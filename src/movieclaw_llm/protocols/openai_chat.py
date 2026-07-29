@@ -47,6 +47,14 @@ from movieclaw_net import egress_transport
 
 logger = logging.getLogger(__name__)
 
+# 部分启用 Cloudflare AI Bot 防护的 OpenAI 兼容端点会将 SDK 默认的
+# ``AsyncOpenAI/Python`` User-Agent 误判为抓取机器人。统一使用常规浏览器标识，
+# 只改变客户端身份特征，不影响 Authorization 与 OpenAI 线协议。
+_BROWSER_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+)
+
 # OpenAI 的 finish_reason → 统一枚举；未知值按 stop 兜底
 _FINISH_REASON_MAP: dict[str, FinishReason] = {
     "stop": "stop",
@@ -62,7 +70,10 @@ _CONTENT_FILTER_CODES = {"data_inspection_failed", "content_filter"}
 class OpenAIChatProtocol(BaseLlmProtocol):
     def __init__(self, config: LlmProviderConfig, preset: ProviderPreset) -> None:
         super().__init__(config, preset)
-        kwargs: dict[str, Any] = {"api_key": config.api_key}
+        kwargs: dict[str, Any] = {
+            "api_key": config.api_key,
+            "default_headers": {"User-Agent": _BROWSER_UA},
+        }
         base_url = config.base_url or preset.base_url
         if base_url:
             kwargs["base_url"] = base_url

@@ -5,6 +5,7 @@ import openai
 import pytest
 from openai.types.chat import ChatCompletion, ChatCompletionChunk
 
+import movieclaw_llm.protocols.openai_chat as openai_chat_module
 from movieclaw_llm import (
     ChatMessage,
     ChatRequest,
@@ -27,6 +28,54 @@ from movieclaw_llm.providers import get_preset
 def make_protocol(provider_type: str = "bailian") -> OpenAIChatProtocol:
     config = LlmProviderConfig(name="测试实例", provider_type=provider_type, api_key="sk-test")
     return OpenAIChatProtocol(config, get_preset(provider_type))
+
+
+async def test_protocol_sends_browser_user_agent(monkeypatch):
+    captured_user_agent = ""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal captured_user_agent
+        captured_user_agent = request.headers["user-agent"]
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "id": "cmpl-ua",
+                "object": "chat.completion",
+                "created": 1,
+                "model": "test-model",
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "stop",
+                        "message": {"role": "assistant", "content": "pong"},
+                    }
+                ],
+            },
+        )
+
+    monkeypatch.setattr(
+        openai_chat_module,
+        "egress_transport",
+        lambda _service: httpx.MockTransport(handler),
+    )
+    config = LlmProviderConfig(
+        name="测试实例",
+        provider_type="openai_compat",
+        api_key="sk-test",
+        base_url="https://example.test/v1",
+    )
+    protocol = OpenAIChatProtocol(config, get_preset("openai_compat"))
+    try:
+        await protocol.chat(
+            ChatRequest(messages=[ChatMessage(role="user", content="ping")]),
+            "test-model",
+        )
+    finally:
+        await protocol.close()
+
+    assert captured_user_agent.startswith("Mozilla/5.0")
+    assert "OpenAI/Python" not in captured_user_agent
 
 
 # -- 请求转换 ---------------------------------------------------------------
