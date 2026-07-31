@@ -216,6 +216,12 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   // 海报墙顶部的锚：跳字母后滚回墙首，否则用户停在原来的滚动位置上，
   // 看到的是新一批的中间，像是"点了没反应"
   const wallTop = useRef<HTMLDivElement>(null);
+  // 页面滚动容器与海报墙格子容器：滚动时反推「视口顶部停在第几个条目」用
+  const scrollRoot = useRef<HTMLDivElement>(null);
+  const wallGrid = useRef<HTMLDivElement>(null);
+  // 视口顶部当前停在整份排序的第几个条目：索引条的高亮档位由它驱动。
+  // 滚动与字母跳转都会更新它——只用跳转起点的话，普通滑动页面时高亮不动
+  const [viewOffset, setViewOffset] = useState(0);
   /**
    * 跳到某个首字母档：换掉整个窗口（而不是继续往后追加），此后照常向下滚动加载。
    * offset=0 即回到墙首，索引条的「全部」走的也是这条路。
@@ -231,6 +237,9 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
         .then((page) => {
           wallLoaded.current = Math.max(WALL_PAGE_SIZE, page.length);
           setWallStart(offset);
+          // 立即对齐高亮：已停在墙顶时 scrollIntoView 不会触发滚动事件，
+          // 光靠滚动同步的话这次跳转的高亮就不更新
+          setViewOffset(offset);
           setItems(page);
           setWallHasMore(page.length >= WALL_PAGE_SIZE);
           wallTop.current?.scrollIntoView({ block: "start", behavior: "smooth" });
@@ -272,6 +281,39 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
 
   const library = libraries?.find((l) => l.id === libraryId) ?? null;
   usePageTitle(library?.name);
+
+  // 滚动时同步 viewOffset：按格子几何反推可见起点（rAF 节流；
+  // 格子按行排布、文档序位置单调，二分即可，不必给几百个格子挂观察器）
+  const hasLibrary = library !== null;
+  useEffect(() => {
+    const root = scrollRoot.current;
+    if (!root || !hasLibrary) return;
+    let raf = 0;
+    const sync = () => {
+      raf = 0;
+      const cells = wallGrid.current?.children;
+      if (!cells || cells.length === 0) return;
+      const topline = root.getBoundingClientRect().top + 1;
+      // 第一个底边还没滚出视口顶的格子 = 用户当前看到的第一个条目
+      let lo = 0;
+      let hi = cells.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (cells[mid].getBoundingClientRect().bottom > topline) hi = mid;
+        else lo = mid + 1;
+      }
+      setViewOffset(wallOffset.current + lo);
+    };
+    const onScroll = () => {
+      if (raf === 0) raf = requestAnimationFrame(sync);
+    };
+    root.addEventListener("scroll", onScroll, { passive: true });
+    sync();
+    return () => {
+      root.removeEventListener("scroll", onScroll);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [hasLibrary]);
 
   // 扫描/整理期间轮询，结束自动展示最新库存与文件名
   const busy = Boolean(library?.scanning || library?.organizing);
@@ -324,6 +366,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
     // 换了排序，之前跳到的字母位置就没意义了，窗口回到墙首
     wallOffset.current = 0;
     setWallStart(0);
+    setViewOffset(0);
     reload();
   }, [probing, reload]);
 
@@ -455,7 +498,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   );
 
   return (
-    <div className="scroll-thin scroll-safe flex-1 overflow-y-auto pb-10">
+    <div ref={scrollRoot} className="scroll-thin scroll-safe flex-1 overflow-y-auto pb-10">
       {/* 顶栏：返回媒体库 + 吸顶库名 + 库操作 ⋯（无 pt——顶边与侧栏卡片顶边齐平） */}
       <PageNav
         items={[{ label: "媒体库", href: "/library" }, { label: library.name }]}
@@ -634,7 +677,10 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
           <div ref={wallTop} className={pending.length > 0 ? "mt-4" : "mt-6 max-md:mt-4"}>
             {/* 索引条与墙并排：条固定在视口右侧（sticky），墙照常滚 */}
             <div className="flex items-start gap-2 px-6 max-md:gap-1 max-md:px-4">
-              <div className="grid flex-1 gap-x-4 gap-y-7 [grid-template-columns:repeat(auto-fill,minmax(148px,1fr))] max-md:gap-x-3 max-md:gap-y-5 max-md:[grid-template-columns:repeat(auto-fill,minmax(140px,1fr))]">
+              <div
+                ref={wallGrid}
+                className="grid flex-1 gap-x-4 gap-y-7 [grid-template-columns:repeat(auto-fill,minmax(148px,1fr))] max-md:gap-x-3 max-md:gap-y-5 max-md:[grid-template-columns:repeat(auto-fill,minmax(140px,1fr))]"
+              >
                 {items.map((item) => (
                   <InventoryCell
                     key={item.media_item_id}
@@ -648,7 +694,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
                 ))}
               </div>
               {/* 补探阶段排序不是拼音序，字母跳转会跳错位置——那几分钟里收起来 */}
-              {!probing && <WallIndexBar index={wallIndex} start={wallStart} onJump={jumpTo} />}
+              {!probing && <WallIndexBar index={wallIndex} start={viewOffset} onJump={jumpTo} />}
             </div>
           </div>
           <WallLoadMore
@@ -1005,12 +1051,12 @@ function WallIndexBar({
   onJump,
 }: {
   index: LibraryIndexEntry[];
-  /** 当前窗口起点，用来高亮"现在停在哪一档" */
+  /** 视口顶部条目的全局序号（滚动/跳转都会更新），用来高亮"现在停在哪一档" */
   start: number;
   onJump: (offset: number) => void;
 }) {
   const byInitial = useMemo(() => new Map(index.map((e) => [e.initial, e])), [index]);
-  // 当前档 = 起点落在哪一档的区间里
+  // 当前档 = 视口顶部序号落在哪一档的区间里
   const active = useMemo(
     () => index.findLast((e) => e.offset <= start)?.initial ?? null,
     [index, start],
