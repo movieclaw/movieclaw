@@ -34,6 +34,7 @@ from movieclaw_jellyfin.ids import (
     EntityKind,
     decode_guid,
     is_empty_guid,
+    library_guid,
 )
 from movieclaw_jellyfin.routes.common import (
     dto_context,
@@ -101,6 +102,96 @@ async def user_views(user_id: str | None = None) -> JSONResponse:
         for lib in libraries
     ]
     return JSONResponse(query_result(dtos, len(dtos)))
+
+
+def _refresh_status(library_id: int) -> tuple[str, float | None]:
+    """把本库的扫描/元数据刷新任务线映射到 Jellyfin 的三态语义（LibraryManager.cs:1586-1589）。
+
+    真实现：有进度值 → Active，在队列里 → Queued，其余 → Idle；RefreshProgress
+    是 0~100 的百分数，非 Active 时为 null（省略输出）。我们两条任务线
+    （scan 扫描 + media_scrape 整库元数据刷新）任一在跑即 Active——分母未知的
+    遍历阶段报 0.0（客户端画不确定态转圈，与自家前端约定一致）；元数据刷新
+    "已启动但状态尚未就绪"的间隙映射为 Queued。
+    """
+    from movieclaw_api.services import media_scrape
+    from movieclaw_api.services.library.scan import scan_progress
+
+    for state in (scan_progress(library_id), media_scrape.library_refresh_state(library_id)):
+        if state is not None:
+            if state.total > 0:
+                return "Active", round(state.processed / state.total * 100, 1)
+            return "Active", 0.0
+    if media_scrape.is_library_refreshing(library_id):
+        return "Queued", None
+    return "Idle", None
+
+
+@router.get("/Library/VirtualFolders")
+async def library_virtual_folders() -> JSONResponse:
+    """媒体库物理结构（LibraryStructureController.cs:58-63）。Infuse 在 GroupingOptions 之后必调。
+
+    真 Jellyfin 返回**裸数组**的 VirtualFolderInfo：库名、物理路径、类型与库配置。
+    我们把 Library.root_paths 原样给出（第一个为主根），LibraryOptions 按真实现的
+    实体默认值给一份静态子集——客户端只读，我们不开放库管理写端点。
+    """
+    async with get_database().session() as session:
+        libraries = await list_libraries(session)
+    infos = []
+    for lib in libraries:
+        roots = [str(p) for p in (lib.root_paths or [])]
+        status, progress = _refresh_status(lib.id)
+        infos.append(
+            {
+                "Name": lib.name,
+                "Locations": roots,
+                "CollectionType": "movies" if lib.kind == "movie" else "tvshows",
+                "ItemId": library_guid(lib.id),
+                "RefreshStatus": status,
+                "LibraryOptions": {
+                    "Enabled": True,
+                    "EnablePhotos": False,
+                    "EnableRealtimeMonitor": True,
+                    "EnableChapterImageExtraction": False,
+                    "ExtractChapterImagesDuringLibraryScan": False,
+                    "EnableTrickplayImageExtraction": False,
+                    "ExtractTrickplayImagesDuringLibraryScan": False,
+                    "PathInfos": [{"Path": p} for p in roots],
+                    "SaveLocalMetadata": False,
+                    "EnableAutomaticSeriesGrouping": False,
+                    "EnableEmbeddedTitles": False,
+                    "EnableEmbeddedExtrasTitles": False,
+                    "EnableEmbeddedEpisodeInfos": False,
+                    "AutomaticRefreshIntervalDays": 0,
+                    "SeasonZeroDisplayName": "Specials",
+                    "DisabledLocalMetadataReaders": [],
+                    "DisabledSubtitleFetchers": [],
+                    "SubtitleFetcherOrder": [],
+                },
+            }
+        )
+        # 对齐真实现：RefreshProgress 仅 Active 时输出（可空 double 的 null 省略约定）
+        if progress is not None:
+            infos[-1]["RefreshProgress"] = progress
+    return JSONResponse(infos)
+
+
+@router.get("/UserViews/GroupingOptions")
+@router.get("/Users/{user_id}/GroupingOptions")
+async def user_view_grouping_options(user_id: str | None = None) -> JSONResponse:
+    """可分组视图清单（UserViewsController.cs:128-155）。Infuse 握手必调，缺了会中断添加流程。
+
+    真 Jellyfin 取用户根目录下 CollectionType ∈ {movies, tvshows, null} 的文件夹
+    （UserView.IsEligibleForGrouping）——我们的库只有 movies/tvshows 两种，全部符合。
+    注意返回形状是**裸数组**（不套 QueryResult），元素仅 Name + Id（Guid "N" 格式，
+    与 library_guid 的 32 位 hex 一致），按 Name 排序。
+    """
+    async with get_database().session() as session:
+        libraries = await list_libraries(session)
+    options = sorted(
+        ({"Name": lib.name, "Id": library_guid(lib.id)} for lib in libraries),
+        key=lambda option: option["Name"],
+    )
+    return JSONResponse(options)
 
 
 # ---------------------------------------------------------------------------

@@ -149,6 +149,98 @@ def test_user_views_both_routes(client: TestClient, seeded: dict) -> None:
         assert by_name["电影"]["Id"] == library_guid(seeded["movie_lib"])
 
 
+def test_grouping_options_both_routes(client: TestClient, seeded: dict) -> None:
+    """GroupingOptions 是裸数组（不套 QueryResult），Id 与库视图的 Id 一致，按名称排序。"""
+    token = jf_login(client)
+    auth = {"ApiKey": token}
+    for path in ("/UserViews/GroupingOptions", f"/Users/{'0' * 32}/GroupingOptions"):
+        body = client.get(path, params=auth).json()
+        assert isinstance(body, list)
+        assert [o["Name"] for o in body] == sorted(o["Name"] for o in body)
+        by_name = {o["Name"]: o for o in body}
+        assert set(by_name) == {"电影", "剧集"}
+        assert by_name["电影"]["Id"] == library_guid(seeded["movie_lib"])
+        assert set(by_name["电影"]) == {"Name", "Id"}
+
+
+def test_library_virtual_folders(client: TestClient, seeded: dict) -> None:
+    """VirtualFolders 是裸数组；路径、类型、ItemId 与库视图对齐；大小写归一化可达。"""
+    token = jf_login(client)
+    auth = {"ApiKey": token}
+    body = client.get("/Library/VirtualFolders", params=auth).json()
+    assert isinstance(body, list)
+    by_name = {v["Name"]: v for v in body}
+    assert set(by_name) == {"电影", "剧集"}
+    movie = by_name["电影"]
+    assert movie["CollectionType"] == "movies"
+    assert by_name["剧集"]["CollectionType"] == "tvshows"
+    assert movie["ItemId"] == library_guid(seeded["movie_lib"])
+    assert movie["Locations"] and all(isinstance(p, str) for p in movie["Locations"])
+    assert movie["LibraryOptions"]["PathInfos"] == [{"Path": p} for p in movie["Locations"]]
+    # 没有任务在跑：Idle 且不输出 RefreshProgress（可空 double 的 null 省略约定）
+    assert movie["RefreshStatus"] == "Idle"
+    assert "RefreshProgress" not in movie
+    assert client.get("/library/virtualfolders", params=auth).status_code == 200
+
+
+def test_virtual_folders_refresh_status(
+    client: TestClient, seeded: dict, monkeypatch
+) -> None:
+    """扫描/元数据刷新任务线映射到 Active(+百分比)/Queued 三态。"""
+    from types import SimpleNamespace
+
+    from movieclaw_api.services import media_scrape
+    from movieclaw_api.services.library import scan as scan_module
+
+    token = jf_login(client)
+    auth = {"ApiKey": token}
+    movie_lib = seeded["movie_lib"]
+
+    def by_name(body: list) -> dict:
+        return {v["Name"]: v for v in body}
+
+    # 电影库在扫描（3/10）→ Active 30.0；剧集库无任务 → Idle
+    monkeypatch.setattr(
+        scan_module,
+        "scan_progress",
+        lambda lid: SimpleNamespace(processed=3, total=10) if lid == movie_lib else None,
+    )
+    body = by_name(client.get("/Library/VirtualFolders", params=auth).json())
+    assert body["电影"]["RefreshStatus"] == "Active"
+    assert body["电影"]["RefreshProgress"] == 30.0
+    assert body["剧集"]["RefreshStatus"] == "Idle"
+
+    # 元数据刷新已启动但状态未就绪 → Queued
+    monkeypatch.setattr(scan_module, "scan_progress", lambda lid: None)
+    monkeypatch.setattr(
+        media_scrape, "is_library_refreshing", lambda lid: lid == movie_lib
+    )
+    body = by_name(client.get("/Library/VirtualFolders", params=auth).json())
+    assert body["电影"]["RefreshStatus"] == "Queued"
+    assert "RefreshProgress" not in body["电影"]
+
+
+def test_display_preferences_defaults(client: TestClient, seeded: dict) -> None:
+    """DisplayPreferences 读端恒为出厂默认；写端 204；大小写与 emby 别名可达。"""
+    token = jf_login(client)
+    auth = {"ApiKey": token, "client": "emby"}
+    body = client.get("/DisplayPreferences/usersettings", params=auth).json()
+    # Guid.TryParse 失败走 GetMD5("usersettings")，"D" 格式带连字符
+    assert body["Id"] == "3e374929-b8d7-0f04-df93-01c3d0cc6088"
+    assert body["SortBy"] == "SortName"
+    assert body["SortOrder"] == "Ascending"
+    assert body["ScrollDirection"] == "Horizontal"
+    assert body["ShowBackdrop"] is True
+    assert body["CustomPrefs"]["skipForwardLength"] == "30000"
+    assert body["Client"] == "emby"
+    # 大小写归一化 + emby 前缀别名
+    assert client.get("/displaypreferences/usersettings", params=auth).status_code == 200
+    assert client.get("/emby/DisplayPreferences/usersettings", params=auth).status_code == 200
+    # 写端 no-op
+    resp = client.post("/DisplayPreferences/usersettings", params=auth, json={"SortBy": "SortName"})
+    assert resp.status_code == 204
+
+
 def test_items_in_movie_library(client: TestClient, seeded: dict) -> None:
     token = jf_login(client)
     body = client.get(

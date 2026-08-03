@@ -18,6 +18,7 @@ from movieclaw_jellyfin.routes.library import router as library_router
 from movieclaw_jellyfin.routes.misc import router as misc_router
 from movieclaw_jellyfin.routes.playback import router as playback_router
 from movieclaw_jellyfin.routes.playstate import router as playstate_router
+from movieclaw_jellyfin.routes.preferences import router as preferences_router
 from movieclaw_jellyfin.routes.system import router as system_router
 from movieclaw_jellyfin.routes.users import router as users_router
 
@@ -36,6 +37,8 @@ NAMESPACE_PREFIXES = {
     "playingitems",
     "branding",
     "quickconnect",
+    "displaypreferences",
+    "library",
     "emby",
 }
 
@@ -83,6 +86,7 @@ _KNOWN_QUERY_KEYS = [
     "positionTicks",
     "userId",
     "format",
+    "client",
 ]
 
 # 注册顺序即匹配顺序：字面路径的模块在参数路径之前
@@ -93,6 +97,7 @@ _SUB_ROUTERS = [
     playstate_router,
     playback_router,
     images_router,
+    preferences_router,
     library_router,
 ]
 
