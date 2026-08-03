@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path, PurePath
 from typing import Annotated, Literal
 
@@ -76,7 +77,7 @@ from movieclaw_api.services.library.items import (
     delete_item_files,
     delete_single_file,
     find_episode_thumb,
-    find_local_artwork,
+    local_item_artwork,
     search_library_items,
 )
 from movieclaw_api.services.library.layout import entry_dir_of
@@ -1389,16 +1390,10 @@ async def get_item_artwork(
     library = await service.get(library_id)
     _, rows = await _item_rows(session, library_id, media_item_id)
     roots = [Path(p) for p in library.root_paths]
-    for row in rows:
-        entry = entry_dir_of(roots, Path(row.file_path))
-        if entry is None and row.container in ("bluray", "dvd"):
-            entry = Path(row.file_path)
-        if entry is None or not entry.is_dir():
-            continue
-        art = find_local_artwork(entry, kind)
-        if art is not None:
-            # 本地文件可能被用户替换，给短缓存而非 immutable
-            return FileResponse(art, headers={"Cache-Control": "private, max-age=3600"})
+    art = await asyncio.to_thread(local_item_artwork, roots, rows, kind)
+    if art is not None:
+        # 本地文件可能被用户替换，给短缓存而非 immutable
+        return FileResponse(art, headers={"Cache-Control": "private, max-age=3600"})
     raise NotFoundException("条目目录里没有本地美术图")
 
 

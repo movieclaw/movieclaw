@@ -33,6 +33,7 @@ KNOWN_NON_GENERATED = {
     "search.stream",
     "agent.runs.stream",
     "fs.browse",  # 仅 Web 端目录选择器用；CLI/Agent 有 bash 等通用工具，不再暴露
+    "libraries.cover",  # 库封面拼贴图（二进制响应，Web/Jellyfin 双端消费），CLI 无用途
 }
 
 

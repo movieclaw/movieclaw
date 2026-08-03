@@ -220,6 +220,62 @@ def test_virtual_folders_refresh_status(
     assert "RefreshProgress" not in body["电影"]
 
 
+def test_item_detail_triggers_self_heal(client: TestClient, seeded: dict, monkeypatch) -> None:
+    """条目没有刮削档案时，单条目详情后台触发自愈刮削；已刮过则不触发。"""
+    import os
+    import sqlite3
+    import time
+
+    from movieclaw_api.services import media_scrape
+
+    calls: list[int] = []
+
+    async def fake_scrape(media_item_id: int, **_kw) -> bool:
+        calls.append(media_item_id)
+        return True
+
+    monkeypatch.setattr(media_scrape, "scrape_media_item", fake_scrape)
+    token = jf_login(client)
+    auth = {"ApiKey": token}
+
+    # 种子数据的 metadata 行 scraped_at 为 None → 视同"从未刮过"，应触发
+    assert client.get(f"/Items/{item_guid(seeded['movie'])}", params=auth).status_code == 200
+    for _ in range(100):  # fire-and-forget 任务在应用事件循环上，稍候可见
+        if calls:
+            break
+        time.sleep(0.02)
+    assert calls == [seeded["movie"]]
+
+    # 补上 scraped_at（cast 为空、也无关系行）→ 视同已刮过且无数据可补，不触发
+    db_path = os.environ["DATABASE_URL"].split("///", 1)[1]
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "update media_metadata set scraped_at = '2026-01-01 00:00:00' where media_item_id = ?",
+        (seeded["show"],),
+    )
+    conn.commit()
+    calls.clear()
+    assert client.get(f"/Items/{item_guid(seeded['show'])}", params=auth).status_code == 200
+    time.sleep(0.2)
+    assert calls == []
+
+    # 已刮过但档案有 cast、关系表为空（影人功能上线前的存量形态）→ 触发
+    conn.execute(
+        """update media_metadata set "cast" = '[{"name": "Bryan Cranston"}]'
+           where media_item_id = ?""",
+        (seeded["show"],),
+    )
+    conn.commit()
+    conn.close()
+    calls.clear()
+    assert client.get(f"/Items/{item_guid(seeded['show'])}", params=auth).status_code == 200
+    for _ in range(100):
+        if calls:
+            break
+        time.sleep(0.02)
+    assert calls == [seeded["show"]]
+
+
 def test_display_preferences_defaults(client: TestClient, seeded: dict) -> None:
     """DisplayPreferences 读端恒为出厂默认；写端 204；大小写与 emby 别名可达。"""
     token = jf_login(client)
@@ -380,6 +436,63 @@ def test_image_served_and_missing(client: TestClient, seeded: dict) -> None:
     assert missing.status_code == 404
 
 
+def test_item_image_three_layers(
+    client: TestClient, seeded: dict, media_root, tmp_path, monkeypatch
+) -> None:
+    """条目图片三层解析：目录美术图 > 刮削资产 > TMDB 图床兜底（与 Web 同口径）。"""
+    import os
+    import sqlite3
+    from types import SimpleNamespace
+
+    from PIL import Image
+
+    token = jf_login(client)
+    auth = {"ApiKey": token}
+    movie_guid = item_guid(seeded["movie"])
+
+    # ① 条目目录美术图最优先：短缓存（用户可随时换图），压过刮削资产
+    entry = media_root / "Inception (2010)"
+    Image.new("RGB", (50, 75), "#aa3333").save(entry / "poster.jpg", "JPEG")
+    resp = client.get(f"/Items/{movie_guid}/Images/Primary", params=auth)
+    assert resp.status_code == 200
+    assert resp.headers["Cache-Control"] == "private, max-age=3600"
+
+    # ② 目录图撤掉 → 回到刮削资产层
+    (entry / "poster.jpg").unlink()
+    resp = client.get(f"/Items/{movie_guid}/Images/Primary", params=auth)
+    assert resp.status_code == 200
+    assert "private" not in resp.headers["Cache-Control"]
+
+    # ③ TMDB 兜底：show 无资产，标上 poster_path 后 DTO 有 tag、图片经代理可出
+    db_path = os.environ["DATABASE_URL"].split("///", 1)[1]
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "update media_item set poster_path = '/fallback.jpg' where id = ?",
+        (seeded["show"],),
+    )
+    conn.commit()
+    conn.close()
+
+    fake_file = tmp_path / "fake-tmdb.jpg"
+    Image.new("RGB", (60, 90), "#22aa66").save(fake_file, "JPEG")
+
+    class _FakeCache:
+        async def get_or_fetch(self, url: str):
+            assert "/fallback.jpg" in url
+            return SimpleNamespace(path=fake_file, content_type="image/jpeg")
+
+    from movieclaw_api.services import image_cache as image_cache_module
+
+    monkeypatch.setattr(image_cache_module, "get_image_cache", lambda: _FakeCache())
+
+    show_guid = item_guid(seeded["show"])
+    body = client.get(f"/Items/{show_guid}", params=auth).json()
+    assert "Primary" in body["ImageTags"]  # 资产未落地也要有 tag，客户端才会来请求
+    resp = client.get(f"/Items/{show_guid}/Images/Primary", params=auth)
+    assert resp.status_code == 200
+    assert resp.headers["Cache-Control"] == "public, max-age=31536000, immutable"
+
+
 # ---------------------------------------------------------------------------
 # 播放
 # ---------------------------------------------------------------------------
@@ -414,6 +527,23 @@ def test_playback_info_direct_play_no_transcode(client: TestClient, seeded: dict
     assert remote["Path"] == "https://pan.example.com/inception-1080p.mp4"
     assert remote["IsRemote"] is True
     assert remote["SupportsDirectPlay"] is True
+    # strm 版本从未探测：hdr 为空是「未知」不是 SDR，不能妄断
+    remote_video = next(s for s in remote["MediaStreams"] if s["Type"] == "Video")
+    assert remote_video["VideoRange"] == "Unknown"
+    assert remote_video["VideoRangeType"] == "Unknown"
+    assert remote_video["DisplayTitle"] == "Video"
+
+
+def test_probed_sdr_file_stays_sdr(client: TestClient, seeded: dict) -> None:
+    """探测跑过且无 HDR 的文件是真 SDR，不受 Unknown 兜底影响。"""
+    token = jf_login(client)
+    guid = episode_guid(seeded["show"], 1, 1)
+    body = client.post(f"/Items/{guid}/PlaybackInfo", params={"ApiKey": token}).json()
+    video = next(
+        s for s in body["MediaSources"][0]["MediaStreams"] if s["Type"] == "Video"
+    )
+    assert video["VideoRange"] == "SDR" and video["VideoRangeType"] == "SDR"
+    assert video["DisplayTitle"] == "1080p H264 SDR"
 
 
 def test_stream_range_request(client: TestClient, seeded: dict) -> None:

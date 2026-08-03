@@ -139,6 +139,85 @@ def test_write_entry_nfo_and_respect_existing(tmp_path) -> None:
     assert nfo.read_text(encoding="utf-8") == "precious"
 
 
+def test_full_nfo_refresh_alignment(tmp_path) -> None:
+    """完整 NFO 的刷新对齐语义（2026-08-04 翻转）：有档案即重写，无档案不降级。"""
+    from datetime import UTC, datetime
+
+    from movieclaw_db.models import MediaMetadata
+
+    item = MediaItem(
+        kind="movie",
+        tmdb_id=42,
+        imdb_id=None,
+        title="某电影",
+        original_title="Some Movie",
+        year=2020,
+        aliases=[],
+    )
+    meta = MediaMetadata(
+        media_item_id=1,
+        overview="新简介",
+        genres=["剧情"],
+        scraped_at=datetime.now(UTC),
+    )
+    entry = tmp_path / "某电影 (2020)"
+    entry.mkdir()
+    nfo = entry / "movie.nfo"
+
+    # 既有富 NFO（同 tmdbid）+ 新档案 → 对齐重写
+    nfo.write_text(
+        "<movie><tmdbid>42</tmdbid><plot>旧简介</plot></movie>", encoding="utf-8"
+    )
+    write_full_nfo(entry, item, meta)
+    text = nfo.read_text(encoding="utf-8")
+    assert "新简介" in text and "旧简介" not in text
+
+    # 内容无变化 → 不落盘（mtime 不动，watchdog/播放器不受扰）
+    before = nfo.stat().st_mtime_ns
+    write_full_nfo(entry, item, meta)
+    assert nfo.stat().st_mtime_ns == before
+
+    # 无档案 → 绝不覆盖既有内容（不能拿身份档降级刮削成果）
+    nfo.write_text("<movie><tmdbid>42</tmdbid><plot>precious</plot></movie>", encoding="utf-8")
+    write_full_nfo(entry, item, None)
+    assert "precious" in nfo.read_text(encoding="utf-8")
+
+    # 声明了不同 tmdbid → 不写（留给认领纠错链路）
+    nfo.write_text("<movie><tmdbid>99</tmdbid><plot>other</plot></movie>", encoding="utf-8")
+    write_full_nfo(entry, item, meta)
+    assert "other" in nfo.read_text(encoding="utf-8")
+
+
+def test_episode_nfo_refresh_alignment(tmp_path) -> None:
+    """分集 NFO 对齐重写；骨架档案行（无简介无日期）不覆盖第三方成果。"""
+    from datetime import date
+
+    from movieclaw_api.services.library.nfo import write_episode_nfo
+    from movieclaw_db.models import MediaEpisode
+
+    video = tmp_path / "S01E01.mkv"
+    video.write_bytes(b"x")
+    nfo = tmp_path / "S01E01.nfo"
+    rich = MediaEpisode(
+        media_item_id=1,
+        season_number=1,
+        episode_number=1,
+        name="Pilot",
+        overview="新的分集简介",
+        air_date=date(2020, 1, 1),
+    )
+    # 既有文件 + 有实质档案 → 对齐重写
+    nfo.write_text("<episodedetails><plot>旧</plot></episodedetails>", encoding="utf-8")
+    write_episode_nfo(video, rich)
+    assert "新的分集简介" in nfo.read_text(encoding="utf-8")
+
+    # 骨架行（无简介无日期）→ 不碰既有文件
+    nfo.write_text("<episodedetails><plot>rich</plot></episodedetails>", encoding="utf-8")
+    skeleton = MediaEpisode(media_item_id=1, season_number=1, episode_number=2, name="E2")
+    write_episode_nfo(video, skeleton)
+    assert "rich" in nfo.read_text(encoding="utf-8")
+
+
 def test_entry_nfo_refuses_kind_conflicting_dir(tmp_path) -> None:
     """目录里已有 tvshow.nfo 时，绝不再写 movie.nfo（反之亦然）。
 

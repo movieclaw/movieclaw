@@ -112,6 +112,72 @@ async def _resolve_asset(
     return None
 
 
+async def _item_layer_fallbacks(
+    session: AsyncSession, media_item_id: int, itype: str
+) -> tuple[Path | None, str | None]:
+    """条目图片三层解析的第一层与第三层素材：目录美术图路径 + TMDB 兜底路径。
+
+    目录美术图复用 Web 侧的共享定位函数（local_item_artwork，同一份策略）；
+    找目录需要台账文件与库根，一次联查取回。
+    """
+    from movieclaw_api.services.library.items import local_item_artwork
+    from movieclaw_db.models import Library, LibraryFile, MediaItem
+
+    item = await session.get(MediaItem, media_item_id)
+    if item is None:
+        return None, None
+    tmdb_path = item.poster_path if itype == "primary" else item.backdrop_path
+    rows = (
+        await session.execute(
+            select(LibraryFile, Library)
+            .join(Library, Library.id == LibraryFile.library_id)
+            .where(
+                LibraryFile.media_item_id == media_item_id,
+                LibraryFile.missing_since.is_(None),
+            )
+        )
+    ).all()
+    if not rows:
+        return None, tmdb_path
+    files = [f for f, _ in rows]
+    roots: list[Path] = []
+    for _, lib in rows:
+        for p in lib.root_paths:
+            path = Path(p)
+            if path not in roots:
+                roots.append(path)
+    kind = "poster" if itype == "primary" else "fanart"
+    art = await asyncio.to_thread(local_item_artwork, roots, files, kind)
+    return art, tmdb_path
+
+
+async def _tmdb_image(tmdb_path: str, itype: str, request: Request) -> Response:
+    """TMDB 图床兜底：经图片代理拉取缓存后直出（档位对齐 Web 的兜底展示）。"""
+    from movieclaw_api.core.config import get_settings
+    from movieclaw_api.services.image_cache import get_image_cache
+
+    base = get_settings().tmdb_image_base_url.rstrip("/")
+    size = "w780" if itype == "primary" else "w1280"
+    try:
+        cached = await get_image_cache().get_or_fetch(f"{base}/{size}{tmdb_path}")
+    except Exception:
+        raise JellyfinError(
+            404, text=f"Item does not have an image of type {itype.capitalize()}"
+        ) from None
+    target = await _maybe_scaled(cached.path, request)
+    tag = hashlib.md5(f"tmdb:{tmdb_path}".encode()).hexdigest()
+    media_type = cached.content_type if target == cached.path else "image/jpeg"
+    return FileResponse(
+        target,
+        media_type=media_type,
+        headers={
+            "Vary": "Accept",
+            "Cache-Control": "public, max-age=31536000, immutable",
+            "ETag": f'"{tag}"',
+        },
+    )
+
+
 @router.get("/Items/{item_id}/Images/{image_type}")
 @router.head("/Items/{item_id}/Images/{image_type}")
 @router.get("/Items/{item_id}/Images/{image_type}/{image_index}")
@@ -143,9 +209,35 @@ async def get_item_image(
         )
     if ref is not None and ref.kind == EntityKind.PERSON:
         return await _person_image(ref.entity_id, image_type)
+    # 条目 Primary/Backdrop 走与 Web 相同的三层解析（docs/design/metadata.md 5）：
+    # 条目目录美术图（用户/第三方刮削器放的 poster.jpg，最优先）→ 刮削资产
+    # → TMDB 图床兜底（经图片代理缓存；资产还没落地时的自愈网）
+    dir_art: Path | None = None
+    tmdb_fallback: str | None = None
+    is_item_image = (
+        ref is not None
+        and ref.kind == EntityKind.ITEM
+        and image_type.lower() in ("primary", "backdrop")
+    )
     async with get_database().session() as session:
         rel_path = await _resolve_asset(session, item_id, image_type)
+        if is_item_image:
+            assert ref is not None
+            dir_art, tmdb_fallback = await _item_layer_fallbacks(
+                session, ref.entity_id, image_type.lower()
+            )
+    if dir_art is not None:
+        target = await _maybe_scaled(dir_art, request)
+        media_type = mimetypes.guess_type(str(target))[0] or "image/jpeg"
+        # 用户可随时替换目录里的图：短缓存，不做 immutable/ETag 协商（与 Web 一致）
+        return FileResponse(
+            target,
+            media_type=media_type,
+            headers={"Vary": "Accept", "Cache-Control": "private, max-age=3600"},
+        )
     if not rel_path:
+        if tmdb_fallback:
+            return await _tmdb_image(tmdb_fallback, image_type.lower(), request)
         # 条目在但无该类型图：text 文案 404（对齐 ImageController.cs:1875）
         raise JellyfinError(404, text=f"Item does not have an image of type {image_type}")
 

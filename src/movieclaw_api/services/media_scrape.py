@@ -813,6 +813,8 @@ async def download_item_assets(
         item_dir = assets_root() / str(media_item_id)
         base = get_settings().tmdb_image_base_url.rstrip("/")
         poster_size, backdrop_size, still_size = _asset_sizes()
+        sources = await asyncio.to_thread(_load_asset_sources, item_dir)
+        saved_sources = dict(sources)
 
         async with _asset_semaphore:
             meta.poster_file = await _sync_asset(
@@ -822,6 +824,9 @@ async def download_item_assets(
                 item_dir / "poster.jpg",
                 meta.poster_file,
                 force and (ignore_locks or not meta.poster_locked),
+                sources,
+                "poster",
+                locked=meta.poster_locked and not ignore_locks,
             )
             meta.backdrop_file = await _sync_asset(
                 base,
@@ -830,6 +835,9 @@ async def download_item_assets(
                 item_dir / "backdrop.jpg",
                 meta.backdrop_file,
                 force and (ignore_locks or not meta.backdrop_locked),
+                sources,
+                "backdrop",
+                locked=meta.backdrop_locked and not ignore_locks,
             )
             session.add(meta)
             for season in seasons:
@@ -840,30 +848,87 @@ async def download_item_assets(
                     item_dir / f"season-{season.season_number}.jpg",
                     season.poster_file,
                     force,
+                    sources,
+                    f"season-{season.season_number}",
                 )
                 session.add(season)
             if has_files:
                 for episode in episodes:
+                    key = f"s{episode.season_number:02d}e{episode.episode_number:02d}"
                     episode.still_file = await _sync_asset(
                         base,
                         still_size,
                         episode.still_path,
-                        item_dir / f"s{episode.season_number:02d}e{episode.episode_number:02d}.jpg",
+                        item_dir / f"{key}.jpg",
                         episode.still_file,
                         force,
+                        sources,
+                        key,
                     )
                     session.add(episode)
+        if sources != saved_sources:
+            await asyncio.to_thread(_save_asset_sources, item_dir, sources)
         await session.commit()
 
 
+_SOURCES_FILE = "sources.json"
+
+
+def _load_asset_sources(item_dir: Path) -> dict[str, str]:
+    """条目资产目录的溯源记录：资产键 → 下载时的「档位+TMDB 路径」。
+
+    普通刷新据此判断"上游换图了没有"——没有溯源就没法感知 TMDB 换图，
+    资产会永远停在首次下载的那张（docs/design/metadata.md 6.1，2026-08-04
+    完整性决策）。放文件而非数据库：与资产同生共死，且免一次迁移。
+    """
+    try:
+        import json
+
+        return json.loads((item_dir / _SOURCES_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_asset_sources(item_dir: Path, sources: dict[str, str]) -> None:
+    try:
+        import json
+
+        item_dir.mkdir(parents=True, exist_ok=True)
+        (item_dir / _SOURCES_FILE).write_text(
+            json.dumps(sources, ensure_ascii=False, indent=1), encoding="utf-8"
+        )
+    except OSError as exc:
+        logger.warning("资产溯源记录写盘失败（不阻断）：%s（%s）", item_dir, exc)
+
+
 async def _sync_asset(
-    base: str, size: str, tmdb_path: str | None, dest: Path, current: str | None, force: bool
+    base: str,
+    size: str,
+    tmdb_path: str | None,
+    dest: Path,
+    current: str | None,
+    force: bool,
+    sources: dict[str, str],
+    key: str,
+    *,
+    locked: bool = False,
 ) -> str | None:
-    """下载单张图到资产目录，返回落库的相对路径（失败保留现值/None）。"""
+    """下载单张图到资产目录，返回落库的相对路径（失败保留现值/None）。
+
+    跳过条件（普通刷新）：文件在**且溯源与当前来源一致**——TMDB 换图
+    （poster_path 变更）或档位配置调整都会触发重下，资产随刷新保持最新。
+    ``locked``（手动选定）：只要文件还在就不动，上游换图与它无关。
+    """
     if not tmdb_path:
         return current
     rel = str(dest.relative_to(assets_root()))
-    if not force and current == rel and await asyncio.to_thread(dest.is_file):
+    want = f"{size}{tmdb_path}"
+    if (
+        not force
+        and current == rel
+        and (locked or sources.get(key) == want)
+        and await asyncio.to_thread(dest.is_file)
+    ):
         return current
     from movieclaw_api.services.image_proxy import get_image_proxy
 
@@ -877,6 +942,7 @@ async def _sync_asset(
     except OSError as exc:
         logger.warning("图片资产写盘失败：%s（%s）", dest, exc)
         return current
+    sources[key] = want
     return rel
 
 
@@ -996,12 +1062,10 @@ async def select_artwork(media_item_id: int, *, kind: str, file_path: str | None
 async def mirror_media_dir_assets(media_item_id: int, *, force: bool = False) -> None:
     """把刮削成果镜像写入媒体目录：条目图片 + 完整 NFO + 分集 thumb/NFO。
 
-    铁律：目标文件已存在则跳过（唯一例外：内容为空的最小身份 NFO 且
-    tmdbid 相同，升级为完整 NFO）；绝不删除；写失败只告警。
-
-    ``force``（单条目手动刷新）：**图片**改为覆盖写——用户点强制刷新的
-    语义就是"以 TMDB 最新为准"（Emby「替换现有图片」同款）；NFO 不跟随
-    覆盖（TMM/Emby 的富 NFO 是用户刮削成果，维持只增规则）。
+    铁律（2026-08-04 完整性决策改版，docs/design/metadata.md 6.2）：镜像随
+    库内档案**保持更新**——图片"资产比镜像新才覆盖"（_copy_asset），NFO 每次
+    刷新按 media_metadata 重写（内容比对，无变化不落盘）；**绝不删除**；
+    写失败只告警。``force``（单条目手动刷新）：图片无条件覆盖写。
 
     NFO 只在身份**高置信**时写（人工认领 / 目录 tmdbid 标记 / 既有 NFO /
     入库管线锚定）：扫描的名称收敛（RESOLVED）是机器结论，写成 NFO 会被
@@ -1102,9 +1166,21 @@ async def mirror_media_dir_assets(media_item_id: int, *, force: bool = False) ->
 
 
 def _copy_asset(src: Path, dest: Path, force: bool) -> None:
-    """资产 → 媒体目录的单张复制：默认只补缺失，force 覆盖（源不存在不动）。"""
-    if not src.is_file() or (dest.exists() and not force):
+    """资产 → 媒体目录的单张镜像：**资产比镜像新（或 force）才覆盖**，绝不删除。
+
+    2026-08-04 完整性决策：镜像随资产追新——资产因上游换图/档位调整重下后
+    （mtime 变新），下次镜像即覆盖媒体目录里的旧图；用户手工放进目录的图
+    （mtime 比资产新）不会被冲掉——想让手选图长期生效请走详情页选图锁
+    （锁会覆盖镜像并冻结资产，见 docs/design/metadata.md 6.3）。
+    """
+    if not src.is_file():
         return
+    if dest.exists() and not force:
+        try:
+            if dest.stat().st_mtime >= src.stat().st_mtime:
+                return
+        except OSError:
+            return
     try:
         shutil.copyfile(src, dest)
     except OSError as exc:

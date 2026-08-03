@@ -464,6 +464,61 @@ class ItemDetailBundle:
     pending_probe_ids: list[int] = field(default_factory=list)
 
 
+def resolve_entry_dirs(roots: list[Path], files: list[LibraryFile]) -> list[Path]:
+    """条目目录集合：多根/多版本可能给出多个，去重保序（第一个用于 NFO 与美术图）。"""
+    entry_dirs: list[Path] = []
+    for row in files:
+        entry = entry_dir_of(roots, Path(row.file_path))
+        # 原盘条目 file_path 本身就是目录（BDMV/VIDEO_TS），直接在根下时以它为条目目录
+        if entry is None and row.container in ("bluray", "dvd"):
+            entry = Path(row.file_path)
+        if entry is not None and entry not in entry_dirs:
+            entry_dirs.append(entry)
+    return entry_dirs
+
+
+async def layered_item_meta(
+    session: AsyncSession,
+    item: MediaItem,
+    entry_dirs: list[Path],
+    files: list[LibraryFile],
+    kind: MediaKind,
+) -> EntryMetadata | None:
+    """条目展示元数据的**唯一读口径**（docs/design/metadata.md 第 5 节），
+    Web 详情页与 Jellyfin 兼容层共用——分层策略只在这里维护一份：
+    本地 NFO 最优先（尊重既有刮削成果）→ 库内刮削档案（media_metadata，
+    绝大多数条目的日常路径，断网可用）→ TMDB 实时兜底（条目还没刮过，
+    顺带触发后台刮削自愈）。
+    """
+    local_meta = await asyncio.to_thread(_read_meta, entry_dirs, files, kind)
+    if local_meta is not None:
+        await _fill_actor_thumbs(session, item, local_meta)
+    if local_meta is None:
+        local_meta = await _db_meta(session, item)
+    if local_meta is None:
+        local_meta = await _tmdb_fallback_meta(item)
+        if item.id is not None:
+            from movieclaw_api.services.media_scrape import scrape_media_item
+
+            asyncio.get_running_loop().create_task(scrape_media_item(item.id))
+    return local_meta
+
+
+def local_item_artwork(roots: list[Path], files: list[LibraryFile], kind: str) -> Path | None:
+    """条目目录里的本地美术图（逐个条目目录找，第一张命中即用）。
+
+    Web 的 artwork 接口与 Jellyfin 图片接口共用；找不到时两端各自退回
+    刮削资产 / TMDB 图床。同步磁盘 IO——调用方自行决定是否进线程池。
+    """
+    for entry in resolve_entry_dirs(roots, files):
+        if not entry.is_dir():
+            continue
+        art = find_local_artwork(entry, kind)
+        if art is not None:
+            return art
+    return None
+
+
 async def build_item_detail(
     session: AsyncSession, library: Library, item: MediaItem, files: list[LibraryFile]
 ) -> ItemDetailBundle:
@@ -475,30 +530,8 @@ async def build_item_detail(
     roots = [Path(p) for p in library.root_paths]
     kind = MediaKind(library.kind)
 
-    # 条目目录：多根/多版本可能给出多个，去重保序（第一个用于 NFO 与美术图）
-    entry_dirs: list[Path] = []
-    for row in files:
-        entry = entry_dir_of(roots, Path(row.file_path))
-        # 原盘条目 file_path 本身就是目录（BDMV/VIDEO_TS），直接在根下时以它为条目目录
-        if entry is None and row.container in ("bluray", "dvd"):
-            entry = Path(row.file_path)
-        if entry is not None and entry not in entry_dirs:
-            entry_dirs.append(entry)
-
-    local_meta = await asyncio.to_thread(_read_meta, entry_dirs, files, kind)
-    # 读路径分层（docs/design/metadata.md 第 5 节）：本地 NFO 最优先（尊重
-    # 既有刮削成果）→ 库内刮削档案（media_metadata，绝大多数条目的日常
-    # 路径，断网可用）→ TMDB 实时兜底（条目还没刮过，顺带触发后台刮削自愈）
-    if local_meta is not None:
-        await _fill_actor_thumbs(session, item, local_meta)
-    if local_meta is None:
-        local_meta = await _db_meta(session, item)
-    if local_meta is None:
-        local_meta = await _tmdb_fallback_meta(item)
-        if item.id is not None:
-            from movieclaw_api.services.media_scrape import scrape_media_item
-
-            asyncio.get_running_loop().create_task(scrape_media_item(item.id))
+    entry_dirs = resolve_entry_dirs(roots, files)
+    local_meta = await layered_item_meta(session, item, entry_dirs, files, kind)
 
     primary_dir = next((d for d in entry_dirs if d.is_dir()), None)
     poster_art = fanart_art = None

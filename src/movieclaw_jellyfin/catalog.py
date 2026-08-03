@@ -421,6 +421,15 @@ def _apply_provider_ids(dto: dict[str, Any], bundle: ItemBundle, options: DtoOpt
     dto["ProviderIds"] = providers
 
 
+def _tmdb_tag(tmdb_path: str | None) -> str | None:
+    """TMDB 图床兜底的图片 tag：资产未落地时也要让客户端来请求图片——
+    没有 ImageTags 播放器根本不会发起图片请求，三层解析的兜底层就永远
+    走不到（图片端点会经图片代理拉取并缓存）。路径变即 tag 变。"""
+    if not tmdb_path:
+        return None
+    return hashlib.md5(f"tmdb:{tmdb_path}".encode()).hexdigest()
+
+
 def _apply_item_images(
     dto: dict[str, Any], ctx: DtoContext, bundle: ItemBundle, options: DtoOptions
 ) -> None:
@@ -428,11 +437,15 @@ def _apply_item_images(
         return
     tags: dict[str, str] = {}
     meta = bundle.metadata
-    poster = _asset_tag(ctx.assets_root, meta.poster_file if meta else None)
+    poster = _asset_tag(ctx.assets_root, meta.poster_file if meta else None) or _tmdb_tag(
+        bundle.item.poster_path
+    )
     if poster:
         tags["Primary"] = poster
     dto["ImageTags"] = tags
-    backdrop = _asset_tag(ctx.assets_root, meta.backdrop_file if meta else None)
+    backdrop = _asset_tag(ctx.assets_root, meta.backdrop_file if meta else None) or _tmdb_tag(
+        bundle.item.backdrop_path
+    )
     dto["BackdropImageTags"] = [backdrop] if backdrop else []
 
 
@@ -663,10 +676,15 @@ def _lang_display(code: str | None) -> str | None:
     return _LANG_DISPLAY.get(code.lower(), code.capitalize())
 
 
-def _video_range(hdr: str | None) -> tuple[str, str]:
-    if not hdr:
-        return "SDR", "SDR"
-    normalized = hdr.upper()
+def _video_range(f: LibraryFile) -> tuple[str, str]:
+    if not f.hdr:
+        # hdr 为空有两种含义（media_probe 三态铁律）：探测跑过、确实是 SDR；
+        # 或探测根本没跑（ffprobe 缺失/strm 远程文件）。后者不能妄断 SDR——
+        # Jellyfin 语义里 Unknown 让客户端隐藏画质角标，而非挂错误的 SDR 标。
+        if f.video_codec or f.resolution or f.bit_depth:
+            return "SDR", "SDR"
+        return "Unknown", "Unknown"
+    normalized = f.hdr.upper()
     if "HLG" in normalized:
         return "HDR", "HLG"
     if "DOLBY" in normalized or normalized == "DV" or "DOVI" in normalized:
@@ -681,9 +699,13 @@ def _resolution_text(f: LibraryFile) -> str:
 
 
 def _video_stream(f: LibraryFile) -> dict[str, Any]:
-    video_range, range_type = _video_range(f.hdr)
+    video_range, range_type = _video_range(f)
     codec = (f.video_codec or "").lower()
-    title_parts = [p for p in (_resolution_text(f), codec.upper(), video_range) if p]
+    title_parts = [
+        p
+        for p in (_resolution_text(f), codec.upper(), video_range)
+        if p and p != "Unknown"
+    ]
     stream: dict[str, Any] = {
         "Type": "Video",
         "Index": 0,

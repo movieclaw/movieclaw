@@ -122,11 +122,16 @@ def rewrite_identity_nfo(nfo_path: Path, item: MediaItem) -> bool:
 def write_full_nfo(entry_dir: Path, item: MediaItem, meta: MediaMetadata | None) -> None:
     """在条目目录写出完整 NFO（身份 + 简介/评分/片长/分级/演职员）。
 
-    同步函数（调用方放线程池）。覆盖规则（docs/design/metadata.md 6.2）：
-    已存在的 NFO 一律跳过，唯一例外是**内容为空的最小身份 NFO 且 tmdbid
-    相同**——那是我们入库时写的占位，刮削完成后原地升级为完整版；
-    TMM/Emby 的刮削成果（有实质内容）绝不覆盖。目录里已有另一类型的条目
-    NFO 时同样不写（见 ``_kind_conflicting_nfo``）。
+    同步函数（调用方放线程池）。覆盖规则（docs/design/metadata.md 6.2，
+    2026-08-04 决策翻转）：NFO 是库内档案在媒体目录的镜像，**每次刮削/刷新
+    都与 media_metadata 对齐**——内容比对，无变化不落盘（不动 mtime，免得
+    watchdog 与播放器无谓重扫）。三条保护不变：
+
+    - 目录里已有另一类型的条目 NFO 时不写（``_kind_conflicting_nfo``，
+      身份判错的强信号）；
+    - 既有 NFO 声明了**不同的 tmdbid** 时不写（留给认领纠错链路改写；
+      没有 tmdbid 声明的按本条目身份对齐——调用方已用高置信身份门槛把关）；
+    - **没有刮削档案时绝不覆盖已有文件**（不能拿最小身份档降级 TMM 的富 NFO）。
     """
     if not entry_dir.is_dir():
         return
@@ -135,12 +140,13 @@ def write_full_nfo(entry_dir: Path, item: MediaItem, meta: MediaMetadata | None)
     nfo_path = entry_dir / ("movie.nfo" if kind is MediaKind.MOVIE else "tvshow.nfo")
     if _kind_conflicting_nfo(entry_dir, kind, item) is not None:
         return
-    if nfo_path.exists():
-        existing = read_entry_metadata(nfo_path)
-        if existing is not None and existing.has_content():
-            return  # 有实质内容的刮削成果，绝不覆盖
-        if read_tmdb_id(nfo_path) != item.tmdb_id:
+    exists = nfo_path.exists()
+    if exists:
+        declared = read_tmdb_id(nfo_path)
+        if declared is not None and declared != item.tmdb_id:
             return  # 身份对不上，宁可不写
+        if meta is None or meta.scraped_at is None:
+            return  # 无档案可对齐，保留既有内容
 
     lines = [
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
@@ -201,8 +207,15 @@ def write_full_nfo(entry_dir: Path, item: MediaItem, meta: MediaMetadata | None)
             lines.append("  </actor>")
     lines.append(f"</{root_tag}>")
 
+    content = "\n".join(lines) + "\n"
+    if exists:
+        try:
+            if nfo_path.read_text(encoding="utf-8") == content:
+                return  # 内容无变化，不动 mtime
+        except OSError:
+            pass
     try:
-        nfo_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        nfo_path.write_text(content, encoding="utf-8")
     except OSError as exc:
         logger.warning("完整 NFO 写出失败（不阻断）：%s（%s）", nfo_path, exc)
         return
@@ -212,11 +225,14 @@ def write_full_nfo(entry_dir: Path, item: MediaItem, meta: MediaMetadata | None)
 def write_episode_nfo(video: Path, episode: MediaEpisode) -> None:
     """写出分集 NFO（视频同名 .nfo，根元素 <episodedetails>）。
 
-    同步函数（调用方放线程池）。已存在一律跳过——分集 NFO 我们此前从未
-    写过，存在即他人刮削成果。
+    同步函数（调用方放线程池）。与条目 NFO 同款对齐语义（2026-08-04）：
+    每次刷新按 media_episode 重写，内容比对无变化不落盘；调用方已按
+    高置信身份门槛把关，季集号本就来自台账与档案的同一套数字对。
+    防降级闸：档案行只有集号骨架（无简介且无播出日期，说明 TMDB 没数据）
+    时不覆盖已有文件——第三方刮的分集 NFO 大概率比骨架富。
     """
     nfo_path = video.with_suffix(".nfo")
-    if nfo_path.exists():
+    if nfo_path.exists() and not episode.overview and episode.air_date is None:
         return
     lines = [
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
@@ -232,8 +248,15 @@ def write_episode_nfo(video: Path, episode: MediaEpisode) -> None:
     if episode.runtime_minutes:
         lines.append(f"  <runtime>{episode.runtime_minutes}</runtime>")
     lines.append("</episodedetails>")
+    content = "\n".join(lines) + "\n"
+    if nfo_path.exists():
+        try:
+            if nfo_path.read_text(encoding="utf-8") == content:
+                return  # 内容无变化，不动 mtime
+        except OSError:
+            pass
     try:
-        nfo_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        nfo_path.write_text(content, encoding="utf-8")
     except OSError as exc:
         logger.warning("分集 NFO 写出失败（不阻断）：%s（%s）", nfo_path, exc)
 
