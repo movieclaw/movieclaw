@@ -104,6 +104,43 @@ def _mute_instant_search_kick(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _offline_tmdb_singleton(request, monkeypatch):
+    """媒体身份层的 TmdbClient 单例在测试环境一律离线（不访问真实 TMDB）。
+
+    背景：库路由决策（library/routing.gather_facts）等链路直接取
+    ``get_tmdb_client()`` 进程级单例，测试往服务里注入的 fake client
+    覆盖不到它。开发机 .env 里带 TMDB_API_KEY 时，订阅等服务级测试会
+    经它发出**真实** TMDB 请求：单例连同 HTTP 连接池被创建在首个用例
+    的事件循环上，循环随用例结束关闭，连接却还留在池里；之后第一个跑
+    完整 lifespan 的测试在关停时 ``close_media_service()`` 去关这条
+    死循环上的连接，偶发 ``RuntimeError: Event loop is closed``
+    （teardown 报错，且与测试顺序/网络时机相关，极难排查）。
+
+    这里按用例把单例换成独立的离线实例（503 快速失败，不重试）：
+    既掐断单测的真实外网流量，也保证单例及其连接不跨事件循环存活。
+    monkeypatch 会在用例结束时把单例槽位还原（通常是 None）。
+    集成测试可能需要真实单例，跳过注入。
+    """
+    if request.node.get_closest_marker("integration"):
+        yield
+        return
+    import httpx
+
+    from movieclaw_api.services import media_discover
+    from movieclaw_media.tmdb import TmdbClient
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, json={"note": "测试环境不访问真实 TMDB"})
+
+    monkeypatch.setattr(
+        media_discover,
+        "_tmdb_client",
+        TmdbClient("test-offline-key", transport=httpx.MockTransport(handler)),
+    )
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _offline_image_proxy(monkeypatch):
     """刮削管线的图片资产下载在测试环境一律快速失败（不访问外网图床）。
 
