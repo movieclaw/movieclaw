@@ -8,6 +8,7 @@ import type { Route } from "next";
 import Link from "next/link";
 
 import { useConfirm } from "@/components/feedback";
+import { refreshLibraryConfirm, scanLibraryConfirm } from "@/lib/library-confirm";
 import { MoreIcon, XIcon } from "@/components/icons";
 import { PAGE_NAV_BUTTON_CLASS, PageNav } from "@/components/page-nav";
 import { usePageTitle } from "@/lib/use-page-title";
@@ -96,6 +97,7 @@ function busyText(progress: ScanProgress | null): string {
 const WALL_PAGE_SIZE = 60;
 
 export function LibraryDetailView({ libraryId }: { libraryId: number }) {
+  const confirm = useConfirm();
   const [libraries, setLibraries] = useState<MediaLibrary[] | null>(null);
   const [items, setItems] = useState<LibraryItem[]>([]);
   // 服务端还有没有下一页；滚动加载的哨兵据此决定是否继续观察
@@ -410,9 +412,19 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
       }
       onToggleScan={() => {
         setNotice(null);
-        void (library.scanning ? stopLibraryScan(library.id) : startLibraryScan(library.id))
-          .then(() => reload())
-          .catch((e) => setNotice((e as Error).message));
+        if (library.scanning) {
+          void stopLibraryScan(library.id)
+            .then(() => reload())
+            .catch((e) => setNotice((e as Error).message));
+          return;
+        }
+        // 重操作先确认（停止不确认：停止本身就是在纠正）
+        void confirm(scanLibraryConfirm(library.name)).then((ok) => {
+          if (!ok) return;
+          void startLibraryScan(library.id)
+            .then(() => reload())
+            .catch((e) => setNotice((e as Error).message));
+        });
       }}
       organizing={Boolean(library.organizing)}
       organizePercent={
@@ -439,17 +451,21 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
       }}
       onToggleMetaRefresh={() => {
         setNotice(null);
-        void (
-          refreshingMeta
-            ? stopLibraryMetadataRefresh(libraryId)
-            : startLibraryMetadataRefresh(libraryId)
-        )
-          .then(() =>
-            getMetadataRefreshProgress(libraryId)
-              .then(setMetaRefresh)
-              .catch(() => {}),
-          )
-          .catch((e) => setNotice((e as Error).message));
+        const kick = (action: Promise<unknown>) =>
+          action
+            .then(() =>
+              getMetadataRefreshProgress(libraryId)
+                .then(setMetaRefresh)
+                .catch(() => {}),
+            )
+            .catch((e) => setNotice((e as Error).message));
+        if (refreshingMeta) {
+          void kick(stopLibraryMetadataRefresh(libraryId));
+          return;
+        }
+        void confirm(refreshLibraryConfirm(library.name)).then((ok) => {
+          if (ok) void kick(startLibraryMetadataRefresh(libraryId));
+        });
       }}
       onEdit={() => setEditing(library)}
     />

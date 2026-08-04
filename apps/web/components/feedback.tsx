@@ -85,6 +85,10 @@ export interface ConfirmOptions {
   title: string;
   /** 补充说明（后果、影响范围）；支持多行 */
   description?: string;
+  /** 将要发生的动作清单（每行一条，带图标点缀）：重操作确认用它代替
+   *  大段文字——一眼扫清"点下去会发生什么"。与 description 可并存
+   *  （description 作导语）。 */
+  bullets?: string[];
   confirmLabel?: string;
   cancelLabel?: string;
   /** danger 时确认键为红色（删除、撤销令牌等破坏性操作） */
@@ -316,6 +320,28 @@ function ConfirmDialog({
           <p className="mt-2 whitespace-pre-line text-sub leading-6 text-[var(--text-muted)]">
             {options.description}
           </p>
+        )}
+        {options.bullets && options.bullets.length > 0 && (
+          <ul className="mt-3 space-y-2">
+            {options.bullets.map((line) => (
+              <li key={line} className="flex items-start gap-2.5">
+                {/* 小对勾图标：内联 SVG 不引外部依赖，accent 色点缀 */}
+                <svg
+                  aria-hidden
+                  viewBox="0 0 16 16"
+                  className="mt-[5px] size-3.5 shrink-0 text-[var(--accent)]"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M2.5 8.5l3.5 3.5 7.5-8" />
+                </svg>
+                <span className="min-w-0 text-sub leading-6 text-[var(--text-muted)]">{line}</span>
+              </li>
+            ))}
+          </ul>
         )}
         <div className="mt-5 flex justify-end gap-2.5">
           <button

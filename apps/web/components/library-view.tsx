@@ -29,10 +29,13 @@ import {
   reorderLibraries,
   SCAN_PHASE_LABELS,
   setDefaultLibrary,
+  startLibraryMetadataRefresh,
   startLibraryScan,
+  stopLibraryMetadataRefresh,
   stopLibraryScan,
   updateLibrary,
 } from "@/lib/api/libraries";
+import { refreshLibraryConfirm, scanLibraryConfirm } from "@/lib/library-confirm";
 import type { Subscription } from "@/lib/api/subscriptions";
 import { publicEnv } from "@/lib/env";
 import { imageUrl } from "@/lib/image-proxy";
@@ -895,7 +898,10 @@ function LibraryCardMenu({
                   guard(() => stopLibraryScan(library.id));
                   return;
                 }
-                onScan();
+                // 重操作先确认（停止不确认：停止本身就是在纠正）
+                void confirm(scanLibraryConfirm(library.name)).then((ok) => {
+                  if (ok) onScan();
+                });
               }}
               className="glass-row px-2.5 py-2 text-ui font-medium disabled:opacity-40"
             >
@@ -904,6 +910,24 @@ function LibraryCardMenu({
                 : library.scan_progress?.phase === "reidentifying"
                   ? "正在重新识别…"
                   : "停止扫描"}
+            </button>
+            {/* 整库元数据刷新（与库详情页 ⋯ 菜单同款入口）：与扫描不互斥
+                ——刷新只写元数据表，不碰台账与文件 */}
+            <button
+              type="button"
+              onClick={() => {
+                setMenuPos(null);
+                if (library.metadata_refresh) {
+                  guard(() => stopLibraryMetadataRefresh(library.id));
+                  return;
+                }
+                void confirm(refreshLibraryConfirm(library.name)).then((ok) => {
+                  if (ok) guard(() => startLibraryMetadataRefresh(library.id));
+                });
+              }}
+              className="glass-row px-2.5 py-2 text-ui font-medium"
+            >
+              {library.metadata_refresh ? "停止刷新元数据" : "刷新元数据"}
             </button>
             <button
               type="button"

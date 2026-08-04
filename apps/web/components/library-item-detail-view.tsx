@@ -19,6 +19,7 @@ import {
   StarIcon,
   TrashIcon,
 } from "@/components/icons";
+import { useConfirm } from "@/components/feedback";
 import { Modal } from "@/components/modal";
 import { PosterImage } from "@/components/poster-image";
 import { Tooltip } from "@/components/tooltip";
@@ -50,6 +51,7 @@ import { useBackdrop } from "@/lib/backdrop";
 import { formatBytes } from "@/lib/format";
 import { resolveRequestUrl } from "@/lib/http";
 import { cachedImageUrl } from "@/lib/image-proxy";
+import { refreshItemConfirm } from "@/lib/library-confirm";
 import { formatRelativeTime } from "@/lib/time";
 import { usePageTitle } from "@/lib/use-page-title";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
@@ -78,6 +80,7 @@ export function LibraryItemDetailView({
   mediaItemId: number;
 }) {
   const router = useRouter();
+  const confirm = useConfirm();
   const [detail, setDetail] = useState<LibraryItemDetail | null>(null);
   const [library, setLibrary] = useState<MediaLibrary | null>(null);
   const [failed, setFailed] = useState(false);
@@ -237,6 +240,8 @@ export function LibraryItemDetailView({
   };
 
   const runMetadataRefresh = async () => {
+    // 重操作先确认：单条目刷新是 force 语义（图片覆盖重下），说清再动手
+    if (!(await confirm(refreshItemConfirm(detail?.title ?? "此条目")))) return;
     setKicking(true);
     try {
       await refreshItemMetadata(libraryId, mediaItemId);
