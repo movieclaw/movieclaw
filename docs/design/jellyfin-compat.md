@@ -909,6 +909,49 @@ id），调同一套领域服务——**不**让自家前端去消费 Jellyfin �
   `personIds` 过滤已覆盖主流客户端的演员页链路）；
 - 图片两种 404 body 未细分（均给 text 文案；客户端不解析 body）。
 
-1. **外挂字幕台账**：library_file 目前只有内封 `subtitle_streams`；同目录
-   `.srt/.ass` 的发现、命名解析（语言后缀）、台账落位是独立小设计（§6.5
-   字幕接口随台账一起实施），补一节到 library.md 或单开短文档。
+1. **外挂字幕台账**：已完成源码级调研（2026-08-04，字幕全链路五块逐项
+   核实），设计定稿如下，待实施：
+
+   **发现规则**（照抄 Jellyfin MediaInfoResolver/ExternalPathParser 语义）：
+   - 扩展名白名单 `.ass .srt .ssa .sub .sup .vtt .smi/.sami`（裁掉 `.mks`
+     ——需 ffmpeg 解封装）；仅扫视频同目录（Jellyfin 不递归），**扩展支持
+     `Subs/` 子目录**（Jellyfin 没有、国内片源常见，属兼容超集）；
+   - 匹配三条件：同目录、文件名前缀与视频同名（OrdinalIgnoreCase）、
+     前缀后必须是 `.`（唯一分隔符，天然防 `Movie.mkv` 误吃 `Movie 2.chi.srt`）；
+   - 后缀链**从右往左**逐段解析：default/forced(foreign)/语言码/cc|hi|sdh，
+     全部大小写不敏感；只取最右侧第一个语言；`.hi` 单独出现按 Hindi、
+     与其它语言共存按听障标记（照抄消歧规则）；**改良**：default/forced
+     用整段 Equals 而非 Jellyfin 的 Contains 子串匹配（避免 `.Unforced`
+     误判 forced——Jellyfin 的已知坑不抄）；
+   - 语言归一化二分支：带地区码保留小写原样（`zh-cn`），否则转 ISO 639-2/T
+     三字母（`chi/zh/zho → zho`）；
+   - **不跑 ffprobe**（Jellyfin 对每个 sidecar probe 一次纯为拿 codec，
+     我们按扩展名硬映射：srt→subrip、ass→ass、ssa→ssa、vtt→webvtt、
+     sup→PGSSUB、sub→DVDSUB）。
+
+   **台账**：新表 `external_subtitle`（library_file 外键、path、
+   stream_index、codec、language、title、is_default/is_forced/
+   is_hearing_impaired、size/mtime 增量键）。**Index 分配**：外挂接在内封流
+   之后、从内封数起单调递增、按 path 稳定排序，新增/删除不重排已有
+   index（12.0 dev 把外挂插到 index 0 是远程视频保 ID 的历史包袱，不抄
+   ——我们不转码、没有 FindIndex 那层按 Path 分组的还原保护，索引语义
+   越直白越安全）。
+
+   **接口**（§6.5 两条路由）：index 按 MediaStream.Index 全局序查字幕流；
+   同格式/ssa→ass 原样吐字节；srt→vtt 文本转换；ass/ssa 不跨格式转换、
+   图形字幕仅同格式直出（不支持组合回 400，不学 Jellyfin 的 500）；
+   `?format=` 空串原样吐源文件；`startPositionTicks≠0` 时按 FilterEvents
+   语义裁剪+平移（copyTimestamps=true 只裁不移）；`addVttTimeMap` 是一行
+   字符串插入。**DeliveryMethod 按文本性分流**：文本流
+   External+Stream.srt，图形流 External+Stream.sup（一律 srt 会在图形流
+   上翻车）。`GET /FallbackFont/Fonts` 返回 200 `[]`（204 会弄坏
+   jellyfin-web 的 ass 渲染器）。
+
+   **鉴权注意**：真 Jellyfin 的字幕 Stream 端点匿名；我们要求 token
+   （偏离③），因此 **DeliveryUrl 必须拼 `?ApiKey=`**——Infuse 用
+   `<track src>` 直拉，不带 header，漏了就是 401。
+
+   **不做**：subtitles.m3u8（仅转码 Hls 投递用）、字幕搜索下载/上传删除
+   （EnableSubtitleManagement=false 已关入口）、/Attachments 字体附件
+   （MediaAttachments 恒 []，声明内封 ass 也不给附件的话 web 端用
+   fallback 字体，可接受）。
