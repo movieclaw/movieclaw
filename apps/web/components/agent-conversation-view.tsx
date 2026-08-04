@@ -97,11 +97,11 @@ export function AgentConversationView({ conversationId }: { conversationId: stri
   const handleEdit = useCallback(
     async (entryUuid: string) => {
       const agreed = await confirm({
-        title: "改写这条提问？",
+        title: "从这里重新提问？",
         description:
-          "这条提问、以及它之后的所有对话（含回答）会被永久删除，无法恢复。\n" +
-          "原文会填回输入框，你可以改完再发一次，Agent 将从这里继续。",
-        confirmLabel: "删除并改写",
+          "从这个位置重新提问，将会抛弃这条提问及它之后的所有对话（含回答），且无法恢复。\n" +
+          "原文会填回输入框，修改后重新发送，对话将从这里继续。确定吗？",
+        confirmLabel: "抛弃并重新提问",
         tone: "danger",
       });
       if (!agreed) return;
@@ -300,8 +300,8 @@ function UserBubble({ text, onEdit }: { text: string; onEdit?: () => void }) {
       {onEdit && (
         <button
           type="button"
-          aria-label="改写这条提问"
-          title="改写这条提问（会删除其后的对话）"
+          aria-label="从这里重新提问"
+          title="从这里重新提问（会抛弃其后的所有对话）"
           onClick={(event) => {
             // 不冒泡到气泡的 toggle：否则点完操作键，浮现态立刻被切回去
             event.stopPropagation();
