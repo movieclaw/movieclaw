@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import logging
 import secrets
 from pathlib import Path
 
@@ -30,6 +31,8 @@ from movieclaw_playback.streaming import (
     resolve_strm_url,
     unregister_device_stream,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(dependencies=[Depends(require_device)])
 
@@ -172,27 +175,43 @@ async def download_item(request: Request, item_id: str) -> Response:
     - strm 条目与取流同策略（偏离，真 Jellyfin 会回 .strm 文本本身）：
       302 到云端直链，客户端下载到的是真实媒体文件，服务器零流量；
     - ``mediaSourceId`` 为超集扩展：真 Jellyfin 此接口只认条目主文件，
-      我们允许客户端指定下载某个版本，缺省取第一个。
+      我们允许客户端指定下载某个版本，缺省优先本地文件版本。
     """
     ref = decode_guid(item_id)
     if ref is None or ref.kind not in (EntityKind.ITEM, EntityKind.EPISODE):
         raise not_found()
 
     files = await _files_for_ref(ref)
-    selected = _select_source(files, request.query_params.get("mediaSourceId"), item_id)
+    media_source_id = request.query_params.get("mediaSourceId")
+    selected = _select_source(files, media_source_id, item_id)
     if not selected:
+        logger.warning(
+            "下载请求未匹配到文件版本：item=%s mediaSourceId=%s（该条目共 %d 个在位文件）",
+            item_id, media_source_id, len(files),
+        )
         raise not_found()
-    f = selected[0]
+    # 缺省优先本地文件版本：strm 版本 302 后能否下载取决于云端直链对下载器
+    # 是否宽容（签名/UA 校验），本地文件由我们自己响应、行为确定
+    local_first = sorted(selected, key=lambda x: is_strm(x.file_path))
+    f = local_first[0]
 
     if is_strm(f.file_path):
         url = resolve_strm_url(f.file_path)
         if url is None:
+            logger.warning("下载失败：strm 直链解析失败，file=%s", f.file_path)
             raise not_found()
+        logger.info("下载重定向到云端直链：item=%s file=%s", item_id, f.file_path)
         return RedirectResponse(url, status_code=302)
 
     path = Path(f.file_path)
     if not path.is_file():
+        logger.warning(
+            "下载失败：本地文件不存在或容器内不可见（检查 Docker 挂载路径）：%s", path
+        )
         raise not_found()
+    logger.info(
+        "开始下载：item=%s file=%s size=%s", item_id, path.name, f.size_bytes
+    )
     # 下载不是播放会话：用普通 FileResponse，不登记设备流，避免用户边下边看
     # 时点"停止播放"误杀下载读盘（TCP 断连兜底对下载器依然生效）
     is_download = request.url.path.lower().endswith("/download")

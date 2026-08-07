@@ -779,10 +779,25 @@ def _apply_item_images(
     dto["BackdropImageTags"] = [backdrop] if backdrop else []
 
 
+def _unit_can_download(bundle: ItemBundle, season: int, episode: int) -> bool:
+    """单元是否可整文件下载（对齐 Video.CanDownload：IsFileProtocol）。
+
+    真 Jellyfin 只有本地文件协议的条目才可下载，strm（Http 协议）恒 false，
+    客户端据此隐藏/禁用下载入口。客户端拿不到 CanDownload 时会自己猜下载
+    链路（拿播放直链甚至文件路径当下载地址），产生"下载瞬间结束、文件
+    不可播"的坏结果——所以这个字段必须输出。
+    """
+    return any(
+        not is_strm(f.file_path) for f in bundle.files.get((season, episode), [])
+    )
+
+
 def movie_dto(ctx: DtoContext, bundle: ItemBundle, options: DtoOptions) -> dict[str, Any]:
     guid = item_guid(bundle.item.id)
     dto = _common(ctx, guid, bundle.item.title, "Movie", "Video")
     dto["IsFolder"] = False
+    if options.has("CanDownload"):
+        dto["CanDownload"] = _unit_can_download(bundle, 0, 0)
     if bundle.item.year:
         dto["ProductionYear"] = bundle.item.year
     runtime_ms = bundle.unit_runtime_ms(0, 0)
@@ -894,6 +909,8 @@ def episode_dto(
     name = (row.name if row else "") or f"Episode {episode}"
     dto = _common(ctx, guid, name, "Episode", "Video")
     dto["IsFolder"] = False
+    if options.has("CanDownload"):
+        dto["CanDownload"] = _unit_can_download(bundle, season, episode)
     dto["IndexNumber"] = episode
     dto["ParentIndexNumber"] = season
     dto["SeriesId"] = item_guid(bundle.item.id)

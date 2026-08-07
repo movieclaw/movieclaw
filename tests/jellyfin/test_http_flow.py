@@ -233,6 +233,8 @@ def test_single_item_full_fields(client: TestClient, seeded: dict) -> None:
         assert body["MediaSources"], path
         assert body["ProviderIds"]["Tmdb"] == "27205"
         assert body["ProviderIds"]["Imdb"] == "tt1375666"
+        # 有本地文件版本 → 可下载（Video.CanDownload 的 IsFileProtocol 语义）
+        assert body["CanDownload"] is True
 
 
 def test_seasons_and_episodes(client: TestClient, seeded: dict) -> None:
@@ -412,6 +414,13 @@ def test_download_local_file_with_attachment(client: TestClient, seeded: dict) -
     )
     assert raw.status_code == 200
     assert "content-disposition" not in raw.headers
+
+    # 不带 mediaSourceId → 优先本地文件版本而非 strm（行为确定，不依赖云端）
+    default = client.get(
+        f"/Items/{guid}/Download", params={"ApiKey": token}, follow_redirects=False
+    )
+    assert default.status_code == 200
+    assert default.headers["content-type"] == "video/x-matroska"
 
     # 无 token → 401
     anon = client.get(f"/Items/{guid}/Download")
