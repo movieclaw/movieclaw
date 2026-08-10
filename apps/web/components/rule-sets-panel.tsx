@@ -251,8 +251,10 @@ export function specSummary(spec: RuleSetSpec): string[] {
     labels.push(...rest);
     chips.push(labels.join("/"));
   }
-  if (spec.hdr === "require") chips.push("必须 HDR");
-  if (spec.hdr === "forbid") chips.push("排除 HDR");
+  if (spec.hdr === "require") chips.push("必须HDR");
+  if (spec.hdr === "require_dv") chips.push("必须DV");
+  if (spec.hdr === "forbid") chips.push("排除HDR");
+  if (spec.hdr === "forbid_dv") chips.push("排除DV");
   if (spec.free_only) chips.push("仅免费");
   if (spec.min_seeders != null) chips.push(`做种 ≥ ${spec.min_seeders}`);
   if (spec.size_min_mb != null || spec.size_max_mb != null) {
@@ -305,7 +307,7 @@ export function RuleSetEditorDialog({
         ).map((f) => f.label),
       ),
   );
-  const [hdr, setHdr] = useState<"any" | "require" | "forbid">(spec.hdr ?? "any");
+  const [hdr, setHdr] = useState<NonNullable<RuleSetSpec["hdr"]>>(spec.hdr ?? "any");
   const [freeOnly, setFreeOnly] = useState(spec.free_only ?? false);
   const [excludeHr, setExcludeHr] = useState(spec.exclude_hr ?? false);
   const [hrStrict, setHrStrict] = useState(spec.hr_unknown_policy === "strict");
@@ -470,13 +472,15 @@ export function RuleSetEditorDialog({
             </div>
           </Field>
 
-          <Field label="HDR">
+          <Field label="HDR/DV">
             <div className="flex flex-wrap gap-1.5">
               {(
                 [
                   ["any", "不限"],
-                  ["require", "必须 HDR"],
-                  ["forbid", "排除 HDR"],
+                  ["require", "必须HDR"],
+                  ["require_dv", "必须DV"],
+                  ["forbid", "排除HDR"],
+                  ["forbid_dv", "排除DV"],
                 ] as const
               ).map(([value, label]) => (
                 <ToggleChip key={value} active={hdr === value} onClick={() => setHdr(value)}>

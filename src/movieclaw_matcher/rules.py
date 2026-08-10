@@ -64,12 +64,23 @@ def evaluate_rules(
         if group not in {g.casefold() for g in spec.release_groups_allow}:
             return _reject("group_not_allowed", f"制作组 {attrs.release_group} 不在白名单中")
 
-    # hdr 空列表 = 未提取到 HDR 标记；命名惯例里 HDR 属"缺席即否定"的强标记，
-    # 因此 require 时空列表按"非 HDR"拒绝，forbid 时空列表放行
-    if spec.hdr is HdrPolicy.REQUIRE and not attrs.hdr:
-        return _reject("hdr_required", "规则要求 HDR，该资源未标注任何 HDR 格式")
-    if spec.hdr is HdrPolicy.FORBID and attrs.hdr:
+    # HDR 与 DV 必须分开判断。发布名常见 ``DV.HDR`` 双标记，若只判断 hdr
+    # 列表非空，“必须 HDR”会误收 DV 版本。这里把 DV 单独剥离：必须 HDR 时
+    # 先拒绝任何含 DV 的候选，再要求至少一个非 DV HDR 标记。
+    hdr_formats = {value.casefold() for value in attrs.hdr}
+    has_dv = "dv" in hdr_formats
+    has_hdr = bool(hdr_formats - {"dv"})
+    if spec.hdr is HdrPolicy.REQUIRE:
+        if has_dv:
+            return _reject("dv_not_allowed_for_hdr", "规则要求 HDR（不含 DV），该资源带有 DV 标记")
+        if not has_hdr:
+            return _reject("hdr_required", "规则要求 HDR，该资源未标注 HDR 格式")
+    if spec.hdr is HdrPolicy.REQUIRE_DV and not has_dv:
+        return _reject("dv_required", "规则要求 DV，该资源未标注 DV")
+    if spec.hdr is HdrPolicy.FORBID and has_hdr:
         return _reject("hdr_forbidden", f"规则排除 HDR，该资源标注了 {'/'.join(attrs.hdr)}")
+    if spec.hdr is HdrPolicy.FORBID_DV and has_dv:
+        return _reject("dv_forbidden", f"规则排除 DV，该资源标注了 {'/'.join(attrs.hdr)}")
 
     if spec.free_only and candidate.is_free is not True:
         state = "非免费" if candidate.is_free is False else "促销状态未知（按非免费处理）"

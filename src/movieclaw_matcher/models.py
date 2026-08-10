@@ -21,11 +21,17 @@ from movieclaw_enrich.models import TorrentAttrs
 
 
 class HdrPolicy(StrEnum):
-    """HDR 三态要求。"""
+    """HDR/DV 过滤策略。
+
+    ``require`` / ``forbid`` 是已有规则组的持久化值，继续分别表示
+    “必须 HDR（且不含 DV）”与“排除 HDR”，避免升级后改写用户配置。
+    """
 
     ANY = "any"  # 不限（默认）
-    REQUIRE = "require"  # 必须是 HDR
-    FORBID = "forbid"  # 必须不是 HDR
+    REQUIRE = "require"  # 必须是非 DV 的 HDR，且资源不能同时带 DV
+    REQUIRE_DV = "require_dv"  # 必须包含 Dolby Vision，可同时带 HDR
+    FORBID = "forbid"  # 排除非 DV 的 HDR，不影响纯 DV
+    FORBID_DV = "forbid_dv"  # 排除 Dolby Vision，不影响 HDR
 
 
 class HrUnknownPolicy(StrEnum):
@@ -60,7 +66,7 @@ class RuleSetSpec(BaseModel):
     release_groups_block: list[str] = Field(
         default_factory=list, description="制作组黑名单"
     )
-    hdr: HdrPolicy = Field(default=HdrPolicy.ANY, description="HDR 三态要求")
+    hdr: HdrPolicy = Field(default=HdrPolicy.ANY, description="HDR/DV 过滤策略")
     free_only: bool = Field(default=False, description="只接受当前免费（free）的种子")
     min_seeders: int | None = Field(default=None, description="做种数下限；None=不限")
     # 体积区间按"每集均摊"评估：整季包用总体积 ÷ 集数比较，避免整季包被误杀

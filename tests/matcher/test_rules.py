@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from movieclaw_enrich import enrich
 from movieclaw_enrich.models import TorrentAttrs
 from movieclaw_matcher import RuleSetSpec, TorrentCandidate, evaluate_rules
 
@@ -48,11 +49,27 @@ def _candidate(**kwargs) -> TorrentCandidate:
             "group_not_allowed",
         ),
         ({}, {"release_groups_allow": ["OurTV"]}, False, "group_unknown"),
-        # HDR：空列表=未标注（命名惯例缺席即否定）
-        ({"hdr": ["HDR10", "DV"]}, {"hdr": "require"}, True, None),
+        # HDR/DV 分开判断；必须 HDR 明确拒绝纯 DV 与 HDR+DV 双标资源
+        ({"hdr": ["HDR10"]}, {"hdr": "require"}, True, None),
+        ({"hdr": ["DV"]}, {"hdr": "require"}, False, "dv_not_allowed_for_hdr"),
+        (
+            {"hdr": ["HDR10", "DV"]},
+            {"hdr": "require"},
+            False,
+            "dv_not_allowed_for_hdr",
+        ),
         ({}, {"hdr": "require"}, False, "hdr_required"),
-        ({"hdr": ["DV"]}, {"hdr": "forbid"}, False, "hdr_forbidden"),
+        ({"hdr": ["DV"]}, {"hdr": "require_dv"}, True, None),
+        ({"hdr": ["HDR10", "DV"]}, {"hdr": "require_dv"}, True, None),
+        ({"hdr": ["HDR10"]}, {"hdr": "require_dv"}, False, "dv_required"),
+        ({"hdr": ["HDR10"]}, {"hdr": "forbid"}, False, "hdr_forbidden"),
+        ({"hdr": ["HDR10", "DV"]}, {"hdr": "forbid"}, False, "hdr_forbidden"),
+        ({"hdr": ["DV"]}, {"hdr": "forbid"}, True, None),
         ({}, {"hdr": "forbid"}, True, None),
+        ({"hdr": ["DV"]}, {"hdr": "forbid_dv"}, False, "dv_forbidden"),
+        ({"hdr": ["HDR10", "DV"]}, {"hdr": "forbid_dv"}, False, "dv_forbidden"),
+        ({"hdr": ["HDR10"]}, {"hdr": "forbid_dv"}, True, None),
+        ({"hdr": ["HDR10", "DV"]}, {"hdr": "any"}, True, None),
         # 仅免费：None=未知按非免费
         ({"is_free": True}, {"free_only": True}, True, None),
         ({"is_free": False}, {"free_only": True}, False, "not_free"),
@@ -98,6 +115,23 @@ def test_size_unknown_rejected_when_bounds_set() -> None:
     verdict = evaluate_rules(_candidate(), RuleSetSpec(size_max_mb=2000))
     assert verdict.accepted is False
     assert verdict.reason_code == "size_unknown"
+
+
+def test_require_hdr_rejects_real_title_containing_hdr_and_dv() -> None:
+    """真实资源名里的 HDR+DV 双标不能被“必须 HDR”误收。"""
+    title = "Movie.2026.2160p.WEB-DL.HDR.DV.HEVC"
+    candidate = TorrentCandidate(
+        site_id="test",
+        torrent_id="hdr-dv",
+        title=title,
+        subtitle="",
+        attrs=enrich(title),
+    )
+
+    assert set(candidate.attrs.hdr) == {"HDR", "DV"}
+    verdict = evaluate_rules(candidate, RuleSetSpec(hdr="require"))
+    assert verdict.accepted is False
+    assert verdict.reason_code == "dv_not_allowed_for_hdr"
 
 
 # ---------------------------------------------------------------------------

@@ -116,7 +116,7 @@ export interface RuleSetSpec {
   video_codecs?: string[];
   release_groups_allow?: string[];
   release_groups_block?: string[];
-  hdr?: "any" | "require" | "forbid";
+  hdr?: "any" | "require" | "require_dv" | "forbid" | "forbid_dv";
   free_only?: boolean;
   min_seeders?: number | null;
   /** 体积区间按「每集均摊」评估：整季包用总体积 ÷ 集数比较 */

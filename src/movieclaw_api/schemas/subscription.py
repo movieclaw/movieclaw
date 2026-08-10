@@ -448,7 +448,8 @@ class RuleSetPayload(BaseModel):
             "过滤规则 JSON（全部键可缺省=不限）："
             'resolutions 分辨率偏好序（如 ["2160p","1080p"]，顺序即优先级）、'
             "video_codecs 编码白名单、release_groups_allow/release_groups_block "
-            "制作组白/黑名单、hdr 策略（any/require/forbid）、free_only 只要免费种、"
+            "制作组白/黑名单、hdr 策略"
+            "（any/require/require_dv/forbid/forbid_dv）、free_only 只要免费种、"
             "min_seeders 做种数下限、size_min_mb/size_max_mb 体积区间（整季包按每集均摊）、"
             "exclude_hr 排除 H&R。"
             '例：{"resolutions":["2160p"],"free_only":true}'
