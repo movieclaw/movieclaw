@@ -13,6 +13,7 @@ import {
   type RuleSet,
   type RuleSetSpec,
 } from "@/lib/api/subscriptions";
+import { PLATFORM_OPTIONS } from "@/lib/platforms";
 
 /**
  * 规则组管理（设置 → 订阅 → 规则组）：Web 端唯一的规则组配置入口。
@@ -264,10 +265,17 @@ export function specSummary(spec: RuleSetSpec): string[] {
   }
   if (spec.exclude_hr)
     chips.push(spec.hr_unknown_policy === "strict" ? "排除 H&R（未知也排）" : "排除 H&R");
+  if (spec.platforms_allow?.length)
+    chips.push(`平台白名单 ${spec.platforms_allow.length} 个`);
+  if (spec.platforms_block?.length)
+    chips.push(`平台黑名单 ${spec.platforms_block.length} 个`);
   if (spec.release_groups_allow?.length)
     chips.push(`制作组白名单 ${spec.release_groups_allow.length} 个`);
   if (spec.release_groups_block?.length)
     chips.push(`制作组黑名单 ${spec.release_groups_block.length} 个`);
+  if (spec.platforms_allow?.length && spec.release_groups_allow?.length) {
+    chips.push(spec.source_match_mode === "all" ? "平台且制作组" : "平台或制作组");
+  }
   return chips;
 }
 
@@ -315,8 +323,13 @@ export function RuleSetEditorDialog({
   const [minSeeders, setMinSeeders] = useState(spec.min_seeders?.toString() ?? "");
   const [sizeMin, setSizeMin] = useState(spec.size_min_mb?.toString() ?? "");
   const [sizeMax, setSizeMax] = useState(spec.size_max_mb?.toString() ?? "");
+  const [platformsAllow, setPlatformsAllow] = useState(spec.platforms_allow ?? []);
+  const [platformsBlock, setPlatformsBlock] = useState(spec.platforms_block ?? []);
   const [groupsAllow, setGroupsAllow] = useState((spec.release_groups_allow ?? []).join(", "));
   const [groupsBlock, setGroupsBlock] = useState((spec.release_groups_block ?? []).join(", "));
+  const [sourceMatchMode, setSourceMatchMode] = useState<
+    NonNullable<RuleSetSpec["source_match_mode"]>
+  >(spec.source_match_mode ?? "any");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -379,8 +392,23 @@ export function RuleSetEditorDialog({
     }
     const allow = parseGroups(groupsAllow);
     const block = parseGroups(groupsBlock);
+    const platformOverlap = platformsAllow.filter((value) => platformsBlock.includes(value));
+    if (platformOverlap.length) {
+      setError("同一平台不能同时加入白名单和黑名单");
+      return;
+    }
+    const blockedGroups = new Set(block.map((value) => value.toLocaleLowerCase()));
+    if (allow.some((value) => blockedGroups.has(value.toLocaleLowerCase()))) {
+      setError("同一制作组不能同时加入白名单和黑名单");
+      return;
+    }
+    if (platformsAllow.length) next.platforms_allow = platformsAllow;
+    if (platformsBlock.length) next.platforms_block = platformsBlock;
     if (allow.length) next.release_groups_allow = allow;
     if (block.length) next.release_groups_block = block;
+    if (platformsAllow.length && allow.length && sourceMatchMode === "all") {
+      next.source_match_mode = "all";
+    }
 
     setBusy(true);
     setError(null);
@@ -410,7 +438,7 @@ export function RuleSetEditorDialog({
           {ruleSet ? "编辑规则组" : "新建规则组"}
         </h2>
         <p className="mt-1 text-sub text-[var(--text-muted)]">
-          所有条件都可以留空 = 不限该维度；条件之间是「且」的关系。
+          所有条件都可以留空 = 不限该维度；来源白名单可单独选择组合关系。
         </p>
         {ruleSet !== null && ruleSet.reference_count > 0 && (
           <p className="mt-2 rounded-lg border border-amber-400/25 bg-amber-500/10 px-3.5 py-2.5 text-sub leading-6 text-amber-200">
@@ -570,19 +598,34 @@ export function RuleSetEditorDialog({
             体积按「每集均摊」评估：整季包用总体积 ÷ 集数比较，整季合集不会被单集上限误杀。
           </p>
 
+          <Field label="平台白名单">
+            <PlatformPicker
+              selected={platformsAllow}
+              disabledValues={platformsBlock}
+              onChange={setPlatformsAllow}
+            />
+          </Field>
+          <Field label="平台黑名单">
+            <PlatformPicker
+              selected={platformsBlock}
+              disabledValues={platformsAllow}
+              onChange={setPlatformsBlock}
+            />
+          </Field>
+
           <Field
             label="制作组白名单"
-            hint="只接受这些制作组的资源，逗号或空格分隔（如 FRDS, WiKi）；留空 = 不限"
+            hint="完整匹配制作组，逗号或空格分隔；Pure@HDSWEB 与 HDSWEB 是两个不同值"
           >
             <input
               type="text"
               value={groupsAllow}
               onChange={(e) => setGroupsAllow(e.target.value)}
-              placeholder="留空不限"
+              placeholder="如 Pure@HDSWEB, HHWEB"
               className="w-full rounded-xl border border-white/[0.08] bg-white/[0.04] px-3.5 py-2.5 text-ui text-[var(--text)] outline-none focus:border-[var(--accent)]/60"
             />
           </Field>
-          <Field label="制作组黑名单" hint="这些制作组的资源一律不要">
+          <Field label="制作组黑名单" hint="黑名单优先，且只按制作组完整值排除">
             <input
               type="text"
               value={groupsBlock}
@@ -591,6 +634,25 @@ export function RuleSetEditorDialog({
               className="w-full rounded-xl border border-white/[0.08] bg-white/[0.04] px-3.5 py-2.5 text-ui text-[var(--text)] outline-none focus:border-[var(--accent)]/60"
             />
           </Field>
+
+          {platformsAllow.length > 0 && groupsAllow.trim() && (
+            <Field label="来源白名单关系">
+              <div className="flex flex-wrap gap-1.5">
+                <ToggleChip
+                  active={sourceMatchMode === "any"}
+                  onClick={() => setSourceMatchMode("any")}
+                >
+                  符合任一
+                </ToggleChip>
+                <ToggleChip
+                  active={sourceMatchMode === "all"}
+                  onClick={() => setSourceMatchMode("all")}
+                >
+                  必须同时符合
+                </ToggleChip>
+              </div>
+            </Field>
+          )}
 
           {error && (
             <p className="rounded-lg border border-red-400/25 bg-red-500/10 px-3.5 py-2.5 text-sub leading-6 text-red-200">
@@ -635,6 +697,80 @@ function Field({
       <p className="mb-1.5 text-ui font-semibold text-white/85">{label}</p>
       {children}
       {hint && <p className="mt-1.5 text-caption leading-relaxed text-[var(--text-faint)]">{hint}</p>}
+    </div>
+  );
+}
+
+function PlatformPicker({
+  selected,
+  disabledValues,
+  onChange,
+}: {
+  selected: string[];
+  disabledValues: string[];
+  onChange: (values: string[]) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const selectedSet = new Set(selected);
+  const disabledSet = new Set(disabledValues);
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const visible = PLATFORM_OPTIONS.filter((option) => {
+    if (!normalizedQuery) return true;
+    return `${option.label} ${option.aliases} ${option.value}`
+      .toLocaleLowerCase()
+      .includes(normalizedQuery);
+  });
+
+  const toggle = (value: string) => {
+    onChange(
+      selectedSet.has(value)
+        ? selected.filter((item) => item !== value)
+        : [...selected, value],
+    );
+  };
+
+  return (
+    <div>
+      <input
+        type="search"
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+        placeholder="搜索平台或发布名，如 IQ、DSNP、Viu"
+        className="w-full rounded-xl border border-white/[0.08] bg-white/[0.04] px-3.5 py-2.5 text-ui text-[var(--text)] outline-none focus:border-[var(--accent)]/60"
+      />
+      <div className="scroll-thin mt-2 max-h-44 space-y-2 overflow-y-auto pr-1">
+        {(["国际", "亚洲", "动漫"] as const).map((group) => {
+          const options = visible.filter((option) => option.group === group);
+          if (!options.length) return null;
+          return (
+            <div key={group} className="flex flex-wrap items-center gap-1.5">
+              <span className="w-8 shrink-0 text-caption text-[var(--text-faint)]">{group}</span>
+              {options.map((option) => {
+                const disabled = disabledSet.has(option.value);
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    disabled={disabled}
+                    title={`${option.aliases}${disabled ? "；已在另一名单中" : ""}`}
+                    onClick={() => toggle(option.value)}
+                    className={`rounded-full border px-2.5 py-1 text-caption transition disabled:cursor-not-allowed disabled:opacity-30 ${
+                      selectedSet.has(option.value)
+                        ? "border-white/25 bg-white/[0.14] text-white"
+                        : "border-white/[0.08] bg-white/[0.03] text-[var(--text-muted)] hover:bg-white/[0.07]"
+                    }`}
+                  >
+                    {option.label}
+                  </button>
+                );
+              })}
+            </div>
+          );
+        })}
+        {visible.length === 0 && (
+          <p className="py-2 text-center text-caption text-[var(--text-faint)]">没有匹配的平台</p>
+        )}
+      </div>
     </div>
   );
 }

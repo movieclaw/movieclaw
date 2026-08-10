@@ -25,6 +25,7 @@ import {
 } from "@/components/download-target-dialog";
 import { getSubscription, grabForSubscription } from "@/lib/api/subscriptions";
 import { cachedImageUrl } from "@/lib/image-proxy";
+import { platformLabel } from "@/lib/platforms";
 import { formatDateTime, formatRelativeTime } from "@/lib/time";
 
 /**
@@ -2704,6 +2705,9 @@ function AttrBadges({ attrs }: { attrs: TorrentAttrs }) {
     chips.push({ text: CONTENT_TYPE_LABEL[attrs.content_type], cls: "text-[#f0b6d8]" });
   }
   if (attrs.resolution) chips.push({ text: attrs.resolution });
+  for (const platform of attrs.platforms ?? []) {
+    chips.push({ text: platformLabel(platform), cls: "text-[#7ee2b8]" });
+  }
   if (attrs.remux) chips.push({ text: "Remux", cls: "text-[#9cc2ff]" });
   for (const v of attrs.hdr) chips.push({ text: v, cls: "text-[#c8a6ff]" });
   for (const v of attrs.subtitle_languages ?? []) {

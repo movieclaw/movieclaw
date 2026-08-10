@@ -47,6 +47,8 @@ export interface TorrentAttrs {
   audio: string[];
   /** 标题/副标题明确声明的字幕语言（BCP 47；当前可识别 zh-Hans） */
   subtitle_languages: string[];
+  /** 规范化流媒体来源平台，与末尾制作组分开 */
+  platforms: string[];
   release_group: string | null;
 }
 

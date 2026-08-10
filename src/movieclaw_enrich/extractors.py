@@ -26,6 +26,7 @@ from movieclaw_enrich.vocab import (
     RESOLUTION_COMPILED,
     TECH_TOKENS,
     VIDEO_CODEC_COMPILED,
+    match_platforms,
     match_vocab,
 )
 
@@ -156,6 +157,11 @@ def extract_media_source(text: str) -> dict[str, object]:
     return {"media_source": hits[0]} if hits else {}
 
 
+def extract_platforms(text: str) -> dict[str, object]:
+    hits = match_platforms(text.upper())
+    return {"platforms": hits} if hits else {}
+
+
 _REMUX_RE = re.compile(r"(?<![A-Za-z])REMUX(?![A-Za-z])")
 
 
@@ -181,6 +187,10 @@ def extract_complete_marker(text: str) -> dict[str, object]:
 #    避免 MovieBot 那种 CHD/TTG 短词命中片名、被迫用位置启发式硬扛的坑）。
 
 _TRAILING_DECOR_RE = re.compile(r"\s*[\[【（(][^\[\]【】（）()]*[\]】）)]\s*$")
+_TRAILING_MEDIA_EXTENSION_RE = re.compile(
+    r"\.(?:MKV|MP4|M4V|AVI|TS|M2TS|MOV|WMV)\s*$",
+    re.I,
+)
 _TAIL_GROUP_RE = re.compile(r"[-@]\s?([A-Za-z0-9@!]{2,20})\s*$")
 
 _KNOWN_GROUP_PATTERNS: list[tuple[re.Pattern[str], str]] = [
@@ -192,7 +202,7 @@ _KNOWN_GROUP_PATTERNS: list[tuple[re.Pattern[str], str]] = [
 
 
 def extract_release_group(text: str) -> dict[str, object]:
-    stripped = text.rstrip()
+    stripped = _TRAILING_MEDIA_EXTENSION_RE.sub("", text.rstrip())
     # 最多剥两层末尾装饰（"[中字][DIY]" 这种叠加）
     for _ in range(2):
         cleaned = _TRAILING_DECOR_RE.sub("", stripped)
@@ -223,6 +233,7 @@ EXTRACTORS: list[tuple[str, object]] = [
     ("audio", extract_audio),
     ("hdr", extract_hdr),
     ("media_source", extract_media_source),
+    ("platforms", extract_platforms),
     ("remux", extract_remux),
     ("complete_marker", extract_complete_marker),
     ("release_group", extract_release_group),

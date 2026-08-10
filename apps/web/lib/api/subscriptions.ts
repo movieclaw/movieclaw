@@ -114,8 +114,12 @@ export interface RuleSetSpec {
   /** 允许的分辨率；列表顺序即偏好顺序（排前面的评分更高） */
   resolutions?: string[];
   video_codecs?: string[];
+  platforms_allow?: string[];
+  platforms_block?: string[];
   release_groups_allow?: string[];
   release_groups_block?: string[];
+  /** 平台与制作组白名单同时配置时：任一命中 / 全部命中 */
+  source_match_mode?: "any" | "all";
   /** 判断整个 HDR 家族（含 DV），与 dv 轴正交 */
   hdr?: "any" | "require" | "forbid";
   /** 单独判断杜比视界；"必须 HDR 但排除 DV" = hdr:require + dv:forbid */

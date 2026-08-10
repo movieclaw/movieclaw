@@ -447,8 +447,10 @@ class RuleSetPayload(BaseModel):
         description=(
             "过滤规则 JSON（全部键可缺省=不限）："
             'resolutions 分辨率偏好序（如 ["2160p","1080p"]，顺序即优先级）、'
-            "video_codecs 编码白名单、release_groups_allow/release_groups_block "
-            "制作组白/黑名单、hdr 策略（any/require/forbid，判断整个 HDR 家族含 DV）、"
+            "video_codecs 编码白名单、platforms_allow/platforms_block 平台白/黑名单、"
+            "release_groups_allow/release_groups_block 制作组白/黑名单、"
+            "source_match_mode 平台与制作组白名单的 any/all 关系、"
+            "hdr 策略（any/require/forbid，判断整个 HDR 家族含 DV）、"
             "dv 策略（any/require/forbid，单独判断杜比视界，与 hdr 正交，"
             "如必须 HDR 但排除 DV = hdr:require + dv:forbid）、free_only 只要免费种、"
             "min_seeders 做种数下限、size_min_mb/size_max_mb 体积区间（整季包按每集均摊）、"

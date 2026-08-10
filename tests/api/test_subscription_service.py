@@ -419,9 +419,20 @@ async def test_rule_set_spec_validation(db) -> None:
             await rule_service.create("坏规则", {"resolutions": "1080p"})  # 应为列表
 
         row = await rule_service.create(
-            "高清免费", {"resolutions": ["2160p", "1080p"], "free_only": True}
+            "高清免费",
+            {
+                "resolutions": ["2160p", "1080p"],
+                "platforms_allow": ["iqiyi"],
+                "release_groups_allow": ["Pure@HDSWEB"],
+                "free_only": True,
+            },
         )
-        assert row.spec == {"resolutions": ["2160p", "1080p"], "free_only": True}
+        assert row.spec == {
+            "resolutions": ["2160p", "1080p"],
+            "platforms_allow": ["iqiyi"],
+            "release_groups_allow": ["Pure@HDSWEB"],
+            "free_only": True,
+        }
 
 
 async def test_rule_set_duplicate_name_conflict(db) -> None:
