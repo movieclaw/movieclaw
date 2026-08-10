@@ -1,22 +1,19 @@
 # =============================================================================
 # Docker 镜像发布流水线
 #
-# 在 amd64 / arm64 原生 runner 上分别构建，再合并为一个多架构 manifest，
-# 推送到 Docker Hub（docker.io/<DOCKERHUB_USERNAME>/movieclaw）。
+# 在 GitHub amd64 runner 上构建 linux/amd64 镜像，并推送到 Docker Hub
+#（docker.io/<DOCKERHUB_USERNAME>/movieclaw）。
 #
-# 两个入口：
-#   1. release.yml 在发版产物构建成功后自动调用（workflow_call）——
+# 三个入口：
+#   1. main 分支每次推送后自动构建，发布 latest + sha-<短提交号>；
+#   2. release.yml 在发版产物构建成功后自动调用（workflow_call）——
 #      每次应用发版都会同步发布同版本号的镜像
-#   2. 手动触发（Actions → docker-image → Run workflow）——补发或
+#   3. 手动触发（Actions → docker-image → Run workflow）——补发或
 #      单独发镜像时用
 #
 # 标签策略：正式版打 <tag> + runtime-N + latest 三个标签；
 # 预发布版（tag 含 "-"，如 v0.3.0-beta.1）只打 <tag>，不动 latest，
 # 避免 beta 被 docker pull 默认拉到。
-#
-# 为什么不用 QEMU 单机跨构建：Next.js 构建与 QEMU 模拟阶段并行时会间歇性
-# 挂死（详见 scripts/build-image.sh 头注释）。公开仓库的 arm64 原生 runner
-# 免费，两边都原生构建，又快又稳。
 #
 # 依赖的仓库配置（Settings → Secrets and variables → Actions）：
 #   变量  DOCKERHUB_USERNAME  Docker Hub 用户名（镜像命名空间）
@@ -26,6 +23,8 @@
 name: docker-image
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       tag:
@@ -45,19 +44,8 @@ env:
   IMAGE: docker.io/${{ vars.DOCKERHUB_USERNAME }}/movieclaw
 
 jobs:
-  # 每个架构在自己的原生 runner 上构建，先只按 digest 推送（不打标签），
-  # 最后由 merge 作业把两个 digest 合成一个多架构 manifest 再打标签。
   build:
-    strategy:
-      matrix:
-        include:
-          - platform: linux/amd64
-            arch: amd64
-            runner: ubuntu-latest
-          - platform: linux/arm64
-            arch: arm64
-            runner: ubuntu-24.04-arm
-    runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -68,63 +56,45 @@ jobs:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: 构建并按 digest 推送
-        id: build
+      - name: 生成镜像标签
+        id: metadata
+        run: |
+          RELEASE_TAG="${{ inputs.tag }}"
+          if [ -z "$RELEASE_TAG" ]; then
+            # main 自动构建：latest 给 compose 默认拉取，sha 标签用于精确回滚。
+            SHORT_SHA="${GITHUB_SHA::12}"
+            PUBLISH_TAG="sha-$SHORT_SHA"
+            TAGS="$IMAGE:$PUBLISH_TAG"$'\n'"$IMAGE:latest"
+          else
+            PUBLISH_TAG="$RELEASE_TAG"
+            TAGS="$IMAGE:$RELEASE_TAG"
+            # 预发布（tag 含 "-"）只打版本号标签，不推 latest / runtime-N
+            case "$RELEASE_TAG" in
+              *-*) ;;
+              *)
+                RUNTIME="$(tr -d '[:space:]' < "$GITHUB_WORKSPACE/docker/runtime-version")"
+                TAGS+=$'\n'"$IMAGE:runtime-$RUNTIME"$'\n'"$IMAGE:latest"
+                ;;
+            esac
+          fi
+          {
+            echo "tags<<EOF"
+            echo "$TAGS"
+            echo "EOF"
+            echo "publish_tag=$PUBLISH_TAG"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: 构建并推送 amd64 镜像
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: ${{ matrix.platform }}
+          platforms: linux/amd64
           # Next.js 构建的并行 worker 靠 /dev/shm 通信，默认 64MB 会静默死锁
           shm-size: 2g
           build-args: |
             TMDB_API_KEY=${{ secrets.TMDB_API_KEY }}
-          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
-
-      - name: 导出 digest 供合并作业使用
-        run: |
-          mkdir -p /tmp/digests
-          digest="${{ steps.build.outputs.digest }}"
-          touch "/tmp/digests/${digest#sha256:}"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: digests-${{ matrix.arch }}
-          path: /tmp/digests/*
-          if-no-files-found: error
-          retention-days: 1
-
-  merge:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      # 只为读 docker/runtime-version，给镜像补一个 runtime-N 标签
-      - uses: actions/checkout@v4
-
-      - name: 下载各架构 digest
-        uses: actions/download-artifact@v4
-        with:
-          path: /tmp/digests
-          pattern: digests-*
-          merge-multiple: true
-
-      - uses: docker/login-action@v3
-        with:
-          username: ${{ vars.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: 合并多架构 manifest 并打标签推送
-        working-directory: /tmp/digests
-        run: |
-          TAGS=(-t "$IMAGE:${{ inputs.tag }}")
-          # 预发布（tag 含 "-"）只打版本号标签，不推 latest / runtime-N
-          case "${{ inputs.tag }}" in
-            *-*) ;;
-            *)
-              RUNTIME="$(tr -d '[:space:]' < "$GITHUB_WORKSPACE/docker/runtime-version")"
-              TAGS+=(-t "$IMAGE:runtime-$RUNTIME" -t "$IMAGE:latest")
-              ;;
-          esac
-          docker buildx imagetools create "${TAGS[@]}" $(printf "$IMAGE@sha256:%s " *)
+          push: true
+          tags: ${{ steps.metadata.outputs.tags }}
 
       - name: 检查推送结果
-        run: docker buildx imagetools inspect "$IMAGE:${{ inputs.tag }}"
+        run: docker buildx imagetools inspect "$IMAGE:${{ steps.metadata.outputs.publish_tag }}"

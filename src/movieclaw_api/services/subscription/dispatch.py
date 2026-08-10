@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from movieclaw_api.core.config import get_settings
+from movieclaw_api.services.subscription.quality import record_pending_candidate
 from movieclaw_db.models import (
     ActivityType,
     MediaItem,
@@ -147,6 +148,12 @@ async def dispatch(
             await session.commit()
 
     mode = "【模拟投递】" if dry_run else ""
+    pending_policy = record_pending_candidate(
+        subscription.quality_policy, claimed, candidate
+    )
+    if pending_policy is not None:
+        subscription.quality_policy = pending_policy
+        await repo.save(subscription)
     logger.info(
         "%s已投递（%s）：《%s》%s ← %s 的「%s」（%s）",
         mode,
@@ -318,7 +325,12 @@ async def _claim(session: AsyncSession, wanted_rows: list[WantedItem]) -> list[W
     for wanted in wanted_rows:
         result = await session.execute(
             update(WantedItem)
-            .where(WantedItem.id == wanted.id, WantedItem.status == WantedStatus.WANTED)
+            .where(
+                WantedItem.id == wanted.id,
+                WantedItem.status.in_(  # type: ignore[attr-defined]
+                    (WantedStatus.WANTED, WantedStatus.UPGRADING)
+                ),
+            )
             .values(status=WantedStatus.GRABBED, grabbed_at=now, updated_at=now)
         )
         if result.rowcount:
@@ -335,7 +347,11 @@ async def _rollback_claim(session: AsyncSession, claimed: list[WantedItem], *, r
             update(WantedItem)
             .where(WantedItem.id == wanted.id, WantedItem.status == WantedStatus.GRABBED)
             .values(
-                status=WantedStatus.WANTED,
+                status=(
+                    WantedStatus.UPGRADING
+                    if wanted.status == WantedStatus.UPGRADING
+                    else WantedStatus.WANTED
+                ),
                 grabbed_at=None,
                 next_search_at=now + retry_delay,
                 updated_at=now,

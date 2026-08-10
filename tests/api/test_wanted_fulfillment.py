@@ -43,13 +43,29 @@ async def db(tmp_path, monkeypatch):
     get_settings.cache_clear()
 
 
-async def _seed(db, *, wanted_status=WantedStatus.GRABBED, info_hash="abc123", grabbed_at=None):
+async def _seed(
+    db,
+    *,
+    wanted_status=WantedStatus.GRABBED,
+    info_hash="abc123",
+    grabbed_at=None,
+    quality_policy=None,
+    kind="tv",
+):
     """建 库/条目/订阅/工单 的最小闭包，返回 (library_id, item_id, sub_id, wanted_id)。"""
     async with db.session() as session:
         library = await LibraryRepository(session).create(
-            name="剧集库", kind="tv", root_paths=["/media/tv"]
+            name="剧集库" if kind == "tv" else "电影库",
+            kind=kind,
+            root_paths=["/media/tv" if kind == "tv" else "/media/movies"],
         )
-        item = MediaItem(kind="tv", tmdb_id=200, title="测试剧集", original_title="Test", year=2024)
+        item = MediaItem(
+            kind=kind,
+            tmdb_id=200 if kind == "tv" else 100,
+            title="测试剧集" if kind == "tv" else "测试电影",
+            original_title="Test",
+            year=2024,
+        )
         rule_set = RuleSet(name="默认", spec={})
         session.add(item)
         session.add(rule_set)
@@ -57,7 +73,11 @@ async def _seed(db, *, wanted_status=WantedStatus.GRABBED, info_hash="abc123", g
         await session.refresh(item)
         await session.refresh(rule_set)
         sub = Subscription(
-            media_item_id=item.id, kind="tv", rule_set_id=rule_set.id, library_id=library.id
+            media_item_id=item.id,
+            kind=kind,
+            rule_set_id=rule_set.id,
+            library_id=library.id,
+            quality_policy=quality_policy,
         )
         session.add(sub)
         await session.commit()
@@ -65,8 +85,8 @@ async def _seed(db, *, wanted_status=WantedStatus.GRABBED, info_hash="abc123", g
         wanted = WantedItem(
             subscription_id=sub.id,
             media_item_id=item.id,
-            season_number=1,
-            episode_number=1,
+            season_number=1 if kind == "tv" else 0,
+            episode_number=1 if kind == "tv" else 0,
             status=wanted_status,
             info_hash=info_hash,
             grabbed_at=grabbed_at or utcnow(),
@@ -114,6 +134,178 @@ async def test_inventory_closes_wanted_and_records_activity(db):
 
         # 幂等：再次对账无事发生
         assert await close_fulfilled_wanted(session, item_id) == 0
+
+
+@pytest.mark.asyncio
+async def test_first_import_locks_title_profile_for_future_episodes(db):
+    """首次成功入库后保存平台、制作组、分辨率及 HDR 档案。"""
+    profile = {
+        "resolutions": ["2160p"],
+        "platforms_allow": ["iqiyi"],
+        "release_groups_allow": ["Pure@HDSWEB"],
+        "source_match_mode": "all",
+        "hdr": "require",
+        "dv": "forbid",
+    }
+    policy = {
+        "mode": "lock_first",
+        "pending": {
+            "1:1": {
+                "profile": profile,
+                "meets_target": False,
+                "was_upgrading": False,
+            }
+        },
+    }
+    library_id, item_id, sub_id, wanted_id = await _seed(db, quality_policy=policy)
+    async with db.session() as session:
+        session.add(
+            LibraryFile(
+                library_id=library_id,
+                media_item_id=item_id,
+                season_number=1,
+                episode_number=1,
+                file_path="/media/tv/Test/Season 01/Test - S01E01.mkv",
+                size_bytes=1,
+                source=FileSource.IMPORTED,
+            )
+        )
+        await session.commit()
+
+        assert await close_fulfilled_wanted(session, item_id) == 1
+        wanted = await session.get(WantedItem, wanted_id)
+        sub = await session.get(Subscription, sub_id)
+
+    assert wanted.status == WantedStatus.IMPORTED
+    assert sub.quality_policy["locked"] == profile
+    assert "pending" not in sub.quality_policy
+
+
+@pytest.mark.asyncio
+async def test_tv_upgrade_keeps_one_anchor_open_until_target_imports(db):
+    """低版本先入库后只洗一个锚点；目标标题版本入库后固定后续。"""
+    target = {
+        "resolutions": ["2160p"],
+        "platforms_allow": ["iqiyi"],
+        "hdr": "require",
+        "dv": "forbid",
+    }
+    policy = {
+        "mode": "upgrade",
+        "target": target,
+        "pending": {
+            "1:1": {
+                "profile": {"resolutions": ["1080p"], "hdr": "forbid"},
+                "meets_target": False,
+                "was_upgrading": False,
+            }
+        },
+    }
+    library_id, item_id, sub_id, wanted_id = await _seed(db, quality_policy=policy)
+    async with db.session() as session:
+        session.add(
+            LibraryFile(
+                library_id=library_id,
+                media_item_id=item_id,
+                season_number=1,
+                episode_number=1,
+                file_path="/media/tv/Test/Season 01/Test - S01E01.mkv",
+                size_bytes=1,
+                source=FileSource.IMPORTED,
+            )
+        )
+        await session.commit()
+
+        assert await close_fulfilled_wanted(session, item_id) == 1
+        wanted = await session.get(WantedItem, wanted_id)
+        sub = await session.get(Subscription, sub_id)
+        assert wanted.status == WantedStatus.UPGRADING
+        assert sub.quality_policy["anchor_unit"] == "1:1"
+
+        wanted.status = WantedStatus.GRABBED
+        wanted.info_hash = "target123"
+        sub.quality_policy = {
+            **sub.quality_policy,
+            "pending": {
+                "1:1": {
+                    "profile": target,
+                    "meets_target": True,
+                    "was_upgrading": True,
+                }
+            },
+        }
+        session.add(wanted)
+        session.add(sub)
+        await session.commit()
+
+        assert await close_fulfilled_wanted(session, item_id) == 1
+        await session.refresh(wanted)
+        await session.refresh(sub)
+
+    assert wanted.status == WantedStatus.IMPORTED
+    assert sub.quality_policy["locked"] == target
+    assert "anchor_unit" not in sub.quality_policy
+    assert "pending" not in sub.quality_policy
+
+
+@pytest.mark.asyncio
+async def test_movie_keeps_upgrading_until_target_title_version_imports(db):
+    """电影基础版先可用，目标标题版真正入库后才结束自动洗版。"""
+    target = {"resolutions": ["2160p"], "hdr": "require", "dv": "forbid"}
+    policy = {
+        "mode": "upgrade",
+        "target": target,
+        "pending": {
+            "0:0": {
+                "profile": {"resolutions": ["1080p"], "hdr": "forbid"},
+                "meets_target": False,
+                "was_upgrading": False,
+            }
+        },
+    }
+    library_id, item_id, sub_id, wanted_id = await _seed(
+        db, quality_policy=policy, kind="movie"
+    )
+    async with db.session() as session:
+        session.add(
+            LibraryFile(
+                library_id=library_id,
+                media_item_id=item_id,
+                season_number=0,
+                episode_number=0,
+                file_path="/media/movies/Test (2024)/Test (2024).mkv",
+                size_bytes=1,
+                source=FileSource.IMPORTED,
+            )
+        )
+        await session.commit()
+
+        assert await close_fulfilled_wanted(session, item_id) == 1
+        wanted = await session.get(WantedItem, wanted_id)
+        sub = await session.get(Subscription, sub_id)
+        assert wanted.status == WantedStatus.UPGRADING
+
+        wanted.status = WantedStatus.GRABBED
+        sub.quality_policy = {
+            **sub.quality_policy,
+            "pending": {
+                "0:0": {
+                    "profile": target,
+                    "meets_target": True,
+                    "was_upgrading": True,
+                }
+            },
+        }
+        session.add(wanted)
+        session.add(sub)
+        await session.commit()
+
+        assert await close_fulfilled_wanted(session, item_id) == 1
+        await session.refresh(wanted)
+        await session.refresh(sub)
+
+    assert wanted.status == WantedStatus.IMPORTED
+    assert "pending" not in sub.quality_policy
 
 
 @pytest.mark.asyncio
@@ -195,6 +387,36 @@ async def test_rescue_requeues_missing_torrent(db, monkeypatch):
             .all()
         )
         assert any("不在下载器" in a.message for a in activities)
+
+
+@pytest.mark.asyncio
+async def test_rescue_restores_upgrade_state_and_clears_pending(db, monkeypatch):
+    """洗版下载消失后退回 upgrading，不能退化成普通缺集。"""
+    policy = {
+        "mode": "upgrade",
+        "target": {"resolutions": ["2160p"]},
+        "anchor_unit": "1:1",
+        "pending": {
+            "1:1": {
+                "profile": {"resolutions": ["2160p"]},
+                "meets_target": True,
+                "was_upgrading": True,
+            }
+        },
+    }
+    _library_id, _item_id, sub_id, wanted_id = await _seed(db, quality_policy=policy)
+
+    async def query_none(info_hash, downloaders):
+        return None
+
+    monkeypatch.setattr(progress_mod, "_query_torrent", query_none)
+    await progress_mod._rescue_group(sub_id, "abc123", downloaders=[])
+
+    async with db.session() as session:
+        wanted = await session.get(WantedItem, wanted_id)
+        sub = await session.get(Subscription, sub_id)
+    assert wanted.status == WantedStatus.UPGRADING
+    assert "pending" not in sub.quality_policy
 
 
 @pytest.mark.asyncio

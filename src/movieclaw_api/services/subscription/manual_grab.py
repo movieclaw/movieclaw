@@ -90,7 +90,9 @@ async def grab_manual(
             await session.execute(
                 select(WantedItem).where(
                     WantedItem.subscription_id == subscription_id,
-                    WantedItem.status == WantedStatus.WANTED,
+                    WantedItem.status.in_(  # type: ignore[attr-defined]
+                        (WantedStatus.WANTED, WantedStatus.UPGRADING)
+                    ),
                 )
             )
         )

@@ -130,7 +130,9 @@ async def _due_media_groups(session: AsyncSession) -> list[int]:
         select(WantedItem.media_item_id)
         .join(Subscription, WantedItem.subscription_id == Subscription.id)  # type: ignore[arg-type]
         .where(
-            WantedItem.status == WantedStatus.WANTED,
+            WantedItem.status.in_(  # type: ignore[attr-defined]
+                (WantedStatus.WANTED, WantedStatus.UPGRADING)
+            ),
             WantedItem.next_search_at.isnot(None),  # type: ignore[union-attr]
             WantedItem.next_search_at <= now,  # type: ignore[operator]
             Subscription.status == SubscriptionStatus.ACTIVE,
@@ -306,7 +308,9 @@ async def _postpone_open_wanted(
     result = await session.execute(
         select(WantedItem).where(
             WantedItem.media_item_id == media_id,
-            WantedItem.status == WantedStatus.WANTED,
+            WantedItem.status.in_(  # type: ignore[attr-defined]
+                (WantedStatus.WANTED, WantedStatus.UPGRADING)
+            ),
             WantedItem.next_search_at.isnot(None),  # type: ignore[union-attr]
             WantedItem.next_search_at <= now,  # type: ignore[operator]
         )

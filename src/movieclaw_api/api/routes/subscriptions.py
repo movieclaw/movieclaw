@@ -133,6 +133,9 @@ async def create_subscription(
         rule_set_id=payload.rule_set_id,
         library_id=payload.library_id,
         douban_id=payload.douban_id,
+        quality_policy=(
+            payload.quality_policy.model_dump() if payload.quality_policy is not None else None
+        ),
     )
     assert subscription.id is not None
     sub, item, wanted = await service.detail(subscription.id)
@@ -273,6 +276,13 @@ async def update_subscription(
         # library_id 要区分「未传=不变」与「显式 null=清除指定、回默认库路由」，
         # 用 model_fields_set 判断调用方是否真的带了这个字段
         library_id=payload.library_id if "library_id" in payload.model_fields_set else ...,
+        quality_policy=(
+            payload.quality_policy.model_dump()
+            if payload.quality_policy is not None
+            else None
+        )
+        if "quality_policy" in payload.model_fields_set
+        else ...,
     )
     sub, item, wanted = await service.detail(subscription_id)
     return ok(SubscriptionDetailView.from_detail(sub, item, wanted), message="订阅已调整")

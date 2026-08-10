@@ -25,6 +25,7 @@ class WantedStatus(StrEnum):
     GRABBED = "grabbed"  # 已向下载器投递成功
     DOWNLOADED = "downloaded"  # 下载器确认文件全部落盘
     IMPORTED = "imported"  # 已整理入库（硬链到库目录 + library_file 落账）——终态
+    UPGRADING = "upgrading"  # 已有可用版本，继续搜索洗版目标
 
 
 class Subscription(TimestampMixin, table=True):
@@ -86,6 +87,12 @@ class Subscription(TimestampMixin, table=True):
     rule_set_id: int = Field(
         sa_column=Column(Integer, ForeignKey("rule_set.id"), nullable=False, index=True),
         description="引用的规则组；规则组被引用时禁删（服务层保证）",
+    )
+
+    quality_policy: dict | None = Field(
+        default=None,
+        sa_column=Column(JSON, nullable=True),
+        description="首个版本锁定/洗版目标及运行态；NULL=关闭",
     )
 
     status: str = Field(
@@ -156,7 +163,9 @@ class WantedItem(TimestampMixin, table=True):
     episode_number: int = Field(default=0, description="集号；电影=0（哨兵）")
 
     status: str = Field(
-        default=WantedStatus.WANTED, index=True, description="wanted / grabbed / downloaded"
+        default=WantedStatus.WANTED,
+        index=True,
+        description="wanted / upgrading / grabbed / downloaded / imported",
     )
     air_date: date | None = Field(
         default=None, description="播出日期快照（冗余自 episodes JSON，F3 同步）；NULL=未定档"

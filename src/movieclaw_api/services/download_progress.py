@@ -30,6 +30,7 @@ from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
+from movieclaw_api.services.subscription.quality import pop_pending, retry_status
 from movieclaw_api.services.system_notice import resolve_notices, upsert_notice
 from movieclaw_db.engine import get_database
 from movieclaw_db.models import (
@@ -422,15 +423,19 @@ async def _requeue(
     message: str,
     reason: str,
 ) -> None:
-    """把一组在途工单退回 wanted：冷却后重新找资源，记中文活动。"""
+    """把一组在途工单退回投递前状态：普通缺口或洗版队列。"""
     now = utcnow()
     retry_at = now + timedelta(minutes=_MISSING_RETRY_MINUTES)
+    subscription = await session.get(Subscription, rows[0].subscription_id)
+    policy = subscription.quality_policy if subscription is not None else None
     for w in rows:
+        restored = retry_status(policy, w)
+        policy, _entry = pop_pending(policy, w)
         await session.execute(
             update(WantedItem)
             .where(WantedItem.id == w.id)
             .values(
-                status=WantedStatus.WANTED,
+                status=restored,
                 info_hash=None,
                 grabbed_at=None,
                 downloaded_at=None,
@@ -438,6 +443,10 @@ async def _requeue(
                 updated_at=now,
             )
         )
+    if subscription is not None:
+        subscription.quality_policy = policy
+        subscription.updated_at = now
+        session.add(subscription)
     await session.commit()
     # 工单退回后旧种子的落点告警已无意义（重找会产生新种子/新告警）
     await resolve_notices(

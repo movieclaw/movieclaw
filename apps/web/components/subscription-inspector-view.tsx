@@ -124,6 +124,24 @@ export function SubscriptionInspectorView({ id }: { id: number }) {
     () => ruleSets.find((r) => r.id === detail?.rule_set_id)?.name ?? `#${detail?.rule_set_id}`,
     [ruleSets, detail],
   );
+  const qualityPolicyNote = useMemo(() => {
+    const policy = detail?.quality_policy;
+    if (!policy) return null;
+    const locked = policy.locked ? specSummary(policy.locked) : [];
+    if (locked.length > 0) return `已固定 ${locked.join(" · ")}`;
+    if (policy.mode === "lock_first") return "等待首次入库锁定版本";
+    const target = policy.target ? specSummary(policy.target) : [];
+    if (
+      detail?.media.kind === "movie" &&
+      detail.progress.imported > 0 &&
+      detail.progress.wanted === 0 &&
+      detail.progress.upgrading === 0 &&
+      detail.progress.grabbed + detail.progress.downloaded === 0
+    ) {
+      return `洗版已达标${target.length > 0 ? ` · ${target.join(" · ")}` : ""}`;
+    }
+    return `洗版目标 ${policy.target_rule_name ?? (target.join(" · ") || "指定版本")}`;
+  }, [detail]);
   usePageTitle(detail?.media.title);
 
   // 兜底态（加载中/失败）也渲染 PageNav（片名未知，末项留空）：向外壳登记
@@ -273,6 +291,7 @@ export function SubscriptionInspectorView({ id }: { id: number }) {
                 </ParamChip>
               )}
               {!isMovie && <ParamChip>持续追新 {detail.follow_future ? "开" : "关"}</ParamChip>}
+              {qualityPolicyNote && <ParamChip>{qualityPolicyNote}</ParamChip>}
               {/* 规则组徽片可点击换组：删除被引用规则组前"先把订阅改到其他组"的
                   唯一 Web 入口，也是新建规则组后应用到已有订阅的路 */}
               <button
@@ -299,7 +318,8 @@ export function SubscriptionInspectorView({ id }: { id: number }) {
 
           <div className="flex shrink-0 flex-wrap gap-2.5 pt-0.5 max-md:w-full">
             {/* 缺口存在且未暂停时才有意义；其余情况后端会给可读错误，按钮直接隐藏更干净 */}
-            {detail.progress.wanted > 0 && detail.status !== "paused" && (
+            {detail.progress.wanted + detail.progress.upgrading > 0 &&
+              detail.status !== "paused" && (
               <button
                 type="button"
                 disabled={busy}
@@ -309,7 +329,7 @@ export function SubscriptionInspectorView({ id }: { id: number }) {
                 立即搜索
               </button>
             )}
-            {detail.progress.wanted > 0 && (
+            {detail.progress.wanted + detail.progress.upgrading > 0 && (
               <Link
                 href={
                   `/search?q=${encodeURIComponent(detail.media.title)}&for_sub=${detail.id}` as Route
@@ -513,7 +533,7 @@ function ProgressStrip({
 }: {
   progress: SubscriptionDetail["progress"];
 }) {
-  const { total, wanted, grabbed, downloaded, imported } = progress;
+  const { total, wanted, grabbed, downloaded, imported, upgrading } = progress;
   const denom = Math.max(total, 1);
   const inPipeline = grabbed + downloaded;
   return (
@@ -527,10 +547,15 @@ function ProgressStrip({
           className="bg-[#6aa7ff]"
           style={{ width: `${(inPipeline / denom) * 100}%` }}
         />
+        <div
+          className="bg-[#f5c451]"
+          style={{ width: `${(upgrading / denom) * 100}%` }}
+        />
       </div>
       <p className="tnum mt-2 text-sub text-white/55">
         共 {total} 项 · 缺 {wanted}
         {inPipeline > 0 && ` · 下载中 ${inPipeline}`}
+        {upgrading > 0 && ` · 洗版中 ${upgrading}`}
         {imported > 0 && ` · 已入库 ${imported}`}
       </p>
     </div>
@@ -674,7 +699,8 @@ function WantedBreakdown({
               <p className="border-b border-white/[0.06] px-5 py-2.5 text-sub font-semibold text-white/80">
                 {season === 0 ? "特别篇" : `第 ${season} 季`}
                 <span className="ml-2 font-normal text-[var(--text-faint)]">
-                  {items.filter((w) => w.status !== "wanted").length}/{items.length} 已安排
+                  {items.filter((w) => !["wanted", "upgrading"].includes(w.status)).length}/
+                  {items.length} 已安排
                 </span>
               </p>
             )}
@@ -775,6 +801,15 @@ function downloadNote(d: SubscriptionDownload): string {
 }
 
 function wantedPresentation(w: WantedItem): { label: string; color: string; note: string } {
+  if (w.status === "upgrading") {
+    return {
+      label: "洗版中",
+      color: "#f5c451",
+      note: w.last_search_at
+        ? `已有可用版本，上次搜索 ${formatRelativeTime(w.last_search_at)}`
+        : "已有可用版本，正在寻找洗版目标",
+    };
+  }
   if (w.status === "imported") {
     return { label: "已入库", color: "#4ade80", note: `入库于 ${formatDateTime(w.imported_at)}` };
   }

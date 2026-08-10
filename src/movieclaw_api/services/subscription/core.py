@@ -23,6 +23,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from movieclaw_api.exceptions import BadRequestException, NotFoundException
 from movieclaw_api.services.media_library import MediaLibraryService
 from movieclaw_api.services.rule_sets import RuleSetService
+from movieclaw_api.services.subscription.quality import (
+    LOCK_FIRST,
+    UPGRADE,
+    normalized_policy,
+    public_policy,
+    target_profile_from_rule,
+)
 from movieclaw_db.models import (
     ActivityType,
     MediaEpisode,
@@ -41,6 +48,7 @@ from movieclaw_db.repositories import (
     MediaItemRepository,
     SubscriptionRepository,
 )
+from movieclaw_matcher import RuleSetSpec
 from movieclaw_media.models import MediaKind
 
 logger = logging.getLogger("movieclaw_api.subscription")
@@ -133,7 +141,7 @@ async def recompute_subscription_status(
     wanted = await repo.list_wanted(subscription.id)
 
     def _is_open(w: WantedItem) -> bool:
-        if w.status == WantedStatus.WANTED:
+        if w.status in (WantedStatus.WANTED, WantedStatus.UPGRADING):
             return True
         in_pipeline = w.status in (WantedStatus.GRABBED, WantedStatus.DOWNLOADED)
         return in_pipeline and w.info_hash is not None
@@ -207,6 +215,7 @@ class SubscriptionService:
         rule_set_id: int | None = None,
         library_id: int | None = None,
         douban_id: str | None = None,
+        quality_policy: dict | None = None,
     ) -> Subscription:
         """创建订阅并生成初始工单。同一条目已有订阅时幂等返回已有（不改参数）。"""
         item, seasons, existing = await self.prepare(kind, tmdb_id, douban_id=douban_id)
@@ -224,6 +233,7 @@ class SubscriptionService:
         else:
             await self._rule_sets.get(rule_set_id)  # 不存在则抛 404
         assert rule_set_id is not None
+        saved_quality_policy = await self._build_quality_policy(kind, quality_policy)
         # 入库目标：显式指定优先；否则按收藏范围路由并**创建时定格**——粘性
         # 的实现（docs/design/library-routing.md 2.1）：之后每次投递读定格值，
         # 规则中途变更不影响既有订阅，一部剧不会裂在两个库
@@ -246,6 +256,7 @@ class SubscriptionService:
                 follow_future=follow_future,
                 rule_set_id=rule_set_id,
                 library_id=library_id,
+                quality_policy=saved_quality_policy,
                 status=SubscriptionStatus.ACTIVE,
             )
         )
@@ -259,6 +270,7 @@ class SubscriptionService:
         units = [u for u in units if (u.season_number, u.episode_number) not in owned]
         rows = [self._to_wanted(subscription, unit) for unit in units]
         await self._repo.add_wanted(rows)
+        await self._reconcile_quality_policy(subscription)
         created_message = self._created_message(item, kind, selected, follow_future, rows)
         if skipped_owned:
             created_message += f"；库里已有 {len(skipped_owned)} 个单元，无需重复下载"
@@ -274,6 +286,7 @@ class SubscriptionService:
                 "wanted_total": len(rows),
                 "owned_skipped": len(skipped_owned),
                 "library_id": library_id,
+                "quality_policy": self._public_quality_policy(subscription.quality_policy),
             },
         )
         await self._recompute_status(subscription, item)
@@ -300,6 +313,7 @@ class SubscriptionService:
         follow_future: bool | None = None,
         rule_set_id: int | None = None,
         library_id: int | None | EllipsisType = ...,
+        quality_policy: dict | None | EllipsisType = ...,
     ) -> Subscription:
         """修改 E 的定义（季选择/追新/规则组/入库目标库），diff 重算工单。
 
@@ -315,6 +329,7 @@ class SubscriptionService:
         """
         subscription = await self._get_or_404(subscription_id)
         item = await self._media_repo_get(subscription.media_item_id)
+        disabled_quality_policy = None
 
         new_rule_set = None
         if rule_set_id is not None and rule_set_id != subscription.rule_set_id:
@@ -324,6 +339,39 @@ class SubscriptionService:
             if library_id is not None:
                 await self._validate_library(subscription.kind, library_id)
             subscription.library_id = library_id
+        if quality_policy is not ...:
+            next_policy = await self._build_quality_policy(
+                MediaKind(subscription.kind), quality_policy
+            )
+            current = normalized_policy(subscription.quality_policy)
+            if (
+                current is not None
+                and next_policy is not None
+                and current.get("mode") == next_policy.get("mode")
+                and current.get("target_rule_set_id")
+                == next_policy.get("target_rule_set_id")
+            ):
+                next_policy = current  # 相同策略保存时保留锁定档案、锚点和在途候选
+            elif current is not None and next_policy is None:
+                disabled_quality_policy = current
+            elif (
+                current is not None
+                and current.get("mode") == UPGRADE
+                and next_policy is not None
+            ):
+                pending = current.get("pending")
+                if isinstance(pending, dict):
+                    next_policy["pending"] = pending
+                    if next_policy.get("mode") == UPGRADE:
+                        for entry in pending.values():
+                            if isinstance(entry, dict):
+                                entry["meets_target"] = False
+                anchor_unit = current.get("anchor_unit")
+                if next_policy.get("mode") == UPGRADE and isinstance(
+                    anchor_unit, str
+                ):
+                    next_policy["anchor_unit"] = anchor_unit
+            subscription.quality_policy = next_policy
 
         kind = MediaKind(subscription.kind)
         seasons = await self._media_repo.list_seasons(subscription.media_item_id)
@@ -366,7 +414,7 @@ class SubscriptionService:
         to_remove = [
             w
             for w in existing
-            if w.status == WantedStatus.WANTED
+            if w.status in (WantedStatus.WANTED, WantedStatus.UPGRADING)
             and (w.season_number, w.episode_number) not in expected_keys
             and w.season_number not in selected_set
             and not _protected_by_follow(w)
@@ -377,6 +425,9 @@ class SubscriptionService:
             await self._repo.add_wanted(to_add)
         if to_remove:
             await self._repo.delete_wanted(to_remove)
+        quality_requeued = await self._reconcile_quality_policy(
+            subscription, previous_policy=disabled_quality_policy
+        )
         season_text = self._season_text(list(subscription.selected_seasons))
         rule_note = f"，规则组改为「{new_rule_set.name}」" if new_rule_set is not None else ""
         await self._log(
@@ -391,6 +442,7 @@ class SubscriptionService:
                 "rule_set_id": subscription.rule_set_id,
                 "added": len(to_add),
                 "removed": len(to_remove),
+                "quality_policy": self._public_quality_policy(subscription.quality_policy),
             },
         )
         await self._recompute_status(subscription, item)
@@ -400,7 +452,7 @@ class SubscriptionService:
             len(to_add),
             len(to_remove),
         )
-        if to_add:
+        if to_add or quality_requeued:
             self._kick_search()  # diff 可能补了新的补旧工单，同样立即发车
         return subscription
 
@@ -495,7 +547,10 @@ class SubscriptionService:
         wanted = await self._repo.list_wanted(subscription_id)
         reset = 0
         for w in wanted:
-            if w.status != WantedStatus.WANTED or w.next_search_at is None:
+            if (
+                w.status not in (WantedStatus.WANTED, WantedStatus.UPGRADING)
+                or w.next_search_at is None
+            ):
                 continue
             if w.air_date is not None and w.air_date > today:
                 continue
@@ -581,6 +636,205 @@ class SubscriptionService:
 
     async def _recompute_status(self, subscription: Subscription, item: MediaItem) -> None:
         await recompute_subscription_status(self._session, subscription, item)
+
+    async def _build_quality_policy(
+        self, kind: MediaKind, requested: dict | None
+    ) -> dict | None:
+        """请求策略转持久快照；规则组后续修改/删除不改变既有洗版目标。"""
+        if requested is None:
+            return None
+        mode = requested.get("mode")
+        if mode == LOCK_FIRST:
+            if kind is MediaKind.MOVIE:
+                raise BadRequestException("电影订阅不支持首次入库锁版，请选择自动洗版")
+            return {"mode": LOCK_FIRST}
+        if mode != UPGRADE:
+            raise BadRequestException("未知的版本连续性策略")
+        target_id = requested.get("target_rule_set_id")
+        if not isinstance(target_id, int):
+            raise BadRequestException("自动洗版必须选择目标规则组")
+        target_rule = await self._rule_sets.get(target_id)
+        target = target_profile_from_rule(RuleSetSpec.model_validate(target_rule.spec))
+        if not target:
+            raise BadRequestException(
+                f"洗版目标规则组「{target_rule.name}」没有分辨率、编码、HDR/DV、平台或制作组条件"
+            )
+        return {
+            "mode": UPGRADE,
+            "target_rule_set_id": target_id,
+            "target_rule_name": target_rule.name,
+            "target": target,
+        }
+
+    async def _reconcile_quality_policy(
+        self, subscription: Subscription, *, previous_policy: dict | None = None
+    ) -> int:
+        """策略开关与洗版锚点对齐；返回新进入洗版队列的工单数。"""
+        assert subscription.id is not None
+        policy = normalized_policy(subscription.quality_policy)
+        rows = await self._repo.list_wanted(subscription.id)
+        changed = 0
+        now = utcnow()
+
+        if policy is None:
+            pending = (
+                previous_policy.get("pending")
+                if isinstance(previous_policy, dict)
+                else None
+            )
+            for row in rows:
+                entry = (
+                    pending.get(f"{row.season_number}:{row.episode_number}")
+                    if isinstance(pending, dict)
+                    else None
+                )
+                was_upgrade_dispatch = (
+                    row.status in (WantedStatus.GRABBED, WantedStatus.DOWNLOADED)
+                    and isinstance(entry, dict)
+                    and entry.get("was_upgrading") is True
+                )
+                if row.status != WantedStatus.UPGRADING and not was_upgrade_dispatch:
+                    continue
+                row.status = WantedStatus.IMPORTED
+                row.next_search_at = None
+                row.updated_at = now
+                self._session.add(row)
+            await self._session.commit()
+            return 0
+
+        if policy.get("mode") != UPGRADE:
+            return 0
+
+        if subscription.kind == MediaKind.TV.value:
+            if policy.get("locked"):
+                return 0
+            cleared_anchor = False
+            anchor_key = policy.get("anchor_unit")
+            if isinstance(anchor_key, str):
+                active_anchor = next(
+                    (
+                        row
+                        for row in rows
+                        if f"{row.season_number}:{row.episode_number}" == anchor_key
+                        and row.status
+                        in (
+                            WantedStatus.UPGRADING,
+                            WantedStatus.GRABBED,
+                            WantedStatus.DOWNLOADED,
+                        )
+                    ),
+                    None,
+                )
+                if active_anchor is not None:
+                    return 0
+                policy.pop("anchor_unit", None)
+                cleared_anchor = True
+            upgrading = next(
+                (row for row in rows if row.status == WantedStatus.UPGRADING), None
+            )
+            if upgrading is not None:
+                if not policy.get("anchor_unit"):
+                    policy["anchor_unit"] = f"{upgrading.season_number}:{upgrading.episode_number}"
+                    subscription.quality_policy = policy
+                    await self._repo.save(subscription)
+                return 0
+
+            anchor = next(
+                (
+                    row
+                    for row in sorted(
+                        rows, key=lambda item: (item.season_number, item.episode_number)
+                    )
+                    if row.status == WantedStatus.IMPORTED
+                    and row.season_number in set(subscription.selected_seasons)
+                ),
+                None,
+            )
+            if anchor is None and subscription.selected_seasons:
+                owned = await self._owned_units(subscription.media_item_id)
+                owned = {
+                    unit
+                    for unit in owned
+                    if unit[0] in set(subscription.selected_seasons)
+                }
+                existing_keys = {
+                    (row.season_number, row.episode_number) for row in rows
+                }
+                key = next(iter(sorted(owned - existing_keys)), None)
+                if key is not None:
+                    episodes = await self._media_repo.list_episodes(
+                        subscription.media_item_id
+                    )
+                    air_dates = {
+                        (episode.season_number, episode.episode_number): episode.air_date
+                        for episode in episodes
+                    }
+                    anchor = WantedItem(
+                        subscription_id=subscription.id,
+                        media_item_id=subscription.media_item_id,
+                        season_number=key[0],
+                        episode_number=key[1],
+                        status=WantedStatus.UPGRADING,
+                        air_date=air_dates.get(key),
+                        next_search_at=now,
+                    )
+                    self._session.add(anchor)
+            if anchor is None:
+                if cleared_anchor:
+                    subscription.quality_policy = policy
+                    await self._repo.save(subscription)
+                return 0
+            anchor.status = WantedStatus.UPGRADING
+            anchor.info_hash = None
+            anchor.grabbed_at = None
+            anchor.downloaded_at = None
+            anchor.next_search_at = now
+            anchor.search_attempts = 0
+            anchor.last_search_at = None
+            anchor.updated_at = now
+            policy["anchor_unit"] = f"{anchor.season_number}:{anchor.episode_number}"
+            subscription.quality_policy = policy
+            self._session.add(anchor)
+            self._session.add(subscription)
+            await self._session.commit()
+            return 1
+
+        row = next(
+            (
+                item
+                for item in rows
+                if (item.season_number, item.episode_number) == (0, 0)
+            ),
+            None,
+        )
+        if row is None:
+            row = WantedItem(
+                subscription_id=subscription.id,
+                media_item_id=subscription.media_item_id,
+                season_number=0,
+                episode_number=0,
+                status=WantedStatus.UPGRADING,
+                next_search_at=now,
+            )
+            self._session.add(row)
+            changed = 1
+        elif row.status == WantedStatus.IMPORTED:
+            row.status = WantedStatus.UPGRADING
+            row.info_hash = None
+            row.grabbed_at = None
+            row.downloaded_at = None
+            row.next_search_at = now
+            row.search_attempts = 0
+            row.last_search_at = None
+            row.updated_at = now
+            self._session.add(row)
+            changed = 1
+        await self._session.commit()
+        return changed
+
+    @staticmethod
+    def _public_quality_policy(value: object) -> dict | None:
+        return public_policy(value)
 
     async def activities(
         self, subscription_id: int, *, limit: int = 100
@@ -708,5 +962,3 @@ class SubscriptionService:
         if item is None:  # 外键保证下理论不可达
             raise NotFoundException("订阅关联的媒体条目不存在")
         return item
-
-
