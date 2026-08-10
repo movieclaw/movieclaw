@@ -15,12 +15,18 @@ import { useEffect, useMemo, useState } from "react";
 import { useToast } from "@/components/feedback";
 import { Modal } from "@/components/modal";
 import { SeasonRow } from "@/components/subscribe-dialog";
+import {
+  SubscriptionQualityPolicyFields,
+  type QualityMode,
+} from "@/components/subscription-quality-policy-fields";
 import { listLibraries, type MediaLibrary } from "@/lib/api/libraries";
 import {
   getDispatchPreview,
+  listRuleSets,
   prepareSubscription,
   updateSubscription,
   type DispatchPreview,
+  type RuleSet,
   type SeasonOverview,
   type SubscriptionDetail,
 } from "@/lib/api/subscriptions";
@@ -40,11 +46,18 @@ export function SubscriptionAdjustDialog({
   // null = 加载中；[] 也是有效结果（电影没有季）
   const [seasons, setSeasons] = useState<SeasonOverview[] | null>(isMovie ? [] : null);
   const [libraries, setLibraries] = useState<MediaLibrary[]>([]);
+  const [ruleSets, setRuleSets] = useState<RuleSet[]>([]);
   const [selectedSeasons, setSelectedSeasons] = useState<Set<number>>(
     () => new Set(detail.selected_seasons),
   );
   const [followFuture, setFollowFuture] = useState(detail.follow_future);
   const [libraryId, setLibraryId] = useState<number | null>(detail.library_id);
+  const [qualityMode, setQualityMode] = useState<QualityMode>(
+    detail.quality_policy?.mode ?? "off",
+  );
+  const [targetRuleSetId, setTargetRuleSetId] = useState<number | null>(
+    detail.quality_policy?.target_rule_set_id ?? null,
+  );
   const [preview, setPreview] = useState<DispatchPreview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -60,11 +73,33 @@ export function SubscriptionAdjustDialog({
             tmdb_id: detail.media.tmdb_id,
           }),
       listLibraries(detail.media.kind),
+      listRuleSets(),
     ])
-      .then(([prepared, libs]) => {
+      .then(([prepared, libs, rules]) => {
         if (cancelled) return;
         if (prepared) setSeasons(prepared.status === "ready" ? prepared.seasons : []);
         setLibraries(libs);
+        const savedTargetId = detail.quality_policy?.target_rule_set_id;
+        const savedTarget = detail.quality_policy?.target;
+        setRuleSets(
+          savedTargetId != null &&
+            savedTarget &&
+            !rules.some((rule) => rule.id === savedTargetId)
+            ? [
+                ...rules,
+                {
+                  id: savedTargetId,
+                  name: detail.quality_policy?.target_rule_name ?? "已保存的洗版目标",
+                  is_default: false,
+                  spec: savedTarget,
+                  reference_count: 0,
+                },
+              ]
+            : rules,
+        );
+        setTargetRuleSetId(
+          (current) => current ?? rules.find((rule) => rule.is_default)?.id ?? rules[0]?.id ?? null,
+        );
       })
       .catch(() => {
         if (!cancelled) setError("加载季集与媒体库信息失败，请稍后重试");
@@ -72,7 +107,14 @@ export function SubscriptionAdjustDialog({
     return () => {
       cancelled = true;
     };
-  }, [detail.media.kind, detail.media.tmdb_id, isMovie]);
+  }, [
+    detail.media.kind,
+    detail.media.tmdb_id,
+    detail.quality_policy?.target,
+    detail.quality_policy?.target_rule_name,
+    detail.quality_policy?.target_rule_set_id,
+    isMovie,
+  ]);
 
   // 选库即预演投递落点（与订阅弹窗同一套提示；null=该类型默认库也预演）
   useEffect(() => {
@@ -116,9 +158,13 @@ export function SubscriptionAdjustDialog({
       seasons: seasonsChanged,
       follow: !isMovie && followFuture !== detail.follow_future,
       library: libraryId !== detail.library_id,
+      quality:
+        qualityMode !== (detail.quality_policy?.mode ?? "off") ||
+        (qualityMode === "upgrade" &&
+          targetRuleSetId !== (detail.quality_policy?.target_rule_set_id ?? null)),
     };
-  }, [detail, followFuture, isMovie, libraryId, selectedSeasons]);
-  const dirty = changed.seasons || changed.follow || changed.library;
+  }, [detail, followFuture, isMovie, libraryId, qualityMode, selectedSeasons, targetRuleSetId]);
+  const dirty = changed.seasons || changed.follow || changed.library || changed.quality;
 
   const save = async () => {
     setBusy(true);
@@ -131,6 +177,18 @@ export function SubscriptionAdjustDialog({
         ...(changed.follow ? { follow_future: followFuture } : {}),
         // 显式带上 null 即「清除指定库、改回默认库路由」（后端区分未传与 null）
         ...(changed.library ? { library_id: libraryId } : {}),
+        ...(changed.quality
+          ? {
+              quality_policy:
+                qualityMode === "off"
+                  ? null
+                  : {
+                      mode: qualityMode,
+                      target_rule_set_id:
+                        qualityMode === "upgrade" ? targetRuleSetId : null,
+                    },
+            }
+          : {}),
       });
       toast.success("订阅已调整");
       onSaved();
@@ -238,6 +296,17 @@ export function SubscriptionAdjustDialog({
                 ))}
             </section>
           )}
+
+          {ruleSets.length > 0 && (
+            <SubscriptionQualityPolicyFields
+              kind={detail.media.kind}
+              ruleSets={ruleSets}
+              mode={qualityMode}
+              targetRuleSetId={targetRuleSetId}
+              onModeChange={setQualityMode}
+              onTargetRuleSetChange={setTargetRuleSetId}
+            />
+          )}
         </div>
 
         <div className="mt-6 flex justify-end gap-3">
@@ -246,7 +315,12 @@ export function SubscriptionAdjustDialog({
           </button>
           <button
             type="button"
-            disabled={busy || !dirty || (!isMovie && selectedSeasons.size === 0)}
+            disabled={
+              busy ||
+              !dirty ||
+              (!isMovie && selectedSeasons.size === 0) ||
+              (qualityMode === "upgrade" && targetRuleSetId === null)
+            }
             onClick={() => void save()}
             className="btn-accent h-9 rounded-full px-5 text-ui font-semibold disabled:opacity-40"
           >

@@ -6,6 +6,10 @@ import { CheckIcon } from "@/components/icons";
 import { Modal } from "@/components/modal";
 import { PosterImage } from "@/components/poster-image";
 import { RuleSetEditorDialog, specSummary } from "@/components/rule-sets-panel";
+import {
+  SubscriptionQualityPolicyFields,
+  type QualityMode,
+} from "@/components/subscription-quality-policy-fields";
 import { listLibraries, type MediaLibrary } from "@/lib/api/libraries";
 import {
   createSubscription,
@@ -63,6 +67,8 @@ export function SubscribeDialog({
   const [selectedSeasons, setSelectedSeasons] = useState<Set<number>>(new Set());
   const [followFuture, setFollowFuture] = useState(false);
   const [ruleSetId, setRuleSetId] = useState<number | null>(null);
+  const [qualityMode, setQualityMode] = useState<QualityMode>("off");
+  const [targetRuleSetId, setTargetRuleSetId] = useState<number | null>(null);
   // 快捷新建规则组（编辑器叠在本弹窗之上，保存后自动选中新组）
   const [creatingRuleSet, setCreatingRuleSet] = useState(false);
   const [libraryId, setLibraryId] = useState<number | null>(null);
@@ -114,7 +120,10 @@ export function SubscribeDialog({
           listLibraries(t.kind),
         ]);
         setRuleSets(rules);
-        setRuleSetId(rules.find((r) => r.is_default)?.id ?? rules[0]?.id ?? null);
+        const defaultRuleId = rules.find((r) => r.is_default)?.id ?? rules[0]?.id ?? null;
+        setRuleSetId(defaultRuleId);
+        setTargetRuleSetId(defaultRuleId);
+        setQualityMode("off");
         setLibraries(libs);
         // 默认库 = 收藏范围路由的结论（按作品的类型/区域自动选库，带中文理由）；
         // 预检失败或没有路由结论时回落该类型默认库
@@ -177,6 +186,13 @@ export function SubscribeDialog({
         rule_set_id: ruleSetId,
         library_id: libraryId,
         douban_id: target.doubanId ?? null,
+        quality_policy:
+          qualityMode === "off"
+            ? null
+            : {
+                mode: qualityMode,
+                target_rule_set_id: qualityMode === "upgrade" ? targetRuleSetId : null,
+              },
       });
       onChanged?.();
       onClose();
@@ -203,9 +219,10 @@ export function SubscribeDialog({
 
   const canSubmit = useMemo(() => {
     if (!prepared?.media || busy) return false;
+    if (qualityMode === "upgrade" && targetRuleSetId === null) return false;
     if (prepared.media.kind === "movie") return true;
     return selectedSeasons.size > 0 || followFuture;
-  }, [prepared, busy, selectedSeasons, followFuture]);
+  }, [prepared, busy, selectedSeasons, followFuture, qualityMode, targetRuleSetId]);
 
   if (!target) return null;
 
@@ -399,6 +416,17 @@ export function SubscribeDialog({
                     );
                   })()}
                 </section>
+              )}
+
+              {ruleSets.length > 0 && prepared.media && (
+                <SubscriptionQualityPolicyFields
+                  kind={prepared.media.kind}
+                  ruleSets={ruleSets}
+                  mode={qualityMode}
+                  targetRuleSetId={targetRuleSetId}
+                  onModeChange={setQualityMode}
+                  onTargetRuleSetChange={setTargetRuleSetId}
+                />
               )}
 
               {libraries.length > 0 && (

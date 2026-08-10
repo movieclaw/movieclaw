@@ -15,19 +15,27 @@ export const subscriptionStatusMeta: Record<
 
 /** 进度说明：回答「还缺多少 / 入库了多少」——订阅信息里最高频的一眼答案。 */
 export function subscriptionProgressNote(sub: Subscription): string {
-  const { wanted, grabbed, downloaded, imported, total } = sub.progress;
+  const { wanted, grabbed, downloaded, imported, upgrading, total } = sub.progress;
   if (sub.status === "paused") return "暂停追踪";
   const inPipeline = grabbed + downloaded;
   if (wanted === 0) {
     if (sub.media.kind === "movie") {
-      return imported > 0 ? "已入库" : inPipeline > 0 ? "下载安排中" : "已收齐";
+      return upgrading > 0
+        ? "正在洗版"
+        : imported > 0
+          ? "已入库"
+          : inPipeline > 0
+            ? "下载安排中"
+            : "已收齐";
     }
+    if (upgrading > 0) return `${upgrading} 集洗版中 · 已入库 ${imported}`;
     if (inPipeline > 0) return `${inPipeline} 集下载中 · 已入库 ${imported}`;
     if (sub.status === "active") return "等待新集播出";
     return imported > 0 ? `全部 ${total} 集已入库` : `全部 ${total} 集已安排`;
   }
-  if (sub.media.kind === "movie") return "正在寻找资源";
+  if (sub.media.kind === "movie") return upgrading > 0 ? "正在洗版" : "正在寻找资源";
   const detail = [
+    upgrading > 0 ? `${upgrading} 集洗版中` : null,
     inPipeline > 0 ? `${inPipeline} 集下载中` : null,
     imported > 0 ? `已入库 ${imported}` : null,
   ].filter(Boolean);

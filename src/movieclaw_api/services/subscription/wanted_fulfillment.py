@@ -17,6 +17,14 @@ import logging
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
+from movieclaw_api.services.subscription.quality import (
+    LOCK_FIRST,
+    UPGRADE,
+    normalized_policy,
+    pending_key,
+    pop_pending,
+    profile_summary,
+)
 from movieclaw_db.models import (
     ActivityType,
     MediaItem,
@@ -53,18 +61,14 @@ async def close_fulfilled_wanted(session: AsyncSession, media_item_id: int) -> i
     if not fulfilled:
         return 0
 
+    # 时间线与派生状态：逐订阅处理（对账可能一次关闭多个订阅的工单）
+    from movieclaw_api.services.subscription import recompute_subscription_status
+    from movieclaw_api.services.subscription.matching import units_text
+
     now = utcnow()
     by_subscription: dict[int, list[WantedItem]] = {}
     for wanted in fulfilled:
-        wanted.status = WantedStatus.IMPORTED
-        wanted.imported_at = now
-        wanted.updated_at = now
         by_subscription.setdefault(wanted.subscription_id, []).append(wanted)
-    await session.commit()
-
-    # 时间线与派生状态：逐订阅补记（对账可能一次关闭多个订阅的工单）
-    from movieclaw_api.services.subscription import recompute_subscription_status
-    from movieclaw_api.services.subscription.matching import units_text
 
     item = await session.get(MediaItem, media_item_id)
     repo = SubscriptionRepository(session)
@@ -72,13 +76,87 @@ async def close_fulfilled_wanted(session: AsyncSession, media_item_id: int) -> i
         subscription = await session.get(Subscription, subscription_id)
         if subscription is None or item is None:
             continue
+        policy = normalized_policy(subscription.quality_policy)
+        processed_rows: list[WantedItem] = []
+        upgrading_rows: list[WantedItem] = []
+        lock_activated = False
+        for wanted in wanted_rows:
+            policy, entry = pop_pending(policy, wanted)
+            # 已有旧版本、仍在等待目标候选的洗版工单会持续命中库存 H；只有
+            # 新投递候选真正入库（pending 存在）时才重新判定，避免被旧文件关单。
+            if wanted.status == WantedStatus.UPGRADING and entry is None:
+                continue
+            processed_rows.append(wanted)
+            next_status = WantedStatus.IMPORTED
+            if policy is not None and entry is not None:
+                if policy.get("mode") == LOCK_FIRST and not policy.get("locked"):
+                    profile = entry.get("profile")
+                    if isinstance(profile, dict):
+                        policy["locked"] = profile
+                        lock_activated = True
+                elif policy.get("mode") == UPGRADE:
+                    key = pending_key(wanted)
+                    anchor = policy.get("anchor_unit")
+                    if entry.get("meets_target") is True:
+                        if (
+                            subscription.kind == "tv"
+                            and not policy.get("locked")
+                            and (anchor is None or anchor == key)
+                        ):
+                            policy["locked"] = dict(policy.get("target") or {})
+                            lock_activated = True
+                        if anchor == key:
+                            policy.pop("anchor_unit", None)
+                    elif subscription.kind == "movie":
+                        next_status = WantedStatus.UPGRADING
+                    else:
+                        if anchor is None:
+                            policy["anchor_unit"] = key
+                            next_status = WantedStatus.UPGRADING
+                        elif anchor == key:
+                            next_status = WantedStatus.UPGRADING
+
+            wanted.status = next_status
+            wanted.imported_at = now
+            wanted.updated_at = now
+            if next_status == WantedStatus.UPGRADING:
+                wanted.info_hash = None
+                wanted.grabbed_at = None
+                wanted.downloaded_at = None
+                wanted.next_search_at = now
+                wanted.search_attempts = 0
+                wanted.last_search_at = None
+                upgrading_rows.append(wanted)
+            else:
+                wanted.next_search_at = None
+            session.add(wanted)
+
+        if not processed_rows:
+            continue
+
+        subscription.quality_policy = policy
+        subscription.updated_at = now
+        session.add(subscription)
+        await session.commit()
+
+        message = f"{units_text(processed_rows)}已入库（媒体库对账确认）"
+        if upgrading_rows:
+            message += f"；其中 {units_text(upgrading_rows)} 未达到洗版目标，继续寻找"
+        if lock_activated and policy is not None:
+            message += f"；后续剧集已固定为 {profile_summary(policy.get('locked'))}"
         await repo.add_activity(
             SubscriptionActivity(
                 subscription_id=subscription_id,
-                wanted_item_id=wanted_rows[0].id,
+                wanted_item_id=processed_rows[0].id,
                 type=ActivityType.IMPORTED,
-                message=f"{units_text(wanted_rows)}已入库（媒体库对账确认）",
-                payload={"units": [[w.season_number, w.episode_number] for w in wanted_rows]},
+                message=message,
+                payload={
+                    "units": [[w.season_number, w.episode_number] for w in processed_rows],
+                    "upgrading_units": [
+                        [w.season_number, w.episode_number] for w in upgrading_rows
+                    ],
+                    "quality_locked": lock_activated,
+                },
             )
         )
         await recompute_subscription_status(session, subscription, item)
@@ -87,7 +165,7 @@ async def close_fulfilled_wanted(session: AsyncSession, media_item_id: int) -> i
 
         year_text = f"({item.year}) " if item.year else ""
         notify_channels(
-            f"🎬 已入库:《{item.title}》{year_text}{units_text(wanted_rows)}",
+            f"🎬 已入库:《{item.title}》{year_text}{units_text(processed_rows)}",
             event="imported",
             image_url=tmdb_push_image_url(item.backdrop_path, item.poster_path),
         )
@@ -98,7 +176,7 @@ async def close_fulfilled_wanted(session: AsyncSession, media_item_id: int) -> i
         emit_events(
             [
                 build_fulfilled_event(
-                    item, [(w.season_number, w.episode_number) for w in wanted_rows]
+                    item, [(w.season_number, w.episode_number) for w in processed_rows]
                 )
             ]
         )
@@ -106,6 +184,10 @@ async def close_fulfilled_wanted(session: AsyncSession, media_item_id: int) -> i
         from movieclaw_api.services.system_notice import resolve_notices
 
         await resolve_notices(session, prefix=f"subscription.landing:{subscription_id}:")
+        if upgrading_rows:
+            from movieclaw_api.services.subscription.wanted_search import kick_search_soon
+
+            kick_search_soon()
     logger.info("库存对账：条目 #%s 关闭了 %d 个工单", media_item_id, len(fulfilled))
 
     # L4：通知媒体服务器刷新（未配置为 no-op；失败只告警）

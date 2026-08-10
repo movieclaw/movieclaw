@@ -20,6 +20,7 @@ from datetime import timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
+from movieclaw_api.services.subscription.quality import normalized_policy, profile_verdict
 from movieclaw_db.models import (
     ActivityType,
     MediaItem,
@@ -107,7 +108,9 @@ async def load_match_context(session: AsyncSession) -> dict[int, MediaContext]:
         select(WantedItem, Subscription)
         .join(Subscription, WantedItem.subscription_id == Subscription.id)  # type: ignore[arg-type]
         .where(
-            WantedItem.status == WantedStatus.WANTED,
+            WantedItem.status.in_(  # type: ignore[attr-defined]
+                (WantedStatus.WANTED, WantedStatus.UPGRADING)
+            ),
             Subscription.status == SubscriptionStatus.ACTIVE,
         )
     )
@@ -263,7 +266,17 @@ async def evaluate_and_dispatch(
         return summary
 
     # 第一遍：逐种子评估，按条目聚合通过的候选，规则拒绝当场记活动
-    accepted: dict[int, list[tuple[TorrentCandidate, IdentityMatch, RuleVerdict]]] = {}
+    accepted: dict[
+        int,
+        list[
+            tuple[
+                TorrentCandidate,
+                IdentityMatch,
+                RuleVerdict,
+                frozenset[tuple[int, int]],
+            ]
+        ],
+    ] = {}
     repo = SubscriptionRepository(session)
     for row in torrents:
         candidate = to_candidate(row)
@@ -286,7 +299,39 @@ async def evaluate_and_dispatch(
                 summary.rejected += 1
                 await _log_rejection(repo, ctx, candidate, covered, verdict, source)
                 continue
-            accepted.setdefault(media_id, []).append((candidate, match, verdict))
+            policy = normalized_policy(ctx.subscription.quality_policy)
+            locked = policy.get("locked") if policy else None
+            if locked:
+                locked_verdict = profile_verdict(candidate, locked)
+                if not locked_verdict.accepted:
+                    summary.rejected += 1
+                    await _log_rejection(
+                        repo, ctx, candidate, covered, locked_verdict, source
+                    )
+                    continue
+                eligible = covered
+            else:
+                target = policy.get("target") if policy else None
+                target_verdict = profile_verdict(candidate, target) if target else None
+                eligible = [
+                    wanted
+                    for wanted in covered
+                    if wanted.status != WantedStatus.UPGRADING
+                    or (target_verdict is not None and target_verdict.accepted)
+                ]
+                if not eligible:
+                    summary.rejected += 1
+                    assert target_verdict is not None
+                    await _log_rejection(
+                        repo, ctx, candidate, covered, target_verdict, source
+                    )
+                    continue
+            eligible_keys = frozenset(
+                (wanted.season_number, wanted.episode_number) for wanted in eligible
+            )
+            accepted.setdefault(media_id, []).append(
+                (candidate, match, verdict, eligible_keys)
+            )
 
     # 第二遍：按条目选优投递。整季包优先（已确认决策）；一个候选投出后，
     # 它覆盖的单元从缺口里划掉，剩余缺口继续由次优候选补
@@ -294,13 +339,18 @@ async def evaluate_and_dispatch(
         ctx = contexts[media_id]
         entries.sort(key=lambda e: (e[1].is_pack, e[2].score, e[0].seeders or 0), reverse=True)
         remaining = dict(ctx.open_wanted)
-        for candidate, match, verdict in entries:
+        for candidate, match, verdict, eligible_keys in entries:
             published = (
                 candidate.publish_time.date()
                 if candidate.publish_time is not None
                 else utcnow().date()
             )
             targets = covered_units(match, remaining, published=published)
+            targets = [
+                wanted
+                for wanted in targets
+                if (wanted.season_number, wanted.episode_number) in eligible_keys
+            ]
             if not targets:
                 continue
             done = await dispatch(

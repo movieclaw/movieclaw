@@ -9,8 +9,9 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_serializer
+from pydantic import BaseModel, Field, field_serializer, model_validator
 
+from movieclaw_api.services.subscription.quality import public_policy
 from movieclaw_db.models import (
     MediaItem,
     MediaSeason,
@@ -199,6 +200,25 @@ class DispatchPreviewView(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class QualityPolicyPayload(BaseModel):
+    """订阅级连续性策略；目标规则组在保存时复制成稳定快照。"""
+
+    mode: Literal["lock_first", "upgrade"] = Field(
+        description="lock_first=首次入库后固定；upgrade=洗版达标后固定"
+    )
+    target_rule_set_id: int | None = Field(
+        default=None, description="洗版目标规则组；mode=upgrade 时必填"
+    )
+
+    @model_validator(mode="after")
+    def validate_target(self) -> QualityPolicyPayload:
+        if self.mode == "upgrade" and self.target_rule_set_id is None:
+            raise ValueError("自动洗版必须选择目标规则组")
+        if self.mode == "lock_first" and self.target_rule_set_id is not None:
+            self.target_rule_set_id = None
+        return self
+
+
 class SubscriptionCreatePayload(BaseModel):
     kind: MediaKind
     tmdb_id: int = Field(description="TMDB 条目 id（movie 用电影 id，tv 用剧集 id）")
@@ -209,6 +229,9 @@ class SubscriptionCreatePayload(BaseModel):
     rule_set_id: int | None = Field(default=None, description="缺省用默认规则组")
     library_id: int | None = Field(default=None, description="入库目标库；缺省用该类型默认库")
     douban_id: str | None = Field(default=None, description="豆瓣入口时带上，留存来源身份")
+    quality_policy: QualityPolicyPayload | None = Field(
+        default=None, description="首个版本锁定或自动洗版策略；null=关闭"
+    )
 
 
 class SubscriptionUpdatePayload(BaseModel):
@@ -224,6 +247,9 @@ class SubscriptionUpdatePayload(BaseModel):
     library_id: int | None = Field(
         default=None,
         description="换入库目标库；显式传 null=清除指定、改回按默认库路由；不传=不变",
+    )
+    quality_policy: QualityPolicyPayload | None = Field(
+        default=None, description="首个版本锁定或自动洗版策略；显式 null=关闭；不传=不变"
     )
 
 
@@ -284,6 +310,7 @@ class ProgressView(BaseModel):
     grabbed: int
     downloaded: int
     imported: int
+    upgrading: int = Field(default=0, description="已有版本、正在寻找洗版目标的单元数")
 
 
 class SubscriptionView(BaseModel):
@@ -293,6 +320,7 @@ class SubscriptionView(BaseModel):
     selected_seasons: list[int]
     follow_future: bool
     rule_set_id: int
+    quality_policy: dict | None = Field(description="连续性/洗版策略及当前锁定状态")
     library_id: int | None = Field(description="入库目标库；null=该类型默认库")
     progress: ProgressView
     created_at: datetime
@@ -310,6 +338,7 @@ class SubscriptionView(BaseModel):
         grabbed = counts.get("grabbed", 0)
         downloaded = counts.get("downloaded", 0)
         imported = counts.get("imported", 0)
+        upgrading = counts.get("upgrading", 0)
         return cls(
             id=sub.id,  # type: ignore[arg-type]
             media=MediaBrief.from_model(item),
@@ -317,13 +346,15 @@ class SubscriptionView(BaseModel):
             selected_seasons=list(sub.selected_seasons),
             follow_future=sub.follow_future,
             rule_set_id=sub.rule_set_id,
+            quality_policy=public_policy(sub.quality_policy),
             library_id=sub.library_id,
             progress=ProgressView(
-                total=wanted + grabbed + downloaded + imported,
+                total=wanted + grabbed + downloaded + imported + upgrading,
                 wanted=wanted,
                 grabbed=grabbed,
                 downloaded=downloaded,
                 imported=imported,
+                upgrading=upgrading,
             ),
             created_at=sub.created_at,
             updated_at=sub.updated_at,

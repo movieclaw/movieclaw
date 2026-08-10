@@ -17,7 +17,7 @@ async function unwrap<T>(promise: Promise<ApiEnvelope<T>>): Promise<T> {
 export type SubscriptionStatus = "active" | "paused" | "completed";
 
 /** 工单状态机（见 movieclaw_db WantedStatus） */
-export type WantedStatus = "wanted" | "grabbed" | "downloaded" | "imported";
+export type WantedStatus = "wanted" | "upgrading" | "grabbed" | "downloaded" | "imported";
 
 /** 条目摘要（见 schemas.subscription.MediaBrief） */
 export interface SubscriptionMedia {
@@ -72,6 +72,8 @@ export interface SubscriptionProgress {
   downloaded: number;
   /** 已整理入库（终态） */
   imported: number;
+  /** 已有可用版本，仍在寻找洗版目标 */
+  upgrading: number;
 }
 
 export interface Subscription {
@@ -81,6 +83,7 @@ export interface Subscription {
   selected_seasons: number[];
   follow_future: boolean;
   rule_set_id: number;
+  quality_policy: QualityPolicy | null;
   /** 入库目标库；null = 该类型的默认库 */
   library_id: number | null;
   progress: SubscriptionProgress;
@@ -133,6 +136,18 @@ export interface RuleSetSpec {
   hr_unknown_policy?: "lenient" | "strict";
 }
 
+export interface QualityPolicyInput {
+  mode: "lock_first" | "upgrade";
+  target_rule_set_id?: number | null;
+}
+
+export interface QualityPolicy extends QualityPolicyInput {
+  target_rule_name?: string;
+  target?: RuleSetSpec;
+  locked?: RuleSetSpec;
+  anchor_unit?: string;
+}
+
 export interface RuleSet {
   id: number;
   name: string;
@@ -161,6 +176,7 @@ export interface CreateSubscriptionPayload {
   /** 入库目标库；缺省用该类型的默认库 */
   library_id?: number | null;
   douban_id?: string | null;
+  quality_policy?: QualityPolicyInput | null;
 }
 
 /** 投递路由预检（见 schemas.subscription.DispatchPreviewView）。 */
@@ -327,6 +343,7 @@ export function updateSubscription(
     selected_seasons?: number[];
     follow_future?: boolean;
     rule_set_id?: number;
+    quality_policy?: QualityPolicyInput | null;
     /** 换入库目标库；显式传 null=清除指定、改回按默认库路由；缺省不变 */
     library_id?: number | null;
   },
