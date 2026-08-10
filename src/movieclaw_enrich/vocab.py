@@ -175,6 +175,102 @@ MEDIA_SOURCE: dict[str, str] = {
     "HD-DVD": "HD-DVD", "HDDVD": "HD-DVD",
 }
 
+# -- 流媒体平台 -------------------------------------------------------------
+# 平台与发布组是两个正交字段：``IQ.WEB-DL...-HHWEB`` 的平台是 iQIYI，发布组是
+# HHWEB；``...-Pure@HDSWEB`` 没有平台标记，发布组整体是 Pure@HDSWEB。
+# 平台只在同段文本明确带 WEB 来源时识别，避免片名里的 Apple/Max/Now 等普通词
+# 被误判。极短别名还必须紧邻 WEB 来源标记，进一步压低 IQ/CR/NOW/MAX 等碰撞。
+
+PLATFORM: dict[str, str] = {
+    # 国际
+    "AMAZONHD": "amazon", "AMAZON": "amazon", "AMZN": "amazon",
+    "APPLE TV+": "apple_tv_plus", "APPLE TV PLUS": "apple_tv_plus",
+    "ATVP": "apple_tv_plus", "APTV": "apple_tv_plus", "APPLE TV": "apple_tv",
+    "ATV": "apple_tv",
+    "NETFLIXUHD": "netflix", "NETFLIXHD": "netflix", "NETFLIX": "netflix",
+    "NF": "netflix",
+    "DISNEY+": "disney_plus", "DISNEY PLUS": "disney_plus", "DISNEY": "disney_plus",
+    "DSNP": "disney_plus", "DSNY": "disney_plus",
+    "HBO MAX": "hbo_max", "HMAX": "hbo_max", "HBOM": "hbo_max", "HBO": "hbo",
+    "MAX": "max", "HULU": "hulu",
+    "PARAMOUNT+": "paramount_plus", "PARAMOUNT PLUS": "paramount_plus",
+    "PARAMOUNT": "paramount_plus", "PMTP": "paramount_plus",
+    "PEACOCK TV": "peacock", "PEACOCK": "peacock", "PCOK": "peacock",
+    "NOW": "now", "SHOWTIME": "showtime", "SHO": "showtime",
+    "DISCOVERY+": "discovery_plus", "DSCV+": "discovery_plus",
+    "DSCP": "discovery_plus", "DISC": "discovery_plus", "DCP": "discovery_plus",
+    "STAN": "stan", "CRAVE": "crave", "CRAV": "crave", "ROKU": "roku",
+    "GOOGLE TV": "google_tv", "PLAY": "google_tv", "ITUNES": "itunes",
+    "IT": "itunes", "SONY PICTURES CORE": "sony_core", "BCORE": "sony_core",
+    "CORE": "sony_core", "CRITERION": "criterion", "CRIT": "criterion",
+    # 中国及亚洲
+    "IQIYI": "iqiyi", "IQIY": "iqiyi", "IQ": "iqiyi",
+    "TENCENT VIDEO": "wetv", "WETV": "wetv", "YOUKU": "youku",
+    "MANGOTV": "mangotv", "MGTV": "mangotv", "BILIBILI": "bilibili",
+    "BILI": "bilibili", "VIU": "viu", "NOWPLAYER": "nowplayer",
+    "MYTVSUPER": "mytv_super", "MYVIDEO": "myvideo", "HAMIVIDEO": "hami_video",
+    "HAMI": "hami_video", "LINETV": "line_tv", "FRIDAY": "friday", "KKTV": "kktv",
+    "TVING": "tving", "WAVVE": "wavve", "COUPANG PLAY": "coupang_play",
+    "CPNG": "coupang_play", "KOCOWA": "kocowa", "KCW": "kocowa", "VIKI": "viki",
+    "U-NEXT": "unext", "TVER": "tver", "FOD": "fod", "DMM-TV": "dmm_tv",
+    "HOTSTAR": "hotstar", "DSNPHS": "hotstar", "HTSR": "hotstar",
+    # 动漫
+    "CRUNCHYROLL": "crunchyroll", "CR": "crunchyroll", "HIDIVE": "hidive",
+    "HIDI": "hidive", "ABEMA TV": "abema", "ABEMA": "abema", "ADN": "adn",
+    "FUNIMATION": "funimation", "FUNI": "funimation", "VRV": "vrv",
+    "WAKANIM": "wakanim", "WKN": "wakanim", "B-GLOBAL": "b_global",
+}
+
+PLATFORM_IDS: frozenset[str] = frozenset(PLATFORM.values())
+
+_PLATFORM_SHORT_ALIASES = frozenset(
+    {
+        "ATV", "NF", "HBO", "MAX", "NOW", "SHO", "DISC", "DCP", "PLAY", "IT",
+        "CORE", "CRIT", "IQ", "BILI", "VIU", "HAMI", "KCW", "FOD", "HTSR", "CR",
+        "HIDI", "ADN", "FUNI", "VRV", "WKN",
+    }
+)
+
+_WEB_SOURCE_CONTEXT_RE = re.compile(
+    r"(?<![A-Z])WEB(?:[\s._-]?(?:DL|RIP))?(?![A-Z])"
+)
+
+
+def _compile_platform_table() -> list[tuple[re.Pattern[str], str, bool]]:
+    return [
+        (_boundary_pattern(alias), canon, alias in _PLATFORM_SHORT_ALIASES)
+        for alias, canon in sorted(PLATFORM.items(), key=lambda kv: len(kv[0]), reverse=True)
+    ]
+
+
+def _short_platform_has_context(text: str, start: int, end: int) -> bool:
+    """短平台代码只在紧邻 WEB/WEB-DL/WEBRip 时成立。"""
+    before = text[max(0, start - 16):start]
+    after = text[end:min(len(text), end + 16)]
+    separators = r"[\s._-]*"
+    return bool(
+        re.search(rf"{_WEB_SOURCE_CONTEXT_RE.pattern}{separators}$", before)
+        or re.match(rf"^{separators}{_WEB_SOURCE_CONTEXT_RE.pattern}", after)
+    )
+
+
+def match_platforms(text_upper: str) -> list[str]:
+    """提取规范平台值；同一资源可带多个平台标记，结果去重。"""
+    if not _WEB_SOURCE_CONTEXT_RE.search(text_upper):
+        return []
+    found: list[str] = []
+    masked = text_upper
+    for pattern, canon, needs_close_context in PLATFORM_COMPILED:
+        while match := pattern.search(masked):
+            start, end = match.span()
+            if needs_close_context and not _short_platform_has_context(text_upper, start, end):
+                masked = masked[:start] + " " * (end - start) + masked[end:]
+                continue
+            if canon not in found:
+                found.append(canon)
+            masked = masked[:start] + " " * (end - start) + masked[end:]
+    return found
+
 # -- 压制组大小写归一表 -------------------------------------------------------
 # 种子标题里组名大小写混乱（wiki/WiKi/WIKI），此表把已知组归一成官方写法。
 # 词表来自 MovieBot 积累的 media_stream.json，是它多年踩坑攒下的真实资产。
@@ -213,6 +309,7 @@ RELEASE_GROUP_CASE: dict[str, str] = {
     "AJP69": "AJP69", "BEYONDHD": "BeyondHD", "CHOTAB": "Chotab",
     "TRIM": "TRiM", "HIFI": "HiFi", "FGT": "FGT", "RARBG": "RARBG",
     "SPARKS": "SPARKS", "ROVERS": "ROVERS", "DRONES": "DRONES",
+    "PURE@HDSWEB": "Pure@HDSWEB",
 }
 
 # -- 技术 token 黑名单 --------------------------------------------------------
@@ -246,3 +343,4 @@ VIDEO_CODEC_COMPILED = compile_table(VIDEO_CODEC)
 AUDIO_COMPILED = compile_table(AUDIO)
 HDR_COMPILED = compile_table(HDR)
 MEDIA_SOURCE_COMPILED = compile_table(MEDIA_SOURCE)
+PLATFORM_COMPILED = _compile_platform_table()

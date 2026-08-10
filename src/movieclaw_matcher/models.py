@@ -18,6 +18,7 @@ from enum import StrEnum
 from pydantic import BaseModel, Field, model_validator
 
 from movieclaw_enrich.models import TorrentAttrs
+from movieclaw_enrich.vocab import PLATFORM_IDS
 
 
 class HdrPolicy(StrEnum):
@@ -57,6 +58,13 @@ class HrUnknownPolicy(StrEnum):
     STRICT = "strict"  # 保守：未知视作有考核，拒绝
 
 
+class SourceMatchMode(StrEnum):
+    """平台与制作组白名单同时配置时的组合关系。"""
+
+    ANY = "any"  # 任一维度命中即可，适合“无广告平台或例外制作组”
+    ALL = "all"  # 每个已配置维度都必须命中，适合指定平台与制作组组合
+
+
 class RuleSetSpec(BaseModel):
     """规则组参数包（``rule_set.spec`` 的 JSON schema）。
 
@@ -72,11 +80,21 @@ class RuleSetSpec(BaseModel):
     video_codecs: list[str] = Field(
         default_factory=list, description="允许的视频编码（如 x265/x264）；空=不限"
     )
+    platforms_allow: list[str] = Field(
+        default_factory=list, description="流媒体平台白名单（规范值）；空=不限"
+    )
+    platforms_block: list[str] = Field(
+        default_factory=list, description="流媒体平台黑名单"
+    )
     release_groups_allow: list[str] = Field(
         default_factory=list, description="制作组白名单；空=不限"
     )
     release_groups_block: list[str] = Field(
         default_factory=list, description="制作组黑名单"
+    )
+    source_match_mode: SourceMatchMode = Field(
+        default=SourceMatchMode.ANY,
+        description="平台与制作组白名单同时存在时：any=任一命中，all=全部命中",
     )
     hdr: HdrPolicy = Field(
         default=HdrPolicy.ANY, description="HDR 三态要求（整个 HDR 家族，含 DV）"
@@ -101,6 +119,27 @@ class RuleSetSpec(BaseModel):
     cutoff_resolution: str | None = Field(
         default=None, description="[预留] 洗版上限（P6 启用）"
     )
+
+    @model_validator(mode="after")
+    def validate_source_lists(self) -> RuleSetSpec:
+        """平台只收规范值，同一来源不能同时进入白名单与黑名单。"""
+        configured_platforms = {*self.platforms_allow, *self.platforms_block}
+        unknown = sorted(configured_platforms - PLATFORM_IDS)
+        if unknown:
+            raise ValueError(f"未知流媒体平台规范值：{', '.join(unknown)}")
+
+        platform_overlap = {
+            value.casefold() for value in self.platforms_allow
+        } & {value.casefold() for value in self.platforms_block}
+        if platform_overlap:
+            raise ValueError("同一流媒体平台不能同时加入白名单和黑名单")
+
+        group_overlap = {
+            value.casefold() for value in self.release_groups_allow
+        } & {value.casefold() for value in self.release_groups_block}
+        if group_overlap:
+            raise ValueError("同一制作组不能同时加入白名单和黑名单")
+        return self
 
     @model_validator(mode="after")
     def _reject_hdr_dv_conflict(self) -> RuleSetSpec:

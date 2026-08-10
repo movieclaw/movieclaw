@@ -297,6 +297,60 @@ class TestReleaseGroupGuards:
         assert a.release_group is None
 
 
+class TestStreamingPlatforms:
+    """平台与制作组分轴提取；短平台代码必须有 WEB 上下文。"""
+
+    @pytest.mark.parametrize(
+        ("title", "platform", "group"),
+        [
+            (
+                "凛冬下的罪恶.Frozen.Sins.S01E24.2026.2160p.IQ.WEB-DL."
+                "H.265.DDP5.1.2Audios-HHWEB.mkv",
+                "iqiyi",
+                "HHWEB",
+            ),
+            (
+                "Possession.S01E05.1080p.NOW.WEB-DL.DDP5.1.H.264-RAWR",
+                "now",
+                "RAWR",
+            ),
+            (
+                "Running.Man.S01E815.2010.1080p.Viu.WEB-DL.H264.AAC-ADWeb",
+                "viu",
+                "ADWeb",
+            ),
+            (
+                "The.Husband.2026.S01E12.1080p.DSNP.WEB-DL.AAC2.0.H.264-SCOPE",
+                "disney_plus",
+                "SCOPE",
+            ),
+        ],
+    )
+    def test_platform_and_release_group_are_independent(self, title, platform, group):
+        attrs = enrich(title)
+        assert attrs.platforms == [platform]
+        assert attrs.release_group == group
+
+    def test_pure_at_hdsweb_is_one_release_group_without_platform(self):
+        attrs = enrich(
+            "逆时追捕.Reverse.Chase.S01E19.2026.2160p.WEB-DL."
+            "DDP2.0.H265.HDR-Pure@HDSWEB.mkv"
+        )
+        assert attrs.platforms == []
+        assert attrs.release_group == "Pure@HDSWEB"
+
+    @pytest.mark.parametrize(
+        "title",
+        [
+            "It.2026.1080p.WEB-DL.H264-GROUP",
+            "Max.2025.1080p.BluRay.x265-GROUP",
+            "Show.S01E01.1080p.MAXPLUS.WEB-DL.H264-GROUP",
+        ],
+    )
+    def test_short_or_embedded_words_do_not_become_platforms(self, title):
+        assert enrich(title).platforms == []
+
+
 class TestMediaType:
     """影视类型推断：站点分类先验 + 季集观测的联合判定。"""
 

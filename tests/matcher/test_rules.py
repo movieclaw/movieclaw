@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from movieclaw_enrich import enrich
 from movieclaw_enrich.models import TorrentAttrs
 from movieclaw_matcher import RuleSetSpec, TorrentCandidate, evaluate_rules
 
@@ -124,6 +125,118 @@ def test_size_unknown_rejected_when_bounds_set() -> None:
     verdict = evaluate_rules(_candidate(), RuleSetSpec(size_max_mb=2000))
     assert verdict.accepted is False
     assert verdict.reason_code == "size_unknown"
+
+
+def test_source_allow_any_accepts_platform_or_release_group() -> None:
+    """国产剧来源白名单：无广告平台和 Pure@HDSWEB 是两个可替代入口。"""
+    spec = RuleSetSpec(
+        platforms_allow=["iqiyi", "wetv", "youku"],
+        release_groups_allow=["Pure@HDSWEB"],
+    )
+    iq_title = (
+        "凛冬下的罪恶.Frozen.Sins.S01E24.2026.2160p.IQ.WEB-DL."
+        "H.265.DDP5.1.2Audios-HHWEB.mkv"
+    )
+    pure_title = (
+        "逆时追捕.Reverse.Chase.S01E19.2026.2160p.WEB-DL."
+        "DDP2.0.H265.HDR-Pure@HDSWEB.mkv"
+    )
+
+    assert evaluate_rules(_candidate(**enrich(iq_title).model_dump()), spec).accepted is True
+    assert evaluate_rules(_candidate(**enrich(pure_title).model_dump()), spec).accepted is True
+
+    rejected = evaluate_rules(
+        _candidate(platforms=["netflix"], release_group="HHWEB"), spec
+    )
+    assert rejected.accepted is False
+    assert rejected.reason_code == "source_not_allowed"
+
+
+def test_source_blacklist_has_priority_and_release_group_match_is_exact() -> None:
+    spec = RuleSetSpec(
+        platforms_allow=["iqiyi"],
+        release_groups_allow=["Pure@HDSWEB"],
+        release_groups_block=["HDSWEB"],
+    )
+
+    blocked = evaluate_rules(
+        _candidate(platforms=["iqiyi"], release_group="HDSWEB"), spec
+    )
+    assert blocked.accepted is False
+    assert blocked.reason_code == "group_blocked"
+
+    pure = evaluate_rules(_candidate(release_group="Pure@HDSWEB"), spec)
+    assert pure.accepted is True
+
+
+def test_source_allow_all_requires_platform_and_release_group() -> None:
+    spec = RuleSetSpec(
+        platforms_allow=["iqiyi"],
+        release_groups_allow=["HHWEB"],
+        source_match_mode="all",
+    )
+    assert evaluate_rules(
+        _candidate(platforms=["iqiyi"], release_group="HHWEB"), spec
+    ).accepted
+
+    platform_only = evaluate_rules(
+        _candidate(platforms=["iqiyi"], release_group="Other"), spec
+    )
+    assert platform_only.accepted is False
+    assert platform_only.reason_code == "source_not_allowed"
+
+
+def test_platform_filter_composes_with_hdr_and_dv_axes() -> None:
+    spec = RuleSetSpec(
+        platforms_allow=["iqiyi"],
+        hdr="require",
+        dv="forbid",
+    )
+
+    assert evaluate_rules(
+        _candidate(platforms=["iqiyi"], hdr=["HDR10"]), spec
+    ).accepted
+    assert (
+        evaluate_rules(
+            _candidate(platforms=["iqiyi"], hdr=["HDR10", "DV"]), spec
+        ).reason_code
+        == "dv_forbidden"
+    )
+    assert (
+        evaluate_rules(
+            _candidate(platforms=["netflix"], hdr=["HDR10"]), spec
+        ).reason_code
+        == "platform_not_allowed"
+    )
+
+
+def test_platform_allow_and_block_single_dimension() -> None:
+    allowed = RuleSetSpec(platforms_allow=["iqiyi"])
+    assert evaluate_rules(_candidate(platforms=["iqiyi"]), allowed).accepted
+    assert evaluate_rules(_candidate(), allowed).reason_code == "platform_unknown"
+    assert (
+        evaluate_rules(_candidate(platforms=["netflix"]), allowed).reason_code
+        == "platform_not_allowed"
+    )
+
+    blocked = RuleSetSpec(platforms_block=["netflix"])
+    assert (
+        evaluate_rules(_candidate(platforms=["netflix"]), blocked).reason_code
+        == "platform_blocked"
+    )
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        {"platforms_allow": ["IQ"]},
+        {"platforms_allow": ["iqiyi"], "platforms_block": ["IQIYI"]},
+        {"release_groups_allow": ["HDSWEB"], "release_groups_block": ["hdsweb"]},
+    ],
+)
+def test_source_lists_reject_unknown_or_overlapping_values(spec) -> None:
+    with pytest.raises(ValueError):
+        RuleSetSpec.model_validate(spec)
 
 
 # ---------------------------------------------------------------------------

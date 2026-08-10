@@ -25,6 +25,7 @@ from movieclaw_matcher.models import (
     MediaIdentity,
     RuleSetSpec,
     RuleVerdict,
+    SourceMatchMode,
     TorrentCandidate,
 )
 from movieclaw_matcher.rules import evaluate_rules
@@ -37,6 +38,7 @@ __all__ = [
     "MediaIdentity",
     "RuleSetSpec",
     "RuleVerdict",
+    "SourceMatchMode",
     "TorrentCandidate",
     "match_identity",
     "normalize_title",

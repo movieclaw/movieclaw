@@ -58,7 +58,8 @@ logger = logging.getLogger("movieclaw_enrich")
 # v13: 字幕识别修误报/漏报：音轨守卫覆盖「简中」且不再吞掉「字幕语言：简体」；
 #      「无字幕组」不再当「无字幕」；配对/分隔桥接不跨句读与配音词；
 #      新增简日/简韩配对与 & 分隔符、「字幕：无」否定
-ENRICH_VERSION = 13
+# v14: 新增结构化流媒体平台字段；平台与末尾发布组分离，短代码只在紧邻 WEB 来源时识别
+ENRICH_VERSION = 14
 
 # 场景命名的两类粘连（站点生成器丢空格所致），喂模型前拆开：
 # ① 季号紧贴分辨率："S021080p" → "S02 1080p"
@@ -105,6 +106,9 @@ def enrich(title: str, subtitle: str = "", category: str | None = None) -> Torre
     fields = _extract_all(title) if title else {}
     if subtitle:
         for key, value in _extract_all(subtitle).items():
+            if key == "platforms" and _has_value(fields.get(key)):
+                fields[key] = list(dict.fromkeys([*fields[key], *value]))  # type: ignore[misc]
+                continue
             if not _has_value(fields.get(key)):
                 fields[key] = value
 

@@ -16,6 +16,7 @@ from movieclaw_matcher.models import (
     HrUnknownPolicy,
     RuleSetSpec,
     RuleVerdict,
+    SourceMatchMode,
     TorrentCandidate,
 )
 
@@ -56,14 +57,54 @@ def evaluate_rules(
                 f"视频编码 {attrs.video_codec} 不在允许范围（{'/'.join(spec.video_codecs)}）",
             )
 
+    # 来源黑名单是全局否决项，且平台与制作组严格分字段判断。制作组使用完整值
+    # 匹配，HDSWEB 不会误伤 Pure@HDSWEB；反过来 Pure 也不会命中后者。
+    platforms = {value.casefold() for value in attrs.platforms}
+    blocked_platforms = platforms & {value.casefold() for value in spec.platforms_block}
+    if blocked_platforms:
+        return _reject("platform_blocked", f"流媒体平台 {sorted(blocked_platforms)[0]} 在黑名单中")
+
     group = (attrs.release_group or "").casefold()
     if spec.release_groups_block and group in {g.casefold() for g in spec.release_groups_block}:
         return _reject("group_blocked", f"制作组 {attrs.release_group} 在黑名单中")
+
+    platform_match = bool(
+        platforms & {value.casefold() for value in spec.platforms_allow}
+    )
+    group_match = bool(
+        group and group in {value.casefold() for value in spec.release_groups_allow}
+    )
+    source_checks = []
+    if spec.platforms_allow:
+        source_checks.append(platform_match)
     if spec.release_groups_allow:
-        if not group:
-            return _reject("group_unknown", "无法识别制作组，规则设置了白名单时按不合格处理")
-        if group not in {g.casefold() for g in spec.release_groups_allow}:
-            return _reject("group_not_allowed", f"制作组 {attrs.release_group} 不在白名单中")
+        source_checks.append(group_match)
+    if source_checks:
+        accepted_source = (
+            all(source_checks)
+            if spec.source_match_mode is SourceMatchMode.ALL
+            else any(source_checks)
+        )
+        if not accepted_source:
+            if spec.platforms_allow and not spec.release_groups_allow:
+                if not platforms:
+                    return _reject(
+                        "platform_unknown",
+                        "无法识别流媒体平台，规则设置了白名单时按不合格处理",
+                    )
+                return _reject("platform_not_allowed", "流媒体平台不在白名单中")
+            if spec.release_groups_allow and not spec.platforms_allow:
+                if not group:
+                    return _reject(
+                        "group_unknown",
+                        "无法识别制作组，规则设置了白名单时按不合格处理",
+                    )
+                return _reject("group_not_allowed", f"制作组 {attrs.release_group} 不在白名单中")
+            relation = "且" if spec.source_match_mode is SourceMatchMode.ALL else "或"
+            return _reject(
+                "source_not_allowed",
+                f"资源未满足平台{relation}制作组白名单条件",
+            )
 
     # hdr 空列表 = 未提取到 HDR 标记；命名惯例里 HDR 属"缺席即否定"的强标记，
     # 因此 require 时空列表按"非 HDR"拒绝，forbid 时空列表放行。
