@@ -285,6 +285,10 @@ def test_unhealthy_full_proxy_chain_exits_container(entrypoint_env: dict[str, st
 
     assert process.returncode == 1, output
     assert "完整健康链路连续失败" in output
+    # 失败日志必须带可读的原因与分段归因：假 API 返回 500，直连同样失败，
+    # 应归因到后端而不是前端反代。
+    assert "原因：" in output
+    assert "后端直连亦失败" in output
 
 
 def test_restart_code_before_ready_is_startup_failure(entrypoint_env: dict[str, str]) -> None:

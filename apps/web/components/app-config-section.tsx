@@ -104,7 +104,9 @@ export function AppConfigSection() {
     }
     // 先给停机留出时间，避免轮询打到「还没退出的旧进程」造成误判
     await new Promise((r) => setTimeout(r, 4000));
-    for (let i = 0; i < 45; i++) {
+    // 轮询窗口需覆盖 entrypoint 重启链路的最坏情况（收尾宽限 + 后端就绪 +
+    // 前端就绪各阶段的超时之和约 140s），否则会误报「超时」而服务随后自行恢复
+    for (let i = 0; i < 75; i++) {
       try {
         await getHealth();
         window.location.reload();

@@ -226,6 +226,24 @@ except Exception:
 ' "$1" >/dev/null 2>&1
 }
 
+# 与 probe_health 同一探测，但输出失败的具体原因（连接拒绝/超时/HTTP 状态码）。
+# 这是给非开发者看的诊断日志：只说「失败」没法判断该查哪一层。
+describe_health_failure() {
+    "$PYTHON_BIN" -c '
+import sys
+from urllib.request import urlopen
+
+try:
+    with urlopen(sys.argv[1], timeout=2) as response:
+        if 200 <= response.status < 300:
+            print("已恢复正常")
+        else:
+            print(f"HTTP {response.status}")
+except Exception as exc:
+    print(f"{type(exc).__name__}: {exc}"[:200])
+' "$1" 2>/dev/null || echo "健康探测进程自身异常"
+}
+
 # 在等待健康接口时同步观察进程是否提前退出，避免后端 import/迁移报错后还白等
 # 到超时。WAIT_FAILURE_CODE 保存真实退出码；正常退出却未就绪也按失败码 1 处理。
 wait_for_health() {
@@ -304,7 +322,7 @@ start_web() {
 # 退出，Docker 才能可靠地拉起一个全新的进程组。
 start_health_watchdog() {
     (
-        local failures=0
+        local failures=0 reason segment
         while true; do
             sleep "$HEALTHCHECK_INTERVAL_SECONDS"
             if probe_health "$WEB_HEALTH_URL"; then
@@ -312,7 +330,15 @@ start_health_watchdog() {
                 continue
             fi
             failures=$(( failures + 1 ))
-            echo "[entrypoint] 完整健康链路检查失败（$failures/${HEALTHCHECK_FAILURE_THRESHOLD}）：$WEB_HEALTH_URL" >&2
+            # 失败时补一次后端直连探测做分段归因：完整链路断了，先分清是
+            # 后端故障还是前端/反代故障，用户贴日志时就能直接定位到出问题的层。
+            reason="$(describe_health_failure "$WEB_HEALTH_URL")"
+            if probe_health "$API_HEALTH_URL"; then
+                segment="后端直连正常，疑似前端或反代故障"
+            else
+                segment="后端直连亦失败，疑似后端故障"
+            fi
+            echo "[entrypoint] 完整健康链路检查失败（$failures/${HEALTHCHECK_FAILURE_THRESHOLD}）：$WEB_HEALTH_URL（原因：$reason；$segment）" >&2
             if [ "$failures" -ge "$HEALTHCHECK_FAILURE_THRESHOLD" ]; then
                 echo "[entrypoint] 完整健康链路连续失败，停止容器以触发 Docker 重启。" >&2
                 exit "$HEALTH_WATCHDOG_EXIT_CODE"
