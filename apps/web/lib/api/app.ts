@@ -45,6 +45,18 @@ export function restartApp(): Promise<null> {
 // 应用内更新（设置 → 应用，见 routes/app_update）
 // ---------------------------------------------------------------------------
 
+/** 上一次容器异常退出的记录（entrypoint 落盘；近 7 天内才返回）。 */
+export interface LastAbnormalExitView {
+  /** 异常退出时间（Unix epoch 秒，按本地时区格式化展示） */
+  at: number;
+  /** 原因分类：startup_failure / api_crash / web_crash / watchdog_unhealthy / supervisor_error */
+  reason: string;
+  /** 容器当时的退出码 */
+  exit_code: number;
+  /** 中文说明 */
+  detail: string;
+}
+
 /** 版本与更新能力状态（GET /app/update/status）。 */
 export interface UpdateStatusView {
   /** 当前运行的应用版本 */
@@ -69,6 +81,8 @@ export interface UpdateStatusView {
   inactive_overlay_version: string | null;
   /** 上述版本未生效的中文原因 */
   inactive_overlay_reason: string | null;
+  /** 近 7 天内最近一次容器异常退出并被自动拉起的记录；没有则为 null */
+  last_abnormal_exit: LastAbnormalExitView | null;
 }
 
 /** 检查更新的结果（POST /app/update/check）。 */

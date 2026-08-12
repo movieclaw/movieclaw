@@ -49,6 +49,7 @@ from movieclaw_api import __version__
 from movieclaw_api.core.config import get_settings
 from movieclaw_api.exceptions import BadRequestException
 from movieclaw_api.schemas.app_update import (
+    LastAbnormalExitView,
     ModelUpdateCheckView,
     PendingUpdateView,
     RollbackOptionsView,
@@ -205,6 +206,33 @@ def _is_marked_bad(version: str) -> bool:
     return (_updates_dir() / "state" / f"bad-{_sanitize(version)}").is_file()
 
 
+# 异常退出记录的展示窗口：太久前的旧事件不再打扰用户（记录带时间戳，
+# entrypoint 只在下一次异常退出时覆盖写入，不会自动清理）
+_LAST_EXIT_MAX_AGE_SECONDS = 7 * 86400
+
+
+def _read_last_abnormal_exit() -> LastAbnormalExitView | None:
+    """读 entrypoint 落盘的异常退出记录（updates/state/last-exit.json）。
+
+    这是尽力而为的诊断信息：文件不存在、损坏或超出展示窗口都按「无记录」
+    处理，绝不影响状态接口本身。
+    """
+    path = _updates_dir() / "state" / "last-exit.json"
+    try:
+        data = json.loads(path.read_bytes())
+        ts = int(data["ts"])
+        if time.time() - ts > _LAST_EXIT_MAX_AGE_SECONDS:
+            return None
+        return LastAbnormalExitView(
+            at=ts,
+            reason=str(data.get("reason", "")),
+            exit_code=int(data.get("exit_code", 1)),
+            detail=str(data.get("detail", "")),
+        )
+    except Exception:
+        return None
+
+
 def _overlay_state(vdir: Path) -> tuple[str, bool, str]:
     """判定一个 overlay 版本目录能否被 entrypoint 采用（与其校验口径一致）。
 
@@ -276,6 +304,7 @@ def build_status() -> UpdateStatusView:
         model_tag=_current_model_tag(),
         inactive_overlay_version=inactive_version,
         inactive_overlay_reason=inactive_reason,
+        last_abnormal_exit=_read_last_abnormal_exit(),
     )
 
 

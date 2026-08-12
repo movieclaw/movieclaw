@@ -5,6 +5,24 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 
+class LastAbnormalExitView(BaseModel):
+    """上一次容器异常退出的记录（entrypoint 落盘 updates/state/last-exit.json）。
+
+    容器被 Docker 自动拉起后，用户需要知道曾发生过什么——无人值守的自愈
+    不能悄无声息。正常停机与设置页/更新触发的重启不会产生该记录。
+    """
+
+    #: 异常退出的时间（Unix epoch 秒；前端按本地时区格式化展示）
+    at: int
+    #: 机器可读的原因分类：startup_failure / api_crash / web_crash /
+    #: watchdog_unhealthy / supervisor_error
+    reason: str
+    #: 容器当时的退出码
+    exit_code: int
+    #: 给用户看的中文说明
+    detail: str
+
+
 class UpdateStatusView(BaseModel):
     """「设置 → 关于与更新」的状态区。"""
 
@@ -32,6 +50,8 @@ class UpdateStatusView(BaseModel):
     inactive_overlay_version: str | None
     #: 上述版本未生效的中文原因
     inactive_overlay_reason: str | None
+    #: 近 7 天内最近一次容器异常退出并被自动拉起的记录；没有则为 None
+    last_abnormal_exit: LastAbnormalExitView | None
 
 
 class UpdateCheckView(BaseModel):

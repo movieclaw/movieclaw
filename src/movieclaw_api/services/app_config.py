@@ -4,8 +4,8 @@
 - 配置读写：外部访问地址的校验与落库（保存即生效，纯落库数据）；
 - 重启调度：优雅停机后以约定退出码 ``RESTART_EXIT_CODE``（42）退出进程，
   告知守护方「这是重启请求」——Docker 镜像的 entrypoint 内置重启循环，
-  见到 42 会在后端恢复健康后重新拉起前端（避免前端向空后端反代），也不依赖
-  用户的 restart 策略；
+  见到 42 只重启后端进程，前端保持运行（窗口内 API 反代短暂不可用，发起
+  重启的页面本就在轮询等待），也不依赖用户的 restart 策略；
   其他退出码仍走「整容器退出」，保持故障外显。源码部署需 systemd 等守护
   （42 非 0，Restart=on-failure 即可覆盖），否则退出后须手动再启动。
 
@@ -128,8 +128,8 @@ def _terminate_self(exit_code: int) -> None:
 def schedule_restart(exit_code: int = RESTART_EXIT_CODE) -> None:
     """调度一次应用重启：延迟片刻（先让响应回到前端）后优雅退出进程。
 
-    exit_code 决定 entrypoint 的处理方式：42 在保持当前代码来源的前提下重启后端
-    与前端（默认，设置页重启），43 前后端全量重启并重新解析代码来源
+    exit_code 决定 entrypoint 的处理方式：42 保持当前代码来源、只重启后端
+    （前端保持运行；默认，设置页重启），43 前后端全量重启并重新解析代码来源
     （应用内更新/回退用）。
     """
     timer = threading.Timer(_RESTART_DELAY_SECONDS, _terminate_self, args=(exit_code,))

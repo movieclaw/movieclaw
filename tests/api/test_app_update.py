@@ -12,6 +12,7 @@ import hashlib
 import io
 import json
 import tarfile
+import time
 from pathlib import Path
 
 import pytest
@@ -322,6 +323,44 @@ def test_status_exposes_previous_version(updates_dir, tmp_path, monkeypatch):
     status = app_update.build_status()
     assert status.has_previous is True
     assert status.previous_version == "0.2.0"
+
+
+def test_status_exposes_last_abnormal_exit(updates_dir):
+    """entrypoint 落盘的异常退出记录要外显到状态接口（自愈事件不能悄无声息）。"""
+    state = updates_dir / "state"
+    state.mkdir(parents=True, exist_ok=True)
+    (state / "last-exit.json").write_text(
+        json.dumps(
+            {
+                "ts": int(time.time()) - 60,
+                "reason": "watchdog_unhealthy",
+                "exit_code": 1,
+                "detail": "完整健康链路连续失败，容器主动退出等待自动拉起",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    status = app_update.build_status()
+    assert status.last_abnormal_exit is not None
+    assert status.last_abnormal_exit.reason == "watchdog_unhealthy"
+    assert "健康链路" in status.last_abnormal_exit.detail
+
+
+def test_status_hides_stale_or_broken_last_exit(updates_dir):
+    """超出展示窗口的旧记录与损坏文件都按无记录处理，不打扰用户也不报错。"""
+    state = updates_dir / "state"
+    state.mkdir(parents=True, exist_ok=True)
+    record = state / "last-exit.json"
+    record.write_text(
+        json.dumps({"ts": int(time.time()) - 8 * 86400, "reason": "api_crash",
+                    "exit_code": 3, "detail": "后端进程异常退出"}),
+        encoding="utf-8",
+    )
+    assert app_update.build_status().last_abnormal_exit is None
+
+    record.write_text("not-json", encoding="utf-8")
+    assert app_update.build_status().last_abnormal_exit is None
 
 
 def test_status_exposes_inactive_overlay(updates_dir, tmp_path, monkeypatch):

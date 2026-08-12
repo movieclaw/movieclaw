@@ -13,6 +13,8 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from urllib.error import HTTPError
+from urllib.request import urlopen
 
 import pytest
 
@@ -213,6 +215,49 @@ def _stop(process: subprocess.Popen[str]) -> str:
     return output
 
 
+def _http_get(url: str, timeout: float = 1.0) -> tuple[int, str]:
+    """GET 一次并返回 (状态码, 响应体)；非 2xx 也正常返回而不是抛异常。"""
+    try:
+        with urlopen(url, timeout=timeout) as response:
+            return response.status, response.read().decode("utf-8", "replace")
+    except HTTPError as exc:
+        return exc.code, exc.read().decode("utf-8", "replace")
+
+
+def _http_get_retry(url: str, timeout: float = 5) -> tuple[int, str]:
+    """轮询直到端口有人应答（无论状态码），用于等待占位页或前端开始监听。"""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            return _http_get(url)
+        except OSError as exc:
+            if time.monotonic() >= deadline:
+                raise AssertionError(f"等待 {url} 有响应超时") from exc
+            time.sleep(0.05)
+
+
+def _wait_for_http_ok(url: str, timeout: float = 8) -> None:
+    """轮询直到健康接口返回 2xx，确认完整链路已恢复。"""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            status, _ = _http_get(url)
+            if 200 <= status < 300:
+                return
+        except OSError:
+            pass
+        if time.monotonic() >= deadline:
+            raise AssertionError(f"等待 {url} 恢复健康超时")
+        time.sleep(0.1)
+
+
+def _read_last_exit(env: dict[str, str]) -> dict:
+    """读 entrypoint 落盘的异常退出记录（自愈事件外显的数据源）。"""
+    path = Path(env["MOVIECLAW_DATA_DIR"]) / "updates" / "state" / "last-exit.json"
+    assert path.is_file(), "异常退出后应写入 last-exit.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 def test_web_starts_only_after_api_is_ready(entrypoint_env: dict[str, str]) -> None:
     """后端在 lifespan 中延迟时，前端不得提前监听或开始反代。"""
     entrypoint_env["FAKE_API_MODE"] = "serve"
@@ -231,6 +276,26 @@ def test_web_starts_only_after_api_is_ready(entrypoint_env: dict[str, str]) -> N
         _stop(process)
 
 
+def test_placeholder_page_serves_during_startup(entrypoint_env: dict[str, str]) -> None:
+    """后端就绪前 3000 由占位页顶住：页面 200、/api 503，就绪后让位给真前端。"""
+    entrypoint_env["FAKE_API_MODE"] = "serve"
+    entrypoint_env["FAKE_API_DELAY_SECONDS"] = "3"
+    marker = Path(entrypoint_env["FAKE_WEB_MARKER"])
+    process = _start_entrypoint(entrypoint_env)
+    try:
+        status, body = _http_get_retry("http://127.0.0.1:3000/", timeout=2.5)
+        assert status == 200
+        assert "正在启动" in body
+        api_status, _ = _http_get("http://127.0.0.1:3000/api/v1/health")
+        assert api_status == 503
+        _wait_for_file(marker)
+        # 占位页已让位：健康接口最终穿透真前端反代到后端返回 2xx
+        _wait_for_http_ok("http://127.0.0.1:3000/api/v1/health")
+        assert process.poll() is None
+    finally:
+        _stop(process)
+
+
 def test_api_exit_before_ready_never_starts_web(entrypoint_env: dict[str, str]) -> None:
     """后端启动即失败时，容器返回原退出码，前端完全不会启动。"""
     entrypoint_env["FAKE_API_MODE"] = "exit"
@@ -242,6 +307,9 @@ def test_api_exit_before_ready_never_starts_web(entrypoint_env: dict[str, str]) 
     assert process.returncode == 17
     assert not marker.exists()
     assert "后端 在就绪前退出（exit=17）" in output
+    record = _read_last_exit(entrypoint_env)
+    assert record["reason"] == "startup_failure"
+    assert record["exit_code"] == 17
 
 
 def test_api_readiness_timeout_never_starts_web(entrypoint_env: dict[str, str]) -> None:
@@ -289,6 +357,8 @@ def test_unhealthy_full_proxy_chain_exits_container(entrypoint_env: dict[str, st
     # 应归因到后端而不是前端反代。
     assert "原因：" in output
     assert "后端直连亦失败" in output
+    record = _read_last_exit(entrypoint_env)
+    assert record["reason"] == "watchdog_unhealthy"
 
 
 def test_restart_code_before_ready_is_startup_failure(entrypoint_env: dict[str, str]) -> None:
@@ -338,8 +408,8 @@ def test_startup_restart_codes_mark_bad_overlay_and_fall_back(
     assert "标记为坏版本并回落" in output
 
 
-def test_runtime_restart_code_restarts_web_after_health(entrypoint_env: dict[str, str]) -> None:
-    """运行中的 42 先停止前端，新后端健康后才重建代理链路。"""
+def test_runtime_restart_keeps_web_alive(entrypoint_env: dict[str, str]) -> None:
+    """运行中的 42 只重启后端：前端进程保持不动，链路恢复后继续对外服务。"""
     entrypoint_env["FAKE_API_MODE"] = "restart-after-ready-once"
     entrypoint_env["FAKE_API_STATE_FILE"] = str(
         Path(entrypoint_env["FAKE_WEB_MARKER"]).with_name("api-runtime-restarted")
@@ -351,10 +421,11 @@ def test_runtime_restart_code_restarts_web_after_health(entrypoint_env: dict[str
     try:
         _wait_for_file(marker)
         _wait_for_value(api_count, 2)
-        _wait_for_value(web_count, 2)
-        assert int(web_count.read_text(encoding="utf-8")) == 2
+        # 新后端就绪、完整链路恢复后，前端必须还是最初那一个进程
+        _wait_for_http_ok("http://127.0.0.1:3000/api/v1/health")
+        assert int(web_count.read_text(encoding="utf-8")) == 1
         assert process.poll() is None
     finally:
         output = _stop(process)
 
-    assert "停止前端并等待完整链路恢复" in output
+    assert "保持前端运行" in output

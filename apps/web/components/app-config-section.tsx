@@ -26,8 +26,10 @@ import { getHealth } from "@/lib/api/health";
  * 交互模型与「网络与代理」分区一致：输入框失焦自动落库，无「保存」按钮。
  *
  * 重启流程：调用 /app/restart → 后端优雅停机、以约定码 42 退出 → Docker 镜像
- * 的 entrypoint 重启循环重建前后端（后端与反代链路健康后恢复前端，不依赖 restart
- * 策略；源码部署需 systemd 等守护）→ 前端轮询 /health 直到服务恢复，然后整页刷新。
+ * 的 entrypoint 重启循环只重启后端（前端保持运行，反代链路验证健康后恢复监督，
+ * 不依赖 restart 策略；源码部署需 systemd 等守护）→ 前端轮询 /health 直到服务
+ * 恢复，然后整页刷新。后端重启失败时 entrypoint 会升级为前后端完整重启，
+ * 因此轮询窗口仍需覆盖完整重启的最坏情况。
  */
 
 type RestartPhase = "idle" | "confirming" | "waiting" | "timeout";

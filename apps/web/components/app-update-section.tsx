@@ -404,6 +404,15 @@ export function AppUpdateSection() {
                 </p>
               </div>
             )}
+            {status.last_abnormal_exit && (
+              <div className="px-5 py-3.5">
+                <p className="text-sub text-amber-300/90">
+                  应用曾于 {new Date(status.last_abnormal_exit.at * 1000).toLocaleString()}{" "}
+                  异常退出并被容器自动恢复：{status.last_abnormal_exit.detail}
+                  （exit={status.last_abnormal_exit.exit_code}）。若频繁出现，请查看容器日志排查。
+                </p>
+              </div>
+            )}
           </div>
 
           {/* 更新进度：紧跟版本卡，替换新版本卡片的位置 */}

@@ -49,7 +49,8 @@ def run() -> None:
     # 生产：自持 Server 实例并注册给重启服务（services/app_config）。
     # 设置页重启由此直接置 should_exit 优雅停机（不经信号投递，绕开 uvloop 下
     # signal.signal 处理器可能长时间不执行的问题），停机后以约定退出码 42
-    # 告知 entrypoint「这是重启请求」——由其在后端恢复健康后重建前端反代；
+    # 告知 entrypoint「这是重启请求」——由其只重启后端（前端保持运行），
+    # 反代链路重新验证健康后恢复监督；
     # 其他退出码（含 docker stop 的信号路径）仍是整容器退出。
     config = uvicorn.Config(
         "movieclaw_api.main:app",
