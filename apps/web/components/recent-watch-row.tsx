@@ -35,23 +35,31 @@ function clock(ms: number): string {
 }
 
 /**
- * 「已播 / 总时长」文本。只在"看了一半"时出现：
- * 已看完的作品右上角有对勾就够了，尚未开播或后端没探到时长的也不必占位，
- * 卡片上始终只保留当下最有用的那一条信息。
+ * 进度条上方那行「已播 / 总时长 · 百分比」。只在"看了一半"时出现：
+ * 已看完的作品右上角有对勾就够了，尚未开播或后端没探到时长的也不必占位。
+ *
+ * 时钟与百分比各答一个问题 —— 时钟给"接着从哪看"的绝对位置，百分比给
+ * "还剩多少"的一眼判断 —— 所以分成两段返回，展示时用不同的字重与透明度
+ * 拉开主次，避免读成一串等权重的数字。
  */
-function playbackClock(item: RecentWatchItem): string | null {
+function playbackProgress(
+  item: RecentWatchItem,
+): { clock: string; percent: string | null } | null {
   if (item.played || item.position_ms <= 0 || !item.duration_ms) return null;
-  return `${clock(item.position_ms)} / ${clock(item.duration_ms)}`;
+  return {
+    clock: `${clock(item.position_ms)} / ${clock(item.duration_ms)}`,
+    percent: item.progress_percent != null ? `${item.progress_percent}%` : null,
+  };
 }
 
 /**
- * 卡片底部第三行的状态文案。卡片上已经用时钟展示进度时不再重复百分比，
- * 这一行只回答"什么时候看的"。
+ * 卡片底部第三行的状态文案。进度已经在图上展示时这一行不再重复百分比，
+ * 只回答"什么时候看的"。
  */
-function stateLabel(item: RecentWatchItem, hasClock: boolean): string {
+function stateLabel(item: RecentWatchItem, hasProgress: boolean): string {
   const ago = formatRelativeTime(item.last_played_at);
   if (item.played) return `${ago}已看完`;
-  if (item.position_ms > 0 && item.progress_percent != null && !hasClock) {
+  if (item.position_ms > 0 && item.progress_percent != null && !hasProgress) {
     return `${ago}观看到 ${item.progress_percent}%`;
   }
   if (item.position_ms > 0) return `${ago}观看过`;
@@ -93,7 +101,7 @@ function RecentWatchCard({ item }: { item: RecentWatchItem }) {
       ? String(item.year)
       : "";
   const progress = item.played ? 100 : item.progress_percent;
-  const timeLabel = playbackClock(item);
+  const progressText = playbackProgress(item);
   const artworkUrl = isEpisode ? item.episode_still_url : item.backdrop_url;
   const newEpisodeLabel =
     isEpisode && item.new_episode_count > 0 ? `新入库 ${item.new_episode_count} 集` : null;
@@ -101,7 +109,7 @@ function RecentWatchCard({ item }: { item: RecentWatchItem }) {
   return (
     <Link
       href={itemHref(item)}
-      aria-label={`${item.title}${context ? `，${context}` : ""}，${stateLabel(item, timeLabel != null)}${timeLabel ? `，已播 ${timeLabel}` : ""}${newEpisodeLabel ? `，${newEpisodeLabel}` : ""}`}
+      aria-label={`${item.title}${context ? `，${context}` : ""}，${stateLabel(item, progressText != null)}${progressText ? `，已播 ${progressText.clock}${progressText.percent ? ` ${progressText.percent}` : ""}` : ""}${newEpisodeLabel ? `，${newEpisodeLabel}` : ""}`}
       {...tapGuard}
       className="group/recent w-[224px] shrink-0 outline-none max-md:w-[200px] xl:w-[240px]"
     >
@@ -146,11 +154,14 @@ function RecentWatchCard({ item }: { item: RecentWatchItem }) {
             )}
           </div>
         )}
-        {/* 底部只留进度：看了一半时在进度条上方补一行「已播 / 总时长」。 */}
+        {/* 底部只留进度：看了一半时在进度条上方补一行「已播 / 总时长 · 百分比」。 */}
         <div className="pointer-events-none absolute inset-x-2 bottom-2 space-y-1">
-          {timeLabel && (
-            <span className="tnum text-on-image block text-micro font-semibold text-white/85">
-              {timeLabel}
+          {progressText && (
+            <span className="tnum text-on-image flex items-baseline gap-1.5 text-micro font-semibold text-white/85">
+              {progressText.clock}
+              {progressText.percent && (
+                <span className="font-medium text-white/55">{progressText.percent}</span>
+              )}
             </span>
           )}
           {progress != null ? (
@@ -172,7 +183,7 @@ function RecentWatchCard({ item }: { item: RecentWatchItem }) {
         <p className="tnum mt-0.5 truncate text-sub text-[var(--text-muted)]">{context}</p>
       )}
       <p className="tnum mt-0.5 truncate text-caption text-[var(--text-faint)]">
-        {stateLabel(item, timeLabel != null)}
+        {stateLabel(item, progressText != null)}
       </p>
     </Link>
   );
