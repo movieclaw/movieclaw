@@ -68,8 +68,8 @@ const HISTORY_JOB_STATUSES = new Set<JobStatus>(["succeeded", "cancelled"]);
 
 const VIEW_LABELS: { id: TaskCenterViewName; label: string }[] = [
   { id: "all", label: "全部" },
-  { id: "attention", label: "需要处理" },
   { id: "active", label: "进行中" },
+  { id: "attention", label: "需要处理" },
   { id: "history", label: "已结束" },
 ];
 
