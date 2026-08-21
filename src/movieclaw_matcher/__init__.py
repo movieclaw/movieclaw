@@ -18,6 +18,7 @@ movieclaw_api 的 services 层编排（docs/design/subscription.md 第 3 节）�
 from movieclaw_matcher.decision import (
     USER_LOWEST_SOURCE,
     build_snapshot,
+    candidate_ladder_rank,
     compare_upgrade,
     pick_best,
     provably_at_cutoff,
@@ -61,6 +62,7 @@ __all__ = [
     "evaluate_rules",
     "pick_best",
     "build_snapshot",
+    "candidate_ladder_rank",
     "compare_upgrade",
     "provably_at_cutoff",
     "provably_below_cutoff",

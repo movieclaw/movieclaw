@@ -125,6 +125,25 @@ def resolution_rank(resolution: str | None, spec: RuleSetSpec) -> int | None:
     return len(ladder) - ladder.index(key)
 
 
+def candidate_ladder_rank(
+    attrs: QualitySnapshot | TorrentAttrs, spec: RuleSetSpec
+) -> tuple[int, int]:
+    """候选自身的绝对档位，供**洗版选优排序**使用（不参与升级判定）。
+
+    与 ``compare_upgrade`` 的"未知即不可比"不同：这里未知按最低（-1）处理。
+    两者不矛盾——升级判定回答"要不要投"，必须只在能证明的维度上行动；
+    本函数只回答"同样已经判定合格的候选谁先投"，把未知排在后面不会
+    产生任何额外投递。
+
+    用途见 quality-upgrade.md §15.4：洗版候选按档位而非评分选优，否则
+    免费加分（_FREE_SCORE=100）会压过一档分辨率（30），系统可能先抓一个
+    "免费但只高半档"的版本，同一单元付两次下载。
+    """
+    resolution = resolution_rank(attrs.resolution, spec)
+    tier = source_tier(attrs.media_source, attrs.remux)
+    return (-1 if resolution is None else resolution, -1 if tier is None else tier)
+
+
 def _target(spec: RuleSetSpec) -> tuple[str, int]:
     """洗版目标 (分辨率, 片源档)。调用前提：spec.upgrade_source 已配置。"""
     resolution = (
@@ -259,6 +278,18 @@ def compare_upgrade(
             candidate_label,
         )
     cand_tier = source_tier(candidate.attrs.media_source, candidate.attrs.remux)
+    if cand_tier is None and cur_tier is None:
+        # 双方都未知 = 该位平局（quality-upgrade.md §14.4）。片源是阶梯末位，
+        # 末位平局即整体等价 → 不构成升级。归 upgrade_not_better 而非
+        # not_comparable 是有意的：两边都没标片源是命名习惯的常态，不是用户
+        # 能改善的数据质量问题，按不可比记活动只会刷屏。单侧未知仍判不可比。
+        return _upgrade_reject(
+            "upgrade_not_better",
+            f"候选 {candidate_label} 与当前版本 {current_label} 在可比维度上完全相同，"
+            "不构成升级",
+            current_label,
+            candidate_label,
+        )
     if cand_tier is None:
         return _upgrade_reject(
             "upgrade_not_comparable",

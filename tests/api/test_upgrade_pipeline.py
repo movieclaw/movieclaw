@@ -90,7 +90,7 @@ async def _seed(
         return item.id, sub.id, ids
 
 
-def _torrent(title, *, attrs, torrent_id="t1", seeders=10):
+def _torrent(title, *, attrs, torrent_id="t1", seeders=10, is_free=None):
     return SiteTorrent(
         site_id="site-a",
         torrent_id=torrent_id,
@@ -99,6 +99,7 @@ def _torrent(title, *, attrs, torrent_id="t1", seeders=10):
         enrich_version=1,
         source=TorrentSource.LIST,
         seeders=seeders,
+        is_free=is_free,
         publish_time=utcnow(),
     )
 
@@ -198,6 +199,75 @@ async def test_upgrade_rejects_not_better_and_at_cutoff_silently(db):
         assert activities == []
 
 
+@pytest.mark.asyncio
+async def test_upgrade_picks_higher_tier_over_cheaper_candidate(db):
+    """洗版选优按档位而非评分：免费高做种的 WEB-DL 不该压过非免费的 Remux。
+
+    评分里免费 +100、做种封顶 +50，都远大于档位差，按评分选会先抓 WEB-DL、
+    下一轮再洗 Remux —— 同一个单元付两次下载（quality-upgrade.md §15.4）。
+    """
+    _item_id, _sub_id, _ = await _seed(
+        db, quality={"resolution": "1080p", "media_source": "WEBRip"}
+    )
+    async with db.session() as session:
+        cheap = _torrent(
+            "Testshow 2024 S01E01 1080p WEB-DL",
+            attrs={
+                "resolution": "1080p",
+                "media_source": "WEB-DL",
+                "seasons": [1],
+                "episodes": [1],
+            },
+            torrent_id="cheap",
+            seeders=99,
+            is_free=True,
+        )
+        better = _torrent(
+            "Testshow 2024 S01E01 1080p Blu-ray REMUX",
+            attrs=_REMUX_E1,
+            torrent_id="better",
+            seeders=1,
+        )
+        session.add_all([cheap, better])
+        await session.commit()
+        await session.refresh(cheap)
+        await session.refresh(better)
+        summary = await evaluate_and_dispatch(session, [cheap, better], source="被动匹配")
+        assert summary.dispatched_units == 1
+        assert summary.dispatched_torrents == ["site-a/better"]
+
+
+@pytest.mark.asyncio
+async def test_both_sides_unknown_source_rejects_silently(db):
+    """双方片源都未标注 = 末位平局，不构成升级且不写活动（§14.4）。
+
+    只有分辨率可证明低于目标的单元才进洗版上下文，所以这条在生产里可达。
+    修复前它按 upgrade_not_comparable 记 MATCH_REJECTED——而"两边都没标片源"
+    是命名习惯的常态，不是用户能改善的数据质量问题，记活动只会刷屏。
+    """
+    _item_id, sub_id, _ = await _seed(db, quality={"resolution": "720p"})
+    async with db.session() as session:
+        row = _torrent(
+            "Testshow 2024 S01E01 720p",
+            attrs={"resolution": "720p", "seasons": [1], "episodes": [1]},
+        )
+        session.add(row)
+        await session.commit()
+        await session.refresh(row)
+        summary = await evaluate_and_dispatch(session, [row], source="被动匹配")
+        assert summary.dispatched_units == 0
+        activities = list(
+            (
+                await session.execute(
+                    select(SubscriptionActivity).where(
+                        SubscriptionActivity.subscription_id == sub_id
+                    )
+                )
+            ).scalars()
+        )
+        assert activities == []
+
+
 _PACK_REMUX = {
     "resolution": "1080p",
     "media_source": "Blu-ray",
@@ -207,11 +277,17 @@ _PACK_REMUX = {
 }
 
 
-async def _seed_pack_units(db, sub_id, item_id, episodes_quality: dict[int, dict]):
-    """给整季包测试造带播出日期的 imported 单元（air_date 已过，包可覆盖）。"""
+async def _seed_pack_units(
+    db, sub_id, item_id, episodes_quality: dict[int, dict], *, status=WantedStatus.IMPORTED
+):
+    """给整季包测试造带播出日期的单元（air_date 已过，包才可覆盖）。
+
+    ``status`` 默认 imported（洗版单元）；传 WANTED 可造同季的缺口单元。
+    """
     from datetime import date, timedelta
 
     aired = date.today() - timedelta(days=30)
+    imported = status == WantedStatus.IMPORTED
     async with db.session() as session:
         for episode, quality in episodes_quality.items():
             session.add(
@@ -220,13 +296,59 @@ async def _seed_pack_units(db, sub_id, item_id, episodes_quality: dict[int, dict
                     media_item_id=item_id,
                     season_number=1,
                     episode_number=episode,
-                    status=WantedStatus.IMPORTED,
+                    status=status,
                     quality=quality,
                     air_date=aired,
-                    imported_at=utcnow(),
+                    imported_at=utcnow() if imported else None,
                 )
             )
         await session.commit()
+
+
+_PACK_WEBDL = {
+    "resolution": "1080p",
+    "media_source": "WEB-DL",
+    "seasons": [1],
+    "complete": True,
+}
+
+
+@pytest.mark.asyncio
+async def test_gap_selection_still_prefers_free_candidate(db):
+    """缺口选优不受洗版档位排序影响：凡覆盖缺口的候选一律按评分排。
+
+    构造：S01E01 缺口 + S01E02 可洗（基线 WEB-DL）。两个整季包竞争——
+    Remux 包非免费（既能填缺口又能洗 E02），WEB-DL 免费包对 E02 不构成升级
+    （铁律否决洗版侧），只能填缺口。缺口必须仍然走免费包：免费优先是 PT
+    场景的既有决策（`rules._FREE_SCORE`），洗版侧的排序调整不得顺带改掉它。
+    """
+    item_id, sub_id, _ = await _seed(db, wanted_status=WantedStatus.WANTED, units=())
+    await _seed_pack_units(db, sub_id, item_id, {2: _WEBDL})
+    await _seed_pack_units(db, sub_id, item_id, {1: None}, status=WantedStatus.WANTED)
+    async with db.session() as session:
+        free_pack = _torrent(
+            "Testshow 2024 S01 1080p WEB-DL Complete",
+            attrs=_PACK_WEBDL,
+            torrent_id="free-pack",
+            seeders=99,
+            is_free=True,
+        )
+        remux_pack = _torrent(
+            "Testshow 2024 S01 1080p Blu-ray REMUX Complete",
+            attrs=_PACK_REMUX,
+            torrent_id="remux-pack",
+            seeders=1,
+        )
+        session.add_all([free_pack, remux_pack])
+        await session.commit()
+        await session.refresh(free_pack)
+        await session.refresh(remux_pack)
+        summary = await evaluate_and_dispatch(
+            session, [free_pack, remux_pack], source="被动匹配"
+        )
+        # 免费包先投并拿走缺口，Remux 包随后只承担 E02 的洗版
+        assert summary.dispatched_torrents == ["site-a/free-pack", "site-a/remux-pack"]
+        assert summary.dispatched_units == 2
 
 
 @pytest.mark.asyncio

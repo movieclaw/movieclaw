@@ -15,6 +15,7 @@ from movieclaw_matcher import (
     RuleSetSpec,
     TorrentCandidate,
     build_snapshot,
+    candidate_ladder_rank,
     compare_upgrade,
     provably_at_cutoff,
     provably_below_cutoff,
@@ -144,6 +145,23 @@ UPGRADE_CASES = [
     (
         dict(resolution="1080p", media_source="WEB-DL"),
         dict(media_source="Blu-ray", remux=True),
+        dict(upgrade_source="remux"),
+        False,
+        "upgrade_not_comparable",
+    ),
+    # 双方片源都未知：末位平局 = 整体等价，判"不构成升级"而非"不可比"（§14.4）。
+    # 分辨率低于目标才会进洗版上下文，所以这条在生产里是可达的
+    (
+        dict(resolution="720p"),
+        dict(resolution="720p"),
+        dict(upgrade_source="remux"),
+        False,
+        "upgrade_not_better",
+    ),
+    # 单侧未知仍是不可比（三态铁律不变）：当前已知、候选未知
+    (
+        dict(resolution="720p", media_source="HDTV"),
+        dict(resolution="720p"),
         dict(upgrade_source="remux"),
         False,
         "upgrade_not_comparable",
@@ -428,3 +446,33 @@ def test_user_lowest_label_is_human_readable() -> None:
     """哨兵值不能把 user-lowest 原样亮给用户。"""
     snap = _snap(resolution="2160p", media_source=USER_LOWEST_SOURCE)
     assert quality_label(snap) == "2160p 最低档（人工标注）"
+
+
+# ---------------------------------------------------------------------------
+# 选优排序用的绝对档位（§15.4）：与升级判定的"未知即不可比"是两套语义
+# ---------------------------------------------------------------------------
+
+
+def test_candidate_ladder_rank_orders_by_tier() -> None:
+    """同分辨率下档位更高的候选排序位次更大——洗版按它选优而非按评分。"""
+    spec = _spec(upgrade_source="remux")
+    webdl = candidate_ladder_rank(TorrentAttrs(resolution="1080p", media_source="WEB-DL"), spec)
+    remux = candidate_ladder_rank(
+        TorrentAttrs(resolution="1080p", media_source="Blu-ray", remux=True), spec
+    )
+    assert remux > webdl
+
+
+def test_candidate_ladder_rank_unknown_sorts_lowest() -> None:
+    """未知维度按最低（-1）排序：排序只决定谁先投，不会因此多投一个候选。"""
+    spec = _spec(upgrade_source="remux")
+    assert candidate_ladder_rank(TorrentAttrs(), spec) == (-1, -1)
+    assert candidate_ladder_rank(TorrentAttrs(resolution="1080p"), spec)[1] == -1
+
+
+def test_candidate_ladder_rank_follows_user_resolution_order() -> None:
+    """分辨率位次跟随规则组偏好序（省空间党的 1080p 优先同样生效）。"""
+    spec = _spec(upgrade_source="remux", resolutions=["1080p", "2160p"])
+    r1080 = candidate_ladder_rank(TorrentAttrs(resolution="1080p", media_source="WEB-DL"), spec)
+    r2160 = candidate_ladder_rank(TorrentAttrs(resolution="2160p", media_source="WEB-DL"), spec)
+    assert r1080 > r2160
