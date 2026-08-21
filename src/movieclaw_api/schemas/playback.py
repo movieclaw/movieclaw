@@ -146,3 +146,101 @@ class MediaActivityView(BaseModel):
     downloads: list[ActiveFileDownloadView]
     devices: list[PlaybackDeviceView]
     recent: list[MediaRecentPlayView]
+
+
+# ---------------------------------------------------------------------------
+# 网页播放器：能力探测与播放决策（docs/design/web-player.md §3）
+# ---------------------------------------------------------------------------
+
+
+class VideoSupportIn(BaseModel):
+    """前端 ``MediaCapabilities.decodingInfo()`` 的一项视频探测结果。"""
+
+    codec: str
+    max_height: int = 2160
+    # decodingInfo 三态之二。canPlayType 给不出这两个信号——它分不清
+    # 「能解码」和「能流畅解码」。
+    smooth: bool = True
+    power_efficient: bool = True
+
+
+class AudioSupportIn(BaseModel):
+    codec: str
+    max_channels: int = 8
+
+
+class ClientCapabilityIn(BaseModel):
+    """客户端解码能力快照。前端探测后随决策请求上送，并缓存在 localStorage。"""
+
+    video: list[VideoSupportIn] = []
+    audio: list[AudioSupportIn] = []
+    containers: list[str] = []
+    hdr_passthrough: bool = False
+    mse: str = "full"
+    is_mobile: bool = False
+
+
+class PlaybackDecideRequest(BaseModel):
+    """一次播放决策请求。``file_id`` 与播放单元二选一——给单元时服务端会在
+    该单元的全部版本文件里择优（能直通的 1080p 胜过要转码的 2160p）。"""
+
+    file_id: int | None = None
+    media_item_id: int | None = None
+    season_number: int = 0
+    episode_number: int = 0
+    capability: ClientCapabilityIn
+    # 运行期降档回路：前端播放失败后带上已失败的档位重来，服务端跳过它们。
+    failed_tiers: list[int] = []
+
+
+class VideoPlanView(BaseModel):
+    action: str
+    codec: str | None = None
+    height: int | None = None
+    tone_map: bool = False
+
+
+class AudioPlanView(BaseModel):
+    action: str
+    track_ref: str | None = None
+    codec: str | None = None
+    channels: int | None = None
+    downmix: bool = False
+
+
+class SubtitlePlanView(BaseModel):
+    track_ref: str
+    kind: str
+    language: str | None = None
+    is_default: bool = False
+
+
+class PlaybackDecisionView(BaseModel):
+    """决策结果的三态并集。``outcome`` 决定其余字段哪些有值。
+
+    - ``plan``    —— 可以播，按 ``tier`` 走；
+    - ``consent`` —— 需要用户同意开启软件转码（§3.6）；
+    - ``rejected``—— 放不了，``reason`` / ``suggestion`` 面向用户。
+    """
+
+    outcome: str  # plan | consent | rejected
+
+    # outcome == "plan"
+    tier: int | None = None
+    file_id: int | None = None
+    container: str | None = None
+    video: VideoPlanView | None = None
+    audio: AudioPlanView | None = None
+    subtitles: list[SubtitlePlanView] = []
+    degraded_from: int | None = None
+
+    # outcome == "consent"
+    cost_hint: str | None = None
+    can_self_enable: bool | None = None
+    setting_namespace: str | None = None
+    setting_key: str | None = None
+
+    # 三态共有：中文，为什么是这个结果。诊断面板与失败提示共用同一份文案。
+    reason: str = ""
+    # outcome == "rejected"
+    suggestion: str | None = None

@@ -37,6 +37,7 @@ from movieclaw_api.settings.network import (
     BUILTIN_EGRESS_SERVICES,
     NetworkEgressSetting,
 )
+from movieclaw_api.settings.playback import PlaybackPolicySetting
 from movieclaw_api.settings.schemas import (
     AdminAccountSetting,
     ApiTokenRecord,
@@ -94,6 +95,7 @@ __all__ = [
     "SessionSecretSetting",
     # 网络与代理
     "NetworkEgressSetting",
+    "PlaybackPolicySetting",
     "ChannelPushSetting",
     "BUILTIN_EGRESS_SERVICES",
     # 应用服务（外部访问地址）

@@ -100,6 +100,160 @@ def probe_media(path: str | Path) -> MediaSpec | None:
     return _parse_probe(payload, include_mpegts_pids=Path(path).suffix.lower() == ".m2ts")
 
 
+# --- 关键帧密度探测（docs/design/web-player.md §3.5 / §7-②）-----------------
+#
+# 为什么需要它：remux 直通（档 1/2）是 ``-c:v copy``，分片切点只能落在源片
+# 已有的 IDR 上。PT 压制组的关键帧间隔常常是 5~10 秒甚至不规则，硬切非关键帧
+# 会花屏黑屏；而 GOP 长到十几秒时，remux 的首帧优势也就没了，不如直接转码。
+#
+# 为什么是采样而不是全片索引：判定「稀不稀疏」只要一个平均间隔，采样三段
+# 即可，几百毫秒；全片关键帧索引对两小时的片有几千个时间点，扫一遍很慢，
+# 那是转码会话启动时才需要的东西（届时用户已在等待，且可以边转边给）。
+#
+# 为什么不落库：存量库无论如何都要懒加载补齐，落库的额外收益只是「重启后
+# 不用重算」，不值一次数据库迁移。先内存缓存，实测不够再说。
+
+_KEYFRAME_PROBE_TIMEOUT = 60.0
+# 每段采样窗口时长（秒）。取 30 秒：足够覆盖 2~3 个正常 GOP，又不至于读太多包。
+_KEYFRAME_WINDOW_S = 30
+# 采样位置（占全片比例）。避开片头片尾的特殊编码段，取片中三处。
+_KEYFRAME_SAMPLE_POSITIONS = (0.10, 0.50, 0.90)
+# 短于这个时长就整片扫，不采样（省得三段窗口互相重叠反而更慢）。
+_KEYFRAME_FULL_SCAN_MAX_S = _KEYFRAME_WINDOW_S * len(_KEYFRAME_SAMPLE_POSITIONS)
+
+
+def probe_keyframe_interval(
+    path: str | Path, duration_seconds: int | None
+) -> float | None:
+    """采样估算视频轨的关键帧平均间隔（秒）。
+
+    返回 None = 无法判定（ffprobe 缺失/超时/无关键帧信息）。决策引擎见到
+    None 会保守地不走 remux——索引未知就赌不起。
+
+    结果按 (路径, mtime, 大小) 缓存：同一文件重复播放、切集来回都不重算；
+    文件被换掉（改名归并、洗版）时三元组变化，缓存自然失效。
+
+    **只缓存成功结果**：ffprobe 在繁忙存储上偶发超时会返回 None，若把 None
+    也缓存住，一次瞬时故障就会让这个文件在整个进程生命周期里被永久判成
+    「关键帧未知 → 只能转码」。宁可下次再探一遍。
+    """
+    path = Path(path)
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    key = (str(path), stat.st_mtime_ns, stat.st_size)
+    cached = _keyframe_cache.get(key)
+    if cached is not None:
+        return cached
+    value = _probe_keyframe_interval(str(path), duration_seconds)
+    if value is not None:
+        if len(_keyframe_cache) >= _KEYFRAME_CACHE_MAX:
+            _keyframe_cache.clear()
+        _keyframe_cache[key] = value
+    return value
+
+
+# (路径, mtime_ns, 大小) -> 平均间隔秒。满了整体清空——这是纯加速缓存，
+# 命中率短暂下降无所谓，不值得为它引入 LRU 的复杂度。
+_keyframe_cache: dict[tuple[str, int, int], float] = {}
+_KEYFRAME_CACHE_MAX = 1024
+
+
+def _probe_keyframe_interval(path: str, duration_seconds: int | None) -> float | None:
+    windows = _keyframe_windows(duration_seconds)
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-print_format",
+        "json",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "packet=pts_time,flags",
+    ]
+    if windows:
+        cmd += ["-read_intervals", ",".join(f"{s}%+{_KEYFRAME_WINDOW_S}" for s, _ in windows)]
+    cmd.append(path)
+    try:
+        proc = subprocess.run(cmd, capture_output=True, timeout=_KEYFRAME_PROBE_TIMEOUT)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        # ffprobe 缺失已由 probe_media 告警过一次，这里不重复刷屏
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        payload = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return None
+    return keyframe_interval_from_packets(payload.get("packets") or [], windows)
+
+
+def _keyframe_windows(duration_seconds: int | None) -> list[tuple[int, int]]:
+    """采样窗口 [(起点秒, 终点秒)]；短片或时长未知返回空列表表示整片扫。"""
+    if not duration_seconds or duration_seconds <= _KEYFRAME_FULL_SCAN_MAX_S:
+        return []
+    return [
+        (start, start + _KEYFRAME_WINDOW_S)
+        for start in (int(duration_seconds * p) for p in _KEYFRAME_SAMPLE_POSITIONS)
+    ]
+
+
+def keyframe_interval_from_packets(
+    packets: list[dict], windows: list[tuple[int, int]]
+) -> float | None:
+    """从 ffprobe 的 packet 列表估算关键帧间隔——**纯函数，可单测**。
+
+    取窗口内相邻关键帧时间差的中位数：中位数而非平均，是为了不被片尾静态
+    画面那种异常稀疏的一段带偏；**间隔不跨窗口计算**，否则两段采样之间那个
+    巨大的空档会被当成一个超长 GOP。
+
+    只有一个关键帧（或一个都没有）的窗口无法给出间隔，退化为「窗口时长 ÷
+    关键帧数」的保守估计——这会得到一个偏大的值，正好让决策引擎不走 remux。
+    """
+    times = sorted(
+        float(p["pts_time"])
+        for p in packets
+        if isinstance(p, dict)
+        and str(p.get("flags") or "").startswith("K")
+        and _is_number(p.get("pts_time"))
+    )
+    if not times:
+        return None
+    if not windows:
+        windows = [(int(times[0]), int(times[-1]) + 1)]
+
+    deltas: list[float] = []
+    fallbacks: list[float] = []
+    for start, end in windows:
+        inside = [t for t in times if start <= t <= end]
+        if len(inside) >= 2:
+            deltas.extend(b - a for a, b in zip(inside, inside[1:], strict=False))
+        else:
+            span = max(end - start, 1)
+            fallbacks.append(float(span) / max(len(inside), 1))
+    if deltas:
+        return _median(deltas)
+    return _median(fallbacks) if fallbacks else None
+
+
+def _is_number(value) -> bool:  # noqa: ANN001
+    try:
+        float(value)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def _median(values: list[float]) -> float:
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[mid]
+    return (ordered[mid - 1] + ordered[mid]) / 2
+
+
 def _parse_probe(payload: dict, *, include_mpegts_pids: bool = False) -> MediaSpec:
     video = next(
         (s for s in payload.get("streams", []) if s.get("codec_type") == "video"),
