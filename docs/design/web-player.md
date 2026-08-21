@@ -250,7 +250,9 @@ ffmpeg -hwaccel vaapi -hwaccel_output_format vaapi -hwaccel_device <dev>
      视频音频均可 copy 且容器为 mp4         → 档 0
      视频音频均可 copy 且容器非 mp4         → 档 1（remux）
      视频可 copy、音频需转                  → 档 2
-     视频需转                               → 档 3（有硬件）/ 档 4（无硬件且策略允许）
+     视频需转                               → 档 3（有可用硬件）
+                                              → 档 4（无硬件）：开关已开则出计划，
+                                                否则返回 ConsentRequired（§3.6）
 
 7. 关键帧密度校验（仅档 1/2）
      平均 IDR 间隔 > 15s                    → 首帧收益消失，降级到档 3
@@ -263,9 +265,32 @@ ffmpeg -hwaccel vaapi -hwaccel_output_format vaapi -hwaccel_device <dev>
      VobSub                                 → 暂不支持，明示原因
 ```
 
-### 3.4 `PlaybackPlan` 契约
+### 3.4 `PlaybackDecision` 契约
+
+`decide` 的返回**不是单一的 plan，而是三态**——软件转码需要用户同意（§3.6），
+拒绝也要携带可读理由（硬边界 5）。这个形状必须一开始就定死，后期从
+「总是返回 plan」改成三态要重写全部调用方。
 
 ```python
+PlaybackDecision = PlaybackPlan | ConsentRequired | PlaybackRejected
+
+
+class ConsentRequired(BaseModel):
+    """决策落到需要用户显式同意的档位（当前只有档 4）。"""
+
+    tier: int                        # 拟采用的档位
+    reason: str                      # 中文，为什么只能走这一档
+    cost_hint: str                   # 中文，开启的代价
+    setting_namespace: str           # "playback.policy"
+    setting_key: str                 # "software_transcode_enabled"
+    can_self_enable: bool            # 当前成员是否有权改全局设置
+
+
+class PlaybackRejected(BaseModel):
+    reason: str                      # 中文，为什么放不了
+    suggestion: str                  # 中文，怎么办
+
+
 class PlaybackPlan(BaseModel):
     """一次播放的完整计划。决策引擎的唯一输出，前端据此组装播放器。"""
 
@@ -312,6 +337,60 @@ HDR10 处理会输出**绿紫画面**（见 §7-④）。
 **候选集合 → 最优计划**，而不是单文件判档：优先选能落在低档位的版本
 （能直通的 1080p 胜过要转码的 2160p），同档位时选码率高的。
 **这个形状一开始就要定死，后期从单候选改多候选要重写调用方。**
+
+### 3.6 软件转码的用户同意链路
+
+**决策：软件转码（档 4）默认关闭。** 低配 NAS 上一路 1080p 软转就能吃满 CPU，
+连带影响搜索、扫描、订阅——用户感知到的是「整个应用变卡了」，却完全不会联想到
+是自己点了播放。默认开启是拿全站可用性赌一次播放。
+
+但也不能默认关了就完事——那等于把「这部片放不了」的死路直接甩给用户。因此配一条
+**播放时询问 + 一次同意永久保存**的交互链路：
+
+```text
+用户点播放
+   │
+   ├─ decide → PlaybackPlan（档 0–3）────────────────> 正常播放
+   │
+   └─ decide → ConsentRequired（档 4，且开关为关）
+         │
+         ├─ can_self_enable=true（超管）
+         │     弹窗：为什么 + 代价 + 两个按钮
+         │       ┌────────────────────────────────────────────┐
+         │       │ 这部片需要软件转码才能在浏览器里播放          │
+         │       │                                            │
+         │       │ 原因：视频编码 VC-1，浏览器不支持；且未检测到 │
+         │       │       可用的硬件加速设备。                   │
+         │       │ 代价：软件转码会占用大量 CPU，可能让搜索、    │
+         │       │       扫描、订阅等后台任务明显变慢，首帧也    │
+         │       │       需要更长时间。                        │
+         │       │ 之后可在「设置 → 播放」里随时关闭。          │
+         │       │                                            │
+         │       │        [取消]        [开启并播放]           │
+         │       └────────────────────────────────────────────┘
+         │     点「开启并播放」
+         │       → PATCH playback.policy.software_transcode_enabled = true
+         │       → 重新 decide → 得到档 4 的 plan → 播放
+         │
+         └─ can_self_enable=false（普通成员）
+               提示：「这部片需要软件转码，当前未开启。请联系管理员在
+               『设置 → 播放』中开启。」不提供开启按钮。
+```
+
+四条约定：
+
+1. **保存粒度是全局开关**，不是每次播放、也不做「仅本次允许」的临时态——
+   临时态既复杂又没价值，用户第二次遇到还得再点一遍。
+2. **幂等**：开启后不再询问；用户在设置页关掉后，再遇到再问。
+3. **权限**：全局设置只有超管能改（与成员管理的既有约定一致）。普通成员看到的是
+   说明而非按钮——不要给一个点了会 403 的按钮。
+4. **`reason` 必须说清「为什么落到这一档」**，尤其要区分两种成因：
+   「编码不支持」还是「有编码不支持但也没有可用硬件加速」。后者应顺带把用户
+   引到硬件自检结果（§5.2）——很多情况其实是 GPU 没配对，而不是真的只能软转。
+
+**配置落点**：`app_setting` 表的 `playback.policy` namespace（通用配置表，
+namespace + JSON，**新增配置域零数据库迁移**）。同域下一并承载最大转码并发、
+码率上限、缓存配额等策略项（§4.5 / §4.6）。
 
 ---
 
@@ -376,6 +455,8 @@ created ──start──> spawning ──首片就绪──> ready ──客户
   而 CPU 几乎是空的。
 
 超限时排队并明确告知「当前转码会话已满（2/2），请稍候或停止其它播放」。
+
+两个上限与软件转码开关同属 `playback.policy` 配置域（§3.6），设置页统一承载。
 
 ### 4.6 磁盘配额
 
@@ -450,8 +531,11 @@ Debian bookworm 的 `ffmpeg`（5.1.x，现镜像所装）对档 0/1/2 够用，�
 **连带动作**（按 CLAUDE.md 发布规范）：
 
 - Dockerfile 换 jellyfin-ffmpeg，保留 tesseract / seconv / 字体那一整套不动。
-- **`docker/runtime-version` 8 → 9**。
-- **P0 必须发新镜像**，不能只走应用内更新。排期要算进去。
+- **`docker/runtime-version` 8 → 9**，并在合并后发布新镜像（CI 守卫会拦截漏 bump）。
+- **不为「旧镜像 + 新应用」做任何降级兼容**：runtime-version 守卫本就是干这件事的，
+  应用内更新 overlay 与镜像不兼容时会被既有机制拦下并提示升级镜像。不要为了让
+  老镜像也能用而在决策引擎里加「ffmpeg 能力探测降级」分支——那是给自己加一条
+  永久维护的岔路。部署者升级镜像是既定的运维动作，按现有流程走即可。
 
 ---
 
@@ -532,6 +616,8 @@ iOS Safari 是整件事最难的一块：MSE 只有 `ManagedMediaSource` 子集�
 - **Trickplay 进度条缩略图**：入库时抽帧生成雪碧图 + VTT 索引。ffmpeg 与入库
   流程都现成，**性价比最高**，是「这个播放器不便宜」的第一印象来源。
 - **下一集自动播 + 片尾倒计时**；续播点来自 `playback_state`。
+- **软件转码同意弹窗**（§3.6）：说清原因与代价，一次同意永久保存；无权限的成员
+  看到的是说明而非按钮。
 - **诊断面板**（类似 YouTube 的 Stats for nerds）：当前档位、源/目标编码、
   是否硬件加速、实时码率、掉帧数、缓冲秒数、会话 ID、`plan.reason`。
   用户报 bug 直接截这张图——**对开源项目是支持成本的直接节省**。
@@ -801,7 +887,7 @@ Mac mini 验证。做成发版前的人工清单，列进 `.claude/skills/releas
 
 **后端**
 
-- [ ] `services/playback/decide.py` 决策引擎（纯函数）+ 判定表 + `PlaybackPlan`
+- [ ] `services/playback/decide.py` 决策引擎（纯函数）+ 判定表 + **`PlaybackDecision` 三态**
 - [ ] `services/playback/session.py` 会话管理（生命周期、心跳、区间位图、配额）
 - [ ] `services/playback/ffmpeg_runner.py` 执行器（§4.2 五条进程契约）
 - [ ] `services/playback/hwprobe.py` 硬件自检 + 设置页中文诊断
@@ -811,7 +897,9 @@ Mac mini 验证。做成发版前的人工清单，列进 `.claude/skills/releas
 - [ ] Trickplay 雪碧图 + VTT 生成（入库流程内）
 - [ ] `api/routes/playback.py` 扩展：`decide` / `sessions` / `ping` / 分片 / 字幕 / 字体
 - [ ] 签名 URL（与 `movieclaw_jellyfin/security.py` 共用密钥与实现）
-- [ ] `playback_metric` 表 + 迁移（向前兼容）
+- [ ] `playback.policy` 配置域（`app_setting` namespace + Pydantic 模型，**零迁移**）：
+      软件转码开关、转码并发、直通并发、码率上限、缓存配额
+- [ ] `playback_metric` 表 + 迁移（向前兼容）——**唯一需要迁移的新表**
 - [ ] Jellyfin 兼容层改用同一决策引擎（恒等快照），行为不变
 
 **前端**
@@ -821,6 +909,7 @@ Mac mini 验证。做成发版前的人工清单，列进 `.claude/skills/releas
 - [ ] Media Chrome UI + 自有皮肤 + 播放器状态机
 - [ ] JASSUB / libbitsub / VTT 三条字幕路径 + 时间轴微调 + 样式配置
 - [ ] 自动降档回路（§6.3）
+- [ ] **软件转码同意弹窗 + 权限分支**（§3.6）；设置 → 播放 页承载对应开关
 - [ ] Trickplay 预览、下一集自动播、续播接入 `playback_state`
 - [ ] Media Session、wakeLock、键盘快捷键
 - [ ] **诊断面板**
@@ -862,5 +951,5 @@ Mac mini 验证。做成发版前的人工清单，列进 `.claude/skills/releas
    ABR 收益（应对带宽抖动）远小于成本（同内容转 N 份，GPU 翻倍）。
    远程访问需求出现后再评估，届时优先做「手动选清晰度」而非自动 ABR。
 3. **`playback_metric` 的保留期**：默认存多久、要不要滚动清理。
-4. **档 4 软件转码的默认开关**：低配 NAS 上一路 1080p 软转就能吃满 CPU 影响
-   全站。倾向**默认关闭**，设置页显式开启并警示。
+4. ~~档 4 软件转码的默认开关~~ —— **已决（2026-08-21）**：默认关闭，
+   播放时按 §3.6 的同意链路询问并永久保存。
