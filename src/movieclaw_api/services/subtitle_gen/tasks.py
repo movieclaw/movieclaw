@@ -960,10 +960,15 @@ async def _run_generation_job(
     except translate.TranslationAborted as exc:
         if cancelled.is_set() or await context.cancel_requested():
             raise jobs.JobCancelled from exc
+        # 「重试」沿用任务创建时固定的模型（见 input_data.model_ref 的注释）：
+        # 模型本身就是失败原因时，重试只会原样再失败一次。把固定的模型写进
+        # 错误信息，并给出改默认模型的入口——改完重新发起生成即可换模型续译。
         raise jobs.JobFailed(
-            str(exc),
+            f"{exc}。当前任务固定使用模型 {model_ref or '默认模型'}；"
+            "换模型请改默认模型后重新发起生成，点「重试」仍会用原模型",
             code="SUBTITLE_TRANSLATION_ABORTED",
             actions=[
+                {"type": "open_settings", "label": "调整 AI 模型", "target": "llm"},
                 {"type": "retry_job", "label": "重试"},
                 {"type": "handoff_agent", "label": "交给 Agent"},
             ],
@@ -1287,8 +1292,23 @@ async def _refresh_subtitle_inventory(db, file_id: int) -> None:  # noqa: ANN001
         await session.commit()
 
 
-def _subtitle_max_tokens(call: translate.ChatCall) -> int:
-    """按输出条数给结构化字幕留足空间，同时阻止模型无界思考。"""
+#: 思考模型的输出预算放大倍数。reasoning_content 与译文共享同一份
+#: completion 预算，按纯译文估算的额度会被思考先烧光，译文 JSON 还没写完就
+#: 撞上 finish=length（issue #194）。放大后仍受模型目录声明的输出上限约束。
+_THINKING_BUDGET_MULTIPLIER = 3
+
+
+def _subtitle_max_tokens(
+    call: translate.ChatCall,
+    *,
+    thinking: bool = False,
+    max_output_tokens: int | None = None,
+) -> int:
+    """按输出条数给结构化字幕留足空间，同时阻止模型无界思考。
+
+    ``thinking`` 与 ``max_output_tokens`` 来自模型目录：思考模型放大额度，
+    再由目录声明的输出上限收口，避免向端点要一个它根本不接受的 max_tokens。
+    """
     if call.purpose == "glossary":
         base, ceiling = 2048, 4096
     elif call.purpose == "compress":
@@ -1298,8 +1318,14 @@ def _subtitle_max_tokens(call: translate.ChatCall) -> int:
         per_event = 180 if call.bilingual else 110
         base = max(4096, 1024 + call.event_count * per_event)
         ceiling = 12288 if call.bilingual else 8192
+    if thinking:
+        base *= _THINKING_BUDGET_MULTIPLIER
+        ceiling *= _THINKING_BUDGET_MULTIPLIER
     expanded = int(base * (1.5 ** max(0, call.attempt - 1)))
-    return min(ceiling, expanded)
+    budget = min(ceiling, expanded)
+    if max_output_tokens:
+        budget = min(budget, max_output_tokens)
+    return budget
 
 
 async def _build_chat(
@@ -1332,10 +1358,19 @@ async def _build_chat(
         "kimi-k2.5",
         "kimi-k2.6",
     }
+    # 关不掉思考的模型（DeepSeek v4 系官方目录只有强制思考的 pro/flash）只能
+    # 靠加大输出预算兜住：思考与译文共用 completion 额度，按纯译文估算必被
+    # 截断。目录外的自定义模型可在实例配置的 extra_models 里补声明。
+    model_info = router.get_model_info(model_ref or "")
+    thinking_budget = model_info.supports_thinking and not kimi_fast_json
 
     async def chat(system: str, user: str, call: translate.ChatCall) -> str:
         settings = ModelSettings(
-            max_tokens=_subtitle_max_tokens(call),
+            max_tokens=_subtitle_max_tokens(
+                call,
+                thinking=thinking_budget,
+                max_output_tokens=model_info.max_output_tokens,
+            ),
             response_format="json_object" if kimi_fast_json else None,
             extra_body=({"thinking": {"type": "disabled"}} if kimi_fast_json else None),
         )
@@ -1421,7 +1456,12 @@ async def _build_chat(
             response.finish_reason,
         )
         if response.finish_reason == "length":
-            raise ValueError("模型输出达到长度上限，正在扩大预算后重试")
+            # 专属信号：翻译层据此扩大预算重试，仍不够就把块拆半——原样重发
+            # 同一个块只会再次被截断。深度思考模型是这里最常见的触发者。
+            raise translate.ChatOutputTruncated(
+                f"模型在 {settings.max_tokens} tokens 输出上限内没写完译文"
+                f"（本次思考+正文共 {response.usage.completion_tokens} tokens）"
+            )
         if response.finish_reason == "tool_calls":
             raise ValueError("字幕模型返回了意外的工具调用，正在重试结构化输出")
         return response.content or ""

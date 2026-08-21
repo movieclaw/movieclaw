@@ -342,7 +342,7 @@ def _good_chat(monkeypatch=None):
 async def test_subtitle_chat_uses_fast_kimi_json_mode_and_records_usage(monkeypatch) -> None:
     """字幕专用调用关闭 Kimi 思考、限制输出，并把用量归集到 Job 快照。"""
     from movieclaw_api.services import llm_config
-    from movieclaw_llm import ChatResponse, LlmProviderConfig, TokenUsage
+    from movieclaw_llm import ChatResponse, LlmProviderConfig, ModelInfo, TokenUsage
 
     requests = []
     provider = LlmProviderConfig(
@@ -355,6 +355,9 @@ async def test_subtitle_chat_uses_fast_kimi_json_mode_and_records_usage(monkeypa
     class Router:
         def resolve(self, _model_ref):  # noqa: ANN001
             return provider, "kimi-k2.6"
+
+        def get_model_info(self, _model_ref):  # noqa: ANN001
+            return ModelInfo(id="kimi-k2.6", supports_thinking=True)
 
         async def chat(self, request):  # noqa: ANN001
             requests.append(request)
@@ -529,6 +532,80 @@ async def test_translate_checkpoint_cannot_bypass_failure_fuse(tmp_path: Path, m
     checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
     # 有界并发允许同一批调用一起完成，因此熔断最多产生一个并发窗口的超调。
     assert checkpoint["failed_blocks"] == list(range(translate.TRANSLATION_CONCURRENCY))
+
+
+async def test_translate_resume_retries_failed_blocks(tmp_path: Path, monkeypatch) -> None:
+    """换好模型后续传必须重译失败块，而不是一开跑就被历史失败数顶穿熔断。
+
+    issue #194：失败块存的是保留原文的占位，旧实现把它们当成已完成块跳过，
+    累计失败数又直接触发熔断 —— 任务永远停在「重试 22 秒即失败」。
+    """
+    monkeypatch.chdir(tmp_path)
+    events = _events(500)  # 10 块，熔断阈值 20% → 3 块起跳
+
+    async def flaky_chat(system: str, user: str, _call: translate.ChatCall) -> str:
+        if "找出其中反复出现的人名" in user:
+            return "[]"
+        block = _prompt_block(user)
+        if block[0]["i"] < 250:  # 前 5 块坏掉，足以触发熔断
+            return "不是 JSON"
+        return json.dumps([{"i": e["i"], "t": f"译{e['i']}"} for e in block])
+
+    with pytest.raises(translate.TranslationAborted):
+        await translate.translate_events(flaky_chat, events, CTX, "chs", file_id=40)
+    checkpoint_path = next((tmp_path / "data").rglob("*.checkpoint.json"))
+    failed = json.loads(checkpoint_path.read_text(encoding="utf-8"))["failed_blocks"]
+    assert failed, "熔断前应已把失败块记进断点"
+
+    retried: list[int] = []
+
+    async def fixed_chat(system: str, user: str, _call: translate.ChatCall) -> str:
+        if "找出其中反复出现的人名" in user:
+            raise AssertionError("术语表该从断点恢复")
+        block = _prompt_block(user)
+        retried.append(block[0]["i"] // 50)
+        return json.dumps([{"i": e["i"], "t": f"译{e['i']}"} for e in block])
+
+    out, stats = await translate.translate_events(fixed_chat, events, CTX, "chs", file_id=40)
+    assert set(failed) <= set(retried), "断点里的失败块必须被重新翻译"
+    assert stats.failed_blocks == 0 and stats.kept_original == 0
+    assert out[0][2] == "译0" and out[499][2] == "译499"
+    # 失败名单已销账：再续传不会白白重译已经成功的块
+    assert json.loads(checkpoint_path.read_text(encoding="utf-8"))["failed_blocks"] == []
+
+
+async def test_translate_splits_block_when_output_truncated(tmp_path: Path, monkeypatch) -> None:
+    """输出撞长度上限时拆块重译：深度思考模型烧光输出预算的通用兜底。"""
+    monkeypatch.chdir(tmp_path)
+    sizes: list[int] = []
+
+    async def chat(system: str, user: str, call: translate.ChatCall) -> str:
+        if "找出其中反复出现的人名" in user:
+            return "[]"
+        block = _prompt_block(user)
+        sizes.append(len(block))
+        if len(block) > 25:  # 整块写不完，半块才写得下
+            raise translate.ChatOutputTruncated("输出达到长度上限")
+        return json.dumps([{"i": e["i"], "t": f"译{e['i']}"} for e in block])
+
+    out, stats = await translate.translate_events(chat, _events(50), CTX, "chs", file_id=41)
+
+    assert stats.failed_blocks == 0
+    assert len(out) == 50 and out[0][2] == "译0" and out[49][2] == "译49"
+    # 整块三次尝试全被截断后拆成 25 + 25，且拆出来的半块不再二次拆分
+    assert sizes == [50, 50, 50, 25, 25]
+
+
+def test_subtitle_max_tokens_leaves_room_for_thinking() -> None:
+    """思考模型的译文预算要放大，并被模型目录声明的输出上限收口。"""
+    call = translate.ChatCall(purpose="translate", block_index=1, event_count=50)
+
+    plain = tasks._subtitle_max_tokens(call)
+    thinking = tasks._subtitle_max_tokens(call, thinking=True)
+    capped = tasks._subtitle_max_tokens(call, thinking=True, max_output_tokens=8192)
+
+    assert thinking == plain * tasks._THINKING_BUDGET_MULTIPLIER
+    assert capped == 8192
 
 
 async def test_translate_untranslated_block_detected(tmp_path: Path, monkeypatch) -> None:

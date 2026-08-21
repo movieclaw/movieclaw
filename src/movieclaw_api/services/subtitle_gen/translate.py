@@ -45,6 +45,10 @@ BLOCK_SIZE = 50  # 每块事件数（§3.1）
 _CONTEXT_LINES = 3  # 滚动上下文条数
 _BLOCK_RETRIES = 2  # 结构不符/漏翻的重试次数
 FAILED_BLOCK_ABORT_RATE = 0.2  # 失败块超 20% 中止任务（§3.6 熔断）
+# 输出被长度上限截断后，把整块对半拆开重译一次。深度思考模型会把思考写进
+# 同一份 completion 预算，光靠调大 max_tokens 未必够；条数减半让单次需要的
+# 译文输出也减半，这是与供应商无关的兜底。只拆一层，最坏 3+3+3 次调用封顶。
+_SPLIT_MIN_EVENTS = 4
 # 单文件从 8 路并发起步；遇到 429 后协调器会自动降并发并退避，稳定完成
 # 一段时间后再逐级恢复。高延迟模型因此无需被最保守的供应商永久拖慢。
 TRANSLATION_CONCURRENCY = 8
@@ -117,6 +121,14 @@ class ChatRateLimited(Exception):
     def __init__(self, retry_after: float | None = None) -> None:
         self.retry_after = retry_after
         super().__init__("模型请求触发限流")
+
+
+class ChatOutputTruncated(ValueError):
+    """模型输出撞上长度上限（finish_reason=length），译文 JSON 不完整。
+
+    继承 ValueError 是为了让老的校验重试路径原样兜住；单独成类是因为这个
+    失败有专属解法——重试同样的块只会再次被截断，必须缩小单次输出量。
+    """
 
 
 def _film_intro(ctx: FilmContext) -> str:
@@ -271,8 +283,9 @@ class Checkpoint:
         self.path = cache_dir() / f"{file_id}.{target_language}.checkpoint.json"
         self.fingerprint = fingerprint
         self.blocks: dict[int, list[str]] = {}
-        # 失败后保留原文的块必须单独记账。否则重跑时它们会被当成正常译文
-        # 跳过，失败计数又从零开始，反复续传即可绕过 20% 熔断。
+        # 失败后保留原文的块必须单独记账：blocks 里存的是原文占位，不记账就
+        # 会在续传时被当成正常译文跳过——既永远得不到重译，反复续传还能把整片
+        # 原文洗成「成功」结果绕过 20% 熔断。记账后续传会重新翻译它们。
         self.failed_blocks: set[int] = set()
         self.legacy_without_failure_metadata = False
         self.glossary: dict[str, str] = {}
@@ -354,15 +367,48 @@ def _block_user_prompt(
 async def _translate_block(
     chat: ChatFn,
     system: str,
-    user: str,
     block: list[tuple[int, str]],
     block_index: int,
     target_language: str,
     secondary_language: str | None = None,
+    *,
+    context: list[tuple[str, str]],
+    previous_source: list[str],
 ) -> tuple[int, list[str], bool, int]:
     """翻译一个块；仅返回结果，不在并发协程里写共享断点。"""
-    result: list[str] | None = None
+    result, validation_retries = await _translate_span(
+        chat,
+        system,
+        block,
+        block_index,
+        target_language,
+        secondary_language,
+        context=context,
+        previous_source=previous_source,
+        allow_split=True,
+    )
+    if result is not None:
+        return block_index, result, False, validation_retries
+    # 输出结构连续失败时保留原文；失败率熔断由中央协调器统一判断。
+    return block_index, [text for _, text in block], True, validation_retries
+
+
+async def _translate_span(
+    chat: ChatFn,
+    system: str,
+    span: list[tuple[int, str]],
+    block_index: int,
+    target_language: str,
+    secondary_language: str | None,
+    *,
+    context: list[tuple[str, str]],
+    previous_source: list[str],
+    allow_split: bool,
+) -> tuple[list[str] | None, int]:
+    """翻译一整块或拆分后的半块，返回 (译文, 校验重试次数)；失败返回 None。"""
+    user = _block_user_prompt(span, context, previous_source)
     validation_retries = 0
+    truncated = False
     for attempt in range(_BLOCK_RETRIES + 1):
         try:
             raw = await chat(
@@ -371,13 +417,25 @@ async def _translate_block(
                 ChatCall(
                     purpose="translate",
                     block_index=block_index + 1,
-                    event_count=len(block),
+                    event_count=len(span),
                     bilingual=secondary_language is not None,
                     attempt=attempt + 1,
                 ),
             )
-            result = _validate_block(raw, block, target_language, secondary_language)
-            break
+            return (
+                _validate_block(raw, span, target_language, secondary_language),
+                validation_retries,
+            )
+        except ChatOutputTruncated as exc:
+            truncated = True
+            validation_retries += 1
+            logger.warning(
+                "字幕翻译第 %d 块输出被长度上限截断（第 %d 次尝试，%d 条）：%s",
+                block_index + 1,
+                attempt + 1,
+                len(span),
+                exc,
+            )
         except (ValueError, json.JSONDecodeError) as exc:
             validation_retries += 1
             logger.warning(
@@ -386,10 +444,49 @@ async def _translate_block(
                 attempt + 1,
                 exc,
             )
-    if result is not None:
-        return block_index, result, False, validation_retries
-    # 输出结构连续失败时保留原文；失败率熔断由中央协调器统一判断。
-    return block_index, [text for _, text in block], True, validation_retries
+    if not (truncated and allow_split and len(span) >= _SPLIT_MIN_EVENTS):
+        return None, validation_retries
+    # 扩大预算仍被截断：条数对半砍，让单次需要写出的译文量也减半。深度思考
+    # 模型把思考算进同一份输出预算，这是唯一不依赖供应商开关的兜底。
+    mid = len(span) // 2
+    head_span, tail_span = span[:mid], span[mid:]
+    logger.warning(
+        "字幕翻译第 %d 块改为拆成 %d + %d 条重译（模型输出预算不足以一次写完）",
+        block_index + 1,
+        len(head_span),
+        len(tail_span),
+    )
+    head, head_retries = await _translate_span(
+        chat,
+        system,
+        head_span,
+        block_index,
+        target_language,
+        secondary_language,
+        context=context,
+        previous_source=previous_source,
+        allow_split=False,
+    )
+    validation_retries += head_retries
+    tail_source = [text for _, text in head_span[-_CONTEXT_LINES:]]
+    tail_context = (
+        list(zip(tail_source, head[-_CONTEXT_LINES:], strict=False)) if head is not None else []
+    )
+    tail, tail_retries = await _translate_span(
+        chat,
+        system,
+        tail_span,
+        block_index,
+        target_language,
+        secondary_language,
+        context=tail_context,
+        previous_source=tail_source,
+        allow_split=False,
+    )
+    validation_retries += tail_retries
+    if head is None or tail is None:
+        return None, validation_retries
+    return head + tail, validation_retries
 
 
 def _validate_block(
@@ -477,10 +574,18 @@ async def translate_events(
         bi: result for bi, result in checkpoint.blocks.items() if 0 <= bi < stats.total_blocks
     }
     checkpoint.failed_blocks.intersection_update(translated)
-    stats.failed_blocks = len(checkpoint.failed_blocks)
-    stats.kept_original = sum(
-        len(translated[bi]) for bi in checkpoint.failed_blocks if bi in translated
-    )
+    # 失败块存的是「保留原文」的占位而不是译文，续传必须重新翻译它们：
+    # 只把它们记账、不重排队，会让任务一开跑就因历史失败数顶穿熔断阈值而
+    # 立刻中止，而失败块永远得不到第二次机会——续传彻底死锁。改模型配置后
+    # 重新发起也救不回来，因为断点按源文件指纹命中的还是同一份记录。
+    # 熔断改为只统计本次运行真正失败的块，历史失败块重译成功即自动出账。
+    for bi in sorted(checkpoint.failed_blocks):
+        translated.pop(bi, None)
+    if checkpoint.failed_blocks:
+        logger.info(
+            "断点中有 %d 个失败块（此前保留原文），本次续传将重新翻译",
+            len(checkpoint.failed_blocks),
+        )
     target_concurrency = TRANSLATION_CONCURRENCY
     active_started: dict[int, float] = {}
     last_completed_at: float | None = None
@@ -546,12 +651,6 @@ async def translate_events(
     if phase is not None:
         phase("translating", f"正在使用 {target_concurrency} 路并行翻译对白")
 
-    if stats.total_blocks and stats.failed_blocks / stats.total_blocks > FAILED_BLOCK_ABORT_RATE:
-        raise TranslationAborted(
-            f"翻译失败块已达 {stats.failed_blocks}/{stats.total_blocks}，"
-            "超过熔断阈值，任务中止（已完成块已暂存，修复模型配置后可续传）"
-        )
-
     remaining = deque(bi for bi in range(stats.total_blocks) if bi not in translated)
     running: dict[asyncio.Task[tuple[int, list[str], bool, int]], int] = {}
     rate_limit_attempts: dict[int, int] = {}
@@ -576,16 +675,16 @@ async def translate_events(
                         strict=False,
                     )
                 )
-            user = _block_user_prompt(block, context, previous_source)
             task = asyncio.create_task(
                 _translate_block(
                     chat,
                     system,
-                    user,
                     block,
                     bi,
                     target_language,
                     secondary_language,
+                    context=context,
+                    previous_source=previous_source,
                 ),
                 name=f"subtitle-translate-block-{bi + 1}",
             )
@@ -673,6 +772,10 @@ async def translate_events(
                     checkpoint.failed_blocks.add(bi)
                     stats.failed_blocks += 1
                     stats.kept_original += len(blocks[bi])
+                else:
+                    # 历史失败块这次翻成了：从断点的失败名单里销账，
+                    # 否则下次续传还会白白重译一遍已经成功的块。
+                    checkpoint.failed_blocks.discard(bi)
                 checkpoint.save()
                 last_completed_at = time.monotonic()
                 notify(tuple(sorted(index + 1 for index in running.values())))
@@ -727,8 +830,9 @@ async def translate_events(
                 and stats.failed_blocks / stats.total_blocks > FAILED_BLOCK_ABORT_RATE
             ):
                 raise TranslationAborted(
-                    f"翻译失败块已达 {stats.failed_blocks}/{stats.total_blocks}，"
-                    "超过熔断阈值，任务中止（已完成块已暂存，修复模型配置后可续传）"
+                    f"本次已有 {stats.failed_blocks}/{stats.total_blocks} 块翻译失败，"
+                    "超过熔断阈值，任务中止（成功块已暂存，"
+                    "换用输出预算更充裕的模型后重新发起可从断点续译失败块）"
                 )
             schedule()
             notify(tuple(sorted(bi + 1 for bi in running.values())))
