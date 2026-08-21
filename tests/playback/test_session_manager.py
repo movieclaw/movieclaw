@@ -485,3 +485,103 @@ async def test_signal_handler_contract_uses_killpg(manager, monkeypatch):
     )
     await manager.stop(session.id)
     assert seen and seen[0][1] == signal.SIGTERM
+
+
+# ---------------------------------------------------------------------------
+# 竞态与异常路径
+# ---------------------------------------------------------------------------
+
+
+async def test_concurrent_starts_respect_the_limit(manager, monkeypatch):
+    """并发起会话不能突破上限——检查与占位之间如果有 await，就会漏。"""
+    install_fake(monkeypatch, WRITES_PLAYLIST_THEN_SLEEPS)
+    results = await asyncio.gather(
+        *[
+            manager.start(
+                make_plan(file_id=i), source_path="/m/a.mkv", member_id=0, max_remux=2
+            )
+            for i in range(5)
+        ],
+        return_exceptions=True,
+    )
+    started = [r for r in results if not isinstance(r, Exception)]
+    refused = [r for r in results if isinstance(r, SessionLimitError)]
+    try:
+        assert len(started) + len(refused) == 5
+        assert len(started) <= 2, f"并发突破了上限：起了 {len(started)} 个"
+        assert refused, "全都起成功了，上限没生效"
+    finally:
+        await manager.shutdown()
+
+
+async def test_concurrent_stops_are_idempotent(manager, monkeypatch):
+    """同一会话被并发停止（用户点停 + 心跳超时 + 关页面）不能炸。"""
+    install_fake(monkeypatch, WRITES_PLAYLIST_THEN_SLEEPS)
+    session = await manager.start(make_plan(), source_path="/m/a.mkv", member_id=0)
+    pid = session.process.pid
+    results = await asyncio.gather(*[manager.stop(session.id) for _ in range(4)])
+    assert sum(1 for r in results if r) == 1  # 只有一个真的停掉了
+    assert await wait_until(lambda: not pid_alive(pid))
+
+
+async def test_session_dying_midway_is_reported_not_hidden(manager, monkeypatch):
+    """ffmpeg 起来之后半路崩了——不能假装还活着让客户端一直拉空分片。"""
+    dies_after_playlist = """
+import sys, time, pathlib
+out = pathlib.Path(sys.argv[1])
+out.write_text("#EXTM3U\\n")
+time.sleep(0.2)
+print("Segmentation fault", file=sys.stderr)
+sys.exit(139)
+"""
+    install_fake(monkeypatch, dies_after_playlist)
+    session = await manager.start(make_plan(), source_path="/m/a.mkv", member_id=0)
+    try:
+        assert session.state == "ready"
+        assert await wait_until(lambda: session.process.returncode is not None)
+        # 进程已死但 stderr 尾巴留着，供诊断面板与日志定位
+        assert any("Segmentation fault" in line for line in session.stderr_tail)
+    finally:
+        await manager.shutdown()
+
+
+async def test_one_member_can_play_two_different_files(manager, monkeypatch):
+    """停旧会话只针对同一文件——同时开两部片是正常使用。"""
+    install_fake(monkeypatch, WRITES_PLAYLIST_THEN_SLEEPS)
+    try:
+        first = await manager.start(make_plan(file_id=1), source_path="/m/a.mkv", member_id=5)
+        second = await manager.start(make_plan(file_id=2), source_path="/m/b.mkv", member_id=5)
+        assert await manager.stop_for_file(1, member_id=5) == 1
+        assert manager.get(first.id) is None
+        assert manager.get(second.id) is not None
+    finally:
+        await manager.shutdown()
+
+
+async def test_ping_during_reap_does_not_resurrect_a_stopped_session(manager, monkeypatch):
+    """回收和心跳撞车时，回收赢——会话已经杀了就不该被 ping 复活。"""
+    install_fake(monkeypatch, WRITES_PLAYLIST_THEN_SLEEPS)
+    monkeypatch.setattr(session_mod, "SESSION_IDLE_TIMEOUT_S", 0.1)
+    session = await manager.start(make_plan(), source_path="/m/a.mkv", member_id=0)
+    await asyncio.sleep(0.15)
+    await manager.reap()
+    assert manager.ping(session.id) is False
+    assert manager.get(session.id) is None
+
+
+async def test_start_failure_frees_the_concurrency_slot(manager, monkeypatch):
+    """启动失败必须把占用的名额还回去，否则失败几次就再也起不了会话。"""
+    install_fake(monkeypatch, DIES_IMMEDIATELY)
+    for _ in range(3):
+        with pytest.raises(SessionStartError):
+            await manager.start(
+                make_plan(), source_path="/m/a.mkv", member_id=0, max_remux=1
+            )
+    install_fake(monkeypatch, WRITES_PLAYLIST_THEN_SLEEPS)
+    session = await manager.start(
+        make_plan(), source_path="/m/a.mkv", member_id=0, max_remux=1
+    )
+    try:
+        assert session.state == "ready"
+    finally:
+        await manager.shutdown()
