@@ -1040,12 +1040,14 @@ Mac mini 验证。做成发版前的人工清单，列进 `.claude/skills/releas
 | 决策引擎 | `tests/playback/test_decide.py` | 40 |
 | 关键帧估算 | `tests/media/test_keyframe_interval.py` | 11 |
 | 命令装配 | `tests/playback/test_ffmpeg_args.py` | 28 |
-| 会话与进程契约 | `tests/playback/test_session_manager.py` | 27 |
+| 会话与进程契约 | `tests/playback/test_session_manager.py` | 33 |
 | 签名 token | `tests/playback/test_stream_signing.py` | 14 |
 | 决策服务层 | `tests/api/test_playback_decide.py` | 4 |
 | 取流端点 | `tests/api/test_playback_stream.py` | 23 |
 | 转码执行（真 ffmpeg） | `tests/playback/test_transcode_integration.py` | 10 |
 | 端到端（真 HTTP + 真 ffmpeg） | `tests/api/test_playback_e2e.py` | 6 |
 
-前七项进 CI 默认门禁（假 ffmpeg 替身，不需要系统装 ffmpeg）；后两项标
-`integration`，需要 ffmpeg。
+合计 **169 条**。前七项（153 条）进 CI 默认门禁——转码进程用假 ffmpeg 替身，
+不需要系统装 ffmpeg；后两项（16 条）标 `integration`，需要 ffmpeg。
+
+全量套件跑完后用 `pgrep ffmpeg` 确认过：**没有泄漏任何转码进程**。
