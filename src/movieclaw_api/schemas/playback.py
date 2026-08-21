@@ -244,3 +244,30 @@ class PlaybackDecisionView(BaseModel):
     reason: str = ""
     # outcome == "rejected"
     suggestion: str | None = None
+
+
+class PlaybackSessionView(BaseModel):
+    """开会话的结果。
+
+    三态里只有 ``plan`` 才会真的起会话；``consent`` / ``rejected`` 原样把
+    决策带回前端，由它渲染弹窗或错误说明。
+    """
+
+    decision: PlaybackDecisionView
+    #: 档 0 没有会话（原文件直出），此处为 None
+    session_id: str | None = None
+    #: 可直接喂给 <video src> 或 hls.js 的地址，已带签名 token。
+    #: 决策不是 plan 时为 None。
+    stream_url: str | None = None
+    #: 会话时间轴的零点在文件里的位置。**文件时间 = start_ms + currentTime**——
+    #: 全前端只有这一处换算（见 ffmpeg_args 模块文档的时间轴取舍）。
+    start_ms: int = 0
+    #: 旁挂字幕地址（已带 token），与 decision.subtitles 一一对应。
+    subtitle_urls: list[str] = []
+
+
+class PlaybackSessionRequest(PlaybackDecideRequest):
+    """开会话请求：在决策请求上多一个起播位置。"""
+
+    #: 从文件的哪个位置开始。会话时间轴恒从 0 起，客户端用它换算回文件时间。
+    start_ms: int = 0

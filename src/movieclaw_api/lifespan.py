@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -210,6 +211,13 @@ def build_lifespan(settings: Settings):
         from movieclaw_api.services.subtitle_gen import tasks as subtitle_tasks  # noqa: F401
 
         await init_job_dispatcher()
+        # 网页播放器的转码会话：先清上次退出遗留的分片目录（会话状态只在内存，
+        # 目录里的任何东西都是垃圾——不能假设上次是干净退出的），再起心跳巡检。
+        from movieclaw_api.services.playback.session import get_session_manager
+
+        transcode_sessions = get_session_manager()
+        await asyncio.to_thread(transcode_sessions.cleanup_orphans)
+        transcode_sessions.start_reaper()
         logger.info("应用启动完成，数据库就绪")
         try:
             yield
@@ -217,6 +225,10 @@ def build_lifespan(settings: Settings):
             from movieclaw_jellyfin.udp import stop_discovery
 
             stop_discovery()
+            # 转码会话最先停：ffmpeg 起在独立进程组里，后端退出前必须 killpg
+            # 整组，否则会留下满负荷烧 GPU、持续写盘的孤儿进程（§4.2 契约 3）。
+            # entrypoint.sh 的 trap 只 kill 后端自己，不会连坐孙子进程。
+            await get_session_manager().shutdown()
             # 先停媒体库监听（观察者线程持有事件循环引用，须在循环关闭前退出）
             from movieclaw_api.services.library.ingest import close_ingest_watcher
             from movieclaw_api.services.library.watch import close_library_watcher

@@ -357,6 +357,17 @@ async def _get_session_secret() -> str:
     return setting.secret
 
 
+async def get_signing_secret() -> str:
+    """供其它签名用途复用的密钥（**必须配不同的 salt 做域隔离**）。
+
+    目前的使用方：网页播放器的取流 URL 签名（``services/playback/signing.py``）。
+    取流 URL 只能把凭据放查询参数——``<video src>`` 与原生 HLS 带不了自定义
+    header。复用同一把密钥的附带好处是：轮换它（全端下线）会一并作废所有
+    在途的取流 token。
+    """
+    return await _get_session_secret()
+
+
 async def rotate_session_secret() -> None:
     """轮换签名密钥：所有已签发的会话令牌立即验签失败（全端下线）。"""
     await get_setting_store().set(SessionSecretSetting(secret=secrets.token_urlsafe(48)))

@@ -530,6 +530,16 @@ _MEMBER_ALLOWLIST = {
     # 不可见库的文件一律 404；软件转码开关是全局设置，成员只会拿到
     # can_self_enable=false 的说明，改不了配置。
     ("POST", "/api/v1/playback/decide"),
+    # 会话是私人资源：get/ping/stop 都按 member_id 校验归属，成员之间互相看不见。
+    ("POST", "/api/v1/playback/sessions"),
+    ("POST", "/api/v1/playback/sessions/{session_id}/ping"),
+    ("DELETE", "/api/v1/playback/sessions/{session_id}"),
+    # 取流端点不挂登录依赖（<video src> 带不了 header），改用签名 token；
+    # 无 token 或 token 不符一律 404，与「不存在」不可区分。
+    ("GET", "/api/v1/playback/sessions/{session_id}/index.m3u8"),
+    ("GET", "/api/v1/playback/sessions/{session_id}/{name}"),
+    ("GET", "/api/v1/playback/files/{file_id}/stream"),
+    ("GET", "/api/v1/playback/files/{file_id}/subtitles"),
     # 搜索历史：个人数据；统一结果端点再按记录类型检查对应能力。
     ("GET", "/api/v1/search/history"),
     ("GET", "/api/v1/search/history/{history_id}/results"),
@@ -575,6 +585,7 @@ _PATH_DUMMIES = {
     "{entry_id}": "1",
     "{file_id}": "1",
     "{device_id}": "no-such-device",
+    "{name}": "seg00000.m4s",
     "{token_id}": "1",
     "{notice_id}": "1",
     "{run_id}": "test-run",

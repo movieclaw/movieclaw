@@ -118,3 +118,24 @@ class ConflictException(AppException):
             message=message,
             details=details,
         )
+
+
+class ServiceUnavailableException(AppException):
+    """服务暂时不可用（资源耗尽而非请求有错）。
+
+    网页播放器用它表达「转码位已满」「转码缓存达配额」这类**稍后重试就能好**
+    的情况——语义上不是客户端的错（4xx），而是服务端当下没有余量。
+    message 面向用户，中文。
+    """
+
+    def __init__(
+        self,
+        message: str = "service unavailable",
+        details: list[dict[str, Any]] | None = None,
+    ) -> None:
+        super().__init__(
+            status_code=503,
+            code="SERVICE_UNAVAILABLE",
+            message=message,
+            details=details,
+        )
