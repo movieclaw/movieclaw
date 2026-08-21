@@ -21,10 +21,14 @@ from movieclaw_api.services.ratio_boost import (
     apply_observation,
     assess_candidate,
     budget_evictable,
+    cohort_density,
+    density,
     downloader_congested,
     evictable,
+    eviction_order_key,
     free_window_sufficient,
     hand_over_if_claimed,
+    is_idle,
     pick_evictions,
     stop_loss_reason,
     turnover_seconds,
@@ -185,6 +189,17 @@ class TestFreeWindow:
         size = 200 * _GIB
         assert not free_window_sufficient(size, _NOW + timedelta(hours=3), _NOW)
         assert free_window_sufficient(size, _NOW + timedelta(hours=12), _NOW)
+
+    def test_estimate_follows_actual_per_task_speed(self) -> None:
+        """并发摊薄后每任务只剩 1 MiB/s 时，同一个窗口就不再够用。
+
+        用固定速度估算会系统性乐观：放进来的种子在免费窗口内下不完，
+        要么被止损放弃（白烧带宽），要么下成付费流量（反而伤分享率）。
+        """
+        size = 20 * _GIB
+        window = _NOW + timedelta(hours=2, minutes=30)
+        assert free_window_sufficient(size, window, _NOW, expected_speed=5 * 1024**2)
+        assert not free_window_sufficient(size, window, _NOW, expected_speed=1024**2)
 
 
 # ---------------------------------------------------------------------------
@@ -374,31 +389,41 @@ class TestEviction:
         )
         assert not evictable(unknown_fresh, _NOW, hold=timedelta(0))
 
-    def test_uncompleted_and_fast_turnover_are_kept(self) -> None:
+    def test_uncompleted_is_not_judgeable(self) -> None:
+        """下载中的任务没有可信的密度读数，不进汰换候选（由止损另行处理）。"""
         assert not evictable(_task(completed=False), _NOW)
-        # 周转 5 天（10 天地板以内）= 单位存储仍在产出，留下
-        fast = _task(upload_rate_ema=(10 * _GIB) / (5 * 86400))
-        assert not evictable(fast, _NOW)
 
-    def test_turnover_floor_is_size_relative(self) -> None:
-        """同样的绝对速度，判决取决于体积：效率的单位是 rate/size，不是 rate。
+    def test_evictable_asks_judgeability_not_quality(self) -> None:
+        """evictable 只回答"能不能评价它"，不回答"它够不够好"。
+
+        高效种子同样进候选池——够不够好是相对于能换进来的东西而言的，
+        由 pick_evictions 的边际比较逐个候选回答。这里绝不能有绝对地板：
+        曾有过的"周转 > 10 天"地板换算成密度是 1.21 KiB/s per GiB，而同期
+        门外候选实测密度 30~210，于是整池 68 个种全部"合格"、一个都换不动。
+        """
+        efficient = _task(upload_rate_ema=(10 * _GIB) / (5 * 86400))  # 周转 5 天
+        assert evictable(efficient, _NOW)
+
+    def test_density_is_size_relative(self) -> None:
+        """效率的单位是 rate/size，不是 rate。
 
         15 KiB/s 对 5 GiB 是约 4 天周转的好资产；对 100 GiB 是 81 天周转的
-        坏资产——绝对速度地板会把这两个判反。
+        坏资产——绝对速度会把这两个判反。
         """
         rate = 15 * 1024.0
         small = _task(size_bytes=5 * _GIB, upload_rate_ema=rate)
         big = _task(torrent_id="big", size_bytes=100 * _GIB, upload_rate_ema=rate)
-        assert not evictable(small, _NOW)
-        assert evictable(big, _NOW)
+        assert density(small) > density(big)
+        assert eviction_order_key(big) < eviction_order_key(small)  # 大而稀的先走
 
-    def test_pick_slowest_turnover_first(self) -> None:
-        """汰换顺序按单位存储产出：大而慢的先走，哪怕它的绝对速度更高。"""
-        # 绝对速度 8 KiB/s 但只有 1 GiB：周转 1.5 天…… 需为可汰换设成慢的
-        dense = _task(torrent_id="dense", size_bytes=10 * _GIB, upload_rate_ema=800.0)
-        sparse = _task(torrent_id="sparse", size_bytes=40 * _GIB, upload_rate_ema=1600.0)
-        # dense 周转 ≈ 155 天，sparse 周转 ≈ 311 天（绝对速度反而更高）
-        picked = pick_evictions([dense, sparse], need_bytes=30 * _GIB, now=_NOW)
+    def test_pick_lowest_density_first_within_tier(self) -> None:
+        """同层内按单位存储产出排序：大而稀的先走，哪怕它的绝对速度更高。"""
+        dense = _task(torrent_id="dense", size_bytes=10 * _GIB, upload_rate_ema=2048.0)
+        sparse = _task(torrent_id="sparse", size_bytes=40 * _GIB, upload_rate_ema=4096.0)
+        # dense 密度 1.9e-7、sparse 9.5e-8（sparse 绝对速度反而是 dense 的两倍）
+        picked = pick_evictions(
+            [dense, sparse], need_bytes=30 * _GIB, now=_NOW, expected_density=2.5e-7
+        )
         assert picked is not None
         assert [t.torrent_id for t in picked] == ["sparse"]
 
@@ -422,16 +447,139 @@ class TestEviction:
         assert pick_evictions([protected_by_hold, small], need_bytes=20 * _GIB, now=_NOW) is None
 
 
+class TestIdleTier:
+    """空闲层：24h EMA 低于地板 = 当下零产出，排在在产资产之前，且换掉
+    它不需要过保证金。"""
+
+    def test_idle_is_measured_on_ema_never_instantaneous(self) -> None:
+        """"有没有速度"只能问 24 小时 EMA。实测某时刻全池 125 个种里 121 个
+        瞬时上行为 0，其中包括累计上传 100 GiB 的池内头号资产——PT 上传
+        以天为周期突发，用瞬时判会清空全池。EMA 高就不是空闲，哪怕此刻静默。
+        """
+        bursty = _task(upload_rate_ema=400 * 1024.0, uploaded_bytes=100 * _GIB)
+        assert not is_idle(bursty)
+        assert is_idle(_task(upload_rate_ema=512.0))
+
+    def test_idle_evicted_before_producing_regardless_of_density(self) -> None:
+        """空闲层优先于在产层，即使空闲的那个密度更高（小体积微speed 种）。
+
+        这是"不能把存量有速度的淘汰掉"的直接编码：先用零成本的空间接新种。
+        """
+        # 空闲但密度高：0.02 GiB / 512 B/s → 密度 2.4e-8… 仍排在在产之前
+        idle_small = _task(torrent_id="idle", size_bytes=_GIB // 8, upload_rate_ema=512.0)
+        producing = _task(torrent_id="hot", size_bytes=_GIB // 8, upload_rate_ema=8192.0)
+        assert density(idle_small) < density(producing)
+        picked = pick_evictions(
+            [producing, idle_small], need_bytes=_GIB // 8, now=_NOW, expected_density=1.0
+        )
+        assert picked is not None
+        assert [t.torrent_id for t in picked] == ["idle"]
+
+    def test_idle_needs_no_margin(self) -> None:
+        """空闲层不过保证金：没有标定系数（冷启动）时照样能换，这正是
+        自举路径——换进来的新种 24 小时内补充标定样本。"""
+        idle = _task(torrent_id="idle", upload_rate_ema=0.0)
+        picked = pick_evictions([idle], need_bytes=_GIB, now=_NOW, expected_density=None)
+        assert picked is not None
+        assert [t.torrent_id for t in picked] == ["idle"]
+
+
+class TestSwapMargin:
+    """在产资产的绝对保护：候选期望密度要显著超过实测密度才换手。"""
+
+    def test_producing_asset_survives_a_mediocre_candidate(self) -> None:
+        """候选只是略强（未过保证金）→ 不动在产资产，宁可放弃这个候选。
+
+        在池产出是实测的、候选是期望的，置信度不对称；赌错是双输
+        （丢实测产出 + 白烧一遍下载带宽）。
+        """
+        producing = _task(size_bytes=10 * _GIB, upload_rate_ema=8192.0)
+        d = density(producing)
+        assert pick_evictions(
+            [producing], need_bytes=10 * _GIB, now=_NOW, expected_density=d * 1.5
+        ) is None
+        assert pick_evictions(
+            [producing], need_bytes=10 * _GIB, now=_NOW, expected_density=d * 2.5
+        ) is not None
+
+    def test_no_calibration_never_touches_producing(self) -> None:
+        """标定样本不足时绝不动在产资产——没有换算依据就没有比较的资格。"""
+        producing = _task(size_bytes=10 * _GIB, upload_rate_ema=8192.0)
+        assert pick_evictions(
+            [producing], need_bytes=10 * _GIB, now=_NOW, expected_density=None
+        ) is None
+
+    def test_stops_at_first_survivor(self) -> None:
+        """候选按密度升序，一旦有一个扛住保证金，后面只会更强 → 收手。
+
+        腾不够就返回 None 放弃这个候选，而不是继续往上啃高产出资产。
+        """
+        weak = _task(torrent_id="weak", size_bytes=_GIB, upload_rate_ema=1500.0)
+        strong = _task(torrent_id="strong", size_bytes=_GIB, upload_rate_ema=100 * 1024.0)
+        # 期望密度只够吃掉 weak，need 需要两个才够 → 放弃
+        expected = density(weak) * 2.5
+        assert pick_evictions(
+            [weak, strong], need_bytes=2 * _GIB, now=_NOW, expected_density=expected
+        ) is None
+
+
+class TestCohortDensity:
+    """候选期望密度 = 新鲜队列的实测密度中位数，直接读观测，不做外推。"""
+
+    def _sample(self, idx: int, ema: float, done_ago: timedelta) -> RatioBoostTask:
+        return _task(
+            torrent_id=f"c{idx}",
+            info_hash=f"{idx:040d}",
+            size_bytes=10 * _GIB,
+            entry_score=100.0,
+            upload_rate_ema=ema,
+            completed_at=_NOW - done_ago,
+        )
+
+    def test_median_of_recent_completions(self) -> None:
+        tasks = [
+            self._sample(i, ema, timedelta(hours=2))
+            for i, ema in enumerate([1024.0, 2048.0, 3072.0, 4096.0, 5120.0])
+        ]
+        got = cohort_density(tasks, _NOW)
+        assert got is not None
+        assert math.isclose(got, 3072.0 / (10 * _GIB))  # 中位样本的密度
+
+    def test_ignores_entry_score(self) -> None:
+        """评分不参与量级预测：实测评分弹性只有 0.18（t=1.49，与 0 无法
+        区分），弹性=1 被强烈拒绝（t=-6.8）。按评分线性外推会把高分候选
+        高估两倍以上，而高分候选正是唯一会去动在产资产的那种。"""
+        low = [self._sample(i, 2048.0, timedelta(hours=2)) for i in range(5)]
+        high = [self._sample(i, 2048.0, timedelta(hours=2)) for i in range(5)]
+        for t in high:
+            t.entry_score = 900.0
+        assert cohort_density(low, _NOW) == cohort_density(high, _NOW)
+
+    def test_insufficient_samples_returns_none(self) -> None:
+        """样本不足 → None，调用方退回只动空闲层的保守路径。"""
+        tasks = [self._sample(i, 2048.0, timedelta(hours=2)) for i in range(4)]
+        assert cohort_density(tasks, _NOW) is None
+
+    def test_stale_completions_excluded(self) -> None:
+        """只用完成后 24 小时内的样本：密度强烈依赖种龄（实测入池 0-12h
+        的中位是 36-60h 的 12 倍），拿老种标定会把候选低估一个数量级。"""
+        tasks = [self._sample(i, 2048.0, timedelta(hours=30)) for i in range(6)]
+        assert cohort_density(tasks, _NOW) is None
+
+
 class TestBudgetConvergence:
     """预算收敛的判据（budget_evictable）：用户调小预算必须收敛到位，
     高效不是免死金牌；只有保留期是铁律。"""
 
-    def test_efficient_task_is_evictable_under_budget_pressure(self) -> None:
-        """周转 5 天的高效种子：日常汰换（evictable）不会碰它，但预算
-        收敛可以——否则 1000G 调 100G 时高效种子占着 900G 永不归还。"""
-        efficient = _task(upload_rate_ema=(10 * _GIB) / (5 * 86400))
-        assert not evictable(efficient, _NOW)
-        assert budget_evictable(efficient, _NOW)
+    def test_immature_task_is_evictable_under_budget_pressure(self) -> None:
+        """刚下完、密度还测不准的种子：日常汰换要等测量成熟，预算收敛不等——
+        否则 1000G 调 100G 时一池新种占着 900G 迟迟不归还。
+
+        这是 evictable 与 budget_evictable 仅剩的区别（两者的保留期铁律相同）。
+        """
+        fresh = _task(completed_at=_NOW - timedelta(hours=1), uploaded_bytes=_GIB)
+        assert not evictable(fresh, _NOW)
+        assert budget_evictable(fresh, _NOW)
 
     def test_hold_remains_inviolable(self) -> None:
         """保留期铁律在预算压力下依然成立（H&R 安全垫不因用户调预算失效）。"""
@@ -457,20 +605,30 @@ class TestBudgetConvergence:
 
 
 class TestAdmissionHeadroom:
-    """准入余量 = 剩余预算 + 可汰换容量——准入扫描与同步快节奏的统一开关。"""
+    """准入余量 = 剩余预算 + 已过保留期（可判定）任务的占用。
+
+    它只服务索引同步的节奏，**不是准入扫描的开关**——"能换手"不等于
+    "该换手"，后者由准入时的边际比较逐个候选回答。
+    """
 
     def test_empty_pool_full_headroom(self) -> None:
         assert admission_headroom([], _BUDGET, _NOW) == _BUDGET
 
-    def test_evictable_capacity_counts_as_headroom(self) -> None:
-        """预算被占满但有低效老种可换：发现新种仍有意义（会触发汰换腾位）。"""
-        hot = _task(size_bytes=60 * _GIB, upload_rate_ema=100 * 1024)  # 高效，不可换
-        idle = _task(torrent_id="i", size_bytes=40 * _GIB, upload_rate_ema=0.0)  # 可换
-        assert admission_headroom([hot, idle], _BUDGET, _NOW) == 40 * _GIB
+    def test_judgeable_capacity_counts_as_headroom(self) -> None:
+        """池满但有种子已过保留期：整池有换手能力，同步继续钉最快节奏。
+
+        在产资产也算进余量——它有没有资格被评价，和它值不值得被换掉，
+        是两个问题。
+        """
+        hot = _task(size_bytes=60 * _GIB, upload_rate_ema=100 * 1024)
+        held = _task(
+            torrent_id="h", size_bytes=40 * _GIB, created_at=_NOW - timedelta(hours=10)
+        )
+        assert admission_headroom([hot, held], _BUDGET, _NOW) == 60 * _GIB
 
     def test_full_pool_within_hold_has_no_headroom(self) -> None:
-        """池子满且全在 72 小时保留期内：换不动，余量为 0——此时准入跳过、
-        索引同步回落到正常自适应（不再为发现新种白打站点）。"""
+        """池子满且全在 72 小时保留期内：一个都动不了，余量为 0——此时索引
+        同步才回落到正常自适应（不再为发现新种白打站点）。"""
         young = _task(size_bytes=100 * _GIB, created_at=_NOW - timedelta(hours=10))
         assert admission_headroom([young], _BUDGET, _NOW) == 0
 

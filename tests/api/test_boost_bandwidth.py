@@ -14,6 +14,7 @@ from movieclaw_api.services.boost_bandwidth import (
     _ENVELOPE_FLOOR,
     _PER_TASK_FLOOR,
     LinkControl,
+    concurrent_download_cap,
     observe,
     per_task_limit,
 )
@@ -94,3 +95,33 @@ class TestPerTaskLimit:
         # 摊薄到地板以下时按地板：限速不能把任务饿死
         assert per_task_limit(2 * _MIB, 8) == _PER_TASK_FLOOR
         assert per_task_limit(30 * _MIB, 0) is None
+
+
+class TestConcurrentDownloadCap:
+    """并发上限由包络导出，没有自由参数——个数是速率的劣质代理，
+    真正该被限的是下行总速率。"""
+
+    def test_derived_from_envelope_over_floor(self) -> None:
+        """上限 = 包络 / 每任务地板：正好是"再多一个就击穿地板"的那个点。
+
+        超过它，per_task_limit 会退到地板，聚合速率反过来超出包络，
+        限速形同虚设。
+        """
+        assert concurrent_download_cap(30 * _MIB) == 30 * _MIB // _PER_TASK_FLOOR
+        assert concurrent_download_cap(5 * _MIB) == 5 * _MIB // _PER_TASK_FLOOR
+        # 与 per_task_limit 自洽：正好在上限内时摊出的限速不低于地板
+        cap = concurrent_download_cap(30 * _MIB)
+        assert per_task_limit(30 * _MIB, cap) >= _PER_TASK_FLOOR
+
+    def test_unclamped_link_has_no_cap(self) -> None:
+        """链路从未出现拥塞证据（对称大带宽）→ 不设并发限制。
+
+        对这类用户，任何固定并发帽都是纯粹的损失——下行再快也不伤上行。
+        """
+        assert concurrent_download_cap(None) is None
+
+    def test_never_zero(self) -> None:
+        """包络被压到极低时仍允许 1 个在下：否则刷流彻底停摆，
+        而单个任务本来就受 per_task_limit 的地板保护。"""
+        assert concurrent_download_cap(1) == 1
+        assert concurrent_download_cap(_PER_TASK_FLOOR // 2) == 1

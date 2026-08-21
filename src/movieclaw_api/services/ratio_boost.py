@@ -29,6 +29,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import math
+import statistics
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -37,6 +38,7 @@ from sqlalchemy import case, delete, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
+from movieclaw_api.services.boost_bandwidth import concurrent_download_cap, per_task_limit
 from movieclaw_db.engine import get_database
 from movieclaw_db.models import (
     BoostTaskState,
@@ -75,7 +77,11 @@ _VOLATILE_FRESHNESS = timedelta(hours=2)
 # 不受 72 小时保留期约束——保留期保护的是已完成的做种）
 _ABANDON_REMAINING_FRACTION = 0.1
 _STUCK_AFTER = timedelta(hours=48)
-# 免费窗口安全垫：按保守下载速度估算下载时长，窗口不足即放弃
+# 免费窗口安全垫：按预期下载速度估算下载时长，窗口不足即放弃。
+# 预期速度优先用带宽哨兵包络摊出的每任务限速（见 _admit_candidates）——
+# 并发上升会摊薄每个任务的速度，用固定值估算会系统性乐观、把注定赶不上
+# 免费窗口的种子放进来白烧一遍带宽。链路无拥塞证据（包络为 None）时回退
+# 到这个保守常量
 _ASSUMED_DL_SPEED = 5 * 1024 * 1024  # 5 MiB/s
 _MIN_FREE_MARGIN = timedelta(hours=2)
 # 汰换的最低保留期（H&R 安全垫）默认值：每站可配（boost_hold_days），
@@ -83,11 +89,42 @@ _MIN_FREE_MARGIN = timedelta(hours=2)
 # 注意这只是"考核时长未知"时的保底：站点配置了 hr_seed_hours 且种子明确
 # 标注 H&R 时，该任务的保留期取 max(保底, 真实考核时长)，真实值优先
 _DEFAULT_MIN_HOLD = timedelta(days=3)
-# 效率的衡量单位是「周转」= 单位存储的上传速度（rate/size）。预算约束的是
-# 存储×时间，最大化总上传是个背包问题，按密度（rate/size）贪心保留/汰换
-# 即近似最优——绝对速度会留错资产：200 GiB 跑 10 KiB/s（周转 240 天）远差于
-# 2 GiB 跑 8 KiB/s（周转 3 天）。地板：10 天内传不出自己体积一遍的可替换
-_EVICT_TURNOVER_DAYS = 10
+# 效率的衡量单位是「密度」= 单位存储的上传速度（rate/size，其倒数即「周转」）。
+# 预算约束的是存储×时间，最大化总上传是个背包问题，按密度贪心保留/汰换即
+# 近似最优——绝对速度会留错资产：200 GiB 跑 10 KiB/s（周转 240 天）远差于
+# 2 GiB 跑 8 KiB/s（周转 3 天）。
+#
+# 这里**刻意没有绝对地板**。曾有过「周转 > 10 天才可汰换」的写法，实测证明
+# 它是错的：地板换算成密度是 1.21 KiB/s per GiB，而同期门外候选的实测密度
+# 是 30~210——地板定在市场出清价的 1/25 到 1/170，于是整池 68 个种全部
+# "合格"、一个都换不动，池子冻死在低产出状态。绝对阈值回答的是"这块资产
+# 烂不烂"，而真正的问题永远是"它比我能换进来的东西烂不烂"。判据因此改为
+# 边际比较（见 pick_evictions），绝对量只保留 H&R 保留期这一条硬约束。
+#
+# 空闲层判据：24 小时 EMA 低于此值 = 当下零产出，换掉它不损失任何在产产能，
+# 因此**不需要过换手保证金**。必须用 EMA 而不是瞬时速度——实测某时刻
+# 125 个种里 121 个瞬时上行为 0，其中包括累计上传 100 GiB 的池内头号资产
+#（PT 上传以天为周期突发，见 _EMA_WINDOW_SECONDS）。用瞬时判会清空全池
+_IDLE_EMA_FLOOR = 1024.0  # 1 KiB/s
+# 换手保证金：动一个**还在产出**的种子，候选的期望密度必须超过它实测密度
+# 这么多倍。在池的产出是实测的、候选的产出是期望的，两者置信度不对称——
+# 拿在产资产赌未验证的候选，赌错是双输（丢实测产出 + 白烧一遍下载带宽）。
+# 免费种下载不计分享率，所以保证金不必很大；但下载会挤占上行（实测：下行
+# 冲到 69 MB/s 时上传从 5.2 塌到 1.5 MiB/s），所以也不能是 1
+_SWAP_MARGIN = 2.0
+# 评分→密度的换算系数：候选只有无量纲评分 L/(S+1)，在池的是实测密度
+#（字节/秒每字节），不标定就没法比大小。系数从池内任务自己反解，不写死——
+# 不同站点的蜂群动力学、不同线路的上行能力都会改变它，与带宽哨兵的基线
+# 同理，必须从本地观测里长出来。
+#
+# 只用「完成后 24 小时内」的样本标定：候选即将变成的就是这个阶段的样子。
+# 实测该系数强烈依赖种龄（入池 0-12h 中位 0.324，36-60h 只有 0.027，差 12 倍），
+# 用全池中位会把候选低估一个数量级。取中位而非均值：密度分布长尾。
+_CALIBRATION_WINDOW = timedelta(hours=24)
+# 样本不足时返回 None，调用方退回"只动空闲层"的保守路径。这条路径也是
+# 冷启动的自举来源：空闲层汰换不需要标定，换进来的新种在 24 小时内又
+# 补充了标定样本，系数因此永远不会饿死
+_CALIBRATION_MIN_SAMPLES = 5
 # 上传速度 EMA 的时间窗口：PT 上传以「天」为周期突发（晚高峰猛、白天静），
 # 短窗口会把昨晚狂传的种子在今天下午误判成死种。α 按时距计算（1-e^(-dt/W)），
 # tick 间隔漂移也不影响窗口语义
@@ -97,8 +134,10 @@ _EMA_WINDOW_SECONDS = 24 * 3600
 # - 零产出速汰：完成 6 小时累计上传仍不足 64 MiB → 蜂群根本不来要数据，
 #   不必等公平测量窗走完，及时淘汰"下完却一直起不来"的种子；
 # - 公平判定窗：完成满 12 小时（此时已观测入池至少 12 小时以上），
-#   周转仍然太慢就是真慢，进入常规汰换候选。
+#   密度读数才算可信，进入常规汰换候选。
 # 蜂群已死（tracker 汇报 0 下载者）不受这两个窗口约束，随时可换。
+# 注意这一组是**可判定性**门槛（"我有没有资格评价它"），不是质量门槛
+#（"它够不够好"）——质量一律交给边际比较，绝不设绝对线。
 _ZERO_YIELD_AFTER = timedelta(hours=6)
 _ZERO_YIELD_BYTES = 64 * 1024**2
 _JUDGMENT_AFTER_COMPLETE = timedelta(hours=12)
@@ -110,19 +149,23 @@ _MAX_SIZE_BUDGET_FRACTION = 4
 _MIN_ADMIT_SCORE = 3.0
 # 每站每 tick 最多提交数：对站点保持克制
 _MAX_ADMIT_PER_TICK = 3
-# 同时在下的刷流任务上限（跨站点、按下载器计）：SRPT 思想——高分种近似
-# 串行地独享下载带宽，最早完成最早独享做种红利。首夜数据：平均在下 7.5 个
-# 的小时下行冲到 69 MB/s、上传塌掉 3/4；并发压低后每个任务下得更快、
-# 更早上桌、免费窗口风险也更小
-_MAX_CONCURRENT_DOWNLOADS = 3
+# 在下并发不设常量上限：见 boost_bandwidth.concurrent_download_cap()。
+# 曾经这里写死 3，理由是首夜数据"平均在下 7.5 个时下行冲到 69 MB/s、上传
+# 塌掉 3/4"。但那次事故的因是**下行总速率**，不是任务个数——3 个种各跑
+# 20 MiB/s 比 10 个种各跑 1 MiB/s 伤得多，个数只是速率的劣质代理。
+# 速率现在由带宽哨兵的 AIMD 包络直接管着，并发上限从包络导出（包络 /
+# 每任务速度地板），链路没有拥塞证据时干脆不设限
 # JIT 预测止损的证据门槛：入池不足 30 分钟不预测（速率观测还不充分，
 # 可能刚排完队开始下载，凭均速误杀会永久跳过一个好种）
 _PREDICT_MIN_AGE = timedelta(minutes=30)
 # 提交后宽限：刚提交的任务可能还没出现在下载器列表里，不能立刻判 missing
 _MISSING_GRACE = timedelta(minutes=10)
-# 最小准入余量：余量（剩余预算 + 可汰换容量）低于此值时视为"没有能力接新种"——
-# 准入扫描跳过，索引同步也回落到正常自适应节奏（值得抢的免费种极少小于 1 GiB）
-_MIN_ADMISSION_HEADROOM = 1024**3
+# 准入扫描没有余量门槛：曾经有过 1 GiB 的绝对门槛，它是上面那条 10 天地板
+# 的派生——余量 = 剩余预算 + 可汰换容量，地板判定"没有可换的"，余量就掉到
+# 门槛以下。实测卡在 0.99 GiB，差 1% 停扫。更坏的是同一判据还驱动
+# wants_fast_sync，池满会让索引同步退化到慢排期：停止发现 = 输掉新鲜度
+# 竞赛，而新鲜度恰恰是刷流收益的主要来源。扫描本身很便宜（一次 SQL +
+# 200 行内存打分），现在永远跑，能不能接由边际比较自己回答
 # 余量恢复后推同步一把的阈值：游标排期还在 15 分钟开外才值得打断
 #（刚回落不久/本来就快的排期没必要动）
 _NUDGE_THRESHOLD = timedelta(minutes=15)
@@ -141,17 +184,26 @@ _BOOST_SUBDIR = "movieclaw-boost"
 
 
 def free_window_sufficient(
-    size_bytes: int, free_deadline: datetime | None, now: datetime
+    size_bytes: int,
+    free_deadline: datetime | None,
+    now: datetime,
+    *,
+    expected_speed: float = _ASSUMED_DL_SPEED,
 ) -> bool:
     """免费窗口是否足够把种子下完（含安全垫）。
 
     deadline 为 NULL 表示"无促销截止/长期免费/未知"——索引层已把 M-Team
     长期免费哨兵归一为 NULL，且候选查询以 is_free=True 为前提，此处 NULL
     按"窗口充足"处理。
+
+    ``expected_speed`` 是这个种子**实际能分到**的下载速度：并发越高每个
+    任务分得越少，拿固定值估算会系统性乐观，放进来一批注定在免费窗口内
+    下不完的种子——它们要么被止损放弃（白烧带宽），要么下成付费流量
+    （反而伤分享率）。调用方从带宽哨兵的包络摊算后传入。
     """
     if free_deadline is None:
         return True
-    required = max(_MIN_FREE_MARGIN, timedelta(seconds=size_bytes / _ASSUMED_DL_SPEED))
+    required = max(_MIN_FREE_MARGIN, timedelta(seconds=size_bytes / expected_speed))
     return free_deadline - now >= required
 
 
@@ -162,6 +214,7 @@ def assess_candidate(
     budget_bytes: int,
     tracked_torrent_ids: set[str],
     hr_hold: timedelta | None = None,
+    expected_speed: float = _ASSUMED_DL_SPEED,
 ) -> tuple[bool, float]:
     """评估一个索引行是否值得抢，返回（是否合格, 评分）。
 
@@ -199,7 +252,9 @@ def assess_candidate(
         or now - row.volatile_refreshed_at > _VOLATILE_FRESHNESS
     ):
         return False, 0.0  # 促销观测太旧，等同步刷新后再评估
-    if not free_window_sufficient(row.size_bytes, row.free_deadline, now):
+    if not free_window_sufficient(
+        row.size_bytes, row.free_deadline, now, expected_speed=expected_speed
+    ):
         return False, 0.0
     score = row.leechers / ((row.seeders or 0) + 1)
     if row.upload_volume_factor and row.upload_volume_factor > 1.0:
@@ -388,6 +443,29 @@ def turnover_seconds(task: RatioBoostTask) -> float:
     return task.size_bytes / task.upload_rate_ema
 
 
+def density(task: RatioBoostTask) -> float:
+    """产出密度 = 单位存储的上传速度（字节/秒每字节），周转的倒数。
+
+    这是预算这个背包问题里的"单价"：预算约束的是存储，密度就是每字节存储
+    换来的上传速度。汰换排序、边际比较都用它，绝不用绝对速度——15 KiB/s
+    对 5 GiB 是好资产，对 100 GiB 是坏资产。
+    """
+    if task.size_bytes <= 0:
+        return 0.0
+    return task.upload_rate_ema / task.size_bytes
+
+
+def is_idle(task: RatioBoostTask) -> bool:
+    """当下是否零产出：24 小时 EMA 低于空闲地板。
+
+    "有没有速度"必须问 EMA，不能问瞬时——PT 上传以天为周期突发，实测某
+    时刻全池 121/125 个种瞬时上行为 0，其中包括累计上传 100 GiB 的头号
+    资产。空闲层的种子换掉不损失在产产能，因此汰换时排在有产出的前面，
+    且不需要过换手保证金。
+    """
+    return task.upload_rate_ema < _IDLE_EMA_FLOOR
+
+
 def swarm_dead(task: RatioBoostTask) -> bool:
     """蜂群是否已死：tracker 明确汇报 0 个下载者。
 
@@ -413,11 +491,12 @@ def evictable(
     hold: timedelta = _DEFAULT_MIN_HOLD,
     hr_hold: timedelta | None = None,
 ) -> bool:
-    """任务是否可被汰换：下载完成 + 过了保留期 + 周转太慢 + 完成后表现分层判定。
+    """任务的密度读数是否**可判定**：下载完成 + 过了保留期 + 完成后观测已成熟。
 
-    「周转太慢」= 按当前上传 EMA，10 天都传不出自己体积的一遍（rate/size
-    密度地板）。用周转而非绝对速度：预算约束的是存储×时间，留下的应该是
-    单位存储产出高的资产。
+    注意这个函数回答的是"我有没有资格评价它"，**不是"它够不够好"**。够不够
+    好一律由边际比较回答（见 ``pick_evictions``）：够不够好是相对于能换进来
+    的东西而言的，任何绝对阈值都会在池子整体变好或变差时判错。曾经这里有一
+    条"周转 > 10 天"的绝对地板，实测把整池冻死（见 _IDLE_EMA_FLOOR 上方注释）。
 
     保留期（在此期间任何预算压力都不删）取两个来源之大者：
 
@@ -427,20 +506,21 @@ def evictable(
       明确标注 H&R 的任务——解析到真实要求时以真实为准，哪怕用户把保底
       调成了 0。
 
-    过了保留期后，判定窗口从**完成时刻**起算（完成前是在下载，谈不上
-    传得慢），按证据强度分层，越确凿越早放行汰换：
+    这是全局唯一的绝对硬约束，理由是它保护的不是效率而是**账号安全**。
 
-    - **蜂群已死**（tracker 汇报 0 下载者）——未来注定零产出，立即可换；
+    过了保留期后，判定窗口从**完成时刻**起算（完成前是在下载，密度读数
+    没有意义），按证据强度分层，越确凿越早放行：
+
+    - **蜂群已死**（tracker 汇报 0 下载者）——未来注定零产出，无需测量；
     - **零产出速汰**（完成 6 小时累计上传仍不足 64 MiB）——下完却根本
-      起不来的种子不必陪跑公平测量窗，及时淘汰腾位；
+      起不来的种子不必陪跑公平测量窗；
     - **公平判定窗**（完成满 12 小时）——EMA 已覆盖足够长的观测（含下载
-      阶段），周转仍慢就是真慢。
+      阶段），此时的密度可以拿去和候选比较。
     """
     if not (
         task.state == BoostTaskState.ACTIVE
         and task.completed
         and now - task.created_at >= _effective_hold(task, hold, hr_hold)
-        and turnover_seconds(task) > _EVICT_TURNOVER_DAYS * 86400
     ):
         return False
     if swarm_dead(task):
@@ -484,11 +564,15 @@ def admission_headroom(
     hold: timedelta = _DEFAULT_MIN_HOLD,
     hr_hold: timedelta | None = None,
 ) -> int:
-    """当前的准入余量 = 剩余预算 + 可汰换任务的占用。
+    """当前的准入余量 = 剩余预算 + 已过保留期（可判定）任务的占用。
 
-    这是"刷流还有没有能力接新种"的统一判据：预算满但有低效老种可换时，
-    发现新种仍有意义（会触发汰换腾位）；满且换不动时，发现了也下不了——
-    准入扫描与索引同步的快节奏（wants_fast_sync）都以它为开关。
+    这是"刷流有没有换手能力"的粗判据，只服务索引同步的节奏（wants_fast_sync）：
+    余量为 0 意味着整池都还在 H&R 保留期内，一个都动不了，此时高频刷索引
+    纯属浪费站点请求。
+
+    注意它**不再是准入扫描的开关**：可换手不等于该换手，"该不该换"由准入
+    时的边际比较逐个候选回答（见 pick_evictions）。把这两件事混成一个绝对
+    门槛，正是此前池子冻死的原因。
     """
     used = sum(t.size_bytes for t in tasks if t.state == BoostTaskState.ACTIVE)
     reclaimable = sum(
@@ -498,13 +582,57 @@ def admission_headroom(
 
 
 def eviction_order_key(task: RatioBoostTask) -> tuple[int, float]:
-    """汰换顺序：蜂群已死的最先走（未来注定零产出），其余按周转从慢到快。
+    """汰换顺序：三层，层内按密度从低到高（周转从慢到快）。
 
-    死种排最前是双信源策略的核心收益——同样"周转 30 天"的两个种子，
-    蜂群 0 下载者的那个没有任何翻身可能，而还有下载者的那个可能只是
-    暂时安静，应该后走。
+    - **0 蜂群已死**（tracker 汇报 0 下载者）：未来注定零产出，最先走。
+      这是双信源策略的核心收益——同样"周转 30 天"的两个种子，蜂群 0
+      下载者的那个没有翻身可能，还有下载者的那个可能只是暂时安静。
+    - **1 空闲**（24h EMA 低于地板）：当下零产出，换掉不损失在产产能。
+    - **2 在产**：还在出货的资产，永远排最后，且要过换手保证金才动。
+
+    分层负责"谁先走"（相对保护），保证金负责"值不值得动"（绝对保护），
+    两者合起来才是完整的策略——只有分层的话，池子全在产时照样会被一个
+    平庸候选啃掉底部。
     """
-    return (0 if swarm_dead(task) else 1, -turnover_seconds(task))
+    if swarm_dead(task):
+        tier = 0
+    elif is_idle(task):
+        tier = 1
+    else:
+        tier = 2
+    return (tier, -turnover_seconds(task))
+
+
+def cohort_density(tasks: list[RatioBoostTask], now: datetime) -> float | None:
+    """新鲜队列的实测密度中位数——"一个刚上桌的种子通常能跑多少"。
+
+    这是候选的期望密度：候选即将变成的就是这批种子现在的样子。窗口取
+    "完成后 24 小时内"，因为密度强烈依赖种龄（实测入池 0-12h 的中位是
+    36-60h 的 12 倍），拿全池中位会把候选低估一个数量级、永远换不动在产资产。
+
+    **刻意不按候选评分做线性外推。** 直觉上"评分翻倍则期望产出翻倍"，
+    但实测站不住：以本地 103 个已完成任务回归 log(单位存储单位时间上传)
+    ~ log(评分) + log(体积) + log(做种时长)，评分弹性只有 0.18（标准误
+    0.12，t=1.49，与 0 无法区分），而弹性 =1 被强烈拒绝（t=-6.8）。按线性
+    外推会把高分候选的期望高估两倍以上——偏偏高分候选正是唯一会去动在产
+    资产的那种，高估直接变成误杀。
+
+    评分仍然决定候选之间的**排序**（弱预测子做排序仍然有用），只是不再
+    用来预测**量级**。量级只信这一个从本地观测直接读出来的数。
+
+    样本不足返回 None：调用方退回"只动空闲层"的保守路径，那条路径不需要
+    标定，且换进来的新种 24 小时内又会补充样本——系数不会饿死。
+    """
+    values = [
+        density(t)
+        for t in tasks
+        if t.upload_rate_ema > 0
+        and t.completed_at is not None
+        and now - t.completed_at <= _CALIBRATION_WINDOW
+    ]
+    if len(values) < _CALIBRATION_MIN_SAMPLES:
+        return None
+    return statistics.median(values)
 
 
 def pick_evictions(
@@ -514,11 +642,23 @@ def pick_evictions(
     *,
     hold: timedelta = _DEFAULT_MIN_HOLD,
     hr_hold: timedelta | None = None,
+    expected_density: float | None = None,
+    margin: float = _SWAP_MARGIN,
 ) -> list[RatioBoostTask] | None:
-    """从可汰换任务里按汰换顺序（死种优先，再按单位存储产出从低到高）挑出
-    足够腾出 need_bytes 的一批。
+    """为一个候选腾出 need_bytes：沿汰换顺序往下走，踩到第一个打得过候选的
+    在产任务就收手。
 
-    腾不够返回 None——调用方放弃准入，**绝不提前动保留期内的任务**。
+    ``expected_density`` 是候选的期望密度（由 ``score_density_ratio`` 换算）。
+    在产任务只有在 ``密度 × margin < 期望密度`` 时才让位——在池的产出是实测
+    的、候选的是期望的，置信度不对称，拿在产资产赌未验证的候选赌错是双输。
+    死种与空闲层密度≈0，任何候选都赢，不必过保证金。
+
+    ``None`` = 标定样本不足（冷启动），此时**只动死种与空闲层**：宁可少换
+    也不在没有换算依据时误伤在产资产。
+
+    因为候选按密度升序排列，一旦有一个扛住了保证金，后面的只会更强——直接
+    break 而不是 continue。腾不够返回 None，调用方放弃准入，
+    **绝不提前动保留期内的任务**。
     """
     candidates = sorted(
         (t for t in tasks if evictable(t, now, hold=hold, hr_hold=hr_hold)),
@@ -529,6 +669,12 @@ def pick_evictions(
     for task in candidates:
         if freed >= need_bytes:
             break
+        if not swarm_dead(task) and not is_idle(task):
+            # 在产资产：没有换算依据就不碰；有依据也要候选明显更划算才动
+            if expected_density is None:
+                break
+            if density(task) * margin >= expected_density:
+                break
         picked.append(task)
         freed += task.size_bytes
     return picked if freed >= need_bytes else None
@@ -833,11 +979,14 @@ async def _record_stats(
 
 
 async def _nudge_slow_cursor(session: AsyncSession, site_id: str, now: datetime) -> None:
-    """准入余量恢复后，把还在慢排期的同步游标标记到期，发现速度立刻回升。
+    """把还在慢排期的同步游标标记到期，让新种发现速度立刻回升。
 
-    无余量期间同步回落到自适应节奏（可能已放疏到小时级）；余量恢复的信号
-    只有刷流引擎自己知道，不推这一把就要等旧排期走完才重新钉住。排期在
-    15 分钟内的不动——马上就要同步了，没必要打断。
+    整池都在保留期内时同步会回落到自适应节奏（可能已放疏到小时级），
+    保留期一过就该重新钉住——这个信号只有刷流引擎自己知道，不推这一把
+    就要等旧排期走完。排期在 15 分钟内的不动：马上就要同步了，没必要打断。
+
+    准入每 tick 都会调它：新鲜度是刷流收益的主要来源，候选池断供比多打
+    几次站点贵得多。
     """
     from movieclaw_db.repositories.torrent_repo import TorrentRepository
 
@@ -847,7 +996,7 @@ async def _nudge_slow_cursor(session: AsyncSession, site_id: str, now: datetime)
         cursor.next_sync_at - now > _NUDGE_THRESHOLD
     ):
         await repo.expire_cursor(site_id)
-        logger.info("刷流余量恢复，站点 %s 的索引同步已提前", site_id)
+        logger.info("刷流：站点 %s 的索引同步已提前（保持新种发现速度）", site_id)
 
 
 async def _admit_candidates(
@@ -878,9 +1027,14 @@ async def _admit_candidates(
             cred.site_id,
         )
         return
-    # 下载并发帽（SRPT 思想，跨站点按下载器计）：先把手里的下完、尽早转入
-    # 做种，比摊大饼强——并发高时任务互相抢带宽，全都更晚上桌、免费窗口
-    # 风险全面上升（首夜数据见 _MAX_CONCURRENT_DOWNLOADS 注释）
+    # 在下并发上限：由带宽哨兵学到的下载包络导出（包络 / 每任务速度地板），
+    # 不是常量。包络为 None = 这条链路从未出现拥塞证据，下行再快也不伤上行，
+    # 不设限。跨站点按下载器计——包络约束的是链路，不是站点
+    envelope = (
+        float(downloader.boost_dl_envelope_bytes)
+        if downloader.boost_dl_envelope_bytes
+        else None
+    )
     downloading_count = (
         await session.execute(
             select(func.count()).select_from(RatioBoostTask).where(
@@ -890,32 +1044,38 @@ async def _admit_candidates(
             )
         )
     ).scalar_one()
-    download_slots = _MAX_CONCURRENT_DOWNLOADS - downloading_count
-    if download_slots <= 0:
+    cap = concurrent_download_cap(envelope)
+    if cap is not None and downloading_count >= cap:
         logger.debug(
-            "刷流：下载器「%s」已有 %d 个任务在下（并发帽 %d），站点 %s 本轮暂停准入",
+            "刷流：下载器「%s」已有 %d 个任务在下（包络 %.1f MiB/s 导出的上限 %d），"
+            "站点 %s 本轮暂停准入",
             downloader.name,
             downloading_count,
-            _MAX_CONCURRENT_DOWNLOADS,
+            (envelope or 0) / 1024**2,
+            cap,
             cred.site_id,
         )
         return
+    download_slots = _MAX_ADMIT_PER_TICK if cap is None else cap - downloading_count
+    # 这个种子实际能分到的下载速度：并发越高摊得越薄。免费窗口够不够下完
+    # 要按它估，用固定值会系统性乐观地放进注定赶不上窗口的种子
+    expected_speed = float(
+        per_task_limit(envelope, downloading_count + 1) or _ASSUMED_DL_SPEED
+    )
 
     site_id = cred.site_id
     budget = cred.boost_budget_bytes
     used = sum(t.size_bytes for t in site_tasks if t.state == BoostTaskState.ACTIVE)
 
-    # 余量开关：池子满且换不动时不扫候选（发现了也下不了）；同步端由
-    # wants_fast_sync 同一判据回落节奏。有余量时若游标还在慢排期（此前
-    # 无余量回落遗留的），推一把让发现速度立刻恢复
+    # 没有余量门槛：扫描永远跑（一次 SQL + 内存打分，很便宜），能不能接由
+    # 每个候选自己的边际比较回答。池满不再是停扫的理由——停扫会连带让索引
+    # 同步退化到慢排期，而新鲜度是刷流收益的主要来源，输不起
     hold = hold_for(cred)
     hr_hold = hr_hold_for(site_id)
-    if (
-        admission_headroom(site_tasks, budget, now, hold=hold, hr_hold=hr_hold)
-        < _MIN_ADMISSION_HEADROOM
-    ):
-        return
     await _nudge_slow_cursor(session, site_id, now)
+    # 候选的期望密度：本站新鲜队列的实测密度中位数（不按评分外推，理由见
+    # cohort_density）。None=样本不足，本轮只动空闲层
+    expected_density = cohort_density(site_tasks, now)
 
     # 抢过的不再抢（任何状态都算：missing/evicted 是明确结论，不能反复拉扯）
     tracked = set(
@@ -977,7 +1137,12 @@ async def _admit_candidates(
     scored: list[tuple[float, SiteTorrent]] = []
     for row in rows:
         ok, score = assess_candidate(
-            row, now=now, budget_bytes=budget, tracked_torrent_ids=tracked, hr_hold=hr_hold
+            row,
+            now=now,
+            budget_bytes=budget,
+            tracked_torrent_ids=tracked,
+            hr_hold=hr_hold,
+            expected_speed=expected_speed,
         )
         if ok:
             scored.append((score, row))
@@ -994,13 +1159,31 @@ async def _admit_candidates(
         size = row.size_bytes or 0
         space = budget - used
         if size > space:
-            # 预算不够：尝试汰换低效任务腾位；腾不出就看下一个（更小的）候选
-            plan = pick_evictions(site_tasks, size - space, now, hold=hold, hr_hold=hr_hold)
+            # 预算不够：按汰换顺序腾位——死种、空闲层先走，在产资产只有在
+            # 这个候选的期望密度显著超过它时才让位。腾不出就看下一个候选
+            #（更小或更强的），不强行删
+            plan = pick_evictions(
+                site_tasks,
+                size - space,
+                now,
+                hold=hold,
+                hr_hold=hr_hold,
+                expected_density=expected_density,
+            )
             if plan is None:
                 continue
             for victim in plan:
                 if await _evict(
-                    pool, victim, now, reason="为更高效的新免费种腾出预算（上传效率过低）"
+                    pool,
+                    victim,
+                    now,
+                    reason=(
+                        "蜂群已死，让位给更高效的新免费种"
+                        if swarm_dead(victim)
+                        else "24 小时无上行产出，让位给更高效的新免费种"
+                        if is_idle(victim)
+                        else "新免费种的期望产出显著更高，换手（按单位存储产出比较）"
+                    ),
                 ):
                     used -= victim.size_bytes
             if size > budget - used:
@@ -1133,7 +1316,7 @@ async def run_ratio_boost() -> None:
                     if t.site_id == cred.site_id and t.state == BoostTaskState.ACTIVE
                 ]
                 # ② 预算收敛：用户调小预算是明确指令，必须收敛到位——判据用
-                # budget_evictable（不设周转地板，高效不是免死金牌），顺序仍是
+                # budget_evictable（不设完成后判定窗，高效不是免死金牌），顺序仍是
                 # 死种优先、再按周转从慢到快（高效的排最后、只在必要时牺牲）；
                 # 保留期内的任务不动，等到期后在后续 tick 里继续收敛
                 used = sum(t.size_bytes for t in site_tasks)
@@ -1165,10 +1348,14 @@ async def run_ratio_boost() -> None:
 async def wants_fast_sync(session: AsyncSession, cred: SiteCredential) -> bool:
     """站点索引同步是否应钉在最快节奏（供 torrent_sync 每轮同步后询问）。
 
-    动态判定，而非"开了刷流就一直快"：预算满且无可汰换时，发现新种也没
-    机会下，高频刷索引纯属浪费站点请求——此时回 False，同步回到正常的
-    冷热自适应/指数退避；余量恢复（汰换解锁、用户调大预算、任务转出）后
-    自动回 True 重新钉住。
+    动态判定，而非"开了刷流就一直快"：只有当整池**一个种都动不了**——即
+    全部还在 H&R 保留期内——发现新种才真的没有意义，此时回 False 让同步
+    回到冷热自适应/指数退避；任何一个种过了保留期，池子就有换手能力，
+    钉回最快节奏。
+
+    门槛是 "> 0" 而不是某个绝对余量：绝对门槛会在池满时停掉发现，而池满
+    恰恰是最需要盯紧新种的时候——能不能接由准入的边际比较回答，同步端
+    只负责别让候选池断供。
     """
     if not cred.boost_enabled:
         return False
@@ -1192,7 +1379,7 @@ async def wants_fast_sync(session: AsyncSession, cred: SiteCredential) -> bool:
             hold=hold_for(cred),
             hr_hold=hr_hold_for(cred.site_id),
         )
-        >= _MIN_ADMISSION_HEADROOM
+        > 0
     )
 
 
