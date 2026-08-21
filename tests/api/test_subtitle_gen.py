@@ -596,16 +596,83 @@ async def test_translate_splits_block_when_output_truncated(tmp_path: Path, monk
     assert sizes == [50, 50, 50, 25, 25]
 
 
-def test_subtitle_max_tokens_leaves_room_for_thinking() -> None:
-    """思考模型的译文预算要放大，并被模型目录声明的输出上限收口。"""
-    call = translate.ChatCall(purpose="translate", block_index=1, event_count=50)
+def test_subtitle_max_tokens_reserves_fixed_room_for_thinking() -> None:
+    """思考额度必须是固定加项，不能按条数放大 —— 否则拆块换不到任何空间。
 
-    plain = tasks._subtitle_max_tokens(call)
-    thinking = tasks._subtitle_max_tokens(call, thinking=True)
-    capped = tasks._subtitle_max_tokens(call, thinking=True, max_output_tokens=8192)
+    思考量取决于这次要想多久，与块里有多少条对白基本无关。若按倍数放大，
+    每条对白分到的额度恒定，截断后把 50 条拆成 25 条也拿不到额外空间，
+    拆块这条兜底就形同虚设。
+    """
+    full = translate.ChatCall(purpose="translate", block_index=1, event_count=50)
+    half = translate.ChatCall(purpose="translate", block_index=1, event_count=25)
 
-    assert thinking == plain * tasks._THINKING_BUDGET_MULTIPLIER
-    assert capped == 8192
+    assert (
+        tasks._subtitle_max_tokens(full, thinking=True)
+        == tasks._subtitle_max_tokens(full) + tasks._THINKING_RESERVE_TOKENS
+    )
+    # 拆块的收益：条数减半后，每条对白能分到的额度必须严格变大
+    per_event_full = tasks._subtitle_max_tokens(full, thinking=True) / 50
+    per_event_half = tasks._subtitle_max_tokens(half, thinking=True) / 25
+    assert per_event_half > per_event_full
+
+    # 目录声明的输出上限收口，不向端点要它根本不接受的 max_tokens
+    assert tasks._subtitle_max_tokens(full, thinking=True, max_output_tokens=8192) == 8192
+
+
+def test_validate_block_rejects_non_integer_index() -> None:
+    """序号写成 null/数组是「结构不对」，要抛 ValueError 走块重试。
+
+    放任 TypeError 逃出去，一次畸形响应就会打死整个任务 —— 而块重试机制
+    存在的意义正是兜住模型的畸形输出。
+    """
+    block = [(0, "hello there my friend"), (1, "second line here ok")]
+    for raw in (
+        '[{"i": null, "t": "译0"}, {"i": 1, "t": "译1"}]',
+        '[{"i": [0], "t": "译0"}, {"i": 1, "t": "译1"}]',
+    ):
+        with pytest.raises(ValueError, match="不是整数"):
+            translate._validate_block(raw, block, "chs")
+
+
+def test_checkpoint_save_is_atomic(tmp_path: Path, monkeypatch) -> None:
+    """写盘中途崩溃不能毁掉已有断点 —— 那正是断点存在的理由。"""
+    monkeypatch.chdir(tmp_path)
+    checkpoint = translate.Checkpoint(7, "chs", "fp")
+    checkpoint.blocks = {0: ["译0"]}
+    checkpoint.save()
+
+    real_write_text = Path.write_text
+
+    def crash(self, *args, **kwargs):  # noqa: ANN001, ANN202
+        real_write_text(self, *args, **kwargs)  # 临时文件已写出
+        raise OSError("磁盘写满")
+
+    monkeypatch.setattr(Path, "write_text", crash)
+    checkpoint.blocks[1] = ["译1"]
+    with pytest.raises(OSError):
+        checkpoint.save()
+    monkeypatch.setattr(Path, "write_text", real_write_text)  # 只撤销这一项，保留 chdir
+
+    reloaded = translate.Checkpoint(7, "chs", "fp")
+    reloaded.load()
+    assert reloaded.blocks == {0: ["译0"]}, "半截写入不能污染已落盘的断点"
+
+
+async def test_compress_overruns_keeps_glossary(tmp_path: Path, monkeypatch) -> None:
+    """二次压缩是对译文的改写，丢了术语表会让人名地名在这批行上跑偏。"""
+    monkeypatch.chdir(tmp_path)
+    systems: list[str] = []
+
+    async def chat(system: str, user: str, _call: translate.ChatCall) -> str:
+        systems.append(system)
+        return '{"items": []}'
+
+    events = [(0, 1000, "这一句明显读不完必须压缩改写才行的超长译文")]
+    await translate.compress_overruns(
+        chat, events, [0], CTX, "chs", None, glossary={"John": "约翰"}
+    )
+
+    assert systems and "John→约翰" in systems[0]
 
 
 async def test_translate_untranslated_block_detected(tmp_path: Path, monkeypatch) -> None:

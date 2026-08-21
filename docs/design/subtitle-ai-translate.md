@@ -197,10 +197,14 @@ Pedersen 的 FAR 字幕质量评估模型（JoSTrans 2017，学术界通行框�
 - 字幕是结构化映射任务，模型接入按 `glossary / translate / compress` 用途设置
   有界输出预算。Kimi K2.5/K2.6 官方端点关闭深度思考并启用 JSON mode，
   避免推理 token 远高于字幕正文；关不掉思考的模型（如 DeepSeek v4 系）按模型
-  目录的 `supports_thinking` 放大输出预算，再由 `max_output_tokens` 收口——
-  思考与译文共用 completion 额度，按纯译文估算必被 `finish=length` 截断。
-  扩预算仍被截断时把块对半拆开重译一次，这是不依赖供应商开关的兜底；
+  目录的 `supports_thinking` **叠加固定思考额度**，再由 `max_output_tokens`
+  收口——思考与译文共用 completion 额度，按纯译文估算必被 `finish=length`
+  截断。额度只能是固定加项而非按条数放大的倍数：思考量取决于想多久、与块内
+  条数无关，按倍数放大会让每条对白分到的额度不变，拆块兜底随之失效。
+  扩预算仍被截断时把块对半拆开重译一次，端点硬顶输出上限时这是唯一出路；
   Agent 等其他调用不受影响；
+- 断点原子写盘（临时文件 + `replace`，同 `write_srt`）：就地覆盖会在崩溃窗口
+  把整份已完成译文写成半截 JSON，下次加载失败即等于已付的钱全部作废；
 - Job `usage` 聚合请求数、输入/输出 token、缓存命中、最长耗时、finish reason
   与分用途用量；日志携带 job、用途、块号和重试次数，Agent 日志与字幕日志可区分；
 - 术语阶段和翻译首批等待期间每 10 秒发布心跳。百分比仍只按校验通过的块

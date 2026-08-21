@@ -1221,6 +1221,7 @@ async def _run(
             ctx,
             target_language,
             secondary_language,
+            glossary=stats.glossary,
         )
         if compressed:
             final_events, report = validate.finalize_events(
@@ -1292,10 +1293,15 @@ async def _refresh_subtitle_inventory(db, file_id: int) -> None:  # noqa: ANN001
         await session.commit()
 
 
-#: 思考模型的输出预算放大倍数。reasoning_content 与译文共享同一份
-#: completion 预算，按纯译文估算的额度会被思考先烧光，译文 JSON 还没写完就
-#: 撞上 finish=length（issue #194）。放大后仍受模型目录声明的输出上限约束。
-_THINKING_BUDGET_MULTIPLIER = 3
+#: 思考模型的固定思考额度。reasoning_content 与译文共享同一份 completion
+#: 预算，按纯译文估算的额度会被思考先烧光，译文 JSON 还没写完就撞上
+#: finish=length（issue #194）。
+#:
+#: 必须是「固定加项」而不是「按条数放大的倍数」：思考量取决于这次要想多久，
+#: 与块里有多少条对白基本无关。按倍数放大会让每条对白分到的额度不变，于是
+#: 截断后把块拆半也拿不到任何额外空间——拆块这条兜底会彻底失效。加固定额度
+#: 后，条数减半 = 译文部分减半而思考额度照留，拆块才真的能救回来。
+_THINKING_RESERVE_TOKENS = 16384
 
 
 def _subtitle_max_tokens(
@@ -1306,8 +1312,9 @@ def _subtitle_max_tokens(
 ) -> int:
     """按输出条数给结构化字幕留足空间，同时阻止模型无界思考。
 
-    ``thinking`` 与 ``max_output_tokens`` 来自模型目录：思考模型放大额度，
-    再由目录声明的输出上限收口，避免向端点要一个它根本不接受的 max_tokens。
+    ``thinking`` 与 ``max_output_tokens`` 来自模型目录：思考模型额外叠加固定
+    思考额度，再由目录声明的输出上限收口，避免向端点要一个它根本不接受的
+    max_tokens。
     """
     if call.purpose == "glossary":
         base, ceiling = 2048, 4096
@@ -1319,8 +1326,8 @@ def _subtitle_max_tokens(
         base = max(4096, 1024 + call.event_count * per_event)
         ceiling = 12288 if call.bilingual else 8192
     if thinking:
-        base *= _THINKING_BUDGET_MULTIPLIER
-        ceiling *= _THINKING_BUDGET_MULTIPLIER
+        base += _THINKING_RESERVE_TOKENS
+        ceiling += _THINKING_RESERVE_TOKENS
     expanded = int(base * (1.5 ** max(0, call.attempt - 1)))
     budget = min(ceiling, expanded)
     if max_output_tokens:

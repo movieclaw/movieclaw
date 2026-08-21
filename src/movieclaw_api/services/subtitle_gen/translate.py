@@ -307,19 +307,25 @@ class Checkpoint:
             logger.info("发现字幕翻译断点，续传 %d 个已完成块", len(self.blocks))
 
     def save(self) -> None:
+        """先写临时文件再原子替换。
+
+        断点存在的唯一理由就是崩溃/断电后不重复烧钱，而就地覆盖恰恰在崩溃
+        窗口里把整份已完成译文写成半截 JSON——下次 load 解析失败直接当没有
+        断点，已经付过的钱全部作废。与 write_srt、内封抽取同一套写法。
+        """
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(
-            json.dumps(
-                {
-                    "fingerprint": self.fingerprint,
-                    "glossary": self.glossary,
-                    "blocks": {str(k): v for k, v in self.blocks.items()},
-                    "failed_blocks": sorted(self.failed_blocks),
-                },
-                ensure_ascii=False,
-            ),
-            encoding="utf-8",
+        payload = json.dumps(
+            {
+                "fingerprint": self.fingerprint,
+                "glossary": self.glossary,
+                "blocks": {str(k): v for k, v in self.blocks.items()},
+                "failed_blocks": sorted(self.failed_blocks),
+            },
+            ensure_ascii=False,
         )
+        tmp = self.path.with_suffix(self.path.suffix + ".part")
+        tmp.write_text(payload, encoding="utf-8")
+        tmp.replace(self.path)
 
     def discard(self) -> None:
         import contextlib
@@ -504,7 +510,13 @@ def _validate_block(
     for item in parsed:
         if not isinstance(item, dict) or "i" not in item or "t" not in item:
             raise ValueError("元素缺少 i/t 字段")
-        by_index[int(item["i"])] = str(item["t"]).strip()
+        try:
+            index = int(item["i"])
+        except (TypeError, ValueError) as exc:
+            # 模型偶尔把序号写成 null 或数组。这属于"输出结构不对"，必须走块
+            # 重试；放任 TypeError 逃出去会让一次畸形响应直接打死整个任务。
+            raise ValueError(f"序号 {item['i']!r} 不是整数") from exc
+        by_index[index] = str(item["t"]).strip()
     out: list[str] = []
     untranslated = 0
     for i, src in block:
@@ -880,6 +892,7 @@ async def compress_overruns(
     ctx: FilmContext,
     target_language: str,
     secondary_language: str | None = None,
+    glossary: dict[str, str] | None = None,
 ) -> tuple[list[SubEvent], int]:
     """对超读速事件做限字数压缩重写；失败保留原译文。返回 (事件, 成功数)。
 
@@ -897,7 +910,9 @@ async def compress_overruns(
 
     out = list(events)
     compressed = 0
-    system = system_prompt(ctx, {}, target_language, secondary_language)
+    # 必须带术语表：压缩是对译文的二次改写，空表会让模型把人名地名重新
+    # 意译一遍，全片一致性正好毁在这批被改写的行上。
+    system = system_prompt(ctx, glossary or {}, target_language, secondary_language)
     for batch_start in range(0, len(todo), _COMPRESS_BATCH):
         batch = todo[batch_start : batch_start + _COMPRESS_BATCH]
         payload = json.dumps(
