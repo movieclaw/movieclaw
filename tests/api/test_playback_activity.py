@@ -214,6 +214,65 @@ async def test_download_connections_aggregate_per_file(client: TestClient) -> No
     assert download["progress_percent"] == 5
 
 
+async def test_session_bytes_sent_spans_reconnects(client: TestClient) -> None:
+    """已传输 = 已结束连接的累计 + 在服务连接的实时增量，换连接不归零。"""
+    async with get_database().session() as session:
+        movie = MediaItem(
+            kind="movie",
+            tmdb_id=27205,
+            title="盗梦空间",
+            original_title="Inception",
+            year=2010,
+            aliases=[],
+        )
+        library = Library(name="电影", kind="movie", root_paths=["/media/movies"])
+        session.add_all([movie, library])
+        await session.commit()
+        session.add(
+            LibraryFile(
+                library_id=library.id,
+                media_item_id=movie.id,
+                file_path="/media/movies/inception.mkv",
+                source="scanned",
+                size_bytes=100_000,
+            )
+        )
+        await session.commit()
+        movie_id = movie.id
+
+    unit = (movie_id, 0, 0)
+    info = ClientInfo(
+        name="Infuse", device_name="客厅 Apple TV", device_id="dev-3", version="8.0"
+    )
+    activity.report_start("dev-3", member_id=0, client=info, unit=unit)
+
+    def _open() -> activity.StreamMeter:
+        return activity.register_stream(
+            device_id="dev-3",
+            kind=activity.STREAM_KIND_PLAY,
+            member_id=0,
+            unit=unit,
+            file_id=None,
+            file_name="inception.mkv",
+            size_bytes=100_000,
+            client=info,
+        )
+
+    # 前两条 Range 连接已经结束（播放器 seek / 续拉缓冲换的连接）
+    for sent in (30_000, 20_000):
+        finished = _open()
+        finished.add(sent)
+        activity.unregister_stream(finished)
+    live = _open()
+    live.add(5_000)
+
+    data = client.get("/api/v1/playback/activity").json()["data"]
+    view = data["sessions"][0]
+    assert view["bytes_sent"] == 55_000
+    # 连接数仍是"当下在服务的条数"，与累计字节是两个读数
+    assert view["connections"] == 1
+
+
 async def test_strm_session_reports_remote_play_method(client: TestClient) -> None:
     """strm 网盘条目走 302 直链、流量不经过服务器：标注 remote 而非伪造速率。"""
     async with get_database().session() as session:

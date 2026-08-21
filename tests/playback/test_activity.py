@@ -158,3 +158,64 @@ def test_repeat_start_keeps_session_identity() -> None:
     assert sessions[0].started_at == started_at
     # 已看位置不因重复开始而闪回
     assert sessions[0].position_ms == 60_000
+
+
+def test_session_accumulates_bytes_across_connections() -> None:
+    """换连接不清零：一场播放里已结束连接的字节结转进会话累计。"""
+    activity.report_start("dev-1", member_id=0, client=CLIENT, unit=UNIT)
+
+    def _open() -> activity.StreamMeter:
+        return activity.register_stream(
+            device_id="dev-1",
+            kind=activity.STREAM_KIND_PLAY,
+            member_id=0,
+            unit=UNIT,
+            file_id=11,
+            file_name="movie.mkv",
+            size_bytes=100_000,
+            client=CLIENT,
+        )
+
+    first = _open()
+    first.add(30_000)
+    activity.unregister_stream(first)
+    sessions, meters = activity.snapshot()
+    assert meters == []
+    assert sessions[0].bytes_transferred == 30_000
+
+    # 重复回收（on_close 被调两次）不能把同一批字节记两遍
+    activity.unregister_stream(first)
+    sessions, _ = activity.snapshot()
+    assert sessions[0].bytes_transferred == 30_000
+
+    second = _open()
+    second.add(20_000)
+    activity.unregister_stream(second)
+    sessions, _ = activity.snapshot()
+    assert sessions[0].bytes_transferred == 50_000
+
+
+def test_finished_connection_bytes_do_not_leak_to_next_unit() -> None:
+    """换集时上一集的收尾连接不把字节记到新一集头上。"""
+    activity.report_start("dev-1", member_id=0, client=CLIENT, unit=UNIT)
+    meter = activity.register_stream(
+        device_id="dev-1",
+        kind=activity.STREAM_KIND_PLAY,
+        member_id=0,
+        unit=UNIT,
+        file_id=11,
+        file_name="s01e01.mkv",
+        size_bytes=100_000,
+        client=CLIENT,
+    )
+    meter.add(30_000)
+
+    next_unit = (1, 1, 2)
+    activity.report_progress(
+        "dev-1", member_id=0, client=CLIENT, unit=next_unit, position_ms=0, paused=False
+    )
+    activity.unregister_stream(meter)
+
+    sessions, _ = activity.snapshot()
+    assert sessions[0].unit == next_unit
+    assert sessions[0].bytes_transferred == 0

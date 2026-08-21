@@ -101,6 +101,12 @@ class PlaySession:
     #: 本会话是否走过本地取流。False = 网盘直链（302）或播放器只上报不取流，
     #: 展示层据此把速率标注为"不经过服务器"，而不是显示 0。
     local_streamed: bool = False
+    #: 本会话内**已结束**连接累计传出的字节。播放器一场播放里会换很多条
+    #: Range 连接（每次 seek、每次缓冲区续拉都是新连接，旧连接随即关闭），
+    #: 只统计当下还在服务的连接会让"已传输"在整场播放里反复归零，
+    #: 与观看进度完全对不上。仍在服务的连接由各自计量器实时累加，
+    #: 展示口径 = 本字段 + 活跃计量器的 bytes_sent 之和。
+    bytes_transferred: int = 0
     #: 保鲜时钟（monotonic），进度上报与本地取流字节都会续期。
     last_activity_mono: float = field(default_factory=time.monotonic)
 
@@ -204,13 +210,20 @@ def register_stream(
 
 
 def unregister_stream(meter: StreamMeter) -> None:
-    """回收已结束的字节流；同设备会话的保鲜时钟顺带续期。"""
+    """回收已结束的字节流；字节数结转进会话累计，保鲜时钟顺带续期。
+
+    先 ``remove`` 再结转：重复回收（同一条连接的 on_close 被调用两次）在
+    第一次之后就直接返回，不会把同一批字节计两遍。只结转给单元相同的会话——
+    换集时新会话可能先建立，上一集的收尾连接不该把字节记到新一集头上。
+    """
     try:
         _meters.remove(meter)
     except ValueError:
         return
     session = _sessions.get(meter.device_id)
     if session is not None and meter.kind == STREAM_KIND_PLAY and meter.bytes_sent > 0:
+        if session.unit == meter.unit:
+            session.bytes_transferred += meter.bytes_sent
         session.local_streamed = True
         session.last_activity_mono = time.monotonic()
 

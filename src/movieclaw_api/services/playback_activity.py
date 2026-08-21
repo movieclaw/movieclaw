@@ -310,8 +310,14 @@ async def media_activity_overview(
                     if device_meters
                     else None
                 ),
+                # 已传输 = 本会话内已结束连接的累计 + 当前在服务连接的实时增量。
+                # 播放器每次 seek / 续拉缓冲都换一条 Range 连接，只看在服务的
+                # 连接会让读数反复归零，和观看进度对不上。全程无字节（网盘直链）
+                # 才是 None——展示层据此隐藏该项，而不是显示一个 0。
                 bytes_sent=(
-                    sum(m.bytes_sent for m in device_meters) if device_meters else None
+                    play.bytes_transferred
+                    + sum(m.bytes_sent for m in device_meters)
+                    or None
                 ),
                 connections=len(device_meters),
                 file=_file_spec(ctx.file),
