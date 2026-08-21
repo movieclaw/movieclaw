@@ -45,10 +45,12 @@ BLOCK_SIZE = 50  # 每块事件数（§3.1）
 _CONTEXT_LINES = 3  # 滚动上下文条数
 _BLOCK_RETRIES = 2  # 结构不符/漏翻的重试次数
 FAILED_BLOCK_ABORT_RATE = 0.2  # 失败块超 20% 中止任务（§3.6 熔断）
-# 输出被长度上限截断后，把整块对半拆开重译一次。深度思考模型会把思考写进
-# 同一份 completion 预算，光靠调大 max_tokens 未必够；条数减半让单次需要的
-# 译文输出也减半，这是与供应商无关的兜底。只拆一层，最坏 3+3+3 次调用封顶。
-_SPLIT_MIN_EVENTS = 4
+# 输出被长度上限截断时把块对半拆开重译。管线不再自设 max_tokens，截断即
+# 意味着撞上了供应商自己的天花板——那是确定性的，同样条数重发必然再次
+# 截断，所以不浪费同尺寸重试，直接拆。条数减半 = 需要写出的译文减半，这是
+# 唯一不依赖供应商能否关思考、能否调预算的兜底。
+_SPLIT_MIN_EVENTS = 4  # 少于这个条数不再拆（拆无可拆）
+_SPLIT_MAX_DEPTH = 2  # 最多拆两层（50→25→12），调用次数封顶 1+2+4=7 次
 # 单文件从 8 路并发起步；遇到 429 后协调器会自动降并发并退避，稳定完成
 # 一段时间后再逐级恢复。高延迟模型因此无需被最保守的供应商永久拖慢。
 TRANSLATION_CONCURRENCY = 8
@@ -391,7 +393,7 @@ async def _translate_block(
         secondary_language,
         context=context,
         previous_source=previous_source,
-        allow_split=True,
+        splits_left=_SPLIT_MAX_DEPTH,
     )
     if result is not None:
         return block_index, result, False, validation_retries
@@ -409,12 +411,11 @@ async def _translate_span(
     *,
     context: list[tuple[str, str]],
     previous_source: list[str],
-    allow_split: bool,
+    splits_left: int,
 ) -> tuple[list[str] | None, int]:
-    """翻译一整块或拆分后的半块，返回 (译文, 校验重试次数)；失败返回 None。"""
+    """翻译一整块或拆分后的子段，返回 (译文, 校验重试次数)；失败返回 None。"""
     user = _block_user_prompt(span, context, previous_source)
     validation_retries = 0
-    truncated = False
     for attempt in range(_BLOCK_RETRIES + 1):
         try:
             raw = await chat(
@@ -433,15 +434,29 @@ async def _translate_span(
                 validation_retries,
             )
         except ChatOutputTruncated as exc:
-            truncated = True
             validation_retries += 1
             logger.warning(
-                "字幕翻译第 %d 块输出被长度上限截断（第 %d 次尝试，%d 条）：%s",
+                "字幕翻译第 %d 块输出被模型自身上限截断（%d 条）：%s",
                 block_index + 1,
-                attempt + 1,
                 len(span),
                 exc,
             )
+            if splits_left <= 0 or len(span) < _SPLIT_MIN_EVENTS:
+                return None, validation_retries
+            # 撞的是供应商天花板，同样条数重发必然再截断——不烧同尺寸重试，
+            # 直接对半拆，把这一次需要写出的译文量砍半。
+            sub, sub_retries = await _translate_halves(
+                chat,
+                system,
+                span,
+                block_index,
+                target_language,
+                secondary_language,
+                context=context,
+                previous_source=previous_source,
+                splits_left=splits_left - 1,
+            )
+            return sub, validation_retries + sub_retries
         except (ValueError, json.JSONDecodeError) as exc:
             validation_retries += 1
             logger.warning(
@@ -450,19 +465,31 @@ async def _translate_span(
                 attempt + 1,
                 exc,
             )
-    if not (truncated and allow_split and len(span) >= _SPLIT_MIN_EVENTS):
-        return None, validation_retries
-    # 扩大预算仍被截断：条数对半砍，让单次需要写出的译文量也减半。深度思考
-    # 模型把思考算进同一份输出预算，这是唯一不依赖供应商开关的兜底。
+    return None, validation_retries
+
+
+async def _translate_halves(
+    chat: ChatFn,
+    system: str,
+    span: list[tuple[int, str]],
+    block_index: int,
+    target_language: str,
+    secondary_language: str | None,
+    *,
+    context: list[tuple[str, str]],
+    previous_source: list[str],
+    splits_left: int,
+) -> tuple[list[str] | None, int]:
+    """把一段对半拆开分别翻译；任一半失败则整段失败（由调用方保留原文）。"""
     mid = len(span) // 2
     head_span, tail_span = span[:mid], span[mid:]
     logger.warning(
-        "字幕翻译第 %d 块改为拆成 %d + %d 条重译（模型输出预算不足以一次写完）",
+        "字幕翻译第 %d 块拆成 %d + %d 条重译（模型一次写不完这么多译文）",
         block_index + 1,
         len(head_span),
         len(tail_span),
     )
-    head, head_retries = await _translate_span(
+    head, retries = await _translate_span(
         chat,
         system,
         head_span,
@@ -471,9 +498,9 @@ async def _translate_span(
         secondary_language,
         context=context,
         previous_source=previous_source,
-        allow_split=False,
+        splits_left=splits_left,
     )
-    validation_retries += head_retries
+    # 后半段用前半段的原文/译文接上下文，拆块不至于断了称谓和语气的连贯
     tail_source = [text for _, text in head_span[-_CONTEXT_LINES:]]
     tail_context = (
         list(zip(tail_source, head[-_CONTEXT_LINES:], strict=False)) if head is not None else []
@@ -487,12 +514,12 @@ async def _translate_span(
         secondary_language,
         context=tail_context,
         previous_source=tail_source,
-        allow_split=False,
+        splits_left=splits_left,
     )
-    validation_retries += tail_retries
+    retries += tail_retries
     if head is None or tail is None:
-        return None, validation_retries
-    return head + tail, validation_retries
+        return None, retries
+    return head + tail, retries
 
 
 def _validate_block(

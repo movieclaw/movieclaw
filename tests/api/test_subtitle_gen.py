@@ -342,7 +342,7 @@ def _good_chat(monkeypatch=None):
 async def test_subtitle_chat_uses_fast_kimi_json_mode_and_records_usage(monkeypatch) -> None:
     """字幕专用调用关闭 Kimi 思考、限制输出，并把用量归集到 Job 快照。"""
     from movieclaw_api.services import llm_config
-    from movieclaw_llm import ChatResponse, LlmProviderConfig, ModelInfo, TokenUsage
+    from movieclaw_llm import ChatResponse, LlmProviderConfig, TokenUsage
 
     requests = []
     provider = LlmProviderConfig(
@@ -355,9 +355,6 @@ async def test_subtitle_chat_uses_fast_kimi_json_mode_and_records_usage(monkeypa
     class Router:
         def resolve(self, _model_ref):  # noqa: ANN001
             return provider, "kimi-k2.6"
-
-        def get_model_info(self, _model_ref):  # noqa: ANN001
-            return ModelInfo(id="kimi-k2.6", supports_thinking=True)
 
         async def chat(self, request):  # noqa: ANN001
             requests.append(request)
@@ -394,7 +391,8 @@ async def test_subtitle_chat_uses_fast_kimi_json_mode_and_records_usage(monkeypa
     assert result == '{"items": []}'
     assert requests[0].settings.extra_body == {"thinking": {"type": "disabled"}}
     assert requests[0].settings.response_format == "json_object"
-    assert 4096 <= requests[0].settings.max_tokens <= 8192
+    # 不自设输出上限：截断的响应照样全额计费却零产出，上限护不住钱包
+    assert requests[0].settings.max_tokens is None
     snapshot = usage.snapshot()
     assert snapshot["request_count"] == 1
     assert snapshot["total_tokens"] == 200
@@ -575,48 +573,66 @@ async def test_translate_resume_retries_failed_blocks(tmp_path: Path, monkeypatc
 
 
 async def test_translate_splits_block_when_output_truncated(tmp_path: Path, monkeypatch) -> None:
-    """输出撞长度上限时拆块重译：深度思考模型烧光输出预算的通用兜底。"""
+    """撞上模型自身输出上限时立刻拆块，不浪费同尺寸重试。
+
+    管线不自设 max_tokens，截断即意味着撞的是供应商天花板 —— 那是确定性的，
+    同样条数重发必然再次截断，所以不该把块重试次数烧在原尺寸上。
+    """
     monkeypatch.chdir(tmp_path)
     sizes: list[int] = []
 
-    async def chat(system: str, user: str, call: translate.ChatCall) -> str:
+    async def chat(system: str, user: str, _call: translate.ChatCall) -> str:
         if "找出其中反复出现的人名" in user:
             return "[]"
         block = _prompt_block(user)
         sizes.append(len(block))
         if len(block) > 25:  # 整块写不完，半块才写得下
-            raise translate.ChatOutputTruncated("输出达到长度上限")
+            raise translate.ChatOutputTruncated("撞上模型输出上限")
         return json.dumps([{"i": e["i"], "t": f"译{e['i']}"} for e in block])
 
     out, stats = await translate.translate_events(chat, _events(50), CTX, "chs", file_id=41)
 
     assert stats.failed_blocks == 0
     assert len(out) == 50 and out[0][2] == "译0" and out[49][2] == "译49"
-    # 整块三次尝试全被截断后拆成 25 + 25，且拆出来的半块不再二次拆分
-    assert sizes == [50, 50, 50, 25, 25]
+    assert sizes == [50, 25, 25], "截断后应立刻拆块，而不是原尺寸再试两次"
 
 
-def test_subtitle_max_tokens_reserves_fixed_room_for_thinking() -> None:
-    """思考额度必须是固定加项，不能按条数放大 —— 否则拆块换不到任何空间。
+async def test_translate_split_recurses_within_depth_cap(tmp_path: Path, monkeypatch) -> None:
+    """供应商天花板很低时逐层再拆，但调用次数有硬上限。"""
+    monkeypatch.chdir(tmp_path)
+    sizes: list[int] = []
 
-    思考量取决于这次要想多久，与块里有多少条对白基本无关。若按倍数放大，
-    每条对白分到的额度恒定，截断后把 50 条拆成 25 条也拿不到额外空间，
-    拆块这条兜底就形同虚设。
-    """
-    full = translate.ChatCall(purpose="translate", block_index=1, event_count=50)
-    half = translate.ChatCall(purpose="translate", block_index=1, event_count=25)
+    async def chat(system: str, user: str, _call: translate.ChatCall) -> str:
+        if "找出其中反复出现的人名" in user:
+            return "[]"
+        block = _prompt_block(user)
+        sizes.append(len(block))
+        if len(block) > 13:  # 只有拆两层后才写得下
+            raise translate.ChatOutputTruncated("撞上模型输出上限")
+        return json.dumps([{"i": e["i"], "t": f"译{e['i']}"} for e in block])
 
-    assert (
-        tasks._subtitle_max_tokens(full, thinking=True)
-        == tasks._subtitle_max_tokens(full) + tasks._THINKING_RESERVE_TOKENS
-    )
-    # 拆块的收益：条数减半后，每条对白能分到的额度必须严格变大
-    per_event_full = tasks._subtitle_max_tokens(full, thinking=True) / 50
-    per_event_half = tasks._subtitle_max_tokens(half, thinking=True) / 25
-    assert per_event_half > per_event_full
+    out, stats = await translate.translate_events(chat, _events(50), CTX, "chs", file_id=42)
 
-    # 目录声明的输出上限收口，不向端点要它根本不接受的 max_tokens
-    assert tasks._subtitle_max_tokens(full, thinking=True, max_output_tokens=8192) == 8192
+    assert stats.failed_blocks == 0 and len(out) == 50
+    # 50 → 25+25 → 各自 12+13，调用次数落在 1+2+4=7 次的封顶内
+    assert sizes == [50, 25, 12, 13, 25, 12, 13]
+    assert len(sizes) <= 1 + 2 + 4
+
+
+async def test_translate_gives_up_when_split_cap_exhausted(tmp_path: Path, monkeypatch) -> None:
+    """拆到底仍写不完就认输保留原文，不无限拆下去。"""
+    monkeypatch.chdir(tmp_path)
+    calls = {"n": 0}
+
+    async def chat(system: str, user: str, _call: translate.ChatCall) -> str:
+        if "找出其中反复出现的人名" in user:
+            return "[]"
+        calls["n"] += 1
+        raise translate.ChatOutputTruncated("再怎么拆都写不完")
+
+    with pytest.raises(translate.TranslationAborted):  # 1/1 失败率触发熔断
+        await translate.translate_events(chat, _events(50), CTX, "chs", file_id=43)
+    assert calls["n"] <= 1 + 2 + 4, "拆分深度必须有硬上限"
 
 
 def test_validate_block_rejects_non_integer_index() -> None:

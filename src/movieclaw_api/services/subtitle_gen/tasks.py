@@ -1293,48 +1293,6 @@ async def _refresh_subtitle_inventory(db, file_id: int) -> None:  # noqa: ANN001
         await session.commit()
 
 
-#: 思考模型的固定思考额度。reasoning_content 与译文共享同一份 completion
-#: 预算，按纯译文估算的额度会被思考先烧光，译文 JSON 还没写完就撞上
-#: finish=length（issue #194）。
-#:
-#: 必须是「固定加项」而不是「按条数放大的倍数」：思考量取决于这次要想多久，
-#: 与块里有多少条对白基本无关。按倍数放大会让每条对白分到的额度不变，于是
-#: 截断后把块拆半也拿不到任何额外空间——拆块这条兜底会彻底失效。加固定额度
-#: 后，条数减半 = 译文部分减半而思考额度照留，拆块才真的能救回来。
-_THINKING_RESERVE_TOKENS = 16384
-
-
-def _subtitle_max_tokens(
-    call: translate.ChatCall,
-    *,
-    thinking: bool = False,
-    max_output_tokens: int | None = None,
-) -> int:
-    """按输出条数给结构化字幕留足空间，同时阻止模型无界思考。
-
-    ``thinking`` 与 ``max_output_tokens`` 来自模型目录：思考模型额外叠加固定
-    思考额度，再由目录声明的输出上限收口，避免向端点要一个它根本不接受的
-    max_tokens。
-    """
-    if call.purpose == "glossary":
-        base, ceiling = 2048, 4096
-    elif call.purpose == "compress":
-        base = max(2048, 1024 + call.event_count * 100)
-        ceiling = 6144
-    else:
-        per_event = 180 if call.bilingual else 110
-        base = max(4096, 1024 + call.event_count * per_event)
-        ceiling = 12288 if call.bilingual else 8192
-    if thinking:
-        base += _THINKING_RESERVE_TOKENS
-        ceiling += _THINKING_RESERVE_TOKENS
-    expanded = int(base * (1.5 ** max(0, call.attempt - 1)))
-    budget = min(ceiling, expanded)
-    if max_output_tokens:
-        budget = min(budget, max_output_tokens)
-    return budget
-
-
 async def _build_chat(
     session: AsyncSession,
     *,
@@ -1365,19 +1323,15 @@ async def _build_chat(
         "kimi-k2.5",
         "kimi-k2.6",
     }
-    # 关不掉思考的模型（DeepSeek v4 系官方目录只有强制思考的 pro/flash）只能
-    # 靠加大输出预算兜住：思考与译文共用 completion 额度，按纯译文估算必被
-    # 截断。目录外的自定义模型可在实例配置的 extra_models 里补声明。
-    model_info = router.get_model_info(model_ref or "")
-    thinking_budget = model_info.supports_thinking and not kimi_fast_json
 
     async def chat(system: str, user: str, call: translate.ChatCall) -> str:
+        # 不设 max_tokens：让模型有多少写多少，交给供应商按剩余上下文兜底
+        # （与 agent 侧一致）。曾经按条数估算输出预算，结果是深度思考模型的
+        # 思考先烧光额度、译文 JSON 半截被 finish=length 截断（issue #194）。
+        # 上限并不省钱——被截断的响应照样全额计费却零可用产出，等于把「付一次
+        # 拿到一个块」换成「付三次什么都没有」。真正的成本闸门是块重试上限和
+        # 失败率熔断，它们按「块」计价，比按 token 猜一个数字可靠得多。
         settings = ModelSettings(
-            max_tokens=_subtitle_max_tokens(
-                call,
-                thinking=thinking_budget,
-                max_output_tokens=model_info.max_output_tokens,
-            ),
             response_format="json_object" if kimi_fast_json else None,
             extra_body=({"thinking": {"type": "disabled"}} if kimi_fast_json else None),
         )
@@ -1463,10 +1417,10 @@ async def _build_chat(
             response.finish_reason,
         )
         if response.finish_reason == "length":
-            # 专属信号：翻译层据此扩大预算重试，仍不够就把块拆半——原样重发
-            # 同一个块只会再次被截断。深度思考模型是这里最常见的触发者。
+            # 专属信号：翻译层据此把块对半拆开重译。原样重发只会再次被截断——
+            # 撞的是供应商天花板。深度思考模型是这里最常见的触发者。
             raise translate.ChatOutputTruncated(
-                f"模型在 {settings.max_tokens} tokens 输出上限内没写完译文"
+                "模型写到自身输出上限仍未写完译文"
                 f"（本次思考+正文共 {response.usage.completion_tokens} tokens）"
             )
         if response.finish_reason == "tool_calls":
