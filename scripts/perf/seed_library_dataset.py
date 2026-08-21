@@ -143,7 +143,7 @@ def seed(db_path: str) -> None:
             libraries.append((lib_id, name, kind, sort_order, target_files))
 
     print(f"计划：{len(libraries)} 个媒体库，"
-          f"目标台账行 {sum(l[4] for l in libraries):,}")
+          f"目标台账行 {sum(lib[4] for lib in libraries):,}")
 
     item_rows: list[tuple] = []
     season_rows: list[tuple] = []

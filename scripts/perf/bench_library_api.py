@@ -81,9 +81,9 @@ async def main() -> None:
         login.raise_for_status()
 
         libs = (await client.get("/libraries")).json()["data"]
-        by_files = sorted(libs, key=lambda l: l["stats"]["file_count"], reverse=True)
-        big_movie = next(l for l in by_files if l["kind"] == "movie")
-        big_tv = next(l for l in by_files if l["kind"] == "tv")
+        by_files = sorted(libs, key=lambda lib: lib["stats"]["file_count"], reverse=True)
+        big_movie = next(lib for lib in by_files if lib["kind"] == "movie")
+        big_tv = next(lib for lib in by_files if lib["kind"] == "tv")
         small = by_files[-1]
 
         # 大库里挑一个真实条目 id，用于详情页采样
@@ -149,7 +149,7 @@ async def main() -> None:
         # —— 首页的真实形态：1 + N 个请求同时飞出 ——
         print("\n【媒体库首页并发形态】1 次库列表 + 每库一次「最近添加 20」")
         urls = ["/libraries"] + [
-            f"/libraries/{l['id']}/items?sort=added_at&limit=20" for l in libs
+            f"/libraries/{lib['id']}/items?sort=added_at&limit=20" for lib in libs
         ]
         burst = await _burst(client, urls)
         print(f"  请求数 {burst['count']}，全部完成墙钟 {burst['wall_ms']} ms，"

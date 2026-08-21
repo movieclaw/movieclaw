@@ -18,7 +18,7 @@ SQL 里 ORDER BY 就得落一列排序键 + 加索引 + 在改名/重识别时�
 
 from __future__ import annotations
 
-from functools import lru_cache
+from functools import cache
 
 from pypinyin import Style, lazy_pinyin
 
@@ -45,7 +45,7 @@ _INITIAL_ORDER = {value: index for index, value in enumerate(INITIALS)}
 # 定义域是有界的（media_item 的标题集合），所以无界缓存不会无限增长：
 # 实测 37,363 个条目的库占 2 MB。tests/api/test_library_sort_key.py 里有
 # 守护测试钉住这个不变量。
-@lru_cache(maxsize=None)
+@cache
 def title_sort_key(title: str) -> tuple[int, str]:
     """标题 → (首字母档位序号, 拼音串)。
 

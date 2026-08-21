@@ -24,6 +24,7 @@ import time
 
 from playwright.async_api import async_playwright
 
+
 def _chromium_path() -> str | None:
     """本机预装的 Chromium（会话环境已装好，不联网下载）；找不到就交给
     Playwright 自己的解析逻辑。"""
@@ -252,7 +253,7 @@ async def main() -> None:
         print("\n【步骤 5】海报墙连续滚动 8 屏（滚动加载）")
         trace.requests.clear()
         scroll_lat = []
-        for i in range(8):
+        for _ in range(8):
             t = time.perf_counter()
             await page.mouse.wheel(0, 2400)
             await page.wait_for_timeout(700)
