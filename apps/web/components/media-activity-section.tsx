@@ -9,6 +9,7 @@ import {
   CheckIcon,
   ChevronRightIcon,
   DownloadIcon,
+  HistoryIcon,
   PlayIcon,
 } from "@/components/icons";
 import { useToast } from "@/components/feedback";
@@ -643,7 +644,7 @@ export function MediaActivityPanel({
       {snapshot.recent.length > 0 && (
         <section className="mt-7" aria-label="最近观看">
           <SectionHeading
-            icon={<PlayIcon className="size-4 text-white/40" />}
+            icon={<HistoryIcon className="size-4 text-white/40" />}
             title="最近观看"
             count={snapshot.recent.length}
           />

@@ -88,6 +88,19 @@ export const ClockIcon = (p: IconProps) => (
   </Base>
 );
 
+/**
+ * 历史：时钟 + 逆时针回拨箭头。
+ * 用于「最近观看」这类"已经发生过"的记录，与表达"此刻正在发生"的
+ * PlayIcon 区分开——两者都用播放三角时，用户无法一眼分辨实时与回顾。
+ */
+export const HistoryIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1L3.5 8.3" />
+    <path d="M3.5 3.6v4.7h4.7" />
+    <path d="M12 7.5V12l3 1.8" />
+  </Base>
+);
+
 /** 活动：脉冲折线。时钟表达的是"排队与历史"，活动要表达"此刻正在发生"。 */
 export const ActivityIcon = (p: IconProps) => (
   <Base {...p}>
