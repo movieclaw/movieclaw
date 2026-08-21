@@ -524,7 +524,9 @@ def _build_video_plan(
     policy: PlaybackPolicy,
 ) -> VideoPlan:
     if tier <= PlaybackTier.AUDIO_TRANSCODE:
-        return VideoPlan(action="copy")
+        # copy 也要记录流经的编码：下游装 ffmpeg 命令时据此决定要不要打
+        # ``-tag:v hvc1``——HEVC 进 fMP4 不打这个标签，Safari 是静默黑屏。
+        return VideoPlan(action="copy", codec=(media.video_codec or None))
     height = min(media.height or policy.max_transcode_height, policy.max_transcode_height)
     return VideoPlan(
         action="transcode", codec="h264", height=height, tone_map=verdict.tone_map
