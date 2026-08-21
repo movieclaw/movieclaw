@@ -1,0 +1,405 @@
+"""转码会话管理与进程契约（docs/design/web-player.md §4）。
+
+一个会话 = 一个 ffmpeg 进程 + 一个分片目录 + 一条心跳。会话状态放内存：
+生产是**单进程 uvicorn**（``main.py`` 自持 ``uvicorn.Config``，无 workers），
+不需要持久化、不需要跨进程同步；进程一走会话本就该消失。
+
+五条进程契约（§4.2，一条都不能省）
+--------------------------------
+1. **必须 asyncio 子进程**。单进程 async 服务里一个阻塞调用会卡死全部用户的
+   搜索、订阅、扫描。
+2. **必须 start_new_session=True**，让 ffmpeg 起在独立进程组。
+3. **停止时 killpg 整组**，SIGTERM 后给 3 秒再 SIGKILL。``entrypoint.sh`` 的
+   ``trap shutdown`` 只 kill API 进程，**不会连坐孙子进程**；而设置页重启
+   （退出码 42）与应用内更新都会重启后端。不做这条，每次重启都会留下满负荷
+   烧 GPU、持续写盘的孤儿 ffmpeg。
+4. **stderr 必须持续读取**。管道写满会阻塞进程本身——表现为转码莫名卡死。
+5. **启动时清残留**。不能假设上次是干净退出的（与「台账自愈」同思路）。
+
+与文档的一处偏离
+----------------
+§4.5 写的是并发超限「排队并明确告知」。实现改为**立即拒绝并告知当前占用**：
+在 HTTP 请求里排队会让用户对着转圈等一个不知道多久的位置，不如直接说
+「2/2 已满」让他停掉别的播放——这是更诚实的交互。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import logging
+import os
+import shutil
+import signal
+import time
+from collections import deque
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from movieclaw_api.core.config import get_settings
+from movieclaw_api.services.playback.ffmpeg_args import (
+    PLAYLIST_NAME,
+    TranscodeCommand,
+    build_hls_command,
+)
+from movieclaw_events import new_ulid
+from movieclaw_playback.decide import PlaybackPlan, PlaybackTier
+
+logger = logging.getLogger("movieclaw_api.playback.session")
+
+#: 客户端心跳间隔的四倍。用户关页面不会发任何信号，超时回收是唯一可靠兜底。
+SESSION_IDLE_TIMEOUT_S = 60.0
+#: 回收巡检间隔。
+REAP_INTERVAL_S = 15.0
+#: 等 playlist 出现的上限。playlist 先行——会话起来后 ffmpeg 立刻写出
+#: index.m3u8，不等分片；超过这个时间还没有，基本是命令本身有问题。
+PLAYLIST_WAIT_TIMEOUT_S = 30.0
+#: 盘上至少要留的余量。低于它一律拒绝新会话——转码分片与 SQLite 同卷，
+#: 盘满会让数据库写不进去，整个应用不可用。
+MIN_FREE_BYTES = 2 * 1024**3
+#: stderr 保留的行数，供诊断面板与日志使用。
+_STDERR_KEEP_LINES = 40
+
+
+class SessionLimitError(RuntimeError):
+    """并发已满。message 面向用户，中文。"""
+
+
+class DiskQuotaError(RuntimeError):
+    """磁盘配额不足。message 面向用户，中文。"""
+
+
+class SessionStartError(RuntimeError):
+    """会话启动失败（ffmpeg 起不来或迟迟不产出 playlist）。"""
+
+
+@dataclass
+class TranscodeSession:
+    """一个在跑的转码/直通会话。"""
+
+    id: str
+    file_id: int
+    member_id: int
+    tier: PlaybackTier
+    directory: Path
+    start_ms: int
+    plan: PlaybackPlan
+    process: asyncio.subprocess.Process | None = None
+    state: str = "spawning"  # spawning | ready | failed | stopped
+    last_ping: float = field(default_factory=time.monotonic)
+    created_at: float = field(default_factory=time.monotonic)
+    error: str | None = None
+    stderr_tail: deque[str] = field(default_factory=lambda: deque(maxlen=_STDERR_KEEP_LINES))
+    _stderr_task: asyncio.Task | None = None
+
+    @property
+    def playlist_path(self) -> Path:
+        return self.directory / PLAYLIST_NAME
+
+    @property
+    def is_transcoding(self) -> bool:
+        """档 3/4 吃 CPU/GPU，档 1/2 吃 IO——两者并发上限必须分开算。"""
+        return self.tier >= PlaybackTier.HARDWARE_TRANSCODE
+
+    def touch(self) -> None:
+        self.last_ping = time.monotonic()
+
+    def size_bytes(self) -> int:
+        if not self.directory.exists():
+            return 0
+        return sum(f.stat().st_size for f in self.directory.rglob("*") if f.is_file())
+
+
+class TranscodeSessionManager:
+    """全局会话表。单进程内唯一实例（``get_session_manager()``）。"""
+
+    def __init__(self, root: Path | None = None) -> None:
+        self._root = root or Path(get_settings().transcode_dir)
+        self._sessions: dict[str, TranscodeSession] = {}
+        self._reaper: asyncio.Task | None = None
+
+    # -- 生命周期 ---------------------------------------------------------
+
+    def cleanup_orphans(self) -> int:
+        """删掉根目录下的全部残留会话目录，返回清理数量。
+
+        会话状态只在内存里，所以启动时目录里的任何东西都是上次退出留下的垃圾
+        （契约 5）。**不能假设上次是干净退出的**。
+        """
+        if not self._root.exists():
+            return 0
+        removed = 0
+        for child in self._root.iterdir():
+            if child.is_dir():
+                shutil.rmtree(child, ignore_errors=True)
+                removed += 1
+        if removed:
+            logger.info("清理了 %d 个上次退出遗留的转码目录", removed)
+        return removed
+
+    def start_reaper(self) -> None:
+        """启动心跳巡检。应用 lifespan 里调一次。"""
+        if self._reaper is None or self._reaper.done():
+            self._reaper = asyncio.create_task(self._reap_loop())
+
+    async def shutdown(self) -> None:
+        """停掉全部会话与巡检任务。后端退出前必须走到这里（契约 3）。"""
+        if self._reaper is not None:
+            self._reaper.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._reaper
+            self._reaper = None
+        for session_id in list(self._sessions):
+            await self.stop(session_id)
+
+    async def _reap_loop(self) -> None:
+        while True:
+            try:
+                await asyncio.sleep(REAP_INTERVAL_S)
+                await self.reap()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 — 巡检不能因单次异常停摆
+                logger.exception("转码会话巡检异常")
+
+    async def reap(self) -> int:
+        """回收超时无心跳的会话，返回回收数量。"""
+        now = time.monotonic()
+        stale = [
+            sid
+            for sid, s in self._sessions.items()
+            if now - s.last_ping > SESSION_IDLE_TIMEOUT_S
+        ]
+        for sid in stale:
+            logger.info("会话 %s 超过 %.0f 秒无心跳，回收", sid, SESSION_IDLE_TIMEOUT_S)
+            await self.stop(sid)
+        return len(stale)
+
+    # -- 会话操作 ---------------------------------------------------------
+
+    async def start(
+        self,
+        plan: PlaybackPlan,
+        *,
+        source_path: str,
+        member_id: int,
+        start_ms: int = 0,
+        hw_backend: str | None = None,
+        max_transcode: int = 2,
+        max_remux: int = 4,
+        quota_bytes: int | None = None,
+    ) -> TranscodeSession:
+        """起一个会话。playlist 出现即返回，不等全部分片转完。"""
+        if plan.tier is PlaybackTier.DIRECT_PLAY:
+            raise ValueError("档 0 是原文件直出，不需要会话")
+
+        await self.reap()  # 顺手清掉超时的，给新会话腾位置
+        transcoding = plan.tier >= PlaybackTier.HARDWARE_TRANSCODE
+        self._check_capacity(transcoding, max_transcode, max_remux)
+        self._check_disk(quota_bytes)
+
+        session = TranscodeSession(
+            id=new_ulid(),
+            file_id=plan.file_id,
+            member_id=member_id,
+            tier=plan.tier,
+            directory=self._root / new_ulid(),
+            start_ms=start_ms,
+            plan=plan,
+        )
+        session.directory.mkdir(parents=True, exist_ok=True)
+        command = build_hls_command(
+            plan,
+            source_path=source_path,
+            session_dir=session.directory,
+            start_ms=start_ms,
+            hw_backend=hw_backend,
+        )
+        self._sessions[session.id] = session
+        try:
+            await self._spawn(session, command)
+        except Exception:
+            await self.stop(session.id)
+            raise
+        return session
+
+    def _check_capacity(self, transcoding: bool, max_transcode: int, max_remux: int) -> None:
+        """两个独立信号量：转码按 CPU/GPU 算，直通按 IO 算。
+
+        机械盘上两路 4K remux 就能打满随机读，而 CPU 几乎是空的——瓶颈不在
+        算力，合成一个上限会误判。
+        """
+        active = [s for s in self._sessions.values() if s.state in ("spawning", "ready")]
+        if transcoding:
+            used = sum(1 for s in active if s.is_transcoding)
+            if used >= max_transcode:
+                raise SessionLimitError(
+                    f"当前转码会话已满（{used}/{max_transcode}），"
+                    "请稍候或停止其它正在转码的播放。"
+                )
+        else:
+            used = sum(1 for s in active if not s.is_transcoding)
+            if used >= max_remux:
+                raise SessionLimitError(
+                    f"当前直通播放已达上限（{used}/{max_remux}），请稍候或停止其它播放。"
+                )
+
+    def _check_disk(self, quota_bytes: int | None) -> None:
+        """写入前先查盘（§4.6）。**不要指望 LRU 跑得比写入快。**"""
+        self._root.mkdir(parents=True, exist_ok=True)
+        free = shutil.disk_usage(self._root).free
+        if free < MIN_FREE_BYTES:
+            raise DiskQuotaError(
+                f"磁盘剩余空间不足（{free / 1024**3:.1f} GB），已拒绝新的转码会话。"
+                "转码缓存与数据库同在 data 目录，写满会导致整个应用不可用。"
+                "请清理磁盘后重试。"
+            )
+        if quota_bytes is not None and self.usage_bytes() >= quota_bytes:
+            raise DiskQuotaError(
+                f"转码缓存已达配额上限（{quota_bytes / 1024**3:.1f} GB）。"
+                "请稍候——正在播放的会话结束后会自动清理，"
+                "也可在「设置 → 播放」调高配额。"
+            )
+
+    async def _spawn(self, session: TranscodeSession, command: TranscodeCommand) -> None:
+        # 契约 1+2：异步子进程 + 独立进程组
+        process = await asyncio.create_subprocess_exec(
+            *command.argv,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
+        )
+        session.process = process
+        # 契约 4：stderr 持续读取，否则管道写满会把 ffmpeg 卡死
+        session._stderr_task = asyncio.create_task(self._drain_stderr(session))
+
+        try:
+            await self._wait_for_playlist(session)
+        except SessionStartError:
+            session.state = "failed"
+            raise
+        session.state = "ready"
+        session.touch()
+
+    async def _drain_stderr(self, session: TranscodeSession) -> None:
+        assert session.process is not None and session.process.stderr is not None
+        try:
+            async for raw in session.process.stderr:
+                line = raw.decode(errors="replace").rstrip()
+                if line:
+                    session.stderr_tail.append(line)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            logger.debug("会话 %s 的 stderr 读取中断", session.id, exc_info=True)
+
+    async def _wait_for_playlist(self, session: TranscodeSession) -> None:
+        """等 index.m3u8 出现。ffmpeg 写出 playlist 就算会话可用——
+        分片按需生成，客户端边拉边转（首帧延迟的关键）。"""
+        deadline = time.monotonic() + PLAYLIST_WAIT_TIMEOUT_S
+        while time.monotonic() < deadline:
+            if session.playlist_path.exists():
+                return
+            process = session.process
+            if process is not None and process.returncode is not None:
+                tail = " / ".join(list(session.stderr_tail)[-5:])
+                session.error = tail or f"ffmpeg 退出码 {process.returncode}"
+                raise SessionStartError(f"转码进程启动失败：{session.error}")
+            await asyncio.sleep(0.05)
+        session.error = "ffmpeg 超时未产出播放列表"
+        raise SessionStartError(session.error)
+
+    def get(self, session_id: str, *, member_id: int | None = None) -> TranscodeSession | None:
+        """取会话。``member_id`` 非空时校验归属——会话是私人资源。"""
+        session = self._sessions.get(session_id)
+        if session is None:
+            return None
+        if member_id is not None and session.member_id != member_id:
+            return None
+        return session
+
+    def ping(self, session_id: str, *, member_id: int | None = None) -> bool:
+        session = self.get(session_id, member_id=member_id)
+        if session is None:
+            return False
+        session.touch()
+        return True
+
+    async def stop(self, session_id: str) -> bool:
+        session = self._sessions.pop(session_id, None)
+        if session is None:
+            return False
+        session.state = "stopped"
+        await self._terminate(session)
+        shutil.rmtree(session.directory, ignore_errors=True)
+        return True
+
+    async def stop_for_file(self, file_id: int, member_id: int) -> int:
+        """停掉同一成员对同一文件的其它会话。
+
+        seek 到已转区间之外要起新会话，此时旧会话必须先杀掉——不然用户连拖
+        五下进度条就有五个 ffmpeg 在跑，NAS 直接躺平（§4.4）。
+        """
+        victims = [
+            sid
+            for sid, s in self._sessions.items()
+            if s.file_id == file_id and s.member_id == member_id
+        ]
+        for sid in victims:
+            await self.stop(sid)
+        return len(victims)
+
+    async def _terminate(self, session: TranscodeSession) -> None:
+        """契约 3：杀整个进程组，SIGTERM 后给 3 秒再 SIGKILL。"""
+        process = session.process
+        if process is None or process.returncode is not None:
+            await self._cancel_stderr(session)
+            return
+        try:
+            os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            with contextlib.suppress(ProcessLookupError):
+                process.terminate()
+        try:
+            await asyncio.wait_for(process.wait(), timeout=3.0)
+        except TimeoutError:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(process.wait(), timeout=2.0)
+        await self._cancel_stderr(session)
+
+    async def _cancel_stderr(self, session: TranscodeSession) -> None:
+        task = session._stderr_task
+        if task is not None and not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+        session._stderr_task = None
+
+    # -- 观测 -------------------------------------------------------------
+
+    def usage_bytes(self) -> int:
+        """当前转码缓存占盘。设置页展示用，也是配额判定的依据。"""
+        if not self._root.exists():
+            return 0
+        return sum(f.stat().st_size for f in self._root.rglob("*") if f.is_file())
+
+    def active(self) -> list[TranscodeSession]:
+        return list(self._sessions.values())
+
+
+_manager: TranscodeSessionManager | None = None
+
+
+def get_session_manager() -> TranscodeSessionManager:
+    global _manager
+    if _manager is None:
+        _manager = TranscodeSessionManager()
+    return _manager
+
+
+def reset_session_manager() -> None:
+    """测试用：丢掉全局实例。调用方负责先 shutdown。"""
+    global _manager
+    _manager = None

@@ -193,6 +193,11 @@ class Settings(BaseSettings):
     # NER 模型的应用内更新落盘目录（entrypoint 解析其中的 current 指针，
     # 优先于镜像内置模型）。与 updates_dir 同在 data/ 卷上。
     models_dir: str = Field(default="./data/models/ner", alias="MOVIECLAW_MODELS_DIR")
+
+    # 网页播放器的转码分片缓存。与数据库同在 data/ 卷上，因此写入前必须查
+    # 剩余空间——盘满会让 SQLite 写不进去、整个应用不可用
+    # （docs/design/web-player.md §4.6）。会话结束即删，重启清残留。
+    transcode_dir: str = Field(default="./data/transcodes", alias="MOVIECLAW_TRANSCODE_DIR")
     # 更新清单的 Ed25519 签名公钥（base64 的 32 字节原始公钥）。配置后所有
     # 更新清单必须携带有效签名（manifest.json.sig），防 Release 被篡改——
     # 对走第三方加速镜像的用户是 sha256 之上的第二道保险。留空则不校验签名。
