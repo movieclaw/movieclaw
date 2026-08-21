@@ -198,12 +198,14 @@ class TranscodeSessionManager:
         self._check_capacity(transcoding, max_transcode, max_remux)
         self._check_disk(quota_bytes)
 
+        session_id = new_ulid()
         session = TranscodeSession(
-            id=new_ulid(),
+            id=session_id,
             file_id=plan.file_id,
             member_id=member_id,
             tier=plan.tier,
-            directory=self._root / new_ulid(),
+            # 目录名就用会话 id：排查问题时看一眼盘上的目录就知道是哪个会话
+            directory=self._root / session_id,
             start_ms=start_ms,
             plan=plan,
         )

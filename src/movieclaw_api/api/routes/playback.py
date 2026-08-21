@@ -328,7 +328,9 @@ async def ping_playback_session(
     response_model=ApiResponse[dict],
     summary="结束播放",
     operation_id="playback.session.stop",
-    openapi_extra={"x-cli-hidden": True},
+    # confirm 而非 destructive：只掐断本次播放并清掉临时分片，
+    # 观看进度、媒体文件都不受影响。
+    openapi_extra={"x-cli-hidden": True, "x-cli-dangerous": "confirm"},
 )
 async def stop_playback_session(
     session_id: Annotated[str, Path()],
@@ -402,7 +404,7 @@ async def get_session_segment(
     "/files/{file_id}/stream",
     summary="原文件直出",
     operation_id="playback.file.stream",
-    openapi_extra={"x-cli-hidden": True, "x-cli-stream": True},
+    openapi_extra={"x-cli-hidden": True},
 )
 async def stream_library_file(
     file_id: Annotated[int, Path()],

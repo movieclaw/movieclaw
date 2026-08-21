@@ -271,6 +271,14 @@ def test_throttle_lock_survives_bucket_flood() -> None:
 
 # 公开白名单：新增公开接口必须在此登记并说明理由，否则守护测试失败。
 _PUBLIC_ALLOWLIST = {
+    # 网页播放器取流：<video src>、hls.js 拉分片、原生 HLS 都带不了自定义
+    # header（整条取流链路在浏览器内部，JS 插不进手），所以不挂登录依赖，
+    # 改用查询参数里的短时效签名 token。无 token / token 不符一律 404——
+    # 与「资源不存在」不可区分，不给探测者留判据。
+    ("GET", "/api/v1/playback/sessions/{session_id}/index.m3u8"),
+    ("GET", "/api/v1/playback/sessions/{session_id}/{name}"),
+    ("GET", "/api/v1/playback/files/{file_id}/stream"),
+    ("GET", "/api/v1/playback/files/{file_id}/subtitles"),
     ("GET", "/api/v1/health"),  # 存活探针
     ("GET", "/api/v1/auth/bootstrap"),  # 前端判断进引导页还是登录页
     ("POST", "/api/v1/auth/bootstrap"),  # 首次建号（服务端一次性锁自我封闭）
@@ -327,6 +335,7 @@ def test_every_route_denies_anonymous_access(client: TestClient) -> None:
             .replace("{member_id}", "1")
             .replace("{job_id}", "job_test")
             .replace("{device_id}", "test-device")
+            .replace("{name}", "seg00000.m4s")
         )
         assert "{" not in url, f"守护测试不认识路径参数，请补充哑值：{path}"
         for method in methods:

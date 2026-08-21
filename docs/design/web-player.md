@@ -1,6 +1,7 @@
 # 网页播放器：架构与实施计划
 
-> 状态：设计定稿 **v1**（2026-08-21），待实施。
+> 状态：设计定稿 **v1**（2026-08-21）；**后端 P0 已实现**（2026-08-21），
+> 实现期的实测结论与偏离已回写本文（见 §12 实现纪要）。前端未开始。
 > 关联文档：[jellyfin-compat.md](jellyfin-compat.md)（第三方播放器直连）、
 > [library.md](library.md)（媒体库架构）、[strm-workflow.md](strm-workflow.md)
 > （网盘零流量原则）、[jellyfin-subtitle.md](jellyfin-subtitle.md)（字幕轨中性引用）、
@@ -959,3 +960,92 @@ Mac mini 验证。做成发版前的人工清单，列进 `.claude/skills/releas
 3. **`playback_metric` 的保留期**：默认存多久、要不要滚动清理。
 4. ~~档 4 软件转码的默认开关~~ —— **已决（2026-08-21）**：默认关闭，
    播放时按 §3.6 的同意链路询问并永久保存。
+
+
+---
+
+## 12. 实现纪要（2026-08-21）
+
+后端 P0 已落地并验证。本节记录**实现期才知道的事实**——都是照文档抄抄不出来、
+只能靠真跑 ffmpeg 才能确定的东西。
+
+### 12.1 已实现
+
+| 模块 | 位置 | 说明 |
+|---|---|---|
+| 决策引擎 | `movieclaw_playback/decide.py` | 纯函数，三态返回 |
+| 能力快照 | `movieclaw_playback/capability.py` | 含恒等快照（Jellyfin 兼容层复用） |
+| 台账适配 | `movieclaw_playback/profile.py` | 单独成模块，不污染纯函数层 |
+| 关键帧探测 | `services/media_probe.py` | 采样式，不落库 |
+| 命令装配 | `services/playback/ffmpeg_args.py` | 纯函数 |
+| 会话管理 | `services/playback/session.py` | 五条进程契约 |
+| 硬件探测 | `services/playback/hwprobe.py` | 第一版（编码器 + 设备节点双条件） |
+| 签名 URL | `services/playback/signing.py` | 复用登录密钥 + 独立 salt |
+| 策略配置 | `settings/playback.py` | `playback.policy`，零迁移 |
+| 端点 | `api/routes/playback.py` | decide / sessions / 分片 / 直出 / 字幕 |
+
+### 12.2 实测结论：`-ss` 的关键帧回退比预想的大
+
+源片 6 秒、关键帧在 0/2/4 秒，copy 模式下实测：
+
+| `-ss` | 实际起点 | |
+|---|---|---|
+| 1.0 | 0.0 | 回退到前一个关键帧 |
+| **2.0** | **0.0** | **请求正好等于关键帧时间，反而退到更前一个** |
+| 2.5 | 2.0 | |
+| 3.0 | 2.0 | |
+| **4.0** | **2.0** | 同样是「正好在关键帧上」的情况 |
+
+即 input seek 落在**严格早于**请求时间的关键帧上，最坏回退**两个 GOP**。
+方向恒为「稍早」而非「跳过内容」——宁可重看几秒，不能漏看。
+
+配套的时间轴取舍（同为实测）：`-copyts` 保留绝对时间轴、`-copyts
+-start_at_zero` 会被源片起始偏移（-0.023）带歪。**最终不用 copyts**：会话
+时间轴恒从 0 起，`文件时间 = start_ms + currentTime`，全前端只有这一处换算。
+
+### 12.3 实测确认的两条
+
+- **不加 `-tag:v hvc1` 输出就是 `hev1`**（§7-① 的 Safari 静默黑屏）。实现期
+  发现决策引擎的 `VideoPlan(action="copy")` 原先不带 codec，导致这个标签
+  **永远打不上**——根因已修（copy 也记录流经的编码）。
+- **上游 ffmpeg 没有 `tonemap_cuda`**（`tonemap_vaapi` / `tonemap_opencl` /
+  `libplacebo` 都有），印证了 §5.3 关于 jellyfin-ffmpeg 补丁的说法。命令装配
+  据此在无原生滤镜的后端上退回「软件解码 + 软件 tone-map + 硬件编码」。
+
+### 12.4 与本文的偏离
+
+| 处 | 文档 | 实现 | 理由 |
+|---|---|---|---|
+| §4.5 | 并发超限「排队并明确告知」 | **立即拒绝**并报当前占用（如「2/2」） | HTTP 请求里排队 = 用户对着转圈等一个不知道多久的位置 |
+| §3.5 | 关键帧索引落 `library_file` | **不落库**，采样现算 + 内存缓存 | 存量库无论如何要懒加载补齐，落库的增量收益只是「重启后不用重算」，不值一次迁移 |
+| §7-④ | 按 `dv_profile` 区分 P5/P8 | **DV 一律转码** | 探测层只落 `hdr="Dolby Vision"` 不落 profile；判错的代价是绿紫画面，保守 |
+
+### 12.5 尚未做
+
+- **前端播放器**（引擎抽象、Media Chrome UI、JASSUB/libbitsub、诊断面板、
+  同意弹窗、自动降档回路的客户端侧）——整个 §6 都还没开始。
+- **硬件自检的真实 1 秒转码探测**（§5.2）与中文诊断文案：当前 `hwprobe` 只
+  查「编码器存在 + 设备节点可读写」。
+- **Trickplay 缩略图、MKV 内嵌字体抽取、PGS 前端渲染**。
+- **`playback_metric` 表与指标采集**（§8）。
+- **换 jellyfin-ffmpeg 与 `runtime-version` bump**：档 3 的命令已按各后端装配
+  好，但要在真显卡上跑通、要 HDR tone-map，仍需换 ffmpeg。
+- **已转码区间位图与 seek 复用**（§4.4）：当前 seek 是「杀旧会话起新会话」，
+  正确但不够快。
+
+### 12.6 测试现状
+
+| 层 | 文件 | 条数 |
+|---|---|---|
+| 决策引擎 | `tests/playback/test_decide.py` | 40 |
+| 关键帧估算 | `tests/media/test_keyframe_interval.py` | 11 |
+| 命令装配 | `tests/playback/test_ffmpeg_args.py` | 28 |
+| 会话与进程契约 | `tests/playback/test_session_manager.py` | 27 |
+| 签名 token | `tests/playback/test_stream_signing.py` | 14 |
+| 决策服务层 | `tests/api/test_playback_decide.py` | 4 |
+| 取流端点 | `tests/api/test_playback_stream.py` | 23 |
+| 转码执行（真 ffmpeg） | `tests/playback/test_transcode_integration.py` | 10 |
+| 端到端（真 HTTP + 真 ffmpeg） | `tests/api/test_playback_e2e.py` | 6 |
+
+前七项进 CI 默认门禁（假 ffmpeg 替身，不需要系统装 ffmpeg）；后两项标
+`integration`，需要 ffmpeg。
