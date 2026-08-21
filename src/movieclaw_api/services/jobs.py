@@ -381,6 +381,66 @@ async def list_jobs(
     return list((await session.execute(statement)).scalars().unique())
 
 
+async def list_jobs_by_resource(
+    session: AsyncSession,
+    *,
+    resource_type: str,
+    resource_ids: Sequence[str | int],
+    job_type: str | None = None,
+    limit_per_resource: int = 10,
+) -> dict[str, list[Job]]:
+    """一次取回**多个**资源各自最近的若干个 Job：``resource_id -> [Job, ...]``。
+
+    存在的理由是列表页：媒体库列表要给每张库卡片显示扫描状态，逐库调用
+    ``list_jobs`` 就是一次 N+1——79 个库 = 79 次 join 查询，而且随着 job
+    台账增长而持续变慢（实测空表 70 ms、9 万行 131 ms）。
+
+    每个资源内的顺序与 ``list_jobs`` 完全一致（``created_at`` 倒序），
+    调用方拿到的切片因此可以直接顶替逐个查询的结果。用窗口函数在库内分组
+    取前 N，不是取全部再在内存里切——后者在长期运行的部署上会把整张 job
+    表读进内存。
+
+    ``resource_ids`` 为空时直接返回空字典，不打库。
+    """
+    if not resource_ids:
+        return {}
+    keys = [str(resource_id) for resource_id in resource_ids]
+    ranked = (
+        select(
+            JobResource.resource_id.label("resource_id"),
+            Job.id.label("job_id"),
+            func.row_number()
+            .over(
+                partition_by=JobResource.resource_id,
+                order_by=Job.created_at.desc(),
+            )
+            .label("rank"),
+        )
+        .join(Job, Job.id == JobResource.job_id)
+        .where(
+            JobResource.resource_type == resource_type,
+            JobResource.resource_id.in_(keys),
+        )
+    )
+    if job_type:
+        ranked = ranked.where(Job.job_type == job_type)
+    ranked = ranked.subquery()
+
+    rows = (
+        await session.execute(
+            select(ranked.c.resource_id, Job)
+            .join(Job, Job.id == ranked.c.job_id)
+            .where(ranked.c.rank <= max(limit_per_resource, 1))
+            .order_by(ranked.c.resource_id, Job.created_at.desc())
+        )
+    ).all()
+
+    grouped: dict[str, list[Job]] = {key: [] for key in keys}
+    for resource_id, job in rows:
+        grouped[resource_id].append(job)
+    return grouped
+
+
 async def latest_job_for_resource(
     session: AsyncSession,
     resource_type: str,

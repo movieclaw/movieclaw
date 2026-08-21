@@ -1100,8 +1100,10 @@ const InventoryCell = memo(function InventoryCell({
     year: item.year ?? undefined,
     rating: 0,
     overlayDetails: inventoryLabel ? { primary: inventoryLabel } : undefined,
-    // 海报可能是本地刮削资产的相对路径（断网可用），也可能是 TMDB 图床地址
-    posterUrl: imageUrl(item.poster_url),
+    // 海报可能是本地刮削资产的相对路径（断网可用），也可能是 TMDB 图床地址。
+    // 与首页海报墙同样取 poster-card 派生图：海报墙是全站最大的一张图片网格，
+    // 直出原图等于每屏多拉三倍字节（见 library-view.tsx 同名字段的注释）
+    posterUrl: imageUrl(item.poster_url, "poster-card"),
   };
   // 文件全部缺失的"死条目"：海报置灰，一眼与在位内容区分
   const dead = item.file_count > 0 && item.missing_count >= item.file_count;

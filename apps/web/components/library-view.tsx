@@ -582,8 +582,11 @@ function libraryItemToMediaItem(item: LibraryItem): MediaItem {
     overview: "",
     overlayDetails,
     // 海报可能是本地刮削资产的相对路径（/images/assets/...），也可能是
-    // TMDB 图床绝对地址——统一经 imageUrl 解析（补 API base / 走缓存代理）
-    posterUrl: imageUrl(item.poster_url),
+    // TMDB 图床绝对地址——统一经 imageUrl 解析（补 API base / 走缓存代理）。
+    // 取 poster-card 派生图而非原图：格子实测渲染 150~170 CSS px，328px 的
+    // 预设覆盖 2x 屏绰绰有余，而原图是 500px 宽的刮削资产——一屏 60 格直出
+    // 原图要 4.9 MB，取派生图只要 1.7 MB（实测单张 82KB → 29KB）
+    posterUrl: imageUrl(item.poster_url, "poster-card"),
   };
 }
 

@@ -226,6 +226,12 @@ async def get_library_cover(library_id: int, request: Request) -> Response:
     )
 
 
+# 卡片要回答「在扫吗」和「上次扫的结果」，后者可能被若干条已取消/无结论的
+# 作业挡在前面，所以往回多看几条。两条取数路径（单库查、列表批量查）必须
+# 用同一个深度，否则同一个库在首页和详情页会显示不同的「上次扫描」
+_SCAN_JOB_LOOKBACK = 10
+
+
 def _scan_progress_view(library_id: int) -> ScanProgressView | None:
     """进行中扫描的实时状态（阶段 + 进度）；没在扫返回 None。
 
@@ -310,15 +316,27 @@ async def _persistent_scan_views(
     session: AsyncSession, library_id: int
 ) -> tuple[bool, ScanProgressView | None, LastScanView | None]:
     """合并进程内细粒度状态与 Job 台账，服务重启时库卡片不丢进度。"""
-    legacy_progress = _scan_progress_view(library_id)
-    legacy_last = _last_scan_view(library_id)
     rows = await jobs.list_jobs(
         session,
         resource_type="library",
         resource_id=library_id,
         job_type="library.scan",
-        limit=10,
+        limit=_SCAN_JOB_LOOKBACK,
     )
+    return _scan_views_from_jobs(library_id, rows)
+
+
+def _scan_views_from_jobs(
+    library_id: int, rows: list[Job]
+) -> tuple[bool, ScanProgressView | None, LastScanView | None]:
+    """由「该库最近若干个 library.scan 作业」推出卡片要显示的扫描状态。
+
+    与取数分离，是为了让列表页能批量取一次再逐库套用（见 list_libraries），
+    而单库详情页仍走 ``_persistent_scan_views`` 各查各的——两条路径共用本
+    函数，口径不会分叉。
+    """
+    legacy_progress = _scan_progress_view(library_id)
+    legacy_last = _last_scan_view(library_id)
     active = next(
         (
             row
@@ -492,8 +510,20 @@ async def list_libraries(
     visible = await visible_library_ids(session, principal)
     if visible is not None:
         rows = [r for r in rows if r.id in visible]
+    # 逐库 await 一次 list_jobs 就是一次 N+1：79 个库 = 79 次 join 查询，
+    # 且随 job 台账增长持续变慢。这里一次批量取回再逐库套用，口径与单库页
+    # 共用 _scan_views_from_jobs，不会分叉。
+    library_ids = [row.id for row in rows if row.id is not None]
+    scan_jobs = await jobs.list_jobs_by_resource(
+        session,
+        resource_type="library",
+        resource_ids=library_ids,
+        job_type="library.scan",
+        limit_per_resource=_SCAN_JOB_LOOKBACK,
+    )
     scan_views = {
-        row.id: await _persistent_scan_views(session, row.id) for row in rows if row.id is not None
+        library_id: _scan_views_from_jobs(library_id, scan_jobs.get(str(library_id), []))
+        for library_id in library_ids
     }
     views = [
         LibraryView.from_model(
