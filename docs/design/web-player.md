@@ -897,8 +897,8 @@ Mac mini 验证。做成发版前的人工清单，列进 `.claude/skills/releas
 - [x] `services/playback/decide.py` 决策引擎（纯函数）+ 判定表 + **`PlaybackDecision` 三态**
 - [x] `services/playback/session.py` 会话管理（生命周期、心跳、区间位图、配额）
 - [x] `services/playback/ffmpeg_runner.py` 执行器（§4.2 五条进程契约）
-- [~] `services/playback/hwprobe.py` 硬件自检（编码器 + 设备节点双条件已做，
-      **真实 1 秒转码探测未做**）+ 设置页展示
+- [x] `services/playback/hwprobe.py` 硬件自检（真跑一秒编码 + 逐项中文诊断）
+      + 设置页展示与「重新检测」
 - [x] `HwBackend` 抽象：VAAPI / QSV / NVENC / VideoToolbox / 软件
 - [x] 关键帧索引：**改为采样现算 + 内存缓存**，不落库（偏离见 §12.4）
 - [~] 字幕规划：VTT 转换、ASS 原样、内封轨按需抽取、**MKV 字体抽取**已做；
@@ -988,7 +988,7 @@ Mac mini 验证。做成发版前的人工清单，列进 `.claude/skills/releas
 | 关键帧探测 | `services/media_probe.py` | 采样式，不落库 |
 | 命令装配 | `services/playback/ffmpeg_args.py` | 纯函数 |
 | 会话管理 | `services/playback/session.py` | 五条进程契约 |
-| 硬件探测 | `services/playback/hwprobe.py` | 第一版（编码器 + 设备节点双条件） |
+| 硬件探测 | `services/playback/hwprobe.py` | 真跑一秒编码 + 逐项中文诊断 |
 | 签名 URL | `services/playback/signing.py` | 复用登录密钥 + 独立 salt |
 | 策略配置 | `settings/playback.py` | `playback.policy`，零迁移 |
 | 观看状态 | `services/playback/watch.py` | 续播点、已看判定、轨记忆 |
@@ -1054,8 +1054,6 @@ Mac mini 验证。做成发版前的人工清单，列进 `.claude/skills/releas
 
 ### 12.5 尚未做
 
-- **硬件自检的真实 1 秒转码探测**（§5.2）与中文诊断文案：当前 `hwprobe` 只
-  查「编码器存在 + 设备节点可读写」。
 - **Trickplay 缩略图**（入库侧雪碧图 + VTT，以及播放器里的进度条预览）。
 - **PGS 前端渲染（libbitsub）**。内封的文本与 ASS 轨已经可播、内嵌字体也已
   随 ASS 一并抽出下发（见 §12.8）。PGS 是位图轨，仍进「不可用」清单并给中文
@@ -1084,6 +1082,27 @@ Mac mini 验证。做成发版前的人工清单，列进 `.claude/skills/releas
 画面由播放器出。**cue 文本一律剥标签再渲染**——字幕是用户丢进媒体库的任意文本，
 把它当 HTML 插进 DOM 就是一条现成的 XSS 通道，斜体这点观感换不来这个风险
 （要完整排版的走 ASS/JASSUB，那条路径在 canvas 上画，根本不碰 DOM）。
+
+### 12.11 硬件自检：把「转码失败」这个黑盒打开
+
+自建软件里硬件加速最大的成本不是写代码，是**用户配不对**：设备没挂、容器
+用户不在 render 组（GID 在群晖/unRAID/各发行版上都不一样）、驱动版本不够。
+这些出问题的现象**全都是「转码失败」**——用户既不知道原因也不知道该改什么。
+
+所以自检不猜，**真跑一次一秒钟的编码**。只看两件事都不够：
+
+- 只看 `ffmpeg -encoders` 里有没有编码器：发行版 ffmpeg 普遍带着 `h264_vaapi`，
+  但容器里根本没挂 `/dev/dri`，报「可用」会把用户送进必然失败的档 3；
+- 只看设备节点在不在：节点在、当前用户没读写权限（最典型的群晖场景），
+  照样编码不了。
+
+失败原因逐类翻成**可操作的中文**，并且分清三种完全不同的修法——设备没挂
+（改 compose 的 `devices`）、权限不够（`group_add` 加 render 组，并报出宿主机
+上该节点的实际 GID）、驱动不行（装驱动）。命中不了的报错原样带上摘要，不装懂。
+
+自检在启动时后台预热（逐个后端各跑一秒要几秒钟，不该拖慢启动，也不该等到
+第一次播放才做），设置页可展开逐项详情并「重新检测」——用户按提示挂上设备后
+要能立刻看到结果，不必重启容器。
 
 ### 12.10 停顿归因：别把「转得慢」当成「播不了」
 

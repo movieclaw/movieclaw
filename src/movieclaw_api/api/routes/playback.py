@@ -19,6 +19,8 @@ from movieclaw_api.exceptions import (
     ServiceUnavailableException,
 )
 from movieclaw_api.schemas.playback import (
+    HwBackendStatusView,
+    HwProbeView,
     MediaActivityView,
     PlaybackDecideRequest,
     PlaybackDecisionView,
@@ -42,7 +44,10 @@ from movieclaw_api.services.playback.embedded_subs import (
     font_cache_dir,
     safe_font_name,
 )
-from movieclaw_api.services.playback.hwprobe import available_backends
+from movieclaw_api.services.playback.hwprobe import (
+    available_backends,
+    probe_backends_async,
+)
 from movieclaw_api.services.playback.session import (
     DiskQuotaError,
     SessionLimitError,
@@ -737,3 +742,32 @@ async def get_playback_font(
     if not target.is_file():
         raise NotFoundException("字体不存在")
     return FileResponse(target, media_type="font/sfnt")
+
+
+@router.get(
+    "/hardware",
+    response_model=ApiResponse[HwProbeView],
+    summary="硬件加速自检",
+    operation_id="playback.hardware.probe",
+    dependencies=[Depends(require_admin)],
+    openapi_extra={"x-cli-hidden": True},
+)
+async def probe_playback_hardware(
+    refresh: Annotated[bool, Query(description="重新检测而不是读缓存")] = False,
+) -> ApiResponse[HwProbeView]:
+    """逐个后端真跑一秒钟的编码，把失败原因翻成可操作的中文。
+
+    自建软件里硬件加速最大的成本不是写代码，是用户配不对：设备没挂、容器
+    用户不在 render 组、驱动版本不够。这些出问题的现象**全都是「转码失败」
+    黑盒**——用户既不知道原因也不知道该改什么。这个接口就是为了把黑盒打开。
+
+    `refresh=true` 供设置页的「重新检测」按钮：用户按提示挂上设备后要能立刻
+    看到结果，不必重启容器。
+    """
+    statuses = await probe_backends_async(force=refresh)
+    return ok(
+        HwProbeView(
+            backends=[HwBackendStatusView(**vars(s)) for s in statuses],
+            hardware_available=any(s.available for s in statuses),
+        )
+    )

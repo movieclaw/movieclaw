@@ -29,6 +29,14 @@ from movieclaw_tracker import load_all_sites
 logger = logging.getLogger("movieclaw_api.lifespan")
 
 
+async def _warm_hardware_probe(probe) -> None:  # noqa: ANN001
+    """后台预热硬件自检。失败只影响档位判定（退回软件转码），不阻断启动。"""
+    try:
+        await probe()
+    except Exception:  # noqa: BLE001
+        logger.warning("硬件加速自检未能完成，按「无可用硬件」处理", exc_info=True)
+
+
 async def _reset_stale_verifying() -> None:
     """把上次进程遗留在 VERIFYING 的记录重置为 PENDING（崩溃/重启自愈）。"""
     async with get_database().session() as session:
@@ -218,6 +226,12 @@ def build_lifespan(settings: Settings):
         transcode_sessions = get_session_manager()
         await asyncio.to_thread(transcode_sessions.cleanup_orphans)
         transcode_sessions.start_reaper()
+        # 硬件加速自检放后台预热：逐个后端真跑一秒编码要几秒钟，不该拖慢启动；
+        # 但也不能等到第一次播放才做——那会让首帧白等。异常吞掉，探测失败
+        # 只意味着「按软件转码处理」，不该阻断应用启动。
+        from movieclaw_api.services.playback.hwprobe import probe_backends_async
+
+        asyncio.create_task(_warm_hardware_probe(probe_backends_async))
         logger.info("应用启动完成，数据库就绪")
         try:
             yield

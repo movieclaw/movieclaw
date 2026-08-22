@@ -356,3 +356,23 @@ class PlaybackFontsView(BaseModel):
     """ASS 字幕依赖的内嵌字体地址（已带签名 token）。"""
 
     fonts: list[str] = []
+
+
+class HwBackendStatusView(BaseModel):
+    """一个硬件加速后端的自检结论。``detail`` 是给用户看的中文原因与修法。"""
+
+    name: str
+    label: str
+    available: bool
+    detail: str
+
+
+class HwProbeView(BaseModel):
+    """硬件加速自检结果。
+
+    `available` 为空即「只能软件转码」——用户据此决定是去挂设备，还是接受
+    软件转码的代价。
+    """
+
+    backends: list[HwBackendStatusView] = []
+    hardware_available: bool = False

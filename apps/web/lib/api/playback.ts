@@ -426,3 +426,30 @@ export async function fetchEmbeddedFonts(subtitleUrl: string): Promise<string[]>
   );
   return response.data.fonts;
 }
+
+
+export interface HwBackendStatus {
+  name: string;
+  label: string;
+  available: boolean;
+  /** 面向用户的中文原因与修法 */
+  detail: string;
+}
+
+export interface HwProbeResult {
+  backends: HwBackendStatus[];
+  hardware_available: boolean;
+}
+
+/**
+ * 硬件加速自检：逐个后端真跑一秒钟的编码，把失败原因翻成可操作的中文。
+ *
+ * `refresh` 供「重新检测」按钮——用户按提示挂上设备后要能立刻看到结果，
+ * 不必重启容器。
+ */
+export async function probePlaybackHardware(refresh = false): Promise<HwProbeResult> {
+  const response = await request<ApiEnvelope<HwProbeResult>>(
+    `/playback/hardware${refresh ? "?refresh=true" : ""}`,
+  );
+  return response.data;
+}

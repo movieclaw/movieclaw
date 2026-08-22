@@ -8,8 +8,10 @@ import { InfoIcon } from "@/components/icons";
 import { Tooltip } from "@/components/tooltip";
 import { useBackdrop } from "@/lib/backdrop";
 import {
+  type HwProbeResult,
   type PlaybackPolicy,
   fetchPlaybackPolicy,
+  probePlaybackHardware,
   savePlaybackPolicy,
 } from "@/lib/api/playback";
 
@@ -64,6 +66,32 @@ export function PlaybackSettingsSection() {
   const [failed, setFailed] = useState(false);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  const [diagnostics, setDiagnostics] = useState<HwProbeResult | null>(null);
+  const [probing, setProbing] = useState(false);
+
+  /** 拉硬件自检详情。`refresh` 会让服务端真的重测而不是读缓存。 */
+  const loadDiagnostics = useCallback(async (refresh: boolean) => {
+    setProbing(true);
+    try {
+      const result = await probePlaybackHardware(refresh);
+      setDiagnostics(result);
+      // 重新检测可能改变结论（用户刚挂上设备），顶部的可用状态要跟着走
+      setPolicy((current) =>
+        current
+          ? {
+              ...current,
+              hardware_available: result.hardware_available,
+              hw_backends: result.backends.filter((b) => b.available).map((b) => b.name),
+            }
+          : current,
+      );
+    } catch {
+      // 检测失败不该把设置页打崩；保持原有结论，用户可以再按一次
+    } finally {
+      setProbing(false);
+    }
+  }, []);
   // 保存串行化：连点开关时按顺序落库，避免旧请求的响应覆盖新配置
   const saveChain = useRef<Promise<unknown>>(Promise.resolve());
   const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -149,6 +177,53 @@ export function PlaybackSettingsSection() {
                   : "未检测到可用设备"}
               </span>
             </span>
+          </div>
+
+          {/*
+            逐后端诊断。「转码失败」这种黑盒是硬件加速最大的部署成本——用户既
+            不知道原因也不知道该改什么。这里把每个后端为什么不可用、该怎么改
+            都摊开说。
+          */}
+          <div className="px-5 py-3.5">
+            <button
+              type="button"
+              className="text-sub text-[var(--text-faint)] transition hover:text-[var(--text)]"
+              onClick={() => {
+                setDiagnosticsOpen((open) => !open);
+                if (!diagnostics) void loadDiagnostics(false);
+              }}
+            >
+              {diagnosticsOpen ? "收起检测详情" : "查看检测详情"}
+            </button>
+            {diagnosticsOpen && (
+              <div className="mt-3 space-y-2.5">
+                {diagnostics === null ? (
+                  <p className="text-caption text-[var(--text-faint)]">检测中…</p>
+                ) : (
+                  diagnostics.backends.map((backend) => (
+                    <div key={backend.name} className="flex gap-2.5">
+                      <span
+                        className={`mt-1.5 size-1.5 shrink-0 rounded-full ${
+                          backend.available ? "bg-[var(--ok)]" : "bg-[var(--text-faint)]"
+                        }`}
+                      />
+                      <div className="min-w-0">
+                        <p className="text-sub text-[var(--text)]">{backend.label}</p>
+                        <p className="text-caption text-[var(--text-faint)]">{backend.detail}</p>
+                      </div>
+                    </div>
+                  ))
+                )}
+                <button
+                  type="button"
+                  className="text-caption text-[var(--text-faint)] underline-offset-2 transition hover:text-[var(--text)] hover:underline disabled:opacity-50"
+                  disabled={probing}
+                  onClick={() => void loadDiagnostics(true)}
+                >
+                  {probing ? "重新检测中…" : "重新检测"}
+                </button>
+              </div>
+            )}
           </div>
 
           <div className="px-5 py-3.5">
