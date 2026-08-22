@@ -137,6 +137,40 @@ test("重新起播清空上一轮的失败记录", () => {
   assert.equal(state.startMs, 90_000);
 });
 
+test("起播失败后原样重试，状态必须与上一次可区分", () => {
+  // 编排层靠状态指纹给 effect 去重，指纹撞了请求就发不出去，界面会永远停在
+  // 「正在判断播放方式」。重试恰恰是参数一模一样再来一次，全靠 attempt 区分。
+  const failed = run([
+    { type: "request", startMs: 0 },
+    { type: "fatal", message: "转码进程启动失败" },
+  ]);
+  const retried = playerReducer(failed, { type: "request", startMs: 0 });
+  assert.equal(retried.phase, "deciding");
+  assert.notEqual(retried.attempt, failed.attempt);
+});
+
+test("同意继续播也算一次新的起播，不能与之前的决策撞纹", () => {
+  const consent = planSession(4);
+  consent.decision = { ...consent.decision, outcome: "consent" };
+  const waiting = run([{ type: "request", startMs: 0 }, { type: "session", session: consent }]);
+  const granted = playerReducer(waiting, { type: "consent-granted" });
+  assert.equal(granted.phase, "deciding");
+  assert.notEqual(granted.attempt, waiting.attempt);
+});
+
+test("连续重试每次都递增，第二次重试同样发得出去", () => {
+  let state = run([{ type: "request", startMs: 0 }]);
+  const seen = new Set([state.attempt]);
+  for (let i = 0; i < 3; i += 1) {
+    state = playerReducer(playerReducer(state, { type: "fatal", message: "又坏了" }), {
+      type: "request",
+      startMs: 0,
+    });
+    assert.equal(seen.has(state.attempt), false);
+    seen.add(state.attempt);
+  }
+});
+
 test("忙碌态覆盖起播四段与降档重来", () => {
   assert.equal(isBusy("deciding"), true);
   assert.equal(isBusy("degrading"), true);

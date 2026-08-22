@@ -246,7 +246,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
     const phase = state.phase;
     if (phase !== "deciding" && phase !== "degrading" && phase !== "session-starting") return;
 
-    const key = `${unitKey}|${phase}|${state.startMs}|${failedKey}|${state.failureCount}`;
+    const key = `${unitKey}|${phase}|${state.startMs}|${failedKey}|${state.failureCount}|${state.attempt}`;
     if (startedKeyRef.current === key) return;
     startedKeyRef.current = key;
 
@@ -279,7 +279,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.phase, state.startMs, failedKey, state.failureCount, unitKey]);
+  }, [state.phase, state.startMs, failedKey, state.failureCount, state.attempt, unitKey]);
 
   /**
    * 自动播放：试一次，被拒绝了按原因决定重试还是降级。

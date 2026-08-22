@@ -1262,16 +1262,6 @@ async def postpone_upgrade_wanted(
     return postponed
 
 
-@register_task(
-    "backfill_upgrade_snapshots",
-    title="洗版基线回填",
-    trigger_type=TriggerType.INTERVAL,
-    interval_seconds=_BACKFILL_TICK_SECONDS,
-    description=(
-        "为已配置洗版目标的规则组所引用订阅，补齐历史已入库单元的质量快照"
-        "（洗版比较的基线）。纯数据库变换、分批慢跑，补完即空转。"
-    ),
-)
 def _snapshot_version(quality: dict) -> int:
     """快照结构版本；缺键或值损坏一律按 v1（重算一次即修好，绝不让巡检抛错）。"""
     try:
@@ -1347,6 +1337,16 @@ async def _refill_stale_snapshots(session: AsyncSession, upgrade_ids: set[int]) 
     return len(stale)
 
 
+@register_task(
+    "backfill_upgrade_snapshots",
+    title="洗版基线回填",
+    trigger_type=TriggerType.INTERVAL,
+    interval_seconds=_BACKFILL_TICK_SECONDS,
+    description=(
+        "为已配置洗版目标的规则组所引用订阅，补齐历史已入库单元的质量快照"
+        "（洗版比较的基线）。纯数据库变换、分批慢跑，补完即空转。"
+    ),
+)
 async def backfill_upgrade_snapshots() -> None:
     """存量回填 tick：每次最多处理一批 quality IS NULL 的 imported 单元。"""
     db = get_database()

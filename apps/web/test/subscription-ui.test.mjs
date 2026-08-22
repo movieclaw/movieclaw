@@ -72,7 +72,13 @@ test("在播剧只展示最新一季的低密度收录进度", () => {
       seasons: [season(1, 10, 10, 10), season(2, 7, 5, 5)],
     }),
   );
-  assert.deepEqual(result, { label: "第 2 季", value: "5 / 7", tracking: true, upgrading: false });
+  assert.deepEqual(result, {
+    label: "第 2 季",
+    value: "5 / 7",
+    tracking: true,
+    upgrading: false,
+    upgradingCount: undefined,
+  });
 });
 
 test("完结多季已收齐时聚合为季数和总集数", () => {
@@ -88,7 +94,13 @@ test("完结多季已收齐时聚合为季数和总集数", () => {
       seasons,
     }),
   );
-  assert.deepEqual(result, { label: "共 8 季", value: "73 集全", tracking: false, upgrading: false });
+  assert.deepEqual(result, {
+    label: "全 8 季",
+    value: "全 73 集",
+    tracking: false,
+    upgrading: false,
+    upgradingCount: undefined,
+  });
 });
 
 test("完结剧补旧时聚合显示已收录和总集数", () => {
@@ -104,7 +116,13 @@ test("完结剧补旧时聚合显示已收录和总集数", () => {
       ],
     }),
   );
-  assert.deepEqual(result, { label: "共 3 季", value: "24 / 30", tracking: false, upgrading: false });
+  assert.deepEqual(result, {
+    label: "共 3 季",
+    value: "24 / 30",
+    tracking: false,
+    upgrading: false,
+    upgradingCount: undefined,
+  });
 });
 
 test("最新一季尚未播出时不展示零进度", () => {
@@ -114,7 +132,13 @@ test("最新一季尚未播出时不展示零进度", () => {
       seasons: [season(3, 10, 0, 0)],
     }),
   );
-  assert.deepEqual(result, { label: "第 3 季", value: "待播出", tracking: true, upgrading: false });
+  assert.deepEqual(result, {
+    label: "第 3 季",
+    value: "待播出",
+    tracking: true,
+    upgrading: false,
+    upgradingCount: undefined,
+  });
 });
 
 test("洗版中的订阅亮青点，暂停后不亮", () => {

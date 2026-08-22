@@ -47,6 +47,16 @@ export interface PlayerState {
   failureCount: number;
   /** 起播位置（文件时间，毫秒）。降档重来要落回同一位置，不能从头放。 */
   startMs: number;
+  /**
+   * 起播尝试序号：每次「用户要求重来」（错误页点重试、同意弹窗点继续）都 +1。
+   *
+   * 它存在的唯一理由是编排层要给起播 effect 去重——React 严格模式下 effect
+   * 会跑两遍，靠状态指纹认出「这是同一次请求」。但重试的本质就是**参数一模
+   * 一样再来一次**，没有这个序号，重试算出的指纹与上一次完全相同，会被当成
+   * 严格模式的重复调用丢掉：请求发不出去，界面永远停在「正在判断播放方式」。
+   * 降档路径不受影响是因为它每次都改 failedTiers/failureCount，指纹天然不同。
+   */
+  attempt: number;
   error: { message: string; suggestion: string | null } | null;
 }
 
@@ -57,6 +67,7 @@ export const initialPlayerState: PlayerState = {
   failedTiers: [],
   failureCount: 0,
   startMs: 0,
+  attempt: 0,
   error: null,
 };
 
@@ -106,6 +117,7 @@ export function playerReducer(state: PlayerState, event: PlayerEvent): PlayerSta
         ...initialPlayerState,
         phase: "deciding",
         startMs: event.startMs,
+        attempt: state.attempt + 1,
       };
 
     case "session": {
@@ -135,7 +147,7 @@ export function playerReducer(state: PlayerState, event: PlayerEvent): PlayerSta
     case "consent-granted":
       // 开关已经翻开，同一份请求重来一次即可——不清 failedTiers：之前
       // 试过并失败的档位仍然是失败的。
-      return { ...state, phase: "deciding", decision: null };
+      return { ...state, phase: "deciding", decision: null, attempt: state.attempt + 1 };
 
     case "buffering":
       // 播放中途的缓冲不该把状态打回起播阶段（会让 UI 闪一下"正在启动"），
