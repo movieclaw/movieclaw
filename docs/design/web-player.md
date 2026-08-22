@@ -1059,13 +1059,33 @@ Mac mini 验证。做成发版前的人工清单，列进 `.claude/skills/releas
 
 ### 12.5 尚未做
 
-- **PGS 前端渲染（libbitsub）**。内封的文本与 ASS 轨已经可播、内嵌字体也已
-  随 ASS 一并抽出下发（见 §12.8）。PGS 是位图轨，仍进「不可用」清单并给中文
-  原因，不是给一个点了没反应的选项。
-- **已转码区间位图与 seek 复用**（§4.4）：当前 seek 是「杀旧会话起新会话」，
-  正确但不够快。
-- **真机验收**：前端全部逻辑有单测、类型与构建均通过，但**尚未在装有媒体库
-  的环境里端到端点开过**——档位判定、降档回路、字幕渲染的真实观感待验。
+- **PGS 前端渲染（libbitsub）** —— **暂不做，理由见下**。内封的文本与 ASS 轨
+  已经可播、内嵌字体也随 ASS 一并抽出下发（见 §12.8）。PGS 是位图轨，仍进
+  「不可用」清单并给中文原因，不是给一个点了没反应的选项。
+
+  不做的理由不是工作量，是**验不了**：位图字幕的正确性只能靠眼睛看（位置、
+  缩放、透明度、与画面的对齐），而这套渲染没有任何自动化手段能证明它对。
+  在没有真实媒体库和浏览器的环境里写它，等于交付一段没人验过的渲染代码——
+  比诚实地说「暂不支持」更糟。真机验收之后如果确有需求，再单独做一轮。
+- ~~已转码区间位图与 seek 复用~~ —— **实际已经成立**（本轮核对时更正）。
+  `planSeek` 用浏览器自己的 `video.seekable` 当区间表：落在已转区间内的 seek
+  走原生跳转、不起新会话；只有拖到还没转出来的位置才重开——那是 ffmpeg 没法
+  快进的物理限制，再优化也去不掉。不需要服务端另建一份位图。
+- **真机验收**（唯一剩下的必做项）。所有纯逻辑都有单测、类型与构建均通过、
+  真 ffmpeg 的端到端也跑通了，但**尚未在装有真实媒体库的环境里用眼睛看过**
+  ——档位判定、降档回路、字幕与字体的观感、缩略图预览、硬件转码，这些的
+  「对不对」最终只有人能判。起点已经备好：
+
+  1. `python scripts/perf/seed_player_corpus.py --out ./corpus` 合成六个样本，
+     把 `./corpus` 当电影库根路径加进来扫描，逐个点开——文件名写明了各自在
+     验哪类陷阱；
+  2. 按 `.claude/skills/release/SKILL.md` 第五节的硬件矩阵逐项过；
+  3. `python scripts/perf/e2e_player_qoe.py --web ... --library N --item M`
+     拿一份 QoE 读数，与设置页「播放质量」里的统计对照。
+
+  ⚠️ 另有一项本环境验不了：**镜像没有真正构建过**（没有 docker daemon）。
+  apt 源、包内容与构建配置都已核对（§12.14），但 `docker build` 要在真机跑
+  一次——这是 runtime-version 从 8 升到 9 之后的第一次构建。
 
 ### 12.6 前端实现期定下的两条
 
@@ -1237,16 +1257,34 @@ PT 片源的字幕绝大多数是内封的，外挂 `.srt` 反而是少数。只
 | 命令装配 | `tests/playback/test_ffmpeg_args.py` | 28 |
 | 会话与进程契约 | `tests/playback/test_session_manager.py` | 33 |
 | 签名 token | `tests/playback/test_stream_signing.py` | 14 |
-| 内封字幕抽取 | `tests/playback/test_embedded_subs.py` | 25 |
+| 内封字幕与字体 | `tests/playback/test_embedded_subs.py` | 39 |
+| 硬件自检 | `tests/playback/test_hwprobe.py` | 17 |
+| 缩略图 | `tests/playback/test_trickplay.py` | 16 |
 | 决策服务层 | `tests/api/test_playback_decide.py` | 4 |
 | 取流端点 | `tests/api/test_playback_stream.py` | 23 |
 | 观看状态与进度 | `tests/api/test_playback_watch.py` | 11 |
+| 质量指标 | `tests/api/test_playback_metrics.py` | 10 |
 | 转码执行（真 ffmpeg） | `tests/playback/test_transcode_integration.py` | 10 |
 | 端到端（真 HTTP + 真 ffmpeg） | `tests/api/test_playback_e2e.py` | 7 |
 
-合计 **206 条**。绝大多数进 CI 默认门禁——转码进程用假 ffmpeg 替身，不需要
-系统装 ffmpeg；标 `integration` 的 21 条需要 ffmpeg（真转码 10、端到端 7、
-内封字幕真抽取 4）。
+合计 **263 条**。绝大多数进 CI 默认门禁——转码进程用假 ffmpeg 替身，不需要
+系统装 ffmpeg；标 `integration` 的需要真 ffmpeg。
+
+**前端**
+
+| 模块 | 文件 | 条数 |
+|---|---|---|
+| 能力探测 | `test/player-capability.test.mjs` | 6 |
+| 状态机与降档 | `test/player-machine.test.mjs` | 16 |
+| 质量归约 | `test/player-qoe.test.mjs` | 12 |
+| 会话释放 | `test/player-session-release.test.mjs` | 6 |
+| 停顿归因 | `test/player-stall.test.mjs` | 14 |
+| 字幕规划 | `test/player-subtitles.test.mjs` | 11 |
+| 缩略图定位 | `test/player-trickplay.test.mjs` | 12 |
+
+合计 **77 条**，全部 `node --test` 直跑，不需要浏览器——这也是纯逻辑一律放
+`lib/player/` 的理由：降档、时间轴换算、字幕分派、会话释放、停顿归因、质量
+归约、缩略图定位这些最容易出错的判断因此都能被覆盖。
 
 全量套件跑完后用 `pgrep ffmpeg` 确认过：**没有泄漏任何转码进程**。
 
