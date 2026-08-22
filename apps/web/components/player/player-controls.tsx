@@ -1,8 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { MediaPipButton } from "media-chrome/react";
-
 import { SUBTITLE_OFFSET_STEP, clampSubtitleOffset } from "@/lib/player/subtitles";
 import type { SubtitleStyle, SubtitleTracks } from "@/lib/player/subtitles";
 import { formatClock } from "@/lib/player/timeline";
@@ -86,28 +84,32 @@ function SubtitleGlyph() {
   );
 }
 
-function NextGlyph() {
+/** 设置齿轮：八颗齿 + 一圈 + 中心点。手画而不是抄图标库，省一个依赖。 */
+function GearGlyph() {
   return (
     <svg viewBox="0 0 24 24" className={ICON} aria-hidden>
-      <path d="M5 4.6v14.8a.6.6 0 0 0 .93.5l11-7.4a.6.6 0 0 0 0-1L5.93 4.1A.6.6 0 0 0 5 4.6Z" />
-      <path d="M18.4 4h2.2v16h-2.2z" />
+      {[0, 1, 2, 3, 4, 5, 6, 7].map((i) => (
+        <rect
+          key={i}
+          x="10.5"
+          y="2.6"
+          width="3"
+          height="3.6"
+          rx="1.2"
+          transform={`rotate(${i * 45} 12 12)`}
+        />
+      ))}
+      <circle cx="12" cy="12" r="6" fill="none" stroke="currentColor" strokeWidth="3" />
+      <circle cx="12" cy="12" r="2.2" />
     </svg>
   );
 }
 
+/** 菜单里的柱状图小图标：只用来标「播放诊断」这一项。 */
 function StatsGlyph() {
   return (
-    <svg viewBox="0 0 24 24" className={ICON} aria-hidden>
+    <svg viewBox="0 0 24 24" className="size-4 shrink-0 fill-current" aria-hidden>
       <path d="M4 19h2.6v-6H4v6Zm5.2 0h2.6V5H9.2v14Zm5.2 0H17v-9h-2.6v9Zm5.2 0H22V8h-2.4v11Z" />
-    </svg>
-  );
-}
-
-function PipGlyph({ exit, slot }: { exit?: boolean; slot?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" className={ICON} slot={slot} aria-hidden>
-      <path d="M3 5.5A1.5 1.5 0 0 1 4.5 4h15A1.5 1.5 0 0 1 21 5.5v13a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5v-13Zm2 .5v12h14V6H5Z" />
-      <path d={exit ? "M7 8h7v5H7V8Z" : "M12 12h6v5h-6v-5Z"} />
     </svg>
   );
 }
@@ -164,13 +166,10 @@ export interface PlayerControlsProps {
   onSubtitleStyleChange: (style: SubtitleStyle) => void;
   diagnosticsOpen: boolean;
   onToggleDiagnostics: () => void;
-  onNext: (() => void) | null;
   /** 横屏（全屏 + 锁横向）；已经在里面时点它就是退出 */
   landscape: boolean;
   /** 这台设备的方向锁真的能用（手机/平板）。桌面上同一个按钮叫「全屏」 */
   canRotate: boolean;
-  /** 这个浏览器的画中画能由网页发起。不能就别渲染那个键（Firefox） */
-  canPip: boolean;
   onToggleLandscape: () => void;
   /** 菜单展开时要顶住控制条的自动隐藏，否则菜单会连着控制条一起淡掉 */
   onMenuOpenChange: (open: boolean) => void;
@@ -192,10 +191,8 @@ export function PlayerControls(props: PlayerControlsProps) {
     onSubtitleStyleChange,
     diagnosticsOpen,
     onToggleDiagnostics,
-    onNext,
     landscape,
     canRotate,
-    canPip,
     onToggleLandscape,
     onMenuOpenChange,
     trickplay,
@@ -204,7 +201,7 @@ export function PlayerControls(props: PlayerControlsProps) {
   // 拖动中的本地值：直接跟 positionMs 会被 timeupdate 反复拉回去，手感是
   // 滑块「粘手」——松手才提交是进度条唯一能用的做法
   const [dragging, setDragging] = useState<number | null>(null);
-  const [menu, setMenu] = useState<"none" | "subtitles">("none");
+  const [menu, setMenu] = useState<"none" | "subtitles" | "settings">("none");
   // 悬停预览的位置（文件毫秒 + 进度条内的像素横坐标）。null = 没在悬停
   const [hover, setHover] = useState<{ ms: number; x: number } | null>(null);
   const shown = dragging ?? positionMs;
@@ -213,7 +210,7 @@ export function PlayerControls(props: PlayerControlsProps) {
   const buffered =
     durationMs && bufferedEndMs ? Math.min(100, (bufferedEndMs / durationMs) * 100) : 0;
 
-  const openMenu = (next: "none" | "subtitles") => {
+  const openMenu = (next: "none" | "subtitles" | "settings") => {
     setMenu(next);
     onMenuOpenChange(next !== "none");
   };
@@ -241,12 +238,6 @@ export function PlayerControls(props: PlayerControlsProps) {
 
         <div className="flex-1" />
 
-        {onNext ? (
-          <IconButton tip="下一集" onClick={onNext}>
-            <NextGlyph />
-          </IconButton>
-        ) : null}
-
         <div className="relative">
           <IconButton
             tip="字幕"
@@ -267,17 +258,30 @@ export function PlayerControls(props: PlayerControlsProps) {
           ) : null}
         </div>
 
-        <IconButton tip="播放诊断" active={diagnosticsOpen} onClick={onToggleDiagnostics}>
-          <StatsGlyph />
-        </IconButton>
+        <div className="relative">
+          <IconButton
+            tip="设置"
+            active={menu === "settings"}
+            onClick={() => openMenu(menu === "settings" ? "none" : "settings")}
+          >
+            <GearGlyph />
+          </IconButton>
+          {menu === "settings" ? (
+            <MenuPanel title="设置" onClose={() => openMenu("none")}>
+              <MenuItem
+                active={diagnosticsOpen}
+                icon={<StatsGlyph />}
+                onClick={() => {
+                  onToggleDiagnostics();
+                  openMenu("none");
+                }}
+              >
+                播放诊断
+              </MenuItem>
+            </MenuPanel>
+          ) : null}
+        </div>
 
-        {/* 手机上不显示：那边「切走就自动进画中画」由系统负责，不需要手点 */}
-        {canPip ? (
-          <MediaPipButton className="player-mc-button max-md:hidden" noTooltip>
-            <PipGlyph slot="enter" />
-            <PipGlyph slot="exit" exit />
-          </MediaPipButton>
-        ) : null}
         <IconButton
           tip={canRotate ? (landscape ? "退出横屏" : "横屏") : landscape ? "退出全屏" : "全屏"}
           onClick={onToggleLandscape}
@@ -486,25 +490,8 @@ function SubtitleMenu({
   onStyleChange: (style: SubtitleStyle) => void;
   onClose: () => void;
 }) {
-  const box = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const onDocPointerDown = (event: PointerEvent) => {
-      if (!box.current?.contains(event.target as Node)) onClose();
-    };
-    // 捕获阶段：菜单里的按钮自己 stopPropagation 时也要能关掉外面的菜单
-    document.addEventListener("pointerdown", onDocPointerDown, true);
-    return () => document.removeEventListener("pointerdown", onDocPointerDown, true);
-  }, [onClose]);
-
   return (
-    <div
-      ref={box}
-      className="absolute bottom-14 right-0 w-[300px] rounded-sm border border-white/15 bg-[rgba(20,20,20,0.94)] py-2 text-[14px] shadow-[0_8px_32px_rgba(0,0,0,0.7)] backdrop-blur-sm"
-    >
-      <p className="px-4 pb-2 text-[12px] font-semibold uppercase tracking-wide text-white/45">
-        字幕
-      </p>
+    <MenuPanel title="字幕" onClose={onClose}>
       <div className="max-h-[240px] overflow-y-auto">
         <MenuItem active={selected === null} onClick={() => onSelect(null)}>
           关闭
@@ -583,16 +570,58 @@ function SubtitleMenu({
           </div>
         </div>
       ) : null}
+    </MenuPanel>
+  );
+}
+
+/**
+ * 控制条上方弹出的小菜单：字幕与设置共用。
+ *
+ * 抽出来是因为「点外面关掉」这段必须写在捕获阶段（菜单里的按钮自己
+ * stopPropagation 时也要能关），复制两份迟早有一份忘了改。
+ */
+function MenuPanel({
+  title,
+  onClose,
+  children,
+}: {
+  title: string;
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  const box = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const onDocPointerDown = (event: PointerEvent) => {
+      if (!box.current?.contains(event.target as Node)) onClose();
+    };
+    document.addEventListener("pointerdown", onDocPointerDown, true);
+    return () => document.removeEventListener("pointerdown", onDocPointerDown, true);
+  }, [onClose]);
+
+  return (
+    <div
+      ref={box}
+      className="absolute bottom-14 right-0 w-[300px] rounded-sm border border-white/15 bg-[rgba(20,20,20,0.94)] py-2 text-[14px] shadow-[0_8px_32px_rgba(0,0,0,0.7)] backdrop-blur-sm"
+    >
+      <p className="px-4 pb-2 text-[12px] font-semibold uppercase tracking-wide text-white/45">
+        {title}
+      </p>
+      {children}
     </div>
   );
 }
 
 function MenuItem({
   active,
+  icon,
   onClick,
   children,
 }: {
   active: boolean;
+  /** 可选的行首小图标。必须与文字**并列**，不能塞进 truncate 的 span 里——
+   *  Tailwind preflight 把 svg 设成 display:block，塞进去会自己换一行。 */
+  icon?: React.ReactNode;
   onClick: () => void;
   children: React.ReactNode;
 }) {
@@ -600,12 +629,13 @@ function MenuItem({
     <button
       type="button"
       onClick={onClick}
-      className={`flex w-full items-center gap-3 border-l-[3px] px-4 py-1.5 text-left transition-colors hover:bg-white/10 ${
+      className={`flex w-full items-center gap-2.5 border-l-[3px] px-4 py-1.5 text-left transition-colors hover:bg-white/10 ${
         active
           ? "border-[var(--player-accent)] font-semibold text-white"
           : "border-transparent text-white/70"
       }`}
     >
+      {icon}
       <span className="truncate">{children}</span>
     </button>
   );

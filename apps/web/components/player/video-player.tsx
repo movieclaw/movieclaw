@@ -136,9 +136,6 @@ export function VideoPlayer(props: VideoPlayerProps) {
    * `screen`，直接算会造成水合不一致，按钮文案在首帧闪一下。
    */
   const [canRotate, setCanRotate] = useState(false);
-  /** 这个浏览器有 W3C 画中画 API。Firefox 的画中画只在浏览器自己的界面里，
-   *  网页调不动——不判一下就会在那边留一个点了没反应的死按钮。 */
-  const [canPip, setCanPip] = useState(false);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<PlaybackEngine | null>(null);
@@ -692,7 +689,6 @@ export function VideoPlayer(props: VideoPlayerProps) {
       typeof screenOrientation()?.lock === "function" &&
         window.matchMedia("(pointer: coarse)").matches,
     );
-    setCanPip(document.pictureInPictureEnabled === true);
   }, []);
 
   /**
@@ -1123,11 +1119,9 @@ export function VideoPlayer(props: VideoPlayerProps) {
             onToggleDiagnostics={() => setDiagnosticsOpen((open) => !open)}
             landscape={landscape}
             canRotate={canRotate}
-            canPip={canPip}
             onToggleLandscape={toggleLandscape}
             onMenuOpenChange={setMenuOpen}
             trickplay={trickplay}
-            onNext={next ? onPlayNext : null}
           />
         </div>
       </MediaController>

@@ -1487,25 +1487,6 @@ body.cmdk-open .app-shell {
   outline: none;
 }
 
-/* ---- Media Chrome 的按钮（现在只剩画中画） -------------------------------
-   它是 Web Component，样式只能经由自定义属性注入，改不了内部 DOM；图标则用
-   slot 换成我们自己的那一套，否则一条控制条上会出现两种线宽的图标，这正是
-   「粗糙」的来源。尺寸与悬停反馈和自建的 .player-btn 对齐。 */
-.player-mc-button {
-  --media-control-background: transparent;
-  --media-control-hover-background: transparent;
-  --media-primary-color: #fff;
-  --media-secondary-color: transparent;
-  --media-icon-color: #fff;
-  width: 40px;
-  height: 40px;
-  padding: 0;
-  transition: transform 0.15s cubic-bezier(0.2, 0, 0.2, 1);
-}
-.player-mc-button:hover {
-  transform: scale(1.12);
-}
-
 /* ---- 图标按钮 -------------------------------------------------------------
    不用背景色块做悬停反馈（黑底上的浅灰方块很脏），改成放大 + 提亮，
    与 Netflix 一致。 */
@@ -1562,7 +1543,6 @@ body.cmdk-open .app-shell {
 
 @media (prefers-reduced-motion: reduce) {
   .player-btn,
-  .player-mc-button,
   .player-scrub-row,
   .player-scrub-row * {
     transition: none;
