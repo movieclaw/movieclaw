@@ -933,7 +933,7 @@ Mac mini 验证。做成发版前的人工清单，列进 `.claude/skills/releas
 
 **基建**
 
-- [ ] Dockerfile 换 jellyfin-ffmpeg；**`docker/runtime-version` 8 → 9**
+- [x] Dockerfile 换 jellyfin-ffmpeg7（走官方 apt 源）；**`docker/runtime-version` 8 → 9**
 - [ ] `scripts/perf/` 播放器测试脚本四件套 + 黄金样本库 + Release 资产
 - [x] 决策引擎表驱动单测进 CI；集成测试标 `integration`
 - [x] 更新 `jellyfin-compat.md` §0 硬边界 2（按 §0.3）
@@ -1058,8 +1058,6 @@ Mac mini 验证。做成发版前的人工清单，列进 `.claude/skills/releas
 - **PGS 前端渲染（libbitsub）**。内封的文本与 ASS 轨已经可播、内嵌字体也已
   随 ASS 一并抽出下发（见 §12.8）。PGS 是位图轨，仍进「不可用」清单并给中文
   原因，不是给一个点了没反应的选项。
-- **换 jellyfin-ffmpeg 与 `runtime-version` bump**：档 3 的命令已按各后端装配
-  好，但要在真显卡上跑通、要 HDR tone-map，仍需换 ffmpeg。
 - **已转码区间位图与 seek 复用**（§4.4）：当前 seek 是「杀旧会话起新会话」，
   正确但不够快。
 - **真机验收**：前端全部逻辑有单测、类型与构建均通过，但**尚未在装有媒体库
@@ -1080,6 +1078,27 @@ Mac mini 验证。做成发版前的人工清单，列进 `.claude/skills/releas
 画面由播放器出。**cue 文本一律剥标签再渲染**——字幕是用户丢进媒体库的任意文本，
 把它当 HTML 插进 DOM 就是一条现成的 XSS 通道，斜体这点观感换不来这个风险
 （要完整排版的走 ASS/JASSUB，那条路径在 canvas 上画，根本不碰 DOM）。
+
+### 12.14 换 jellyfin-ffmpeg：核对过的事实
+
+走 Jellyfin 官方 apt 源装 `jellyfin-ffmpeg7`（当前 7.1.4-3-bookworm），不硬编码
+GitHub 的 .deb 直链——apt 按目标架构自己取包，交叉构建 amd64/arm64 不用维护两份
+文件名。国内网络可用 `JELLYFIN_REPO` 构建参数换镜像，与既有的 `NER_MODEL_BASE`
+/ `SECONV_BASE` 同一模式。
+
+包装在 `/usr/lib/jellyfin-ffmpeg/`，把该目录放进 `PATH` 即可让所有调用点
+（`media_probe`、字幕/字体抽取、转码会话、硬件自检）按名字找到它，不必逐处
+改绝对路径。`ENV PATH` 必须早于构建期的字幕冒烟测试，否则那一步还在用旧的。
+
+**从 deb 里读出的构建配置**（不是照文档抄）：`--enable-vaapi --enable-libvpl
+--enable-nvenc --enable-cuda --enable-opencl --enable-vulkan --enable-libzimg
+--enable-libx264 --enable-libplacebo --enable-libfdk-aac`。这印证了 §5.3 的两条
+说法：GPU 色调映射路径齐全，以及 **libfdk-aac 因许可问题上游二进制发不了**——
+它现在可用了，多声道 AAC 的编码质量比原生编码器好，但目前没有启用（需要按
+运行期能力选编码器，收益对最常见的立体声降混很有限，先记在这里）。
+
+⚠️ **未验证**：这个环境没有 docker daemon，镜像没有真正构建过。apt 源可达性、
+包内容与构建配置都已核对，但 `docker build` 本身要在你的机器上跑一次。
 
 ### 12.13 指标：北极星是直通率
 

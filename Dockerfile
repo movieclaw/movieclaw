@@ -138,10 +138,13 @@ FROM node:22-bookworm-slim AS node-dist
 FROM python:3.12-slim-bookworm
 
 # - libstdc++6：onnxruntime / tokenizers 的 manylinux wheel 依赖（slim 基础镜像不带）
-# - ffmpeg：介质规格探测（ffprobe）与 PGS 轨道抽取的运行时依赖。库存画质的真相来自文件本体
-#   而非种子名，缺了它整个「视频/音频/字幕规格」区块都是空的。装全套 ffmpeg
-#   约 160MB（ffprobe 在 Debian 里不单独成包，且 libavdevice 硬依赖 SDL 那串），
-#   这是为「开箱即用」付的确定成本——降级路径虽然存在，但不该是默认体验
+# - jellyfin-ffmpeg7：介质规格探测（ffprobe）、PGS 轨道抽取、网页播放器的转码与
+#   直通。**不用 Debian 自带的 ffmpeg**：硬件加速覆盖不全（QSV/RKMPP/AMF 基本
+#   没有），更关键的是没有 GPU 色调映射路径——软件 zscale+tonemap 转 4K HDR 是
+#   幻灯片级性能。jellyfin-ffmpeg 维护着一批上游因优先级不同未合入的补丁，恰是
+#   媒体库刚需：Intel VPP / CUDA / Metal tone-map、Dolby Vision 透传进 HLS、
+#   libx265 fMP4 HLS 的 Safari 兼容修复、Atmos 透传、PGS 在硬件滤镜里叠加。
+#   （详见 docs/design/web-player.md §5.3。改动这个包必须 bump runtime-version。）
 # - tesseract-ocr + 常用字幕语言：seconv 的跨架构保底 OCR。覆盖简繁中、英、
 #   日、韩、法、德、西、意、葡、俄；语言数据约增加 22MB（镜像展开后）。
 #   预检仍会按 PGS 语言检测，未知语言不会回退到英语生成乱码
@@ -153,18 +156,33 @@ FROM python:3.12-slim-bookworm
 #   （Node 每 GB 多烧约 10 个 CPU 秒），同时在前后端重启窗口代答占位页。
 #   只要核心包（proxy/gzip/map/rewrite 都是静态内置模块），不装推荐的动态模块
 ARG APT_MIRROR=""
+# Jellyfin 官方 apt 源。用源而不是硬编码 .deb 直链：apt 自己按目标架构取包，
+# 交叉构建 amd64/arm64 不用维护两份文件名。国内网络可用 JELLYFIN_REPO 换镜像。
+ARG JELLYFIN_REPO=https://repo.jellyfin.org
 RUN if [ -n "$APT_MIRROR" ]; then \
         sed -i "s|deb.debian.org|$APT_MIRROR|g" /etc/apt/sources.list.d/debian.sources; \
     fi \
     && apt-get update \
+    && apt-get install -y --no-install-recommends curl ca-certificates gnupg \
+    && install -d -m 0755 /etc/apt/keyrings \
+    && curl -fsSL --retry 3 "$JELLYFIN_REPO/jellyfin_team.gpg.key" \
+        | gpg --dearmor -o /etc/apt/keyrings/jellyfin.gpg \
+    && echo "deb [signed-by=/etc/apt/keyrings/jellyfin.gpg] $JELLYFIN_REPO/debian bookworm main" \
+        > /etc/apt/sources.list.d/jellyfin.list \
+    && apt-get update \
     && apt-get install -y --no-install-recommends \
-        libstdc++6 ca-certificates ffmpeg fontconfig fonts-dejavu-core libicu72 nginx \
+        libstdc++6 jellyfin-ffmpeg7 fontconfig fonts-dejavu-core libicu72 nginx \
         tesseract-ocr \
         tesseract-ocr-eng tesseract-ocr-chi-sim tesseract-ocr-chi-tra \
         tesseract-ocr-jpn tesseract-ocr-kor \
         tesseract-ocr-fra tesseract-ocr-deu tesseract-ocr-spa \
         tesseract-ocr-ita tesseract-ocr-por tesseract-ocr-rus \
     && rm -rf /var/lib/apt/lists/*
+
+# jellyfin-ffmpeg 装在自己的目录里，不占用 /usr/bin/ffmpeg。放进 PATH 即可让
+# 所有调用点（media_probe、字幕抽取、转码会话、硬件自检）按名字找到它，
+# 不必逐处改成绝对路径。必须早于下面的构建期冒烟测试。
+ENV PATH="/usr/lib/jellyfin-ffmpeg:${PATH}"
 
 # PGS OCR：每个多架构镜像只带与自身匹配的一份 seconv，不在运行时下载。
 COPY --from=seconv-dist /out /opt/movieclaw/seconv
