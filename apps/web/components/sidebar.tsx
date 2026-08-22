@@ -5,6 +5,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 import {
+  ActivityIcon,
   BookmarkIcon,
   ClockIcon,
   LayersIcon,
@@ -56,7 +57,7 @@ export interface SidebarProps {
   flat?: boolean;
 }
 
-/** 主导航：新会话 / 媒体库 / 探索项 / 订阅，合并成一列扁平列表。
+/** 主导航：新会话 / 媒体库 / 探索项 / 订阅 / 活动，合并成一列扁平列表。
  *  「新会话」是 Agent 入口（管理员专属，成员侧隐藏——后端也会 403）。
  *
  *  这个数组的次序就是**内置默认顺序**：用户在「设置 → 外观 → 导航顺序」里排过
@@ -68,6 +69,11 @@ export const SIDEBAR_NAV_ITEMS = [
   { id: "library", label: "媒体库", icon: LayersIcon },
   ...exploreItems,
   { id: "subscriptions", label: "我的订阅", icon: BookmarkIcon },
+  // 「活动」（管理员专属）在这里占一位，只为**参与排序**：它带角标、落点还随
+  // 角标变，因此渲染仍交给 JobCenter（见下方 navItems.map 的分支），这里登记的
+  // label/icon 只给设置页的排序列表用。id 与 app-shell 的 navIdFromPath 对齐
+  // （/activity → tasks），不另立一套 id。
+  { id: "tasks", label: "活动", icon: ActivityIcon },
 ];
 
 const memberNavItems = SIDEBAR_NAV_ITEMS.filter((item) => item.id !== "new");
@@ -78,9 +84,15 @@ const memberNavItems = SIDEBAR_NAV_ITEMS.filter((item) => item.id !== "new");
  */
 export function useVisibleNavItems() {
   const { session } = useSession();
-  const { canSubscribe } = usePermissions();
+  const { isAdmin, canSubscribe } = usePermissions();
   const items = session.role === "member" ? memberNavItems : SIDEBAR_NAV_ITEMS;
-  return items.filter((item) => item.id !== "subscriptions" || canSubscribe);
+  return items.filter((item) => {
+    if (item.id === "subscriptions") return canSubscribe;
+    // 活动页与任务数据都是管理员专属（JobCenter 自身也有这道判断，成员侧渲染为空），
+    // 这里必须同样挡掉，否则设置页会列出一条侧栏根本没有的可排序项
+    if (item.id === "tasks") return isAdmin;
+    return true;
+  });
 }
 
 export function Sidebar({
@@ -158,6 +170,13 @@ export function Sidebar({
             而不是把「最近会话」挤没。 */}
         <div className="scroll-thin space-y-0.5 overflow-y-auto">
           {navItems.map((item) => {
+            // 「活动」自带角标与动态落点，交给 JobCenter 渲染；它同样参与个人排序，
+            // 所以位置由这里的 map 决定，而不再被钉在主导航末尾
+            if (item.id === "tasks") {
+              return (
+                <JobCenter key={item.id} collapsed={collapsed} active={activeNav === "tasks"} />
+              );
+            }
             const Icon = item.icon;
             return (
               <button
@@ -179,7 +198,6 @@ export function Sidebar({
               </button>
             );
           })}
-          <JobCenter collapsed={collapsed} active={activeNav === "tasks"} />
           {/* 待处理事项：常态零渲染，有"需要用户行动"的运行时故障才亮起 */}
           <NoticeCenter collapsed={collapsed} />
           {/* 更新入口：同样常态零渲染。刻意与待处理事项分开——"有新版可用"
