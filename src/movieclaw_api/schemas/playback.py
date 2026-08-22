@@ -193,6 +193,10 @@ class PlaybackDecideRequest(BaseModel):
     capability: ClientCapabilityIn
     # 运行期降档回路：前端播放失败后带上已失败的档位重来，服务端跳过它们。
     failed_tiers: list[int] = []
+    #: 用户在播放器里点选的音轨（``embedded:<k>``）。给了就认它，服务端不再
+    #: 自动换轨。**选了非默认轨会把档 0 顶成档 1**——直出时浏览器只放默认轨，
+    #: 必须重封装才能把选中的那条带上。
+    audio_track: str | None = None
 
 
 class VideoPlanView(BaseModel):
@@ -208,6 +212,17 @@ class AudioPlanView(BaseModel):
     codec: str | None = None
     channels: int | None = None
     downmix: bool = False
+
+
+class AudioTrackView(BaseModel):
+    """文件里的一条可选音轨。给播放器渲染音轨菜单用——只有候选列表在手，
+    前端才能让用户换轨；`audio.track_ref` 说的是「这次放的是哪条」。"""
+
+    ref: str
+    codec: str | None = None
+    channels: int | None = None
+    language: str | None = None
+    is_default: bool = False
 
 
 class SubtitlePlanView(BaseModel):
@@ -233,6 +248,8 @@ class PlaybackDecisionView(BaseModel):
     container: str | None = None
     video: VideoPlanView | None = None
     audio: AudioPlanView | None = None
+    #: 这个文件里全部可选音轨（含当前这条）。前端据此渲染音轨菜单。
+    audio_tracks: list[AudioTrackView] = []
     subtitles: list[SubtitlePlanView] = []
     degraded_from: int | None = None
 

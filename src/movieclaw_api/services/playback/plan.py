@@ -40,6 +40,7 @@ async def decide_for_file(
     *,
     can_self_enable: bool,
     failed_tiers: frozenset[Tier] = frozenset(),
+    preferred_audio: str | None = None,
     visible_library_ids: set[int] | None = None,
 ) -> PlaybackDecision | None:
     """对一个台账文件出播放决策；文件不存在或当前账号不可见时返回 None。
@@ -56,6 +57,7 @@ async def decide_for_file(
         capability,
         can_self_enable=can_self_enable,
         failed_tiers=failed_tiers,
+        preferred_audio=preferred_audio,
     )
 
 
@@ -65,6 +67,7 @@ async def decide_for_files(
     *,
     can_self_enable: bool,
     failed_tiers: frozenset[Tier] = frozenset(),
+    preferred_audio: str | None = None,
 ) -> PlaybackDecision | None:
     """多候选择优（§3.5）：同一条目常有 1080p/2160p 两个版本，能直通的
     1080p 胜过要转码的 2160p。
@@ -88,6 +91,7 @@ async def decide_for_files(
                 policy,
                 can_self_enable=can_self_enable,
                 failed_tiers=failed_tiers,
+                preferred_audio=preferred_audio,
             )
         )
     return _best(decisions)
@@ -150,6 +154,7 @@ def to_view(decision: PlaybackDecision) -> PlaybackDecisionView:
     """
     from movieclaw_api.schemas.playback import (  # 局部导入避免 schemas ↔ services 循环
         AudioPlanView,
+        AudioTrackView,
         PlaybackDecisionView,
         SubtitlePlanView,
         VideoPlanView,
@@ -163,6 +168,7 @@ def to_view(decision: PlaybackDecision) -> PlaybackDecisionView:
             container=decision.container,
             video=VideoPlanView(**vars(decision.video)),
             audio=AudioPlanView(**vars(decision.audio)),
+            audio_tracks=[AudioTrackView(**vars(t)) for t in decision.audio_tracks],
             subtitles=[SubtitlePlanView(**vars(s)) for s in decision.subtitles],
             degraded_from=(
                 int(decision.degraded_from) if decision.degraded_from is not None else None

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { ActivityIcon, ExpandIcon, GearIcon, ShrinkIcon } from "@/components/icons";
+import type { AudioOption } from "@/lib/player/audio-tracks";
 import { SUBTITLE_OFFSET_STEP, clampSubtitleOffset } from "@/lib/player/subtitles";
 import type { SubtitleStyle, SubtitleTracks } from "@/lib/player/subtitles";
 import { formatClock } from "@/lib/player/timeline";
@@ -102,6 +103,17 @@ function SkipGlyph({ forward }: { forward: boolean }) {
   );
 }
 
+/** 音轨：一个音符。站内没有这个图标，按同一套描边规格画。 */
+function AudioGlyph() {
+  return (
+    <StrokeIcon>
+      <path d="M9 18V5.4l10-2v12.2" />
+      <circle cx="6.4" cy="18" r="2.6" />
+      <circle cx="16.4" cy="15.6" r="2.6" />
+    </StrokeIcon>
+  );
+}
+
 /** 字幕：站内没有这个图标，按同一套描边规格画。 */
 function SubtitleGlyph() {
   return (
@@ -153,6 +165,11 @@ export interface PlayerControlsProps {
   subtitles: SubtitleTracks;
   selectedSubtitle: string | null;
   onSelectSubtitle: (ref: string | null) => void;
+  /** 可选音轨。**少于两条时为空数组**，那时整个按钮都不出现——没得选的菜单是噪音 */
+  audioOptions: AudioOption[];
+  /** 当前音轨；null = 还没表态，由服务端自动选 */
+  selectedAudio: string | null;
+  onSelectAudio: (ref: string) => void;
   subtitleStyle: SubtitleStyle;
   onSubtitleStyleChange: (style: SubtitleStyle) => void;
   diagnosticsOpen: boolean;
@@ -182,6 +199,9 @@ export function PlayerControls(props: PlayerControlsProps) {
     subtitles,
     selectedSubtitle,
     onSelectSubtitle,
+    audioOptions,
+    selectedAudio,
+    onSelectAudio,
     subtitleStyle,
     onSubtitleStyleChange,
     diagnosticsOpen,
@@ -198,7 +218,7 @@ export function PlayerControls(props: PlayerControlsProps) {
   // 拖动中的本地值：直接跟 positionMs 会被 timeupdate 反复拉回去，手感是
   // 滑块「粘手」——松手才提交是进度条唯一能用的做法
   const [dragging, setDragging] = useState<number | null>(null);
-  const [menu, setMenu] = useState<"none" | "subtitles" | "settings">("none");
+  const [menu, setMenu] = useState<"none" | "audio" | "subtitles" | "settings">("none");
   // 悬停预览的位置（文件毫秒 + 进度条内的像素横坐标）。null = 没在悬停
   const [hover, setHover] = useState<{ ms: number; x: number } | null>(null);
   const shown = dragging ?? positionMs;
@@ -207,7 +227,7 @@ export function PlayerControls(props: PlayerControlsProps) {
   const buffered =
     durationMs && bufferedEndMs ? Math.min(100, (bufferedEndMs / durationMs) * 100) : 0;
 
-  const openMenu = (next: "none" | "subtitles" | "settings") => {
+  const openMenu = (next: "none" | "audio" | "subtitles" | "settings") => {
     setMenu(next);
     onMenuOpenChange(next !== "none");
   };
@@ -352,13 +372,53 @@ export function PlayerControls(props: PlayerControlsProps) {
           chromeVisible ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
         }`}
       >
-        <div className="overflow-hidden">
+        {/* 收起动画靠这层裁剪；但菜单是**向上**弹的、整个落在这个盒子外面，
+            裁着就等于点了没反应。菜单展开时控制条被 chromeMustStayVisible 顶住
+            不会收，也就不存在「一边收起一边要显示菜单」的冲突，所以这时候可以
+            安全地放开裁剪。 */}
+        <div className={menu === "none" ? "overflow-hidden" : ""}>
           <div
             className={`relative flex items-center px-6 pb-4 pt-3 transition-opacity duration-300 max-md:px-3 max-md:pb-3 ${
               chromeVisible ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
             }`}
           >
             <div className="player-glass flex items-center gap-1 rounded-full px-1.5 py-1">
+              {/* 音轨排在字幕左边：多音轨片子里「先挑语言、再挑字幕」是自然顺序。
+                  只有一条轨时 audioOptions 为空，整个按钮不出现。 */}
+              {audioOptions.length > 0 ? (
+                <div className="relative">
+                  <IconButton
+                    tip="音轨"
+                    open={menu === "audio"}
+                    onClick={() => openMenu(menu === "audio" ? "none" : "audio")}
+                  >
+                    <AudioGlyph />
+                  </IconButton>
+                  {menu === "audio" ? (
+                    <MenuPanel title="音轨" onClose={() => openMenu("none")}>
+                      {audioOptions.map((option) => (
+                        <MenuItem
+                          key={option.ref}
+                          active={
+                            option.ref === selectedAudio ||
+                            (selectedAudio === null && option.isDefault)
+                          }
+                          onClick={() => {
+                            onSelectAudio(option.ref);
+                            openMenu("none");
+                          }}
+                        >
+                          {option.label}
+                        </MenuItem>
+                      ))}
+                      <p className="mt-1 border-t border-white/10 px-4 pb-1 pt-2 text-[12px] leading-relaxed text-white/40">
+                        换音轨需要重新起流，会从当前位置续上，中间大约停顿一秒。
+                      </p>
+                    </MenuPanel>
+                  ) : null}
+                </div>
+              ) : null}
+
               <div className="relative">
                 <IconButton
                   tip="字幕"
@@ -673,7 +733,10 @@ function MenuPanel({
   return (
     <div
       ref={box}
-      className="absolute bottom-14 left-0 w-[300px] rounded-sm border border-white/15 bg-[rgba(20,20,20,0.94)] py-2 text-[14px] shadow-[0_8px_32px_rgba(0,0,0,0.7)] backdrop-blur-sm"
+      // bottom-full + mb-8：底边落在按钮上方 32px，正好越过操作行的上内边距
+      // （pt-3）与进度条那一行。用相对量而不是写死像素——按钮在移动端会从 36
+      // 变 44，写死的偏移在两个断点上必然有一个不对。
+      className="absolute bottom-full left-0 mb-8 w-[300px] rounded-sm border border-white/15 bg-[rgba(20,20,20,0.94)] py-2 text-[14px] shadow-[0_8px_32px_rgba(0,0,0,0.7)] backdrop-blur-sm"
     >
       <p className="px-4 pb-2 text-[12px] font-semibold uppercase tracking-wide text-white/45">
         {title}
