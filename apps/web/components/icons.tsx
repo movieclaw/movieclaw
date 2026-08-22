@@ -36,6 +36,16 @@ export const SparkIcon = (p: IconProps) => (
   </Base>
 );
 
+/** 魔法棒：业界通用的「AI 生成」手势，用在会产出新内容的入口上（区别于
+ *  SparkIcon 那种表示「AI 能力/模型」的星芒）。 */
+export const WandIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="M4 20 14.5 9.5" />
+    <path d="m17.5 6.5-2 2-2-2 2-2 2 2Z" />
+    <path d="M18 13v3M16.5 14.5h3M6.5 3v3M5 4.5h3" />
+  </Base>
+);
+
 export const PuzzleIcon = (p: IconProps) => (
   <Base {...p}>
     <path d="M10.5 4a1.5 1.5 0 0 1 3 0V5h3.5a1 1 0 0 1 1 1v3.5h1a1.5 1.5 0 0 1 0 3h-1V16a1 1 0 0 1-1 1h-3.5v1a1.5 1.5 0 0 1-3 0v-1H7a1 1 0 0 1-1-1v-3.5H5a1.5 1.5 0 0 1 0-3h1V6a1 1 0 0 1 1-1h3.5V4Z" />

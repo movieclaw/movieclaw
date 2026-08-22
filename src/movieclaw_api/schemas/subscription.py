@@ -744,6 +744,8 @@ class RuleSetPayload(BaseModel):
         description=(
             "过滤规则 JSON（全部键可缺省=不限）："
             'resolutions 分辨率偏好序（如 ["2160p","1080p"]，顺序即优先级）、'
+            "media_sources 片源档白名单兼偏好序（值域 remux/blu-ray/web-dl/rip/tv，"
+            "顺序即优先级；与 resolutions 一样参与候选选优，空=不限片源）、"
             "video_codecs 编码白名单（按编码族匹配：写 x265 即接受 H.265/HEVC）、"
             "platforms/platforms_block 流媒体平台白/黑名单（规范值如 netflix、"
             "disney_plus、iqiyi；词表外的值读取时丢弃不报错）、"
@@ -759,7 +761,8 @@ class RuleSetPayload(BaseModel):
             "audio_languages_require：要求的音轨语言（BCP 47，任一命中即通过）。\n\n"
             "upgrade_source 洗版目标片源档（web-dl/blu-ray/remux，缺省=不洗版）、"
             "cutoff_resolution 洗版目标分辨率（缺省=resolutions 首选，"
-            "必须在 resolutions 允许范围内）、"
+            "必须在 resolutions 允许范围内；同理 upgrade_source 必须在 "
+            "media_sources 允许范围内）、"
             "upgrade_ladder 参与洗版比较的维度及优先级（顺序即位次，值域 "
             "resolution/source/video_codec/platform，缺省 [resolution, source] "
             "即只比分辨率与片源；偏好列表为空的维度自动跳过）。\n\n"

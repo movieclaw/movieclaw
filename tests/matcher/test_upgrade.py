@@ -393,6 +393,54 @@ def test_spec_old_json_reads_as_upgrade_disabled() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 片源白名单（media_sources）：配了之后阶梯的片源位次改由用户序决定
+# ---------------------------------------------------------------------------
+
+
+def test_media_source_whitelist_order_overrides_builtin_tiers() -> None:
+    """省流党把 WEB-DL 排在蓝光前面：洗版就认他的序，蓝光→WEB-DL 才叫升级。"""
+    spec = _spec(
+        resolutions=["1080p"],
+        media_sources=["web-dl", "blu-ray"],
+        upgrade_source="web-dl",
+    )
+    verdict = compare_upgrade(
+        _candidate(resolution="1080p", media_source="WEB-DL"),
+        _snap(resolution="1080p", media_source="Blu-ray"),
+        spec,
+    )
+    assert verdict.accepted is True
+
+
+def test_media_source_outside_whitelist_stays_not_comparable() -> None:
+    """白名单外的档位次未知（不可比），与"不在偏好序里的分辨率"同一取向——
+    绝不当最低档，否则倒序偏好会把已入库的 Remux 判成最低而白洗一次。"""
+    spec = _spec(
+        resolutions=["1080p"],
+        media_sources=["web-dl", "blu-ray"],
+        upgrade_source="web-dl",
+    )
+    snap = _snap(resolution="1080p", media_source="Remux")
+    assert provably_below_cutoff(snap, spec) is False
+    assert provably_at_cutoff(snap, spec) is False
+
+
+def test_user_lowest_still_comparable_under_whitelist() -> None:
+    """T0 哨兵的语义是"低于一切"，白名单不该把它变回不可比。"""
+    spec = _spec(
+        resolutions=["1080p"], media_sources=["blu-ray"], upgrade_source="blu-ray"
+    )
+    snap = _snap(resolution="1080p", media_source=USER_LOWEST_SOURCE)
+    assert provably_below_cutoff(snap, spec) is True
+
+
+def test_spec_rejects_upgrade_source_outside_whitelist() -> None:
+    """洗版终点必须是规则组自己接受的片源档，否则永远洗不到。"""
+    with pytest.raises(ValueError):
+        _spec(media_sources=["web-dl"], upgrade_source="remux")
+
+
+# ---------------------------------------------------------------------------
 # 片源人工标注（docs/design/media-source-annotation.md §2.2）：
 # T0「用户判定最低档」哨兵与 Remux 存为 media_source 值的两条路径
 # ---------------------------------------------------------------------------

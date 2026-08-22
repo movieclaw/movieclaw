@@ -17,7 +17,7 @@ import { useRouter } from "next/navigation";
 import { Modal } from "@/components/modal";
 import { LlmCapabilityGate } from "@/components/llm-gate";
 import { Tooltip } from "@/components/tooltip";
-import { SparkIcon } from "@/components/icons";
+import { WandIcon } from "@/components/icons";
 import { useAgentConversations } from "@/lib/agent-conversations";
 import type { LibraryItemFile } from "@/lib/api/libraries";
 import {
@@ -616,7 +616,7 @@ export function SubtitleGenPanel({
       {running ? (
         <span className="size-1.5 animate-pulse rounded-full bg-current" />
       ) : (
-        <SparkIcon className="size-3.5" />
+        <WandIcon className="size-3.5" />
       )}
       <span>{badgeLabel}</span>
     </button>
