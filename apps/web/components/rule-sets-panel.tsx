@@ -18,6 +18,7 @@ import {
   CODEC_FAMILIES,
   DEFAULT_LADDER,
   LADDER_OPTIONS,
+  MEDIA_SOURCE_OPTIONS,
   upgradeLadderPreview,
   type UpgradeLadderPreview,
 } from "@/lib/upgrade-ladder";
@@ -265,6 +266,10 @@ const UPGRADE_SOURCE_LABEL: Record<string, string> = {
   remux: "Remux",
 };
 
+/** 片源档规范值 → 展示名；未知值原样返回（与 platformLabel 同一取向）。 */
+const mediaSourceLabel = (value: string): string =>
+  MEDIA_SOURCE_OPTIONS.find((option) => option.value === value)?.label ?? value;
+
 /**
  * HDR 值域（顺序即编辑器里的芯片顺序）。"SDR" 是哨兵值 = 资源未标注任何
  * HDR 格式——命名惯例里 HDR 属"缺席即否定"的强标记。
@@ -338,6 +343,9 @@ export function specSummary(
 ): string[] {
   const chips: string[] = [];
   if (spec.resolutions?.length) chips.push(spec.resolutions.join(" > "));
+  if (spec.media_sources?.length) {
+    chips.push(spec.media_sources.map(mediaSourceLabel).join(" > "));
+  }
   const upgradeTarget = withoutUpgrade ? null : upgradeTargetLabel(spec);
   if (upgradeTarget) {
     chips.push(`洗到 ${upgradeTarget}${spec.upgrade_keep_old ? "（保留旧版）" : ""}`);
@@ -430,6 +438,7 @@ export function RuleSetEditorDialog({
   const [platformsBlock, setPlatformsBlock] = useState<string[]>(() =>
     (spec.platforms_block ?? []).filter((v) => PLATFORM_OPTIONS.includes(v)),
   );
+  const [mediaSources, setMediaSources] = useState<string[]>(spec.media_sources ?? []);
   const [upgradeLadder, setUpgradeLadder] = useState<string[]>(
     () => spec.upgrade_ladder ?? [...DEFAULT_LADDER],
   );
@@ -577,6 +586,20 @@ export function RuleSetEditorDialog({
       prev.includes(value) ? prev.filter((r) => r !== value) : [...prev, value],
     );
 
+  /** 片源档：交互与分辨率偏好完全一致（点击依次入列，序号即位次）。
+   *  收窄白名单时若洗版终点被排除在外，直接把终点清掉——不让用户进入
+   *  "保存时才报错"的状态（与平台三态那处"矛盾在源头消除"同一取向）。 */
+  const toggleMediaSource = (value: string) =>
+    setMediaSources((prev) => {
+      const next = prev.includes(value)
+        ? prev.filter((v) => v !== value)
+        : [...prev, value];
+      if (upgradeSource && next.length && !next.includes(upgradeSource)) {
+        setUpgradeSource("");
+      }
+      return next;
+    });
+
   const toggleCodecFamily = (label: string) =>
     setCodecFamilies((prev) => {
       const next = new Set(prev);
@@ -603,6 +626,7 @@ export function RuleSetEditorDialog({
 
     const next: RuleSetSpec = {};
     if (resolutions.length) next.resolutions = resolutions;
+    if (mediaSources.length) next.media_sources = mediaSources;
     const codecs = [
       ...CODEC_FAMILIES.filter((f) => codecFamilies.has(f.label)).flatMap((f) => f.values),
       ...codecExtras,
@@ -640,6 +664,9 @@ export function RuleSetEditorDialog({
     if (allow.length) next.release_groups_allow = allow;
     if (block.length) next.release_groups_block = block;
     if (upgradeSource) {
+      if (mediaSources.length && !mediaSources.includes(upgradeSource)) {
+        return { spec: next, error: "洗版目标片源必须在允许的片源范围内" };
+      }
       next.upgrade_source = upgradeSource as RuleSetSpec["upgrade_source"];
       // 目标分辨率仅在偏离缺省（分辨率偏好首选）时写入；限定了分辨率时
       // 目标必须落在允许范围内（后端同样校验）
@@ -656,6 +683,7 @@ export function RuleSetEditorDialog({
     return { spec: next, error: null };
   }, [
     resolutions,
+    mediaSources,
     codecFamilies,
     codecExtras,
     upgradeSource,
@@ -763,6 +791,34 @@ export function RuleSetEditorDialog({
                       </span>
                     )}
                     {option}
+                  </ToggleChip>
+                );
+              })}
+            </div>
+          </Field>
+
+          {/* 片源与分辨率是用户谈论"版本好坏"时实际用的两个主轴（§2.2），也是
+              仅有的两个偏好序参与候选选优的维度，因此并排放在最外层；它还必须
+              排在洗版之前——洗版终点档只能从这个白名单里挑 */}
+          <Field
+            label="片源"
+            hint="点击依次选择，先选的优先（选中顺序 = 下载偏好）；不选 = 不限。Rip 类 = WEBRip/BDRip，电视录制类 = HDTV/DVD。限定片源后，无法从种子名识别出片源的资源也会被排除，可用「手动选种」兜底"
+          >
+            <div className="flex flex-wrap gap-1.5">
+              {MEDIA_SOURCE_OPTIONS.map((option) => {
+                const index = mediaSources.indexOf(option.value);
+                return (
+                  <ToggleChip
+                    key={option.value}
+                    active={index >= 0}
+                    onClick={() => toggleMediaSource(option.value)}
+                  >
+                    {index >= 0 && mediaSources.length > 1 && (
+                      <span className="mr-1.5 inline-flex size-4 items-center justify-center rounded-full bg-white/20 text-micro font-semibold">
+                        {index + 1}
+                      </span>
+                    )}
+                    {option.label}
                   </ToggleChip>
                 );
               })}
@@ -950,7 +1006,9 @@ export function RuleSetEditorDialog({
               <ToggleChip active={upgradeSource === ""} onClick={() => setUpgradeSource("")}>
                 不洗版
               </ToggleChip>
-              {UPGRADE_OPTIONS.map(([value, label]) => (
+              {UPGRADE_OPTIONS.filter(
+                ([value]) => !mediaSources.length || mediaSources.includes(value),
+              ).map(([value, label]) => (
                 <ToggleChip
                   key={value}
                   active={upgradeSource === value}

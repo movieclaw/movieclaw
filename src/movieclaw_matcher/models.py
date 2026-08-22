@@ -64,6 +64,12 @@ _LADDER_DIMENSION_VALUES: frozenset[str] = frozenset(
 )
 _DEFAULT_UPGRADE_LADDER: tuple[str, ...] = ("resolution", "source")
 
+# 片源档白名单的值域（MediaSourceTier 的字符串值；定义在下方枚举之后不便引用，
+# 这里按值列出，两者由 test_models 锁死一致）
+_MEDIA_SOURCE_TIER_VALUES: frozenset[str] = frozenset(
+    {"remux", "blu-ray", "web-dl", "rip", "tv"}
+)
+
 
 def _known_hdr_levels(values: list[str]) -> list[str]:
     """保序去重地筛出值域内的 HDR 值（大小写不敏感）。"""
@@ -166,6 +172,25 @@ class UpgradeSource(StrEnum):
     REMUX = "remux"  # 洗到原盘 Remux
 
 
+class MediaSourceTier(StrEnum):
+    """片源档（规则组片源白名单的值域，docs/design/quality-upgrade.md §2.1）。
+
+    单位是**档**而不是词表原值（Blu-ray / UHD Blu-ray / BDRip …）：用户谈论
+    版本时说的就是"蓝光""WEB-DL"，档内的写法差异（UHD Blu-ray 与 Blu-ray）
+    实际由分辨率那一维表达；按档白名单还天然免疫词表演进——新增的写法自动
+    落进已有档，不需要用户回来补勾。
+
+    前三个值与 ``UpgradeSource`` **刻意同值**：洗版终点必须是白名单里的一档，
+    两个字段说同一种语言才能互相校验（``_validate_upgrade_target``）。
+    """
+
+    REMUX = "remux"  # 原盘 Remux（T5）
+    BLU_RAY = "blu-ray"  # 光盘重编码：Blu-ray / UHD Blu-ray / HD-DVD（T4）
+    WEB_DL = "web-dl"  # 流媒体原流（T3）
+    RIP = "rip"  # 二压 Rip：WEBRip / BDRip / HDRip / DVDRip（T2）
+    TV = "tv"  # 电视录制与 DVD：HDTV / HDTVRip / TVRip / DVD（T1）
+
+
 class HrUnknownPolicy(StrEnum):
     """H&R 状态未知（NULL）时的处理策略。
 
@@ -188,6 +213,13 @@ class RuleSetSpec(BaseModel):
     # -- 硬性过滤 ----------------------------------------------------------
     resolutions: list[str] = Field(
         default_factory=list, description="允许的分辨率（如 2160p/1080p）；顺序即偏好；空=不限"
+    )
+    # 片源与分辨率是用户谈论"版本好坏"时实际使用的两个主轴（§2.2），因此
+    # 两者的偏好序都参与候选选优（rules._score）；其余维度只做过滤，顺序仅在
+    # 洗版阶梯上有意义。
+    media_sources: list[str] = Field(
+        default_factory=list,
+        description="允许的片源档（remux/blu-ray/web-dl/rip/tv）；顺序即偏好；空=不限",
     )
     video_codecs: list[str] = Field(
         default_factory=list, description="允许的视频编码（如 x265/x264）；空=不限"
@@ -323,8 +355,19 @@ class RuleSetSpec(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def _normalize_media_sources(self) -> RuleSetSpec:
+        """片源档归一：丢弃未知值与重复项（与平台白名单同一取向，读取路径永远宽容）。"""
+        seen: list[str] = []
+        for value in self.media_sources:
+            key = value.casefold()
+            if key in _MEDIA_SOURCE_TIER_VALUES and key not in seen:
+                seen.append(key)
+        self.media_sources = seen
+        return self
+
+    @model_validator(mode="after")
     def _validate_upgrade_target(self) -> RuleSetSpec:
-        """洗版目标分辨率必须是规则组自己接受的分辨率，否则永远洗不到。"""
+        """洗版目标必须是规则组自己接受的档，否则永远洗不到。"""
         if (
             self.cutoff_resolution is not None
             and self.resolutions
@@ -334,6 +377,15 @@ class RuleSetSpec(BaseModel):
             raise ValueError(
                 f"洗版目标分辨率 {self.cutoff_resolution} 不在允许的分辨率列表中，"
                 "规则组自己都不接受的分辨率无法作为洗版目标"
+            )
+        if (
+            self.upgrade_source is not None
+            and self.media_sources
+            and self.upgrade_source.value not in self.media_sources
+        ):
+            raise ValueError(
+                f"洗版目标片源 {self.upgrade_source.value} 不在允许的片源列表中，"
+                "规则组自己都不接受的片源无法作为洗版目标"
             )
         return self
 

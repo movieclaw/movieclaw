@@ -208,6 +208,8 @@ export interface SubscriptionDetail extends Subscription {
 export interface RuleSetSpec {
   /** 允许的分辨率；列表顺序即偏好顺序（排前面的评分更高） */
   resolutions?: string[];
+  /** 允许的片源档（remux/blu-ray/web-dl/rip/tv）；顺序即偏好，与分辨率一样参与选优 */
+  media_sources?: string[];
   video_codecs?: string[];
   /** 流媒体平台白名单（规范值，见 lib/platforms.ts）；空=不限。与制作组各自独立生效 */
   platforms?: string[];

@@ -46,18 +46,24 @@ export const CODEC_FAMILIES: { label: string; values: string[] }[] = [
 ];
 
 /**
- * 片源档的展示序（高 → 低），与后端 decision._SOURCE_TIER 的 T5…T1 一一对应：
- * 同档的多种写法（WEBRip/BDRip 都是 T2）合成一行，用户不需要认识全部词。
- * T0（人工标注"按最低档"）不是一类可下载的资源，不进预览。
+ * 片源档选项（值域与后端 MediaSourceTier 一致，顺序即内置档序 T5…T1）。
+ * 同档的多种写法（WEBRip/BDRip 都是 T2）合成一项，用户不需要认识全部词；
+ * T0（人工标注"按最低档"）不是一类可下载的资源，不进选项。
  */
-const SOURCE_TIERS = ["Remux", "蓝光", "WEB-DL", "WEBRip/BDRip", "HDTV/DVD"];
+export const MEDIA_SOURCE_OPTIONS: { value: string; label: string; hint: string }[] = [
+  { value: "remux", label: "Remux", hint: "原盘直封" },
+  { value: "blu-ray", label: "蓝光", hint: "Blu-ray / UHD Blu-ray" },
+  { value: "web-dl", label: "WEB-DL", hint: "流媒体原流" },
+  { value: "rip", label: "Rip 类", hint: "WEBRip / BDRip" },
+  { value: "tv", label: "电视录制类", hint: "HDTV / DVD" },
+];
 
-/** 洗版目标片源档 → 展示序里的那一行。 */
-const UPGRADE_SOURCE_TIER: Record<string, string> = {
-  remux: "Remux",
-  "blu-ray": "蓝光",
-  "web-dl": "WEB-DL",
-};
+/** 洗版目标可选的三档——没人会把终点设成"洗到 Rip"。 */
+export const UPGRADE_SOURCE_VALUES = ["web-dl", "blu-ray", "remux"];
+
+const SOURCE_LABEL: Record<string, string> = Object.fromEntries(
+  MEDIA_SOURCE_OPTIONS.map((option) => [option.value, option.label]),
+);
 
 /** 未配置 resolutions 时的内置偏好序，与后端 _DEFAULT_RESOLUTION_LADDER 同值。 */
 const DEFAULT_RESOLUTION_LADDER = [
@@ -123,7 +129,13 @@ function axisOf(
   if (dim === "resolution") {
     return spec.resolutions?.length ? spec.resolutions : DEFAULT_RESOLUTION_LADDER;
   }
-  if (dim === "source") return SOURCE_TIERS;
+  if (dim === "source") {
+    // 配了片源白名单就按用户序（后端 media_source_rank 同口径），否则内置档序
+    const chosen = spec.media_sources?.length ? spec.media_sources : null;
+    return (chosen ?? MEDIA_SOURCE_OPTIONS.map((o) => o.value)).map(
+      (value) => SOURCE_LABEL[value] ?? value,
+    );
+  }
   if (dim === "hdr") return spec.hdr_levels ?? [];
   if (dim === "video_codec") return codecAxis(spec.video_codecs ?? []);
   return (spec.platforms ?? []).map(platformLabel);
@@ -137,7 +149,7 @@ function targetIndexOf(dim: string, axis: string[], spec: RuleSetSpec): number {
     return axis.indexOf(resolution);
   }
   if (dim === "source") {
-    return axis.indexOf(UPGRADE_SOURCE_TIER[spec.upgrade_source ?? ""] ?? "");
+    return axis.indexOf(SOURCE_LABEL[spec.upgrade_source ?? ""] ?? "");
   }
   // 只有分辨率与片源会成数量级地改变磁盘占用，才需要"接受但不主动洗"的
   // 区分；其余维度的终点就是偏好首项（后端 target_vector 同口径）

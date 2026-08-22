@@ -20,8 +20,8 @@ test("缺省二元组：终点之下逐级降片源，更高分辨率整体高�
   assert.equal(preview.ceiling, "2160p · Remux");
   assert.deepEqual(preview.below, [
     "1080p · WEB-DL",
-    "1080p · WEBRip/BDRip",
-    "1080p · HDTV/DVD",
+    "1080p · Rip 类",
+    "1080p · 电视录制类",
   ]);
   assert.equal(preview.moreBelow, 0);
 });
@@ -58,8 +58,8 @@ test("没配偏好的维度不占位，编码按族塌缩成一位", () => {
   assert.deepEqual(preview.dimensions, ["分辨率", "编码", "片源"]);
   assert.equal(preview.target, "1080p · H.265 · WEB-DL");
   assert.deepEqual(preview.below.slice(0, 3), [
-    "1080p · H.265 · WEBRip/BDRip",
-    "1080p · H.265 · HDTV/DVD",
+    "1080p · H.265 · Rip 类",
+    "1080p · H.265 · 电视录制类",
     "1080p · H.264 · Remux",
   ]);
 });
@@ -79,8 +79,21 @@ test("平台维度用展示名，且注入的 labeller 生效", () => {
   assert.equal(preview.ceiling, "2160p · Remux · Netflix");
   assert.deepEqual(preview.below.slice(0, 2), [
     "2160p · WEB-DL · Disney+",
-    "2160p · WEBRip/BDRip · Netflix",
+    "2160p · Rip 类 · Netflix",
   ]);
+});
+
+test("配了片源白名单时，阶梯的片源轴改用用户序", () => {
+  const preview = upgradeLadderPreview({
+    resolutions: ["1080p"],
+    media_sources: ["web-dl", "blu-ray"], // 省流党：WEB-DL 优于蓝光
+    upgrade_source: "web-dl",
+  });
+
+  assert.equal(preview.target, "1080p · WEB-DL");
+  assert.equal(preview.ceiling, null); // 终点已是用户序里的最高档
+  assert.deepEqual(preview.below, ["1080p · 蓝光"]); // 白名单外的档不出现在阶梯上
+  assert.equal(preview.moreBelow, 0);
 });
 
 test("目标分辨率不在偏好序里 = 配置矛盾，安静返回 null", () => {
@@ -99,8 +112,8 @@ test("未限定分辨率时按内置偏好序，终点缺省 1080p", () => {
   assert.equal(preview.target, "1080p · WEB-DL");
   assert.equal(preview.ceiling, "4320p · Remux");
   assert.deepEqual(preview.below.slice(0, 3), [
-    "1080p · WEBRip/BDRip",
-    "1080p · HDTV/DVD",
+    "1080p · Rip 类",
+    "1080p · 电视录制类",
     "720p · Remux",
   ]);
 });
