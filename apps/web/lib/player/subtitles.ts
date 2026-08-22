@@ -10,9 +10,11 @@
  * | ASS / SSA | 原样下发 + JASSUB（libass WASM），保留特效与排版 |
  * | PGS | 位图轨，P0 不渲染 |
  *
- * **当前后端只服务外挂字幕**（`resolve_external_subtitle` 只认
- * `external:<文件名>`，内封轨一律 404）。内封轨因此进"不可用"清单并给出
- * 原因，而不是给一个点了没反应的选项——番剧的内封 ASS 是最常见的情况，
+ * 外挂与内封轨一视同仁：内封轨由服务端按需 ffmpeg 抽出来再下发（首次要通读
+ * 整个容器，之后走缓存）。PT 片源的字幕绝大多数是内封的，只服务外挂等于对
+ * 大部分片子没字幕。
+ *
+ * 拿不到的轨进"不可用"清单并给出中文原因，而不是给一个点了没反应的选项——
  * 用户点了没反应会以为播放器坏了。
  */
 
@@ -54,13 +56,18 @@ const KIND_LABELS: Record<string, string> = {
 function trackLabel(plan: SubtitlePlan): string {
   const language = languageLabel(plan.language);
   const kind = KIND_LABELS[plan.kind] ?? plan.kind;
-  const name = language ?? fileNameOf(plan.track_ref) ?? "未知语言";
+  const name = language ?? refLabel(plan.track_ref);
   return `${name} · ${kind}`;
 }
 
-/** external:<文件名> → 文件名；不是外挂引用返回 null。 */
-function fileNameOf(ref: string): string | null {
-  return ref.startsWith("external:") ? ref.slice("external:".length) : null;
+/**
+ * 没有语言标记时的兜底名。外挂轨用文件名（用户自己放的，认得出），内封轨
+ * 用序号——总比一律叫"未知语言"强，那样多条无语言标记的轨会长得一模一样。
+ */
+function refLabel(ref: string): string {
+  if (ref.startsWith("external:")) return ref.slice("external:".length);
+  if (ref.startsWith("embedded:")) return `内封轨 ${ref.slice("embedded:".length)}`;
+  return "未知语言";
 }
 
 /**
@@ -82,13 +89,6 @@ export function planSubtitleTracks(
     const label = trackLabel(plan);
     if (!url) {
       unavailable.push({ label, reason: "服务端没有给出这条轨的地址" });
-      return;
-    }
-    if (!plan.track_ref.startsWith("external:")) {
-      unavailable.push({
-        label,
-        reason: "内封字幕暂不支持在网页端渲染，可用同名外挂字幕文件替代",
-      });
       return;
     }
     if (plan.kind === "pgs") {

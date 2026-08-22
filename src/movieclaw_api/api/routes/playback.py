@@ -35,6 +35,7 @@ from movieclaw_api.services.auth import Principal
 from movieclaw_api.services.library.access import visible_library_ids
 from movieclaw_api.services.playback import plan as playback_plan
 from movieclaw_api.services.playback import watch as playback_watch
+from movieclaw_api.services.playback.embedded_subs import extract_embedded_subtitle
 from movieclaw_api.services.playback.hwprobe import available_backends
 from movieclaw_api.services.playback.session import (
     DiskQuotaError,
@@ -59,6 +60,7 @@ from movieclaw_playback.streaming import (
 )
 from movieclaw_playback.subtitles import (
     SubtitleServeError,
+    parse_embedded_track,
     resolve_external_subtitle,
     serve_subtitle,
 )
@@ -452,12 +454,18 @@ async def stream_library_file(
 )
 async def get_playback_subtitle(
     file_id: Annotated[int, Path()],
-    track: Annotated[str, Query(description="中性轨引用：external:<文件名>")],
+    track: Annotated[
+        str, Query(description="中性轨引用：external:<文件名> / embedded:<序号>")
+    ],
     token: Annotated[str, Query()],
     format: Annotated[str | None, Query()] = None,
     session: AsyncSession = Depends(get_session),
 ) -> Response:
-    """字幕**永远旁挂**，绝不烧录（硬边界 1）——烧录会把任何档位拖进全转码。"""
+    """字幕**永远旁挂**，绝不烧录（硬边界 1）——烧录会把任何档位拖进全转码。
+
+    外挂轨直接读文件；内封轨按需 ffmpeg 抽出来（首次要通读整个容器，之后走
+    缓存）。PT 片源的字幕绝大多数是内封的，只服务外挂等于对大部分片子没字幕。
+    """
     grant = await verify_stream_token(token, file_id=file_id)
     if grant is None:
         raise NotFoundException("字幕地址无效或已过期")
@@ -465,6 +473,12 @@ async def get_playback_subtitle(
     if file is None:
         raise NotFoundException("文件不存在")
     ref = resolve_external_subtitle(file, track)
+    if ref is None:
+        index = parse_embedded_track(track)
+        if index is not None:
+            # 抽取是阻塞的子进程调用，必须放线程池——单进程 async 服务里
+            # 一个阻塞调用会卡死全站的搜索、订阅、扫描。
+            ref = await asyncio.to_thread(extract_embedded_subtitle, file, index)
     if ref is None:
         raise NotFoundException("字幕轨不存在或暂不支持在网页端渲染")
     try:

@@ -1,0 +1,215 @@
+"""内封字幕轨抽取测试（docs/design/web-player.md §6.2）。
+
+PT 片源的字幕绝大多数是内封的，只服务外挂等于对大部分片子没字幕——所以这条
+路径的正确性直接决定「能不能看」。
+
+格式判定与缓存新鲜度是纯逻辑，进 CI 默认门禁；真抽取标 ``integration``，
+用 ffmpeg 合成带字幕的样本，验证 **ASS 保住样式、文本轨转 SRT**。
+"""
+
+from __future__ import annotations
+
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from movieclaw_api.services.playback.embedded_subs import (
+    embedded_subtitle_format,
+    embedded_track_codec,
+    extract_embedded_subtitle,
+)
+from movieclaw_db.models import FileSource, FileState, LibraryFile
+
+
+def make_file(tmp_path: Path, streams: list[dict] | None, *, path: Path | None = None):
+    return LibraryFile(
+        id=7,
+        library_id=1,
+        media_item_id=1,
+        file_path=str(path or (tmp_path / "movie.mkv")),
+        size_bytes=1,
+        source=FileSource.SCANNED,
+        state=FileState.IN_PLACE,
+        container="mkv",
+        subtitle_streams=streams,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 格式判定：ASS 保原样，文本转 SRT，图形轨一律拒绝
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("codec", ["ass", "ssa", "ASS"])
+def test_ass_tracks_keep_their_format(codec):
+    """转成 VTT 就丢掉特效与排版，番剧字幕直接崩。"""
+    assert embedded_subtitle_format(codec) == "ass"
+
+
+@pytest.mark.parametrize("codec", ["subrip", "srt", "mov_text", "text", "webvtt"])
+def test_text_tracks_normalize_to_srt(codec):
+    assert embedded_subtitle_format(codec) == "srt"
+
+
+@pytest.mark.parametrize("codec", ["hdmv_pgs_subtitle", "dvd_subtitle", "", None, "xyz"])
+def test_graphic_and_unknown_tracks_are_refused(codec):
+    """宁可少一条轨也不烧录——烧录会把任何档位拖进全转码。"""
+    assert embedded_subtitle_format(codec) is None
+
+
+# ---------------------------------------------------------------------------
+# 轨定位：数组下标即 ffmpeg 的 0:s:<k>
+# ---------------------------------------------------------------------------
+
+
+def test_track_codec_comes_from_the_ledger(tmp_path):
+    file = make_file(tmp_path, [{"codec": "ass"}, {"codec": "subrip"}])
+    assert embedded_track_codec(file, 0) == "ass"
+    assert embedded_track_codec(file, 1) == "subrip"
+
+
+@pytest.mark.parametrize("index", [-1, 2, 99])
+def test_out_of_range_track_is_none(tmp_path, index):
+    file = make_file(tmp_path, [{"codec": "ass"}, {"codec": "subrip"}])
+    assert embedded_track_codec(file, index) is None
+
+
+def test_unprobed_file_has_no_tracks(tmp_path):
+    """subtitle_streams=None 表示没探测过，不能当成「没有字幕」。"""
+    assert embedded_track_codec(make_file(tmp_path, None), 0) is None
+
+
+def test_malformed_ledger_entry_does_not_crash(tmp_path):
+    file = make_file(tmp_path, ["不是字典", {"codec": "ass"}])
+    assert embedded_track_codec(file, 0) is None
+    assert embedded_track_codec(file, 1) == "ass"
+
+
+def test_unsupported_track_never_touches_ffmpeg(tmp_path, monkeypatch):
+    """格式判定要在起进程之前完成——PGS 轨不该白白读一遍整个容器。"""
+    called = []
+    monkeypatch.setattr(
+        "movieclaw_api.services.playback.embedded_subs.subprocess.run",
+        lambda *a, **k: called.append(a),
+    )
+    file = make_file(tmp_path, [{"codec": "hdmv_pgs_subtitle"}])
+    assert extract_embedded_subtitle(file, 0) is None
+    assert called == []
+
+
+def test_missing_video_file_is_none(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    file = make_file(tmp_path, [{"codec": "subrip"}], path=tmp_path / "gone.mkv")
+    assert extract_embedded_subtitle(file, 0) is None
+
+
+# ---------------------------------------------------------------------------
+# 真抽取
+# ---------------------------------------------------------------------------
+
+integration = pytest.mark.skipif(
+    shutil.which("ffmpeg") is None, reason="需要系统 ffmpeg"
+)
+
+
+def _run(argv: list[str]) -> None:
+    proc = subprocess.run(argv, capture_output=True, timeout=180)
+    assert proc.returncode == 0, proc.stderr.decode(errors="replace")[-1500:]
+
+
+@pytest.fixture
+def video_with_subs(tmp_path):
+    """合成一个内封 ASS + 内封 SRT 双字幕轨的 MKV。"""
+    ass = tmp_path / "styled.ass"
+    ass.write_text(
+        "[Script Info]\nScriptType: v4.00+\n\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour\n"
+        "Style: Karaoke,Arial,72,&H00FF00FF\n\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Text\n"
+        "Dialogue: 0,0:00:00.50,0:00:03.00,Karaoke,{\\pos(320,240)}特效字幕\n",
+        encoding="utf-8",
+    )
+    srt = tmp_path / "plain.srt"
+    srt.write_text("1\n00:00:00,500 --> 00:00:03,000\n纯文本字幕\n\n", encoding="utf-8")
+    video = tmp_path / "movie.mkv"
+    _run([
+        "ffmpeg", "-v", "error",
+        "-f", "lavfi", "-i", "testsrc2=size=160x120:rate=10:duration=4",
+        "-i", str(ass), "-i", str(srt),
+        "-map", "0:v", "-map", "1:s", "-map", "2:s",
+        "-c:v", "libx264", "-preset", "ultrafast",
+        "-c:s:0", "ass", "-c:s:1", "srt",
+        "-y", str(video),
+    ])
+    return video
+
+
+@integration
+@pytest.mark.integration
+def test_extracts_ass_track_preserving_styles(tmp_path, monkeypatch, video_with_subs):
+    """ASS 必须原样 copy 出来——样式段和定位标签都得在，否则 JASSUB 渲染出的
+    就是一行没有排版的白字。"""
+    monkeypatch.chdir(tmp_path)
+    file = make_file(tmp_path, [{"codec": "ass"}, {"codec": "subrip"}], path=video_with_subs)
+    ref = extract_embedded_subtitle(file, 0)
+    assert ref is not None and ref.format == "ass"
+    text = ref.path.read_text(encoding="utf-8")
+    assert "[V4+ Styles]" in text
+    assert "Karaoke" in text
+    assert "\\pos(320,240)" in text
+    assert "特效字幕" in text
+
+
+@integration
+@pytest.mark.integration
+def test_extracts_text_track_as_srt(tmp_path, monkeypatch, video_with_subs):
+    monkeypatch.chdir(tmp_path)
+    file = make_file(tmp_path, [{"codec": "ass"}, {"codec": "subrip"}], path=video_with_subs)
+    ref = extract_embedded_subtitle(file, 1)
+    assert ref is not None and ref.format == "srt"
+    text = ref.path.read_text(encoding="utf-8")
+    assert "纯文本字幕" in text
+    assert "-->" in text
+
+
+@integration
+@pytest.mark.integration
+def test_second_call_reuses_the_cache(tmp_path, monkeypatch, video_with_subs):
+    """抽取要通读整个容器，不能每次点开字幕都重来一遍。"""
+    monkeypatch.chdir(tmp_path)
+    file = make_file(tmp_path, [{"codec": "ass"}], path=video_with_subs)
+    first = extract_embedded_subtitle(file, 0)
+    assert first is not None
+    stamp = first.path.stat().st_mtime_ns
+
+    calls = []
+    real_run = subprocess.run
+    monkeypatch.setattr(
+        "movieclaw_api.services.playback.embedded_subs.subprocess.run",
+        lambda *a, **k: (calls.append(a), real_run(*a, **k))[1],
+    )
+    second = extract_embedded_subtitle(file, 0)
+    assert second is not None and second.path == first.path
+    assert calls == [], "命中缓存却又起了一次 ffmpeg"
+    assert second.path.stat().st_mtime_ns == stamp
+
+
+@integration
+@pytest.mark.integration
+def test_failed_extraction_leaves_no_partial_file(tmp_path, monkeypatch, video_with_subs):
+    """失败留下的非空残片会被下次的新鲜度判断误认成成功产物。"""
+    monkeypatch.chdir(tmp_path)
+    # 台账说有第 3 条轨，实际没有——ffmpeg 会以非零码退出
+    file = make_file(
+        tmp_path,
+        [{"codec": "ass"}, {"codec": "subrip"}, {"codec": "subrip"}],
+        path=video_with_subs,
+    )
+    assert extract_embedded_subtitle(file, 2) is None
+    cache = tmp_path / "data" / "cache" / "playback-subs"
+    leftovers = list(cache.glob("*")) if cache.exists() else []
+    assert leftovers == [], f"留下了残片：{leftovers}"

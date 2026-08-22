@@ -293,3 +293,80 @@ def test_stopping_a_session_removes_its_files(client, tmp_path):
     assert any(root.iterdir())
     assert client.delete(f"{_PB}/sessions/{data['session_id']}").status_code == 200
     assert list(root.iterdir()) == []
+
+
+def test_embedded_subtitle_is_served_over_http(client, tmp_path):
+    """内封字幕经 HTTP 取回来必须是能渲染的内容。
+
+    PT 片源的字幕绝大多数是内封的——这条链路不通，等于对大部分片子没字幕。
+    """
+    ass = tmp_path / "styled.ass"
+    ass.write_text(
+        "[Script Info]\nScriptType: v4.00+\n\n"
+        "[V4+ Styles]\nFormat: Name, Fontname, Fontsize\nStyle: Karaoke,Arial,72\n\n"
+        "[Events]\nFormat: Layer, Start, End, Style, Text\n"
+        "Dialogue: 0,0:00:00.50,0:00:03.00,Karaoke,{\\pos(160,120)}特效字幕\n",
+        encoding="utf-8",
+    )
+    srt = tmp_path / "plain.srt"
+    srt.write_text("1\n00:00:00,500 --> 00:00:03,000\n纯文本字幕\n\n", encoding="utf-8")
+
+    root = tmp_path / "m"
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / "subs.mkv"
+    _run([
+        "ffmpeg", "-v", "error",
+        "-f", "lavfi", "-i", f"testsrc2=size=320x240:rate=25:duration={DURATION}",
+        "-f", "lavfi", "-i", f"sine=frequency=440:duration={DURATION}",
+        "-i", str(ass), "-i", str(srt),
+        "-map", "0:v", "-map", "1:a", "-map", "2:s", "-map", "3:s",
+        "-c:v", "libx264", "-preset", "ultrafast", "-g", "50",
+        "-c:a", "aac", "-c:s:0", "ass", "-c:s:1", "srt",
+        "-shortest", "-y", str(path),
+    ])
+
+    async def _seed_with_subs():
+        async with get_database().session() as session:
+            library = await LibraryRepository(session).create(
+                name="字幕库", kind="movie", root_paths=[str(root)]
+            )
+            item = MediaItem(kind="movie", tmdb_id=999, title="字幕片", original_title="Subs")
+            session.add(item)
+            await session.flush()
+            row = LibraryFile(
+                library_id=library.id, media_item_id=item.id,
+                file_path=str(path), size_bytes=path.stat().st_size,
+                source=FileSource.SCANNED, state=FileState.IN_PLACE,
+                container="mkv", video_codec="h264", resolution="240p",
+                duration_seconds=DURATION,
+                audio_streams=[{"codec": "aac", "channels": 2, "default": True}],
+                subtitle_streams=[
+                    {"codec": "ass", "language": "chi", "default": True},
+                    {"codec": "subrip", "language": "eng"},
+                ],
+            )
+            session.add(row)
+            await session.commit()
+            await session.refresh(row)
+            return row.id
+
+    file_id = client.portal.call(_seed_with_subs)
+    data = start(client, file_id)
+    urls = data["subtitle_urls"]
+    plans = data["decision"]["subtitles"]
+    assert len(urls) == 2 and len(plans) == 2
+    assert [p["track_ref"] for p in plans] == ["embedded:0", "embedded:1"]
+    assert [p["kind"] for p in plans] == ["ass", "vtt"]
+
+    # ASS 原样下发：样式段与定位标签都要在，否则 JASSUB 渲染出的是没排版的白字
+    styled = client.get(urls[0])
+    assert styled.status_code == 200, styled.text
+    assert "[V4+ Styles]" in styled.text
+    assert "\\pos(160,120)" in styled.text
+    assert "特效字幕" in styled.text
+
+    # 文本轨按前端的要求转 VTT：<track> 只认这个格式
+    plain = client.get(f"{urls[1]}&format=vtt")
+    assert plain.status_code == 200, plain.text
+    assert plain.text.startswith("WEBVTT")
+    assert "纯文本字幕" in plain.text

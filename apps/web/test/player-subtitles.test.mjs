@@ -23,15 +23,38 @@ test("文本轨要 VTT，ASS 原样下发", () => {
   assert.equal(options[1].url, "/sub?track=2&token=t");
 });
 
-test("内封轨与 PGS 进不可用清单并给出中文原因", () => {
+test("内封轨与外挂轨一视同仁——PT 片源的字幕绝大多数是内封的", () => {
   const { options, unavailable } = planSubtitleTracks(
-    [plan("embedded:0", "ass"), plan("external:zh.sup", "pgs")],
+    [plan("embedded:0", "ass"), plan("embedded:1", "vtt")],
+    ["/a", "/b"],
+  );
+  assert.equal(unavailable.length, 0);
+  assert.equal(options.length, 2);
+  assert.equal(options[0].kind, "ass");
+  // ASS 不能转 VTT——转了就丢特效与排版，番剧字幕直接崩
+  assert.equal(options[0].url, "/a");
+  // 文本轨统一要 VTT：<track> 只认这个格式
+  assert.equal(options[1].url, "/b&format=vtt");
+});
+
+test("没有语言标记时内封轨按序号命名，不至于几条长得一样", () => {
+  const { options } = planSubtitleTracks(
+    [plan("embedded:0", "vtt"), plan("embedded:2", "vtt")],
+    ["/a", "/b"],
+  );
+  assert.match(options[0].label, /内封轨 0/);
+  assert.match(options[1].label, /内封轨 2/);
+});
+
+test("PGS 与未知格式仍进不可用清单并给出中文原因", () => {
+  const { options, unavailable } = planSubtitleTracks(
+    [plan("embedded:0", "pgs"), plan("external:zh.sub", "vobsub")],
     ["/a", "/b"],
   );
   assert.equal(options.length, 0);
   assert.equal(unavailable.length, 2);
-  assert.match(unavailable[0].reason, /内封字幕暂不支持/);
-  assert.match(unavailable[1].reason, /图形字幕/);
+  assert.match(unavailable[0].reason, /图形字幕/);
+  assert.match(unavailable[1].reason, /暂不支持的字幕格式/);
 });
 
 test("字幕地址缺失时不做位移匹配", () => {
