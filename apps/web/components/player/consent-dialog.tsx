@@ -64,7 +64,7 @@ export function ConsentDialog({
         </dl>
 
         {error ? (
-          <p className="mt-4 rounded-sm bg-[var(--player-accent)]/20 px-3 py-2 text-[13px] text-white">{error}</p>
+          <p className="mt-4 rounded-sm bg-[var(--danger)]/20 px-3 py-2 text-[13px] text-white">{error}</p>
         ) : null}
 
         {canSelfEnable ? (
@@ -82,7 +82,7 @@ export function ConsentDialog({
                 type="button"
                 onClick={enable}
                 disabled={saving}
-                className="rounded-sm bg-[var(--player-accent)] px-5 py-2.5 text-[14px] font-semibold text-white transition-colors hover:bg-[var(--player-accent-hover)] disabled:opacity-50"
+                className="rounded-sm bg-[var(--player-accent)] px-5 py-2.5 text-[14px] font-semibold text-black transition-colors hover:bg-[var(--player-accent-hover)] disabled:opacity-50"
               >
                 {saving ? "正在开启…" : "开启并播放"}
               </button>

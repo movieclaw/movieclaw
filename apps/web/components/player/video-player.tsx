@@ -29,6 +29,13 @@ import { getCapabilitySnapshot } from "@/lib/player/capability";
 import type { PlaybackEngine } from "@/lib/player/engine";
 import { createEngine } from "@/lib/player/engine";
 import { initialPlayerState, isBusy, playerReducer } from "@/lib/player/machine";
+import {
+  asNativeVideo,
+  enterLandscape,
+  enterNativeVideoFullscreen,
+  exitLandscape,
+  screenOrientation,
+} from "@/lib/player/orientation";
 import { createSessionReleaser } from "@/lib/player/session-release";
 import {
   type QoeEvent,
@@ -124,6 +131,13 @@ export function VideoPlayer(props: VideoPlayerProps) {
   const [forcedMute, setForcedMute] = useState(false);
   /** 播放/暂停时画面中央闪一下的圆环。递增的 key 就是「再放一次动画」 */
   const [pulse, setPulse] = useState<{ id: number; paused: boolean } | null>(null);
+  /** 当前是否在横屏（全屏 + 锁横向）里 */
+  const [landscape, setLandscape] = useState(false);
+  /**
+   * 这台设备的方向锁真的能用。放 state 而不是渲染时直接算：服务端渲染没有
+   * `screen`，直接算会造成水合不一致，按钮文案在首帧闪一下。
+   */
+  const [canRotate, setCanRotate] = useState(false);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<PlaybackEngine | null>(null);
@@ -656,12 +670,76 @@ export function VideoPlayer(props: VideoPlayerProps) {
     [seekToFileMs],
   );
 
-  const toggleFullscreen = useCallback(() => {
+  useEffect(() => {
+    // 桌面浏览器普遍有 screen.orientation.lock 这个方法但一调就抛，所以还要
+    // 看指针类型：粗指针（手指）才是真能转的那类设备
+    setCanRotate(
+      typeof screenOrientation()?.lock === "function" &&
+        window.matchMedia("(pointer: coarse)").matches,
+    );
+  }, []);
+
+  /**
+   * 横屏 / 退出横屏。
+   *
+   * 桌面上没有方向可锁，这个按钮退化成纯全屏——所以它是**唯一**的全屏入口，
+   * 不再另外摆一个「全屏」按钮：同一个动作两个按钮只会让人猜哪个才对。
+   */
+  const toggleLandscape = useCallback(() => {
+    if (landscape || document.fullscreenElement) {
+      setLandscape(false);
+      void exitLandscape(
+        screenOrientation(),
+        document.fullscreenElement ? () => document.exitFullscreen() : null,
+      );
+      return;
+    }
     const target = containerRef.current;
     if (!target) return;
-    if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
-    else void target.requestFullscreen().catch(() => undefined);
+    void enterLandscape(target, screenOrientation()).then((outcome) => {
+      // unsupported = 连元素级全屏都没有（iPhone Safari），把 <video> 交给
+      // 系统播放器——iOS 上本来就不硬撑自定义 UI（§6.4）
+      if (outcome === "unsupported") {
+        enterNativeVideoFullscreen(asNativeVideo(video));
+        return;
+      }
+      setLandscape(true);
+    });
+  }, [landscape, video]);
+
+  /**
+   * 用户按 Esc / 系统手势退出全屏时把状态同步回来，并解掉方向锁。
+   *
+   * 不解锁的后果很难查：退出播放器之后整个站点还被钉在横屏，用户只会觉得
+   * 「这网站把我手机转坏了」。
+   */
+  useEffect(() => {
+    const onChange = () => {
+      if (document.fullscreenElement) return;
+      setLandscape(false);
+      void exitLandscape(screenOrientation(), null);
+    };
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
   }, []);
+
+  /** 离开播放器时一定要把方向锁还回去，哪怕是被直接卸载的。 */
+  useEffect(() => {
+    return () => {
+      void exitLandscape(
+        screenOrientation(),
+        typeof document !== "undefined" && document.fullscreenElement
+          ? () => document.exitFullscreen()
+          : null,
+      );
+    };
+  }, []);
+
+  /** 左上角的后退：在横屏里先回到普通，再按一次才是退出播放。 */
+  const goBack = useCallback(() => {
+    if (landscape) toggleLandscape();
+    else onExit();
+  }, [landscape, toggleLandscape, onExit]);
 
   /** 键盘快捷键按 YouTube 惯例，映射本身在纯函数里。 */
   useEffect(() => {
@@ -693,7 +771,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
           if (video) video.muted = !video.muted;
           break;
         case "toggle-fullscreen":
-          toggleFullscreen();
+          toggleLandscape();
           break;
         case "toggle-subtitles":
           setSelectedSubtitle((current) =>
@@ -704,7 +782,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [togglePlay, seekBy, seekToFileMs, toggleFullscreen, durationMs, video, subtitles.options]);
+  }, [togglePlay, seekBy, seekToFileMs, toggleLandscape, durationMs, video, subtitles.options]);
 
   // ---------------------------------------------------------------------
   // 系统集成：媒体键 / 锁屏信息 / 防息屏
@@ -827,12 +905,12 @@ export function VideoPlayer(props: VideoPlayerProps) {
         >
           <button
             type="button"
-            onClick={onExit}
+            onClick={goBack}
             // 淡出后必须同时断掉命中：隐形却仍能点的按钮会在用户想点画面时误触
             className={`player-btn size-10 shrink-0 ${
               chromeVisible ? "pointer-events-auto" : "pointer-events-none"
             }`}
-            aria-label="退出播放"
+            aria-label={landscape ? "退出横屏" : "退出播放"}
           >
             <svg viewBox="0 0 24 24" className="size-7 fill-current" aria-hidden>
               <path d="M10.7 3.6 2.3 12l8.4 8.4 1.7-1.7L6.4 13.2H22v-2.4H6.4l6-6-1.7-1.2Z" />
@@ -939,7 +1017,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
                 <button
                   type="button"
                   onClick={() => dispatch({ type: "request", startMs: positionRef.current })}
-                  className="rounded-sm bg-[var(--player-accent)] px-6 py-2.5 text-[14px] font-semibold text-white transition-colors hover:bg-[var(--player-accent-hover)]"
+                  className="rounded-sm bg-[var(--player-accent)] px-6 py-2.5 text-[14px] font-semibold text-black transition-colors hover:bg-[var(--player-accent-hover)]"
                 >
                   重试
                 </button>
@@ -1027,6 +1105,9 @@ export function VideoPlayer(props: VideoPlayerProps) {
             onSubtitleStyleChange={setSubtitleStyle}
             diagnosticsOpen={diagnosticsOpen}
             onToggleDiagnostics={() => setDiagnosticsOpen((open) => !open)}
+            landscape={landscape}
+            canRotate={canRotate}
+            onToggleLandscape={toggleLandscape}
             onMenuOpenChange={setMenuOpen}
             trickplay={trickplay}
             onNext={next ? onPlayNext : null}

@@ -1,12 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import {
-  MediaFullscreenButton,
-  MediaMuteButton,
-  MediaPipButton,
-  MediaVolumeRange,
-} from "media-chrome/react";
+import { MediaMuteButton, MediaPipButton, MediaVolumeRange } from "media-chrome/react";
 
 import { SUBTITLE_OFFSET_STEP, clampSubtitleOffset } from "@/lib/player/subtitles";
 import type { SubtitleStyle, SubtitleTracks } from "@/lib/player/subtitles";
@@ -123,9 +118,33 @@ function PipGlyph({ exit, slot }: { exit?: boolean; slot?: string }) {
   );
 }
 
-function FullscreenGlyph({ exit, slot }: { exit?: boolean; slot?: string }) {
+/**
+ * 横屏：一个旋转弧 + 一台设备。设备的方向画的是**点下去之后**的样子——
+ * 图标表示结果而不是现状，否则用户要在脑子里做一次取反。
+ */
+function RotateGlyph({ active }: { active: boolean }) {
   return (
-    <svg viewBox="0 0 24 24" className={ICON} slot={slot} aria-hidden>
+    <svg viewBox="0 0 24 24" className={ICON} aria-hidden>
+      <path
+        d="M4 10.2A6.2 6.2 0 0 1 10.2 4"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.9"
+        strokeLinecap="round"
+      />
+      <path d="M4 13.4 1.3 8.7h5.4z" />
+      {active ? (
+        <rect x="9.6" y="8.8" width="9" height="13.2" rx="1.8" fill="none" stroke="currentColor" strokeWidth="1.9" />
+      ) : (
+        <rect x="8.2" y="11" width="14" height="9" rx="1.8" fill="none" stroke="currentColor" strokeWidth="1.9" />
+      )}
+    </svg>
+  );
+}
+
+function FullscreenGlyph({ exit }: { exit?: boolean }) {
+  return (
+    <svg viewBox="0 0 24 24" className={ICON} aria-hidden>
       {exit ? (
         <path d="M9.4 3v4.6a1.8 1.8 0 0 1-1.8 1.8H3v-2h4.4V3h2Zm5.2 0h2v4.4H21v2h-4.6a1.8 1.8 0 0 1-1.8-1.8V3ZM3 14.6h4.6a1.8 1.8 0 0 1 1.8 1.8V21h-2v-4.4H3v-2Zm11.6 1.8a1.8 1.8 0 0 1 1.8-1.8H21v2h-4.4V21h-2v-4.6Z" />
       ) : (
@@ -156,6 +175,11 @@ export interface PlayerControlsProps {
   diagnosticsOpen: boolean;
   onToggleDiagnostics: () => void;
   onNext: (() => void) | null;
+  /** 横屏（全屏 + 锁横向）；已经在里面时点它就是退出 */
+  landscape: boolean;
+  /** 这台设备的方向锁真的能用（手机/平板）。桌面上同一个按钮叫「全屏」 */
+  canRotate: boolean;
+  onToggleLandscape: () => void;
   /** 菜单展开时要顶住控制条的自动隐藏，否则菜单会连着控制条一起淡掉 */
   onMenuOpenChange: (open: boolean) => void;
   /** 进度条缩略图索引。null = 还没生成好，表现为没有预览 */
@@ -181,6 +205,9 @@ export function PlayerControls(props: PlayerControlsProps) {
     diagnosticsOpen,
     onToggleDiagnostics,
     onNext,
+    landscape,
+    canRotate,
+    onToggleLandscape,
     onMenuOpenChange,
     trickplay,
   } = props;
@@ -347,10 +374,14 @@ export function PlayerControls(props: PlayerControlsProps) {
           <PipGlyph slot="enter" />
           <PipGlyph slot="exit" exit />
         </MediaPipButton>
-        <MediaFullscreenButton className="player-mc-button" noTooltip>
-          <FullscreenGlyph slot="enter" />
-          <FullscreenGlyph slot="exit" exit />
-        </MediaFullscreenButton>
+        <IconButton
+          tip={
+            canRotate ? (landscape ? "退出横屏" : "横屏") : landscape ? "退出全屏" : "全屏"
+          }
+          onClick={onToggleLandscape}
+        >
+          {canRotate ? <RotateGlyph active={landscape} /> : <FullscreenGlyph exit={landscape} />}
+        </IconButton>
       </div>
     </div>
   );
@@ -572,7 +603,7 @@ function Toggle({
       type="button"
       onClick={onClick}
       className={`rounded-sm px-3 py-1 text-[12px] transition-colors ${
-        on ? "bg-[var(--player-accent)] text-white" : "bg-white/12 text-white/60 hover:bg-white/20"
+        on ? "bg-[var(--player-accent)] text-black" : "bg-white/12 text-white/60 hover:bg-white/20"
       }`}
     >
       {children}
