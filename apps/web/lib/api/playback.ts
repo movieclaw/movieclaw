@@ -472,3 +472,61 @@ export async function fetchTrickplay(subtitleOrStreamUrl: string): Promise<Trick
   );
   return response.data;
 }
+
+
+export interface PlaybackMetricPayload {
+  library_file_id: number | null;
+  tier: number;
+  degraded_from: number | null;
+  engine: string;
+  hw_backend: string;
+  ttff_ms: number | null;
+  rebuffer_ms: number;
+  rebuffer_count: number;
+  seek_count: number;
+  dropped_frames: number | null;
+  total_frames: number | null;
+  watched_ms: number;
+}
+
+/**
+ * 上报一次播放的质量快照。
+ *
+ * 只落本地——写进自建实例自己的数据库，绝不外发。失败无所谓（指标是趋势
+ * 数据），所以调用方一律吞掉；页面卸载路径用 sendBeacon 保证发得出去。
+ */
+export async function reportPlaybackMetric(payload: PlaybackMetricPayload): Promise<void> {
+  await request<ApiEnvelope<unknown>>("/playback/metrics", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+/** 卸载路径上的上报：普通 fetch 会被浏览器直接取消。 */
+export function reportPlaybackMetricOnUnload(payload: PlaybackMetricPayload): void {
+  try {
+    navigator.sendBeacon?.(
+      resolveRequestUrl("/playback/metrics"),
+      new Blob([JSON.stringify(payload)], { type: "application/json" }),
+    );
+  } catch {
+    // 卸载路径上无处呈现错误
+  }
+}
+
+export interface PlaybackStats {
+  sessions: number;
+  /** 北极星指标：档 0 + 档 1 的占比 */
+  direct_ratio: number | null;
+  degraded_ratio: number | null;
+  ttff_p50_ms: number | null;
+  ttff_p95_ms: number | null;
+  rebuffer_ratio: number | null;
+  dropped_ratio: number | null;
+  tier_counts: Record<string, number>;
+}
+
+export async function fetchPlaybackStats(): Promise<PlaybackStats> {
+  const response = await request<ApiEnvelope<PlaybackStats>>("/playback/stats");
+  return response.data;
+}

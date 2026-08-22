@@ -909,7 +909,7 @@ Mac mini 验证。做成发版前的人工清单，列进 `.claude/skills/releas
 - [x] 签名 URL（与 `movieclaw_jellyfin/security.py` 共用密钥与实现）
 - [x] `playback.policy` 配置域（`app_setting` namespace + Pydantic 模型，**零迁移**）：
       软件转码开关、转码并发、直通并发、码率上限、缓存配额
-- [ ] `playback_metric` 表 + 迁移（向前兼容）——**唯一需要迁移的新表**
+- [x] `playback_metric` 表 + 迁移（向前兼容）——**唯一需要迁移的新表**
 - [ ] ~~Jellyfin 兼容层改用同一决策引擎（恒等快照）~~ —— **不做，理由见 §12.9**。
       行为要求（全解码播放器恒直连）已由兼容层自己保证，走引擎只是绕一圈得到
       同一个常量
@@ -926,7 +926,7 @@ Mac mini 验证。做成发版前的人工清单，列进 `.claude/skills/releas
 - [x] 下一集自动播、续播接入 `playback_state`、Trickplay 进度条预览
 - [x] Media Session、wakeLock、键盘快捷键
 - [x] **诊断面板**
-- [ ] QoE 采集（`requestVideoFrameCallback` 等）+ CMCD
+- [x] QoE 采集（`requestVideoFrameCallback` 等）；**CMCD 未做**（见 §12.13）
 - [x] iOS 走原生 HLS 分支（`createEngine` 按 MSE 形态分派）
 
 > 勾选说明：`[x]` 已完成并有测试覆盖，`[~]` 部分完成（同一行写清缺的是哪一块）。
@@ -1058,8 +1058,6 @@ Mac mini 验证。做成发版前的人工清单，列进 `.claude/skills/releas
 - **PGS 前端渲染（libbitsub）**。内封的文本与 ASS 轨已经可播、内嵌字体也已
   随 ASS 一并抽出下发（见 §12.8）。PGS 是位图轨，仍进「不可用」清单并给中文
   原因，不是给一个点了没反应的选项。
-- **`playback_metric` 表与指标采集**（§8）：降档事件目前只体现在诊断面板上，
-  没有落库，因此还答不出「决策引擎判错了多少」。
 - **换 jellyfin-ffmpeg 与 `runtime-version` bump**：档 3 的命令已按各后端装配
   好，但要在真显卡上跑通、要 HDR tone-map，仍需换 ffmpeg。
 - **已转码区间位图与 seek 复用**（§4.4）：当前 seek 是「杀旧会话起新会话」，
@@ -1082,6 +1080,29 @@ Mac mini 验证。做成发版前的人工清单，列进 `.claude/skills/releas
 画面由播放器出。**cue 文本一律剥标签再渲染**——字幕是用户丢进媒体库的任意文本，
 把它当 HTML 插进 DOM 就是一条现成的 XSS 通道，斜体这点观感换不来这个风险
 （要完整排版的走 ASS/JASSUB，那条路径在 canvas 上画，根本不碰 DOM）。
+
+### 12.13 指标：北极星是直通率
+
+**直通率**（档 0 + 档 1 占全部播放的比例）是这个播放器最重要的一个数：它同时
+代表画质（没重编码 = 无损）、速度（秒开）和服务器负担（不烧 GPU），其它指标
+各自只覆盖一个侧面。它也是「这个软件对我的库适配得好不好」的直观答案，所以
+做进了设置页给用户看，不只是给开发者看。降档率则是「决策引擎判错了多少」的
+直接度量。
+
+采集侧两条最容易出错的地方，也是 `lib/player/qoe.ts` 单独成模块的理由：
+
+- **首帧只能用 `requestVideoFrameCallback` 量**。`canplay` / `playing` /
+  `loadeddata` 全都早于真实出画（有时早几百毫秒），用它们量会系统性偏乐观，
+  然后困惑「数据好看但用户说慢」。而且首帧要从**用户点播放**算起，不是从会话
+  就位算起——决策与起会话的耗时正是首帧延迟的大头。
+- **卡顿必须排除 seek 引起的 `waiting`**。不排除的话用户拖一下进度条就被记成
+  一次卡顿，数据全废。
+
+样本不足时各项返回 null 而不是 0——一个假的「直通率 0%」比没有数字更误导人。
+指标是趋势数据不是台账，攒过阈值就裁掉旧行，免得拖慢 data 卷上的 SQLite。
+
+**CMCD 没做**：它的价值在于让 CDN 侧拿到客户端状态，而自建部署没有 CDN，
+服务端访问日志本来就在自己手里。等有远程访问/反代场景再说。
 
 ### 12.12 Trickplay：后台生成 + JSON 索引
 

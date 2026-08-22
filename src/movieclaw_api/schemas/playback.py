@@ -395,3 +395,37 @@ class TrickplayView(BaseModel):
     rows: int = 0
     count: int = 0
     sheets: list[str] = []
+
+
+class PlaybackMetricPayload(BaseModel):
+    """一次播放结束时上报的质量快照。指标口径按 CTA-2066，不自创。"""
+
+    library_file_id: int | None = None
+    tier: int
+    degraded_from: int | None = None
+    engine: str = ""
+    hw_backend: str = ""
+    ttff_ms: int | None = None
+    rebuffer_ms: int = 0
+    rebuffer_count: int = 0
+    seek_count: int = 0
+    dropped_frames: int | None = None
+    total_frames: int | None = None
+    watched_ms: int = 0
+
+
+class PlaybackStatsView(BaseModel):
+    """播放质量汇总。样本不足时各项为 null——不编数字。
+
+    `direct_ratio` 是**北极星指标**：档 0 + 档 1 占全部播放的比例。这一个数
+    同时代表画质（没重编码）、速度（秒开）和服务器负担（不烧 GPU）。
+    """
+
+    sessions: int = 0
+    direct_ratio: float | None = None
+    degraded_ratio: float | None = None
+    ttff_p50_ms: int | None = None
+    ttff_p95_ms: int | None = None
+    rebuffer_ratio: float | None = None
+    dropped_ratio: float | None = None
+    tier_counts: dict[int, int] = {}

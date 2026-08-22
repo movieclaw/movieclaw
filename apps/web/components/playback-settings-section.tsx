@@ -10,7 +10,9 @@ import { useBackdrop } from "@/lib/backdrop";
 import {
   type HwProbeResult,
   type PlaybackPolicy,
+  type PlaybackStats,
   fetchPlaybackPolicy,
+  fetchPlaybackStats,
   probePlaybackHardware,
   savePlaybackPolicy,
 } from "@/lib/api/playback";
@@ -69,6 +71,12 @@ export function PlaybackSettingsSection() {
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [diagnostics, setDiagnostics] = useState<HwProbeResult | null>(null);
   const [probing, setProbing] = useState(false);
+  const [stats, setStats] = useState<PlaybackStats | null>(null);
+
+  useEffect(() => {
+    // 播放质量汇总：拿不到就不显示这一段，不该把设置页打崩
+    void fetchPlaybackStats().then(setStats).catch(() => undefined);
+  }, []);
 
   /** 拉硬件自检详情。`refresh` 会让服务端真的重测而不是读缓存。 */
   const loadDiagnostics = useCallback(async (refresh: boolean) => {
@@ -272,6 +280,61 @@ export function PlaybackSettingsSection() {
         </div>
       </section>
 
+      {/* —— 播放质量 —— */}
+      {stats !== null && stats.sessions > 0 && (
+        <section>
+          <div className="mb-2.5 flex items-center gap-1.5 px-1">
+            <h3 className="group-label">播放质量</h3>
+            <HelpDot
+              content={
+                <>
+                  <p>
+                    最近 {stats.sessions} 次网页播放的统计。**只存在本机**，不上报任何外部
+                    服务。
+                  </p>
+                  <p className="mt-1.5">
+                    「直连播放」是最重要的一项：它同时代表画质（没有重编码）、速度（秒开）
+                    和服务器负担（不烧 CPU/GPU）。这个比例越高，说明这套库对网页播放越友好。
+                  </p>
+                </>
+              }
+            />
+          </div>
+          <div className="css-glass divide-y divide-white/[0.055] !rounded-2xl">
+            <StatRow
+              label="直连播放"
+              value={stats.direct_ratio === null ? "—" : `${Math.round(stats.direct_ratio * 100)}%`}
+              hint="不转码就能播的比例"
+            />
+            <StatRow
+              label="首帧耗时"
+              value={stats.ttff_p50_ms === null ? "—" : `${(stats.ttff_p50_ms / 1000).toFixed(1)} 秒`}
+              hint={
+                stats.ttff_p95_ms === null
+                  ? "点击到出画面"
+                  : `中位数；较慢的 5% 约 ${(stats.ttff_p95_ms / 1000).toFixed(1)} 秒`
+              }
+            />
+            <StatRow
+              label="卡顿占比"
+              value={
+                stats.rebuffer_ratio === null
+                  ? "—"
+                  : `${(stats.rebuffer_ratio * 100).toFixed(1)}%`
+              }
+              hint="等待缓冲的时间占观看时长"
+            />
+            {stats.degraded_ratio !== null && stats.degraded_ratio > 0 && (
+              <StatRow
+                label="自动降档"
+                value={`${Math.round(stats.degraded_ratio * 100)}%`}
+                hint="首选方式播不了、自动换了一种的比例"
+              />
+            )}
+          </div>
+        </section>
+      )}
+
       {/* —— 资源上限 —— */}
       <section>
         <div className="mb-2.5 flex items-center gap-1.5 px-1">
@@ -329,5 +392,19 @@ function HelpDot({ content }: { content: React.ReactNode }) {
         <InfoIcon className="size-[15px]" />
       </button>
     </Tooltip>
+  );
+}
+
+
+/** 一行只读统计。设置页里这些是结论，不是可调项，所以不做成控件。 */
+function StatRow({ label, value, hint }: { label: string; value: string; hint: string }) {
+  return (
+    <div className="flex items-baseline gap-3 px-5 py-3.5">
+      <div className="min-w-0">
+        <p className="text-body font-medium text-[var(--text)]">{label}</p>
+        <p className="text-caption text-[var(--text-faint)]">{hint}</p>
+      </div>
+      <span className="ml-auto shrink-0 text-body tabular-nums text-[var(--text)]">{value}</span>
+    </div>
   );
 }

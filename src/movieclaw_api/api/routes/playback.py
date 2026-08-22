@@ -25,20 +25,22 @@ from movieclaw_api.schemas.playback import (
     PlaybackDecideRequest,
     PlaybackDecisionView,
     PlaybackFontsView,
+    PlaybackMetricPayload,
     PlaybackPolicyPayload,
     PlaybackPolicyView,
     PlaybackProgressRequest,
     PlaybackSessionRequest,
     PlaybackSessionView,
     PlaybackStateView,
+    PlaybackStatsView,
     RecentWatchView,
     TrickplayView,
 )
 from movieclaw_api.schemas.response import ApiResponse, ok
 from movieclaw_api.services.auth import Principal
 from movieclaw_api.services.library.access import visible_library_ids
+from movieclaw_api.services.playback import metrics, trickplay
 from movieclaw_api.services.playback import plan as playback_plan
-from movieclaw_api.services.playback import trickplay
 from movieclaw_api.services.playback import watch as playback_watch
 from movieclaw_api.services.playback.embedded_subs import (
     extract_embedded_fonts,
@@ -62,7 +64,7 @@ from movieclaw_api.services.playback_recent import recent_watch_items
 from movieclaw_api.settings import PlaybackPolicySetting
 from movieclaw_api.settings.store import get_setting_store
 from movieclaw_db.engine import get_session
-from movieclaw_db.models import LibraryFile
+from movieclaw_db.models import LibraryFile, PlaybackMetric
 from movieclaw_playback import state as playback_state
 from movieclaw_playback.decide import PlaybackTier as Tier
 from movieclaw_playback.streaming import (
@@ -216,6 +218,9 @@ async def decide_playback_route(
 _SEGMENT_NAME = re.compile(r"^(init\.mp4|seg\d{5}\.m4s)$")
 # 雪碧图文件名由服务端生成，但仍经过 URL——白名单一视同仁。
 _TRICKPLAY_SHEET_NAME = re.compile(r"^sprite_\d{3}\.jpg$")
+
+#: 攒到这个行数就顺手裁一次。指标是趋势数据不是台账。
+_METRIC_PURGE_TRIGGER = 3000
 
 
 async def _decide(
@@ -846,3 +851,50 @@ async def get_trickplay_sheet(
     if not target.is_file():
         raise NotFoundException("预览图不存在")
     return FileResponse(target, media_type="image/jpeg")
+
+
+@router.post(
+    "/metrics",
+    response_model=ApiResponse[dict],
+    summary="上报播放质量",
+    operation_id="playback.metric.report",
+    openapi_extra={"x-cli-hidden": True},
+)
+async def report_playback_metric(
+    payload: PlaybackMetricPayload,
+    principal: Principal = Depends(require_login),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[dict]:
+    """一次播放结束时上报一行质量快照。
+
+    **只落本地**（硬边界 3）：写进自己的数据库、设置页可看，绝不外发。
+    """
+    member_id = principal.member_id if principal.member_id is not None else 0
+    await metrics.record(
+        session,
+        PlaybackMetric(member_id=member_id, **payload.model_dump()),
+    )
+    # 指标是趋势数据不是台账，攒到几十万行只会拖慢 data 卷上的 SQLite
+    if await metrics.count(session) > _METRIC_PURGE_TRIGGER:
+        await metrics.purge_older_than(session)
+    return ok({"recorded": True})
+
+
+@router.get(
+    "/stats",
+    response_model=ApiResponse[PlaybackStatsView],
+    summary="播放质量汇总",
+    operation_id="playback.stats",
+    dependencies=[Depends(require_admin)],
+    openapi_extra={"x-cli-hidden": True},
+)
+async def get_playback_stats(
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[PlaybackStatsView]:
+    """最近若干次播放的质量汇总。
+
+    `direct_ratio` 是北极星指标：档 0 + 档 1 的占比，一个数同时代表画质、
+    速度和服务器负担，也是「这个软件对我的库适配得好不好」的直观答案。
+    """
+    stats = await metrics.summarize(session)
+    return ok(PlaybackStatsView(**vars(stats)))

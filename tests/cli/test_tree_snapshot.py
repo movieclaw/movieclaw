@@ -51,6 +51,8 @@ KNOWN_NON_GENERATED = {
     "playback.hardware.probe",
     "playback.file.trickplay",
     "playback.file.trickplay.sheet",
+    "playback.metric.report",
+    "playback.stats",
     "playback.device.revoke",
     # 观看进度上报与续播点：播放器起播/心跳/退出时自动调用的内部链路，
     # CLI 手动上报一次进度没有意义。

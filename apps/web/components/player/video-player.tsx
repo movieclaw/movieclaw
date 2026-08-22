@@ -17,7 +17,10 @@ import {
   reportPlaybackProgressOnUnload,
   resolveStreamUrl,
   startPlaybackSession,
+  type PlaybackMetricPayload,
   fetchTrickplay,
+  reportPlaybackMetric,
+  reportPlaybackMetricOnUnload,
   stopPlaybackSession,
   stopPlaybackSessionOnUnload,
 } from "@/lib/api/playback";
@@ -26,6 +29,13 @@ import type { PlaybackEngine } from "@/lib/player/engine";
 import { createEngine } from "@/lib/player/engine";
 import { initialPlayerState, isBusy, playerReducer } from "@/lib/player/machine";
 import { createSessionReleaser } from "@/lib/player/session-release";
+import {
+  type QoeEvent,
+  initialQoe,
+  isReportable,
+  reduceQoe,
+  summarize,
+} from "@/lib/player/qoe";
 import type { TrickplayIndex } from "@/lib/player/trickplay";
 import { isEditableTarget, resolveShortcut } from "@/lib/player/shortcuts";
 import type { SubtitleStyle } from "@/lib/player/subtitles";
@@ -86,6 +96,11 @@ export function VideoPlayer(props: VideoPlayerProps) {
   const [selectedSubtitle, setSelectedSubtitle] = useState<string | null>(null);
   const [subtitleStyle, setSubtitleStyle] = useState<SubtitleStyle>(DEFAULT_SUBTITLE_STYLE);
   const [trickplay, setTrickplay] = useState<TrickplayIndex | null>(null);
+  // 播放质量累计。放 ref 而不是 state：每秒都在变，进渲染只会白重绘。
+  const qoeRef = useRef(initialQoe());
+  // 快照函数放 ref：卸载与切集的 effect 都不依赖 state.session，
+  // 直接闭包会拿到过期的会话，上报到错误的档位上。
+  const qoeSnapshotRef = useRef<() => PlaybackMetricPayload | null>(() => null);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [chromeVisible, setChromeVisible] = useState(true);
   const [countdown, setCountdown] = useState<number | null>(null);
@@ -193,6 +208,9 @@ export function VideoPlayer(props: VideoPlayerProps) {
       try {
         if (!capabilityRef.current) capabilityRef.current = await getCapabilitySnapshot();
         pendingFileMsRef.current = state.startMs;
+        // 首帧从"用户要求播放"这一刻算起，而不是从会话就位算起——
+        // 决策与起会话的耗时正是首帧延迟的大头
+        qoe({ type: "play-requested", at: performance.now() });
         const session = await startPlaybackSession({
           ...unit,
           capability: capabilityRef.current,
@@ -254,16 +272,29 @@ export function VideoPlayer(props: VideoPlayerProps) {
     };
   }, [state.session, video]);
 
-  /** video 元素事件 → 状态机 / 进度。绑一次，值从 ref 读。 */
+  /** 累计一条播放质量事件。归约是纯函数，这里只负责喂事件。 */
+  const qoe = useCallback((event: QoeEvent) => {
+    qoeRef.current = reduceQoe(qoeRef.current, event);
+  }, []);
+
+  /** video 元素事件 → 状态机 / 进度 / 质量采集。绑一次，值从 ref 读。 */
   useEffect(() => {
     if (!video) return;
     const onPlaying = () => {
       setPaused(false);
+      qoe({ type: "playing", at: performance.now() });
       dispatch({ type: "playing" });
     };
     const onPause = () => setPaused(true);
-    const onWaiting = () => dispatch({ type: "buffering" });
-    const onSeeking = () => dispatch({ type: "seeking" });
+    const onWaiting = () => {
+      qoe({ type: "waiting", at: performance.now() });
+      dispatch({ type: "buffering" });
+    };
+    const onSeeking = () => {
+      qoe({ type: "seeking", at: performance.now() });
+      dispatch({ type: "seeking" });
+    };
+    const onSeeked = () => qoe({ type: "seeked", at: performance.now() });
     const onEnded = () => dispatch({ type: "ended" });
     const onDurationChange = () =>
       setVideoDurationMs(
@@ -283,6 +314,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
     video.addEventListener("pause", onPause);
     video.addEventListener("waiting", onWaiting);
     video.addEventListener("seeking", onSeeking);
+    video.addEventListener("seeked", onSeeked);
     video.addEventListener("ended", onEnded);
     video.addEventListener("durationchange", onDurationChange);
     video.addEventListener("timeupdate", onTimeUpdate);
@@ -291,11 +323,12 @@ export function VideoPlayer(props: VideoPlayerProps) {
       video.removeEventListener("pause", onPause);
       video.removeEventListener("waiting", onWaiting);
       video.removeEventListener("seeking", onSeeking);
+      video.removeEventListener("seeked", onSeeked);
       video.removeEventListener("ended", onEnded);
       video.removeEventListener("durationchange", onDurationChange);
       video.removeEventListener("timeupdate", onTimeUpdate);
     };
-  }, [video]);
+  }, [video, qoe]);
 
   // ---------------------------------------------------------------------
   // 字幕：轨记忆来自 playback_state，用户明确关掉过就不要再自作主张打开
@@ -338,7 +371,27 @@ export function VideoPlayer(props: VideoPlayerProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.phase, unitKey, trackRefs]);
 
-  /** 离开这一集（切集或退出播放器）时补一次停止上报。 */
+  /** 这次播放的质量快照。离开与卸载两条路径共用。 */
+  const qoeSnapshot = useCallback(() => {
+    const summary = summarize(qoeRef.current);
+    if (!isReportable(summary)) return null;
+    const decision = state.session?.decision;
+    if (!decision || decision.tier == null) return null;
+    return {
+      library_file_id: decision.file_id ?? null,
+      tier: decision.tier,
+      degraded_from: decision.degraded_from ?? null,
+      engine: engineRef.current?.stats().engine ?? "",
+      hw_backend: "",
+      ...summary,
+    };
+  }, [state.session]);
+
+  useEffect(() => {
+    qoeSnapshotRef.current = qoeSnapshot;
+  }, [qoeSnapshot]);
+
+  /** 离开这一集（切集或退出播放器）时补一次停止上报，并交出质量快照。 */
   useEffect(() => {
     const snapshot = { ...unit };
     return () => {
@@ -348,6 +401,9 @@ export function VideoPlayer(props: VideoPlayerProps) {
         event: "stop",
         position_ms: positionRef.current,
       }).catch(() => undefined);
+      const metric = qoeSnapshotRef.current();
+      if (metric) void reportPlaybackMetric(metric).catch(() => undefined);
+      qoeRef.current = initialQoe();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [unitKey]);
@@ -363,11 +419,45 @@ export function VideoPlayer(props: VideoPlayerProps) {
         });
       }
       if (sessionId) stopPlaybackSessionOnUnload(sessionId);
+      const metric = qoeSnapshotRef.current();
+      if (metric) reportPlaybackMetricOnUnload(metric);
     };
     window.addEventListener("pagehide", onPageHide);
     return () => window.removeEventListener("pagehide", onPageHide);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [unitKey, sessionId]);
+
+  /**
+   * 首帧只能用 `requestVideoFrameCallback` 量。
+   *
+   * `canplay` / `playing` / `loadeddata` 全都早于真实出画（有时早几百毫秒），
+   * 用它们量首帧会系统性偏乐观，然后困惑「数据好看但用户说慢」。
+   */
+  useEffect(() => {
+    if (!video) return;
+    const withFrameCallback = video as HTMLVideoElement & {
+      requestVideoFrameCallback?: (cb: () => void) => number;
+      cancelVideoFrameCallback?: (handle: number) => void;
+    };
+    if (!withFrameCallback.requestVideoFrameCallback) return;
+    const handle = withFrameCallback.requestVideoFrameCallback(() => {
+      qoe({ type: "first-frame", at: performance.now() });
+    });
+    return () => withFrameCallback.cancelVideoFrameCallback?.(handle);
+  }, [video, state.session?.session_id, qoe]);
+
+  /** 每秒采一次观看时长与掉帧。掉帧率是「解码能力判对没有」的直接证据。 */
+  useEffect(() => {
+    if (!video) return;
+    const timer = window.setInterval(() => {
+      qoe({ type: "tick", at: performance.now(), playing: !video.paused && !video.ended });
+      const stats = engineRef.current?.stats();
+      if (stats?.totalFrames != null && stats.droppedFrames != null) {
+        qoe({ type: "frames", dropped: stats.droppedFrames, total: stats.totalFrames });
+      }
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [video, qoe]);
 
   /**
    * 进度条缩略图：服务端在开会话时后台生成，这里轮询到就绪为止。
