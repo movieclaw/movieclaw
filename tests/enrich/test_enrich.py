@@ -469,3 +469,31 @@ class TestInferenceCache:
         assert all(
             "污染" not in value for value in second.values() if isinstance(value, list)
         )
+
+
+class TestCodecFamily:
+    """编码族（vocab.codec_family）：筛选与洗版位次的共同基础。"""
+
+    def test_aliases_share_one_family(self) -> None:
+        from movieclaw_enrich.vocab import codec_family
+
+        assert codec_family("x265") == codec_family("H.265") == codec_family("HEVC")
+        assert codec_family("x264") == codec_family("H.264") == codec_family("AVC")
+        assert codec_family("x265") != codec_family("x264")
+
+    def test_probe_codec_names_map_to_same_family(self) -> None:
+        """ffprobe 的 codec_name 与标题解析值必须落到同一个族，
+        否则洗版基线（实测）与候选（名称）在编码维度上永远不可比。"""
+        from movieclaw_enrich.vocab import codec_family
+
+        assert codec_family("hevc") == codec_family("x265")
+        assert codec_family("h264") == codec_family("H.264")
+        assert codec_family("av1") == codec_family("AV1")
+
+    def test_unknown_codec_is_its_own_family(self) -> None:
+        from movieclaw_enrich.vocab import codec_family
+
+        assert codec_family("VC-1") == codec_family("vc-1")
+        assert codec_family("VC-1") != codec_family("VP9")
+        assert codec_family(None) is None
+        assert codec_family("") is None

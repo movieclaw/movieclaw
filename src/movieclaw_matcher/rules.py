@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+from movieclaw_enrich.vocab import codec_family
 from movieclaw_matcher.models import (
     DvPolicy,
     HdrPolicy,
@@ -58,10 +59,12 @@ def evaluate_rules(
             )
 
     if spec.video_codecs:
-        allowed = {c.casefold() for c in spec.video_codecs}
+        # 按**编码族**比较（vocab.codec_family）：x265 / H.265 / HEVC 是同一种
+        # 编码的三种写法，规则组写其中之一不该漏掉另一种写法的资源
+        allowed = {codec_family(c) for c in spec.video_codecs}
         if attrs.video_codec is None:
             return _reject("codec_unknown", "无法识别视频编码，规则要求明确编码时按不合格处理")
-        if attrs.video_codec.casefold() not in allowed:
+        if codec_family(attrs.video_codec) not in allowed:
             return _reject(
                 "codec_not_allowed",
                 f"视频编码 {attrs.video_codec} 不在允许范围（{'/'.join(spec.video_codecs)}）",

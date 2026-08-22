@@ -124,6 +124,33 @@ VIDEO_CODEC: dict[str, str] = {
     "XVID": "XviD", "DIVX": "DivX",
 }
 
+# 编码族：x265 / H.265 / HEVC 是同一种编码的三种写法（x265 是 HEVC 的一个
+# 编码器实现），发布组用哪种纯属命名习惯。用户想表达的是"要 H.265 这一族"，
+# 因此筛选与洗版位次都按族比较——规则组写 x265 不该漏掉标 HEVC 的资源。
+# （前端 rule-sets-panel.tsx 早已按族提供选项，这里补上后端缺的那一半。）
+#
+# 这张表同时服务两侧：种子标题解析出的归一值（x265/HEVC/…），以及 ffprobe
+# 的 codec_name（hevc/h264/av1，见 library_file.video_codec）——两边查同一张
+# 表得到同一个族，洗版基线与候选才可比。表里没有的编码各自成族。
+#
+# 注意：族**不能**用来表达"二压还是原封"。原封 WEB-DL 也大量标 x265，写法
+# 不是事实；重编码与否可靠的维度是 media_source + remux（片源档 T3/T4/T5）。
+
+VIDEO_CODEC_FAMILY: dict[str, str] = {
+    "x265": "h265", "h.265": "h265", "hevc": "h265", "h265": "h265",
+    "x264": "h264", "h.264": "h264", "avc": "h264", "h264": "h264",
+    "av1": "av1",
+}
+
+
+def codec_family(value: str | None) -> str | None:
+    """编码 → 族标识；未知/不在表中的编码以自身归一值成族；None 保持 None。"""
+    if not value:
+        return None
+    key = value.casefold()
+    return VIDEO_CODEC_FAMILY.get(key, key)
+
+
 # -- 音频编码 ---------------------------------------------------------------
 # 归一值统一去掉声道数（DDP5.1 → DDP）：筛选场景关心"有没有 Atmos / DTS-HD MA"，
 # 声道数属于长尾细节，纳入只会让归一值爆炸。

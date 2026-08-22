@@ -38,6 +38,15 @@ def _candidate(**kwargs) -> TorrentCandidate:
         # 编码（大小写不敏感）
         ({"video_codec": "H.265"}, {"video_codecs": ["h.265"]}, True, None),
         ({"video_codec": "H.264"}, {"video_codecs": ["H.265"]}, False, "codec_not_allowed"),
+        # 编码按族比较：x265 / H.265 / HEVC 是同一编码的三种写法，写哪个都互通
+        ({"video_codec": "HEVC"}, {"video_codecs": ["x265"]}, True, None),
+        ({"video_codec": "x265"}, {"video_codecs": ["HEVC"]}, True, None),
+        ({"video_codec": "AVC"}, {"video_codecs": ["x264"]}, True, None),
+        # 跨族仍然拒绝，族归一没有放宽到"什么都收"
+        ({"video_codec": "AV1"}, {"video_codecs": ["x265"]}, False, "codec_not_allowed"),
+        # 族表外的编码各自成族：自己命中自己，不误伤也不互通
+        ({"video_codec": "VC-1"}, {"video_codecs": ["VC-1"]}, True, None),
+        ({"video_codec": "VP9"}, {"video_codecs": ["x265"]}, False, "codec_not_allowed"),
         # 制作组黑白名单
         ({"release_group": "CHD"}, {"release_groups_block": ["chd"]}, False, "group_blocked"),
         ({"release_group": "OurTV"}, {"release_groups_allow": ["OurTV"]}, True, None),
