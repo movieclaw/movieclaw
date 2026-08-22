@@ -312,3 +312,30 @@ async def test_manual_source_annotation_survives_snapshot_rebuild(db, monkeypatc
         wanted = await session.get(WantedItem, wanted_id)
     assert wanted.quality["v"] == 2  # 确实重算过
     assert wanted.quality["media_source"] == "Blu-ray"  # 人工标注仍在
+
+
+@pytest.mark.asyncio
+async def test_refill_never_downgrades_a_good_baseline_to_sentinel(db, monkeypatch):
+    """文件此刻不在位时，重算保留旧基线而不是写 {} 哨兵。
+
+    入库验证确认升级时会把旧文件移进回收站，重算撞进这个窗口就会看到
+    "该单元没有在位文件"。写下 {} 的后果是粘的：哨兵被排除在重算之外，
+    这个单元从此永久退出洗版。文件不在位是暂时状态，真相是"这次测不了"。
+    """
+    from movieclaw_api.services.subscription import upgrade as upgrade_mod
+
+    monkeypatch.setattr(upgrade_mod, "_stale_snapshot_cursor", 0)
+    _library_id, _item_id, _sub_id, wanted_id = await _seed(
+        db, rule_spec={"upgrade_source": "remux"}, wanted_status=WantedStatus.IMPORTED
+    )
+    good = {"resolution": "1080p", "media_source": "WEB-DL"}  # v1，会被判定为陈旧
+    async with db.session() as session:
+        wanted = await session.get(WantedItem, wanted_id)
+        wanted.quality = good
+        await session.commit()  # 故意不建 LibraryFile：模拟文件不在位
+
+    await backfill_upgrade_snapshots()
+
+    async with db.session() as session:
+        wanted = await session.get(WantedItem, wanted_id)
+    assert wanted.quality == good

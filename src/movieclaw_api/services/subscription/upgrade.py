@@ -1320,8 +1320,20 @@ async def _refill_stale_snapshots(session: AsyncSession, upgrade_ids: set[int]) 
     by_media: dict[int, list[WantedItem]] = {}
     for row in stale:
         by_media.setdefault(row.media_item_id, []).append(row)
-    for media_item_id, wanted_rows in by_media.items():
-        await fill_snapshots(session, media_item_id, wanted_rows)
+    # 与入库验证互斥：验证确认升级时会把旧文件移进回收站（in_place 变假）。
+    # 重算恰好撞进这个窗口的话，fill_snapshots 会因为"该单元没有在位文件"
+    # 写下 {} 哨兵，把一条好基线换成"无法识别"——而 {} 又被排除在重算之外，
+    # 单元就此永久退出洗版。回填 tick 900 秒一轮、每轮 50 行，锁竞争可忽略
+    previous = {row.id: row.quality for row in stale}
+    async with _verify_lock:
+        for media_item_id, wanted_rows in by_media.items():
+            await fill_snapshots(session, media_item_id, wanted_rows)
+    # 双保险：重算**永远不把已有基线降级成哨兵**。文件此刻不在位（卸载的
+    # 媒体库、正在搬运）是暂时状态，真相是"这次测不了"而不是"识别不出"，
+    # 留着旧基线，下一轮轮转再试
+    for row in stale:
+        if not row.quality and previous.get(row.id):
+            row.quality = previous[row.id]
     # 重算可能让单元在新维度上第一次变得"可证明低于目标"，当场排期而不是
     # 等排期补挂巡检轮转到它
     armed = await arm_upgrade_candidates(session, stale)

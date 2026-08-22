@@ -142,6 +142,10 @@ _LADDER_LABELS: dict[str, str] = {
     "platform": "平台",
 }
 
+# 与 models._DEFAULT_UPGRADE_LADDER 同值：生效维度为空时的兜底
+_DEFAULT_LADDER: tuple[str, ...] = ("resolution", "source")
+
+
 def _rank_in(ladder: list[str], value: str | None) -> int | None:
     """值在偏好序里的位次（越大越优）；不在序列里 = 未知（不可比）。"""
     if not value:
@@ -173,13 +177,19 @@ def effective_ladder(spec: RuleSetSpec) -> tuple[str, ...]:
     洗版全线哑火。resolution / source 恒有效：前者有内置默认偏好序，
     后者有内置片源档，都不依赖用户配置。
     """
-    return tuple(
+    dims = tuple(
         dim
         for dim in spec.upgrade_ladder
         if not (dim == "hdr" and not spec.hdr_levels)
         and not (dim == "video_codec" and not spec.video_codecs)
         and not (dim == "platform" and not spec.platforms)
     )
+    # 全被跳过时回落缺省二元组。空阶梯下没有任何一位可比：比较恒等价 ⇒
+    # 没有候选构成升级，而所有单元又都算"已达目标"——720p HDTV 会被报成
+    # 「已达 Remux 目标」，洗版静默全停且详情页还在误导用户。
+    # 校验层的同名保护只挡得住"列表本身为空"，挡不住"列表里的维度全没配偏好"
+    # （用户在洗版优先级里点掉分辨率和片源、只留一个没配的平台就是这样）
+    return dims or _DEFAULT_LADDER
 
 
 def _dimension_rank(

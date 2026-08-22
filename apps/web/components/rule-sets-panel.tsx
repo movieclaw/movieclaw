@@ -465,6 +465,9 @@ export function RuleSetEditorDialog({
   const [cutoffResolution, setCutoffResolution] = useState<string>(
     spec.cutoff_resolution ?? "",
   );
+  // 洗版优先级默认收起：只想"洗到 Remux"的人不该被维度排序打断，
+  // 但也不能藏起来——折叠头直接显示当前顺序，需要时一点就开
+  const [ladderOpen, setLadderOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -572,6 +575,9 @@ export function RuleSetEditorDialog({
   // 按**生效**维度判断——被跳过的维度不占位，否则"平台后面跟着一个未配置的
   // 编码位"会误报
   const effectiveLadder = upgradeLadder.filter((dim) => !ladderUnconfigured(dim));
+  const ladderText = effectiveLadder
+    .map((dim) => LADDER_OPTIONS.find((o) => o.value === dim)?.label ?? dim)
+    .join(" › ");
   const platformIndex = effectiveLadder.indexOf("platform");
   const platformNotLast =
     platformIndex >= 0 && platformIndex < effectiveLadder.length - 1;
@@ -589,7 +595,12 @@ export function RuleSetEditorDialog({
       return next;
     });
 
-  const submit = async () => {
+  /**
+   * 表单状态 → spec 的**唯一**构造点：保存与底部"这条规则会这样筛选"共用它，
+   * 保证用户看到的摘要就是将要存下去的东西。校验错误随返回值给出——memo 里
+   * 不能 setState，也正好把校验变成纯函数。
+   */
+  const draft = useMemo<{ spec: RuleSetSpec; error: string | null }>(() => {
     const parseInt_ = (text: string): number | undefined => {
       const n = Number.parseInt(text.trim(), 10);
       return Number.isFinite(n) && n >= 0 ? n : undefined;
@@ -632,8 +643,7 @@ export function RuleSetEditorDialog({
     if (min !== undefined && min > 0) next.size_min_mb = min;
     if (max !== undefined && max > 0) next.size_max_mb = max;
     if (min !== undefined && max !== undefined && min > 0 && max > 0 && min > max) {
-      setError("体积下限不能大于上限");
-      return;
+      return { spec: next, error: "体积下限不能大于上限" };
     }
     const allow = parseGroups(groupsAllow);
     const block = parseGroups(groupsBlock);
@@ -645,8 +655,7 @@ export function RuleSetEditorDialog({
       // 目标必须落在允许范围内（后端同样校验）
       if (cutoffResolution && cutoffResolution !== (resolutions[0] ?? "")) {
         if (resolutions.length && !resolutions.includes(cutoffResolution)) {
-          setError("洗版目标分辨率必须在允许的分辨率范围内");
-          return;
+          return { spec: next, error: "洗版目标分辨率必须在允许的分辨率范围内" };
         }
         next.cutoff_resolution = cutoffResolution;
       }
@@ -654,7 +663,41 @@ export function RuleSetEditorDialog({
     }
     // API 写入的预留字段（站点白名单）编辑时原样保留，不因 UI 保存而丢失
     if (spec.sites?.length) next.sites = spec.sites;
+    return { spec: next, error: null };
+  }, [
+    resolutions,
+    codecFamilies,
+    codecExtras,
+    upgradeSource,
+    upgradeLadder,
+    platformsAllow,
+    platformsBlock,
+    platformExtras,
+    hdrLevels,
+    hdrBlock,
+    subLangs,
+    audioLangs,
+    freeOnly,
+    excludeHr,
+    hrStrict,
+    minSeeders,
+    sizeMin,
+    sizeMax,
+    groupsAllow,
+    groupsBlock,
+    cutoffResolution,
+    upgradeKeepOld,
+    spec.sites,
+  ]);
 
+  const draftChips = useMemo(() => specSummary(draft.spec), [draft.spec]);
+
+  const submit = async () => {
+    if (draft.error) {
+      setError(draft.error);
+      return;
+    }
+    const next = draft.spec;
     setBusy(true);
     setError(null);
     try {
@@ -794,8 +837,29 @@ export function RuleSetEditorDialog({
                 {/* 洗版优先级：交互与上方分辨率偏好一致——点击依次入列、序号即
                     位次。多一位就是多一轮潜在的重复下载，所以缺省只有前两位 */}
                 <div className="mt-2.5 border-t border-white/[0.06] pt-2.5">
-                  <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5">
-                    <span className="text-sub text-[var(--text-muted)]">洗版优先级</span>
+                  <button
+                    type="button"
+                    onClick={() => setLadderOpen((v) => !v)}
+                    className="flex w-full items-center gap-3 text-left"
+                  >
+                    <span className="shrink-0 text-sub text-[var(--text-muted)]">
+                      洗版优先级
+                    </span>
+                    <span className="min-w-0 flex-1 truncate text-right text-caption text-[var(--text-faint)]">
+                      {ladderText}
+                    </span>
+                    <span
+                      className={`shrink-0 text-[var(--text-faint)] transition-transform ${
+                        ladderOpen ? "rotate-90" : ""
+                      }`}
+                    >
+                      ›
+                    </span>
+                  </button>
+                  {ladderOpen && (
+                    <>
+                  <div className="mt-2 flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5">
+                    <span className="text-caption text-[var(--text-faint)]">点击依次选择</span>
                     <div className="flex flex-wrap gap-1.5">
                       {LADDER_OPTIONS.map((dim) => {
                         const index = upgradeLadder.indexOf(dim.value);
@@ -820,16 +884,18 @@ export function RuleSetEditorDialog({
                       })}
                     </div>
                   </div>
-                  <p className="mt-1.5 text-caption leading-relaxed text-[var(--text-faint)]">
-                    按顺序逐维度比较，先分出高低的那一维说了算。每多一维，就多一轮
-                    潜在的重复下载——缺省只比分辨率与片源。标「未配置」的维度会被
-                    自动跳过（先在下面配好它的偏好再选）。
-                  </p>
+                    <p className="mt-1.5 text-caption leading-relaxed text-[var(--text-faint)]">
+                      按顺序逐维度比较，先分出高低的那一维说了算。每多一维，就多一轮
+                      潜在的重复下载——缺省只比分辨率与片源。标「未配置」的维度会被
+                      自动跳过；全被跳过时按缺省的「分辨率 › 片源」比。
+                    </p>
+                    </>
+                  )}
                   {platformNotLast && (
                     <p className="mt-1.5 rounded-lg border border-amber-400/25 bg-amber-500/10 px-3 py-2 text-caption leading-relaxed text-amber-200">
-                      平台是所有维度里识别率最低的（只有带 WEB 标记的资源才认得出）。
-                      把它排在前面，会让大量候选在这一维上无法比较、整条洗版停在这里。
-                      建议放到最后一位。
+                      很多资源的标题里根本没写平台。把平台排在前面，等于要求「先比平台
+                      再比别的」——没写平台的资源就全都分不出高低，洗版会大面积停住。
+                      建议把平台放到最后一位。
                     </p>
                   )}
                 </div>
@@ -1009,6 +1075,17 @@ export function RuleSetEditorDialog({
             体积按「每集均摊」评估：整季包用总体积 ÷ 集数比较，整季合集不会被单集上限误杀。
           </p>
           </Section>
+
+          {/* 配完给一句人话回执：新用户最缺的就是"我配的到底是什么"的确认。
+              内容来自与保存同一个 draft.spec，不会出现"看到的和存下去的不一样" */}
+          <div className="rounded-xl bg-white/[0.03] px-4 py-3">
+            <p className="text-caption text-[var(--text-faint)]">这条规则会这样筛选</p>
+            <p className="mt-1 text-sub leading-6 text-[var(--text-muted)]">
+              {draftChips.length
+                ? draftChips.join(" · ")
+                : "不限任何条件——身份对得上的资源都接受"}
+            </p>
+          </div>
 
           {error && (
             <p className="rounded-lg border border-red-400/25 bg-red-500/10 px-3.5 py-2.5 text-sub leading-6 text-red-200">

@@ -636,3 +636,27 @@ def test_ladder_dimension_domains_do_not_drift() -> None:
     from movieclaw_matcher.models import _LADDER_DIMENSION_VALUES
 
     assert set(_LADDER_LABELS) == set(_LADDER_DIMENSION_VALUES)
+
+
+def test_all_dimensions_skipped_falls_back_to_default_pair() -> None:
+    """阶梯里的维度**全部因未配偏好而被跳过**时，回落缺省二元组。
+
+    校验层的同名保护只挡得住"列表本身为空"。用户在界面上点掉分辨率和片源、
+    只留一个没配偏好的平台，列表非空但生效维度为零——那时比较恒等价：
+    没有候选构成升级，所有单元又都算"已达目标"，720p HDTV 会被报成
+    「已达 Remux 目标」，洗版静默全停而详情页还在误导人。
+    """
+    spec = RuleSetSpec.model_validate(
+        {"upgrade_source": "remux", "upgrade_ladder": ["platform"]}
+    )
+    snap = _snap(resolution="720p", media_source="HDTV")
+    assert provably_below_cutoff(snap, spec) is True
+    assert provably_at_cutoff(snap, spec) is False
+
+
+def test_default_ladder_constants_agree() -> None:
+    """两个模块各自持有一份缺省二元组（循环导入所迫），值必须一致。"""
+    from movieclaw_matcher.decision import _DEFAULT_LADDER
+    from movieclaw_matcher.models import _DEFAULT_UPGRADE_LADDER
+
+    assert tuple(_DEFAULT_LADDER) == tuple(_DEFAULT_UPGRADE_LADDER)
