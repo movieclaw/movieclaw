@@ -22,6 +22,7 @@ from movieclaw_api.schemas.playback import (
     MediaActivityView,
     PlaybackDecideRequest,
     PlaybackDecisionView,
+    PlaybackFontsView,
     PlaybackPolicyPayload,
     PlaybackPolicyView,
     PlaybackProgressRequest,
@@ -35,7 +36,12 @@ from movieclaw_api.services.auth import Principal
 from movieclaw_api.services.library.access import visible_library_ids
 from movieclaw_api.services.playback import plan as playback_plan
 from movieclaw_api.services.playback import watch as playback_watch
-from movieclaw_api.services.playback.embedded_subs import extract_embedded_subtitle
+from movieclaw_api.services.playback.embedded_subs import (
+    extract_embedded_fonts,
+    extract_embedded_subtitle,
+    font_cache_dir,
+    safe_font_name,
+)
 from movieclaw_api.services.playback.hwprobe import available_backends
 from movieclaw_api.services.playback.session import (
     DiskQuotaError,
@@ -664,3 +670,70 @@ async def save_playback_policy(
         # 上的 ge/le 约束就形同虚设（写进去的非法值要到起转码时才炸）。
         await store.set(PlaybackPolicySetting(**{**stored.model_dump(), **changes}))
     return ok(await _policy_view())
+
+
+@router.get(
+    "/files/{file_id}/fonts",
+    response_model=ApiResponse[PlaybackFontsView],
+    summary="内嵌字体清单",
+    operation_id="playback.file.fonts",
+    openapi_extra={"x-cli-hidden": True},
+)
+async def list_playback_fonts(
+    file_id: Annotated[int, Path()],
+    token: Annotated[str, Query()],
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[PlaybackFontsView]:
+    """ASS 字幕依赖的内嵌字体。
+
+    番剧的 ASS 把字体作为附件放在 MKV 里，不喂给 JASSUB 就会回退成默认字体，
+    排版、字号、描边全走样——这是「ASS 能播」和「ASS 播得对」的差距。
+
+    **懒加载**：抽取要通读整个容器，放在开会话里会拖慢首帧。前端只在真的要
+    渲染 ASS 轨时才来拿，抽完进缓存，之后同一部片直接命中。
+    """
+    grant = await verify_stream_token(token, file_id=file_id)
+    if grant is None:
+        raise NotFoundException("字体地址无效或已过期")
+    file = await session.get(LibraryFile, file_id)
+    if file is None:
+        raise NotFoundException("文件不存在")
+    names = await asyncio.to_thread(extract_embedded_fonts, file)
+    return ok(
+        PlaybackFontsView(
+            fonts=[
+                f"/api/v1/playback/files/{file_id}/fonts/{quote(name, safe='')}"
+                f"?token={token}"
+                for name in names
+            ]
+        )
+    )
+
+
+@router.get(
+    "/files/{file_id}/fonts/{name}",
+    summary="内嵌字体文件",
+    operation_id="playback.file.font",
+    openapi_extra={"x-cli-hidden": True},
+)
+async def get_playback_font(
+    file_id: Annotated[int, Path()],
+    name: Annotated[str, Path()],
+    token: Annotated[str, Query()],
+) -> FileResponse:
+    """取一个已抽出的字体文件。
+
+    文件名来自附件、也就是媒体文件本体——**不可信输入**。落盘时已经过白名单
+    消毒（``safe_font_name``），这里再消毒一次并只在该文件的字体目录里找：
+    路径穿越的防线不能只有一道。
+    """
+    grant = await verify_stream_token(token, file_id=file_id)
+    if grant is None:
+        raise NotFoundException("字体地址无效或已过期")
+    safe = safe_font_name(name)
+    if safe is None or safe != name:
+        raise NotFoundException("字体不存在")
+    target = font_cache_dir(file_id) / safe
+    if not target.is_file():
+        raise NotFoundException("字体不存在")
+    return FileResponse(target, media_type="font/sfnt")

@@ -213,3 +213,127 @@ def test_failed_extraction_leaves_no_partial_file(tmp_path, monkeypatch, video_w
     cache = tmp_path / "data" / "cache" / "playback-subs"
     leftovers = list(cache.glob("*")) if cache.exists() else []
     assert leftovers == [], f"留下了残片：{leftovers}"
+
+
+# ---------------------------------------------------------------------------
+# 内嵌字体：ASS 特效字幕的另一半
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("SourceHanSans.ttf", "SourceHanSans.ttf"),
+        ("Font Name.otf", "Font Name.otf"),
+        ("字体.ttf", "字体.ttf"),
+        # 文件名来自媒体文件本体，是不可信输入——只取 basename
+        ("../../etc/passwd.ttf", "passwd.ttf"),
+        ("/abs/evil.ttf", "evil.ttf"),
+        ("..\\\\windows\\\\evil.ttf", None),  # 反斜杠不在白名单里
+        ("script.sh", None),  # 不是字体扩展名
+        ("payload.ttf.sh", None),
+        ("", None),
+        ("x" * 200 + ".ttf", None),  # 超长
+    ],
+)
+def test_font_name_sanitizing(raw, expected):
+    from movieclaw_api.services.playback.embedded_subs import safe_font_name
+
+    assert safe_font_name(raw) == expected
+
+
+def test_font_extraction_without_ffmpeg_is_empty(tmp_path, monkeypatch):
+    from movieclaw_api.services.playback.embedded_subs import extract_embedded_fonts
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "movieclaw_api.services.playback.embedded_subs.shutil.which", lambda _n: None
+    )
+    assert extract_embedded_fonts(make_file(tmp_path, None)) == []
+
+
+@integration
+@pytest.mark.integration
+def test_extracts_attached_fonts(tmp_path, monkeypatch):
+    """番剧的 ASS 把字体作为附件放在 MKV 里；不抽出来字幕会回退成默认字体。"""
+    from movieclaw_api.services.playback.embedded_subs import (
+        extract_embedded_fonts,
+        font_cache_dir,
+    )
+
+    system_font = next(Path("/usr/share/fonts").rglob("*.ttf"), None)
+    if system_font is None:
+        pytest.skip("本机没有可用作附件的 ttf 字体")
+
+    video = tmp_path / "anime.mkv"
+    _run([
+        "ffmpeg", "-v", "error",
+        "-f", "lavfi", "-i", "testsrc2=size=160x120:rate=10:duration=2",
+        "-attach", str(system_font),
+        "-metadata:s:t:0", "mimetype=application/x-truetype-font",
+        "-map", "0:v", "-c:v", "libx264", "-preset", "ultrafast",
+        "-y", str(video),
+    ])
+    monkeypatch.chdir(tmp_path)
+    file = make_file(tmp_path, [{"codec": "ass"}], path=video)
+    names = extract_embedded_fonts(file)
+    assert names == [system_font.name]
+    dumped = font_cache_dir(file.id) / names[0]
+    assert dumped.is_file()
+    # 抽出来的必须是有效字体，否则 JASSUB 加载会静默失败
+    assert dumped.read_bytes()[:4] in (b"\x00\x01\x00\x00", b"OTTO", b"true", b"ttcf")
+
+
+@integration
+@pytest.mark.integration
+def test_second_font_extraction_reuses_cache(tmp_path, monkeypatch):
+    from movieclaw_api.services.playback.embedded_subs import extract_embedded_fonts
+
+    system_font = next(Path("/usr/share/fonts").rglob("*.ttf"), None)
+    if system_font is None:
+        pytest.skip("本机没有可用作附件的 ttf 字体")
+    video = tmp_path / "anime.mkv"
+    _run([
+        "ffmpeg", "-v", "error",
+        "-f", "lavfi", "-i", "testsrc2=size=160x120:rate=10:duration=2",
+        "-attach", str(system_font),
+        "-metadata:s:t:0", "mimetype=application/x-truetype-font",
+        "-map", "0:v", "-c:v", "libx264", "-preset", "ultrafast",
+        "-y", str(video),
+    ])
+    monkeypatch.chdir(tmp_path)
+    file = make_file(tmp_path, [{"codec": "ass"}], path=video)
+    assert extract_embedded_fonts(file)
+
+    calls = []
+    monkeypatch.setattr(
+        "movieclaw_api.services.playback.embedded_subs.subprocess.run",
+        lambda *a, **k: calls.append(a),
+    )
+    assert extract_embedded_fonts(file)
+    assert calls == [], "命中缓存却又读了一遍容器"
+
+
+@integration
+@pytest.mark.integration
+def test_video_without_attachments_is_remembered(tmp_path, monkeypatch):
+    """没有字体的片子也要记住结论，否则每次点开 ASS 都白读一遍整个容器。"""
+    from movieclaw_api.services.playback.embedded_subs import extract_embedded_fonts
+
+    video = tmp_path / "plain.mkv"
+    _run([
+        "ffmpeg", "-v", "error",
+        "-f", "lavfi", "-i", "testsrc2=size=160x120:rate=10:duration=2",
+        "-c:v", "libx264", "-preset", "ultrafast", "-y", str(video),
+    ])
+    monkeypatch.chdir(tmp_path)
+    file = make_file(tmp_path, [{"codec": "ass"}], path=video)
+    assert extract_embedded_fonts(file) == []
+
+    calls = []
+    monkeypatch.setattr(
+        "movieclaw_api.services.playback.embedded_subs.subprocess.run",
+        lambda *a, **k: calls.append(a),
+    )
+    assert extract_embedded_fonts(file) == []
+    assert calls == []

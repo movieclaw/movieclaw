@@ -19,7 +19,9 @@ ASS/SSA 原样 copy 出来交 JASSUB，纯文本轨才转 SRT（再由服务层�
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
+import re
 import shutil
 import subprocess
 import uuid
@@ -148,3 +150,142 @@ def _is_fresh(out_path: Path, video: Path) -> bool:
 def _cleanup(path: Path) -> None:
     with contextlib.suppress(OSError):
         path.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# 内嵌字体：ASS 特效字幕的另一半
+# ---------------------------------------------------------------------------
+#
+# 番剧的 ASS 字幕把字体作为附件放在 MKV 里。不把它抽出来喂给 JASSUB，字幕会
+# 回退成默认字体——排版、字号、描边全走样，特效字幕的观感直接崩。这是
+# 「ASS 能播」和「ASS 播得对」之间的差距。
+
+#: 附件按 mimetype 或扩展名认字体。两个都看：压制组填的 mimetype 五花八门，
+#: 而有些容器干脆不填。
+_FONT_MIMETYPES = frozenset({
+    "application/x-truetype-font", "application/x-font-ttf", "application/x-font-otf",
+    "application/font-sfnt", "application/vnd.ms-opentype", "application/font-woff",
+    "font/ttf", "font/otf", "font/sfnt", "font/collection", "font/woff", "font/woff2",
+})
+_FONT_SUFFIXES = frozenset({".ttf", ".otf", ".ttc", ".woff", ".woff2", ".pfb"})
+
+#: 允许落盘的附件文件名。**文件名来自媒体文件本体，是不可信输入**——
+#: 压制组可以在里面塞 `../../` 或绝对路径。这里用白名单而不是过滤：
+#: 只认「字母数字下划线连字符空格点」，且必须是字体扩展名。
+_SAFE_FONT_NAME = re.compile(r"^[\w\-. ]{1,120}$")
+
+
+def font_cache_dir(file_id: int) -> Path:
+    return cache_dir() / "fonts" / str(file_id)
+
+
+def _is_font(filename: str, mimetype: str) -> bool:
+    if mimetype.lower() in _FONT_MIMETYPES:
+        return True
+    return Path(filename).suffix.lower() in _FONT_SUFFIXES
+
+
+def safe_font_name(filename: str) -> str | None:
+    """附件文件名 → 可安全落盘的名字；不合规返回 None。
+
+    只取 basename 并过白名单——绝不能把容器里写的路径当路径用。
+    """
+    name = Path(filename).name
+    if not name or not _SAFE_FONT_NAME.match(name):
+        return None
+    if Path(name).suffix.lower() not in _FONT_SUFFIXES:
+        return None
+    return name
+
+
+def extract_embedded_fonts(file: LibraryFile) -> list[str]:
+    """（阻塞，调用方须放线程池）抽出容器里的字体附件，返回文件名列表。
+
+    整个目录一次抽完再原子换上：JASSUB 要的是「这部片的全部字体」，抽到一半
+    就被使用会渲染出半套字体，比没有字体更难排查。目录存在即视为抽全了。
+    """
+    out_dir = font_cache_dir(file.id or 0)
+    if out_dir.is_dir():
+        return sorted(p.name for p in out_dir.iterdir() if p.is_file())
+
+    video = Path(file.file_path)
+    if shutil.which("ffmpeg") is None or not video.is_file():
+        return []
+    attachments = _list_font_attachments(video)
+    if not attachments:
+        out_dir.mkdir(parents=True, exist_ok=True)  # 记住「这部片没有字体」，别每次重探
+        return []
+
+    staging = out_dir.with_name(f".{out_dir.name}.{uuid.uuid4().hex}.part")
+    staging.mkdir(parents=True, exist_ok=True)
+    # 一条命令抽全部附件：每个附件单独起一次 ffmpeg 要把容器读 N 遍。
+    dump_args: list[str] = []
+    for index, name in attachments:
+        dump_args += [f"-dump_attachment:t:{index}", str(staging / name)]
+    try:
+        proc = subprocess.run(
+            ["ffmpeg", "-v", "error", "-y", *dump_args, "-i", str(video), "-f", "null", "-"],
+            capture_output=True,
+            timeout=_EXTRACT_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        shutil.rmtree(staging, ignore_errors=True)
+        logger.warning("内嵌字体抽取超时（%.0f 秒）：%s", _EXTRACT_TIMEOUT, video)
+        return []
+    # ffmpeg 用 -f null 输出时返回码可能非零，但附件已经落盘——以产物为准。
+    written = sorted(p.name for p in staging.iterdir() if p.is_file() and p.stat().st_size > 0)
+    if not written:
+        shutil.rmtree(staging, ignore_errors=True)
+        logger.warning(
+            "内嵌字体抽取没有产物：%s（%s）",
+            video, proc.stderr.decode(errors="replace")[:200],
+        )
+        return []
+    try:
+        staging.replace(out_dir)
+    except OSError:
+        shutil.rmtree(staging, ignore_errors=True)
+        return []
+    return written
+
+
+def _list_font_attachments(video: Path) -> list[tuple[int, str]]:
+    """列出字体附件的 (附件流序号, 安全文件名)。
+
+    序号是「第几条附件流」——与 ffmpeg 的 ``-dump_attachment:t:<k>`` 同源，
+    不是绝对流序号。
+    """
+    try:
+        proc = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-print_format", "json",
+                "-select_streams", "t", "-show_entries", "stream_tags=filename,mimetype",
+                str(video),
+            ],
+            capture_output=True,
+            timeout=_EXTRACT_TIMEOUT,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return []
+    if proc.returncode != 0:
+        return []
+    try:
+        streams = json.loads(proc.stdout).get("streams") or []
+    except json.JSONDecodeError:
+        return []
+
+    fonts: list[tuple[int, str]] = []
+    seen: set[str] = set()
+    for order, stream in enumerate(streams):
+        tags = stream.get("tags") or {}
+        raw_name = str(tags.get("filename") or "")
+        mimetype = str(tags.get("mimetype") or "")
+        if not _is_font(raw_name, mimetype):
+            continue
+        name = safe_font_name(raw_name)
+        # 同名附件只取第一个：后写的会覆盖前一个，落盘数量与列表对不上
+        if name is None or name in seen:
+            continue
+        seen.add(name)
+        fonts.append((order, name))
+    return fonts

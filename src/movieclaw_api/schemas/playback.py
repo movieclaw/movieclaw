@@ -350,3 +350,9 @@ class PlaybackPolicyPayload(BaseModel):
     max_remux_concurrency: int | None = Field(default=None, ge=1, le=16)
     max_transcode_height: int | None = Field(default=None, ge=480, le=2160)
     transcode_cache_quota_gb: int | None = Field(default=None, ge=1, le=500)
+
+
+class PlaybackFontsView(BaseModel):
+    """ASS 字幕依赖的内嵌字体地址（已带签名 token）。"""
+
+    fonts: list[str] = []

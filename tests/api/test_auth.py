@@ -279,6 +279,8 @@ _PUBLIC_ALLOWLIST = {
     ("GET", "/api/v1/playback/sessions/{session_id}/{name}"),
     ("GET", "/api/v1/playback/files/{file_id}/stream"),
     ("GET", "/api/v1/playback/files/{file_id}/subtitles"),
+    ("GET", "/api/v1/playback/files/{file_id}/fonts"),
+    ("GET", "/api/v1/playback/files/{file_id}/fonts/{name}"),
     ("GET", "/api/v1/health"),  # 存活探针
     ("GET", "/api/v1/auth/bootstrap"),  # 前端判断进引导页还是登录页
     ("POST", "/api/v1/auth/bootstrap"),  # 首次建号（服务端一次性锁自我封闭）
