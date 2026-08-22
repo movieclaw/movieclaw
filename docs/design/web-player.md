@@ -1150,16 +1150,32 @@ PT 片源的字幕绝大多数是内封的，外挂 `.srt` 反而是少数。只
 | 命令装配 | `tests/playback/test_ffmpeg_args.py` | 28 |
 | 会话与进程契约 | `tests/playback/test_session_manager.py` | 33 |
 | 签名 token | `tests/playback/test_stream_signing.py` | 14 |
+| 内封字幕抽取 | `tests/playback/test_embedded_subs.py` | 25 |
 | 决策服务层 | `tests/api/test_playback_decide.py` | 4 |
 | 取流端点 | `tests/api/test_playback_stream.py` | 23 |
 | 观看状态与进度 | `tests/api/test_playback_watch.py` | 11 |
 | 转码执行（真 ffmpeg） | `tests/playback/test_transcode_integration.py` | 10 |
-| 端到端（真 HTTP + 真 ffmpeg） | `tests/api/test_playback_e2e.py` | 6 |
+| 端到端（真 HTTP + 真 ffmpeg） | `tests/api/test_playback_e2e.py` | 7 |
 
-合计 **180 条**。前八项（164 条）进 CI 默认门禁——转码进程用假 ffmpeg 替身，
-不需要系统装 ffmpeg；后两项（16 条）标 `integration`，需要 ffmpeg。
+合计 **206 条**。绝大多数进 CI 默认门禁——转码进程用假 ffmpeg 替身，不需要
+系统装 ffmpeg；标 `integration` 的 21 条需要 ffmpeg（真转码 10、端到端 7、
+内封字幕真抽取 4）。
 
 全量套件跑完后用 `pgrep ffmpeg` 确认过：**没有泄漏任何转码进程**。
+
+**前端**
+
+| 模块 | 文件 | 条数 |
+|---|---|---|
+| 能力探测 | `test/player-capability.test.mjs` | 6 |
+| 状态机与降档 | `test/player-machine.test.mjs` | 16 |
+| 字幕规划 | `test/player-subtitles.test.mjs` | 11 |
+| 会话释放 | `test/player-session-release.test.mjs` | 6 |
+| 停顿归因 | `test/player-stall.test.mjs` | 14 |
+
+合计 **53 条**，全部 `node --test` 直跑，不需要浏览器——这也是纯逻辑一律放
+`lib/player/` 的理由：降档、时间轴换算、字幕分派、会话释放、停顿归因这些
+最容易出错的判断因此都能被覆盖。
 
 **前端**（`node --test`，与后端同为默认门禁）
 
