@@ -32,11 +32,13 @@ from movieclaw_api.schemas.playback import (
     PlaybackSessionView,
     PlaybackStateView,
     RecentWatchView,
+    TrickplayView,
 )
 from movieclaw_api.schemas.response import ApiResponse, ok
 from movieclaw_api.services.auth import Principal
 from movieclaw_api.services.library.access import visible_library_ids
 from movieclaw_api.services.playback import plan as playback_plan
+from movieclaw_api.services.playback import trickplay
 from movieclaw_api.services.playback import watch as playback_watch
 from movieclaw_api.services.playback.embedded_subs import (
     extract_embedded_fonts,
@@ -212,6 +214,8 @@ async def decide_playback_route(
 # 只放行会话目录里由 ffmpeg 产出的两类文件名。**这是路径穿越的唯一防线**：
 # 会话 id 来自签名 token 可信，但文件名来自 URL，必须白名单而不是过滤。
 _SEGMENT_NAME = re.compile(r"^(init\.mp4|seg\d{5}\.m4s)$")
+# 雪碧图文件名由服务端生成，但仍经过 URL——白名单一视同仁。
+_TRICKPLAY_SHEET_NAME = re.compile(r"^sprite_\d{3}\.jpg$")
 
 
 async def _decide(
@@ -268,6 +272,10 @@ async def start_playback_session(
     file = await session.get(LibraryFile, view.file_id)
     if file is None:
         raise NotFoundException("文件已不在台账中")
+
+    # 进度条缩略图：后台起，不挡首帧。生成要通读整个容器，放进同步路径会让
+    # 首帧白等；而缩略图晚几十秒出现完全可以接受。
+    trickplay.schedule(file)
 
     subtitle_urls = [
         f"/api/v1/playback/files/{file.id}/subtitles"
@@ -771,3 +779,70 @@ async def probe_playback_hardware(
             hardware_available=any(s.available for s in statuses),
         )
     )
+
+
+@router.get(
+    "/files/{file_id}/trickplay",
+    response_model=ApiResponse[TrickplayView],
+    summary="进度条缩略图索引",
+    operation_id="playback.file.trickplay",
+    openapi_extra={"x-cli-hidden": True},
+)
+async def get_trickplay_index(
+    file_id: Annotated[int, Path()],
+    token: Annotated[str, Query()],
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[TrickplayView]:
+    """拖进度条时的画面预览索引。
+
+    还没生成好就返回 `ready=false`——前端表现为「暂无预览」，不影响播放。
+    生成要通读整个容器，是在开会话时后台起的。
+    """
+    grant = await verify_stream_token(token, file_id=file_id)
+    if grant is None:
+        raise NotFoundException("预览地址无效或已过期")
+    index = trickplay.load_index(file_id)
+    if index is None:
+        file = await session.get(LibraryFile, file_id)
+        if file is not None:
+            trickplay.schedule(file)  # 没赶上开会话那次（或那次失败了），补一发
+        return ok(TrickplayView(ready=False))
+    return ok(
+        TrickplayView(
+            ready=True,
+            interval_ms=index.interval_ms,
+            tile_width=index.tile_width,
+            tile_height=index.tile_height,
+            columns=index.columns,
+            rows=index.rows,
+            count=index.count,
+            sheets=[
+                f"/api/v1/playback/files/{file_id}/trickplay/{quote(name, safe='')}"
+                f"?token={token}"
+                for name in index.sheets
+            ],
+        )
+    )
+
+
+@router.get(
+    "/files/{file_id}/trickplay/{name}",
+    summary="进度条缩略图雪碧图",
+    operation_id="playback.file.trickplay.sheet",
+    openapi_extra={"x-cli-hidden": True},
+)
+async def get_trickplay_sheet(
+    file_id: Annotated[int, Path()],
+    name: Annotated[str, Path()],
+    token: Annotated[str, Query()],
+) -> FileResponse:
+    """取一张雪碧图。文件名走白名单——它虽然由服务端生成，但经过了 URL。"""
+    grant = await verify_stream_token(token, file_id=file_id)
+    if grant is None:
+        raise NotFoundException("预览地址无效或已过期")
+    if not _TRICKPLAY_SHEET_NAME.match(name):
+        raise NotFoundException("预览图不存在")
+    target = trickplay.trickplay_dir(file_id) / name
+    if not target.is_file():
+        raise NotFoundException("预览图不存在")
+    return FileResponse(target, media_type="image/jpeg")

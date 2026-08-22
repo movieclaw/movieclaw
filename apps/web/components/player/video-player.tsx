@@ -17,6 +17,7 @@ import {
   reportPlaybackProgressOnUnload,
   resolveStreamUrl,
   startPlaybackSession,
+  fetchTrickplay,
   stopPlaybackSession,
   stopPlaybackSessionOnUnload,
 } from "@/lib/api/playback";
@@ -25,6 +26,7 @@ import type { PlaybackEngine } from "@/lib/player/engine";
 import { createEngine } from "@/lib/player/engine";
 import { initialPlayerState, isBusy, playerReducer } from "@/lib/player/machine";
 import { createSessionReleaser } from "@/lib/player/session-release";
+import type { TrickplayIndex } from "@/lib/player/trickplay";
 import { isEditableTarget, resolveShortcut } from "@/lib/player/shortcuts";
 import type { SubtitleStyle } from "@/lib/player/subtitles";
 import {
@@ -83,6 +85,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
   const [paused, setPaused] = useState(true);
   const [selectedSubtitle, setSelectedSubtitle] = useState<string | null>(null);
   const [subtitleStyle, setSubtitleStyle] = useState<SubtitleStyle>(DEFAULT_SUBTITLE_STYLE);
+  const [trickplay, setTrickplay] = useState<TrickplayIndex | null>(null);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [chromeVisible, setChromeVisible] = useState(true);
   const [countdown, setCountdown] = useState<number | null>(null);
@@ -154,6 +157,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
     setNextDismissed(false);
     setVideoDurationMs(null);
     setSelectedSubtitle(null);
+    setTrickplay(null); // 换片必须清掉：旧片的缩略图配新片的进度条是错的
     dispatch({ type: "reset" });
 
     fetchResumeState(unit)
@@ -364,6 +368,40 @@ export function VideoPlayer(props: VideoPlayerProps) {
     return () => window.removeEventListener("pagehide", onPageHide);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [unitKey, sessionId]);
+
+  /**
+   * 进度条缩略图：服务端在开会话时后台生成，这里轮询到就绪为止。
+   *
+   * 轮询而不是等推送：生成时长取决于片长与磁盘，几秒到几十秒都有可能，为它
+   * 拉一条长连接不值当。没就绪就是没有预览，不影响播放，所以失败一律吞掉；
+   * 试满十次（约两分钟）还拿不到就是这部片生成不了，别一直打服务端。
+   */
+  useEffect(() => {
+    const source = state.session?.stream_url;
+    if (!source) return;
+    let cancelled = false;
+    let attempts = 0;
+    let timer = 0;
+    const tick = async () => {
+      attempts += 1;
+      try {
+        const index = await fetchTrickplay(source);
+        if (cancelled) return;
+        if (index?.ready) {
+          setTrickplay(index);
+          return;
+        }
+      } catch {
+        // 预览不是关键路径，静默重试
+      }
+      if (!cancelled && attempts < 10) timer = window.setTimeout(tick, 12_000);
+    };
+    timer = window.setTimeout(tick, 1_000);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [state.session?.stream_url]);
 
   /**
    * 会话续命 + 离开时显式收尾。
@@ -711,6 +749,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
             onSubtitleStyleChange={setSubtitleStyle}
             diagnosticsOpen={diagnosticsOpen}
             onToggleDiagnostics={() => setDiagnosticsOpen((open) => !open)}
+            trickplay={trickplay}
             onNext={next ? onPlayNext : null}
           />
         </div>

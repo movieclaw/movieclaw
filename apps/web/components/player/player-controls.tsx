@@ -11,6 +11,7 @@ import {
 import { SUBTITLE_OFFSET_STEP, clampSubtitleOffset } from "@/lib/player/subtitles";
 import type { SubtitleStyle, SubtitleTracks } from "@/lib/player/subtitles";
 import { formatClock } from "@/lib/player/timeline";
+import { type TrickplayIndex, tileAt } from "@/lib/player/trickplay";
 
 /**
  * 播放器控制条（docs/design/web-player.md §6.1 / §6.5）。
@@ -58,6 +59,8 @@ export interface PlayerControlsProps {
   diagnosticsOpen: boolean;
   onToggleDiagnostics: () => void;
   onNext: (() => void) | null;
+  /** 进度条缩略图索引。null = 还没生成好，表现为没有预览 */
+  trickplay: TrickplayIndex | null;
 }
 
 export function PlayerControls(props: PlayerControlsProps) {
@@ -77,20 +80,53 @@ export function PlayerControls(props: PlayerControlsProps) {
     diagnosticsOpen,
     onToggleDiagnostics,
     onNext,
+    trickplay,
   } = props;
 
   // 拖动中的本地值：直接跟 positionMs 会被 timeupdate 反复拉回去，手感是
   // 滑块「粘手」——松手才提交是进度条唯一能用的做法
   const [dragging, setDragging] = useState<number | null>(null);
   const [menu, setMenu] = useState<"none" | "subtitles">("none");
+  // 悬停预览的位置（文件毫秒 + 进度条内的像素横坐标）。null = 没在悬停
+  const [hover, setHover] = useState<{ ms: number; x: number } | null>(null);
   const shown = dragging ?? positionMs;
+  const previewTile = hover ? tileAt(trickplay, hover.ms) : null;
   const progress = durationMs ? Math.min(100, (shown / durationMs) * 100) : 0;
   const buffered = durationMs && bufferedEndMs ? Math.min(100, (bufferedEndMs / durationMs) * 100) : 0;
 
   return (
     <div className="pointer-events-auto bg-gradient-to-t from-black/85 via-black/55 to-transparent px-4 pb-4 pt-16">
       {/* 进度条 */}
-      <div className="relative mb-1 h-6">
+      <div
+        className="relative mb-1 h-6"
+        onPointerMove={(e) => {
+          if (!durationMs) return;
+          const rect = e.currentTarget.getBoundingClientRect();
+          const x = Math.min(Math.max(e.clientX - rect.left, 0), rect.width);
+          setHover({ ms: (x / rect.width) * durationMs, x });
+        }}
+        onPointerLeave={() => setHover(null)}
+      >
+        {/* 缩略图预览：拖进度条时能看见画面。没生成好就没有，不影响拖动 */}
+        {hover && previewTile && (
+          <div
+            className="pointer-events-none absolute bottom-7 -translate-x-1/2 rounded-md border border-white/15 bg-black/70 p-1 shadow-lg"
+            style={{ left: hover.x }}
+          >
+            <div
+              style={{
+                width: previewTile.width,
+                height: previewTile.height,
+                backgroundImage: `url(${previewTile.url})`,
+                backgroundPosition: `${previewTile.offsetX}px ${previewTile.offsetY}px`,
+              }}
+              className="rounded-sm"
+            />
+            <p className="mt-0.5 text-center text-caption tabular-nums text-white/80">
+              {formatClock(hover.ms)}
+            </p>
+          </div>
+        )}
         <div className="pointer-events-none absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 overflow-hidden rounded-full bg-white/20">
           <div className="h-full bg-white/30" style={{ width: `${buffered}%` }} />
           <div

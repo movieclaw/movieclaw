@@ -1,4 +1,5 @@
 import { publicEnv } from "@/lib/env";
+import type { TrickplayIndex } from "@/lib/player/trickplay";
 import { request, resolveRequestUrl } from "@/lib/http";
 import type { MediaType } from "@/lib/media-types";
 
@@ -450,6 +451,24 @@ export interface HwProbeResult {
 export async function probePlaybackHardware(refresh = false): Promise<HwProbeResult> {
   const response = await request<ApiEnvelope<HwProbeResult>>(
     `/playback/hardware${refresh ? "?refresh=true" : ""}`,
+  );
+  return response.data;
+}
+
+
+/**
+ * 进度条缩略图索引。
+ *
+ * 生成要通读整个容器，是开会话时在服务端后台起的——没就绪就是 `ready:false`，
+ * 表现为没有预览，不影响播放。所以调用方轮询几次即可，失败一律吞掉。
+ */
+export async function fetchTrickplay(subtitleOrStreamUrl: string): Promise<TrickplayIndex | null> {
+  const url = new URL(subtitleOrStreamUrl, "http://placeholder");
+  const token = url.searchParams.get("token");
+  const fileId = url.pathname.match(/\/files\/(\d+)\//)?.[1];
+  if (!token || !fileId) return null;
+  const response = await request<ApiEnvelope<TrickplayIndex>>(
+    `/playback/files/${fileId}/trickplay?token=${encodeURIComponent(token)}`,
   );
   return response.data;
 }

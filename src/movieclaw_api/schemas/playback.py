@@ -376,3 +376,22 @@ class HwProbeView(BaseModel):
 
     backends: list[HwBackendStatusView] = []
     hardware_available: bool = False
+
+
+class TrickplayView(BaseModel):
+    """进度条缩略图索引。
+
+    `ready=false` 表示还在生成（或这部片生成不了）——前端表现为「暂无预览」，
+    不影响播放。前端据 `interval_ms` 与格子尺寸算「第 t 秒在哪张图的哪一格」。
+    """
+
+    ready: bool = False
+    interval_ms: int = 0
+    tile_width: int = 0
+    tile_height: int = 0
+    columns: int = 0
+    #: 每张雪碧图的行数。必须下发——少了它前端只能反推每张图的容量，
+    #: 而最后一张通常没填满，反推必错。
+    rows: int = 0
+    count: int = 0
+    sheets: list[str] = []
