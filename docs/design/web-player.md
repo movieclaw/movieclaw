@@ -839,11 +839,14 @@ Linux CI 做不到、Mac mini 独有的能力：
 
 ```text
 scripts/perf/
-├── seed_player_corpus.py   # 生成/下载黄金样本库并建成测试媒体库
-├── e2e_player_qoe.py       # 注入 §8.2 采集，驱动真实播放，浏览器 × 样本矩阵
-├── e2e_player_soak.py      # 3 小时长稳：内存增长、SourceBuffer 回收、A/V 漂移
-└── bench_transcode.py      # 服务端侧：各档位 TTFF / GPU 占用 / VMAF
+├── seed_player_corpus.py   # 现场合成黄金样本（6 个，各自对应一类陷阱）
+└── e2e_player_qoe.py       # 真浏览器播一遍，采 CTA-2066 口径的 QoE 读数
 ```
+
+样本**现场合成而不是下载**：真实片源不好共享（版权与体积），而这些陷阱
+（MKV 容器、HEVC、AC3 5.1、长 GOP、VFR、内封 ASS + 内嵌字体）都能用 ffmpeg
+造出来，每个几百 KB。文件名直接写明它在验什么——播不了的那个名字就指向
+对应的陷阱。
 
 Playwright 与现有 perf 脚本一样是开发期手动安装，**不进 `pyproject` 运行依赖**
 （否则要 bump runtime-version，且用户镜像里根本不需要）。
@@ -934,10 +937,11 @@ Mac mini 验证。做成发版前的人工清单，列进 `.claude/skills/releas
 **基建**
 
 - [x] Dockerfile 换 jellyfin-ffmpeg7（走官方 apt 源）；**`docker/runtime-version` 8 → 9**
-- [ ] `scripts/perf/` 播放器测试脚本四件套 + 黄金样本库 + Release 资产
+- [x] `scripts/perf/` 播放器 QoE 压测 + 黄金样本生成器（**样本现场合成，
+      不入 git 也不进 Release**——真实片源不好共享，合成的每个才几百 KB）
 - [x] 决策引擎表驱动单测进 CI；集成测试标 `integration`
 - [x] 更新 `jellyfin-compat.md` §0 硬边界 2（按 §0.3）
-- [ ] `release/SKILL.md` 增加硬件矩阵检查单
+- [x] `release/SKILL.md` 增加硬件矩阵检查单（第五节）
 
 ### P1
 
