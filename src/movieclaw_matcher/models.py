@@ -20,6 +20,13 @@ from pydantic import BaseModel, Field, model_validator
 from movieclaw_enrich.models import TorrentAttrs
 from movieclaw_enrich.vocab import PLATFORM_IDS
 
+# 洗版阶梯的值域与缺省。缺省二元组 = quality-upgrade.md §2 的原样行为，
+# 存量规则组因此逐位等价、零迁移。
+_LADDER_DIMENSION_VALUES: frozenset[str] = frozenset(
+    {"resolution", "source", "video_codec", "platform"}
+)
+_DEFAULT_UPGRADE_LADDER: tuple[str, ...] = ("resolution", "source")
+
 
 def _known_platforms(values: list[str]) -> list[str]:
     """保序去重地筛出词表里认识的平台规范值（大小写不敏感）。"""
@@ -151,6 +158,11 @@ class RuleSetSpec(BaseModel):
         description="洗版目标分辨率；None=取 resolutions 首选（都缺省则 1080p，"
         "保守缺省避免把用户意外带进 4K 的磁盘占用）",
     )
+    upgrade_ladder: list[str] = Field(
+        default_factory=lambda: list(_DEFAULT_UPGRADE_LADDER),
+        description="参与洗版比较的维度及其优先级（顺序即位次）；"
+        "值域 resolution/source/video_codec/platform，缺省即 §2 的二元组",
+    )
     upgrade_keep_old: bool = Field(
         default=False,
         description="洗到新版本后保留旧版本（多版本共存，收藏家模式）；"
@@ -161,6 +173,21 @@ class RuleSetSpec(BaseModel):
     sites: list[str] = Field(
         default_factory=list, description="[预留] 站点白名单；空=全部启用站点"
     )
+
+    @model_validator(mode="after")
+    def _normalize_upgrade_ladder(self) -> RuleSetSpec:
+        """阶梯维度归一：丢弃未知值与重复项；全被丢弃时回落到缺省二元组。
+
+        与平台白名单同一取向——读取路径永远宽容（§16.4）。回落而不是留空是
+        因为**空阶梯没有任何一位可比**：比较恒等价，于是没有候选构成升级、
+        所有单元又都算"已达目标"，洗版静默全停。回落到缺省至少行为正确。
+        """
+        seen: list[str] = []
+        for dim in self.upgrade_ladder:
+            if dim in _LADDER_DIMENSION_VALUES and dim not in seen:
+                seen.append(dim)
+        self.upgrade_ladder = seen or list(_DEFAULT_UPGRADE_LADDER)
+        return self
 
     @model_validator(mode="after")
     def _normalize_platforms(self) -> RuleSetSpec:

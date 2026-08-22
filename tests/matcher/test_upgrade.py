@@ -511,3 +511,116 @@ def test_compare_ladder_is_antisymmetric() -> None:
     for left, right, expected in LADDER_CASES:
         flipped = compare_ladder(right, left)
         assert flipped == (None if expected is None else -expected)
+
+
+# ---------------------------------------------------------------------------
+# 多维阶梯（§14.3）：维度顺序即优先级，偏好列表顺序即位次
+# ---------------------------------------------------------------------------
+
+
+def _multi_spec(**kwargs) -> RuleSetSpec:
+    base = dict(
+        upgrade_source="web-dl",
+        resolutions=["2160p", "1080p"],
+        # UI 选"H.265 一族"会把三种等价写法都写进来
+        video_codecs=["x265", "H.265", "HEVC", "x264"],
+        platforms=["netflix", "amazon"],
+        upgrade_ladder=["resolution", "source", "video_codec", "platform"],
+    )
+    return RuleSetSpec(**{**base, **kwargs})
+
+
+_MULTI_BASE = dict(
+    resolution="2160p", media_source="WEB-DL", video_codec="x264", platforms=["amazon"]
+)
+
+
+def test_codec_position_upgrades_within_same_resolution_and_source() -> None:
+    verdict = compare_upgrade(
+        _candidate(**{**_MULTI_BASE, "video_codec": "x265"}), _snap(**_MULTI_BASE), _multi_spec()
+    )
+    assert verdict.accepted
+
+
+def test_same_codec_family_written_differently_is_a_tie() -> None:
+    """x265 与 HEVC 是同一族的两种写法，必须塌缩成阶梯上的同一个位次——
+    否则同族的不同写法会互相"升级"，来回重下。"""
+    snapshot = {**_MULTI_BASE, "video_codec": "x265"}
+    verdict = compare_upgrade(
+        _candidate(**{**snapshot, "video_codec": "hevc"}), _snap(**snapshot), _multi_spec()
+    )
+    assert not verdict.accepted
+    assert verdict.reason_code == "upgrade_not_better"
+
+
+def test_platform_position_decides_when_higher_positions_tie() -> None:
+    snapshot = {**_MULTI_BASE, "video_codec": "x265"}
+    verdict = compare_upgrade(
+        _candidate(**{**snapshot, "platforms": ["netflix"]}), _snap(**snapshot), _multi_spec()
+    )
+    assert verdict.accepted
+
+
+def test_dimension_order_changes_the_verdict() -> None:
+    """把平台提到编码之前，"编码更好但平台更差"的候选从升级变成降级——
+    维度顺序就是用户表达偏好的地方。"""
+    snapshot = {
+        "resolution": "2160p",
+        "media_source": "WEB-DL",
+        "video_codec": "x264",
+        "platforms": ["netflix"],
+    }
+    candidate = {**snapshot, "video_codec": "x265", "platforms": ["amazon"]}
+    codec_first = compare_upgrade(_candidate(**candidate), _snap(**snapshot), _multi_spec())
+    platform_first = compare_upgrade(
+        _candidate(**candidate),
+        _snap(**snapshot),
+        _multi_spec(upgrade_ladder=["resolution", "source", "platform", "video_codec"]),
+    )
+    assert codec_first.accepted
+    assert not platform_first.accepted
+
+
+def test_dimension_without_preference_list_is_skipped_not_unknown() -> None:
+    """偏好列表为空的位自动跳过：当成"未知"会截断整条阶梯，洗版全线哑火。"""
+    spec = _multi_spec(platforms=[], video_codecs=[])
+    verdict = compare_upgrade(
+        _candidate(resolution="2160p", media_source="Blu-ray"),
+        _snap(resolution="2160p", media_source="WEBRip"),
+        spec,
+    )
+    assert verdict.accepted  # 只剩分辨率与片源两位，片源 T2 → T4 成立
+
+
+def test_unknown_low_position_does_not_block_higher_position_verdict() -> None:
+    """未知只截断它**之后**的位：编码已定序时，平台未标注不影响结论。"""
+    verdict = compare_upgrade(
+        _candidate(resolution="2160p", media_source="WEB-DL", video_codec="x265"),
+        _snap(**_MULTI_BASE),
+        _multi_spec(),
+    )
+    assert verdict.accepted
+
+
+def test_ladder_normalization_drops_unknown_and_duplicates() -> None:
+    spec = RuleSetSpec.model_validate(
+        {"upgrade_ladder": ["platform", "nope", "platform", "resolution"]}
+    )
+    assert spec.upgrade_ladder == ["platform", "resolution"]
+
+
+def test_empty_ladder_falls_back_to_default_pair() -> None:
+    """空阶梯没有任何一位可比 ⇒ 没有候选构成升级、所有单元又都算已达目标，
+    洗版静默全停。回落到缺省二元组至少行为正确。"""
+    assert RuleSetSpec.model_validate({"upgrade_ladder": ["nope"]}).upgrade_ladder == [
+        "resolution",
+        "source",
+    ]
+
+
+def test_target_label_renders_every_effective_dimension() -> None:
+    assert upgrade_target_label(_multi_spec()) == "2160p WEB-DL · x265 · netflix"
+    # 未进阶梯的维度不出现在目标里
+    assert upgrade_target_label(_multi_spec(upgrade_ladder=["resolution", "source"])) == (
+        "2160p WEB-DL"
+    )
