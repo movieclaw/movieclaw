@@ -38,6 +38,7 @@ import {
   exitLandscape,
   screenOrientation,
 } from "@/lib/player/orientation";
+import { chromeMustStayVisible, shouldHideOnPointerLeave } from "@/lib/player/chrome";
 import { createSessionReleaser } from "@/lib/player/session-release";
 import {
   type QoeEvent,
@@ -873,8 +874,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
   // ---------------------------------------------------------------------
 
   useEffect(() => {
-    // 暂停、菜单展开、诊断面板打开时都必须留着控制条：这三种情况用户正要用它
-    if (paused || diagnosticsOpen || menuOpen) {
+    if (chromeMustStayVisible({ paused, menuOpen, diagnosticsOpen })) {
       setChromeVisible(true);
       return;
     }
@@ -919,7 +919,13 @@ export function VideoPlayer(props: VideoPlayerProps) {
         chromeWasVisibleRef.current = chromeVisible;
         setChromeVisible(true);
       }}
-      onPointerLeave={() => !paused && setChromeVisible(false)}
+      // 只认鼠标：触屏上每点一下都会触发 pointerleave（pointerdown → pointerup
+      // → pointerleave → click），当成「用户不看了」会让控制条闪一下就没
+      onPointerLeave={(event) => {
+        if (shouldHideOnPointerLeave({ pointerType: event.pointerType, paused })) {
+          setChromeVisible(false);
+        }
+      }}
     >
       <MediaController
         noHotkeys
