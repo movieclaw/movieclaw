@@ -1507,21 +1507,28 @@ body.cmdk-open .app-shell {
 }
 
 /* ---- 图标按钮 -------------------------------------------------------------
-   不用背景色块做悬停反馈（黑底上的浅灰方块很脏），改成放大 + 提亮，
-   与 Netflix 一致。 */
+   尺寸与交互对齐全站的顶栏控件（components/page-nav.tsx 的
+   PAGE_NAV_BUTTON_CLASS）：36px 命中区、移动端 44px、悬停换底色、按下 0.94。
+   与那边唯一的差别是这里不带自己的玻璃底与描边——播放器里这几个键是装在
+   一张磨砂卡片上的，每个再包一层底会变成「玻璃里的玻璃」。单独浮在画面上的
+   键（顶栏的返回）用的就是那边的完整样式。 */
 .player-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  display: grid;
+  place-items: center;
+  border-radius: 9999px;
   color: rgba(255, 255, 255, 0.85);
   transition:
-    transform 0.15s cubic-bezier(0.2, 0, 0.2, 1),
-    color 0.15s linear;
+    background-color 0.15s linear,
+    color 0.15s linear,
+    transform 0.12s ease;
 }
 .player-btn:hover,
 .player-btn:focus-visible {
+  background: rgba(255, 255, 255, 0.12);
   color: #fff;
-  transform: scale(1.12);
+}
+.player-btn:active {
+  transform: scale(0.94);
 }
 .player-btn[data-active="true"] {
   color: #fff;
@@ -1565,5 +1572,8 @@ body.cmdk-open .app-shell {
   .player-scrub-row,
   .player-scrub-row * {
     transition: none;
+  }
+  .player-btn:active {
+    transform: none;
   }
 }

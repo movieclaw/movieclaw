@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { ActivityIcon, ExpandIcon, GearIcon, ShrinkIcon } from "@/components/icons";
 import { SUBTITLE_OFFSET_STEP, clampSubtitleOffset } from "@/lib/player/subtitles";
 import type { SubtitleStyle, SubtitleTracks } from "@/lib/player/subtitles";
 import { formatClock } from "@/lib/player/timeline";
@@ -29,10 +30,39 @@ import { type TrickplayIndex, tileAt } from "@/lib/player/trickplay";
  *   贴边的细线。这是「安静时也知道播到哪」与「安静时画面干净」唯一能同时
  *   成立的做法，也是 YouTube 控件隐藏后的样子。
  *
- * 图标之间靠间距和悬停放大区分，不用背景色块——黑底上的浅灰方块最显廉价。
+ * **图标与尺寸对齐全站**（见 components/page-nav.tsx 的 `PAGE_NAV_BUTTON_CLASS`
+ * 与 components/icons.tsx）：功能键的命中区 36px / 移动 44px，图标 18px / 22px，
+ * 风格是 24×24、`strokeWidth 1.8` 的描边——能直接用站内图标的就直接用
+ * （齿轮、全屏、诊断），站内没有的（字幕、横屏）按同一套描边规格自己画。
+ *
+ * **只有传输控件是实心的**：播放/暂停/退进十秒/切集。描边的播放三角读起来
+ * 是「一个箭头轮廓」而不是「播放」，所有播放器都用实心；站内的 `PlayIcon`
+ * 本身也是 `fill=currentColor` 的，所以这不算破例。
  */
 
-const ICON = "size-6 fill-current";
+/** 功能键图标尺寸：与 page-nav 的顶栏控件一致。 */
+const ICON = "size-[18px] max-md:size-[22px]";
+
+/**
+ * 描边图标底座：镜像 components/icons.tsx 里的 `Base`（那边没导出）。
+ * 播放器里只有字幕与横屏两个图标站内没有，其余一律直接用站内图标。
+ */
+function StrokeIcon({ children, className }: { children: React.ReactNode; className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.8}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className ?? ICON}
+      aria-hidden="true"
+    >
+      {children}
+    </svg>
+  );
+}
 
 /** 播放 / 暂停。只出现在中央簇，所以尺寸按中央簇给。 */
 function PlayGlyph({ paused }: { paused: boolean }) {
@@ -72,15 +102,13 @@ function SkipGlyph({ forward }: { forward: boolean }) {
   );
 }
 
-/** 字幕图标：外框 + 挖空的字幕线。必须用 evenodd，非零缠绕会把线条填实成白块。 */
+/** 字幕：站内没有这个图标，按同一套描边规格画。 */
 function SubtitleGlyph() {
   return (
-    <svg viewBox="0 0 24 24" className={ICON} aria-hidden>
-      <path
-        fillRule="evenodd"
-        d="M3 5.8A1.8 1.8 0 0 1 4.8 4h14.4A1.8 1.8 0 0 1 21 5.8v12.4a1.8 1.8 0 0 1-1.8 1.8H4.8A1.8 1.8 0 0 1 3 18.2V5.8ZM6 9.3h4.1v1.8H6V9.3Zm6 0h6v1.8h-6V9.3ZM6 13.1h6.2v1.8H6v-1.8Zm8.1 0H18v1.8h-3.9v-1.8Z"
-      />
-    </svg>
+    <StrokeIcon>
+      <rect x="3" y="5" width="18" height="14" rx="2.5" />
+      <path d="M7 10.6h4M13.5 10.6h3.5M7 14.4h6.5M16 14.4h1" />
+    </StrokeIcon>
   );
 }
 
@@ -94,69 +122,22 @@ function NextGlyph() {
   );
 }
 
-/** 设置齿轮：八颗齿 + 一圈 + 中心点。手画而不是抄图标库，省一个依赖。 */
-function GearGlyph() {
-  return (
-    <svg viewBox="0 0 24 24" className={ICON} aria-hidden>
-      {[0, 1, 2, 3, 4, 5, 6, 7].map((i) => (
-        <rect
-          key={i}
-          x="10.5"
-          y="2.6"
-          width="3"
-          height="3.6"
-          rx="1.2"
-          transform={`rotate(${i * 45} 12 12)`}
-        />
-      ))}
-      <circle cx="12" cy="12" r="6" fill="none" stroke="currentColor" strokeWidth="3" />
-      <circle cx="12" cy="12" r="2.2" />
-    </svg>
-  );
-}
-
-/** 菜单里的柱状图小图标：只用来标「播放诊断」这一项。 */
-function StatsGlyph() {
-  return (
-    <svg viewBox="0 0 24 24" className="size-4 shrink-0 fill-current" aria-hidden>
-      <path d="M4 19h2.6v-6H4v6Zm5.2 0h2.6V5H9.2v14Zm5.2 0H17v-9h-2.6v9Zm5.2 0H22V8h-2.4v11Z" />
-    </svg>
-  );
-}
-
 /**
- * 横屏：一个旋转弧 + 一台设备。设备的方向画的是**点下去之后**的样子——
- * 图标表示结果而不是现状，否则用户要在脑子里做一次取反。
+ * 横屏：一个旋转弧 + 一台设备，站内没有这个图标，按同一套描边规格画。
+ * 设备的方向画的是**点下去之后**的样子——图标表示结果而不是现状，
+ * 否则用户要在脑子里做一次取反。
  */
 function RotateGlyph({ active }: { active: boolean }) {
   return (
-    <svg viewBox="0 0 24 24" className={ICON} aria-hidden>
-      <path
-        d="M4 10.2A6.2 6.2 0 0 1 10.2 4"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.9"
-        strokeLinecap="round"
-      />
-      <path d="M4 13.4 1.3 8.7h5.4z" />
+    <StrokeIcon>
+      <path d="M4.4 10.4A6.2 6.2 0 0 1 10.4 4.4" />
+      <path d="m2.2 8.6 2.2 2.6 2.6-2.2" />
       {active ? (
-        <rect x="9.6" y="8.8" width="9" height="13.2" rx="1.8" fill="none" stroke="currentColor" strokeWidth="1.9" />
+        <rect x="9.4" y="8.6" width="9.2" height="13.4" rx="2" />
       ) : (
-        <rect x="8.2" y="11" width="14" height="9" rx="1.8" fill="none" stroke="currentColor" strokeWidth="1.9" />
+        <rect x="8.6" y="11" width="13.4" height="9.2" rx="2" />
       )}
-    </svg>
-  );
-}
-
-function FullscreenGlyph({ exit }: { exit?: boolean }) {
-  return (
-    <svg viewBox="0 0 24 24" className={ICON} aria-hidden>
-      {exit ? (
-        <path d="M9.4 3v4.6a1.8 1.8 0 0 1-1.8 1.8H3v-2h4.4V3h2Zm5.2 0h2v4.4H21v2h-4.6a1.8 1.8 0 0 1-1.8-1.8V3ZM3 14.6h4.6a1.8 1.8 0 0 1 1.8 1.8V21h-2v-4.4H3v-2Zm11.6 1.8a1.8 1.8 0 0 1 1.8-1.8H21v2h-4.4V21h-2v-4.6Z" />
-      ) : (
-        <path d="M3 3h6.6v2H5v4.6H3V3Zm11.4 0H21v6.6h-2V5h-4.6V3ZM3 14.4h2V19h4.6v2H3v-6.6ZM19 14.4h2V21h-6.6v-2H19v-4.6Z" />
-      )}
-    </svg>
+    </StrokeIcon>
   );
 }
 
@@ -384,13 +365,13 @@ export function PlayerControls(props: PlayerControlsProps) {
                   active={menu === "settings"}
                   onClick={() => openMenu(menu === "settings" ? "none" : "settings")}
                 >
-                  <GearGlyph />
+                  <GearIcon className={ICON} />
                 </IconButton>
                 {menu === "settings" ? (
                   <MenuPanel title="设置" onClose={() => openMenu("none")}>
                     <MenuItem
                       active={diagnosticsOpen}
-                      icon={<StatsGlyph />}
+                      icon={<ActivityIcon className="size-4 shrink-0" />}
                       onClick={() => {
                         onToggleDiagnostics();
                         openMenu("none");
@@ -406,7 +387,13 @@ export function PlayerControls(props: PlayerControlsProps) {
                 tip={canRotate ? (landscape ? "退出横屏" : "横屏") : landscape ? "退出全屏" : "全屏"}
                 onClick={onToggleLandscape}
               >
-                {canRotate ? <RotateGlyph active={landscape} /> : <FullscreenGlyph exit={landscape} />}
+                {canRotate ? (
+                  <RotateGlyph active={landscape} />
+                ) : landscape ? (
+                  <ShrinkIcon className={ICON} />
+                ) : (
+                  <ExpandIcon className={ICON} />
+                )}
               </IconButton>
             </div>
 
@@ -521,7 +508,7 @@ function IconButton({
       aria-label={tip}
       data-tip={tip}
       data-active={active ? "true" : undefined}
-      className="player-btn player-tip size-10 shrink-0"
+      className="player-btn player-tip size-9 shrink-0 max-md:size-11"
     >
       {children}
     </button>

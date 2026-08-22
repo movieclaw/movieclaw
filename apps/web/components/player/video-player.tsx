@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { MediaController } from "media-chrome/react";
 
+import { ChevronLeftIcon } from "@/components/icons";
+
 import { ConsentDialog } from "@/components/player/consent-dialog";
 import { DiagnosticsPanel } from "@/components/player/diagnostics-panel";
 import { PlayerCenterControls, PlayerControls } from "@/components/player/player-controls";
@@ -955,18 +957,21 @@ export function VideoPlayer(props: VideoPlayerProps) {
             chromeVisible ? "opacity-100" : "opacity-0"
           }`}
         >
+          {/* 返回键单独浮在画面上，和其它页面顶栏的返回键是同一个东西，
+              所以样式也照抄那边（page-nav.tsx 的 PAGE_NAV_BUTTON_CLASS）：
+              36/44px 圆形玻璃底 + 发丝描边 + 站内同一颗 ChevronLeft。
+              不 import 那个常量是因为 page-nav 会把搜索命令面板等一整串东西
+              拖进播放路由，而这条路由的初始 JS 是刻意压着的。 */}
           <button
             type="button"
             onClick={goBack}
             // 淡出后必须同时断掉命中：隐形却仍能点的按钮会在用户想点画面时误触
-            className={`player-btn size-10 shrink-0 ${
+            className={`grid size-9 shrink-0 place-items-center rounded-full border border-white/[0.09] bg-black/30 text-white/85 backdrop-blur-md transition hover:bg-black/50 hover:text-white active:scale-[0.94] max-md:size-11 ${
               chromeVisible ? "pointer-events-auto" : "pointer-events-none"
             }`}
             aria-label={landscape ? "退出横屏" : "退出播放"}
           >
-            <svg viewBox="0 0 24 24" className="size-7 fill-current" aria-hidden>
-              <path d="M10.7 3.6 2.3 12l8.4 8.4 1.7-1.7L6.4 13.2H22v-2.4H6.4l6-6-1.7-1.2Z" />
-            </svg>
+            <ChevronLeftIcon className="size-[18px] max-md:size-[22px]" />
           </button>
           <div className="min-w-0">
             <h1 className="truncate text-[17px] font-semibold text-white drop-shadow">{title}</h1>
