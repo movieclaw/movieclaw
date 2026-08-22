@@ -10,6 +10,7 @@ import { MediaActivityPanel, useMediaActivity } from "@/components/media-activit
 import { TaskCenterView } from "@/components/task-center-view";
 import { usePageChrome } from "@/lib/page-chrome";
 import { usePermissions } from "@/lib/permissions";
+import { taskActivityBadge, useTaskActivity } from "@/lib/task-activity";
 import type { ActivityScope, TaskCenterViewName } from "@/lib/task-center";
 import { useIsMobile } from "@/lib/use-media-query";
 
@@ -79,10 +80,23 @@ export function ActivityView({
 
   const liveCount =
     mediaActivity.snapshot.sessions.length + mediaActivity.snapshot.downloads.length;
+  // 「任务」上的角标与侧栏「活动」入口同源同口径：用户是被那个角标带进来的，
+  // 一级切换器必须原样把它接住——否则从观看视角看过去，任务那边有什么事
+  // 完全不可见（就是"点进来不知道为什么有提醒"的由来）。
+  const taskActivity = useTaskActivity();
+  const taskBadge = taskActivityBadge(taskActivity);
 
   const switcher = useMemo(
-    () => <ScopeSwitcher value={scope} liveCount={liveCount} onChange={switchScope} />,
-    [liveCount, scope, switchScope],
+    () => (
+      <ScopeSwitcher
+        value={scope}
+        liveCount={liveCount}
+        taskCount={taskBadge.count}
+        taskAlert={taskBadge.alert}
+        onChange={switchScope}
+      />
+    ),
+    [liveCount, scope, switchScope, taskBadge.alert, taskBadge.count],
   );
 
   // 活动页与发现页同为侧栏一级入口、没有 PageNav：视角切换若在窄屏自己占一行，
@@ -126,14 +140,24 @@ export function ActivityView({
   );
 }
 
-/** 一级视角切换（形态对齐发现页的数据源切换器）。 */
+/**
+ * 一级视角切换（形态对齐发现页的数据源切换器）。
+ *
+ * 两边各带一枚提示，语义刻意不同：观看是"此刻有人在播"，没有处置含义，
+ * 用一颗呼吸的绿点即可；任务要回答"有几件事等着我"，必须给数字——需要处理
+ * 时用警示红，只是进行中时用信息蓝，与侧栏角标同色同数。
+ */
 function ScopeSwitcher({
   value,
   liveCount,
+  taskCount,
+  taskAlert,
   onChange,
 }: {
   value: ActivityScope;
   liveCount: number;
+  taskCount: number;
+  taskAlert: boolean;
   onChange: (scope: ActivityScope) => void;
 }) {
   return (
@@ -155,6 +179,18 @@ function ScopeSwitcher({
             <span className="relative flex size-1.5" aria-hidden="true">
               <span className="absolute inline-flex size-1.5 motion-safe:animate-ping rounded-full bg-[var(--ok)]/60" />
               <span className="relative inline-flex size-1.5 rounded-full bg-[var(--ok)]" />
+            </span>
+          )}
+          {scope === "tasks" && taskCount > 0 && (
+            <span
+              aria-label={taskAlert ? `${taskCount} 项需要处理` : `${taskCount} 个进行中`}
+              className={`tnum rounded-full px-1.5 py-0.5 text-[11px] font-semibold leading-none ${
+                taskAlert
+                  ? "bg-[var(--danger)]/20 text-[var(--danger)]"
+                  : "bg-[var(--info)]/20 text-[var(--info)]"
+              }`}
+            >
+              {taskCount}
             </span>
           )}
         </button>

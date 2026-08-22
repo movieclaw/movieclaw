@@ -60,4 +60,8 @@ class TorrentAttrs(BaseModel):
     # 音轨语言（BCP 47：cmn=国语/普通话、yue=粤语…），含配音与原声语言声明。
     # 仅模型通道产出
     audio_languages: list[str] = []
+    # 流媒体来源平台（规范值：netflix / disney_plus / iqiyi …），与 release_group
+    # 正交：IQ.WEB-DL...-HHWEB 的平台是 iqiyi、压制组是 HHWEB。
+    # 空列表=未识别（三态铁律：不猜；非 WEB 资源本就不该有平台）
+    platforms: list[str] = []
     release_group: str | None = None   # 压制组/发布组

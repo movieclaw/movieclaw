@@ -209,11 +209,19 @@ export interface RuleSetSpec {
   /** 允许的分辨率；列表顺序即偏好顺序（排前面的评分更高） */
   resolutions?: string[];
   video_codecs?: string[];
+  /** 流媒体平台白名单（规范值，见 lib/platforms.ts）；空=不限。与制作组各自独立生效 */
+  platforms?: string[];
+  /** 流媒体平台黑名单（规范值）；命中即排除，优先于白名单 */
+  platforms_block?: string[];
   release_groups_allow?: string[];
   release_groups_block?: string[];
-  /** 判断整个 HDR 家族（含 DV），与 dv 轴正交 */
+  /** HDR 白名单兼偏好序（DV/HDR10+/HDR10/HLG/SDR，SDR=未标注）；任一命中即过 */
+  hdr_levels?: string[];
+  /** HDR 黑名单：资源带其中任一格式即排除 */
+  hdr_block?: string[];
+  /** [兼容层] 旧的 HDR 三态；hdr_levels/hdr_block 为空时后端才消费它 */
   hdr?: "any" | "require" | "forbid";
-  /** 单独判断杜比视界；"必须 HDR 但排除 DV" = hdr:require + dv:forbid */
+  /** [兼容层] 旧的 DV 三态；同上 */
   dv?: "any" | "require" | "forbid";
   free_only?: boolean;
   min_seeders?: number | null;
@@ -232,6 +240,8 @@ export interface RuleSetSpec {
   cutoff_resolution?: string | null;
   /** 洗到新版本后保留旧版本（多版本共存，收藏家模式）；缺省=旧版本进回收站 */
   upgrade_keep_old?: boolean;
+  /** 参与洗版比较的维度及优先级（顺序即位次）；缺省 ["resolution","source"] */
+  upgrade_ladder?: string[];
   /** [预留] 站点白名单；空=全部启用站点 */
   sites?: string[];
 }

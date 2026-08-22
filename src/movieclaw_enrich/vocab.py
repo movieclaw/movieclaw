@@ -124,6 +124,33 @@ VIDEO_CODEC: dict[str, str] = {
     "XVID": "XviD", "DIVX": "DivX",
 }
 
+# 编码族：x265 / H.265 / HEVC 是同一种编码的三种写法（x265 是 HEVC 的一个
+# 编码器实现），发布组用哪种纯属命名习惯。用户想表达的是"要 H.265 这一族"，
+# 因此筛选与洗版位次都按族比较——规则组写 x265 不该漏掉标 HEVC 的资源。
+# （前端 rule-sets-panel.tsx 早已按族提供选项，这里补上后端缺的那一半。）
+#
+# 这张表同时服务两侧：种子标题解析出的归一值（x265/HEVC/…），以及 ffprobe
+# 的 codec_name（hevc/h264/av1，见 library_file.video_codec）——两边查同一张
+# 表得到同一个族，洗版基线与候选才可比。表里没有的编码各自成族。
+#
+# 注意：族**不能**用来表达"二压还是原封"。原封 WEB-DL 也大量标 x265，写法
+# 不是事实；重编码与否可靠的维度是 media_source + remux（片源档 T3/T4/T5）。
+
+VIDEO_CODEC_FAMILY: dict[str, str] = {
+    "x265": "h265", "h.265": "h265", "hevc": "h265", "h265": "h265",
+    "x264": "h264", "h.264": "h264", "avc": "h264", "h264": "h264",
+    "av1": "av1",
+}
+
+
+def codec_family(value: str | None) -> str | None:
+    """编码 → 族标识；未知/不在表中的编码以自身归一值成族；None 保持 None。"""
+    if not value:
+        return None
+    key = value.casefold()
+    return VIDEO_CODEC_FAMILY.get(key, key)
+
+
 # -- 音频编码 ---------------------------------------------------------------
 # 归一值统一去掉声道数（DDP5.1 → DDP）：筛选场景关心"有没有 Atmos / DTS-HD MA"，
 # 声道数属于长尾细节，纳入只会让归一值爆炸。
@@ -174,6 +201,126 @@ MEDIA_SOURCE: dict[str, str] = {
     "DVDRIP": "DVDRip", "DVD9": "DVD", "DVD5": "DVD", "DVD": "DVD",
     "HD-DVD": "HD-DVD", "HDDVD": "HD-DVD",
 }
+
+# -- 流媒体平台 ---------------------------------------------------------------
+# 平台与压制组是**两个正交字段**：``IQ.WEB-DL...-HHWEB`` 的平台是 iQIYI、
+# 压制组是 HHWEB；``...-Pure@HDSWEB`` 没有平台标记，整体是压制组。
+#
+# 两道闸把误判压到最低（"宁缺毋滥"，与本模块其余词表同一取向）：
+#   ① 整条文本必须带 WEB / WEB-DL / WEBRip 来源标记，否则一律不识别平台——
+#      平台标记只在流媒体资源上有意义，片名里的 Apple / Max 不是平台；
+#   ② 短别名（见 _PLATFORM_SHORT_ALIASES）还必须**紧邻**来源标记，
+#      "Apocalypse.Now.2160p.WEB-DL" 这类不会把片名词当成平台。
+#
+# 词表是**定向裁剪**过的，以下别名有意不收，请勿"顺手补全"：
+#   NOW / PLAY / IT / CORE / CRIT / DISC / FRIDAY —— 都是常用词或技术标记
+#   （"Blu-ray DISC"、"DISC 1"、语言标签 IT、Friday the 13th），即便有 WEB
+#   上下文也会误命中；对应平台改收不易碰撞的长写法（NOWPLAYER / GOOGLE TV /
+#   ITUNES / SONY PICTURES CORE / CRITERION / DISCOVERY+）。
+#
+# HBO / HBO MAX / MAX 合并成同一个规范值：它们是同一平台的新旧名，拆成三个
+# 值只会让用户配置时无所适从（发布名用哪个纯看发布组习惯）。
+
+PLATFORM: dict[str, str] = {
+    # 国际
+    "NETFLIX": "netflix", "NF": "netflix",
+    "AMAZON": "amazon", "AMZN": "amazon",
+    "DISNEY+": "disney_plus", "DISNEY PLUS": "disney_plus", "DSNP": "disney_plus",
+    "HBO MAX": "hbo_max", "HMAX": "hbo_max", "HBOM": "hbo_max",
+    "HBO": "hbo_max", "MAX": "hbo_max",
+    "HULU": "hulu",
+    "APPLE TV+": "apple_tv_plus", "APPLE TV PLUS": "apple_tv_plus",
+    "APPLE TV": "apple_tv_plus", "ATVP": "apple_tv_plus", "APTV": "apple_tv_plus",
+    "ATV": "apple_tv_plus",
+    "PARAMOUNT+": "paramount_plus", "PARAMOUNT PLUS": "paramount_plus",
+    "PMTP": "paramount_plus",
+    "PEACOCK": "peacock", "PCOK": "peacock",
+    "SHOWTIME": "showtime", "SHO": "showtime",
+    "STARZ": "starz",
+    "DISCOVERY+": "discovery_plus", "DSCP": "discovery_plus",
+    "CRAVE": "crave", "STAN": "stan", "ROKU": "roku",
+    "GOOGLE TV": "google_tv", "ITUNES": "itunes",
+    "SONY PICTURES CORE": "sony_core", "BCORE": "sony_core",
+    "CRITERION": "criterion",
+    # 中国及亚洲
+    "IQIYI": "iqiyi", "IQ": "iqiyi",
+    "TENCENT VIDEO": "wetv", "WETV": "wetv",
+    "YOUKU": "youku",
+    "MANGOTV": "mangotv", "MGTV": "mangotv",
+    "BILIBILI": "bilibili", "BILI": "bilibili",
+    "VIU": "viu", "NOWPLAYER": "nowplayer", "MYTVSUPER": "mytv_super",
+    "HAMIVIDEO": "hami_video", "HAMI": "hami_video",
+    "LINETV": "line_tv", "KKTV": "kktv",
+    "TVING": "tving", "WAVVE": "wavve",
+    "COUPANG PLAY": "coupang_play", "CPNG": "coupang_play",
+    "KOCOWA": "kocowa", "KCW": "kocowa", "VIKI": "viki",
+    "U-NEXT": "unext", "TVER": "tver", "FOD": "fod", "DMM-TV": "dmm_tv",
+    "HOTSTAR": "hotstar", "HTSR": "hotstar",
+    # 动漫
+    "CRUNCHYROLL": "crunchyroll", "CR": "crunchyroll",
+    "HIDIVE": "hidive", "HIDI": "hidive",
+    "ABEMA TV": "abema", "ABEMA": "abema", "ADN": "adn",
+    "FUNIMATION": "funimation", "FUNI": "funimation",
+    "VRV": "vrv", "WAKANIM": "wakanim", "WKN": "wakanim",
+    "B-GLOBAL": "b_global",
+}
+
+# 规范值全集：规则组只接受这些值（词表演进时，配置里的陈旧值被丢弃而非报错，
+# 见 RuleSetSpec.platforms 的说明）
+PLATFORM_IDS: frozenset[str] = frozenset(PLATFORM.values())
+
+# 必须紧邻 WEB 来源标记才成立的短别名：本身是常用词、人名或过短的代码。
+# HBO 有意不在此列：三字母但辨识度极高，不与常用词碰撞，加约束只会漏识别
+_PLATFORM_SHORT_ALIASES: frozenset[str] = frozenset(
+    {
+        "NF", "MAX", "ATV", "SHO", "STAN", "IQ", "BILI", "VIU", "HAMI",
+        "KCW", "FOD", "HTSR", "CR", "HIDI", "ADN", "VRV", "WKN",
+    }
+)
+
+# WEB 来源标记：WEB / WEB-DL / WEBRip（含点号、下划线、连字符分隔）
+_WEB_SOURCE_RE = re.compile(r"(?<![A-Z])WEB(?:[\s._-]?(?:DL|RIP))?(?![A-Z])")
+# "紧邻" = 两者之间只有分隔符
+_SEPARATORS_ONLY_RE = re.compile(r"^[\s._-]*$")
+
+
+def _compile_platform_table() -> list[tuple[re.Pattern[str], str, bool]]:
+    """与 compile_table 同构，额外带上"该别名是否需要紧邻来源标记"。"""
+    return [
+        (_boundary_pattern(alias), canon, alias in _PLATFORM_SHORT_ALIASES)
+        for alias, canon in sorted(PLATFORM.items(), key=lambda kv: len(kv[0]), reverse=True)
+    ]
+
+
+def _adjacent_to_web_source(text: str, start: int, end: int, spans) -> bool:
+    """别名与任一 WEB 来源标记之间是否只隔着分隔符。"""
+    return any(
+        (source_end <= start and _SEPARATORS_ONLY_RE.match(text[source_end:start]))
+        or (source_start >= end and _SEPARATORS_ONLY_RE.match(text[end:source_start]))
+        for source_start, source_end in spans
+    )
+
+
+def match_platforms(text_upper: str) -> list[str]:
+    """提取流媒体平台规范值（同一资源可带多个标记，去重保序）。"""
+    spans = [m.span() for m in _WEB_SOURCE_RE.finditer(text_upper)]
+    if not spans:
+        return []  # 没有 WEB 来源标记 → 不是流媒体资源，平台一律不识别
+    found: list[str] = []
+    masked = text_upper
+    for pattern, canon, needs_adjacency in PLATFORM_COMPILED:
+        while match := pattern.search(masked):
+            start, end = match.span()
+            # 命中即掩蔽（同 match_vocab）：短别名不会在长别名内部二次命中，
+            # 未通过紧邻判定的那次也被抹掉，循环继续找同一别名的其他出现
+            masked = masked[:start] + " " * (end - start) + masked[end:]
+            if needs_adjacency and not _adjacent_to_web_source(text_upper, start, end, spans):
+                continue
+            if canon not in found:
+                found.append(canon)
+            break
+    return found
+
 
 # -- 压制组大小写归一表 -------------------------------------------------------
 # 种子标题里组名大小写混乱（wiki/WiKi/WIKI），此表把已知组归一成官方写法。
@@ -246,3 +393,4 @@ VIDEO_CODEC_COMPILED = compile_table(VIDEO_CODEC)
 AUDIO_COMPILED = compile_table(AUDIO)
 HDR_COMPILED = compile_table(HDR)
 MEDIA_SOURCE_COMPILED = compile_table(MEDIA_SOURCE)
+PLATFORM_COMPILED = _compile_platform_table()

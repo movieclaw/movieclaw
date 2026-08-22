@@ -37,9 +37,16 @@ export interface ScrimUiPrefs {
   dark: number;
 }
 
+/** 侧栏主导航的个人排序。合并规则与"为什么只存顺序"见 lib/sidebar-nav.ts。 */
+export interface NavUiPrefs {
+  /** 导航项 id 的展示顺序；空数组 = 用内置默认顺序 */
+  order: string[];
+}
+
 export interface UiPreferences {
   sidebar: SidebarUiPrefs;
   scrim: ScrimUiPrefs;
+  nav: NavUiPrefs;
 }
 
 /** 各页面的默认样式（与后端模型默认值一致），拉取失败时前端以此兜底；
@@ -48,6 +55,8 @@ export interface UiPreferences {
 export const DEFAULT_UI_PREFS: UiPreferences = {
   sidebar: { transparency: 0.49, brightness: -0.36, depth: 28 },
   scrim: { blur: 13, dark: 0.69 },
+  // 空顺序 = 内置默认顺序（导航项在 components/sidebar.tsx 的 SIDEBAR_NAV_ITEMS）
+  nav: { order: [] },
 };
 
 /** 把后端返回的偏好与内置默认逐分组合并：老版本后端（不认识新分组/新字段）
@@ -56,6 +65,9 @@ function withDefaults(data: Partial<UiPreferences> | null | undefined): UiPrefer
   return {
     sidebar: { ...DEFAULT_UI_PREFS.sidebar, ...data?.sidebar },
     scrim: { ...DEFAULT_UI_PREFS.scrim, ...data?.scrim },
+    // order 必须兜住非数组：老后端不认识这个分组时返回的是 undefined，
+    // 消费者（applyNavOrder）拿到的必须永远是可迭代的数组
+    nav: { order: Array.isArray(data?.nav?.order) ? data.nav.order : [] },
   };
 }
 

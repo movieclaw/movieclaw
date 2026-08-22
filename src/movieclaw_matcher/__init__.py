@@ -18,7 +18,10 @@ movieclaw_api 的 services 层编排（docs/design/subscription.md 第 3 节）�
 from movieclaw_matcher.decision import (
     USER_LOWEST_SOURCE,
     build_snapshot,
+    candidate_ladder_rank,
+    compare_ladder,
     compare_upgrade,
+    ladder_vector,
     pick_best,
     provably_at_cutoff,
     provably_below_cutoff,
@@ -29,6 +32,7 @@ from movieclaw_matcher.decision import (
 )
 from movieclaw_matcher.identity import match_identity, normalize_title
 from movieclaw_matcher.models import (
+    SNAPSHOT_VERSION,
     DvPolicy,
     HdrPolicy,
     HrUnknownPolicy,
@@ -51,6 +55,7 @@ __all__ = [
     "IdentityMatch",
     "MediaIdentity",
     "QualitySnapshot",
+    "SNAPSHOT_VERSION",
     "RuleSetSpec",
     "RuleVerdict",
     "TorrentCandidate",
@@ -61,7 +66,10 @@ __all__ = [
     "evaluate_rules",
     "pick_best",
     "build_snapshot",
+    "candidate_ladder_rank",
+    "compare_ladder",
     "compare_upgrade",
+    "ladder_vector",
     "provably_at_cutoff",
     "provably_below_cutoff",
     "quality_label",

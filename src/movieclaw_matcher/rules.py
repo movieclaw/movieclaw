@@ -10,13 +10,13 @@
 
 from __future__ import annotations
 
+from movieclaw_enrich.vocab import codec_family
 from movieclaw_matcher.models import (
-    DvPolicy,
-    HdrPolicy,
     HrUnknownPolicy,
     RuleSetSpec,
     RuleVerdict,
     TorrentCandidate,
+    hdr_values,
 )
 
 # 未配置分辨率偏好时的内置默认（高清优先，权重温和）
@@ -58,13 +58,36 @@ def evaluate_rules(
             )
 
     if spec.video_codecs:
-        allowed = {c.casefold() for c in spec.video_codecs}
+        # 按**编码族**比较（vocab.codec_family）：x265 / H.265 / HEVC 是同一种
+        # 编码的三种写法，规则组写其中之一不该漏掉另一种写法的资源
+        allowed = {codec_family(c) for c in spec.video_codecs}
         if attrs.video_codec is None:
             return _reject("codec_unknown", "无法识别视频编码，规则要求明确编码时按不合格处理")
-        if attrs.video_codec.casefold() not in allowed:
+        if codec_family(attrs.video_codec) not in allowed:
             return _reject(
                 "codec_not_allowed",
                 f"视频编码 {attrs.video_codec} 不在允许范围（{'/'.join(spec.video_codecs)}）",
+            )
+
+    # 平台：黑名单先判（与制作组同构）。平台是"来源"维度，与制作组正交，
+    # 两者都配就都要满足——拒绝原因因此永远指向单一维度
+    platforms = {value.casefold() for value in attrs.platforms}
+    if spec.platforms_block:
+        blocked = platforms & set(spec.platforms_block)
+        if blocked:
+            return _reject(
+                "platform_blocked", f"流媒体平台 {_platform_text(sorted(blocked))} 在黑名单中"
+            )
+    if spec.platforms:
+        if not platforms:
+            return _reject(
+                "platform_unknown", "无法识别流媒体平台，规则设置了平台白名单时按不合格处理"
+            )
+        if not platforms & set(spec.platforms):
+            return _reject(
+                "platform_not_allowed",
+                f"流媒体平台 {_platform_text(sorted(platforms))} 不在允许范围"
+                f"（{_platform_text(spec.platforms)}）",
             )
 
     group = (attrs.release_group or "").casefold()
@@ -76,21 +99,21 @@ def evaluate_rules(
         if group not in {g.casefold() for g in spec.release_groups_allow}:
             return _reject("group_not_allowed", f"制作组 {attrs.release_group} 不在白名单中")
 
-    # hdr 空列表 = 未提取到 HDR 标记；命名惯例里 HDR 属"缺席即否定"的强标记，
-    # 因此 require 时空列表按"非 HDR"拒绝，forbid 时空列表放行。
-    # hdr 轴判断整个 HDR 家族（含 DV），dv 轴单独判断杜比视界，两轴正交：
-    # 如"必须 HDR 但不要 DV"= hdr=require + dv=forbid，组合语义自然叠加。
-    if spec.hdr is HdrPolicy.REQUIRE and not attrs.hdr:
-        return _reject("hdr_required", "规则要求 HDR，该资源未标注任何 HDR 格式")
-    if spec.hdr is HdrPolicy.FORBID and attrs.hdr:
-        return _reject("hdr_forbidden", f"规则排除 HDR，该资源标注了 {'/'.join(attrs.hdr)}")
-
-    # 词表已把 DoVi/Dolby Vision 等写法归一化为 "DV"，直接查成员即可
-    has_dv = "DV" in attrs.hdr
-    if spec.dv is DvPolicy.REQUIRE and not has_dv:
-        return _reject("dv_required", "规则要求杜比视界（DV），该资源未标注 DV")
-    if spec.dv is DvPolicy.FORBID and has_dv:
-        return _reject("dv_forbidden", "规则排除杜比视界（DV），该资源标注了 DV")
+    # HDR：黑名单命中即拒（先判），白名单任一命中即过。资源未标注任何 HDR
+    # 格式 = SDR——命名惯例里 HDR 属"缺席即否定"的强标记。多值属性上"只要 A"
+    # 表达不了"排除 B"，所以白/黑两份，与平台维度同构
+    declared = hdr_values(attrs.hdr)
+    if spec.hdr_block and declared & set(spec.hdr_block):
+        return _reject(
+            "hdr_blocked",
+            f"规则排除 {'/'.join(spec.hdr_block)}，该资源标注了 {'/'.join(attrs.hdr)}",
+        )
+    if spec.hdr_levels and not declared & set(spec.hdr_levels):
+        text = "/".join(attrs.hdr) or "未标注 HDR（按 SDR 处理）"
+        return _reject(
+            "hdr_not_allowed",
+            f"规则要求 HDR 为 {'/'.join(spec.hdr_levels)}，该资源是 {text}",
+        )
 
     # 字幕/音轨语言：BCP 47 前缀匹配（要求 "zh" 命中 zh/zh-Hans/zh-Hant；
     # 要求 "zh-Hans" 不接受只写泛称"中字"的资源）。声明式语义：资源未声明
@@ -99,21 +122,21 @@ def evaluate_rules(
     if spec.subtitle_languages_require and not _any_lang_match(
         spec.subtitle_languages_require, attrs.subtitle_languages
     ):
-        declared = "/".join(attrs.subtitle_languages) or "未声明"
+        declared_subs = "/".join(attrs.subtitle_languages) or "未声明"
         return _reject(
             "subtitle_language_missing",
             f"规则要求字幕语言（{'/'.join(spec.subtitle_languages_require)}），"
-            f"该资源字幕声明为：{declared}",
+            f"该资源字幕声明为：{declared_subs}",
         )
 
     if spec.audio_languages_require and not _any_lang_match(
         spec.audio_languages_require, attrs.audio_languages
     ):
-        declared = "/".join(attrs.audio_languages) or "未声明"
+        declared_audio = "/".join(attrs.audio_languages) or "未声明"
         return _reject(
             "audio_language_missing",
             f"规则要求音轨语言（{'/'.join(spec.audio_languages_require)}），"
-            f"该资源音轨声明为：{declared}",
+            f"该资源音轨声明为：{declared_audio}",
         )
 
     if spec.free_only and candidate.is_free is not True:
@@ -170,6 +193,12 @@ def _score(candidate: TorrentCandidate, spec: RuleSetSpec) -> int:
     else:
         score += _DEFAULT_RESOLUTION_SCORE.get(resolution, 0)
     return score
+
+
+def _platform_text(values: list[str]) -> str:
+    """平台规范值 → 展示串。展示名归前端，这里保证拒绝文案里是原始规范值，
+    用户能拿它直接对照规则组配置。"""
+    return "/".join(values)
 
 
 def _reject(code: str, text: str) -> RuleVerdict:

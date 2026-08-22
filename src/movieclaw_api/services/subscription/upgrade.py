@@ -15,6 +15,15 @@ media_source/remux/release_group 优先取投递时的 attempt.quality（种子�
 
 快照三态：NULL=未回填；``{}``（空对象）=已尝试构建但关键维度全部无法识别
 （不参与洗版，且不会被回填任务反复重试）；非空=正常基线。
+
+**落库一律全键**（``model_dump()`` 不带 exclude_defaults）：``{}`` 因此在结构上
+专属于哨兵。曾经用 ``exclude_defaults=True`` 落库，正常快照在"全部维度取默认值"
+时也会 dump 成 ``{}`` 被误当哨兵——多加一个可比维度（如 SDR 是 hdr 的默认空列表）
+这个碰撞就会真实发生并静默漏洗，见 quality-upgrade.md §16.2。
+
+**结构版本**：快照带 ``v``（``SNAPSHOT_VERSION``）。新增可比维度时 +1，
+``backfill_upgrade_snapshots`` 的陈旧扫描会把存量快照逐批重算——纯 DB 变换，
+不重新探测文件（§16.3）。
 """
 
 from __future__ import annotations
@@ -40,6 +49,7 @@ from movieclaw_db.models import (
 from movieclaw_db.models.scheduled_task import TriggerType
 from movieclaw_enrich import enrich
 from movieclaw_matcher import (
+    SNAPSHOT_VERSION,
     QualitySnapshot,
     RuleSetSpec,
     build_snapshot,
@@ -56,6 +66,9 @@ _BACKFILL_TICK_SECONDS = 900
 
 # 排期补挂的全表轮转游标（进程内状态；重启丢失只是从头再扫一轮）
 _pending_arm_cursor = 0
+# 陈旧快照重算的全表轮转游标（同上）。"版本落后"这个条件要跨方言写 JSON 取值
+# 才能进 SQL，得不偿失；沿用本模块既有的游标轮转 + Python 侧判定的做法
+_stale_snapshot_cursor = 0
 
 # 入库验证互斥：监听导入与库扫描可能并发触发同一条目的对账，双重确认会
 # 对同一批旧文件重复走回收站/删行（第二个会话删已删行会抛错）
@@ -108,12 +121,21 @@ def snapshot_from_file(
             name_attrs.media_source = file.media_source
         if file.release_group is not None:
             name_attrs.release_group = file.release_group
+    # 人工标注的片源是**权威值**：保护位的语义就是"自动名称解析不得覆盖"
+    # （media-source-annotation.md），而 attempt.quality 恰恰是名称解析的产物。
+    # 少这一条，任何一次快照重算都会把用户的标注静默抹回名称值，被解卡的
+    # 「无法确认」单元又卡回去。remux 一并清零，与标注服务同一口径
+    if file.media_source_manual and file.media_source is not None:
+        name_attrs = name_attrs.model_copy(
+            update={"media_source": file.media_source, "remux": False}
+        )
     probed = file.resolution is not None or file.bit_rate is not None
     return build_snapshot(
         name_attrs,
         probed=probed,
         probe_resolution=file.resolution,
         probe_hdr_label=file.hdr,
+        probe_video_codec=file.video_codec,
         probe_bit_rate=file.bit_rate,
     )
 
@@ -166,7 +188,7 @@ async def fill_snapshots(
             if attempt is not None and attempt.quality:
                 name_attrs = QualitySnapshot.model_validate(attempt.quality)
         snapshot = snapshot_from_file(best, name_attrs)
-        wanted.quality = snapshot.model_dump(exclude_defaults=True)
+        wanted.quality = snapshot.model_dump()
         wanted.updated_at = utcnow()
 
 
@@ -404,7 +426,7 @@ async def run_upgrade_round(
             state = "not_comparable"
         else:
             snapshot = QualitySnapshot.model_validate(wanted.quality)
-            current_label = quality_label(snapshot)
+            current_label = quality_label(snapshot, spec)
             if unit in in_flight:
                 state = "in_flight"
             elif upgrade_ready(wanted, spec, now=now) or (
@@ -688,11 +710,15 @@ async def _verify_upgrades_locked(session: AsyncSession, media_item_id: int) -> 
 
         # 逐文件算快照，按**快照**找最优（名称来源：来自洗版投递的文件用
         # attempt.quality——文件行本身可能还没有片源信息）
-        from movieclaw_matcher.decision import resolution_rank, source_tier
+        from movieclaw_matcher import candidate_ladder_rank
 
+        # 选最优用**规则组自己的阶梯**（拿不到 spec 时回落中性序）：与下面的
+        # 判定同口径。此前固定按 (分辨率, 片源) 选，多维阶梯下会出现"选中的
+        # 文件不是判定认为最优的那个"，全靠 file.id 兜底才碰巧对
+        rank_spec = spec or _NEUTRAL_SPEC
         best_file: LibraryFile | None = None
         best_snapshot: QualitySnapshot | None = None
-        best_key: tuple[int, int, int] = (-1, -1, -1)
+        best_key: tuple[tuple[int, ...], int] = ((), -1)
         snapshots_by_file: dict[int, QualitySnapshot] = {}
         for file in unit_files:
             name_attrs = None
@@ -701,11 +727,7 @@ async def _verify_upgrades_locked(session: AsyncSession, media_item_id: int) -> 
             snapshot = snapshot_from_file(file, name_attrs)
             if file.id is not None:
                 snapshots_by_file[file.id] = snapshot
-            key = (
-                resolution_rank(snapshot.resolution, _NEUTRAL_SPEC) or 0,
-                source_tier(snapshot.media_source, snapshot.remux) or 0,
-                file.id or 0,
-            )
+            key = (candidate_ladder_rank(snapshot, rank_spec), file.id or 0)
             if key > best_key:
                 best_file, best_snapshot, best_key = file, snapshot, key
 
@@ -720,16 +742,16 @@ async def _verify_upgrades_locked(session: AsyncSession, media_item_id: int) -> 
                 # 未开洗版：只静默把基线刷新为实测最优（保持台账真实，日后
                 # 开洗版立即可用），**绝不**替换/移动用户的文件——删除性动作
                 # 必须有洗版目标这个显式 opt-in
-                wanted.quality = best_snapshot.model_dump(exclude_defaults=True)
+                wanted.quality = best_snapshot.model_dump()
                 wanted.updated_at = utcnow()
                 await session.commit()
                 continue
             # ---- 确认升级 ----
             now = utcnow()
             old_hash = wanted.info_hash
-            new_label = quality_label(best_snapshot)
-            old_label = quality_label(baseline)
-            wanted.quality = best_snapshot.model_dump(exclude_defaults=True)
+            new_label = quality_label(best_snapshot, spec)
+            old_label = quality_label(baseline, spec)
+            wanted.quality = best_snapshot.model_dump()
             wanted.upgrade_verify_failures = 0
             wanted.updated_at = now
             # 该单元此前若因连续证伪出过熔断提示，升级成功即问题消失
@@ -877,7 +899,7 @@ async def _verify_upgrades_locked(session: AsyncSession, media_item_id: int) -> 
                     "保留（未自动替换）；不需要的版本可在库详情删除"
                 )
                 attempt.updated_at = now
-                wanted.quality = best_snapshot.model_dump(exclude_defaults=True)
+                wanted.quality = best_snapshot.model_dump()
                 wanted.updated_at = now
                 await session.commit()
                 await repo.add_activity(
@@ -996,18 +1018,19 @@ async def _verify_upgrades_locked(session: AsyncSession, media_item_id: int) -> 
 
 
 def _better(snapshot, baseline, spec) -> bool:
-    """实测快照是否严格优于基线（不设停止线的纯序比较，供确认路径复用）。"""
-    from movieclaw_matcher.decision import resolution_rank, source_tier
+    """实测快照是否严格优于基线（不设停止线的纯序比较，供确认路径复用）。
 
-    s_res = resolution_rank(snapshot.resolution, spec)
-    b_res = resolution_rank(baseline.resolution, spec)
-    if s_res is None or b_res is None:
-        return False
-    if s_res != b_res:
-        return s_res > b_res
-    s_tier = source_tier(snapshot.media_source, snapshot.remux)
-    b_tier = source_tier(baseline.media_source, baseline.remux)
-    return s_tier is not None and b_tier is not None and s_tier > b_tier
+    **必须与抓取判定走同一条阶梯**（``compare_ladder``）。这里曾经手写
+    "先比分辨率、再比片源"，对 §14 加进阶梯的编码/HDR/平台三个维度视而不见：
+    抓取端认定的合法升级，到验证端一律判否——文件进回收站，而"诚实资源"判定
+    又不会把它拉黑，于是下一轮再抓同一个候选，下载 → 回收 → 再下载 无限循环。
+    不可比（某位单侧未知）保持判否，与旧实现一致。
+    """
+    from movieclaw_matcher import compare_ladder, ladder_vector
+
+    return (
+        compare_ladder(ladder_vector(snapshot, spec), ladder_vector(baseline, spec)) == 1
+    )
 
 
 def _unit_text(wanted: WantedItem) -> str:
@@ -1249,6 +1272,81 @@ async def postpone_upgrade_wanted(
         "（洗版比较的基线）。纯数据库变换、分批慢跑，补完即空转。"
     ),
 )
+def _snapshot_version(quality: dict) -> int:
+    """快照结构版本；缺键或值损坏一律按 v1（重算一次即修好，绝不让巡检抛错）。"""
+    try:
+        return int(quality.get("v", 1))
+    except (TypeError, ValueError):
+        return 1
+
+
+async def _refill_stale_snapshots(session: AsyncSession, upgrade_ids: set[int]) -> int:
+    """把结构版本落后的存量快照逐批重算（quality-upgrade.md §16.3）。
+
+    新增可比维度（如 v2 的 video_codec / platforms）后，老快照在这些位上恒为
+    未知：一旦用户把新维度加进洗版阶梯，比较会在该位单侧未知而截断，这些单元
+    会**大面积变成不可比、洗版停摆**。重算是纯 DB 变换（probe 各列都在
+    library_file 里），逐批做即可。
+
+    ``{}`` 哨兵不在重算范围：它表示"没有在位文件或什么都识别不出"，与新增
+    维度无关，重算只会白白重扫。
+    """
+    global _stale_snapshot_cursor
+    rows = list(
+        (
+            await session.execute(
+                select(WantedItem)
+                .join(Subscription, Subscription.id == WantedItem.subscription_id)
+                .where(
+                    WantedItem.id > _stale_snapshot_cursor,  # type: ignore[operator]
+                    WantedItem.status == WantedStatus.IMPORTED,  # type: ignore[arg-type]
+                    WantedItem.in_scope.is_(True),  # type: ignore[attr-defined]
+                    WantedItem.quality.isnot(None),  # type: ignore[union-attr]
+                    Subscription.rule_set_id.in_(upgrade_ids),  # type: ignore[union-attr]
+                )
+                .order_by(WantedItem.id)  # type: ignore[arg-type]
+                .limit(_BACKFILL_BATCH * 4)
+            )
+        ).scalars()
+    )
+    _stale_snapshot_cursor = (rows[-1].id or 0) if rows else 0
+    stale = [
+        row
+        for row in rows
+        if row.quality and _snapshot_version(row.quality) < SNAPSHOT_VERSION
+    ]
+    if not stale:
+        return 0
+    by_media: dict[int, list[WantedItem]] = {}
+    for row in stale:
+        by_media.setdefault(row.media_item_id, []).append(row)
+    # 与入库验证互斥：验证确认升级时会把旧文件移进回收站（in_place 变假）。
+    # 重算恰好撞进这个窗口的话，fill_snapshots 会因为"该单元没有在位文件"
+    # 写下 {} 哨兵，把一条好基线换成"无法识别"——而 {} 又被排除在重算之外，
+    # 单元就此永久退出洗版。回填 tick 900 秒一轮、每轮 50 行，锁竞争可忽略
+    previous = {row.id: row.quality for row in stale}
+    async with _verify_lock:
+        for media_item_id, wanted_rows in by_media.items():
+            await fill_snapshots(session, media_item_id, wanted_rows)
+    # 双保险：重算**永远不把已有基线降级成哨兵**。文件此刻不在位（卸载的
+    # 媒体库、正在搬运）是暂时状态，真相是"这次测不了"而不是"识别不出"，
+    # 留着旧基线，下一轮轮转再试
+    for row in stale:
+        if not row.quality and previous.get(row.id):
+            row.quality = previous[row.id]
+    # 重算可能让单元在新维度上第一次变得"可证明低于目标"，当场排期而不是
+    # 等排期补挂巡检轮转到它
+    armed = await arm_upgrade_candidates(session, stale)
+    await session.commit()
+    logger.info(
+        "洗版基线重算：%d 个单元的质量快照升到 v%d，%d 个进入洗版排期",
+        len(stale),
+        SNAPSHOT_VERSION,
+        armed,
+    )
+    return len(stale)
+
+
 async def backfill_upgrade_snapshots() -> None:
     """存量回填 tick：每次最多处理一批 quality IS NULL 的 imported 单元。"""
     db = get_database()
@@ -1276,20 +1374,24 @@ async def backfill_upgrade_snapshots() -> None:
             .scalars()
             .all()
         )
-        if not rows:
-            return
-        by_media: dict[int, list[WantedItem]] = {}
-        for row in rows:
-            by_media.setdefault(row.media_item_id, []).append(row)
-        for media_item_id, wanted_rows in by_media.items():
-            await fill_snapshots(session, media_item_id, wanted_rows)
-        armed = await arm_upgrade_candidates(session, rows)
-        await session.commit()
-        logger.info(
-            "洗版基线回填：本轮补齐 %d 个单元的质量快照，%d 个进入洗版排期",
-            len(rows),
-            armed,
-        )
+        # 注意这里**不能**在 rows 为空时早退：下面两个巡检（版本重算、排期
+        # 补挂）恰恰是为"稳态"设计的——库全部回填完之后 NULL 行本就为零，
+        # 早退会让它们在成熟部署上永远不执行
+        if rows:
+            by_media: dict[int, list[WantedItem]] = {}
+            for row in rows:
+                by_media.setdefault(row.media_item_id, []).append(row)
+            for media_item_id, wanted_rows in by_media.items():
+                await fill_snapshots(session, media_item_id, wanted_rows)
+            armed = await arm_upgrade_candidates(session, rows)
+            await session.commit()
+            logger.info(
+                "洗版基线回填：本轮补齐 %d 个单元的质量快照，%d 个进入洗版排期",
+                len(rows),
+                armed,
+            )
+
+        await _refill_stale_snapshots(session, upgrade_ids)
 
         # 已有快照但尚未排期的单元（如规则组事后才配洗版目标）：本 tick 顺带
         # 补排期。查询条件表达不了"可洗"（到顶/{} 哨兵会被 arm 判否留在

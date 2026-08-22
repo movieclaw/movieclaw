@@ -143,7 +143,9 @@ async def annotate_media_source(
             continue
         quality = dict(wanted.quality)
         quality["media_source"] = best.media_source
-        quality.pop("remux", None)
+        # 人工标注片源即否定 Remux；显式写 False 而不是删键——快照落库一律
+        # 全键，删键会破坏这个不变量（§16.2）
+        quality["remux"] = False
         wanted.quality = quality
         wanted.updated_at = now
         snapshots += 1

@@ -15,6 +15,8 @@ from movieclaw_matcher import (
     RuleSetSpec,
     TorrentCandidate,
     build_snapshot,
+    candidate_ladder_rank,
+    compare_ladder,
     compare_upgrade,
     provably_at_cutoff,
     provably_below_cutoff,
@@ -144,6 +146,23 @@ UPGRADE_CASES = [
     (
         dict(resolution="1080p", media_source="WEB-DL"),
         dict(media_source="Blu-ray", remux=True),
+        dict(upgrade_source="remux"),
+        False,
+        "upgrade_not_comparable",
+    ),
+    # 双方片源都未知：末位平局 = 整体等价，判"不构成升级"而非"不可比"（§14.4）。
+    # 分辨率低于目标才会进洗版上下文，所以这条在生产里是可达的
+    (
+        dict(resolution="720p"),
+        dict(resolution="720p"),
+        dict(upgrade_source="remux"),
+        False,
+        "upgrade_not_better",
+    ),
+    # 单侧未知仍是不可比（三态铁律不变）：当前已知、候选未知
+    (
+        dict(resolution="720p", media_source="HDTV"),
+        dict(resolution="720p"),
         dict(upgrade_source="remux"),
         False,
         "upgrade_not_comparable",
@@ -428,3 +447,216 @@ def test_user_lowest_label_is_human_readable() -> None:
     """哨兵值不能把 user-lowest 原样亮给用户。"""
     snap = _snap(resolution="2160p", media_source=USER_LOWEST_SOURCE)
     assert quality_label(snap) == "2160p 最低档（人工标注）"
+
+
+# ---------------------------------------------------------------------------
+# 选优排序用的绝对档位（§15.4）：与升级判定的"未知即不可比"是两套语义
+# ---------------------------------------------------------------------------
+
+
+def test_candidate_ladder_rank_orders_by_tier() -> None:
+    """同分辨率下档位更高的候选排序位次更大——洗版按它选优而非按评分。"""
+    spec = _spec(upgrade_source="remux")
+    webdl = candidate_ladder_rank(TorrentAttrs(resolution="1080p", media_source="WEB-DL"), spec)
+    remux = candidate_ladder_rank(
+        TorrentAttrs(resolution="1080p", media_source="Blu-ray", remux=True), spec
+    )
+    assert remux > webdl
+
+
+def test_candidate_ladder_rank_unknown_sorts_lowest() -> None:
+    """未知维度按最低（-1）排序：排序只决定谁先投，不会因此多投一个候选。"""
+    spec = _spec(upgrade_source="remux")
+    assert candidate_ladder_rank(TorrentAttrs(), spec) == (-1, -1)
+    assert candidate_ladder_rank(TorrentAttrs(resolution="1080p"), spec)[1] == -1
+
+
+def test_candidate_ladder_rank_follows_user_resolution_order() -> None:
+    """分辨率位次跟随规则组偏好序（省空间党的 1080p 优先同样生效）。"""
+    spec = _spec(upgrade_source="remux", resolutions=["1080p", "2160p"])
+    r1080 = candidate_ladder_rank(TorrentAttrs(resolution="1080p", media_source="WEB-DL"), spec)
+    r2160 = candidate_ladder_rank(TorrentAttrs(resolution="2160p", media_source="WEB-DL"), spec)
+    assert r1080 > r2160
+
+
+# ---------------------------------------------------------------------------
+# 档位向量比较：三个洗版谓词的共同底座（§14.4）
+# ---------------------------------------------------------------------------
+
+
+LADDER_CASES = [
+    # (左, 右, 期望)  —— 1 = 左更优，-1 = 右更优，0 = 逐位等价，None = 不可比
+    ((4, 3), (4, 2), 1),
+    ((4, 2), (4, 3), -1),
+    ((4, 2), (3, 5), 1),  # 首位定序，后续位够不着（分辨率严格优先）
+    ((4, 3), (4, 3), 0),
+    # 双方都未知 = 该位平局：末位平局即整体等价
+    ((4, None), (4, None), 0),
+    # 单侧未知 = 截断，后续位一律够不着
+    ((4, None), (4, 3), None),
+    ((4, 3), (4, None), None),
+    ((None, 5), (4, 1), None),
+    # 首位就定序时，次位的未知不影响结论——未知只截断它**之后**的位
+    ((5, None), (4, 3), 1),
+]
+
+
+@pytest.mark.parametrize("left, right, expected", LADDER_CASES)
+def test_compare_ladder_table(left, right, expected) -> None:
+    assert compare_ladder(left, right) == expected
+
+
+def test_compare_ladder_is_antisymmetric() -> None:
+    """交换两侧则结果取反（不可比与等价对称不变）——比较关系自洽的底线。"""
+    for left, right, expected in LADDER_CASES:
+        flipped = compare_ladder(right, left)
+        assert flipped == (None if expected is None else -expected)
+
+
+# ---------------------------------------------------------------------------
+# 多维阶梯（§14.3）：维度顺序即优先级，偏好列表顺序即位次
+# ---------------------------------------------------------------------------
+
+
+def _multi_spec(**kwargs) -> RuleSetSpec:
+    base = dict(
+        upgrade_source="web-dl",
+        resolutions=["2160p", "1080p"],
+        # UI 选"H.265 一族"会把三种等价写法都写进来
+        video_codecs=["x265", "H.265", "HEVC", "x264"],
+        platforms=["netflix", "amazon"],
+        upgrade_ladder=["resolution", "source", "video_codec", "platform"],
+    )
+    return RuleSetSpec(**{**base, **kwargs})
+
+
+_MULTI_BASE = dict(
+    resolution="2160p", media_source="WEB-DL", video_codec="x264", platforms=["amazon"]
+)
+
+
+def test_codec_position_upgrades_within_same_resolution_and_source() -> None:
+    verdict = compare_upgrade(
+        _candidate(**{**_MULTI_BASE, "video_codec": "x265"}), _snap(**_MULTI_BASE), _multi_spec()
+    )
+    assert verdict.accepted
+
+
+def test_same_codec_family_written_differently_is_a_tie() -> None:
+    """x265 与 HEVC 是同一族的两种写法，必须塌缩成阶梯上的同一个位次——
+    否则同族的不同写法会互相"升级"，来回重下。"""
+    snapshot = {**_MULTI_BASE, "video_codec": "x265"}
+    verdict = compare_upgrade(
+        _candidate(**{**snapshot, "video_codec": "hevc"}), _snap(**snapshot), _multi_spec()
+    )
+    assert not verdict.accepted
+    assert verdict.reason_code == "upgrade_not_better"
+
+
+def test_platform_position_decides_when_higher_positions_tie() -> None:
+    snapshot = {**_MULTI_BASE, "video_codec": "x265"}
+    verdict = compare_upgrade(
+        _candidate(**{**snapshot, "platforms": ["netflix"]}), _snap(**snapshot), _multi_spec()
+    )
+    assert verdict.accepted
+
+
+def test_dimension_order_changes_the_verdict() -> None:
+    """把平台提到编码之前，"编码更好但平台更差"的候选从升级变成降级——
+    维度顺序就是用户表达偏好的地方。"""
+    snapshot = {
+        "resolution": "2160p",
+        "media_source": "WEB-DL",
+        "video_codec": "x264",
+        "platforms": ["netflix"],
+    }
+    candidate = {**snapshot, "video_codec": "x265", "platforms": ["amazon"]}
+    codec_first = compare_upgrade(_candidate(**candidate), _snap(**snapshot), _multi_spec())
+    platform_first = compare_upgrade(
+        _candidate(**candidate),
+        _snap(**snapshot),
+        _multi_spec(upgrade_ladder=["resolution", "source", "platform", "video_codec"]),
+    )
+    assert codec_first.accepted
+    assert not platform_first.accepted
+
+
+def test_dimension_without_preference_list_is_skipped_not_unknown() -> None:
+    """偏好列表为空的位自动跳过：当成"未知"会截断整条阶梯，洗版全线哑火。"""
+    spec = _multi_spec(platforms=[], video_codecs=[])
+    verdict = compare_upgrade(
+        _candidate(resolution="2160p", media_source="Blu-ray"),
+        _snap(resolution="2160p", media_source="WEBRip"),
+        spec,
+    )
+    assert verdict.accepted  # 只剩分辨率与片源两位，片源 T2 → T4 成立
+
+
+def test_unknown_low_position_does_not_block_higher_position_verdict() -> None:
+    """未知只截断它**之后**的位：编码已定序时，平台未标注不影响结论。"""
+    verdict = compare_upgrade(
+        _candidate(resolution="2160p", media_source="WEB-DL", video_codec="x265"),
+        _snap(**_MULTI_BASE),
+        _multi_spec(),
+    )
+    assert verdict.accepted
+
+
+def test_ladder_normalization_drops_unknown_and_duplicates() -> None:
+    spec = RuleSetSpec.model_validate(
+        {"upgrade_ladder": ["platform", "nope", "platform", "resolution"]}
+    )
+    assert spec.upgrade_ladder == ["platform", "resolution"]
+
+
+def test_empty_ladder_falls_back_to_default_pair() -> None:
+    """空阶梯没有任何一位可比 ⇒ 没有候选构成升级、所有单元又都算已达目标，
+    洗版静默全停。回落到缺省二元组至少行为正确。"""
+    assert RuleSetSpec.model_validate({"upgrade_ladder": ["nope"]}).upgrade_ladder == [
+        "resolution",
+        "source",
+    ]
+
+
+def test_target_label_renders_every_effective_dimension() -> None:
+    assert upgrade_target_label(_multi_spec()) == "2160p WEB-DL · x265 · netflix"
+    # 未进阶梯的维度不出现在目标里
+    assert upgrade_target_label(_multi_spec(upgrade_ladder=["resolution", "source"])) == (
+        "2160p WEB-DL"
+    )
+
+
+def test_ladder_dimension_domains_do_not_drift() -> None:
+    """值域（models 校验用）与标签表（decision 文案用）必须一一对应。
+
+    两份定义分居两个模块是循环导入所迫；漂移的后果很隐蔽——校验层放行了一个
+    维度，排序层却算不出它的位次。这条测试是它们之间唯一的粘合。
+    """
+    from movieclaw_matcher.decision import _LADDER_LABELS
+    from movieclaw_matcher.models import _LADDER_DIMENSION_VALUES
+
+    assert set(_LADDER_LABELS) == set(_LADDER_DIMENSION_VALUES)
+
+
+def test_all_dimensions_skipped_falls_back_to_default_pair() -> None:
+    """阶梯里的维度**全部因未配偏好而被跳过**时，回落缺省二元组。
+
+    校验层的同名保护只挡得住"列表本身为空"。用户在界面上点掉分辨率和片源、
+    只留一个没配偏好的平台，列表非空但生效维度为零——那时比较恒等价：
+    没有候选构成升级，所有单元又都算"已达目标"，720p HDTV 会被报成
+    「已达 Remux 目标」，洗版静默全停而详情页还在误导人。
+    """
+    spec = RuleSetSpec.model_validate(
+        {"upgrade_source": "remux", "upgrade_ladder": ["platform"]}
+    )
+    snap = _snap(resolution="720p", media_source="HDTV")
+    assert provably_below_cutoff(snap, spec) is True
+    assert provably_at_cutoff(snap, spec) is False
+
+
+def test_default_ladder_constants_agree() -> None:
+    """两个模块各自持有一份缺省二元组（循环导入所迫），值必须一致。"""
+    from movieclaw_matcher.decision import _DEFAULT_LADDER
+    from movieclaw_matcher.models import _DEFAULT_UPGRADE_LADDER
+
+    assert tuple(_DEFAULT_LADDER) == tuple(_DEFAULT_UPGRADE_LADDER)

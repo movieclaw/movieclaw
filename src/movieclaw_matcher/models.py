@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -18,6 +19,113 @@ from enum import StrEnum
 from pydantic import BaseModel, Field, model_validator
 
 from movieclaw_enrich.models import TorrentAttrs
+from movieclaw_enrich.vocab import PLATFORM_IDS
+
+# HDR 值域，按"越靠前越高"的内置顺序排列（仅作编辑器初始顺序与旧字段换算用，
+# 实际偏好序以用户列表为准）。"SDR" 是哨兵值，对应资源未标注任何 HDR 格式。
+HDR_LEVELS: tuple[str, ...] = ("DV", "HDR10+", "HDR10", "HLG", "SDR")
+
+# 高格式蕴含低格式：DV Profile 8 自带 HDR10 基础层，HDR10+ 是 HDR10 的动态
+# 元数据扩展。不建模这层关系的话，"偏好 HDR10 胜过 DV"的用户（播放设备对 DV
+# 支持差）会把一个**已经含 HDR10 基础层**的文件判成低位次，白洗一次
+# （quality-upgrade.md §14.8）。DV Profile 5 确实不含 HDR10 基础层，但标题与
+# probe 都区分不出 profile——按"能播 HDR10"这侧保守建模，错的方向是少洗一次。
+_HDR_IMPLIES: dict[str, set[str]] = {"DV": {"HDR10"}, "HDR10+": {"HDR10"}}
+
+
+def hdr_values(tags: list[str]) -> set[str]:
+    """资源**声明**的 HDR 格式集合；未标注任何格式 = {"SDR"}。过滤用。"""
+    return {tag.upper() for tag in tags} if tags else {"SDR"}
+
+
+def hdr_effective_values(tags: list[str], allowed: Collection[str]) -> set[str]:
+    """资源"能当什么格式用"的集合（含蕴含展开）。**排序用**。
+
+    与 ``hdr_values`` 分开是因为过滤与排序回答的是两个问题：
+    - 要不要（过滤）：**你列出的就是你接受的全部格式**，资源带了没列出的格式
+      就不要——白名单对多值属性必须这么判，否则「排除 DV」会被一个同时标了
+      HDR10 的 DV 资源绕过去（"只要 A"表达不了"排除 B"）；
+    - 谁更好（排序）：DV 文件自带 HDR10 基础层，按它**能播的最高格式**算位次，
+      免得偏好 HDR10 的用户为一个已经含 HDR10 的文件白洗一次（§14.8）。
+    展开只对用户本来就接受的格式生效，排序因此不会把被排除的格式抬进来。
+    """
+    values = hdr_values(tags)
+    accepted = {value.upper() for value in allowed}
+    for tag in list(values):
+        if tag in accepted:
+            values |= _HDR_IMPLIES.get(tag, set())
+    return values
+
+
+# 洗版阶梯的值域与缺省。缺省二元组 = quality-upgrade.md §2 的原样行为，
+# 存量规则组因此逐位等价、零迁移。
+_LADDER_DIMENSION_VALUES: frozenset[str] = frozenset(
+    {"resolution", "source", "hdr", "video_codec", "platform"}
+)
+_DEFAULT_UPGRADE_LADDER: tuple[str, ...] = ("resolution", "source")
+
+
+def _known_hdr_levels(values: list[str]) -> list[str]:
+    """保序去重地筛出值域内的 HDR 值（大小写不敏感）。"""
+    known = {v.casefold(): v for v in HDR_LEVELS}
+    out: list[str] = []
+    for value in values:
+        canon = known.get(value.casefold())
+        if canon and canon not in out:
+            out.append(canon)
+    return out
+
+
+def _hdr_from_legacy(hdr: HdrPolicy, dv: DvPolicy) -> tuple[list[str], list[str]]:
+    """旧三态组合 → (白名单, 黑名单)（quality-upgrade.md §14.8 的对照表）。
+
+    白/黑两份而不是一份：HDR 是**多值属性**，"必须含 DV"（任一命中）与
+    "排除 DV"（命中即拒）是两个方向，单靠白名单表达不了其中之一——这也正是
+    平台维度当初就分白/黑两个字段的原因，两者形状一致。
+
+    ``hdr=forbid`` 与 ``dv=require`` 的历史矛盾组合不再报错（读取路径必须
+    永远宽容，§16.4）：排除项更强，按 ``hdr=forbid`` 解释为「只要 SDR」。
+    """
+    family = [v for v in HDR_LEVELS if v != "SDR"]
+    if hdr is HdrPolicy.FORBID:
+        return ["SDR"], []
+    if dv is DvPolicy.REQUIRE:
+        return ["DV"], []
+    if hdr is HdrPolicy.REQUIRE:
+        if dv is DvPolicy.FORBID:
+            return [v for v in family if v != "DV"], ["DV"]
+        return family, []
+    if dv is DvPolicy.FORBID:
+        return [], ["DV"]  # 不限 HDR，只排除 DV
+    return [], []
+
+
+def _legacy_from_hdr(levels: list[str], block: list[str]) -> tuple[HdrPolicy, DvPolicy]:
+    """(白名单, 黑名单) → 最接近的旧三态组合（仅供回退兼容，丢失顺序信息）。"""
+    dv = (
+        DvPolicy.FORBID
+        if "DV" in block
+        else DvPolicy.REQUIRE
+        if levels == ["DV"]
+        else DvPolicy.ANY
+    )
+    if not levels:
+        return HdrPolicy.ANY, dv
+    if levels == ["SDR"]:
+        return HdrPolicy.FORBID, DvPolicy.ANY
+    if "SDR" in levels:
+        return HdrPolicy.ANY, dv  # 既收 SDR 又收 HDR：旧字段表达不了，退回不限
+    return HdrPolicy.REQUIRE, dv
+
+
+def _known_platforms(values: list[str]) -> list[str]:
+    """保序去重地筛出词表里认识的平台规范值（大小写不敏感）。"""
+    seen: list[str] = []
+    for value in values:
+        canon = value.casefold()
+        if canon in PLATFORM_IDS and canon not in seen:
+            seen.append(canon)
+    return seen
 
 
 class HdrPolicy(StrEnum):
@@ -84,17 +192,40 @@ class RuleSetSpec(BaseModel):
     video_codecs: list[str] = Field(
         default_factory=list, description="允许的视频编码（如 x265/x264）；空=不限"
     )
+    # 平台与制作组是正交的两个来源维度，各自独立判断（都配 = 都要满足）：
+    # 不引入"任一命中即可"的组合开关——每个维度独立才能一句话解释拒绝原因。
+    platforms: list[str] = Field(
+        default_factory=list,
+        description="流媒体平台白名单（规范值，如 netflix/disney_plus）；空=不限。"
+        "列表顺序即偏好序，为洗版位次预留（§14），当前不参与候选评分",
+    )
+    platforms_block: list[str] = Field(
+        default_factory=list, description="流媒体平台黑名单（规范值）"
+    )
     release_groups_allow: list[str] = Field(
         default_factory=list, description="制作组白名单；空=不限"
     )
     release_groups_block: list[str] = Field(
         default_factory=list, description="制作组黑名单"
     )
+    # HDR：硬过滤与偏好合并成**一条有序列表**（列表即白名单，顺序即偏好，
+    # 首项即洗版终点）。旧的 hdr/dv 两个三态字段降级为兼容层——读取时若
+    # hdr_levels 为空则由它们推导，写入时反向回填等价值，让"应用内更新回退到
+    # 旧版本"仍能读懂（不能原地改 hdr 的类型：同名不同型会让旧代码
+    # model_validate 直接抛错、规则组全线解析失败，§14.8）。
+    hdr_levels: list[str] = Field(
+        default_factory=list,
+        description='HDR 白名单兼偏好序（值域 DV/HDR10+/HDR10/HLG/SDR，"SDR"=未标注）；'
+        "任一命中即过，顺序即偏好；空=不限",
+    )
+    hdr_block: list[str] = Field(
+        default_factory=list, description="HDR 黑名单；资源带其中任一格式即排除"
+    )
     hdr: HdrPolicy = Field(
-        default=HdrPolicy.ANY, description="HDR 三态要求（整个 HDR 家族，含 DV）"
+        default=HdrPolicy.ANY, description="[兼容层] HDR 三态；hdr_levels 为空时才消费"
     )
     dv: DvPolicy = Field(
-        default=DvPolicy.ANY, description="DV（杜比视界）三态要求，与 hdr 正交"
+        default=DvPolicy.ANY, description="[兼容层] DV 三态；hdr_levels 为空时才消费"
     )
     free_only: bool = Field(default=False, description="只接受当前免费（free）的种子")
     min_seeders: int | None = Field(default=None, description="做种数下限；None=不限")
@@ -130,6 +261,11 @@ class RuleSetSpec(BaseModel):
         description="洗版目标分辨率；None=取 resolutions 首选（都缺省则 1080p，"
         "保守缺省避免把用户意外带进 4K 的磁盘占用）",
     )
+    upgrade_ladder: list[str] = Field(
+        default_factory=lambda: list(_DEFAULT_UPGRADE_LADDER),
+        description="参与洗版比较的维度及其优先级（顺序即位次）；"
+        "值域 resolution/source/video_codec/platform，缺省即 §2 的二元组",
+    )
     upgrade_keep_old: bool = Field(
         default=False,
         description="洗到新版本后保留旧版本（多版本共存，收藏家模式）；"
@@ -142,13 +278,48 @@ class RuleSetSpec(BaseModel):
     )
 
     @model_validator(mode="after")
-    def _reject_hdr_dv_conflict(self) -> RuleSetSpec:
-        """拦截逻辑矛盾的组合：DV 属于 HDR 家族，排除 HDR 的同时无法要求 DV。"""
-        if self.hdr is HdrPolicy.FORBID and self.dv is DvPolicy.REQUIRE:
-            raise ValueError(
-                "hdr=forbid 与 dv=require 互相矛盾：DV 属于 HDR 家族，"
-                "「排除 HDR」会排除一切 DV 资源，无法同时「必须 DV」"
-            )
+    def _normalize_upgrade_ladder(self) -> RuleSetSpec:
+        """阶梯维度归一：丢弃未知值与重复项；全被丢弃时回落到缺省二元组。
+
+        与平台白名单同一取向——读取路径永远宽容（§16.4）。回落而不是留空是
+        因为**空阶梯没有任何一位可比**：比较恒等价，于是没有候选构成升级、
+        所有单元又都算"已达目标"，洗版静默全停。回落到缺省至少行为正确。
+        """
+        seen: list[str] = []
+        for dim in self.upgrade_ladder:
+            if dim in _LADDER_DIMENSION_VALUES and dim not in seen:
+                seen.append(dim)
+        self.upgrade_ladder = seen or list(_DEFAULT_UPGRADE_LADDER)
+        return self
+
+    @model_validator(mode="after")
+    def _normalize_platforms(self) -> RuleSetSpec:
+        """平台值归一到规范值；词表外的值**丢弃而非报错**。
+
+        规则组 spec 的读取路径必须永远宽容：词表演进（合并平台、改规范值）
+        或人工写错一个值，都不该让 ``model_validate`` 抛错——那会让整个规则组
+        解析失败、匹配管线全线停摆，波及的远不止平台这一个维度。
+        丢弃的后果只是该值不再产生约束，量级与"少配了一个条件"相同。
+        """
+        self.platforms = _known_platforms(self.platforms)
+        self.platforms_block = _known_platforms(self.platforms_block)
+        return self
+
+    @model_validator(mode="after")
+    def _normalize_hdr(self) -> RuleSetSpec:
+        """HDR 归一与双写：新键优先，同时回填等价旧键。
+
+        旧的互斥校验器（hdr=forbid + dv=require）随之删除——矛盾组合在列表
+        语义下根本写不出来，这正是合并成一个字段的收益之一。
+        """
+        levels = _known_hdr_levels(self.hdr_levels)
+        block = _known_hdr_levels(self.hdr_block)
+        if not levels and not block:
+            levels, block = _hdr_from_legacy(self.hdr, self.dv)
+        self.hdr_levels, self.hdr_block = levels, block
+        # 反向回填：能精确表达就精确写，表达不了（顺序、混合集合）就写最宽松的
+        # 等价值。回退到旧版本后行为退化为粗粒度，**不精确但不崩、不危险**。
+        self.hdr, self.dv = _legacy_from_hdr(levels, block)
         return self
 
     @model_validator(mode="after")
@@ -243,6 +414,12 @@ class RuleVerdict:
     reason_text: str | None = None
 
 
+# 快照结构版本：新增可比维度时 +1，驱动存量快照重算（quality-upgrade.md §16.3）。
+# v1 = 历史快照（无版本键，只有 resolution/media_source/remux/release_group/hdr/bit_rate）
+# v2 = 增加 video_codec 与 platforms
+SNAPSHOT_VERSION = 2
+
+
 class QualitySnapshot(BaseModel):
     """单元当前版本的质量快照（``wanted_item.quality`` JSON 列的 schema）。
 
@@ -254,11 +431,16 @@ class QualitySnapshot(BaseModel):
     部分可比规则）。
     """
 
+    # 结构版本；**缺省是 1 而不是当前版本**——老行没有这个键，读出来必须
+    # 显示为"落后"，回填任务才会把新维度补上（写入方 build_snapshot 负责盖章）
+    v: int = 1
     resolution: str | None = None  # 归一化分辨率（2160p/1080p/…）；probe 优先
     media_source: str | None = None  # 片源（WEB-DL/Blu-ray/…）；名称来源
     remux: bool = False  # 是否原盘 Remux；名称来源（缺席即否定，同 TorrentAttrs）
     release_group: str | None = None  # 制作组；仅展示
     hdr: list[str] = Field(default_factory=list)  # HDR 格式（DV/HDR10/…）；仅展示
+    video_codec: str | None = None  # 视频编码；probe 定族、名称定写法（见 build_snapshot）
+    platforms: list[str] = Field(default_factory=list)  # 流媒体平台；名称来源
     bit_rate: int | None = None  # 实测码率（bps）；留证据供详情页展示，不参与档位
 
 

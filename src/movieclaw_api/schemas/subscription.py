@@ -669,7 +669,7 @@ def _wanted_upgrades(
         snapshot = QualitySnapshot.model_validate(w.quality)
         result[(w.season_number, w.episode_number)] = WantedUpgradeView(
             active=w.in_scope and upgrade_ready(w, rule_spec, now=now),
-            current_label=quality_label(snapshot),
+            current_label=quality_label(snapshot, rule_spec),
             target_label=target,
             search_attempts=w.search_attempts,
             indeterminate=not provably_below_cutoff(snapshot, rule_spec)
@@ -744,10 +744,14 @@ class RuleSetPayload(BaseModel):
         description=(
             "过滤规则 JSON（全部键可缺省=不限）："
             'resolutions 分辨率偏好序（如 ["2160p","1080p"]，顺序即优先级）、'
-            "video_codecs 编码白名单、release_groups_allow/release_groups_block "
-            "制作组白/黑名单、hdr 策略（any/require/forbid，判断整个 HDR 家族含 DV）、"
-            "dv 策略（any/require/forbid，单独判断杜比视界，与 hdr 正交，"
-            "如必须 HDR 但排除 DV = hdr:require + dv:forbid）、free_only 只要免费种、"
+            "video_codecs 编码白名单（按编码族匹配：写 x265 即接受 H.265/HEVC）、"
+            "platforms/platforms_block 流媒体平台白/黑名单（规范值如 netflix、"
+            "disney_plus、iqiyi；词表外的值读取时丢弃不报错）、"
+            "release_groups_allow/release_groups_block "
+            "制作组白/黑名单、hdr_levels/hdr_block HDR 白/黑名单（值域 "
+            "DV/HDR10+/HDR10/HLG/SDR，SDR=资源未标注 HDR；白名单任一命中即过、"
+            "顺序即偏好，黑名单命中即排除；旧的 hdr/dv 三态字段仍可写入，"
+            "读取时自动换算并反向回填）、free_only 只要免费种、"
             "min_seeders 做种数下限、size_min_mb/size_max_mb 体积区间（整季包按每集均摊）、"
             "exclude_hr 排除 H&R、hr_unknown_policy 决定 H&R 状态未知时宽松/严格处理、"
             "未填写的条件均不限制。\n\n"
@@ -755,7 +759,10 @@ class RuleSetPayload(BaseModel):
             "audio_languages_require：要求的音轨语言（BCP 47，任一命中即通过）。\n\n"
             "upgrade_source 洗版目标片源档（web-dl/blu-ray/remux，缺省=不洗版）、"
             "cutoff_resolution 洗版目标分辨率（缺省=resolutions 首选，"
-            "必须在 resolutions 允许范围内）。\n\n"
+            "必须在 resolutions 允许范围内）、"
+            "upgrade_ladder 参与洗版比较的维度及优先级（顺序即位次，值域 "
+            "resolution/source/video_codec/platform，缺省 [resolution, source] "
+            "即只比分辨率与片源；偏好列表为空的维度自动跳过）。\n\n"
             '示例：{"resolutions":["2160p"],"free_only":true,"upgrade_source":"remux"}'
         ),
     )

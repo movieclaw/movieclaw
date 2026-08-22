@@ -20,14 +20,19 @@
 
 from __future__ import annotations
 
+from functools import partial
+
 from movieclaw_enrich.models import TorrentAttrs
+from movieclaw_enrich.vocab import codec_family
 from movieclaw_matcher.models import (
+    SNAPSHOT_VERSION,
     IdentityMatch,
     QualitySnapshot,
     RuleSetSpec,
     RuleVerdict,
     TorrentCandidate,
     UpgradeVerdict,
+    hdr_effective_values,
 )
 
 Entry = tuple[TorrentCandidate, IdentityMatch, RuleVerdict]
@@ -125,6 +130,192 @@ def resolution_rank(resolution: str | None, spec: RuleSetSpec) -> int | None:
     return len(ladder) - ladder.index(key)
 
 
+# 档位阶梯的位序（quality-upgrade.md §2.1）。§14 会把它变成规则组可配的
+# ``upgrade_ladder``；在那之前写死为二元组，语义与位次来源都不变。
+# 档位阶梯的维度（quality-upgrade.md §14.3）。位序由规则组的 ``upgrade_ladder``
+# 决定，缺省 ("resolution", "source") 即 §2 的二元组。
+_LADDER_LABELS: dict[str, str] = {
+    "resolution": "分辨率",
+    "source": "片源",
+    "hdr": "HDR",
+    "video_codec": "编码",
+    "platform": "平台",
+}
+
+# 与 models._DEFAULT_UPGRADE_LADDER 同值：生效维度为空时的兜底
+_DEFAULT_LADDER: tuple[str, ...] = ("resolution", "source")
+
+
+def _rank_in(ladder: list[str], value: str | None) -> int | None:
+    """值在偏好序里的位次（越大越优）；不在序列里 = 未知（不可比）。"""
+    if not value:
+        return None
+    try:
+        return len(ladder) - ladder.index(value)
+    except ValueError:
+        return None
+
+
+def _codec_ladder(spec: RuleSetSpec) -> list[str]:
+    """编码白名单 → **按族去重**的偏好序。
+
+    UI 选一族会把三种等价写法都写进 video_codecs（x265/H.265/HEVC），它们
+    必须塌缩成阶梯上的**一个**位次，否则同一族的不同写法会互相"升级"。
+    """
+    ladder: list[str] = []
+    for value in spec.video_codecs:
+        family = codec_family(value)
+        if family and family not in ladder:
+            ladder.append(family)
+    return ladder
+
+
+def effective_ladder(spec: RuleSetSpec) -> tuple[str, ...]:
+    """实际参与比较的维度：**偏好列表为空的位自动跳过**（§14.3）。
+
+    跳过而不是"当作未知"是关键——空列表当未知会让整条阶梯在该位截断、
+    洗版全线哑火。resolution / source 恒有效：前者有内置默认偏好序，
+    后者有内置片源档，都不依赖用户配置。
+    """
+    dims = tuple(
+        dim
+        for dim in spec.upgrade_ladder
+        if not (dim == "hdr" and not spec.hdr_levels)
+        and not (dim == "video_codec" and not spec.video_codecs)
+        and not (dim == "platform" and not spec.platforms)
+    )
+    # 全被跳过时回落缺省二元组。空阶梯下没有任何一位可比：比较恒等价 ⇒
+    # 没有候选构成升级，而所有单元又都算"已达目标"——720p HDTV 会被报成
+    # 「已达 Remux 目标」，洗版静默全停且详情页还在误导用户。
+    # 校验层的同名保护只挡得住"列表本身为空"，挡不住"列表里的维度全没配偏好"
+    # （用户在洗版优先级里点掉分辨率和片源、只留一个没配的平台就是这样）
+    return dims or _DEFAULT_LADDER
+
+
+def _dimension_rank(
+    item: QualitySnapshot | TorrentAttrs, dim: str, spec: RuleSetSpec
+) -> int | None:
+    if dim == "resolution":
+        return resolution_rank(item.resolution, spec)
+    if dim == "source":
+        return source_tier(item.media_source, item.remux)
+    if dim == "hdr":
+        # 取"能播的最高格式"位次：DV 文件自带 HDR10 基础层，偏好 HDR10 的
+        # 规则组不该为它白洗一次（hdr_effective_values 的展开只对已接受的格式生效）
+        values = hdr_effective_values(item.hdr, spec.hdr_levels)
+        hdr_ranks = [r for v in values if (r := _rank_in(spec.hdr_levels, v)) is not None]
+        return max(hdr_ranks) if hdr_ranks else None
+    if dim == "video_codec":
+        return _rank_in(_codec_ladder(spec), codec_family(item.video_codec))
+    if dim == "platform":
+        # 一个资源可带多个平台标记，取其中位次最高的那个
+        ranks = [r for p in item.platforms if (r := _rank_in(spec.platforms, p)) is not None]
+        return max(ranks) if ranks else None
+    # 值域由 models._LADDER_DIMENSION_VALUES 把关，走到这里说明两者漂移了；
+    # 显式炸掉好过悄悄按最后一个分支算（那会让新维度看起来"生效了"却全错）
+    raise ValueError(f"未知的洗版阶梯维度：{dim}")
+
+
+def _dimension_text(item: QualitySnapshot | TorrentAttrs, dim: str) -> str:
+    """该资源在某维度上的原始标注值，供"无法识别 X（…）"文案使用。"""
+    if dim == "resolution":
+        return item.resolution or "未标注"
+    if dim == "source":
+        return item.media_source or "未标注"
+    if dim == "hdr":
+        return "/".join(item.hdr) or "未标注 HDR（按 SDR 处理）"
+    if dim == "video_codec":
+        return item.video_codec or "未标注"
+    return "/".join(item.platforms) or "未标注"
+
+
+def ladder_vector(
+    item: QualitySnapshot | TorrentAttrs, spec: RuleSetSpec
+) -> tuple[int | None, ...]:
+    """档位向量：逐位的位次，``None`` = 该维度未知（不可比，见 §2.4）。"""
+    return tuple(_dimension_rank(item, dim, spec) for dim in effective_ladder(spec))
+
+
+def compare_ladder_at(
+    left: tuple[int | None, ...], right: tuple[int | None, ...]
+) -> tuple[int | None, int]:
+    """字典序逐位比较两个档位向量，返回 (结果, 定序位下标)。
+
+    结果：``1`` = left 更优，``-1`` = right 更优，``0`` = 逐位等价，
+    ``None`` = 不可比（某位单侧未知，比较被截断，后续位够不着）。
+    逐位等价时下标是向量长度（没有任何一位定序）。
+
+    三条规则（quality-upgrade.md §2.4 + §14.4）：
+    - 双方都已知且不同 → 该位定序，结束；
+    - **双方都未知 → 该位平局，继续比下一位**（两边都没标片源是命名习惯的
+      常态，不是数据质量问题）；
+    - 单侧未知 → 不可比。三态铁律：未知永远不当已知用。
+    """
+    for index, (a, b) in enumerate(zip(left, right, strict=True)):
+        if a is None and b is None:
+            continue
+        if a is None or b is None:
+            return None, index
+        if a != b:
+            return (1 if a > b else -1), index
+    return 0, len(left)
+
+
+def compare_ladder(
+    left: tuple[int | None, ...], right: tuple[int | None, ...]
+) -> int | None:
+    """``compare_ladder_at`` 只取结果——三个洗版谓词的共同底座。"""
+    return compare_ladder_at(left, right)[0]
+
+
+def candidate_ladder_rank(
+    attrs: QualitySnapshot | TorrentAttrs, spec: RuleSetSpec
+) -> tuple[int, ...]:
+    """候选自身的绝对档位，供**洗版选优排序**使用（不参与升级判定）。
+
+    与 ``compare_ladder`` 的"未知即不可比"不同：这里未知按最低（-1）处理。
+    两者不矛盾——升级判定回答"要不要投"，必须只在能证明的维度上行动；
+    本函数只回答"同样已经判定合格的候选谁先投"，把未知排在后面不会
+    产生任何额外投递。
+
+    用途见 quality-upgrade.md §15.4：洗版候选按档位而非评分选优，否则
+    免费加分（_FREE_SCORE=100）会压过一档分辨率（30），系统可能先抓一个
+    "免费但只高半档"的版本，同一单元付两次下载。
+    """
+    return tuple(-1 if rank is None else rank for rank in ladder_vector(attrs, spec))
+
+
+def target_vector(spec: RuleSetSpec) -> tuple[int | None, ...] | None:
+    """洗版目标的档位向量；目标分辨率不在偏好序里时返回 ``None``。
+
+    逐位取值（§14.3）：resolution 取 ``cutoff_resolution``（缺省=偏好首选），
+    source 取 ``upgrade_source``，**其余维度直接取偏好列表首项**——只有
+    分辨率与片源会成数量级地改变磁盘占用，才需要"接受但不主动洗"的区分。
+
+    返回 None 表示"这个目标无法比较"（配置矛盾，校验器已拦，此处防御）——
+    调用方一律按"证明不了"处理，不猜。
+    """
+    if spec.upgrade_source is None:
+        return None
+    vector: list[int] = []
+    for dim in effective_ladder(spec):
+        if dim == "resolution":
+            target_resolution, _ = _target(spec)
+            resolution = resolution_rank(target_resolution, spec)
+            if resolution is None:
+                return None
+            vector.append(resolution)
+        elif dim == "source":
+            vector.append(_TARGET_SOURCE_TIER[spec.upgrade_source.value])
+        elif dim == "hdr":
+            vector.append(len(spec.hdr_levels))  # 首项位次
+        elif dim == "video_codec":
+            vector.append(len(_codec_ladder(spec)))  # 首项位次
+        else:
+            vector.append(len(spec.platforms))
+    return tuple(vector)
+
+
 def _target(spec: RuleSetSpec) -> tuple[str, int]:
     """洗版目标 (分辨率, 片源档)。调用前提：spec.upgrade_source 已配置。"""
     resolution = (
@@ -135,23 +326,48 @@ def _target(spec: RuleSetSpec) -> tuple[str, int]:
     return resolution, _TARGET_SOURCE_TIER[spec.upgrade_source.value]
 
 
-def quality_label(snapshot: QualitySnapshot | TorrentAttrs) -> str:
-    """档位的人话标签（"1080p Remux" / "2160p WEB-DL" / "1080p 片源未知"），
-    供活动文案与详情页展示。"""
+def quality_label(
+    snapshot: QualitySnapshot | TorrentAttrs, spec: RuleSetSpec | None = None
+) -> str:
+    """档位的人话标签（"1080p Remux" / "2160p WEB-DL · x265 · Netflix"）。
+
+    ``spec`` 给出时按生效阶梯补上编码/平台位——多维阶梯下，两个候选可能
+    分辨率与片源都一样、只差在编码上，标签不带那一位就没法解释拒绝理由。
+    """
     resolution = snapshot.resolution or "分辨率未知"
     if snapshot.remux:
-        return f"{resolution} Remux"
-    if (snapshot.media_source or "").casefold() == USER_LOWEST_SOURCE:
-        return f"{resolution} 最低档（人工标注）"
-    return f"{resolution} {snapshot.media_source or '片源未知'}"
+        head = f"{resolution} Remux"
+    elif (snapshot.media_source or "").casefold() == USER_LOWEST_SOURCE:
+        head = f"{resolution} 最低档（人工标注）"
+    else:
+        head = f"{resolution} {snapshot.media_source or '片源未知'}"
+    if spec is None:
+        return head
+    parts = [head]
+    dims = effective_ladder(spec)
+    if "hdr" in dims and snapshot.hdr:
+        parts.append("/".join(snapshot.hdr))
+    if "video_codec" in dims and snapshot.video_codec:
+        parts.append(snapshot.video_codec)
+    if "platform" in dims and snapshot.platforms:
+        parts.append("/".join(snapshot.platforms))
+    return " · ".join(parts)
 
 
 def upgrade_target_label(spec: RuleSetSpec) -> str | None:
-    """洗版目标的人话标签（"2160p Remux"）；未配置洗版返回 None。"""
+    """洗版目标的人话标签（"2160p Remux · x265"）；未配置洗版返回 None。"""
     if spec.upgrade_source is None:
         return None
     resolution, _ = _target(spec)
-    return f"{resolution} {_TARGET_SOURCE_LABEL[spec.upgrade_source.value]}"
+    parts = [f"{resolution} {_TARGET_SOURCE_LABEL[spec.upgrade_source.value]}"]
+    dims = effective_ladder(spec)
+    if "hdr" in dims and spec.hdr_levels:
+        parts.append(spec.hdr_levels[0])
+    if "video_codec" in dims and spec.video_codecs:
+        parts.append(spec.video_codecs[0])
+    if "platform" in dims and spec.platforms:
+        parts.append(spec.platforms[0])
+    return " · ".join(parts)
 
 
 def provably_below_cutoff(snapshot: QualitySnapshot | None, spec: RuleSetSpec) -> bool:
@@ -160,21 +376,10 @@ def provably_below_cutoff(snapshot: QualitySnapshot | None, spec: RuleSetSpec) -
     只有可证明"还差着"的单元才参与洗版排期——证明不了的（快照缺失、
     分辨率位次未知、同分辨率但片源未知）一律安静，不打扰站点。
     """
-    if spec.upgrade_source is None or snapshot is None:
+    target = target_vector(spec)
+    if target is None or snapshot is None:
         return False
-    cur_res = resolution_rank(snapshot.resolution, spec)
-    if cur_res is None:
-        return False
-    target_resolution, target_tier = _target(spec)
-    tgt_res = resolution_rank(target_resolution, spec)
-    if tgt_res is None:  # 目标分辨率不在偏好序（配置矛盾，校验器已拦，防御处理）
-        return False
-    if cur_res < tgt_res:
-        return True
-    if cur_res > tgt_res:
-        return False
-    cur_tier = source_tier(snapshot.media_source, snapshot.remux)
-    return cur_tier is not None and cur_tier < target_tier
+    return compare_ladder(ladder_vector(snapshot, spec), target) == -1
 
 
 def provably_at_cutoff(snapshot: QualitySnapshot | None, spec: RuleSetSpec) -> bool:
@@ -184,19 +389,10 @@ def provably_at_cutoff(snapshot: QualitySnapshot | None, spec: RuleSetSpec) -> b
     （分辨率位次未知、同分辨率但片源未知）体检报告要如实展示为
     「无法确认」，不能冒充"已达目标"。
     """
-    if spec.upgrade_source is None or snapshot is None:
+    target = target_vector(spec)
+    if target is None or snapshot is None:
         return False
-    cur_res = resolution_rank(snapshot.resolution, spec)
-    if cur_res is None:
-        return False
-    target_resolution, target_tier = _target(spec)
-    tgt_res = resolution_rank(target_resolution, spec)
-    if tgt_res is None:
-        return False
-    if cur_res != tgt_res:
-        return cur_res > tgt_res
-    cur_tier = source_tier(snapshot.media_source, snapshot.remux)
-    return cur_tier is not None and cur_tier >= target_tier
+    return compare_ladder(ladder_vector(snapshot, spec), target) in (0, 1)
 
 
 def compare_upgrade(
@@ -206,83 +402,67 @@ def compare_upgrade(
 
     前提：候选已通过规则组硬过滤（evaluate_rules）。三个否定出口 + 一个
     肯定出口，reason_text 为完整中文句子。
+
+    判定链与 ``provably_*`` 共用 ``compare_ladder``，本函数只额外负责把
+    "在哪一位上定的序"翻译成人话——每次拒绝永远只解释一个维度（§14.7）。
     """
     if spec.upgrade_source is None:
         raise ValueError("规则组未配置洗版目标，不应调用洗版比较")
 
-    current_label = quality_label(snapshot)
-    candidate_label = quality_label(candidate.attrs)
+    current_label = quality_label(snapshot, spec)
+    candidate_label = quality_label(candidate.attrs, spec)
+    reject = partial(
+        _upgrade_reject, current_label=current_label, candidate_label=candidate_label
+    )
 
-    cur_res = resolution_rank(snapshot.resolution, spec)
-    if cur_res is None:
-        return _upgrade_reject(
-            "upgrade_not_comparable",
-            "无法识别当前版本的分辨率，洗版比较不成立",
-            current_label,
-            candidate_label,
-        )
-    cand_res = resolution_rank(candidate.attrs.resolution, spec)
-    if cand_res is None:
-        return _upgrade_reject(
-            "upgrade_not_comparable",
-            f"无法识别候选的分辨率（{candidate.attrs.resolution or '未标注'}），洗版比较不成立",
-            current_label,
-            candidate_label,
-        )
+    dimensions = effective_ladder(spec)
+    snapshot_vector = ladder_vector(snapshot, spec)
+    candidate_vector = ladder_vector(candidate.attrs, spec)
 
-    # 停止线：当前版本已达洗版目标（分辨率位次更高，或同位次且片源档达标）
-    target_resolution, target_tier = _target(spec)
-    tgt_res = resolution_rank(target_resolution, spec)
-    cur_tier = source_tier(snapshot.media_source, snapshot.remux)
-    if tgt_res is not None and (
-        cur_res > tgt_res
-        or (cur_res == tgt_res and cur_tier is not None and cur_tier >= target_tier)
-    ):
-        return _upgrade_reject(
+    # 停止线：当前版本已达洗版目标
+    target = target_vector(spec)
+    if target is not None and compare_ladder(snapshot_vector, target) in (0, 1):
+        return reject(
             "upgrade_at_cutoff",
             f"当前版本 {current_label} 已达到洗版目标（{upgrade_target_label(spec)}），不再洗版",
-            current_label,
-            candidate_label,
         )
 
-    # 升级判定：字典序严格更高。分辨率位次先决；同位次时比片源档，
-    # 任一侧片源未知即无法证明"更好"，判否（部分可比原则）
-    if cand_res > cur_res:
+    # 升级判定：字典序严格更优才算升级
+    result, position = compare_ladder_at(candidate_vector, snapshot_vector)
+    if result == 1:
         return UpgradeVerdict(
             accepted=True, current_label=current_label, candidate_label=candidate_label
         )
-    if cand_res < cur_res:
-        return _upgrade_reject(
+    if result == 0:
+        return reject(
             "upgrade_not_better",
-            f"候选 {candidate_label} 的分辨率偏好低于当前版本 {current_label}，不构成升级",
-            current_label,
-            candidate_label,
+            f"候选 {candidate_label} 与当前版本 {current_label} 在可比维度上完全相同，不构成升级",
         )
-    cand_tier = source_tier(candidate.attrs.media_source, candidate.attrs.remux)
-    if cand_tier is None:
-        return _upgrade_reject(
+    dimension = dimensions[position]
+    label = _LADDER_LABELS[dimension]
+    # 定序/截断发生在第 position 位，意味着它之前的位全部打平——说出来，
+    # 用户才知道"差就差在这一个维度上"
+    prior = (
+        f"{'、'.join(_LADDER_LABELS[d] for d in dimensions[:position])}相同，"
+        if position
+        else ""
+    )
+    if result is None:
+        # 截断位上是哪一侧未知，文案就点名哪一侧——用户据此知道该修数据还是等资源
+        if candidate_vector[position] is None:
+            return reject(
+                "upgrade_not_comparable",
+                f"{prior}无法识别候选的{label}"
+                f"（{_dimension_text(candidate.attrs, dimension)}），无法证明是升级",
+            )
+        return reject(
             "upgrade_not_comparable",
-            f"无法识别候选的片源（{candidate.attrs.media_source or '未标注'}），"
-            "同分辨率下无法证明是升级",
-            current_label,
-            candidate_label,
+            f"{prior}当前版本{label}无法识别，无法证明候选更好",
         )
-    if cur_tier is None:
-        return _upgrade_reject(
-            "upgrade_not_comparable",
-            "当前版本片源无法识别，同分辨率下无法证明候选更好",
-            current_label,
-            candidate_label,
-        )
-    if cand_tier <= cur_tier:
-        return _upgrade_reject(
-            "upgrade_not_better",
-            f"候选 {candidate_label} 的片源档不高于当前版本 {current_label}，不构成升级",
-            current_label,
-            candidate_label,
-        )
-    return UpgradeVerdict(
-        accepted=True, current_label=current_label, candidate_label=candidate_label
+    return reject(
+        "upgrade_not_better",
+        f"{prior}候选 {candidate_label} 的{label}位次不高于当前版本 {current_label}，"
+        "不构成升级",
     )
 
 
@@ -317,6 +497,7 @@ def build_snapshot(
     probed: bool = False,
     probe_resolution: str | None = None,
     probe_hdr_label: str | None = None,
+    probe_video_codec: str | None = None,
     probe_bit_rate: int | None = None,
 ) -> QualitySnapshot:
     """按"可实测性分层"构造质量快照。
@@ -326,19 +507,33 @@ def build_snapshot(
     - ``probed=True`` 表示文件经过 ffprobe 实测：resolution/hdr 以实测为准
       （probe 的 hdr=None 是**测得 SDR**，不是未知，因此覆盖为空列表）；
       实测拿不到分辨率（探测失败）时回落名称值；
-    - ``probed=False``（纯名称路径）：resolution/hdr 也取名称值。
+    - ``probed=False``（纯名称路径）：resolution/hdr 也取名称值；
+    - ``video_codec``：**实测定族、名称定写法**——probe 的 codec_name
+      （hevc/h264）与标题写法（x265/HEVC）同族时保留名称值（信息量更大、
+      与规则组配置同一命名空间），不同族或名称缺失时以实测为准（实测推翻
+      名称）。两侧比较统一走 ``vocab.codec_family``，不需要额外映射层；
+    - ``platforms``：名称唯一来源（文件本体测不出发行平台）。
     """
     resolution = name_attrs.resolution if name_attrs else None
     hdr = list(name_attrs.hdr) if name_attrs else []
+    video_codec = name_attrs.video_codec if name_attrs else None
     if probed:
         resolution = probe_resolution or resolution
         mapped = _PROBE_HDR_TO_VOCAB.get((probe_hdr_label or "").casefold())
         hdr = [mapped] if mapped else []
+        if probe_video_codec and (
+            video_codec is None
+            or codec_family(video_codec) != codec_family(probe_video_codec)
+        ):
+            video_codec = probe_video_codec
     return QualitySnapshot(
+        v=SNAPSHOT_VERSION,
         resolution=resolution,
         media_source=name_attrs.media_source if name_attrs else None,
         remux=bool(name_attrs.remux) if name_attrs else False,
         release_group=name_attrs.release_group if name_attrs else None,
         hdr=hdr,
+        video_codec=video_codec,
+        platforms=list(name_attrs.platforms) if name_attrs else [],
         bit_rate=probe_bit_rate,
     )

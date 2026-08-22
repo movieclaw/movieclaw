@@ -469,3 +469,84 @@ class TestInferenceCache:
         assert all(
             "污染" not in value for value in second.values() if isinstance(value, list)
         )
+
+
+class TestCodecFamily:
+    """编码族（vocab.codec_family）：筛选与洗版位次的共同基础。"""
+
+    def test_aliases_share_one_family(self) -> None:
+        from movieclaw_enrich.vocab import codec_family
+
+        assert codec_family("x265") == codec_family("H.265") == codec_family("HEVC")
+        assert codec_family("x264") == codec_family("H.264") == codec_family("AVC")
+        assert codec_family("x265") != codec_family("x264")
+
+    def test_probe_codec_names_map_to_same_family(self) -> None:
+        """ffprobe 的 codec_name 与标题解析值必须落到同一个族，
+        否则洗版基线（实测）与候选（名称）在编码维度上永远不可比。"""
+        from movieclaw_enrich.vocab import codec_family
+
+        assert codec_family("hevc") == codec_family("x265")
+        assert codec_family("h264") == codec_family("H.264")
+        assert codec_family("av1") == codec_family("AV1")
+
+    def test_unknown_codec_is_its_own_family(self) -> None:
+        from movieclaw_enrich.vocab import codec_family
+
+        assert codec_family("VC-1") == codec_family("vc-1")
+        assert codec_family("VC-1") != codec_family("VP9")
+        assert codec_family(None) is None
+        assert codec_family("") is None
+
+
+class TestPlatform:
+    """流媒体平台识别：两道闸（WEB 上下文 + 短别名紧邻）与正交性。"""
+
+    @staticmethod
+    def _hit(title: str) -> list[str]:
+        from movieclaw_enrich.extractors import extract_platforms
+
+        return extract_platforms(title).get("platforms", [])
+
+    def test_common_platform_tags(self) -> None:
+        assert self._hit("Show.S01E01.2160p.NF.WEB-DL.DDP5.1-FLUX") == ["netflix"]
+        assert self._hit("Movie.2024.2160p.DSNP.WEB-DL.HDR-CMRG") == ["disney_plus"]
+        assert self._hit("Show.S01E01.1080p.IQ.WEB-DL.H265-HHWEB") == ["iqiyi"]
+
+    def test_requires_web_source_context(self) -> None:
+        """没有 WEB 来源标记就不识别平台——蓝光资源上的平台标记没有意义。"""
+        assert self._hit("Movie.2024.1080p.BluRay.x265-GROUP") == []
+        assert self._hit("Show.S01.1080p.NF.BluRay.x265-GROUP") == []
+
+    def test_short_alias_must_be_adjacent_to_web_source(self) -> None:
+        """短别名是常用词的重灾区：MAX / STAN 只在紧邻 WEB 标记时才成立。"""
+        assert self._hit("Mad.Max.Fury.Road.2015.2160p.WEB-DL.HDR-GROUP") == []
+        assert self._hit("Stan.Lee.2023.1080p.WEB-DL-GROUP") == []
+        assert self._hit("Show.S01.1080p.MAX.WEB-DL.DDP5.1-NTb") == ["hbo_max"]
+
+    def test_platform_and_release_group_are_orthogonal(self) -> None:
+        """IQ.WEB-DL...-HHWEB：平台是 iQIYI，压制组是 HHWEB，互不吞并。"""
+        from movieclaw_enrich.extractors import extract_platforms, extract_release_group
+
+        title = "Show.S01E01.1080p.IQ.WEB-DL.H265-HHWEB"
+        assert extract_platforms(title)["platforms"] == ["iqiyi"]
+        assert extract_release_group(title)["release_group"] == "HHWEB"
+
+    def test_long_alias_masks_short_one(self) -> None:
+        """HBO.MAX 只产出一个值，不会被 HBO 与 MAX 重复计数。"""
+        assert self._hit("Show.2024.1080p.HBO.MAX.WEB-DL-GROUP") == ["hbo_max"]
+
+    def test_long_aliases_do_not_need_adjacency(self) -> None:
+        """长别名本身就足够有区分度，不受紧邻约束，因此可以多个并存。"""
+        hits = self._hit("Show.S01.NETFLIX.1080p.AMZN.WEB-DL-GROUP")
+        assert set(hits) == {"netflix", "amazon"}
+
+    def test_short_alias_does_not_chain_through_another_tag(self) -> None:
+        """短别名与 WEB 之间夹着别的 token 就不成立——**有意不做**"链式紧邻"
+        的放宽（把已识别的平台标记也当作分隔符）：那会让
+        "Mad.Max.NF.WEB-DL" 里的片名词 Max 顺着 NF 攀到 WEB 上变成平台。
+        代价是 "NF.AMZN.WEB-DL" 这类连写只认后一个，而同一发布挂两个平台
+        标记本就罕见，宁缺毋滥。
+        """
+        assert self._hit("Show.S01.1080p.NF.AMZN.WEB-DL-GROUP") == ["amazon"]
+        assert self._hit("Mad.Max.NF.WEB-DL-GROUP") == ["netflix"]

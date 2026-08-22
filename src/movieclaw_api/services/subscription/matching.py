@@ -43,6 +43,7 @@ from movieclaw_matcher import (
     RuleSetSpec,
     RuleVerdict,
     TorrentCandidate,
+    candidate_ladder_rank,
     evaluate_rules,
     match_identity,
 )
@@ -75,6 +76,11 @@ UPGRADE_PRIORITY = -10  # 永远排在补旧(0)与追新(10)后面
 UPGRADE_FUSE_LIMIT = 3  # 连续证伪熔断阈值（§6.3）
 UPGRADE_FUSE_COOLDOWN = timedelta(days=30)  # 熔断后的长冷却
 UPGRADE_FIRST_SEARCH_SPREAD_HOURS = 24  # 首搜在 24h 内错峰，避免瞬时搜索风暴
+# 覆盖了缺口单元的候选在"洗版档位"这一排序位上的取值：空元组低于任何非空
+# 向量，使缺口单元的竞争者之间仍完全由评分决定顺序（§15.4）。
+# 用空元组而不是 (-1, -1)：档位向量的长度随规则组的 upgrade_ladder 变化，
+# 定长哨兵会在多维阶梯下与真实向量按位比较出无意义的结果
+_NO_UPGRADE_RANK: tuple[int, ...] = ()
 
 
 def upgrade_backoff_delay(attempts: int) -> timedelta:
@@ -597,7 +603,9 @@ async def evaluate_and_dispatch(
         return summary
 
     # 第一遍：逐种子评估，按条目聚合通过的候选，规则拒绝当场记活动
-    accepted: dict[int, list[tuple[TorrentCandidate, IdentityMatch, RuleVerdict]]] = {}
+    accepted: dict[
+        int, list[tuple[TorrentCandidate, IdentityMatch, RuleVerdict, tuple[int, ...]]]
+    ] = {}
     repo = SubscriptionRepository(session)
     for row in torrents:
         candidate = to_candidate(row)
@@ -625,16 +633,34 @@ async def evaluate_and_dispatch(
                     repo, ctx, candidate, covered or upgrade_covered, verdict, source
                 )
                 continue
-            accepted.setdefault(media_id, []).append((candidate, match, verdict))
+            # 洗版选优的排序位次（§15.4）：只有**纯洗版**候选才带真实档位。
+            # 判据带上 `not covered` 是有意的——凡是覆盖了缺口单元的候选一律
+            # 取哨兵值，于是缺口单元的竞争者之间仍完全按评分排序，本次改动
+            # 对缺口侧的选优结果可证明为零影响（免费优先是既有决策，
+            # 不该被一个只修洗版的补丁顺带改掉）。
+            upgrade_rank = (
+                candidate_ladder_rank(candidate.attrs, ctx.spec)
+                if upgrade_covered and not covered
+                else _NO_UPGRADE_RANK
+            )
+            accepted.setdefault(media_id, []).append(
+                (candidate, match, verdict, upgrade_rank)
+            )
 
     # 第二遍：按条目选优投递。整季包优先（已确认决策）；一个候选投出后，
-    # 它覆盖的单元从缺口/洗版清单里划掉，剩余单元继续由次优候选补
+    # 它覆盖的单元从缺口/洗版清单里划掉，剩余单元继续由次优候选补。
+    # 洗版档位排在评分之前（§15.4）：洗版不急，宁可等一个档位更高的，也不要
+    # 因为免费加分先抓个"只高半档"的版本、下一轮再洗一次（同一单元两次下载）。
+    # 缺口侧不受影响——覆盖缺口的候选档位位次恒为 _NO_UPGRADE_RANK（见上），
+    # 而纯洗版候选按定义不碰缺口单元，两侧的选优互不干扰。
     for media_id, entries in accepted.items():
         ctx = contexts[media_id]
-        entries.sort(key=lambda e: (e[1].is_pack, e[2].score, e[0].seeders or 0), reverse=True)
+        entries.sort(
+            key=lambda e: (e[1].is_pack, e[3], e[2].score, e[0].seeders or 0), reverse=True
+        )
         remaining = dict(ctx.open_wanted)
         remaining_upgrade = dict(ctx.upgrade_wanted)
-        for candidate, match, verdict in entries:
+        for candidate, match, verdict, _rank in entries:
             published = publish_calendar_date(candidate.publish_time)
             targets = drop_proven_missing(
                 ctx, candidate, covered_units(match, remaining, published=published)

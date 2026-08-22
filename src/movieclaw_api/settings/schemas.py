@@ -377,12 +377,36 @@ class ScrimUiPrefs(BaseModel):
     )
 
 
+class NavUiPrefs(BaseModel):
+    """侧边栏主导航的个人排序。
+
+    只存**顺序**（导航项 id 的列表），不存导航项本身——导航有哪些项、叫什么、
+    什么权限可见，全部由前端与权限决定，这里存下来的仅仅是"这个人希望它们按
+    什么次序排"。
+
+    因此本字段是提示而非契约，前端按"排过的按此顺序在前，没排过的按内置默认
+    顺序追加在后"合并（见 apps/web/lib/sidebar-nav.ts）：
+    - 版本升级新增的导航入口，在存过排序的老用户那里也一定会出现（追加在后），
+      不会因为不在这个列表里而永远消失——这是这类"存死一份顺序"功能最常见的事故；
+    - 已经不存在的 id（导航项被删）读取时直接忽略，无需迁移。
+
+    上限 32 只是防脏数据无限增长的安全阀，不是产品限制（主导航实际只有个位数项）。
+    """
+
+    order: list[str] = Field(
+        default_factory=list,
+        max_length=32,
+        description="侧栏主导航的展示顺序（导航项 id）；空列表 = 用内置默认顺序",
+    )
+
+
 @register_setting(namespace="ui.preferences", title="界面偏好")
 class UiPreferencesSetting(SettingSchema):
     """全站界面样式偏好，按页面分组。新页面的设定加嵌套模型字段即可。"""
 
     sidebar: SidebarUiPrefs = Field(default_factory=SidebarUiPrefs, description="侧边栏玻璃面板")
     scrim: ScrimUiPrefs = Field(default_factory=ScrimUiPrefs, description="全站背景蒙版")
+    nav: NavUiPrefs = Field(default_factory=NavUiPrefs, description="侧边栏主导航排序")
 
 
 async def get_ui_preferences() -> UiPreferencesSetting:

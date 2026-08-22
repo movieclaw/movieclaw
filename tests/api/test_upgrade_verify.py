@@ -814,3 +814,59 @@ async def test_confirm_keep_old_coexists(db, tmp_path):
         )
         assert any(a.payload.get("kept_coexisting") for a in activities)
     assert old_file.exists()
+
+
+_LADDER_SPEC = {
+    "upgrade_source": "web-dl",
+    "resolutions": ["1080p"],
+    "video_codecs": ["x265", "x264"],  # 顺序即偏好：x265 更优
+    "upgrade_ladder": ["resolution", "source", "video_codec"],
+}
+_WEBDL_X264 = {
+    "v": 2,
+    "resolution": "1080p",
+    "media_source": "WEB-DL",
+    "video_codec": "x264",
+}
+
+
+@pytest.mark.asyncio
+async def test_codec_only_upgrade_is_confirmed_not_refuted(db, tmp_path):
+    """只在低位维度（编码）上更优的洗版，实测验证必须确认而不是判否。
+
+    验证走的是**同一条档位阶梯**——它此前只比分辨率与片源，对 §14 新加的
+    维度视而不见。后果不是"少确认一次"：判否会把刚下完的文件扔进回收站，
+    而"诚实资源"判定又不会把它拉黑，于是下一轮搜索再抓同一个候选，
+    下载 → 回收 → 再下载 无限循环，每轮都在烧上传量。
+    """
+    library, item_id, sub_id, wanted_id, root, old_file = await _seed(
+        db, tmp_path, quality=_WEBDL_X264, rule_spec=_LADDER_SPEC
+    )
+    new_file = await _add_upgrade_delivery(
+        db,
+        sub_id,
+        item_id,
+        library.id,
+        root,
+        claimed_quality={
+            "resolution": "1080p",
+            "media_source": "WEB-DL",
+            "video_codec": "x265",
+        },
+        # probe 给 ffprobe 命名空间的 hevc，与标题的 x265 同族 → 快照留 x265
+        probed={"resolution": "1080p", "bit_rate": 9_000_000, "video_codec": "hevc"},
+    )
+    async with db.session() as session:
+        await close_fulfilled_wanted(session, item_id)
+        wanted = await session.get(WantedItem, wanted_id)
+        assert wanted.quality["video_codec"] == "x265"  # 基线前进
+        assert wanted.info_hash == "new1"
+        attempt = (
+            await session.execute(
+                select(SubscriptionDownloadAttempt).where(
+                    SubscriptionDownloadAttempt.info_hash == "new1"
+                )
+            )
+        ).scalar_one()
+        assert attempt.status == DownloadAttemptStatus.IMPORTED
+    assert new_file.exists()  # 新文件没有被当成证伪扔进回收站
