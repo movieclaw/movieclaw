@@ -24,6 +24,7 @@ import {
   stopPlaybackSession,
   stopPlaybackSessionOnUnload,
 } from "@/lib/api/playback";
+import { type AutoplayOutcome, attemptAutoplay, shouldAttemptAutoplay } from "@/lib/player/autoplay";
 import { getCapabilitySnapshot } from "@/lib/player/capability";
 import type { PlaybackEngine } from "@/lib/player/engine";
 import { createEngine } from "@/lib/player/engine";
@@ -51,8 +52,8 @@ import { isInEndCredits, planSeek, toFileMs, toSessionSeconds } from "@/lib/play
  *
  * 本组件是**唯一的编排层**：决策、会话生命周期、降档回路、进度上报、字幕与
  * 快捷键都在这里接线，而每一段判断本身都在 `lib/player/` 的纯函数里（状态机、
- * 时间轴换算、字幕规划、快捷键映射），因此它们能被 node --test 直接覆盖，
- * 这里只剩「什么时候调它们」。
+ * 时间轴换算、字幕规划、快捷键映射、自动播放兜底），因此它们能被 node --test
+ * 直接覆盖，这里只剩「什么时候调它们」。
  *
  * 起播是「决策 → 开会话 → 缓冲 → 出画」四段异步，中间随时可能插进 seek、
  * 降档、切集，所以状态一律走 `playerReducer`，不用 boolean 拼——拼出来的
@@ -102,6 +103,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
   // 直接闭包会拿到过期的会话，上报到错误的档位上。
   const qoeSnapshotRef = useRef<() => PlaybackMetricPayload | null>(() => null);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   const [chromeVisible, setChromeVisible] = useState(true);
   const [countdown, setCountdown] = useState<number | null>(null);
   /** 用户明确取消过本集的「下一集」提示：取消后不能因为还在片尾窗口里又弹回来 */
@@ -110,6 +112,18 @@ export function VideoPlayer(props: VideoPlayerProps) {
   const [videoDurationMs, setVideoDurationMs] = useState<number | null>(null);
   // video 元素挂载后要触发依赖它的 effect，所以用 state 而不是纯 ref 持有
   const [video, setVideo] = useState<HTMLVideoElement | null>(null);
+  /** 本集自动播放的结果。只有 blocked 需要界面兜底（中央大播放键） */
+  const [autoplay, setAutoplay] = useState<AutoplayOutcome | null>(null);
+  /**
+   * 是**我们**为了绕过自动播放策略把它静音的。
+   *
+   * 与 `autoplay` 分开的理由：静音是**跨集延续**的状态（video 元素一直是
+   * 同一个），而 `autoplay` 每集重置。合成一个的后果是切下一集时提示消失、
+   * 声音却还没回来，用户以为这部剧没有音轨。
+   */
+  const [forcedMute, setForcedMute] = useState(false);
+  /** 播放/暂停时画面中央闪一下的圆环。递增的 key 就是「再放一次动画」 */
+  const [pulse, setPulse] = useState<{ id: number; paused: boolean } | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<PlaybackEngine | null>(null);
@@ -122,6 +136,11 @@ export function VideoPlayer(props: VideoPlayerProps) {
   const startMsRef = useRef(0);
   const positionRef = useRef(0);
   const reportedStartRef = useRef<string | null>(null);
+  /** 用户还想不想自动播放：他自己按过暂停之后就不再替他做主 */
+  const wantsPlayRef = useRef(true);
+  const autoplayAttemptsRef = useRef(0);
+  const autoplayLastRef = useRef<AutoplayOutcome | null>(null);
+  const pulseIdRef = useRef(0);
   // 会话释放器：区分「真的离开了」与「StrictMode 把同一个会话重新挂了一遍」。
   const sessionReleaser = useMemo(
     () =>
@@ -173,6 +192,11 @@ export function VideoPlayer(props: VideoPlayerProps) {
     setVideoDurationMs(null);
     setSelectedSubtitle(null);
     setTrickplay(null); // 换片必须清掉：旧片的缩略图配新片的进度条是错的
+    // 新的一集重新获得自动播放的资格：上一集用户按过暂停不代表下一集也不想看
+    wantsPlayRef.current = true;
+    autoplayAttemptsRef.current = 0;
+    autoplayLastRef.current = null;
+    setAutoplay(null);
     dispatch({ type: "reset" });
 
     fetchResumeState(unit)
@@ -234,6 +258,36 @@ export function VideoPlayer(props: VideoPlayerProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.phase, state.startMs, failedKey, state.failureCount, unitKey]);
 
+  /**
+   * 自动播放：试一次，被拒绝了按原因决定重试还是降级。
+   *
+   * **为什么必须能重试**：`play()` 的调用时机在 hls.js 刚 attachMedia、
+   * MediaSource 还没 open 的那一瞬间，浏览器可能直接抛 `AbortError`。只试
+   * 一次的后果就是用户从条目页点了播放，进来却停在第一帧，非得再点一下——
+   * 也就是这次要修的现象。所以起播链路上每一个「现在应该能播了」的时机
+   * （挂流完成、loadedmetadata、canplay）都来敲一次这个门，闸门逻辑在
+   * `shouldAttemptAutoplay` 里，有单测。
+   */
+  const tryAutoplay = useCallback(async () => {
+    if (!video) return;
+    if (
+      !shouldAttemptAutoplay({
+        wanted: wantsPlayRef.current,
+        paused: video.paused,
+        attempts: autoplayAttemptsRef.current,
+        last: autoplayLastRef.current,
+      })
+    ) {
+      return;
+    }
+    autoplayAttemptsRef.current += 1;
+    const outcome = await attemptAutoplay(video);
+    autoplayLastRef.current = outcome;
+    if (outcome === "muted") setForcedMute(true);
+    // interrupted 是中间态，界面上什么都不该变——它等下一个时机再试
+    if (outcome !== "interrupted") setAutoplay(outcome);
+  }, [video]);
+
   /** 会话就位：挂引擎、落回目标位置、起播。 */
   useEffect(() => {
     const session = state.session;
@@ -261,8 +315,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
         if (video.readyState >= 1) seek();
         else video.addEventListener("loadedmetadata", seek, { once: true });
       }
-      // 自动播放被浏览器拦下不是错误：用户点一下就好，别弹错误吓人
-      void video.play().catch(() => undefined);
+      void tryAutoplay();
     });
 
     return () => {
@@ -270,7 +323,20 @@ export function VideoPlayer(props: VideoPlayerProps) {
       engine.destroy();
       engineRef.current = null;
     };
-  }, [state.session, video]);
+  }, [state.session, video, tryAutoplay]);
+
+  /**
+   * 换了会话（降档 / seek 换流）就重新获得自动播放的机会。
+   *
+   * 计数与结果都清空：新会话是一条新的流，上一条流上的「被拦下了」不能
+   * 直接继承过来——真被拦的话这一轮会再判一次，代价只是一次 play()。
+   */
+  useEffect(() => {
+    if (!state.session) return;
+    autoplayAttemptsRef.current = 0;
+    autoplayLastRef.current = null;
+    setAutoplay(null);
+  }, [state.session]);
 
   /** 累计一条播放质量事件。归约是纯函数，这里只负责喂事件。 */
   const qoe = useCallback((event: QoeEvent) => {
@@ -309,6 +375,12 @@ export function VideoPlayer(props: VideoPlayerProps) {
         ranges.length ? toFileMs(ranges.end(ranges.length - 1), startMsRef.current) : null,
       );
     };
+    // 「现在应该能播了」的两个时机：挂流那一次可能太早，这两次是补刀
+    const onReady = () => void tryAutoplay();
+    // 用户也可能绕过我们的按钮、直接用控制条上的静音键解除，提示要跟着消失
+    const onVolumeChange = () => {
+      if (!video.muted) setForcedMute(false);
+    };
 
     video.addEventListener("playing", onPlaying);
     video.addEventListener("pause", onPause);
@@ -318,6 +390,9 @@ export function VideoPlayer(props: VideoPlayerProps) {
     video.addEventListener("ended", onEnded);
     video.addEventListener("durationchange", onDurationChange);
     video.addEventListener("timeupdate", onTimeUpdate);
+    video.addEventListener("loadedmetadata", onReady);
+    video.addEventListener("canplay", onReady);
+    video.addEventListener("volumechange", onVolumeChange);
     return () => {
       video.removeEventListener("playing", onPlaying);
       video.removeEventListener("pause", onPause);
@@ -327,8 +402,11 @@ export function VideoPlayer(props: VideoPlayerProps) {
       video.removeEventListener("ended", onEnded);
       video.removeEventListener("durationchange", onDurationChange);
       video.removeEventListener("timeupdate", onTimeUpdate);
+      video.removeEventListener("loadedmetadata", onReady);
+      video.removeEventListener("canplay", onReady);
+      video.removeEventListener("volumechange", onVolumeChange);
     };
-  }, [video, qoe]);
+  }, [video, qoe, tryAutoplay]);
 
   // ---------------------------------------------------------------------
   // 字幕：轨记忆来自 playback_state，用户明确关掉过就不要再自作主张打开
@@ -520,8 +598,28 @@ export function VideoPlayer(props: VideoPlayerProps) {
 
   const togglePlay = useCallback(() => {
     if (!video) return;
-    if (video.paused) void video.play().catch(() => undefined);
-    else video.pause();
+    setPulse({ id: (pulseIdRef.current += 1), paused: !video.paused });
+    if (video.paused) {
+      // 用户亲手点的播放：手势就在这一刻，一定放得起来；中央大播放键该消失。
+      // 但静音提示留着——静音是另一回事，得他自己点「开启声音」。
+      wantsPlayRef.current = true;
+      autoplayLastRef.current = null;
+      setAutoplay(null);
+      void video.play().catch(() => undefined);
+    } else {
+      // 用户主动暂停：从这一刻起不再替他自动续播
+      wantsPlayRef.current = false;
+      video.pause();
+    }
+  }, [video]);
+
+  /** 恢复声音：自动播放被策略拦下时我们静音救回来的那一路，交还给用户。 */
+  const restoreSound = useCallback(() => {
+    if (!video) return;
+    video.muted = false;
+    // 静音时用户可能顺手把音量也拖到 0，只解静音会得到「点了没反应」
+    if (video.volume === 0) video.volume = 1;
+    setForcedMute(false);
   }, [video]);
 
   /**
@@ -544,6 +642,8 @@ export function VideoPlayer(props: VideoPlayerProps) {
       // 换会话期间先把旧流停住：不停的话旧会话还在往前走，进度条会在新会话
       // 起来之前继续跳动，看着像"拖了没反应"
       video.pause();
+      // 这次暂停是我们自己造成的，不是用户不想看了——换流后必须继续自动播放
+      wantsPlayRef.current = true;
       pendingFileMsRef.current = plan.startMs;
       setPositionMs(plan.startMs);
       dispatch({ type: "restart", startMs: plan.startMs });
@@ -654,13 +754,14 @@ export function VideoPlayer(props: VideoPlayerProps) {
   // ---------------------------------------------------------------------
 
   useEffect(() => {
-    if (paused || diagnosticsOpen) {
+    // 暂停、菜单展开、诊断面板打开时都必须留着控制条：这三种情况用户正要用它
+    if (paused || diagnosticsOpen || menuOpen) {
       setChromeVisible(true);
       return;
     }
     const timer = window.setTimeout(() => setChromeVisible(false), IDLE_HIDE_MS);
     return () => window.clearTimeout(timer);
-  }, [paused, diagnosticsOpen, chromeVisible]);
+  }, [paused, diagnosticsOpen, menuOpen, chromeVisible]);
 
   useEffect(() => {
     if (!next || nextDismissed) return;
@@ -682,12 +783,18 @@ export function VideoPlayer(props: VideoPlayerProps) {
     return () => window.clearTimeout(timer);
   }, [countdown, onPlayNext]);
 
-  const busy = isBusy(state.phase);
+  // 自动播放被彻底拦下时不能再转圈：状态机要等 `playing` 才离开 buffering，
+  // 而那一刻永远不会来——转圈叠着中央播放键是最典型的「界面卡住了」观感。
+  const busy = isBusy(state.phase) && autoplay !== "blocked";
+  // 暂停海报：出过画之后才显示，否则起播那几秒会先闪一张「已暂停」
+  const showPauseOverlay =
+    paused && !busy && state.phase !== "error" && state.phase !== "consent" && positionMs > 0;
 
   return (
     <div
       ref={containerRef}
       className="player-root relative size-full bg-black"
+      data-chrome={chromeVisible ? "visible" : "hidden"}
       onPointerMove={() => setChromeVisible(true)}
       onPointerLeave={() => !paused && setChromeVisible(false)}
     >
@@ -714,7 +821,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
 
         {/* 顶栏：返回 + 片名。全屏时也要留着，否则退不出去只能按 Esc */}
         <div
-          className={`pointer-events-none absolute inset-x-0 top-0 z-20 flex items-start gap-3 bg-gradient-to-b from-black/70 to-transparent px-4 pb-12 pt-4 transition-opacity duration-200 ${
+          className={`pointer-events-none absolute inset-x-0 top-0 z-20 flex items-center gap-4 bg-gradient-to-b from-black/80 via-black/30 to-transparent px-6 pb-16 pt-5 transition-opacity duration-300 max-md:px-3 max-md:pt-3 ${
             chromeVisible ? "opacity-100" : "opacity-0"
           }`}
         >
@@ -722,55 +829,126 @@ export function VideoPlayer(props: VideoPlayerProps) {
             type="button"
             onClick={onExit}
             // 淡出后必须同时断掉命中：隐形却仍能点的按钮会在用户想点画面时误触
-            className={`flex size-9 shrink-0 items-center justify-center rounded-lg text-white/85 transition-colors hover:bg-white/15 ${
+            className={`player-btn size-10 shrink-0 ${
               chromeVisible ? "pointer-events-auto" : "pointer-events-none"
             }`}
             aria-label="退出播放"
           >
-            <svg viewBox="0 0 24 24" className="size-5 fill-current" aria-hidden>
-              <path d="M10.7 4.3 3 12l7.7 7.7 1.4-1.4L6.8 13H21v-2H6.8l5.3-5.3-1.4-1.4Z" />
+            <svg viewBox="0 0 24 24" className="size-7 fill-current" aria-hidden>
+              <path d="M10.7 3.6 2.3 12l8.4 8.4 1.7-1.7L6.4 13.2H22v-2.4H6.4l6-6-1.7-1.2Z" />
             </svg>
           </button>
           <div className="min-w-0">
-            <h1 className="truncate text-[15px] font-medium text-white">{title}</h1>
+            <h1 className="truncate text-[17px] font-semibold text-white drop-shadow">{title}</h1>
             {episodeLabel ? (
-              <p className="truncate text-[13px] text-white/60">{episodeLabel}</p>
+              <p className="truncate text-[13px] text-white/65">{episodeLabel}</p>
             ) : null}
           </div>
         </div>
 
-        {busy ? (
-          <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
-            <div className="flex flex-col items-center gap-3">
-              <span className="size-9 animate-spin rounded-full border-2 border-white/25 border-t-white" />
-              <span className="text-[13px] text-white/70">{busyLabel(state.phase)}</span>
+        {/* 暂停海报：Netflix 在暂停时把片名大字压在画面上，同时压暗背景，
+            一眼知道「停在哪部片」。不拦指针——点画面仍然是继续播放。 */}
+        {showPauseOverlay ? (
+          <div className="pointer-events-none absolute inset-0 z-10 flex items-center bg-black/45 px-16 transition-opacity duration-300 max-md:px-6">
+            <div className="min-w-0">
+              <p className="text-[13px] uppercase tracking-[0.3em] text-white/55">已暂停</p>
+              <h2 className="mt-3 truncate text-[44px] font-bold leading-tight text-white drop-shadow-lg max-md:text-[26px]">
+                {title}
+              </h2>
+              {episodeLabel ? (
+                <p className="mt-1 truncate text-[18px] text-white/70 max-md:text-[14px]">
+                  {episodeLabel}
+                </p>
+              ) : null}
             </div>
           </div>
         ) : null}
 
+        {/* 播放/暂停的确认反馈：中央闪一下的圆环 */}
+        {pulse ? (
+          <div
+            key={pulse.id}
+            onAnimationEnd={() => setPulse(null)}
+            className="player-pulse pointer-events-none absolute left-1/2 top-1/2 z-10 flex size-24 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-black/55 text-white"
+          >
+            <svg viewBox="0 0 24 24" className="size-10 fill-current" aria-hidden>
+              {pulse.paused ? (
+                <path d="M6.5 4h3.6v16H6.5zM13.9 4h3.6v16h-3.6z" />
+              ) : (
+                <path d="M6 4.3v15.4a.7.7 0 0 0 1.07.6l12.3-7.7a.7.7 0 0 0 0-1.2L7.07 3.7A.7.7 0 0 0 6 4.3Z" />
+              )}
+            </svg>
+          </div>
+        ) : null}
+
+        {busy ? (
+          <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
+            <div className="flex flex-col items-center gap-4">
+              <span className="size-12 animate-spin rounded-full border-[3px] border-white/15 border-t-[var(--player-accent)]" />
+              <span className="text-[14px] text-white/75">{busyLabel(state.phase)}</span>
+            </div>
+          </div>
+        ) : null}
+
+        {/* 自动播放被静音救回来了：给一个显眼但不挡画面的恢复声音入口。
+            不给的话用户会以为这部片没有音轨。 */}
+        {forcedMute ? (
+          <button
+            type="button"
+            onClick={restoreSound}
+            // 放左下角而不是右上角：右上是诊断面板、右下是下一集卡片，
+            // 三个浮层挤在同一角上一定会盖住彼此
+            className={`absolute bottom-32 left-6 z-30 flex items-center gap-2 rounded-sm bg-white px-4 py-2.5 text-[14px] font-semibold text-black shadow-lg transition-opacity duration-300 hover:opacity-90 max-md:bottom-28 max-md:left-3 ${
+              chromeVisible ? "opacity-100" : "pointer-events-none opacity-0"
+            }`}
+          >
+            <svg viewBox="0 0 24 24" className="size-5 fill-current" aria-hidden>
+              <path d="M4 9.5h3.4L12 5.2v13.6L7.4 14.5H4a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1Z" />
+              <path d="M15.4 8.6a4.6 4.6 0 0 1 0 6.8l-1.3-1.5a2.6 2.6 0 0 0 0-3.8l1.3-1.5Z" />
+              <path d="M17.6 5.9a8.2 8.2 0 0 1 0 12.2l-1.3-1.5a6.2 6.2 0 0 0 0-9.2l1.3-1.5Z" />
+            </svg>
+            开启声音
+          </button>
+        ) : null}
+
+        {/* 静音也放不起来（浏览器把自动播放彻底关掉了）：给一个大播放键，
+            别让用户对着黑屏找按钮。 */}
+        {autoplay === "blocked" && paused && state.phase !== "error" ? (
+          <button
+            type="button"
+            onClick={togglePlay}
+            className="absolute left-1/2 top-1/2 z-30 flex size-20 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-white/95 text-black shadow-2xl transition-transform hover:scale-105"
+            aria-label="播放"
+          >
+            <svg viewBox="0 0 24 24" className="ml-1 size-10 fill-current" aria-hidden>
+              <path d="M6 4.3v15.4a.7.7 0 0 0 1.07.6l12.3-7.7a.7.7 0 0 0 0-1.2L7.07 3.7A.7.7 0 0 0 6 4.3Z" />
+            </svg>
+          </button>
+        ) : null}
+
         {state.phase === "error" && state.error ? (
-          <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/80 px-6">
-            <div className="max-w-[440px] text-center">
-              <p className="text-[15px] text-white">{state.error.message}</p>
+          <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/85 px-6">
+            <div className="max-w-[480px] text-center">
+              <p className="text-[17px] font-semibold text-white">{state.error.message}</p>
               {state.error.suggestion ? (
-                <p className="mt-2 text-[13px] leading-relaxed text-white/60">
+                <p className="mt-3 text-[14px] leading-relaxed text-white/60">
                   {state.error.suggestion}
                 </p>
               ) : null}
-              <div className="mt-5 flex justify-center gap-2">
-                <button
-                  type="button"
-                  onClick={onExit}
-                  className="rounded-xl bg-white/10 px-4 py-2 text-[13px] text-white transition-colors hover:bg-white/15"
-                >
-                  返回
-                </button>
+              <div className="mt-6 flex justify-center gap-3">
                 <button
                   type="button"
                   onClick={() => dispatch({ type: "request", startMs: positionRef.current })}
-                  className="rounded-xl bg-white px-4 py-2 text-[13px] font-medium text-black transition-opacity hover:opacity-90"
+                  className="rounded-sm bg-[var(--player-accent)] px-6 py-2.5 text-[14px] font-semibold text-white transition-colors hover:bg-[var(--player-accent-hover)]"
                 >
                   重试
+                </button>
+                <button
+                  type="button"
+                  onClick={onExit}
+                  className="rounded-sm bg-white/15 px-6 py-2.5 text-[14px] font-medium text-white transition-colors hover:bg-white/25"
+                >
+                  返回
                 </button>
               </div>
             </div>
@@ -793,34 +971,42 @@ export function VideoPlayer(props: VideoPlayerProps) {
           />
         ) : null}
 
+        {/* 下一集卡片：Netflix 把倒计时画成按钮里逐渐填满的底色，比一个
+            跳动的数字更好读——余量一眼可见，也不会读到一半就跳走。 */}
         {countdown !== null && next ? (
-          <div className="absolute bottom-28 right-4 z-20 w-[260px] rounded-xl border border-white/10 bg-black/85 p-4 backdrop-blur-md">
-            <p className="text-[12px] text-white/50">即将播放</p>
-            <p className="mt-1 truncate text-[14px] text-white">{next.label}</p>
-            <div className="mt-3 flex gap-2">
+          <div className="absolute bottom-32 right-6 z-30 w-[300px] rounded-sm bg-[rgba(20,20,20,0.95)] p-4 shadow-[0_8px_32px_rgba(0,0,0,0.7)] max-md:bottom-28 max-md:right-3 max-md:w-[240px]">
+            <p className="text-[12px] uppercase tracking-wide text-white/50">即将播放</p>
+            <p className="mt-1.5 truncate text-[15px] font-semibold text-white">{next.label}</p>
+            <div className="mt-4 flex gap-2">
               <button
                 type="button"
                 onClick={() => {
                   setCountdown(null);
                   setNextDismissed(true);
                 }}
-                className="flex-1 rounded-lg bg-white/10 px-3 py-1.5 text-[13px] text-white/80 transition-colors hover:bg-white/15"
+                className="rounded-sm bg-white/15 px-4 py-2 text-[13px] text-white/85 transition-colors hover:bg-white/25"
               >
                 取消
               </button>
               <button
                 type="button"
                 onClick={onPlayNext}
-                className="flex-1 rounded-lg bg-white px-3 py-1.5 text-[13px] font-medium text-black"
+                className="relative flex-1 overflow-hidden rounded-sm bg-white px-4 py-2 text-[13px] font-semibold text-black"
               >
-                立即播放 {countdown}
+                <span
+                  className="absolute inset-y-0 left-0 bg-black/15 transition-[width] duration-1000 ease-linear"
+                  style={{
+                    width: `${((NEXT_COUNTDOWN_S - countdown) / NEXT_COUNTDOWN_S) * 100}%`,
+                  }}
+                />
+                <span className="relative">立即播放 · {countdown}</span>
               </button>
             </div>
           </div>
         ) : null}
 
         <div
-          className={`absolute inset-x-0 bottom-0 z-20 transition-opacity duration-200 ${
+          className={`absolute inset-x-0 bottom-0 z-20 transition-opacity duration-300 ${
             chromeVisible ? "opacity-100" : "pointer-events-none opacity-0"
           }`}
         >
@@ -829,6 +1015,8 @@ export function VideoPlayer(props: VideoPlayerProps) {
             durationMs={durationMs}
             bufferedEndMs={bufferedEndMs}
             paused={paused}
+            title={title}
+            episodeLabel={episodeLabel}
             onTogglePlay={togglePlay}
             onSeek={seekToFileMs}
             onSeekBy={seekBy}
@@ -839,6 +1027,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
             onSubtitleStyleChange={setSubtitleStyle}
             diagnosticsOpen={diagnosticsOpen}
             onToggleDiagnostics={() => setDiagnosticsOpen((open) => !open)}
+            onMenuOpenChange={setMenuOpen}
             trickplay={trickplay}
             onNext={next ? onPlayNext : null}
           />

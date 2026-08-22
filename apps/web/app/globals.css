@@ -1415,19 +1415,45 @@ body.cmdk-open .app-shell {
   left: 0;
   animation: search-progress-sweep 1.1s ease-in-out infinite;
 }
-
 /* ---------------------------------------------------------------------------
    网页播放器（components/player/*，docs/design/web-player.md §6）
+
+   视觉语言刻意与产品其它页面不同：工作台是冷银色的「工具」，播放器是黑底
+   红点的「影院」。所有播放器专属变量都挂在 .player-root 上，不进 :root——
+   否则红色会漏到媒体库、设置页去。
    --------------------------------------------------------------------------- */
 
-/* 字幕字号用 cqh（容器高度的百分比）而不是 vh：分屏、画中画、内联播放时
-   画面并不等于视口，按视口算比例会跑掉。这一条声明是那些 cqh 的锚点。 */
 .player-root {
+  /* 字幕字号用 cqh（容器高度的百分比）而不是 vh：分屏、画中画、内联播放时
+     画面并不等于视口，按视口算比例会跑掉。这一条声明是那些 cqh 的锚点。 */
   container-type: size;
+
+  --player-accent: #e50914;
+  --player-accent-hover: #f6121d;
+  /* 轨道与缓冲：两层都要压得比已播低一档，否则三段颜色一样重，一眼看不出播到哪 */
+  --player-track: rgba(255, 255, 255, 0.28);
+  --player-buffered: rgba(255, 255, 255, 0.48);
 }
 
-/* 自建进度条：轨道由外层 div 画（含缓冲底色），input 只留一个可拖的把手，
-   所以轨道透明、把手常显。 */
+/* media-controller（继承自 media-container）在 :host 上写死 `line-height: 0`，
+   为的是消掉行内 <video> 底下那道空隙。但我们的顶栏、控制条、菜单、提示全是
+   它的 light DOM 子节点，会一并把行高继承成 0——表现是每一行文字都塌成一条
+   线、彼此叠在一起。这正是「播放器看着粗糙」的一大来源，必须在自己的浮层上
+   把行高要回来；media 插槽是它自己要管的，不碰。 */
+.player-root media-controller > :not([slot="media"]) {
+  line-height: normal;
+}
+
+/* 控制条隐藏时把指针也藏起来：留一个箭头浮在画面上是最典型的「像半成品」。
+   注意只藏播放器内部，菜单展开时不藏（那时 chrome 本来就是显示的）。 */
+.player-root[data-chrome="hidden"] {
+  cursor: none;
+}
+
+/* ---- 自建进度条 -----------------------------------------------------------
+   轨道由外层 div 画（含缓冲底色），input 只留一个可拖的把手，所以轨道透明、
+   把手常显。把手在静止时缩到 0（Netflix 的做法：不悬停时只有一条细红线），
+   悬停整行时再放出来——这样静止画面上的干扰最少。 */
 .player-scrub::-webkit-slider-runnable-track {
   background: transparent;
   height: 100%;
@@ -1438,44 +1464,173 @@ body.cmdk-open .app-shell {
 }
 .player-scrub::-webkit-slider-thumb {
   appearance: none;
-  width: 13px;
-  height: 13px;
+  width: 14px;
+  height: 14px;
   border-radius: 9999px;
-  background: var(--accent);
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
-  transition: transform 0.12s ease;
+  background: var(--player-accent);
+  transform: scale(0);
+  transition: transform 0.15s cubic-bezier(0.2, 0, 0.2, 1);
 }
 .player-scrub::-moz-range-thumb {
-  width: 13px;
-  height: 13px;
+  width: 14px;
+  height: 14px;
   border: none;
   border-radius: 9999px;
-  background: var(--accent);
+  background: var(--player-accent);
+  transform: scale(0);
+  transition: transform 0.15s cubic-bezier(0.2, 0, 0.2, 1);
 }
-.player-scrub:hover::-webkit-slider-thumb {
-  transform: scale(1.25);
+/* 悬停或拖动整行时把手才出现。用 :focus-visible 兜键盘：只能用鼠标调的
+   进度条对键盘用户等于没有把手。 */
+.player-scrub-row:hover .player-scrub::-webkit-slider-thumb,
+.player-scrub[data-dragging="true"]::-webkit-slider-thumb,
+.player-scrub:focus-visible::-webkit-slider-thumb {
+  transform: scale(1);
 }
-.player-scrub:disabled::-webkit-slider-thumb {
-  background: rgba(255, 255, 255, 0.35);
+.player-scrub-row:hover .player-scrub::-moz-range-thumb,
+.player-scrub[data-dragging="true"]::-moz-range-thumb,
+.player-scrub:focus-visible::-moz-range-thumb {
+  transform: scale(1);
+}
+.player-scrub:disabled::-webkit-slider-thumb,
+.player-scrub:disabled::-moz-range-thumb {
+  transform: scale(0);
+}
+.player-scrub:focus {
+  outline: none;
 }
 
-/* Media Chrome 的按钮/音量条：它们是 Web Component，样式只能经由自定义属性
-   注入，改不了内部 DOM。这里只统一尺寸与配色，与自建按钮对齐。 */
+/* ---- Media Chrome 的按钮与音量条 -----------------------------------------
+   它们是 Web Component，样式只能经由自定义属性注入，改不了内部 DOM；图标
+   则用 slot 换成我们自己的那一套，否则一条控制条上会出现两种线宽的图标，
+   这正是「粗糙」的来源。 */
 .player-mc-button,
 .player-mc-range {
   --media-control-background: transparent;
-  --media-control-hover-background: rgba(255, 255, 255, 0.15);
-  --media-primary-color: rgba(255, 255, 255, 0.85);
+  --media-control-hover-background: transparent;
+  --media-primary-color: #fff;
   --media-secondary-color: transparent;
+  --media-icon-color: #fff;
   --media-range-thumb-background: #fff;
+  --media-range-thumb-width: 12px;
+  --media-range-thumb-height: 12px;
+  /* 不给圆角的话把手是一个竖着的小方块，和自建进度条的圆点对不上 */
+  --media-range-thumb-border-radius: 9999px;
   --media-range-track-height: 4px;
-  height: 36px;
+  --media-range-track-border-radius: 9999px;
+  --media-range-track-background: rgba(255, 255, 255, 0.3);
+  --media-range-bar-color: #fff;
+  --media-range-padding: 0;
+  height: 40px;
 }
 .player-mc-button {
-  width: 36px;
+  width: 40px;
   padding: 0;
-  border-radius: 8px;
+  transition: transform 0.15s cubic-bezier(0.2, 0, 0.2, 1);
+}
+.player-mc-button:hover {
+  transform: scale(1.12);
+}
+/* 音量条平时收起来，悬停音量区才滑出——Netflix 的做法，静止时控制条更干净。
+   收起时宽度为 0 且不可点，不会留一条无形的热区挡住旁边的按钮。 */
+.player-volume-slot {
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  width: 0;
+  opacity: 0;
+  transition:
+    width 0.22s cubic-bezier(0.2, 0, 0.2, 1),
+    opacity 0.18s linear;
+}
+.player-volume:hover .player-volume-slot,
+.player-volume:focus-within .player-volume-slot {
+  width: 88px;
+  opacity: 1;
 }
 .player-mc-range {
-  width: 76px;
+  width: 80px;
+  margin-left: 8px;
+}
+
+/* ---- 图标按钮 -------------------------------------------------------------
+   不用背景色块做悬停反馈（黑底上的浅灰方块很脏），改成放大 + 提亮，
+   与 Netflix 一致。 */
+.player-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.85);
+  transition:
+    transform 0.15s cubic-bezier(0.2, 0, 0.2, 1),
+    color 0.15s linear;
+}
+.player-btn:hover,
+.player-btn:focus-visible {
+  color: #fff;
+  transform: scale(1.12);
+}
+.player-btn[data-active="true"] {
+  color: #fff;
+}
+
+/* 按钮说明气泡：Netflix 每个图标上方都有一块黑底白字的说明，
+   否则一排纯图标要靠猜。纯 CSS 实现，不为它引一个浮层库。 */
+.player-tip {
+  position: relative;
+}
+.player-tip::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 50%;
+  translate: -50% 0;
+  padding: 4px 10px;
+  border-radius: 4px;
+  background: rgba(20, 20, 20, 0.95);
+  color: #fff;
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.12s linear;
+}
+.player-tip:hover::after,
+.player-tip:focus-visible::after {
+  opacity: 1;
+}
+/* 触屏没有悬停，气泡会在点击后赖着不走 */
+@media (hover: none) {
+  .player-tip::after {
+    content: none;
+  }
+}
+
+/* 播放/暂停时画面中央闪一下的圆环，给一个「按下去了」的确认。 */
+@keyframes player-pulse {
+  from {
+    opacity: 0.9;
+    transform: scale(0.85);
+  }
+  to {
+    opacity: 0;
+    transform: scale(1.35);
+  }
+}
+.player-pulse {
+  animation: player-pulse 0.45s cubic-bezier(0.2, 0, 0.2, 1) forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .player-btn,
+  .player-mc-button,
+  .player-volume-slot,
+  .player-scrub::-webkit-slider-thumb,
+  .player-scrub::-moz-range-thumb {
+    transition: none;
+  }
+  .player-pulse {
+    animation: none;
+  }
 }

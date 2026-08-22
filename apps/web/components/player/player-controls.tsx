@@ -21,25 +21,119 @@ import { type TrickplayIndex, tileAt } from "@/lib/player/trickplay";
  * `start_ms` 处、`duration` 只到「已经转出来的那一段」。照它渲染，用户从
  * 一小时处续播时进度条会显示成 0、总时长显示成 30 秒。所以进度条按**文件
  * 时间**自建，其余按钮（音量/画中画/全屏）继续用 Media Chrome——那些与
- * 时间轴无关，交给它反而更稳。
+ * 时间轴无关，交给它反而更稳；只是图标全部用 slot 换成本文件里这一套，
+ * 免得一条控制条上出现两种线宽的图标。
+ *
+ * **布局照 Netflix**：进度条独占一行、右端只报剩余时长；下面一行左簇是
+ * 播放/退十秒/进十秒/音量，中间是片名，右簇是下一集/字幕/诊断/画中画/全屏。
+ * 图标之间靠间距和悬停放大区分，不用背景色块——黑底上的浅灰方块最显廉价。
  */
 
-const ICON = "size-5 fill-current";
+const ICON = "size-6 fill-current";
 
 function PlayGlyph({ paused }: { paused: boolean }) {
   return paused ? (
-    <svg viewBox="0 0 24 24" className={ICON} aria-hidden>
-      <path d="M8 5.14v13.72a.5.5 0 0 0 .76.43l11.02-6.86a.5.5 0 0 0 0-.86L8.76 4.71a.5.5 0 0 0-.76.43Z" />
+    <svg viewBox="0 0 24 24" className="size-7 fill-current" aria-hidden>
+      <path d="M6 4.3v15.4a.7.7 0 0 0 1.07.6l12.3-7.7a.7.7 0 0 0 0-1.2L7.07 3.7A.7.7 0 0 0 6 4.3Z" />
     </svg>
   ) : (
-    <svg viewBox="0 0 24 24" className={ICON} aria-hidden>
-      <path d="M7 4h3.5v16H7zM13.5 4H17v16h-3.5z" />
+    <svg viewBox="0 0 24 24" className="size-7 fill-current" aria-hidden>
+      <path d="M6.5 4h3.6v16H6.5zM13.9 4h3.6v16h-3.6z" />
     </svg>
   );
 }
 
-const BUTTON_CLASS =
-  "flex size-9 items-center justify-center rounded-lg text-white/85 transition-colors hover:bg-white/15 hover:text-white";
+/** 退/进十秒：圆弧箭头 + 中间的 10，Netflix 与 YouTube 用的都是这一种。 */
+function SkipGlyph({ forward }: { forward: boolean }) {
+  return (
+    <svg viewBox="0 0 24 24" className={ICON} aria-hidden>
+      {forward ? (
+        <path d="M12 4.5V1.8l5.2 4.1L12 10V7.2a4.9 4.9 0 1 0 4.9 4.9h2.1A7 7 0 1 1 12 4.5Z" />
+      ) : (
+        <path d="M12 4.5V1.8L6.8 5.9 12 10V7.2a4.9 4.9 0 1 1-4.9 4.9H5A7 7 0 1 0 12 4.5Z" />
+      )}
+      <text
+        x="12"
+        y="16.2"
+        textAnchor="middle"
+        fontSize="7.5"
+        fontWeight="600"
+        fill="currentColor"
+        stroke="none"
+      >
+        10
+      </text>
+    </svg>
+  );
+}
+
+function VolumeGlyph({ level, slot }: { level: "off" | "low" | "high"; slot?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={ICON} slot={slot} aria-hidden>
+      <path d="M4 9.5h3.4L12 5.2v13.6L7.4 14.5H4a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1Z" />
+      {level === "off" ? (
+        <path d="m15.2 9.3 1.4-1.4 5.1 5.1-1.4 1.4-5.1-5.1Z M20.3 7.9l1.4 1.4-5.1 5.1-1.4-1.4 5.1-5.1Z" />
+      ) : (
+        <>
+          <path d="M15.4 8.6a4.6 4.6 0 0 1 0 6.8l-1.3-1.5a2.6 2.6 0 0 0 0-3.8l1.3-1.5Z" />
+          {level === "high" ? (
+            <path d="M17.6 5.9a8.2 8.2 0 0 1 0 12.2l-1.3-1.5a6.2 6.2 0 0 0 0-9.2l1.3-1.5Z" />
+          ) : null}
+        </>
+      )}
+    </svg>
+  );
+}
+
+/** 字幕图标：外框 + 挖空的字幕线。必须用 evenodd，非零缠绕会把线条填实成白块。 */
+function SubtitleGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" className={ICON} aria-hidden>
+      <path
+        fillRule="evenodd"
+        d="M3 5.8A1.8 1.8 0 0 1 4.8 4h14.4A1.8 1.8 0 0 1 21 5.8v12.4a1.8 1.8 0 0 1-1.8 1.8H4.8A1.8 1.8 0 0 1 3 18.2V5.8ZM6 9.3h4.1v1.8H6V9.3Zm6 0h6v1.8h-6V9.3ZM6 13.1h6.2v1.8H6v-1.8Zm8.1 0H18v1.8h-3.9v-1.8Z"
+      />
+    </svg>
+  );
+}
+
+function NextGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" className={ICON} aria-hidden>
+      <path d="M5 4.6v14.8a.6.6 0 0 0 .93.5l11-7.4a.6.6 0 0 0 0-1L5.93 4.1A.6.6 0 0 0 5 4.6Z" />
+      <path d="M18.4 4h2.2v16h-2.2z" />
+    </svg>
+  );
+}
+
+function StatsGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" className={ICON} aria-hidden>
+      <path d="M4 19h2.6v-6H4v6Zm5.2 0h2.6V5H9.2v14Zm5.2 0H17v-9h-2.6v9Zm5.2 0H22V8h-2.4v11Z" />
+    </svg>
+  );
+}
+
+function PipGlyph({ exit, slot }: { exit?: boolean; slot?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={ICON} slot={slot} aria-hidden>
+      <path d="M3 5.5A1.5 1.5 0 0 1 4.5 4h15A1.5 1.5 0 0 1 21 5.5v13a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5v-13Zm2 .5v12h14V6H5Z" />
+      <path d={exit ? "M7 8h7v5H7V8Z" : "M12 12h6v5h-6v-5Z"} />
+    </svg>
+  );
+}
+
+function FullscreenGlyph({ exit, slot }: { exit?: boolean; slot?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={ICON} slot={slot} aria-hidden>
+      {exit ? (
+        <path d="M9.4 3v4.6a1.8 1.8 0 0 1-1.8 1.8H3v-2h4.4V3h2Zm5.2 0h2v4.4H21v2h-4.6a1.8 1.8 0 0 1-1.8-1.8V3ZM3 14.6h4.6a1.8 1.8 0 0 1 1.8 1.8V21h-2v-4.4H3v-2Zm11.6 1.8a1.8 1.8 0 0 1 1.8-1.8H21v2h-4.4V21h-2v-4.6Z" />
+      ) : (
+        <path d="M3 3h6.6v2H5v4.6H3V3Zm11.4 0H21v6.6h-2V5h-4.6V3ZM3 14.4h2V19h4.6v2H3v-6.6ZM19 14.4h2V21h-6.6v-2H19v-4.6Z" />
+      )}
+    </svg>
+  );
+}
 
 export interface PlayerControlsProps {
   positionMs: number;
@@ -48,6 +142,9 @@ export interface PlayerControlsProps {
   /** 当前会话已缓冲到的文件位置，用于进度条的浅色底 */
   bufferedEndMs: number | null;
   paused: boolean;
+  /** 片名与集号：Netflix 把它放在控制条中间，全屏时这是唯一的片名出处 */
+  title: string;
+  episodeLabel: string | null;
   onTogglePlay: () => void;
   onSeek: (fileMs: number) => void;
   onSeekBy: (seconds: number) => void;
@@ -59,6 +156,8 @@ export interface PlayerControlsProps {
   diagnosticsOpen: boolean;
   onToggleDiagnostics: () => void;
   onNext: (() => void) | null;
+  /** 菜单展开时要顶住控制条的自动隐藏，否则菜单会连着控制条一起淡掉 */
+  onMenuOpenChange: (open: boolean) => void;
   /** 进度条缩略图索引。null = 还没生成好，表现为没有预览 */
   trickplay: TrickplayIndex | null;
 }
@@ -69,6 +168,8 @@ export function PlayerControls(props: PlayerControlsProps) {
     durationMs,
     bufferedEndMs,
     paused,
+    title,
+    episodeLabel,
     onTogglePlay,
     onSeek,
     onSeekBy,
@@ -80,6 +181,7 @@ export function PlayerControls(props: PlayerControlsProps) {
     diagnosticsOpen,
     onToggleDiagnostics,
     onNext,
+    onMenuOpenChange,
     trickplay,
   } = props;
 
@@ -92,118 +194,139 @@ export function PlayerControls(props: PlayerControlsProps) {
   const shown = dragging ?? positionMs;
   const previewTile = hover ? tileAt(trickplay, hover.ms) : null;
   const progress = durationMs ? Math.min(100, (shown / durationMs) * 100) : 0;
-  const buffered = durationMs && bufferedEndMs ? Math.min(100, (bufferedEndMs / durationMs) * 100) : 0;
+  const buffered =
+    durationMs && bufferedEndMs ? Math.min(100, (bufferedEndMs / durationMs) * 100) : 0;
+  const remainingMs = durationMs ? Math.max(0, durationMs - shown) : null;
+
+  const openMenu = (next: "none" | "subtitles") => {
+    setMenu(next);
+    onMenuOpenChange(next !== "none");
+  };
 
   return (
-    <div className="pointer-events-auto bg-gradient-to-t from-black/85 via-black/55 to-transparent px-4 pb-4 pt-16">
-      {/* 进度条 */}
-      <div
-        className="relative mb-1 h-6"
-        onPointerMove={(e) => {
-          if (!durationMs) return;
-          const rect = e.currentTarget.getBoundingClientRect();
-          const x = Math.min(Math.max(e.clientX - rect.left, 0), rect.width);
-          setHover({ ms: (x / rect.width) * durationMs, x });
-        }}
-        onPointerLeave={() => setHover(null)}
-      >
-        {/* 缩略图预览：拖进度条时能看见画面。没生成好就没有，不影响拖动 */}
-        {hover && previewTile && (
-          <div
-            className="pointer-events-none absolute bottom-7 -translate-x-1/2 rounded-md border border-white/15 bg-black/70 p-1 shadow-lg"
-            style={{ left: hover.x }}
-          >
+    <div className="pointer-events-auto bg-gradient-to-t from-black/90 via-black/60 to-transparent px-6 pb-6 pt-24 max-md:px-3 max-md:pb-3 max-md:pt-16">
+      {/* ---- 进度行：条 + 右端剩余时长（Netflix 只报剩余，不报总长） ---- */}
+      <div className="player-scrub-row flex items-center gap-4">
+        <div
+          className="relative h-5 flex-1"
+          onPointerMove={(e) => {
+            if (!durationMs) return;
+            const rect = e.currentTarget.getBoundingClientRect();
+            const x = Math.min(Math.max(e.clientX - rect.left, 0), rect.width);
+            setHover({ ms: (x / rect.width) * durationMs, x });
+          }}
+          onPointerLeave={() => setHover(null)}
+        >
+          {/* 缩略图预览：拖进度条时能看见画面。没生成好就只剩时间戳，
+              不影响拖动——预览是锦上添花，时间戳是刚需。 */}
+          {hover ? (
             <div
-              style={{
-                width: previewTile.width,
-                height: previewTile.height,
-                backgroundImage: `url(${previewTile.url})`,
-                backgroundPosition: `${previewTile.offsetX}px ${previewTile.offsetY}px`,
-              }}
-              className="rounded-sm"
+              className="pointer-events-none absolute bottom-8 -translate-x-1/2"
+              style={{ left: hover.x }}
+            >
+              {previewTile ? (
+                <div
+                  style={{
+                    width: previewTile.width,
+                    height: previewTile.height,
+                    backgroundImage: `url(${previewTile.url})`,
+                    backgroundPosition: `${previewTile.offsetX}px ${previewTile.offsetY}px`,
+                  }}
+                  className="rounded-[3px] shadow-[0_4px_18px_rgba(0,0,0,0.6)] ring-2 ring-white/85"
+                />
+              ) : null}
+              <p className="mt-1.5 text-center text-[13px] font-medium tabular-nums text-white drop-shadow">
+                {formatClock(hover.ms)}
+              </p>
+            </div>
+          ) : null}
+
+          {/* 轨道：静止 3px、悬停 5px。Netflix 的细红线就是这个手感 */}
+          <div className="pointer-events-none absolute inset-x-0 top-1/2 h-[3px] -translate-y-1/2 overflow-hidden rounded-full bg-[var(--player-track)] transition-[height] duration-150 [.player-scrub-row:hover_&]:h-[5px]">
+            <div className="h-full bg-[var(--player-buffered)]" style={{ width: `${buffered}%` }} />
+            <div
+              className="absolute inset-y-0 left-0 bg-[var(--player-accent)]"
+              style={{ width: `${progress}%` }}
             />
-            <p className="mt-0.5 text-center text-caption tabular-nums text-white/80">
-              {formatClock(hover.ms)}
-            </p>
           </div>
-        )}
-        <div className="pointer-events-none absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 overflow-hidden rounded-full bg-white/20">
-          <div className="h-full bg-white/30" style={{ width: `${buffered}%` }} />
-          <div
-            className="absolute inset-y-0 left-0 bg-[var(--accent)]"
-            style={{ width: `${progress}%` }}
+          <input
+            type="range"
+            min={0}
+            max={durationMs ?? 0}
+            step={1000}
+            value={shown}
+            disabled={!durationMs}
+            aria-label="播放进度"
+            data-dragging={dragging !== null}
+            onChange={(e) => setDragging(Number(e.target.value))}
+            onPointerUp={() => {
+              if (dragging !== null) onSeek(dragging);
+              setDragging(null);
+            }}
+            onKeyUp={() => {
+              if (dragging !== null) onSeek(dragging);
+              setDragging(null);
+            }}
+            className="player-scrub absolute inset-x-0 top-1/2 h-5 w-full -translate-y-1/2 cursor-pointer appearance-none bg-transparent disabled:cursor-default"
           />
         </div>
-        <input
-          type="range"
-          min={0}
-          max={durationMs ?? 0}
-          step={1000}
-          value={shown}
-          disabled={!durationMs}
-          aria-label="播放进度"
-          onChange={(e) => setDragging(Number(e.target.value))}
-          onPointerUp={() => {
-            if (dragging !== null) onSeek(dragging);
-            setDragging(null);
-          }}
-          onKeyUp={() => {
-            if (dragging !== null) onSeek(dragging);
-            setDragging(null);
-          }}
-          className="player-scrub absolute inset-x-0 top-1/2 h-6 w-full -translate-y-1/2 cursor-pointer appearance-none bg-transparent disabled:cursor-default"
-        />
+        <span className="shrink-0 text-[15px] font-medium tabular-nums text-white max-md:text-[13px]">
+          {remainingMs !== null ? formatClock(remainingMs) : formatClock(shown)}
+        </span>
       </div>
 
-      <div className="flex items-center gap-1">
-        <button type="button" onClick={onTogglePlay} className={BUTTON_CLASS} aria-label={paused ? "播放" : "暂停"}>
+      {/* ---- 控制行 ---- */}
+      <div className="mt-2 flex items-center gap-5 max-md:gap-3">
+        <IconButton tip={paused ? "播放" : "暂停"} onClick={onTogglePlay}>
           <PlayGlyph paused={paused} />
-        </button>
-        <button type="button" onClick={() => onSeekBy(-10)} className={BUTTON_CLASS} aria-label="后退 10 秒">
-          <svg viewBox="0 0 24 24" className={ICON} aria-hidden>
-            <path d="M12 5V2L7 6l5 4V7a5 5 0 1 1-5 5H5a7 7 0 1 0 7-7Z" />
-            <text x="12" y="15.5" textAnchor="middle" fontSize="7" fill="currentColor" stroke="none">
-              10
-            </text>
-          </svg>
-        </button>
-        <button type="button" onClick={() => onSeekBy(10)} className={BUTTON_CLASS} aria-label="前进 10 秒">
-          <svg viewBox="0 0 24 24" className={ICON} aria-hidden>
-            <path d="M12 5V2l5 4-5 4V7a5 5 0 1 0 5 5h2a7 7 0 1 1-7-7Z" />
-            <text x="12" y="15.5" textAnchor="middle" fontSize="7" fill="currentColor" stroke="none">
-              10
-            </text>
-          </svg>
-        </button>
+        </IconButton>
+        <IconButton tip="后退 10 秒" onClick={() => onSeekBy(-10)}>
+          <SkipGlyph forward={false} />
+        </IconButton>
+        <IconButton tip="前进 10 秒" onClick={() => onSeekBy(10)}>
+          <SkipGlyph forward />
+        </IconButton>
 
-        {/* 音量交给 Media Chrome：它已经处理好静音记忆、触屏与键盘无障碍 */}
-        <MediaMuteButton className="player-mc-button" />
-        <MediaVolumeRange className="player-mc-range" />
+        {/* 音量：图标常显，滑块悬停滑出。静音记忆、触屏与键盘无障碍交给
+            Media Chrome，只把图标换成本文件这一套。 */}
+        <div className="player-volume flex items-center max-md:hidden">
+          <MediaMuteButton className="player-mc-button" noTooltip>
+            <VolumeGlyph slot="off" level="off" />
+            <VolumeGlyph slot="low" level="low" />
+            <VolumeGlyph slot="medium" level="low" />
+            <VolumeGlyph slot="high" level="high" />
+          </MediaMuteButton>
+          <div className="player-volume-slot">
+            <MediaVolumeRange className="player-mc-range" />
+          </div>
+        </div>
 
-        <span className="tnum ml-2 text-[13px] text-white/75">
-          {formatClock(shown)}
-          <span className="text-white/40"> / {durationMs ? formatClock(durationMs) : "--:--"}</span>
-        </span>
-
-        <div className="flex-1" />
+        {/* 片名居中：全屏时顶栏被系统控件挤掉，这里是唯一还能看到「在放什么」
+            的地方。剧集用「片名 · S01E05」一行写完，不占两行。 */}
+        <div className="min-w-0 flex-1 px-2 text-center max-md:hidden">
+          <p className="truncate text-[15px] font-semibold text-white/95">
+            {title}
+            {episodeLabel ? (
+              <span className="font-normal text-white/60">{` · ${episodeLabel}`}</span>
+            ) : null}
+          </p>
+        </div>
+        <div className="flex-1 md:hidden" />
 
         {onNext ? (
-          <button type="button" onClick={onNext} className={`${BUTTON_CLASS} w-auto px-3 text-[13px]`}>
-            下一集
-          </button>
+          <IconButton tip="下一集" onClick={onNext}>
+            <NextGlyph />
+          </IconButton>
         ) : null}
 
         <div className="relative">
-          <button
-            type="button"
-            onClick={() => setMenu(menu === "subtitles" ? "none" : "subtitles")}
-            className={`${BUTTON_CLASS} ${selectedSubtitle ? "text-[var(--accent)]" : ""}`}
-            aria-label="字幕"
+          <IconButton
+            tip="字幕"
+            active={Boolean(selectedSubtitle) || menu === "subtitles"}
+            onClick={() => openMenu(menu === "subtitles" ? "none" : "subtitles")}
           >
-            <svg viewBox="0 0 24 24" className={ICON} aria-hidden>
-              <path d="M3 5.5A1.5 1.5 0 0 1 4.5 4h15A1.5 1.5 0 0 1 21 5.5v13a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5v-13ZM6 13h6v1.6H6V13Zm8 0h4v1.6h-4V13ZM6 9.5h4v1.6H6V9.5Zm6 0h6v1.6h-6V9.5Z" />
-            </svg>
-          </button>
+            <SubtitleGlyph />
+          </IconButton>
           {menu === "subtitles" ? (
             <SubtitleMenu
               tracks={subtitles}
@@ -211,26 +334,51 @@ export function PlayerControls(props: PlayerControlsProps) {
               onSelect={(ref) => onSelectSubtitle(ref)}
               style={subtitleStyle}
               onStyleChange={onSubtitleStyleChange}
-              onClose={() => setMenu("none")}
+              onClose={() => openMenu("none")}
             />
           ) : null}
         </div>
 
-        <button
-          type="button"
-          onClick={onToggleDiagnostics}
-          className={`${BUTTON_CLASS} ${diagnosticsOpen ? "text-[var(--accent)]" : ""}`}
-          aria-label="播放诊断"
-        >
-          <svg viewBox="0 0 24 24" className={ICON} aria-hidden>
-            <path d="M4 19h2v-6H4v6Zm5 0h2V5H9v14Zm5 0h2v-9h-2v9Zm5 0h2V8h-2v11Z" />
-          </svg>
-        </button>
+        <IconButton tip="播放诊断" active={diagnosticsOpen} onClick={onToggleDiagnostics}>
+          <StatsGlyph />
+        </IconButton>
 
-        <MediaPipButton className="player-mc-button" />
-        <MediaFullscreenButton className="player-mc-button" />
+        <MediaPipButton className="player-mc-button max-md:hidden" noTooltip>
+          <PipGlyph slot="enter" />
+          <PipGlyph slot="exit" exit />
+        </MediaPipButton>
+        <MediaFullscreenButton className="player-mc-button" noTooltip>
+          <FullscreenGlyph slot="enter" />
+          <FullscreenGlyph slot="exit" exit />
+        </MediaFullscreenButton>
       </div>
     </div>
+  );
+}
+
+/** 控制条上的图标按钮：悬停放大 + 上方说明气泡，样式统一在 globals.css。 */
+function IconButton({
+  tip,
+  active,
+  onClick,
+  children,
+}: {
+  tip: string;
+  active?: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={tip}
+      data-tip={tip}
+      data-active={active ? "true" : undefined}
+      className="player-btn player-tip size-10 shrink-0"
+    >
+      {children}
+    </button>
   );
 }
 
@@ -264,11 +412,14 @@ function SubtitleMenu({
   return (
     <div
       ref={box}
-      className="absolute bottom-11 right-0 w-[290px] rounded-xl border border-white/10 bg-black/85 p-2 text-[13px] backdrop-blur-md"
+      className="absolute bottom-14 right-0 w-[300px] rounded-sm border border-white/15 bg-[rgba(20,20,20,0.94)] py-2 text-[14px] shadow-[0_8px_32px_rgba(0,0,0,0.7)] backdrop-blur-sm"
     >
-      <div className="max-h-[220px] overflow-y-auto">
+      <p className="px-4 pb-2 text-[12px] font-semibold uppercase tracking-wide text-white/45">
+        字幕
+      </p>
+      <div className="max-h-[240px] overflow-y-auto">
         <MenuItem active={selected === null} onClick={() => onSelect(null)}>
-          关闭字幕
+          关闭
         </MenuItem>
         {tracks.options.map((option) => (
           <MenuItem
@@ -280,18 +431,18 @@ function SubtitleMenu({
           </MenuItem>
         ))}
         {tracks.unavailable.map((item) => (
-          <div key={item.label} className="px-3 py-1.5 text-white/35">
+          <div key={item.label} className="px-4 py-1.5 text-white/35">
             <div className="truncate">{item.label}</div>
-            <div className="text-[11px] leading-snug">{item.reason}</div>
+            <div className="text-[12px] leading-snug">{item.reason}</div>
           </div>
         ))}
         {tracks.options.length === 0 && tracks.unavailable.length === 0 ? (
-          <div className="px-3 py-2 text-white/40">这个文件没有可用字幕</div>
+          <div className="px-4 py-2 text-white/40">这个文件没有可用字幕</div>
         ) : null}
       </div>
 
       {selected ? (
-        <div className="mt-2 space-y-2 border-t border-white/10 pt-2">
+        <div className="mt-2 space-y-2 border-t border-white/10 pt-3">
           <StepRow
             label="时间轴"
             value={`${style.offsetSeconds > 0 ? "+" : ""}${style.offsetSeconds.toFixed(1)} 秒`}
@@ -328,7 +479,7 @@ function SubtitleMenu({
               onStyleChange({ ...style, bottomPercent: Math.min(40, style.bottomPercent + 2) })
             }
           />
-          <div className="flex gap-2 px-3 pb-1">
+          <div className="flex gap-2 px-4 pb-1">
             <Toggle
               on={style.outline}
               onClick={() => onStyleChange({ ...style, outline: !style.outline })}
@@ -361,11 +512,12 @@ function MenuItem({
     <button
       type="button"
       onClick={onClick}
-      className={`flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left transition-colors hover:bg-white/10 ${
-        active ? "text-[var(--accent)]" : "text-white/80"
+      className={`flex w-full items-center gap-3 border-l-[3px] px-4 py-1.5 text-left transition-colors hover:bg-white/10 ${
+        active
+          ? "border-[var(--player-accent)] font-semibold text-white"
+          : "border-transparent text-white/70"
       }`}
     >
-      <span className="w-3 shrink-0">{active ? "✓" : ""}</span>
       <span className="truncate">{children}</span>
     </button>
   );
@@ -383,11 +535,11 @@ function StepRow({
   onPlus: () => void;
 }) {
   return (
-    <div className="flex items-center justify-between px-3 text-white/70">
+    <div className="flex items-center justify-between px-4 text-[13px] text-white/65">
       <span>{label}</span>
-      <span className="flex items-center gap-1">
+      <span className="flex items-center gap-1.5">
         <StepButton onClick={onMinus}>−</StepButton>
-        <span className="tnum w-[68px] text-center text-white/90">{value}</span>
+        <span className="w-[68px] text-center tabular-nums text-white/90">{value}</span>
         <StepButton onClick={onPlus}>+</StepButton>
       </span>
     </div>
@@ -399,7 +551,7 @@ function StepButton({ onClick, children }: { onClick: () => void; children: Reac
     <button
       type="button"
       onClick={onClick}
-      className="size-6 rounded-md bg-white/10 leading-none text-white/85 transition-colors hover:bg-white/20"
+      className="size-6 rounded-sm bg-white/12 leading-none text-white/85 transition-colors hover:bg-white/25"
     >
       {children}
     </button>
@@ -419,8 +571,8 @@ function Toggle({
     <button
       type="button"
       onClick={onClick}
-      className={`rounded-lg px-3 py-1 text-[12px] transition-colors ${
-        on ? "bg-[var(--accent)]/25 text-[var(--accent)]" : "bg-white/10 text-white/60"
+      className={`rounded-sm px-3 py-1 text-[12px] transition-colors ${
+        on ? "bg-[var(--player-accent)] text-white" : "bg-white/12 text-white/60 hover:bg-white/20"
       }`}
     >
       {children}

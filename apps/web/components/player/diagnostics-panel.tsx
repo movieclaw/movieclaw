@@ -59,13 +59,13 @@ export function DiagnosticsPanel({
       : 0;
 
   return (
-    <div className="absolute right-4 top-16 z-20 w-[330px] max-w-[calc(100%-2rem)] rounded-xl border border-white/10 bg-black/80 p-4 text-[12px] backdrop-blur-md">
+    <div className="absolute right-6 top-20 z-20 w-[340px] max-w-[calc(100%-2rem)] rounded-sm bg-[rgba(20,20,20,0.94)] p-4 text-[12px] shadow-[0_8px_32px_rgba(0,0,0,0.7)] backdrop-blur-sm max-md:right-3">
       <div className="mb-3 flex items-center justify-between">
         <h3 className="text-[13px] font-semibold text-white">播放诊断</h3>
         <button
           type="button"
           onClick={onClose}
-          className="rounded-md px-2 py-0.5 text-white/50 transition-colors hover:bg-white/10 hover:text-white"
+          className="rounded-sm px-2 py-0.5 text-white/50 transition-colors hover:bg-white/10 hover:text-white"
         >
           关闭
         </button>
@@ -73,7 +73,7 @@ export function DiagnosticsPanel({
 
       <div className="space-y-1.5">
         <Row label="档位" value={TIER_LABELS[decision.tier ?? -1] ?? "未知"} />
-        {decision.degraded_from !== null ? (
+        {decision.degraded_from != null ? (
           <Row label="降档自" value={`档 ${decision.degraded_from}`} />
         ) : null}
         <Row

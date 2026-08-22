@@ -46,9 +46,9 @@ export function ConsentDialog({
   };
 
   return (
-    <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/70 px-6">
-      <div className="w-full max-w-[440px] rounded-2xl border border-white/10 bg-[#16181d] p-6 text-white shadow-2xl">
-        <h2 className="text-[17px] font-semibold">这部片需要软件转码才能在浏览器里播放</h2>
+    <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/75 px-6">
+      <div className="w-full max-w-[460px] rounded-sm bg-[rgba(20,20,20,0.97)] p-7 text-white shadow-[0_12px_48px_rgba(0,0,0,0.8)]">
+        <h2 className="text-[19px] font-semibold leading-snug">这部片需要软件转码才能在浏览器里播放</h2>
 
         <dl className="mt-4 space-y-3 text-[13px] leading-relaxed text-white/70">
           <div>
@@ -64,7 +64,7 @@ export function ConsentDialog({
         </dl>
 
         {error ? (
-          <p className="mt-4 rounded-lg bg-red-500/15 px-3 py-2 text-[13px] text-red-200">{error}</p>
+          <p className="mt-4 rounded-sm bg-[var(--player-accent)]/20 px-3 py-2 text-[13px] text-white">{error}</p>
         ) : null}
 
         {canSelfEnable ? (
@@ -74,7 +74,7 @@ export function ConsentDialog({
               <button
                 type="button"
                 onClick={onCancel}
-                className="rounded-xl px-4 py-2 text-[13px] text-white/70 transition-colors hover:bg-white/10"
+                className="rounded-sm px-5 py-2.5 text-[14px] text-white/70 transition-colors hover:bg-white/10"
               >
                 取消
               </button>
@@ -82,7 +82,7 @@ export function ConsentDialog({
                 type="button"
                 onClick={enable}
                 disabled={saving}
-                className="rounded-xl bg-white px-4 py-2 text-[13px] font-medium text-black transition-opacity hover:opacity-90 disabled:opacity-50"
+                className="rounded-sm bg-[var(--player-accent)] px-5 py-2.5 text-[14px] font-semibold text-white transition-colors hover:bg-[var(--player-accent-hover)] disabled:opacity-50"
               >
                 {saving ? "正在开启…" : "开启并播放"}
               </button>
@@ -97,7 +97,7 @@ export function ConsentDialog({
               <button
                 type="button"
                 onClick={onCancel}
-                className="rounded-xl bg-white/10 px-4 py-2 text-[13px] text-white transition-colors hover:bg-white/15"
+                className="rounded-sm bg-white/15 px-5 py-2.5 text-[14px] text-white transition-colors hover:bg-white/25"
               >
                 知道了
               </button>

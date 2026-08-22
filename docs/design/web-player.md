@@ -645,6 +645,25 @@ iOS Safari 是整件事最难的一块：MSE 只有 `ManagedMediaSource` 子集�
 - 章节标记。
 - Google Cast（要注册接收端应用，成本高，最后做）。
 
+### 6.6 自动播放：手势撑不过起播链路
+
+从条目页点「播放」到真的能 `play()`，中间隔着「问续播点 → 决策 → 开会话 →
+动态 import hls.js → 挂流」四段异步，短则几百毫秒、长则几秒。那次点击的手势
+撑不到这里，`play()` 会以两种完全不同的方式被拒绝，处置也必须完全不同：
+
+| 拒绝 | 含义 | 处置 |
+|---|---|---|
+| `AbortError` | **时序**打断：`load()` / 换源抢在 play 前面（实测 `play()` 后紧跟 `load()` 必然抛这个） | 重试。绝不能因此静音——静音一次就白让用户点一下 |
+| `NotAllowedError` | **策略**拦截 | 静音重试。**静音视频永远允许自动播放**，用户看到画面已经在动，再点「开启声音」 |
+| 其它 | 放不了 | 中央大播放键，请用户自己点 |
+
+因此起播链路上每一个「现在应该能播了」的时机（挂流完成、`loadedmetadata`、
+`canplay`）都要敲一次门，闸门条件（用户按过暂停就收手、已在播就别试、`blocked`
+与 `muted` 是终态、重试有上限）在 `lib/player/autoplay.ts` 的纯函数里，可单测。
+
+静音降级是**跨集延续**的状态（video 元素一直是同一个），必须与「本集自动播放
+结果」分开存；合成一个的后果是切下一集时提示消失、声音却还没回来。
+
 ---
 
 ## 7. 已知陷阱与对应措施
@@ -668,6 +687,8 @@ iOS Safari 是整件事最难的一块：MSE 只有 `ManagedMediaSource` 子集�
 | ⑬ | **阻塞 subprocess** | 全站 API 卡死 | 一律 `asyncio.create_subprocess_exec`（§4.2-1） |
 | ⑭ | **首次能力探测过于乐观** | 判为直通实际掉帧 | §6.3 运行时降档回路 |
 | ⑮ | **NVENC 并发会话上限** | 第 4 路直接报错 | 显式检测 + 中文提示；不内置解锁补丁 |
+| ⑯ | **自动播放的手势撑不过起播链路** | 进了播放页停在第一帧，非得再点一次播放 | 多时机重试 + 按错误类型区分处置（§6.6） |
+| ⑰ | **`media-controller` 把 `line-height` 写死为 0** | 浮层里每一行文字塌成一条线、彼此叠住 | 在自己的浮层（`media-controller` 的非 media 子节点）上把行高要回来 |
 
 ---
 
@@ -1281,34 +1302,12 @@ PT 片源的字幕绝大多数是内封的，外挂 `.srt` 反而是少数。只
 | 停顿归因 | `test/player-stall.test.mjs` | 14 |
 | 字幕规划 | `test/player-subtitles.test.mjs` | 11 |
 | 缩略图定位 | `test/player-trickplay.test.mjs` | 12 |
+| 自动播放兜底 | `test/player-autoplay.test.mjs` | 13 |
 
-合计 **77 条**，全部 `node --test` 直跑，不需要浏览器——这也是纯逻辑一律放
+合计 **90 条**，全部 `node --test` 直跑，不需要浏览器——这也是纯逻辑一律放
 `lib/player/` 的理由：降档、时间轴换算、字幕分派、会话释放、停顿归因、质量
-归约、缩略图定位这些最容易出错的判断因此都能被覆盖。
+归约、缩略图定位、自动播放兜底这些最容易出错的判断因此都能被覆盖。
 
 全量套件跑完后用 `pgrep ffmpeg` 确认过：**没有泄漏任何转码进程**。
 
-**前端**
-
-| 模块 | 文件 | 条数 |
-|---|---|---|
-| 能力探测 | `test/player-capability.test.mjs` | 6 |
-| 状态机与降档 | `test/player-machine.test.mjs` | 16 |
-| 字幕规划 | `test/player-subtitles.test.mjs` | 11 |
-| 会话释放 | `test/player-session-release.test.mjs` | 6 |
-| 停顿归因 | `test/player-stall.test.mjs` | 14 |
-
-合计 **53 条**，全部 `node --test` 直跑，不需要浏览器——这也是纯逻辑一律放
-`lib/player/` 的理由：降档、时间轴换算、字幕分派、会话释放、停顿归因这些
-最容易出错的判断因此都能被覆盖。
-
-**前端**（`node --test`，与后端同为默认门禁）
-
-| 层 | 文件 | 条数 |
-|---|---|---|
-| 能力探测 | `apps/web/test/player-capability.test.mjs` | 6 |
-| 状态机与时间轴 | `apps/web/test/player-machine.test.mjs` | 16 |
-| 字幕规划与快捷键 | `apps/web/test/player-subtitles.test.mjs` | 9 |
-
-合计 **31 条**。UI 组件不写渲染测试——判断都已经被挤到上面这三个纯模块里，
-组件层剩下的只有接线。
+UI 组件不写渲染测试——判断都已经被挤到上面这些纯模块里，组件层剩下的只有接线。
