@@ -29,12 +29,25 @@
 
 1. **最小可用子集，不是复刻**。只实现 Infuse 类播放器实际会调的接口；
    WebSocket、SyncPlay、QuickConnect、DLNA、LiveTV、转码 HLS 一概不做。
-2. **不转码**。所有 MediaSource 声明 `SupportsDirectPlay=true,
-   SupportsTranscoding=false`——这等价于"用户无转码权限的 Jellyfin"这一
-   **协议内合法状态**（Jellyfin 在用户缺 `EnableVideoPlaybackTranscoding` 等
-   权限时自己就这么置，`MediaInfoHelper.cs:288-303`）。全解码播放器（Infuse
-   等）永远走直连；解码能力不足的客户端（网页端、Chromecast）不在支持范围，
-   播放失败是预期行为。
+2. **本兼容层不转码**（2026-08-21 修订，见下）。所有 MediaSource 声明
+   `SupportsDirectPlay=true, SupportsTranscoding=false`——这等价于"用户无转码
+   权限的 Jellyfin"这一**协议内合法状态**（Jellyfin 在用户缺
+   `EnableVideoPlaybackTranscoding` 等权限时自己就这么置，
+   `MediaInfoHelper.cs:288-303`）。全解码播放器（Infuse 等）永远走直连。
+
+   > **修订说明**：原文写的是产品级的"不转码"，并把网页端列为"不在支持范围、
+   > 播放失败是预期行为"。[web-player.md](web-player.md) §0.3 起，转码在**网页
+   > 播放器**上是允许的，"不转码"降为**本兼容层的局部策略**。
+   >
+   > **本层行为与修订前完全一致**：所有 MediaSource 仍恒声明直连、不转码，
+   > 网页端的转码走的是另一条决策路径（`movieclaw_playback.decide` 的五档
+   > 阶梯），不经过本层。对 Infuse 等全解码播放器而言转码永远是劣化，不该
+   > 提供——这条不变。
+   >
+   > 曾计划让本层也改走那个决策引擎（传一份"我全都能解"的恒等快照），实现时
+   > 放弃了：本层的判定是个常量，走引擎需要在同步无 IO 的 DTO 构造里读异步
+   > 配置、并让 catalog 反向依赖播放服务层，换来一个必然相同的结果。详见
+   > [web-player.md](web-player.md) §12.9。
 3. **网盘 strm 不代理**。strm 条目直接把云端 URL 交给播放器（见 6.4），
    服务器零流量——这是相对真 Jellyfin（12.0 服务端对远程源做反向代理）的
    **有意偏离**，与 strm-workflow.md 的"零网盘流量"原则一致。社区已有
@@ -42,7 +55,8 @@
    使用 302 直链配合 Infuse，可行性经过验证。
 
 **有意偏离清单**（模仿不是复刻，所有偏离集中声明，实现与评审对照用）：
-① 不转码（上）；② strm 直连/302 不代理（上）；③ `/Videos/*/stream` 与字幕
+① 本兼容层不转码（上；网页播放器另有决策路径，见 web-player.md）；
+② strm 直连/302 不代理（上）；③ `/Videos/*/stream` 与字幕
 接口**要求 token**（真 Jellyfin 匿名，见 6.4）；④ 发现与 `LocalAddress` 的
 地址策略（见 3.1/3.2）；⑤ QuickConnect/Enabled 恒 `false`（真默认 true）；
 ⑥ Latest 聚合简化为两态（见 5.5）；⑦ strm 条目的 `Container` 从 URL 猜而非

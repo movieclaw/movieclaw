@@ -909,7 +909,9 @@ Mac mini 验证。做成发版前的人工清单，列进 `.claude/skills/releas
 - [x] `playback.policy` 配置域（`app_setting` namespace + Pydantic 模型，**零迁移**）：
       软件转码开关、转码并发、直通并发、码率上限、缓存配额
 - [ ] `playback_metric` 表 + 迁移（向前兼容）——**唯一需要迁移的新表**
-- [x] Jellyfin 兼容层改用同一决策引擎（恒等快照），行为不变
+- [ ] ~~Jellyfin 兼容层改用同一决策引擎（恒等快照）~~ —— **不做，理由见 §12.9**。
+      行为要求（全解码播放器恒直连）已由兼容层自己保证，走引擎只是绕一圈得到
+      同一个常量
 
 **前端**
 
@@ -933,7 +935,7 @@ Mac mini 验证。做成发版前的人工清单，列进 `.claude/skills/releas
 - [ ] Dockerfile 换 jellyfin-ffmpeg；**`docker/runtime-version` 8 → 9**
 - [ ] `scripts/perf/` 播放器测试脚本四件套 + 黄金样本库 + Release 资产
 - [x] 决策引擎表驱动单测进 CI；集成测试标 `integration`
-- [ ] 更新 `jellyfin-compat.md` §0 硬边界 2（按 §0.3）
+- [x] 更新 `jellyfin-compat.md` §0 硬边界 2（按 §0.3）
 - [ ] `release/SKILL.md` 增加硬件矩阵检查单
 
 ### P1
@@ -1083,6 +1085,22 @@ Mac mini 验证。做成发版前的人工清单，列进 `.claude/skills/releas
 画面由播放器出。**cue 文本一律剥标签再渲染**——字幕是用户丢进媒体库的任意文本，
 把它当 HTML 插进 DOM 就是一条现成的 XSS 通道，斜体这点观感换不来这个风险
 （要完整排版的走 ASS/JASSUB，那条路径在 canvas 上画，根本不碰 DOM）。
+
+### 12.9 为什么最终没让 Jellyfin 兼容层走决策引擎
+
+§0.3 原本写的是「两条链路共用同一个决策引擎，区别只在能力快照」。实现下来
+**这条不做**，文档据此修正（含 jellyfin-compat.md §0 的修订说明）。
+
+原因：兼容层的判定是一个**常量**——所有 MediaSource 恒
+`SupportsDirectPlay=true, SupportsTranscoding=false`，直接写在
+`catalog.py` 的 DTO 里。让它改走引擎需要在一个同步、无 IO 的 DTO 构造里读取
+异步的策略配置，并让 catalog 反向依赖播放服务层，换来的是一个必然为档 0 的
+结果。多一层间接、多一条依赖、多一个出错面，不换任何行为。
+
+保留 `universal_capability()`：它不是兼容层的实际入参，而是**「全解码播放器
+必须恒得档 0」这条不变量的可执行表述**，由 `test_decide.py` 的守护用例持有。
+真正的共用发生在更下面一层——两条链路的规格输入都是同一份 ffprobe 落库真值
+（`MediaStreams`），这才是「同一份事实」的实际所指。
 
 ### 12.8 内封字幕：按需抽取而不是烧录
 

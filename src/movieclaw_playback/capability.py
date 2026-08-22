@@ -6,10 +6,13 @@
 ``navigator.mediaCapabilities.decodingInfo()``，把 ``supported`` /
 ``smooth`` / ``powerEfficient`` 三态原样带上来。
 
-**恒等快照**（``universal_capability()``）是 Jellyfin 兼容层的输入：Infuse /
-VidHub 这类全解码播放器自称「我全都能解」，于是同一套决策引擎对它们永远
-输出档 0——[jellyfin-compat.md](../../docs/design/jellyfin-compat.md) 的直连
-行为因此保持不变，而不需要第二套判定逻辑。
+**恒等快照**（``universal_capability()``）描述 Infuse / VidHub 这类全解码
+播放器：自称「我全都能解」，因此决策引擎对它们必须恒输出档 0。
+
+它是这条**不变量的可执行表述**，由 ``tests/playback/test_decide.py`` 的守护
+用例持有——不是 Jellyfin 兼容层的实际入参。兼容层的判定是个常量，直接写在
+它自己的 MediaSource DTO 里（``movieclaw_jellyfin/catalog.py``），没有绕经
+本引擎；理由见 web-player.md §12.9。
 
 ⚠️ **已知偏差**：浏览器在没有本机统计数据前，会把所有 ``supported`` 的配置
 乐观报成 ``smooth=true`` / ``powerEfficient=true``。因此首次探测不可全信，
