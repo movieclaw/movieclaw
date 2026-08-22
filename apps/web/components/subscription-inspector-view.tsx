@@ -10,6 +10,7 @@ import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { useConfirm, useToast } from "@/components/feedback";
 import {
   ArrowLeftIcon,
+  ChevronDownIcon,
   FilmIcon,
   MoreIcon,
   RefreshIcon,
@@ -1071,7 +1072,40 @@ function ActivityTimeline({ activities }: { activities: SubscriptionActivity[] }
   );
 }
 
-/** 追踪项按季分组展开；电影是单项的退化形态。 */
+/**
+ * 默认展开哪几季：最新一季 ∪ 有在途工单的季。
+ *
+ * 只展开最新一季不够——回补老剧时在途的那一集完全可能落在第 3 季，
+ * 而最新季一潭死水。用户来这页问的是「现在卡在哪」，把正在下载的那一季
+ * 折起来恰恰答错了问题。在途口径复用本文件顶部 hasInFlight 的同一条
+ * （grabbed / downloaded），不含洗版中：洗版是长期后台过程、可能横跨多季，
+ * 算进来等于全展开，折叠就白做了。
+ *
+ * 「最新一季」取季号最大的正季，只有特别篇时才落到 0——与海报卡的
+ * subscriptionCollectionMeta（lib/subscription-ui.ts）同一口径。
+ */
+function defaultOpenSeasons(wanted: WantedItem[]): Set<number> {
+  const open = new Set<number>();
+  const regular = wanted.filter((w) => w.season_number > 0);
+  const pool = regular.length > 0 ? regular : wanted;
+  if (pool.length > 0) {
+    open.add(Math.max(...pool.map((w) => w.season_number)));
+  }
+  for (const w of wanted) {
+    if (w.status === "grabbed" || w.status === "downloaded") open.add(w.season_number);
+  }
+  return open;
+}
+
+/**
+ * 追踪项按季分组展开；电影是单项的退化形态。
+ *
+ * 多季订阅（回补整部剧很常见，全 8 季 = 70 多行）默认只展开
+ * defaultOpenSeasons 选中的季，其余折成季头行那条本来就有的摘要
+ * （N/M 已安排 + 洗版中 N + 标注片源）。折叠而不是「只显示一季」：
+ * 收起的每一行仍然回答着「这季还缺不缺」，换季选择器（下拉/胶囊）会把
+ * 这个信息藏掉，回补老剧的用户恰恰最需要它。季序改为倒序，最新季在最上面。
+ */
 function WantedBreakdown({
   wanted,
   isMovie,
@@ -1092,6 +1126,18 @@ function WantedBreakdown({
 }) {
   // 「无法确认档位」季的标注弹窗（docs/design/media-source-annotation.md §5.1）
   const [annotateSeason, setAnnotateSeason] = useState<number | null>(null);
+  // 惰性初始化只在挂载时算一次：详情每 30s 静默刷新一遍，若跟着 wanted 重算，
+  // 用户手动展开的季会被刷回去。代价是自动续订新增的季不会自动展开——
+  // 折叠行本身就写着进度，不算信息丢失。
+  const [openSeasons, setOpenSeasons] = useState(() => defaultOpenSeasons(wanted));
+  const toggleSeason = (season: number) => {
+    setOpenSeasons((prev) => {
+      const next = new Set(prev);
+      if (next.has(season)) next.delete(season);
+      else next.add(season);
+      return next;
+    });
+  };
   if (wanted.length === 0) {
     return (
       <p className="rounded-2xl border border-white/[0.07] bg-[rgba(14,16,22,0.45)] p-5 text-sub leading-6 text-[var(--text-muted)] backdrop-blur-xl">
@@ -1107,54 +1153,114 @@ function WantedBreakdown({
     seasons.set(w.season_number, list);
   }
   const annotatable = canAnnotate ? seasonsWithIndeterminate(wanted) : new Set<number>();
+  // 只有一组时折叠没有意义（电影、单季剧），维持原来的常展开形态
+  const collapsible = !isMovie && seasons.size > 1;
 
   return (
     <div className="space-y-4">
       {[...seasons.entries()]
-        .sort(([a], [b]) => a - b)
-        .map(([season, items]) => (
-          <div
-            key={season}
-            className="overflow-hidden rounded-2xl border border-white/[0.07] bg-[rgba(14,16,22,0.45)] backdrop-blur-xl"
-          >
-            {(!isMovie || annotatable.has(season)) && (
-              <p className="flex items-center border-b border-white/[0.06] px-5 py-2.5 text-sub font-semibold text-white/80">
-                <span className="min-w-0 flex-1 truncate">
-                  {isMovie ? "正片" : season === 0 ? "特别篇" : `第 ${season} 季`}
-                  {!isMovie && (
-                    <span className="ml-2 font-normal text-[var(--text-faint)]">
-                      {items.filter((w) => w.status !== "wanted").length}/{items.length} 已安排
+        // 倒序：最新一季在最上面，也就是默认展开的那一季，进页面不用先往下滚
+        .sort(([a], [b]) => b - a)
+        .map(([season, items]) => {
+          const open = !collapsible || openSeasons.has(season);
+          const arranged = items.filter((w) => w.status !== "wanted").length;
+          return (
+            <div
+              key={season}
+              className="overflow-hidden rounded-2xl border border-white/[0.07] bg-[rgba(14,16,22,0.45)] backdrop-blur-xl"
+            >
+              {(!isMovie || annotatable.has(season)) && (
+                /* 折叠热区用 role="button" 的 div 而不是 <button>：季头行里还有
+                   「标注片源」按钮，button 套 button 是非法嵌套。与站点配置行
+                   （site-config-section.tsx）同一套写法。 */
+                <div
+                  role={collapsible ? "button" : undefined}
+                  tabIndex={collapsible ? 0 : undefined}
+                  aria-expanded={collapsible ? open : undefined}
+                  onClick={collapsible ? () => toggleSeason(season) : undefined}
+                  onKeyDown={
+                    collapsible
+                      ? (e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            toggleSeason(season);
+                          }
+                        }
+                      : undefined
+                  }
+                  className={`flex items-center gap-2 px-5 py-2.5 text-sub font-semibold text-white/80 ${
+                    open ? "border-b border-white/[0.06]" : ""
+                  } ${
+                    collapsible
+                      ? "cursor-pointer transition-colors hover:bg-white/[0.035] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-white/25"
+                      : ""
+                  }`}
+                >
+                  {collapsible && (
+                    <ChevronDownIcon
+                      className={`size-4 shrink-0 text-[var(--text-faint)] transition-transform ${
+                        open ? "rotate-180" : ""
+                      }`}
+                    />
+                  )}
+                  <span className="min-w-0 flex-1 truncate">
+                    {isMovie ? "正片" : season === 0 ? "特别篇" : `第 ${season} 季`}
+                    {!isMovie && (
+                      <span className="ml-2 font-normal text-[var(--text-faint)]">
+                        {arranged}/{items.length} 已安排
+                      </span>
+                    )}
+                    {items.some((w) => w.upgrade?.active) && (
+                      <span className="ml-2 font-normal text-[#2dd4bf]/80">
+                        洗版中 {items.filter((w) => w.upgrade?.active).length}
+                      </span>
+                    )}
+                  </span>
+                  {/* 收起态的迷你进度条：一列折叠行里，光看数字扫不出哪季有缺口。
+                      刻意与同行「已安排」取同一个比值——旁边的条和数字讲两件事，
+                      用户只会更糊涂 */}
+                  {collapsible && !open && (
+                    <span className="h-1 w-12 shrink-0 overflow-hidden rounded-full bg-white/[0.1]">
+                      <span
+                        className="block h-full rounded-full"
+                        style={{
+                          width: `${Math.round((arranged / items.length) * 100)}%`,
+                          backgroundColor:
+                            arranged === items.length ? "var(--ok)" : "var(--warn)",
+                        }}
+                      />
                     </span>
                   )}
-                  {items.some((w) => w.upgrade?.active) && (
-                    <span className="ml-2 font-normal text-[#2dd4bf]/80">
-                      洗版中 {items.filter((w) => w.upgrade?.active).length}
-                    </span>
+                  {annotatable.has(season) && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        // 整行是折叠热区，标注按钮不能顺带把这一季折起来
+                        e.stopPropagation();
+                        setAnnotateSeason(season);
+                      }}
+                      className="shrink-0 rounded-md border border-white/[0.12] px-2 py-0.5 text-caption font-medium text-white/75 transition hover:bg-white/[0.07] hover:text-white"
+                    >
+                      标注片源
+                    </button>
                   )}
-                </span>
-                {annotatable.has(season) && (
-                  <button
-                    type="button"
-                    onClick={() => setAnnotateSeason(season)}
-                    className="shrink-0 rounded-md border border-white/[0.12] px-2 py-0.5 text-caption font-medium text-white/75 transition hover:bg-white/[0.07] hover:text-white"
-                  >
-                    标注片源
-                  </button>
-                )}
-              </p>
-            )}
-            <ul className="divide-y divide-white/[0.05]">
-              {items.map((w) => (
-                <WantedRow
-                  key={w.id}
-                  wanted={w}
-                  isMovie={isMovie}
-                  download={w.info_hash ? downloads.get(w.info_hash) : undefined}
-                />
-              ))}
-            </ul>
-          </div>
-        ))}
+                </div>
+              )}
+              {open && (
+                <ul className="divide-y divide-white/[0.05]">
+                  {items.map((w) => (
+                    <WantedRow
+                      key={w.id}
+                      wanted={w}
+                      isMovie={isMovie}
+                      download={w.info_hash ? downloads.get(w.info_hash) : undefined}
+                    />
+                  ))}
+                </ul>
+              )}
+            </div>
+          );
+        })}
 
       {annotateSeason !== null && (
         <MediaSourceAnnotationDialog
