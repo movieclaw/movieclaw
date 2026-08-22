@@ -1455,9 +1455,11 @@ body.cmdk-open .app-shell {
 }
 
 /* ---- 自建进度条 -----------------------------------------------------------
-   轨道由外层 div 画（含缓冲底色），input 只留一个可拖的把手，所以轨道透明、
-   把手常显。把手在静止时缩到 0（Netflix 的做法：不悬停时只有一条细红线），
-   悬停整行时再放出来——这样静止画面上的干扰最少。 */
+   轨道、缓冲底、已播段、把手**全部由组件里的 div 画**，`<input type=range>`
+   只负责「可拖 + 键盘可达 + 无障碍语义」，视觉上完全隐形。
+   为什么连把手也自己画：原生把手在 `宽度 - 把手宽` 的范围里走，而已播段是
+   按整条宽度铺的，两者只在正中对得上，两端各差半个把手宽——表现就是圆点
+   没对准进度。详见 player-controls.tsx 里那段注释。 */
 .player-scrub::-webkit-slider-runnable-track {
   background: transparent;
   height: 100%;
@@ -1466,97 +1468,42 @@ body.cmdk-open .app-shell {
   background: transparent;
   height: 100%;
 }
+/* 原生把手缩到 1px 并隐形：位置由组件里自己画的圆点负责（原因见
+   player-controls.tsx 里那段注释——原生把手与已播段的坐标系差半个把手宽）。
+   1px 而不是 0：0 宽的把手在部分浏览器上会让拖动判定变得不稳。 */
 .player-scrub::-webkit-slider-thumb {
   appearance: none;
-  width: 14px;
+  width: 1px;
   height: 14px;
-  border-radius: 9999px;
-  background: var(--player-thumb);
-  box-shadow: 0 0 0 4px var(--accent-soft);
-  transform: scale(0);
-  transition: transform 0.15s cubic-bezier(0.2, 0, 0.2, 1);
+  background: transparent;
 }
 .player-scrub::-moz-range-thumb {
-  width: 14px;
+  width: 1px;
   height: 14px;
   border: none;
-  border-radius: 9999px;
-  background: var(--player-thumb);
-  box-shadow: 0 0 0 4px var(--accent-soft);
-  transform: scale(0);
-  transition: transform 0.15s cubic-bezier(0.2, 0, 0.2, 1);
-}
-/* 悬停或拖动整行时把手才出现。用 :focus-visible 兜键盘：只能用鼠标调的
-   进度条对键盘用户等于没有把手。 */
-.player-scrub-row:hover .player-scrub::-webkit-slider-thumb,
-.player-scrub[data-dragging="true"]::-webkit-slider-thumb,
-.player-scrub:focus-visible::-webkit-slider-thumb {
-  transform: scale(1);
-}
-.player-scrub-row:hover .player-scrub::-moz-range-thumb,
-.player-scrub[data-dragging="true"]::-moz-range-thumb,
-.player-scrub:focus-visible::-moz-range-thumb {
-  transform: scale(1);
-}
-.player-scrub:disabled::-webkit-slider-thumb,
-.player-scrub:disabled::-moz-range-thumb {
-  transform: scale(0);
+  background: transparent;
 }
 .player-scrub:focus {
   outline: none;
 }
 
-/* ---- Media Chrome 的按钮与音量条 -----------------------------------------
-   它们是 Web Component，样式只能经由自定义属性注入，改不了内部 DOM；图标
-   则用 slot 换成我们自己的那一套，否则一条控制条上会出现两种线宽的图标，
-   这正是「粗糙」的来源。 */
-.player-mc-button,
-.player-mc-range {
+/* ---- Media Chrome 的按钮（现在只剩画中画） -------------------------------
+   它是 Web Component，样式只能经由自定义属性注入，改不了内部 DOM；图标则用
+   slot 换成我们自己的那一套，否则一条控制条上会出现两种线宽的图标，这正是
+   「粗糙」的来源。尺寸与悬停反馈和自建的 .player-btn 对齐。 */
+.player-mc-button {
   --media-control-background: transparent;
   --media-control-hover-background: transparent;
   --media-primary-color: #fff;
   --media-secondary-color: transparent;
   --media-icon-color: #fff;
-  --media-range-thumb-background: #fff;
-  --media-range-thumb-width: 12px;
-  --media-range-thumb-height: 12px;
-  /* 不给圆角的话把手是一个竖着的小方块，和自建进度条的圆点对不上 */
-  --media-range-thumb-border-radius: 9999px;
-  --media-range-track-height: 4px;
-  --media-range-track-border-radius: 9999px;
-  --media-range-track-background: rgba(255, 255, 255, 0.3);
-  --media-range-bar-color: #fff;
-  --media-range-padding: 0;
-  height: 40px;
-}
-.player-mc-button {
   width: 40px;
+  height: 40px;
   padding: 0;
   transition: transform 0.15s cubic-bezier(0.2, 0, 0.2, 1);
 }
 .player-mc-button:hover {
   transform: scale(1.12);
-}
-/* 音量条平时收起来，悬停音量区才滑出——Netflix 的做法，静止时控制条更干净。
-   收起时宽度为 0 且不可点，不会留一条无形的热区挡住旁边的按钮。 */
-.player-volume-slot {
-  display: flex;
-  align-items: center;
-  overflow: hidden;
-  width: 0;
-  opacity: 0;
-  transition:
-    width 0.22s cubic-bezier(0.2, 0, 0.2, 1),
-    opacity 0.18s linear;
-}
-.player-volume:hover .player-volume-slot,
-.player-volume:focus-within .player-volume-slot {
-  width: 88px;
-  opacity: 1;
-}
-.player-mc-range {
-  width: 80px;
-  margin-left: 8px;
 }
 
 /* ---- 图标按钮 -------------------------------------------------------------
@@ -1616,9 +1563,8 @@ body.cmdk-open .app-shell {
 @media (prefers-reduced-motion: reduce) {
   .player-btn,
   .player-mc-button,
-  .player-volume-slot,
-  .player-scrub::-webkit-slider-thumb,
-  .player-scrub::-moz-range-thumb {
+  .player-scrub-row,
+  .player-scrub-row * {
     transition: none;
   }
 }

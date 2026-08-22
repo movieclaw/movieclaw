@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { MediaMuteButton, MediaPipButton, MediaVolumeRange } from "media-chrome/react";
+import { MediaPipButton } from "media-chrome/react";
 
 import { SUBTITLE_OFFSET_STEP, clampSubtitleOffset } from "@/lib/player/subtitles";
 import type { SubtitleStyle, SubtitleTracks } from "@/lib/player/subtitles";
@@ -23,8 +23,10 @@ import { type TrickplayIndex, tileAt } from "@/lib/player/trickplay";
  *
  * - **中央簇**（`PlayerCenterControls`）：退十秒 / 播放暂停 / 进十秒。播放
  *   控制是最高频的动作，放画面正中比塞在左下角更好够到，触屏上尤其明显。
- * - **控制行**：左簇音量 + 时间，右簇下一集/字幕/诊断/画中画/横屏。
- *   片名不再重复放这里——顶栏已经有了，重复只会让静止画面更吵。
+ * - **控制行**：左端时间，右簇下一集/字幕/诊断/画中画/横屏。片名不再重复
+ *   放这里——顶栏已经有了，重复只会让静止画面更吵。音量条也去掉了：网页
+ *   播放器上调音量的人远比想象中少（系统音量、耳机、键盘 M 与上下键都能
+ *   管），留着只是让静止画面多一件东西。
  * - **进度条**：常驻播放器**最底边**，控制条淡出后它仍在，只是收成一条
  *   贴边的细线。这是「安静时也知道播到哪」与「安静时画面干净」唯一能同时
  *   成立的做法，也是 YouTube 控件隐藏后的样子。
@@ -68,24 +70,6 @@ function SkipGlyph({ forward }: { forward: boolean }) {
       >
         10
       </text>
-    </svg>
-  );
-}
-
-function VolumeGlyph({ level, slot }: { level: "off" | "low" | "high"; slot?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" className={ICON} slot={slot} aria-hidden>
-      <path d="M4 9.5h3.4L12 5.2v13.6L7.4 14.5H4a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1Z" />
-      {level === "off" ? (
-        <path d="m15.2 9.3 1.4-1.4 5.1 5.1-1.4 1.4-5.1-5.1Z M20.3 7.9l1.4 1.4-5.1 5.1-1.4-1.4 5.1-5.1Z" />
-      ) : (
-        <>
-          <path d="M15.4 8.6a4.6 4.6 0 0 1 0 6.8l-1.3-1.5a2.6 2.6 0 0 0 0-3.8l1.3-1.5Z" />
-          {level === "high" ? (
-            <path d="M17.6 5.9a8.2 8.2 0 0 1 0 12.2l-1.3-1.5a6.2 6.2 0 0 0 0-9.2l1.3-1.5Z" />
-          ) : null}
-        </>
-      )}
     </svg>
   );
 }
@@ -241,26 +225,12 @@ export function PlayerControls(props: PlayerControlsProps) {
         }`}
       />
 
-      {/* ---- 控制行：左簇音量 + 时间，右簇功能键 ---- */}
+      {/* ---- 控制行：左端时间，右簇功能键 ---- */}
       <div
         className={`relative flex items-center gap-5 px-6 pt-24 transition-opacity duration-300 max-md:gap-3 max-md:px-3 max-md:pt-16 ${
           chromeVisible ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
         }`}
       >
-        {/* 音量：图标常显，滑块悬停滑出。静音记忆、触屏与键盘无障碍交给
-            Media Chrome，只把图标换成本文件这一套。 */}
-        <div className="player-volume flex items-center max-md:hidden">
-          <MediaMuteButton className="player-mc-button" noTooltip>
-            <VolumeGlyph slot="off" level="off" />
-            <VolumeGlyph slot="low" level="low" />
-            <VolumeGlyph slot="medium" level="low" />
-            <VolumeGlyph slot="high" level="high" />
-          </MediaMuteButton>
-          <div className="player-volume-slot">
-            <MediaVolumeRange className="player-mc-range" />
-          </div>
-        </div>
-
         <span className="text-[14px] tabular-nums text-white/85 max-md:text-[12px]">
           {formatClock(shown)}
           <span className="text-white/45"> / {durationMs ? formatClock(durationMs) : "--:--"}</span>
@@ -368,7 +338,6 @@ export function PlayerControls(props: PlayerControlsProps) {
             value={shown}
             disabled={!durationMs}
             aria-label="播放进度"
-            data-dragging={dragging !== null}
             onChange={(e) => setDragging(Number(e.target.value))}
             onPointerUp={() => {
               if (dragging !== null) onSeek(dragging);
@@ -379,6 +348,24 @@ export function PlayerControls(props: PlayerControlsProps) {
               setDragging(null);
             }}
             className="player-scrub absolute inset-x-0 top-1/2 h-5 w-full -translate-y-1/2 cursor-pointer appearance-none bg-transparent disabled:cursor-default"
+          />
+
+          {/* 把手自己画，不用 input 原生的那个。
+              原生把手在 `宽度 - 把手宽` 的范围里走：0% 时它的圆心在左边缘往里
+              半个把手，100% 时往里半个把手，而我们画的已播段是按整条宽度铺的，
+              两者只有在正中才对得上，两端各差半个把手（14px 的把手就是 7px）。
+              这就是「圆点没对齐进度」的来源。把原生把手缩到 1px 隐藏掉，改成
+              按 `left: 进度%` 定位一个自己的圆点，两者从此永远同一个位置；
+              1px 的把手同时也让指针位置到时间的换算变成精确的线性映射。 */}
+          <div
+            className={`pointer-events-none absolute top-1/2 size-[14px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-[var(--player-thumb)] shadow-[0_0_0_4px_var(--accent-soft)] transition-transform duration-150 ${
+              durationMs
+                ? dragging !== null
+                  ? "scale-100"
+                  : "scale-0 [.player-scrub-row:hover_&]:scale-100"
+                : "scale-0"
+            }`}
+            style={{ left: `${progress}%` }}
           />
         </div>
       </div>
