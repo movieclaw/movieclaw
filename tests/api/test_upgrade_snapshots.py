@@ -259,3 +259,56 @@ async def test_sentinel_snapshot_is_not_recomputed(db, monkeypatch):
     async with db.session() as session:
         wanted = await session.get(WantedItem, wanted_id)
     assert wanted.quality == {}
+
+
+@pytest.mark.asyncio
+async def test_manual_source_annotation_survives_snapshot_rebuild(db, monkeypatch):
+    """人工标注的片源不能被快照重算抹回名称值。
+
+    ``library_file.media_source_manual`` 的语义就是"自动名称解析不得覆盖"
+    （media-source-annotation.md），而重算时用的 ``attempt.quality`` 正是
+    名称解析的产物。标注存在的意义是把「无法确认」的单元解卡，重算把它抹掉
+    等于把单元重新卡死——而且是静默的。
+    """
+    from movieclaw_api.services.subscription import upgrade as upgrade_mod
+
+    monkeypatch.setattr(upgrade_mod, "_stale_snapshot_cursor", 0)
+    library_id, item_id, sub_id, wanted_id = await _seed(
+        db, rule_spec={"upgrade_source": "remux"}, wanted_status=WantedStatus.IMPORTED
+    )
+    async with db.session() as session:
+        session.add(
+            SubscriptionDownloadAttempt(
+                subscription_id=sub_id,
+                info_hash="abc123",
+                units=[[1, 1]],
+                # 种子名解析出的片源是 WEB-DL；用户后来人工标注为 Blu-ray
+                quality={"resolution": "1080p", "media_source": "WEB-DL"},
+                last_progress_at=utcnow(),
+            )
+        )
+        session.add(
+            LibraryFile(
+                library_id=library_id,
+                media_item_id=item_id,
+                season_number=1,
+                episode_number=1,
+                file_path="/media/tv/测试剧集 (2024)/Season 01/S01E01.mkv",
+                size_bytes=1,
+                source=FileSource.IMPORTED,
+                resolution="1080p",
+                bit_rate=8_000_000,
+                media_source="Blu-ray",
+                media_source_manual=True,
+            )
+        )
+        wanted = await session.get(WantedItem, wanted_id)
+        wanted.quality = {"resolution": "1080p", "media_source": "Blu-ray"}  # v1 老快照
+        await session.commit()
+
+    await backfill_upgrade_snapshots()
+
+    async with db.session() as session:
+        wanted = await session.get(WantedItem, wanted_id)
+    assert wanted.quality["v"] == 2  # 确实重算过
+    assert wanted.quality["media_source"] == "Blu-ray"  # 人工标注仍在

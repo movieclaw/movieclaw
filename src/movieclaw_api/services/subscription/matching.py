@@ -76,9 +76,11 @@ UPGRADE_PRIORITY = -10  # 永远排在补旧(0)与追新(10)后面
 UPGRADE_FUSE_LIMIT = 3  # 连续证伪熔断阈值（§6.3）
 UPGRADE_FUSE_COOLDOWN = timedelta(days=30)  # 熔断后的长冷却
 UPGRADE_FIRST_SEARCH_SPREAD_HOURS = 24  # 首搜在 24h 内错峰，避免瞬时搜索风暴
-# 覆盖了缺口单元的候选在"洗版档位"这一排序位上的取值：低于任何真实档位，
-# 使缺口单元的竞争者之间仍完全由评分决定顺序（§15.4）
-_NO_UPGRADE_RANK = (-1, -1)
+# 覆盖了缺口单元的候选在"洗版档位"这一排序位上的取值：空元组低于任何非空
+# 向量，使缺口单元的竞争者之间仍完全由评分决定顺序（§15.4）。
+# 用空元组而不是 (-1, -1)：档位向量的长度随规则组的 upgrade_ladder 变化，
+# 定长哨兵会在多维阶梯下与真实向量按位比较出无意义的结果
+_NO_UPGRADE_RANK: tuple[int, ...] = ()
 
 
 def upgrade_backoff_delay(attempts: int) -> timedelta:
@@ -602,7 +604,7 @@ async def evaluate_and_dispatch(
 
     # 第一遍：逐种子评估，按条目聚合通过的候选，规则拒绝当场记活动
     accepted: dict[
-        int, list[tuple[TorrentCandidate, IdentityMatch, RuleVerdict, tuple[int, int]]]
+        int, list[tuple[TorrentCandidate, IdentityMatch, RuleVerdict, tuple[int, ...]]]
     ] = {}
     repo = SubscriptionRepository(session)
     for row in torrents:

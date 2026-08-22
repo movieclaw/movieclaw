@@ -269,7 +269,8 @@ PLATFORM: dict[str, str] = {
 # 见 RuleSetSpec.platforms 的说明）
 PLATFORM_IDS: frozenset[str] = frozenset(PLATFORM.values())
 
-# 必须紧邻 WEB 来源标记才成立的短别名：本身是常用词、人名或过短的代码
+# 必须紧邻 WEB 来源标记才成立的短别名：本身是常用词、人名或过短的代码。
+# HBO 有意不在此列：三字母但辨识度极高，不与常用词碰撞，加约束只会漏识别
 _PLATFORM_SHORT_ALIASES: frozenset[str] = frozenset(
     {
         "NF", "MAX", "ATV", "SHO", "STAN", "IQ", "BILI", "VIU", "HAMI",

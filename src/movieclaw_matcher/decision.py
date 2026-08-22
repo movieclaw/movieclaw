@@ -141,8 +141,6 @@ _LADDER_LABELS: dict[str, str] = {
     "video_codec": "编码",
     "platform": "平台",
 }
-LADDER_DIMENSIONS: tuple[str, ...] = tuple(_LADDER_LABELS)
-
 
 def _rank_in(ladder: list[str], value: str | None) -> int | None:
     """值在偏好序里的位次（越大越优）；不在序列里 = 未知（不可比）。"""
@@ -199,9 +197,13 @@ def _dimension_rank(
         return max(hdr_ranks) if hdr_ranks else None
     if dim == "video_codec":
         return _rank_in(_codec_ladder(spec), codec_family(item.video_codec))
-    # 平台：一个资源可带多个标记，取其中位次最高的那个
-    ranks = [r for p in item.platforms if (r := _rank_in(spec.platforms, p)) is not None]
-    return max(ranks) if ranks else None
+    if dim == "platform":
+        # 一个资源可带多个平台标记，取其中位次最高的那个
+        ranks = [r for p in item.platforms if (r := _rank_in(spec.platforms, p)) is not None]
+        return max(ranks) if ranks else None
+    # 值域由 models._LADDER_DIMENSION_VALUES 把关，走到这里说明两者漂移了；
+    # 显式炸掉好过悄悄按最后一个分支算（那会让新维度看起来"生效了"却全错）
+    raise ValueError(f"未知的洗版阶梯维度：{dim}")
 
 
 def _dimension_text(item: QualitySnapshot | TorrentAttrs, dim: str) -> str:
@@ -522,6 +524,6 @@ def build_snapshot(
         release_group=name_attrs.release_group if name_attrs else None,
         hdr=hdr,
         video_codec=video_codec,
-        platforms=list(getattr(name_attrs, "platforms", []) or []),
+        platforms=list(name_attrs.platforms) if name_attrs else [],
         bit_rate=probe_bit_rate,
     )

@@ -121,6 +121,14 @@ def snapshot_from_file(
             name_attrs.media_source = file.media_source
         if file.release_group is not None:
             name_attrs.release_group = file.release_group
+    # 人工标注的片源是**权威值**：保护位的语义就是"自动名称解析不得覆盖"
+    # （media-source-annotation.md），而 attempt.quality 恰恰是名称解析的产物。
+    # 少这一条，任何一次快照重算都会把用户的标注静默抹回名称值，被解卡的
+    # 「无法确认」单元又卡回去。remux 一并清零，与标注服务同一口径
+    if file.media_source_manual and file.media_source is not None:
+        name_attrs = name_attrs.model_copy(
+            update={"media_source": file.media_source, "remux": False}
+        )
     probed = file.resolution is not None or file.bit_rate is not None
     return build_snapshot(
         name_attrs,
@@ -418,7 +426,7 @@ async def run_upgrade_round(
             state = "not_comparable"
         else:
             snapshot = QualitySnapshot.model_validate(wanted.quality)
-            current_label = quality_label(snapshot)
+            current_label = quality_label(snapshot, spec)
             if unit in in_flight:
                 state = "in_flight"
             elif upgrade_ready(wanted, spec, now=now) or (
@@ -741,8 +749,8 @@ async def _verify_upgrades_locked(session: AsyncSession, media_item_id: int) -> 
             # ---- 确认升级 ----
             now = utcnow()
             old_hash = wanted.info_hash
-            new_label = quality_label(best_snapshot)
-            old_label = quality_label(baseline)
+            new_label = quality_label(best_snapshot, spec)
+            old_label = quality_label(baseline, spec)
             wanted.quality = best_snapshot.model_dump()
             wanted.upgrade_verify_failures = 0
             wanted.updated_at = now
@@ -1263,6 +1271,14 @@ async def postpone_upgrade_wanted(
         "（洗版比较的基线）。纯数据库变换、分批慢跑，补完即空转。"
     ),
 )
+def _snapshot_version(quality: dict) -> int:
+    """快照结构版本；缺键或值损坏一律按 v1（重算一次即修好，绝不让巡检抛错）。"""
+    try:
+        return int(quality.get("v", 1))
+    except (TypeError, ValueError):
+        return 1
+
+
 async def _refill_stale_snapshots(session: AsyncSession, upgrade_ids: set[int]) -> int:
     """把结构版本落后的存量快照逐批重算（quality-upgrade.md §16.3）。
 
@@ -1296,7 +1312,7 @@ async def _refill_stale_snapshots(session: AsyncSession, upgrade_ids: set[int]) 
     stale = [
         row
         for row in rows
-        if row.quality and int(row.quality.get("v", 1)) < SNAPSHOT_VERSION
+        if row.quality and _snapshot_version(row.quality) < SNAPSHOT_VERSION
     ]
     if not stale:
         return 0
@@ -1305,8 +1321,16 @@ async def _refill_stale_snapshots(session: AsyncSession, upgrade_ids: set[int]) 
         by_media.setdefault(row.media_item_id, []).append(row)
     for media_item_id, wanted_rows in by_media.items():
         await fill_snapshots(session, media_item_id, wanted_rows)
+    # 重算可能让单元在新维度上第一次变得"可证明低于目标"，当场排期而不是
+    # 等排期补挂巡检轮转到它
+    armed = await arm_upgrade_candidates(session, stale)
     await session.commit()
-    logger.info("洗版基线重算：%d 个单元的质量快照升到 v%d", len(stale), SNAPSHOT_VERSION)
+    logger.info(
+        "洗版基线重算：%d 个单元的质量快照升到 v%d，%d 个进入洗版排期",
+        len(stale),
+        SNAPSHOT_VERSION,
+        armed,
+    )
     return len(stale)
 
 

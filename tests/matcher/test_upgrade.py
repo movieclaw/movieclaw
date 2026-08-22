@@ -624,3 +624,15 @@ def test_target_label_renders_every_effective_dimension() -> None:
     assert upgrade_target_label(_multi_spec(upgrade_ladder=["resolution", "source"])) == (
         "2160p WEB-DL"
     )
+
+
+def test_ladder_dimension_domains_do_not_drift() -> None:
+    """值域（models 校验用）与标签表（decision 文案用）必须一一对应。
+
+    两份定义分居两个模块是循环导入所迫；漂移的后果很隐蔽——校验层放行了一个
+    维度，排序层却算不出它的位次。这条测试是它们之间唯一的粘合。
+    """
+    from movieclaw_matcher.decision import _LADDER_LABELS
+    from movieclaw_matcher.models import _LADDER_DIMENSION_VALUES
+
+    assert set(_LADDER_LABELS) == set(_LADDER_DIMENSION_VALUES)

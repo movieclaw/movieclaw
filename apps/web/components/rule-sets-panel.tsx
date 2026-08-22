@@ -284,17 +284,27 @@ function hdrFromLegacy(spec: RuleSetSpec): { levels: string[]; block: string[] }
   return { levels: [], block: [] };
 }
 
+/**
+ * HDR 白名单 → 摘要文案。整族与纯 SDR 这两种最常见的配置（也是旧 hdr 三态
+ * 换算出来的形态）说人话，避免清单里出现 "HDR DV/HDR10+/HDR10/HLG" 这种
+ * 又长又没信息量的芯片。
+ */
+function hdrChipText(levels: string[]): string {
+  const family = HDR_OPTIONS.filter((v) => v !== "SDR");
+  if (levels.length === family.length && family.every((v) => levels.includes(v))) {
+    return "必须 HDR";
+  }
+  if (levels.length === 1 && levels[0] === "SDR") return "排除 HDR";
+  return `HDR ${levels.join("/")}`;
+}
+
 /** 洗版阶梯的维度选项（顺序即位次，交互与分辨率偏好完全一致：点击依次入列）。 */
-const LADDER_OPTIONS: {
-  value: string;
-  label: string;
-  needs?: "hdr" | "codec" | "platform";
-}[] = [
+const LADDER_OPTIONS: { value: string; label: string }[] = [
   { value: "resolution", label: "分辨率" },
   { value: "source", label: "片源" },
-  { value: "hdr", label: "HDR", needs: "hdr" },
-  { value: "video_codec", label: "编码", needs: "codec" },
-  { value: "platform", label: "平台", needs: "platform" },
+  { value: "hdr", label: "HDR" },
+  { value: "video_codec", label: "编码" },
+  { value: "platform", label: "平台" },
 ];
 const DEFAULT_LADDER = ["resolution", "source"];
 
@@ -311,6 +321,9 @@ export function upgradeTargetLabel(spec: RuleSetSpec): string | null {
   // 与后端 decision.upgrade_target_label 同一口径：只渲染"进了阶梯且配了偏好"
   // 的维度（偏好为空的位后端会自动跳过）
   const ladder = spec.upgrade_ladder ?? DEFAULT_LADDER;
+  if (ladder.includes("hdr") && spec.hdr_levels?.length) {
+    parts.push(spec.hdr_levels[0]);
+  }
   if (ladder.includes("video_codec") && spec.video_codecs?.length) {
     parts.push(spec.video_codecs[0]);
   }
@@ -358,7 +371,7 @@ export function specSummary(spec: RuleSetSpec): string[] {
     chips.push(`排除平台: ${spec.platforms_block.map(platformLabel).join("/")}`);
   }
   const { levels: hdrLevels, block: hdrBlock } = hdrFromLegacy(spec);
-  if (hdrLevels.length) chips.push(`HDR ${hdrLevels.join("/")}`);
+  if (hdrLevels.length) chips.push(hdrChipText(hdrLevels));
   if (hdrBlock.length) chips.push(`排除 ${hdrBlock.join("/")}`);
   if (spec.subtitle_languages_require?.length)
     chips.push(
@@ -527,7 +540,7 @@ export function RuleSetEditorDialog({
       codecFamilies.size ? [...codecFamilies].join("/") : "",
       platformsAllow.length ? platformsAllow.map(platformLabel).join("/") : "",
       platformsBlock.length ? `排除 ${platformsBlock.map(platformLabel).join("/")}` : "",
-      hdrLevels.length ? `HDR ${hdrLevels.join("/")}` : "",
+      hdrLevels.length ? hdrChipText(hdrLevels) : "",
       hdrBlock.length ? `排除 ${hdrBlock.join("/")}` : "",
       groupsAllow.trim() ? `组 ${groupsAllow.trim()}` : "",
       groupsBlock.trim() ? `排除组 ${groupsBlock.trim()}` : "",
@@ -549,10 +562,19 @@ export function RuleSetEditorDialog({
       .filter(Boolean)
       .join(" · ") || "未设置";
 
-  // 名称维度上浮的告警条件（§14.4）：平台识别率最低，排在前面会截断整条比较
-  const ladderPlatformIndex = upgradeLadder.indexOf("platform");
+  /** 某维度是否还没配偏好——后端会把这种位直接跳过。 */
+  const ladderUnconfigured = (dim: string) =>
+    (dim === "hdr" && !hdrLevels.length) ||
+    (dim === "video_codec" && !codecFamilies.size && !codecExtras.length) ||
+    (dim === "platform" && !platformsAllow.length && !platformExtras.allow.length);
+
+  // 名称维度上浮的告警条件（§14.4）：平台识别率最低，排在前面会截断整条比较。
+  // 按**生效**维度判断——被跳过的维度不占位，否则"平台后面跟着一个未配置的
+  // 编码位"会误报
+  const effectiveLadder = upgradeLadder.filter((dim) => !ladderUnconfigured(dim));
+  const platformIndex = effectiveLadder.indexOf("platform");
   const platformNotLast =
-    ladderPlatformIndex >= 0 && ladderPlatformIndex < upgradeLadder.length - 1;
+    platformIndex >= 0 && platformIndex < effectiveLadder.length - 1;
 
   const toggleResolution = (value: string) =>
     setResolutions((prev) =>
@@ -777,12 +799,7 @@ export function RuleSetEditorDialog({
                     <div className="flex flex-wrap gap-1.5">
                       {LADDER_OPTIONS.map((dim) => {
                         const index = upgradeLadder.indexOf(dim.value);
-                        const unconfigured =
-                          (dim.needs === "hdr" && !hdrLevels.length) ||
-                          (dim.needs === "codec" && !codecFamilies.size && !codecExtras.length) ||
-                          (dim.needs === "platform" &&
-                            !platformsAllow.length &&
-                            !platformExtras.allow.length);
+                        const unconfigured = ladderUnconfigured(dim.value);
                         return (
                           <ToggleChip
                             key={dim.value}

@@ -669,7 +669,7 @@ def _wanted_upgrades(
         snapshot = QualitySnapshot.model_validate(w.quality)
         result[(w.season_number, w.episode_number)] = WantedUpgradeView(
             active=w.in_scope and upgrade_ready(w, rule_spec, now=now),
-            current_label=quality_label(snapshot),
+            current_label=quality_label(snapshot, rule_spec),
             target_label=target,
             search_attempts=w.search_attempts,
             indeterminate=not provably_below_cutoff(snapshot, rule_spec)
