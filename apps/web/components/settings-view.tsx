@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { LiquidGlassButton } from "@/vendor/liquid-glass";
 
@@ -20,13 +20,22 @@ import { SubscriptionSettingsSection } from "@/components/subscription-settings-
 import { SystemLogsSection } from "@/components/system-logs-section";
 import { WebhookSection } from "@/components/webhook-section";
 import { GlassPanel } from "@/components/glass-panel";
-import { ArrowLeftIcon, CheckIcon, PlusIcon, XIcon } from "@/components/icons";
+import {
+  ArrowLeftIcon,
+  CheckIcon,
+  ChevronDownIcon,
+  GripIcon,
+  PlusIcon,
+  XIcon,
+} from "@/components/icons";
+import { useVisibleNavItems } from "@/components/sidebar";
 import { fileToCompressedJpeg, useBackdrop } from "@/lib/backdrop";
 import { BACKDROP, sidebarGlass } from "@/lib/glass";
 import { changePassword, updateProfile, uploadAvatar } from "@/lib/api/auth";
 import { DEFAULT_UI_PREFS } from "@/lib/api/ui";
 import { HttpError } from "@/lib/http";
 import { useSession } from "@/lib/session";
+import { applyNavOrder, mergeNavOrder, sameNavOrder } from "@/lib/sidebar-nav";
 import { settingsSectionGroupsFor, settingsSections } from "@/lib/mock-data";
 import { useUiPrefs } from "@/lib/ui-prefs";
 
@@ -533,10 +542,11 @@ function AppSection() {
  * 草稿自动撤销（组件卸载即触发既有的清理逻辑）。
  */
 function AppearanceSection() {
-  const [tab, setTab] = useState<"backdrop" | "texture">("backdrop");
+  const [tab, setTab] = useState<"backdrop" | "texture" | "nav">("backdrop");
   const tabs = [
     { id: "backdrop" as const, label: "背景图" },
     { id: "texture" as const, label: "界面质感" },
+    { id: "nav" as const, label: "导航顺序" },
   ] as const;
 
   return (
@@ -558,7 +568,13 @@ function AppearanceSection() {
           </button>
         ))}
       </div>
-      {tab === "backdrop" ? <BackdropGroup /> : <InterfaceTextureGroup />}
+      {tab === "backdrop" ? (
+        <BackdropGroup />
+      ) : tab === "texture" ? (
+        <InterfaceTextureGroup />
+      ) : (
+        <NavOrderGroup />
+      )}
     </div>
   );
 }
@@ -899,6 +915,217 @@ function InterfaceTextureGroup() {
         </div>
       </div>
     </SettingsGroup>
+  );
+}
+
+/**
+ * —— 导航顺序：侧栏主导航的个人排序 ——
+ *
+ * 存 `ui.preferences.nav.order`，超管与成员各存各的（`/ui/preferences` 按主体
+ * 分流）。只排**主导航**那几项——活动 / 待处理 / 更新入口是角标驱动的系统入口，
+ * 位置固定才可预期，刻意不参与排序。
+ *
+ * 交互与「界面质感」同一套语言：改动即写入 UiPrefs 预览草稿 → 左侧真实侧栏
+ * 当场重排（未落库），「保存」才落库，离开分区自动撤销草稿。
+ *
+ * 两种改序方式并存不是冗余：拖拽是桌面端的直觉操作，但 HTML5 拖放在触屏上
+ * 根本不触发，键盘用户也用不了——上/下移按钮既是触屏与键盘的唯一入口，
+ * 也是拖拽失手时的兜底。这也是本方案不做"侧栏内长按拖拽"的同一个理由：
+ * 窄屏侧栏是抽屉，长按拖拽要和纵向滚动、抽屉滑动关闭抢同一串触摸事件。
+ */
+function NavOrderGroup() {
+  const { savedPrefs, savePrefs, setPreview, loading } = useUiPrefs();
+  const items = useVisibleNavItems();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // 拖拽中的行下标；null = 没在拖
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+
+  // 依赖用拼接后的字符串而不是数组本身：items 每次渲染都是新数组（filter 的结果），
+  // 直接进依赖会让下面的 useEffect 每帧都把草稿重置一遍
+  const itemsKey = items.map((item) => item.id).join("|");
+  const orderKey = savedPrefs.nav.order.join("|");
+  const savedOrder = useMemo(
+    () => applyNavOrder(items, savedPrefs.nav.order).map((item) => item.id),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [itemsKey, orderKey],
+  );
+  const defaultOrder = useMemo(
+    () => items.map((item) => item.id),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [itemsKey],
+  );
+  const [draft, setDraft] = useState(savedOrder);
+
+  // 已保存值变化（首次拉取完成 / 保存成功）时把草稿对齐到最新落库值
+  useEffect(() => setDraft(savedOrder), [savedOrder]);
+  // 离开外观分区时撤销未保存的预览，侧栏顺序回到已保存状态
+  useEffect(() => () => setPreview(null), [setPreview]);
+
+  const byId = new Map(items.map((item) => [item.id, item]));
+  const rows = draft.map((id) => byId.get(id)).filter((item) => item != null);
+
+  /** 顺序落到草稿并即时预览（未落库）。不可见项的 id 在这里一并保留。 */
+  const apply = (nextOrder: string[]) => {
+    setDraft(nextOrder);
+    setPreview({
+      ...savedPrefs,
+      nav: { order: mergeNavOrder(nextOrder, savedPrefs.nav.order) },
+    });
+  };
+
+  const move = (from: number, to: number) => {
+    if (to < 0 || to >= draft.length || from === to) return;
+    const next = [...draft];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    apply(next);
+  };
+
+  const save = async (nextOrder: string[]) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await savePrefs({
+        ...savedPrefs,
+        nav: { order: mergeNavOrder(nextOrder, savedPrefs.nav.order) },
+      });
+    } catch (err) {
+      setError(err instanceof HttpError ? err.message : "保存失败，请稍后重试");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** 恢复默认：存空列表而不是存一份"恰好等于默认"的顺序——这样将来默认顺序
+   *  调整、或新增导航入口时，没自定义过的人自动跟随新的默认排布。 */
+  const reset = () => {
+    setDraft(defaultOrder);
+    setPreview({ ...savedPrefs, nav: { order: [] } });
+    setBusy(true);
+    setError(null);
+    savePrefs({ ...savedPrefs, nav: { order: [] } })
+      .catch((err) => setError(err instanceof HttpError ? err.message : "保存失败，请稍后重试"))
+      .finally(() => setBusy(false));
+  };
+
+  const dirty = !sameNavOrder(draft, savedOrder);
+  const isDefault = sameNavOrder(draft, defaultOrder);
+  const disabled = loading || busy;
+
+  return (
+    <SettingsGroup label="导航顺序">
+      <div className="css-glass space-y-4 !rounded-2xl p-5">
+        <p className="text-sub leading-6 text-[var(--text-muted)]">
+          调整左侧栏主导航的排列次序：拖动条目，或用右侧的上下按钮。活动、待处理与更新入口是
+          系统入口，位置固定，不参与排序。
+        </p>
+
+        <ul className="space-y-1.5">
+          {rows.map((item, index) => {
+            const Icon = item.icon;
+            return (
+              <li
+                key={item.id}
+                draggable={!disabled}
+                onDragStart={() => setDragIndex(index)}
+                onDragEnd={() => setDragIndex(null)}
+                // 拖到哪就换到哪（跟手实时重排），而不是松手才生效：
+                // 侧栏预览同步跟着变，所见即所得
+                onDragEnter={() => {
+                  if (dragIndex == null || dragIndex === index) return;
+                  move(dragIndex, index);
+                  setDragIndex(index);
+                }}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => e.preventDefault()}
+                className={`flex items-center gap-3 rounded-xl border px-3 py-2.5 transition ${
+                  dragIndex === index
+                    ? "border-white/20 bg-white/[0.1] opacity-60"
+                    : "border-white/[0.08] bg-white/[0.035]"
+                } ${disabled ? "opacity-50" : "cursor-grab active:cursor-grabbing"}`}
+              >
+                <GripIcon className="size-4 shrink-0 text-[var(--text-faint)]" />
+                <Icon className="size-[18px] shrink-0 text-[var(--text-muted)]" />
+                <span className="flex-1 truncate text-ui font-medium text-[var(--text)]">
+                  {item.label}
+                </span>
+                <span className="tnum shrink-0 text-caption text-[var(--text-faint)]">
+                  {index + 1}
+                </span>
+                <div className="flex shrink-0 items-center gap-1">
+                  <MoveButton
+                    label={`把「${item.label}」上移`}
+                    disabled={disabled || index === 0}
+                    up
+                    onClick={() => move(index, index - 1)}
+                  />
+                  <MoveButton
+                    label={`把「${item.label}」下移`}
+                    disabled={disabled || index === rows.length - 1}
+                    onClick={() => move(index, index + 1)}
+                  />
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+
+        {error && <p className="text-sub text-[var(--danger)]">{error}</p>}
+
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-caption text-[var(--text-faint)]">
+            {dirty ? "左侧栏实时预览中，保存后对所有设备生效" : "设置已保存，跨设备一致"}
+          </p>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={reset}
+              disabled={disabled || isDefault}
+              className="btn-glass px-3.5 py-1.5 text-sub font-medium disabled:opacity-40"
+            >
+              恢复默认
+            </button>
+            <button
+              type="button"
+              onClick={() => void save(draft)}
+              disabled={disabled || !dirty}
+              className="btn-accent rounded-full px-4 py-1.5 text-sub font-semibold disabled:opacity-40"
+            >
+              {busy ? "保存中…" : "保存"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </SettingsGroup>
+  );
+}
+
+/** 上/下移一格。触屏与键盘用户改序**只能**靠它——HTML5 拖放在触屏上不触发。 */
+function MoveButton({
+  label,
+  up = false,
+  disabled,
+  onClick,
+}: {
+  label: string;
+  up?: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      disabled={disabled}
+      onClick={onClick}
+      // 窄屏放大到 44px（iOS HIG 最小可点目标）：触屏上 HTML5 拖放根本不触发，
+      // 这两颗键是触屏用户改序的唯一入口，不能按普通图标键的密度做
+      className="glass-row !size-8 justify-center !p-0 disabled:opacity-25 max-md:!size-11"
+    >
+      <ChevronDownIcon className={`size-4 ${up ? "rotate-180" : ""}`} />
+    </button>
   );
 }
 

@@ -22,6 +22,7 @@ import { UserMenu } from "@/components/user-menu";
 import { useAgentConversations } from "@/lib/agent-conversations";
 import { useBackdrop } from "@/lib/backdrop";
 import { sidebarGlass } from "@/lib/glass";
+import { applyNavOrder } from "@/lib/sidebar-nav";
 import { formatRelativeTime } from "@/lib/time";
 import { useUiPrefs } from "@/lib/ui-prefs";
 import { useIsMobile } from "@/lib/use-media-query";
@@ -56,15 +57,31 @@ export interface SidebarProps {
 }
 
 /** 主导航：新会话 / 媒体库 / 探索项 / 订阅，合并成一列扁平列表。
- *  「新会话」是 Agent 入口（管理员专属，成员侧隐藏——后端也会 403）。 */
-const mainNavItems = [
+ *  「新会话」是 Agent 入口（管理员专属，成员侧隐藏——后端也会 403）。
+ *
+ *  这个数组的次序就是**内置默认顺序**：用户在「设置 → 外观 → 导航顺序」里排过
+ *  的项按个人顺序在前，没排过的（包括版本升级新增的入口）按这里的次序追加在后
+ *  （合并规则见 lib/sidebar-nav.ts）。设置页复用同一份清单渲染排序列表，
+ *  两边的图标与文案不会各写一份。 */
+export const SIDEBAR_NAV_ITEMS = [
   { id: "new", label: "新会话", icon: PlusIcon },
   { id: "library", label: "媒体库", icon: LayersIcon },
   ...exploreItems,
   { id: "subscriptions", label: "我的订阅", icon: BookmarkIcon },
 ];
 
-const memberNavItems = mainNavItems.filter((item) => item.id !== "new");
+const memberNavItems = SIDEBAR_NAV_ITEMS.filter((item) => item.id !== "new");
+
+/**
+ * 当前用户实际可见的主导航项（未排序）。侧栏与设置页的排序列表必须用同一套
+ * 可见性判定，否则会出现"设置页能排、侧栏没有"这种对不上的项。
+ */
+export function useVisibleNavItems() {
+  const { session } = useSession();
+  const { canSubscribe } = usePermissions();
+  const items = session.role === "member" ? memberNavItems : SIDEBAR_NAV_ITEMS;
+  return items.filter((item) => item.id !== "subscriptions" || canSubscribe);
+}
 
 export function Sidebar({
   activeNav,
@@ -87,11 +104,11 @@ export function Sidebar({
   // 成员形态做减法：隐藏 Agent 入口（新会话）与「最近会话」组；
   // 这是界面裁剪，安全边界在后端 require_admin
   const { session } = useSession();
-  const { canSearch, canSubscribe } = usePermissions();
+  const { canSearch } = usePermissions();
   const isMember = session.role === "member";
-  const navItems = (isMember ? memberNavItems : mainNavItems).filter(
-    (item) => item.id !== "subscriptions" || canSubscribe,
-  );
+  // 个人排序：prefs 已含设置页的未保存草稿，因此在设置页拖动时这里即时跟随
+  const visibleNavItems = useVisibleNavItems();
+  const navItems = applyNavOrder(visibleNavItems, prefs.nav.order);
   const body = (
     <>
       {/* 品牌头部。展开：完整字标 + 开合/搜索图标横排；折叠：独立徽标、开合、搜索竖排居中。

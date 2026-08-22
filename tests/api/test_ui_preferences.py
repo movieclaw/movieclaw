@@ -41,6 +41,8 @@ def client(tmp_path, monkeypatch):
 DEFAULT_PREFS = {
     "sidebar": {"transparency": 0.49, "brightness": -0.36, "depth": 28.0},
     "scrim": {"blur": 13.0, "dark": 0.69},
+    # 空顺序 = 侧栏主导航用内置默认排布
+    "nav": {"order": []},
 }
 
 
@@ -123,4 +125,33 @@ def test_scrim_prefs_out_of_range_rejected(client: TestClient) -> None:
         resp = client.put("/api/v1/ui/preferences", json=payload)
         assert resp.status_code == 422
 
+    assert client.get("/api/v1/ui/preferences").json()["data"] == DEFAULT_PREFS
+
+
+def test_save_nav_order_persists(client: TestClient) -> None:
+    """侧栏主导航的个人排序整体覆盖保存；顺序原样保留（后端不做业务校验）。"""
+    saved = ["subscriptions", "library", "new", "explore-movies", "explore-tv"]
+    resp = client.put("/api/v1/ui/preferences", json={"nav": {"order": saved}})
+    assert resp.status_code == 200
+    assert resp.json()["data"]["nav"]["order"] == saved
+
+    # 再次 GET：真正落库
+    assert client.get("/api/v1/ui/preferences").json()["data"]["nav"]["order"] == saved
+
+
+def test_nav_order_accepts_unknown_ids(client: TestClient) -> None:
+    """顺序里出现界面上已不存在的 id 不报错：读取端负责忽略，避免升级后写不进设置。"""
+    resp = client.put(
+        "/api/v1/ui/preferences", json={"nav": {"order": ["library", "removed-in-v2"]}}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["data"]["nav"]["order"] == ["library", "removed-in-v2"]
+
+
+def test_nav_order_too_long_rejected(client: TestClient) -> None:
+    """超过 32 项整体拒绝（422）：防脏数据无限增长，正常主导航只有个位数项。"""
+    resp = client.put(
+        "/api/v1/ui/preferences", json={"nav": {"order": [f"item-{i}" for i in range(33)]}}
+    )
+    assert resp.status_code == 422
     assert client.get("/api/v1/ui/preferences").json()["data"] == DEFAULT_PREFS
