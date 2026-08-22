@@ -1117,6 +1117,9 @@ export function VideoPlayer(props: VideoPlayerProps) {
             onSubtitleStyleChange={setSubtitleStyle}
             diagnosticsOpen={diagnosticsOpen}
             onToggleDiagnostics={() => setDiagnosticsOpen((open) => !open)}
+            // 剧集才有右下角那个切集位；电影 episodeLabel 为 null
+            isSeries={episodeLabel !== null}
+            onNext={next ? onPlayNext : null}
             landscape={landscape}
             canRotate={canRotate}
             onToggleLandscape={toggleLandscape}

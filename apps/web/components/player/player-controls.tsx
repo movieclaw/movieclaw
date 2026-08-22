@@ -84,6 +84,16 @@ function SubtitleGlyph() {
   );
 }
 
+/** 切集按钮里的小箭头。比控制条上的图标小一号，跟着文字走。 */
+function NextGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" className="size-4 shrink-0 fill-current" aria-hidden>
+      <path d="M5 4.6v14.8a.6.6 0 0 0 .93.5l11-7.4a.6.6 0 0 0 0-1L5.93 4.1A.6.6 0 0 0 5 4.6Z" />
+      <path d="M18.4 4h2.2v16h-2.2z" />
+    </svg>
+  );
+}
+
 /** 设置齿轮：八颗齿 + 一圈 + 中心点。手画而不是抄图标库，省一个依赖。 */
 function GearGlyph() {
   return (
@@ -166,6 +176,10 @@ export interface PlayerControlsProps {
   onSubtitleStyleChange: (style: SubtitleStyle) => void;
   diagnosticsOpen: boolean;
   onToggleDiagnostics: () => void;
+  /** 剧集才有右下角那个位；电影不显示（「已完结」对电影是错的说法） */
+  isSeries: boolean;
+  /** 有下一集时的回调；剧集但为 null = 本季到头了，那个位显示「已完结」 */
+  onNext: (() => void) | null;
   /** 横屏（全屏 + 锁横向）；已经在里面时点它就是退出 */
   landscape: boolean;
   /** 这台设备的方向锁真的能用（手机/平板）。桌面上同一个按钮叫「全屏」 */
@@ -191,6 +205,8 @@ export function PlayerControls(props: PlayerControlsProps) {
     onSubtitleStyleChange,
     diagnosticsOpen,
     onToggleDiagnostics,
+    isSeries,
+    onNext,
     landscape,
     canRotate,
     onToggleLandscape,
@@ -225,69 +241,92 @@ export function PlayerControls(props: PlayerControlsProps) {
         }`}
       />
 
-      {/* ---- 控制行：左端时间，右簇功能键 ---- */}
+      {/* ---- 控制行：左下角时间 + 功能键，右下角切集 ---- */}
       <div
-        className={`relative flex items-center gap-5 px-6 pt-24 transition-opacity duration-300 max-md:gap-3 max-md:px-3 max-md:pt-16 ${
+        className={`relative px-6 pt-24 transition-opacity duration-300 max-md:px-3 max-md:pt-16 ${
           chromeVisible ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
         }`}
       >
-        <span className="text-[14px] tabular-nums text-white/85 max-md:text-[12px]">
+        {/* 时间单独一行、压在功能键上方：和功能键挤一行会让「读数」和「可点」
+            混在一起，用户得先分辨哪个能按 */}
+        <p className="mb-1.5 text-[13px] tabular-nums text-white/80 max-md:text-[12px]">
           {formatClock(shown)}
           <span className="text-white/45"> / {durationMs ? formatClock(durationMs) : "--:--"}</span>
-        </span>
+        </p>
 
-        <div className="flex-1" />
+        <div className="flex items-center gap-5 max-md:gap-3">
+          <div className="relative">
+            <IconButton
+              tip="字幕"
+              active={Boolean(selectedSubtitle) || menu === "subtitles"}
+              onClick={() => openMenu(menu === "subtitles" ? "none" : "subtitles")}
+            >
+              <SubtitleGlyph />
+            </IconButton>
+            {menu === "subtitles" ? (
+              <SubtitleMenu
+                tracks={subtitles}
+                selected={selectedSubtitle}
+                onSelect={(ref) => onSelectSubtitle(ref)}
+                style={subtitleStyle}
+                onStyleChange={onSubtitleStyleChange}
+                onClose={() => openMenu("none")}
+              />
+            ) : null}
+          </div>
 
-        <div className="relative">
+          <div className="relative">
+            <IconButton
+              tip="设置"
+              active={menu === "settings"}
+              onClick={() => openMenu(menu === "settings" ? "none" : "settings")}
+            >
+              <GearGlyph />
+            </IconButton>
+            {menu === "settings" ? (
+              <MenuPanel title="设置" onClose={() => openMenu("none")}>
+                <MenuItem
+                  active={diagnosticsOpen}
+                  icon={<StatsGlyph />}
+                  onClick={() => {
+                    onToggleDiagnostics();
+                    openMenu("none");
+                  }}
+                >
+                  播放诊断
+                </MenuItem>
+              </MenuPanel>
+            ) : null}
+          </div>
+
           <IconButton
-            tip="字幕"
-            active={Boolean(selectedSubtitle) || menu === "subtitles"}
-            onClick={() => openMenu(menu === "subtitles" ? "none" : "subtitles")}
+            tip={canRotate ? (landscape ? "退出横屏" : "横屏") : landscape ? "退出全屏" : "全屏"}
+            onClick={onToggleLandscape}
           >
-            <SubtitleGlyph />
+            {canRotate ? <RotateGlyph active={landscape} /> : <FullscreenGlyph exit={landscape} />}
           </IconButton>
-          {menu === "subtitles" ? (
-            <SubtitleMenu
-              tracks={subtitles}
-              selected={selectedSubtitle}
-              onSelect={(ref) => onSelectSubtitle(ref)}
-              style={subtitleStyle}
-              onStyleChange={onSubtitleStyleChange}
-              onClose={() => openMenu("none")}
-            />
-          ) : null}
-        </div>
 
-        <div className="relative">
-          <IconButton
-            tip="设置"
-            active={menu === "settings"}
-            onClick={() => openMenu(menu === "settings" ? "none" : "settings")}
-          >
-            <GearGlyph />
-          </IconButton>
-          {menu === "settings" ? (
-            <MenuPanel title="设置" onClose={() => openMenu("none")}>
-              <MenuItem
-                active={diagnosticsOpen}
-                icon={<StatsGlyph />}
-                onClick={() => {
-                  onToggleDiagnostics();
-                  openMenu("none");
-                }}
+          <div className="flex-1" />
+
+          {/* 右下角切集位。剧集才有：「已完结」这句话对电影是错的，
+              而电影本来也没有别的东西会因为这个位空着而移位。 */}
+          {isSeries ? (
+            onNext ? (
+              <button
+                type="button"
+                onClick={onNext}
+                className="flex items-center gap-2 rounded-full bg-white/15 px-4 py-2 text-[14px] font-medium text-white transition-colors hover:bg-white/25 max-md:px-3 max-md:py-1.5 max-md:text-[13px]"
               >
-                播放诊断
-              </MenuItem>
-            </MenuPanel>
+                下一集
+                <NextGlyph />
+              </button>
+            ) : (
+              <span className="rounded-full bg-white/8 px-4 py-2 text-[14px] text-white/40 max-md:px-3 max-md:py-1.5 max-md:text-[13px]">
+                已完结
+              </span>
+            )
           ) : null}
         </div>
-
-        <IconButton
-          tip={canRotate ? (landscape ? "退出横屏" : "横屏") : landscape ? "退出全屏" : "全屏"}
-          onClick={onToggleLandscape}
-        >
-          {canRotate ? <RotateGlyph active={landscape} /> : <FullscreenGlyph exit={landscape} />}
-        </IconButton>
       </div>
 
       {/* ---- 进度条：常驻最底边 ----
@@ -602,7 +641,7 @@ function MenuPanel({
   return (
     <div
       ref={box}
-      className="absolute bottom-14 right-0 w-[300px] rounded-sm border border-white/15 bg-[rgba(20,20,20,0.94)] py-2 text-[14px] shadow-[0_8px_32px_rgba(0,0,0,0.7)] backdrop-blur-sm"
+      className="absolute bottom-14 left-0 w-[300px] rounded-sm border border-white/15 bg-[rgba(20,20,20,0.94)] py-2 text-[14px] shadow-[0_8px_32px_rgba(0,0,0,0.7)] backdrop-blur-sm"
     >
       <p className="px-4 pb-2 text-[12px] font-semibold uppercase tracking-wide text-white/45">
         {title}
