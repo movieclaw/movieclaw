@@ -73,7 +73,9 @@ logger = logging.getLogger("movieclaw_enrich")
 # v16: 字幕否定护栏按审计退役（生产 4 天零触发；语料 test 2532 零触发、
 #      holdout 986 唯一触发为误杀，不满足 killed_correct=0 的存留条件）；
 #      zh-Hans 双向校准保留，待 torrent-ner-v3 shadow 期后另行审计
-ENRICH_VERSION = 16
+# v17: 新增流媒体平台维度（vocab.PLATFORM + extract_platforms）——平台与压制组
+#      正交，仅在带 WEB 来源标记的资源上识别，短别名还需紧邻来源标记
+ENRICH_VERSION = 17
 
 # 场景命名的两类粘连（站点生成器丢空格所致），喂模型前拆开：
 # ① 季号紧贴分辨率："S021080p" → "S02 1080p"

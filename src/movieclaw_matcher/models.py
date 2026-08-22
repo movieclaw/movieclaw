@@ -18,6 +18,17 @@ from enum import StrEnum
 from pydantic import BaseModel, Field, model_validator
 
 from movieclaw_enrich.models import TorrentAttrs
+from movieclaw_enrich.vocab import PLATFORM_IDS
+
+
+def _known_platforms(values: list[str]) -> list[str]:
+    """保序去重地筛出词表里认识的平台规范值（大小写不敏感）。"""
+    seen: list[str] = []
+    for value in values:
+        canon = value.casefold()
+        if canon in PLATFORM_IDS and canon not in seen:
+            seen.append(canon)
+    return seen
 
 
 class HdrPolicy(StrEnum):
@@ -84,6 +95,16 @@ class RuleSetSpec(BaseModel):
     video_codecs: list[str] = Field(
         default_factory=list, description="允许的视频编码（如 x265/x264）；空=不限"
     )
+    # 平台与制作组是正交的两个来源维度，各自独立判断（都配 = 都要满足）：
+    # 不引入"任一命中即可"的组合开关——每个维度独立才能一句话解释拒绝原因。
+    platforms: list[str] = Field(
+        default_factory=list,
+        description="流媒体平台白名单（规范值，如 netflix/disney_plus）；空=不限。"
+        "列表顺序即偏好序，为洗版位次预留（§14），当前不参与候选评分",
+    )
+    platforms_block: list[str] = Field(
+        default_factory=list, description="流媒体平台黑名单（规范值）"
+    )
     release_groups_allow: list[str] = Field(
         default_factory=list, description="制作组白名单；空=不限"
     )
@@ -140,6 +161,19 @@ class RuleSetSpec(BaseModel):
     sites: list[str] = Field(
         default_factory=list, description="[预留] 站点白名单；空=全部启用站点"
     )
+
+    @model_validator(mode="after")
+    def _normalize_platforms(self) -> RuleSetSpec:
+        """平台值归一到规范值；词表外的值**丢弃而非报错**。
+
+        规则组 spec 的读取路径必须永远宽容：词表演进（合并平台、改规范值）
+        或人工写错一个值，都不该让 ``model_validate`` 抛错——那会让整个规则组
+        解析失败、匹配管线全线停摆，波及的远不止平台这一个维度。
+        丢弃的后果只是该值不再产生约束，量级与"少配了一个条件"相同。
+        """
+        self.platforms = _known_platforms(self.platforms)
+        self.platforms_block = _known_platforms(self.platforms_block)
+        return self
 
     @model_validator(mode="after")
     def _reject_hdr_dv_conflict(self) -> RuleSetSpec:

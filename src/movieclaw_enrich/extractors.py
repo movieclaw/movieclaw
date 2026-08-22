@@ -26,6 +26,7 @@ from movieclaw_enrich.vocab import (
     RESOLUTION_COMPILED,
     TECH_TOKENS,
     VIDEO_CODEC_COMPILED,
+    match_platforms,
     match_vocab,
 )
 
@@ -156,6 +157,11 @@ def extract_media_source(text: str) -> dict[str, object]:
     return {"media_source": hits[0]} if hits else {}
 
 
+def extract_platforms(text: str) -> dict[str, object]:
+    hits = match_platforms(text.upper())
+    return {"platforms": hits} if hits else {}
+
+
 _REMUX_RE = re.compile(r"(?<![A-Za-z])REMUX(?![A-Za-z])")
 
 
@@ -228,6 +234,7 @@ EXTRACTORS: list[tuple[str, object]] = [
     ("audio", extract_audio),
     ("hdr", extract_hdr),
     ("media_source", extract_media_source),
+    ("platforms", extract_platforms),
     ("remux", extract_remux),
     ("complete_marker", extract_complete_marker),
     ("release_group", extract_release_group),

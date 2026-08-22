@@ -70,6 +70,27 @@ def evaluate_rules(
                 f"视频编码 {attrs.video_codec} 不在允许范围（{'/'.join(spec.video_codecs)}）",
             )
 
+    # 平台：黑名单先判（与制作组同构）。平台是"来源"维度，与制作组正交，
+    # 两者都配就都要满足——拒绝原因因此永远指向单一维度
+    platforms = {value.casefold() for value in attrs.platforms}
+    if spec.platforms_block:
+        blocked = platforms & set(spec.platforms_block)
+        if blocked:
+            return _reject(
+                "platform_blocked", f"流媒体平台 {_platform_text(sorted(blocked))} 在黑名单中"
+            )
+    if spec.platforms:
+        if not platforms:
+            return _reject(
+                "platform_unknown", "无法识别流媒体平台，规则设置了平台白名单时按不合格处理"
+            )
+        if not platforms & set(spec.platforms):
+            return _reject(
+                "platform_not_allowed",
+                f"流媒体平台 {_platform_text(sorted(platforms))} 不在允许范围"
+                f"（{_platform_text(spec.platforms)}）",
+            )
+
     group = (attrs.release_group or "").casefold()
     if spec.release_groups_block and group in {g.casefold() for g in spec.release_groups_block}:
         return _reject("group_blocked", f"制作组 {attrs.release_group} 在黑名单中")
@@ -173,6 +194,12 @@ def _score(candidate: TorrentCandidate, spec: RuleSetSpec) -> int:
     else:
         score += _DEFAULT_RESOLUTION_SCORE.get(resolution, 0)
     return score
+
+
+def _platform_text(values: list[str]) -> str:
+    """平台规范值 → 展示串。展示名归前端，这里保证拒绝文案里是原始规范值，
+    用户能拿它直接对照规则组配置。"""
+    return "/".join(values)
 
 
 def _reject(code: str, text: str) -> RuleVerdict:

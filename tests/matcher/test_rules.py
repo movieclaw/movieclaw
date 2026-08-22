@@ -47,6 +47,26 @@ def _candidate(**kwargs) -> TorrentCandidate:
         # 族表外的编码各自成族：自己命中自己，不误伤也不互通
         ({"video_codec": "VC-1"}, {"video_codecs": ["VC-1"]}, True, None),
         ({"video_codec": "VP9"}, {"video_codecs": ["x265"]}, False, "codec_not_allowed"),
+        # 流媒体平台：与制作组正交，两者都配则都要满足
+        ({"platforms": ["netflix"]}, {"platforms": ["netflix"]}, True, None),
+        ({"platforms": ["netflix"]}, {"platforms": ["Netflix"]}, True, None),  # 大小写不敏感
+        (
+            {"platforms": ["iqiyi"]},
+            {"platforms": ["netflix"]},
+            False,
+            "platform_not_allowed",
+        ),
+        # 平台未识别 + 规则配了白名单 → 按不合格（与分辨率/编码的未知语义一致）
+        ({}, {"platforms": ["netflix"]}, False, "platform_unknown"),
+        ({"platforms": ["netflix"]}, {"platforms_block": ["netflix"]}, False, "platform_blocked"),
+        ({}, {"platforms_block": ["netflix"]}, True, None),  # 黑名单不误伤未知
+        # 平台与制作组各自独立：平台过了但组不在白名单，仍拒且原因指向组
+        (
+            {"platforms": ["netflix"], "release_group": "Other"},
+            {"platforms": ["netflix"], "release_groups_allow": ["FLUX"]},
+            False,
+            "group_not_allowed",
+        ),
         # 制作组黑白名单
         ({"release_group": "CHD"}, {"release_groups_block": ["chd"]}, False, "group_blocked"),
         ({"release_group": "OurTV"}, {"release_groups_allow": ["OurTV"]}, True, None),
@@ -191,3 +211,15 @@ class TestSubtitleAudioLanguages:
     def test_unset_dimensions_do_not_filter(self):
         assert evaluate_rules(_candidate(subtitle_languages=[], audio_languages=[]),
                               RuleSetSpec()).accepted
+
+
+def test_unknown_platform_value_is_dropped_not_raised() -> None:
+    """规则组 spec 的读取路径必须永远宽容：词表外的平台值丢弃而非抛错。
+
+    抛错会让整个规则组解析失败、匹配管线全线停摆（PR #120 的写法正是如此），
+    波及范围远大于"少配了一个条件"。
+    """
+    spec = RuleSetSpec.model_validate({"platforms": ["netflix", "no_such_platform"]})
+    assert spec.platforms == ["netflix"]
+    # 全部是未知值 → 该维度不产生约束，等价于没配
+    assert RuleSetSpec.model_validate({"platforms": ["nope"]}).platforms == []
