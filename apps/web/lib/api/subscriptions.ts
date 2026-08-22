@@ -236,6 +236,8 @@ export interface RuleSetSpec {
   cutoff_resolution?: string | null;
   /** 洗到新版本后保留旧版本（多版本共存，收藏家模式）；缺省=旧版本进回收站 */
   upgrade_keep_old?: boolean;
+  /** 参与洗版比较的维度及优先级（顺序即位次）；缺省 ["resolution","source"] */
+  upgrade_ladder?: string[];
   /** [预留] 站点白名单；空=全部启用站点 */
   sites?: string[];
 }

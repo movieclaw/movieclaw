@@ -258,11 +258,35 @@ const UPGRADE_SOURCE_LABEL: Record<string, string> = {
   remux: "Remux",
 };
 
+/** 洗版阶梯的维度选项（顺序即位次，交互与分辨率偏好完全一致：点击依次入列）。 */
+const LADDER_OPTIONS: { value: string; label: string; needs?: "codec" | "platform" }[] = [
+  { value: "resolution", label: "分辨率" },
+  { value: "source", label: "片源" },
+  { value: "video_codec", label: "编码", needs: "codec" },
+  { value: "platform", label: "平台", needs: "platform" },
+];
+const DEFAULT_LADDER = ["resolution", "source"];
+
+const sameLadder = (a: string[], b: string[]) =>
+  a.length === b.length && a.every((v, i) => v === b[i]);
+
 /** 洗版目标的人话标签（摘要芯片 / 订阅详情页规则组 fact 复用）。 */
 export function upgradeTargetLabel(spec: RuleSetSpec): string | null {
   if (!spec.upgrade_source) return null;
   const resolution = spec.cutoff_resolution || spec.resolutions?.[0] || "1080p";
-  return `${resolution} ${UPGRADE_SOURCE_LABEL[spec.upgrade_source] ?? spec.upgrade_source}`;
+  const parts = [
+    `${resolution} ${UPGRADE_SOURCE_LABEL[spec.upgrade_source] ?? spec.upgrade_source}`,
+  ];
+  // 与后端 decision.upgrade_target_label 同一口径：只渲染"进了阶梯且配了偏好"
+  // 的维度（偏好为空的位后端会自动跳过）
+  const ladder = spec.upgrade_ladder ?? DEFAULT_LADDER;
+  if (ladder.includes("video_codec") && spec.video_codecs?.length) {
+    parts.push(spec.video_codecs[0]);
+  }
+  if (ladder.includes("platform") && spec.platforms?.length) {
+    parts.push(platformLabel(spec.platforms[0]));
+  }
+  return parts.join(" · ");
 }
 
 /**
@@ -373,6 +397,9 @@ export function RuleSetEditorDialog({
   const [platformsBlock, setPlatformsBlock] = useState<string[]>(() =>
     (spec.platforms_block ?? []).filter((v) => PLATFORM_OPTIONS.includes(v)),
   );
+  const [upgradeLadder, setUpgradeLadder] = useState<string[]>(
+    () => spec.upgrade_ladder ?? [...DEFAULT_LADDER],
+  );
   const [hdr, setHdr] = useState<"any" | "require" | "forbid">(spec.hdr ?? "any");
   const [dv, setDv] = useState<"any" | "require" | "forbid">(spec.dv ?? "any");
   const [subLangs, setSubLangs] = useState<string[]>(
@@ -416,19 +443,71 @@ export function RuleSetEditorDialog({
     [spec],
   );
 
-  /** 同一平台不能同时进白/黑名单——后端读取路径有意保持宽容，矛盾在这里拦。 */
-  const togglePlatform = (value: string, list: "allow" | "block") => {
-    const [current, set, clearOther] =
-      list === "allow"
-        ? ([platformsAllow, setPlatformsAllow, setPlatformsBlock] as const)
-        : ([platformsBlock, setPlatformsBlock, setPlatformsAllow] as const);
-    if (current.includes(value)) {
-      set(current.filter((v) => v !== value));
-      return;
+  const platformState = (value: string): "off" | "include" | "exclude" =>
+    platformsAllow.includes(value)
+      ? "include"
+      : platformsBlock.includes(value)
+        ? "exclude"
+        : "off";
+
+  /** 三态循环：不限 → 只要 → 排除 → 不限。同一平台因此不可能同时进白/黑名单
+   *  （后端读取路径有意保持宽容、不对矛盾配置报错，矛盾在这里从源头消除）。 */
+  const cyclePlatform = (value: string) => {
+    const state = platformState(value);
+    if (state === "off") {
+      setPlatformsAllow((prev) => [...prev, value]);
+    } else if (state === "include") {
+      setPlatformsAllow((prev) => prev.filter((v) => v !== value));
+      setPlatformsBlock((prev) => [...prev, value]);
+    } else {
+      setPlatformsBlock((prev) => prev.filter((v) => v !== value));
     }
-    set([...current, value]);
-    clearOther((prev) => prev.filter((v) => v !== value));
   };
+
+  /** 阶梯维度：交互与分辨率偏好完全一致——点击依次入列，序号即位次。
+   *  最后一维不允许移除：空阶梯没有任何一位可比，后端会回落到缺省二元组，
+   *  界面上却显示"一个都没选"——不让用户进入这种口径不一致的状态。 */
+  const toggleLadderDim = (value: string) =>
+    setUpgradeLadder((prev) => {
+      if (!prev.includes(value)) return [...prev, value];
+      return prev.length > 1 ? prev.filter((v) => v !== value) : prev;
+    });
+
+  const labelOf = (options: readonly (readonly [string, string])[], values: string[]) =>
+    values.map((v) => options.find(([code]) => code === v)?.[1] ?? v).join("/");
+
+  // 折叠段的实时摘要：不展开也知道里面配了什么，这是长表单能收起来的前提
+  const qualitySummary =
+    [
+      codecFamilies.size ? [...codecFamilies].join("/") : "",
+      platformsAllow.length ? platformsAllow.map(platformLabel).join("/") : "",
+      platformsBlock.length ? `排除 ${platformsBlock.map(platformLabel).join("/")}` : "",
+      hdr === "require" ? "必须 HDR" : hdr === "forbid" ? "排除 HDR" : "",
+      dv === "require" ? "必须 DV" : dv === "forbid" ? "排除 DV" : "",
+      groupsAllow.trim() ? `组 ${groupsAllow.trim()}` : "",
+      groupsBlock.trim() ? `排除组 ${groupsBlock.trim()}` : "",
+    ]
+      .filter(Boolean)
+      .join(" · ") || "未设置";
+
+  const limitSummary =
+    [
+      subLangs.length ? `字幕 ${labelOf(SUB_LANG_OPTIONS, subLangs)}` : "",
+      audioLangs.length ? `音轨 ${labelOf(AUDIO_LANG_OPTIONS, audioLangs)}` : "",
+      freeOnly ? "仅免费" : "",
+      excludeHr ? "排除 H&R" : "",
+      minSeeders.trim() ? `做种 ≥ ${minSeeders.trim()}` : "",
+      sizeMin.trim() || sizeMax.trim()
+        ? `体积 ${sizeMin.trim() || "0"}–${sizeMax.trim() || "∞"}MB`
+        : "",
+    ]
+      .filter(Boolean)
+      .join(" · ") || "未设置";
+
+  // 名称维度上浮的告警条件（§14.4）：平台识别率最低，排在前面会截断整条比较
+  const ladderPlatformIndex = upgradeLadder.indexOf("platform");
+  const platformNotLast =
+    ladderPlatformIndex >= 0 && ladderPlatformIndex < upgradeLadder.length - 1;
 
   const toggleResolution = (value: string) =>
     setResolutions((prev) =>
@@ -461,6 +540,10 @@ export function RuleSetEditorDialog({
       ...codecExtras,
     ];
     if (codecs.length) next.video_codecs = codecs;
+    // 与缺省一致就不写进 spec——spec 只记录用户真的改过的东西
+    if (upgradeSource !== "" && !sameLadder(upgradeLadder, DEFAULT_LADDER)) {
+      next.upgrade_ladder = upgradeLadder;
+    }
     const allowPlatforms = [...platformsAllow, ...platformExtras.allow];
     if (allowPlatforms.length) next.platforms = allowPlatforms;
     const blockPlatforms = [...platformsBlock, ...platformExtras.block];
@@ -639,10 +722,58 @@ export function RuleSetEditorDialog({
                     className="size-4 accent-[var(--accent-2)]"
                   />
                 </label>
+
+                {/* 洗版优先级：交互与上方分辨率偏好一致——点击依次入列、序号即
+                    位次。多一位就是多一轮潜在的重复下载，所以缺省只有前两位 */}
+                <div className="mt-2.5 border-t border-white/[0.06] pt-2.5">
+                  <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5">
+                    <span className="text-sub text-[var(--text-muted)]">洗版优先级</span>
+                    <div className="flex flex-wrap gap-1.5">
+                      {LADDER_OPTIONS.map((dim) => {
+                        const index = upgradeLadder.indexOf(dim.value);
+                        const unconfigured =
+                          (dim.needs === "codec" && !codecFamilies.size && !codecExtras.length) ||
+                          (dim.needs === "platform" &&
+                            !platformsAllow.length &&
+                            !platformExtras.allow.length);
+                        return (
+                          <ToggleChip
+                            key={dim.value}
+                            active={index >= 0}
+                            onClick={() => toggleLadderDim(dim.value)}
+                          >
+                            {index >= 0 && upgradeLadder.length > 1 && (
+                              <span className="mr-1.5 inline-flex size-4 items-center justify-center rounded-full bg-white/20 text-micro font-semibold">
+                                {index + 1}
+                              </span>
+                            )}
+                            {dim.label}
+                            {index >= 0 && unconfigured && (
+                              <span className="ml-1 text-[var(--text-faint)]">· 未配置</span>
+                            )}
+                          </ToggleChip>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <p className="mt-1.5 text-caption leading-relaxed text-[var(--text-faint)]">
+                    按顺序逐维度比较，先分出高低的那一维说了算。每多一维，就多一轮
+                    潜在的重复下载——缺省只比分辨率与片源。标「未配置」的维度会被
+                    自动跳过（先在下面配好它的偏好再选）。
+                  </p>
+                  {platformNotLast && (
+                    <p className="mt-1.5 rounded-lg border border-amber-400/25 bg-amber-500/10 px-3 py-2 text-caption leading-relaxed text-amber-200">
+                      平台是所有维度里识别率最低的（只有带 WEB 标记的资源才认得出）。
+                      把它排在前面，会让大量候选在这一维上无法比较、整条洗版停在这里。
+                      建议放到最后一位。
+                    </p>
+                  )}
+                </div>
               </div>
             )}
           </Field>
 
+          <Section title="画质与来源" summary={qualitySummary}>
           <Field label="视频编码" hint="按家族选择，等价写法（如 x265 / HEVC）一并计入；不选 = 不限">
             <div className="flex flex-wrap gap-1.5">
               {CODEC_FAMILIES.map((family) => (
@@ -664,46 +795,26 @@ export function RuleSetEditorDialog({
 
           <Field
             label="流媒体平台"
-            hint="只要这些平台的资源；不选 = 不限。选了之后，识别不出平台的资源会被排除（与分辨率/编码口径一致）"
+            hint="点一下 = 只要，再点 = 排除，第三下取消。设了「只要」之后，识别不出平台的资源会被排除（与分辨率/编码口径一致）"
           >
             <div className="flex flex-wrap gap-1.5">
               {PLATFORM_OPTIONS.map((id) => (
-                <ToggleChip
+                <TriChip
                   key={id}
-                  active={platformsAllow.includes(id)}
-                  onClick={() => togglePlatform(id, "allow")}
+                  state={platformState(id)}
+                  onClick={() => cyclePlatform(id)}
                 >
                   {platformLabel(id)}
-                </ToggleChip>
+                </TriChip>
               ))}
-              {platformExtras.allow.length > 0 && (
-                <span className="self-center text-caption text-[var(--text-faint)]">
-                  另有自定义值：{platformExtras.allow.map(platformLabel).join("、")}（保留）
-                </span>
-              )}
             </div>
-          </Field>
-
-          <Field
-            label="排除平台"
-            hint="命中即排除，优先于上面的白名单；识别不出平台的资源不受影响"
-          >
-            <div className="flex flex-wrap gap-1.5">
-              {PLATFORM_OPTIONS.map((id) => (
-                <ToggleChip
-                  key={id}
-                  active={platformsBlock.includes(id)}
-                  onClick={() => togglePlatform(id, "block")}
-                >
-                  {platformLabel(id)}
-                </ToggleChip>
-              ))}
-              {platformExtras.block.length > 0 && (
-                <span className="self-center text-caption text-[var(--text-faint)]">
-                  另有自定义值：{platformExtras.block.map(platformLabel).join("、")}（保留）
-                </span>
-              )}
-            </div>
+            {(platformExtras.allow.length > 0 || platformExtras.block.length > 0) && (
+              <p className="mt-1.5 text-caption text-[var(--text-faint)]">
+                另有自定义值：
+                {[...platformExtras.allow, ...platformExtras.block].map(platformLabel).join("、")}
+                （保留）
+              </p>
+            )}
           </Field>
 
           <Field label="HDR" hint="判断整个 HDR 家族（HDR10/HLG/DV 等）；DV 可在下方单独控制">
@@ -757,6 +868,30 @@ export function RuleSetEditorDialog({
             </div>
           </Field>
 
+          <Field
+            label="制作组白名单"
+            hint="只接受这些制作组的资源，逗号或空格分隔（如 FRDS, WiKi）；留空 = 不限"
+          >
+            <input
+              type="text"
+              value={groupsAllow}
+              onChange={(e) => setGroupsAllow(e.target.value)}
+              placeholder="留空不限"
+              className="w-full rounded-xl border border-white/[0.08] bg-white/[0.04] px-3.5 py-2.5 text-ui text-[var(--text)] outline-none focus:border-[var(--accent)]/60"
+            />
+          </Field>
+          <Field label="制作组黑名单" hint="这些制作组的资源一律不要">
+            <input
+              type="text"
+              value={groupsBlock}
+              onChange={(e) => setGroupsBlock(e.target.value)}
+              placeholder="留空不启用"
+              className="w-full rounded-xl border border-white/[0.08] bg-white/[0.04] px-3.5 py-2.5 text-ui text-[var(--text)] outline-none focus:border-[var(--accent)]/60"
+            />
+          </Field>
+          </Section>
+
+          <Section title="下载与限制" summary={limitSummary}>
           <Field
             label="字幕语言"
             hint="任一命中即通过；按种子标题声明判断——未声明字幕的资源会被排除，不选 = 不限"
@@ -847,28 +982,7 @@ export function RuleSetEditorDialog({
           <p className="-mt-3 text-caption leading-relaxed text-[var(--text-faint)]">
             体积按「每集均摊」评估：整季包用总体积 ÷ 集数比较，整季合集不会被单集上限误杀。
           </p>
-
-          <Field
-            label="制作组白名单"
-            hint="只接受这些制作组的资源，逗号或空格分隔（如 FRDS, WiKi）；留空 = 不限"
-          >
-            <input
-              type="text"
-              value={groupsAllow}
-              onChange={(e) => setGroupsAllow(e.target.value)}
-              placeholder="留空不限"
-              className="w-full rounded-xl border border-white/[0.08] bg-white/[0.04] px-3.5 py-2.5 text-ui text-[var(--text)] outline-none focus:border-[var(--accent)]/60"
-            />
-          </Field>
-          <Field label="制作组黑名单" hint="这些制作组的资源一律不要">
-            <input
-              type="text"
-              value={groupsBlock}
-              onChange={(e) => setGroupsBlock(e.target.value)}
-              placeholder="留空不启用"
-              className="w-full rounded-xl border border-white/[0.08] bg-white/[0.04] px-3.5 py-2.5 text-ui text-[var(--text)] outline-none focus:border-[var(--accent)]/60"
-            />
-          </Field>
+          </Section>
 
           {error && (
             <p className="rounded-lg border border-red-400/25 bg-red-500/10 px-3.5 py-2.5 text-sub leading-6 text-red-200">
@@ -936,6 +1050,79 @@ function ToggleChip({
           : "border-white/[0.08] bg-white/[0.03] text-[var(--text-muted)] hover:bg-white/[0.07]"
       }`}
     >
+      {children}
+    </button>
+  );
+}
+
+/**
+ * 可折叠分段：折叠态直接显示该段的**当前摘要**——不展开也知道里面配了什么，
+ * 这是这个长表单能收起来的前提（渐进披露，quality-upgrade.md §14.9）。
+ */
+function Section({
+  title,
+  summary,
+  children,
+}: {
+  title: string;
+  summary: string;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="rounded-xl border border-white/[0.07] bg-white/[0.02]">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-3 px-4 py-3 text-left"
+      >
+        <span className="shrink-0 text-ui font-semibold text-white/85">{title}</span>
+        <span className="min-w-0 flex-1 truncate text-right text-caption text-[var(--text-faint)]">
+          {summary}
+        </span>
+        <span
+          className={`shrink-0 text-[var(--text-faint)] transition-transform ${
+            open ? "rotate-90" : ""
+          }`}
+        >
+          ›
+        </span>
+      </button>
+      {open && (
+        <div className="space-y-5 border-t border-white/[0.06] px-4 pb-4 pt-4">{children}</div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * 三态芯片：不限 → 只要 → 排除 → 不限。
+ *
+ * 平台有十几个选项，白/黑名单铺成两组芯片就是三十多个点击目标；三态把它压回
+ * 一组，且每个芯片自解释（选中=只要，红色带 ✕=排除）。
+ */
+function TriChip({
+  state,
+  onClick,
+  children,
+}: {
+  state: "off" | "include" | "exclude";
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  const tone =
+    state === "include"
+      ? "border-white/25 bg-white/[0.14] text-white"
+      : state === "exclude"
+        ? "border-red-400/35 bg-red-500/12 text-red-200"
+        : "border-white/[0.08] bg-white/[0.03] text-[var(--text-muted)] hover:bg-white/[0.07]";
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`rounded-full border px-3 py-1.5 text-sub font-medium transition ${tone}`}
+    >
+      {state === "exclude" && <span className="mr-1">✕</span>}
       {children}
     </button>
   );
