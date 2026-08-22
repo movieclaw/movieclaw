@@ -23,7 +23,9 @@ from __future__ import annotations
 from functools import partial
 
 from movieclaw_enrich.models import TorrentAttrs
+from movieclaw_enrich.vocab import codec_family
 from movieclaw_matcher.models import (
+    SNAPSHOT_VERSION,
     IdentityMatch,
     QualitySnapshot,
     RuleSetSpec,
@@ -372,6 +374,7 @@ def build_snapshot(
     probed: bool = False,
     probe_resolution: str | None = None,
     probe_hdr_label: str | None = None,
+    probe_video_codec: str | None = None,
     probe_bit_rate: int | None = None,
 ) -> QualitySnapshot:
     """按"可实测性分层"构造质量快照。
@@ -381,19 +384,33 @@ def build_snapshot(
     - ``probed=True`` 表示文件经过 ffprobe 实测：resolution/hdr 以实测为准
       （probe 的 hdr=None 是**测得 SDR**，不是未知，因此覆盖为空列表）；
       实测拿不到分辨率（探测失败）时回落名称值；
-    - ``probed=False``（纯名称路径）：resolution/hdr 也取名称值。
+    - ``probed=False``（纯名称路径）：resolution/hdr 也取名称值；
+    - ``video_codec``：**实测定族、名称定写法**——probe 的 codec_name
+      （hevc/h264）与标题写法（x265/HEVC）同族时保留名称值（信息量更大、
+      与规则组配置同一命名空间），不同族或名称缺失时以实测为准（实测推翻
+      名称）。两侧比较统一走 ``vocab.codec_family``，不需要额外映射层；
+    - ``platforms``：名称唯一来源（文件本体测不出发行平台）。
     """
     resolution = name_attrs.resolution if name_attrs else None
     hdr = list(name_attrs.hdr) if name_attrs else []
+    video_codec = name_attrs.video_codec if name_attrs else None
     if probed:
         resolution = probe_resolution or resolution
         mapped = _PROBE_HDR_TO_VOCAB.get((probe_hdr_label or "").casefold())
         hdr = [mapped] if mapped else []
+        if probe_video_codec and (
+            video_codec is None
+            or codec_family(video_codec) != codec_family(probe_video_codec)
+        ):
+            video_codec = probe_video_codec
     return QualitySnapshot(
+        v=SNAPSHOT_VERSION,
         resolution=resolution,
         media_source=name_attrs.media_source if name_attrs else None,
         remux=bool(name_attrs.remux) if name_attrs else False,
         release_group=name_attrs.release_group if name_attrs else None,
         hdr=hdr,
+        video_codec=video_codec,
+        platforms=list(getattr(name_attrs, "platforms", []) or []),
         bit_rate=probe_bit_rate,
     )

@@ -32,6 +32,7 @@ from movieclaw_matcher.decision import (
 )
 from movieclaw_matcher.identity import match_identity, normalize_title
 from movieclaw_matcher.models import (
+    SNAPSHOT_VERSION,
     DvPolicy,
     HdrPolicy,
     HrUnknownPolicy,
@@ -54,6 +55,7 @@ __all__ = [
     "IdentityMatch",
     "MediaIdentity",
     "QualitySnapshot",
+    "SNAPSHOT_VERSION",
     "RuleSetSpec",
     "RuleVerdict",
     "TorrentCandidate",

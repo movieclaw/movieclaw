@@ -113,10 +113,13 @@ async def test_annotate_marks_files_and_refreshes_snapshot(db):
         )).all()
         assert all(f.media_source == "WEB-DL" and f.media_source_manual for f in files)
         w1 = await session.get(WantedItem, w1_id)
+        # 标注是**定点修补**而非重建：只动出处维度，其余键原样，结构版本
+        # 也不动（本例种的是 v1 老快照，补齐新维度是回填任务的事，§16.3）
         assert w1.quality == {
             "resolution": "2160p",
             "bit_rate": 1_900_000,
             "media_source": "WEB-DL",
+            "remux": False,  # 人工标注片源即否定 Remux（显式 False，不删键）
         }
         w2 = await session.get(WantedItem, w2_id)
         assert w2.quality is None

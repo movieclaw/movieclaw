@@ -1033,7 +1033,7 @@ probe 都无法区分 profile——按"能播 HDR10"这一侧保守建模，错�
 | 1 | `platforms` 新维度 + `video_codecs` 有序化（纯 spec 语义，不碰洗版） | **后端已落地**：`vocab.PLATFORM` + `extract_platforms`（`ENRICH_VERSION` 17 驱动存量重算）、`RuleSetSpec.platforms/platforms_block`、`rules` 的平台黑白名单。前端编辑器与搜索结果展示待做。`video_codecs` 的"有序化"在本步是**空操作**——列表顺序本就保序，只是尚无消费者：它要到第 3 步进阶梯才生效（顺序**不进** `_score`，否则会改变缺口选优，见 §15.4） |
 | 2 | `compare_ladder` 收敛 + 双方都未知=平局修复（ladder 仍写死二元组） | **已落地**：`ladder_vector` / `compare_ladder_at` / `target_vector` 就位，三个谓词全部由它导出；拒绝文案已改为"首个定序位"句式（含"分辨率相同，…"的前序维度说明，见 §14.7）。现有洗版单测全绿 + 新增表驱动比较用例与反对称性用例 |
 | 3 | `upgrade_ladder` 字段 + N 维比较 + 校验（空列表跳过、名称维度告警） | 表驱动单测覆盖：截断、平局、跳过、首个定序位 |
-| 4 | `QualitySnapshot` 两字段 + 归一映射表 + 存量回填 | 回填 tick 纯 DB 变换，抽样核对 probe 值 |
+| 4 | `QualitySnapshot` 两字段 + 归一映射表 + 存量回填 | **已落地**：`v` / `video_codec` / `platforms` 三个键；编码走"实测定族、名称定写法"（不需要归一映射表，族表已兼容两侧）；陈旧快照由回填 tick 的游标巡检逐批重算 |
 | 5 | 季级两阶段锚点洗版（**必须与 3–4 同批发布**，见 14.6） | 一季只有一个锚点单元进入排期 |
 | 6 | 规则组编辑器高级区 + 详情页多维标签 | 交互走查：简单层用户看不到任何变化 |
 | 7 | HDR 字段合并（新键 + 双写 + 归一 validator） | 旧 spec 读取后语义等价的对照单测；模拟回退：新形态被旧版 schema 解析不报错 |
@@ -1195,12 +1195,13 @@ season_lock: bool = False   # 锁定季内版本：同季后续单元必须匹�
 | 1 | A | `compare_upgrade` 在双方片源都未知时判"不可比" | **已修复**：该位按平局处理，末位平局即整体等价 ⇒ `upgrade_not_better`（§14.4）。附带收益：这类常态不再写 `MATCH_REJECTED` 活动 |
 | 2 | A | 洗版候选选优用评分而非档位，可能先抓"免费但只高半档"的版本，同一单元付两次下载 | **已修复**：洗版排序键插入档位位次（`candidate_ladder_rank`），排在评分之前；纯缺口候选取哨兵值，选优顺序不变（§15.4） |
 | 3 | A | `video_codecs` 白名单精确匹配：配 `x265` 时标 `HEVC` 的资源被 `codec_not_allowed` 拒 | **已修复**：`vocab.VIDEO_CODEC_FAMILY` + `codec_family()`，筛选与洗版位次都按族比较（见下） |
-| 4 | B | `{}` 快照哨兵与 `exclude_defaults=True` 的编码冲突 | 哨兵改为显式键（见下） |
-| 5 | B | 存量快照回填只认 `quality IS NULL`，新增维度永远补不上 | 快照加版本键，回填条件改为"NULL 或版本落后"（见下） |
-| 6 | B | `build_snapshot` 的 probe 覆盖丢弃 HDR 双标 ⇒ §14 后基线位次虚低 | 三分支覆盖策略（§14.8） |
+| 4 | B | `{}` 快照哨兵与 `exclude_defaults=True` 的编码冲突 | **已修复**：快照落库一律全键（`model_dump()`），`{}` 因此在结构上专属于哨兵 |
+| 5 | B | 存量快照回填只认 `quality IS NULL`，新增维度永远补不上 | **已修复**：快照带 `v`（`SNAPSHOT_VERSION`），回填 tick 增加游标轮转的陈旧重算巡检 |
+| 6 | B | `build_snapshot` 的 probe 覆盖丢弃 HDR 双标 ⇒ §14 后基线位次虚低 | 三分支覆盖策略（§14.8）；编码维度已按同一取向落地：**实测定族、名称定写法** |
 | 7 | B | HDR 字段原地改类型会让回退后的旧版本解析崩溃 | 新键 `hdr_levels` + 旧键双写（§14.8） |
 | 8 | C | 锚点闸门只落在 `arm_upgrade_wanted` 会被被动匹配绕过 | 闸门落在 `load_match_context`（§15.6） |
 | 9 | C | 锚点阶段的非锚点单元落进 `upgrade_blocked` ⇒ 整季包洗版永不成立 | `blocked` / `deferred` 二分（§15.7） |
+| 10 | A | 回填 tick 的 `if not rows: return` 把后面两个巡检整个短路：库全部回填完之后 NULL 行本就为零，**排期补挂在成熟部署上永远不执行** | **已修复**：早退改为条件块，两个巡检（版本重算、排期补挂）与本轮有没有 NULL 行无关 |
 
 ### 16.1 第 3 条：编码族（已修复）
 

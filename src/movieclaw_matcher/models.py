@@ -277,6 +277,12 @@ class RuleVerdict:
     reason_text: str | None = None
 
 
+# 快照结构版本：新增可比维度时 +1，驱动存量快照重算（quality-upgrade.md §16.3）。
+# v1 = 历史快照（无版本键，只有 resolution/media_source/remux/release_group/hdr/bit_rate）
+# v2 = 增加 video_codec 与 platforms
+SNAPSHOT_VERSION = 2
+
+
 class QualitySnapshot(BaseModel):
     """单元当前版本的质量快照（``wanted_item.quality`` JSON 列的 schema）。
 
@@ -288,11 +294,16 @@ class QualitySnapshot(BaseModel):
     部分可比规则）。
     """
 
+    # 结构版本；**缺省是 1 而不是当前版本**——老行没有这个键，读出来必须
+    # 显示为"落后"，回填任务才会把新维度补上（写入方 build_snapshot 负责盖章）
+    v: int = 1
     resolution: str | None = None  # 归一化分辨率（2160p/1080p/…）；probe 优先
     media_source: str | None = None  # 片源（WEB-DL/Blu-ray/…）；名称来源
     remux: bool = False  # 是否原盘 Remux；名称来源（缺席即否定，同 TorrentAttrs）
     release_group: str | None = None  # 制作组；仅展示
     hdr: list[str] = Field(default_factory=list)  # HDR 格式（DV/HDR10/…）；仅展示
+    video_codec: str | None = None  # 视频编码；probe 定族、名称定写法（见 build_snapshot）
+    platforms: list[str] = Field(default_factory=list)  # 流媒体平台；名称来源
     bit_rate: int | None = None  # 实测码率（bps）；留证据供详情页展示，不参与档位
 
 
