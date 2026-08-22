@@ -1031,7 +1031,7 @@ probe 都无法区分 profile——按"能播 HDR10"这一侧保守建模，错�
 | 步骤 | 内容 | 验证 |
 |---|---|---|
 | 1 | `platforms` 新维度 + `video_codecs` 有序化（纯 spec 语义，不碰洗版） | **后端已落地**：`vocab.PLATFORM` + `extract_platforms`（`ENRICH_VERSION` 17 驱动存量重算）、`RuleSetSpec.platforms/platforms_block`、`rules` 的平台黑白名单。前端编辑器与搜索结果展示待做。`video_codecs` 的"有序化"在本步是**空操作**——列表顺序本就保序，只是尚无消费者：它要到第 3 步进阶梯才生效（顺序**不进** `_score`，否则会改变缺口选优，见 §15.4） |
-| 2 | `compare_ladder` 收敛 + 双方都未知=平局修复（ladder 仍写死二元组） | 现有洗版单测全绿 + 新增双侧未知平局用例 |
+| 2 | `compare_ladder` 收敛 + 双方都未知=平局修复（ladder 仍写死二元组） | **已落地**：`ladder_vector` / `compare_ladder_at` / `target_vector` 就位，三个谓词全部由它导出；拒绝文案已改为"首个定序位"句式（含"分辨率相同，…"的前序维度说明，见 §14.7）。现有洗版单测全绿 + 新增表驱动比较用例与反对称性用例 |
 | 3 | `upgrade_ladder` 字段 + N 维比较 + 校验（空列表跳过、名称维度告警） | 表驱动单测覆盖：截断、平局、跳过、首个定序位 |
 | 4 | `QualitySnapshot` 两字段 + 归一映射表 + 存量回填 | 回填 tick 纯 DB 变换，抽样核对 probe 值 |
 | 5 | 季级两阶段锚点洗版（**必须与 3–4 同批发布**，见 14.6） | 一季只有一个锚点单元进入排期 |

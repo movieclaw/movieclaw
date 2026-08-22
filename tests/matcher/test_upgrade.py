@@ -16,6 +16,7 @@ from movieclaw_matcher import (
     TorrentCandidate,
     build_snapshot,
     candidate_ladder_rank,
+    compare_ladder,
     compare_upgrade,
     provably_at_cutoff,
     provably_below_cutoff,
@@ -476,3 +477,37 @@ def test_candidate_ladder_rank_follows_user_resolution_order() -> None:
     r1080 = candidate_ladder_rank(TorrentAttrs(resolution="1080p", media_source="WEB-DL"), spec)
     r2160 = candidate_ladder_rank(TorrentAttrs(resolution="2160p", media_source="WEB-DL"), spec)
     assert r1080 > r2160
+
+
+# ---------------------------------------------------------------------------
+# 档位向量比较：三个洗版谓词的共同底座（§14.4）
+# ---------------------------------------------------------------------------
+
+
+LADDER_CASES = [
+    # (左, 右, 期望)  —— 1 = 左更优，-1 = 右更优，0 = 逐位等价，None = 不可比
+    ((4, 3), (4, 2), 1),
+    ((4, 2), (4, 3), -1),
+    ((4, 2), (3, 5), 1),  # 首位定序，后续位够不着（分辨率严格优先）
+    ((4, 3), (4, 3), 0),
+    # 双方都未知 = 该位平局：末位平局即整体等价
+    ((4, None), (4, None), 0),
+    # 单侧未知 = 截断，后续位一律够不着
+    ((4, None), (4, 3), None),
+    ((4, 3), (4, None), None),
+    ((None, 5), (4, 1), None),
+    # 首位就定序时，次位的未知不影响结论——未知只截断它**之后**的位
+    ((5, None), (4, 3), 1),
+]
+
+
+@pytest.mark.parametrize("left, right, expected", LADDER_CASES)
+def test_compare_ladder_table(left, right, expected) -> None:
+    assert compare_ladder(left, right) == expected
+
+
+def test_compare_ladder_is_antisymmetric() -> None:
+    """交换两侧则结果取反（不可比与等价对称不变）——比较关系自洽的底线。"""
+    for left, right, expected in LADDER_CASES:
+        flipped = compare_ladder(right, left)
+        assert flipped == (None if expected is None else -expected)
