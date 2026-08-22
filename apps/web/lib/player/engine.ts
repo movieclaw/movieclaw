@@ -12,6 +12,8 @@
 
 import type Hls from "hls.js";
 
+import { bufferedAhead, classifyStall, stallReason } from "./stall";
+
 /** 诊断面板（§6.5「Stats for nerds」）要的实时读数。 */
 export interface EngineStats {
   /** 当前正在用的实现，出问题时第一眼要看的就是这个 */
@@ -46,9 +48,6 @@ export interface EngineOptions {
   onFailed: (reason: string) => void;
 }
 
-/** 判定为卡死的无进展时长（秒）。低于这个值会把正常的网络抖动误判成失败。 */
-const STALL_TIMEOUT_S = 8;
-
 /**
  * 回收多少秒的已播缓冲（hls.js `backBufferLength`）。
  *
@@ -59,16 +58,9 @@ const BACK_BUFFER_S = 30;
 
 /** 掉帧与缓冲读数：三种引擎共用一份取法。 */
 function readCommonStats(video: HTMLVideoElement): Omit<EngineStats, "engine" | "bitrate"> {
-  let bufferedSeconds = 0;
-  for (let i = 0; i < video.buffered.length; i += 1) {
-    if (video.buffered.start(i) <= video.currentTime && video.buffered.end(i) >= video.currentTime) {
-      bufferedSeconds = video.buffered.end(i) - video.currentTime;
-      break;
-    }
-  }
   const quality = video.getVideoPlaybackQuality?.();
   return {
-    bufferedSeconds,
+    bufferedSeconds: bufferedAhead(video),
     droppedFrames: quality?.droppedVideoFrames ?? null,
     totalFrames: quality?.totalVideoFrames ?? null,
   };
@@ -79,25 +71,32 @@ function readCommonStats(video: HTMLVideoElement): Omit<EngineStats, "engine" | 
  *
  * 只看 `error` 事件是不够的——坏流最常见的表现不是报错，而是解码器悄悄停住、
  * 界面永远转圈。用户等三分钟然后关掉页面，我们连一条日志都拿不到。
+ *
+ * 归因交给 `classifyStall`：解码卡死与「追上了编码器」的正确处置完全相反，
+ * 混为一谈会把「服务器转得慢」误判成「这一档播不了」而白白降档。
  */
 function watchStall(video: HTMLVideoElement, onFailed: (reason: string) => void): () => void {
   let lastTime = video.currentTime;
   let stalledFor = 0;
   const timer = window.setInterval(() => {
-    if (video.paused || video.ended || video.seeking) {
+    const advanced = video.currentTime > lastTime;
+    const verdict = classifyStall({
+      paused: video.paused,
+      ended: video.ended,
+      seeking: video.seeking,
+      advanced,
+      bufferedAhead: bufferedAhead(video),
+      stalledFor: stalledFor + 1,
+    });
+    lastTime = video.currentTime;
+    if (video.paused || video.ended || video.seeking || advanced) {
       stalledFor = 0;
-      lastTime = video.currentTime;
-      return;
-    }
-    if (video.currentTime > lastTime) {
-      stalledFor = 0;
-      lastTime = video.currentTime;
       return;
     }
     stalledFor += 1;
-    if (stalledFor >= STALL_TIMEOUT_S) {
+    if (verdict !== "ok") {
       stalledFor = 0;
-      onFailed(`播放停滞超过 ${STALL_TIMEOUT_S} 秒`);
+      onFailed(stallReason(verdict));
     }
   }, 1000);
   return () => window.clearInterval(timer);
