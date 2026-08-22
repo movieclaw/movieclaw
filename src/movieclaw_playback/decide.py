@@ -180,6 +180,10 @@ class PlaybackPlan:
     video: VideoPlan
     audio: AudioPlan
     subtitles: tuple[SubtitlePlan, ...] = ()
+    #: 这个文件里全部可选音轨。与 ``subtitles`` 同理：**候选列表由决策层给**，
+    #: 前端不再回头去查文件详情——播放器只认「一次决策 + 一次会话」这一组
+    #: 数据，多一次往返就多一次能不一致的机会。
+    audio_tracks: tuple[AudioTrack, ...] = ()
     #: ★ 中文，为什么是这个档。**一等公民字段**，不是调试信息：同时供给
     #: 诊断面板与失败提示（硬边界 5）。
     reason: str = ""
@@ -222,6 +226,7 @@ def decide_playback(
     *,
     can_self_enable: bool = False,
     failed_tiers: frozenset[PlaybackTier] = frozenset(),
+    preferred_audio: str | None = None,
 ) -> PlaybackDecision:
     """按 web-player.md §3.3 的判定顺序算出最优播放计划。
 
@@ -250,12 +255,13 @@ def decide_playback(
             video=VideoPlan(action="copy"),
             audio=AudioPlan(action="copy", track_ref=_default_audio_ref(media)),
             subtitles=(),
+            audio_tracks=media.audio_tracks,
             reason="播放器自述具备完整解码能力，原文件直连播放",
         )
 
     # 3–5. 视频、HDR、音频三项判定，各自算出「能不能 copy」。
     video_verdict = _judge_video(media, capability, policy)
-    audio_verdict = _judge_audio(media, capability)
+    audio_verdict = _judge_audio(media, capability, preferred_audio)
 
     # 6–7. 综合定档。
     tier, container, reason = _resolve_tier(
@@ -286,6 +292,7 @@ def decide_playback(
         video=_build_video_plan(media, video_verdict, tier, policy),
         audio=_build_audio_plan(media, audio_verdict, tier),
         subtitles=subtitles,
+        audio_tracks=media.audio_tracks,
         reason=reason,
         degraded_from=min(failed_tiers) if failed_tiers else None,
     )
@@ -313,6 +320,10 @@ class _AudioVerdict:
     target_codec: str | None = None
     target_channels: int | None = None
     downmix: bool = False
+    #: 选中的轨不是容器里默认播的那条。**直出档下浏览器只会放默认轨**，
+    #: 我们选的那条根本到不了用户耳朵里，所以这种情况必须至少走 remux，
+    #: 让 ffmpeg 把选中的轨 `-map` 出来。
+    needs_remap: bool = False
 
 
 def _judge_video(
@@ -380,18 +391,39 @@ def _judge_video(
     return _VideoVerdict(can_copy=True, reason=f"视频编码 {codec_label} 可直通{hdr_note}")
 
 
-def _judge_audio(media: MediaProfile, capability: ClientCapability) -> _AudioVerdict:
-    """音轨判定（§3.3 步骤 5）：先找能直通的轨，找不到才转。"""
+def _judge_audio(
+    media: MediaProfile,
+    capability: ClientCapability,
+    preferred_audio: str | None = None,
+) -> _AudioVerdict:
+    """音轨判定（§3.3 步骤 5）：先找能直通的轨，找不到才转。
+
+    ``preferred_audio`` 是**用户在播放器里点选的轨**。给了就认它，不再自动
+    换轨——自动换轨是「用户没表态时帮他找一条能放的」，用户表了态还替他改
+    等于点了没用。它放不了就转它，也不去动别的轨。
+    """
     tracks = media.audio_tracks
     if not tracks:
-        return _AudioVerdict(
-            can_copy=True, track=None, reason="无音轨"
-        )
+        return _AudioVerdict(can_copy=True, track=None, reason="无音轨")
 
-    preferred = _preferred_audio(tracks)
+    default = _preferred_audio(tracks)
+    chosen = next((t for t in tracks if t.ref == preferred_audio), None)
 
-    # 首选轨能直通最好；否则在其它轨里找一条能直通的（换轨优于转码）。
-    for track, is_preferred in ((preferred, True), *((t, False) for t in tracks)):
+    if chosen is not None:
+        support = capability.audio_support(chosen.codec)
+        channels = chosen.channels or 2
+        label = _track_label(chosen)
+        if support is not None and channels <= support.max_channels:
+            return _AudioVerdict(
+                can_copy=True,
+                track=chosen,
+                reason=f"音轨 {label} 可直通",
+                needs_remap=chosen.ref != default.ref,
+            )
+        return _transcode_audio(chosen, capability, prefix=f"选中的音轨 {label}")
+
+    # 用户没表态：首选轨能直通最好；否则在其它轨里找一条能直通的（换轨优于转码）。
+    for track, is_preferred in ((default, True), *((t, False) for t in tracks)):
         support = capability.audio_support(track.codec)
         if support is None:
             continue
@@ -403,12 +435,19 @@ def _judge_audio(media: MediaProfile, capability: ClientCapability) -> _AudioVer
             can_copy=True,
             track=track,
             reason=f"音轨 {(track.codec or '未知').upper()} 可直通{note}",
+            needs_remap=track.ref != default.ref,
         )
 
-    # 都不能直通 → 转码首选轨。目标编码优先 EAC3（保留多声道），
-    # 客户端不支持则退 AAC。
+    # 都不能直通 → 转码首选轨。
+    return _transcode_audio(default, capability, prefix=f"音轨 {(default.codec or '未知').upper()}")
+
+
+def _transcode_audio(
+    track: AudioTrack, capability: ClientCapability, *, prefix: str
+) -> _AudioVerdict:
+    """把一条放不了的轨转掉。目标编码优先 EAC3（保留多声道），客户端不支持则退 AAC。"""
     eac3 = capability.audio_support("eac3")
-    source_channels = preferred.channels or 2
+    source_channels = track.channels or 2
     if eac3 is not None and source_channels > 2:
         target_codec, max_channels = "eac3", eac3.max_channels
     else:
@@ -418,15 +457,21 @@ def _judge_audio(media: MediaProfile, capability: ClientCapability) -> _AudioVer
     target_channels = min(source_channels, max_channels)
     return _AudioVerdict(
         can_copy=False,
-        track=preferred,
-        reason=(
-            f"音轨 {(preferred.codec or '未知').upper()} 浏览器不支持，"
-            f"已转为 {target_codec.upper()}"
-        ),
+        track=track,
+        reason=f"{prefix} 浏览器不支持，已转为 {target_codec.upper()}",
         target_codec=target_codec,
         target_channels=target_channels,
         downmix=target_channels < source_channels,
     )
+
+
+def _track_label(track: AudioTrack) -> str:
+    """音轨的中文短标签：语言 + 编码 + 声道，缺项自动省略。"""
+    bits = [track.language] if track.language else []
+    bits.append((track.codec or "未知").upper())
+    if track.channels:
+        bits.append(f"{track.channels} 声道")
+    return " ".join(bits)
 
 
 def _resolve_tier(
@@ -451,8 +496,13 @@ def _resolve_tier(
 
     if video.can_copy and audio.can_copy:
         container = (media.container or "").lower()
-        if container in DIRECT_PLAY_CONTAINERS:
+        if container in DIRECT_PLAY_CONTAINERS and not audio.needs_remap:
             tier = PlaybackTier.DIRECT_PLAY
+        elif audio.needs_remap:
+            # 直出档整份文件交给 <video>，浏览器只会放容器里的默认轨——我们
+            # 选的那条到不了用户耳朵里。必须重封装，让 ffmpeg 把它 map 出来。
+            tier = PlaybackTier.REMUX
+            reason += "；选中的不是默认音轨，已重封装以带上它"
         else:
             tier = PlaybackTier.REMUX
             reason += f"；{container.upper() or '未知'} 容器已重封装为 fMP4"

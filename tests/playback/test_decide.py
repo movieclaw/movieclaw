@@ -433,3 +433,91 @@ def test_all_tiers_failed_is_rejected_with_suggestion():
     )
     assert isinstance(decision, PlaybackRejected)
     assert decision.suggestion
+
+
+# ---------------------------------------------------------------------------
+# 用户点选音轨（web-player.md §6.9）
+# ---------------------------------------------------------------------------
+
+JPN_AAC = AudioTrack(ref="embedded:1", codec="aac", channels=2, language="jpn", is_default=True)
+CHI_AAC = AudioTrack(ref="embedded:2", codec="aac", channels=2, language="chi")
+CHI_DTS = AudioTrack(ref="embedded:2", codec="dts", channels=6, language="chi")
+
+
+def test_preferred_audio_is_honoured():
+    """用户点了第二条轨就放第二条，不管默认轨是哪条。"""
+    decision = decide_playback(
+        media(container="mp4", audio_tracks=(JPN_AAC, CHI_AAC)),
+        CHROME_HEVC,
+        WITH_GPU,
+        preferred_audio="embedded:2",
+    )
+    assert isinstance(decision, PlaybackPlan)
+    assert decision.audio.track_ref == "embedded:2"
+
+
+def test_non_default_audio_forces_remux_out_of_direct_play():
+    """直出档整份文件交给 <video>，浏览器只放默认轨——选了别的轨就必须重封装。
+
+    这一条不只是新功能的边界：不加这个判定，「自动换轨」也会悄悄落进档 0，
+    结果是决策说放第二条、用户听到的还是第一条。
+    """
+    profile = media(container="mp4", audio_tracks=(JPN_AAC, CHI_AAC))
+    # 不点选：默认轨能直通 → mp4 容器走直出
+    assert decide_playback(profile, CHROME_HEVC, WITH_GPU).tier is PlaybackTier.DIRECT_PLAY
+    # 点选第二条 → 必须降到 remux 才能把它 map 出来
+    picked = decide_playback(profile, CHROME_HEVC, WITH_GPU, preferred_audio="embedded:2")
+    assert picked.tier is PlaybackTier.REMUX
+    assert picked.audio.track_ref == "embedded:2"
+    assert "默认音轨" in picked.reason
+
+
+def test_picking_default_audio_keeps_direct_play():
+    """点选的就是默认轨时不该白白掉档。"""
+    decision = decide_playback(
+        media(container="mp4", audio_tracks=(JPN_AAC, CHI_AAC)),
+        CHROME_HEVC,
+        WITH_GPU,
+        preferred_audio="embedded:1",
+    )
+    assert decision.tier is PlaybackTier.DIRECT_PLAY
+
+
+def test_preferred_audio_transcodes_instead_of_switching_away():
+    """用户点的轨放不了就转它，**绝不能**替他换回另一条能直通的。
+
+    自动换轨是「用户没表态时帮他找一条能放的」；他表了态还替他改，等于点了没用。
+    """
+    decision = decide_playback(
+        media(audio_tracks=(JPN_AAC, CHI_DTS)),
+        CHROME_HEVC,
+        WITH_GPU,
+        preferred_audio="embedded:2",
+    )
+    assert isinstance(decision, PlaybackPlan)
+    assert decision.audio.track_ref == "embedded:2"
+    assert decision.audio.action == "transcode"
+    assert decision.tier is PlaybackTier.AUDIO_TRANSCODE
+
+
+def test_unknown_preferred_audio_falls_back_to_automatic():
+    """点选的轨不在这个文件里（换了版本文件）：退回自动选轨，不能报错也不能静音。"""
+    decision = decide_playback(
+        media(container="mp4", audio_tracks=(JPN_AAC,)),
+        CHROME_HEVC,
+        WITH_GPU,
+        preferred_audio="embedded:9",
+    )
+    assert isinstance(decision, PlaybackPlan)
+    assert decision.audio.track_ref == "embedded:1"
+    assert decision.tier is PlaybackTier.DIRECT_PLAY
+
+
+def test_plan_carries_candidate_audio_tracks():
+    """候选列表由决策层给：前端要靠它渲染音轨菜单，不该再回头查文件详情。"""
+    decision = decide_playback(
+        media(audio_tracks=(JPN_AAC, CHI_AAC)), CHROME_HEVC, WITH_GPU
+    )
+    assert isinstance(decision, PlaybackPlan)
+    assert [t.ref for t in decision.audio_tracks] == ["embedded:1", "embedded:2"]
+    assert [t.language for t in decision.audio_tracks] == ["jpn", "chi"]

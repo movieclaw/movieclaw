@@ -38,6 +38,7 @@ import {
   exitLandscape,
   screenOrientation,
 } from "@/lib/player/orientation";
+import { planAudioOptions } from "@/lib/player/audio-tracks";
 import { chromeMustStayVisible, shouldHideOnPointerLeave } from "@/lib/player/chrome";
 import { createSessionReleaser } from "@/lib/player/session-release";
 import {
@@ -105,6 +106,14 @@ export function VideoPlayer(props: VideoPlayerProps) {
   const [bufferedEndMs, setBufferedEndMs] = useState<number | null>(null);
   const [paused, setPaused] = useState(true);
   const [selectedSubtitle, setSelectedSubtitle] = useState<string | null>(null);
+  /**
+   * 向服务端点名要的音轨。null = 没表态，由服务端自动选。
+   *
+   * 与「现在实际在放哪条」分开：后者读决策里的 `audio.track_ref`，永远是真值
+   * （点名的轨可能不在这个文件里，服务端会自动回退）。菜单打勾用真值，
+   * 请求用这个——用一个变量同时干两件事，换版本文件时勾就会打空。
+   */
+  const [requestedAudio, setRequestedAudio] = useState<string | null>(null);
   const [subtitleStyle, setSubtitleStyle] = useState<SubtitleStyle>(DEFAULT_SUBTITLE_STYLE);
   const [trickplay, setTrickplay] = useState<TrickplayIndex | null>(null);
   // 播放质量累计。放 ref 而不是 state：每秒都在变，进渲染只会白重绘。
@@ -194,6 +203,12 @@ export function VideoPlayer(props: VideoPlayerProps) {
     return planSubtitleTracks(session.decision.subtitles, session.subtitle_urls);
   }, [state.session]);
 
+  /** 音轨菜单项。少于两条时为空数组，控制条据此把整个按钮藏掉。 */
+  const audioOptions = useMemo(
+    () => planAudioOptions(state.session?.decision.audio_tracks),
+    [state.session],
+  );
+
   const activeSubtitle = useMemo(
     () => subtitles.options.find((option) => option.ref === selectedSubtitle) ?? null,
     [subtitles, selectedSubtitle],
@@ -215,6 +230,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
     setNextDismissed(false);
     setVideoDurationMs(null);
     setSelectedSubtitle(null);
+    setRequestedAudio(null);
     setTrickplay(null); // 换片必须清掉：旧片的缩略图配新片的进度条是错的
     // 新的一集重新获得自动播放的资格：上一集用户按过暂停不代表下一集也不想看
     wantsPlayRef.current = true;
@@ -227,6 +243,9 @@ export function VideoPlayer(props: VideoPlayerProps) {
       .then((watched) => {
         if (cancelled) return;
         setResume(watched);
+        // 上次听的哪条轨直接带给服务端。不在前端验它还在不在这个文件里——
+        // 换版本文件轨序会变，服务端认不出会自动回退（decide.py 有覆盖）。
+        setRequestedAudio(watched.audio_track);
         // 已看完的重播从头开始——续播到最后三十秒等于点开就是片尾
         dispatch({ type: "request", startMs: watched.played ? 0 : watched.position_ms });
       })
@@ -247,7 +266,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
     const phase = state.phase;
     if (phase !== "deciding" && phase !== "degrading" && phase !== "session-starting") return;
 
-    const key = `${unitKey}|${phase}|${state.startMs}|${failedKey}|${state.failureCount}`;
+    const key = `${unitKey}|${phase}|${state.startMs}|${failedKey}|${state.failureCount}|${requestedAudio ?? ""}`;
     if (startedKeyRef.current === key) return;
     startedKeyRef.current = key;
 
@@ -264,6 +283,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
           capability: capabilityRef.current,
           failed_tiers: state.failedTiers,
           start_ms: state.startMs,
+          audio_track: requestedAudio ?? undefined,
         });
         if (cancelled) return;
         dispatch({ type: "session", session });
@@ -280,7 +300,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.phase, state.startMs, failedKey, state.failureCount, unitKey]);
+  }, [state.phase, state.startMs, failedKey, state.failureCount, unitKey, requestedAudio]);
 
   /**
    * 自动播放：试一次，被拒绝了按原因决定重试还是降级。
@@ -641,6 +661,29 @@ export function VideoPlayer(props: VideoPlayerProps) {
     if (chromeWasVisibleRef.current) togglePlay();
     else setChromeVisible(true);
   }, [togglePlay]);
+
+  /**
+   * 换音轨。
+   *
+   * 音轨在开会话时就被 ffmpeg `-map` 进命令里了，改不了——所以换轨走的是和
+   * 「seek 拖出已转区间」完全一样的路：停住旧流、记下当前位置、重开会话。
+   * 中间会有一次约一秒的停顿，菜单里已经写明。
+   *
+   * 点的就是正在放的那条时只记住、不重开：那一秒停顿白花了。
+   */
+  const selectAudio = useCallback(
+    (ref: string) => {
+      setRequestedAudio(ref);
+      if (ref === (state.session?.decision.audio?.track_ref ?? null)) return;
+      // 换流期间先把旧流停住，否则进度条会在新会话起来前继续跳
+      video?.pause();
+      // 这次暂停是我们造成的，不是用户不想看——换完要接着播
+      wantsPlayRef.current = true;
+      pendingFileMsRef.current = positionRef.current;
+      dispatch({ type: "restart", startMs: positionRef.current });
+    },
+    [state.session, video],
+  );
 
   /** 恢复声音：自动播放被策略拦下时我们静音救回来的那一路，交还给用户。 */
   const restoreSound = useCallback(() => {
@@ -1124,6 +1167,9 @@ export function VideoPlayer(props: VideoPlayerProps) {
             subtitles={subtitles}
             selectedSubtitle={selectedSubtitle}
             onSelectSubtitle={setSelectedSubtitle}
+            audioOptions={audioOptions}
+            selectedAudio={state.session?.decision.audio?.track_ref ?? null}
+            onSelectAudio={selectAudio}
             subtitleStyle={subtitleStyle}
             onSubtitleStyleChange={setSubtitleStyle}
             diagnosticsOpen={diagnosticsOpen}

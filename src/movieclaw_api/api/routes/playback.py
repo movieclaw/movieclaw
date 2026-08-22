@@ -181,6 +181,7 @@ async def decide_playback_route(
             capability,
             can_self_enable=principal.is_admin,
             failed_tiers=failed,
+            preferred_audio=payload.audio_track,
             visible_library_ids=visible,
         )
     elif payload.media_item_id is not None:
@@ -196,6 +197,7 @@ async def decide_playback_route(
             capability,
             can_self_enable=principal.is_admin,
             failed_tiers=failed,
+            preferred_audio=payload.audio_track,
         )
     else:
         raise BadRequestException("需要提供 file_id 或 media_item_id")
@@ -236,6 +238,7 @@ async def _decide(
         return await playback_plan.decide_for_file(
             session, payload.file_id, capability,
             can_self_enable=principal.is_admin, failed_tiers=failed,
+            preferred_audio=payload.audio_track,
             visible_library_ids=visible,
         )
     if payload.media_item_id is not None:
@@ -244,7 +247,8 @@ async def _decide(
             payload.episode_number, visible_library_ids=visible,
         )
         return await playback_plan.decide_for_files(
-            files, capability, can_self_enable=principal.is_admin, failed_tiers=failed
+            files, capability, can_self_enable=principal.is_admin, failed_tiers=failed,
+            preferred_audio=payload.audio_track,
         )
     raise BadRequestException("需要提供 file_id 或 media_item_id")
 

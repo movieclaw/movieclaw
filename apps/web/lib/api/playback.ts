@@ -210,6 +210,16 @@ export interface AudioPlan {
   downmix: boolean;
 }
 
+/** 文件里的一条可选音轨。`AudioPlan` 说的是「这次放哪条」，这个是候选列表。 */
+export interface AudioTrack {
+  /** 中性轨引用：embedded:<下标> */
+  ref: string;
+  codec: string | null;
+  channels: number | null;
+  language: string | null;
+  is_default: boolean;
+}
+
 export interface SubtitlePlan {
   /** 中性轨引用：external:<文件名> / embedded:<下标> */
   track_ref: string;
@@ -230,6 +240,8 @@ export interface PlaybackDecision {
   container: string | null;
   video: VideoPlan | null;
   audio: AudioPlan | null;
+  /** 这个文件里全部可选音轨（含当前这条），前端据此渲染音轨菜单 */
+  audio_tracks: AudioTrack[];
   subtitles: SubtitlePlan[];
   /** 本次是降档重来的结果，记录原本失败的档位（§6.3） */
   degraded_from: number | null;
@@ -262,6 +274,14 @@ interface DecideBody extends PlaybackUnit {
   /** 运行期降档回路：带上已失败的档位，服务端跳过它们（§6.3） */
   failed_tiers?: number[];
   start_ms?: number;
+  /**
+   * 用户点选的音轨。给了服务端就认它、不再自动换轨。
+   *
+   * **换轨要换会话**：音轨在开会话时就被 ffmpeg `-map` 进命令里了，改不了；
+   * 而且选了非默认轨会把档 0 顶成档 1（直出时浏览器只放默认轨）。所以前端
+   * 换轨走的是和 seek 出界一样的「带着当前位置重开会话」那条路。
+   */
+  audio_track?: string;
 }
 
 /** 只问「该怎么放」，不起会话。用于播放前的档位预览与诊断。 */
