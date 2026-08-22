@@ -17,12 +17,14 @@ import {
   reportPlaybackProgressOnUnload,
   resolveStreamUrl,
   startPlaybackSession,
+  stopPlaybackSession,
   stopPlaybackSessionOnUnload,
 } from "@/lib/api/playback";
 import { getCapabilitySnapshot } from "@/lib/player/capability";
 import type { PlaybackEngine } from "@/lib/player/engine";
 import { createEngine } from "@/lib/player/engine";
 import { initialPlayerState, isBusy, playerReducer } from "@/lib/player/machine";
+import { createSessionReleaser } from "@/lib/player/session-release";
 import { isEditableTarget, resolveShortcut } from "@/lib/player/shortcuts";
 import type { SubtitleStyle } from "@/lib/player/subtitles";
 import {
@@ -102,6 +104,14 @@ export function VideoPlayer(props: VideoPlayerProps) {
   const startMsRef = useRef(0);
   const positionRef = useRef(0);
   const reportedStartRef = useRef<string | null>(null);
+  // 会话释放器：区分「真的离开了」与「StrictMode 把同一个会话重新挂了一遍」。
+  const sessionReleaser = useMemo(
+    () =>
+      createSessionReleaser((id) => {
+        void stopPlaybackSession(id).catch(() => undefined);
+      }),
+    [],
+  );
 
   startMsRef.current = state.session?.start_ms ?? 0;
   positionRef.current = positionMs;
@@ -355,14 +365,26 @@ export function VideoPlayer(props: VideoPlayerProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [unitKey, sessionId]);
 
-  /** 会话续命：用户关页面不会发任何信号，超时回收是唯一可靠兜底。 */
+  /**
+   * 会话续命 + 离开时显式收尾。
+   *
+   * 心跳：用户关页面不会发任何信号，服务端的超时回收是唯一可靠兜底。
+   *
+   * 收尾：`pagehide` 只在真正卸载文档时触发，SPA 内部返回媒体库、切下一集
+   * 都不会触发。释放的时机与 StrictMode 规避都在 `createSessionReleaser` 里，
+   * 那边有单测；这里只负责「什么时候调它」。
+   */
   useEffect(() => {
     if (!sessionId) return;
+    sessionReleaser.acquire(sessionId);
     const timer = window.setInterval(() => {
       void pingPlaybackSession(sessionId).catch(() => undefined);
     }, PING_INTERVAL_MS);
-    return () => window.clearInterval(timer);
-  }, [sessionId]);
+    return () => {
+      window.clearInterval(timer);
+      sessionReleaser.release(sessionId);
+    };
+  }, [sessionId, sessionReleaser]);
 
   // ---------------------------------------------------------------------
   // 播放控制
