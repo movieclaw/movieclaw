@@ -352,7 +352,11 @@ export function PlayerControls(props: PlayerControlsProps) {
           chromeVisible ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
         }`}
       >
-        <div className="overflow-hidden">
+        {/* 收起动画靠这层裁剪；但菜单是**向上**弹的、整个落在这个盒子外面，
+            裁着就等于点了没反应。菜单展开时控制条被 chromeMustStayVisible 顶住
+            不会收，也就不存在「一边收起一边要显示菜单」的冲突，所以这时候可以
+            安全地放开裁剪。 */}
+        <div className={menu === "none" ? "overflow-hidden" : ""}>
           <div
             className={`relative flex items-center px-6 pb-4 pt-3 transition-opacity duration-300 max-md:px-3 max-md:pb-3 ${
               chromeVisible ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
@@ -673,7 +677,10 @@ function MenuPanel({
   return (
     <div
       ref={box}
-      className="absolute bottom-14 left-0 w-[300px] rounded-sm border border-white/15 bg-[rgba(20,20,20,0.94)] py-2 text-[14px] shadow-[0_8px_32px_rgba(0,0,0,0.7)] backdrop-blur-sm"
+      // bottom-full + mb-8：底边落在按钮上方 32px，正好越过操作行的上内边距
+      // （pt-3）与进度条那一行。用相对量而不是写死像素——按钮在移动端会从 36
+      // 变 44，写死的偏移在两个断点上必然有一个不对。
+      className="absolute bottom-full left-0 mb-8 w-[300px] rounded-sm border border-white/15 bg-[rgba(20,20,20,0.94)] py-2 text-[14px] shadow-[0_8px_32px_rgba(0,0,0,0.7)] backdrop-blur-sm"
     >
       <p className="px-4 pb-2 text-[12px] font-semibold uppercase tracking-wide text-white/45">
         {title}
