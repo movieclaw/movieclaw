@@ -233,108 +233,32 @@ export function PlayerControls(props: PlayerControlsProps) {
 
   return (
     <div className="pointer-events-none relative">
-      {/* 渐变铺满整块底部（含进度条那一条），与控制行同步淡出——只淡控制行
-          会留下一道空的黑带，只淡渐变又会让按钮浮在亮画面上看不清 */}
+      {/* 渐变铺满整块底部，与控制条同步淡出。它只负责把画面压暗一档，真正
+          保证按钮可读的是按钮自己那层磨砂卡片——渐变挡不住亮画面。 */}
       <div
-        className={`absolute inset-0 bg-gradient-to-t from-black/90 via-black/55 to-transparent transition-opacity duration-300 ${
+        className={`absolute inset-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent transition-opacity duration-300 ${
           chromeVisible ? "opacity-100" : "opacity-0"
         }`}
       />
 
-      {/* ---- 控制行：左下角时间 + 功能键，右下角切集 ---- */}
+      {/* ---- 时间：进度条上方、左对齐的一颗磨砂药丸 ---- */}
       <div
-        className={`relative px-6 pt-24 transition-opacity duration-300 max-md:px-3 max-md:pt-16 ${
-          chromeVisible ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
+        className={`relative px-6 pt-24 pb-2 transition-opacity duration-300 max-md:px-3 max-md:pt-16 ${
+          chromeVisible ? "opacity-100" : "opacity-0"
         }`}
       >
-        {/* 时间单独一行、压在功能键上方：和功能键挤一行会让「读数」和「可点」
-            混在一起，用户得先分辨哪个能按 */}
-        <p className="mb-1.5 text-[13px] tabular-nums text-white/80 max-md:text-[12px]">
+        <span className="player-glass inline-block rounded-full px-3 py-1 text-[13px] tabular-nums text-white/90 max-md:text-[12px]">
           {formatClock(shown)}
           <span className="text-white/45"> / {durationMs ? formatClock(durationMs) : "--:--"}</span>
-        </p>
-
-        <div className="flex items-center gap-5 max-md:gap-3">
-          <div className="relative">
-            <IconButton
-              tip="字幕"
-              active={Boolean(selectedSubtitle) || menu === "subtitles"}
-              onClick={() => openMenu(menu === "subtitles" ? "none" : "subtitles")}
-            >
-              <SubtitleGlyph />
-            </IconButton>
-            {menu === "subtitles" ? (
-              <SubtitleMenu
-                tracks={subtitles}
-                selected={selectedSubtitle}
-                onSelect={(ref) => onSelectSubtitle(ref)}
-                style={subtitleStyle}
-                onStyleChange={onSubtitleStyleChange}
-                onClose={() => openMenu("none")}
-              />
-            ) : null}
-          </div>
-
-          <div className="relative">
-            <IconButton
-              tip="设置"
-              active={menu === "settings"}
-              onClick={() => openMenu(menu === "settings" ? "none" : "settings")}
-            >
-              <GearGlyph />
-            </IconButton>
-            {menu === "settings" ? (
-              <MenuPanel title="设置" onClose={() => openMenu("none")}>
-                <MenuItem
-                  active={diagnosticsOpen}
-                  icon={<StatsGlyph />}
-                  onClick={() => {
-                    onToggleDiagnostics();
-                    openMenu("none");
-                  }}
-                >
-                  播放诊断
-                </MenuItem>
-              </MenuPanel>
-            ) : null}
-          </div>
-
-          <IconButton
-            tip={canRotate ? (landscape ? "退出横屏" : "横屏") : landscape ? "退出全屏" : "全屏"}
-            onClick={onToggleLandscape}
-          >
-            {canRotate ? <RotateGlyph active={landscape} /> : <FullscreenGlyph exit={landscape} />}
-          </IconButton>
-
-          <div className="flex-1" />
-
-          {/* 右下角切集位。剧集才有：「已完结」这句话对电影是错的，
-              而电影本来也没有别的东西会因为这个位空着而移位。 */}
-          {isSeries ? (
-            onNext ? (
-              <button
-                type="button"
-                onClick={onNext}
-                className="flex items-center gap-2 rounded-full bg-white/15 px-4 py-2 text-[14px] font-medium text-white transition-colors hover:bg-white/25 max-md:px-3 max-md:py-1.5 max-md:text-[13px]"
-              >
-                下一集
-                <NextGlyph />
-              </button>
-            ) : (
-              <span className="rounded-full bg-white/8 px-4 py-2 text-[14px] text-white/40 max-md:px-3 max-md:py-1.5 max-md:text-[13px]">
-                已完结
-              </span>
-            )
-          ) : null}
-        </div>
+        </span>
       </div>
 
-      {/* ---- 进度条：常驻最底边 ----
-          控制条淡出后它不淡出，只是把左右内边距和高度收掉，变成一条贴着
-          播放器下沿的细线。安静时画面干净，又不用点一下才知道播到哪。 */}
+      {/* ---- 进度条 ----
+          控制条收起时下面那一行整体塌成 0 高，进度条自然落到播放器最底边，
+          只剩一条贴边的细线；展开时它回到操作区上方。 */}
       <div
         className={`player-scrub-row pointer-events-auto relative transition-[padding] duration-300 ${
-          chromeVisible ? "px-6 pb-2.5 max-md:px-3" : "px-0 pb-0"
+          chromeVisible ? "px-6 max-md:px-3" : "px-0"
         }`}
       >
         <div
@@ -372,7 +296,7 @@ export function PlayerControls(props: PlayerControlsProps) {
           ) : null}
 
           {/* 轨道：静止 3px、悬停 5px。Netflix 的细红线就是这个手感 */}
-          <div className="pointer-events-none absolute inset-x-0 top-1/2 h-[3px] -translate-y-1/2 overflow-hidden rounded-full bg-[var(--player-track)] transition-[height] duration-150 [.player-scrub-row:hover_&]:h-[5px]">
+          <div className="player-scrub-track pointer-events-none absolute inset-x-0 top-1/2 h-[3px] -translate-y-1/2 overflow-hidden rounded-full bg-[var(--player-track)] transition-[height] duration-150 [.player-scrub-row:hover_&]:h-[5px]">
             <div className="h-full bg-[var(--player-buffered)]" style={{ width: `${buffered}%` }} />
             <div
               className="absolute inset-y-0 left-0 bg-[var(--player-accent)]"
@@ -416,6 +340,97 @@ export function PlayerControls(props: PlayerControlsProps) {
             }`}
             style={{ left: `${progress}%` }}
           />
+        </div>
+      </div>
+
+      {/* ---- 操作区：进度条**下方**，左卡片是本片的操作、右胶囊是去下一集 ----
+          用 grid-rows 0fr→1fr 收起而不是定死高度：卡片高度会随字号、断点变，
+          写死的高度迟早对不上，收起时留一条空白或把内容切掉半截。 */}
+      <div
+        className={`grid transition-[grid-template-rows] duration-300 ${
+          chromeVisible ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
+        }`}
+      >
+        <div className="overflow-hidden">
+          <div
+            className={`relative flex items-center px-6 pb-4 pt-3 transition-opacity duration-300 max-md:px-3 max-md:pb-3 ${
+              chromeVisible ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
+            }`}
+          >
+            <div className="player-glass flex items-center gap-1 rounded-full px-1.5 py-1">
+              <div className="relative">
+                <IconButton
+                  tip="字幕"
+                  active={Boolean(selectedSubtitle) || menu === "subtitles"}
+                  onClick={() => openMenu(menu === "subtitles" ? "none" : "subtitles")}
+                >
+                  <SubtitleGlyph />
+                </IconButton>
+                {menu === "subtitles" ? (
+                  <SubtitleMenu
+                    tracks={subtitles}
+                    selected={selectedSubtitle}
+                    onSelect={(ref) => onSelectSubtitle(ref)}
+                    style={subtitleStyle}
+                    onStyleChange={onSubtitleStyleChange}
+                    onClose={() => openMenu("none")}
+                  />
+                ) : null}
+              </div>
+
+              <div className="relative">
+                <IconButton
+                  tip="设置"
+                  active={menu === "settings"}
+                  onClick={() => openMenu(menu === "settings" ? "none" : "settings")}
+                >
+                  <GearGlyph />
+                </IconButton>
+                {menu === "settings" ? (
+                  <MenuPanel title="设置" onClose={() => openMenu("none")}>
+                    <MenuItem
+                      active={diagnosticsOpen}
+                      icon={<StatsGlyph />}
+                      onClick={() => {
+                        onToggleDiagnostics();
+                        openMenu("none");
+                      }}
+                    >
+                      播放诊断
+                    </MenuItem>
+                  </MenuPanel>
+                ) : null}
+              </div>
+
+              <IconButton
+                tip={canRotate ? (landscape ? "退出横屏" : "横屏") : landscape ? "退出全屏" : "全屏"}
+                onClick={onToggleLandscape}
+              >
+                {canRotate ? <RotateGlyph active={landscape} /> : <FullscreenGlyph exit={landscape} />}
+              </IconButton>
+            </div>
+
+            <div className="flex-1" />
+
+            {/* 右下角切集位。剧集才有：「已完结」这句话对电影是错的，
+                而电影本来也没有别的东西会因为这个位空着而移位。 */}
+            {isSeries ? (
+              onNext ? (
+                <button
+                  type="button"
+                  onClick={onNext}
+                  className="player-glass flex items-center gap-2 rounded-full px-4 py-2.5 text-[14px] font-medium text-white transition-colors hover:bg-white/20 max-md:px-3 max-md:py-2 max-md:text-[13px]"
+                >
+                  下一集
+                  <NextGlyph />
+                </button>
+              ) : (
+                <span className="player-glass rounded-full px-4 py-2.5 text-[14px] text-white/40 max-md:px-3 max-md:py-2 max-md:text-[13px]">
+                  已完结
+                </span>
+              )
+            ) : null}
+          </div>
         </div>
       </div>
     </div>
