@@ -11,6 +11,7 @@ import { Modal } from "@/components/modal";
 import { PosterImage } from "@/components/poster-image";
 import { Tooltip } from "@/components/tooltip";
 import type { SearchScope } from "@/lib/categories";
+import { platformLabel } from "@/lib/platforms";
 import {
   getTorrentSearchHistoryResults,
   streamSearchTorrents,
@@ -247,6 +248,7 @@ interface Filters {
   season: Set<number>;
   episode: Set<number>;
   source: Set<string>; // media_source 值 + 特殊值 "Remux"
+  platform: Set<string>; // 流媒体平台规范值（netflix/iqiyi…）
   codec: Set<string>;
   hdr: Set<string>;
   audio: Set<string>;
@@ -262,6 +264,7 @@ function emptyFilters(): Filters {
     season: new Set(),
     episode: new Set(),
     source: new Set(),
+    platform: new Set(),
     codec: new Set(),
     hdr: new Set(),
     audio: new Set(),
@@ -272,7 +275,8 @@ function emptyFilters(): Filters {
 
 /** 弹层内维度的键（回显行与角标计数只统计这些——类型/分辨率在工具栏上自明）。 */
 const SHEET_KEYS = [
-  "site", "year", "season", "episode", "source", "codec", "hdr", "audio", "subtitle", "group",
+  "site", "year", "season", "episode", "source", "platform", "codec", "hdr", "audio",
+  "subtitle", "group",
 ] as const;
 type SheetKey = (typeof SHEET_KEYS)[number];
 
@@ -394,6 +398,11 @@ const FILTER_DIMENSIONS: { dim: FilterDim; pass: (hit: TorrentHit, f: Filters) =
     },
   },
   {
+    dim: "platform",
+    pass: (hit, f) =>
+      !f.platform.size || (hit.attrs?.platforms ?? []).some((v) => f.platform.has(v)),
+  },
+  {
     dim: "codec",
     pass: (hit, f) =>
       !f.codec.size || (!!hit.attrs?.video_codec && f.codec.has(hit.attrs.video_codec)),
@@ -444,6 +453,7 @@ interface Facets {
   seasons: NumericFacetValue[]; // 升序，观测到多少列多少
   episodes: NumericFacetValue[];
   source: FacetValue[];
+  platform: FacetValue[];
   codec: FacetValue[];
   hdr: FacetValue[];
   audio: FacetValue[];
@@ -457,6 +467,7 @@ interface Facets {
 interface FacetMaps {
   resolution: Map<string, number>;
   source: Map<string, number>;
+  platform: Map<string, number>;
   codec: Map<string, number>;
   hdr: Map<string, number>;
   audio: Map<string, number>;
@@ -480,6 +491,7 @@ function collectFacetMaps(items: TorrentHit[], filters: Filters | null): FacetMa
   const maps: FacetMaps = {
     resolution: new Map(),
     source: new Map(),
+    platform: new Map(),
     codec: new Map(),
     hdr: new Map(),
     audio: new Map(),
@@ -525,6 +537,7 @@ function collectFacetMaps(items: TorrentHit[], filters: Filters | null): FacetMa
       if (a.media_source) bump(maps.source, a.media_source);
       if (a.remux) bump(maps.source, "Remux");
     }
+    if (want("platform")) for (const v of a.platforms ?? []) bump(maps.platform, v);
     if (want("codec") && a.video_codec) bump(maps.codec, a.video_codec);
     if (want("hdr")) for (const v of a.hdr) bump(maps.hdr, v);
     if (want("audio")) for (const v of a.audio) bump(maps.audio, v);
@@ -569,6 +582,7 @@ function aggregateFacets(items: TorrentHit[], filters: Filters): Facets {
     seasons: toNumeric("seasons", 1),
     episodes: toNumeric("episodes", 1),
     source: toSorted("source", 50),
+    platform: toSorted("platform", 50),
     codec: toSorted("codec", 50),
     hdr: toSorted("hdr", 50),
     audio: toSorted("audio", 50),
@@ -1806,6 +1820,19 @@ function FilterSheet({
               ))}
             </SheetGroup>
           )}
+          {facets.platform.length > 0 && (
+            <SheetGroup title="流媒体平台">
+              {facets.platform.map((v) => (
+                <FacetChip
+                  key={v.value}
+                  label={platformLabel(v.value)}
+                  count={v.count}
+                  active={filters.platform.has(v.value)}
+                  onToggle={() => toggle("platform", v.value)}
+                />
+              ))}
+            </SheetGroup>
+          )}
           {facets.codec.length > 0 && (
             <SheetGroup title="视频编码">
               {facets.codec.map((v) => (
@@ -2581,6 +2608,7 @@ function specSummary(attrs: TorrentAttrs): string | null {
   const parts = [
     seasonEpLabel(attrs),
     attrs.resolution,
+    ...(attrs.platforms ?? []).map(platformLabel),
     attrs.media_source,
     attrs.remux && "Remux",
     attrs.video_codec,
@@ -2916,6 +2944,9 @@ function AttrBadges({ attrs }: { attrs: TorrentAttrs }) {
   const audioBadge = compactAudioBadge(attrs);
   if (audioBadge) chips.push({ text: audioBadge, cls: "text-[#ffd08a]" });
   if (attrs.release_group) chips.push({ text: attrs.release_group, cls: "text-[var(--accent)]" });
+  for (const v of attrs.platforms ?? []) {
+    chips.push({ text: platformLabel(v), cls: "text-[#8fd8ff]" });
+  }
   if (attrs.media_source) chips.push({ text: attrs.media_source });
   if (attrs.video_codec) chips.push({ text: attrs.video_codec });
   for (const v of attrs.audio.slice(0, 2)) chips.push({ text: v });

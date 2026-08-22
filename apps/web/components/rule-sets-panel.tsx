@@ -13,6 +13,7 @@ import {
   type RuleSet,
   type RuleSetSpec,
 } from "@/lib/api/subscriptions";
+import { PLATFORM_OPTIONS, platformLabel } from "@/lib/platforms";
 
 /**
  * 规则组管理（设置 → 订阅 → 规则组）：Web 端唯一的规则组配置入口。
@@ -295,6 +296,12 @@ export function specSummary(spec: RuleSetSpec): string[] {
     labels.push(...rest);
     chips.push(labels.join("/"));
   }
+  if (spec.platforms?.length) {
+    chips.push(`平台: ${spec.platforms.map(platformLabel).join("/")}`);
+  }
+  if (spec.platforms_block?.length) {
+    chips.push(`排除平台: ${spec.platforms_block.map(platformLabel).join("/")}`);
+  }
   if (spec.hdr === "require") chips.push("必须 HDR");
   if (spec.hdr === "forbid") chips.push("排除 HDR");
   if (spec.dv === "require") chips.push("必须 DV");
@@ -359,6 +366,13 @@ export function RuleSetEditorDialog({
         ).map((f) => f.label),
       ),
   );
+  // 平台白/黑名单：界面只维护"常驻选项"部分，其余值走 platformExtras 透传
+  const [platformsAllow, setPlatformsAllow] = useState<string[]>(() =>
+    (spec.platforms ?? []).filter((v) => PLATFORM_OPTIONS.includes(v)),
+  );
+  const [platformsBlock, setPlatformsBlock] = useState<string[]>(() =>
+    (spec.platforms_block ?? []).filter((v) => PLATFORM_OPTIONS.includes(v)),
+  );
   const [hdr, setHdr] = useState<"any" | "require" | "forbid">(spec.hdr ?? "any");
   const [dv, setDv] = useState<"any" | "require" | "forbid">(spec.dv ?? "any");
   const [subLangs, setSubLangs] = useState<string[]>(
@@ -393,6 +407,29 @@ export function RuleSetEditorDialog({
     [spec],
   );
 
+  // 常驻选项之外的既有平台值（经 API 配置的小众平台）：编辑时不丢
+  const platformExtras = useMemo(
+    () => ({
+      allow: (spec.platforms ?? []).filter((v) => !PLATFORM_OPTIONS.includes(v)),
+      block: (spec.platforms_block ?? []).filter((v) => !PLATFORM_OPTIONS.includes(v)),
+    }),
+    [spec],
+  );
+
+  /** 同一平台不能同时进白/黑名单——后端读取路径有意保持宽容，矛盾在这里拦。 */
+  const togglePlatform = (value: string, list: "allow" | "block") => {
+    const [current, set, clearOther] =
+      list === "allow"
+        ? ([platformsAllow, setPlatformsAllow, setPlatformsBlock] as const)
+        : ([platformsBlock, setPlatformsBlock, setPlatformsAllow] as const);
+    if (current.includes(value)) {
+      set(current.filter((v) => v !== value));
+      return;
+    }
+    set([...current, value]);
+    clearOther((prev) => prev.filter((v) => v !== value));
+  };
+
   const toggleResolution = (value: string) =>
     setResolutions((prev) =>
       prev.includes(value) ? prev.filter((r) => r !== value) : [...prev, value],
@@ -424,6 +461,10 @@ export function RuleSetEditorDialog({
       ...codecExtras,
     ];
     if (codecs.length) next.video_codecs = codecs;
+    const allowPlatforms = [...platformsAllow, ...platformExtras.allow];
+    if (allowPlatforms.length) next.platforms = allowPlatforms;
+    const blockPlatforms = [...platformsBlock, ...platformExtras.block];
+    if (blockPlatforms.length) next.platforms_block = blockPlatforms;
     if (hdr !== "any") next.hdr = hdr;
     if (dv !== "any") next.dv = dv;
     if (subLangs.length) next.subtitle_languages_require = subLangs;
@@ -616,6 +657,50 @@ export function RuleSetEditorDialog({
               {codecExtras.length > 0 && (
                 <span className="self-center text-caption text-[var(--text-faint)]">
                   另有自定义值：{codecExtras.join("、")}（保留）
+                </span>
+              )}
+            </div>
+          </Field>
+
+          <Field
+            label="流媒体平台"
+            hint="只要这些平台的资源；不选 = 不限。选了之后，识别不出平台的资源会被排除（与分辨率/编码口径一致）"
+          >
+            <div className="flex flex-wrap gap-1.5">
+              {PLATFORM_OPTIONS.map((id) => (
+                <ToggleChip
+                  key={id}
+                  active={platformsAllow.includes(id)}
+                  onClick={() => togglePlatform(id, "allow")}
+                >
+                  {platformLabel(id)}
+                </ToggleChip>
+              ))}
+              {platformExtras.allow.length > 0 && (
+                <span className="self-center text-caption text-[var(--text-faint)]">
+                  另有自定义值：{platformExtras.allow.map(platformLabel).join("、")}（保留）
+                </span>
+              )}
+            </div>
+          </Field>
+
+          <Field
+            label="排除平台"
+            hint="命中即排除，优先于上面的白名单；识别不出平台的资源不受影响"
+          >
+            <div className="flex flex-wrap gap-1.5">
+              {PLATFORM_OPTIONS.map((id) => (
+                <ToggleChip
+                  key={id}
+                  active={platformsBlock.includes(id)}
+                  onClick={() => togglePlatform(id, "block")}
+                >
+                  {platformLabel(id)}
+                </ToggleChip>
+              ))}
+              {platformExtras.block.length > 0 && (
+                <span className="self-center text-caption text-[var(--text-faint)]">
+                  另有自定义值：{platformExtras.block.map(platformLabel).join("、")}（保留）
                 </span>
               )}
             </div>

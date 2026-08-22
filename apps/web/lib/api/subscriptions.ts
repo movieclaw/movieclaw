@@ -209,6 +209,10 @@ export interface RuleSetSpec {
   /** 允许的分辨率；列表顺序即偏好顺序（排前面的评分更高） */
   resolutions?: string[];
   video_codecs?: string[];
+  /** 流媒体平台白名单（规范值，见 lib/platforms.ts）；空=不限。与制作组各自独立生效 */
+  platforms?: string[];
+  /** 流媒体平台黑名单（规范值）；命中即排除，优先于白名单 */
+  platforms_block?: string[];
   release_groups_allow?: string[];
   release_groups_block?: string[];
   /** 判断整个 HDR 家族（含 DV），与 dv 轴正交 */

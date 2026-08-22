@@ -61,6 +61,8 @@ export interface TorrentAttrs {
   subtitle_carriers?: string[];
   /** 音轨语言（BCP 47：cmn=国语、yue=粤语…），含配音与原声声明 */
   audio_languages?: string[];
+  /** 流媒体来源平台（规范值，展示名见 lib/platforms.ts）；与 release_group 正交 */
+  platforms?: string[];
   release_group: string | null;
 }
 
