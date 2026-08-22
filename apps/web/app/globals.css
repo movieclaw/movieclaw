@@ -1513,6 +1513,7 @@ body.cmdk-open .app-shell {
    一张磨砂卡片上的，每个再包一层底会变成「玻璃里的玻璃」。单独浮在画面上的
    键（顶栏的返回）用的就是那边的完整样式。 */
 .player-btn {
+  position: relative;
   display: grid;
   place-items: center;
   border-radius: 9999px;
@@ -1536,8 +1537,38 @@ body.cmdk-open .app-shell {
 .player-btn--glass:focus-visible {
   background: rgb(42 46 55 / 0.72);
 }
+/*
+ * 「这个功能开着」的标记：图标下方一条短横杠（YouTube 用的就是这个），
+ * 外加提亮。
+ *
+ * **只提亮是不够的**：85% 白提到 100% 白，落在一个 18px 的图标上几乎看不
+ * 出差别，用户根本判断不出字幕现在开没开。参考实现全都用**结构性**变化——
+ * media-chrome 的 CC 键干脆换一整个图标（开=实心底挖字，关=描边框），
+ * 我们的图标是描边体系，换实心会跟旁边的键打架，所以用横杠这条路。
+ */
 .player-btn[data-active="true"] {
   color: #fff;
+}
+.player-btn[data-active="true"]::before {
+  content: "";
+  position: absolute;
+  bottom: 4px;
+  left: 50%;
+  translate: -50% 0;
+  width: 16px;
+  height: 2px;
+  border-radius: 9999px;
+  background: var(--player-accent);
+}
+
+/* 菜单展开时按钮保持「按住」的样子。与上面那条是两件事：一个说功能开着，
+   一个说菜单开着，合成一个会让「关掉字幕但菜单还开着」看起来像还开着。 */
+.player-btn[data-open="true"] {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+.player-btn--glass[data-open="true"] {
+  background: rgb(42 46 55 / 0.72);
 }
 
 /* 按钮说明气泡：Netflix 每个图标上方都有一块黑底白字的说明，

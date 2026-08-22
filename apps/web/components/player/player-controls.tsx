@@ -362,7 +362,8 @@ export function PlayerControls(props: PlayerControlsProps) {
               <div className="relative">
                 <IconButton
                   tip="字幕"
-                  active={Boolean(selectedSubtitle) || menu === "subtitles"}
+                  active={Boolean(selectedSubtitle)}
+                  open={menu === "subtitles"}
                   onClick={() => openMenu(menu === "subtitles" ? "none" : "subtitles")}
                 >
                   <SubtitleGlyph />
@@ -382,7 +383,7 @@ export function PlayerControls(props: PlayerControlsProps) {
               <div className="relative">
                 <IconButton
                   tip="设置"
-                  active={menu === "settings"}
+                  open={menu === "settings"}
                   onClick={() => openMenu(menu === "settings" ? "none" : "settings")}
                 >
                   <GearIcon className={ICON} />
@@ -507,12 +508,21 @@ function CenterButton({
 function IconButton({
   tip,
   active,
+  open,
   glass,
   onClick,
   children,
 }: {
   tip: string;
+  /**
+   * 这个功能**当前是开着的**（比如字幕已选中某一轨）。
+   *
+   * 与 `open` 分开是必须的：一个是「功能开没开」，一个是「菜单展没展」，
+   * 合成一个的后果是关掉字幕后只要菜单还开着，按钮看起来仍然「亮着」。
+   */
   active?: boolean;
+  /** 这个按钮的菜单正展开着 */
+  open?: boolean;
   glass?: boolean;
   onClick: () => void;
   children: React.ReactNode;
@@ -522,8 +532,10 @@ function IconButton({
       type="button"
       onClick={onClick}
       aria-label={tip}
+      aria-expanded={open === undefined ? undefined : open}
       data-tip={tip}
       data-active={active ? "true" : undefined}
+      data-open={open ? "true" : undefined}
       className={`player-btn player-tip size-9 shrink-0 max-md:size-11 ${
         glass ? "player-glass player-btn--glass" : ""
       }`}
