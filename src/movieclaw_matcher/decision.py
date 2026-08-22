@@ -32,6 +32,7 @@ from movieclaw_matcher.models import (
     RuleVerdict,
     TorrentCandidate,
     UpgradeVerdict,
+    hdr_effective_values,
 )
 
 Entry = tuple[TorrentCandidate, IdentityMatch, RuleVerdict]
@@ -136,6 +137,7 @@ def resolution_rank(resolution: str | None, spec: RuleSetSpec) -> int | None:
 _LADDER_LABELS: dict[str, str] = {
     "resolution": "分辨率",
     "source": "片源",
+    "hdr": "HDR",
     "video_codec": "编码",
     "platform": "平台",
 }
@@ -176,7 +178,8 @@ def effective_ladder(spec: RuleSetSpec) -> tuple[str, ...]:
     return tuple(
         dim
         for dim in spec.upgrade_ladder
-        if not (dim == "video_codec" and not spec.video_codecs)
+        if not (dim == "hdr" and not spec.hdr_levels)
+        and not (dim == "video_codec" and not spec.video_codecs)
         and not (dim == "platform" and not spec.platforms)
     )
 
@@ -188,6 +191,12 @@ def _dimension_rank(
         return resolution_rank(item.resolution, spec)
     if dim == "source":
         return source_tier(item.media_source, item.remux)
+    if dim == "hdr":
+        # 取"能播的最高格式"位次：DV 文件自带 HDR10 基础层，偏好 HDR10 的
+        # 规则组不该为它白洗一次（hdr_effective_values 的展开只对已接受的格式生效）
+        values = hdr_effective_values(item.hdr, spec.hdr_levels)
+        hdr_ranks = [r for v in values if (r := _rank_in(spec.hdr_levels, v)) is not None]
+        return max(hdr_ranks) if hdr_ranks else None
     if dim == "video_codec":
         return _rank_in(_codec_ladder(spec), codec_family(item.video_codec))
     # 平台：一个资源可带多个标记，取其中位次最高的那个
@@ -201,6 +210,8 @@ def _dimension_text(item: QualitySnapshot | TorrentAttrs, dim: str) -> str:
         return item.resolution or "未标注"
     if dim == "source":
         return item.media_source or "未标注"
+    if dim == "hdr":
+        return "/".join(item.hdr) or "未标注 HDR（按 SDR 处理）"
     if dim == "video_codec":
         return item.video_codec or "未标注"
     return "/".join(item.platforms) or "未标注"
@@ -284,6 +295,8 @@ def target_vector(spec: RuleSetSpec) -> tuple[int | None, ...] | None:
             vector.append(resolution)
         elif dim == "source":
             vector.append(_TARGET_SOURCE_TIER[spec.upgrade_source.value])
+        elif dim == "hdr":
+            vector.append(len(spec.hdr_levels))  # 首项位次
         elif dim == "video_codec":
             vector.append(len(_codec_ladder(spec)))  # 首项位次
         else:
@@ -320,6 +333,8 @@ def quality_label(
         return head
     parts = [head]
     dims = effective_ladder(spec)
+    if "hdr" in dims and snapshot.hdr:
+        parts.append("/".join(snapshot.hdr))
     if "video_codec" in dims and snapshot.video_codec:
         parts.append(snapshot.video_codec)
     if "platform" in dims and snapshot.platforms:
@@ -334,6 +349,8 @@ def upgrade_target_label(spec: RuleSetSpec) -> str | None:
     resolution, _ = _target(spec)
     parts = [f"{resolution} {_TARGET_SOURCE_LABEL[spec.upgrade_source.value]}"]
     dims = effective_ladder(spec)
+    if "hdr" in dims and spec.hdr_levels:
+        parts.append(spec.hdr_levels[0])
     if "video_codec" in dims and spec.video_codecs:
         parts.append(spec.video_codecs[0])
     if "platform" in dims and spec.platforms:

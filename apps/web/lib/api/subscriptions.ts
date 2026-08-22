@@ -215,9 +215,13 @@ export interface RuleSetSpec {
   platforms_block?: string[];
   release_groups_allow?: string[];
   release_groups_block?: string[];
-  /** 判断整个 HDR 家族（含 DV），与 dv 轴正交 */
+  /** HDR 白名单兼偏好序（DV/HDR10+/HDR10/HLG/SDR，SDR=未标注）；任一命中即过 */
+  hdr_levels?: string[];
+  /** HDR 黑名单：资源带其中任一格式即排除 */
+  hdr_block?: string[];
+  /** [兼容层] 旧的 HDR 三态；hdr_levels/hdr_block 为空时后端才消费它 */
   hdr?: "any" | "require" | "forbid";
-  /** 单独判断杜比视界；"必须 HDR 但排除 DV" = hdr:require + dv:forbid */
+  /** [兼容层] 旧的 DV 三态；同上 */
   dv?: "any" | "require" | "forbid";
   free_only?: boolean;
   min_seeders?: number | null;

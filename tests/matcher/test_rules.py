@@ -80,16 +80,16 @@ def _candidate(**kwargs) -> TorrentCandidate:
         # HDR：空列表=未标注（命名惯例缺席即否定）；hdr 轴判整个家族（含 DV）
         ({"hdr": ["HDR10", "DV"]}, {"hdr": "require"}, True, None),
         ({"hdr": ["DV"]}, {"hdr": "require"}, True, None),  # 纯 DV 也是 HDR 家族
-        ({}, {"hdr": "require"}, False, "hdr_required"),
-        ({"hdr": ["DV"]}, {"hdr": "forbid"}, False, "hdr_forbidden"),
+        ({}, {"hdr": "require"}, False, "hdr_not_allowed"),
+        ({"hdr": ["DV"]}, {"hdr": "forbid"}, False, "hdr_not_allowed"),
         ({}, {"hdr": "forbid"}, True, None),
         # DV：独立轴，只判断杜比视界标记
         ({"hdr": ["DV"]}, {"dv": "require"}, True, None),
         ({"hdr": ["HDR10", "DV"]}, {"dv": "require"}, True, None),
-        ({"hdr": ["HDR10"]}, {"dv": "require"}, False, "dv_required"),
-        ({}, {"dv": "require"}, False, "dv_required"),
-        ({"hdr": ["DV"]}, {"dv": "forbid"}, False, "dv_forbidden"),
-        ({"hdr": ["HDR10", "DV"]}, {"dv": "forbid"}, False, "dv_forbidden"),
+        ({"hdr": ["HDR10"]}, {"dv": "require"}, False, "hdr_not_allowed"),
+        ({}, {"dv": "require"}, False, "hdr_not_allowed"),
+        ({"hdr": ["DV"]}, {"dv": "forbid"}, False, "hdr_blocked"),
+        ({"hdr": ["HDR10", "DV"]}, {"dv": "forbid"}, False, "hdr_blocked"),
         ({"hdr": ["HDR10"]}, {"dv": "forbid"}, True, None),
         ({}, {"dv": "forbid"}, True, None),
         # 两轴叠加：必须 HDR 且排除 DV（PR #112 的原始诉求）
@@ -98,10 +98,10 @@ def _candidate(**kwargs) -> TorrentCandidate:
             {"hdr": ["HDR10", "DV"]},
             {"hdr": "require", "dv": "forbid"},
             False,
-            "dv_forbidden",
+            "hdr_blocked",
         ),
-        ({"hdr": ["DV"]}, {"hdr": "require", "dv": "forbid"}, False, "dv_forbidden"),
-        ({}, {"hdr": "require", "dv": "forbid"}, False, "hdr_required"),
+        ({"hdr": ["DV"]}, {"hdr": "require", "dv": "forbid"}, False, "hdr_blocked"),
+        ({}, {"hdr": "require", "dv": "forbid"}, False, "hdr_not_allowed"),
         # 仅免费：None=未知按非免费
         ({"is_free": True}, {"free_only": True}, True, None),
         ({"is_free": False}, {"free_only": True}, False, "not_free"),
@@ -143,10 +143,16 @@ def test_size_amortized_for_season_pack() -> None:
     assert single.reason_code == "size_too_large"
 
 
-def test_spec_rejects_contradictory_hdr_dv_combo() -> None:
-    """「排除 HDR」+「必须 DV」逻辑无解（DV 属 HDR 家族），校验层直接拒绝。"""
-    with pytest.raises(ValueError, match="矛盾"):
-        RuleSetSpec.model_validate({"hdr": "forbid", "dv": "require"})
+def test_contradictory_legacy_hdr_dv_combo_resolves_instead_of_raising() -> None:
+    """「排除 HDR」+「必须 DV」这个历史矛盾组合**不再抛错**。
+
+    读取路径必须永远宽容（§16.4）：抛错会让整个规则组解析失败、匹配管线全线
+    停摆。排除项更强，按「排除 HDR」解释为「只要 SDR」。合并成一个列表之后，
+    这种组合在新形态里根本写不出来。
+    """
+    spec = RuleSetSpec.model_validate({"hdr": "forbid", "dv": "require"})
+    assert spec.hdr_levels == ["SDR"]
+    assert spec.hdr_block == []
 
 
 def test_size_unknown_rejected_when_bounds_set() -> None:
@@ -223,3 +229,77 @@ def test_unknown_platform_value_is_dropped_not_raised() -> None:
     assert spec.platforms == ["netflix"]
     # 全部是未知值 → 该维度不产生约束，等价于没配
     assert RuleSetSpec.model_validate({"platforms": ["nope"]}).platforms == []
+
+
+# ---------------------------------------------------------------------------
+# HDR 有序列表（§14.8 方案 A）：硬过滤与偏好合并成一个字段
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("tags", "levels", "accepted"),
+    [
+        (["DV"], ["DV", "HDR10"], True),
+        (["HDR10"], ["DV", "HDR10"], True),
+        ([], ["SDR"], True),  # 未标注 = SDR
+        ([], ["DV", "HDR10"], False),  # 缺席即否定，SDR 不在白名单
+        (["DV"], ["HDR10"], False),  # 没列 DV 就不收 DV
+        (["HLG"], ["SDR", "HDR10"], False),
+        (["HDR10", "DV"], ["DV", "HDR10+", "HDR10", "HLG"], True),
+    ],
+)
+def test_hdr_levels_filtering(tags, levels, accepted) -> None:
+    verdict = evaluate_rules(_candidate(hdr=tags), RuleSetSpec(hdr_levels=levels))
+    assert verdict.accepted is accepted
+    if not accepted:
+        assert verdict.reason_code == "hdr_not_allowed"
+
+
+def test_hdr_block_is_needed_to_exclude_a_format() -> None:
+    """多值属性上"只要 A"表达不了"排除 B"——这正是 HDR 与平台一样分白/黑
+    两份的原因：白名单是"任一命中即过"，双标资源靠 HDR10 就能过，
+    要挡住 DV 只能靠黑名单。"""
+    dual = _candidate(hdr=["HDR10", "DV"])
+    allow_only = RuleSetSpec(hdr_levels=["HDR10+", "HDR10", "HLG", "SDR"])
+    assert evaluate_rules(dual, allow_only).accepted
+    with_block = RuleSetSpec(hdr_levels=["HDR10+", "HDR10", "HLG", "SDR"], hdr_block=["DV"])
+    verdict = evaluate_rules(dual, with_block)
+    assert not verdict.accepted
+    assert verdict.reason_code == "hdr_blocked"
+
+
+@pytest.mark.parametrize(
+    ("legacy", "levels", "block"),
+    [
+        ({}, [], []),
+        ({"hdr": "require"}, ["DV", "HDR10+", "HDR10", "HLG"], []),
+        ({"hdr": "require", "dv": "forbid"}, ["HDR10+", "HDR10", "HLG"], ["DV"]),
+        ({"hdr": "forbid"}, ["SDR"], []),
+        ({"dv": "require"}, ["DV"], []),
+        ({"dv": "forbid"}, [], ["DV"]),  # 不限 HDR，只排除 DV
+    ],
+)
+def test_legacy_hdr_fields_derive_levels(legacy, levels, block) -> None:
+    """旧三态组合读进来即换算成新形态——存量规则组不迁移也照常工作。"""
+    spec = RuleSetSpec.model_validate(legacy)
+    assert (spec.hdr_levels, spec.hdr_block) == (levels, block)
+
+
+def test_new_levels_backfill_legacy_fields_for_rollback() -> None:
+    """写入时反向回填旧键：应用内更新回退到旧版本后，旧代码仍读得懂。
+
+    表达不了顺序或混合集合时退回最宽松的等价值——不精确，但不崩、不危险。
+    """
+    spec = RuleSetSpec.model_validate({"hdr_levels": ["DV"]})
+    assert (spec.hdr.value, spec.dv.value) == ("require", "require")
+    mixed = RuleSetSpec.model_validate({"hdr_levels": ["SDR", "HDR10"]})
+    assert mixed.hdr.value == "any"
+
+
+def test_hdr_spec_roundtrip_is_stable() -> None:
+    """读→写→读 必须稳定，否则每次保存都会把规则组改一点点。"""
+    first = RuleSetSpec.model_validate({"hdr": "require", "dv": "forbid"})
+    dumped = first.model_dump(exclude_defaults=True, mode="json")
+    assert RuleSetSpec.model_validate(dumped).model_dump(
+        exclude_defaults=True, mode="json"
+    ) == dumped

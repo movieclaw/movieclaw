@@ -12,12 +12,11 @@ from __future__ import annotations
 
 from movieclaw_enrich.vocab import codec_family
 from movieclaw_matcher.models import (
-    DvPolicy,
-    HdrPolicy,
     HrUnknownPolicy,
     RuleSetSpec,
     RuleVerdict,
     TorrentCandidate,
+    hdr_values,
 )
 
 # 未配置分辨率偏好时的内置默认（高清优先，权重温和）
@@ -100,21 +99,21 @@ def evaluate_rules(
         if group not in {g.casefold() for g in spec.release_groups_allow}:
             return _reject("group_not_allowed", f"制作组 {attrs.release_group} 不在白名单中")
 
-    # hdr 空列表 = 未提取到 HDR 标记；命名惯例里 HDR 属"缺席即否定"的强标记，
-    # 因此 require 时空列表按"非 HDR"拒绝，forbid 时空列表放行。
-    # hdr 轴判断整个 HDR 家族（含 DV），dv 轴单独判断杜比视界，两轴正交：
-    # 如"必须 HDR 但不要 DV"= hdr=require + dv=forbid，组合语义自然叠加。
-    if spec.hdr is HdrPolicy.REQUIRE and not attrs.hdr:
-        return _reject("hdr_required", "规则要求 HDR，该资源未标注任何 HDR 格式")
-    if spec.hdr is HdrPolicy.FORBID and attrs.hdr:
-        return _reject("hdr_forbidden", f"规则排除 HDR，该资源标注了 {'/'.join(attrs.hdr)}")
-
-    # 词表已把 DoVi/Dolby Vision 等写法归一化为 "DV"，直接查成员即可
-    has_dv = "DV" in attrs.hdr
-    if spec.dv is DvPolicy.REQUIRE and not has_dv:
-        return _reject("dv_required", "规则要求杜比视界（DV），该资源未标注 DV")
-    if spec.dv is DvPolicy.FORBID and has_dv:
-        return _reject("dv_forbidden", "规则排除杜比视界（DV），该资源标注了 DV")
+    # HDR：黑名单命中即拒（先判），白名单任一命中即过。资源未标注任何 HDR
+    # 格式 = SDR——命名惯例里 HDR 属"缺席即否定"的强标记。多值属性上"只要 A"
+    # 表达不了"排除 B"，所以白/黑两份，与平台维度同构
+    declared = hdr_values(attrs.hdr)
+    if spec.hdr_block and declared & set(spec.hdr_block):
+        return _reject(
+            "hdr_blocked",
+            f"规则排除 {'/'.join(spec.hdr_block)}，该资源标注了 {'/'.join(attrs.hdr)}",
+        )
+    if spec.hdr_levels and not declared & set(spec.hdr_levels):
+        text = "/".join(attrs.hdr) or "未标注 HDR（按 SDR 处理）"
+        return _reject(
+            "hdr_not_allowed",
+            f"规则要求 HDR 为 {'/'.join(spec.hdr_levels)}，该资源是 {text}",
+        )
 
     # 字幕/音轨语言：BCP 47 前缀匹配（要求 "zh" 命中 zh/zh-Hans/zh-Hant；
     # 要求 "zh-Hans" 不接受只写泛称"中字"的资源）。声明式语义：资源未声明
@@ -123,21 +122,21 @@ def evaluate_rules(
     if spec.subtitle_languages_require and not _any_lang_match(
         spec.subtitle_languages_require, attrs.subtitle_languages
     ):
-        declared = "/".join(attrs.subtitle_languages) or "未声明"
+        declared_subs = "/".join(attrs.subtitle_languages) or "未声明"
         return _reject(
             "subtitle_language_missing",
             f"规则要求字幕语言（{'/'.join(spec.subtitle_languages_require)}），"
-            f"该资源字幕声明为：{declared}",
+            f"该资源字幕声明为：{declared_subs}",
         )
 
     if spec.audio_languages_require and not _any_lang_match(
         spec.audio_languages_require, attrs.audio_languages
     ):
-        declared = "/".join(attrs.audio_languages) or "未声明"
+        declared_audio = "/".join(attrs.audio_languages) or "未声明"
         return _reject(
             "audio_language_missing",
             f"规则要求音轨语言（{'/'.join(spec.audio_languages_require)}），"
-            f"该资源音轨声明为：{declared}",
+            f"该资源音轨声明为：{declared_audio}",
         )
 
     if spec.free_only and candidate.is_free is not True:

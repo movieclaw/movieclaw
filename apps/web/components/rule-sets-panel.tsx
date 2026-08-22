@@ -258,10 +258,41 @@ const UPGRADE_SOURCE_LABEL: Record<string, string> = {
   remux: "Remux",
 };
 
+/**
+ * HDR 值域（顺序即编辑器里的芯片顺序）。"SDR" 是哨兵值 = 资源未标注任何
+ * HDR 格式——命名惯例里 HDR 属"缺席即否定"的强标记。
+ */
+const HDR_OPTIONS = ["DV", "HDR10+", "HDR10", "HLG", "SDR"];
+
+/**
+ * 旧三态字段 → (白名单, 黑名单)。与后端 models._hdr_from_legacy 同一张表，
+ * 属兼容层：存量规则组保存过一次后就带上新键了，旧键退休时这段一起删。
+ */
+function hdrFromLegacy(spec: RuleSetSpec): { levels: string[]; block: string[] } {
+  if (spec.hdr_levels?.length || spec.hdr_block?.length) {
+    return { levels: spec.hdr_levels ?? [], block: spec.hdr_block ?? [] };
+  }
+  const family = HDR_OPTIONS.filter((v) => v !== "SDR");
+  if (spec.hdr === "forbid") return { levels: ["SDR"], block: [] };
+  if (spec.dv === "require") return { levels: ["DV"], block: [] };
+  if (spec.hdr === "require") {
+    return spec.dv === "forbid"
+      ? { levels: family.filter((v) => v !== "DV"), block: ["DV"] }
+      : { levels: family, block: [] };
+  }
+  if (spec.dv === "forbid") return { levels: [], block: ["DV"] };
+  return { levels: [], block: [] };
+}
+
 /** 洗版阶梯的维度选项（顺序即位次，交互与分辨率偏好完全一致：点击依次入列）。 */
-const LADDER_OPTIONS: { value: string; label: string; needs?: "codec" | "platform" }[] = [
+const LADDER_OPTIONS: {
+  value: string;
+  label: string;
+  needs?: "hdr" | "codec" | "platform";
+}[] = [
   { value: "resolution", label: "分辨率" },
   { value: "source", label: "片源" },
+  { value: "hdr", label: "HDR", needs: "hdr" },
   { value: "video_codec", label: "编码", needs: "codec" },
   { value: "platform", label: "平台", needs: "platform" },
 ];
@@ -326,10 +357,9 @@ export function specSummary(spec: RuleSetSpec): string[] {
   if (spec.platforms_block?.length) {
     chips.push(`排除平台: ${spec.platforms_block.map(platformLabel).join("/")}`);
   }
-  if (spec.hdr === "require") chips.push("必须 HDR");
-  if (spec.hdr === "forbid") chips.push("排除 HDR");
-  if (spec.dv === "require") chips.push("必须 DV");
-  if (spec.dv === "forbid") chips.push("排除 DV");
+  const { levels: hdrLevels, block: hdrBlock } = hdrFromLegacy(spec);
+  if (hdrLevels.length) chips.push(`HDR ${hdrLevels.join("/")}`);
+  if (hdrBlock.length) chips.push(`排除 ${hdrBlock.join("/")}`);
   if (spec.subtitle_languages_require?.length)
     chips.push(
       `字幕: ${spec.subtitle_languages_require.map((v) => SUB_LANG_OPTIONS.find(([code]) => code === v)?.[1] ?? v).join("/")}`,
@@ -400,8 +430,8 @@ export function RuleSetEditorDialog({
   const [upgradeLadder, setUpgradeLadder] = useState<string[]>(
     () => spec.upgrade_ladder ?? [...DEFAULT_LADDER],
   );
-  const [hdr, setHdr] = useState<"any" | "require" | "forbid">(spec.hdr ?? "any");
-  const [dv, setDv] = useState<"any" | "require" | "forbid">(spec.dv ?? "any");
+  const [hdrLevels, setHdrLevels] = useState<string[]>(() => hdrFromLegacy(spec).levels);
+  const [hdrBlock, setHdrBlock] = useState<string[]>(() => hdrFromLegacy(spec).block);
   const [subLangs, setSubLangs] = useState<string[]>(
     spec.subtitle_languages_require ?? [],
   );
@@ -464,6 +494,21 @@ export function RuleSetEditorDialog({
     }
   };
 
+  const hdrState = (value: string): "off" | "include" | "exclude" =>
+    hdrLevels.includes(value) ? "include" : hdrBlock.includes(value) ? "exclude" : "off";
+
+  const cycleHdr = (value: string) => {
+    const state = hdrState(value);
+    if (state === "off") {
+      setHdrLevels((prev) => [...prev, value]);
+    } else if (state === "include") {
+      setHdrLevels((prev) => prev.filter((v) => v !== value));
+      setHdrBlock((prev) => [...prev, value]);
+    } else {
+      setHdrBlock((prev) => prev.filter((v) => v !== value));
+    }
+  };
+
   /** 阶梯维度：交互与分辨率偏好完全一致——点击依次入列，序号即位次。
    *  最后一维不允许移除：空阶梯没有任何一位可比，后端会回落到缺省二元组，
    *  界面上却显示"一个都没选"——不让用户进入这种口径不一致的状态。 */
@@ -482,8 +527,8 @@ export function RuleSetEditorDialog({
       codecFamilies.size ? [...codecFamilies].join("/") : "",
       platformsAllow.length ? platformsAllow.map(platformLabel).join("/") : "",
       platformsBlock.length ? `排除 ${platformsBlock.map(platformLabel).join("/")}` : "",
-      hdr === "require" ? "必须 HDR" : hdr === "forbid" ? "排除 HDR" : "",
-      dv === "require" ? "必须 DV" : dv === "forbid" ? "排除 DV" : "",
+      hdrLevels.length ? `HDR ${hdrLevels.join("/")}` : "",
+      hdrBlock.length ? `排除 ${hdrBlock.join("/")}` : "",
       groupsAllow.trim() ? `组 ${groupsAllow.trim()}` : "",
       groupsBlock.trim() ? `排除组 ${groupsBlock.trim()}` : "",
     ]
@@ -548,8 +593,9 @@ export function RuleSetEditorDialog({
     if (allowPlatforms.length) next.platforms = allowPlatforms;
     const blockPlatforms = [...platformsBlock, ...platformExtras.block];
     if (blockPlatforms.length) next.platforms_block = blockPlatforms;
-    if (hdr !== "any") next.hdr = hdr;
-    if (dv !== "any") next.dv = dv;
+    // 只写新键：旧的 hdr/dv 由后端在校验层反向回填（回退兼容），前端不掺和
+    if (hdrLevels.length) next.hdr_levels = hdrLevels;
+    if (hdrBlock.length) next.hdr_block = hdrBlock;
     if (subLangs.length) next.subtitle_languages_require = subLangs;
     if (audioLangs.length) next.audio_languages_require = audioLangs;
     if (freeOnly) next.free_only = true;
@@ -732,6 +778,7 @@ export function RuleSetEditorDialog({
                       {LADDER_OPTIONS.map((dim) => {
                         const index = upgradeLadder.indexOf(dim.value);
                         const unconfigured =
+                          (dim.needs === "hdr" && !hdrLevels.length) ||
                           (dim.needs === "codec" && !codecFamilies.size && !codecExtras.length) ||
                           (dim.needs === "platform" &&
                             !platformsAllow.length &&
@@ -817,53 +864,15 @@ export function RuleSetEditorDialog({
             )}
           </Field>
 
-          <Field label="HDR" hint="判断整个 HDR 家族（HDR10/HLG/DV 等）；DV 可在下方单独控制">
-            <div className="flex flex-wrap gap-1.5">
-              {(
-                [
-                  ["any", "不限"],
-                  ["require", "必须 HDR"],
-                  ["forbid", "排除 HDR"],
-                ] as const
-              ).map(([value, label]) => (
-                <ToggleChip
-                  key={value}
-                  active={hdr === value}
-                  onClick={() => {
-                    setHdr(value);
-                    // 排除整个 HDR 家族时，「必须 DV」成为矛盾条件，自动复位
-                    if (value === "forbid" && dv === "require") setDv("any");
-                  }}
-                >
-                  {label}
-                </ToggleChip>
-              ))}
-            </div>
-          </Field>
-
           <Field
-            label="杜比视界（DV）"
-            hint="与上面的 HDR 条件叠加生效，如「必须 HDR」+「排除 DV」= 只要不带 DV 的 HDR 资源"
+            label="HDR"
+            hint='点一下 = 只要，再点 = 排除，第三下取消。"SDR" 指资源没标注任何 HDR 格式；都不选 = 不限'
           >
             <div className="flex flex-wrap gap-1.5">
-              {(
-                [
-                  ["any", "不限"],
-                  ["require", "必须 DV"],
-                  ["forbid", "排除 DV"],
-                ] as const
-              ).map(([value, label]) => (
-                <ToggleChip
-                  key={value}
-                  active={dv === value}
-                  onClick={() => {
-                    setDv(value);
-                    // 「必须 DV」与「排除 HDR」矛盾（DV 属于 HDR 家族），自动复位后者
-                    if (value === "require" && hdr === "forbid") setHdr("any");
-                  }}
-                >
-                  {label}
-                </ToggleChip>
+              {HDR_OPTIONS.map((value) => (
+                <TriChip key={value} state={hdrState(value)} onClick={() => cycleHdr(value)}>
+                  {value}
+                </TriChip>
               ))}
             </div>
           </Field>
