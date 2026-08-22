@@ -362,7 +362,7 @@ async def download_item(
         raise not_found()
     # 下载不是播放会话：不登记设备流，避免用户边下边看时点"停止播放"误杀
     # 下载读盘；但下载器取消/断网后必须停止读盘（裸 FileResponse 会把几十 GB
-    # 读到底），且保留 Content-Length 供下载器显示进度与续传
+    # 读到底）。Content-Length 由响应类统一保留，下载器据此显示进度与续传
     is_download = request.url.path.lower().endswith("/download")
     # 独立登记为下载活动：活动页「观看」视角展示"谁在下哪个文件、多快"
     meter = activity.register_stream(
@@ -380,7 +380,6 @@ async def download_item(
         path,
         media_type=container_mime_type(f.container or path.suffix),
         filename=path.name if is_download else None,
-        keep_content_length=True,
         byte_sink=meter.add,
         on_close=lambda: activity.unregister_stream(meter),
     )

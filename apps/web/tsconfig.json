@@ -13,6 +13,10 @@
     "esModuleInterop": true,
     "module": "esnext",
     "moduleResolution": "bundler",
+    // 允许带 .ts 后缀导入：进 node --test 的纯逻辑模块之间必须用带后缀的
+    // 相对路径（Node 的类型擦除只抹 `import type`，值导入照原样解析，
+    // 测试进程里既没有 @/ 别名解析器也不会补后缀）。noEmit 下无副作用。
+    "allowImportingTsExtensions": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
     "jsx": "preserve",

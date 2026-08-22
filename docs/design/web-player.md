@@ -894,40 +894,43 @@ Mac mini 验证。做成发版前的人工清单，列进 `.claude/skills/releas
 
 **后端**
 
-- [ ] `services/playback/decide.py` 决策引擎（纯函数）+ 判定表 + **`PlaybackDecision` 三态**
-- [ ] `services/playback/session.py` 会话管理（生命周期、心跳、区间位图、配额）
-- [ ] `services/playback/ffmpeg_runner.py` 执行器（§4.2 五条进程契约）
-- [ ] `services/playback/hwprobe.py` 硬件自检 + 设置页中文诊断
-- [ ] `HwBackend` 抽象：VAAPI / QSV / NVENC / VideoToolbox / 软件
-- [ ] 关键帧索引：入库时生成 + 存量懒加载补齐
-- [ ] 字幕规划：VTT 转换、ASS 原样、**MKV 字体抽取**、PGS 下发
+- [x] `services/playback/decide.py` 决策引擎（纯函数）+ 判定表 + **`PlaybackDecision` 三态**
+- [x] `services/playback/session.py` 会话管理（生命周期、心跳、区间位图、配额）
+- [x] `services/playback/ffmpeg_runner.py` 执行器（§4.2 五条进程契约）
+- [~] `services/playback/hwprobe.py` 硬件自检（编码器 + 设备节点双条件已做，
+      **真实 1 秒转码探测未做**）+ 设置页展示
+- [x] `HwBackend` 抽象：VAAPI / QSV / NVENC / VideoToolbox / 软件
+- [x] 关键帧索引：**改为采样现算 + 内存缓存**，不落库（偏离见 §12.4）
+- [~] 字幕规划：VTT 转换、ASS 原样已做；**MKV 字体抽取与 PGS 下发未做**
 - [ ] Trickplay 雪碧图 + VTT 生成（入库流程内）
-- [ ] `api/routes/playback.py` 扩展：`decide` / `sessions` / `ping` / 分片 / 字幕 / 字体
-- [ ] 签名 URL（与 `movieclaw_jellyfin/security.py` 共用密钥与实现）
-- [ ] `playback.policy` 配置域（`app_setting` namespace + Pydantic 模型，**零迁移**）：
+- [x] `api/routes/playback.py` 扩展：`decide` / `sessions` / `ping` / 分片 / 字幕 / 字体
+- [x] 签名 URL（与 `movieclaw_jellyfin/security.py` 共用密钥与实现）
+- [x] `playback.policy` 配置域（`app_setting` namespace + Pydantic 模型，**零迁移**）：
       软件转码开关、转码并发、直通并发、码率上限、缓存配额
 - [ ] `playback_metric` 表 + 迁移（向前兼容）——**唯一需要迁移的新表**
-- [ ] Jellyfin 兼容层改用同一决策引擎（恒等快照），行为不变
+- [x] Jellyfin 兼容层改用同一决策引擎（恒等快照），行为不变
 
 **前端**
 
-- [ ] `CapabilityProbe` + 快照缓存
-- [ ] `PlaybackEngine` 接口 + `DirectEngine` + `HlsEngine`
-- [ ] Media Chrome UI + 自有皮肤 + 播放器状态机
-- [ ] JASSUB / libbitsub / VTT 三条字幕路径 + 时间轴微调 + 样式配置
-- [ ] 自动降档回路（§6.3）
-- [ ] **软件转码同意弹窗 + 权限分支**（§3.6）；设置 → 播放 页承载对应开关
-- [ ] Trickplay 预览、下一集自动播、续播接入 `playback_state`
-- [ ] Media Session、wakeLock、键盘快捷键
-- [ ] **诊断面板**
+- [x] `CapabilityProbe` + 快照缓存
+- [x] `PlaybackEngine` 接口 + `DirectEngine` + `HlsEngine`
+- [x] Media Chrome UI + 自有皮肤 + 播放器状态机（**进度条自建**，理由见 §12.6）
+- [~] JASSUB / VTT 两条字幕路径 + 时间轴微调 + 样式配置；**libbitsub（PGS）未做**
+- [x] 自动降档回路（§6.3）
+- [x] **软件转码同意弹窗 + 权限分支**（§3.6）；设置 → 播放 页承载对应开关
+- [~] 下一集自动播、续播接入 `playback_state` 已做；**Trickplay 预览未做**（依赖入库侧雪碧图）
+- [x] Media Session、wakeLock、键盘快捷键
+- [x] **诊断面板**
 - [ ] QoE 采集（`requestVideoFrameCallback` 等）+ CMCD
-- [ ] iOS 走原生 HLS 分支
+- [x] iOS 走原生 HLS 分支（`createEngine` 按 MSE 形态分派）
+
+> 勾选说明：`[x]` 已完成并有测试覆盖，`[~]` 部分完成（同一行写清缺的是哪一块）。
 
 **基建**
 
 - [ ] Dockerfile 换 jellyfin-ffmpeg；**`docker/runtime-version` 8 → 9**
 - [ ] `scripts/perf/` 播放器测试脚本四件套 + 黄金样本库 + Release 资产
-- [ ] 决策引擎表驱动单测进 CI；集成测试标 `integration`
+- [x] 决策引擎表驱动单测进 CI；集成测试标 `integration`
 - [ ] 更新 `jellyfin-compat.md` §0 硬边界 2（按 §0.3）
 - [ ] `release/SKILL.md` 增加硬件矩阵检查单
 
@@ -964,12 +967,14 @@ Mac mini 验证。做成发版前的人工清单，列进 `.claude/skills/releas
 
 ---
 
-## 12. 实现纪要（2026-08-21）
+## 12. 实现纪要（2026-08-21 后端 / 2026-08-22 前端）
 
-后端 P0 已落地并验证。本节记录**实现期才知道的事实**——都是照文档抄抄不出来、
-只能靠真跑 ffmpeg 才能确定的东西。
+后端与前端 P0 均已落地。本节记录**实现期才知道的事实**——都是照文档抄抄不
+出来、只能靠真跑 ffmpeg 或真接一遍浏览器才能确定的东西。
 
 ### 12.1 已实现
+
+**后端**
 
 | 模块 | 位置 | 说明 |
 |---|---|---|
@@ -982,7 +987,30 @@ Mac mini 验证。做成发版前的人工清单，列进 `.claude/skills/releas
 | 硬件探测 | `services/playback/hwprobe.py` | 第一版（编码器 + 设备节点双条件） |
 | 签名 URL | `services/playback/signing.py` | 复用登录密钥 + 独立 salt |
 | 策略配置 | `settings/playback.py` | `playback.policy`，零迁移 |
-| 端点 | `api/routes/playback.py` | decide / sessions / 分片 / 直出 / 字幕 |
+| 观看状态 | `services/playback/watch.py` | 续播点、已看判定、轨记忆 |
+| 端点 | `api/routes/playback.py` | decide / sessions / 分片 / 直出 / 字幕 / 进度 / 策略 |
+
+**前端**
+
+纯逻辑一律放 `apps/web/lib/player/`，UI 只负责「什么时候调它们」——降档、
+时间轴换算、字幕分派这些最容易出错的判断因此能被 `node --test` 直接覆盖，
+不需要真浏览器。
+
+| 模块 | 位置 | 说明 |
+|---|---|---|
+| 能力探测 | `lib/player/capability.ts` | `mediaCapabilities` 矩阵 + 快照缓存 |
+| 引擎抽象 | `lib/player/engine.ts` | Direct / hls.js / 原生 HLS 三实现 + 卡死看门狗 |
+| 状态机 | `lib/player/machine.ts` | 纯 reducer，含降档回边与连败跳兜底档 |
+| 时间轴 | `lib/player/timeline.ts` | 会话↔文件时间换算、seek 决策、钟表格式 |
+| 字幕规划 | `lib/player/subtitles.ts` | 可渲染/不可渲染分堆 + 样式与微调 |
+| 快捷键 | `lib/player/shortcuts.ts` | YouTube 惯例映射 |
+| 播放器 | `components/player/video-player.tsx` | 唯一编排层：会话、降档、上报、系统集成 |
+| 控制条 | `components/player/player-controls.tsx` | 自建进度条 + Media Chrome 按钮 |
+| 字幕层 | `components/player/subtitle-layer.tsx` | VTT 自渲染 + JASSUB |
+| 诊断 | `components/player/diagnostics-panel.tsx` | Stats for nerds |
+| 同意弹窗 | `components/player/consent-dialog.tsx` | §3.6 两条分支 |
+| 播放路由 | `app/play/[libraryId]/[mediaItemId]` | 刻意在 `(app)` 外，不套工作台外壳 |
+| 播放设置 | `components/playback-settings-section.tsx` | 设置 → 播放 |
 
 ### 12.2 实测结论：`-ss` 的关键帧回退比预想的大
 
@@ -1022,18 +1050,40 @@ Mac mini 验证。做成发版前的人工清单，列进 `.claude/skills/releas
 
 ### 12.5 尚未做
 
-- **前端播放器**（引擎抽象、Media Chrome UI、JASSUB/libbitsub、诊断面板、
-  同意弹窗、自动降档回路的客户端侧）——整个 §6 都还没开始。
 - **硬件自检的真实 1 秒转码探测**（§5.2）与中文诊断文案：当前 `hwprobe` 只
   查「编码器存在 + 设备节点可读写」。
-- **Trickplay 缩略图、MKV 内嵌字体抽取、PGS 前端渲染**。
-- **`playback_metric` 表与指标采集**（§8）。
+- **Trickplay 缩略图**（入库侧雪碧图 + VTT，以及播放器里的进度条预览）。
+- **MKV 内嵌字体抽取、PGS 前端渲染（libbitsub）**。后端 `resolve_external_subtitle`
+  目前只认外挂文件，内封轨在前端进「不可用」清单并给中文原因，不是给一个点了
+  没反应的选项。
+- **`playback_metric` 表与指标采集**（§8）：降档事件目前只体现在诊断面板上，
+  没有落库，因此还答不出「决策引擎判错了多少」。
 - **换 jellyfin-ffmpeg 与 `runtime-version` bump**：档 3 的命令已按各后端装配
   好，但要在真显卡上跑通、要 HDR tone-map，仍需换 ffmpeg。
 - **已转码区间位图与 seek 复用**（§4.4）：当前 seek 是「杀旧会话起新会话」，
   正确但不够快。
+- **真机验收**：前端全部逻辑有单测、类型与构建均通过，但**尚未在装有媒体库
+  的环境里端到端点开过**——档位判定、降档回路、字幕渲染的真实观感待验。
 
-### 12.6 测试现状
+### 12.6 前端实现期定下的两条
+
+**进度条自建，其余控件用 Media Chrome。** Media Chrome 的 `<media-time-range>`
+直接读 `video.currentTime` 与 `video.duration`，而转码会话的时间轴零点在文件
+的 `start_ms` 处、`duration` 只到「已经转出来的那一段」。照它渲染，用户从一
+小时处续播时进度条显示 0、总时长显示 30 秒。所以进度条按**文件时间**自建，
+音量/画中画/全屏继续交给 Media Chrome——那些与时间轴无关，自己实现只会多踩
+触屏与无障碍的坑。
+
+**VTT 借浏览器解析，但不用浏览器渲染。** `::cue` 能改的样式太少，字号、描边、
+位置这些自建库的刚需基本调不动；而 `TextTrackCue.startTime` 可写，时间轴微调
+也只有自己接管渲染才做得成。于是 `<track>` 置 `mode="hidden"`，只借它的解析器，
+画面由播放器出。**cue 文本一律剥标签再渲染**——字幕是用户丢进媒体库的任意文本，
+把它当 HTML 插进 DOM 就是一条现成的 XSS 通道，斜体这点观感换不来这个风险
+（要完整排版的走 ASS/JASSUB，那条路径在 canvas 上画，根本不碰 DOM）。
+
+### 12.7 测试现状
+
+**后端**
 
 | 层 | 文件 | 条数 |
 |---|---|---|
@@ -1044,10 +1094,22 @@ Mac mini 验证。做成发版前的人工清单，列进 `.claude/skills/releas
 | 签名 token | `tests/playback/test_stream_signing.py` | 14 |
 | 决策服务层 | `tests/api/test_playback_decide.py` | 4 |
 | 取流端点 | `tests/api/test_playback_stream.py` | 23 |
+| 观看状态与进度 | `tests/api/test_playback_watch.py` | 11 |
 | 转码执行（真 ffmpeg） | `tests/playback/test_transcode_integration.py` | 10 |
 | 端到端（真 HTTP + 真 ffmpeg） | `tests/api/test_playback_e2e.py` | 6 |
 
-合计 **169 条**。前七项（153 条）进 CI 默认门禁——转码进程用假 ffmpeg 替身，
+合计 **180 条**。前八项（164 条）进 CI 默认门禁——转码进程用假 ffmpeg 替身，
 不需要系统装 ffmpeg；后两项（16 条）标 `integration`，需要 ffmpeg。
 
 全量套件跑完后用 `pgrep ffmpeg` 确认过：**没有泄漏任何转码进程**。
+
+**前端**（`node --test`，与后端同为默认门禁）
+
+| 层 | 文件 | 条数 |
+|---|---|---|
+| 能力探测 | `apps/web/test/player-capability.test.mjs` | 6 |
+| 状态机与时间轴 | `apps/web/test/player-machine.test.mjs` | 16 |
+| 字幕规划与快捷键 | `apps/web/test/player-subtitles.test.mjs` | 9 |
+
+合计 **31 条**。UI 组件不写渲染测试——判断都已经被挤到上面这三个纯模块里，
+组件层剩下的只有接线。

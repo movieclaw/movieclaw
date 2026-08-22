@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from pydantic import Field
+
 from movieclaw_api.schemas.base import BaseModel
 from movieclaw_media.models import MediaKind
 
@@ -264,6 +266,10 @@ class PlaybackSessionView(BaseModel):
     start_ms: int = 0
     #: 旁挂字幕地址（已带 token），与 decision.subtitles 一一对应。
     subtitle_urls: list[str] = []
+    #: 本次会话实际使用的硬件加速后端（vaapi / qsv / nvenc / videotoolbox）；
+    #: None = 纯软件。诊断面板要靠它回答「到底有没有走显卡」——用户报「转码
+    #: 很卡」时，这一项与「有没有装对驱动」是同一个问题的两面（§6.5）。
+    hw_backend: str | None = None
 
 
 class PlaybackSessionRequest(PlaybackDecideRequest):
@@ -271,3 +277,76 @@ class PlaybackSessionRequest(PlaybackDecideRequest):
 
     #: 从文件的哪个位置开始。会话时间轴恒从 0 起，客户端用它换算回文件时间。
     start_ms: int = 0
+
+
+# ---------------------------------------------------------------------------
+# 网页播放器：观看状态（续播点、已看、轨记忆）
+# ---------------------------------------------------------------------------
+
+
+class PlaybackProgressRequest(BaseModel):
+    """一次观看状态上报。三种事件同一入口，与 Jellyfin 的 Playing /
+    Playing/Progress / Playing/Stopped 一一对应。"""
+
+    media_item_id: int
+    #: 电影恒为 (0, 0) 的哨兵单元，与台账、playback_state 的约定一致
+    season_number: int = 0
+    episode_number: int = 0
+    event: str = "progress"  # start | progress | stop
+    #: 播到文件的哪个位置。**None = 没报**（视同播到结尾标已看），与报 0
+    #: （拖回开头）语义不同——别把「不知道」和「零」合并。
+    position_ms: int | None = None
+    #: 中性轨引用（external:<文件名> / embedded:<下标> / 字幕的 "off"）。
+    #: None = 本次不报该轨，服务端保持原值不动。
+    audio_track: str | None = None
+    subtitle_track: str | None = None
+
+
+class PlaybackStateView(BaseModel):
+    """一个播放单元在当前成员名下的观看状态。续播与上报共用同一形状。"""
+
+    position_ms: int
+    played: bool
+    play_count: int
+    #: 服务端算出的片长（在位文件实测 > 分集刮削 > 条目刮削）；都没有为 None。
+    #: 客户端拿它画进度条兜底，但**已看判定的分母始终以服务端为准**。
+    duration_ms: int | None = None
+    audio_track: str | None = None
+    subtitle_track: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# 网页播放器：策略配置（「设置 → 播放」页 + 软件转码同意链路 §3.6）
+# ---------------------------------------------------------------------------
+
+
+class PlaybackPolicyView(BaseModel):
+    """播放策略的当前取值。字段与 PlaybackPolicySetting 一一对应。"""
+
+    software_transcode_enabled: bool
+    max_transcode_concurrency: int
+    max_remux_concurrency: int
+    max_transcode_height: int
+    transcode_cache_quota_gb: int
+    #: 实测结果而非配置项——用户改不了自己有没有显卡。设置页据此说明
+    #: 「无可用硬件加速，HDR 片源需要软件转码」这类结论。
+    hardware_available: bool = False
+    #: 探测到的硬件后端名（vaapi / qsv / nvenc / videotoolbox），无则为空
+    hw_backends: list[str] = []
+
+
+class PlaybackPolicyPayload(BaseModel):
+    """策略保存请求。**全字段可选，None = 不动这一项**——同意弹窗只翻
+    software_transcode_enabled 一个开关，不该被迫先读全量再回写（那样会把
+    另一个标签页刚改的并发数覆盖掉）。
+
+    取值范围与 ``PlaybackPolicySetting``（配置域的唯一真值）保持一致，在这里
+    重述一遍是为了让越界值在请求边界就得到 422 与字段名，而不是掉进处理函数
+    里抛成 500。服务层保存前仍会按配置域重新构造一次校验，两道都在。
+    """
+
+    software_transcode_enabled: bool | None = None
+    max_transcode_concurrency: int | None = Field(default=None, ge=1, le=8)
+    max_remux_concurrency: int | None = Field(default=None, ge=1, le=16)
+    max_transcode_height: int | None = Field(default=None, ge=480, le=2160)
+    transcode_cache_quota_gb: int | None = Field(default=None, ge=1, le=500)

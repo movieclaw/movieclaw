@@ -47,6 +47,14 @@ KNOWN_NON_GENERATED = {
     "playback.file.stream",
     "playback.file.subtitle",
     "playback.device.revoke",
+    # 观看进度上报与续播点：播放器起播/心跳/退出时自动调用的内部链路，
+    # CLI 手动上报一次进度没有意义。
+    "playback.progress",
+    "playback.resume",
+    # 播放策略：由「设置 → 播放」页与播放时的同意弹窗承载。整个 playback 域
+    # 都是网页播放器专用，不为两个开关新开一个 CLI 域。
+    "playback.policy.show",
+    "playback.policy.set",
     # 精选命令负责 preview → --yes 工作流，底层两段接口不直接进入命令树。
     "workflow.library.organize-files.preview",
     "workflow.library.organize-files.start",

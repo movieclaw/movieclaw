@@ -20,7 +20,7 @@ from sqlalchemy import select
 
 from movieclaw_api.services.webhook import emit_events
 from movieclaw_db.engine import get_database
-from movieclaw_db.models import LibraryFile, MediaEpisode, MediaItem, MediaMetadata
+from movieclaw_db.models import LibraryFile, MediaEpisode, MediaItem
 from movieclaw_jellyfin.catalog import (
     TICKS_PER_MS,
     _folder_user_data,
@@ -119,42 +119,11 @@ async def _resolve_units(ref: EntityRef) -> list[playback_state.Unit]:
 
 
 async def _unit_runtime_ms(unit: playback_state.Unit) -> int | None:
-    item_id, season, episode = unit
+    """片长解析下沉到领域层（``playback_state.unit_runtime_ms``），网页播放器
+    共用同一份——它是已看阈值的分母，两个入口算法不一致会让同一部片在
+    Jellyfin 客户端和网页端给出不同的「已看」结论。"""
     async with get_database().session() as session:
-        files = list(
-            (
-                await session.execute(
-                    select(LibraryFile).where(
-                        LibraryFile.media_item_id == item_id,
-                        LibraryFile.season_number == season,
-                        LibraryFile.episode_number == episode,
-                        LibraryFile.in_place(),
-                    )
-                )
-            ).scalars()
-        )
-        for f in files:
-            if f.duration_seconds:
-                return f.duration_seconds * 1000
-        ep = (
-            await session.execute(
-                select(MediaEpisode).where(
-                    MediaEpisode.media_item_id == item_id,
-                    MediaEpisode.season_number == season,
-                    MediaEpisode.episode_number == episode,
-                )
-            )
-        ).scalar_one_or_none()
-        if ep and ep.runtime_minutes:
-            return ep.runtime_minutes * 60_000
-        meta = (
-            await session.execute(
-                select(MediaMetadata).where(MediaMetadata.media_item_id == item_id)
-            )
-        ).scalar_one_or_none()
-        if meta and meta.runtime_minutes:
-            return meta.runtime_minutes * 60_000
-    return None
+        return await playback_state.unit_runtime_ms(session, unit)
 
 
 def _leaf_unit(ref: EntityRef) -> playback_state.Unit:

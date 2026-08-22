@@ -17,6 +17,7 @@ import {
   ChevronRightIcon,
   FolderIcon,
   MoreIcon,
+  PlayIcon,
   TrashIcon,
 } from "@/components/icons";
 import { useConfirm, useToast } from "@/components/feedback";
@@ -58,6 +59,7 @@ import { useDoubanAppHref } from "@/lib/douban-app-link";
 import { useBackdrop } from "@/lib/backdrop";
 import { resolveRequestUrl } from "@/lib/http";
 import { cachedImageUrl } from "@/lib/image-proxy";
+import { languageLabel } from "@/lib/language-labels";
 import { invalidateLibraryDetailSnapshot } from "@/lib/library-detail-snapshot";
 import { refreshItemConfirm } from "@/lib/library-confirm";
 import { usePermissions } from "@/lib/permissions";
@@ -479,6 +481,34 @@ export function LibraryItemDetailView({
               {meta.genres.join(" · ")}
             </p>
           )}
+          {/* 播放入口：只在真有在位文件时出现。缺集/待回收的版本给一个点了
+              必然报错的按钮，比不给更糟。剧集跟随分集区当前选中的那一集。 */}
+          {availableTrackFiles.length > 0 && (isMovie || selectedSeriesEpisode) && (
+            <div className="mt-5 max-md:mt-4">
+              <button
+                type="button"
+                onClick={() => {
+                  const query = new URLSearchParams();
+                  if (!isMovie && selectedSeriesEpisode) {
+                    query.set("season", String(selectedSeriesEpisode.seasonNumber));
+                    query.set("episode", String(selectedSeriesEpisode.episode.episode_number));
+                  }
+                  // 退出播放要回到用户离开的这一屏（含季集查询参数）。这里
+                  // 读 location 而不是 useSearchParams()：后者会把整页拖进
+                  // 「必须包 Suspense」的预渲染约束，而点击时一定在浏览器里。
+                  query.set("returnTo", window.location.pathname + window.location.search);
+                  router.push(
+                    `/play/${libraryId}/${detail.media_item_id}?${query}` as Route,
+                  );
+                }}
+                className="flex items-center gap-2 rounded-full bg-white px-6 py-2.5 text-ui font-semibold text-black transition-opacity hover:opacity-90 max-md:px-5 max-md:py-2"
+              >
+                <PlayIcon className="size-[18px]" />
+                播放
+              </button>
+            </div>
+          )}
+
           <MediaTrackRows
             files={trackFiles}
             selectedFileId={selectedTrackFile?.id ?? null}
@@ -824,33 +854,6 @@ const VIDEO_CODEC_LABELS: Record<string, string> = {
   mpeg2video: "MPEG-2",
   vp9: "VP9",
 };
-
-const LANGUAGE_LABELS: Record<string, string> = {
-  chs: "简体中文",
-  cht: "繁体中文",
-  chi: "中文",
-  zho: "中文",
-  cmn: "中文",
-  yue: "粤语",
-  eng: "英语",
-  jpn: "日语",
-  kor: "韩语",
-  fre: "法语",
-  fra: "法语",
-  ger: "德语",
-  deu: "德语",
-  spa: "西班牙语",
-  rus: "俄语",
-  ita: "意大利语",
-  por: "葡萄牙语",
-  tha: "泰语",
-  hin: "印地语",
-};
-
-function languageLabel(code: string | null): string | null {
-  if (!code || code === "und") return null;
-  return LANGUAGE_LABELS[code.toLowerCase()] ?? code;
-}
 
 /** 声道数 → 惯用布局标签（channel_layout 可用时优先，去掉 (side) 等后缀）。 */
 function channelsLabel(stream: AudioStream): string | null {

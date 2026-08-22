@@ -540,6 +540,10 @@ _MEMBER_ALLOWLIST = {
     ("GET", "/api/v1/playback/sessions/{session_id}/{name}"),
     ("GET", "/api/v1/playback/files/{file_id}/stream"),
     ("GET", "/api/v1/playback/files/{file_id}/subtitles"),
+    # 观看进度与续播点是按成员隔离的个人数据，且只认可见库里的播放单元
+    # （不可见的单元一律 404，与"不存在"不可区分）。
+    ("POST", "/api/v1/playback/progress"),
+    ("GET", "/api/v1/playback/resume"),
     # 搜索历史：个人数据；统一结果端点再按记录类型检查对应能力。
     ("GET", "/api/v1/search/history"),
     ("GET", "/api/v1/search/history/{history_id}/results"),

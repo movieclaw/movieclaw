@@ -15,11 +15,59 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from movieclaw_db.models import PlaybackState
+from movieclaw_db.models import (
+    LibraryFile,
+    MediaEpisode,
+    MediaMetadata,
+    PlaybackState,
+)
 from movieclaw_db.models.base import utcnow
 from movieclaw_playback.progress import resolve_mark_played, resolve_progress
 
 Unit = tuple[int, int, int]  # (media_item_id, season, episode)
+
+
+async def unit_runtime_ms(session: AsyncSession, unit: Unit) -> int | None:
+    """一个播放单元的片长（毫秒），按可信度降序回退：在位文件实测时长 >
+    分集刮削时长 > 条目刮削时长；都没有返回 None。
+
+    **必须服务端算，不能听客户端报**——它是 ``resolve_progress`` 的分母，
+    直接决定「看到哪算已看」。网页播放器与 Jellyfin 客户端共用同一个来源，
+    同一部片才不会在两个入口给出不同的已看结论。
+    """
+    item_id, season, episode = unit
+    files = (
+        await session.execute(
+            select(LibraryFile).where(
+                LibraryFile.media_item_id == item_id,
+                LibraryFile.season_number == season,
+                LibraryFile.episode_number == episode,
+                LibraryFile.in_place(),
+            )
+        )
+    ).scalars()
+    for file in files:
+        if file.duration_seconds:
+            return file.duration_seconds * 1000
+    ep = (
+        await session.execute(
+            select(MediaEpisode).where(
+                MediaEpisode.media_item_id == item_id,
+                MediaEpisode.season_number == season,
+                MediaEpisode.episode_number == episode,
+            )
+        )
+    ).scalar_one_or_none()
+    if ep and ep.runtime_minutes:
+        return ep.runtime_minutes * 60_000
+    meta = (
+        await session.execute(
+            select(MediaMetadata).where(MediaMetadata.media_item_id == item_id)
+        )
+    ).scalar_one_or_none()
+    if meta and meta.runtime_minutes:
+        return meta.runtime_minutes * 60_000
+    return None
 
 
 async def get_states(

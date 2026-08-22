@@ -74,8 +74,8 @@ async def test_disconnect_aware_file_response_skips_open_when_client_is_gone(
     # 第一次 receive 就是 http.disconnect：监听任务先于打开文件前置位
     await response(_scope(), _receiver(disconnect_after=1), _sender(messages))
 
-    assert messages[0]["type"] == "http.response.start"
-    assert messages[-1] == {"type": "http.response.body", "body": b"", "more_body": False}
+    # 头已带 Content-Length，不能再补空的结束帧，直接返回让服务器关连接
+    assert [message["type"] for message in messages] == ["http.response.start"]
 
 
 @pytest.mark.asyncio
@@ -122,11 +122,7 @@ async def test_stopped_playback_signal_skips_opening_the_file(
     )
     await response(_scope(), _receive, _sender(messages))
 
-    assert [message["type"] for message in messages] == [
-        "http.response.start",
-        "http.response.body",
-    ]
-    assert messages[-1]["more_body"] is False
+    assert [message["type"] for message in messages] == ["http.response.start"]
 
 
 def test_stop_device_streams_sets_all_active_streams() -> None:
@@ -165,7 +161,8 @@ async def test_stopped_playback_signal_stops_active_stream_before_next_chunk(
 
     body = b"".join(message.get("body", b"") for message in messages)
     assert body == content[: DisconnectAwareFileResponse.chunk_size]
-    assert messages[-1] == {"type": "http.response.body", "body": b"", "more_body": False}
+    # 停在半路：既不补结束帧也不继续读盘，未完成的响应由服务器关闭连接收场
+    assert messages[-1]["more_body"] is True
 
 
 @pytest.mark.asyncio
@@ -192,7 +189,7 @@ async def test_disconnect_aware_file_response_stops_before_next_chunk(tmp_path: 
 
     body = b"".join(message.get("body", b"") for message in messages)
     assert body == content[: DisconnectAwareFileResponse.chunk_size]
-    assert messages[-1] == {"type": "http.response.body", "body": b"", "more_body": False}
+    assert messages[-1]["more_body"] is True
 
 
 @pytest.mark.asyncio
@@ -214,7 +211,7 @@ async def test_disconnect_aware_file_response_keeps_range_response(tmp_path: Pat
     body = b"".join(message.get("body", b"") for message in messages[1:])
     assert start["status"] == 206
     assert headers["content-range"] == f"bytes 100-69999/{len(content)}"
-    assert "content-length" not in headers
+    assert headers["content-length"] == "69900"
     assert body == content[100:70000]
 
 
@@ -252,7 +249,7 @@ async def test_disconnect_aware_file_response_keeps_multiple_range_response(
     body = b"".join(message.get("body", b"") for message in messages[1:])
     assert messages[0]["status"] == 206
     assert headers["content-type"].startswith("multipart/byteranges; boundary=")
-    assert "content-length" not in headers
+    assert headers["content-length"] == str(len(body))
     assert b"Content-Range: bytes 0-9/200" in body
     assert b"Content-Range: bytes 100-109/200" in body
     assert content[:10] in body and content[100:110] in body
@@ -297,42 +294,27 @@ async def test_stopped_playback_ends_multiple_range_response(tmp_path: Path) -> 
         _sender(messages),
     )
 
+    assert [message["type"] for message in messages] == ["http.response.start"]
     assert messages[0]["status"] == 206
-    assert messages[-1] == {"type": "http.response.body", "body": b"", "more_body": False}
 
 
 @pytest.mark.asyncio
-async def test_keep_content_length_mode_keeps_header_and_stops_silently(tmp_path: Path) -> None:
-    """整文件下载：保留 Content-Length 供下载器续传；断连后直接停读盘、不补结束帧。"""
+async def test_whole_file_response_declares_content_length(tmp_path: Path) -> None:
+    """整文件响应必须带 Content-Length。
+
+    回归守卫：曾经为了能提前收尾而剥掉长度头改用 chunked，Infuse/VidHub 等
+    AVFoundation 播放器因此不停地开小 Range 再掐断，把 NAS 磁盘读爆
+    （详见 DisconnectAwareFileResponse 的类注释）。
+    """
     video = tmp_path / "movie.mkv"
-    content = b"x" * (DisconnectAwareFileResponse.chunk_size * 3)
+    content = b"x" * 4096
     video.write_bytes(content)
     messages: list[dict[str, Any]] = []
-    disconnect = asyncio.Event()
 
-    async def receive() -> dict[str, Any]:
-        await disconnect.wait()
-        return {"type": "http.disconnect"}
-
-    async def send(message: dict[str, Any]) -> None:
-        messages.append(message)
-        if message.get("body") == content[: DisconnectAwareFileResponse.chunk_size]:
-            disconnect.set()
-            await asyncio.sleep(0)
-
-    response = DisconnectAwareFileResponse(video, keep_content_length=True)
-    await response(_scope(), receive, send)
+    response = DisconnectAwareFileResponse(video)
+    await response(_scope(), _receive, _sender(messages))
 
     headers = {key.decode(): value.decode() for key, value in messages[0]["headers"]}
     assert headers["content-length"] == str(len(content))
-    body = b"".join(message.get("body", b"") for message in messages)
-    assert body == content[: DisconnectAwareFileResponse.chunk_size]
-    # 断连后服务器已丢弃 send，不能再补 more_body=False 的空帧（会触发长度不符）
-    assert messages[-1]["more_body"] is True
-
-
-def test_keep_content_length_rejects_session_stopped(tmp_path: Path) -> None:
-    with pytest.raises(ValueError):
-        DisconnectAwareFileResponse(
-            tmp_path / "x.mkv", keep_content_length=True, session_stopped=asyncio.Event()
-        )
+    assert b"".join(message.get("body", b"") for message in messages) == content
+    assert messages[-1]["more_body"] is False

@@ -99,13 +99,26 @@ class DisconnectAwareFileResponse(FileResponse):
     - 块大小提到 1 MiB（Starlette 默认 64 KiB）：每块都要经过 ASGI send、
       中间件转发和 uvicorn 写缓冲，块数少 16 倍就是 CPU 少 16 倍。
 
-    该类沿用 Starlette 的 Range 头和分段规则。为了能在"播放器上报停止、TCP
-    仍连着"时以完整的 ASGI body 结束响应，默认非 HEAD 请求不发送
-    ``Content-Length``，由 HTTP 服务器使用 chunked 传输；``206`` 的
-    ``Content-Range`` 仍保留，因此客户端仍可校验请求区间。
-    ``keep_content_length=True`` 用于整文件下载：下载器依赖 ``Content-Length``
-    显示进度/续传，此模式只响应 TCP 断连（断连后服务器本就丢弃后续 send，
-    直接停止读盘即可），因此不能同时传 ``session_stopped``。
+    该类沿用 Starlette 的 Range 头和分段规则，并且**一律发送
+    ``Content-Length``**（2026-08-22 NAS 现场事故的教训）：
+
+    - 早期版本为了能在"播放器上报停止、TCP 仍连着"时用一个空的结束帧收尾，
+      非 HEAD 请求一律剥掉 ``Content-Length``、让服务器改用 chunked。真
+      Jellyfin 不是这么干的，而 Infuse / VidHub / Apple TV 这类基于
+      AVFoundation 的播放器拿不到响应长度就无法预估缓冲，表现为**不停地开一个
+      小 Range、读一点、掐断、再开一个**：现场实测 40 秒内打进来 89 个 Range
+      请求（约 2 次/秒），每个响应在客户端断开前已经从磁盘读了 23–60 MB，
+      合计约 2.2 GB——比整个 1.67 GB 的剧集文件还多。磁盘被打满后，同一时刻的
+      媒体库列表和封面请求全部超时，客户端表现为"连不上、库里空空的"。
+    - 因此长度头必须留着。代价是提前停止时**无法再合法地收尾**（body 短于
+      已声明的长度是协议错误），只能停止发送、由服务器关闭连接：
+
+      * TCP 已断连：uvicorn 本就丢弃后续 send，直接返回即静默结束；
+      * 播放器上报 Stopped 而 TCP 仍在：uvicorn 会记一条
+        "ASGI callable returned without completing response." 并关闭连接——
+        关掉这条已被放弃的连接正是我们要的结果，为了让部署者看懂，停止读盘时
+        先用中文说明原因。
+
     断开时最多多读一个已在途的块。
     """
 
@@ -117,18 +130,12 @@ class DisconnectAwareFileResponse(FileResponse):
         *,
         session_stopped: asyncio.Event | None = None,
         on_close: Callable[[], None] | None = None,
-        keep_content_length: bool = False,
         byte_sink: Callable[[int], None] | None = None,
         **kwargs,
     ) -> None:
         super().__init__(path, **kwargs)
-        if keep_content_length and session_stopped is not None:
-            raise ValueError(
-                "保留 Content-Length 的响应无法在会话停止时优雅收尾，不能同时登记 session_stopped"
-            )
         self._session_stopped = session_stopped
         self._on_close = on_close
-        self._keep_content_length = keep_content_length
         # 每发出一块调用一次的字节计量回调（活动页「观看」视角的速率来源）；
         # 必须是同步且近零开销的，不能拖慢发送循环
         self._byte_sink = byte_sink
@@ -140,16 +147,22 @@ class DisconnectAwareFileResponse(FileResponse):
         """同步、零开销的停止判断；每块调用一次。"""
         if self._session_stopped is not None and self._session_stopped.is_set():
             reason = "播放器已上报停止"
+            # TCP 还连着，这条响应会短于已声明的 Content-Length：服务器接下来
+            # 会打印一条英文的 "returned without completing response" 并关闭
+            # 连接，那是预期行为而不是故障，先在这里讲清楚
+            detail = "，将关闭这条已被放弃的连接"
         elif self._disconnected.is_set():
             reason = "客户端已断开"
+            detail = ""
         else:
             return False
         if not self._stop_logged:
             self._stop_logged = True
             logger.info(
-                "%s视频流，停止继续读取（本响应已读取 %d 字节）",
+                "%s视频流，停止继续读取（本响应已读取 %d 字节）%s",
                 reason,
                 self._bytes_read,
+                detail,
             )
         return True
 
@@ -192,37 +205,17 @@ class DisconnectAwareFileResponse(FileResponse):
             if self._on_close is not None:
                 self._on_close()
 
-    def _stream_headers(
-        self, headers: list[tuple[bytes, bytes]] | None = None
-    ) -> list[tuple[bytes, bytes]]:
-        """移除长度头，使提前停止可以用 ASGI 结束帧正常结束 chunked 响应。"""
-        if self._keep_content_length:
-            return list(headers or self.raw_headers)
-        mutable_headers = MutableHeaders(raw=list(headers or self.raw_headers))
-        if "content-length" in mutable_headers:
-            del mutable_headers["content-length"]
-        return mutable_headers.raw
-
-    async def _finish_stopped_response(self, send: Send) -> None:
-        """已发送响应头后收尾，避免 ASGI 应用以未完成的 body 返回。
-
-        保留 Content-Length 的模式只会因 TCP 断连而停止，此时服务器已丢弃
-        后续 send，补发结束帧反而会触发"body 短于 Content-Length"的协议错误。
-        """
-        if self._keep_content_length:
-            return
-        await send({"type": "http.response.body", "body": b"", "more_body": False})
-
     async def _send_span(self, file, send: Send, start: int, end: int | None) -> None:
-        """把文件 ``[start, end)`` 区间逐块发出，中途停止则收尾后返回。
+        """把文件 ``[start, end)`` 区间逐块发出，中途停止则直接返回。
 
         ``end`` 为 None 表示读到文件末尾（无 Range 的整文件响应）。
+        提前停止时不补结束帧：Content-Length 已经发出去了，补一个短 body
+        是协议错误，交给服务器关闭连接即可。
         """
         await file.seek(start)
         more_body = True
         while more_body:
             if self._should_stop_reading():
-                await self._finish_stopped_response(send)
                 return
             size = self.chunk_size if end is None else min(self.chunk_size, end - start)
             chunk = await file.read(size)
@@ -240,14 +233,13 @@ class DisconnectAwareFileResponse(FileResponse):
             {
                 "type": "http.response.start",
                 "status": self.status_code,
-                "headers": self.raw_headers if send_header_only else self._stream_headers(),
+                "headers": self.raw_headers,
             }
         )
         if send_header_only:
             await send({"type": "http.response.body", "body": b"", "more_body": False})
             return
         if self._should_stop_reading():
-            await self._finish_stopped_response(send)
             return
         async with await anyio.open_file(self.path, mode="rb") as file:
             await self._send_span(file, send, 0, None)
@@ -262,14 +254,13 @@ class DisconnectAwareFileResponse(FileResponse):
             {
                 "type": "http.response.start",
                 "status": 206,
-                "headers": (headers.raw if send_header_only else self._stream_headers(headers.raw)),
+                "headers": headers.raw,
             }
         )
         if send_header_only:
             await send({"type": "http.response.body", "body": b"", "more_body": False})
             return
         if self._should_stop_reading():
-            await self._finish_stopped_response(send)
             return
         async with await anyio.open_file(self.path, mode="rb") as file:
             await self._send_span(file, send, start, end)
@@ -292,19 +283,17 @@ class DisconnectAwareFileResponse(FileResponse):
             {
                 "type": "http.response.start",
                 "status": 206,
-                "headers": (headers.raw if send_header_only else self._stream_headers(headers.raw)),
+                "headers": headers.raw,
             }
         )
         if send_header_only:
             await send({"type": "http.response.body", "body": b"", "more_body": False})
             return
         if self._should_stop_reading():
-            await self._finish_stopped_response(send)
             return
         async with await anyio.open_file(self.path, mode="rb") as file:
             for start, end in ranges:
                 if self._should_stop_reading():
-                    await self._finish_stopped_response(send)
                     return
                 await send(
                     {
@@ -316,7 +305,6 @@ class DisconnectAwareFileResponse(FileResponse):
                 await file.seek(start)
                 while start < end:
                     if self._should_stop_reading():
-                        await self._finish_stopped_response(send)
                         return
                     chunk = await file.read(min(self.chunk_size, end - start))
                     self._bytes_read += len(chunk)

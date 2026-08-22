@@ -1415,3 +1415,67 @@ body.cmdk-open .app-shell {
   left: 0;
   animation: search-progress-sweep 1.1s ease-in-out infinite;
 }
+
+/* ---------------------------------------------------------------------------
+   网页播放器（components/player/*，docs/design/web-player.md §6）
+   --------------------------------------------------------------------------- */
+
+/* 字幕字号用 cqh（容器高度的百分比）而不是 vh：分屏、画中画、内联播放时
+   画面并不等于视口，按视口算比例会跑掉。这一条声明是那些 cqh 的锚点。 */
+.player-root {
+  container-type: size;
+}
+
+/* 自建进度条：轨道由外层 div 画（含缓冲底色），input 只留一个可拖的把手，
+   所以轨道透明、把手常显。 */
+.player-scrub::-webkit-slider-runnable-track {
+  background: transparent;
+  height: 100%;
+}
+.player-scrub::-moz-range-track {
+  background: transparent;
+  height: 100%;
+}
+.player-scrub::-webkit-slider-thumb {
+  appearance: none;
+  width: 13px;
+  height: 13px;
+  border-radius: 9999px;
+  background: var(--accent);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+  transition: transform 0.12s ease;
+}
+.player-scrub::-moz-range-thumb {
+  width: 13px;
+  height: 13px;
+  border: none;
+  border-radius: 9999px;
+  background: var(--accent);
+}
+.player-scrub:hover::-webkit-slider-thumb {
+  transform: scale(1.25);
+}
+.player-scrub:disabled::-webkit-slider-thumb {
+  background: rgba(255, 255, 255, 0.35);
+}
+
+/* Media Chrome 的按钮/音量条：它们是 Web Component，样式只能经由自定义属性
+   注入，改不了内部 DOM。这里只统一尺寸与配色，与自建按钮对齐。 */
+.player-mc-button,
+.player-mc-range {
+  --media-control-background: transparent;
+  --media-control-hover-background: rgba(255, 255, 255, 0.15);
+  --media-primary-color: rgba(255, 255, 255, 0.85);
+  --media-secondary-color: transparent;
+  --media-range-thumb-background: #fff;
+  --media-range-track-height: 4px;
+  height: 36px;
+}
+.player-mc-button {
+  width: 36px;
+  padding: 0;
+  border-radius: 8px;
+}
+.player-mc-range {
+  width: 76px;
+}

@@ -1,0 +1,217 @@
+/**
+ * 播放器状态机（docs/design/web-player.md §6.5「显式状态机」）。
+ *
+ * 为什么不能用一堆 boolean 拼：起播是「决策 → 开会话 → 缓冲 → 出画」四段
+ * 异步，中间随时可能插进来 seek、降档、用户切集。boolean 拼出来的组合里
+ * 一定有「正在降档又正在缓冲」这种自相矛盾的中间态，表现是转圈不消失、
+ * 或者一次失败触发两条降档链（两个 ffmpeg 一起跑）。
+ *
+ * 本模块是**纯 reducer**，不碰 DOM 也不发请求——降档回路里最容易出错的
+ * 「连败两次要跳兜底档」「已失败的档位不能再被选中」这类判断因此可以直接
+ * 用表驱动单测覆盖。
+ */
+
+import type { PlaybackDecision, PlaybackSession } from "@/lib/api/playback";
+
+/**
+ * 与文档 §6.5 的状态列表一致，多一个 `consent`：软件转码同意链路（§3.6）
+ * 是决策的三态之一，界面上是一个必须由用户拍板的停顿，不是错误也不是加载中。
+ * 把它挤进 error 会让「点了同意继续播」这条回边无处安放。
+ */
+export type PlayerPhase =
+  | "idle"
+  | "deciding"
+  | "session-starting"
+  | "buffering"
+  | "playing"
+  | "seeking"
+  | "degrading"
+  | "consent"
+  | "error"
+  | "ended";
+
+/** 最高兜底档：软件转码。连败两次后直接跳到它，不再逐级试。 */
+const FALLBACK_TIER = 4;
+
+/** 连续失败到这个次数就放弃逐级降档（§6.3）。 */
+const MAX_STEPWISE_FAILURES = 2;
+
+export interface PlayerState {
+  phase: PlayerPhase;
+  /** 当前生效的会话（含 stream_url / start_ms / 字幕地址）；档 0 也有，只是 session_id 为 null */
+  session: PlaybackSession | null;
+  decision: PlaybackDecision | null;
+  /** 已经失败过的档位，带给下次 decide，服务端据此跳过它们 */
+  failedTiers: number[];
+  /** 同一文件连续失败次数 */
+  failureCount: number;
+  /** 起播位置（文件时间，毫秒）。降档重来要落回同一位置，不能从头放。 */
+  startMs: number;
+  error: { message: string; suggestion: string | null } | null;
+}
+
+export const initialPlayerState: PlayerState = {
+  phase: "idle",
+  session: null,
+  decision: null,
+  failedTiers: [],
+  failureCount: 0,
+  startMs: 0,
+  error: null,
+};
+
+export type PlayerEvent =
+  /** 用户点了播放 / 切了集：从头走决策流程，清掉上一轮的失败记录 */
+  | { type: "request"; startMs: number }
+  /** 决策 + 开会话回来了（三态都走这一条，由 decision.outcome 分流） */
+  | { type: "session"; session: PlaybackSession }
+  /** 用户在同意弹窗里点了「继续」：重新决策，这次服务端会给出软转计划 */
+  | { type: "consent-granted" }
+  | { type: "buffering" }
+  | { type: "playing" }
+  | { type: "seeking" }
+  /** seek 越出已转区间：换会话，位置不变 */
+  | { type: "restart"; startMs: number }
+  /** 播放链路失败（error 事件 / 长时间 stall），触发降档回路 */
+  | { type: "failed"; reason: string }
+  /** 无法继续（接口报错、会话起不来等），直接进错误态 */
+  | { type: "fatal"; message: string; suggestion?: string | null }
+  | { type: "ended" }
+  | { type: "reset" };
+
+/**
+ * 降档：把当前档位记入失败集合，算出下一轮 decide 要跳过哪些档。
+ *
+ * **逐级降**（1 失败后仍试 2）是实现期定下的取舍：档 2 同样 `-c:v copy`，
+ * 若失败原因在视频码流会同样失败，但若原因在音轨，档 2 正好修好。浏览器
+ * 给不出可靠的失败归因，多试一档只浪费几秒（一次性），跳过档 2 却可能让
+ * 本可直通的视频每次播放都多转一路。
+ *
+ * 连败两次说明「逐级试」这个假设本身不成立，此时把兜底档以下全标失败，
+ * 一步到位。
+ */
+function nextFailedTiers(state: PlayerState, failedTier: number): number[] {
+  const accumulated = new Set(state.failedTiers);
+  accumulated.add(failedTier);
+  if (state.failureCount + 1 >= MAX_STEPWISE_FAILURES) {
+    for (let tier = 0; tier < FALLBACK_TIER; tier += 1) accumulated.add(tier);
+  }
+  return [...accumulated].sort((a, b) => a - b);
+}
+
+export function playerReducer(state: PlayerState, event: PlayerEvent): PlayerState {
+  switch (event.type) {
+    case "request":
+      return {
+        ...initialPlayerState,
+        phase: "deciding",
+        startMs: event.startMs,
+      };
+
+    case "session": {
+      const { decision } = event.session;
+      if (decision.outcome === "consent") {
+        return { ...state, phase: "consent", decision, session: null };
+      }
+      if (decision.outcome === "rejected") {
+        return {
+          ...state,
+          phase: "error",
+          decision,
+          session: null,
+          error: { message: decision.reason, suggestion: decision.suggestion },
+        };
+      }
+      return {
+        ...state,
+        phase: "buffering",
+        decision,
+        session: event.session,
+        startMs: event.session.start_ms,
+        error: null,
+      };
+    }
+
+    case "consent-granted":
+      // 开关已经翻开，同一份请求重来一次即可——不清 failedTiers：之前
+      // 试过并失败的档位仍然是失败的。
+      return { ...state, phase: "deciding", decision: null };
+
+    case "buffering":
+      // 播放中途的缓冲不该把状态打回起播阶段（会让 UI 闪一下"正在启动"），
+      // 只有已经出过画之后才认这条。
+      return state.phase === "playing" || state.phase === "seeking"
+        ? { ...state, phase: "buffering" }
+        : state;
+
+    case "playing":
+      // 出画即认为本档可用：清掉连败计数，之后再失败重新从逐级降开始。
+      return { ...state, phase: "playing", failureCount: 0, error: null };
+
+    case "seeking":
+      return state.phase === "idle" ? state : { ...state, phase: "seeking" };
+
+    case "restart":
+      return { ...state, phase: "session-starting", startMs: event.startMs };
+
+    case "failed": {
+      const tier = state.decision?.tier;
+      // 还没定档就失败（会话都没起来）：没有可降的档，直接错误态
+      if (tier === null || tier === undefined) {
+        return {
+          ...state,
+          phase: "error",
+          error: { message: event.reason, suggestion: null },
+        };
+      }
+      const failedTiers = nextFailedTiers(state, tier);
+      // 兜底档本身都失败了：没有更低的档可退，只能报错并建议换播放器
+      if (tier >= FALLBACK_TIER) {
+        return {
+          ...state,
+          phase: "error",
+          failedTiers,
+          failureCount: state.failureCount + 1,
+          error: {
+            message: event.reason,
+            suggestion: "这个文件在浏览器里放不出来，建议用 Infuse、VidHub 等原生播放器打开。",
+          },
+        };
+      }
+      return {
+        ...state,
+        phase: "degrading",
+        failedTiers,
+        failureCount: state.failureCount + 1,
+        session: null,
+      };
+    }
+
+    case "fatal":
+      return {
+        ...state,
+        phase: "error",
+        session: null,
+        error: { message: event.message, suggestion: event.suggestion ?? null },
+      };
+
+    case "ended":
+      return { ...state, phase: "ended" };
+
+    case "reset":
+      return initialPlayerState;
+
+    default:
+      return state;
+  }
+}
+
+/** 转圈该不该显示：起播四段与降档重来都算「还没出画」。 */
+export function isBusy(phase: PlayerPhase): boolean {
+  return (
+    phase === "deciding" ||
+    phase === "session-starting" ||
+    phase === "buffering" ||
+    phase === "degrading"
+  );
+}

@@ -1,5 +1,21 @@
-import { request } from "@/lib/http";
+import { publicEnv } from "@/lib/env";
+import { request, resolveRequestUrl } from "@/lib/http";
 import type { MediaType } from "@/lib/media-types";
+
+/**
+ * 取流/字幕地址的最终解析。
+ *
+ * 后端给的是**服务器根相对路径**（`/api/v1/playback/...`，token 已在里面），
+ * 与 `request()` 吃的「API 相对路径」不是一回事，不能过 `resolveRequestUrl`
+ * ——那会把前缀拼两遍。默认部署（同源 + Next 反代）直接可用；只有把
+ * `NEXT_PUBLIC_API_BASE_URL` 指到别的源时才需要补上源。
+ */
+export function resolveStreamUrl(path: string): string {
+  if (/^https?:\/\//.test(path)) return path;
+  const base = publicEnv.apiBaseUrl;
+  if (!/^https?:\/\//.test(base)) return path;
+  return new URL(path, base).toString();
+}
 
 interface ApiEnvelope<T> {
   success: boolean;
@@ -147,4 +163,244 @@ export async function revokePlaybackDevice(deviceId: string): Promise<string> {
     { method: "DELETE" },
   );
   return response.message;
+}
+
+// ---------------------------------------------------------------------------
+// 网页播放器（docs/design/web-player.md）
+// ---------------------------------------------------------------------------
+
+/**
+ * 客户端解码能力快照。**字段名与后端 ClientCapabilityIn 严格对应**，
+ * codec 用的是归一化的编码家族名（h264 / hevc / aac …），不是浏览器探测时
+ * 用的 RFC 6381 串（avc1.640028）——服务端要拿它和 ffprobe 落库的 codec_name
+ * 直接比对。翻译在 lib/player/capability.ts 里做。
+ */
+export interface ClientCapability {
+  video: { codec: string; max_height: number; smooth: boolean; power_efficient: boolean }[];
+  audio: { codec: string; max_channels: number }[];
+  /** "mp4" = 能 <video src> 直出；"hls-fmp4" = 有 MSE 或原生 HLS */
+  containers: string[];
+  hdr_passthrough: boolean;
+  /** "full" | "managed"（iOS 的 ManagedMediaSource）| "none" */
+  mse: string;
+  is_mobile: boolean;
+}
+
+/** 播放单元：电影用 (0, 0) 哨兵，与台账、playback_state 的约定一致。 */
+export interface PlaybackUnit {
+  media_item_id: number;
+  season_number?: number;
+  episode_number?: number;
+}
+
+export interface VideoPlan {
+  /** "copy" | "transcode" */
+  action: string;
+  codec: string | null;
+  height: number | null;
+  tone_map: boolean;
+}
+
+export interface AudioPlan {
+  action: string;
+  track_ref: string | null;
+  codec: string | null;
+  channels: number | null;
+  downmix: boolean;
+}
+
+export interface SubtitlePlan {
+  /** 中性轨引用：external:<文件名> / embedded:<下标> */
+  track_ref: string;
+  /** "vtt"（服务端转好的文本轨）| "ass"（原样下发交 JASSUB）| "pgs"（P0 不渲染） */
+  kind: string;
+  language: string | null;
+  is_default: boolean;
+}
+
+/**
+ * 决策结果的三态并集。`outcome` 决定其余字段哪些有值——分支处理别漏，
+ * consent 与 rejected 都带面向用户的中文 `reason`。
+ */
+export interface PlaybackDecision {
+  outcome: "plan" | "consent" | "rejected";
+  tier: number | null;
+  file_id: number | null;
+  container: string | null;
+  video: VideoPlan | null;
+  audio: AudioPlan | null;
+  subtitles: SubtitlePlan[];
+  /** 本次是降档重来的结果，记录原本失败的档位（§6.3） */
+  degraded_from: number | null;
+  cost_hint: string | null;
+  /** 当前账号能不能自己去开软件转码开关（只有超管可以） */
+  can_self_enable: boolean | null;
+  setting_namespace: string | null;
+  setting_key: string | null;
+  reason: string;
+  suggestion: string | null;
+}
+
+export interface PlaybackSession {
+  decision: PlaybackDecision;
+  /** 档 0 没有会话（原文件直出），此处为 null */
+  session_id: string | null;
+  /** 可直接喂给 <video src> 或 hls.js 的地址，已带签名 token */
+  stream_url: string | null;
+  /** 会话时间轴的零点在文件里的位置。**文件时间 = start_ms + currentTime** */
+  start_ms: number;
+  /** 旁挂字幕地址（已带 token），与 decision.subtitles 一一对应 */
+  subtitle_urls: string[];
+  /** 实际使用的硬件加速后端；null = 纯软件（直通档不经编码器，同样为 null） */
+  hw_backend: string | null;
+}
+
+interface DecideBody extends PlaybackUnit {
+  file_id?: number;
+  capability: ClientCapability;
+  /** 运行期降档回路：带上已失败的档位，服务端跳过它们（§6.3） */
+  failed_tiers?: number[];
+  start_ms?: number;
+}
+
+/** 只问「该怎么放」，不起会话。用于播放前的档位预览与诊断。 */
+export async function decidePlayback(body: DecideBody): Promise<PlaybackDecision> {
+  const response = await request<ApiEnvelope<PlaybackDecision>>("/playback/decide", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+  return response.data;
+}
+
+/** 判定档位并（需要时）起转码会话，返回可直接播放的地址。 */
+export async function startPlaybackSession(body: DecideBody): Promise<PlaybackSession> {
+  const response = await request<ApiEnvelope<PlaybackSession>>("/playback/sessions", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+  return response.data;
+}
+
+/**
+ * 会话续命。用户关页面不会发任何信号，服务端的超时回收是唯一可靠兜底，
+ * 所以播放中必须定时喂这个。
+ */
+export async function pingPlaybackSession(sessionId: string): Promise<void> {
+  await request<ApiEnvelope<unknown>>(
+    `/playback/sessions/${encodeURIComponent(sessionId)}/ping`,
+    { method: "POST" },
+  );
+}
+
+/** 结束会话，掐断 ffmpeg 并清掉临时分片。 */
+export async function stopPlaybackSession(sessionId: string): Promise<void> {
+  await request<ApiEnvelope<unknown>>(
+    `/playback/sessions/${encodeURIComponent(sessionId)}`,
+    { method: "DELETE" },
+  );
+}
+
+/**
+ * 页面卸载时结束会话。
+ *
+ * 普通 fetch 在 pagehide 之后会被浏览器直接取消，请求根本发不出去；
+ * `keepalive` 让它脱离文档生命周期继续发完。sendBeacon 在这里不可用——
+ * 它只能发 POST，而结束会话是 DELETE。
+ *
+ * 这条链路失败也不是灾难：服务端有心跳超时回收兜底（§4.1），这里只是让
+ * 转码进程早几十秒结束、少占一次并发额度。因此异常一律吞掉。
+ */
+export function stopPlaybackSessionOnUnload(sessionId: string): void {
+  try {
+    void fetch(
+      resolveRequestUrl(`/playback/sessions/${encodeURIComponent(sessionId)}`),
+      { method: "DELETE", keepalive: true },
+    );
+  } catch {
+    // 卸载路径上无处呈现错误，静默即可
+  }
+}
+
+export interface PlaybackWatchState {
+  position_ms: number;
+  played: boolean;
+  play_count: number;
+  /** 服务端算出的片长；已看判定的分母始终以它为准 */
+  duration_ms: number | null;
+  audio_track: string | null;
+  subtitle_track: string | null;
+}
+
+/** 起播前问「上次看到哪、用的哪条轨」。从未播过返回全零，不是错误。 */
+export async function fetchResumeState(unit: PlaybackUnit): Promise<PlaybackWatchState> {
+  const params = new URLSearchParams({
+    media_item_id: String(unit.media_item_id),
+    season_number: String(unit.season_number ?? 0),
+    episode_number: String(unit.episode_number ?? 0),
+  });
+  const response = await request<ApiEnvelope<PlaybackWatchState>>(
+    `/playback/resume?${params}`,
+  );
+  return response.data;
+}
+
+export interface PlaybackProgressBody extends PlaybackUnit {
+  event: "start" | "progress" | "stop";
+  /** 播到文件的哪个位置。**不报（undefined）视同播到结尾**，与报 0 不同。 */
+  position_ms?: number;
+  audio_track?: string;
+  subtitle_track?: string;
+}
+
+/** 上报观看进度（开始 / 心跳 / 停止同一入口）。 */
+export async function reportPlaybackProgress(
+  body: PlaybackProgressBody,
+): Promise<PlaybackWatchState> {
+  const response = await request<ApiEnvelope<PlaybackWatchState>>("/playback/progress", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+  return response.data;
+}
+
+/**
+ * 页面卸载时上报最后位置。
+ *
+ * 与结束会话不同，这一条**不能丢**——丢了用户下次续播就会回到十几秒前，
+ * 是最容易被察觉的体验缺陷。`sendBeacon` 是唯一能在卸载路径上活下来的
+ * 通道（普通 fetch 会被直接取消），它发的是 POST，正合进度接口。
+ * Blob 必须带 `application/json` 类型，否则 FastAPI 会因 Content-Type
+ * 不对而拒收。
+ */
+export function reportPlaybackProgressOnUnload(body: PlaybackProgressBody): void {
+  if (typeof navigator === "undefined" || !navigator.sendBeacon) return;
+  const blob = new Blob([JSON.stringify(body)], { type: "application/json" });
+  navigator.sendBeacon(resolveRequestUrl("/playback/progress"), blob);
+}
+
+export interface PlaybackPolicy {
+  software_transcode_enabled: boolean;
+  max_transcode_concurrency: number;
+  max_remux_concurrency: number;
+  max_transcode_height: number;
+  transcode_cache_quota_gb: number;
+  /** 实测结果而非配置项——用户改不了自己有没有显卡 */
+  hardware_available: boolean;
+  hw_backends: string[];
+}
+
+export async function fetchPlaybackPolicy(): Promise<PlaybackPolicy> {
+  const response = await request<ApiEnvelope<PlaybackPolicy>>("/playback/policy");
+  return response.data;
+}
+
+/** 按字段增量保存：没给的项保持原值，不会覆盖别处刚改的设置。 */
+export async function savePlaybackPolicy(
+  changes: Partial<Omit<PlaybackPolicy, "hardware_available" | "hw_backends">>,
+): Promise<PlaybackPolicy> {
+  const response = await request<ApiEnvelope<PlaybackPolicy>>("/playback/policy", {
+    method: "PUT",
+    body: JSON.stringify(changes),
+  });
+  return response.data;
 }
