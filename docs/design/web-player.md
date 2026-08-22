@@ -704,6 +704,17 @@ iPhone Safari 没有元素级全屏 API，`enterLandscape` 会报 `unsupported`�
   「安静时也知道播到哪」与「安静时画面干净」只有这样才能同时成立，这也正是
   YouTube 控件隐藏后的样子。渐变底与控制行一起淡出，进度条留下。
 
+**画中画不做成主要入口**。「切走标签页就自动进画中画」网页自己实现不了：
+`requestPictureInPicture()` 要求用户手势，而 `visibilitychange` 里没有手势。
+浏览器给的唯一入口是媒体会话动作 `enterpictureinpicture`——由浏览器判断该
+不该自动进、然后回调页面，此时调用才合法（Chrome 目前主要对**已安装为应用**
+的站点触发，本项目有 manifest，装到桌面/主屏后即生效；Safari 不认这个动作名，
+`setActionHandler` 会直接抛，必须裹 try）。手机上另有一条不需要代码的路：
+Android Chrome 与 iOS Safari 在视频处于**全屏**时离开浏览器会自动进画中画，
+「横屏」按钮正好就是全屏——**前提是播放器在页面隐藏时不能暂停**。所以按钮
+只在桌面出现，且只在 `document.pictureInPictureEnabled` 为真时渲染：Firefox
+的画中画只活在浏览器自己的界面里，网页调不动，不判一下就是个死按钮。
+
 **进度条的把手也是自己画的**，不用 `<input type=range>` 原生的那个：原生把手
 在 `宽度 - 把手宽` 的范围里走，而已播段是按整条宽度铺的，两者只在正中对得上、
 两端各差半个把手宽（14px 的把手就是 7px）——表现就是「圆点没对准进度」。

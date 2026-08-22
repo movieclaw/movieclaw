@@ -136,6 +136,9 @@ export function VideoPlayer(props: VideoPlayerProps) {
    * `screen`，直接算会造成水合不一致，按钮文案在首帧闪一下。
    */
   const [canRotate, setCanRotate] = useState(false);
+  /** 这个浏览器有 W3C 画中画 API。Firefox 的画中画只在浏览器自己的界面里，
+   *  网页调不动——不判一下就会在那边留一个点了没反应的死按钮。 */
+  const [canPip, setCanPip] = useState(false);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<PlaybackEngine | null>(null);
@@ -689,6 +692,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
       typeof screenOrientation()?.lock === "function" &&
         window.matchMedia("(pointer: coarse)").matches,
     );
+    setCanPip(document.pictureInPictureEnabled === true);
   }, []);
 
   /**
@@ -813,13 +817,40 @@ export function VideoPlayer(props: VideoPlayerProps) {
     mediaSession.setActionHandler("seekbackward", () => seekBy(-10));
     mediaSession.setActionHandler("seekforward", () => seekBy(10));
     mediaSession.setActionHandler("nexttrack", next ? () => onPlayNext() : null);
+    /**
+     * 「切走标签页就自动进画中画」。
+     *
+     * 网页**没法**自己实现这件事：`requestPictureInPicture()` 要求用户手势，
+     * 而 `visibilitychange` 里根本没有手势。浏览器给的唯一入口就是这个媒体
+     * 会话动作——由浏览器判断该不该自动进，然后回调我们，此时调用是合法的。
+     * Chrome 目前主要对**已安装为应用**的站点触发（本项目有 manifest，装到
+     * 桌面/主屏后即生效）。
+     *
+     * 手机上另有一条不需要代码的路：Android Chrome 与 iOS Safari 在视频处于
+     * **全屏**时离开浏览器会自动进画中画，我们的「横屏」按钮正好就是全屏，
+     * 而且这里从不在页面隐藏时暂停，所以那条路本来就是通的。
+     *
+     * 不认识这个动作名的浏览器（Safari）会直接抛，所以必须裹 try。
+     */
+    try {
+      mediaSession.setActionHandler("enterpictureinpicture" as MediaSessionAction, () => {
+        void video?.requestPictureInPicture?.().catch(() => undefined);
+      });
+    } catch {
+      // 这个浏览器不认这个动作，自动画中画交给系统自己的行为
+    }
     return () => {
       mediaSession.metadata = null;
       for (const action of ["play", "pause", "seekbackward", "seekforward", "nexttrack"] as const) {
         mediaSession.setActionHandler(action, null);
       }
+      try {
+        mediaSession.setActionHandler("enterpictureinpicture" as MediaSessionAction, null);
+      } catch {
+        // 同上，没注册上自然也不用清
+      }
     };
-  }, [title, episodeLabel, posterUrl, togglePlay, seekBy, next, onPlayNext]);
+  }, [title, episodeLabel, posterUrl, togglePlay, seekBy, next, onPlayNext, video]);
 
   /** 播放中申请防息屏。切到后台会被系统收走，回来时重新申请。 */
   useEffect(() => {
@@ -1092,6 +1123,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
             onToggleDiagnostics={() => setDiagnosticsOpen((open) => !open)}
             landscape={landscape}
             canRotate={canRotate}
+            canPip={canPip}
             onToggleLandscape={toggleLandscape}
             onMenuOpenChange={setMenuOpen}
             trickplay={trickplay}

@@ -169,6 +169,8 @@ export interface PlayerControlsProps {
   landscape: boolean;
   /** 这台设备的方向锁真的能用（手机/平板）。桌面上同一个按钮叫「全屏」 */
   canRotate: boolean;
+  /** 这个浏览器的画中画能由网页发起。不能就别渲染那个键（Firefox） */
+  canPip: boolean;
   onToggleLandscape: () => void;
   /** 菜单展开时要顶住控制条的自动隐藏，否则菜单会连着控制条一起淡掉 */
   onMenuOpenChange: (open: boolean) => void;
@@ -193,6 +195,7 @@ export function PlayerControls(props: PlayerControlsProps) {
     onNext,
     landscape,
     canRotate,
+    canPip,
     onToggleLandscape,
     onMenuOpenChange,
     trickplay,
@@ -268,10 +271,13 @@ export function PlayerControls(props: PlayerControlsProps) {
           <StatsGlyph />
         </IconButton>
 
-        <MediaPipButton className="player-mc-button max-md:hidden" noTooltip>
-          <PipGlyph slot="enter" />
-          <PipGlyph slot="exit" exit />
-        </MediaPipButton>
+        {/* 手机上不显示：那边「切走就自动进画中画」由系统负责，不需要手点 */}
+        {canPip ? (
+          <MediaPipButton className="player-mc-button max-md:hidden" noTooltip>
+            <PipGlyph slot="enter" />
+            <PipGlyph slot="exit" exit />
+          </MediaPipButton>
+        ) : null}
         <IconButton
           tip={canRotate ? (landscape ? "退出横屏" : "横屏") : landscape ? "退出全屏" : "全屏"}
           onClick={onToggleLandscape}
