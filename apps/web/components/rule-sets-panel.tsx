@@ -14,6 +14,13 @@ import {
   type RuleSetSpec,
 } from "@/lib/api/subscriptions";
 import { PLATFORM_OPTIONS, platformLabel } from "@/lib/platforms";
+import {
+  CODEC_FAMILIES,
+  DEFAULT_LADDER,
+  LADDER_OPTIONS,
+  upgradeLadderPreview,
+  type UpgradeLadderPreview,
+} from "@/lib/upgrade-ladder";
 
 /**
  * 规则组管理（设置 → 订阅 → 规则组）：Web 端唯一的规则组配置入口。
@@ -298,16 +305,6 @@ function hdrChipText(levels: string[]): string {
   return `HDR ${levels.join("/")}`;
 }
 
-/** 洗版阶梯的维度选项（顺序即位次，交互与分辨率偏好完全一致：点击依次入列）。 */
-const LADDER_OPTIONS: { value: string; label: string }[] = [
-  { value: "resolution", label: "分辨率" },
-  { value: "source", label: "片源" },
-  { value: "hdr", label: "HDR" },
-  { value: "video_codec", label: "编码" },
-  { value: "platform", label: "平台" },
-];
-const DEFAULT_LADDER = ["resolution", "source"];
-
 const sameLadder = (a: string[], b: string[]) =>
   a.length === b.length && a.every((v, i) => v === b[i]);
 
@@ -333,22 +330,15 @@ export function upgradeTargetLabel(spec: RuleSetSpec): string | null {
   return parts.join(" · ");
 }
 
-/**
- * 编码按"家族"选择：词表把 x265 / H.265 / HEVC 归一成不同值，而用户想表达的
- * 是"要 H.265 这一族"——UI 选一族即把全部等价写法写进白名单，避免因发布组
- * 写法不同而漏掉资源。
- */
-const CODEC_FAMILIES: { label: string; values: string[] }[] = [
-  { label: "H.265", values: ["x265", "H.265", "HEVC"] },
-  { label: "H.264", values: ["x264", "H.264", "AVC"] },
-  { label: "AV1", values: ["AV1"] },
-];
-
-/** spec → 人话芯片列表（清单摘要 / 订阅弹窗与详情页复用；空数组=全不限）。 */
-export function specSummary(spec: RuleSetSpec): string[] {
+/** spec → 人话芯片列表（清单摘要 / 订阅弹窗与详情页复用；空数组=全不限）。
+ *  `withoutUpgrade`：编辑器底部把洗版单独渲染成阶梯，那里不再要这枚芯片。 */
+export function specSummary(
+  spec: RuleSetSpec,
+  { withoutUpgrade = false }: { withoutUpgrade?: boolean } = {},
+): string[] {
   const chips: string[] = [];
   if (spec.resolutions?.length) chips.push(spec.resolutions.join(" > "));
-  const upgradeTarget = upgradeTargetLabel(spec);
+  const upgradeTarget = withoutUpgrade ? null : upgradeTargetLabel(spec);
   if (upgradeTarget) {
     chips.push(`洗到 ${upgradeTarget}${spec.upgrade_keep_old ? "（保留旧版）" : ""}`);
   }
@@ -690,7 +680,15 @@ export function RuleSetEditorDialog({
     spec.sites,
   ]);
 
-  const draftChips = useMemo(() => specSummary(draft.spec), [draft.spec]);
+  // 底部回执分两段：硬性筛选走芯片，洗版走阶梯（洗版开着时芯片里不再重复目标）
+  const ladderPreview = useMemo(
+    () => upgradeLadderPreview(draft.spec, platformLabel),
+    [draft.spec],
+  );
+  const draftChips = useMemo(
+    () => specSummary(draft.spec, { withoutUpgrade: ladderPreview !== null }),
+    [draft.spec, ladderPreview],
+  );
 
   const submit = async () => {
     if (draft.error) {
@@ -1079,12 +1077,17 @@ export function RuleSetEditorDialog({
           {/* 配完给一句人话回执：新用户最缺的就是"我配的到底是什么"的确认。
               内容来自与保存同一个 draft.spec，不会出现"看到的和存下去的不一样" */}
           <div className="rounded-xl bg-white/[0.03] px-4 py-3">
-            <p className="text-caption text-[var(--text-faint)]">这条规则会这样筛选</p>
+            <p className="text-caption text-[var(--text-faint)]">
+              {ladderPreview ? "先这样筛掉不要的" : "这条规则会这样筛选"}
+            </p>
             <p className="mt-1 text-sub leading-6 text-[var(--text-muted)]">
               {draftChips.length
                 ? draftChips.join(" · ")
                 : "不限任何条件——身份对得上的资源都接受"}
             </p>
+            {ladderPreview && (
+              <UpgradeLadderPreviewView preview={ladderPreview} keepOld={upgradeKeepOld} />
+            )}
           </div>
 
           {error && (
@@ -1109,6 +1112,82 @@ export function RuleSetEditorDialog({
         </div>
       </div>
     </Modal>
+  );
+}
+
+/**
+ * 洗版阶梯预览：把"洗到哪一档"从一句话摊成一条**看得见的路**。
+ *
+ * 一句"洗到 1080p 蓝光 · DV"读不出洗版真正的两个后果，而它们恰恰是用户
+ * 最该在按下保存之前知道的（docs/design/quality-upgrade.md §2.1 / §14.6）：
+ *
+ * - **终点之下还有多少档**：每上一档就是一次重复下载，多加一维阶梯的代价
+ *   在这里才具体；
+ * - **哪些档已经算达标**：分辨率排在第一位时，任意 2160p 资源（哪怕 WEBRip）
+ *   都优于 1080p 蓝光，洗版会直接停在那儿——所以"更高档同样算达标"必须写在
+ *   终点卡上，而不是留给用户自己推。
+ *
+ * 版式即语义：终点在最上方并高亮（"最好品质"是这条路的目的地），下方按档位
+ * 降序排开、每行一个 ↑ 指回终点——从下往上读就是资源逐级被替换的过程。
+ */
+function UpgradeLadderPreviewView({
+  preview,
+  keepOld,
+}: {
+  preview: UpgradeLadderPreview;
+  keepOld: boolean;
+}) {
+  return (
+    <div className="mt-3 border-t border-white/[0.06] pt-3">
+      <p className="text-caption leading-relaxed text-[var(--text-faint)]">
+        {`再这样一级级往上洗（按「${preview.dimensions.join(" › ")}」逐维比较，先分出高低的那一维说了算）`}
+      </p>
+
+      <div className="mt-2 rounded-lg border border-[var(--accent-2)]/45 bg-[var(--accent-2)]/[0.14] px-3 py-2">
+        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+          <span className="rounded-full bg-[var(--accent-2)]/25 px-2 py-0.5 text-micro font-semibold text-white">
+            终点
+          </span>
+          <span className="text-sub font-semibold text-white">{preview.target}</span>
+        </div>
+        <p className="mt-1 text-caption leading-relaxed text-[var(--text-faint)]">
+          到手即停，不再洗版
+          {preview.ceiling
+            ? `；比它更高的档（最高 ${preview.ceiling}）同样算达标，也会停`
+            : ""}
+          。{keepOld ? "旧版本保留共存。" : "旧版本进回收站保留 7 天。"}
+        </p>
+      </div>
+
+      {preview.below.length > 0 ? (
+        <>
+          <p className="mt-2.5 text-caption leading-relaxed text-[var(--text-faint)]">
+            {"到终点之前，先到手的可能是下面任意一档；之后每遇到更高的一档，就再下一次、换掉旧的："}
+          </p>
+          <ol className="mt-1.5 space-y-1">
+            {preview.below.map((label) => (
+              <li
+                key={label}
+                className="flex items-center gap-2 text-sub text-[var(--text-muted)]"
+              >
+                <span className="text-[var(--text-faint)]">↑</span>
+                <span>{label}</span>
+              </li>
+            ))}
+            {preview.moreBelow > 0 && (
+              <li className="flex items-center gap-2 text-caption text-[var(--text-faint)]">
+                <span>↑</span>
+                <span>更低的 {preview.moreBelow} 档同理</span>
+              </li>
+            )}
+          </ol>
+        </>
+      ) : (
+        <p className="mt-2 text-caption text-[var(--text-faint)]">
+          终点已是最低档，不会有过渡版本。
+        </p>
+      )}
+    </div>
   );
 }
 
