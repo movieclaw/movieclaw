@@ -49,21 +49,18 @@ import {
 import { useJobs } from "@/lib/jobs";
 import type { TaskCenterViewName } from "@/lib/task-center";
 import {
+  ACTIVE_FEED_JOB_STATUSES,
+  ATTENTION_JOB_STATUSES,
+  contentMissingLabel,
+  useTaskActivity,
+  type DownloadTaskGroup,
+} from "@/lib/task-activity";
+import {
   formatClockTime,
   formatRelativeTime,
   formatTimelineDayLabel,
   timelineDayKey,
 } from "@/lib/time";
-
-const ATTENTION_JOB_STATUSES = new Set<JobStatus>(["blocked", "failed"]);
-const ACTIVE_FEED_JOB_STATUSES = new Set<JobStatus>([
-  "queued",
-  "running",
-  "retry_wait",
-  "cancelling",
-  "waiting",
-]);
-const HISTORY_JOB_STATUSES = new Set<JobStatus>(["succeeded", "cancelled"]);
 
 const VIEW_LABELS: { id: TaskCenterViewName; label: string }[] = [
   { id: "all", label: "全部" },
@@ -99,9 +96,8 @@ export function TaskCenterView({
   const [retryingJobId, setRetryingJobId] = useState<string | null>(null);
   const [pendingDeleteTask, setPendingDeleteTask] = useState<DownloadTask | null>(null);
   const toast = useToast();
-  const { jobs, upsert } = useJobs();
+  const { upsert } = useJobs();
   const {
-    tasks: downloadTasks,
     sources,
     loading,
     error,
@@ -167,75 +163,21 @@ export function TaskCenterView({
     }
   }
 
-  // 页面按“是否需要用户行动”组织，而不是按底层执行器分类。每个分区内部
-  // 仍沿用 Provider 的更新时间倒序，保留实时刷新时最重要的任务在前。
-  const attentionJobs = useMemo(
-    () => jobs.filter((job) => ATTENTION_JOB_STATUSES.has(job.status)),
-    [jobs],
-  );
-  const activeFeedJobs = useMemo(
-    () => jobs.filter((job) => ACTIVE_FEED_JOB_STATUSES.has(job.status)),
-    [jobs],
-  );
-  const historicalJobs = useMemo(
-    () => jobs.filter((job) => HISTORY_JOB_STATUSES.has(job.status)),
-    [jobs],
-  );
-  const ingestJobsByHash = useMemo(() => {
-    const linked = new Map<string, JobView>();
-    for (const job of jobs) {
-      if (job.job_type !== "library.ingest") continue;
-      for (const resource of job.resources) {
-        if (resource.resource_type === "download" && !linked.has(resource.resource_id)) {
-          linked.set(resource.resource_id.toLowerCase(), job);
-        }
-      }
-    }
-    return linked;
-  }, [jobs]);
-  // 刷流种子先从媒体管线里分流：它们没有入库/救援/流转语义，不进分组时间线
-  // 与关注区，由独立的折叠分组承载（见 BoostTaskSection）
-  const boostTasks = useMemo(
-    () => downloadTasks.filter((task) => task.source === "boost"),
-    [downloadTasks],
-  );
-  const mediaTasks = useMemo(
-    () => downloadTasks.filter((task) => task.source !== "boost"),
-    [downloadTasks],
-  );
-  const downloadGroups = useMemo(() => groupDownloadTasks(mediaTasks), [mediaTasks]);
-  const attentionDownloadGroups = useMemo(
-    () => downloadGroups.filter((group) => downloadGroupNeedsAttention(group, ingestJobsByHash)),
-    [downloadGroups, ingestJobsByHash],
-  );
-  const activeDownloadGroups = useMemo(
-    () => downloadGroups.filter((group) => !downloadGroupNeedsAttention(group, ingestJobsByHash)),
-    [downloadGroups, ingestJobsByHash],
-  );
-  const linkedIngestJobIds = useMemo(
-    () =>
-      new Set(
-        downloadTasks
-          .map((task) => ingestJobsByHash.get(task.info_hash.toLowerCase())?.id)
-          .filter((jobId): jobId is string => jobId != null),
-      ),
-    [downloadTasks, ingestJobsByHash],
-  );
-  // 已经串进下载生命周期的 ingest Job 不再作为第二张独立卡重复出现。
-  const standaloneAttentionJobs = useMemo(
-    () => attentionJobs.filter((job) => !linkedIngestJobIds.has(job.id)),
-    [attentionJobs, linkedIngestJobIds],
-  );
-  const standaloneActiveJobs = useMemo(
-    () => activeFeedJobs.filter((job) => !linkedIngestJobIds.has(job.id)),
-    [activeFeedJobs, linkedIngestJobIds],
-  );
-  const standaloneHistoricalJobs = useMemo(
-    () => historicalJobs.filter((job) => !linkedIngestJobIds.has(job.id)),
-    [historicalJobs, linkedIngestJobIds],
-  );
-  const attentionTotal = attentionDownloadGroups.length + standaloneAttentionJobs.length;
-  const activeTotal = activeDownloadGroups.length + standaloneActiveJobs.length;
+  // 页面按“是否需要用户行动”组织，而不是按底层执行器分类。归类与计数由
+  // useTaskActivity 统一承担——侧栏角标、一级切换器和这里的状态选项卡必须
+  // 用同一份口径，否则同一屏上会出现互相矛盾的数字（见 lib/task-activity）。
+  // 每个分区内部仍沿用 Provider 的更新时间倒序，保留最重要的任务在前。
+  const {
+    ingestJobsByHash,
+    attentionDownloadGroups,
+    activeDownloadGroups,
+    boostTasks,
+    standaloneAttentionJobs,
+    standaloneActiveJobs,
+    standaloneHistoricalJobs,
+    attentionTotal,
+    activeTotal,
+  } = useTaskActivity();
   const showAttention = view === "all" || view === "attention";
   const showActive = view === "all" || view === "active";
   const showHistory = view === "all" || view === "history";
@@ -1222,76 +1164,11 @@ function ingestUnitSummary(
   };
 }
 
-/**
- * 内容核验证明种子里没有的集（声明的覆盖范围与实际文件不符）。
- *
- * 这些集已经退回重新寻找资源，等这个种子永远等不到——不能再按"其余等待下载
- * 完成"讲，否则会出现「下载完成 7.59 GB」和「等待下载完成」同框的自相矛盾。
- */
-function contentMissingLabel(task: DownloadTask): string | null {
-  const units = (task.subscriptions[0]?.units ?? []).filter((unit) => unit.content_missing);
-  if (units.length === 0) return null;
-  const first = units[0];
-  const label = `S${String(first.season_number).padStart(2, "0")}E${String(
-    first.episode_number,
-  ).padStart(2, "0")}`;
-  return units.length === 1 ? label : `${label} 等 ${units.length} 集`;
-}
-
 /** 多集资源分批交付时的「已入库/已替换 N/M 集」；单集与电影没有分批语义，返回 null。 */
 function partialIngestLabel(task: DownloadTask): string | null {
   const summary = ingestUnitSummary(task);
   if (summary == null || summary.total <= 1) return null;
   return `${summary.upgrade ? "已替换" : "已入库"} ${summary.done}/${summary.total} 集`;
-}
-
-interface DownloadTaskGroup {
-  key: string;
-  mediaItemId: number | null;
-  title: string;
-  kind: string | null;
-  posterUrl: string | null;
-  tasks: DownloadTask[];
-}
-
-function groupDownloadTasks(tasks: DownloadTask[]): DownloadTaskGroup[] {
-  const groups = new Map<string, DownloadTaskGroup>();
-  for (const task of tasks) {
-    // 只用数据库里的媒体条目主键合并。同名但未识别的资源必须各自保留，
-    // 不能因为标题解析相似就把两个版本或两部同名作品错误折叠。
-    const key = task.media_item_id != null ? `media:${task.media_item_id}` : `task:${task.id}`;
-    const existing = groups.get(key);
-    if (existing) {
-      existing.tasks.push(task);
-      if (!existing.posterUrl && task.poster_url) existing.posterUrl = task.poster_url;
-      continue;
-    }
-    groups.set(key, {
-      key,
-      mediaItemId: task.media_item_id,
-      title: task.media_title || task.name || task.info_hash,
-      kind: task.media_kind,
-      posterUrl: task.poster_url,
-      tasks: [task],
-    });
-  }
-  return [...groups.values()];
-}
-
-function downloadGroupNeedsAttention(
-  group: DownloadTaskGroup,
-  ingestJobsByHash: Map<string, JobView>,
-): boolean {
-  return group.tasks.some((task) => {
-    const ingestJob = ingestJobsByHash.get(task.info_hash.toLowerCase());
-    return (
-      task.can_replace ||
-      task.state === "error" ||
-      task.state === "missing" ||
-      contentMissingLabel(task) != null ||
-      (ingestJob != null && ATTENTION_JOB_STATUSES.has(ingestJob.status))
-    );
-  });
 }
 
 function downloadGroupTimelineTone(

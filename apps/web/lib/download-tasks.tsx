@@ -24,7 +24,6 @@ interface DownloadTasksContextValue {
   tasks: DownloadTask[];
   sources: DownloadTaskSource[];
   subscriptionTasks: DownloadTask[];
-  attentionTasks: DownloadTask[];
   loading: boolean;
   error: string | null;
   refreshedAt: number | null;
@@ -79,23 +78,11 @@ export function DownloadTasksProvider({ children }: { children: React.ReactNode 
     () => snapshot.items.filter((task) => task.source === "subscription"),
     [snapshot.items],
   );
-  const attentionTasks = useMemo(
-    () =>
-      snapshot.items.filter(
-        (task) =>
-          // 刷流种子没有救援/入库语义，异常由刷流引擎自身消化（missing 判定、
-          // 止损、汰换），不进"需要关注"清单打扰用户
-          task.source !== "boost" &&
-          (["error", "missing"].includes(task.state) || task.can_replace),
-      ),
-    [snapshot.items],
-  );
   const value = useMemo(
     () => ({
       tasks: snapshot.items,
       sources: snapshot.sources,
       subscriptionTasks,
-      attentionTasks,
       loading,
       error,
       refreshedAt,
@@ -104,7 +91,6 @@ export function DownloadTasksProvider({ children }: { children: React.ReactNode 
     [
       snapshot,
       subscriptionTasks,
-      attentionTasks,
       loading,
       error,
       refreshedAt,

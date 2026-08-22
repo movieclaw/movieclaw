@@ -21,9 +21,9 @@ import {
   type JobStatus,
   type JobView,
 } from "@/lib/api/jobs";
-import { useDownloadTasks } from "@/lib/download-tasks";
 import { formatBytes, formatDuration } from "@/lib/format";
 import { useJobs } from "@/lib/jobs";
+import { taskActivityBadge, useTaskActivity } from "@/lib/task-activity";
 import { formatDateTime, formatRelativeTime } from "@/lib/time";
 import { usePermissions } from "@/lib/permissions";
 
@@ -715,36 +715,26 @@ function UsageMetric({ label, value }: { label: string; value: string }) {
   );
 }
 
-/** 需要用户判断的 Job 状态；与活动页任务视角的「需要处理」同口径。 */
-const ATTENTION_STATUSES = new Set<JobStatus>(["blocked", "failed"]);
-
 /**
  * 侧栏「活动」入口。
  *
  * 角标只表达**当前最该被看见的那件事**，点击就直达那件事：有失败/阻塞的任务
- * 时亮警示色并直接落到任务视角的「需要处理」——角标本身就是"有事要办"的信号，
- * 点进去还要再切一次视角是纯粹的浪费；没有异常时回到常规的进行中计数，
- * 点击落在默认的观看视角。
+ * 时亮警示色并落到任务视角的「需要处理」，只有进行中任务时落到「进行中」。
+ * 角标数的是任务，落点就必须是任务视角对应的那一片——把人丢到「观看」再让他
+ * 自己找"为什么有提醒"，等于让提醒自证失败。角标为空时才回到页面默认的观看。
+ *
+ * 计数走 useTaskActivity 这份共享口径，与活动页里的选项卡数字保证一致。
  */
 export function JobCenter({ collapsed, active = false }: { collapsed: boolean; active?: boolean }) {
   const router = useRouter();
   const { isAdmin } = usePermissions();
-  const { jobs, activeJobs } = useJobs();
-  const { tasks: downloadTasks, attentionTasks } = useDownloadTasks();
+  const activity = useTaskActivity();
   if (!isAdmin) return null;
-  // 刷流（boost）种子常年大量在跑，计入角标会让数字失去提醒意义，只数真实下载
-  const activeCount =
-    activeJobs.length + downloadTasks.filter((task) => task.source !== "boost").length;
-  const attentionCount =
-    jobs.filter((job) => ATTENTION_STATUSES.has(job.status)).length + attentionTasks.length;
-  const alert = attentionCount > 0;
-  const badgeCount = alert ? attentionCount : activeCount;
-  const href = (alert ? "/activity?view=attention" : "/activity") as Route;
-  const hint = alert ? `${attentionCount} 项需要处理` : `${activeCount} 个进行中`;
+  const { alert, count: badgeCount, href, hint } = taskActivityBadge(activity);
   return (
     <button
       type="button"
-      onClick={() => router.push(href)}
+      onClick={() => router.push(href as Route)}
       data-active={active}
       title={collapsed ? `活动（${hint}）` : undefined}
       className={`glass-row nav-item py-2 max-md:py-2.5 ${collapsed ? "justify-center px-0" : "px-3"}`}
