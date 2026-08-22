@@ -710,11 +710,15 @@ async def _verify_upgrades_locked(session: AsyncSession, media_item_id: int) -> 
 
         # 逐文件算快照，按**快照**找最优（名称来源：来自洗版投递的文件用
         # attempt.quality——文件行本身可能还没有片源信息）
-        from movieclaw_matcher.decision import resolution_rank, source_tier
+        from movieclaw_matcher import candidate_ladder_rank
 
+        # 选最优用**规则组自己的阶梯**（拿不到 spec 时回落中性序）：与下面的
+        # 判定同口径。此前固定按 (分辨率, 片源) 选，多维阶梯下会出现"选中的
+        # 文件不是判定认为最优的那个"，全靠 file.id 兜底才碰巧对
+        rank_spec = spec or _NEUTRAL_SPEC
         best_file: LibraryFile | None = None
         best_snapshot: QualitySnapshot | None = None
-        best_key: tuple[int, int, int] = (-1, -1, -1)
+        best_key: tuple[tuple[int, ...], int] = ((), -1)
         snapshots_by_file: dict[int, QualitySnapshot] = {}
         for file in unit_files:
             name_attrs = None
@@ -723,11 +727,7 @@ async def _verify_upgrades_locked(session: AsyncSession, media_item_id: int) -> 
             snapshot = snapshot_from_file(file, name_attrs)
             if file.id is not None:
                 snapshots_by_file[file.id] = snapshot
-            key = (
-                resolution_rank(snapshot.resolution, _NEUTRAL_SPEC) or 0,
-                source_tier(snapshot.media_source, snapshot.remux) or 0,
-                file.id or 0,
-            )
+            key = (candidate_ladder_rank(snapshot, rank_spec), file.id or 0)
             if key > best_key:
                 best_file, best_snapshot, best_key = file, snapshot, key
 
@@ -1018,18 +1018,19 @@ async def _verify_upgrades_locked(session: AsyncSession, media_item_id: int) -> 
 
 
 def _better(snapshot, baseline, spec) -> bool:
-    """实测快照是否严格优于基线（不设停止线的纯序比较，供确认路径复用）。"""
-    from movieclaw_matcher.decision import resolution_rank, source_tier
+    """实测快照是否严格优于基线（不设停止线的纯序比较，供确认路径复用）。
 
-    s_res = resolution_rank(snapshot.resolution, spec)
-    b_res = resolution_rank(baseline.resolution, spec)
-    if s_res is None or b_res is None:
-        return False
-    if s_res != b_res:
-        return s_res > b_res
-    s_tier = source_tier(snapshot.media_source, snapshot.remux)
-    b_tier = source_tier(baseline.media_source, baseline.remux)
-    return s_tier is not None and b_tier is not None and s_tier > b_tier
+    **必须与抓取判定走同一条阶梯**（``compare_ladder``）。这里曾经手写
+    "先比分辨率、再比片源"，对 §14 加进阶梯的编码/HDR/平台三个维度视而不见：
+    抓取端认定的合法升级，到验证端一律判否——文件进回收站，而"诚实资源"判定
+    又不会把它拉黑，于是下一轮再抓同一个候选，下载 → 回收 → 再下载 无限循环。
+    不可比（某位单侧未知）保持判否，与旧实现一致。
+    """
+    from movieclaw_matcher import compare_ladder, ladder_vector
+
+    return (
+        compare_ladder(ladder_vector(snapshot, spec), ladder_vector(baseline, spec)) == 1
+    )
 
 
 def _unit_text(wanted: WantedItem) -> str:

@@ -208,8 +208,10 @@ async def grab_manual(
     upgrade_labels: tuple[str, str] | None = None
     if upgrade_covered:
         upgrade_labels = (
-            quality_label(QualitySnapshot.model_validate(upgrade_covered[0].quality or {})),
-            quality_label(parsed_attrs),
+            quality_label(
+                QualitySnapshot.model_validate(upgrade_covered[0].quality or {}), spec
+            ),
+            quality_label(parsed_attrs, spec),
         )
 
     # 手动选种 = 用户显式覆盖规则组：verdict 直接放行（score=0 只进活动 payload）
