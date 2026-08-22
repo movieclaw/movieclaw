@@ -10,6 +10,7 @@ import { useRouter } from "next/navigation";
 
 import { ArtworkPickerDialog } from "@/components/artwork-picker-dialog";
 import { CastRow } from "@/components/cast-row";
+import { MediaTrackRows } from "@/components/media-track-rows";
 import { PAGE_NAV_BUTTON_CLASS, PageNav } from "@/components/page-nav";
 import { HScroller } from "@/components/h-scroller";
 import {
@@ -25,14 +26,12 @@ import { PosterImage } from "@/components/poster-image";
 import { ReidentifyDialog } from "@/components/reidentify-dialog";
 import { Tooltip } from "@/components/tooltip";
 import {
-  type AudioStream,
   type ItemDeleteResult,
   type LibraryEpisode,
   type LibraryItemDetail,
   type LibraryItemFile,
   type MediaLibrary,
   type SeasonEpisodes,
-  type SubtitleStream,
   type TransferPreview,
   type TransferStatus,
   deleteLibraryFile,
@@ -49,8 +48,6 @@ import {
   transferLibraryItem,
 } from "@/lib/api/libraries";
 import { useSubscribeEntry } from "@/components/subscribe-entry";
-import { SubtitleGenPanel } from "@/components/subtitle-gen-panel";
-import { SubtitlePreviewDialog } from "@/components/subtitle-preview-dialog";
 import { getDiscoveryReturnPath } from "@/lib/discovery-return-path";
 import { formatBytes, formatRuntimeMinutes, formatVideoResolution } from "@/lib/format";
 import { USER_LOWEST_SOURCE, mediaSourceDisplayLabel } from "@/lib/media-source-annotation";
@@ -789,32 +786,6 @@ function imageUrl(url: string | null): string {
   return /^https?:\/\//i.test(url) ? cachedImageUrl(url) : resolveRequestUrl(url);
 }
 
-const AUDIO_CODEC_LABELS: Record<string, string> = {
-  aac: "AAC",
-  ac3: "Dolby Digital",
-  eac3: "Dolby Digital+",
-  truehd: "Dolby TrueHD",
-  dts: "DTS",
-  flac: "FLAC",
-  opus: "Opus",
-  mp3: "MP3",
-  vorbis: "Vorbis",
-};
-
-const SUBTITLE_CODEC_LABELS: Record<string, string> = {
-  subrip: "SRT",
-  srt: "SRT",
-  ass: "ASS",
-  ssa: "SSA",
-  hdmv_pgs_subtitle: "PGS",
-  dvd_subtitle: "VobSub",
-  mov_text: "Text",
-  webvtt: "VTT",
-  vtt: "VTT",
-  sub: "VobSub",
-  sup: "PGS",
-};
-
 const VIDEO_CODEC_LABELS: Record<string, string> = {
   hevc: "HEVC",
   h264: "H.264",
@@ -824,220 +795,6 @@ const VIDEO_CODEC_LABELS: Record<string, string> = {
   mpeg2video: "MPEG-2",
   vp9: "VP9",
 };
-
-const LANGUAGE_LABELS: Record<string, string> = {
-  chs: "简体中文",
-  cht: "繁体中文",
-  chi: "中文",
-  zho: "中文",
-  cmn: "中文",
-  yue: "粤语",
-  eng: "英语",
-  jpn: "日语",
-  kor: "韩语",
-  fre: "法语",
-  fra: "法语",
-  ger: "德语",
-  deu: "德语",
-  spa: "西班牙语",
-  rus: "俄语",
-  ita: "意大利语",
-  por: "葡萄牙语",
-  tha: "泰语",
-  hin: "印地语",
-};
-
-function languageLabel(code: string | null): string | null {
-  if (!code || code === "und") return null;
-  return LANGUAGE_LABELS[code.toLowerCase()] ?? code;
-}
-
-/** 声道数 → 惯用布局标签（channel_layout 可用时优先，去掉 (side) 等后缀）。 */
-function channelsLabel(stream: AudioStream): string | null {
-  const layout = stream.channel_layout?.split("(")[0]?.trim();
-  if (layout && /^\d/.test(layout)) return layout;
-  const map: Record<number, string> = { 1: "单声道", 2: "2.0", 6: "5.1", 7: "6.1", 8: "7.1" };
-  if (stream.channels == null) return null;
-  return map[stream.channels] ?? `${stream.channels} 声道`;
-}
-
-// 这些 profile 值只是编码内部档次（如 AAC 的 LC、HEVC 的 Main 10），单独展示
-// 反而让人困惑——只有 DTS-HD MA 这类"比 codec 更有信息量"的 profile 才顶替 codec
-const GENERIC_PROFILES = new Set(["lc", "main", "high", "baseline", "main 10"]);
-
-/** 音轨 → 一行徽章文案：格式（有信息量的 profile 优先）· 声道 · 语言。 */
-function audioLabel(stream: AudioStream): string {
-  const profile =
-    stream.profile && !GENERIC_PROFILES.has(stream.profile.toLowerCase()) ? stream.profile : null;
-  const codec =
-    profile ||
-    (stream.codec ? (AUDIO_CODEC_LABELS[stream.codec] ?? stream.codec.toUpperCase()) : "未知格式");
-  return [codec, channelsLabel(stream), languageLabel(stream.language)]
-    .filter(Boolean)
-    .join(" · ");
-}
-
-/** 音轨常显也只保留语言首字，编码、声道与默认状态统一交给 Tooltip。 */
-function audioCompactLabel(stream: AudioStream): string {
-  const name = languageLabel(stream.language) ?? stream.title?.trim();
-  if (name) return Array.from(name)[0]?.toUpperCase() ?? "音";
-  const codec = stream.codec
-    ? (AUDIO_CODEC_LABELS[stream.codec.toLowerCase()] ?? stream.codec.toUpperCase())
-    : null;
-  return codec ? Array.from(codec)[0]!.toUpperCase() : "音";
-}
-
-function audioTooltip(stream: AudioStream): string {
-  return [audioLabel(stream), stream.title, stream.default ? "默认" : null]
-    .filter(Boolean)
-    .join(" · ");
-}
-
-/** 字幕 → 一行徽章文案：语言/标题 · 格式 (+ 强制/外挂标记在徽章样式上体现)。 */
-function generatedSubtitleLabel(stream: SubtitleStream): string | null {
-  const title = stream.title?.toLowerCase();
-  if (!title) return null;
-  if (title.startsWith("ai-bilingual-")) {
-    const languages = title.slice("ai-bilingual-".length).split("-");
-    if (languages.length === 2) {
-      return `${languageLabel(languages[0]) ?? languages[0]} + ${languageLabel(languages[1]) ?? languages[1]}`;
-    }
-  }
-  if (title === "ai-chs") return "简体中文";
-  if (title === "ai-cht") return "繁体中文";
-  return null;
-}
-
-function subtitleLabel(stream: SubtitleStream): string {
-  const codec = stream.codec
-    ? (SUBTITLE_CODEC_LABELS[stream.codec.toLowerCase()] ?? stream.codec.toUpperCase())
-    : null;
-  const name = generatedSubtitleLabel(stream) ?? languageLabel(stream.language) ?? stream.title ?? null;
-  const parts = [name, codec].filter(Boolean);
-  if (stream.forced) parts.push("强制");
-  return parts.join(" · ") || "未知字幕";
-}
-
-/**
- * 字幕常显只保留语言首字，完整语言 / 格式 / 属性交给 Tooltip。
- * 双语 AI 字幕保留两个首字，避免都缩成一个「简」后无法区分。
- */
-function subtitleCompactLabel(stream: SubtitleStream): string {
-  const name =
-    generatedSubtitleLabel(stream) ?? languageLabel(stream.language) ?? stream.title?.trim();
-  if (name) {
-    return name
-      .split(/\s*\+\s*/)
-      .map((part) => Array.from(part.trim())[0]?.toUpperCase())
-      .filter(Boolean)
-      .join("+");
-  }
-  const codec = stream.codec
-    ? (SUBTITLE_CODEC_LABELS[stream.codec.toLowerCase()] ?? stream.codec.toUpperCase())
-    : null;
-  return codec ? Array.from(codec)[0]!.toUpperCase() : "字";
-}
-
-function subtitleTooltip(stream: SubtitleStream): string {
-  const location = externalSubtitleSuffix(stream) ?? "内封";
-  return [subtitleLabel(stream), location, stream.default ? "默认" : null, stream.file_name]
-    .filter(Boolean)
-    .join(" · ");
-}
-
-/** 字幕色块只承担格式识别，颜色刻意保持低饱和，避免重新变成徽章墙。 */
-enum SubtitleBadgeTone {
-  Srt = "srt",
-  Ass = "ass",
-  Pgs = "pgs",
-  VobSub = "vobsub",
-  Text = "text",
-  Ai = "ai",
-  Other = "other",
-}
-
-const SUBTITLE_BADGE_TONE_CLASS: Record<SubtitleBadgeTone, string> = {
-  [SubtitleBadgeTone.Srt]: "bg-sky-300/[0.1] text-sky-100/90 hover:bg-sky-300/[0.17]",
-  [SubtitleBadgeTone.Ass]:
-    "bg-violet-300/[0.1] text-violet-100/90 hover:bg-violet-300/[0.17]",
-  [SubtitleBadgeTone.Pgs]:
-    "bg-amber-300/[0.1] text-amber-100/90 hover:bg-amber-300/[0.17]",
-  [SubtitleBadgeTone.VobSub]:
-    "bg-orange-300/[0.1] text-orange-100/90 hover:bg-orange-300/[0.17]",
-  [SubtitleBadgeTone.Text]:
-    "bg-cyan-300/[0.1] text-cyan-100/90 hover:bg-cyan-300/[0.17]",
-  // AI 产物沿用主按钮的冷银色，但保持与其他字幕色块一致的轻量层级。
-  [SubtitleBadgeTone.Ai]:
-    "bg-[#cdd6e6]/[0.1] text-[#eef2f8]/90 hover:bg-[#cdd6e6]/[0.17]",
-  [SubtitleBadgeTone.Other]: "bg-white/[0.065] text-white/75 hover:bg-white/[0.12]",
-};
-
-function subtitleBadgeTone(stream: SubtitleStream): SubtitleBadgeTone {
-  const title = stream.title?.toLowerCase() ?? "";
-  const fileTokens = stream.file_name?.toLowerCase().split(".") ?? [];
-  if (
-    title.startsWith("ai-") ||
-    fileTokens.some((token) => token === "ai" || token.startsWith("ai-"))
-  ) {
-    return SubtitleBadgeTone.Ai;
-  }
-  switch (stream.codec?.toLowerCase()) {
-    case "subrip":
-    case "srt":
-      return SubtitleBadgeTone.Srt;
-    case "ass":
-    case "ssa":
-      return SubtitleBadgeTone.Ass;
-    case "hdmv_pgs_subtitle":
-    case "sup":
-      return SubtitleBadgeTone.Pgs;
-    case "dvd_subtitle":
-    case "sub":
-      return SubtitleBadgeTone.VobSub;
-    case "mov_text":
-    case "webvtt":
-    case "vtt":
-      return SubtitleBadgeTone.Text;
-    default:
-      return SubtitleBadgeTone.Other;
-  }
-}
-
-/** 音轨与字幕共用低饱和色系，颜色只帮助快速区分常见编码族。 */
-function audioBadgeTone(stream: AudioStream): SubtitleBadgeTone {
-  switch (stream.codec?.toLowerCase()) {
-    case "aac":
-    case "mp3":
-      return SubtitleBadgeTone.Srt;
-    case "truehd":
-      return SubtitleBadgeTone.Ass;
-    case "ac3":
-    case "eac3":
-      return SubtitleBadgeTone.Pgs;
-    case "dts":
-      return SubtitleBadgeTone.VobSub;
-    case "flac":
-    case "opus":
-    case "vorbis":
-      return SubtitleBadgeTone.Text;
-    default:
-      return SubtitleBadgeTone.Other;
-  }
-}
-
-function externalSubtitleSuffix(stream: SubtitleStream): string | undefined {
-  if (!stream.external) return undefined;
-  const tokens = stream.file_name?.toLowerCase().split(".") ?? [];
-  if (tokens.some((token) => token === "ai" || token.startsWith("ai-"))) return "AI 外挂";
-  if (tokens.includes("pgs-ocr")) return "PGS 转换";
-  return "外挂";
-}
-
-/** 字幕预览接口使用的中性轨引用：内封按序号，外挂按文件名。 */
-function subtitleTrack(stream: SubtitleStream, index: number): string | null {
-  if (!stream.external) return `embedded:${index}`;
-  return stream.file_name ? `external:${stream.file_name}` : null;
-}
 
 function videoCodecLabel(codec: string | null): string | null {
   if (!codec) return null;
@@ -1053,189 +810,6 @@ function frameRateLabel(frameRate: number | null): string | null {
 /* ------------------------------------------------------------------------ */
 /* 子组件                                                                     */
 /* ------------------------------------------------------------------------ */
-
-/**
- * 电影和剧集共用的介质轨摘要。音轨和字幕分别保持一行语义；多文件时先选
- * 物理文件，再查看该文件的轨道，避免不同版本或不同集的语言与格式混在一起。
- */
-function MediaTrackRows({
-  files,
-  selectedFileId,
-  onSelectedFileIdChange,
-  onChanged,
-}: {
-  files: LibraryItemFile[];
-  selectedFileId: number | null;
-  onSelectedFileIdChange: (fileId: number) => void;
-  onChanged?: () => void;
-}) {
-  // 只认在位文件：缺失与待回收的版本都不该出现在音轨/字幕选择器里
-  const availableFiles = files.filter((file) => file.state === "in_place");
-  const [previewTarget, setPreviewTarget] = useState<{
-    file: LibraryItemFile;
-    stream: SubtitleStream;
-    track: string;
-    label: string;
-  } | null>(null);
-
-  if (availableFiles.length === 0) return null;
-  const multipleVersions = availableFiles.length > 1;
-  // 文件刷新或删除后，若原选择已不存在，直接派生回第一项，无需额外 effect。
-  const selectedFile =
-    availableFiles.find((file) => file.id === selectedFileId) ?? availableFiles[0];
-  const fileOptionLabel = (file: LibraryItemFile) => {
-    const resolution = file.resolution ? formatVideoResolution(file.resolution) : null;
-    return resolution ? `${resolution} — ${file.file_name}` : file.file_name;
-  };
-
-  return (
-    <>
-      <div className="mt-4 max-w-4xl space-y-2.5">
-        {multipleVersions && (
-          <select
-            aria-label="选择视频文件"
-            value={selectedFile.id}
-            onChange={(event) => onSelectedFileIdChange(Number(event.target.value))}
-            className="w-full rounded-xl border border-white/[0.08] bg-white/[0.055] px-3.5 py-2 text-sub text-white/90 outline-none transition focus:border-white/25 focus:bg-white/[0.08] [&>option]:bg-[#181c28]"
-          >
-            {availableFiles.map((file) => (
-              <option key={file.id} value={file.id}>
-                {fileOptionLabel(file)}
-              </option>
-            ))}
-          </select>
-        )}
-        <SpecRow label="音轨">
-          {selectedFile.audio_streams === null ? (
-            <span className="text-sub text-[var(--text-muted)]">尚未探测</span>
-          ) : selectedFile.audio_streams.length === 0 ? (
-            <span className="text-sub text-[var(--text-muted)]">文件内没有音轨</span>
-          ) : (
-            selectedFile.audio_streams.map((audio, index) => (
-              <SpecBadge
-                key={`${selectedFile.id}:audio:${index}`}
-                text={audioCompactLabel(audio)}
-                variant="subtitle"
-                subtitleTone={audioBadgeTone(audio)}
-                tooltip={audioTooltip(audio)}
-              />
-            ))
-          )}
-        </SpecRow>
-        <SpecRow label="字幕">
-          {selectedFile.subtitle_streams.length === 0 ? (
-            <span className="text-sub text-[var(--text-muted)]">无内封或外挂字幕</span>
-          ) : (
-            selectedFile.subtitle_streams.map((subtitle, index) => {
-              const label = subtitleLabel(subtitle);
-              const track = subtitleTrack(subtitle, index);
-              return (
-                <SpecBadge
-                  key={`${selectedFile.id}:${track ?? `external:${index}`}`}
-                  text={subtitleCompactLabel(subtitle)}
-                  variant="subtitle"
-                  subtitleTone={subtitleBadgeTone(subtitle)}
-                  tooltip={subtitleTooltip(subtitle)}
-                  tooltipDisabled={previewTarget !== null}
-                  onClick={
-                    track
-                      ? () =>
-                          setPreviewTarget({ file: selectedFile, stream: subtitle, track, label })
-                      : undefined
-                  }
-                />
-              );
-            })
-          )}
-          <SubtitleGenPanel key={selectedFile.id} file={selectedFile} onChanged={onChanged} />
-        </SpecRow>
-      </div>
-      {previewTarget && (
-        <SubtitlePreviewDialog
-          open
-          file={previewTarget.file}
-          stream={previewTarget.stream}
-          track={previewTarget.track}
-          label={previewTarget.label}
-          onClose={() => setPreviewTarget(null)}
-          onChanged={onChanged}
-        />
-      )}
-    </>
-  );
-}
-
-function SpecRow({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="flex items-baseline gap-4">
-      <span className="w-10 shrink-0 text-sub text-[var(--text-faint)]">{label}</span>
-      <div className="flex flex-wrap items-center gap-1.5">{children}</div>
-    </div>
-  );
-}
-
-function SpecBadge({
-  text,
-  suffix,
-  tooltip,
-  tooltipDisabled = false,
-  variant = "default",
-  subtitleTone = SubtitleBadgeTone.Other,
-  onClick,
-}: {
-  text: string;
-  suffix?: string;
-  tooltip?: string;
-  tooltipDisabled?: boolean;
-  variant?: "default" | "subtitle";
-  subtitleTone?: SubtitleBadgeTone;
-  onClick?: () => void;
-}) {
-  const className =
-    variant === "subtitle"
-      ? "tnum inline-flex h-7 min-w-6 items-center justify-center rounded-[5px] " +
-        "px-1.5 text-caption font-semibold leading-none backdrop-blur-md " +
-        "shadow-[inset_0_1px_0_rgba(255,255,255,0.055)] " +
-        "transition-[transform,background-color,box-shadow,color] hover:-translate-y-px " +
-        "hover:shadow-[0_4px_12px_rgba(0,0,0,0.16)] " +
-        `${SUBTITLE_BADGE_TONE_CLASS[subtitleTone]} ` +
-        `focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-2)] ${
-          onClick ? "cursor-pointer" : ""
-        }`
-      : `tnum inline-flex items-center gap-1 rounded-md border border-white/[0.12] bg-white/[0.04] px-2 py-0.5 text-caption text-white/80 ${onClick ? "cursor-pointer transition hover:border-white/25 hover:bg-white/[0.09] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-2)]" : ""}`;
-  const content = (
-    <>
-      {text}
-      {suffix && (
-        <span className="rounded-sm bg-white/[0.12] px-1 text-micro text-white/70">{suffix}</span>
-      )}
-    </>
-  );
-  const badge = onClick ? (
-    <button
-      type="button"
-      onClick={onClick}
-      className={className}
-      aria-label={tooltip ? `预览字幕：${tooltip}` : `预览字幕：${text}`}
-    >
-      {content}
-    </button>
-  ) : (
-    <span className={className}>{content}</span>
-  );
-  return tooltip ? (
-    <Tooltip
-      content={tooltip}
-      maxWidth={460}
-      disabled={tooltipDisabled}
-      dismissOnReferencePress
-    >
-      {badge}
-    </Tooltip>
-  ) : (
-    badge
-  );
-}
 
 /**
  * 电影与分集简介共用的四行摘要。只有真实发生溢出时才出现展开入口；剧集
