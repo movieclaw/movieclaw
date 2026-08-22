@@ -1613,21 +1613,6 @@ body.cmdk-open .app-shell {
   }
 }
 
-/* 播放/暂停时画面中央闪一下的圆环，给一个「按下去了」的确认。 */
-@keyframes player-pulse {
-  from {
-    opacity: 0.9;
-    transform: scale(0.85);
-  }
-  to {
-    opacity: 0;
-    transform: scale(1.35);
-  }
-}
-.player-pulse {
-  animation: player-pulse 0.45s cubic-bezier(0.2, 0, 0.2, 1) forwards;
-}
-
 @media (prefers-reduced-motion: reduce) {
   .player-btn,
   .player-mc-button,
@@ -1635,8 +1620,5 @@ body.cmdk-open .app-shell {
   .player-scrub::-webkit-slider-thumb,
   .player-scrub::-moz-range-thumb {
     transition: none;
-  }
-  .player-pulse {
-    animation: none;
   }
 }

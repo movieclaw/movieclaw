@@ -5,7 +5,7 @@ import { MediaController } from "media-chrome/react";
 
 import { ConsentDialog } from "@/components/player/consent-dialog";
 import { DiagnosticsPanel } from "@/components/player/diagnostics-panel";
-import { PlayerControls } from "@/components/player/player-controls";
+import { PlayerCenterControls, PlayerControls } from "@/components/player/player-controls";
 import { SubtitleLayer } from "@/components/player/subtitle-layer";
 import {
   type ClientCapability,
@@ -129,8 +129,6 @@ export function VideoPlayer(props: VideoPlayerProps) {
    * 声音却还没回来，用户以为这部剧没有音轨。
    */
   const [forcedMute, setForcedMute] = useState(false);
-  /** 播放/暂停时画面中央闪一下的圆环。递增的 key 就是「再放一次动画」 */
-  const [pulse, setPulse] = useState<{ id: number; paused: boolean } | null>(null);
   /** 当前是否在横屏（全屏 + 锁横向）里 */
   const [landscape, setLandscape] = useState(false);
   /**
@@ -154,7 +152,16 @@ export function VideoPlayer(props: VideoPlayerProps) {
   const wantsPlayRef = useRef(true);
   const autoplayAttemptsRef = useRef(0);
   const autoplayLastRef = useRef<AutoplayOutcome | null>(null);
-  const pulseIdRef = useRef(0);
+  /**
+   * 按下的那一刻控制条在不在。
+   *
+   * 触屏上没有悬停，控制条藏起来时第一下点击应该只是**把它叫出来**，而不是
+   * 顺手把片子暂停了（YouTube 手机端就是这样）。但 `setChromeVisible(true)`
+   * 是异步的，click 回调读到的可能已经是新值，所以要在 pointerdown 时把
+   * 「当时」的状态记进 ref，判断才稳定。桌面上鼠标一动控制条早就出来了，
+   * 点击行为跟以前一样。
+   */
+  const chromeWasVisibleRef = useRef(true);
   // 会话释放器：区分「真的离开了」与「StrictMode 把同一个会话重新挂了一遍」。
   const sessionReleaser = useMemo(
     () =>
@@ -612,7 +619,6 @@ export function VideoPlayer(props: VideoPlayerProps) {
 
   const togglePlay = useCallback(() => {
     if (!video) return;
-    setPulse({ id: (pulseIdRef.current += 1), paused: !video.paused });
     if (video.paused) {
       // 用户亲手点的播放：手势就在这一刻，一定放得起来；中央大播放键该消失。
       // 但静音提示留着——静音是另一回事，得他自己点「开启声音」。
@@ -626,6 +632,12 @@ export function VideoPlayer(props: VideoPlayerProps) {
       video.pause();
     }
   }, [video]);
+
+  /** 点画面：控制条藏着时只把它叫出来，露着时才是播放/暂停。 */
+  const onSurfaceClick = useCallback(() => {
+    if (chromeWasVisibleRef.current) togglePlay();
+    else setChromeVisible(true);
+  }, [togglePlay]);
 
   /** 恢复声音：自动播放被策略拦下时我们静音救回来的那一路，交还给用户。 */
   const restoreSound = useCallback(() => {
@@ -874,6 +886,10 @@ export function VideoPlayer(props: VideoPlayerProps) {
       className="player-root relative size-full bg-black"
       data-chrome={chromeVisible ? "visible" : "hidden"}
       onPointerMove={() => setChromeVisible(true)}
+      onPointerDown={() => {
+        chromeWasVisibleRef.current = chromeVisible;
+        setChromeVisible(true);
+      }}
       onPointerLeave={() => !paused && setChromeVisible(false)}
     >
       <MediaController
@@ -886,7 +902,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
           slot="media"
           playsInline
           poster={posterUrl ?? undefined}
-          onClick={togglePlay}
+          onClick={onSurfaceClick}
           className="size-full object-contain"
         />
 
@@ -895,6 +911,15 @@ export function VideoPlayer(props: VideoPlayerProps) {
           track={activeSubtitle}
           style={subtitleStyle}
           baseOffsetSeconds={(state.session?.start_ms ?? 0) / 1000}
+        />
+
+        {/* 中央播放簇：退十秒 / 播放暂停 / 进十秒。与控制条同步淡入淡出。
+            起播转圈时不出——那时候按什么都没用，两个东西叠在画面正中最乱。 */}
+        <PlayerCenterControls
+          paused={paused}
+          visible={chromeVisible && !busy && state.phase !== "error" && state.phase !== "consent"}
+          onTogglePlay={togglePlay}
+          onSeekBy={seekBy}
         />
 
         {/* 顶栏：返回 + 片名。全屏时也要留着，否则退不出去只能按 Esc */}
@@ -942,23 +967,6 @@ export function VideoPlayer(props: VideoPlayerProps) {
           </div>
         ) : null}
 
-        {/* 播放/暂停的确认反馈：中央闪一下的圆环 */}
-        {pulse ? (
-          <div
-            key={pulse.id}
-            onAnimationEnd={() => setPulse(null)}
-            className="player-pulse pointer-events-none absolute left-1/2 top-1/2 z-10 flex size-24 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-black/55 text-white"
-          >
-            <svg viewBox="0 0 24 24" className="size-10 fill-current" aria-hidden>
-              {pulse.paused ? (
-                <path d="M6.5 4h3.6v16H6.5zM13.9 4h3.6v16h-3.6z" />
-              ) : (
-                <path d="M6 4.3v15.4a.7.7 0 0 0 1.07.6l12.3-7.7a.7.7 0 0 0 0-1.2L7.07 3.7A.7.7 0 0 0 6 4.3Z" />
-              )}
-            </svg>
-          </div>
-        ) : null}
-
         {busy ? (
           <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
             <div className="flex flex-col items-center gap-4">
@@ -986,21 +994,6 @@ export function VideoPlayer(props: VideoPlayerProps) {
               <path d="M17.6 5.9a8.2 8.2 0 0 1 0 12.2l-1.3-1.5a6.2 6.2 0 0 0 0-9.2l1.3-1.5Z" />
             </svg>
             开启声音
-          </button>
-        ) : null}
-
-        {/* 静音也放不起来（浏览器把自动播放彻底关掉了）：给一个大播放键，
-            别让用户对着黑屏找按钮。 */}
-        {autoplay === "blocked" && paused && state.phase !== "error" ? (
-          <button
-            type="button"
-            onClick={togglePlay}
-            className="absolute left-1/2 top-1/2 z-30 flex size-20 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-white/95 text-black shadow-2xl transition-transform hover:scale-105"
-            aria-label="播放"
-          >
-            <svg viewBox="0 0 24 24" className="ml-1 size-10 fill-current" aria-hidden>
-              <path d="M6 4.3v15.4a.7.7 0 0 0 1.07.6l12.3-7.7a.7.7 0 0 0 0-1.2L7.07 3.7A.7.7 0 0 0 6 4.3Z" />
-            </svg>
           </button>
         ) : null}
 
@@ -1083,21 +1076,13 @@ export function VideoPlayer(props: VideoPlayerProps) {
           </div>
         ) : null}
 
-        <div
-          className={`absolute inset-x-0 bottom-0 z-20 transition-opacity duration-300 ${
-            chromeVisible ? "opacity-100" : "pointer-events-none opacity-0"
-          }`}
-        >
+        <div className="absolute inset-x-0 bottom-0 z-20">
           <PlayerControls
             positionMs={positionMs}
             durationMs={durationMs}
             bufferedEndMs={bufferedEndMs}
-            paused={paused}
-            title={title}
-            episodeLabel={episodeLabel}
-            onTogglePlay={togglePlay}
+            chromeVisible={chromeVisible}
             onSeek={seekToFileMs}
-            onSeekBy={seekBy}
             subtitles={subtitles}
             selectedSubtitle={selectedSubtitle}
             onSelectSubtitle={setSelectedSubtitle}

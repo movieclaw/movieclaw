@@ -19,20 +19,30 @@ import { type TrickplayIndex, tileAt } from "@/lib/player/trickplay";
  * 时间轴无关，交给它反而更稳；只是图标全部用 slot 换成本文件里这一套，
  * 免得一条控制条上出现两种线宽的图标。
  *
- * **布局照 Netflix**：进度条独占一行、右端只报剩余时长；下面一行左簇是
- * 播放/退十秒/进十秒/音量，中间是片名，右簇是下一集/字幕/诊断/画中画/全屏。
+ * **布局照 YouTube**，分三块：
+ *
+ * - **中央簇**（`PlayerCenterControls`）：退十秒 / 播放暂停 / 进十秒。播放
+ *   控制是最高频的动作，放画面正中比塞在左下角更好够到，触屏上尤其明显。
+ * - **控制行**：左簇音量 + 时间，右簇下一集/字幕/诊断/画中画/横屏。
+ *   片名不再重复放这里——顶栏已经有了，重复只会让静止画面更吵。
+ * - **进度条**：常驻播放器**最底边**，控制条淡出后它仍在，只是收成一条
+ *   贴边的细线。这是「安静时也知道播到哪」与「安静时画面干净」唯一能同时
+ *   成立的做法，也是 YouTube 控件隐藏后的样子。
+ *
  * 图标之间靠间距和悬停放大区分，不用背景色块——黑底上的浅灰方块最显廉价。
  */
 
 const ICON = "size-6 fill-current";
 
+/** 播放 / 暂停。只出现在中央簇，所以尺寸按中央簇给。 */
 function PlayGlyph({ paused }: { paused: boolean }) {
+  const cls = "size-[52px] fill-current max-md:size-11";
   return paused ? (
-    <svg viewBox="0 0 24 24" className="size-7 fill-current" aria-hidden>
+    <svg viewBox="0 0 24 24" className={cls} aria-hidden>
       <path d="M6 4.3v15.4a.7.7 0 0 0 1.07.6l12.3-7.7a.7.7 0 0 0 0-1.2L7.07 3.7A.7.7 0 0 0 6 4.3Z" />
     </svg>
   ) : (
-    <svg viewBox="0 0 24 24" className="size-7 fill-current" aria-hidden>
+    <svg viewBox="0 0 24 24" className={cls} aria-hidden>
       <path d="M6.5 4h3.6v16H6.5zM13.9 4h3.6v16h-3.6z" />
     </svg>
   );
@@ -41,7 +51,7 @@ function PlayGlyph({ paused }: { paused: boolean }) {
 /** 退/进十秒：圆弧箭头 + 中间的 10，Netflix 与 YouTube 用的都是这一种。 */
 function SkipGlyph({ forward }: { forward: boolean }) {
   return (
-    <svg viewBox="0 0 24 24" className={ICON} aria-hidden>
+    <svg viewBox="0 0 24 24" className="size-9 fill-current max-md:size-8" aria-hidden>
       {forward ? (
         <path d="M12 4.5V1.8l5.2 4.1L12 10V7.2a4.9 4.9 0 1 0 4.9 4.9h2.1A7 7 0 1 1 12 4.5Z" />
       ) : (
@@ -160,13 +170,9 @@ export interface PlayerControlsProps {
   durationMs: number | null;
   /** 当前会话已缓冲到的文件位置，用于进度条的浅色底 */
   bufferedEndMs: number | null;
-  paused: boolean;
-  /** 片名与集号：Netflix 把它放在控制条中间，全屏时这是唯一的片名出处 */
-  title: string;
-  episodeLabel: string | null;
-  onTogglePlay: () => void;
+  /** 控制条是否可见。进度条不跟着淡出，只是收成贴底边的细线 */
+  chromeVisible: boolean;
   onSeek: (fileMs: number) => void;
-  onSeekBy: (seconds: number) => void;
   subtitles: SubtitleTracks;
   selectedSubtitle: string | null;
   onSelectSubtitle: (ref: string | null) => void;
@@ -191,12 +197,8 @@ export function PlayerControls(props: PlayerControlsProps) {
     positionMs,
     durationMs,
     bufferedEndMs,
-    paused,
-    title,
-    episodeLabel,
-    onTogglePlay,
+    chromeVisible,
     onSeek,
-    onSeekBy,
     subtitles,
     selectedSubtitle,
     onSelectSubtitle,
@@ -223,7 +225,6 @@ export function PlayerControls(props: PlayerControlsProps) {
   const progress = durationMs ? Math.min(100, (shown / durationMs) * 100) : 0;
   const buffered =
     durationMs && bufferedEndMs ? Math.min(100, (bufferedEndMs / durationMs) * 100) : 0;
-  const remainingMs = durationMs ? Math.max(0, durationMs - shown) : null;
 
   const openMenu = (next: "none" | "subtitles") => {
     setMenu(next);
@@ -231,11 +232,94 @@ export function PlayerControls(props: PlayerControlsProps) {
   };
 
   return (
-    <div className="pointer-events-auto bg-gradient-to-t from-black/90 via-black/60 to-transparent px-6 pb-6 pt-24 max-md:px-3 max-md:pb-3 max-md:pt-16">
-      {/* ---- 进度行：条 + 右端剩余时长（Netflix 只报剩余，不报总长） ---- */}
-      <div className="player-scrub-row flex items-center gap-4">
+    <div className="pointer-events-none relative">
+      {/* 渐变铺满整块底部（含进度条那一条），与控制行同步淡出——只淡控制行
+          会留下一道空的黑带，只淡渐变又会让按钮浮在亮画面上看不清 */}
+      <div
+        className={`absolute inset-0 bg-gradient-to-t from-black/90 via-black/55 to-transparent transition-opacity duration-300 ${
+          chromeVisible ? "opacity-100" : "opacity-0"
+        }`}
+      />
+
+      {/* ---- 控制行：左簇音量 + 时间，右簇功能键 ---- */}
+      <div
+        className={`relative flex items-center gap-5 px-6 pt-24 transition-opacity duration-300 max-md:gap-3 max-md:px-3 max-md:pt-16 ${
+          chromeVisible ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
+        }`}
+      >
+        {/* 音量：图标常显，滑块悬停滑出。静音记忆、触屏与键盘无障碍交给
+            Media Chrome，只把图标换成本文件这一套。 */}
+        <div className="player-volume flex items-center max-md:hidden">
+          <MediaMuteButton className="player-mc-button" noTooltip>
+            <VolumeGlyph slot="off" level="off" />
+            <VolumeGlyph slot="low" level="low" />
+            <VolumeGlyph slot="medium" level="low" />
+            <VolumeGlyph slot="high" level="high" />
+          </MediaMuteButton>
+          <div className="player-volume-slot">
+            <MediaVolumeRange className="player-mc-range" />
+          </div>
+        </div>
+
+        <span className="text-[14px] tabular-nums text-white/85 max-md:text-[12px]">
+          {formatClock(shown)}
+          <span className="text-white/45"> / {durationMs ? formatClock(durationMs) : "--:--"}</span>
+        </span>
+
+        <div className="flex-1" />
+
+        {onNext ? (
+          <IconButton tip="下一集" onClick={onNext}>
+            <NextGlyph />
+          </IconButton>
+        ) : null}
+
+        <div className="relative">
+          <IconButton
+            tip="字幕"
+            active={Boolean(selectedSubtitle) || menu === "subtitles"}
+            onClick={() => openMenu(menu === "subtitles" ? "none" : "subtitles")}
+          >
+            <SubtitleGlyph />
+          </IconButton>
+          {menu === "subtitles" ? (
+            <SubtitleMenu
+              tracks={subtitles}
+              selected={selectedSubtitle}
+              onSelect={(ref) => onSelectSubtitle(ref)}
+              style={subtitleStyle}
+              onStyleChange={onSubtitleStyleChange}
+              onClose={() => openMenu("none")}
+            />
+          ) : null}
+        </div>
+
+        <IconButton tip="播放诊断" active={diagnosticsOpen} onClick={onToggleDiagnostics}>
+          <StatsGlyph />
+        </IconButton>
+
+        <MediaPipButton className="player-mc-button max-md:hidden" noTooltip>
+          <PipGlyph slot="enter" />
+          <PipGlyph slot="exit" exit />
+        </MediaPipButton>
+        <IconButton
+          tip={canRotate ? (landscape ? "退出横屏" : "横屏") : landscape ? "退出全屏" : "全屏"}
+          onClick={onToggleLandscape}
+        >
+          {canRotate ? <RotateGlyph active={landscape} /> : <FullscreenGlyph exit={landscape} />}
+        </IconButton>
+      </div>
+
+      {/* ---- 进度条：常驻最底边 ----
+          控制条淡出后它不淡出，只是把左右内边距和高度收掉，变成一条贴着
+          播放器下沿的细线。安静时画面干净，又不用点一下才知道播到哪。 */}
+      <div
+        className={`player-scrub-row pointer-events-auto relative transition-[padding] duration-300 ${
+          chromeVisible ? "px-6 pb-2.5 max-md:px-3" : "px-0 pb-0"
+        }`}
+      >
         <div
-          className="relative h-5 flex-1"
+          className={`relative transition-[height] duration-300 ${chromeVisible ? "h-5" : "h-[3px]"}`}
           onPointerMove={(e) => {
             if (!durationMs) return;
             const rect = e.currentTarget.getBoundingClientRect();
@@ -297,93 +381,73 @@ export function PlayerControls(props: PlayerControlsProps) {
             className="player-scrub absolute inset-x-0 top-1/2 h-5 w-full -translate-y-1/2 cursor-pointer appearance-none bg-transparent disabled:cursor-default"
           />
         </div>
-        <span className="shrink-0 text-[15px] font-medium tabular-nums text-white max-md:text-[13px]">
-          {remainingMs !== null ? formatClock(remainingMs) : formatClock(shown)}
-        </span>
-      </div>
-
-      {/* ---- 控制行 ---- */}
-      <div className="mt-2 flex items-center gap-5 max-md:gap-3">
-        <IconButton tip={paused ? "播放" : "暂停"} onClick={onTogglePlay}>
-          <PlayGlyph paused={paused} />
-        </IconButton>
-        <IconButton tip="后退 10 秒" onClick={() => onSeekBy(-10)}>
-          <SkipGlyph forward={false} />
-        </IconButton>
-        <IconButton tip="前进 10 秒" onClick={() => onSeekBy(10)}>
-          <SkipGlyph forward />
-        </IconButton>
-
-        {/* 音量：图标常显，滑块悬停滑出。静音记忆、触屏与键盘无障碍交给
-            Media Chrome，只把图标换成本文件这一套。 */}
-        <div className="player-volume flex items-center max-md:hidden">
-          <MediaMuteButton className="player-mc-button" noTooltip>
-            <VolumeGlyph slot="off" level="off" />
-            <VolumeGlyph slot="low" level="low" />
-            <VolumeGlyph slot="medium" level="low" />
-            <VolumeGlyph slot="high" level="high" />
-          </MediaMuteButton>
-          <div className="player-volume-slot">
-            <MediaVolumeRange className="player-mc-range" />
-          </div>
-        </div>
-
-        {/* 片名居中：全屏时顶栏被系统控件挤掉，这里是唯一还能看到「在放什么」
-            的地方。剧集用「片名 · S01E05」一行写完，不占两行。 */}
-        <div className="min-w-0 flex-1 px-2 text-center max-md:hidden">
-          <p className="truncate text-[15px] font-semibold text-white/95">
-            {title}
-            {episodeLabel ? (
-              <span className="font-normal text-white/60">{` · ${episodeLabel}`}</span>
-            ) : null}
-          </p>
-        </div>
-        <div className="flex-1 md:hidden" />
-
-        {onNext ? (
-          <IconButton tip="下一集" onClick={onNext}>
-            <NextGlyph />
-          </IconButton>
-        ) : null}
-
-        <div className="relative">
-          <IconButton
-            tip="字幕"
-            active={Boolean(selectedSubtitle) || menu === "subtitles"}
-            onClick={() => openMenu(menu === "subtitles" ? "none" : "subtitles")}
-          >
-            <SubtitleGlyph />
-          </IconButton>
-          {menu === "subtitles" ? (
-            <SubtitleMenu
-              tracks={subtitles}
-              selected={selectedSubtitle}
-              onSelect={(ref) => onSelectSubtitle(ref)}
-              style={subtitleStyle}
-              onStyleChange={onSubtitleStyleChange}
-              onClose={() => openMenu("none")}
-            />
-          ) : null}
-        </div>
-
-        <IconButton tip="播放诊断" active={diagnosticsOpen} onClick={onToggleDiagnostics}>
-          <StatsGlyph />
-        </IconButton>
-
-        <MediaPipButton className="player-mc-button max-md:hidden" noTooltip>
-          <PipGlyph slot="enter" />
-          <PipGlyph slot="exit" exit />
-        </MediaPipButton>
-        <IconButton
-          tip={
-            canRotate ? (landscape ? "退出横屏" : "横屏") : landscape ? "退出全屏" : "全屏"
-          }
-          onClick={onToggleLandscape}
-        >
-          {canRotate ? <RotateGlyph active={landscape} /> : <FullscreenGlyph exit={landscape} />}
-        </IconButton>
       </div>
     </div>
+  );
+}
+
+/**
+ * 中央播放簇：退十秒 / 播放暂停 / 进十秒。
+ *
+ * 与控制行分开是因为它们的显示位置不同（一个铺在画面正中、一个贴着底边），
+ * 但淡入淡出必须同步——所以可见性由上层的 `chromeVisible` 统一给，这里只
+ * 负责画。容器不吃指针事件，点画面本身仍然是播放/暂停。
+ */
+export function PlayerCenterControls({
+  paused,
+  visible,
+  onTogglePlay,
+  onSeekBy,
+}: {
+  paused: boolean;
+  visible: boolean;
+  onTogglePlay: () => void;
+  onSeekBy: (seconds: number) => void;
+}) {
+  return (
+    <div
+      className={`pointer-events-none absolute inset-0 z-10 flex items-center justify-center gap-14 transition-opacity duration-300 max-md:gap-10 ${
+        visible ? "opacity-100" : "opacity-0"
+      }`}
+    >
+      <CenterButton label="后退 10 秒" visible={visible} onClick={() => onSeekBy(-10)}>
+        <SkipGlyph forward={false} />
+      </CenterButton>
+      <CenterButton label={paused ? "播放" : "暂停"} visible={visible} onClick={onTogglePlay} primary>
+        <PlayGlyph paused={paused} />
+      </CenterButton>
+      <CenterButton label="前进 10 秒" visible={visible} onClick={() => onSeekBy(10)}>
+        <SkipGlyph forward />
+      </CenterButton>
+    </div>
+  );
+}
+
+function CenterButton({
+  label,
+  visible,
+  primary,
+  onClick,
+  children,
+}: {
+  label: string;
+  visible: boolean;
+  primary?: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      // 淡出后必须同时断掉命中，否则隐形的按钮会在用户想点画面时误触
+      className={`player-btn drop-shadow-[0_2px_8px_rgba(0,0,0,0.65)] ${
+        primary ? "size-[68px] max-md:size-14" : "size-12 max-md:size-11"
+      } ${visible ? "pointer-events-auto" : "pointer-events-none"}`}
+    >
+      {children}
+    </button>
   );
 }
 
