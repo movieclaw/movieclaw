@@ -1530,6 +1530,12 @@ body.cmdk-open .app-shell {
 .player-btn:active {
   transform: scale(0.94);
 }
+/* 自带磨砂底的那种（横屏键）：悬停只把底提亮一档，不能被上面那条通用规则
+   换成半透白——那会把玻璃底整个盖掉，看着像换了一个按钮。 */
+.player-btn--glass:hover,
+.player-btn--glass:focus-visible {
+  background: rgb(42 46 55 / 0.72);
+}
 .player-btn[data-active="true"] {
   color: #fff;
 }

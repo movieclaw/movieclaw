@@ -222,16 +222,36 @@ export function PlayerControls(props: PlayerControlsProps) {
         }`}
       />
 
-      {/* ---- 时间：进度条上方、左对齐的一颗磨砂药丸 ---- */}
+      {/* ---- 进度条上方这一行：左边时间，右边横屏键，两端对齐 ----
+          横屏不跟字幕/设置放一起：那两个是「调这一路播放怎么放」，横屏是
+          「把画面铺满整块屏幕」，属于跟时间同级的观看形态。放在这一行还有
+          个实际好处——它和右下角的切集胶囊隔着进度条，不会误按。
+          两边高度取同一档，左右才真的对称。 */}
       <div
-        className={`relative px-6 pt-24 pb-2 transition-opacity duration-300 max-md:px-3 max-md:pt-16 ${
-          chromeVisible ? "opacity-100" : "opacity-0"
+        className={`relative flex items-center justify-between px-6 pt-24 pb-2 transition-opacity duration-300 max-md:px-3 max-md:pt-16 ${
+          chromeVisible ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
         }`}
       >
-        <span className="player-glass inline-block rounded-full px-3 py-1 text-[13px] tabular-nums text-white/90 max-md:text-[12px]">
-          {formatClock(shown)}
-          <span className="text-white/45"> / {durationMs ? formatClock(durationMs) : "--:--"}</span>
+        {/* 两段各自成元素、靠 gap 分开：药丸是 flex，写在文字里的前导空格会
+            被折掉，变成「41:00/ 2:32:00」 */}
+        <span className="player-glass inline-flex h-9 items-center gap-1 rounded-full px-3.5 text-[13px] tabular-nums text-white/90 max-md:h-11 max-md:text-[12px]">
+          <span>{formatClock(shown)}</span>
+          <span className="text-white/45">/ {durationMs ? formatClock(durationMs) : "--:--"}</span>
         </span>
+
+        <IconButton
+          glass
+          tip={canRotate ? (landscape ? "退出横屏" : "横屏") : landscape ? "退出全屏" : "全屏"}
+          onClick={onToggleLandscape}
+        >
+          {canRotate ? (
+            <RotateGlyph active={landscape} />
+          ) : landscape ? (
+            <ShrinkIcon className={ICON} />
+          ) : (
+            <ExpandIcon className={ICON} />
+          )}
+        </IconButton>
       </div>
 
       {/* ---- 进度条 ----
@@ -382,19 +402,6 @@ export function PlayerControls(props: PlayerControlsProps) {
                   </MenuPanel>
                 ) : null}
               </div>
-
-              <IconButton
-                tip={canRotate ? (landscape ? "退出横屏" : "横屏") : landscape ? "退出全屏" : "全屏"}
-                onClick={onToggleLandscape}
-              >
-                {canRotate ? (
-                  <RotateGlyph active={landscape} />
-                ) : landscape ? (
-                  <ShrinkIcon className={ICON} />
-                ) : (
-                  <ExpandIcon className={ICON} />
-                )}
-              </IconButton>
             </div>
 
             <div className="flex-1" />
@@ -489,15 +496,24 @@ function CenterButton({
   );
 }
 
-/** 控制条上的图标按钮：悬停放大 + 上方说明气泡，样式统一在 globals.css。 */
+/**
+ * 控制条上的图标按钮：换底色 + 上方说明气泡，尺寸与全站顶栏控件一致
+ * （样式在 globals.css 的 .player-btn）。
+ *
+ * `glass` 是给**单独浮在画面上**的键用的（横屏键）：它不在那张磨砂卡片里，
+ * 得自己带一层玻璃底，否则会直接糊进画面。卡片里的键不能开这个开关——
+ * 那会变成「玻璃里的玻璃」。
+ */
 function IconButton({
   tip,
   active,
+  glass,
   onClick,
   children,
 }: {
   tip: string;
   active?: boolean;
+  glass?: boolean;
   onClick: () => void;
   children: React.ReactNode;
 }) {
@@ -508,7 +524,9 @@ function IconButton({
       aria-label={tip}
       data-tip={tip}
       data-active={active ? "true" : undefined}
-      className="player-btn player-tip size-9 shrink-0 max-md:size-11"
+      className={`player-btn player-tip size-9 shrink-0 max-md:size-11 ${
+        glass ? "player-glass player-btn--glass" : ""
+      }`}
     >
       {children}
     </button>
