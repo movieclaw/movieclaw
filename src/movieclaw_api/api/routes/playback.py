@@ -221,6 +221,36 @@ _SEGMENT_NAME = re.compile(r"^(init\.mp4|seg\d{5}\.m4s)$")
 # 雪碧图文件名由服务端生成，但仍经过 URL——白名单一视同仁。
 _TRICKPLAY_SHEET_NAME = re.compile(r"^sprite_\d{3}\.jpg$")
 
+#: 播放列表里 `#EXT-X-MAP` 那行的初始化段地址，形如 `URI="init.mp4"`。
+_PLAYLIST_MAP_URI = re.compile(r'(#EXT-X-MAP:.*?URI=")([^"]+)(")')
+
+
+def playlist_with_tokens(playlist: str, token: str) -> str:
+    """给播放列表里的每个分片地址补上取流 token。
+
+    ffmpeg 写出来的地址是裸相对路径（`init.mp4` / `seg00000.m4s`），而浏览器
+    按**播放列表自身的 URL** 解析相对地址时**会把 query 丢掉**——播放列表带着
+    `?token=` 请求成功，它引用的分片却一个凭据都没有，全部倒在鉴权上。整条取流
+    链路在浏览器内部，JS 插不进手补 header（§4.7），所以只能由服务端在发出前把
+    token 写进每个地址。
+
+    只改地址行：`#` 开头的是标签，除了 `EXT-X-MAP` 里的 URI 之外都不带地址。
+    """
+    if not token:
+        return playlist
+    query = f"?token={token}"
+    lines = []
+    for line in playlist.splitlines(keepends=True):
+        stripped = line.strip()
+        if not stripped:
+            lines.append(line)
+        elif stripped.startswith("#"):
+            lines.append(_PLAYLIST_MAP_URI.sub(rf"\g<1>\g<2>{query}\g<3>", line))
+        else:
+            lines.append(line.replace(stripped, stripped + query, 1))
+    return "".join(lines)
+
+
 #: 攒到这个行数就顺手裁一次。指标是趋势数据不是台账。
 _METRIC_PURGE_TRIGGER = 3000
 
@@ -393,7 +423,7 @@ async def stop_playback_session(
 async def get_session_playlist(
     session_id: Annotated[str, Path()],
     token: Annotated[str, Query()],
-) -> FileResponse:
+) -> Response:
     """HLS 播放列表。EVENT 类型，只增不改——边转边给。"""
     grant = await verify_stream_token(token, session_id=session_id)
     if grant is None:
@@ -402,8 +432,9 @@ async def get_session_playlist(
     if session is None or not session.playlist_path.exists():
         raise NotFoundException("会话不存在或已结束")
     session.touch()  # 拉 playlist 也算活着
-    return FileResponse(
-        session.playlist_path,
+    playlist = await asyncio.to_thread(session.playlist_path.read_text, encoding="utf-8")
+    return Response(
+        content=playlist_with_tokens(playlist, token),
         media_type="application/vnd.apple.mpegurl",
         headers={"Cache-Control": "no-store"},
     )
