@@ -64,7 +64,9 @@ RUN pnpm web:build > /tmp/web-build.log 2>&1 || (cat /tmp/web-build.log; exit 1)
 # ---------------------------------------------------------------------------
 # 阶段 2：后端运行依赖（只装 pyproject 的 dependencies，不装 dev 工具、不打包源码）
 # ---------------------------------------------------------------------------
-FROM python:3.12-slim-bookworm AS py-deps
+# 注意与最终运行镜像保持同一发行版（trixie）：venv 里的原生 wheel 按构建时
+# 的 glibc/系统库选择，跨发行版拷贝会埋下延迟加载失败的雷
+FROM python:3.12-slim-trixie AS py-deps
 ARG PIP_INDEX_URL=https://pypi.org/simple
 WORKDIR /build
 COPY pyproject.toml ./
@@ -130,13 +132,20 @@ RUN case "$TARGETARCH" in \
 # ---------------------------------------------------------------------------
 # 阶段 5：目标架构的 node 二进制来源
 # ---------------------------------------------------------------------------
-FROM node:22-bookworm-slim AS node-dist
+FROM node:22-trixie-slim AS node-dist
 
 # ---------------------------------------------------------------------------
 # 阶段 6：运行镜像
 # ---------------------------------------------------------------------------
-FROM python:3.12-slim-bookworm
+FROM python:3.12-slim-trixie
 
+# 基础镜像用 Debian 13（trixie）而不是 12：核心诉求是 ffmpeg 7.1。bookworm 的
+# ffmpeg 5.1 读不出 Matroska 的 HDR10+/杜比视界 BlockAdditionMapping 等新式
+# 流级 side data，介质探测（media_probe._hdr_label）会把 HDR10+ 片源降标成
+# 普通 HDR10、部分 DV 片源只剩 PQ 兜底——源码部署（本机新版 ffmpeg）与容器
+# 部署的规格徽标从此不一致。换基础镜像时已按 docs/design/docker-subtitle-runtime.md
+# §7 核对：ICU 包名 72 → 76，seconv 动态库由构建期烟测的 ldd 检查兜底。
+#
 # - libstdc++6：onnxruntime / tokenizers 的 manylinux wheel 依赖（slim 基础镜像不带）
 # - ffmpeg：介质规格探测（ffprobe）与 PGS 轨道抽取的运行时依赖。库存画质的真相来自文件本体
 #   而非种子名，缺了它整个「视频/音频/字幕规格」区块都是空的。装全套 ffmpeg
@@ -147,8 +156,8 @@ FROM python:3.12-slim-bookworm
 #   预检仍会按 PGS 语言检测，未知语言不会回退到英语生成乱码
 # - fontconfig + DejaVu：seconv 随附的 libSkiaSharp.so 依赖 Fontconfig；内置一套
 #   跨架构字体也让构建期可以真正生成 PGS，再 OCR 回 SRT 验证完整调用链
-# - libicu72：seconv 自包含 .NET 运行时仍需要 ICU 提供区域/Unicode 数据；
-#   缺失时进程会在加载字幕格式类型前直接 FailFast
+# - libicu76：seconv 自包含 .NET 运行时仍需要 ICU 提供区域/Unicode 数据；
+#   缺失时进程会在加载字幕格式类型前直接 FailFast（trixie 的 ICU 包名是 76）
 # - nginx：容器内统一前门。播放器取流/整文件下载直达后端而不经 Node 反代
 #   （Node 每 GB 多烧约 10 个 CPU 秒），同时在前后端重启窗口代答占位页。
 #   只要核心包（proxy/gzip/map/rewrite 都是静态内置模块），不装推荐的动态模块
@@ -158,7 +167,7 @@ RUN if [ -n "$APT_MIRROR" ]; then \
     fi \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
-        libstdc++6 ca-certificates ffmpeg fontconfig fonts-dejavu-core libicu72 nginx \
+        libstdc++6 ca-certificates ffmpeg fontconfig fonts-dejavu-core libicu76 nginx \
         tesseract-ocr \
         tesseract-ocr-eng tesseract-ocr-chi-sim tesseract-ocr-chi-tra \
         tesseract-ocr-jpn tesseract-ocr-kor \

@@ -38,7 +38,7 @@ PGS 转换器固定为 Subtitle Edit `v5.1.0` 官方 Release：
 |---|---|---|
 | `ffmpeg` / `ffprobe` | 探测媒体、从容器抽取 PGS 为 `.sup` | 任务预检失败或无法抽轨 |
 | seconv Linux 自包含产物 | 解析 PGS、编排 OCR、写 SRT | PGS 无法转换 |
-| `libicu72` | seconv/.NET 的 Unicode 与区域数据 | seconv 启动 FailFast |
+| `libicu76` | seconv/.NET 的 Unicode 与区域数据（基础镜像 Debian 13/trixie 的 ICU 包名） | seconv 启动 FailFast |
 | `fontconfig`、`fonts-dejavu-core` | SkiaSharp 字体解析与端到端合成探针 | 图形字幕路径延迟失败 |
 | `libSkiaSharp.so`、`libHarfBuzzSharp.so` | seconv 随包的图像与字形库 | PGS 解析/渲染时动态加载失败 |
 | Tesseract 及 traineddata | 实际 OCR | seconv 可启动但转换时报错 |

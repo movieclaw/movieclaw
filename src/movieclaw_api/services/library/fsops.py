@@ -30,7 +30,7 @@ from pathlib import Path
 _RENAME_NOREPLACE = 1
 _AT_FDCWD = -100
 
-# glibc >= 2.28 提供 renameat2 封装（运行镜像 Debian bookworm 为 2.36）。
+# glibc >= 2.28 提供 renameat2 封装（运行镜像 Debian trixie 为 2.41）。
 # 拿不到符号时置 None，永远走回退路径——功能不缺失，只是防覆盖不再原子
 try:
     _libc = ctypes.CDLL(None, use_errno=True)
