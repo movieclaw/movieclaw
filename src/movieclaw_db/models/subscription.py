@@ -289,6 +289,22 @@ class WantedItem(TimestampMixin, table=True):
         default=0, description="洗版候选连续证伪次数；确认升级时清零"
     )
 
+    # -- 单集履历注解（订阅详情页里程碑链）------------------------------------
+    # 工单自身已携带六站时间戳（air_date → 搜索 → grabbed → downloaded →
+    # imported → 洗版），唯一缺的叙事细节是「最近为什么被拒 / 投的是哪个种子」
+    # ——它们散在活动流水里，按季集捞既慢又受条数上限。选择冗余快照而不是
+    # 活动↔工单关联表：关联表要迁移回填、逐轮写关联，换来的仍是一条读不快的
+    # 流水；两列在写入点顺手落，详情页一次查询即得（同类冗余先例：
+    # subscription.last_activity_at 由数据库触发器维护）。
+    last_reject_reason: str | None = Field(
+        default=None,
+        description="最近一次候选被拒原因（含站点与种子名）；NULL=从未被拒",
+    )
+    grab_title: str | None = Field(
+        default=None,
+        description="最近一次投递的种子（站点 · 标题）；NULL=未投递",
+    )
+
     # -- 入库管线（媒体库 L2）------------------------------------------------
     # 真实投递成功时记录种子 infohash——check_download_progress 据此轮询
     # 下载器进度；dry-run 投递不产生 infohash，工单停在 grabbed 不进管线。

@@ -721,15 +721,21 @@ async def _log_rejection(
         ):
             return  # 已经解释过这个候选为什么被拒，不重复刷屏
     units_label = units_text(covered)
+    reason_note = (
+        f"{verdict.reason_text}——来自 {candidate.site_id} 的「{candidate.title[:60]}」"
+    )
+    # 单集履历注解：最近一次被拒原因冻结在工单上，详情页里程碑链的搜索站
+    # 直接读。covered 行与本 repo 同一 session，setattr 进 dirty 集、随下方
+    # add_activity 的 commit 一起落库。同一种子的重复评估在上方去重 return，
+    # 不会用旧闻覆盖更新的拒绝原因。
+    for w in covered:
+        w.last_reject_reason = reason_note
     await repo.add_activity(
         SubscriptionActivity(
             subscription_id=subscription_id,
             wanted_item_id=covered[0].id,
             type=ActivityType.MATCH_REJECTED,
-            message=(
-                f"{units_label}有候选被拒：{verdict.reason_text}"
-                f"——来自 {candidate.site_id} 的「{candidate.title[:60]}」"
-            ),
+            message=f"{units_label}有候选被拒：{reason_note}",
             payload={
                 "site_id": candidate.site_id,
                 "torrent_id": candidate.torrent_id,

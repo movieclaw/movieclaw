@@ -196,6 +196,10 @@ export interface WantedItem {
   imported_at: string | null;
   /** 在途工单锚定的种子 hash；据此与 listActiveSubscriptionDownloads 的进度组对上 */
   info_hash: string | null;
+  /** 单集履历注解：最近一次候选被拒原因（含站点与种子名）；null=从未被拒 */
+  last_reject_reason: string | null;
+  /** 单集履历注解：最近一次投递的种子（站点 · 标题）；null=未投递 */
+  grab_title: string | null;
   /** 洗版派生状态；规则组未配洗版目标或单元未入库时为 null */
   upgrade: WantedUpgrade | null;
 }

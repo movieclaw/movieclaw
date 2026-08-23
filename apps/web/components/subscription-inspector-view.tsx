@@ -10,6 +10,7 @@ import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { useConfirm, useToast } from "@/components/feedback";
 import {
   ArrowLeftIcon,
+  ChevronDownIcon,
   FilmIcon,
   MoreIcon,
   RefreshIcon,
@@ -59,13 +60,16 @@ import { usePermissions } from "@/lib/permissions";
  *   1. Hero 氛围横幅 —— 海报低透明度取色产出该片专属底色（订阅接口无宽幅
  *      剧照，海报是永远可用的兜底），上面按状态 / 海报身份 / 配置参数 /
  *      收录进度 / 操作区纵向组织；移动端配置与操作跨满海报下方；
- *   2. 标签页主体 —— 「追踪明细」与「活动记录」性质不同（一个是可变的状态
- *      快照，一个是只增的事件流水），不再左右分栏互相挤压，改为胶囊标签
- *      切换、各占全宽：
- *      - 追踪明细：按季分组的工单明细，含调度信息（排队中 / 待播出 /
- *        未定档 / 已提交下载），让「正在寻找资源」背后的每个单元都可见；
- *      - 活动记录：竖轨时间线，后端每个动作的中文流水全宽展示
- *        （创建 / 搜索 / 匹配 / 拒绝原因 / 投递 / 入库），长句不再折行成豆腐块。
+ *   2. 单视图主体 —— 「一集一条履历」：不再分「追踪明细 / 活动记录」两个
+ *      标签页，而是把每集展开成一条固定形状的里程碑链（播出 → 搜索 → 投递
+ *      → 下载 → 入库 →（洗版）），第一个非完成节点就是这集卡住的地方。
+ *      链的六站时间戳全在工单（WantedItem）上，一次详情请求即得；叙事细节
+ *      （最近被拒原因 / 投递种子名）是工单上的冗余快照两列，不再回活动流水
+ *      里按季集捞。原活动流水按性质归位：
+ *      - 搜索轮次（订阅级，一轮服务所有缺口，天然拆不到集）→ 顶部一行摘要，
+ *        历史轮次折叠在后；
+ *      - 集级事件 → 降级为链上节点的注解；
+ *      - 全量流水 → 底部「活动流水」折叠区，日常不看、排查时下钻原始记录。
  */
 export function SubscriptionInspectorView({
   id,
@@ -89,7 +93,6 @@ export function SubscriptionInspectorView({
   const [adjusting, setAdjusting] = useState(false);
   const [upgradeRunning, setUpgradeRunning] = useState(autoOpenUpgradeRun);
   const [managing, setManaging] = useState(false);
-  const [tab, setTab] = useState<"wanted" | "activity">("wanted");
   const toast = useToast();
 
   const [downloads, setDownloads] = useState<SubscriptionDownload[]>([]);
@@ -470,50 +473,27 @@ export function SubscriptionInspectorView({
         </div>
       </section>
 
-      {/* —— 2. 标签页：状态快照与事件流水分页各占全宽 —— */}
-      <div className="text-on-image mt-7 flex items-center gap-1.5">
-        <InspectorTab
-          active={tab === "wanted"}
-          onClick={() => setTab("wanted")}
-          label="追踪明细"
-          count={detail.progress.total}
+      {/* —— 2. 单视图主体：搜索轮次摘要 → 按季分组的集履历 → 活动流水台账 —— */}
+      <div className="mt-7 space-y-4">
+        <SearchRoundBar activities={activities} wanted={detail.wanted} />
+        <WantedBreakdown
+          wanted={detail.wanted}
+          isMovie={isMovie}
+          downloads={downloadByHash}
+          mediaItemId={detail.media.media_item_id}
+          canAnnotate={isAdmin}
+          onAnnotated={async (message) => {
+            // 标注已刷新快照：顺手重跑一轮体检完成排期（幂等），再刷新详情
+            try {
+              await runSubscriptionUpgradeRound(id);
+              toast.success(`${message}，已重新体检并排期洗版`);
+            } catch {
+              toast.success(message);
+            }
+            reload();
+          }}
         />
-        <InspectorTab
-          active={tab === "activity"}
-          onClick={() => setTab("activity")}
-          label="活动记录"
-          count={activities.length}
-        />
-        {/* 解释性副文案：窄屏上它会跟两颗标签胶囊抢宽度，把「追踪明细」挤成两行
-            （iPhone 实测），而它本身只是提示、不承载数据——移动端直接不显示。
-            桌面端也补 truncate 兜底，窄窗口时截断而不是撑破这一行。 */}
-        <span className="ml-2 truncate text-sub text-[var(--text-faint)] max-md:hidden">
-          {tab === "wanted" ? "每个追踪单元此刻到哪一步了" : "系统对该订阅的每个动作"}
-        </span>
-      </div>
-
-      <div className="mt-4">
-        {tab === "wanted" ? (
-          <WantedBreakdown
-            wanted={detail.wanted}
-            isMovie={isMovie}
-            downloads={downloadByHash}
-            mediaItemId={detail.media.media_item_id}
-            canAnnotate={isAdmin}
-            onAnnotated={async (message) => {
-              // 标注已刷新快照：顺手重跑一轮体检完成排期（幂等），再刷新详情
-              try {
-                await runSubscriptionUpgradeRound(id);
-                toast.success(`${message}，已重新体检并排期洗版`);
-              } catch {
-                toast.success(message);
-              }
-              reload();
-            }}
-          />
-        ) : (
-          <ActivityTimeline activities={activities} />
-        )}
+        <ActivityLogSection activities={activities} />
       </div>
 
       {(canSubscribe || canManageSubscriptions) && managing && (
@@ -967,34 +947,112 @@ function ProgressLegend({ color, label }: { color: string; label: string }) {
   );
 }
 
-/** 标签页切换钮：与影片详情页「剧照/海报」同款胶囊，带计数。 */
-function InspectorTab({
-  active,
-  onClick,
-  label,
-  count,
+/**
+ * 搜索轮次摘要行：SEARCHED 活动是订阅级的一轮（一轮服务所有缺口，天然拆
+ * 不到集），不值得为它养一个标签页——压成一行「最近一轮 + 关键数字 +
+ * 下轮时间」，历史轮次折叠在后。payload 有结构化字段时用数字组，失败轮或
+ * 老记录退化为完整句子。没有任何搜索记录时整行不渲染（如纯追新未到期）。
+ */
+function SearchRoundBar({
+  activities,
+  wanted,
 }: {
-  active: boolean;
-  onClick: () => void;
-  label: string;
-  count: number;
+  activities: SubscriptionActivity[];
+  wanted: WantedItem[];
 }) {
+  const [showHistory, setShowHistory] = useState(false);
+  const rounds = activities.filter((a) => a.type === "searched");
+  const latest = rounds[0];
+  if (!latest) return null;
+
+  const p = latest.payload as Record<string, unknown>;
+  const hasStats = typeof p.results === "number" && !p.failed;
+  // 下一轮 = 未满足工单里最近的到期时刻（后端退避曲线排出来的）
+  const nextDue = wanted
+    .filter((w) => w.status === "wanted" && w.next_search_at)
+    .map((w) => w.next_search_at as string)
+    .sort()[0];
+
   return (
-    <button
-      type="button"
-      aria-pressed={active}
-      onClick={onClick}
-      /* shrink-0 + whitespace-nowrap：标签是固定宽度的控件，任何情况下都不该
-         被同行的副文案压缩换行（这正是移动端「追踪明细」折成两行的直接原因） */
-      className={`flex shrink-0 items-center gap-2 whitespace-nowrap rounded-full px-4 py-1.5 text-ui font-medium transition-colors ${
-        active
-          ? "bg-white/[0.14] text-white"
-          : "text-[var(--text-muted)] hover:bg-white/[0.07] hover:text-[var(--text)]"
-      }`}
-    >
-      {label}
-      <span className="tnum text-caption opacity-70">{count}</span>
-    </button>
+    <div className="rounded-2xl border border-white/[0.07] bg-[rgba(14,16,22,0.45)] backdrop-blur-xl">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2.5">
+        <span
+          className="size-1.5 shrink-0 rounded-full bg-[var(--info)]"
+          style={{ boxShadow: "0 0 0 3px color-mix(in oklab, var(--info) 14%, transparent)" }}
+        />
+        <span className="text-sub font-medium text-white/85">
+          {formatRelativeTime(latest.created_at)}搜了一轮
+        </span>
+        {rounds.length > 1 && (
+          <button
+            type="button"
+            onClick={() => setShowHistory((v) => !v)}
+            className="ml-auto shrink-0 text-caption text-[var(--text-faint)] transition-colors hover:text-white"
+          >
+            {showHistory ? "收起" : `历史轮次 ${rounds.length - 1}`}
+          </button>
+        )}
+        <span className="tnum basis-full text-caption leading-5 text-[var(--text-faint)]">
+          {hasStats ? (
+            <>
+              {String(p.results)} 结果 · 命中 {String(p.identity_hits ?? 0)} · 拒绝{" "}
+              {String(p.rejected ?? 0)} · 投递 {String(p.dispatched_units ?? 0)} 个单元
+              {nextDue ? ` · 下轮 ${formatDateTime(nextDue)}` : ""}
+            </>
+          ) : (
+            latest.message
+          )}
+        </span>
+      </div>
+      {showHistory && (
+        <ol className="space-y-2.5 border-t border-white/[0.06] px-4 py-3">
+          {rounds.slice(1, 6).map((r) => (
+            <li key={r.id} className="text-caption leading-5 text-[var(--text-muted)]">
+              <span
+                className="tnum mr-2 text-[var(--text-faint)]"
+                title={formatDateTime(r.created_at)}
+              >
+                {formatRelativeTime(r.created_at)}
+              </span>
+              {r.message}
+            </li>
+          ))}
+        </ol>
+      )}
+    </div>
+  );
+}
+
+/**
+ * 活动流水台账：全量活动的折叠区，默认收起。主视图只讲结论（链上的
+ * 卡点与注解），这里保住「按时间顺序回放系统每个动作」的排查能力——
+ * 生命周期变更、换源、洗版证伪等订阅级事件也只在这里完整可见。
+ */
+function ActivityLogSection({ activities }: { activities: SubscriptionActivity[] }) {
+  const [open, setOpen] = useState(false);
+  if (activities.length === 0) return null;
+  return (
+    <div className="overflow-hidden rounded-2xl border border-white/[0.07] bg-[rgba(14,16,22,0.45)] backdrop-blur-xl">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-sub font-semibold text-white/70 transition-colors hover:bg-white/[0.035]"
+      >
+        活动流水
+        <span className="tnum font-normal text-[var(--text-faint)]">{activities.length}</span>
+        <ChevronDownIcon
+          className={`ml-auto size-4 shrink-0 text-[var(--text-faint)] transition-transform ${
+            open ? "rotate-180" : ""
+          }`}
+        />
+      </button>
+      {open && (
+        <div className="border-t border-white/[0.06]">
+          <ActivityTimeline activities={activities} bare />
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1028,7 +1086,14 @@ function activityColor(type: SubscriptionActivity["type"]): string {
  * 活动时间线（全宽竖轨）：圆点定性（颜色）+ 中文流水句 + 相对时间。
  * message 由后端写入时渲染成完整句子，前端不做模板拼接。
  */
-function ActivityTimeline({ activities }: { activities: SubscriptionActivity[] }) {
+function ActivityTimeline({
+  activities,
+  bare = false,
+}: {
+  activities: SubscriptionActivity[];
+  /** 已被外层卡片（活动流水折叠区）包裹时不再画自己的边框底色 */
+  bare?: boolean;
+}) {
   if (activities.length === 0) {
     return (
       <p className="rounded-2xl border border-white/[0.07] bg-[rgba(14,16,22,0.45)] p-5 text-sub leading-6 text-[var(--text-muted)] backdrop-blur-xl">
@@ -1037,7 +1102,13 @@ function ActivityTimeline({ activities }: { activities: SubscriptionActivity[] }
     );
   }
   return (
-    <div className="rounded-2xl border border-white/[0.07] bg-[rgba(14,16,22,0.45)] px-6 py-5 backdrop-blur-xl">
+    <div
+      className={
+        bare
+          ? "px-6 py-5 max-md:px-4"
+          : "rounded-2xl border border-white/[0.07] bg-[rgba(14,16,22,0.45)] px-6 py-5 backdrop-blur-xl"
+      }
+    >
       <ol>
         {activities.map((a, i) => {
           const last = i === activities.length - 1;
@@ -1071,7 +1142,40 @@ function ActivityTimeline({ activities }: { activities: SubscriptionActivity[] }
   );
 }
 
-/** 追踪项按季分组展开；电影是单项的退化形态。 */
+/**
+ * 默认展开哪几季：最新一季 ∪ 有在途工单的季。
+ *
+ * 只展开最新一季不够——回补老剧时在途的那一集完全可能落在第 3 季，
+ * 而最新季一潭死水。用户来这页问的是「现在卡在哪」，把正在下载的那一季
+ * 折起来恰恰答错了问题。在途口径复用本文件顶部 hasInFlight 的同一条
+ * （grabbed / downloaded），不含洗版中：洗版是长期后台过程、可能横跨多季，
+ * 算进来等于全展开，折叠就白做了。
+ *
+ * 「最新一季」取季号最大的正季，只有特别篇时才落到 0——与海报卡的
+ * subscriptionCollectionMeta（lib/subscription-ui.ts）同一口径。
+ */
+function defaultOpenSeasons(wanted: WantedItem[]): Set<number> {
+  const open = new Set<number>();
+  const regular = wanted.filter((w) => w.season_number > 0);
+  const pool = regular.length > 0 ? regular : wanted;
+  if (pool.length > 0) {
+    open.add(Math.max(...pool.map((w) => w.season_number)));
+  }
+  for (const w of wanted) {
+    if (w.status === "grabbed" || w.status === "downloaded") open.add(w.season_number);
+  }
+  return open;
+}
+
+/**
+ * 追踪项按季分组展开；电影是单项的退化形态。
+ *
+ * 多季订阅（回补整部剧很常见，全 8 季 = 70 多行）默认只展开
+ * defaultOpenSeasons 选中的季，其余折成季头行那条本来就有的摘要
+ * （N/M 计数 + 洗版 N + 标注片源）。折叠而不是「只显示一季」：
+ * 收起的每一行仍然回答着「这季还缺不缺」，换季选择器（下拉/胶囊）会把
+ * 这个信息藏掉，回补老剧的用户恰恰最需要它。季序改为倒序，最新季在最上面。
+ */
 function WantedBreakdown({
   wanted,
   isMovie,
@@ -1092,6 +1196,21 @@ function WantedBreakdown({
 }) {
   // 「无法确认档位」季的标注弹窗（docs/design/media-source-annotation.md §5.1）
   const [annotateSeason, setAnnotateSeason] = useState<number | null>(null);
+  // 惰性初始化只在挂载时算一次：详情每 30s 静默刷新一遍，若跟着 wanted 重算，
+  // 用户手动展开的季会被刷回去。代价是自动续订新增的季不会自动展开——
+  // 折叠行本身就写着进度，不算信息丢失。
+  const [openSeasons, setOpenSeasons] = useState(() => defaultOpenSeasons(wanted));
+  const toggleSeason = (season: number) => {
+    setOpenSeasons((prev) => {
+      const next = new Set(prev);
+      if (next.has(season)) next.delete(season);
+      else next.add(season);
+      return next;
+    });
+  };
+  // 展开的集（里程碑链）：同一时刻只开一条——链是「细看一集」的动作，
+  // 多条同开只会把页面重新拉长
+  const [openWanted, setOpenWanted] = useState<number | null>(null);
   if (wanted.length === 0) {
     return (
       <p className="rounded-2xl border border-white/[0.07] bg-[rgba(14,16,22,0.45)] p-5 text-sub leading-6 text-[var(--text-muted)] backdrop-blur-xl">
@@ -1107,54 +1226,123 @@ function WantedBreakdown({
     seasons.set(w.season_number, list);
   }
   const annotatable = canAnnotate ? seasonsWithIndeterminate(wanted) : new Set<number>();
+  // 只有一组时折叠没有意义（电影、单季剧），维持原来的常展开形态
+  const collapsible = !isMovie && seasons.size > 1;
 
   return (
     <div className="space-y-4">
       {[...seasons.entries()]
-        .sort(([a], [b]) => a - b)
-        .map(([season, items]) => (
-          <div
-            key={season}
-            className="overflow-hidden rounded-2xl border border-white/[0.07] bg-[rgba(14,16,22,0.45)] backdrop-blur-xl"
-          >
-            {(!isMovie || annotatable.has(season)) && (
-              <p className="flex items-center border-b border-white/[0.06] px-5 py-2.5 text-sub font-semibold text-white/80">
-                <span className="min-w-0 flex-1 truncate">
-                  {isMovie ? "正片" : season === 0 ? "特别篇" : `第 ${season} 季`}
-                  {!isMovie && (
-                    <span className="ml-2 font-normal text-[var(--text-faint)]">
-                      {items.filter((w) => w.status !== "wanted").length}/{items.length} 已安排
+        // 倒序：最新一季在最上面，也就是默认展开的那一季，进页面不用先往下滚
+        .sort(([a], [b]) => b - a)
+        .map(([season, items]) => {
+          const open = !collapsible || openSeasons.has(season);
+          const arranged = items.filter((w) => w.status !== "wanted").length;
+          return (
+            <div
+              key={season}
+              className="overflow-hidden rounded-2xl border border-white/[0.07] bg-[rgba(14,16,22,0.45)] backdrop-blur-xl"
+            >
+              {(!isMovie || annotatable.has(season)) && (
+                /* 折叠热区用 role="button" 的 div 而不是 <button>：季头行里还有
+                   「标注片源」按钮，button 套 button 是非法嵌套。与站点配置行
+                   （site-config-section.tsx）同一套写法。 */
+                <div
+                  role={collapsible ? "button" : undefined}
+                  tabIndex={collapsible ? 0 : undefined}
+                  aria-expanded={collapsible ? open : undefined}
+                  onClick={collapsible ? () => toggleSeason(season) : undefined}
+                  onKeyDown={
+                    collapsible
+                      ? (e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            toggleSeason(season);
+                          }
+                        }
+                      : undefined
+                  }
+                  className={`flex items-center gap-2 px-5 py-2.5 text-sub font-semibold text-white/80 ${
+                    open ? "border-b border-white/[0.06]" : ""
+                  } ${
+                    collapsible
+                      ? "cursor-pointer transition-colors hover:bg-white/[0.035] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-white/25"
+                      : ""
+                  }`}
+                >
+                  {collapsible && (
+                    <ChevronDownIcon
+                      className={`size-4 shrink-0 text-[var(--text-faint)] transition-transform ${
+                        open ? "rotate-180" : ""
+                      }`}
+                    />
+                  )}
+                  <span className="min-w-0 flex-1 truncate">
+                    {isMovie ? "正片" : season === 0 ? "特别篇" : `第 ${season} 季`}
+                    {/* 计数不带「已安排」标签：集行的状态胶囊已让语义自明，
+                        短形态在窄屏不与洗版数、标注按钮抢宽度 */}
+                    {!isMovie && (
+                      <span
+                        className="tnum ml-2 font-normal text-[var(--text-faint)]"
+                        title={`${arranged}/${items.length} 已安排`}
+                      >
+                        {arranged}/{items.length}
+                      </span>
+                    )}
+                    {items.some((w) => w.upgrade?.active) && (
+                      <span className="tnum ml-2 font-normal text-[#2dd4bf]/80">
+                        洗版 {items.filter((w) => w.upgrade?.active).length}
+                      </span>
+                    )}
+                  </span>
+                  {/* 收起态的迷你进度条：一列折叠行里，光看数字扫不出哪季有缺口。
+                      刻意与同行 N/M 计数取同一个比值——旁边的条和数字讲两件事，
+                      用户只会更糊涂 */}
+                  {collapsible && !open && (
+                    <span className="h-1 w-12 shrink-0 overflow-hidden rounded-full bg-white/[0.1]">
+                      <span
+                        className="block h-full rounded-full"
+                        style={{
+                          width: `${Math.round((arranged / items.length) * 100)}%`,
+                          backgroundColor:
+                            arranged === items.length ? "var(--ok)" : "var(--warn)",
+                        }}
+                      />
                     </span>
                   )}
-                  {items.some((w) => w.upgrade?.active) && (
-                    <span className="ml-2 font-normal text-[#2dd4bf]/80">
-                      洗版中 {items.filter((w) => w.upgrade?.active).length}
-                    </span>
+                  {annotatable.has(season) && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        // 整行是折叠热区，标注按钮不能顺带把这一季折起来
+                        e.stopPropagation();
+                        setAnnotateSeason(season);
+                      }}
+                      className="shrink-0 rounded-md border border-white/[0.12] px-2 py-0.5 text-caption font-medium text-white/75 transition hover:bg-white/[0.07] hover:text-white"
+                    >
+                      标注片源
+                    </button>
                   )}
-                </span>
-                {annotatable.has(season) && (
-                  <button
-                    type="button"
-                    onClick={() => setAnnotateSeason(season)}
-                    className="shrink-0 rounded-md border border-white/[0.12] px-2 py-0.5 text-caption font-medium text-white/75 transition hover:bg-white/[0.07] hover:text-white"
-                  >
-                    标注片源
-                  </button>
-                )}
-              </p>
-            )}
-            <ul className="divide-y divide-white/[0.05]">
-              {items.map((w) => (
-                <WantedRow
-                  key={w.id}
-                  wanted={w}
-                  isMovie={isMovie}
-                  download={w.info_hash ? downloads.get(w.info_hash) : undefined}
-                />
-              ))}
-            </ul>
-          </div>
-        ))}
+                </div>
+              )}
+              {open && (
+                <ul className="divide-y divide-white/[0.05]">
+                  {items.map((w) => (
+                    <WantedRow
+                      key={w.id}
+                      wanted={w}
+                      isMovie={isMovie}
+                      download={w.info_hash ? downloads.get(w.info_hash) : undefined}
+                      expanded={openWanted === w.id}
+                      onToggle={() =>
+                        setOpenWanted((cur) => (cur === w.id ? null : w.id))
+                      }
+                    />
+                  ))}
+                </ul>
+              )}
+            </div>
+          );
+        })}
 
       {annotateSeason !== null && (
         <MediaSourceAnnotationDialog
@@ -1173,69 +1361,380 @@ function WantedBreakdown({
 }
 
 /**
- * 单个追踪项的透明化行：状态徽标 + 该项此刻"卡在哪、下一步是什么"。
- * 文案与后端调度语义一一对应（补旧排队 / 追新等被动匹配 / 未定档不可调度）。
+ * wantedPresentation 长词 → 状态胶囊三字短名。整套词表恰好能全部收敛到
+ * 三字（配合微型链固定占宽 → 所有胶囊等宽，右轨对成一列状态列）；
+ * 丢掉的字由行说明与展开链补全（「已提交下载器」），胶囊只承担短名。
+ */
+const SHORT_STATUS: Record<string, string> = {
+  已提交下载: "已提交",
+  排队搜索: "排队中",
+  预测窗口: "预测中",
+};
+
+/** 里程碑链的一站。state：done=历史（中性）/ now=卡点（状态色）/ todo=未到 */
+interface Milestone {
+  lab: string;
+  state: "done" | "now" | "todo";
+  /** 右侧时间列：done 站的发生时刻、搜索站的次数等辅助短语；可为空 */
+  time: string;
+  det: string;
+  /** 红色补充行：最近一次候选被拒原因（仅搜索站、未投递时） */
+  why?: string;
+  /** 弱化补充行：投递种子名 / 资源发布→提交时间链 */
+  src?: string[];
+}
+
+/**
+ * 工单 → 里程碑链：播出 → 搜索 → 投递 → 下载 → 入库 →（洗版，规则组配了
+ * 目标才有）。六站时间戳全部来自工单自身字段，第一个非 done 的站就是这集
+ * 卡住的地方；now 站颜色恒等于胶囊色（wantedPresentation 同源），胶囊亮点、
+ * 胶囊文字、链上卡点三处同色互认。
+ *
+ * 电影哨兵 (0,0) 的第一站叫「上映」且不读 air_date——上映日刻意不写进
+ * air_date（见 WantedItem 模型注释），用 next_search_at 是否可调度判断定档。
+ */
+function milestonesOf(
+  w: WantedItem,
+  isMovie: boolean,
+  live: SubscriptionDownload | undefined,
+): Milestone[] {
+  const M: Milestone[] = [];
+  const now = new Date();
+
+  // 1. 播出 / 上映——语义是「定档站」：定档即 done（det 带日期，未来场次也
+  //    如实写「X 播出」），未定档才是卡点。待播出 / 预测窗口的等待发生在
+  //    搜索侧（wantedPresentation 的措辞也如此），卡点归搜索站，否则会出现
+  //    胶囊叫「预测中」而亮点指着播出站的名实错位；资源先于播出流出的
+  //    已投递单元也不会被误标「已播出」。
+  if (isMovie) {
+    const undated = w.status === "wanted" && w.next_search_at === null;
+    M.push(
+      undated
+        ? { lab: "上映", state: "now", time: "", det: "上映日期未公布，定档后自动排队" }
+        : { lab: "上映", state: "done", time: "", det: "已定档或已上映" },
+    );
+  } else if (!w.air_date) {
+    M.push({ lab: "播出", state: "now", time: "", det: "播出日期未公布，定档后自动排队" });
+  } else {
+    M.push({
+      lab: "播出",
+      state: "done",
+      time: w.air_date,
+      det: new Date(w.air_date) > now ? `${w.air_date} 播出` : "已播出",
+    });
+  }
+  // 未定档 = 不可调度，搜索站保持 todo；已定档未播出的等待语义交给搜索站
+  const preAir = M[0].state === "now";
+
+  // 2. 搜索：卡在这里时直接复用 wantedPresentation 的调度文案
+  //   （排队 / 冷却 / 预测窗口 / 待搜索的精确措辞单源维护，不重写一遍）
+  if (w.status !== "wanted") {
+    M.push({
+      lab: "搜索",
+      state: "done",
+      time: w.last_search_at ? formatRelativeTime(w.last_search_at) : "",
+      det: w.search_attempts > 0 ? `搜索 ${w.search_attempts} 次后命中` : "被动匹配命中",
+    });
+  } else if (preAir) {
+    M.push({ lab: "搜索", state: "todo", time: "", det: "定档后进入搜索队列" });
+  } else {
+    M.push({
+      lab: "搜索",
+      state: "now",
+      time: w.search_attempts > 0 ? `已搜 ${w.search_attempts} 次` : "",
+      det: wantedPresentation(w).note,
+      why: w.last_reject_reason ? `最近一次被拒：${w.last_reject_reason}` : undefined,
+    });
+  }
+
+  // 3. 投递
+  if (w.grabbed_at) {
+    const src = [
+      w.grab_title,
+      resourceTimingNote(w.resource_timing, false),
+    ].filter((s): s is string => !!s);
+    M.push({
+      lab: "投递",
+      state: "done",
+      time: formatRelativeTime(w.grabbed_at),
+      det: "已提交下载器",
+      src: src.length ? src : undefined,
+    });
+  } else {
+    // 重开的工单（缺失重下）grabbed_at 已清但上次投递的时间链还在：
+    // 保留「上次 · 站点：耗时」注解，与旧版行内第二行的信息对齐
+    const lastTiming = resourceTimingNote(w.resource_timing, true);
+    M.push({
+      lab: "投递",
+      state: "todo",
+      time: "",
+      det: "尚未找到符合规则组的资源",
+      src: lastTiming ? [lastTiming] : undefined,
+    });
+  }
+
+  // 4. 下载
+  if (w.downloaded_at) {
+    M.push({
+      lab: "下载",
+      state: "done",
+      time: formatRelativeTime(w.downloaded_at),
+      det: "全部落盘",
+    });
+  } else if (w.grabbed_at) {
+    M.push({
+      lab: "下载",
+      state: "now",
+      time: "进行中",
+      det: live ? downloadNote(live) : "已提交下载器，等待进度汇报",
+    });
+  } else {
+    M.push({ lab: "下载", state: "todo", time: "", det: "等待投递完成" });
+  }
+
+  // 5. 入库
+  if (w.imported_at) {
+    M.push({
+      lab: "入库",
+      state: "done",
+      time: formatRelativeTime(w.imported_at),
+      det: w.upgrade ? `已整理入库 · ${w.upgrade.current_label}` : "已整理入库",
+    });
+  } else if (w.downloaded_at) {
+    M.push({ lab: "入库", state: "now", time: "", det: "下载完成，等待整理入库" });
+  } else {
+    M.push({ lab: "入库", state: "todo", time: "", det: "下载完成后自动整理" });
+  }
+
+  // 6. 洗版（规则组配了洗版目标才出现这一站）
+  if (w.upgrade) {
+    if (w.upgrade.active) {
+      M.push({
+        lab: "洗版",
+        state: "now",
+        time: w.upgrade.search_attempts > 0 ? `已搜 ${w.upgrade.search_attempts} 次` : "",
+        det: `当前 ${w.upgrade.current_label} → 目标 ${w.upgrade.target_label}`,
+      });
+    } else if (w.upgrade.indeterminate) {
+      M.push({
+        lab: "洗版",
+        state: "now",
+        time: "",
+        det: `${w.upgrade.current_label} · 无法确认是否低于洗版目标，不自动洗；可在季标题「标注片源」或手动选种替换`,
+      });
+    } else {
+      M.push({
+        lab: "洗版",
+        state: "done",
+        time: "",
+        det: `当前 ${w.upgrade.current_label}`,
+      });
+    }
+  }
+  return M;
+}
+
+/** 卡点 = 链上第一个非 done 的站；全 done（收齐且无洗版任务）时亮终点站。 */
+function stuckIndex(chain: Milestone[]): number {
+  const i = chain.findIndex((m) => m.state !== "done");
+  return i < 0 ? chain.length - 1 : i;
+}
+
+/**
+ * 展开的里程碑链：竖轨节点 + 站名 + 时间列 + 说明。当前站零额外几何
+ * （色块/色条都是对链语法的重复）：发光节点是链原生的选中指示器，站名染成
+ * 同一状态色作文字锚点——一列中性站名里唯一有色的那个就是卡点。
+ */
+function MilestoneChain({ chain, color }: { chain: Milestone[]; color: string }) {
+  const stuck = stuckIndex(chain);
+  return (
+    /* 左缩进 76px = 行内边距 20 + 集号列 44 + 间距 12：链与行说明文字同列起步 */
+    <ol className="bg-white/[0.05] py-3 pl-[76px] pr-5 max-md:px-4">
+      {chain.map((m, i) => {
+        const isNow = m.state === "now";
+        return (
+          <li key={m.lab} className="flex gap-3">
+            <span className="flex flex-col items-center">
+              <span
+                className={`shrink-0 rounded-full ${
+                  isNow ? "mt-1.5 size-2.5" : "mt-[7px] size-[9px]"
+                } ${m.state === "done" ? "bg-white/30" : "border-[1.5px] border-white/[0.15]"}`}
+                style={
+                  isNow
+                    ? {
+                        borderColor: color,
+                        borderWidth: 2.5,
+                        boxShadow: `0 0 9px color-mix(in oklab, ${color} 40%, transparent)`,
+                      }
+                    : undefined
+                }
+              />
+              {i < chain.length - 1 && (
+                /* 轨线分段：走过的亮、没走的暗——链断在哪一眼可见 */
+                <span
+                  className={`mt-1 w-[1.5px] flex-1 rounded-full ${
+                    i < stuck ? "bg-white/[0.16]" : "bg-white/[0.07]"
+                  }`}
+                />
+              )}
+            </span>
+            {/* 行距收口在倒数第一站：last: 变体在这里不可用——本 div 恒为
+                li 的最后子元素，last:pb-1 会让每一站的行距都塌掉 */}
+            <div
+              className={`flex min-w-0 flex-1 flex-wrap items-baseline gap-x-3 ${
+                i === chain.length - 1 ? "pb-1" : "pb-3.5"
+              }`}
+            >
+              <span
+                className={`text-sub ${
+                  isNow
+                    ? "font-semibold"
+                    : m.state === "done"
+                      ? "font-medium text-white/65"
+                      : "font-medium text-[var(--text-faint)]"
+                }`}
+                style={isNow ? { color } : undefined}
+              >
+                {m.lab}
+              </span>
+              {m.time && (
+                <span className="tnum ml-auto shrink-0 text-caption text-[var(--text-faint)]">
+                  {m.time}
+                </span>
+              )}
+              <span
+                className={`tnum basis-full text-sub leading-6 ${
+                  m.state === "done"
+                    ? "text-[var(--text-faint)]"
+                    : m.state === "todo"
+                      ? "text-white/25"
+                      : "text-white/80"
+                }`}
+              >
+                {m.det}
+              </span>
+              {m.why && (
+                <span className="basis-full text-caption leading-5 text-[#ff8a8a]/90">
+                  {m.why}
+                </span>
+              )}
+              {m.src?.map((s) => (
+                <span
+                  key={s}
+                  className="basis-full truncate text-caption leading-5 text-[var(--text-faint)]"
+                >
+                  {s}
+                </span>
+              ))}
+            </div>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+/**
+ * 单个追踪项：一行「集号 + 说明 + 状态胶囊」，点开展开该集的里程碑链。
+ * 胶囊 = 微型链（亮点指卡在第几站）+ 三字短名（那一站的细分状态名）——
+ * 同一事实的位置与名字物理相邻，且与展开链共用一套语法与颜色。
+ * 说明文案与后端调度语义一一对应（补旧排队 / 追新被动匹配 / 未定档不可调度）。
  */
 function WantedRow({
   wanted: w,
   isMovie,
   download,
+  expanded,
+  onToggle,
 }: {
   wanted: WantedItem;
   isMovie: boolean;
   /** 该工单锚定种子的实时下载快照（仅在途工单有，5s 轮询更新） */
   download?: SubscriptionDownload;
+  expanded: boolean;
+  onToggle: () => void;
 }) {
   const { label, color, note: statusNote } = wantedPresentation(w);
   // 已提交下载且拿到了实时快照：说明行升级为进度行（进度条 + 速度/ETA）
   const live = w.status === "grabbed" || w.status === "downloaded" ? download : undefined;
-  const timingNote = resourceTimingNote(w.resource_timing, w.status === "wanted");
+  const chain = milestonesOf(w, isMovie, live);
+  const lit = stuckIndex(chain);
+  const complete = chain.every((m) => m.state === "done");
   return (
-    /* 移动端：顶部对齐 + 更紧的间距——说明文案在窄屏允许折行（见下方 md:truncate），
-       折行后徽标要与文案首行齐平，而不是吊在两行的正中 */
-    <li className="px-5 py-2.5 max-md:px-4">
-      <div className="flex items-center gap-4 max-md:items-start max-md:gap-3">
-        <span className="tnum w-14 shrink-0 text-sub font-medium text-white/90">
-          {isMovie ? "正片" : `E${String(w.episode_number).padStart(2, "0")}`}
-        </span>
-        <span
-          className="shrink-0 rounded-full px-2 py-0.5 text-micro font-semibold"
-          style={{ backgroundColor: `color-mix(in oklab, ${color} 13%, transparent)`, color }}
-        >
-          {label}
-        </span>
-        {/* 桌面端一行截断（列表要能快速扫读）；移动端改为折行——窄屏截断后只剩
-            半个日期（「将于 202…」），信息量归零，不如让它占两行把话说完 */}
-        <div className="tnum min-w-0 flex-1 leading-5">
-          <span className="block text-sub text-[var(--text-muted)] md:truncate">
+    <li>
+      <button
+        type="button"
+        aria-expanded={expanded}
+        onClick={onToggle}
+        className={`block w-full cursor-pointer px-5 py-2.5 text-left transition-colors hover:bg-white/[0.035] max-md:px-4 ${
+          expanded ? "bg-white/[0.05]" : ""
+        }`}
+      >
+        {/* 桌面单行：集号 | 说明(截断) | 胶囊 | 箭头；窄屏两行——定长元素留
+            第一行（胶囊 ml-auto 靠右），说明整宽折到第二行（basis-full），
+            截断只剩半个日期的信息量归零问题就此消失 */}
+        {/* max-md:flex-wrap 是窄屏两行布局的开关：没有它 basis-full 不换行、
+            说明文案被压成一条缝。桌面保持 nowrap 单行 */}
+        <span className="flex items-center gap-x-3 gap-y-1 max-md:flex-wrap">
+          <span className="tnum w-11 shrink-0 text-sub font-semibold text-white/90">
+            {isMovie ? "正片" : `E${String(w.episode_number).padStart(2, "0")}`}
+          </span>
+          <span className="tnum min-w-0 flex-1 truncate text-sub leading-5 text-[var(--text-muted)] max-md:order-last max-md:basis-full max-md:whitespace-normal max-md:line-clamp-2">
             {live ? downloadNote(live) : statusNote}
           </span>
-          {timingNote && (
-            <span className="mt-0.5 block text-caption text-[var(--text-faint)]">
-              {timingNote}
+          <span
+            className="flex shrink-0 items-center gap-[7px] rounded-full px-2.5 py-[3px] text-micro font-semibold max-md:ml-auto"
+            style={{
+              backgroundColor: `color-mix(in oklab, ${color} 14%, transparent)`,
+              color,
+            }}
+            title={`第 ${lit + 1}/${chain.length} 站：${chain[lit].lab}${complete ? "（已收齐）" : ""}`}
+          >
+            {/* 微型链固定占最长链（6 站）的宽度：与三字短名合力让胶囊等宽 */}
+            <span className="flex w-[42px] shrink-0 items-center gap-[3px]">
+              {chain.map((m, i) => (
+                <span
+                  key={m.lab}
+                  className="size-[4.5px] shrink-0 rounded-full"
+                  style={{
+                    backgroundColor:
+                      i === lit
+                        ? color
+                        : m.state === "done"
+                          ? "rgba(255,255,255,.38)"
+                          : "rgba(255,255,255,.14)",
+                    boxShadow:
+                      i === lit
+                        ? `0 0 5px color-mix(in oklab, ${color} 60%, transparent)`
+                        : undefined,
+                  }}
+                />
+              ))}
             </span>
-          )}
-        </div>
-        {!live && w.search_attempts > 0 && (
-          <span className="tnum shrink-0 text-caption text-[var(--text-faint)]">
-            已搜索 {w.search_attempts} 次
+            {SHORT_STATUS[label] ?? label}
+          </span>
+          <ChevronDownIcon
+            className={`size-3.5 shrink-0 text-white/30 transition-transform ${
+              expanded ? "rotate-180 text-[var(--text-muted)]" : ""
+            }`}
+          />
+        </span>
+        {live && live.progress != null && live.state !== "missing" && (
+          <span
+            className="mt-2 block h-1 overflow-hidden rounded-full bg-white/[0.08]"
+            role="progressbar"
+            aria-valuenow={Math.round(live.progress * 100)}
+            aria-valuemin={0}
+            aria-valuemax={100}
+          >
+            <span
+              className="block h-full rounded-full bg-[var(--ok)] transition-[width] duration-700"
+              style={{ width: `${Math.min(100, Math.max(1, live.progress * 100))}%` }}
+            />
           </span>
         )}
-      </div>
-      {live && live.progress != null && live.state !== "missing" && (
-        <div
-          className="mt-2 h-1 overflow-hidden rounded-full bg-white/[0.08]"
-          role="progressbar"
-          aria-valuenow={Math.round(live.progress * 100)}
-          aria-valuemin={0}
-          aria-valuemax={100}
-        >
-          <div
-            className="h-full rounded-full bg-[var(--ok)] transition-[width] duration-700"
-            style={{ width: `${Math.min(100, Math.max(1, live.progress * 100))}%` }}
-          />
-        </div>
-      )}
+      </button>
+      {expanded && <MilestoneChain chain={chain} color={color} />}
     </li>
   );
 }
