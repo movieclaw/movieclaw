@@ -17,8 +17,10 @@ from movieclaw_jellyfin.routes.common import require_enabled
 from movieclaw_jellyfin.routes.images import router as images_router
 from movieclaw_jellyfin.routes.library import router as library_router
 from movieclaw_jellyfin.routes.misc import router as misc_router
+from movieclaw_jellyfin.routes.persons import router as persons_router
 from movieclaw_jellyfin.routes.playback import router as playback_router
 from movieclaw_jellyfin.routes.playstate import router as playstate_router
+from movieclaw_jellyfin.routes.search import router as search_router
 from movieclaw_jellyfin.routes.system import router as system_router
 from movieclaw_jellyfin.routes.users import router as users_router
 
@@ -31,6 +33,8 @@ NAMESPACE_PREFIXES = {
     "userplayeditems",
     "userfavoriteitems",
     "items",
+    "persons",
+    "search",
     "videos",
     "shows",
     "sessions",
@@ -96,6 +100,23 @@ _KNOWN_QUERY_KEYS = [
     "format",
     # DisplayPreferences 的客户端标识参数（issue #124）
     "client",
+    # /Persons 与 /Search/Hints 的参数（PersonsController.cs / SearchController.cs）
+    "nameStartsWith",
+    "nameLessThan",
+    "nameStartsWithOrGreater",
+    "personTypes",
+    "excludePersonTypes",
+    "appearsInItemId",
+    "includePeople",
+    "includeMedia",
+    "includeGenres",
+    "includeStudios",
+    "includeArtists",
+    "isMovie",
+    "isSeries",
+    "isNews",
+    "isKids",
+    "isSports",
 ]
 
 # 注册顺序即匹配顺序：字面路径的模块在参数路径之前
@@ -106,6 +127,8 @@ _SUB_ROUTERS = [
     playstate_router,
     playback_router,
     images_router,
+    search_router,
+    persons_router,
     library_router,
 ]
 

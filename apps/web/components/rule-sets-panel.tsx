@@ -14,6 +14,14 @@ import {
   type RuleSetSpec,
 } from "@/lib/api/subscriptions";
 import { PLATFORM_OPTIONS, platformLabel } from "@/lib/platforms";
+import {
+  CODEC_FAMILIES,
+  DEFAULT_LADDER,
+  LADDER_OPTIONS,
+  MEDIA_SOURCE_OPTIONS,
+  upgradeLadderPreview,
+  type UpgradeLadderPreview,
+} from "@/lib/upgrade-ladder";
 
 /**
  * 规则组管理（设置 → 订阅 → 规则组）：Web 端唯一的规则组配置入口。
@@ -258,6 +266,10 @@ const UPGRADE_SOURCE_LABEL: Record<string, string> = {
   remux: "Remux",
 };
 
+/** 片源档规范值 → 展示名；未知值原样返回（与 platformLabel 同一取向）。 */
+const mediaSourceLabel = (value: string): string =>
+  MEDIA_SOURCE_OPTIONS.find((option) => option.value === value)?.label ?? value;
+
 /**
  * HDR 值域（顺序即编辑器里的芯片顺序）。"SDR" 是哨兵值 = 资源未标注任何
  * HDR 格式——命名惯例里 HDR 属"缺席即否定"的强标记。
@@ -298,16 +310,6 @@ function hdrChipText(levels: string[]): string {
   return `HDR ${levels.join("/")}`;
 }
 
-/** 洗版阶梯的维度选项（顺序即位次，交互与分辨率偏好完全一致：点击依次入列）。 */
-const LADDER_OPTIONS: { value: string; label: string }[] = [
-  { value: "resolution", label: "分辨率" },
-  { value: "source", label: "片源" },
-  { value: "hdr", label: "HDR" },
-  { value: "video_codec", label: "编码" },
-  { value: "platform", label: "平台" },
-];
-const DEFAULT_LADDER = ["resolution", "source"];
-
 const sameLadder = (a: string[], b: string[]) =>
   a.length === b.length && a.every((v, i) => v === b[i]);
 
@@ -333,22 +335,18 @@ export function upgradeTargetLabel(spec: RuleSetSpec): string | null {
   return parts.join(" · ");
 }
 
-/**
- * 编码按"家族"选择：词表把 x265 / H.265 / HEVC 归一成不同值，而用户想表达的
- * 是"要 H.265 这一族"——UI 选一族即把全部等价写法写进白名单，避免因发布组
- * 写法不同而漏掉资源。
- */
-const CODEC_FAMILIES: { label: string; values: string[] }[] = [
-  { label: "H.265", values: ["x265", "H.265", "HEVC"] },
-  { label: "H.264", values: ["x264", "H.264", "AVC"] },
-  { label: "AV1", values: ["AV1"] },
-];
-
-/** spec → 人话芯片列表（清单摘要 / 订阅弹窗与详情页复用；空数组=全不限）。 */
-export function specSummary(spec: RuleSetSpec): string[] {
+/** spec → 人话芯片列表（清单摘要 / 订阅弹窗与详情页复用；空数组=全不限）。
+ *  `withoutUpgrade`：编辑器底部把洗版单独渲染成阶梯，那里不再要这枚芯片。 */
+export function specSummary(
+  spec: RuleSetSpec,
+  { withoutUpgrade = false }: { withoutUpgrade?: boolean } = {},
+): string[] {
   const chips: string[] = [];
   if (spec.resolutions?.length) chips.push(spec.resolutions.join(" > "));
-  const upgradeTarget = upgradeTargetLabel(spec);
+  if (spec.media_sources?.length) {
+    chips.push(spec.media_sources.map(mediaSourceLabel).join(" > "));
+  }
+  const upgradeTarget = withoutUpgrade ? null : upgradeTargetLabel(spec);
   if (upgradeTarget) {
     chips.push(`洗到 ${upgradeTarget}${spec.upgrade_keep_old ? "（保留旧版）" : ""}`);
   }
@@ -440,6 +438,7 @@ export function RuleSetEditorDialog({
   const [platformsBlock, setPlatformsBlock] = useState<string[]>(() =>
     (spec.platforms_block ?? []).filter((v) => PLATFORM_OPTIONS.includes(v)),
   );
+  const [mediaSources, setMediaSources] = useState<string[]>(spec.media_sources ?? []);
   const [upgradeLadder, setUpgradeLadder] = useState<string[]>(
     () => spec.upgrade_ladder ?? [...DEFAULT_LADDER],
   );
@@ -587,6 +586,20 @@ export function RuleSetEditorDialog({
       prev.includes(value) ? prev.filter((r) => r !== value) : [...prev, value],
     );
 
+  /** 片源档：交互与分辨率偏好完全一致（点击依次入列，序号即位次）。
+   *  收窄白名单时若洗版终点被排除在外，直接把终点清掉——不让用户进入
+   *  "保存时才报错"的状态（与平台三态那处"矛盾在源头消除"同一取向）。 */
+  const toggleMediaSource = (value: string) =>
+    setMediaSources((prev) => {
+      const next = prev.includes(value)
+        ? prev.filter((v) => v !== value)
+        : [...prev, value];
+      if (upgradeSource && next.length && !next.includes(upgradeSource)) {
+        setUpgradeSource("");
+      }
+      return next;
+    });
+
   const toggleCodecFamily = (label: string) =>
     setCodecFamilies((prev) => {
       const next = new Set(prev);
@@ -613,6 +626,7 @@ export function RuleSetEditorDialog({
 
     const next: RuleSetSpec = {};
     if (resolutions.length) next.resolutions = resolutions;
+    if (mediaSources.length) next.media_sources = mediaSources;
     const codecs = [
       ...CODEC_FAMILIES.filter((f) => codecFamilies.has(f.label)).flatMap((f) => f.values),
       ...codecExtras,
@@ -650,6 +664,9 @@ export function RuleSetEditorDialog({
     if (allow.length) next.release_groups_allow = allow;
     if (block.length) next.release_groups_block = block;
     if (upgradeSource) {
+      if (mediaSources.length && !mediaSources.includes(upgradeSource)) {
+        return { spec: next, error: "洗版目标片源必须在允许的片源范围内" };
+      }
       next.upgrade_source = upgradeSource as RuleSetSpec["upgrade_source"];
       // 目标分辨率仅在偏离缺省（分辨率偏好首选）时写入；限定了分辨率时
       // 目标必须落在允许范围内（后端同样校验）
@@ -666,6 +683,7 @@ export function RuleSetEditorDialog({
     return { spec: next, error: null };
   }, [
     resolutions,
+    mediaSources,
     codecFamilies,
     codecExtras,
     upgradeSource,
@@ -690,7 +708,15 @@ export function RuleSetEditorDialog({
     spec.sites,
   ]);
 
-  const draftChips = useMemo(() => specSummary(draft.spec), [draft.spec]);
+  // 底部回执分两段：硬性筛选走芯片，洗版走阶梯（洗版开着时芯片里不再重复目标）
+  const ladderPreview = useMemo(
+    () => upgradeLadderPreview(draft.spec, platformLabel),
+    [draft.spec],
+  );
+  const draftChips = useMemo(
+    () => specSummary(draft.spec, { withoutUpgrade: ladderPreview !== null }),
+    [draft.spec, ladderPreview],
+  );
 
   const submit = async () => {
     if (draft.error) {
@@ -771,136 +797,32 @@ export function RuleSetEditorDialog({
             </div>
           </Field>
 
+          {/* 片源与分辨率是用户谈论"版本好坏"时实际用的两个主轴（§2.2），也是
+              仅有的两个偏好序参与候选选优的维度，因此并排放在最外层；它还必须
+              排在洗版之前——洗版终点档只能从这个白名单里挑 */}
           <Field
-            label="洗版"
-            hint="收齐后继续追更高版本，直到达到目标档位为止。新版本入库后旧版本进回收站保留 7 天，做种中的任务不受影响；不开启 = 下到即止"
+            label="片源"
+            hint="点击依次选择，先选的优先（选中顺序 = 下载偏好）；不选 = 不限。Rip 类 = WEBRip/BDRip，电视录制类 = HDTV/DVD。限定片源后，无法从种子名识别出片源的资源也会被排除，可用「手动选种」兜底"
           >
             <div className="flex flex-wrap gap-1.5">
-              <ToggleChip active={upgradeSource === ""} onClick={() => setUpgradeSource("")}>
-                不洗版
-              </ToggleChip>
-              {UPGRADE_OPTIONS.map(([value, label]) => (
-                <ToggleChip
-                  key={value}
-                  active={upgradeSource === value}
-                  onClick={() => setUpgradeSource(value)}
-                >
-                  {label}
-                </ToggleChip>
-              ))}
-            </div>
-            {upgradeSource !== "" && (
-              <div className="mt-2 rounded-xl bg-white/[0.03] px-4 py-2.5">
-                <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5">
-                  <span className="text-sub text-[var(--text-muted)]">目标分辨率</span>
-                  <div className="flex flex-wrap gap-1.5">
-                    {(resolutions.length ? resolutions : RESOLUTION_OPTIONS).map((option) => {
-                      const effective = cutoffResolution || resolutions[0] || "1080p";
-                      return (
-                        <ToggleChip
-                          key={option}
-                          active={effective === option}
-                          onClick={() =>
-                            setCutoffResolution(option === (resolutions[0] ?? "") ? "" : option)
-                          }
-                        >
-                          {option}
-                        </ToggleChip>
-                      );
-                    })}
-                  </div>
-                </div>
-                <p className="mt-1.5 text-caption text-[var(--text-faint)]">
-                  {resolutions.length > 0
-                    ? "缺省跟随上方分辨率偏好的第一位"
-                    : "未限定分辨率时缺省洗到 1080p（避免意外进入 4K 的磁盘占用）"}
-                </p>
-                {/* 旧版本处置（library-file-recycle.md §9）：配置洗版的那一刻
-                    就是询问旧版去留的合适时机；保留共存服务收藏家场景 */}
-                <label className="mt-2.5 flex cursor-pointer items-center justify-between gap-3 border-t border-white/[0.06] pt-2.5">
-                  <span>
-                    <span className="block text-sub text-[var(--text-muted)]">
-                      洗到新版本后保留旧版本
-                    </span>
-                    <span className="mt-0.5 block text-caption text-[var(--text-faint)]">
-                      多版本共存（收藏家模式）；关闭 = 旧版本进回收站保留 7 天
-                    </span>
-                  </span>
-                  <input
-                    type="checkbox"
-                    checked={upgradeKeepOld}
-                    onChange={(e) => setUpgradeKeepOld(e.target.checked)}
-                    className="size-4 accent-[var(--accent-2)]"
-                  />
-                </label>
-
-                {/* 洗版优先级：交互与上方分辨率偏好一致——点击依次入列、序号即
-                    位次。多一位就是多一轮潜在的重复下载，所以缺省只有前两位 */}
-                <div className="mt-2.5 border-t border-white/[0.06] pt-2.5">
-                  <button
-                    type="button"
-                    onClick={() => setLadderOpen((v) => !v)}
-                    className="flex w-full items-center gap-3 text-left"
+              {MEDIA_SOURCE_OPTIONS.map((option) => {
+                const index = mediaSources.indexOf(option.value);
+                return (
+                  <ToggleChip
+                    key={option.value}
+                    active={index >= 0}
+                    onClick={() => toggleMediaSource(option.value)}
                   >
-                    <span className="shrink-0 text-sub text-[var(--text-muted)]">
-                      洗版优先级
-                    </span>
-                    <span className="min-w-0 flex-1 truncate text-right text-caption text-[var(--text-faint)]">
-                      {ladderText}
-                    </span>
-                    <span
-                      className={`shrink-0 text-[var(--text-faint)] transition-transform ${
-                        ladderOpen ? "rotate-90" : ""
-                      }`}
-                    >
-                      ›
-                    </span>
-                  </button>
-                  {ladderOpen && (
-                    <>
-                  <div className="mt-2 flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5">
-                    <span className="text-caption text-[var(--text-faint)]">点击依次选择</span>
-                    <div className="flex flex-wrap gap-1.5">
-                      {LADDER_OPTIONS.map((dim) => {
-                        const index = upgradeLadder.indexOf(dim.value);
-                        const unconfigured = ladderUnconfigured(dim.value);
-                        return (
-                          <ToggleChip
-                            key={dim.value}
-                            active={index >= 0}
-                            onClick={() => toggleLadderDim(dim.value)}
-                          >
-                            {index >= 0 && upgradeLadder.length > 1 && (
-                              <span className="mr-1.5 inline-flex size-4 items-center justify-center rounded-full bg-white/20 text-micro font-semibold">
-                                {index + 1}
-                              </span>
-                            )}
-                            {dim.label}
-                            {index >= 0 && unconfigured && (
-                              <span className="ml-1 text-[var(--text-faint)]">· 未配置</span>
-                            )}
-                          </ToggleChip>
-                        );
-                      })}
-                    </div>
-                  </div>
-                    <p className="mt-1.5 text-caption leading-relaxed text-[var(--text-faint)]">
-                      按顺序逐维度比较，先分出高低的那一维说了算。每多一维，就多一轮
-                      潜在的重复下载——缺省只比分辨率与片源。标「未配置」的维度会被
-                      自动跳过；全被跳过时按缺省的「分辨率 › 片源」比。
-                    </p>
-                    </>
-                  )}
-                  {platformNotLast && (
-                    <p className="mt-1.5 rounded-lg border border-amber-400/25 bg-amber-500/10 px-3 py-2 text-caption leading-relaxed text-amber-200">
-                      很多资源的标题里根本没写平台。把平台排在前面，等于要求「先比平台
-                      再比别的」——没写平台的资源就全都分不出高低，洗版会大面积停住。
-                      建议把平台放到最后一位。
-                    </p>
-                  )}
-                </div>
-              </div>
-            )}
+                    {index >= 0 && mediaSources.length > 1 && (
+                      <span className="mr-1.5 inline-flex size-4 items-center justify-center rounded-full bg-white/20 text-micro font-semibold">
+                        {index + 1}
+                      </span>
+                    )}
+                    {option.label}
+                  </ToggleChip>
+                );
+              })}
+            </div>
           </Field>
 
           <Section title="画质与来源" summary={qualitySummary}>
@@ -1076,15 +998,154 @@ export function RuleSetEditorDialog({
           </p>
           </Section>
 
+          <Field
+            label="洗版"
+            hint="收齐后继续追更高版本，直到达到目标档位为止。新版本入库后旧版本进回收站保留 7 天，做种中的任务不受影响；不开启 = 下到即止"
+          >
+            <div className="flex flex-wrap gap-1.5">
+              <ToggleChip active={upgradeSource === ""} onClick={() => setUpgradeSource("")}>
+                不洗版
+              </ToggleChip>
+              {UPGRADE_OPTIONS.filter(
+                ([value]) => !mediaSources.length || mediaSources.includes(value),
+              ).map(([value, label]) => (
+                <ToggleChip
+                  key={value}
+                  active={upgradeSource === value}
+                  onClick={() => setUpgradeSource(value)}
+                >
+                  {label}
+                </ToggleChip>
+              ))}
+            </div>
+            {upgradeSource !== "" && (
+              <div className="mt-2 rounded-xl bg-white/[0.03] px-4 py-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5">
+                  <span className="text-sub text-[var(--text-muted)]">目标分辨率</span>
+                  <div className="flex flex-wrap gap-1.5">
+                    {(resolutions.length ? resolutions : RESOLUTION_OPTIONS).map((option) => {
+                      const effective = cutoffResolution || resolutions[0] || "1080p";
+                      return (
+                        <ToggleChip
+                          key={option}
+                          active={effective === option}
+                          onClick={() =>
+                            setCutoffResolution(option === (resolutions[0] ?? "") ? "" : option)
+                          }
+                        >
+                          {option}
+                        </ToggleChip>
+                      );
+                    })}
+                  </div>
+                </div>
+                <p className="mt-1.5 text-caption text-[var(--text-faint)]">
+                  {resolutions.length > 0
+                    ? "缺省跟随上方分辨率偏好的第一位"
+                    : "未限定分辨率时缺省洗到 1080p（避免意外进入 4K 的磁盘占用）"}
+                </p>
+                {/* 旧版本处置（library-file-recycle.md §9）：配置洗版的那一刻
+                    就是询问旧版去留的合适时机；保留共存服务收藏家场景 */}
+                <label className="mt-2.5 flex cursor-pointer items-center justify-between gap-3 border-t border-white/[0.06] pt-2.5">
+                  <span>
+                    <span className="block text-sub text-[var(--text-muted)]">
+                      洗到新版本后保留旧版本
+                    </span>
+                    <span className="mt-0.5 block text-caption text-[var(--text-faint)]">
+                      多版本共存（收藏家模式）；关闭 = 旧版本进回收站保留 7 天
+                    </span>
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={upgradeKeepOld}
+                    onChange={(e) => setUpgradeKeepOld(e.target.checked)}
+                    className="size-4 accent-[var(--accent-2)]"
+                  />
+                </label>
+
+                {/* 洗版优先级：交互与上方分辨率偏好一致——点击依次入列、序号即
+                    位次。多一位就是多一轮潜在的重复下载，所以缺省只有前两位 */}
+                <div className="mt-2.5 border-t border-white/[0.06] pt-2.5">
+                  <button
+                    type="button"
+                    onClick={() => setLadderOpen((v) => !v)}
+                    className="flex w-full items-center gap-3 text-left"
+                  >
+                    <span className="shrink-0 text-sub text-[var(--text-muted)]">
+                      洗版优先级
+                    </span>
+                    <span className="min-w-0 flex-1 truncate text-right text-caption text-[var(--text-faint)]">
+                      {ladderText}
+                    </span>
+                    <span
+                      className={`shrink-0 text-[var(--text-faint)] transition-transform ${
+                        ladderOpen ? "rotate-90" : ""
+                      }`}
+                    >
+                      ›
+                    </span>
+                  </button>
+                  {ladderOpen && (
+                    <>
+                  <div className="mt-2 flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5">
+                    <span className="text-caption text-[var(--text-faint)]">点击依次选择</span>
+                    <div className="flex flex-wrap gap-1.5">
+                      {LADDER_OPTIONS.map((dim) => {
+                        const index = upgradeLadder.indexOf(dim.value);
+                        const unconfigured = ladderUnconfigured(dim.value);
+                        return (
+                          <ToggleChip
+                            key={dim.value}
+                            active={index >= 0}
+                            onClick={() => toggleLadderDim(dim.value)}
+                          >
+                            {index >= 0 && upgradeLadder.length > 1 && (
+                              <span className="mr-1.5 inline-flex size-4 items-center justify-center rounded-full bg-white/20 text-micro font-semibold">
+                                {index + 1}
+                              </span>
+                            )}
+                            {dim.label}
+                            {index >= 0 && unconfigured && (
+                              <span className="ml-1 text-[var(--text-faint)]">· 未配置</span>
+                            )}
+                          </ToggleChip>
+                        );
+                      })}
+                    </div>
+                  </div>
+                    <p className="mt-1.5 text-caption leading-relaxed text-[var(--text-faint)]">
+                      按顺序逐维度比较，先分出高低的那一维说了算。每多一维，就多一轮
+                      潜在的重复下载——缺省只比分辨率与片源。标「未配置」的维度会被
+                      自动跳过；全被跳过时按缺省的「分辨率 › 片源」比。
+                    </p>
+                    </>
+                  )}
+                  {platformNotLast && (
+                    <p className="mt-1.5 rounded-lg border border-amber-400/25 bg-amber-500/10 px-3 py-2 text-caption leading-relaxed text-amber-200">
+                      很多资源的标题里根本没写平台。把平台排在前面，等于要求「先比平台
+                      再比别的」——没写平台的资源就全都分不出高低，洗版会大面积停住。
+                      建议把平台放到最后一位。
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
+          </Field>
+
           {/* 配完给一句人话回执：新用户最缺的就是"我配的到底是什么"的确认。
               内容来自与保存同一个 draft.spec，不会出现"看到的和存下去的不一样" */}
           <div className="rounded-xl bg-white/[0.03] px-4 py-3">
-            <p className="text-caption text-[var(--text-faint)]">这条规则会这样筛选</p>
+            <p className="text-caption text-[var(--text-faint)]">
+              {ladderPreview ? "先这样筛掉不要的" : "这条规则会这样筛选"}
+            </p>
             <p className="mt-1 text-sub leading-6 text-[var(--text-muted)]">
               {draftChips.length
                 ? draftChips.join(" · ")
                 : "不限任何条件——身份对得上的资源都接受"}
             </p>
+            {ladderPreview && (
+              <UpgradeLadderPreviewView preview={ladderPreview} keepOld={upgradeKeepOld} />
+            )}
           </div>
 
           {error && (
@@ -1109,6 +1170,115 @@ export function RuleSetEditorDialog({
         </div>
       </div>
     </Modal>
+  );
+}
+
+/**
+ * 洗版阶梯预览：把"洗到哪一档"从一句话摊成一条**看得见的路**。
+ *
+ * 一句"洗到 1080p 蓝光 · DV"读不出洗版真正的两个后果，而它们恰恰是用户
+ * 最该在按下保存之前知道的（docs/design/quality-upgrade.md §2.1 / §14.6）：
+ *
+ * - **终点之下还有多少档**：每上一档就是一次重复下载，多加一维阶梯的代价
+ *   在这里才具体；
+ * - **哪些档已经算达标**：分辨率排在第一位时，任意 2160p 资源（哪怕 WEBRip）
+ *   都优于 1080p 蓝光，洗版会直接停在那儿——所以"更高档同样算达标"必须写在
+ *   展开后的终点卡上，而不是留给用户自己推。
+ *
+ * **默认折叠**：完整阶梯要占十来行，常驻会把配置本身挤出视野；收起态只留
+ * 一行终点（这段里唯一值得常驻的信息），其余进按钮后面。用点击而不是 hover
+ * ——这个弹窗在手机上同样要用，触屏没有 hover；且这里是要读几行的解释，
+ * 浮层里读长内容不如就地展开。折叠的交互形态与同一弹窗里的「洗版优先级」
+ * 「画质与来源」保持一致，不新增第三种。
+ *
+ * 展开后版式即语义：终点在最上方并高亮（"最好品质"是这条路的目的地），下方
+ * 按档位降序排开、每行一个 ↑ 指回终点——从下往上读就是资源逐级被替换的过程。
+ */
+function UpgradeLadderPreviewView({
+  preview,
+  keepOld,
+}: {
+  preview: UpgradeLadderPreview;
+  keepOld: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="mt-2.5 border-t border-white/[0.06] pt-2.5">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="flex w-full items-center gap-3 text-left"
+      >
+        <span className="min-w-0 flex-1 text-sub text-[var(--text-muted)]">
+          再一级级洗到{" "}
+          <span className="font-semibold text-white">{preview.target}</span>
+        </span>
+        <span className="shrink-0 text-caption text-[var(--text-faint)]">
+          {open ? "收起" : "看会经过哪些档"}
+        </span>
+        <span
+          className={`shrink-0 text-[var(--text-faint)] transition-transform ${
+            open ? "rotate-90" : ""
+          }`}
+        >
+          ›
+        </span>
+      </button>
+
+      {open && (
+        <div className="mt-2.5">
+          <p className="text-caption leading-relaxed text-[var(--text-faint)]">
+            {`按「${preview.dimensions.join(" › ")}」逐维比较，先分出高低的那一维说了算。`}
+          </p>
+
+          <div className="mt-2 rounded-lg border border-[var(--accent-2)]/45 bg-[var(--accent-2)]/[0.14] px-3 py-2">
+            <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+              <span className="rounded-full bg-[var(--accent-2)]/25 px-2 py-0.5 text-micro font-semibold text-white">
+                终点
+              </span>
+              <span className="text-sub font-semibold text-white">{preview.target}</span>
+            </div>
+            <p className="mt-1 text-caption leading-relaxed text-[var(--text-faint)]">
+              到手即停，不再洗版
+              {preview.ceiling
+                ? `；比它更高的档（最高 ${preview.ceiling}）同样算达标，也会停`
+                : ""}
+              。{keepOld ? "旧版本保留共存。" : "旧版本进回收站保留 7 天。"}
+            </p>
+          </div>
+
+          {preview.below.length > 0 ? (
+            <>
+              <p className="mt-2.5 text-caption leading-relaxed text-[var(--text-faint)]">
+                {"到终点之前，先到手的可能是下面任意一档；之后每遇到更高的一档，就再下一次、换掉旧的："}
+              </p>
+              <ol className="mt-1.5 space-y-1">
+                {preview.below.map((label) => (
+                  <li
+                    key={label}
+                    className="flex items-center gap-2 text-sub text-[var(--text-muted)]"
+                  >
+                    <span className="text-[var(--text-faint)]">↑</span>
+                    <span>{label}</span>
+                  </li>
+                ))}
+                {preview.moreBelow > 0 && (
+                  <li className="flex items-center gap-2 text-caption text-[var(--text-faint)]">
+                    <span>↑</span>
+                    <span>更低的 {preview.moreBelow} 档同理</span>
+                  </li>
+                )}
+              </ol>
+            </>
+          ) : (
+            <p className="mt-2 text-caption text-[var(--text-faint)]">
+              终点已是最低档，不会有过渡版本。
+            </p>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 

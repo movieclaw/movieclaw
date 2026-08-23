@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 from movieclaw_enrich.vocab import codec_family
+from movieclaw_matcher.decision import MEDIA_SOURCE_TIER_LABEL, media_source_rank
 from movieclaw_matcher.models import (
     HrUnknownPolicy,
     RuleSetSpec,
@@ -24,6 +25,10 @@ _DEFAULT_RESOLUTION_SCORE = {"2160p": 30, "1080p": 20, "720p": 10}
 
 _FREE_SCORE = 100  # 免费是 PT 场景的第一偏好
 _SEEDERS_CAP = 50  # 做种数计分封顶，防止爆种老资源碾压一切偏好
+_RESOLUTION_SCORE_STEP = 30  # 分辨率偏好每档的分值
+# 片源偏好每档的分值，刻意低于分辨率一档：两者都是"版本好坏"的主轴，但分辨率
+# 先于片源（洗版阶梯的缺省位序也是"分辨率 › 片源"，两处口径必须一致）
+_SOURCE_SCORE_STEP = 20
 
 
 def _any_lang_match(required: list[str], declared: list[str]) -> bool:
@@ -55,6 +60,19 @@ def evaluate_rules(
             return _reject(
                 "resolution_not_allowed",
                 f"分辨率 {attrs.resolution} 不在允许范围（{'/'.join(spec.resolutions)}）",
+            )
+
+    if spec.media_sources:
+        rank = media_source_rank(attrs.media_source, attrs.remux, spec)
+        allowed = "/".join(MEDIA_SOURCE_TIER_LABEL[v] for v in spec.media_sources)
+        if attrs.media_source is None and not attrs.remux:
+            return _reject(
+                "media_source_unknown", "无法识别片源，规则要求明确片源时按不合格处理"
+            )
+        if rank is None:
+            return _reject(
+                "media_source_not_allowed",
+                f"片源 {attrs.media_source or 'Remux'} 不在允许范围（{allowed}）",
             )
 
     if spec.video_codecs:
@@ -180,7 +198,12 @@ def evaluate_rules(
 
 
 def _score(candidate: TorrentCandidate, spec: RuleSetSpec) -> int:
-    """内置评分：免费 > 做种数（封顶） > 分辨率偏好（配置序或内置默认序）。"""
+    """内置评分：免费 > 做种数（封顶） > 分辨率偏好 > 片源偏好。
+
+    片源只在规则组**显式配了** ``media_sources`` 时参与——没配就是"不限片源"，
+    此时任何内置片源序都是替用户做主张，且会悄悄改变存量规则组的选优结果。
+    这也是它与分辨率的唯一不同（分辨率有内置默认序，因为"高清优先"没有争议）。
+    """
     score = 0
     if candidate.is_free is True:
         score += _FREE_SCORE
@@ -189,9 +212,13 @@ def _score(candidate: TorrentCandidate, spec: RuleSetSpec) -> int:
     if spec.resolutions:
         ordered = [r.casefold() for r in spec.resolutions]
         if resolution in ordered:
-            score += (len(ordered) - ordered.index(resolution)) * 30
+            score += (len(ordered) - ordered.index(resolution)) * _RESOLUTION_SCORE_STEP
     else:
         score += _DEFAULT_RESOLUTION_SCORE.get(resolution, 0)
+    if spec.media_sources:
+        rank = media_source_rank(candidate.attrs.media_source, candidate.attrs.remux, spec)
+        if rank is not None:
+            score += rank * _SOURCE_SCORE_STEP
     return score
 
 

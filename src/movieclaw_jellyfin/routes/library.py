@@ -33,7 +33,10 @@ from movieclaw_jellyfin.catalog import (
     movie_dto,
     movie_library_page,
     next_up_item_ids,
+    person_dto,
+    query_persons,
     resume_unit_candidates,
+    search_candidate_item_ids,
     season_dto,
     series_dto,
 )
@@ -53,6 +56,7 @@ from movieclaw_jellyfin.routes.common import (
     parse_pipe,
     query_result,
 )
+from movieclaw_jellyfin.search import SearchTerm, parse_term
 from movieclaw_jellyfin.security import RequestIdentity, require_device
 
 router = APIRouter(dependencies=[Depends(require_device)])
@@ -110,8 +114,10 @@ async def viewer_scope(
         visible = await member_visible_ids(session, member_id)
     return ViewerScope(member_id, visible)
 
-# (type, bundle, season, episode)：查询管线里的一条候选
-Entry = tuple[str, ItemBundle, int, int]
+# (type, payload, season, episode)：查询管线里的一条候选。
+# payload 通常是 ItemBundle；type == "Person" 时是 Person 行——人物是
+# ItemsByName，没有文件/季集/播放状态，凑不出 bundle，也不参与媒体侧筛选与排序。
+Entry = tuple[str, Any, int, int]
 
 
 async def _items_with_persons(
@@ -302,11 +308,20 @@ def _entry_favorite(entry: Entry) -> bool:
     return bool(st and st.is_favorite)
 
 
-def _search_match(bundle: ItemBundle, term: str) -> bool:
-    lowered = term.lower()
-    candidates = [bundle.item.title, bundle.item.original_title]
-    candidates.extend(bundle.item.aliases or [])
-    return any(lowered in (c or "").lower() for c in candidates)
+def _entry_search_match(entry: Entry, term: SearchTerm) -> bool:
+    """逐条目判定 searchTerm 是否命中——口径见 ``movieclaw_jellyfin.search``。
+
+    按 Jellyfin 的语义，Season / Episode 是各自独立的 BaseItem，只比对**自己的
+    Name**：剧名命中不会把它下面几十集一并带出来，反过来集名命中也能单独出现。
+    """
+    kind, bundle, season, episode = entry
+    if kind == "Episode":
+        row = bundle.episodes.get((season, episode))
+        return term.matches(row.name if row else None)
+    if kind == "Season":
+        row = bundle.seasons.get(season)
+        return term.matches(row.name if row else None)
+    return term.matches(bundle.item.title, bundle.item.original_title)
 
 
 def _build_entries(
@@ -426,6 +441,8 @@ def _sort_entries(entries: list[Entry], sort_by: list[str], sort_orders: list[st
 
 def _entry_dto(ctx: DtoContext, entry: Entry, options: DtoOptions) -> dict[str, Any]:
     kind, bundle, season, episode = entry
+    if kind == "Person":
+        return person_dto(ctx, bundle)
     if kind == "Movie":
         return movie_dto(ctx, bundle, options)
     if kind == "Series":
@@ -448,7 +465,7 @@ async def _query_items(request: Request, scope: ViewerScope) -> JSONResponse:
     recursive = parse_bool(q.get("recursive"))
     parent_raw = q.get("parentId")
     ids_raw = parse_comma(q.get("ids"))
-    search_term = q.get("searchTerm")
+    search_term = parse_term(q.get("searchTerm"))
     person_ids_raw = parse_comma(q.get("personIds"))
     start_index = _parse_int(q.get("startIndex"))
     limit = _parse_int(q.get("limit"), default=-1)
@@ -521,7 +538,7 @@ async def _query_items(request: Request, scope: ViewerScope) -> JSONResponse:
                 scope,
                 include_types=include_types,
                 recursive=recursive,
-                has_search=bool(search_term),
+                search=search_term,
                 options=options,
             )
             if entries is None:
@@ -536,6 +553,14 @@ async def _query_items(request: Request, scope: ViewerScope) -> JSONResponse:
         if not simple_movie_page and person_ids_raw:
             member_ids = await _items_with_persons(session, person_ids_raw)
             entries = [e for e in entries if e[1].item.id in member_ids]
+        # 人物条目（ItemsByName）：Person 行不属于任何库、没有 TopParentId，
+        # 真 Jellyfin 用 GetExemptedItemByNameTypes 把它豁免出库过滤
+        # （BaseItemRepository.QueryBuilding.cs:504-513）——只有 includeItemTypes
+        # 显式点名 Person 才产出，且不参与年份/类型/播放状态这些媒体侧筛选。
+        # 这里在会话内查出来，拼接放到全部媒体筛选与排序之后。
+        person_entries: list[Entry] = []
+        if "Person" in include_types and not ids_raw and not simple_movie_page:
+            person_entries = await _person_entries(session, scope, search_term)
     if simple_movie_page:
         entries = page_entries or []
         total = simple_total
@@ -546,7 +571,7 @@ async def _query_items(request: Request, scope: ViewerScope) -> JSONResponse:
 
         # ---- 过滤 ---------------------------------------------------------
         if search_term:
-            entries = [e for e in entries if _search_match(e[1], search_term)]
+            entries = [e for e in entries if _entry_search_match(e, search_term)]
         years = {int(y) for y in parse_comma(q.get("years")) if y.isdigit()}
         if years:
             entries = [e for e in entries if e[1].item.year in years]
@@ -576,13 +601,82 @@ async def _query_items(request: Request, scope: ViewerScope) -> JSONResponse:
         if "IsFavorite" in filters or parse_bool(q.get("isFavorite")) is True:
             entries = [e for e in entries if _entry_favorite(e)]
 
-        # ---- 排序 / 分页 / DTO -------------------------------------------
-        entries = _sort_entries(entries, sort_by, sort_order)
+        # ---- 排序 / 分页 -----------------------------------------------------
+        entries = _sort_entries(entries, sort_by, sort_order) + person_entries
         total = len(entries)
         page = entries[start_index : start_index + limit] if limit >= 0 else entries[start_index:]
 
     dtos = [_entry_dto(ctx, e, options) for e in page]
     return JSONResponse(query_result(dtos, total, start_index))
+
+
+async def collect_search_entries(
+    session: AsyncSession,
+    scope: ViewerScope,
+    search: SearchTerm,
+    *,
+    media_types: set[str],
+    include_persons: bool,
+    library_id: int | None = None,
+) -> list[Entry]:
+    """按搜索词装配候选条目——`/Search/Hints` 与 `/Items?searchTerm=` 共用同一口径。
+
+    独立成公开函数是为了让两个接口的"什么算命中"只有一份实现：/Search/Hints
+    在真 Jellyfin 里也是先拿候选再换一套输出结构（SearchManager.cs:176），
+    不是另一套匹配规则。
+    """
+    entries: list[Entry] = []
+    if media_types:
+        ids = await item_ids_with_files(
+            session,
+            library_id=library_id,
+            visible_library_ids=scope.visible,
+        )
+        ids = await _narrow_by_search(session, ids, search)
+        bundles = await load_bundles(
+            session,
+            ids,
+            member_id=scope.member_id,
+            library_id=library_id,
+            visible_library_ids=scope.visible,
+            dto_options=DtoOptions(),
+        )
+        entries = [
+            e
+            for e in _build_entries(bundles, media_types)
+            if _entry_search_match(e, search)
+        ]
+    if include_persons:
+        entries += await _person_entries(session, scope, search, library_id=library_id)
+    return entries
+
+
+async def _person_entries(
+    session: AsyncSession,
+    scope: ViewerScope,
+    search: SearchTerm | None,
+    *,
+    library_id: int | None = None,
+) -> list[Entry]:
+    """/Items 里的 Person 候选。可见性 = 至少在一部可见条目里有署名。
+
+    这里的姓名比对走 ``SearchTerm``（CleanName 口径），与 `/Persons` 的
+    NameContains 不同——两条路径在真 Jellyfin 里分别落在 BaseItemRepository 与
+    PeopleRepository，口径本就不一致，照抄。
+    """
+    visible_ids: list[int] | None = None
+    if library_id is not None:
+        visible_ids = await item_ids_with_files(
+            session, library_id=library_id, visible_library_ids=scope.visible
+        )
+    elif scope.visible is not None:
+        visible_ids = await item_ids_with_files(
+            session, visible_library_ids=scope.visible
+        )
+    _, persons = await query_persons(session, visible_item_ids=visible_ids)
+    if search is not None:
+        persons = [p for p in persons if search.matches(p.name, p.original_name)]
+    return [("Person", p, 0, 0) for p in persons]
 
 
 async def _entries_for_ids(
@@ -615,6 +709,20 @@ async def _entries_for_ids(
     return entries
 
 
+async def _narrow_by_search(
+    session: AsyncSession, ids: list[int], search: SearchTerm | None
+) -> list[int]:
+    """带 searchTerm 时，把待水合的条目收窄到搜索粗筛命中的那些。
+
+    粗筛只读名字列，水合才是重头——顺序反过来就是「命中 1 条也要装完整库」，
+    也就是 Infuse 逐字搜索被拖到 5~8 秒的原因。
+    """
+    if search is None:
+        return ids
+    matched = await search_candidate_item_ids(session, search, ids)
+    return [i for i in ids if i in matched]
+
+
 async def _entries_for_parent(
     session: AsyncSession,
     parent_raw: str | None,
@@ -622,15 +730,16 @@ async def _entries_for_parent(
     *,
     include_types: set[str],
     recursive: bool | None,
-    has_search: bool,
+    search: SearchTerm | None,
     options: DtoOptions,
 ) -> list[Entry] | None:
     """按 parentId 语义展开候选。返回 None 表示"根级 → 视图列表"。"""
     if not parent_raw or is_empty_guid(parent_raw):
-        if has_search or include_types:
+        if search is not None or include_types:
             # 无 parent 的全局搜索/类型查询：跨**可见**库递归
             types = include_types or {"Movie", "Series"}
             ids = await item_ids_with_files(session, visible_library_ids=scope.visible)
+            ids = await _narrow_by_search(session, ids, search)
             bundles = await load_bundles(
                 session,
                 ids,
@@ -667,6 +776,7 @@ async def _entries_for_parent(
             # 非递归 = 只看直接子级，includeItemTypes 在其上做过滤（可为空集）
             types = (include_types & default_types) if include_types else default_types
         ids = await item_ids_with_files(session, library_id=ref.entity_id)
+        ids = await _narrow_by_search(session, ids, search)
         bundles = await load_bundles(
             session,
             ids,
@@ -1091,25 +1201,7 @@ async def get_item(
             person = await session.get(Person, ref.entity_id)
             if person is None:
                 raise not_found()
-            import hashlib
-
-            dto: dict[str, Any] = {
-                "Name": person.name,
-                "ServerId": ctx.server_id,
-                "Id": item_id.lower().replace("-", ""),
-                "Type": "Person",
-                "MediaType": "Unknown",
-                "IsFolder": False,
-                "ImageTags": (
-                    {"Primary": hashlib.md5(person.profile_path.encode()).hexdigest()}
-                    if person.profile_path
-                    else {}
-                ),
-                "BackdropImageTags": [],
-            }
-            if person.original_name and person.original_name != person.name:
-                dto["OriginalTitle"] = person.original_name
-            return JSONResponse(dto)
+            return JSONResponse(person_dto(ctx, person))
         if ref.kind == EntityKind.LIBRARY:
             if scope.library_hidden(ref.entity_id):
                 raise not_found()

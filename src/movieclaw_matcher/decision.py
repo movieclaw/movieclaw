@@ -101,6 +101,48 @@ _FALLBACK_CUTOFF_RESOLUTION = "1080p"
 _TARGET_SOURCE_LABEL = {"web-dl": "WEB-DL", "blu-ray": "蓝光", "remux": "Remux"}
 _TARGET_SOURCE_TIER = {"web-dl": 3, "blu-ray": 4, "remux": _REMUX_TIER}
 
+# 片源档选项（MediaSourceTier 的值）→ 内置档位 / 展示名。前三个与洗版目标同值，
+# 多出的 rip/tv 两档只在片源白名单里出现（洗版终点没人会设成"洗到 Rip"）。
+_MEDIA_SOURCE_CHOICE_TIER = {**_TARGET_SOURCE_TIER, "rip": 2, "tv": 1}
+MEDIA_SOURCE_TIER_LABEL = {
+    "remux": "Remux",
+    "blu-ray": "蓝光",
+    "web-dl": "WEB-DL",
+    "rip": "Rip 类",
+    "tv": "电视录制类",
+}
+
+
+def media_source_rank(
+    media_source: str | None, remux: bool, spec: RuleSetSpec
+) -> int | None:
+    """片源位次（越大越优）；未知或不在白名单内返回 ``None``（不可比）。
+
+    两种模式，与分辨率那一维完全同构：
+    - **没配 ``media_sources``**：用内置片源档（Remux T5 > 光盘 T4 > WEB-DL T3
+      > Rip T2 > 录制 T1），即本模块一直以来的行为；
+    - **配了**：位次由**用户的列表顺序**决定——省流党把 WEB-DL 排在蓝光前面，
+      洗版与选优就都按他说的算（"偏好即优先级"，§14.3 对编码/平台/HDR 也是
+      这个待遇）。
+
+    不在白名单内的档返回 ``None`` 而不是"最低"，与 ``_resolution_ladder`` 的
+    取向一字不差：位次未知时宁可让该单元安静，也不做数值猜测——把"白名单外"
+    一律当最低，会让 [WEB-DL, 蓝光] 这种倒序偏好把已入库的 Remux 判成最低档
+    而白洗一次，那是删掉更好的文件。唯一例外是 T0 哨兵（人工标注"按最低档"），
+    它的语义就是"低于一切"，保留可比。
+    """
+    tier = source_tier(media_source, remux)
+    if tier is None:
+        return None
+    if not spec.media_sources:
+        return tier
+    if tier == 0:  # USER_LOWEST_SOURCE：显式的"低于白名单里的一切"
+        return 0
+    ladder = [_MEDIA_SOURCE_CHOICE_TIER[value] for value in spec.media_sources]
+    if tier not in ladder:
+        return None
+    return len(ladder) - ladder.index(tier)
+
 
 def source_tier(media_source: str | None, remux: bool) -> int | None:
     """片源 → 档位；未知片源返回 None（不可比，绝不当最低档处理）。"""
@@ -198,7 +240,7 @@ def _dimension_rank(
     if dim == "resolution":
         return resolution_rank(item.resolution, spec)
     if dim == "source":
-        return source_tier(item.media_source, item.remux)
+        return media_source_rank(item.media_source, item.remux, spec)
     if dim == "hdr":
         # 取"能播的最高格式"位次：DV 文件自带 HDR10 基础层，偏好 HDR10 的
         # 规则组不该为它白洗一次（hdr_effective_values 的展开只对已接受的格式生效）
@@ -306,7 +348,15 @@ def target_vector(spec: RuleSetSpec) -> tuple[int | None, ...] | None:
                 return None
             vector.append(resolution)
         elif dim == "source":
-            vector.append(_TARGET_SOURCE_TIER[spec.upgrade_source.value])
+            # 配了白名单就按用户序取位次（校验层保证终点档在白名单内）
+            target_tier = _TARGET_SOURCE_TIER[spec.upgrade_source.value]
+            if spec.media_sources:
+                ladder = [_MEDIA_SOURCE_CHOICE_TIER[v] for v in spec.media_sources]
+                if target_tier not in ladder:
+                    return None
+                vector.append(len(ladder) - ladder.index(target_tier))
+            else:
+                vector.append(target_tier)
         elif dim == "hdr":
             vector.append(len(spec.hdr_levels))  # 首项位次
         elif dim == "video_codec":

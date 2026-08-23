@@ -35,6 +35,24 @@ def _candidate(**kwargs) -> TorrentCandidate:
         ),
         ({}, {"resolutions": ["1080p"]}, False, "resolution_unknown"),
         ({"resolution": "720p"}, {}, True, None),  # 不限时未知/任意都放行
+        # 片源档（白名单按档，词表里的多种写法归一到同一档）
+        ({"media_source": "Blu-ray"}, {"media_sources": ["blu-ray"]}, True, None),
+        ({"media_source": "UHD Blu-ray"}, {"media_sources": ["blu-ray"]}, True, None),
+        ({"remux": True}, {"media_sources": ["remux"]}, True, None),
+        (
+            {"media_source": "HDTV"},
+            {"media_sources": ["blu-ray", "web-dl"]},
+            False,
+            "media_source_not_allowed",
+        ),
+        (
+            {"media_source": "WEBRip"},
+            {"media_sources": ["rip"]},
+            True,
+            None,
+        ),
+        ({}, {"media_sources": ["web-dl"]}, False, "media_source_unknown"),
+        ({"media_source": "HDTV"}, {}, True, None),  # 不限片源时任意都放行
         # 编码（大小写不敏感）
         ({"video_codec": "H.265"}, {"video_codecs": ["h.265"]}, True, None),
         ({"video_codec": "H.264"}, {"video_codecs": ["H.265"]}, False, "codec_not_allowed"),
@@ -179,6 +197,34 @@ def test_score_resolution_preference_follows_spec_order() -> None:
     v1080 = evaluate_rules(_candidate(resolution="1080p"), spec)
     v2160 = evaluate_rules(_candidate(resolution="2160p"), spec)
     assert v1080.score > v2160.score
+
+
+def test_score_media_source_preference_follows_spec_order() -> None:
+    """media_sources 列表顺序即偏好：省流党把 WEB-DL 排前面，选优就按他说的算。"""
+    spec = RuleSetSpec(media_sources=["web-dl", "blu-ray"])  # 刻意 WEB-DL 优先
+    web = evaluate_rules(_candidate(media_source="WEB-DL"), spec)
+    disc = evaluate_rules(_candidate(media_source="Blu-ray"), spec)
+    assert web.score > disc.score
+
+
+def test_score_resolution_outranks_media_source() -> None:
+    """两个主轴同时生效时分辨率先说话（与洗版阶梯缺省位序"分辨率 › 片源"一致）。"""
+    spec = RuleSetSpec(resolutions=["2160p", "1080p"], media_sources=["remux", "web-dl"])
+    better_resolution = evaluate_rules(
+        _candidate(resolution="2160p", media_source="WEB-DL"), spec
+    )
+    better_source = evaluate_rules(
+        _candidate(resolution="1080p", media_source="Remux", remux=True), spec
+    )
+    assert better_resolution.score > better_source.score
+
+
+def test_score_ignores_media_source_when_unset() -> None:
+    """没配片源白名单 = 不限片源：任何内置片源序都不该悄悄改变存量规则组的选优。"""
+    spec = RuleSetSpec()
+    remux = evaluate_rules(_candidate(media_source="Remux", remux=True), spec)
+    hdtv = evaluate_rules(_candidate(media_source="HDTV"), spec)
+    assert remux.score == hdtv.score
 
 
 class TestSubtitleAudioLanguages:

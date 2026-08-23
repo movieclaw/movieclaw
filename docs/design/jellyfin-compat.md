@@ -117,6 +117,7 @@ P2 兜底兼容。**凡列出 legacy 别名的都必须与新路由一起实现*
 | `GET /Users/Me`、`GET /Users/{userId}`、`GET /Users/Public` | 用户信息/续验 token（Public 匿名） |
 | `GET /UserViews` + legacy `GET /Users/{userId}/Views` | 库视图列表（**不补 legacy 则老客户端库列表直接空**） |
 | `GET /Items`（含 `?searchTerm`）+ legacy `GET /Users/{userId}/Items` | 核心查询 |
+| `GET /Persons`、`GET /Persons/{name}` | 人物查询。**Infuse 的搜索页是 `/Items` + `/Persons` 两路并发**，缺这一路会让它把整次搜索判为失败、结果页全空（2026-08-22 抓包实证，见 11 节考古） |
 | `GET /Items/{itemId}` + legacy `GET /Users/{userId}/Items/{itemId}` | 单条目详情（**全字段语义，无 fields 参数**，见 5.3） |
 | `GET /Shows/{seriesId}/Seasons`、`GET /Shows/{seriesId}/Episodes` | 剧集结构 |
 | `GET\|HEAD /Items/{itemId}/Images/{type}[/{index}]` | 海报/背景/缩略图 |
@@ -138,6 +139,7 @@ P2 兜底兼容。**凡列出 legacy 别名的都必须与新路由一起实现*
 | `GET /Branding/Configuration`、`GET /QuickConnect/Enabled` | 匿名轻量 JSON（固定值） |
 | `GET /Branding/Css` + `/Branding/Css.css` | 匿名，**`text/css` 裸文本**（空串即可），非 JSON |
 | `GET /Sessions` → `[]`、`DELETE /Videos/ActiveEncodings` → 204、`GET /System/Endpoint` → `{"IsLocal":true,"IsInNetwork":true}` | 敷衍实现防客户端卡启动/退出（Fileball/VidHub 退出时会无条件发 ActiveEncodings 清理） |
+| `GET /Search/Hints` | 搜索建议（Jellyfin 官方 Web/Android 的搜索框走它；Infuse 不用）。输出是扁平的 `{SearchHints, TotalRecordCount}`，不是 QueryResult |
 | `GET\|HEAD /Items/{itemId}/Download` 与 `/Items/{itemId}/File` | 整文件下载。Policy 宣告了 `EnableContentDownloading:true`，VidHub 等客户端的下载按钮打 Download，缺失则下载 404 无法开始。本地文件回 FileResponse（Download 带 attachment 文件名，File 不带，均支持 Range 断点续传）；strm 偏离真 Jellyfin（后者回 .strm 文本）：302 到云端直链 |
 
 **P2 兜底**：legacy `POST /PlayingItems/{itemId}`、`POST /PlayingItems/{itemId}/Progress`、
@@ -145,7 +147,7 @@ P2 兜底兼容。**凡列出 legacy 别名的都必须与新路由一起实现*
 变体（参数走 query，均 204）；`GET /Items/Filters2`（部分客户端进库时无条件请求，
 返回空结构 `{"Genres":[],"Tags":[]}` 兜底）与 `/Items/Filters`；`GET /Items/Root` +
 legacy；`GET /Items/{itemId}/Similar`（返回空 QueryResult 比 404 干净）；
-`GET /Search/Hints`（内部转调 /Items 再映射扁平结构）；`GET /System/Info`（复用
+`GET /System/Info`（复用
 Public 字段）；`/emby/*` 路径前缀别名（**非 Jellyfin 行为**——12.0 源码不存在
 该前缀，纯为个别客户端探测兜底）。
 
@@ -392,7 +394,7 @@ allFields），我们没有的字段靠 null 省略天然合法。响应 `QueryR
 | `sortBy` / `sortOrder` | 至少支持 `SortName` `Name` `DateCreated` `PremiereDate` `ProductionYear` `CommunityRating` `Runtime` `Random` `DatePlayed` `AiredEpisodeOrder` `ParentIndexNumber,IndexNumber`；`Ascending`/`Descending` 按位配对 |
 | `fields` | 字段门控，见 5.3 |
 | `filters` | `IsPlayed` `IsUnplayed` `IsResumable` `IsFavorite` |
-| `searchTerm` | 标题/别名模糊匹配（走 media_item.title/aliases） |
+| `searchTerm` | 逐字对齐 `BaseItemRepository.TranslateQuery.cs:178`：`CleanName.Contains(cleanedTerm) \|\| OriginalTitle LIKE %term%`，其中 `cleanedTerm`/`CleanName` 都过 `GetCleanValue()`（去变音符 → 小写 → 标点转空格 → 折叠空白）。实现见 `movieclaw_jellyfin/search.py`，口径单测在 `tests/jellyfin/test_search_matching.py` |
 | `genres` `years` `officialRatings` | 筛选；genres/officialRatings 用 `\|` 分隔，years 逗号 |
 | `ids` | 批量取条目（逗号分隔，非法项静默丢弃） |
 | `isPlayed` / `isFavorite` | 与 filters 等价的另一入口 |
@@ -943,13 +945,28 @@ Next 侧的 rewrite 保留给裸机开发。
 （并修正其 GetMD5 误用 UTF-8 的编码差异），另补齐了它没覆盖的 /Plugins。
 
 **已知差距**（有意留下的小缺口，不影响 Infuse 主链路）：
-- `GET /Search/Hints` 未实现（P2 兜底项，主流播放器搜索走 /Items?searchTerm）；
 - `imageTypeLimit`/`enableImageTypes`/`enableTotalRecordCount` 接受但忽略
   （超集输出，协议宽容）；
 - `PrimaryImageAspectRatio` 不输出（本地未存图片尺寸，纯排版观感）；
-- `/Persons/*` 独立命名空间未实现（人物条目走 `/Items/{personGuid}` +
-  `personIds` 过滤已覆盖主流客户端的演员页链路）；
+- `/Search/Hints` 的 `isNews`/`isKids`/`isSports` 接受但忽略（无直播电视、
+  无分级标签数据），`includeGenres`/`includeStudios`/`includeArtists` 同理
+  （没有 Genre/Studio/MusicArtist 实体，能给的按名类型只有 Person）；
+- `/Persons` 的 `IsFavorite` 筛成空（本层不落人物收藏台账）；
+- `/Items` 里 Person 与媒体条目混排时不参与 `sortBy` 比较，恒排在媒体之后；
 - 图片两种 404 body 未细分（均给 text 文案；客户端不解析 body）。
+
+**2026-08-23 补齐**（起因：Infuse 搜索页整体不可用，抓包定位）：
+- `GET /Persons`、`GET /Persons/{name}` 实现（`routes/persons.py`）。此前
+  `persons` 不在 `NAMESPACE_PREFIXES` 里，请求连兼容层都进不去，掉到前端
+  catch-all 返回 21KB 的 Next.js HTML 404；
+- `GET /Search/Hints` 实现（`routes/search.py`）；
+- 搜索匹配从「标题/原名/**别名**的裸子串」改为 Jellyfin 口径（见 5.2）。
+  副作用是别名不再参与匹配——搜 "Nirvana in Fire" 不再命中《琅琊榜》，
+  与真 Jellyfin 一致；相应地分集标题变得可搜（Episode 有自己的 Name），
+  剧名命中也不再把整季集数一并带出；
+- 带 `searchTerm` 的查询改为「先按名字列粗筛、只水合命中条目」。此前是全库
+  水合后再在内存过滤，千级条目库单次 1.4 秒，Infuse 逐字符发请求且不取消，
+  4 个并发就把单次拖到 5~8 秒。
 
 **与产品侧读策略的对齐记录**（2026-08-04，Infuse 联调后重构）：
 - 单条目详情与图片接口已复用 Web 的共享读策略（`library/items.py` 的
@@ -959,8 +976,9 @@ Next 侧的 rewrite 保留给裸机开发。
   TMDB 路径兜底出 tag——否则客户端不发图片请求，兜底层永远走不到。
 - 自愈刮削两条触发：档案缺失/从未刮过（分层读内部，与 Web 同源）；
   档案有 cast 但影人关系为空（存量补齐，收敛条件）。仅挂单条目详情。
-- **仍独立实现**：/Items 的搜索与排序口径（`_search_match` 只匹配
-  标题/原名/别名，与 Web 搜索服务的拼音等能力不同源）；People 不做
+- **仍独立实现**：/Items 的搜索与排序口径（2026-08-23 起改为逐字对齐
+  Jellyfin，见 `movieclaw_jellyfin/search.py`；与 Web 搜索服务的拼音、简繁等
+  能力**有意不同源**——协议层要的是"和真 Jellyfin 一样"，不是"更好用"）；People 不做
   NFO 叠加（人物页需要关系表影人 id，NFO 给不出，靠自愈收敛）；
   季/集图片未接目录美术图层（`season{NN}-poster.jpg` 目前只在镜像写出，
   读取仍走资产）。

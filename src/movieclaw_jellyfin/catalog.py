@@ -45,6 +45,7 @@ from movieclaw_jellyfin.ids import (
     root_guid,
     season_guid,
 )
+from movieclaw_jellyfin.search import SearchTerm, person_name_matches
 from movieclaw_playback.streaming import container_mime_type, is_strm  # noqa: F401
 
 TICKS_PER_SECOND = 10_000_000
@@ -590,6 +591,160 @@ async def item_ids_with_files(
         )
     ).scalars()
     return list(kind_ids)
+
+
+async def search_candidate_item_ids(
+    session: AsyncSession, term: SearchTerm, candidate_ids: list[int]
+) -> set[int]:
+    """搜索粗筛：候选条目里，自身**或其任一季/集**能命中搜索词的条目 id。
+
+    为什么要先粗筛
+    --------------
+    带 searchTerm 的查询原先要把候选条目全部水合成 bundle（条目 ⋈ 文件 ⋈ 季 ⋈
+    集 ⋈ 元数据 ⋈ 播放状态）之后才在内存里做子串过滤——命中 1 条也得先装完
+    整库。Infuse 是逐字符发请求且不取消上一个，几个并发就把单次拖到 5~8 秒
+    （实测千级条目的库 1.4 秒/次）。这里改成先用「只取名字列」的轻量投影选出
+    命中的条目 id，水合只覆盖真正要输出的那几条。
+
+    只查三张表的名字列（不 join、不反序列化 JSON 大列），因此代价与库规模
+    线性但常数极小。季/集也纳入判定是因为 Jellyfin 里 Season/Episode 是各自
+    独立的 BaseItem，有自己的 Name——搜集名在真 Jellyfin 是能搜到的。
+    最终每条候选是否真的进结果，仍由调用方按条目类型逐条判定（见
+    ``routes/library.py`` 的 ``_entry_search_match``），这里只负责收窄水合面。
+    """
+    if not candidate_ids or term.empty:
+        return set()
+    matched: set[int] = set()
+
+    rows = await session.execute(
+        select(MediaItem.id, MediaItem.title, MediaItem.original_title).where(
+            MediaItem.id.in_(candidate_ids)
+        )
+    )
+    for item_id, title, original_title in rows:
+        if term.matches(title, original_title):
+            matched.add(item_id)
+
+    season_rows = await session.execute(
+        select(MediaSeason.media_item_id, MediaSeason.name).where(
+            MediaSeason.media_item_id.in_(candidate_ids)
+        )
+    )
+    for item_id, name in season_rows:
+        if item_id not in matched and term.matches(name):
+            matched.add(item_id)
+
+    episode_rows = await session.execute(
+        select(MediaEpisode.media_item_id, MediaEpisode.name).where(
+            MediaEpisode.media_item_id.in_(candidate_ids)
+        )
+    )
+    for item_id, name in episode_rows:
+        if item_id not in matched and term.matches(name):
+            matched.add(item_id)
+
+    return matched
+
+
+async def query_persons(
+    session: AsyncSession,
+    *,
+    name_contains: str | None = None,
+    name_starts_with: str | None = None,
+    name_less_than: str | None = None,
+    name_starts_with_or_greater: str | None = None,
+    appears_in_item_id: int | None = None,
+    person_types: set[str] | None = None,
+    exclude_person_types: set[str] | None = None,
+    visible_item_ids: list[int] | None = None,
+    start_index: int = 0,
+    limit: int = 0,
+) -> tuple[int, list[Person]]:
+    """人物查询（PeopleRepository.cs:270-360 的等价筛选），返回 (总数, 该页)。
+
+    ``visible_item_ids`` 是可见性收口：人物不属于任何库，真 Jellyfin 靠
+    「至少在一部该用户能看到的片里有署名」来判定（PersonsController.cs:128
+    的 BuildAccessFilter），这里同构——传入的是该观看者可见的条目 id。
+
+    两段式：先只取 (id, name) 做结构筛选与姓名匹配，分页切完才水合整行。
+    人物表是万级的，全量水合 ORM 行只为返回一页 24 条不值当；而
+    ``NameContains`` 的口径（Unicode 大写子串）SQLite 的 LIKE 表达不出来
+    （LIKE 只对 ASCII 大小写不敏感，重音字母会漏），必须在 Python 侧判定。
+    """
+    projection = select(Person.id, Person.name)
+    linked = select(MediaItemPerson.person_id)
+    needs_link = False
+    if visible_item_ids is not None:
+        linked = linked.where(MediaItemPerson.media_item_id.in_(visible_item_ids))
+        needs_link = True
+    if appears_in_item_id is not None:
+        linked = linked.where(MediaItemPerson.media_item_id == appears_in_item_id)
+        needs_link = True
+    if person_types:
+        linked = linked.where(MediaItemPerson.department.in_(person_types))
+        needs_link = True
+    if exclude_person_types:
+        linked = linked.where(MediaItemPerson.department.not_in(exclude_person_types))
+        needs_link = True
+    if needs_link:
+        projection = projection.where(Person.id.in_(linked))
+
+    # StartsWith/LessThan/StartsWithOrGreater 照抄 PeopleRepository.cs:344-357：
+    # 过滤值先转小写再比，比对列不转——SQLite 的 LIKE/序比对与之同解
+    if name_starts_with:
+        projection = projection.where(
+            Person.name.like(f"{_escape_like(name_starts_with.lower())}%", escape="\\")
+        )
+    if name_less_than:
+        projection = projection.where(Person.name < name_less_than.lower())
+    if name_starts_with_or_greater:
+        projection = projection.where(Person.name >= name_starts_with_or_greater.lower())
+
+    rows = list(await session.execute(projection.order_by(Person.name.asc())))
+    if name_contains:
+        rows = [r for r in rows if person_name_matches(r[1], name_contains)]
+
+    total = len(rows)
+    page_rows = rows[start_index : start_index + limit] if limit > 0 else rows[start_index:]
+    page_ids = [r[0] for r in page_rows]
+    if not page_ids:
+        return total, []
+    loaded = {
+        p.id: p
+        for p in (await session.execute(select(Person).where(Person.id.in_(page_ids))))
+        .scalars()
+    }
+    return total, [loaded[i] for i in page_ids if i in loaded]
+
+
+def _escape_like(value: str) -> str:
+    """转义 LIKE 元字符——过滤值里的 % 和 _ 是字面量，不是通配符。"""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def person_dto(ctx: DtoContext, person: Person) -> dict[str, Any]:
+    """人物条目的 BaseItemDto（Type=Person 的 ItemsByName 形态）。
+
+    人物不是媒体，没有 MediaSources/UserData/库归属；Jellyfin 侧由
+    `DtoService.GetItemByNameDto` 产出，字段集就是这么窄。
+    """
+    dto: dict[str, Any] = {
+        "Name": person.name,
+        "ServerId": ctx.server_id,
+        "Id": person_guid(person.id or 0),
+        "Type": "Person",
+        "MediaType": "Unknown",
+        "IsFolder": False,
+        "ImageTags": (
+            {"Primary": hashlib.md5(person.profile_path.encode()).hexdigest()}  # noqa: S324
+            if person.profile_path
+            else {}
+        ),
+        "BackdropImageTags": [],
+    }
+    if person.original_name and person.original_name != person.name:
+        dto["OriginalTitle"] = person.original_name
+    return dto
 
 
 async def list_libraries(
