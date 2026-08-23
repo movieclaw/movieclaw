@@ -7,6 +7,7 @@ import type { Route } from "next";
 import { AuthError, AuthField, AuthScreen } from "@/components/auth-screen";
 import { getBootstrapStatus, getSession, login } from "@/lib/api/auth";
 import { clearBackdropCache } from "@/lib/backdrop-cache";
+import { clearUiPrefsCache } from "@/lib/ui-prefs-cache";
 import { usePageTitle } from "@/lib/use-page-title";
 import { HttpError } from "@/lib/http";
 import { accessiblePathFor } from "@/lib/permissions";
@@ -74,6 +75,7 @@ export default function LoginPage() {
       // 整页跳转而非路由跳转：让 AppShell 及全部数据在已登录态下重新初始化。
       // 回到 next 指向的页面（会话过期前所在处），默认首页。
       clearBackdropCache();
+      clearUiPrefsCache();
       window.location.href = resolveNext(session);
     } catch (err) {
       setError(err instanceof HttpError ? err.message : "网络异常，请稍后重试");
