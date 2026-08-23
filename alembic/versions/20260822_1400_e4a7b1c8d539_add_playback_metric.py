@@ -7,7 +7,7 @@
 遥测只落本地，绝不外发（硬边界 3）。
 
 Revision ID: e4a7b1c8d539
-Revises: d3f6a9c2e458
+Revises: e4a7b0d3f569
 Create Date: 2026-08-22 14:00:00.000000
 """
 
@@ -19,7 +19,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "e4a7b1c8d539"
-down_revision: str | None = "d3f6a9c2e458"
+down_revision: str | None = "e4a7b0d3f569"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
