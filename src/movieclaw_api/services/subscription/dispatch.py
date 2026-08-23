@@ -347,6 +347,20 @@ async def dispatch(
             + target_text
             + ("——模拟投递，未真实提交下载器" if dry_run else "")
         )
+    # 单集履历注解：把「这集靠哪个种子拿到」冻结在工单上，详情页里程碑链的
+    # 投递站直接读，不再回活动流水里按季集捞。只写认领的缺口单元——洗版
+    # 单元仍指向在库旧版本，升级确认前候选种子不是它的「来源」。
+    # 提交失败在上方已 return，走到这里必然是投递成立（含 dry-run 模拟投递）；
+    # 随下方 add_activity 的 commit 一起落库。
+    if claimed:
+        grab_note = f"{candidate.site_id} · {candidate.title[:120]}"
+        grab_ts = utcnow()
+        for wanted in claimed:
+            await session.execute(
+                update(WantedItem)
+                .where(WantedItem.id == wanted.id)
+                .values(grab_title=grab_note, updated_at=grab_ts)
+            )
     await repo.add_activity(
         SubscriptionActivity(
             subscription_id=subscription.id,

@@ -555,6 +555,9 @@ class WantedView(BaseModel):
     grabbed_at: datetime | None
     downloaded_at: datetime | None
     imported_at: datetime | None
+    # 单集履历注解（里程碑链的叙事细节）：最近一次被拒原因 / 投递的种子名
+    last_reject_reason: str | None
+    grab_title: str | None
     # 洗版派生状态；规则组未配洗版目标或单元未入库时为 null
     upgrade: WantedUpgradeView | None = None
 
@@ -588,6 +591,8 @@ class WantedView(BaseModel):
             grabbed_at=w.grabbed_at,
             downloaded_at=w.downloaded_at,
             imported_at=w.imported_at,
+            last_reject_reason=w.last_reject_reason,
+            grab_title=w.grab_title,
         )
 
 
