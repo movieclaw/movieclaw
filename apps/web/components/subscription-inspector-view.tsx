@@ -1172,7 +1172,7 @@ function defaultOpenSeasons(wanted: WantedItem[]): Set<number> {
  *
  * 多季订阅（回补整部剧很常见，全 8 季 = 70 多行）默认只展开
  * defaultOpenSeasons 选中的季，其余折成季头行那条本来就有的摘要
- * （N/M 已安排 + 洗版中 N + 标注片源）。折叠而不是「只显示一季」：
+ * （N/M 计数 + 洗版 N + 标注片源）。折叠而不是「只显示一季」：
  * 收起的每一行仍然回答着「这季还缺不缺」，换季选择器（下拉/胶囊）会把
  * 这个信息藏掉，回补老剧的用户恰恰最需要它。季序改为倒序，最新季在最上面。
  */
@@ -1278,19 +1278,24 @@ function WantedBreakdown({
                   )}
                   <span className="min-w-0 flex-1 truncate">
                     {isMovie ? "正片" : season === 0 ? "特别篇" : `第 ${season} 季`}
+                    {/* 计数不带「已安排」标签：集行的状态胶囊已让语义自明，
+                        短形态在窄屏不与洗版数、标注按钮抢宽度 */}
                     {!isMovie && (
-                      <span className="ml-2 font-normal text-[var(--text-faint)]">
-                        {arranged}/{items.length} 已安排
+                      <span
+                        className="tnum ml-2 font-normal text-[var(--text-faint)]"
+                        title={`${arranged}/${items.length} 已安排`}
+                      >
+                        {arranged}/{items.length}
                       </span>
                     )}
                     {items.some((w) => w.upgrade?.active) && (
-                      <span className="ml-2 font-normal text-[#2dd4bf]/80">
-                        洗版中 {items.filter((w) => w.upgrade?.active).length}
+                      <span className="tnum ml-2 font-normal text-[#2dd4bf]/80">
+                        洗版 {items.filter((w) => w.upgrade?.active).length}
                       </span>
                     )}
                   </span>
                   {/* 收起态的迷你进度条：一列折叠行里，光看数字扫不出哪季有缺口。
-                      刻意与同行「已安排」取同一个比值——旁边的条和数字讲两件事，
+                      刻意与同行 N/M 计数取同一个比值——旁边的条和数字讲两件事，
                       用户只会更糊涂 */}
                   {collapsible && !open && (
                     <span className="h-1 w-12 shrink-0 overflow-hidden rounded-full bg-white/[0.1]">
@@ -1396,7 +1401,11 @@ function milestonesOf(
   const M: Milestone[] = [];
   const now = new Date();
 
-  // 1. 播出 / 上映
+  // 1. 播出 / 上映——语义是「定档站」：定档即 done（det 带日期，未来场次也
+  //    如实写「X 播出」），未定档才是卡点。待播出 / 预测窗口的等待发生在
+  //    搜索侧（wantedPresentation 的措辞也如此），卡点归搜索站，否则会出现
+  //    胶囊叫「预测中」而亮点指着播出站的名实错位；资源先于播出流出的
+  //    已投递单元也不会被误标「已播出」。
   if (isMovie) {
     const undated = w.status === "wanted" && w.next_search_at === null;
     M.push(
@@ -1406,11 +1415,15 @@ function milestonesOf(
     );
   } else if (!w.air_date) {
     M.push({ lab: "播出", state: "now", time: "", det: "播出日期未公布，定档后自动排队" });
-  } else if (new Date(w.air_date) > now && w.status === "wanted") {
-    M.push({ lab: "播出", state: "now", time: "", det: `${w.air_date} 播出` });
   } else {
-    M.push({ lab: "播出", state: "done", time: w.air_date, det: "已播出" });
+    M.push({
+      lab: "播出",
+      state: "done",
+      time: w.air_date,
+      det: new Date(w.air_date) > now ? `${w.air_date} 播出` : "已播出",
+    });
   }
+  // 未定档 = 不可调度，搜索站保持 todo；已定档未播出的等待语义交给搜索站
   const preAir = M[0].state === "now";
 
   // 2. 搜索：卡在这里时直接复用 wantedPresentation 的调度文案
@@ -1423,13 +1436,7 @@ function milestonesOf(
       det: w.search_attempts > 0 ? `搜索 ${w.search_attempts} 次后命中` : "被动匹配命中",
     });
   } else if (preAir) {
-    // 电影的 preAir 必是未定档（定档即视为可调度）；剧集分未定档/已定档未播
-    M.push({
-      lab: "搜索",
-      state: "todo",
-      time: "",
-      det: !isMovie && w.air_date ? "播出后进入搜索队列" : "定档后进入搜索队列",
-    });
+    M.push({ lab: "搜索", state: "todo", time: "", det: "定档后进入搜索队列" });
   } else {
     M.push({
       lab: "搜索",
@@ -1454,7 +1461,16 @@ function milestonesOf(
       src: src.length ? src : undefined,
     });
   } else {
-    M.push({ lab: "投递", state: "todo", time: "", det: "尚未找到符合规则组的资源" });
+    // 重开的工单（缺失重下）grabbed_at 已清但上次投递的时间链还在：
+    // 保留「上次 · 站点：耗时」注解，与旧版行内第二行的信息对齐
+    const lastTiming = resourceTimingNote(w.resource_timing, true);
+    M.push({
+      lab: "投递",
+      state: "todo",
+      time: "",
+      det: "尚未找到符合规则组的资源",
+      src: lastTiming ? [lastTiming] : undefined,
+    });
   }
 
   // 4. 下载
@@ -1540,14 +1556,14 @@ function MilestoneChain({ chain, color }: { chain: Milestone[]; color: string })
           <li key={m.lab} className="flex gap-3">
             <span className="flex flex-col items-center">
               <span
-                className={`mt-[7px] size-[9px] shrink-0 rounded-full ${
-                  m.state === "done" ? "bg-white/30" : "border-[1.5px] border-white/[0.15]"
-                }`}
+                className={`shrink-0 rounded-full ${
+                  isNow ? "mt-1.5 size-2.5" : "mt-[7px] size-[9px]"
+                } ${m.state === "done" ? "bg-white/30" : "border-[1.5px] border-white/[0.15]"}`}
                 style={
                   isNow
                     ? {
                         borderColor: color,
-                        borderWidth: 2,
+                        borderWidth: 2.5,
                         boxShadow: `0 0 9px color-mix(in oklab, ${color} 40%, transparent)`,
                       }
                     : undefined
@@ -1556,11 +1572,19 @@ function MilestoneChain({ chain, color }: { chain: Milestone[]; color: string })
               {i < chain.length - 1 && (
                 /* 轨线分段：走过的亮、没走的暗——链断在哪一眼可见 */
                 <span
-                  className={`mt-1 w-px flex-1 ${i < stuck ? "bg-white/[0.16]" : "bg-white/[0.07]"}`}
+                  className={`mt-1 w-[1.5px] flex-1 rounded-full ${
+                    i < stuck ? "bg-white/[0.16]" : "bg-white/[0.07]"
+                  }`}
                 />
               )}
             </span>
-            <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-3 pb-3.5 last:pb-1">
+            {/* 行距收口在倒数第一站：last: 变体在这里不可用——本 div 恒为
+                li 的最后子元素，last:pb-1 会让每一站的行距都塌掉 */}
+            <div
+              className={`flex min-w-0 flex-1 flex-wrap items-baseline gap-x-3 ${
+                i === chain.length - 1 ? "pb-1" : "pb-3.5"
+              }`}
+            >
               <span
                 className={`text-sub ${
                   isNow
@@ -1635,6 +1659,7 @@ function WantedRow({
   const live = w.status === "grabbed" || w.status === "downloaded" ? download : undefined;
   const chain = milestonesOf(w, isMovie, live);
   const lit = stuckIndex(chain);
+  const complete = chain.every((m) => m.state === "done");
   return (
     <li>
       <button
@@ -1648,20 +1673,22 @@ function WantedRow({
         {/* 桌面单行：集号 | 说明(截断) | 胶囊 | 箭头；窄屏两行——定长元素留
             第一行（胶囊 ml-auto 靠右），说明整宽折到第二行（basis-full），
             截断只剩半个日期的信息量归零问题就此消失 */}
-        <span className="flex items-center gap-3">
+        {/* max-md:flex-wrap 是窄屏两行布局的开关：没有它 basis-full 不换行、
+            说明文案被压成一条缝。桌面保持 nowrap 单行 */}
+        <span className="flex items-center gap-x-3 gap-y-1 max-md:flex-wrap">
           <span className="tnum w-11 shrink-0 text-sub font-semibold text-white/90">
             {isMovie ? "正片" : `E${String(w.episode_number).padStart(2, "0")}`}
           </span>
-          <span className="tnum min-w-0 flex-1 truncate text-sub leading-5 text-[var(--text-muted)] max-md:order-last max-md:mt-1 max-md:basis-full max-md:whitespace-normal max-md:line-clamp-2">
+          <span className="tnum min-w-0 flex-1 truncate text-sub leading-5 text-[var(--text-muted)] max-md:order-last max-md:basis-full max-md:whitespace-normal max-md:line-clamp-2">
             {live ? downloadNote(live) : statusNote}
           </span>
           <span
-            className="flex shrink-0 items-center gap-[7px] rounded-full py-[3px] pl-2.5 pr-2.5 text-micro font-semibold max-md:ml-auto"
+            className="flex shrink-0 items-center gap-[7px] rounded-full px-2.5 py-[3px] text-micro font-semibold max-md:ml-auto"
             style={{
               backgroundColor: `color-mix(in oklab, ${color} 14%, transparent)`,
               color,
             }}
-            title={`第 ${lit + 1}/${chain.length} 站：${chain[lit].lab}`}
+            title={`第 ${lit + 1}/${chain.length} 站：${chain[lit].lab}${complete ? "（已收齐）" : ""}`}
           >
             {/* 微型链固定占最长链（6 站）的宽度：与三字短名合力让胶囊等宽 */}
             <span className="flex w-[42px] shrink-0 items-center gap-[3px]">
