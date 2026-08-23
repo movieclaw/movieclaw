@@ -23,6 +23,7 @@ from movieclaw_api.exceptions import BadRequestException, NotFoundException
 from movieclaw_api.services.agent_sessions import (
     SESSION_FORMAT_VERSION,
     AgentSessionStore,
+    SessionHandoffEntry,
     reset_agent_session_store,
 )
 from movieclaw_llm import ChatMessage, ChatResponse, TokenUsage, ToolCall
@@ -270,6 +271,65 @@ def test_unknown_entry_type_skipped_as_bad_line(tmp_path) -> None:
     assert store.build_history(sid)[0].text() == "执行任务"
 
 
+def test_fork_creates_independent_handoff_snapshot(tmp_path) -> None:
+    """新会话持有源上下文快照，源文件之后删除也不影响续聊。"""
+    store = AgentSessionStore(tmp_path)
+    source_id = store.create().session_id
+    store.append(source_id, ChatMessage(role="user", content="整理订阅"))
+    store.append(source_id, ChatMessage(role="assistant", content="已完成第一步"))
+    source_before = store.path(source_id).read_bytes()
+
+    header, handoff = store.fork(source_id, source_title="订阅整理")
+
+    assert header.session_id != source_id
+    assert handoff.source_session_id == source_id
+    assert handoff.source_leaf_uuid == store.read(source_id)[1][-1].uuid
+    assert store.path(source_id).read_bytes() == source_before
+    _, target_entries = store.read(header.session_id)
+    assert target_entries == [handoff]
+    assert isinstance(target_entries[0], SessionHandoffEntry)
+    assert [message.text() for message in store.build_history(header.session_id)] == [
+        "整理订阅",
+        "已完成第一步",
+    ]
+    assert store.summarize(header.session_id).title == "续：订阅整理"
+
+    store.delete(source_id)
+    assert [message.text() for message in store.build_history(header.session_id)] == [
+        "整理订阅",
+        "已完成第一步",
+    ]
+
+
+def test_fork_uses_effective_compacted_history_and_repairs_tool_pairs(tmp_path) -> None:
+    """只继承有效上下文，并在目标快照内修复硬崩留下的未配对调用。"""
+    store = AgentSessionStore(tmp_path)
+    source_id = store.create().session_id
+    store.append(source_id, ChatMessage(role="user", content="不会进入快照的旧消息"))
+    store.append_compaction(source_id, _compaction_result())
+    store.append(source_id, _assistant_with_tools())
+    store.append(
+        source_id,
+        ChatMessage(role="tool", content="已读文件", tool_call_id="call_1", name="read"),
+    )
+    source_count = len(store.read(source_id)[1])
+
+    header, _ = store.fork(source_id, source_title="异常会话")
+    history = store.build_history(header.session_id)
+
+    assert [message.text() for message in history[:2]] == [
+        "执行任务",
+        f"{SUMMARY_PREFIX}\n交接摘要",
+    ]
+    assert "不会进入快照的旧消息" not in [message.text() for message in history]
+    assert history[-2].tool_call_id == "call_1"
+    assert history[-1].role == "tool"
+    assert history[-1].tool_call_id == "call_2"
+    assert "结果未知" in history[-1].text()
+    # 修复只写进新会话的 handoff 快照，源会话保持原状。
+    assert len(store.read(source_id)[1]) == source_count
+
+
 # ---------------------------------------------------------------------------
 # 记录器 + 索引（异步，真实 SQLite）
 # ---------------------------------------------------------------------------
@@ -509,6 +569,87 @@ def test_followup_message_builds_history_from_transcript(client, monkeypatch) ->
     assert item["entry_count"] == 4
     assert item["last_prompt"] == "第二轮"
     assert item["title"] == "第一轮"  # 标题保持首轮
+
+
+def test_fork_api_creates_independent_session_and_resumes_snapshot(client, monkeypatch) -> None:
+    """Fork 返回新 ID；删除源会话后，目标仍从快照上下文继续。"""
+    captured: list[list[str]] = []
+
+    class _CaptureProtocol(_StreamProtocol):
+        async def chat_stream(self, request, model_id):
+            captured.append([message.text() for message in request.messages])
+            async for event in super().chat_stream(request, model_id):
+                yield event
+
+    monkeypatch.setitem(PROTOCOLS, "openai_chat", _CaptureProtocol)
+    client.put(
+        "/api/v1/llm/provider",
+        json={
+            "provider_type": "bailian",
+            "api_key": "sk-session-fork",
+            "default_model": "qwen3.7-max",
+        },
+    )
+    source_id, _ = _send_message_and_wait(client, {"content": "第一轮"})
+    _wait_not_running(client, source_id)
+    source_before = client.get(f"/api/v1/sessions/{source_id}").json()["data"]
+
+    forked = client.post(f"/api/v1/sessions/{source_id}/fork")
+    assert forked.status_code == 201
+    fork_data = forked.json()["data"]
+    target_id = fork_data["session"]["id"]
+    assert target_id != source_id
+    assert fork_data["session"]["running"] is False
+    assert fork_data["entries"][0]["type"] == "handoff"
+    assert fork_data["entries"][0]["source_session_id"] == source_id
+    assert fork_data["entries"][0]["replacement_history"]
+    # Fork 是只读快照，不改源轨迹。
+    assert client.get(f"/api/v1/sessions/{source_id}").json()["data"] == source_before
+
+    assert client.delete(f"/api/v1/sessions/{source_id}").status_code == 200
+    fetched = client.get(f"/api/v1/sessions/{target_id}")
+    assert fetched.status_code == 200
+    # 常规轨迹读取不重复下发继承快照，只保留来源信息。
+    target_entries = fetched.json()["data"]["entries"]
+    assert target_entries[0]["type"] == "handoff"
+    assert target_entries[0]["source_session_id"] == source_id
+    assert target_entries[0]["replacement_history"] == []
+
+    resumed_id, _ = _send_message_and_wait(
+        client,
+        {"content": "从这里继续", "session_id": target_id},
+    )
+    assert resumed_id == target_id
+    _wait_not_running(client, target_id)
+    assert captured[-1][1:] == ["第一轮", "已找到资源", "从这里继续"]
+
+
+def test_fork_api_rejects_missing_running_and_empty_source(client) -> None:
+    configure_provider(client)
+    assert client.post("/api/v1/sessions/missing/fork").status_code == 404
+
+    # 存储层空会话虽然不会由普通 UI 产生，但 Fork 仍需给出明确业务错误。
+    import asyncio
+
+    from movieclaw_api.services.agent_sessions import get_agent_session_store
+    from movieclaw_db.engine import get_database
+    from movieclaw_db.repositories.agent_session_repo import AgentSessionRepository
+
+    store = get_agent_session_store()
+    empty_id = store.create().session_id
+
+    async def create_index() -> None:
+        async with get_database().session() as db_session:
+            await AgentSessionRepository(db_session).create(empty_id, title=None)
+
+    asyncio.run(create_index())
+    assert client.post(f"/api/v1/sessions/{empty_id}/fork").status_code == 400
+
+    started = client.post("/api/v1/sessions", json={"content": "仍在执行"})
+    running_id = started.json()["data"]["session_id"]
+    assert client.post(f"/api/v1/sessions/{running_id}/fork").status_code == 400
+    with client.stream("GET", f"/api/v1/sessions/{running_id}/events") as response:
+        response.read()
 
 
 def test_send_message_to_unknown_session_returns_404(client) -> None:

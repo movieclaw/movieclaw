@@ -32,6 +32,7 @@ import {
   type SessionSummary,
   type SessionTranscript,
   deleteSession,
+  forkSession,
   getSessionTranscript,
   listSessions,
   renameSession,
@@ -111,6 +112,11 @@ export interface AgentConversation {
   turns: AgentTurn[];
   /** 详情是否已从服务端回放；false 表示只有列表摘要壳 */
   loaded: boolean;
+  /** 从旧会话续开时的来源快照；只用于展示来源，实际上下文由服务端持久化。 */
+  handoff?: {
+    sourceSessionId: string;
+    sourceTitle?: string;
+  };
 }
 
 interface AgentConversationsValue {
@@ -127,6 +133,8 @@ interface AgentConversationsValue {
   open: (id: string) => Promise<void>;
   /** 新建服务端会话并发起首轮运行，成功后返回会话 id（调用方跳转 /sessions/[id]） */
   start: (input: string) => Promise<string>;
+  /** 从已有会话上下文创建独立新会话，不启动模型，成功后返回新会话 id。 */
+  fork: (conversationId: string) => Promise<string>;
   /** 在既有会话中追问一轮（历史由服务端从转录重建，只传 session_id） */
   send: (conversationId: string, input: string) => void;
   /** 请求后端停止当前正在生成的轮次。 */
@@ -175,6 +183,9 @@ function messageThinking(message: AgentTranscriptMessage): string {
 function entriesToTurns(entries: SessionAnyEntry[]): AgentTurn[] {
   const turns: AgentTurn[] = [];
   for (const entry of entries) {
+    // handoff 是会话级来源卡片，旧消息已作为服务端上下文快照保存，不能在
+    // 新会话里再次派生成可重试的历史轮次。
+    if (entry.type === "handoff") continue;
     if (entry.type === "compaction") {
       // 压缩行没有 message：作为分隔卡片并入上一轮时间线（会话首条必是
       // user 消息，正常不会出现无归属的压缩行；万一有也直接跳过）
@@ -257,6 +268,7 @@ function conversationFromSummary(summary: SessionSummary): AgentConversation {
 function conversationFromDetail(detail: SessionTranscript): AgentConversation {
   const summary = detail.session;
   const turns = entriesToTurns(detail.entries);
+  const handoffEntry = detail.entries.find((entry) => entry.type === "handoff");
   const running = summary.running;
   if (running) {
     const last = turns[turns.length - 1];
@@ -279,6 +291,13 @@ function conversationFromDetail(detail: SessionTranscript): AgentConversation {
     running,
     turns,
     loaded: true,
+    handoff:
+      handoffEntry?.type === "handoff"
+        ? {
+            sourceSessionId: handoffEntry.source_session_id,
+            sourceTitle: handoffEntry.source_title ?? undefined,
+          }
+        : undefined,
   };
 }
 
@@ -732,6 +751,16 @@ export function AgentConversationsProvider({ children }: { children: React.React
     [connectSession],
   );
 
+  const forkConversation = useCallback(async (conversationId: string) => {
+    const detail = await forkSession(conversationId);
+    const conversation = conversationFromDetail(detail);
+    setConversations((previous) => [
+      conversation,
+      ...previous.filter((item) => item.id !== conversation.id),
+    ]);
+    return conversation.id;
+  }, []);
+
   const send = useCallback(
     (conversationId: string, input: string) => {
       const turnId = nanoid();
@@ -836,6 +865,7 @@ export function AgentConversationsProvider({ children }: { children: React.React
       get: (id) => conversations.find((conversation) => conversation.id === id),
       open,
       start,
+      fork: forkConversation,
       send,
       stop,
       rename,
@@ -849,6 +879,7 @@ export function AgentConversationsProvider({ children }: { children: React.React
       loadMore,
       open,
       start,
+      forkConversation,
       send,
       stop,
       rename,

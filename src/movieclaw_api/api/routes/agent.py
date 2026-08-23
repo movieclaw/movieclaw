@@ -18,6 +18,7 @@ from movieclaw_api.exceptions import (
 from movieclaw_api.schemas.agent import (
     SessionCompactionEntryView,
     SessionContextCompactionView,
+    SessionHandoffEntryView,
     SessionMessageAcceptedView,
     SessionMessageEntryView,
     SessionMessageView,
@@ -33,6 +34,7 @@ from movieclaw_api.services.agent_runs import get_agent_run_registry
 from movieclaw_api.services.agent_session_recorder import AgentSessionRecorder
 from movieclaw_api.services.agent_sessions import (
     SessionCompactionEntry,
+    SessionHandoffEntry,
     SessionMessageEntry,
     get_agent_session_store,
 )
@@ -293,6 +295,8 @@ async def get_session_transcript(
 
     结果不分页、不截断，长会话响应可能很大。user message 的 ``message_id``
     可作为 ``session.retry`` 的定位参数；compaction 记录不会隐藏更早的原始消息。
+    handoff 记录只带来源信息，继承上下文的快照不在此重复下发（见
+    ``SessionHandoffEntryView.replacement_history``）。
     """
     row = await AgentSessionRepository(session).get(session_id)
     if row is None:
@@ -301,15 +305,35 @@ async def get_session_transcript(
     return ok(
         SessionTranscriptView(
             session=SessionSummary.from_model(row),
-            entries=[_entry_view(e) for e in entries],
+            entries=[_entry_view(e, include_handoff_snapshot=False) for e in entries],
         )
     )
 
 
 def _entry_view(
-    entry: SessionMessageEntry | SessionCompactionEntry,
-) -> SessionMessageEntryView | SessionCompactionEntryView:
-    """内部 JSONL entry → 公开的 message/compaction 判别联合。"""
+    entry: SessionMessageEntry | SessionCompactionEntry | SessionHandoffEntry,
+    *,
+    include_handoff_snapshot: bool = True,
+) -> SessionMessageEntryView | SessionCompactionEntryView | SessionHandoffEntryView:
+    """内部 JSONL entry → 公开的 message/compaction/handoff 判别联合。
+
+    handoff 的 replacement_history 只在 fork 创建响应里下发一次；常规轨迹
+    读取留空，避免每次打开分叉会话都重复传输整份继承上下文。
+    """
+    if isinstance(entry, SessionHandoffEntry):
+        return SessionHandoffEntryView(
+            handoff_id=entry.uuid,
+            parent_id=entry.parent_uuid,
+            timestamp=entry.timestamp,
+            source_session_id=entry.source_session_id,
+            source_leaf_id=entry.source_leaf_uuid,
+            source_title=entry.source_title,
+            replacement_history=(
+                [SessionMessageView.from_model(message) for message in entry.replacement_history]
+                if include_handoff_snapshot
+                else []
+            ),
+        )
     if isinstance(entry, SessionCompactionEntry):
         return SessionCompactionEntryView(
             compaction_id=entry.uuid,
@@ -330,6 +354,64 @@ def _entry_view(
         model=entry.model,
         usage=entry.usage,
         finish_reason=entry.finish_reason,
+    )
+
+
+@router.post(
+    "/{session_id}/fork",
+    response_model=ApiResponse[SessionTranscriptView],
+    status_code=201,
+    summary="从已有上下文创建独立的新会话",
+    operation_id="session.fork",
+    openapi_extra={"x-cli-hidden": True},
+)
+async def fork_session(
+    session_id: str,
+    identity: Principal = Depends(require_login),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[SessionTranscriptView]:
+    """把源会话此刻的有效上下文快照到一个全新的会话编号。
+
+    源会话保持不变；新会话不继承运行编号、心跳或事件流，源文件之后被删除也
+    不影响新会话。运行中的源会话拒绝分叉，避免拿到一份仍在变化的半截快照。
+    此操作不调用模型，新会话创建后等待用户提交第一条后续消息。
+
+    运行状态检查与读取快照之间存在极小的竞态窗口（另一客户端可能恰好发起
+    新一轮运行）；快照里悬空的 tool_call 会在写入新会话时修复为合法回执，
+    因此即使踩中窗口，新会话拿到的仍是一份协议完整的上下文。
+    """
+    if identity.kind == "agent":
+        raise BadRequestException("Agent 工作区内不能创建新的 Agent 会话（禁止递归）")
+
+    store = get_agent_session_store()
+    repo = AgentSessionRepository(session)
+    source = await repo.get(session_id)
+    if source is None:
+        raise NotFoundException("Agent 会话不存在")
+    if is_running(source):
+        raise BadRequestException("源会话正在运行中，请先停止或等待完成后再创建新会话")
+
+    source_title = source.title or source.last_prompt
+    header, handoff = store.fork(session_id, source_title=source_title)
+    target_title = (
+        (source_title if source_title.startswith("续：") else f"续：{source_title}")[:80]
+        if source_title
+        else None
+    )
+    target = await repo.create(header.session_id, title=target_title)
+    await repo.touch_after_append(
+        header.session_id,
+        leaf_uuid=handoff.uuid,
+        entry_count=1,
+    )
+    # touch_after_append 在同一 AsyncSession 内提交后，重新读取确保响应携带最终索引。
+    target = await repo.get(header.session_id) or target
+    return ok(
+        SessionTranscriptView(
+            session=SessionSummary.from_model(target),
+            entries=[_entry_view(handoff)],
+        ),
+        message="已创建续接会话",
     )
 
 

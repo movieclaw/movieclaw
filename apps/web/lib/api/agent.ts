@@ -122,7 +122,23 @@ export interface SessionCompactionEntry {
   replacement_history: AgentTranscriptMessage[];
 }
 
-export type SessionAnyEntry = SessionMessageEntry | SessionCompactionEntry;
+/** 从另一会话创建独立新会话时写入的上下文快照。 */
+export interface SessionHandoffEntry {
+  type: "handoff";
+  handoff_id: string;
+  parent_id?: string;
+  timestamp: string;
+  source_session_id: string;
+  source_leaf_id?: string | null;
+  source_title?: string | null;
+  /** 完整快照只在 fork 创建响应里下发一次；常规轨迹读取固定为空数组。页面只展示来源卡片，不重复渲染旧消息。 */
+  replacement_history: AgentTranscriptMessage[];
+}
+
+export type SessionAnyEntry =
+  | SessionMessageEntry
+  | SessionCompactionEntry
+  | SessionHandoffEntry;
 
 /** 会话列表项；后台运行编号是服务端实现细节，不进入公开协议。 */
 export interface SessionSummary {
@@ -179,6 +195,14 @@ export async function listSessions(
 /** 会话详情（完整消息 entry 回放）。 */
 export async function getSessionTranscript(sessionId: string): Promise<SessionTranscript> {
   const response = await request<ApiEnvelope<SessionTranscript>>(`/sessions/${sessionId}`);
+  return response.data;
+}
+
+/** 从源会话的有效上下文创建独立的新会话；不触发模型运行。 */
+export async function forkSession(sessionId: string): Promise<SessionTranscript> {
+  const response = await request<ApiEnvelope<SessionTranscript>>(`/sessions/${sessionId}/fork`, {
+    method: "POST",
+  });
   return response.data;
 }
 

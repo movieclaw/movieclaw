@@ -46,6 +46,7 @@ KNOWN_NON_GENERATED = {
     "auth.login",  # 精选命令 mclaw login 负责（要持久化本地凭证）
     "auth.logout",  # 精选命令 mclaw logout 负责
     "workflow.search.torrents.stream",
+    "session.fork",  # Web 端创建空的新会话后再跳转；CLI 的 start 已有完整交互语义
     "session.follow",
     "fs.browse",  # 仅 Web 端目录选择器用；CLI/Agent 有 bash 等通用工具，不再暴露
     "jobs.stream",  # 前端全局事件流；CLI 使用 jobs wait/events
@@ -149,6 +150,7 @@ def test_session_exposes_only_message_semantic_operations() -> None:
         "session.compact-context",
         "session.delete",
         "session.follow",
+        "session.fork",
         "session.get-transcript",
         "session.list",
         "session.rename",
