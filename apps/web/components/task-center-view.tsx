@@ -12,7 +12,7 @@ import {
   TaskActionsMenu,
   TaskStatusDot,
 } from "@/components/job-center";
-import { CopyButton } from "@/components/copy-button";
+import { CopyButton, copyText } from "@/components/copy-button";
 import { useToast } from "@/components/feedback";
 import {
   ChevronRightIcon,
@@ -1364,21 +1364,13 @@ function DownloadTaskFeedItem({
             </p>
           )}
         </div>
-        <div className="flex shrink-0 items-center gap-1">
-          <CopyButton
-            text={downloadTaskDiagnosticText(task, ingestJob)}
-            label="复制诊断信息"
-            className="px-2.5 py-1.5 text-caption font-medium text-white/45 hover:bg-white/[0.06] hover:text-white/75"
-          />
-          {(task.page_url != null || task.downloader_id != null) && (
-            <DownloadTaskActionsMenu
-              task={task}
-              deleting={deleting}
-              replacing={replacing}
-              onDelete={onDelete}
-            />
-          )}
-        </div>
+        <DownloadTaskActionsMenu
+          task={task}
+          diagnosticText={downloadTaskDiagnosticText(task, ingestJob)}
+          deleting={deleting}
+          replacing={replacing}
+          onDelete={onDelete}
+        />
       </div>
       {note && (
         <OverflowText lines={2} className="mt-1.5 text-caption leading-5 text-white/42">
@@ -1570,14 +1562,13 @@ function DownloadTaskCard({
               <OverflowText>{title}</OverflowText>
             </h3>
           </div>
-          {(task.page_url != null || task.downloader_id != null) && (
-            <DownloadTaskActionsMenu
-              task={task}
-              deleting={deleting}
-              replacing={replacing}
-              onDelete={onDelete}
-            />
-          )}
+          <DownloadTaskActionsMenu
+            task={task}
+            diagnosticText={downloadTaskDiagnosticText(task, ingestJob)}
+            deleting={deleting}
+            replacing={replacing}
+            onDelete={onDelete}
+          />
         </div>
         {(torrentName || taskNote) && (
           <div
@@ -2005,18 +1996,25 @@ function DownloadLifecycle({
   );
 }
 
-/** 打开种子页与删除收进右上角菜单；查看订阅由分组标题承担，不在此重复。 */
+/**
+ * 右上角 ⋯ 菜单：复制诊断信息恒在（任何任务都可定位），打开种子页与删除
+ * 按可用性追加；查看订阅由分组标题承担，不在此重复。
+ * 复制走菜单项而非独立按钮，是为了不打破任务行「单菜单」的原有布局。
+ */
 function DownloadTaskActionsMenu({
   task,
+  diagnosticText,
   deleting,
   replacing,
   onDelete,
 }: {
   task: DownloadTask;
+  diagnosticText: string;
   deleting: boolean;
   replacing: boolean;
   onDelete: (task: DownloadTask) => void;
 }) {
+  const toast = useToast();
   return (
     <TaskActionsMenu
       ariaLabel={`${task.name || task.info_hash}的更多操作`}
@@ -2033,6 +2031,15 @@ function DownloadTaskActionsMenu({
               },
             ]
           : []),
+        {
+          id: "copy-diagnostic",
+          label: "复制诊断信息",
+          onSelect: () => {
+            void copyText(diagnosticText)
+              .then(() => toast.success("诊断信息已复制，可直接发给 AI 排查"))
+              .catch(() => toast.error("复制失败，请检查浏览器剪贴板权限"));
+          },
+        },
         ...(task.downloader_id != null
           ? [
               {
