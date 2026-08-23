@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { chromeMustStayVisible, shouldHideOnPointerLeave } from "../lib/player/chrome.ts";
 
-const idle = { paused: false, menuOpen: false, diagnosticsOpen: false };
+const idle = { paused: false, menuOpen: false, diagnosticsOpen: false, awaitingUser: false };
 
 test("正常播放中，控制条可以自动淡出", () => {
   assert.equal(chromeMustStayVisible(idle), false);
@@ -19,6 +19,12 @@ test("菜单展开时常显——控制条一淡出会把菜单一起带走", ()
 
 test("诊断面板开着时常显", () => {
   assert.equal(chromeMustStayVisible({ ...idle, diagnosticsOpen: true }), true);
+});
+
+test("等用户拍板时常显——报错和同意弹窗不设超时", () => {
+  // 播放失败后界面淡成一块黑屏，用户既不知道出了什么事，也不知道还能点什么。
+  // 注意此时 paused 未必为真：解码失败的媒体元素可能既没在放也没触发 pause。
+  assert.equal(chromeMustStayVisible({ ...idle, awaitingUser: true }), true);
 });
 
 // ---------------------------------------------------------------------------

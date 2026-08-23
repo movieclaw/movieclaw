@@ -30,6 +30,21 @@ export type PlayerPhase =
   | "error"
   | "ended";
 
+/**
+ * 「等用户拍板」的两个态：报错页与同意弹窗。
+ *
+ * 它们是**终态**，只有用户自己的动作（重试 / 同意 / 换一集）能离开。挡的是
+ * video 元素的迟到事件：解码失败后媒体元素并不安静，`playing`/`ended`/`seeking`
+ * 仍可能各自再飞一发，而这些事件当时无条件改写 phase，报错浮层就被它们顶掉了
+ * ——用户看到提示闪几秒，然后只剩一个黑播放器，不知道发生了什么、也没得选。
+ *
+ * 进了这两个态就没有在用的会话（fatal/failed 都把 session 置空），所以此时收到
+ * 的播放事件按定义都是上一轮的残响，忽略它们不会丢掉任何真实进展。
+ */
+export function awaitsUserDecision(phase: PlayerPhase): boolean {
+  return phase === "error" || phase === "consent";
+}
+
 /** 最高兜底档：软件转码。连败两次后直接跳到它，不再逐级试。 */
 const FALLBACK_TIER = 4;
 
@@ -157,10 +172,12 @@ export function playerReducer(state: PlayerState, event: PlayerEvent): PlayerSta
         : state;
 
     case "playing":
+      if (awaitsUserDecision(state.phase)) return state;
       // 出画即认为本档可用：清掉连败计数，之后再失败重新从逐级降开始。
       return { ...state, phase: "playing", failureCount: 0, error: null };
 
     case "seeking":
+      if (awaitsUserDecision(state.phase)) return state;
       return state.phase === "idle" ? state : { ...state, phase: "seeking" };
 
     case "restart":
@@ -208,6 +225,7 @@ export function playerReducer(state: PlayerState, event: PlayerEvent): PlayerSta
       };
 
     case "ended":
+      if (awaitsUserDecision(state.phase)) return state;
       return { ...state, phase: "ended" };
 
     case "reset":

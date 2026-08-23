@@ -30,7 +30,12 @@ import { type AutoplayOutcome, attemptAutoplay, shouldAttemptAutoplay } from "@/
 import { getCapabilitySnapshot } from "@/lib/player/capability";
 import type { PlaybackEngine } from "@/lib/player/engine";
 import { createEngine } from "@/lib/player/engine";
-import { initialPlayerState, isBusy, playerReducer } from "@/lib/player/machine";
+import {
+  awaitsUserDecision,
+  initialPlayerState,
+  isBusy,
+  playerReducer,
+} from "@/lib/player/machine";
 import {
   asNativeVideo,
   enterLandscape,
@@ -924,14 +929,16 @@ export function VideoPlayer(props: VideoPlayerProps) {
   // 控制条自动隐藏 + 片尾下一集
   // ---------------------------------------------------------------------
 
+  const awaitingUser = awaitsUserDecision(state.phase);
+
   useEffect(() => {
-    if (chromeMustStayVisible({ paused, menuOpen, diagnosticsOpen })) {
+    if (chromeMustStayVisible({ paused, menuOpen, diagnosticsOpen, awaitingUser })) {
       setChromeVisible(true);
       return;
     }
     const timer = window.setTimeout(() => setChromeVisible(false), IDLE_HIDE_MS);
     return () => window.clearTimeout(timer);
-  }, [paused, diagnosticsOpen, menuOpen, chromeVisible]);
+  }, [paused, diagnosticsOpen, menuOpen, awaitingUser, chromeVisible]);
 
   useEffect(() => {
     if (!next || nextDismissed) return;

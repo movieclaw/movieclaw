@@ -18,16 +18,22 @@ export interface ChromeVisibilityInput {
   menuOpen: boolean;
   /** 诊断面板开着 */
   diagnosticsOpen: boolean;
+  /** 正等用户拍板（报错页 / 同意弹窗），见 machine.ts 的 awaitsUserDecision */
+  awaitingUser: boolean;
 }
 
 /**
  * 控制条必须常显、不能走自动淡出的情况。
  *
- * 三条都是「用户正要用它」：暂停时他在找播放键；菜单或诊断面板开着时，控制条
+ * 前三条都是「用户正要用它」：暂停时他在找播放键；菜单或诊断面板开着时，控制条
  * 一淡出会把它们一起带走。
+ *
+ * 第四条是「用户必须知道现在什么情况」：报错和同意弹窗都在等他做决定，此时让
+ * 界面淡成一块黑屏，他既不知道出了什么事，也不知道还能点什么。**要用户抉择的
+ * 状态不设超时**——超时的前提是"没人看也没关系"，这里恰恰相反。
  */
 export function chromeMustStayVisible(input: ChromeVisibilityInput): boolean {
-  return input.paused || input.menuOpen || input.diagnosticsOpen;
+  return input.paused || input.menuOpen || input.diagnosticsOpen || input.awaitingUser;
 }
 
 export interface PointerLeaveInput {
