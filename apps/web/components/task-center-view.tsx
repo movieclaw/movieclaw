@@ -12,6 +12,7 @@ import {
   TaskActionsMenu,
   TaskStatusDot,
 } from "@/components/job-center";
+import { CopyButton } from "@/components/copy-button";
 import { useToast } from "@/components/feedback";
 import {
   ChevronRightIcon,
@@ -48,6 +49,10 @@ import {
 } from "@/lib/api/jobs";
 import { useJobs } from "@/lib/jobs";
 import type { TaskCenterViewName } from "@/lib/task-center";
+import {
+  backgroundJobDiagnosticText,
+  downloadTaskDiagnosticText,
+} from "@/lib/task-diagnostics";
 import {
   ACTIVE_FEED_JOB_STATUSES,
   ATTENTION_JOB_STATUSES,
@@ -658,16 +663,23 @@ function ActiveJobFeedItem({
             )}
           </p>
         </div>
-        {cancellable && (
-          <button
-            type="button"
-            onClick={onCancel}
-            disabled={cancelling}
-            className="shrink-0 rounded-lg px-2.5 py-1.5 text-caption font-medium text-white/45 transition hover:bg-white/[0.06] hover:text-white/75 disabled:cursor-wait disabled:opacity-45"
-          >
-            {cancelling ? "正在取消…" : "取消任务"}
-          </button>
-        )}
+        <div className="flex shrink-0 items-center gap-1">
+          <CopyButton
+            text={backgroundJobDiagnosticText(job)}
+            label="复制诊断信息"
+            className="px-2.5 py-1.5 text-caption font-medium text-white/45 hover:bg-white/[0.06] hover:text-white/75"
+          />
+          {cancellable && (
+            <button
+              type="button"
+              onClick={onCancel}
+              disabled={cancelling}
+              className="shrink-0 rounded-lg px-2.5 py-1.5 text-caption font-medium text-white/45 transition hover:bg-white/[0.06] hover:text-white/75 disabled:cursor-wait disabled:opacity-45"
+            >
+              {cancelling ? "正在取消…" : "取消任务"}
+            </button>
+          )}
+        </div>
       </div>
       {job.progress.message && (
         <OverflowText lines={2} className="mt-1.5 text-caption leading-5 text-white/42">
@@ -1352,14 +1364,21 @@ function DownloadTaskFeedItem({
             </p>
           )}
         </div>
-        {(task.page_url != null || task.downloader_id != null) && (
-          <DownloadTaskActionsMenu
-            task={task}
-            deleting={deleting}
-            replacing={replacing}
-            onDelete={onDelete}
+        <div className="flex shrink-0 items-center gap-1">
+          <CopyButton
+            text={downloadTaskDiagnosticText(task, ingestJob)}
+            label="复制诊断信息"
+            className="px-2.5 py-1.5 text-caption font-medium text-white/45 hover:bg-white/[0.06] hover:text-white/75"
           />
-        )}
+          {(task.page_url != null || task.downloader_id != null) && (
+            <DownloadTaskActionsMenu
+              task={task}
+              deleting={deleting}
+              replacing={replacing}
+              onDelete={onDelete}
+            />
+          )}
+        </div>
       </div>
       {note && (
         <OverflowText lines={2} className="mt-1.5 text-caption leading-5 text-white/42">
