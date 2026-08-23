@@ -14,7 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from movieclaw_api.core.config import get_settings
-from movieclaw_llm import ChatResponse, ProviderInfo, TokenUsage
+from movieclaw_llm import ChatResponse, ProviderInfo, TokenUsage, ToolCall
 from movieclaw_llm.base import BaseLlmProtocol
 from movieclaw_llm.models import ChatStreamEvent
 from movieclaw_llm.protocols import PROTOCOLS
@@ -325,6 +325,57 @@ def test_manual_compact_endpoint(client, monkeypatch) -> None:
 
     missing = client.post("/api/v1/sessions/not-exist/compact-context")
     assert missing.status_code == 404
+
+
+def test_manual_compact_failure_does_not_persist_tool_repair(client, monkeypatch) -> None:
+    """压缩失败不能因上下文修复而提前改写转录，造成文件与索引失步。"""
+
+    class _CompactFailureProtocol(_StreamProtocol):
+        async def chat_stream(self, request, model_id):
+            if request.tools is None:
+                yield ChatStreamEvent(
+                    type="error",
+                    partial=ChatResponse(
+                        finish_reason="error",
+                        error="模拟压缩失败",
+                        model=model_id,
+                        provider=self.config.name,
+                    ),
+                )
+                return
+            async for event in super().chat_stream(request, model_id):
+                yield event
+
+    monkeypatch.setitem(PROTOCOLS, "openai_chat", _CompactFailureProtocol)
+    configure_provider(client)
+    started = client.post("/api/v1/sessions", json={"content": "执行任务"})
+    session_id = started.json()["data"]["session_id"]
+    client.get(f"/api/v1/sessions/{session_id}/events")
+    _wait_run_settled(client, session_id)
+
+    # 模拟进程在 assistant tool_call 落盘后硬退出，并先把索引校准到该事实轨迹。
+    from movieclaw_api.services.agent_session_recorder import rebuild_agent_session_index
+    from movieclaw_api.services.agent_sessions import get_agent_session_store
+    from movieclaw_llm import ChatMessage
+
+    store = get_agent_session_store()
+    store.append(
+        session_id,
+        ChatMessage(
+            role="assistant",
+            tool_calls=[ToolCall(id="call_crashed", name="bash", arguments={})],
+        ),
+    )
+    asyncio.run(rebuild_agent_session_index())
+    before = client.get(f"/api/v1/sessions/{session_id}").json()["data"]
+    assert before["session"]["entry_count"] == len(before["entries"])
+
+    failed = client.post(f"/api/v1/sessions/{session_id}/compact-context")
+
+    assert failed.status_code == 502
+    after = client.get(f"/api/v1/sessions/{session_id}").json()["data"]
+    assert after["entries"] == before["entries"]
+    assert after["session"]["entry_count"] == len(after["entries"])
 
 
 def test_stop_session_ends_with_cancelled_event(client, monkeypatch) -> None:

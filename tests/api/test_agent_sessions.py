@@ -113,6 +113,60 @@ def test_seal_pending_tool_calls_completes_pairing(tmp_path) -> None:
     assert store.seal_pending_tool_calls(sid) == 0
 
 
+def test_prepare_history_seals_pending_call_before_next_user(tmp_path) -> None:
+    """续聊前先把崩溃遗留的调用补齐，不能让新 user 插到 call/result 中间。"""
+    store = AgentSessionStore(tmp_path)
+    sid = store.create().session_id
+    store.append(sid, ChatMessage(role="user", content="执行任务"))
+    store.append(
+        sid,
+        ChatMessage(
+            role="assistant",
+            tool_calls=[ToolCall(id="call_sleep", name="bash", arguments={"command": "sleep 8"})],
+        ),
+    )
+
+    history = store.prepare_history(sid)
+    store.append(sid, ChatMessage(role="user", content="怎样了"))
+
+    assert [message.role for message in history] == ["user", "assistant", "tool"]
+    assert history[-1].tool_call_id == "call_sleep"
+    _, entries = store.read(sid)
+    assert [entry.message.role for entry in entries] == ["user", "assistant", "tool", "user"]
+
+
+def test_build_history_moves_late_tool_result_before_intervening_user(tmp_path) -> None:
+    """已损坏转录保持原样，但喂给模型的投影必须恢复合法工具调用顺序。"""
+    store = AgentSessionStore(tmp_path)
+    sid = store.create().session_id
+    store.append(sid, ChatMessage(role="user", content="执行任务"))
+    store.append(
+        sid,
+        ChatMessage(
+            role="assistant",
+            tool_calls=[ToolCall(id="call_sleep", name="bash", arguments={"command": "sleep 8"})],
+        ),
+    )
+    store.append(sid, ChatMessage(role="user", content="怎样了"))
+    store.append(
+        sid,
+        ChatMessage(
+            role="tool",
+            content="操作已被中断，工具未执行完成。",
+            tool_call_id="call_sleep",
+            name="bash",
+        ),
+    )
+
+    history = store.build_history(sid)
+
+    assert [message.role for message in history] == ["user", "assistant", "tool", "user"]
+    assert history[2].tool_call_id == "call_sleep"
+    # 完整轨迹仍保持事实发生顺序；只修复发送给模型的上下文投影。
+    _, entries = store.read(sid)
+    assert [entry.message.role for entry in entries] == ["user", "assistant", "user", "tool"]
+
+
 def test_summarize_and_scan_all(tmp_path) -> None:
     store = AgentSessionStore(tmp_path)
     sid = store.create().session_id
@@ -509,6 +563,52 @@ def test_followup_message_builds_history_from_transcript(client, monkeypatch) ->
     assert item["entry_count"] == 4
     assert item["last_prompt"] == "第二轮"
     assert item["title"] == "第一轮"  # 标题保持首轮
+
+
+def test_followup_seals_crash_orphan_before_new_user(client, monkeypatch) -> None:
+    """进程崩溃遗留的 tool call 必须在续聊 user 落盘和请求上游前补齐。"""
+    captured_roles: list[list[str]] = []
+
+    class _CaptureProtocol(_StreamProtocol):
+        async def chat_stream(self, request, model_id):
+            captured_roles.append([message.role for message in request.messages])
+            async for event in super().chat_stream(request, model_id):
+                yield event
+
+    monkeypatch.setitem(PROTOCOLS, "openai_chat", _CaptureProtocol)
+    client.put(
+        "/api/v1/llm/provider",
+        json={
+            "provider_type": "bailian",
+            "api_key": "sk-session-orphan",
+            "default_model": "qwen3.7-max",
+        },
+    )
+    session_id, _ = _send_message_and_wait(client, {"content": "执行任务"})
+    _wait_not_running(client, session_id)
+
+    from movieclaw_api.services.agent_sessions import get_agent_session_store
+
+    store = get_agent_session_store()
+    store.append(
+        session_id,
+        ChatMessage(
+            role="assistant",
+            tool_calls=[ToolCall(id="call_sleep", name="bash", arguments={"command": "sleep 8"})],
+        ),
+    )
+
+    resumed, _ = _send_message_and_wait(
+        client,
+        {"content": "怎样了", "session_id": session_id},
+    )
+    assert resumed == session_id
+    assert captured_roles[-1][-3:] == ["assistant", "tool", "user"]
+
+    _, entries = store.read(session_id)
+    roles = [entry.message.role for entry in entries]
+    assert roles[-4:] == ["assistant", "tool", "user", "assistant"]
+    assert entries[-3].message.tool_call_id == "call_sleep"
 
 
 def test_send_message_to_unknown_session_returns_404(client) -> None:

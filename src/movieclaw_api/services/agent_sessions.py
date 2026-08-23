@@ -7,8 +7,8 @@
    唯一例外是 ``discard_from_user_message``（retry 的历史替换），见该方法
    的说明；除它以外，任何写入路径都只准 append。
 2. **只落定稿消息，不落流式 delta**：SSE 增量属于 UI 通道；文件里的
-   ``message`` 就是 LLM API 原样格式（ChatMessage），resume 重建上下文
-   零转换。
+   ``message`` 保留事实发生顺序，resume 投影时只修复进程重启可能造成的
+   工具回执迟到/缺失，不改写完整轨迹。
 3. **entry 带 uuid / parent_uuid**：v1 是纯线性链（parent 永远指向上一
    条），字段先留好，将来做历史分支时无需迁移文件格式。
 4. **SQLite 的 agent_session 表只是查询索引**：任何时候都能由本目录的
@@ -47,6 +47,9 @@ SESSION_FORMAT_VERSION = 2
 
 #: 会话标题 / 最后提示预览的截断长度（DB 索引列用，全文始终在文件里）
 PREVIEW_MAX_CHARS = 80
+
+#: 进程退出时给尚未完成的工具调用回填的统一结果文本。
+_INTERRUPTED_TOOL_RESULT = "操作已被中断，工具未执行完成。"
 
 
 def _now_iso() -> str:
@@ -147,6 +150,67 @@ def _messages_after_last_compaction(
     return [e.message for e in entries[last + 1 :] if isinstance(e, SessionMessageEntry)]
 
 
+def _normalize_tool_call_history(
+    messages: list[ChatMessage],
+) -> tuple[list[ChatMessage], int, int, int]:
+    """把工具结果投影到对应 assistant 调用之后，返回修复后的模型上下文。
+
+    OpenAI 工具协议不只要求 call id 存在，还要求每组 assistant tool_calls 在
+    下一条普通消息之前收齐结果。应用重启可能留下「assistant → user → tool」的
+    迟到回执；完整转录仍保留事实发生顺序，这里只修复发送给模型的投影：
+
+    - 迟到回执移动到对应调用之后；
+    - 完全缺失的回执生成中断结果，避免坏历史永久阻断续聊；
+    - 找不到对应调用的孤立 tool 消息不进入模型上下文。
+
+    额外返回（补写数、迟到数、孤立数），供调用方输出可理解的诊断日志。
+    """
+    outputs_by_id: dict[str, list[tuple[int, ChatMessage]]] = {}
+    tool_indexes: set[int] = set()
+    for index, message in enumerate(messages):
+        if message.role != "tool":
+            continue
+        tool_indexes.add(index)
+        if message.tool_call_id:
+            outputs_by_id.setdefault(message.tool_call_id, []).append((index, message))
+
+    normalized: list[ChatMessage] = []
+    used_tool_indexes: set[int] = set()
+    synthesized = 0
+    late = 0
+    for call_index, message in enumerate(messages):
+        if message.role == "tool":
+            continue
+        normalized.append(message)
+        if message.role != "assistant" or not message.tool_calls:
+            continue
+        for tool_call in message.tool_calls:
+            matched: tuple[int, ChatMessage] | None = None
+            for output_index, output in outputs_by_id.get(tool_call.id, []):
+                if output_index > call_index and output_index not in used_tool_indexes:
+                    matched = (output_index, output)
+                    break
+            if matched is None:
+                normalized.append(
+                    ChatMessage(
+                        role="tool",
+                        content=_INTERRUPTED_TOOL_RESULT,
+                        tool_call_id=tool_call.id,
+                        name=tool_call.name,
+                    )
+                )
+                synthesized += 1
+                continue
+            output_index, output = matched
+            used_tool_indexes.add(output_index)
+            if any(messages[index].role != "tool" for index in range(call_index + 1, output_index)):
+                late += 1
+            normalized.append(output)
+
+    orphaned = len(tool_indexes - used_tool_indexes)
+    return normalized, synthesized, late, orphaned
+
+
 class AgentSessionStore:
     """会话 JSONL 文件的读写入口。
 
@@ -237,9 +301,9 @@ class AgentSessionStore:
     def seal_pending_tool_calls(self, session_id: str) -> int:
         """中断收尾：给没有结果的 tool_call 补写错误回执，返回补写条数。
 
-        保证文件里 assistant 的 tool_calls 与 tool 消息任何时刻都配对完整，
-        resume 直接回喂 API 不需要修复逻辑（Claude Code 是吃到 400 再反应式
-        修复，我们在写入侧一次做对更省事）。
+        正常终态保证文件里的 assistant tool_calls 都有 tool 回执。进程硬退出
+        无法运行本方法，续聊时由 prepare_history 再补；若旧版已经把新 user
+        写在回执前面，build_history 会在模型上下文投影中恢复协议顺序。
 
         只检查最后一条压缩行之后的消息：更早的往返已被压缩挡在上下文之外，
         给死上下文补回执毫无意义。
@@ -256,7 +320,7 @@ class AgentSessionStore:
                     session_id,
                     ChatMessage(
                         role="tool",
-                        content="操作已被中断，工具未执行完成。",
+                        content=_INTERRUPTED_TOOL_RESULT,
                         tool_call_id=tc.id,
                         name=tc.name,
                     ),
@@ -331,8 +395,9 @@ class AgentSessionStore:
     def build_history(self, session_id: str) -> list[ChatMessage]:
         """把会话重建成 LLM 上下文消息列表（resume 喂回模型用）。
 
-        文件里存的就是 API 原样消息，这里只做投影不做转换；system 提示词
-        不入库（随代码版本演进），由 runner 每次运行时重新拼装。
+        文件里保存完整事实轨迹；system 提示词不入库（随代码版本演进），由
+        runner 每次运行时重新拼装。投影到模型上下文时会修复重启窗口产生的
+        迟到/缺失工具回执，避免一条坏顺序让整个会话永久无法续聊。
 
         有压缩行时，从**最后一条**压缩行的替换历史起步、只追加其后的增量
         消息——压缩前的原始消息仍完整留在文件里（回放展示用），但不再进入
@@ -341,11 +406,30 @@ class AgentSessionStore:
         _, entries = self.read(session_id)
         last = _last_compaction_index(entries)
         if last < 0:
-            return [e.message for e in entries if isinstance(e, SessionMessageEntry)]
-        return [
-            *entries[last].replacement_history,
-            *(e.message for e in entries[last + 1 :] if isinstance(e, SessionMessageEntry)),
-        ]
+            messages = [e.message for e in entries if isinstance(e, SessionMessageEntry)]
+        else:
+            messages = [
+                *entries[last].replacement_history,
+                *(e.message for e in entries[last + 1 :] if isinstance(e, SessionMessageEntry)),
+            ]
+        history, synthesized, late, orphaned = _normalize_tool_call_history(messages)
+        if synthesized or late or orphaned:
+            logger.warning(
+                "会话历史工具回执顺序已在模型上下文中修复 "
+                "session=%s 补回执=%d 迟到=%d 孤立=%d",
+                session_id,
+                synthesized,
+                late,
+                orphaned,
+            )
+        return history
+
+    def prepare_history(self, session_id: str) -> list[ChatMessage]:
+        """续聊前补齐尾部未完成调用，再构建协议合法的模型上下文。"""
+        sealed = self.seal_pending_tool_calls(session_id)
+        if sealed:
+            logger.info("续聊前已补齐中断的工具调用 session=%s 数量=%d", session_id, sealed)
+        return self.build_history(session_id)
 
     def summarize(self, session_id: str) -> SessionSummary:
         """扫描单个会话文件生成索引摘要。"""

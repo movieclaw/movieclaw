@@ -171,7 +171,7 @@ async def _accept_user_message(
             raise NotFoundException("Agent 会话不存在")
         if is_running(row):
             raise BadRequestException("该会话已有正在进行的运行，请先停止或等待完成")
-        history = store.build_history(session_id)
+        history = store.prepare_history(session_id)
         _, existing_entries = store.read(session_id)
         entry_count = len(existing_entries)
     else:
@@ -377,6 +377,8 @@ async def compact_session_context(
         raise BadRequestException("该会话正在运行中，请等待完成后再压缩")
 
     llm_router = await acquire_llm_router(session)
+    # 压缩失败时不能提前改写事实轨迹；build_history 会在内存投影中补齐
+    # 缺失回执，只有压缩成功后才由下方 append_compaction 产生持久化写入。
     history = store.build_history(session_id)
     if not history:
         raise BadRequestException("会话没有可压缩的内容")
@@ -455,7 +457,7 @@ async def retry_session_message(
     tools = get_agent_tools(await _cli_env(session_id))
 
     store.discard_from_user_message(session_id, payload.message_id)
-    history = store.build_history(session_id)
+    history = store.prepare_history(session_id)
     _, remaining_entries = store.read(session_id)
     summary = store.summarize(session_id)
     await repo.resync_after_discard(

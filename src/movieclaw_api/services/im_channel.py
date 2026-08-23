@@ -533,8 +533,9 @@ class ImChannelService:
 
         store = get_agent_session_store()
         session_id = await self._ensure_agent_session(msg)
-        history = store.build_history(session_id)
-        recorder = AgentSessionRecorder(store, session_id, entry_count=len(history))
+        history = store.prepare_history(session_id)
+        _, entries = store.read(session_id)
+        recorder = AgentSessionRecorder(store, session_id, entry_count=len(entries))
         await recorder.record_user_message(msg.text)
 
         runner = AgentRunner(
