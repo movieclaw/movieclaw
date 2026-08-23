@@ -238,6 +238,37 @@ pnpm install && pnpm web:dev
 
 可选：需要 AI 助手时在「设置 → AI 模型」填供应商密钥；想让任意来源的下载也自动入库，在「设置 → 监听导入」加一条「源目录 → 目标库」规则。
 
+## 忘记管理员密码了怎么办
+
+在跑着 movieclaw 的机器上执行一条命令即可重置，**不会动任何配置与数据**
+（站点、下载器、媒体库、订阅全部原样保留，只换掉密码）：
+
+```bash
+# Docker 部署（容器名按你 compose 里的实际值改）
+docker exec -it movieclaw python -m movieclaw_api.reset_password
+
+# 源码部署：先 cd 到项目根目录（data/ 的上一级）
+python -m movieclaw_api.reset_password
+```
+
+按提示输入两次新密码就好；连用户名也忘了，就加 `--show` 先看一眼：
+
+```bash
+docker exec -it movieclaw python -m movieclaw_api.reset_password --show
+```
+
+重置后立刻就能用新密码登录，不必重启服务；想让别处已登录的设备一并下线，
+再 `docker restart movieclaw` 一次即可。
+
+> 为什么是命令行、而不是网页上点「忘记密码」？自托管软件没有可信的第三方来
+> 证明"你是账号主人"——没有强制绑定的邮箱/手机，真做邮件找回就得要求每位
+> 部署者先配好 SMTP。所以这里把身份证明换成一件更硬的事：**能访问这台机器的
+> `data/` 目录，就是主人**。这跟加密密钥文件的边界是同一条，Jellyfin、
+> Vaultwarden、Gitea 也都这么做。
+
+家人朋友的**成员**账号忘了密码不用这条命令：管理员在「设置 → 成员管理」里
+点一下重置就行。
+
 ## 技术栈
 
 | 部分 | 技术 |

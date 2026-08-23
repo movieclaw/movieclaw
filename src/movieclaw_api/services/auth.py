@@ -262,11 +262,17 @@ async def authenticate(username: str, password: str) -> AdminAccountSetting | Me
     失败计入该用户名的限速桶，成功清零。无论用户名是否存在都执行一次密码
     哈希校验，避免通过响应时间差探测用户名；错误信息也不区分"用户名不存在
     /密码错误"。
+
+    管理员账号刻意绕过缓存直读数据库：离线重置入口
+    （``python -m movieclaw_api.reset_password``）是另一个进程，改完密码不会
+    通知到本进程的配置缓存——吃缓存的话用户会遇到"明明重置了却登录不上、
+    非得重启服务"的困惑。登录本就是低频操作且已被限速，多一次按主键的
+    SQLite 读取可忽略。
     """
     throttle = _throttle_for(username)
     throttle.ensure_allowed()
 
-    admin = await get_setting_store().get(AdminAccountSetting)
+    admin = await _load_admin_fresh()
     if not admin.password_hash:
         raise BadRequestException("系统尚未初始化，请先完成首次引导创建管理员账号")
 
@@ -316,18 +322,42 @@ async def update_nickname(nickname: str) -> AdminAccountSetting:
 
 
 async def change_password(old_password: str, new_password: str) -> None:
-    """修改管理员密码，并轮换会话签名密钥（所有已登录会话立即失效）。"""
+    """修改管理员密码（校验原密码），并强制全端下线。"""
     admin = await get_setting_store().get(AdminAccountSetting)
     if not admin.password_hash:
         raise BadRequestException("系统尚未初始化，无法修改密码")
     if not _password_hash.verify(old_password, admin.password_hash):
         raise UnauthorizedException("原密码错误")
 
+    await reset_admin_password(new_password)
+    logger.info("管理员密码已修改，所有登录会话与播放器凭据已强制下线")
+
+
+async def reset_admin_password(new_password: str) -> AdminAccountSetting:
+    """**不校验原密码**直接重写管理员密码，并轮换会话签名密钥、吊销播放器凭据。
+
+    ⚠️ 安全红线：本函数是"忘记密码"的最后一道后门，绝不可挂到任何 HTTP 路由上
+    （挂上去等于任何人都能改管理员密码）。它的唯一调用方是离线维护入口
+    ``python -m movieclaw_api.reset_password``——那条路径要求调用者能直接访问
+    ``data/`` 目录，与主密钥文件同一条信任边界：能碰数据目录的人本就能解密全部
+    配置，再多一个改密能力不降低任何安全性。
+
+    只覆写 ``password_hash`` 一个字段，用户名、昵称与其余所有配置域原样保留。
+    """
+    store = get_setting_store()
+    # 绕开缓存取最新账号：离线入口是独立进程，缓存里可能是空的默认实例，
+    # 直接用会把用户名/昵称写没
+    admin = await _load_admin_fresh()
+    if not admin.password_hash:
+        raise BadRequestException("系统尚未初始化，请先在网页上完成首次引导创建管理员账号")
+
     admin.password_hash = _password_hash.hash(new_password)
-    await get_setting_store().set(admin)
+    await store.set(admin)
+    # 轮换签名密钥：已签发的会话令牌全部作废（重置密码的场景下，把可能已被
+    # 他人持有的会话一并踢掉才是正确语义）
     await rotate_session_secret()
     await _drop_admin_jellyfin_devices()
-    logger.info("管理员密码已修改，所有登录会话与播放器凭据已强制下线")
+    return admin
 
 
 async def _drop_admin_jellyfin_devices() -> None:
