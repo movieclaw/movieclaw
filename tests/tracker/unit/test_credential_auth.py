@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import urllib.parse
 from unittest.mock import AsyncMock, MagicMock, PropertyMock
 
 import httpx
@@ -149,6 +150,12 @@ def _make_client(*responses: httpx.Response) -> MagicMock:
     return client
 
 
+def _posted_form(client: MagicMock) -> list[tuple[str, str]]:
+    """解析登录请求中已经编码的表单内容。"""
+    content = client.raw_post.call_args.kwargs["content"]
+    return urllib.parse.parse_qsl(content.decode(), keep_blank_values=True)
+
+
 def _make_provider(**kwargs) -> CredentialAuthProvider:
     """创建已绑定站点上下文的 CredentialAuthProvider。"""
     provider = CredentialAuthProvider(
@@ -194,8 +201,8 @@ async def test_login_success_no_captcha() -> None:
     # 验证 POST 提交了正确的表单数据
     call_kwargs = client.raw_post.call_args
     assert call_kwargs.args[0] == "https://example.com/login.php"
-    assert ("username", "user") in call_kwargs.kwargs["data"]
-    assert ("password", "pass") in call_kwargs.kwargs["data"]
+    assert ("username", "user") in _posted_form(client)
+    assert ("password", "pass") in _posted_form(client)
 
 
 @pytest.mark.asyncio
@@ -217,7 +224,40 @@ async def test_login_posts_to_form_action_and_includes_hidden_fields() -> None:
     assert result.success is True
     assert result.cookies == {"access_token": "jwt-fixture"}
     assert client.raw_post.call_args.args[0] == "https://tjupt.org/takelogin.php"
-    assert ("logout", "7") in client.raw_post.call_args.kwargs["data"]
+    assert ("logout", "7") in _posted_form(client)
+
+
+@pytest.mark.asyncio
+async def test_login_submits_repeated_fields_with_real_http_client() -> None:
+    """真实异步客户端应正确发送重复字段及需转义的账号密码。"""
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "GET":
+            return httpx.Response(200, text=LOGIN_PAGE_WITH_LEADING_SEARCH_FORM)
+        return httpx.Response(200, text=SUCCESS_PAGE, headers={"set-cookie": "sid=ok"})
+
+    from movieclaw_tracker.http import HttpClient
+
+    client = HttpClient(transport=httpx.MockTransport(handler))
+    provider = CredentialAuthProvider(username="user+name", password="p&ss=word")
+    provider.bind(base_url="https://example.com")
+
+    try:
+        result = await provider.authenticate(client)
+    finally:
+        await client.close()
+
+    assert result.success is True
+    assert len(requests) == 2
+    assert requests[1].headers["content-type"].startswith("application/x-www-form-urlencoded")
+    assert urllib.parse.parse_qsl(requests[1].content.decode(), keep_blank_values=True) == [
+        ("token", "first"),
+        ("token", "second"),
+        ("username", "user+name"),
+        ("password", "p&ss=word"),
+    ]
 
 
 @pytest.mark.asyncio
@@ -250,7 +290,7 @@ async def test_login_selects_form_with_configured_credential_fields() -> None:
     await provider.authenticate(client)
 
     assert client.raw_post.call_args.args[0] == "https://example.com/takelogin.php"
-    assert client.raw_post.call_args.kwargs["data"] == [
+    assert _posted_form(client) == [
         ("token", "first"),
         ("token", "second"),
         ("username", "user"),
@@ -320,7 +360,7 @@ async def test_login_success_with_captcha() -> None:
     solver.solve.assert_called_once_with(b"fake-image-bytes")
 
     # 验证表单中包含验证码字段
-    form_data = client.raw_post.call_args.kwargs["data"]
+    form_data = _posted_form(client)
     assert ("imagestring", "x7k9") in form_data
     assert ("imagehash", "abc123") in form_data
 
@@ -469,7 +509,7 @@ async def test_extra_form_data() -> None:
     result = await provider.authenticate(client)
 
     assert result.success is True
-    form_data = client.raw_post.call_args.kwargs["data"]
+    form_data = _posted_form(client)
     assert ("passan", "") in form_data
     assert ("passid", "0") in form_data
     assert ("lang", "0") in form_data
@@ -498,6 +538,6 @@ async def test_select_defaults_only_submit_fields_present_in_form() -> None:
 
     await provider.authenticate(client)
 
-    form_data = client.raw_post.call_args.kwargs["data"]
+    form_data = _posted_form(client)
     assert ("logout", "7") in form_data
     assert not any(key == "missing" for key, _ in form_data)
