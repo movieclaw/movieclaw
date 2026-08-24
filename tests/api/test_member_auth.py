@@ -537,6 +537,10 @@ _MEMBER_ALLOWLIST = {
     # 取流端点不挂登录依赖（<video src> 带不了 header），改用签名 token；
     # 无 token 或 token 不符一律 404，与「不存在」不可区分。
     ("GET", "/api/v1/playback/sessions/{session_id}/index.m3u8"),
+    # master 列表与字幕媒体列表和 index.m3u8 完全同构：同样不挂登录依赖
+    # （iOS 原生 HLS 的请求也带不了 header），同样用签名 token 校验归属。
+    ("GET", "/api/v1/playback/sessions/{session_id}/master.m3u8"),
+    ("GET", "/api/v1/playback/sessions/{session_id}/sub{index}.m3u8"),
     ("GET", "/api/v1/playback/sessions/{session_id}/{name}"),
     ("GET", "/api/v1/playback/files/{file_id}/stream"),
     ("GET", "/api/v1/playback/files/{file_id}/subtitles"),
@@ -600,6 +604,8 @@ _PATH_DUMMIES = {
     "{notice_id}": "1",
     "{run_id}": "test-run",
     "{session_id}": "test-session",
+    # 字幕媒体列表的路径参数嵌在文件名里（.../sub{index}.m3u8）
+    "{index}": "0",
     "{day}": "2026-01-01",
     "{path}": "1/poster.jpg",
     "{challenge_id}": "test-challenge",
