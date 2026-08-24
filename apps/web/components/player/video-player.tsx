@@ -1471,27 +1471,11 @@ export function VideoPlayer(props: VideoPlayerProps) {
           ) : null}
         </div>
 
-        {/* 暂停海报：Netflix 在暂停时把片名大字压在画面上，同时压暗背景，
-            一眼知道「停在哪部片」。不拦指针——点画面仍然是继续播放。 */}
+        {/* 暂停压暗层：整屏 45% 黑，一眼知道「现在是停着的」。片名大字不在
+            这里——它长在下面控制条那个布局流里（见 bottom 容器），跟时间行
+            排队而不是各自绝对定位再拿 padding 去猜对方的高度。 */}
         {showPauseOverlay ? (
-          // 文字块靠左下、落在控制条正上方（Disney+ / Apple TV+ 同款位置）：
-          // 垂直中央是中央播放簇的地盘，大标题放中央会跟按钮叠在一起，窄屏
-          // 尤其糟。左上也不行——顶栏本来就有片名，会变成两行重复。
-          // 矮屏（手机横屏）底部这点空间也会顶到中央簇，直接藏大字，
-          // 片名看顶栏。
-          <div className="pointer-events-none absolute inset-0 z-10 flex items-end bg-black/45 px-16 pb-48 transition-opacity duration-300 max-md:px-6 max-md:pb-44">
-            <div className="min-w-0 [@media(max-height:480px)]:hidden">
-              <p className="text-[12px] uppercase tracking-[0.3em] text-white/55">已暂停</p>
-              <h2 className="mt-2 truncate text-[32px] font-bold leading-tight text-white drop-shadow-lg max-md:text-[22px]">
-                {title}
-              </h2>
-              {episodeLabel ? (
-                <p className="mt-1 truncate text-[16px] text-white/70 max-md:text-[13px]">
-                  {episodeLabel}
-                </p>
-              ) : null}
-            </div>
-          </div>
+          <div className="pointer-events-none absolute inset-0 z-10 bg-black/45 transition-opacity duration-300" />
         ) : null}
 
         {busy ? (
@@ -1592,6 +1576,25 @@ export function VideoPlayer(props: VideoPlayerProps) {
             也拦命中，退十秒会看得见按不动。可点元素在 PlayerControls 里各自
             开回 auto。 */}
         <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20">
+          {/* 暂停片名：Netflix 式大字，靠左下、落在控制条正上方（Disney+ /
+              Apple TV+ 同款位置）：垂直中央是播放簇的地盘，左上顶栏已有片名。
+              放进控制条的布局流而不是绝对定位 + 猜高度的 padding——控制条在
+              手机上比桌面高一截，猜出来的数字压上时间药丸（真机截图证实），
+              而且以后控制条每改一次布局都要重猜。排队永远不重叠。
+              矮屏（手机横屏）底部这点空间会顶到中央簇，直接藏大字。 */}
+          {showPauseOverlay && title ? (
+            <div className="player-inset-x min-w-0 [@media(max-height:480px)]:hidden">
+              <p className="text-[12px] uppercase tracking-[0.3em] text-white/55">已暂停</p>
+              <h2 className="mt-2 truncate text-[32px] font-bold leading-tight text-white drop-shadow-lg max-md:text-[22px]">
+                {title}
+              </h2>
+              {episodeLabel ? (
+                <p className="mt-1 truncate text-[16px] text-white/70 max-md:text-[13px]">
+                  {episodeLabel}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
           <PlayerControls
             positionMs={positionMs}
             durationMs={durationMs}
