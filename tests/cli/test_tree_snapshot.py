@@ -46,7 +46,7 @@ KNOWN_NON_GENERATED = {
     "playback.session.segment",
     # VOD（§12）：master 列表与字幕子列表都是播放器取流端点，CLI 不生成
     "playback.session.master",
-    "playback.session.subtitle_playlist",
+    "playback.session.subtitle-playlist",
     "playback.file.stream",
     "playback.file.subtitle",
     "playback.file.fonts",

@@ -570,7 +570,7 @@ async def get_session_master_playlist(
 @router.get(
     "/sessions/{session_id}/sub{index}.m3u8",
     summary="字幕媒体列表",
-    operation_id="playback.session.subtitle_playlist",
+    operation_id="playback.session.subtitle-playlist",
     openapi_extra={"x-cli-hidden": True},
 )
 async def get_session_subtitle_playlist(
