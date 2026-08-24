@@ -1,6 +1,7 @@
 import { publicEnv } from "@/lib/env";
 import type { TrickplayIndex } from "@/lib/player/trickplay";
 import { HttpError, request, resolveRequestUrl } from "@/lib/http";
+import type { LibraryEpisode } from "@/lib/api/libraries";
 import type { MediaType } from "@/lib/media-types";
 
 /**
@@ -276,6 +277,9 @@ export interface PlaybackSession {
   subtitle_urls: string[];
   /** 实际使用的硬件加速后端；null = 纯软件（直通档不经编码器，同样为 null） */
   hw_backend: string | null;
+  /** 本单元的观看状态快照（§6.10）。续播点已由服务端并入 start_ms，这里
+   * 整份带回给前端预填时间轴、恢复字幕记忆——起播不再单独问 /resume */
+  watch: PlaybackWatchState | null;
 }
 
 interface DecideBody extends PlaybackUnit {
@@ -376,6 +380,35 @@ export interface PlaybackWatchState {
   duration_ms: number | null;
   audio_track: string | null;
   subtitle_track: string | null;
+}
+
+/** 播放页要的条目信息（§6.10）：路由只带 media_item_id，库归属服务端解析。 */
+export interface PlaybackItemInfo {
+  media_item_id: number;
+  /** 该条目对当前成员可见的库 id；退出播放跳回条目页用 */
+  library_id: number;
+  kind: "movie" | "tv";
+  title: string;
+  year: number | null;
+  poster_url: string | null;
+}
+
+export async function getPlaybackItem(mediaItemId: number): Promise<PlaybackItemInfo> {
+  const response = await request<ApiEnvelope<PlaybackItemInfo>>(
+    `/playback/items/${mediaItemId}`,
+  );
+  return response.data;
+}
+
+/** 播放页一季的分集清单（切集/上一集下一集数据源），形状与库详情页同构。 */
+export async function getPlaybackItemEpisodes(
+  mediaItemId: number,
+  seasonNumber: number,
+): Promise<{ season_number: number; episodes: LibraryEpisode[] }> {
+  const response = await request<
+    ApiEnvelope<{ season_number: number; episodes: LibraryEpisode[] }>
+  >(`/playback/items/${mediaItemId}/episodes?season_number=${seasonNumber}`);
+  return response.data;
 }
 
 /** 起播前问「上次看到哪、用的哪条轨」。从未播过返回全零，不是错误。 */

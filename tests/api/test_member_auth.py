@@ -526,6 +526,9 @@ _MEMBER_ALLOWLIST = {
     ("GET", "/api/v1/libraries/{library_id}/items/{media_item_id}/episodes"),
     # 最近观看是按成员隔离的个人播放数据，并继续受媒体库白名单过滤。
     ("GET", "/api/v1/playback/recent"),
+    # 播放页条目信息/分集清单：按可见库解析归属，不可见与不存在同样 404
+    ("GET", "/api/v1/playback/items/{media_item_id}"),
+    ("GET", "/api/v1/playback/items/{media_item_id}/episodes"),
     # 播放决策：成员当然要能放片。结果按请求里的可见库过滤，
     # 不可见库的文件一律 404；软件转码开关是全局设置，成员只会拿到
     # can_self_enable=false 的说明，改不了配置。

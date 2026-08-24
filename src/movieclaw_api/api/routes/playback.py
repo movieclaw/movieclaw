@@ -25,6 +25,7 @@ from movieclaw_api.schemas.playback import (
     PlaybackDecideRequest,
     PlaybackDecisionView,
     PlaybackFontsView,
+    PlaybackItemView,
     PlaybackMetricPayload,
     PlaybackPolicyPayload,
     PlaybackPolicyView,
@@ -77,8 +78,14 @@ from movieclaw_api.services.playback_activity import media_activity_overview, re
 from movieclaw_api.services.playback_recent import recent_watch_items
 from movieclaw_api.settings import PlaybackPolicySetting
 from movieclaw_api.settings.store import get_setting_store
+from movieclaw_api.core.config import get_settings
+from movieclaw_api.schemas.library import EpisodeView, SeasonEpisodesView
+from movieclaw_api.services import media_scrape
+from movieclaw_api.services.library.items import build_season_episodes
 from movieclaw_db.engine import get_session
-from movieclaw_db.models import LibraryFile, PlaybackMetric
+from movieclaw_db.models import LibraryFile, MediaItem, PlaybackMetric
+from movieclaw_db.repositories.media_repo import MediaItemRepository
+from sqlmodel import select
 from movieclaw_playback import state as playback_state
 from movieclaw_playback.decide import PlaybackTier as Tier
 from movieclaw_playback.streaming import (
@@ -316,15 +323,47 @@ async def start_playback_session(
 
     档 0 不起会话，直接给原文件的签名直出地址；档 1–4 起 ffmpeg 会话，
     playlist 一出现就返回——分片按需生成，客户端边拉边转。
+
+    观看状态在这里一并解析（§6.10）：``start_ms`` 缺省时用续播点（看完的
+    从头播）、``audio_track`` 缺省时用上次听的那条轨，整份状态随响应带回。
+    起播链路因此不用先问一次 ``/resume``——省一个串行往返，分享出去的链接
+    也天然「各看各的进度」。
     """
+    member_id = principal.member_id if principal.member_id is not None else 0
+    watch_row = None
+    watch_view: PlaybackStateView | None = None
+    if payload.media_item_id is not None:
+        unit = (payload.media_item_id, payload.season_number, payload.episode_number)
+        states = await playback_state.get_states(
+            session, [payload.media_item_id], member_id=member_id
+        )
+        watch_row = states.get(unit)
+        watch_view = PlaybackStateView(
+            position_ms=watch_row.position_ms if watch_row else 0,
+            played=watch_row.played if watch_row else False,
+            play_count=watch_row.play_count if watch_row else 0,
+            duration_ms=await playback_state.unit_runtime_ms(session, unit),
+            audio_track=watch_row.audio_track if watch_row else None,
+            subtitle_track=watch_row.subtitle_track if watch_row else None,
+        )
+        if payload.audio_track is None and watch_row and watch_row.audio_track:
+            # 上次听的哪条轨接着用。轨在这次选中的文件里不存在时 decide 会
+            # 自动回退默认轨（换版本文件轨序会变，这是既有覆盖）。
+            payload = payload.model_copy(update={"audio_track": watch_row.audio_track})
+    resolved_start_ms = payload.start_ms
+    if resolved_start_ms is None:
+        # 看完的重播从头开始——续播到最后三十秒等于点开就是片尾
+        resolved_start_ms = (
+            0 if (watch_row is None or watch_row.played) else watch_row.position_ms
+        )
+
     decision = await _decide(payload, principal, session)
     if decision is None:
         raise NotFoundException("没有找到可播放的文件")
     view = playback_plan.to_view(decision)
     if view.outcome != "plan":
-        return ok(PlaybackSessionView(decision=view))
+        return ok(PlaybackSessionView(decision=view, watch=watch_view))
 
-    member_id = principal.member_id if principal.member_id is not None else 0
     file = await session.get(LibraryFile, view.file_id)
     if file is None:
         raise NotFoundException("文件已不在台账中")
@@ -346,7 +385,10 @@ async def start_playback_session(
             PlaybackSessionView(
                 decision=view,
                 stream_url=f"/api/v1/playback/files/{file.id}/stream?token={token}",
+                # 直出没有会话时间轴，续播位置由前端 seek 到 watch.position_ms
+                start_ms=resolved_start_ms,
                 subtitle_urls=subtitle_urls,
+                watch=watch_view,
             )
         )
 
@@ -373,7 +415,7 @@ async def start_playback_session(
                 segment_plan = compute_segment_plan(
                     index.times_s, duration_s, target_s=SEGMENT_SECONDS
                 )
-    start_ms = payload.start_ms
+    start_ms = resolved_start_ms
     if segment_plan is None and start_ms > 0 and view.video and view.video.action == "copy":
         # 旧模式的关键帧校正（VOD 下不需要：start() 自己对齐到分片边界）
         keyframe_s = await asyncio.to_thread(
@@ -415,12 +457,13 @@ async def start_playback_session(
                 if segment_plan is not None
                 else None
             ),
-            # VOD：时间轴是文件绝对时间，start_ms 只是建议起播位置（用户
-            # 请求的原值，不必对齐边界——播放器 seek 到毫秒都行）
-            start_ms=payload.start_ms if segment_plan is not None else start_ms,
+            # VOD：时间轴是文件绝对时间，start_ms 只是建议起播位置（解析后
+            # 的原值，不必对齐边界——播放器 seek 到毫秒都行）
+            start_ms=resolved_start_ms if segment_plan is not None else start_ms,
             timeline="file" if segment_plan is not None else "session",
             subtitle_urls=subtitle_urls,
             hw_backend=hw_used,
+            watch=watch_view,
         )
     )
 
@@ -843,6 +886,136 @@ async def get_playback_resume(
             duration_ms=await playback_state.unit_runtime_ms(session, unit),
             audio_track=row.audio_track if row else None,
             subtitle_track=row.subtitle_track if row else None,
+        )
+    )
+
+
+# ---------------------------------------------------------------------------
+# 网页播放器：播放页条目信息（§6.10 路由只带 media_item_id）
+# ---------------------------------------------------------------------------
+
+
+async def _visible_item(
+    session: AsyncSession, principal: Principal, media_item_id: int
+) -> tuple[MediaItem, int]:
+    """条目 + 它对当前成员可见的库 id。
+
+    播放路由只带 ``media_item_id``（比库自增 id 稳定，§6.10），库归属在这里
+    按可见性解析：取该条目**有台账行落在可见库里**的最小库 id。不可见与不存
+    在同样 404——与决策接口同一判据。
+    """
+    item = await session.get(MediaItem, media_item_id)
+    if item is None:
+        raise NotFoundException("媒体条目不存在（可能已被删除）")
+    visible = await visible_library_ids(session, principal)
+    library_ids = sorted(
+        {
+            lid
+            for lid in (
+                await session.execute(
+                    select(LibraryFile.library_id).where(
+                        LibraryFile.media_item_id == media_item_id,
+                        LibraryFile.library_id.is_not(None),  # type: ignore[union-attr]
+                    )
+                )
+            )
+            .scalars()
+            .all()
+            if lid is not None and (visible is None or lid in visible)
+        }
+    )
+    if not library_ids:
+        raise NotFoundException("没有找到可播放的文件")
+    return item, library_ids[0]
+
+
+@router.get(
+    "/items/{media_item_id}",
+    response_model=ApiResponse[PlaybackItemView],
+    summary="播放页条目信息（标题/海报/库归属）",
+    operation_id="playback.item.info",
+    openapi_extra={"x-cli-hidden": True},
+)
+async def get_playback_item(
+    media_item_id: Annotated[int, Path()],
+    principal: Principal = Depends(require_login),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[PlaybackItemView]:
+    """播放器要的条目信息，刻意只给几样：标题给顶栏、海报给起播占位、
+    library_id 给「退出播放跳回条目页」。不复用条目详情大接口——那份要装配
+    NFO/演职员/逐文件规格，播放页用不上还拖慢并行加载。"""
+    item, library_id = await _visible_item(session, principal, media_item_id)
+    # 海报两层：本地刮削资产（带 mtime 版本戳绕缓存）> TMDB 图床。条目目录
+    # 美术图那层不查——它需要装配整个详情 bundle，这里只是起播前的占位画面
+    meta_row = await MediaItemRepository(session).get_metadata(media_item_id)
+    if meta_row is not None and meta_row.poster_file:
+        version = media_scrape.asset_version(meta_row.poster_file)
+        poster_url = f"/images/assets/{meta_row.poster_file}?v={version}"
+    elif item.poster_path:
+        base = get_settings().tmdb_image_base_url.rstrip("/")
+        poster_url = f"{base}/w500{item.poster_path}"
+    else:
+        poster_url = None
+    return ok(
+        PlaybackItemView(
+            media_item_id=item.id,
+            library_id=library_id,
+            kind=item.kind,
+            title=item.title,
+            year=item.year,
+            poster_url=poster_url,
+        )
+    )
+
+
+@router.get(
+    "/items/{media_item_id}/episodes",
+    response_model=ApiResponse[SeasonEpisodesView],
+    summary="播放页一季的分集清单（切集/上一集下一集数据源）",
+    operation_id="playback.item.episodes",
+    openapi_extra={"x-cli-hidden": True},
+)
+async def get_playback_item_episodes(
+    media_item_id: Annotated[int, Path()],
+    season_number: Annotated[int, Query(ge=0, description="季号（0=特别篇）")],
+    principal: Principal = Depends(require_login),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[SeasonEpisodesView]:
+    """与库详情页的分集接口同一装配器（并集"元数据的集 ∪ 库里实有的集"），
+    只是按 media_item_id 定位、库归属服务端解析——播放页不再依赖库 id。"""
+    item, library_id = await _visible_item(session, principal, media_item_id)
+    rows = list(
+        (
+            await session.execute(
+                select(LibraryFile)
+                .where(
+                    LibraryFile.library_id == library_id,
+                    LibraryFile.media_item_id == media_item_id,
+                )
+                .order_by(
+                    LibraryFile.season_number, LibraryFile.episode_number, LibraryFile.id
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    episodes = await build_season_episodes(session, item, rows, season_number)
+    return ok(
+        SeasonEpisodesView(
+            season_number=season_number,
+            episodes=[
+                EpisodeView(
+                    episode_number=e.episode_number,
+                    name=e.name,
+                    overview=e.overview,
+                    air_date=e.air_date,
+                    still_url=e.still_url,
+                    owned=e.owned,
+                    file_ids=e.file_ids,
+                )
+                for e in episodes
+            ],
         )
     )
 

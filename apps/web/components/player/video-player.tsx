@@ -13,7 +13,6 @@ import {
   type ClientCapability,
   type PlaybackUnit,
   type PlaybackWatchState,
-  fetchResumeState,
   pingPlaybackSession,
   reportPlaybackProgress,
   reportPlaybackProgressOnUnload,
@@ -29,7 +28,7 @@ import {
 import { type AutoplayOutcome, attemptAutoplay, shouldAttemptAutoplay } from "@/lib/player/autoplay";
 import { getCapabilitySnapshot } from "@/lib/player/capability";
 import type { PlaybackEngine } from "@/lib/player/engine";
-import { createEngine } from "@/lib/player/engine";
+import { createEngine, preloadHlsEngine } from "@/lib/player/engine";
 import {
   awaitsUserDecision,
   initialPlayerState,
@@ -83,10 +82,17 @@ import { isInEndCredits, planSeek, toFileMs, toSessionSeconds } from "@/lib/play
 
 export interface VideoPlayerProps {
   unit: PlaybackUnit;
-  title: string;
+  /** 片名。条目信息与起播并行加载（§6.10），晚到时先空着 */
+  title: string | null;
   /** 副标题：剧集显示「S01E05 · 集名」，电影为 null */
   episodeLabel: string | null;
   posterUrl: string | null;
+  /**
+   * 分享链接的 `?t=` 起播覆盖（毫秒）。只对**进入播放页的第一个单元**生效
+   * ——切下一集之后回到「服务端按各自观看状态定」的默认语义。
+   * undefined = 不覆盖：start_ms 不发，服务端接续播点（看完的从头播）。
+   */
+  startMsOverride?: number;
   /** 下一集；没有（电影 / 本季最后一集）为 null */
   next: { unit: PlaybackUnit; label: string } | null;
   /** 上一集；没有（电影 / 本季第一集）为 null */
@@ -128,8 +134,18 @@ function unitKeyOf(unit: PlaybackUnit): string {
 }
 
 export function VideoPlayer(props: VideoPlayerProps) {
-  const { unit, title, episodeLabel, posterUrl, next, prev, onPlayNext, onPlayPrev, onExit } =
-    props;
+  const {
+    unit,
+    title,
+    episodeLabel,
+    posterUrl,
+    startMsOverride,
+    next,
+    prev,
+    onPlayNext,
+    onPlayPrev,
+    onExit,
+  } = props;
   const unitKey = unitKeyOf(unit);
 
   const [state, dispatch] = useReducer(playerReducer, initialPlayerState);
@@ -328,9 +344,16 @@ export function VideoPlayer(props: VideoPlayerProps) {
   // 起播链路
   // ---------------------------------------------------------------------
 
-  /** 切集 / 首次进入：先问续播点，再发起决策。 */
+  /** `?t=` 起播覆盖只吃一次：切集之后回到「各自的续播点」默认语义。 */
+  const overrideConsumedRef = useRef(false);
+
+  // hls.js 热身与会话请求并行，别等会话回来才开始下载（§6.10）
   useEffect(() => {
-    let cancelled = false;
+    preloadHlsEngine();
+  }, []);
+
+  /** 切集 / 首次进入：直接发起决策，续播点由服务端并入会话响应（§6.10）。 */
+  useEffect(() => {
     startedKeyRef.current = null;
     reportedStartRef.current = null;
     setPositionMs(0);
@@ -351,29 +374,14 @@ export function VideoPlayer(props: VideoPlayerProps) {
     setAutoplay(null);
     dispatch({ type: "reset" });
 
-    fetchResumeState(unit)
-      .then((watched) => {
-        if (cancelled) return;
-        setResume(watched);
-        // 上次听的哪条轨直接带给服务端。不在前端验它还在不在这个文件里——
-        // 换版本文件轨序会变，服务端认不出会自动回退（decide.py 有覆盖）。
-        setRequestedAudio(watched.audio_track);
-        // 已看完的重播从头开始——续播到最后三十秒等于点开就是片尾
-        const startMs = watched.played ? 0 : watched.position_ms;
-        // 时间显示预填续播点：不填的话起播那几秒进度条停在 00:00，等首个
-        // timeupdate 才跳到真实位置，看起来像「时间没加载出来」
-        setPositionMs(startMs);
-        dispatch({ type: "request", startMs });
-      })
-      .catch(() => {
-        if (cancelled) return;
-        dispatch({ type: "request", startMs: 0 });
-      });
-
-    return () => {
-      cancelled = true;
-    };
-    // unit 是对象字面量，按内容比较
+    // `?t=` 只覆盖进入播放页的第一个单元；其余一律 null = 服务端按观看状态
+    // 定起点（看完的从头播）。以前这里要先问一次 /resume 再发决策——两跳
+    // 串行是首帧延迟的白等大头，现在续播点由会话响应一并带回。
+    const override = overrideConsumedRef.current ? undefined : startMsOverride;
+    overrideConsumedRef.current = true;
+    if (override !== undefined) setPositionMs(override);
+    dispatch({ type: "request", startMs: override ?? null });
+    // unit 是对象字面量，按内容比较；startMsOverride 只在首个单元消费
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [unitKey]);
 
@@ -390,7 +398,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
     void (async () => {
       try {
         if (!capabilityRef.current) capabilityRef.current = await getCapabilitySnapshot();
-        pendingFileMsRef.current = state.startMs;
+        pendingFileMsRef.current = state.startMs ?? 0;
         // 首帧从"用户要求播放"这一刻算起，而不是从会话就位算起——
         // 决策与起会话的耗时正是首帧延迟的大头
         qoe({ type: "play-requested", at: performance.now() });
@@ -398,11 +406,20 @@ export function VideoPlayer(props: VideoPlayerProps) {
           ...unit,
           capability: capabilityRef.current,
           failed_tiers: state.failedTiers,
-          start_ms: state.startMs,
+          // null = 服务端接续播点；显式值（seek 重开 / 换轨 / ?t=）原样发
+          start_ms: state.startMs ?? undefined,
           max_height: quality ?? undefined,
           audio_track: requestedAudio ?? undefined,
         });
         if (cancelled) return;
+        if (state.startMs === null) {
+          // 起点是服务端定的（续播点）：seek 目标与时间轴预填都跟上，
+          // 不填的话起播那几秒进度条停在 00:00，看起来像「时间没加载出来」
+          pendingFileMsRef.current = session.start_ms;
+          setPositionMs(session.start_ms);
+        }
+        // 观看状态随响应带回：时间轴兜底片长、字幕记忆轨都从这里来
+        if (session.watch) setResume(session.watch);
         dispatch({ type: "session", session });
       } catch (error) {
         if (cancelled) return;
@@ -1160,9 +1177,12 @@ export function VideoPlayer(props: VideoPlayerProps) {
   useEffect(() => {
     const mediaSession = navigator.mediaSession;
     if (!mediaSession) return;
+    // 片名与起播并行加载（§6.10），晚到的那几百毫秒先用占位——锁屏卡片
+    // 会在下一次 effect 里拿到真名
+    const shownTitle = title ?? "正在播放";
     mediaSession.metadata = new MediaMetadata({
-      title: episodeLabel ? `${title} · ${episodeLabel}` : title,
-      artist: episodeLabel ? title : undefined,
+      title: episodeLabel ? `${shownTitle} · ${episodeLabel}` : shownTitle,
+      artist: episodeLabel ? shownTitle : undefined,
       artwork: posterUrl ? [{ src: posterUrl, sizes: "512x512" }] : undefined,
     });
     mediaSession.setActionHandler("play", () => togglePlay());

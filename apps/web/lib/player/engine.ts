@@ -297,6 +297,17 @@ class HlsEngine implements PlaybackEngine {
  * 一次，屏幕周期性闪黑。hls.js 从头播、缓冲目标由我们配置管，没这个问题。
  * 当年选原生的理由（iOS 系统全屏强制系统控件）已被 CSS 伪横屏替代。
  */
+/**
+ * 起播热身：把 hls.js 的动态包在**会话请求在途时**就开始下载解析（§6.10）。
+ * 不热身的话 import 要等会话响应回来才发起，弱网上白排一跳。原生 HLS 路径
+ * （iOS Safari 没有 MediaSource）用不上它，不下。
+ */
+export function preloadHlsEngine(): void {
+  if (typeof window === "undefined") return;
+  if (typeof window.MediaSource === "undefined") return;
+  void import("hls.js").catch(() => undefined);
+}
+
 export function createEngine(options: EngineOptions): PlaybackEngine {
   if (options.container !== "hls-fmp4") return new DirectEngine(options, "direct");
   // iOS 回归系统原生 HLS（AVPlayer）：字幕组由系统在任何表面（内联/全屏/

@@ -25,6 +25,7 @@ import {
 import { useConfirm, useToast } from "@/components/feedback";
 import { Modal } from "@/components/modal";
 import { PosterImage } from "@/components/poster-image";
+import { playHref, rememberPlayerReturnPath } from "@/lib/player/play-links";
 import { ReidentifyDialog } from "@/components/reidentify-dialog";
 import { Tooltip } from "@/components/tooltip";
 import {
@@ -125,6 +126,13 @@ export function LibraryItemDetailView({
   // 拍板后不立刻重拉详情——文件全改挂走时本页会 404 翻成兜底态、把弹窗
   // 连同"✓ 已改挂为《X》"的回执一起卸掉，分裂成多组时更是没法接着处理
   // 剩下的组。改成记一个脏标记，关窗时再刷新
+  // 播放键是 button 而不是 <Link>，Next 不会自动预取 /play 的路由包与 RSC
+  // 载荷；条目一加载完成就预取，点播放时整整省掉一跳（§6.10 起播链路）。
+  // 预取电影形态的地址即可：剧集地址只是多一段路径，JS 包完全相同。
+  useEffect(() => {
+    if (detail) router.prefetch(playHref(detail.media_item_id) as Route);
+  }, [router, detail]);
+
   const [reidentifyOpen, setReidentifyOpen] = useState(false);
   const [reidentifyDirty, setReidentifyDirty] = useState(false);
   // 元数据刷新的失败提示（原先与重识别共用一条横幅）
@@ -548,17 +556,22 @@ export function LibraryItemDetailView({
             <PlayAction
               watched={watched}
               onPlay={() => {
-                const query = new URLSearchParams();
-                if (!isMovie && selectedSeriesEpisode) {
-                  query.set("season", String(selectedSeriesEpisode.seasonNumber));
-                  query.set("episode", String(selectedSeriesEpisode.episode.episode_number));
-                }
-                // 退出播放要回到用户离开的这一屏（含季集查询参数）。这里
-                // 读 location 而不是 useSearchParams()：后者会把整页拖进
-                // 「必须包 Suspense」的预渲染约束，而点击时一定在浏览器里。
-                query.set("returnTo", window.location.pathname + window.location.search);
+                // 退出播放要回到用户离开的这一屏（含季集查询参数）。导航
+                // 状态不进播放页地址（§6.10 地址就是分享凭证），走
+                // sessionStorage。读 location 而不是 useSearchParams()：
+                // 后者会把整页拖进「必须包 Suspense」的预渲染约束。
+                rememberPlayerReturnPath(window.location.pathname + window.location.search);
                 router.push(
-                  `/play/${libraryId}/${detail.media_item_id}?${query}` as Route,
+                  playHref(detail.media_item_id, {
+                    season:
+                      !isMovie && selectedSeriesEpisode
+                        ? selectedSeriesEpisode.seasonNumber
+                        : undefined,
+                    episode:
+                      !isMovie && selectedSeriesEpisode
+                        ? selectedSeriesEpisode.episode.episode_number
+                        : undefined,
+                  }) as Route,
                 );
               }}
             />

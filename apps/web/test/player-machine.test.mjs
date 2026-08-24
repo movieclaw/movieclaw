@@ -263,3 +263,22 @@ test("片长未知时给占位而不是 NaN", () => {
   assert.equal(formatClock(Number.NaN), "--:--");
   assert.equal(formatClock(-1), "--:--");
 });
+
+test("startMs 为 null（服务端定起点）时，会话响应的 start_ms 落回状态", () => {
+  const state = run([
+    { type: "request", startMs: null },
+    { type: "session", session: planSession(1, 120_000) },
+  ]);
+  assert.equal(state.startMs, 120_000);
+  assert.equal(state.phase, "buffering");
+});
+
+test("null 起点只存在于首次请求在途期间：降档重来带的是解析后的位置", () => {
+  const state = run([
+    { type: "request", startMs: null },
+    { type: "session", session: planSession(1, 120_000) },
+    { type: "failed", reason: "测试失败" },
+  ]);
+  assert.equal(state.phase, "degrading");
+  assert.equal(state.startMs, 120_000); // 不能又变回 null 从头放
+});

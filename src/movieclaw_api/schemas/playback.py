@@ -270,6 +270,19 @@ class PlaybackDecisionView(BaseModel):
     suggestion: str | None = None
 
 
+class PlaybackStateView(BaseModel):
+    """一个播放单元在当前成员名下的观看状态。续播与上报共用同一形状。"""
+
+    position_ms: int
+    played: bool
+    play_count: int
+    #: 服务端算出的片长（在位文件实测 > 分集刮削 > 条目刮削）；都没有为 None。
+    #: 客户端拿它画进度条兜底，但**已看判定的分母始终以服务端为准**。
+    duration_ms: int | None = None
+    audio_track: str | None = None
+    subtitle_track: str | None = None
+
+
 class PlaybackSessionView(BaseModel):
     """开会话的结果。
 
@@ -301,13 +314,37 @@ class PlaybackSessionView(BaseModel):
     #: None = 纯软件。诊断面板要靠它回答「到底有没有走显卡」——用户报「转码
     #: 很卡」时，这一项与「有没有装对驱动」是同一个问题的两面（§6.5）。
     hw_backend: str | None = None
+    #: 本单元的观看状态快照。续播点已按它并入 ``start_ms``，这里整份带回是
+    #: 给前端**预填时间轴与恢复字幕记忆**用的——省掉起播链路里「先问 /resume
+    #: 再开会话」的一次串行往返（§6.10）。file_id 直连（无播放单元）时为 None。
+    watch: PlaybackStateView | None = None
 
 
 class PlaybackSessionRequest(PlaybackDecideRequest):
     """开会话请求：在决策请求上多一个起播位置。"""
 
-    #: 从文件的哪个位置开始。会话时间轴恒从 0 起，客户端用它换算回文件时间。
-    start_ms: int = 0
+    #: 从文件的哪个位置开始。**None = 服务端按观看状态定**：看完的从头播，
+    #: 没看完的接续播点——分享出去的链接因此天然「各看各的进度」。显式给值
+    #: （含 0）原样照办：seek 重开、「从头开始」都走这条路。
+    start_ms: int | None = None
+
+
+class PlaybackItemView(BaseModel):
+    """播放页要的条目信息，只有播放器用得上的那几样。
+
+    播放路由只带 ``media_item_id``——它以 ``(kind, tmdb_id)`` 为锚、幂等复用，
+    比库自增 id 稳定得多，分享出去的地址不会因删库重建而失效（§6.10）。库归
+    属由服务端按成员可见性解析，前端只在「退出播放跳回条目页」时用到它。
+    """
+
+    media_item_id: int
+    library_id: int
+    #: movie / tv
+    kind: str
+    title: str
+    year: int | None = None
+    #: 海报（本地刮削资产优先、TMDB 兜底），起播前的占位画面用
+    poster_url: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -333,17 +370,7 @@ class PlaybackProgressRequest(BaseModel):
     subtitle_track: str | None = None
 
 
-class PlaybackStateView(BaseModel):
-    """一个播放单元在当前成员名下的观看状态。续播与上报共用同一形状。"""
-
-    position_ms: int
-    played: bool
-    play_count: int
-    #: 服务端算出的片长（在位文件实测 > 分集刮削 > 条目刮削）；都没有为 None。
-    #: 客户端拿它画进度条兜底，但**已看判定的分母始终以服务端为准**。
-    duration_ms: int | None = None
-    audio_track: str | None = None
-    subtitle_track: str | None = None
+# PlaybackStateView 定义在会话模型之前（PlaybackSessionView.watch 引用它）。
 
 
 # ---------------------------------------------------------------------------

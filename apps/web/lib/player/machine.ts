@@ -60,8 +60,10 @@ export interface PlayerState {
   failedTiers: number[];
   /** 同一文件连续失败次数 */
   failureCount: number;
-  /** 起播位置（文件时间，毫秒）。降档重来要落回同一位置，不能从头放。 */
-  startMs: number;
+  /** 起播位置（文件时间，毫秒）。降档重来要落回同一位置，不能从头放。
+   *  **null = 交给服务端按观看状态定**（§6.10 续播并入开会话）；会话响应
+   *  回来后被解析出的实际起点覆盖，null 只存在于首次请求在途期间。 */
+  startMs: number | null;
   /**
    * 起播尝试序号：每次「用户要求重来」（错误页点重试、同意弹窗点继续）都 +1。
    *
@@ -87,8 +89,9 @@ export const initialPlayerState: PlayerState = {
 };
 
 export type PlayerEvent =
-  /** 用户点了播放 / 切了集：从头走决策流程，清掉上一轮的失败记录 */
-  | { type: "request"; startMs: number }
+  /** 用户点了播放 / 切了集：从头走决策流程，清掉上一轮的失败记录。
+   *  startMs 为 null = 起点交给服务端（续播点；看完的从头播） */
+  | { type: "request"; startMs: number | null }
   /** 决策 + 开会话回来了（三态都走这一条，由 decision.outcome 分流） */
   | { type: "session"; session: PlaybackSession }
   /** 用户在同意弹窗里点了「继续」：重新决策，这次服务端会给出软转计划 */

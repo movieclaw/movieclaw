@@ -39,6 +39,10 @@ KNOWN_NON_GENERATED = {
     # 网页播放器：入参是浏览器实测的解码能力快照，取流靠签名 URL 直喂
     # <video>/hls.js，CLI 无从构造也无从消费
     "playback.decide",
+    # 播放页条目信息/分集清单（§6.10 路由只带 media_item_id）：纯播放器 UI
+    # 数据源，条目查询 CLI 走 library.items.get 那套
+    "playback.item.info",
+    "playback.item.episodes",
     "playback.session.start",
     "playback.session.ping",
     "playback.session.stop",

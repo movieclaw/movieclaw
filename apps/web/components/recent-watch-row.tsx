@@ -7,6 +7,7 @@ import { HScroller } from "@/components/h-scroller";
 import { CheckIcon, PlayIcon } from "@/components/icons";
 import { PosterImage } from "@/components/poster-image";
 import type { RecentWatchItem } from "@/lib/api/playback";
+import { playHref, rememberPlayerReturnPath } from "@/lib/player/play-links";
 import { imageUrl } from "@/lib/image-proxy";
 import { formatRelativeTime } from "@/lib/time";
 import { useTapGuard } from "@/lib/use-tap-guard";
@@ -27,20 +28,17 @@ function itemHref(item: RecentWatchItem): Route {
 /**
  * 卡片中央播放键的落点：直接进播放页，不经过条目详情。
  *
- * 不需要在这里带上「从哪一秒开始」——播放器起播前自己会问一次
- * `/playback/resume`（与条目页播放键同一条链路），续播点、上次用的音轨
- * 都由服务端那份记录决定。前端再算一次只会算出两个版本的真相。
+ * 不需要在这里带上「从哪一秒开始」——续播点、上次用的音轨都由服务端在
+ * 开会话时按观看状态解析（§6.10）。前端再算一次只会算出两个版本的真相。
  *
- * `returnTo` 固定回媒体库首页：这张卡只出现在那一屏，且该页没有查询参数。
+ * 退出回哪不进地址（分享者的上下文不是内容标识），点击时记进
+ * sessionStorage；这张卡只出现在媒体库首页，落点固定。
  */
-function playHref(item: RecentWatchItem): Route {
-  const query = new URLSearchParams();
-  if (item.kind === "tv") {
-    query.set("season", String(item.season_number));
-    query.set("episode", String(item.episode_number));
-  }
-  query.set("returnTo", "/library");
-  return `/play/${item.library_id}/${item.media_item_id}?${query}` as Route;
+function cardPlayHref(item: RecentWatchItem): Route {
+  return playHref(item.media_item_id, {
+    season: item.kind === "tv" ? item.season_number : undefined,
+    episode: item.kind === "tv" ? item.episode_number : undefined,
+  }) as Route;
 }
 
 /** 播放键的读法：看完的是重播，看了一半的是续播，其余就是播放。 */
@@ -110,7 +108,8 @@ function RecentWatchCard({ item }: { item: RecentWatchItem }) {
   const tapGuard = useTapGuard();
   // 播放键自己也要过一遍误触保护：横滑最近观看这一行时，手指常常正好停在
   // 卡片中央，没有它一划就起播了（比误进详情页糟得多——会真的起转码会话）。
-  const playTapGuard = useTapGuard();
+  // onTap 顺带记「退出回媒体库首页」：guard 自己接管 onClick，另挂会被覆盖
+  const playTapGuard = useTapGuard(() => rememberPlayerReturnPath("/library"));
   const isEpisode = item.kind === "tv";
   const code = isEpisode ? episodeCode(item) : null;
   // 集号不再压在剧照左上角（会跟角标、进度挤在一起），改到片名下方的副标题里，
@@ -224,7 +223,7 @@ function RecentWatchCard({ item }: { item: RecentWatchItem }) {
           抬升动画跟着卡片一起做，否则悬停时剧照上浮 4px、播放键留在原地。 */}
       <div className="pointer-events-none absolute inset-x-0 top-0 flex aspect-video items-center justify-center transition duration-300 group-hover/recent:-translate-y-1">
         <Link
-          href={playHref(item)}
+          href={cardPlayHref(item)}
           aria-label={`${playVerb(item)}《${item.title}》${context ? ` ${context}` : ""}`}
           {...playTapGuard}
           className="pointer-events-auto flex size-11 items-center justify-center rounded-full border-[1.5px] border-white/75 text-white shadow-[0_1px_10px_rgba(0,0,0,0.45)] transition duration-200 hover:scale-[1.06] hover:border-white hover:bg-white/15 hover:shadow-[0_6px_20px_rgba(0,0,0,0.45)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80 group-hover/recent:border-white max-md:size-10"

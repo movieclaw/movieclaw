@@ -281,3 +281,94 @@ def test_policy_is_admin_only(client, tmp_path):
     assert client.post("/api/v1/auth/login", json=_MEMBER).status_code == 200
     assert client.get(f"{_PB}/policy").status_code == 403
     assert client.put(f"{_PB}/policy", json={}).status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# 续播并入开会话（§6.10：省掉起播链路里「先问 /resume 再开会话」的串行往返）
+# ---------------------------------------------------------------------------
+
+#: 与种子文件（h264/aac/mp4）匹配的能力：判成档 0 直出，不需要 ffmpeg
+_CAPABILITY = {
+    "video": [{"codec": "h264"}],
+    "audio": [{"codec": "aac"}],
+    "containers": ["mp4", "hls-fmp4"],
+}
+
+
+def start_session(client: TestClient, item_id: int, **extra) -> dict:
+    resp = client.post(
+        f"{_PB}/sessions",
+        json={"media_item_id": item_id, "capability": _CAPABILITY, **extra},
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()["data"]
+
+
+def test_session_without_start_ms_resumes_from_stored_position(client, tmp_path):
+    """start_ms 缺省 = 服务端接续播点，整份观看状态随响应带回。"""
+    _, item_id = seed(client, tmp_path)
+    report(client, item_id, event="progress", position_ms=120_000)
+
+    data = start_session(client, item_id)
+    assert data["start_ms"] == 120_000
+    assert data["watch"]["position_ms"] == 120_000
+    assert data["watch"]["duration_ms"] == _DURATION_S * 1000
+    assert data["decision"]["tier"] == 0
+
+
+def test_session_explicit_start_ms_wins_over_resume(client, tmp_path):
+    """显式给值（含 0）原样照办：seek 重开与「从头播」都不受续播点干扰。"""
+    _, item_id = seed(client, tmp_path)
+    report(client, item_id, event="progress", position_ms=120_000)
+
+    assert start_session(client, item_id, start_ms=0)["start_ms"] == 0
+    assert start_session(client, item_id, start_ms=90_000)["start_ms"] == 90_000
+
+
+def test_session_replays_finished_unit_from_zero(client, tmp_path):
+    """看完的重播从头开始——续播到最后三十秒等于点开就是片尾。"""
+    _, item_id = seed(client, tmp_path)
+    report(client, item_id, event="stop", position_ms=570_000)  # 95% → 已看
+
+    data = start_session(client, item_id)
+    assert data["start_ms"] == 0
+    assert data["watch"]["played"] is True
+
+
+def test_session_reuses_remembered_audio_track(client, tmp_path):
+    """audio_track 缺省时用上次听的那条轨（记忆轨并入决策）。"""
+    _, item_id = seed(client, tmp_path)
+    report(client, item_id, event="start", audio_track="embedded:0")
+
+    data = start_session(client, item_id)
+    assert data["watch"]["audio_track"] == "embedded:0"
+    assert data["decision"]["audio"]["track_ref"] == "embedded:0"
+
+
+# ---------------------------------------------------------------------------
+# 播放页条目信息（§6.10 路由只带 media_item_id，库归属服务端解析）
+# ---------------------------------------------------------------------------
+
+
+def test_playback_item_info_resolves_library(client, tmp_path):
+    library_id, item_id = seed(client, tmp_path)
+    resp = client.get(f"{_PB}/items/{item_id}")
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["media_item_id"] == item_id
+    assert data["library_id"] == library_id
+    assert data["kind"] == "movie"
+    assert data["title"].startswith("示例")
+
+
+def test_playback_item_outside_visible_libraries_is_not_found(client, tmp_path):
+    """不可见与不存在同样 404——与决策接口同一判据。"""
+    _hidden_library_id, hidden_item_id = seed(client, tmp_path)
+    visible_library_id, visible_item_id = seed(client, tmp_path)
+    _make_member(client, library_ids=[visible_library_id])
+    client.post("/api/v1/auth/logout")
+    assert client.post("/api/v1/auth/login", json=_MEMBER).status_code == 200
+
+    assert client.get(f"{_PB}/items/{hidden_item_id}").status_code == 404
+    assert client.get(f"{_PB}/items/{visible_item_id}").status_code == 200
+    assert client.get(f"{_PB}/items/99999").status_code == 404
