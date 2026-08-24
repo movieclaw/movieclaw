@@ -53,8 +53,14 @@ def test_text_tracks_normalize_to_srt(codec):
     assert embedded_subtitle_format(codec) == "srt"
 
 
-@pytest.mark.parametrize("codec", ["hdmv_pgs_subtitle", "dvd_subtitle", "", None, "xyz"])
-def test_graphic_and_unknown_tracks_are_refused(codec):
+@pytest.mark.parametrize("codec", ["hdmv_pgs_subtitle", "pgssub", "PGS"])
+def test_pgs_tracks_extract_as_sup(codec):
+    """蓝光位图轨抽成 .sup 交前端 libbitsub 渲染（Jellyfin 10.9+ 同路）。"""
+    assert embedded_subtitle_format(codec) == "sup"
+
+
+@pytest.mark.parametrize("codec", ["dvd_subtitle", "", None, "xyz"])
+def test_unknown_tracks_are_refused(codec):
     """宁可少一条轨也不烧录——烧录会把任何档位拖进全转码。"""
     assert embedded_subtitle_format(codec) is None
 
@@ -88,13 +94,13 @@ def test_malformed_ledger_entry_does_not_crash(tmp_path):
 
 
 def test_unsupported_track_never_touches_ffmpeg(tmp_path, monkeypatch):
-    """格式判定要在起进程之前完成——PGS 轨不该白白读一遍整个容器。"""
+    """格式判定要在起进程之前完成——VobSub 轨不该白白读一遍整个容器。"""
     called = []
     monkeypatch.setattr(
         "movieclaw_api.services.playback.embedded_subs.subprocess.run",
         lambda *a, **k: called.append(a),
     )
-    file = make_file(tmp_path, [{"codec": "hdmv_pgs_subtitle"}])
+    file = make_file(tmp_path, [{"codec": "dvd_subtitle"}])
     assert extract_embedded_subtitle(file, 0) is None
     assert called == []
 
@@ -337,3 +343,42 @@ def test_video_without_attachments_is_remembered(tmp_path, monkeypatch):
     )
     assert extract_embedded_fonts(file) == []
     assert calls == []
+
+
+@pytest.fixture
+def video_with_pgs(tmp_path):
+    """合成带真 PGS 位图轨的 MKV。ffmpeg 没有 PGS 编码器，字幕流由
+    pgs_sup 按段格式手工拼出，muxer 只做流拷贝。"""
+    from pgs_sup import make_sup
+
+    sup = tmp_path / "sample.sup"
+    sup.write_bytes(make_sup())
+    video = tmp_path / "pgs-movie.mkv"
+    _run([
+        "ffmpeg", "-v", "error",
+        "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=10:duration=6",
+        "-f", "sup", "-i", str(sup),
+        "-map", "0:v", "-map", "1:s",
+        "-c:v", "libx264", "-preset", "ultrafast",
+        "-c:s", "copy",
+        "-y", str(video),
+    ])
+    return video
+
+
+@integration
+@pytest.mark.integration
+def test_extracts_pgs_track_as_binary_sup(tmp_path, monkeypatch, video_with_pgs):
+    """PGS 轨抽成 .sup：二进制原样拷贝，段魔数在、ffprobe 认得出。"""
+    monkeypatch.chdir(tmp_path)
+    file = make_file(tmp_path, [{"codec": "hdmv_pgs_subtitle"}], path=video_with_pgs)
+    ref = extract_embedded_subtitle(file, 0)
+    assert ref is not None and ref.format == "sup"
+    raw = ref.path.read_bytes()
+    assert raw.startswith(b"PG"), "sup 段魔数丢失——不是合法的 HDMV PGS 流"
+    assert len(raw) > 100
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-f", "sup", "-show_streams", str(ref.path)],
+        capture_output=True, timeout=60,
+    )
+    assert b"hdmv_pgs_subtitle" in probe.stdout

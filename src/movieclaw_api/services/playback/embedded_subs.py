@@ -39,6 +39,10 @@ _EXTRACT_TIMEOUT = 120.0
 _TEXT_CODECS = frozenset({"subrip", "srt", "mov_text", "text", "webvtt", "vtt"})
 #: 特效轨：原样 copy 出来交 JASSUB，转格式就毁了。
 _ASS_CODECS = frozenset({"ass", "ssa"})
+#: 蓝光位图轨：原样 copy 成 .sup（HDMV PGS 的标准封装，ffmpeg 的 sup muxer），
+#: 交前端 libbitsub 在 canvas 上渲染——与 Jellyfin 10.9+ 的做法一致。
+#: 绝不烧录（硬边界 1），也绝不 OCR（错字比没字幕更糟）。
+_PGS_CODECS = frozenset({"hdmv_pgs_subtitle", "pgssub", "pgs"})
 
 
 def cache_dir() -> Path:
@@ -47,12 +51,14 @@ def cache_dir() -> Path:
 
 
 def embedded_subtitle_format(codec: str | None) -> str | None:
-    """内封轨 codec → 抽取后的文件格式；不支持的轨（PGS/VobSub）返回 None。"""
+    """内封轨 codec → 抽取后的文件格式；不支持的轨（VobSub 等）返回 None。"""
     normalized = (codec or "").lower()
     if normalized in _ASS_CODECS:
         return "ass"
     if normalized in _TEXT_CODECS:
         return "srt"
+    if normalized in _PGS_CODECS:
+        return "sup"
     return None
 
 
@@ -97,8 +103,9 @@ def extract_embedded_subtitle(file: LibraryFile, index: int) -> SubtitleRef | No
     # 下一次会被上面的新鲜度判断误认成成功产物。临时文件保留正式后缀，
     # ffmpeg 才能按扩展名选对 muxer。
     tmp_path = out_path.with_name(f".{out_path.stem}.{uuid.uuid4().hex}.part{out_path.suffix}")
-    # ASS 用 copy 保住特效与排版；文本轨统一转 SRT，抹平 mov_text 之类的差异。
-    codec_args = ["-c:s", "copy"] if fmt == "ass" else ["-c:s", "srt"]
+    # ASS 用 copy 保住特效与排版；PGS 是位图流只能 copy（ffmpeg 没有 PGS
+    # 编码器）；文本轨统一转 SRT，抹平 mov_text 之类的差异。
+    codec_args = ["-c:s", "copy"] if fmt in ("ass", "sup") else ["-c:s", "srt"]
     try:
         proc = subprocess.run(
             [

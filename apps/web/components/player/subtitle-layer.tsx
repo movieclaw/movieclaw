@@ -152,6 +152,78 @@ function shiftCues(track: TextTrack, delta: number): void {
   }
 }
 
+/**
+ * PGS：libbitsub 渲染器的生命周期（docs/design/web-player.md §6.2）。
+ *
+ * 蓝光位图轨没有任何浏览器原生渲染路径，Jellyfin 10.9+ 的解法是服务端把轨
+ * 抽成 .sup、网页端 WASM 解码 + canvas 合成——我们用同一个库（libbitsub，
+ * libpgs 的后继）。动态 import：不选 PGS 轨不付 WASM 代价，与 JASSUB 同款
+ * 懒加载。timeOffset 语义与 JASSUB 相同（查表时间 = 播放时间 + offset）。
+ *
+ * streamingLoad：.sup 可达几十 MB，边收边解，首条字幕不用等整个文件；
+ * rangeRequests 不开——字幕端点是 FileResponse 整流下发，没实现 Range。
+ */
+function usePgs(
+  video: HTMLVideoElement | null,
+  track: SubtitleOption | null,
+  timeOffset: number,
+): void {
+  const instance = useRef<{ timeOffset: number; dispose(): void } | null>(null);
+
+  useEffect(() => {
+    if (!video || !track || track.kind !== "pgs") return;
+    let disposed = false;
+
+    void import("libbitsub").then(({ PgsRenderer }) => {
+      if (disposed) return;
+      // 渲染 canvas 会被追加到 video 的父节点末尾，而且是**异步**创建的
+      // （要先等 WASM 初始化）；先记下已有的 canvas，之后新出现的那块就是
+      // 它——libbitsub 没把 canvas 暴露成公开属性。
+      const parent = video.parentElement;
+      const before = new Set(parent?.querySelectorAll("canvas") ?? []);
+      // media-controller 会在用户无操作时把普通子元素统一淡出，字幕是内容
+      // 不是控制件，必须常显（noautohide 豁免，理由同 VTT 层与 JASSUB）。
+      // 必须在 onLoaded 里补一次：构造返回时 canvas 多半还没插进 DOM，
+      // 只在构造后设会漏掉——表现为字幕渲染成功却在控制条淡出时一起消失。
+      const exemptNewCanvases = () => {
+        parent?.querySelectorAll("canvas").forEach((canvas) => {
+          if (!before.has(canvas)) canvas.setAttribute("noautohide", "");
+        });
+      };
+      const created = new PgsRenderer({
+        video,
+        subUrl: track.url,
+        timeOffset,
+        streamingLoad: true,
+        rangeRequests: false,
+        onLoaded: exemptNewCanvases,
+        onError: (error: Error) => {
+          console.error("PGS 字幕加载失败：", error);
+        },
+        // 非致命诊断保留在控制台：位图轨的坏段/解析退化肉眼只看得到
+        // 「字幕没出来」，没有这行用户报障时什么线索都没有
+        onWarning: (warning: unknown) => {
+          console.warn("PGS 字幕警告：", warning);
+        },
+      });
+      instance.current = created;
+      exemptNewCanvases();
+    });
+
+    return () => {
+      disposed = true;
+      instance.current?.dispose();
+      instance.current = null;
+    };
+    // timeOffset 变化直接改实例属性（见下一个 effect），不重建
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [video, track]);
+
+  useEffect(() => {
+    if (instance.current) instance.current.timeOffset = timeOffset;
+  }, [timeOffset]);
+}
+
 /** ASS：JASSUB 实例的生命周期。换轨要重建（v2 没有换轨 API），改偏移不用。 */
 function useJassub(
   video: HTMLVideoElement | null,
@@ -213,8 +285,9 @@ export function SubtitleLayer({
 }: SubtitleLayerProps) {
   // VTT：cue 时间（文件绝对）→ 会话相对，再加上用户微调（正数 = 字幕延后）
   const vttLines = useVttCues(video, track, -baseOffsetSeconds + style.offsetSeconds);
-  // JASSUB：查表时间 = 播放时间 + timeOffset，方向与上面相反
+  // JASSUB / libbitsub：查表时间 = 播放时间 + timeOffset，方向与上面相反
   useJassub(video, track, baseOffsetSeconds - style.offsetSeconds);
+  usePgs(video, track, baseOffsetSeconds - style.offsetSeconds);
   const contentBox = useVideoContentBox(video);
 
   if (!track || track.kind !== "vtt" || vttLines.length === 0) return null;

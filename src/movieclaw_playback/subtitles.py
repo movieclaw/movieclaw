@@ -108,7 +108,7 @@ class SubtitleRef:
     """一次可服务的外挂字幕定位（resolve 的产物，serve 的输入）。"""
 
     path: Path
-    format: str  # srt/ass/ssa/vtt（小写）
+    format: str  # srt/ass/ssa/vtt/sup（小写；sup 是二进制位图轨，不进文本管线）
 
 
 def resolve_external_subtitle(file: LibraryFile, track: str) -> SubtitleRef | None:

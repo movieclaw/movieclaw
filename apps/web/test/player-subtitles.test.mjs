@@ -56,15 +56,26 @@ test("没有语言标记时内封轨按序号命名，不至于几条长得一�
   assert.match(options[1].label, /内封轨 2/);
 });
 
-test("PGS 与未知格式仍进不可用清单并给出中文原因", () => {
+test("PGS 是可选轨：.sup 原样下发交 libbitsub，不追加 format 参数", () => {
   const { options, unavailable } = planSubtitleTracks(
-    [plan("embedded:0", "pgs"), plan("external:zh.sub", "vobsub")],
-    ["/a", "/b"],
+    [plan("embedded:0", "pgs", { language: "chi" })],
+    ["/sub?track=0&token=t"],
+  );
+  assert.equal(unavailable.length, 0);
+  assert.equal(options.length, 1);
+  assert.equal(options[0].kind, "pgs");
+  assert.equal(options[0].url, "/sub?track=0&token=t");
+  assert.match(options[0].label, /图形/);
+});
+
+test("未知格式（VobSub 等）仍进不可用清单并给出中文原因", () => {
+  const { options, unavailable } = planSubtitleTracks(
+    [plan("external:zh.sub", "vobsub")],
+    ["/b"],
   );
   assert.equal(options.length, 0);
-  assert.equal(unavailable.length, 2);
-  assert.match(unavailable[0].reason, /图形字幕/);
-  assert.match(unavailable[1].reason, /暂不支持的字幕格式/);
+  assert.equal(unavailable.length, 1);
+  assert.match(unavailable[0].reason, /暂不支持的字幕格式/);
 });
 
 test("字幕地址缺失时不做位移匹配", () => {

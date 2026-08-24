@@ -587,8 +587,8 @@ mid-2026 GA，官方迁移指南计划 Q4 2026）。**因此：**
 - **明确不新押注 Vidstack**（作者已公开说明撞到自身架构上限）。
 - 引擎与 UI 都在接口后面，v10 GA 后按需评估，不做仓促迁移。
 
-**打包预算**：hls.js 只在计划为 `hls-fmp4` 时动态 import；JASSUB 只在存在 ASS
-轨时加载；libbitsub 只在存在 PGS 轨时加载。播放器路由的初始 JS 不带这三个。
+**打包预算**：hls.js 只在计划为 `hls-fmp4` 时动态 import；JASSUB 只在选中 ASS
+轨时加载；libbitsub 只在选中 PGS 轨时加载。播放器路由的初始 JS 不带这三个。
 
 ### 6.2 字幕
 
@@ -597,8 +597,8 @@ mid-2026 GA，官方迁移指南计划 Q4 2026）。**因此：**
 | SRT / mov_text | 服务端转 VTT，`<track>` 原生渲染 |
 | ASS / SSA | 原样下发 + **JASSUB**（libass WASM）渲染 |
 | ASS 内嵌字体 | `ffmpeg -dump_attachment` 抽出缓存，随计划下发。**不做这条字体会回退成默认字体，番剧字幕效果直接崩** |
-| PGS | 前端 **libbitsub** 解码位图 |
-| VobSub | P0 不支持，明示原因 |
+| PGS | 服务端抽成 `.sup`（`-c:s copy`，二进制直出不进文本管线）+ 前端 **libbitsub**（libpgs 后继，Jellyfin 10.9+ 同款）WASM 解码、canvas 合成。timeOffset 语义与 JASSUB 相同；iOS 上内联播放由 canvas 层负责（位图进不了 HLS 字幕组，原生全屏/画中画不显示——与 ASS 特效同类限制） |
+| VobSub | 暂不支持，明示原因（libbitsub 有 VobSubRenderer，后续顺路可加） |
 
 外挂字幕的**时间轴微调（±0.1s 步进）与样式配置**（字号/字体/描边/背景/位置）
 是自建媒体库刚需，不是锦上添花——外挂字幕经常不同步。
@@ -1020,6 +1020,7 @@ ref——`setChromeVisible(true)` 是异步的，click 回调读到的可能已�
 | ㉔ | **半透明浮层与顶栏各自定位、都在顶部** | 两组文字叠在一起（下层从半透明里透出来），不是"盖住"而是"糊成一团" | 浮层的 `top` 同样叠 `--safe-top` 并让开顶栏高度；小屏浮层还要限高到中央播放键之上（§6.5） |
 | ㉕ | **伪横屏（CSS 旋转）里 env() 不跟着转** | 时间药丸、操作卡顶进灵动岛底下；按视口宽度判断的浮层继续用竖屏布局横跨全屏 | `.player-fake-landscape` 交叉重映射四个 `--safe-*`；形态布局以 `landscape` 状态优先（§6.7） |
 | ㉖ | **透明容器拦命中** | 退十秒看得见按不动（时间行 `pt-24` 内边距与控制条外层容器截胡了点击） | 纯布局容器一律 `pointer-events-none`，命中权只给真正可点的子元素（§6.7） |
+| ㉗ | **第三方渲染库的 canvas 是异步插入的** | libbitsub 渲染成功却「看不见」：canvas 等 WASM 初始化后才进 DOM，构造后立即设 `noautohide` 扑空，media-controller 无操作淡出时把字幕一起淡掉 | 构造后设一次 + `onLoaded` 回调里再补一次（§6.2） |
 
 ---
 
@@ -1256,8 +1257,8 @@ Mac mini 验证。做成发版前的人工清单，列进 `.claude/skills/releas
       + 设置页展示与「重新检测」
 - [x] `HwBackend` 抽象：VAAPI / QSV / NVENC / VideoToolbox / 软件
 - [x] 关键帧索引：**改为采样现算 + 内存缓存**，不落库（偏离见 §12.4）
-- [~] 字幕规划：VTT 转换、ASS 原样、内封轨按需抽取、**MKV 字体抽取**已做；
-      **PGS 下发未做**
+- [x] 字幕规划：VTT 转换、ASS 原样、内封轨按需抽取、**MKV 字体抽取**、
+      **PGS 抽 .sup 二进制直出**
 - [x] Trickplay 雪碧图 + 索引生成（**改为开会话时后台生成**，不进入库流程；
       索引给 JSON 而非 VTT，理由见 §12.12）
 - [x] `api/routes/playback.py` 扩展：`decide` / `sessions` / `ping` / 分片 / 字幕 / 字体
@@ -1274,8 +1275,8 @@ Mac mini 验证。做成发版前的人工清单，列进 `.claude/skills/releas
 - [x] `CapabilityProbe` + 快照缓存
 - [x] `PlaybackEngine` 接口 + `DirectEngine` + `HlsEngine`
 - [x] Media Chrome UI + 自有皮肤 + 播放器状态机（**进度条自建**，理由见 §12.6）
-- [~] JASSUB / VTT 两条字幕路径（外挂与内封轨均可播，内嵌字体随 ASS 下发）
-      + 时间轴微调 + 样式配置；**libbitsub（PGS）未做**
+- [x] JASSUB / VTT / libbitsub（PGS）三条字幕路径（外挂与内封轨均可播，
+      内嵌字体随 ASS 下发）+ 时间轴微调 + 样式配置
 - [x] 自动降档回路（§6.3）
 - [x] **软件转码同意弹窗 + 权限分支**（§3.6）；设置 → 播放 页承载对应开关
 - [x] 片尾下一集提示 + 上一集切集、续播接入 `playback_state`、Trickplay 进度条预览
@@ -1418,14 +1419,13 @@ Mac mini 验证。做成发版前的人工清单，列进 `.claude/skills/releas
 
 ### 12.5 尚未做
 
-- **PGS 前端渲染（libbitsub）** —— **暂不做，理由见下**。内封的文本与 ASS 轨
-  已经可播、内嵌字体也随 ASS 一并抽出下发（见 §12.8）。PGS 是位图轨，仍进
-  「不可用」清单并给中文原因，不是给一个点了没反应的选项。
-
-  不做的理由不是工作量，是**验不了**：位图字幕的正确性只能靠眼睛看（位置、
-  缩放、透明度、与画面的对齐），而这套渲染没有任何自动化手段能证明它对。
-  在没有真实媒体库和浏览器的环境里写它，等于交付一段没人验过的渲染代码——
-  比诚实地说「暂不支持」更糟。真机验收之后如果确有需求，再单独做一轮。
+- ~~PGS 前端渲染（libbitsub）~~ —— **已做**（后续轮次补上）。当初「暂不做」
+  的理由是**验不了**（位图字幕的正确性只能靠眼睛看）；后来解决了验证手段：
+  ffmpeg 没有 PGS 编码器，就按 HDMV PGS 段格式**手工合成最小 .sup**
+  （tests/playback/pgs_sup.py，ffprobe 认得出、ffmpeg 能烧录复核），端到端
+  在 Chromium 里真实播放 + 像素采样断言——白色矩形在声明的坐标与时间窗口内
+  出现、窗口外消失。渲染路径与 Jellyfin 10.9+ 完全同构：服务端抽 .sup、
+  前端 libbitsub WASM 解码 + canvas 合成。
 - ~~已转码区间位图与 seek 复用~~ —— **实际已经成立**（本轮核对时更正）。
   `planSeek` 用浏览器自己的 `video.seekable` 当区间表：落在已转区间内的 seek
   走原生跳转、不起新会话；只有拖到还没转出来的位置才重开——那是 ffmpeg 没法

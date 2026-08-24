@@ -403,3 +403,31 @@ def test_unknown_file_is_not_found(client):
 def test_request_without_target_is_rejected(client):
     resp = client.post(f"{_PB}/sessions", json={"capability": CAPABILITY})
     assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# PGS 位图字幕：.sup 走二进制直出，绝不进文本管线
+# ---------------------------------------------------------------------------
+
+
+def test_pgs_subtitle_served_as_binary_sup(client, tmp_path, monkeypatch):
+    """.sup 是二进制位图流（含非法 UTF-8 字节）：必须逐字节原样下发。
+    走文本管线（按编码解码再编码）会把它毁掉——libbitsub 直接解析失败。"""
+    from movieclaw_playback.subtitles import SubtitleRef
+
+    file_id = seed(client, tmp_path)
+    # 含 0xFF/0x00 的假位图数据：任何「按文本解码」的路径都会在这里露馅
+    raw = b"PG" + bytes(range(256)) * 4
+    sup = tmp_path / "extracted.sup"
+    sup.write_bytes(raw)
+    monkeypatch.setattr(
+        "movieclaw_api.api.routes.playback.extract_embedded_subtitle",
+        lambda file, index: SubtitleRef(path=sup, format="sup"),
+    )
+    token = client.portal.call(
+        partial(issue_stream_token, member_id=0, file_id=file_id, session_id=None)
+    )
+    resp = client.get(f"{_PB}/files/{file_id}/subtitles?track=embedded:0&token={token}")
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"].startswith("application/octet-stream")
+    assert resp.content == raw

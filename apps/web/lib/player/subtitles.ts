@@ -28,8 +28,8 @@ export interface SubtitleOption {
   /** 中性轨引用，同时用作 React key 与轨记忆的值 */
   ref: string;
   label: string;
-  /** vtt 交 `<track>`，ass 交 JASSUB */
-  kind: "vtt" | "ass";
+  /** vtt 交 `<track>`，ass 交 JASSUB，pgs（蓝光位图轨的 .sup）交 libbitsub */
+  kind: "vtt" | "ass" | "pgs";
   /** 已带签名 token 的下载地址 */
   url: string;
   language: string | null;
@@ -102,11 +102,7 @@ export function planSubtitleTracks(
       unavailable.push({ ref: plan.track_ref, label, reason: "服务端没有给出这条轨的地址" });
       return;
     }
-    if (plan.kind === "pgs") {
-      unavailable.push({ ref: plan.track_ref, label, reason: "PGS 是图形字幕，网页端暂不支持渲染" });
-      return;
-    }
-    if (plan.kind !== "vtt" && plan.kind !== "ass") {
+    if (plan.kind !== "vtt" && plan.kind !== "ass" && plan.kind !== "pgs") {
       unavailable.push({ ref: plan.track_ref, label, reason: `暂不支持的字幕格式：${plan.kind}` });
       return;
     }
@@ -116,6 +112,7 @@ export function planSubtitleTracks(
       kind: plan.kind,
       // 文本轨统一要 VTT：`<track>` 只认这个格式，服务端现读现转。
       // ASS 不能转——转成 VTT 就丢掉了特效与排版，番剧字幕直接崩。
+      // PGS 原样要 .sup 二进制，交 libbitsub 在 canvas 上渲染。
       url: plan.kind === "vtt" ? `${url}&format=vtt` : url,
       language: plan.language,
       isDefault: plan.is_default,

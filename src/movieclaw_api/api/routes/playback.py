@@ -759,6 +759,14 @@ async def get_playback_subtitle(
             ref = await asyncio.to_thread(extract_embedded_subtitle, file, index)
     if ref is None:
         raise NotFoundException("字幕轨不存在或暂不支持在网页端渲染")
+    if ref.format == "sup":
+        # PGS 位图轨：二进制、可达几十 MB，不进文本管线（那条路要按编码解码
+        # 成 UTF-8）。FileResponse 流式发出，前端 libbitsub 边收边解。
+        return FileResponse(
+            ref.path,
+            media_type="application/octet-stream",
+            headers={"Cache-Control": "private, max-age=3600"},
+        )
     try:
         body, media_type = serve_subtitle(ref, format)
     except SubtitleServeError as exc:

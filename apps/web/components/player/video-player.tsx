@@ -1250,8 +1250,12 @@ export function VideoPlayer(props: VideoPlayerProps) {
       const list = Array.from(video.textTracks).filter(
         (t) => !domTracks.has(t) && (t.kind === "subtitles" || t.kind === "captions"),
       );
+      // master 字幕组只收文本轨（服务端 _MASTER_SUBTITLE_KINDS = vtt/ass），
+      // 下标必须在**同一过滤规则**下对位——pgs 位图轨在 options 里但进不了
+      // HLS 字幕组，直接用全量下标会错位到别人的轨上
+      const textOptions = subtitles.options.filter((o) => o.kind !== "pgs");
       const target = activeSubtitle
-        ? subtitles.options.findIndex((o) => o.ref === activeSubtitle.ref)
+        ? textOptions.findIndex((o) => o.ref === activeSubtitle.ref)
         : -1;
       const modes = planSystemTrackModes(list.length, target);
       list.forEach((track, i) => {
@@ -1402,7 +1406,11 @@ export function VideoPlayer(props: VideoPlayerProps) {
 
         <SubtitleLayer
           video={video}
-          track={systemSubtitles ? null : activeSubtitle}
+          // system-track（iOS 原生 HLS）时文本轨交系统渲染、自绘层闲置；
+          // 但 PGS 位图轨进不了 HLS 字幕组，内联播放仍由 canvas 层负责
+          // （原生全屏/画中画只渲染视频帧，位图字幕跟不进去——ASS 特效
+          // 在那两个面上同样只剩降级文本，属于同一类既有限制）
+          track={systemSubtitles && activeSubtitle?.kind !== "pgs" ? null : activeSubtitle}
           style={subtitleStyle}
           baseOffsetSeconds={(mode?.originMs ?? 0) / 1000}
           // 控制条三行（时间行 + 进度条 + 操作行）展开时的实占高度，字幕
