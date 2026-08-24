@@ -368,7 +368,7 @@ export function PlayerControls(props: PlayerControlsProps) {
         }`}
       >
         <div
-          className={`relative transition-[height] duration-300 ${chromeVisible ? "h-5" : "h-[3px]"}`}
+          className={`player-scrub-shade relative transition-[height] duration-300 ${chromeVisible ? "h-5" : "h-[3px]"}`}
           onPointerMove={(e) => {
             if (!durationMs) return;
             const rect = e.currentTarget.getBoundingClientRect();
@@ -401,7 +401,10 @@ export function PlayerControls(props: PlayerControlsProps) {
             </div>
           ) : null}
 
-          {/* 轨道：静止 3px、悬停 5px。Netflix 的细红线就是这个手感 */}
+          {/* 轨道三段，亮度一路递增：未播（半透白，自己在暗画面上就读得出来，
+              不靠已播段衬）→ 已缓冲 → 已播（冷银）。亮画面上的对比度由外层
+              .player-scrub-shade 那条随身暗渐变兜底，见 globals.css。
+              静止 3px、悬停 5px，Netflix 的细红线就是这个手感 */}
           <div className="player-scrub-track pointer-events-none absolute inset-x-0 top-1/2 h-[3px] -translate-y-1/2 overflow-hidden rounded-full bg-[var(--player-track)] transition-[height] duration-150 [.player-scrub-row:hover_&]:h-[5px]">
             <div className="h-full bg-[var(--player-buffered)]" style={{ width: `${buffered}%` }} />
             <div

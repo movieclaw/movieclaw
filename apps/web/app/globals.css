@@ -1487,12 +1487,15 @@ body.cmdk-open .app-shell {
   --player-accent: var(--accent);
   --player-accent-hover: var(--accent-strong);
   --player-thumb: var(--accent-strong);
-  /* 轨道用**暗色**而不是常见的半透白：控制条收起后进度条直接压在原始画面上，
-     而已播段是浅银——遇到雪景 / 白墙 / 爆炸，浅银配半透白会一起消失。暗轨道
-     把整条变成「暗底 + 亮填充」，亮暗两种画面上都读得出来。代价是暗画面里
-     轨道会融进背景、看不出整片有多长，但缓冲段仍然给得出参照。 */
-  --player-track: rgb(0 0 0 / 0.6);
-  --player-buffered: rgba(255, 255, 255, 0.42);
+  /* 三段亮度一路递增：未播 30% 白 → 已缓冲 55% 白 → 已播冷银（≈90% 白）。
+     **未播段必须自己就看得见**，而不是靠「已播段压在暗轨道上」的反差衬出来：
+     刚起播时已播段宽度为 0，暗轨道压在黑画面上等于整条进度条不存在，用户连
+     「这片有多长、进度条在哪」都不知道（真机截图证实）。半透白是 YouTube /
+     Netflix 同款选择，暗画面上直接可读。
+     亮画面（雪景 / 白墙 / 爆炸）的可读性交给轨道自己的暗描边 + 投影
+     （.player-scrub-track），不再靠把轨道整条压黑——那是拆东墙补西墙。 */
+  --player-track: rgba(255, 255, 255, 0.3);
+  --player-buffered: rgba(255, 255, 255, 0.55);
 }
 
 /* ---- iOS PWA 安全区（docs/design/web-player.md §6.8） --------------------
@@ -1567,9 +1570,38 @@ body.cmdk-open .app-shell {
    为什么连把手也自己画：原生把手在 `宽度 - 把手宽` 的范围里走，而已播段是
    按整条宽度铺的，两者只在正中对得上，两端各差半个把手宽——表现就是圆点
    没对准进度。详见 player-controls.tsx 里那段注释。 */
-/* 除了暗轨道，再给整条一道向下的暗投影，把它从亮画面上「抬」起来。 */
+/* 控制条收起后这条细线直接压在原始画面上，背后亮度完全不可控——而三段全是
+   浅色（见 .player-root 那段注释）。解法照 YouTube / Netflix：**给进度条自己
+   铺一条随身的暗渐变**（scrim），把它脚下那一小条画面压暗，三段的明暗关系
+   于是在雪景上与在黑画面上完全一样。
+   只有 22px 高、上下淡出，安静时看着就是底边一道极淡的暗晕，不像整块渐变
+   那样吃掉画面；控制条展开时它被那块大渐变吸收，看不出来。
+   为什么不是「把轨道本身染黑」（上一版的做法）：那等于拿暗画面的可见性换
+   亮画面的可见性——刚起播已播段宽度为 0，黑轨道压在黑画面上，用户会以为
+   播放器没有进度条。 */
+.player-scrub-shade::before {
+  content: "";
+  position: absolute;
+  inset-inline: 0;
+  top: 50%;
+  height: 22px;
+  transform: translateY(-50%);
+  pointer-events: none;
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    rgb(0 0 0 / 0.5) 38%,
+    rgb(0 0 0 / 0.5) 62%,
+    transparent
+  );
+}
+
+/* 再给轨道紧贴一圈 hairline 暗描边 + 一道向下的投影，把它从画面里「抬」起来。
+   iOS/macOS 控件浮在任意壁纸上的标准做法，与上面的 scrim 是两道保险。 */
 .player-scrub-track {
-  box-shadow: 0 1px 5px rgb(0 0 0 / 0.5);
+  box-shadow:
+    0 0 0 1px rgb(0 0 0 / 0.4),
+    0 1px 6px rgb(0 0 0 / 0.5);
 }
 
 .player-scrub::-webkit-slider-runnable-track {
