@@ -176,6 +176,11 @@ _STAT_RETENTION = timedelta(days=30)
 BOOST_CATEGORY = "movieclaw-boost"
 BOOST_TAG = "movieclaw-boost"
 _BOOST_SUBDIR = "movieclaw-boost"
+# 站点刷流暂停时的按种上传限速：本质是给用户的前台流量（看视频等）让出
+# 上行，所以要压到接近于零——1 KiB/s 保住与蜂群/tracker 的连接不掉种，
+# 即使上百个做种聚合起来也只有百余 KiB/s。刻意不用 qB 的"暂停任务"：
+# 暂停任务会停止汇报 tracker，部分站点会把它记为停止做种（H&R 风险）
+_PAUSED_UPLOAD_LIMIT = 1024  # 1 KiB/s
 
 
 # ---------------------------------------------------------------------------
@@ -292,12 +297,18 @@ def apply_observation(
     swarm_seeders: int | None = None,
     swarm_leechers: int | None = None,
     downloaded_bytes: int | None = None,
+    freeze_ema: bool = False,
 ) -> None:
     """把下载器的一次观测写回台账：完成位 + 上传量差分 → 上传速度 EMA。
 
     uploaded_bytes / downloaded_bytes 为 None（旧适配器不提供）时只更新
     完成位，绝不能当 0 参与差分——会把 EMA 错误打到 0 触发误汰换。
     差分为负说明下载器重建过任务（重新校验/换实例），重置基线不更新 EMA。
+
+    ``freeze_ema=True``（站点刷流暂停中）时照常记账（完成位/累计量/蜂群），
+    但**不更新上传速度 EMA**：暂停期间做种被人为限速，观测到的低速不是
+    真实效率，混进 EMA 会在恢复后触发一轮误汰换。基线（last_checked_at/
+    uploaded_bytes）仍然推进，恢复后差分从暂停结束处重新起算。
     """
     if completed and not task.completed:
         # 首次观测到完成：汰换判定窗口（零产出速汰/公平判定）从此刻起算
@@ -307,7 +318,7 @@ def apply_observation(
         baseline_at = task.last_checked_at or task.created_at
         dt = (now - baseline_at).total_seconds()
         delta = uploaded_bytes - task.uploaded_bytes
-        if dt > 0 and delta >= 0:
+        if not freeze_ema and dt > 0 and delta >= 0:
             rate = delta / dt
             # 时距感知 EMA：等效 24 小时观测窗口（见 _EMA_WINDOW_SECONDS）
             alpha = 1 - math.exp(-dt / _EMA_WINDOW_SECONDS)
@@ -765,14 +776,23 @@ class _SiteTickObs:
 
 
 async def _refresh_tasks(
-    session: AsyncSession, pool: _DownloaderPool, tasks: list[RatioBoostTask], now: datetime
+    session: AsyncSession,
+    pool: _DownloaderPool,
+    tasks: list[RatioBoostTask],
+    now: datetime,
+    paused_sites: set[str] | None = None,
 ) -> dict[str, _SiteTickObs]:
     """第一步对账：把下载器观测写回台账，找不到的标记 missing。
     返回本 tick 各站点的聚合观测（site_id → _SiteTickObs），供小时桶统计累加。
 
     对账前先做认领转出（见 hand_over_if_claimed）：被订阅/手动下载认领的
     任务立即脱离刷流管理，从根上杜绝后续任何汰换触碰它的数据。
+
+    ``paused_sites`` 里的站点正处于刷流暂停：任务照常记账但冻结上传 EMA
+    （限速下的低速不是真实效率，见 apply_observation），止损判定照常——
+    止损防的是免费窗口过期后的付费下载，暂停期间同样成立。
     """
+    paused_sites = paused_sites or set()
     deltas: dict[str, _SiteTickObs] = {}
     observed: list[RatioBoostTask] = []
     claimed = await _claimed_hashes(session)
@@ -809,6 +829,7 @@ async def _refresh_tasks(
             swarm_seeders=brief.swarm_seeders,
             swarm_leechers=brief.swarm_leechers,
             downloaded_bytes=brief.downloaded_bytes,
+            freeze_ema=task.site_id in paused_sites,
         )
         observed.append(task)
         # 增量按站点归集（下载器重建导致的负差分已在 apply_observation 归零基线）
@@ -903,6 +924,60 @@ async def _evict(pool: _DownloaderPool, task: RatioBoostTask, now: datetime, rea
         "∞" if math.isinf(turnover) else f"{turnover / 86400:.1f} 天",
     )
     return True
+
+
+async def _apply_upload_limits(
+    pool: _DownloaderPool, tasks: list[RatioBoostTask], limit_bytes: int | None
+) -> list[int]:
+    """把上传限速批量下发到这批任务（按下载器分组，每台一次请求）。
+
+    ``limit_bytes=None`` = 解除限速。返回下发失败（不可达等）的下载器 id
+    列表——暂停路径靠引擎每 tick 重试自愈可忽略，恢复路径必须让用户知道
+    哪台没解除成功。
+    """
+    by_downloader: dict[int, list[str]] = {}
+    for task in tasks:
+        if task.state == BoostTaskState.ACTIVE and task.downloader_id is not None:
+            by_downloader.setdefault(task.downloader_id, []).append(task.info_hash)
+    failed: list[int] = []
+    for did, hashes in by_downloader.items():
+        adapter = await pool.adapter(did)
+        if adapter is None:
+            failed.append(did)
+            continue
+        try:
+            await adapter.set_upload_limits(sorted(hashes), limit_bytes)
+        except Exception as exc:  # noqa: BLE001 -- 单台失败不拖垮其余下载器
+            logger.warning("刷流暂停/恢复：下载器 #%d 下发上传限速失败：%s", did, exc)
+            failed.append(did)
+    return failed
+
+
+async def apply_boost_pause(session: AsyncSession, site_id: str, paused: bool) -> list[int]:
+    """把某站刷流的暂停/恢复立即落到下载器：在池任务批量设置/解除上传限速。
+
+    供站点配置服务在切换 boost_paused 时调用，让暂停"秒级生效"而不是等
+    下一个 tick。返回失败的下载器 id 列表（语义见 _apply_upload_limits）。
+    """
+    tasks = (
+        (
+            await session.execute(
+                select(RatioBoostTask).where(
+                    RatioBoostTask.site_id == site_id,
+                    RatioBoostTask.state == BoostTaskState.ACTIVE,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    pool = _DownloaderPool(session)
+    try:
+        return await _apply_upload_limits(
+            pool, list(tasks), _PAUSED_UPLOAD_LIMIT if paused else None
+        )
+    finally:
+        await pool.close()
 
 
 async def _default_downloader(session: AsyncSession) -> DownloaderClient | None:
@@ -1298,10 +1373,26 @@ async def run_ratio_boost() -> None:
         if not boost_creds and not active_tasks:
             return
 
+        # 暂停中的站点（独立查询而非从 boost_creds 过滤：站点被停用/验证失败
+        # 后不在 boost_creds 里，但暂停期间其任务的 EMA 仍须冻结）
+        paused_sites = set(
+            (
+                await session.execute(
+                    select(SiteCredential.site_id).where(
+                        SiteCredential.boost_paused == True  # noqa: E712 -- SQL 表达式
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
         pool = _DownloaderPool(session)
         try:
             # ① 对账：即使站点已关掉刷流，在池任务仍继续追踪（它们还在做种）
-            deltas = await _refresh_tasks(session, pool, list(active_tasks), now)
+            deltas = await _refresh_tasks(
+                session, pool, list(active_tasks), now, paused_sites=paused_sites
+            )
             # 小时桶统计：上传增量 + 在池占用采样（转出/汰换后的任务不计占用）
             used_by_site: dict[str, int] = {}
             for t in active_tasks:
@@ -1315,6 +1406,12 @@ async def run_ratio_boost() -> None:
                     for t in active_tasks
                     if t.site_id == cred.site_id and t.state == BoostTaskState.ACTIVE
                 ]
+                if cred.boost_paused:
+                    # 暂停中：不汰换、不收敛预算、不拉新种，只把上传限速
+                    # 重新下发一遍（覆盖暂停时下发失败/下载器换实例等情况，
+                    # 幂等且每台下载器只有一次轻量请求）
+                    await _apply_upload_limits(pool, site_tasks, _PAUSED_UPLOAD_LIMIT)
+                    continue
                 # ② 预算收敛：用户调小预算是明确指令，必须收敛到位——判据用
                 # budget_evictable（不设完成后判定窗，高效不是免死金牌），顺序仍是
                 # 死种优先、再按周转从慢到快（高效的排最后、只在必要时牺牲）；
@@ -1357,7 +1454,8 @@ async def wants_fast_sync(session: AsyncSession, cred: SiteCredential) -> bool:
     恰恰是最需要盯紧新种的时候——能不能接由准入的边际比较回答，同步端
     只负责别让候选池断供。
     """
-    if not cred.boost_enabled:
+    if not cred.boost_enabled or cred.boost_paused:
+        # 暂停期间不拉新种，索引同步没必要钉在最快档
         return False
     tasks = (
         (

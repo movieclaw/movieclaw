@@ -29,6 +29,7 @@ import {
   listSiteCatalog,
   listSiteSyncStats,
   reverifySite,
+  setSiteBoostPaused,
   setSiteEnabled,
   setSiteProtection,
   setSiteRatioBoost,
@@ -621,7 +622,7 @@ function SiteRow({
         ) : (
           site.boost_enabled && (
             <div className="order-3 basis-full sm:order-none sm:basis-auto">
-              <BoostReadout boost={boost} />
+              <BoostReadout boost={boost} paused={site.boost_paused} />
             </div>
           )
         )}
@@ -644,6 +645,11 @@ function SiteRow({
             }
             onEnableBoost={() => setBoostModal("enable")}
             onDisableBoost={() => void disableBoost()}
+            onToggleBoostPaused={() =>
+              void guard(async () =>
+                onChanged(await setSiteBoostPaused(site.site_id, !site.boost_paused)),
+              )
+            }
             onBoostSettings={() => setBoostModal("adjust")}
             onEditAuth={() => {
               onOpen();
@@ -732,6 +738,12 @@ function SiteDetail({
       {/* ─ 刷流 ─ 只读运行统计；启停与预算在 ⋯ 菜单（带二次确认与预算弹窗） */}
       {site.boost_enabled && (
         <DetailSection label="刷流">
+          {site.boost_paused && (
+            <p className="text-caption leading-5 text-[var(--warn)]">
+              已暂停：在池做种压到极低上传限速，停止汰换与拉新种（任务与数据保留）。
+              可在 ⋯ 菜单里「恢复刷流」。
+            </p>
+          )}
           <StatGrid>
             <DetailStat
               label="已用 / 预算"
@@ -1070,9 +1082,23 @@ function QueueCongestionTip() {
    没有产出数据时退回显示已用量，让用户看到引擎确实在动。数字穿文本色，
    「刷流」小字标签用 accent 特性色标识身份，不与状态徽章的绿色混淆。 */
 
-function BoostReadout({ boost }: { boost?: SiteBoostStats }) {
+function BoostReadout({ boost, paused }: { boost?: SiteBoostStats; paused?: boolean }) {
   const up24 = boost?.uploaded_bytes_24h ?? 0;
   const used = boost?.used_bytes ?? 0;
+  // 暂停态吃掉产出读数：那一刻「为什么没产出」比「产出多少」更重要
+  if (paused) {
+    return (
+      <div
+        className="flex min-w-0 items-center gap-1.5"
+        title="刷流已暂停：做种压到极低上传限速、停止汰换与拉新种，任务与数据保留；在 ⋯ 菜单里可随时恢复"
+      >
+        <span className="shrink-0 text-caption font-medium text-[var(--accent)]">刷流</span>
+        <span className="truncate text-caption font-medium text-[var(--warn)]">
+          已暂停 · 做种限速让出上行
+        </span>
+      </div>
+    );
+  }
   return (
     <div
       className="flex min-w-0 items-center gap-1.5"
@@ -1215,6 +1241,7 @@ interface SiteActionsMenuProps {
   onSetProtected: (next: boolean) => void;
   onEnableBoost: () => void;
   onDisableBoost: () => void;
+  onToggleBoostPaused: () => void;
   onBoostSettings: () => void;
   onEditAuth: () => void;
   onReverify: () => void;
@@ -1228,6 +1255,7 @@ function SiteActionsMenu({
   onSetProtected,
   onEnableBoost,
   onDisableBoost,
+  onToggleBoostPaused,
   onBoostSettings,
   onEditAuth,
   onReverify,
@@ -1284,6 +1312,17 @@ function SiteActionsMenu({
           >
             {site.boost_enabled ? "关闭刷流…" : "开启刷流…"}
           </DropdownMenu.Item>
+          {/* 暂停/恢复：临时给前台流量（看视频等）让出上行——做种限速 +
+              停止汰换拉新，任务保留，随时无损恢复，故不设二次确认 */}
+          {site.boost_enabled && (
+            <DropdownMenu.Item
+              onSelect={onToggleBoostPaused}
+              disabled={busy}
+              className={itemClass}
+            >
+              {site.boost_paused ? "恢复刷流" : "暂停刷流"}
+            </DropdownMenu.Item>
+          )}
           {site.boost_enabled && (
             <DropdownMenu.Item onSelect={onBoostSettings} disabled={busy} className={itemClass}>
               刷流设置…

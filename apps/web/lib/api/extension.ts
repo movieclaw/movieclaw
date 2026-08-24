@@ -65,6 +65,8 @@ export interface ConfiguredSite {
   protected: boolean;
   /** 自动刷分享率开关 */
   boost_enabled: boolean;
+  /** 刷流暂停中：做种压到极低上传限速，停止汰换与拉新种（任务保留） */
+  boost_paused: boolean;
   /** 刷流存储预算（字节） */
   boost_budget_bytes: number;
   /** 刷流汰换最低保留天数（H&R 安全垫）；0=不保护，自由汰换 */

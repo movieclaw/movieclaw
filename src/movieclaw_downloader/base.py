@@ -107,6 +107,16 @@ class BaseDownloader(abc.ABC):
         """
 
     @abc.abstractmethod
+    async def set_upload_limits(self, info_hashes: list[str], limit_bytes: int | None) -> None:
+        """批量设置指定任务的上传限速（字节/秒），``None`` = 取消限速。
+
+        站点刷流「暂停」用它把在池做种压到极低速，为用户的前台流量
+        （看视频等）让出上行；恢复时传 None 解除。只作用于传入的
+        movieclaw-boost 任务，绝不触碰下载器全局限速或用户自己的任务。
+        不存在的 hash 静默忽略（幂等）。
+        """
+
+    @abc.abstractmethod
     async def test_connection(self) -> DownloaderInfo:
         """验证连通性与凭证，返回下载器版本信息。"""
 

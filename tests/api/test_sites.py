@@ -145,6 +145,26 @@ def test_disable_makes_site_unusable_without_changing_status(client: TestClient)
     assert d["usable"] is False  # 但因停用而不可用
 
 
+def test_boost_pause_resume_roundtrip(client: TestClient) -> None:
+    """刷流暂停/恢复闸：未开刷流时 400；开启后可暂停、可恢复；
+    暂停中关闭刷流会连带清掉暂停态（暂停依附于刷流本身）。"""
+    client.post("/api/v1/sites", json={"site_id": "mteam", "auth_type": "apikey", "api_key": "k"})
+    r = client.patch("/api/v1/sites/mteam/ratio-boost/pause", json={"paused": True})
+    assert r.status_code == 400  # 未开启刷流无从暂停
+
+    d = client.patch("/api/v1/sites/mteam/ratio-boost", json={"enabled": True}).json()["data"]
+    assert d["boost_paused"] is False
+    d = client.patch("/api/v1/sites/mteam/ratio-boost/pause", json={"paused": True}).json()["data"]
+    assert d["boost_paused"] is True
+    d = client.patch("/api/v1/sites/mteam/ratio-boost/pause", json={"paused": False}).json()["data"]
+    assert d["boost_paused"] is False
+
+    client.patch("/api/v1/sites/mteam/ratio-boost/pause", json={"paused": True})
+    d = client.patch("/api/v1/sites/mteam/ratio-boost", json={"enabled": False}).json()["data"]
+    assert d["boost_enabled"] is False
+    assert d["boost_paused"] is False
+
+
 def test_update_credentials_resets_and_reverifies(client: TestClient) -> None:
     client.post("/api/v1/sites", json={"site_id": "mteam", "auth_type": "apikey", "api_key": "k1"})
     assert client.get("/api/v1/sites/mteam").json()["data"]["status"] == "active"

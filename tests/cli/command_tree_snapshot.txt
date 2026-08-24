@@ -166,6 +166,7 @@ site catalog
 site delete
 site list
 site protection set
+site ratio-boost pause
 site ratio-boost set
 site show
 site stats

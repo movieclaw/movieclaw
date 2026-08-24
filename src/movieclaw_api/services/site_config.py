@@ -6,6 +6,7 @@ from movieclaw_api.exceptions import (
     BadRequestException,
     ConflictException,
     NotFoundException,
+    UpstreamServiceException,
 )
 from movieclaw_api.services.auth_factory import missing_required_fields
 from movieclaw_api.services.site_access import invalidate_site_access
@@ -189,16 +190,56 @@ class SiteConfigService:
             raise BadRequestException("刷流存储预算不能小于 1 GiB")
         if hold_days is not None and not (0 <= hold_days <= 30):
             raise BadRequestException("刷流汰换保留期须在 0～30 天之间（0=不保护）")
-        ok = await self._credentials.set_ratio_boost(
+        row = await self._credentials.get_by_site(site_id)
+        if row is None:
+            raise NotFoundException(f"站点尚未配置：{site_id}")
+        was_paused = row.boost_paused
+        await self._credentials.set_ratio_boost(
             site_id, enabled=enabled, budget_bytes=budget_bytes, hold_days=hold_days
         )
-        if not ok:
-            raise NotFoundException(f"站点尚未配置：{site_id}")
+        if not enabled and was_paused:
+            # 关闭刷流会连带清掉暂停态（见 credential_repo），做种上的暂停
+            # 限速也要一并解除——尽力而为：下载器不可达时只告警，任务保留
+            # 做种但仍被限速，用户可在下载器里自行解除
+            from movieclaw_api.services.ratio_boost import apply_boost_pause
+
+            await apply_boost_pause(self._session, site_id, False)
         if enabled:
             # 立刻生效：游标标记到期，下一个 tick（≤2 分钟）即同步一次索引，
             # 之后同步节奏被钉在最快档（见 torrent_sync._adapt_interval 的 pinned），
             # 免费新种的发现延迟收敛到 5 分钟级，而不是等冷站的旧排期走完
             await self._torrents.expire_cursor(site_id)
+        return await self.get_configured(site_id)
+
+    async def set_boost_paused(self, site_id: str, paused: bool) -> SiteCredential:
+        """暂停 / 恢复某站点的刷流；未配置时抛 404，未开启刷流时抛 400。
+
+        暂停是"临时给前台流量让路"：在池做种批量压到极低上传限速，引擎
+        停止汰换与拉新种（任务与数据全部保留）；恢复则解除限速、回到正常
+        节奏。两个方向的落地策略刻意不对称：
+
+        - **暂停**：先落库再下发限速——即使此刻下载器不可达，引擎每个 tick
+          都会重新下发（幂等自愈），暂停意图不能因一次网络抖动而丢失；
+        - **恢复**：先解除限速、全部成功才落库——若有下载器没解除成功就
+          报错保持暂停态，绝不能出现"界面显示运行中、做种却停在 1 KiB/s"
+          的静默失速。
+        """
+        row = await self.get_configured(site_id)  # 未配置抛 404
+        if not row.boost_enabled:
+            raise BadRequestException(f"站点 {site_id} 未开启刷流，无法暂停/恢复")
+        from movieclaw_api.services.ratio_boost import apply_boost_pause
+
+        if paused:
+            await self._credentials.set_boost_paused(site_id, True)
+            await apply_boost_pause(self._session, site_id, True)  # 失败由 tick 重试
+        else:
+            failed = await apply_boost_pause(self._session, site_id, False)
+            if failed:
+                raise UpstreamServiceException(
+                    "部分下载器不可达，做种的限速尚未解除，刷流保持暂停状态；"
+                    "请检查下载器连接后重试恢复"
+                )
+            await self._credentials.set_boost_paused(site_id, False)
         return await self.get_configured(site_id)
 
     async def delete(self, site_id: str) -> None:
@@ -209,6 +250,12 @@ class SiteConfigService:
         """
         row = await self.get_configured(site_id)  # 未配置抛 404
         self._assert_not_verifying(row)  # 验证中抛 409
+        if row.boost_paused:
+            # 暂停中删除站点：转出的任务会继续做种，先尽力解除暂停限速，
+            # 避免它们永远停在 1 KiB/s（失败只告警，用户可在下载器里解除）
+            from movieclaw_api.services.ratio_boost import apply_boost_pause
+
+            await apply_boost_pause(self._session, site_id, False)
         await self._credentials.delete(site_id)
         # 凭据已删，遗留的 cookie 会话也一并清掉
         await self._cookies.delete(site_id)

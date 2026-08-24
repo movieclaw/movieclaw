@@ -107,6 +107,10 @@ class ConfiguredSite(BaseModel):
         default=False, description="站点保护开关：订阅链路绕开该站，手动搜索/下载不受影响"
     )
     boost_enabled: bool = Field(default=False, description="自动刷分享率开关")
+    boost_paused: bool = Field(
+        default=False,
+        description="刷流暂停中：做种压到极低上传限速，停止汰换与拉新种（任务保留）",
+    )
     boost_budget_bytes: int = Field(default=0, description="刷流存储预算（字节）")
     boost_hold_days: int = Field(default=3, description="刷流汰换最低保留天数；0=不保护")
     last_verified_at: datetime | None = Field(default=None, description="最近验证成功时间")
@@ -149,6 +153,7 @@ class ConfiguredSite(BaseModel):
             usable=row.enabled and row.status == ConfigStatus.ACTIVE,
             protected=row.protected,
             boost_enabled=row.boost_enabled,
+            boost_paused=row.boost_paused,
             boost_budget_bytes=row.boost_budget_bytes,
             boost_hold_days=row.boost_hold_days,
             last_verified_at=row.last_verified_at,
@@ -264,6 +269,17 @@ class SiteRatioBoostUpdate(BaseModel):
     hold_days: int | None = Field(
         default=None,
         description="汰换最低保留天数（0～30；0=站点无 H&R、不设保护）；None=不修改",
+    )
+
+
+class SiteBoostPauseUpdate(BaseModel):
+    """刷流暂停/恢复请求体。"""
+
+    paused: bool = Field(
+        description=(
+            "true=暂停（做种压到极低上传限速、停止汰换与拉新种，任务与数据保留）"
+            "/ false=恢复（解除限速，回到正常刷流节奏）"
+        )
     )
 
 

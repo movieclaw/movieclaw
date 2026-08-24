@@ -7,6 +7,7 @@ from movieclaw_api.schemas.response import ApiResponse, ok
 from movieclaw_api.schemas.site import (
     CatalogItem,
     ConfiguredSite,
+    SiteBoostPauseUpdate,
     SiteBoostStatsView,
     SiteConfigCreate,
     SiteConfigUpdate,
@@ -246,6 +247,28 @@ async def set_site_ratio_boost(
         hold_days=payload.hold_days,
     )
     return ok(await _to_view(service, row))
+
+
+@router.patch(
+    "/{site_id}/ratio-boost/pause",
+    response_model=ApiResponse[ConfiguredSite],
+    summary="暂停 / 恢复站点刷流",
+    operation_id="site.ratio-boost.pause",
+)
+async def set_site_boost_paused(
+    site_id: str,
+    payload: SiteBoostPauseUpdate,
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[ConfiguredSite]:
+    """刷流上行占满带宽影响前台使用（如看视频）时的临时闸：暂停会把该站
+    在池做种批量压到极低上传限速，并停止汰换与拉新种（任务与数据全部保留）；
+    恢复则解除限速、回到正常刷流节奏。与关闭刷流不同，暂停随时可无损恢复。"""
+    service = SiteConfigService(session)
+    row = await service.set_boost_paused(site_id, payload.paused)
+    return ok(
+        await _to_view(service, row),
+        message="已暂停刷流，做种已限速让出上行带宽" if payload.paused else "已恢复刷流",
+    )
 
 
 @router.post(

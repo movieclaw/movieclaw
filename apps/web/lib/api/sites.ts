@@ -145,6 +145,17 @@ export function setSiteRatioBoost(
   );
 }
 
+/** 暂停 / 恢复站点刷流：暂停把在池做种压到极低上传限速（给看视频等前台
+ *  流量让出上行）并停止汰换与拉新种，任务与数据全部保留；恢复解除限速。 */
+export function setSiteBoostPaused(siteId: string, paused: boolean): Promise<ConfiguredSite> {
+  return unwrap(
+    request<ApiEnvelope<ConfiguredSite>>(`/sites/${siteId}/ratio-boost/pause`, {
+      method: "PATCH",
+      body: JSON.stringify({ paused }),
+    }),
+  );
+}
+
 /** 单个站点的刷流运行统计（见 schemas.site.SiteBoostStatsView）。 */
 export interface SiteBoostStats {
   /** 在池刷流任务数 */

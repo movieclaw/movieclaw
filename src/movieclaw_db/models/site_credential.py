@@ -83,6 +83,11 @@ class SiteCredential(TimestampMixin, table=True):
     protected: bool = Field(default=False, description="站点保护开关：订阅链路绕开该站")
     # 自动刷分享率开关：盯本地索引的免费种第一时间抢下做种，预算内自动汰换
     boost_enabled: bool = Field(default=False, description="自动刷分享率开关")
+    # 刷流暂停开关：上行带宽被刷流占满影响前台使用（如看视频）时的临时闸——
+    # 暂停期间在池做种全部压到极低上传限速，且停止汰换与拉新种；恢复时解除
+    # 限速、引擎回到正常节奏。与 boost_enabled 正交：暂停是"临时让路"，
+    # 关闭是"不再刷流"（关闭刷流会自动清掉暂停态）。
+    boost_paused: bool = Field(default=False, description="刷流暂停开关：做种限速+停止汰换拉新")
     # 刷流存储预算（字节）：该站刷流任务占用磁盘的上限，默认 100 GiB
     boost_budget_bytes: int = Field(
         default=100 * 1024**3, description="刷流存储预算（字节）"
