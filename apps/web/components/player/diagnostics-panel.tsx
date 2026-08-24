@@ -36,10 +36,14 @@ const DROP_ALERT_RATIO = 0.02;
 export function DiagnosticsPanel({
   session,
   engine,
+  landscape,
   onClose,
 }: {
   session: PlaybackSession;
   engine: PlaybackEngine | null;
+  /** 横屏中（真方向锁或 iOS 伪横屏）。见下方注释：伪横屏时视口仍是竖的，
+   *  `max-md:` 按视口宽度判断会选错布局，必须由这个状态拍板 */
+  landscape: boolean;
   onClose: () => void;
 }) {
   const [stats, setStats] = useState<EngineStats | null>(null);
@@ -75,6 +79,20 @@ export function DiagnosticsPanel({
        *   宽屏不受这条约束：面板 320px 靠左，与居中的按钮簇在横向上本就错开，
        *   那里只留一个防撑破的兜底限高。
        *
+       * 竖屏/宽屏怎么判：**横屏状态优先，`max-md:` 只兜竖屏的班**。iOS 伪
+       * 横屏是把容器旋转 90°，视口还是竖着的 390px——按视口宽度判断会继续
+       * 用竖屏布局，面板横跨 844px 的旋转容器（真机截图证实）。所以横屏时
+       * 由 landscape 状态直接切到宽屏那组类，与视口无关。
+       *
+       * z-10，比中央簇（z-20）**低**：手机横屏只有 320~390pt 高，320px 宽的
+       * 面板与中央簇必然相交，谁躲谁都躲不开。YouTube 的答案是传输控件画在
+       * Stats for nerds 上层——面板是被动读数，退十秒不能被它埋掉。面板的
+       * 关闭键在自己右上角，不在相交区，两边都点得到。
+       *
+       * `left` 用 max(1.5rem, --safe-left)：伪横屏下布局左边就是物理顶边，
+       * --safe-left 被重映射成状态栏高度（globals.css 的 .player-fake-landscape），
+       * 桌面上它是 0、退化回原来的 1.5rem。
+       *
        * 限高一律配 `overflow-y-auto`：判定理由那段长度不可控（多轨、降档、
        * HDR 处置都会往里加句子），撑破了会一路盖到控制条上。
        *
@@ -86,12 +104,16 @@ export function DiagnosticsPanel({
        * 视频上，每帧重采样模糊是掉帧的头号大户（globals 里的 QoE 注释），而
        * 诊断面板恰恰是用来量掉帧的，不能自己污染读数。
        */
-      className="
-        absolute z-20 overflow-y-auto overscroll-contain rounded-[14px] bg-black/70 px-3.5 py-2.5 text-[11.5px]
-        left-6 top-[calc(4.5rem_+_var(--safe-top))] w-[320px] max-h-[calc(100%-12rem)]
-        max-md:left-3 max-md:right-3 max-md:w-auto
-        max-md:max-h-[calc(50%_-_4.5rem_-_var(--safe-top)_-_2.5rem)]
-      "
+      className={`
+        absolute z-10 overflow-y-auto overscroll-contain rounded-[14px] bg-black/70 px-3.5 py-2.5 text-[11.5px]
+        left-[max(1.5rem,var(--safe-left))] top-[calc(4.5rem_+_var(--safe-top))] w-[320px] max-h-[calc(100%-12rem)]
+        ${
+          landscape
+            ? ""
+            : `max-md:left-[max(0.75rem,var(--safe-left))] max-md:right-[max(0.75rem,var(--safe-right))]
+               max-md:w-auto max-md:max-h-[calc(50%_-_4.5rem_-_var(--safe-top)_-_2.5rem)]`
+        }
+      `}
     >
       <div className="mb-2 flex items-center justify-between">
         <h3 className="text-[12px] font-semibold text-white/90">播放诊断</h3>

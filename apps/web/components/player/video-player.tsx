@@ -1533,6 +1533,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
           <DiagnosticsPanel
             session={state.session}
             engine={engineRef.current}
+            landscape={landscape}
             onClose={() => setDiagnosticsOpen(false)}
           />
         ) : null}
@@ -1566,7 +1567,11 @@ export function VideoPlayer(props: VideoPlayerProps) {
           </div>
         ) : null}
 
-        <div className="absolute inset-x-0 bottom-0 z-20">
+        {/* pointer-events-none 必须有：这层透明容器的高度由内容撑（时间行的
+            pt-24 也算），横屏时上沿会探进中央簇的区域——普通 div 即使全透明
+            也拦命中，退十秒会看得见按不动。可点元素在 PlayerControls 里各自
+            开回 auto。 */}
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20">
           <PlayerControls
             positionMs={positionMs}
             durationMs={durationMs}

@@ -325,8 +325,12 @@ export function PlayerControls(props: PlayerControlsProps) {
           个实际好处——它和右下角的切集胶囊隔着进度条，不会误按。
           两边高度取同一档，左右才真的对称。 */}
       <div
-        className={`player-inset-x relative flex items-center justify-between pt-24 pb-2 transition-opacity duration-300 max-md:pt-16 ${
-          chromeVisible ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
+        // 行容器**永远 pointer-events-none**，命中权在右侧按钮组那个子元素上：
+        // pt-24 那截透明内边距只是撑视觉间距，但挂上 auto 它就会吃掉底下的
+        // 点击——横屏只有 320~390pt 高，这截正好罩在中央簇的退十秒按钮上，
+        // 按钮看得见按不动（层级在下、命中被这行截胡）。
+        className={`player-inset-x pointer-events-none relative flex items-center justify-between pt-24 pb-2 transition-opacity duration-300 max-md:pt-16 ${
+          chromeVisible ? "opacity-100" : "opacity-0"
         }`}
       >
         {/* 两段各自成元素、靠 gap 分开：药丸是 flex，写在文字里的前导空格会
@@ -339,7 +343,7 @@ export function PlayerControls(props: PlayerControlsProps) {
         {/* 横屏管方向、全屏管铺满——真横屏会顺带进全屏，此时全屏键自然
             成为退出键。iPhone 没有元素级全屏，全屏键走系统原生播放器，
             字幕靠 video 上的原生 VTT 轨跟进去（见 video-player 的 pip 轨） */}
-        <div className="flex items-center gap-2">
+        <div className={`flex items-center gap-2 ${chromeVisible ? "pointer-events-auto" : ""}`}>
           {canRotate ? (
             <IconButton
               glass
@@ -655,7 +659,10 @@ export function PlayerCenterControls({
 }) {
   return (
     <div
-      className={`pointer-events-none absolute inset-0 z-10 flex items-center justify-center gap-14 transition-opacity duration-300 max-md:gap-10 ${
+      // z-20：要压在诊断面板（z-10）**之上**。手机横屏只有 320~390pt 高，
+      // 面板再怎么摆都会与中央簇相交；YouTube 的处理就是传输控件永远画在
+      // Stats for nerds 上层——面板是被动读数，播放/退进十秒不能被它埋掉。
+      className={`pointer-events-none absolute inset-0 z-20 flex items-center justify-center gap-14 transition-opacity duration-300 max-md:gap-10 ${
         visible ? "opacity-100" : "opacity-0"
       }`}
     >

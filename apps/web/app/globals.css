@@ -1562,6 +1562,17 @@ body.cmdk-open .app-shell {
   height: 100dvw;
   transform: rotate(90deg) translateY(-100%);
   transform-origin: top left;
+
+  /* 安全区必须跟着一起转 90°。env() 给的永远是**物理**方向的值（设备还竖
+     着拿），而容器顺时针转了 90°：物理顶边（灵动岛/状态栏）成了布局的左边，
+     物理底边（Home 指示条）成了布局的右边。不重映射的话，时间药丸和操作
+     卡片的左边距按 --safe-left = 0 算，整排顶进灵动岛底下（真机截图证实）；
+     真横屏（方向锁）不需要这段——那时视口真的转了，env() 自己会换方向。
+     只能直接引 env()：写 var(--safe-*) 是在重定义里引用自己，循环了。 */
+  --safe-left: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-bottom, 0px);
+  --safe-top: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-left, 0px);
 }
 
 /* ---- 自建进度条 -----------------------------------------------------------
