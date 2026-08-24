@@ -317,6 +317,23 @@ function externalSubtitleSuffix(stream: SubtitleStream): string {
   return "外挂";
 }
 
+/**
+ * 外挂字幕的行内标签：去掉与视频同名的那段前缀，只留区分用的 token 段。
+ *
+ * 同一部影片的外挂字幕**全都**以视频文件名开头（发现规则就是这么定的），
+ * 完整文件名放进列表行里，一列截断下来几条长得一模一样——真正的区分信息
+ * （chs / ai-chs / 简体.default）全在被截掉的尾部。手机抽屉里尤其致命：
+ * 删除要的就是"我删的是哪一条"。完整路径仍会在删除确认框里给全。
+ */
+function externalSubtitleLabel(fileName: string | null, videoStem: string): string {
+  if (!fileName) return "外挂字幕";
+  if (videoStem && fileName.toLowerCase().startsWith(videoStem.toLowerCase())) {
+    const rest = fileName.slice(videoStem.length).replace(/^\./, "");
+    if (rest) return rest;
+  }
+  return fileName;
+}
+
 /** 外挂字幕与视频同目录，据此还原它的完整路径（删除确认框要摆给用户看）。 */
 function siblingPath(videoPath: string, filename: string): string {
   const cut = Math.max(videoPath.lastIndexOf("/"), videoPath.lastIndexOf("\\"));
@@ -381,7 +398,7 @@ function audioEntries(streams: AudioStream[]): TrackEntry[] {
   });
 }
 
-function subtitleEntries(streams: SubtitleStream[]): TrackEntry[] {
+function subtitleEntries(streams: SubtitleStream[], videoStem: string): TrackEntry[] {
   // 内封轨在界面上按"内封里的第几条"编号，而不是在混合数组里的下标——
   // subtitle_streams 里内封与外挂是混在一起的，直接用下标会给出错误的轨号
   let embeddedOrdinal = 0;
@@ -398,7 +415,9 @@ function subtitleEntries(streams: SubtitleStream[]): TrackEntry[] {
       rank: subtitleRank(stream, language),
       format,
       tone: subtitleTone(stream),
-      primary: external ? (stream.file_name ?? "外挂字幕") : `内封轨 ${embeddedOrdinal}`,
+      primary: external
+        ? externalSubtitleLabel(stream.file_name, videoStem)
+        : `内封轨 ${embeddedOrdinal}`,
       secondary: external ? externalSubtitleSuffix(stream) : "内封",
       flags: [stream.default ? "默认" : null, stream.forced ? "强制" : null].filter(
         (flag): flag is string => flag !== null,
@@ -496,9 +515,11 @@ export function MediaTrackRows({
     () => groupByLanguage(audioEntries(selectedFile?.audio_streams ?? [])),
     [selectedFile?.audio_streams],
   );
+  // 外挂字幕的行内标签要减掉这段前缀（见 externalSubtitleLabel）
+  const videoStem = (selectedFile?.file_name ?? "").replace(/\.[^.]+$/, "");
   const subtitleGroups = useMemo(
-    () => groupByLanguage(subtitleEntries(selectedFile?.subtitle_streams ?? [])),
-    [selectedFile?.subtitle_streams],
+    () => groupByLanguage(subtitleEntries(selectedFile?.subtitle_streams ?? [], videoStem)),
+    [selectedFile?.subtitle_streams, videoStem],
   );
 
   /**
