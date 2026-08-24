@@ -88,14 +88,17 @@ async def decide_for_files(
         )
         profile = media_profile_from_file(file, keyframe_interval_s=interval)
         decisions.append(
-            decide_playback(
-                profile,
-                capability,
-                policy,
-                can_self_enable=can_self_enable,
-                failed_tiers=failed_tiers,
-                preferred_audio=preferred_audio,
-                max_height=max_height,
+            (
+                decide_playback(
+                    profile,
+                    capability,
+                    policy,
+                    can_self_enable=can_self_enable,
+                    failed_tiers=failed_tiers,
+                    preferred_audio=preferred_audio,
+                    max_height=max_height,
+                ),
+                profile.height,
             )
         )
     return _best(decisions)
@@ -115,14 +118,19 @@ async def _load_policy() -> PlaybackPolicy:
     )
 
 
-def _best(decisions: list[PlaybackDecision]) -> PlaybackDecision:
-    """择优：能出计划的按档位取最小；全都出不了计划时，优先把「要用户同意」
-    这种可挽救的结果交给前端，而不是直接报拒绝。"""
-    plans = [d for d in decisions if isinstance(d, PlaybackPlan)]
+def _best(decisions: list[tuple[PlaybackDecision, int | None]]) -> PlaybackDecision:
+    """择优：能出计划的按档位取最小，**同档位取更高分辨率**；全都出不了计划
+    时，优先把「要用户同意」这种可挽救的结果交给前端，而不是直接报拒绝。
+
+    同档位决胜为什么必须有：直通判定放开后（§12.15），1080p 与 2160p 版本
+    经常**同时**落在档 0/1，此时播哪个取决于数据库返回顺序——同一部片今天
+    4K 明天 1080p。既然同档位代价相同（都不重编码），当然给用户画质最好的
+    那份；高度未知的候选排最后（None 当 0），至少保证结果确定。"""
+    plans = [(d, height) for d, height in decisions if isinstance(d, PlaybackPlan)]
     if plans:
-        return min(plans, key=lambda d: d.tier)
-    consents = [d for d in decisions if isinstance(d, ConsentRequired)]
-    return consents[0] if consents else decisions[0]
+        return min(plans, key=lambda pair: (pair[0].tier, -(pair[1] or 0)))[0]
+    consents = [d for d, _ in decisions if isinstance(d, ConsentRequired)]
+    return consents[0] if consents else decisions[0][0]
 
 
 async def library_files_for_unit(

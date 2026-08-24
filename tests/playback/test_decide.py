@@ -620,3 +620,30 @@ def test_quality_cap_does_not_touch_strm():
     )
     assert isinstance(plan, PlaybackPlan)
     assert plan.tier is PlaybackTier.DIRECT_PLAY
+
+
+def test_copy_audio_plan_carries_codec_and_channels():
+    """直通计划也要带源轨 codec/声道——诊断面板靠它回答「直通的是什么」。
+
+    不带的表现就是面板上那格「直通 · 未知」；与视频侧当年 hvc1 打标的坑同构
+    （copy 计划不带 codec，下游要用时已经没有了）。
+    """
+    decision = decide_playback(
+        media(container="mp4", audio_tracks=(AC3_51,)), SAFARI_MAC, WITH_GPU
+    )
+    assert isinstance(decision, PlaybackPlan)
+    assert decision.audio.action == "copy"
+    assert decision.audio.codec == "ac3"
+    assert decision.audio.channels == 6
+
+    universal_decision = decide_playback(
+        media(audio_tracks=(AC3_51,)), universal_capability(), WITH_GPU
+    )
+    assert isinstance(universal_decision, PlaybackPlan)
+    assert universal_decision.audio.codec == "ac3"
+
+    strm_decision = decide_playback(
+        media(is_strm=True, audio_tracks=(AC3_51,)), CHROME_HEVC, WITH_GPU
+    )
+    assert isinstance(strm_decision, PlaybackPlan)
+    assert strm_decision.audio.codec == "ac3"

@@ -265,7 +265,9 @@ def decide_playback(
             file_id=media.file_id,
             container="mp4",
             video=VideoPlan(action="copy"),
-            audio=AudioPlan(action="copy", track_ref=_default_audio_ref(media)),
+            audio=_copy_audio_plan(
+                _preferred_audio(media.audio_tracks) if media.audio_tracks else None
+            ),
             subtitles=(),
             audio_tracks=media.audio_tracks,
             reason="播放器自述具备完整解码能力，原文件直连播放",
@@ -606,12 +608,26 @@ def _build_video_plan(
     )
 
 
+def _copy_audio_plan(track: AudioTrack | None) -> AudioPlan:
+    """直通计划也要带上源轨的 codec/声道。
+
+    这不是装饰：诊断面板靠 `audio.codec` 回答「直通的到底是什么」，不带就
+    显示「直通 · 未知」——用户排障时最需要的恰恰是这一格。视频侧早年为
+    hvc1 打标修过同构的坑（copy 计划不带 codec 导致 `-tag:v` 永远打不上）。
+    """
+    if track is None:
+        return AudioPlan(action="copy", track_ref=None)
+    return AudioPlan(
+        action="copy", track_ref=track.ref, codec=track.codec, channels=track.channels
+    )
+
+
 def _build_audio_plan(
     media: MediaProfile, verdict: _AudioVerdict, tier: PlaybackTier
 ) -> AudioPlan:
     track_ref = verdict.track.ref if verdict.track else None
     if verdict.can_copy:
-        return AudioPlan(action="copy", track_ref=track_ref)
+        return _copy_audio_plan(verdict.track)
     return AudioPlan(
         action="transcode",
         track_ref=track_ref,
@@ -678,7 +694,9 @@ def _decide_strm(
         file_id=media.file_id,
         container="mp4",
         video=VideoPlan(action="copy"),
-        audio=AudioPlan(action="copy", track_ref=_default_audio_ref(media)),
+        audio=_copy_audio_plan(
+            _preferred_audio(media.audio_tracks) if media.audio_tracks else None
+        ),
         subtitles=plan_subtitles(media),
         reason="网盘条目直连云端播放，服务器零流量",
     )
@@ -689,7 +707,3 @@ def _preferred_audio(tracks: tuple[AudioTrack, ...]) -> AudioTrack:
     return next((t for t in tracks if t.is_default), tracks[0])
 
 
-def _default_audio_ref(media: MediaProfile) -> str | None:
-    if not media.audio_tracks:
-        return None
-    return _preferred_audio(media.audio_tracks).ref

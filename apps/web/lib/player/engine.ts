@@ -78,10 +78,19 @@ const BACK_BUFFER_S = 30;
 /** 掉帧与缓冲读数：三种引擎共用一份取法。 */
 function readCommonStats(video: HTMLVideoElement): Omit<EngineStats, "engine" | "bitrate"> {
   const quality = video.getVideoPlaybackQuality?.();
+  // Safari 老前缀回退：标准 getVideoPlaybackQuality 在部分 WebKit 上缺失或
+  // 返回全零，但 webkitDroppedFrameCount / webkitDecodedFrameCount 一直在。
+  // 这两个计数不喂的话，掉帧 watchdog 在 iOS（恰恰是 smooth 误报最重、最
+  // 需要真实证据的平台）就是哑的。decodedFrameCount 语义≈totalVideoFrames
+  // （解码数 vs 应显示数），对「窗口掉帧率」这个用途足够等价。
+  const legacy = video as HTMLVideoElement & {
+    webkitDroppedFrameCount?: number;
+    webkitDecodedFrameCount?: number;
+  };
   return {
     bufferedSeconds: bufferedAhead(video),
-    droppedFrames: quality?.droppedVideoFrames ?? null,
-    totalFrames: quality?.totalVideoFrames ?? null,
+    droppedFrames: quality?.droppedVideoFrames ?? legacy.webkitDroppedFrameCount ?? null,
+    totalFrames: quality?.totalVideoFrames ?? legacy.webkitDecodedFrameCount ?? null,
   };
 }
 

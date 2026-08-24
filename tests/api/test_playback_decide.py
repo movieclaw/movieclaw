@@ -191,3 +191,41 @@ async def test_view_translation_covers_three_outcomes(db):
     assert consent_view.outcome == "consent"
     assert consent_view.can_self_enable is False  # 普通成员：渲染说明而非按钮
     assert consent_view.cost_hint
+
+
+def test_best_prefers_higher_resolution_at_equal_tier():
+    """同档位并列时取更高分辨率——直通判定放开后 1080p/2160p 经常同档。
+
+    改动前是 `min(key=tier)`，并列取数据库返回顺序的第一个：同一部片今天播
+    4K 明天播 1080p，全看行序。同档位代价相同（都不重编码），画质当然取高。
+    """
+    from movieclaw_api.services.playback.plan import _best
+    from movieclaw_playback.decide import AudioPlan, PlaybackPlan, PlaybackTier, VideoPlan
+
+    def plan(file_id: int) -> PlaybackPlan:
+        return PlaybackPlan(
+            tier=PlaybackTier.REMUX,
+            file_id=file_id,
+            container="hls-fmp4",
+            video=VideoPlan(action="copy"),
+            audio=AudioPlan(action="copy"),
+        )
+
+    # 1080p 在前、4K 在后：不看高度的话会取到先来的 1080p
+    picked = _best([(plan(1), 1080), (plan(2), 2160)])
+    assert picked.file_id == 2
+
+    # 高度未知的候选排最后，结果保持确定
+    picked = _best([(plan(3), None), (plan(4), 1080)])
+    assert picked.file_id == 4
+
+    # 档位仍然优先于分辨率：能直通的 1080p 胜过要转码的 4K
+    transcode_4k = PlaybackPlan(
+        tier=PlaybackTier.HARDWARE_TRANSCODE,
+        file_id=5,
+        container="hls-fmp4",
+        video=VideoPlan(action="transcode", codec="h264"),
+        audio=AudioPlan(action="copy"),
+    )
+    picked = _best([(transcode_4k, 2160), (plan(6), 1080)])
+    assert picked.file_id == 6
