@@ -32,6 +32,7 @@ from movieclaw_api.schemas.playback import (
     PlaybackProgressRequest,
     PlaybackSessionRequest,
     PlaybackSessionView,
+    PlaybackSourceView,
     PlaybackStateView,
     PlaybackStatsView,
     RecentWatchView,
@@ -376,6 +377,16 @@ async def start_playback_session(
     file = await session.get(LibraryFile, view.file_id)
     if file is None:
         raise NotFoundException("文件已不在台账中")
+    # 诊断面板的「源 → 处理」层次要有左半边：台账真值原样带回（§6.5）
+    source_view = PlaybackSourceView(
+        container=file.container,
+        resolution=file.resolution,
+        video_codec=file.video_codec,
+        hdr=file.hdr,
+        bit_rate=file.bit_rate,
+        frame_rate=file.frame_rate,
+        size_bytes=file.size_bytes,
+    )
 
     # 进度条缩略图：后台起，不挡首帧。生成要通读整个容器，放进同步路径会让
     # 首帧白等；而缩略图晚几十秒出现完全可以接受。
@@ -398,6 +409,7 @@ async def start_playback_session(
                 start_ms=resolved_start_ms,
                 subtitle_urls=subtitle_urls,
                 watch=watch_view,
+                source=source_view,
             )
         )
 
@@ -478,6 +490,7 @@ async def start_playback_session(
             subtitle_urls=subtitle_urls,
             hw_backend=hw_used,
             watch=watch_view,
+            source=source_view,
         )
     )
 

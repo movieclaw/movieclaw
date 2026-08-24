@@ -4,34 +4,60 @@ import { useEffect, useState } from "react";
 
 import type { PlaybackSession } from "@/lib/api/playback";
 import type { EngineStats, PlaybackEngine } from "@/lib/player/engine";
+import { languageLabel } from "@/lib/language-labels";
 
 /**
- * 诊断面板（docs/design/web-player.md §6.5，对标 YouTube 的 Stats for nerds）。
+ * 诊断面板（docs/design/web-player.md §6.5，信息层次对标 Emby 的播放信息）。
  *
  * 这一屏是**开源项目支持成本的直接节省**：用户报「放不出来 / 很卡」时，截这
- * 一张图，档位、源与目标编码、有没有走显卡、实时码率、掉帧、缓冲、会话 id、
- * 判定理由全在里面，一来一回就能定位，不用反复问「你的浏览器是什么版本」。
+ * 一张图，源规格、处理方式、有没有走显卡、掉帧、会话 id、判定理由全在里面，
+ * 一来一回就能定位，不用反复问「你的浏览器是什么版本」。
+ *
+ * **层次照 Emby：每一节先摆「源是什么」，下一行「→ 我们对它做了什么」。**
+ * 只报处理结果的面板回答不了用户真正的疑问——「1080p H264 明明能直通，为什么
+ * 在转码」这类问题必须把源和处理摆在一起才看得出来。
  */
 
 const TIER_LABELS: Record<number, string> = {
-  0: "档 0 · 原文件直出",
-  1: "档 1 · 换壳（视频音频均直通）",
-  2: "档 2 · 换壳 + 转音轨",
-  3: "档 3 · 硬件转码",
-  4: "档 4 · 软件转码",
+  0: "原文件直出",
+  1: "换壳直通",
+  2: "换壳 + 转音轨",
+  3: "硬件转码",
+  4: "软件转码",
 };
 
-function Row({ label, value }: { label: string; value: string }) {
+/** 掉帧率高于这个比例就标红：能解但解不动，通常是该降一档了。 */
+const DROP_ALERT_RATIO = 0.02;
+
+function formatMbps(bps: number | null | undefined): string | null {
+  if (!bps) return null;
+  return `${(bps / 1_000_000).toFixed(bps >= 10_000_000 ? 0 : 1)} Mbps`;
+}
+
+/** 节标题 + 内容：Emby 式两级缩进。 */
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="flex items-baseline justify-between gap-6">
-      <span className="shrink-0 text-white/55">{label}</span>
-      <span className="tnum truncate text-right text-white/95">{value}</span>
+    <div>
+      <p className="font-semibold text-white/60">{title}</p>
+      <div className="mt-0.5 space-y-0.5 pl-3">{children}</div>
     </div>
   );
 }
 
-/** 掉帧率高于这个比例就标红：能解但解不动，通常是该降一档了。 */
-const DROP_ALERT_RATIO = 0.02;
+/** 源行：白色主体字，一节的「左半边」。 */
+function SourceLine({ children }: { children: React.ReactNode }) {
+  return <p className="font-medium text-white/95">{children}</p>;
+}
+
+/** 处理行：→ 开头，弱一档的颜色——读的顺序就是数据流的方向。 */
+function ActionLine({ children, alert }: { children: React.ReactNode; alert?: boolean }) {
+  return (
+    <p className={alert ? "text-red-300" : "text-white/75"}>
+      <span className="mr-1 text-white/40">→</span>
+      {children}
+    </p>
+  );
+}
 
 export function DiagnosticsPanel({
   session,
@@ -56,16 +82,76 @@ export function DiagnosticsPanel({
     return () => window.clearInterval(timer);
   }, [engine]);
 
-  const { decision } = session;
+  const { decision, source } = session;
   const dropRatio =
     stats?.droppedFrames != null && stats.totalFrames
       ? stats.droppedFrames / stats.totalFrames
       : 0;
 
+  // —— 流媒体节：容器层的「源 → 协议」 ——
+  const sourceContainer = [
+    (source?.container ?? decision.container ?? "未知").toUpperCase(),
+    formatMbps(source?.bit_rate),
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const streamTarget =
+    decision.tier === 0
+      ? "原文件直出"
+      : `HLS · fMP4（${TIER_LABELS[decision.tier ?? -1] ?? "未知档位"}）`;
+
+  // —— 视频节 ——
+  const videoSource = source
+    ? [
+        source.resolution,
+        source.video_codec?.toUpperCase(),
+        source.hdr,
+        source.frame_rate ? `${source.frame_rate.toFixed(3).replace(/\.?0+$/, "")} fps` : null,
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    : null;
+  const videoCopy = decision.video?.action === "copy";
+  const videoAction = decision.video
+    ? videoCopy
+      ? "直通"
+      : `转码（${(decision.video.codec ?? "h264").toUpperCase()}${
+          decision.video.height ? ` ${decision.video.height}p` : ""
+        }${session.hw_backend ? ` · ${session.hw_backend}` : " · 软件"}${
+          decision.video.tone_map ? " · HDR 转 SDR" : ""
+        }）`
+    : null;
+
+  // —— 音频节：源行来自候选轨列表里「这次放的那条」 ——
+  const activeTrack = decision.audio_tracks.find(
+    (track) => track.ref === decision.audio?.track_ref,
+  );
+  const audioSource = activeTrack
+    ? [
+        activeTrack.language ? languageLabel(activeTrack.language) : null,
+        activeTrack.codec?.toUpperCase(),
+        activeTrack.channels ? `${activeTrack.channels} 声道` : null,
+      ]
+        .filter(Boolean)
+        .join(" ") + (activeTrack.is_default ? "（默认）" : "")
+    : null;
+  const audioCopy = decision.audio?.action === "copy";
+  const audioAction = decision.audio
+    ? audioCopy
+      ? "直通"
+      : `转码（${(decision.audio.codec ?? "aac").toUpperCase()}${
+          decision.audio.channels ? ` ${decision.audio.channels} 声道` : ""
+        }${decision.audio.downmix ? " · 已降混" : ""}）`
+    : null;
+
   return (
     <div
       /*
        * 外观照 YouTube 的 Stats for nerds：**一块半透明的黑，仅此而已**。
+       *
+       * noautohide：media-controller 在用户无操作时把普通子元素统一淡出，
+       * 这块面板要一直挂到用户点关闭为止、与控制条显隐互不相干（Emby 同款
+       * 行为）——不豁免的话表现为「鼠标一停诊断信息就消失」。
        *
        * 位置照它放在画面左上，但有两条约束是真机截图逼出来的：
        *
@@ -104,8 +190,9 @@ export function DiagnosticsPanel({
        * 视频上，每帧重采样模糊是掉帧的头号大户（globals 里的 QoE 注释），而
        * 诊断面板恰恰是用来量掉帧的，不能自己污染读数。
        */
+      {...{ noautohide: "" }}
       className={`
-        absolute z-10 overflow-y-auto overscroll-contain rounded-[14px] bg-black/70 px-3.5 py-2.5 text-[11.5px]
+        absolute z-10 overflow-y-auto overscroll-contain rounded-[14px] bg-black/70 px-3.5 py-2.5 text-[11.5px] leading-relaxed
         left-[max(1.5rem,var(--safe-left))] top-[calc(4.5rem_+_var(--safe-top))] w-[320px] max-h-[calc(100%-12rem)]
         ${
           landscape
@@ -115,7 +202,7 @@ export function DiagnosticsPanel({
         }
       `}
     >
-      <div className="mb-2 flex items-center justify-between">
+      <div className="mb-1.5 flex items-center justify-between">
         <h3 className="text-[12px] font-semibold text-white/90">播放诊断</h3>
         <button
           type="button"
@@ -129,59 +216,51 @@ export function DiagnosticsPanel({
         </button>
       </div>
 
-      <div className="space-y-0.5">
-        <Row label="档位" value={TIER_LABELS[decision.tier ?? -1] ?? "未知"} />
-        {decision.degraded_from != null ? (
-          <Row label="降档自" value={`档 ${decision.degraded_from}`} />
-        ) : null}
-        <Row
-          label="视频"
-          value={
-            decision.video
-              ? `${decision.video.action === "copy" ? "直通" : "转码"} · ${decision.video.codec ?? "未知"}` +
-                (decision.video.height ? ` · ${decision.video.height}p` : "") +
-                (decision.video.tone_map ? " · HDR 转 SDR" : "")
-              : "—"
-          }
-        />
-        <Row
-          label="音频"
-          value={
-            decision.audio
-              ? `${decision.audio.action === "copy" ? "直通" : "转码"} · ${decision.audio.codec ?? "未知"}` +
-                (decision.audio.channels ? ` · ${decision.audio.channels} 声道` : "") +
-                (decision.audio.downmix ? " · 已降混" : "")
-              : "—"
-          }
-        />
-        {/* 直通档（0/1/2）根本不经编码器，「硬件加速：不适用」是句废话；
-            码率拿不到时那条 `—` 同理。竖屏能显示的行数有限，没信息量的行
-            就是在把真正要看的判定理由挤出屏幕。 */}
-        {decision.tier != null && decision.tier >= 3 ? (
-          <Row
-            label="硬件加速"
-            value={session.hw_backend ?? (decision.tier === 4 ? "无（软件转码）" : "不适用")}
-          />
-        ) : null}
-        <Row label="传输" value={stats?.engine ?? "—"} />
-        {stats?.bitrate ? (
-          <Row label="实时码率" value={`${(stats.bitrate / 1_000_000).toFixed(1)} Mbps`} />
-        ) : null}
-        <div className={dropRatio > DROP_ALERT_RATIO ? "text-red-300" : undefined}>
-          <Row
-            label="掉帧"
-            value={
-              stats?.droppedFrames != null
+      <div className="space-y-2">
+        <Section title="流媒体">
+          <SourceLine>{sourceContainer}</SourceLine>
+          <ActionLine>{streamTarget}</ActionLine>
+          {decision.degraded_from != null ? (
+            <ActionLine alert>上一档播放失败，自动降档而来</ActionLine>
+          ) : null}
+        </Section>
+
+        <Section title="视频">
+          {videoSource ? <SourceLine>{videoSource}</SourceLine> : null}
+          {videoAction ? <ActionLine>{videoAction}</ActionLine> : null}
+          {decision.video?.burn_subtitle ? <ActionLine>字幕压制进画面</ActionLine> : null}
+          <div className={dropRatio > DROP_ALERT_RATIO ? "text-red-300" : "text-white/75"}>
+            掉帧{" "}
+            <span className="tnum">
+              {stats?.droppedFrames != null
                 ? `${stats.droppedFrames} / ${stats.totalFrames ?? "?"}`
-                : "—"
-            }
-          />
-        </div>
-        <Row label="缓冲" value={stats ? `${stats.bufferedSeconds.toFixed(1)} 秒` : "—"} />
-        <Row label="会话" value={session.session_id ?? "无（直出）"} />
+                : "—"}
+            </span>
+          </div>
+        </Section>
+
+        <Section title="音频">
+          {audioSource ? <SourceLine>{audioSource}</SourceLine> : null}
+          {audioAction ? <ActionLine>{audioAction}</ActionLine> : null}
+        </Section>
+
+        <Section title="传输">
+          <p className="text-white/75">
+            {[
+              stats?.engine ?? "—",
+              formatMbps(stats?.bitrate) && `实时 ${formatMbps(stats?.bitrate)}`,
+              stats ? `缓冲 ${stats.bufferedSeconds.toFixed(1)} 秒` : null,
+            ]
+              .filter(Boolean)
+              .join(" · ")}
+          </p>
+          <p className="tnum break-all text-white/50">
+            会话 {session.session_id ?? "无（直出）"}
+          </p>
+        </Section>
       </div>
 
-      <p className="mt-2.5 border-t border-white/10 pt-2 leading-relaxed text-white/60">
+      <p className="mt-2 border-t border-white/10 pt-1.5 leading-relaxed text-white/60">
         {decision.reason}
       </p>
     </div>

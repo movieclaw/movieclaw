@@ -278,6 +278,23 @@ class PlaybackDecisionView(BaseModel):
     suggestion: str | None = None
 
 
+class PlaybackSourceView(BaseModel):
+    """源文件的客观规格（台账真值），诊断面板「源 → 处理」层次的左半边。
+
+    Emby 式面板的关键是把「源是什么」与「我们对它做了什么」摆在一起——
+    只报处理结果，用户看不出「1080p H264 明明能直通为什么在转码」这类问题。
+    """
+
+    container: str | None = None
+    resolution: str | None = None
+    video_codec: str | None = None
+    hdr: str | None = None
+    #: 总码率（bps）；探测不出为 None
+    bit_rate: int | None = None
+    frame_rate: float | None = None
+    size_bytes: int | None = None
+
+
 class PlaybackStateView(BaseModel):
     """一个播放单元在当前成员名下的观看状态。续播与上报共用同一形状。"""
 
@@ -326,6 +343,9 @@ class PlaybackSessionView(BaseModel):
     #: 给前端**预填时间轴与恢复字幕记忆**用的——省掉起播链路里「先问 /resume
     #: 再开会话」的一次串行往返（§6.10）。file_id 直连（无播放单元）时为 None。
     watch: PlaybackStateView | None = None
+    #: 选中文件的源规格（台账真值）。诊断面板按 Emby 的「源 → 处理」层次
+    #: 展示：MKV 24 Mbps → HLS、1080p H264 → 直通……（§6.5）
+    source: PlaybackSourceView | None = None
 
 
 class PlaybackSessionRequest(PlaybackDecideRequest):

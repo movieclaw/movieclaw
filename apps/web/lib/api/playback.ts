@@ -263,6 +263,18 @@ export interface PlaybackDecision {
   suggestion: string | null;
 }
 
+/** 源文件的客观规格（台账真值），诊断面板「源 → 处理」层次的左半边 */
+export interface PlaybackSource {
+  container: string | null;
+  resolution: string | null;
+  video_codec: string | null;
+  hdr: string | null;
+  /** 总码率（bps） */
+  bit_rate: number | null;
+  frame_rate: number | null;
+  size_bytes: number | null;
+}
+
 export interface PlaybackSession {
   decision: PlaybackDecision;
   /** 档 0 没有会话（原文件直出），此处为 null */
@@ -284,6 +296,8 @@ export interface PlaybackSession {
   /** 本单元的观看状态快照（§6.10）。续播点已由服务端并入 start_ms，这里
    * 整份带回给前端预填时间轴、恢复字幕记忆——起播不再单独问 /resume */
   watch: PlaybackWatchState | null;
+  /** 选中文件的源规格（台账真值），诊断面板「源 → 处理」层次用（§6.5） */
+  source: PlaybackSource | null;
 }
 
 interface DecideBody extends PlaybackUnit {
