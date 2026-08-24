@@ -1091,6 +1091,30 @@ export function getSubtitlePreview(
   );
 }
 
+/** 删除一个外挂字幕文件后的回执。 */
+export interface SubtitleDeleteResult {
+  /** 已删除的字幕文件完整路径 */
+  path: string;
+  freed_bytes: number;
+}
+
+/**
+ * 从磁盘删除一个**外挂**字幕文件（AI 生成的字幕同样是外挂 sidecar）。
+ * 内封轨长在视频容器里，不走这条路径；调用前必须把文件名列给用户确认。
+ */
+export function deleteExternalSubtitle(
+  fileId: number,
+  filename: string,
+): Promise<SubtitleDeleteResult> {
+  const query = new URLSearchParams({ filename });
+  return unwrap(
+    request<ApiEnvelope<SubtitleDeleteResult>>(
+      `/libraries/files/${fileId}/subtitles?${query.toString()}`,
+      { method: "DELETE" },
+    ),
+  );
+}
+
 /**
  * 从磁盘**彻底删除**条目——整个刮削目录（视频+NFO+海报+字幕）一起清除。
  * 全站唯一会动磁盘的删除接口，调用前必须经过明确的二次确认。

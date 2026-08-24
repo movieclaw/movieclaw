@@ -212,6 +212,7 @@ def test_library_exposes_only_semantic_domain_commands() -> None:
         "library.scan.stop",
         "library.set-default",
         "library.subtitles.calibrate-timing",
+        "library.subtitles.delete",
         "library.subtitles.generate",
         "library.subtitles.preview-generation",
         "library.update",

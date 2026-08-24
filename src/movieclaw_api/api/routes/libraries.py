@@ -63,6 +63,7 @@ from movieclaw_api.schemas.library import (
     ScanResultView,
     SeasonEpisodesView,
     SubtitleCueView,
+    SubtitleDeleteResultView,
     SubtitlePreviewView,
     SubtitleStreamView,
     TransferMoveView,
@@ -125,6 +126,7 @@ from movieclaw_api.services.library.subtitle_preview import (
     load_subtitle_preview,
 )
 from movieclaw_api.services.library.subtitles import (
+    delete_external_subtitle,
     match_subtitle_filename,
     parse_subtitle_tokens,
 )
@@ -2016,6 +2018,34 @@ async def preview_file_subtitle(
             event_count=len(cues),
             cues=cues,
         )
+    )
+
+
+@router.delete(
+    "/files/{file_id}/subtitles",
+    response_model=ApiResponse[SubtitleDeleteResultView],
+    summary="删除该文件的一个外挂字幕（含 AI 生成的字幕；内封轨在容器内，不可删）",
+    operation_id="library.subtitles.delete",
+    dependencies=[Depends(require_admin)],
+    openapi_extra={"x-cli-dangerous": "destructive"},
+)
+async def delete_file_subtitle(
+    file_id: int,
+    filename: str = Query(description="外挂字幕文件名（不含目录），必须属于该视频"),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[SubtitleDeleteResultView]:
+    """真删磁盘上的字幕文件（不进回收），调用方必须先把将删除的文件列给
+    用户并取得本轮明确同意——Web 端由确认框承担，CLI 由 --yes 承担。
+
+    只对外挂字幕开放：内封轨要删得重封装视频文件，不属于本接口的语义。
+    """
+    row = await session.get(LibraryFile, file_id)
+    if row is None:
+        raise NotFoundException("台账文件不存在")
+    result = await delete_external_subtitle(session, row, filename)
+    return ok(
+        SubtitleDeleteResultView(path=result.path, freed_bytes=result.freed_bytes),
+        message=f"已删除字幕文件：{filename}",
     )
 
 

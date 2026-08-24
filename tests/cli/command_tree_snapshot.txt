@@ -114,6 +114,7 @@ library scan start
 library scan stop
 library set-default
 library subtitles calibrate-timing
+library subtitles delete
 library subtitles generate
 library subtitles preview-generation
 library update

@@ -32,11 +32,19 @@ import {
   useRole,
 } from "@floating-ui/react";
 
+import { useConfirm, useToast } from "@/components/feedback";
+import { TrashIcon } from "@/components/icons";
 import { Modal } from "@/components/modal";
 import { SubtitleGenPanel } from "@/components/subtitle-gen-panel";
 import { SubtitlePreviewDialog } from "@/components/subtitle-preview-dialog";
-import type { AudioStream, LibraryItemFile, SubtitleStream } from "@/lib/api/libraries";
+import {
+  type AudioStream,
+  type LibraryItemFile,
+  type SubtitleStream,
+  deleteExternalSubtitle,
+} from "@/lib/api/libraries";
 import { formatVideoResolution } from "@/lib/format";
+import { usePermissions } from "@/lib/permissions";
 import { useIsMobile } from "@/lib/use-media-query";
 
 /* ------------------------------------------------------------------------ */
@@ -309,6 +317,12 @@ function externalSubtitleSuffix(stream: SubtitleStream): string {
   return "外挂";
 }
 
+/** 外挂字幕与视频同目录，据此还原它的完整路径（删除确认框要摆给用户看）。 */
+function siblingPath(videoPath: string, filename: string): string {
+  const cut = Math.max(videoPath.lastIndexOf("/"), videoPath.lastIndexOf("\\"));
+  return cut < 0 ? filename : `${videoPath.slice(0, cut + 1)}${filename}`;
+}
+
 /** 字幕预览接口使用的中性轨引用：内封按序号，外挂按文件名。 */
 function subtitleTrackRef(stream: SubtitleStream, index: number): string | null {
   if (!stream.external) return `embedded:${index}`;
@@ -338,6 +352,8 @@ interface TrackEntry {
   external: boolean | null;
   /** 组内排序：默认 → 内封 → 外挂 → AI 生成 */
   order: number;
+  /** 可删除的外挂字幕文件名；内封轨与音轨为 null（长在容器里，删不掉） */
+  deletable: string | null;
   /** 仅字幕有：点击后打开预览弹窗所需的一切 */
   preview: { stream: SubtitleStream; track: string; label: string } | null;
 }
@@ -359,6 +375,7 @@ function audioEntries(streams: AudioStream[]): TrackEntry[] {
       flags: stream.default ? ["默认"] : [],
       external: null,
       order: stream.default ? 0 : 1,
+      deletable: null,
       preview: null,
     };
   });
@@ -388,6 +405,9 @@ function subtitleEntries(streams: SubtitleStream[]): TrackEntry[] {
       ),
       external,
       order: stream.default ? 0 : isAiSubtitle(stream) ? 3 : external ? 2 : 1,
+      // 外挂（含 AI 生成）是磁盘上的独立文件，可以单独删；内封轨要删得
+      // 重封装视频本体，不给入口
+      deletable: external ? (stream.file_name ?? null) : null,
       preview: track ? { stream, track, label } : null,
     };
   });
@@ -463,6 +483,10 @@ export function MediaTrackRows({
     track: string;
     label: string;
   } | null>(null);
+  const confirm = useConfirm();
+  const toast = useToast();
+  // 删磁盘文件是管理动作：成员看不到入口（后端同样只对管理员开放）
+  const { canManageLibraries } = usePermissions();
 
   // 文件刷新或删除后，若原选择已不存在，直接派生回第一项，无需额外 effect。
   const selectedFile =
@@ -476,6 +500,32 @@ export function MediaTrackRows({
     () => groupByLanguage(subtitleEntries(selectedFile?.subtitle_streams ?? [])),
     [selectedFile?.subtitle_streams],
   );
+
+  /**
+   * 删除一条外挂字幕：先把**完整路径**摆给用户确认，同意后直接删磁盘文件。
+   *
+   * 删除不进回收站也没有撤销，所以确认框列的是真实路径而不是"这条字幕"——
+   * 同一部影片常有一堆同语言字幕，只有路径能让用户确认删的是哪一个。
+   */
+  const requestDelete = async (entry: TrackEntry) => {
+    const filename = entry.deletable;
+    if (!filename || !selectedFile) return;
+    const agreed = await confirm({
+      title: "删除这个字幕文件？",
+      description: "将从磁盘直接删除下面的文件，删除后无法恢复：",
+      bullets: [siblingPath(selectedFile.file_path, filename)],
+      confirmLabel: "删除字幕",
+      tone: "danger",
+    });
+    if (!agreed) return;
+    try {
+      await deleteExternalSubtitle(selectedFile.id, filename);
+      toast.success(`已删除字幕：${filename}`);
+      onChanged?.();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "字幕删除失败，请稍后重试");
+    }
+  };
 
   if (availableFiles.length === 0 || !selectedFile) return null;
   const multipleVersions = availableFiles.length > 1;
@@ -525,11 +575,16 @@ export function MediaTrackRows({
           label="字幕"
           kind="字幕"
           groups={subtitleGroups}
-          footer="点任意一条打开字幕预览"
+          footer={
+            canManageLibraries
+              ? "点任意一条打开字幕预览；外挂字幕可就地删除"
+              : "点任意一条打开字幕预览"
+          }
           onSelect={(entry) => {
             if (!entry.preview) return;
             setPreviewTarget({ file: selectedFile, ...entry.preview });
           }}
+          onDelete={canManageLibraries ? (entry) => void requestDelete(entry) : undefined}
           trailing={
             <div className="flex shrink-0 items-center md:ml-auto">
               <SubtitleGenPanel key={selectedFile.id} file={selectedFile} onChanged={onChanged} />
@@ -577,6 +632,7 @@ function TrackRow({
   footer,
   trailing,
   onSelect,
+  onDelete,
 }: {
   label: string;
   kind: string;
@@ -585,6 +641,7 @@ function TrackRow({
   footer?: string;
   trailing?: React.ReactNode;
   onSelect?: (entry: TrackEntry) => void;
+  onDelete?: (entry: TrackEntry) => void;
 }) {
   const isMobile = useIsMobile();
   const [open, setOpen] = useState(false);
@@ -628,7 +685,12 @@ function TrackRow({
     whileElementsMounted: autoUpdate,
   });
   const { getFloatingProps } = useInteractions([
-    useDismiss(context),
+    useDismiss(context, {
+      // 删除确认框是 body 级 portal，对浮层来说算"外部点击"——不特判的话
+      // 用户一点确认，整个字幕面板就被收起，接着清理下一条还得重新展开
+      outsidePress: (event) =>
+        !(event.target as Element | null)?.closest?.('[role="dialog"][aria-modal="true"]'),
+    }),
     useRole(context, { role: "dialog" }),
   ]);
 
@@ -666,6 +728,8 @@ function TrackRow({
             }
           : undefined
       }
+      // 删除不收起面板：确认框叠在上层，删完还能接着清理同一组里的其他字幕
+      onDelete={onDelete}
     />
   );
 
@@ -753,6 +817,7 @@ function TrackList({
   focusLanguage,
   footer,
   onSelect,
+  onDelete,
 }: {
   scrollRef: React.RefObject<HTMLDivElement | null>;
   focusRef: React.RefObject<HTMLDivElement | null>;
@@ -762,6 +827,7 @@ function TrackList({
   focusLanguage: string | null;
   footer?: string;
   onSelect?: (entry: TrackEntry) => void;
+  onDelete?: (entry: TrackEntry) => void;
 }) {
   const entries = groups.flatMap((group) => group.entries);
   // 音轨的 external 恒为 null：它没有内封/外挂之分，表头就不占这一格
@@ -822,6 +888,7 @@ function TrackList({
                 key={entry.key}
                 entry={entry}
                 onSelect={entry.preview && onSelect ? () => onSelect(entry) : undefined}
+                onDelete={entry.deletable && onDelete ? () => onDelete(entry) : undefined}
               />
             ))}
           </div>
@@ -842,8 +909,20 @@ function TrackList({
  *
  * 音轨没有可点动作，渲染成 div 而不是禁用按钮——禁用态对读屏是"这里本来
  * 有个操作但你用不了"，而它本来就只是一条信息。
+ *
+ * 删除键只挂在外挂字幕（含 AI 生成）上：内封轨要删得重封装视频本体，与
+ * "删一个 sidecar 文件"完全不是一回事，索性不给入口。它是独立按钮而不是
+ * 整行的第二种点击语义——预览与删除挨在一起，误触的代价不对称。
  */
-function TrackLine({ entry, onSelect }: { entry: TrackEntry; onSelect?: () => void }) {
+function TrackLine({
+  entry,
+  onSelect,
+  onDelete,
+}: {
+  entry: TrackEntry;
+  onSelect?: () => void;
+  onDelete?: () => void;
+}) {
   const content = (
     <>
       <span
@@ -876,19 +955,38 @@ function TrackLine({ entry, onSelect }: { entry: TrackEntry; onSelect?: () => vo
   );
 
   const className =
-    "group/line grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2.5 " +
+    "grid min-w-0 flex-1 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2.5 " +
     "rounded-[9px] px-2.5 py-1.5 text-left max-md:py-2.5";
 
-  return onSelect ? (
-    <button
-      type="button"
-      onClick={onSelect}
-      aria-label={`预览字幕：${entry.language} · ${entry.format} · ${entry.primary}`}
-      className={`${className} transition-colors hover:bg-white/[0.075] focus-visible:bg-white/[0.075] focus-visible:outline-none`}
-    >
-      {content}
-    </button>
-  ) : (
-    <div className={className}>{content}</div>
+  // 两层 group：外层 row 管垃圾桶的显隐（悬停行内任意处都算），内层 line
+  // 仍挂在可点区域上——箭头的"悬停/键盘聚焦才出现"沿用原来的判定
+  return (
+    <div className="group/row flex items-center">
+      {onSelect ? (
+        <button
+          type="button"
+          onClick={onSelect}
+          aria-label={`预览字幕：${entry.language} · ${entry.format} · ${entry.primary}`}
+          className={`group/line ${className} transition-colors hover:bg-white/[0.075] focus-visible:bg-white/[0.075] focus-visible:outline-none`}
+        >
+          {content}
+        </button>
+      ) : (
+        <div className={`group/line ${className}`}>{content}</div>
+      )}
+      {onDelete && (
+        // 桌面悬停/聚焦才显形（十几条字幕各挂一个垃圾桶只是噪音）；触屏没有
+        // hover，移动端常显
+        <button
+          type="button"
+          onClick={onDelete}
+          title="删除这个字幕文件"
+          aria-label={`删除字幕文件：${entry.primary}`}
+          className="mr-0.5 flex size-7 shrink-0 items-center justify-center rounded-[7px] text-white/35 opacity-0 transition hover:bg-[var(--danger)]/15 hover:text-[#ff9f9f] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--danger)]/50 group-hover/row:opacity-100 max-md:size-9 max-md:opacity-100"
+        >
+          <TrashIcon className="size-3.5 max-md:size-4" />
+        </button>
+      )}
+    </div>
   );
 }
