@@ -959,15 +959,17 @@ function TrackLine({
     "rounded-[9px] px-2.5 py-1.5 text-left max-md:py-2.5";
 
   // 两层 group：外层 row 管垃圾桶的显隐（悬停行内任意处都算），内层 line
-  // 仍挂在可点区域上——箭头的"悬停/键盘聚焦才出现"沿用原来的判定
+  // 仍挂在可点区域上——箭头的"悬停/键盘聚焦才出现"沿用原来的判定。
+  // 行高亮也放在外层：垃圾桶在可点区之外，挂在内层的话它会落在高亮块外面，
+  // 看着像浮在这一行旁边而不是属于这一行。
   return (
-    <div className="group/row flex items-center">
+    <div className="group/row flex items-center rounded-[9px] transition-colors hover:bg-white/[0.075] has-[:focus-visible]:bg-white/[0.075]">
       {onSelect ? (
         <button
           type="button"
           onClick={onSelect}
           aria-label={`预览字幕：${entry.language} · ${entry.format} · ${entry.primary}`}
-          className={`group/line ${className} transition-colors hover:bg-white/[0.075] focus-visible:bg-white/[0.075] focus-visible:outline-none`}
+          className={`group/line ${className} focus-visible:outline-none`}
         >
           {content}
         </button>
