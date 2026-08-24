@@ -45,6 +45,7 @@ from movieclaw_api.services.playback.ffmpeg_args import (
     INIT_NAME,
     SEGMENT_PATTERN,
     SEGMENT_SECONDS,
+    effective_hw_backend,
 )
 from movieclaw_playback.hls_vod import (
     build_master_playlist,
@@ -291,6 +292,7 @@ async def _decide(
             session, payload.file_id, capability,
             can_self_enable=principal.is_admin, failed_tiers=failed,
             preferred_audio=payload.audio_track,
+            preferred_subtitle=payload.subtitle_track,
             max_height=payload.max_height,
             visible_library_ids=visible,
         )
@@ -302,6 +304,7 @@ async def _decide(
         return await playback_plan.decide_for_files(
             files, capability, can_self_enable=principal.is_admin, failed_tiers=failed,
             preferred_audio=payload.audio_track,
+            preferred_subtitle=payload.subtitle_track,
             max_height=payload.max_height,
         )
     raise BadRequestException("需要提供 file_id 或 media_item_id")
@@ -350,6 +353,12 @@ async def start_playback_session(
             # 上次听的哪条轨接着用。轨在这次选中的文件里不存在时 decide 会
             # 自动回退默认轨（换版本文件轨序会变，这是既有覆盖）。
             payload = payload.model_copy(update={"audio_track": watch_row.audio_track})
+        if payload.subtitle_track is None and watch_row and watch_row.subtitle_track:
+            # 字幕记忆同款：上次选的 PGS 轨会自动继续烧录，文本轨/"off" 在
+            # decide 里是 no-op（只有 PGS 改变视频策略）。
+            payload = payload.model_copy(
+                update={"subtitle_track": watch_row.subtitle_track}
+            )
     resolved_start_ms = payload.start_ms
     if resolved_start_ms is None:
         # 看完的重播从头开始——续播到最后三十秒等于点开就是片尾
@@ -399,8 +408,13 @@ async def start_playback_session(
     policy = await get_setting_store().get(PlaybackPolicySetting)
     backends = await asyncio.to_thread(available_backends)
     # 只有真的转视频才谈得上硬件加速：直通档（-c:v copy）不经编码器，报个
-    # 后端名只会让诊断面板骗人。
-    hw_used = backends[0] if backends and view.video and view.video.action == "transcode" else None
+    # 后端名只会让诊断面板骗人。烧录时 VAAPI/QSV 会退软件编码（overlay 是
+    # 软件滤镜，这两家编码器吃不了软件帧），同样要报实际值。
+    hw_used = (
+        effective_hw_backend(decision, backends[0])
+        if backends and view.video and view.video.action == "transcode"
+        else None
+    )
     # VOD 预生成规划（§12）：直通档按全片关键帧索引算分片边界；转码档
     # force_key_frames 在绝对栅格上强插关键帧，用等长规划。规划失败（时长
     # 未知 / 关键帧索引读不出）退回旧的会话相对模式，一切照旧。

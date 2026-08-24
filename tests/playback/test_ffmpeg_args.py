@@ -458,3 +458,124 @@ def test_event_mode_keeps_relative_timeline():
     assert "-copyts" not in argv
     assert "-start_number" not in argv
     assert argv[-1].endswith("index.m3u8")
+
+
+# ---------------------------------------------------------------------------
+# PGS 烧录：filter_complex 图与硬件编码取舍
+# ---------------------------------------------------------------------------
+
+
+def _burn_plan(**video_kw) -> PlaybackPlan:
+    defaults = dict(action="transcode", codec="h264", height=1080, burn_subtitle="embedded:2")
+    defaults.update(video_kw)
+    return plan(PlaybackTier.SOFTWARE_TRANSCODE, video=VideoPlan(**defaults))
+
+
+def test_burn_uses_filter_complex_with_overlay_before_scale():
+    """overlay 必须在 scale 之前：PGS 位图坐标按源分辨率定位，先缩放再叠，
+    字幕的位置和大小全错。"""
+    argv = argv_of(_burn_plan())
+    graph = argv[argv.index("-filter_complex") + 1]
+    assert graph == "[0:v:0][0:s:2]overlay[burned];[burned]scale=-2:1080[vout]"
+    assert argv[argv.index("-map") + 1] == "[vout]"
+    assert "0:v:0" not in [argv[i + 1] for i, a in enumerate(argv) if a == "-map"]
+    assert "-vf" not in argv  # 与 filter_complex 互斥
+
+
+def test_burn_with_tonemap_runs_tonemap_before_overlay():
+    """先把 HDR 画面拉回 SDR 再叠字幕：PGS 是 SDR 图形，叠上 HDR 帧再整体
+    映射会把字幕颜色一起压暗。"""
+    argv = argv_of(_burn_plan(tone_map=True, height=None))
+    graph = argv[argv.index("-filter_complex") + 1]
+    assert graph.startswith("[0:v:0]tonemapx")
+    assert graph.index("tonemapx") < graph.index("overlay")
+    assert graph.endswith("overlay[vout]")
+
+
+def test_burn_forces_software_pipeline_for_vaapi():
+    """overlay 是软件滤镜，VAAPI 编码器吃不了软件帧 → 整条退软件编码。"""
+    argv = argv_of(_burn_plan(), hw_backend="vaapi")
+    assert "-hwaccel" not in argv
+    assert "libx264" in argv
+    assert "h264_vaapi" not in argv
+
+
+def test_burn_keeps_nvenc_encoder_on_software_frames():
+    """NVENC 编码器接系统内存帧没问题：软件解码+overlay，硬件编码。"""
+    argv = argv_of(_burn_plan(), hw_backend="nvenc")
+    assert "-hwaccel" not in argv  # 解码侧仍是软件（滤镜链在软件侧）
+    assert "h264_nvenc" in argv
+
+
+def test_no_burn_keeps_plain_vf_path():
+    """无烧录的普通转码不受影响：-map 0:v:0 + -vf，一切照旧。"""
+    argv = argv_of(
+        plan(
+            PlaybackTier.HARDWARE_TRANSCODE,
+            video=VideoPlan(action="transcode", codec="h264", height=720),
+        ),
+        hw_backend="vaapi",
+    )
+    assert "-filter_complex" not in argv
+    assert "0:v:0" in [argv[i + 1] for i, a in enumerate(argv) if a == "-map"]
+    assert "scale_vaapi=w=-2:h=720" in " ".join(argv)
+
+
+# ---------------------------------------------------------------------------
+# 真 ffmpeg 烧录端到端（integration）
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_burn_session_produces_burned_segments(tmp_path):
+    """整条真链路：合成 PGS → mux 进 MKV → 烧录转码 → 分片里像素级验证
+    字幕在显示窗口内是白色、窗口外与结束后是画面原色。"""
+    import shutil
+    import subprocess
+
+    if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
+        pytest.skip("需要系统 ffmpeg")
+    from pgs_sup import make_sup
+
+    sup = tmp_path / "s.sup"
+    sup.write_bytes(make_sup())
+    movie = tmp_path / "m.mkv"
+    subprocess.run(
+        [
+            "ffmpeg", "-v", "error",
+            "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=10:duration=6",
+            "-f", "sup", "-i", str(sup),
+            "-map", "0:v", "-map", "1:s",
+            "-c:v", "libx264", "-preset", "ultrafast", "-c:s", "copy",
+            "-y", str(movie),
+        ],
+        check=True, capture_output=True, timeout=120,
+    )
+    session_dir = tmp_path / "session"
+    session_dir.mkdir()
+    burn = plan(
+        PlaybackTier.SOFTWARE_TRANSCODE,
+        video=VideoPlan(action="transcode", codec="h264", height=360, burn_subtitle="embedded:0"),
+        audio=AudioPlan(action="copy", track_ref=None),
+    )
+    cmd = build_hls_command(burn, source_path=str(movie), session_dir=session_dir)
+    proc = subprocess.run(cmd.argv, capture_output=True, timeout=180)
+    assert proc.returncode == 0, proc.stderr.decode(errors="replace")[-800:]
+
+    def pixel(ss: float, x: int, y: int) -> tuple[int, int, int]:
+        out = tmp_path / f"f{ss}.png"
+        subprocess.run(
+            ["ffmpeg", "-v", "error", "-i", str(session_dir / "index.m3u8"),
+             "-ss", str(ss), "-frames:v", "1", "-y", str(out)],
+            check=True, capture_output=True, timeout=60,
+        )
+        from PIL import Image
+
+        return Image.open(out).convert("RGB").getpixel((x, y))
+
+    inside = pixel(2, 320, 305)   # 字幕矩形中心（1s–4s 显示窗口内）
+    outside = pixel(2, 320, 100)  # 同帧、矩形外
+    after = pixel(5, 320, 305)    # 字幕结束后同一点
+    assert all(c > 220 for c in inside), f"字幕没烧进画面：{inside}"
+    assert not all(c > 220 for c in outside), f"矩形外不该是白色：{outside}"
+    assert not all(c > 220 for c in after), f"字幕结束后应消失：{after}"

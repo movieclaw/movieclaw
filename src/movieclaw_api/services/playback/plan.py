@@ -41,6 +41,7 @@ async def decide_for_file(
     can_self_enable: bool,
     failed_tiers: frozenset[Tier] = frozenset(),
     preferred_audio: str | None = None,
+    preferred_subtitle: str | None = None,
     max_height: int | None = None,
     visible_library_ids: set[int] | None = None,
 ) -> PlaybackDecision | None:
@@ -59,6 +60,7 @@ async def decide_for_file(
         can_self_enable=can_self_enable,
         failed_tiers=failed_tiers,
         preferred_audio=preferred_audio,
+        preferred_subtitle=preferred_subtitle,
         max_height=max_height,
     )
 
@@ -70,6 +72,7 @@ async def decide_for_files(
     can_self_enable: bool,
     failed_tiers: frozenset[Tier] = frozenset(),
     preferred_audio: str | None = None,
+    preferred_subtitle: str | None = None,
     max_height: int | None = None,
 ) -> PlaybackDecision | None:
     """多候选择优（§3.5）：同一条目常有 1080p/2160p 两个版本，能直通的
@@ -96,6 +99,7 @@ async def decide_for_files(
                     can_self_enable=can_self_enable,
                     failed_tiers=failed_tiers,
                     preferred_audio=preferred_audio,
+                    preferred_subtitle=preferred_subtitle,
                     max_height=max_height,
                 ),
                 profile.height,

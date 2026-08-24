@@ -197,6 +197,10 @@ class PlaybackDecideRequest(BaseModel):
     #: 自动换轨。**选了非默认轨会把档 0 顶成档 1**——直出时浏览器只放默认轨，
     #: 必须重封装才能把选中的那条带上。
     audio_track: str | None = None
+    #: 用户选中的字幕轨（中性引用）。只在指向**内封 PGS 轨**时改变决策：
+    #: 视频转码 + 字幕烧录进画面（Emby 语义，硬边界 1 的唯一例外）。
+    #: None = 用观看状态里记住的轨；"off" 与文本轨都不影响视频策略。
+    subtitle_track: str | None = None
     #: 用户选的画质上限（如 720）。语义是上限而非目标：源不超就照常直通，
     #: 超了才转码降下去。None = 自动。弱网救急用（§10「手动选清晰度」）。
     max_height: int | None = Field(default=None, ge=240, le=2160)
@@ -207,6 +211,10 @@ class VideoPlanView(BaseModel):
     codec: str | None = None
     height: int | None = None
     tone_map: bool = False
+    #: 非空 = 该字幕轨被烧录进画面（用户显式选中 PGS 触发，Emby 语义的
+    #: 「字幕压制」）。前端据此：不再旁挂渲染这条轨、菜单选中态指向它、
+    #: 诊断面板显示「字幕压制」。
+    burn_subtitle: str | None = None
 
 
 class AudioPlanView(BaseModel):

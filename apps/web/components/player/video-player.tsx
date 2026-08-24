@@ -162,6 +162,12 @@ export function VideoPlayer(props: VideoPlayerProps) {
    * 请求用这个——用一个变量同时干两件事，换版本文件时勾就会打空。
    */
   const [requestedAudio, setRequestedAudio] = useState<string | null>(null);
+  /**
+   * 用户点选的字幕轨请求值。null = 让服务端用观看记忆；"off"/轨引用 = 显式。
+   * 只有涉及**烧录**（选中/撤下 PGS）才会随会话请求上送并触发重开——
+   * 文本轨切换纯前端完成，不惊动服务端。
+   */
+  const [requestedSubtitle, setRequestedSubtitle] = useState<string | null>(null);
   // 惰性初始化从 localStorage 读：字幕调好的字号/位置不该每次进来都重调
   const [subtitleStyle, setSubtitleStyle] = useState<SubtitleStyle>(loadSubtitleStyle);
   /** 画质上限（max_height）。null = 自动。持久化，弱网用户不必每部片重选 */
@@ -312,6 +318,9 @@ export function VideoPlayer(props: VideoPlayerProps) {
     return planSubtitleTracks(session.decision.subtitles, session.subtitle_urls);
   }, [state.session]);
 
+  /** 服务端正在烧录进画面的字幕轨（Emby 语义「字幕压制」）；null = 没烧。 */
+  const burnedSubtitle = state.session?.decision.video?.burn_subtitle ?? null;
+
   /** 音轨菜单项。少于两条时为空数组，控制条据此把整个按钮藏掉。 */
   const audioOptions = useMemo(
     () => planAudioOptions(state.session?.decision.audio_tracks),
@@ -335,10 +344,11 @@ export function VideoPlayer(props: VideoPlayerProps) {
   const pipSubtitleUrl = useMemo(() => {
     if (!mode?.pipPatchTrack) return null; // system-track：字幕组已是系统轨
     if (!activeSubtitle) return null;
+    if (activeSubtitle.ref === burnedSubtitle) return null; // 已烧进画面，哪里都带着
     if (activeSubtitle.kind === "vtt") return activeSubtitle.url;
     if (activeSubtitle.kind === "ass") return `${activeSubtitle.url}&format=vtt`;
     return null;
-  }, [activeSubtitle, mode?.pipPatchTrack]);
+  }, [activeSubtitle, burnedSubtitle, mode?.pipPatchTrack]);
 
   // ---------------------------------------------------------------------
   // 起播链路
@@ -363,6 +373,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
     setVideoDurationMs(null);
     setSelectedSubtitle(null);
     setRequestedAudio(null);
+    setRequestedSubtitle(null);
     setTrickplay(null); // 换片必须清掉：旧片的缩略图配新片的进度条是错的
     // 新的一集重新获得自动播放的资格：上一集用户按过暂停不代表下一集也不想看
     wantsPlayRef.current = true;
@@ -390,7 +401,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
     const phase = state.phase;
     if (phase !== "deciding" && phase !== "degrading" && phase !== "session-starting") return;
 
-    const key = `${unitKey}|${phase}|${state.startMs}|${failedKey}|${state.failureCount}|${state.attempt}|${requestedAudio ?? ""}`;
+    const key = `${unitKey}|${phase}|${state.startMs}|${failedKey}|${state.failureCount}|${state.attempt}|${requestedAudio ?? ""}|${requestedSubtitle ?? ""}`;
     if (startedKeyRef.current === key) return;
     startedKeyRef.current = key;
 
@@ -410,6 +421,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
           start_ms: state.startMs ?? undefined,
           max_height: quality ?? undefined,
           audio_track: requestedAudio ?? undefined,
+          subtitle_track: requestedSubtitle ?? undefined,
         });
         if (cancelled) return;
         if (state.startMs === null) {
@@ -442,6 +454,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
     state.attempt,
     unitKey,
     requestedAudio,
+    requestedSubtitle,
     quality,
   ]);
 
@@ -610,8 +623,13 @@ export function VideoPlayer(props: VideoPlayerProps) {
 
   useEffect(() => {
     if (subtitles.options.length === 0) return;
+    // 服务端在烧录哪条，菜单就选中哪条——烧录会话里画面本身就是真值
+    if (burnedSubtitle) {
+      setSelectedSubtitle(burnedSubtitle);
+      return;
+    }
     setSelectedSubtitle(pickInitialSubtitle(subtitles.options, resume?.subtitle_track ?? null));
-  }, [subtitles, resume?.subtitle_track]);
+  }, [subtitles, resume?.subtitle_track, burnedSubtitle]);
 
   // ---------------------------------------------------------------------
   // 观看进度：开始 / 心跳 / 停止
@@ -926,6 +944,54 @@ export function VideoPlayer(props: VideoPlayerProps) {
     },
     [state.session, video],
   );
+
+  /**
+   * 换字幕。
+   *
+   * 文本轨（VTT/ASS）纯前端换：旁挂渲染层立即切，零停顿。涉及**烧录**的
+   * 两种情况要走「换音轨」同一条重开会话的路（约一秒停顿，菜单里写明）：
+   * - 选中 PGS 轨 → 服务端转码并把字幕压制进画面（Emby 语义）；
+   * - 当前正在烧录、换成文本轨/关闭 → 撤下烧录回到直通策略。
+   */
+  const selectSubtitle = useCallback(
+    (ref: string | null) => {
+      setSelectedSubtitle(ref);
+      const target = ref ? subtitles.options.find((o) => o.ref === ref) : null;
+      const wantBurn = target?.kind === "pgs";
+      if (!wantBurn && burnedSubtitle === null) return; // 纯文本切换，前端搞定
+      if (wantBurn && burnedSubtitle === ref) return; // 已在烧这条，白重启
+      setRequestedSubtitle(ref ?? "off");
+      video?.pause();
+      wantsPlayRef.current = true;
+      pendingFileMsRef.current = positionRef.current;
+      dispatch({ type: "restart", startMs: positionRef.current });
+    },
+    [subtitles, burnedSubtitle, video],
+  );
+
+  /**
+   * 烧录撞上软件转码同意：**自动退回旁挂渲染，不打断观看**。
+   *
+   * 用户点的是「换条字幕」，不是「给我弹一个转码协商」。服务器没显卡又没
+   * 开软转时，把烧录意图撤掉重开会话——canvas 旁挂照样能看（只是进不了
+   * 画中画），观看不中断。只有非烧录导致的 consent（片子本来就要软转）才
+   * 走原来的弹窗。记忆轨触发的烧录（requestedSubtitle 为 null）同样弹窗：
+   * 那是用户上次的明确选择，值得问一次。
+   */
+  const burnFallbackRef = useRef(false);
+  useEffect(() => {
+    if (state.phase !== "consent") {
+      burnFallbackRef.current = false;
+      return;
+    }
+    if (burnFallbackRef.current) return;
+    if (requestedSubtitle && requestedSubtitle !== "off") {
+      burnFallbackRef.current = true;
+      setRequestedSubtitle("off");
+      dispatch({ type: "reset" });
+      dispatch({ type: "request", startMs: positionRef.current });
+    }
+  }, [state.phase, requestedSubtitle]);
 
   /**
    * 换画质上限。与换音轨同一条路：重开会话（约一秒停顿）。
@@ -1406,11 +1472,18 @@ export function VideoPlayer(props: VideoPlayerProps) {
 
         <SubtitleLayer
           video={video}
+          // 烧录中的轨绝不旁挂——画面里已经有了，再挂一层是双字幕。
           // system-track（iOS 原生 HLS）时文本轨交系统渲染、自绘层闲置；
           // 但 PGS 位图轨进不了 HLS 字幕组，内联播放仍由 canvas 层负责
           // （原生全屏/画中画只渲染视频帧，位图字幕跟不进去——ASS 特效
           // 在那两个面上同样只剩降级文本，属于同一类既有限制）
-          track={systemSubtitles && activeSubtitle?.kind !== "pgs" ? null : activeSubtitle}
+          track={
+            activeSubtitle?.ref === burnedSubtitle
+              ? null
+              : systemSubtitles && activeSubtitle?.kind !== "pgs"
+                ? null
+                : activeSubtitle
+          }
           style={subtitleStyle}
           baseOffsetSeconds={(mode?.originMs ?? 0) / 1000}
           // 控制条三行（时间行 + 进度条 + 操作行）展开时的实占高度，字幕
@@ -1611,7 +1684,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
             onSeek={seekToFileMs}
             subtitles={subtitles}
             selectedSubtitle={selectedSubtitle}
-            onSelectSubtitle={setSelectedSubtitle}
+            onSelectSubtitle={selectSubtitle}
             audioOptions={audioOptions}
             selectedAudio={state.session?.decision.audio?.track_ref ?? null}
             onSelectAudio={selectAudio}

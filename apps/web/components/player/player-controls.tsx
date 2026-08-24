@@ -801,6 +801,14 @@ function SubtitleMenu({
         ) : null}
       </div>
 
+      {tracks.options.some((option) => option.kind === "pgs") ? (
+        // 用户点之前就该知道代价：选图形字幕会换成转码播放（约一秒切换），
+        // 换来的是画中画/投屏里也带字幕——与 Emby 的「字幕压制」同语义
+        <p className="mt-2 border-t border-white/[0.08] px-3 pt-3 text-[12px] leading-relaxed text-white/40">
+          图形字幕会转码压制进画面（切换约一秒），画中画等场景也能看到
+        </p>
+      ) : null}
+
       {selected && systemRendered ? (
         // 调了没反应比没有选项更糟——iOS 上系统渲染字幕，样式跟随系统的
         // 辅助功能设置，时间轴微调也不经过我们，如实告知去哪调

@@ -203,6 +203,10 @@ export interface VideoPlan {
   codec: string | null;
   height: number | null;
   tone_map: boolean;
+  /** 非空 = 该字幕轨被烧录进画面（用户显式选中 PGS 触发，Emby 语义的
+   * 「字幕压制」）。前端据此：不再旁挂渲染这条轨、菜单选中态指向它、
+   * 画中画补丁轨跳过、诊断面板显示「字幕压制」。 */
+  burn_subtitle: string | null;
 }
 
 export interface AudioPlan {
@@ -296,6 +300,10 @@ interface DecideBody extends PlaybackUnit {
    * 换轨走的是和 seek 出界一样的「带着当前位置重开会话」那条路。
    */
   audio_track?: string;
+  /** 用户选中的字幕轨。只在指向内封 PGS 轨时改变决策——视频转码并把字幕
+   * 烧录进画面（Emby 语义）。缺省 = 服务端用观看状态里记住的轨；
+   * "off" 显式不烧。文本轨传了也无妨（服务端 no-op），顺带刷新轨记忆。 */
+  subtitle_track?: string;
   /** 画质上限（如 720）。上限而非目标：源不超就照常直通。省略 = 自动 */
   max_height?: number;
 }

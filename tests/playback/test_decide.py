@@ -390,7 +390,7 @@ def test_no_audio_track_still_plays():
 
 
 # ---------------------------------------------------------------------------
-# 字幕：硬边界 1「绝不烧录」
+# 字幕：硬边界 1「默认绝不烧录」
 # ---------------------------------------------------------------------------
 
 
@@ -647,3 +647,72 @@ def test_copy_audio_plan_carries_codec_and_channels():
     )
     assert isinstance(strm_decision, PlaybackPlan)
     assert strm_decision.audio.codec == "ac3"
+
+
+# ---------------------------------------------------------------------------
+# PGS 烧录：硬边界 1 的唯一例外，必须由用户显式选中触发（Emby 语义）
+# ---------------------------------------------------------------------------
+
+PGS_MEDIA_KW = dict(
+    subtitle_tracks=(
+        SubtitleTrack(ref="embedded:0", codec="subrip", language="eng"),
+        SubtitleTrack(ref="embedded:1", codec="hdmv_pgs_subtitle", language="chi"),
+    )
+)
+
+
+def test_selecting_pgs_burns_and_forces_transcode():
+    """选中 PGS → 视频转码 + burn_subtitle；有显卡落档 3。"""
+    decision = decide_playback(
+        media(**PGS_MEDIA_KW), CHROME_NO_HEVC, WITH_GPU, preferred_subtitle="embedded:1"
+    )
+    assert isinstance(decision, PlaybackPlan)
+    assert decision.tier is PlaybackTier.HARDWARE_TRANSCODE
+    assert decision.video.action == "transcode"
+    assert decision.video.burn_subtitle == "embedded:1"
+    assert "压制" in decision.reason
+    # 被烧的轨仍在旁挂清单里：前端菜单要靠它渲染选中态
+    assert any(s.track_ref == "embedded:1" for s in decision.subtitles)
+
+
+def test_selecting_pgs_without_gpu_requires_consent():
+    """无显卡时烧录落到软件转码——沿用既有的同意链路，不静默烧 CPU。"""
+    decision = decide_playback(
+        media(**PGS_MEDIA_KW), CHROME_NO_HEVC, NO_GPU, preferred_subtitle="embedded:1"
+    )
+    assert isinstance(decision, ConsentRequired)
+
+
+@pytest.mark.parametrize("selected", [None, "off", "embedded:0"])
+def test_text_or_no_subtitle_never_changes_video_policy(selected):
+    """文本轨 / 关字幕 / 不选：视频策略完全不变（默认硬边界照旧）。"""
+    decision = decide_playback(
+        media(**PGS_MEDIA_KW), CHROME_NO_HEVC, WITH_GPU, preferred_subtitle=selected
+    )
+    assert isinstance(decision, PlaybackPlan)
+    assert decision.tier is PlaybackTier.REMUX
+    assert decision.video.action == "copy"
+    assert decision.video.burn_subtitle is None
+
+
+def test_stale_pgs_ref_is_ignored():
+    """引用不在本文件里（换了版本轨序变了）→ 宁可不烧也不能烧错轨。"""
+    decision = decide_playback(
+        media(**PGS_MEDIA_KW), CHROME_NO_HEVC, WITH_GPU, preferred_subtitle="embedded:9"
+    )
+    assert isinstance(decision, PlaybackPlan)
+    assert decision.video.burn_subtitle is None
+    assert decision.tier is PlaybackTier.REMUX
+
+
+def test_strm_ignores_pgs_selection():
+    """strm 禁转码（硬边界 2）优先级更高：选中 PGS 也不烧，仍旧直连。"""
+    decision = decide_playback(
+        media(is_strm=True, container="mp4", **PGS_MEDIA_KW),
+        CHROME_NO_HEVC,
+        WITH_GPU,
+        preferred_subtitle="embedded:1",
+    )
+    assert isinstance(decision, PlaybackPlan)
+    assert decision.video.action == "copy"
+    assert decision.video.burn_subtitle is None

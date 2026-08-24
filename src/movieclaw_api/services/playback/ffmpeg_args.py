@@ -142,6 +142,11 @@ class HwBackend:
     scale_filter: str | None = None  # 形如 "scale_vaapi"；None=用软件 scale
     tonemap_filter: str | None = None
     device: str | None = None
+    #: 编码器能否直接吃系统内存帧。烧录（overlay 是软件滤镜）会把整条滤镜链
+    #: 拉回软件侧：NVENC / VideoToolbox 的编码器接软件帧没问题；VAAPI / QSV
+    #: 需要 hwupload + init_hw_device 那套显存搬运，碎且驱动相关——烧录时
+    #: 这两家直接退软件编码（用户选烧录已经接受了转码代价）。
+    sw_frames_ok: bool = False
 
 
 HW_BACKENDS: dict[str, HwBackend] = {
@@ -153,6 +158,7 @@ HW_BACKENDS: dict[str, HwBackend] = {
         scale_filter="scale_vaapi",
         tonemap_filter="tonemap_vaapi=format=nv12:t=bt709",
         device="/dev/dri/renderD128",
+        sw_frames_ok=False,
     ),
     "qsv": HwBackend(
         name="qsv",
@@ -169,6 +175,7 @@ HW_BACKENDS: dict[str, HwBackend] = {
         hwaccel_output_format="cuda",
         scale_filter="scale_cuda",
         tonemap_filter=None,  # 上游没有 tonemap_cuda，见类文档
+        sw_frames_ok=True,
     ),
     "videotoolbox": HwBackend(
         name="videotoolbox",
@@ -176,8 +183,26 @@ HW_BACKENDS: dict[str, HwBackend] = {
         hwaccel="videotoolbox",
         # VideoToolbox 解码输出就在系统内存，滤镜链直接用软件 scale
         tonemap_filter=None,
+        sw_frames_ok=True,
     ),
 }
+
+
+def effective_hw_backend(plan: PlaybackPlan, hw_backend: str | None) -> str | None:
+    """这次会话**实际**用哪个硬件后端。
+
+    烧录（``video.burn_subtitle``）把滤镜链拉回软件侧，编码器吃不了软件帧的
+    后端（VAAPI/QSV）退回软件编码。诊断面板的 ``hw_backend`` 必须走这里——
+    报一个实际没用上的后端名，用户查「为什么转码这么卡」时会被带偏。
+    """
+    if plan.video.action != "transcode" or hw_backend is None:
+        return None if plan.video.action != "transcode" else hw_backend
+    backend = HW_BACKENDS.get(hw_backend)
+    if backend is None:
+        return None
+    if plan.video.burn_subtitle is not None and not backend.sw_frames_ok:
+        return None
+    return hw_backend
 
 
 @dataclass(frozen=True)
@@ -211,10 +236,13 @@ def build_hls_command(
     argv = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "warning"]
 
     transcoding_video = plan.video.action == "transcode"
-    backend = HW_BACKENDS.get(hw_backend or "") if transcoding_video else None
-    # 需要 tone-map 但该后端没有原生滤镜 → 走软件解码，让软件滤镜链能接上
-    software_filters = bool(plan.video.tone_map) and (
-        backend is None or backend.tonemap_filter is None
+    backend = HW_BACKENDS.get(effective_hw_backend(plan, hw_backend) or "") if transcoding_video else None
+    burn_index = _burn_subtitle_index(plan) if transcoding_video else None
+    # 需要 tone-map 但该后端没有原生滤镜，或要烧录字幕（overlay 是软件滤镜）
+    # → 走软件解码，让软件滤镜链能接上
+    software_filters = burn_index is not None or (
+        bool(plan.video.tone_map)
+        and (backend is None or backend.tonemap_filter is None)
     )
 
     # -ss 必须在 -i 之前：input seek 快得多（不用解码到该点）
@@ -246,15 +274,23 @@ def build_hls_command(
             argv += ["-hwaccel_device", backend.device]
     argv += ["-i", source_path]
 
-    # 只取一路视频一路音频；字幕与数据流一律不进容器——**绝不烧录**（硬边界 1），
-    # 字幕全部旁挂由前端渲染。-map_metadata -1 去掉源片元数据（含可能的大块附件）。
-    argv += ["-map", "0:v:0"]
+    # 只取一路视频一路音频；字幕流不进输出容器（-sn）——默认旁挂由前端渲染
+    # （硬边界 1）。唯一例外：用户显式选中 PGS 触发的烧录，字幕经 filter_complex
+    # 合成进视频帧，输出里依然没有独立字幕流。-map_metadata -1 去掉源片元数据。
+    if burn_index is not None:
+        argv += [
+            "-filter_complex",
+            _burn_filter_graph(plan, burn_index),
+            "-map", "[vout]",
+        ]
+    else:
+        argv += ["-map", "0:v:0"]
     audio_index = _audio_index(plan)
     if audio_index is not None:
         argv += ["-map", f"0:a:{audio_index}"]
     argv += ["-sn", "-dn", "-map_metadata", "-1"]
 
-    argv += _video_args(plan, backend, software_filters)
+    argv += _video_args(plan, backend, software_filters, skip_filters=burn_index is not None)
     argv += _audio_args(
         plan, has_audio=audio_index is not None, absolute_ts=start_number is not None
     )
@@ -284,8 +320,41 @@ def _audio_index(plan: PlaybackPlan) -> int | None:
     return index if index is not None else 0
 
 
+def _burn_subtitle_index(plan: PlaybackPlan) -> int | None:
+    """烧录轨中性引用 ``embedded:<k>`` → ffmpeg 的 ``0:s:<k>``；非烧录为 None。"""
+    if plan.video.burn_subtitle is None:
+        return None
+    return parse_embedded_track(plan.video.burn_subtitle)
+
+
+def _burn_filter_graph(plan: PlaybackPlan, subtitle_index: int) -> str:
+    """烧录的 filter_complex 图：tone-map →（源分辨率）overlay 烧字幕 → scale。
+
+    顺序有讲究：
+    - overlay 必须在 **scale 之前**——PGS 位图的坐标按源分辨率定位，先缩放
+      画面再叠原始坐标的字幕，位置和大小全错；
+    - tone-map 在 overlay 之前——PGS 是 SDR 图形，叠上 HDR 帧再整体映射会把
+      字幕颜色一起压暗；先把画面拉回 SDR 再叠，字幕保持设计时的观感。
+    烧录一律软件滤镜链（overlay 没有通用的硬件版本），编码器侧的取舍见
+    ``effective_hw_backend``。
+    """
+    steps: list[tuple[str, str]] = []  # (滤镜串, 输出标签)
+    if plan.video.tone_map:
+        steps.append((_SOFTWARE_TONEMAP, "tm"))
+    base = f"[0:v:0]{steps[0][0]}[tm];[tm]" if steps else "[0:v:0]"
+    graph = f"{base}[0:s:{subtitle_index}]overlay"
+    if plan.video.height:
+        graph += f"[burned];[burned]scale=-2:{plan.video.height}"
+    graph += "[vout]"
+    return graph
+
+
 def _video_args(
-    plan: PlaybackPlan, backend: HwBackend | None, software_filters: bool
+    plan: PlaybackPlan,
+    backend: HwBackend | None,
+    software_filters: bool,
+    *,
+    skip_filters: bool = False,
 ) -> list[str]:
     if plan.video.action == "copy":
         args = ["-c:v", "copy"]
@@ -296,7 +365,8 @@ def _video_args(
             args += ["-tag:v", "hvc1"]
         return args
 
-    filters = _filter_chain(plan, backend, software_filters)
+    # 烧录时滤镜已在 filter_complex 图里（-vf 与 filter_complex 互斥）
+    filters = "" if skip_filters else _filter_chain(plan, backend, software_filters)
     args = []
     if filters:
         args += ["-vf", filters]
