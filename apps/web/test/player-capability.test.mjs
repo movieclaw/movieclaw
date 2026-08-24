@@ -11,18 +11,18 @@ const yes = { supported: true, smooth: true, powerEfficient: true };
 const no = { supported: false, smooth: false, powerEfficient: false };
 const choppy = { supported: true, smooth: false, powerEfficient: false };
 
-test("取能流畅解码的最大高度，而不是能解码的最大高度", () => {
-  // 4K 能解但掉帧、1080p 流畅：应上报 1080p 而不是 2160p——否则服务端会把
-  // 一部 4K 直通给一台放不动的机器，用户看到的是卡成幻灯片。
+test("取能解码的最大高度；smooth 只作参考随行，不压低上限", () => {
+  // §12.15：Safari 对 HEVC 整族报 smooth=false 而实际直通 0 掉帧。拿 smooth
+  // 压低上限等于替一台放得动的设备抢先转码；真掉帧由 framedrop watchdog 兜底。
   const picked = pickVideoSupport([
     { height: 2160, probe: choppy },
     { height: 1080, probe: yes },
     { height: 720, probe: yes },
   ]);
-  assert.deepEqual(picked, { max_height: 1080, smooth: true, power_efficient: true });
+  assert.deepEqual(picked, { max_height: 2160, smooth: false, power_efficient: false });
 });
 
-test("支持但没有一档流畅时，上报 smooth=false 让服务端降分辨率", () => {
+test("支持但没有一档流畅时，同样取支持上限并如实带出 smooth=false", () => {
   const picked = pickVideoSupport([
     { height: 2160, probe: choppy },
     { height: 1080, probe: choppy },

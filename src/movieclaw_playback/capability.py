@@ -37,9 +37,12 @@ class VideoSupport:
     """客户端对某个视频编码家族的解码能力。"""
 
     codec: str
-    # 探测确认能流畅解到的最大高度。超过这个高度即使 supported 也应转码降分辨率。
+    # 探测确认**能解码**的最大高度（supported 上限，不含流畅度预测）。
+    # 超过这个高度的源转码降分辨率。
     max_height: int = 2160
     # decodingInfo 的三态之二。supported 不单列——不支持就不该出现在列表里。
+    # ⚠️ 这两项**只作参考**（诊断与指标），决策不拿它们做硬闸：实测 Safari 对
+    # HEVC 整族报 smooth=false 而实际直通 0 掉帧（decide.py §12.15 有对照）。
     smooth: bool = True
     power_efficient: bool = True
 

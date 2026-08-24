@@ -272,8 +272,13 @@ def test_keyframe_interval_gates_remux(interval, expected):
 # ---------------------------------------------------------------------------
 
 
-def test_smooth_false_forces_transcode():
-    """能解码但会掉帧——canPlayType 会说 probably，实际播成幻灯片。"""
+def test_smooth_false_still_direct_plays():
+    """smooth=false 只是参考，不再抢先转码（§12.15 Jellyfin 对照）。
+
+    实测 Safari 对 HEVC 整族报 smooth=false，同一台设备直通同一文件 0 掉帧。
+    预测掉帧就转码等于用一定发生的转码代价对冲一个未必发生的掉帧；真掉帧
+    由运行期 framedrop watchdog 带着 failed_tiers 回来降档。
+    """
     cap = ClientCapability(
         video=(VideoSupport("hevc", smooth=False),),
         audio=(AudioSupport("aac"),),
@@ -281,23 +286,53 @@ def test_smooth_false_forces_transcode():
     )
     decision = decide_playback(media(video_codec="hevc"), cap, WITH_GPU)
     assert isinstance(decision, PlaybackPlan)
-    assert decision.tier is PlaybackTier.HARDWARE_TRANSCODE
+    assert decision.tier is PlaybackTier.REMUX
 
 
-def test_power_efficient_false_only_degrades_on_mobile():
-    """软解在桌面可以忍，在手机上是发热掉电。"""
-    desktop = ClientCapability(
-        video=(VideoSupport("hevc", power_efficient=False),),
+def test_power_efficient_false_no_longer_forces_transcode():
+    """powerEfficient=false 同为参考：手机软解费电但能放，视频直通优先。
+
+    这台手机 AAC 只到立体声，5.1 音轨要降混（档 2），但**视频保持 copy**——
+    改造前这里是整路视频转码（档 3）。
+    """
+    decision = decide_playback(media(video_codec="hevc"), PHONE_SOFT_HEVC, WITH_GPU)
+    assert isinstance(decision, PlaybackPlan)
+    assert decision.tier is PlaybackTier.AUDIO_TRANSCODE
+    assert decision.video.action == "copy"
+
+
+def test_dropped_frames_feedback_degrades_via_failed_tiers():
+    """掉帧兜底的服务端半边：watchdog 逐级报废档位，最终落到真转码。
+
+    档 0/1 失败后引擎先给档 2（视频仍 copy——浏览器归因不可靠，逐级降是
+    既定取舍）；档 2 再被掉帧报废，才落到档 3 的视频转码。
+    """
+    cap = ClientCapability(
+        video=(VideoSupport("hevc", smooth=False),),
         audio=(AudioSupport("aac"),),
         containers=frozenset({"hls-fmp4"}),
     )
-    decision = decide_playback(media(video_codec="hevc"), desktop, WITH_GPU)
-    assert isinstance(decision, PlaybackPlan)
-    assert decision.tier is PlaybackTier.REMUX
+    step1 = decide_playback(
+        media(video_codec="hevc"),
+        cap,
+        WITH_GPU,
+        failed_tiers=frozenset({PlaybackTier.DIRECT_PLAY, PlaybackTier.REMUX}),
+    )
+    assert isinstance(step1, PlaybackPlan)
+    assert step1.tier is PlaybackTier.AUDIO_TRANSCODE
+    assert step1.video.action == "copy"
 
-    decision = decide_playback(media(video_codec="hevc"), PHONE_SOFT_HEVC, WITH_GPU)
-    assert isinstance(decision, PlaybackPlan)
-    assert decision.tier is PlaybackTier.HARDWARE_TRANSCODE
+    step2 = decide_playback(
+        media(video_codec="hevc"),
+        cap,
+        WITH_GPU,
+        failed_tiers=frozenset(
+            {PlaybackTier.DIRECT_PLAY, PlaybackTier.REMUX, PlaybackTier.AUDIO_TRANSCODE}
+        ),
+    )
+    assert isinstance(step2, PlaybackPlan)
+    assert step2.tier is PlaybackTier.HARDWARE_TRANSCODE
+    assert step2.video.action != "copy"
 
 
 def test_resolution_above_device_ceiling_transcodes():

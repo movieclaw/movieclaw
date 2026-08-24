@@ -14,9 +14,11 @@
  * 2. **max_height 要探出来而不是猜**。同一个 codec 在 1080p 流畅、4K 掉帧
  *    是最常见的情况，只报「支持 HEVC」会让服务端把 4K 直通给一台放不动的机器。
  *
- * ⚠️ 已知偏差：浏览器在没有本机统计数据前，会把所有 supported 的配置乐观报成
- * smooth=true / powerEfficient=true。**首次探测不可全信**，必须有运行期降档
- * 回路（§6.3）兜底——本模块只忠实承载探测结果，不做任何「猜它其实不行」的修正。
+ * ⚠️ 已知偏差（两个方向都有，§12.15 Jellyfin 对照）：Chrome 在没有本机统计
+ * 前会把 supported 的配置乐观报成 smooth=true；Safari 则会对 HEVC 整族悲观
+ * 报 smooth=false，而同一台设备直通同一文件 0 掉帧。所以 smooth /
+ * powerEfficient **只作参考随快照上报**（诊断与指标用），服务端决策只认
+ * supported；流畅与否交给运行期证据——真掉帧由 framedrop watchdog 降档。
  */
 
 import type { ClientCapability } from "@/lib/api/playback";
@@ -24,7 +26,9 @@ import type { ClientCapability } from "@/lib/api/playback";
 /** 快照结构版本。改了探测矩阵或字段含义就 +1，旧缓存自动失效。 */
 // 2：快照加了 native_hls 字段（选原生 HLS 引擎用）。老缓存没有它，
 // iPhone 会误走 hls.js 路径——版本不同即作废重探。
-export const CAPABILITY_SCHEMA_VERSION = 2;
+// 3：max_height 语义从「流畅上限」改为「支持上限」（smooth 降为参考）。
+// 老缓存里被 smooth=false 压低过的上限会让服务端继续错误转码，必须重探。
+export const CAPABILITY_SCHEMA_VERSION = 3;
 
 const CACHE_KEY = "movieclaw.player.capability";
 
@@ -83,19 +87,19 @@ export type ProbeFn = (config: {
 /**
  * 从一组「高度 → 探测结果」里挑出该编码家族的上报值。
  *
- * 规则（与服务端 `_judge_video` 的消费方式对应）：
+ * 规则（与服务端 `_judge_video` 的消费方式对应，§12.15）：
  * - 一个高度都不支持 → 返回 null，该家族**整个不出现在快照里**（服务端据此转码）；
- * - 有能流畅解的高度 → 取其中最大的，smooth=true；
- * - 支持但没有一个高度流畅 → 取最大的支持高度并 smooth=false，让服务端
- *   降分辨率转码。这正是 canPlayType 永远给不出的那条信息。
+ * - 否则取**最大的支持高度**。smooth / powerEfficient 取该高度探测的原值，
+ *   只作参考随行——**不再拿 smooth 压低上限**：Safari 对 HEVC 整族报
+ *   smooth=false 而实际直通 0 掉帧，压低上限等于替一台放得动的设备转码。
+ *   真掉帧由运行期 framedrop watchdog 兜底。
  */
 export function pickVideoSupport(
   probes: { height: number; probe: DecodeProbe }[],
 ): { max_height: number; smooth: boolean; power_efficient: boolean } | null {
   const supported = probes.filter((p) => p.probe.supported);
   if (supported.length === 0) return null;
-  const smooth = supported.filter((p) => p.probe.smooth);
-  const pick = (smooth.length > 0 ? smooth : supported).reduce((best, current) =>
+  const pick = supported.reduce((best, current) =>
     current.height > best.height ? current : best,
   );
   return {

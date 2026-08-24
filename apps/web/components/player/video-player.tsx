@@ -46,6 +46,7 @@ import {
 } from "@/lib/player/orientation";
 import { planAudioOptions } from "@/lib/player/audio-tracks";
 import { chromeMustStayVisible, shouldHideOnPointerLeave } from "@/lib/player/chrome";
+import { createFrameDropTracker } from "@/lib/player/framedrop";
 import { planSystemTrackModes, resolvePlaybackMode } from "@/lib/player/playback-mode";
 import { loadQualityPreference, saveQualityPreference } from "@/lib/player/quality";
 import { createSessionReleaser } from "@/lib/player/session-release";
@@ -709,18 +710,46 @@ export function VideoPlayer(props: VideoPlayerProps) {
     return () => withFrameCallback.cancelVideoFrameCallback?.(handle);
   }, [video, state.session?.session_id, qoe]);
 
-  /** 每秒采一次观看时长与掉帧。掉帧率是「解码能力判对没有」的直接证据。 */
+  /**
+   * 每秒采一次观看时长与掉帧。掉帧既进 QoE 指标，也是**降档回路的真实证据**：
+   * 决策层已不再预测流畅度（§12.15），「放不放得动」由这里持续掉帧超阈值来
+   * 回答——报废当前档，failed_tiers 回路换转码重来。
+   *
+   * 只在视频**直通**（copy）时武装 watchdog：转码档的视频已经是 h264 了，
+   * 再掉帧说明设备连转码产物都放不动，继续降档只会转得更狠、更卡。
+   *
+   * 两种假掉帧要挡住：后台标签页浏览器主动丢帧（不可见时不喂样本，回前台
+   * 先清窗口）；seek 落点的瞬时掉帧（seeking 时清窗口）。换会话由 tracker
+   * 的负增量自愈兜底，依赖里带 session_id 时 effect 重建也会重置。
+   */
   useEffect(() => {
     if (!video) return;
+    const tracker = createFrameDropTracker();
+    const videoIsCopy = state.session?.decision.video?.action === "copy";
+    const onVisibility = () => tracker.reset();
+    const onSeeking = () => tracker.reset();
+    document.addEventListener("visibilitychange", onVisibility);
+    video.addEventListener("seeking", onSeeking);
     const timer = window.setInterval(() => {
       qoe({ type: "tick", at: performance.now(), playing: !video.paused && !video.ended });
       const stats = engineRef.current?.stats();
-      if (stats?.totalFrames != null && stats.droppedFrames != null) {
-        qoe({ type: "frames", dropped: stats.droppedFrames, total: stats.totalFrames });
+      if (stats?.totalFrames == null || stats.droppedFrames == null) return;
+      qoe({ type: "frames", dropped: stats.droppedFrames, total: stats.totalFrames });
+      if (!videoIsCopy || document.visibilityState !== "visible" || video.paused) return;
+      const verdict = tracker.sample({ dropped: stats.droppedFrames, total: stats.totalFrames });
+      if (verdict.degrade) {
+        dispatch({
+          type: "failed",
+          reason: `直通播放持续掉帧（${Math.round((verdict.ratio ?? 0) * 100)}%），正在换转码重试`,
+        });
       }
     }, 1000);
-    return () => window.clearInterval(timer);
-  }, [video, qoe]);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
+      video.removeEventListener("seeking", onSeeking);
+    };
+  }, [video, qoe, state.session]);
 
   /**
    * 进度条缩略图：服务端在开会话时后台生成，这里轮询到就绪为止。

@@ -192,16 +192,18 @@ ffmpeg -hwaccel vaapi -hwaccel_output_format vaapi -hwaccel_device <dev>
 }
 ```
 
-三态语义：
+三态语义（2026-08 修订，动因见 §12.15 的 Jellyfin 对照与真实误判案例）：
 
-- `supported=false` → 必须转码。
-- `supported=true, smooth=false` → **能解但会卡**，应主动降档（`canPlayType`
-  永远给不出这条）。
-- `powerEfficient=false` → 软解，移动端/笔记本应降档（发热与续航）。
+- `supported=false` → 必须转码。**这是三态里唯一作硬闸的一项。**
+- `smooth` / `powerEfficient` → **只作参考**，随快照上报供诊断与指标用，
+  决策不消费。流畅与否由运行期真实证据回答：直通期间持续掉帧超阈值，
+  framedrop watchdog（§6.3）报废当前档、换转码重来。
 
-⚠️ **已知偏差**：浏览器在没有本机统计数据前，会把所有 `supported` 的配置
-乐观报成 `smooth=true` / `powerEfficient=true`。因此**首次探测不可全信**，
-必须有 §6.4 的运行时降档回路兜底。
+⚠️ **已知偏差（两个方向都有）**：Chrome 在没有本机统计前把 supported 的配置
+乐观报成 `smooth=true`；Safari 则对 HEVC **整族**报 `smooth=false`，而同一台
+设备直通同一文件 0 掉帧（实测，§12.15）。预测双向都不可信，所以它不配当闸：
+预测掉帧就抢先转码，等于用**一定发生**的转码代价去对冲一个**未必发生**的
+掉帧。`max_height` 也随之改为「支持上限」而非「流畅上限」。
 
 快照缓存进 `localStorage`，key 带 schema 版本 + UA 哈希，浏览器升级后自动失效。
 
@@ -229,9 +231,10 @@ ffmpeg -hwaccel vaapi -hwaccel_output_format vaapi -hwaccel_device <dev>
 
 3. 视频编码判定
      supported=false                        → 需转码（档 3/4）
-     supported=true, smooth=false           → 需转码（降分辨率/降码率）
-     supported=true, powerEfficient=false 且客户端自称移动端 → 需转码
+     源高度 > 探测出的支持上限               → 需转码（降分辨率）
      否则                                   → 视频可 copy
+     （smooth / powerEfficient 不参与判定，见 §3.1 修订；真掉帧由
+       framedrop watchdog 运行期降档）
 
 4. HDR 判定
      源为 SDR                               → 无约束
@@ -901,7 +904,7 @@ ref——`setChromeVisible(true)` 是异步的，click 回调读到的可能已�
 | ⑪ | **孤儿 ffmpeg** | 后端重启后持续烧 GPU、写盘 | `start_new_session` + `killpg` + 启动清残留（§4.2） |
 | ⑫ | **转码缓存爆盘** | SQLite 写不进，整个应用挂 | 配额 + 写前检查 + LRU + 启动清理（§4.6） |
 | ⑬ | **阻塞 subprocess** | 全站 API 卡死 | 一律 `asyncio.create_subprocess_exec`（§4.2-1） |
-| ⑭ | **首次能力探测过于乐观** | 判为直通实际掉帧 | §6.3 运行时降档回路 |
+| ⑭ | **拿 decodingInfo 的 smooth 预测当硬闸** | 双向都错：Chrome 乐观（判直通实际掉帧）、Safari 悲观（放得动却被转码） | supported 才是硬闸；掉帧由 framedrop watchdog 用真实证据降档（§3.1 修订、§12.15） |
 | ⑮ | **NVENC 并发会话上限** | 第 4 路直接报错 | 显式检测 + 中文提示；不内置解锁补丁 |
 | ⑯ | **自动播放的手势撑不过起播链路** | 进了播放页停在第一帧，非得再点一次播放 | 多时机重试 + 按错误类型区分处置（§6.6） |
 | ⑰ | **`media-controller` 把 `line-height` 写死为 0** | 浮层里每一行文字塌成一条线、彼此叠住 | 在自己的浮层（`media-controller` 的非 media 子节点）上把行高要回来 |
@@ -1535,8 +1538,9 @@ PT 片源的字幕绝大多数是内封的，外挂 `.srt` 反而是少数。只
 | 横屏与方向锁 | `test/player-orientation.test.mjs` | 12 |
 | 控制条显隐 | `test/player-chrome.test.mjs` | 9 |
 | 音轨菜单 | `test/player-audio-tracks.test.mjs` | 6 |
+| 掉帧 watchdog | `test/player-framedrop.test.mjs` | 8 |
 
-合计 **117 条**，全部 `node --test` 直跑，不需要浏览器——这也是纯逻辑一律放
+合计 **125 条**，全部 `node --test` 直跑，不需要浏览器——这也是纯逻辑一律放
 `lib/player/` 的理由：降档、时间轴换算、字幕分派、会话释放、停顿归因、质量
 归约、缩略图定位、自动播放兜底、横屏顺序与方向锁归还、控制条显隐、音轨标签
 这些最容易出错的判断因此都能被覆盖。
@@ -1544,6 +1548,58 @@ PT 片源的字幕绝大多数是内封的，外挂 `.srt` 反而是少数。只
 全量套件跑完后用 `pgrep ffmpeg` 确认过：**没有泄漏任何转码进程**。
 
 UI 组件不写渲染测试——判断都已经被挤到上面这些纯模块里，组件层剩下的只有接线。
+
+### 12.15 Jellyfin 对照研究：直通判定为什么改成「supported 即直通」
+
+起因是一个真实误判：同一个 4K HEVC Main 3 Mbps 25fps 的 MKV，Emby 视频直通
+（重封装 HLS + 音频转码）0 掉帧，我们判成档 4 软转 + 降 1080p。为此通读了
+jellyfin / jellyfin-web 源码（2026-08 主干，浅克隆核对），要点如下。
+
+**Jellyfin 的能力声明：canPlayType 二值 + 等级阶梯，零流畅度预测。**
+`jellyfin-web/src/scripts/browserDeviceProfile.js` 全文 59 处 `canPlayType`、
+0 处 `mediaCapabilities`。HEVC 探 `hvc1.1.L120`（Main L4.0）起步，逐级问到
+`hvc1.2.4.L186`（Main10 L6.2）拿到 maxLevel；分辨率与帧率的天花板由**等级**
+隐含表达，不单独探。码率上限默认 **120 Mbps 写死**（`getMaxBitrate()`），
+按设备猜上限的只有 PS4（8M）与 Tizen FHD 面板（20M）两处白名单。
+
+**Safari 特例与我们实测一致**：它给 Safari 加了两条 CodecProfile 条件——
+`VideoCodecTag ∈ hvc1|dvh1`（hev1 会静默黑屏，与我们 §12.2 的 `-tag:v hvc1`
+结论互证）、`VideoFramerate ≤ 60`。
+
+**服务端消费**（`MediaBrowser.Model/Dlna/StreamBuilder.cs`
+`GetVideoDirectPlayProfile`）：容器/编码/音轨逐项对表打 TranscodeReason 标志，
+全零 → DirectPlay，只剩容器不兼容 → DirectStream（重封装）。转码时
+`EncodingHelper.CanStreamCopyVideo`（2399 行起）仍尽力保住视频 copy：逐项核对
+profile / level / range / 宽高 / 帧率 / 码率 / bit depth，全过就 `-c:v copy`——
+这正是截图里「转 HLS 但视频直接播放」的来源。
+
+**Jellyfin 的兜底只有硬错误**：`playbackmanager.js` `onPlaybackError` 收到
+mediadecodeerror 后带 `EnableDirectPlay: false` 重开流强制转码。**画面卡成
+幻灯片但没抛错时它什么也不做**。
+
+**我们错在哪**：把 `decodingInfo` 的 `smooth` 当硬闸，而探测喂的是假想负载
+（4K 一档 25 Mbps、Main10）；真实文件只有 3 Mbps、Main。Safari 对 HEVC 整族
+报 smooth=false，同一台设备直通 0 掉帧——预测与现实完全相反。方向也不对称：
+文档早就警告过 Chrome 的 smooth **乐观**不可信、要靠运行期降档兜底，却对
+**悲观**的回答照单全收，而阶梯只降不升，被误判的设备永远没机会翻案。
+
+**修订后的策略（取两家之长）**：
+
+| | Jellyfin | 我们（修订后） |
+|---|---|---|
+| 能力声明 | canPlayType 二值 | decodingInfo 的 **supported**（同样二值消费） |
+| 流畅度预测 | 没有 | smooth/powerEfficient 只随快照作诊断参考 |
+| 分辨率上限 | 等级隐含 | 逐高度探 supported 的上限 |
+| 硬错误兜底 | 重开流强制转码 | failed_tiers 降档回路（既有） |
+| 掉帧兜底 | **没有** | framedrop watchdog：直通期间 10 秒窗口掉帧率 ≥10%（窗口 ≥100 帧）→ 报废当前档换转码（`lib/player/framedrop.ts`） |
+
+watchdog 只在视频 copy 的档位武装：转码档的视频已是 h264，再掉帧说明设备连
+转码产物都放不动，继续降档只会更卡。后台标签页与 seek 的假掉帧分别靠
+「不可见不喂样本 + 回前台清窗口」「seeking 清窗口」挡住。
+
+已知残留：h264 10bit（Hi10P 动漫）无浏览器硬解，我们家族级探测分不出它，
+直通失败走硬错误回退（decode error → failed → 降档），与 Jellyfin 桌面端
+行为一致；如需抢先拦截可在 MediaProfile.bit_depth 上加一条 h264+10bit 规则。
 
 ## 13. VOD 架构与播放模式矩阵（2026-08-23 重构）
 

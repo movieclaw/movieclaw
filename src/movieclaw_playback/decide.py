@@ -352,21 +352,18 @@ def _judge_video(
         return _VideoVerdict(
             can_copy=False, reason=f"视频编码 {codec_label} 浏览器不支持"
         )
-    if not support.smooth:
-        return _VideoVerdict(
-            can_copy=False,
-            reason=f"视频编码 {codec_label} 可解码但会掉帧，已降分辨率转码",
-        )
-    if capability.is_mobile and not support.power_efficient:
-        return _VideoVerdict(
-            can_copy=False,
-            reason=f"移动端软解 {codec_label} 会发热耗电，已转码为硬解格式",
-        )
+    # smooth / power_efficient **只作参考，不再作硬闸**（§12.15 Jellyfin 对照）。
+    # 实测 Safari 对 HEVC 会整族报 smooth=false，而同一台设备直通同一文件
+    # 0 掉帧——decodingInfo 的预测是对"假想负载"（我们探测用 25 Mbps）的回答，
+    # 与真实文件（可能只有 3 Mbps）对不上，两个方向都不可信。Jellyfin 压根
+    # 不做流畅度预测（canPlayType 二值声明），靠出错回退兜底；我们保留更强的
+    # 兜底：真实掉帧率超阈值时运行期降档（lib/player/framedrop.ts）。
+    # 预测掉帧就抢先转码，等于用一定发生的转码代价去对冲一个未必发生的掉帧。
     height = media.height
     if height is not None and height > support.max_height:
         return _VideoVerdict(
             can_copy=False,
-            reason=f"{media.resolution} 超出设备可流畅解码的分辨率，已降分辨率",
+            reason=f"{media.resolution} 超出设备可解码的分辨率，已降分辨率",
         )
     # 用户选了画质上限且源超出：强制转码降下去。放在设备判定之后——
     # 两条都命中时归因给设备（那是硬性的，用户上限只是偏好）
