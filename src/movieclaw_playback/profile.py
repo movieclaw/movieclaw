@@ -14,7 +14,7 @@ from __future__ import annotations
 from movieclaw_db.models import LibraryFile
 from movieclaw_playback.decide import AudioTrack, MediaProfile, SubtitleTrack
 from movieclaw_playback.streaming import is_strm
-from movieclaw_playback.subtitles import embedded_track, external_track
+from movieclaw_playback.subtitles import embedded_track, external_track, is_ai_generated
 
 
 def media_profile_from_file(
@@ -74,6 +74,9 @@ def _subtitle_tracks(file: LibraryFile) -> tuple[SubtitleTrack, ...]:
             codec=(entry.get("format") or None),
             language=entry.get("language"),
             is_external=True,
+            # title 段是扫描时从文件名解析好的（视频 stem 之后的 token），
+            # AI 字幕的世代标记就写在这里
+            is_ai=is_ai_generated(entry.get("title")),
         )
         for entry in (file.external_subtitles or [])
         if isinstance(entry, dict) and entry.get("filename")

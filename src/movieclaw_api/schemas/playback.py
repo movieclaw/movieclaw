@@ -197,6 +197,9 @@ class PlaybackDecideRequest(BaseModel):
     #: 自动换轨。**选了非默认轨会把档 0 顶成档 1**——直出时浏览器只放默认轨，
     #: 必须重封装才能把选中的那条带上。
     audio_track: str | None = None
+    #: 用户选的画质上限（如 720）。语义是上限而非目标：源不超就照常直通，
+    #: 超了才转码降下去。None = 自动。弱网救急用（§10「手动选清晰度」）。
+    max_height: int | None = Field(default=None, ge=240, le=2160)
 
 
 class VideoPlanView(BaseModel):
@@ -230,6 +233,8 @@ class SubtitlePlanView(BaseModel):
     kind: str
     language: str | None = None
     is_default: bool = False
+    #: 本机 AI 生成的字幕（翻译/双语）。播放器的字幕菜单据此打「AI 生成」标
+    is_ai: bool = False
 
 
 class PlaybackDecisionView(BaseModel):
@@ -280,9 +285,18 @@ class PlaybackSessionView(BaseModel):
     stream_url: str | None = None
     #: 会话时间轴的零点在文件里的位置。**文件时间 = start_ms + currentTime**——
     #: 全前端只有这一处换算（见 ffmpeg_args 模块文档的时间轴取舍）。
+    #: timeline="file" 时它退化为「建议的起播位置」：分片时间戳本身就是
+    #: 文件绝对时间，currentTime 即文件时间，前端应把播放器 seek 到这里。
     start_ms: int = 0
+    #: 时间轴语义：session = 旧会话相对制（流从 0 起）；file = VOD 预生成
+    #: 列表（§12），播放列表覆盖全片、时间戳为文件绝对时间，seek 任意位置
+    #: 不需要换会话。
+    timeline: str = "session"
     #: 旁挂字幕地址（已带 token），与 decision.subtitles 一一对应。
     subtitle_urls: list[str] = []
+    #: master 播放列表（带 WEBVTT 字幕组），仅 VOD 会话有。iOS 原生 HLS 用
+    #: 它——字幕成为系统级字幕轨，画中画/原生全屏里由系统渲染（§12）。
+    master_url: str | None = None
     #: 本次会话实际使用的硬件加速后端（vaapi / qsv / nvenc / videotoolbox）；
     #: None = 纯软件。诊断面板要靠它回答「到底有没有走显卡」——用户报「转码
     #: 很卡」时，这一项与「有没有装对驱动」是同一个问题的两面（§6.5）。

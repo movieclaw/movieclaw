@@ -30,6 +30,50 @@ export interface SubtitleLayerProps {
   style: SubtitleStyle;
   /** 会话时间轴零点在文件里的位置（秒）= start_ms / 1000 */
   baseOffsetSeconds: number;
+  /** 控制条展开时要让出的底部高度（px）；收起时传 0 */
+  avoidBottomPx: number;
+}
+
+/**
+ * object-contain 之后画面在元素里的实际矩形（竖屏看横片时上下是大片黑边）。
+ * 字幕必须锚定这个矩形而不是容器：按容器定位，竖屏时字幕会悬在离画面很远
+ * 的黑边中间，观感脱节；字号同理——原来用 cqh 号称「跟随画面高度」，其实
+ * cqh 是容器高，竖屏时字会大得离谱。
+ */
+export function useVideoContentBox(video: HTMLVideoElement | null): {
+  bottomInset: number;
+  height: number;
+} {
+  const [box, setBox] = useState({ bottomInset: 0, height: 0 });
+  useEffect(() => {
+    if (!video) return;
+    const measure = () => {
+      const cw = video.clientWidth;
+      const ch = video.clientHeight;
+      const vw = video.videoWidth;
+      const vh = video.videoHeight;
+      if (!vw || !vh || !cw || !ch) {
+        setBox({ bottomInset: 0, height: ch });
+        return;
+      }
+      const height = vh * Math.min(cw / vw, ch / vh);
+      setBox({ bottomInset: (ch - height) / 2, height });
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(video);
+    // video 的 resize 事件在 videoWidth/videoHeight 变化时触发，比只听
+    // loadedmetadata 可靠：metadata 可能早于本 effect 挂载就到了（此时首次
+    // measure 读到 0 走了兜底），换会话、降档换流也都靠它兜住
+    video.addEventListener("resize", measure);
+    video.addEventListener("loadedmetadata", measure);
+    return () => {
+      observer.disconnect();
+      video.removeEventListener("resize", measure);
+      video.removeEventListener("loadedmetadata", measure);
+    };
+  }, [video]);
+  return box;
 }
 
 /** VTT：借浏览器解析，自己渲染，并按 baseOffset + 用户微调整体平移 cue。 */
@@ -141,6 +185,9 @@ function useJassub(
         timeOffset,
       });
       instance.current = created;
+      // JASSUB 把渲染 canvas 插在 video 旁边，也在 media-controller 的
+      // 自动淡出范围内——同样要豁免，理由同上面 VTT 层的 noautohide
+      (created as { _canvas?: HTMLElement })._canvas?.setAttribute("noautohide", "");
     });
 
     return () => {
@@ -157,18 +204,35 @@ function useJassub(
   }, [timeOffset]);
 }
 
-export function SubtitleLayer({ video, track, style, baseOffsetSeconds }: SubtitleLayerProps) {
+export function SubtitleLayer({
+  video,
+  track,
+  style,
+  baseOffsetSeconds,
+  avoidBottomPx,
+}: SubtitleLayerProps) {
   // VTT：cue 时间（文件绝对）→ 会话相对，再加上用户微调（正数 = 字幕延后）
   const vttLines = useVttCues(video, track, -baseOffsetSeconds + style.offsetSeconds);
   // JASSUB：查表时间 = 播放时间 + timeOffset，方向与上面相反
   useJassub(video, track, baseOffsetSeconds - style.offsetSeconds);
+  const contentBox = useVideoContentBox(video);
 
   if (!track || track.kind !== "vtt" || vttLines.length === 0) return null;
 
+  // 锚在画面内底部；控制条展开且会压到时整体抬升（YouTube 同款避让）。
+  // 竖屏时画面下沿本来就远高于控制条，max 自然不生效，字幕纹丝不动。
+  const bottomPx = Math.max(
+    contentBox.bottomInset + (style.bottomPercent / 100) * contentBox.height,
+    avoidBottomPx,
+  );
+
   return (
+    // noautohide：media-controller 会在用户无操作时把普通子元素统一淡出，
+    // 字幕是内容不是控制件，必须常显——否则表现为「鼠标一动字幕才出现」
     <div
-      className="pointer-events-none absolute inset-x-0 z-10 flex flex-col items-center gap-1 px-[6%] text-center"
-      style={{ bottom: `${style.bottomPercent}%` }}
+      {...{ noautohide: "" }}
+      className="pointer-events-none absolute inset-x-0 z-10 flex flex-col items-center gap-1 px-[6%] text-center transition-[bottom] duration-300"
+      style={{ bottom: `${bottomPx}px` }}
       aria-live="off"
     >
       {vttLines.map((line, index) => (
@@ -176,9 +240,10 @@ export function SubtitleLayer({ video, track, style, baseOffsetSeconds }: Subtit
           key={`${index}-${line}`}
           className="max-w-full whitespace-pre-wrap font-medium leading-snug text-white"
           style={{
-            // cqh：字号跟随画面高度而不是视口——分屏、画中画、内联播放时
-            // 字幕比例才不会跑掉
-            fontSize: `${style.fontScale}cqh`,
+            // 字号 = 画面实际高度的百分比（不是容器高）：竖屏 letterbox
+            // 时容器高是画面高的好几倍，按容器算字会大得离谱。16px 下限是
+            // 移动端通用做法——竖屏小画面按比例算不到 10px，谁也读不了
+            fontSize: `${Math.max(16, (style.fontScale / 100) * contentBox.height)}px`,
             // 描边用四向 text-shadow：亮画面上的白字没有描边基本读不清，
             // 而 -webkit-text-stroke 会把笔画往里吃、中文字形直接糊掉
             textShadow: style.outline

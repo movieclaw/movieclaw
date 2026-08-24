@@ -16,8 +16,6 @@ export interface ChromeVisibilityInput {
   paused: boolean;
   /** 有菜单展开着（字幕 / 设置） */
   menuOpen: boolean;
-  /** 诊断面板开着 */
-  diagnosticsOpen: boolean;
   /** 正等用户拍板（报错页 / 同意弹窗），见 machine.ts 的 awaitsUserDecision */
   awaitingUser: boolean;
 }
@@ -25,15 +23,19 @@ export interface ChromeVisibilityInput {
 /**
  * 控制条必须常显、不能走自动淡出的情况。
  *
- * 前三条都是「用户正要用它」：暂停时他在找播放键；菜单或诊断面板开着时，控制条
- * 一淡出会把它们一起带走。
+ * 前两条都是「用户正要用它」：暂停时他在找播放键；菜单开着时控制条一淡出会
+ * 把菜单一起带走（菜单是从控制条里长出来的）。
  *
- * 第四条是「用户必须知道现在什么情况」：报错和同意弹窗都在等他做决定，此时让
+ * 第三条是「用户必须知道现在什么情况」：报错和同意弹窗都在等他做决定，此时让
  * 界面淡成一块黑屏，他既不知道出了什么事，也不知道还能点什么。**要用户抉择的
  * 状态不设超时**——超时的前提是"没人看也没关系"，这里恰恰相反。
+ *
+ * **诊断面板不在此列**（曾经在）：它不长在控制条上，是一块独立浮在画面角上的
+ * 常驻读数（YouTube 的 Stats for nerds 同款），开着它就把控制条钉死在画面上
+ * 只会挡着看片。它自己一直挂到用户点关闭为止，与控制条互不相干。
  */
 export function chromeMustStayVisible(input: ChromeVisibilityInput): boolean {
-  return input.paused || input.menuOpen || input.diagnosticsOpen || input.awaitingUser;
+  return input.paused || input.menuOpen || input.awaitingUser;
 }
 
 export interface PointerLeaveInput {

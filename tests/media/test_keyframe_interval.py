@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from movieclaw_api.services.media_probe import (
+    last_keyframe_at_or_before,
     _keyframe_windows,
     keyframe_interval_from_packets,
 )
@@ -88,3 +89,18 @@ class TestWindowPlanning:
         # 窗口不重叠，且都落在片内
         assert all(end <= 7200 + 30 for _, end in windows)
         assert windows[0][1] < windows[1][0] < windows[1][1] < windows[2][0]
+
+
+def test_last_keyframe_at_or_before_picks_nearest():
+    """续播校正：取 ≤ 目标点的最后一个关键帧；恰好相等也算（含浮点容差）。"""
+    packets = [
+        {"pts_time": "10.0", "flags": "K__"},
+        {"pts_time": "12.5", "flags": "___"},
+        {"pts_time": "14.0", "flags": "K__"},
+        {"pts_time": "18.0", "flags": "K__"},
+    ]
+    assert last_keyframe_at_or_before(packets, 15.0) == 14.0
+    assert last_keyframe_at_or_before(packets, 14.0) == 14.0
+    assert last_keyframe_at_or_before(packets, 9.0) is None
+    # 坏数据不炸：缺 pts / N/A 直接跳过
+    assert last_keyframe_at_or_before([{"flags": "K__"}, {"pts_time": "N/A", "flags": "K__"}], 5) is None

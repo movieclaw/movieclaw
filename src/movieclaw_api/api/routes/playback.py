@@ -39,6 +39,20 @@ from movieclaw_api.schemas.playback import (
 from movieclaw_api.schemas.response import ApiResponse, ok
 from movieclaw_api.services.auth import Principal
 from movieclaw_api.services.library.access import visible_library_ids
+from movieclaw_api.services.media_probe import probe_keyframe_before
+from movieclaw_api.services.playback.ffmpeg_args import (
+    INIT_NAME,
+    SEGMENT_PATTERN,
+    SEGMENT_SECONDS,
+)
+from movieclaw_playback.hls_vod import (
+    build_master_playlist,
+    build_media_playlist,
+    build_subtitle_playlist,
+    compute_segment_plan,
+    compute_uniform_plan,
+)
+from movieclaw_playback.keyframes import read_keyframe_index
 from movieclaw_api.services.playback import metrics, trickplay
 from movieclaw_api.services.playback import plan as playback_plan
 from movieclaw_api.services.playback import watch as playback_watch
@@ -182,6 +196,7 @@ async def decide_playback_route(
             can_self_enable=principal.is_admin,
             failed_tiers=failed,
             preferred_audio=payload.audio_track,
+            max_height=payload.max_height,
             visible_library_ids=visible,
         )
     elif payload.media_item_id is not None:
@@ -269,6 +284,7 @@ async def _decide(
             session, payload.file_id, capability,
             can_self_enable=principal.is_admin, failed_tiers=failed,
             preferred_audio=payload.audio_track,
+            max_height=payload.max_height,
             visible_library_ids=visible,
         )
     if payload.media_item_id is not None:
@@ -279,6 +295,7 @@ async def _decide(
         return await playback_plan.decide_for_files(
             files, capability, can_self_enable=principal.is_admin, failed_tiers=failed,
             preferred_audio=payload.audio_track,
+            max_height=payload.max_height,
         )
     raise BadRequestException("需要提供 file_id 或 media_item_id")
 
@@ -342,12 +359,35 @@ async def start_playback_session(
     # 只有真的转视频才谈得上硬件加速：直通档（-c:v copy）不经编码器，报个
     # 后端名只会让诊断面板骗人。
     hw_used = backends[0] if backends and view.video and view.video.action == "transcode" else None
+    # VOD 预生成规划（§12）：直通档按全片关键帧索引算分片边界；转码档
+    # force_key_frames 在绝对栅格上强插关键帧，用等长规划。规划失败（时长
+    # 未知 / 关键帧索引读不出）退回旧的会话相对模式，一切照旧。
+    segment_plan = None
+    if file.duration_seconds:
+        duration_s = float(file.duration_seconds)
+        if view.video and view.video.action == "transcode":
+            segment_plan = compute_uniform_plan(duration_s, target_s=SEGMENT_SECONDS)
+        else:
+            index = await asyncio.to_thread(read_keyframe_index, file.file_path)
+            if index is not None:
+                segment_plan = compute_segment_plan(
+                    index.times_s, duration_s, target_s=SEGMENT_SECONDS
+                )
+    start_ms = payload.start_ms
+    if segment_plan is None and start_ms > 0 and view.video and view.video.action == "copy":
+        # 旧模式的关键帧校正（VOD 下不需要：start() 自己对齐到分片边界）
+        keyframe_s = await asyncio.to_thread(
+            probe_keyframe_before, file.file_path, start_ms / 1000
+        )
+        if keyframe_s is not None:
+            start_ms = int(keyframe_s * 1000)
     try:
         transcode = await manager.start(
             decision,
             source_path=file.file_path,
             member_id=member_id,
-            start_ms=payload.start_ms,
+            start_ms=start_ms,
+            segment_plan=segment_plan,
             hw_backend=backends[0] if backends else None,
             max_transcode=policy.max_transcode_concurrency,
             max_remux=policy.max_remux_concurrency,
@@ -368,7 +408,17 @@ async def start_playback_session(
             stream_url=(
                 f"/api/v1/playback/sessions/{transcode.id}/index.m3u8?token={token}"
             ),
-            start_ms=payload.start_ms,
+            # master 列表带 WEBVTT 字幕组：iOS 原生 HLS 用它，字幕成为系统级
+            # 字幕轨——画中画小窗、原生全屏里都由系统渲染（§12）
+            master_url=(
+                f"/api/v1/playback/sessions/{transcode.id}/master.m3u8?token={token}"
+                if segment_plan is not None
+                else None
+            ),
+            # VOD：时间轴是文件绝对时间，start_ms 只是建议起播位置（用户
+            # 请求的原值，不必对齐边界——播放器 seek 到毫秒都行）
+            start_ms=payload.start_ms if segment_plan is not None else start_ms,
+            timeline="file" if segment_plan is not None else "session",
             subtitle_urls=subtitle_urls,
             hw_backend=hw_used,
         )
@@ -424,17 +474,133 @@ async def get_session_playlist(
     session_id: Annotated[str, Path()],
     token: Annotated[str, Query()],
 ) -> Response:
-    """HLS 播放列表。EVENT 类型，只增不改——边转边给。"""
+    """HLS 播放列表。
+
+    VOD 模式（§12）：按分片规划一次性生成完整列表（VOD + ENDLIST），播放器
+    把它当真正的点播——总时长已知、seek 任意位置、绝不贴直播边缘。
+    旧模式：转发 ffmpeg 边写的 EVENT 列表。
+    """
     grant = await verify_stream_token(token, session_id=session_id)
     if grant is None:
         raise NotFoundException("播放地址无效或已过期")
     session = get_session_manager().get(session_id, member_id=grant.member_id)
-    if session is None or not session.playlist_path.exists():
+    if session is None:
         raise NotFoundException("会话不存在或已结束")
     session.touch()  # 拉 playlist 也算活着
+    if session.segment_plan is not None:
+        playlist = build_media_playlist(
+            session.segment_plan,
+            init_name=INIT_NAME,
+            segment_name=SEGMENT_PATTERN,
+            query=f"?token={token}",
+        )
+        return Response(
+            content=playlist,
+            media_type="application/vnd.apple.mpegurl",
+            headers={"Cache-Control": "no-store"},
+        )
+    if not session.playlist_path.exists():
+        raise NotFoundException("会话不存在或已结束")
     playlist = await asyncio.to_thread(session.playlist_path.read_text, encoding="utf-8")
     return Response(
         content=playlist_with_tokens(playlist, token),
+        media_type="application/vnd.apple.mpegurl",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+#: HLS 字幕组 NAME 的语言显示名。装进系统播放器的字幕菜单里给人看的，
+#: 覆盖常见语言即可，冷门语言直接显示原始码也能认。
+_SUBTITLE_LANG_NAMES = {
+    "chi": "中文", "zho": "中文", "zh": "中文",
+    "eng": "英文", "en": "英文",
+    "jpn": "日文", "ja": "日文",
+    "kor": "韩文", "ko": "韩文",
+}
+
+#: 能进 HLS 字幕组的轨：文本轨（vtt 含 srt 转换；ass 服务端降级转 VTT）。
+#: PGS 是图形字幕转不了。**与前端 planSubtitleTracks 的 options 过滤规则
+#: 必须一致**——前端按 options 的下标定位系统字幕轨。
+_MASTER_SUBTITLE_KINDS = {"vtt", "ass"}
+
+
+def _master_subtitle_tracks(session) -> list:
+    return [s for s in session.plan.subtitles if s.kind in _MASTER_SUBTITLE_KINDS]
+
+
+@router.get(
+    "/sessions/{session_id}/master.m3u8",
+    summary="master 播放列表（含字幕组）",
+    operation_id="playback.session.master",
+    openapi_extra={"x-cli-hidden": True},
+)
+async def get_session_master_playlist(
+    session_id: Annotated[str, Path()],
+    token: Annotated[str, Query()],
+) -> Response:
+    """master 列表：一路视频 + WEBVTT 字幕组（仅 VOD 会话）。
+
+    iOS 原生 HLS（AVPlayer）吃它，字幕由系统在任何表面（内联/全屏/画中画）
+    渲染——这是网页 DOM 字幕层做不到的（PiP 图层只含视频帧）。
+    """
+    grant = await verify_stream_token(token, session_id=session_id)
+    if grant is None:
+        raise NotFoundException("播放地址无效或已过期")
+    session = get_session_manager().get(session_id, member_id=grant.member_id)
+    if session is None or session.segment_plan is None:
+        raise NotFoundException("会话不存在或已结束")
+    session.touch()
+    subtitles: list[tuple[str, str]] = []
+    seen: dict[str, int] = {}
+    for i, track in enumerate(_master_subtitle_tracks(session)):
+        name = _SUBTITLE_LANG_NAMES.get((track.language or "").lower(), track.language or "字幕")
+        seen[name] = seen.get(name, 0) + 1
+        if seen[name] > 1:
+            name = f"{name} {seen[name]}"
+        subtitles.append((name, f"sub{i}.m3u8"))
+    return Response(
+        content=build_master_playlist(
+            media_uri="index.m3u8", subtitles=subtitles, query=f"?token={token}"
+        ),
+        media_type="application/vnd.apple.mpegurl",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.get(
+    "/sessions/{session_id}/sub{index}.m3u8",
+    summary="字幕媒体列表",
+    operation_id="playback.session.subtitle_playlist",
+    openapi_extra={"x-cli-hidden": True},
+)
+async def get_session_subtitle_playlist(
+    session_id: Annotated[str, Path()],
+    index: Annotated[int, Path(ge=0, le=99)],
+    token: Annotated[str, Query()],
+) -> Response:
+    """字幕组里一条轨的媒体列表：整片一个 VTT 分片。"""
+    grant = await verify_stream_token(token, session_id=session_id)
+    if grant is None:
+        raise NotFoundException("播放地址无效或已过期")
+    session = get_session_manager().get(session_id, member_id=grant.member_id)
+    if session is None or session.segment_plan is None:
+        raise NotFoundException("会话不存在或已结束")
+    tracks = _master_subtitle_tracks(session)
+    if index >= len(tracks):
+        raise NotFoundException("字幕轨不存在")
+    session.touch()
+    file_token = await issue_stream_token(
+        member_id=session.member_id, file_id=session.file_id
+    )
+    vtt_uri = (
+        f"/api/v1/playback/files/{session.file_id}/subtitles"
+        f"?track={quote(tracks[index].track_ref, safe='')}"
+        f"&format=vtt&token={file_token}"
+    )
+    return Response(
+        content=build_subtitle_playlist(
+            vtt_uri=vtt_uri, duration_s=session.segment_plan.duration_s
+        ),
         media_type="application/vnd.apple.mpegurl",
         headers={"Cache-Control": "no-store"},
     )
@@ -451,19 +617,29 @@ async def get_session_segment(
     name: Annotated[str, Path()],
     token: Annotated[str, Query()],
 ) -> FileResponse:
-    """取一个 fMP4 分片或初始化段。"""
+    """取一个 fMP4 分片或初始化段。
+
+    VOD 模式下这里就是 seek 的入口：播放器按预生成列表请求任意分片，
+    ``ensure_segment`` 负责「等 ffmpeg 转过来」或「杀掉重启直奔目标」。
+    """
     if not _SEGMENT_NAME.match(name):
         raise NotFoundException("分片不存在")
     grant = await verify_stream_token(token, session_id=session_id)
     if grant is None:
         raise NotFoundException("播放地址无效或已过期")
-    session = get_session_manager().get(session_id, member_id=grant.member_id)
+    manager = get_session_manager()
+    session = manager.get(session_id, member_id=grant.member_id)
     if session is None:
         raise NotFoundException("会话不存在或已结束")
-    target = session.directory / name
-    if not target.exists():
-        raise NotFoundException("分片尚未就绪")
     session.touch()
+    target = session.directory / name
+    if session.segment_plan is not None and name.startswith("seg"):
+        ready = await manager.ensure_segment(session, int(name[3:8]))
+        if ready is None:
+            raise NotFoundException("分片尚未就绪")
+        target = ready
+    elif not target.exists():
+        raise NotFoundException("分片尚未就绪")
     return FileResponse(
         target,
         media_type="video/mp4",

@@ -108,6 +108,25 @@ export function PlayerPage({ libraryId, mediaItemId, season, episode, returnTo }
     };
   }, [episodes, current, mediaItemId]);
 
+  /** 上一集：同样只在**本季且有在位文件**里找，规则与「下一集」对称。 */
+  const prev = useMemo(() => {
+    if (!current) return null;
+    const candidate = episodes
+      .filter((item) => item.episode_number < current.episode && item.owned)
+      .sort((a, b) => b.episode_number - a.episode_number)[0];
+    if (!candidate) return null;
+    return {
+      unit: {
+        media_item_id: mediaItemId,
+        season_number: current.season,
+        episode_number: candidate.episode_number,
+      },
+      label: `${episodeCode(current.season, candidate.episode_number)}${
+        candidate.name ? ` · ${candidate.name}` : ""
+      }`,
+    };
+  }, [episodes, current, mediaItemId]);
+
   const playNext = useCallback(() => {
     if (!next) return;
     setCurrent({
@@ -115,6 +134,14 @@ export function PlayerPage({ libraryId, mediaItemId, season, episode, returnTo }
       episode: next.unit.episode_number ?? 0,
     });
   }, [next]);
+
+  const playPrev = useCallback(() => {
+    if (!prev) return;
+    setCurrent({
+      season: prev.unit.season_number ?? 0,
+      episode: prev.unit.episode_number ?? 0,
+    });
+  }, [prev]);
 
   const exit = useCallback(() => {
     const fallback = `/library/${libraryId}/item/${mediaItemId}`;
@@ -159,7 +186,9 @@ export function PlayerPage({ libraryId, mediaItemId, season, episode, returnTo }
       }
       posterUrl={detail.poster_url ? imageUrl(detail.poster_url) : null}
       next={next}
+      prev={prev}
       onPlayNext={playNext}
+      onPlayPrev={playPrev}
       onExit={exit}
     />
   );

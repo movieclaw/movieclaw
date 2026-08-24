@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { ActivityIcon, ExpandIcon, GearIcon, ShrinkIcon } from "@/components/icons";
 import type { AudioOption } from "@/lib/player/audio-tracks";
 import { SUBTITLE_OFFSET_STEP, clampSubtitleOffset } from "@/lib/player/subtitles";
+import { QUALITY_OPTIONS } from "@/lib/player/quality";
 import type { SubtitleStyle, SubtitleTracks } from "@/lib/player/subtitles";
 import { formatClock } from "@/lib/player/timeline";
 import { type TrickplayIndex, tileAt } from "@/lib/player/trickplay";
@@ -79,20 +80,37 @@ function PlayGlyph({ paused }: { paused: boolean }) {
   );
 }
 
-/** 退/进十秒：圆弧箭头 + 中间的 10，Netflix 与 YouTube 用的都是这一种。 */
+/**
+ * 退/进十秒：细描边圆弧 + 顶部箭头 + 居中的 10，YouTube / Material 同款。
+ *
+ * 两个几何要点，都是返工换来的：
+ * - 弧用描边而不是填充环：环带会把内腔挤到数字装不下，10 直接压在弧上；
+ * - 箭头必须贴在弧的**正顶部**——只有那里切线是水平的，水平三角形才能
+ *   与弧自然顺接；放在别处就是一个歪着的钩子。
+ */
 function SkipGlyph({ forward }: { forward: boolean }) {
+  // 弧心 (12,12.5)、半径 8。一端在正顶部 (12,4.5)，另一端留 60° 缺口——
+  // 箭头要盖掉顶端一段，缺口小了箭头尖会怼上弧尾，圆环看起来是闭合的。
   return (
     <svg viewBox="0 0 24 24" className="size-9 fill-current max-md:size-8" aria-hidden>
+      <path
+        d={forward ? "M12 4.5A8 8 0 1 0 18.93 8.5" : "M12 4.5A8 8 0 1 1 5.07 8.5"}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+      {/* 箭头：盖在弧顶端点上，指向行进方向 */}
       {forward ? (
-        <path d="M12 4.5V1.8l5.2 4.1L12 10V7.2a4.9 4.9 0 1 0 4.9 4.9h2.1A7 7 0 1 1 12 4.5Z" />
+        <path d="M11.7 1.9v5.2l4.6-2.6Z" />
       ) : (
-        <path d="M12 4.5V1.8L6.8 5.9 12 10V7.2a4.9 4.9 0 1 1-4.9 4.9H5A7 7 0 1 0 12 4.5Z" />
+        <path d="M12.3 1.9v5.2L7.7 4.5Z" />
       )}
       <text
         x="12"
-        y="16.2"
+        y="15"
         textAnchor="middle"
-        fontSize="7.5"
+        fontSize="7"
         fontWeight="600"
         fill="currentColor"
         stroke="none"
@@ -134,20 +152,37 @@ function NextGlyph() {
   );
 }
 
+/** 上一集：NextGlyph 的水平镜像，两颗按钮并排时形状必须对称，别另画一个。 */
+function PrevGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" className="size-4 shrink-0 fill-current" aria-hidden>
+      <path d="M19 4.6v14.8a.6.6 0 0 1-.93.5l-11-7.4a.6.6 0 0 1 0-1l11-7.4a.6.6 0 0 1 .93.5Z" />
+      <path d="M3.4 4h2.2v16H3.4z" />
+    </svg>
+  );
+}
+
 /**
- * 横屏：一个旋转弧 + 一台设备，站内没有这个图标，按同一套描边规格画。
- * 设备的方向画的是**点下去之后**的样子——图标表示结果而不是现状，
- * 否则用户要在脑子里做一次取反。
+ * 横屏：一条环绕的大弧箭头 + 一台设备（Material screen_rotation_alt 的
+ * 构图），站内没有这个图标，按同一套描边规格画。设备的方向画的是**点下去
+ * 之后**的样子——图标表示结果而不是现状，否则用户要在脑子里做一次取反。
+ * 弧和箭头必须占到图标的一半以上：小弧挤在角落里 36px 下根本读不出旋转。
  */
 function RotateGlyph({ active }: { active: boolean }) {
   return (
     <StrokeIcon>
-      <path d="M4.4 10.4A6.2 6.2 0 0 1 10.4 4.4" />
-      <path d="m2.2 8.6 2.2 2.6 2.6-2.2" />
       {active ? (
-        <rect x="9.4" y="8.6" width="9.2" height="13.4" rx="2" />
+        <>
+          <path d="M20.5 11.5A8 8 0 0 0 12.5 3.5" />
+          <path d="m15.2 1.9-2.7 1.6 1.6 2.7" />
+          <rect x="3" y="8.5" width="9.5" height="12.5" rx="2" />
+        </>
       ) : (
-        <rect x="8.6" y="11" width="13.4" height="9.2" rx="2" />
+        <>
+          <path d="M3.5 11.5A8 8 0 0 1 11.5 3.5" />
+          <path d="m8.8 1.9 2.7 1.6-1.6 2.7" />
+          <rect x="8.5" y="11" width="12.5" height="9.5" rx="2" />
+        </>
       )}
     </StrokeIcon>
   );
@@ -178,11 +213,26 @@ export interface PlayerControlsProps {
   isSeries: boolean;
   /** 有下一集时的回调；剧集但为 null = 本季到头了，那个位显示「已完结」 */
   onNext: (() => void) | null;
+  /**
+   * 有上一集时的回调；null = 已经是本季第一集（或往前没有在位文件）。
+   *
+   * 与 `onNext` 不同，没有上一集时**整颗按钮不出现**而不是留一个灰字：
+   * 「已完结」是对剧集状态的陈述、用户需要知道，「没有上一集」则不是信息。
+   */
+  onPrev: (() => void) | null;
   /** 横屏（全屏 + 锁横向）；已经在里面时点它就是退出 */
   landscape: boolean;
-  /** 这台设备的方向锁真的能用（手机/平板）。桌面上同一个按钮叫「全屏」 */
+  /** 触屏设备（手机/平板）：显示横屏按钮。桌面只有全屏按钮 */
   canRotate: boolean;
   onToggleLandscape: () => void;
+  /** 当前在元素级全屏里 */
+  fullscreen: boolean;
+  onToggleFullscreen: () => void;
+  /** 字幕由系统渲染（iOS 原生 HLS），字幕菜单隐藏无效的样式调节 */
+  systemSubtitles: boolean;
+  /** 画质上限（max_height）；null = 自动 */
+  quality: number | null;
+  onSelectQuality: (maxHeight: number | null) => void;
   /** 菜单展开时要顶住控制条的自动隐藏，否则菜单会连着控制条一起淡掉 */
   onMenuOpenChange: (open: boolean) => void;
   /** 进度条缩略图索引。null = 还没生成好，表现为没有预览 */
@@ -208,9 +258,15 @@ export function PlayerControls(props: PlayerControlsProps) {
     onToggleDiagnostics,
     isSeries,
     onNext,
+    onPrev,
     landscape,
     canRotate,
     onToggleLandscape,
+    fullscreen,
+    onToggleFullscreen,
+    systemSubtitles,
+    quality,
+    onSelectQuality,
     onMenuOpenChange,
     trickplay,
   } = props;
@@ -231,6 +287,25 @@ export function PlayerControls(props: PlayerControlsProps) {
     setMenu(next);
     onMenuOpenChange(next !== "none");
   };
+
+  /**
+   * 操作区展开动画**已经放完**。
+   *
+   * 只用来决定要不要继续裁剪那一层（见下方 grid 收起处的注释）：展开途中
+   * 必须裁，否则卡片会以完整高度探出播放器底边再被拉回去；完全展开之后必须
+   * 放开，否则按钮上方的说明气泡（.player-tip，冒在按钮上方 32px 处）会被
+   * 这层裁掉一半——字幕/设置那几颗键的气泡看不见就是这么来的。
+   */
+  const [expanded, setExpanded] = useState(false);
+  useEffect(() => {
+    if (!chromeVisible) {
+      setExpanded(false);
+      return;
+    }
+    // 比 duration-300 略长一点，等动画真的落地
+    const timer = window.setTimeout(() => setExpanded(true), 320);
+    return () => window.clearTimeout(timer);
+  }, [chromeVisible]);
 
   return (
     <div className="pointer-events-none relative">
@@ -259,19 +334,27 @@ export function PlayerControls(props: PlayerControlsProps) {
           <span className="text-white/45">/ {durationMs ? formatClock(durationMs) : "--:--"}</span>
         </span>
 
-        <IconButton
-          glass
-          tip={canRotate ? (landscape ? "退出横屏" : "横屏") : landscape ? "退出全屏" : "全屏"}
-          onClick={onToggleLandscape}
-        >
+        {/* 横屏管方向、全屏管铺满——真横屏会顺带进全屏，此时全屏键自然
+            成为退出键。iPhone 没有元素级全屏，全屏键走系统原生播放器，
+            字幕靠 video 上的原生 VTT 轨跟进去（见 video-player 的 pip 轨） */}
+        <div className="flex items-center gap-2">
           {canRotate ? (
-            <RotateGlyph active={landscape} />
-          ) : landscape ? (
-            <ShrinkIcon className={ICON} />
-          ) : (
-            <ExpandIcon className={ICON} />
-          )}
-        </IconButton>
+            <IconButton
+              glass
+              tip={landscape ? "退出横屏" : "横屏"}
+              onClick={onToggleLandscape}
+            >
+              <RotateGlyph active={landscape} />
+            </IconButton>
+          ) : null}
+          <IconButton
+            glass
+            tip={fullscreen ? "退出全屏" : "全屏"}
+            onClick={onToggleFullscreen}
+          >
+            {fullscreen ? <ShrinkIcon className={ICON} /> : <ExpandIcon className={ICON} />}
+          </IconButton>
+        </div>
       </div>
 
       {/* ---- 进度条 ----
@@ -307,7 +390,7 @@ export function PlayerControls(props: PlayerControlsProps) {
                     backgroundImage: `url(${previewTile.url})`,
                     backgroundPosition: `${previewTile.offsetX}px ${previewTile.offsetY}px`,
                   }}
-                  className="rounded-[3px] shadow-[0_4px_18px_rgba(0,0,0,0.6)] ring-2 ring-white/85"
+                  className="rounded-[10px] shadow-[0_10px_28px_rgba(0,0,0,0.55)] ring-1 ring-white/30"
                 />
               ) : null}
               <p className="mt-1.5 text-center text-[13px] font-medium tabular-nums text-white drop-shadow">
@@ -333,6 +416,23 @@ export function PlayerControls(props: PlayerControlsProps) {
             disabled={!durationMs}
             aria-label="播放进度"
             onChange={(e) => setDragging(Number(e.target.value))}
+            // 拖拽不走 range 的原生行为，用指针事件自己算：iOS 只有按中
+            // **原生把手**才进入连续拖拽，而那个把手被缩到 1px 藏起来了
+            // （见下方圆点注释），手指永远按不中——表现为拖动时圆点不跟手、
+            // 松手 seek 到的是按下点。setPointerCapture 让移出条外也不断跟。
+            onPointerDown={(e) => {
+              if (!durationMs) return;
+              e.currentTarget.setPointerCapture(e.pointerId);
+              const rect = e.currentTarget.getBoundingClientRect();
+              const ratio = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+              setDragging(Math.round(ratio * durationMs));
+            }}
+            onPointerMove={(e) => {
+              if (dragging === null || !durationMs) return;
+              const rect = e.currentTarget.getBoundingClientRect();
+              const ratio = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+              setDragging(Math.round(ratio * durationMs));
+            }}
             onPointerUp={() => {
               if (dragging !== null) onSeek(dragging);
               setDragging(null);
@@ -341,7 +441,7 @@ export function PlayerControls(props: PlayerControlsProps) {
               if (dragging !== null) onSeek(dragging);
               setDragging(null);
             }}
-            className="player-scrub absolute inset-x-0 top-1/2 h-5 w-full -translate-y-1/2 cursor-pointer appearance-none bg-transparent disabled:cursor-default"
+            className="player-scrub absolute inset-x-0 top-1/2 h-5 w-full -translate-y-1/2 cursor-pointer touch-none appearance-none bg-transparent disabled:cursor-default"
           />
 
           {/* 把手自己画，不用 input 原生的那个。
@@ -372,11 +472,14 @@ export function PlayerControls(props: PlayerControlsProps) {
           chromeVisible ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
         }`}
       >
-        {/* 收起动画靠这层裁剪；但菜单是**向上**弹的、整个落在这个盒子外面，
-            裁着就等于点了没反应。菜单展开时控制条被 chromeMustStayVisible 顶住
-            不会收，也就不存在「一边收起一边要显示菜单」的冲突，所以这时候可以
-            安全地放开裁剪。 */}
-        <div className={menu === "none" ? "overflow-hidden" : ""}>
+        {/* 收起动画靠这层裁剪；但**向上冒的东西全都落在这个盒子外面**——菜单
+            （bottom-full）与按钮说明气泡（.player-tip）都是，裁着就等于菜单点了
+            没反应、气泡只露出一角。
+            只在「收起中/已收起」时裁：展开动画途中不裁，卡片会以完整高度探出
+            播放器底边再被拉回来；展开落地之后不放，气泡与菜单就永远露不出来。
+            菜单展开时控制条被 chromeMustStayVisible 顶住不会收，所以那时无论
+            动画走到哪一步都可以安全放开。 */}
+        <div className={menu === "none" && !expanded ? "overflow-hidden" : ""}>
           <div
             className={`relative flex items-center px-6 pb-4 pt-3 transition-opacity duration-300 max-md:px-3 max-md:pb-3 ${
               chromeVisible ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
@@ -411,7 +514,7 @@ export function PlayerControls(props: PlayerControlsProps) {
                           {option.label}
                         </MenuItem>
                       ))}
-                      <p className="mt-1 border-t border-white/10 px-4 pb-1 pt-2 text-[12px] leading-relaxed text-white/40">
+                      <p className="mt-1 border-t border-white/[0.08] px-3 pb-1 pt-2 text-[12px] leading-relaxed text-white/40">
                         换音轨需要重新起流，会从当前位置续上，中间大约停顿一秒。
                       </p>
                     </MenuPanel>
@@ -435,6 +538,7 @@ export function PlayerControls(props: PlayerControlsProps) {
                     onSelect={(ref) => onSelectSubtitle(ref)}
                     style={subtitleStyle}
                     onStyleChange={onSubtitleStyleChange}
+                    systemRendered={systemSubtitles}
                     onClose={() => openMenu("none")}
                   />
                 ) : null}
@@ -450,6 +554,25 @@ export function PlayerControls(props: PlayerControlsProps) {
                 </IconButton>
                 {menu === "settings" ? (
                   <MenuPanel title="设置" onClose={() => openMenu("none")}>
+                    {/* 画质：语义是上限——源不超所选档就照常直通（无损），
+                        超了才转码降下去。弱网选低档换低带宽（§10）。 */}
+                    <div className="px-3 pb-1 pt-0.5 text-[12px] text-white/40">画质</div>
+                    {QUALITY_OPTIONS.map((option) => (
+                      <MenuItem
+                        key={option.label}
+                        active={quality === option.maxHeight}
+                        onClick={() => {
+                          onSelectQuality(option.maxHeight);
+                          openMenu("none");
+                        }}
+                      >
+                        {option.label}
+                        {option.hint ? (
+                          <span className="ml-2 text-[12px] text-white/40">{option.hint}</span>
+                        ) : null}
+                      </MenuItem>
+                    ))}
+                    <div className="mx-1.5 my-1.5 h-px bg-white/[0.07]" />
                     <MenuItem
                       active={diagnosticsOpen}
                       icon={<ActivityIcon className="size-4 shrink-0" />}
@@ -468,22 +591,37 @@ export function PlayerControls(props: PlayerControlsProps) {
             <div className="flex-1" />
 
             {/* 右下角切集位。剧集才有：「已完结」这句话对电影是错的，
-                而电影本来也没有别的东西会因为这个位空着而移位。 */}
+                而电影本来也没有别的东西会因为这个位空着而移位。
+
+                上一集恒在下一集左边（包括本季放到头、右边是「已完结」的
+                时候）——切集是双向的，只给单向会逼用户退回详情页点集。 */}
             {isSeries ? (
-              onNext ? (
-                <button
-                  type="button"
-                  onClick={onNext}
-                  className="player-glass flex items-center gap-2 rounded-full px-4 py-2.5 text-[14px] font-medium text-white transition-colors hover:bg-white/20 max-md:px-3 max-md:py-2 max-md:text-[13px]"
-                >
-                  下一集
-                  <NextGlyph />
-                </button>
-              ) : (
-                <span className="player-glass rounded-full px-4 py-2.5 text-[14px] text-white/40 max-md:px-3 max-md:py-2 max-md:text-[13px]">
-                  已完结
-                </span>
-              )
+              <div className="flex items-center gap-2 max-md:gap-1.5">
+                {onPrev ? (
+                  <button
+                    type="button"
+                    onClick={onPrev}
+                    className="player-glass flex items-center gap-2 rounded-full px-4 py-2.5 text-[14px] font-medium text-white transition-colors hover:bg-white/20 max-md:px-3 max-md:py-2 max-md:text-[13px]"
+                  >
+                    <PrevGlyph />
+                    上一集
+                  </button>
+                ) : null}
+                {onNext ? (
+                  <button
+                    type="button"
+                    onClick={onNext}
+                    className="player-glass flex items-center gap-2 rounded-full px-4 py-2.5 text-[14px] font-medium text-white transition-colors hover:bg-white/20 max-md:px-3 max-md:py-2 max-md:text-[13px]"
+                  >
+                    下一集
+                    <NextGlyph />
+                  </button>
+                ) : (
+                  <span className="player-glass rounded-full px-4 py-2.5 text-[14px] text-white/40 max-md:px-3 max-md:py-2 max-md:text-[13px]">
+                    已完结
+                  </span>
+                )}
+              </div>
             ) : null}
           </div>
         </div>
@@ -612,6 +750,7 @@ function SubtitleMenu({
   onSelect,
   style,
   onStyleChange,
+  systemRendered,
   onClose,
 }: {
   tracks: SubtitleTracks;
@@ -619,11 +758,13 @@ function SubtitleMenu({
   onSelect: (ref: string | null) => void;
   style: SubtitleStyle;
   onStyleChange: (style: SubtitleStyle) => void;
+  /** 字幕由系统渲染（iOS 原生 HLS）：样式与时间轴调节不经我们的手，全部隐藏 */
+  systemRendered: boolean;
   onClose: () => void;
 }) {
   return (
     <MenuPanel title="字幕" onClose={onClose}>
-      <div className="max-h-[240px] overflow-y-auto">
+      <div className="scroll-thin max-h-[240px] overflow-y-auto">
         <MenuItem active={selected === null} onClick={() => onSelect(null)}>
           关闭
         </MenuItem>
@@ -631,24 +772,32 @@ function SubtitleMenu({
           <MenuItem
             key={option.ref}
             active={selected === option.ref}
+            badge={option.isAi ? <AiChip /> : null}
             onClick={() => onSelect(option.ref)}
           >
             {option.label}
           </MenuItem>
         ))}
         {tracks.unavailable.map((item) => (
-          <div key={item.label} className="px-4 py-1.5 text-white/35">
+          <div key={item.ref} className="px-3 py-1.5 text-white/35">
             <div className="truncate">{item.label}</div>
             <div className="text-[12px] leading-snug">{item.reason}</div>
           </div>
         ))}
         {tracks.options.length === 0 && tracks.unavailable.length === 0 ? (
-          <div className="px-4 py-2 text-white/40">这个文件没有可用字幕</div>
+          <div className="px-3 py-2 text-white/40">这个文件没有可用字幕</div>
         ) : null}
       </div>
 
-      {selected ? (
-        <div className="mt-2 space-y-2 border-t border-white/10 pt-3">
+      {selected && systemRendered ? (
+        // 调了没反应比没有选项更糟——iOS 上系统渲染字幕，样式跟随系统的
+        // 辅助功能设置，时间轴微调也不经过我们，如实告知去哪调
+        <p className="mt-2 border-t border-white/[0.08] px-3 pt-3 text-[12px] leading-relaxed text-white/40">
+          字幕由 iOS 系统渲染，样式在系统设置 → 辅助功能 → 字幕与隐藏式字幕中调整
+        </p>
+      ) : null}
+      {selected && !systemRendered ? (
+        <div className="mt-2 space-y-2 border-t border-white/[0.08] pt-3">
           <StepRow
             label="时间轴"
             value={`${style.offsetSeconds > 0 ? "+" : ""}${style.offsetSeconds.toFixed(1)} 秒`}
@@ -685,7 +834,7 @@ function SubtitleMenu({
               onStyleChange({ ...style, bottomPercent: Math.min(40, style.bottomPercent + 2) })
             }
           />
-          <div className="flex gap-2 px-4 pb-1">
+          <div className="flex gap-2 px-3 pb-1">
             <Toggle
               on={style.outline}
               onClick={() => onStyleChange({ ...style, outline: !style.outline })}
@@ -733,12 +882,17 @@ function MenuPanel({
   return (
     <div
       ref={box}
+      // 定位必须内联：.menu-surface 自带 position:relative 且不在 @layer 里，
+      // className 上的 absolute 是 @layer utilities、压不过它（user-menu 同款处理）
+      style={{ position: "absolute" }}
       // bottom-full + mb-8：底边落在按钮上方 32px，正好越过操作行的上内边距
       // （pt-3）与进度条那一行。用相对量而不是写死像素——按钮在移动端会从 36
       // 变 44，写死的偏移在两个断点上必然有一个不对。
-      className="absolute bottom-full left-0 mb-8 w-[300px] rounded-sm border border-white/15 bg-[rgba(20,20,20,0.94)] py-2 text-[14px] shadow-[0_8px_32px_rgba(0,0,0,0.7)] backdrop-blur-sm"
+      // 面板外观走全站浮层的 .menu-surface（16px 圆角玻璃），不再自己配一套
+      // 方角黑底——播放器不该是站内唯一一个方角浮层的地方。
+      className="menu-surface bottom-full left-0 mb-8 w-[300px] p-1.5 text-[14px]"
     >
-      <p className="px-4 pb-2 text-[12px] font-semibold uppercase tracking-wide text-white/45">
+      <p className="px-3 pb-1.5 pt-1 text-[12px] font-semibold uppercase tracking-wide text-white/45">
         {title}
       </p>
       {children}
@@ -749,6 +903,7 @@ function MenuPanel({
 function MenuItem({
   active,
   icon,
+  badge,
   onClick,
   children,
 }: {
@@ -756,6 +911,8 @@ function MenuItem({
   /** 可选的行首小图标。必须与文字**并列**，不能塞进 truncate 的 span 里——
    *  Tailwind preflight 把 svg 设成 display:block，塞进去会自己换一行。 */
   icon?: React.ReactNode;
+  /** 可选的行尾标记（AI 生成…）。靠右贴边，长文案截断时它不跟着被切掉 */
+  badge?: React.ReactNode;
   onClick: () => void;
   children: React.ReactNode;
 }) {
@@ -763,15 +920,35 @@ function MenuItem({
     <button
       type="button"
       onClick={onClick}
-      className={`flex w-full items-center gap-2.5 border-l-[3px] px-4 py-1.5 text-left transition-colors hover:bg-white/10 ${
-        active
-          ? "border-[var(--player-accent)] font-semibold text-white"
-          : "border-transparent text-white/70"
-      }`}
+      // 选中态与全站菜单同一语言：nav-item 的「浮起亮胶囊」，不再用左侧
+      // 指示条——那是这套控件早期照抄 Netflix 留下的，站内没有第二处这么画
+      data-active={active || undefined}
+      className="glass-row nav-item cursor-pointer px-3 py-2 font-medium"
     >
       {icon}
       <span className="truncate">{children}</span>
+      {badge ? <span className="ml-auto">{badge}</span> : null}
     </button>
+  );
+}
+
+/**
+ * 「AI 生成」标记。
+ *
+ * 值得一个渐变胶囊 + 扫光（样式在 globals.css 的 .ai-chip）：AI 字幕的译文与
+ * 时间轴都可能有偏差，而它在菜单里就挤在发行方字幕中间，一行灰白小字根本
+ * 分不出来。用户有权在**选中之前**就知道这条是机器产的。
+ */
+function AiChip() {
+  return (
+    <span className="ai-chip">
+      {/* 四角星：业界通用的「AI」手势（站内 WandIcon 在 10px 下糊成一团） */}
+      <svg viewBox="0 0 24 24" className="size-[9px] fill-current" aria-hidden>
+        <path d="M12 1.5c.9 4.6 2.9 6.7 8 7.6-5.1.9-7.1 3-8 7.6-.9-4.6-2.9-6.7-8-7.6 5.1-.9 7.1-3 8-7.6Z" />
+        <path d="M18.6 15c.45 2.3 1.45 3.35 4 3.8-2.55.45-3.55 1.5-4 3.8-.45-2.3-1.45-3.35-4-3.8 2.55-.45 3.55-1.5 4-3.8Z" />
+      </svg>
+      AI 生成
+    </span>
   );
 }
 
@@ -787,7 +964,7 @@ function StepRow({
   onPlus: () => void;
 }) {
   return (
-    <div className="flex items-center justify-between px-4 text-[13px] text-white/65">
+    <div className="flex items-center justify-between px-3 text-[13px] text-white/65">
       <span>{label}</span>
       <span className="flex items-center gap-1.5">
         <StepButton onClick={onMinus}>−</StepButton>
@@ -803,7 +980,7 @@ function StepButton({ onClick, children }: { onClick: () => void; children: Reac
     <button
       type="button"
       onClick={onClick}
-      className="size-6 rounded-sm bg-white/12 leading-none text-white/85 transition-colors hover:bg-white/25"
+      className="size-6 rounded-[7px] border border-white/10 bg-white/[0.06] leading-none text-white/85 transition-colors hover:bg-white/[0.14] hover:text-white"
     >
       {children}
     </button>
@@ -823,8 +1000,11 @@ function Toggle({
     <button
       type="button"
       onClick={onClick}
-      className={`rounded-sm px-3 py-1 text-[12px] transition-colors ${
-        on ? "bg-[var(--player-accent)] text-black" : "bg-white/12 text-white/60 hover:bg-white/20"
+      // 两态都带 border 占位，否则开关瞬间会差 1px 抖一下
+      className={`rounded-full border px-3 py-1 text-[12px] font-medium transition-colors ${
+        on
+          ? "border-transparent bg-[var(--player-accent)] text-black"
+          : "border-white/10 bg-white/[0.06] text-white/65 hover:bg-white/[0.14] hover:text-white"
       }`}
     >
       {children}

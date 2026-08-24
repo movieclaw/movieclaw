@@ -1,6 +1,6 @@
 import { publicEnv } from "@/lib/env";
 import type { TrickplayIndex } from "@/lib/player/trickplay";
-import { request, resolveRequestUrl } from "@/lib/http";
+import { HttpError, request, resolveRequestUrl } from "@/lib/http";
 import type { MediaType } from "@/lib/media-types";
 
 /**
@@ -185,6 +185,8 @@ export interface ClientCapability {
   /** "full" | "managed"（iOS 的 ManagedMediaSource）| "none" */
   mse: string;
   is_mobile: boolean;
+  /** 能原生播 HLS（Safari/AVPlayer）。服务端不消费，前端选引擎用 */
+  native_hls: boolean;
 }
 
 /** 播放单元：电影用 (0, 0) 哨兵，与台账、playback_state 的约定一致。 */
@@ -227,6 +229,8 @@ export interface SubtitlePlan {
   kind: string;
   language: string | null;
   is_default: boolean;
+  /** 本机 AI 生成的字幕（翻译 / 双语），字幕菜单据此打标 */
+  is_ai?: boolean;
 }
 
 /**
@@ -260,8 +264,14 @@ export interface PlaybackSession {
   session_id: string | null;
   /** 可直接喂给 <video src> 或 hls.js 的地址，已带签名 token */
   stream_url: string | null;
-  /** 会话时间轴的零点在文件里的位置。**文件时间 = start_ms + currentTime** */
+  /** 会话时间轴的零点在文件里的位置。**文件时间 = start_ms + currentTime**。
+   * timeline="file"（VOD 预生成列表）时它只是建议起播位置：分片时间戳
+   * 本身是文件绝对时间，currentTime 即文件时间，换算参照点为 0 */
   start_ms: number;
+  /** 时间轴语义：session = 会话相对（旧）；file = 文件绝对（VOD，§12） */
+  timeline?: "session" | "file";
+  /** master 播放列表（带 WEBVTT 字幕组），仅 VOD 会话有——iOS 原生 HLS 用 */
+  master_url?: string | null;
   /** 旁挂字幕地址（已带 token），与 decision.subtitles 一一对应 */
   subtitle_urls: string[];
   /** 实际使用的硬件加速后端；null = 纯软件（直通档不经编码器，同样为 null） */
@@ -282,6 +292,8 @@ interface DecideBody extends PlaybackUnit {
    * 换轨走的是和 seek 出界一样的「带着当前位置重开会话」那条路。
    */
   audio_track?: string;
+  /** 画质上限（如 720）。上限而非目标：源不超就照常直通。省略 = 自动 */
+  max_height?: number;
 }
 
 /** 只问「该怎么放」，不起会话。用于播放前的档位预览与诊断。 */
@@ -303,14 +315,28 @@ export async function startPlaybackSession(body: DecideBody): Promise<PlaybackSe
 }
 
 /**
- * 会话续命。用户关页面不会发任何信号，服务端的超时回收是唯一可靠兜底，
- * 所以播放中必须定时喂这个。
+ * 会话续命，兼探活。用户关页面不会发任何信号，服务端的超时回收是唯一可靠
+ * 兜底，所以播放中必须定时喂这个。
+ *
+ * 返回值分三态，**调用方必须区分**：
+ *
+ * - `true`  —— 会话还在；
+ * - `false` —— 服务端明确说它没了（404，多半是页面被浏览器冻在后台、心跳
+ *   被节流到喂不上，会话让巡检回收了）。此时继续放下去只会卡在「正在缓冲」，
+ *   要原地重开一个会话；
+ * - `null`  —— 这次请求本身没成功（断网、超时、服务端 5xx）。**不能当成
+ *   会话没了**：网络抖一下就把流掐掉重开，代价比多等一轮心跳大得多。
  */
-export async function pingPlaybackSession(sessionId: string): Promise<void> {
-  await request<ApiEnvelope<unknown>>(
-    `/playback/sessions/${encodeURIComponent(sessionId)}/ping`,
-    { method: "POST" },
-  );
+export async function pingPlaybackSession(sessionId: string): Promise<boolean | null> {
+  try {
+    await request<ApiEnvelope<unknown>>(
+      `/playback/sessions/${encodeURIComponent(sessionId)}/ping`,
+      { method: "POST" },
+    );
+    return true;
+  } catch (error) {
+    return error instanceof HttpError && error.status === 404 ? false : null;
+  }
 }
 
 /** 结束会话，掐断 ffmpeg 并清掉临时分片。 */

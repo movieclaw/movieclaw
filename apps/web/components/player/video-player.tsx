@@ -8,7 +8,7 @@ import { ChevronLeftIcon } from "@/components/icons";
 import { ConsentDialog } from "@/components/player/consent-dialog";
 import { DiagnosticsPanel } from "@/components/player/diagnostics-panel";
 import { PlayerCenterControls, PlayerControls } from "@/components/player/player-controls";
-import { SubtitleLayer } from "@/components/player/subtitle-layer";
+import { SubtitleLayer, useVideoContentBox } from "@/components/player/subtitle-layer";
 import {
   type ClientCapability,
   type PlaybackUnit,
@@ -41,10 +41,13 @@ import {
   enterLandscape,
   enterNativeVideoFullscreen,
   exitLandscape,
+  requestFullscreen,
   screenOrientation,
 } from "@/lib/player/orientation";
 import { planAudioOptions } from "@/lib/player/audio-tracks";
 import { chromeMustStayVisible, shouldHideOnPointerLeave } from "@/lib/player/chrome";
+import { planSystemTrackModes, resolvePlaybackMode } from "@/lib/player/playback-mode";
+import { loadQualityPreference, saveQualityPreference } from "@/lib/player/quality";
 import { createSessionReleaser } from "@/lib/player/session-release";
 import {
   type QoeEvent,
@@ -57,9 +60,10 @@ import type { TrickplayIndex } from "@/lib/player/trickplay";
 import { isEditableTarget, resolveShortcut } from "@/lib/player/shortcuts";
 import type { SubtitleStyle } from "@/lib/player/subtitles";
 import {
-  DEFAULT_SUBTITLE_STYLE,
+  loadSubtitleStyle,
   pickInitialSubtitle,
   planSubtitleTracks,
+  saveSubtitleStyle,
 } from "@/lib/player/subtitles";
 import { isInEndCredits, planSeek, toFileMs, toSessionSeconds } from "@/lib/player/timeline";
 
@@ -84,7 +88,10 @@ export interface VideoPlayerProps {
   posterUrl: string | null;
   /** 下一集；没有（电影 / 本季最后一集）为 null */
   next: { unit: PlaybackUnit; label: string } | null;
+  /** 上一集；没有（电影 / 本季第一集）为 null */
+  prev: { unit: PlaybackUnit; label: string } | null;
   onPlayNext: () => void;
+  onPlayPrev: () => void;
   onExit: () => void;
 }
 
@@ -94,15 +101,34 @@ const PROGRESS_INTERVAL_MS = 10_000;
 const PING_INTERVAL_MS = 15_000;
 /** 播放中控制条自动隐藏的静止时长。 */
 const IDLE_HIDE_MS = 3000;
-/** 片尾「下一集」倒计时秒数。 */
-const NEXT_COUNTDOWN_S = 10;
+
+/**
+ * iOS Safari 的画中画：没有 W3C 那套 API，只有带前缀的 presentationMode。
+ * TS 的 DOM 类型至今没收录，本文件里多处要用，收成一个类型别名。
+ */
+interface WebkitPresentationVideo {
+  webkitSupportsPresentationMode?: (mode: string) => boolean;
+  webkitSetPresentationMode?: (mode: string) => void;
+  webkitPresentationMode?: string;
+}
+
+/** 画中画图标：一个大屏 + 右下角的小窗；退出态把小窗画到左上，表示「收回大屏」。 */
+function PipGlyph({ exit }: { exit: boolean }) {
+  return (
+    <svg viewBox="0 0 24 24" className="size-[18px] max-md:size-[22px]" fill="currentColor" aria-hidden>
+      <path d="M3 5.5A1.5 1.5 0 0 1 4.5 4h15A1.5 1.5 0 0 1 21 5.5v13a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5v-13Zm2 .5v12h14V6H5Z" />
+      <path d={exit ? "M7 8h7v5H7V8Z" : "M12 12h6v5h-6v-5Z"} />
+    </svg>
+  );
+}
 
 function unitKeyOf(unit: PlaybackUnit): string {
   return `${unit.media_item_id}/${unit.season_number ?? 0}/${unit.episode_number ?? 0}`;
 }
 
 export function VideoPlayer(props: VideoPlayerProps) {
-  const { unit, title, episodeLabel, posterUrl, next, onPlayNext, onExit } = props;
+  const { unit, title, episodeLabel, posterUrl, next, prev, onPlayNext, onPlayPrev, onExit } =
+    props;
   const unitKey = unitKeyOf(unit);
 
   const [state, dispatch] = useReducer(playerReducer, initialPlayerState);
@@ -119,7 +145,10 @@ export function VideoPlayer(props: VideoPlayerProps) {
    * 请求用这个——用一个变量同时干两件事，换版本文件时勾就会打空。
    */
   const [requestedAudio, setRequestedAudio] = useState<string | null>(null);
-  const [subtitleStyle, setSubtitleStyle] = useState<SubtitleStyle>(DEFAULT_SUBTITLE_STYLE);
+  // 惰性初始化从 localStorage 读：字幕调好的字号/位置不该每次进来都重调
+  const [subtitleStyle, setSubtitleStyle] = useState<SubtitleStyle>(loadSubtitleStyle);
+  /** 画质上限（max_height）。null = 自动。持久化，弱网用户不必每部片重选 */
+  const [quality, setQuality] = useState<number | null>(loadQualityPreference);
   const [trickplay, setTrickplay] = useState<TrickplayIndex | null>(null);
   // 播放质量累计。放 ref 而不是 state：每秒都在变，进渲染只会白重绘。
   const qoeRef = useRef(initialQoe());
@@ -129,8 +158,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [chromeVisible, setChromeVisible] = useState(true);
-  const [countdown, setCountdown] = useState<number | null>(null);
-  /** 用户明确取消过本集的「下一集」提示：取消后不能因为还在片尾窗口里又弹回来 */
+  /** 用户明确关掉过本集的「下一集」提示：关掉后不能因为还在片尾窗口里又弹回来 */
   const [nextDismissed, setNextDismissed] = useState(false);
   /** 元数据里的时长（毫秒）。档 0 直出时它就是片长，服务端算不出时的兜底 */
   const [videoDurationMs, setVideoDurationMs] = useState<number | null>(null);
@@ -138,21 +166,33 @@ export function VideoPlayer(props: VideoPlayerProps) {
   const [video, setVideo] = useState<HTMLVideoElement | null>(null);
   /** 本集自动播放的结果。只有 blocked 需要界面兜底（中央大播放键） */
   const [autoplay, setAutoplay] = useState<AutoplayOutcome | null>(null);
-  /**
-   * 是**我们**为了绕过自动播放策略把它静音的。
-   *
-   * 与 `autoplay` 分开的理由：静音是**跨集延续**的状态（video 元素一直是
-   * 同一个），而 `autoplay` 每集重置。合成一个的后果是切下一集时提示消失、
-   * 声音却还没回来，用户以为这部剧没有音轨。
-   */
-  const [forcedMute, setForcedMute] = useState(false);
-  /** 当前是否在横屏（全屏 + 锁横向）里 */
+  /** 当前是否在横屏（全屏 + 锁横向，或 iOS 上的 CSS 伪横屏）里 */
   const [landscape, setLandscape] = useState(false);
+  /**
+   * 走的是 CSS 伪横屏（把播放器容器旋转 90° 铺满视口）。
+   *
+   * iPhone Safari 既没有元素级全屏也没有 `screen.orientation.lock`，真横屏
+   * 做不了；但「点一下横过来」是移动端播放器的基本操作，国内视频站在 iOS
+   * 上全是这么伪的。与 `landscape` 分开存：退出时要知道该解方向锁还是摘类名。
+   */
+  const [fakeLandscape, setFakeLandscape] = useState(false);
+  /** 当前在元素级全屏里（无论是全屏键还是真横屏带进去的） */
+  const [fullscreen, setFullscreen] = useState(false);
   /**
    * 这台设备的方向锁真的能用。放 state 而不是渲染时直接算：服务端渲染没有
    * `screen`，直接算会造成水合不一致，按钮文案在首帧闪一下。
    */
   const [canRotate, setCanRotate] = useState(false);
+  /**
+   * 这个浏览器能不能**由网页发起**画中画。
+   *
+   * Firefox 的画中画只存在于浏览器自己的界面里（那颗浮在视频上的原生小按钮），
+   * 网页调不动；不判一下就会留一个点了没反应的死按钮。iOS Safari 则是另一套
+   * 前缀 API，两套都要认。
+   */
+  const [canPip, setCanPip] = useState(false);
+  /** 已经在小窗里。按钮据此翻成「退出画中画」 */
+  const [pipActive, setPipActive] = useState(false);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<PlaybackEngine | null>(null);
@@ -169,6 +209,15 @@ export function VideoPlayer(props: VideoPlayerProps) {
   const wantsPlayRef = useRef(true);
   const autoplayAttemptsRef = useRef(0);
   const autoplayLastRef = useRef<AutoplayOutcome | null>(null);
+  /** 供心跳探活读当前阶段：重开已经在路上时绝不能再触发一次重开 */
+  const phaseRef = useRef(initialPlayerState.phase);
+  /**
+   * 会话已被服务端回收、但用户正暂停着，我们**没有**代他重开。
+   *
+   * 暂停中替他拉起一路 ffmpeg 是浪费（他可能再也不回来了），所以只立这个
+   * 标记，等他点播放的那一刻再原地重开——那一下点击就是「我还要看」。
+   */
+  const deadSessionRef = useRef(false);
   /**
    * 按下的那一刻控制条在不在。
    *
@@ -188,19 +237,57 @@ export function VideoPlayer(props: VideoPlayerProps) {
     [],
   );
 
-  startMsRef.current = state.session?.start_ms ?? 0;
+  /**
+   * 本次会话的播放模式：引擎/地址/时间轴参照/字幕渲染器，一次算清、处处
+   * 引用这一份（决策逻辑与矩阵见 lib/player/playback-mode.ts）。
+   * capability 在开会话前必已探测完，会话就位触发的重渲染里读 ref 是稳定的。
+   */
+  const mode = useMemo(
+    () =>
+      state.session && capabilityRef.current
+        ? resolvePlaybackMode(state.session, capabilityRef.current)
+        : null,
+    [state.session],
+  );
+  const systemSubtitles = mode?.subtitleRenderer === "system-track";
+  // system-track 内联的系统 cue 两处失真都源于 WebKit 以**整个元素**为
+  // 基准（竖屏元素高是画面高的近 4 倍）：位置掉进黑边、字号巨大。量出画面
+  // 矩形后用 CSS 变量双管齐下——位置抬到画面下沿再留 8% 安全边距（Apple/
+  // Netflix caption safe area），字号按画面高 5.2% 显式指定（与自绘层同一
+  // 标准；PiP/全屏由系统基于小窗渲染，本来就对，页面 CSS 也够不着）。
+  const contentBox = useVideoContentBox(systemSubtitles ? video : null);
+  const cueFontPx = systemSubtitles ? Math.max(16, contentBox.height * 0.052) : 0;
+  // 服务端已给 cue 加 line:84%（系统层用它定位），内联的 WebKit 同样会把
+  // cue 顶放在**元素高**的 84% 处——竖屏时那还在黑边里。目标：cue 顶落在
+  // 「画面底 − 8% 安全边距 − 一行字高」，向上平移量 = 当前顶 − 目标顶；
+  // 控制条展开时目标再抬到控制条上方。横屏满屏时元素≈画面，平移量≈0，
+  // 与系统层（全屏/PiP）的 line:84% 自然一致。
+  let cueLiftPx = 0;
+  if (systemSubtitles && contentBox.height > 0) {
+    const elementH = contentBox.height + contentBox.bottomInset * 2;
+    const lineH = cueFontPx * 1.3;
+    const currentTop = elementH * 0.84;
+    const safeTop =
+      elementH - contentBox.bottomInset - contentBox.height * 0.08 - lineH;
+    const chromeTop = elementH - 172 - lineH;
+    const targetTop = chromeVisible ? Math.min(safeTop, chromeTop) : safeTop;
+    cueLiftPx = Math.max(0, currentTop - targetTop);
+  }
+  startMsRef.current = mode?.originMs ?? 0;
   positionRef.current = positionMs;
+  phaseRef.current = state.phase;
 
   const failedKey = state.failedTiers.join(",");
   const sessionId = state.session?.session_id ?? null;
 
-  // 片长：服务端算的真值优先。转码会话里 video.duration 只到「已经转出来的
-  // 那一段」，拿它当分母会让进度条一路自己缩放。
+  // 片长：服务端算的真值优先。**旧会话相对制**里 video.duration 只到「已经
+  // 转出来的那一段」，拿它当分母会让进度条一路自己缩放；VOD 全片列表
+  // （timeline="file"）和档 0 直出的 video.duration 都是真片长，可以兜底。
   const durationMs = useMemo(() => {
     if (resume?.duration_ms) return resume.duration_ms;
-    // 只有没会话（档 0 原文件直出）时 video.duration 才是整片时长
+    if (state.session?.timeline === "file") return videoDurationMs;
     return sessionId ? null : videoDurationMs;
-  }, [resume?.duration_ms, sessionId, videoDurationMs]);
+  }, [resume?.duration_ms, state.session?.timeline, sessionId, videoDurationMs]);
 
   const subtitles = useMemo(() => {
     const session = state.session;
@@ -219,6 +306,23 @@ export function VideoPlayer(props: VideoPlayerProps) {
     [subtitles, selectedSubtitle],
   );
 
+  /**
+   * 画中画字幕的原生 <track> 地址。
+   *
+   * PiP 窗口只渲染 <video> 本身，自绘字幕层（VTT 自绘 / ASS canvas）跟不
+   * 进去；但 Safari 的 PiP 会渲染 video 上 mode="showing" 的原生 VTT cue。
+   * 所以给 video 常挂一条原生轨：VTT 直接用，ASS 要服务端降级转 VTT
+   * （丢特效保文本，小窗里本来也看不清特效）。平时 mode="hidden" 不出画，
+   * 由自绘层负责；进 PiP 才切 showing——两层同显会出双字幕。
+   */
+  const pipSubtitleUrl = useMemo(() => {
+    if (!mode?.pipPatchTrack) return null; // system-track：字幕组已是系统轨
+    if (!activeSubtitle) return null;
+    if (activeSubtitle.kind === "vtt") return activeSubtitle.url;
+    if (activeSubtitle.kind === "ass") return `${activeSubtitle.url}&format=vtt`;
+    return null;
+  }, [activeSubtitle, mode?.pipPatchTrack]);
+
   // ---------------------------------------------------------------------
   // 起播链路
   // ---------------------------------------------------------------------
@@ -231,7 +335,6 @@ export function VideoPlayer(props: VideoPlayerProps) {
     setPositionMs(0);
     setBufferedEndMs(null);
     setResume(null);
-    setCountdown(null);
     setNextDismissed(false);
     setVideoDurationMs(null);
     setSelectedSubtitle(null);
@@ -241,6 +344,9 @@ export function VideoPlayer(props: VideoPlayerProps) {
     wantsPlayRef.current = true;
     autoplayAttemptsRef.current = 0;
     autoplayLastRef.current = null;
+    // 上一集的「会话已死」标记不能带进新的一集：带着的话，起播完成前用户点
+    // 播放会被当成「重开死会话」，凭空多拉一次决策
+    deadSessionRef.current = false;
     setAutoplay(null);
     dispatch({ type: "reset" });
 
@@ -252,7 +358,11 @@ export function VideoPlayer(props: VideoPlayerProps) {
         // 换版本文件轨序会变，服务端认不出会自动回退（decide.py 有覆盖）。
         setRequestedAudio(watched.audio_track);
         // 已看完的重播从头开始——续播到最后三十秒等于点开就是片尾
-        dispatch({ type: "request", startMs: watched.played ? 0 : watched.position_ms });
+        const startMs = watched.played ? 0 : watched.position_ms;
+        // 时间显示预填续播点：不填的话起播那几秒进度条停在 00:00，等首个
+        // timeupdate 才跳到真实位置，看起来像「时间没加载出来」
+        setPositionMs(startMs);
+        dispatch({ type: "request", startMs });
       })
       .catch(() => {
         if (cancelled) return;
@@ -288,6 +398,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
           capability: capabilityRef.current,
           failed_tiers: state.failedTiers,
           start_ms: state.startMs,
+          max_height: quality ?? undefined,
           audio_track: requestedAudio ?? undefined,
         });
         if (cancelled) return;
@@ -313,6 +424,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
     state.attempt,
     unitKey,
     requestedAudio,
+    quality,
   ]);
 
   /**
@@ -340,31 +452,45 @@ export function VideoPlayer(props: VideoPlayerProps) {
     autoplayAttemptsRef.current += 1;
     const outcome = await attemptAutoplay(video);
     autoplayLastRef.current = outcome;
-    if (outcome === "muted") setForcedMute(true);
     // interrupted 是中间态，界面上什么都不该变——它等下一个时机再试
     if (outcome !== "interrupted") setAutoplay(outcome);
   }, [video]);
 
-  /** 会话就位：挂引擎、落回目标位置、起播。 */
+  /** 会话就位：按 mode 挂引擎、落回目标位置、起播。 */
   useEffect(() => {
     const session = state.session;
-    if (!session?.stream_url || !video) return;
+    if (!session?.stream_url || !video || !mode) return;
 
     const engine = createEngine({
       video,
-      streamUrl: resolveStreamUrl(session.stream_url),
+      streamUrl: resolveStreamUrl(mode.streamUrl),
       container: session.decision.container ?? "mp4",
-      hasFullMse: capabilityRef.current?.mse === "full",
+      hasMse: capabilityRef.current?.mse !== "none",
+      preferNativeHls: mode.engine === "native-hls",
+      // 首帧就从续播点开始装载。会话相对制下换算结果≈0，与从前无异；VOD
+      // 全片列表下这是防止 hls.js 先去拉第 0 段的关键（engine.ts 有注释）
+      startPositionS: Math.max(0, toSessionSeconds(pendingFileMsRef.current, mode.originMs)),
       onFailed: (reason) => dispatch({ type: "failed", reason }),
+      // 取流持续失败（token 过期 / 服务端中断）：与心跳自愈同一条路，同档位
+      // 原地重开（新会话 = 新 token），不走降档——这一档没有失败。真断网时
+      // 重开请求本身会失败，落到 fatal 错误页，比无限转圈至少让人知道出了事。
+      onNetworkDead: () => {
+        // 刻意不动 wantsPlayRef：断流也可能发生在用户暂停期间（暂停时
+        // hls.js 还在预载），置 true 会替他续播。在播的话它本来就是 true。
+        video.pause();
+        pendingFileMsRef.current = positionRef.current;
+        dispatch({ type: "restart", startMs: positionRef.current });
+      },
     });
     engineRef.current = engine;
 
     let disposed = false;
     void engine.attach().then(() => {
       if (disposed) return;
-      // 转码会话已经从 start_ms 起转，换算结果≈0；档 0 直出没有偏移，
-      // 续播点必须在这里真的跳一次。两种情况同一行代码。
-      const target = toSessionSeconds(pendingFileMsRef.current, session.start_ms);
+      // 会话相对制：转码会话已从 start_ms 起转，换算结果≈0；档 0 直出没有
+      // 偏移，续播点在这里真的跳一次。文件绝对制：参照点为 0，target 即
+      // 文件秒数，seek 由播放器按 VOD 列表直接取对应分片。
+      const target = toSessionSeconds(pendingFileMsRef.current, mode.originMs);
       if (target > 1) {
         const seek = () => {
           video.currentTime = target;
@@ -380,7 +506,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
       engine.destroy();
       engineRef.current = null;
     };
-  }, [state.session, video, tryAutoplay]);
+  }, [state.session, mode, video, tryAutoplay]);
 
   /**
    * 换了会话（降档 / seek 换流）就重新获得自动播放的机会。
@@ -392,6 +518,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
     if (!state.session) return;
     autoplayAttemptsRef.current = 0;
     autoplayLastRef.current = null;
+    deadSessionRef.current = false;
     setAutoplay(null);
   }, [state.session]);
 
@@ -434,10 +561,6 @@ export function VideoPlayer(props: VideoPlayerProps) {
     };
     // 「现在应该能播了」的两个时机：挂流那一次可能太早，这两次是补刀
     const onReady = () => void tryAutoplay();
-    // 用户也可能绕过我们的按钮、直接用控制条上的静音键解除，提示要跟着消失
-    const onVolumeChange = () => {
-      if (!video.muted) setForcedMute(false);
-    };
 
     video.addEventListener("playing", onPlaying);
     video.addEventListener("pause", onPause);
@@ -449,7 +572,6 @@ export function VideoPlayer(props: VideoPlayerProps) {
     video.addEventListener("timeupdate", onTimeUpdate);
     video.addEventListener("loadedmetadata", onReady);
     video.addEventListener("canplay", onReady);
-    video.addEventListener("volumechange", onVolumeChange);
     return () => {
       video.removeEventListener("playing", onPlaying);
       video.removeEventListener("pause", onPause);
@@ -461,7 +583,6 @@ export function VideoPlayer(props: VideoPlayerProps) {
       video.removeEventListener("timeupdate", onTimeUpdate);
       video.removeEventListener("loadedmetadata", onReady);
       video.removeEventListener("canplay", onReady);
-      video.removeEventListener("volumechange", onVolumeChange);
     };
   }, [video, qoe, tryAutoplay]);
 
@@ -517,7 +638,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
       tier: decision.tier,
       degraded_from: decision.degraded_from ?? null,
       engine: engineRef.current?.stats().engine ?? "",
-      hw_backend: "",
+      hw_backend: state.session?.hw_backend ?? "",
       ...summary,
     };
   }, [state.session]);
@@ -553,7 +674,14 @@ export function VideoPlayer(props: VideoPlayerProps) {
           position_ms: positionRef.current,
         });
       }
-      if (sessionId) stopPlaybackSessionOnUnload(sessionId);
+      // iOS 切后台也触发 pagehide——画中画还播着呢，这时杀掉转码会话，
+      // 小窗播完缓冲就断流。PiP 中不杀，真关页面后由服务端超时回收兜底。
+      const webkitMode = (video as { webkitPresentationMode?: string } | null)
+        ?.webkitPresentationMode;
+      const inPip =
+        (video && document.pictureInPictureElement === video) ||
+        webkitMode === "picture-in-picture";
+      if (sessionId && !inPip) stopPlaybackSessionOnUnload(sessionId);
       const metric = qoeSnapshotRef.current();
       if (metric) reportPlaybackMetricOnUnload(metric);
     };
@@ -629,9 +757,23 @@ export function VideoPlayer(props: VideoPlayerProps) {
   }, [state.session?.stream_url]);
 
   /**
-   * 会话续命 + 离开时显式收尾。
+   * 会话续命 + 掉线自愈 + 离开时显式收尾。
    *
    * 心跳：用户关页面不会发任何信号，服务端的超时回收是唯一可靠兜底。
+   *
+   * **自愈**：心跳并不总喂得上——页面切到后台后浏览器会把定时器节流到一分钟
+   * 一次，挂久了干脆整页冻结（Chrome 的 tab freezing），暂停着离开一会儿再
+   * 回来，服务端那边的会话早被巡检回收了。此时流的地址还在、取流 token 也
+   * 没过期（有效期 12 小时），但分片已经不存在，表现就是**一直转圈**，只能
+   * 刷新页面——这次修的就是它。
+   *
+   * 做法是把心跳同时当探活用：服务端明确说会话没了（404）就带着当前位置原地
+   * 重开一个（`restart`，与换音轨/换画质同一条路），而不是走降档回路——这一
+   * 档并没有失败，只是流没了，白降一档反而会把画质压下去。用户自己按过暂停
+   * 的话新会话不会自动续播（`wantsPlayRef` 说了算），他回来点播放即可。
+   *
+   * 页面在后台时只探不修：那时重开会话等于替一个没人看的页面拉起一路 ffmpeg，
+   * 留到 `visibilitychange` 回前台再修。
    *
    * 收尾：`pagehide` 只在真正卸载文档时触发，SPA 内部返回媒体库、切下一集
    * 都不会触发。释放的时机与 StrictMode 规避都在 `createSessionReleaser` 里，
@@ -640,14 +782,48 @@ export function VideoPlayer(props: VideoPlayerProps) {
   useEffect(() => {
     if (!sessionId) return;
     sessionReleaser.acquire(sessionId);
-    const timer = window.setInterval(() => {
-      void pingPlaybackSession(sessionId).catch(() => undefined);
-    }, PING_INTERVAL_MS);
+    // 一次探活没回来之前不发下一次：回前台那一下与定时器可能撞在一起，
+    // 两次都判定「没了」就会连开两个会话，其中一个当场变成孤儿
+    let probing = false;
+    const beat = async () => {
+      if (probing) return;
+      probing = true;
+      try {
+        const alive = await pingPlaybackSession(sessionId);
+        // null = 这次请求本身失败（断网/5xx），不能据此判定会话没了
+        if (alive !== false) return;
+        if (document.visibilityState !== "visible") return;
+        // 只在「确实在播/该播」的阶段重开。重开路上（deciding /
+        // session-starting / degrading，此时 state.session 还是旧会话）再触发
+        // 一次会形成风暴：新会话没就绪前每次心跳都 404，而每次重开都会让
+        // 服务端把上一次刚起的会话杀掉（stop_for_file），永远收敛不了。
+        // 报错 / 同意弹窗 / 播完同理——那些界面正等用户拍板，别在背后换流。
+        const phase = phaseRef.current;
+        if (phase !== "playing" && phase !== "buffering" && phase !== "seeking") return;
+        if (video?.paused && !wantsPlayRef.current) {
+          // 用户自己暂停着：不替他白烧一路转码，等他点播放再重开
+          deadSessionRef.current = true;
+          return;
+        }
+        // 客户端缓冲里可能还有几十秒余粮在放，先停住：换流期间进度条不该
+        // 继续跳（与换音轨/换画质同一处理）。这次暂停是我们造成的，不算
+        // 用户表态——wantsPlay 保持原值，新会话就位后自动续播。
+        video?.pause();
+        pendingFileMsRef.current = positionRef.current;
+        dispatch({ type: "restart", startMs: positionRef.current });
+      } finally {
+        probing = false;
+      }
+    };
+    const timer = window.setInterval(() => void beat(), PING_INTERVAL_MS);
+    const onVisibility = () => void beat();
+    document.addEventListener("visibilitychange", onVisibility);
     return () => {
       window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
       sessionReleaser.release(sessionId);
     };
-  }, [sessionId, sessionReleaser]);
+  }, [sessionId, sessionReleaser, video]);
 
   // ---------------------------------------------------------------------
   // 播放控制
@@ -657,10 +833,17 @@ export function VideoPlayer(props: VideoPlayerProps) {
     if (!video) return;
     if (video.paused) {
       // 用户亲手点的播放：手势就在这一刻，一定放得起来；中央大播放键该消失。
-      // 但静音提示留着——静音是另一回事，得他自己点「开启声音」。
       wantsPlayRef.current = true;
       autoplayLastRef.current = null;
       setAutoplay(null);
+      if (deadSessionRef.current) {
+        // 暂停期间会话已被服务端回收（见心跳探活）：流是死的，play() 只会
+        // 永远转圈。带着当前位置原地重开，新会话就位后自动续播。
+        deadSessionRef.current = false;
+        pendingFileMsRef.current = positionRef.current;
+        dispatch({ type: "restart", startMs: positionRef.current });
+        return;
+      }
       void video.play().catch(() => undefined);
     } else {
       // 用户主动暂停：从这一刻起不再替他自动续播
@@ -698,14 +881,27 @@ export function VideoPlayer(props: VideoPlayerProps) {
     [state.session, video],
   );
 
-  /** 恢复声音：自动播放被策略拦下时我们静音救回来的那一路，交还给用户。 */
-  const restoreSound = useCallback(() => {
-    if (!video) return;
-    video.muted = false;
-    // 静音时用户可能顺手把音量也拖到 0，只解静音会得到「点了没反应」
-    if (video.volume === 0) video.volume = 1;
-    setForcedMute(false);
-  }, [video]);
+  /**
+   * 换画质上限。与换音轨同一条路：重开会话（约一秒停顿）。
+   *
+   * 唯一跳过重启的情况：当前是直通（copy）且新上限装得下源分辨率——
+   * 此时服务端会给出一模一样的计划，重启纯属白断一次。videoHeight 在
+   * copy 档就是源高度，可以直接拿来判。
+   */
+  const selectQuality = useCallback(
+    (maxHeight: number | null) => {
+      setQuality(maxHeight);
+      saveQualityPreference(maxHeight);
+      if (maxHeight === quality) return;
+      const copying = state.session?.decision.video?.action === "copy";
+      if (copying && (maxHeight === null || (video?.videoHeight ?? 0) <= maxHeight)) return;
+      video?.pause();
+      wantsPlayRef.current = true;
+      pendingFileMsRef.current = positionRef.current;
+      dispatch({ type: "restart", startMs: positionRef.current });
+    },
+    [quality, state.session, video],
+  );
 
   /**
    * 跳转。转码会话是「从 start_ms 起、边转边给」的单向流：拖出已转区间必须
@@ -718,7 +914,8 @@ export function VideoPlayer(props: VideoPlayerProps) {
       const plan = planSeek(fileMs, {
         startMs: startMsRef.current,
         seekableEndSeconds: seekable.length ? seekable.end(seekable.length - 1) : 0,
-        hasSession: Boolean(sessionId),
+        // 是否越界换会话由播放模式定：VOD/档 0 列表覆盖全片，永远列表内跳
+        hasSession: Boolean(sessionId) && (mode?.seekBeyondBufferedRestarts ?? false),
       });
       if (plan.kind === "native") {
         video.currentTime = Math.max(0, plan.seconds);
@@ -733,7 +930,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
       setPositionMs(plan.startMs);
       dispatch({ type: "restart", startMs: plan.startMs });
     },
-    [video, sessionId],
+    [video, sessionId, mode],
   );
 
   const seekBy = useCallback(
@@ -742,23 +939,94 @@ export function VideoPlayer(props: VideoPlayerProps) {
   );
 
   useEffect(() => {
-    // 桌面浏览器普遍有 screen.orientation.lock 这个方法但一调就抛，所以还要
-    // 看指针类型：粗指针（手指）才是真能转的那类设备
-    setCanRotate(
-      typeof screenOrientation()?.lock === "function" &&
-        window.matchMedia("(pointer: coarse)").matches,
-    );
+    // 粗指针（手指）就是能转的设备。不再要求 orientation.lock 存在：
+    // iPhone Safari 没有它，但可以走 CSS 伪横屏，按钮照样要给
+    setCanRotate(window.matchMedia("(pointer: coarse)").matches);
   }, []);
 
   /**
-   * 横屏 / 退出横屏。
+   * 画中画的能力探测与状态跟随。
    *
-   * 桌面上没有方向可锁，这个按钮退化成纯全屏——所以它是**唯一**的全屏入口，
-   * 不再另外摆一个「全屏」按钮：同一个动作两个按钮只会让人猜哪个才对。
+   * `disablePictureInPicture` 也要看：视频自己声明了不许进小窗时，
+   * 标准 API 存在但调用必然被拒。
    */
+  useEffect(() => {
+    if (!video) {
+      setCanPip(false);
+      setPipActive(false);
+      return;
+    }
+    const webkit = video as WebkitPresentationVideo;
+    setCanPip(
+      (document.pictureInPictureEnabled === true && !video.disablePictureInPicture) ||
+        webkit.webkitSupportsPresentationMode?.("picture-in-picture") === true,
+    );
+    // 小窗可以被用户从系统 UI 直接关掉，按钮状态只能跟着事件走，不能自己记
+    const sync = () =>
+      setPipActive(
+        document.pictureInPictureElement === video ||
+          webkit.webkitPresentationMode === "picture-in-picture",
+      );
+    sync();
+    video.addEventListener("enterpictureinpicture", sync);
+    video.addEventListener("leavepictureinpicture", sync);
+    video.addEventListener("webkitpresentationmodechanged", sync);
+    return () => {
+      video.removeEventListener("enterpictureinpicture", sync);
+      video.removeEventListener("leavepictureinpicture", sync);
+      video.removeEventListener("webkitpresentationmodechanged", sync);
+    };
+  }, [video]);
+
+  /**
+   * 进 / 出画中画。
+   *
+   * 只在用户手势里调用才合法（浏览器硬性要求），所以这件事必须有一颗真按钮，
+   * 不能挂在可见性变化之类的自动时机上——「切走标签页自动进小窗」那条路是
+   * 另一套机制（媒体会话动作，见下面的 mediaSession）。
+   * 失败一律吞掉：用户在系统弹窗里点了取消不是错误。
+   */
+  const togglePip = useCallback(() => {
+    if (!video) return;
+    const webkit = video as WebkitPresentationVideo;
+    if (webkit.webkitSetPresentationMode && document.pictureInPictureEnabled !== true) {
+      webkit.webkitSetPresentationMode(
+        webkit.webkitPresentationMode === "picture-in-picture" ? "inline" : "picture-in-picture",
+      );
+      return;
+    }
+    if (document.pictureInPictureElement === video) {
+      void document.exitPictureInPicture().catch(() => undefined);
+      return;
+    }
+    void video.requestPictureInPicture?.().catch(() => undefined);
+  }, [video]);
+
+  /**
+   * 全屏 / 退出全屏。与横屏是两个独立按钮：横屏管方向、全屏管铺满，
+   * 移动端两个都要（真横屏本身会带进全屏，此时这个键就是退出键）。
+   */
+  const toggleFullscreen = useCallback(() => {
+    if (document.fullscreenElement) {
+      void document.exitFullscreen();
+      return;
+    }
+    const target = containerRef.current;
+    if (!target) return;
+    void requestFullscreen(target).then((ok) => {
+      // iPhone Safari 没有元素级全屏，把 <video> 交给系统播放器。字幕层
+      // 跟不进去，但 video 上挂着原生 VTT 轨（见 pipSubtitleUrl）——系统
+      // 播放器渲染 mode="showing" 的原生 cue，进出时由 presentationMode
+      // 监听切换，字幕不丢
+      if (!ok) enterNativeVideoFullscreen(asNativeVideo(video));
+    });
+  }, [video]);
+
+  /** 横屏 / 退出横屏（真锁或 iOS 伪横屏），只在触屏设备上出现。 */
   const toggleLandscape = useCallback(() => {
     if (landscape || document.fullscreenElement) {
       setLandscape(false);
+      setFakeLandscape(false);
       void exitLandscape(
         screenOrientation(),
         document.fullscreenElement ? () => document.exitFullscreen() : null,
@@ -768,15 +1036,13 @@ export function VideoPlayer(props: VideoPlayerProps) {
     const target = containerRef.current;
     if (!target) return;
     void enterLandscape(target, screenOrientation()).then((outcome) => {
-      // unsupported = 连元素级全屏都没有（iPhone Safari），把 <video> 交给
-      // 系统播放器——iOS 上本来就不硬撑自定义 UI（§6.4）
-      if (outcome === "unsupported") {
-        enterNativeVideoFullscreen(asNativeVideo(video));
-        return;
-      }
+      // unsupported = 连元素级全屏都没有（iPhone Safari）。以前是把 <video>
+      // 丢给系统播放器，但那样字幕/降档/自动下一集全部失效，也没有横屏键——
+      // 改走 CSS 伪横屏，自定义 UI 原样保留
+      if (outcome === "unsupported") setFakeLandscape(true);
       setLandscape(true);
     });
-  }, [landscape, video]);
+  }, [landscape]);
 
   /**
    * 用户按 Esc / 系统手势退出全屏时把状态同步回来，并解掉方向锁。
@@ -786,7 +1052,9 @@ export function VideoPlayer(props: VideoPlayerProps) {
    */
   useEffect(() => {
     const onChange = () => {
-      if (document.fullscreenElement) return;
+      const active = Boolean(document.fullscreenElement);
+      setFullscreen(active);
+      if (active) return;
       setLandscape(false);
       void exitLandscape(screenOrientation(), null);
     };
@@ -806,9 +1074,10 @@ export function VideoPlayer(props: VideoPlayerProps) {
     };
   }, []);
 
-  /** 左上角的后退：在横屏里先回到普通，再按一次才是退出播放。 */
+  /** 左上角的后退：先退横屏、再退全屏，最后一层才是退出播放。 */
   const goBack = useCallback(() => {
     if (landscape) toggleLandscape();
+    else if (document.fullscreenElement) void document.exitFullscreen();
     else onExit();
   }, [landscape, toggleLandscape, onExit]);
 
@@ -842,7 +1111,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
           if (video) video.muted = !video.muted;
           break;
         case "toggle-fullscreen":
-          toggleLandscape();
+          toggleFullscreen();
           break;
         case "toggle-subtitles":
           setSelectedSubtitle((current) =>
@@ -853,7 +1122,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [togglePlay, seekBy, seekToFileMs, toggleLandscape, durationMs, video, subtitles.options]);
+  }, [togglePlay, seekBy, seekToFileMs, toggleFullscreen, durationMs, video, subtitles.options]);
 
   // ---------------------------------------------------------------------
   // 系统集成：媒体键 / 锁屏信息 / 防息屏
@@ -907,6 +1176,79 @@ export function VideoPlayer(props: VideoPlayerProps) {
     };
   }, [title, episodeLabel, posterUrl, togglePlay, seekBy, next, onPlayNext, video]);
 
+  /**
+   * 原生 HLS 模式：选中的系统字幕轨**常开**（showing），所有表面（内联/
+   * 原生全屏/画中画）都由系统渲染同一条轨。
+   *
+   * 走过的弯路必须记下来：曾试过「内联 hidden 走自绘、进 PiP 才切 showing」
+   * 的混合制——切换依赖页面 JS，而 iOS 滑回桌面自动进 PiP 时 JS 冻结的
+   * 时机不可控，字幕十次有九次跟不进小窗。恒开不赌时序。内联时 cue 落在
+   * 元素底部（竖屏是黑边）的问题由 CSS 解决：见 globals.css 的
+   * ::-webkit-media-text-track-container 抬升——那段 CSS 只影响内联，
+   * 原生全屏与 PiP 是系统层，页面样式够不着，位置本来就对。
+   *
+   * 轨的顺序 = master 列表里 EXT-X-MEDIA 的顺序 = 服务端按 decision.subtitles
+   * 过滤文本轨（vtt/ass）的顺序 = 前端 subtitles.options 的顺序——四者同一
+   * 条过滤规则，下标可以直接对位（服务端注释里锚了这个约定）。
+   */
+  useEffect(() => {
+    if (!systemSubtitles || !video) return;
+    const apply = () => {
+      // 只留 HLS 内生轨（system-track 模式没有自绘 <track>，防御性剔除保留）
+      const domTracks = new Set(
+        Array.from(video.querySelectorAll("track"), (el) => el.track),
+      );
+      const list = Array.from(video.textTracks).filter(
+        (t) => !domTracks.has(t) && (t.kind === "subtitles" || t.kind === "captions"),
+      );
+      const target = activeSubtitle
+        ? subtitles.options.findIndex((o) => o.ref === activeSubtitle.ref)
+        : -1;
+      const modes = planSystemTrackModes(list.length, target);
+      list.forEach((track, i) => {
+        track.mode = modes[i];
+      });
+    };
+    apply();
+    video.textTracks.addEventListener("addtrack", apply);
+    return () => video.textTracks.removeEventListener("addtrack", apply);
+  }, [systemSubtitles, video, activeSubtitle, subtitles]);
+
+  /** 画中画进出时切换原生字幕轨的显隐（理由见 pipSubtitleUrl 注释）。 */
+  useEffect(() => {
+    if (!video || !mode?.pipPatchTrack) return; // system-track：系统轨常开，由上面的 effect 管
+    const applyMode = () => {
+      // iPhone Safari 没有标准 PiP API，进出画中画/原生全屏走 WebKit 前缀
+      // 的 presentationMode，事件名也不同——两套都得认。原生全屏与 PiP
+      // 同待遇：都只渲染 <video> 本身，字幕都得靠原生轨
+      const webkitMode = (video as { webkitPresentationMode?: string }).webkitPresentationMode;
+      // 页面不可见也算「原生表面」：iOS 从全屏滑回桌面自动转 PiP 时，mode
+      // 事件序列是 fullscreen → inline → picture-in-picture，而页面 JS 在
+      // 滑出去的瞬间就冻结了——inline 那步把轨切回 hidden 后，最后的 PiP
+      // 事件根本跑不到，小窗里就没字幕。页面都看不见了不存在双字幕问题，
+      // 不可见时一律 showing 最稳。
+      const nativeSurface =
+        document.pictureInPictureElement === video ||
+        webkitMode === "picture-in-picture" ||
+        webkitMode === "fullscreen" ||
+        document.visibilityState === "hidden";
+      for (const track of Array.from(video.textTracks)) {
+        track.mode = nativeSurface ? "showing" : "hidden";
+      }
+    };
+    applyMode();
+    video.addEventListener("enterpictureinpicture", applyMode);
+    video.addEventListener("leavepictureinpicture", applyMode);
+    video.addEventListener("webkitpresentationmodechanged", applyMode);
+    document.addEventListener("visibilitychange", applyMode);
+    return () => {
+      video.removeEventListener("enterpictureinpicture", applyMode);
+      video.removeEventListener("leavepictureinpicture", applyMode);
+      video.removeEventListener("webkitpresentationmodechanged", applyMode);
+      document.removeEventListener("visibilitychange", applyMode);
+    };
+  }, [video, pipSubtitleUrl, mode?.pipPatchTrack]);
+
   /** 播放中申请防息屏。切到后台会被系统收走，回来时重新申请。 */
   useEffect(() => {
     if (paused || state.phase !== "playing") return;
@@ -932,33 +1274,28 @@ export function VideoPlayer(props: VideoPlayerProps) {
   const awaitingUser = awaitsUserDecision(state.phase);
 
   useEffect(() => {
-    if (chromeMustStayVisible({ paused, menuOpen, diagnosticsOpen, awaitingUser })) {
+    if (chromeMustStayVisible({ paused, menuOpen, awaitingUser })) {
       setChromeVisible(true);
       return;
     }
     const timer = window.setTimeout(() => setChromeVisible(false), IDLE_HIDE_MS);
     return () => window.clearTimeout(timer);
-  }, [paused, diagnosticsOpen, menuOpen, awaitingUser, chromeVisible]);
+  }, [paused, menuOpen, awaitingUser, chromeVisible]);
 
-  useEffect(() => {
-    if (!next || nextDismissed) return;
-    const inCredits = isInEndCredits(positionMs, durationMs);
-    if (!inCredits && state.phase !== "ended") {
-      setCountdown(null);
-      return;
-    }
-    setCountdown((current) => current ?? NEXT_COUNTDOWN_S);
-  }, [positionMs, durationMs, next, state.phase, nextDismissed]);
-
-  useEffect(() => {
-    if (countdown === null) return;
-    if (countdown <= 0) {
-      onPlayNext();
-      return;
-    }
-    const timer = window.setTimeout(() => setCountdown(countdown - 1), 1000);
-    return () => window.clearTimeout(timer);
-  }, [countdown, onPlayNext]);
+  /**
+   * 片尾「下一集」卡片该不该显示。
+   *
+   * 纯派生、**不带任何计时器**：卡片进了片尾窗口就一直挂着，直到用户点它或
+   * 点关闭。曾经这里是一个 10 秒倒计时，数到 0 自动换集——片尾还没看完画面
+   * 就被抢走，而用户以为「按钮自己消失了」。要连播由用户自己点。
+   *
+   * 往回拖出片尾窗口会收起来（那时它已经不是「即将播放」了），再放到片尾还
+   * 会回来；只有明确关掉的那次才对本集永久生效。
+   */
+  const showNextCard =
+    next !== null &&
+    !nextDismissed &&
+    (isInEndCredits(positionMs, durationMs) || state.phase === "ended");
 
   // 自动播放被彻底拦下时不能再转圈：状态机要等 `playing` 才离开 buffering，
   // 而那一刻永远不会来——转圈叠着中央播放键是最典型的「界面卡住了」观感。
@@ -970,7 +1307,15 @@ export function VideoPlayer(props: VideoPlayerProps) {
   return (
     <div
       ref={containerRef}
-      className="player-root relative size-full bg-black"
+      className={`player-root relative size-full bg-black ${
+        fakeLandscape ? "player-fake-landscape" : ""
+      }`}
+      style={
+        {
+          "--cue-lift": `${cueLiftPx}px`,
+          "--cue-font-size": cueFontPx ? `${cueFontPx}px` : undefined,
+        } as React.CSSProperties
+      }
       data-chrome={chromeVisible ? "visible" : "hidden"}
       onPointerMove={() => setChromeVisible(true)}
       onPointerDown={() => {
@@ -997,13 +1342,23 @@ export function VideoPlayer(props: VideoPlayerProps) {
           poster={posterUrl ?? undefined}
           onClick={onSurfaceClick}
           className="size-full object-contain"
-        />
+        >
+          {pipSubtitleUrl ? (
+            // key 让换轨时整个 <track> 重建——改 src 复用元素时 Safari 不重载 cue。
+            // 不带 default：iOS 开着系统字幕偏好时 Safari 会自动点亮 default
+            // 轨，和自绘层叠成双字幕；显隐完全由 PiP 切换逻辑控制。
+            <track key={pipSubtitleUrl} kind="subtitles" src={pipSubtitleUrl} />
+          ) : null}
+        </video>
 
         <SubtitleLayer
           video={video}
-          track={activeSubtitle}
+          track={systemSubtitles ? null : activeSubtitle}
           style={subtitleStyle}
-          baseOffsetSeconds={(state.session?.start_ms ?? 0) / 1000}
+          baseOffsetSeconds={(mode?.originMs ?? 0) / 1000}
+          // 控制条三行（时间行 + 进度条 + 操作行）展开时的实占高度，字幕
+          // 压到会被盖住；收起时只剩贴边细进度条，不用让
+          avoidBottomPx={chromeVisible ? 172 : 8}
         />
 
         {/* 中央播放簇：退十秒 / 播放暂停 / 进十秒。与控制条同步淡入淡出。
@@ -1043,19 +1398,44 @@ export function VideoPlayer(props: VideoPlayerProps) {
               <p className="truncate text-[13px] text-white/65">{episodeLabel}</p>
             ) : null}
           </div>
+
+          {/* 画中画放顶栏右上角，不回控制条：它不是「控制这次播放」的动作，
+              而是「把这次播放带走」——和左上角的退出键成对，一个离开播放、
+              一个带着继续。控制条右簇留给字幕/设置/全屏那批真正的播放控制。
+
+              浏览器不支持由网页发起时整颗不渲染（Firefox 的画中画只在它自己
+              的界面里，留着就是个死按钮）。 */}
+          {canPip ? (
+            <button
+              type="button"
+              onClick={togglePip}
+              className={`ml-auto grid size-9 shrink-0 place-items-center rounded-full border border-white/[0.09] bg-black/30 text-white/85 backdrop-blur-md transition hover:bg-black/50 hover:text-white active:scale-[0.94] max-md:size-11 ${
+                chromeVisible ? "pointer-events-auto" : "pointer-events-none"
+              }`}
+              aria-label={pipActive ? "退出画中画" : "画中画"}
+              title={pipActive ? "退出画中画" : "画中画"}
+            >
+              <PipGlyph exit={pipActive} />
+            </button>
+          ) : null}
         </div>
 
         {/* 暂停海报：Netflix 在暂停时把片名大字压在画面上，同时压暗背景，
             一眼知道「停在哪部片」。不拦指针——点画面仍然是继续播放。 */}
         {showPauseOverlay ? (
-          <div className="pointer-events-none absolute inset-0 z-10 flex items-center bg-black/45 px-16 transition-opacity duration-300 max-md:px-6">
-            <div className="min-w-0">
-              <p className="text-[13px] uppercase tracking-[0.3em] text-white/55">已暂停</p>
-              <h2 className="mt-3 truncate text-[44px] font-bold leading-tight text-white drop-shadow-lg max-md:text-[26px]">
+          // 文字块靠左下、落在控制条正上方（Disney+ / Apple TV+ 同款位置）：
+          // 垂直中央是中央播放簇的地盘，大标题放中央会跟按钮叠在一起，窄屏
+          // 尤其糟。左上也不行——顶栏本来就有片名，会变成两行重复。
+          // 矮屏（手机横屏）底部这点空间也会顶到中央簇，直接藏大字，
+          // 片名看顶栏。
+          <div className="pointer-events-none absolute inset-0 z-10 flex items-end bg-black/45 px-16 pb-48 transition-opacity duration-300 max-md:px-6 max-md:pb-44">
+            <div className="min-w-0 [@media(max-height:480px)]:hidden">
+              <p className="text-[12px] uppercase tracking-[0.3em] text-white/55">已暂停</p>
+              <h2 className="mt-2 truncate text-[32px] font-bold leading-tight text-white drop-shadow-lg max-md:text-[22px]">
                 {title}
               </h2>
               {episodeLabel ? (
-                <p className="mt-1 truncate text-[18px] text-white/70 max-md:text-[14px]">
+                <p className="mt-1 truncate text-[16px] text-white/70 max-md:text-[13px]">
                   {episodeLabel}
                 </p>
               ) : null}
@@ -1064,7 +1444,12 @@ export function VideoPlayer(props: VideoPlayerProps) {
         ) : null}
 
         {busy ? (
-          <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
+          // noautohide：media-controller 会把无操作时的普通子元素统一淡出，
+          // 状态提示（转圈/报错/同意）必须豁免——黑屏配一个隐形的错误是最差体验
+          <div
+            {...{ noautohide: "" }}
+            className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center"
+          >
             <div className="flex flex-col items-center gap-4">
               <span className="size-12 animate-spin rounded-full border-[3px] border-white/15 border-t-[var(--player-accent)]" />
               <span className="text-[14px] text-white/75">{busyLabel(state.phase)}</span>
@@ -1072,29 +1457,12 @@ export function VideoPlayer(props: VideoPlayerProps) {
           </div>
         ) : null}
 
-        {/* 自动播放被静音救回来了：给一个显眼但不挡画面的恢复声音入口。
-            不给的话用户会以为这部片没有音轨。 */}
-        {forcedMute ? (
-          <button
-            type="button"
-            onClick={restoreSound}
-            // 放左下角而不是右上角：右上是诊断面板、右下是下一集卡片，
-            // 三个浮层挤在同一角上一定会盖住彼此
-            className={`absolute bottom-32 left-6 z-30 flex items-center gap-2 rounded-sm bg-white px-4 py-2.5 text-[14px] font-semibold text-black shadow-lg transition-opacity duration-300 hover:opacity-90 max-md:bottom-28 max-md:left-3 ${
-              chromeVisible ? "opacity-100" : "pointer-events-none opacity-0"
-            }`}
-          >
-            <svg viewBox="0 0 24 24" className="size-5 fill-current" aria-hidden>
-              <path d="M4 9.5h3.4L12 5.2v13.6L7.4 14.5H4a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1Z" />
-              <path d="M15.4 8.6a4.6 4.6 0 0 1 0 6.8l-1.3-1.5a2.6 2.6 0 0 0 0-3.8l1.3-1.5Z" />
-              <path d="M17.6 5.9a8.2 8.2 0 0 1 0 12.2l-1.3-1.5a6.2 6.2 0 0 0 0-9.2l1.3-1.5Z" />
-            </svg>
-            开启声音
-          </button>
-        ) : null}
 
         {state.phase === "error" && state.error ? (
-          <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/85 px-6">
+          <div
+            {...{ noautohide: "" }}
+            className="absolute inset-0 z-30 flex items-center justify-center bg-black/85 px-6"
+          >
             <div className="max-w-[480px] text-center">
               <p className="text-[17px] font-semibold text-white">{state.error.message}</p>
               {state.error.suggestion ? (
@@ -1106,14 +1474,14 @@ export function VideoPlayer(props: VideoPlayerProps) {
                 <button
                   type="button"
                   onClick={() => dispatch({ type: "request", startMs: positionRef.current })}
-                  className="rounded-sm bg-[var(--player-accent)] px-6 py-2.5 text-[14px] font-semibold text-black transition-colors hover:bg-[var(--player-accent-hover)]"
+                  className="rounded-full bg-[var(--player-accent)] px-6 py-2.5 text-[14px] font-semibold text-black transition-colors hover:bg-[var(--player-accent-hover)]"
                 >
                   重试
                 </button>
                 <button
                   type="button"
                   onClick={onExit}
-                  className="rounded-sm bg-white/15 px-6 py-2.5 text-[14px] font-medium text-white transition-colors hover:bg-white/25"
+                  className="rounded-full bg-white/15 px-6 py-2.5 text-[14px] font-medium text-white transition-colors hover:bg-white/25"
                 >
                   返回
                 </button>
@@ -1138,35 +1506,30 @@ export function VideoPlayer(props: VideoPlayerProps) {
           />
         ) : null}
 
-        {/* 下一集卡片：Netflix 把倒计时画成按钮里逐渐填满的底色，比一个
-            跳动的数字更好读——余量一眼可见，也不会读到一半就跳走。 */}
-        {countdown !== null && next ? (
-          <div className="absolute bottom-32 right-6 z-30 w-[300px] rounded-sm bg-[rgba(20,20,20,0.95)] p-4 shadow-[0_8px_32px_rgba(0,0,0,0.7)] max-md:bottom-28 max-md:right-3 max-md:w-[240px]">
+        {/* 下一集卡片：片尾窗口内常驻，换集完全由用户决定 */}
+        {showNextCard && next ? (
+          <div
+            // 定位内联：.menu-surface 自带 position:relative（不在 @layer，
+            // className 的 absolute 压不过它）
+            style={{ position: "absolute" }}
+            className="menu-surface bottom-32 right-6 z-30 w-[300px] p-4 max-md:bottom-28 max-md:right-3 max-md:w-[240px]"
+          >
             <p className="text-[12px] uppercase tracking-wide text-white/50">即将播放</p>
             <p className="mt-1.5 truncate text-[15px] font-semibold text-white">{next.label}</p>
             <div className="mt-4 flex gap-2">
               <button
                 type="button"
-                onClick={() => {
-                  setCountdown(null);
-                  setNextDismissed(true);
-                }}
-                className="rounded-sm bg-white/15 px-4 py-2 text-[13px] text-white/85 transition-colors hover:bg-white/25"
+                onClick={() => setNextDismissed(true)}
+                className="rounded-full bg-white/15 px-4 py-2 text-[13px] text-white/85 transition-colors hover:bg-white/25"
               >
-                取消
+                关闭
               </button>
               <button
                 type="button"
                 onClick={onPlayNext}
-                className="relative flex-1 overflow-hidden rounded-sm bg-white px-4 py-2 text-[13px] font-semibold text-black"
+                className="flex-1 rounded-full bg-white px-4 py-2 text-[13px] font-semibold text-black transition-colors hover:bg-white/85"
               >
-                <span
-                  className="absolute inset-y-0 left-0 bg-black/15 transition-[width] duration-1000 ease-linear"
-                  style={{
-                    width: `${((NEXT_COUNTDOWN_S - countdown) / NEXT_COUNTDOWN_S) * 100}%`,
-                  }}
-                />
-                <span className="relative">立即播放 · {countdown}</span>
+                立即播放
               </button>
             </div>
           </div>
@@ -1186,15 +1549,24 @@ export function VideoPlayer(props: VideoPlayerProps) {
             selectedAudio={state.session?.decision.audio?.track_ref ?? null}
             onSelectAudio={selectAudio}
             subtitleStyle={subtitleStyle}
-            onSubtitleStyleChange={setSubtitleStyle}
+            onSubtitleStyleChange={(style) => {
+              setSubtitleStyle(style);
+              saveSubtitleStyle(style);
+            }}
             diagnosticsOpen={diagnosticsOpen}
             onToggleDiagnostics={() => setDiagnosticsOpen((open) => !open)}
             // 剧集才有右下角那个切集位；电影 episodeLabel 为 null
             isSeries={episodeLabel !== null}
             onNext={next ? onPlayNext : null}
+            onPrev={prev ? onPlayPrev : null}
             landscape={landscape}
             canRotate={canRotate}
             onToggleLandscape={toggleLandscape}
+            systemSubtitles={systemSubtitles}
+            quality={quality}
+            onSelectQuality={selectQuality}
+            fullscreen={fullscreen}
+            onToggleFullscreen={toggleFullscreen}
             onMenuOpenChange={setMenuOpen}
             trickplay={trickplay}
           />

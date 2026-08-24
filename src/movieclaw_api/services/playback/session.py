@@ -38,17 +38,30 @@ from pathlib import Path
 
 from movieclaw_api.core.config import get_settings
 from movieclaw_api.services.playback.ffmpeg_args import (
+    LIVE_PLAYLIST_NAME,
     PLAYLIST_NAME,
+    SEGMENT_PATTERN,
     TranscodeCommand,
     build_hls_command,
 )
+from movieclaw_playback.hls_vod import SegmentPlan
 from movieclaw_events import new_ulid
 from movieclaw_playback.decide import PlaybackPlan, PlaybackTier
 
 logger = logging.getLogger("movieclaw_api.playback.session")
 
-#: 客户端心跳间隔的四倍。用户关页面不会发任何信号，超时回收是唯一可靠兜底。
-SESSION_IDLE_TIMEOUT_S = 60.0
+#: 会话空闲回收窗口。用户关页面不会发任何信号，超时回收是唯一可靠兜底。
+#:
+#: 取三分钟而不是「心跳间隔（15 秒）的几倍」：**浏览器不保证心跳按时发得
+#: 出来**。页面切到后台后定时器会被节流到一分钟一次，挂久了整页冻结，此时
+#: 一个只是暂停着等用户回来的会话会被判成「没人要了」而回收，用户切回来看
+#: 到的是永远转不完的圈。三分钟能盖住绝大多数「切个标签页回来接着看」，
+#: 代价是页面被强杀（崩溃/断网）时多留两分钟的 ffmpeg——正常关闭走的是
+#: pagehide 里的显式 DELETE，不受这个窗口影响。
+#:
+#: 网页播放器另有兜底：心跳收到 404 会带着当前位置原地重开会话
+#: （components/player/video-player.tsx 的「掉线自愈」）。
+SESSION_IDLE_TIMEOUT_S = 180.0
 #: 回收巡检间隔。
 REAP_INTERVAL_S = 15.0
 #: 等 playlist 出现的上限。playlist 先行——会话起来后 ffmpeg 立刻写出
@@ -57,6 +70,9 @@ PLAYLIST_WAIT_TIMEOUT_S = 30.0
 #: 盘上至少要留的余量。低于它一律拒绝新会话——转码分片与 SQLite 同卷，
 #: 盘满会让数据库写不进去，整个应用不可用。
 MIN_FREE_BYTES = 2 * 1024**3
+#: 低水位急停后，剩余空间回到这个线以上才恢复被暂停的转码。两档水位拉开
+#: 距离是为了不在临界值附近反复停/走（迟滞回差）。
+RESUME_FREE_BYTES = 2 * MIN_FREE_BYTES
 #: stderr 保留的行数，供诊断面板与日志使用。
 _STDERR_KEEP_LINES = 40
 
@@ -90,10 +106,30 @@ class TranscodeSession:
     created_at: float = field(default_factory=time.monotonic)
     error: str | None = None
     stderr_tail: deque[str] = field(default_factory=lambda: deque(maxlen=_STDERR_KEEP_LINES))
+    #: 被磁盘低水位哨兵 SIGSTOP 挂起中。挂起的进程不响应 SIGTERM，
+    #: 终止前必须先 SIGCONT（见 ``_terminate``）。
+    disk_paused: bool = False
+    #: VOD 模式（§12）：非 None 表示播放列表由服务端按关键帧表预生成，
+    #: seek 由分片请求驱动（ensure_segment），ffmpeg 可在会话内多次重启。
+    segment_plan: SegmentPlan | None = None
+    #: 本轮 ffmpeg 的 -start_number：它正从这个分片号往后转
+    head_segment: int = 0
+    #: 跨轮次累计的已完成分片号。分片文件在会话目录里从不删除，重启只是换
+    #: ffmpeg 的起点——没有这份台账，seek 回看过的区间会把「文件还在、但
+    #: 不在当前轮次 live.m3u8 里」的分片误判未就绪，白白再重启一轮。
+    completed_segments: set[int] = field(default_factory=set)
+    #: 重启 ffmpeg 需要的原始参数（VOD 模式）
+    source_path: str = ""
+    hw_backend: str | None = None
     _stderr_task: asyncio.Task | None = None
+    _restart_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     @property
     def playlist_path(self) -> Path:
+        """ffmpeg 写的列表：VOD 模式下是内部进度追踪（live.m3u8），客户端
+        拿到的 index.m3u8 由服务端按 segment_plan 生成。"""
+        if self.segment_plan is not None:
+            return self.directory / LIVE_PLAYLIST_NAME
         return self.directory / PLAYLIST_NAME
 
     @property
@@ -163,7 +199,8 @@ class TranscodeSessionManager:
                 logger.exception("转码会话巡检异常")
 
     async def reap(self) -> int:
-        """回收超时无心跳的会话，返回回收数量。"""
+        """回收超时无心跳的会话，返回回收数量。顺带跑一遍磁盘水位哨兵。"""
+        self._enforce_disk_watermark()
         now = time.monotonic()
         stale = [
             sid
@@ -188,8 +225,14 @@ class TranscodeSessionManager:
         max_transcode: int = 2,
         max_remux: int = 4,
         quota_bytes: int | None = None,
+        segment_plan: SegmentPlan | None = None,
     ) -> TranscodeSession:
-        """起一个会话。playlist 出现即返回，不等全部分片转完。"""
+        """起一个会话。playlist 出现即返回，不等全部分片转完。
+
+        ``segment_plan`` 非 None 走 VOD 模式（§12）：客户端列表由服务端按
+        它生成，ffmpeg 从 ``start_ms`` 所在的分片边界起转、编号接上全片
+        规划；seek 由分片请求驱动（``ensure_segment``），会话内可重启。
+        """
         if plan.tier is PlaybackTier.DIRECT_PLAY:
             raise ValueError("档 0 是原文件直出，不需要会话")
 
@@ -199,6 +242,12 @@ class TranscodeSessionManager:
         self._check_disk(quota_bytes)
 
         session_id = new_ulid()
+        head_segment = 0
+        if segment_plan is not None:
+            head_segment = segment_plan.segment_for(start_ms / 1000)
+            # 起播点对齐到分片边界：VOD 列表的时间轴是文件绝对时间，客户端
+            # 想到哪就 seek 到哪，服务端只按边界供片
+            start_ms = int(segment_plan.boundaries[head_segment] * 1000)
         session = TranscodeSession(
             id=session_id,
             file_id=plan.file_id,
@@ -208,6 +257,10 @@ class TranscodeSessionManager:
             directory=self._root / session_id,
             start_ms=start_ms,
             plan=plan,
+            segment_plan=segment_plan,
+            head_segment=head_segment,
+            source_path=source_path,
+            hw_backend=hw_backend,
         )
         session.directory.mkdir(parents=True, exist_ok=True)
         command = build_hls_command(
@@ -216,6 +269,7 @@ class TranscodeSessionManager:
             session_dir=session.directory,
             start_ms=start_ms,
             hw_backend=hw_backend,
+            start_number=head_segment if segment_plan is not None else None,
         )
         self._sessions[session.id] = session
         try:
@@ -262,6 +316,59 @@ class TranscodeSessionManager:
                 "请稍候——正在播放的会话结束后会自动清理，"
                 "也可在「设置 → 播放」调高配额。"
             )
+
+    def _enforce_disk_watermark(self) -> None:
+        """磁盘低水位急停：空间见底时 SIGSTOP 所有在写的会话，回升后放行。
+
+        开会话时的 ``_check_disk`` 只拦得住**新**会话；已经在跑的 ffmpeg 即使
+        有 readrate 限速也仍在持续写盘，放任不管的结局是写满整卷、SQLite
+        直接不可用（2026-08-23 真实发生过，一晚 200 GB）。SIGSTOP/SIGCONT
+        对整个进程组生效，比杀掉重起便宜得多——空间恢复后播放无感续走。
+        """
+        writing = [
+            s
+            for s in self._sessions.values()
+            if s.process is not None and s.process.returncode is None
+        ]
+        if not any(writing):
+            return
+        try:
+            free = shutil.disk_usage(self._root).free
+        except OSError:
+            return
+        if free < MIN_FREE_BYTES:
+            for session in writing:
+                if session.disk_paused:
+                    continue
+                if self._signal_group(session, signal.SIGSTOP):
+                    session.disk_paused = True
+                    logger.warning(
+                        "磁盘剩余 %.1f GB 已低于安全水位，暂停会话 %s 的转码写入",
+                        free / 1024**3,
+                        session.id,
+                    )
+        elif free >= RESUME_FREE_BYTES:
+            for session in writing:
+                if not session.disk_paused:
+                    continue
+                if self._signal_group(session, signal.SIGCONT):
+                    session.disk_paused = False
+                    logger.info(
+                        "磁盘空间已恢复（剩余 %.1f GB），继续会话 %s 的转码",
+                        free / 1024**3,
+                        session.id,
+                    )
+
+    def _signal_group(self, session: TranscodeSession, sig: signal.Signals) -> bool:
+        """给会话的整个进程组发信号。进程已不在时返回 False。"""
+        process = session.process
+        if process is None or process.returncode is not None:
+            return False
+        try:
+            os.killpg(os.getpgid(process.pid), sig)
+            return True
+        except (ProcessLookupError, PermissionError):
+            return False
 
     async def _spawn(self, session: TranscodeSession, command: TranscodeCommand) -> None:
         # 契约 1+2：异步子进程 + 独立进程组
@@ -311,6 +418,139 @@ class TranscodeSessionManager:
         session.error = "ffmpeg 超时未产出播放列表"
         raise SessionStartError(session.error)
 
+    # -- VOD 分片按需供给（§12） -----------------------------------------
+
+    #: 请求的分片超前当前转码头这么多段就重启 ffmpeg 直奔目标，而不是干等
+    #: 它顺序转过去（4 秒段 × 6 = 24 秒，与 Jellyfin 的重启阈值一致）
+    _RESTART_AHEAD_SEGMENTS = 6
+    #: 单个分片的等待上限。局域网起播 + burst 下正常几百毫秒就好；超时说明
+    #: ffmpeg 卡死或存储极慢，让客户端拿 404 重试比挂着请求强
+    _SEGMENT_WAIT_S = 30.0
+
+    async def ensure_segment(self, session: TranscodeSession, index: int) -> Path | None:
+        """确保 VOD 会话的第 index 个分片就绪，返回文件路径；超时返回 None。
+
+        这是 seek 的唯一入口：客户端按预生成列表直接请求任意分片，这里判断
+        「等它转过来」还是「杀掉重启直奔目标」。"""
+        plan = session.segment_plan
+        if plan is None or not (0 <= index < plan.count):
+            return None
+        target = session.directory / (SEGMENT_PATTERN % index)
+        deadline = time.monotonic() + self._SEGMENT_WAIT_S
+        while time.monotonic() < deadline:
+            # 会话可能在等待期间被显式结束（用户退出的 DELETE 会删目录）。
+            # 不查这条就会对着已删除的目录重启 ffmpeg，No such file or
+            # directory 一路冒成 500。
+            if session.state == "stopped":
+                return None
+            if self._segment_ready(session, index):
+                return target
+            try:
+                await self._maybe_restart_for(session, index)
+            except SessionStartError:
+                # 重启失败（目录被删/命令有误）按「拿不到分片」处理：客户端
+                # 收 404 走它自己的重试与降档，比 500 刷屏有意义
+                logger.warning(
+                    "分片重启失败：session=%s seg=%05d：%s", session.id, index, session.error
+                )
+                return None
+            if session.state == "failed":
+                return None
+            await asyncio.sleep(0.15)
+        logger.warning(
+            "分片等待超时：session=%s seg=%05d（转码进程可能卡死或存储过慢）",
+            session.id,
+            index,
+        )
+        return None
+
+    def _segment_ready(self, session: TranscodeSession, index: int) -> bool:
+        """分片写完才算就绪：ffmpeg 只有在切走下一段时才把上一段写进列表，
+        所以「出现在 live.m3u8 里」是可靠的完成信号（读到就记入跨轮次台账，
+        seek 回看不再依赖当前轮次的列表）；进程已退出（转到片尾）时列表
+        可能没来得及收尾，退化成看文件存在。"""
+        target = session.directory / (SEGMENT_PATTERN % index)
+        if not target.exists():
+            return False
+        self._sync_completed(session)
+        if index in session.completed_segments:
+            return True
+        process = session.process
+        return process is not None and process.returncode is not None
+
+    def _sync_completed(self, session: TranscodeSession) -> None:
+        """把当前轮次 live.m3u8 里已列出的分片并入跨轮次台账。"""
+        try:
+            text = session.playlist_path.read_text(encoding="utf-8")
+        except OSError:
+            return
+        for line in text.splitlines():
+            line = line.strip()
+            if line.endswith(".m4s") and line.startswith("seg"):
+                try:
+                    session.completed_segments.add(int(line[3:8]))
+                except ValueError:
+                    continue
+
+    async def _maybe_restart_for(self, session: TranscodeSession, index: int) -> None:
+        """请求的分片在当前转码轮次覆盖不到时，杀掉 ffmpeg 从目标边界重启。
+
+        「覆盖不到」= 在转码头之前（copy 不能倒着转），或超前到等不起
+        （_RESTART_AHEAD_SEGMENTS）。重启用锁串行化：一次 seek 会让播放器
+        并发请求好几个相邻分片，只有第一个该触发重启。"""
+        plan = session.segment_plan
+        assert plan is not None
+        async with session._restart_lock:
+            # 排队等锁期间会话可能已被结束；stopped 后目录已删，绝不能再拉进程
+            if session.state == "stopped":
+                return
+            produced = self._highest_produced(session)
+            behind = index < session.head_segment
+            ahead = index > produced + self._RESTART_AHEAD_SEGMENTS
+            process_dead = session.process is not None and session.process.returncode is not None
+            # 进程还活着且目标在合理范围内：等它转过来即可
+            if not (behind or ahead or (process_dead and not self._segment_ready(session, index))):
+                return
+            logger.info(
+                "转码重启直奔分片：session=%s seg=%05d（当前头=%d 已产出到=%d）",
+                session.id,
+                index,
+                session.head_segment,
+                produced,
+            )
+            await self._terminate(session)
+            session.head_segment = index
+            session.start_ms = int(plan.boundaries[index] * 1000)
+            session.state = "spawning"
+            session.error = None
+            command = build_hls_command(
+                session.plan,
+                source_path=session.source_path,
+                session_dir=session.directory,
+                start_ms=session.start_ms,
+                hw_backend=session.hw_backend,
+                start_number=index,
+            )
+            # 旧轮次的清单先并入台账再删：这一轮转出的分片下次回看直接可用
+            self._sync_completed(session)
+            session.playlist_path.unlink(missing_ok=True)
+            await self._spawn(session, command)
+
+    def _highest_produced(self, session: TranscodeSession) -> int:
+        """从转码头起**连续**产出到的分片号；一个都没写完时为 head-1。
+
+        必须数连续段而不是 `max(≥ head)`：台账是跨轮次的，重启到低位后
+        （比如 seek 回第 0 段）上一轮留下的高编号分片全都 ≥ head，取 max 会
+        把 produced 顶到上一轮的尾巴上——后果是请求「上一轮尾巴 + 1」时
+        ahead 判定失灵，既不重启也等不来，30 秒超时 404 循环，播放器表现为
+        永远缓冲。ffmpeg 在一轮内是从 head 顺序写的，连续段就是本轮进度
+        （恰好与上一轮无缝衔接的旧分片也算——它们本来就直接可服务）。"""
+        self._sync_completed(session)
+        produced = session.head_segment - 1
+        while (produced + 1) in session.completed_segments:
+            produced += 1
+        return produced
+
     def get(self, session_id: str, *, member_id: int | None = None) -> TranscodeSession | None:
         """取会话。``member_id`` 非空时校验归属——会话是私人资源。"""
         session = self._sessions.get(session_id)
@@ -357,6 +597,11 @@ class TranscodeSessionManager:
         if process is None or process.returncode is not None:
             await self._cancel_stderr(session)
             return
+        # 被低水位哨兵挂起的进程不会处理 SIGTERM（信号排队到 SIGCONT 之后），
+        # 不解冻直接杀只能等 3 秒超时走 SIGKILL——白等
+        if session.disk_paused:
+            self._signal_group(session, signal.SIGCONT)
+            session.disk_paused = False
         try:
             os.killpg(os.getpgid(process.pid), signal.SIGTERM)
         except (ProcessLookupError, PermissionError):

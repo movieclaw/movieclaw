@@ -530,8 +530,11 @@ export function MediaTrackRows({
             if (!entry.preview) return;
             setPreviewTarget({ file: selectedFile, ...entry.preview });
           }}
+          // 生成入口紧跟在语言芯片后面，而不是像音轨行的规格标签那样贴到行尾：
+          // 它是对「这一行的字幕」动手，挨着它作用的对象才读得通；行尾那个位置
+          // 在音轨行放的是只读规格，动作跑过去反而像另一件事。
           trailing={
-            <div className="flex shrink-0 items-center md:ml-auto">
+            <div className="flex shrink-0 items-center">
               <SubtitleGenPanel key={selectedFile.id} file={selectedFile} onChanged={onChanged} />
             </div>
           }

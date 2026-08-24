@@ -20,16 +20,13 @@
 export type AutoplayOutcome =
   /** 正常出声播放 */
   | "playing"
-  /** 被策略拦下，已降级为静音播放——必须给用户一个恢复声音的入口 */
-  | "muted"
   /** 时序性打断（换源 / load 抢占），下一个可播时机再试一次即可 */
   | "interrupted"
-  /** 静音也放不起来：只能请用户自己点 */
+  /** 放不起来（含自动播放策略拦截）：停在暂停态请用户自己点 */
   | "blocked";
 
-/** `attemptAutoplay` 只需要 `<video>` 的这几个能力，测试因此不必造 DOM。 */
+/** `attemptAutoplay` 只需要 `<video>` 的这个能力，测试因此不必造 DOM。 */
 export interface AutoplayTarget {
-  muted: boolean;
   play(): Promise<void>;
 }
 
@@ -42,15 +39,18 @@ function errorName(error: unknown): string {
 }
 
 /**
- * 把「被策略拦下」与「被时序打断」分开，只对前者做静音降级。
+ * 把「真放不了」与「被时序打断」分开。
  *
  * 判定放在这里而不是 catch 里散着写：这两类错误的正确处置完全相反，混在
- * 一起的表现是「偶尔莫名其妙就没声音了」，而且极难复现。
+ * 一起的表现是「偶尔莫名其妙就卡在第一帧」，而且极难复现。
+ *
+ * 被自动播放策略拦下（NotAllowedError）**不做静音降级**：静音起播再挂一个
+ * 「开启声音」按钮是很怪的交互——用户以为片子没音轨的投诉比"要多点一下
+ * 播放"多得多。判成 blocked 停在暂停态，用户点播放那一刻自带手势，
+ * 出声播放一定成功。
  */
 export function classifyPlayFailure(error: unknown): Exclude<AutoplayOutcome, "playing"> {
   switch (errorName(error)) {
-    case "NotAllowedError":
-      return "muted"; // 可以靠静音救回来
     case "AbortError":
       return "interrupted"; // 重试即可
     default:
@@ -58,29 +58,13 @@ export function classifyPlayFailure(error: unknown): Exclude<AutoplayOutcome, "p
   }
 }
 
-/**
- * 尝试自动播放：先出声试，被策略拦下就静音再试一次。
- *
- * 静音重试失败时把 `muted` 还原——留着一个静音又没播的播放器，用户点了播放
- * 会得到一段没有声音的片子，然后以为是文件没音轨。
- */
+/** 尝试自动播放：出声试一次，失败按错误类型分流（见 `classifyPlayFailure`）。 */
 export async function attemptAutoplay(video: AutoplayTarget): Promise<AutoplayOutcome> {
   try {
     await video.play();
     return "playing";
   } catch (error) {
-    const verdict = classifyPlayFailure(error);
-    if (verdict !== "muted") return verdict;
-
-    const wasMuted = video.muted;
-    video.muted = true;
-    try {
-      await video.play();
-      return "muted";
-    } catch (retryError) {
-      video.muted = wasMuted;
-      return classifyPlayFailure(retryError) === "interrupted" ? "interrupted" : "blocked";
-    }
+    return classifyPlayFailure(error);
   }
 }
 
@@ -106,13 +90,12 @@ export interface AutoplayGateInput {
  * 这次要修的现象。但重试也必须有闸：
  *
  * - 用户自己按了暂停 → 立刻停手，否则播放器会和用户抢遥控器；
- * - 已经在放了 → 没什么可试的（静音降级后的恢复声音是另一条路）；
- * - 已经判定 `blocked` → 再试多少次结果一样，只会拖慢界面响应；
- * - `muted` 是**终态**：已经放起来了，剩下的是等用户点「开启声音」。
+ * - 已经在放了 → 没什么可试的；
+ * - 已经判定 `blocked` → 再试多少次结果一样，等用户自己点播放。
  */
 export function shouldAttemptAutoplay(input: AutoplayGateInput): boolean {
   if (!input.wanted) return false;
   if (!input.paused) return false;
-  if (input.last === "blocked" || input.last === "muted") return false;
+  if (input.last === "blocked") return false;
   return input.attempts < MAX_AUTOPLAY_ATTEMPTS;
 }

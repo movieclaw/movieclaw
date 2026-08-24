@@ -22,7 +22,9 @@
 import type { ClientCapability } from "@/lib/api/playback";
 
 /** 快照结构版本。改了探测矩阵或字段含义就 +1，旧缓存自动失效。 */
-export const CAPABILITY_SCHEMA_VERSION = 1;
+// 2：快照加了 native_hls 字段（选原生 HLS 引擎用）。老缓存没有它，
+// iPhone 会误走 hls.js 路径——版本不同即作废重探。
+export const CAPABILITY_SCHEMA_VERSION = 2;
 
 const CACHE_KEY = "movieclaw.player.capability";
 
@@ -179,6 +181,7 @@ export async function buildCapabilitySnapshot(
     hdr_passthrough: env.hdr_passthrough,
     mse: env.mse,
     is_mobile: env.is_mobile,
+    native_hls: env.native_hls,
   };
 }
 

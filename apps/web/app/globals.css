@@ -1035,6 +1035,60 @@ a {
     0 6px 16px -6px rgba(0, 0, 0, 0.45);
 }
 
+/* ---- AI 生成标记 -----------------------------------------------------------
+   同一部片里 AI 字幕常常和发行方字幕并排列着，而两者的可信度不一样（译文与
+   时间轴都可能有偏差）。所以这个标记要**抢眼**：紫青渐变胶囊 + 一道每隔几秒
+   扫过的高光，在一列灰白文字里一眼就能挑出来，同时不占多少宽度。
+
+   高光用 ::after 的位移而不是 background-position 动画：位移只动合成层，
+   background-position 每帧都要重绘渐变——这块标记会长时间挂在播放器上，
+   而播放器正是全站最不能白烧 GPU 的地方。 */
+.ai-chip {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 3px;
+  overflow: hidden;
+  padding: 1px 7px;
+  border-radius: 9999px;
+  background: linear-gradient(115deg, #7c5cff, #22d3ee);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.5;
+  letter-spacing: 0.02em;
+  box-shadow: 0 0 0 1px rgb(255 255 255 / 0.14) inset;
+}
+.ai-chip::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    100deg,
+    transparent 34%,
+    rgb(255 255 255 / 0.5) 50%,
+    transparent 66%
+  );
+  translate: -110% 0;
+  animation: ai-chip-sheen 3.6s ease-in-out infinite;
+}
+@keyframes ai-chip-sheen {
+  0%,
+  62% {
+    translate: -110% 0;
+  }
+  100% {
+    translate: 110% 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ai-chip::after {
+    animation: none;
+    opacity: 0;
+  }
+}
+
 /*
  * 列表行左侧图标徽标（对齐参考站列表项的圆形首字母徽标，这里承载图标）：
  * 平时是深色玻璃圆角方块 + 顶部内高光；hover 略提亮；选中行内变成亮银徽标+深墨图标，
@@ -1456,6 +1510,37 @@ body.cmdk-open .app-shell {
   cursor: none;
 }
 
+/* iOS 原生 HLS 内联播放的系统字幕位置修正：WebKit 把 cue 画在整个 video
+   元素的底部，竖屏 letterbox 时就是屏幕最底的黑边。用画面矩形算出的抬升量
+   （--cue-lift，video-player 维护）把 cue 容器顶回画面下沿。只影响内联——
+   原生全屏与画中画由系统层渲染，页面 CSS 够不着，那两处位置本来就对。 */
+.player-root video::-webkit-media-text-track-container {
+  transform: translateY(calc(-1 * var(--cue-lift, 0px)));
+  transition: transform 0.3s;
+}
+
+/* 内联系统 cue 的字号：WebKit 默认按**元素高**算，竖屏 letterbox 时字会比
+   标准大好几倍。显式按画面高 5.2% 指定（Apple/Netflix 的字幕字号区间），
+   与自绘层同一标准；颜色背景不动——尊重系统字幕样式与用户的辅助功能设置。 */
+.player-root video::cue {
+  font-size: var(--cue-font-size, 1em);
+}
+
+/* iOS 伪横屏：iPhone Safari 没有元素级全屏和方向锁，把整个播放器容器
+   旋转 90° 铺满视口来「横过来」。宽高对调（100dvh/100dvw），旋转后原点
+   在左上角，先转再往回平移一个屏宽才落回视口内。 */
+.player-fake-landscape {
+  position: fixed;
+  inset: auto;
+  top: 0;
+  left: 0;
+  z-index: 60;
+  width: 100dvh;
+  height: 100dvw;
+  transform: rotate(90deg) translateY(-100%);
+  transform-origin: top left;
+}
+
 /* ---- 自建进度条 -----------------------------------------------------------
    轨道、缓冲底、已播段、把手**全部由组件里的 div 画**，`<input type=range>`
    只负责「可拖 + 键盘可达 + 无障碍语义」，视觉上完全隐形。
@@ -1502,8 +1587,15 @@ body.cmdk-open .app-shell {
    注意：**不要手写 -webkit-backdrop-filter**，原因见本文件开头那条全站约定。 */
 .player-glass {
   background: rgb(15 17 23 / 0.5);
-  backdrop-filter: blur(18px) saturate(1.3);
+  backdrop-filter: blur(12px) saturate(1.3);
   box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.1);
+}
+
+/* 控制条收起后必须把磨砂一并摘掉：backdrop-filter 叠在视频上，每一帧都要
+   对画面重新采样做模糊，是 GPU 合成的头号大户；opacity:0 只是看不见，元素
+   还在合成树里照样算。实测掉帧率 2.5%+ 的大头就在这里（QoE 2026-08-23）。 */
+.player-root[data-chrome="hidden"] .player-glass {
+  backdrop-filter: none;
 }
 
 /* ---- 图标按钮 -------------------------------------------------------------
@@ -1583,8 +1675,12 @@ body.cmdk-open .app-shell {
   left: 50%;
   translate: -50% 0;
   padding: 4px 10px;
-  border-radius: 4px;
-  background: rgba(20, 20, 20, 0.95);
+  /* 外观对齐站内 Tooltip（components/tooltip.tsx）：同一个近黑底色 +
+     发丝描边 + 圆角，别让播放器里飘着一块别处没有的方角黑牌 */
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgb(16 18 26 / 0.97);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
   color: #fff;
   font-size: 12px;
   line-height: 1.4;

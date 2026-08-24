@@ -23,7 +23,7 @@ from movieclaw_api.services.auth import get_signing_secret
 
 _STREAM_SALT = "movieclaw.playback.stream.v1"
 
-#: 取流 token 的有效期。比会话空闲回收（60 秒）长得多——一部三小时的电影
+#: 取流 token 的有效期。比会话空闲回收（三分钟）长得多——一部三小时的电影
 #: 从头播到尾中间不会重新签发，但也不能长到「链接泄漏出去还能用一年」。
 STREAM_TOKEN_TTL_S = 12 * 3600
 

@@ -96,6 +96,9 @@ class SubtitleTrack:
     language: str | None = None
     is_default: bool = False
     is_external: bool = False
+    #: 本机 AI 生成的字幕（翻译/双语）。播放器要据此打标——AI 字幕的译文与
+    #: 时间轴都可能有偏差，用户有权在选之前就知道这条是机器产的。
+    is_ai: bool = False
 
 
 @dataclass(frozen=True)
@@ -168,6 +171,8 @@ class SubtitlePlan:
     kind: str  # "vtt" | "ass" | "pgs"
     language: str | None = None
     is_default: bool = False
+    #: 本机 AI 生成（见 SubtitleTrack.is_ai），原样透传给播放器打标
+    is_ai: bool = False
 
 
 @dataclass(frozen=True)
@@ -227,6 +232,7 @@ def decide_playback(
     can_self_enable: bool = False,
     failed_tiers: frozenset[PlaybackTier] = frozenset(),
     preferred_audio: str | None = None,
+    max_height: int | None = None,
 ) -> PlaybackDecision:
     """按 web-player.md §3.3 的判定顺序算出最优播放计划。
 
@@ -238,6 +244,12 @@ def decide_playback(
     ``can_self_enable`` 是当前成员能否修改全局设置（只有超管可以）。为 False
     时 ``ConsentRequired`` 由前端渲染成说明文字而非按钮——不要给一个点了会
     403 的按钮。
+
+    ``max_height`` 是用户在播放器里选的画质上限（§10 预案的「手动选清晰度」，
+    弱网救急用）。语义是**上限而不是目标**：源分辨率不超它就照常直通——
+    直通是无损的，比转出来的同分辨率画质更好也更省资源；超了才强制转码降
+    到该高度。None = 自动（不限制）。strm 与 universal 分支不受它影响：
+    前者禁止转码（硬边界 2），后者是全解码客户端自己拉流。
     """
     # 1. strm 网盘条目：硬规则分支，只允许直连（硬边界 2）。
     #    一旦允许转码，服务端就得先把云端内容拉下来再转，直接推翻
@@ -260,7 +272,7 @@ def decide_playback(
         )
 
     # 3–5. 视频、HDR、音频三项判定，各自算出「能不能 copy」。
-    video_verdict = _judge_video(media, capability, policy)
+    video_verdict = _judge_video(media, capability, policy, max_height)
     audio_verdict = _judge_audio(media, capability, preferred_audio)
 
     # 6–7. 综合定档。
@@ -289,7 +301,7 @@ def decide_playback(
         tier=tier,
         file_id=media.file_id,
         container=container,
-        video=_build_video_plan(media, video_verdict, tier, policy),
+        video=_build_video_plan(media, video_verdict, tier, policy, max_height),
         audio=_build_audio_plan(media, audio_verdict, tier),
         subtitles=subtitles,
         audio_tracks=media.audio_tracks,
@@ -327,9 +339,12 @@ class _AudioVerdict:
 
 
 def _judge_video(
-    media: MediaProfile, capability: ClientCapability, policy: PlaybackPolicy
+    media: MediaProfile,
+    capability: ClientCapability,
+    policy: PlaybackPolicy,
+    max_height: int | None = None,
 ) -> _VideoVerdict:
-    """视频编码 + HDR 两项判定（§3.3 步骤 3–4）。"""
+    """视频编码 + HDR + 用户画质上限，三项判定（§3.3 步骤 3–4）。"""
     support = capability.video_support(media.video_codec)
     codec_label = (media.video_codec or "未知").upper()
 
@@ -352,6 +367,13 @@ def _judge_video(
         return _VideoVerdict(
             can_copy=False,
             reason=f"{media.resolution} 超出设备可流畅解码的分辨率，已降分辨率",
+        )
+    # 用户选了画质上限且源超出：强制转码降下去。放在设备判定之后——
+    # 两条都命中时归因给设备（那是硬性的，用户上限只是偏好）
+    if max_height is not None and height is not None and height > max_height:
+        return _VideoVerdict(
+            can_copy=False,
+            reason=f"按所选画质上限 {max_height}p 转码（源为 {media.resolution}）",
         )
 
     # HDR 判定。Dolby Vision 一律转码 + tone-map：DV Profile 5 用 IPTPQc2 色彩
@@ -572,14 +594,18 @@ def _build_video_plan(
     verdict: _VideoVerdict,
     tier: PlaybackTier,
     policy: PlaybackPolicy,
+    max_height: int | None = None,
 ) -> VideoPlan:
     if tier <= PlaybackTier.AUDIO_TRANSCODE:
         # copy 也要记录流经的编码：下游装 ffmpeg 命令时据此决定要不要打
         # ``-tag:v hvc1``——HEVC 进 fMP4 不打这个标签，Safari 是静默黑屏。
         return VideoPlan(action="copy", codec=(media.video_codec or None))
-    height = min(media.height or policy.max_transcode_height, policy.max_transcode_height)
+    # 三个上限取最小：源高度、管理员配置、用户画质选择
+    candidates = [media.height or policy.max_transcode_height, policy.max_transcode_height]
+    if max_height is not None:
+        candidates.append(max_height)
     return VideoPlan(
-        action="transcode", codec="h264", height=height, tone_map=verdict.tone_map
+        action="transcode", codec="h264", height=min(candidates), tone_map=verdict.tone_map
     )
 
 
@@ -622,6 +648,7 @@ def plan_subtitles(media: MediaProfile) -> tuple[SubtitlePlan, ...]:
                 kind=kind,
                 language=track.language,
                 is_default=track.is_default,
+                is_ai=track.is_ai,
             )
         )
     return tuple(plans)

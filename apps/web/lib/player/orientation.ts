@@ -52,7 +52,8 @@ export function asNativeVideo(video: HTMLVideoElement | null): NativeVideoFullsc
 }
 
 /** 进入全屏。带前缀的那个可能返回 undefined，统一成 Promise。 */
-async function requestFullscreen(target: FullscreenTarget): Promise<boolean> {
+/** 元素级全屏。返回是否进成了——iPhone Safari 没有这个能力，返回 false。 */
+export async function requestFullscreen(target: FullscreenTarget): Promise<boolean> {
   const request = target.requestFullscreen ?? target.webkitRequestFullscreen;
   if (!request) return false;
   try {

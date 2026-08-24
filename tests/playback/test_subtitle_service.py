@@ -13,6 +13,7 @@ from movieclaw_playback.subtitles import (
     SubtitleServeError,
     embedded_track,
     external_track,
+    is_ai_generated,
     parse_embedded_track,
     parse_external_track,
     pick_default_subtitle,
@@ -33,6 +34,24 @@ SRT = "1\n00:00:01,000 --> 00:00:02,500\n简体中文字幕测试\n\n"
 def test_track_ref_roundtrip() -> None:
     assert parse_embedded_track(embedded_track(2)) == 2
     assert parse_external_track(external_track("Movie.chs.srt")) == "Movie.chs.srt"
+
+
+def test_ai_subtitle_detection() -> None:
+    # subtitle_gen 的三种命名（单语 / 指定语言 / 双语）与 v2.1 旧版命名
+    assert is_ai_generated("ai") is True
+    assert is_ai_generated("ai-cht") is True
+    assert is_ai_generated("ai-bilingual-chs-eng") is True
+    assert is_ai_generated("AI") is True
+
+
+def test_ai_subtitle_detection_ignores_publisher_tracks() -> None:
+    # 判据是台账解析出的 title 段（视频 stem 之后的 token），不是整个文件名：
+    # 拿文件名去找会把片名叫《A.I.》《AI》的片子全标成 AI 生成
+    assert is_ai_generated(None) is False
+    assert is_ai_generated("") is False
+    assert is_ai_generated("SubHD") is False
+    assert is_ai_generated("air") is False
+    assert is_ai_generated("A.I.Artificial.Intelligence") is False
 
 
 def test_track_ref_rejects_garbage() -> None:
@@ -112,8 +131,9 @@ def test_serve_ass_passthrough_but_no_cross_conversion(tmp_path: Path) -> None:
     content, mime = serve_subtitle(SubtitleRef(path=ass, format="ass"), "ass")
     assert mime == "text/x-ssa"
     assert "你好" in content.decode("utf-8")
+    # 白名单外的组合仍要拒绝（ass→vtt 已为画中画放行，见 _CONVERTIBLE）
     with pytest.raises(SubtitleServeError):
-        serve_subtitle(SubtitleRef(path=ass, format="ass"), "vtt")
+        serve_subtitle(SubtitleRef(path=ass, format="ass"), "srt")
 
 
 def test_serve_empty_format_means_source_format(tmp_path: Path) -> None:
@@ -249,3 +269,35 @@ def test_playback_domain_never_imports_jellyfin_layer() -> None:
                     f"领域层文件 {py.name} import 了协议层 {name}——"
                     "Jellyfin 只是翻译皮，方言不得渗入领域层"
                 )
+
+
+def test_ass_converts_to_vtt_for_pip(tmp_path):
+    """ass→vtt 降级（画中画用）：丢样式、保文本与时间轴。"""
+    ass = tmp_path / "Movie.ass"
+    ass.write_text(
+        "[Script Info]\nScriptType: v4.00+\n\n"
+        "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR,"
+        " MarginV, Effect, Text\n"
+        "Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,{\\b1}你好{\\b0}\n",
+        encoding="utf-8",
+    )
+    body, mime = serve_subtitle(SubtitleRef(path=ass, format="ass"), "vtt")
+    text = body.decode("utf-8")
+    assert text.startswith("WEBVTT")
+    assert "你好" in text
+    assert mime == "text/vtt"
+
+
+def test_vtt_cues_get_default_bottom_safe_line(tmp_path):
+    """VTT 输出给无定位的 cue 加 line:84%（系统层字幕位置的唯一控制手段）；
+    作者显式定位过的 cue 原样尊重。"""
+    sub = tmp_path / "Movie.vtt"
+    sub.write_text(
+        "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n你好\n\n"
+        "00:00:03.000 --> 00:00:04.000 line:10%\n顶置注释\n",
+        encoding="utf-8",
+    )
+    body, _ = serve_subtitle(SubtitleRef(path=sub, format="vtt"), "vtt")
+    text = body.decode("utf-8")
+    assert "00:00:01.000 --> 00:00:02.000 line:84%" in text
+    assert "00:00:03.000 --> 00:00:04.000 line:10%" in text

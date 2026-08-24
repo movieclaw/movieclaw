@@ -228,8 +228,8 @@ def test_software_transcode_scales_and_reencodes(samples, tmp_path):
     assert _stream(payload, "audio")["codec_name"] == "aac"
 
 
-def test_software_transcode_segments_are_two_seconds(samples, tmp_path):
-    """转码档自己控制 GOP，分片能精确对齐（直通档做不到）。"""
+def test_software_transcode_segments_match_target(samples, tmp_path):
+    """转码档自己控制 GOP，分片能精确对齐目标时长（直通档做不到）。"""
     plan = _plan(
         PlaybackTier.SOFTWARE_TRANSCODE,
         video=VideoPlan(action="transcode", codec="h264", height=120),
@@ -242,7 +242,8 @@ def test_software_transcode_segments_are_two_seconds(samples, tmp_path):
         if line.startswith("#EXTINF")
     ]
     assert durations
-    assert all(d <= 2.5 for d in durations[:-1]), durations
+    # 上限 = SEGMENT_SECONDS + 半秒容差（末段除外）
+    assert all(d <= 4.5 for d in durations[:-1]), durations
 
 
 # ---------------------------------------------------------------------------

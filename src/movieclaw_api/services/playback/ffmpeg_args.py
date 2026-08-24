@@ -49,19 +49,72 @@ from movieclaw_playback.decide import PlaybackPlan, PlaybackTier
 from movieclaw_playback.subtitles import parse_embedded_track
 
 PLAYLIST_NAME = "index.m3u8"
+#: VOD 模式下 ffmpeg 写的内部播放列表：只做「转到哪了」的进度追踪与启动
+#: 就绪信号，客户端拿到的 index.m3u8 由服务端按关键帧表预生成（hls_vod.py）
+LIVE_PLAYLIST_NAME = "live.m3u8"
 INIT_NAME = "init.mp4"
 SEGMENT_PATTERN = "seg%05d.m4s"
 
-#: 分片时长（秒）。转码档自己控制 GOP，可以精确 2 秒；直通档 copy 模式下
+#: 分片时长（秒）。转码档自己控制 GOP，可以精确对齐；直通档 copy 模式下
 #: ffmpeg 只能切在源片已有的关键帧上，这个值是「至少多久」，实际分片会更长。
-SEGMENT_SECONDS = 2
+#: 取 4：VOD 预生成列表的分片栅格与这里必须同值（hls_vod.compute_segment_plan），
+#: 2 秒的列表对两小时的片有三千多行，4 秒折半，起播首段转出也只多等两秒。
+SEGMENT_SECONDS = 4
 
-#: 软件 HDR→SDR 色调映射链。必须用 BT.2390 EETF——简单 clip 会把高光全压成
+#: 码率阶梯：转码目标高度 → maxrate。此前硬件档写死 8M 不随分辨率变——
+#: 480p 给 8M 等于没降（弱网选低画质白选），4K 给 8M 又明显不够。数值参考
+#: Jellyfin 默认阶梯取整，H.264 下各档「够清晰又不虚胖」的经验值；bufsize
+#: 统一给 2 倍 maxrate。软件档走 CRF 恒定质量，阶梯只作为 maxrate 上限
+#: 兜底（防止高动态场景码率爆冲打满弱网带宽）。
+BITRATE_LADDER: dict[int, str] = {
+    2160: "16M",
+    1440: "10M",
+    1080: "6M",
+    720: "3M",
+    480: "1.5M",
+}
+
+
+def maxrate_for_height(height: int | None) -> str:
+    """取不小于目标高度的最近阶梯档；无高度信息按 1080p 算。"""
+    if height is None:
+        return BITRATE_LADDER[1080]
+    for step in sorted(BITRATE_LADDER):
+        if height <= step:
+            return BITRATE_LADDER[step]
+    return BITRATE_LADDER[2160]
+
+
+#: 读入限速（相对实时的倍数）与起播突发窗口（秒）。
+#:
+#: 不限速的教训（2026-08-23，一晚上写满 200 GB）：remux 档 `-c copy` 以磁盘
+#: IO 的速度跑，点开一部 30 GB 的片看一分钟，盘上就是完整的 30 GB 分片；
+#: 转码档也会一路转到片尾。分片在会话存续期间只增不减，而配额只在**开会话
+#: 时**检查——活跃会话可以写穿配额直到磁盘归零，转码缓存又与 SQLite 同卷。
+#:
+#: `-readrate` 让 ffmpeg 限速读输入：转码进度始终领先播放位置、但占盘增速
+#: 被钉住；`-readrate_initial_burst` 先全速转出开头一段，保证起播与开场
+#: seek 不受限速拖累。Jellyfin 10.9+ 同款方案。
+#:
+#: 直通档与转码档分开限（2026-08-23 复盘 QoE 数据的结论）：1.5 倍配合前端
+#: 60 秒的缓冲目标，起播后要播满两分钟缓冲才攒得够，这期间任何抖动都直接
+#: stall——实测每次会话卡 2~3 次。直通档 `-c:v copy` 不吃 CPU，限它只是在
+#: 省盘，而盘已有配额与低水位哨兵兜着，放到 4 倍让缓冲 20 秒内攒满；
+#: 真转码档维持 1.5 倍护 CPU（软转 4 倍速本来也跑不动）。
+READRATE = 1.5
+READRATE_COPY = 4
+READRATE_BURST_SECONDS = 60
+
+#: 软件 HDR→SDR 色调映射。必须用 BT.2390 EETF——简单 clip 会把高光全压成
 #: 死白（雪景、天空、爆炸场面直接糊掉）。
+#:
+#: 用 jellyfin-ffmpeg 专属的 ``tonemapx``（SIMD 优化的软件 tone-map 补丁，
+#: 默认算法即 bt2390），不用上游的 ``zscale+tonemap+zscale`` 三级链：上游
+#: ``tonemap`` 滤镜根本没有 bt2390 算法（只到 mobius，ffmpeg 8 也一样），
+#: 那条链在 2026-08-23 的真机容器里实测直接报「Undefined constant」。镜像
+#: 恒定内置 jellyfin-ffmpeg（§5.3），按 §12.14 不做 ffmpeg 能力探测降级。
 _SOFTWARE_TONEMAP = (
-    "zscale=t=linear:npl=100,format=gbrpf32le,"
-    "tonemap=tonemap=bt2390:desat=0,"
-    "zscale=p=bt709:t=bt709:m=bt709:r=tv,format=yuv420p"
+    "tonemapx=tonemap=bt2390:desat=0:p=bt709:t=bt709:m=bt709:format=yuv420p"
 )
 
 #: 多声道降混系数：提升中置声道权重。不带它，对白会明显偏小——
@@ -143,8 +196,15 @@ def build_hls_command(
     session_dir: Path,
     start_ms: int = 0,
     hw_backend: str | None = None,
+    start_number: int | None = None,
 ) -> TranscodeCommand:
-    """把播放计划翻成 ffmpeg 命令。档 0（Direct Play）不该走到这里。"""
+    """把播放计划翻成 ffmpeg 命令。档 0（Direct Play）不该走到这里。
+
+    ``start_number`` 非 None 即 VOD 模式（服务端预生成播放列表，§12）：
+    分片编号从它开始接上全片规划，并加 ``-copyts`` 三件套让分片内部时间戳
+    保持**文件绝对时间**——这是预生成列表与实际分片能对上的根本（EXTINF
+    只是索引近似，播放器按分片真实时间戳自我校正，Jellyfin 同款取舍）。
+    """
     if plan.tier is PlaybackTier.DIRECT_PLAY:
         raise ValueError("档 0 是原文件直出，不需要 ffmpeg")
 
@@ -159,7 +219,25 @@ def build_hls_command(
 
     # -ss 必须在 -i 之前：input seek 快得多（不用解码到该点）
     if start_ms > 0:
-        argv += ["-ss", f"{start_ms / 1000:.3f}"]
+        seek_s = start_ms / 1000
+        # 直通档的 start_ms 已被上游校正到关键帧（routes 里查 keyframe），但
+        # ffmpeg 在 seek 目标**恰好等于**关键帧时间时会回退到前一个关键帧
+        # （Jellyfin EncodingHelper 同款 workaround）——加 0.5 秒让它精确
+        # 落在目标关键帧上。转码档不加：accurate_seek 解码丢帧，本来就精确。
+        if not transcoding_video:
+            seek_s += 0.5
+        argv += ["-ss", f"{seek_s:.3f}"]
+    # 视频直通时给缺 PTS 的包现算 PTS（输入选项，放输出侧无效）。转码档
+    # 解码器自己会重建时间戳，不需要；copy 档少了它，只有 DTS 的源（TS 转
+    # 封装的 mkv 常见）写进 fMP4 的 TFDT 就是垃圾值——Jellyfin copy 路径
+    # 无条件加这一条。
+    if not transcoding_video:
+        argv += ["-fflags", "+genpts"]
+    # 读入限速也是输入选项，必须在 -i 之前，理由见常量注释
+    argv += [
+        "-readrate", str(READRATE_COPY if not transcoding_video else READRATE),
+        "-readrate_initial_burst", str(READRATE_BURST_SECONDS),
+    ]
     if backend and backend.hwaccel and not software_filters:
         argv += ["-hwaccel", backend.hwaccel]
         if backend.hwaccel_output_format:
@@ -177,10 +255,17 @@ def build_hls_command(
     argv += ["-sn", "-dn", "-map_metadata", "-1"]
 
     argv += _video_args(plan, backend, software_filters)
-    argv += _audio_args(plan, has_audio=audio_index is not None)
-    argv += _hls_args(session_dir)
+    argv += _audio_args(
+        plan, has_audio=audio_index is not None, absolute_ts=start_number is not None
+    )
+    if start_number is not None:
+        # copyts + avoid_negative_ts disabled：保留输入的绝对时间戳，muxer
+        # 不做归零平移——seek 重启后分片时间戳依旧是文件时间。start_at_zero
+        # 处理 start_time != 0 的源（TS 转封装常见），照抄 Jellyfin。
+        argv += ["-copyts", "-avoid_negative_ts", "disabled", "-start_at_zero"]
+    argv += _hls_args(session_dir, start_number=start_number)
 
-    playlist = session_dir / PLAYLIST_NAME
+    playlist = session_dir / (LIVE_PLAYLIST_NAME if start_number is not None else PLAYLIST_NAME)
     argv.append(str(playlist))
     return TranscodeCommand(
         argv=argv, playlist_path=playlist, init_path=session_dir / INIT_NAME
@@ -215,12 +300,18 @@ def _video_args(
     args = []
     if filters:
         args += ["-vf", filters]
+    maxrate = maxrate_for_height(plan.video.height)
+    bufsize = f"{int(float(maxrate[:-1]) * 2)}M"
     if backend is not None:
         args += ["-c:v", backend.encoder]
-        # 硬件编码器不认 CRF，用码率上限约束
-        args += ["-b:v", "0", "-maxrate", "8M", "-bufsize", "16M"]
+        # 硬件编码器不认 CRF，用码率阶梯约束
+        args += ["-b:v", "0", "-maxrate", maxrate, "-bufsize", bufsize]
     else:
-        args += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "21"]
+        # CRF 恒定质量优先（§11-1），阶梯只作为上限兜底防码率爆冲
+        args += [
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
+            "-maxrate", maxrate, "-bufsize", bufsize,
+        ]
     # 强制 2 秒关键帧，让分片精确对齐（转码档自己控制 GOP，直通档做不到）
     args += ["-force_key_frames", f"expr:gte(t,n_forced*{SEGMENT_SECONDS})"]
     return args
@@ -245,7 +336,7 @@ def _filter_chain(
     return ",".join(parts)
 
 
-def _audio_args(plan: PlaybackPlan, *, has_audio: bool) -> list[str]:
+def _audio_args(plan: PlaybackPlan, *, has_audio: bool, absolute_ts: bool) -> list[str]:
     if not has_audio:
         return []
     if plan.audio.action == "copy":
@@ -254,26 +345,52 @@ def _audio_args(plan: PlaybackPlan, *, has_audio: bool) -> list[str]:
     if plan.audio.channels:
         args += ["-ac", str(plan.audio.channels)]
     args += ["-b:a", "256k" if (plan.audio.channels or 2) <= 2 else "640k"]
+    # aresample=async=1：重采样器按时间戳对齐输出，填平/吸收源音轨的起点
+    # 偏移与细小漂移。视频 copy + 音频转码是最常见组合（EAC3/DTS 浏览器不认），
+    # 不对齐的表现是起播/暂停恢复的瞬间唇音差几十毫秒、几秒后才追上——
+    # 对比原生播放器"不丝滑"的主要来源。Jellyfin 的音频链同款。
+    #
+    # first_pts=0（把音频时间轴拉回 0）**只属于会话相对模式**。VOD 模式带
+    # -copyts，音频 pts 是文件绝对时间——再要求归零，重采样器会试图插入
+    # 几千秒的静音来「补偿」（实测：从 3393 秒处续播，ffmpeg 埋头填了 17 秒
+    # 静音才吐出第一个分片，前端就卡在「正在判断播放方式」）。
+    resample = "aresample=async=1" if absolute_ts else "aresample=async=1:first_pts=0"
     if plan.audio.downmix:
-        args += ["-af", _DOWNMIX_PAN]
+        args += ["-af", f"{_DOWNMIX_PAN},{resample}"]
+    else:
+        args += ["-af", resample]
     return args
 
 
-def _hls_args(session_dir: Path) -> list[str]:
+def _hls_args(session_dir: Path, *, start_number: int | None = None) -> list[str]:
     """fMP4/CMAF 分片。不用 MPEG-TS：同一份分片将来可同时喂 HLS 和 DASH，
     加 DASH/离线只是多一份 manifest。
 
     ``-hls_playlist_type event``：playlist 只增不改，边转边给——会话起来后
-    立刻返回 m3u8，不等分片（首帧延迟的关键）。
+    立刻返回 m3u8，不等分片（首帧延迟的关键）。VOD 模式下这份列表只是内部
+    进度追踪（客户端的列表由服务端预生成），``-start_number`` 让 seek 重启
+    后的分片文件名接上全片编号。
     """
-    return [
+    args = [
         "-f", "hls",
         "-hls_time", str(SEGMENT_SECONDS),
         "-hls_segment_type", "fmp4",
         "-hls_fmp4_init_filename", INIT_NAME,
         "-hls_segment_filename", str(session_dir / SEGMENT_PATTERN),
+    ]
+    if start_number is not None:
+        args += ["-start_number", str(start_number)]
+    args += [
         "-hls_playlist_type", "event",
         "-hls_list_size", "0",
         "-hls_flags", "independent_segments",
+        # fMP4 分片的时间基修正（Jellyfin 同款，它注释写明了这两个 movflag
+        # 就是治分片衔接处画面闪）：
+        # +frag_discont —— 每个 moof 的 TFDT 写含初始 delay 的真实 DTS，
+        #   不写就是「假定紧接上一段」，音频有编码器 delay 时拼接点错位；
+        # +skip_sidx —— HLS 用不到 sidx，而 ffmpeg 写 sidx 时会回头改写
+        #   open-GOP 边界包的 PTS，正是切片处闪一帧的经典成因。
+        "-hls_segment_options", "movflags=+frag_discont+skip_sidx",
         "-y",
     ]
+    return args

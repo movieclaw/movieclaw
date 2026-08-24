@@ -68,18 +68,28 @@ function isAiSubtitle(filename: string | null): boolean {
     .some((part) => part === "ai" || part.startsWith("ai-"));
 }
 
-// 发现页 Banner 主按钮的紧凑变体：保留胶囊比例与连续文案，但不撑高字幕规格行。
+/*
+ * 与字幕语言芯片同一副骨架（h-7、7px 圆角、caption 字号），只靠描边把
+ * 「可点的动作」与「只读的标签」区分开。
+ *
+ * 原来这里用的是主按钮银色（.btn-accent）：条目页真正的主行动是下方那枚
+ * 白色播放键，规格行里再放一枚亮银胶囊等于页面上有两个主按钮在抢视线，
+ * 而生成字幕是低频操作。降为次级描边按钮后，层级变成
+ * 播放（白）> AI 生成字幕（描边）> 语言芯片（无边填充）。
+ */
 const AI_BADGE_BASE =
-  "tnum inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full px-3.5 text-sub " +
-  "font-semibold transition-[background-color,color,box-shadow] " +
+  "tnum inline-flex h-7 shrink-0 items-center gap-1.5 rounded-[7px] border px-2.5 " +
+  "text-caption font-medium leading-none transition-[background-color,border-color,color] " +
   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)] " +
-  "disabled:pointer-events-none disabled:opacity-50";
-// 生成入口是真实操作按钮，使用主按钮银色与普通字幕类型标签拉开层级。
-const AI_BADGE_SILVER = "btn-accent";
+  "disabled:pointer-events-none disabled:opacity-50 max-md:h-8";
+const AI_BADGE_IDLE =
+  "border-white/[0.16] text-white/75 hover:border-white/30 hover:bg-white/[0.08] hover:text-white";
 const AI_BADGE_RUNNING =
-  "bg-[var(--info)]/[0.14] text-[var(--info)] hover:bg-[var(--info)]/[0.21] hover:shadow-[0_4px_12px_rgba(0,0,0,0.16)]";
+  "border-[var(--info)]/30 bg-[var(--info)]/[0.12] text-[var(--info)] " +
+  "hover:border-[var(--info)]/45 hover:bg-[var(--info)]/[0.18]";
 const AI_BADGE_FAILED =
-  "bg-[#ff9f9f]/[0.08] text-[#ffb4b4] hover:bg-[#ff9f9f]/[0.14] hover:shadow-[0_4px_12px_rgba(0,0,0,0.16)]";
+  "border-[#ff9f9f]/25 bg-[#ff9f9f]/[0.07] text-[#ffb4b4] " +
+  "hover:border-[#ff9f9f]/40 hover:bg-[#ff9f9f]/[0.12]";
 const CANCEL_BUTTON =
   "rounded-lg border border-white/10 bg-white/[0.06] px-4 py-2 text-ui text-white/80 " +
   "transition hover:bg-white/[0.1] disabled:pointer-events-none disabled:opacity-40";
@@ -585,15 +595,18 @@ export function SubtitleGenPanel({
     !pgsConversion?.language_confirmation_required || Boolean(pgsOcrLanguage);
   const canConvertPgs = canPreparePgs && pgsLanguageReady;
 
-  let badgeClass = AI_BADGE_SILVER;
-  let badgeText = generated || jobSucceeded ? "新建 AI 版本" : "AI 生成";
+  let badgeClass = AI_BADGE_IDLE;
+  // 已经生成过也不改口称「新建 AI 版本」：那是在讲实现（又加一个文件），
+  // 用户要的答案始终是同一句「让 AI 给这个片子做字幕」。
+  let badgeText = "AI 生成字幕";
   if (previewing) {
     badgeText = "正在检查";
   } else if (running) {
     badgeClass = AI_BADGE_RUNNING;
     badgeText = runningBadgeText(progress);
   } else if (generated || jobSucceeded) {
-    badgeClass = AI_BADGE_SILVER;
+    // 生成成功过的文件即便带着历史失败记录，也不该再顶着红色的未完成态
+    badgeClass = AI_BADGE_IDLE;
   } else if (hasTerminalIssue) {
     badgeClass = AI_BADGE_FAILED;
     badgeText = "AI 未完成";

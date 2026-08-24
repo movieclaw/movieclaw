@@ -4,7 +4,7 @@ import type { Route } from "next";
 import Link from "next/link";
 
 import { HScroller } from "@/components/h-scroller";
-import { CheckIcon } from "@/components/icons";
+import { CheckIcon, PlayIcon } from "@/components/icons";
 import { PosterImage } from "@/components/poster-image";
 import type { RecentWatchItem } from "@/lib/api/playback";
 import { imageUrl } from "@/lib/image-proxy";
@@ -22,6 +22,31 @@ function itemHref(item: RecentWatchItem): Route {
     return `${base}?season=${item.season_number}&episode=${item.episode_number}&from=recent` as Route;
   }
   return `${base}?from=recent` as Route;
+}
+
+/**
+ * 卡片中央播放键的落点：直接进播放页，不经过条目详情。
+ *
+ * 不需要在这里带上「从哪一秒开始」——播放器起播前自己会问一次
+ * `/playback/resume`（与条目页播放键同一条链路），续播点、上次用的音轨
+ * 都由服务端那份记录决定。前端再算一次只会算出两个版本的真相。
+ *
+ * `returnTo` 固定回媒体库首页：这张卡只出现在那一屏，且该页没有查询参数。
+ */
+function playHref(item: RecentWatchItem): Route {
+  const query = new URLSearchParams();
+  if (item.kind === "tv") {
+    query.set("season", String(item.season_number));
+    query.set("episode", String(item.episode_number));
+  }
+  query.set("returnTo", "/library");
+  return `/play/${item.library_id}/${item.media_item_id}?${query}` as Route;
+}
+
+/** 播放键的读法：看完的是重播，看了一半的是续播，其余就是播放。 */
+function playVerb(item: RecentWatchItem): string {
+  if (item.played) return "重新播放";
+  return item.position_ms > 0 ? "继续播放" : "播放";
 }
 
 /** 毫秒 → 播放器风格时钟，只有超过一小时才带小时位，短片保持 12:34 的紧凑写法。 */
@@ -83,6 +108,9 @@ export function RecentWatchRow({ items }: { items: RecentWatchItem[] | null }) {
 
 function RecentWatchCard({ item }: { item: RecentWatchItem }) {
   const tapGuard = useTapGuard();
+  // 播放键自己也要过一遍误触保护：横滑最近观看这一行时，手指常常正好停在
+  // 卡片中央，没有它一划就起播了（比误进详情页糟得多——会真的起转码会话）。
+  const playTapGuard = useTapGuard();
   const isEpisode = item.kind === "tv";
   const code = isEpisode ? episodeCode(item) : null;
   // 集号不再压在剧照左上角（会跟角标、进度挤在一起），改到片名下方的副标题里，
@@ -100,82 +128,117 @@ function RecentWatchCard({ item }: { item: RecentWatchItem }) {
     isEpisode && item.unwatched_ahead_count > 0 ? `未看 ${item.unwatched_ahead_count} 集` : null;
 
   return (
-    <Link
-      href={itemHref(item)}
-      aria-label={`${item.title}${context ? `，${context}` : ""}，${stateLabel(item, timeLabel != null)}${timeLabel ? `，已播 ${timeLabel}` : ""}${unwatchedLabel ? `，${unwatchedLabel}` : ""}`}
-      {...tapGuard}
-      className="group/recent w-[224px] shrink-0 outline-none max-md:w-[200px] xl:w-[240px]"
-    >
-      <div
-        className="relative aspect-video overflow-hidden rounded-2xl bg-[#141824] shadow-[0_10px_28px_rgba(0,0,0,0.38)] ring-1 ring-white/[0.08] transition duration-300 group-hover/recent:-translate-y-1 group-hover/recent:shadow-[0_18px_42px_rgba(0,0,0,0.55)] group-hover/recent:ring-white/25 group-focus-visible/recent:ring-2 group-focus-visible/recent:ring-white/80"
+    // 卡片是两个入口叠在一起：整卡进详情、中央播放键直接起播。播放键必须是
+    // 卡片链接的**兄弟节点**——嵌在 <a> 里是无效 HTML，键盘与读屏都会错乱。
+    // group/recent 因此上移到外壳（悬停播放键时整卡的抬升也要继续成立），
+    // 焦点环仍挂在真正可聚焦的卡片链接上（group/card）。
+    <div className="group/recent relative w-[224px] shrink-0 max-md:w-[200px] xl:w-[240px]">
+      <Link
+        href={itemHref(item)}
+        aria-label={`${item.title}${context ? `，${context}` : ""}，${stateLabel(item, timeLabel != null)}${timeLabel ? `，已播 ${timeLabel}` : ""}${unwatchedLabel ? `，${unwatchedLabel}` : ""}`}
+        {...tapGuard}
+        className="group/card block outline-none"
       >
-        {artworkUrl ? (
-          <PosterImage
-            src={imageUrl(artworkUrl, "landscape-card")}
-            alt={isEpisode ? `${item.title} ${code}分集剧照` : `${item.title}背景剧照`}
-            className="size-full transition duration-500 group-hover/recent:scale-[1.03]"
-            fallback={
-              isEpisode ? (
-                <span className="tnum flex size-full items-center justify-center text-title-sm font-bold tracking-wide text-white/25">
-                  {code}
+        <div
+          className="relative aspect-video overflow-hidden rounded-2xl bg-[#141824] shadow-[0_10px_28px_rgba(0,0,0,0.38)] ring-1 ring-white/[0.08] transition duration-300 group-hover/recent:-translate-y-1 group-hover/recent:shadow-[0_18px_42px_rgba(0,0,0,0.55)] group-hover/recent:ring-white/25 group-focus-visible/card:ring-2 group-focus-visible/card:ring-white/80"
+        >
+          {artworkUrl ? (
+            <PosterImage
+              src={imageUrl(artworkUrl, "landscape-card")}
+              alt={isEpisode ? `${item.title} ${code}分集剧照` : `${item.title}背景剧照`}
+              className="size-full transition duration-500 group-hover/recent:scale-[1.03]"
+              fallback={
+                isEpisode ? (
+                  <span className="tnum flex size-full items-center justify-center text-title-sm font-bold tracking-wide text-white/25">
+                    {code}
+                  </span>
+                ) : (
+                  <MoviePosterFill title={item.title} posterUrl={item.poster_url} />
+                )
+              }
+            />
+          ) : isEpisode ? (
+            <span className="tnum flex size-full items-center justify-center text-title-sm font-bold tracking-wide text-white/25">
+              {code}
+            </span>
+          ) : (
+            <MoviePosterFill title={item.title} posterUrl={item.poster_url} />
+          )}
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-black/75 to-transparent" />
+          {/* 右上角统一放"状态角标"：看完的对勾与未看提示同排，不再和底部进度抢位置。 */}
+          {(unwatchedLabel || item.played) && (
+            <div className="pointer-events-none absolute right-2 top-2 flex items-center gap-1.5">
+              {unwatchedLabel && (
+                <span className="tnum rounded-full border border-emerald-200/25 bg-[rgba(5,46,34,0.76)] px-2 py-0.5 text-micro font-semibold text-emerald-100 shadow-[0_5px_16px_rgba(0,0,0,0.32)] backdrop-blur-md">
+                  {unwatchedLabel}
                 </span>
-              ) : (
-                <MoviePosterFill title={item.title} posterUrl={item.poster_url} />
-              )
-            }
-          />
-        ) : isEpisode ? (
-          <span className="tnum flex size-full items-center justify-center text-title-sm font-bold tracking-wide text-white/25">
-            {code}
-          </span>
-        ) : (
-          <MoviePosterFill title={item.title} posterUrl={item.poster_url} />
-        )}
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-black/75 to-transparent" />
-        {/* 右上角统一放"状态角标"：看完的对勾与未看提示同排，不再和底部进度抢位置。 */}
-        {(unwatchedLabel || item.played) && (
-          <div className="pointer-events-none absolute right-2 top-2 flex items-center gap-1.5">
-            {unwatchedLabel && (
-              <span className="tnum rounded-full border border-emerald-200/25 bg-[rgba(5,46,34,0.76)] px-2 py-0.5 text-micro font-semibold text-emerald-100 shadow-[0_5px_16px_rgba(0,0,0,0.32)] backdrop-blur-md">
-                {unwatchedLabel}
+              )}
+              {item.played && (
+                <span className="flex size-6 items-center justify-center rounded-full bg-[var(--ok)] text-[#07120c] shadow-lg">
+                  <CheckIcon className="size-3.5 stroke-[2.5]" />
+                </span>
+              )}
+            </div>
+          )}
+          {/* 底部只留进度：看了一半时在进度条上方补一行「已播 / 总时长」。 */}
+          <div className="pointer-events-none absolute inset-x-2 bottom-2 space-y-1">
+            {timeLabel && (
+              <span className="tnum text-on-image block text-micro font-semibold text-white/85">
+                {timeLabel}
               </span>
             )}
-            {item.played && (
-              <span className="flex size-6 items-center justify-center rounded-full bg-[var(--ok)] text-[#07120c] shadow-lg">
-                <CheckIcon className="size-3.5 stroke-[2.5]" />
-              </span>
+            {progress != null ? (
+              <div className="h-[3px] overflow-hidden rounded-full bg-white/25">
+                <div
+                  className={`h-full rounded-full ${item.played ? "bg-[var(--ok)]" : "bg-[var(--accent-2)]"}`}
+                  style={{ width: `${progress}%` }}
+                />
+              </div>
+            ) : (
+              item.position_ms > 0 && (
+                <div className="h-[3px] rounded-full bg-[var(--accent-2)]/60" />
+              )
             )}
           </div>
-        )}
-        {/* 底部只留进度：看了一半时在进度条上方补一行「已播 / 总时长」。 */}
-        <div className="pointer-events-none absolute inset-x-2 bottom-2 space-y-1">
-          {timeLabel && (
-            <span className="tnum text-on-image block text-micro font-semibold text-white/85">
-              {timeLabel}
-            </span>
-          )}
-          {progress != null ? (
-            <div className="h-[3px] overflow-hidden rounded-full bg-white/25">
-              <div
-                className={`h-full rounded-full ${item.played ? "bg-[var(--ok)]" : "bg-[var(--accent-2)]"}`}
-                style={{ width: `${progress}%` }}
-              />
-            </div>
-          ) : (
-            item.position_ms > 0 && (
-              <div className="h-[3px] rounded-full bg-[var(--accent-2)]/60" />
-            )
-          )}
         </div>
+        <p className="mt-2 truncate text-ui font-semibold text-[var(--text)]">{item.title}</p>
+        {context && (
+          <p className="tnum mt-0.5 truncate text-sub text-[var(--text-muted)]">{context}</p>
+        )}
+        <p className="tnum mt-0.5 truncate text-caption text-[var(--text-faint)]">
+          {stateLabel(item, timeLabel != null)}
+        </p>
+      </Link>
+
+      {/* 中央播放键常驻，不做「悬停才出现」——它要说明的是「这张卡能直接看」，
+          而触摸屏根本没有悬停态，藏起来等于对一半用户不存在。
+
+          静息态是**空心**的：只有一圈描边和一个三角，圆内不填色、不加毛玻璃，
+          剧照原样透出来（缩略图本身就小，中央糊掉一块等于把这张卡的主体挡了）。
+          白描边压在浅色画面上会糊，所以靠外投影给它一圈暗晕、三角自带投影，
+          两者都不遮挡画面就能拉出对比。悬停也**不翻成实心白**——那等于把
+          「别挡封面」在用户凑近时收回；只把描边点亮到纯白、圆内浮一层
+          15% 的白纱并轻微放大，反馈够清楚，封面始终看得见。
+
+          外层 flex 用与剧照相同的 aspect-video 定位，保证圆心落在画面正中；
+          抬升动画跟着卡片一起做，否则悬停时剧照上浮 4px、播放键留在原地。 */}
+      <div className="pointer-events-none absolute inset-x-0 top-0 flex aspect-video items-center justify-center transition duration-300 group-hover/recent:-translate-y-1">
+        <Link
+          href={playHref(item)}
+          aria-label={`${playVerb(item)}《${item.title}》${context ? ` ${context}` : ""}`}
+          {...playTapGuard}
+          className="pointer-events-auto flex size-11 items-center justify-center rounded-full border-[1.5px] border-white/75 text-white shadow-[0_1px_10px_rgba(0,0,0,0.45)] transition duration-200 hover:scale-[1.06] hover:border-white hover:bg-white/15 hover:shadow-[0_6px_20px_rgba(0,0,0,0.45)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80 group-hover/recent:border-white max-md:size-10"
+        >
+          {/* 图标尺寸不等于三角尺寸：PlayIcon 的三角只占 24 视框的 47%×58%，
+              按常规的 size-5 给，落到 44px 的圆里三角只有 8px，看着像个小点。
+              这里按「三角高 ≈ 圆直径的 45%」倒推出 36px 的图标框。
+              也不再额外右移——路径本身的重心就已经落在视框中心（起点 x=8、
+              尖端 x=19.3，形心 ≈ 12），再推一次反而偏右。
+              投影用来在任意画面上压住三角；悬停后按钮仍是通透的，投影不撤。 */}
+          <PlayIcon className="size-9 drop-shadow-[0_1px_2px_rgba(0,0,0,0.55)] max-md:size-8" />
+        </Link>
       </div>
-      <p className="mt-2 truncate text-ui font-semibold text-[var(--text)]">{item.title}</p>
-      {context && (
-        <p className="tnum mt-0.5 truncate text-sub text-[var(--text-muted)]">{context}</p>
-      )}
-      <p className="tnum mt-0.5 truncate text-caption text-[var(--text-faint)]">
-        {stateLabel(item, timeLabel != null)}
-      </p>
-    </Link>
+    </div>
   );
 }
 

@@ -181,7 +181,14 @@ export function playerReducer(state: PlayerState, event: PlayerEvent): PlayerSta
       return state.phase === "idle" ? state : { ...state, phase: "seeking" };
 
     case "restart":
-      return { ...state, phase: "session-starting", startMs: event.startMs };
+      // restart 也是一次新的起播尝试：换音轨/换画质可能在暂停下连续发生，
+      // 位置不变时若不递增 attempt，第二次会撞上起播 effect 的去重指纹
+      return {
+        ...state,
+        phase: "session-starting",
+        startMs: event.startMs,
+        attempt: state.attempt + 1,
+      };
 
     case "failed": {
       const tier = state.decision?.tier;

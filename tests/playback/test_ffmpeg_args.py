@@ -118,9 +118,19 @@ def test_source_metadata_is_dropped():
 
 
 def test_seek_flag_precedes_input():
+    """直通档 -ss 带 +0.5s 关键帧吸附补偿（start_ms 已被上游校正到关键帧，
+    恰等时 ffmpeg 会回退到前一个关键帧）；转码档 accurate_seek 精确，不加。"""
     argv = argv_of(plan(PlaybackTier.REMUX), start_ms=90_000)
     assert argv.index("-ss") < argv.index("-i")
-    assert pair(argv, "-ss") == "90.000"
+    assert pair(argv, "-ss") == "90.500"
+    transcode_argv = argv_of(
+        plan(
+            PlaybackTier.SOFTWARE_TRANSCODE,
+            video=VideoPlan(action="transcode", codec="h264", height=1080),
+        ),
+        start_ms=90_000,
+    )
+    assert pair(transcode_argv, "-ss") == "90.000"
 
 
 def test_no_seek_flag_when_starting_from_zero():
@@ -174,9 +184,27 @@ def test_multichannel_transcode_without_downmix_has_no_pan():
             ),
         )
     )
-    assert "-af" not in argv
+    # 不降混就不该有 pan 系数；但时间戳对齐的 aresample 任何音频转码都要带
+    af = pair(argv, "-af")
+    assert af is not None and "pan=" not in af and "aresample=async=1" in af
     assert pair(argv, "-ac") == "6"
     assert pair(argv, "-c:a") == "eac3"
+
+
+def test_audio_transcode_always_aligns_timestamps():
+    """aresample=async=1 是唇音同步的保险：视频 copy + 音频转码时，音频起点
+    偏移不吸收掉就是起播瞬间的音画不同步。降混时两个滤镜串同一条链。"""
+    downmixed = argv_of(
+        plan(
+            PlaybackTier.AUDIO_TRANSCODE,
+            audio=AudioPlan(
+                action="transcode", track_ref="embedded:0", codec="aac",
+                channels=2, downmix=True,
+            ),
+        )
+    )
+    af = pair(downmixed, "-af")
+    assert af is not None and "pan=" in af and af.index("pan=") < af.index("aresample=")
 
 
 def test_plan_without_audio_track_maps_no_audio():
@@ -300,7 +328,7 @@ def test_nvenc_without_native_tonemap_falls_back_to_software_chain():
         hw_backend="nvenc",
     )
     vf = pair(argv, "-vf")
-    assert vf and "tonemap=tonemap=bt2390" in vf  # BT.2390 EETF，不是简单 clip
+    assert vf and "tonemapx=tonemap=bt2390" in vf  # BT.2390 EETF，不是简单 clip
     assert "-hwaccel" not in argv  # 解码退回软件，滤镜链才接得上
     assert pair(argv, "-c:v") == "h264_nvenc"  # 编码仍然用硬件
 
@@ -320,3 +348,113 @@ def test_direct_play_tier_is_rejected():
     """档 0 是原文件直出，走到命令装配就是调用方的 bug。"""
     with pytest.raises(ValueError):
         build(plan(PlaybackTier.DIRECT_PLAY))
+
+
+# ---------------------------------------------------------------------------
+# 读入限速：占盘增速的闸门（一晚 200 GB 的教训）
+# ---------------------------------------------------------------------------
+
+
+def test_readrate_throttle_precedes_input():
+    """限速是输入选项，必须出现在 -i 之前，否则 ffmpeg 会当作输出选项报错。"""
+    argv = argv_of(plan(PlaybackTier.REMUX))
+    assert argv.index("-readrate") < argv.index("-i")
+    assert argv.index("-readrate_initial_burst") < argv.index("-i")
+
+
+def test_readrate_applies_to_every_tier():
+    """remux 与转码档都要限，但闸门不同：直通不吃 CPU 放到 4 倍让缓冲快攒，
+    真转码维持 1.5 倍护 CPU。全不限的教训是一晚 200 GB。"""
+    copy_argv = argv_of(plan(PlaybackTier.REMUX))
+    assert pair(copy_argv, "-readrate") == "4"
+    assert pair(copy_argv, "-readrate_initial_burst") == "60"
+    transcode_argv = argv_of(
+        plan(
+            PlaybackTier.SOFTWARE_TRANSCODE,
+            video=VideoPlan(action="transcode", codec="h264", height=1080),
+        )
+    )
+    assert pair(transcode_argv, "-readrate") == "1.5"
+    assert pair(transcode_argv, "-readrate_initial_burst") == "60"
+
+
+# ---------------------------------------------------------------------------
+# 分片衔接的时间基修正：fMP4 拼接闪屏的三个闸门（参照 Jellyfin）
+# ---------------------------------------------------------------------------
+
+
+def test_fmp4_segment_options_fix_boundary_pts():
+    """+frag_discont 让 TFDT 带真实 DTS，+skip_sidx 防 open-GOP 边界 PTS 被改写。"""
+    for tier in (PlaybackTier.REMUX, PlaybackTier.SOFTWARE_TRANSCODE):
+        argv = argv_of(plan(tier))
+        assert pair(argv, "-hls_segment_options") == "movflags=+frag_discont+skip_sidx"
+
+
+def test_copy_video_gets_genpts_input_flag():
+    """直通档输入侧补 PTS；转码档解码器自己重建时间戳，不需要。"""
+    copy_argv = argv_of(plan(PlaybackTier.REMUX))
+    assert pair(copy_argv, "-fflags") == "+genpts"
+    assert copy_argv.index("-fflags") < copy_argv.index("-i")
+    transcode_argv = argv_of(
+        plan(
+            PlaybackTier.SOFTWARE_TRANSCODE,
+            video=VideoPlan(action="transcode", codec="h264", height=1080),
+        )
+    )
+    assert "-fflags" not in transcode_argv
+
+
+# ---------------------------------------------------------------------------
+# 码率阶梯：maxrate 必须随目标高度走
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("height", "maxrate", "bufsize"),
+    [(2160, "16M", "32M"), (1080, "6M", "12M"), (720, "3M", "6M"), (480, "1.5M", "3M")],
+)
+def test_bitrate_ladder_follows_target_height(height, maxrate, bufsize):
+    argv = argv_of(
+        plan(
+            PlaybackTier.SOFTWARE_TRANSCODE,
+            video=VideoPlan(action="transcode", codec="h264", height=height),
+        )
+    )
+    assert pair(argv, "-maxrate") == maxrate
+    assert pair(argv, "-bufsize") == bufsize
+
+
+def test_software_transcode_keeps_crf_with_maxrate_cap():
+    """CRF 恒定质量优先，阶梯只是上限兜底——两者必须同时在场。"""
+    argv = argv_of(
+        plan(
+            PlaybackTier.SOFTWARE_TRANSCODE,
+            video=VideoPlan(action="transcode", codec="h264", height=1080),
+        )
+    )
+    assert pair(argv, "-crf") == "21"
+    assert pair(argv, "-maxrate") == "6M"
+
+
+# ---------------------------------------------------------------------------
+# VOD 模式（服务端预生成播放列表，§12）
+# ---------------------------------------------------------------------------
+
+
+def test_vod_mode_adds_copyts_and_start_number():
+    """VOD 分片时间戳必须是文件绝对时间（copyts 三件套），编号接上全片规划。"""
+    argv = argv_of(plan(PlaybackTier.REMUX), start_number=37)
+    assert pair(argv, "-start_number") == "37"
+    assert "-copyts" in argv
+    assert pair(argv, "-avoid_negative_ts") == "disabled"
+    assert "-start_at_zero" in argv
+    # 内部进度列表用 live.m3u8，客户端的 index.m3u8 由服务端生成
+    assert argv[-1].endswith("live.m3u8")
+
+
+def test_event_mode_keeps_relative_timeline():
+    """旧会话模式不带 copyts：前端按会话相对时间轴换算。"""
+    argv = argv_of(plan(PlaybackTier.REMUX))
+    assert "-copyts" not in argv
+    assert "-start_number" not in argv
+    assert argv[-1].endswith("index.m3u8")

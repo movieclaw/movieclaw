@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { chromeMustStayVisible, shouldHideOnPointerLeave } from "../lib/player/chrome.ts";
 
-const idle = { paused: false, menuOpen: false, diagnosticsOpen: false, awaitingUser: false };
+const idle = { paused: false, menuOpen: false, awaitingUser: false };
 
 test("正常播放中，控制条可以自动淡出", () => {
   assert.equal(chromeMustStayVisible(idle), false);
@@ -17,8 +17,8 @@ test("菜单展开时常显——控制条一淡出会把菜单一起带走", ()
   assert.equal(chromeMustStayVisible({ ...idle, menuOpen: true }), true);
 });
 
-test("诊断面板开着时常显", () => {
-  assert.equal(chromeMustStayVisible({ ...idle, diagnosticsOpen: true }), true);
+test("诊断面板开着不影响控制条——它是独立常驻的一块读数，不该把控制条钉死", () => {
+  assert.equal(chromeMustStayVisible({ ...idle, diagnosticsOpen: true }), false);
 });
 
 test("等用户拍板时常显——报错和同意弹窗不设超时", () => {

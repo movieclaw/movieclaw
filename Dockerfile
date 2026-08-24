@@ -165,8 +165,13 @@ RUN if [ -n "$APT_MIRROR" ]; then \
     && apt-get update \
     && apt-get install -y --no-install-recommends curl ca-certificates gnupg \
     && install -d -m 0755 /etc/apt/keyrings \
-    && curl -fsSL --retry 3 "$JELLYFIN_REPO/jellyfin_team.gpg.key" \
-        | gpg --dearmor -o /etc/apt/keyrings/jellyfin.gpg \
+    # 签名 key 优先从镜像站取，取不到回退官方站：常见加速镜像（如南京大学）
+    # 只同步 debian/ 仓库本体、不带顶层 key 文件；key 只有 3KB，官方站再慢
+    # 也拖得动（2026-08-23 NAS 实测：官方站 deb 只有 5KB/s，key 2 秒到手）
+    && { curl -fsSL --retry 3 -o /tmp/jellyfin_team.gpg.key "$JELLYFIN_REPO/jellyfin_team.gpg.key" \
+        || curl -fsSL --retry 3 -o /tmp/jellyfin_team.gpg.key https://repo.jellyfin.org/jellyfin_team.gpg.key; } \
+    && gpg --dearmor -o /etc/apt/keyrings/jellyfin.gpg < /tmp/jellyfin_team.gpg.key \
+    && rm /tmp/jellyfin_team.gpg.key \
     && echo "deb [signed-by=/etc/apt/keyrings/jellyfin.gpg] $JELLYFIN_REPO/debian bookworm main" \
         > /etc/apt/sources.list.d/jellyfin.list \
     && apt-get update \

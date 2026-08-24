@@ -15,6 +15,7 @@ import { PAGE_NAV_BUTTON_CLASS, PageNav } from "@/components/page-nav";
 import { HScroller } from "@/components/h-scroller";
 import {
   ArrowLeftIcon,
+  CheckIcon,
   ChevronRightIcon,
   FolderIcon,
   MoreIcon,
@@ -48,9 +49,15 @@ import {
   restoreLibraryFile,
   transferLibraryItem,
 } from "@/lib/api/libraries";
+import {
+  type PlaybackUnit,
+  type PlaybackWatchState,
+  fetchResumeState,
+} from "@/lib/api/playback";
 import { useSubscribeEntry } from "@/components/subscribe-entry";
 import { getDiscoveryReturnPath } from "@/lib/discovery-return-path";
 import { formatBytes, formatRuntimeMinutes, formatVideoResolution } from "@/lib/format";
+import { formatClock } from "@/lib/player/timeline";
 import { USER_LOWEST_SOURCE, mediaSourceDisplayLabel } from "@/lib/media-source-annotation";
 import { useDoubanAppHref } from "@/lib/douban-app-link";
 import { useBackdrop } from "@/lib/backdrop";
@@ -139,6 +146,52 @@ export function LibraryItemDetailView({
     useState<SelectedEpisodeContext | null>(null);
   // 顶部文件选择器由父级控制，分辨率才能与音轨、字幕同步切换。
   const [selectedTrackFileId, setSelectedTrackFileId] = useState<number | null>(null);
+  // 当前播放单元的观看记录（上次看到哪 / 是否看完）。播放按钮据此在
+  // 「播放 / 继续观看 / 重新播放」之间切换——null 表示还没问到，按钮先按
+  // 「播放」渲染，不为一次可能是全零的查询留骨架。
+  const [watched, setWatched] = useState<PlaybackWatchState | null>(null);
+
+  /**
+   * 播放入口指向的播放单元（media_item + 季集三元组，与播放器同一套约定）。
+   * 电影用 (0, 0) 哨兵；剧集跟随分集区当前选中的那一集，选集变了续播点也要跟着变。
+   */
+  const playUnit = useMemo<PlaybackUnit | null>(() => {
+    if (!detail) return null;
+    if (detail.kind === "movie") {
+      return { media_item_id: detail.media_item_id, season_number: 0, episode_number: 0 };
+    }
+    if (!selectedSeriesEpisode) return null;
+    return {
+      media_item_id: detail.media_item_id,
+      season_number: selectedSeriesEpisode.seasonNumber,
+      episode_number: selectedSeriesEpisode.episode.episode_number,
+    };
+  }, [detail, selectedSeriesEpisode]);
+
+  // 单元三元组的字符串形式：detail 每次轮询都是新对象，直接依赖 playUnit
+  // 会让刮削期间每两秒重查一次续播点。
+  const playUnitKey = playUnit
+    ? `${playUnit.media_item_id}/${playUnit.season_number}/${playUnit.episode_number}`
+    : null;
+  useEffect(() => {
+    if (!playUnit) {
+      setWatched(null);
+      return;
+    }
+    let cancelled = false;
+    setWatched(null);
+    fetchResumeState(playUnit)
+      .then((state) => {
+        if (!cancelled) setWatched(state);
+      })
+      // 查不到续播点不影响起播，按钮退回「播放」即可，不打扰用户
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+    // playUnit 是对象字面量，按内容（三元组）比较
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playUnitKey]);
 
   const handleTransferFinished = useCallback(
     (targetLibraryId: number) => {
@@ -478,40 +531,38 @@ export function LibraryItemDetailView({
               {meta.genres.join(" · ")}
             </p>
           )}
-          {/* 播放入口：只在真有在位文件时出现。缺集/待回收的版本给一个点了
-              必然报错的按钮，比不给更糟。剧集跟随分集区当前选中的那一集。 */}
-          {availableTrackFiles.length > 0 && (isMovie || selectedSeriesEpisode) && (
-            <div className="mt-5 max-md:mt-4">
-              <button
-                type="button"
-                onClick={() => {
-                  const query = new URLSearchParams();
-                  if (!isMovie && selectedSeriesEpisode) {
-                    query.set("season", String(selectedSeriesEpisode.seasonNumber));
-                    query.set("episode", String(selectedSeriesEpisode.episode.episode_number));
-                  }
-                  // 退出播放要回到用户离开的这一屏（含季集查询参数）。这里
-                  // 读 location 而不是 useSearchParams()：后者会把整页拖进
-                  // 「必须包 Suspense」的预渲染约束，而点击时一定在浏览器里。
-                  query.set("returnTo", window.location.pathname + window.location.search);
-                  router.push(
-                    `/play/${libraryId}/${detail.media_item_id}?${query}` as Route,
-                  );
-                }}
-                className="flex items-center gap-2 rounded-full bg-white px-6 py-2.5 text-ui font-semibold text-black transition-opacity hover:opacity-90 max-md:px-5 max-md:py-2"
-              >
-                <PlayIcon className="size-[18px]" />
-                播放
-              </button>
-            </div>
-          )}
-
           <MediaTrackRows
             files={trackFiles}
             selectedFileId={selectedTrackFile?.id ?? null}
             onSelectedFileIdChange={setSelectedTrackFileId}
             onChanged={reload}
           />
+
+          {/* 播放入口：只在真有在位文件时出现。缺集/待回收的版本给一个点了
+              必然报错的按钮，比不给更糟。剧集跟随分集区当前选中的那一集。
+
+              位置刻意排在音轨 / 字幕之后：这一屏的动线是「先挑版本与轨道，
+              再决定开播」，播放键作为这段选择的落点，而不是把它插在标题与
+              轨道之间、把一次连续的阅读切成两截。 */}
+          {availableTrackFiles.length > 0 && (isMovie || selectedSeriesEpisode) && (
+            <PlayAction
+              watched={watched}
+              onPlay={() => {
+                const query = new URLSearchParams();
+                if (!isMovie && selectedSeriesEpisode) {
+                  query.set("season", String(selectedSeriesEpisode.seasonNumber));
+                  query.set("episode", String(selectedSeriesEpisode.episode.episode_number));
+                }
+                // 退出播放要回到用户离开的这一屏（含季集查询参数）。这里
+                // 读 location 而不是 useSearchParams()：后者会把整页拖进
+                // 「必须包 Suspense」的预渲染约束，而点击时一定在浏览器里。
+                query.set("returnTo", window.location.pathname + window.location.search);
+                router.push(
+                  `/play/${libraryId}/${detail.media_item_id}?${query}` as Route,
+                );
+              }}
+            />
+          )}
 
           {/* 刮削进行中的状态条：与库页的整库刷新面板同一套语言（阶段文案
               也同源），状态在服务端——离开页面/刷新浏览器回来照样看得到 */}
@@ -688,6 +739,97 @@ export function LibraryItemDetailView({
         onClose={() => setArtworkOpen(false)}
         onChanged={reload}
       />}
+    </div>
+  );
+}
+
+/**
+ * 播放入口（主行动按钮 + 续播进度）。
+ *
+ * 三态一个按钮，而不是并排铺三个入口：
+ *   - 从未播过 → 「播放」
+ *   - 播到一半 → 「继续观看」，右侧补一条细进度条与「看到 xx:xx · 剩余 xx」
+ *   - 已看完   → 「重新播放」，右侧换成一枚对勾与观看次数
+ *
+ * 主流媒体产品（Netflix / Apple TV / Disney+）在详情页都是这么处理的：
+ * 一个页面只保留一个「现在就看」的落点，进度信息挂在按钮旁边做解释，
+ * 而不是让用户先在「播放」和「继续播放」两个按钮之间做一次选择题。
+ *
+ * 尺寸也按这套规格给：整页标题 42px、正文栏宽 max-w-4xl，原来 px-6/py-2.5
+ * 的小胶囊放在这样的版面里明显不像主行动按钮，因此抬到 h-12 + text-body，
+ * 窄屏改为整行铺满（拇指区最容易命中的形状）。
+ */
+function PlayAction({
+  watched,
+  onPlay,
+}: {
+  watched: PlaybackWatchState | null;
+  onPlay: () => void;
+}) {
+  const positionMs = watched?.position_ms ?? 0;
+  const durationMs = watched?.duration_ms ?? null;
+  const finished = watched?.played ?? false;
+  // 「能续播」以服务端结论为准：已看完的重播从头开始（播放器同一套判定），
+  // 所以看完之后不再展示续播点，否则点进去的位置和文案对不上。
+  const resumable = !finished && positionMs > 0;
+  // 进度条至少留 2%：真按比例画，刚开头几分钟的记录在条上是看不见的一根线。
+  const percent =
+    resumable && durationMs && durationMs > 0
+      ? Math.min(100, Math.max(2, Math.round((positionMs / durationMs) * 100)))
+      : null;
+  const remainingMinutes =
+    resumable && durationMs && durationMs > positionMs
+      ? Math.round((durationMs - positionMs) / 60000)
+      : null;
+  const label = finished ? "重新播放" : resumable ? "继续观看" : "播放";
+  const progressText = resumable
+    ? [
+        `看到 ${formatClock(positionMs)}`,
+        remainingMinutes && remainingMinutes >= 1
+          ? `剩余 ${formatRuntimeMinutes(remainingMinutes)}`
+          : durationMs
+            ? "即将看完"
+            : null,
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    : null;
+
+  return (
+    <div className="mt-5 flex max-w-4xl flex-wrap items-center gap-x-5 gap-y-3 max-md:mt-4">
+      <button
+        type="button"
+        onClick={onPlay}
+        aria-label={progressText ? `${label}，${progressText}` : label}
+        className="inline-flex h-12 shrink-0 items-center justify-center gap-2.5 rounded-full bg-white px-8 text-body font-semibold text-black shadow-[0_10px_30px_rgba(0,0,0,0.35)] transition duration-200 hover:bg-white/90 active:scale-[0.985] max-md:h-11 max-md:w-full max-md:px-6"
+      >
+        <PlayIcon className="size-5" />
+        {label}
+      </button>
+
+      {progressText && (
+        <div className="min-w-0 max-md:w-full">
+          <div
+            className="h-1 w-44 overflow-hidden rounded-full bg-white/[0.18] max-md:w-full"
+            role="progressbar"
+            aria-valuenow={percent ?? 0}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-label="观看进度"
+          >
+            <div className="h-full rounded-full bg-white/85" style={{ width: `${percent ?? 0}%` }} />
+          </div>
+          <p className="tnum mt-1.5 text-caption text-white/60">{progressText}</p>
+        </div>
+      )}
+
+      {finished && (
+        <p className="flex items-center gap-1.5 text-caption text-white/55">
+          <CheckIcon className="size-3.5 text-emerald-300/90" />
+          已看完
+          {watched && watched.play_count > 1 ? ` · 看过 ${watched.play_count} 次` : ""}
+        </p>
+      )}
     </div>
   );
 }

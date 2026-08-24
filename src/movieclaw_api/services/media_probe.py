@@ -190,6 +190,63 @@ def _probe_keyframe_interval(path: str, duration_seconds: int | None) -> float |
     return keyframe_interval_from_packets(payload.get("packets") or [], windows)
 
 
+def probe_keyframe_before(path: str | Path, position_s: float) -> float | None:
+    """找 ≤ ``position_s`` 的最后一个视频关键帧时间（秒）。
+
+    为什么需要它（续播漂移的根因，§7-②）：直通档 ``-c:v copy`` 不解码，
+    ``-ss`` 只能落在关键帧上——ffmpeg 会静默回退到目标点**之前**的关键帧
+    起播。会话的 start_ms 若仍按请求值返回，前端整条时间轴（进度、字幕、
+    进度上报）就系统性快了 0~一个 GOP；上报的进度带着这个偏差存库，下次
+    续播再回退一次，表现为「每次刷新进来位置都不一样」。开会话前用它把
+    start_ms 校正成 ffmpeg 真实会用的起点，偏差归零。
+
+    返回 None = 窗口内没找到（GOP 超长/探测失败），调用方保持原值——
+    此时决策引擎多半也不会选 remux，不值得为罕见失败加重试。
+    """
+    window_start = max(0.0, position_s - _KEYFRAME_WINDOW_S)
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-print_format",
+        "json",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "packet=pts_time,flags",
+        "-read_intervals",
+        f"{window_start}%{position_s + 0.001}",
+        str(path),
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, timeout=_KEYFRAME_PROBE_TIMEOUT)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        payload = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return None
+    return last_keyframe_at_or_before(payload.get("packets") or [], position_s)
+
+
+def last_keyframe_at_or_before(packets: list[dict], position_s: float) -> float | None:
+    """从 ffprobe 的 packet 列表里挑 ≤ position_s 的最后一个关键帧——纯函数，可单测。"""
+    best: float | None = None
+    for packet in packets:
+        if "K" not in (packet.get("flags") or ""):
+            continue
+        raw = packet.get("pts_time")
+        try:
+            pts = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if pts <= position_s + 0.001 and (best is None or pts > best):
+            best = pts
+    return best
+
+
 def _keyframe_windows(duration_seconds: int | None) -> list[tuple[int, int]]:
     """采样窗口 [(起点秒, 终点秒)]；短片或时长未知返回空列表表示整片扫。"""
     if not duration_seconds or duration_seconds <= _KEYFRAME_FULL_SCAN_MAX_S:

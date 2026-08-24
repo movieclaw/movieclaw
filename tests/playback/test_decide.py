@@ -378,6 +378,22 @@ def test_subtitle_planning_never_burns_in():
     assert decision.tier is PlaybackTier.REMUX
 
 
+def test_subtitle_plan_carries_ai_flag():
+    """AI 生成的标记要一路带到播放器——菜单靠它打标（§6.2）。"""
+    profile = media(
+        subtitle_tracks=(
+            SubtitleTrack(ref="external:a.srt", codec="srt", is_external=True, is_ai=True),
+            SubtitleTrack(ref="external:b.srt", codec="srt", is_external=True),
+        )
+    )
+    decision = decide_playback(profile, CHROME_NO_HEVC, WITH_GPU)
+    assert isinstance(decision, PlaybackPlan)
+    assert {s.track_ref: s.is_ai for s in decision.subtitles} == {
+        "external:a.srt": True,
+        "external:b.srt": False,
+    }
+
+
 # ---------------------------------------------------------------------------
 # 降档回路（§6.3）：兜住「看起来兼容、实际 copy 出来是坏流」的源片
 # ---------------------------------------------------------------------------
@@ -521,3 +537,51 @@ def test_plan_carries_candidate_audio_tracks():
     assert isinstance(decision, PlaybackPlan)
     assert [t.ref for t in decision.audio_tracks] == ["embedded:1", "embedded:2"]
     assert [t.language for t in decision.audio_tracks] == ["jpn", "chi"]
+
+
+# ---------------------------------------------------------------------------
+# 用户画质上限（§10「手动选清晰度」：弱网救急）
+# ---------------------------------------------------------------------------
+
+
+def test_quality_cap_forces_transcode_when_source_exceeds():
+    """源 2160p、用户限 720p：即使编码可直通也必须转码降下去。"""
+    plan = decide_playback(
+        media(resolution="2160p"), CHROME_NO_HEVC, WITH_GPU, max_height=720
+    )
+    assert isinstance(plan, PlaybackPlan)
+    assert plan.tier is PlaybackTier.HARDWARE_TRANSCODE
+    assert plan.video.action == "transcode"
+    assert plan.video.height == 720
+
+
+def test_quality_cap_keeps_direct_when_source_within_limit():
+    """上限是上限不是目标：1080p 源限 1080p，照常直通（无损优于转码）。"""
+    plan = decide_playback(
+        media(resolution="1080p"), CHROME_NO_HEVC, WITH_GPU, max_height=1080
+    )
+    assert isinstance(plan, PlaybackPlan)
+    assert plan.tier is PlaybackTier.REMUX
+    assert plan.video.action == "copy"
+
+
+def test_quality_cap_combines_with_admin_limit():
+    """用户上限与管理员 max_transcode_height 取更小的那个。"""
+    policy = PlaybackPolicy(hardware_available=True, max_transcode_height=720)
+    plan = decide_playback(
+        media(resolution="2160p"), CHROME_NO_HEVC, policy, max_height=1080
+    )
+    assert isinstance(plan, PlaybackPlan)
+    assert plan.video.height == 720
+
+
+def test_quality_cap_does_not_touch_strm():
+    """strm 禁止转码（硬边界 2），画质上限对它不生效。"""
+    plan = decide_playback(
+        media(is_strm=True, container="strm", resolution="2160p"),
+        CHROME_NO_HEVC,
+        WITH_GPU,
+        max_height=480,
+    )
+    assert isinstance(plan, PlaybackPlan)
+    assert plan.tier is PlaybackTier.DIRECT_PLAY

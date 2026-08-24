@@ -24,8 +24,8 @@ const TIER_LABELS: Record<number, string> = {
 function Row({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-baseline justify-between gap-6">
-      <span className="shrink-0 text-white/45">{label}</span>
-      <span className="tnum truncate text-right text-white/90">{value}</span>
+      <span className="shrink-0 text-white/55">{label}</span>
+      <span className="tnum truncate text-right text-white/95">{value}</span>
     </div>
   );
 }
@@ -59,19 +59,36 @@ export function DiagnosticsPanel({
       : 0;
 
   return (
-    <div className="absolute right-6 top-20 z-20 w-[340px] max-w-[calc(100%-2rem)] rounded-sm bg-[rgba(20,20,20,0.94)] p-4 text-[12px] shadow-[0_8px_32px_rgba(0,0,0,0.7)] backdrop-blur-sm max-md:right-3">
-      <div className="mb-3 flex items-center justify-between">
-        <h3 className="text-[13px] font-semibold text-white">播放诊断</h3>
+    <div
+      /*
+       * 外观照 YouTube 的 Stats for nerds：**一块半透明的黑，仅此而已**，
+       * 位置也照它放在画面左上（顶栏片名之下）。
+       *
+       * 刻意不用站内浮层的 .menu-surface（磨砂玻璃 + 高光描边 + 大投影）：
+       * 那套语言是给「压在内容上、等你操作完就走」的菜单用的，而这块面板会
+       * 挂在画面角上几十分钟，越素越好。圆角保留——播放器里不该出现方角牌子。
+       *
+       * 顺带解决的一件事：磨砂一走，backdrop-filter 也就没了。面板长时间叠在
+       * 视频上，每帧重采样模糊是掉帧的头号大户（globals 里的 QoE 注释），而
+       * 诊断面板恰恰是用来量掉帧的，不能自己污染读数。
+       */
+      className="absolute left-6 top-20 z-20 w-[320px] max-w-[calc(100%-2rem)] rounded-[14px] bg-black/60 px-3.5 py-3 text-[11.5px] max-md:left-3 max-md:top-16"
+    >
+      <div className="mb-2 flex items-center justify-between">
+        <h3 className="text-[12px] font-semibold text-white/90">播放诊断</h3>
         <button
           type="button"
           onClick={onClose}
-          className="rounded-sm px-2 py-0.5 text-white/50 transition-colors hover:bg-white/10 hover:text-white"
+          aria-label="关闭播放诊断"
+          className="-mr-1 grid size-6 place-items-center rounded-full text-white/50 transition-colors hover:bg-white/10 hover:text-white"
         >
-          关闭
+          <svg viewBox="0 0 24 24" className="size-3.5" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" aria-hidden>
+            <path d="M6 6l12 12M18 6L6 18" />
+          </svg>
         </button>
       </div>
 
-      <div className="space-y-1.5">
+      <div className="space-y-1">
         <Row label="档位" value={TIER_LABELS[decision.tier ?? -1] ?? "未知"} />
         {decision.degraded_from != null ? (
           <Row label="降档自" value={`档 ${decision.degraded_from}`} />
@@ -119,7 +136,7 @@ export function DiagnosticsPanel({
         <Row label="会话" value={session.session_id ?? "无（直出）"} />
       </div>
 
-      <p className="mt-3 border-t border-white/10 pt-2 leading-relaxed text-white/55">
+      <p className="mt-2.5 border-t border-white/10 pt-2 leading-relaxed text-white/60">
         {decision.reason}
       </p>
     </div>

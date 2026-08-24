@@ -62,6 +62,25 @@ def parse_external_track(track: str) -> str | None:
     return filename or None
 
 
+def is_ai_generated(title: str | None) -> bool:
+    """这条外挂字幕是不是本机 AI 生成的（含翻译与双语）。
+
+    判据是台账里**解析出来的 title 段**，不是整个文件名：title 只包含视频
+    stem 之后的 token（``library/subtitles.py`` 的 ``parse_subtitle_tokens``），
+    拿整个文件名去找 "ai" 会把片名本来就叫《A.I.》《AI》的片子全标成 AI 生成。
+
+    命名规则见 ``subtitle_gen/tasks.py`` 的 ``_sidecar_path``：
+    ``ai`` / ``ai-<语言>`` / ``ai-bilingual-<主>-<次>``，旧版是 ``<语言>.ai``
+    （两者的 title 段都以 ai 打头）。与 ``subtitle_gen/source.py`` 的
+    ``_external_provenance`` 是同一套约定的两处实现——分层守护禁止本层
+    import movieclaw_api，改命名规则时两边都要动。
+    """
+    if not title:
+        return False
+    marker = title.strip().lower()
+    return marker == "ai" or marker.startswith("ai-")
+
+
 # -- 字幕内容服务 -----------------------------------------------------------
 
 # 输出 MIME（对齐 Jellyfin MimeTypes 表：ass/ssa 是 text/x-ssa 不是 x-ass）
@@ -74,7 +93,9 @@ SUBTITLE_MIME = {
 
 # 可互转矩阵：v1 仅 srt↔vtt。ass/ssa 不做跨格式转换（样式会整体丢失，
 # 对齐真 Jellyfin"无该格式转换器即失败"的语义）
-_CONVERTIBLE = {("srt", "vtt"), ("vtt", "srt")}
+#: ass→vtt 是给画中画的降级：PiP 窗口只认原生 VTT cue，特效在小窗里本来
+#: 也看不清，丢样式保文本是正确取舍。反向（vtt→ass）没有意义，不开。
+_CONVERTIBLE = {("srt", "vtt"), ("vtt", "srt"), ("ass", "vtt")}
 
 
 class SubtitleServeError(Exception):
@@ -193,13 +214,40 @@ def serve_subtitle(ref: SubtitleRef, out_format: str | None) -> tuple[bytes, str
         import pysubs2
 
         try:
-            subs = pysubs2.SSAFile.from_string(text)
+            # 源格式已知就显式告诉 pysubs2——autodetect 对精简的 ASS 头
+            # （缺 [V4+ Styles] 段）会直接认不出来
+            subs = pysubs2.SSAFile.from_string(text, format_=ref.format)
             text = subs.to_string(fmt)
         except Exception as exc:  # noqa: BLE001 -- pysubs2 异常类型不穷举
             raise SubtitleServeError(
                 f"字幕解析失败，无法转换为 {fmt}：{ref.path}（{exc}）"
             ) from exc
+    if fmt == "vtt":
+        text = apply_default_cue_line(text)
     return text.encode("utf-8"), SUBTITLE_MIME[fmt]
+
+
+#: 兜底的 cue 垂直位置：顶边在渲染区 84% 处，单行底边约 89%、双行约 94%——
+#: 落在 Apple/Netflix caption safe area（底部留 8~10%）。iOS 的 AVPlayer
+#: （原生全屏 / 画中画）按 HLS 规范遵守 cue 的 line 设置，这是**唯一**能
+#: 控制系统层字幕位置的手段——那两个表面页面 CSS 够不着，默认渲染贴底。
+_DEFAULT_CUE_LINE = "line:84%"
+_TIMING_ARROW = "-->"
+
+
+def apply_default_cue_line(text: str) -> str:
+    """给没有自带定位的 VTT cue 追加默认 line 设置。
+
+    只动 timing 行（含 ``-->``）且行内没有任何 line 设置的 cue——字幕作者
+    显式定位过的（如顶置注释轨）原样尊重。
+    """
+    lines = []
+    for line in text.splitlines():
+        if _TIMING_ARROW in line and "line:" not in line:
+            lines.append(f"{line.rstrip()} {_DEFAULT_CUE_LINE}")
+        else:
+            lines.append(line)
+    return "\n".join(lines) + ("\n" if text.endswith("\n") else "")
 
 
 async def serve_subtitle_async(

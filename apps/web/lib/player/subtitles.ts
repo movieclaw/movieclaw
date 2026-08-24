@@ -34,10 +34,21 @@ export interface SubtitleOption {
   url: string;
   language: string | null;
   isDefault: boolean;
+  /**
+   * 本机 AI 生成的字幕（翻译 / 双语）。
+   *
+   * 菜单要把它标出来：AI 字幕的译文与时间轴都可能有偏差，同一部片里它常常
+   * 和发行方的字幕并排列着，不标的话用户选中之后才发现，还以为是播放器的
+   * 字幕功能不准。判定在服务端（按台账里解析好的命名段，见
+   * movieclaw_playback/subtitles.py 的 is_ai_generated）。
+   */
+  isAi: boolean;
 }
 
 /** 一条拿不到的字幕轨，连同面向用户的中文原因。 */
 export interface UnavailableSubtitle {
+  /** 轨引用，天然唯一（embedded:N / external:文件名），列表渲染用它当 key */
+  ref: string;
   label: string;
   reason: string;
 }
@@ -88,15 +99,15 @@ export function planSubtitleTracks(
     const url = urls[index];
     const label = trackLabel(plan);
     if (!url) {
-      unavailable.push({ label, reason: "服务端没有给出这条轨的地址" });
+      unavailable.push({ ref: plan.track_ref, label, reason: "服务端没有给出这条轨的地址" });
       return;
     }
     if (plan.kind === "pgs") {
-      unavailable.push({ label, reason: "PGS 是图形字幕，网页端暂不支持渲染" });
+      unavailable.push({ ref: plan.track_ref, label, reason: "PGS 是图形字幕，网页端暂不支持渲染" });
       return;
     }
     if (plan.kind !== "vtt" && plan.kind !== "ass") {
-      unavailable.push({ label, reason: `暂不支持的字幕格式：${plan.kind}` });
+      unavailable.push({ ref: plan.track_ref, label, reason: `暂不支持的字幕格式：${plan.kind}` });
       return;
     }
     options.push({
@@ -108,6 +119,7 @@ export function planSubtitleTracks(
       url: plan.kind === "vtt" ? `${url}&format=vtt` : url,
       language: plan.language,
       isDefault: plan.is_default,
+      isAi: plan.is_ai === true,
     });
   });
 
@@ -153,10 +165,46 @@ export interface SubtitleStyle {
   background: boolean;
 }
 
+const STYLE_STORAGE_KEY = "movieclaw.player.subtitle-style";
+
+/** 读持久化的字幕样式；没存过/损坏/无 localStorage 都回默认值。
+    offsetSeconds 刻意不持久化——时间轴偏移是逐文件的修正，跨片带着只会错。 */
+export function loadSubtitleStyle(): SubtitleStyle {
+  try {
+    const raw = window.localStorage.getItem(STYLE_STORAGE_KEY);
+    if (!raw) return DEFAULT_SUBTITLE_STYLE;
+    const parsed = JSON.parse(raw) as Partial<SubtitleStyle>;
+    return {
+      ...DEFAULT_SUBTITLE_STYLE,
+      fontScale: typeof parsed.fontScale === "number" ? parsed.fontScale : DEFAULT_SUBTITLE_STYLE.fontScale,
+      bottomPercent:
+        typeof parsed.bottomPercent === "number" ? parsed.bottomPercent : DEFAULT_SUBTITLE_STYLE.bottomPercent,
+      outline: typeof parsed.outline === "boolean" ? parsed.outline : DEFAULT_SUBTITLE_STYLE.outline,
+      background:
+        typeof parsed.background === "boolean" ? parsed.background : DEFAULT_SUBTITLE_STYLE.background,
+    };
+  } catch {
+    return DEFAULT_SUBTITLE_STYLE;
+  }
+}
+
+export function saveSubtitleStyle(style: SubtitleStyle): void {
+  try {
+    const { offsetSeconds: _drop, ...persisted } = style;
+    window.localStorage.setItem(STYLE_STORAGE_KEY, JSON.stringify(persisted));
+  } catch {
+    // 隐私模式写不进：本次会话内仍生效
+  }
+}
+
 export const DEFAULT_SUBTITLE_STYLE: SubtitleStyle = {
-  fontScale: 4.4,
+  // 画面高的 5.2%：Netflix 规范约 5.3%、BBC 指南约 5.5%、YouTube 默认 4~5%，
+  // 取这个区间中值。渲染层另有最小像素下限兜底小画面（见 subtitle-layer）。
+  fontScale: 5.2,
   offsetSeconds: 0,
-  bottomPercent: 6,
+  // 底部安全边距 8%：Apple/Netflix/BBC 的 caption safe area 都在 8~10%，
+  // 字幕不贴画面底边
+  bottomPercent: 8,
   outline: true,
   background: false,
 };

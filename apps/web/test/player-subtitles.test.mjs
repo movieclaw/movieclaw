@@ -37,6 +37,16 @@ test("内封轨与外挂轨一视同仁——PT 片源的字幕绝大多数是�
   assert.equal(options[1].url, "/b&format=vtt");
 });
 
+test("AI 生成的轨要带标记，普通轨不带——两者可信度不一样", () => {
+  const { options } = planSubtitleTracks(
+    [plan("external:a.srt", "vtt", { is_ai: true }), plan("external:b.srt", "vtt")],
+    ["/a", "/b"],
+  );
+  assert.equal(options[0].isAi, true);
+  // 老版本服务端不带这个字段，缺省必须是 false 而不是 undefined
+  assert.equal(options[1].isAi, false);
+});
+
 test("没有语言标记时内封轨按序号命名，不至于几条长得一样", () => {
   const { options } = planSubtitleTracks(
     [plan("embedded:0", "vtt"), plan("embedded:2", "vtt")],

@@ -8,8 +8,14 @@ import { ChevronLeftIcon, ChevronRightIcon } from "@/components/icons";
  * 横滚容器（Netflix 式行），发现页海报行与媒体库卡片行共用。
  *
  * 交互设计：
- *   - 隐藏原生滚动条（.scroll-none），左右两枚玻璃圆钮在滚动区 hover 时浮现，
- *     点击按约 85% 可视宽度平滑翻页；触控板/滚轮横扫仍然可用。
+ *   - 隐藏原生滚动条（.scroll-none），还能往某个方向滚时对应的玻璃圆钮
+ *     **常驻显示**（静息略收敛、行 hover 提到全亮），点击按约 85% 可视宽度
+ *     平滑翻页；触控板/滚轮横扫仍然可用。曾经是 hover 才浮现——不悬停就
+ *     完全隐形，等于没告诉用户「右边还有内容」，纯滚动条隐藏反而藏掉了
+ *     唯一的可滑线索。
+ *   - 触屏上不渲染（hover:none 媒体查询）：那边的可滑线索是刻意露出的半张
+ *     卡（见 library-home-recently-watched.md §5），常驻圆钮只会压住卡片
+ *     还挨误触。
  *   - 到达边缘时对应方向的按钮隐藏（用 onScroll 实时追踪滚动位置）；
  *     内容不足一屏时两侧都不出现，视觉上与普通一行无异。
  *   - 间距/内边距由调用方通过 className 决定，容器只管滚动与翻页。
@@ -77,7 +83,7 @@ export function HScroller({
         {children}
       </div>
 
-      {/* 左右翻页钮：滚动区 hover 时浮现；到边缘后隐藏 */}
+      {/* 左右翻页钮：能滚就常驻；到边缘后隐藏 */}
       <ScrollArrow dir={-1} visible={canLeft} onClick={() => page(-1)} />
       <ScrollArrow dir={1} visible={canRight} onClick={() => page(1)} />
     </div>
@@ -101,11 +107,11 @@ function ScrollArrow({
       onClick={onClick}
       // !absolute：.surface-raised 自带 position:relative 且声明在工具类之后，
       // 会盖掉普通 absolute，导致按钮掉出定位流、堆到行底部
-      className={`surface-raised !absolute top-[38%] z-10 flex size-9 -translate-y-1/2 items-center justify-center !rounded-full text-[var(--text)] transition-all duration-200 hover:scale-110 ${
+      className={`surface-raised !absolute top-[38%] z-10 flex size-9 -translate-y-1/2 items-center justify-center !rounded-full text-[var(--text)] transition-all duration-200 hover:scale-110 [@media(hover:none)]:hidden ${
         dir === -1 ? "left-2" : "right-2"
       } ${
         visible
-          ? "pointer-events-auto opacity-0 group-hover/hscroll:opacity-100"
+          ? "pointer-events-auto opacity-80 group-hover/hscroll:opacity-100"
           : "pointer-events-none opacity-0"
       }`}
     >

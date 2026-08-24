@@ -46,8 +46,16 @@ export function ConsentDialog({
   };
 
   return (
-    <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/75 px-6">
-      <div className="w-full max-w-[460px] rounded-sm bg-[rgba(20,20,20,0.97)] p-7 text-white shadow-[0_12px_48px_rgba(0,0,0,0.8)]">
+    // role=dialog 兼具语义与 media-controller 的自动淡出豁免（它的隐藏规则
+    // 明确跳过 [role=dialog]）——等用户拍板的弹窗绝不能自己隐身
+    <div
+      role="dialog"
+      aria-modal="true"
+      className="absolute inset-0 z-30 flex items-center justify-center bg-black/75 px-6"
+    >
+      {/* 面板外观照抄站内 Modal（components/modal.tsx）：同一个圆角、描边、
+          底色与投影——它就是一个模态，不该长得像另一套系统 */}
+      <div className="w-full max-w-[460px] rounded-2xl border border-white/10 bg-[rgba(16,18,26,0.92)] p-7 text-white shadow-[0_32px_90px_rgba(0,0,0,0.7)] backdrop-blur-2xl">
         <h2 className="text-[19px] font-semibold leading-snug">这部片需要软件转码才能在浏览器里播放</h2>
 
         <dl className="mt-4 space-y-3 text-[13px] leading-relaxed text-white/70">
@@ -64,7 +72,7 @@ export function ConsentDialog({
         </dl>
 
         {error ? (
-          <p className="mt-4 rounded-sm bg-[var(--danger)]/20 px-3 py-2 text-[13px] text-white">{error}</p>
+          <p className="mt-4 rounded-xl bg-[var(--danger)]/20 px-3 py-2 text-[13px] text-white">{error}</p>
         ) : null}
 
         {canSelfEnable ? (
@@ -74,7 +82,7 @@ export function ConsentDialog({
               <button
                 type="button"
                 onClick={onCancel}
-                className="rounded-sm px-5 py-2.5 text-[14px] text-white/70 transition-colors hover:bg-white/10"
+                className="rounded-full px-5 py-2.5 text-[14px] text-white/70 transition-colors hover:bg-white/10"
               >
                 取消
               </button>
@@ -82,7 +90,7 @@ export function ConsentDialog({
                 type="button"
                 onClick={enable}
                 disabled={saving}
-                className="rounded-sm bg-[var(--player-accent)] px-5 py-2.5 text-[14px] font-semibold text-black transition-colors hover:bg-[var(--player-accent-hover)] disabled:opacity-50"
+                className="rounded-full bg-[var(--player-accent)] px-5 py-2.5 text-[14px] font-semibold text-black transition-colors hover:bg-[var(--player-accent-hover)] disabled:opacity-50"
               >
                 {saving ? "正在开启…" : "开启并播放"}
               </button>
@@ -97,7 +105,7 @@ export function ConsentDialog({
               <button
                 type="button"
                 onClick={onCancel}
-                className="rounded-sm bg-white/15 px-5 py-2.5 text-[14px] text-white transition-colors hover:bg-white/25"
+                className="rounded-full bg-white/15 px-5 py-2.5 text-[14px] text-white transition-colors hover:bg-white/25"
               >
                 知道了
               </button>

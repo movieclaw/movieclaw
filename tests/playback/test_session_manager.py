@@ -29,6 +29,7 @@ from movieclaw_api.services.playback.session import (
     TranscodeSessionManager,
 )
 from movieclaw_playback.decide import AudioPlan, PlaybackPlan, PlaybackTier, VideoPlan
+from movieclaw_playback.hls_vod import SegmentPlan
 
 
 def make_plan(tier: PlaybackTier = PlaybackTier.REMUX, file_id: int = 1) -> PlaybackPlan:
@@ -84,7 +85,7 @@ def manager(tmp_path) -> TranscodeSessionManager:
 def install_fake(monkeypatch, body: str, *, delay: float = 0.0) -> None:
     """把命令装配换成假 ffmpeg。``delay`` 模拟 playlist 迟迟不出现。"""
 
-    def fake_build(plan, *, source_path, session_dir, start_ms=0, hw_backend=None):
+    def fake_build(plan, *, source_path, session_dir, start_ms=0, hw_backend=None, start_number=None):
         playlist = Path(session_dir) / "index.m3u8"
         script = body if delay <= 0 else f"import time; time.sleep({delay})\n{body}"
         return TranscodeCommand(
@@ -585,3 +586,139 @@ async def test_start_failure_frees_the_concurrency_slot(manager, monkeypatch):
         assert session.state == "ready"
     finally:
         await manager.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# 磁盘低水位哨兵：空间见底暂停写入、回升恢复、暂停中也能被杀掉
+# ---------------------------------------------------------------------------
+
+
+class _FakeDiskUsage:
+    def __init__(self, free: int) -> None:
+        self.free = free
+        self.total = 100 * 1024**3
+        self.used = self.total - free
+
+
+def set_free_bytes(monkeypatch, free: int) -> None:
+    monkeypatch.setattr(
+        session_mod.shutil, "disk_usage", lambda _path: _FakeDiskUsage(free)
+    )
+
+
+def _process_stopped(pid: int) -> bool:
+    """进程组长处于 SIGSTOP 挂起态（macOS/Linux 的 ps 状态首字母 T）。"""
+    import subprocess
+
+    out = subprocess.run(
+        ["ps", "-o", "state=", "-p", str(pid)], capture_output=True, text=True
+    )
+    return out.stdout.strip().startswith("T")
+
+
+@pytest.mark.asyncio
+async def test_low_watermark_pauses_running_sessions(manager, monkeypatch):
+    install_fake(monkeypatch, WRITES_PLAYLIST_THEN_SLEEPS)
+    session = await manager.start(make_plan(), source_path="/tmp/a.mkv", member_id=1)
+
+    set_free_bytes(monkeypatch, session_mod.MIN_FREE_BYTES - 1)
+    await manager.reap()
+
+    assert session.disk_paused is True
+    assert await wait_until(lambda: _process_stopped(session.process.pid))
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_recovered_disk_resumes_paused_sessions(manager, monkeypatch):
+    install_fake(monkeypatch, WRITES_PLAYLIST_THEN_SLEEPS)
+    session = await manager.start(make_plan(), source_path="/tmp/a.mkv", member_id=1)
+
+    set_free_bytes(monkeypatch, session_mod.MIN_FREE_BYTES - 1)
+    await manager.reap()
+    assert session.disk_paused is True
+
+    # 回升到恢复线之上才放行——迟滞回差，避免在临界值附近反复停/走
+    set_free_bytes(monkeypatch, session_mod.RESUME_FREE_BYTES)
+    await manager.reap()
+
+    assert session.disk_paused is False
+    assert await wait_until(lambda: not _process_stopped(session.process.pid))
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_between_watermarks_keeps_paused_state(manager, monkeypatch):
+    """两档水位之间（回差区）不改变现状：已暂停的保持暂停。"""
+    install_fake(monkeypatch, WRITES_PLAYLIST_THEN_SLEEPS)
+    session = await manager.start(make_plan(), source_path="/tmp/a.mkv", member_id=1)
+
+    set_free_bytes(monkeypatch, session_mod.MIN_FREE_BYTES - 1)
+    await manager.reap()
+    set_free_bytes(monkeypatch, (session_mod.MIN_FREE_BYTES + session_mod.RESUME_FREE_BYTES) // 2)
+    await manager.reap()
+
+    assert session.disk_paused is True
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_paused_session_can_still_be_stopped(manager, monkeypatch):
+    """挂起的进程不响应 SIGTERM，stop 必须先 SIGCONT 再杀，否则要干等超时。"""
+    install_fake(monkeypatch, WRITES_PLAYLIST_THEN_SLEEPS)
+    session = await manager.start(make_plan(), source_path="/tmp/a.mkv", member_id=1)
+    pid = session.process.pid
+
+    set_free_bytes(monkeypatch, session_mod.MIN_FREE_BYTES - 1)
+    await manager.reap()
+    assert await wait_until(lambda: _process_stopped(pid))
+
+    started = time.monotonic()
+    assert await manager.stop(session.id) is True
+    # 走的是 SIGCONT+SIGTERM 快路径，而不是 3 秒超时后的 SIGKILL
+    assert time.monotonic() - started < 2.0
+    assert await wait_until(lambda: not pid_alive(pid))
+
+
+# --- VOD 供片判定（不起进程的纯逻辑回归） ---------------------------------
+
+
+def _vod_session(tmp_path: Path, *, head: int, completed: set[int]) -> session_mod.TranscodeSession:
+    plan = SegmentPlan(boundaries=tuple(float(i * 4) for i in range(800)), duration_s=3200.0)
+    return session_mod.TranscodeSession(
+        id="vod-test",
+        file_id=1,
+        member_id=0,
+        tier=PlaybackTier.REMUX,
+        directory=tmp_path,
+        start_ms=0,
+        plan=make_plan(),
+        segment_plan=plan,
+        head_segment=head,
+        completed_segments=set(completed),
+    )
+
+
+def test_highest_produced_counts_contiguous_run_only(manager, tmp_path):
+    """回归：续播起在 783、被杂散请求拉回第 0 段重启后，台账里上一轮的
+    783/784 全都 ≥ head(0)。取 max 会把 produced 顶成 784，于是请求 785 时
+    ahead 判定失灵——既不重启也永远等不来，表现为播放器一直缓冲。
+    正确口径是**从 head 起连续**产出到哪。"""
+    session = _vod_session(tmp_path, head=0, completed={0, 1, 783, 784})
+    assert manager._highest_produced(session) == 1
+    # 一个都没写完：head - 1
+    session = _vod_session(tmp_path, head=10, completed={783, 784})
+    assert manager._highest_produced(session) == 9
+    # 与上一轮无缝衔接时旧分片照常计入——它们本来就直接可服务
+    session = _vod_session(tmp_path, head=782, completed={782, 783, 784})
+    assert manager._highest_produced(session) == 784
+
+
+@pytest.mark.asyncio
+async def test_ensure_segment_bails_out_on_stopped_session(manager, tmp_path):
+    """回归：用户退出（DELETE）删掉会话目录后，还挂着的分片请求绝不能再
+    拉起 ffmpeg——往已删除的目录写只会 No such file or directory 冒成 500。"""
+    session = _vod_session(tmp_path / "gone", head=0, completed=set())
+    session.state = "stopped"
+    assert await manager.ensure_segment(session, 5) is None
+    assert session.process is None  # 没有试图重启
