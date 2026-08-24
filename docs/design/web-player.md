@@ -850,6 +850,16 @@ iOS Safari 没有 W3C 那套 API，走带前缀的 `webkitSetPresentationMode`�
 了播放器」这件事只对鼠标成立，手指抬起来不算离开，笔同理。判断连同「哪些情况
 控制条必须常显」一起放在 `lib/player/chrome.ts`，有回归测试。
 
+**浮层退让安全区，视频不退**（iOS 标准播放器规范，AVPlayerViewController 与
+YouTube/Netflix iOS 皆如此）。站点是 black-translucent 状态栏 +
+`viewport-fit=cover`，PWA 里页面画到状态栏与 Home 指示条底下；`/play` 路由
+刻意不套工作台外壳，也就没了外壳那层 `--safe-top` 适配——真机表现是顶栏
+返回键顶进系统时钟里。修法：视频保持全出血铺满，浮层各自退让——顶栏 `pt`
+叠加 `--safe-top`；控制条整块 `pb` 叠加 `--safe-bottom`（进度条「贴最底边」
+在有指示条的设备上指**安全区下沿**，压到指示条底下既看不见也跟上滑手势打
+架）；横向内边距统一走 `.player-inset-x`（`max(原值, --safe-left/right)`，
+安全区为 0 时取回原值，横屏刘海侧自动让开）。
+
 **触屏第一下点击只叫控制条，不暂停**（YouTube 手机端同款）。桌面上鼠标一动
 控制条早就出来了，点击行为不变。判断要用「pointerdown 那一刻」的状态存进
 ref——`setChromeVisible(true)` 是异步的，click 回调读到的可能已经是新值。

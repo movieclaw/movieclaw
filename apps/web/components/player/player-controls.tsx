@@ -308,7 +308,9 @@ export function PlayerControls(props: PlayerControlsProps) {
   }, [chromeVisible]);
 
   return (
-    <div className="pointer-events-none relative">
+    // pb 让开 Home 指示条：进度条「贴最底边」在有指示条的设备上指的是安全区
+    // 下沿——压到指示条底下既看不见也会跟上滑手势打架（iOS 标准播放器同此）
+    <div className="pointer-events-none relative pb-[var(--safe-bottom)]">
       {/* 渐变铺满整块底部，与控制条同步淡出。它只负责把画面压暗一档，真正
           保证按钮可读的是按钮自己那层磨砂卡片——渐变挡不住亮画面。 */}
       <div
@@ -323,7 +325,7 @@ export function PlayerControls(props: PlayerControlsProps) {
           个实际好处——它和右下角的切集胶囊隔着进度条，不会误按。
           两边高度取同一档，左右才真的对称。 */}
       <div
-        className={`relative flex items-center justify-between px-6 pt-24 pb-2 transition-opacity duration-300 max-md:px-3 max-md:pt-16 ${
+        className={`player-inset-x relative flex items-center justify-between pt-24 pb-2 transition-opacity duration-300 max-md:pt-16 ${
           chromeVisible ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
         }`}
       >
@@ -362,7 +364,7 @@ export function PlayerControls(props: PlayerControlsProps) {
           只剩一条贴边的细线；展开时它回到操作区上方。 */}
       <div
         className={`player-scrub-row pointer-events-auto relative transition-[padding] duration-300 ${
-          chromeVisible ? "px-6 max-md:px-3" : "px-0"
+          chromeVisible ? "player-inset-x" : "px-0"
         }`}
       >
         <div
@@ -481,7 +483,7 @@ export function PlayerControls(props: PlayerControlsProps) {
             动画走到哪一步都可以安全放开。 */}
         <div className={menu === "none" && !expanded ? "overflow-hidden" : ""}>
           <div
-            className={`relative flex items-center px-6 pb-4 pt-3 transition-opacity duration-300 max-md:px-3 max-md:pb-3 ${
+            className={`player-inset-x relative flex items-center pb-4 pt-3 transition-opacity duration-300 max-md:pb-3 ${
               chromeVisible ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
             }`}
           >

@@ -1495,6 +1495,26 @@ body.cmdk-open .app-shell {
   --player-buffered: rgba(255, 255, 255, 0.42);
 }
 
+/* ---- iOS PWA 安全区（docs/design/web-player.md §6.8） --------------------
+   /play 路由刻意不套工作台外壳，也就没了外壳那层 --safe-top 适配；而站点是
+   black-translucent 状态栏 + viewport-fit=cover，PWA 里页面直接画到状态栏和
+   Home 指示条底下——顶栏返回键会顶进时钟里（真机截图证实）。iOS 标准播放器
+   的规范是：**视频全出血铺满整块屏，浮层控件退让安全区**（AVPlayerViewController
+   与 YouTube/Netflix iOS 皆如此），所以下面这些类只加在浮层上，不动视频。
+
+   横向用 max()：安全区平时为 0，直接用会把桌面的内边距压没；竖屏无刘海时
+   取回原值，横屏刘海侧自动让开。 */
+.player-inset-x {
+  padding-left: max(1.5rem, var(--safe-left));
+  padding-right: max(1.5rem, var(--safe-right));
+}
+@media (max-width: 767.98px) {
+  .player-inset-x {
+    padding-left: max(0.75rem, var(--safe-left));
+    padding-right: max(0.75rem, var(--safe-right));
+  }
+}
+
 /* media-controller（继承自 media-container）在 :host 上写死 `line-height: 0`，
    为的是消掉行内 <video> 底下那道空隙。但我们的顶栏、控制条、菜单、提示全是
    它的 light DOM 子节点，会一并把行高继承成 0——表现是每一行文字都塌成一条

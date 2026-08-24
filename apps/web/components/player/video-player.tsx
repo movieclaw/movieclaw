@@ -1401,7 +1401,9 @@ export function VideoPlayer(props: VideoPlayerProps) {
 
         {/* 顶栏：返回 + 片名。全屏时也要留着，否则退不出去只能按 Esc */}
         <div
-          className={`pointer-events-none absolute inset-x-0 top-0 z-20 flex items-center gap-4 bg-gradient-to-b from-black/80 via-black/30 to-transparent px-6 pb-16 pt-5 transition-opacity duration-300 max-md:px-3 max-md:pt-3 ${
+          // pt 叠加 --safe-top：PWA（black-translucent + viewport-fit=cover）里
+          // 页面画到状态栏底下，不让开的话返回键会顶进系统时钟里
+          className={`player-inset-x pointer-events-none absolute inset-x-0 top-0 z-20 flex items-center gap-4 bg-gradient-to-b from-black/80 via-black/30 to-transparent pb-16 pt-[calc(1.25rem_+_var(--safe-top))] transition-opacity duration-300 max-md:pt-[calc(0.75rem_+_var(--safe-top))] ${
             chromeVisible ? "opacity-100" : "opacity-0"
           }`}
         >
