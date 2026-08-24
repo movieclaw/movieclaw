@@ -851,10 +851,6 @@ function TrackList({
   onDelete?: (entry: TrackEntry) => void;
 }) {
   const entries = groups.flatMap((group) => group.entries);
-  // 这份列表里只要有一条能删，所有行就都留出删除键那一格——否则有删除键的
-  // 行会被挤窄一截，右侧的「内封 / 外挂 / ›」在行与行之间对不齐（移动端
-  // 垃圾桶常显、格子更宽，参差尤其明显）。全都不能删时不留，免得白留一条空沟。
-  const reserveAction = Boolean(onDelete) && entries.some((entry) => entry.deletable);
   // 音轨的 external 恒为 null：它没有内封/外挂之分，表头就不占这一格
   const hasSource = entries.some((entry) => entry.external !== null);
   const external = entries.filter((entry) => entry.external).length;
@@ -914,7 +910,6 @@ function TrackList({
                 entry={entry}
                 onSelect={entry.preview && onSelect ? () => onSelect(entry) : undefined}
                 onDelete={entry.deletable && onDelete ? () => onDelete(entry) : undefined}
-                reserveAction={reserveAction}
               />
             ))}
           </div>
@@ -944,13 +939,10 @@ function TrackLine({
   entry,
   onSelect,
   onDelete,
-  reserveAction,
 }: {
   entry: TrackEntry;
   onSelect?: () => void;
   onDelete?: () => void;
-  /** 本行没有删除键时，是否仍占住那一格（同一列表里有别的行能删就要占） */
-  reserveAction?: boolean;
 }) {
   const content = (
     <>
@@ -971,12 +963,19 @@ function TrackLine({
           </span>
         ))}
         {onSelect && (
-          // 触屏没有 hover，箭头在移动端常显；桌面只在悬停/聚焦时出现
+          // 行尾「动作格」：可删的行由垃圾桶占这一格（浮在其上，见下方），
+          // 不可删的行放可点箭头。两者尺寸相同，所以行与行的右缘天然对齐，
+          // 既不用为删除键额外留一条空沟，也不会让有删除键的行被挤窄。
+          // 触屏没有 hover，箭头在移动端常显；桌面只在悬停/聚焦时出现。
           <span
             aria-hidden="true"
-            className="w-3 text-sub text-[var(--accent-2)] opacity-0 transition-opacity group-hover/line:opacity-100 group-focus-visible/line:opacity-100 max-md:opacity-100"
+            className="flex size-6 shrink-0 items-center justify-center text-sub text-[var(--accent-2)] max-md:size-7"
           >
-            ›
+            {!onDelete && (
+              <span className="opacity-0 transition-opacity group-hover/line:opacity-100 group-focus-visible/line:opacity-100 max-md:opacity-100">
+                ›
+              </span>
+            )}
           </span>
         )}
       </span>
@@ -989,10 +988,9 @@ function TrackLine({
 
   // 两层 group：外层 row 管垃圾桶的显隐（悬停行内任意处都算），内层 line
   // 仍挂在可点区域上——箭头的"悬停/键盘聚焦才出现"沿用原来的判定。
-  // 行高亮也放在外层：垃圾桶在可点区之外，挂在内层的话它会落在高亮块外面，
-  // 看着像浮在这一行旁边而不是属于这一行。
+  // 行高亮也放在外层，垃圾桶才落在高亮块内、看着属于这一行。
   return (
-    <div className="group/row flex items-center rounded-[9px] transition-colors hover:bg-white/[0.075] has-[:focus-visible]:bg-white/[0.075]">
+    <div className="group/row relative flex items-center rounded-[9px] transition-colors hover:bg-white/[0.075] has-[:focus-visible]:bg-white/[0.075]">
       {onSelect ? (
         <button
           type="button"
@@ -1006,20 +1004,20 @@ function TrackLine({
         <div className={`group/line ${className}`}>{content}</div>
       )}
       {onDelete && (
-        // 桌面悬停/聚焦才显形（十几条字幕各挂一个垃圾桶只是噪音）；触屏没有
-        // hover，移动端常显
+        // 浮在行尾动作格之上，不占流式空间（!absolute 是必需的：.touch-target
+        // 在移动端会把元素设成 relative 以锚定撑命中区的伪元素，会顶掉普通 absolute）——占位由动作格本身承担，行与行
+        // 因此始终对齐（沿用侧栏会话行 ⋯ 的做法）。桌面悬停/聚焦才显形（十几条
+        // 字幕各挂一个垃圾桶只是噪音）；触屏没有 hover，.touch-reveal 让它常显，
+        // .touch-target 再把命中区悄悄撑到 44×44，外观不变。
         <button
           type="button"
           onClick={onDelete}
           title="删除这个字幕文件"
           aria-label={`删除字幕文件：${entry.primary}`}
-          className="mr-0.5 flex size-7 shrink-0 items-center justify-center rounded-[7px] text-white/35 opacity-0 transition hover:bg-[var(--danger)]/15 hover:text-[#ff9f9f] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--danger)]/50 group-hover/row:opacity-100 max-md:size-11 max-md:opacity-100"
+          className="touch-reveal touch-target !absolute right-2.5 top-1/2 flex size-6 -translate-y-1/2 items-center justify-center rounded-[7px] text-white/35 opacity-0 transition hover:bg-[var(--danger)]/15 hover:text-[#ff9f9f] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--danger)]/50 group-hover/row:opacity-100 max-md:size-7"
         >
           <TrashIcon className="size-3.5 max-md:size-4" />
         </button>
-      )}
-      {!onDelete && reserveAction && (
-        <span aria-hidden className="mr-0.5 size-7 shrink-0 max-md:size-11" />
       )}
     </div>
   );
