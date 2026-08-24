@@ -851,6 +851,10 @@ function TrackList({
   onDelete?: (entry: TrackEntry) => void;
 }) {
   const entries = groups.flatMap((group) => group.entries);
+  // 这份列表里只要有一条能删，所有行就都留出删除键那一格——否则有删除键的
+  // 行会被挤窄一截，右侧的「内封 / 外挂 / ›」在行与行之间对不齐（移动端
+  // 垃圾桶常显、格子更宽，参差尤其明显）。全都不能删时不留，免得白留一条空沟。
+  const reserveAction = Boolean(onDelete) && entries.some((entry) => entry.deletable);
   // 音轨的 external 恒为 null：它没有内封/外挂之分，表头就不占这一格
   const hasSource = entries.some((entry) => entry.external !== null);
   const external = entries.filter((entry) => entry.external).length;
@@ -910,6 +914,7 @@ function TrackList({
                 entry={entry}
                 onSelect={entry.preview && onSelect ? () => onSelect(entry) : undefined}
                 onDelete={entry.deletable && onDelete ? () => onDelete(entry) : undefined}
+                reserveAction={reserveAction}
               />
             ))}
           </div>
@@ -939,10 +944,13 @@ function TrackLine({
   entry,
   onSelect,
   onDelete,
+  reserveAction,
 }: {
   entry: TrackEntry;
   onSelect?: () => void;
   onDelete?: () => void;
+  /** 本行没有删除键时，是否仍占住那一格（同一列表里有别的行能删就要占） */
+  reserveAction?: boolean;
 }) {
   const content = (
     <>
@@ -1009,6 +1017,9 @@ function TrackLine({
         >
           <TrashIcon className="size-3.5 max-md:size-4" />
         </button>
+      )}
+      {!onDelete && reserveAction && (
+        <span aria-hidden className="mr-0.5 size-7 shrink-0 max-md:size-11" />
       )}
     </div>
   );
