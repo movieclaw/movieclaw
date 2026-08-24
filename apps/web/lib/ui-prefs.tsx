@@ -10,11 +10,12 @@ import {
 } from "react";
 
 import {
-  DEFAULT_UI_PREFS,
   fetchUiPreferences,
+  normalizeUiPreferences,
   updateUiPreferences,
   type UiPreferences,
 } from "@/lib/api/ui";
+import { readUiPrefsCache, writeUiPrefsCache } from "@/lib/ui-prefs-cache";
 
 /**
  * 界面偏好（按页面分组的样式设定）的全局状态。
@@ -22,6 +23,11 @@ import {
  * 与 backdrop / search-prefs 同款 Context 模式：应用启动时向后端拉**一次**
  * `ui.preferences` 整个配置域，之后全站（设置页、各业务页面）共享同一份状态
  * ——SPA 内切换页面不会重复请求；设置页改动即时保存并同步到所有消费者。
+ *
+ * 首帧不等接口：初始值取自 localStorage 缓存（上次拉到的偏好，见
+ * lib/ui-prefs-cache.ts），接口返回后再以服务端值为准覆盖并回写缓存。
+ * 没有这层缓存，自定义过导航顺序的用户每次刷新都会先看到默认排序、
+ * 接口回来后再重排一次——这一跳是肉眼可见的（玻璃透明度、蒙版同理）。
  *
  * 扩展方式：后端配置域加字段 → lib/api/ui.ts 的类型与 DEFAULT_UI_PREFS 对齐
  * → 消费页面从 useUiPrefs().prefs.<页面> 取值。本文件无需再动。
@@ -45,16 +51,27 @@ interface UiPrefsContextValue {
 const UiPrefsContext = createContext<UiPrefsContextValue | null>(null);
 
 export function UiPrefsProvider({ children }: { children: React.ReactNode }) {
-  const [prefs, setPrefs] = useState<UiPreferences>(DEFAULT_UI_PREFS);
+  // 惰性初始化读缓存：本 Provider 只在 AuthGate 确认登录后于客户端渲染
+  // （见 components/app-shell.tsx），不参与 SSR，故可直接读 localStorage。
+  // 缓存内容不可信，统一过一遍 normalizeUiPreferences 补齐缺项（无缓存时
+  // 它补出来的就是 DEFAULT_UI_PREFS，与改动前的初始值完全一致）。
+  const [prefs, setPrefs] = useState<UiPreferences>(() =>
+    normalizeUiPreferences(readUiPrefsCache()),
+  );
   const [preview, setPreview] = useState<UiPreferences | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
     fetchUiPreferences()
-      .then((data) => !cancelled && setPrefs(data))
+      .then((data) => {
+        if (cancelled) return;
+        setPrefs(data);
+        // 服务端值即下次启动的首帧值
+        writeUiPrefsCache(data);
+      })
       .catch((err) => {
-        // 拉取失败不致命：静默沿用各页面默认样式（与后端默认一致）
+        // 拉取失败不致命：静默沿用首帧缓存里的偏好（没有缓存时即内置默认样式）
         console.warn("读取界面设置失败，暂用默认样式：", err);
       })
       .finally(() => !cancelled && setLoading(false));
@@ -79,7 +96,9 @@ export function UiPrefsProvider({ children }: { children: React.ReactNode }) {
       // 乐观更新：开关立即生效；保存失败回滚并抛给调用方提示
       setPrefs(next);
       try {
-        setPrefs(await updateUiPreferences(next));
+        const saved = await updateUiPreferences(next);
+        setPrefs(saved);
+        writeUiPrefsCache(saved);
         // 保存成功后草稿使命完成，撤销以免遮住刚落库的新值
         setPreview(null);
       } catch (err) {

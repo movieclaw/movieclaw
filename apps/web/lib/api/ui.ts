@@ -59,9 +59,12 @@ export const DEFAULT_UI_PREFS: UiPreferences = {
   nav: { order: [] },
 };
 
-/** 把后端返回的偏好与内置默认逐分组合并：老版本后端（不认识新分组/新字段）
- *  返回的数据会缺项，缺什么补什么的默认值，保证消费者拿到的结构永远完整。 */
-function withDefaults(data: Partial<UiPreferences> | null | undefined): UiPreferences {
+/** 把偏好与内置默认逐分组合并：老版本后端（不认识新分组/新字段）返回的数据会
+ *  缺项，缺什么补什么的默认值，保证消费者拿到的结构永远完整。
+ *  首帧缓存（lib/ui-prefs-cache.ts）读出的旧版本数据同样走这里补齐。 */
+export function normalizeUiPreferences(
+  data: Partial<UiPreferences> | null | undefined,
+): UiPreferences {
   return {
     sidebar: { ...DEFAULT_UI_PREFS.sidebar, ...data?.sidebar },
     scrim: { ...DEFAULT_UI_PREFS.scrim, ...data?.scrim },
@@ -73,14 +76,14 @@ function withDefaults(data: Partial<UiPreferences> | null | undefined): UiPrefer
 
 /** 读取全站界面偏好（从未配置的页面返回默认值），存服务端、跨设备一致。 */
 export async function fetchUiPreferences(init?: RequestInit): Promise<UiPreferences> {
-  return withDefaults(
+  return normalizeUiPreferences(
     await unwrap(request<ApiEnvelope<Partial<UiPreferences>>>("/ui/preferences", init)),
   );
 }
 
 /** 整体覆盖式保存界面偏好，返回保存后的值。 */
 export async function updateUiPreferences(prefs: UiPreferences): Promise<UiPreferences> {
-  return withDefaults(
+  return normalizeUiPreferences(
     await unwrap(
       request<ApiEnvelope<Partial<UiPreferences>>>("/ui/preferences", {
         method: "PUT",

@@ -7,6 +7,7 @@ import { AvatarBadge } from "@/components/avatar-badge";
 import { GearIcon, LogoutIcon } from "@/components/icons";
 import { logout } from "@/lib/api/auth";
 import { clearBackdropCache } from "@/lib/backdrop-cache";
+import { clearUiPrefsCache } from "@/lib/ui-prefs-cache";
 import { roleLabel } from "@/lib/permissions";
 import { useSession } from "@/lib/session";
 
@@ -64,6 +65,7 @@ export function UserMenu({ onOpenSettings, collapsed = false }: UserMenuProps) {
       // 即使请求失败（如网络断开），也照常跳登录页；会话在后端仍会自然过期
     }
     clearBackdropCache();
+    clearUiPrefsCache();
     window.location.href = "/login";
   };
 
