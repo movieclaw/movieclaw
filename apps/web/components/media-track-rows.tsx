@@ -1005,7 +1005,7 @@ function TrackLine({
           onClick={onDelete}
           title="删除这个字幕文件"
           aria-label={`删除字幕文件：${entry.primary}`}
-          className="mr-0.5 flex size-7 shrink-0 items-center justify-center rounded-[7px] text-white/35 opacity-0 transition hover:bg-[var(--danger)]/15 hover:text-[#ff9f9f] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--danger)]/50 group-hover/row:opacity-100 max-md:size-9 max-md:opacity-100"
+          className="mr-0.5 flex size-7 shrink-0 items-center justify-center rounded-[7px] text-white/35 opacity-0 transition hover:bg-[var(--danger)]/15 hover:text-[#ff9f9f] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--danger)]/50 group-hover/row:opacity-100 max-md:size-11 max-md:opacity-100"
         >
           <TrashIcon className="size-3.5 max-md:size-4" />
         </button>
