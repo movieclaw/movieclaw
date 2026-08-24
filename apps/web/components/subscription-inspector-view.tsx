@@ -1635,7 +1635,8 @@ function MilestoneChain({ chain, color }: { chain: Milestone[]; color: string })
 }
 
 /**
- * 单个追踪项：一行「集号 + 说明 + 状态胶囊」，点开展开该集的里程碑链。
+ * 单个追踪项：一行「集号 + 说明 + 状态胶囊」，点开展开该集的里程碑链
+ * （电影只有「正片」一条，不折叠，链常展开）。
  * 胶囊 = 微型链（亮点指卡在第几站）+ 三字短名（那一站的细分状态名）——
  * 同一事实的位置与名字物理相邻，且与展开链共用一套语法与颜色。
  * 说明文案与后端调度语义一一对应（补旧排队 / 追新被动匹配 / 未定档不可调度）。
@@ -1660,81 +1661,102 @@ function WantedRow({
   const chain = milestonesOf(w, isMovie, live);
   const lit = stuckIndex(chain);
   const complete = chain.every((m) => m.state === "done");
-  return (
-    <li>
-      <button
-        type="button"
-        aria-expanded={expanded}
-        onClick={onToggle}
-        className={`block w-full cursor-pointer px-5 py-2.5 text-left transition-colors hover:bg-white/[0.035] max-md:px-4 ${
+  // 电影只有「正片」一条工单，折叠没有任何可选性——链常展开、去掉箭头与点击热区，
+  // 与季头行「只有一组时不折叠」是同一条规则
+  const collapsible = !isMovie;
+  const open = !collapsible || expanded;
+  // 行头在两种形态下共用同一套排版，只有交互态（指针/悬停/展开底色）随折叠能力增减
+  const headerClass = `block w-full px-5 py-2.5 text-left max-md:px-4 ${
+    collapsible
+      ? `cursor-pointer transition-colors hover:bg-white/[0.035] ${
           expanded ? "bg-white/[0.05]" : ""
-        }`}
-      >
-        {/* 桌面单行：集号 | 说明(截断) | 胶囊 | 箭头；窄屏两行——定长元素留
-            第一行（胶囊 ml-auto 靠右），说明整宽折到第二行（basis-full），
-            截断只剩半个日期的信息量归零问题就此消失 */}
-        {/* max-md:flex-wrap 是窄屏两行布局的开关：没有它 basis-full 不换行、
-            说明文案被压成一条缝。桌面保持 nowrap 单行 */}
-        <span className="flex items-center gap-x-3 gap-y-1 max-md:flex-wrap">
-          <span className="tnum w-11 shrink-0 text-sub font-semibold text-white/90">
-            {isMovie ? "正片" : `E${String(w.episode_number).padStart(2, "0")}`}
+        }`
+      : ""
+  }`;
+  const header = (
+    <>
+      {/* 桌面单行：集号 | 说明(截断) | 胶囊 | 箭头；窄屏两行——定长元素留
+          第一行（胶囊 ml-auto 靠右），说明整宽折到第二行（basis-full），
+          截断只剩半个日期的信息量归零问题就此消失 */}
+      {/* max-md:flex-wrap 是窄屏两行布局的开关：没有它 basis-full 不换行、
+          说明文案被压成一条缝。桌面保持 nowrap 单行 */}
+      <span className="flex items-center gap-x-3 gap-y-1 max-md:flex-wrap">
+        <span className="tnum w-11 shrink-0 text-sub font-semibold text-white/90">
+          {isMovie ? "正片" : `E${String(w.episode_number).padStart(2, "0")}`}
+        </span>
+        <span className="tnum min-w-0 flex-1 truncate text-sub leading-5 text-[var(--text-muted)] max-md:order-last max-md:basis-full max-md:whitespace-normal max-md:line-clamp-2">
+          {live ? downloadNote(live) : statusNote}
+        </span>
+        <span
+          className="flex shrink-0 items-center gap-[7px] rounded-full px-2.5 py-[3px] text-micro font-semibold max-md:ml-auto"
+          style={{
+            backgroundColor: `color-mix(in oklab, ${color} 14%, transparent)`,
+            color,
+          }}
+          title={`第 ${lit + 1}/${chain.length} 站：${chain[lit].lab}${complete ? "（已收齐）" : ""}`}
+        >
+          {/* 微型链固定占最长链（6 站）的宽度：与三字短名合力让胶囊等宽 */}
+          <span className="flex w-[42px] shrink-0 items-center gap-[3px]">
+            {chain.map((m, i) => (
+              <span
+                key={m.lab}
+                className="size-[4.5px] shrink-0 rounded-full"
+                style={{
+                  backgroundColor:
+                    i === lit
+                      ? color
+                      : m.state === "done"
+                        ? "rgba(255,255,255,.38)"
+                        : "rgba(255,255,255,.14)",
+                  boxShadow:
+                    i === lit
+                      ? `0 0 5px color-mix(in oklab, ${color} 60%, transparent)`
+                      : undefined,
+                }}
+              />
+            ))}
           </span>
-          <span className="tnum min-w-0 flex-1 truncate text-sub leading-5 text-[var(--text-muted)] max-md:order-last max-md:basis-full max-md:whitespace-normal max-md:line-clamp-2">
-            {live ? downloadNote(live) : statusNote}
-          </span>
-          <span
-            className="flex shrink-0 items-center gap-[7px] rounded-full px-2.5 py-[3px] text-micro font-semibold max-md:ml-auto"
-            style={{
-              backgroundColor: `color-mix(in oklab, ${color} 14%, transparent)`,
-              color,
-            }}
-            title={`第 ${lit + 1}/${chain.length} 站：${chain[lit].lab}${complete ? "（已收齐）" : ""}`}
-          >
-            {/* 微型链固定占最长链（6 站）的宽度：与三字短名合力让胶囊等宽 */}
-            <span className="flex w-[42px] shrink-0 items-center gap-[3px]">
-              {chain.map((m, i) => (
-                <span
-                  key={m.lab}
-                  className="size-[4.5px] shrink-0 rounded-full"
-                  style={{
-                    backgroundColor:
-                      i === lit
-                        ? color
-                        : m.state === "done"
-                          ? "rgba(255,255,255,.38)"
-                          : "rgba(255,255,255,.14)",
-                    boxShadow:
-                      i === lit
-                        ? `0 0 5px color-mix(in oklab, ${color} 60%, transparent)`
-                        : undefined,
-                  }}
-                />
-              ))}
-            </span>
-            {SHORT_STATUS[label] ?? label}
-          </span>
+          {SHORT_STATUS[label] ?? label}
+        </span>
+        {collapsible && (
           <ChevronDownIcon
             className={`size-3.5 shrink-0 text-white/30 transition-transform ${
               expanded ? "rotate-180 text-[var(--text-muted)]" : ""
             }`}
           />
-        </span>
-        {live && live.progress != null && live.state !== "missing" && (
-          <span
-            className="mt-2 block h-1 overflow-hidden rounded-full bg-white/[0.08]"
-            role="progressbar"
-            aria-valuenow={Math.round(live.progress * 100)}
-            aria-valuemin={0}
-            aria-valuemax={100}
-          >
-            <span
-              className="block h-full rounded-full bg-[var(--ok)] transition-[width] duration-700"
-              style={{ width: `${Math.min(100, Math.max(1, live.progress * 100))}%` }}
-            />
-          </span>
         )}
-      </button>
-      {expanded && <MilestoneChain chain={chain} color={color} />}
+      </span>
+      {live && live.progress != null && live.state !== "missing" && (
+        <span
+          className="mt-2 block h-1 overflow-hidden rounded-full bg-white/[0.08]"
+          role="progressbar"
+          aria-valuenow={Math.round(live.progress * 100)}
+          aria-valuemin={0}
+          aria-valuemax={100}
+        >
+          <span
+            className="block h-full rounded-full bg-[var(--ok)] transition-[width] duration-700"
+            style={{ width: `${Math.min(100, Math.max(1, live.progress * 100))}%` }}
+          />
+        </span>
+      )}
+    </>
+  );
+  return (
+    <li>
+      {collapsible ? (
+        <button
+          type="button"
+          aria-expanded={expanded}
+          onClick={onToggle}
+          className={headerClass}
+        >
+          {header}
+        </button>
+      ) : (
+        <div className={headerClass}>{header}</div>
+      )}
+      {open && <MilestoneChain chain={chain} color={color} />}
     </li>
   );
 }
