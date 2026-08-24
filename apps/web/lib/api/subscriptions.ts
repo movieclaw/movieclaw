@@ -660,6 +660,8 @@ export interface SubscriptionActivity {
   message: string;
   payload: Record<string, unknown>;
   created_at: string;
+  /** 管线类活动所属工单；生命周期变更、搜索轮次等订阅级活动为 null */
+  wanted_item_id: number | null;
 }
 
 /** 订阅活动时间线（系统对该订阅做过的每个动作，时间倒序）。 */
