@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import type { Route } from "next";
 import { usePathname, useRouter } from "next/navigation";
@@ -16,6 +16,23 @@ interface StartupFailure {
 }
 
 /**
+ * 模块级会话缓存：本次页面加载内验证过一次就记下来。
+ *
+ * 为什么需要：工作台（(app) 组）与播放器（/play）是**两个 layout、各挂一个
+ * AuthGate**。Next.js 跨 layout 导航会把旧 layout 整个卸掉、新的从零挂载——
+ * 新 AuthGate 的 session 初值是 null，用户就会看到一屏「正在连接服务…」，等
+ * bootstrap + me 两个串行请求跑完才见到播放器，观感像整页刷新了一次。点播放、
+ * 退播放各来一回。
+ *
+ * 有缓存后：新挂载的 AuthGate 直接放行渲染，后台静默复验（权限被改、会话被
+ * 收回时照样会被纠正——401 由 http.ts 整页跳登录）。
+ *
+ * 不会跨用户泄漏：登出与登录成功都是 window.location.href 整页跳转
+ * （user-menu.tsx / login/page.tsx），模块状态随页面一起清零。
+ */
+let cachedSession: SessionView | null = null;
+
+/**
  * 首页的鉴权门：在确认登录状态之前不渲染工作台，消除
  * "先闪一下主界面、再跳转登录/引导页"的割裂体验。
  *
@@ -28,25 +45,37 @@ interface StartupFailure {
 export function AuthGate({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
-  const [session, setSession] = useState<SessionView | null>(null);
+  // 初值取缓存：跨 layout 重挂载时立即放行渲染，不再闪「正在连接服务…」
+  const [session, setSession] = useState<SessionView | null>(cachedSession);
   const [failure, setFailure] = useState<StartupFailure | null>(null);
   const [retryKey, setRetryKey] = useState(0);
 
+  /** 改昵称等处更新会话时，缓存要一起跟上，否则下次跨 layout 会闪回旧数据 */
+  const updateSession = useCallback((next: SessionView) => {
+    cachedSession = next;
+    setSession(next);
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
-    let endpoint = "/auth/bootstrap";
+    // 缓存在手 = 系统必然已初始化，bootstrap 那一跳可以省掉
+    const revalidating = cachedSession !== null;
+    let endpoint = revalidating ? "/auth/me" : "/auth/bootstrap";
     setFailure(null);
     (async () => {
       try {
-        const status = await getBootstrapStatus();
-        if (cancelled) return;
-        if (!status.initialized) {
-          router.replace("/setup");
-          return;
+        if (!revalidating) {
+          const status = await getBootstrapStatus();
+          if (cancelled) return;
+          if (!status.initialized) {
+            router.replace("/setup");
+            return;
+          }
         }
         endpoint = "/auth/me";
         const view = await getSession(); // 未登录时抛 401，http.ts 拦截并整页跳 /login
         if (cancelled) return;
+        cachedSession = view;
         const allowedPath = accessiblePathFor(view, pathname);
         if (allowedPath !== pathname) {
           router.replace(allowedPath as Route);
@@ -57,9 +86,11 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
         if (cancelled) return;
         // 401 已由 http.ts 发起整页跳转；此处继续保持启动态，避免跳转前闪出错误卡。
         if (error instanceof HttpError && error.status === 401) return;
-        const message = startupFailureMessage(error);
         console.error(`工作台启动失败（${resolveRequestUrl(endpoint)}）：`, error);
-        setFailure({ endpoint, message });
+        // 静默复验失败（多半是瞬时网络问题）不打断已经在用的界面：
+        // 界面自己的 API 调用会把持续性故障暴露出来
+        if (revalidating) return;
+        setFailure({ endpoint, message: startupFailureMessage(error) });
       }
     })();
     return () => {
@@ -75,7 +106,12 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
       />
     );
   }
-  return <SessionProvider value={{ session, setSession }}>{children}</SessionProvider>;
+  // 缓存放行也不能放过权限：受限成员被丢进无权页面时，effect 里的 replace
+  // 要一拍才生效，这里同步判掉，不让无权内容闪出一帧
+  if (accessiblePathFor(session, pathname) !== pathname) {
+    return <StartupStatus failure={null} onRetry={() => setRetryKey((value) => value + 1)} />;
+  }
+  return <SessionProvider value={{ session, setSession: updateSession }}>{children}</SessionProvider>;
 }
 
 /** 把启动异常收敛成部署用户能理解的中文信息；后端主动返回的业务消息原样保留。 */
