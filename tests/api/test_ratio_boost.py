@@ -267,6 +267,25 @@ class TestApplyObservation:
         apply_observation(task, uploaded_bytes=None, completed=True, now=later)
         assert task.completed_at == _NOW
 
+    def test_freeze_ema_keeps_ledger_but_not_rate(self) -> None:
+        """站点刷流暂停中（做种被人为限速）：累计量/完成位/蜂群照常记账，
+        但上传速度 EMA 冻结——限速下的低速不是真实效率，混进 EMA 会在
+        恢复后触发一轮误汰换。基线仍推进，恢复后差分从暂停结束处起算。"""
+        task = _task(upload_rate_ema=500_000.0, uploaded_bytes=1_000_000)
+        task.last_checked_at = _NOW - timedelta(seconds=300)
+        apply_observation(
+            task,
+            uploaded_bytes=1_000_100,  # 限速下 300 秒只传出 100 字节
+            completed=True,
+            now=_NOW,
+            swarm_leechers=7,
+            freeze_ema=True,
+        )
+        assert task.upload_rate_ema == 500_000.0  # EMA 原封不动
+        assert task.uploaded_bytes == 1_000_100  # 累计量照常入账
+        assert task.swarm_leechers == 7
+        assert task.last_checked_at == _NOW  # 基线推进，恢复后差分不含暂停段
+
     def test_downloaded_bytes_recorded_and_none_safe(self) -> None:
         """下载量入台账（带宽成本，任务删除后 qb 里就没了）；
         None（旧适配器不提供）绝不能当 0 把已有账目清掉。"""

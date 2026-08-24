@@ -237,10 +237,23 @@ class CredentialRepository:
         if row is None:
             return False
         row.boost_enabled = enabled
+        if not enabled:
+            # 关闭刷流时顺带清掉暂停态：暂停是"临时让路"，依附于刷流本身
+            row.boost_paused = False
         if budget_bytes is not None:
             row.boost_budget_bytes = budget_bytes
         if hold_days is not None:
             row.boost_hold_days = hold_days
+        row.updated_at = utcnow()
+        await self._session.commit()
+        return True
+
+    async def set_boost_paused(self, site_id: str, paused: bool) -> bool:
+        """设置刷流暂停开关（做种限速 + 停止汰换拉新）。返回是否命中记录。"""
+        row = await self.get_by_site(site_id)
+        if row is None:
+            return False
+        row.boost_paused = paused
         row.updated_at = utcnow()
         await self._session.commit()
         return True

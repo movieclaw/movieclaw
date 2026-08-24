@@ -336,6 +336,25 @@ class TransmissionDownloader(BaseDownloader):
                     download_limit=max(1, round(limit_bytes / 1000)),
                 )
 
+    async def set_upload_limits(self, info_hashes: list[str], limit_bytes: int | None) -> None:
+        await asyncio.to_thread(self._set_upload_limits_sync, info_hashes, limit_bytes)
+
+    def _set_upload_limits_sync(self, info_hashes: list[str], limit_bytes: int | None) -> None:
+        """Transmission 的按种上传限速：uploadLimit 是 kB/s + 独立开关，
+        None=关开关（取消限速）。不存在的 hash 由守护进程静默忽略。"""
+        if not info_hashes:
+            return
+        ids = [h.lower() for h in info_hashes]
+        with _translate_errors(self.config.url):
+            if limit_bytes is None or limit_bytes <= 0:
+                self._client().change_torrent(ids, upload_limited=False)
+            else:
+                self._client().change_torrent(
+                    ids,
+                    upload_limited=True,
+                    upload_limit=max(1, round(limit_bytes / 1000)),
+                )
+
     async def get_limits(self) -> DownloaderLimits:
         return await asyncio.to_thread(self._get_limits_sync)
 
