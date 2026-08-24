@@ -78,6 +78,7 @@ from movieclaw_api.schemas.library import (
 )
 from movieclaw_api.schemas.response import ApiResponse, ok
 from movieclaw_api.services import jobs, media_scrape
+from movieclaw_api.services.playback import warmup as playback_warmup
 from movieclaw_api.services.auth import Principal
 from movieclaw_api.services.library import claim as library_claim
 from movieclaw_api.services.library import source_annotation
@@ -1797,6 +1798,12 @@ async def get_library_item(
     service = LibraryConfigService(session)
     library = await service.get(library_id)
     item, rows = await _item_rows(session, library_id, media_item_id)
+    # 起播预热：用户在详情页看简介的这几秒，正好把关键帧采样与默认字幕
+    # 抽掉——点播放时缓存直接命中，首播不再现场探测（§6.10）。后台任务，
+    # 失败无感；剧集（文件多）在 warmup 内部自动跳过。
+    playback_warmup.schedule(
+        media_item_id, [row for row in rows if row.state == FileState.IN_PLACE]
+    )
     bundle = await build_item_detail(session, library, item, rows)
 
     base = get_settings().tmdb_image_base_url.rstrip("/")

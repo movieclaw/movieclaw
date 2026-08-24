@@ -183,3 +183,37 @@ def test_generates_sheets_and_index(tmp_path, monkeypatch):
     monkeypatch.setattr(trickplay.subprocess, "run", lambda *a, **k: calls.append(a))
     again = trickplay.generate(file)
     assert again is not None and calls == []
+
+
+# ---------------------------------------------------------------------------
+# 生成命令的 IO 约束（§6.10「首次起播卡缓冲」的头号元凶）
+# ---------------------------------------------------------------------------
+
+
+def test_generate_command_is_readrate_limited(tmp_path, monkeypatch):
+    """skip_frame 只省解码不省 IO——不限速的话 demuxer 会以极限速度通读整个
+    容器，跟首片转码抢盘。这里锁死 -readrate 必须在命令里且在 -i 之前。"""
+    import subprocess as sp
+
+    from movieclaw_db.models import FileSource, FileState, LibraryFile
+
+    video = tmp_path / "m.mkv"
+    video.write_bytes(b"x")
+    file = LibraryFile(
+        id=7, library_id=1, media_item_id=1, file_path=str(video), size_bytes=1,
+        source=FileSource.SCANNED, state=FileState.IN_PLACE, duration_seconds=600,
+    )
+    captured = []
+
+    def fake_run(argv, **kwargs):
+        captured.append(argv)
+        raise sp.TimeoutExpired(argv, 1)  # 立刻退出，不真跑 ffmpeg
+
+    monkeypatch.setattr(trickplay.subprocess, "run", fake_run)
+    monkeypatch.setattr(trickplay.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(trickplay, "trickplay_dir", lambda fid: tmp_path / "tp")
+    monkeypatch.setattr(trickplay, "load_index", lambda fid: None)
+    assert trickplay.generate(file) is None
+    argv = captured[0]
+    assert "-readrate" in argv
+    assert argv.index("-readrate") < argv.index("-i")

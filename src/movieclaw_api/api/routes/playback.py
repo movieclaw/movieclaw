@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
+import time
 from pathlib import Path as PathLib
 from typing import Annotated
 from urllib.parse import quote
@@ -102,6 +104,8 @@ from movieclaw_playback.subtitles import (
     resolve_external_subtitle,
     serve_subtitle,
 )
+
+logger = logging.getLogger("movieclaw_api.playback")
 
 router = APIRouter(prefix="/playback", tags=["playback"])
 
@@ -333,6 +337,7 @@ async def start_playback_session(
     起播链路因此不用先问一次 ``/resume``——省一个串行往返，分享出去的链接
     也天然「各看各的进度」。
     """
+    started_at = time.perf_counter()
     member_id = principal.member_id if principal.member_id is not None else 0
     watch_row = None
     watch_view: PlaybackStateView | None = None
@@ -368,6 +373,7 @@ async def start_playback_session(
         )
 
     decision = await _decide(payload, principal, session)
+    decide_ms = int((time.perf_counter() - started_at) * 1000)
     if decision is None:
         raise NotFoundException("没有找到可播放的文件")
     view = playback_plan.to_view(decision)
@@ -388,9 +394,9 @@ async def start_playback_session(
         size_bytes=file.size_bytes,
     )
 
-    # 进度条缩略图：后台起，不挡首帧。生成要通读整个容器，放进同步路径会让
-    # 首帧白等；而缩略图晚几十秒出现完全可以接受。
-    trickplay.schedule(file)
+    # 进度条缩略图：后台起，不挡首帧；延迟 90 秒 + 读入限速，起播关键窗口
+    # 不与首片转码抢 IO（「首次起播卡缓冲、重进就好」的头号元凶，§6.10）。
+    trickplay.schedule(file, delay_s=90)
 
     subtitle_urls = [
         f"/api/v1/playback/files/{file.id}/subtitles"
@@ -401,6 +407,11 @@ async def start_playback_session(
 
     if view.tier == int(Tier.DIRECT_PLAY):
         token = await issue_stream_token(member_id=member_id, file_id=file.id)
+        # 分段计时（§6.10）：用户报「起播慢」时，这一行直接指认卡在哪一段。
+        # 决策段偏慢多半是关键帧采样在现场读盘——详情页预热没盖住的路径。
+        logger.info(
+            "播放会话就绪：档 0 直出 · 决策 %d 毫秒（file_id=%s）", decide_ms, file.id
+        )
         return ok(
             PlaybackSessionView(
                 decision=view,
@@ -468,6 +479,14 @@ async def start_playback_session(
 
     token = await issue_stream_token(
         member_id=member_id, file_id=file.id, session_id=transcode.id
+    )
+    total_ms = int((time.perf_counter() - started_at) * 1000)
+    # 分段计时（§6.10）：决策段偏慢 = 关键帧采样在现场读盘（详情页预热没盖住
+    # 的路径）；启动段偏慢 = ffmpeg 首片没出来（转码/IO 竞争，看 trickplay 与
+    # 存储负载）。用户报「起播慢」时这一行直接指认方向。
+    logger.info(
+        "播放会话就绪：档 %s · 决策 %d 毫秒 · 会话启动 %d 毫秒（file_id=%s hw=%s）",
+        view.tier, decide_ms, total_ms - decide_ms, file.id, hw_used or "无",
     )
     return ok(
         PlaybackSessionView(

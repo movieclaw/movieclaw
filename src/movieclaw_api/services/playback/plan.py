@@ -8,6 +8,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
 from typing import TYPE_CHECKING
 
 from sqlalchemy import select
@@ -31,6 +33,9 @@ from movieclaw_playback.profile import media_profile_from_file
 
 if TYPE_CHECKING:  # 仅类型标注需要，运行时不导入（避免 schemas ↔ services 循环）
     from movieclaw_api.schemas.playback import PlaybackDecisionView
+
+
+logger = logging.getLogger("movieclaw_api.playback.plan")
 
 
 async def decide_for_file(
@@ -86,9 +91,19 @@ async def decide_for_files(
     policy = await _load_policy()
     decisions = []
     for file in files:
+        probe_started = time.perf_counter()
         interval = await asyncio.to_thread(
             probe_keyframe_interval, file.file_path, file.duration_seconds
         )
+        probe_s = time.perf_counter() - probe_started
+        if probe_s > 1.0:
+            # 慢的几乎都是存储：三段采样约 90 秒码流的读取，网络挂载上会到
+            # 几十秒。条目详情页的起播预热（warmup.py）本该把它提前做掉——
+            # 这条日志出现说明预热没盖住（剧集多文件 / 分享直达播放页）。
+            logger.warning(
+                "关键帧采样耗时 %.1f 秒（%s）——存储较慢，首播延迟主要来自这里",
+                probe_s, file.file_path,
+            )
         profile = media_profile_from_file(file, keyframe_interval_s=interval)
         decisions.append(
             (

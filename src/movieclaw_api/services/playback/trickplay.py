@@ -47,7 +47,9 @@ TILES_PER_SHEET = COLUMNS * ROWS
 THUMB_WIDTH = 320
 
 #: 生成要通读整个容器；给足余量，超时就放弃（没有预览不影响播放）。
-_GENERATE_TIMEOUT = 600.0
+#: 生成上限。加了 -readrate 4 之后生成时长 ≈ 片长 / 4（两小时片约 30 分钟），
+#: 上限要按最长的片（4 小时）留足；超时残片会被清掉、下次重来。
+_GENERATE_TIMEOUT = 7200.0
 
 _SHEET_PATTERN = "sprite_%03d.jpg"
 _INDEX_NAME = "index.json"
@@ -136,6 +138,12 @@ def generate(file: LibraryFile) -> TrickplayIndex | None:
                 "ffmpeg", "-v", "error", "-y",
                 # 只解关键帧：缩略图不需要精确到帧，快一两个数量级
                 "-skip_frame", "nokey",
+                # 读入限速（4 倍实时）：skip_frame 只省解码不省 IO，不限速的话
+                # demuxer 会以磁盘/网络的极限速度通读整个容器，跟同一块盘上的
+                # 首片转码/直通取流抢 IO——「首次起播卡缓冲、重进就好」的头号
+                # 元凶（§6.10）。4 倍 = 24Mbps 的片约 12MB/s，千兆网口一成，
+                # 两小时片约 30 分钟出图——缩略图晚点完全可以接受。
+                "-readrate", "4",
                 "-i", str(video),
                 "-an", "-sn", "-dn",
                 "-vf", f"fps=1/{INTERVAL_S},scale={THUMB_WIDTH}:-2,tile={COLUMNS}x{ROWS}",
@@ -180,11 +188,15 @@ def generate(file: LibraryFile) -> TrickplayIndex | None:
     return index
 
 
-def schedule(file: LibraryFile) -> None:
+def schedule(file: LibraryFile, *, delay_s: float = 0) -> None:
     """后台生成，不阻塞调用方。同一部片并发触发只做一次。
 
     生成要通读整个容器，放进开会话的同步路径会让首帧白等；而缩略图晚几十秒
     出现完全可以接受——没有预览不影响播放。
+
+    ``delay_s``：开会话时传 90 秒——即便有 -readrate 限速，起播头一分钟正是
+    转码抢首片、播放器攒缓冲的关键窗口，缩略图这种最不急的活让开它。延迟
+    期间用户退出播放也照样生成（低速后台任务，下次进来直接有预览）。
     """
     file_id = file.id or 0
     if file_id in _in_flight or load_index(file_id) is not None:
@@ -193,6 +205,8 @@ def schedule(file: LibraryFile) -> None:
 
     async def run() -> None:
         try:
+            if delay_s > 0:
+                await asyncio.sleep(delay_s)
             await asyncio.to_thread(generate, file)
         except Exception:  # noqa: BLE001 — 缩略图失败绝不能影响播放
             logger.warning("缩略图生成失败：file_id=%s", file_id, exc_info=True)
