@@ -61,8 +61,22 @@ export function DiagnosticsPanel({
   return (
     <div
       /*
-       * 外观照 YouTube 的 Stats for nerds：**一块半透明的黑，仅此而已**，
-       * 位置也照它放在画面左上（顶栏片名之下）。
+       * 外观照 YouTube 的 Stats for nerds：**一块半透明的黑，仅此而已**。
+       *
+       * 位置照它放在画面左上，但有两条约束是真机截图逼出来的：
+       *
+       * - **`top` 必须自己叠 `--safe-top`**。顶栏也叠了它，PWA（black-translucent
+       *   + viewport-fit=cover）里状态栏把顶栏整体往下推 59px，面板不跟着让就
+       *   正好压在片名那一行上。面板是半透明的，压上去不是"盖住"而是"透出来"，
+       *   两组文字叠在一起谁也读不了——真机截图里就是这个样子。
+       * - **不能长到盖住中央的播放键**。竖屏宽度不够，面板必然横跨屏幕中线，
+       *   而播放/退进十秒那一簇就在画面正中；面板挡住它，用户要先关诊断才能
+       *   暂停。所以竖屏限高到中线上方一档（`50% - top - 3rem`），超出滚动。
+       *   宽屏不受这条约束：面板 320px 靠左，与居中的按钮簇在横向上本就错开，
+       *   那里只留一个防撑破的兜底限高。
+       *
+       * 限高一律配 `overflow-y-auto`：判定理由那段长度不可控（多轨、降档、
+       * HDR 处置都会往里加句子），撑破了会一路盖到控制条上。
        *
        * 刻意不用站内浮层的 .menu-surface（磨砂玻璃 + 高光描边 + 大投影）：
        * 那套语言是给「压在内容上、等你操作完就走」的菜单用的，而这块面板会
@@ -72,7 +86,12 @@ export function DiagnosticsPanel({
        * 视频上，每帧重采样模糊是掉帧的头号大户（globals 里的 QoE 注释），而
        * 诊断面板恰恰是用来量掉帧的，不能自己污染读数。
        */
-      className="absolute left-6 top-20 z-20 w-[320px] max-w-[calc(100%-2rem)] rounded-[14px] bg-black/60 px-3.5 py-3 text-[11.5px] max-md:left-3 max-md:top-16"
+      className="
+        absolute z-20 overflow-y-auto overscroll-contain rounded-[14px] bg-black/70 px-3.5 py-2.5 text-[11.5px]
+        left-6 top-[calc(4.5rem_+_var(--safe-top))] w-[320px] max-h-[calc(100%-12rem)]
+        max-md:left-3 max-md:right-3 max-md:w-auto
+        max-md:max-h-[calc(50%_-_4.5rem_-_var(--safe-top)_-_2.5rem)]
+      "
     >
       <div className="mb-2 flex items-center justify-between">
         <h3 className="text-[12px] font-semibold text-white/90">播放诊断</h3>
@@ -88,7 +107,7 @@ export function DiagnosticsPanel({
         </button>
       </div>
 
-      <div className="space-y-1">
+      <div className="space-y-0.5">
         <Row label="档位" value={TIER_LABELS[decision.tier ?? -1] ?? "未知"} />
         {decision.degraded_from != null ? (
           <Row label="降档自" value={`档 ${decision.degraded_from}`} />
@@ -113,15 +132,19 @@ export function DiagnosticsPanel({
               : "—"
           }
         />
-        <Row
-          label="硬件加速"
-          value={session.hw_backend ?? (decision.tier === 4 ? "无（软件转码）" : "不适用")}
-        />
+        {/* 直通档（0/1/2）根本不经编码器，「硬件加速：不适用」是句废话；
+            码率拿不到时那条 `—` 同理。竖屏能显示的行数有限，没信息量的行
+            就是在把真正要看的判定理由挤出屏幕。 */}
+        {decision.tier != null && decision.tier >= 3 ? (
+          <Row
+            label="硬件加速"
+            value={session.hw_backend ?? (decision.tier === 4 ? "无（软件转码）" : "不适用")}
+          />
+        ) : null}
         <Row label="传输" value={stats?.engine ?? "—"} />
-        <Row
-          label="实时码率"
-          value={stats?.bitrate ? `${(stats.bitrate / 1_000_000).toFixed(1)} Mbps` : "—"}
-        />
+        {stats?.bitrate ? (
+          <Row label="实时码率" value={`${(stats.bitrate / 1_000_000).toFixed(1)} Mbps`} />
+        ) : null}
         <div className={dropRatio > DROP_ALERT_RATIO ? "text-red-300" : undefined}>
           <Row
             label="掉帧"
