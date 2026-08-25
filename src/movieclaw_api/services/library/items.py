@@ -38,6 +38,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from movieclaw_api.schemas.library import (
+    EpisodeView,
     LibraryInventorySummaryView,
     LibraryItemView,
     LibraryRecentAdditionView,
@@ -737,6 +738,28 @@ class EpisodeInfo:
     still_url: str | None = None
     owned: bool = False  # 该集有在位文件
     file_ids: list[int] = field(default_factory=list)  # 该集的台账行（含 missing）
+    # 当前观看者的进度（build_season_episodes 传 member_id 才填）：分集卡据此
+    # 画进度条与已看对勾，口径与首页「最近观看」一致
+    position_ms: int = 0
+    played: bool = False
+    progress_percent: int | None = None  # 1~99；完成态由 played 单独表达
+
+
+def episode_view(info: EpisodeInfo) -> EpisodeView:
+    """EpisodeInfo → 接口视图。两个分集端点（库详情页 / 播放页）共用，
+    字段加减只改这一处。"""
+    return EpisodeView(
+        episode_number=info.episode_number,
+        name=info.name,
+        overview=info.overview,
+        air_date=info.air_date,
+        still_url=info.still_url,
+        owned=info.owned,
+        file_ids=info.file_ids,
+        position_ms=info.position_ms,
+        played=info.played,
+        progress_percent=info.progress_percent,
+    )
 
 
 def find_episode_thumb(video: Path) -> Path | None:
@@ -749,7 +772,12 @@ def find_episode_thumb(video: Path) -> Path | None:
 
 
 async def build_season_episodes(
-    session: AsyncSession, item: MediaItem, files: list[LibraryFile], season_number: int
+    session: AsyncSession,
+    item: MediaItem,
+    files: list[LibraryFile],
+    season_number: int,
+    *,
+    member_id: int | None = None,
 ) -> list[EpisodeInfo]:
     """装配一季的分集清单：并集"元数据里的集 ∪ 库里实际拥有的集"。
 
@@ -758,6 +786,10 @@ async def build_season_episodes(
     读路径分层（docs/design/metadata.md 第 5 节）：分集 NFO/本地缩略图
     最优先（尊重既有刮削成果）→ media_episode 表（刮削落库的主体）→
     条目还没刮过时拉一次 TMDB 分季实时兜底。
+
+    ``member_id`` 非 None 时附带该观看者的每集进度（position/played/percent）：
+    分集卡与首页「最近观看」同一套视觉语言，数据同样只认 ``playback_state``
+    ——网页播放器与 Jellyfin 客户端写的是同一张表，这里读出来天然一致。
     """
     from sqlmodel import select
 
@@ -831,6 +863,33 @@ async def build_season_episodes(
             from movieclaw_api.services.media_scrape import scrape_media_item
 
             asyncio.get_running_loop().create_task(scrape_media_item(item.id))
+
+    if member_id is not None and item.id is not None:
+        from movieclaw_playback import state as playback_state
+
+        states = await playback_state.get_states(session, [item.id], member_id=member_id)
+        for info in infos:
+            row = states.get((item.id, season_number, info.episode_number))
+            if row is None:
+                continue
+            info.played = row.played
+            info.position_ms = row.position_ms
+            if row.position_ms > 0:
+                # 百分比的分母与首页「最近观看」同口径：在位文件实测时长优先，
+                # 其次分集刮削时长；clamp 到 1~99——完成态由 played 单独表达
+                meta = meta_by_number.get(info.episode_number)
+                duration_ms = max(
+                    (
+                        r.duration_seconds * 1000
+                        for r in by_episode.get(info.episode_number, [])
+                        if r.state == FileState.IN_PLACE and r.duration_seconds
+                    ),
+                    default=(meta.runtime_minutes or 0) * 60_000 if meta else 0,
+                )
+                if duration_ms > 0:
+                    info.progress_percent = max(
+                        1, min(99, round(row.position_ms * 100 / duration_ms))
+                    )
     return infos
 
 

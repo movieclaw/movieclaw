@@ -1264,7 +1264,11 @@ function SeasonEpisodesSection({
   );
 }
 
-/** 分集横滚卡：16:9 剧照缩略图 + 集号集名；缺集置灰。 */
+/** 分集横滚卡：16:9 剧照缩略图 + 集号集名；缺集置灰。
+
+    观看状态与首页「最近观看」卡同一套视觉语言（同一张 playback_state 表，
+    Jellyfin 客户端里看的进度也在内）：看了一半底部细进度条，看完右上角
+    绿色对勾——用户扫一眼分集行就知道追到哪了。 */
 function EpisodeCard({
   episode,
   selected,
@@ -1274,6 +1278,9 @@ function EpisodeCard({
   selected: boolean;
   onSelect: () => void;
 }) {
+  // 看完 = 满条绿；看一半 = 百分比蓝；有记录但算不出百分比（无时长）给
+  // 一根 60% 透明的整条兜底——三种形态与 RecentWatchCard 逐一对应
+  const progress = episode.played ? 100 : episode.progress_percent;
   return (
     <button
       type="button"
@@ -1301,10 +1308,35 @@ function EpisodeCard({
             </span>
           }
         />
-        {!episode.owned && (
-          <span className="absolute right-1.5 top-1.5 rounded bg-black/60 px-1.5 py-px text-micro font-semibold text-[var(--warn)]">
-            缺
-          </span>
+        {/* 右上角状态位：缺集与已看对勾同排（看过之后文件丢了两者会同时出现） */}
+        {(!episode.owned || episode.played) && (
+          <div className="pointer-events-none absolute right-1.5 top-1.5 flex items-center gap-1">
+            {!episode.owned && (
+              <span className="rounded bg-black/60 px-1.5 py-px text-micro font-semibold text-[var(--warn)]">
+                缺
+              </span>
+            )}
+            {episode.played && (
+              <span
+                aria-label="已看完"
+                className="flex size-5 items-center justify-center rounded-full bg-[var(--ok)] text-[#07120c] shadow-lg"
+              >
+                <CheckIcon className="size-3 stroke-[2.5]" />
+              </span>
+            )}
+          </div>
+        )}
+        {progress != null ? (
+          <div className="pointer-events-none absolute inset-x-1.5 bottom-1.5 h-[3px] overflow-hidden rounded-full bg-white/25">
+            <div
+              className={`h-full rounded-full ${episode.played ? "bg-[var(--ok)]" : "bg-[var(--accent-2)]"}`}
+              style={{ width: `${progress}%` }}
+            />
+          </div>
+        ) : (
+          episode.position_ms > 0 && (
+            <div className="pointer-events-none absolute inset-x-1.5 bottom-1.5 h-[3px] rounded-full bg-[var(--accent-2)]/60" />
+          )
         )}
       </div>
       <p

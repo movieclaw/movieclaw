@@ -22,7 +22,6 @@ from movieclaw_api.schemas.library import (
     ClaimPayload,
     DetachPayload,
     DirectorView,
-    EpisodeView,
     IdentityReviewDecision,
     ItemDeleteResultView,
     LastOrganizeView,
@@ -94,6 +93,7 @@ from movieclaw_api.services.library.items import (
     build_season_episodes,
     delete_item_files,
     delete_single_file,
+    episode_view,
     find_episode_thumb,
     local_item_artwork,
 )
@@ -1929,29 +1929,26 @@ async def list_item_episodes(
     library_id: int,
     media_item_id: int,
     season_number: int = Query(ge=0, description="季号（0=特别篇）"),
+    principal: Principal = Depends(require_login),
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[SeasonEpisodesView]:
     """并集"元数据里的集 ∪ 库里实有的集"：缺集也列出（owned=false 置灰）。
-    集名/日期来自库内季集结构，简介/剧照本地分集刮削优先、TMDB 分季兜底。"""
+    集名/日期来自库内季集结构，简介/剧照本地分集刮削优先、TMDB 分季兜底。
+    随集带回当前观看者的进度（进度条/已看对勾的数据源）。"""
     service = LibraryConfigService(session)
     await service.get(library_id)  # 404 检查
     item, rows = await _item_rows(session, library_id, media_item_id)
-    episodes = await build_season_episodes(session, item, rows, season_number)
+    episodes = await build_season_episodes(
+        session,
+        item,
+        rows,
+        season_number,
+        member_id=principal.member_id if principal.member_id is not None else 0,
+    )
     return ok(
         SeasonEpisodesView(
             season_number=season_number,
-            episodes=[
-                EpisodeView(
-                    episode_number=e.episode_number,
-                    name=e.name,
-                    overview=e.overview,
-                    air_date=e.air_date,
-                    still_url=e.still_url,
-                    owned=e.owned,
-                    file_ids=e.file_ids,
-                )
-                for e in episodes
-            ],
+            episodes=[episode_view(e) for e in episodes],
         )
     )
 

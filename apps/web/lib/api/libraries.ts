@@ -1018,6 +1018,12 @@ export interface LibraryEpisode {
   owned: boolean;
   /** 该集的台账文件 id（在详情的 files 里查规格） */
   file_ids: number[];
+  /** 当前观看者上次看到的位置（毫秒）；0=没看过或已重置 */
+  position_ms: number;
+  /** 当前观看者已看完该集（右上角绿色对勾，与首页最近观看同款） */
+  played: boolean;
+  /** 观看进度 1~99；已看完由 played 表达，不给百分比 */
+  progress_percent: number | null;
 }
 
 /** 一季的分集清单。 */

@@ -83,9 +83,9 @@ from movieclaw_api.services.playback_recent import recent_watch_items
 from movieclaw_api.settings import PlaybackPolicySetting
 from movieclaw_api.settings.store import get_setting_store
 from movieclaw_api.core.config import get_settings
-from movieclaw_api.schemas.library import EpisodeView, SeasonEpisodesView
+from movieclaw_api.schemas.library import SeasonEpisodesView
 from movieclaw_api.services import media_scrape
-from movieclaw_api.services.library.items import build_season_episodes
+from movieclaw_api.services.library.items import build_season_episodes, episode_view
 from movieclaw_db.engine import get_session
 from movieclaw_db.models import LibraryFile, MediaItem, PlaybackMetric
 from movieclaw_db.repositories.media_repo import MediaItemRepository
@@ -1080,22 +1080,17 @@ async def get_playback_item_episodes(
         .scalars()
         .all()
     )
-    episodes = await build_season_episodes(session, item, rows, season_number)
+    episodes = await build_season_episodes(
+        session,
+        item,
+        rows,
+        season_number,
+        member_id=principal.member_id if principal.member_id is not None else 0,
+    )
     return ok(
         SeasonEpisodesView(
             season_number=season_number,
-            episodes=[
-                EpisodeView(
-                    episode_number=e.episode_number,
-                    name=e.name,
-                    overview=e.overview,
-                    air_date=e.air_date,
-                    still_url=e.still_url,
-                    owned=e.owned,
-                    file_ids=e.file_ids,
-                )
-                for e in episodes
-            ],
+            episodes=[episode_view(e) for e in episodes],
         )
     )
 

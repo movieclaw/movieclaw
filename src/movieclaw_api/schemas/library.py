@@ -550,6 +550,13 @@ class EpisodeView(BaseModel):
     )
     owned: bool = Field(description="该集有在位文件；false=缺集或文件缺失（前端置灰）")
     file_ids: list[int] = Field(default_factory=list, description="该集的台账文件 id")
+    # 当前观看者的进度：分集卡的进度条与已看对勾，视觉与数据口径都与首页
+    # 「最近观看」一致（同一张 playback_state 表，Jellyfin 客户端写的也算）
+    position_ms: int = Field(default=0, description="当前观看者上次看到的位置（毫秒）")
+    played: bool = Field(default=False, description="当前观看者已看完该集")
+    progress_percent: int | None = Field(
+        default=None, description="观看进度 1~99；已看完由 played 表达，不给百分比"
+    )
 
 
 class SeasonEpisodesView(BaseModel):
