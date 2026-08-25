@@ -252,11 +252,10 @@ export function VideoPlayer(props: VideoPlayerProps) {
   /**
    * 按下的那一刻控制条在不在。
    *
-   * 触屏上没有悬停，控制条藏起来时第一下点击应该只是**把它叫出来**，而不是
-   * 顺手把片子暂停了（YouTube 手机端就是这样）。但 `setChromeVisible(true)`
-   * 是异步的，click 回调读到的可能已经是新值，所以要在 pointerdown 时把
-   * 「当时」的状态记进 ref，判断才稳定。桌面上鼠标一动控制条早就出来了，
-   * 点击行为跟以前一样。
+   * 画面点击是「控制层开关」：藏着的第一下只**唤出**，露着的那一下才收起。
+   * 但容器的 pointerdown 会先 `setChromeVisible(true)`，click 回调读 state
+   * 拿到的已经是新值——分不清这一下是「唤出」还是「该收起」。所以在
+   * pointerdown 时把「当时」的状态记进 ref，click 里按它判断才稳定。
    */
   const chromeWasVisibleRef = useRef(true);
   // 会话释放器：区分「真的离开了」与「StrictMode 把同一个会话重新挂了一遍」。
@@ -928,11 +927,19 @@ export function VideoPlayer(props: VideoPlayerProps) {
     }
   }, [video]);
 
-  /** 点画面：控制条藏着时只把它叫出来，露着时才是播放/暂停。 */
+  /**
+   * 点画面只负责控制层的显隐：藏着就唤出，露着就收起。
+   *
+   * 播放/暂停只属于按钮和快捷键——整块画面都是暂停键的话，找按钮时点偏
+   * 一点、擦一下屏幕，片子就停了（真机反馈的误触来源）。Netflix / YouTube
+   * 手机端同款取舍：画面点击 = 控制层开关，动作 = 各自的按钮。
+   * 唤出由容器的 pointerdown 先做（那里同时记下按下瞬间的显隐态），这里
+   * 只补「露着 → 收起」的那一半；暂停中收不掉是有意的——chromeMustStay-
+   * Visible 会立刻把它拉回来，暂停画面本来就该带着控制条。
+   */
   const onSurfaceClick = useCallback(() => {
-    if (chromeWasVisibleRef.current) togglePlay();
-    else setChromeVisible(true);
-  }, [togglePlay]);
+    if (chromeWasVisibleRef.current) setChromeVisible(false);
+  }, []);
 
   /**
    * 换音轨。
@@ -1471,6 +1478,10 @@ export function VideoPlayer(props: VideoPlayerProps) {
     >
       <MediaController
         noHotkeys
+        // media-chrome 自带的手势层会在点击媒体时切换播放/暂停——与我们的
+        // 「画面点击只开关控制层」直接冲突（它就是"点哪都会暂停"的元凶之一，
+        // 浏览器 E2E 抓出来的）。快捷键已经 noHotkeys 自管，手势也一样自管。
+        {...{ gesturesdisabled: "" }}
         className="size-full"
         style={{ width: "100%", height: "100%", backgroundColor: "#000" }}
       >
