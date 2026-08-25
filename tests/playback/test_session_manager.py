@@ -788,6 +788,89 @@ time.sleep(300)
         await manager.shutdown()
 
 
+@pytest.mark.asyncio
+async def test_parallel_prefetch_never_triggers_restart_storm(manager, monkeypatch):
+    """回归（2026-08-25 iPhone 真机事故）：AVPlayer 会**并行**请求相邻分片。
+    重启判定若只看单个请求，阈值 1 之下会互相杀——N+2 嫌转码器超前杀过去、
+    N 发现落后又杀回来，一片都产不出直到超时。判定必须看全体等待者的最小
+    分片号：并行预取时最小号紧贴转码头 → 全员等待，一次都不许杀。"""
+    # 假 ffmpeg：起步 0.3 秒后每 0.25 秒产出一片（写文件 + 进列表），模拟
+    # 慢速软转；三个并发请求到达时它一片都还没写完——事故的并发窗口
+    slow_producer = """
+import sys, time, pathlib
+out = pathlib.Path(sys.argv[1])
+d = out.parent
+out.write_text("#EXTM3U\\n#EXT-X-VERSION:7\\n")
+time.sleep(0.3)
+for i in range(6):
+    (d / ("seg%05d.m4s" % i)).write_bytes(b"x" * 64)
+    with out.open("a") as f:
+        f.write("#EXTINF:4.0,\\nseg%05d.m4s\\n" % i)
+    time.sleep(0.25)
+time.sleep(300)
+"""
+    install_fake(monkeypatch, slow_producer)
+    session = await manager.start(
+        make_plan(), source_path="/m/a.mkv", member_id=0, segment_plan=_boundaries(800)
+    )
+    kills: list[int] = []
+    real_killpg = os.killpg
+    monkeypatch.setattr(
+        session_mod.os, "killpg",
+        lambda pgid, sig: (kills.append(sig), real_killpg(pgid, sig))[1],
+    )
+    try:
+        results = await asyncio.gather(
+            manager.ensure_segment(session, 0),
+            manager.ensure_segment(session, 1),
+            manager.ensure_segment(session, 2),
+        )
+        assert all(r is not None for r in results), "并行预取的分片没有全部就绪"
+        assert kills == [], f"并行预取触发了重启风暴：{kills}"
+        assert session.head_segment == 0  # 转码器从未被打断
+        assert session.pending_segments == {}  # 挂号表清干净
+    finally:
+        monkeypatch.setattr(session_mod.os, "killpg", real_killpg)
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_restart_targets_min_pending_not_the_trigger(manager, monkeypatch):
+    """重启起点取全体等待者的最小号：往前杀会把更早的请求永远饿死。
+    场景：进程已死（分片永远等不来），同时在等 seg3 与 seg7——无论哪个先
+    触发重启，都必须从 3 起转，7 顺流而下也能拿到。"""
+    writes_live_then_exits = """
+import sys, pathlib
+pathlib.Path(sys.argv[1]).write_text("#EXTM3U\\n#EXT-X-VERSION:7\\n")
+"""
+    install_fake(monkeypatch, writes_live_then_exits)
+    monkeypatch.setattr(TranscodeSessionManager, "_SEGMENT_WAIT_S", 2.0)
+    session = await manager.start(
+        make_plan(), source_path="/m/a.mkv", member_id=0, segment_plan=_boundaries(800)
+    )
+    heads: list[int] = []
+    real_spawn = manager._spawn
+
+    async def spy_spawn(sess, command):
+        heads.append(sess.head_segment)
+        return await real_spawn(sess, command)
+
+    monkeypatch.setattr(manager, "_spawn", spy_spawn)
+    try:
+        await asyncio.gather(
+            manager.ensure_segment(session, 7),
+            manager.ensure_segment(session, 3),
+        )
+        # 第一记可能打到 7（seg3 还没来得及挂号的竞速窗口）；但 3 一旦在等，
+        # 之后的每次重启都必须以 3 为起点——绝不允许 3↔7 往复互杀（事故形态）
+        assert heads, "进程已死却从未尝试重启"
+        first_three = heads.index(3) if 3 in heads else len(heads)
+        assert 3 in heads, f"最小号 3 从未成为重启起点：{heads[:10]}"
+        assert all(h == 3 for h in heads[first_three:]), f"出现回弹互杀：{heads[:12]}"
+    finally:
+        await manager.shutdown()
+
+
 def test_sync_completed_skips_reparse_when_playlist_unchanged(manager, tmp_path):
     """签名门控：一次 seek 有好几个并发分片请求各自 50ms 轮询，live.m3u8
     没变就不该反复全量重解析（两小时片近两千行）。"""

@@ -133,6 +133,10 @@ class TranscodeSession:
     #: 行的列表全量重解析一遍——文件没变就跳过，解析只在 ffmpeg 真写了新
     #: 内容时发生一次。
     _playlist_sig: tuple[int, int] | None = None
+    #: 正在 ensure_segment 里等待的分片号 → 并发请求数。重启判定必须看
+    #: **全体**在等的请求而不是只看自己：iOS 的 AVPlayer 会并行请求相邻的
+    #: 几个分片，逐个自查会互相杀（详见 _maybe_restart_for 的注释）。
+    pending_segments: dict[int, int] = field(default_factory=dict)
     _stderr_task: asyncio.Task | None = None
     _restart_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
@@ -465,6 +469,27 @@ class TranscodeSessionManager:
         waited_from = time.monotonic()
         head_before = session.head_segment
         deadline = waited_from + self._SEGMENT_WAIT_S
+        # 登记「我在等这一片」。客户端断开时 uvicorn 会取消本协程，finally
+        # 兜底注销——挂号表漏项会让重启目标算错，宁可多算不可漏算。
+        session.pending_segments[index] = session.pending_segments.get(index, 0) + 1
+        try:
+            return await self._await_segment(session, index, target, waited_from, head_before, deadline)
+        finally:
+            remaining = session.pending_segments.get(index, 1) - 1
+            if remaining <= 0:
+                session.pending_segments.pop(index, None)
+            else:
+                session.pending_segments[index] = remaining
+
+    async def _await_segment(
+        self,
+        session: TranscodeSession,
+        index: int,
+        target: Path,
+        waited_from: float,
+        head_before: int,
+        deadline: float,
+    ) -> Path | None:
         while time.monotonic() < deadline:
             # 会话可能在等待期间被显式结束（用户退出的 DELETE 会删目录）。
             # 不查这条就会对着已删除的目录重启 ffmpeg，No such file or
@@ -544,11 +569,19 @@ class TranscodeSessionManager:
         session._playlist_sig = sig
 
     async def _maybe_restart_for(self, session: TranscodeSession, index: int) -> None:
-        """请求的分片在当前转码轮次覆盖不到时，杀掉 ffmpeg 从目标边界重启。
+        """请求的分片在当前转码轮次覆盖不到时，杀掉 ffmpeg 从**全体等待者的
+        最小分片号**重启。
 
-        「覆盖不到」= 在转码头之前（copy 不能倒着转），或超前到等不起
-        （_RESTART_AHEAD_SEGMENTS）。重启用锁串行化：一次 seek 会让播放器
-        并发请求好几个相邻分片，只有第一个该触发重启。"""
+        为什么必须看全体而不是只看自己（2026-08-25 真机事故，iPhone PWA）：
+        hls.js 串行取分片，但 iOS 的 AVPlayer 会**并行**请求相邻的几个分片。
+        逐个自查的旧逻辑在阈值收紧到 1 之后会互相杀——转码器刚从 N 起步，
+        N+2 的请求嫌它超前就杀掉直奔 N+2，N 的请求发现自己落后又杀回 N，
+        一片都没转完就再次被杀，循环到 30 秒超时 404，AVPlayer 报解码错误、
+        一路降档到底（软转/烧录每片编得慢，并发窗口大，必炸）。
+
+        以最小号为准两种场景都正确：并行预取时最小号必然紧贴转码头（覆盖内
+        → 全员等待，绝不杀）；真正的快进只有一个远端请求（照旧立杀直奔）。
+        重启起点也取最小号——往前杀会把还在等的更早请求永远饿死。"""
         plan = session.segment_plan
         assert plan is not None
         async with session._restart_lock:
@@ -556,18 +589,26 @@ class TranscodeSessionManager:
             if session.state == "stopped":
                 return
             produced = self._highest_produced(session)
-            behind = index < session.head_segment
-            ahead = index > produced + self._RESTART_AHEAD_SEGMENTS
+            # 全体等待者中最小的未完成分片号（自己必在挂号表里）。已完成的
+            # 不算——它们各自的循环马上会拿到文件退出等待
+            wanted = min(
+                (i for i in session.pending_segments if i not in session.completed_segments),
+                default=index,
+            )
+            behind = wanted < session.head_segment
+            ahead = wanted > produced + self._RESTART_AHEAD_SEGMENTS
             process_dead = session.process is not None and session.process.returncode is not None
-            # 进程还活着且目标在合理范围内：等它转过来即可
+            # 进程还活着且全体等待者都在覆盖范围内：等它转过来即可
             if not (behind or ahead or (process_dead and not self._segment_ready(session, index))):
                 return
+            index = wanted
             logger.info(
-                "转码重启直奔分片：session=%s seg=%05d（当前头=%d 已产出到=%d）",
+                "转码重启直奔分片：session=%s seg=%05d（当前头=%d 已产出到=%d 在等=%s）",
                 session.id,
                 index,
                 session.head_segment,
                 produced,
+                sorted(session.pending_segments),
             )
             # seek 重启走快杀（SIGKILL），不给 SIGTERM 收尾机会：优雅退出是
             # ffmpeg 把当前分片写完再走，转码压力大时要一两秒——而这段时间
