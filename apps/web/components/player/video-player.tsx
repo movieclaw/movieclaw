@@ -1043,7 +1043,14 @@ export function VideoPlayer(props: VideoPlayerProps) {
         hasSession: Boolean(sessionId) && (mode?.seekBeyondBufferedRestarts ?? false),
       });
       if (plan.kind === "native") {
-        video.currentTime = Math.max(0, plan.seconds);
+        const seconds = Math.max(0, plan.seconds);
+        video.currentTime = seconds;
+        // 乐观更新进度条：seek 落到未缓冲区间（往回拖出 back buffer、往前
+        // 拖到没转的段）时，规范只在 seek **完成**后才发 timeupdate——
+        // 服务端供片要一两秒，这期间进度条会弹回旧位置，用户以为没拖上。
+        // currentTime 已经同步改过去了，把 UI 一起带过去；seek 完成后的
+        // timeupdate 读同一个值，不会跳。
+        setPositionMs(toFileMs(seconds, startMsRef.current));
         return;
       }
       // 换会话期间先把旧流停住：不停的话旧会话还在往前走，进度条会在新会话

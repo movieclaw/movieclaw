@@ -181,7 +181,15 @@ export function playerReducer(state: PlayerState, event: PlayerEvent): PlayerSta
 
     case "seeking":
       if (awaitsUserDecision(state.phase)) return state;
-      return state.phase === "idle" ? state : { ...state, phase: "seeking" };
+      // 只有「已经出画」之后的 seek 才算 seeking；起播路上（buffering /
+      // session-starting）的那次续播点跳转不能把 phase 顶成 seeking——
+      // seeking 不算 busy（正常拖拽不该弹全屏转圈），被它顶掉的后果是
+      // 加载转圈提前消失、中央播放键在还放不动的时候就亮出来：用户点了
+      // 没反应，以为播放器坏了（真机复现的起播假死感）。ended 之后往回
+      // 拖是真 seek，照常进。
+      return state.phase === "playing" || state.phase === "seeking" || state.phase === "ended"
+        ? { ...state, phase: "seeking" }
+        : state;
 
     case "restart":
       // restart 也是一次新的起播尝试：换音轨/换画质可能在暂停下连续发生，

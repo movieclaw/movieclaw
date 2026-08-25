@@ -126,6 +126,26 @@ test("播放中途的缓冲不会把状态打回起播阶段", () => {
   assert.equal(playerReducer(playing, { type: "buffering" }).phase, "buffering");
 });
 
+test("起播路上的续播点 seek 不把 phase 顶成 seeking——加载转圈要一直亮到出画", () => {
+  // seeking 不算 busy（正常拖拽不弹全屏转圈）。挂流后跳续播点会让 video
+  // 发 seeking 事件，若被它顶掉 buffering，转圈提前消失、播放键在放不动
+  // 的时候就亮出来：用户点了没反应，以为播放器坏了（真机复现）。
+  const loading = run([
+    { type: "request", startMs: 0 },
+    { type: "session", session: planSession(0) },
+  ]);
+  assert.equal(loading.phase, "buffering");
+  const afterSeek = playerReducer(loading, { type: "seeking" });
+  assert.equal(afterSeek.phase, "buffering");
+  assert.equal(isBusy(afterSeek.phase), true);
+
+  // 出画之后的 seek 才是真 seeking；ended 之后往回拖同理
+  const playing = playerReducer(afterSeek, { type: "playing" });
+  assert.equal(playerReducer(playing, { type: "seeking" }).phase, "seeking");
+  const ended = playerReducer(playing, { type: "ended" });
+  assert.equal(playerReducer(ended, { type: "seeking" }).phase, "seeking");
+});
+
 test("重新起播清空上一轮的失败记录", () => {
   const state = run([
     { type: "request", startMs: 0 },
