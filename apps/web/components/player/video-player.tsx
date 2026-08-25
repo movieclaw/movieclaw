@@ -2106,10 +2106,19 @@ export function VideoPlayer(props: VideoPlayerProps) {
 
         {/* 暂停压暗层：整屏 45% 黑，一眼知道「现在是停着的」。片名大字不在
             这里——它长在下面控制条那个布局流里（见 bottom 容器），跟时间行
-            排队而不是各自绝对定位再拿 padding 去猜对方的高度。 */}
-        {showPauseOverlay ? (
-          <div className="pointer-events-none absolute inset-0 z-10 bg-black/45 transition-opacity duration-300" />
-        ) : null}
+            排队而不是各自绝对定位再拿 padding 去猜对方的高度。
+
+            常驻 + 透明度切换，绝不 mount/unmount：挂载瞬间 transition 不生效，
+            直接 mount 就是「啪」一下整屏变黑。而 paused 跟的是 video 的原生
+            pause/playing 事件——iOS 的 AVPlayer 在缓冲、起播、seek 重启时会
+            连发 pause→waiting→playing，间隙帧里这层会反复挂上又摘掉，真机上
+            表现为黑屏快速闪烁几次（2026-08-25 反馈）。入场延迟 200ms：短于
+            这个窗口的状态抖动完全不可见；真暂停则柔和淡入，松手退场不带延迟。 */}
+        <div
+          className={`pointer-events-none absolute inset-0 z-10 bg-black/45 transition-opacity ${
+            showPauseOverlay ? "opacity-100 duration-300 delay-200" : "opacity-0 duration-200 delay-0"
+          }`}
+        />
 
         {busy ? (
           // noautohide：media-controller 会把无操作时的普通子元素统一淡出，
