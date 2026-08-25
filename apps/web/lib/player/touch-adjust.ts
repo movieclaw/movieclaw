@@ -31,9 +31,10 @@ export const ACTIVATE_PX = 12;
  * ——在那里起手的竖直滑动多半是想去摸进度条，不该被劫持成调亮度。 */
 const TOP_EXCLUDE = 0.12;
 const BOTTOM_EXCLUDE = 0.24;
-/** 左右缘排除带（px）：与边缘返回手势守卫同一片区域，那里的触摸已被
- * preventDefault，也不该再当成调节手势的起手点。 */
-const EDGE_EXCLUDE_PX = 32;
+/** 屏幕左右缘的手势带宽度（px）。两处共用同一个值：边缘返回手势守卫
+ * （video-player 里 preventDefault 的范围）和本模块的调节手势排除带——
+ * 定义在一起才不会出现「守卫拦了、调节又接手」的缝隙。 */
+export const EDGE_GUARD_PX = 32;
 
 export interface ViewportInfo {
   /** 物理视口宽高（window.innerWidth/Height——触摸事件坐标所在的坐标系） */
@@ -68,7 +69,7 @@ export function classifyTouchZone(
 ): AdjustKind | null {
   const p = toLayoutPoint(physicalX, physicalY, viewport);
   if (p.y < p.height * TOP_EXCLUDE || p.y > p.height * (1 - BOTTOM_EXCLUDE)) return null;
-  if (p.x < EDGE_EXCLUDE_PX || p.x > p.width - EDGE_EXCLUDE_PX) return null;
+  if (p.x < EDGE_GUARD_PX || p.x > p.width - EDGE_GUARD_PX) return null;
   return p.x < p.width / 2 ? "brightness" : "volume";
 }
 

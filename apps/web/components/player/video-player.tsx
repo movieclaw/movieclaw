@@ -61,6 +61,7 @@ import type { TrickplayIndex } from "@/lib/player/trickplay";
 import { isEditableTarget, resolveShortcut } from "@/lib/player/shortcuts";
 import {
   type AdjustKind,
+  EDGE_GUARD_PX,
   applySwipe,
   classifyTouchZone,
   isVerticalIntent,
@@ -288,10 +289,9 @@ export function VideoPlayer(props: VideoPlayerProps) {
   /**
    * 按下的那一刻控制条在不在。
    *
-   * 画面点击是「控制层开关」：藏着的第一下只**唤出**，露着的那一下才收起。
-   * 但容器的 pointerdown 会先 `setChromeVisible(true)`，click 回调读 state
-   * 拿到的已经是新值——分不清这一下是「唤出」还是「该收起」。所以在
-   * pointerdown 时把「当时」的状态记进 ref，click 里按它判断才稳定。
+   * 画面轻点是「控制层开关」：click 按这份快照取反。用 ref 而不是在 click
+   * 里直接读 state：按下到抬起之间显隐可能被别的路径改过（鼠标 move 唤出、
+   * 自动隐藏计时器收起），按「按下瞬间」的状态判断才符合用户的意图。
    */
   const chromeWasVisibleRef = useRef(true);
   // 会话释放器：区分「真的离开了」与「StrictMode 把同一个会话重新挂了一遍」。
@@ -969,12 +969,13 @@ export function VideoPlayer(props: VideoPlayerProps) {
    * 播放/暂停只属于按钮和快捷键——整块画面都是暂停键的话，找按钮时点偏
    * 一点、擦一下屏幕，片子就停了（真机反馈的误触来源）。Netflix / YouTube
    * 手机端同款取舍：画面点击 = 控制层开关，动作 = 各自的按钮。
-   * 唤出由容器的 pointerdown 先做（那里同时记下按下瞬间的显隐态），这里
-   * 只补「露着 → 收起」的那一半；暂停中收不掉是有意的——chromeMustStay-
-   * Visible 会立刻把它拉回来，暂停画面本来就该带着控制条。
+   * 按「按下瞬间」的显隐态取反（容器 pointerdown 记录）：滑动手势没有
+   * click，不会走到这里——控制层的显隐只回应真正的轻点。暂停中收不掉是
+   * 有意的——chromeMustStayVisible 会立刻把它拉回来，暂停画面本来就该
+   * 带着控制条。
    */
   const onSurfaceClick = useCallback(() => {
-    if (chromeWasVisibleRef.current) setChromeVisible(false);
+    setChromeVisible(!chromeWasVisibleRef.current);
   }, []);
 
   /**
@@ -1444,21 +1445,20 @@ export function VideoPlayer(props: VideoPlayerProps) {
    * 两个刻意的细节：
    * - 判定用**物理视口**坐标：伪横屏只是容器转了 90°，事件坐标仍是物理
    *   方向的，恰好与系统手势的起手边一致，不用换算；
-   * - 起手点落在按钮/链接/输入件上时放行：顶栏返回键、右下角的功能键都
-   *   离边缘不远，preventDefault 会吞掉它们的 click，把「禁手势」变成
-   *   「按钮失灵」。手势恰好从按钮上起手的概率可以忽略。
+   * - **只拦裸画面（video 元素本身）上的触摸**。按 target 白名单排除按钮
+   *   的第一版仍会误伤：字幕/设置菜单、诊断面板都能滚动，在靠边的非按钮
+   *   处起手拖动会被 preventDefault 吞掉滚动，表现为「列表滑不动」；
+   *   preventDefault 还会吞掉合成 click，把「禁手势」连坐成「控件失灵」。
+   *   历史滑动的典型起手场景本来就是裸画面，控件上放行的风险可以忽略。
    */
   useEffect(() => {
-    const EDGE_PX = 32;
     const onTouchStart = (event: TouchEvent) => {
       const touch = event.touches[0];
       if (!touch) return;
+      if (!(event.target instanceof HTMLVideoElement)) return;
       const nearEdge =
-        touch.clientX <= EDGE_PX || touch.clientX >= window.innerWidth - EDGE_PX;
-      if (!nearEdge) return;
-      const target = event.target as Element | null;
-      if (target?.closest("button, a, input, select, [role='button']")) return;
-      event.preventDefault();
+        touch.clientX <= EDGE_GUARD_PX || touch.clientX >= window.innerWidth - EDGE_GUARD_PX;
+      if (nearEdge) event.preventDefault();
     };
     document.addEventListener("touchstart", onTouchStart, { passive: false });
     return () => document.removeEventListener("touchstart", onTouchStart);
@@ -1546,14 +1546,20 @@ export function VideoPlayer(props: VideoPlayerProps) {
         showAdjust("brightness", value);
         return;
       }
+      const before = video.volume;
       video.volume = value;
-      if (volumeAdjustableRef.current === null) {
-        // 只有试了才知道：iOS 的赋值被系统静默忽略（读回不变）
+      // 只有试了才知道 iOS 的赋值有没有被系统静默忽略——但**必须用一次
+      // 真正会改变数值的赋值来试**：音量本来就是 1 时向上滑，value 被
+      // clamp 回 1，「读回不变」什么也证明不了；这时先按不下结论，等到
+      // 一次 value ≠ 原值的赋值再判。不然 iOS 上第一下向上滑会把「可调」
+      // 永久误判成 true，之后的胶囊读数全是假的。
+      if (volumeAdjustableRef.current === null && Math.abs(value - before) > 0.01) {
         volumeAdjustableRef.current = Math.abs(video.volume - value) < 0.01;
       }
-      if (volumeAdjustableRef.current) {
-        // 从 0 往上滑视同「要声音」，静音一并解除
-        if (value > 0 && video.muted) video.muted = false;
+      if (volumeAdjustableRef.current !== false) {
+        // 只有**往上滑**才视同「要声音」解除静音；向下调音量时静音保持——
+        // 用户按过静音键后想把音量预调小一点，不该突然出声
+        if (value > gesture.startValue && video.muted) video.muted = false;
         showAdjust("volume", value);
       } else {
         showAdjust("volume", video.volume, true);
@@ -1651,10 +1657,16 @@ export function VideoPlayer(props: VideoPlayerProps) {
         } as React.CSSProperties
       }
       data-chrome={chromeVisible ? "visible" : "hidden"}
-      onPointerMove={() => setChromeVisible(true)}
+      // 悬停唤出只属于鼠标：触摸的 pointermove（滑动调节、拖进度）不该把
+      // 控制层惊出来——亮度/音量手势恰恰设计成在控制层藏着时用，滑一下
+      // 弹一屏按钮就是视觉噪音。触屏的唤出走「轻点 → click → onSurfaceClick」。
+      onPointerMove={(event) => {
+        if (event.pointerType === "mouse") setChromeVisible(true);
+      }}
+      // 只记录按下瞬间的显隐态，不在这里唤出：唤出等 click（轻点才有 click，
+      // 滑动没有），手势滑动全程控制层保持原样
       onPointerDown={() => {
         chromeWasVisibleRef.current = chromeVisible;
-        setChromeVisible(true);
       }}
       // 只认鼠标：触屏上每点一下都会触发 pointerleave（pointerdown → pointerup
       // → pointerleave → click），当成「用户不看了」会让控制条闪一下就没
