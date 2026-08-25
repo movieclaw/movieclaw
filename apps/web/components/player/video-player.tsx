@@ -346,10 +346,38 @@ export function VideoPlayer(props: VideoPlayerProps) {
     }, 800);
   }, []);
 
-  /** 卸载时清掉两组反馈计时器，别让它们对着已卸载的组件 setState。 */
+  /** 一次性文字提示（顶部胶囊，与调节读数同视觉）；给「画中画被系统拒绝」
+   * 这类**本来会静默失败**的操作一个出口——用户分不清「没反应」和「被拒绝」
+   * 是最难排查的一类反馈。 */
+  const [notice, setNotice] = useState<{ text: string; leaving: boolean } | null>(null);
+  const noticeTimersRef = useRef<{ hide: number | null; gone: number | null }>({
+    hide: null,
+    gone: null,
+  });
+  const flashNotice = useCallback((text: string) => {
+    const timers = noticeTimersRef.current;
+    if (timers.hide !== null) window.clearTimeout(timers.hide);
+    if (timers.gone !== null) window.clearTimeout(timers.gone);
+    timers.gone = null;
+    setNotice({ text, leaving: false });
+    timers.hide = window.setTimeout(() => {
+      timers.hide = null;
+      setNotice((prev) => (prev ? { ...prev, leaving: true } : prev));
+      timers.gone = window.setTimeout(() => {
+        timers.gone = null;
+        setNotice(null);
+      }, 180);
+    }, 2600);
+  }, []);
+
+  /** 卸载时清掉各组反馈计时器，别让它们对着已卸载的组件 setState。 */
   useEffect(
     () => () => {
-      for (const timers of [adjustTimersRef.current, seekFlashTimersRef.current]) {
+      for (const timers of [
+        adjustTimersRef.current,
+        seekFlashTimersRef.current,
+        noticeTimersRef.current,
+      ]) {
         if (timers.hide !== null) window.clearTimeout(timers.hide);
         if (timers.gone !== null) window.clearTimeout(timers.gone);
       }
@@ -1264,17 +1292,37 @@ export function VideoPlayer(props: VideoPlayerProps) {
     if (!video) return;
     const webkit = video as WebkitPresentationVideo;
     if (webkit.webkitSetPresentationMode && document.pictureInPictureEnabled !== true) {
-      webkit.webkitSetPresentationMode(
-        webkit.webkitPresentationMode === "picture-in-picture" ? "inline" : "picture-in-picture",
-      );
+      const target =
+        webkit.webkitPresentationMode === "picture-in-picture" ? "inline" : "picture-in-picture";
+      webkit.webkitSetPresentationMode(target);
+      // 这个调用是同步 void：被系统拒绝时**什么都不发生**（模式不变、无异常、
+      // 无事件），按钮看起来就是「点了没反应」——真机上没法排查。稍等半秒查
+      // 模式有没有真的切过去，没切就把拒绝这件事说出来（iOS 的 PWA 形态、
+      // 低电量模式、系统限制都会拒）。
+      if (target === "picture-in-picture") {
+        window.setTimeout(() => {
+          if (webkit.webkitPresentationMode !== "picture-in-picture") {
+            flashNotice("系统未开启画中画（当前环境可能不支持）");
+          }
+        }, 500);
+      }
       return;
     }
     if (document.pictureInPictureElement === video) {
       void document.exitPictureInPicture().catch(() => undefined);
       return;
     }
-    void video.requestPictureInPicture?.().catch(() => undefined);
-  }, [video]);
+    void video.requestPictureInPicture?.().catch((error: unknown) => {
+      // 静默失败是「点了没反应」类反馈的根源：把浏览器的拒绝翻成人话
+      const name = typeof error === "object" && error && "name" in error ? String((error as { name: unknown }).name) : "";
+      flashNotice(
+        name === "NotAllowedError"
+          ? "浏览器拒绝了画中画（需要页面处于可交互状态）"
+          : "画中画启动失败（此视频源或环境不支持）",
+      );
+      console.warn("画中画请求被拒绝：", error);
+    });
+  }, [video, flashNotice]);
 
   /**
    * 全屏 / 退出全屏。与横屏是两个独立按钮：横屏管方向、全屏管铺满，
@@ -1917,6 +1965,23 @@ export function VideoPlayer(props: VideoPlayerProps) {
                   <span className="tnum w-9 text-right">{Math.round(adjust.value * 100)}%</span>
                 </>
               )}
+            </div>
+          </div>
+        ) : null}
+
+        {/* 一次性文字提示：与调节胶囊同视觉，压低一档（两者可共存不叠）。
+            承接本来会静默失败的操作（画中画被系统拒绝等）。 */}
+        {notice ? (
+          <div
+            {...{ noautohide: "" }}
+            className="pointer-events-none absolute left-1/2 top-[calc(3.75rem_+_var(--safe-top))] z-30 -translate-x-1/2"
+          >
+            <div
+              className={`max-w-[85vw] rounded-full bg-black/70 px-4 py-2 text-center text-[13px] font-medium text-white shadow-[0_10px_28px_rgba(0,0,0,0.45)] ${
+                notice.leaving ? "player-flash-out" : "player-flash-in"
+              }`}
+            >
+              {notice.text}
             </div>
           </div>
         ) : null}
