@@ -59,6 +59,8 @@ KNOWN_NON_GENERATED = {
     "playback.file.trickplay",
     "playback.file.trickplay.sheet",
     "playback.metric.report",
+    # 客户端日志上报：播放器故障现场的内部链路，CLI 手动报一条没有意义
+    "playback.client-log",
     "playback.stats",
     "playback.device.revoke",
     # 观看进度上报与续播点：播放器起播/心跳/退出时自动调用的内部链路，

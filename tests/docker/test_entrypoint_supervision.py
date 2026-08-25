@@ -304,10 +304,21 @@ def _wait_for_file(path: Path, timeout: float = 8) -> None:
         time.sleep(0.05)
 
 
+def _read_count(path: Path) -> int:
+    """读进程计数，容忍写方竞态。替身用 write_text 更新计数——先截断后写入，
+    读方轮询恰好撞见截断瞬间会读到空串，int('') 直接炸掉整个用例（CI 上
+    实际发生过）。空读当 0，下一轮轮询自然读到新值。"""
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return 0
+    return int(text) if text else 0
+
+
 def _wait_for_value(path: Path, value: int, timeout: float = 8) -> None:
     """等待进程计数到达期望值，确认重启真的发生而不是仅写入状态文件。"""
     deadline = time.monotonic() + timeout
-    while not path.exists() or int(path.read_text(encoding="utf-8")) < value:
+    while _read_count(path) < value:
         if time.monotonic() >= deadline:
             raise AssertionError(f"等待计数 {value} 超时：{path}")
         time.sleep(0.05)
@@ -569,7 +580,7 @@ def test_runtime_restart_keeps_web_alive(entrypoint_env: dict[str, str]) -> None
         _wait_for_value(api_count, 2)
         # 新后端就绪、完整链路恢复后，前端必须还是最初那一个进程
         _wait_for_http_ok("http://127.0.0.1:3000/api/v1/health")
-        assert int(web_count.read_text(encoding="utf-8")) == 1
+        assert _read_count(web_count) == 1
         assert process.poll() is None
     finally:
         output = _stop(process)

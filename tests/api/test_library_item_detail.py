@@ -1242,7 +1242,9 @@ async def test_tv_episodes_merge_local_and_tmdb(db, tmp_path) -> None:
         detail = (await get_library_item(library.id, item.id, _ADMIN, session)).data
         assert detail.seasons == [1]
 
-        resp = await list_item_episodes(library.id, item.id, 1, session)
+        # 路由带上了 principal（分集随观看者带回进度/已看，member_id 由它来）——
+        # 直调时按签名补齐，别再位置传参把 session 顶进 principal 槽
+        resp = await list_item_episodes(library.id, item.id, 1, _ADMIN, session)
         episodes = {e.episode_number: e for e in resp.data.episodes}
 
     # 元数据有 E1/E2（TMDB 建档带回）；库里恰好也只有这两集
@@ -1278,7 +1280,9 @@ async def test_tv_episodes_list_missing_episode_from_metadata(db, tmp_path) -> N
             .scalars()
             .one()
         )
-        resp = await list_item_episodes(library.id, item.id, 1, session)
+        # 路由带上了 principal（分集随观看者带回进度/已看，member_id 由它来）——
+        # 直调时按签名补齐，别再位置传参把 session 顶进 principal 槽
+        resp = await list_item_episodes(library.id, item.id, 1, _ADMIN, session)
     numbers = {(e.episode_number, e.owned) for e in resp.data.episodes}
     assert (1, True) in numbers and (2, False) in numbers
 
