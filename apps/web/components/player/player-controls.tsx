@@ -364,15 +364,18 @@ export function PlayerControls(props: PlayerControlsProps) {
       </div>
 
       {/* ---- 进度条 ----
-          控制条收起时下面那一行整体塌成 0 高，进度条自然落到播放器最底边，
-          只剩一条贴边的细线；展开时它回到操作区上方。 */}
+          与其它控件同一个显隐语义：控制层收起时整条淡出（曾走 YouTube 手机端
+          的「收起留 3px 细线」，实际反馈是显隐不一致、读不出点击切换了什么，
+          2026-08-25 拍板改 Netflix 派的全出全收——一致、可预期优先）。
+          pointer-events-none 必须跟着：透明但可拖的进度条会把「点屏幕下缘
+          唤出控制层」截胡成一次误 seek。 */}
       <div
-        className={`player-scrub-row pointer-events-auto relative transition-[padding] duration-300 ${
-          chromeVisible ? "player-scrub-inset" : "px-0"
+        className={`player-scrub-row player-scrub-inset relative transition-opacity duration-300 ${
+          chromeVisible ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
         }`}
       >
         <div
-          className={`player-scrub-shade relative transition-[height] duration-300 ${chromeVisible ? "h-5" : "h-[3px]"}`}
+          className="player-scrub-shade relative h-5"
           onPointerMove={(e) => {
             if (!durationMs) return;
             const rect = e.currentTarget.getBoundingClientRect();
@@ -455,11 +458,8 @@ export function PlayerControls(props: PlayerControlsProps) {
             // 触屏把命中带加高到 44px（Apple HIG 的最小触控目标）：视觉上还是
             // 那条细线，但手指按在线的上下 20px 内都算按中了——竖屏上「滑不准、
             // 按不中」的直接解法。桌面维持 20px，不跟鼠标抢悬停区。
-            // 只在控制条露出时加高：收起后它是贴底的被动细线，44px 的隐形命中
-            // 带会把「点屏幕下缘唤出控制条」截胡成一次误 seek。
-            className={`player-scrub absolute inset-x-0 top-1/2 h-5 w-full -translate-y-1/2 cursor-pointer touch-none appearance-none bg-transparent disabled:cursor-default ${
-              chromeVisible ? "pointer-coarse:h-11" : ""
-            }`}
+            // 收起态整行 pointer-events-none，命中带不用再单独收。
+            className="player-scrub absolute inset-x-0 top-1/2 h-5 w-full -translate-y-1/2 cursor-pointer touch-none appearance-none bg-transparent disabled:cursor-default pointer-coarse:h-11"
           />
 
           {/* 把手自己画，不用 input 原生的那个。
@@ -477,9 +477,8 @@ export function PlayerControls(props: PlayerControlsProps) {
               durationMs
                 ? dragging !== null
                   ? "scale-100 pointer-coarse:scale-110"
-                  : `scale-0 [.player-scrub-row:hover_&]:scale-100 ${
-                      chromeVisible ? "pointer-coarse:scale-100" : ""
-                    }`
+                  : // 收起态整行 opacity-0，触屏常显不用再按 chromeVisible 分岔
+                    "scale-0 [.player-scrub-row:hover_&]:scale-100 pointer-coarse:scale-100"
                 : "scale-0"
             }`}
             style={{ left: `${progress}%` }}
