@@ -1859,9 +1859,23 @@ export function VideoPlayer(props: VideoPlayerProps) {
   // 自动播放被彻底拦下时不能再转圈：状态机要等 `playing` 才离开 buffering，
   // 而那一刻永远不会来——转圈叠着中央播放键是最典型的「界面卡住了」观感。
   const busy = isBusy(state.phase) && autoplay !== "blocked";
-  // 暂停海报：出过画之后才显示，否则起播那几秒会先闪一张「已暂停」
+  // 暂停海报：出过画之后才显示，否则起播那几秒会先闪一张「已暂停」。
+  //
+  // 必须跟「用户意图」而不是 video 元素的原生 paused：iOS 在缓冲饥饿、seek
+  // 后追流时会自己发 pause（间隙里 busy 还没立起来），直通片在远程挂载上
+  // seek 后的短暂反复饥饿能让这层黑罩以饥饿周期反复淡入扯出——真机表现是
+  // 快进后黑屏连闪（2026-08-26 反馈；200ms 入场延迟只能吃掉更短的抖动）。
+  // wantsPlayRef 只在用户亲手按暂停时为 false（程序性暂停都刻意置 true），
+  // 拿它把「饥饿暂停」整类排除。代价是系统侧发起的暂停（拔耳机等，不经
+  // togglePlay）不压暗，只有静止画面——可接受。渲染期读 ref 是安全的：
+  // 每次 pause/playing 都伴随 setPaused，取值时刻恒有新鲜渲染。
   const showPauseOverlay =
-    paused && !busy && state.phase !== "error" && state.phase !== "consent" && positionMs > 0;
+    paused &&
+    !busy &&
+    !wantsPlayRef.current &&
+    state.phase !== "error" &&
+    state.phase !== "consent" &&
+    positionMs > 0;
 
   return (
     <div
