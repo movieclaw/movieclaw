@@ -115,8 +115,10 @@ export interface VideoPlayerProps {
 const PROGRESS_INTERVAL_MS = 10_000;
 /** 会话续命间隔。必须明显短于服务端的空闲回收窗口。 */
 const PING_INTERVAL_MS = 15_000;
-/** 播放中控制条自动隐藏的静止时长。 */
-const IDLE_HIDE_MS = 3000;
+/** 播放中控制条自动隐藏的**静止**时长——任何操作（触摸、鼠标移动、快捷键）
+ * 都会把倒计时从头来过（见 chromeActivity 的注释）。4 秒取 Netflix 手机端
+ * 的手感：3 秒在真机上「刚找到按钮就没了」（用户反馈）。 */
+const IDLE_HIDE_MS = 4000;
 
 /**
  * iOS Safari 的画中画：没有 W3C 那套 API，只有带前缀的 presentationMode。
@@ -235,6 +237,26 @@ export function VideoPlayer(props: VideoPlayerProps) {
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [chromeVisible, setChromeVisible] = useState(true);
+  /**
+   * 控制层的活动信号：每次用户操作 +1，自动隐藏的倒计时以它为依赖从头再排。
+   *
+   * 没有它的话计时器只在 chromeVisible **翻转**时重排——控制层已经露着时，
+   * `setChromeVisible(true)` 被 React 按同值去重，effect 不再执行，于是
+   * 「首次唤出后 N 秒」准时消失：用户手指还按在按钮上、鼠标还在动，控制层
+   * 也照样收走（真机反馈「很快就消失」的根源）。所有播放器的语义都是
+   * 「静止 N 秒才收」，静止的定义需要这个信号来承载。
+   */
+  const [chromeActivity, setChromeActivity] = useState(0);
+  const lastActivityBumpRef = useRef(0);
+  /** 活动信号节流到 500ms 一跳：鼠标 move 是指针频率的事件，逐次 setState
+   * 会让整棵播放器组件树跟着指针重渲染。粒度换来的误差上限是倒计时短
+   * 500ms，感知不到。 */
+  const bumpChromeActivity = useCallback(() => {
+    const now = performance.now();
+    if (now - lastActivityBumpRef.current < 500) return;
+    lastActivityBumpRef.current = now;
+    setChromeActivity((n) => n + 1);
+  }, []);
   /** 用户明确关掉过本集的「下一集」提示：关掉后不能因为还在片尾窗口里又弹回来 */
   const [nextDismissed, setNextDismissed] = useState(false);
   /** 元数据里的时长（毫秒）。档 0 直出时它就是片长，服务端算不出时的兜底 */
@@ -1423,6 +1445,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
       if (!action) return;
       event.preventDefault();
       setChromeVisible(true);
+      bumpChromeActivity();
       switch (action.type) {
         case "toggle-play":
           togglePlay();
@@ -1460,7 +1483,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [togglePlay, seekBy, seekToFileMs, toggleFullscreen, durationMs, video, subtitles.options, flashAdjust, flashSeek]);
+  }, [togglePlay, seekBy, seekToFileMs, toggleFullscreen, durationMs, video, subtitles.options, flashAdjust, flashSeek, bumpChromeActivity]);
 
   // ---------------------------------------------------------------------
   // 系统集成：媒体键 / 锁屏信息 / 防息屏
@@ -1766,7 +1789,8 @@ export function VideoPlayer(props: VideoPlayerProps) {
     }
     const timer = window.setTimeout(() => setChromeVisible(false), IDLE_HIDE_MS);
     return () => window.clearTimeout(timer);
-  }, [paused, menuOpen, awaitingUser, chromeVisible]);
+    // chromeActivity：用户的每次操作都重排这个倒计时（声明见 state 注释）
+  }, [paused, menuOpen, awaitingUser, chromeVisible, chromeActivity]);
 
   /**
    * 片尾「下一集」卡片该不该显示。
@@ -1807,14 +1831,20 @@ export function VideoPlayer(props: VideoPlayerProps) {
       // 控制层惊出来——亮度/音量手势恰恰设计成在控制层藏着时用，滑一下
       // 弹一屏按钮就是视觉噪音。触屏的唤出走「轻点 → click → onSurfaceClick」。
       onPointerMove={(event) => {
-        if (event.pointerType === "mouse") setChromeVisible(true);
+        if (event.pointerType === "mouse") {
+          setChromeVisible(true);
+          bumpChromeActivity();
+        }
       }}
       // 只记录按下瞬间的显隐态，不在这里唤出：唤出等 click（轻点才有 click，
       // 滑动没有），手势滑动全程控制层保持原样。顺带记指针类型——双击全屏
-      // 只属于鼠标（dblclick 事件本身不带 pointerType）
+      // 只属于鼠标（dblclick 事件本身不带 pointerType）。
+      // 控制层已露出时，任何按下（含按钮点按）都重排自动隐藏的倒计时；
+      // 藏着时不动它——那会让滑动手势把控制层惊出来
       onPointerDown={(event) => {
         chromeWasVisibleRef.current = chromeVisible;
         lastPointerTypeRef.current = event.pointerType;
+        if (chromeVisible) bumpChromeActivity();
       }}
       // 只认鼠标：触屏上每点一下都会触发 pointerleave（pointerdown → pointerup
       // → pointerleave → click），当成「用户不看了」会让控制条闪一下就没
