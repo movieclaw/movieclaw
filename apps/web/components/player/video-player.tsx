@@ -425,6 +425,16 @@ export function VideoPlayer(props: VideoPlayerProps) {
   /** 供心跳探活读当前阶段：重开已经在路上时绝不能再触发一次重开 */
   const phaseRef = useRef(initialPlayerState.phase);
   /**
+   * 供心跳探活确认「404 说的还是不是当前会话」。
+   *
+   * 换字幕（PGS 烧录）/换音轨/换画质会重开会话，而服务端开新会话的第一步
+   * 就是杀掉同文件的旧会话（stop_for_file）。若旧定时器的那拍探活恰好在
+   * 新会话落地之后才拿到 404，此刻 phase 已经是 buffering——只靠 phase
+   * 守卫会放行一次多余的 restart，其 stop_for_file 又把刚起好的新会话
+   * 杀掉，播放器随即撞上 404 的 playlist，报「浏览器不支持这个格式」。
+   */
+  const sessionIdRef = useRef<string | null>(null);
+  /**
    * 会话已被服务端回收、但用户正暂停着，我们**没有**代他重开。
    *
    * 暂停中替他拉起一路 ffmpeg 是浪费（他可能再也不回来了），所以只立这个
@@ -493,6 +503,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
 
   const failedKey = state.failedTiers.join(",");
   const sessionId = state.session?.session_id ?? null;
+  sessionIdRef.current = sessionId;
 
   // 片长：服务端算的真值优先。**旧会话相对制**里 video.duration 只到「已经
   // 转出来的那一段」，拿它当分母会让进度条一路自己缩放；VOD 全片列表
@@ -1051,6 +1062,10 @@ export function VideoPlayer(props: VideoPlayerProps) {
         const alive = await pingPlaybackSession(sessionId);
         // null = 这次请求本身失败（断网/5xx），不能据此判定会话没了
         if (alive !== false) return;
+        // 探活途中会话已经换了（换字幕烧录/换音轨/换画质重开）：这个 404
+        // 说的是上一个会话，拿它去 restart 会让服务端 stop_for_file 把刚
+        // 起好的新会话一起杀掉（见 sessionIdRef 的注释）
+        if (sessionIdRef.current !== sessionId) return;
         if (document.visibilityState !== "visible") return;
         // 只在「确实在播/该播」的阶段重开。重开路上（deciding /
         // session-starting / degrading，此时 state.session 还是旧会话）再触发
