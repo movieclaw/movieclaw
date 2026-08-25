@@ -135,21 +135,37 @@ test("解码卡死要求前方缓冲至少 DECODE_STALL_MIN_BUFFER_S", () => {
 // 推一把（nudge）：iOS AVPlayer「有数据却楞住」的 wedge 先踢再判死
 // ---------------------------------------------------------------------------
 
-test("有数据卡满 3 秒且还有推动额度 → 推一把", () => {
-  assert.equal(shouldNudge({ stalledFor: NUDGE_AT_S, nudges: 0, bufferedAhead: 8 }), true);
+const nudgeBase = {
+  stalledFor: NUDGE_AT_S,
+  nudges: 0,
+  bufferedAhead: 8,
+  readyState: 3,
+  everAdvanced: true,
+};
+
+test("播起来过之后有数据卡满 3 秒且还有推动额度 → 推一把", () => {
+  assert.equal(shouldNudge({ ...nudgeBase }), true);
 });
 
 test("卡的时间不足推动起点 → 不推", () => {
-  assert.equal(shouldNudge({ stalledFor: NUDGE_AT_S - 1, nudges: 0, bufferedAhead: 8 }), false);
+  assert.equal(shouldNudge({ ...nudgeBase, stalledFor: NUDGE_AT_S - 1 }), false);
 });
 
 test("推满次数后不再推——让 decode-stalled 判定接手降档", () => {
-  assert.equal(shouldNudge({ stalledFor: 99, nudges: MAX_NUDGES, bufferedAhead: 8 }), false);
+  assert.equal(shouldNudge({ ...nudgeBase, stalledFor: 99, nudges: MAX_NUDGES }), false);
 });
 
 test("前方缓冲不足（追上编码器）不推——那是缺粮不是 wedge", () => {
   assert.equal(
-    shouldNudge({ stalledFor: 99, nudges: 0, bufferedAhead: DECODE_STALL_MIN_BUFFER_S - 1 }),
+    shouldNudge({ ...nudgeBase, stalledFor: 99, bufferedAhead: DECODE_STALL_MIN_BUFFER_S - 1 }),
     false,
   );
+});
+
+test("从未真正播起来过绝不推——起播预滚被推动打断是真机踩过的回归", () => {
+  assert.equal(shouldNudge({ ...nudgeBase, stalledFor: 99, everAdvanced: false }), false);
+});
+
+test("readyState 不足 HAVE_FUTURE_DATA（还在预滚）绝不推", () => {
+  assert.equal(shouldNudge({ ...nudgeBase, stalledFor: 99, readyState: 2 }), false);
 });

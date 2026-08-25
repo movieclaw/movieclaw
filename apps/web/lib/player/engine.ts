@@ -132,8 +132,14 @@ function watchStall(
   let stalledFor = 0;
   let nudges = 0;
   let sinceNudge = 99;
+  let everAdvanced = false;
   const timer = window.setInterval(() => {
     const advanced = video.currentTime > lastTime;
+    // 「真正播起来过」只认小步前进：起播 jsseek / 用户拖动是一次大跳，
+    // 不算播放推进——它击穿预滚闸的话，推动又会回到打断起播的老路
+    if (advanced && !video.seeking && video.currentTime - lastTime < 5) {
+      everAdvanced = true;
+    }
     sinceNudge += 1;
     const verdict = classifyStall({
       paused: video.paused,
@@ -160,7 +166,15 @@ function watchStall(
     }
     // 有数据却不动：先推一把（见 stall.ts shouldNudge 的 iOS wedge 注释），
     // 推不动再让 classifyStall 走到 decode-stalled 降档
-    if (shouldNudge({ stalledFor, nudges, bufferedAhead: bufferedAhead(video) })) {
+    if (
+      shouldNudge({
+        stalledFor,
+        nudges,
+        bufferedAhead: bufferedAhead(video),
+        readyState: video.readyState,
+        everAdvanced,
+      })
+    ) {
       nudges += 1;
       sinceNudge = 0;
       stalledFor = 0;

@@ -58,7 +58,17 @@ export function shouldNudge(input: {
   stalledFor: number;
   nudges: number;
   bufferedAhead: number;
+  /** HTMLMediaElement.readyState：< 3（HAVE_FUTURE_DATA）说明还在预滚 */
+  readyState: number;
+  /** 本次挂流后 currentTime 是否真正前进过 */
+  everAdvanced: boolean;
 }): boolean {
+  // 两道硬闸（2026-08-26 真机回归的教训）：起播预滚阶段 AVPlayer 的
+  // currentTime 本来就不动，此时改 currentTime 会把预滚管线冲掉重来——
+  // 表现为永远起不了播、看门狗降档、会话反复重开狂闪黑屏。wedge 的定义
+  // 是「播着播着楞住」，所以必须真正播起来过、且 readyState 已到
+  // HAVE_FUTURE_DATA 才有资格推。
+  if (!input.everAdvanced || input.readyState < 3) return false;
   return (
     input.stalledFor >= NUDGE_AT_S &&
     input.nudges < MAX_NUDGES &&
