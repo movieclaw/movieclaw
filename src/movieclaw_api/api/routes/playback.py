@@ -425,11 +425,24 @@ async def start_playback_session(
         )
 
     manager = get_session_manager()
-    # seek 出已转区间要起新会话，同文件的旧会话必须先杀——不然用户连拖五下
-    # 进度条就有五个 ffmpeg 在跑（§4.4）。
-    await manager.stop_for_file(file.id, member_id)
-    policy = await get_setting_store().get(PlaybackPolicySetting)
-    backends = await asyncio.to_thread(available_backends)
+
+    async def _keyframe_index():
+        """全片关键帧索引，只有直通档的 VOD 规划要它。冷缓存时 mp4 要过
+        ffprobe（上秒级）——这是把它并入 gather 的主要理由：分享链接直达
+        播放页时详情页预热没跑过，串行 await 会把这一秒全记在起播上。"""
+        if not file.duration_seconds or not view.video or view.video.action != "copy":
+            return None
+        return await asyncio.to_thread(read_keyframe_index, file.file_path)
+
+    # 四件事互相独立，并行做：杀同文件旧会话（seek 出已转区间的前置，§4.4，
+    # 不杀的话用户连拖五下进度条就有五个 ffmpeg 在跑）、策略读取（设置存储
+    # 自带短会话，与请求会话无关）、硬件后端探测、关键帧索引。
+    _, policy, backends, keyframe_index = await asyncio.gather(
+        manager.stop_for_file(file.id, member_id),
+        get_setting_store().get(PlaybackPolicySetting),
+        asyncio.to_thread(available_backends),
+        _keyframe_index(),
+    )
     # 只有真的转视频才谈得上硬件加速：直通档（-c:v copy）不经编码器，报个
     # 后端名只会让诊断面板骗人。烧录时 VAAPI/QSV 会退软件编码（overlay 是
     # 软件滤镜，这两家编码器吃不了软件帧），同样要报实际值。
@@ -446,12 +459,10 @@ async def start_playback_session(
         duration_s = float(file.duration_seconds)
         if view.video and view.video.action == "transcode":
             segment_plan = compute_uniform_plan(duration_s, target_s=SEGMENT_SECONDS)
-        else:
-            index = await asyncio.to_thread(read_keyframe_index, file.file_path)
-            if index is not None:
-                segment_plan = compute_segment_plan(
-                    index.times_s, duration_s, target_s=SEGMENT_SECONDS
-                )
+        elif keyframe_index is not None:
+            segment_plan = compute_segment_plan(
+                keyframe_index.times_s, duration_s, target_s=SEGMENT_SECONDS
+            )
     start_ms = resolved_start_ms
     if segment_plan is None and start_ms > 0 and view.video and view.video.action == "copy":
         # 旧模式的关键帧校正（VOD 下不需要：start() 自己对齐到分片边界）
@@ -727,12 +738,27 @@ async def get_session_segment(
         if ready is None:
             raise NotFoundException("分片尚未就绪")
         target = ready
+    elif session.segment_plan is not None and not target.exists():
+        # VOD 会话响应不再等 live.m3u8（session._wait_for_playlist 的快速
+        # 放行），init.mp4 可能比播放器的第一个请求晚几百毫秒落盘——原地
+        # 小等，别让 hls.js 白吃一次带 1 秒退避的 404 重试，把省下的时间
+        # 又还回去。
+        deadline = time.monotonic() + 10.0
+        while not target.exists() and time.monotonic() < deadline:
+            if session.state in ("stopped", "failed"):
+                break
+            await asyncio.sleep(0.05)
+        if not target.exists():
+            raise NotFoundException("分片尚未就绪")
     elif not target.exists():
         raise NotFoundException("分片尚未就绪")
+    # 分片与 init 段在一个会话的生命期内不可变，URL 又含会话 id 与签名 token
+    # （换会话必换 URL）——放给浏览器缓存，用户往回拖（back buffer 只留 30
+    # 秒，回看必然重新走 HTTP）就变成本地命中，不再打服务端。
     return FileResponse(
         target,
         media_type="video/mp4",
-        headers={"Cache-Control": "no-store"},
+        headers={"Cache-Control": "private, max-age=3600, immutable"},
     )
 
 

@@ -83,10 +83,14 @@ def manager(tmp_path) -> TranscodeSessionManager:
 
 
 def install_fake(monkeypatch, body: str, *, delay: float = 0.0) -> None:
-    """把命令装配换成假 ffmpeg。``delay`` 模拟 playlist 迟迟不出现。"""
+    """把命令装配换成假 ffmpeg。``delay`` 模拟 playlist 迟迟不出现。
+
+    playlist 文件名随模式走（真装配同款）：VOD（start_number 非 None）是
+    live.m3u8，会话相对模式是 index.m3u8。"""
 
     def fake_build(plan, *, source_path, session_dir, start_ms=0, hw_backend=None, start_number=None):
-        playlist = Path(session_dir) / "index.m3u8"
+        name = "live.m3u8" if start_number is not None else "index.m3u8"
+        playlist = Path(session_dir) / name
         script = body if delay <= 0 else f"import time; time.sleep({delay})\n{body}"
         return TranscodeCommand(
             argv=[*_script(script), str(playlist)],
@@ -712,6 +716,97 @@ def test_highest_produced_counts_contiguous_run_only(manager, tmp_path):
     # 与上一轮无缝衔接时旧分片照常计入——它们本来就直接可服务
     session = _vod_session(tmp_path, head=782, completed={782, 783, 784})
     assert manager._highest_produced(session) == 784
+
+
+def _boundaries(count: int) -> SegmentPlan:
+    return SegmentPlan(boundaries=tuple(float(i * 4) for i in range(count)), duration_s=count * 4.0)
+
+
+@pytest.mark.asyncio
+async def test_vod_start_does_not_wait_for_live_playlist(manager, monkeypatch):
+    """VOD 客户端列表由服务端生成，不依赖 ffmpeg 的 live.m3u8——起播响应
+    不该为它白等（实测 0.3~0.8 秒）。进程活着、快速失败窗口过了就放行。"""
+    install_fake(monkeypatch, NEVER_WRITES_PLAYLIST)
+    started = time.monotonic()
+    session = await manager.start(
+        make_plan(), source_path="/m/a.mkv", member_id=0, segment_plan=_boundaries(800)
+    )
+    try:
+        assert session.state == "ready"
+        assert not session.playlist_path.exists()  # 真的没等它出现
+        assert session.process is not None and session.process.returncode is None
+        assert time.monotonic() - started < 2.0  # 只守 0.3 秒窗口，不是 30 秒超时
+    finally:
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_vod_start_still_fails_fast_on_dead_process(manager, monkeypatch):
+    """快速放行不放过「命令本身有错、进程秒退」——这类要立刻给带 stderr
+    的明确报错，而不是让用户对着分片 404 循环猜。"""
+    install_fake(monkeypatch, DIES_IMMEDIATELY)
+    # 窗口放宽到 2 秒：CI 慢机器上 python 假进程可能起得比 0.3 秒还慢，
+    # 这里要验的是「窗口内死亡必报错」，不是窗口的具体长度
+    monkeypatch.setattr(session_mod, "VOD_FAST_FAIL_WINDOW_S", 2.0)
+    with pytest.raises(SessionStartError) as excinfo:
+        await manager.start(
+            make_plan(), source_path="/m/a.mkv", member_id=0, segment_plan=_boundaries(800)
+        )
+    assert "Invalid data" in str(excinfo.value)
+    assert manager.active() == []
+
+
+@pytest.mark.asyncio
+async def test_seek_restart_kills_without_sigterm_grace(manager, monkeypatch):
+    """seek 重启走 SIGKILL 快杀：SIGTERM 让 ffmpeg 收尾写完当前分片要一两秒，
+    而用户正对着转圈等新位置——没写完的分片不进列表、重启后会被覆盖，
+    立杀没有损失。优雅退出只属于 stop()（契约 3 的测试另有覆盖）。"""
+    writes_live_then_sleeps = """
+import sys, time, pathlib
+pathlib.Path(sys.argv[1]).write_text("#EXTM3U\\n#EXT-X-VERSION:7\\n")
+time.sleep(300)
+"""
+    install_fake(monkeypatch, writes_live_then_sleeps)
+    monkeypatch.setattr(TranscodeSessionManager, "_SEGMENT_WAIT_S", 0.6)
+    session = await manager.start(
+        make_plan(), source_path="/m/a.mkv", member_id=0, segment_plan=_boundaries(800)
+    )
+    seen: list[int] = []
+    real_killpg = os.killpg
+    monkeypatch.setattr(
+        session_mod.os, "killpg",
+        lambda pgid, sig: (seen.append(sig), real_killpg(pgid, sig))[1],
+    )
+    try:
+        # 远处分片触发重启；假进程不产分片，等待窗内拿不到 → None
+        assert await manager.ensure_segment(session, 50) is None
+        assert session.head_segment == 50  # 重启确实发生了
+        assert signal.SIGKILL in seen
+        assert signal.SIGTERM not in seen
+    finally:
+        monkeypatch.setattr(session_mod.os, "killpg", real_killpg)
+        await manager.shutdown()
+
+
+def test_sync_completed_skips_reparse_when_playlist_unchanged(manager, tmp_path):
+    """签名门控：一次 seek 有好几个并发分片请求各自 50ms 轮询，live.m3u8
+    没变就不该反复全量重解析（两小时片近两千行）。"""
+    session = _vod_session(tmp_path, head=0, completed=set())
+    playlist = session.playlist_path
+    playlist.write_text("#EXTM3U\nseg00000.m4s\n", encoding="utf-8")
+
+    manager._sync_completed(session)
+    assert session.completed_segments == {0}
+
+    # 文件没变：清掉台账再同步，跳过解析 → 台账保持空，证明确实没重读
+    session.completed_segments.clear()
+    manager._sync_completed(session)
+    assert session.completed_segments == set()
+
+    # 文件变了（追加一行，size 必变）：重新解析
+    playlist.write_text("#EXTM3U\nseg00000.m4s\nseg00001.m4s\n", encoding="utf-8")
+    manager._sync_completed(session)
+    assert session.completed_segments == {0, 1}
 
 
 @pytest.mark.asyncio

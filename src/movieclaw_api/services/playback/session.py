@@ -67,6 +67,13 @@ REAP_INTERVAL_S = 15.0
 #: 等 playlist 出现的上限。playlist 先行——会话起来后 ffmpeg 立刻写出
 #: index.m3u8，不等分片；超过这个时间还没有，基本是命令本身有问题。
 PLAYLIST_WAIT_TIMEOUT_S = 30.0
+#: VOD 模式的快速失败窗口：客户端列表由服务端按 segment_plan 生成，根本不
+#: 依赖 ffmpeg 的 live.m3u8——起播路径上等它出现是白等（实测 0.3~0.8 秒）。
+#: spawn 后只守这么一小段，专抓「命令本身有错、进程秒退」（参数错/文件不
+#: 存在通常 100~300ms 内退出），能给用户一句带 stderr 的明确报错；窗口过
+#: 后进程还活着就放行，更晚的死亡由 ensure_segment 的 process-dead 分支
+#: 兜住（表现为分片 404 → 前端降档回路）。
+VOD_FAST_FAIL_WINDOW_S = 0.3
 #: 盘上至少要留的余量。低于它一律拒绝新会话——转码分片与 SQLite 同卷，
 #: 盘满会让数据库写不进去，整个应用不可用。
 MIN_FREE_BYTES = 2 * 1024**3
@@ -121,6 +128,11 @@ class TranscodeSession:
     #: 重启 ffmpeg 需要的原始参数（VOD 模式）
     source_path: str = ""
     hw_backend: str | None = None
+    #: 上次解析 live.m3u8 时的 (mtime_ns, size)。一次 seek 会有好几个并发的
+    #: 分片请求各自轮询就绪，不做门控的话每个请求每 50ms 都把两小时片近两千
+    #: 行的列表全量重解析一遍——文件没变就跳过，解析只在 ffmpeg 真写了新
+    #: 内容时发生一次。
+    _playlist_sig: tuple[int, int] | None = None
     _stderr_task: asyncio.Task | None = None
     _restart_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
@@ -404,8 +416,16 @@ class TranscodeSessionManager:
 
     async def _wait_for_playlist(self, session: TranscodeSession) -> None:
         """等 index.m3u8 出现。ffmpeg 写出 playlist 就算会话可用——
-        分片按需生成，客户端边拉边转（首帧延迟的关键）。"""
-        deadline = time.monotonic() + PLAYLIST_WAIT_TIMEOUT_S
+        分片按需生成，客户端边拉边转（首帧延迟的关键）。
+
+        VOD 模式（segment_plan 非 None）只守 ``VOD_FAST_FAIL_WINDOW_S`` 的
+        快速失败窗口：客户端列表不依赖 ffmpeg，窗口过后进程活着就放行，让
+        ffmpeg 启动与「响应传回 + 播放器初始化 + 列表请求」并行——起播与
+        seek 重启各省几百毫秒（常数注释里有完整取舍）。"""
+        vod = session.segment_plan is not None
+        deadline = time.monotonic() + (
+            VOD_FAST_FAIL_WINDOW_S if vod else PLAYLIST_WAIT_TIMEOUT_S
+        )
         while time.monotonic() < deadline:
             if session.playlist_path.exists():
                 return
@@ -415,6 +435,8 @@ class TranscodeSessionManager:
                 session.error = tail or f"ffmpeg 退出码 {process.returncode}"
                 raise SessionStartError(f"转码进程启动失败：{session.error}")
             await asyncio.sleep(0.05)
+        if vod:
+            return
         session.error = "ffmpeg 超时未产出播放列表"
         raise SessionStartError(session.error)
 
@@ -471,7 +493,10 @@ class TranscodeSessionManager:
                 return None
             if session.state == "failed":
                 return None
-            await asyncio.sleep(0.15)
+            # 50ms 轮询：这决定「分片写完 → 客户端拿到」的发现延迟，seek 的
+            # 尾巴上省的就是这几十毫秒。解析已被 _sync_completed 的签名门控
+            # 挡住，轮询本身只剩 stat 调用，再快也没有收益。
+            await asyncio.sleep(0.05)
         logger.warning(
             "分片等待超时：session=%s seg=%05d（转码进程可能卡死或存储过慢）",
             session.id,
@@ -494,7 +519,17 @@ class TranscodeSessionManager:
         return process is not None and process.returncode is not None
 
     def _sync_completed(self, session: TranscodeSession) -> None:
-        """把当前轮次 live.m3u8 里已列出的分片并入跨轮次台账。"""
+        """把当前轮次 live.m3u8 里已列出的分片并入跨轮次台账。
+
+        按 (mtime_ns, size) 门控：文件没变就不重解析（理由见字段注释）。
+        重启会删掉旧列表重写，新文件的签名必然不同，门控自然失效。"""
+        try:
+            stat = session.playlist_path.stat()
+        except OSError:
+            return
+        sig = (stat.st_mtime_ns, stat.st_size)
+        if sig == session._playlist_sig:
+            return
         try:
             text = session.playlist_path.read_text(encoding="utf-8")
         except OSError:
@@ -506,6 +541,7 @@ class TranscodeSessionManager:
                     session.completed_segments.add(int(line[3:8]))
                 except ValueError:
                     continue
+        session._playlist_sig = sig
 
     async def _maybe_restart_for(self, session: TranscodeSession, index: int) -> None:
         """请求的分片在当前转码轮次覆盖不到时，杀掉 ffmpeg 从目标边界重启。
@@ -533,7 +569,11 @@ class TranscodeSessionManager:
                 session.head_segment,
                 produced,
             )
-            await self._terminate(session)
+            # seek 重启走快杀（SIGKILL），不给 SIGTERM 收尾机会：优雅退出是
+            # ffmpeg 把当前分片写完再走，转码压力大时要一两秒——而这段时间
+            # 用户正对着转圈等新位置的画面。没写完的分片不进列表、重启后会被
+            # 覆盖，立杀没有任何损失（Jellyfin 的 seek 路径同款）。
+            await self._terminate(session, graceful=False)
             session.head_segment = index
             session.start_ms = int(plan.boundaries[index] * 1000)
             session.state = "spawning"
@@ -606,8 +646,12 @@ class TranscodeSessionManager:
             await self.stop(sid)
         return len(victims)
 
-    async def _terminate(self, session: TranscodeSession) -> None:
-        """契约 3：杀整个进程组，SIGTERM 后给 3 秒再 SIGKILL。"""
+    async def _terminate(self, session: TranscodeSession, *, graceful: bool = True) -> None:
+        """契约 3：杀整个进程组。默认 SIGTERM 后给 3 秒再 SIGKILL。
+
+        ``graceful=False`` 直接 SIGKILL——seek 重启专用：用户在等画面，
+        SIGTERM 让 ffmpeg 收尾写完当前分片纯属白等（调用处有完整理由）。
+        """
         process = session.process
         if process is None or process.returncode is not None:
             await self._cancel_stderr(session)
@@ -617,13 +661,17 @@ class TranscodeSessionManager:
         if session.disk_paused:
             self._signal_group(session, signal.SIGCONT)
             session.disk_paused = False
+        first_signal = signal.SIGTERM if graceful else signal.SIGKILL
         try:
-            os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+            os.killpg(os.getpgid(process.pid), first_signal)
         except (ProcessLookupError, PermissionError):
             with contextlib.suppress(ProcessLookupError):
-                process.terminate()
+                if graceful:
+                    process.terminate()
+                else:
+                    process.kill()
         try:
-            await asyncio.wait_for(process.wait(), timeout=3.0)
+            await asyncio.wait_for(process.wait(), timeout=3.0 if graceful else 2.0)
         except TimeoutError:
             with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.killpg(os.getpgid(process.pid), signal.SIGKILL)

@@ -473,6 +473,24 @@ created ──start──> spawning ──首片就绪──> ready ──客户
   就绪），不存在「多等一片才可见」的问题，无需 temp_file 改造。
   `ensure_segment` 对等待 > 1 秒的分片打 info 日志（区分「重启直奔」与
   「顺序追赶」两条路径），真机上哪条路径慢一看便知。
+- **seek 重启走 SIGKILL 快杀，不走契约 3 的优雅退出**：SIGTERM 是让 ffmpeg
+  收尾写完当前分片再退，转码压力大时要一两秒，而这段时间用户正对着转圈；
+  没写完的分片不进列表、重启后会被覆盖，立杀零损失（Jellyfin seek 同款）。
+  优雅退出仍然属于 stop()/shutdown()。
+- **VOD 会话的响应不等 live.m3u8**：客户端列表由服务端按 segment_plan 生成，
+  ffmpeg 的 live.m3u8 只是内部进度追踪——为它阻塞响应是白等（实测 0.3~0.8
+  秒）。spawn 后只守 0.3 秒快速失败窗口（专抓命令有错秒退，给出带 stderr
+  的报错），窗口过后进程活着就放行，ffmpeg 启动与「响应传回 + 播放器初始化」
+  并行；更晚的死亡由 ensure_segment 的 process-dead 分支兜住。init.mp4 因此
+  可能比播放器第一个请求晚几百毫秒，取流端点对它原地小等，不让 hls.js 白吃
+  一次 1 秒退避的 404 重试。
+- **分片就绪的发现是 50ms 轮询 + 签名门控解析**：live.m3u8 按 (mtime, size)
+  没变就不重解析（一次 seek 有多个并发分片请求各自轮询，两小时片的列表近
+  两千行）。刻意不上 inotify/进程 progress 管道那套事件机制——门控后轮询
+  只剩 stat 调用，发现延迟 ≤50ms 已够，事件化的复杂度买不来更多。
+- 分片与 init 段响应带 `Cache-Control: private, max-age=3600, immutable`：
+  会话生命期内内容不可变、URL 含会话 id 与 token（换会话必换 URL），back
+  buffer 只留 30 秒，用户往回拖的重取直接命中浏览器缓存。
 
 ### 4.5 并发与配额
 
