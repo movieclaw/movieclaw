@@ -848,6 +848,11 @@ export function VideoPlayer(props: VideoPlayerProps) {
     }),
     [state.session, selectedSubtitle],
   );
+  /** 供停止上报的 cleanup/pagehide 闭包读**当下**的轨选择。停止上报若不带
+   * 轨，用户「切完字幕就退出」的那次选择会丢——下一次进来又回到旧轨
+   * （切换后 10 秒内退出必现，PGS→文本尤其明显：进来直接又开始烧录）。 */
+  const trackRefsRef = useRef(trackRefs);
+  trackRefsRef.current = trackRefs;
 
   useEffect(() => {
     if (state.phase !== "playing") return;
@@ -898,6 +903,8 @@ export function VideoPlayer(props: VideoPlayerProps) {
         ...snapshot,
         event: "stop",
         position_ms: positionRef.current,
+        // 停止也要带轨记忆：切完字幕/音轨立刻退出的那次选择不能丢
+        ...trackRefsRef.current(),
       }).catch(() => undefined);
       const metric = qoeSnapshotRef.current();
       if (metric) void reportPlaybackMetric(metric).catch(() => undefined);
@@ -914,6 +921,8 @@ export function VideoPlayer(props: VideoPlayerProps) {
           ...unit,
           event: "stop",
           position_ms: positionRef.current,
+          // 同 SPA 离开路径：停止上报带上轨记忆
+          ...trackRefsRef.current(),
         });
       }
       // iOS 切后台也触发 pagehide——画中画还播着呢，这时杀掉转码会话，
