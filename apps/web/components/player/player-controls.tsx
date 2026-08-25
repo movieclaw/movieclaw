@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ActivityIcon, ExpandIcon, GearIcon, ShrinkIcon } from "@/components/icons";
+import { ActivityIcon, CheckIcon, ExpandIcon, GearIcon, ShrinkIcon } from "@/components/icons";
 import type { AudioOption } from "@/lib/player/audio-tracks";
 import { SUBTITLE_OFFSET_STEP, clampSubtitleOffset } from "@/lib/player/subtitles";
 import { QUALITY_OPTIONS } from "@/lib/player/quality";
@@ -28,9 +28,8 @@ import { type TrickplayIndex, tileAt } from "@/lib/player/trickplay";
  *   放这里——顶栏已经有了，重复只会让静止画面更吵。音量条也去掉了：网页
  *   播放器上调音量的人远比想象中少（系统音量、耳机、键盘 M 与上下键都能
  *   管），留着只是让静止画面多一件东西。
- * - **进度条**：常驻播放器**最底边**，控制条淡出后它仍在，只是收成一条
- *   贴边的细线。这是「安静时也知道播到哪」与「安静时画面干净」唯一能同时
- *   成立的做法，也是 YouTube 控件隐藏后的样子。
+ * - **进度条**：贴播放器**最底边**，与控制条同显同隐（Netflix 派全出全收，
+ *   取舍记录见 docs/design/web-player.md §6）。
  *
  * **图标与尺寸对齐全站**（见 components/page-nav.tsx 的 `PAGE_NAV_BUTTON_CLASS`
  * 与 components/icons.tsx）：功能键的命中区 36px / 移动 44px，图标 18px / 22px，
@@ -194,7 +193,7 @@ export interface PlayerControlsProps {
   durationMs: number | null;
   /** 当前会话已缓冲到的文件位置，用于进度条的浅色底 */
   bufferedEndMs: number | null;
-  /** 控制条是否可见。进度条不跟着淡出，只是收成贴底边的细线 */
+  /** 控制条是否可见。进度条与其它控件一起淡入淡出（全出全收） */
   chromeVisible: boolean;
   onSeek: (fileMs: number) => void;
   subtitles: SubtitleTracks;
@@ -578,7 +577,7 @@ export function PlayerControls(props: PlayerControlsProps) {
                   <MenuPanel title="设置" onClose={() => openMenu("none")}>
                     {/* 画质：语义是上限——源不超所选档就照常直通（无损），
                         超了才转码降下去。弱网选低档换低带宽（§10）。 */}
-                    <div className="px-3 pb-1 pt-0.5 text-[12px] text-white/40">画质</div>
+                    <div className="px-4 pb-1 pt-0.5 text-[12px] font-medium text-white/45">画质</div>
                     {QUALITY_OPTIONS.map((option) => (
                       <MenuItem
                         key={option.label}
@@ -594,7 +593,7 @@ export function PlayerControls(props: PlayerControlsProps) {
                         ) : null}
                       </MenuItem>
                     ))}
-                    <div className="mx-1.5 my-1.5 h-px bg-white/[0.07]" />
+                    <div className="my-1.5 h-px bg-white/10" />
                     <MenuItem
                       active={diagnosticsOpen}
                       icon={<ActivityIcon className="size-4 shrink-0" />}
@@ -815,20 +814,20 @@ function SubtitleMenu({
           </MenuItem>
         ))}
         {tracks.unavailable.map((item) => (
-          <div key={item.ref} className="px-3 py-1.5 text-white/35">
+          <div key={item.ref} className="px-4 py-1.5 text-white/35">
             <div className="truncate">{item.label}</div>
             <div className="text-[12px] leading-snug">{item.reason}</div>
           </div>
         ))}
         {tracks.options.length === 0 && tracks.unavailable.length === 0 ? (
-          <div className="px-3 py-2 text-white/40">这个文件没有可用字幕</div>
+          <div className="px-4 py-2 text-white/45">这个文件没有可用字幕</div>
         ) : null}
       </div>
 
       {tracks.options.some((option) => option.kind === "pgs") ? (
         // 用户点之前就该知道代价：选图形字幕会换成转码播放（约一秒切换），
         // 换来的是画中画/投屏里也带字幕——与 Emby 的「字幕压制」同语义
-        <p className="mt-2 border-t border-white/[0.08] px-3 pt-3 text-[12px] leading-relaxed text-white/40">
+        <p className="mt-2 border-t border-white/10 px-4 pt-2.5 text-[12px] leading-relaxed text-white/55">
           图形字幕会转码压制进画面（切换约一秒），画中画等场景也能看到
         </p>
       ) : null}
@@ -836,12 +835,12 @@ function SubtitleMenu({
       {selected && systemRendered ? (
         // 调了没反应比没有选项更糟——iOS 上系统渲染字幕，样式跟随系统的
         // 辅助功能设置，时间轴微调也不经过我们，如实告知去哪调
-        <p className="mt-2 border-t border-white/[0.08] px-3 pt-3 text-[12px] leading-relaxed text-white/40">
+        <p className="mt-2 border-t border-white/10 px-4 pt-2.5 text-[12px] leading-relaxed text-white/55">
           字幕由 iOS 系统渲染，样式在系统设置 → 辅助功能 → 字幕与隐藏式字幕中调整
         </p>
       ) : null}
       {selected && !systemRendered ? (
-        <div className="mt-2 space-y-2 border-t border-white/[0.08] pt-3">
+        <div className="mt-2 space-y-2 border-t border-white/10 pt-3">
           <StepRow
             label="时间轴"
             value={`${style.offsetSeconds > 0 ? "+" : ""}${style.offsetSeconds.toFixed(1)} 秒`}
@@ -878,7 +877,7 @@ function SubtitleMenu({
               onStyleChange({ ...style, bottomPercent: Math.min(40, style.bottomPercent + 2) })
             }
           />
-          <div className="flex gap-2 px-3 pb-1">
+          <div className="flex gap-2 px-4 pb-1">
             <Toggle
               on={style.outline}
               onClick={() => onStyleChange({ ...style, outline: !style.outline })}
@@ -926,19 +925,21 @@ function MenuPanel({
   return (
     <div
       ref={box}
-      // 定位必须内联：.menu-surface 自带 position:relative 且不在 @layer 里，
-      // className 上的 absolute 是 @layer utilities、压不过它（user-menu 同款处理）
-      style={{ position: "absolute" }}
       // bottom-full + mb-8：底边落在按钮上方 32px，正好越过操作行的上内边距
       // （pt-3）与进度条那一行。用相对量而不是写死像素——按钮在移动端会从 36
       // 变 44，写死的偏移在两个断点上必然有一个不对。
-      // 面板外观走全站浮层的 .menu-surface（16px 圆角玻璃），不再自己配一套
-      // 方角黑底——播放器不该是站内唯一一个方角浮层的地方。
-      className="menu-surface bottom-full left-0 mb-8 w-[300px] p-1.5 text-[14px]"
+      //
+      // 外观与诊断面板同一套语言（YouTube 播放器菜单同款取舍）：
+      // - **一块半透明的黑（bg-black/70），不用站内的磨砂玻璃**。磨砂的
+      //   backdrop-filter 叠在视频上每帧都要重采样模糊，是掉帧大户
+      //   （globals 的 QoE 注释）；且播放器里已经有诊断面板/调节胶囊两个
+      //   同语言的浮层，菜单跟站内玻璃反而是异类。
+      // - 行是**通宽命中**（YouTube/Netflix 菜单都不给行画圆角胶囊），
+      //   面板自己 overflow-hidden 让首尾行贴住 14px 圆角。
+      // - 进场与调节胶囊同一个 0.16s 动画，origin 指向锚点按钮那一角。
+      className="player-flash-in absolute bottom-full left-0 mb-8 w-[300px] origin-bottom-left overflow-hidden rounded-[14px] bg-black/70 py-2 text-[13px] shadow-[0_18px_44px_rgba(0,0,0,0.5)]"
     >
-      <p className="px-3 pb-1.5 pt-1 text-[12px] font-semibold uppercase tracking-wide text-white/45">
-        {title}
-      </p>
+      <p className="px-4 pb-1.5 pt-0.5 text-[12px] font-semibold text-white/55">{title}</p>
       {children}
     </div>
   );
@@ -964,14 +965,19 @@ function MenuItem({
     <button
       type="button"
       onClick={onClick}
-      // 选中态与全站菜单同一语言：nav-item 的「浮起亮胶囊」，不再用左侧
-      // 指示条——那是这套控件早期照抄 Netflix 留下的，站内没有第二处这么画
-      data-active={active || undefined}
-      className="glass-row nav-item cursor-pointer px-3 py-2 font-medium"
+      // 选中态照 YouTube/Netflix：**只用行尾对勾说话**，不给选中行铺高亮底
+      // ——菜单里同时存在 hover 高亮时，两种高亮叠在一起分不清哪个是选中、
+      // 哪个只是鼠标路过。行通宽、无圆角，与面板的黑色语言一体。
+      className={`flex w-full cursor-pointer items-center gap-2.5 px-4 py-2 text-left font-medium transition-colors hover:bg-white/10 ${
+        active ? "text-white" : "text-white/80 hover:text-white"
+      }`}
     >
       {icon}
       <span className="truncate">{children}</span>
-      {badge ? <span className="ml-auto">{badge}</span> : null}
+      <span className="ml-auto flex shrink-0 items-center gap-2">
+        {badge}
+        {active ? <CheckIcon className="size-4 text-white" /> : null}
+      </span>
     </button>
   );
 }
@@ -1008,7 +1014,7 @@ function StepRow({
   onPlus: () => void;
 }) {
   return (
-    <div className="flex items-center justify-between px-3 text-[13px] text-white/65">
+    <div className="flex items-center justify-between px-4 text-[13px] text-white/65">
       <span>{label}</span>
       <span className="flex items-center gap-1.5">
         <StepButton onClick={onMinus}>−</StepButton>
