@@ -43,6 +43,8 @@ NAMESPACE_PREFIXES = {
     "branding",
     "quickconnect",
     "plugins",
+    "packages",
+    "mediasegments",
     "library",
     "displaypreferences",
     "emby",

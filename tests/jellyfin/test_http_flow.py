@@ -160,6 +160,8 @@ def test_infuse_library_probe_endpoints(client: TestClient, seeded: dict) -> Non
     """
     for path in (
         "/Plugins",
+        "/Packages",
+        "/MediaSegments/4d430200000000000000000100000000",
         "/Library/VirtualFolders",
         "/UserViews/GroupingOptions",
         "/DisplayPreferences/usersettings",
@@ -172,6 +174,13 @@ def test_infuse_library_probe_endpoints(client: TestClient, seeded: dict) -> Non
     auth = {"ApiKey": token}
 
     assert client.get("/Plugins", params=auth).json() == []
+    # Infuse-Library 建索引会探测插件仓库；拿到 404 HTML 会让整轮索引失败
+    # （2026-08-25 抓包实证），必须是 JSON 空数组
+    assert client.get("/Packages", params=auth).json() == []
+    # 起播即查的媒体分段：无分段时是空 QueryResult，不能是 404
+    assert client.get(
+        "/MediaSegments/4d430200000000000000000100000000", params=auth
+    ).json() == {"Items": [], "TotalRecordCount": 0, "StartIndex": 0}
 
     folders = client.get("/Library/VirtualFolders", params=auth).json()
     by_name = {f["Name"]: f for f in folders}

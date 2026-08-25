@@ -110,7 +110,7 @@ http {
             error_page 502 503 504 @api_starting;
             proxy_pass http://movieclaw_api;
         }
-        location ~* ^/(system|users|userviews|useritems|userplayeditems|userfavoriteitems|items|persons|livestreams|videos|shows|playingitems|branding|quickconnect|plugins|displaypreferences|emby)(/|$) {
+        location ~* ^/(system|users|userviews|useritems|userplayeditems|userfavoriteitems|items|persons|livestreams|videos|shows|playingitems|branding|quickconnect|plugins|packages|mediasegments|displaypreferences|emby)(/|$) {
             error_page 502 503 504 @api_starting;
             proxy_pass http://movieclaw_api;
         }

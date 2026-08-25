@@ -33,6 +33,22 @@ async def plugins() -> JSONResponse:
     return JSONResponse([])
 
 
+@router.get("/Packages", dependencies=[Depends(require_device)])
+async def packages() -> JSONResponse:
+    # Infuse-Library 建索引时会探测插件仓库（2026-08-25 抓包实证：拿到
+    # Next 的 404 HTML 会让整轮索引中断重试，客户端报「媒体库索引失败」，
+    # 资料库的「每日精选/所有电影」等板块因此恒空）。无插件体系，空数组即可。
+    return JSONResponse([])
+
+
+@router.get("/MediaSegments/{item_id}", dependencies=[Depends(require_device)])
+async def media_segments(item_id: str) -> JSONResponse:
+    # 片头/片尾等媒体分段（Jellyfin 10.9+）。Infuse 每次起播都会查询；
+    # movieclaw 不生成分段数据，恒返回空 QueryResult——形态对齐真 Jellyfin
+    # 无分段时的响应，客户端据此不显示「跳过片头」。
+    return JSONResponse({"Items": [], "TotalRecordCount": 0, "StartIndex": 0})
+
+
 def _display_preferences_guid(raw: str) -> str:
     """DisplayPreferencesDto.Id：对齐真 Jellyfin 的派生规则（10.10 源码）。
 
