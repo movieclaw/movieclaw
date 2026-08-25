@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from movieclaw_api.services.media_probe import probe_keyframe_interval
 from movieclaw_api.services.playback.hwprobe import hardware_available
+from movieclaw_api.services.playback.limits import MAX_TRANSCODE_HEIGHT
 from movieclaw_api.settings import PlaybackPolicySetting
 from movieclaw_api.settings.store import get_setting_store
 from movieclaw_db.models import FileState, LibraryFile
@@ -124,16 +125,17 @@ async def decide_for_files(
 
 
 async def _load_policy() -> PlaybackPolicy:
-    """把「设置 → 播放」的持久化配置翻成引擎输入。
+    """把持久化配置翻成引擎输入。
 
     ``hardware_available`` 不来自配置而来自实测——用户改不了自己有没有显卡，
-    把它做成开关只会让人误配。
+    把它做成开关只会让人误配。转码高度上限不再是配置项，按最佳定值取
+    （limits.py，独立播放设置页已于 2026-08-25 撤下）。
     """
     stored = await get_setting_store().get(PlaybackPolicySetting)
     return PlaybackPolicy(
         software_transcode_enabled=stored.software_transcode_enabled,
         hardware_available=await asyncio.to_thread(hardware_available),
-        max_transcode_height=stored.max_transcode_height,
+        max_transcode_height=MAX_TRANSCODE_HEIGHT,
     )
 
 

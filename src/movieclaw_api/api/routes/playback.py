@@ -72,6 +72,11 @@ from movieclaw_api.services.playback.hwprobe import (
     available_backends,
     probe_backends_async,
 )
+from movieclaw_api.services.playback.limits import (
+    MAX_REMUX_CONCURRENCY,
+    auto_quota_bytes,
+    auto_transcode_concurrency,
+)
 from movieclaw_api.services.playback.session import (
     DiskQuotaError,
     SessionLimitError,
@@ -483,9 +488,10 @@ async def start_playback_session(
             start_ms=start_ms,
             segment_plan=segment_plan,
             hw_backend=backends[0] if backends else None,
-            max_transcode=policy.max_transcode_concurrency,
-            max_remux=policy.max_remux_concurrency,
-            quota_bytes=policy.transcode_cache_quota_gb * 1024**3,
+            # 资源上限不再是配置项，按机器规格自动推导（limits.py）
+            max_transcode=auto_transcode_concurrency(hardware=bool(backends)),
+            max_remux=MAX_REMUX_CONCURRENCY,
+            quota_bytes=auto_quota_bytes(manager.cache_root),
         )
     except (SessionLimitError, DiskQuotaError) as exc:
         raise ServiceUnavailableException(str(exc)) from exc
@@ -1113,7 +1119,8 @@ async def get_playback_item_episodes(
 
 
 # ---------------------------------------------------------------------------
-# 网页播放器：策略配置（「设置 → 播放」页 + 软件转码同意链路 §3.6）
+# 网页播放器：策略配置（软件转码同意链路 §3.6）。独立设置页已撤（2026-08-25），
+# 数字上限改为自动推导（limits.py），端点保留给同意弹窗与 API/CLI 排障用。
 # ---------------------------------------------------------------------------
 
 
@@ -1136,7 +1143,7 @@ async def _policy_view() -> PlaybackPolicyView:
     openapi_extra={"x-cli-hidden": True},
 )
 async def get_playback_policy() -> ApiResponse[PlaybackPolicyView]:
-    """「设置 → 播放」页的数据源。硬件加速一项是实测结果而非配置项。"""
+    """策略当前取值（API/CLI 排障用）。硬件加速一项是实测结果而非配置项。"""
     return ok(await _policy_view())
 
 
@@ -1154,14 +1161,14 @@ async def save_playback_policy(
     """按字段增量保存：``None`` 的项保持原值。
 
     同意弹窗（§3.6）只翻 ``software_transcode_enabled`` 一个开关，不该被迫
-    先读全量再回写——那样会把另一个标签页刚改的并发数悄悄覆盖回去。
+    先读全量再回写——那样会把另一个标签页刚保存的值悄悄覆盖回去。
     """
     store = get_setting_store()
     stored = await store.get(PlaybackPolicySetting)
     changes = payload.model_dump(exclude_none=True)
     if changes:
-        # 重新构造而不是 model_copy(update=...)：后者跳过校验，并发数、码率上限
-        # 上的 ge/le 约束就形同虚设（写进去的非法值要到起转码时才炸）。
+        # 重新构造而不是 model_copy(update=...)：后者跳过校验，字段约束就
+        # 形同虚设（写进去的非法值要到消费时才炸）。
         await store.set(PlaybackPolicySetting(**{**stored.model_dump(), **changes}))
     return ok(await _policy_view())
 

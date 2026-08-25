@@ -77,7 +77,8 @@ export function ConsentDialog({
 
         {canSelfEnable ? (
           <>
-            <p className="mt-4 text-[12px] text-white/45">之后可在「设置 → 播放」里随时关闭。</p>
+            {/* 独立播放设置页已撤（2026-08-25），这里如实告知开启即长期生效 */}
+            <p className="mt-4 text-[12px] text-white/45">开启后长期生效，之后不再询问。</p>
             <div className="mt-5 flex justify-end gap-2">
               <button
                 type="button"
@@ -99,7 +100,7 @@ export function ConsentDialog({
         ) : (
           <>
             <p className="mt-4 text-[13px] leading-relaxed text-white/70">
-              当前未开启软件转码。请联系管理员在「设置 → 播放」中开启。
+              当前未开启软件转码。请联系管理员开启（管理员播放此类影片时会收到开启询问）。
             </p>
             <div className="mt-5 flex justify-end">
               <button

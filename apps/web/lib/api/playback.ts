@@ -492,20 +492,13 @@ export function reportPlaybackProgressOnUnload(body: PlaybackProgressBody): void
   navigator.sendBeacon(resolveRequestUrl("/playback/progress"), blob);
 }
 
+/** 播放策略。数字上限（并发/高度/缓存配额）由服务端按机器规格自动推导，
+    不再是配置项；这里只剩软件转码开关（由播放页同意弹窗翻开）。 */
 export interface PlaybackPolicy {
   software_transcode_enabled: boolean;
-  max_transcode_concurrency: number;
-  max_remux_concurrency: number;
-  max_transcode_height: number;
-  transcode_cache_quota_gb: number;
   /** 实测结果而非配置项——用户改不了自己有没有显卡 */
   hardware_available: boolean;
   hw_backends: string[];
-}
-
-export async function fetchPlaybackPolicy(): Promise<PlaybackPolicy> {
-  const response = await request<ApiEnvelope<PlaybackPolicy>>("/playback/policy");
-  return response.data;
 }
 
 /** 按字段增量保存：没给的项保持原值，不会覆盖别处刚改的设置。 */
@@ -539,33 +532,6 @@ export async function fetchEmbeddedFonts(subtitleUrl: string): Promise<string[]>
     `/playback/files/${fileId}/fonts?token=${encodeURIComponent(token)}`,
   );
   return response.data.fonts;
-}
-
-
-export interface HwBackendStatus {
-  name: string;
-  label: string;
-  available: boolean;
-  /** 面向用户的中文原因与修法 */
-  detail: string;
-}
-
-export interface HwProbeResult {
-  backends: HwBackendStatus[];
-  hardware_available: boolean;
-}
-
-/**
- * 硬件加速自检：逐个后端真跑一秒钟的编码，把失败原因翻成可操作的中文。
- *
- * `refresh` 供「重新检测」按钮——用户按提示挂上设备后要能立刻看到结果，
- * 不必重启容器。
- */
-export async function probePlaybackHardware(refresh = false): Promise<HwProbeResult> {
-  const response = await request<ApiEnvelope<HwProbeResult>>(
-    `/playback/hardware${refresh ? "?refresh=true" : ""}`,
-  );
-  return response.data;
 }
 
 
@@ -627,19 +593,3 @@ export function reportPlaybackMetricOnUnload(payload: PlaybackMetricPayload): vo
   }
 }
 
-export interface PlaybackStats {
-  sessions: number;
-  /** 北极星指标：档 0 + 档 1 的占比 */
-  direct_ratio: number | null;
-  degraded_ratio: number | null;
-  ttff_p50_ms: number | null;
-  ttff_p95_ms: number | null;
-  rebuffer_ratio: number | null;
-  dropped_ratio: number | null;
-  tier_counts: Record<string, number>;
-}
-
-export async function fetchPlaybackStats(): Promise<PlaybackStats> {
-  const response = await request<ApiEnvelope<PlaybackStats>>("/playback/stats");
-  return response.data;
-}

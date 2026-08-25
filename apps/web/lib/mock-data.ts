@@ -151,7 +151,6 @@ export const settingsSectionGroups: SettingsSectionGroup[] = [
     label: "系统",
     items: [
       { id: "app", label: "应用", description: "版本与更新、外部访问地址与重启", icon: GearIcon },
-      { id: "playback", label: "播放", description: "硬件加速、软件转码与转码并发、分片缓存上限", icon: PlayIcon },
       { id: "webhook", label: "Webhook", description: "向外部服务推送播放、收藏等事件", icon: SendIcon },
       { id: "network", label: "网络与代理", description: "外部服务的代理与镜像地址，解决 TMDB 等不可达", icon: GlobeIcon },
       { id: "logs", label: "系统日志", description: "后端运行日志，按天存档", icon: TerminalIcon },

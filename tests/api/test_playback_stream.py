@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from movieclaw_api.api.routes import playback as routes_playback
 from movieclaw_api.core.config import get_settings
 from movieclaw_api.services.auth import reset_auth_state
 from movieclaw_api.services.playback import session as session_mod
@@ -28,8 +29,7 @@ from movieclaw_api.services.playback.session import (
     reset_session_manager,
 )
 from movieclaw_api.services.playback.signing import issue_stream_token
-from movieclaw_api.settings import PlaybackPolicySetting
-from movieclaw_api.settings.store import get_setting_store, reset_setting_store
+from movieclaw_api.settings.store import reset_setting_store
 from movieclaw_db.crypto import reset_secret_box
 from movieclaw_db.engine import get_database
 from movieclaw_db.models import FileSource, FileState, LibraryFile, MediaItem
@@ -337,13 +337,13 @@ def test_seeking_replaces_the_previous_session_for_the_same_file(client, tmp_pat
     assert client.post(f"{_PB}/sessions/{second}/ping").status_code == 200
 
 
-def test_concurrency_limit_returns_503_with_chinese_message(client, tmp_path):
-    """资源耗尽是 503 而不是 4xx——不是客户端的错，稍后重试就能好。"""
+def test_concurrency_limit_returns_503_with_chinese_message(client, tmp_path, monkeypatch):
+    """资源耗尽是 503 而不是 4xx——不是客户端的错，稍后重试就能好。
 
-    async def _limit_to_one():
-        await get_setting_store().set(PlaybackPolicySetting(max_remux_concurrency=1))
-
-    client.portal.call(_limit_to_one)
+    并发上限已不是配置项（按机器规格自动推导，limits.py），测试直接钉住
+    路由模块里的常量。
+    """
+    monkeypatch.setattr(routes_playback, "MAX_REMUX_CONCURRENCY", 1)
     ids = [seed(client, tmp_path, container="mkv") for _ in range(2)]
     start_session(client, ids[0])
     resp = client.post(

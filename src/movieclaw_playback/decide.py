@@ -314,7 +314,7 @@ def decide_playback(
             reason=reason,
             cost_hint=(
                 "软件转码会占用大量 CPU，可能让搜索、扫描、订阅等后台任务明显"
-                "变慢，首帧也需要更长时间。之后可在「设置 → 播放」里随时关闭。"
+                "变慢，首帧也需要更长时间。"
             ),
             can_self_enable=can_self_enable,
         )

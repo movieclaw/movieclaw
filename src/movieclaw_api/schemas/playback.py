@@ -402,19 +402,19 @@ class PlaybackProgressRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# 网页播放器：策略配置（「设置 → 播放」页 + 软件转码同意链路 §3.6）
+# 网页播放器：策略配置（软件转码同意链路 §3.6；独立设置页已撤，上限自动推导）
 # ---------------------------------------------------------------------------
 
 
 class PlaybackPolicyView(BaseModel):
-    """播放策略的当前取值。字段与 PlaybackPolicySetting 一一对应。"""
+    """播放策略的当前取值。字段与 PlaybackPolicySetting 一一对应。
+
+    数字上限（并发、输出高度、缓存配额）不在这里——它们已改为按机器规格
+    自动推导（services/playback/limits.py），不再是配置项。
+    """
 
     software_transcode_enabled: bool
-    max_transcode_concurrency: int
-    max_remux_concurrency: int
-    max_transcode_height: int
-    transcode_cache_quota_gb: int
-    #: 实测结果而非配置项——用户改不了自己有没有显卡。设置页据此说明
+    #: 实测结果而非配置项——用户改不了自己有没有显卡。前端据此说明
     #: 「无可用硬件加速，HDR 片源需要软件转码」这类结论。
     hardware_available: bool = False
     #: 探测到的硬件后端名（vaapi / qsv / nvenc / videotoolbox），无则为空
@@ -423,19 +423,9 @@ class PlaybackPolicyView(BaseModel):
 
 class PlaybackPolicyPayload(BaseModel):
     """策略保存请求。**全字段可选，None = 不动这一项**——同意弹窗只翻
-    software_transcode_enabled 一个开关，不该被迫先读全量再回写（那样会把
-    另一个标签页刚改的并发数覆盖掉）。
-
-    取值范围与 ``PlaybackPolicySetting``（配置域的唯一真值）保持一致，在这里
-    重述一遍是为了让越界值在请求边界就得到 422 与字段名，而不是掉进处理函数
-    里抛成 500。服务层保存前仍会按配置域重新构造一次校验，两道都在。
-    """
+    software_transcode_enabled 一个开关。"""
 
     software_transcode_enabled: bool | None = None
-    max_transcode_concurrency: int | None = Field(default=None, ge=1, le=8)
-    max_remux_concurrency: int | None = Field(default=None, ge=1, le=16)
-    max_transcode_height: int | None = Field(default=None, ge=480, le=2160)
-    transcode_cache_quota_gb: int | None = Field(default=None, ge=1, le=500)
 
 
 class PlaybackFontsView(BaseModel):

@@ -100,7 +100,8 @@ def probe_backends(*, force: bool = False) -> list[HwBackendStatus]:
     else:
         logger.info(
             "未检测到可用的硬件加速——需要转码的片子只能走软件转码"
-            "（默认关闭，可在「设置 → 播放」开启）。逐项原因见设置页。"
+            "（默认关闭，播放此类影片时会弹窗征求开启）。逐后端原因如下：%s",
+            "；".join(f"{s.label}：{s.detail}" for s in _cache if not s.available),
         )
     return _cache
 

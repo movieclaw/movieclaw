@@ -175,6 +175,11 @@ class TranscodeSessionManager:
         self._sessions: dict[str, TranscodeSession] = {}
         self._reaper: asyncio.Task | None = None
 
+    @property
+    def cache_root(self) -> Path:
+        """分片缓存根目录。开会话前按它的剩余空间推导配额（limits.py）。"""
+        return self._root
+
     # -- 生命周期 ---------------------------------------------------------
 
     def cleanup_orphans(self) -> int:
@@ -333,9 +338,9 @@ class TranscodeSessionManager:
             )
         if quota_bytes is not None and self.usage_bytes() >= quota_bytes:
             raise DiskQuotaError(
-                f"转码缓存已达配额上限（{quota_bytes / 1024**3:.1f} GB）。"
-                "请稍候——正在播放的会话结束后会自动清理，"
-                "也可在「设置 → 播放」调高配额。"
+                f"转码缓存已达配额上限（{quota_bytes / 1024**3:.1f} GB，"
+                "按磁盘剩余空间自动设定）。请稍候——正在播放的会话结束后会"
+                "自动清理，清理磁盘腾出空间也会自动调高配额。"
             )
 
     def _enforce_disk_watermark(self) -> None:

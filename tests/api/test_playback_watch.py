@@ -255,23 +255,28 @@ def test_policy_defaults_and_hardware_is_probed_not_configured(client):
     assert data["hw_backends"] == []
 
 
-def test_policy_saves_incrementally(client):
-    """同意弹窗只翻一个开关，不该把别处刚改的并发数覆盖回默认值。"""
-    client.put(f"{_PB}/policy", json={"max_transcode_concurrency": 4})
+def test_policy_saves_software_transcode_toggle(client):
+    """同意弹窗翻开软转开关后要持久生效。"""
     data = client.put(
         f"{_PB}/policy", json={"software_transcode_enabled": True}
     ).json()["data"]
     assert data["software_transcode_enabled"] is True
-    assert data["max_transcode_concurrency"] == 4  # 没被这次保存带走
-
-
-def test_policy_rejects_out_of_range_values(client):
-    """增量保存也要过字段校验——非法值不能等到起转码时才炸。"""
-    resp = client.put(f"{_PB}/policy", json={"max_transcode_concurrency": 999})
-    assert resp.status_code == 422
     assert (
-        client.get(f"{_PB}/policy").json()["data"]["max_transcode_concurrency"] == 2
+        client.get(f"{_PB}/policy").json()["data"]["software_transcode_enabled"] is True
     )
+
+
+def test_policy_ignores_retired_limit_fields(client):
+    """数字上限已撤为自动推导（limits.py）。旧版网页可能还带着这些字段来
+    保存——忽略而不是 422，别把只想翻软转开关的老客户端挡在门外。"""
+    resp = client.put(
+        f"{_PB}/policy",
+        json={"software_transcode_enabled": True, "max_transcode_concurrency": 4},
+    )
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["software_transcode_enabled"] is True
+    assert "max_transcode_concurrency" not in data
 
 
 def test_policy_is_admin_only(client, tmp_path):
