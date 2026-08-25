@@ -1343,12 +1343,20 @@ export function VideoPlayer(props: VideoPlayerProps) {
       webkit.webkitSetPresentationMode(target);
       // 这个调用是同步 void：被系统拒绝时**什么都不发生**（模式不变、无异常、
       // 无事件），按钮看起来就是「点了没反应」——真机上没法排查。稍等半秒查
-      // 模式有没有真的切过去，没切就把拒绝这件事说出来（iOS 的 PWA 形态、
-      // 低电量模式、系统限制都会拒）。
+      // 模式有没有真的切过去，没切就把拒绝这件事说出来。
+      // 最常见的拒绝就是 iOS 的桌面网页应用（PWA）形态：WebKit 的独立容器
+      // 不给网页画中画的通路，webkitSupportsPresentationMode 却照样报 true，
+      // 网页侧无解——能做的只有把去处说清楚（Safari 里打开就能用）。
       if (target === "picture-in-picture") {
         window.setTimeout(() => {
           if (webkit.webkitPresentationMode !== "picture-in-picture") {
-            flashNotice("系统未开启画中画（当前环境可能不支持）");
+            const standalone =
+              (navigator as { standalone?: boolean }).standalone === true;
+            flashNotice(
+              standalone
+                ? "iOS 桌面应用暂不支持画中画，请在 Safari 中打开本站使用"
+                : "系统未开启画中画（低电量模式或当前环境可能不支持）",
+            );
           }
         }, 500);
       }
