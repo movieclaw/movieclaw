@@ -368,7 +368,7 @@ export function PlayerControls(props: PlayerControlsProps) {
           只剩一条贴边的细线；展开时它回到操作区上方。 */}
       <div
         className={`player-scrub-row pointer-events-auto relative transition-[padding] duration-300 ${
-          chromeVisible ? "player-inset-x" : "px-0"
+          chromeVisible ? "player-scrub-inset" : "px-0"
         }`}
       >
         <div
@@ -450,7 +450,14 @@ export function PlayerControls(props: PlayerControlsProps) {
               if (dragging !== null) onSeek(dragging);
               setDragging(null);
             }}
-            className="player-scrub absolute inset-x-0 top-1/2 h-5 w-full -translate-y-1/2 cursor-pointer touch-none appearance-none bg-transparent disabled:cursor-default"
+            // 触屏把命中带加高到 44px（Apple HIG 的最小触控目标）：视觉上还是
+            // 那条细线，但手指按在线的上下 20px 内都算按中了——竖屏上「滑不准、
+            // 按不中」的直接解法。桌面维持 20px，不跟鼠标抢悬停区。
+            // 只在控制条露出时加高：收起后它是贴底的被动细线，44px 的隐形命中
+            // 带会把「点屏幕下缘唤出控制条」截胡成一次误 seek。
+            className={`player-scrub absolute inset-x-0 top-1/2 h-5 w-full -translate-y-1/2 cursor-pointer touch-none appearance-none bg-transparent disabled:cursor-default ${
+              chromeVisible ? "pointer-coarse:h-11" : ""
+            }`}
           />
 
           {/* 把手自己画，不用 input 原生的那个。
@@ -460,12 +467,17 @@ export function PlayerControls(props: PlayerControlsProps) {
               这就是「圆点没对齐进度」的来源。把原生把手缩到 1px 隐藏掉，改成
               按 `left: 进度%` 定位一个自己的圆点，两者从此永远同一个位置；
               1px 的把手同时也让指针位置到时间的换算变成精确的线性映射。 */}
+          {/* 触屏没有悬停：圆点在控制条露出时**常显**（YouTube 手机端同款），
+              不然「拖拽那个点」根本无从下手——用户不知道该按哪里；拖动中再
+              放大一号，指下有反馈。桌面维持悬停才现，不挡画面。 */}
           <div
-            className={`pointer-events-none absolute top-1/2 size-[14px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-[var(--player-thumb)] shadow-[0_0_0_4px_var(--accent-soft)] transition-transform duration-150 ${
+            className={`pointer-events-none absolute top-1/2 size-[14px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-[var(--player-thumb)] shadow-[0_0_0_4px_var(--accent-soft)] transition-transform duration-150 pointer-coarse:size-[18px] ${
               durationMs
                 ? dragging !== null
-                  ? "scale-100"
-                  : "scale-0 [.player-scrub-row:hover_&]:scale-100"
+                  ? "scale-100 pointer-coarse:scale-110"
+                  : `scale-0 [.player-scrub-row:hover_&]:scale-100 ${
+                      chromeVisible ? "pointer-coarse:scale-100" : ""
+                    }`
                 : "scale-0"
             }`}
             style={{ left: `${progress}%` }}

@@ -1518,6 +1518,22 @@ body.cmdk-open .app-shell {
   }
 }
 
+/* 进度条专用的横向内边距：桌面与 .player-inset-x 相同；窄屏刻意**更宽**。
+   iOS 的系统返回手势从屏幕左缘 ~20-25px 的带内起手，而刚起播时进度为 0，
+   把手正落在进度条最左端——内边距只有 12px 时，去拖那个点就是在返回手势
+   区里横划，片子没拖动、页面先退出去了（真机反馈）。28px 起步让 0 进度的
+   把手整个落在手势区外；有安全区（刘海/圆角）时在安全区上再加一档。 */
+.player-scrub-inset {
+  padding-left: max(1.5rem, var(--safe-left));
+  padding-right: max(1.5rem, var(--safe-right));
+}
+@media (max-width: 767.98px) {
+  .player-scrub-inset {
+    padding-left: max(1.75rem, calc(var(--safe-left) + 0.75rem));
+    padding-right: max(1.75rem, calc(var(--safe-right) + 0.75rem));
+  }
+}
+
 /* media-controller（继承自 media-container）在 :host 上写死 `line-height: 0`，
    为的是消掉行内 <video> 底下那道空隙。但我们的顶栏、控制条、菜单、提示全是
    它的 light DOM 子节点，会一并把行高继承成 0——表现是每一行文字都塌成一条
