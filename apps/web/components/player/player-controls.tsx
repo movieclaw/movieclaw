@@ -930,14 +930,14 @@ function MenuPanel({
       // 变 44，写死的偏移在两个断点上必然有一个不对。
       //
       // 外观与诊断面板同一套语言（YouTube 播放器菜单同款取舍）：
-      // - **一块半透明的黑（bg-black/70），不用站内的磨砂玻璃**。磨砂的
+      // - **一块半透明的黑（bg-black/85），不用站内的磨砂玻璃**。磨砂的
       //   backdrop-filter 叠在视频上每帧都要重采样模糊，是掉帧大户
       //   （globals 的 QoE 注释）；且播放器里已经有诊断面板/调节胶囊两个
       //   同语言的浮层，菜单跟站内玻璃反而是异类。
       // - 行是**通宽命中**（YouTube/Netflix 菜单都不给行画圆角胶囊），
       //   面板自己 overflow-hidden 让首尾行贴住 14px 圆角。
       // - 进场与调节胶囊同一个 0.16s 动画，origin 指向锚点按钮那一角。
-      className="player-flash-in absolute bottom-full left-0 mb-8 w-[300px] origin-bottom-left overflow-hidden rounded-[14px] bg-black/70 py-2 text-[13px] shadow-[0_18px_44px_rgba(0,0,0,0.5)]"
+      className="player-flash-in absolute bottom-full left-0 mb-8 w-[300px] origin-bottom-left overflow-hidden rounded-[14px] bg-black/85 py-2 text-[13px] shadow-[0_18px_44px_rgba(0,0,0,0.5)]"
     >
       <p className="px-4 pb-1.5 pt-0.5 text-[12px] font-semibold text-white/55">{title}</p>
       {children}
