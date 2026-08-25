@@ -53,6 +53,7 @@ import {
   type QoeEvent,
   initialQoe,
   isReportable,
+  liveStats,
   reduceQoe,
   summarize,
 } from "@/lib/player/qoe";
@@ -1630,6 +1631,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
           <DiagnosticsPanel
             session={state.session}
             engine={engineRef.current}
+            qoe={() => liveStats(qoeRef.current)}
             landscape={landscape}
             onClose={() => setDiagnosticsOpen(false)}
           />

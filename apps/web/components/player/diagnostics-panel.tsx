@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 
 import type { PlaybackSession } from "@/lib/api/playback";
 import type { EngineStats, PlaybackEngine } from "@/lib/player/engine";
+import type { QoeLiveStats } from "@/lib/player/qoe";
 import { languageLabel } from "@/lib/language-labels";
 
 /**
@@ -62,24 +63,36 @@ function ActionLine({ children, alert }: { children: React.ReactNode; alert?: bo
 export function DiagnosticsPanel({
   session,
   engine,
+  qoe,
   landscape,
   onClose,
 }: {
   session: PlaybackSession;
   engine: PlaybackEngine | null;
+  /** 实时 QoE 读数（跳转耗时、卡顿）。用函数而非快照：数据源在播放器的
+   *  ref 里逐事件归约，面板按自己的节奏拉取即可，不用逼播放器每次事件都
+   *  重渲染 */
+  qoe: () => QoeLiveStats;
   /** 横屏中（真方向锁或 iOS 伪横屏）。见下方注释：伪横屏时视口仍是竖的，
    *  `max-md:` 按视口宽度判断会选错布局，必须由这个状态拍板 */
   landscape: boolean;
   onClose: () => void;
 }) {
   const [stats, setStats] = useState<EngineStats | null>(null);
+  const [qoeStats, setQoeStats] = useState<QoeLiveStats | null>(null);
 
   useEffect(() => {
-    if (!engine) return;
     // 1 秒一次：再快没有信息量（掉帧与码率本身就是秒级统计），只会白烧主线程
-    const timer = window.setInterval(() => setStats(engine.stats()), 1000);
-    setStats(engine.stats());
+    const pull = () => {
+      if (engine) setStats(engine.stats());
+      setQoeStats(qoe());
+    };
+    const timer = window.setInterval(pull, 1000);
+    pull();
     return () => window.clearInterval(timer);
+    // qoe 是读 ref 的稳定闭包，不进依赖：进了会因父组件每次渲染新建闭包
+    // 而让定时器反复拆装
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [engine]);
 
   const { decision, source } = session;
@@ -250,6 +263,25 @@ export function DiagnosticsPanel({
               stats?.engine ?? "—",
               formatMbps(stats?.bitrate) && `实时 ${formatMbps(stats?.bitrate)}`,
               stats ? `缓冲 ${stats.bufferedSeconds.toFixed(1)} 秒` : null,
+            ]
+              .filter(Boolean)
+              .join(" · ")}
+          </p>
+          {/* 「不丝滑」的量化行：用户拖一下进度条，这里马上告诉他等了多少秒；
+              卡顿计数不含 seek 造成的等待（qoe.ts 的口径），所以这两个数字
+              可以分开读——前者是跳转体验，后者是网络/转码跟不跟得上 */}
+          <p className="text-white/75">
+            {[
+              qoeStats?.lastSeekMs != null
+                ? `上次跳转 ${(qoeStats.lastSeekMs / 1000).toFixed(1)} 秒`
+                : null,
+              qoeStats
+                ? `卡顿 ${qoeStats.rebufferCount} 次${
+                    qoeStats.rebufferCount > 0
+                      ? ` · 累计 ${(qoeStats.rebufferMs / 1000).toFixed(1)} 秒`
+                      : ""
+                  }`
+                : null,
             ]
               .filter(Boolean)
               .join(" · ")}

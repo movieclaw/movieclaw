@@ -420,9 +420,13 @@ class TranscodeSessionManager:
 
     # -- VOD 分片按需供给（§12） -----------------------------------------
 
-    #: 请求的分片超前当前转码头这么多段就重启 ffmpeg 直奔目标，而不是干等
-    #: 它顺序转过去（4 秒段 × 6 = 24 秒，与 Jellyfin 的重启阈值一致）
-    _RESTART_AHEAD_SEGMENTS = 6
+    #: 请求的分片超前**已产出头**这么多段就重启 ffmpeg 直奔目标，而不是干等
+    #: 它顺序转过去。原来照抄 Jellyfin 的 6（24 秒），实测是「快进 +10 秒
+    #: 卡顿」的主因：readrate 1.5 限速下等转码追 n 段差距要 n×4/1.5 秒
+    #: （最长 16 秒），而杀掉重启直奔实测 1~3 秒就出片——超前不足一段才值得
+    #: 等。重启的代价（丢掉当前轮的前向缓冲）在快进场景本来就不心疼：用户
+    #: 明确要去新位置，旧缓冲多半用不上。
+    _RESTART_AHEAD_SEGMENTS = 1
     #: 单个分片的等待上限。局域网起播 + burst 下正常几百毫秒就好；超时说明
     #: ffmpeg 卡死或存储极慢，让客户端拿 404 重试比挂着请求强
     _SEGMENT_WAIT_S = 30.0
@@ -436,7 +440,9 @@ class TranscodeSessionManager:
         if plan is None or not (0 <= index < plan.count):
             return None
         target = session.directory / (SEGMENT_PATTERN % index)
-        deadline = time.monotonic() + self._SEGMENT_WAIT_S
+        waited_from = time.monotonic()
+        head_before = session.head_segment
+        deadline = waited_from + self._SEGMENT_WAIT_S
         while time.monotonic() < deadline:
             # 会话可能在等待期间被显式结束（用户退出的 DELETE 会删目录）。
             # 不查这条就会对着已删除的目录重启 ffmpeg，No such file or
@@ -444,6 +450,15 @@ class TranscodeSessionManager:
             if session.state == "stopped":
                 return None
             if self._segment_ready(session, index):
+                waited_s = time.monotonic() - waited_from
+                if waited_s > 1.0:
+                    # seek/快进的卡顿感直接对应这里的等待——用户报「不丝滑」时
+                    # 这一行给出量化：等了多久、走的是重启直奔还是顺序追赶
+                    logger.info(
+                        "分片就绪：session=%s seg=%05d 等待 %.1f 秒（%s）",
+                        session.id, index, waited_s,
+                        "重启直奔" if session.head_segment != head_before else "顺序追赶",
+                    )
                 return target
             try:
                 await self._maybe_restart_for(session, index)

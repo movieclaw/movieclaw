@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { initialQoe, isReportable, reduceQoe, summarize } from "../lib/player/qoe.ts";
+import { initialQoe, isReportable, liveStats, reduceQoe, summarize } from "../lib/player/qoe.ts";
 
 function run(events) {
   return summarize(events.reduce(reduceQoe, initialQoe()));
+}
+
+function runLive(events) {
+  return liveStats(events.reduce(reduceQoe, initialQoe()));
 }
 
 test("首帧 = 点击播放到第一帧真正渲染", () => {
@@ -93,6 +97,47 @@ test("掉帧取最后一次读数", () => {
   ]);
   assert.equal(s.dropped_frames, 7);
   assert.equal(s.total_frames, 900);
+});
+
+test("跳转耗时 = seeking 到画面恢复（playing）", () => {
+  const live = runLive([
+    { type: "seeking", at: 1000 },
+    { type: "waiting", at: 1100 },
+    { type: "playing", at: 2400 },
+  ]);
+  assert.equal(live.lastSeekMs, 1400);
+  // seek 的等待不混进卡顿口径
+  assert.equal(live.rebufferCount, 0);
+});
+
+test("连续拖拽以第一次 seeking 为起点——用户的等待从第一下就开始了", () => {
+  const live = runLive([
+    { type: "seeking", at: 1000 },
+    { type: "seeking", at: 1500 },
+    { type: "seeking", at: 2000 },
+    { type: "playing", at: 4000 },
+  ]);
+  assert.equal(live.lastSeekMs, 3000);
+});
+
+test("结算后再来一次 seek，重新起算", () => {
+  const live = runLive([
+    { type: "seeking", at: 1000 },
+    { type: "playing", at: 1800 },
+    { type: "seeking", at: 10000 },
+    { type: "playing", at: 10200 },
+  ]);
+  assert.equal(live.lastSeekMs, 200);
+});
+
+test("没 seek 过就没有跳转读数；卡顿累计照常给", () => {
+  const live = runLive([
+    { type: "waiting", at: 1000 },
+    { type: "playing", at: 3500 },
+  ]);
+  assert.equal(live.lastSeekMs, null);
+  assert.equal(live.rebufferCount, 1);
+  assert.equal(live.rebufferMs, 2500);
 });
 
 test("没播起来的会话不上报，免得污染统计", () => {

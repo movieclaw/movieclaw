@@ -45,6 +45,11 @@ interface State {
   waitingSince: number | null;
   /** seek 引起的等待不算卡顿；这个标记在 seeked 之后的第一次 playing 才清 */
   inSeek: boolean;
+  /** 本次 seek 的起点时刻；恢复播放时结算成 lastSeekMs */
+  seekStartedAt: number | null;
+  /** 上一次 seek 从发起到画面恢复的耗时（毫秒）。诊断面板的「跳转耗时」——
+   * 用户报「快进/拖拽不丝滑」时，这个数字直接量化「不丝滑」有多少毫秒 */
+  lastSeekMs: number | null;
   rebufferMs: number;
   rebufferCount: number;
   seekCount: number;
@@ -60,6 +65,8 @@ export function initialQoe(): State {
     firstFrameAt: null,
     waitingSince: null,
     inSeek: false,
+    seekStartedAt: null,
+    lastSeekMs: null,
     rebufferMs: 0,
     rebufferCount: 0,
     seekCount: 0,
@@ -70,6 +77,23 @@ export function initialQoe(): State {
   };
 }
 
+/** 诊断面板的实时读数（与上报的 QoeSummary 分开：面板要的是「刚才那一下
+ * 多久」，上报要的是整场累计）。 */
+export interface QoeLiveStats {
+  lastSeekMs: number | null;
+  rebufferMs: number;
+  rebufferCount: number;
+}
+
+export function liveStats(state: State): QoeLiveStats {
+  return {
+    lastSeekMs: state.lastSeekMs,
+    rebufferMs: Math.round(state.rebufferMs),
+    rebufferCount: state.rebufferCount,
+  };
+}
+
+
 /** 纯归约：事件进、状态出。没有副作用，因此可以直接表驱动单测。 */
 export function reduceQoe(state: State, event: QoeEvent): State {
   switch (event.type) {
@@ -79,7 +103,15 @@ export function reduceQoe(state: State, event: QoeEvent): State {
       // 只记第一次——降档重来时的第二次出画不是"首帧"
       return state.firstFrameAt === null ? { ...state, firstFrameAt: event.at } : state;
     case "seeking":
-      return { ...state, inSeek: true, seekCount: state.seekCount + 1, waitingSince: null };
+      return {
+        ...state,
+        inSeek: true,
+        seekCount: state.seekCount + 1,
+        waitingSince: null,
+        // 连续拖拽（seeking 里再 seeking）以第一次为起点：用户感知的等待
+        // 从第一下拖动就开始了
+        seekStartedAt: state.seekStartedAt ?? event.at,
+      };
     case "seeked":
       return state;
     case "waiting":
@@ -87,13 +119,18 @@ export function reduceQoe(state: State, event: QoeEvent): State {
       if (state.inSeek || state.waitingSince !== null) return state;
       return { ...state, waitingSince: event.at };
     case "playing": {
-      if (state.waitingSince === null) return { ...state, inSeek: false };
+      const seekSettled =
+        state.inSeek && state.seekStartedAt !== null
+          ? { seekStartedAt: null, lastSeekMs: Math.max(0, event.at - state.seekStartedAt) }
+          : {};
+      if (state.waitingSince === null) return { ...state, inSeek: false, ...seekSettled };
       return {
         ...state,
         inSeek: false,
         waitingSince: null,
         rebufferMs: state.rebufferMs + Math.max(0, event.at - state.waitingSince),
         rebufferCount: state.rebufferCount + 1,
+        ...seekSettled,
       };
     }
     case "frames":

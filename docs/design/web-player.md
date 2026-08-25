@@ -464,6 +464,15 @@ created ──start──> spawning ──首片就绪──> ready ──客户
 - seek 落在区间外 → 起新会话，**先杀同一 playback 的旧会话**。
 - 前端 seek 必须防抖（拖动结束才发请求）。不做这条，用户连拖 5 下就有 5 个
   ffmpeg 在跑，NAS 直接躺平。
+- **「区间外」的判定线要激进**（`_RESTART_AHEAD_SEGMENTS = 1`）：目标分片
+  在转码头前方 1 片以内才值得等，再远就杀进程直奔目标。这条线最初设为 6，
+  实测证明是「快进/短距拖拽卡顿」的主因——等转码器顺序追 n 片要
+  n × 分片时长 / 转码倍速 秒（1.5x 倍速追 6 片最长 16 秒），而杀进程
+  从目标关键帧重启只要 1~3 秒（input seek 是 O(1) 的）。同一轮实测还推翻
+  过另一个猜想：分片文件落盘与进 playlist 是**同一时刻**（seg0 约 0.76s
+  就绪），不存在「多等一片才可见」的问题，无需 temp_file 改造。
+  `ensure_segment` 对等待 > 1 秒的分片打 info 日志（区分「重启直奔」与
+  「顺序追赶」两条路径），真机上哪条路径慢一看便知。
 
 ### 4.5 并发与配额
 
@@ -1089,6 +1098,11 @@ ref——`setChromeVisible(true)` 是异步的，click 回调读到的可能已�
 - 卡顿：配对 `waiting` → `playing` 累计时长，**必须排除 seek 引起的 `waiting`**，
   否则用户拖一下进度条就被记成一次卡顿，数据全废。
 - 缓冲健康：`video.buffered` 末端 − `currentTime`。
+- **跳转耗时**：`seeking` →（画面恢复的）`playing` 的毫秒数，连续拖拽以第一次
+  `seeking` 为起点——用户感知的等待从第一下拖动就开始。只进诊断面板实时读数
+  （「上次跳转 X.X 秒」），不进会话聚合上报：它量的是「刚才那一下」，用户报
+  「快进不丝滑」时照着面板念数字即可，服务端再配 `ensure_segment` 的等待
+  日志（§4.4）就能分清慢在前端 buffer 还是后端供片。
 - INP：`PerformanceObserver` 的 `event` timing。
 - 内存：`performance.measureUserAgentSpecificMemory()`（Chrome）。
 - **CMCD**：把 buffer length / measured throughput / object duration / session id
