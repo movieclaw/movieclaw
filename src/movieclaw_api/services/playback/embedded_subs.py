@@ -24,6 +24,7 @@ import logging
 import re
 import shutil
 import subprocess
+import time
 import uuid
 from pathlib import Path
 
@@ -106,6 +107,7 @@ def extract_embedded_subtitle(file: LibraryFile, index: int) -> SubtitleRef | No
     # ASS 用 copy 保住特效与排版；PGS 是位图流只能 copy（ffmpeg 没有 PGS
     # 编码器）；文本轨统一转 SRT，抹平 mov_text 之类的差异。
     codec_args = ["-c:s", "copy"] if fmt in ("ass", "sup") else ["-c:s", "srt"]
+    extract_started_at = time.monotonic()
     try:
         proc = subprocess.run(
             [
@@ -135,6 +137,12 @@ def extract_embedded_subtitle(file: LibraryFile, index: int) -> SubtitleRef | No
         _cleanup(tmp_path)
         logger.warning("内封字幕缓存写入失败：%s（%s）", out_path, exc)
         return None
+    # 冷抽取要通读整个容器，是「点开字幕菜单卡半天」的头号来源；缓存命中
+    # 走上面的 _is_fresh 直接返回不会到这里，所以这一行只记真实的抽取耗时
+    logger.info(
+        "内封字幕抽取完成：%s 轨 %d → %s 耗时 %.1f 秒",
+        video.name, index, fmt, time.monotonic() - extract_started_at,
+    )
     return SubtitleRef(path=out_path, format=fmt)
 
 

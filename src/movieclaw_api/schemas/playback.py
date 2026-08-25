@@ -483,6 +483,15 @@ class TrickplayView(BaseModel):
     sheets: list[str] = []
 
 
+class PlaybackClientLogPayload(BaseModel):
+    """播放器客户端事件上报：把浏览器侧的现场（MediaError 详情、播放器状态）
+    落进服务端日志。iPhone 上的播放故障没有任何本地可看的控制台，服务端
+    日志是唯一能拿到客户端真相的地方。"""
+
+    event: str
+    detail: dict = {}
+
+
 class PlaybackMetricPayload(BaseModel):
     """一次播放结束时上报的质量快照。指标口径按 CTA-2066，不自创。"""
 

@@ -24,6 +24,7 @@ from movieclaw_api.schemas.playback import (
     HwBackendStatusView,
     HwProbeView,
     MediaActivityView,
+    PlaybackClientLogPayload,
     PlaybackDecideRequest,
     PlaybackDecisionView,
     PlaybackFontsView,
@@ -437,12 +438,14 @@ async def start_playback_session(
     # 四件事互相独立，并行做：杀同文件旧会话（seek 出已转区间的前置，§4.4，
     # 不杀的话用户连拖五下进度条就有五个 ffmpeg 在跑）、策略读取（设置存储
     # 自带短会话，与请求会话无关）、硬件后端探测、关键帧索引。
+    prep_started_at = time.perf_counter()
     _, policy, backends, keyframe_index = await asyncio.gather(
         manager.stop_for_file(file.id, member_id),
         get_setting_store().get(PlaybackPolicySetting),
         asyncio.to_thread(available_backends),
         _keyframe_index(),
     )
+    prep_ms = int((time.perf_counter() - prep_started_at) * 1000)
     # 只有真的转视频才谈得上硬件加速：直通档（-c:v copy）不经编码器，报个
     # 后端名只会让诊断面板骗人。烧录时 VAAPI/QSV 会退软件编码（overlay 是
     # 软件滤镜，这两家编码器吃不了软件帧），同样要报实际值。
@@ -471,6 +474,7 @@ async def start_playback_session(
         )
         if keyframe_s is not None:
             start_ms = int(keyframe_s * 1000)
+    spawn_started_at = time.perf_counter()
     try:
         transcode = await manager.start(
             decision,
@@ -487,17 +491,22 @@ async def start_playback_session(
         raise ServiceUnavailableException(str(exc)) from exc
     except SessionStartError as exc:
         raise ServiceUnavailableException(f"播放启动失败：{exc}") from exc
+    spawn_ms = int((time.perf_counter() - spawn_started_at) * 1000)
 
     token = await issue_stream_token(
         member_id=member_id, file_id=file.id, session_id=transcode.id
     )
     total_ms = int((time.perf_counter() - started_at) * 1000)
     # 分段计时（§6.10）：决策段偏慢 = 关键帧采样在现场读盘（详情页预热没盖住
-    # 的路径）；启动段偏慢 = ffmpeg 首片没出来（转码/IO 竞争，看 trickplay 与
-    # 存储负载）。用户报「起播慢」时这一行直接指认方向。
+    # 的路径）；准备段偏慢 = 杀旧会话的 SIGTERM 等待（换字幕烧录/换音轨重开
+    # 时最常见，配合 stop_for_file 的日志看）或关键帧索引现场读盘；ffmpeg 段
+    # 偏慢 = 进程起不来或首列表难产（转码/IO 竞争，看 trickplay 与存储负载）。
+    # 用户报「起播慢」时这一行直接指认方向。
     logger.info(
-        "播放会话就绪：档 %s · 决策 %d 毫秒 · 会话启动 %d 毫秒（file_id=%s hw=%s）",
-        view.tier, decide_ms, total_ms - decide_ms, file.id, hw_used or "无",
+        "播放会话就绪：档 %s · 决策 %d 毫秒 · 准备 %d 毫秒 · ffmpeg %d 毫秒 · 共 %d 毫秒"
+        "（file_id=%s hw=%s session=%s）",
+        view.tier, decide_ms, prep_ms, spawn_ms, total_ms,
+        file.id, hw_used or "无", transcode.id,
     )
     return ok(
         PlaybackSessionView(
@@ -1313,6 +1322,32 @@ async def get_trickplay_sheet(
 
 
 @router.post(
+    "/client-log",
+    response_model=ApiResponse[dict],
+    summary="播放器客户端日志",
+    operation_id="playback.client-log",
+    openapi_extra={"x-cli-hidden": True},
+)
+async def report_playback_client_log(
+    payload: PlaybackClientLogPayload,
+    principal: Principal = Depends(require_login),
+) -> ApiResponse[dict]:
+    """浏览器侧播放现场落服务端日志（只记日志不落库）。
+
+    iPhone 上没有可看的控制台，播放器在哪条路径上、MediaError 报了什么，
+    只有让客户端主动报上来才能在服务端日志里与转码时间线对照排障。
+    """
+    import json as _json
+
+    logger.warning(
+        "播放器客户端日志：%s %s",
+        payload.event,
+        _json.dumps(payload.detail, ensure_ascii=False, default=str)[:2000],
+    )
+    return ok({"logged": True})
+
+
+@router.post(
     "/metrics",
     response_model=ApiResponse[dict],
     summary="上报播放质量",
@@ -1329,6 +1364,20 @@ async def report_playback_metric(
     **只落本地**（硬边界 3）：写进自己的数据库、设置页可看，绝不外发。
     """
     member_id = principal.member_id if principal.member_id is not None else 0
+    # 用户端的真实体验落进服务端日志：ttff 是 requestVideoFrameCallback 量出
+    # 的「点播放 → 真出画」，与「播放会话就绪」的服务端分段计时对照，差值就
+    # 是网络 + 播放器初始化 + 首片下载解码——排查「日志都快但用户说慢」靠它
+    logger.info(
+        "播放质量上报：档 %s%s · 引擎 %s · 首帧 %s · 卡顿 %d 次/%d 毫秒 · "
+        "拖动 %d 次 · 观看 %d 秒（file_id=%s）",
+        payload.tier,
+        f"（从档 {payload.degraded_from} 降档）" if payload.degraded_from is not None else "",
+        payload.engine or "未知",
+        f"{payload.ttff_ms} 毫秒" if payload.ttff_ms is not None else "未出画",
+        payload.rebuffer_count, payload.rebuffer_ms,
+        payload.seek_count, payload.watched_ms // 1000,
+        payload.library_file_id,
+    )
     await metrics.record(
         session,
         PlaybackMetric(member_id=member_id, **payload.model_dump()),
