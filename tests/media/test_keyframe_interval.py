@@ -8,9 +8,9 @@
 from __future__ import annotations
 
 from movieclaw_api.services.media_probe import (
-    last_keyframe_at_or_before,
     _keyframe_windows,
     keyframe_interval_from_packets,
+    last_keyframe_at_or_before,
 )
 
 
@@ -103,4 +103,5 @@ def test_last_keyframe_at_or_before_picks_nearest():
     assert last_keyframe_at_or_before(packets, 14.0) == 14.0
     assert last_keyframe_at_or_before(packets, 9.0) is None
     # 坏数据不炸：缺 pts / N/A 直接跳过
-    assert last_keyframe_at_or_before([{"flags": "K__"}, {"pts_time": "N/A", "flags": "K__"}], 5) is None
+    broken = [{"flags": "K__"}, {"pts_time": "N/A", "flags": "K__"}]
+    assert last_keyframe_at_or_before(broken, 5) is None

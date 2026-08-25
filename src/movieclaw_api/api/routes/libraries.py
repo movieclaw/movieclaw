@@ -78,7 +78,6 @@ from movieclaw_api.schemas.library import (
 )
 from movieclaw_api.schemas.response import ApiResponse, ok
 from movieclaw_api.services import jobs, media_scrape
-from movieclaw_api.services.playback import warmup as playback_warmup
 from movieclaw_api.services.auth import Principal
 from movieclaw_api.services.library import claim as library_claim
 from movieclaw_api.services.library import source_annotation
@@ -142,6 +141,7 @@ from movieclaw_api.services.library.transfer import (
 from movieclaw_api.services.media_discover import get_tmdb_client
 from movieclaw_api.services.media_library import MediaLibraryService
 from movieclaw_api.services.media_server_notify import notify_media_server_refresh
+from movieclaw_api.services.playback import warmup as playback_warmup
 from movieclaw_api.services.subscription import SubscriptionService
 from movieclaw_api.services.title_discovery import parse_title_ref
 from movieclaw_db.engine import get_database, get_session

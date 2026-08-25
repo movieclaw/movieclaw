@@ -44,9 +44,9 @@ from movieclaw_api.services.playback.ffmpeg_args import (
     TranscodeCommand,
     build_hls_command,
 )
-from movieclaw_playback.hls_vod import SegmentPlan
 from movieclaw_events import new_ulid
 from movieclaw_playback.decide import PlaybackPlan, PlaybackTier
+from movieclaw_playback.hls_vod import SegmentPlan
 
 logger = logging.getLogger("movieclaw_api.playback.session")
 

@@ -67,5 +67,7 @@ def make_sup(
         + _segment(0x15, start_s, ods)
         + _segment(0x80, start_s, b"")
     )
-    clear = _segment(0x16, end_s, pcs_clear) + _segment(0x17, end_s, wds) + _segment(0x80, end_s, b"")
+    clear = (
+        _segment(0x16, end_s, pcs_clear) + _segment(0x17, end_s, wds) + _segment(0x80, end_s, b"")
+    )
     return show + clear

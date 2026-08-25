@@ -71,7 +71,9 @@ def client(tmp_path, monkeypatch):
     reset_session_manager()
 
     # 假 ffmpeg：端点测试要验的是 HTTP 边界，不是转码内容
-    def fake_build(plan, *, source_path, session_dir, start_ms=0, hw_backend=None, start_number=None):
+    def fake_build(
+        plan, *, source_path, session_dir, start_ms=0, hw_backend=None, start_number=None
+    ):
         playlist = Path(session_dir) / "index.m3u8"
         return TranscodeCommand(
             argv=["python3", "-c", FAKE_FFMPEG, str(playlist)],
@@ -303,7 +305,9 @@ init.write_bytes(b"REAL-INIT")  # 迟到的落盘
 time.sleep(300)
 """
 
-    def late_build(plan, *, source_path, session_dir, start_ms=0, hw_backend=None, start_number=None):
+    def late_build(
+        plan, *, source_path, session_dir, start_ms=0, hw_backend=None, start_number=None
+    ):
         playlist = Path(session_dir) / "index.m3u8"
         return TranscodeCommand(
             argv=["python3", "-c", late_init, str(playlist)],

@@ -13,13 +13,16 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, Path, Query, Response
 from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import select
 
 from movieclaw_api.api.deps import require_admin, require_login
+from movieclaw_api.core.config import get_settings
 from movieclaw_api.exceptions import (
     BadRequestException,
     NotFoundException,
     ServiceUnavailableException,
 )
+from movieclaw_api.schemas.library import SeasonEpisodesView
 from movieclaw_api.schemas.playback import (
     HwBackendStatusView,
     HwProbeView,
@@ -42,23 +45,11 @@ from movieclaw_api.schemas.playback import (
     TrickplayView,
 )
 from movieclaw_api.schemas.response import ApiResponse, ok
+from movieclaw_api.services import media_scrape
 from movieclaw_api.services.auth import Principal
 from movieclaw_api.services.library.access import visible_library_ids
+from movieclaw_api.services.library.items import build_season_episodes, episode_view
 from movieclaw_api.services.media_probe import probe_keyframe_before
-from movieclaw_api.services.playback.ffmpeg_args import (
-    INIT_NAME,
-    SEGMENT_PATTERN,
-    SEGMENT_SECONDS,
-    effective_hw_backend,
-)
-from movieclaw_playback.hls_vod import (
-    build_master_playlist,
-    build_media_playlist,
-    build_subtitle_playlist,
-    compute_segment_plan,
-    compute_uniform_plan,
-)
-from movieclaw_playback.keyframes import read_keyframe_index
 from movieclaw_api.services.playback import metrics, trickplay
 from movieclaw_api.services.playback import plan as playback_plan
 from movieclaw_api.services.playback import watch as playback_watch
@@ -67,6 +58,12 @@ from movieclaw_api.services.playback.embedded_subs import (
     extract_embedded_subtitle,
     font_cache_dir,
     safe_font_name,
+)
+from movieclaw_api.services.playback.ffmpeg_args import (
+    INIT_NAME,
+    SEGMENT_PATTERN,
+    SEGMENT_SECONDS,
+    effective_hw_backend,
 )
 from movieclaw_api.services.playback.hwprobe import (
     available_backends,
@@ -88,16 +85,19 @@ from movieclaw_api.services.playback_activity import media_activity_overview, re
 from movieclaw_api.services.playback_recent import recent_watch_items
 from movieclaw_api.settings import PlaybackPolicySetting
 from movieclaw_api.settings.store import get_setting_store
-from movieclaw_api.core.config import get_settings
-from movieclaw_api.schemas.library import SeasonEpisodesView
-from movieclaw_api.services import media_scrape
-from movieclaw_api.services.library.items import build_season_episodes, episode_view
 from movieclaw_db.engine import get_session
 from movieclaw_db.models import LibraryFile, MediaItem, PlaybackMetric
 from movieclaw_db.repositories.media_repo import MediaItemRepository
-from sqlmodel import select
 from movieclaw_playback import state as playback_state
 from movieclaw_playback.decide import PlaybackTier as Tier
+from movieclaw_playback.hls_vod import (
+    build_master_playlist,
+    build_media_playlist,
+    build_subtitle_playlist,
+    compute_segment_plan,
+    compute_uniform_plan,
+)
+from movieclaw_playback.keyframes import read_keyframe_index
 from movieclaw_playback.streaming import (
     DisconnectAwareFileResponse,
     container_mime_type,

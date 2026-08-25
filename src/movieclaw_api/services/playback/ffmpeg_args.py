@@ -236,7 +236,9 @@ def build_hls_command(
     argv = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "warning"]
 
     transcoding_video = plan.video.action == "transcode"
-    backend = HW_BACKENDS.get(effective_hw_backend(plan, hw_backend) or "") if transcoding_video else None
+    backend = (
+        HW_BACKENDS.get(effective_hw_backend(plan, hw_backend) or "") if transcoding_video else None
+    )
     burn_index = _burn_subtitle_index(plan) if transcoding_video else None
     # 需要 tone-map 但该后端没有原生滤镜，或要烧录字幕（overlay 是软件滤镜）
     # → 走软件解码，让软件滤镜链能接上

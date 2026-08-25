@@ -88,7 +88,9 @@ def install_fake(monkeypatch, body: str, *, delay: float = 0.0) -> None:
     playlist 文件名随模式走（真装配同款）：VOD（start_number 非 None）是
     live.m3u8，会话相对模式是 index.m3u8。"""
 
-    def fake_build(plan, *, source_path, session_dir, start_ms=0, hw_backend=None, start_number=None):
+    def fake_build(
+        plan, *, source_path, session_dir, start_ms=0, hw_backend=None, start_number=None
+    ):
         name = "live.m3u8" if start_number is not None else "index.m3u8"
         playlist = Path(session_dir) / name
         script = body if delay <= 0 else f"import time; time.sleep({delay})\n{body}"
