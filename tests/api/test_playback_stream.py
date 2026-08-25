@@ -285,6 +285,41 @@ def test_session_lifecycle_playlist_segment_ping_stop(client, tmp_path):
     assert client.post(f"{_PB}/sessions/{session_id}/ping").status_code == 404
 
 
+def test_init_segment_waits_until_fully_written(client, tmp_path, monkeypatch):
+    """回归（2026-08-25 真机事故，iPhone 烧录必现「解码失败」）：ffmpeg 起转
+    就创建 init.mp4，但 avio 缓冲让它长期 0 字节（实测 ~5 秒，比首个分片还
+    晚落盘）。只等「文件存在」会把 0 字节的 init 以 immutable 缓存喂给
+    AVPlayer——整个会话被毒缓存钉死。路由必须等到非空且写稳才下发。"""
+    late_init = """
+import sys, time, pathlib
+out = pathlib.Path(sys.argv[1])
+out.parent.mkdir(parents=True, exist_ok=True)
+out.write_text("#EXTM3U\\n#EXT-X-VERSION:7\\n")
+init = out.parent / "init.mp4"
+init.touch()  # 存在但 0 字节——avio 缓冲未落盘的形态
+(out.parent / "seg00000.m4s").write_bytes(b"SEG")
+time.sleep(0.4)
+init.write_bytes(b"REAL-INIT")  # 迟到的落盘
+time.sleep(300)
+"""
+
+    def late_build(plan, *, source_path, session_dir, start_ms=0, hw_backend=None, start_number=None):
+        playlist = Path(session_dir) / "index.m3u8"
+        return TranscodeCommand(
+            argv=["python3", "-c", late_init, str(playlist)],
+            playlist_path=playlist,
+            init_path=Path(session_dir) / "init.mp4",
+        )
+
+    monkeypatch.setattr(session_mod, "build_hls_command", late_build)
+    file_id = seed(client, tmp_path, container="mkv")
+    data = start_session(client, file_id)
+    token = data["stream_url"].split("token=")[1]
+    init = client.get(f"{_PB}/sessions/{data['session_id']}/init.mp4?token={token}")
+    assert init.status_code == 200
+    assert init.content == b"REAL-INIT"  # 绝不能把 0 字节的半成品发出去
+
+
 def test_session_start_ms_is_echoed_for_timeline_mapping(client, tmp_path):
     """会话时间轴恒从 0 起，start_ms 是前端换算回文件时间的唯一依据。"""
     file_id = seed(client, tmp_path, container="mkv")

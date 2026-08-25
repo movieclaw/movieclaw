@@ -747,17 +747,25 @@ async def get_session_segment(
         if ready is None:
             raise NotFoundException("分片尚未就绪")
         target = ready
-    elif session.segment_plan is not None and not target.exists():
-        # VOD 会话响应不再等 live.m3u8（session._wait_for_playlist 的快速
-        # 放行），init.mp4 可能比播放器的第一个请求晚几百毫秒落盘——原地
-        # 小等，别让 hls.js 白吃一次带 1 秒退避的 404 重试，把省下的时间
-        # 又还回去。
-        deadline = time.monotonic() + 10.0
-        while not target.exists() and time.monotonic() < deadline:
+    elif name == INIT_NAME:
+        # init.mp4 必须等到**写完**，不只是「文件存在」（2026-08-25 真机事故，
+        # iPhone 烧录必现「解码失败」）：ffmpeg 起转就创建 init.mp4，但 avio
+        # 缓冲让它长期 0 字节——实测软转会话创建后 ~5 秒才落盘，比首个分片
+        # 还晚。只等存在就会把 0 字节的 init 以 immutable 缓存喂给 AVPlayer，
+        # 整个会话被毒缓存钉死。判完整：非空且两次采样大小不变（moov 一次
+        # 写入，落盘即稳定）。
+        deadline = time.monotonic() + 15.0
+        last_size = -1
+        while time.monotonic() < deadline:
             if session.state in ("stopped", "failed"):
                 break
+            if target.exists():
+                size = target.stat().st_size
+                if size > 0 and size == last_size:
+                    break
+                last_size = size
             await asyncio.sleep(0.05)
-        if not target.exists():
+        if not target.exists() or target.stat().st_size == 0:
             raise NotFoundException("分片尚未就绪")
     elif not target.exists():
         raise NotFoundException("分片尚未就绪")
