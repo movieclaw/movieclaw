@@ -436,6 +436,19 @@ def test_software_transcode_keeps_crf_with_maxrate_cap():
     assert pair(argv, "-maxrate") == "6M"
 
 
+def test_software_transcode_pins_8bit_output():
+    """软编 H.264 必须钉死 yuv420p（2026-08-25 真机事故）：10-bit 源不钉的话
+    libx264 顺着输入位深编出 High 10 profile——iPhone/多数硬解都不认，表现
+    为真实解码错误，且降到哪一档软转都一样炸。Jellyfin 同款做法。"""
+    argv = argv_of(
+        plan(
+            PlaybackTier.SOFTWARE_TRANSCODE,
+            video=VideoPlan(action="transcode", codec="h264", height=None),
+        )
+    )
+    assert pair(argv, "-pix_fmt") == "yuv420p"
+
+
 # ---------------------------------------------------------------------------
 # VOD 模式（服务端预生成播放列表，§12）
 # ---------------------------------------------------------------------------
@@ -476,7 +489,9 @@ def test_burn_uses_filter_complex_with_overlay_before_scale():
     字幕的位置和大小全错。"""
     argv = argv_of(_burn_plan())
     graph = argv[argv.index("-filter_complex") + 1]
-    assert graph == "[0:v:0][0:s:2]overlay[burned];[burned]scale=-2:1080[vout]"
+    assert graph == (
+        "[0:v:0][0:s:2]overlay[burned];[burned]scale=-2:1080[pre];[pre]format=yuv420p[vout]"
+    )
     assert argv[argv.index("-map") + 1] == "[vout]"
     assert "0:v:0" not in [argv[i + 1] for i, a in enumerate(argv) if a == "-map"]
     assert "-vf" not in argv  # 与 filter_complex 互斥
@@ -489,7 +504,9 @@ def test_burn_with_tonemap_runs_tonemap_before_overlay():
     graph = argv[argv.index("-filter_complex") + 1]
     assert graph.startswith("[0:v:0]tonemapx")
     assert graph.index("tonemapx") < graph.index("overlay")
-    assert graph.endswith("overlay[vout]")
+    # 末端钉 8-bit：10-bit 源经 overlay 的位深靠协商、随 ffmpeg 版本漂，
+    # 协商出 10-bit 就是 iPhone 不认的 High 10（2026-08-25 真机事故）
+    assert graph.endswith("overlay[pre];[pre]format=yuv420p[vout]")
 
 
 def test_burn_forces_software_pipeline_for_vaapi():

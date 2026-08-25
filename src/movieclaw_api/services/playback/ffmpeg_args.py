@@ -345,6 +345,10 @@ def _burn_filter_graph(plan: PlaybackPlan, subtitle_index: int) -> str:
     graph = f"{base}[0:s:{subtitle_index}]overlay"
     if plan.video.height:
         graph += f"[burned];[burned]scale=-2:{plan.video.height}"
+    # 末端钉死 8-bit：10-bit 源（无 tonemap 的 SDR 10-bit 最常见）经 overlay
+    # 后的位深由滤镜格式协商决定、随 ffmpeg 版本漂——协商出 10-bit 就会让
+    # x264 编出 iPhone 不认的 High 10，或让 NVENC/VideoToolbox 直接拒帧。
+    graph += "[pre];[pre]format=yuv420p"
     graph += "[vout]"
     return graph
 
@@ -377,9 +381,17 @@ def _video_args(
         # 硬件编码器不认 CRF，用码率阶梯约束
         args += ["-b:v", "0", "-maxrate", maxrate, "-bufsize", bufsize]
     else:
-        # CRF 恒定质量优先（§11-1），阶梯只作为上限兜底防码率爆冲
+        # CRF 恒定质量优先（§11-1），阶梯只作为上限兜底防码率爆冲。
+        #
+        # -pix_fmt yuv420p 必须显式钉死（2026-08-25 真机事故，Jellyfin 的
+        # EncodingHelper 同款做法）：10-bit 源（动漫的 HEVC 10-bit SDR 极常见）
+        # 不钉的话 libx264 顺着输入位深编出 **High 10 profile**——iPhone/大多数
+        # 硬解都不认这个 profile，表现为真实的解码错误，且降档到哪一档软转
+        # 都一样炸。烧录链的位深同理不能赌 overlay 的格式协商（不同 ffmpeg
+        # 版本协商结果不同），见 _burn_filter_graph 末端的 format。
         args += [
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
+            "-pix_fmt", "yuv420p",
             "-maxrate", maxrate, "-bufsize", bufsize,
         ]
     # 强制 2 秒关键帧，让分片精确对齐（转码档自己控制 GOP，直通档做不到）
