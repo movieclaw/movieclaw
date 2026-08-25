@@ -46,6 +46,9 @@ importers:
       jassub:
         specifier: ^2.5.14
         version: 2.5.14
+      libbitsub:
+        specifier: ^1.11.0
+        version: 1.12.1(hls.js@1.7.1)(react@19.2.4)
       media-chrome:
         specifier: ^4.19.2
         version: 4.19.2(react@19.2.4)
@@ -522,6 +525,7 @@ packages:
     resolution: {integrity: sha512-+LpyBk7L44ZIXwz/VYfglaX/okxezESc6UxDSoyo2Ks6Jxc4Y7sGjpgU9s4PMgqgjj1gZCylTieNamqA1MF7Dg==}
     cpu: [x64]
     os: [linux]
+    libc: [musl]
 
   '@img/sharp-linux-arm64@0.34.5':
     resolution: {integrity: sha512-bKQzaJRY/bkPOXyKx5EVup7qkaojECG6NLYswgktOZjaXecSAeCWiZwwiFf3/Y+O1HrauiE3FVsGxFg8c24rZg==}
@@ -1459,6 +1463,9 @@ packages:
 
   '@webext-core/match-patterns@1.1.0':
     resolution: {integrity: sha512-vebVVbcOyva4jyvljIzRJwjFi/OKMLr96LIIxiPeXfA38gE4Z3+H6Y9DwRmn7pWErJGNNHU6XOhOb5ZwicGs7Q==}
+
+  '@webgpu/types@0.1.72':
+    resolution: {integrity: sha512-0cF7RFM2edNoiIS1ODJp0/Gzv4/xSXhwoR0YCza+OWpJWtn4wmo9DvK91aLlH9+uUnwIriP7ZiC3WitmyhuzBw==}
 
   '@wxt-dev/browser@0.1.43':
     resolution: {integrity: sha512-RMB0zgfe7uuiTp18s9taLeKXoOCLBV418797dnEggiMWmM1JDJekiLtlvrNc6QeZg+amDBy2/KKYuQB2kh/K9A==}
@@ -2774,6 +2781,24 @@ packages:
   lfa-ponyfill@1.1.1:
     resolution: {integrity: sha512-Had4tsGEHtIj58MRtf6SlubNDltxinxMSdxIn1GdwrWbye8TD+pZ+D6qKETnJ9+vQOfG9q/Ds4WUPskhyAMp5Q==}
 
+  libbitsub@1.12.1:
+    resolution: {integrity: sha512-5OzJzT5wufax1IQYGknTC3p8DkkcmZbqpNEMdyqK3BCqrFMgrvaKg3CYBFYaGjkgAuTRgBKP8T9FoTgFP+1/OA==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      hls.js: '>=1.0.0'
+      react: '>=18.0.0'
+      shaka-player: '>=4.0.0'
+      video.js: '>=7.0.0'
+    peerDependenciesMeta:
+      hls.js:
+        optional: true
+      react:
+        optional: true
+      shaka-player:
+        optional: true
+      video.js:
+        optional: true
+
   lie@3.3.0:
     resolution: {integrity: sha512-UaiMJzeWRlEujzAuw5LokY1L5ecNQYZKfmyZ9L7wDHb/p5etKaxXhohBcrw0EYby+G/NA52vRSN4N39dxHAIwQ==}
 
@@ -2822,6 +2847,7 @@ packages:
     engines: {node: '>= 12.0.0'}
     cpu: [arm64]
     os: [linux]
+    libc: [musl]
 
   lightningcss-linux-x64-gnu@1.32.0:
     resolution: {integrity: sha512-V7Qr52IhZmdKPVr+Vtw8o+WLsQJYCTd8loIfpDaMRWGUZfBOYEJeyJIkqGIDMZPwPx24pUMfwSxxI8phr/MbOA==}
@@ -5279,6 +5305,8 @@ snapshots:
 
   '@webext-core/match-patterns@1.1.0': {}
 
+  '@webgpu/types@0.1.72': {}
+
   '@wxt-dev/browser@0.1.43':
     dependencies:
       '@types/filesystem': 0.0.36
@@ -6787,6 +6815,13 @@ snapshots:
       type-check: 0.4.0
 
   lfa-ponyfill@1.1.1: {}
+
+  libbitsub@1.12.1(hls.js@1.7.1)(react@19.2.4):
+    dependencies:
+      '@webgpu/types': 0.1.72
+    optionalDependencies:
+      hls.js: 1.7.1
+      react: 19.2.4
 
   lie@3.3.0:
     dependencies:
