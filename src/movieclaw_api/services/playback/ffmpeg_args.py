@@ -389,8 +389,14 @@ def _video_args(
         # 硬解都不认这个 profile，表现为真实的解码错误，且降档到哪一档软转
         # 都一样炸。烧录链的位深同理不能赌 overlay 的格式协商（不同 ffmpeg
         # 版本协商结果不同），见 _burn_filter_graph 末端的 format。
+        # -preset superfast 而不是 veryfast（2026-08-25 真机事故）：无硬编的
+        # 弱 CPU（NAS 常见）上 veryfast 编 1080p+overlay 实测只有 1.11× 实时，
+        # 起播阶段攒不出缓冲——iPhone 的 AVPlayer 等分片超时直接放弃，抛的
+        # 还是笼统的「不支持此格式」，极难排查。superfast 实测 1.67×，越过
+        # readrate 1.5 的读入限速线，编码器不再是瓶颈；同机 ultrafast 2.35×
+        # 但画质损失明显，1.67× 已够供片就不再降。
         args += [
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
+            "-c:v", "libx264", "-preset", "superfast", "-crf", "21",
             "-pix_fmt", "yuv420p",
             "-maxrate", maxrate, "-bufsize", bufsize,
         ]
