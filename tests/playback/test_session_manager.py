@@ -835,10 +835,14 @@ time.sleep(300)
 
 
 @pytest.mark.asyncio
-async def test_restart_targets_min_pending_not_the_trigger(manager, monkeypatch):
-    """重启起点取全体等待者的最小号：往前杀会把更早的请求永远饿死。
-    场景：进程已死（分片永远等不来），同时在等 seg3 与 seg7——无论哪个先
-    触发重启，都必须从 3 起转，7 顺流而下也能拿到。"""
+async def test_restart_never_bounces_between_waiters(manager, monkeypatch):
+    """重启绝不在等待者之间往复互杀（3↔7 事故形态）。
+
+    语义随探测宽限调整（2026-08-25）：有前方（≥ head）等待者时，落后者一律
+    让路——否则 AVPlayer 的列表头探测就能劫持转码器（另一场真机事故）。
+    落后者的出路：真实回拖时播放器会取消前方请求，它随即成为独行等待者，
+    熬过宽限期照常重启（见 test_lone_backward_seek_still_restarts_after_grace）。
+    这里守住的底线：无论并发怎么竞速，头部只会单调走到一个胜者，绝不回弹。"""
     writes_live_then_exits = """
 import sys, pathlib
 pathlib.Path(sys.argv[1]).write_text("#EXTM3U\\n#EXT-X-VERSION:7\\n")
@@ -861,12 +865,82 @@ pathlib.Path(sys.argv[1]).write_text("#EXTM3U\\n#EXT-X-VERSION:7\\n")
             manager.ensure_segment(session, 7),
             manager.ensure_segment(session, 3),
         )
-        # 第一记可能打到 7（seg3 还没来得及挂号的竞速窗口）；但 3 一旦在等，
-        # 之后的每次重启都必须以 3 为起点——绝不允许 3↔7 往复互杀（事故形态）
         assert heads, "进程已死却从未尝试重启"
-        first_three = heads.index(3) if 3 in heads else len(heads)
-        assert 3 in heads, f"最小号 3 从未成为重启起点：{heads[:10]}"
-        assert all(h == 3 for h in heads[first_three:]), f"出现回弹互杀：{heads[:12]}"
+        # 竞速窗口内第一记可能打到 3 或 7，但此后必须钉死在那个号上——
+        # 3↔7 往复互杀（每 50ms 一次 SIGKILL + spawn）是当年的事故形态
+        winner = heads[0]
+        assert all(h == winner for h in heads), f"出现回弹互杀：{heads[:12]}"
+    finally:
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_head_probe_never_hijacks_restart(manager, monkeypatch):
+    """回归（2026-08-25 iPhone 真机事故，PGS 烧录切换）：原生 HLS 改 JS seek
+    后，AVPlayer 在 seek 落地前会从列表头狂打 seg00000。会话起在分片 317，
+    探测请求（0）与正经请求（317）并发到达——落后于头且有前方等待者的
+    请求绝不能触发重启，否则转码器被劫持回第 0 段、起播点反而挨饿。"""
+    # 假 ffmpeg：模拟从 317 起转的慢速软转，起步后陆续产出 317~322
+    slow_producer_317 = """
+import sys, time, pathlib
+out = pathlib.Path(sys.argv[1])
+d = out.parent
+out.write_text("#EXTM3U\\n#EXT-X-VERSION:7\\n")
+time.sleep(0.3)
+for i in range(317, 323):
+    (d / ("seg%05d.m4s" % i)).write_bytes(b"x" * 64)
+    with out.open("a") as f:
+        f.write("#EXTINF:4.0,\\nseg%05d.m4s\\n" % i)
+    time.sleep(0.25)
+time.sleep(300)
+"""
+    install_fake(monkeypatch, slow_producer_317)
+    monkeypatch.setattr(TranscodeSessionManager, "_SEGMENT_WAIT_S", 2.0)
+    session = await manager.start(
+        make_plan(), source_path="/m/a.mkv", member_id=0,
+        segment_plan=_boundaries(800), start_ms=317 * 4000,
+    )
+    assert session.head_segment == 317
+    kills: list[int] = []
+    real_killpg = os.killpg
+    monkeypatch.setattr(
+        session_mod.os, "killpg",
+        lambda pgid, sig: (kills.append(sig), real_killpg(pgid, sig))[1],
+    )
+    try:
+        probe, target = await asyncio.gather(
+            manager.ensure_segment(session, 0),
+            manager.ensure_segment(session, 317),
+        )
+        assert target is not None, "正经起播点的分片没拿到"
+        assert probe is None  # 探测请求等待窗内拿不到，404 即可——AVPlayer 不在乎
+        assert kills == [], f"头部探测劫持了转码器：{kills}"
+        assert session.head_segment == 317  # 从未被拉回第 0 段
+    finally:
+        monkeypatch.setattr(session_mod.os, "killpg", real_killpg)
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_lone_backward_seek_still_restarts_after_grace(manager, monkeypatch):
+    """真正的用户回拖不能被探测宽限误伤：前方没有任何等待者时，落后请求
+    熬过宽限期照常重启直奔。"""
+    writes_live_then_sleeps = """
+import sys, time, pathlib
+pathlib.Path(sys.argv[1]).write_text("#EXTM3U\\n#EXT-X-VERSION:7\\n")
+time.sleep(300)
+"""
+    install_fake(monkeypatch, writes_live_then_sleeps)
+    monkeypatch.setattr(TranscodeSessionManager, "_SEGMENT_WAIT_S", 2.0)
+    monkeypatch.setattr(TranscodeSessionManager, "_PROBE_GRACE_S", 0.3)
+    session = await manager.start(
+        make_plan(), source_path="/m/a.mkv", member_id=0,
+        segment_plan=_boundaries(800), start_ms=317 * 4000,
+    )
+    try:
+        # 假进程不产分片，拿不到是预期；要验的是宽限期后重启确实发生
+        await manager.ensure_segment(session, 5)
+        assert session.head_segment == 5, "宽限期后的真实回拖没有触发重启"
     finally:
         await manager.shutdown()
 

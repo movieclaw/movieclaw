@@ -137,6 +137,11 @@ class TranscodeSession:
     #: **全体**在等的请求而不是只看自己：iOS 的 AVPlayer 会并行请求相邻的
     #: 几个分片，逐个自查会互相杀（详见 _maybe_restart_for 的注释）。
     pending_segments: dict[int, int] = field(default_factory=dict)
+    #: 分片号 → 首个等待者挂号的时刻（monotonic）。落后于转码头的请求要
+    #: 熬过宽限期才有资格触发重启——见 _maybe_restart_for 的探测宽限注释。
+    pending_since: dict[int, float] = field(default_factory=dict)
+    #: 首个分片已供出（供起播计时打点用，只打一次）
+    first_segment_served: bool = False
     _stderr_task: asyncio.Task | None = None
     _restart_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
@@ -453,6 +458,12 @@ class TranscodeSessionManager:
     #: 等。重启的代价（丢掉当前轮的前向缓冲）在快进场景本来就不心疼：用户
     #: 明确要去新位置，旧缓冲多半用不上。
     _RESTART_AHEAD_SEGMENTS = 1
+    #: 落后于转码头的分片请求要等这么久才有资格触发重启（探测宽限）。
+    #: iOS 的 AVPlayer 在 JS seek 落地之前会从列表头狂打 seg00000（真机
+    #: 实测 35 连发）——立刻理会就是把转码器劫持回第 0 段、正经起播点
+    #: 反而挨饿。探测请求在 seek 落定后由客户端自行取消，熬不过宽限期；
+    #: 真正的用户回拖会一直等着，宽限一到照常重启直奔。
+    _PROBE_GRACE_S = 3.0
     #: 单个分片的等待上限。局域网起播 + burst 下正常几百毫秒就好；超时说明
     #: ffmpeg 卡死或存储极慢，让客户端拿 404 重试比挂着请求强
     _SEGMENT_WAIT_S = 30.0
@@ -472,12 +483,28 @@ class TranscodeSessionManager:
         # 登记「我在等这一片」。客户端断开时 uvicorn 会取消本协程，finally
         # 兜底注销——挂号表漏项会让重启目标算错，宁可多算不可漏算。
         session.pending_segments[index] = session.pending_segments.get(index, 0) + 1
+        session.pending_since.setdefault(index, waited_from)
         try:
-            return await self._await_segment(session, index, target, waited_from, head_before, deadline)
+            result = await self._await_segment(
+                session, index, target, waited_from, head_before, deadline
+            )
+            if result is not None and not session.first_segment_served:
+                session.first_segment_served = True
+                # 起播链路的最后一公里：「会话就绪」只等到 playlist，画面
+                # 能动还要等首个分片转出来。首帧慢但「会话就绪」各段都快时，
+                # 差值就在这里（ffmpeg 起转到首片落盘 + 客户端发现延迟）
+                logger.info(
+                    "首片供给：session=%s seg=%05d 距会话创建 %.1f 秒（本次请求等待 %d 毫秒）",
+                    session.id, index,
+                    time.monotonic() - session.created_at,
+                    int((time.monotonic() - waited_from) * 1000),
+                )
+            return result
         finally:
             remaining = session.pending_segments.get(index, 1) - 1
             if remaining <= 0:
                 session.pending_segments.pop(index, None)
+                session.pending_since.pop(index, None)
             else:
                 session.pending_segments[index] = remaining
 
@@ -589,12 +616,29 @@ class TranscodeSessionManager:
             if session.state == "stopped":
                 return
             produced = self._highest_produced(session)
-            # 全体等待者中最小的未完成分片号（自己必在挂号表里）。已完成的
-            # 不算——它们各自的循环马上会拿到文件退出等待
-            wanted = min(
-                (i for i in session.pending_segments if i not in session.completed_segments),
-                default=index,
-            )
+            # 全体等待者中最小的未完成分片号（已完成的不算——它们各自的
+            # 循环马上会拿到文件退出等待）。落后于转码头的等待者分两档看：
+            # 只要还有覆盖范围内（≥ head）的等待者，落后者一律不算数——
+            # AVPlayer 在 JS seek 落地前会从列表头狂打 seg00000（真机实测
+            # 35 连发），立刻理会就是把转码器劫持回第 0 段、正经起播点反而
+            # 挨饿；真正的用户回拖不会再有前方请求，此时落后者熬过探测
+            # 宽限期（挡住探测的余波）就照常重启直奔。
+            now = time.monotonic()
+            waiting = [
+                i for i in session.pending_segments if i not in session.completed_segments
+            ]
+            in_coverage = [i for i in waiting if i >= session.head_segment]
+            if in_coverage:
+                wanted = min(in_coverage)
+            else:
+                aged = [
+                    i
+                    for i in waiting
+                    if now - session.pending_since.get(i, now) >= self._PROBE_GRACE_S
+                ]
+                if not aged:
+                    return  # 在等的只有宽限期内的头部探测，不理会
+                wanted = min(aged)
             behind = wanted < session.head_segment
             ahead = wanted > produced + self._RESTART_AHEAD_SEGMENTS
             process_dead = session.process is not None and session.process.returncode is not None
@@ -683,8 +727,17 @@ class TranscodeSessionManager:
             for sid, s in self._sessions.items()
             if s.file_id == file_id and s.member_id == member_id
         ]
+        started_at = time.monotonic()
         for sid in victims:
             await self.stop(sid)
+        if victims:
+            # 换字幕烧录/换音轨/seek 重开会话都要先走这里，SIGTERM 的收尾
+            # 等待（最多 3 秒）会整段计入用户感知的切换延迟——「换轨慢」时
+            # 先看这一行，接近 3000 毫秒就该考虑对重开场景直接 SIGKILL
+            logger.info(
+                "杀掉同文件旧会话 %d 个耗时 %d 毫秒（file_id=%s）",
+                len(victims), int((time.monotonic() - started_at) * 1000), file_id,
+            )
         return len(victims)
 
     async def _terminate(self, session: TranscodeSession, *, graceful: bool = True) -> None:
