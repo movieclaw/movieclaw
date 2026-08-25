@@ -213,6 +213,33 @@ def test_pick_external_default_flag_first_among_externals() -> None:
     assert pick_default_subtitle(f) == "external:Movie.chs.default.srt"
 
 
+def test_pick_ai_external_first_among_externals() -> None:
+    """产品拍板（2026-08-25）：外挂里有 AI 生成的字幕就最优先——它是为
+    这部片现生成的，比随片源顺来的外挂更可能是用户想看的那条。
+    AI 优先级压过外挂的 default 旗标。"""
+    f = _file_tracks(
+        [{"codec": "subrip", "default": True}],
+        [
+            {"filename": "Movie.chs.default.srt", "format": "srt", "default": True},
+            {"filename": "Movie.ai-zh.srt", "format": "srt", "title": "ai-zh"},
+        ],
+    )
+    assert pick_default_subtitle(f) == "external:Movie.ai-zh.srt"
+
+
+def test_pick_ai_marker_reads_title_not_filename() -> None:
+    """判 AI 只认解析出来的 title 段：片名叫《AI》的片子不能被误标。"""
+    f = _file_tracks(
+        [],
+        [
+            {"filename": "AI.2024.chs.srt", "format": "srt", "title": "chs"},
+            {"filename": "AI.2024.eng.srt", "format": "srt", "title": "eng"},
+        ],
+    )
+    # 没有真 AI 轨：照旧外挂第一条
+    assert pick_default_subtitle(f) == "external:AI.2024.chs.srt"
+
+
 # ---------------------------------------------------------------------------
 # 记忆裁决（§3.3/§3.4：off 恒生效、失效回落）
 # ---------------------------------------------------------------------------

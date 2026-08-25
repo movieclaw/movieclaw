@@ -124,10 +124,16 @@ export function planSubtitleTracks(
 }
 
 /**
- * 选哪条轨：优先用户上次记住的，其次服务端标记的默认轨，再次第一条。
+ * 选哪条轨：优先用户上次记住的，其次服务端裁决的默认轨；都没有就不自动开。
  *
  * `remembered` 是 playback_state 里存的中性引用，值为 "off" 表示用户明确
  * 关掉了字幕——**这条必须尊重**，否则每集都要手动关一次。
+ *
+ * `isDefault` 是服务端 pick_default_subtitle 的结论（外挂 > AI 优先 >
+ * 内封 default 旗标 > 非 forced，全不命中谁都不标）——与 Jellyfin 协议端
+ * 同一个函数，两个入口对同一部片给出同一条默认轨。这里刻意**不再兜底选
+ * 第一条**：服务端说「不该自动开」（比如只有 forced 轨之外全无候选）时，
+ * 网页端硬开第一条就是两端漂移的来源（2026-08-25 对齐）。
  */
 export function pickInitialSubtitle(
   options: SubtitleOption[],
@@ -135,7 +141,7 @@ export function pickInitialSubtitle(
 ): string | null {
   if (remembered === "off") return null;
   if (remembered && options.some((o) => o.ref === remembered)) return remembered;
-  return options.find((o) => o.isDefault)?.ref ?? options[0]?.ref ?? null;
+  return options.find((o) => o.isDefault)?.ref ?? null;
 }
 
 /**

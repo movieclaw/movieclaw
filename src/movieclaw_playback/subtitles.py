@@ -261,19 +261,25 @@ async def serve_subtitle_async(
 
 
 def pick_default_subtitle(file: LibraryFile) -> str | None:
-    """默认字幕轨（Jellyfin Default 模式在通配语言下的化简）。
+    """默认字幕轨（Jellyfin Default 模式在通配语言下的化简，全端共用）。
 
-    候选排序：外挂 ↓ → default 旗标 ↓ → 非 forced ↓ → 稳定序；过滤条件
-    ``外挂 || default || forced``，取首个；全不命中 → None（不自动开）。
-    效果：装了外挂字幕就预选外挂（装了就是要看的），否则尊重内封
-    default 旗标，仅当只有 forced 轨可选时才选 forced。
+    候选排序：外挂 ↓ →（外挂内部）AI 生成 ↓ → default 旗标 ↓ → 非 forced ↓ →
+    稳定序；过滤条件 ``外挂 || default || forced``，取首个；全不命中 → None
+    （不自动开）。效果：装了外挂字幕就预选外挂（装了就是要看的），外挂里有
+    AI 生成的字幕优先选它（产品拍板 2026-08-25：AI 字幕是为这部片现生成的，
+    比随片源顺来的外挂更可能是用户想看的那条）；没有外挂则尊重内封 default
+    旗标，仅当只有 forced 轨可选时才选 forced。
+
+    **这是全端唯一的默认字幕策略**：Jellyfin 协议端经 resolve_default_subtitle
+    直接用；网页端经 profile 把结论写进轨列表的 is_default 间接用。改这里
+    两端同时生效，不会再漂。
     """
-    candidates: list[tuple[bool, bool, bool, int, str]] = []
+    candidates: list[tuple[bool, bool, bool, bool, int, str]] = []
     order = 0
     for k, raw in enumerate(file.subtitle_streams or []):
         track = embedded_track(k)
         candidates.append(
-            (False, bool(raw.get("default")), bool(raw.get("forced")), order, track)
+            (False, False, bool(raw.get("default")), bool(raw.get("forced")), order, track)
         )
         order += 1
     for entry in file.external_subtitles or []:
@@ -282,15 +288,22 @@ def pick_default_subtitle(file: LibraryFile) -> str | None:
             continue
         track = external_track(filename)
         candidates.append(
-            (True, bool(entry.get("default")), bool(entry.get("forced")), order, track)
+            (
+                True,
+                is_ai_generated(entry.get("title")),
+                bool(entry.get("default")),
+                bool(entry.get("forced")),
+                order,
+                track,
+            )
         )
         order += 1
 
-    eligible = [c for c in candidates if c[0] or c[1] or c[2]]
+    eligible = [c for c in candidates if c[0] or c[2] or c[3]]
     if not eligible:
         return None
-    eligible.sort(key=lambda c: (not c[0], not c[1], c[2], c[3]))
-    return eligible[0][4]
+    eligible.sort(key=lambda c: (not c[0], not c[1], not c[2], c[3], c[4]))
+    return eligible[0][5]
 
 
 def _track_exists(file: LibraryFile, track: str) -> bool:

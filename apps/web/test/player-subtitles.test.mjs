@@ -104,6 +104,16 @@ test("记住的轨优先于默认轨，off 表示用户明确关掉了字幕", (
   assert.equal(pickInitialSubtitle(options, "external:ja.srt"), "external:zh.srt");
 });
 
+test("服务端没标默认轨就不自动开——不再兜底选第一条（与 Jellyfin 端同口径）", () => {
+  const { options } = planSubtitleTracks(
+    [plan("embedded:0", "vtt"), plan("embedded:1", "vtt")],
+    ["/a", "/b"],
+  );
+  // is_default 全 false = 服务端裁决「不该自动开」（比如全是无旗标内封轨）；
+  // 网页端硬开第一条就是两端对同一部片选出不同字幕的漂移来源
+  assert.equal(pickInitialSubtitle(options, null), null);
+});
+
 test("时间轴微调钳到 ±30 秒并去掉浮点毛刺", () => {
   assert.equal(clampSubtitleOffset(0.1 + 0.2), 0.3);
   assert.equal(clampSubtitleOffset(99), 30);

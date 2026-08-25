@@ -14,7 +14,12 @@ from __future__ import annotations
 from movieclaw_db.models import LibraryFile
 from movieclaw_playback.decide import AudioTrack, MediaProfile, SubtitleTrack
 from movieclaw_playback.streaming import is_strm
-from movieclaw_playback.subtitles import embedded_track, external_track, is_ai_generated
+from movieclaw_playback.subtitles import (
+    embedded_track,
+    external_track,
+    is_ai_generated,
+    pick_default_subtitle,
+)
 
 
 def media_profile_from_file(
@@ -56,13 +61,20 @@ def _audio_tracks(file: LibraryFile) -> tuple[AudioTrack, ...]:
 
 
 def _subtitle_tracks(file: LibraryFile) -> tuple[SubtitleTrack, ...]:
-    """内封轨在前、外挂轨在后——与既有中性引用的编号口径保持一致。"""
+    """内封轨在前、外挂轨在后——与既有中性引用的编号口径保持一致。
+
+    ``is_default`` 写的是**服务端裁决出的那一条**（pick_default_subtitle：
+    外挂 > AI 优先 > 内封 default 旗标 > 非 forced，全不命中则谁都不标），
+    不是容器里的原始旗标。网页端拿这个标记做首选，Jellyfin 端经
+    resolve_default_subtitle 走同一个函数——两端对同一部片给出同一条默认轨。
+    """
+    default_ref = pick_default_subtitle(file)
     embedded = [
         SubtitleTrack(
             ref=embedded_track(index),
             codec=(raw.get("codec") or None),
             language=raw.get("language"),
-            is_default=bool(raw.get("default")),
+            is_default=embedded_track(index) == default_ref,
         )
         for index, raw in enumerate(file.subtitle_streams or [])
         if isinstance(raw, dict)
@@ -74,6 +86,7 @@ def _subtitle_tracks(file: LibraryFile) -> tuple[SubtitleTrack, ...]:
             codec=(entry.get("format") or None),
             language=entry.get("language"),
             is_external=True,
+            is_default=external_track(str(entry.get("filename"))) == default_ref,
             # title 段是扫描时从文件名解析好的（视频 stem 之后的 token），
             # AI 字幕的世代标记就写在这里
             is_ai=is_ai_generated(entry.get("title")),
