@@ -141,26 +141,6 @@ function SubtitleGlyph() {
   );
 }
 
-/** 切集按钮里的小箭头。比控制条上的图标小一号，跟着文字走。 */
-function NextGlyph() {
-  return (
-    <svg viewBox="0 0 24 24" className="size-4 shrink-0 fill-current" aria-hidden>
-      <path d="M5 4.6v14.8a.6.6 0 0 0 .93.5l11-7.4a.6.6 0 0 0 0-1L5.93 4.1A.6.6 0 0 0 5 4.6Z" />
-      <path d="M18.4 4h2.2v16h-2.2z" />
-    </svg>
-  );
-}
-
-/** 上一集：NextGlyph 的水平镜像，两颗按钮并排时形状必须对称，别另画一个。 */
-function PrevGlyph() {
-  return (
-    <svg viewBox="0 0 24 24" className="size-4 shrink-0 fill-current" aria-hidden>
-      <path d="M19 4.6v14.8a.6.6 0 0 1-.93.5l-11-7.4a.6.6 0 0 1 0-1l11-7.4a.6.6 0 0 1 .93.5Z" />
-      <path d="M3.4 4h2.2v16H3.4z" />
-    </svg>
-  );
-}
-
 /**
  * 横屏：一条环绕的大弧箭头 + 一台设备（Material screen_rotation_alt 的
  * 构图），站内没有这个图标，按同一套描边规格画。设备的方向画的是**点下去
@@ -615,16 +595,18 @@ export function PlayerControls(props: PlayerControlsProps) {
                 而电影本来也没有别的东西会因为这个位空着而移位。
 
                 上一集恒在下一集左边（包括本季放到头、右边是「已完结」的
-                时候）——切集是双向的，只给单向会逼用户退回详情页点集。 */}
+                时候）——切集是双向的，只给单向会逼用户退回详情页点集。
+
+                纯文字胶囊：中文标签已把方向说全，箭头小图标是冗余装饰，
+                去掉后与「已完结」（本就无图标）风格统一。 */}
             {isSeries ? (
               <div className="flex items-center gap-2 max-md:gap-1.5">
                 {onPrev ? (
                   <button
                     type="button"
                     onClick={onPrev}
-                    className="player-glass flex items-center gap-2 rounded-full px-4 py-2.5 text-[14px] font-medium text-white transition-colors hover:bg-white/20 max-md:px-3 max-md:py-2 max-md:text-[13px]"
+                    className="player-glass flex items-center rounded-full px-4 py-2.5 text-[14px] font-medium text-white transition-colors hover:bg-white/20 max-md:px-3 max-md:py-2 max-md:text-[13px]"
                   >
-                    <PrevGlyph />
                     上一集
                   </button>
                 ) : null}
@@ -632,10 +614,9 @@ export function PlayerControls(props: PlayerControlsProps) {
                   <button
                     type="button"
                     onClick={onNext}
-                    className="player-glass flex items-center gap-2 rounded-full px-4 py-2.5 text-[14px] font-medium text-white transition-colors hover:bg-white/20 max-md:px-3 max-md:py-2 max-md:text-[13px]"
+                    className="player-glass flex items-center rounded-full px-4 py-2.5 text-[14px] font-medium text-white transition-colors hover:bg-white/20 max-md:px-3 max-md:py-2 max-md:text-[13px]"
                   >
                     下一集
-                    <NextGlyph />
                   </button>
                 ) : (
                   <span className="player-glass rounded-full px-4 py-2.5 text-[14px] text-white/40 max-md:px-3 max-md:py-2 max-md:text-[13px]">
