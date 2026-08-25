@@ -1395,6 +1395,39 @@ export function VideoPlayer(props: VideoPlayerProps) {
     };
   }, [video, pipSubtitleUrl, mode?.pipPatchTrack]);
 
+  /**
+   * 拦掉屏幕边缘起手的历史滑动（返回/前进）手势——只在播放器存续期间。
+   *
+   * 能拦与拦不了要分清：**PWA（添加到主屏）里**，iOS 把历史滑动交给页面
+   * 先裁决，边缘触摸的 touchstart 上 preventDefault 就能拦下——这是标准
+   * 手段（也是各视频类 PWA 的通行做法）；**Safari 标签页里**该手势属于
+   * 浏览器 chrome，网页无权禁用，只能靠进度条让位（.player-scrub-inset）
+   * 把可拖元素挪出手势区。桌面触控板的双指历史滑动由下面的
+   * overscroll-behavior 规则（globals.css）负责。
+   *
+   * 两个刻意的细节：
+   * - 判定用**物理视口**坐标：伪横屏只是容器转了 90°，事件坐标仍是物理
+   *   方向的，恰好与系统手势的起手边一致，不用换算；
+   * - 起手点落在按钮/链接/输入件上时放行：顶栏返回键、右下角的功能键都
+   *   离边缘不远，preventDefault 会吞掉它们的 click，把「禁手势」变成
+   *   「按钮失灵」。手势恰好从按钮上起手的概率可以忽略。
+   */
+  useEffect(() => {
+    const EDGE_PX = 32;
+    const onTouchStart = (event: TouchEvent) => {
+      const touch = event.touches[0];
+      if (!touch) return;
+      const nearEdge =
+        touch.clientX <= EDGE_PX || touch.clientX >= window.innerWidth - EDGE_PX;
+      if (!nearEdge) return;
+      const target = event.target as Element | null;
+      if (target?.closest("button, a, input, select, [role='button']")) return;
+      event.preventDefault();
+    };
+    document.addEventListener("touchstart", onTouchStart, { passive: false });
+    return () => document.removeEventListener("touchstart", onTouchStart);
+  }, []);
+
   /** 播放中申请防息屏。切到后台会被系统收走，回来时重新申请。 */
   useEffect(() => {
     if (paused || state.phase !== "playing") return;

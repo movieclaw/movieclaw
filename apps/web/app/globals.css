@@ -1549,6 +1549,14 @@ body.cmdk-open .app-shell {
   cursor: none;
 }
 
+/* 播放器打开时禁掉根滚动容器的横向历史滑动（Chrome/Edge 触控板双指左划
+   返回上一页）：看片中一次不经意的横向滚动就退出播放器，代价太大。触屏的
+   边缘手势由 video-player 的 touchstart 守卫负责（那是另一条通路，CSS 管
+   不到）；macOS Safari 两者都不认，只能靠进度条让位。 */
+html:has(.player-root) {
+  overscroll-behavior-x: none;
+}
+
 /* iOS 原生 HLS 内联播放的系统字幕位置修正：WebKit 把 cue 画在整个 video
    元素的底部，竖屏 letterbox 时就是屏幕最底的黑边。用画面矩形算出的抬升量
    （--cue-lift，video-player 维护）把 cue 容器顶回画面下沿。只影响内联——
