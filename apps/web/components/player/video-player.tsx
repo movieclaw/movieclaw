@@ -59,6 +59,13 @@ import {
 } from "@/lib/player/qoe";
 import type { TrickplayIndex } from "@/lib/player/trickplay";
 import { isEditableTarget, resolveShortcut } from "@/lib/player/shortcuts";
+import {
+  type AdjustKind,
+  applySwipe,
+  classifyTouchZone,
+  isVerticalIntent,
+  toLayoutPoint,
+} from "@/lib/player/touch-adjust";
 import type { SubtitleStyle } from "@/lib/player/subtitles";
 import {
   loadSubtitleStyle,
@@ -126,6 +133,26 @@ function PipGlyph({ exit }: { exit: boolean }) {
     <svg viewBox="0 0 24 24" className="size-[18px] max-md:size-[22px]" fill="currentColor" aria-hidden>
       <path d="M3 5.5A1.5 1.5 0 0 1 4.5 4h15A1.5 1.5 0 0 1 21 5.5v13a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5v-13Zm2 .5v12h14V6H5Z" />
       <path d={exit ? "M7 8h7v5H7V8Z" : "M12 12h6v5h-6v-5Z"} />
+    </svg>
+  );
+}
+
+/** 亮度胶囊的太阳图标。 */
+function BrightnessGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" className="size-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" aria-hidden>
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M19.1 4.9l-1.8 1.8M6.7 17.3l-1.8 1.8" />
+    </svg>
+  );
+}
+
+/** 音量胶囊的喇叭图标；静音时画一道斜杠。 */
+function VolumeGlyph({ muted }: { muted: boolean }) {
+  return (
+    <svg viewBox="0 0 24 24" className="size-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M11 5 6.5 9H3v6h3.5L11 19V5Z" />
+      {muted ? <path d="M15 9l6 6M21 9l-6 6" /> : <path d="M15.5 8.5a5 5 0 0 1 0 7M18.4 6a9 9 0 0 1 0 12" />}
     </svg>
   );
 }
@@ -224,6 +251,15 @@ export function VideoPlayer(props: VideoPlayerProps) {
   const [canPip, setCanPip] = useState(false);
   /** 已经在小窗里。按钮据此翻成「退出画中画」 */
   const [pipActive, setPipActive] = useState(false);
+  /** 画面亮度（CSS brightness 滤镜，0.1~1）。左半屏上下滑调节 */
+  const [brightness, setBrightness] = useState(1);
+  /** 滑动调节的胶囊读数（顶部居中）；null = 没在调 */
+  const [adjust, setAdjust] = useState<{
+    kind: AdjustKind;
+    value: number;
+    /** iOS：video.volume 赋值被系统忽略，改为提示用侧键 */
+    unsupported?: boolean;
+  } | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<PlaybackEngine | null>(null);
@@ -1428,6 +1464,125 @@ export function VideoPlayer(props: VideoPlayerProps) {
     return () => document.removeEventListener("touchstart", onTouchStart);
   }, []);
 
+  // ---------------------------------------------------------------------
+  // 触屏滑动调节：左半屏亮度、右半屏音量（分区/映射/换算在 touch-adjust.ts）
+  // ---------------------------------------------------------------------
+
+  /** 进行中的滑动手势；active 前只是「手指放上来了」，竖直位移过门槛才生效 */
+  const adjustGestureRef = useRef<{
+    kind: AdjustKind;
+    startX: number;
+    startY: number;
+    startValue: number;
+    active: boolean;
+  } | null>(null);
+  const adjustHideTimerRef = useRef<number | null>(null);
+  /** 音量能不能调：null=还没试过；iOS 上赋值被忽略，读回不变即不可调 */
+  const volumeAdjustableRef = useRef<boolean | null>(null);
+  const fakeLandscapeRef = useRef(false);
+  fakeLandscapeRef.current = fakeLandscape;
+  const brightnessRef = useRef(1);
+  brightnessRef.current = brightness;
+
+  /** 亮度落到画面上。滤镜挂 video 而不是容器：控制层、字幕、胶囊读数
+   * 都不该跟着变暗——用户调的是「画面」亮度。 */
+  useEffect(() => {
+    if (!video) return;
+    video.style.filter = brightness < 1 ? `brightness(${brightness})` : "";
+    return () => {
+      video.style.filter = "";
+    };
+  }, [video, brightness]);
+
+  useEffect(() => {
+    if (!video) return;
+    const showAdjust = (kind: AdjustKind, value: number, unsupported = false) => {
+      if (adjustHideTimerRef.current !== null) {
+        window.clearTimeout(adjustHideTimerRef.current);
+        adjustHideTimerRef.current = null;
+      }
+      setAdjust({ kind, value, unsupported });
+    };
+    const onTouchStart = (event: TouchEvent) => {
+      if (event.touches.length !== 1) {
+        adjustGestureRef.current = null;
+        return;
+      }
+      const touch = event.touches[0];
+      const kind = classifyTouchZone(touch.clientX, touch.clientY, {
+        width: window.innerWidth,
+        height: window.innerHeight,
+        fakeLandscape: fakeLandscapeRef.current,
+      });
+      if (!kind) return;
+      adjustGestureRef.current = {
+        kind,
+        startX: touch.clientX,
+        startY: touch.clientY,
+        startValue: kind === "brightness" ? brightnessRef.current : video.volume,
+        active: false,
+      };
+    };
+    const onTouchMove = (event: TouchEvent) => {
+      const gesture = adjustGestureRef.current;
+      if (!gesture || event.touches.length !== 1) return;
+      const touch = event.touches[0];
+      const viewport = {
+        width: window.innerWidth,
+        height: window.innerHeight,
+        fakeLandscape: fakeLandscapeRef.current,
+      };
+      const start = toLayoutPoint(gesture.startX, gesture.startY, viewport);
+      const now = toLayoutPoint(touch.clientX, touch.clientY, viewport);
+      if (!gesture.active) {
+        if (!isVerticalIntent(now.x - start.x, now.y - start.y)) return;
+        gesture.active = true;
+      }
+      // 生效后接管这根手指：不让它同时滚动页面/触发下拉刷新
+      event.preventDefault();
+      const value = applySwipe(gesture.kind, gesture.startValue, now.y - start.y, now.height);
+      if (gesture.kind === "brightness") {
+        setBrightness(value);
+        showAdjust("brightness", value);
+        return;
+      }
+      video.volume = value;
+      if (volumeAdjustableRef.current === null) {
+        // 只有试了才知道：iOS 的赋值被系统静默忽略（读回不变）
+        volumeAdjustableRef.current = Math.abs(video.volume - value) < 0.01;
+      }
+      if (volumeAdjustableRef.current) {
+        // 从 0 往上滑视同「要声音」，静音一并解除
+        if (value > 0 && video.muted) video.muted = false;
+        showAdjust("volume", value);
+      } else {
+        showAdjust("volume", video.volume, true);
+      }
+    };
+    const onTouchEnd = () => {
+      adjustGestureRef.current = null;
+      if (adjustHideTimerRef.current !== null) window.clearTimeout(adjustHideTimerRef.current);
+      adjustHideTimerRef.current = window.setTimeout(() => {
+        adjustHideTimerRef.current = null;
+        setAdjust(null);
+      }, 900);
+    };
+    video.addEventListener("touchstart", onTouchStart, { passive: true });
+    video.addEventListener("touchmove", onTouchMove, { passive: false });
+    video.addEventListener("touchend", onTouchEnd);
+    video.addEventListener("touchcancel", onTouchEnd);
+    return () => {
+      video.removeEventListener("touchstart", onTouchStart);
+      video.removeEventListener("touchmove", onTouchMove);
+      video.removeEventListener("touchend", onTouchEnd);
+      video.removeEventListener("touchcancel", onTouchEnd);
+      if (adjustHideTimerRef.current !== null) {
+        window.clearTimeout(adjustHideTimerRef.current);
+        adjustHideTimerRef.current = null;
+      }
+    };
+  }, [video]);
+
   /** 播放中申请防息屏。切到后台会被系统收走，回来时重新申请。 */
   useEffect(() => {
     if (paused || state.phase !== "playing") return;
@@ -1615,6 +1770,32 @@ export function VideoPlayer(props: VideoPlayerProps) {
             </button>
           ) : null}
         </div>
+
+        {/* 滑动调节的胶囊读数：顶部居中，滑动中常驻、松手 0.9 秒后消失。
+            noautohide：不随控制层显隐——手势恰恰常在控制层藏着时用。 */}
+        {adjust ? (
+          <div
+            {...{ noautohide: "" }}
+            className="pointer-events-none absolute left-1/2 top-[calc(1rem_+_var(--safe-top))] z-30 -translate-x-1/2"
+          >
+            <div className="flex items-center gap-2.5 rounded-full bg-black/70 px-4 py-2 text-[13px] font-medium text-white shadow-[0_10px_28px_rgba(0,0,0,0.45)]">
+              {adjust.kind === "brightness" ? <BrightnessGlyph /> : <VolumeGlyph muted={adjust.value <= 0.001} />}
+              {adjust.unsupported ? (
+                <span>音量由系统侧键控制</span>
+              ) : (
+                <>
+                  <div className="h-1 w-24 overflow-hidden rounded-full bg-white/25">
+                    <div
+                      className="h-full rounded-full bg-white"
+                      style={{ width: `${Math.round(adjust.value * 100)}%` }}
+                    />
+                  </div>
+                  <span className="tnum w-9 text-right">{Math.round(adjust.value * 100)}%</span>
+                </>
+              )}
+            </div>
+          </div>
+        ) : null}
 
         {/* 暂停压暗层：整屏 45% 黑，一眼知道「现在是停着的」。片名大字不在
             这里——它长在下面控制条那个布局流里（见 bottom 容器），跟时间行
