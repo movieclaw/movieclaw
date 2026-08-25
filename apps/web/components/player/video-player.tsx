@@ -168,6 +168,13 @@ export function VideoPlayer(props: VideoPlayerProps) {
    * 文本轨切换纯前端完成，不惊动服务端。
    */
   const [requestedSubtitle, setRequestedSubtitle] = useState<string | null>(null);
+  /**
+   * 本单元内用户是否亲手选过字幕（选轨或关闭都算）。表过态之后，「初始
+   * 字幕选择」不再插手——换会话（换音轨/画质/撤烧/seek 重开）会带来新的
+   * watch 快照，里面的记忆轨是**旧值**（比如刚撤下的 PGS），拿它覆盖用户
+   * 刚点的选择，表现为「切了 SRT 字幕却没加载」（真机踩中）。
+   */
+  const subtitleTouchedRef = useRef(false);
   // 惰性初始化从 localStorage 读：字幕调好的字号/位置不该每次进来都重调
   const [subtitleStyle, setSubtitleStyle] = useState<SubtitleStyle>(loadSubtitleStyle);
   /** 画质上限（max_height）。null = 自动。持久化，弱网用户不必每部片重选 */
@@ -374,6 +381,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
     setSelectedSubtitle(null);
     setRequestedAudio(null);
     setRequestedSubtitle(null);
+    subtitleTouchedRef.current = false;
     setTrickplay(null); // 换片必须清掉：旧片的缩略图配新片的进度条是错的
     // 新的一集重新获得自动播放的资格：上一集用户按过暂停不代表下一集也不想看
     wantsPlayRef.current = true;
@@ -623,6 +631,9 @@ export function VideoPlayer(props: VideoPlayerProps) {
 
   useEffect(() => {
     if (subtitles.options.length === 0) return;
+    // 用户亲手选过就不再插手：新会话的 watch 快照里躺着的是旧记忆轨，
+    // 拿它覆盖刚点的选择等于把用户的操作悄悄撤销
+    if (subtitleTouchedRef.current) return;
     // 服务端在烧录哪条，菜单就选中哪条——烧录会话里画面本身就是真值
     if (burnedSubtitle) {
       setSelectedSubtitle(burnedSubtitle);
@@ -955,6 +966,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
    */
   const selectSubtitle = useCallback(
     (ref: string | null) => {
+      subtitleTouchedRef.current = true;
       setSelectedSubtitle(ref);
       const target = ref ? subtitles.options.find((o) => o.ref === ref) : null;
       const wantBurn = target?.kind === "pgs";

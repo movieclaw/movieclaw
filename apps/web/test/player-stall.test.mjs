@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  DECODE_STALL_MIN_BUFFER_S,
   STALL_TIMEOUT_S,
   STARVE_TIMEOUT_S,
   bufferedAhead,
@@ -104,4 +105,25 @@ test("落在缓冲空洞里记 0", () => {
 
 test("没有任何缓冲记 0", () => {
   assert.equal(bufferedAhead(fakeVideo(0, [])), 0);
+});
+
+test("前方剩一两秒卡住是「追上了转码器」，不是解码卡死——按缺粮长限等", () => {
+  // 转码会话里 buffered 尾 = 已转出的全部，播放头贴着尾巴跑时前方常剩
+  // 0.5~2 秒。烧录/软转会话起步慢，按 8 秒解码卡死判会误杀降档（真机踩中：
+  // 「选个 PGS 字幕先给我降了一档」）。
+  assert.equal(
+    classifyStall({ ...base, bufferedAhead: 1.5, stalledFor: STALL_TIMEOUT_S }),
+    "ok",
+  );
+  assert.equal(
+    classifyStall({ ...base, bufferedAhead: 1.5, stalledFor: STARVE_TIMEOUT_S }),
+    "starved",
+  );
+});
+
+test("解码卡死要求前方缓冲至少 DECODE_STALL_MIN_BUFFER_S", () => {
+  assert.equal(
+    classifyStall({ ...base, bufferedAhead: DECODE_STALL_MIN_BUFFER_S, stalledFor: STALL_TIMEOUT_S }),
+    "decode-stalled",
+  );
 });

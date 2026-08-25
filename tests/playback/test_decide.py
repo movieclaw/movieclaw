@@ -716,3 +716,33 @@ def test_strm_ignores_pgs_selection():
     assert isinstance(decision, PlaybackPlan)
     assert decision.video.action == "copy"
     assert decision.video.burn_subtitle is None
+
+
+def test_unrelated_failure_history_is_not_marked_as_degraded():
+    """带着「档 1 失败」的历史来开烧录会话：目标本来就是档 3，与那次失败
+    无关，不能标 degraded_from——否则诊断面板给毫无关系的会话挂红字。"""
+    decision = decide_playback(
+        media(**PGS_MEDIA_KW),
+        CHROME_NO_HEVC,
+        WITH_GPU,
+        preferred_subtitle="embedded:1",
+        failed_tiers=frozenset({PlaybackTier.REMUX}),
+    )
+    assert isinstance(decision, PlaybackPlan)
+    assert decision.tier is PlaybackTier.HARDWARE_TRANSCODE
+    assert decision.degraded_from is None
+    assert "已自动降档" not in decision.reason
+
+
+def test_real_degrade_still_marks_the_origin_tier():
+    """真被 failed_tiers 顶下来的会话要标起点档位（§6.3 的既有语义不变）。"""
+    decision = decide_playback(
+        media(),  # 默认可 REMUX
+        CHROME_NO_HEVC,
+        WITH_GPU,
+        failed_tiers=frozenset({PlaybackTier.REMUX, PlaybackTier.AUDIO_TRANSCODE}),
+    )
+    assert isinstance(decision, PlaybackPlan)
+    assert decision.tier is PlaybackTier.HARDWARE_TRANSCODE
+    assert decision.degraded_from is PlaybackTier.REMUX
+    assert "已自动降档" in decision.reason

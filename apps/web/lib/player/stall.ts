@@ -16,6 +16,16 @@
 
 /** 有数据却不前进，判定为解码卡死的秒数。 */
 export const STALL_TIMEOUT_S = 8;
+
+/** 「解码卡死」判定要求的最小前方缓冲（秒）。
+
+只有缓冲里**明确还有一大段**却播不动，才够格叫解码卡死。转码会话里
+buffered 的尾巴就是「已经转出来的全部」，播放头贴着尾巴跑时前方常剩
+0.5~2 秒——那是**追上了编码器**（starve 语义，值得等 45 秒），不是浏览器
+吃不下码流。烧录/软转会话起步慢，按 0.5 秒的旧阈值 8 秒就误判降档，
+表现为「选个 PGS 字幕先给我降了一档」（真机踩中）。真正的解码卡死
+（buffered 里躺着十几秒就是不走）仍然 8 秒内抓住。 */
+export const DECODE_STALL_MIN_BUFFER_S = 3;
 /**
  * 缓冲耗尽后仍无进展、判定为供流中断的秒数。
  *
@@ -24,7 +34,6 @@ export const STALL_TIMEOUT_S = 8;
  */
 export const STARVE_TIMEOUT_S = 45;
 /** 小于这个秒数的前方缓冲视同没有——四舍五入的抖动不该被当成"有数据"。 */
-const BUFFER_EPSILON_S = 0.5;
 
 export type StallVerdict = "ok" | "decode-stalled" | "starved";
 
@@ -46,9 +55,11 @@ export interface StallInput {
  */
 export function classifyStall(input: StallInput): StallVerdict {
   if (input.paused || input.ended || input.seeking || input.advanced) return "ok";
-  if (input.bufferedAhead > BUFFER_EPSILON_S) {
+  if (input.bufferedAhead >= DECODE_STALL_MIN_BUFFER_S) {
     return input.stalledFor >= STALL_TIMEOUT_S ? "decode-stalled" : "ok";
   }
+  // 前方只剩零点几秒到两三秒：大概率是追上了转码器（buffered 尾 = 已转出
+  // 的全部），按缺粮处理给足 45 秒——降档的代价是整路重来，误杀最伤
   return input.stalledFor >= STARVE_TIMEOUT_S ? "starved" : "ok";
 }
 

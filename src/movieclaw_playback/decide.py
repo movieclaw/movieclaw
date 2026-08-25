@@ -301,7 +301,7 @@ def decide_playback(
         )
 
     # 6–7. 综合定档。
-    tier, container, reason = _resolve_tier(
+    tier, container, reason, degraded_from = _resolve_tier(
         media, video_verdict, audio_verdict, policy, failed_tiers
     )
     if isinstance(tier, PlaybackRejected):
@@ -339,7 +339,7 @@ def decide_playback(
         subtitles=subtitles,
         audio_tracks=media.audio_tracks,
         reason=reason,
-        degraded_from=min(failed_tiers) if failed_tiers else None,
+        degraded_from=degraded_from,
     )
 
 
@@ -532,8 +532,15 @@ def _resolve_tier(
     audio: _AudioVerdict,
     policy: PlaybackPolicy,
     failed_tiers: frozenset[PlaybackTier],
-) -> tuple[PlaybackTier | PlaybackRejected, str, str]:
-    """综合定档（§3.3 步骤 6–7）。返回 (档位或拒绝, 容器, 中文理由)。"""
+) -> tuple[PlaybackTier | PlaybackRejected, str, str, PlaybackTier | None]:
+    """综合定档（§3.3 步骤 6–7）。返回 (档位或拒绝, 容器, 中文理由,
+    降档起点)。
+
+    降档起点只在**本次真的被 failed_tiers 顶下来**时非空——曾经失败过但
+    本次目标档与失败无关（比如带着「档 1 失败」的历史来开烧录会话，目标
+    本来就是档 3）不算降档。以前无条件标 min(failed_tiers)，诊断面板会给
+    毫无关系的会话挂上「上一档播放失败，自动降档而来」的红字（真机踩中）。
+    """
     if video.blocked:
         return (
             PlaybackRejected(
@@ -542,6 +549,7 @@ def _resolve_tier(
             ),
             "",
             "",
+            None,
         )
 
     reason = f"{video.reason}；{audio.reason}"
@@ -589,9 +597,10 @@ def _resolve_tier(
     # ``-c:v copy``，若失败原因在视频码流，它会同样失败——但若原因在音轨，
     # 它正好修好。多试一档只浪费几秒（一次性），跳过档 2 却可能让本可直通的
     # 视频永久多转一路（每次播放都付）。这个不对称决定了保留 1→2。
-    degraded = False
+    degraded_from: PlaybackTier | None = None
     while tier in failed_tiers:
-        degraded = True
+        if degraded_from is None:
+            degraded_from = tier
         if tier >= PlaybackTier.SOFTWARE_TRANSCODE:
             return (
                 PlaybackRejected(
@@ -603,15 +612,16 @@ def _resolve_tier(
                 ),
                 "",
                 "",
+                None,
             )
         tier = PlaybackTier(tier + 1)
         if tier is PlaybackTier.HARDWARE_TRANSCODE and not policy.hardware_available:
             tier = PlaybackTier.SOFTWARE_TRANSCODE
-    if degraded:
+    if degraded_from is not None:
         reason += "；上一档播放失败，已自动降档"
 
     container = "mp4" if tier is PlaybackTier.DIRECT_PLAY else "hls-fmp4"
-    return tier, container, reason
+    return tier, container, reason, degraded_from
 
 
 # ---------------------------------------------------------------------------

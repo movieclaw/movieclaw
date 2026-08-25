@@ -777,7 +777,15 @@ function SubtitleMenu({
   return (
     <MenuPanel title="字幕" onClose={onClose}>
       <div className="scroll-thin max-h-[240px] overflow-y-auto">
-        <MenuItem active={selected === null} onClick={() => onSelect(null)}>
+        {/* 选完即关（音轨/画质菜单同款）：换轨是一次决定，不是连续调节；
+            要调时间轴/样式的用户重新打开菜单，此时样式区因已选中而展开 */}
+        <MenuItem
+          active={selected === null}
+          onClick={() => {
+            onSelect(null);
+            onClose();
+          }}
+        >
           关闭
         </MenuItem>
         {tracks.options.map((option) => (
@@ -785,7 +793,10 @@ function SubtitleMenu({
             key={option.ref}
             active={selected === option.ref}
             badge={option.isAi ? <AiChip /> : null}
-            onClick={() => onSelect(option.ref)}
+            onClick={() => {
+              onSelect(option.ref);
+              onClose();
+            }}
           >
             {option.label}
           </MenuItem>
