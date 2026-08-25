@@ -1859,7 +1859,12 @@ export function VideoPlayer(props: VideoPlayerProps) {
         // media-chrome 自带的手势层会在点击媒体时切换播放/暂停——与我们的
         // 「画面点击只开关控制层」直接冲突（它就是"点哪都会暂停"的元凶之一，
         // 浏览器 E2E 抓出来的）。快捷键已经 noHotkeys 自管，手势也一样自管。
-        {...{ gesturesdisabled: "" }}
+        // autohide="-1" 关掉它的第二套显隐时钟：负值时 media-chrome 永远不会
+        // 进 userinactive，也就不会按它自己的倒计时把菜单浮层、控制条统一
+        // 淡出——显隐完全由我们的 chromeVisible 单一所有（静止 4 秒收、菜单
+        // 打开时 chromeMustStayVisible 钉住）。不禁的话菜单开着等几秒会被它
+        // 淡掉，绕过我们的 menuOpen 钉住逻辑（真机反馈的根因）。
+        {...{ gesturesdisabled: "", autohide: "-1" }}
         className="size-full"
         style={{ width: "100%", height: "100%", backgroundColor: "#000" }}
       >
