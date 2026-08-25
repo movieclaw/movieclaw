@@ -110,7 +110,15 @@ http {
             error_page 502 503 504 @api_starting;
             proxy_pass http://movieclaw_api;
         }
-        location ~* ^/(system|users|userviews|useritems|userplayeditems|userfavoriteitems|items|videos|shows|playingitems|branding|quickconnect|plugins|displaypreferences|emby)(/|$) {
+        location ~* ^/(system|users|userviews|useritems|userplayeditems|userfavoriteitems|items|persons|livestreams|videos|shows|playingitems|branding|quickconnect|plugins|displaypreferences|emby)(/|$) {
+            error_page 502 503 504 @api_starting;
+            proxy_pass http://movieclaw_api;
+        }
+        # /Search 只放行 /Search/Hints 子路径：网页端自己有 /search 页面，
+        # 整段放行会把页面劫持到后端。Infuse 的搜索是 /Items?searchTerm= 与
+        # /Persons?searchTerm= 两路并发（部分版本再加 /Search/Hints），任何
+        # 一路拿到 Next 的 404 HTML，客户端就把整次搜索判为失败。
+        location ~* ^/search/hints(/|$) {
             error_page 502 503 504 @api_starting;
             proxy_pass http://movieclaw_api;
         }
