@@ -1685,22 +1685,33 @@ export function VideoPlayer(props: VideoPlayerProps) {
     startValue: number;
     active: boolean;
   } | null>(null);
-  /** 音量能不能调：null=还没试过；iOS 上赋值被忽略，读回不变即不可调 */
+  /** 音量能不能调：null=还没探完；不可调 = iOS（WebKit 只认硬件侧键）。 */
   const volumeAdjustableRef = useRef<boolean | null>(null);
   const fakeLandscapeRef = useRef(false);
   fakeLandscapeRef.current = fakeLandscape;
   const brightnessRef = useRef(1);
   brightnessRef.current = brightness;
 
-  /** 亮度落到画面上。滤镜挂 video 而不是容器：控制层、字幕、胶囊读数
-   * 都不该跟着变暗——用户调的是「画面」亮度。 */
+  /** 音量可调性探测。iOS 的坑分两代：老版本赋值被同步忽略（读回还是 1），
+   * 新版本会**先把赋的值反映出来、稍后又异步弹回 1**——同步「赋值后读回」
+   * 在新版上会把不可调误判成可调，表现就是真机上胶囊读数在变、实际响度
+   * 纹丝不动、下一次滑动又从 100% 起步（2026-08-25 真机反馈）。所以必须
+   * 赋一个真正不同的值、**过一拍再读回**才能下结论。探测用 ±6% 的扰动，
+   * 250ms 后即还原，可调平台上听不出来。 */
   useEffect(() => {
     if (!video) return;
-    video.style.filter = brightness < 1 ? `brightness(${brightness})` : "";
+    const original = video.volume;
+    const probe = original > 0.5 ? original - 0.06 : original + 0.06;
+    video.volume = probe;
+    const timer = window.setTimeout(() => {
+      volumeAdjustableRef.current = Math.abs(video.volume - probe) < 0.01;
+      video.volume = original;
+    }, 250);
     return () => {
-      video.style.filter = "";
+      window.clearTimeout(timer);
+      video.volume = original;
     };
-  }, [video, brightness]);
+  }, [video]);
 
   useEffect(() => {
     if (!video) return;
@@ -1747,16 +1758,10 @@ export function VideoPlayer(props: VideoPlayerProps) {
         flashAdjust({ kind: "brightness", value });
         return;
       }
-      const before = video.volume;
       video.volume = value;
-      // 只有试了才知道 iOS 的赋值有没有被系统静默忽略——但**必须用一次
-      // 真正会改变数值的赋值来试**：音量本来就是 1 时向上滑，value 被
-      // clamp 回 1，「读回不变」什么也证明不了；这时先按不下结论，等到
-      // 一次 value ≠ 原值的赋值再判。不然 iOS 上第一下向上滑会把「可调」
-      // 永久误判成 true，之后的胶囊读数全是假的。
-      if (volumeAdjustableRef.current === null && Math.abs(value - before) > 0.01) {
-        volumeAdjustableRef.current = Math.abs(video.volume - value) < 0.01;
-      }
+      // 可调性由挂载时的延时探测裁决（见 volumeAdjustableRef 旁的探测
+      // effect）；探测未出结论前（挂载后 250ms 内就有手势的极端情况）
+      // 先乐观显示，touchend 的复核兜底
       if (volumeAdjustableRef.current !== false) {
         // 只有**往上滑**才视同「要声音」解除静音；向下调音量时静音保持——
         // 用户按过静音键后想把音量预调小一点，不该突然出声
@@ -1766,9 +1771,21 @@ export function VideoPlayer(props: VideoPlayerProps) {
         flashAdjust({ kind: "volume", value: video.volume, unsupported: true });
       }
     };
-    // 退场由 flashAdjust 自己排（每次 move 都会顺延），松手只需清掉手势
+    // 退场由 flashAdjust 自己排（每次 move 都会顺延），松手清掉手势；
+    // 音量手势松手后复核一次「赋的值是否真的留住了」——挂载探测万一误判
+    // 可调（WebKit 行为随版本漂），这里能把结论纠回来，下一次滑动就会
+    // 如实提示由侧键控制
     const onTouchEnd = () => {
+      const gesture = adjustGestureRef.current;
       adjustGestureRef.current = null;
+      if (!gesture?.active || gesture.kind !== "volume") return;
+      if (volumeAdjustableRef.current === false) return;
+      const expected = video.volume;
+      window.setTimeout(() => {
+        if (Math.abs(video.volume - expected) > 0.05) {
+          volumeAdjustableRef.current = false;
+        }
+      }, 300);
     };
     video.addEventListener("touchstart", onTouchStart, { passive: true });
     video.addEventListener("touchmove", onTouchMove, { passive: false });
@@ -1908,6 +1925,19 @@ export function VideoPlayer(props: VideoPlayerProps) {
             <track key={pipSubtitleUrl} kind="subtitles" src={pipSubtitleUrl} />
           ) : null}
         </video>
+
+        {/* 亮度遮罩。不用 video 上的 CSS filter：iOS 的视频走独立合成层，
+            filter 在真机上时常被绕过（滤镜不生效，2026-08-25 真机反馈）；
+            黑色遮罩按不透明度压暗是全平台都吃的等效实现（只往暗调，数学上
+            与 brightness(x) 同为乘法压暗）。放在 video 之后、字幕与控制层
+            之前——用户调的是「画面」亮度，字幕和按钮不该跟着暗。 */}
+        {brightness < 1 ? (
+          <div
+            {...{ noautohide: "" }}
+            className="player-brightness-mask pointer-events-none absolute inset-0 bg-black"
+            style={{ opacity: 1 - brightness }}
+          />
+        ) : null}
 
         <SubtitleLayer
           video={video}
