@@ -365,6 +365,18 @@ export async function pingPlaybackSession(sessionId: string): Promise<boolean | 
   }
 }
 
+/**
+ * 播放器客户端事件上报：把浏览器侧现场（MediaError 详情、播放器状态）落
+ * 服务端日志。iPhone 上没有可看的控制台，这是拿到客户端真相的唯一通道。
+ * fire-and-forget：上报失败绝不能影响播放本身。
+ */
+export function reportPlaybackClientLog(event: string, detail: Record<string, unknown>): void {
+  void request<ApiEnvelope<unknown>>("/playback/client-log", {
+    method: "POST",
+    body: JSON.stringify({ event, detail }),
+  }).catch(() => undefined);
+}
+
 /** 结束会话，掐断 ffmpeg 并清掉临时分片。 */
 export async function stopPlaybackSession(sessionId: string): Promise<void> {
   await request<ApiEnvelope<unknown>>(

@@ -12,7 +12,27 @@
 
 import type Hls from "hls.js";
 
+import { reportPlaybackClientLog } from "@/lib/api/playback";
+
 import { bufferedAhead, classifyStall, stallReason } from "./stall";
+
+/** 把 `<video>` 的当下状态压成一行上报（排障用，字段都很小）。 */
+function videoSnapshot(video: HTMLVideoElement): Record<string, unknown> {
+  const buffered: string[] = [];
+  for (let i = 0; i < video.buffered.length; i += 1) {
+    buffered.push(`${video.buffered.start(i).toFixed(1)}-${video.buffered.end(i).toFixed(1)}`);
+  }
+  return {
+    error_code: video.error?.code ?? null,
+    error_message: video.error?.message ?? null,
+    current_time: Number(video.currentTime.toFixed(2)),
+    ready_state: video.readyState,
+    network_state: video.networkState,
+    paused: video.paused,
+    buffered: buffered.join(","),
+    src_tail: video.currentSrc.slice(-80),
+  };
+}
 
 /** 诊断面板（§6.5「Stats for nerds」）要的实时读数。 */
 export interface EngineStats {
@@ -149,7 +169,13 @@ function describeMediaError(video: HTMLVideoElement): string {
 /** 档 0 与原生 HLS 共用：直接把地址交给 `<video src>`。 */
 class DirectEngine implements PlaybackEngine {
   private stopStallWatch: (() => void) | null = null;
-  private readonly onErrorEvent = () => this.options.onFailed(describeMediaError(this.options.video));
+  private readonly onErrorEvent = () => {
+    // 报错瞬间的客户端现场进服务端日志：iPhone 上没有控制台可看，
+    // MediaError 的 code/message 与播放器状态只有这里能拿到
+    reportPlaybackClientLog(`${this.label}-media-error`, videoSnapshot(this.options.video));
+    this.options.onFailed(describeMediaError(this.options.video));
+  };
+  private onMetadataSeek: (() => void) | null = null;
 
   constructor(
     private readonly options: EngineOptions,
@@ -159,21 +185,46 @@ class DirectEngine implements PlaybackEngine {
   async attach(): Promise<void> {
     const { video, streamUrl, onFailed, startPositionS } = this.options;
     video.addEventListener("error", this.onErrorEvent);
-    // 媒体片段（#t=）：iOS 原生 HLS 没有 hls.js 的 startPosition 可配，
-    // AVPlayer 在上层 seek 落地之前就会从列表头开始拉分片——VOD 按需供片
-    // 会把那个杂散的第 0 段请求当成「seek 回开头」重启转码（与 hls.js 侧
-    // 同一个坑）。Safari/Chrome 都认媒体片段，直出 mp4 上它同样只是把首帧
-    // 定到续播点，无副作用。
-    video.src =
-      startPositionS && startPositionS > 1 ? `${streamUrl}#t=${startPositionS}` : streamUrl;
+    // 起播点的两条路（2026-08-25 真机结论，iPhone 逐场景实测）：
+    // - 直出 mp4：媒体片段（#t=）可用且零副作用，保留；
+    // - 原生 HLS：**#t= 在 iOS 上对 HLS 列表不生效**——AVPlayer 会拉对
+    //   起播点所在的分片，却永远不进入播放，几秒后报笼统的解码错误
+    //   （冷加载都如此），必须改回 loadedmetadata 后 JS seek。
+    //   代价是 seek 落地前 AVPlayer 会探测列表头（实测狂打 seg00000），
+    //   这些杂散请求由服务端的重启宽限期挡住（_maybe_restart_for），
+    //   不再劫持转码器回第 0 段。
+    if (this.label === "native-hls" && startPositionS && startPositionS > 1) {
+      video.src = streamUrl;
+      this.onMetadataSeek = () => {
+        video.currentTime = startPositionS;
+      };
+      video.addEventListener("loadedmetadata", this.onMetadataSeek, { once: true });
+      // 挂流路径进服务端日志：与 media-error 对照，可确证客户端跑的是
+      // 哪个版本的代码、走的哪条起播路径
+      reportPlaybackClientLog("native-attach-jsseek", { start_s: startPositionS });
+    } else {
+      video.src =
+        startPositionS && startPositionS > 1 ? `${streamUrl}#t=${startPositionS}` : streamUrl;
+    }
     video.load();
-    this.stopStallWatch = watchStall(video, onFailed);
+    this.stopStallWatch = watchStall(video, (reason) => {
+      // 停滞判死同样要留客户端现场：它与真 MediaError 的处置完全不同
+      reportPlaybackClientLog(`${this.label}-stall`, {
+        reason,
+        ...videoSnapshot(video),
+      });
+      onFailed(reason);
+    });
   }
 
   destroy(): void {
     this.stopStallWatch?.();
     this.stopStallWatch = null;
     this.options.video.removeEventListener("error", this.onErrorEvent);
+    if (this.onMetadataSeek) {
+      this.options.video.removeEventListener("loadedmetadata", this.onMetadataSeek);
+      this.onMetadataSeek = null;
+    }
     // removeAttribute + load()：只置空 src 会让部分浏览器继续持有连接，
     // 表现是切集后旧会话的取流不断开、服务端并发额度被占着不放。
     this.options.video.removeAttribute("src");
