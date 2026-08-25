@@ -3,10 +3,13 @@ import test from "node:test";
 
 import {
   DECODE_STALL_MIN_BUFFER_S,
+  MAX_NUDGES,
+  NUDGE_AT_S,
   STALL_TIMEOUT_S,
   STARVE_TIMEOUT_S,
   bufferedAhead,
   classifyStall,
+  shouldNudge,
   stallReason,
 } from "../lib/player/stall.ts";
 
@@ -125,5 +128,28 @@ test("解码卡死要求前方缓冲至少 DECODE_STALL_MIN_BUFFER_S", () => {
   assert.equal(
     classifyStall({ ...base, bufferedAhead: DECODE_STALL_MIN_BUFFER_S, stalledFor: STALL_TIMEOUT_S }),
     "decode-stalled",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// 推一把（nudge）：iOS AVPlayer「有数据却楞住」的 wedge 先踢再判死
+// ---------------------------------------------------------------------------
+
+test("有数据卡满 3 秒且还有推动额度 → 推一把", () => {
+  assert.equal(shouldNudge({ stalledFor: NUDGE_AT_S, nudges: 0, bufferedAhead: 8 }), true);
+});
+
+test("卡的时间不足推动起点 → 不推", () => {
+  assert.equal(shouldNudge({ stalledFor: NUDGE_AT_S - 1, nudges: 0, bufferedAhead: 8 }), false);
+});
+
+test("推满次数后不再推——让 decode-stalled 判定接手降档", () => {
+  assert.equal(shouldNudge({ stalledFor: 99, nudges: MAX_NUDGES, bufferedAhead: 8 }), false);
+});
+
+test("前方缓冲不足（追上编码器）不推——那是缺粮不是 wedge", () => {
+  assert.equal(
+    shouldNudge({ stalledFor: 99, nudges: 0, bufferedAhead: DECODE_STALL_MIN_BUFFER_S - 1 }),
+    false,
   );
 });

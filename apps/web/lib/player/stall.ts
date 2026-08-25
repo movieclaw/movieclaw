@@ -37,6 +37,35 @@ export const STARVE_TIMEOUT_S = 45;
 
 export type StallVerdict = "ok" | "decode-stalled" | "starved";
 
+/** 有数据却不动时，先「推一把」再谈判死的起点（秒）。 */
+export const NUDGE_AT_S = 3;
+/** 一次停滞里最多推几把；推完仍不动才够格进入 decode-stalled 判定。 */
+export const MAX_NUDGES = 2;
+/** 推一把的幅度（秒）：跳进缓冲区间内的下一个瞬间，重新触发解码管线。 */
+export const NUDGE_STEP_S = 0.1;
+
+/**
+ * 该不该推一把（hls.js 的 nudge-on-stall 同款思路）。
+ *
+ * iOS 的 AVPlayer 在会话重启 + seek 之后会出现「缓冲明明覆盖播放头、
+ * paused=false、readyState=3，就是不走」的 wedge（2026-08-26 真机日志实证：
+ * buffered 1100.1-1112.1、播放头 1103.91、停滞 8 秒被误判成解码卡死而降档）。
+ * 微调 currentTime 能把解码管线重新踢活，代价近乎为零；真正的坏流推不动，
+ * 推满 MAX_NUDGES 次后仍停滞照旧走 decode-stalled 降档——只是把判死起点
+ * 从 8 秒推迟到最坏约 3+3+8 秒，换取 wedge 场景不再白白重开整路会话。
+ */
+export function shouldNudge(input: {
+  stalledFor: number;
+  nudges: number;
+  bufferedAhead: number;
+}): boolean {
+  return (
+    input.stalledFor >= NUDGE_AT_S &&
+    input.nudges < MAX_NUDGES &&
+    input.bufferedAhead >= DECODE_STALL_MIN_BUFFER_S
+  );
+}
+
 export interface StallInput {
   paused: boolean;
   ended: boolean;

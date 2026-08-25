@@ -14,7 +14,7 @@ import type Hls from "hls.js";
 
 import { reportPlaybackClientLog } from "@/lib/api/playback";
 
-import { bufferedAhead, classifyStall, stallReason } from "./stall";
+import { NUDGE_STEP_S, bufferedAhead, classifyStall, shouldNudge, stallReason } from "./stall";
 
 /** 把 `<video>` 的当下状态压成一行上报（排障用，字段都很小）。 */
 function videoSnapshot(video: HTMLVideoElement): Record<string, unknown> {
@@ -123,11 +123,18 @@ function readCommonStats(video: HTMLVideoElement): Omit<EngineStats, "engine" | 
  * 归因交给 `classifyStall`：解码卡死与「追上了编码器」的正确处置完全相反，
  * 混为一谈会把「服务器转得慢」误判成「这一档播不了」而白白降档。
  */
-function watchStall(video: HTMLVideoElement, onFailed: (reason: string) => void): () => void {
+function watchStall(
+  video: HTMLVideoElement,
+  onFailed: (reason: string) => void,
+  onNudge?: (attempt: number) => void,
+): () => void {
   let lastTime = video.currentTime;
   let stalledFor = 0;
+  let nudges = 0;
+  let sinceNudge = 99;
   const timer = window.setInterval(() => {
     const advanced = video.currentTime > lastTime;
+    sinceNudge += 1;
     const verdict = classifyStall({
       paused: video.paused,
       ended: video.ended,
@@ -139,12 +146,28 @@ function watchStall(video: HTMLVideoElement, onFailed: (reason: string) => void)
     lastTime = video.currentTime;
     if (video.paused || video.ended || video.seeking || advanced) {
       stalledFor = 0;
+      // 只有远离上次推动的真实前进才算恢复——推动自己造成的 currentTime
+      // 变化 / seeking 不作数，否则每 3 秒推一次、永远到不了判死
+      if (advanced && sinceNudge > 3) nudges = 0;
       return;
     }
     stalledFor += 1;
     if (verdict !== "ok") {
       stalledFor = 0;
+      nudges = 0;
       onFailed(stallReason(verdict));
+      return;
+    }
+    // 有数据却不动：先推一把（见 stall.ts shouldNudge 的 iOS wedge 注释），
+    // 推不动再让 classifyStall 走到 decode-stalled 降档
+    if (shouldNudge({ stalledFor, nudges, bufferedAhead: bufferedAhead(video) })) {
+      nudges += 1;
+      sinceNudge = 0;
+      stalledFor = 0;
+      onNudge?.(nudges);
+      video.currentTime = video.currentTime + NUDGE_STEP_S;
+      void video.play().catch(() => undefined);
+      lastTime = video.currentTime;
     }
   }, 1000);
   return () => window.clearInterval(timer);
@@ -207,14 +230,24 @@ class DirectEngine implements PlaybackEngine {
         startPositionS && startPositionS > 1 ? `${streamUrl}#t=${startPositionS}` : streamUrl;
     }
     video.load();
-    this.stopStallWatch = watchStall(video, (reason) => {
-      // 停滞判死同样要留客户端现场：它与真 MediaError 的处置完全不同
-      reportPlaybackClientLog(`${this.label}-stall`, {
-        reason,
-        ...videoSnapshot(video),
-      });
-      onFailed(reason);
-    });
+    this.stopStallWatch = watchStall(
+      video,
+      (reason) => {
+        // 停滞判死同样要留客户端现场：它与真 MediaError 的处置完全不同
+        reportPlaybackClientLog(`${this.label}-stall`, {
+          reason,
+          ...videoSnapshot(video),
+        });
+        onFailed(reason);
+      },
+      (attempt) => {
+        // 推动也留痕：日志里「nudge 后恢复」与「nudge 无效判死」是两种病
+        reportPlaybackClientLog(`${this.label}-nudge`, {
+          attempt,
+          ...videoSnapshot(video),
+        });
+      },
+    );
   }
 
   destroy(): void {
