@@ -1557,6 +1557,54 @@ html:has(.player-root) {
   overscroll-behavior-x: none;
 }
 
+/* ---- 反馈浮层的进出场（调节胶囊 / 快进快退提示 / 转圈） ------------------
+   进出各 0.16 秒的淡入淡出 + 一点缩放，与控制条 300ms 的显隐同一套节奏；
+   挂在**内层胶囊**上而不是定位容器上——容器的 transform 是 Tailwind 的
+   translate 定位，keyframes 里再写 transform 会把定位顶掉。
+   转圈另有 0.45 秒的出场延迟（.player-busy-appear）：一次 200ms 的短缓冲
+   不该闪一下转圈，「转圈晃过」比「短暂无提示」更让人觉得卡（Netflix 同款
+   手法）；`both` 让延迟期间保持在 from 帧（完全透明）。 */
+@keyframes player-flash-in {
+  from {
+    opacity: 0;
+    transform: scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes player-flash-out {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+.player-flash-in {
+  animation: player-flash-in 0.16s ease both;
+}
+.player-flash-out {
+  animation: player-flash-out 0.16s ease both;
+}
+.player-busy-appear {
+  animation: player-flash-in 0.25s ease 0.45s both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .player-flash-in,
+  .player-flash-out {
+    animation-duration: 0.01s;
+  }
+  /* 出场延迟保留：那不是动效，是防闪烁 */
+  .player-busy-appear {
+    animation-duration: 0.01s;
+    animation-delay: 0.45s;
+  }
+}
+
 /* iOS 原生 HLS 内联播放的系统字幕位置修正：WebKit 把 cue 画在整个 video
    元素的底部，竖屏 letterbox 时就是屏幕最底的黑边。用画面矩形算出的抬升量
    （--cue-lift，video-player 维护）把 cue 容器顶回画面下沿。只影响内联——

@@ -382,10 +382,12 @@ export function PlayerControls(props: PlayerControlsProps) {
           onPointerLeave={() => setHover(null)}
         >
           {/* 缩略图预览：拖进度条时能看见画面。没生成好就只剩时间戳，
-              不影响拖动——预览是锦上添花，时间戳是刚需。 */}
+              不影响拖动——预览是锦上添花，时间戳是刚需。
+              触屏抬高一档（bottom-8 → bottom-16）：32px 的间距正好被手指
+              压着下缘，64px 让预览完整露在指尖上方。 */}
           {hover ? (
             <div
-              className="pointer-events-none absolute bottom-8 -translate-x-1/2"
+              className="pointer-events-none absolute bottom-8 -translate-x-1/2 pointer-coarse:bottom-16"
               style={{ left: hover.x }}
             >
               {previewTile ? (

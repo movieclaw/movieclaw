@@ -158,6 +158,24 @@ function VolumeGlyph({ muted }: { muted: boolean }) {
   );
 }
 
+/** 快进/快退提示的双箭头。 */
+function SeekChevrons({ back }: { back: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className={`size-4 shrink-0 ${back ? "-scale-x-100" : ""}`}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2.2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="m6 6 6 6-6 6M13 6l6 6-6 6" />
+    </svg>
+  );
+}
+
 function unitKeyOf(unit: PlaybackUnit): string {
   return `${unit.media_item_id}/${unit.season_number ?? 0}/${unit.episode_number ?? 0}`;
 }
@@ -254,13 +272,90 @@ export function VideoPlayer(props: VideoPlayerProps) {
   const [pipActive, setPipActive] = useState(false);
   /** 画面亮度（CSS brightness 滤镜，0.1~1）。左半屏上下滑调节 */
   const [brightness, setBrightness] = useState(1);
-  /** 滑动调节的胶囊读数（顶部居中）；null = 没在调 */
+  /** 调节反馈的胶囊读数（顶部居中）；触摸滑动与键盘 ↑↓/M 共用。null = 没在调 */
   const [adjust, setAdjust] = useState<{
     kind: AdjustKind;
     value: number;
     /** iOS：video.volume 赋值被系统忽略，改为提示用侧键 */
     unsupported?: boolean;
+    /** 静音中（M 键 / 静音下调音量）：图标画斜杠、读数换成「静音」 */
+    muted?: boolean;
+    /** 淡出阶段：还挂着但在播退场动画，动画走完才卸载 */
+    leaving?: boolean;
   } | null>(null);
+  /** 键盘快进/快退的方向提示（画面左/右侧）；连续按键在窗口内累计秒数 */
+  const [seekFlash, setSeekFlash] = useState<{ seconds: number; leaving: boolean } | null>(
+    null,
+  );
+  const adjustTimersRef = useRef<{ hide: number | null; gone: number | null }>({
+    hide: null,
+    gone: null,
+  });
+  const seekFlashTimersRef = useRef<{ hide: number | null; gone: number | null }>({
+    hide: null,
+    gone: null,
+  });
+
+  /**
+   * 弹出/刷新调节胶囊，并重排它的退场：每次调用都把「0.9 秒后开始淡出、
+   * 淡出 0.16 秒后卸载」的两段计时从头来过。滑动中每次 move 都会刷新，
+   * 所以手指不离开胶囊就不走；键盘连按同理。两段式（leaving → null）是
+   * 为了退场也有动画——直接卸载是「啪」地消失，与控制条 300ms 的淡入
+   * 淡出不成体系。
+   */
+  const flashAdjust = useCallback(
+    (next: { kind: AdjustKind; value: number; unsupported?: boolean; muted?: boolean }) => {
+      const timers = adjustTimersRef.current;
+      if (timers.hide !== null) window.clearTimeout(timers.hide);
+      if (timers.gone !== null) window.clearTimeout(timers.gone);
+      timers.gone = null;
+      setAdjust({ ...next, leaving: false });
+      timers.hide = window.setTimeout(() => {
+        timers.hide = null;
+        setAdjust((prev) => (prev ? { ...prev, leaving: true } : prev));
+        timers.gone = window.setTimeout(() => {
+          timers.gone = null;
+          setAdjust(null);
+        }, 180);
+      }, 900);
+    },
+    [],
+  );
+
+  /** 键盘快进/快退的方向提示：同方向连按在提示存续期内累计秒数
+   * （按三下 → 就显示 ±15 秒，YouTube 同款），换方向从头计。 */
+  const flashSeek = useCallback((seconds: number) => {
+    const timers = seekFlashTimersRef.current;
+    if (timers.hide !== null) window.clearTimeout(timers.hide);
+    if (timers.gone !== null) window.clearTimeout(timers.gone);
+    timers.gone = null;
+    setSeekFlash((prev) => ({
+      seconds:
+        prev && !prev.leaving && Math.sign(prev.seconds) === Math.sign(seconds)
+          ? prev.seconds + seconds
+          : seconds,
+      leaving: false,
+    }));
+    timers.hide = window.setTimeout(() => {
+      timers.hide = null;
+      setSeekFlash((prev) => (prev ? { ...prev, leaving: true } : prev));
+      timers.gone = window.setTimeout(() => {
+        timers.gone = null;
+        setSeekFlash(null);
+      }, 180);
+    }, 800);
+  }, []);
+
+  /** 卸载时清掉两组反馈计时器，别让它们对着已卸载的组件 setState。 */
+  useEffect(
+    () => () => {
+      for (const timers of [adjustTimersRef.current, seekFlashTimersRef.current]) {
+        if (timers.hide !== null) window.clearTimeout(timers.hide);
+        if (timers.gone !== null) window.clearTimeout(timers.gone);
+      }
+    },
+    [],
+  );
 
   const containerRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<PlaybackEngine | null>(null);
@@ -294,6 +389,9 @@ export function VideoPlayer(props: VideoPlayerProps) {
    * 自动隐藏计时器收起），按「按下瞬间」的状态判断才符合用户的意图。
    */
   const chromeWasVisibleRef = useRef(true);
+  /** 最近一次按下的指针类型：dblclick 事件不带 pointerType，双击全屏靠它
+   * 判定「只属于鼠标」——触屏双击是两次控制层开关，不该顺带进全屏 */
+  const lastPointerTypeRef = useRef("");
   // 会话释放器：区分「真的离开了」与「StrictMode 把同一个会话重新挂了一遍」。
   const sessionReleaser = useMemo(
     () =>
@@ -1198,6 +1296,13 @@ export function VideoPlayer(props: VideoPlayerProps) {
     });
   }, [video]);
 
+  /** 桌面惯例：双击画面进/出全屏（YouTube/Netflix 网页端同款）。只认鼠标——
+   * 触屏的双击就是两次控制层开关，净效果回到原状，不搭全屏的车。 */
+  const onSurfaceDoubleClick = useCallback(() => {
+    if (lastPointerTypeRef.current !== "mouse") return;
+    toggleFullscreen();
+  }, [toggleFullscreen]);
+
   /** 横屏 / 退出横屏（真锁或 iOS 伪横屏），只在触屏设备上出现。 */
   const toggleLandscape = useCallback(() => {
     if (landscape || document.fullscreenElement) {
@@ -1276,15 +1381,24 @@ export function VideoPlayer(props: VideoPlayerProps) {
           break;
         case "seek-by":
           seekBy(action.seconds);
+          // 键盘是「盲操作」：不给方向提示，用户只能盯着进度条数字猜有没有
+          // 按上。按钮点击不发这个提示——按钮自己就是可见反馈
+          flashSeek(action.seconds);
           break;
         case "seek-percent":
           if (durationMs) seekToFileMs((durationMs * action.percent) / 100);
           break;
         case "volume-by":
-          if (video) video.volume = Math.min(1, Math.max(0, video.volume + action.delta));
+          if (video) {
+            video.volume = Math.min(1, Math.max(0, video.volume + action.delta));
+            flashAdjust({ kind: "volume", value: video.volume, muted: video.muted });
+          }
           break;
         case "toggle-mute":
-          if (video) video.muted = !video.muted;
+          if (video) {
+            video.muted = !video.muted;
+            flashAdjust({ kind: "volume", value: video.volume, muted: video.muted });
+          }
           break;
         case "toggle-fullscreen":
           toggleFullscreen();
@@ -1298,7 +1412,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [togglePlay, seekBy, seekToFileMs, toggleFullscreen, durationMs, video, subtitles.options]);
+  }, [togglePlay, seekBy, seekToFileMs, toggleFullscreen, durationMs, video, subtitles.options, flashAdjust, flashSeek]);
 
   // ---------------------------------------------------------------------
   // 系统集成：媒体键 / 锁屏信息 / 防息屏
@@ -1476,7 +1590,6 @@ export function VideoPlayer(props: VideoPlayerProps) {
     startValue: number;
     active: boolean;
   } | null>(null);
-  const adjustHideTimerRef = useRef<number | null>(null);
   /** 音量能不能调：null=还没试过；iOS 上赋值被忽略，读回不变即不可调 */
   const volumeAdjustableRef = useRef<boolean | null>(null);
   const fakeLandscapeRef = useRef(false);
@@ -1496,13 +1609,6 @@ export function VideoPlayer(props: VideoPlayerProps) {
 
   useEffect(() => {
     if (!video) return;
-    const showAdjust = (kind: AdjustKind, value: number, unsupported = false) => {
-      if (adjustHideTimerRef.current !== null) {
-        window.clearTimeout(adjustHideTimerRef.current);
-        adjustHideTimerRef.current = null;
-      }
-      setAdjust({ kind, value, unsupported });
-    };
     const onTouchStart = (event: TouchEvent) => {
       if (event.touches.length !== 1) {
         adjustGestureRef.current = null;
@@ -1543,7 +1649,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
       const value = applySwipe(gesture.kind, gesture.startValue, now.y - start.y, now.height);
       if (gesture.kind === "brightness") {
         setBrightness(value);
-        showAdjust("brightness", value);
+        flashAdjust({ kind: "brightness", value });
         return;
       }
       const before = video.volume;
@@ -1560,18 +1666,14 @@ export function VideoPlayer(props: VideoPlayerProps) {
         // 只有**往上滑**才视同「要声音」解除静音；向下调音量时静音保持——
         // 用户按过静音键后想把音量预调小一点，不该突然出声
         if (value > gesture.startValue && video.muted) video.muted = false;
-        showAdjust("volume", value);
+        flashAdjust({ kind: "volume", value, muted: video.muted });
       } else {
-        showAdjust("volume", video.volume, true);
+        flashAdjust({ kind: "volume", value: video.volume, unsupported: true });
       }
     };
+    // 退场由 flashAdjust 自己排（每次 move 都会顺延），松手只需清掉手势
     const onTouchEnd = () => {
       adjustGestureRef.current = null;
-      if (adjustHideTimerRef.current !== null) window.clearTimeout(adjustHideTimerRef.current);
-      adjustHideTimerRef.current = window.setTimeout(() => {
-        adjustHideTimerRef.current = null;
-        setAdjust(null);
-      }, 900);
     };
     video.addEventListener("touchstart", onTouchStart, { passive: true });
     video.addEventListener("touchmove", onTouchMove, { passive: false });
@@ -1582,12 +1684,8 @@ export function VideoPlayer(props: VideoPlayerProps) {
       video.removeEventListener("touchmove", onTouchMove);
       video.removeEventListener("touchend", onTouchEnd);
       video.removeEventListener("touchcancel", onTouchEnd);
-      if (adjustHideTimerRef.current !== null) {
-        window.clearTimeout(adjustHideTimerRef.current);
-        adjustHideTimerRef.current = null;
-      }
     };
-  }, [video]);
+  }, [video, flashAdjust]);
 
   /** 播放中申请防息屏。切到后台会被系统收走，回来时重新申请。 */
   useEffect(() => {
@@ -1664,9 +1762,11 @@ export function VideoPlayer(props: VideoPlayerProps) {
         if (event.pointerType === "mouse") setChromeVisible(true);
       }}
       // 只记录按下瞬间的显隐态，不在这里唤出：唤出等 click（轻点才有 click，
-      // 滑动没有），手势滑动全程控制层保持原样
-      onPointerDown={() => {
+      // 滑动没有），手势滑动全程控制层保持原样。顺带记指针类型——双击全屏
+      // 只属于鼠标（dblclick 事件本身不带 pointerType）
+      onPointerDown={(event) => {
         chromeWasVisibleRef.current = chromeVisible;
+        lastPointerTypeRef.current = event.pointerType;
       }}
       // 只认鼠标：触屏上每点一下都会触发 pointerleave（pointerdown → pointerup
       // → pointerleave → click），当成「用户不看了」会让控制条闪一下就没
@@ -1691,6 +1791,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
           playsInline
           poster={posterUrl ?? undefined}
           onClick={onSurfaceClick}
+          onDoubleClick={onSurfaceDoubleClick}
           className="size-full object-contain"
         >
           {pipSubtitleUrl ? (
@@ -1783,17 +1884,28 @@ export function VideoPlayer(props: VideoPlayerProps) {
           ) : null}
         </div>
 
-        {/* 滑动调节的胶囊读数：顶部居中，滑动中常驻、松手 0.9 秒后消失。
+        {/* 调节反馈胶囊：顶部居中，触摸滑动与键盘 ↑↓/M 共用；调节中常驻、
+            停手 0.9 秒后淡出（两段式，动画类见 globals 的 .player-flash-*）。
             noautohide：不随控制层显隐——手势恰恰常在控制层藏着时用。 */}
         {adjust ? (
           <div
             {...{ noautohide: "" }}
             className="pointer-events-none absolute left-1/2 top-[calc(1rem_+_var(--safe-top))] z-30 -translate-x-1/2"
           >
-            <div className="flex items-center gap-2.5 rounded-full bg-black/70 px-4 py-2 text-[13px] font-medium text-white shadow-[0_10px_28px_rgba(0,0,0,0.45)]">
-              {adjust.kind === "brightness" ? <BrightnessGlyph /> : <VolumeGlyph muted={adjust.value <= 0.001} />}
+            <div
+              className={`flex items-center gap-2.5 rounded-full bg-black/70 px-4 py-2 text-[13px] font-medium text-white shadow-[0_10px_28px_rgba(0,0,0,0.45)] ${
+                adjust.leaving ? "player-flash-out" : "player-flash-in"
+              }`}
+            >
+              {adjust.kind === "brightness" ? (
+                <BrightnessGlyph />
+              ) : (
+                <VolumeGlyph muted={Boolean(adjust.muted) || adjust.value <= 0.001} />
+              )}
               {adjust.unsupported ? (
                 <span>音量由系统侧键控制</span>
+              ) : adjust.muted ? (
+                <span>静音</span>
               ) : (
                 <>
                   <div className="h-1 w-24 overflow-hidden rounded-full bg-white/25">
@@ -1805,6 +1917,27 @@ export function VideoPlayer(props: VideoPlayerProps) {
                   <span className="tnum w-9 text-right">{Math.round(adjust.value * 100)}%</span>
                 </>
               )}
+            </div>
+          </div>
+        ) : null}
+
+        {/* 键盘快进/快退的方向提示：快退在画面左侧、快进在右侧，连按累计。
+            与暂停压暗层同 z：它只是读数，不该压过报错/同意这些要拍板的层。 */}
+        {seekFlash ? (
+          <div
+            {...{ noautohide: "" }}
+            className={`pointer-events-none absolute top-1/2 z-10 -translate-y-1/2 ${
+              seekFlash.seconds < 0 ? "left-[10%]" : "right-[10%]"
+            }`}
+          >
+            <div
+              className={`flex items-center gap-1.5 rounded-full bg-black/65 px-3.5 py-2 text-[13px] font-medium text-white shadow-[0_10px_28px_rgba(0,0,0,0.45)] ${
+                seekFlash.leaving ? "player-flash-out" : "player-flash-in"
+              }`}
+            >
+              {seekFlash.seconds < 0 ? <SeekChevrons back /> : null}
+              <span className="tnum">{Math.abs(seekFlash.seconds)} 秒</span>
+              {seekFlash.seconds > 0 ? <SeekChevrons back={false} /> : null}
             </div>
           </div>
         ) : null}
@@ -1823,7 +1956,10 @@ export function VideoPlayer(props: VideoPlayerProps) {
             {...{ noautohide: "" }}
             className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center"
           >
-            <div className="flex flex-col items-center gap-4">
+            {/* player-busy-appear：450ms 后才现身。一次 200ms 的短缓冲不该
+                闪一下转圈——「转圈晃过」比「短暂无提示」更让人觉得卡
+                （Netflix 同款延迟）。busy 恢复时整块卸载，即时消失。 */}
+            <div className="player-busy-appear flex flex-col items-center gap-4">
               <span className="size-12 animate-spin rounded-full border-[3px] border-white/15 border-t-[var(--player-accent)]" />
               <span className="text-[14px] text-white/75">{busyLabel(state.phase)}</span>
             </div>
