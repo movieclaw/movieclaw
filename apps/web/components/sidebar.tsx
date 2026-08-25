@@ -7,7 +7,9 @@ import { createPortal } from "react-dom";
 import {
   ActivityIcon,
   BookmarkIcon,
+  ChatIcon,
   ClockIcon,
+  CopyIcon,
   LayersIcon,
   MoreIcon,
   PanelLeftIcon,
@@ -16,6 +18,7 @@ import {
   TrashIcon,
 } from "@/components/icons";
 import { AppUpdateEntry } from "@/components/app-update-entry";
+import { copyText } from "@/components/copy-button";
 import { useConfirm, usePrompt, useToast } from "@/components/feedback";
 import { NoticeCenter } from "@/components/notice-center";
 import { JobCenter } from "@/components/job-center";
@@ -301,7 +304,7 @@ function RecentSessions({
   activeNav: string;
   onSelect: (id: string) => void;
 }) {
-  const { conversations, hasMore, loadingMore, loadMore, rename, remove } =
+  const { conversations, hasMore, loadingMore, loadMore, fork, rename, remove } =
     useAgentConversations();
   const toast = useToast();
   const confirm = useConfirm();
@@ -346,6 +349,25 @@ function RecentSessions({
     });
   };
 
+  /** 把源会话上下文快照进独立新会话，成功后直接切到新会话页面。 */
+  const handleFork = async (id: string) => {
+    try {
+      const targetId = await fork(id);
+      onSelect(targetId);
+    } catch (error) {
+      toast.error(`创建续接会话失败：${(error as Error).message}`);
+    }
+  };
+
+  const handleCopyId = async (id: string) => {
+    try {
+      await copyText(id);
+      toast.success("会话 ID 已复制");
+    } catch (error) {
+      toast.error(`复制失败：${(error as Error).message}`);
+    }
+  };
+
   /** 彻底删除会话（二次确认）；删的是当前打开的会话时回到新会话页。 */
   const handleDelete = async (id: string, title: string) => {
     const ok = await confirm({
@@ -385,6 +407,8 @@ function RecentSessions({
                 time={formatRelativeTime(new Date(c.updatedAt).toISOString())}
                 active={activeNav === c.id}
                 onClick={() => onSelect(c.id)}
+                onFork={() => void handleFork(c.id)}
+                onCopyId={() => void handleCopyId(c.id)}
                 onRename={() => void handleRename(c.id, c.title)}
                 onDelete={() => void handleDelete(c.id, c.title)}
               />
@@ -431,6 +455,8 @@ function RunRow({
   time,
   active,
   onClick,
+  onFork,
+  onCopyId,
   onRename,
   onDelete,
 }: {
@@ -439,6 +465,8 @@ function RunRow({
   time: string;
   active: boolean;
   onClick: () => void;
+  onFork: () => void;
+  onCopyId: () => void;
   onRename: () => void;
   onDelete: () => void;
 }) {
@@ -522,7 +550,7 @@ function RunRow({
             return;
           }
           const rect = e.currentTarget.getBoundingClientRect();
-          setMenuPos({ left: rect.right - 144, top: rect.bottom + 6 });
+          setMenuPos({ left: rect.right - 176, top: rect.bottom + 6 });
         }}
         // 移动端：视觉放大一档（32px）+ .touch-target 把命中区撑到 44px（iOS HIG）
         className={`glass-row touch-target !absolute right-1.5 top-1/2 !size-6 -translate-y-1/2 justify-center !rounded-md !p-0 transition-opacity duration-200 max-md:!size-8 ${
@@ -536,11 +564,27 @@ function RunRow({
         createPortal(
           <div
             ref={menuRef}
-            className="menu-surface w-36 overflow-hidden rounded-xl p-1.5"
+            className="menu-surface w-44 overflow-hidden rounded-xl p-1.5"
             // z 必须压过移动端抽屉（.mobile-drawer 是 60）：侧栏在窄屏上装进抽屉，
             // 菜单虽 Portal 到 body，z 不够会被抽屉盖住——表现为点 ⋯ 毫无反应
             style={{ position: "fixed", left: menuPos.left, top: menuPos.top, zIndex: 70 }}
           >
+            <button
+              type="button"
+              onClick={() => pick(onFork)}
+              className="glass-row px-2.5 py-2 text-ui font-medium max-md:py-2.5"
+            >
+              <ChatIcon className="size-4 shrink-0 opacity-80 max-md:size-5" />
+              <span className="flex-1">在新会话中继续</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => pick(onCopyId)}
+              className="glass-row px-2.5 py-2 text-ui font-medium max-md:py-2.5"
+            >
+              <CopyIcon className="size-4 shrink-0 opacity-80 max-md:size-5" />
+              <span className="flex-1">复制会话 ID</span>
+            </button>
             <button
               type="button"
               onClick={() => pick(onRename)}

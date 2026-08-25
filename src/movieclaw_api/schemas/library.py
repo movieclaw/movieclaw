@@ -400,6 +400,13 @@ class SubtitlePreviewView(BaseModel):
     cues: list[SubtitleCueView] = Field(default_factory=list)
 
 
+class SubtitleDeleteResultView(BaseModel):
+    """删除一个外挂字幕文件后的回执（路径回显，便于用户核对删的是哪一个）。"""
+
+    path: str = Field(description="已删除的字幕文件完整路径")
+    freed_bytes: int = Field(ge=0, description="释放的磁盘空间")
+
+
 class LibraryFileView(BaseModel):
     """条目详情页的一个物理文件（一个版本 / 一集）。"""
 

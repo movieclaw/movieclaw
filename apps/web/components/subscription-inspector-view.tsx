@@ -67,9 +67,9 @@ import { usePermissions } from "@/lib/permissions";
  *      （最近被拒原因 / 投递种子名）是工单上的冗余快照两列，不再回活动流水
  *      里按季集捞。原活动流水按性质归位：
  *      - 搜索轮次（订阅级，一轮服务所有缺口，天然拆不到集）→ 顶部一行摘要，
- *        历史轮次折叠在后；
+ *        只留最近一轮；
  *      - 集级事件 → 降级为链上节点的注解；
- *      - 全量流水 → 底部「活动流水」折叠区，日常不看、排查时下钻原始记录。
+ *      - 全量流水 → 底部「排查记录」折叠区，日常不看、排查时下钻原始记录。
  */
 export function SubscriptionInspectorView({
   id,
@@ -473,13 +473,14 @@ export function SubscriptionInspectorView({
         </div>
       </section>
 
-      {/* —— 2. 单视图主体：搜索轮次摘要 → 按季分组的集履历 → 活动流水台账 —— */}
+      {/* —— 2. 单视图主体：搜索轮次摘要 → 按季分组的集履历 → 排查记录 —— */}
       <div className="mt-7 space-y-4">
         <SearchRoundBar activities={activities} wanted={detail.wanted} />
         <WantedBreakdown
           wanted={detail.wanted}
           isMovie={isMovie}
           downloads={downloadByHash}
+          failures={pendingFailures(activities)}
           mediaItemId={detail.media.media_item_id}
           canAnnotate={isAdmin}
           onAnnotated={async (message) => {
@@ -948,10 +949,39 @@ function ProgressLegend({ color, label }: { color: string; label: string }) {
 }
 
 /**
+ * 工单 → 此刻仍未解决的失败活动（入库失败 / 投递失败）。
+ *
+ * 判据是「该工单最新一条活动仍是失败」而不是比时间戳：任何后续进展
+ * （重投递 / 下载完成 / 入库成功）都会给同一工单写一条新活动，最新那条
+ * 一旦不是失败，说明问题已经翻篇。搜索轮次是订阅级活动（wanted_item_id
+ * 为空），不会挤掉这里的判断。活动接口只取最近 100 条，更久远的失败落窗
+ * 之外——那种陈年记录本来也该去排查记录里翻。
+ */
+function pendingFailures(
+  activities: SubscriptionActivity[],
+): Map<number, SubscriptionActivity> {
+  const failures = new Map<number, SubscriptionActivity>();
+  const seen = new Set<number>();
+  // 接口按时间倒序，每个工单第一次出现的就是它最新的一条
+  for (const a of activities) {
+    if (a.wanted_item_id === null || seen.has(a.wanted_item_id)) continue;
+    seen.add(a.wanted_item_id);
+    if (a.type === "import_failed" || a.type === "dispatch_failed") {
+      failures.set(a.wanted_item_id, a);
+    }
+  }
+  return failures;
+}
+
+/**
  * 搜索轮次摘要行：SEARCHED 活动是订阅级的一轮（一轮服务所有缺口，天然拆
  * 不到集），不值得为它养一个标签页——压成一行「最近一轮 + 关键数字 +
- * 下轮时间」，历史轮次折叠在后。payload 有结构化字段时用数字组，失败轮或
- * 老记录退化为完整句子。没有任何搜索记录时整行不渲染（如纯追新未到期）。
+ * 下轮时间」。payload 有结构化字段时用数字组，失败轮或老记录退化为完整
+ * 句子。没有任何搜索记录时整行不渲染（如纯追新未到期）。
+ *
+ * 刻意只留最近一轮：翻历史轮次答不出任何可执行的问题——「搜过几次还没
+ * 命中」链上的搜索站已经写着（次数 + 最近一次被拒原因），要逐条回放去底部
+ * 的排查记录，不必在页面最显眼处再挂一份折叠副本。
  */
 function SearchRoundBar({
   activities,
@@ -960,9 +990,7 @@ function SearchRoundBar({
   activities: SubscriptionActivity[];
   wanted: WantedItem[];
 }) {
-  const [showHistory, setShowHistory] = useState(false);
-  const rounds = activities.filter((a) => a.type === "searched");
-  const latest = rounds[0];
+  const latest = activities.find((a) => a.type === "searched");
   if (!latest) return null;
 
   const p = latest.payload as Record<string, unknown>;
@@ -983,15 +1011,6 @@ function SearchRoundBar({
         <span className="text-sub font-medium text-white/85">
           {formatRelativeTime(latest.created_at)}搜了一轮
         </span>
-        {rounds.length > 1 && (
-          <button
-            type="button"
-            onClick={() => setShowHistory((v) => !v)}
-            className="ml-auto shrink-0 text-caption text-[var(--text-faint)] transition-colors hover:text-white"
-          >
-            {showHistory ? "收起" : `历史轮次 ${rounds.length - 1}`}
-          </button>
-        )}
         <span className="tnum basis-full text-caption leading-5 text-[var(--text-faint)]">
           {hasStats ? (
             <>
@@ -1004,29 +1023,17 @@ function SearchRoundBar({
           )}
         </span>
       </div>
-      {showHistory && (
-        <ol className="space-y-2.5 border-t border-white/[0.06] px-4 py-3">
-          {rounds.slice(1, 6).map((r) => (
-            <li key={r.id} className="text-caption leading-5 text-[var(--text-muted)]">
-              <span
-                className="tnum mr-2 text-[var(--text-faint)]"
-                title={formatDateTime(r.created_at)}
-              >
-                {formatRelativeTime(r.created_at)}
-              </span>
-              {r.message}
-            </li>
-          ))}
-        </ol>
-      )}
     </div>
   );
 }
 
 /**
- * 活动流水台账：全量活动的折叠区，默认收起。主视图只讲结论（链上的
- * 卡点与注解），这里保住「按时间顺序回放系统每个动作」的排查能力——
+ * 排查记录：全量活动的折叠区，默认收起。主视图只讲结论（链上的卡点、
+ * 失败站与注解），这里保住「按时间顺序回放系统每个动作」的兜底能力——
  * 生命周期变更、换源、洗版证伪等订阅级事件也只在这里完整可见。
+ *
+ * 标题自带用途说明：日常这块不该被点开，只有「链上看不出为什么」时才下钻，
+ * 叫「活动流水」用户根本不知道什么时候该看它。
  */
 function ActivityLogSection({ activities }: { activities: SubscriptionActivity[] }) {
   const [open, setOpen] = useState(false);
@@ -1039,7 +1046,10 @@ function ActivityLogSection({ activities }: { activities: SubscriptionActivity[]
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-sub font-semibold text-white/70 transition-colors hover:bg-white/[0.035]"
       >
-        活动流水
+        排查记录
+        <span className="font-normal text-caption text-[var(--text-faint)] max-md:hidden">
+          按时间回放系统做过的每一步
+        </span>
         <span className="tnum font-normal text-[var(--text-faint)]">{activities.length}</span>
         <ChevronDownIcon
           className={`ml-auto size-4 shrink-0 text-[var(--text-faint)] transition-transform ${
@@ -1091,7 +1101,7 @@ function ActivityTimeline({
   bare = false,
 }: {
   activities: SubscriptionActivity[];
-  /** 已被外层卡片（活动流水折叠区）包裹时不再画自己的边框底色 */
+  /** 已被外层卡片（排查记录折叠区）包裹时不再画自己的边框底色 */
   bare?: boolean;
 }) {
   if (activities.length === 0) {
@@ -1180,6 +1190,7 @@ function WantedBreakdown({
   wanted,
   isMovie,
   downloads,
+  failures,
   mediaItemId,
   canAnnotate,
   onAnnotated,
@@ -1188,6 +1199,8 @@ function WantedBreakdown({
   isMovie: boolean;
   /** info_hash → 实时下载快照（无在途工单时为空 Map） */
   downloads: Map<string, SubscriptionDownload>;
+  /** 工单 id → 仍未解决的失败活动（pendingFailures） */
+  failures: Map<number, SubscriptionActivity>;
   mediaItemId: number;
   /** 片源标注是库数据纠错（管理员动作），与后端 require_admin 对齐 */
   canAnnotate: boolean;
@@ -1332,6 +1345,7 @@ function WantedBreakdown({
                       wanted={w}
                       isMovie={isMovie}
                       download={w.info_hash ? downloads.get(w.info_hash) : undefined}
+                      failure={failures.get(w.id)}
                       expanded={openWanted === w.id}
                       onToggle={() =>
                         setOpenWanted((cur) => (cur === w.id ? null : w.id))
@@ -1366,6 +1380,7 @@ function WantedBreakdown({
  * 丢掉的字由行说明与展开链补全（「已提交下载器」），胶囊只承担短名。
  */
 const SHORT_STATUS: Record<string, string> = {
+  入库失败: "失败",
   已提交下载: "已提交",
   排队搜索: "排队中",
   预测窗口: "预测中",
@@ -1374,11 +1389,12 @@ const SHORT_STATUS: Record<string, string> = {
 /** 里程碑链的一站。state：done=历史（中性）/ now=卡点（状态色）/ todo=未到 */
 interface Milestone {
   lab: string;
-  state: "done" | "now" | "todo";
+  /** fail = 卡在这一站且不会自愈（需要用户处理），与 now 同色同亮点、走红色 */
+  state: "done" | "now" | "todo" | "fail";
   /** 右侧时间列：done 站的发生时刻、搜索站的次数等辅助短语；可为空 */
   time: string;
   det: string;
-  /** 红色补充行：最近一次候选被拒原因（仅搜索站、未投递时） */
+  /** 红色补充行：最近一次候选被拒原因 / 投递失败原因 / 入库失败原因 */
   why?: string;
   /** 弱化补充行：投递种子名 / 资源发布→提交时间链 */
   src?: string[];
@@ -1397,6 +1413,7 @@ function milestonesOf(
   w: WantedItem,
   isMovie: boolean,
   live: SubscriptionDownload | undefined,
+  failure?: SubscriptionActivity,
 ): Milestone[] {
   const M: Milestone[] = [];
   const now = new Date();
@@ -1464,11 +1481,16 @@ function milestonesOf(
     // 重开的工单（缺失重下）grabbed_at 已清但上次投递的时间链还在：
     // 保留「上次 · 站点：耗时」注解，与旧版行内第二行的信息对齐
     const lastTiming = resourceTimingNote(w.resource_timing, true);
+    // 投递失败会退回队列自动重试（卡点仍在搜索站），所以不占用失败站，
+    // 只借搜索站同款的红色注解把原因说清——否则链上写着「尚未找到资源」，
+    // 而真相是资源找到了、提交下载器时出错
+    const dispatchFailure = failure?.type === "dispatch_failed" ? failure : undefined;
     M.push({
       lab: "投递",
       state: "todo",
       time: "",
-      det: "尚未找到符合规则组的资源",
+      det: dispatchFailure ? "上次投递未成功，已退回队列" : "尚未找到符合规则组的资源",
+      why: dispatchFailure?.message,
       src: lastTiming ? [lastTiming] : undefined,
     });
   }
@@ -1499,6 +1521,16 @@ function milestonesOf(
       state: "done",
       time: formatRelativeTime(w.imported_at),
       det: w.upgrade ? `已整理入库 · ${w.upgrade.current_label}` : "已整理入库",
+    });
+  } else if (failure?.type === "import_failed") {
+    // 文件已落盘却整理不进库：不修配置就永远停在这里，如实标红并把
+    // 后端写好的中文原因（含修复指引）原样带出来，别让用户干等
+    M.push({
+      lab: "入库",
+      state: "fail",
+      time: "",
+      det: "下载完成了，但 movieclaw 无法把文件整理入库",
+      why: failure.message,
     });
   } else if (w.downloaded_at) {
     M.push({ lab: "入库", state: "now", time: "", det: "下载完成，等待整理入库" });
@@ -1551,7 +1583,9 @@ function MilestoneChain({ chain, color }: { chain: Milestone[]; color: string })
     /* 左缩进 76px = 行内边距 20 + 集号列 44 + 间距 12：链与行说明文字同列起步 */
     <ol className="bg-white/[0.05] py-3 pl-[76px] pr-5 max-md:px-4">
       {chain.map((m, i) => {
-        const isNow = m.state === "now";
+        // fail 与 now 同款高亮：卡点只有一个，失败站就是那个卡点，
+        // 颜色由外层胶囊色统一给（入库失败时整行已是红色）
+        const isNow = m.state === "now" || m.state === "fail";
         return (
           <li key={m.lab} className="flex gap-3">
             <span className="flex flex-col items-center">
@@ -1635,7 +1669,8 @@ function MilestoneChain({ chain, color }: { chain: Milestone[]; color: string })
 }
 
 /**
- * 单个追踪项：一行「集号 + 说明 + 状态胶囊」，点开展开该集的里程碑链。
+ * 单个追踪项：一行「集号 + 说明 + 状态胶囊」，点开展开该集的里程碑链
+ * （电影只有「正片」一条，不折叠，链常展开）。
  * 胶囊 = 微型链（亮点指卡在第几站）+ 三字短名（那一站的细分状态名）——
  * 同一事实的位置与名字物理相邻，且与展开链共用一套语法与颜色。
  * 说明文案与后端调度语义一一对应（补旧排队 / 追新被动匹配 / 未定档不可调度）。
@@ -1644,6 +1679,7 @@ function WantedRow({
   wanted: w,
   isMovie,
   download,
+  failure,
   expanded,
   onToggle,
 }: {
@@ -1651,90 +1687,124 @@ function WantedRow({
   isMovie: boolean;
   /** 该工单锚定种子的实时下载快照（仅在途工单有，5s 轮询更新） */
   download?: SubscriptionDownload;
+  /** 该工单仍未解决的失败活动（pendingFailures），没有则一切正常 */
+  failure?: SubscriptionActivity;
   expanded: boolean;
   onToggle: () => void;
 }) {
-  const { label, color, note: statusNote } = wantedPresentation(w);
-  // 已提交下载且拿到了实时快照：说明行升级为进度行（进度条 + 速度/ETA）
-  const live = w.status === "grabbed" || w.status === "downloaded" ? download : undefined;
-  const chain = milestonesOf(w, isMovie, live);
+  // 入库失败是死局（多为下载器路径映射缺失/卷未挂载），必须让胶囊自己变红：
+  // 工单状态仍是「已下载」，不覆盖的话这一行看起来与正常等待入库毫无区别，
+  // 用户扫列表时根本不会点开去看链。投递失败会自动退回队列重试，不算卡住，
+  // 只在链上留一条注解（见 milestonesOf）
+  const stuckOnImport = failure?.type === "import_failed" ? failure : undefined;
+  const { label, color, note: statusNote } = stuckOnImport
+    ? { label: "入库失败", color: "var(--danger)", note: stuckOnImport.message }
+    : wantedPresentation(w);
+  // 已提交下载且拿到了实时快照：说明行升级为进度行（进度条 + 速度/ETA）。
+  // 入库失败时不要这条进度行——它只会重复「已下载完成」，把失败原因挤掉
+  const live =
+    !stuckOnImport && (w.status === "grabbed" || w.status === "downloaded")
+      ? download
+      : undefined;
+  const chain = milestonesOf(w, isMovie, live, failure);
   const lit = stuckIndex(chain);
   const complete = chain.every((m) => m.state === "done");
-  return (
-    <li>
-      <button
-        type="button"
-        aria-expanded={expanded}
-        onClick={onToggle}
-        className={`block w-full cursor-pointer px-5 py-2.5 text-left transition-colors hover:bg-white/[0.035] max-md:px-4 ${
+  // 电影只有「正片」一条工单，折叠没有任何可选性——链常展开、去掉箭头与点击热区，
+  // 与季头行「只有一组时不折叠」是同一条规则
+  const collapsible = !isMovie;
+  const open = !collapsible || expanded;
+  // 行头在两种形态下共用同一套排版，只有交互态（指针/悬停/展开底色）随折叠能力增减
+  const headerClass = `block w-full px-5 py-2.5 text-left max-md:px-4 ${
+    collapsible
+      ? `cursor-pointer transition-colors hover:bg-white/[0.035] ${
           expanded ? "bg-white/[0.05]" : ""
-        }`}
-      >
-        {/* 桌面单行：集号 | 说明(截断) | 胶囊 | 箭头；窄屏两行——定长元素留
-            第一行（胶囊 ml-auto 靠右），说明整宽折到第二行（basis-full），
-            截断只剩半个日期的信息量归零问题就此消失 */}
-        {/* max-md:flex-wrap 是窄屏两行布局的开关：没有它 basis-full 不换行、
-            说明文案被压成一条缝。桌面保持 nowrap 单行 */}
-        <span className="flex items-center gap-x-3 gap-y-1 max-md:flex-wrap">
-          <span className="tnum w-11 shrink-0 text-sub font-semibold text-white/90">
-            {isMovie ? "正片" : `E${String(w.episode_number).padStart(2, "0")}`}
+        }`
+      : ""
+  }`;
+  const header = (
+    <>
+      {/* 桌面单行：集号 | 说明(截断) | 胶囊 | 箭头；窄屏两行——定长元素留
+          第一行（胶囊 ml-auto 靠右），说明整宽折到第二行（basis-full），
+          截断只剩半个日期的信息量归零问题就此消失 */}
+      {/* max-md:flex-wrap 是窄屏两行布局的开关：没有它 basis-full 不换行、
+          说明文案被压成一条缝。桌面保持 nowrap 单行 */}
+      <span className="flex items-center gap-x-3 gap-y-1 max-md:flex-wrap">
+        <span className="tnum w-11 shrink-0 text-sub font-semibold text-white/90">
+          {isMovie ? "正片" : `E${String(w.episode_number).padStart(2, "0")}`}
+        </span>
+        <span className="tnum min-w-0 flex-1 truncate text-sub leading-5 text-[var(--text-muted)] max-md:order-last max-md:basis-full max-md:whitespace-normal max-md:line-clamp-2">
+          {live ? downloadNote(live) : statusNote}
+        </span>
+        <span
+          className="flex shrink-0 items-center gap-[7px] rounded-full px-2.5 py-[3px] text-micro font-semibold max-md:ml-auto"
+          style={{
+            backgroundColor: `color-mix(in oklab, ${color} 14%, transparent)`,
+            color,
+          }}
+          title={`第 ${lit + 1}/${chain.length} 站：${chain[lit].lab}${complete ? "（已收齐）" : ""}`}
+        >
+          {/* 微型链固定占最长链（6 站）的宽度：与三字短名合力让胶囊等宽 */}
+          <span className="flex w-[42px] shrink-0 items-center gap-[3px]">
+            {chain.map((m, i) => (
+              <span
+                key={m.lab}
+                className="size-[4.5px] shrink-0 rounded-full"
+                style={{
+                  backgroundColor:
+                    i === lit
+                      ? color
+                      : m.state === "done"
+                        ? "rgba(255,255,255,.38)"
+                        : "rgba(255,255,255,.14)",
+                  boxShadow:
+                    i === lit
+                      ? `0 0 5px color-mix(in oklab, ${color} 60%, transparent)`
+                      : undefined,
+                }}
+              />
+            ))}
           </span>
-          <span className="tnum min-w-0 flex-1 truncate text-sub leading-5 text-[var(--text-muted)] max-md:order-last max-md:basis-full max-md:whitespace-normal max-md:line-clamp-2">
-            {live ? downloadNote(live) : statusNote}
-          </span>
-          <span
-            className="flex shrink-0 items-center gap-[7px] rounded-full px-2.5 py-[3px] text-micro font-semibold max-md:ml-auto"
-            style={{
-              backgroundColor: `color-mix(in oklab, ${color} 14%, transparent)`,
-              color,
-            }}
-            title={`第 ${lit + 1}/${chain.length} 站：${chain[lit].lab}${complete ? "（已收齐）" : ""}`}
-          >
-            {/* 微型链固定占最长链（6 站）的宽度：与三字短名合力让胶囊等宽 */}
-            <span className="flex w-[42px] shrink-0 items-center gap-[3px]">
-              {chain.map((m, i) => (
-                <span
-                  key={m.lab}
-                  className="size-[4.5px] shrink-0 rounded-full"
-                  style={{
-                    backgroundColor:
-                      i === lit
-                        ? color
-                        : m.state === "done"
-                          ? "rgba(255,255,255,.38)"
-                          : "rgba(255,255,255,.14)",
-                    boxShadow:
-                      i === lit
-                        ? `0 0 5px color-mix(in oklab, ${color} 60%, transparent)`
-                        : undefined,
-                  }}
-                />
-              ))}
-            </span>
-            {SHORT_STATUS[label] ?? label}
-          </span>
+          {SHORT_STATUS[label] ?? label}
+        </span>
+        {collapsible && (
           <ChevronDownIcon
             className={`size-3.5 shrink-0 text-white/30 transition-transform ${
               expanded ? "rotate-180 text-[var(--text-muted)]" : ""
             }`}
           />
-        </span>
-        {live && live.progress != null && live.state !== "missing" && (
-          <span
-            className="mt-2 block h-1 overflow-hidden rounded-full bg-white/[0.08]"
-            role="progressbar"
-            aria-valuenow={Math.round(live.progress * 100)}
-            aria-valuemin={0}
-            aria-valuemax={100}
-          >
-            <span
-              className="block h-full rounded-full bg-[var(--ok)] transition-[width] duration-700"
-              style={{ width: `${Math.min(100, Math.max(1, live.progress * 100))}%` }}
-            />
-          </span>
         )}
-      </button>
-      {expanded && <MilestoneChain chain={chain} color={color} />}
+      </span>
+      {live && live.progress != null && live.state !== "missing" && (
+        <span
+          className="mt-2 block h-1 overflow-hidden rounded-full bg-white/[0.08]"
+          role="progressbar"
+          aria-valuenow={Math.round(live.progress * 100)}
+          aria-valuemin={0}
+          aria-valuemax={100}
+        >
+          <span
+            className="block h-full rounded-full bg-[var(--ok)] transition-[width] duration-700"
+            style={{ width: `${Math.min(100, Math.max(1, live.progress * 100))}%` }}
+          />
+        </span>
+      )}
+    </>
+  );
+  return (
+    <li>
+      {collapsible ? (
+        <button
+          type="button"
+          aria-expanded={expanded}
+          onClick={onToggle}
+          className={headerClass}
+        >
+          {header}
+        </button>
+      ) : (
+        <div className={headerClass}>{header}</div>
+      )}
+      {open && <MilestoneChain chain={chain} color={color} />}
     </li>
   );
 }

@@ -2,6 +2,9 @@
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import type { Route } from "next";
+import Link from "next/link";
+
 import { Composer } from "@/components/composer";
 import { CopyButton, REVEAL_CLASS, useTapReveal } from "@/components/copy-button";
 import { useConfirm, useToast } from "@/components/feedback";
@@ -11,6 +14,7 @@ import { ChevronRightIcon, PencilIcon } from "@/components/icons";
 import { Markdown } from "@/components/markdown";
 import type { CodeLang } from "@/lib/shiki";
 import {
+  type AgentConversation,
   type AgentProcessItem,
   type AgentTurn,
   type AgentTurnSegment,
@@ -182,6 +186,7 @@ export function AgentConversationView({ conversationId }: { conversationId: stri
           className="scroll-thin min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-6 py-6 max-md:px-4 max-md:py-4"
         >
           <div className="mx-auto max-w-3xl space-y-8">
+            {conversation.handoff && <HandoffCard handoff={conversation.handoff} />}
             {conversation.turns.map((turn) => (
               // 运行中不给改写入口：服务端会拒绝替换正在写轨迹的会话
               <TurnView
@@ -247,6 +252,32 @@ export function AgentConversationView({ conversationId }: { conversationId: stri
           {locked && <LlmSetupNotice />}
         </div>
       </div>
+    </div>
+  );
+}
+
+/** 新会话只展示来源关系，不把旧消息重复画成当前会话里可重试的轮次。 */
+function HandoffCard({
+  handoff,
+}: {
+  handoff: NonNullable<AgentConversation["handoff"]>;
+}) {
+  const sourceLabel = handoff.sourceTitle || `会话 ${handoff.sourceSessionId.slice(0, 8)}`;
+  return (
+    <div className="flex items-center justify-between gap-4 rounded-xl border border-white/8 bg-white/[0.025] px-4 py-3 text-ui text-[var(--text-muted)] max-md:items-start">
+      <div className="min-w-0">
+        <p className="font-medium text-[var(--text)]">已从「{sourceLabel}」续接上下文</p>
+        <p className="mt-1 text-caption leading-5 text-[var(--text-faint)]">
+          这是一个独立的新会话；后续操作不会改写原会话。
+        </p>
+      </div>
+      <Link
+        href={`/sessions/${handoff.sourceSessionId}` as Route}
+        className="inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-caption text-[var(--text-muted)] transition-colors hover:text-[var(--text)]"
+      >
+        查看原会话
+        <ChevronRightIcon className="size-3.5" />
+      </Link>
     </div>
   );
 }

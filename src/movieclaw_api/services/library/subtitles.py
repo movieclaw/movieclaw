@@ -17,10 +17,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from movieclaw_api.exceptions import BadRequestException, NotFoundException
 from movieclaw_api.services.library.layout import SUBTITLE_EXTS
+from movieclaw_db.models import LibraryFile, utcnow
 
 logger = logging.getLogger("movieclaw_api.library_subtitles")
 
@@ -170,3 +175,53 @@ async def discover_external_subtitles_async(
 ) -> list[dict[str, Any]]:
     """线程池版（扫描主循环用：stat/iterdir 在网络挂载上可能阻塞）。"""
     return await asyncio.to_thread(discover_external_subtitles, video_path, dir_names)
+
+
+@dataclass(slots=True)
+class SubtitleDeletion:
+    """一次外挂字幕删除的结论（回执要能对上确认框里列给用户的那份清单）。"""
+
+    path: str
+    freed_bytes: int
+
+
+def _unlink_with_size(path: Path) -> int:
+    """删除文件并返回释放的字节数（先 stat 再 unlink，同一次线程跳转内完成）。"""
+    size = path.stat().st_size
+    path.unlink()
+    return size
+
+
+async def delete_external_subtitle(
+    session: AsyncSession, row: LibraryFile, filename: str
+) -> SubtitleDeletion:
+    """删除该视频的一个外挂字幕文件，并即时刷新台账。
+
+    只删外挂：内封轨长在视频容器里，删不掉也不该删（界面上就不给入口）。
+    AI 生成的字幕同样是落在视频同目录的 sidecar 文件，走的就是这条路径。
+
+    归属校验直接复用发现规则（``match_subtitle_filename``）——文件名必须
+    是这个视频的字幕命名：同目录、以视频 stem 为前缀、字幕扩展名。因此
+    这里不存在路径注入面：目录分隔符与 ``..`` 都过不了前缀匹配，也删不到
+    视频本体（视频扩展名不在 SUBTITLE_EXTS 里）。
+    """
+    video = Path(row.file_path)
+    if "/" in filename or "\\" in filename or filename.startswith("."):
+        raise BadRequestException(f"字幕文件名不合法：{filename!r}")
+    if match_subtitle_filename(video.stem, filename) is None:
+        raise BadRequestException(f"「{filename}」不是「{video.name}」的外挂字幕，拒绝删除")
+
+    path = video.parent / filename
+    try:
+        freed = await asyncio.to_thread(_unlink_with_size, path)
+    except FileNotFoundError as exc:
+        raise NotFoundException(f"这个字幕文件已经不在磁盘上：{path}") from exc
+    except OSError as exc:
+        raise BadRequestException(f"字幕文件删除失败（库目录是否只读？）：{path}（{exc}）") from exc
+
+    # 台账即时刷新：详情页与播放器都不必等下一次扫描就能看到少了这一条
+    row.external_subtitles = await discover_external_subtitles_async(video)
+    row.updated_at = utcnow()
+    await session.commit()
+    logger.info("外挂字幕已删除：%s（释放 %d 字节）", path, freed)
+    return SubtitleDeletion(path=str(path), freed_bytes=freed)

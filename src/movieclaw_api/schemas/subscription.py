@@ -721,6 +721,10 @@ class ActivityView(BaseModel):
     message: str
     payload: dict
     created_at: datetime
+    # 管线类活动挂在具体工单上（生命周期/搜索轮次等订阅级活动为 NULL）。
+    # 详情页据此把「该工单最新一条活动仍是失败」翻译成里程碑链上的失败站，
+    # 失败原因不再只躺在折叠的排查记录里
+    wanted_item_id: int | None
 
     @field_serializer("created_at")
     def _serialize_utc(self, value: datetime | None) -> str | None:
@@ -734,6 +738,7 @@ class ActivityView(BaseModel):
             message=row.message,
             payload=dict(row.payload),
             created_at=row.created_at,
+            wanted_item_id=row.wanted_item_id,
         )
 
 

@@ -21,6 +21,9 @@
    完整替换历史的记录，``build_history`` 从最后一条压缩行起重建（codex 的
    Compacted 记录同款思路）。老版本读端会把压缩行当坏行跳过，重建出未压缩的
    全量历史——更大但仍是合法上下文，属可接受的降级。
+7. **v3 新增交接行**（``type: "handoff"``）：从旧会话创建独立新会话时，
+   把源会话当时的有效上下文完整快照进新文件。新会话不依赖源文件，也不继承
+   运行状态；``build_history`` 把交接行与压缩行同样视为上下文替换边界。
 """
 
 from __future__ import annotations
@@ -37,13 +40,13 @@ from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from movieclaw_agent import CompactionResult
 from movieclaw_api.exceptions import BadRequestException, NotFoundException
-from movieclaw_llm import ChatMessage, TokenUsage
+from movieclaw_llm import ChatMessage, TokenUsage, ToolCall
 
 logger = logging.getLogger("movieclaw_api.agent_sessions")
 
 #: 文件格式版本；未来结构变化时 +1，读取端按版本做迁移
-#: v2：新增 type="compaction" 的压缩行（读端向后兼容 v1，无需迁移）
-SESSION_FORMAT_VERSION = 2
+#: v3：新增 type="handoff" 的跨会话交接行；v1/v2 文件继续原样读取
+SESSION_FORMAT_VERSION = 3
 
 #: 会话标题 / 最后提示预览的截断长度（DB 索引列用，全文始终在文件里）
 PREVIEW_MAX_CHARS = 80
@@ -104,13 +107,31 @@ class SessionCompactionEntry(BaseModel):
     tokens_after: int | None = None
 
 
-#: 消息行与压缩行的联合类型；_read 逐行按 type 判别解析
+class SessionHandoffEntry(BaseModel):
+    """跨会话交接行：源会话有效上下文的一份独立快照。
+
+    新会话必须在源文件被删除后仍可续聊，因此这里保存 ``replacement_history``
+    而不是只记一个外键。``source_leaf_uuid`` 标记快照时点：源会话之后即使继续
+    写入，也不会悄悄改变已经创建的新会话。运行编号、心跳与 SSE 事件从不继承。
+    """
+
+    type: Literal["handoff"] = "handoff"
+    uuid: str
+    parent_uuid: str | None = None
+    timestamp: str
+    source_session_id: str
+    source_leaf_uuid: str | None = None
+    source_title: str | None = None
+    replacement_history: list[ChatMessage]
+
+
+#: 消息、压缩与交接行的联合类型；_read 逐行按 type 判别解析
 SessionTranscriptEntry = Annotated[
-    SessionMessageEntry | SessionCompactionEntry,
+    SessionMessageEntry | SessionCompactionEntry | SessionHandoffEntry,
     Field(discriminator="type"),
 ]
-_entry_adapter: TypeAdapter[SessionMessageEntry | SessionCompactionEntry] = TypeAdapter(
-    SessionTranscriptEntry
+_entry_adapter: TypeAdapter[SessionMessageEntry | SessionCompactionEntry | SessionHandoffEntry] = (
+    TypeAdapter(SessionTranscriptEntry)
 )
 
 
@@ -129,22 +150,83 @@ class SessionSummary(BaseModel):
     last_timestamp: str
 
 
-def _last_compaction_index(
-    entries: list[SessionMessageEntry | SessionCompactionEntry],
+def _last_context_boundary_index(
+    entries: list[SessionMessageEntry | SessionCompactionEntry | SessionHandoffEntry],
 ) -> int:
-    """最后一条压缩行的下标；没有压缩行时返回 -1。"""
+    """最后一条上下文替换边界（压缩或交接）的下标；没有时返回 -1。"""
     for i in range(len(entries) - 1, -1, -1):
-        if isinstance(entries[i], SessionCompactionEntry):
+        if isinstance(entries[i], (SessionCompactionEntry, SessionHandoffEntry)):
             return i
     return -1
 
 
 def _messages_after_last_compaction(
-    entries: list[SessionMessageEntry | SessionCompactionEntry],
+    entries: list[SessionMessageEntry | SessionCompactionEntry | SessionHandoffEntry],
 ) -> list[ChatMessage]:
-    """最后一条压缩行之后的消息（无压缩行时即全部消息）。"""
-    last = _last_compaction_index(entries)
+    """最后一个上下文边界之后的消息（没有边界时即全部消息）。"""
+    last = _last_context_boundary_index(entries)
     return [e.message for e in entries[last + 1 :] if isinstance(e, SessionMessageEntry)]
+
+
+def _repair_handoff_history(history: list[ChatMessage]) -> list[ChatMessage]:
+    """为新会话复制一份协议完整的历史，不修改源会话。
+
+    硬崩可能留下 assistant tool_call 却没有 tool 回执；原会话直接续聊时部分
+    供应商会因此拒绝整次请求。交接快照在每个缺口处补一条「结果未知」，提醒
+    新 Agent 先查询真实状态，不能武断地把外部操作判成未执行。孤立 tool 回执
+    则降级成普通历史说明，既保住信息，也不把非法 tool 消息喂给供应商。
+    """
+    repaired: list[ChatMessage] = []
+    pending: list[ToolCall] = []
+
+    def seal_pending() -> None:
+        for tool_call in pending:
+            repaired.append(
+                ChatMessage(
+                    role="tool",
+                    content=(
+                        f"旧会话在此处异常中断，工具「{tool_call.name}」的结果未知。"
+                        "继续前请先查询实际状态，避免重复操作。"
+                    ),
+                    tool_call_id=tool_call.id,
+                    name=tool_call.name,
+                )
+            )
+        pending.clear()
+
+    for message in history:
+        # system 随当前代码版本重新生成，不从旧会话继承。
+        if message.role == "system":
+            continue
+        if message.role == "tool":
+            match = next(
+                (call for call in pending if call.id == message.tool_call_id),
+                None,
+            )
+            if match is not None:
+                repaired.append(message)
+                pending.remove(match)
+            else:
+                repaired.append(
+                    ChatMessage(
+                        role="user",
+                        content=(
+                            f"【旧会话中的孤立工具回执：{message.name or '未知工具'}】\n"
+                            f"{message.text()}"
+                        ),
+                    )
+                )
+            continue
+
+        if pending:
+            seal_pending()
+        repaired.append(message)
+        if message.role == "assistant" and message.tool_calls:
+            pending.extend(message.tool_calls)
+
+    if pending:
+        seal_pending()
+    return repaired
 
 
 class AgentSessionStore:
@@ -234,6 +316,59 @@ class AgentSessionStore:
         self._leaf_cache[session_id] = entry.uuid
         return entry
 
+    def append_handoff(
+        self,
+        session_id: str,
+        *,
+        source_session_id: str,
+        source_leaf_uuid: str | None,
+        source_title: str | None,
+        replacement_history: list[ChatMessage],
+    ) -> SessionHandoffEntry:
+        """给新建的空会话写入首条交接快照。"""
+        path = self.path(session_id)
+        if not path.is_file():
+            raise NotFoundException("Agent 会话不存在或转录文件已被删除")
+        if session_id not in self._leaf_cache:
+            _, entries, _ = self._read(path)
+            self._leaf_cache[session_id] = entries[-1].uuid if entries else None
+        entry = SessionHandoffEntry(
+            uuid=uuid_mod.uuid4().hex[:12],
+            parent_uuid=self._leaf_cache[session_id],
+            timestamp=_now_iso(),
+            source_session_id=source_session_id,
+            source_leaf_uuid=source_leaf_uuid,
+            source_title=source_title,
+            replacement_history=replacement_history,
+        )
+        with path.open("a", encoding="utf-8") as f:
+            f.write(entry.model_dump_json(exclude_none=True) + "\n")
+        self._leaf_cache[session_id] = entry.uuid
+        return entry
+
+    def fork(
+        self, source_session_id: str, *, source_title: str | None = None
+    ) -> tuple[SessionHeader, SessionHandoffEntry]:
+        """从源会话的有效上下文创建一个完全独立的新会话。
+
+        读取与修复均先完成，再创建目标文件；源会话为空或不可读时不会留下空的
+        新会话。这里只复制模型上下文，不复制标题索引、运行状态或事件流。
+        """
+        _, source_entries = self.read(source_session_id)
+        history = _repair_handoff_history(self.build_history(source_session_id))
+        if not history:
+            raise BadRequestException("源会话没有可继承的上下文")
+        source_leaf_uuid = source_entries[-1].uuid if source_entries else None
+        header = self.create()
+        handoff = self.append_handoff(
+            header.session_id,
+            source_session_id=source_session_id,
+            source_leaf_uuid=source_leaf_uuid,
+            source_title=source_title,
+            replacement_history=history,
+        )
+        return header, handoff
+
     def seal_pending_tool_calls(self, session_id: str) -> int:
         """中断收尾：给没有结果的 tool_call 补写错误回执，返回补写条数。
 
@@ -314,8 +449,11 @@ class AgentSessionStore:
     # ------------------------------------------------------------------
     def read(
         self, session_id: str
-    ) -> tuple[SessionHeader, list[SessionMessageEntry | SessionCompactionEntry]]:
-        """读取整个会话（头 + 全部 entry，含压缩行），坏行静默跳过。"""
+    ) -> tuple[
+        SessionHeader,
+        list[SessionMessageEntry | SessionCompactionEntry | SessionHandoffEntry],
+    ]:
+        """读取整个会话（头 + 全部 entry，含压缩/交接行），坏行静默跳过。"""
         path = self.path(session_id)
         if not path.is_file():
             raise NotFoundException("Agent 会话不存在或转录文件已被删除")
@@ -334,12 +472,12 @@ class AgentSessionStore:
         文件里存的就是 API 原样消息，这里只做投影不做转换；system 提示词
         不入库（随代码版本演进），由 runner 每次运行时重新拼装。
 
-        有压缩行时，从**最后一条**压缩行的替换历史起步、只追加其后的增量
-        消息——压缩前的原始消息仍完整留在文件里（回放展示用），但不再进入
-        模型上下文。
+        有压缩或交接行时，从**最后一个**上下文边界的替换历史起步、只追加
+        其后的增量消息。交接因此只在新会话文件里保存一次快照，之后与普通
+        会话完全相同，不再读取源文件。
         """
         _, entries = self.read(session_id)
-        last = _last_compaction_index(entries)
+        last = _last_context_boundary_index(entries)
         if last < 0:
             return [e.message for e in entries if isinstance(e, SessionMessageEntry)]
         return [
@@ -350,7 +488,9 @@ class AgentSessionStore:
     def summarize(self, session_id: str) -> SessionSummary:
         """扫描单个会话文件生成索引摘要。"""
         header, entries = self.read(session_id)
-        # 标题/预览只看消息行；压缩行计入 entry_count 与链尾但不产生文本
+        # 交接会话的标题固定为「续：源标题」——与 DB 索引只在 title 为空时
+        # 回填的口径一致，用户后续发言不覆盖标题，重建索引时也保持同一语义。
+        # 压缩/交接行都计入 entry_count 与链尾，但不伪造 last_prompt。
         user_texts = [
             e.message.text().strip()
             for e in entries
@@ -358,12 +498,22 @@ class AgentSessionStore:
             and e.message.role == "user"
             and e.message.text().strip()
         ]
+        handoff_title = next(
+            (
+                (e.source_title if e.source_title.startswith("续：") else f"续：{e.source_title}")[
+                    :PREVIEW_MAX_CHARS
+                ]
+                for e in entries
+                if isinstance(e, SessionHandoffEntry) and e.source_title
+            ),
+            None,
+        )
         return SessionSummary(
             session_id=header.session_id,
             created_at=header.created_at,
             entry_count=len(entries),
             leaf_uuid=entries[-1].uuid if entries else None,
-            title=user_texts[0][:PREVIEW_MAX_CHARS] if user_texts else None,
+            title=handoff_title or (user_texts[0][:PREVIEW_MAX_CHARS] if user_texts else None),
             last_prompt=user_texts[-1][:PREVIEW_MAX_CHARS] if user_texts else None,
             last_timestamp=entries[-1].timestamp if entries else header.created_at,
         )
@@ -385,12 +535,16 @@ class AgentSessionStore:
 
     def _read(
         self, path: Path
-    ) -> tuple[SessionHeader, list[SessionMessageEntry | SessionCompactionEntry], int]:
+    ) -> tuple[
+        SessionHeader,
+        list[SessionMessageEntry | SessionCompactionEntry | SessionHandoffEntry],
+        int,
+    ]:
         """逐行解析文件；返回（头、entry 列表、坏行数）。
 
         首行必须是合法会话头（否则整个文件视为损坏抛错）；其余行坏了只跳过。
         """
-        entries: list[SessionMessageEntry | SessionCompactionEntry] = []
+        entries: list[SessionMessageEntry | SessionCompactionEntry | SessionHandoffEntry] = []
         bad = 0
         header: SessionHeader | None = None
         with path.open("r", encoding="utf-8") as f:

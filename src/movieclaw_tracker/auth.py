@@ -382,10 +382,15 @@ class CredentialAuthProvider(AuthProvider):
             for key, value in sel.extra_form_data:
                 self._set_form_field(form_data, key, value)
 
-            # 4. POST 登录
-            headers = {"Referer": login_url}
+            # 4. POST 登录。httpx.AsyncClient 不支持以键值对列表作为 data；
+            # 先编码为标准表单字节，既保留重复字段，也避免生成同步请求流。
+            headers = {
+                "Referer": login_url,
+                "Content-Type": "application/x-www-form-urlencoded",
+            }
             post_url = self._form_action(form, login_url)
-            res = await client.raw_post(post_url, data=form_data, headers=headers)
+            form_body = urllib.parse.urlencode(form_data, doseq=True).encode("utf-8")
+            res = await client.raw_post(post_url, content=form_body, headers=headers)
             response_text = res.text
 
             # 5. 判定登录结果

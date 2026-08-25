@@ -173,8 +173,27 @@ class SessionCompactionEntryView(BaseModel):
     tokens_after: int | None = Field(default=None, description="压缩后的估算 token 数")
 
 
+class SessionHandoffEntryView(BaseModel):
+    """新会话的来源快照；replacement_history 是后续请求实际继承的上下文。"""
+
+    type: Literal["handoff"] = Field(default="handoff", description="轨迹类型判别值")
+    handoff_id: str = Field(description="交接记录的稳定编号")
+    parent_id: str | None = Field(default=None, description="上一条轨迹 entry 的编号")
+    timestamp: str = Field(description="创建快照的时间（ISO 8601 UTC）")
+    source_session_id: str = Field(description="源会话稳定编号")
+    source_leaf_id: str | None = Field(default=None, description="源会话快照时的链尾编号")
+    source_title: str | None = Field(default=None, description="快照时的源会话标题")
+    replacement_history: list[SessionMessageView] = Field(
+        description=(
+            "新会话后续模型请求继承的完整上下文（不含 system 消息）。仅在 "
+            "session.fork 的创建响应中携带；session.get-transcript 固定返回空列表"
+            "——快照已持久化在服务端，每次读取会话都重复下发整份历史太浪费"
+        )
+    )
+
+
 SessionTranscriptEntryView = Annotated[
-    SessionMessageEntryView | SessionCompactionEntryView,
+    SessionMessageEntryView | SessionCompactionEntryView | SessionHandoffEntryView,
     Field(discriminator="type"),
 ]
 
@@ -182,8 +201,8 @@ SessionTranscriptEntryView = Annotated[
 class SessionTranscriptView(BaseModel):
     """会话详情：列表项字段 + 完整轨迹回放。
 
-    message 与 compaction 是两种明确的 entry；各自使用 message_id 与
-    compaction_id，parent_id 只描述跨 entry 的线性轨迹链。
+    message / compaction / handoff 是三种明确的 entry；各自使用自己的稳定
+    编号，parent_id 只描述同一会话内跨 entry 的线性轨迹链。
     """
 
     session: SessionSummary = Field(description="会话摘要与当前运行状态")

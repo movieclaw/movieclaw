@@ -331,19 +331,28 @@ function ConfirmDialog({
           <ul className="mt-3 space-y-2">
             {options.bullets.map((line) => (
               <li key={line} className="flex items-start gap-2.5">
-                {/* 小对勾图标：内联 SVG 不引外部依赖，accent 色点缀 */}
-                <svg
-                  aria-hidden
-                  viewBox="0 0 16 16"
-                  className="mt-[5px] size-3.5 shrink-0 text-[var(--accent)]"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <path d="M2.5 8.5l3.5 3.5 7.5-8" />
-                </svg>
+                {/* 小对勾图标：内联 SVG 不引外部依赖，accent 色点缀。
+                    危险确认的清单是"将被销毁的东西"，打勾会读成"已完成"，
+                    换成一枚危险色圆点。 */}
+                {options.tone === "danger" ? (
+                  <span
+                    aria-hidden
+                    className="mt-[9px] size-1.5 shrink-0 rounded-full bg-[var(--danger)]"
+                  />
+                ) : (
+                  <svg
+                    aria-hidden
+                    viewBox="0 0 16 16"
+                    className="mt-[5px] size-3.5 shrink-0 text-[var(--accent)]"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M2.5 8.5l3.5 3.5 7.5-8" />
+                  </svg>
+                )}
                 <span className="min-w-0 text-sub leading-6 text-[var(--text-muted)]">{line}</span>
               </li>
             ))}
