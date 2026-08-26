@@ -53,11 +53,17 @@ export function ConsentDialog({
 
   return (
     // role=dialog 兼具语义与 media-controller 的自动淡出豁免（它的隐藏规则
-    // 明确跳过 [role=dialog]）——等用户拍板的弹窗绝不能自己隐身
+    // 明确跳过 [role=dialog]）——等用户拍板的弹窗绝不能自己隐身。
+    //
+    // pointer-events-auto 必须显式写（2026-08-26 用户反馈「确认按钮点着没反应」
+    // 的根因）：media-chrome 的浮层容器是 pointer-events:none，靠
+    // `::slotted(...)` 规则给子元素恢复命中，但那条规则**同样明确跳过
+    // [role=dialog]**（media-container 的样式表里两处豁免是同一个选择器）。
+    // 不自己声明的话整个弹窗继承 none——看得见、点不中，点击穿透到画面上。
     <div
       role="dialog"
       aria-modal="true"
-      className="absolute inset-0 z-30 flex items-center justify-center bg-black/75 px-6"
+      className="pointer-events-auto absolute inset-0 z-30 flex items-center justify-center bg-black/75 px-6"
     >
       {/* 面板外观照抄站内 Modal（components/modal.tsx）：同一个圆角、描边、
           底色与投影——它就是一个模态，不该长得像另一套系统 */}
