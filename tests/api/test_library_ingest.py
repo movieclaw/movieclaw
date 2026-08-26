@@ -268,6 +268,17 @@ async def test_ignored_entry_job_reconcile_repairs_old_rows_once(db, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_ignored_entry_job_reconcile_failure_does_not_block_startup(db, monkeypatch):
+    """旧数据清理是自愈项：短暂数据库异常只记日志，不能拖垮应用启动。"""
+
+    async def fail(*_args, **_kwargs):
+        raise RuntimeError("temporary database failure")
+
+    monkeypatch.setattr(ingest_mod, "_cancel_active_entry_jobs", fail)
+    assert await ingest_mod.reconcile_ignored_entry_jobs() == 0
+
+
+@pytest.mark.asyncio
 async def test_ingest_watcher_reconciles_ignored_jobs_before_starting(monkeypatch):
     """应用启动监听时先修旧台账，再接收新文件事件。"""
     calls: list[str] = []

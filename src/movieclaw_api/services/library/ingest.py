@@ -2837,13 +2837,17 @@ async def _cancel_active_entry_jobs(
 
 
 async def reconcile_ignored_entry_jobs() -> int:
-    """启动时收口旧版本遗留在已忽略条目上的活跃作业（幂等、只查数据库）。"""
-    async with get_database().session() as session:
-        cancelled = await _cancel_active_entry_jobs(
-            session,
-            requested_by="system:ignored-ingest-reconcile",
-            reason="监听导入条目已被忽略，系统在启动对账时自动收口遗留任务",
-        )
+    """启动时收口旧版遗留作业；失败不阻断服务，下次启动继续幂等重试。"""
+    try:
+        async with get_database().session() as session:
+            cancelled = await _cancel_active_entry_jobs(
+                session,
+                requested_by="system:ignored-ingest-reconcile",
+                reason="监听导入条目已被忽略，系统在启动对账时自动收口遗留任务",
+            )
+    except Exception:  # noqa: BLE001 -- 历史清理失败不能让整个服务拒绝启动
+        logger.warning("已忽略条目的遗留作业对账失败（不影响启动，下次启动将重试）", exc_info=True)
+        return 0
     if cancelled:
         logger.info("启动对账已收口 %d 个已忽略条目的遗留作业", cancelled)
     return cancelled
