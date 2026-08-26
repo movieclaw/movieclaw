@@ -37,7 +37,13 @@ export function ConsentDialog({
     setSaving(true);
     setError(null);
     try {
-      await savePlaybackPolicy({ software_transcode_enabled: true });
+      const saved = await savePlaybackPolicy({ software_transcode_enabled: true });
+      // 保存接口回显的就是落库后的取值：不是 true 说明开关根本没生效，此时
+      // 绝不能 onGranted——重新决策还会弹回同一个窗，用户只会觉得「点了没
+      // 反应」。把失败明确说出来，让人知道该去查什么。
+      if (!saved.software_transcode_enabled) {
+        throw new Error("软件转码开关保存后未生效，请刷新页面重试或查看服务端日志");
+      }
       onGranted();
     } catch (err) {
       setError(err instanceof Error ? err.message : "开启失败，请稍后重试");

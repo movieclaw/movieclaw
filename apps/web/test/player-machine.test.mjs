@@ -100,6 +100,17 @@ test("兜底档也失败：进错误态并给出换播放器的建议", () => {
   assert.match(state.error.suggestion, /原生播放器/);
 });
 
+test("兜底档失败进错误态时会话必须清空——错误页背后不能还挂着转码", () => {
+  // 不清的话心跳继续给这个会话续命、引擎还在拉流：用户对着错误页，
+  // 服务端的软转 ffmpeg 却一直烧 CPU（「播放停了 ffmpeg 还在跑」的来路之一）。
+  const state = run([
+    { type: "request", startMs: 0 },
+    { type: "session", session: planSession(4) },
+    { type: "failed", reason: "软转也放不出来" },
+  ]);
+  assert.equal(state.session, null);
+});
+
 test("需要同意软件转码时进 consent 态，同意后回到决策", () => {
   const consent = planSession(4);
   consent.decision = {

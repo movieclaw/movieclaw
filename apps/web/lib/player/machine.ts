@@ -212,11 +212,16 @@ export function playerReducer(state: PlayerState, event: PlayerEvent): PlayerSta
         };
       }
       const failedTiers = nextFailedTiers(state, tier);
-      // 兜底档本身都失败了：没有更低的档可退，只能报错并建议换播放器
+      // 兜底档本身都失败了：没有更低的档可退，只能报错并建议换播放器。
+      // session 必须一并置空（与 fatal/degrading 同一不变式，见
+      // awaitsUserDecision 的注释）：留着的话心跳还在给这个会话续命、
+      // 引擎还挂着在拉流——用户对着错误页，服务端的软转 ffmpeg 却一直
+      // 烧着 CPU，正是「播放都停了 ffmpeg 还在跑」的一条来路。
       if (tier >= FALLBACK_TIER) {
         return {
           ...state,
           phase: "error",
+          session: null,
           failedTiers,
           failureCount: state.failureCount + 1,
           error: {

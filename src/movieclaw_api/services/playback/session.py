@@ -300,8 +300,14 @@ class TranscodeSessionManager:
         self._sessions[session.id] = session
         try:
             await self._spawn(session, command)
-        except Exception:
-            await self.stop(session.id)
+        except BaseException:
+            # 捕 BaseException 而不只是 Exception：客户端在起播途中断开连接
+            # （关页面/切集）时，uvicorn 会**取消**本请求协程，抛出来的是
+            # CancelledError（BaseException）。只捕 Exception 的话会话留在
+            # 表里、ffmpeg 继续空转到超时回收——「关了播放 ffmpeg 还在跑」
+            # 的一条服务端来路。清理后原样重抛，取消语义不变。
+            with contextlib.suppress(Exception):
+                await self.stop(session.id)
             raise
         return session
 
@@ -716,8 +722,18 @@ class TranscodeSessionManager:
         session = self._sessions.pop(session_id, None)
         if session is None:
             return False
+        # 先置状态再抢重启锁：正在排队等锁的 VOD 分片重启会在临界区入口看到
+        # stopped 直接放弃。终止必须与 _maybe_restart_for 互斥——不互斥的话，
+        # 一次「杀旧进程 → 拉新进程」的重启可能在本次 killpg **之后**才把新
+        # ffmpeg 拉起来，而会话已经不在表里，那个进程从此没人管（孤儿
+        # ffmpeg，「关了播放 ffmpeg 还在跑」的一条来路）。
         session.state = "stopped"
-        await self._terminate(session)
+        async with session._restart_lock:
+            # 锁内再置一次：恰好在临界区里的那次重启会经由 _spawn 把状态写回
+            # spawning/ready，把外面置的 stopped 盖掉——不重申终态的话，还挂着
+            # 的分片等待者下一拍又能通过状态检查再拉起一个 ffmpeg。
+            session.state = "stopped"
+            await self._terminate(session)
         shutil.rmtree(session.directory, ignore_errors=True)
         return True
 

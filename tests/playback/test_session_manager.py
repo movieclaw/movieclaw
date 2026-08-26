@@ -976,3 +976,61 @@ async def test_ensure_segment_bails_out_on_stopped_session(manager, tmp_path):
     session.state = "stopped"
     assert await manager.ensure_segment(session, 5) is None
     assert session.process is None  # 没有试图重启
+
+
+@pytest.mark.asyncio
+async def test_cancelled_start_leaves_no_session_behind(manager, monkeypatch):
+    """回归：客户端在起播途中断开（关页面/切集）时，uvicorn 会**取消**本次
+    请求协程，start 里抛出的是 CancelledError（BaseException）。只清理
+    Exception 的话，会话留在表里、ffmpeg 继续空转到超时回收——「关了播放
+    ffmpeg 还在跑」的一条服务端来路。"""
+    # playlist 延迟 0.5 秒出现：把 spawn 的等待窗口拉长，好让取消落在中途
+    install_fake(monkeypatch, WRITES_PLAYLIST_THEN_SLEEPS, delay=0.5)
+    task = asyncio.create_task(
+        manager.start(make_plan(), source_path="/m/a.mkv", member_id=0)
+    )
+    assert await wait_until(
+        lambda: bool(manager.active()) and manager.active()[0].process is not None
+    )
+    pid = manager.active()[0].process.pid
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert manager.active() == []  # 会话没有留在表里
+    assert await wait_until(lambda: not pid_alive(pid))  # 进程组整个被收掉
+
+
+@pytest.mark.asyncio
+async def test_stop_during_vod_restart_leaves_no_process(manager, monkeypatch):
+    """回归：stop 与 VOD 分片重启不互斥的话，一次「杀旧进程 → 拉新进程」的
+    重启可能在 stop 的 killpg 之后才把新 ffmpeg 拉起来——会话已出表，那个
+    进程从此没人管。stop 必须拿重启锁：要么排在重启后面把新进程一并杀掉，
+    要么先到并让排队的重启放弃；锁内重申 stopped 终态，后续等待者也不会
+    再拉起下一轮。"""
+    install_fake(monkeypatch, NEVER_WRITES_PLAYLIST)
+    monkeypatch.setattr(TranscodeSessionManager, "_SEGMENT_WAIT_S", 2.0)
+    session = await manager.start(
+        make_plan(), source_path="/m/a.mkv", member_id=0, segment_plan=_boundaries(800)
+    )
+    pids = [session.process.pid]
+    real_spawn = manager._spawn
+
+    async def slow_spawn(sess, command):
+        # 拉长重启临界区，确保 stop 在「旧进程已杀、新进程未起」的窗口到达
+        await asyncio.sleep(0.3)
+        await real_spawn(sess, command)
+        if sess.process is not None:
+            pids.append(sess.process.pid)
+
+    monkeypatch.setattr(manager, "_spawn", slow_spawn)
+    ensure = asyncio.create_task(manager.ensure_segment(session, 50))
+    await asyncio.sleep(0.1)  # 让重启进入临界区
+    try:
+        assert await manager.stop(session.id) is True
+        await ensure
+        assert session.state == "stopped"  # 终态没有被重启写回 ready
+        for pid in pids:
+            assert await wait_until(lambda p=pid: not pid_alive(p)), f"进程 {pid} 泄漏"
+        assert manager.get(session.id) is None
+    finally:
+        await manager.shutdown()

@@ -559,6 +559,16 @@ export function VideoPlayer(props: VideoPlayerProps) {
   /** `?t=` 起播覆盖只吃一次：切集之后回到「各自的续播点」默认语义。 */
   const overrideConsumedRef = useRef(false);
 
+  /**
+   * 刚在同意弹窗里点过「开启并播放」（保存成功后置位）。
+   *
+   * 用来识别「开关已保存、下一次决策却仍要求同意」的异常闭环：不识别的话
+   * 一模一样的弹窗会在几百毫秒内原样闪回，用户看到的就是「确认按钮点了
+   * 没反应」，而真正的故障（设置未生效/服务端异常）被完全吞掉。命中时改走
+   * 明确的错误页（见起播 effect）。正常拿到非 consent 决策即清零。
+   */
+  const consentGrantedRef = useRef(false);
+
   // hls.js 热身与会话请求并行，别等会话回来才开始下载（§6.10）
   useEffect(() => {
     preloadHlsEngine();
@@ -585,6 +595,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
     // 上一集的「会话已死」标记不能带进新的一集：带着的话，起播完成前用户点
     // 播放会被当成「重开死会话」，凭空多拉一次决策
     deadSessionRef.current = false;
+    consentGrantedRef.current = false;
     setAutoplay(null);
     dispatch({ type: "reset" });
 
@@ -604,7 +615,10 @@ export function VideoPlayer(props: VideoPlayerProps) {
     const phase = state.phase;
     if (phase !== "deciding" && phase !== "degrading" && phase !== "session-starting") return;
 
-    const key = `${unitKey}|${phase}|${state.startMs}|${failedKey}|${state.failureCount}|${state.attempt}|${requestedAudio ?? ""}|${requestedSubtitle ?? ""}`;
+    // 指纹必须覆盖**全部**会影响请求参数的依赖（quality 也在内）：漏一项的
+    // 后果是该项单独变化时 effect 重跑却撞上相同指纹被去重跳过，而上一次
+    // 在途请求已被 cancelled——响应回来没人认领，起播就永远停在转圈里。
+    const key = `${unitKey}|${phase}|${state.startMs}|${failedKey}|${state.failureCount}|${state.attempt}|${requestedAudio ?? ""}|${requestedSubtitle ?? ""}|${quality ?? ""}`;
     if (startedKeyRef.current === key) return;
     startedKeyRef.current = key;
 
@@ -626,7 +640,35 @@ export function VideoPlayer(props: VideoPlayerProps) {
           audio_track: requestedAudio ?? undefined,
           subtitle_track: requestedSubtitle ?? undefined,
         });
-        if (cancelled) return;
+        if (cancelled) {
+          // 请求已被超越（退出播放器/切集/换参数重发）：响应里可能带着一个
+          // 刚拉起的转码会话，此后没有任何代码会认领它——心跳、释放器都只认
+          // 落进状态机的会话。不当场掐掉的话，这路 ffmpeg 会占着转码并发
+          // 名额空烧三分钟 CPU，直到服务端超时回收（「关了播放 ffmpeg 还在
+          // 跑」的主要来路；同文件重开有 stop_for_file 兜底，这里补上退出与
+          // 跨文件切换的口子）。
+          if (session.session_id) {
+            void stopPlaybackSession(session.session_id).catch(() => undefined);
+          }
+          return;
+        }
+        if (session.decision.outcome === "consent") {
+          // 刚点过「开启并播放」、开关也保存成功，服务端却仍要求同意：这是
+          // 异常闭环（设置没生效/后端异常），绝不能把一模一样的弹窗原样闪
+          // 回去——那在用户眼里就是「确认按钮点了没反应」，出错这件事被完全
+          // 吞掉。翻成明确的错误页，用户至少知道出了什么、该做什么。
+          if (consentGrantedRef.current) {
+            dispatch({
+              type: "fatal",
+              message: "软件转码开关已保存，但服务端仍在请求开启确认",
+              suggestion:
+                "开关可能没有生效（例如服务端刚重启）。请刷新页面重试；若反复出现，请查看服务端日志排查。",
+            });
+            return;
+          }
+        } else {
+          consentGrantedRef.current = false;
+        }
         if (state.startMs === null) {
           // 起点是服务端定的（续播点）：seek 目标与时间轴预填都跟上，
           // 不填的话起播那几秒进度条停在 00:00，看起来像「时间没加载出来」
@@ -2187,7 +2229,12 @@ export function VideoPlayer(props: VideoPlayerProps) {
         {state.phase === "consent" && state.decision ? (
           <ConsentDialog
             decision={state.decision}
-            onGranted={() => dispatch({ type: "consent-granted" })}
+            onGranted={() => {
+              // 置位在重新决策之前：新决策若仍是 consent 就走错误页而不是
+              // 把弹窗原样闪回（见 consentGrantedRef 的注释）
+              consentGrantedRef.current = true;
+              dispatch({ type: "consent-granted" });
+            }}
             onCancel={onExit}
           />
         ) : null}
