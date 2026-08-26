@@ -109,7 +109,7 @@ from pathlib import Path, PurePosixPath
 from typing import NamedTuple
 from uuid import uuid4
 
-from sqlalchemy import or_, update
+from sqlalchemy import String, cast, or_, update
 from sqlmodel import select
 
 from movieclaw_api.services import jobs
@@ -139,6 +139,8 @@ from movieclaw_db.models import (
     ImportWatch,
     IngestEntry,
     IngestStatus,
+    Job,
+    JobResource,
     JobStatus,
     Library,
     LibraryFile,
@@ -1369,8 +1371,6 @@ async def _ingest_entry(
             # 作业（白名单钉死、等人工）已被彻底取代，就地收口——否则它们会
             # 以「需要处理」永远挂在任务中心（升级补偿只唤醒每个条目最新的
             # 作业，轮不到这些历史批次；NAS 实测滞留 4 条）
-            from movieclaw_db.models import Job
-
             stale_batches = (
                 (
                     await session.execute(
@@ -2784,16 +2784,69 @@ async def ignore_entry(session, entry_id: int) -> IngestEntry:
     record.message = "已手动忽略；如需处理可在清单中恢复"
     record.updated_at = utcnow()
     await session.commit()
-    active = await jobs.latest_job_for_resource(session, "ingest_entry", entry_id)
-    if active is not None and active.status in ACTIVE_JOB_STATUSES:
-        await jobs.request_cancel(
-            session,
-            active.id,
-            requested_by="监听导入清单",
-            reason="条目已在监听导入清单中手动忽略，任务随之取消；如需处理可在清单中恢复",
-        )
+    await _cancel_active_entry_jobs(
+        session,
+        entry_id=entry_id,
+        requested_by="监听导入清单",
+        reason="条目已在监听导入清单中手动忽略，任务随之取消；如需处理可在清单中恢复",
+    )
     await refresh_source_notice(session, str(Path(record.entry_path).parent))
     return record
+
+
+async def _cancel_active_entry_jobs(
+    session,
+    *,
+    entry_id: int | None = None,
+    requested_by: str,
+    reason: str,
+) -> int:
+    """取消条目关联的全部活跃作业；``entry_id=None`` 时对账所有已忽略条目。
+
+    同一条目可能因增量下载、重试或升级补偿留下多个作业。只取 ``latest`` 会
+    让较早的 blocked 作业永远留在任务中心。这里按资源关系一次找全，但不改
+    succeeded/failed/cancelled 等终态历史；重复运行时查不到活跃行，天然幂等。
+    """
+    statement = select(Job).join(JobResource, JobResource.job_id == Job.id)
+    statement = statement.where(
+        JobResource.resource_type == "ingest_entry",
+        # cancelling 已经收到过取消请求；重复对账不再追加同义事件。
+        Job.status.in_(
+            [status.value for status in ACTIVE_JOB_STATUSES if status is not JobStatus.CANCELLING]
+        ),
+    )
+    if entry_id is None:
+        statement = statement.join(
+            IngestEntry,
+            cast(IngestEntry.id, String) == JobResource.resource_id,
+        ).where(IngestEntry.status == IngestStatus.IGNORED)
+    else:
+        statement = statement.where(JobResource.resource_id == str(entry_id))
+
+    active_jobs = list((await session.execute(statement)).scalars().unique())
+    cancelled = 0
+    for active in active_jobs:
+        _, changed = await jobs.request_cancel(
+            session,
+            active.id,
+            requested_by=requested_by,
+            reason=reason,
+        )
+        cancelled += int(changed)
+    return cancelled
+
+
+async def reconcile_ignored_entry_jobs() -> int:
+    """启动时收口旧版本遗留在已忽略条目上的活跃作业（幂等、只查数据库）。"""
+    async with get_database().session() as session:
+        cancelled = await _cancel_active_entry_jobs(
+            session,
+            requested_by="system:ignored-ingest-reconcile",
+            reason="监听导入条目已被忽略，系统在启动对账时自动收口遗留任务",
+        )
+    if cancelled:
+        logger.info("启动对账已收口 %d 个已忽略条目的遗留作业", cancelled)
+    return cancelled
 
 
 async def restore_entry(session, entry_id: int) -> IngestEntry:
@@ -3272,6 +3325,9 @@ def get_ingest_watcher() -> IngestWatcher | None:
 async def init_ingest_watcher() -> None:
     """启动进程级监听单例（lifespan 调用）。"""
     global _watcher
+    # v0.18.0 及更早版本只取消同一条目的最新作业，旧 blocked 批次会一直
+    # 挂在任务中心。监听启动前做一次纯数据库对账，升级镜像即可自动修复。
+    await reconcile_ignored_entry_jobs()
     _watcher = IngestWatcher()
     await _watcher.start()
 

@@ -32,6 +32,7 @@ from movieclaw_db.models import (
     IngestEntry,
     IngestStatus,
     Job,
+    JobResource,
     JobStatus,
     Library,
     LibraryFile,
@@ -105,6 +106,189 @@ async def _get_library(db, library_id: int) -> Library:
         row = await session.get(Library, library_id)
         assert row is not None
         return row
+
+
+async def _add_ingest_job(session, *, job_id: str, entry_id: int, status: JobStatus) -> Job:
+    row = Job(id=job_id, job_type="library.ingest", status=status, input_data={})
+    session.add(row)
+    session.add(
+        JobResource(
+            job_id=job_id,
+            resource_type="ingest_entry",
+            resource_id=str(entry_id),
+        )
+    )
+    return row
+
+
+@pytest.mark.asyncio
+async def test_ignore_entry_cancels_every_active_job_without_rewriting_history(db, tmp_path):
+    """多批次/重试可留下多条活跃作业；忽略必须全部收口且不串资源。"""
+    async with db.session() as session:
+        ignored = IngestEntry(
+            entry_path=str(tmp_path / "watch" / "待忽略"),
+            fingerprint="fp-ignored",
+            status=IngestStatus.PENDING,
+        )
+        unrelated = IngestEntry(
+            entry_path=str(tmp_path / "watch" / "其他条目"),
+            fingerprint="fp-unrelated",
+            status=IngestStatus.PENDING,
+        )
+        session.add(ignored)
+        session.add(unrelated)
+        await session.commit()
+        await session.refresh(ignored)
+        await session.refresh(unrelated)
+        assert ignored.id is not None and unrelated.id is not None
+
+        for suffix, status in (
+            ("queued", JobStatus.QUEUED),
+            ("waiting", JobStatus.WAITING),
+            ("retry", JobStatus.RETRY_WAIT),
+            ("blocked", JobStatus.BLOCKED),
+            ("running", JobStatus.RUNNING),
+        ):
+            await _add_ingest_job(
+                session,
+                job_id=f"job_ignored_{suffix}",
+                entry_id=ignored.id,
+                status=status,
+            )
+        cancelling = await _add_ingest_job(
+            session,
+            job_id="job_ignored_cancelling",
+            entry_id=ignored.id,
+            status=JobStatus.CANCELLING,
+        )
+        cancelling.cancel_requested_by = "prior-request"
+        await _add_ingest_job(
+            session,
+            job_id="job_ignored_succeeded",
+            entry_id=ignored.id,
+            status=JobStatus.SUCCEEDED,
+        )
+        await _add_ingest_job(
+            session,
+            job_id="job_ignored_failed",
+            entry_id=ignored.id,
+            status=JobStatus.FAILED,
+        )
+        await _add_ingest_job(
+            session,
+            job_id="job_unrelated_blocked",
+            entry_id=unrelated.id,
+            status=JobStatus.BLOCKED,
+        )
+        await session.commit()
+
+        await ingest_mod.ignore_entry(session, ignored.id)
+
+    async with db.session() as session:
+        record = await session.get(IngestEntry, ignored.id)
+        assert record is not None and record.status == IngestStatus.IGNORED
+        for suffix in ("queued", "waiting", "retry", "blocked"):
+            row = await session.get(Job, f"job_ignored_{suffix}")
+            assert row is not None and row.status == JobStatus.CANCELLED
+            assert row.cancel_requested_by == "监听导入清单"
+        running = await session.get(Job, "job_ignored_running")
+        cancelling = await session.get(Job, "job_ignored_cancelling")
+        assert running is not None and running.status == JobStatus.CANCELLING
+        assert running.cancel_requested_by == "监听导入清单"
+        assert cancelling is not None and cancelling.status == JobStatus.CANCELLING
+        assert cancelling.cancel_requested_by == "prior-request"
+        succeeded = await session.get(Job, "job_ignored_succeeded")
+        failed = await session.get(Job, "job_ignored_failed")
+        unrelated = await session.get(Job, "job_unrelated_blocked")
+        assert succeeded is not None and succeeded.status == JobStatus.SUCCEEDED
+        assert failed is not None and failed.status == JobStatus.FAILED
+        assert unrelated is not None and unrelated.status == JobStatus.BLOCKED
+
+
+@pytest.mark.asyncio
+async def test_ignored_entry_job_reconcile_repairs_old_rows_once(db, tmp_path):
+    """升级启动对账会修旧数据；再次运行无写入，未忽略条目和终态不受影响。"""
+    async with db.session() as session:
+        ignored = IngestEntry(
+            entry_path=str(tmp_path / "watch" / "旧版已忽略"),
+            fingerprint="fp-old-ignored",
+            status=IngestStatus.IGNORED,
+        )
+        pending = IngestEntry(
+            entry_path=str(tmp_path / "watch" / "仍待处理"),
+            fingerprint="fp-pending",
+            status=IngestStatus.PENDING,
+        )
+        session.add(ignored)
+        session.add(pending)
+        await session.commit()
+        await session.refresh(ignored)
+        await session.refresh(pending)
+        assert ignored.id is not None and pending.id is not None
+        await _add_ingest_job(
+            session,
+            job_id="job_old_queued",
+            entry_id=ignored.id,
+            status=JobStatus.QUEUED,
+        )
+        await _add_ingest_job(
+            session,
+            job_id="job_old_blocked",
+            entry_id=ignored.id,
+            status=JobStatus.BLOCKED,
+        )
+        await _add_ingest_job(
+            session,
+            job_id="job_old_cancelled",
+            entry_id=ignored.id,
+            status=JobStatus.CANCELLED,
+        )
+        await _add_ingest_job(
+            session,
+            job_id="job_pending_blocked",
+            entry_id=pending.id,
+            status=JobStatus.BLOCKED,
+        )
+        await session.commit()
+
+    assert await ingest_mod.reconcile_ignored_entry_jobs() == 2
+    assert await ingest_mod.reconcile_ignored_entry_jobs() == 0
+
+    async with db.session() as session:
+        queued = await session.get(Job, "job_old_queued")
+        blocked = await session.get(Job, "job_old_blocked")
+        terminal = await session.get(Job, "job_old_cancelled")
+        unrelated = await session.get(Job, "job_pending_blocked")
+        assert queued is not None and queued.status == JobStatus.CANCELLED
+        assert blocked is not None and blocked.status == JobStatus.CANCELLED
+        assert queued.cancel_requested_by == "system:ignored-ingest-reconcile"
+        assert blocked.cancel_requested_by == "system:ignored-ingest-reconcile"
+        assert terminal is not None and terminal.status == JobStatus.CANCELLED
+        assert unrelated is not None and unrelated.status == JobStatus.BLOCKED
+
+
+@pytest.mark.asyncio
+async def test_ingest_watcher_reconciles_ignored_jobs_before_starting(monkeypatch):
+    """应用启动监听时先修旧台账，再接收新文件事件。"""
+    calls: list[str] = []
+
+    async def reconcile() -> int:
+        calls.append("reconcile")
+        return 1
+
+    class Watcher:
+        async def start(self) -> None:
+            calls.append("start")
+
+        async def stop(self) -> None:
+            calls.append("stop")
+
+    monkeypatch.setattr(ingest_mod, "reconcile_ignored_entry_jobs", reconcile)
+    monkeypatch.setattr(ingest_mod, "IngestWatcher", Watcher)
+    await ingest_mod.init_ingest_watcher()
+    assert calls == ["reconcile", "start"]
+    await ingest_mod.close_ingest_watcher()
+    assert calls == ["reconcile", "start", "stop"]
 
 
 async def _wait_job_status(job_id: str, status: JobStatus, timeout: float = 3.0) -> Job:
