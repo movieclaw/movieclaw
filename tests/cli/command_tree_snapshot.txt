@@ -64,11 +64,14 @@ extension token revoke
 extension token show
 health check
 jobs cancel
+jobs dismiss
+jobs dismiss-all
 jobs events
 jobs health
 jobs list
 jobs retry
 jobs show
+jobs undismiss
 jobs wait
 library artwork download
 library artwork list-candidates

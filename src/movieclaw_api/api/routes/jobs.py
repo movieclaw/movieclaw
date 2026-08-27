@@ -217,7 +217,7 @@ async def job_worker_health() -> ApiResponse[JobWorkerHealthView]:
     "/dismiss-all",
     response_model=ApiResponse[JobDismissAllView],
     summary="忽略当前所有失败任务",
-    operation_id="jobs.dismissAll",
+    operation_id="jobs.dismiss-all",
 )
 async def dismiss_all_failed_jobs(
     payload: JobDismissAllRequest | None = None,
