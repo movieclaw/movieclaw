@@ -96,6 +96,11 @@ def build_lifespan(settings: Settings):
         from movieclaw_api.services.network_egress import load_network_egress
 
         await load_network_egress()
+        # 加载刮削/发现页偏好快照（语言优先级、选图偏好、院线地区）：
+        # 须在刮削管线与发现页服务首次使用前生效
+        from movieclaw_api.services.scrape_config import load_scrape_runtime
+
+        await load_scrape_runtime()
         # 加载站点目录（内置 sites/configs/*.yaml + 用户自定义 data/site-configs/
         # → registry），供"可选项"接口使用；用户目录同 site_id 覆盖内置配置
         load_all_sites(settings.site_configs_dir)

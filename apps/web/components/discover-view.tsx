@@ -14,6 +14,7 @@ import {
   StarIcon,
 } from "@/components/icons";
 import { MediaRow } from "@/components/media-row";
+import { DiscoverRegionFooter } from "@/components/discover-region-footer";
 import { DiscoveryFilterControl } from "@/components/discovery-filter-dialog";
 import { FilteredDiscoveryView } from "@/components/filtered-discovery-view";
 import { PosterImage } from "@/components/poster-image";
@@ -109,6 +110,16 @@ export function DiscoverView({
   const [error, setError] = useState<DiscoverErrorInfo | null>(null);
   // 重试计数器：点「重试」时 +1，触发 effect 重新拉取
   const [reloadKey, setReloadKey] = useState(0);
+
+  // 页脚切换院线地区后：清掉片单缓存并重拉——「正在热映/即将上映」的内容
+  // 随地区而变，留着旧缓存用户会以为切换没生效
+  const reloadAfterRegionChange = useCallback(() => {
+    pageCache.clear();
+    collectionCache.clear();
+    setRowsByRef({});
+    setHero(undefined);
+    setReloadKey((k) => k + 1);
+  }, []);
 
   useEffect(() => {
     if (filtering) return;
@@ -324,6 +335,10 @@ export function DiscoverView({
           );
         })}
       </div>
+      {/* 院线地区就地设置：只在有院线榜单的电影 TMDB 视角出现 */}
+      {mediaType === "movie" && source === "tmdb" && (
+        <DiscoverRegionFooter onChanged={reloadAfterRegionChange} />
+      )}
     </div>
   );
 }

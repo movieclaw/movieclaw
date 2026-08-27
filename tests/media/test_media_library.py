@@ -136,23 +136,56 @@ async def test_fetch_movie_uses_append_to_response() -> None:
     assert params["include_image_language"] == "null,zh,en"
 
 
-async def test_fetch_movie_english_overview_fallback() -> None:
-    """中文简介缺失时补拉一次英文兜底（仅条目级，docs/design/metadata.md 第 3 节）。"""
-    detail = {**_MOVIE_DETAIL, "overview": "", "tagline": ""}
+async def test_fetch_movie_overview_falls_back_via_translations() -> None:
+    """主语言简介缺失时按语言优先级从 translations 本地回落——**零额外请求**
+    （docs/design/scrape-customization.md §2.1，替代旧的补拉 en-US 兜底）。"""
+    detail = {
+        **_MOVIE_DETAIL,
+        "overview": "",
+        "tagline": "",
+        "translations": {
+            "translations": [
+                {"iso_639_1": "zh", "iso_3166_1": "CN", "data": {"title": "沙丘2"}},
+                {
+                    "iso_639_1": "en",
+                    "iso_3166_1": "US",
+                    "data": {
+                        "title": "Dune: Part Two",
+                        "overview": "Paul seeks revenge.",
+                        "tagline": "EN tagline",
+                    },
+                },
+            ]
+        },
+    }
     captured: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        captured.append(request)
-        if dict(request.url.params).get("language") == "en-US":
-            return httpx.Response(
-                200, json={**detail, "overview": "Paul seeks revenge.", "tagline": "EN tagline"}
-            )
-        return httpx.Response(200, json=detail)
-
-    client = TmdbClient(_KEY, transport=httpx.MockTransport(handler))
+    client = _client({"/3/movie/693134": detail}, captured)
     profile = await fetch_media_profile(client, MediaKind.MOVIE, 693134)
-    assert len(captured) == 2
+    assert len(captured) == 1
     assert profile.overview == "Paul seeks revenge."
+    assert profile.tagline == "EN tagline"
+
+
+async def test_fetch_movie_title_falls_back_when_primary_untranslated() -> None:
+    """主语言无标题翻译时，标题按优先级取下一语言的译名。"""
+    detail = {
+        **_MOVIE_DETAIL,
+        "title": "Dune: Part Two",  # TMDB 无 zh 翻译时静默退回原名
+        "translations": {
+            "translations": [
+                {
+                    "iso_639_1": "en",
+                    "iso_3166_1": "US",
+                    "data": {"title": "Dune: Part Two", "overview": "x"},
+                },
+            ]
+        },
+    }
+    client = _client({"/3/movie/693134": detail})
+    profile = await fetch_media_profile(
+        client, MediaKind.MOVIE, 693134, languages=["zh-CN", "en-US"]
+    )
+    assert profile.title == "Dune: Part Two"
 
 
 _TV_DETAIL = {
@@ -277,9 +310,9 @@ def test_pick_poster_prefers_localized() -> None:
             ]
         }
     }
-    assert pick_poster(data, "zh-CN") == "/zh.jpg"
+    assert pick_poster(data, ["zh"]) == "/zh.jpg"
     # 当前语言没有海报时退回全部候选里的最优
-    assert pick_poster(data, "ja-JP") == "/en.jpg"
+    assert pick_poster(data, ["ja"]) == "/en.jpg"
 
 
 def test_list_candidates_ordering_matches_auto_pick() -> None:
@@ -297,8 +330,8 @@ def test_list_candidates_ordering_matches_auto_pick() -> None:
             ],
         }
     }
-    posters, backdrops = list_image_candidates(data, "zh-CN")
-    assert posters[0]["file_path"] == pick_poster(data, "zh-CN") == "/p-zh.jpg"
+    posters, backdrops = list_image_candidates(data, ["zh"], [None])
+    assert posters[0]["file_path"] == pick_poster(data, ["zh"]) == "/p-zh.jpg"
     assert backdrops[0]["file_path"] == pick_backdrop(data) == "/b-clean.jpg"
     assert {i["file_path"] for i in posters} == {"/p-zh.jpg", "/p-en.jpg"}
     assert {i["file_path"] for i in backdrops} == {"/b-clean.jpg", "/b-text.jpg"}
@@ -429,3 +462,153 @@ async def test_resolve_year_mismatch_falls_back_to_all_candidates() -> None:
     result = await resolve_douban_to_tmdb(client, MediaKind.MOVIE, "某片", year=1990)
     assert result.status is ResolveStatus.AMBIGUOUS
     assert len(result.candidates) == 2
+
+
+# ---------------------------------------------------------------------------
+# 语言优先级与选图偏好（docs/design/scrape-customization.md）
+# ---------------------------------------------------------------------------
+
+
+async def test_fetch_tv_season_fallback_when_primary_coverage_poor() -> None:
+    """主语言分集大面积是占位名时，该季按次位语言整季重拉一次并合并译文；
+    覆盖率正常的季不触发额外请求。"""
+    detail = {
+        "id": 94997,
+        "name": "某剧",
+        "original_name": "Some Show",
+        "first_air_date": "2022-08-21",
+        "translations": {"translations": []},
+        "seasons": [{"season_number": 1}],
+    }
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        if request.url.path == "/3/tv/94997":
+            return httpx.Response(200, json=detail)
+        if request.url.path == "/3/tv/94997/season/1":
+            if dict(request.url.params).get("language") == "en-US":
+                return httpx.Response(
+                    200,
+                    json={
+                        "name": "Season 1",
+                        "episodes": [
+                            {"episode_number": 1, "name": "Pilot", "overview": "EN ov"},
+                            {"episode_number": 2, "name": "Second", "overview": ""},
+                        ],
+                    },
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "name": "第 1 季",
+                    "episodes": [
+                        {"episode_number": 1, "name": "第 1 集", "overview": ""},
+                        {"episode_number": 2, "name": "Episode 2", "overview": ""},
+                    ],
+                },
+            )
+        return httpx.Response(404, json={})
+
+    client = TmdbClient(_KEY, transport=httpx.MockTransport(handler))
+    profile = await fetch_media_profile(
+        client, MediaKind.TV, 94997, languages=["zh-CN", "en-US"]
+    )
+    episodes = profile.seasons[0].episodes
+    assert [e.name for e in episodes] == ["Pilot", "Second"]
+    assert episodes[0].overview == "EN ov"
+    # 详情 1 次 + 季主语言 1 次 + 季回落 1 次
+    assert len(captured) == 3
+
+
+async def test_fetch_profile_poster_language_mode() -> None:
+    """poster_mode=language 时按语言优先级挑海报（不再以 TMDB 默认为准）。"""
+    from movieclaw_media.library import ImagePrefs
+
+    detail = {
+        **_MOVIE_DETAIL,
+        "poster_path": "/default-poster.jpg",
+        "images": {
+            "posters": [
+                _img("/zh-poster.jpg", lang="zh", width=1000, avg=6.0, count=40),
+                _img("/en-poster.jpg", lang="en", width=2000, avg=9.0, count=900),
+            ],
+        },
+    }
+    client = _client({"/3/movie/693134": detail})
+    prefs = ImagePrefs(poster_mode="language", poster_langs=("meta", "en", "null"))
+    profile = await fetch_media_profile(client, MediaKind.MOVIE, 693134, image_prefs=prefs)
+    assert profile.poster_path == "/zh-poster.jpg"
+
+
+async def test_fetch_profile_backdrop_language_tiers() -> None:
+    """背景语言优先级：把语言排在「无文字」前面时选带字图（收藏 logo 横图）。"""
+    from movieclaw_media.library import ImagePrefs
+
+    detail = {
+        **_MOVIE_DETAIL,
+        "images": {
+            "backdrops": [
+                _img("/clean.jpg", lang=None, width=3840, avg=9.0, count=500),
+                _img("/logo-en.jpg", lang="en", width=1920, avg=6.0, count=40),
+            ],
+        },
+    }
+    client = _client({"/3/movie/693134": detail})
+    prefs = ImagePrefs(backdrop_langs=("en", "null"))
+    profile = await fetch_media_profile(client, MediaKind.MOVIE, 693134, image_prefs=prefs)
+    assert profile.backdrop_path == "/logo-en.jpg"
+
+
+async def test_fetch_profile_orig_token_triggers_extra_images_fetch() -> None:
+    """偏好含「原始语言」且详情请求未覆盖该语言时，补拉一次 images 合并候选。"""
+    from movieclaw_media.library import ImagePrefs
+
+    detail = {
+        **_MOVIE_DETAIL,
+        "original_language": "ko",
+        "poster_path": None,
+        "images": {"posters": [_img("/en-poster.jpg", lang="en", width=1000, avg=8.0, count=100)]},
+    }
+    extra_images = {
+        "posters": [_img("/ko-poster.jpg", lang="ko", width=1000, avg=7.0, count=50)],
+        "backdrops": [],
+    }
+    captured: list[httpx.Request] = []
+    client = _client(
+        {"/3/movie/693134": detail, "/3/movie/693134/images": extra_images}, captured
+    )
+    prefs = ImagePrefs(poster_mode="language", poster_langs=("orig", "en"))
+    profile = await fetch_media_profile(client, MediaKind.MOVIE, 693134, image_prefs=prefs)
+    assert profile.poster_path == "/ko-poster.jpg"
+    assert len(captured) == 2
+
+
+async def test_fetch_profile_certification_priority() -> None:
+    """分级按配置的地区优先级取值。"""
+    detail = {
+        **_MOVIE_DETAIL,
+        "release_dates": {
+            "results": [
+                {"iso_3166_1": "US", "release_dates": [{"certification": "PG-13"}]},
+                {"iso_3166_1": "JP", "release_dates": [{"certification": "G"}]},
+            ]
+        },
+    }
+    client = _client({"/3/movie/693134": detail})
+    profile = await fetch_media_profile(
+        client, MediaKind.MOVIE, 693134, cert_countries=["JP", "US"]
+    )
+    assert profile.content_rating == "G"
+
+
+def test_resolve_image_languages_tokens() -> None:
+    """token 解析：meta/orig/null/具体码，保序去重，orig 缺失时跳过。"""
+    from movieclaw_media.library import resolve_image_languages
+
+    assert resolve_image_languages(
+        ("meta", "orig", "en", "null"), primary_language="zh-CN", original_language="ja"
+    ) == ["zh", "ja", "en", None]
+    assert resolve_image_languages(
+        ("orig", "meta", "zh"), primary_language="zh-CN", original_language=None
+    ) == ["zh"]

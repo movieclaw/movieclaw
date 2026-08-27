@@ -25,12 +25,16 @@ from movieclaw_media.douban import (
 )
 from movieclaw_media.library import (
     DoubanResolution,
+    ImagePrefs,
     MediaProfile,
     ResolveCandidate,
     ResolveStatus,
     SeasonProfile,
     fetch_media_profile,
+    image_language_param,
+    list_image_candidates,
     resolve_douban_to_tmdb,
+    resolve_image_languages,
 )
 from movieclaw_media.models import (
     DiscoverLayout,
@@ -88,6 +92,10 @@ __all__ = [
     "ResolveStatus",
     "SeasonProfile",
     "fetch_media_profile",
+    "ImagePrefs",
+    "image_language_param",
+    "list_image_candidates",
+    "resolve_image_languages",
     "resolve_douban_to_tmdb",
     "MediaDiscoverService",
     "TmdbAuthError",

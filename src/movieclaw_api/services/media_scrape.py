@@ -39,6 +39,12 @@ from sqlmodel import select
 
 from movieclaw_api.core.config import get_settings
 from movieclaw_api.services import jobs
+from movieclaw_api.services.scrape_config import (
+    effective_asset_sizes,
+    effective_image_prefs,
+    effective_language,
+    profile_fetch_kwargs,
+)
 from movieclaw_api.services.task_state import TaskState
 from movieclaw_db.engine import get_database
 from movieclaw_db.models import (
@@ -143,9 +149,10 @@ async def _scrape(media_item_id: int, *, force: bool, on_phase: PhaseHook = None
         if item is None:
             return False
         kind = MediaKind(item.kind)
-        language = get_settings().tmdb_language
+        fetch_kwargs = profile_fetch_kwargs()
+        language = fetch_kwargs["languages"][0]
         client = get_tmdb_client()
-        profile = await fetch_media_profile(client, kind, item.tmdb_id, language=language)
+        profile = await fetch_media_profile(client, kind, item.tmdb_id, **fetch_kwargs)
 
         # 本次刷新前已知的集：wanted 生长只补"新出现的集"（历史 diff 里
         # 被移除的工单不因刷新复活）
@@ -968,9 +975,8 @@ async def _sync_movie_schedule(
 
 
 def _asset_sizes() -> tuple[str, str, str]:
-    """当前配置的 (海报, 背景, 剧照) 尺寸档位（见 Settings 的注释与取舍）。"""
-    settings = get_settings()
-    return (settings.tmdb_poster_size, settings.tmdb_backdrop_size, settings.tmdb_still_size)
+    """当前生效的 (海报, 背景, 剧照) 尺寸档位（设置页覆盖 > 环境变量）。"""
+    return effective_asset_sizes()
 
 
 def assets_root() -> Path:
@@ -1253,22 +1259,49 @@ async def list_artwork_candidates(
     三种情况下"第一张"都不等于在用的那张（实测：星际穿越的背景对不上）。
     """
     from movieclaw_api.services.media_discover import get_tmdb_client
-    from movieclaw_media.library import list_image_candidates
+    from movieclaw_media.library import (
+        image_language_param,
+        list_image_candidates,
+        resolve_image_languages,
+    )
 
     db = get_database()
     async with db.session() as session:
+        repo = MediaItemRepository(session)
         item = await session.get(MediaItem, media_item_id)
         if item is None:
             return [], [], None, None
         kind = MediaKind(item.kind)
         current_poster = item.poster_path
         current_backdrop = item.backdrop_path
+        meta = await repo.get_metadata(media_item_id)
+        original_language = meta.original_language if meta else None
     settings = get_settings()
+    prefs = effective_image_prefs()
+    language = effective_language()
+    # 候选语言集由选图偏好推导；「原始语言」此处已知（档案落库过），直接并入
+    include_param = image_language_param(prefs, language)
+    if original_language and original_language not in include_param.split(","):
+        tokens = (*prefs.poster_langs, *prefs.backdrop_langs)
+        if "orig" in tokens:
+            include_param = f"{include_param},{original_language}"
     data = await get_tmdb_client().get(
         f"{kind.value}/{item.tmdb_id}/images",
-        {"include_image_language": f"null,{settings.tmdb_language.split('-')[0]},en"},
+        {"include_image_language": include_param},
     )
-    posters, backdrops = list_image_candidates({"images": data}, settings.tmdb_language)
+    poster_langs = resolve_image_languages(
+        prefs.poster_langs, primary_language=language, original_language=original_language
+    )
+    backdrop_langs = resolve_image_languages(
+        prefs.backdrop_langs, primary_language=language, original_language=original_language
+    )
+    posters, backdrops = list_image_candidates(
+        {"images": data},
+        poster_langs,
+        backdrop_langs,
+        poster_min_width=prefs.poster_min_width,
+        backdrop_min_width=prefs.backdrop_min_width,
+    )
     base = settings.tmdb_image_base_url.rstrip("/")
 
     def _view(image: dict, preview_size: str) -> dict:

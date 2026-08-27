@@ -13,6 +13,7 @@ from movieclaw_api.services.network_egress import (
     effective_tmdb_api_base_url,
     effective_tmdb_image_base_url,
 )
+from movieclaw_api.services.scrape_config import effective_language, effective_region
 from movieclaw_db.stores import SqlCacheStore
 from movieclaw_media import (
     DoubanClient,
@@ -71,8 +72,10 @@ def get_media_service() -> MediaDiscoverService:
                 transport=egress_transport("tmdb"),
             ),
             image_base_url=effective_tmdb_image_base_url(),
-            language=settings.tmdb_language,
-            region=settings.tmdb_region,
+            # 语言/地区走设置页覆盖（空则回落环境变量）；设置保存后由保存
+            # 接口 reset_media_service()，下次请求按新值重建本单例
+            language=effective_language(),
+            region=effective_region(),
             timezone=settings.scheduler_timezone,
         )
     return _service

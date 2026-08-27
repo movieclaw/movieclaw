@@ -15,6 +15,7 @@ import { MembersSection } from "@/components/members-section";
 import { LlmConfigSection } from "@/components/llm-config-section";
 import { ImPushSection } from "@/components/im-push-section";
 import { NetworkConfigSection } from "@/components/network-config-section";
+import { ScrapeSettingsSection } from "@/components/scrape-settings-section";
 import { SiteConfigSection, SitesSectionSubtitle } from "@/components/site-config-section";
 import { SubscriptionSettingsSection } from "@/components/subscription-settings-section";
 import { SystemLogsSection } from "@/components/system-logs-section";
@@ -193,6 +194,8 @@ export function SettingsPanel({ active }: SettingsPanelProps) {
           <DownloaderConfigSection />
         ) : section.id === "import-watch" ? (
           <ImportWatchSection />
+        ) : section.id === "scrape" ? (
+          <ScrapeSettingsSection />
         ) : section.id === "llm" ? (
           <LlmConfigSection />
         ) : section.id === "im-push" ? (

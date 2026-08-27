@@ -145,12 +145,12 @@ async def gather_facts(session: AsyncSession, item: MediaItem) -> RoutingFacts |
                 origin_countries=tuple(meta.origin_countries or []),
             )
 
-    from movieclaw_api.core.config import get_settings
     from movieclaw_api.services.media_discover import get_tmdb_client
+    from movieclaw_api.services.scrape_config import effective_language
 
     try:
         data = await get_tmdb_client().get(
-            f"{item.kind}/{item.tmdb_id}", {"language": get_settings().tmdb_language}
+            f"{item.kind}/{item.tmdb_id}", {"language": effective_language()}
         )
         return RoutingFacts(
             genre_ids=tuple(extract_genre_ids(data)),
