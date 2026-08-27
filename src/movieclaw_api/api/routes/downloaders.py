@@ -220,6 +220,9 @@ async def submit_download(
             info_hash=result.info_hash,
             media_item_id=manual_item.id,
             library_id=library.id,
+            downloader_id=row.id,
+            download_name=result.name or None,
+            save_path=derived_path,
             site_id=payload.site_id,
             torrent_id=payload.torrent_id,
         )

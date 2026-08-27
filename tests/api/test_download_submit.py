@@ -294,9 +294,7 @@ def test_dispatch_preview_routes_and_warnings(client) -> None:
         "/api/v1/libraries",
         json={"name": "预检电影库", "kind": "movie", "root_paths": ["/vol1/media/movies"]},
     ).json()["data"]
-    r = client.get(
-        "/api/v1/subscriptions/download-routing-preview", params={"kind": "movie"}
-    )
+    r = client.get("/api/v1/subscriptions/download-routing-preview", params={"kind": "movie"})
     assert r.status_code == 200
     assert r.json()["data"]["ok"] is False
     assert "默认下载器" in r.json()["data"]["warning"]
@@ -566,6 +564,9 @@ def test_auto_route_submits_to_watch_and_anchors_info_hash(client, monkeypatch) 
     intent = asyncio.run(load_intent())
     assert intent.info_hash == "a" * 40
     assert intent.library_id == library["id"]
+    assert intent.downloader_id == selected_downloader_id
+    assert intent.download_name == "Some.Movie.2024.2160p"
+    assert intent.save_path == "/downloads/manual/movies"
     # 站点种子 ID 随身份锚落库，任务中心据此反查详情页提供「打开种子页」
     assert intent.torrent_id == "8866"
 
@@ -614,6 +615,50 @@ def test_anchor_sweeps_stale_orphan_intents(client) -> None:
     assert asyncio.run(run()) == {"c" * 40, "d" * 40}
 
 
+def test_anchor_backfills_new_task_identity_columns_on_legacy_row(client) -> None:
+    """重复提交旧版锚时补真实任务名和落点，但保持首次媒体/库归属。"""
+    from movieclaw_api.services.torrent_submit import anchor_manual_download
+
+    async def run() -> ManualDownloadIntent:
+        async with get_database().session() as session:
+            item = MediaItem(
+                kind="movie",
+                tmdb_id=2,
+                title="旧锚影片",
+                original_title="Legacy Anchor",
+                year=2020,
+                aliases=[],
+            )
+            library = Library(name="旧锚库", kind="movie", root_paths=["/media/movies"])
+            session.add_all([item, library])
+            await session.commit()
+            await session.refresh(item)
+            await session.refresh(library)
+            legacy = ManualDownloadIntent(
+                info_hash="e" * 40,
+                media_item_id=item.id,
+                library_id=library.id,
+                site_id="mteam",
+            )
+            session.add(legacy)
+            await session.commit()
+            await anchor_manual_download(
+                session,
+                info_hash="e" * 40,
+                media_item_id=item.id,
+                library_id=library.id,
+                site_id="mteam",
+                download_name="Legacy.Anchor.2020.2160p",
+                save_path="/downloads/movies",
+            )
+            await session.refresh(legacy)
+            return legacy
+
+    intent = asyncio.run(run())
+    assert intent.download_name == "Legacy.Anchor.2020.2160p"
+    assert intent.save_path == "/downloads/movies"
+
+
 def test_submit_with_disabled_default_downloader(client) -> None:
     did = _add_default_downloader(client)
     client.patch(f"/api/v1/downloaders/{did}/status", json={"enabled": False})
@@ -637,9 +682,7 @@ def test_submit_with_specified_downloader(client) -> None:
 def test_submit_with_specified_downloader_unavailable(client) -> None:
     """指定的下载器停用/不存在：指向明确的中文错误，不静默回落默认台。"""
     _add_default_downloader(client)
-    second = _add_default_downloader(
-        client, name="备用机", url="http://192.168.1.30:8080"
-    )
+    second = _add_default_downloader(client, name="备用机", url="http://192.168.1.30:8080")
     client.patch(f"/api/v1/downloaders/{second}/status", json={"enabled": False})
     r = client.post("/api/v1/downloaders/submit", json={**_SUBMIT, "downloader_id": second})
     assert r.status_code == 400

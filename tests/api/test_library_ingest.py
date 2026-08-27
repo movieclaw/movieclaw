@@ -10,7 +10,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import threading
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -27,6 +29,7 @@ from movieclaw_api.services.library.layout import explicit_unit
 from movieclaw_db.engine import dispose_db, get_database, init_db
 from movieclaw_db.migrations import run_migrations
 from movieclaw_db.models import (
+    DownloaderClient,
     FileSource,
     ImportWatch,
     IngestEntry,
@@ -40,6 +43,9 @@ from movieclaw_db.models import (
     MediaItem,
 )
 from movieclaw_db.models.base import utcnow
+from movieclaw_db.models.downloader_client import ClientType
+from movieclaw_db.models.manual_download_intent import MANUAL_DOWNLOAD_INTENT_TTL
+from movieclaw_db.models.site_credential import ConfigStatus
 from movieclaw_db.repositories.library_repo import LibraryRepository
 from movieclaw_media.models import MediaKind
 
@@ -419,6 +425,73 @@ async def test_disc_batch_job_reconcile_cancels_only_active_disc_batches(db):
         previously_reconciled_record is not None
         and previously_reconciled_record.status == IngestStatus.SKIPPED
     )
+
+
+@pytest.mark.asyncio
+async def test_reconciled_legacy_disc_job_is_replaced_by_complete_disc_ingest(
+    db, tmp_path, monkeypatch
+):
+    """升级取消旧分段 Job 后自动建立整盘 Job，不能被“已取消”通用门禁拦住。"""
+    root, watch = tmp_path / "movies", tmp_path / "watch"
+    watch.mkdir()
+    library_id = await _make_library(db, kind=MediaKind.MOVIE, root=root)
+    await _make_rule(db, library_id=library_id, source=watch)
+    item = await _make_item(db, kind=MediaKind.MOVIE, title="升级原盘", year=2026)
+    _stub_identify(monkeypatch, item)
+    monkeypatch.setattr(ingest_mod, "probe_media", lambda _path: _FAKE_SPEC)
+
+    entry = watch / "Legacy.Disc.2026"
+    stream = entry / "BDMV" / "STREAM" / "00001.m2ts"
+    stream.parent.mkdir(parents=True)
+    stream.write_bytes(b"complete-main-feature")
+    fingerprint = ingest_mod._snapshot(entry).fingerprint
+    async with db.session() as session:
+        record = IngestEntry(
+            entry_path=str(entry),
+            fingerprint=fingerprint,
+            status=IngestStatus.PENDING,
+            message="已取最大文件为正片，忽略其余 37 个视频",
+        )
+        session.add(record)
+        await session.flush()
+        assert record.id is not None
+        old_job = Job(
+            id="job_legacy_disc_upgrade",
+            job_type="library.ingest",
+            status=JobStatus.BLOCKED,
+            input_data={"ready_files": [{"path": "BDMV/STREAM/00001.m2ts"}]},
+        )
+        session.add(old_job)
+        session.add(
+            JobResource(
+                job_id=old_job.id,
+                resource_type="ingest_entry",
+                resource_id=str(record.id),
+            )
+        )
+        await session.commit()
+
+    assert await ingest_mod.reconcile_disc_batch_jobs() == 1
+    async with db.session() as session:
+        rule = (await session.execute(select(ImportWatch))).scalar_one()
+        library = await session.get(Library, library_id)
+        assert library is not None
+    await ingest_mod._sweep_dir(rule, library)
+    await ingest_mod._sweep_dir(rule, library)
+    async with db.session() as session:
+        rows = list((await session.execute(select(Job))).scalars())
+    assert len(rows) == 2
+    replacement = next(row for row in rows if row.id != "job_legacy_disc_upgrade")
+    assert "ready_files" not in replacement.input_data
+
+    await jobs.init_job_dispatcher(max_parallel=1)
+    await _wait_job_status(replacement.id, JobStatus.SUCCEEDED)
+    async with db.session() as session:
+        record = (await session.execute(select(IngestEntry))).scalar_one()
+        files = list((await session.execute(select(LibraryFile))).scalars())
+    assert record.status == IngestStatus.IMPORTED
+    assert len(files) == 1 and files[0].container == "bluray"
+    assert Path(files[0].file_path).is_dir()
 
 
 @pytest.mark.asyncio
@@ -968,9 +1041,7 @@ async def test_completed_files_are_ingested_while_same_torrent_keeps_downloading
     await ingest_mod._sweep_dir(
         _fixed_rule(watch, library_id=library_id), library, execute_inline=True
     )
-    assert (season / "分批剧集 (2026) - S01E02.mkv").read_bytes() == (
-        b"episode-2-partial"
-    )
+    assert (season / "分批剧集 (2026) - S01E02.mkv").read_bytes() == (b"episode-2-partial")
     assert str(entry) in ingest_mod._deferred
     async with db.session() as session:
         record = (await session.execute(select(IngestEntry))).scalar_one()
@@ -1153,11 +1224,9 @@ async def test_completed_torrent_creates_file_scoped_job_while_sibling_downloads
     ]
     assert job.input_data["consume_info_hashes"] == ["completed-hash"]
     assert job.input_data["keep_deferred"] is True
-    assert {
-        row.resource_id
-        for row in resources[job.id]
-        if row.resource_type == "download"
-    } == {"completed-hash"}
+    assert {row.resource_id for row in resources[job.id] if row.resource_type == "download"} == {
+        "completed-hash"
+    }
 
     await jobs.init_job_dispatcher(max_parallel=1)
     await _wait_job_status(job.id, JobStatus.SUCCEEDED)
@@ -1186,6 +1255,9 @@ async def test_downloading_disc_never_imports_completed_stream_segments(
     watch.mkdir()
     library_id = await _make_library(db, kind=MediaKind.MOVIE, root=root)
     await _make_rule(db, library_id=library_id, source=watch)
+    item = await _make_item(db, kind=MediaKind.MOVIE, title="原盘电影", year=2001)
+    _stub_identify(monkeypatch, item)
+    monkeypatch.setattr(ingest_mod, "probe_media", lambda _path: _FAKE_SPEC)
     entry = watch / "Movie.Collection.2001-2023.UHD.BluRay"
     stream = entry.joinpath(*relative_path.split("/"))
     stream.parent.mkdir(parents=True)
@@ -1238,7 +1310,7 @@ async def test_downloading_disc_never_imports_completed_stream_segments(
         assert list((await session.execute(select(LibraryFile))).scalars()) == []
     assert str(entry) in ingest_mod._deferred
 
-    # 整种完成：整树识别出原盘，只生成一条可理解的“暂不支持”结论。
+    # 整种完成：完整原盘树一次性硬链接入库，仍不会产生任何分片条目。
     download_complete["value"] = True
     await ingest_mod._sweep_dir(rule, library)
     async with db.session() as session:
@@ -1248,8 +1320,406 @@ async def test_downloading_disc_never_imports_completed_stream_segments(
     async with db.session() as session:
         record = (await session.execute(select(IngestEntry))).scalar_one()
         files = list((await session.execute(select(LibraryFile))).scalars())
-    assert record.status == IngestStatus.SKIPPED
-    assert "原盘目录" in (record.message or "")
+    assert record.status == IngestStatus.IMPORTED
+    assert "完整原盘" in (record.message or "")
+    assert len(files) == 1
+    final = Path(files[0].file_path)
+    assert files[0].container == "bluray"
+    assert (final / "BDMV" / "STREAM" / "00001.m2ts").stat().st_ino == stream.stat().st_ino
+
+
+@pytest.mark.asyncio
+async def test_downloader_outage_fails_closed_without_snapshot_ingest(db, tmp_path, monkeypatch):
+    """配置下载器全部不可达时不再退回静默时间猜测，恢复前零入库。"""
+    root, watch = tmp_path / "movies", tmp_path / "watch"
+    watch.mkdir()
+    library_id = await _make_library(db, kind=MediaKind.MOVIE, root=root)
+    item = await _make_item(db, kind=MediaKind.MOVIE, title="未完成电影", year=2026)
+    _stub_identify(monkeypatch, item)
+    monkeypatch.setattr(ingest_mod, "probe_media", lambda _path: _FAKE_SPEC)
+
+    entry = watch / "Incomplete.Movie.2026"
+    entry.mkdir()
+    (entry / "movie.mkv").write_bytes(b"preallocated-partial")
+
+    async def unavailable():
+        return None
+
+    monkeypatch.setattr(ingest_mod, "_downloader_briefs", unavailable)
+    await _sweep_twice(db, library_id, watch)
+    assert not (root / "未完成电影 (2026)").exists()
+    assert str(entry) in ingest_mod._deferred
+    async with db.session() as session:
+        assert list((await session.execute(select(IngestEntry))).scalars()) == []
+
+
+@pytest.mark.asyncio
+async def test_queued_ingest_job_rechecks_downloader_outage_before_snapshot(
+    db, tmp_path, monkeypatch
+):
+    """巡检后、Job 执行前下载器掉线时也必须 fail closed，不能从队列绕过门禁。"""
+    root, watch = tmp_path / "movies", tmp_path / "watch"
+    watch.mkdir()
+    library_id = await _make_library(db, kind=MediaKind.MOVIE, root=root)
+    await _make_rule(db, library_id=library_id, source=watch)
+    async with db.session() as session:
+        rule_id = (await session.execute(select(ImportWatch.id))).scalar_one()
+    entry = watch / "Queued.Incomplete.Movie.2026"
+    entry.mkdir()
+    (entry / "movie.mkv").write_bytes(b"preallocated-partial")
+
+    async def unavailable():
+        return None
+
+    monkeypatch.setattr(ingest_mod, "_downloader_briefs", unavailable)
+
+    class Context:
+        async def current_progress(self):
+            return {}
+
+        async def update_progress(self, **_kwargs):
+            return None
+
+    with pytest.raises(jobs.JobRetry, match="下载器当前不可达"):
+        await ingest_mod._execute_ingest_job(
+            Context(),
+            {
+                "rule_id": rule_id,
+                "entry_path": str(entry),
+                "detected_fingerprint": "queued-before-outage",
+            },
+        )
+    assert not (root / "Queued Incomplete Movie (2026)").exists()
+    async with db.session() as session:
+        assert list((await session.execute(select(IngestEntry))).scalars()) == []
+
+
+@pytest.mark.asyncio
+async def test_legacy_queued_torrent_job_waits_when_reachable_api_returns_empty(
+    db, tmp_path, monkeypatch
+):
+    """升级前 Job 只有 infohash 也足以证明受管，空列表不能把它当普通文件放行。"""
+    root, watch = tmp_path / "movies", tmp_path / "watch"
+    watch.mkdir()
+    library_id = await _make_library(db, kind=MediaKind.MOVIE, root=root)
+    await _make_rule(db, library_id=library_id, source=watch)
+    async with db.session() as session:
+        rule_id = (await session.execute(select(ImportWatch.id))).scalar_one()
+    entry = watch / "Legacy.Managed.Movie.2026"
+    entry.mkdir()
+    (entry / "movie.mkv").write_bytes(b"preallocated-partial")
+
+    async def empty():
+        return []
+
+    monkeypatch.setattr(ingest_mod, "_downloader_briefs", empty)
+
+    class Context:
+        async def current_progress(self):
+            return {}
+
+        async def update_progress(self, **_kwargs):
+            return None
+
+    with pytest.raises(jobs.JobRetry, match="暂未返回该受管任务"):
+        await ingest_mod._execute_ingest_job(
+            Context(),
+            {
+                "rule_id": rule_id,
+                "entry_path": str(entry),
+                "info_hashes": ["a" * 40],
+                "detected_fingerprint": "queued-before-upgrade",
+            },
+        )
+    assert list(root.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_enabled_unverified_downloader_is_unavailable_not_unconfigured(db):
+    """启用中的 pending/failed 配置仍是权威状态源，验证窗口不能启发式放行。"""
+    async with db.session() as session:
+        row = DownloaderClient(
+            name="等待验证的下载器",
+            client_type=ClientType.QBITTORRENT,
+            url="http://127.0.0.1:65535",
+            enabled=True,
+            status=ConfigStatus.PENDING,
+        )
+        session.add(row)
+        await session.commit()
+
+    ingest_mod._briefs_cache = (float("-inf"), None)
+    assert await ingest_mod._downloader_briefs() is None
+
+    async with db.session() as session:
+        row = (await session.execute(select(DownloaderClient))).scalar_one()
+        row.enabled = False
+        await session.commit()
+    ingest_mod._briefs_cache = (float("-inf"), None)
+    assert await ingest_mod._downloader_briefs() == []
+
+
+@pytest.mark.asyncio
+async def test_one_unreachable_downloader_makes_combined_brief_incomplete(
+    db, monkeypatch
+):
+    """多下载器只成功一台时不能把部分列表当完整事实，未命中条目继续等待。"""
+    async with db.session() as session:
+        session.add_all(
+            [
+                DownloaderClient(
+                    name="可达下载器",
+                    client_type=ClientType.QBITTORRENT,
+                    url="http://reachable.invalid",
+                    enabled=True,
+                    status=ConfigStatus.ACTIVE,
+                ),
+                DownloaderClient(
+                    name="失联下载器",
+                    client_type=ClientType.QBITTORRENT,
+                    url="http://offline.invalid",
+                    enabled=True,
+                    status=ConfigStatus.ACTIVE,
+                ),
+            ]
+        )
+        await session.commit()
+
+    class Adapter:
+        def __init__(self, url: str):
+            self.url = url
+
+        async def list_torrents(self):
+            if "offline" in self.url:
+                raise OSError("offline")
+            return []
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(
+        "movieclaw_downloader.create_downloader",
+        lambda config: Adapter(config.url),
+    )
+    ingest_mod._briefs_cache = (float("-inf"), None)
+    assert await ingest_mod._downloader_briefs() is None
+
+
+@pytest.mark.asyncio
+async def test_persisted_download_name_blocks_transient_empty_torrent_list(
+    db, tmp_path, monkeypatch
+):
+    """API 可达却暂时返回空列表时，真实投递名锚仍阻止受管任务被误放行。"""
+    root, watch = tmp_path / "movies", tmp_path / "watch"
+    watch.mkdir()
+    library_id = await _make_library(db, kind=MediaKind.MOVIE, root=root)
+    item = await _make_item(db, kind=MediaKind.MOVIE, title="受管电影", year=2026)
+    _stub_identify(monkeypatch, item)
+    monkeypatch.setattr(ingest_mod, "probe_media", lambda _path: _FAKE_SPEC)
+    entry = watch / "Managed.Movie.2026"
+    entry.mkdir()
+    (entry / "movie.mkv").write_bytes(b"preallocated-partial")
+    async with db.session() as session:
+        session.add(
+            ManualDownloadIntent(
+                info_hash="a" * 40,
+                media_item_id=item.id,
+                library_id=library_id,
+                download_name=entry.name,
+                save_path=str(watch),
+            )
+        )
+        await session.commit()
+
+    async def empty():
+        return []
+
+    monkeypatch.setattr(ingest_mod, "_downloader_briefs", empty)
+    await _sweep_twice(db, library_id, watch)
+    assert not (root / "受管电影 (2026)").exists()
+    assert str(entry) in ingest_mod._deferred
+
+
+@pytest.mark.asyncio
+async def test_stale_manual_download_name_no_longer_blocks_ingest(db, tmp_path):
+    """任务被删除且 90 天未入库的孤儿锚不能让同名目录永久等待。"""
+    root = tmp_path / "movies"
+    library_id = await _make_library(db, kind=MediaKind.MOVIE, root=root)
+    item = await _make_item(db, kind=MediaKind.MOVIE, title="旧任务", year=2026)
+    entry = tmp_path / "watch" / "Stale.Managed.Movie.2026"
+    async with db.session() as session:
+        intent = ManualDownloadIntent(
+            info_hash="f" * 40,
+            media_item_id=item.id,
+            library_id=library_id,
+            download_name=entry.name,
+            save_path=str(entry.parent),
+        )
+        intent.created_at = utcnow() - MANUAL_DOWNLOAD_INTENT_TTL - timedelta(days=1)
+        session.add(intent)
+        await session.commit()
+        assert await ingest_mod._has_managed_download_claim(session, entry) is False
+
+
+def test_legacy_site_title_matches_real_downloader_name_without_crossing_movie_year():
+    """旧台账没有真实下载名时，站点标题允许发布属性差异，但不同年份不串。"""
+    actual = "Mission.Impossible.1996.2160p.BluRay.DoVi.x265.10bit.TrueHD5.1-WiKi"
+    site = "Mission: Impossible 1996 2160p BluRay DoVi x265 10bit 3Audios TrueHD 5.1-WiKi"
+    assert ingest_mod._download_name_matches(actual, site)
+    assert not ingest_mod._download_name_matches(actual, site.replace("1996", "2018"))
+
+
+def test_disc_tree_copy_is_atomic_and_idempotent(tmp_path):
+    """跨盘策略保留完整目录树；再次执行识别为同内容，不复制第二份。"""
+    source = tmp_path / "source" / "Movie"
+    stream = source / "BDMV" / "STREAM" / "00001.m2ts"
+    playlist = source / "BDMV" / "PLAYLIST" / "00001.mpls"
+    stream.parent.mkdir(parents=True)
+    playlist.parent.mkdir(parents=True)
+    (source / "BDMV" / "AUXDATA").mkdir()
+    (source / "BDMV" / "AUXDATA" / "empty.bin").touch()
+    stream.write_bytes(b"main-feature")
+    playlist.write_bytes(b"playlist")
+    base = tmp_path / "library" / "电影 (2026)"
+
+    final, created = ingest_mod._transfer_disc_tree(source, base, "copy", "2160p")
+    assert created is True and final == base
+    assert (final / "BDMV" / "STREAM" / "00001.m2ts").read_bytes() == b"main-feature"
+    assert (final / "BDMV" / "PLAYLIST" / "00001.mpls").read_bytes() == b"playlist"
+    assert (final / "BDMV" / "STREAM" / "00001.m2ts").stat().st_ino != stream.stat().st_ino
+    again, created_again = ingest_mod._transfer_disc_tree(source, base, "copy", "2160p")
+    assert again == final and created_again is False
+
+
+def test_disc_tree_same_sizes_with_different_mtime_is_not_deduplicated(tmp_path):
+    """路径和尺寸碰巧相同的另一张盘不能被静默当成已入库内容。"""
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first_stream = first / "BDMV" / "STREAM" / "00001.m2ts"
+    second_stream = second / "BDMV" / "STREAM" / "00001.m2ts"
+    first_stream.parent.mkdir(parents=True)
+    second_stream.parent.mkdir(parents=True)
+    first_stream.write_bytes(b"first-disc")
+    second_stream.write_bytes(b"other-disc")
+    os.utime(first_stream, ns=(1_000_000_000, 1_000_000_000))
+    os.utime(second_stream, ns=(2_000_000_000, 2_000_000_000))
+    base = tmp_path / "library" / "电影 (2026)"
+
+    final, created = ingest_mod._transfer_disc_tree(first, base, "copy", "2160p")
+    assert created is True and final == base
+    alternate, already_present = ingest_mod._disc_destination(second, base, "2160p")
+    assert already_present is False
+    assert alternate != base
+
+
+@pytest.mark.asyncio
+async def test_disc_tree_job_copy_resumes_and_publishes_atomically(tmp_path, monkeypatch):
+    """原盘复制被服务更新打断后保留确认字节，重跑续传并只发布完整目录。"""
+    source = tmp_path / "source" / "Movie"
+    stream = source / "BDMV" / "STREAM" / "00001.m2ts"
+    playlist = source / "BDMV" / "PLAYLIST" / "00001.mpls"
+    stream.parent.mkdir(parents=True)
+    playlist.parent.mkdir(parents=True)
+    (source / "BDMV" / "AUXDATA").mkdir()
+    (source / "BDMV" / "AUXDATA" / "empty.bin").touch()
+    stream.write_bytes(bytes(range(32)))
+    playlist.write_bytes(b"playlist")
+    base = tmp_path / "library" / "电影 (2026)"
+    monkeypatch.setattr(ingest_mod, "_INGEST_COPY_CHUNK_BYTES", 8)
+
+    class Context:
+        async def raise_if_cancelled(self):
+            return None
+
+    interrupted = False
+
+    async def interrupt_after_first_chunk(copied: int, total: int):
+        nonlocal interrupted
+        if copied and copied < total and not interrupted:
+            interrupted = True
+            raise jobs.JobCancelled
+
+    with pytest.raises(jobs.JobCancelled):
+        await ingest_mod._transfer_disc_tree_for_job(
+            source,
+            base,
+            "copy",
+            "2160p",
+            Context(),
+            interrupt_after_first_chunk,
+        )
+    stage, state_path = ingest_mod._disc_ingest_paths(base)
+    assert stage.is_dir() and state_path.is_file()
+    assert not base.exists()
+    assert any(path.stat().st_size == 8 for path in stage.rglob("*.part"))
+
+    offsets: list[int] = []
+
+    async def record_progress(copied: int, _total: int):
+        offsets.append(copied)
+
+    final, created = await ingest_mod._transfer_disc_tree_for_job(
+        source,
+        base,
+        "copy",
+        "2160p",
+        Context(),
+        record_progress,
+    )
+    assert created is True and final == base
+    assert offsets[:2] == [0, 8], "重跑从零复制，没有复用上次确认的字节"
+    assert stream.read_bytes() == (final / "BDMV" / "STREAM" / "00001.m2ts").read_bytes()
+    assert playlist.read_bytes() == (final / "BDMV" / "PLAYLIST" / "00001.mpls").read_bytes()
+    assert (final / "BDMV" / "AUXDATA").is_dir()
+    assert (final / "BDMV" / "AUXDATA" / "empty.bin").stat().st_size == 0
+    assert not stage.exists() and not state_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_multi_disc_collection_stays_pending_without_partial_import(
+    db, tmp_path, monkeypatch
+):
+    """合集含多个 BDMV 时不能猜电影边界，完整保留源并只生成一条待处理结论。"""
+    root, watch = tmp_path / "movies", tmp_path / "watch"
+    watch.mkdir()
+    library_id = await _make_library(db, kind=MediaKind.MOVIE, root=root)
+    entry = watch / "Movie.Collection"
+    for number in (1, 2):
+        stream = entry / f"Movie {number}" / "BDMV" / "STREAM" / "00001.m2ts"
+        stream.parent.mkdir(parents=True)
+        stream.write_bytes(f"disc-{number}".encode())
+
+    await _sweep_twice(db, library_id, watch)
+    async with db.session() as session:
+        record = (await session.execute(select(IngestEntry))).scalar_one()
+        files = list((await session.execute(select(LibraryFile))).scalars())
+    assert record.status == IngestStatus.PENDING
+    assert "包含 2 个原盘" in (record.message or "")
+    assert files == []
+    assert all(path.exists() for path in entry.rglob("*.m2ts"))
+
+
+@pytest.mark.asyncio
+async def test_direct_bdmv_entry_never_treats_whole_watch_root_as_disc(db, tmp_path):
+    """BDMV 直接位于监听根时只能待人工，绝不能把兄弟下载一起搬进媒体库。"""
+    root, watch = tmp_path / "movies", tmp_path / "watch"
+    watch.mkdir()
+    library_id = await _make_library(db, kind=MediaKind.MOVIE, root=root)
+    stream = watch / "BDMV" / "STREAM" / "00001.m2ts"
+    stream.parent.mkdir(parents=True)
+    stream.write_bytes(b"disc")
+    sibling = watch / "Other.Download" / "keep.txt"
+    sibling.parent.mkdir()
+    sibling.write_text("must-stay", encoding="utf-8")
+
+    await _sweep_twice(db, library_id, watch)
+    async with db.session() as session:
+        records = list((await session.execute(select(IngestEntry))).scalars())
+        files = list((await session.execute(select(LibraryFile))).scalars())
+    bdmv = next(record for record in records if Path(record.entry_path).name == "BDMV")
+    assert bdmv.status == IngestStatus.PENDING
+    assert "不能直接作为监听目录的顶层条目" in (bdmv.message or "")
+    assert sibling.read_text(encoding="utf-8") == "must-stay"
     assert files == []
 
 
@@ -1382,9 +1852,7 @@ async def test_blocked_batch_does_not_stall_remaining_episodes(db, tmp_path, mon
     # ep1 解析不出集号 → 第一批挂起；ep2 正常
     _stub_unit(
         monkeypatch,
-        lambda file: (1, 0)
-        if file.stem == "ep1"
-        else (1, int(file.stem.removeprefix("ep"))),
+        lambda file: (1, 0) if file.stem == "ep1" else (1, int(file.stem.removeprefix("ep"))),
     )
 
     entry = watch / "Collateral.Show.S01"
@@ -1713,9 +2181,7 @@ async def test_name_conflict_with_same_tier_version_skips_as_imported(db, tmp_pa
     await _sweep_twice(db, library_id, watch)
 
     async with db.session() as session:
-        record = (
-            await session.execute(select(IngestEntry))
-        ).scalar_one()
+        record = (await session.execute(select(IngestEntry))).scalar_one()
     assert record.status == IngestStatus.IMPORTED
     assert "已有同档或更高版本" in (record.message or "")
     # 来件没有落任何新文件
@@ -1828,9 +2294,7 @@ async def test_subscription_extra_same_tier_file_not_imported_as_new_version(
     async with db.session() as session:
         record = (await session.execute(select(IngestEntry))).scalar_one()
         imported_row = (
-            await session.execute(
-                select(LibraryFile).where(LibraryFile.episode_number == 2)
-            )
+            await session.execute(select(LibraryFile).where(LibraryFile.episode_number == 2))
         ).scalar_one()
     assert record.status == IngestStatus.IMPORTED
     assert "1 个文件在库中已有同档或更高版本，跳过" in (record.message or "")
@@ -2566,9 +3030,7 @@ async def test_model_upgrade_wakes_blocked_parser_gap_job(db, tmp_path, monkeypa
 
     await ingest_mod._sweep_dir(rule, library)
     completed = await _wait_job_status(job.id, JobStatus.SUCCEEDED)
-    assert (
-        completed.handler_revision == f"{ingest_mod._INGEST_HANDLER_REVISION}+torrent-ner-v9"
-    )
+    assert completed.handler_revision == f"{ingest_mod._INGEST_HANDLER_REVISION}+torrent-ner-v9"
 
     async with db.session() as session:
         all_jobs = list((await session.execute(select(Job))).scalars())

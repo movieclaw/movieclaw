@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+from datetime import timedelta
+
 from sqlalchemy import Column, ForeignKey, Integer, Text
 from sqlmodel import Field
 
 from movieclaw_db.models.base import TimestampMixin
+
+# 手动下载锚只用于覆盖“投递成功到入库完成”的在途窗口。超窗仍未被消费的
+# 记录通常对应已从下载器删除的孤儿任务；查询与写入清理必须共用同一口径，
+# 否则旧锚会让监听条目永久停在“等待下载器”。
+MANUAL_DOWNLOAD_INTENT_TTL = timedelta(days=90)
 
 
 class ManualDownloadIntent(TimestampMixin, table=True):
@@ -42,6 +49,26 @@ class ManualDownloadIntent(TimestampMixin, table=True):
             index=True,
         ),
         description="按收藏范围路由后确认的目标媒体库",
+    )
+    downloader_id: int | None = Field(
+        default=None,
+        sa_column=Column(
+            Integer,
+            ForeignKey("downloader_client.id", ondelete="SET NULL"),
+            nullable=True,
+            index=True,
+        ),
+        description="实际承载任务的下载器；NULL=旧数据",
+    )
+    download_name: str | None = Field(
+        default=None,
+        sa_column=Column(Text, nullable=True, index=True),
+        description="下载器返回的真实任务/内容名；用于监听目录可靠关联",
+    )
+    save_path: str | None = Field(
+        default=None,
+        sa_column=Column(Text, nullable=True),
+        description="MovieClaw 视角的投递路径；用于同名任务消歧",
     )
     site_id: str | None = Field(default=None, description="来源站点（追溯用）")
     # 站点内种子 ID：与 site_id 一起反查 site_torrent 的详情页，供任务中心

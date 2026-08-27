@@ -20,7 +20,8 @@
    整种未完成时按单文件完成字节数构造安全白名单，已完成且没有其他种子仍在
    写同一路径的文件先入库，其余继续等待——这是暂停种子误判与同目录长尾
    阻塞的共同解法；
-   匹配不到（网盘/浏览器等非种子来源）或下载器不可达时退回启发式：
+   匹配不到且没有持久化投递锚（网盘/浏览器等非种子来源）时才退回启发式；
+   启用中的下载器不可达/未验证完成时保持等待，绝不猜测完成：
 1. **进行中标记排除**：条目树内存在下载器的未完成标记文件
    （qBittorrent ``.!qB`` / aria2 ``.aria2`` / 浏览器 ``.crdownload`` 等）
    即视为下载中，并重置静默计时（标记与权威信号矛盾时从严，按下载中处理）；
@@ -101,10 +102,12 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from difflib import SequenceMatcher
 from pathlib import Path, PurePosixPath
 from typing import NamedTuple
 from uuid import uuid4
@@ -114,6 +117,11 @@ from sqlmodel import select
 
 from movieclaw_api.services import jobs
 from movieclaw_api.services.import_watch_config import rule_target_label
+from movieclaw_api.services.library.bluray import (
+    enrich_spec_with_clpi,
+    read_clpi_languages,
+    read_main_playlist,
+)
 from movieclaw_api.services.library.config import (
     derive_entry_dir,
     derive_save_path,
@@ -127,7 +135,7 @@ from movieclaw_api.services.library.layout import (
     is_disc_dir,
 )
 from movieclaw_api.services.library.resolve import verify_resolve
-from movieclaw_api.services.library.scan import guess_evidence
+from movieclaw_api.services.library.scan import disc_main_stream, guess_evidence
 from movieclaw_api.services.library.units import FileUnit, resolve_units
 from movieclaw_api.services.media_discover import get_tmdb_client
 from movieclaw_api.services.media_library import MediaLibraryService
@@ -135,6 +143,7 @@ from movieclaw_api.services.media_probe import ffprobe_available, probe_media
 from movieclaw_db.engine import get_database
 from movieclaw_db.models import (
     ACTIVE_JOB_STATUSES,
+    DownloaderClient,
     FileSource,
     ImportWatch,
     IngestEntry,
@@ -150,6 +159,7 @@ from movieclaw_db.models import (
     NoticeSeverity,
     utcnow,
 )
+from movieclaw_db.models.manual_download_intent import MANUAL_DOWNLOAD_INTENT_TTL
 from movieclaw_db.models.scheduled_task import TriggerType
 from movieclaw_db.repositories.library_file_repo import LibraryFileRepository
 from movieclaw_db.repositories.library_repo import LibraryRepository
@@ -326,6 +336,7 @@ class _EntrySnapshot:
     has_marker: bool  # 树内存在下载中标记文件
     has_disc: bool  # 树内存在原盘结构（BDMV/VIDEO_TS）
     videos: list[Path] = field(default_factory=list)  # 可入库的视频文件
+    disc_roots: list[Path] = field(default_factory=list)  # 完整原盘根（其下含标志目录）
 
 
 @dataclass(frozen=True)
@@ -351,8 +362,9 @@ def _snapshot(entry: Path) -> _EntrySnapshot:
     has_marker = False
     has_disc = False
     videos: list[Path] = []
+    disc_roots: set[Path] = set()
 
-    def visit(file: Path) -> None:
+    def visit(file: Path, *, inside_disc: bool = False) -> None:
         nonlocal total, count, max_mtime, has_marker
         try:
             stat = file.stat()
@@ -365,18 +377,23 @@ def _snapshot(entry: Path) -> _EntrySnapshot:
         if any(lower.endswith(marker) for marker in IN_PROGRESS_MARKERS):
             has_marker = True
             return
-        if Path(lower).suffix in VIDEO_EXTS and not any(m in lower for m in _IGNORE_MARKERS):
+        if (
+            not inside_disc
+            and Path(lower).suffix in VIDEO_EXTS
+            and not any(m in lower for m in _IGNORE_MARKERS)
+        ):
             videos.append(file)
 
     if entry.is_file():
         visit(entry)
     else:
-        stack = [entry]
+        stack = [(entry, False)]
         while stack:
-            current = stack.pop()
+            current, inside_disc = stack.pop()
             if current.name.upper() in ("BDMV", "VIDEO_TS"):
                 has_disc = True
-                continue
+                inside_disc = True
+                disc_roots.add(current.parent)
             try:
                 children = sorted(current.iterdir())
             except OSError:
@@ -384,14 +401,15 @@ def _snapshot(entry: Path) -> _EntrySnapshot:
             for child in children:
                 if child.is_dir():
                     if not child.name.startswith("."):
-                        stack.append(child)
+                        stack.append((child, inside_disc))
                 elif child.is_file():
-                    visit(child)
+                    visit(child, inside_disc=inside_disc)
     return _EntrySnapshot(
         fingerprint=f"{total}:{count}:{int(max_mtime)}",
         has_marker=has_marker,
         has_disc=has_disc,
         videos=sorted(videos),
+        disc_roots=sorted(disc_roots),
     )
 
 
@@ -674,6 +692,11 @@ async def _sweep_dir(
         if not rule.process_existing and not rule.baseline_done:
             # 「跳过存量」基线：本轮只盖章不处理，下轮起只有基线外的新条目
             # 会被消费（正在下载中的条目不进基线，完成后按新增处理）
+            if briefs is None:
+                # 无法确认哪些条目仍在下载时不能盖「存量已完成」基线。
+                for entry in entries:
+                    _deferred.setdefault(str(entry), time.monotonic())
+                return
             await _baseline_existing(rule, library, entries, briefs)
             return
         seen = {str(e) for e in entries}
@@ -818,10 +841,11 @@ async def refresh_source_notice(session, source_path: str, present: set[str] | N
 
 
 async def _downloader_briefs() -> list | None:
-    """全部可用下载器的种子概览（带短缓存）；无下载器/全部不可达返回 None。
+    """全部可用下载器的种子概览（带短缓存）。
 
-    None 表示"权威信号缺席"——调用方退回启发式检测，而不是把所有条目
-    误判成"未在下载"。
+    ``[]`` 表示没有配置下载器或可达下载器确实没有任务；``None`` 只表示
+    配置过下载器但本轮全部不可达。后者必须 fail closed，不能拿静默窗口
+    猜完成——API 短暂失联正是未完成文件被提前入库的根因。
     """
     global _briefs_cache
     now = time.monotonic()
@@ -834,21 +858,135 @@ async def _downloader_briefs() -> list | None:
 
     db = get_database()
     async with db.session() as session:
+        enabled_exists = (
+            await session.execute(
+                select(DownloaderClient.id).where(DownloaderClient.enabled.is_(True))  # type: ignore[union-attr]
+            )
+        ).first() is not None
         downloaders = await _usable_downloaders(session)
+    if not downloaders:
+        # 没有启用任何下载器才表示“确实没有权威状态源”。启用中的配置若仍在
+        # pending/verifying/failed，则只是当前不可用，必须和连接异常一样
+        # fail closed；否则服务启动的验证窗口会把预分配文件误当成已完成。
+        result = None if enabled_exists else []
+        _briefs_cache = (now, result)
+        return result
     briefs: list = []
-    any_ok = False
+    all_ok = True
     for row, config in downloaders:
         adapter = create_downloader(config)
         try:
             briefs.extend(await adapter.list_torrents())
-            any_ok = True
-        except Exception as exc:  # noqa: BLE001 -- 单台不可达降级继续
+        except Exception as exc:  # noqa: BLE001 -- 继续关闭/检查其余连接后整体降级
+            all_ok = False
             logger.warning("列出下载器「%s」的种子失败：%s", row.name, exc)
         finally:
             await adapter.close()
-    result = briefs if any_ok else None
+    # 任一台缺席时，这份列表都不能证明“某目录不属于下载任务”。宁可让所有
+    # 未决条目暂等，也不能用另一台的成功响应替失联下载器作否定判断。
+    result = briefs if all_ok else None
     _briefs_cache = (now, result)
     return result
+
+
+def _claim_path_matches(entry: Path, save_path: str | None) -> bool:
+    """持久化投递路径是否覆盖当前监听条目；旧行无路径时按真实名称认领。"""
+    if not save_path:
+        return True
+    expected = Path(os.path.normpath(save_path))
+    actual = Path(os.path.normpath(str(entry)))
+    return expected in {actual, actual.parent}
+
+
+def _download_name_matches(entry_name: str, recorded_name: str | None) -> bool:
+    """兼容站点标题与下载器内容名的轻微差异，不做宽松片名猜测。"""
+    if not recorded_name:
+        return False
+    if entry_name == recorded_name:
+        return True
+    compact_entry = re.sub(r"[^a-z0-9]+", "", entry_name.lower())
+    compact_recorded = re.sub(r"[^a-z0-9]+", "", recorded_name.lower())
+    if compact_entry == compact_recorded:
+        return True
+    if min(len(compact_entry), len(compact_recorded)) < 20:
+        return False
+    years_entry = set(re.findall(r"(?:19|20)\d{2}", compact_entry))
+    years_recorded = set(re.findall(r"(?:19|20)\d{2}", compact_recorded))
+    if years_entry and years_recorded and not years_entry.intersection(years_recorded):
+        return False
+    return SequenceMatcher(None, compact_entry, compact_recorded).ratio() >= 0.90
+
+
+async def _has_managed_download_claim(session, entry: Path) -> bool:
+    """条目是否仍由 MovieClaw 投递台账管理，即使下载器概览暂时漏掉它。"""
+    from movieclaw_db.models import (
+        DownloadAttemptStatus,
+        SiteTorrent,
+        SubscriptionDownloadAttempt,
+    )
+
+    manual = list(
+        (
+            await session.execute(
+                select(ManualDownloadIntent, SiteTorrent.title)
+                .outerjoin(
+                    SiteTorrent,
+                    (SiteTorrent.site_id == ManualDownloadIntent.site_id)
+                    & (SiteTorrent.torrent_id == ManualDownloadIntent.torrent_id),
+                )
+                .where(
+                    ManualDownloadIntent.created_at
+                    >= utcnow() - MANUAL_DOWNLOAD_INTENT_TTL,  # type: ignore[arg-type]
+                    or_(
+                        ManualDownloadIntent.download_name == entry.name,
+                        ManualDownloadIntent.download_name.is_(None),  # type: ignore[union-attr]
+                        ManualDownloadIntent.download_name == "",
+                    )
+                )
+            )
+        ).all()
+    )
+    if any(
+        _claim_path_matches(entry, intent.save_path)
+        and (
+            _download_name_matches(entry.name, intent.download_name)
+            or _download_name_matches(entry.name, site_title)
+        )
+        for intent, site_title in manual
+    ):
+        return True
+
+    active = (
+        DownloadAttemptStatus.ACTIVE,
+        DownloadAttemptStatus.REPLACEMENT_PENDING,
+        DownloadAttemptStatus.TRIAL,
+        DownloadAttemptStatus.CLEANUP_PENDING,
+        DownloadAttemptStatus.COMPLETED,
+    )
+    attempts = list(
+        (
+            await session.execute(
+                select(SubscriptionDownloadAttempt).where(
+                    SubscriptionDownloadAttempt.status.in_(active),  # type: ignore[union-attr]
+                    or_(
+                        SubscriptionDownloadAttempt.download_name == entry.name,
+                        SubscriptionDownloadAttempt.download_name.is_(None),  # type: ignore[union-attr]
+                        SubscriptionDownloadAttempt.download_name == "",
+                    ),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return any(
+        _claim_path_matches(entry, row.save_path)
+        and (
+            _download_name_matches(entry.name, row.download_name)
+            or _download_name_matches(entry.name, row.torrent_title)
+        )
+        for row in attempts
+    )
 
 
 def _match_briefs(entry_name: str, briefs: list | None) -> list:
@@ -1024,9 +1162,9 @@ async def _claimed_by_file_batches(session, entry_path: str) -> frozenset[str]:
 async def _deferred_flipped(prefix: str) -> bool:
     """挂起条目是否出现整种完成或新的单文件安全批次。
 
-    任一条目的种子翻转成完成、或从下载器消失（用户删了任务 → 退回启发式
-    检测）、或下载器整体不可达（权威信号缺席 → 同样退回启发式）都算翻转
-    ——巡检自会走完整判定链得出结论。仍在下载时只补查下载器文件状态并
+    任一条目的种子翻转成完成、或从下载器消失（巡检将结合持久化投递锚
+    再判定）都算翻转；下载器整体不可达时继续等待，绝不退回启发式。
+    仍在下载时只补查下载器文件状态并
     stat 已被确认完成的少量文件；与台账指纹不同才唤醒完整巡检。
     """
     paths = [p for p in _deferred if p.startswith(prefix)]
@@ -1034,7 +1172,7 @@ async def _deferred_flipped(prefix: str) -> bool:
         return False
     briefs = await _downloader_briefs()
     if briefs is None:
-        return True
+        return False
     db = get_database()
     for path in paths:
         entry = Path(path)
@@ -1050,9 +1188,7 @@ async def _deferred_flipped(prefix: str) -> bool:
             continue
         async with db.session() as session:
             record = (
-                await session.execute(
-                    select(IngestEntry).where(IngestEntry.entry_path == path)
-                )
+                await session.execute(select(IngestEntry).where(IngestEntry.entry_path == path))
             ).scalar_one_or_none()
         if record is None or record.fingerprint != snap.fingerprint:
             return True
@@ -1149,6 +1285,12 @@ async def _process_entry(
     execute_inline: bool,
 ) -> None:
     path_str = str(entry)
+    if briefs is None:
+        # 下载器配置存在但本轮全部不可达：绝不能回退到静默时间猜测。把条目
+        # 留在挂起表，API 恢复后由状态轮询重新判定，不读整棵目录。
+        _stability.pop(path_str, None)
+        _deferred.setdefault(path_str, time.monotonic())
+        return
     # 权威信号优先：能匹配到下载器种子时以下载器状态为准。报未完成的条目
     # 先尝试按文件完成证据拆出安全批次；没有可放行文件时只记入挂起表，
     # 状态轮询期间不做目录全树快照——绝不能
@@ -1199,6 +1341,12 @@ async def _process_entry(
         if record is not None and record.status == IngestStatus.IGNORED:
             _failed_retry.pop(path_str, None)  # 失败后被人工忽略：不再退避重试
             return  # 用户拍板（或存量基线）永久忽略：指纹变化也不复活，恢复走接口
+        if verdict is None and await _has_managed_download_claim(session, entry):
+            # 可达 API 偶尔在重启/恢复窗口返回空列表，或展示名尚未同步。真实
+            # 投递名与落点已持久化时继续 fail closed，避免第二条误放行路径。
+            _stability.pop(path_str, None)
+            _deferred.setdefault(path_str, time.monotonic())
+            return
         latest_job = None if execute_inline else await _latest_ingest_job(session, path_str)
         parser_retry = _parser_gap_auto_retry(rule, record)
         if latest_job is not None and latest_job.status in ACTIVE_JOB_STATUSES:
@@ -1240,11 +1388,24 @@ async def _process_entry(
 
         if snap is None:
             snap = await asyncio.to_thread(_snapshot, entry)
+        disc_retry = bool(
+            snap.has_disc
+            and record is not None
+            and record.status == IngestStatus.SKIPPED
+            and "原盘目录（BDMV/VIDEO_TS）暂不支持自动入库" in (record.message or "")
+        )
         if latest_job is not None and latest_job.status in {
             JobStatus.CANCELLED,
             JobStatus.FAILED,
         }:
-            # 用户取消或重试耗尽后，同一磁盘版本不能被启动补扫悄悄复活。
+            reconciled_disc_job = bool(
+                disc_retry
+                and latest_job.status == JobStatus.CANCELLED
+                and latest_job.cancel_requested_by == "system:disc-batch-reconcile"
+            )
+            # 用户取消或重试耗尽后，同一磁盘版本不能被启动补扫悄悄复活；
+            # 唯一例外是升级对账主动取消的旧版原盘分段 Job——那不是用户意图，
+            # 必须允许新处理器按完整原盘重新建立一次作业。
             # 已取消代表用户明确停止，只能显式重试；失败任务可由人工“恢复”
             # 清空台账指纹，或在源内容真的变化后由监听器建立一条新作业。
             terminal_fingerprint = (
@@ -1252,7 +1413,10 @@ async def _process_entry(
                 if record is not None
                 else str(latest_job.input_data.get("detected_fingerprint") or "")
             )
-            if latest_job.status == JobStatus.CANCELLED or terminal_fingerprint == snap.fingerprint:
+            if not reconciled_disc_job and (
+                latest_job.status == JobStatus.CANCELLED
+                or terminal_fingerprint == snap.fingerprint
+            ):
                 return
         # 标记文件与权威信号矛盾（说完成却还有 .!qB 等）说明匹配可疑，从严按
         # 下载中处理。必须在静默观察表留痕：CIFS/NFS 等不产生 fs 事件的挂载
@@ -1264,7 +1428,7 @@ async def _process_entry(
             return
 
         if record is not None and record.fingerprint == snap.fingerprint:
-            if record.status != IngestStatus.FAILED and not parser_retry:
+            if record.status != IngestStatus.FAILED and not parser_retry and not disc_retry:
                 return  # 已处理且没变化（pending 等的是人工拍板，不是时间）
             if record.status == IngestStatus.FAILED:
                 elapsed = (utcnow() - record.attempted_at).total_seconds()
@@ -1282,7 +1446,7 @@ async def _process_entry(
             # 下载器确认完成：整种或单文件证据都跳过静默窗口，立即处理。
             _stability.pop(path_str, None)
         else:
-            # 启发式兜底（非种子来源/下载器不可用）：
+            # 启发式兜底（没有权威任务或持久化投递锚的非种子来源）：
             # 同一指纹连续稳定 QUIET_SECONDS 才认为下载落定
             now = time.monotonic()
             previous = _stability.get(path_str)
@@ -1449,11 +1613,7 @@ async def _ingest_entry(
             item,
             schedule_retry=job_context is None,
         )
-        if (
-            status is IngestStatus.IMPORTED
-            and job_context is not None
-            and imported_files
-        ):
+        if status is IngestStatus.IMPORTED and job_context is not None and imported_files:
             await job_context.update_progress(
                 mode="determinate",
                 phase="finalizing",
@@ -1471,16 +1631,35 @@ async def _ingest_entry(
             )
         return saved
 
-    if snap.has_disc:
-        return await conclude(
-            IngestStatus.SKIPPED, "原盘目录（BDMV/VIDEO_TS）暂不支持自动入库，请手动整理"
-        )
-    if not snap.videos:
-        return await conclude(IngestStatus.SKIPPED, "条目中没有视频文件，已跳过")
-
     # kind 先验：指定库取库类型；auto 规则取规则声明（识别链按 movie/tv 分叉）
     kind = MediaKind(library.kind if library is not None else rule.kind)
-    main = max(snap.videos, key=lambda f: f.stat().st_size)
+    disc_root: Path | None = None
+    if snap.has_disc:
+        if kind is not MediaKind.MOVIE:
+            return await conclude(IngestStatus.PENDING, "剧集原盘暂不能确定季集边界，请人工整理")
+        if any(root == watch_root for root in snap.disc_roots):
+            return await conclude(
+                IngestStatus.PENDING,
+                "BDMV/VIDEO_TS 不能直接作为监听目录的顶层条目；"
+                "请先放进单独的「标题 (年份)」目录，避免越界处理同目录其他下载",
+            )
+        if len(snap.disc_roots) != 1 or snap.videos:
+            return await conclude(
+                IngestStatus.PENDING,
+                f"条目包含 {len(snap.disc_roots)} 个原盘或混合视频，"
+                "无法安全判定电影边界，请人工整理",
+            )
+        disc_root = snap.disc_roots[0]
+        main = await asyncio.to_thread(disc_main_stream, disc_root)
+        if main is None:
+            return await conclude(
+                IngestStatus.FAILED,
+                "原盘缺少可读取的主播放流，可能尚未下载完整；文件变化后自动重试",
+            )
+    else:
+        if not snap.videos:
+            return await conclude(IngestStatus.SKIPPED, "条目中没有视频文件，已跳过")
+        main = max(snap.videos, key=lambda f: f.stat().st_size)
     if job_context is not None:
         await job_context.update_progress(
             mode="indeterminate",
@@ -1496,6 +1675,13 @@ async def _ingest_entry(
             IngestStatus.FAILED,
             f"主视频「{main.name}」探测失败——可能尚未下载完成或已损坏，文件变化后自动重试",
         )
+    if spec is not None and disc_root is not None and (disc_root / "BDMV").is_dir():
+        languages = await asyncio.to_thread(read_clpi_languages, main)
+        if languages is not None:
+            spec = enrich_spec_with_clpi(spec, languages)
+        playlist = await asyncio.to_thread(read_main_playlist, disc_root)
+        if playlist is not None and playlist.duration_seconds > 0:
+            spec = replace(spec, duration_seconds=playlist.duration_seconds)
 
     # 身份优先级：人工认领（forced_item，用户拍板最高权威）→ 订阅工单认领
     # （info_hash 命中在途投递 → 继承投递时锚定的精确身份，零猜测）→
@@ -1537,7 +1723,7 @@ async def _ingest_entry(
             identity_source = "manual" if item is not None else None
         if item is None:
             try:
-                item = await _identify(session, kind, watch_root, main, spec)
+                item = await _identify(session, kind, watch_root, disc_root or main, spec)
             except IdentifyUnavailable as exc:
                 # 环境故障：网络恢复后重试就能过，不该钉进待处理清单
                 return await conclude(IngestStatus.FAILED, f"识别中断：{exc}；将自动重试")
@@ -1621,11 +1807,121 @@ async def _ingest_entry(
         version_label = (
             (spec.resolution if spec else None) or release_attrs.media_source or "V2"
         )
-        dest_dir = _avoid_disc_entry_dir(dest_dir, version_label)
+        if disc_root is None:
+            dest_dir = _avoid_disc_entry_dir(dest_dir, version_label)
     base = entry_base_name(item)
     repo = LibraryFileRepository(session)
     assert item.id is not None
     assert staging is not None or (dest_library is not None and dest_library.id is not None)
+
+    if disc_root is not None:
+        label = (spec.resolution if spec else None) or release_attrs.media_source or "原盘"
+        try:
+            if job_context is None:
+                final, created = await asyncio.to_thread(
+                    _transfer_disc_tree, disc_root, Path(dest_dir), strategy, label
+                )
+            else:
+
+                async def report_disc_copy(copied: int, total: int) -> None:
+                    percent = copied / total * 100 if total else 100.0
+                    await job_context.update_progress(
+                        mode="determinate",
+                        phase="transferring",
+                        message=(
+                            f"正在{'复制' if strategy == 'copy' else '硬链接'}完整原盘"
+                        ),
+                        current=copied,
+                        total=total,
+                        percent=round(percent, 1),
+                        phase_index=3,
+                        phase_count=4,
+                        details={
+                            "entry_name": entry.name,
+                            "library_id": dest_library.id if dest_library else None,
+                            "bytes_copied": copied,
+                        },
+                    )
+
+                final, created = await _transfer_disc_tree_for_job(
+                    disc_root,
+                    Path(dest_dir),
+                    strategy,
+                    label,
+                    job_context,
+                    report_disc_copy,
+                )
+        except (IngestConflictError, IngestError) as exc:
+            return await conclude(IngestStatus.FAILED, str(exc))
+        imported_files.append(final.name)
+        if staging is not None:
+            verb = "硬链接" if strategy == "hardlink" else "复制"
+            return await conclude(
+                IngestStatus.IMPORTED,
+                f"已识别为《{item.title}》，完整原盘已{verb}到 {final}；"
+                "文件进入媒体库根目录后将自动入账",
+                1 if created else 0,
+            )
+        assert dest_library is not None and dest_library.id is not None
+        stat = final.stat()
+        await repo.upsert_by_path(
+            LibraryFile(
+                library_id=dest_library.id,
+                media_item_id=item.id,
+                season_number=0,
+                episode_number=0,
+                file_path=str(final),
+                size_bytes=await asyncio.to_thread(_disc_total_size, final),
+                file_mtime_ns=stat.st_mtime_ns,
+                container="bluray" if (final / "BDMV").is_dir() else "dvd",
+                resolution=spec.resolution if spec else None,
+                video_codec=spec.video_codec if spec else None,
+                hdr=spec.hdr if spec else None,
+                bit_depth=spec.bit_depth if spec else None,
+                duration_seconds=spec.duration_seconds if spec else None,
+                bit_rate=spec.bit_rate if spec else None,
+                frame_rate=spec.frame_rate if spec else None,
+                color_space=spec.color_space if spec else None,
+                audio_streams=list(spec.audio_streams) if spec else None,
+                subtitle_streams=list(spec.subtitle_streams) if spec else None,
+                media_source=release_attrs.media_source,
+                release_group=release_attrs.release_group,
+                source=FileSource.IMPORTED,
+                site_id=prov_site,
+                torrent_id=prov_torrent,
+                added_batch_id=added_batch_id,
+            )
+        )
+        await LibraryRepository(session).refresh_stats([dest_library.id])
+        from movieclaw_api.services.library.nfo import write_entry_nfo
+        from movieclaw_api.services.subscription import close_fulfilled_wanted
+
+        await asyncio.to_thread(write_entry_nfo, final, item)
+        await close_fulfilled_wanted(session, item.id)
+        from movieclaw_api.services.media_scrape import ensure_assets
+
+        if job_context is None:
+            asyncio.get_running_loop().create_task(ensure_assets(item.id))
+        else:
+            await job_context.update_progress(
+                mode="indeterminate",
+                phase="finalizing",
+                message=f"正在补齐《{item.title}》的图片与媒体目录资产",
+                phase_index=4,
+                phase_count=4,
+                details={
+                    "entry_name": entry.name,
+                    "media_item_id": item.id,
+                    "library_id": dest_library.id,
+                },
+            )
+            await ensure_assets(item.id)
+        message = (
+            f"已识别为《{item.title}》"
+            + (f"，{route_note}" if route_note else "")
+            + f"，完整原盘已{'硬链接' if strategy == 'hardlink' else '复制'}到 {final}"
+        )
+        return await conclude(IngestStatus.IMPORTED, message, 1 if created else 0)
 
     files = [main] if kind is MediaKind.MOVIE else list(snap.videos)
     # 季集号按**整批**解析（设计见 library/units.py）：同一个包里的文件季号
@@ -1637,9 +1933,7 @@ async def _ingest_entry(
         known_seasons = set(
             (
                 await session.execute(
-                    select(MediaSeason.season_number).where(
-                        MediaSeason.media_item_id == item.id
-                    )
+                    select(MediaSeason.season_number).where(MediaSeason.media_item_id == item.id)
                 )
             ).scalars()
         )
@@ -2053,7 +2347,7 @@ def _entry_nfo_paths(kind: MediaKind, watch_root: Path, main: Path) -> list[Path
     目录里每个条目都毒成同一部片）的 movie/tvshow.nfo。
     """
     names = ["movie.nfo", "tvshow.nfo"] if kind is MediaKind.MOVIE else ["tvshow.nfo", "movie.nfo"]
-    paths = [main.with_suffix(".nfo")]
+    paths = [main / names[0], main / names[1]] if main.is_dir() else [main.with_suffix(".nfo")]
     current = main.parent
     while current != watch_root and current != current.parent:
         paths.extend(current / n for n in names)
@@ -2087,7 +2381,7 @@ async def _identify(
         except Exception as exc:
             raise IdentifyUnavailable(f"读到 NFO 身份但 TMDB 建档失败（{exc}）") from exc
 
-    evidence = guess_evidence(kind, watch_root, main)
+    evidence = guess_evidence(kind, watch_root, main, is_disc=main.is_dir())
     if evidence is None:
         return None
     evidence.duration_seconds = spec.duration_seconds if spec else None
@@ -2115,6 +2409,284 @@ def _same_payload(a: Path, b: Path) -> bool:
         return a.stat().st_size == b.stat().st_size
     except OSError:
         return False
+
+
+def _disc_total_size(disc_dir: Path) -> int:
+    """原盘整树体积；不可读文件由后续搬运报错，不在这里伪造体积。"""
+    return sum(path.stat().st_size for path in disc_dir.rglob("*") if path.is_file())
+
+
+def _same_disc_payload(source: Path, target: Path) -> bool:
+    """整树是否已落位：相对路径一致，文件为同一 inode 或尺寸与 mtime 一致。
+
+    普通单文件历史逻辑只比尺寸；原盘往往有大量固定尺寸的流分段，单凭尺寸
+    更容易把不同盘面误判成同一内容。复制路径保留源 mtime，因此无需读取数百
+    GB 内容，也能比“路径 + 尺寸”多一道低成本身份校验。
+    """
+    try:
+        source_files = {
+            path.relative_to(source): path for path in source.rglob("*") if path.is_file()
+        }
+        target_files = {
+            path.relative_to(target): path for path in target.rglob("*") if path.is_file()
+        }
+        if source_files.keys() != target_files.keys():
+            return False
+        for relative, path in source_files.items():
+            other = target_files[relative]
+            if os.path.samefile(path, other):
+                continue
+            source_stat = path.stat()
+            target_stat = other.stat()
+            if (
+                source_stat.st_size != target_stat.st_size
+                or source_stat.st_mtime_ns != target_stat.st_mtime_ns
+            ):
+                return False
+        return True
+    except OSError:
+        return False
+
+
+def _disc_destination(source: Path, base: Path, version_label: str) -> tuple[Path, bool]:
+    """选择完整原盘目录落点，返回（目录，是否已存在同内容）。"""
+    if not base.exists():
+        return base, False
+    if is_disc_dir(base) and _same_disc_payload(source, base):
+        return base, True
+    label = sanitize_folder_name(f"{version_label}原盘")
+    candidate = base.with_name(f"{base.name} - {label}")
+    serial = 2
+    while candidate.exists():
+        if is_disc_dir(candidate) and _same_disc_payload(source, candidate):
+            return candidate, True
+        candidate = base.with_name(f"{base.name} - {label} ({serial})")
+        serial += 1
+    return candidate, False
+
+
+def _transfer_disc_tree(
+    source: Path, base: Path, strategy: str, version_label: str
+) -> tuple[Path, bool]:
+    """完整保留 BDMV/VIDEO_TS 树并一次发布；不 remux、不拼接、不修改保种源。"""
+    final, already_present = _disc_destination(source, base, version_label)
+    if already_present:
+        return final, False
+    try:
+        final.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise IngestError(f"创建原盘目标目录失败（{exc.strerror}）：{final.parent}") from exc
+    stage = final.parent / f".{final.name}.{uuid4().hex[:8]}.part"
+    try:
+        stage.mkdir()
+        copied = 0
+        for path in sorted(source.rglob("*")):
+            relative = path.relative_to(source)
+            target = stage / relative
+            if path.is_symlink():
+                raise IngestError(f"原盘包含符号链接，拒绝自动搬运：{relative}")
+            if path.is_dir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            if not path.is_file():
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if strategy == "copy":
+                shutil.copy2(path, target)
+            else:
+                try:
+                    os.link(path, target)
+                except OSError as exc:
+                    if exc.errno == errno.EXDEV:
+                        raise IngestError(
+                            "原盘硬链接失败：监听目录与目标目录不在同一文件系统；"
+                            "请把该监听规则改为「复制」"
+                        ) from exc
+                    raise
+            copied += 1
+        if copied == 0:
+            raise IngestError("原盘目录中没有可搬运文件")
+        rename_no_replace(stage, final)
+        return final, True
+    except FileExistsError as exc:
+        raise IngestConflictError(f"原盘目标目录已被并发占用：{final.name}") from exc
+    except IngestError:
+        raise
+    except OSError as exc:
+        verb = "复制" if strategy == "copy" else "硬链接"
+        raise IngestError(f"原盘{verb}失败（{exc.strerror}）：{source.name} → {final}") from exc
+    finally:
+        if stage.exists():
+            shutil.rmtree(stage, ignore_errors=True)
+
+
+def _disc_ingest_paths(final: Path) -> tuple[Path, Path]:
+    """完整原盘 Job 的隐藏续传目录与源版本边车。"""
+    stage = final.parent / f".{final.name}.movieclaw-ingest.part"
+    return stage, stage.with_name(stage.name + ".json")
+
+
+def _prepare_disc_ingest(
+    source: Path, stage: Path, state_path: Path
+) -> tuple[list[Path], list[tuple[Path, Path, int, int]], int]:
+    """校验原盘源版本并准备稳定续传目录，返回文件清单与总字节数。"""
+    directories: list[Path] = []
+    files: list[tuple[Path, Path, int, int]] = []
+    for path in sorted(source.rglob("*")):
+        relative = path.relative_to(source)
+        if path.is_symlink():
+            raise IngestError(f"原盘包含符号链接，拒绝自动搬运：{relative}")
+        if path.is_dir():
+            directories.append(relative)
+            continue
+        if not path.is_file():
+            continue
+        stat = path.stat()
+        files.append((path, relative, stat.st_size, stat.st_mtime_ns))
+    if not files:
+        raise IngestError("原盘目录中没有可搬运文件")
+    expected = {
+        "source": str(source),
+        "directories": [relative.as_posix() for relative in directories],
+        "files": [
+            [relative.as_posix(), size, mtime_ns]
+            for _path, relative, size, mtime_ns in files
+        ],
+    }
+    valid = False
+    if stage.is_dir() and state_path.is_file():
+        try:
+            valid = json.loads(state_path.read_text(encoding="utf-8")) == expected
+        except (OSError, json.JSONDecodeError):
+            valid = False
+    if not valid:
+        if stage.exists():
+            if stage.is_dir():
+                shutil.rmtree(stage)
+            else:
+                stage.unlink()
+        state_path.unlink(missing_ok=True)
+    stage.parent.mkdir(parents=True, exist_ok=True)
+    stage.mkdir(exist_ok=True)
+    if not state_path.exists():
+        temp = state_path.with_name(state_path.name + ".tmp")
+        temp.write_text(json.dumps(expected, ensure_ascii=False), encoding="utf-8")
+        os.replace(temp, state_path)
+    return directories, files, sum(size for _path, _relative, size, _mtime_ns in files)
+
+
+async def _transfer_disc_tree_for_job(
+    source: Path,
+    base: Path,
+    strategy: str,
+    version_label: str,
+    context: jobs.JobContext,
+    on_progress: Callable[[int, int], Awaitable[None]],
+) -> tuple[Path, bool]:
+    """Job 专用完整原盘搬运：复制可续传，整树完成后才原子发布。"""
+    final, already_present = await asyncio.to_thread(
+        _disc_destination, source, base, version_label
+    )
+    if already_present:
+        stage, state_path = _disc_ingest_paths(final)
+        if stage.exists():
+            await asyncio.to_thread(shutil.rmtree, stage, True)
+        state_path.unlink(missing_ok=True)
+        return final, False
+    stage, state_path = _disc_ingest_paths(final)
+    try:
+        directories, files, total = await asyncio.to_thread(
+            _prepare_disc_ingest, source, stage, state_path
+        )
+        for relative in directories:
+            await asyncio.to_thread((stage / relative).mkdir, parents=True, exist_ok=True)
+        completed = 0
+        for path, relative, size, mtime_ns in files:
+            await context.raise_if_cancelled()
+            target = stage / relative
+            await asyncio.to_thread(target.parent.mkdir, parents=True, exist_ok=True)
+            if strategy == "hardlink":
+                same_link = False
+                if target.exists():
+                    try:
+                        same_link = os.path.samefile(path, target)
+                    except OSError:
+                        same_link = False
+                    if not same_link:
+                        target.unlink()
+                if not same_link:
+                    try:
+                        await asyncio.to_thread(os.link, path, target)
+                    except OSError as exc:
+                        if exc.errno == errno.EXDEV:
+                            raise IngestError(
+                                "原盘硬链接失败：监听目录与目标目录不在同一文件系统；"
+                                "请把该监听规则改为「复制」"
+                            ) from exc
+                        raise
+                completed += size
+                await on_progress(completed, total)
+                continue
+
+            target_complete = False
+            if target.is_file():
+                stat = target.stat()
+                target_complete = stat.st_size == size and stat.st_mtime_ns == mtime_ns
+                if not target_complete:
+                    target.unlink()
+            if target_complete:
+                completed += size
+                await on_progress(completed, total)
+                continue
+
+            partial = target.with_name(f".{target.name}.part")
+            if partial.exists() and partial.stat().st_size > size:
+                partial.unlink()
+            if size == 0:
+                partial.touch(exist_ok=True)
+            copied = partial.stat().st_size if partial.exists() else 0
+            await on_progress(completed + copied, total)
+            while copied < size:
+                await context.raise_if_cancelled()
+                copied = await asyncio.to_thread(
+                    _copy_ingest_chunk,
+                    path,
+                    partial,
+                    expected_size=size,
+                    expected_mtime_ns=mtime_ns,
+                )
+                await on_progress(completed + copied, total)
+            await asyncio.to_thread(rename_no_replace, partial, target)
+            target_stat = target.stat()
+            await asyncio.to_thread(
+                os.utime,
+                target,
+                ns=(target_stat.st_atime_ns, mtime_ns),
+            )
+            completed += size
+
+        await context.raise_if_cancelled()
+        try:
+            await asyncio.to_thread(rename_no_replace, stage, final)
+        except FileExistsError as exc:
+            if await asyncio.to_thread(_same_disc_payload, source, final):
+                await asyncio.to_thread(shutil.rmtree, stage, True)
+                state_path.unlink(missing_ok=True)
+                return final, False
+            raise IngestConflictError(f"原盘目标目录已被并发占用：{final.name}") from exc
+        state_path.unlink(missing_ok=True)
+        return final, True
+    except IngestSourceChanged:
+        if stage.exists():
+            await asyncio.to_thread(shutil.rmtree, stage, True)
+        state_path.unlink(missing_ok=True)
+        raise
+    except (jobs.JobCancelled, asyncio.CancelledError, IngestError):
+        # 更新/取消与暂态错误保留已确认字节；下一次执行按源版本边车续传。
+        raise
+    except OSError as exc:
+        verb = "复制" if strategy == "copy" else "硬链接"
+        raise IngestError(f"原盘{verb}暂未完成（{exc}）：{source.name} → {final}") from exc
 
 
 def _avoid_disc_entry_dir(dest_dir: str, version_label: str) -> str:
@@ -2548,8 +3120,25 @@ async def _execute_ingest_job(
         details={**persisted_details, "rule_id": rule_id, "entry_name": entry.name},
     )
     briefs = await _downloader_briefs()
+    if briefs is None:
+        raise jobs.JobRetry(
+            "下载器当前不可达，无法确认条目已经完整；恢复连接后自动继续",
+            delay_seconds=DEFERRED_POLL_SECONDS,
+        )
     matches = _match_briefs(entry.name, briefs)
     verdict = _torrent_verdict(matches)
+    if verdict is None and stored_hashes:
+        raise jobs.JobRetry(
+            "下载器暂未返回该受管任务，等待状态同步后自动继续",
+            delay_seconds=DEFERRED_POLL_SECONDS,
+        )
+    if verdict is None:
+        async with db.session() as session:
+            if await _has_managed_download_claim(session, entry):
+                raise jobs.JobRetry(
+                    "下载器暂未返回该受管任务，等待状态同步后自动继续",
+                    delay_seconds=DEFERRED_POLL_SECONDS,
+                )
     if file_scoped and verdict == "downloading":
         current_batch = await _completed_file_batch(entry, matches)
         current_ready = {
@@ -2588,9 +3177,7 @@ async def _execute_ingest_job(
         entry_name=entry.name,
     )
     current_hashes = (
-        []
-        if file_scoped
-        else [brief.info_hash.lower() for brief in matches if brief.info_hash]
+        [] if file_scoped else [brief.info_hash.lower() for brief in matches if brief.info_hash]
     )
     matched_hashes = sorted(set(stored_hashes) | set(current_hashes))
 
@@ -2610,7 +3197,17 @@ async def _execute_ingest_job(
             # 中转记录的补偿限制见 _parser_gap_auto_retry；被限制的记录在此
             # 照旧短路/挂起，等用户改名或恢复时以新指纹走完整重跑
             parser_retry = _parser_gap_auto_retry(rule, record)
-            if record.status in {IngestStatus.IMPORTED, IngestStatus.SKIPPED} and not parser_retry:
+            disc_retry = bool(
+                snap.has_disc
+                and record.status == IngestStatus.SKIPPED
+                and "原盘目录（BDMV/VIDEO_TS）暂不支持自动入库"
+                in (record.message or "")
+            )
+            if (
+                record.status in {IngestStatus.IMPORTED, IngestStatus.SKIPPED}
+                and not parser_retry
+                and not disc_retry
+            ):
                 return {
                     "message": record.message or "监听条目已处理",
                     "entry_id": record.id,

@@ -218,6 +218,8 @@ async def dispatch(
                 "site_id": candidate.site_id,
                 "torrent_id": candidate.torrent_id,
                 "torrent_title": candidate.title,
+                "download_name": submit_result.name or None,
+                "save_path": dispatch_dir,
                 "units": [[w.season_number, w.episode_number] for w in all_targets],
                 "quality": candidate.attrs.model_dump(exclude_defaults=True),
                 "hit_and_run": candidate.hit_and_run,
@@ -277,6 +279,10 @@ async def dispatch(
                     values["site_id"] = existing_attempt.site_id
                     values["torrent_id"] = existing_attempt.torrent_id
                     values["torrent_title"] = existing_attempt.torrent_title
+                if existing_attempt.download_name:
+                    values["download_name"] = existing_attempt.download_name
+                if existing_attempt.save_path:
+                    values["save_path"] = existing_attempt.save_path
                 if existing_attempt.quality:
                     values["quality"] = existing_attempt.quality
                 if existing_attempt.hit_and_run is not None:

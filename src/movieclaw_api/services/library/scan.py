@@ -59,6 +59,7 @@ from movieclaw_api.services import jobs
 from movieclaw_api.services.library.bluray import (
     enrich_spec_with_clpi,
     read_clpi_languages,
+    read_main_playlist,
     streams_have_clpi_metadata,
 )
 from movieclaw_api.services.library.layout import (
@@ -1762,7 +1763,21 @@ def unit_name(file: Path, is_disc: bool) -> str:
 
 
 def disc_main_stream(disc_dir: Path) -> Path | None:
-    """原盘的主流文件：BDMV/STREAM 或 VIDEO_TS 下最大的流文件（探测用）。"""
+    """原盘主流文件（探测用）：蓝光优先按 MPLS 主播放列表，损坏盘降级取最大流。"""
+    playlist = read_main_playlist(disc_dir)
+    if playlist is not None:
+        stream_dir = disc_dir / "BDMV" / "STREAM"
+        try:
+            by_stem = {
+                path.stem: path
+                for path in stream_dir.iterdir()
+                if path.is_file() and path.suffix.lower() == ".m2ts"
+            }
+        except OSError:
+            by_stem = {}
+        existing = [by_stem[clip_id] for clip_id in playlist.clip_ids if clip_id in by_stem]
+        if existing:
+            return max(existing, key=lambda path: path.stat().st_size)
     for sub, exts in (("BDMV/STREAM", {".m2ts"}), ("VIDEO_TS", {".vob"})):
         stream_dir = disc_dir / sub
         if not stream_dir.is_dir():
@@ -2339,6 +2354,9 @@ async def _ingest_file(
         languages = await asyncio.to_thread(read_clpi_languages, probe_target)
         if languages is not None:
             spec = enrich_spec_with_clpi(spec, languages)
+        playlist = await asyncio.to_thread(read_main_playlist, file)
+        if playlist is not None and playlist.duration_seconds > 0:
+            spec = replace(spec, duration_seconds=playlist.duration_seconds)
     if is_disc:
         size_bytes = await asyncio.to_thread(_disc_total_size, file)
         container = "bluray" if (file / "BDMV").is_dir() else "dvd"
