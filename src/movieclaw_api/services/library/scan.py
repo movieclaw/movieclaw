@@ -83,7 +83,7 @@ from movieclaw_api.services.library.subtitles import discover_external_subtitles
 from movieclaw_api.services.library.units import resolve_units
 from movieclaw_api.services.media_discover import get_tmdb_client
 from movieclaw_api.services.media_library import MediaLibraryService
-from movieclaw_api.services.media_probe import probe_media
+from movieclaw_api.services.media_probe import MediaSpec, probe_media
 from movieclaw_api.services.task_state import TaskState
 from movieclaw_db.engine import get_database
 from movieclaw_db.models import (
@@ -255,6 +255,13 @@ _ASSET_CONCURRENCY = 3
 # 只覆盖显式身份（NFO / [tmdbid=N]）：靠文件名解析的条目要先搜一次 TMDB
 # 才知道 id，预取不了；它们照常走原来的串行链路，不受影响。
 _PREFETCH_WINDOW = 16
+
+# 介质探测预取窗口：入账链路每个新文件都要等一次 ffprobe 子进程（本地盘
+# 30ms 起、网络挂载常在数百毫秒），且严格串行——新库首扫的主要等待项。
+# 这里为"接下来几个要走入账链的文件"提前在线程池起探测，让探测与当前
+# 文件的识别/落账重叠。窗口小而有界：不放大对存储的并发压力（机械盘/
+# 网络挂载经不起大并发随机读），预取过头的浪费也至多几个子进程。
+_PROBE_AHEAD_WINDOW = 4
 
 
 class ScanPhase(StrEnum):
@@ -915,6 +922,9 @@ async def _scan(
             if bridge is not None:
                 await bridge.checkpoint(state, summary, before_write=session.commit)
 
+        # 介质探测预取（_PROBE_AHEAD_WINDOW 的说明）：pending 索引 → 预取
+        # 任务；不需要探测的位置记 None，避免每轮重复判定
+        probe_ahead: dict[int, asyncio.Task[MediaSpec | None] | None] = {}
         for done, (root_path, file, is_disc) in enumerate(pending, start=1):
             if bridge is not None:
                 await bridge.raise_if_cancelled()
@@ -929,6 +939,18 @@ async def _scan(
                     pending[done - 1 : done - 1 + _PREFETCH_WINDOW],
                     known,
                 )
+            # 为下一窗要走入账链的文件提前起 ffprobe，与当前文件的识别/落账
+            # 重叠；轮到自己时把结果领走（跳过路径直接丢弃，外壳保证无害）
+            for ahead in range(done - 1, min(done - 1 + _PROBE_AHEAD_WINDOW, len(pending))):
+                if ahead in probe_ahead:
+                    continue
+                _root_ahead, file_ahead, disc_ahead = pending[ahead]
+                probe_ahead[ahead] = (
+                    asyncio.create_task(_probe_quietly(file_ahead))
+                    if _probe_ahead_eligible(known.get(str(file_ahead)), file_ahead, disc_ahead)
+                    else None
+                )
+            probe_task = probe_ahead.pop(done - 1, None)
             # 用户请求停止：提前收尾。已入账的保留，剩余文件下次扫描继续
             if _scan_tasks.stop_requested(library_id):
                 summary.cancelled = True
@@ -1037,12 +1059,20 @@ async def _scan(
                     existing=existing,
                     dir_names=dir_files.get(str(file.parent)),
                     added_batch_id=added_batch_id,
+                    prefetched_probe=probe_task,
                 )
             except Exception as exc:  # noqa: BLE001 -- 单文件失败不断整轮
                 await recover_failed_session()
                 logger.exception("扫描文件失败：%s", file)
                 summary.errors.append(f"「{file.name}」处理失败：{exc}")
             await advance(done)
+
+        # 手动停止/提前收尾时窗口里可能还挂着几个预取任务：取消掉，别让
+        # 它们在扫描结束后继续占线程池（子进程本身很快自然结束）
+        for leftover in probe_ahead.values():
+            if leftover is not None:
+                leftover.cancel()
+        probe_ahead.clear()
 
         if mtime_backfilled or rows_refreshed:
             await session.commit()
@@ -2231,6 +2261,38 @@ async def _refresh_known_row(
     return changed
 
 
+def _probe_ahead_eligible(existing: LibraryFile | None, file: Path, is_disc: bool) -> bool:
+    """该文件轮到时是否会需要一次 ffprobe（介质探测预取的判定）。
+
+    原盘不预取（要先解析盘内主流文件，现场处理）；strm 不预取（无媒体流）；
+    已识别且在位的秒过行与已忽略行不会走入账链，同样不预取。判定与
+    ``_scan`` 主循环的秒过条件保持一致；判错的代价不对称且都可接受——
+    漏预取只是退回现场探测，多预取至多白跑一个子进程。
+    """
+    if is_disc or file.suffix.lower() == STRM_EXT:
+        return False
+    if existing is not None and existing.ignored_at is not None:
+        return False
+    return not (
+        existing is not None
+        and existing.state != FileState.MISSING
+        and existing.media_item_id is not None
+    )
+
+
+async def _probe_quietly(file: Path) -> MediaSpec | None:
+    """预取探测的外壳：任何异常收敛为 None（与探测失败同语义）。
+
+    预取任务可能因文件被跳过（暂缓入账等）而被丢弃，不能让未取回的
+    异常在事件循环里报"Task exception was never retrieved"。
+    """
+    try:
+        return await asyncio.to_thread(probe_media, file)
+    except Exception:  # noqa: BLE001 -- 预取失败退化为"没探测到"，不断扫描
+        logger.exception("介质探测预取失败：%s", file)
+        return None
+
+
 async def _ingest_file(
     session,
     repo: LibraryFileRepository,
@@ -2248,9 +2310,12 @@ async def _ingest_file(
     existing: LibraryFile | None = None,
     dir_names: list[str] | None = None,
     added_batch_id: str,
+    prefetched_probe: asyncio.Task[MediaSpec | None] | None = None,
 ) -> None:
     """把一个文件识别并写入台账。``existing`` 是该路径已有的台账行：
-    在位但待识别 → 本次是识别重试；标记过 missing → 文件回归。"""
+    在位但待识别 → 本次是识别重试；标记过 missing → 文件回归。
+    ``prefetched_probe``：主循环预取的介质探测任务（普通视频文件才有，
+    见 _PROBE_AHEAD_WINDOW），没给就现场探测。"""
     if existing is None or existing.state == FileState.MISSING:
         summary.scanned += 1  # 新文件 / 回归的 missing 文件
     else:
@@ -2261,7 +2326,13 @@ async def _ingest_file(
     # 还违背 strm"扫库零流量"的初衷，规格列留空即可
     is_strm = not is_disc and file.suffix.lower() == STRM_EXT
     probe_target = None if is_strm else (disc_main_stream(file) if is_disc else file)
-    spec = await asyncio.to_thread(probe_media, probe_target) if probe_target is not None else None
+    if probe_target is None:
+        spec = None
+    elif prefetched_probe is not None:
+        # 预取只覆盖普通视频文件（probe_target 必然是文件本身），原盘仍走现场
+        spec = await prefetched_probe
+    else:
+        spec = await asyncio.to_thread(probe_media, probe_target)
     if spec is not None and is_disc and (file / "BDMV").is_dir():
         # m2ts 常常不带语言描述符；同编号 CLPI 用 PID 补齐，已有 ffprobe
         # 语言保持不动。缺失/损坏 CLPI 只降级，不影响原盘入账。
@@ -2330,7 +2401,10 @@ async def _ingest_file(
         unidentified_reason, candidates = identified.reason, identified.candidates
         unidentified_code = identified.code
         item_id = identified.item.id if identified.item is not None else None
-        season, episode = (0, 0) if is_disc else _unit_for(kind, file)
+        # 季集解析进线程池：要读分集 NFO（磁盘 IO），解析层兜底还会跑 NER
+        season, episode = (
+            (0, 0) if is_disc else await asyncio.to_thread(_unit_for, kind, file)
+        )
         identity_source = identified.source if item_id is not None else None
         resolved_version = RESOLVER_VERSION if item_id is not None else None
         review_suggestion = None
@@ -2672,13 +2746,16 @@ async def _try_relink(
             continue
         if row.state == FileState.TRASHED:
             continue  # 待回收行不参与改名归并——归并会复活它
-        if row.state == FileState.IN_PLACE and await asyncio.to_thread(Path(row.file_path).exists):
-            continue
         if (
             duration_seconds
             and row.duration_seconds
             and abs(duration_seconds - row.duration_seconds) > _RELINK_DURATION_TOLERANCE_SECONDS
         ):
+            continue
+        # 磁盘 stat 放最后：前面全是零成本的内存判定，先筛掉注定落选的
+        # 候选，才轮到唯一需要 IO 的"路径是否仍在磁盘"（线程池，网络挂载
+        # 上可能阻塞）——同尺寸候选多时省下的就是一串白付的往返
+        if row.state == FileState.IN_PLACE and await asyncio.to_thread(Path(row.file_path).exists):
             continue
         candidates.append(row)
     if len(candidates) != 1:
@@ -2744,6 +2821,19 @@ def _hint_for(file: Path, hints: list[_SubtitleHint]) -> _SubtitleHint | None:
     return None
 
 
+def _local_identity_evidence(
+    kind: MediaKind, root: Path, file: Path, *, is_disc: bool
+) -> tuple[NfoIdentity | None, str | None, LocalEvidence | None]:
+    """（线程池内运行）识别链的本地证据：NFO → 类型冲突判定 → 名称证据。
+
+    类型冲突时不再收集名称证据（与原串行逻辑一致：冲突即早退，证据用不上）。
+    """
+    nfo = _entry_nfo(kind, root, file, is_disc=is_disc)
+    conflict = _kind_conflict(kind, file, nfo, is_disc=is_disc)
+    evidence = None if conflict is not None else guess_evidence(kind, root, file, is_disc=is_disc)
+    return nfo, conflict, evidence
+
+
 async def _identify(
     media_service: MediaLibraryService,
     kind: MediaKind,
@@ -2763,15 +2853,15 @@ async def _identify(
     与"确实找不到匹配"区分开：前者修好网络重扫即可，后者需要人工认领。
     收敛器给出候选时一并带回（``candidates``），让用户在清单里直接点选。
     """
-    nfo = _entry_nfo(kind, root, file, is_disc=is_disc)
-
+    # 本地证据三件套整体放线程池：NFO 查找要逐级 stat/读盘（网络挂载上
+    # 可能长阻塞），guess_evidence 内含 NER 推理（CPU 数毫秒）——都不该
+    # 占用事件循环；一次线程跳转拿齐，省去逐项跨线程的调度开销
+    nfo, conflict, evidence = await asyncio.to_thread(
+        _local_identity_evidence, kind, root, file, is_disc=is_disc
+    )
     # ⓪ 类型冲突：文件实际是剧集/电影，与所在库的类型对不上（零网络成本）
-    conflict = _kind_conflict(kind, file, nfo, is_disc=is_disc)
     if conflict is not None:
         return _Identified(None, conflict, code=UnidentifiedCode.KIND_MISMATCH)
-
-    # 本地证据先算出来：既是步骤②的输入，也是步骤①校验钉死身份的标尺
-    evidence = guess_evidence(kind, root, file, is_disc=is_disc)
 
     # ① 显式精确身份：路径 tmdbid 标记（就近优先）→ NFO
     # 各级路径上的标记互相矛盾时全部不采信（实测：目录标着正主、文件名
@@ -2873,7 +2963,9 @@ async def _resolve_by_name(
     if kind is MediaKind.TV:
         directory = file.parent
         if directory not in episodes_cache:
-            episodes_cache[directory] = local_episode_count(directory)
+            # 统计要列目录 + 对每个文件名跑集号解析（含 NER），放线程池；
+            # 缓存写回仍在事件循环，单飞扫描不存在并发写
+            episodes_cache[directory] = await asyncio.to_thread(local_episode_count, directory)
         evidence.local_episodes = episodes_cache[directory]
     key = (
         evidence.title,
