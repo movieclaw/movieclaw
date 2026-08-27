@@ -280,8 +280,49 @@ async def test_ignored_entry_job_reconcile_failure_does_not_block_startup(db, mo
 
 @pytest.mark.asyncio
 async def test_disc_batch_job_reconcile_cancels_only_active_disc_batches(db):
-    """升级只收口原盘分段批次；普通剧集批次和历史终态不被改写。"""
+    """升级收口原盘分段 Job 与 pending 台账；普通批次和无关终态不被改写。"""
     async with db.session() as session:
+        direct_entry = IngestEntry(
+            entry_path="/watch/disc-direct",
+            fingerprint="ready:direct",
+            status=IngestStatus.PENDING,
+            message="已取最大文件为正片，忽略其余 37 个视频",
+        )
+        nested_entry = IngestEntry(
+            entry_path="/watch/disc-nested",
+            fingerprint="ready:nested",
+            status=IngestStatus.PENDING,
+        )
+        episode_entry = IngestEntry(
+            entry_path="/watch/episode",
+            fingerprint="ready:episode",
+            status=IngestStatus.PENDING,
+        )
+        succeeded_entry = IngestEntry(
+            entry_path="/watch/disc-succeeded",
+            fingerprint="ready:succeeded",
+            status=IngestStatus.PENDING,
+        )
+        previously_reconciled_entry = IngestEntry(
+            entry_path="/watch/disc-already-cancelled",
+            fingerprint="ready:already-cancelled",
+            status=IngestStatus.PENDING,
+        )
+        session.add_all(
+            [
+                direct_entry,
+                nested_entry,
+                episode_entry,
+                succeeded_entry,
+                previously_reconciled_entry,
+            ]
+        )
+        await session.flush()
+        assert direct_entry.id is not None
+        assert nested_entry.id is not None
+        assert episode_entry.id is not None
+        assert succeeded_entry.id is not None
+        assert previously_reconciled_entry.id is not None
         session.add_all(
             [
                 Job(
@@ -312,6 +353,38 @@ async def test_disc_batch_job_reconcile_cancels_only_active_disc_batches(db):
                     status=JobStatus.SUCCEEDED,
                     input_data={"ready_files": [{"path": "BDMV/STREAM/00002.m2ts"}]},
                 ),
+                Job(
+                    id="job_disc_already_cancelled",
+                    job_type="library.ingest",
+                    status=JobStatus.CANCELLED,
+                    cancel_requested_by="system:disc-batch-reconcile",
+                    input_data={"ready_files": [{"path": "BDMV/STREAM/00003.m2ts"}]},
+                ),
+                JobResource(
+                    job_id="job_disc_direct",
+                    resource_type="ingest_entry",
+                    resource_id=str(direct_entry.id),
+                ),
+                JobResource(
+                    job_id="job_disc_nested",
+                    resource_type="ingest_entry",
+                    resource_id=str(nested_entry.id),
+                ),
+                JobResource(
+                    job_id="job_episode_blocked",
+                    resource_type="ingest_entry",
+                    resource_id=str(episode_entry.id),
+                ),
+                JobResource(
+                    job_id="job_disc_succeeded",
+                    resource_type="ingest_entry",
+                    resource_id=str(succeeded_entry.id),
+                ),
+                JobResource(
+                    job_id="job_disc_already_cancelled",
+                    resource_type="ingest_entry",
+                    resource_id=str(previously_reconciled_entry.id),
+                ),
             ]
         )
         await session.commit()
@@ -324,12 +397,28 @@ async def test_disc_batch_job_reconcile_cancels_only_active_disc_batches(db):
         nested = await session.get(Job, "job_disc_nested")
         episode = await session.get(Job, "job_episode_blocked")
         succeeded = await session.get(Job, "job_disc_succeeded")
+        direct_record = await session.get(IngestEntry, direct_entry.id)
+        nested_record = await session.get(IngestEntry, nested_entry.id)
+        episode_record = await session.get(IngestEntry, episode_entry.id)
+        succeeded_record = await session.get(IngestEntry, succeeded_entry.id)
+        previously_reconciled_record = await session.get(
+            IngestEntry, previously_reconciled_entry.id
+        )
     assert direct is not None and direct.status == JobStatus.CANCELLED
     assert nested is not None and nested.status == JobStatus.CANCELLED
     assert direct.cancel_requested_by == "system:disc-batch-reconcile"
     assert nested.cancel_requested_by == "system:disc-batch-reconcile"
     assert episode is not None and episode.status == JobStatus.BLOCKED
     assert succeeded is not None and succeeded.status == JobStatus.SUCCEEDED
+    assert direct_record is not None and direct_record.status == IngestStatus.SKIPPED
+    assert nested_record is not None and nested_record.status == IngestStatus.SKIPPED
+    assert "旧版原盘流分段" in (direct_record.message or "")
+    assert episode_record is not None and episode_record.status == IngestStatus.PENDING
+    assert succeeded_record is not None and succeeded_record.status == IngestStatus.PENDING
+    assert (
+        previously_reconciled_record is not None
+        and previously_reconciled_record.status == IngestStatus.SKIPPED
+    )
 
 
 @pytest.mark.asyncio

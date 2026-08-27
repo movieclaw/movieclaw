@@ -2876,30 +2876,32 @@ async def reconcile_disc_batch_jobs() -> int:
     """启动时收口旧版把原盘流分段当视频建立的活跃作业。
 
     只依据作业已经持久化的文件白名单判定，不扫描 NAS 目录；普通电影、剧集
-    批次和终态作业都不受影响。升级后这一步会清掉任务中心里的历史红项，新的
-    原盘下载则由 ``_completed_file_batch`` 在建作业前直接拦住。
+    批次和无关终态作业都不受影响。升级后这一步会同时清掉任务中心里的历史
+    红项与监听页残留的 ``pending`` 台账；新的原盘下载则由
+    ``_completed_file_batch`` 在建作业前直接拦住。
     """
     try:
         async with get_database().session() as session:
+            active_statuses = [
+                status.value for status in ACTIVE_JOB_STATUSES if status is not JobStatus.CANCELLING
+            ]
             rows = list(
                 (
                     await session.execute(
                         select(Job).where(
                             Job.job_type == "library.ingest",
-                            Job.status.in_(
-                                [
-                                    status.value
-                                    for status in ACTIVE_JOB_STATUSES
-                                    if status is not JobStatus.CANCELLING
-                                ]
+                            or_(
+                                Job.status.in_(active_statuses),
+                                Job.cancel_requested_by == "system:disc-batch-reconcile",
                             ),
                         )
                     )
                 ).scalars()
             )
             cancelled = 0
-            for active in rows:
-                ready_files = (active.input_data or {}).get("ready_files") or ()
+            disc_job_ids: set[str] = set()
+            for job in rows:
+                ready_files = (job.input_data or {}).get("ready_files") or ()
                 if not any(
                     isinstance(ready, dict)
                     and isinstance(ready.get("path"), str)
@@ -2907,13 +2909,54 @@ async def reconcile_disc_batch_jobs() -> int:
                     for ready in ready_files
                 ):
                     continue
+                disc_job_ids.add(job.id)
+                if job.status not in active_statuses:
+                    continue
                 _, changed = await jobs.request_cancel(
                     session,
-                    active.id,
+                    job.id,
                     requested_by="system:disc-batch-reconcile",
                     reason="原盘流分段不是独立视频，本批次由升级后的入库逻辑自动收口",
                 )
                 cancelled += int(changed)
+
+            # v0.18.0 的 Job 与监听台账是两套持久化状态。只取消 Job 会让前端
+            # 继续显示旧的“已取最大文件、忽略其余 N 个视频”。资源关系能精确
+            # 找回这些 Job 对应的台账，不需要扫描 NAS，也不会碰普通 pending。
+            reconciled_entries = 0
+            if disc_job_ids:
+                resource_ids = (
+                    await session.execute(
+                        select(JobResource.resource_id).where(
+                            JobResource.job_id.in_(disc_job_ids),  # type: ignore[union-attr]
+                            JobResource.resource_type == "ingest_entry",
+                        )
+                    )
+                ).scalars()
+                entry_ids = {
+                    int(resource_id) for resource_id in resource_ids if str(resource_id).isdigit()
+                }
+                if entry_ids:
+                    records = list(
+                        (
+                            await session.execute(
+                                select(IngestEntry).where(
+                                    IngestEntry.id.in_(entry_ids),  # type: ignore[union-attr]
+                                    IngestEntry.status == IngestStatus.PENDING,
+                                )
+                            )
+                        ).scalars()
+                    )
+                    for record in records:
+                        record.status = IngestStatus.SKIPPED
+                        record.message = (
+                            "旧版原盘流分段的待处理记录已自动收口；"
+                            "原盘目录（BDMV/VIDEO_TS）暂不支持自动入库，请手动整理"
+                        )
+                        record.updated_at = utcnow()
+                    reconciled_entries = len(records)
+                    if records:
+                        await session.commit()
     except Exception:  # noqa: BLE001 -- 历史清理失败不能让整个服务拒绝启动
         logger.warning(
             "原盘分批入库的遗留作业对账失败（不影响启动，下次启动将重试）", exc_info=True
@@ -2921,6 +2964,8 @@ async def reconcile_disc_batch_jobs() -> int:
         return 0
     if cancelled:
         logger.info("启动对账已收口 %d 个原盘分批入库遗留作业", cancelled)
+    if reconciled_entries:
+        logger.info("启动对账已收口 %d 个原盘分批监听台账", reconciled_entries)
     return cancelled
 
 
