@@ -365,3 +365,21 @@ def test_error_message_contains_provider_and_chinese_hint():
 def test_protocol_constructs_for_all_presets(provider_type):
     # openai_compat 无预设 base_url 时也能构造（用户覆盖前 SDK 用官方默认）
     make_protocol(provider_type)
+
+
+# -- Harmony 残留告警 -------------------------------------------------------
+
+
+def test_content_with_harmony_residue_logs_warning(caplog):
+    """正文泄漏 Harmony 标记（后端解析失败的特征）→ 打中文告警引导修后端。"""
+    from movieclaw_llm.protocols.openai_chat import _warn_harmony_residue_in_content
+
+    with caplog.at_level("WARNING"):
+        _warn_harmony_residue_in_content("<|channel|>analysis<|message|>思考内容……")
+    assert any("Harmony" in r.message for r in caplog.records)
+
+    caplog.clear()
+    with caplog.at_level("WARNING"):
+        _warn_harmony_residue_in_content("正常的回答文本")
+        _warn_harmony_residue_in_content(None)
+    assert not caplog.records

@@ -40,3 +40,19 @@ def test_parse_error_propagates():
     args, err = validate_tool_call([SEARCH_TOOL], tc)
     assert args is None
     assert "解析失败" in err
+
+
+def test_harmony_residue_in_tool_name_reports_backend_hint(caplog):
+    """工具名混入 Harmony 标记 → 错误信息引导用户排查推理后端，并打告警日志。"""
+    tc = ToolCall(id="1", name="search<|channel|>commentary")
+    with caplog.at_level("WARNING"):
+        args, err = validate_tool_call([SEARCH_TOOL], tc)
+    assert args is None
+    assert "Harmony" in err and "推理后端" in err and "search" in err
+    assert any("Harmony" in r.message for r in caplog.records)
+
+
+def test_plain_unknown_tool_name_has_no_harmony_hint():
+    """普通的幻觉工具名不应误报 Harmony 残留。"""
+    _, err = validate_tool_call([SEARCH_TOOL], ToolCall(id="1", name="downloadd"))
+    assert "Harmony" not in err

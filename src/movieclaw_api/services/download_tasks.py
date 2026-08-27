@@ -690,6 +690,7 @@ def _task_dict(
         or (boost or {}).get("_page_url"),
         "resolution": quality.get("resolution"),
         "media_source": quality.get("media_source"),
+        "remux": bool(quality.get("remux")),
         "media_item_id": (media or {}).get("media_item_id"),
         "media_title": (media or {}).get("media_title"),
         "media_kind": (media or {}).get("media_kind"),
