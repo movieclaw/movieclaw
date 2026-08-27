@@ -39,6 +39,14 @@ class LibraryPayload(BaseModel):
     )
     # 同为"不传 = 不改动"：老客户端的请求体没带该字段，不能把用户关掉的
     # 监控悄悄打开（或反过来）
+    scrape_overrides: dict | None = Field(
+        default=None,
+        description=(
+            "库级刮削偏好覆盖（命名模板与目录写入细项）；"
+            "不传=不改动，空对象=清空覆盖回到全跟全局。"
+            "选图与语言不支持按库覆盖：它们的产物跨库共享一份"
+        ),
+    )
     realtime_watch: bool | None = Field(
         default=None,
         description=(
@@ -175,6 +183,9 @@ class LibraryView(BaseModel):
         default=False, description="扫描后自动清理已确认丢失的库存记录"
     )
     realtime_watch: bool = Field(default=True, description="是否启用实时文件监控")
+    scrape_overrides: dict = Field(
+        default_factory=dict, description="库级刮削偏好覆盖；空对象 = 全跟全局设置"
+    )
     stats: LibraryStats = Field(default_factory=LibraryStats)
     scanning: bool = Field(default=False, description="是否正在扫描")
     scan_progress: ScanProgressView | None = Field(default=None, description="扫描实时进度")
@@ -221,6 +232,7 @@ class LibraryView(BaseModel):
             match_rules=list(row.match_rules),
             auto_clear_missing=row.auto_clear_missing,
             realtime_watch=row.realtime_watch,
+            scrape_overrides=dict(row.scrape_overrides or {}),
             stats=LibraryStats(
                 item_count=row.stats_item_count,
                 file_count=row.stats_file_count,

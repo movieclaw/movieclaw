@@ -59,6 +59,8 @@ export interface MediaLibrary {
   auto_clear_missing: boolean;
   /** 是否启用实时文件监控（关闭后靠定期对账与手动扫描，SMB/NFS 建议关） */
   realtime_watch: boolean;
+  /** 库级刮削覆盖；空对象 = 全跟全局设置 */
+  scrape_overrides?: Record<string, unknown>;
   /** 库存统计快照（台账变化时重算，列表查询不扫描文件台账） */
   stats: LibraryStats;
   /** 是否正在扫描 */
@@ -313,6 +315,9 @@ export interface LibraryPayload {
   auto_clear_missing?: boolean;
   /** 是否启用实时文件监控；不传=不改动（新建时默认开） */
   realtime_watch?: boolean;
+  /** 库级刮削覆盖（命名模板与目录写入细项）；不传=不改动，空对象=清空覆盖。
+   *  选图与语言不支持按库覆盖——它们的产物跨库共享一份 */
+  scrape_overrides?: Record<string, unknown>;
 }
 
 /** 收藏范围的可选项（后端唯一真相源：类型 chips 与区域预设）。 */

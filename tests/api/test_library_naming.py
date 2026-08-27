@@ -185,7 +185,10 @@ def test_all_call_sites_share_one_entry_dir_name(monkeypatch) -> None:
     from movieclaw_db.models import Library
 
     custom = NamingTemplates(entry_dir="{original_title} [{year}]")
-    monkeypatch.setattr("movieclaw_api.services.library.naming.effective_templates", lambda: custom)
+    monkeypatch.setattr(
+        "movieclaw_api.services.library.naming.effective_templates",
+        lambda library=None: custom,
+    )
 
     item = _item(title="风筝", original_title="Kite", year=2017)
     expected = "Kite [2017]"
@@ -213,7 +216,10 @@ def test_entry_dir_degrades_without_item(monkeypatch) -> None:
     from movieclaw_api.services.library.naming import NamingTemplates
 
     custom = NamingTemplates(entry_dir="{title} ({year}) [tmdbid-{tmdb_id}]")
-    monkeypatch.setattr("movieclaw_api.services.library.naming.effective_templates", lambda: custom)
+    monkeypatch.setattr(
+        "movieclaw_api.services.library.naming.effective_templates",
+        lambda library=None: custom,
+    )
     # 无条目：tmdbid 段整体收缩掉，不留 "[tmdbid-]" 这种残缺文本
     assert derive_entry_dir("/media", title="风筝", year=2017) == "/media/风筝 (2017)"
     # 有条目：占位符正常渲染
@@ -232,7 +238,10 @@ def test_organize_and_ingest_build_identical_paths(monkeypatch) -> None:
         season_dir="S{season:02d}",
         episode_file="{title}.S{season:02d}E{episode:02d}",
     )
-    monkeypatch.setattr("movieclaw_api.services.library.naming.effective_templates", lambda: custom)
+    monkeypatch.setattr(
+        "movieclaw_api.services.library.naming.effective_templates",
+        lambda library=None: custom,
+    )
     item = _item()
     assert entry_dir_name_of(item) == "风筝 (2017)"
     assert season_dir_name(1, item) == "S01"

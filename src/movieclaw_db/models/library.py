@@ -58,6 +58,17 @@ class Library(TimestampMixin, table=True):
         sa_column=Column(JSON, nullable=False),
         description="收藏范围条件列表；空=未声明（只作兜底目标）",
     )
+    # 库级刮削偏好覆盖（docs/design/scrape-customization.md §1）：JSON 对象，
+    # **只存显式覆盖的字段**，空/NULL = 全跟全局设置。动漫库要日文原名海报、
+    # 电影库与剧集库各用一套命名模板，这类"按库口味"全局一套设置盖不住。
+    # 只允许覆盖设计文档标注〔可库级〕的字段（选图、命名、目录写入细项）——
+    # 语言不可库级：同一条目跨库共享一份 media_metadata，按库切语言会让两个
+    # 库抢写同一行。合并读取见 services/scrape_config.merge_for_library
+    scrape_overrides: dict | None = Field(
+        default=None,
+        sa_column=Column(JSON, nullable=True),
+        description="库级刮削偏好覆盖；NULL/空对象 = 全跟全局设置",
+    )
     # 刮削成果镜像写入媒体目录（poster.jpg/fanart.jpg/分集 thumb + 完整 NFO，
     # Kodi/Emby 规范，只增不覆盖不删除——docs/design/metadata.md 6.2）。
     # 默认开：无破坏性且反哺播放器生态；不想污染目录的用户按库关闭

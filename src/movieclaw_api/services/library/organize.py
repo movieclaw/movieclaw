@@ -162,16 +162,17 @@ async def build_organize_plan(session, library: Library) -> OrganizePlan:
     kind = MediaKind(library.kind)
     roots = [r.rstrip("/") for r in library.root_paths]
     # 磁盘检查（exists/is_dir/附属文件枚举）放线程池：大库上千次 stat 不该阻塞事件循环
-    return await asyncio.to_thread(_build_plan_sync, library.id, kind, roots, rows)
+    # 带上库本身：命名模板可按库覆盖（library.scrape_overrides）
+    return await asyncio.to_thread(_build_plan_sync, library, kind, roots, rows)
 
 
 def _build_plan_sync(
-    library_id: int,
+    library: Library,
     kind: MediaKind,
     roots: list[str],
     rows: list[tuple[LibraryFile, MediaItem | None]],
 ) -> OrganizePlan:
-    plan = OrganizePlan(library_id=library_id)
+    plan = OrganizePlan(library_id=library.id)
     candidates: list[RenameAction] = []
     for row, item in rows:
         if row.state != FileState.IN_PLACE:
@@ -196,17 +197,17 @@ def _build_plan_sync(
             )
             continue
         # 目录名与文件名各走各的模板（默认两者相同，即模板化之前的行为）
-        entry_dir = entry_dir_name_of(item)
+        entry_dir = entry_dir_name_of(item, library=library)
         ext = src.suffix.lower()
         if kind is MediaKind.MOVIE:
-            target = Path(root) / entry_dir / f"{movie_file_name(item)}{ext}"
+            target = Path(root) / entry_dir / f"{movie_file_name(item, library=library)}{ext}"
         else:
             season = row.season_number
             target = (
                 Path(root)
                 / entry_dir
-                / season_dir_name(season, item)
-                / f"{episode_file_name(item, season, row.episode_number)}{ext}"
+                / season_dir_name(season, item, library=library)
+                / f"{episode_file_name(item, season, row.episode_number, library=library)}{ext}"
             )
         if str(target) == row.file_path:
             plan.already_ok += 1

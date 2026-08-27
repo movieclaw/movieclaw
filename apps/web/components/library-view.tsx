@@ -1055,6 +1055,133 @@ function LibraryCardMenu({
   );
 }
 
+/**
+ * 库级刮削覆盖（docs/design/scrape-customization.md §1 / P3）。
+ *
+ * 每个字段三态：**跟随全局**（不写进 overrides）/ **显式值**（写进 overrides）。
+ * 只列可按库覆盖的字段——命名模板与目录写入细项。选图与语言不在这里：
+ * 它们的产物（poster_path、图片资产、media_metadata）跨库共享一份，同一
+ * 条目分散在两个库时按库配会互相覆盖，只能在全局设置里改。
+ */
+function LibraryScrapeOverrides({
+  overrides,
+  onChange,
+}: {
+  overrides: Record<string, unknown>;
+  onChange: (next: Record<string, unknown>) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const count = Object.keys(overrides).length;
+
+  const setField = (key: string, value: unknown) => {
+    const next = { ...overrides };
+    if (value === undefined) delete next[key];
+    else next[key] = value;
+    onChange(next);
+  };
+
+  const NAMING = [
+    { key: "naming_entry_dir", label: "条目目录", fallback: "{title} ({year})" },
+    { key: "naming_movie_file", label: "电影文件名", fallback: "{title} ({year})" },
+    { key: "naming_season_dir", label: "季目录", fallback: "Season {season:02d}" },
+    {
+      key: "naming_episode_file",
+      label: "剧集文件名",
+      fallback: "{title} ({year}) - S{season:02d}E{episode:02d}",
+    },
+  ];
+  const MIRROR = [
+    { key: "mirror_images", label: "写入条目图片" },
+    { key: "mirror_nfo", label: "写入 NFO 元数据" },
+    { key: "mirror_episode_thumbs", label: "写入分集剧照" },
+  ];
+
+  return (
+    <div className="rounded-xl border border-white/[0.08] bg-white/[0.02]">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center justify-between gap-3 px-3.5 py-2.5 text-left"
+      >
+        <span className="text-ui font-medium">
+          高级：覆盖全局刮削设置
+          {count > 0 && (
+            <span className="ml-2 rounded-full bg-[var(--accent-soft)] px-2 py-px text-micro text-[var(--accent)]">
+              已覆盖 {count} 项
+            </span>
+          )}
+        </span>
+        <span className="text-caption text-[var(--text-faint)]">{open ? "收起" : "展开"}</span>
+      </button>
+      {open && (
+        <div className="border-t border-white/[0.06] px-3.5 py-3">
+          <p className="mb-3 text-caption leading-relaxed text-[var(--text-faint)]">
+            留空即跟随「设置 → 刮削与整理」。只有命名模板与目录写入可以按库不同——
+            选图与语言的结果在所有库之间共享一份，只能全局设置。
+          </p>
+
+          <p className="mb-1.5 text-micro uppercase tracking-widest text-[var(--text-faint)]">
+            命名模板
+          </p>
+          {NAMING.map((field) => (
+            <div key={field.key} className="mb-2">
+              <label className="mb-1 block text-caption text-[var(--text-muted)]">
+                {field.label}
+              </label>
+              <input
+                spellCheck={false}
+                placeholder={`跟随全局（${field.fallback}）`}
+                value={(overrides[field.key] as string) ?? ""}
+                onChange={(e) =>
+                  setField(field.key, e.target.value.trim() ? e.target.value : undefined)
+                }
+                className="w-full rounded-lg border border-white/[0.08] bg-white/[0.04] px-2.5 py-1.5 font-mono text-sub text-[var(--text)] outline-none focus:border-[var(--accent)]/60"
+              />
+            </div>
+          ))}
+
+          <p className="mb-1.5 mt-3.5 text-micro uppercase tracking-widest text-[var(--text-faint)]">
+            目录写入
+          </p>
+          {MIRROR.map((field) => {
+            const value = overrides[field.key] as boolean | undefined;
+            return (
+              <div
+                key={field.key}
+                className="flex items-center justify-between gap-3 border-t border-white/[0.05] py-2 first:border-t-0"
+              >
+                <span className="text-sub">{field.label}</span>
+                <div className="flex gap-1">
+                  {(
+                    [
+                      [undefined, "跟随全局"],
+                      [true, "开"],
+                      [false, "关"],
+                    ] as const
+                  ).map(([option, optionLabel]) => (
+                    <button
+                      key={String(option)}
+                      type="button"
+                      onClick={() => setField(field.key, option)}
+                      className={`rounded-lg px-2.5 py-1 text-caption transition-colors ${
+                        value === option
+                          ? "bg-[var(--accent-soft)] text-[var(--text)]"
+                          : "text-[var(--text-faint)] hover:bg-white/[0.06]"
+                      }`}
+                    >
+                      {optionLabel}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* —— 新增 / 编辑库的弹窗（订阅弹层同款视觉），库页与单库页共用 —— */
 
 export function LibraryFormDialog({
@@ -1085,6 +1212,8 @@ export function LibraryFormDialog({
   // 实时文件监控（默认开）：SMB/NFS 网络挂载收不到远端变更事件、递归建
   // 监听还很慢，按库关闭后靠定期对账与手动扫描（见 Library.realtime_watch）
   const [realtimeWatch, setRealtimeWatch] = useState(true);
+  // 库级刮削覆盖（命名模板与目录写入细项）：空对象 = 全跟全局设置
+  const [scrapeOverrides, setScrapeOverrides] = useState<Record<string, unknown>>({});
   // 表单分两个页签：必填的基本信息 / 可选的收藏范围，避免单页长滚动拥挤
   const [tab, setTab] = useState<"basic" | "scope">("basic");
   const routingOptions = useRoutingOptions();
@@ -1101,6 +1230,7 @@ export function LibraryFormDialog({
     setMatchRegions(parsed.regions);
     setAutoClearMissing(library?.auto_clear_missing ?? false);
     setRealtimeWatch(library?.realtime_watch ?? true);
+    setScrapeOverrides({ ...(library?.scrape_overrides ?? {}) });
     setPickerTarget(null);
     setTab("basic");
   }, [state, library]);
@@ -1131,6 +1261,7 @@ export function LibraryFormDialog({
       match_rules: buildMatchRules(genres, matchRegions),
       auto_clear_missing: autoClearMissing,
       realtime_watch: realtimeWatch,
+      scrape_overrides: scrapeOverrides,
     };
     void (library ? updateLibrary(library.id, payload) : createLibrary(payload))
       .then(onSaved)
@@ -1383,6 +1514,10 @@ export function LibraryFormDialog({
               </span>
             </label>
           </div>
+
+          {/* 库级刮削覆盖：命名模板与目录写入可以按库不同（动漫库与电影库
+              各用一套模板是收藏玩家的常见诉求）。折叠收起，不打扰常规建库 */}
+          <LibraryScrapeOverrides overrides={scrapeOverrides} onChange={setScrapeOverrides} />
             </>
           )}
 

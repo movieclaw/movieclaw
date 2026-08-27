@@ -96,6 +96,16 @@ class MetadataScrapeSetting(SettingSchema):
         description="剧集文件名模板；空 = 默认 {title} ({year}) - S{season:02d}E{episode:02d}",
     )
 
+    # —— STEP 4 目录写入（细项；库上的 write_media_assets 是总闸）——————
+    # 默认全开 = 拆分之前的行为：总闸开着就三样都写
+    mirror_images: bool = Field(
+        default=True, description="镜像条目图片到媒体目录（poster/fanart/季海报）"
+    )
+    mirror_nfo: bool = Field(default=True, description="镜像 NFO 元数据到媒体目录")
+    mirror_episode_thumbs: bool = Field(
+        default=True, description="镜像分集剧照（长剧集写入量最大，可单独关）"
+    )
+
     # —— 校验 ————————————————————————————————————————
     @field_validator("language_priority")
     @classmethod

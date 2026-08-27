@@ -5,7 +5,7 @@
  *
  * 按刮削管线的执行顺序分 tab：STEP 1 元数据（语言优先级、分级地区）→
  * STEP 2 图片（海报/背景语言优先级、门槛、质量档位）→ STEP 3 命名与整理
- * （模板 + 实时预览）。目录写入细分（STEP 4）随 P3 接入，tab 结构已就位。
+ * （模板 + 实时预览）→ STEP 4 目录写入（图片/NFO/分集剧照三项细分开关）。
  *
  * 有序优先级统一用「排序芯片」交互：点击加入优先级并按点击顺序编号
  * （首位标「主」/「首选」），再点移除；常用项直接摆在行内，长尾语种/地区
@@ -243,6 +243,7 @@ const TABS = [
   { id: "meta", step: "STEP 1", label: "元数据", detail: "语言与文本" },
   { id: "images", step: "STEP 2", label: "图片", detail: "海报与背景" },
   { id: "naming", step: "STEP 3", label: "命名与整理", detail: "目录与文件名" },
+  { id: "mirror", step: "STEP 4", label: "目录写入", detail: "NFO 与图片镜像" },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
@@ -568,6 +569,93 @@ function NamingTab({
   );
 }
 
+/* ------------------------------------------------------------------ */
+/* 目录写入                                                            */
+/* ------------------------------------------------------------------ */
+
+function Toggle({
+  checked,
+  onChange,
+  disabled,
+}: {
+  checked: boolean;
+  onChange: (next: boolean) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <label className="relative inline-block h-[22px] w-[38px] shrink-0">
+      <input
+        type="checkbox"
+        className="peer absolute inset-0 z-10 m-0 cursor-pointer opacity-0 disabled:cursor-default"
+        checked={checked}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.checked)}
+      />
+      <span
+        className={`absolute inset-0 rounded-full transition-colors peer-disabled:opacity-35 ${
+          checked ? "bg-[var(--accent-2)]" : "bg-white/[0.12]"
+        }`}
+      />
+      <span
+        className={`pointer-events-none absolute top-0.5 size-[18px] rounded-full bg-[#e8ecf4] transition-transform ${
+          checked ? "translate-x-[18px]" : "translate-x-0.5"
+        }`}
+      />
+    </label>
+  );
+}
+
+const MIRROR_ROWS = [
+  {
+    key: "mirror_images" as const,
+    label: "条目图片",
+    hint: "poster.jpg / fanart.jpg / 季海报",
+  },
+  {
+    key: "mirror_nfo" as const,
+    label: "NFO 元数据",
+    hint: "tvshow.nfo / movie.nfo / 分集 NFO，含 tmdbid 精确身份",
+  },
+  {
+    key: "mirror_episode_thumbs" as const,
+    label: "分集剧照",
+    hint: "每集一张 -thumb.jpg，长剧集写入量最大，可单独关闭",
+  },
+];
+
+function MirrorTab({
+  setting,
+  patch,
+}: {
+  setting: ScrapeSetting;
+  patch: (changes: Partial<ScrapeSetting>) => void;
+}) {
+  return (
+    <Card
+      title="媒体目录写入"
+      perLibrary
+      desc="把刮削成果写入媒体目录，反哺 Emby / Jellyfin / Kodi（文件名遵循播放器规范）。只增不删除；已存在的 NFO 绝不覆盖。每个媒体库还有一个总开关，关掉则该库三项都不写。"
+    >
+      <div className="divide-y divide-white/[0.06]">
+        {MIRROR_ROWS.map((row) => (
+          <div key={row.key} className="flex items-center justify-between gap-4 py-2.5">
+            <div>
+              <span className="text-ui font-medium">{row.label}</span>
+              <span className="mt-0.5 block max-w-[46ch] text-caption text-[var(--text-faint)]">
+                {row.hint}
+              </span>
+            </div>
+            <Toggle
+              checked={setting[row.key]}
+              onChange={(next) => patch({ [row.key]: next } as Partial<ScrapeSetting>)}
+            />
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
 export function ScrapeSettingsSection() {
   const toast = useToast();
   const [view, setView] = useState<ScrapeConfigView | null>(null);
@@ -698,7 +786,9 @@ export function ScrapeSettingsSection() {
         ))}
       </div>
 
-      {tab === "naming" ? (
+      {tab === "mirror" ? (
+        <MirrorTab setting={setting} patch={patch} />
+      ) : tab === "naming" ? (
         <NamingTab setting={setting} patch={patch} />
       ) : tab === "meta" ? (
         <>

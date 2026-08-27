@@ -166,3 +166,107 @@ def test_discover_region_defaults_and_save(client: TestClient) -> None:
 def test_discover_region_rejects_bad_code(client: TestClient) -> None:
     resp = client.put("/api/v1/discover/region", json={"region": "china"})
     assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# 库级覆盖（docs/design/scrape-customization.md §1 / P3）
+# ---------------------------------------------------------------------------
+
+
+def _make_library(client: TestClient, name: str, root: str, **extra) -> dict:
+    resp = client.post(
+        "/api/v1/libraries",
+        json={"name": name, "kind": "tv", "root_paths": [root], **extra},
+    )
+    assert resp.status_code in (200, 201), resp.text
+    return resp.json()["data"]
+
+
+def test_library_scrape_overrides_roundtrip(client: TestClient, tmp_path) -> None:
+    """库级覆盖：保存 → 读回 → 合并生效（命名模板与镜像细项）。"""
+    root = str(tmp_path / "anime")
+    library = _make_library(
+        client,
+        "动漫库",
+        root,
+        scrape_overrides={
+            "naming_entry_dir": "{original_title} ({year})",
+            "mirror_episode_thumbs": False,
+        },
+    )
+    assert library["scrape_overrides"]["naming_entry_dir"] == "{original_title} ({year})"
+
+    # 合并读取：该库用覆盖值，其余字段继续跟全局
+    from movieclaw_api.services.scrape_config import (
+        effective_mirror_flags,
+        effective_naming_templates,
+    )
+    from movieclaw_db.models import Library
+
+    row = Library(
+        name="动漫库",
+        kind="tv",
+        root_paths=[root],
+        scrape_overrides=library["scrape_overrides"],
+    )
+    assert effective_naming_templates(row).entry_dir == "{original_title} ({year})"
+    # 没覆盖的模板字段回落内置默认
+    assert effective_naming_templates(row).season_dir == "Season {season:02d}"
+    assert effective_mirror_flags(row) == (True, True, False)
+    # 无覆盖的库全跟全局
+    assert effective_naming_templates(None).entry_dir == "{title} ({year})"
+
+
+def test_library_overrides_reject_non_overridable_and_invalid(client: TestClient, tmp_path) -> None:
+    """不可按库覆盖的字段、以及非法模板，保存时整体拒绝（中文 400）。"""
+    root = str(tmp_path / "lib2")
+    # 选图不可按库覆盖：它的产物（poster_path/资产文件）跨库共享一份
+    resp = client.post(
+        "/api/v1/libraries",
+        json={
+            "name": "选图库",
+            "kind": "tv",
+            "root_paths": [root],
+            "scrape_overrides": {"poster_mode": "language"},
+        },
+    )
+    assert resp.status_code == 400
+    assert "不支持按库覆盖" in resp.json()["message"]
+
+    # 非法命名模板同样拒绝
+    resp = client.post(
+        "/api/v1/libraries",
+        json={
+            "name": "坏模板库",
+            "kind": "tv",
+            "root_paths": [root],
+            "scrape_overrides": {"naming_episode_file": "{title}"},
+        },
+    )
+    assert resp.status_code == 400
+    assert "{season}" in resp.json()["message"]
+
+
+def test_library_overrides_can_be_cleared(client: TestClient, tmp_path) -> None:
+    """空对象 = 显式清空覆盖，回到全跟全局；不传 = 不改动。"""
+    root = str(tmp_path / "lib3")
+    library = _make_library(
+        client, "可清空库", root, scrape_overrides={"naming_season_dir": "S{season:02d}"}
+    )
+    library_id = library["id"]
+
+    # 不传该字段：保持原覆盖
+    resp = client.put(
+        f"/api/v1/libraries/{library_id}",
+        json={"name": "可清空库", "kind": "tv", "root_paths": [root]},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["data"]["scrape_overrides"]["naming_season_dir"] == "S{season:02d}"
+
+    # 传空对象：清空
+    resp = client.put(
+        f"/api/v1/libraries/{library_id}",
+        json={"name": "可清空库", "kind": "tv", "root_paths": [root], "scrape_overrides": {}},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["data"]["scrape_overrides"] == {}

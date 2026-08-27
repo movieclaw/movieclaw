@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any
 
 from movieclaw_api.services.library.config import sanitize_folder_name
@@ -179,21 +179,15 @@ def validate_templates(templates: NamingTemplates) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def effective_templates() -> NamingTemplates:
-    """当前生效的模板（设置页覆盖 > 内置默认）。
+def effective_templates(library: object | None = None) -> NamingTemplates:
+    """当前生效的模板（内置默认 → 全局设置 → 库级覆盖，逐字段回落）。
 
     延迟导入 scrape_config：本模块被 settings 的校验器引用，模块级导入会
     绕成 settings → naming → scrape_config → settings 的环。
     """
-    from movieclaw_api.services.scrape_config import current_scrape_setting
+    from movieclaw_api.services.scrape_config import effective_naming_templates
 
-    setting = current_scrape_setting()
-    overrides = {
-        field: value
-        for field in ALLOWED_TOKENS
-        if (value := getattr(setting, f"naming_{field}", "").strip())
-    }
-    return replace(DEFAULT_TEMPLATES, **overrides) if overrides else DEFAULT_TEMPLATES
+    return effective_naming_templates(library)
 
 
 def item_context(item: Any) -> dict[str, Any]:
@@ -217,30 +211,41 @@ def entry_dir_name(
     title: str,
     year: int | None = None,
     templates: NamingTemplates | None = None,
+    library: object | None = None,
     **extra: Any,
 ) -> str:
     """条目目录名。投递 save_path、监听导入落点、整理目标目录共用。"""
-    tpl = templates or effective_templates()
+    tpl = templates or effective_templates(library)
     return render(tpl.entry_dir, {"title": title, "year": year, **extra})
 
 
-def entry_dir_name_of(item: Any, templates: NamingTemplates | None = None) -> str:
+def entry_dir_name_of(
+    item: Any, templates: NamingTemplates | None = None, library: object | None = None
+) -> str:
     """条目目录名（媒体条目版）。"""
-    tpl = templates or effective_templates()
+    tpl = templates or effective_templates(library)
     return render(tpl.entry_dir, item_context(item))
 
 
-def movie_file_name(item: Any, templates: NamingTemplates | None = None, **extra: Any) -> str:
+def movie_file_name(
+    item: Any,
+    templates: NamingTemplates | None = None,
+    library: object | None = None,
+    **extra: Any,
+) -> str:
     """电影正片文件名（不含扩展名）。"""
-    tpl = templates or effective_templates()
+    tpl = templates or effective_templates(library)
     return render(tpl.movie_file, {**item_context(item), **extra})
 
 
 def season_dir_name(
-    season: int, item: Any | None = None, templates: NamingTemplates | None = None
+    season: int,
+    item: Any | None = None,
+    templates: NamingTemplates | None = None,
+    library: object | None = None,
 ) -> str:
     """季目录名。"""
-    tpl = templates or effective_templates()
+    tpl = templates or effective_templates(library)
     context: dict[str, Any] = dict(item_context(item)) if item is not None else {}
     context["season"] = season
     return render(tpl.season_dir, context)
@@ -251,10 +256,11 @@ def episode_file_name(
     season: int,
     episode: int,
     templates: NamingTemplates | None = None,
+    library: object | None = None,
     **extra: Any,
 ) -> str:
     """分集文件名（不含扩展名）。"""
-    tpl = templates or effective_templates()
+    tpl = templates or effective_templates(library)
     return render(
         tpl.episode_file,
         {**item_context(item), "season": season, "episode": episode, **extra},

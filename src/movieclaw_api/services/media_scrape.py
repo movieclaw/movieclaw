@@ -17,7 +17,8 @@
    定时刷新再也发现不了它们）；
 4. 图片资产下载（data/metadata/images/{条目 id}/，缺失才下，force 覆盖）；
 5. 媒体目录镜像（poster.jpg/fanart.jpg/分集 thumb + 完整 NFO，Kodi/Emby
-   规范，**只增不覆盖不删除**，按库开关）。
+   规范，**只增不覆盖不删除**）。按库开关：``write_media_assets`` 是总闸，
+   图片/NFO/分集剧照三项另可按库细分（library.scrape_overrides）。
 
 图片与镜像失败均不阻断（保持 NULL/缺失，任一后续入口自愈）。
 """
@@ -43,6 +44,7 @@ from movieclaw_api.services.scrape_config import (
     effective_asset_sizes,
     effective_image_prefs,
     effective_language,
+    effective_mirror_flags,
     profile_fetch_kwargs,
 )
 from movieclaw_api.services.task_state import TaskState
@@ -1438,46 +1440,52 @@ async def mirror_media_dir_assets(media_item_id: int, *, force: bool = False) ->
         )
 
     item_dir = assets_root() / str(media_item_id)
-    entry_dirs: list[Path] = []
+    # 条目目录 → 它所属的库：镜像三件事（图片/NFO/分集剧照）各有按库开关，
+    # 必须知道每个目录归谁管。库根不允许重叠（LibraryConfigService 保存时
+    # 已校验），所以一个条目目录只会归属一个库
+    entry_dirs: dict[Path, Library] = {}
     trusted_entries: set[Path] = set()
     for file, library in rows:
         entry = entry_dir_of([Path(p) for p in library.root_paths], Path(file.file_path))
         if entry is None:
             continue
-        if entry not in entry_dirs:
-            entry_dirs.append(entry)
+        entry_dirs.setdefault(entry, library)
         if _file_trusted(file):
             trusted_entries.add(entry)
 
     def _mirror() -> None:
-        for entry in entry_dirs:
+        for entry, library in entry_dirs.items():
             if not entry.is_dir():
                 continue
-            _copy_asset(item_dir / "poster.jpg", entry / "poster.jpg", force)
-            _copy_asset(item_dir / "backdrop.jpg", entry / "fanart.jpg", force)
-            if item.kind == MediaKind.TV.value:
-                for season in seasons:
-                    name = (
-                        "season-specials-poster.jpg"
-                        if season.season_number == 0
-                        else f"season{season.season_number:02d}-poster.jpg"
-                    )
-                    _copy_asset(
-                        item_dir / f"season-{season.season_number}.jpg", entry / name, force
-                    )
-            if entry in trusted_entries:
+            write_images, write_nfo, _ = effective_mirror_flags(library)
+            if write_images:
+                _copy_asset(item_dir / "poster.jpg", entry / "poster.jpg", force)
+                _copy_asset(item_dir / "backdrop.jpg", entry / "fanart.jpg", force)
+                if item.kind == MediaKind.TV.value:
+                    for season in seasons:
+                        name = (
+                            "season-specials-poster.jpg"
+                            if season.season_number == 0
+                            else f"season{season.season_number:02d}-poster.jpg"
+                        )
+                        _copy_asset(
+                            item_dir / f"season-{season.season_number}.jpg", entry / name, force
+                        )
+            if write_nfo and entry in trusted_entries:
                 write_full_nfo(entry, item, meta)
-        for file, _library in rows:
+        for file, library in rows:
             episode = episodes.get((file.season_number, file.episode_number))
             if episode is None or file.container in ("bluray", "dvd"):
                 continue
+            write_images, write_nfo, write_thumbs = effective_mirror_flags(library)
             video = Path(file.file_path)
-            _copy_asset(
-                item_dir / f"s{episode.season_number:02d}e{episode.episode_number:02d}.jpg",
-                video.with_name(f"{video.stem}-thumb.jpg"),
-                force,
-            )
-            if _file_trusted(file):
+            if write_thumbs and write_images:
+                _copy_asset(
+                    item_dir / f"s{episode.season_number:02d}e{episode.episode_number:02d}.jpg",
+                    video.with_name(f"{video.stem}-thumb.jpg"),
+                    force,
+                )
+            if write_nfo and _file_trusted(file):
                 write_episode_nfo(video, episode)
 
     await asyncio.to_thread(_mirror)
