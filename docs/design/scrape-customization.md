@@ -259,3 +259,34 @@ strm 回流链路（docs/design/strm-workflow.md）直接断裂。
   折叠区 + 目录写入细分开关。
 
 每期独立可发版，P1 不依赖后两期的任何结构。
+
+## 7. P1 实施记录（2026-08-27，与草案的偏差）
+
+P1 已落地（语言优先级 + 选图偏好 + 图片档位 + 设置分区 + 发现页地区），
+与草案的偏差与补充如下：
+
+1. **env 播种改为"读取期合并"**：草案设想"设置域首次读取时把 env 值
+   落库"，实现改为空值/空列表表示"跟随环境变量"，由
+   `services/scrape_config.py` 的 `effective_*` 在读取期合并
+   （与 `network_egress` 的镜像地址覆盖完全同构）。好处是不写入用户从未
+   设置过的值：用户改 env 后行为立刻跟着变，而不是被首次启动的快照钉死。
+2. **`_fetch_english_text` 已删除**：其职责由 translations 本地回落覆盖，
+   默认 `[zh-CN, en-US]` 下语义不变但**少一次请求**。
+3. **`orig`（原始语言）需要一次补拉**：请求详情前无从得知条目的
+   original_language，若它不在 `include_image_language` 里，详情回来后由
+   `_ensure_original_language_images` 补拉一次 `/images` 合并候选——只有
+   显式配置 `orig` 的用户会走到，失败静默按无候选处理。
+4. **季级回落的判据**：`_season_text_poor`——≥60% 分集名为空或匹配
+   「第 N 集 / Episode N」占位式即判定覆盖率过低，整季按次位语言重拉一次。
+5. **选图函数签名变化**：`pick_poster/pick_backdrop/list_image_candidates`
+   由"语言字符串"改为"语言档位列表（None=无文字）+ 门槛"，仍是纯函数。
+   `pick_backdrop` 的默认档位 `(None,)` 即历史行为。
+6. **`MediaLibraryService(language=...)` 改为 `languages=...`**，默认 None
+   表示跟随设置快照；显式传入仅供测试固定语言。
+7. **设置页 tab 只出 STEP 1/2**：STEP 3 命名与整理、STEP 4 目录写入随
+   P2/P3 接入，tab 容器已就位。
+
+验收：`tests/media/test_media_library.py` 覆盖语言回落（含"零额外请求"
+断言）、季级回落请求次数、选图分档、`orig` 补拉、分级优先级、token 解析；
+`tests/api/test_scrape_settings.py` 覆盖读写、校验拒绝、env 回落与地区
+联动。既有用例在默认参数下零 diff（"默认值 = 现状"承诺）。
