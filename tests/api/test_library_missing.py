@@ -162,3 +162,52 @@ async def test_clear_unidentified_bulk(db) -> None:
         assert all(f.ignored_at is None for f in remaining if f.media_item_id is not None)
         # 清单里已经看不到它们了
         assert (await list_unidentified(library_id, session)).data == []
+
+
+async def test_unidentified_list_excludes_missing_files(db) -> None:
+    """待识别清单只收在位文件：文件已从磁盘上消失的未识别行不该催人认领。
+
+    口径必须与库卡片角标 ``stats_unidentified_count`` 一致（后者一直只算
+    在位），否则同一件事两个数，用户没法判断该信哪个。
+    """
+    from movieclaw_api.api.routes.libraries import list_unidentified
+
+    async with db.session() as session:
+        library_id, _, _ = await _seed(session)
+        now = utcnow()
+        session.add_all(
+            [
+                # 在位且未识别：该进清单
+                LibraryFile(
+                    library_id=library_id,
+                    media_item_id=None,
+                    season_number=0,
+                    episode_number=0,
+                    file_path="/tv/未知/在位.mkv",
+                    size_bytes=1,
+                    source=FileSource.SCANNED,
+                ),
+                # 未识别但文件已消失：属于「缺失」，不该进待识别清单
+                LibraryFile(
+                    library_id=library_id,
+                    media_item_id=None,
+                    season_number=0,
+                    episode_number=0,
+                    file_path="/tv/未知/已消失.mkv",
+                    size_bytes=1,
+                    source=FileSource.SCANNED,
+                    missing_since=now,
+                    state=FileState.MISSING,
+                ),
+            ]
+        )
+        await session.flush()
+
+        groups = (await list_unidentified(library_id, session)).data
+        paths = [f.file_path for g in groups for f in g.files]
+        assert paths == ["/tv/未知/在位.mkv"]
+
+        # 与角标同源的统计口径也必须给出同一个数
+        await LibraryRepository(session).refresh_stats([library_id])
+        library = (await LibraryRepository(session).list_all())[0]
+        assert library.stats_unidentified_count == 1

@@ -108,6 +108,18 @@ const WALL_PAGE_SIZE = 60;
 /** 后端单次分页的硬上限；轮询已加载窗口时按此上限分块请求。 */
 const WALL_API_PAGE_SIZE = 200;
 
+/**
+ * 列表拉取失败折成 ``null``（而不是空数组）。
+ *
+ * 「拉不到」和「没有」是两回事，待办清单尤其不能混：折成空数组的话，一次
+ * 500 / 超时 / 权限不足会让胶囊与计数静默归零，页面上找不到任何异常痕迹，
+ * 用户只会以为待办都处理完了。调用方拿到 null 就保留上一份快照并点亮顶部
+ * 的重试提示条——展示旧数据总好过展示假数据。
+ */
+function keepOnError<T>(rows: Promise<T[]>): Promise<T[] | null> {
+  return rows.catch(() => null);
+}
+
 export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   const initialSnapshot = getLibraryDetailSnapshot(libraryId);
   const restoredFromSnapshot = useRef(initialSnapshot !== undefined);
@@ -161,7 +173,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   // 删除/转移等详情页操作会把旧窗口标记为过期。先保留它供滚动锚点落脚，
   // 后台对账成功后再清除标记；请求失败时下次返回仍会重试。
   const [snapshotStale, setSnapshotStale] = useState(initialSnapshot?.stale ?? false);
-  // 工单抽屉：从哪个胶囊点进来就落在哪个 tab；null = 关闭
+  // 待处理抽屉：从哪个入口点进来就落在哪个 tab；null = 关闭
   const [issueTab, setIssueTab] = useState<IssueTab | null>(null);
 
   // 轮询乱序守卫：扫描期间后端响应时间抖动大，上一轮的慢响应可能晚于
@@ -239,23 +251,28 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
       listLibraryItemIds(libraryId).catch(() => []),
       listLibraryItemIndex(libraryId).catch(() => []),
       canManageLibraries
-        ? listUnidentifiedLibraryFiles(libraryId).catch(() => [])
+        ? keepOnError(listUnidentifiedLibraryFiles(libraryId))
         : Promise.resolve([]),
       canManageLibraries
-        ? listLibraryIdentityReviewCases(libraryId).catch(() => [])
+        ? keepOnError(listLibraryIdentityReviewCases(libraryId))
         : Promise.resolve([]),
       canManageLibraries
-        ? listIgnoredLibraryFiles(libraryId).catch(() => [])
+        ? keepOnError(listIgnoredLibraryFiles(libraryId))
         : Promise.resolve([]),
       canManageLibraries
-        ? listMissingLibraryFiles(libraryId).catch(() => [])
+        ? keepOnError(listMissingLibraryFiles(libraryId))
         : Promise.resolve([]),
       listSubscriptions().catch(() => []),
     ])
       .then(([libs, libraryItems, ids, index, unknown, reviewGroups, ignoredGroups, missingItems, subs]) => {
         if (seq !== reloadSeq.current) return;
         setSnapshotStale(false);
-        setFailed(false);
+        // 四张待办清单只要有一张没拿到，就保留上一份快照并点亮顶部提示条。
+        // 把失败折成空数组等于对用户说"没有待办了"：胶囊消失、⋯ 菜单的计数
+        // 归零，一个 500/超时/权限不足看起来和"全处理完了"一模一样
+        setFailed(
+          [unknown, reviewGroups, ignoredGroups, missingItems].some((rows) => rows === null),
+        );
         // 轮询快照内容没变时复用旧引用：库存墙逐条目复用（配合 InventoryCell
         // 的 memo，只有真正变化的格子重渲染），其余列表整体复用。否则扫描期间
         // 每 3 秒就把几百个格子全部重画一遍，表现为周期性卡顿
@@ -269,10 +286,10 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
           ids.length === prev.size && ids.every((i) => prev.has(i)) ? prev : new Set(ids),
         );
         setWallIndex((prev) => keepIfEqual(prev, index));
-        setUnidentified((prev) => keepIfEqual(prev, unknown));
-        setReview((prev) => keepIfEqual(prev, reviewGroups));
-        setIgnored((prev) => keepIfEqual(prev, ignoredGroups));
-        setMissing((prev) => keepIfEqual(prev, missingItems));
+        if (unknown !== null) setUnidentified((prev) => keepIfEqual(prev, unknown));
+        if (reviewGroups !== null) setReview((prev) => keepIfEqual(prev, reviewGroups));
+        if (ignoredGroups !== null) setIgnored((prev) => keepIfEqual(prev, ignoredGroups));
+        if (missingItems !== null) setMissing((prev) => keepIfEqual(prev, missingItems));
         setSubscriptions((prev) => keepIfEqual(prev, subs));
         // 整库刷新可能是别处（首页卡片/其他设备）发起的：库列表响应里带着
         // 状态，据此补种进度面板——否则只有挂载时那一次探测，之后发起的
@@ -417,6 +434,21 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
 
   // 待识别的文件总数（清单按条目目录分组，一组可能是一部剧的几十集）
   const unidentifiedFiles = unidentified.reduce((n, g) => n + g.file_count, 0);
+  // ⋯ 菜单上的待处理件数：数的是**要拍几次板**，不是涉及多少文件——
+  // 一部剧几十集聚成一组、认领一次就完事，按文件数报会把 3 件活说成 80 件
+  const pendingCount = missing.length + unidentified.length + review.length;
+  // 从菜单进抽屉时的落点：按抽屉自身的 tab 顺序取第一个有内容的，都空了
+  // 落在「待识别」（最常用的那张，且空态文案本身就是有效答复）
+  const pendingTab: IssueTab =
+    missing.length > 0
+      ? "missing"
+      : unidentified.length > 0
+        ? "unidentified"
+        : review.length > 0
+          ? "review"
+          : ignored.length > 0
+            ? "ignored"
+            : "unidentified";
 
   // 整库刷新中"正在处理哪几部、各在什么阶段"：海报墙据此点亮对应的格，
   // 用户不必在进度面板与墙之间对片名
@@ -649,6 +681,8 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
           if (ok) void kick(startLibraryMetadataRefresh(libraryId));
         });
       }}
+      pendingCount={pendingCount}
+      onOpenPending={() => setIssueTab(pendingTab)}
       onEdit={() => setEditing(library)}
     />
   ) : null;
@@ -677,11 +711,16 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
           {meta.label}库 · {stats.item_count} 部作品 · {stats.file_count} 个文件 ·{" "}
           {formatBytes(stats.total_size_bytes)}
         </p>
+        {/* 这一行是**那一次扫描的成绩单**，每个数都是历史（last_scan 只在扫描
+            收尾时覆写，见 _last_scan_view）。所以说「未识别 N」——它是当轮
+            的战果，不是现在还剩多少活。当前待办一律看下方胶囊与 ⋯ 菜单里的
+            「待处理」，那两处读的是实时清单。曾经这里写「待识别 N」，扫完
+            之后哪怕全处理干净了也永远停在那个数，与消失的胶囊自相矛盾 */}
         {library.last_scan && !busy && (
           <p className="mt-1 text-sub text-white/45">
             最近扫描 {formatRelativeTime(library.last_scan.finished_at)}
             {library.last_scan.cancelled ? "（手动停止，未扫完）" : ""} · 新入账{" "}
-            {library.last_scan.scanned}（识别 {library.last_scan.identified} / 待识别{" "}
+            {library.last_scan.scanned}（识别 {library.last_scan.identified} / 未识别{" "}
             {library.last_scan.unidentified}）
             {library.last_scan.retried > 0
               ? ` · 重试识别 ${library.last_scan.retried} 个待识别文件`
@@ -700,7 +739,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
               : ""}
           </p>
         )}
-        {/* —— 健康状态胶囊：工单收进抽屉，海报墙保持干净 —— */}
+        {/* —— 健康状态胶囊：待办收进抽屉，海报墙保持干净 —— */}
         {canManageLibraries && (missing.length > 0 ||
           unidentified.length > 0 ||
           review.length > 0 ||
@@ -795,7 +834,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
         )}
       </div>
 
-      {/* —— 工单抽屉：缺失 / 待识别 / 身份复核 / 已忽略，从头部胶囊进入 —— */}
+      {/* —— 待处理抽屉：缺失 / 待识别 / 身份复核 / 已忽略，从胶囊或 ⋯ 菜单进入 —— */}
       {canManageLibraries && (
         <IssueDrawer
           open={issueTab}
@@ -902,7 +941,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   );
 }
 
-/* —— 库操作折叠菜单：扫描库 / 整理文件名 / 刷新元数据 / 编辑库 全收进 ⋯，头部不再摆一排按钮。
+/* —— 库操作折叠菜单：待处理 / 扫描库 / 整理文件名 / 刷新元数据 / 编辑库 全收进 ⋯，头部不再摆一排按钮。
  *  三个长任务在菜单里就能看进度并原地停止，运行状态另由头部胶囊常驻呈现。 */
 
 interface LibraryActionsMenuProps {
@@ -920,6 +959,9 @@ interface LibraryActionsMenuProps {
   metaProgress: string | null;
   /** 扫描或整理进行中：编辑库须锁定（任务正按当前根路径读写台账） */
   busy: boolean;
+  /** 待处理总件数（缺失 + 待识别 + 身份复核）；0 也照常给入口，见下方说明 */
+  pendingCount: number;
+  onOpenPending: () => void;
   onOrganize: () => void;
   onToggleMetaRefresh: () => void;
   onEdit: () => void;
@@ -935,6 +977,8 @@ function LibraryActionsMenu({
   refreshingMeta,
   metaProgress,
   busy,
+  pendingCount,
+  onOpenPending,
   onOrganize,
   onToggleMetaRefresh,
   onEdit,
@@ -973,6 +1017,14 @@ function LibraryActionsMenu({
           collisionPadding={12}
           className="menu-surface z-50 min-w-[11rem] !rounded-xl p-1"
         >
+          {/* 待处理清单的**常驻**入口。头部胶囊是条件渲染的（有待办才出现），
+              光靠它意味着清单一空抽屉就整个不可达——「已忽略」更是从来没有
+              自己的胶囊，把待识别全忽略掉之后就再也回不去了。这里恒在，
+              计数为 0 时也不隐藏：归档随时可查，空清单本身也是有效答案 */}
+          <DropdownMenu.Item onSelect={onOpenPending} className={itemClass}>
+            待处理{pendingCount > 0 ? ` ${pendingCount}` : ""}
+          </DropdownMenu.Item>
+          <DropdownMenu.Separator className="my-1 h-px bg-white/[0.07]" />
           {/* 扫描中切换为「停止扫描」（增量幂等：已入账的保留，剩余下次继续） */}
           <DropdownMenu.Item
             onSelect={onToggleScan}
@@ -1362,7 +1414,7 @@ function PendingCell({ sub }: { sub: Subscription }) {
   );
 }
 
-/* —— 工单抽屉：缺失 / 待识别 / 身份复核 / 已忽略，右侧滑出，海报墙不再被工单铺满 ——
+/* —— 待处理抽屉：缺失 / 待识别 / 身份复核 / 已忽略，右侧滑出，海报墙不再被待办铺满 ——
    「已忽略」不是待办，是**已处理**的归档：默认不打扰，只在有内容时露出 tab，
    给识别器变强之后反悔的机会。 */
 
@@ -1458,7 +1510,7 @@ function IssueDrawer({
       className="fixed inset-0 z-50 [bottom:calc(-1*var(--vp-overshoot))]"
       role="dialog"
       aria-modal="true"
-      aria-label="库工单"
+      aria-label="待处理"
     >
       <button
         type="button"

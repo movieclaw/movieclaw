@@ -43,10 +43,18 @@ class LibraryFileRepository:
         return list(result.scalars().all())
 
     async def list_unidentified(self, *, library_id: int | None = None) -> list[LibraryFile]:
-        """待识别清单：落了账、没挂上身份锚、且用户没忽略过的文件。"""
+        """待识别清单：**在位**、没挂上身份锚、且用户没忽略过的文件。
+
+        在位口径不能省：文件已经不在磁盘上了还催人去认领，是让用户对着
+        一个认领完也没有片源的条目做决定；那类行属于「缺失」清单。少了这
+        个条件，清单还会与库卡片上的 ``stats_unidentified_count`` 角标对不上
+        （后者一直只算在位，见 LibraryRepository.refresh_stats）——同一件事
+        两个数，用户没法判断该信哪个。
+        """
         stmt = select(LibraryFile).where(
             LibraryFile.media_item_id.is_(None),  # type: ignore[union-attr]
             LibraryFile.ignored_at.is_(None),  # type: ignore[union-attr]
+            LibraryFile.in_place(),
         )
         if library_id is not None:
             stmt = stmt.where(LibraryFile.library_id == library_id)
