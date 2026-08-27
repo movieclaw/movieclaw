@@ -336,3 +336,62 @@ async def test_scan_and_organize_are_mutually_exclusive(db, tmp_path):
         assert scan_summary.scanned == 0
     finally:
         organize_mod._organize_tasks.finish(library_id)
+
+
+@pytest.mark.asyncio
+async def test_organize_job_progress_is_throttled_but_conclusion_exact(db, tmp_path):
+    """进度持久化按秒节流：事件数远小于文件数，但结论与终态进度必须精确。
+
+    逐文件写进度会触发“事件 → SSE → 每个任务中心客户端拉两次列表”的
+    放大链（大库整理被拖慢一个数量级的元凶之一）。节流只该丢中间观察值：
+    改名结果、最终 current/total 一个都不能差。
+    """
+    import asyncio
+
+    from movieclaw_api.services import jobs as jobs_svc
+    from movieclaw_db.models import JobStatus
+
+    root = tmp_path / "movies"
+    file_count = 24
+    async with db.session() as session:
+        library = await _make_library(session, kind=MediaKind.MOVIE, root=root)
+        for i in range(file_count):
+            movie = await _make_item(
+                session, kind=MediaKind.MOVIE, tmdb_id=9000 + i, title=f"影片{i}", year=2020
+            )
+            messy = root / f"Movie.{i}.2020.1080p" / f"movie.{i}.mkv"
+            messy.parent.mkdir(parents=True)
+            messy.write_bytes(b"x")
+            _add_file(session, library, movie, messy)
+        await session.commit()
+        plan = await organize_mod.build_organize_plan(session, library)
+        created = await organize_mod.enqueue_organize_job(session, library, plan)
+
+    await jobs_svc.init_job_dispatcher(max_parallel=1)
+    try:
+        deadline = asyncio.get_running_loop().time() + 10.0
+        while True:
+            async with db.session() as session:
+                row = await jobs_svc.get_job(session, created.job.id)
+                assert row is not None
+                if row.status is JobStatus.SUCCEEDED:
+                    break
+                assert row.status not in (JobStatus.FAILED, JobStatus.BLOCKED), row.error
+            assert asyncio.get_running_loop().time() < deadline, "整理作业未在期限内完成"
+            await asyncio.sleep(0.05)
+
+        async with db.session() as session:
+            row = await jobs_svc.get_job(session, created.job.id)
+            events = await jobs_svc.job_events(session, created.job.id)
+        assert row is not None and row.result is not None
+        assert row.result["renamed"] == file_count
+        assert row.progress["percent"] == 100.0
+        progress_events = [e for e in events if e.event_type == "progress"]
+        # 节流后事件数应当只与耗时（秒级）相关，而不是与文件数同阶
+        assert len(progress_events) < file_count / 2
+        # 终态前最后一条进度必须是精确的 total/total（最后一个文件强制落盘）
+        final = [e for e in progress_events if e.payload.get("phase") == "organizing"][-1]
+        assert final.payload["current"] == file_count
+        assert final.payload["total"] == file_count
+    finally:
+        await jobs_svc.close_job_dispatcher()

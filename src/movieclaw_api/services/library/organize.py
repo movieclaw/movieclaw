@@ -422,38 +422,42 @@ async def _organize(
                 percent=0.0 if plan.renames else 100.0,
                 details={"errors": 0},
             )
+        # 一次性把本库台账行拉进会话身份映射：随后逐文件的 session.get
+        # 全部命中内存，不再每个文件都打一次数据库
+        await session.execute(select(LibraryFile).where(LibraryFile.library_id == library_id))
         dirty_parents: set[Path] = set()
+        total = len(plan.renames)
         for done, action in enumerate(plan.renames, start=1):
             if context is not None:
                 await context.raise_if_cancelled()
             row = await session.get(LibraryFile, action.file_id)
             if row is None:
                 summary.errors.append(f"台账文件已不存在，跳过：{action.source_path}")
-                _organize_tasks.update(library_id, (done, len(plan.renames)))
+                _organize_tasks.update(library_id, (done, total))
                 continue
             src = Path(action.source_path)
             dst = Path(action.target_path)
-            relocated = row.file_path == action.target_path and dst.exists()
+            # 台账已指向目标 = 上次执行连台账都提交过了，确认磁盘在位即可
+            ledger_done = row.file_path == action.target_path
             try:
-                if not relocated:
-                    if row.file_path != action.source_path:
+                if ledger_done:
+                    if not await asyncio.to_thread(dst.exists):
                         raise _MoveError(f"台账路径已被其他操作修改，跳过：{row.file_path}")
-                    if src.exists() and not dst.exists():
-                        await asyncio.to_thread(_move_no_clobber, src, dst)
-                    elif not src.exists() and dst.exists():
-                        # 服务可能停在“磁盘改名成功、台账提交前”。持久化计划
-                        # 能证明目标属于本任务，此时只补台账，不重复改名。
-                        pass
-                    elif src.exists() and dst.exists():
-                        raise _MoveError(f"源与目标同时存在，跳过以免覆盖：{src} → {dst}")
-                    else:
-                        raise _MoveError(f"源与目标都不存在，无法继续整理：{src}")
+                elif row.file_path != action.source_path:
+                    raise _MoveError(f"台账路径已被其他操作修改，跳过：{row.file_path}")
+                else:
+                    await asyncio.to_thread(
+                        _resolve_and_move,
+                        src,
+                        dst,
+                        missing_message=f"源与目标都不存在，无法继续整理：{src}",
+                    )
             except _MoveError as exc:
                 summary.errors.append(str(exc))
-                _organize_tasks.update(library_id, (done, len(plan.renames)))
+                _organize_tasks.update(library_id, (done, total))
                 continue
             # 改名成功立即随迁台账：中途失败不会留下账实不符的批量烂摊子
-            if not relocated:
+            if not ledger_done:
                 container = dst.suffix.lstrip(".").lower() or None
                 await repo.relocate(
                     action.file_id, file_path=action.target_path, container=container
@@ -464,28 +468,28 @@ async def _organize(
                 sidecar_src = Path(sidecar.source_path)
                 sidecar_dst = Path(sidecar.target_path)
                 try:
-                    if sidecar_src.exists() and not sidecar_dst.exists():
-                        await asyncio.to_thread(_move_no_clobber, sidecar_src, sidecar_dst)
-                    elif not sidecar_src.exists() and sidecar_dst.exists():
-                        pass  # 上次执行已改名，重启后直接确认完成
-                    elif sidecar_src.exists() and sidecar_dst.exists():
-                        raise _MoveError(
-                            f"源与目标同时存在，跳过以免覆盖：{sidecar_src} → {sidecar_dst}"
-                        )
-                    else:
-                        raise _MoveError(f"附属文件已不存在：{sidecar_src}")
+                    await asyncio.to_thread(
+                        _resolve_and_move,
+                        sidecar_src,
+                        sidecar_dst,
+                        missing_message=f"附属文件已不存在：{sidecar_src}",
+                    )
                     summary.sidecars_renamed += 1
                 except _MoveError as exc:
                     summary.errors.append(f"附属文件改名失败：{exc}")
-            _organize_tasks.update(library_id, (done, len(plan.renames)))
-            if context is not None:
+            _organize_tasks.update(library_id, (done, total))
+            # 进度持久化按秒节流（最后一个文件必写）：逐文件写会触发
+            # “事件 → SSE → 所有任务中心客户端各拉两次列表”的放大链，
+            # 实测能把整轮整理拖慢一个数量级。实时进度由上面的内存态
+            # _organize_tasks 提供，节流不影响接口里的进行中读数
+            if context is not None and (done == total or context.progress_due()):
                 await context.update_progress(
                     mode="determinate",
                     phase="organizing",
-                    message=f"已整理 {done} / {len(plan.renames)} 个文件",
+                    message=f"已整理 {done} / {total} 个文件",
                     current=done,
-                    total=len(plan.renames),
-                    percent=(done / len(plan.renames) * 100) if plan.renames else 100.0,
+                    total=total,
+                    percent=(done / total * 100) if total else 100.0,
                     details={"errors": len(summary.errors)},
                 )
 
@@ -583,6 +587,29 @@ async def _run_organize_job(
     if summary.errors:
         message += f"，{len(summary.errors)} 个问题已跳过"
     return {"message": message, **asdict(summary)}
+
+
+def _resolve_and_move(src: Path, dst: Path, *, missing_message: str) -> None:
+    """（线程池内运行）看一眼现场，把该做的改名做掉。
+
+    exists 判定与改名收进同一次线程跳转：省去逐文件三四次跨线程 stat 的
+    调度开销，更重要的是网络挂载上这些都是可能阻塞的调用，一律不允许
+    落在事件循环里（一次挂住会冻住全站请求）。
+
+    源在目标不在 → 改名；源不在目标在 → 无事（服务可能停在“磁盘改名
+    成功、台账提交前”，持久化计划能证明目标属于本任务，调用方只补台账）；
+    其余现场说明磁盘被并发修改，抛 _MoveError 逐条跳过。
+    """
+    src_exists = src.exists()
+    dst_exists = dst.exists()
+    if src_exists and not dst_exists:
+        _move_no_clobber(src, dst)
+        return
+    if not src_exists and dst_exists:
+        return
+    if src_exists and dst_exists:
+        raise _MoveError(f"源与目标同时存在，跳过以免覆盖：{src} → {dst}")
+    raise _MoveError(missing_message)
 
 
 def _move_no_clobber(src: Path, dst: Path) -> None:

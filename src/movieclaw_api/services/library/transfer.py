@@ -516,7 +516,9 @@ async def _transfer(
                 )
                 summary.files_relocated += 1
             state.processed = done
-            if context is not None:
+            # 按秒节流（最后一条必写）：逐路径写进度会触发“事件 → SSE →
+            # 客户端拉列表”的放大链；实时读数由内存态 _transfer_tasks 提供
+            if context is not None and (done == len(plan.moves) or context.progress_due()):
                 await context.update_progress(
                     mode="determinate",
                     phase="transferring",

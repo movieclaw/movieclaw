@@ -454,3 +454,69 @@ async def test_job_api_lists_waits_events_and_cancels(job_db, job_client: AsyncC
     cancelled = await job_client.post(f"/jobs/{created.job.id}/cancel")
     assert cancelled.status_code == 200
     assert cancelled.json()["data"]["job"]["status"] == "cancelled"
+
+
+async def test_update_progress_from_stale_lease_writes_nothing(job_db) -> None:
+    """列级进度写路径的租约守卫：令牌不符时不落任何东西，只举失联旗。"""
+    async with job_db.session() as session:
+        created = await jobs.create_job(session, job_type="test.stale-lease", input_data={})
+        row = await jobs.get_job(session, created.job.id)
+        assert row is not None
+        row.status = JobStatus.RUNNING
+        row.lease_owner = "lease-current"
+        await session.commit()
+
+    lease_lost = asyncio.Event()
+    context = jobs.JobContext(created.job.id, lease_token="lease-stale", lease_lost=lease_lost)
+    await context.update_progress(mode="determinate", phase="work", message="过期执行的进度")
+
+    assert lease_lost.is_set()
+    async with job_db.session() as session:
+        row = await jobs.get_job(session, created.job.id)
+        events = await jobs.job_events(session, created.job.id)
+    assert row is not None
+    assert row.progress.get("message") != "过期执行的进度"
+    assert all(event.event_type != "progress" for event in events)
+
+
+async def test_update_progress_after_terminal_state_is_ignored(job_db) -> None:
+    """终态后迟到的进度写入必须被丢弃：结果页不能被回退成“进行中”。"""
+    async with job_db.session() as session:
+        created = await jobs.create_job(session, job_type="test.terminal-progress", input_data={})
+        row = await jobs.get_job(session, created.job.id)
+        assert row is not None
+        row.status = JobStatus.SUCCEEDED
+        row.lease_owner = "lease-done"
+        await session.commit()
+
+    context = jobs.JobContext(created.job.id, lease_token="lease-done", lease_lost=asyncio.Event())
+    await context.update_progress(mode="determinate", phase="work", message="迟到的进度")
+
+    async with job_db.session() as session:
+        row = await jobs.get_job(session, created.job.id)
+        events = await jobs.job_events(session, created.job.id)
+    assert row is not None
+    assert row.status is JobStatus.SUCCEEDED
+    assert row.progress.get("message") != "迟到的进度"
+    assert all(event.event_type != "progress" for event in events)
+
+
+async def test_job_list_slims_bulky_plan_but_detail_keeps_it(
+    job_db, job_client: AsyncClient
+) -> None:
+    """列表响应裁掉 MB 级计划快照（任务中心高频拉取），详情保留完整输入。"""
+    big_plan = {"library_id": 1, "renames": [{"source_path": f"/a/{i}.mkv"} for i in range(50)]}
+    async with job_db.session() as session:
+        created = await jobs.create_job(
+            session,
+            job_type="library.organize",
+            input_data={"library_id": 1, "plan": big_plan},
+        )
+
+    listed = await job_client.get("/jobs")
+    item = next(x for x in listed.json()["data"]["items"] if x["id"] == created.job.id)
+    assert "plan" not in item["input_data"]
+    assert item["input_data"]["library_id"] == 1  # 小键保留，前端详情芯片仍可用
+
+    detail = await job_client.get(f"/jobs/{created.job.id}")
+    assert detail.json()["data"]["input_data"]["plan"] == big_plan

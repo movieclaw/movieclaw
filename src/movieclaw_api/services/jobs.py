@@ -629,6 +629,23 @@ class JobContext:
         self.job_id = job_id
         self._lease_token = lease_token
         self._lease_lost = lease_lost
+        # progress_due 的节流时钟：初值取“过去”，任务的第一次写不被节流
+        self._last_progress_write = time.monotonic() - 3600.0
+
+    def progress_due(self, *, min_interval: float = 1.0) -> bool:
+        """高频循环里是否该持久化一次进度（时间节流）。
+
+        进度写入 = 一次 Job 行更新 + 一条事件 + 一次 SSE 广播 + 每个打开着
+        任务中心的客户端各拉两次列表快照。逐文件写会把这整条放大链跑成
+        每秒几十遍（实测能把整理任务拖慢一个数量级，也把前端刷成常亮）。
+        循环体应当 ``if done == total or context.progress_due():`` 再写；
+        节流丢掉的只是中间观察值，恢复检查点始终以领域台账为准。
+        """
+        now = time.monotonic()
+        if now - self._last_progress_write < min_interval:
+            return False
+        self._last_progress_write = now
+        return True
 
     async def update_progress(
         self,
@@ -655,20 +672,46 @@ class JobContext:
             "phase_count": phase_count,
             "details": details or {},
         }
+        values: dict[str, Any] = {"progress": progress}
+        if usage is not None:
+            # 用量和进度共享同一事务，前端、CLI 与 Agent 读取任一 revision
+            # 都不会看到“进度已完成但 token 仍滞后”的撕裂状态。
+            values["usage"] = usage
         db = get_database()
         async with db.session() as session:
-            job = await session.get(Job, self.job_id)
-            if job is None or job.status in TERMINAL_JOB_STATUSES:
+            # 定向 UPDATE，全程不加载 ORM 整行：input_data 可能是 MB 级
+            # （整理/转移把完整计划存在里面），而进度是最高频写路径——
+            # 逐文件把大行读一遍再写回，会让单文件成本随计划体积线性膨胀
+            # （实测 4000 文件的库每文件从 8ms 恶化到 53ms）。
+            # revision 由数据库原子自增，语义与 _record_transition 一致。
+            now = utcnow()
+            claimed = await session.execute(
+                update(Job)
+                .where(
+                    Job.id == self.job_id,
+                    Job.lease_owner == self._lease_token,
+                    Job.status.not_in([status.value for status in TERMINAL_JOB_STATUSES]),
+                )
+                .values(revision=Job.revision + 1, updated_at=now, **values)
+            )
+            if not claimed.rowcount:
+                owner = (
+                    await session.execute(select(Job.lease_owner).where(Job.id == self.job_id))
+                ).scalar_one_or_none()
+                if owner != self._lease_token:
+                    self._lease_lost.set()
                 return
-            if job.lease_owner != self._lease_token:
-                self._lease_lost.set()
-                return
-            job.progress = progress
-            if usage is not None:
-                # 用量和进度共享同一事务，前端、CLI 与 Agent 读取任一 revision
-                # 都不会看到“进度已完成但 token 仍滞后”的撕裂状态。
-                job.usage = usage
-            await _record_transition(session, job, "progress", progress)
+            revision = (
+                await session.execute(select(Job.revision).where(Job.id == self.job_id))
+            ).scalar_one()
+            session.add(
+                JobEvent(
+                    job_id=self.job_id,
+                    revision=revision,
+                    event_type="progress",
+                    payload=progress,
+                )
+            )
             await session.commit()
         await notify_job_change()
 
@@ -680,22 +723,33 @@ class JobContext:
         """
         db = get_database()
         async with db.session() as session:
-            job = await session.get(Job, self.job_id)
-            if job is None or job.lease_owner != self._lease_token:
+            # 只取需要的两列：Job 整行可能带着 MB 级 input_data
+            row = (
+                await session.execute(
+                    select(Job.progress, Job.lease_owner).where(Job.id == self.job_id)
+                )
+            ).one_or_none()
+            if row is None or row.lease_owner != self._lease_token:
                 self._lease_lost.set()
                 return default_progress("任务执行租约已失效")
-            return dict(job.progress or {})
+            return dict(row.progress or {})
 
     async def cancel_requested(self) -> bool:
         if self._lease_lost.is_set():
             return True
         db = get_database()
         async with db.session() as session:
-            job = await session.get(Job, self.job_id)
+            # 同 current_progress：取消检查在逐文件循环里高频调用，
+            # 只读两个小列，不搬 input_data 大行
+            row = (
+                await session.execute(
+                    select(Job.lease_owner, Job.cancel_requested_at).where(Job.id == self.job_id)
+                )
+            ).one_or_none()
             return bool(
-                job is None
-                or job.lease_owner != self._lease_token
-                or job.cancel_requested_at is not None
+                row is None
+                or row.lease_owner != self._lease_token
+                or row.cancel_requested_at is not None
             )
 
     async def raise_if_cancelled(self) -> None:

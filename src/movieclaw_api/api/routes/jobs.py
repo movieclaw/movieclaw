@@ -40,9 +40,20 @@ def _origin(principal: Principal, client_name: str | None) -> str:
     return "cli" if principal.kind == "pat" else "web"
 
 
-def _job_view(job: Job, resources: list[JobResource]) -> JobView:
+# 列表响应里整体裁掉的 input_data 键：值是 MB 级的执行快照（整理/转移把
+# 完整计划落在这里做崩溃恢复凭据），前端从不读它，而任务中心每收到一个
+# 事件就要拉两次列表——带上它，一次快照就是几 MB 的序列化 + 传输，全部
+# 压在事件循环上（实测单次 150ms+，能把同机的后台任务拖慢一个数量级）。
+# 详情接口（jobs.show）不裁剪，需要完整输入的场景走详情。
+_BULKY_INPUT_KEYS = frozenset({"plan"})
+
+
+def _job_view(job: Job, resources: list[JobResource], *, slim_input: bool = False) -> JobView:
     progress = jobs.default_progress()
     progress.update(job.progress or {})
+    input_data = job.input_data
+    if slim_input and any(key in input_data for key in _BULKY_INPUT_KEYS):
+        input_data = {k: v for k, v in input_data.items() if k not in _BULKY_INPUT_KEYS}
     return JobView(
         id=job.id,
         job_type=job.job_type,
@@ -52,7 +63,7 @@ def _job_view(job: Job, resources: list[JobResource]) -> JobView:
         prompt_revision=job.prompt_revision,
         provider_ref=job.provider_ref,
         status=job.status,
-        input_data=job.input_data,
+        input_data=input_data,
         progress=progress,  # type: ignore[arg-type]
         result=job.result,
         error=job.error,
@@ -89,9 +100,10 @@ async def job_view(session: AsyncSession, job: Job) -> JobView:
 
 
 async def job_views(session: AsyncSession, rows: list[Job]) -> list[JobView]:
-    """列表只批量读取一次资源索引，避免任务中心产生 N+1 查询。"""
+    """列表只批量读取一次资源索引，避免任务中心产生 N+1 查询；
+    并裁掉 MB 级的输入快照（见 _BULKY_INPUT_KEYS）。"""
     resource_map = await jobs.resources_for_jobs(session, [row.id for row in rows])
-    return [_job_view(row, resource_map.get(row.id, [])) for row in rows]
+    return [_job_view(row, resource_map.get(row.id, []), slim_input=True) for row in rows]
 
 
 def _parse_statuses(value: str | None) -> list[JobStatus]:
