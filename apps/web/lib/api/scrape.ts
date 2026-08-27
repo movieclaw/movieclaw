@@ -24,6 +24,11 @@ export interface ScrapeSetting {
   poster_size: string;
   backdrop_size: string;
   still_size: string;
+  /** 命名模板；空串 = 用内置默认（即模板化之前的行为） */
+  naming_entry_dir: string;
+  naming_movie_file: string;
+  naming_season_dir: string;
+  naming_episode_file: string;
 }
 
 /** "跟随环境变量"字段当前的生效值（用于展示"跟随中：xxx"）。 */

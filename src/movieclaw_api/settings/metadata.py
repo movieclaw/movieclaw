@@ -79,6 +79,23 @@ class MetadataScrapeSetting(SettingSchema):
     backdrop_size: str = Field(default="", description="背景档位；空 = 跟随环境变量")
     still_size: str = Field(default="", description="分集剧照档位；空 = 跟随环境变量")
 
+    # —— STEP 3 命名与整理 ————————————————————————————
+    # 空串 = 用内置默认模板（即模板化之前的写死行为）。模板语法与校验见
+    # services/library/naming.py；层级结构固定，模板只描述一段名字
+    naming_entry_dir: str = Field(
+        default="", description="条目目录模板；空 = 默认 {title} ({year})"
+    )
+    naming_movie_file: str = Field(
+        default="", description="电影文件名模板；空 = 默认 {title} ({year})"
+    )
+    naming_season_dir: str = Field(
+        default="", description="季目录模板；空 = 默认 Season {season:02d}"
+    )
+    naming_episode_file: str = Field(
+        default="",
+        description="剧集文件名模板；空 = 默认 {title} ({year}) - S{season:02d}E{episode:02d}",
+    )
+
     # —— 校验 ————————————————————————————————————————
     @field_validator("language_priority")
     @classmethod
@@ -122,6 +139,27 @@ class MetadataScrapeSetting(SettingSchema):
         for token in value:
             if not _IMAGE_TOKEN.match(token):
                 raise ValueError(f"图片语言项不合法：{token}（应为语言码或 meta/orig/null 特殊项）")
+        return value
+
+    @field_validator(
+        "naming_entry_dir", "naming_movie_file", "naming_season_dir", "naming_episode_file"
+    )
+    @classmethod
+    def _check_naming(cls, value: str, info) -> str:
+        """空串 = 用默认模板；非空则按该字段的可用占位符与防重名规则校验。
+
+        校验逻辑放在 naming.py（渲染与校验同源，规则改一处），此处延迟导入
+        避开 settings → naming → scrape_config → settings 的导入环。
+        """
+        value = value.strip()
+        if not value:
+            return value
+        from movieclaw_api.services.library.naming import validate_template
+
+        field = info.field_name.removeprefix("naming_")
+        error = validate_template(field, value)
+        if error is not None:
+            raise ValueError(error)
         return value
 
     @field_validator("poster_size")

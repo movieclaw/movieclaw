@@ -109,6 +109,42 @@ def test_scrape_config_validation_rejected(client: TestClient) -> None:
         assert resp.status_code == 422, patch
 
 
+def test_naming_templates_save_and_validate(client: TestClient) -> None:
+    """命名模板：合法模板落库并立即生效，非法模板整体拒绝。"""
+    base = client.get("/api/v1/scrape/config").json()["data"]["setting"]
+    assert base["naming_entry_dir"] == ""  # 空 = 用内置默认模板
+
+    payload = {
+        **base,
+        "naming_entry_dir": "{title} ({year}) [tmdbid-{tmdb_id}]",
+        "naming_episode_file": "{title}.S{season:02d}E{episode:02d}",
+    }
+    resp = client.put("/api/v1/scrape/config", json=payload)
+    assert resp.status_code == 200
+    assert (
+        resp.json()["data"]["setting"]["naming_entry_dir"] == "{title} ({year}) [tmdbid-{tmdb_id}]"
+    )
+
+    # 保存即生效：渲染器读的是同一份快照
+    from movieclaw_api.services.library.naming import effective_templates
+
+    templates = effective_templates()
+    assert templates.entry_dir == "{title} ({year}) [tmdbid-{tmdb_id}]"
+    assert templates.episode_file == "{title}.S{season:02d}E{episode:02d}"
+    # 没配的字段继续用内置默认
+    assert templates.season_dir == "Season {season:02d}"
+
+    for patch in (
+        {"naming_entry_dir": "{title}/{year}"},  # 路径分隔符
+        {"naming_entry_dir": "{year}"},  # 缺片名占位符
+        {"naming_episode_file": "{title} E{episode:02d}"},  # 缺季号
+        {"naming_season_dir": "Season"},  # 缺季号
+        {"naming_entry_dir": "{title} {episode}"},  # 该模板不可用的占位符
+    ):
+        bad = client.put("/api/v1/scrape/config", json={**base, **patch})
+        assert bad.status_code == 422, patch
+
+
 def test_discover_region_defaults_and_save(client: TestClient) -> None:
     """地区默认跟随 TMDB_REGION（CN）；保存即生效并落库。"""
     resp = client.get("/api/v1/discover/region")

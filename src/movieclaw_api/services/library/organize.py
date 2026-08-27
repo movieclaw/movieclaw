@@ -54,7 +54,13 @@ from sqlmodel import select
 from movieclaw_api.services import jobs
 from movieclaw_api.services.library.config import sanitize_folder_name
 from movieclaw_api.services.library.fsops import rename_no_replace
-from movieclaw_api.services.library.layout import SCAN_VIDEO_EXTS, entry_base_name
+from movieclaw_api.services.library.layout import SCAN_VIDEO_EXTS
+from movieclaw_api.services.library.naming import (
+    entry_dir_name_of,
+    episode_file_name,
+    movie_file_name,
+    season_dir_name,
+)
 from movieclaw_api.services.task_state import TaskState
 from movieclaw_db.engine import get_database
 from movieclaw_db.models import FileState, Library, LibraryFile, MediaItem, utcnow
@@ -189,17 +195,18 @@ def _build_plan_sync(
                 SkipEntry(row.file_path, "解析不出集号，无法生成规范文件名（可在待识别里修正季集）")
             )
             continue
-        base = entry_base_name(item)
+        # 目录名与文件名各走各的模板（默认两者相同，即模板化之前的行为）
+        entry_dir = entry_dir_name_of(item)
         ext = src.suffix.lower()
         if kind is MediaKind.MOVIE:
-            target = Path(root) / base / f"{base}{ext}"
+            target = Path(root) / entry_dir / f"{movie_file_name(item)}{ext}"
         else:
             season = row.season_number
             target = (
                 Path(root)
-                / base
-                / f"Season {season:02d}"
-                / f"{base} - S{season:02d}E{row.episode_number:02d}{ext}"
+                / entry_dir
+                / season_dir_name(season, item)
+                / f"{episode_file_name(item, season, row.episode_number)}{ext}"
             )
         if str(target) == row.file_path:
             plan.already_ok += 1

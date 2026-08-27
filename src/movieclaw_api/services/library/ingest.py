@@ -123,8 +123,12 @@ from movieclaw_api.services.library.fsops import rename_no_replace
 from movieclaw_api.services.library.layout import (
     IN_PROGRESS_MARKERS,
     VIDEO_EXTS,
-    entry_base_name,
     is_disc_dir,
+)
+from movieclaw_api.services.library.naming import (
+    episode_file_name,
+    movie_file_name,
+    season_dir_name,
 )
 from movieclaw_api.services.library.resolve import verify_resolve
 from movieclaw_api.services.library.scan import guess_evidence
@@ -430,9 +434,7 @@ def _disc_relative_path(relative_path: str) -> bool:
     return any(part.upper() in {"BDMV", "VIDEO_TS"} for part in parts)
 
 
-def _snapshot_ready_files(
-    entry: Path, ready_files: list[_ReadyDownloadFile]
-) -> _EntrySnapshot:
+def _snapshot_ready_files(entry: Path, ready_files: list[_ReadyDownloadFile]) -> _EntrySnapshot:
     """只对下载器放行的文件取快照，目录内其他写入不再阻塞本批作业。"""
     fingerprint_parts: list[str] = []
     videos: list[Path] = []
@@ -453,9 +455,7 @@ def _snapshot_ready_files(
             marker in lower for marker in _IGNORE_MARKERS
         ):
             continue
-        fingerprint_parts.append(
-            f"{ready.relative_path}\0{stat.st_size}\0{stat.st_mtime_ns}"
-        )
+        fingerprint_parts.append(f"{ready.relative_path}\0{stat.st_size}\0{stat.st_mtime_ns}")
         videos.append(file)
     fingerprint = hashlib.sha256("\n".join(fingerprint_parts).encode()).hexdigest()
     return _EntrySnapshot(
@@ -1050,9 +1050,7 @@ async def _deferred_flipped(prefix: str) -> bool:
             continue
         async with db.session() as session:
             record = (
-                await session.execute(
-                    select(IngestEntry).where(IngestEntry.entry_path == path)
-                )
+                await session.execute(select(IngestEntry).where(IngestEntry.entry_path == path))
             ).scalar_one_or_none()
         if record is None or record.fingerprint != snap.fingerprint:
             return True
@@ -1173,9 +1171,7 @@ async def _process_entry(
         if not partial_batch.files:
             return
         try:
-            snap = await asyncio.to_thread(
-                _snapshot_ready_files, entry, list(partial_batch.files)
-            )
+            snap = await asyncio.to_thread(_snapshot_ready_files, entry, list(partial_batch.files))
         except IngestSourceChanged:
             return
         if not snap.videos:
@@ -1293,13 +1289,7 @@ async def _process_entry(
                 return
 
         matched_hashes = (
-            sorted(
-                {
-                    info_hash
-                    for ready in partial_batch.files
-                    for info_hash in ready.info_hashes
-                }
-            )
+            sorted({info_hash for ready in partial_batch.files for info_hash in ready.info_hashes})
             if partial_batch is not None
             else [b.info_hash for b in matches if b.info_hash]
         )
@@ -1449,11 +1439,7 @@ async def _ingest_entry(
             item,
             schedule_retry=job_context is None,
         )
-        if (
-            status is IngestStatus.IMPORTED
-            and job_context is not None
-            and imported_files
-        ):
+        if status is IngestStatus.IMPORTED and job_context is not None and imported_files:
             await job_context.update_progress(
                 mode="determinate",
                 phase="finalizing",
@@ -1608,21 +1594,18 @@ async def _ingest_entry(
     if staging is not None:
         # 自定义目录与库入库共用同一命名规范——回流文件名天然规范，
         # 库根扫描识别精准命中，这就是两段链路的全部衔接
-        dest_dir = derive_entry_dir(staging, title=item.title, year=item.year)
+        dest_dir = derive_entry_dir(staging, title=item.title, year=item.year, item=item)
     else:
         assert dest_library is not None
-        dest_dir = derive_save_path(dest_library, title=item.title, year=item.year)
+        dest_dir = derive_save_path(dest_library, title=item.title, year=item.year, item=item)
         if dest_dir is None:
             return await conclude(
                 IngestStatus.FAILED, f"媒体库「{dest_library.name}」没有配置根路径，无法入库"
             )
         # 入库落点避让（docs/design/disc-version-layout.md §3）：条目目录
         # 本身已是原盘时改落同级版本目录。标签与 _transfer 的版本标签同源
-        version_label = (
-            (spec.resolution if spec else None) or release_attrs.media_source or "V2"
-        )
+        version_label = (spec.resolution if spec else None) or release_attrs.media_source or "V2"
         dest_dir = _avoid_disc_entry_dir(dest_dir, version_label)
-    base = entry_base_name(item)
     repo = LibraryFileRepository(session)
     assert item.id is not None
     assert staging is not None or (dest_library is not None and dest_library.id is not None)
@@ -1637,9 +1620,7 @@ async def _ingest_entry(
         known_seasons = set(
             (
                 await session.execute(
-                    select(MediaSeason.season_number).where(
-                        MediaSeason.media_item_id == item.id
-                    )
+                    select(MediaSeason.season_number).where(MediaSeason.media_item_id == item.id)
                 )
             ).scalars()
         )
@@ -1702,13 +1683,15 @@ async def _ingest_entry(
             completed_bytes += file.stat().st_size
             continue
         ext = file.suffix.lower()
+        # 文件名走命名模板（默认即 ``标题 (年份)`` / ``… - SxxEyy``）；
+        # 版本标签等冲突后缀仍由 _transfer 追加，不进模板
         if kind is MediaKind.MOVIE:
-            target = Path(dest_dir) / f"{base}{ext}"
+            target = Path(dest_dir) / f"{movie_file_name(item)}{ext}"
         else:
             target = (
                 Path(dest_dir)
-                / f"Season {season:02d}"
-                / f"{base} - S{season:02d}E{episode:02d}{ext}"
+                / season_dir_name(season, item)
+                / f"{episode_file_name(item, season, episode)}{ext}"
             )
         file_spec = spec if file == main else await asyncio.to_thread(probe_media, file)
         # 门禁逐文件生效：暂停的季包可能前几集完整、后几集残缺，主文件
@@ -2552,9 +2535,7 @@ async def _execute_ingest_job(
     verdict = _torrent_verdict(matches)
     if file_scoped and verdict == "downloading":
         current_batch = await _completed_file_batch(entry, matches)
-        current_ready = {
-            (ready.relative_path, ready.size_bytes) for ready in current_batch.files
-        }
+        current_ready = {(ready.relative_path, ready.size_bytes) for ready in current_batch.files}
         if any(
             (ready.relative_path, ready.size_bytes) not in current_ready for ready in ready_files
         ):
@@ -2588,9 +2569,7 @@ async def _execute_ingest_job(
         entry_name=entry.name,
     )
     current_hashes = (
-        []
-        if file_scoped
-        else [brief.info_hash.lower() for brief in matches if brief.info_hash]
+        [] if file_scoped else [brief.info_hash.lower() for brief in matches if brief.info_hash]
     )
     matched_hashes = sorted(set(stored_hashes) | set(current_hashes))
 
@@ -3287,9 +3266,7 @@ class IngestWatcher:
             added += 1
         self._watched = set(self._entries)
         if added:
-            logger.info(
-                "监听导入已更新：新增 %d 个，共监听 %d 个源目录", added, len(self._entries)
-            )
+            logger.info("监听导入已更新：新增 %d 个，共监听 %d 个源目录", added, len(self._entries))
         return self._watched - previously_watched
 
     @staticmethod

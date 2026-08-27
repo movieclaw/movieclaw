@@ -105,7 +105,7 @@ async def dispatch(
         subscription.library_id, subscription.kind, item=item
     )
     decision = await resolve_save_path(
-        session, library, kind=subscription.kind, title=item.title, year=item.year
+        session, library, kind=subscription.kind, title=item.title, year=item.year, item=item
     )
     dispatch_dir = decision.path
     # entry_level = 投递目录就是库内条目目录：可以安全锚定副标题线索，
@@ -230,8 +230,7 @@ async def dispatch(
                     else "download"
                 ),
                 # 同理粘性：承担过手动选种语义就保持（验证裁决据此分流）
-                "manual": manual
-                or (existing_attempt is not None and existing_attempt.manual),
+                "manual": manual or (existing_attempt is not None and existing_attempt.manual),
                 "status": (
                     DownloadAttemptStatus.ACTIVE
                     if attempt_alive
@@ -328,9 +327,7 @@ async def dispatch(
     if upgrade_rows and not claimed:
         activity_type = ActivityType.UPGRADE_GRABBED
         label_text = (
-            f"{upgrade_labels[1]}（当前 {upgrade_labels[0]}）"
-            if upgrade_labels
-            else spec_text
+            f"{upgrade_labels[1]}（当前 {upgrade_labels[0]}）" if upgrade_labels else spec_text
         )
         message = (
             f"{units_label}发现更高版本，已提交洗版下载：来自 {candidate.site_id} 的"
@@ -375,9 +372,7 @@ async def dispatch(
                 "dry_run": dry_run,
                 "info_hash": submitted_info_hash,
                 "units": [[w.season_number, w.episode_number] for w in claimed],
-                "upgrade_units": [
-                    [w.season_number, w.episode_number] for w in upgrade_rows
-                ],
+                "upgrade_units": [[w.season_number, w.episode_number] for w in upgrade_rows],
                 "resource_publish_time": _utc_text(resource_publish_time),
                 "resource_first_seen_at": _utc_text(resource_first_seen_at),
                 "submitted_at": _utc_text(submitted_at),
@@ -559,13 +554,9 @@ async def _filter_upgrade_in_flight(
     ).scalars()
     for attempt in attempts:
         in_flight.update(
-            (int(u[0]), int(u[1]))
-            for u in attempt.units
-            if isinstance(u, list) and len(u) == 2
+            (int(u[0]), int(u[1])) for u in attempt.units if isinstance(u, list) and len(u) == 2
         )
-    return [
-        w for w in upgrade_rows if (w.season_number, w.episode_number) not in in_flight
-    ]
+    return [w for w in upgrade_rows if (w.season_number, w.episode_number) not in in_flight]
 
 
 async def _claim(session: AsyncSession, wanted_rows: list[WantedItem]) -> list[WantedItem]:

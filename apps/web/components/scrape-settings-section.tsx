@@ -4,15 +4,15 @@
  * 「刮削与整理」设置分区（docs/design/scrape-customization.md §3）。
  *
  * 按刮削管线的执行顺序分 tab：STEP 1 元数据（语言优先级、分级地区）→
- * STEP 2 图片（海报/背景语言优先级、门槛、质量档位）。命名模板（STEP 3）
- * 与目录写入细分（STEP 4）随 P2/P3 接入，tab 结构已就位。
+ * STEP 2 图片（海报/背景语言优先级、门槛、质量档位）→ STEP 3 命名与整理
+ * （模板 + 实时预览）。目录写入细分（STEP 4）随 P3 接入，tab 结构已就位。
  *
  * 有序优先级统一用「排序芯片」交互：点击加入优先级并按点击顺序编号
  * （首位标「主」/「首选」），再点移除；常用项直接摆在行内，长尾语种/地区
  * 经「更多」搜索面板加入（全量表来自后端代理的 TMDB configuration 接口）。
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useToast } from "@/components/feedback";
 import {
@@ -242,6 +242,7 @@ function OrderChips({
 const TABS = [
   { id: "meta", step: "STEP 1", label: "元数据", detail: "语言与文本" },
   { id: "images", step: "STEP 2", label: "图片", detail: "海报与背景" },
+  { id: "naming", step: "STEP 3", label: "命名与整理", detail: "目录与文件名" },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
@@ -270,6 +271,300 @@ function Card({
       <p className="mb-4 mt-1 max-w-[62ch] text-sub text-[var(--text-muted)]">{desc}</p>
       {children}
     </section>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* 命名模板：实时预览                                                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 预览用的模板渲染器——**规则镜像自后端 services/library/naming.py**。
+ * 权威实现在后端：保存时的校验与真实落盘的名字都由它决定，这里只为让用户
+ * 边打字边看到结果。三步与后端一一对应：整组丢弃占位符全空的括号组 →
+ * 替换占位符 → 收缩并清洗。改后端规则时**必须同步改这里**。
+ */
+const TOKEN_RE = /\{(\w+)(?::0(\d)d)?\}/g;
+const BRACKET_GROUP_RE = /[([【][^()[\]【】]*[)\]】]/g;
+const FORBIDDEN_RE = /[\\/:*?"<>|]/g;
+
+function sanitizeSegment(value: string): string {
+  return value
+    .replace(FORBIDDEN_RE, " ")
+    .replace(/\s+/g, " ")
+    .replace(/^[\s.]+|[\s.]+$/g, "");
+}
+
+function tokenValue(ctx: Record<string, unknown>, name: string, pad?: string): string {
+  const raw = ctx[name];
+  if (raw === undefined || raw === null || raw === "") return "";
+  let text = sanitizeSegment(String(raw));
+  if (pad && /^\d+$/.test(text)) text = text.padStart(Number(pad), "0");
+  return text;
+}
+
+function renderTemplate(template: string, ctx: Record<string, unknown>): string {
+  // ① 占位符全空的括号组连同组内字面文本一起丢弃（收掉 "[tmdbid-]" 这种残留）
+  const dropped = template.replace(BRACKET_GROUP_RE, (group) => {
+    const tokens = [...group.matchAll(TOKEN_RE)];
+    if (tokens.length === 0) return group;
+    return tokens.every((m) => !tokenValue(ctx, m[1], m[2])) ? "" : group;
+  });
+  // ② 替换占位符
+  const filled = dropped.replace(TOKEN_RE, (_m, name: string, pad?: string) =>
+    tokenValue(ctx, name, pad),
+  );
+  // ③ 收缩：括号内侧 → 重复分隔符 → 多余空白 → 首尾分隔符
+  const collapsed = filled
+    .replace(/([([【])[\s\-–]+/g, "$1")
+    .replace(/[\s\-–]+([)\]】])/g, "$1")
+    .replace(/(?:\s*-\s*){2,}/g, " - ")
+    .replace(/\s{2,}/g, " ")
+    .replace(/^[\s\-–.]+|[\s\-–.]+$/g, "");
+  return sanitizeSegment(collapsed) || "未命名";
+}
+
+/** 模板字段定义：可用占位符与后端 naming.ALLOWED_TOKENS 一一对应。 */
+const COMMON_TOKENS = ["title", "original_title", "year", "tmdb_id", "imdb_id"];
+const FILE_ATTR_TOKENS = ["resolution", "media_source", "release_group"];
+
+const NAMING_FIELDS = [
+  {
+    key: "naming_entry_dir" as const,
+    label: "条目目录",
+    note: "电影与剧集共用",
+    fallback: "{title} ({year})",
+    tokens: COMMON_TOKENS,
+  },
+  {
+    key: "naming_movie_file" as const,
+    label: "电影文件名",
+    note: "",
+    fallback: "{title} ({year})",
+    tokens: [...COMMON_TOKENS, ...FILE_ATTR_TOKENS],
+  },
+  {
+    key: "naming_season_dir" as const,
+    label: "季目录",
+    note: "必须包含 {season}",
+    fallback: "Season {season:02d}",
+    tokens: [...COMMON_TOKENS, "season"],
+  },
+  {
+    key: "naming_episode_file" as const,
+    label: "剧集文件名",
+    note: "必须包含 {season} 与 {episode}",
+    fallback: "{title} ({year}) - S{season:02d}E{episode:02d}",
+    tokens: [...COMMON_TOKENS, ...FILE_ATTR_TOKENS, "season", "episode", "episode_title"],
+  },
+];
+
+/** 预览样例：一部电影 + 一集剧集，字段齐全便于看清每个占位符的效果。 */
+const SAMPLE_MOVIE = {
+  title: "沙丘：第二部",
+  original_title: "Dune: Part Two",
+  year: 2024,
+  tmdb_id: 693134,
+  imdb_id: "tt15239678",
+  resolution: "2160p",
+  media_source: "BluRay",
+  release_group: "FRDS",
+};
+const SAMPLE_EPISODE = {
+  title: "风筝",
+  original_title: "风筝",
+  year: 2017,
+  tmdb_id: 68035,
+  imdb_id: "tt6952510",
+  season: 1,
+  episode: 3,
+  episode_title: "延安来的姑娘",
+  resolution: "1080p",
+  media_source: "WEB-DL",
+  release_group: "CHDWEB",
+};
+
+/** 前端侧轻校验：与后端同口径，只为即时反馈；能否保存以后端返回为准。 */
+function templateError(key: string, template: string, allowed: string[]): string | null {
+  if (!template.trim()) return null; // 空 = 用默认模板
+  if (/[\\/]/.test(template)) return "不能包含路径分隔符（目录层级是固定的）";
+  const used = [...template.matchAll(TOKEN_RE)].map((m) => m[1]);
+  const unknown = used.filter((t) => !allowed.includes(t));
+  if (unknown.length) return `不可用的占位符：${unknown.map((t) => `{${t}}`).join("、")}`;
+  if (
+    (key === "naming_entry_dir" || key === "naming_movie_file") &&
+    !used.some((t) => t === "title" || t === "original_title")
+  ) {
+    return "必须包含 {title} 或 {original_title}，否则不同影片会重名";
+  }
+  if (key === "naming_season_dir" && !used.includes("season")) {
+    return "必须包含 {season}，否则不同季的同集号文件会互相覆盖";
+  }
+  if (key === "naming_episode_file" && !(used.includes("season") && used.includes("episode"))) {
+    return "必须包含 {season} 与 {episode}，否则同一部剧的多集会互相覆盖";
+  }
+  return null;
+}
+
+function NamingTab({
+  setting,
+  patch,
+}: {
+  setting: ScrapeSetting;
+  patch: (changes: Partial<ScrapeSetting>) => void;
+}) {
+  const [focused, setFocused] = useState<string>("naming_episode_file");
+  const refs = useRef<Record<string, HTMLInputElement | null>>({});
+
+  const errors = NAMING_FIELDS.map((f) => templateError(f.key, setting[f.key], f.tokens));
+  const valid = errors.every((e) => e === null);
+
+  const tpl = (key: (typeof NAMING_FIELDS)[number]["key"]) =>
+    setting[key].trim() || NAMING_FIELDS.find((f) => f.key === key)!.fallback;
+
+  const moviePath = valid
+    ? `${renderTemplate(tpl("naming_entry_dir"), SAMPLE_MOVIE)}/${renderTemplate(
+        tpl("naming_movie_file"),
+        SAMPLE_MOVIE,
+      )}.mkv`
+    : "";
+  const episodePath = valid
+    ? `${renderTemplate(tpl("naming_entry_dir"), SAMPLE_EPISODE)}/${renderTemplate(
+        tpl("naming_season_dir"),
+        SAMPLE_EPISODE,
+      )}/${renderTemplate(tpl("naming_episode_file"), SAMPLE_EPISODE)}.mkv`
+    : "";
+
+  const insertToken = (token: string) => {
+    const key = focused;
+    const field = NAMING_FIELDS.find((f) => f.key === key);
+    if (!field) return;
+    const input = refs.current[key];
+    const current = setting[field.key] || field.fallback;
+    const start = input?.selectionStart ?? current.length;
+    const end = input?.selectionEnd ?? start;
+    const next = `${current.slice(0, start)}{${token}}${current.slice(end)}`;
+    patch({ [field.key]: next } as Partial<ScrapeSetting>);
+    window.requestAnimationFrame(() => {
+      const el = refs.current[key];
+      if (!el) return;
+      el.focus();
+      const caret = start + token.length + 2;
+      el.setSelectionRange(caret, caret);
+    });
+  };
+
+  const focusedField = NAMING_FIELDS.find((f) => f.key === focused) ?? NAMING_FIELDS[3];
+
+  return (
+    <Card
+      title="命名模板"
+      perLibrary
+      desc="整理与入库的目录/文件命名。留空即使用默认模板；字段缺失时会连同相邻括号自动收缩。目录层级固定为「条目目录 / 季目录 / 文件」，不可自定义。"
+    >
+      {NAMING_FIELDS.map((field, i) => (
+        <div key={field.key} className="mt-3.5 first:mt-0">
+          <label
+            htmlFor={field.key}
+            className="mb-1.5 flex items-baseline gap-2 text-sub font-semibold"
+          >
+            {field.label}
+            {field.note && (
+              <small className="text-caption font-normal text-[var(--text-faint)]">
+                {field.note}
+              </small>
+            )}
+          </label>
+          <input
+            id={field.key}
+            ref={(el) => {
+              refs.current[field.key] = el;
+            }}
+            spellCheck={false}
+            placeholder={field.fallback}
+            value={setting[field.key]}
+            onFocus={() => setFocused(field.key)}
+            onChange={(e) => patch({ [field.key]: e.target.value } as Partial<ScrapeSetting>)}
+            className={`${INPUT_CLASS} w-full font-mono ${
+              errors[i] ? "border-[var(--danger)]/55" : ""
+            }`}
+          />
+          {errors[i] && <p className="mt-1.5 text-caption text-[var(--danger)]">{errors[i]}</p>}
+        </div>
+      ))}
+
+      <div className="mt-4">
+        <p className="mb-1.5 text-micro uppercase tracking-widest text-[var(--text-faint)]">
+          可用占位符（点击插入到「{focusedField.label}」）
+        </p>
+        <div className="flex flex-wrap gap-1.5">
+          {focusedField.tokens.map((token) => (
+            <button
+              key={token}
+              type="button"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => insertToken(token)}
+              className="rounded-lg border border-white/[0.08] bg-white/[0.04] px-2 py-1 font-mono text-caption text-[var(--accent-2)] transition-colors hover:bg-white/[0.07] hover:text-[var(--accent)]"
+            >
+              {`{${token}}`}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="mt-4 overflow-hidden rounded-xl border border-white/[0.08]">
+        <div className="flex items-center justify-between bg-white/[0.04] px-3.5 py-2">
+          <span className="text-micro uppercase tracking-widest text-[var(--text-faint)]">
+            实时预览
+          </span>
+          <span className={`text-caption ${valid ? "text-[var(--ok)]" : "text-[var(--danger)]"}`}>
+            {valid ? "✓ 模板有效" : "✕ 模板有误"}
+          </span>
+        </div>
+        {valid && (
+          <div className="flex flex-col gap-3 overflow-x-auto px-3.5 py-3">
+            <div>
+              <p className="mb-1 text-caption text-[var(--text-faint)]">
+                电影 · 沙丘：第二部（2024）· 2160p BluRay FRDS
+              </p>
+              <p className="whitespace-nowrap font-mono text-sub leading-relaxed">
+                <span className="text-[var(--text-faint)]">/media/电影/</span>
+                <span className="text-[var(--accent)]">{moviePath}</span>
+              </p>
+            </div>
+            <div>
+              <p className="mb-1 text-caption text-[var(--text-faint)]">
+                剧集 · 风筝（2017）第 1 季第 3 集 · 1080p WEB-DL CHDWEB
+              </p>
+              <p className="whitespace-nowrap font-mono text-sub leading-relaxed">
+                <span className="text-[var(--text-faint)]">/media/剧集/</span>
+                <span className="text-[var(--accent)]">{episodePath}</span>
+              </p>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="mt-3 flex flex-wrap items-center gap-2.5">
+        <button
+          type="button"
+          onClick={() =>
+            patch({
+              naming_entry_dir: "",
+              naming_movie_file: "",
+              naming_season_dir: "",
+              naming_episode_file: "",
+            })
+          }
+          className="btn-glass rounded-lg px-3 py-1.5 text-sub"
+        >
+          恢复默认模板
+        </button>
+        <span className="text-caption text-[var(--text-faint)]">
+          同条目多版本会自动追加「 - 版本标签」后缀，无需写进模板
+        </span>
+      </div>
+    </Card>
   );
 }
 
@@ -403,7 +698,9 @@ export function ScrapeSettingsSection() {
         ))}
       </div>
 
-      {tab === "meta" ? (
+      {tab === "naming" ? (
+        <NamingTab setting={setting} patch={patch} />
+      ) : tab === "meta" ? (
         <>
           <Card
             title="元数据语言"

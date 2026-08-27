@@ -186,6 +186,7 @@ async def submit_download(
             kind=payload.media_kind,
             title=manual_item.title,
             year=manual_item.year,
+            item=manual_item,
         )
         derived_path = decision.path
         entry_level = decision.entry_level
@@ -404,11 +405,7 @@ async def delete_download_task_from_downloader(
             info_hash=normalized_hash,
             delete_files=delete_files,
         ),
-        message=(
-            "已删除种子任务和数据文件"
-            if delete_files
-            else "已删除种子任务，数据文件已保留"
-        ),
+        message=("已删除种子任务和数据文件" if delete_files else "已删除种子任务，数据文件已保留"),
     )
 
 

@@ -218,6 +218,7 @@ async def resolve_save_path(
     kind: str,
     title: str | None = None,
     year: int | None = None,
+    item: object | None = None,
 ) -> SavePathDecision:
     """投递目录三级兜底的唯一入口。
 
@@ -231,8 +232,10 @@ async def resolve_save_path(
     from movieclaw_api.services.library.config import derive_save_path
 
     rule = await resolve_dispatch_rule(session, library.id if library else None, kind=kind)
+    # 带上条目：命名模板里的 {original_title}/{tmdb_id} 只有拿到条目才渲染得出，
+    # 投递侧与整理侧因此算出同一个目录名（命名同源，见 library/naming.py）
     entry_dir = (
-        derive_save_path(library, title=title, year=year) if library and title else None
+        derive_save_path(library, title=title, year=year, item=item) if library and title else None
     )
     if rule is not None:
         return SavePathDecision(

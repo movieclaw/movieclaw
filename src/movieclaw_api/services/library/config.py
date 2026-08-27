@@ -40,20 +40,30 @@ def sanitize_folder_name(name: str) -> str:
     return cleaned or "未命名"
 
 
-def derive_entry_dir(root: str, *, title: str, year: int | None) -> str:
-    """由根路径推导条目目录：``{root}/{title} ({year})``。
+def derive_entry_dir(root: str, *, title: str, year: int | None, item: object | None = None) -> str:
+    """由根路径推导条目目录（目录名走命名模板，默认 ``{title} ({year})``）。
 
     库入库与监听导入的自定义目录目标共用同一命名规范——命名同源是
     "整理输出 → 外部流转 → 库根回流"链路的唯一衔接机制
-    （docs/design/strm-workflow.md）。路径用 POSIX 分隔符拼接。
+    （docs/design/strm-workflow.md）；模板化后这个"同一"由
+    ``library/naming.py`` 独家保证，本函数不再自己拼名字。
+    路径用 POSIX 分隔符拼接。
     """
-    folder = sanitize_folder_name(title)
-    if year is not None:
-        folder = f"{folder} ({year})"
-    return posixpath.join(root.rstrip("/"), folder)
+    from movieclaw_api.services.library.naming import entry_dir_name, item_context
+
+    # 给了条目就用完整上下文：模板里的 {original_title}/{tmdb_id} 只有拿到
+    # 条目才渲染得出来。手动下载等"还没有 TMDB 身份"的场景只有 title/year，
+    # 那些占位符渲染为空并被收缩——文件落盘后由扫描识别、整理给出规范名
+    extra = item_context(item) if item is not None else {}
+    # title/year 以显式入参为准（调用方拿到的就是权威值），条目只补其余占位符
+    extra.pop("title", None)
+    extra.pop("year", None)
+    return posixpath.join(root.rstrip("/"), entry_dir_name(title=title, year=year, **extra))
 
 
-def derive_save_path(library: Library, *, title: str, year: int | None) -> str | None:
+def derive_save_path(
+    library: Library, *, title: str, year: int | None, item: object | None = None
+) -> str | None:
     """由库推导入库保存路径：``{主根}/{title} ({year})``。
 
     电影与剧集同构（剧集的 Season 子目录是 L2 整理器的职责，投递阶段
@@ -64,7 +74,7 @@ def derive_save_path(library: Library, *, title: str, year: int | None) -> str |
     root = library.primary_root
     if not root:
         return None
-    return derive_entry_dir(root, title=title, year=year)
+    return derive_entry_dir(root, title=title, year=year, item=item)
 
 
 class LibraryConfigService:
