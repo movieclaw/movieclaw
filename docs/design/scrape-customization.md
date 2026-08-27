@@ -54,10 +54,31 @@ TMDB 环境变量（语言/地区/图片档位）、库级 `write_media_assets` 
 
 | 配置 | 类型/默认 | 替代的写死点 |
 |---|---|---|
-| 元数据语言 | 下拉，默认 `zh-CN` | `TMDB_LANGUAGE` |
+| 元数据语言优先级 | 有序列表（1~3 项），默认 `[zh-CN, en-US]` | `TMDB_LANGUAGE` + `_fetch_english_text` 写死的 en-US 兜底 |
 | 地区 | 下拉，默认 `CN` | `TMDB_REGION` |
-| 简介兜底语言 | 下拉，默认 `en-US`，可关 | `_fetch_english_text` 写死 en-US |
 | 分级优先地区 | 有序多选，默认 `[CN, US]` | `_parse_certification` 写死 CN→US |
+
+**语言做优先级而不是单选**（用户决策 2026-08-27）：Emby/Plex/Kodi 的
+心智模型都是"首选语言 + 回落"，单选 + 独立的"简介兜底语言"是同一
+语义的拆散表达，合并成一个有序列表更直观，也与选图的语言优先级（§2.2）
+同构。语义与成本：
+
+- **首位 = 请求语言**：TMDB 单次请求只接受一个 `language`，首位决定
+  详情/季集请求的语言，也决定类型名、演员译名等只随请求语言走的字段；
+- **条目级字段回落零额外请求**：档案请求本就带
+  `append_to_response=translations`（现只用于收集别名），标题/简介/
+  tagline 的各语言翻译已在同一响应里——主语言缺失时按优先级从
+  translations 本地取下一语言即可。现状"简介缺失补拉一次 en-US"
+  是它的退化版，改造后那次请求反而省掉；
+- **"缺失"按字段判定**：简介/tagline 看空值；标题看 translations 里
+  有无该语言的翻译条目（TMDB 对无翻译的标题会自动退回原名，不能拿
+  返回值判断）。默认 `[zh-CN, en-US]` 下与现状行为一致：简介兜底
+  语义不变，标题回落与 TMDB 自身的回落链等效；
+- **季集级回落有闸**：分集标题/简介不在 translations 里，逐集拉翻译
+  是每集一次请求，不可接受。规则：某季主语言的分集覆盖率过低（集名
+  多为 "Episode N" 占位/简介大面积为空）时，整季按下一语言**重拉一次**
+  ——每季每级至多一次请求，且只在刮削管线内生效；
+- `media_metadata.scrape_language` 记录首位语言（现状语义不变）。
 
 不开放：别名收集范围（`_ALIAS_REGIONS/_ALIAS_LANGUAGES`）。别名喂的是
 匹配内核（种子命名以中英为主），不是展示偏好；开放它只会让用户误伤
@@ -165,7 +186,7 @@ strm 回流链路（docs/design/strm-workflow.md）直接断裂。
 | 命名渲染器（模板解析/校验/渲染/示例预览） | `services/library/naming.py` 新文件 |
 | 四处命名接入改造 | `library/config.py`（derive_entry_dir）、`layout.py`（entry_base_name）、`ingest.py`、`organize.py` |
 | 选图策略接入偏好参数 | `movieclaw_media/library.py`（pick_poster/pick_backdrop/list_image_candidates 加参数，保持纯函数） |
-| 语言/分级/兜底接入 | `movieclaw_media/library.py`、`media_scrape.py` |
+| 语言优先级/分级接入（translations 本地回落 + 季级重拉闸，替代 `_fetch_english_text`） | `movieclaw_media/library.py`、`media_scrape.py` |
 | `library.scrape_overrides` 列 | alembic 迁移一次 |
 | 设置 API + 前端分区 | `api/routes/settings*`、`apps/web` |
 
