@@ -418,6 +418,18 @@ def _relative_entry_file(entry: Path, file: Path) -> str | None:
     return relative.as_posix() if relative.parts else None
 
 
+def _disc_relative_path(relative_path: str) -> bool:
+    """下载器文件清单里的路径是否属于蓝光/DVD 原盘结构。
+
+    整树快照会在下钻时识别 ``BDMV`` / ``VIDEO_TS``，但边下边入库只拿到
+    下载器放行的文件白名单，不能靠目录遍历补判。这里直接检查相对路径的
+    目录段，既覆盖单片原盘 ``BDMV/STREAM/...``，也覆盖合集里嵌套的
+    ``影片名/BDMV/STREAM/...``。
+    """
+    parts = PurePosixPath(relative_path.replace("\\", "/")).parts
+    return any(part.upper() in {"BDMV", "VIDEO_TS"} for part in parts)
+
+
 def _snapshot_ready_files(
     entry: Path, ready_files: list[_ReadyDownloadFile]
 ) -> _EntrySnapshot:
@@ -930,6 +942,12 @@ async def _completed_file_batch(entry: Path, matches: list) -> _DownloadFileBatc
             if relative is None:
                 continue
             mapped_selected += 1
+            # 原盘的 m2ts/vob 是播放列表引用的传输流分段，不是可独立入库的
+            # 正片。下载中若按“已完成文件”放行，会把几秒钟的小分段误当电影，
+            # 还会随每批分段完成不断制造新作业。原盘沿用既有整树语义：等整种
+            # 完成后由 _snapshot 标记 has_disc，并只生成一条“暂不支持”结论。
+            if _disc_relative_path(relative):
+                return _DownloadFileBatch(files=(), consumable_hashes=())
             lower = source.name.lower()
             if source.suffix.lower() not in VIDEO_EXTS or any(
                 marker in lower for marker in _IGNORE_MARKERS
@@ -977,13 +995,13 @@ async def _completed_file_batch(entry: Path, matches: list) -> _DownloadFileBatc
     return _DownloadFileBatch(files=tuple(ready), consumable_hashes=consumable)
 
 
-async def _claimed_by_blocked_batches(session, entry_path: str) -> frozenset[str]:
-    """已被挂起的分批入库作业认领的文件（条目内相对路径）。
+async def _claimed_by_file_batches(session, entry_path: str) -> frozenset[str]:
+    """所有既有分批入库作业已经认领的文件（条目内相对路径）。
 
-    挂起批次的白名单钉死了这些文件，它们只能等人工或解析能力升级。后续批次
-    必须避开——否则新一批会把同一个识别不出的文件再拉进来、整批跟着挂起，
-    剩下的集依旧进不了库（连坐的第二种形态：不是被旧作业拦住，而是被它带的
-    那个坏文件拖住）。
+    文件白名单一经持久化就归属于原作业：blocked 等人工，succeeded 已入库，
+    failed/cancelled 只能显式重试原作业。后续批次若再次带上这些旧文件，不仅
+    重做无用功，还会让一个历史坏文件反复拖住整批；因此新作业只接真正新增的
+    ready 文件。原作业自身的重试直接使用已保存白名单，不经过这里，不受影响。
     """
     from movieclaw_db.models import Job
 
@@ -992,7 +1010,6 @@ async def _claimed_by_blocked_batches(session, entry_path: str) -> frozenset[str
         await session.execute(
             select(Job).where(
                 Job.dedupe_key.startswith(f"{prefix}:"),  # type: ignore[union-attr]
-                Job.status == JobStatus.BLOCKED,
             )
         )
     ).scalars()
@@ -1198,26 +1215,28 @@ async def _process_entry(
                     _deferred.pop(path_str, None)
                 _failed_retry.pop(path_str, None)
                 return
-            if partial_batch is not None:
-                # 放行的新批次要避开挂起批次已认领的文件。剔除后重算快照：
-                # 指纹要与真实白名单一致，它同时是本批的去重分桶键。
-                claimed = await _claimed_by_blocked_batches(session, path_str)
-                remaining = tuple(
-                    ready for ready in partial_batch.files if ready.relative_path not in claimed
-                )
-                if not remaining:
-                    return  # 本轮完成的文件全在挂起批次里：等人工，无事可做
-                if len(remaining) != len(partial_batch.files):
-                    # 仍有文件卡在挂起批次里，种子不能算消费完毕
-                    partial_batch = _DownloadFileBatch(files=remaining, consumable_hashes=())
-                    try:
-                        snap = await asyncio.to_thread(
-                            _snapshot_ready_files, entry, list(remaining)
-                        )
-                    except IngestSourceChanged:
-                        return
-                    if not snap.videos:
-                        return
+
+        if partial_batch is not None:
+            # 每轮都避开所有历史分批作业已认领的文件，而不只在“最新作业恰好
+            # blocked”时做。真实坏例是：大批次挂起后，一个新文件单独成功，
+            # 最新作业随即变成 succeeded；旧实现下一轮便忘掉更早的 blocked，
+            # 也再次带上已成功文件，把上千个旧文件连同新文件再建一批，任务
+            # 中心因此指数式膨胀。
+            claimed = await _claimed_by_file_batches(session, path_str)
+            remaining = tuple(
+                ready for ready in partial_batch.files if ready.relative_path not in claimed
+            )
+            if not remaining:
+                return  # 本轮完成的文件全在挂起批次里：等人工，无事可做
+            if len(remaining) != len(partial_batch.files):
+                # 仍有文件卡在挂起批次里，种子不能算消费完毕
+                partial_batch = _DownloadFileBatch(files=remaining, consumable_hashes=())
+                try:
+                    snap = await asyncio.to_thread(_snapshot_ready_files, entry, list(remaining))
+                except IngestSourceChanged:
+                    return
+                if not snap.videos:
+                    return
 
         if snap is None:
             snap = await asyncio.to_thread(_snapshot, entry)
@@ -2853,6 +2872,58 @@ async def reconcile_ignored_entry_jobs() -> int:
     return cancelled
 
 
+async def reconcile_disc_batch_jobs() -> int:
+    """启动时收口旧版把原盘流分段当视频建立的活跃作业。
+
+    只依据作业已经持久化的文件白名单判定，不扫描 NAS 目录；普通电影、剧集
+    批次和终态作业都不受影响。升级后这一步会清掉任务中心里的历史红项，新的
+    原盘下载则由 ``_completed_file_batch`` 在建作业前直接拦住。
+    """
+    try:
+        async with get_database().session() as session:
+            rows = list(
+                (
+                    await session.execute(
+                        select(Job).where(
+                            Job.job_type == "library.ingest",
+                            Job.status.in_(
+                                [
+                                    status.value
+                                    for status in ACTIVE_JOB_STATUSES
+                                    if status is not JobStatus.CANCELLING
+                                ]
+                            ),
+                        )
+                    )
+                ).scalars()
+            )
+            cancelled = 0
+            for active in rows:
+                ready_files = (active.input_data or {}).get("ready_files") or ()
+                if not any(
+                    isinstance(ready, dict)
+                    and isinstance(ready.get("path"), str)
+                    and _disc_relative_path(ready["path"])
+                    for ready in ready_files
+                ):
+                    continue
+                _, changed = await jobs.request_cancel(
+                    session,
+                    active.id,
+                    requested_by="system:disc-batch-reconcile",
+                    reason="原盘流分段不是独立视频，本批次由升级后的入库逻辑自动收口",
+                )
+                cancelled += int(changed)
+    except Exception:  # noqa: BLE001 -- 历史清理失败不能让整个服务拒绝启动
+        logger.warning(
+            "原盘分批入库的遗留作业对账失败（不影响启动，下次启动将重试）", exc_info=True
+        )
+        return 0
+    if cancelled:
+        logger.info("启动对账已收口 %d 个原盘分批入库遗留作业", cancelled)
+    return cancelled
+
+
 async def restore_entry(session, entry_id: int) -> IngestEntry:
     """恢复处理：置空指纹让下轮巡检必然重处理，并立即请求巡检。
 
@@ -3332,6 +3403,9 @@ async def init_ingest_watcher() -> None:
     # v0.18.0 及更早版本只取消同一条目的最新作业，旧 blocked 批次会一直
     # 挂在任务中心。监听启动前做一次纯数据库对账，升级镜像即可自动修复。
     await reconcile_ignored_entry_jobs()
+    # v0.18.0 的边下边入库会把 BDMV/VIDEO_TS 流分段误当独立视频并持续建
+    # 作业；同样在监听启动前只读作业白名单并收口，不触碰媒体文件。
+    await reconcile_disc_batch_jobs()
     _watcher = IngestWatcher()
     await _watcher.start()
 

@@ -31,6 +31,14 @@ _MOVIE_YEAR_TOLERANCE = 1
 # 别名对标题段的最小覆盖率：低于此值说明别名只是段内一小截，多半是别的作品
 _MIN_COVERAGE = 0.6
 
+# 单部电影候选不能横跨多个发行年份。PT 合集常把首部片名和起始年放在最前，
+# 例如 ``The Fast And The Furious 2001-2023``；旧逻辑会把它精确命中 2001
+# 年首部电影并投递整套合集。年份范围是比“合集/Trilogy”词表更稳定的结构证据，
+# 也不依赖 NER 是否恰好抽出 complete。
+_MOVIE_YEAR_RANGE_RE = re.compile(
+    r"(?<!\d)((?:19|20)\d{2})\s*[-–—~～]\s*((?:19|20)\d{2})(?!\d)"
+)
+
 # 标题段边界：场景命名里片名之后的第一个标记（年份/季集/画质/发布类标记），
 # 命中任一边界即认为片名部分结束
 _BOUNDARY_RE = re.compile(
@@ -131,6 +139,21 @@ def _match_alias(candidate: TorrentCandidate, media: MediaIdentity) -> str | Non
     return None
 
 
+def _is_multi_year_movie_pack(candidate: TorrentCandidate) -> bool:
+    """候选是否明确写了跨年份电影合集。"""
+    attrs = candidate.attrs
+    text = " ".join(
+        (
+            candidate.title,
+            candidate.subtitle,
+            *attrs.titles_zh,
+            *attrs.titles_en,
+            *attrs.title_candidates,
+        )
+    )
+    return any(start != end for start, end in _MOVIE_YEAR_RANGE_RE.findall(text))
+
+
 def match_identity(
     candidate: TorrentCandidate, media: MediaIdentity
 ) -> IdentityMatch | None:
@@ -141,6 +164,11 @@ def match_identity(
     # 注意只信 media_type 字段——电影种子可能被误提取出 seasons 噪音
     # （如 "Zombi VIII" 的罗马数字），不能拿 seasons 是否为空当类型信号。
     if attrs.media_type is not None and attrs.media_type != media.kind:
+        return None
+
+    # 单片订阅不能用跨年份合集来满足。即使合集带首部电影的 IMDb/Douban ID，
+    # 也不能让精确 ID 绕过该结构守卫——当前下载/入库契约只接受一个电影单元。
+    if media.kind == "movie" and _is_multi_year_movie_pack(candidate):
         return None
 
     # -- 信号一：外部 ID 精确相等 -------------------------------------------

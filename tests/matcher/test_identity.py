@@ -91,6 +91,39 @@ def test_real_sample_movie_without_media_type() -> None:
     assert match.is_pack is False
 
 
+def test_multi_year_movie_pack_cannot_satisfy_single_movie() -> None:
+    """NAS 真实坏例：首部片名/年份命中也不能把十一部合集当成一部电影。"""
+    candidate = _candidate(
+        "The Fast And The Furious 2001-2023 UHD Blu-ray 2160p HEVC DTS-X",
+        "速度与激情 2001-2023 十一部合集 含特别行动",
+        media_type="movie",
+        year=2001,
+        titles_en=["The Fast And The Furious"],
+        titles_zh=["速度与激情 2001-2023 十一部合集"],
+        title_candidates=["速度与激情 2001-2023 十一部合集 含特别行动"],
+    )
+    media = _movie(
+        ["速度与激情", "The Fast and the Furious"],
+        2001,
+        imdb_id="tt0232500",
+    )
+
+    assert match_identity(candidate, media) is None
+
+
+def test_single_year_movie_still_matches_after_pack_guard() -> None:
+    """普通单片资源不受跨年份合集守卫影响。"""
+    candidate = _candidate(
+        "The Fast and the Furious 2001 2160p UHD BluRay REMUX",
+        "速度与激情",
+        media_type="movie",
+        year=2001,
+    )
+    media = _movie(["速度与激情", "The Fast and the Furious"], 2001)
+
+    assert match_identity(candidate, media) is not None
+
+
 def test_real_sample_movie_with_seasons_noise() -> None:
     """真实样本：Zombi VIII——罗马数字被误提取成 seasons=[8]，
     media_type=movie 时季噪音必须被忽略，不影响电影命中。"""

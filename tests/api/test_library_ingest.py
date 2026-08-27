@@ -279,12 +279,70 @@ async def test_ignored_entry_job_reconcile_failure_does_not_block_startup(db, mo
 
 
 @pytest.mark.asyncio
+async def test_disc_batch_job_reconcile_cancels_only_active_disc_batches(db):
+    """升级只收口原盘分段批次；普通剧集批次和历史终态不被改写。"""
+    async with db.session() as session:
+        session.add_all(
+            [
+                Job(
+                    id="job_disc_direct",
+                    job_type="library.ingest",
+                    status=JobStatus.BLOCKED,
+                    input_data={"ready_files": [{"path": "BDMV/STREAM/00001.m2ts"}]},
+                ),
+                Job(
+                    id="job_disc_nested",
+                    job_type="library.ingest",
+                    status=JobStatus.QUEUED,
+                    input_data={
+                        "ready_files": [
+                            {"path": "电影一/VIDEO_TS/VTS_01_1.VOB"},
+                        ]
+                    },
+                ),
+                Job(
+                    id="job_episode_blocked",
+                    job_type="library.ingest",
+                    status=JobStatus.BLOCKED,
+                    input_data={"ready_files": [{"path": "Season 01/S01E01.mkv"}]},
+                ),
+                Job(
+                    id="job_disc_succeeded",
+                    job_type="library.ingest",
+                    status=JobStatus.SUCCEEDED,
+                    input_data={"ready_files": [{"path": "BDMV/STREAM/00002.m2ts"}]},
+                ),
+            ]
+        )
+        await session.commit()
+
+    assert await ingest_mod.reconcile_disc_batch_jobs() == 2
+    assert await ingest_mod.reconcile_disc_batch_jobs() == 0
+
+    async with db.session() as session:
+        direct = await session.get(Job, "job_disc_direct")
+        nested = await session.get(Job, "job_disc_nested")
+        episode = await session.get(Job, "job_episode_blocked")
+        succeeded = await session.get(Job, "job_disc_succeeded")
+    assert direct is not None and direct.status == JobStatus.CANCELLED
+    assert nested is not None and nested.status == JobStatus.CANCELLED
+    assert direct.cancel_requested_by == "system:disc-batch-reconcile"
+    assert nested.cancel_requested_by == "system:disc-batch-reconcile"
+    assert episode is not None and episode.status == JobStatus.BLOCKED
+    assert succeeded is not None and succeeded.status == JobStatus.SUCCEEDED
+
+
+@pytest.mark.asyncio
 async def test_ingest_watcher_reconciles_ignored_jobs_before_starting(monkeypatch):
     """应用启动监听时先修旧台账，再接收新文件事件。"""
     calls: list[str] = []
 
     async def reconcile() -> int:
-        calls.append("reconcile")
+        calls.append("reconcile-ignored")
+        return 1
+
+    async def reconcile_disc() -> int:
+        calls.append("reconcile-disc")
         return 1
 
     class Watcher:
@@ -295,11 +353,12 @@ async def test_ingest_watcher_reconciles_ignored_jobs_before_starting(monkeypatc
             calls.append("stop")
 
     monkeypatch.setattr(ingest_mod, "reconcile_ignored_entry_jobs", reconcile)
+    monkeypatch.setattr(ingest_mod, "reconcile_disc_batch_jobs", reconcile_disc)
     monkeypatch.setattr(ingest_mod, "IngestWatcher", Watcher)
     await ingest_mod.init_ingest_watcher()
-    assert calls == ["reconcile", "start"]
+    assert calls == ["reconcile-ignored", "reconcile-disc", "start"]
     await ingest_mod.close_ingest_watcher()
-    assert calls == ["reconcile", "start", "stop"]
+    assert calls == ["reconcile-ignored", "reconcile-disc", "start", "stop"]
 
 
 async def _wait_job_status(job_id: str, status: JobStatus, timeout: float = 3.0) -> Job:
@@ -1020,6 +1079,92 @@ async def test_completed_torrent_creates_file_scoped_job_while_sibling_downloads
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "BDMV/STREAM/00001.m2ts",
+        "电影一 (2001)/BDMV/STREAM/00001.m2ts",
+    ],
+    ids=["single-disc", "collection-with-nested-disc"],
+)
+async def test_downloading_disc_never_imports_completed_stream_segments(
+    db, tmp_path, monkeypatch, relative_path
+):
+    """原盘下载中已完成的 m2ts 不是正片；单盘和合集嵌套盘都必须整种等待。"""
+    from movieclaw_downloader import TorrentBrief, TorrentFile, TorrentStatus
+
+    root, watch = tmp_path / "movies", tmp_path / "watch"
+    watch.mkdir()
+    library_id = await _make_library(db, kind=MediaKind.MOVIE, root=root)
+    await _make_rule(db, library_id=library_id, source=watch)
+    entry = watch / "Movie.Collection.2001-2023.UHD.BluRay"
+    stream = entry.joinpath(*relative_path.split("/"))
+    stream.parent.mkdir(parents=True)
+    stream.write_bytes(b"ten-second-bluray-segment")
+    download_complete = {"value": False}
+
+    async def briefs():
+        return [
+            TorrentBrief(
+                name=entry.name,
+                content_name=entry.name,
+                completed=download_complete["value"],
+                info_hash="disc-hash",
+            )
+        ]
+
+    async def statuses(_matches):
+        return [
+            (
+                SimpleNamespace(path_mappings=None),
+                TorrentStatus(
+                    info_hash="disc-hash",
+                    name=entry.name,
+                    progress=0.5,
+                    completed=False,
+                    save_path=str(watch),
+                    files=[
+                        TorrentFile(
+                            path=f"{entry.name}/{relative_path}",
+                            size_bytes=stream.stat().st_size,
+                            completed_bytes=stream.stat().st_size,
+                        )
+                    ],
+                ),
+            )
+        ]
+
+    monkeypatch.setattr(ingest_mod, "_downloader_briefs", briefs)
+    monkeypatch.setattr(ingest_mod, "_matched_torrent_statuses", statuses)
+    async with db.session() as session:
+        rule = (await session.execute(select(ImportWatch))).scalar_one()
+        library = await session.get(Library, library_id)
+        assert library is not None
+
+    # 下载中：即便流分段已完成，也不能产生作业、台账或假入库文件。
+    await ingest_mod._sweep_dir(rule, library)
+    async with db.session() as session:
+        assert list((await session.execute(select(Job))).scalars()) == []
+        assert list((await session.execute(select(IngestEntry))).scalars()) == []
+        assert list((await session.execute(select(LibraryFile))).scalars()) == []
+    assert str(entry) in ingest_mod._deferred
+
+    # 整种完成：整树识别出原盘，只生成一条可理解的“暂不支持”结论。
+    download_complete["value"] = True
+    await ingest_mod._sweep_dir(rule, library)
+    async with db.session() as session:
+        job = (await session.execute(select(Job))).scalar_one()
+    await jobs.init_job_dispatcher(max_parallel=1)
+    await _wait_job_status(job.id, JobStatus.SUCCEEDED)
+    async with db.session() as session:
+        record = (await session.execute(select(IngestEntry))).scalar_one()
+        files = list((await session.execute(select(LibraryFile))).scalars())
+    assert record.status == IngestStatus.SKIPPED
+    assert "原盘目录" in (record.message or "")
+    assert files == []
+
+
+@pytest.mark.asyncio
 async def test_file_scoped_blocked_job_not_woken_by_tree_fingerprint(db, tmp_path, monkeypatch):
     """文件级批次 blocked 后不被全树指纹差异反复唤醒；升级补偿仍只唤醒一次。
 
@@ -1146,14 +1291,21 @@ async def test_blocked_batch_does_not_stall_remaining_episodes(db, tmp_path, mon
 
     monkeypatch.setattr("movieclaw_api.services.media_scrape.ensure_assets", no_assets)
     # ep1 解析不出集号 → 第一批挂起；ep2 正常
-    _stub_unit(monkeypatch, lambda file: (1, 0) if file.stem == "ep1" else (1, 2))
+    _stub_unit(
+        monkeypatch,
+        lambda file: (1, 0)
+        if file.stem == "ep1"
+        else (1, int(file.stem.removeprefix("ep"))),
+    )
 
     entry = watch / "Collateral.Show.S01"
     entry.mkdir()
     ep1 = entry / "ep1.mkv"
     ep2 = entry / "ep2.mkv"
+    ep3 = entry / "ep3.mkv"
     ep1.write_bytes(b"episode-1")
     ep2.write_bytes(b"episode-2-partial")
+    ep3.write_bytes(b"episode-3-partial")
     completed = TorrentBrief(
         name=entry.name, content_name=entry.name, completed=True, info_hash="done-hash"
     )
@@ -1178,8 +1330,29 @@ async def test_blocked_batch_does_not_stall_remaining_episodes(db, tmp_path, mon
             ],
         )
 
-    # 可变开关：第二轮把 ep2 也切成已完成
-    ep2_done = {"value": False}
+    # 可变开关：后续轮次依次把 ep2、ep3 切成已完成
+    completed_later = {ep2.name: False, ep3.name: False}
+
+    def _writing_status() -> TorrentStatus:
+        files = []
+        for file in (ep2, ep3):
+            size = file.stat().st_size
+            done = completed_later[file.name]
+            files.append(
+                TorrentFile(
+                    path=f"{entry.name}/{file.name}",
+                    size_bytes=size,
+                    completed_bytes=size if done else 3,
+                )
+            )
+        return TorrentStatus(
+            info_hash=downloading.info_hash,
+            name=entry.name,
+            progress=0.75,
+            completed=False,
+            save_path=str(watch),
+            files=files,
+        )
 
     async def briefs():
         return [completed, downloading]
@@ -1187,10 +1360,7 @@ async def test_blocked_batch_does_not_stall_remaining_episodes(db, tmp_path, mon
     async def statuses(_matches):
         return [
             (SimpleNamespace(path_mappings=None), _status(completed.info_hash, ep1, True)),
-            (
-                SimpleNamespace(path_mappings=None),
-                _status(downloading.info_hash, ep2, ep2_done["value"]),
-            ),
+            (SimpleNamespace(path_mappings=None), _writing_status()),
         ]
 
     monkeypatch.setattr(ingest_mod, "_downloader_briefs", briefs)
@@ -1209,7 +1379,7 @@ async def test_blocked_batch_does_not_stall_remaining_episodes(db, tmp_path, mon
     assert blocked.error["code"] == "INGEST_EPISODE_PARSE_REQUIRED"
 
     # 第二轮：ep2 落盘，必须另立作业，而不是并回挂起的那一批
-    ep2_done["value"] = True
+    completed_later[ep2.name] = True
     await ingest_mod._sweep_dir(rule, library)
     async with db.session() as session:
         all_jobs = list((await session.execute(select(Job))).scalars())
@@ -1224,6 +1394,19 @@ async def test_blocked_batch_does_not_stall_remaining_episodes(db, tmp_path, mon
         still_blocked = await session.get(Job, first.id)
         assert still_blocked is not None
         assert still_blocked.status == JobStatus.BLOCKED
+
+    # 第三轮：ep2 的成功作业已成为“最新作业”，仍不能因此忘掉更早 blocked
+    # 认领的 ep1。新作业白名单只能包含真正新增的 ep3，否则会重现 NAS 上
+    # 1300 个旧 m2ts 被反复带入下一批、任务中心持续膨胀的坏例。
+    completed_later[ep3.name] = True
+    await ingest_mod._sweep_dir(rule, library)
+    async with db.session() as session:
+        all_jobs = list((await session.execute(select(Job))).scalars())
+    assert len(all_jobs) == 3
+    third = max(all_jobs, key=lambda job: job.created_at)
+    assert [ready["path"] for ready in third.input_data["ready_files"]] == [ep3.name]
+    await _wait_job_status(third.id, JobStatus.SUCCEEDED)
+    assert (season / "连坐测试剧 (2026) - S01E03.mkv").read_bytes() == b"episode-3-partial"
 
 
 @pytest.mark.asyncio
