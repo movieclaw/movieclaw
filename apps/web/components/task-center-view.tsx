@@ -1291,9 +1291,12 @@ function DownloadTaskFeedItem({
   // 种子名前用站点徽标回答"这个资源从哪来"；画面规格、片源与文件尺寸紧随
   // 其后，弥补高度同质化的 release 名。状态与进度由底部生命周期承担，不再
   // 重复；速度与剩余时间单独一行，专注实时传输信息。
+  // Remux 与片源是两个字段（Remux 的片源仍是 UHD Blu-ray），排在片源之后
+  // 单列一项，与搜索结果页的 Remux 徽标同口径
   const specs = [
     task.resolution,
     task.media_source,
+    task.remux ? "Remux" : null,
     task.size_bytes != null ? formatBytes(task.size_bytes) : null,
   ].filter((item): item is string => item != null);
   // 下行速度只在真正下载时有意义；上行（做种）在下载中和等待入库期间都可能存在

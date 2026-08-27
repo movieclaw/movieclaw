@@ -369,6 +369,8 @@ def test_task_center_aggregates_live_downloads_and_subscription_context(client) 
     assert by_hash[missing_hash]["page_url"] == "https://pt.example.com/details.php?id=4321"
     assert by_hash[missing_hash]["resolution"] == "1080p"
     assert by_hash[missing_hash]["media_source"] == "WEB-DL"
+    # remux 缺席即否定（快照没写 = 不是原盘），不因缺键而丢字段
+    assert by_hash[missing_hash]["remux"] is False
     assert by_hash[external_hash]["site_id"] is None
     assert by_hash[external_hash]["page_url"] is None
     assert by_hash[missing_hash]["can_replace"] is True
@@ -386,6 +388,34 @@ def test_task_center_aggregates_live_downloads_and_subscription_context(client) 
             "task_count": 2,
         }
     ]
+
+
+def test_task_view_keeps_remux_and_media_source_orthogonal() -> None:
+    """Remux 与片源是两个字段：原盘直封的片源仍是 UHD Blu-ray，两者都要带回。
+
+    （enrich 侧就这么分：REMUX 是封装方式不是片源，见 movieclaw_enrich.vocab）
+    """
+    from movieclaw_api.services.download_tasks import _task_dict
+
+    view = _task_dict(
+        task_id="qb:abcd",
+        info_hash="abcd",
+        torrent=None,
+        downloader=None,
+        subscriptions=[
+            {
+                "_quality": {
+                    "resolution": "2160p",
+                    "media_source": "UHD Blu-ray",
+                    "remux": True,
+                }
+            }
+        ],
+        manual=None,
+    )
+    assert view["resolution"] == "2160p"
+    assert view["media_source"] == "UHD Blu-ray"
+    assert view["remux"] is True
 
 
 def test_task_center_manual_task_links_site_torrent_page(client) -> None:

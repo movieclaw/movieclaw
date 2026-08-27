@@ -145,6 +145,8 @@ export interface DownloadTask {
   /** 投递时快照的画面规格与片源（如 2160p / WEB-DL）；未知为 null */
   resolution: string | null;
   media_source: string | null;
+  /** 是否原盘 Remux；与 media_source 正交（Remux 的片源仍是 UHD Blu-ray） */
+  remux: boolean;
   media_item_id: number | null;
   media_title: string | null;
   media_kind: string | null;

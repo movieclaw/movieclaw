@@ -219,6 +219,9 @@ class DownloadTaskView(BaseModel):
     )
     resolution: str | None = Field(default=None, description="投递时快照的分辨率，如 2160p")
     media_source: str | None = Field(default=None, description="投递时快照的片源，如 WEB-DL")
+    # remux 与 media_source 正交（enrich 侧就是两个字段）：Remux 是封装方式，
+    # 片源仍是 UHD Blu-ray。缺席即否定，故用 False 而非 None
+    remux: bool = Field(default=False, description="投递时快照是否为原盘 Remux")
     media_item_id: int | None = None
     media_title: str | None = None
     media_kind: str | None = None
