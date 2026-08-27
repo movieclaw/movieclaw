@@ -43,9 +43,16 @@ from movieclaw_llm.models import (
     TokenUsage,
     ToolCall,
 )
+from movieclaw_llm.tools import HARMONY_RESIDUE_HINT, has_harmony_residue
 from movieclaw_net import egress_transport
 
 logger = logging.getLogger(__name__)
+
+
+def _warn_harmony_residue_in_content(content: str | None) -> None:
+    """正文里泄漏 Harmony 标记（如整段思考被当正文返回）时告警，引导用户修后端。"""
+    if has_harmony_residue(content):
+        logger.warning("模型返回的正文含 Harmony 格式残留。%s", HARMONY_RESIDUE_HINT)
 
 
 def sdk_default_user_agent() -> str:
@@ -240,6 +247,7 @@ class OpenAIChatProtocol(BaseLlmProtocol):
                 self._parse_tool_call(tc.id, tc.function.name, tc.function.arguments or "")
                 for tc in msg.tool_calls
             ]
+        _warn_harmony_residue_in_content(msg.content)
         return ChatResponse(
             content=msg.content,
             thinking=self._read_thinking(msg),
@@ -353,6 +361,7 @@ class OpenAIChatProtocol(BaseLlmProtocol):
             return
 
         # 收尾：工具参数完整了，逐个解析并发 toolcall_end
+        _warn_harmony_residue_in_content("".join(acc.content))
         for index in acc.tool_order:
             tc = acc.finalize_tool(index, self._parse_tool_call)
             yield ChatStreamEvent(type="toolcall_end", tool_call=tc, partial=acc.snapshot())
