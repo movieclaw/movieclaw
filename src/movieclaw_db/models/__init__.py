@@ -67,6 +67,7 @@ from movieclaw_db.models.subscription import (
     WantedStatus,
 )
 from movieclaw_db.models.subscription_activity import ActivityType, SubscriptionActivity
+from movieclaw_db.models.subtitle_auto_mute import SubtitleAutoMute
 from movieclaw_db.models.system_notice import NoticeSeverity, NoticeStatus, SystemNotice
 
 __all__ = [
@@ -130,6 +131,7 @@ __all__ = [
     "WantedStatus",
     "ActivityType",
     "SubscriptionActivity",
+    "SubtitleAutoMute",
     "SearchHistory",
     "SiteTorrent",
     "SiteTorrentSwarmSample",

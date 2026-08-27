@@ -12,15 +12,19 @@ import {
   MoreIcon,
 } from "@/components/icons";
 import { useLlmCapability } from "@/components/llm-gate";
+import { Modal } from "@/components/modal";
 import { OverflowText } from "@/components/overflow-text";
 import { useAgentConversations } from "@/lib/agent-conversations";
 import {
   cancelJob,
+  dismissJob,
   isSystemCancelled,
   retryJob,
+  undismissJob,
   type JobStatus,
   type JobView,
 } from "@/lib/api/jobs";
+import { isDismissed } from "@/lib/job-attention";
 import { formatBytes, formatDuration } from "@/lib/format";
 import { useJobs } from "@/lib/jobs";
 import { taskActivityBadge, useTaskActivity } from "@/lib/task-activity";
@@ -374,13 +378,23 @@ export function JobCard({ job, onNavigate }: { job: JobView; onNavigate: () => v
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [usageExpanded, setUsageExpanded] = useState(false);
+  const [dismissOpen, setDismissOpen] = useState(false);
   const active = ["queued", "running", "retry_wait", "cancelling", "waiting"].includes(
     job.status,
   );
   const executing = job.status === "running" || job.status === "cancelling";
   const waitingProgress = job.progress.mode === "waiting";
-  const attention = job.status === "blocked" || job.status === "failed";
+  // 「需要处理」是**当下要不要用户动手**，不是"这件事失败过"。用户已经拍板
+  // 不处理，红框与「需要处理：」前缀就该一起撤下——否则忽略了还在报警，
+  // 等于没忽略。失败这个事实由状态点与摘要文案继续如实承担。
+  const attention =
+    (job.status === "blocked" || job.status === "failed") && !isDismissed(job);
   const cancellable = active && job.status !== "cancelling";
+  // 忽略只开给失败任务：其余状态各有正确出口，不该被"藏起来"顶替。活跃任务
+  // （含 blocked）要真正终结得走取消——它们仍占着去重键与资源锁，光藏掉提醒
+  // 会留下一个谁也看不见、却挡着同名任务再次创建的幽灵。
+  const dismissable = job.status === "failed" && !isDismissed(job);
+  const dismissed = isDismissed(job);
   const percent = job.progress.percent;
   const statusStyle = STATUS_STYLE[job.status];
   const details = jobDetailItems(job);
@@ -471,6 +485,31 @@ export function JobCard({ job, onNavigate }: { job: JobView; onNavigate: () => v
     }
   }
 
+  async function dismissCurrentJob(muteSource: boolean) {
+    setBusyAction("dismiss");
+    setActionError(null);
+    try {
+      upsert(await dismissJob(job.id, muteSource));
+      setDismissOpen(false);
+    } catch (error) {
+      setActionError((error as Error).message || "忽略失败，请稍后重试");
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function undismissCurrentJob() {
+    setBusyAction("undismiss");
+    setActionError(null);
+    try {
+      upsert(await undismissJob(job.id));
+    } catch (error) {
+      setActionError((error as Error).message || "撤销忽略失败，请稍后重试");
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
   async function cancelCurrentJob() {
     setBusyAction("cancel");
     setActionError(null);
@@ -498,6 +537,27 @@ export function JobCard({ job, onNavigate }: { job: JobView; onNavigate: () => v
       label: busyAction === action.type ? "处理中…" : action.label,
       onSelect: () => void runAction(action.type, action.target),
     })),
+    // 「忽略」排在补救动作之后：先给出路（重试 / 看日志 / 交给 Agent），
+    // 最后才给出口。这是用户在此前唯一缺的那一项——失败任务没有任何办法
+    // 从「需要处理」里下架，红角标于是永不熄灭（issue #221）。
+    ...(dismissable
+      ? [
+          {
+            id: "dismiss",
+            label: "忽略这个任务",
+            onSelect: () => setDismissOpen(true),
+          },
+        ]
+      : []),
+    ...(dismissed
+      ? [
+          {
+            id: "undismiss",
+            label: busyAction === "undismiss" ? "撤销中…" : "撤销忽略",
+            onSelect: () => void undismissCurrentJob(),
+          },
+        ]
+      : []),
   ];
 
   return (
@@ -672,8 +732,113 @@ export function JobCard({ job, onNavigate }: { job: JobView; onNavigate: () => v
         >
           {originLabel(job)} · {formatRelativeTime(job.created_at)}
         </OverflowText>
+        {dismissed && (
+          <span className="ml-auto shrink-0 rounded-md border border-white/[0.08] bg-white/[0.04] px-1.5 py-0.5 text-micro text-white/40">
+            已忽略
+          </span>
+        )}
       </footer>
+      {dismissOpen && (
+        <DismissJobDialog
+          job={job}
+          busy={busyAction === "dismiss"}
+          onClose={() => {
+            if (busyAction !== "dismiss") setDismissOpen(false);
+          }}
+          onConfirm={(muteSource) => void dismissCurrentJob(muteSource)}
+        />
+      )}
     </article>
+  );
+}
+
+/** 有自动来源的任务类型：系统会周期性地重新建同样的任务，光忽略一次不管用。 */
+const AUTO_RECREATED_JOB_TYPES: Record<string, string> = {
+  "subtitle.generate": "不再自动为这个文件生成字幕",
+};
+
+/**
+ * 忽略的二次确认。
+ *
+ * 这个弹窗真正要问的不是"你确定吗"，而是**忽略到哪一层**：
+ *
+ * - 只忽略这一条：任务从「需要处理」下架，但下一次入库扫描收尾还会为同一个
+ *   文件建一条新的字幕任务、再失败一次——因为"本进程只自动试一次"是内存
+ *   集合，重启即清零。用户会觉得忽略根本没生效（issue #221 的真实体验）。
+ * - 连自动来源一起静音：这个决定写进数据库，跨重启有效。
+ *
+ * 因此对有自动来源的任务类型默认勾上——用户既然说了不处理，多半也不想每周
+ * 再被同一件事叫醒一次；手动触发始终不受影响，随时可以自己再试。
+ */
+function DismissJobDialog({
+  job,
+  busy,
+  onClose,
+  onConfirm,
+}: {
+  job: JobView;
+  busy: boolean;
+  onClose: () => void;
+  onConfirm: (muteSource: boolean) => void;
+}) {
+  const muteLabel = AUTO_RECREATED_JOB_TYPES[job.job_type];
+  const [muteSource, setMuteSource] = useState(muteLabel != null);
+  const title = job.subject || JOB_TYPE_LABELS[job.job_type] || job.job_type;
+
+  return (
+    <Modal open onClose={busy ? () => {} : onClose} label="忽略任务" topmost>
+      <div className="p-6 max-md:p-5">
+        <h2 className="text-title-sm font-bold text-white">忽略这个任务？</h2>
+        <p className="mt-2 text-sub leading-6 text-[var(--text-muted)]">
+          它会从「需要处理」下架，移到「已结束」。任务记录、失败原因和重试入口都还在，
+          随时可以撤销忽略。
+        </p>
+        <p className="mt-3 break-words rounded-xl border border-white/[0.08] bg-white/[0.035] px-3.5 py-3 text-sub leading-6 text-white/75">
+          {title}
+        </p>
+        {muteLabel && (
+          <label
+            className={`mt-4 flex cursor-pointer items-start gap-3 rounded-xl border px-3.5 py-3 transition ${
+              muteSource
+                ? "border-white/[0.16] bg-white/[0.07]"
+                : "border-white/[0.08] bg-white/[0.025] hover:bg-white/[0.045]"
+            }`}
+          >
+            <input
+              type="checkbox"
+              checked={muteSource}
+              onChange={(event) => setMuteSource(event.target.checked)}
+              className="mt-1 size-4 shrink-0 accent-white/70"
+            />
+            <span className="min-w-0">
+              <span className="block text-ui font-semibold text-white/90">{muteLabel}</span>
+              <span className="mt-0.5 block text-caption leading-5 text-white/50">
+                不勾选的话，下次扫描媒体库时系统还会自动重新生成一次、再失败一次。
+                手动生成不受影响，你随时可以自己再试。
+              </span>
+            </span>
+          </label>
+        )}
+        <div className="mt-5 flex justify-end gap-2.5">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={busy}
+            className="rounded-lg border border-white/10 bg-white/[0.06] px-4 py-2 text-ui text-white/80 transition hover:bg-white/[0.1] disabled:opacity-40"
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            onClick={() => onConfirm(muteSource)}
+            disabled={busy}
+            className="rounded-lg bg-white/90 px-4 py-2 text-ui font-medium text-black transition hover:bg-white disabled:opacity-40"
+          >
+            {busy ? "正在忽略…" : "忽略"}
+          </button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 

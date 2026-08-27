@@ -559,6 +559,90 @@ async def request_cancel(
     return job, True
 
 
+async def dismiss_job(
+    session: AsyncSession, job_id: str, *, dismissed_by: str
+) -> tuple[Job | None, bool]:
+    """忽略任务：用户明确表示"这件事我不打算处理了"。
+
+    只对**失败**任务开放。理由是其余状态各有正确出口，忽略不该抢它们的活：
+    活跃任务（含 ``blocked``）要真正终结得走取消——它们仍占着去重键与资源锁，
+    只把提醒藏起来会留下一个谁也看不见、却挡着同名任务再次创建的幽灵；
+    ``succeeded`` / ``cancelled`` 本来就不在「需要处理」里，无须忽略。
+
+    忽略不改写 status（见 Job 类文档）：任务仍然是 failed，日志、事件时间线、
+    重试链一概不动，用户随时还能重试或撤销忽略。这里只补一条保留期，让它跟
+    已取消的任务一样最终被清理任务收走，而不是永久占着台账。
+
+    返回 ``(job, 是否本次真的改变了状态)``；已经忽略过的返回 ``False`` 保持幂等。
+    """
+    job = await session.get(Job, job_id)
+    if job is None:
+        return None, False
+    if job.status is not JobStatus.FAILED:
+        raise JobFailed(
+            "只有失败的任务可以忽略；进行中的任务请使用取消",
+            code="JOB_NOT_DISMISSABLE",
+        )
+    if job.dismissed_at is not None:
+        return job, False
+    now = utcnow()
+    job.dismissed_at = now
+    job.dismissed_by = dismissed_by
+    job.retention_until = now + timedelta(days=90)
+    await _record_transition(session, job, "dismissed", {"dismissed_by": dismissed_by})
+    await session.commit()
+    await notify_job_change()
+    return job, True
+
+
+async def undismiss_job(session: AsyncSession, job_id: str) -> tuple[Job | None, bool]:
+    """撤销忽略：任务回到「需要处理」。忽略是用户的判断，就必须能反悔。"""
+    job = await session.get(Job, job_id)
+    if job is None:
+        return None, False
+    if job.dismissed_at is None:
+        return job, False
+    job.dismissed_at = None
+    job.dismissed_by = None
+    job.retention_until = None
+    await _record_transition(session, job, "undismissed", {})
+    await session.commit()
+    await notify_job_change()
+    return job, True
+
+
+async def dismiss_failed_jobs(
+    session: AsyncSession, *, dismissed_by: str, job_type: str | None = None
+) -> list[Job]:
+    """批量忽略当前所有未忽略的失败任务。
+
+    存在的理由是真实故障的形状：一次媒体库扫描收尾可能一口气建出几十个字幕
+    任务，模型配置错了就几十条一起失败。逐条点忽略是灾难，逐条发请求同样是
+    ——所以给一个"当前全部"的整体动作，而不是让前端循环调用单条接口。
+
+    只收口**此刻**已经失败的任务；之后再失败的任务仍会正常提醒，这才是用户
+    要的"把眼前这批清掉"，而不是从此对失败视而不见。
+    """
+    statement = select(Job).where(
+        Job.status == JobStatus.FAILED.value,
+        Job.dismissed_at.is_(None),
+    )
+    if job_type:
+        statement = statement.where(Job.job_type == job_type)
+    rows = list((await session.execute(statement)).scalars().unique())
+    if not rows:
+        return []
+    now = utcnow()
+    for job in rows:
+        job.dismissed_at = now
+        job.dismissed_by = dismissed_by
+        job.retention_until = now + timedelta(days=90)
+        await _record_transition(session, job, "dismissed", {"dismissed_by": dismissed_by})
+    await session.commit()
+    await notify_job_change()
+    return rows
+
+
 async def retry_job(
     session: AsyncSession,
     source: Job,

@@ -38,7 +38,8 @@ import {
 import {
   groupTodayArrivals,
   subscriptionCollectionMeta,
-  subscriptionFollowRibbon,
+  subscriptionFullyCollected,
+  subscriptionRibbon,
   todayArrivalPresentation,
   type TodayArrivalPresentation,
 } from "@/lib/subscription-ui";
@@ -465,7 +466,18 @@ function SubscriptionSection({
       )}
       <div className="grid gap-x-4 gap-y-7 px-6 [grid-template-columns:repeat(auto-fill,minmax(148px,1fr))] max-md:gap-x-3 max-md:gap-y-5 max-md:px-4 max-md:[grid-template-columns:repeat(auto-fill,minmax(140px,1fr))]">
         {subscriptions.slice(0, visibleCount).map((sub) => (
-          <div key={sub.id} data-subscription-id={sub.id}>
+          <div
+            key={sub.id}
+            data-subscription-id={sub.id}
+            // 已经到手的压暗一档：海报墙是用来扫的，用户扫它是想知道"还差
+            // 什么"。绿色角标回答单张卡，压暗回答一整屏——亮着的就是还没到
+            // 手的那些。悬浮恢复满亮度，压暗只排序视线，不把内容藏起来。
+            className={
+              subscriptionFullyCollected(sub)
+                ? "opacity-[0.72] transition-opacity duration-200 focus-within:opacity-100 hover:opacity-100"
+                : undefined
+            }
+          >
             <SubscriptionCell
               sub={sub}
               ruleSetName={ruleSetNameById.get(sub.rule_set_id)}
@@ -779,6 +791,7 @@ function toVisualItem(
 ): PosterVisualItem {
   const scope = sub.media.kind === "tv" ? compactSeasonRange(sub.selected_seasons) : undefined;
   const configFlow = [ruleSetName, libraryName].filter(Boolean).join("  →  ");
+  const ribbon = subscriptionRibbon(sub);
   return {
     id: String(sub.media.tmdb_id),
     source: "tmdb",
@@ -789,9 +802,10 @@ function toVisualItem(
     posterUrl: sub.media.poster_url ? cachedImageUrl(sub.media.poster_url) : "",
     genres: scope ? [scope] : undefined,
     overlayMeta: configFlow || undefined,
-    ribbon: subscriptionFollowRibbon(sub),
-    // 「自动续订」用紧凑左上斜标：右上角让给「洗 N」洗版徽标（常驻状态
-    // 数量比能力开关更值得占主视觉位）
+    ribbon: ribbon?.label,
+    ribbonTone: ribbon?.tone,
+    // 角标一律用紧凑左上斜标：右上角让给「洗 N」洗版徽标（常驻状态数量比
+    // 能力开关更值得占主视觉位）
     ribbonVariant: "compact-left",
     posterFooter: subscriptionCollectionMeta(sub),
   };

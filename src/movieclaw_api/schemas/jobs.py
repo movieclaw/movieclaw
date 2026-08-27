@@ -58,6 +58,11 @@ class JobView(BaseModel):
         default=None,
         description="取消发起方；system: 前缀代表系统自动收口，前端据此隐藏「重新执行」",
     )
+    dismissed_at: datetime | None = Field(
+        default=None,
+        description="用户忽略的时间；非空表示不再计入「需要处理」，但任务本身仍是失败",
+    )
+    dismissed_by: str | None = Field(default=None, description="忽略操作者")
     created_at: datetime
     updated_at: datetime
     started_at: datetime | None
@@ -81,6 +86,31 @@ class JobCancelView(BaseModel):
 class JobRetryView(BaseModel):
     created: bool
     job: JobView
+
+
+class JobDismissRequest(BaseModel):
+    mute_source: bool = Field(
+        default=False,
+        description=(
+            "同时静音自动来源：不再自动为该对象重建同类任务。"
+            "只对有自动来源的任务类型有效（当前为字幕自动生成）；手动触发不受影响"
+        ),
+    )
+
+
+class JobDismissView(BaseModel):
+    dismissed: bool = Field(description="本次是否真的改变了状态；重复忽略为 false")
+    muted: bool = Field(default=False, description="是否落了自动来源静音记录")
+    job: JobView
+
+
+class JobDismissAllRequest(BaseModel):
+    job_type: str | None = Field(default=None, description="只忽略该类型；留空表示全部")
+
+
+class JobDismissAllView(BaseModel):
+    dismissed: int = Field(description="本次忽略的任务条数")
+    jobs: list[JobView]
 
 
 class JobEventView(BaseModel):

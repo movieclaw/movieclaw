@@ -4,7 +4,8 @@ import test from "node:test";
 import {
   groupTodayArrivals,
   subscriptionCollectionMeta,
-  subscriptionFollowRibbon,
+  subscriptionFullyCollected,
+  subscriptionRibbon,
   todayArrivalPresentation,
 } from "../lib/subscription-ui.ts";
 
@@ -38,20 +39,64 @@ function subscription({
   };
 }
 
-test("自动续订角标不再随工单阶段变成追新中", () => {
-  assert.equal(subscriptionFollowRibbon(subscription({ wanted: 2 })), "自动续订");
-  assert.equal(subscriptionFollowRibbon(subscription({ grabbed: 1 })), "自动续订");
-  assert.equal(subscriptionFollowRibbon(subscription({ downloaded: 1 })), "自动续订");
-  assert.equal(subscriptionFollowRibbon(subscription({ imported: 12 })), "自动续订");
+test("追新中的剧集角标不随工单阶段变化，仍是自动续订", () => {
+  for (const progress of [{ wanted: 2 }, { grabbed: 1 }, { downloaded: 1 }, { imported: 12 }]) {
+    assert.deepEqual(subscriptionRibbon(subscription(progress)), {
+      label: "自动续订",
+      tone: "subscribed",
+    });
+  }
 });
 
 test("创建时内容已在库且没有工单也显示自动续订", () => {
-  assert.equal(subscriptionFollowRibbon(subscription()), "自动续订");
+  assert.deepEqual(subscriptionRibbon(subscription()), {
+    label: "自动续订",
+    tone: "subscribed",
+  });
 });
 
-test("关闭自动续订或电影订阅不显示角标", () => {
-  assert.equal(subscriptionFollowRibbon(subscription({ followFuture: false })), undefined);
-  assert.equal(subscriptionFollowRibbon(subscription({ kind: "movie" })), undefined);
+test("关闭自动续订、又没收齐的订阅不显示角标", () => {
+  assert.equal(subscriptionRibbon(subscription({ followFuture: false })), undefined);
+  assert.equal(subscriptionRibbon(subscription({ kind: "movie", wanted: 1 })), undefined);
+});
+
+// --- issue #221：订阅墙要一眼看出哪些已经到手 ---
+
+test("已入库的电影订阅打「已入库」角标", () => {
+  assert.deepEqual(subscriptionRibbon(subscription({ kind: "movie", imported: 1 })), {
+    label: "已入库",
+    tone: "owned",
+  });
+});
+
+test("电影只要还没入库就不打已入库，哪怕已经在下载", () => {
+  assert.equal(subscriptionRibbon(subscription({ kind: "movie", downloaded: 1 })), undefined);
+  assert.equal(subscriptionRibbon(subscription({ kind: "movie", grabbed: 1 })), undefined);
+});
+
+test("收齐的完结剧说「已收齐」，并压过自动续订", () => {
+  assert.deepEqual(
+    subscriptionRibbon(
+      subscription({ status: "completed", mediaStatus: "Ended", imported: 24 }),
+    ),
+    { label: "已收齐", tone: "owned" },
+  );
+});
+
+test("追新剧永远不算收齐——它确实还没完", () => {
+  // 已经入库 12 集，但订阅仍在追新（status=active）：不能盖上"到手了"的章
+  assert.deepEqual(subscriptionRibbon(subscription({ imported: 12 })), {
+    label: "自动续订",
+    tone: "subscribed",
+  });
+  assert.equal(subscriptionFullyCollected(subscription({ imported: 12 })), false);
+});
+
+test("状态是 completed 但一集都没入库时不算收齐", () => {
+  assert.equal(
+    subscriptionFullyCollected(subscription({ status: "completed", imported: 0 })),
+    false,
+  );
 });
 
 function season(seasonNumber, episodeCount, airedCount, ownedCount) {

@@ -39,12 +39,46 @@ export function subscriptionProgressNote(sub: Subscription): string {
   return detail.length > 0 ? `缺 ${wanted} 集 · ${detail.join(" · ")}` : `缺 ${wanted} 集`;
 }
 
-/** 自动续订是需要常显的特殊能力；工单阶段不再占用右上角标。 */
-export function subscriptionFollowRibbon(
-  sub: Pick<Subscription, "follow_future" | "media">,
-): "自动续订" | undefined {
-  if (sub.media.kind !== "tv" || !sub.follow_future) return undefined;
-  return "自动续订";
+/** 订阅是不是已经全部到手了（issue #221 的核心问题：这部到底入库没有）。
+ *
+ *  电影是二元的——一部影片只有一个单元，``imported > 0`` 就是"到手了"，
+ *  与 ``subscriptionProgressNote`` 判定同源。剧集是集合，"收齐"另有定义：
+ *  ``completed`` = 缺口为零且期望集合不再生长（见 SubscriptionStatus），
+ *  追新剧因此永远不算收齐——它确实还没完，这正是不能用一个"已入库"标签
+ *  笼统盖住两类内容的原因。
+ */
+export function subscriptionFullyCollected(
+  sub: Pick<Subscription, "media" | "progress" | "status">,
+): boolean {
+  if (sub.media.kind === "movie") return sub.progress.imported > 0;
+  return sub.status === "completed" && sub.progress.imported > 0;
+}
+
+/**
+ * 海报角标：**状态优先于能力**。
+ *
+ * 订阅墙此前只讲能力（「自动续订」），不讲状态——已经入库的电影和还在满世界
+ * 找资源的电影长得一模一样，用户扫一遍看不出哪些已经到手（issue #221）。
+ * 收齐是扫墙时最先要的那个答案，让它占角标；「自动续订」在一部已经收齐的
+ * 完结剧上不再有信息量，让位。
+ *
+ * 用词沿用项目既有口径，不新造词：电影说「已入库」（与全站 libraryStatus
+ * 斜标同词），剧集说「已收齐」（与 subscriptionStatusMeta.completed 同词），
+ * 因为这确实是两件事——一部影片是入库，一整季是收齐。
+ */
+export function subscriptionRibbon(
+  sub: Pick<Subscription, "follow_future" | "media" | "progress" | "status">,
+): { label: string; tone: "owned" | "subscribed" } | undefined {
+  if (subscriptionFullyCollected(sub)) {
+    return {
+      label: sub.media.kind === "movie" ? "已入库" : "已收齐",
+      tone: "owned",
+    };
+  }
+  if (sub.media.kind === "tv" && sub.follow_future) {
+    return { label: "自动续订", tone: "subscribed" };
+  }
+  return undefined;
 }
 
 export interface SubscriptionCollectionMeta {

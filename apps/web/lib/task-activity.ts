@@ -17,20 +17,16 @@
 import { useMemo } from "react";
 
 import type { DownloadTask } from "@/lib/api/downloaders";
-import type { JobStatus, JobView } from "@/lib/api/jobs";
+import type { JobView } from "@/lib/api/jobs";
 import { useDownloadTasks } from "@/lib/download-tasks";
+// 单条 Job 的档位判定放在 job-attention（无 React、可单测）；本模块只做
+// 跨领域的分组与计数。
+import {
+  ACTIVE_FEED_JOB_STATUSES,
+  jobIsHistorical,
+  jobNeedsAttention,
+} from "@/lib/job-attention";
 import { useJobs } from "@/lib/jobs";
-
-/** 需要用户判断的 Job 状态；与任务视角「需要处理」同口径。 */
-export const ATTENTION_JOB_STATUSES = new Set<JobStatus>(["blocked", "failed"]);
-export const ACTIVE_FEED_JOB_STATUSES = new Set<JobStatus>([
-  "queued",
-  "running",
-  "retry_wait",
-  "cancelling",
-  "waiting",
-]);
-export const HISTORY_JOB_STATUSES = new Set<JobStatus>(["succeeded", "cancelled"]);
 
 export interface DownloadTaskGroup {
   key: string;
@@ -92,7 +88,7 @@ export function downloadGroupNeedsAttention(
       task.state === "error" ||
       task.state === "missing" ||
       contentMissingLabel(task) != null ||
-      (ingestJob != null && ATTENTION_JOB_STATUSES.has(ingestJob.status))
+      (ingestJob != null && jobNeedsAttention(ingestJob))
     );
   });
 }
@@ -166,10 +162,7 @@ export function useTaskActivity(): TaskActivity {
     [downloadTasks, ingestJobsByHash],
   );
   const standaloneAttentionJobs = useMemo(
-    () =>
-      jobs.filter(
-        (job) => ATTENTION_JOB_STATUSES.has(job.status) && !linkedIngestJobIds.has(job.id),
-      ),
+    () => jobs.filter((job) => jobNeedsAttention(job) && !linkedIngestJobIds.has(job.id)),
     [jobs, linkedIngestJobIds],
   );
   const standaloneActiveJobs = useMemo(
@@ -180,8 +173,7 @@ export function useTaskActivity(): TaskActivity {
     [jobs, linkedIngestJobIds],
   );
   const standaloneHistoricalJobs = useMemo(
-    () =>
-      jobs.filter((job) => HISTORY_JOB_STATUSES.has(job.status) && !linkedIngestJobIds.has(job.id)),
+    () => jobs.filter((job) => jobIsHistorical(job) && !linkedIngestJobIds.has(job.id)),
     [jobs, linkedIngestJobIds],
   );
 

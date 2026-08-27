@@ -68,6 +68,9 @@ export interface JobView {
   cancel_requested_at: string | null;
   /** 取消发起方；`system:` 前缀代表系统自动收口，重跑没有意义，界面不给「重新执行」。 */
   cancel_requested_by: string | null;
+  /** 用户忽略的时间。非空 = 不再计入「需要处理」；任务本身仍然是失败，日志与重试都还在。 */
+  dismissed_at: string | null;
+  dismissed_by: string | null;
   created_at: string;
   updated_at: string;
   started_at: string | null;
@@ -112,4 +115,36 @@ export async function retryJob(jobId: string): Promise<JobView> {
     { method: "POST" },
   );
   return response.data.job;
+}
+
+/**
+ * 忽略一条失败任务。
+ *
+ * `muteSource` 决定这次忽略有没有分量：不勾，下次自动扫描还会为同一个对象
+ * 重建同样的任务、再失败一次（issue #221）；勾上则连自动来源一起静音，
+ * 手动触发不受影响。
+ */
+export async function dismissJob(jobId: string, muteSource = false): Promise<JobView> {
+  const response = await request<ApiEnvelope<{ dismissed: boolean; muted: boolean; job: JobView }>>(
+    `/jobs/${jobId}/dismiss`,
+    { method: "POST", body: JSON.stringify({ mute_source: muteSource }) },
+  );
+  return response.data.job;
+}
+
+export async function undismissJob(jobId: string): Promise<JobView> {
+  const response = await request<ApiEnvelope<{ dismissed: boolean; muted: boolean; job: JobView }>>(
+    `/jobs/${jobId}/undismiss`,
+    { method: "POST" },
+  );
+  return response.data.job;
+}
+
+/** 一次收口眼前这批失败任务；服务端单事务完成，不在前端循环发请求。 */
+export async function dismissAllFailedJobs(): Promise<JobView[]> {
+  const response = await request<ApiEnvelope<{ dismissed: number; jobs: JobView[] }>>(
+    "/jobs/dismiss-all",
+    { method: "POST", body: JSON.stringify({}) },
+  );
+  return response.data.jobs;
 }

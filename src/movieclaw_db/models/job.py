@@ -17,6 +17,11 @@ class JobStatus(StrEnum):
     状态值是 API、CLI、前端和执行器共同依赖的稳定协议，不能拿临时协程状态
     代替。``retry_wait`` 表示系统会自动重试，``blocked`` 表示必须由用户修复
     配置或补充输入；二者都不是普通失败。
+
+    「用户忽略」刻意**不做成状态**：忽略只表达"我不打算处理了"，不改写
+    "这件事失败过"这个事实。日志溯源、重试链（``retry_of_job_id``）与终态
+    集合都建立在 status 上，多一个终态会让每一处判定都要跟着改。忽略因此
+    记在 ``dismissed_at`` 这一维上，与 status 正交。
     """
 
     QUEUED = "queued"
@@ -120,6 +125,10 @@ class Job(TimestampMixin, table=True):
     heartbeat_at: datetime | None = Field(default=None)
     cancel_requested_at: datetime | None = Field(default=None)
     cancel_requested_by: str | None = Field(default=None)
+    # 用户忽略：失败任务的"我不再处理了"。与 status 正交（见类文档），只影响
+    # 任务中心把它算进「需要处理」还是「已结束」，不影响任何执行语义。
+    dismissed_at: datetime | None = Field(default=None, index=True)
+    dismissed_by: str | None = Field(default=None)
     started_at: datetime | None = Field(default=None)
     finished_at: datetime | None = Field(default=None, index=True)
     retention_until: datetime | None = Field(default=None, index=True)

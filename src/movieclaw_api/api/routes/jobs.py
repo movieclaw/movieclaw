@@ -1,4 +1,4 @@
-"""统一后台任务查询、等待、取消、重试与事件流。"""
+"""统一后台任务查询、等待、取消、重试、忽略与事件流。"""
 
 from __future__ import annotations
 
@@ -14,6 +14,10 @@ from movieclaw_api.exceptions import BadRequestException, NotFoundException
 from movieclaw_api.schemas.base import utc_isoformat
 from movieclaw_api.schemas.jobs import (
     JobCancelView,
+    JobDismissAllRequest,
+    JobDismissAllView,
+    JobDismissRequest,
+    JobDismissView,
     JobEventListView,
     JobEventView,
     JobListView,
@@ -26,6 +30,7 @@ from movieclaw_api.schemas.jobs import (
 from movieclaw_api.schemas.response import ApiResponse
 from movieclaw_api.services import jobs
 from movieclaw_api.services.auth import Principal
+from movieclaw_api.services.subtitle_gen import auto as subtitle_auto
 from movieclaw_db.engine import get_database, get_session
 from movieclaw_db.models import Job, JobResource, JobStatus
 
@@ -76,6 +81,8 @@ def _job_view(job: Job, resources: list[JobResource]) -> JobView:
         revision=job.revision,
         cancel_requested_at=job.cancel_requested_at,
         cancel_requested_by=job.cancel_requested_by,
+        dismissed_at=job.dismissed_at,
+        dismissed_by=job.dismissed_by,
         created_at=job.created_at,
         updated_at=job.updated_at,
         started_at=job.started_at,
@@ -204,6 +211,36 @@ async def stream_jobs(
 )
 async def job_worker_health() -> ApiResponse[JobWorkerHealthView]:
     return ApiResponse(data=JobWorkerHealthView.model_validate(await jobs.dispatcher_health()))
+
+
+@router.post(
+    "/dismiss-all",
+    response_model=ApiResponse[JobDismissAllView],
+    summary="忽略当前所有失败任务",
+    operation_id="jobs.dismissAll",
+)
+async def dismiss_all_failed_jobs(
+    payload: JobDismissAllRequest | None = None,
+    principal: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[JobDismissAllView]:
+    """一次收口眼前这批失败任务。
+
+    存在的理由是故障的形状：一次扫描收尾可能建出几十个字幕任务，模型配置
+    错了就几十条一起失败。让前端循环调用单条接口既慢又可能中途半死不活，
+    整体动作在服务端一次事务完成。
+
+    只影响**此刻**已经失败的任务；之后再失败的仍会照常提醒。
+    """
+    rows = await jobs.dismiss_failed_jobs(
+        session,
+        dismissed_by=str(principal),
+        job_type=payload.job_type if payload else None,
+    )
+    return ApiResponse(
+        data=JobDismissAllView(dismissed=len(rows), jobs=await job_views(session, rows)),
+        message=f"已忽略 {len(rows)} 个失败任务" if rows else "当前没有需要忽略的失败任务",
+    )
 
 
 @router.get(
@@ -339,4 +376,73 @@ async def retry_job_row(
             if created.created
             else "相同任务已在进行中"
         ),
+    )
+
+
+@router.post(
+    "/{job_id}/dismiss",
+    response_model=ApiResponse[JobDismissView],
+    summary="忽略失败的后台任务（不再计入需要处理）",
+    operation_id="jobs.dismiss",
+)
+async def dismiss_job_row(
+    job_id: str,
+    payload: JobDismissRequest | None = None,
+    principal: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[JobDismissView]:
+    """用户对一条失败任务说"不处理了"。
+
+    任务仍然是失败——日志、事件时间线与重试入口原样保留，只是不再占着
+    「需要处理」。想反悔走 ``jobs.undismiss``。
+
+    ``mute_source`` 是这个动作真正的分量所在：不勾它，下次自动扫描还会为
+    同一个对象重建同样的任务、再失败一次（issue #221）。勾上则连自动来源
+    一起静音，手动触发不受影响。
+    """
+    try:
+        row, dismissed = await jobs.dismiss_job(session, job_id, dismissed_by=str(principal))
+    except jobs.JobFailed as exc:
+        raise BadRequestException(exc.message) from exc
+    if row is None:
+        raise NotFoundException("后台任务不存在")
+
+    muted = False
+    if payload is not None and payload.mute_source:
+        muted = await subtitle_auto.mute_from_job(session, row, muted_by=str(principal))
+
+    if not dismissed:
+        message = "任务已经忽略过了"
+    elif muted:
+        message = "已忽略，并且不再自动重建同类任务"
+    else:
+        message = "已忽略，不再计入需要处理"
+    return ApiResponse(
+        data=JobDismissView(
+            dismissed=dismissed, muted=muted, job=await job_view(session, row)
+        ),
+        message=message,
+    )
+
+
+@router.post(
+    "/{job_id}/undismiss",
+    response_model=ApiResponse[JobDismissView],
+    summary="撤销忽略，任务回到需要处理",
+    operation_id="jobs.undismiss",
+)
+async def undismiss_job_row(
+    job_id: str,
+    _principal: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[JobDismissView]:
+    """撤销忽略。连带解除自动来源静音——否则"撤销"只撤了一半。"""
+    row, restored = await jobs.undismiss_job(session, job_id)
+    if row is None:
+        raise NotFoundException("后台任务不存在")
+    if restored:
+        await subtitle_auto.unmute_from_job(session, row)
+    return ApiResponse(
+        data=JobDismissView(dismissed=False, muted=False, job=await job_view(session, row)),
+        message="已撤销忽略" if restored else "任务并未被忽略",
     )

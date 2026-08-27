@@ -41,16 +41,17 @@ import {
 import { shouldOfferInlineReplacement } from "@/lib/download-task-actions";
 import {
   cancelJob,
+  dismissAllFailedJobs,
   isSystemCancelled,
   retryJob,
+  undismissJob,
   type JobStatus,
   type JobView,
 } from "@/lib/api/jobs";
+import { isDismissed, ACTIVE_FEED_JOB_STATUSES, jobNeedsAttention } from "@/lib/job-attention";
 import { useJobs } from "@/lib/jobs";
 import type { TaskCenterViewName } from "@/lib/task-center";
 import {
-  ACTIVE_FEED_JOB_STATUSES,
-  ATTENTION_JOB_STATUSES,
   contentMissingLabel,
   useTaskActivity,
   type DownloadTaskGroup,
@@ -94,6 +95,8 @@ export function TaskCenterView({
   const [replacingTaskId, setReplacingTaskId] = useState<string | null>(null);
   const [cancellingJobId, setCancellingJobId] = useState<string | null>(null);
   const [retryingJobId, setRetryingJobId] = useState<string | null>(null);
+  const [bulkDismissing, setBulkDismissing] = useState(false);
+  const [undismissingJobId, setUndismissingJobId] = useState<string | null>(null);
   const [pendingDeleteTask, setPendingDeleteTask] = useState<DownloadTask | null>(null);
   const toast = useToast();
   const { upsert } = useJobs();
@@ -147,6 +150,37 @@ export function TaskCenterView({
       toast.error((caught as Error).message || "取消任务失败");
     } finally {
       setCancellingJobId(null);
+    }
+  }
+
+  async function dismissAllFailed() {
+    if (bulkDismissing) return;
+    setBulkDismissing(true);
+    try {
+      const dismissed = await dismissAllFailedJobs();
+      for (const job of dismissed) upsert(job);
+      toast.success(
+        dismissed.length > 0
+          ? `已忽略 ${dismissed.length} 个失败任务`
+          : "当前没有需要忽略的失败任务",
+      );
+    } catch (caught) {
+      toast.error((caught as Error).message || "批量忽略失败");
+    } finally {
+      setBulkDismissing(false);
+    }
+  }
+
+  async function restoreDismissedJob(job: JobView) {
+    if (undismissingJobId != null) return;
+    setUndismissingJobId(job.id);
+    try {
+      upsert(await undismissJob(job.id));
+      toast.success("已撤销忽略，任务回到「需要处理」");
+    } catch (caught) {
+      toast.error((caught as Error).message || "撤销忽略失败");
+    } finally {
+      setUndismissingJobId(null);
     }
   }
 
@@ -238,7 +272,12 @@ export function TaskCenterView({
         </div>
 
         {showAttention && attentionTotal > 0 && (
-          <TaskAttentionSection count={attentionTotal}>
+          <TaskAttentionSection
+            count={attentionTotal}
+            canDismissAll={standaloneAttentionJobs.some((job) => job.status === "failed")}
+            dismissingAll={bulkDismissing}
+            onDismissAll={() => void dismissAllFailed()}
+          >
             {attentionDownloadGroups.map((group) => (
               <DownloadTaskGroupCard
                 key={group.key}
@@ -299,6 +338,8 @@ export function TaskCenterView({
             separated={hasContentBeforeHistory}
             retryingJobId={retryingJobId}
             onRetry={(job) => void retryHistoricalJob(job)}
+            undismissingJobId={undismissingJobId}
+            onUndismiss={(job) => void restoreDismissedJob(job)}
           />
         )}
 
@@ -421,9 +462,16 @@ function SourceWarning({ sources, error }: { sources: DownloadTaskSource[]; erro
 /** 需要用户行动的任务脱离普通时间流置顶，避免失败记录被持续刷新的进度淹没。 */
 function TaskAttentionSection({
   count,
+  canDismissAll,
+  dismissingAll,
+  onDismissAll,
   children,
 }: {
   count: number;
+  /** 有没有"已经失败、还没被忽略"的任务；没有就不摆一个点了没反应的按钮。 */
+  canDismissAll: boolean;
+  dismissingAll: boolean;
+  onDismissAll: () => void;
   children: React.ReactNode;
 }) {
   return (
@@ -436,6 +484,19 @@ function TaskAttentionSection({
         <span className="tnum rounded-full bg-[var(--danger)]/10 px-2 py-0.5 text-caption text-[var(--danger)]">
           {count}
         </span>
+        {/* 故障常常成批：一次扫描收尾可能建出几十个字幕任务，配置错了就几十条
+            一起失败，逐条点忽略是灾难。整体动作压成次要文字按钮，不跟每张卡
+            自己的「重试」抢视觉。 */}
+        {canDismissAll && (
+          <button
+            type="button"
+            onClick={onDismissAll}
+            disabled={dismissingAll}
+            className="ml-auto shrink-0 rounded-lg px-2.5 py-1 text-caption font-medium text-white/40 transition hover:bg-white/[0.05] hover:text-white/70 disabled:cursor-wait disabled:opacity-40"
+          >
+            {dismissingAll ? "正在忽略…" : "全部忽略"}
+          </button>
+        )}
       </div>
       <div className="space-y-2.5 rounded-2xl border border-[var(--danger)]/20 bg-[var(--danger)]/[0.035] p-3.5 max-md:p-3">
         {children}
@@ -610,7 +671,10 @@ function activeJobStatus(job: JobView): string {
 function historicalJobTitle(job: JobView): string {
   const identity = jobFeedIdentity(job);
   const action = COMPLETED_JOB_ACTIONS[job.job_type];
-  const result = job.status === "cancelled" ? "已取消" : "完成";
+  // 忽略只是"不再提醒"，不是"做完了"。历史里如实写「未完成」，否则用户回头
+  // 翻记录会以为这件事已经成了。
+  const result =
+    job.status === "cancelled" ? "已取消" : job.status === "failed" ? "未完成" : "完成";
   if (identity && action) return `${identity}${action}${result}`;
   return `${identity || JOB_TYPE_LABELS[job.job_type] || job.job_type}${result}`;
 }
@@ -624,6 +688,9 @@ function historicalJobSummary(job: JobView): string {
       unidentified != null ? `待识别 ${unidentified} 个` : null,
     ].filter((item): item is string => item != null);
     if (parts.length > 0) return parts.join(" · ");
+  }
+  if (job.status === "failed" && isDismissed(job)) {
+    return job.error?.message || job.progress.message || "任务失败，已被忽略";
   }
   return job.progress.message || (job.status === "cancelled" ? "任务已取消" : "任务已完成");
 }
@@ -724,13 +791,20 @@ function HistoricalJobFeedItem({
   time,
   retrying,
   onRetry,
+  undismissing,
+  onUndismiss,
 }: {
   job: JobView;
   /** 完成时刻。不再占用左侧独立列，跟摘要同行显示，让条目与分组标题左对齐。 */
   time: string;
   retrying: boolean;
   onRetry: () => void;
+  undismissing: boolean;
+  onUndismiss: () => void;
 }) {
+  // 忽略必须能反悔——用户是在信息不全时按下的它（"先不管这个"），
+  // 撤销入口就得留在他能找回这条记录的地方，而不是只能靠重试再造一条新任务。
+  const dismissed = job.status === "failed" && isDismissed(job);
   const ingestDetail = buildIngestHistoryDetail(job);
   return (
     <article className="group/history min-w-0 py-1.5">
@@ -747,6 +821,16 @@ function HistoricalJobFeedItem({
           </div>
           {ingestDetail && <IngestHistoryFiles detail={ingestDetail} />}
         </div>
+        {dismissed && (
+          <button
+            type="button"
+            onClick={onUndismiss}
+            disabled={undismissing}
+            className="shrink-0 rounded-lg px-2.5 py-1.5 text-caption font-medium text-white/35 transition hover:bg-white/[0.05] hover:text-white/65 disabled:cursor-wait disabled:opacity-40"
+          >
+            {undismissing ? "撤销中…" : "撤销忽略"}
+          </button>
+        )}
         {job.status === "cancelled" && !isSystemCancelled(job) && (
           <button
             type="button"
@@ -980,12 +1064,16 @@ function TaskHistorySection({
   separated,
   retryingJobId,
   onRetry,
+  undismissingJobId,
+  onUndismiss,
 }: {
   jobs: JobView[];
   initiallyOpen: boolean;
   separated: boolean;
   retryingJobId: string | null;
   onRetry: (job: JobView) => void;
+  undismissingJobId: string | null;
+  onUndismiss: (job: JobView) => void;
 }) {
   const groups = groupHistoricalJobs(jobs);
   return (
@@ -1017,6 +1105,8 @@ function TaskHistorySection({
                   time={formatClockTime(job.finished_at || job.created_at)}
                   retrying={retryingJobId === job.id}
                   onRetry={() => onRetry(job)}
+                  undismissing={undismissingJobId === job.id}
+                  onUndismiss={() => onUndismiss(job)}
                 />
               </TaskTimelineItem>
             ))}
@@ -1117,7 +1207,9 @@ const INGEST_STATE_META: Record<JobStatus, TaskStateMeta> = {
  */
 function ingestOwnsTaskState(task: DownloadTask, ingestJob: JobView | null): boolean {
   if (ingestJob == null || ingestJob.status === "cancelled") return false;
-  if (ATTENTION_JOB_STATUSES.has(ingestJob.status)) return true;
+  // 用户已经忽略的失败入库不再顶到最前——他要的正是"别再拿这件事挡着我"，
+  // 卡片交回下载轴如实讲进度。
+  if (jobNeedsAttention(ingestJob)) return true;
   return task.state === "completed";
 }
 
@@ -1860,11 +1952,19 @@ function DownloadLifecycle({
   // 二选一：要么已经开始了（ingestStep，观测态），要么还没开始（futureSteps，预测态）
   let ingestStep: LifecycleStep | null = null;
   let futureSteps: LifecycleStep[] | null = null;
-  if (ingestJob && ATTENTION_JOB_STATUSES.has(ingestJob.status)) {
+  if (ingestJob && jobNeedsAttention(ingestJob)) {
     ingestStep = {
       label: "入库待处理",
       detail: ingestJob.error?.message || ingestJob.progress.message,
       tone: "attention",
+    };
+  } else if (ingestJob?.status === "failed" && isDismissed(ingestJob)) {
+    // 忽略了不等于没发生：这一步仍要如实讲清入库到此为止，只是不再报警，
+    // 否则会掉进最后的"什么都还没开始"，把已经失败的事说成还没开始。
+    ingestStep = {
+      label: "入库已忽略",
+      detail: "已按你的选择不再提醒；如需处理可在「已结束」里撤销忽略",
+      tone: "waiting",
     };
   } else if (ingestJob?.status === "running") {
     ingestStep = {
@@ -2191,7 +2291,10 @@ function EmptyView({ view }: { view: TaskCenterViewName }) {
     all: { title: "当前没有任务", note: "新的后台作业或下载任务会自动出现在这里。" },
     attention: { title: "当前无需处理", note: "异常或需要确认的任务会优先出现在这里。" },
     active: { title: "当前没有进行中的任务", note: "新任务启动后会自动进入实时过程。" },
-    history: { title: "还没有历史记录", note: "完成和取消的后台作业会保留在这里。" },
+    history: {
+      title: "还没有历史记录",
+      note: "完成、取消，以及被你忽略的后台作业都会保留在这里。",
+    },
   };
   return (
     <div className="mt-8 rounded-2xl border border-white/[0.07] bg-black/20 px-6 py-16 text-center backdrop-blur-xl">
