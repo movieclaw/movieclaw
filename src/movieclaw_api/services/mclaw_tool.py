@@ -49,6 +49,8 @@ _DOMAIN_LINES = {
     "people": "people   本地媒体库影人档案（按 TMDB 人物 ID 查看资料及已入库参演作品）",
     "rules": "rules    订阅过滤规则组（管理分辨率、编码、HDR、字幕/音轨、免费/H&R、做种数、"
     "体积和制作组等条件及默认规则组）",
+    "scrape": "scrape   刮削偏好（元数据语言优先级与缺失回落、海报/背景按语言优先级选图、"
+    "分级地区与图片质量档位；改动对存量条目生效需执行 library metadata refresh）",
     "search": "search   统一搜索（titles 搜 TMDB/豆瓣影视条目，torrents 跨 PT 站点搜种子并可把"
     "结果行号交给 download，library-items 搜已入库内容；另可管理搜索预设和历史结果）",
     "session": "session  用户与智能体的会话管理（发起新对话或继续已有对话，按指定用户消息"
