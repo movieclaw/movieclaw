@@ -3,9 +3,11 @@
 /**
  * 「刮削与整理」设置分区（docs/design/scrape-customization.md §3）。
  *
- * 按刮削管线的执行顺序分 tab：STEP 1 元数据（语言优先级、分级地区）→
- * STEP 2 图片（海报/背景语言优先级、门槛、质量档位）→ STEP 3 命名与整理
- * （模板 + 实时预览）→ STEP 4 目录写入（图片/NFO/分集剧照三项细分开关）。
+ * 按"配置的是什么"分四个**并列** tab：元数据（语言优先级、分级地区）、
+ * 图片（海报/背景语言优先级、门槛、质量档位）、命名与整理（模板 + 实时
+ * 预览）、目录写入（图片/NFO/分集剧照三项细分开关）。排列顺序沿用刮削
+ * 管线的先后，只为读起来顺；**四组之间没有依赖，可任意顺序配置**——
+ * 所以不编号：编号会把并列关系伪装成"必须按序完成"的向导。
  *
  * 有序优先级统一用「排序芯片」交互：点击加入优先级并按点击顺序编号
  * （首位标「主」/「首选」），再点移除；常用项直接摆在行内，长尾语种/地区
@@ -54,7 +56,7 @@ const COMMON_IMAGE_LANGS: ChipOption[] = [
   {
     id: "meta",
     name: "跟随元数据主语言",
-    tip: "引用上方元数据语言的第 1 位，改语言时选图自动跟随",
+    tip: "引用「元数据」里语言优先级的第 1 位，改语言时选图自动跟随",
   },
   {
     id: "orig",
@@ -240,10 +242,10 @@ function OrderChips({
 /* ------------------------------------------------------------------ */
 
 const TABS = [
-  { id: "meta", step: "STEP 1", label: "元数据", detail: "语言与文本" },
-  { id: "images", step: "STEP 2", label: "图片", detail: "海报与背景" },
-  { id: "naming", step: "STEP 3", label: "命名与整理", detail: "目录与文件名" },
-  { id: "mirror", step: "STEP 4", label: "目录写入", detail: "NFO 与图片镜像" },
+  { id: "meta", label: "元数据", detail: "语言与文本" },
+  { id: "images", label: "图片", detail: "海报与背景" },
+  { id: "naming", label: "命名与整理", detail: "目录与文件名" },
+  { id: "mirror", label: "目录写入", detail: "NFO 与图片镜像" },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
@@ -773,13 +775,6 @@ export function ScrapeSettingsSection() {
                 : "text-[var(--text-muted)] hover:bg-white/[0.06]"
             }`}
           >
-            <span
-              className={`text-micro tabular-nums tracking-widest ${
-                tab === t.id ? "text-[var(--accent-2)]" : "text-[var(--text-faint)]"
-              }`}
-            >
-              {t.step}
-            </span>
             <span className="text-ui font-semibold">{t.label}</span>
             <span className="text-micro text-[var(--text-faint)] max-md:hidden">{t.detail}</span>
           </button>
