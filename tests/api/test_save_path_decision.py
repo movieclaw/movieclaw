@@ -119,3 +119,95 @@ async def test_health_and_preview_agree_with_decision(db, tmp_path):
         health = await pipeline_health(session)
         pipe = next(p for p in health["libraries"] if p["library_id"] == library.id)
         assert (pipe["mode"], pipe["path"]) == (decision.mode, decision.path)
+
+
+# ---------------------------------------------------------------------------
+# 条目目录预览（entry_dir）：前端文案的唯一来源
+# ---------------------------------------------------------------------------
+
+
+async def test_preview_entry_dir_follows_naming_template(db, tmp_path, monkeypatch):
+    """预检返回的 entry_dir 必须由命名模板渲染，而不是写死「标题 (年份)」。
+
+    这条是给**前端文案**兜底的：模板化之前，下载弹窗/订阅弹窗/模拟一单
+    都自己拼 ``${title} (${year})``，用户一改模板预览就与真实落点对不上。
+    改成后端下发 entry_dir 后，这里断言"改模板 → 预览跟着变"。
+    """
+    from movieclaw_api.services import scrape_config
+    from movieclaw_api.settings.metadata import MetadataScrapeSetting
+
+    root = tmp_path / "movies"
+    root.mkdir()
+    library = await _make_library(db, name="电影库", root=root)
+
+    async with db.session() as session:
+        # 默认模板：与改动前的写死行为逐字节一致（年份括号前有空格）
+        preview = await preview_dispatch_route(
+            session, kind="movie", library_id=library.id, title="流浪地球", year=2019
+        )
+        assert preview["entry_dir"] == f"{root}/流浪地球 (2019)"
+
+        # 换一套模板：预览必须跟着变（证明它走的是模板而非写死拼接）
+        monkeypatch.setattr(
+            scrape_config,
+            "_current_scrape",
+            MetadataScrapeSetting(naming_entry_dir="{year} - {title}"),
+        )
+        preview = await preview_dispatch_route(
+            session, kind="movie", library_id=library.id, title="流浪地球", year=2019
+        )
+        assert preview["entry_dir"] == f"{root}/2019 - 流浪地球"
+
+
+async def test_preview_entry_dir_prefers_persisted_item(db, tmp_path, monkeypatch):
+    """已建档条目：标题取库里的权威标题，且 {tmdb_id} 之类的占位符渲染得出。
+
+    手动下载弹窗传的是种子识别出来的标题，真实投递却是按 TMDB 身份建档后
+    推导目录的——两者不一致时以条目为准，预览才等于真实落点。
+    """
+    from movieclaw_api.services import scrape_config
+    from movieclaw_api.settings.metadata import MetadataScrapeSetting
+    from movieclaw_db.models import MediaItem
+
+    root = tmp_path / "movies"
+    root.mkdir()
+    library = await _make_library(db, name="电影库", root=root)
+
+    async with db.session() as session:
+        session.add(
+            MediaItem(
+                kind="movie",
+                tmdb_id=529203,
+                title="疯狂动物城",
+                original_title="Zootopia",
+                year=2016,
+                aliases=[],
+            )
+        )
+        await session.commit()
+
+    monkeypatch.setattr(
+        scrape_config,
+        "_current_scrape",
+        MetadataScrapeSetting(naming_entry_dir="{title} ({year}) [tmdbid-{tmdb_id}]"),
+    )
+    async with db.session() as session:
+        preview = await preview_dispatch_route(
+            session,
+            kind="movie",
+            library_id=library.id,
+            tmdb_id=529203,
+            title="Zootopia.2016.1080p",  # 种子标题：应当被条目标题覆盖
+            year=2016,
+        )
+        assert preview["entry_dir"] == f"{root}/疯狂动物城 (2016) [tmdbid-529203]"
+
+
+async def test_preview_entry_dir_none_without_identity(db, tmp_path):
+    """没有身份（体检/纯选库预检）时不臆造条目目录，entry_dir 为空。"""
+    root = tmp_path / "movies"
+    root.mkdir()
+    library = await _make_library(db, name="电影库", root=root)
+    async with db.session() as session:
+        preview = await preview_dispatch_route(session, kind="movie", library_id=library.id)
+        assert preview["entry_dir"] is None

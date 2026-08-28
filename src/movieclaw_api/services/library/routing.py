@@ -21,7 +21,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
@@ -55,6 +55,11 @@ class RouteDecision:
     library: Library | None
     matched: bool  # True=命中某库的收藏范围；False=默认库兜底/无库
     reason: str  # 可直接展示的中文理由
+    item: MediaItem | None = None
+    """本次路由所依据的条目（走 route_for_item/route_for_tmdb 才有）。
+    预检展示条目目录时要用它渲染命名模板里的 {original_title}/{tmdb_id}
+    ——预览与真实落点必须出自同一套模板（命名同源，见 library/naming.py）。
+    未建档的临时条目（id 为 None）标题是占位符，展示前需自行判别。"""
 
 
 def evaluate(rules: list, facts: RoutingFacts | None) -> bool:
@@ -163,7 +168,8 @@ async def gather_facts(session: AsyncSession, item: MediaItem) -> RoutingFacts |
 
 async def route_for_item(session: AsyncSession, kind: str, item: MediaItem) -> RouteDecision:
     """便捷入口：装配事实 + 选库（订阅创建定格、监听导入 auto 模式共用）。"""
-    return await route(session, kind, await gather_facts(session, item))
+    decision = await route(session, kind, await gather_facts(session, item))
+    return replace(decision, item=item)
 
 
 async def route_for_tmdb(session: AsyncSession, kind: str, tmdb_id: int) -> RouteDecision:

@@ -373,6 +373,8 @@ export interface ManualDownloadTarget {
   library_name: string | null;
   mode: "watch" | "inplace" | "downloader_default" | null;
   path: string | null;
+  /** 条目目录的完整路径预览（后端按生效的命名模板渲染），展示落点时用它 */
+  entry_dir: string | null;
   staging_path: string | null;
   route_matched: boolean | null;
   route_reason: string | null;

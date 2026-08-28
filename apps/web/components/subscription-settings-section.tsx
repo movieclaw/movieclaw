@@ -584,7 +584,10 @@ function SimulatePanel() {
     setPicked(item);
     setPreview(null);
     if (!item.type) return;
-    void previewSubscriptionDownloadRouting(item.type, null, Number(item.id))
+    void previewSubscriptionDownloadRouting(item.type, null, Number(item.id), {
+      title: item.title,
+      year: item.year,
+    })
       .then(setPreview)
       .catch(() => setPreview(null));
   };
@@ -651,7 +654,8 @@ function SimulatePanel() {
                       ? `投递到监听导入目录 ${preview.path}，下载完成后识别改名并整理到 ${preview.staging_path}`
                       : `投递到监听导入目录 ${preview.path}，下载完成后自动整理入库`
                     : preview.mode === "inplace"
-                      ? `直接下载到库内目录 ${preview.path?.replace(/\/+$/, "")}/${picked.title}${picked.year ? ` (${picked.year})` : ""}，完成后自动入账`
+                      ? // 条目目录由后端按命名模板渲染，前端不自己拼「标题 (年份)」
+                        `直接下载到库内目录 ${(preview.entry_dir ?? preview.path)?.replace(/\/+$/, "")}，完成后自动入账`
                       : "落到下载器默认目录（不会自动入库）"
                 }
               />

@@ -416,11 +416,14 @@ def test_resolve_target_returns_existing_route_preview(client, monkeypatch) -> N
         assert kwargs["kind"] == "movie" and kwargs["title"] == "测试电影"
         return ManualTargetResolution(tmdb_id=42, candidates=[])
 
-    async def preview(session, *, kind, library_id, tmdb_id, downloader_id=None):
+    async def preview(session, *, kind, library_id, tmdb_id, downloader_id=None, **identity):
         assert (kind, library_id, tmdb_id, downloader_id) == ("movie", None, 42, 8)
+        # 没有候选时用种子识别出的标题/年份渲染条目目录预览
+        assert identity == {"title": "测试电影", "year": 2024}
         return {
             "mode": "watch",
             "path": "/downloads/manual/movies",
+            "entry_dir": "/data/movies/测试电影 (2024)",
             "staging_path": None,
             "library_id": 7,
             "library_name": "国内电影",
@@ -443,6 +446,7 @@ def test_resolve_target_returns_existing_route_preview(client, monkeypatch) -> N
     assert data["tmdb_id"] == 42
     assert data["library_name"] == "国内电影"
     assert data["path"] == "/downloads/manual/movies"
+    assert data["entry_dir"] == "/data/movies/测试电影 (2024)"
 
 
 def test_resolve_target_accepts_a_confirmed_candidate(client, monkeypatch) -> None:
@@ -457,11 +461,14 @@ def test_resolve_target_accepts_a_confirmed_candidate(client, monkeypatch) -> No
             candidates=[ResolveCandidate(tmdb_id=9527, title="确认影片", year=2024)],
         )
 
-    async def preview(session, *, kind, library_id, tmdb_id, downloader_id=None):
+    async def preview(session, *, kind, library_id, tmdb_id, downloader_id=None, **identity):
         assert (kind, library_id, tmdb_id, downloader_id) == ("movie", None, 9527, None)
+        # 用户确认了候选：条目目录预览用候选（TMDB）标题，而不是种子标题
+        assert identity == {"title": "确认影片", "year": 2024}
         return {
             "mode": "watch",
             "path": "/downloads/manual/movies",
+            "entry_dir": "/data/movies/确认影片 (2024)",
             "staging_path": None,
             "library_id": 7,
             "library_name": "国内电影",

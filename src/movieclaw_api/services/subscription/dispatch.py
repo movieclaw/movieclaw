@@ -423,6 +423,8 @@ async def preview_dispatch_route(
     library_id: int | None,
     tmdb_id: int | None = None,
     downloader_id: int | None = None,
+    title: str | None = None,
+    year: int | None = None,
 ) -> dict:
     """预演一次投递的路由结论（订阅弹窗/下载弹窗的预检数据源）。
 
@@ -437,12 +439,16 @@ async def preview_dispatch_route(
     路由结论（route_matched/route_reason）供前端预选与展示理由——规则
     只决定默认值，用户在弹窗里改库即显式指定，下次预检不再带路由徽标。
 
+    ``title``/``year`` 只影响展示用的 ``entry_dir``（条目目录预览），不参与
+    mode/path 的推导——预检给出的是投递基底目录，条目目录到投递时才推导。
+
     返回字段：mode（watch/inplace/downloader_default）、path（movieclaw
-    视角的投递基底目录）、library_id/library_name、downloader_name、
+    视角的投递基底目录）、entry_dir（条目目录的完整路径预览，见下）、
+    library_id/library_name、downloader_name、
     route_matched/route_reason（走了路由才有）、ok、warning
     （不 ok 时的中文指引）。
     """
-    from movieclaw_api.services.library.config import LibraryConfigService
+    from movieclaw_api.services.library.config import LibraryConfigService, derive_save_path
     from movieclaw_api.services.library.routing import resolve_save_path
     from movieclaw_api.services.torrent_submit import mapping_covers
     from movieclaw_db.models.downloader_client import DownloaderClient
@@ -450,6 +456,7 @@ async def preview_dispatch_route(
 
     route_matched: bool | None = None
     route_reason: str | None = None
+    routed_item = None
     if library_id is None and tmdb_id is not None:
         from movieclaw_api.services.library.routing import route_for_tmdb
 
@@ -457,11 +464,36 @@ async def preview_dispatch_route(
         library = route_decision.library
         route_matched = route_decision.matched
         route_reason = route_decision.reason
+        routed_item = route_decision.item
     else:
         library = await LibraryConfigService(session).resolve_for_subscription(library_id, kind)
     # 投递目录口径与真实投递同源（预检不给 title：条目目录到投递时才推导）
     decision = await resolve_save_path(session, library, kind=kind)
     base = decision.path
+    # 条目目录预览：模板化之后前端不能再自己拼「标题 (年份)」，落点长什么样
+    # 只能由后端用同一套模板渲染（命名同源，见 library/naming.py）。
+    # 标题取值：已建档条目的权威标题优先，未建档（临时条目标题是 tmdb#id
+    # 占位符）时用调用方传入的识别标题。
+    if routed_item is None and tmdb_id is not None:
+        # 显式选库时不走路由，但条目可能已建档——命名模板里的
+        # {original_title}/{tmdb_id} 需要条目才渲染得出，补一次轻量查询
+        from movieclaw_db.models import MediaItem
+
+        routed_item = (
+            await session.execute(
+                select(MediaItem).where(MediaItem.kind == kind, MediaItem.tmdb_id == tmdb_id)
+            )
+        ).scalar_one_or_none()
+    if routed_item is not None and routed_item.id is not None:
+        entry_title, entry_year = routed_item.title, routed_item.year
+        entry_item: object | None = routed_item
+    else:
+        entry_title, entry_year, entry_item = title, year, None
+    entry_dir = (
+        derive_save_path(library, title=entry_title, year=entry_year, item=entry_item)
+        if library is not None and entry_title
+        else None
+    )
 
     if downloader_id is not None:
         # 手动下载弹窗可以显式选第二台下载器。预检必须以该台的路径映射
@@ -517,6 +549,7 @@ async def preview_dispatch_route(
     return {
         "mode": mode,
         "path": base,
+        "entry_dir": entry_dir,
         "staging_path": getattr(decision.rule, "target_path", None),
         "library_id": library.id if library else None,
         "library_name": library.name if library else None,

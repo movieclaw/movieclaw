@@ -266,13 +266,17 @@ async def dispatch_preview(
     tmdb_id: int | None = Query(
         default=None, description="TMDB 条目 ID；缺省库时据此按收藏范围路由选库"
     ),
+    title: str | None = Query(
+        default=None, description="条目标题；仅用于渲染条目目录预览（entry_dir）"
+    ),
+    year: int | None = Query(default=None, description="条目年份；仅用于条目目录预览"),
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[DispatchPreviewView]:
     """按真实下载规则预演目标下载器、保存路径和最终媒体库，不产生任务。"""
     from movieclaw_api.services.subscription import preview_dispatch_route
 
     preview = await preview_dispatch_route(
-        session, kind=kind, library_id=library_id, tmdb_id=tmdb_id
+        session, kind=kind, library_id=library_id, tmdb_id=tmdb_id, title=title, year=year
     )
     return ok(DispatchPreviewView(**preview))
 

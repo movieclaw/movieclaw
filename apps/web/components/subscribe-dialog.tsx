@@ -98,7 +98,11 @@ export function SubscribeDialog({
     }
     let cancelled = false;
     setDispatchPreview(null);
-    previewSubscriptionDownloadRouting(routingKind, libraryId)
+    // 带上条目身份：后端据此渲染条目目录预览（entry_dir），前端不自己拼名字
+    previewSubscriptionDownloadRouting(routingKind, libraryId, prepared?.media?.tmdb_id, {
+      title: prepared?.media?.title,
+      year: prepared?.media?.year,
+    })
       .then((p) => {
         if (!cancelled) setDispatchPreview(p);
       })
@@ -108,7 +112,7 @@ export function SubscribeDialog({
     return () => {
       cancelled = true;
     };
-  }, [canManageSubscriptions, routingKind, libraryId]);
+  }, [canManageSubscriptions, routingKind, libraryId, prepared?.media]);
 
   /** 预检并按结果初始化表单默认值（候选确认后会带着 tmdbId 再次进入）。 */
   const runPrepare = useCallback(
@@ -572,23 +576,18 @@ export function SubscribeDialog({
                             </>
                           )
                         ) : (
-                          (() => {
-                            const folder = prepared.media
-                              ? `/${prepared.media.title}${
-                                  prepared.media.year ? ` (${prepared.media.year})` : ""
-                                }`
-                              : "";
-                            return (
-                              <>
-                                将直接下载到库内目录{" "}
-                                <span className="font-mono">
-                                  {dispatchPreview.path?.replace(/\/+$/, "")}
-                                  {folder}
-                                </span>
-                                ，完成后自动入账
-                              </>
-                            );
-                          })()
+                          // 条目目录由后端按命名模板渲染（entry_dir）：模板可全局/
+                          // 按库自定义，前端自己拼「标题 (年份)」会与真实落点不符
+                          <>
+                            将直接下载到库内目录{" "}
+                            <span className="font-mono">
+                              {(dispatchPreview.entry_dir ?? dispatchPreview.path)?.replace(
+                                /\/+$/,
+                                "",
+                              )}
+                            </span>
+                            ，完成后自动入账
+                          </>
                         )}
                       </p>
                     ) : (

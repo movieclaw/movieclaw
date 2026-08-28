@@ -103,12 +103,17 @@ async def resolve_download_target(
     # 不能在此重算目录，否则多个入口会出现不同归宿。
     from movieclaw_api.services.subscription import preview_dispatch_route
 
+    # 条目目录预览用识别到的 TMDB 标题，而不是种子标题——真实投递也是按
+    # TMDB 身份建档后推导目录的，两边必须一致
+    picked = next((c for c in resolution.candidates if c.tmdb_id == tmdb_id), None)
     preview = await preview_dispatch_route(
         session,
         kind=payload.kind,
         library_id=None,
         tmdb_id=tmdb_id,
         downloader_id=payload.downloader_id,
+        title=picked.title if picked else payload.title,
+        year=picked.year if picked else payload.year,
     )
     return ok(
         ManualDownloadTargetView(

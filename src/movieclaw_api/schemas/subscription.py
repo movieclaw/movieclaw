@@ -168,6 +168,14 @@ class DispatchPreviewView(BaseModel):
         description="投递路由：监听导入目录 / 直接下载进库 / 下载器默认目录"
     )
     path: str | None = Field(default=None, description="movieclaw 视角的投递基底目录")
+    entry_dir: str | None = Field(
+        default=None,
+        description=(
+            "条目目录的完整路径预览（按生效的命名模板渲染）。前端展示"
+            "「直接下载到 …」时必须用它，不要自己拼「标题 (年份)」——"
+            "命名模板可全局/按库自定义，自己拼会与真实落点不一致"
+        ),
+    )
     staging_path: str | None = Field(
         default=None,
         description=(

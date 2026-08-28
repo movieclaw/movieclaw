@@ -466,6 +466,13 @@ class ManualDownloadTargetView(BaseModel):
     library_name: str | None = None
     mode: Literal["watch", "inplace", "downloader_default"] | None = None
     path: str | None = Field(default=None, description="movieclaw 视角的实际投递目录")
+    entry_dir: str | None = Field(
+        default=None,
+        description=(
+            "条目目录的完整路径预览（按生效的命名模板渲染）；前端展示投递落点"
+            "时用它，不要自己拼「标题 (年份)」"
+        ),
+    )
     staging_path: str | None = Field(default=None, description="自定义目录规则的整理落点")
     route_matched: bool | None = Field(default=None, description="是否命中媒体库收藏范围")
     route_reason: str | None = Field(default=None, description="媒体库路由理由")
