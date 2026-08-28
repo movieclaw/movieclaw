@@ -199,15 +199,25 @@ def _build_plan_sync(
         # 目录名与文件名各走各的模板（默认两者相同，即模板化之前的行为）
         entry_dir = entry_dir_name_of(item, library=library)
         ext = src.suffix.lower()
+        # 文件属性来自台账行：命名模板可以用 {resolution}/{media_source}/
+        # {release_group}，与入库侧喂的是同一组值（命名同源）
+        attrs = {
+            "resolution": row.resolution,
+            "media_source": row.media_source,
+            "release_group": row.release_group,
+        }
         if kind is MediaKind.MOVIE:
-            target = Path(root) / entry_dir / f"{movie_file_name(item, library=library)}{ext}"
+            target = (
+                Path(root) / entry_dir / f"{movie_file_name(item, library=library, **attrs)}{ext}"
+            )
         else:
             season = row.season_number
+            stem = episode_file_name(item, season, row.episode_number, library=library, **attrs)
             target = (
                 Path(root)
                 / entry_dir
                 / season_dir_name(season, item, library=library)
-                / f"{episode_file_name(item, season, row.episode_number, library=library)}{ext}"
+                / f"{stem}{ext}"
             )
         if str(target) == row.file_path:
             plan.already_ok += 1

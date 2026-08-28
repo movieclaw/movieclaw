@@ -1683,17 +1683,25 @@ async def _ingest_entry(
             completed_bytes += file.stat().st_size
             continue
         ext = file.suffix.lower()
+        # 探测提前到命名之前：分辨率等文件属性是命名模板的可用占位符
+        # （{resolution}/{media_source}/{release_group}），拿不到值的话
+        # 用户配了这些占位符只会渲染成空——探测本身是纯读取，前移无副作用
+        file_spec = spec if file == main else await asyncio.to_thread(probe_media, file)
+        attrs = {
+            "resolution": file_spec.resolution if file_spec else None,
+            "media_source": release_attrs.media_source,
+            "release_group": release_attrs.release_group,
+        }
         # 文件名走命名模板（默认即 ``标题 (年份)`` / ``… - SxxEyy``）；
         # 版本标签等冲突后缀仍由 _transfer 追加，不进模板
         if kind is MediaKind.MOVIE:
-            target = Path(dest_dir) / f"{movie_file_name(item)}{ext}"
+            target = Path(dest_dir) / f"{movie_file_name(item, library=dest_library, **attrs)}{ext}"
         else:
             target = (
                 Path(dest_dir)
-                / season_dir_name(season, item)
-                / f"{episode_file_name(item, season, episode)}{ext}"
+                / season_dir_name(season, item, library=dest_library)
+                / f"{episode_file_name(item, season, episode, library=dest_library, **attrs)}{ext}"
             )
-        file_spec = spec if file == main else await asyncio.to_thread(probe_media, file)
         # 门禁逐文件生效：暂停的季包可能前几集完整、后几集残缺，主文件
         # 探测通过不代表每个文件都完整
         if file_spec is None and ffprobe_available():
