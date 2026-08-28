@@ -85,6 +85,71 @@ final class WorkerConfigurationTests: XCTestCase {
         )
     }
 
+    // MARK: - 配对码
+
+    func testPairingCodeRoundTripsURLAndToken() throws {
+        let code = try PairingCode.parse(makePairingCode(
+            url: "https://nas.example.com",
+            token: "s3cret-token"
+        ))
+
+        XCTAssertEqual(code.nasURL, "https://nas.example.com")
+        XCTAssertEqual(code.token, "s3cret-token")
+    }
+
+    func testPairingCodeToleratesPastedWhitespaceAndNewlines() throws {
+        // 从聊天工具或邮件里复制回来常常带换行和空格
+        let raw = makePairingCode(url: "http://10.1.1.5:3000", token: "abc123")
+        let mangled = "  " + raw.prefix(20) + "\n  " + raw.dropFirst(20) + "\n"
+
+        let code = try PairingCode.parse(String(mangled))
+
+        XCTAssertEqual(code.nasURL, "http://10.1.1.5:3000")
+        XCTAssertEqual(code.token, "abc123")
+    }
+
+    func testPairingCodeRejectsForeignTextWithActionableMessage() {
+        // 用户很可能误粘贴成 NAS 地址本身
+        XCTAssertThrowsError(try PairingCode.parse("https://nas.example.com")) { error in
+            XCTAssertEqual(error as? PairingCode.ParseError, .badPrefix)
+        }
+        XCTAssertThrowsError(try PairingCode.parse("   ")) { error in
+            XCTAssertEqual(error as? PairingCode.ParseError, .empty)
+        }
+    }
+
+    func testPairingCodeRejectsTruncatedPayload() {
+        let raw = makePairingCode(url: "https://nas.example.com", token: "s3cret")
+        // 少复制了尾巴：必须报「损坏」，不能静默解析出半个配置
+        let truncated = String(raw.dropLast(6))
+
+        XCTAssertThrowsError(try PairingCode.parse(truncated))
+    }
+
+    func testPairingCodeRejectsMissingToken() {
+        let payload = #"{"url":"https://nas.example.com"}"#
+        let encoded = Data(payload.utf8).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+
+        XCTAssertThrowsError(try PairingCode.parse(PairingCode.prefix + encoded)) { error in
+            XCTAssertEqual(error as? PairingCode.ParseError, .missingFields)
+        }
+    }
+
+    /// 按网页端的生成规则拼一段配对码，用来验证两端格式一致。
+    private func makePairingCode(url: String, token: String) -> String {
+        let payload = try! JSONSerialization.data(
+            withJSONObject: ["url": url, "token": token]
+        )
+        let encoded = payload.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+        return PairingCode.prefix + encoded
+    }
+
     private func makeConfiguration(nasText: String) throws -> WorkerConfiguration {
         try WorkerConfiguration.make(
             nasText: nasText,

@@ -3,6 +3,9 @@
 #
 # 打 v* tag 时构建应用内更新产物并上传到 GitHub Release：
 #   app-web.tar.gz / app-backend.tar.gz / manifest.json
+# 同时构建并上传 macOS 远程转码 Worker（MovieClawTranscoder-macos-arm64.zip）：
+# 此前这个 App 只能由用户自己 clone 仓库 + 装 Xcode + swift build，对一个
+# 面向 NAS 用户的开源项目来说等同于劝退。
 # 产物上传成功后自动调用 docker-image.yml，同步发布同版本号的
 # Docker 镜像（多架构，标签策略见该工作流头注释）。
 # =============================================================================
@@ -83,6 +86,45 @@ jobs:
           assets=(dist/release/app-web.tar.gz dist/release/app-backend.tar.gz dist/release/manifest.json)
           [ -f dist/release/manifest.json.sig ] && assets+=(dist/release/manifest.json.sig)
           gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --clobber "${assets[@]}"
+
+  # macOS 远程转码 Worker。needs 只为等 Release 被创建出来，与 docker-image
+  # 并行；它构建失败不该拖住应用产物和镜像的发布，因此用 continue-on-error，
+  # 失败时 Release 里就是少一个可选附件，主更新链路不受影响。
+  worker-macos:
+    needs: release-artifacts
+    runs-on: macos-14
+    continue-on-error: true
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # needs 满足时 tag 可能刚由上一个作业创建，默认 ref 未必包含它；
+          # 显式取触发时的提交，保证打包的就是发版那份代码
+          ref: ${{ github.sha }}
+
+      - name: 单测
+        run: swift test --package-path macos/MovieClawTranscoder
+
+      - name: 打包 App（ad-hoc 签名）
+        run: |
+          chmod +x macos/MovieClawTranscoder/scripts/package-app.sh
+          macos/MovieClawTranscoder/scripts/package-app.sh
+
+      - name: 压缩 App Bundle
+        run: |
+          # 必须用 ditto 而不是 zip：App Bundle 里有符号链接和扩展属性，
+          # 普通 zip 解开后可能无法启动
+          ditto -c -k --keepParent \
+            "macos/MovieClawTranscoder/dist/MovieClaw Transcoder.app" \
+            "MovieClawTranscoder-macos-arm64.zip"
+
+      - name: 上传到 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --clobber \
+            MovieClawTranscoder-macos-arm64.zip
 
   # 产物发布成功后同步发布 Docker 镜像。串在产物之后而非并行，
   # 是为了避免产物构建失败（版本校验不过等）时 latest 镜像已被推走。

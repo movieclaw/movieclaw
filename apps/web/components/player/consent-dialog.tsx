@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 
 import { savePlaybackPolicy } from "@/lib/api/playback";
@@ -89,8 +90,22 @@ export function ConsentDialog({
 
         {canSelfEnable ? (
           <>
+            {/* 用户看到这个弹窗的一刻，正是他最需要远程硬件转码的时候——NAS 没有
+                可用硬件编码器，只能拿 CPU 硬扛。这个功能藏在设置三级页里，不在
+                这里说一句就几乎没人会发现。只对能改全局设置的管理员显示：给成员
+                一个点进去必然 403 的链接毫无意义。 */}
+            <p className="mt-4 rounded-xl bg-white/[0.06] px-3 py-2.5 text-[12px] leading-relaxed text-white/60">
+              局域网里有 Apple Silicon Mac 的话，可以让它替 NAS 做硬件转码，省下这里的
+              CPU 开销。
+              <Link
+                href={{ pathname: "/settings/app", query: { tab: "remote" } }}
+                className="ml-1 text-[var(--player-accent)] underline decoration-dotted underline-offset-2"
+              >
+                去设置远程转码
+              </Link>
+            </p>
             {/* 独立播放设置页已撤（2026-08-25），这里如实告知开启即长期生效 */}
-            <p className="mt-4 text-[12px] text-white/45">开启后长期生效，之后不再询问。</p>
+            <p className="mt-3 text-[12px] text-white/45">开启后长期生效，之后不再询问。</p>
             <div className="mt-5 flex justify-end gap-2">
               <button
                 type="button"

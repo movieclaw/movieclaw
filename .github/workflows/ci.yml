@@ -9,6 +9,11 @@
 #     季集相关的一批测试会稳定失败——所以先从模型 Release 下载三个文件，
 #     并用 actions/cache 按 tag 缓存，避免每次跑 CI 都拉 15MB。
 #   - web 作业：eslint + tsc，与 release.yml 的前端环境保持同一套版本。
+#   - worker-macos 作业：macOS Worker 的 Swift 构建与单测。它只能在 macOS
+#     runner 上编译，本地 Linux 开发机和容器都跑不了，因此这里是它唯一的
+#     机器把关。刻意不加 paths 过滤：被设为必需检查的作业一旦因路径过滤
+#     不运行，PR 会永远等在「检查未完成」上；本仓库是公开仓库，macOS
+#     runner 分钟数不计费，多跑几次换一个稳定的门禁是划算的。
 # =============================================================================
 name: ci
 
@@ -80,3 +85,19 @@ jobs:
 
       - name: typecheck
         run: pnpm web:typecheck
+
+  # macOS Worker 的构建门禁。开发者多数在 Linux/容器里改代码，Swift 侧的
+  # 编译错误在本地完全暴露不出来，只能靠这里拦。
+  worker-macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 输出工具链版本（排障时先看这行）
+        run: swift --version
+
+      - name: 构建
+        run: swift build --package-path macos/MovieClawTranscoder -c release
+
+      - name: 单测
+        run: swift test --package-path macos/MovieClawTranscoder

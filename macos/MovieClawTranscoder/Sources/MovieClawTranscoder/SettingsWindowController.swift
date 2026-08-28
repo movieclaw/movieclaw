@@ -11,11 +11,12 @@ final class SettingsWindowController: NSWindowController {
     private let workerIDField = NSTextField()
     private let ffmpegPathField = NSTextField()
     private let maxJobsField = NSTextField()
+    private let pairingField = NSTextField()
     private let autoConnectButton = NSButton(checkboxWithTitle: "启动时自动连接", target: nil, action: nil)
 
     init(snapshot: WorkerSettingsSnapshot) {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 560, height: 330),
+            contentRect: NSRect(x: 0, y: 0, width: 620, height: 380),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -30,6 +31,7 @@ final class SettingsWindowController: NSWindowController {
         ffmpegPathField.stringValue = snapshot.ffmpegPath
         maxJobsField.stringValue = String(snapshot.maxJobs)
         autoConnectButton.state = snapshot.autoConnect ? .on : .off
+        pairingField.placeholderString = "粘贴 NAS 网页「远程转码」页面的配对码，可自动填好下面的地址与 Token"
         window.contentView = makeContentView()
     }
 
@@ -50,6 +52,9 @@ final class SettingsWindowController: NSWindowController {
         container.spacing = 12
         container.translatesAutoresizingMaskIntoConstraints = false
 
+        // 配对码放在最上面：它能一次填好地址和 Token，是推荐路径；下面的
+        // 手工填写留给不方便复制粘贴的场景。
+        container.addArrangedSubview(makeRow("配对码", field: pairingField, action: ("填入", #selector(applyPairingCode))))
         container.addArrangedSubview(makeRow("NAS 地址", field: nasURLField))
         container.addArrangedSubview(makeRow("Worker Token", field: tokenField))
         container.addArrangedSubview(makeRow("Worker ID", field: workerIDField))
@@ -85,17 +90,43 @@ final class SettingsWindowController: NSWindowController {
         return root
     }
 
-    private func makeRow(_ title: String, field: NSTextField) -> NSView {
+    private func makeRow(
+        _ title: String,
+        field: NSTextField,
+        action: (title: String, selector: Selector)? = nil
+    ) -> NSView {
         field.translatesAutoresizingMaskIntoConstraints = false
-        field.widthAnchor.constraint(greaterThanOrEqualToConstant: 380).isActive = true
         let label = NSTextField(labelWithString: title)
         label.alignment = .right
         label.widthAnchor.constraint(equalToConstant: 100).isActive = true
-        let row = NSStackView(views: [label, field])
+        var views: [NSView] = [label, field]
+        if let action {
+            // 带按钮的行让输入框窄一些，避免整个窗口被撑宽
+            field.widthAnchor.constraint(greaterThanOrEqualToConstant: 320).isActive = true
+            views.append(NSButton(title: action.title, target: self, action: action.selector))
+        } else {
+            field.widthAnchor.constraint(greaterThanOrEqualToConstant: 380).isActive = true
+        }
+        let row = NSStackView(views: views)
         row.orientation = .horizontal
         row.spacing = 10
         row.alignment = .centerY
         return row
+    }
+
+    /// 解析配对码并填入地址与 Token；不直接保存，让用户能先核对一眼。
+    @objc private func applyPairingCode() {
+        do {
+            let code = try PairingCode.parse(pairingField.stringValue)
+            nasURLField.stringValue = code.nasURL
+            tokenField.stringValue = code.token
+            pairingField.stringValue = ""
+            pairingField.placeholderString = "已填入，请核对 NAS 地址后保存"
+        } catch let error as PairingCode.ParseError {
+            showError(error.description)
+        } catch {
+            showError("配对码无法解析：\(error.localizedDescription)")
+        }
     }
 
     @objc private func saveSettings() {
