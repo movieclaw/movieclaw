@@ -154,6 +154,24 @@ final class ArtifactUploadProxy: @unchecked Sendable {
         pattern: #"^(?:init\.mp4|(?:live|index)\.m3u8|seg[0-9]{5}\.m4s)$"#
     )
 
+    /// VOD 会话里 ffmpeg 每写完一个分片都会重写一次它，但服务端对远程会话
+    /// **不解析**这份列表（分片是否就绪以产物文件本身为准，见 NAS 侧
+    /// `_sync_completed`）。每次重写都实传等于把上传请求数翻倍，却只是在送一份
+    /// 对端不看的数据，所以这里只留最后一份、在任务收尾时补传一次备诊断。
+    ///
+    /// `index.m3u8` 不在此列：非 VOD 会话的这份列表要直接发给浏览器，服务端
+    /// 起播时还会阻塞等它出现，必须实时上传。
+    private static let deferredPlaylistName = "live.m3u8"
+
+    /// 该产物是否攒到任务收尾再传。
+    ///
+    /// 判据只认 `live.m3u8` 这一个名字，**不能放宽成「所有 .m3u8」**：
+    /// `index.m3u8` 是非 VOD 会话直接发给浏览器的列表，服务端起播时还会阻塞
+    /// 等它出现，延迟上传会让这类会话直接起播失败。
+    static func isDeferredArtifact(_ filename: String) -> Bool {
+        filename == deferredPlaylistName
+    }
+
     let jobID: String
     private let remoteBaseURL: URL
     private let queue: DispatchQueue
@@ -164,18 +182,35 @@ final class ArtifactUploadProxy: @unchecked Sendable {
     private var stopped = false
     private var failureMessage: String?
     private var connections: [ObjectIdentifier: UploadConnection] = [:]
+    /// 最后一次收到的 live.m3u8（内容与 query），收尾时补传。
+    private var deferredPlaylist: (data: Data, query: String?)?
+    /// 整个任务共用一条 URLSession：HLS 分片按秒级节奏产出，每个产物新建
+    /// 会话会让每次上传都重做一遍 TCP + TLS 握手，握手的 RTT 恰好全落在
+    /// 起播和 seek 这些最怕延迟的时刻。共用后连接可以 keep-alive 复用。
+    private let uploadSession: URLSession
 
     init(jobID: String, remoteBaseURL: URL) throws {
         self.jobID = jobID
         self.remoteBaseURL = remoteBaseURL
         self.queue = DispatchQueue(label: "com.movieclaw.transcoder.artifacts.\(jobID)")
 
+        // 会放在会抛错的那步之后：URLSession 在 invalidate 前会自持引用，
+        // 若 listener 创建失败，先建好的会话没人来释放。
         let parameters = NWParameters.tcp
         parameters.requiredLocalEndpoint = NWEndpoint.hostPort(
             host: "127.0.0.1",
             port: NWEndpoint.Port(rawValue: 0)!
         )
         self.listener = try NWListener(using: parameters)
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 30
+        configuration.timeoutIntervalForResource = 90
+        configuration.httpShouldSetCookies = false
+        configuration.httpCookieStorage = nil
+        // 分片上传之间要复用连接，这个上限决定了并发上传能占多少条
+        configuration.httpMaximumConnectionsPerHost = 4
+        self.uploadSession = URLSession(configuration: configuration)
     }
 
     /// 启动回环 HTTP 服务，并返回给 ffmpeg 使用的根地址。
@@ -263,6 +298,9 @@ final class ArtifactUploadProxy: @unchecked Sendable {
         for connection in activeConnections {
             connection.stop()
         }
+        // 共享会话随代理一起结束；finishTasksAndInvalidate 会等已发出的请求
+        // 收尾，但此时 drain 已经跑过，剩下的都是该取消的。
+        uploadSession.invalidateAndCancel()
         continuation?.resume(throwing: ProxyError.stopped)
         AppLogger.shared.info("任务上传代理已停止：job=\(jobID)")
     }
@@ -272,7 +310,10 @@ final class ArtifactUploadProxy: @unchecked Sendable {
     func drainPendingUploads() async {
         let deadline = DispatchTime.now().uptimeNanoseconds + Self.uploadDrainTimeoutNanoseconds
         while !Task.isCancelled {
-            if !hasPendingUploads() { return }
+            if !hasPendingUploads() {
+                await flushDeferredPlaylist()
+                return
+            }
 
             let now = DispatchTime.now().uptimeNanoseconds
             if now >= deadline {
@@ -287,6 +328,30 @@ final class ArtifactUploadProxy: @unchecked Sendable {
             } catch {
                 return
             }
+        }
+    }
+
+    /// 把攒下的最后一份 live.m3u8 补传给 NAS，供播放诊断查看。
+    ///
+    /// 它对播放不是必需品，所以失败只记日志、不写 failureMessage——否则一份
+    /// 纯诊断产物没传上去，会把一个本来成功的任务判成失败。
+    private func flushDeferredPlaylist() async {
+        lock.lock()
+        let pending = deferredPlaylist
+        deferredPlaylist = nil
+        lock.unlock()
+
+        guard let pending else { return }
+        // 直接走网络实传，不能再经过 upload()——那里会把它重新攒起来。
+        let result = await performUpload(
+            data: pending.data,
+            filename: Self.deferredPlaylistName,
+            query: pending.query
+        )
+        if !result.succeeded {
+            AppLogger.shared.warning(
+                "进度列表补传失败（不影响播放）：job=\(jobID) status=\(result.statusCode)"
+            )
         }
     }
 
@@ -382,7 +447,24 @@ final class ArtifactUploadProxy: @unchecked Sendable {
         return components.url
     }
 
+    /// 代理收到产物后的入口：决定实传还是攒着，真正的网络请求在 performUpload。
     private func upload(
+        data: Data,
+        filename: String,
+        query: String?
+    ) async -> UploadResult {
+        // VOD 进度列表只留最后一份，收尾时补传一次（理由见 deferredPlaylistName）。
+        // 对 ffmpeg 直接回 201，它不会因此改变写入行为。
+        if Self.isDeferredArtifact(filename) {
+            lock.lock()
+            deferredPlaylist = (data: data, query: query)
+            lock.unlock()
+            return UploadResult(statusCode: 201, message: nil, attempts: 1)
+        }
+        return await performUpload(data: data, filename: filename, query: query)
+    }
+
+    private func performUpload(
         data: Data,
         filename: String,
         query: String?
@@ -393,13 +475,7 @@ final class ArtifactUploadProxy: @unchecked Sendable {
             return UploadResult(statusCode: 400, message: message, attempts: 1)
         }
 
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 30
-        configuration.timeoutIntervalForResource = 90
-        configuration.httpShouldSetCookies = false
-        configuration.httpCookieStorage = nil
-        let session = URLSession(configuration: configuration)
-        defer { session.invalidateAndCancel() }
+        let session = uploadSession
 
         var lastStatus = 502
         var lastMessage = "无法连接 NAS"

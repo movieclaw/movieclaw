@@ -20,6 +20,17 @@ actor WorkerClient {
     private var lastError: String?
     private var draining = false
     private var stopRequested = false
+    /// 本轮连接是否收到过 worker.accepted。用来区分「连上后掉线」和「压根连不上」：
+    /// 前者退避应从头开始，后者才该继续指数退避。
+    private var handshakeCompleted = false
+    /// 最近一次收到 NAS 消息的时间（含心跳 ack），用于判定半开连接。
+    private var lastServerMessageAt = Date()
+
+    /// 心跳间隔；服务端的离线判定窗口是它的三倍，留足丢包余量。
+    private static let heartbeatIntervalNanoseconds: UInt64 = 15_000_000_000
+    /// 多久没收到 NAS 任何消息就认定链路已死。与服务端 WORKER_IDLE_TIMEOUT_S
+    /// 保持一致，避免两边对「这条连接还活着吗」给出相反的答案。
+    private static let serverSilenceTimeout: TimeInterval = 45
 
     init(configuration: WorkerConfiguration, capabilities: WorkerCapabilities) {
         let stream = AsyncStream<WorkerStatus>.makeStream(
@@ -47,6 +58,12 @@ actor WorkerClient {
                 lastError = message
                 AppLogger.shared.warning("NAS 控制连接断开：\(message)", secret: configuration.workerToken)
                 publish(.reconnecting, message: message, error: message)
+                // 已经握手成功过的连接掉线，说明地址和令牌都是对的，只是链路断了：
+                // 退避要从头开始，否则一条挂了几小时的连接断开后会直接按上次遗留
+                // 的 30 秒等待，白白多离线半分钟。连不上的情况仍然继续指数退避。
+                if handshakeCompleted {
+                    retryDelay = 1_000_000_000
+                }
             }
             stopAllJobs()
             guard !Task.isCancelled && !stopRequested else { break }
@@ -82,6 +99,8 @@ actor WorkerClient {
     }
 
     private func runConnection() async throws {
+        handshakeCompleted = false
+        lastServerMessageAt = Date()
         var endpoint = configuration.nasURL
             .appendingPathComponent("api")
             .appendingPathComponent("v1")
@@ -132,6 +151,8 @@ actor WorkerClient {
 
         while !Task.isCancelled && !stopRequested {
             let message = try await socket.receive()
+            // 任何一条消息都算链路活着，心跳 ack 也不例外
+            lastServerMessageAt = Date()
             guard case let .string(text) = message,
                   let data = text.data(using: .utf8),
                   let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
@@ -145,11 +166,21 @@ actor WorkerClient {
     private func heartbeatLoop() async {
         while !Task.isCancelled && !stopRequested {
             do {
-                try await Task.sleep(nanoseconds: 15_000_000_000)
+                try await Task.sleep(nanoseconds: Self.heartbeatIntervalNanoseconds)
             } catch {
                 return
             }
             guard !Task.isCancelled && !stopRequested else { return }
+            // 半开连接（Mac 休眠唤醒、NAS 掉电、路由器换 NAT 映射）下，socket
+            // 的 receive() 会一直挂到 TCP 自己放弃，可能好几分钟。服务端 45 秒
+            // 就把我们判离线不再派单了，这段时间里 Worker 却以为自己在线、也
+            // 不会重连。这里用同样的窗口主动断开，把重连交给外层循环。
+            if Date().timeIntervalSince(lastServerMessageAt) > Self.serverSilenceTimeout {
+                let seconds = Int(Self.serverSilenceTimeout)
+                AppLogger.shared.warning("NAS 超过 \(seconds) 秒没有任何响应，主动断开重连")
+                socket?.cancel(with: .goingAway, reason: nil)
+                return
+            }
             try? await send(["type": "worker.heartbeat"])
         }
     }
@@ -159,6 +190,7 @@ actor WorkerClient {
         switch type {
         case "worker.accepted":
             lastError = nil
+            handshakeCompleted = true
             publish(draining ? .draining : .ready, message: "Worker 已连接到 NAS")
             AppLogger.shared.info("Worker 已连接到 NAS：\(configuration.workerID)")
         case "job.start":

@@ -59,6 +59,18 @@ final class WorkerConfigurationTests: XCTestCase {
         XCTAssertEqual(ArtifactUploadProxy.maxArtifactBytes, 512 * 1024 * 1024)
     }
 
+    func testOnlyVODProgressPlaylistIsDeferred() {
+        // live.m3u8 是 VOD 的内部进度列表，服务端对远程会话根本不解析它，
+        // 每个分片都重传一遍纯属浪费。
+        XCTAssertTrue(ArtifactUploadProxy.isDeferredArtifact("live.m3u8"))
+
+        // 其余产物都必须实时上传。index.m3u8 尤其不能延迟——非 VOD 会话
+        // 的浏览器直接读它，服务端起播时还会阻塞等它出现。
+        XCTAssertFalse(ArtifactUploadProxy.isDeferredArtifact("index.m3u8"))
+        XCTAssertFalse(ArtifactUploadProxy.isDeferredArtifact("init.mp4"))
+        XCTAssertFalse(ArtifactUploadProxy.isDeferredArtifact("seg00001.m4s"))
+    }
+
     func testChunkedBodyParserHandlesEveryTCPSplitAndTrailers() {
         let expected = Data("Wikipedia".utf8)
         let encoded = Data(
