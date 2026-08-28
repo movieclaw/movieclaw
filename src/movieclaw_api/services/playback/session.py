@@ -810,23 +810,10 @@ class TranscodeSessionManager:
                     )
                     return None
                 generation = session.restart_generation
-            # seek 重启会先清空旧 job/worker，再异步下发新 job。这个短窗口
-            # 内不检查旧状态，否则等待者会把正常切换误报成 Worker 断线。
-            if session.remote and not session.remote_restarting:
-                registry = get_remote_worker_registry()
-                job_state = registry.job_state(session.remote_job_id or "")
-                if (
-                    job_state
-                    and job_state.get("type") in {"job.failed", "job.finished"}
-                    and not target.exists()
-                ):
-                    session.state = "failed"
-                    session.error = _remote_job_failure_message(job_state)
-                    return None
-                if not registry.worker_online(session.remote_worker_id):
-                    session.state = "failed"
-                    session.error = "远程 Worker 已断开连接"
-                    return None
+            # 就绪检查必须排在远程状态检查**之前**：分片一旦落盘就与 Worker
+            # 在不在线无关了。远程 job 整片转完后用户合上 Mac，缓存里的分片
+            # 仍然完全可播；先查在线状态会把这些请求逐个打成 failed，等于把
+            # 已经转好的整部片子作废。
             if self._segment_ready(session, index):
                 waited_s = time.monotonic() - waited_from
                 if waited_s > 1.0:
@@ -838,6 +825,19 @@ class TranscodeSessionManager:
                         "重启直奔" if session.head_segment != head_before else "顺序追赶",
                     )
                 return target
+            # seek 重启会先清空旧 job/worker，再异步下发新 job。这个短窗口
+            # 内不检查旧状态，否则等待者会把正常切换误报成 Worker 断线。
+            if session.remote and not session.remote_restarting:
+                registry = get_remote_worker_registry()
+                job_state = registry.job_state(session.remote_job_id or "")
+                if job_state and job_state.get("type") in {"job.failed", "job.finished"}:
+                    session.state = "failed"
+                    session.error = _remote_job_failure_message(job_state)
+                    return None
+                if not registry.worker_online(session.remote_worker_id):
+                    session.state = "failed"
+                    session.error = "远程 Worker 已断开连接"
+                    return None
             try:
                 await self._maybe_restart_for(session, index)
             except SessionStartError:

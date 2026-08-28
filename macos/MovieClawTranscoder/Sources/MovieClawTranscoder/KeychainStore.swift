@@ -76,6 +76,12 @@ private struct KeychainError: Error, CustomStringConvertible {
     let status: OSStatus
 
     var description: String {
-        "Keychain 操作失败（(status)）"
+        // SecCopyErrorMessageString 给的是可读原因（如「User interaction is not
+        // allowed」），比裸状态码更能让非开发者判断该怎么办；取不到时退回状态码。
+        let reason = SecCopyErrorMessageString(status, nil) as String?
+        if let reason, !reason.isEmpty {
+            return "Keychain 操作失败：\(reason)（状态码 \(status)）"
+        }
+        return "Keychain 操作失败（状态码 \(status)）"
     }
 }

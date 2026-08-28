@@ -58,10 +58,25 @@ PHONE_SOFT_HEVC = ClientCapability(
     mse="managed",
     is_mobile=True,
 )
+# 无 MSE 的老 iOS：前端会把它交给系统原生播放器（AVPlayer），因此吃 AVPlayer
+# 专属的保守限制。mse="none" 是这条分支的**必要条件**，不能省——见下面的
+# IOS_MANAGED_MSE。
 IOS_NATIVE_HLS = ClientCapability(
     video=(VideoSupport("h264"), VideoSupport("hevc")),
     audio=(AudioSupport("aac"), AudioSupport("ac3"), AudioSupport("eac3")),
     containers=frozenset({"hls-fmp4"}),
+    mse="none",
+    is_mobile=True,
+    native_hls=True,
+)
+# iOS 17+ 的真实形态：具备原生 HLS 能力，但同时暴露 ManagedMediaSource，
+# 前端 resolvePlaybackMode 会交给 hls.js。AVPlayer 不参与解码，所以**不该**
+# 吃 AVPlayer 的限制。
+IOS_MANAGED_MSE = ClientCapability(
+    video=(VideoSupport("h264"), VideoSupport("hevc")),
+    audio=(AudioSupport("aac"), AudioSupport("ac3"), AudioSupport("eac3")),
+    containers=frozenset({"mp4", "hls-fmp4"}),
+    mse="managed",
     is_mobile=True,
     native_hls=True,
 )
@@ -71,6 +86,7 @@ NO_GPU = PlaybackPolicy(hardware_available=False)
 NO_GPU_SOFT_ON = PlaybackPolicy(hardware_available=False, software_transcode_enabled=True)
 
 AAC_51 = AudioTrack(ref="embedded:1", codec="aac", channels=6, is_default=True)
+AAC_STEREO = AudioTrack(ref="embedded:1", codec="aac", channels=2, is_default=True)
 TRUEHD_71 = AudioTrack(ref="embedded:1", codec="truehd", channels=8, is_default=True)
 DTS_51 = AudioTrack(ref="embedded:1", codec="dts", channels=6, is_default=True)
 AC3_51 = AudioTrack(ref="embedded:1", codec="ac3", channels=6, is_default=True)
@@ -383,6 +399,7 @@ def test_mobile_native_hls_4k_uses_server_transcode_height():
         video=(VideoSupport("h264"), VideoSupport("hevc")),
         audio=(AudioSupport("aac"),),
         containers=frozenset({"hls-fmp4"}),
+        mse="none",
         is_mobile=True,
         native_hls=True,
     )
@@ -398,6 +415,23 @@ def test_mobile_native_hls_4k_uses_server_transcode_height():
     assert decision.video.height == 1080
     assert decision.video.source_bit_depth == 10
     assert "原生 HLS" in decision.reason
+
+
+def test_managed_mse_iphone_keeps_4k_passthrough():
+    """iOS 17+ 走 hls.js，不该吃 AVPlayer 的 1080p 上限。
+
+    前端 resolvePlaybackMode 只在 mse="none" 时才选 native-hls 引擎；决策层
+    若只判 native_hls+is_mobile，现代 iPhone 的 4K HEVC 会被无谓降到 1080p，
+    而它本来能直通。真播不动由 failed_tiers 回路兜底。
+    """
+    decision = decide_playback(
+        media(video_codec="hevc", resolution="2160p"), IOS_MANAGED_MSE, WITH_GPU
+    )
+
+    assert isinstance(decision, PlaybackPlan)
+    # 容器仍是 mkv 所以要重封装，但视频码流必须原样带过去、不降分辨率
+    assert decision.tier is PlaybackTier.REMUX
+    assert decision.video.action == "copy"
 
 
 # ---------------------------------------------------------------------------
@@ -439,6 +473,44 @@ def test_mobile_native_hls_pins_audio_to_aac_lc_stereo():
     assert decision.audio.channels == 2
     assert decision.audio.downmix is True
     assert "AAC-LC" in decision.reason
+
+
+def test_native_hls_keeps_aac_stereo_source():
+    """源轨已经是 AAC 双声道时，AVPlayer 那条兜底不该再转一遍。
+
+    它已经是目标格式，重编只是白起一路 ffmpeg，还会把档 0 抬到档 2。
+    """
+    decision = decide_playback(
+        media(container="mp4", video_codec="h264", audio_tracks=(AAC_STEREO,)),
+        IOS_NATIVE_HLS,
+        WITH_GPU,
+    )
+    assert isinstance(decision, PlaybackPlan)
+    assert decision.tier is PlaybackTier.DIRECT_PLAY
+
+
+def test_managed_mse_iphone_keeps_aac_stereo_direct_play():
+    """iOS 17+ 的 AAC 立体声片子必须保持直出，不能被 AVPlayer 兜底波及。
+
+    回归守卫：曾经只判 native_hls+is_mobile，导致 iPhone 上本可直出的片子
+    每次播放都起一路 ffmpeg；关键帧索引未就绪时更会一路抬到软转同意弹窗。
+    """
+    profile = media(container="mp4", video_codec="h264", audio_tracks=(AAC_STEREO,))
+    decision = decide_playback(profile, IOS_MANAGED_MSE, WITH_GPU)
+    assert isinstance(decision, PlaybackPlan)
+    assert decision.tier is PlaybackTier.DIRECT_PLAY
+
+    # 关键帧索引未就绪 + 无 GPU：档 0 不受关键帧门槛影响，仍应直出而不是
+    # 弹「要不要开启软件转码」。
+    no_keyframes = media(
+        container="mp4",
+        video_codec="h264",
+        audio_tracks=(AAC_STEREO,),
+        keyframe_interval_s=None,
+    )
+    decision = decide_playback(no_keyframes, IOS_MANAGED_MSE, NO_GPU)
+    assert isinstance(decision, PlaybackPlan)
+    assert decision.tier is PlaybackTier.DIRECT_PLAY
 
 
 def test_prefers_eac3_to_keep_multichannel():

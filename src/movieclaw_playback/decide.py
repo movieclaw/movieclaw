@@ -401,14 +401,14 @@ def _judge_video(
             can_copy=False,
             reason=f"{media.resolution} 超出设备可解码的分辨率，已降分辨率",
         )
-    # iOS 原生 HLS 会把 fMP4 交给 AVPlayer。Safari 的能力探测只代表「存在
+    # 原生 HLS 会把 fMP4 交给 AVPlayer。Safari 的能力探测只代表「存在
     # 某种可能的解码路径」，不能证明 4K 长时间播放不会触发硬件解码失败；
-    # 原生 HLS + 移动端因此沿用服务端现有 1080p 转码上限，先把视频码流
-    # 变成稳定的 H.264 8-bit 输出，再交给 AVPlayer。MSE 浏览器不走这条
-    # 分支，仍由真实播放失败后的 failed_tiers 回路处理。
+    # 因此沿用服务端现有 1080p 转码上限，先把视频码流变成稳定的 H.264
+    # 8-bit 输出，再交给 AVPlayer。走 hls.js 的设备（含 ManagedMediaSource
+    # 的现代 iPhone）不进这条分支——见 uses_native_hls_player——仍由真实
+    # 播放失败后的 failed_tiers 回路处理。
     if (
-        capability.native_hls
-        and capability.is_mobile
+        capability.uses_native_hls_player
         and height is not None
         and height > policy.max_transcode_height
     ):
@@ -482,12 +482,24 @@ def _judge_audio(
     default = _preferred_audio(tracks)
     chosen = next((t for t in tracks if t.ref == preferred_audio), None)
 
-    # iOS Safari 的原生 HLS 解码链比 MSE/hls.js 更挑剔：即使能力探测报告
+    # 原生 HLS（AVPlayer）的解码链比 MSE/hls.js 更挑剔：即使能力探测报告
     # E-AC-3 或多声道 AAC 可用，放进 fMP4 后仍可能在 init/首片阶段直接报
     # MEDIA_ERR_DECODE。保留用户选中的轨（或默认轨），但统一重编码成
     # AAC-LC 双声道，给 AVPlayer 一个确定的、跨 iOS 版本稳定的音频格式。
-    if capability.native_hls and capability.is_mobile:
+    #
+    # 例外：源轨本身就是 AAC 双声道时，它已经是这条分支想要的目标格式，
+    # 再编一遍纯属白烧一路 ffmpeg——而且会把本可直出（档 0）的片子抬进音频
+    # 转码档，关键帧索引未就绪时甚至一路抬到软转同意弹窗。
+    if capability.uses_native_hls_player:
         track = chosen or default
+        channels = track.channels or 2
+        if (track.codec or "").lower() == "aac" and channels <= 2:
+            return _AudioVerdict(
+                can_copy=True,
+                track=track,
+                reason=f"音轨 {_track_label(track)} 已是 AAC-LC 双声道，可直通",
+                needs_remap=track.ref != default.ref,
+            )
         return _transcode_audio(
             track,
             capability,

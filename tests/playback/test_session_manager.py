@@ -1096,6 +1096,72 @@ async def test_remote_restart_window_does_not_report_worker_offline(manager, tmp
     assert registry.worker_checks == 0
 
 
+@pytest.mark.asyncio
+async def test_remote_cached_segment_survives_worker_offline(manager, tmp_path, monkeypatch):
+    """整片转完后 Mac 关机，缓存里已落盘的分片仍要能播。
+
+    回归守卫：在线状态检查曾排在就绪检查之前且不看分片是否已落盘，导致
+    远程 job 正常 finished、Worker 下线之后，每一个分片请求都被打成
+    failed——已经转好的整部片子被整体作废。
+    """
+    session = _vod_session(tmp_path, head=0, completed=set())
+    session.remote = True
+    session.remote_job_id = "job-1"
+    session.remote_worker_id = "worker-1"
+    session.directory.mkdir(parents=True, exist_ok=True)
+    session.pending_segments[0] = 1
+    session.pending_since[0] = time.monotonic()
+
+    # 分片早已完整落盘（远程上传端点是原子替换，存在即完整）
+    target = session.directory / "seg00000.m4s"
+    target.write_bytes(b"complete")
+
+    class OfflineRegistry:
+        def job_state(self, _job_id: str) -> dict[str, str] | None:
+            return {"type": "job.finished"}
+
+        def worker_online(self, _worker_id: str | None) -> bool:
+            return False
+
+    monkeypatch.setattr(session_mod, "get_remote_worker_registry", lambda: OfflineRegistry())
+
+    result = await manager._await_segment(
+        session, 0, target, time.monotonic(), 0, time.monotonic() + 0.5, 0
+    )
+
+    assert result == target
+    assert session.state != "failed"
+
+
+@pytest.mark.asyncio
+async def test_remote_missing_segment_after_job_end_still_fails(manager, tmp_path, monkeypatch):
+    """job 已结束而分片确实没落盘时，仍必须快速失败而不是空等到超时。"""
+    session = _vod_session(tmp_path, head=0, completed=set())
+    session.remote = True
+    session.remote_job_id = "job-1"
+    session.remote_worker_id = "worker-1"
+    session.directory.mkdir(parents=True, exist_ok=True)
+    session.pending_segments[0] = 1
+    session.pending_since[0] = time.monotonic()
+
+    class OfflineRegistry:
+        def job_state(self, _job_id: str) -> dict[str, str] | None:
+            return {"type": "job.failed", "error": "VideoToolbox 初始化失败"}
+
+        def worker_online(self, _worker_id: str | None) -> bool:
+            return False
+
+    monkeypatch.setattr(session_mod, "get_remote_worker_registry", lambda: OfflineRegistry())
+
+    target = session.directory / "seg00000.m4s"
+    result = await manager._await_segment(
+        session, 0, target, time.monotonic(), 0, time.monotonic() + 0.5, 0
+    )
+
+    assert result is None
+    assert session.state == "failed"
+
+
 def _boundaries(count: int) -> SegmentPlan:
     return SegmentPlan(boundaries=tuple(float(i * 4) for i in range(count)), duration_s=count * 4.0)
 

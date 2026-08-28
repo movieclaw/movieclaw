@@ -79,11 +79,26 @@ class ClientCapability:
     mse: str = "full"
     # 移动端：软解虽然 supported 也会烧电池发热，powerEfficient=False 时应主动降档
     is_mobile: bool = False
-    # 移动端原生 HLS（当前主要是 iOS Safari/AVPlayer）。原生播放器对 4K
-    # 码流的实际解码余量比 decodingInfo 的 supported 更保守，服务端会把它
-    # 限制到既有的转码高度上限，避免把仍可能失败的 4K fMP4 交给 AVPlayer。
+    # 移动端原生 HLS（当前主要是 iOS Safari/AVPlayer）。注意这只表示「设备
+    # 具备原生 HLS 能力」，不代表本次播放真的会交给 AVPlayer——判断后者要用
+    # uses_native_hls_player，见该属性的说明。
     native_hls: bool = False
     universal: bool = False
+
+    @property
+    def uses_native_hls_player(self) -> bool:
+        """本次播放是否真的会落到系统原生播放器（AVPlayer）。
+
+        必须与前端 ``resolvePlaybackMode`` 选 ``native-hls`` 引擎的条件保持
+        一致（apps/web/lib/player/playback-mode.ts）：**只有没有 MSE 的老设备
+        才走原生 HLS**。iOS 17+ 暴露的是 ManagedMediaSource（``mse="managed"``），
+        前端会交给 hls.js，此时 AVPlayer 根本不参与解码。
+
+        分开这两个概念是有代价教训的：只判 ``native_hls and is_mobile`` 会把
+        AVPlayer 专属的保守限制（4K 降 1080p、音轨强制 AAC-LC 双声道）错误地
+        施加到走 hls.js 的现代 iPhone 上，让本可直出的片子白白转码一遍。
+        """
+        return self.native_hls and self.is_mobile and self.mse == "none"
 
     def video_support(self, codec: str | None) -> VideoSupport | None:
         """取指定视频编码的支持情况；不支持返回 None。"""
