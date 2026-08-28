@@ -25,6 +25,7 @@ from movieclaw_jellyfin.catalog import (
     LatestUnitCandidate,
     ResumeUnitCandidate,
     episode_dto,
+    hydrate_leaves,
     item_ids_with_files,
     latest_unit_candidates,
     library_view_dto,
@@ -113,6 +114,41 @@ async def viewer_scope(
     async with get_database().session() as session:
         visible = await member_visible_ids(session, member_id)
     return ViewerScope(member_id, visible)
+
+# 这些排序键要读**每一个候选条目**的文件行（入库时间 / 时长），骨架不够用
+_FULL_LEAF_SORTS = {"DateCreated", "Runtime"}
+# 这些排序/筛选口径在候选里含 Episode 时要读**每一集**的分集元数据
+_EPISODE_LEAF_SORTS = {"SortName", "Name", "PremiereDate", "CommunityRating", "Runtime"}
+
+
+@dataclass
+class _LazyLeaves:
+    """列表查询的"两段式装载"联络簿。
+
+    列表接口的筛选、排序、分页只需要"哪些单元有文件"和播放状态；真正要
+    文件行和分集元数据的只有最后那一页的叶子条目。装载侧据此决定能不能只
+    建骨架（``leaf_scope=set()``），能就把 ``used`` 回填给调用方，调用方选完
+    页再回来补这一页的料。判定放在装载侧是因为"候选里到底会不会出现
+    Episode"要看库类型和 recursive 特例，只有那里才知道。
+    """
+
+    allowed: bool
+    """排序键不依赖每个条目的文件行时为 True。"""
+
+    episode_sensitive: bool
+    """排序/搜索口径会读分集元数据（候选含 Episode 时不能只建骨架）。"""
+
+    used: bool = False
+    library_id: int | None = None
+
+    def scope_for(self, types: set[str]):
+        """返回该批候选可用的 ``leaf_scope``；None = 老路径全量装载。"""
+        if not self.allowed:
+            return None
+        if "Episode" in types and self.episode_sensitive:
+            return None
+        return set()
+
 
 # (type, payload, season, episode)：查询管线里的一条候选。
 # payload 通常是 ItemBundle；type == "Person" 时是 Person 行——人物是
@@ -476,6 +512,7 @@ async def _query_items(request: Request, scope: ViewerScope) -> JSONResponse:
     # personIds 时，数据库即可完成 count/offset/limit，最终页才水合 bundle。
     simple_movie_page = False
     simple_total = 0
+    lazy: _LazyLeaves | None = None
 
     async with get_database().session() as session:
         page_entries: list[Entry] | None = None
@@ -522,6 +559,7 @@ async def _query_items(request: Request, scope: ViewerScope) -> JSONResponse:
                 library_id=parent_ref.entity_id,
                 visible_library_ids=scope.visible,
                 dto_options=options,
+                leaf_scope={(item_id, 0, 0) for item_id in page_ids},
             )
             page_entries = [
                 ("Movie", bundles[item_id], 0, 0)
@@ -532,6 +570,11 @@ async def _query_items(request: Request, scope: ViewerScope) -> JSONResponse:
         elif ids_raw:
             entries = await _entries_for_ids(session, ids_raw, scope, options=options)
         else:
+            lazy = _LazyLeaves(
+                allowed=not (set(sort_by) & _FULL_LEAF_SORTS),
+                episode_sensitive=bool(search_term)
+                or bool(set(sort_by) & _EPISODE_LEAF_SORTS),
+            )
             entries = await _entries_for_parent(
                 session,
                 parent_raw,
@@ -540,6 +583,7 @@ async def _query_items(request: Request, scope: ViewerScope) -> JSONResponse:
                 recursive=recursive,
                 search=search_term,
                 options=options,
+                lazy=lazy,
             )
             if entries is None:
                 # 根级：返回视图列表
@@ -605,6 +649,26 @@ async def _query_items(request: Request, scope: ViewerScope) -> JSONResponse:
         entries = _sort_entries(entries, sort_by, sort_order) + person_entries
         total = len(entries)
         page = entries[start_index : start_index + limit] if limit >= 0 else entries[start_index:]
+
+    if lazy is not None and lazy.used:
+        # 两段式装载的第二段：这一页要渲染的叶子单元现在才确定，
+        # 回头只为它们补文件行与分集元数据（骨架里没有重复行，不会叠加）
+        leaves = {
+            (entry[1].item.id, entry[2], entry[3])
+            for entry in page
+            if entry[0] in ("Movie", "Episode")
+        }
+        if leaves:
+            async with get_database().session() as session:
+                await hydrate_leaves(
+                    session,
+                    {entry[1].item.id: entry[1] for entry in page
+                     if entry[0] in ("Movie", "Episode")},
+                    leaves,
+                    library_id=lazy.library_id,
+                    visible_library_ids=scope.visible,
+                    dto_options=options,
+                )
 
     dtos = [_entry_dto(ctx, e, options) for e in page]
     return JSONResponse(query_result(dtos, total, start_index))
@@ -732,6 +796,7 @@ async def _entries_for_parent(
     recursive: bool | None,
     search: SearchTerm | None,
     options: DtoOptions,
+    lazy: _LazyLeaves | None = None,
 ) -> list[Entry] | None:
     """按 parentId 语义展开候选。返回 None 表示"根级 → 视图列表"。"""
     if not parent_raw or is_empty_guid(parent_raw):
@@ -777,6 +842,7 @@ async def _entries_for_parent(
             types = (include_types & default_types) if include_types else default_types
         ids = await item_ids_with_files(session, library_id=ref.entity_id)
         ids = await _narrow_by_search(session, ids, search)
+        leaf_scope = lazy.scope_for(types) if lazy else None
         bundles = await load_bundles(
             session,
             ids,
@@ -784,32 +850,46 @@ async def _entries_for_parent(
             library_id=ref.entity_id,
             visible_library_ids=scope.visible,
             dto_options=options,
+            leaf_scope=leaf_scope,
+            # 只出 Series 行的库浏览（剧集库的默认视图）不读任何季元数据
+            include_seasons=bool(types & {"Season", "Episode"}),
         )
+        if lazy and leaf_scope is not None:
+            lazy.used = True
+            lazy.library_id = ref.entity_id
         return _build_entries(bundles, types)
 
     if ref.kind == EntityKind.ITEM:
         if not await _item_visible(session, ref.entity_id, scope):
             raise not_found()
+        types = include_types or {"Season"}
+        leaf_scope = lazy.scope_for(types) if lazy else None
         bundles = await load_bundles(
             session,
             [ref.entity_id],
             member_id=scope.member_id,
             visible_library_ids=scope.visible,
             dto_options=options,
+            leaf_scope=leaf_scope,
         )
-        types = include_types or {"Season"}
+        if lazy and leaf_scope is not None:
+            lazy.used = True
         return _build_entries(bundles, types)
 
     if ref.kind == EntityKind.SEASON:
         if not await _item_visible(session, ref.entity_id, scope):
             raise not_found()
+        leaf_scope = lazy.scope_for({"Episode"}) if lazy else None
         bundles = await load_bundles(
             session,
             [ref.entity_id],
             member_id=scope.member_id,
             visible_library_ids=scope.visible,
             dto_options=options,
+            leaf_scope=leaf_scope,
         )
+        if lazy and leaf_scope is not None:
+            lazy.used = True
         return _build_entries(bundles, {"Episode"}, season_scope=ref.season)
 
     raise not_found()
@@ -861,30 +941,45 @@ async def items_latest(
     async with get_database().session() as session:
         # 先读每个最新单元的 5 个标量列；只有通过 limit/groupItems 的最终
         # 条目才进入 load_bundles。这样 1200 部电影不会先水合整库 JSON。
-        latest_units = await latest_unit_candidates(
-            session,
-            member_id=scope.member_id,
-            library_id=library_id,
-            visible_library_ids=scope.visible,
-            is_played=is_played,
-        )
+        #
+        # 候选行数也按需下推到 SQL。取多少够用取决于"最近入库里同一部剧占了
+        # 几集"：电影库一行对一条，取 limit×4 就够；剧集库要把同剧多集折叠
+        # 成一条，生产实测最费的库要扫到 527 行才凑满 20 条，第二档 limit×32
+        # 覆盖得住。两档都不够才不加限制——无论走到哪一档，结果与全表取回
+        # 完全一致（排序是全序，取前缀等价于取全部再切片）。
         selected_units: list[LatestUnitCandidate] = []
         grouped_series: dict[int, int] = {}
-        for candidate in latest_units:
-            if len(selected_units) >= limit:
+        for row_limit in (max(limit * 4, 100), max(limit * 32, 800), None):
+            latest_units = await latest_unit_candidates(
+                session,
+                member_id=scope.member_id,
+                library_id=library_id,
+                visible_library_ids=scope.visible,
+                is_played=is_played,
+                row_limit=row_limit,
+            )
+            selected_units = []
+            grouped_series = {}
+            for candidate in latest_units:
+                if len(selected_units) >= limit:
+                    break
+                if candidate.kind == "movie":
+                    selected_units.append(candidate)
+                    continue
+                # 剧集：两态简化（设计文档偏离⑥），同剧多集新入库聚合为 Series。
+                if not groupItems:
+                    selected_units.append(candidate)
+                    continue
+                if candidate.media_item_id in grouped_series:
+                    grouped_series[candidate.media_item_id] += 1
+                    continue
+                grouped_series[candidate.media_item_id] = 1
+                selected_units.append(candidate)
+            # 选够了，或候选本身就没被截断（说明库里就这么多）→ 结果已是最终态
+            if len(selected_units) >= limit or row_limit is None or len(
+                latest_units
+            ) < row_limit:
                 break
-            if candidate.kind == "movie":
-                selected_units.append(candidate)
-                continue
-            # 剧集：两态简化（设计文档偏离⑥），同剧多集新入库聚合为 Series。
-            if not groupItems:
-                selected_units.append(candidate)
-                continue
-            if candidate.media_item_id in grouped_series:
-                grouped_series[candidate.media_item_id] += 1
-                continue
-            grouped_series[candidate.media_item_id] = 1
-            selected_units.append(candidate)
 
         selected_ids = list(dict.fromkeys(c.media_item_id for c in selected_units))
         bundles = await load_bundles(
@@ -894,6 +989,11 @@ async def items_latest(
             library_id=library_id,
             visible_library_ids=scope.visible,
             dto_options=options,
+            # 只渲染选中的这些单元：同剧聚合成 Series 的那几条也只吃单元键集合
+            leaf_scope={
+                (c.media_item_id, c.season_number, c.episode_number)
+                for c in selected_units
+            },
         )
     dtos: list[dict[str, Any]] = []
     dto_candidates: list[LatestUnitCandidate] = []
@@ -960,6 +1060,15 @@ async def items_resume(
                 member_id=scope.member_id,
                 visible_library_ids=scope.visible,
                 dto_options=options,
+                # 本页的续播单元就是全部会渲染的叶子（电影用 (0,0) 哨兵）
+                leaf_scope={
+                    (
+                        c.media_item_id,
+                        c.season_number,
+                        c.episode_number,
+                    )
+                    for c in page_candidates
+                },
             )
     else:
         page_candidates = []
@@ -1214,12 +1323,24 @@ async def get_item(
         # 单条目是全字段语义，People 恒输出；可见性先行（GUID 可枚举）
         if not await _item_visible(session, ref.entity_id, scope):
             raise not_found()
+        # GUID 自带类型，装载前就知道这次只会渲染哪一个叶子：
+        # 集 → 就那一集；剧/季 → 一个叶子都不渲染（Series/Season DTO 只吃
+        # 单元键集合 + 季元数据 + 播放状态）；电影 → (0,0) 哨兵单元。
+        # 剧条目 GUID 与电影同型，统一带上 (id,0,0)：对剧来说这个单元不存在，
+        # 不会多装任何行。
+        if ref.kind == EntityKind.EPISODE:
+            detail_scope = {(ref.entity_id, ref.season, ref.episode)}
+        elif ref.kind == EntityKind.SEASON:
+            detail_scope = set()
+        else:
+            detail_scope = {(ref.entity_id, 0, 0)}
         bundles = await load_bundles(
             session,
             [ref.entity_id],
             member_id=scope.member_id,
             visible_library_ids=scope.visible,
             dto_options=options,
+            leaf_scope=detail_scope,
         )
 
     bundle = bundles.get(ref.entity_id)
@@ -1364,6 +1485,9 @@ async def shows_seasons(
             member_id=scope.member_id,
             visible_library_ids=scope.visible,
             dto_options=options,
+            # Season DTO 只吃季元数据 + "哪些单元有文件"的键集合 + 播放状态，
+            # 一个叶子条目都不渲染——整剧的文件行与分集元数据全部不必装载
+            leaf_scope=set(),
         )
     bundle = bundles.get(ref.entity_id)
     if bundle is None or bundle.item.kind != "tv":
@@ -1405,6 +1529,12 @@ async def shows_episodes(
         if season_param is not None and season_param.lstrip("-").isdigit():
             season_scope = int(season_param)
 
+    start_index = _parse_int(q.get("startIndex"))
+    limit = _parse_int(q.get("limit"), default=-1)
+    # 不限季又不分页 = 整剧全要，那就没有"少装一点"的空间，直接走整行装载；
+    # 只要限了季或分了页，先建骨架、选完页再补料才划算
+    whole_series = season_scope is None and limit < 0 and start_index == 0
+
     async with get_database().session() as session:
         if not await _item_visible(session, target_item_id, scope):
             raise not_found_message("Series not found")
@@ -1414,27 +1544,40 @@ async def shows_episodes(
             member_id=scope.member_id,
             visible_library_ids=scope.visible,
             dto_options=options,
+            leaf_scope=None if whole_series else set(),
         )
-    bundle = bundles.get(target_item_id)
-    if bundle is None or bundle.item.kind != "tv":
-        raise not_found_message("Series not found")
-    if season_id and season_scope not in {s for s, _ in bundle.units}:
-        # seasonId 指向不存在（无文件）的季 → 404（对齐 TvShowsController.cs:238）
-        raise not_found_message(f"No season exists with Id {season_id}")
+        bundle = bundles.get(target_item_id)
+        if bundle is None or bundle.item.kind != "tv":
+            raise not_found_message("Series not found")
+        if season_id and season_scope not in {s for s, _ in bundle.units}:
+            # seasonId 指向不存在（无文件）的季 → 404（对齐 TvShowsController.cs:238）
+            raise not_found_message(f"No season exists with Id {season_id}")
 
-    units = [
-        u
-        for u in bundle.units
-        if season_scope is None or u[0] == season_scope
-    ]
-    dtos = [episode_dto(ctx, bundle, s, e, options) for s, e in units]
-    if q.get("sortBy") == "Random":
-        import random
+        units = [
+            u
+            for u in bundle.units
+            if season_scope is None or u[0] == season_scope
+        ]
+        # 洗牌对象从 DTO 换成单元：random.shuffle 只按下标置换、与元素类型无关，
+        # 同一 RNG 状态下得到的排列完全相同，但不必先把整季都构建成 DTO
+        if q.get("sortBy") == "Random":
+            import random
 
-        random.shuffle(dtos)
+            random.shuffle(units)
 
-    total = len(dtos)
-    start_index = _parse_int(q.get("startIndex"))
-    limit = _parse_int(q.get("limit"), default=-1)
-    page = dtos[start_index : start_index + limit] if limit >= 0 else dtos[start_index:]
+        total = len(units)
+        page_units = (
+            units[start_index : start_index + limit]
+            if limit >= 0
+            else units[start_index:]
+        )
+        if not whole_series:
+            await hydrate_leaves(
+                session,
+                {target_item_id: bundle},
+                {(target_item_id, s, e) for s, e in page_units},
+                visible_library_ids=scope.visible,
+                dto_options=options,
+            )
+    page = [episode_dto(ctx, bundle, s, e, options) for s, e in page_units]
     return JSONResponse(query_result(page, total, start_index))

@@ -21,8 +21,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import and_, func, or_, select
-from sqlalchemy.orm import load_only
+from sqlalchemy import and_, func, or_, select, tuple_
+from sqlalchemy.orm import Load, load_only
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from movieclaw_db.models import (
@@ -86,11 +86,26 @@ class ItemBundle:
     states: dict[tuple[int, int], PlaybackState] = field(default_factory=dict)
     # (department, character, credit_order, Person)，演员按 credit_order 升序
     people: list[tuple[str, str | None, int, Person]] = field(default_factory=list)
+    # 两段式装载时由骨架查询回填：条目归属库（多库归属取入库最早的那行文件的库，
+    # 与整行装载路径下 files 的首行同义）。整行装载路径保持 None，走原逻辑。
+    primary_library_id: int | None = None
+
+    # units 的缓存。装载阶段一次性建好 files 的键集合，之后只往各键的列表里
+    # 追加行、不再新增键（两段式补料用 setdefault 落在已有键上），所以键集合
+    # 一旦算出就不会失效。
+    _units: list[tuple[int, int]] | None = field(default=None, repr=False)
 
     @property
     def units(self) -> list[tuple[int, int]]:
-        """有文件的 (season, episode) 单元，季集序。"""
-        return sorted(self.files)
+        """有文件的 (season, episode) 单元，季集序。
+
+        一条 Series DTO 就要问三次（ChildCount / RecursiveItemCount / 聚合
+        UserData），一次整库浏览是几百次；每次都 ``sorted`` 一遍几百个键
+        纯属重复劳动，缓存掉。
+        """
+        if self._units is None:
+            self._units = sorted(self.files)
+        return self._units
 
     def state(self, season: int, episode: int) -> PlaybackState | None:
         return self.states.get((season, episode))
@@ -107,6 +122,23 @@ class ItemBundle:
         if self.metadata and self.metadata.runtime_minutes:
             return self.metadata.runtime_minutes * 60_000
         return None
+
+
+# 叶子单元三元组 (media_item_id, season_number, episode_number)。
+# ``None`` = 不限定（装载条目名下全部单元），空集合 = 一个叶子都不渲染
+# （Series/Season 这类文件夹条目只吃"哪些单元有文件"的键集合）。
+LeafScope = set[tuple[int, int, int]] | None
+
+
+def _unit_in(item_col, season_col, episode_col, units) -> Any:
+    """(条目, 季, 集) 三元组批量匹配。
+
+    用 SQL 行值 ``(a,b,c) IN ((…),(…))``：SQLite ≥3.15 支持，且能直接命中
+    ``ix_library_file_media_unit`` 复合索引（实测计划为 COVERING INDEX
+    精确查找）。相比按条目 id 粗筛再在 Python 里过滤，它不会把一部 200 集的
+    剧全部读回来只为了取其中一集。
+    """
+    return tuple_(item_col, season_col, episode_col).in_(sorted(units))
 
 
 @dataclass(frozen=True)
@@ -238,6 +270,112 @@ def _list_load_columns(
     return item_columns, metadata_columns, file_columns, season_columns, episode_columns
 
 
+async def _load_scoped_files(
+    session: AsyncSession,
+    bundles: dict[int, ItemBundle],
+    leaf_scope: set[tuple[int, int, int]],
+    file_scope: list[Any],
+    summary_columns,
+) -> None:
+    """只为白名单单元装完整文件行，追加进已建好的骨架。"""
+    wanted = [u for u in leaf_scope if u[0] in bundles]
+    if not wanted:
+        return
+    file_q = (
+        select(LibraryFile)
+        .where(
+            *file_scope,
+            _unit_in(
+                LibraryFile.media_item_id,
+                LibraryFile.season_number,
+                LibraryFile.episode_number,
+                wanted,
+            ),
+        )
+        # 同一单元多版本时的行序即输出序（Path/Container 取第一行、
+        # MediaSources 按序展开）。旧路径没有 ORDER BY，靠的是
+        # ix_library_file_browse_unit 末列恰好是 created_at 而"碰巧"按入库
+        # 时间出行——换了 WHERE 就换计划、换计划就换顺序。这里把那个隐式
+        # 次序写成显式约束，顺带让它不再随查询计划漂移。
+        .order_by(LibraryFile.created_at, LibraryFile.id)
+    )
+    if summary_columns is not None:
+        file_q = file_q.options(load_only(*summary_columns[2]))
+    for f in (await session.execute(file_q)).scalars():
+        b = bundles.get(f.media_item_id)
+        if b is None:
+            continue
+        key = (f.season_number, f.episode_number)
+        if key not in b.files:
+            # 骨架与这里用的是同一套 file_scope，正常不会出现新键；真出现了
+            # 就把 units 缓存作废，宁可多排一次序也不能给出错的单元集合
+            b.files[key] = []
+            b._units = None
+        b.files[key].append(f)
+
+
+async def _load_scoped_episodes(
+    session: AsyncSession,
+    bundles: dict[int, ItemBundle],
+    leaf_scope: set[tuple[int, int, int]],
+    summary_columns,
+) -> None:
+    """只为白名单单元装分集元数据（电影哨兵单元 episode=0 天然不参与）。"""
+    wanted = [u for u in leaf_scope if u[0] in bundles and u[2] > 0]
+    if not wanted:
+        return
+    episode_q = select(MediaEpisode).where(
+        _unit_in(
+            MediaEpisode.media_item_id,
+            MediaEpisode.season_number,
+            MediaEpisode.episode_number,
+            wanted,
+        )
+    )
+    if summary_columns is not None:
+        episode_q = episode_q.options(load_only(*summary_columns[4]))
+    for e in (await session.execute(episode_q)).scalars():
+        b = bundles.get(e.media_item_id)
+        if b is not None:
+            b.episodes[(e.season_number, e.episode_number)] = e
+
+
+async def hydrate_leaves(
+    session: AsyncSession,
+    bundles: dict[int, ItemBundle],
+    leaf_scope: set[tuple[int, int, int]],
+    *,
+    library_id: int | None = None,
+    visible_library_ids: set[int] | None = None,
+    dto_options: DtoOptions | None = None,
+) -> None:
+    """给 ``leaf_scope=set()`` 装出来的骨架补上指定单元的文件行与分集元数据。
+
+    列表接口的筛选、排序、分页只吃"哪些单元有文件"和播放状态，直到最后
+    才知道这一页要渲染哪些叶子。先按骨架选页、再回头补这一页的料，
+    整库浏览就不用为了输出 100 行 Series 而水合几千条文件行和分集元数据。
+    """
+    if not leaf_scope:
+        return
+    summary_columns = (
+        _list_load_columns(dto_options)
+        if dto_options is not None and not dto_options.all_fields
+        else None
+    )
+    file_scope = [
+        LibraryFile.media_item_id.in_([u[0] for u in leaf_scope]),
+        LibraryFile.in_place(),
+    ]
+    if library_id is not None:
+        file_scope.append(LibraryFile.library_id == library_id)
+    if visible_library_ids is not None:
+        file_scope.append(LibraryFile.library_id.in_(visible_library_ids))
+    await _load_scoped_files(
+        session, bundles, leaf_scope, file_scope, summary_columns
+    )
+    await _load_scoped_episodes(session, bundles, leaf_scope, summary_columns)
+
+
 async def load_bundles(
     session: AsyncSession,
     item_ids: list[int],
@@ -248,6 +386,8 @@ async def load_bundles(
     include_people: bool = False,
     include_fileless: bool = False,
     dto_options: DtoOptions | None = None,
+    leaf_scope: LeafScope = None,
+    include_seasons: bool = True,
 ) -> dict[int, ItemBundle]:
     """批量装载条目素材。库参数限定时只装对应范围内的文件行。
 
@@ -266,6 +406,14 @@ async def load_bundles(
     ``dto_options`` 仅由列表接口传入。它触发最小列集读取，避免列表在不输出
     演员、音轨和字幕时仍反序列化这些大 JSON 列；全字段详情和未迁移的调用
     保持原有整行读取语义。
+
+    ``leaf_scope`` 是"这次响应真正会渲染成叶子条目（Movie/Episode）的单元"
+    白名单，由调用方在装载前就能算出来时传入（Latest 选完页、Resume 选完页、
+    库分页选完页、Seasons 一个叶子都不渲染 → 空集）。传了它就走两段式装载：
+    单元键用列查询建骨架，完整文件行与分集元数据只装白名单内的。
+    **传入的白名单必须覆盖后续所有会构建 DTO 的单元**，漏传会让那些单元
+    的 Path/MediaSources/RunTimeTicks 变空——`tests/jellyfin` 与
+    `scripts/perf/bench_jellyfin_scan.py --compare` 的逐字节比对守着这条线。
     """
     if not item_ids:
         return {}
@@ -277,55 +425,132 @@ async def load_bundles(
     if dto_options is not None:
         include_people = include_people or dto_options.has("People")
 
-    item_q = select(MediaItem).where(MediaItem.id.in_(item_ids))
-    if summary_columns is not None:
-        item_q = item_q.options(load_only(*summary_columns[0]))
-    items = (
-        (await session.execute(item_q))
-        .scalars()
-        .all()
+    # 条目与它的档案是一对一，合成一条 LEFT JOIN 取回：每条查询在 aiosqlite
+    # 下都是一次线程往返，装一个 bundle 本来就要打七八条，能并的都并掉
+    item_q = (
+        select(MediaItem, MediaMetadata)
+        .outerjoin(MediaMetadata, MediaMetadata.media_item_id == MediaItem.id)
+        .where(MediaItem.id.in_(item_ids))
     )
-    bundles = {i.id: ItemBundle(item=i) for i in items}
-
-    metadata_q = select(MediaMetadata).where(MediaMetadata.media_item_id.in_(item_ids))
     if summary_columns is not None:
-        metadata_q = metadata_q.options(load_only(*summary_columns[1]))
-    metas = (
-        (await session.execute(metadata_q))
-        .scalars()
-        .all()
-    )
-    for m in metas:
-        if m.media_item_id in bundles:
-            bundles[m.media_item_id].metadata = m
+        item_q = item_q.options(
+            Load(MediaItem).load_only(*summary_columns[0]),
+            Load(MediaMetadata).load_only(*summary_columns[1]),
+        )
+    items: list[MediaItem] = []
+    bundles: dict[int, ItemBundle] = {}
+    for item, meta in (await session.execute(item_q)).all():
+        items.append(item)
+        bundles[item.id] = ItemBundle(item=item, metadata=meta)
 
-    file_q = select(LibraryFile).where(
+    file_scope = [
         LibraryFile.media_item_id.in_(item_ids),
         LibraryFile.in_place(),
-    )
+    ]
     if library_id is not None:
-        file_q = file_q.where(LibraryFile.library_id == library_id)
+        file_scope.append(LibraryFile.library_id == library_id)
     if visible_library_ids is not None:
-        file_q = file_q.where(LibraryFile.library_id.in_(visible_library_ids))
-    if summary_columns is not None:
-        file_q = file_q.options(load_only(*summary_columns[2]))
-    for f in (await session.execute(file_q)).scalars():
-        b = bundles.get(f.media_item_id)
-        if b is not None:
-            b.files.setdefault((f.season_number, f.episode_number), []).append(f)
+        file_scope.append(LibraryFile.library_id.in_(visible_library_ids))
 
     tv_ids = [i.id for i in items if i.kind == "tv"]
-    if tv_ids:
+    if leaf_scope is None:
+        # 全量装载：单条目详情、以及排序键需要每个单元文件行的列表路径。
+        # 这里刻意不加 ORDER BY——整库口径下那是一次几千行的临时排序，而行序
+        # 本来就由 ix_library_file_browse_unit 给出（末列 created_at），
+        # 补一道显式排序只是把同样的结果重算一遍。两段式那条路径行数很少、
+        # 又换了 WHERE 会换计划，才需要显式定序（见 _load_scoped_files）。
+        file_q = select(LibraryFile).where(*file_scope)
+        if summary_columns is not None:
+            file_q = file_q.options(load_only(*summary_columns[2]))
+        for f in (await session.execute(file_q)).scalars():
+            b = bundles.get(f.media_item_id)
+            if b is not None:
+                b.files.setdefault((f.season_number, f.episode_number), []).append(f)
+    else:
+        # 两段式装载（列表路径的默认姿势）：先用**列查询**把"哪些单元有文件"
+        # 的骨架建起来——units/ChildCount/RecursiveItemCount/聚合 UserData
+        # 只认这个键集合，不需要文件行本身；再只为真正会渲染成叶子条目
+        # （Movie/Episode）的单元装完整行。
+        #
+        # 为什么值得这么绕：一次 Latest 只输出 20 条，旧路径却要为这 20 个条目
+        # 把它们名下**全部**文件行和分集元数据水合成 ORM 对象（生产实测 1499 行），
+        # 一个剧集库的浏览更是要水合整库（3114 文件 + 3416 集）。ORM 对象构造
+        # 和大 JSON 列反序列化是这条链路上最大的一笔开销，而其中 99% 的行
+        # 从头到尾没人读。
+        #
+        # 骨架里刻意不取 created_at：DATETIME 列每行都要在 Python 侧解析成
+        # datetime 对象，几千行下来比其余整型列加起来还贵。
+        # 归属库（ParentId 用）要与整行装载路径同义 = 入库最早那行文件的库。
+        # 查询已按库收口时答案就是那个库，一列都不用多取；否则条目也几乎总是
+        # 只属于一个库（生产实测 855 个条目里跨库的只有 1 个），扫骨架时顺手
+        # 判掉即可，真出现跨库条目才为那几个单独做一次入库时间比较。
+        unit_cols = [
+            LibraryFile.media_item_id,
+            LibraryFile.season_number,
+            LibraryFile.episode_number,
+        ]
+        straddling: set[int] = set()
+        if library_id is not None:
+            for b in bundles.values():
+                b.primary_library_id = library_id
+            for mid, season_no, episode_no in (
+                await session.execute(select(*unit_cols).where(*file_scope))
+            ).all():
+                b = bundles.get(mid)
+                if b is not None:
+                    b.files.setdefault((season_no, episode_no), [])
+        else:
+            unit_q = select(*unit_cols, LibraryFile.library_id).where(*file_scope)
+            for mid, season_no, episode_no, lib in (
+                await session.execute(unit_q)
+            ).all():
+                b = bundles.get(mid)
+                if b is None:
+                    continue
+                b.files.setdefault((season_no, episode_no), [])
+                if b.primary_library_id is None:
+                    b.primary_library_id = lib
+                elif b.primary_library_id != lib:
+                    straddling.add(mid)
+        if straddling:
+            # SQLite 明文保证：聚合里只有一个 min()/max() 时，同 SELECT 的裸列
+            # 取自命中该聚合的那一行。入库时间精确到微秒都相同的并列由 SQLite
+            # 任选（要求同一条目在两个库里最早的文件时间戳完全相同，现实中不会
+            # 发生），其余情况与旧路径逐行比较的结果一致。
+            owner_q = (
+                select(
+                    LibraryFile.media_item_id,
+                    LibraryFile.library_id,
+                    func.min(LibraryFile.created_at),
+                )
+                .where(*file_scope, LibraryFile.media_item_id.in_(straddling))
+                .group_by(LibraryFile.media_item_id)
+            )
+            for mid, lib, _created in (await session.execute(owner_q)).all():
+                b = bundles.get(mid)
+                if b is not None:
+                    b.primary_library_id = lib
+        await _load_scoped_files(
+            session, bundles, leaf_scope, file_scope, summary_columns
+        )
+
+    if tv_ids and include_seasons:
+        # 季元数据只有 Season/Episode DTO 会读（季名、季海报继承）。一部剧
+        # 十几行不构成开销，但整库浏览只输出 Series 行时是几百行的白装，
+        # 调用方明确不产出季/集条目就跳过（include_seasons=False）。
         season_q = select(MediaSeason).where(MediaSeason.media_item_id.in_(tv_ids))
         if summary_columns is not None:
             season_q = season_q.options(load_only(*summary_columns[3]))
         for s in (await session.execute(season_q)).scalars():
             bundles[s.media_item_id].seasons[s.season_number] = s
+    if tv_ids and leaf_scope is None:
         episode_q = select(MediaEpisode).where(MediaEpisode.media_item_id.in_(tv_ids))
         if summary_columns is not None:
             episode_q = episode_q.options(load_only(*summary_columns[4]))
         for e in (await session.execute(episode_q)).scalars():
             bundles[e.media_item_id].episodes[(e.season_number, e.episode_number)] = e
+    elif leaf_scope is not None:
+        await _load_scoped_episodes(session, bundles, leaf_scope, summary_columns)
 
     for st in (
         await session.execute(
@@ -372,6 +597,7 @@ async def latest_unit_candidates(
     library_id: int | None = None,
     visible_library_ids: set[int] | None = None,
     is_played: bool | None = None,
+    row_limit: int | None = None,
 ) -> list[LatestUnitCandidate]:
     """只查询 Latest 的排序单元，延后到选页后再装载 bundle。
 
@@ -380,6 +606,11 @@ async def latest_unit_candidates(
     聚合成一行，播放状态也在数据库侧筛掉；返回固定的小标量列，不会
     触发列表 DTO 不需要的 JSON 反序列化。``min(file.id)`` 只用于复现旧
     路径在入库时间相同的情况下的稳定顺序，不参与业务语义。
+
+    ``row_limit`` 把"只要最新的前 N 个单元"下推到 SQL。排序是全序（入库时间
+    之后还有四级 tiebreak），所以取前缀与"取全部再切片"结果完全一致。不下推
+    的话，一次只输出 20 条的 Latest 要把全库六千多个单元逐行搬进 Python 再扔掉
+    ——调用方按需放大 N 重试即可覆盖同剧聚合把多行折叠成一条的情况。
     """
     latest_created = func.max(LibraryFile.created_at).label("latest_created")
     q = (
@@ -428,6 +659,8 @@ async def latest_unit_candidates(
         LibraryFile.season_number.asc(),
         LibraryFile.episode_number.asc(),
     )
+    if row_limit is not None:
+        q = q.limit(row_limit)
     rows = (await session.execute(q)).all()
     return [
         LatestUnitCandidate(
@@ -910,7 +1143,14 @@ def _apply_parent_id(dto: dict[str, Any], parent: str | None, options: DtoOption
 
 
 def _item_library_guid(bundle: ItemBundle) -> str | None:
-    """条目所属库（多库归属取第一个文件行的库）。"""
+    """条目所属库（多库归属取第一个文件行的库）。
+
+    两段式装载下只有本页的叶子单元装了文件行，"第一个文件行"会随分页漂移，
+    所以骨架查询会把口径一致的归属库直接算好放进 ``primary_library_id``，
+    这里优先用它。
+    """
+    if bundle.primary_library_id is not None:
+        return library_guid(bundle.primary_library_id)
     for files in bundle.files.values():
         for f in files:
             return library_guid(f.library_id)

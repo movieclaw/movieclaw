@@ -67,6 +67,7 @@ class Database:
 
     def __init__(self, database_url: str, *, echo: bool = False) -> None:
         _ensure_sqlite_dir(database_url)
+        self.is_sqlite = database_url.startswith("sqlite")
 
         self._engine: AsyncEngine = create_async_engine(
             database_url,
@@ -102,6 +103,38 @@ class Database:
         """释放连接池。应用关闭时调用。"""
         await self._engine.dispose()
         logger.info("数据库引擎已释放")
+
+
+# ---------------------------------------------------------------------------
+# 查询计划统计
+# ---------------------------------------------------------------------------
+async def refresh_query_statistics(db: Database) -> None:
+    """刷新 SQLite 的索引选择性统计（``sqlite_stat1``）。
+
+    没有这张表时 SQLite 只能靠内置猜测挑索引，而它的猜测在本库上是错的：
+    ``library_file.state`` 全表只有 ``in_place`` 一个取值，索引
+    ``ix_library_file_state`` 命中全部行，planner 却把它当成高选择性条件优先
+    选中——于是"取某个条目的文件行"这种最高频的查询变成整表 6800 行的索引
+    扫描再回过头逐行过滤。生产库实测：跑一次统计后同一条查询 1.66ms → 0.32ms。
+    影响面是全站的，媒体库网页、Jellyfin 兼容层、播放链路都走同一批查询。
+
+    用 ``PRAGMA optimize`` 而不是裸 ``ANALYZE``：它只对"统计缺失或已经明显
+    过时"的表动手，日常启动几乎零成本；``analysis_limit`` 给单表采样设上限，
+    库再大也不会把启动卡住（生产库整轮 12ms）。
+
+    启动与关闭各跑一次：启动那次修正上一轮运行期间的增量（扫描入库会让行数
+    翻倍），关闭那次把本轮的变化落下去，下次启动即是新的。失败只记日志——
+    统计是纯优化，缺了只是慢，不该拦住应用起停。
+    """
+    if not db.is_sqlite:
+        return
+    try:
+        async with db.engine.begin() as conn:
+            await conn.exec_driver_sql("PRAGMA analysis_limit=400")
+            await conn.exec_driver_sql("PRAGMA optimize")
+    except Exception:
+        logger.warning("刷新数据库查询统计失败（不影响功能，只可能让查询变慢）",
+                       exc_info=True)
 
 
 # ---------------------------------------------------------------------------

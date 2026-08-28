@@ -19,7 +19,12 @@ from movieclaw_api.services.media_discover import close_media_service
 from movieclaw_api.services.site_access import get_site_access, init_site_access
 from movieclaw_api.settings import init_setting_store
 from movieclaw_db.crypto import init_secret_box
-from movieclaw_db.engine import dispose_db, get_database, init_db
+from movieclaw_db.engine import (
+    dispose_db,
+    get_database,
+    init_db,
+    refresh_query_statistics,
+)
 from movieclaw_db.migrations import run_migrations
 from movieclaw_db.repositories.credential_repo import CredentialRepository
 from movieclaw_db.repositories.llm_provider_repo import LlmProviderRepository
@@ -80,8 +85,11 @@ def build_lifespan(settings: Settings):
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         # 先初始化引擎（会顺带创建 SQLite 文件所在目录），再执行迁移
-        init_db(settings.database_url, echo=settings.db_echo)
+        db = init_db(settings.database_url, echo=settings.db_echo)
         await run_migrations()
+        # 迁移之后立刻刷一次索引统计：没有它 SQLite 会挑错索引，把"取某个条目
+        # 的文件行"退化成整表扫描（见 refresh_query_statistics 注释）
+        await refresh_query_statistics(db)
         # Alembic 的 fileConfig 会按 alembic.ini 重置 root logger：级别设回 WARNING、
         # Handler 换成仅剩它的 console（应用挂的按天落盘 Handler 也被移除）。迁移一跑完
         # 就重新应用一次应用日志配置，恢复 INFO 级别并重挂文件 Handler，否则访问日志
@@ -280,6 +288,9 @@ def build_lifespan(settings: Settings):
             await get_site_access().aclose()
             await close_media_service()
             await close_image_proxy()
+            # 关闭前把本轮运行期间的行数变化落进统计，下次启动直接是新的。
+            # 用启动时拿到的引用，不走全局单例——启动中途失败时全局可能还没就绪
+            await refresh_query_statistics(db)
             await dispose_db()
             logger.info("应用已关闭，数据库连接已释放")
 
