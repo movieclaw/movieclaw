@@ -30,7 +30,7 @@ _PROGRESS_OPS = {
 
 @click.command(
     name="organize-files",
-    short_help="按媒体库命名规范整理文件（预览影响面 → --yes 确认 → 执行并等待）",
+    short_help="按配置的命名模板整理存量文件名（预览影响面 → --yes 确认 → 执行并等待）",
 )
 @click.argument("library_id", type=int)
 @click.option("--dry-run", is_flag=True, help="只输出整理计划，不动磁盘")
@@ -50,7 +50,11 @@ def library_organize_files(
     wait: bool,
     wait_timeout: float,
 ):
-    """按 Emby/Plex 规范批量改名归位库内文件。
+    """按当前生效的命名模板批量改名归位库内文件（默认模板即 Emby/Plex 规范）。
+
+    模板在 ``mclaw scrape set`` 里配（也可按库覆盖）。**改了模板就跑一次
+    这个命令**，存量文件才会跟着变——可以反复改、反复整理，条目目录改名时
+    海报/NFO/字幕/分集剧照都跟着搬，不会留下空壳目录。
 
     示例：
 

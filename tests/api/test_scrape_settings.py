@@ -270,3 +270,59 @@ def test_library_overrides_can_be_cleared(client: TestClient, tmp_path) -> None:
     )
     assert resp.status_code == 200
     assert resp.json()["data"]["scrape_overrides"] == {}
+
+
+# ---------------------------------------------------------------------------
+# 局部更新：CLI / Agent 天然是"只改一项"的用法
+# ---------------------------------------------------------------------------
+
+
+def test_partial_update_keeps_untouched_fields(client: TestClient) -> None:
+    """只提交一个字段时，其余字段必须原样保留。
+
+    这是 CLI 与 Agent 的主用法（``mclaw scrape set --poster-mode language``）。
+    若按整体替换处理，一条命令就会把用户配好的语言优先级和命名模板悄悄抹掉
+    ——接口还回 200，用户下次整理才发现文件名全变了。
+    """
+    resp = client.put(
+        "/api/v1/scrape/config",
+        json={
+            "language_priority": ["ja-JP", "zh-CN"],
+            "naming_entry_dir": "{title} ({year}) [tmdbid-{tmdb_id}]",
+            "mirror_episode_thumbs": False,
+        },
+    )
+    assert resp.status_code == 200
+
+    resp = client.put("/api/v1/scrape/config", json={"poster_mode": "language"})
+    assert resp.status_code == 200
+    setting = resp.json()["data"]["setting"]
+    assert setting["poster_mode"] == "language"
+    assert setting["language_priority"] == ["ja-JP", "zh-CN"]
+    assert setting["naming_entry_dir"] == "{title} ({year}) [tmdbid-{tmdb_id}]"
+    assert setting["mirror_episode_thumbs"] is False
+
+
+def test_explicit_empty_value_restores_default(client: TestClient) -> None:
+    """显式传空值 = 恢复默认（这是"没传"与"传了空"的唯一区别）。"""
+    client.put(
+        "/api/v1/scrape/config",
+        json={"naming_entry_dir": "{title}.{year}", "language_priority": ["ja-JP"]},
+    )
+    resp = client.put("/api/v1/scrape/config", json={"naming_entry_dir": ""})
+    assert resp.status_code == 200
+    setting = resp.json()["data"]["setting"]
+    assert setting["naming_entry_dir"] == ""  # 已恢复默认（空 = 跟随内置模板）
+    assert setting["language_priority"] == ["ja-JP"]  # 没提到的照旧
+
+
+def test_partial_update_still_validates(client: TestClient) -> None:
+    """局部更新不等于放松校验：非法值照样打回，且不污染已有配置。"""
+    client.put("/api/v1/scrape/config", json={"naming_entry_dir": "{title}.{year}"})
+    resp = client.put("/api/v1/scrape/config", json={"poster_mode": "随便填"})
+    assert resp.status_code == 422
+    # 报错必须说人话：CLI 与 Agent 只能靠这句话自我纠正
+    assert "default" in resp.json()["details"][0]["message"]
+    assert client.get("/api/v1/scrape/config").json()["data"]["setting"][
+        "naming_entry_dir"
+    ] == "{title}.{year}"

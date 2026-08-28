@@ -348,7 +348,11 @@ def _plan_entry_assets(renames: list[RenameAction], roots: list[str]) -> list[En
 
 
 def _has_unplanned_video(entry_dir: Path, planned_sources: set[str]) -> bool:
-    """条目目录里还有本次计划不打算搬走的视频文件吗（含季目录下的分集）。"""
+    """条目目录里还有视频文件吗（含季目录下的分集），``planned_sources`` 里的不算。
+
+    计划阶段传本次要搬走的源路径（那些等会儿就不在了）；执行阶段传空集合
+    ——那时该走的都走了，还剩视频就说明改名没成，资产必须原地不动。
+    """
     try:
         for path in entry_dir.rglob("*"):
             if (
@@ -712,6 +716,11 @@ async def _run_organize_job(
 def _move_entry_assets(moves: list[EntryAssetMove]) -> tuple[int, list[str]]:
     """搬运条目目录级镜像资产（线程池内运行），返回 (成功数, 中文问题列表)。
 
+    **执行前按源目录复核一次**：目录里还留着视频，说明这一组的改名没有真的
+    成功（权限不足、并发占用，或计划到执行之间目录又进了新文件）——此时搬
+    资产会把图从还在原地的视频身边抽走、丢进一个空目录，必须整组跳过。
+    计划阶段的同名守门管的是预览准不准，这一道管的是执行对不对。
+
     目标已存在时**不覆盖**，按内容分流：
     - 逐字节相同 → 删掉源头那份重复副本。这是本模块唯一的删除动作，只针对
       白名单里的镜像产物（本程序自己写出、随时可由 data/ 下的资产重建），
@@ -720,8 +729,22 @@ def _move_entry_assets(moves: list[EntryAssetMove]) -> tuple[int, list[str]]:
     """
     moved = 0
     errors: list[str] = []
+    checked: dict[Path, bool] = {}  # 源目录 → 是否可搬（每组只复核一次）
     for move in moves:
         src, dst = Path(move.source_path), Path(move.target_path)
+        movable = checked.get(src.parent)
+        if movable is None:
+            if not src.parent.is_dir():
+                # 目录已经不在了：作业重跑、上一轮就搬完并清掉了。无事可做，
+                # 但这不是问题——不能报"仍有视频文件"污染结论
+                movable = False
+            else:
+                movable = not _has_unplanned_video(src.parent, set())
+                if not movable:
+                    errors.append(f"条目目录里仍有视频文件，资产保持原位：{src.parent}")
+            checked[src.parent] = movable
+        if not movable:
+            continue
         try:
             if not src.is_file():
                 continue  # 计划到执行之间被别的操作动过，跳过即可

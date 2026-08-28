@@ -1,8 +1,15 @@
 """刮削与整理设置接口（「设置 → 刮削与整理」页的后端）。
 
 - GET  /scrape/config —— 当前配置 + 各"跟随环境变量"字段的生效默认值；
-- PUT  /scrape/config —— 保存并立即生效（快照热更新；对存量条目生效
-  需整库刷新，前端保存后给出引导）；
+- PUT  /scrape/config —— **只更新请求体里出现的字段**，其余保持原样，
+  保存后立即生效（快照热更新；对存量条目生效需整库刷新，前端保存后
+  给出引导）。
+
+为什么 PUT 是"局部更新"而不是整体替换：这是一份**十几个字段的单例配置**，
+Web 端总是整体提交（行为无差别），但 CLI 与 Agent 天然是"只改一项"的用法
+——``mclaw scrape set --poster-mode language`` 如果把没提到的字段一并按
+默认值写回去，用户精心配好的语言优先级和命名模板会被一条命令悄悄抹掉。
+想把某项恢复默认，显式传空值（``""`` / ``[]``）即可。
 - GET  /scrape/language-options —— 完整语种表（TMDB configuration/languages，
   进程内缓存；TMDB 不可用时回落内置常用表）；
 - GET  /scrape/country-options —— 完整地区表（configuration/countries，同上）。
@@ -79,17 +86,39 @@ def _config_view() -> ScrapeConfigView:
     operation_id="scrape.show",
 )
 async def get_scrape_config() -> ApiResponse[ScrapeConfigView]:
+    """返回 ``setting``（用户配置，留空表示跟随环境变量）与 ``effective``
+    （留空字段当前实际生效的值）。改配置前先读一遍，避免把留空当成没配。"""
     return ok(_config_view())
 
 
 @router.put(
     "/config",
     response_model=ApiResponse[ScrapeConfigView],
-    summary="保存刮削与整理配置（立即生效；存量条目需整库刷新）",
+    summary="修改刮削与整理配置：只更新给出的字段，没给的保持原样（立即生效）",
     operation_id="scrape.set",
 )
 async def save_scrape_config(payload: MetadataScrapeSetting) -> ApiResponse[ScrapeConfigView]:
-    await save_scrape_setting(payload)
+    """只改你给出的那几项，没给的保持原样；想把某项恢复默认就显式传空值（"" 或 []）。
+
+    优先级类字段是有序列表，越靠前越优先。language_priority 的首位就是向
+    TMDB 请求的语言，后面的用于该语言缺文本时逐级回落。图片语言里三个特殊
+    取值：meta = 跟随元数据主语言，orig = 影片发行时的原始语言，null = 无
+    文字的纯画面版本。
+
+    例：只把海报改成按语言挑，其余配置不动——
+    mclaw scrape set --poster-mode language
+
+    改动只影响之后的刮削与整理，不会追改存量内容。改了语言、选图或图片档位，
+    用 library metadata refresh 重刷存量条目；改了命名模板，用 library
+    organize-files 把存量文件改名归位（先 --dry-run 看计划，确认后加 --yes）。
+    模板可以反复改、反复整理，条目目录改名时海报和 NFO 会一起搬走，不留空目录。
+    """
+    # model_fields_set 区分"显式传了默认值"和"根本没传"：前者按用户意图写入
+    # （这正是"恢复默认"的表达方式），后者原样保留
+    merged = MetadataScrapeSetting.model_validate(
+        {**current_scrape_setting().model_dump(), **payload.model_dump(exclude_unset=True)}
+    )
+    await save_scrape_setting(merged)
     # 主语言也喂给发现页服务（构造期绑定），重建单例让新语言下次请求生效
     reset_media_service()
     return ok(_config_view())

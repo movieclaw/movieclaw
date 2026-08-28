@@ -386,6 +386,56 @@ async def test_duplicate_entry_asset_removed_but_different_one_kept(db, tmp_path
 
 
 @pytest.mark.asyncio
+async def test_entry_assets_stay_put_when_renames_fail(db, tmp_path, monkeypatch):
+    """改名全都失败时资产必须原地不动——否则图被抽走丢进一个空目录。
+
+    计划阶段的守门看的是"计划里会不会搬空"，管不了执行时改名真的失败
+    （权限不足、并发占用）；执行前必须按源目录再复核一次。
+    """
+    import movieclaw_api.services.library.organize as org
+
+    root = tmp_path / "movies"
+    async with db.session() as session:
+        library = await _make_library(session, kind=MediaKind.MOVIE, root=root, name="电影库")
+        item = await _make_item(session, kind=MediaKind.MOVIE, tmdb_id=36, title="片", year=2023)
+        _add_file(session, library, item, _touch(root / "raw" / "a.mkv"))
+        await session.commit()
+        library_id = library.id
+
+    assert (await organize_library(library_id)).renamed == 1
+    old_entry = root / "片 (2023)"
+    _mirror_products(old_entry, kind=MediaKind.MOVIE)
+
+    def boom(src, dst, *, missing_message):
+        raise org._MoveError(f"改名失败：{src}")
+
+    monkeypatch.setattr(org, "_resolve_and_move", boom)
+    _apply_setting(naming_entry_dir="{title}.{year}")
+    summary = await organize_library(library_id)
+
+    assert (summary.renamed, summary.entry_assets_moved) == (0, 0)
+    assert (old_entry / "片 (2023).mkv").is_file()  # 视频还在原地
+    assert (old_entry / "poster.jpg").is_file()  # 图就得留在它身边
+    assert not (root / "片.2023").exists()  # 不凭空造一个只有图的目录
+    assert any("仍有视频文件" in e for e in summary.errors)
+
+
+def test_stale_asset_plan_is_silent_on_rerun(tmp_path):
+    """持久化作业重跑：上一轮已搬完、旧目录已清掉，这一轮应静默无事。
+
+    不能因为"目录不在了"就报「仍有视频文件」——那会让一次成功的整理带着
+    一串假问题收尾，用户以为出了错。
+    """
+    from movieclaw_api.services.library.organize import EntryAssetMove, _move_entry_assets
+
+    gone = tmp_path / "已清掉的旧目录"
+    moved, errors = _move_entry_assets(
+        [EntryAssetMove(str(gone / "poster.jpg"), str(tmp_path / "新目录" / "poster.jpg"))]
+    )
+    assert (moved, errors) == (0, [])
+
+
+@pytest.mark.asyncio
 async def test_user_files_in_entry_dir_are_never_touched(db, tmp_path):
     """白名单之外的文件（用户自己放的）一律不搬不删——旧目录因此保留。"""
     root = tmp_path / "movies"

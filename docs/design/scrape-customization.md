@@ -527,3 +527,78 @@ removed_dirs: 0
 顺带核过 `library/transfer.py`(转移条目到别的库):它的主路径是**整目录
 搬运**(`is_dir=True`),海报/NFO 天然跟着走,不存在同类漏洞;只有"目录里
 混着其他条目"的退化路径才逐文件搬,而那种情况目录本就不该被清空。
+
+## 13. 复检：Bug 排查与 CLI / Agent 可用性（2026-08-28）
+
+### 13.1 查出并修掉的三个 Bug
+
+**① `PUT /scrape/config` 是整体替换,一条 CLI 命令抹掉全部配置(严重)**
+
+接口直接收 `MetadataScrapeSetting`,请求体里没给的字段一律按模型默认值
+写回去。Web 端总是整体提交,所以从未暴露;但 CLI 与 Agent 天然是"只改一项"
+的用法,`_build_body` 也只把显式给出的标志放进 body。实测:
+
+```
+配置后：            ['ja-JP','zh-CN'] | {title} ({year}) [tmdbid-{tmdb_id}] | False
+只改 poster_mode： []                | ''                                  | True
+```
+
+用户精心配好的语言优先级和命名模板被一条 `mclaw scrape set --poster-mode
+language` 悄悄清空,接口还回 200——下次整理才发现文件名全变了。
+
+改为**局部更新**:`payload.model_dump(exclude_unset=True)` 合并到当前值,
+再走一次完整校验(与 `merge_for_library` 同一套写法)。`model_fields_set`
+区分"显式传了默认值"和"根本没传",所以"恢复默认"仍可用显式空值表达。
+Web 端整体提交,行为完全不变。
+
+**② 改名全部失败时,条目资产照样被搬走(§12 的漏网之鱼)**
+
+`_plan_entry_assets` 的守门是**计划期**判据("这个目录会不会被搬空"),
+管不了执行期改名真的失败(权限不足、并发占用)。实测:
+
+```
+renamed: 0  entry_assets_moved: 3
+视频还在旧目录: True    海报还在旧目录: False
+新目录: ['fanart.jpg','movie.nfo','poster.jpg']   ← 凭空造出的、只有图的目录
+```
+
+修法:`_move_entry_assets` 执行前**按源目录再复核一次**——还剩视频就整组
+跳过并记一条中文问题。同时补掉一个相关的假告警:作业重跑时旧目录早已被
+清掉,此时应静默无事,而不是报"仍有视频文件"。
+
+**③ 域描述漏掉命名模板与目录写入,模型找不到入口**
+
+`mclaw_tool` 的 `scrape` 一行说明只写了"语言/选图/档位",而命名模板和
+目录写入开关是这个域的另外两个 tab;后续动作也只提了 `library metadata
+refresh`(那是给元数据和图片用的),没提改了命名模板要跑 `library
+organize-files`。模型被问"把文件名改成带 tmdbid 的格式"时找不到域,即使
+找到了也不知道存量文件要怎么生效。两处域说明与 `scrape.set` /
+`organize-files` 的正文一并补写。
+
+### 13.2 CLI 命令面:配套齐全
+
+| 能力 | 命令 |
+|------|------|
+| 读配置(含"留空时实际生效值") | `mclaw scrape show` |
+| 改配置(局部更新) | `mclaw scrape set --xxx` |
+| 全量语种/地区表 | `mclaw scrape languages` / `countries` |
+| 发现页院线地区 | `mclaw discover region show` / `set --region JP` |
+| 让存量文件名生效 | `mclaw library organize-files <id> --dry-run` / `--yes` |
+| 库级覆盖 | `mclaw library update <id> --scrape-overrides-json '{...}'` |
+
+### 13.3 真机联调(起真服务 + 真令牌 + 真 CLI)
+
+连打七步验证 Agent 主链路:只改海报模式 → 只改语言优先级 → 只改命名模板
+→ 只关 NFO 写入,每步都只动目标字段、其余原样;传非法值时报回
+`海报选择只能是 default（TMDB 默认）或 language（按语言优先级）`,且已有
+配置零污染。占位符写错的报错还会把该模板可用的占位符全列出来——模型照着
+自我纠正一次就对。库级覆盖写非法字段被挡回
+`这些设置不支持按库覆盖：poster_mode（选图与语言的产物跨库共享一份…）`。
+
+### 13.4 留下的一处粗糙(不属本次改动,未动)
+
+`mclaw library update` 的 `--name/--kind/--root-paths-json` 是必填,所以
+只想加一条库级覆盖也得把这三项一起带上。它是**大声失败**(报"缺少必填
+参数"并给出提示),不会静默改坏东西,Agent 先 `library get` 再补齐即可
+完成——已实测走通。要彻底顺手就得把 `LibraryPayload` 拆成创建版与更新版,
+那是既有接口的语义变更,不在本次范围内。
