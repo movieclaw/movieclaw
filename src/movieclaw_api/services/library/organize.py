@@ -20,6 +20,15 @@
   不会留下"账实不符"的批量烂摊子，单文件失败记入 errors 不断整轮；
 - **只清理自己搬空的目录**：改名后仅对被搬走文件的原目录（及其空祖先）
   尝试 rmdir——非空即停，绝不触碰与本次整理无关的目录，绝不删除文件；
+- **条目目录改名时镜像资产一起搬**：``poster.jpg`` / ``fanart.jpg`` /
+  ``seasonNN-poster.jpg`` / ``movie.nfo`` / ``tvshow.nfo`` 这些镜像产物不以
+  主文件名开头，附属文件规则认不出它们。不搬的话旧目录永远非空、清不掉，
+  用户每调一次命名模板就多留一层只剩图片的空壳目录——这与"用户会反复调
+  模板试效果"的产品预期直接冲突。只在**旧条目目录会被彻底搬空**时搬（还留
+  着别的在位视频就得把图留给它们），且只认镜像自己写死的那几个文件名，
+  用户放进目录的东西一概不碰。唯一的删除动作：目标已存在且**内容逐字节
+  相同**时删掉源头那份重复副本（那是本程序自己写出的、随时可由 data/ 下
+  的资产重建的镜像产物，不是用户数据）；内容不同则原样保留并告警；
 - **多版本按播放器规范命名**：同条目多个版本（1080p 与 2160p 并存）落
   同一条目目录，文件名加 `` - 版本标签`` 后缀（如 ``标题 (年份) - 2160p.ext``）
   ——Emby / Plex / Jellyfin 都按此约定把它们归组为同一影片的不同版本。
@@ -45,7 +54,9 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import filecmp
 import logging
+import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -54,7 +65,7 @@ from sqlmodel import select
 from movieclaw_api.services import jobs
 from movieclaw_api.services.library.config import sanitize_folder_name
 from movieclaw_api.services.library.fsops import rename_no_replace
-from movieclaw_api.services.library.layout import SCAN_VIDEO_EXTS
+from movieclaw_api.services.library.layout import SCAN_VIDEO_EXTS, entry_dir_of
 from movieclaw_api.services.library.naming import (
     entry_dir_name_of,
     episode_file_name,
@@ -69,10 +80,20 @@ from movieclaw_media.models import MediaKind
 
 logger = logging.getLogger("movieclaw_api.library_organize")
 
-# 跟随主文件一起改名的附属文件后缀（字幕/章节/单文件 NFO 等，
-# 同目录且文件名以"主文件名."开头即视为附属，如 foo.zh.srt / foo.nfo）
-# 同名不同容器的视频（含 strm 占位）是独立版本，不是附属
-_SIDECAR_SKIP_EXTS = SCAN_VIDEO_EXTS | {".iso"}
+# 视频类文件（含 strm 占位与原盘 iso）。两处用它：附属文件枚举时排除
+# （同名不同容器的视频是独立版本，不是附属）；判断旧条目目录是否已被搬空
+_VIDEO_LIKE_EXTS = SCAN_VIDEO_EXTS | {".iso"}
+
+# 条目目录级镜像资产的固定文件名（media_scrape.mirror_media_dir_assets 写出）。
+# 它们不以主文件名开头，附属文件规则（"主文件名."前缀）认不出来，条目目录
+# 改名时必须单独搬——见模块头"条目目录改名时镜像资产一起搬"
+_ENTRY_ASSET_NAMES = frozenset({"poster.jpg", "fanart.jpg", "movie.nfo", "tvshow.nfo"})
+_SEASON_POSTER_RE = re.compile(r"^season(?:\d{2}|-specials)-poster\.jpg$")
+
+
+def _is_entry_asset(name: str) -> bool:
+    """是不是镜像写出的条目级资产（白名单，用户自己的文件一律不算）。"""
+    return name in _ENTRY_ASSET_NAMES or _SEASON_POSTER_RE.match(name) is not None
 
 # 每库单飞互斥 + 实时进度 (已完成, 总数) + 最近一次结论，容器统一为 TaskState
 _organize_tasks: TaskState[tuple[int, int]] = TaskState()
@@ -127,6 +148,14 @@ class RenameAction:
 
 
 @dataclass
+class EntryAssetMove:
+    """条目目录改名时跟着搬的镜像资产（海报/背景/季海报/条目 NFO）。"""
+
+    source_path: str
+    target_path: str
+
+
+@dataclass
 class SkipEntry:
     """不参与整理的文件与中文原因（预览里逐条展示，用户心里有数）。"""
 
@@ -143,6 +172,7 @@ class OrganizePlan:
     already_ok: int = 0  # 已符合规范命名，无需动作
     renames: list[RenameAction] = field(default_factory=list)
     skips: list[SkipEntry] = field(default_factory=list)
+    entry_assets: list[EntryAssetMove] = field(default_factory=list)
 
 
 async def build_organize_plan(session, library: Library) -> OrganizePlan:
@@ -274,7 +304,62 @@ def _build_plan_sync(
             action.sidecars = _find_sidecars(action)
             plan.renames.append(action)
     plan.renames.sort(key=lambda a: a.target_path)
+    plan.entry_assets = _plan_entry_assets(plan.renames, roots)
     return plan
+
+
+def _plan_entry_assets(renames: list[RenameAction], roots: list[str]) -> list[EntryAssetMove]:
+    """条目目录变了 → 把该目录里的镜像资产（海报/背景/季海报/NFO）一起搬走。
+
+    两道守门（都是"宁可留着也不搬错"）：
+    - 旧目录里还留着**不在本次计划里**的视频 → 不搬，图要留给那些文件；
+    - 同一个旧目录的文件被搬向多个新条目目录（目录里混着两部作品）→ 歧义，
+      不搬。
+    条目目录的判定复用 ``layout.entry_dir_of``——与镜像写出时用的是同一个
+    函数，不会出现"镜像写到 A、整理去 B 找"的错位。
+    """
+    root_paths = [Path(r) for r in roots]
+    planned_sources = {a.source_path for a in renames}
+    # 旧条目目录 → 新条目目录；值为 None 表示歧义（一个旧目录搬向多个新目录）
+    mapping: dict[Path, Path | None] = {}
+    for action in renames:
+        old = entry_dir_of(root_paths, Path(action.source_path))
+        new = entry_dir_of(root_paths, Path(action.target_path))
+        if old is None or new is None or old == new:
+            continue
+        if old in mapping and mapping[old] != new:
+            mapping[old] = None
+        else:
+            mapping[old] = new
+    moves: list[EntryAssetMove] = []
+    for old_dir, new_dir in sorted(mapping.items()):
+        if new_dir is None or _has_unplanned_video(old_dir, planned_sources):
+            continue
+        try:
+            entries = sorted(old_dir.iterdir())
+        except OSError:
+            continue
+        moves += [
+            EntryAssetMove(str(e), str(new_dir / e.name))
+            for e in entries
+            if _is_entry_asset(e.name) and e.is_file()
+        ]
+    return moves
+
+
+def _has_unplanned_video(entry_dir: Path, planned_sources: set[str]) -> bool:
+    """条目目录里还有本次计划不打算搬走的视频文件吗（含季目录下的分集）。"""
+    try:
+        for path in entry_dir.rglob("*"):
+            if (
+                path.suffix.lower() in _VIDEO_LIKE_EXTS
+                and str(path) not in planned_sources
+                and path.is_file()
+            ):
+                return True
+    except OSError:
+        return True  # 读不了目录就当有东西在，保守不搬
+    return False
 
 
 def _version_labels(actions: list[RenameAction]) -> list[str]:
@@ -326,8 +411,15 @@ def _root_of(roots: list[str], file_path: str) -> str | None:
     return best
 
 
+# 附属文件的前缀形态：``主文件名.`` 是通例（字幕 foo.zh.srt、单文件 NFO
+# foo.nfo）；``主文件名-thumb.`` 是镜像写分集剧照用的 Kodi/Emby 约定
+# （foo-thumb.jpg），它不带那个点，按通例会被漏掉、留在旧目录变成垃圾
+_SIDECAR_PREFIX_SUFFIXES = (".", "-thumb.")
+
+
 def _find_sidecars(action: RenameAction) -> list[SidecarMove]:
-    """主文件的附属文件：同目录、文件名以"主文件名."开头（如 foo.zh.srt）。
+    """主文件的附属文件：同目录、文件名以"主文件名."或"主文件名-thumb."开头
+    （如 foo.zh.srt / foo.nfo / foo-thumb.jpg）。
 
     同名不同容器的视频（foo.mkv 旁的 foo.mp4）是独立版本不是附属，排除。
     """
@@ -338,13 +430,13 @@ def _find_sidecars(action: RenameAction) -> list[SidecarMove]:
         entries = list(src.parent.iterdir())
     except OSError:
         return []
-    prefix = src.stem + "."
+    prefixes = tuple(src.stem + suffix for suffix in _SIDECAR_PREFIX_SUFFIXES)
     for entry in sorted(entries):
-        if not entry.is_file() or entry == src or not entry.name.startswith(prefix):
+        if not entry.is_file() or entry == src or not entry.name.startswith(prefixes):
             continue
-        if entry.suffix.lower() in _SIDECAR_SKIP_EXTS:
+        if entry.suffix.lower() in _VIDEO_LIKE_EXTS:
             continue
-        tail = entry.name[len(src.stem) :]  # 含开头的 "."，如 ".zh.srt"
+        tail = entry.name[len(src.stem) :]  # 含前缀本身，如 ".zh.srt" / "-thumb.jpg"
         moves.append(SidecarMove(str(entry), str(dst.parent / (dst.stem + tail))))
     return moves
 
@@ -361,6 +453,7 @@ class OrganizeSummary:
     library_id: int
     renamed: int = 0  # 成功改名归位的主文件数
     sidecars_renamed: int = 0  # 跟随改名的附属文件数
+    entry_assets_moved: int = 0  # 跟随条目目录改名的镜像资产数（海报/NFO 等）
     already_ok: int = 0  # 本就符合规范
     skipped: int = 0  # 计划阶段跳过（原因见预览）
     removed_dirs: int = 0  # 搬空后清理掉的目录数
@@ -511,16 +604,24 @@ async def _organize(
                     details={"errors": len(summary.errors)},
                 )
 
+        # 条目目录级镜像资产跟着搬：必须在清理空目录之前——它们不搬走，
+        # 旧条目目录就永远非空，下面的 rmdir 一个也清不掉
+        if plan.entry_assets:
+            moved, asset_errors = await asyncio.to_thread(_move_entry_assets, plan.entry_assets)
+            summary.entry_assets_moved = moved
+            summary.errors.extend(asset_errors)
+
         # 只清理被本次整理搬空的目录（及其变空的祖先）：非空即停、绝不删文件，
         # 与整理无关的空目录一概不碰
         summary.removed_dirs = await asyncio.to_thread(_prune_emptied_dirs, dirty_parents, roots)
 
     logger.info(
-        "媒体库 #%s 整理完成：改名归位 %d（附属文件 %d），已规范 %d，跳过 %d，"
-        "清理空目录 %d，问题 %d",
+        "媒体库 #%s 整理完成：改名归位 %d（附属文件 %d，条目资产 %d），已规范 %d，"
+        "跳过 %d，清理空目录 %d，问题 %d",
         library_id,
         summary.renamed,
         summary.sidecars_renamed,
+        summary.entry_assets_moved,
         summary.already_ok,
         summary.skipped,
         summary.removed_dirs,
@@ -577,6 +678,7 @@ def _plan_from_job(value: object) -> OrganizePlan:
         already_ok=int(value.get("already_ok") or 0),
         renames=renames,
         skips=[SkipEntry(**item) for item in value.get("skips", [])],
+        entry_assets=[EntryAssetMove(**item) for item in value.get("entry_assets", [])],
     )
 
 
@@ -605,6 +707,37 @@ async def _run_organize_job(
     if summary.errors:
         message += f"，{len(summary.errors)} 个问题已跳过"
     return {"message": message, **asdict(summary)}
+
+
+def _move_entry_assets(moves: list[EntryAssetMove]) -> tuple[int, list[str]]:
+    """搬运条目目录级镜像资产（线程池内运行），返回 (成功数, 中文问题列表)。
+
+    目标已存在时**不覆盖**，按内容分流：
+    - 逐字节相同 → 删掉源头那份重复副本。这是本模块唯一的删除动作，只针对
+      白名单里的镜像产物（本程序自己写出、随时可由 data/ 下的资产重建），
+      不是用户数据；不删它，旧目录就永远非空、清不掉；
+    - 内容不同 → 原样保留并告警。那可能是用户自己换过的图，绝不静默处置。
+    """
+    moved = 0
+    errors: list[str] = []
+    for move in moves:
+        src, dst = Path(move.source_path), Path(move.target_path)
+        try:
+            if not src.is_file():
+                continue  # 计划到执行之间被别的操作动过，跳过即可
+            if dst.exists():
+                if filecmp.cmp(src, dst, shallow=False):
+                    src.unlink()
+                    moved += 1
+                else:
+                    errors.append(f"条目资产目标已存在且内容不同，保留原文件：{src} → {dst}")
+                continue
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            _move_no_clobber(src, dst)
+            moved += 1
+        except (OSError, _MoveError) as exc:
+            errors.append(f"条目资产搬运失败：{src} → {dst}（{exc}）")
+    return moved, errors
 
 
 def _resolve_and_move(src: Path, dst: Path, *, missing_message: str) -> None:

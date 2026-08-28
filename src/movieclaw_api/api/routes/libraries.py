@@ -424,6 +424,7 @@ def _last_organize_view(library_id: int) -> LastOrganizeView | None:
         finished_at=finished_at,
         renamed=summary.renamed,
         sidecars_renamed=summary.sidecars_renamed,
+        entry_assets_moved=summary.entry_assets_moved,
         already_ok=summary.already_ok,
         skipped=summary.skipped,
         removed_dirs=summary.removed_dirs,
@@ -464,6 +465,7 @@ async def _persistent_organize_views(
                 finished_at=latest.finished_at,
                 renamed=int(result.get("renamed") or 0),
                 sidecars_renamed=int(result.get("sidecars_renamed") or 0),
+                entry_assets_moved=int(result.get("entry_assets_moved") or 0),
                 already_ok=int(result.get("already_ok") or 0),
                 skipped=int(result.get("skipped") or 0),
                 removed_dirs=int(result.get("removed_dirs") or 0),
@@ -1534,6 +1536,10 @@ async def preview_organize(
                 for a in plan.renames
             ],
             skips=[OrganizeSkipView(file_path=s.file_path, reason=s.reason) for s in plan.skips],
+            entry_assets=[
+                OrganizeSidecarView(source_path=a.source_path, target_path=a.target_path)
+                for a in plan.entry_assets
+            ],
         )
     )
 

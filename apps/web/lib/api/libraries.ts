@@ -149,8 +149,10 @@ export interface LastOrganize {
   finished_at: string;
   /** 改名归位的主文件数 */
   renamed: number;
-  /** 跟随改名的附属文件数（字幕等） */
+  /** 跟随改名的附属文件数（字幕、分集剧照等） */
   sidecars_renamed: number;
+  /** 跟随条目目录改名的镜像资产数（海报/背景/季海报/条目 NFO） */
+  entry_assets_moved: number;
   /** 本就符合规范、无需动作的文件数 */
   already_ok: number;
   /** 计划阶段跳过的文件数 */
@@ -197,6 +199,11 @@ export interface OrganizePreview {
   already_ok: number;
   renames: OrganizeRename[];
   skips: OrganizeSkip[];
+  /**
+   * 条目目录改名时跟着搬的镜像资产（poster.jpg / fanart.jpg /
+   * seasonNN-poster.jpg / movie.nfo / tvshow.nfo）——不搬走旧目录就清不掉。
+   */
+  entry_assets: OrganizeSidecar[];
 }
 
 /** 库内一个媒体条目的库存聚合（单库海报墙的一格）。 */

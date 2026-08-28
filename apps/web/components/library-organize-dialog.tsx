@@ -151,6 +151,8 @@ export function LibraryOrganizeDialog({
 
   const renameCount = preview?.renames.length ?? 0;
   const sidecarCount = preview?.renames.reduce((n, r) => n + r.sidecars.length, 0) ?? 0;
+  // 条目目录改名时跟着搬的海报/NFO：不搬走旧目录就永远非空、清不掉
+  const entryAssetCount = preview?.entry_assets.length ?? 0;
   const pct =
     progress && progress.total > 0
       ? Math.min(100, Math.round((progress.processed / progress.total) * 100))
@@ -218,6 +220,9 @@ export function LibraryOrganizeDialog({
                 />
                 {sidecarCount > 0 && (
                   <StatChip tone="muted" label={`${sidecarCount} 个附属文件同步改名`} />
+                )}
+                {entryAssetCount > 0 && (
+                  <StatChip tone="muted" label={`${entryAssetCount} 个海报/NFO 跟随条目目录`} />
                 )}
                 <StatChip tone="ok" label={`${preview.already_ok} 个已符合规范`} />
                 {preview.skips.length > 0 && (
@@ -407,6 +412,9 @@ export function LibraryOrganizeDialog({
                 改名归位 {result?.renamed ?? 0} 个文件
                 {result && result.sidecars_renamed > 0
                   ? `，附属文件 ${result.sidecars_renamed} 个随迁`
+                  : ""}
+                {result && result.entry_assets_moved > 0
+                  ? `，海报/NFO ${result.entry_assets_moved} 个随条目目录搬迁`
                   : ""}
                 {result && result.removed_dirs > 0
                   ? `，清理搬空目录 ${result.removed_dirs} 个`

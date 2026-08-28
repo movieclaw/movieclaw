@@ -255,6 +255,159 @@ async def test_template_change_is_idempotent_and_reorganizes(db, tmp_path):
     assert summary.renamed == 0
 
 
+# --- 反复调整模板时不留垃圾（条目目录级镜像资产随迁）--------------------
+#
+# 用户会反复改模板试效果，这是本功能的**预期用法**。海报/NFO 不跟着搬的话
+# 旧条目目录永远非空、清不掉，每调一次就多留一层只剩图片的空壳目录。
+
+
+def _mirror_products(entry: Path, *, kind: MediaKind) -> None:
+    """在条目目录里造出一份镜像产物（等价于 mirror_media_dir_assets 写完的现场）。"""
+    _touch(entry / "poster.jpg", b"POSTER")
+    _touch(entry / "fanart.jpg", b"FANART")
+    _touch(entry / ("movie.nfo" if kind is MediaKind.MOVIE else "tvshow.nfo"), b"<nfo/>")
+    if kind is MediaKind.TV:
+        _touch(entry / "season01-poster.jpg", b"S01")
+        _touch(entry / "season-specials-poster.jpg", b"SP")
+
+
+@pytest.mark.asyncio
+async def test_entry_assets_follow_entry_dir_rename(db, tmp_path):
+    """改条目目录模板 → 海报/背景/季海报/NFO 跟着搬，旧目录被清空清掉。"""
+    root = tmp_path / "tv"
+    async with db.session() as session:
+        library = await _make_library(session, kind=MediaKind.TV, root=root, name="剧集库")
+        item = await _make_item(session, kind=MediaKind.TV, tmdb_id=31, title="剧", year=2019)
+        _add_file(session, library, item, _touch(root / "raw" / "e1.mkv"), season=1, episode=1)
+        await session.commit()
+        library_id = library.id
+
+    assert (await organize_library(library_id)).renamed == 1
+    old_entry = root / "剧 (2019)"
+    _mirror_products(old_entry, kind=MediaKind.TV)
+
+    _apply_setting(naming_entry_dir="{title} ({year}) [tmdbid-{tmdb_id}]")
+    summary = await organize_library(library_id)
+    new_entry = root / "剧 (2019) [tmdbid-31]"
+
+    # poster / fanart / tvshow.nfo / season01-poster / season-specials-poster
+    assert summary.entry_assets_moved == 5
+    # 旧目录彻底消失：这正是"反复调模板不留垃圾"的判据
+    assert not old_entry.exists()
+    assert summary.removed_dirs >= 1
+    assert (new_entry / "poster.jpg").read_bytes() == b"POSTER"
+    assert (new_entry / "fanart.jpg").read_bytes() == b"FANART"
+    assert (new_entry / "tvshow.nfo").read_bytes() == b"<nfo/>"
+    assert (new_entry / "season01-poster.jpg").read_bytes() == b"S01"
+    assert (new_entry / "season-specials-poster.jpg").read_bytes() == b"SP"
+    assert (new_entry / "Season 01" / "剧 (2019) - S01E01.mkv").is_file()
+
+    # 幂等：同模板再跑一次，不再搬任何东西
+    again = await organize_library(library_id)
+    assert (again.renamed, again.entry_assets_moved) == (0, 0)
+
+
+@pytest.mark.asyncio
+async def test_episode_thumb_follows_rename(db, tmp_path):
+    """分集剧照 ``xxx-thumb.jpg`` 随分集文件改名（它不带"主文件名."前缀）。"""
+    root = tmp_path / "tv"
+    async with db.session() as session:
+        library = await _make_library(session, kind=MediaKind.TV, root=root, name="剧集库")
+        item = await _make_item(session, kind=MediaKind.TV, tmdb_id=32, title="剧", year=2020)
+        _add_file(session, library, item, _touch(root / "raw" / "e1.mkv"), season=1, episode=3)
+        await session.commit()
+        library_id = library.id
+
+    assert (await organize_library(library_id)).renamed == 1
+    season_dir = root / "剧 (2020)" / "Season 01"
+    _touch(season_dir / "剧 (2020) - S01E03-thumb.jpg", b"THUMB")
+    _touch(season_dir / "剧 (2020) - S01E03.nfo", b"<ep/>")
+
+    _apply_setting(naming_episode_file="{title} S{season:02d}E{episode:02d}")
+    summary = await organize_library(library_id)
+    assert summary.sidecars_renamed == 2
+    assert (season_dir / "剧 S01E03-thumb.jpg").read_bytes() == b"THUMB"
+    assert (season_dir / "剧 S01E03.nfo").read_bytes() == b"<ep/>"
+    assert not (season_dir / "剧 (2020) - S01E03-thumb.jpg").exists()
+
+
+@pytest.mark.asyncio
+async def test_entry_assets_stay_when_other_video_remains(db, tmp_path):
+    """旧目录里还有别的在位视频（不在本次计划里）→ 图留给它们，不搬。"""
+    root = tmp_path / "movies"
+    async with db.session() as session:
+        library = await _make_library(session, kind=MediaKind.MOVIE, root=root, name="电影库")
+        item = await _make_item(session, kind=MediaKind.MOVIE, tmdb_id=33, title="片", year=2020)
+        _add_file(session, library, item, _touch(root / "raw" / "a.mkv"))
+        await session.commit()
+        library_id = library.id
+
+    assert (await organize_library(library_id)).renamed == 1
+    old_entry = root / "片 (2020)"
+    _mirror_products(old_entry, kind=MediaKind.MOVIE)
+    # 台账不认识的视频（别的作品，或还没扫到）躺在同一个条目目录里
+    _touch(old_entry / "另一部片.mkv", b"other")
+
+    _apply_setting(naming_entry_dir="{title}.{year}")
+    summary = await organize_library(library_id)
+    assert summary.entry_assets_moved == 0
+    assert (old_entry / "poster.jpg").is_file()
+    assert (root / "片.2020" / "片 (2020).mkv").is_file()
+
+
+@pytest.mark.asyncio
+async def test_duplicate_entry_asset_removed_but_different_one_kept(db, tmp_path):
+    """目标已有同名资产：内容相同删掉重复份，内容不同保留并告警。"""
+    root = tmp_path / "movies"
+    async with db.session() as session:
+        library = await _make_library(session, kind=MediaKind.MOVIE, root=root, name="电影库")
+        item = await _make_item(session, kind=MediaKind.MOVIE, tmdb_id=34, title="片", year=2021)
+        _add_file(session, library, item, _touch(root / "raw" / "a.mkv"))
+        await session.commit()
+        library_id = library.id
+
+    assert (await organize_library(library_id)).renamed == 1
+    old_entry = root / "片 (2021)"
+    _mirror_products(old_entry, kind=MediaKind.MOVIE)
+    # 新目录里预先放好：poster 与旧的逐字节相同，fanart 不同（用户自己换过图）
+    new_entry = root / "片.2021"
+    _touch(new_entry / "poster.jpg", b"POSTER")
+    _touch(new_entry / "fanart.jpg", b"USER-ART")
+
+    _apply_setting(naming_entry_dir="{title}.{year}")
+    summary = await organize_library(library_id)
+
+    assert not (old_entry / "poster.jpg").exists()  # 重复副本清掉
+    assert (new_entry / "poster.jpg").read_bytes() == b"POSTER"
+    assert (old_entry / "fanart.jpg").read_bytes() == b"FANART"  # 内容不同：原样保留
+    assert (new_entry / "fanart.jpg").read_bytes() == b"USER-ART"  # 绝不覆盖
+    assert any("内容不同" in e for e in summary.errors)
+    assert old_entry.exists()  # 还留着那张图，目录自然清不掉（不删用户可能在意的东西）
+
+
+@pytest.mark.asyncio
+async def test_user_files_in_entry_dir_are_never_touched(db, tmp_path):
+    """白名单之外的文件（用户自己放的）一律不搬不删——旧目录因此保留。"""
+    root = tmp_path / "movies"
+    async with db.session() as session:
+        library = await _make_library(session, kind=MediaKind.MOVIE, root=root, name="电影库")
+        item = await _make_item(session, kind=MediaKind.MOVIE, tmdb_id=35, title="片", year=2022)
+        _add_file(session, library, item, _touch(root / "raw" / "a.mkv"))
+        await session.commit()
+        library_id = library.id
+
+    assert (await organize_library(library_id)).renamed == 1
+    old_entry = root / "片 (2022)"
+    _mirror_products(old_entry, kind=MediaKind.MOVIE)
+    _touch(old_entry / "我的观影笔记.txt", b"note")
+
+    _apply_setting(naming_entry_dir="{title}.{year}")
+    await organize_library(library_id)
+    assert (old_entry / "我的观影笔记.txt").read_bytes() == b"note"
+    assert not (old_entry / "poster.jpg").exists()  # 镜像产物照常搬走
+    assert (root / "片.2022" / "poster.jpg").is_file()
+
+
 @pytest.mark.asyncio
 async def test_sidecars_follow_template_rename(db, tmp_path):
     """字幕等附属文件随新模板一起改名（否则外挂字幕会与视频失联）。"""
