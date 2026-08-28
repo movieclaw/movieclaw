@@ -34,12 +34,18 @@ class MediaLibraryService:
     """媒体条目服务：``ensure_media_item`` 是订阅创建链路的第一步。"""
 
     def __init__(
-        self, session: AsyncSession, tmdb_client: TmdbClient, *, language: str = "zh-CN"
+        self,
+        session: AsyncSession,
+        tmdb_client: TmdbClient,
+        *,
+        languages: Sequence[str] | None = None,
     ) -> None:
         self._session = session
         self._repo = MediaItemRepository(session)
         self._client = tmdb_client
-        self._language = language
+        # None = 跟随「设置 → 刮削与整理」的语言优先级（读取时取快照，
+        # 设置保存立即生效）；显式传入仅供测试固定语言
+        self._languages = list(languages) if languages else None
         # 预取档案缓存：(kind, tmdb_id) -> 已经拉回来的 TMDB 档案。
         # 扫描器会在处理每一窗文件前并发填充它（见 library_scan._prefetch_profiles），
         # 建档时命中即省掉一次 TMDB 往返。取用即弹出，不做长期缓存——
@@ -70,9 +76,7 @@ class MediaLibraryService:
 
         profile = self.profile_cache.pop((kind, tmdb_id), None)
         if profile is None:
-            profile = await fetch_media_profile(
-                self._client, kind, tmdb_id, language=self._language
-            )
+            profile = await fetch_media_profile(self._client, kind, tmdb_id, **self._fetch_kwargs())
         item, seasons, episodes, metadata = self._to_rows(profile, douban_id, extra_aliases)
         try:
             item = await self._repo.create_with_seasons(item, seasons, episodes, metadata)
@@ -119,7 +123,7 @@ class MediaLibraryService:
             return
         try:
             self.profile_cache[key] = await fetch_media_profile(
-                self._client, kind, tmdb_id, language=self._language
+                self._client, kind, tmdb_id, **self._fetch_kwargs()
             )
         except Exception as exc:  # noqa: BLE001 -- 预取失败不是错误，建档时会重来
             logger.debug("TMDB 档案预取失败（改由建档时重试）：%s/%s：%s", kind.value, tmdb_id, exc)
@@ -154,7 +158,7 @@ class MediaLibraryService:
         ``ensure_media_item(kind, tmdb_id, douban_id=..., extra_aliases=[豆瓣标题])``。
         """
         resolution = await resolve_douban_to_tmdb(
-            self._client, kind, title, year=year, language=self._language
+            self._client, kind, title, year=year, language=self._primary_language()
         )
         if resolution.status is not ResolveStatus.MATCHED:
             return resolution, None
@@ -226,5 +230,16 @@ class MediaLibraryService:
             # NULL=立即到期：刷新任务首个 tick 会处理并按 status 分档重排
             next_refresh_at=None,
         )
-        seasons, episodes, metadata = build_display_rows(profile, self._language)
+        seasons, episodes, metadata = build_display_rows(profile, self._primary_language())
         return item, seasons, episodes, metadata
+
+    def _fetch_kwargs(self) -> dict:
+        """``fetch_media_profile`` 的偏好参数：显式语言（测试）或当前设置快照。"""
+        if self._languages is not None:
+            return {"languages": self._languages}
+        from movieclaw_api.services.scrape_config import profile_fetch_kwargs
+
+        return profile_fetch_kwargs()
+
+    def _primary_language(self) -> str:
+        return self._fetch_kwargs()["languages"][0]

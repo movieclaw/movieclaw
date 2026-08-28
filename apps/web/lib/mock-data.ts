@@ -13,6 +13,7 @@ import {
   GearIcon,
   GlobeIcon,
   PaletteIcon,
+  PhotoIcon,
   PlayIcon,
   SendIcon,
   ServerIcon,
@@ -138,6 +139,7 @@ export const settingsSectionGroups: SettingsSectionGroup[] = [
       { id: "sites", label: "资源站点", description: "站点接入与鉴权、搜索分类、插件 Cookie 同步", icon: ServerIcon },
       { id: "downloaders", label: "下载器", description: "qBittorrent / Transmission 接入", icon: DownloadIcon },
       { id: "import-watch", label: "监听导入", description: "监听下载目录，完成后自动整理入库", icon: FolderIcon },
+      { id: "scrape", label: "刮削与整理", description: "元数据语言、选图口味、命名模板与目录写入", icon: PhotoIcon },
     ],
   },
   {

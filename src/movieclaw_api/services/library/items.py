@@ -59,6 +59,7 @@ from movieclaw_api.services.library.nfo import (
 from movieclaw_api.services.library.sort_key import title_initial, title_sort_key
 from movieclaw_api.services.media_probe import probe_media
 from movieclaw_api.services.media_scrape import asset_version, file_version
+from movieclaw_api.services.scrape_config import effective_language
 from movieclaw_db.models import FileState, Library, LibraryFile, MediaItem, MediaSeason, utcnow
 from movieclaw_db.repositories.library_repo import LibraryRepository
 from movieclaw_media.models import MediaKind
@@ -910,7 +911,7 @@ async def _fill_from_tmdb_season(
             stale_ttl=_DISPLAY_CACHE_STALE_TTL,
             factory=lambda: get_tmdb_client().get(
                 f"tv/{item.tmdb_id}/season/{season_number}",
-                {"language": settings.tmdb_language},
+                {"language": effective_language()},
             ),
         )
     except Exception as exc:  # noqa: BLE001 -- 兜底信息拉不到不阻断
@@ -1033,7 +1034,7 @@ async def _tmdb_fallback_meta(item: MediaItem) -> EntryMetadata | None:
             stale_ttl=_DISPLAY_CACHE_STALE_TTL,
             factory=lambda: get_tmdb_client().get(
                 f"{kind.value}/{item.tmdb_id}",
-                {"language": settings.tmdb_language, "append_to_response": "credits"},
+                {"language": effective_language(), "append_to_response": "credits"},
             ),
         )
     except Exception as exc:  # noqa: BLE001 -- 兜底信息拉不到不阻断详情页

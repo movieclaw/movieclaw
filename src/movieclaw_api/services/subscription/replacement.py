@@ -566,6 +566,8 @@ async def _try_candidates(
             site_id=candidate.site_id,
             torrent_id=candidate.torrent_id,
             torrent_title=candidate.title,
+            download_name=result.name or None,
+            save_path=decision.path,
             units=[[row.season_number, row.episode_number] for row in covered],
             quality=candidate.attrs.model_dump(exclude_defaults=True),
             hit_and_run=candidate.hit_and_run,

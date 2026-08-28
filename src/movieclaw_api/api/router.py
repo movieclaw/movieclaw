@@ -51,6 +51,7 @@ from movieclaw_api.api.routes.network import router as network_router
 from movieclaw_api.api.routes.people import router as people_router
 from movieclaw_api.api.routes.playback import router as playback_router
 from movieclaw_api.api.routes.rule_sets import router as rule_sets_router
+from movieclaw_api.api.routes.scrape_settings import router as scrape_settings_router
 from movieclaw_api.api.routes.search import router as search_router
 from movieclaw_api.api.routes.sites import router as sites_router
 from movieclaw_api.api.routes.spec import router as spec_router
@@ -121,6 +122,8 @@ _ADMIN_ROUTERS = [
     rule_sets_router,
     logs_router,
     network_router,
+    # 刮削与整理：语言/选图/图片档位是全局配置，错一下全家受影响
+    scrape_settings_router,
     app_config_router,
     app_update_router,
     spec_router,

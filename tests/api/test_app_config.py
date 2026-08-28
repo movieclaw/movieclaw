@@ -192,6 +192,47 @@ def test_remote_transcode_accepts_http_external_url(client):
     assert response.json()["data"]["ready"] is True
 
 
+def test_remote_transcode_tells_user_scheme_is_missing_not_that_url_is_empty(client):
+    """漏写 http:// 的地址不能被报成「未配置」——用户明明填了。
+
+    urlsplit 把 `192.168.1.10:3000` 解析成空 netloc，与真的没填无法区分。
+    照直说「未配置」会让用户对着自己刚填好的输入框完全找不到方向。
+    """
+    response = client.put(
+        "/api/v1/transcode-worker/config",
+        json={
+            "enabled": True,
+            "base_url": "192.168.1.10:3000",
+            "worker_token": "test-worker-token",
+            "max_artifact_bytes": 64 * 1024 * 1024,
+        },
+    )
+
+    assert response.status_code == 400
+    message = response.json()["message"]
+    assert "http:// 或 https:// 开头" in message, message
+    # 必须把用户填的内容回显出来，他才能一眼看出差在哪
+    assert "192.168.1.10:3000" in message, message
+    assert "未配置" not in message, message
+
+
+def test_remote_transcode_still_reports_empty_url_as_unset(client):
+    """真的没填时仍要说「未配置」，不能被上一条的改动带偏。"""
+    client.put("/api/v1/app/config", json={"external_url": ""})
+    response = client.put(
+        "/api/v1/transcode-worker/config",
+        json={
+            "enabled": True,
+            "base_url": "",
+            "worker_token": "test-worker-token",
+            "max_artifact_bytes": 64 * 1024 * 1024,
+        },
+    )
+
+    assert response.status_code == 400
+    assert "未配置" in response.json()["message"]
+
+
 def test_remote_transcode_rejects_artifact_limit_above_worker_cap(client):
     response = client.put(
         "/api/v1/transcode-worker/config",

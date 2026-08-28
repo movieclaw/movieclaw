@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from sqlalchemy import delete
@@ -31,6 +30,7 @@ from sqlmodel import select
 from movieclaw_api.exceptions import BadRequestException, UpstreamServiceException
 from movieclaw_api.services.site_access import SiteUnavailableError, get_site_access
 from movieclaw_db.models import DownloaderClient, DownloadHint, ManualDownloadIntent, utcnow
+from movieclaw_db.models.manual_download_intent import MANUAL_DOWNLOAD_INTENT_TTL
 from movieclaw_db.models.site_credential import ConfigStatus
 from movieclaw_db.repositories.downloader_repo import DownloaderRepository
 from movieclaw_downloader.factory import create_downloader
@@ -45,7 +45,7 @@ logger = logging.getLogger("movieclaw_api.torrent_submit")
 
 # 身份锚的兜底存活窗口：正常下载远短于此；超窗仍未被入库消费的锚基本是
 # 任务已从下载器删除的孤儿行，锚定新下载时顺带清理，避免无限累积
-_INTENT_STALE_AFTER = timedelta(days=90)
+_INTENT_STALE_AFTER = MANUAL_DOWNLOAD_INTENT_TTL
 
 
 @dataclass(frozen=True)
@@ -340,6 +340,9 @@ async def anchor_manual_download(
     library_id: int,
     site_id: str,
     torrent_id: str | None = None,
+    downloader_id: int | None = None,
+    download_name: str | None = None,
+    save_path: str | None = None,
 ) -> None:
     """按 infohash 保存手动下载的已确认身份，供监听导入完成后直接认领。
 
@@ -368,6 +371,9 @@ async def anchor_manual_download(
                 info_hash=normalized,
                 media_item_id=media_item_id,
                 library_id=library_id,
+                downloader_id=downloader_id,
+                download_name=download_name,
+                save_path=save_path,
                 site_id=site_id,
                 torrent_id=torrent_id,
             )
@@ -393,8 +399,21 @@ async def anchor_manual_download(
                 library_id,
             )
             return
-    # 同一 hash 即同一份内容：旧锚缺站点种子 ID 时用本次提交补全（只补
-    # 同站信息，跨站同种不能把别站的种子 ID 配到旧站点上）；身份归属不变。
+    # 同一 hash 即同一份内容：只补旧版本没有的物理任务锚与站点种子 ID，
+    # 绝不改写首次确认的媒体/库归属。路径只有目标身份也一致时才可信——同一
+    # hash 被后来点到另一部片时，不能把旧任务静默指向新目录。
+    changed = False
+    same_target = existing.media_item_id == media_item_id and existing.library_id == library_id
+    if same_target:
+        if existing.downloader_id is None and downloader_id is not None:
+            existing.downloader_id = downloader_id
+            changed = True
+        if not existing.download_name and download_name:
+            existing.download_name = download_name
+            changed = True
+        if not existing.save_path and save_path:
+            existing.save_path = save_path
+            changed = True
     if (
         torrent_id
         and not existing.torrent_id
@@ -402,9 +421,11 @@ async def anchor_manual_download(
     ):
         existing.site_id = site_id
         existing.torrent_id = torrent_id
+        changed = True
+    if changed:
         existing.updated_at = utcnow()
         await session.commit()
-    if existing.media_item_id != media_item_id or existing.library_id != library_id:
+    if not same_target:
         logger.warning(
             "手动下载 hash=%s 已锚定到 media_item=%s/library=%s；"
             "忽略本次不同目标 media_item=%s/library=%s",

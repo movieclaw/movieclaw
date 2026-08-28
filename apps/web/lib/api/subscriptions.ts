@@ -290,6 +290,12 @@ export interface DispatchPreview {
   mode: "watch" | "inplace" | "downloader_default";
   /** movieclaw 视角的投递基底目录 */
   path: string | null;
+  /**
+   * 条目目录的完整路径预览（后端按生效的命名模板渲染）。
+   * 展示"直接下载到 …"时用它，**不要**自己拼 `${title} (${year})`：
+   * 命名模板可全局/按库自定义，自己拼会与真实落点不一致。
+   */
+  entry_dir: string | null;
   /** 命中自定义目录规则时的整理落点：完成后整理到该目录（不直接入库），外部流转回库根后入账 */
   staging_path: string | null;
   /** 解析出的目标库（未选库时=收藏范围路由的结论，弹窗据此预选） */
@@ -314,10 +320,14 @@ export function previewSubscriptionDownloadRouting(
   kind: string,
   libraryId: number | null,
   tmdbId?: number | null,
+  identity?: { title?: string | null; year?: number | null },
 ): Promise<DispatchPreview> {
   const params = new URLSearchParams({ kind });
   if (libraryId !== null) params.set("library_id", String(libraryId));
   if (tmdbId != null) params.set("tmdb_id", String(tmdbId));
+  // 标题/年份只用于渲染 entry_dir（条目目录预览），不影响路由与投递目录
+  if (identity?.title) params.set("title", identity.title);
+  if (identity?.year != null) params.set("year", String(identity.year));
   return unwrap(
     request<ApiEnvelope<DispatchPreview>>(`/subscriptions/download-routing-preview?${params}`),
   );

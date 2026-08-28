@@ -16,6 +16,7 @@ import { LlmConfigSection } from "@/components/llm-config-section";
 import { ImPushSection } from "@/components/im-push-section";
 import { NetworkConfigSection } from "@/components/network-config-section";
 import { RemoteTranscodeSection } from "@/components/remote-transcode-section";
+import { ScrapeSettingsSection } from "@/components/scrape-settings-section";
 import { SiteConfigSection, SitesSectionSubtitle } from "@/components/site-config-section";
 import { SubscriptionSettingsSection } from "@/components/subscription-settings-section";
 import { SystemLogsSection } from "@/components/system-logs-section";
@@ -194,6 +195,8 @@ export function SettingsPanel({ active }: SettingsPanelProps) {
           <DownloaderConfigSection />
         ) : section.id === "import-watch" ? (
           <ImportWatchSection />
+        ) : section.id === "scrape" ? (
+          <ScrapeSettingsSection />
         ) : section.id === "llm" ? (
           <LlmConfigSection />
         ) : section.id === "im-push" ? (
@@ -499,6 +502,15 @@ function ChangePasswordCard() {
  */
 function AppSection() {
   const [tab, setTab] = useState<"update" | "maintain" | "remote">("update");
+  // 支持 /settings/app?tab=remote 深链接：软转同意弹窗要把管理员直接送到
+  // 「远程转码」，落在默认的「版本与更新」等于让引导断在最后一步。
+  // 用 useEffect 而不是初始值读取，避免服务端渲染与客户端首帧不一致。
+  useEffect(() => {
+    const requested = new URLSearchParams(window.location.search).get("tab");
+    if (requested === "remote" || requested === "maintain" || requested === "update") {
+      setTab(requested);
+    }
+  }, []);
   // 本分区只对管理员渲染（成员的分区清单里没有 app），无需再按角色关轮询
   const pendingUpdate = usePendingUpdate();
   const tabs = [

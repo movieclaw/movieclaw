@@ -34,7 +34,9 @@ SEARCH_TOOL_DEF = ToolDefinition(
 _probe: dict = {}
 
 
-def make_runner(protocol_cls, monkeypatch, *, handler=None, max_steps=200) -> AgentRunner:
+def make_runner(
+    protocol_cls, monkeypatch, *, handler=None, max_steps=200, on_message=None
+) -> AgentRunner:
     monkeypatch.setitem(PROTOCOLS, "openai_chat", protocol_cls)
     _probe.clear()
     _probe["requests"] = []
@@ -55,7 +57,7 @@ def make_runner(protocol_cls, monkeypatch, *, handler=None, max_steps=200) -> Ag
         ]
     )
     tools = [AgentTool(definition=SEARCH_TOOL_DEF, handler=handler or default_handler)]
-    return AgentRunner(router, tools=tools, max_steps=max_steps)
+    return AgentRunner(router, tools=tools, max_steps=max_steps, on_message=on_message)
 
 
 class ToolLoopProtocol(BaseLlmProtocol):
@@ -65,6 +67,8 @@ class ToolLoopProtocol(BaseLlmProtocol):
     first_finish = "tool_calls"
     #: 首步的工具调用（子类覆盖以模拟坏参数/未知工具）
     first_calls = [ToolCall(id="c1", name="search", arguments={"q": "沙丘"})]
+    #: 首步的正文（子类覆盖；无工具调用时决定是「有话说」还是空响应）
+    first_content = ""
 
     async def chat(self, request, model_id):  # pragma: no cover
         raise NotImplementedError
@@ -95,6 +99,7 @@ class ToolLoopProtocol(BaseLlmProtocol):
             yield ChatStreamEvent(
                 type="done",
                 partial=ChatResponse(
+                    content=self.first_content or None,
                     tool_calls=self.first_calls or None,
                     finish_reason=self.first_finish,
                     usage=TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
@@ -183,11 +188,36 @@ async def test_tool_calls_finish_reason_with_empty_calls_ends(monkeypatch):
 
     class EmptyCallsProtocol(ToolLoopProtocol):
         first_calls = []
+        first_content = "不用查了，直接回答你"
 
     runner = make_runner(EmptyCallsProtocol, monkeypatch)
     events = await collect(runner, AgentStartParams(input="x"))
     assert events[-1].type == "agent_done"
     assert events[-1].result.steps == 1
+
+
+async def test_empty_response_ends_with_agent_error(monkeypatch):
+    """空响应（无工具调用且正文为空）→ agent_error，不能伪装成正常完成。
+
+    伪装成 agent_done 的话，通道侧拿到空文本会静默丢弃，用户看到的是对话
+    毫无征兆地中断。
+    """
+    recorded: list = []
+
+    async def record(message, response):
+        recorded.append(message)
+
+    class EmptyResponseProtocol(ToolLoopProtocol):
+        first_calls = []
+        first_content = ""
+
+    runner = make_runner(EmptyResponseProtocol, monkeypatch, on_message=record)
+    events = await collect(runner, AgentStartParams(input="x"))
+
+    assert events[-1].type == "agent_error"
+    assert "空响应" in events[-1].error
+    # 空的 assistant 消息不能写进会话历史，否则续聊会把空白带上
+    assert not [m for m in recorded if m.role == "assistant"]
 
 
 async def test_invalid_tool_args_fed_back_as_error(monkeypatch):

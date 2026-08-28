@@ -338,14 +338,16 @@ function DialogContent({
       manualTarget.library_id != null &&
       manualTarget.ok
     ) {
-      const folder = `${request.identity.title} (${request.identity.year})`;
+      // 条目目录由后端按命名模板渲染（entry_dir），前端不再自己拼名字——
+      // 模板可全局/按库自定义，自己拼出来的预览会与真实落点不符
+      const entryDir = manualTarget.entry_dir ?? manualTarget.path;
       const detail =
         manualTarget.mode === "watch"
           ? manualTarget.staging_path
             ? `${manualTarget.route_reason ?? ""}；投递到监听导入目录 ${manualTarget.path}，完成后整理到 ${manualTarget.staging_path}（外部流转回库根后入账）`
             : `${manualTarget.route_reason ?? ""}；投递到监听导入目录 ${manualTarget.path}，完成后自动整理入库`
           : manualTarget.mode === "inplace"
-            ? `${manualTarget.route_reason ?? ""}；直接下载到 ${manualTarget.path?.replace(/\/+$/, "")}/${folder}，完成后自动入账`
+            ? `${manualTarget.route_reason ?? ""}；直接下载到 ${entryDir?.replace(/\/+$/, "")}，完成后自动入账`
             : null;
       result.push({
         key: "smart",

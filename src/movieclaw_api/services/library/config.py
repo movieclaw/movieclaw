@@ -40,20 +40,39 @@ def sanitize_folder_name(name: str) -> str:
     return cleaned or "未命名"
 
 
-def derive_entry_dir(root: str, *, title: str, year: int | None) -> str:
-    """由根路径推导条目目录：``{root}/{title} ({year})``。
+def derive_entry_dir(
+    root: str,
+    *,
+    title: str,
+    year: int | None,
+    item: object | None = None,
+    library: object | None = None,
+) -> str:
+    """由根路径推导条目目录（目录名走命名模板，默认 ``{title} ({year})``）。
 
     库入库与监听导入的自定义目录目标共用同一命名规范——命名同源是
     "整理输出 → 外部流转 → 库根回流"链路的唯一衔接机制
-    （docs/design/strm-workflow.md）。路径用 POSIX 分隔符拼接。
+    （docs/design/strm-workflow.md）；模板化后这个"同一"由
+    ``library/naming.py`` 独家保证，本函数不再自己拼名字。
+    路径用 POSIX 分隔符拼接。
     """
-    folder = sanitize_folder_name(title)
-    if year is not None:
-        folder = f"{folder} ({year})"
-    return posixpath.join(root.rstrip("/"), folder)
+    from movieclaw_api.services.library.naming import entry_dir_name, item_context
+
+    # 给了条目就用完整上下文：模板里的 {original_title}/{tmdb_id} 只有拿到
+    # 条目才渲染得出来。手动下载等"还没有 TMDB 身份"的场景只有 title/year，
+    # 那些占位符渲染为空并被收缩——文件落盘后由扫描识别、整理给出规范名
+    extra = item_context(item) if item is not None else {}
+    # title/year 以显式入参为准（调用方拿到的就是权威值），条目只补其余占位符
+    extra.pop("title", None)
+    extra.pop("year", None)
+    return posixpath.join(
+        root.rstrip("/"), entry_dir_name(title=title, year=year, library=library, **extra)
+    )
 
 
-def derive_save_path(library: Library, *, title: str, year: int | None) -> str | None:
+def derive_save_path(
+    library: Library, *, title: str, year: int | None, item: object | None = None
+) -> str | None:
     """由库推导入库保存路径：``{主根}/{title} ({year})``。
 
     电影与剧集同构（剧集的 Season 子目录是 L2 整理器的职责，投递阶段
@@ -64,7 +83,8 @@ def derive_save_path(library: Library, *, title: str, year: int | None) -> str |
     root = library.primary_root
     if not root:
         return None
-    return derive_entry_dir(root, title=title, year=year)
+    # 库自己就是覆盖来源：命名模板可按库覆盖（动漫库与电影库各用一套）
+    return derive_entry_dir(root, title=title, year=year, item=item, library=library)
 
 
 class LibraryConfigService:
@@ -121,6 +141,39 @@ class LibraryConfigService:
         if len(set(cleaned)) != len(cleaned):
             raise BadRequestException("根路径存在重复项")
         return cleaned
+
+    @staticmethod
+    def _validate_overrides(raw: dict | None) -> dict | None:
+        """库级刮削覆盖的校验：只收可覆盖字段，值按全局设置的同一套规则把关。
+
+        不合法就整体拒绝（400 中文文案）而不是静默丢弃——用户在库设置里
+        写了个坏模板却"保存成功"，比报错难查得多。None = 不改动。
+        """
+        if raw is None:
+            return None
+        from movieclaw_api.services.scrape_config import (
+            LIBRARY_OVERRIDABLE,
+            sanitize_overrides,
+        )
+        from movieclaw_api.settings import MetadataScrapeSetting
+
+        unknown = sorted(set(raw) - LIBRARY_OVERRIDABLE)
+        if unknown:
+            raise BadRequestException(
+                f"这些设置不支持按库覆盖：{'、'.join(unknown)}"
+                "（选图与语言的产物跨库共享一份，只能在全局设置里改）"
+            )
+        overrides = sanitize_overrides(raw)
+        if not overrides:
+            return {}
+        try:
+            MetadataScrapeSetting.model_validate(
+                {**MetadataScrapeSetting().model_dump(), **overrides}
+            )
+        except Exception as exc:  # noqa: BLE001 -- 转成用户可读的 400
+            detail = str(exc).split("\n")[-2].strip() if "\n" in str(exc) else str(exc)
+            raise BadRequestException(f"库级刮削设置不合法：{detail}") from exc
+        return overrides
 
     async def _assert_roots_clear_of_import_watch(self, roots: list[str]) -> None:
         """根路径不得与任何监听导入规则的源目录或自定义目录前缀重叠。
@@ -217,12 +270,14 @@ class LibraryConfigService:
         match_rules: list | None = None,
         auto_clear_missing: bool | None = None,
         realtime_watch: bool | None = None,
+        scrape_overrides: dict | None = None,
     ) -> Library:
         """新增一个库。该类型尚无默认库时自动成为默认。"""
         from movieclaw_api.services.library.routing import validate_match_rules
 
         roots = self._validate(name=name, root_paths=root_paths)
         rules = validate_match_rules(match_rules)
+        overrides = self._validate_overrides(scrape_overrides)
         await self._assert_roots_clear_of_import_watch(roots)
         await self._assert_roots_clear_of_other_libraries(roots)
         await self._assert_name_available(name)
@@ -234,6 +289,7 @@ class LibraryConfigService:
             auto_clear_missing=bool(auto_clear_missing),
             # 实时监控默认开（与 Emby/Plex 一致）；不传按默认
             realtime_watch=True if realtime_watch is None else bool(realtime_watch),
+            scrape_overrides=overrides,
         )
         self._refresh_watcher()
         return row
@@ -247,6 +303,7 @@ class LibraryConfigService:
         match_rules: list | None = None,
         auto_clear_missing: bool | None = None,
         realtime_watch: bool | None = None,
+        scrape_overrides: dict | None = None,
     ) -> Library:
         """更新名称/根路径/收藏范围。kind 创建后不可改（订阅按类型挂库）。
 
@@ -258,6 +315,7 @@ class LibraryConfigService:
 
         roots = self._validate(name=name, root_paths=root_paths)
         rules = validate_match_rules(match_rules)
+        overrides = self._validate_overrides(scrape_overrides)
         await self._assert_roots_clear_of_import_watch(roots)
         await self._assert_roots_clear_of_other_libraries(roots, exclude_id=library_id)
         await self._assert_name_available(name, exclude_id=library_id)
@@ -268,6 +326,7 @@ class LibraryConfigService:
             match_rules=rules,
             auto_clear_missing=auto_clear_missing,
             realtime_watch=realtime_watch,
+            scrape_overrides=overrides,
         )
         assert updated is not None  # get() 已确认存在
         # 开关切换也走同一次后台差量重建：关掉的库拆监听、打开的库建监听

@@ -15,6 +15,9 @@ from __future__ import annotations
 
 import asyncio
 import math
+import re
+from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import date
 from enum import StrEnum
 
@@ -152,32 +155,56 @@ async def fetch_media_profile(
     kind: MediaKind,
     tmdb_id: int,
     *,
-    language: str = "zh-CN",
+    languages: Sequence[str] = ("zh-CN", "en-US"),
+    image_prefs: ImagePrefs | None = None,
+    cert_countries: Sequence[str] = ("CN", "US"),
 ) -> MediaProfile:
     """拉取条目的完整档案（一次详情请求 + 剧集逐季并发拉集列表）。
 
-    append_to_response 把别名/译名/外部 ID/演职员/分级合并进详情请求，
-    整个电影建档只需一次往返；剧集另按季数并发拉集列表（受客户端漏桶
-    限流约束）。冷门条目当前语言简介缺失时，补拉一次英文兜底（仅条目级，
-    控制请求量——docs/design/metadata.md 第 3 节）。
+    ``languages`` 是元数据语言优先级（docs/design/scrape-customization.md
+    §2.1）：首位是主语言（请求语言），标题/简介/tagline 在主语言缺失时按
+    顺序回落——回落数据来自 append_to_response 里**同一次请求已拉回的
+    translations**，零额外请求；分集文本不在 translations 里，主语言覆盖率
+    过低的季按次位语言整季重拉一次（每季至多一次，见 ``_season_text_poor``）。
+
+    ``image_prefs`` 是选图偏好（§2.2）；``cert_countries`` 是分级地区优先级。
+    默认参数即历史行为（zh-CN + en 兜底、TMDB 默认海报、无文字背景优先）。
     """
+    languages = list(languages) or ["zh-CN"]
+    primary = languages[0]
+    prefs = image_prefs or ImagePrefs()
     rating_append = "release_dates" if kind is MediaKind.MOVIE else "content_ratings"
+    # images 默认只回当前语言的图，几乎必空；显式带上"无语言"(null，即无
+    # 文字烧录的干净图)与偏好里出现的具体语种，选图策略才有候选可挑
+    image_languages = image_language_param(prefs, primary)
     data = await client.get(
         f"{kind.value}/{tmdb_id}",
         {
-            "language": language,
+            "language": primary,
             "append_to_response": (
                 f"alternative_titles,translations,external_ids,credits,images,{rating_append}"
             ),
-            # images 默认只回当前语言的图，几乎必空；显式带上"无语言"(null，
-            # 即无文字烧录的干净图)与中英文，选图策略才有候选可挑
-            "include_image_language": f"null,{language.split('-')[0]},en",
+            "include_image_language": image_languages,
         },
     )
+    # 偏好里含「原始语言」时，请求前无从得知它是哪种语言；详情回来后若
+    # 该语言不在已拉取的图片语言集合里，补拉一次 images 合并候选。
+    # 只有显式配置 orig 的用户才会走到这个分支，且中英日韩之外才需要补。
+    await _ensure_original_language_images(client, kind, tmdb_id, data, prefs, image_languages)
 
     title = data.get("title") or data.get("name") or ""
     original_title = data.get("original_title") or data.get("original_name") or title
     release_date = data.get("release_date") or data.get("first_air_date") or ""
+
+    translations = _translation_index(data)
+    # 标题回落：主语言没有翻译时（TMDB 会静默退回原名），按优先级取
+    # 下一语言的译名。主语言有翻译时 data 里的 title 就是它，不用动
+    if not _translation_text(translations, primary, "title", "name"):
+        for lang in languages[1:]:
+            fallback_title = _translation_text(translations, lang, "title", "name")
+            if fallback_title:
+                title = fallback_title
+                break
 
     seasons: list[SeasonProfile] = []
     if kind is MediaKind.TV:
@@ -187,15 +214,37 @@ async def fetch_media_profile(
             if s.get("season_number") is not None
         ]
         seasons = list(
-            await asyncio.gather(
-                *(_fetch_season(client, tmdb_id, n, language) for n in numbers)
-            )
+            await asyncio.gather(*(_fetch_season(client, tmdb_id, n, primary) for n in numbers))
         )
+        if len(languages) > 1:
+            await _fallback_poor_seasons(client, tmdb_id, seasons, languages[1])
 
     overview = (data.get("overview") or "").strip() or None
     tagline = (data.get("tagline") or "").strip() or None
-    if overview is None and not language.lower().startswith("en"):
-        overview, tagline = await _fetch_english_text(client, kind, tmdb_id, tagline)
+    for lang in languages[1:]:
+        if overview is not None and tagline is not None:
+            break
+        overview = overview or _translation_text(translations, lang, "overview")
+        tagline = tagline or _translation_text(translations, lang, "tagline")
+
+    original_language = data.get("original_language") or None
+    poster_langs = resolve_image_languages(
+        prefs.poster_langs, primary_language=primary, original_language=original_language
+    )
+    backdrop_langs = resolve_image_languages(
+        prefs.backdrop_langs, primary_language=primary, original_language=original_language
+    )
+    if prefs.poster_mode == "language":
+        # 用户显式要按语言优先级挑：策略结果优先，候选全空才回 TMDB 默认
+        poster_path = pick_poster(data, poster_langs, min_width=prefs.poster_min_width) or data.get(
+            "poster_path"
+        )
+    else:
+        # 海报与发现页同源：优先 TMDB 默认 poster_path（发现页列表接口给的
+        # 就是这张），订阅建档后展示不跳变；默认缺失时才用选图策略兜底
+        poster_path = data.get("poster_path") or pick_poster(
+            data, poster_langs, min_width=prefs.poster_min_width
+        )
 
     return MediaProfile(
         kind=kind,
@@ -206,10 +255,11 @@ async def fetch_media_profile(
         year=_parse_year(release_date),
         aliases=_build_aliases(data, title, original_title),
         status=data.get("status") or None,
-        # 海报与发现页同源：优先 TMDB 默认 poster_path（发现页列表接口给的就是
-        # 这张），订阅建档后展示不跳变；默认缺失时才用选图策略从候选里兜底
-        poster_path=data.get("poster_path") or pick_poster(data, language),
-        backdrop_path=pick_backdrop(data) or data.get("backdrop_path"),
+        poster_path=poster_path,
+        backdrop_path=(
+            pick_backdrop(data, backdrop_langs, min_width=prefs.backdrop_min_width)
+            or data.get("backdrop_path")
+        ),
         seasons=seasons,
         overview=overview,
         tagline=tagline,
@@ -217,8 +267,8 @@ async def fetch_media_profile(
         genre_ids=extract_genre_ids(data),
         runtime_minutes=_parse_runtime(kind, data),
         release_date=_parse_date(release_date),
-        content_rating=_parse_certification(kind, data),
-        original_language=data.get("original_language") or None,
+        content_rating=_parse_certification(kind, data, cert_countries),
+        original_language=original_language,
         origin_countries=extract_origin_countries(data),
         studios=_parse_studios(kind, data),
         vote_average=round(float(data["vote_average"]), 1) if data.get("vote_average") else None,
@@ -230,20 +280,194 @@ async def fetch_media_profile(
 
 
 # ---------------------------------------------------------------------------
-# 选图策略（docs/design/metadata.md 6.3）
+# 语言回落（docs/design/scrape-customization.md §2.1）
+# ---------------------------------------------------------------------------
+
+
+def _translation_index(data: dict) -> dict[str, dict]:
+    """translations 载荷 → 「语言标签 → 译文字典」索引。
+
+    同时登记精确标签（zh-CN）与裸语言（zh，取第一个地区版本）两个键，
+    查询时先精确后裸——优先级列表里 zh-TW 与 zh-CN 因此能各取所需。
+    """
+    index: dict[str, dict] = {}
+    for trans in (data.get("translations") or {}).get("translations") or []:
+        lang = trans.get("iso_639_1")
+        if not lang:
+            continue
+        payload = trans.get("data") or {}
+        region = trans.get("iso_3166_1")
+        if region:
+            index.setdefault(f"{lang}-{region}", payload)
+        index.setdefault(lang, payload)
+    return index
+
+
+def _translation_text(index: dict[str, dict], tag: str, *fields: str) -> str | None:
+    """某语言译文里第一个非空字段；该语言无翻译或字段全空返回 None。"""
+    payload = index.get(tag) or index.get(tag.split("-")[0])
+    if not payload:
+        return None
+    for field_name in fields:
+        value = (payload.get(field_name) or "").strip()
+        if value:
+            return value
+    return None
+
+
+# 分集占位名：TMDB 无翻译时返回的"第 N 集"/"Episode N"式占位。占比过高
+# 说明该季在主语言下基本没有译文，值得按次位语言整季重拉一次
+_EP_PLACEHOLDER = re.compile(r"^(第\s*\d+\s*[集话話]|episode\s*\d+)$", re.IGNORECASE)
+
+
+def _is_placeholder_name(name: str) -> bool:
+    cleaned = name.strip()
+    return not cleaned or bool(_EP_PLACEHOLDER.match(cleaned))
+
+
+def _season_text_poor(season: SeasonProfile) -> bool:
+    """该季主语言文本覆盖率是否过低（≥60% 分集是占位名/空名）。"""
+    episodes = season.episodes
+    if not episodes:
+        return False
+    placeholders = sum(_is_placeholder_name(e.name) for e in episodes)
+    return placeholders >= max(1, math.ceil(len(episodes) * 0.6))
+
+
+async def _fallback_poor_seasons(
+    client: TmdbClient, tmdb_id: int, seasons: list[SeasonProfile], fallback_language: str
+) -> None:
+    """对文本覆盖率过低的季，按次位语言整季重拉一次并就地合并译文。
+
+    分集标题/简介不在 translations 载荷里，逐集拉翻译是每集一次请求，
+    不可接受；整季重拉每季至多一次、只对被判定的季触发，请求量有闸。
+    拉取失败静默保留主语言结果（占位名依然可用）。
+    """
+    flagged = [s for s in seasons if _season_text_poor(s)]
+    if not flagged:
+        return
+    results = await asyncio.gather(
+        *(_fetch_season(client, tmdb_id, s.season_number, fallback_language) for s in flagged),
+        return_exceptions=True,
+    )
+    for season, fallback in zip(flagged, results, strict=True):
+        if not isinstance(fallback, SeasonProfile):
+            continue
+        by_number = {e.episode_number: e for e in fallback.episodes}
+        for episode in season.episodes:
+            other = by_number.get(episode.episode_number)
+            if other is None:
+                continue
+            if _is_placeholder_name(episode.name) and not _is_placeholder_name(other.name):
+                episode.name = other.name
+            if not episode.overview and other.overview:
+                episode.overview = other.overview
+        if not season.overview and fallback.overview:
+            season.overview = fallback.overview
+
+
+# ---------------------------------------------------------------------------
+# 选图策略（docs/design/metadata.md 6.3 / scrape-customization.md §2.2）
 # ---------------------------------------------------------------------------
 #
 # TMDB 详情里的 backdrop_path 是"按投票排序的第一张"，直接用有两个通病：
 # ① 票王常是**烧了片名文字的横图**（海报化背景），铺全屏做沉浸背景很脏；
-# ② 少量投票就能把一张低分辨率图顶上去。背景从 images 全量候选里按明确规则
-# 重选；**海报相反，以 TMDB 默认为准**——发现页展示的就是默认海报，建档再
-# 重选会导致"订阅前后海报跳变"（用户反馈），pick_poster 仅在默认缺失时兜底，
-# 并为换图弹层提供候选排序。规则本身是纯函数，便于单测与后续调参。
+# ② 少量投票就能把一张低分辨率图顶上去。因此从 images 全量候选里按
+# **语言优先级分档**重选：逐档取第一个有候选的语言（None=无文字），档内按
+# 分辨率门槛 + 加权票数排序。海报/背景的语言优先级、门槛都来自 ImagePrefs
+# （用户可配置），默认值即历史行为。规则是纯函数，便于单测与调参。
 
 # 背景图的分辨率门槛：低于 1080p 宽度的图铺满视口会糊
 _MIN_BACKDROP_WIDTH = 1920
 # 海报的分辨率门槛（w500 展示位，500 宽以下的源图放大会糊）
 _MIN_POSTER_WIDTH = 500
+
+
+@dataclass(frozen=True)
+class ImagePrefs:
+    """选图偏好（「设置 → 刮削与整理 → 图片」）。
+
+    语言项是 token：具体语言码（zh/en/ja…）或三个特殊项——``meta`` 跟随
+    元数据主语言、``orig`` 条目的原声语言（original_language，随条目解析）、
+    ``null`` 无文字。默认值 = 历史写死行为。
+    """
+
+    poster_mode: str = "default"  # default=TMDB 默认；language=按语言优先级挑选
+    poster_langs: tuple[str, ...] = ("meta", "en", "null")
+    backdrop_langs: tuple[str, ...] = ("null", "meta", "en")
+    poster_min_width: int = _MIN_POSTER_WIDTH
+    backdrop_min_width: int = _MIN_BACKDROP_WIDTH
+
+
+def resolve_image_languages(
+    tokens: Sequence[str], *, primary_language: str, original_language: str | None
+) -> list[str | None]:
+    """偏好 token → TMDB 图片语言值列表（None=无文字），保序去重。
+
+    ``orig`` 在条目缺 original_language 时跳过（不猜）。
+    """
+    resolved: list[str | None] = []
+    seen: set[str | None] = set()
+    for token in tokens:
+        value: str | None
+        if token == "meta":
+            value = primary_language.split("-")[0]
+        elif token == "orig":
+            orig = (original_language or "").strip()
+            if not orig:
+                continue
+            value = orig
+        elif token == "null":
+            value = None
+        else:
+            value = token
+        if value not in seen:
+            seen.add(value)
+            resolved.append(value)
+    return resolved
+
+
+def image_language_param(prefs: ImagePrefs, primary_language: str) -> str:
+    """详情请求 include_image_language 的取值：由偏好推导，而非写死。
+
+    始终含 null（无文字）、主语言与 en（历史口径，也是候选最多的语言）；
+    偏好里出现的具体语种一并带上。meta/orig 特殊项此时无法解析（orig 要
+    详情回来才知道），由 ``_ensure_original_language_images`` 补拉兜底。
+    """
+    codes = ["null", primary_language.split("-")[0], "en"]
+    for token in (*prefs.poster_langs, *prefs.backdrop_langs):
+        if token not in {"meta", "orig", "null"} and token not in codes:
+            codes.append(token)
+    return ",".join(dict.fromkeys(codes))
+
+
+async def _ensure_original_language_images(
+    client: TmdbClient,
+    kind: MediaKind,
+    tmdb_id: int,
+    data: dict,
+    prefs: ImagePrefs,
+    requested: str,
+) -> None:
+    """偏好含「原始语言」而详情请求未覆盖该语言时，补拉一次候选图并合并。
+
+    失败静默——选图会按后续档位回落，不阻断档案主体。
+    """
+    if "orig" not in (*prefs.poster_langs, *prefs.backdrop_langs):
+        return
+    orig = ((data.get("original_language") or "").strip()) or None
+    if not orig or orig in requested.split(","):
+        return
+    try:
+        extra = await client.get(f"{kind.value}/{tmdb_id}/images", {"include_image_language": orig})
+    except Exception:  # noqa: BLE001 -- 补拉失败按无该语言候选处理
+        return
+    images = data.setdefault("images", {})
+    for key in ("posters", "backdrops"):
+        merged = images.get(key) or []
+        known = {i.get("file_path") for i in merged}
+        merged.extend(i for i in extra.get(key) or [] if i.get("file_path") not in known)
+        images[key] = merged
 
 
 def _weighted_score(image: dict) -> float:
@@ -264,74 +488,87 @@ def _sorted_candidates(images: list[dict], min_width: int) -> list[dict]:
     return sorted(pool, key=_weighted_score, reverse=True)
 
 
-def pick_backdrop(data: dict) -> str | None:
-    """从候选里挑一张做沉浸背景：**无文字优先**，其次分辨率与加权票数。
-
-    ``iso_639_1 is None`` 即"无语言"——TMDB 用它标记没有烧录任何文字的
-    干净图，正是背景该用的那种；全是带字图时退回加权分最高的一张。
-    没有任何候选返回 None（调用方回落 TMDB 默认 backdrop_path）。
-    """
-    images = (data.get("images") or {}).get("backdrops") or []
-    if not images:
-        return None
-    textless = [i for i in images if i.get("iso_639_1") is None]
-    ranked = _sorted_candidates(textless or images, _MIN_BACKDROP_WIDTH)
+def _pick_by_tiers(images: list[dict], langs: Sequence[str | None], min_width: int) -> str | None:
+    """逐语言档取第一个有候选的档位的最优图；全部档位落空退回全量最优。"""
+    for lang in langs:
+        pool = [i for i in images if i.get("iso_639_1") == lang]
+        if pool:
+            ranked = _sorted_candidates(pool, min_width)
+            return ranked[0].get("file_path")
+    ranked = _sorted_candidates(list(images), min_width)
     return ranked[0].get("file_path") if ranked else None
 
 
-def pick_poster(data: dict, language: str) -> str | None:
-    """从候选里挑一张海报：**本地化语言优先**，其次分辨率与加权票数。
+def pick_backdrop(
+    data: dict,
+    langs: Sequence[str | None] = (None,),
+    *,
+    min_width: int = _MIN_BACKDROP_WIDTH,
+) -> str | None:
+    """按语言档挑一张沉浸背景。默认档位 ``(None,)`` 即历史行为：无文字
+    优先，全是带字图时退回加权分最高的一张。没有候选返回 None
+    （调用方回落 TMDB 默认 backdrop_path）。"""
+    images = (data.get("images") or {}).get("backdrops") or []
+    if not images:
+        return None
+    return _pick_by_tiers(images, langs, min_width)
 
-    与背景相反，海报**要**文字——中文版海报（含中文片名）比英文原版更
-    符合中文用户的预期。当前语言没有海报时退回全部候选。
 
-    注意：建档/刷新的海报以 TMDB 默认 poster_path 为准（与发现页看到的
-    一致，见 fetch_media_profile），本函数只做两件事——默认缺失时的兜底，
-    以及换图弹层的候选排序（用户仍能一键选到中文版）。
+def pick_poster(
+    data: dict,
+    langs: Sequence[str | None],
+    *,
+    min_width: int = _MIN_POSTER_WIDTH,
+) -> str | None:
+    """按语言档挑一张海报（档内按分辨率门槛 + 加权票数）。
+
+    注意：poster_mode=default 时建档/刷新的海报以 TMDB 默认 poster_path
+    为准（与发现页一致，见 fetch_media_profile），本函数只做默认缺失时的
+    兜底与换图弹层的候选排序（用户仍能一键选到目标语言版）。
     """
     images = (data.get("images") or {}).get("posters") or []
     if not images:
         return None
-    lang = language.split("-")[0]
-    localized = [i for i in images if i.get("iso_639_1") == lang]
-    ranked = _sorted_candidates(localized or images, _MIN_POSTER_WIDTH)
-    return ranked[0].get("file_path") if ranked else None
+    return _pick_by_tiers(images, langs, min_width)
 
 
-def list_image_candidates(data: dict, language: str) -> tuple[list[dict], list[dict]]:
-    """条目的全部候选图 (海报, 背景)，按各自策略的排序返回。
+def _tier_ordered(images: list[dict], langs: Sequence[str | None], min_width: int) -> list[dict]:
+    """候选全量按语言档拼接排序：各档内部按加权分，档间按优先级。"""
+    ordered: list[dict] = []
+    used: set[int] = set()
+    for lang in langs:
+        pool = [i for i in images if i.get("iso_639_1") == lang and id(i) not in used]
+        if pool:
+            for image in _sorted_candidates(pool, min_width):
+                ordered.append(image)
+                used.add(id(image))
+    rest = [i for i in images if id(i) not in used]
+    if rest:
+        ordered.extend(_sorted_candidates(rest, min_width))
+    return ordered
 
-    供"更换图片"弹层展示——排序与自动选图一致，所以列表第一张就是
-    自动策略会选的那张，用户一眼看出"默认给的是哪张"。
+
+def list_image_candidates(
+    data: dict,
+    poster_langs: Sequence[str | None],
+    backdrop_langs: Sequence[str | None] = (None,),
+    *,
+    poster_min_width: int = _MIN_POSTER_WIDTH,
+    backdrop_min_width: int = _MIN_BACKDROP_WIDTH,
+) -> tuple[list[dict], list[dict]]:
+    """条目的全部候选图 (海报, 背景)，按各自偏好的档位排序返回。
+
+    供"更换图片"弹层展示——排序与自动选图（``_pick_by_tiers``）同一套
+    规则，列表第一张就是自动策略会选的那张，用户一眼看出"默认给的是哪张"。
     """
     images = data.get("images") or {}
     posters = images.get("posters") or []
     backdrops = images.get("backdrops") or []
-    lang = language.split("-")[0]
-    localized = [i for i in posters if i.get("iso_639_1") == lang]
-    poster_ranked = _sorted_candidates(localized or posters, _MIN_POSTER_WIDTH) if posters else []
-    # 海报：本地化优先在前，其余按分排在后（弹层里仍可选到英文原版）
-    rest = [i for i in posters if i not in poster_ranked]
-    poster_list = [*poster_ranked, *_sorted_candidates(rest, _MIN_POSTER_WIDTH)]
-    textless = [i for i in backdrops if i.get("iso_639_1") is None]
-    backdrop_ranked = _sorted_candidates(textless, _MIN_BACKDROP_WIDTH) if textless else []
-    with_text = [i for i in backdrops if i.get("iso_639_1") is not None]
-    backdrop_list = [*backdrop_ranked, *_sorted_candidates(with_text, _MIN_BACKDROP_WIDTH)]
-    return poster_list, backdrop_list
-
-
-async def _fetch_english_text(
-    client: TmdbClient, kind: MediaKind, tmdb_id: int, tagline: str | None
-) -> tuple[str | None, str | None]:
-    """当前语言无简介时的英文兜底（一次轻量详情请求，失败静默保持 None）。"""
-    try:
-        data = await client.get(f"{kind.value}/{tmdb_id}", {"language": "en-US"})
-    except Exception:  # noqa: BLE001 -- 兜底文案拉不到不影响档案主体
-        return None, tagline
-    return (
-        (data.get("overview") or "").strip() or None,
-        tagline or (data.get("tagline") or "").strip() or None,
+    poster_list = _tier_ordered(posters, poster_langs, poster_min_width) if posters else []
+    backdrop_list = (
+        _tier_ordered(backdrops, backdrop_langs, backdrop_min_width) if backdrops else []
     )
+    return poster_list, backdrop_list
 
 
 def _parse_runtime(kind: MediaKind, data: dict) -> int | None:
@@ -343,8 +580,11 @@ def _parse_runtime(kind: MediaKind, data: dict) -> int | None:
     return int(runtime) if runtime else None
 
 
-def _parse_certification(kind: MediaKind, data: dict) -> str | None:
-    """分级：优先 CN，无则 US，再无取第一个非空（电影与剧集接口结构不同）。"""
+def _parse_certification(
+    kind: MediaKind, data: dict, countries: Sequence[str] = ("CN", "US")
+) -> str | None:
+    """分级：按 ``countries`` 优先级取第一个有数据的地区，全落空取第一个
+    非空（电影与剧集接口结构不同）。"""
     entries: list[tuple[str, str]] = []
     if kind is MediaKind.MOVIE:
         for country in (data.get("release_dates") or {}).get("results", []):
@@ -358,7 +598,7 @@ def _parse_certification(kind: MediaKind, data: dict) -> str | None:
             cert = (country.get("rating") or "").strip()
             if cert:
                 entries.append((country.get("iso_3166_1") or "", cert))
-    for region in ("CN", "US"):
+    for region in countries:
         for iso, cert in entries:
             if iso == region:
                 return cert

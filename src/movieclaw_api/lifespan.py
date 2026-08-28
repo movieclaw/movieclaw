@@ -96,6 +96,11 @@ def build_lifespan(settings: Settings):
         from movieclaw_api.services.network_egress import load_network_egress
 
         await load_network_egress()
+        # 加载刮削/发现页偏好快照（语言优先级、选图偏好、院线地区）：
+        # 须在刮削管线与发现页服务首次使用前生效
+        from movieclaw_api.services.scrape_config import load_scrape_runtime
+
+        await load_scrape_runtime()
         # 加载远程转码网页配置；播放决策与 Worker WebSocket 的同步读取通过进程内
         # 快照即时生效。
         from movieclaw_api.services.playback.remote_config import (

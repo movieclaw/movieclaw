@@ -39,6 +39,14 @@ class LibraryPayload(BaseModel):
     )
     # 同为"不传 = 不改动"：老客户端的请求体没带该字段，不能把用户关掉的
     # 监控悄悄打开（或反过来）
+    scrape_overrides: dict | None = Field(
+        default=None,
+        description=(
+            "库级刮削偏好覆盖（命名模板与目录写入细项）；"
+            "不传=不改动，空对象=清空覆盖回到全跟全局。"
+            "选图与语言不支持按库覆盖：它们的产物跨库共享一份"
+        ),
+    )
     realtime_watch: bool | None = Field(
         default=None,
         description=(
@@ -124,7 +132,10 @@ class LastOrganizeView(BaseModel):
 
     finished_at: datetime
     renamed: int = Field(description="改名归位的主文件数")
-    sidecars_renamed: int = Field(description="跟随改名的附属文件数（字幕等）")
+    sidecars_renamed: int = Field(description="跟随改名的附属文件数（字幕、分集剧照等）")
+    entry_assets_moved: int = Field(
+        default=0, description="跟随条目目录改名的镜像资产数（海报/背景/季海报/条目 NFO）"
+    )
     already_ok: int = Field(description="本就符合规范、无需动作的文件数")
     skipped: int = Field(description="计划阶段跳过的文件数（原因见预览）")
     removed_dirs: int = Field(description="搬空后清理掉的目录数")
@@ -175,6 +186,9 @@ class LibraryView(BaseModel):
         default=False, description="扫描后自动清理已确认丢失的库存记录"
     )
     realtime_watch: bool = Field(default=True, description="是否启用实时文件监控")
+    scrape_overrides: dict = Field(
+        default_factory=dict, description="库级刮削偏好覆盖；空对象 = 全跟全局设置"
+    )
     stats: LibraryStats = Field(default_factory=LibraryStats)
     scanning: bool = Field(default=False, description="是否正在扫描")
     scan_progress: ScanProgressView | None = Field(default=None, description="扫描实时进度")
@@ -221,6 +235,7 @@ class LibraryView(BaseModel):
             match_rules=list(row.match_rules),
             auto_clear_missing=row.auto_clear_missing,
             realtime_watch=row.realtime_watch,
+            scrape_overrides=dict(row.scrape_overrides or {}),
             stats=LibraryStats(
                 item_count=row.stats_item_count,
                 file_count=row.stats_file_count,
@@ -1058,6 +1073,13 @@ class OrganizePreviewView(BaseModel):
     already_ok: int = Field(description="已符合规范命名的文件数")
     renames: list[OrganizeRenameView]
     skips: list[OrganizeSkipView]
+    entry_assets: list[OrganizeSidecarView] = Field(
+        default_factory=list,
+        description=(
+            "条目目录改名时跟着搬的镜像资产（poster.jpg / fanart.jpg / "
+            "seasonNN-poster.jpg / movie.nfo / tvshow.nfo）——不搬走旧目录就清不掉"
+        ),
+    )
 
 
 class OrganizeStartView(BaseModel):

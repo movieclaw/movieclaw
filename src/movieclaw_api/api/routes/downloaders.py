@@ -103,12 +103,17 @@ async def resolve_download_target(
     # 不能在此重算目录，否则多个入口会出现不同归宿。
     from movieclaw_api.services.subscription import preview_dispatch_route
 
+    # 条目目录预览用识别到的 TMDB 标题，而不是种子标题——真实投递也是按
+    # TMDB 身份建档后推导目录的，两边必须一致
+    picked = next((c for c in resolution.candidates if c.tmdb_id == tmdb_id), None)
     preview = await preview_dispatch_route(
         session,
         kind=payload.kind,
         library_id=None,
         tmdb_id=tmdb_id,
         downloader_id=payload.downloader_id,
+        title=picked.title if picked else payload.title,
+        year=picked.year if picked else payload.year,
     )
     return ok(
         ManualDownloadTargetView(
@@ -186,6 +191,7 @@ async def submit_download(
             kind=payload.media_kind,
             title=manual_item.title,
             year=manual_item.year,
+            item=manual_item,
         )
         derived_path = decision.path
         entry_level = decision.entry_level
@@ -220,6 +226,9 @@ async def submit_download(
             info_hash=result.info_hash,
             media_item_id=manual_item.id,
             library_id=library.id,
+            downloader_id=row.id,
+            download_name=result.name or None,
+            save_path=derived_path,
             site_id=payload.site_id,
             torrent_id=payload.torrent_id,
         )
@@ -404,11 +413,7 @@ async def delete_download_task_from_downloader(
             info_hash=normalized_hash,
             delete_files=delete_files,
         ),
-        message=(
-            "已删除种子任务和数据文件"
-            if delete_files
-            else "已删除种子任务，数据文件已保留"
-        ),
+        message=("已删除种子任务和数据文件" if delete_files else "已删除种子任务，数据文件已保留"),
     )
 
 

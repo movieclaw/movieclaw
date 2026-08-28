@@ -10,9 +10,10 @@ import json
 import logging
 
 from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from movieclaw_api.api.deps import require_login, require_subscribe_capability
+from movieclaw_api.api.deps import require_admin, require_login, require_subscribe_capability
 from movieclaw_api.exceptions import (
     AppException,
     BadRequestException,
@@ -366,3 +367,51 @@ async def _record_media_history(
     except Exception:  # noqa: BLE001 —— 历史写入失败不能拖垮搜索本身
         logger.warning("媒体搜索历史写入失败（不影响本次搜索结果）", exc_info=True)
         return None
+
+
+# ---------------------------------------------------------------------------
+# 院线地区（发现页页脚就地设置，docs/design/scrape-customization.md §2.1）
+# ---------------------------------------------------------------------------
+
+
+class DiscoverRegionView(BaseModel):
+    """当前生效的院线地区（含名称，页脚直接展示）。"""
+
+    region: str
+    can_edit: bool = Field(description="当前用户是否可修改（管理员）")
+
+
+class DiscoverRegionPayload(BaseModel):
+    region: str = Field(min_length=2, max_length=2, description="ISO 3166-1 地区码")
+
+
+@router.get(
+    "/region",
+    response_model=ApiResponse[DiscoverRegionView],
+    summary="读取「正在热映/即将上映」的院线地区",
+    operation_id="discover.region.show",
+)
+async def get_discover_region(
+    principal: Principal = Depends(require_login),
+) -> ApiResponse[DiscoverRegionView]:
+    from movieclaw_api.services.scrape_config import effective_region
+
+    return ok(DiscoverRegionView(region=effective_region(), can_edit=principal.is_admin))
+
+
+@router.put(
+    "/region",
+    response_model=ApiResponse[DiscoverRegionView],
+    summary="切换院线地区（选择即保存，立即生效）",
+    operation_id="discover.region.set",
+    dependencies=[Depends(require_admin)],
+)
+async def set_discover_region(payload: DiscoverRegionPayload) -> ApiResponse[DiscoverRegionView]:
+    from movieclaw_api.services.media_discover import reset_media_service
+    from movieclaw_api.services.scrape_config import effective_region, save_discover_prefs
+    from movieclaw_api.settings import DiscoverPreferencesSetting
+
+    await save_discover_prefs(DiscoverPreferencesSetting(region=payload.region))
+    # 地区绑死在发现页服务构造期：重建单例，下次请求即按新地区拉榜单
+    reset_media_service()
+    return ok(DiscoverRegionView(region=effective_region(), can_edit=True))

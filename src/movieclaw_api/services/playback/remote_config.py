@@ -62,7 +62,16 @@ def remote_transcode_issues(config: RemoteTranscodeRuntimeConfig) -> list[str]:
     except ValueError:
         parsed = None
     if parsed is None or not parsed.netloc:
-        issues.append("远程转码外部访问地址未配置")
+        # 漏写 scheme 的地址（如 192.168.1.10:3000）会被 urlsplit 解析成空
+        # netloc，跟真的没填一模一样。用户明明填了却被告知「未配置」会让人
+        # 完全找不到方向，所以这里把两种情况分开说。
+        if config.base_url.strip():
+            issues.append(
+                "远程转码外部访问地址必须以 http:// 或 https:// 开头，"
+                f"当前填写的是「{config.base_url.strip()}」"
+            )
+        else:
+            issues.append("远程转码外部访问地址未配置")
     elif parsed.scheme not in {"http", "https"}:
         issues.append("远程转码外部访问地址必须使用 HTTP 或 HTTPS")
     elif parsed.username or parsed.password:

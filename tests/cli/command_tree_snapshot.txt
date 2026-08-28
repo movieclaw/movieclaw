@@ -44,6 +44,8 @@ discover filter-options
 discover filter-titles
 discover get-title-details
 discover list-collections
+discover region set
+discover region show
 dl add
 dl default set
 dl delete
@@ -147,6 +149,10 @@ rules default
 rules delete
 rules list
 rules update
+scrape countries
+scrape languages
+scrape set
+scrape show
 search history clear
 search history delete
 search history get-results

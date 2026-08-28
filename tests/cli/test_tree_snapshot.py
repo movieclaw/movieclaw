@@ -146,6 +146,10 @@ def test_discover_exposes_only_semantic_domain_commands() -> None:
         "discover.filter-options",
         "discover.filter-titles",
         "discover.get-title-details",
+        # 院线地区是用户语义的偏好（"把发现页切到美国院线"），不是 layout/hero
+        # 这类页面实现细节，模型按用户意图选它是合理的
+        "discover.region.show",
+        "discover.region.set",
     }
 
 

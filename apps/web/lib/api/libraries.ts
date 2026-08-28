@@ -59,6 +59,8 @@ export interface MediaLibrary {
   auto_clear_missing: boolean;
   /** 是否启用实时文件监控（关闭后靠定期对账与手动扫描，SMB/NFS 建议关） */
   realtime_watch: boolean;
+  /** 库级刮削覆盖；空对象 = 全跟全局设置 */
+  scrape_overrides?: Record<string, unknown>;
   /** 库存统计快照（台账变化时重算，列表查询不扫描文件台账） */
   stats: LibraryStats;
   /** 是否正在扫描 */
@@ -147,8 +149,10 @@ export interface LastOrganize {
   finished_at: string;
   /** 改名归位的主文件数 */
   renamed: number;
-  /** 跟随改名的附属文件数（字幕等） */
+  /** 跟随改名的附属文件数（字幕、分集剧照等） */
   sidecars_renamed: number;
+  /** 跟随条目目录改名的镜像资产数（海报/背景/季海报/条目 NFO） */
+  entry_assets_moved: number;
   /** 本就符合规范、无需动作的文件数 */
   already_ok: number;
   /** 计划阶段跳过的文件数 */
@@ -195,6 +199,11 @@ export interface OrganizePreview {
   already_ok: number;
   renames: OrganizeRename[];
   skips: OrganizeSkip[];
+  /**
+   * 条目目录改名时跟着搬的镜像资产（poster.jpg / fanart.jpg /
+   * seasonNN-poster.jpg / movie.nfo / tvshow.nfo）——不搬走旧目录就清不掉。
+   */
+  entry_assets: OrganizeSidecar[];
 }
 
 /** 库内一个媒体条目的库存聚合（单库海报墙的一格）。 */
@@ -313,6 +322,9 @@ export interface LibraryPayload {
   auto_clear_missing?: boolean;
   /** 是否启用实时文件监控；不传=不改动（新建时默认开） */
   realtime_watch?: boolean;
+  /** 库级刮削覆盖（命名模板与目录写入细项）；不传=不改动，空对象=清空覆盖。
+   *  选图与语言不支持按库覆盖——它们的产物跨库共享一份 */
+  scrape_overrides?: Record<string, unknown>;
 }
 
 /** 收藏范围的可选项（后端唯一真相源：类型 chips 与区域预设）。 */

@@ -5,7 +5,8 @@
   继续循环——finish_reason 只作参考，因为兼容端点存在「stop 但带调用」
   「tool_calls 但数组为空」两类在案怪癖（vLLM/Kimi 等）；
 - 有工具调用 → 顺序执行每一个（参数先过 JSON Schema 校验），结果作为
-  tool 消息回喂，进入下一步；无工具调用 → STOP，正常结束；
+  tool 消息回喂，进入下一步；无工具调用且有正文 → STOP，正常结束；
+  无工具调用且正文为空 → 判为空响应，以 agent_error 收尾（详见循环内注释）；
 - 工具的校验失败与执行异常都不中断循环：错误文本作为失败结果回喂，
   让模型自行修正（pi-agent / Claude Code 同款韧性设计）；
 - max_steps（默认 200）防失控；错误一律以 agent_error 事件收尾，不抛异常。
@@ -173,6 +174,28 @@ class AgentRunner:
             # 循环判据：以 tool_calls 内容为准（finish_reason 只作参考）——
             # 覆盖「stop 但带调用」与「tool_calls 但数组为空」两类兼容怪癖
             if not final.tool_calls:
+                # 既没有工具调用、正文也是空的：这不是「答完了」，而是模型或中转
+                # 端点返回了空响应（实测成因之一：中转把缺了父调用的历史喂给模型，
+                # 模型回一个 0 token 的 STOP）。当成正常结束的话通道侧无话可发，
+                # 微信/Telegram 上就表现为对话毫无征兆地静默中断，日志里只留一行
+                # 「运行已结束」，排查时极难定位。这里明确按失败收尾。
+                # 注意要在 _notify 之前返回：空的 assistant 消息不该写进会话历史，
+                # 否则下一轮续聊会把这段空白也带上。
+                if not (final.content or "").strip():
+                    logger.warning(
+                        "Agent 收到空响应 run=%s step=%d finish_reason=%s",
+                        run_id,
+                        step,
+                        final.finish_reason,
+                    )
+                    yield AgentEvent(
+                        type="agent_error",
+                        run_id=run_id,
+                        error="模型返回了空响应（既没有正文，也没有工具调用），本次运行没有结果。"
+                        "通常是模型服务或中转端点异常，请重试；若反复出现，请检查模型供应商配置。",
+                    )
+                    return
+
                 await self._notify(final.to_message(), final)
                 yield AgentEvent(
                     type="agent_done",

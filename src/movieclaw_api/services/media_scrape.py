@@ -17,7 +17,8 @@
    定时刷新再也发现不了它们）；
 4. 图片资产下载（data/metadata/images/{条目 id}/，缺失才下，force 覆盖）；
 5. 媒体目录镜像（poster.jpg/fanart.jpg/分集 thumb + 完整 NFO，Kodi/Emby
-   规范，**只增不覆盖不删除**，按库开关）。
+   规范，**只增不覆盖不删除**）。按库开关：``write_media_assets`` 是总闸，
+   图片/NFO/分集剧照三项另可按库细分（library.scrape_overrides）。
 
 图片与镜像失败均不阻断（保持 NULL/缺失，任一后续入口自愈）。
 """
@@ -39,6 +40,13 @@ from sqlmodel import select
 
 from movieclaw_api.core.config import get_settings
 from movieclaw_api.services import jobs
+from movieclaw_api.services.scrape_config import (
+    effective_asset_sizes,
+    effective_image_prefs,
+    effective_language,
+    effective_mirror_flags,
+    profile_fetch_kwargs,
+)
 from movieclaw_api.services.task_state import TaskState
 from movieclaw_db.engine import get_database
 from movieclaw_db.models import (
@@ -143,9 +151,10 @@ async def _scrape(media_item_id: int, *, force: bool, on_phase: PhaseHook = None
         if item is None:
             return False
         kind = MediaKind(item.kind)
-        language = get_settings().tmdb_language
+        fetch_kwargs = profile_fetch_kwargs()
+        language = fetch_kwargs["languages"][0]
         client = get_tmdb_client()
-        profile = await fetch_media_profile(client, kind, item.tmdb_id, language=language)
+        profile = await fetch_media_profile(client, kind, item.tmdb_id, **fetch_kwargs)
 
         # 本次刷新前已知的集：wanted 生长只补"新出现的集"（历史 diff 里
         # 被移除的工单不因刷新复活）
@@ -968,9 +977,8 @@ async def _sync_movie_schedule(
 
 
 def _asset_sizes() -> tuple[str, str, str]:
-    """当前配置的 (海报, 背景, 剧照) 尺寸档位（见 Settings 的注释与取舍）。"""
-    settings = get_settings()
-    return (settings.tmdb_poster_size, settings.tmdb_backdrop_size, settings.tmdb_still_size)
+    """当前生效的 (海报, 背景, 剧照) 尺寸档位（设置页覆盖 > 环境变量）。"""
+    return effective_asset_sizes()
 
 
 def assets_root() -> Path:
@@ -1253,22 +1261,49 @@ async def list_artwork_candidates(
     三种情况下"第一张"都不等于在用的那张（实测：星际穿越的背景对不上）。
     """
     from movieclaw_api.services.media_discover import get_tmdb_client
-    from movieclaw_media.library import list_image_candidates
+    from movieclaw_media.library import (
+        image_language_param,
+        list_image_candidates,
+        resolve_image_languages,
+    )
 
     db = get_database()
     async with db.session() as session:
+        repo = MediaItemRepository(session)
         item = await session.get(MediaItem, media_item_id)
         if item is None:
             return [], [], None, None
         kind = MediaKind(item.kind)
         current_poster = item.poster_path
         current_backdrop = item.backdrop_path
+        meta = await repo.get_metadata(media_item_id)
+        original_language = meta.original_language if meta else None
     settings = get_settings()
+    prefs = effective_image_prefs()
+    language = effective_language()
+    # 候选语言集由选图偏好推导；「原始语言」此处已知（档案落库过），直接并入
+    include_param = image_language_param(prefs, language)
+    if original_language and original_language not in include_param.split(","):
+        tokens = (*prefs.poster_langs, *prefs.backdrop_langs)
+        if "orig" in tokens:
+            include_param = f"{include_param},{original_language}"
     data = await get_tmdb_client().get(
         f"{kind.value}/{item.tmdb_id}/images",
-        {"include_image_language": f"null,{settings.tmdb_language.split('-')[0]},en"},
+        {"include_image_language": include_param},
     )
-    posters, backdrops = list_image_candidates({"images": data}, settings.tmdb_language)
+    poster_langs = resolve_image_languages(
+        prefs.poster_langs, primary_language=language, original_language=original_language
+    )
+    backdrop_langs = resolve_image_languages(
+        prefs.backdrop_langs, primary_language=language, original_language=original_language
+    )
+    posters, backdrops = list_image_candidates(
+        {"images": data},
+        poster_langs,
+        backdrop_langs,
+        poster_min_width=prefs.poster_min_width,
+        backdrop_min_width=prefs.backdrop_min_width,
+    )
     base = settings.tmdb_image_base_url.rstrip("/")
 
     def _view(image: dict, preview_size: str) -> dict:
@@ -1405,46 +1440,52 @@ async def mirror_media_dir_assets(media_item_id: int, *, force: bool = False) ->
         )
 
     item_dir = assets_root() / str(media_item_id)
-    entry_dirs: list[Path] = []
+    # 条目目录 → 它所属的库：镜像三件事（图片/NFO/分集剧照）各有按库开关，
+    # 必须知道每个目录归谁管。库根不允许重叠（LibraryConfigService 保存时
+    # 已校验），所以一个条目目录只会归属一个库
+    entry_dirs: dict[Path, Library] = {}
     trusted_entries: set[Path] = set()
     for file, library in rows:
         entry = entry_dir_of([Path(p) for p in library.root_paths], Path(file.file_path))
         if entry is None:
             continue
-        if entry not in entry_dirs:
-            entry_dirs.append(entry)
+        entry_dirs.setdefault(entry, library)
         if _file_trusted(file):
             trusted_entries.add(entry)
 
     def _mirror() -> None:
-        for entry in entry_dirs:
+        for entry, library in entry_dirs.items():
             if not entry.is_dir():
                 continue
-            _copy_asset(item_dir / "poster.jpg", entry / "poster.jpg", force)
-            _copy_asset(item_dir / "backdrop.jpg", entry / "fanart.jpg", force)
-            if item.kind == MediaKind.TV.value:
-                for season in seasons:
-                    name = (
-                        "season-specials-poster.jpg"
-                        if season.season_number == 0
-                        else f"season{season.season_number:02d}-poster.jpg"
-                    )
-                    _copy_asset(
-                        item_dir / f"season-{season.season_number}.jpg", entry / name, force
-                    )
-            if entry in trusted_entries:
+            write_images, write_nfo, _ = effective_mirror_flags(library)
+            if write_images:
+                _copy_asset(item_dir / "poster.jpg", entry / "poster.jpg", force)
+                _copy_asset(item_dir / "backdrop.jpg", entry / "fanart.jpg", force)
+                if item.kind == MediaKind.TV.value:
+                    for season in seasons:
+                        name = (
+                            "season-specials-poster.jpg"
+                            if season.season_number == 0
+                            else f"season{season.season_number:02d}-poster.jpg"
+                        )
+                        _copy_asset(
+                            item_dir / f"season-{season.season_number}.jpg", entry / name, force
+                        )
+            if write_nfo and entry in trusted_entries:
                 write_full_nfo(entry, item, meta)
-        for file, _library in rows:
+        for file, library in rows:
             episode = episodes.get((file.season_number, file.episode_number))
             if episode is None or file.container in ("bluray", "dvd"):
                 continue
+            write_images, write_nfo, write_thumbs = effective_mirror_flags(library)
             video = Path(file.file_path)
-            _copy_asset(
-                item_dir / f"s{episode.season_number:02d}e{episode.episode_number:02d}.jpg",
-                video.with_name(f"{video.stem}-thumb.jpg"),
-                force,
-            )
-            if _file_trusted(file):
+            if write_thumbs and write_images:
+                _copy_asset(
+                    item_dir / f"s{episode.season_number:02d}e{episode.episode_number:02d}.jpg",
+                    video.with_name(f"{video.stem}-thumb.jpg"),
+                    force,
+                )
+            if write_nfo and _file_trusted(file):
                 write_episode_nfo(video, episode)
 
     await asyncio.to_thread(_mirror)

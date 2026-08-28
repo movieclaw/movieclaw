@@ -33,6 +33,10 @@ from movieclaw_api.settings.base import (
 from movieclaw_api.settings.channel_push import (
     ChannelPushSetting,
 )
+from movieclaw_api.settings.metadata import (
+    DiscoverPreferencesSetting,
+    MetadataScrapeSetting,
+)
 from movieclaw_api.settings.network import (
     BUILTIN_EGRESS_SERVICES,
     NetworkEgressSetting,
@@ -98,6 +102,9 @@ __all__ = [
     # 超级管理员账号与登录会话
     "AdminAccountSetting",
     "SessionSecretSetting",
+    # 刮削与发现页偏好
+    "MetadataScrapeSetting",
+    "DiscoverPreferencesSetting",
     # 网络与代理
     "NetworkEgressSetting",
     "PlaybackPolicySetting",
