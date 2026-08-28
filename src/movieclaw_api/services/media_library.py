@@ -150,15 +150,27 @@ class MediaLibraryService:
         *,
         year: int | None = None,
         douban_id: str | None = None,
+        aliases: Sequence[str] = (),
+        released: str = "",
     ) -> tuple[DoubanResolution, MediaItem | None]:
         """豆瓣入口收敛：命中即建档并回填豆瓣身份，歧义/未找到交给调用方处理。
 
         返回 (收敛结果, 条目)；仅 status=MATCHED 时条目非 None。
         歧义时由前端弹层让用户从 candidates 里确认，确认后走
         ``ensure_media_item(kind, tmdb_id, douban_id=..., extra_aliases=[豆瓣标题])``。
+
+        ``aliases``（豆瓣又名）与 ``released``（豆瓣首播/上映日期串）是收敛的
+        证据来源，调用方拿到豆瓣详情后应一并传入——缺省时只走标题+年份通路，
+        豆瓣的季条目（「中餐厅 第十季」）会因此收敛不到。
         """
         resolution = await resolve_douban_to_tmdb(
-            self._client, kind, title, year=year, language=self._primary_language()
+            self._client,
+            kind,
+            title,
+            year=year,
+            language=self._primary_language(),
+            aliases=aliases,
+            released=released,
         )
         if resolution.status is not ResolveStatus.MATCHED:
             return resolution, None

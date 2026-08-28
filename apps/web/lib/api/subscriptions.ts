@@ -63,6 +63,12 @@ export interface PrepareResult {
   existing_subscription_id: number | null;
   /** 电影：媒体库里已有本片（弹层提示，不拦订阅） */
   movie_owned: boolean;
+  /**
+   * 建议预勾选的季号：豆瓣把剧集按季拆条目，点进「中餐厅 第十季」要订的就是那一季。
+   * 服务端只在条目确实季专属时给出（且季号是 TMDB 的，与豆瓣季号未必相同）；
+   * 为空表示无结论，按「全部已播正季」的原默认规则勾选。
+   */
+  suggested_seasons: number[];
   candidates: ResolveCandidate[];
 }
 

@@ -166,11 +166,18 @@ export function SubscribeDialog({
         // 默认勾选全部已播出的正季；在播剧默认开启自动续订。
         // 洗版变体（§13.3）：改按媒体库库存预填（用户意图是洗手里有的），
         // 自动续订默认关（洗版场景不追新，可自行打开）
+        //
+        // 豆瓣季条目例外：用户点进的是「中餐厅 第十季」，要订的就是那一季，
+        // 勾上整部剧十季显然不是他的意图。服务端只在条目确实季专属时给出
+        // suggested_seasons（普通剧名为空），所以这里直接采信即可
+        const suggested = result.suggested_seasons ?? [];
         const defaultSeasons = t.upgradeIntent
           ? result.seasons.filter((s) => s.owned_count > 0).map((s) => s.season_number)
-          : result.seasons
-              .filter((s) => s.season_number > 0 && s.aired_count > 0)
-              .map((s) => s.season_number);
+          : suggested.length > 0
+            ? suggested
+            : result.seasons
+                .filter((s) => s.season_number > 0 && s.aired_count > 0)
+                .map((s) => s.season_number);
         setSelectedSeasons(new Set(defaultSeasons));
         setFollowFuture(
           !t.upgradeIntent &&

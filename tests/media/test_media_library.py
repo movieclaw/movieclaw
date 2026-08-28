@@ -612,3 +612,195 @@ def test_resolve_image_languages_tokens() -> None:
     assert resolve_image_languages(
         ("orig", "meta", "zh"), primary_language="zh-CN", original_language=None
     ) == ["zh"]
+
+
+# ---------------------------------------------------------------------------
+# 豆瓣季条目的证据收敛
+#
+# 用例取自真实数据（73 条豆瓣条目的对照实验）里各自暴露出的行为，
+# 每条对应一个曾经真实错掉或漏掉的场景。
+# ---------------------------------------------------------------------------
+
+
+def _tv_client(searches: dict[str, dict], shows: dict[int, dict]) -> TmdbClient:
+    """按 search 的 query 参数与 tv/{id} 路由的假 TMDB（多路查询必须区分 query）。"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/3/search/tv":
+            query = request.url.params.get("query", "")
+            return httpx.Response(200, json=_search_result(*searches.get(query, [])))
+        if path.startswith("/3/tv/"):
+            show = shows.get(int(path.rsplit("/", 1)[1]))
+            if show is not None:
+                return httpx.Response(200, json=show)
+        return httpx.Response(404, json={})
+
+    return TmdbClient(_KEY, transport=httpx.MockTransport(handler))
+
+
+def _tv(tmdb_id: int, name: str, first_air: str = "2020-01-01") -> dict:
+    return {"id": tmdb_id, "name": name, "original_name": name, "first_air_date": first_air}
+
+
+def _show(*seasons: tuple[int, str, int]) -> dict:
+    """(季号, 首播日, 集数) → tv/{id} 详情里的 seasons 结构。"""
+    return {
+        "seasons": [
+            {"season_number": n, "air_date": air, "episode_count": count}
+            for n, air, count in seasons
+        ]
+    }
+
+
+async def test_resolve_douban_season_entry_by_air_date() -> None:
+    """豆瓣「中餐厅 第十季」：整段标题搜不到，剥出基名后靠首播日对齐命中并解出季号。"""
+    client = _tv_client(
+        searches={"中餐厅 第十季": [], "中餐厅": [_tv(91914, "中餐厅", "2017-07-22")]},
+        shows={91914: _show((9, "2025-06-20", 12), (10, "2026-06-19", 12))},
+    )
+    result = await resolve_douban_to_tmdb(
+        client,
+        MediaKind.TV,
+        "中餐厅 第十季",
+        year=2026,
+        aliases=["中餐厅10"],
+        released="2026-06-19(中国大陆)",
+    )
+    assert result.status is ResolveStatus.MATCHED
+    assert result.tmdb_id == 91914
+    assert result.suggested_season == 10
+
+
+async def test_resolve_douban_season_number_differs_from_tmdb() -> None:
+    """豆瓣季号不等于 TMDB 季号（实测 13% 如此）：以首播日对齐的那一季为准。
+
+    只认豆瓣季号会让用户默认勾到差好几年的内容——真实案例是《奔跑吧 第十季》
+    对应 TMDB 的 S14，勾 S10 拿到的是四年前那一季。
+    """
+    client = _tv_client(
+        searches={"奔跑吧 第十季": [], "奔跑吧": [_tv(98031, "奔跑吧", "2014-10-10")]},
+        shows={98031: _show((10, "2022-05-13", 12), (14, "2026-04-24", 12))},
+    )
+    result = await resolve_douban_to_tmdb(
+        client,
+        MediaKind.TV,
+        "奔跑吧 第十季",
+        year=2026,
+        aliases=[],
+        released="2026-04-24(中国大陆)",
+    )
+    assert result.status is ResolveStatus.MATCHED
+    assert result.suggested_season == 14
+
+
+async def test_resolve_douban_uses_aliases_to_find_show() -> None:
+    """裸尾数字条目靠豆瓣别名找到正确的剧：「乘风2026」的别名写着「乘风破浪的姐姐 第七季」。"""
+    client = _tv_client(
+        searches={
+            "乘风2026": [_tv(317948, "乘风2026", "2026-04-02")],
+            "乘风破浪的姐姐": [_tv(104716, "乘风破浪的姐姐", "2020-06-12")],
+            "乘风": [],
+        },
+        shows={
+            317948: _show((1, "2026-04-02", 29)),
+            104716: _show((6, "2025-03-21", 24), (7, "2026-04-03", 28)),
+        },
+    )
+    result = await resolve_douban_to_tmdb(
+        client,
+        MediaKind.TV,
+        "乘风2026",
+        year=2026,
+        aliases=["乘风破浪的姐姐 第七季"],
+        released="2026-04-03(中国大陆)",
+    )
+    assert result.status is ResolveStatus.MATCHED
+    assert result.tmdb_id == 104716
+    assert result.suggested_season == 7
+
+
+async def test_resolve_douban_rejects_stub_entry() -> None:
+    """TMDB 上只有 1 集的残条目要被压过：改造前《诛仙 第四季》正是错配到这种脏数据。"""
+    client = _tv_client(
+        searches={
+            "诛仙 第四季": [_tv(332444, "诛仙第四季")],
+            "诛仙": [_tv(206484, "诛仙", "2022-08-02"), _tv(332444, "诛仙第四季")],
+        },
+        shows={
+            206484: _show((4, "2026-08-21", 26)),
+            # 残条目：季号与豆瓣一致、首播日缺失，只有 1 集
+            332444: _show((4, "", 1)),
+        },
+    )
+    result = await resolve_douban_to_tmdb(
+        client,
+        MediaKind.TV,
+        "诛仙 第四季",
+        year=2026,
+        aliases=["诛仙4"],
+        released="2026-08-21(中国大陆)",
+    )
+    assert result.status is ResolveStatus.MATCHED
+    assert result.tmdb_id == 206484
+
+
+async def test_resolve_douban_prefers_main_cut_over_clean_version() -> None:
+    """正片与「纯享版」同季同首播日时，靠标题精确同名选中正片。"""
+    client = _tv_client(
+        searches={
+            "喜剧之王单口季 第三季": [],
+            "喜剧之王单口季": [
+                _tv(292210, "喜剧之王单口季·纯享版"),
+                _tv(261391, "喜剧之王单口季"),
+            ],
+        },
+        shows={
+            261391: _show((3, "2026-07-03", 41)),
+            292210: _show((3, "2026-07-03", 20)),
+        },
+    )
+    result = await resolve_douban_to_tmdb(
+        client,
+        MediaKind.TV,
+        "喜剧之王单口季 第三季",
+        year=2026,
+        aliases=["喜单3"],
+        released="2026-07-03(中国大陆)",
+    )
+    assert result.status is ResolveStatus.MATCHED
+    assert result.tmdb_id == 261391
+
+
+async def test_resolve_douban_whole_series_gives_no_season_suggestion() -> None:
+    """整剧条目（普通剧名、证据落在第一季）不给预勾选建议，保持「全部已播季」的默认。"""
+    client = _tv_client(
+        searches={"早春晴朗": [_tv(299952, "早春晴朗", "2026-01-05")]},
+        shows={299952: _show((1, "2026-01-05", 24))},
+    )
+    result = await resolve_douban_to_tmdb(
+        client,
+        MediaKind.TV,
+        "早春晴朗",
+        year=2026,
+        aliases=[],
+        released="2026-01-05(中国大陆)",
+    )
+    assert result.status is ResolveStatus.MATCHED
+    assert result.tmdb_id == 299952
+    assert result.suggested_season is None
+
+
+async def test_resolve_douban_falls_back_to_title_rules_without_evidence() -> None:
+    """证据分不出胜负时回落「标题+年份」老通路，判定与改造前一致。"""
+    client = _tv_client(
+        searches={"某剧": [_tv(1, "某剧", "2020-01-01"), _tv(2, "某剧外传", "2020-01-01")]},
+        # 两个候选都没有能对上豆瓣首播日的季 → 证据通路弃权
+        shows={1: _show((1, "2019-05-05", 10)), 2: _show((1, "2019-06-06", 10))},
+    )
+    result = await resolve_douban_to_tmdb(
+        client, MediaKind.TV, "某剧", year=2020, aliases=[], released="2020-03-03(中国大陆)"
+    )
+    assert result.status is ResolveStatus.MATCHED
+    assert result.tmdb_id == 1  # 标题精确相等 + 年份精确相等者唯一
+    assert result.suggested_season is None

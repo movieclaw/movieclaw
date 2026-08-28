@@ -154,6 +154,14 @@ class PrepareView(BaseModel):
     movie_owned: bool = Field(
         default=False, description="电影：媒体库里已有本片（弹层提示，不拦订阅）"
     )
+    suggested_seasons: list[int] = Field(
+        default_factory=list,
+        description=(
+            "建议预勾选的季号。豆瓣把剧集按季拆条目，用户点进「中餐厅 第十季」"
+            "要订的就是那一季；这里给出收敛通路用首播日期定案的 TMDB 季号"
+            "（与豆瓣季号未必相同）。为空表示无可信结论，前端按原默认规则勾选"
+        ),
+    )
     candidates: list[ResolveCandidateView] = Field(default_factory=list)
 
 
@@ -219,8 +227,7 @@ class SubscriptionCreatePayload(BaseModel):
         default=None,
         max_length=160,
         description=(
-            "可选的原始来源引用；从豆瓣歧义候选改选 TMDB 条目时原样回传，"
-            "用于保留豆瓣身份"
+            "可选的原始来源引用；从豆瓣歧义候选改选 TMDB 条目时原样回传，用于保留豆瓣身份"
         ),
     )
     selected_seasons: list[int] = Field(
@@ -633,9 +640,7 @@ class SubscriptionDetailView(SubscriptionView):
         )
         for row in view.wanted:
             row.upgrade = upgrades.get((row.season_number, row.episode_number))
-        view.progress.upgrading = sum(
-            1 for u in upgrades.values() if u is not None and u.active
-        )
+        view.progress.upgrading = sum(1 for u in upgrades.values() if u is not None and u.active)
         return view
 
 
@@ -878,9 +883,7 @@ class RuleSetView(BaseModel):
     name: str
     is_default: bool
     spec: dict
-    reference_count: int = Field(
-        default=0, description="正在引用本规则组的订阅数；>0 时不可删除"
-    )
+    reference_count: int = Field(default=0, description="正在引用本规则组的订阅数；>0 时不可删除")
 
     @classmethod
     def from_model(cls, row: RuleSet, *, reference_count: int = 0) -> RuleSetView:

@@ -77,6 +77,7 @@ async def _prepare_resolved_target(
     douban_id: str | None,
     service: SubscriptionService,
     session: AsyncSession,
+    suggested_season: int | None = None,
 ) -> PrepareView:
     """把已消歧的目标投影成订阅表单需要的季集、库存与现有订阅状态。"""
     item, seasons, existing = await service.prepare(kind, tmdb_id, douban_id=douban_id)
@@ -102,6 +103,14 @@ async def _prepare_resolved_target(
         ],
         existing_subscription_id=existing.id if existing else None,
         movie_owned=kind == MediaKind.MOVIE and (0, 0) in owned,
+        # 只有确实存在于台账的季才提交给前端预勾选，避免收敛结果与季表不同步时
+        # 弹层勾中一个渲染不出来的季
+        suggested_seasons=(
+            [suggested_season]
+            if suggested_season is not None
+            and any(row.season_number == suggested_season for row in seasons)
+            else []
+        ),
     )
 
 
@@ -129,11 +138,15 @@ async def _preview_title_ref(
         if kind is None:
             raise BadRequestException("豆瓣条目缺少电影/剧集类型，暂时无法创建订阅")
         library = MediaLibraryService(session, get_tmdb_client())
+        # 别名与首播日期是收敛证据：豆瓣把剧集按季拆条目，只有靠它们才能把
+        # 「中餐厅 第十季」对上 TMDB 的《中餐厅》S10。详情本来就已拉回，不额外请求
         resolution, item = await library.resolve_douban(
             kind,
             details.title.title,
             year=details.title.release_year,
             douban_id=external_id,
+            aliases=details.metadata.aliases,
+            released=details.metadata.released,
         )
     except ValueError as exc:
         raise BadRequestException(str(exc)) from exc
@@ -155,6 +168,7 @@ async def _preview_title_ref(
         kind=kind,
         tmdb_id=item.tmdb_id,
         douban_id=external_id,
+        suggested_season=resolution.suggested_season,
         service=service,
         session=session,
     )
@@ -244,9 +258,7 @@ async def create_subscription(
     resource_timings = await service.resource_timings(subscription.id)
     return ok(
         SubscriptionCreateView(
-            subscription=SubscriptionDetailView.from_detail(
-                sub, item, wanted, resource_timings
-            ),
+            subscription=SubscriptionDetailView.from_detail(sub, item, wanted, resource_timings),
             download_routing=download_routing,
         ),
         message="已加入订阅，正在搜索缺失资源",
@@ -409,9 +421,7 @@ async def get_subscription(
             rule_spec = RuleSetSpec.model_validate(rule_set.spec or {})
         except ValueError:
             rule_spec = None
-    return ok(
-        SubscriptionDetailView.from_detail(sub, item, wanted, resource_timings, rule_spec)
-    )
+    return ok(SubscriptionDetailView.from_detail(sub, item, wanted, resource_timings, rule_spec))
 
 
 @router.get(
@@ -508,9 +518,7 @@ async def run_subscription_upgrade(
     await service.assert_can_manage(
         subscription_id, None if principal.is_admin else principal.member_id
     )
-    report = await run_upgrade_round(
-        session, subscription_id, rule_set_id=payload.rule_set_id
-    )
+    report = await run_upgrade_round(session, subscription_id, rule_set_id=payload.rule_set_id)
     return ok(UpgradeRunView.model_validate(report), message=report["summary"])
 
 

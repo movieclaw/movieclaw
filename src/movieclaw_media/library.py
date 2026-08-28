@@ -4,8 +4,9 @@
 
 - ``fetch_media_profile``：一次拉齐条目的身份信息（外部 ID、标题、别名集合、
   季集结构），产出与持久层解耦的 ``MediaProfile``；
-- ``resolve_douban_to_tmdb``：豆瓣入口的收敛兜底通路（标题+年份搜索），
-  命中 / 歧义 / 未找到三分支。
+- ``resolve_douban_to_tmdb``：豆瓣入口的收敛通路，命中 / 歧义 / 未找到三分支。
+  剧集走"多路查询 + 季级证据对齐"（同时解出 TMDB 季号），证据不足时回落
+  原有的"标题+年份"规则；电影只走后者。
 
 职责边界：本包不依赖 movieclaw_db，落库编排由 API 层的
 ``movieclaw_api.services.media_library`` 完成。
@@ -20,11 +21,12 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 from enum import StrEnum
+from typing import NamedTuple
 
 from pydantic import BaseModel, Field
 
 from movieclaw_media.models import MediaKind
-from movieclaw_media.tmdb import TmdbClient
+from movieclaw_media.tmdb import TmdbClient, TmdbError
 
 # 别名收集范围：中文圈 + 英语圈的地区别名，加 zh/en 两种语言的译名。
 # 种子命名以英文为主、副标题以中文为主，这两组覆盖了匹配内核的需要。
@@ -33,6 +35,9 @@ _ALIAS_LANGUAGES = frozenset({"zh", "en"})
 
 # 歧义时返回给前端确认弹层的候选数量上限
 _MAX_CANDIDATES = 8
+
+# 季号上界：越界即视为误解析（豆瓣标题里不会出现超过这个数的季号）
+_MAX_SEASON_NUMBER = 100
 
 
 class EpisodeInfo(BaseModel):
@@ -790,6 +795,166 @@ class DoubanResolution(BaseModel):
     status: ResolveStatus
     tmdb_id: int | None = None
     candidates: list[ResolveCandidate] = Field(default_factory=list)
+    suggested_season: int | None = Field(
+        default=None,
+        description=(
+            "可用于订阅表单预勾选的 TMDB 季号；None=无建议，按调用方原默认规则处理。"
+            "仅在两个条件同时成立时给出：① 走的是季级证据通路（兜底通路给不出可信"
+            "季号）；② 该豆瓣条目确实是「季专属」的——标题带显式「第N季」后缀，"
+            "或证据定案到了第一季之后的某一季。整剧条目（普通剧名、证据落在第一季）"
+            "不给建议，否则会把「勾选全部已播季」窄化成只勾一季"
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# 证据通路：用豆瓣条目自带的首播日期把「哪一季」也一起定下来
+#
+# 为什么需要它：豆瓣把剧集按季拆成独立条目（「中餐厅 第十季」是一条，
+# 「中餐厅 第九季」是另一条），而 TMDB 是一剧一条、季挂在下面。于是
+#   ① 整段标题拿去搜必然 0 结果——TMDB 的剧名里没有「第十季」；
+#   ② 豆瓣给的年份是**这一季**的年份，与 TMDB 的**整剧首播年**对不上，
+#      老通路的年份过滤和「标题+年份精确相等」两条判定同时落空。
+#
+# 收敛策略：不去判断「该不该剥掉季号」——这个问题没有可靠信号（「歌手2026」
+# 的 2026 是品牌名不是季号，「问心2」的 2 可能就是片名的一部分）。改成把各种
+# 形态都拿去查生成候选，再用豆瓣条目自带的硬证据裁决：**豆瓣的首播日期与
+# TMDB 某一季的 air_date 对齐**是极强的身份信号，它同时回答了「是哪部剧」
+# 和「是哪一季」两个问题——后者尤其重要，实测豆瓣季号有 13% 与 TMDB 不一致
+# （豆瓣《奔跑吧 第十季》= TMDB S14，《飞出个未来 第十四季》= TMDB S11），
+# 只认剧不认季会让用户默认勾选到错误年份的内容。
+# ---------------------------------------------------------------------------
+
+# 豆瓣季号只有「第N季」一种形态，N 为阿拉伯数字或中文数字。这里不复用
+# movieclaw_enrich 的同类解析：那是种子发布名的解析层，与本包平级，为一个
+# 纯函数跨包依赖不划算，且两边的输入分布完全不同（乱序发布名 vs 规整标题）。
+_CN_DIGITS = {
+    "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+    "五": 5, "六": 6, "七": 7, "八": 8, "九": 9,
+}  # fmt: skip
+_SEASON_SUFFIX_RE = re.compile(r"\s*第\s*([0-9]{1,3}|[一二两三四五六七八九十百]{1,4})\s*季\s*$")
+# 别名里的季号形态更杂：「中餐厅10」「喜单3」「Rock & Roast 3」「... Season 4」「... Ⅲ」
+_ALIAS_TAIL_RE = re.compile(
+    r"(?:\s*第\s*(?:[0-9]{1,3}|[一二两三四五六七八九十百]{1,4})\s*季"
+    r"|\s*(?:[Ss]eason|SEASON)\s*[0-9IVXⅠ-Ⅹ]{1,4}"
+    r"|\s*[0-9]{1,2}"
+    r"|\s*[Ⅰ-Ⅹ]{1,3})\s*$"
+)
+_NUM_TAIL_RE = re.compile(r"\s*(?:[0-9]{1,4}|[Ⅰ-Ⅹ]{1,3})\s*$")
+_ISO_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+# 证据权重（经 73 条真实豆瓣条目标定；门槛在 3~6 之间结论完全一致，不敏感）
+_EV_AIR_DATE = 5  # 首播日精确对齐——最承重，去掉它整个方法崩塌
+_EV_AIR_YEAR = 2  # 只对上年份（先导片/超前点映/深夜档跨日等场景的降级档）
+_EV_SEASON_NO = 2  # 豆瓣季号与 TMDB 季号一致
+_EV_EXACT_NAME = 1  # 候选名与豆瓣基名精确相等——国产综艺普遍有「纯享版」分身，
+#                     正片与纯享版同季同首播日，全靠这一分选对正片
+_EV_STUB_PENALTY = -4  # TMDB 上的残条目（整季只有 ≤1 集）几乎必是脏数据
+_EV_THRESHOLD = 4  # 定案门槛：达标且严格高于第二名才算命中
+_MAX_QUERIES = 8  # 多路查询上限
+_MAX_POOL = 12  # 候选池上限（每个候选要拉一次季表，直接决定请求数）
+
+
+def _parse_cn_int(text: str) -> int | None:
+    """'12' / '十二' / '二十' / '五' → int；无法解析返回 None。"""
+    if text.isdigit():
+        return int(text)
+    if "十" in text:
+        tens, _, units = text.partition("十")
+        if (tens and tens not in _CN_DIGITS) or (units and units not in _CN_DIGITS):
+            return None
+        return (_CN_DIGITS.get(tens, 1) if tens else 1) * 10 + (
+            _CN_DIGITS.get(units, 0) if units else 0
+        )
+    return _CN_DIGITS.get(text)
+
+
+def _split_douban_season(title: str) -> tuple[str, int | None]:
+    """「中餐厅 第十季」→ ('中餐厅', 10)；无季号后缀原样返回 (title, None)。"""
+    match = _SEASON_SUFFIX_RE.search(title)
+    if not match:
+        return title, None
+    number = _parse_cn_int(match.group(1))
+    if number is None or not 0 < number <= _MAX_SEASON_NUMBER:
+        return title, None
+    base = title[: match.start()].strip()
+    # 基名为空说明整个标题就是后缀（如条目名直接叫「第一季」），剥了反而搜不到
+    return (base, number) if base else (title, None)
+
+
+def _douban_queries(title: str, base: str, aliases: Sequence[str]) -> list[str]:
+    """生成多路查询词：基名、原标题、各别名（剥掉季号尾巴）、去掉裸尾数字的形态。
+
+    豆瓣别名是这一层的关键补充——「乘风2026」的别名里写着「乘风破浪的姐姐
+    第七季」，没有它根本搜不到正确的剧；实测别名一路能在「裸尾数字/年份品牌」
+    类条目上把命中数从 6 抬到 11。
+    """
+    # 原标题无条件保留：它是兜底通路的同源输入，也是单字片名（《蝉》）唯一
+    # 可用的查询词——长度守卫只该拦「剥出来的碎片」，不能把原标题本身滤掉
+    seen: list[str] = [title.strip()]
+    for raw in (base, *(_ALIAS_TAIL_RE.sub("", a).strip(" ·:：-") for a in aliases)):
+        text = raw.strip()
+        if len(text) >= 2 and text not in seen:
+            seen.append(text)
+    # 裸尾数字（「一饭封神2」「心脏信号5」）无法可靠判断是季号还是片名的一部分，
+    # 因此不做取舍，两种形态都查，交给证据裁决
+    for source in (title, base):
+        stripped = _NUM_TAIL_RE.sub("", source).strip(" ·:：-")
+        if len(stripped) >= 2 and stripped not in seen:
+            seen.append(stripped)
+    return seen[:_MAX_QUERIES]
+
+
+def _douban_dates(released: str, year: int | None) -> tuple[set[str], set[str]]:
+    """从豆瓣的上映串（形如「2026-06-19(中国大陆)」）提取可比对的日期与年份集合。"""
+    dates = set(_ISO_DATE_RE.findall(released or ""))
+    years = {d[:4] for d in dates}
+    if year is not None:
+        years.add(str(year))
+    return dates, years
+
+
+class _SeasonBrief(NamedTuple):
+    """打分只需要季号、首播日与集数三个字段。"""
+
+    season_number: int
+    air_date: str
+    episode_count: int
+
+
+async def _season_briefs(client: TmdbClient, tmdb_id: int, language: str) -> list[_SeasonBrief]:
+    """拉候选剧的季表；单次请求即可拿到全部季的首播日与集数。"""
+    try:
+        data = await client.get(f"tv/{tmdb_id}", {"language": language})
+    except TmdbError:
+        # 单个候选拉不到不该让整次收敛失败——它只是拿不到证据分而已
+        return []
+    return [
+        _SeasonBrief(
+            season_number=season["season_number"],
+            air_date=season.get("air_date") or "",
+            episode_count=season.get("episode_count") or 0,
+        )
+        for season in data.get("seasons") or []
+        # 特别篇（season 0）不参与身份判定
+        if season.get("season_number")
+    ]
+
+
+def _score_season(
+    brief: _SeasonBrief, *, dates: set[str], years: set[str], season_hint: int | None
+) -> int:
+    """给候选剧的某一季打证据分。"""
+    score = 0
+    if brief.air_date and brief.air_date in dates:
+        score += _EV_AIR_DATE
+    elif brief.air_date[:4] and brief.air_date[:4] in years:
+        score += _EV_AIR_YEAR
+    if season_hint is not None and brief.season_number == season_hint:
+        score += _EV_SEASON_NO
+    if brief.episode_count <= 1:
+        score += _EV_STUB_PENALTY
+    return score
 
 
 async def resolve_douban_to_tmdb(
@@ -799,17 +964,115 @@ async def resolve_douban_to_tmdb(
     *,
     year: int | None = None,
     language: str = "zh-CN",
+    aliases: Sequence[str] = (),
+    released: str = "",
 ) -> DoubanResolution:
-    """按标题+年份把豆瓣条目收敛到 TMDB 锚。
+    """把豆瓣条目收敛到 TMDB 锚（证据优先，标题+年份兜底）。
 
-    判定规则（保守优先，绝不静默错配）：
+    两条通路，证据通路先跑、兜底通路保持原行为不变：
+
+    1. **证据通路**（需要调用方传入 ``aliases``/``released``）：多路查询生成候选，
+       再用豆瓣首播日期与 TMDB 的季 air_date 对齐来定案。达到门槛且严格高于
+       第二名才算命中，同时给出 TMDB 季号。它解决的是老通路根本搜不到的
+       豆瓣季条目，也能识破 TMDB 上的残条目与「纯享版」分身。
+    2. **兜底通路**（证据不足或调用方没传证据时）：沿用「标题+年份」的老规则，
+       行为与改造前完全一致——保守优先，绝不静默错配。
+    """
+    # 证据通路只对剧集生效：豆瓣「按季拆条目」是剧集独有的问题，电影没有这个
+    # 形态，也没有可对齐的季结构，保持改造前的行为不动
+    evidenced = kind is MediaKind.TV and bool(aliases or released)
+    base, season_hint = _split_douban_season(title) if evidenced else (title, None)
+    queries = _douban_queries(title, base, aliases) if evidenced else [title]
+
+    # 多路查询并发发出，整体延迟就是一次往返（客户端自带 20 QPS 漏桶护栏）
+    responses = await asyncio.gather(
+        *(client.get(f"search/{kind.value}", {"query": q, "language": language}) for q in queries),
+        return_exceptions=True,
+    )
+    legacy: list[ResolveCandidate] = []
+    pool: dict[int, ResolveCandidate] = {}
+    for query, response in zip(queries, responses, strict=True):
+        if isinstance(response, BaseException):
+            continue
+        found = [c for raw in response.get("results", []) if (c := _to_candidate(raw))]
+        if query == title:
+            legacy = found  # 兜底通路只认「整段标题」这一路，与改造前完全同源
+        for candidate in found[:5]:
+            pool.setdefault(candidate.tmdb_id, candidate)
+
+    if not pool:
+        return DoubanResolution(status=ResolveStatus.NOT_FOUND)
+
+    dates, years = _douban_dates(released, year)
+    if evidenced and (dates or years):
+        matched = await _resolve_by_evidence(
+            client,
+            kind,
+            list(pool.values())[:_MAX_POOL],
+            base=base,
+            season_hint=season_hint,
+            dates=dates,
+            years=years,
+            language=language,
+        )
+        if matched is not None:
+            return matched
+
+    return _resolve_by_title(legacy or list(pool.values()), title=title, year=year)
+
+
+async def _resolve_by_evidence(
+    client: TmdbClient,
+    kind: MediaKind,
+    candidates: list[ResolveCandidate],
+    *,
+    base: str,
+    season_hint: int | None,
+    dates: set[str],
+    years: set[str],
+    language: str,
+) -> DoubanResolution | None:
+    """季级证据打分；分不出胜负时返回 None 交给兜底通路。"""
+    wanted = _loose(base)
+    scores: list[tuple[int, ResolveCandidate, int | None]] = []
+
+    briefs = await asyncio.gather(
+        *(_season_briefs(client, c.tmdb_id, language) for c in candidates)
+    )
+    for candidate, seasons in zip(candidates, briefs, strict=True):
+        best_score, best_season = 0, None
+        for brief in seasons:
+            score = _score_season(brief, dates=dates, years=years, season_hint=season_hint)
+            if score > best_score:
+                best_score, best_season = score, brief.season_number
+        if wanted in (_loose(candidate.title), _loose(candidate.original_title)):
+            best_score += _EV_EXACT_NAME
+        scores.append((best_score, candidate, best_season))
+
+    scores.sort(key=lambda row: -row[0])
+    top = scores[0]
+    runner = scores[1][0] if len(scores) > 1 else -1
+    if top[0] < _EV_THRESHOLD or top[0] <= runner:
+        return None
+    # 只有「季专属」的豆瓣条目才给预勾选建议：带显式季号后缀（「中餐厅 第十季」），
+    # 或证据定案到了第一季之后（「问心2」→S2、「歌手2026」→S11）。整剧条目的
+    # 首播日期天然对上第一季，若照此预勾选，会把原本的「全部已播季」窄化成一季
+    season = top[2]
+    suggested = season if season is not None and (season_hint is not None or season > 1) else None
+    return DoubanResolution(
+        status=ResolveStatus.MATCHED, tmdb_id=top[1].tmdb_id, suggested_season=suggested
+    )
+
+
+def _resolve_by_title(
+    candidates: list[ResolveCandidate], *, title: str, year: int | None
+) -> DoubanResolution:
+    """兜底通路：改造前的「标题+年份」规则，逐条保持原判定不变。
+
     1. 年份过滤（容差 ±1，豆瓣与 TMDB 偶有跨年差异）后唯一 → 命中；
     2. 过滤后多个，但"标题精确相等且年份精确相等"者唯一 → 命中；
-    3. 其余 → 歧义，返回候选让用户确认；搜索结果为空 → 未找到。
+    3. 其余 → 歧义，返回候选让用户确认。
     """
-    data = await client.get(f"search/{kind.value}", {"query": title, "language": language})
-    candidates = [_to_candidate(raw) for raw in data.get("results", [])]
-    candidates = [c for c in candidates if c is not None]
     if not candidates:
         return DoubanResolution(status=ResolveStatus.NOT_FOUND)
 
