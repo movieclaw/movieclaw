@@ -13,7 +13,7 @@
  * |------------|--------------------------------------|------------|--------|---------|
  * | direct     | 档 0（container != hls-fmp4）          | stream_url | 文件   | overlay |
  * | mse        | 有 MSE（full/managed），hls.js         | stream_url | 按会话 | overlay + PiP 补丁轨 |
- * | native-hls | iOS + VOD 列表 + master（或无 MSE 兜底）| master_url | 文件   | system-track |
+ * | native-hls | 无 MSE 的原生 HLS 设备（或兜底）       | master_url | 文件   | system-track |
  *
  * ## 字幕渲染器只有两种，且整会话恒定
  *
@@ -50,6 +50,20 @@ export interface PlaybackMode {
 }
 
 /**
+ * 判断挂流完成后是否还需要由组件补一次首次 seek。
+ *
+ * 原生 HLS 的 DirectEngine 会在 loadedmetadata 中自己执行 JS seek；组件
+ * 若再挂一个同样的监听器，Safari 可能把两次赋值当成两次 HLS 跳转，导致
+ * 首个 init/segment 被取消后重拉，最终表现为笼统的 MEDIA_ERR_DECODE。
+ */
+export function shouldApplyPostAttachSeek(
+  engine: PlaybackEngineKind,
+  targetSeconds: number,
+): boolean {
+  return engine !== "native-hls" && targetSeconds > 1;
+}
+
+/**
  * 由会话与能力快照算出本次播放的完整模式。三态里只有 plan 会走到这里；
  * stream_url 缺失（consent/rejected）返回 null。
  */
@@ -78,11 +92,17 @@ export function resolvePlaybackMode(
     };
   }
 
-  // iOS 走系统原生 HLS 的前提是 VOD 列表（EVENT 列表会被 Safari 当直播贴
-  // 边播）且服务端给了带字幕组的 master。收益：AVPlayer 的省电/AirPlay/
-  // 锁屏控制，以及字幕在画中画、原生全屏里的系统级渲染。
+  // 只有没有 MSE 的老设备才走系统原生 HLS。iOS 17+ 暴露的是
+  // ManagedMediaSource，应交给 hls.js；原生 AVPlayer 对「服务端按需供片、
+  // 从高位分片起播」的 VOD 清单更严格，实机会在 init/首片返回后报
+  // MEDIA_ERR_DECODE。无 MSE 时仍优先使用带字幕组的 master，保留原生字幕
+  // 与全屏/AirPlay 的兜底能力。
   const nativeEligible =
-    capability.native_hls && capability.is_mobile && fileTimeline && session.master_url;
+    capability.mse === "none" &&
+    capability.native_hls &&
+    capability.is_mobile &&
+    fileTimeline &&
+    session.master_url;
   if (nativeEligible && session.master_url) {
     return {
       engine: "native-hls",

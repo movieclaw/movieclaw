@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import re
 import time
@@ -10,7 +11,7 @@ from pathlib import Path as PathLib
 from typing import Annotated
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, Path, Query, Response
+from fastapi import APIRouter, Depends, Path, Query, Request, Response
 from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
@@ -27,9 +28,11 @@ from movieclaw_api.schemas.playback import (
     HwBackendStatusView,
     HwProbeView,
     MediaActivityView,
+    PlaybackArtifactUploadView,
     PlaybackClientLogPayload,
     PlaybackDecideRequest,
     PlaybackDecisionView,
+    PlaybackDiagnosticsView,
     PlaybackFontsView,
     PlaybackItemView,
     PlaybackMetricPayload,
@@ -52,14 +55,16 @@ from movieclaw_api.services.library.items import build_season_episodes, episode_
 from movieclaw_api.services.media_probe import probe_keyframe_before
 from movieclaw_api.services.playback import metrics, trickplay
 from movieclaw_api.services.playback import plan as playback_plan
+from movieclaw_api.services.playback import warmup as playback_warmup
 from movieclaw_api.services.playback import watch as playback_watch
 from movieclaw_api.services.playback.embedded_subs import (
     extract_embedded_fonts,
-    extract_embedded_subtitle,
+    extract_embedded_subtitle_async,
     font_cache_dir,
     safe_font_name,
 )
 from movieclaw_api.services.playback.ffmpeg_args import (
+    HW_BACKENDS,
     INIT_NAME,
     SEGMENT_PATTERN,
     SEGMENT_SECONDS,
@@ -67,6 +72,7 @@ from movieclaw_api.services.playback.ffmpeg_args import (
 )
 from movieclaw_api.services.playback.hwprobe import (
     available_backends,
+    available_local_backends,
     probe_backends_async,
 )
 from movieclaw_api.services.playback.limits import (
@@ -74,10 +80,16 @@ from movieclaw_api.services.playback.limits import (
     auto_quota_bytes,
     auto_transcode_concurrency,
 )
+from movieclaw_api.services.playback.remote_worker import (
+    effective_remote_transcode_config,
+    get_remote_worker_registry,
+    remote_worker_available,
+)
 from movieclaw_api.services.playback.session import (
     DiskQuotaError,
     SessionLimitError,
     SessionStartError,
+    TranscodeSession,
     get_session_manager,
 )
 from movieclaw_api.services.playback.signing import issue_stream_token, verify_stream_token
@@ -89,6 +101,7 @@ from movieclaw_db.engine import get_session
 from movieclaw_db.models import LibraryFile, MediaItem, PlaybackMetric
 from movieclaw_db.repositories.media_repo import MediaItemRepository
 from movieclaw_playback import state as playback_state
+from movieclaw_playback.decide import PlaybackPlan
 from movieclaw_playback.decide import PlaybackTier as Tier
 from movieclaw_playback.hls_vod import (
     build_master_playlist,
@@ -114,6 +127,178 @@ from movieclaw_playback.subtitles import (
 logger = logging.getLogger("movieclaw_api.playback")
 
 router = APIRouter(prefix="/playback", tags=["playback"])
+
+
+class _SubtitleClientDisconnected(Exception):
+    """客户端已放弃字幕请求，且底层抽取任务已经完成取消。"""
+
+_DIAGNOSTIC_SECRET_RE = re.compile(
+    r"((?:[?&]|\b)(?:token|access_token|signature|sig)=)[^&\s]+", re.IGNORECASE
+)
+
+
+def _diagnostic_error(error: str | None) -> str | None:
+    """截断并脱敏错误文本，避免把签名 URL 带进播放器诊断。"""
+    if not error:
+        return None
+    sanitized = _DIAGNOSTIC_SECRET_RE.sub(r"\1<redacted>", error)
+    return sanitized[-1000:]
+
+
+def _diagnostic_processing_mode(session: TranscodeSession) -> str:
+    """把内部档位归一成面向用户的执行模式。"""
+    if session.remote:
+        return "remote-hardware"
+    if session.plan.video.action == "transcode":
+        return "local-hardware" if session.hw_backend else "local-software"
+    if session.plan.audio.action == "transcode":
+        return "audio-transcode"
+    return "remux"
+
+
+def _diagnostic_encoder(session: TranscodeSession) -> str | None:
+    if session.plan.video.action != "transcode":
+        return None
+    if session.hw_backend:
+        backend = HW_BACKENDS.get(session.hw_backend)
+        if backend is not None:
+            return backend.encoder
+    return "libx264"
+
+
+def _diagnostic_playback_cursor(session: TranscodeSession) -> int:
+    """取最近一次播放器活动对应的分片号，作为缺口展示的时间游标。
+
+    播放器会并行请求分片，完成顺序也可能与请求顺序不同，所以优先使用最近
+    一次请求（它代表播放器当前的供片意图），不能让晚到的旧分片响应把游标
+    往回覆盖。没有请求记录时才回退到最近供给分片，再没有播放器事件则使用
+    当前转码头。
+    """
+    if session.last_requested_segment is not None:
+        return session.last_requested_segment
+    if session.last_served_segment is not None:
+        return session.last_served_segment
+    return session.head_segment
+
+
+def _build_playback_diagnostics(
+    session: TranscodeSession,
+) -> PlaybackDiagnosticsView:
+    """组装单次快照；只读取内存台账和本地缓存，不返回任何访问凭据。"""
+    manager = get_session_manager()
+    registry = get_remote_worker_registry()
+    worker = None
+    if session.remote_worker_id:
+        worker = next(
+            (
+                item
+                for item in registry.snapshot()
+                if item.get("worker_id") == session.remote_worker_id
+            ),
+            None,
+        )
+    job = (
+        registry.job_state(session.remote_job_id or "")
+        if session.remote_job_id
+        else None
+    )
+    highest_produced = (
+        manager._highest_produced(session) if session.segment_plan is not None else None
+    )
+    uploads = [
+        PlaybackArtifactUploadView(
+            name=event.name,
+            status=event.status,
+            received_bytes=event.received_bytes,
+            content_length=event.content_length,
+            transfer_encoding=event.transfer_encoding,
+            occurred_at_ms=event.occurred_at_ms,
+        )
+        for event in list(reversed(session.remote_uploads))[:12]
+    ]
+    try:
+        cache_bytes = session.size_bytes()
+    except OSError:
+        # 诊断轮询可能正好与结束会话并发；目录已开始清理时仍返回快照，
+        # 不能因为统计临时目录大小把播放器旁路请求变成 500。
+        cache_bytes = 0
+    job_type = job.get("type") if job else None
+    job_out_time_ms = job.get("out_time_ms") if job else None
+    if not isinstance(job_out_time_ms, int):
+        job_out_time_ms = None
+    job_speed = job.get("speed") if job else None
+    if not isinstance(job_speed, str):
+        job_speed = None
+    job_phase = job.get("phase") if job else None
+    if not isinstance(job_phase, str):
+        job_phase = None
+    job_exit_code = job.get("exit_code") if job else None
+    if not isinstance(job_exit_code, int) or isinstance(job_exit_code, bool):
+        job_exit_code = None
+    job_error = _diagnostic_error(
+        job.get("error") if job and isinstance(job.get("error"), str) else None
+    )
+    job_stderr_tail = _diagnostic_error(
+        job.get("stderr_tail")
+        if job and isinstance(job.get("stderr_tail"), str)
+        else None
+    )
+    session_error = _diagnostic_error(session.error)
+    if session_error is None:
+        session_error = job_error
+    failed_segments = sorted(session.remote_failed_segments)
+    playback_cursor = _diagnostic_playback_cursor(session)
+    active_failed_segments = [
+        segment for segment in failed_segments if segment >= playback_cursor
+    ][:32]
+    historical_failed_segments = [
+        segment for segment in failed_segments if segment < playback_cursor
+    ][:32]
+
+    return PlaybackDiagnosticsView(
+        session_state=session.state,
+        session_error=session_error,
+        processing_mode=_diagnostic_processing_mode(session),
+        execution_location="remote_worker" if session.remote else "nas",
+        backend=session.hw_backend,
+        encoder=_diagnostic_encoder(session),
+        worker_id=session.remote_worker_id,
+        worker_version=worker.get("worker_version") if worker else None,
+        worker_platform=worker.get("platform") if worker else None,
+        worker_arch=worker.get("arch") if worker else None,
+        ffmpeg_version=worker.get("ffmpeg_version") if worker else None,
+        worker_online=(
+            bool(worker.get("online"))
+            if worker is not None
+            else (None if session.remote_restarting else False)
+        ),
+        worker_last_seen_seconds=(
+            float(worker["last_seen_seconds"])
+            if worker is not None and worker.get("last_seen_seconds") is not None
+            else None
+        ),
+        job_id=session.remote_job_id,
+        attempt_id=session.remote_job_id,
+        job_state=job_type if isinstance(job_type, str) else None,
+        job_out_time_ms=job_out_time_ms,
+        job_speed=job_speed,
+        job_phase=job_phase,
+        job_exit_code=job_exit_code,
+        job_error=job_error,
+        job_stderr_tail=job_stderr_tail,
+        head_segment=session.head_segment if session.segment_plan is not None else None,
+        highest_produced_segment=highest_produced,
+        requested_segment=session.last_requested_segment,
+        served_segment=session.last_served_segment,
+        segment_wait_ms=session.last_segment_wait_ms,
+        segment_status=session.last_segment_status,
+        pending_segments=sorted(session.pending_segments)[:32],
+        failed_segments=active_failed_segments,
+        historical_failed_segments=historical_failed_segments,
+        recent_uploads=uploads,
+        cache_bytes=cache_bytes,
+        total_segments=session.segment_plan.count if session.segment_plan is not None else None,
+    )
 
 
 @router.get(
@@ -203,38 +388,9 @@ async def decide_playback_route(
     返回三态：``plan`` 可以播；``consent`` 需要用户同意开启软件转码；
     ``rejected`` 放不了，附中文原因与下一步建议。
     """
-    visible = await visible_library_ids(session, principal)
-    capability = playback_plan.capability_from_request(payload.capability)
-    failed = frozenset(Tier(t) for t in payload.failed_tiers if t in Tier._value2member_map_)
-
-    if payload.file_id is not None:
-        decision = await playback_plan.decide_for_file(
-            session,
-            payload.file_id,
-            capability,
-            can_self_enable=principal.is_admin,
-            failed_tiers=failed,
-            preferred_audio=payload.audio_track,
-            max_height=payload.max_height,
-            visible_library_ids=visible,
-        )
-    elif payload.media_item_id is not None:
-        files = await playback_plan.library_files_for_unit(
-            session,
-            payload.media_item_id,
-            payload.season_number,
-            payload.episode_number,
-            visible_library_ids=visible,
-        )
-        decision = await playback_plan.decide_for_files(
-            files,
-            capability,
-            can_self_enable=principal.is_admin,
-            failed_tiers=failed,
-            preferred_audio=payload.audio_track,
-        )
-    else:
-        raise BadRequestException("需要提供 file_id 或 media_item_id")
+    # 决策接口与开会话接口必须共享同一组参数转发和可见性规则；否则客户端
+    # 在切换音轨/字幕/清晰度时会看到与实际起播不同的计划。
+    decision = await _decide(payload, principal, session)
 
     if decision is None:
         raise NotFoundException("没有找到可播放的文件")
@@ -254,6 +410,40 @@ async def decide_playback_route(
 _SEGMENT_NAME = re.compile(r"^(init\.mp4|seg\d{5}\.m4s)$")
 # 雪碧图文件名由服务端生成，但仍经过 URL——白名单一视同仁。
 _TRICKPLAY_SHEET_NAME = re.compile(r"^sprite_\d{3}\.jpg$")
+
+
+def _select_execution_backend(
+    decision: PlaybackPlan,
+    *,
+    available: tuple[str, ...],
+    local_backends: tuple[str, ...],
+    remote_video_available: bool,
+) -> tuple[str | None, bool]:
+    """为当前播放计划选择真正能执行的后端。
+
+    ``available`` 是给决策层用的合并能力快照，``local_backends`` 则只包含
+    NAS 本机实际探测通过的后端。两者不能按列表首项直接使用：列表顺序是
+    全局优先级，不代表该计划（尤其是 PGS 烧录）的滤镜链兼容性。先选能在
+    NAS 执行当前计划的后端；只有本地都不兼容时，才把在线 VideoToolbox
+    Worker 作为候选。返回值的第二项明确标出是否需要远程会话。
+    """
+    if (
+        decision.tier is not Tier.HARDWARE_TRANSCODE
+        or decision.video.action != "transcode"
+    ):
+        return None, False
+
+    for backend in local_backends:
+        if effective_hw_backend(decision, backend) is not None:
+            return backend, False
+
+    if (
+        remote_video_available
+        and "videotoolbox" in available
+        and effective_hw_backend(decision, "videotoolbox") is not None
+    ):
+        return "videotoolbox", True
+    return None, False
 
 #: 播放列表里 `#EXT-X-MAP` 那行的初始化段地址，形如 `URI="init.mp4"`。
 _PLAYLIST_MAP_URI = re.compile(r'(#EXT-X-MAP:.*?URI=")([^"]+)(")')
@@ -389,6 +579,24 @@ async def start_playback_session(
     file = await session.get(LibraryFile, view.file_id)
     if file is None:
         raise NotFoundException("文件已不在台账中")
+
+    manager = get_session_manager()
+    if view.tier != int(Tier.DIRECT_PLAY):
+        # 第一次决策可能看到同文件旧会话仍占着远程 Worker 的槽位，暂时落到
+        # 软件转码。先释放旧会话，再重新决策一次，才能把刚空出来的远程能力
+        # 纳入最终结果；没有旧会话时不重复做这次决策。
+        replaced = await manager.stop_for_file(file.id, member_id)
+        if replaced:
+            decision = await _decide(payload, principal, session)
+            if decision is None:
+                raise NotFoundException("没有找到可播放的文件")
+            view = playback_plan.to_view(decision)
+            if view.outcome != "plan":
+                return ok(PlaybackSessionView(decision=view, watch=watch_view))
+            file = await session.get(LibraryFile, view.file_id)
+            if file is None:
+                raise NotFoundException("文件已不在台账中")
+
     # 诊断面板的「源 → 处理」层次要有左半边：台账真值原样带回（§6.5）
     source_view = PlaybackSourceView(
         container=file.container,
@@ -399,6 +607,10 @@ async def start_playback_session(
         frame_rate=file.frame_rate,
         size_bytes=file.size_bytes,
     )
+
+    # 详情页可能正在为同一条目预热字幕；正式播放已经接管 IO，取消那条
+    # 后台任务，避免留下与播放无关的 ffmpeg（尤其是 PGS 的 .part.sup）。
+    playback_warmup.cancel(file.media_item_id)
 
     # 进度条缩略图：后台起，不挡首帧；延迟 90 秒 + 读入限速，起播关键窗口
     # 不与首片转码抢 IO（「首次起播卡缓冲、重进就好」的头号元凶，§6.10）。
@@ -430,8 +642,6 @@ async def start_playback_session(
             )
         )
 
-    manager = get_session_manager()
-
     async def _keyframe_index():
         """全片关键帧索引，只有直通档的 VOD 规划要它。冷缓存时 mp4 要过
         ffprobe（上秒级）——这是把它并入 gather 的主要理由：分享链接直达
@@ -440,25 +650,78 @@ async def start_playback_session(
             return None
         return await asyncio.to_thread(read_keyframe_index, file.file_path)
 
-    # 四件事互相独立，并行做：杀同文件旧会话（seek 出已转区间的前置，§4.4，
-    # 不杀的话用户连拖五下进度条就有五个 ffmpeg 在跑）、策略读取（设置存储
-    # 自带短会话，与请求会话无关）、硬件后端探测、关键帧索引。
+    # 三件准备工作互相独立，并行做：策略读取（设置存储自带短会话，与请求
+    # 会话无关）、硬件后端探测、关键帧索引。旧会话已在上面的最终决策前串行
+    # 释放，不能重新放回这里，否则远程 Worker 的槽位又会产生竞态。
     prep_started_at = time.perf_counter()
-    _, policy, backends, keyframe_index = await asyncio.gather(
-        manager.stop_for_file(file.id, member_id),
+    policy, backends, keyframe_index = await asyncio.gather(
         get_setting_store().get(PlaybackPolicySetting),
         asyncio.to_thread(available_backends),
         _keyframe_index(),
     )
+    # ``backends`` 可能包含外置 Worker 的 videotoolbox；本地命令只能从真实的
+    # NAS 探测快照中选编码器。只有在执行端确认仍在线时，才把 videotoolbox
+    # 作为远程命令发给 Worker。
+    local_backends = (
+        await asyncio.to_thread(available_local_backends) if backends else ()
+    )
+    remote_video_available = remote_worker_available("videotoolbox")
     prep_ms = int((time.perf_counter() - prep_started_at) * 1000)
     # 只有真的转视频才谈得上硬件加速：直通档（-c:v copy）不经编码器，报个
     # 后端名只会让诊断面板骗人。烧录时 VAAPI/QSV 会退软件编码（overlay 是
-    # 软件滤镜，这两家编码器吃不了软件帧），同样要报实际值。
+    # 软件滤镜，这两家编码器吃不了软件帧），同样要报实际值。后端选择必须
+    # 结合当前计划的滤镜兼容性，不能把合并能力列表的第一项当成可执行后端。
+    execution_backend, use_remote = _select_execution_backend(
+        decision,
+        available=backends,
+        local_backends=local_backends,
+        remote_video_available=remote_video_available,
+    )
+    if view.tier == int(Tier.HARDWARE_TRANSCODE) and execution_backend is None:
+        # 决策阶段看到的硬件能力可能在准备阶段断线，或本地后端与当前滤镜链
+        # 不兼容。不能把硬件档的计划悄悄交给 libx264；把硬件档标记为失败后
+        # 重新走统一降档逻辑：软件开关关闭时返回 consent，开启时才允许软转。
+        retry_failed_tiers = sorted(
+            {*payload.failed_tiers, int(Tier.HARDWARE_TRANSCODE)}
+        )
+        fallback_payload = payload.model_copy(update={"failed_tiers": retry_failed_tiers})
+        decision = await _decide(fallback_payload, principal, session)
+        if decision is None:
+            raise NotFoundException("没有找到可播放的文件")
+        view = playback_plan.to_view(decision)
+        if view.outcome != "plan":
+            return ok(PlaybackSessionView(decision=view, watch=watch_view))
+        file = await session.get(LibraryFile, view.file_id)
+        if file is None:
+            raise NotFoundException("文件已不在台账中")
+        source_view = PlaybackSourceView(
+            container=file.container,
+            resolution=file.resolution,
+            video_codec=file.video_codec,
+            hdr=file.hdr,
+            bit_rate=file.bit_rate,
+            frame_rate=file.frame_rate,
+            size_bytes=file.size_bytes,
+        )
+        playback_warmup.cancel(file.media_item_id)
+        trickplay.schedule(file, delay_s=90)
+        subtitle_urls = [
+            f"/api/v1/playback/files/{file.id}/subtitles"
+            f"?track={quote(s.track_ref, safe='')}"
+            f"&token={await issue_stream_token(member_id=member_id, file_id=file.id)}"
+            for s in view.subtitles
+        ]
+        execution_backend = None
+        use_remote = False
     hw_used = (
-        effective_hw_backend(decision, backends[0])
-        if backends and view.video and view.video.action == "transcode"
+        effective_hw_backend(decision, execution_backend)
+        if execution_backend and view.video and view.video.action == "transcode"
         else None
     )
+    # 仅把「硬件转码」任务交给远程硬件 Worker；直通/音频单转继续走 NAS，
+    # 软件转码也保留本地回路。远程 Worker 只有在配置固定 HTTP(S) 根地址时才
+    # 会被 remote_worker_enabled 暴露给决策层，不能从请求 Host 头推导地址。
+    remote_base_url = effective_remote_transcode_config().base_url
     # VOD 预生成规划（§12）：直通档按全片关键帧索引算分片边界；转码档
     # force_key_frames 在绝对栅格上强插关键帧，用等长规划。规划失败（时长
     # 未知 / 关键帧索引读不出）退回旧的会话相对模式，一切照旧。
@@ -487,11 +750,13 @@ async def start_playback_session(
             member_id=member_id,
             start_ms=start_ms,
             segment_plan=segment_plan,
-            hw_backend=backends[0] if backends else None,
+            hw_backend=execution_backend,
             # 资源上限不再是配置项，按机器规格自动推导（limits.py）
-            max_transcode=auto_transcode_concurrency(hardware=bool(backends)),
+            max_transcode=auto_transcode_concurrency(hardware=bool(execution_backend)),
             max_remux=MAX_REMUX_CONCURRENCY,
             quota_bytes=auto_quota_bytes(manager.cache_root),
+            use_remote=use_remote,
+            remote_base_url=remote_base_url if use_remote else None,
         )
     except (SessionLimitError, DiskQuotaError) as exc:
         raise ServiceUnavailableException(str(exc)) from exc
@@ -638,9 +903,41 @@ _SUBTITLE_LANG_NAMES = {
 #: 必须一致**——前端按 options 的下标定位系统字幕轨。
 _MASTER_SUBTITLE_KINDS = {"vtt", "ass"}
 
+# 只有转码目标是本服务明确固定过的编码时，才把 RFC 6381 标识写入 master。
+# copy 音轨只保存 codec family，没有保存 AAC profile 等完整信息，不能据此
+# 猜测 mp4a.40.2；Safari 收到错误 CODECS 比没有声明更容易走错解码路径。
+_HLS_AUDIO_CODEC_IDS = {
+    "aac": "mp4a.40.2",
+    "ac3": "ac-3",
+    "eac3": "ec-3",
+}
+
 
 def _master_subtitle_tracks(session) -> list:
     return [s for s in session.plan.subtitles if s.kind in _MASTER_SUBTITLE_KINDS]
+
+
+def _master_playlist_codecs(session: TranscodeSession) -> str | None:
+    """返回本会话可以确定的 HLS CODECS，未知时返回 None。
+
+    服务端转码视频统一是 H.264 High@4.1，RFC 6381 标识为 avc1.640029。
+    音频只有在本次明确转码时才知道 profile：AAC 参数由 ffmpeg 装配器锁为
+    AAC-LC，E-AC-3/AC-3 的目标编码也没有 profile 歧义。源音轨 copy 路径
+    没有保存足够的 profile 信息，因此整条声明保守省略。
+    """
+    plan = session.plan
+    if plan.video.action != "transcode" or (plan.video.codec or "").lower() != "h264":
+        return None
+    codecs = ["avc1.640029"]
+    if plan.audio.track_ref is None:
+        return ",".join(codecs)
+    if plan.audio.action != "transcode":
+        return None
+    audio_codec = _HLS_AUDIO_CODEC_IDS.get((plan.audio.codec or "").lower())
+    if audio_codec is None:
+        return None
+    codecs.append(audio_codec)
+    return ",".join(codecs)
 
 
 @router.get(
@@ -675,7 +972,10 @@ async def get_session_master_playlist(
         subtitles.append((name, f"sub{i}.m3u8"))
     return Response(
         content=build_master_playlist(
-            media_uri="index.m3u8", subtitles=subtitles, query=f"?token={token}"
+            media_uri="index.m3u8",
+            subtitles=subtitles,
+            codecs=_master_playlist_codecs(session),
+            query=f"?token={token}",
         ),
         media_type="application/vnd.apple.mpegurl",
         headers={"Cache-Control": "no-store"},
@@ -719,6 +1019,29 @@ async def get_session_subtitle_playlist(
         media_type="application/vnd.apple.mpegurl",
         headers={"Cache-Control": "no-store"},
     )
+
+
+@router.get(
+    "/sessions/{session_id}/diagnostics",
+    response_model=ApiResponse[PlaybackDiagnosticsView],
+    summary="播放会话诊断",
+    operation_id="playback.session.diagnostics",
+    openapi_extra={"x-cli-hidden": True},
+)
+async def get_session_diagnostics(
+    session_id: Annotated[str, Path()],
+    token: Annotated[str, Query()],
+) -> ApiResponse[PlaybackDiagnosticsView]:
+    """返回当前播放会话的脱敏执行与供片状态。"""
+    grant = await verify_stream_token(token, session_id=session_id)
+    if grant is None:
+        raise NotFoundException("播放地址无效或已过期")
+    manager = get_session_manager()
+    session = manager.get(session_id, member_id=grant.member_id)
+    if session is None:
+        raise NotFoundException("会话不存在或已结束")
+    session.touch()
+    return ok(_build_playback_diagnostics(session))
 
 
 @router.get(
@@ -819,6 +1142,35 @@ async def stream_library_file(
     )
 
 
+async def _extract_subtitle_until_disconnect(
+    request: Request, file: LibraryFile, index: int
+):
+    """等待字幕抽取，并在浏览器放弃请求时取消底层 ffmpeg。
+
+    内封 PGS/ASS 首次抽取需要通读整个容器，不能把它放进不可取消的线程池。
+    ``Request.is_disconnected`` 只负责发现客户端已经放弃，实际进程回收由
+    ``extract_embedded_subtitle_async`` 的进程组清理逻辑完成。
+    """
+    task = asyncio.create_task(extract_embedded_subtitle_async(file, index))
+    try:
+        while not task.done():
+            await asyncio.wait((task,), timeout=0.25)
+            if task.done():
+                break
+            if await request.is_disconnected():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+                raise _SubtitleClientDisconnected
+        return await task
+    except asyncio.CancelledError:
+        if not task.done():
+            task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        raise
+
+
 @router.get(
     "/files/{file_id}/subtitles",
     summary="旁挂字幕",
@@ -826,6 +1178,7 @@ async def stream_library_file(
     openapi_extra={"x-cli-hidden": True},
 )
 async def get_playback_subtitle(
+    request: Request,
     file_id: Annotated[int, Path()],
     track: Annotated[
         str, Query(description="中性轨引用：external:<文件名> / embedded:<序号>")
@@ -849,9 +1202,13 @@ async def get_playback_subtitle(
     if ref is None:
         index = parse_embedded_track(track)
         if index is not None:
-            # 抽取是阻塞的子进程调用，必须放线程池——单进程 async 服务里
-            # 一个阻塞调用会卡死全站的搜索、订阅、扫描。
-            ref = await asyncio.to_thread(extract_embedded_subtitle, file, index)
+            try:
+                ref = await _extract_subtitle_until_disconnect(request, file, index)
+            except _SubtitleClientDisconnected:
+                # 浏览器切换清晰度、关闭字幕或销毁播放器时可能主动取消请求。
+                # 此时连接本身通常已经关闭，204 只用于让 ASGI 边界安静结束，
+                # 不能把真实的 asyncio.CancelledError 一并吞掉。
+                return Response(status_code=204)
     if ref is None:
         raise NotFoundException("字幕轨不存在或暂不支持在网页端渲染")
     if ref.format == "sup":

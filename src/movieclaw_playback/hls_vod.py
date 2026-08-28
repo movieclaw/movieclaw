@@ -117,13 +117,16 @@ def build_master_playlist(
     *,
     media_uri: str,
     subtitles: list[tuple[str, str]] | None = None,
+    codecs: str | None = None,
     query: str = "",
 ) -> str:
-    """master 播放列表：一路视频 + 可选的 WEBVTT 字幕组。
+    """master 播放列表：一路视频 + 可选的 WEBVTT 字幕组与编码声明。
 
     字幕做成 HLS 字幕组的意义：Safari 原生 HLS / AVPlayer 把它当**系统级
     字幕轨**渲染——画中画小窗、原生全屏里都有字幕，这是网页 DOM 字幕层
     做不到的（PiP 图层只含视频帧）。``subtitles`` 为 (名字, 字幕列表 URI)。
+    ``codecs`` 只有调用方能准确知道输出 sample entry 时才传入；旧路径不应
+    为未知的源流伪造 CODECS，避免 Safari 依据错误声明选择错误的解码器。
     """
     lines = ["#EXTM3U", "#EXT-X-VERSION:7"]
     subtitle_attr = ""
@@ -137,8 +140,12 @@ def build_master_playlist(
             )
         subtitle_attr = ',SUBTITLES="subs"'
     # BANDWIDTH 是必填属性；直通档给不出真值，报一个宽松上限即可——
-    # 单变体列表没有档位切换，这个数字不参与任何决策
-    lines.append(f"#EXT-X-STREAM-INF:BANDWIDTH=80000000{subtitle_attr}")
+    # 单变体列表没有档位切换，这个数字不参与任何决策。CODECS 对 Safari
+    # 原生 HLS 尤其重要：它会在初始化 fMP4 前先按该声明筛选解码路径。
+    codecs_attr = f',CODECS="{codecs}"' if codecs else ""
+    lines.append(
+        f"#EXT-X-STREAM-INF:BANDWIDTH=80000000{codecs_attr}{subtitle_attr}"
+    )
     lines.append(f"{media_uri}{query}")
     return "\n".join(lines) + "\n"
 

@@ -152,6 +152,9 @@ class VideoPlan:
     action: str  # "copy" | "transcode"
     codec: str | None = None  # transcode 时的目标编码
     height: int | None = None  # transcode 时的目标高度
+    #: 源视频位深（来自 ffprobe）。VideoToolbox 从硬件帧下载前要据此选择
+    #: 8-bit 的 NV12 或 10-bit 的 P010；未知时由命令装配层安全回退软件解码。
+    source_bit_depth: int | None = None
     tone_map: bool = False  # HDR → SDR
     #: 要烧录进画面的字幕轨（中性引用，只会是内封 PGS）。非空即 Emby 语义的
     #: 「字幕压制」：用户显式选中位图字幕，视频整路转码、字幕合成进帧——
@@ -398,6 +401,24 @@ def _judge_video(
             can_copy=False,
             reason=f"{media.resolution} 超出设备可解码的分辨率，已降分辨率",
         )
+    # iOS 原生 HLS 会把 fMP4 交给 AVPlayer。Safari 的能力探测只代表「存在
+    # 某种可能的解码路径」，不能证明 4K 长时间播放不会触发硬件解码失败；
+    # 原生 HLS + 移动端因此沿用服务端现有 1080p 转码上限，先把视频码流
+    # 变成稳定的 H.264 8-bit 输出，再交给 AVPlayer。MSE 浏览器不走这条
+    # 分支，仍由真实播放失败后的 failed_tiers 回路处理。
+    if (
+        capability.native_hls
+        and capability.is_mobile
+        and height is not None
+        and height > policy.max_transcode_height
+    ):
+        return _VideoVerdict(
+            can_copy=False,
+            reason=(
+                f"移动端原生 HLS 播放限制为 {policy.max_transcode_height}p，"
+                "已转码降分辨率"
+            ),
+        )
     # 用户选了画质上限且源超出：强制转码降下去。放在设备判定之后——
     # 两条都命中时归因给设备（那是硬性的，用户上限只是偏好）
     if max_height is not None and height is not None and height > max_height:
@@ -461,6 +482,19 @@ def _judge_audio(
     default = _preferred_audio(tracks)
     chosen = next((t for t in tracks if t.ref == preferred_audio), None)
 
+    # iOS Safari 的原生 HLS 解码链比 MSE/hls.js 更挑剔：即使能力探测报告
+    # E-AC-3 或多声道 AAC 可用，放进 fMP4 后仍可能在 init/首片阶段直接报
+    # MEDIA_ERR_DECODE。保留用户选中的轨（或默认轨），但统一重编码成
+    # AAC-LC 双声道，给 AVPlayer 一个确定的、跨 iOS 版本稳定的音频格式。
+    if capability.native_hls and capability.is_mobile:
+        track = chosen or default
+        return _transcode_audio(
+            track,
+            capability,
+            prefix=f"移动端原生 HLS 音轨 {_track_label(track)}",
+            force_aac=True,
+        )
+
     if chosen is not None:
         support = capability.audio_support(chosen.codec)
         channels = chosen.channels or 2
@@ -495,22 +529,33 @@ def _judge_audio(
 
 
 def _transcode_audio(
-    track: AudioTrack, capability: ClientCapability, *, prefix: str
+    track: AudioTrack,
+    capability: ClientCapability,
+    *,
+    prefix: str,
+    force_aac: bool = False,
 ) -> _AudioVerdict:
-    """把一条放不了的轨转掉。目标编码优先 EAC3（保留多声道），客户端不支持则退 AAC。"""
-    eac3 = capability.audio_support("eac3")
     source_channels = track.channels or 2
-    if eac3 is not None and source_channels > 2:
-        target_codec, max_channels = "eac3", eac3.max_channels
-    else:
-        aac = capability.audio_support("aac")
+    if force_aac:
+        # 原生 HLS 的兼容性优先于保留多声道；显式输出双声道，即使源轨是单声道
+        # 也让后续的 HLS CODECS/音频参数保持固定，避免设备分支再次漂移。
         target_codec = "aac"
-        max_channels = aac.max_channels if aac else 2
-    target_channels = min(source_channels, max_channels)
+        target_channels = 2
+        reason = f"{prefix}已固定为 AAC-LC 双声道"
+    else:
+        eac3 = capability.audio_support("eac3")
+        if eac3 is not None and source_channels > 2:
+            target_codec, max_channels = "eac3", eac3.max_channels
+        else:
+            aac = capability.audio_support("aac")
+            target_codec = "aac"
+            max_channels = aac.max_channels if aac else 2
+        target_channels = min(source_channels, max_channels)
+        reason = f"{prefix} 浏览器不支持，已转为 {target_codec.upper()}"
     return _AudioVerdict(
         can_copy=False,
         track=track,
-        reason=f"{prefix} 浏览器不支持，已转为 {target_codec.upper()}",
+        reason=reason,
         target_codec=target_codec,
         target_channels=target_channels,
         downmix=target_channels < source_channels,
@@ -532,6 +577,8 @@ def _resolve_tier(
     audio: _AudioVerdict,
     policy: PlaybackPolicy,
     failed_tiers: frozenset[PlaybackTier],
+    *,
+    enforce_keyframe_gate: bool = True,
 ) -> tuple[PlaybackTier | PlaybackRejected, str, str, PlaybackTier | None]:
     """综合定档（§3.3 步骤 6–7）。返回 (档位或拒绝, 容器, 中文理由,
     降档起点)。
@@ -577,7 +624,10 @@ def _resolve_tier(
 
     # 步骤 7：档 1/2 的分片只能切在 IDR 上。关键帧太稀疏或索引未知时，
     # remux 的首帧优势消失，不如直接转码（§7-②）。
-    if tier in (PlaybackTier.REMUX, PlaybackTier.AUDIO_TRANSCODE):
+    if enforce_keyframe_gate and tier in (
+        PlaybackTier.REMUX,
+        PlaybackTier.AUDIO_TRANSCODE,
+    ):
         interval = media.keyframe_interval_s
         if interval is None or interval > MAX_KEYFRAME_INTERVAL_S:
             tier = (
@@ -624,6 +674,47 @@ def _resolve_tier(
     return tier, container, reason, degraded_from
 
 
+def needs_keyframe_probe(
+    media: MediaProfile,
+    capability: ClientCapability,
+    policy: PlaybackPolicy,
+    *,
+    failed_tiers: frozenset[PlaybackTier] = frozenset(),
+    preferred_audio: str | None = None,
+    preferred_subtitle: str | None = None,
+    max_height: int | None = None,
+) -> bool:
+    """判断当前候选是否需要读取源片关键帧密度。
+
+    关键帧密度只影响档 1/2（视频仍然 ``copy``）的安全性。这里先暂时不执行
+    关键帧门槛，算出候选在其它条件下的基准档位；只有基准档位仍需要复制视频
+    时，调用方才启动有存储开销的 ffprobe。这个预判不会把未经探测的结果交给
+    用户，最终的 ``decide_playback`` 仍会执行原有的保守门槛。
+    """
+    if media.is_strm or capability.universal:
+        return False
+
+    video_verdict = _judge_video(media, capability, policy, max_height)
+    audio_verdict = _judge_audio(media, capability, preferred_audio)
+    burn_track = _burn_target(media, preferred_subtitle)
+    if burn_track is not None and video_verdict.blocked is None:
+        video_verdict = _VideoVerdict(
+            can_copy=False,
+            reason="已选中 PGS 图形字幕，按你的选择转码并把字幕压制进画面",
+            tone_map=video_verdict.tone_map,
+        )
+
+    tier, _, _, _ = _resolve_tier(
+        media,
+        video_verdict,
+        audio_verdict,
+        policy,
+        failed_tiers,
+        enforce_keyframe_gate=False,
+    )
+    return tier in (PlaybackTier.REMUX, PlaybackTier.AUDIO_TRANSCODE)
+
+
 # ---------------------------------------------------------------------------
 # 计划装配
 # ---------------------------------------------------------------------------
@@ -649,6 +740,7 @@ def _build_video_plan(
         action="transcode",
         codec="h264",
         height=min(candidates),
+        source_bit_depth=media.bit_depth,
         tone_map=verdict.tone_map,
         burn_subtitle=burn_subtitle,
     )
@@ -772,5 +864,3 @@ def _decide_strm(
 def _preferred_audio(tracks: tuple[AudioTrack, ...]) -> AudioTrack:
     """首选音轨：标了 default 的优先，否则取第一条。"""
     return next((t for t in tracks if t.is_default), tracks[0])
-
-

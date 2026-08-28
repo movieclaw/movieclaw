@@ -1,4 +1,4 @@
-"""蓝光原盘 CLPI 语言元数据解析与 ffprobe 结果合并。
+"""蓝光原盘 MPLS 主播放列表、CLPI 语言元数据解析与 ffprobe 结果合并。
 
 BDMV 的 m2ts 是 MPEG-TS 流文件，ffprobe 能稳定拿到编码、声道与流 PID，
 但不少原盘没有把语言描述符写进 TS；真实语言位于同编号的
@@ -18,6 +18,133 @@ from pathlib import Path
 from movieclaw_api.services.media_probe import MediaSpec
 
 logger = logging.getLogger("movieclaw_api.bluray")
+
+_MPLS_CLOCK_HZ = 45_000
+
+
+class MplsParseError(ValueError):
+    """MPLS 结构不完整或字段越界。"""
+
+
+@dataclass(frozen=True)
+class MplsPlayItem:
+    """播放列表里的一个剪辑及有效播放区间。"""
+
+    clip_id: str
+    in_time: int
+    out_time: int
+
+    @property
+    def duration_seconds(self) -> float:
+        return max(0, self.out_time - self.in_time) / _MPLS_CLOCK_HZ
+
+
+@dataclass(frozen=True)
+class MplsPlaylist:
+    """可用于选主片的 MPLS 播放列表。"""
+
+    path: Path
+    items: tuple[MplsPlayItem, ...]
+
+    @property
+    def duration_seconds(self) -> int:
+        return round(sum(item.duration_seconds for item in self.items))
+
+    @property
+    def clip_ids(self) -> tuple[str, ...]:
+        return tuple(item.clip_id for item in self.items)
+
+
+def parse_mpls_playlist(data: bytes, *, path: Path = Path("unknown.mpls")) -> MplsPlaylist:
+    """解析 MPLS 的 PlayList 小节。
+
+    这里只读取选择主片所需的 clip id 与 IN/OUT 时间；STN、角度和 SubPath
+    都保留在完整原盘目录中，不需要为了入库而解释或改写。
+    """
+    if len(data) < 20 or data[:4] != b"MPLS":
+        raise MplsParseError("文件签名不是 MPLS 或文件头过短")
+    playlist_offset = int.from_bytes(data[8:12], "big")
+    if playlist_offset + 10 > len(data):
+        raise MplsParseError("PlayList 偏移越界")
+    section_length = int.from_bytes(data[playlist_offset : playlist_offset + 4], "big")
+    section_end = playlist_offset + 4 + section_length
+    if section_end > len(data):
+        raise MplsParseError("PlayList 长度越界")
+    pos = playlist_offset + 4
+    _require(pos, 6, section_end, "PlayList header")
+    pos += 2  # reserved
+    play_item_count = int.from_bytes(data[pos : pos + 2], "big")
+    pos += 4  # number_of_play_items + number_of_sub_paths
+    items: list[MplsPlayItem] = []
+    for _ in range(play_item_count):
+        _require(pos, 2, section_end, "PlayItem length")
+        item_length = int.from_bytes(data[pos : pos + 2], "big")
+        item_start = pos + 2
+        item_end = item_start + item_length
+        _require(item_start, item_length, section_end, "PlayItem")
+        # clip id(5) + codec id(4) + flags(2) + stc id(1) + in/out(8)
+        _require(item_start, 20, item_end, "PlayItem core")
+        clip_raw = data[item_start : item_start + 5]
+        codec_raw = data[item_start + 5 : item_start + 9]
+        try:
+            clip_id = clip_raw.decode("ascii")
+            codec = codec_raw.decode("ascii")
+        except UnicodeDecodeError as exc:
+            raise MplsParseError("PlayItem 标识不是 ASCII") from exc
+        if not clip_id.isdigit() or codec != "M2TS":
+            raise MplsParseError("PlayItem 的 clip/codec 标识无效")
+        in_time = int.from_bytes(data[item_start + 12 : item_start + 16], "big")
+        out_time = int.from_bytes(data[item_start + 16 : item_start + 20], "big")
+        if out_time < in_time:
+            raise MplsParseError("PlayItem 的 OUT_time 早于 IN_time")
+        items.append(MplsPlayItem(clip_id=clip_id, in_time=in_time, out_time=out_time))
+        pos = item_end
+    if not items:
+        raise MplsParseError("播放列表没有 PlayItem")
+    return MplsPlaylist(path=path, items=tuple(items))
+
+
+def read_main_playlist(disc_dir: Path) -> MplsPlaylist | None:
+    """从完整 BDMV 中选择主播放列表；损坏/伪列表只降级，不阻断扫描。
+
+    候选必须引用实际存在的 STREAM 文件。按有效播放时长优先，同一剪辑序列
+    只保留一个，避免不同语言/菜单入口的等价 MPLS 放大候选数量。
+    """
+    playlist_dir = disc_dir / "BDMV" / "PLAYLIST"
+    stream_dir = disc_dir / "BDMV" / "STREAM"
+    if not playlist_dir.is_dir() or not stream_dir.is_dir():
+        return None
+    by_sequence: dict[tuple[str, ...], MplsPlaylist] = {}
+    try:
+        paths = sorted(
+            path
+            for path in playlist_dir.iterdir()
+            if path.is_file() and path.suffix.lower() == ".mpls"
+        )
+        streams = {
+            path.stem: path
+            for path in stream_dir.iterdir()
+            if path.is_file() and path.suffix.lower() == ".m2ts"
+        }
+    except OSError:
+        return None
+    for path in paths:
+        try:
+            playlist = parse_mpls_playlist(path.read_bytes(), path=path)
+        except (OSError, MplsParseError) as exc:
+            logger.warning("蓝光 MPLS 解析失败，跳过候选：%s（%s）", path, exc)
+            continue
+        if not all(clip_id in streams for clip_id in playlist.clip_ids):
+            continue
+        current = by_sequence.get(playlist.clip_ids)
+        if current is None or playlist.duration_seconds > current.duration_seconds:
+            by_sequence[playlist.clip_ids] = playlist
+    return max(
+        by_sequence.values(),
+        key=lambda row: (row.duration_seconds, len(row.items), row.path.name),
+        default=None,
+    )
+
 
 # 写进音轨/字幕 JSON 的内部版本戳。API 会显式投影公开字段，因此不会把它暴露
 # 给前端；存量补探靠它区分“旧数据尚未读 CLPI”和“读过但语言确实未知”。

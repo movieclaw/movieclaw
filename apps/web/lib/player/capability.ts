@@ -21,14 +21,15 @@
  * supported；流畅与否交给运行期证据——真掉帧由 framedrop watchdog 降档。
  */
 
-import type { ClientCapability } from "@/lib/api/playback";
+import type { ClientCapability, MseKind } from "@/lib/api/playback";
 
 /** 快照结构版本。改了探测矩阵或字段含义就 +1，旧缓存自动失效。 */
 // 2：快照加了 native_hls 字段（选原生 HLS 引擎用）。老缓存没有它，
 // iPhone 会误走 hls.js 路径——版本不同即作废重探。
 // 3：max_height 语义从「流畅上限」改为「支持上限」（smooth 降为参考）。
 // 老缓存里被 smooth=false 压低过的上限会让服务端继续错误转码，必须重探。
-export const CAPABILITY_SCHEMA_VERSION = 3;
+// 4：ManagedMediaSource 优先于 MediaSource，确保能力快照与 hls.js 实际后端一致。
+export const CAPABILITY_SCHEMA_VERSION = 4;
 
 const CACHE_KEY = "movieclaw.player.capability";
 
@@ -122,10 +123,26 @@ export function pickAudioChannels(
 
 /** 环境事实：MSE 形态、HDR 直出、是否移动端。浏览器相关，注入以便测试。 */
 export interface PlaybackEnvironment {
-  mse: string;
+  mse: MseKind;
   hdr_passthrough: boolean;
   is_mobile: boolean;
   native_hls: boolean;
+}
+
+/**
+ * 把浏览器暴露的 MSE 构造器归一成三态。
+ *
+ * ManagedMediaSource 要优先于 MediaSource：部分较新的 WebKit 版本可能同时
+ * 暴露两者，但 hls.js 默认也会优先选择 ManagedMediaSource。能力快照必须和
+ * 实际引擎一致，否则服务端会记成 full，播放器却可能落到另一条 WebKit 实现。
+ */
+export function detectMseKind(environment: {
+  MediaSource?: unknown;
+  ManagedMediaSource?: unknown;
+}): MseKind {
+  if (environment.ManagedMediaSource) return "managed";
+  if (environment.MediaSource) return "full";
+  return "none";
 }
 
 /**
@@ -245,9 +262,9 @@ function readEnvironment(): PlaybackEnvironment {
     MediaSource?: unknown;
     ManagedMediaSource?: unknown;
   };
-  // iOS 17+ 只给 ManagedMediaSource（MSE 的子集），要单独识别：它决定
-  // 走 hls.js 还是交给系统原生 HLS（§6.4）。
-  const mse = w.MediaSource ? "full" : w.ManagedMediaSource ? "managed" : "none";
+  // iOS 17+ 只给 ManagedMediaSource（MSE 的子集），要单独识别：现代 iOS
+  // 交给 hls.js，只有完全没有 MSE 的老设备才交给系统原生 HLS（§6.4）。
+  const mse = detectMseKind(w);
   const probeVideo = document.createElement("video");
   const nativeHls =
     probeVideo.canPlayType("application/vnd.apple.mpegurl") !== "";

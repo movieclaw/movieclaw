@@ -11,7 +11,9 @@ import { PlayerCenterControls, PlayerControls } from "@/components/player/player
 import { SubtitleLayer, useVideoContentBox } from "@/components/player/subtitle-layer";
 import {
   type ClientCapability,
+  fetchPlaybackDiagnostics,
   type PlaybackUnit,
+  type PlaybackDiagnostics,
   type PlaybackWatchState,
   pingPlaybackSession,
   reportPlaybackProgress,
@@ -46,7 +48,11 @@ import {
 import { planAudioOptions } from "@/lib/player/audio-tracks";
 import { chromeMustStayVisible, shouldHideOnPointerLeave } from "@/lib/player/chrome";
 import { createFrameDropTracker } from "@/lib/player/framedrop";
-import { planSystemTrackModes, resolvePlaybackMode } from "@/lib/player/playback-mode";
+import {
+  planSystemTrackModes,
+  resolvePlaybackMode,
+  shouldApplyPostAttachSeek,
+} from "@/lib/player/playback-mode";
 import { loadQualityPreference, saveQualityPreference } from "@/lib/player/quality";
 import { createSessionReleaser } from "@/lib/player/session-release";
 import {
@@ -235,6 +241,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
   // 直接闭包会拿到过期的会话，上报到错误的档位上。
   const qoeSnapshotRef = useRef<() => PlaybackMetricPayload | null>(() => null);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  const [serverDiagnostics, setServerDiagnostics] = useState<PlaybackDiagnostics | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [chromeVisible, setChromeVisible] = useState(true);
   /**
@@ -409,6 +416,9 @@ export function VideoPlayer(props: VideoPlayerProps) {
 
   const containerRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<PlaybackEngine | null>(null);
+  /** 事件监听器捕获的会话；切档时旧 video 事件不得污染新会话。 */
+  const activeSessionRef = useRef(state.session);
+  activeSessionRef.current = state.session;
   const capabilityRef = useRef<ClientCapability | null>(null);
   /** 已发起的起播请求指纹：React 严格模式下 effect 会跑两遍，靠它去重 */
   const startedKeyRef = useRef<string | null>(null);
@@ -737,20 +747,25 @@ export function VideoPlayer(props: VideoPlayerProps) {
     const session = state.session;
     if (!session?.stream_url || !video || !mode) return;
 
+    let disposed = false;
     const engine = createEngine({
       video,
       streamUrl: resolveStreamUrl(mode.streamUrl),
       container: session.decision.container ?? "mp4",
       hasMse: capabilityRef.current?.mse !== "none",
+      mse: capabilityRef.current?.mse ?? "none",
       preferNativeHls: mode.engine === "native-hls",
       // 首帧就从续播点开始装载。会话相对制下换算结果≈0，与从前无异；VOD
       // 全片列表下这是防止 hls.js 先去拉第 0 段的关键（engine.ts 有注释）
       startPositionS: Math.max(0, toSessionSeconds(pendingFileMsRef.current, mode.originMs)),
-      onFailed: (reason) => dispatch({ type: "failed", reason }),
+      onFailed: (reason) => {
+        if (!disposed) dispatch({ type: "failed", reason });
+      },
       // 取流持续失败（token 过期 / 服务端中断）：与心跳自愈同一条路，同档位
       // 原地重开（新会话 = 新 token），不走降档——这一档没有失败。真断网时
       // 重开请求本身会失败，落到 fatal 错误页，比无限转圈至少让人知道出了事。
       onNetworkDead: () => {
+        if (disposed) return;
         // 刻意不动 wantsPlayRef：断流也可能发生在用户暂停期间（暂停时
         // hls.js 还在预载），置 true 会替他续播。在播的话它本来就是 true。
         video.pause();
@@ -760,14 +775,21 @@ export function VideoPlayer(props: VideoPlayerProps) {
     });
     engineRef.current = engine;
 
-    let disposed = false;
     void engine.attach().then(() => {
-      if (disposed) return;
+      // hls.js 是动态 import；切档恰好发生在 import 完成前时，destroy() 会
+      // 早于真正 attach。attach 完成后再补一次销毁，避免旧引擎变成孤儿。
+      if (disposed) {
+        engine.destroy();
+        return;
+      }
       // 会话相对制：转码会话已从 start_ms 起转，换算结果≈0；档 0 直出没有
       // 偏移，续播点在这里真的跳一次。文件绝对制：参照点为 0，target 即
       // 文件秒数，seek 由播放器按 VOD 列表直接取对应分片。
       const target = toSessionSeconds(pendingFileMsRef.current, mode.originMs);
-      if (target > 1) {
+      // 原生 HLS 的 DirectEngine 已在自己的 loadedmetadata listener 中完成
+      // 首次 seek；这里不能再挂第二个 listener，否则 Safari 可能取消并重拉
+      // 首个 init/segment，触发 MEDIA_ERR_DECODE。
+      if (shouldApplyPostAttachSeek(mode.engine, target)) {
         const seek = () => {
           video.currentTime = target;
         };
@@ -775,6 +797,12 @@ export function VideoPlayer(props: VideoPlayerProps) {
         else video.addEventListener("loadedmetadata", seek, { once: true });
       }
       void tryAutoplay();
+    }).catch((error: unknown) => {
+      if (disposed) return;
+      dispatch({
+        type: "fatal",
+        message: error instanceof Error ? error.message : "播放引擎启动失败",
+      });
     });
 
     return () => {
@@ -798,37 +826,83 @@ export function VideoPlayer(props: VideoPlayerProps) {
     setAutoplay(null);
   }, [state.session]);
 
+  /** 诊断面板打开时轮询服务端会话，关闭后不额外占用 NAS 请求。 */
+  const diagnosticsSessionId = state.session?.session_id;
+  const diagnosticsStreamUrl = state.session?.stream_url;
+  useEffect(() => {
+    if (!diagnosticsOpen || !diagnosticsSessionId || !diagnosticsStreamUrl) {
+      setServerDiagnostics(null);
+      return;
+    }
+    let cancelled = false;
+    let timer: number | null = null;
+
+    const poll = async () => {
+      try {
+        const snapshot = await fetchPlaybackDiagnostics(
+          diagnosticsSessionId,
+          diagnosticsStreamUrl,
+        );
+        if (!cancelled) setServerDiagnostics(snapshot);
+      } catch {
+        // 诊断是旁路信息，服务端瞬时不可用时保留上一份快照，不影响播放。
+      }
+      if (!cancelled) timer = window.setTimeout(poll, 2_000);
+    };
+
+    setServerDiagnostics(null);
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [diagnosticsOpen, diagnosticsSessionId, diagnosticsStreamUrl]);
+
   /** 累计一条播放质量事件。归约是纯函数，这里只负责喂事件。 */
   const qoe = useCallback((event: QoeEvent) => {
     qoeRef.current = reduceQoe(qoeRef.current, event);
   }, []);
 
-  /** video 元素事件 → 状态机 / 进度 / 质量采集。绑一次，值从 ref 读。 */
+  /** video 元素事件 → 状态机 / 进度 / 质量采集；每个会话单独绑定并校验身份。 */
   useEffect(() => {
-    if (!video) return;
+    const session = state.session;
+    if (!video || !session) return;
+    const isCurrentSession = () => activeSessionRef.current === session;
     const onPlaying = () => {
+      if (!isCurrentSession()) return;
       setPaused(false);
       qoe({ type: "playing", at: performance.now() });
       dispatch({ type: "playing" });
     };
-    const onPause = () => setPaused(true);
+    const onPause = () => {
+      if (isCurrentSession()) setPaused(true);
+    };
     const onWaiting = () => {
+      if (!isCurrentSession()) return;
       qoe({ type: "waiting", at: performance.now() });
       dispatch({ type: "buffering" });
     };
     const onSeeking = () => {
+      if (!isCurrentSession()) return;
       qoe({ type: "seeking", at: performance.now() });
       dispatch({ type: "seeking" });
     };
-    const onSeeked = () => qoe({ type: "seeked", at: performance.now() });
-    const onEnded = () => dispatch({ type: "ended" });
-    const onDurationChange = () =>
+    const onSeeked = () => {
+      if (isCurrentSession()) qoe({ type: "seeked", at: performance.now() });
+    };
+    const onEnded = () => {
+      if (isCurrentSession()) dispatch({ type: "ended" });
+    };
+    const onDurationChange = () => {
+      if (!isCurrentSession()) return;
       setVideoDurationMs(
-        Number.isFinite(video.duration) && video.duration > 0
-          ? Math.round(video.duration * 1000)
-          : null,
-      );
+          Number.isFinite(video.duration) && video.duration > 0
+            ? Math.round(video.duration * 1000)
+            : null,
+        );
+    };
     const onTimeUpdate = () => {
+      if (!isCurrentSession()) return;
       setPositionMs(toFileMs(video.currentTime, startMsRef.current));
       const ranges = video.buffered;
       setBufferedEndMs(
@@ -836,7 +910,9 @@ export function VideoPlayer(props: VideoPlayerProps) {
       );
     };
     // 「现在应该能播了」的两个时机：挂流那一次可能太早，这两次是补刀
-    const onReady = () => void tryAutoplay();
+    const onReady = () => {
+      if (isCurrentSession()) void tryAutoplay();
+    };
 
     video.addEventListener("playing", onPlaying);
     video.addEventListener("pause", onPause);
@@ -860,7 +936,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
       video.removeEventListener("loadedmetadata", onReady);
       video.removeEventListener("canplay", onReady);
     };
-  }, [video, qoe, tryAutoplay]);
+  }, [state.session, video, qoe, tryAutoplay]);
 
   // ---------------------------------------------------------------------
   // 字幕：轨记忆来自 playback_state，用户明确关掉过就不要再自作主张打开
@@ -1210,7 +1286,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
       // 这次暂停是我们造成的，不是用户不想看——换完要接着播
       wantsPlayRef.current = true;
       pendingFileMsRef.current = positionRef.current;
-      dispatch({ type: "restart", startMs: positionRef.current });
+      dispatch({ type: "request", startMs: positionRef.current });
     },
     [state.session, video],
   );
@@ -1235,7 +1311,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
       video?.pause();
       wantsPlayRef.current = true;
       pendingFileMsRef.current = positionRef.current;
-      dispatch({ type: "restart", startMs: positionRef.current });
+      dispatch({ type: "request", startMs: positionRef.current });
     },
     [subtitles, burnedSubtitle, video],
   );
@@ -1281,7 +1357,9 @@ export function VideoPlayer(props: VideoPlayerProps) {
       video?.pause();
       wantsPlayRef.current = true;
       pendingFileMsRef.current = positionRef.current;
-      dispatch({ type: "restart", startMs: positionRef.current });
+      // 用户主动切档是新的播放尝试：清掉自动降档历史，并让旧会话先进入
+      // cleanup，避免上一个硬件档的迟到错误把本次请求推回软件档。
+      dispatch({ type: "request", startMs: positionRef.current });
     },
     [quality, state.session, video],
   );
@@ -1302,7 +1380,8 @@ export function VideoPlayer(props: VideoPlayerProps) {
       });
       if (plan.kind === "native") {
         const seconds = Math.max(0, plan.seconds);
-        video.currentTime = seconds;
+        if (engineRef.current?.seek) engineRef.current.seek(seconds);
+        else video.currentTime = seconds;
         // 乐观更新进度条：seek 落到未缓冲区间（往回拖出 back buffer、往前
         // 拖到没转的段）时，规范只在 seek **完成**后才发 timeupdate——
         // 服务端供片要一两秒，这期间进度条会弹回旧位置，用户以为没拖上。
@@ -2245,6 +2324,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
             engine={engineRef.current}
             qoe={() => liveStats(qoeRef.current)}
             landscape={landscape}
+            diagnostics={serverDiagnostics}
             onClose={() => setDiagnosticsOpen(false)}
           />
         ) : null}

@@ -1,2 +1,9 @@
 packages:
   - "apps/*"
+allowBuilds:
+  "@tailwindcss/oxide": true
+  esbuild: true
+  lfa-ponyfill: false
+  sharp: true
+  spawn-sync: false
+  unrs-resolver: true

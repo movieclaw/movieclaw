@@ -36,3 +36,28 @@ def test_nginx_template_covers_all_jellyfin_namespaces() -> None:
                 f"后端命名空间 /{prefix} 不在 nginx 放行清单里——该命名空间的"
                 "请求会落到 Next 返回 404 HTML（客户端视角就是功能坏了）"
             )
+
+
+def test_nginx_template_forwards_transcode_worker_websocket_upgrade() -> None:
+    """外置 Worker 的 WebSocket 握手不能被通用 API 反代降级成普通 GET。"""
+    text = _TEMPLATE.read_text(encoding="utf-8")
+    assert re.search(
+        r"map\s+\$http_upgrade\s+\$movieclaw_connection_upgrade\s*\{"
+        r".*?default\s+upgrade;.*?\"\"\s+close;.*?\}",
+        text,
+        flags=re.DOTALL,
+    )
+
+    location = re.search(
+        r"location\s*=\s*/api/v1/transcode-worker/ws\s*\{(?P<body>.*?)\n\s*\}",
+        text,
+        flags=re.DOTALL,
+    )
+    assert location, "nginx 模板缺少外置转码 Worker 的精确 WebSocket location"
+    body = location.group("body")
+    for directive in (
+        "proxy_http_version 1.1;",
+        "proxy_set_header Upgrade $http_upgrade;",
+        "proxy_set_header Connection $movieclaw_connection_upgrade;",
+    ):
+        assert directive in body, f"WebSocket location 缺少 {directive}"

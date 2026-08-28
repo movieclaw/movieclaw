@@ -669,6 +669,278 @@ async def test_between_watermarks_keeps_paused_state(manager, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_low_watermark_pauses_and_resumes_remote_worker_session(manager, monkeypatch):
+    """远程 ffmpeg 没有 NAS PID，也必须受到同一套磁盘水位保护。"""
+
+    class FakeRemoteRegistry:
+        def __init__(self) -> None:
+            self.commands: list[tuple[str, str]] = []
+
+        def job_state(self, job_id: str) -> dict[str, str]:
+            assert job_id == "remote-job"
+            return {"type": "job.accepted"}
+
+        async def pause(self, job_id: str) -> bool:
+            self.commands.append(("pause", job_id))
+            return True
+
+        async def resume(self, job_id: str) -> bool:
+            self.commands.append(("resume", job_id))
+            return True
+
+    registry = FakeRemoteRegistry()
+    monkeypatch.setattr(session_mod, "get_remote_worker_registry", lambda: registry)
+    remote = session_mod.TranscodeSession(
+        id="remote-session",
+        file_id=1,
+        member_id=1,
+        tier=PlaybackTier.HARDWARE_TRANSCODE,
+        directory=manager.cache_root / "remote-session",
+        start_ms=0,
+        plan=make_plan(PlaybackTier.HARDWARE_TRANSCODE),
+        state="ready",
+        remote=True,
+        remote_worker_id="mac-mini-a",
+        remote_job_id="remote-job",
+    )
+    remote.directory.mkdir(parents=True)
+    manager._sessions[remote.id] = remote
+
+    set_free_bytes(monkeypatch, session_mod.MIN_FREE_BYTES - 1)
+    await manager.reap()
+    assert remote.disk_paused is True
+    assert registry.commands == [("pause", "remote-job")]
+
+    set_free_bytes(monkeypatch, session_mod.RESUME_FREE_BYTES)
+    await manager.reap()
+    assert remote.disk_paused is False
+    assert registry.commands == [("pause", "remote-job"), ("resume", "remote-job")]
+
+
+@pytest.mark.asyncio
+async def test_remote_session_dispatches_job_without_local_process(manager, monkeypatch):
+    """远程会话只登记控制面任务，NAS 进程表里不能出现本地 ffmpeg。"""
+
+    class FakeRemoteRegistry:
+        def __init__(self) -> None:
+            self.dispatches: list[tuple[str, dict, str]] = []
+            self.cancelled: list[str] = []
+            self.removed: list[str] = []
+
+        def create_job_waiter(self, job_id: str) -> None:
+            self.waiting = job_id
+
+        async def dispatch(self, job_id: str, payload: dict, *, backend: str) -> str:
+            self.dispatches.append((job_id, payload, backend))
+            return "mac-mini-a"
+
+        async def wait_job_event(self, job_id: str) -> dict[str, str]:
+            assert job_id == self.waiting
+            return {"type": "job.accepted"}
+
+        def job_state(self, job_id: str) -> dict[str, str]:
+            assert job_id == self.waiting
+            return {"type": "job.accepted"}
+
+        def worker_online(self, worker_id: str | None) -> bool:
+            return worker_id == "mac-mini-a"
+
+        def remove_job_waiter(self, job_id: str) -> None:
+            assert job_id == self.waiting
+
+        async def cancel(self, job_id: str) -> None:
+            self.cancelled.append(job_id)
+
+        def remove_job(self, job_id: str) -> None:
+            self.removed.append(job_id)
+
+    async def fake_issue_remote_grant(**kwargs: object) -> str:
+        return f"{kwargs['kind']}-grant"
+
+    registry = FakeRemoteRegistry()
+    monkeypatch.setattr(session_mod, "get_remote_worker_registry", lambda: registry)
+    monkeypatch.setattr(session_mod, "issue_remote_grant", fake_issue_remote_grant)
+    plan = PlaybackPlan(
+        tier=PlaybackTier.HARDWARE_TRANSCODE,
+        file_id=1,
+        container="hls-fmp4",
+        video=VideoPlan(action="transcode", codec="h264", height=1080),
+        audio=AudioPlan(action="copy", track_ref=None),
+        reason="测试",
+    )
+
+    session = await manager.start(
+        plan,
+        source_path="/media/movie.mkv",
+        member_id=1,
+        hw_backend="videotoolbox",
+        segment_plan=_boundaries(2),
+        use_remote=True,
+        remote_base_url="https://nas.example.com",
+    )
+
+    assert session.remote is True
+    assert session.process is None
+    assert session.remote_worker_id == "mac-mini-a"
+    job_id, payload, backend = registry.dispatches[0]
+    assert session.remote_job_id == job_id
+    assert backend == "videotoolbox"
+    assert "https://nas.example.com/api/v1/transcode-worker/sessions/" in " ".join(
+        payload["ffmpeg_args"]
+    )
+
+    assert await manager.stop(session.id) is True
+    assert registry.cancelled == [job_id]
+    assert registry.removed == [job_id]
+
+
+@pytest.mark.asyncio
+async def test_remote_start_failure_does_not_fallback_to_local_software(manager, monkeypatch):
+    """远程 Worker 在首片前不可用时，不能绕过软件转码同意门槛。"""
+
+    class FakeRemoteRegistry:
+        def __init__(self) -> None:
+            self.cancelled: list[str] = []
+            self.removed: list[str] = []
+
+        def create_job_waiter(self, job_id: str) -> None:
+            self.job_id = job_id
+
+        async def dispatch(self, job_id: str, payload: dict, *, backend: str) -> str:
+            raise session_mod.RemoteWorkerUnavailable("Worker 刚刚断线")
+
+        def remove_job_waiter(self, job_id: str) -> None:
+            pass
+
+        async def cancel(self, job_id: str) -> None:
+            self.cancelled.append(job_id)
+
+        def remove_job(self, job_id: str) -> None:
+            self.removed.append(job_id)
+
+    local_builds: list[str | None] = []
+
+    def fake_build(
+        plan,
+        *,
+        source_path,
+        session_dir,
+        start_ms=0,
+        hw_backend=None,
+        start_number=None,
+        output_base_url=None,
+        output_url_suffix="",
+    ):
+        name = "live.m3u8" if start_number is not None else "index.m3u8"
+        playlist = Path(session_dir) / name
+        if output_base_url:
+            return TranscodeCommand(
+                argv=["python3", "-c", "pass"],
+                playlist_path=playlist,
+                init_path=Path(session_dir) / "init.mp4",
+            )
+        local_builds.append(hw_backend)
+        return TranscodeCommand(
+            argv=[*_script(WRITES_PLAYLIST_THEN_SLEEPS), str(playlist)],
+            playlist_path=playlist,
+            init_path=Path(session_dir) / "init.mp4",
+        )
+
+    registry = FakeRemoteRegistry()
+    monkeypatch.setattr(session_mod, "get_remote_worker_registry", lambda: registry)
+
+    async def fake_issue_remote_grant(**_: object) -> str:
+        return "grant"
+
+    monkeypatch.setattr(session_mod, "issue_remote_grant", fake_issue_remote_grant)
+    monkeypatch.setattr(session_mod, "build_hls_command", fake_build)
+    plan = PlaybackPlan(
+        tier=PlaybackTier.HARDWARE_TRANSCODE,
+        file_id=1,
+        container="hls-fmp4",
+        video=VideoPlan(action="transcode", codec="h264", height=1080),
+        audio=AudioPlan(action="copy"),
+        reason="测试",
+    )
+
+    with pytest.raises(SessionStartError, match="远程转码不可用"):
+        await manager.start(
+            plan,
+            source_path="/media/movie.mkv",
+            member_id=1,
+            hw_backend="videotoolbox",
+            segment_plan=_boundaries(2),
+            use_remote=True,
+            remote_base_url="https://nas.example.com",
+        )
+
+    assert manager.active() == []
+    assert local_builds == []
+    assert len(registry.cancelled) == 1
+    assert registry.removed == registry.cancelled
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["rejected", "timeout"])
+async def test_remote_restart_failure_cleans_up_new_job(manager, tmp_path, monkeypatch, failure):
+    """seek 重启在新 job 接单失败或超时时，不能留下远程槽位和运行任务。"""
+
+    class FakeRemoteRegistry:
+        def __init__(self) -> None:
+            self.created: str | None = None
+            self.cancelled: list[tuple[str, bool]] = []
+            self.removed: list[str] = []
+            self.waiters_removed: list[str] = []
+
+        def create_job_waiter(self, job_id: str) -> None:
+            self.created = job_id
+
+        async def dispatch(self, job_id: str, payload: dict, *, backend: str) -> str:
+            return "mac-mini-a"
+
+        async def wait_job_event(self, job_id: str) -> dict[str, str]:
+            assert job_id == self.created
+            if failure == "timeout":
+                raise session_mod.RemoteWorkerUnavailable("远程 Worker 接单超时")
+            return {"type": "job.failed", "error": "Worker 拒绝 seek 任务"}
+
+        async def cancel(self, job_id: str, *, force: bool = False) -> None:
+            self.cancelled.append((job_id, force))
+
+        def remove_job(self, job_id: str) -> None:
+            self.removed.append(job_id)
+
+        def remove_job_waiter(self, job_id: str) -> None:
+            self.waiters_removed.append(job_id)
+
+    registry = FakeRemoteRegistry()
+    monkeypatch.setattr(session_mod, "get_remote_worker_registry", lambda: registry)
+
+    async def fake_issue_remote_grant(**_: object) -> str:
+        return "grant"
+
+    monkeypatch.setattr(session_mod, "issue_remote_grant", fake_issue_remote_grant)
+    session = _vod_session(tmp_path / "session", head=0, completed=set())
+    session.remote = True
+    session.state = "ready"
+    session.hw_backend = "videotoolbox"
+    session.remote_source_url = "https://nas.example.com/source"
+    session.remote_artifact_base_url = "https://nas.example.com/artifacts"
+    session.directory.mkdir(parents=True)
+
+    with pytest.raises(SessionStartError):
+        await manager._restart_remote(session, 0)
+
+    assert registry.created is not None
+    assert registry.cancelled == [(registry.created, True)]
+    assert registry.removed == [registry.created]
+    assert registry.waiters_removed == [registry.created]
+    assert session.remote_job_id is None
+    assert session.remote_worker_id is None
+    assert session.state == "failed"
+
+
+@pytest.mark.asyncio
 async def test_paused_session_can_still_be_stopped(manager, monkeypatch):
     """挂起的进程不响应 SIGTERM，stop 必须先 SIGCONT 再杀，否则要干等超时。"""
     install_fake(monkeypatch, WRITES_PLAYLIST_THEN_SLEEPS)
@@ -718,6 +990,110 @@ def test_highest_produced_counts_contiguous_run_only(manager, tmp_path):
     # 与上一轮无缝衔接时旧分片照常计入——它们本来就直接可服务
     session = _vod_session(tmp_path, head=782, completed={782, 783, 784})
     assert manager._highest_produced(session) == 784
+
+
+def test_sync_completed_accepts_remote_absolute_playlist_urls(manager, tmp_path):
+    session = _vod_session(tmp_path, head=0, completed=set())
+    session.playlist_path.write_text(
+        "#EXTM3U\n"
+        'https://nas.example.com/artifacts/seg00000.m4s?token=artifact\n'
+        'https://nas.example.com/artifacts/seg00001.m4s?token=artifact\n',
+        encoding="utf-8",
+    )
+
+    manager._sync_completed(session)
+
+    assert session.completed_segments == {0, 1}
+
+
+def test_remote_atomic_segment_is_ready_without_live_playlist(manager, tmp_path):
+    """远程分片已原子落盘时，不应因 live.m3u8 上传中断而等待 30 秒。"""
+    session = _vod_session(tmp_path, head=0, completed=set())
+    session.remote = True
+    session.remote_job_id = "remote-job"
+    session.directory.mkdir(parents=True, exist_ok=True)
+    (session.directory / "seg00000.m4s").touch()
+    assert manager._segment_ready(session, 0) is False
+    (session.directory / "seg00000.m4s").write_bytes(b"complete-segment")
+
+    assert manager._segment_ready(session, 0) is True
+    assert session.completed_segments == {0}
+    assert manager._highest_produced(session) == 0
+
+
+@pytest.mark.asyncio
+async def test_remote_failed_segment_upload_is_retried(manager, tmp_path, monkeypatch):
+    """回归：中间分片上传失败、后续分片已到位时，不能继续等缺口自然出现。"""
+    session = _vod_session(tmp_path, head=0, completed={0, 1, 2, 4, 5})
+    session.remote = True
+    session.remote_job_id = "remote-job"
+    session.pending_segments[3] = 1
+    session.pending_since[3] = time.monotonic()
+    session.record_remote_upload(
+        "seg00003.m4s",
+        status=499,
+        received_bytes=123,
+        content_length=456,
+        transfer_encoding="chunked",
+    )
+    restarted: list[int] = []
+
+    async def fake_restart(_session, index: int) -> None:
+        restarted.append(index)
+
+    monkeypatch.setattr(manager, "_restart_remote", fake_restart)
+
+    await manager._maybe_restart_for(session, 3)
+
+    assert restarted == [3]
+    assert session.restart_generation == 1
+
+
+@pytest.mark.asyncio
+async def test_remote_restart_window_does_not_report_worker_offline(manager, tmp_path, monkeypatch):
+    """远程 seek 切换 job 时，worker id 暂空不能把正常切换判成断线。"""
+    session = _vod_session(tmp_path, head=0, completed=set())
+    session.remote = True
+    session.remote_restarting = True
+    session.directory.mkdir(parents=True, exist_ok=True)
+    session.pending_segments[0] = 1
+    session.pending_since[0] = time.monotonic()
+
+    class FakeRemoteRegistry:
+        def __init__(self) -> None:
+            self.worker_checks = 0
+
+        def job_state(self, _job_id: str) -> dict[str, str] | None:
+            raise AssertionError("重启窗口不应读取旧 job 状态")
+
+        def worker_online(self, _worker_id: str | None) -> bool:
+            self.worker_checks += 1
+            return False
+
+    registry = FakeRemoteRegistry()
+    monkeypatch.setattr(session_mod, "get_remote_worker_registry", lambda: registry)
+    monkeypatch.setattr(TranscodeSessionManager, "_SEGMENT_WAIT_S", 0.5)
+
+    async def finish_segment() -> None:
+        await asyncio.sleep(0.05)
+        (session.directory / "seg00000.m4s").write_bytes(b"complete")
+
+    target = session.directory / "seg00000.m4s"
+    result, _ = await asyncio.gather(
+        manager._await_segment(
+            session,
+            0,
+            target,
+            time.monotonic(),
+            0,
+            time.monotonic() + 0.5,
+            0,
+        ),
+        finish_segment(),
+    )
+
+    assert result == target
+    assert registry.worker_checks == 0
 
 
 def _boundaries(count: int) -> SegmentPlan:
@@ -787,6 +1163,30 @@ time.sleep(300)
         assert signal.SIGTERM not in seen
     finally:
         monkeypatch.setattr(session_mod.os, "killpg", real_killpg)
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_large_seek_wins_over_stale_nearby_request(manager, monkeypatch):
+    """用户跳到远处时，旧的头部探测请求不能把目标拖满 30 秒。"""
+    install_fake(monkeypatch, WRITES_PLAYLIST_THEN_SLEEPS)
+    monkeypatch.setattr(TranscodeSessionManager, "_SEGMENT_WAIT_S", 1.0)
+    session = await manager.start(
+        make_plan(), source_path="/m/a.mkv", member_id=0,
+        segment_plan=_boundaries(800),
+    )
+    # 模拟日志中的状态：当前轮次已经连续产出到 12，13 是播放器仍挂着的
+    # 近邻请求，366 才是随后到达的真正跳转目标。
+    session.completed_segments.update(range(13))
+    try:
+        await asyncio.gather(
+            manager.ensure_segment(session, 13),
+            manager.ensure_segment(session, 366),
+        )
+        assert session.head_segment == 366
+        assert session.restart_generation == 1
+        assert session.restart_target == 366
+    finally:
         await manager.shutdown()
 
 

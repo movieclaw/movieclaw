@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from movieclaw_api.services.playback.ffmpeg_args import (
+    MAX_GOP_FRAMES,
     SEGMENT_SECONDS,
     build_hls_command,
 )
@@ -60,7 +61,7 @@ def pair(argv: list[str], flag: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# §7-①  hvc1 标签：不打就是 Safari 静默黑屏
+# §7-①  fMP4 编码标签：Safari 原生 HLS 依赖稳定的 sample entry
 # ---------------------------------------------------------------------------
 
 
@@ -239,7 +240,7 @@ def test_outputs_land_in_session_dir():
 
 
 def test_transcode_forces_keyframes_for_exact_segments():
-    """转码档自己控制 GOP，可以精确对齐 2 秒；直通档做不到（§7-②）。"""
+    """转码档自己控制 GOP，可以精确对齐 4 秒；直通档做不到（§7-②）。"""
     argv = argv_of(
         plan(
             PlaybackTier.SOFTWARE_TRANSCODE,
@@ -247,6 +248,18 @@ def test_transcode_forces_keyframes_for_exact_segments():
         )
     )
     assert pair(argv, "-force_key_frames") == f"expr:gte(t,n_forced*{SEGMENT_SECONDS})"
+
+
+@pytest.mark.parametrize("backend", [None, "videotoolbox"])
+def test_transcode_bounds_gop_for_stable_fmp4_segments(backend):
+    """高位点 copyts seek 时也不能让编码器自行切出极短的分片。"""
+    tier = PlaybackTier.SOFTWARE_TRANSCODE if backend is None else PlaybackTier.HARDWARE_TRANSCODE
+    argv = argv_of(
+        plan(tier, video=VideoPlan(action="transcode", codec="h264", height=1080)),
+        hw_backend=backend,
+        start_number=10,
+    )
+    assert pair(argv, "-g") == str(MAX_GOP_FRAMES)
 
 
 def test_copy_tier_does_not_force_keyframes():
@@ -271,13 +284,65 @@ def test_hardware_backends_use_their_own_encoder(backend, encoder, hwaccel):
     argv = argv_of(
         plan(
             PlaybackTier.HARDWARE_TRANSCODE,
-            video=VideoPlan(action="transcode", codec="h264", height=1080),
+            video=VideoPlan(
+                action="transcode", codec="h264", height=1080, source_bit_depth=8
+            ),
         ),
         hw_backend=backend,
     )
     assert pair(argv, "-c:v") == encoder
     assert pair(argv, "-hwaccel") == hwaccel
     assert "-crf" not in argv  # 硬件编码器不认 CRF
+
+
+def test_videotoolbox_keeps_hardware_decode_with_explicit_software_scaling_bridge():
+    """软件 scale 前显式下载 VideoToolbox 帧，避免隐式格式桥接失败。"""
+    argv = argv_of(
+        plan(
+            PlaybackTier.HARDWARE_TRANSCODE,
+            video=VideoPlan(
+                action="transcode", codec="h264", height=1080, source_bit_depth=8
+            ),
+        ),
+        hw_backend="videotoolbox",
+    )
+
+    assert pair(argv, "-c:v") == "h264_videotoolbox"
+    assert pair(argv, "-hwaccel") == "videotoolbox"
+    assert pair(argv, "-hwaccel_output_format") == "videotoolbox_vld"
+    assert pair(argv, "-vf") == "hwdownload,format=nv12,scale=-2:1080,format=yuv420p"
+
+
+def test_videotoolbox_uses_p010le_bridge_for_10bit_source():
+    """10-bit HEVC 的 VideoToolbox 硬件帧不能以 NV12 下载。"""
+    argv = argv_of(
+        plan(
+            PlaybackTier.HARDWARE_TRANSCODE,
+            video=VideoPlan(
+                action="transcode", codec="h264", height=1080, source_bit_depth=10
+            ),
+        ),
+        hw_backend="videotoolbox",
+    )
+
+    assert pair(argv, "-hwaccel") == "videotoolbox"
+    assert pair(argv, "-hwaccel_output_format") == "videotoolbox_vld"
+    assert pair(argv, "-vf") == "hwdownload,format=p010le,scale=-2:1080,format=yuv420p"
+
+
+def test_videotoolbox_unknown_bit_depth_uses_software_decode():
+    """未知位深不能猜下载格式，宁可软件解码也不能让 Worker 起空转进程。"""
+    argv = argv_of(
+        plan(
+            PlaybackTier.HARDWARE_TRANSCODE,
+            video=VideoPlan(action="transcode", codec="h264", height=1080),
+        ),
+        hw_backend="videotoolbox",
+    )
+
+    assert "-hwaccel" not in argv
+    assert pair(argv, "-vf") == "scale=-2:1080"
+    assert pair(argv, "-c:v") == "h264_videotoolbox"
 
 
 def test_software_fallback_uses_libx264_with_crf():
@@ -447,6 +512,51 @@ def test_software_transcode_pins_8bit_output():
         )
     )
     assert pair(argv, "-pix_fmt") == "yuv420p"
+
+
+def test_videotoolbox_transcode_lets_encoder_choose_level_for_4k():
+    argv = argv_of(
+        plan(
+            PlaybackTier.HARDWARE_TRANSCODE,
+            video=VideoPlan(action="transcode", codec="h264", height=2160),
+        ),
+        hw_backend="videotoolbox",
+    )
+
+    assert pair(argv, "-profile:v") == "high"
+    assert "-level:v" not in argv
+    assert pair(argv, "-pix_fmt") == "yuv420p"
+
+
+def test_software_h264_transcode_keeps_level_4_1():
+    argv = argv_of(
+        plan(
+            PlaybackTier.SOFTWARE_TRANSCODE,
+            video=VideoPlan(action="transcode", codec="h264", height=1080),
+        )
+    )
+
+    assert pair(argv, "-level:v") == "4.1"
+
+
+@pytest.mark.parametrize("backend", [None, "videotoolbox"])
+def test_h264_transcode_uses_avc1_sample_entry(backend):
+    tier = PlaybackTier.SOFTWARE_TRANSCODE if backend is None else PlaybackTier.HARDWARE_TRANSCODE
+    argv = argv_of(
+        plan(tier, video=VideoPlan(action="transcode", codec="h264", height=1080)),
+        hw_backend=backend,
+    )
+    assert pair(argv, "-tag:v") == "avc1"
+
+
+def test_aac_transcode_pins_aac_lc_profile():
+    argv = argv_of(
+        plan(
+            PlaybackTier.AUDIO_TRANSCODE,
+            audio=AudioPlan(action="transcode", track_ref="embedded:0", codec="aac", channels=2),
+        )
+    )
+    assert pair(argv, "-profile:a") == "aac_low"
 
 
 # ---------------------------------------------------------------------------

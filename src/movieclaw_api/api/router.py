@@ -58,6 +58,7 @@ from movieclaw_api.api.routes.spec import router as spec_router
 from movieclaw_api.api.routes.subscriptions import router as subscriptions_router
 from movieclaw_api.api.routes.subtitle_gen import router as subtitle_gen_router
 from movieclaw_api.api.routes.system_notices import router as system_notices_router
+from movieclaw_api.api.routes.transcode_worker import router as transcode_worker_router
 from movieclaw_api.api.routes.ui import router as ui_router
 from movieclaw_api.api.routes.webhook import router as webhook_router
 
@@ -69,6 +70,11 @@ api_router.include_router(auth_router)
 
 # ---- 插件区（鉴权在各路由上自行声明：插件侧 sync token / 管理侧 login）----
 api_router.include_router(extension_router)
+
+# ---- 外置转码 Worker 数据面 ---------------------------------------------
+# source/artifact 端点使用会话级签名 token，不挂成员登录依赖；控制面 WebSocket
+# 使用独立共享令牌。status 路由自身声明 require_admin。
+api_router.include_router(transcode_worker_router)
 
 # ---- 外观（读公开：登录页也要加载背景图；写在路由级挂 require_login）------
 api_router.include_router(appearance_router)

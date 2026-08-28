@@ -8,6 +8,11 @@ from fastapi.testclient import TestClient
 from movieclaw_api.core.config import get_settings
 from movieclaw_api.services import app_config
 from movieclaw_api.services.auth import reset_auth_state
+from movieclaw_api.services.playback import remote_config
+from movieclaw_api.settings.remote_transcode import (
+    DEFAULT_REMOTE_TRANSCODE_MAX_ARTIFACT_BYTES,
+    MAX_REMOTE_TRANSCODE_ARTIFACT_BYTES,
+)
 from movieclaw_api.settings.store import reset_setting_store
 from movieclaw_db.crypto import reset_secret_box
 
@@ -25,6 +30,7 @@ def client(tmp_path, monkeypatch):
     reset_setting_store()
     reset_secret_box()
     reset_auth_state()
+    remote_config.reset_remote_transcode_config()
 
     from movieclaw_api.app import create_app
 
@@ -39,6 +45,7 @@ def client(tmp_path, monkeypatch):
     reset_setting_store()
     reset_secret_box()
     reset_auth_state()
+    remote_config.reset_remote_transcode_config()
     get_settings.cache_clear()
 
 
@@ -69,6 +76,152 @@ def test_save_rejects_bad_external_url(client):
     )
     assert resp.status_code == 400
     assert "http(s)" in resp.json()["message"]
+
+
+def test_remote_transcode_config_reuses_external_url_and_hides_token(client):
+    client.put(
+        "/api/v1/app/config",
+        json={"external_url": "https://nas.example.com/movieclaw/"},
+    )
+
+    initial = client.get("/api/v1/transcode-worker/config")
+    assert initial.status_code == 200
+    assert initial.json()["data"]["base_url"] == "https://nas.example.com/movieclaw"
+    assert initial.json()["data"]["base_url_override"] == ""
+    assert initial.json()["data"]["base_url_source"] == "system_external_url"
+    assert initial.json()["data"]["worker_token_configured"] is False
+
+    saved = client.put(
+        "/api/v1/transcode-worker/config",
+        json={
+            "enabled": True,
+            "worker_token": "test-worker-token",
+            "max_artifact_bytes": 64 * 1024 * 1024,
+        },
+    )
+    assert saved.status_code == 200
+    assert saved.json()["data"]["ready"] is True
+    assert saved.json()["data"]["worker_token_configured"] is True
+    assert "test-worker-token" not in saved.text
+
+    kept = client.put(
+        "/api/v1/transcode-worker/config",
+        json={
+            "enabled": True,
+            "worker_token": None,
+            "max_artifact_bytes": 128 * 1024 * 1024,
+        },
+    )
+    assert kept.status_code == 200
+    assert kept.json()["data"]["worker_token_configured"] is True
+    assert kept.json()["data"]["max_artifact_bytes"] == 128 * 1024 * 1024
+
+    cleared = client.put(
+        "/api/v1/transcode-worker/config",
+        json={
+            "enabled": False,
+            "worker_token": "",
+            "max_artifact_bytes": 128 * 1024 * 1024,
+        },
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["data"]["worker_token_configured"] is False
+
+
+def test_remote_transcode_base_url_override_takes_precedence_and_can_fall_back(client):
+    client.put(
+        "/api/v1/app/config",
+        json={"external_url": "https://nas.example.com/movieclaw"},
+    )
+
+    overridden = client.put(
+        "/api/v1/transcode-worker/config",
+        json={
+            "enabled": True,
+            "base_url": "http://10.1.1.5:8096/",
+            "worker_token": "test-worker-token",
+            "max_artifact_bytes": 64 * 1024 * 1024,
+        },
+    )
+    assert overridden.status_code == 200
+    assert overridden.json()["data"]["base_url"] == "http://10.1.1.5:8096"
+    assert overridden.json()["data"]["base_url_override"] == "http://10.1.1.5:8096"
+    assert overridden.json()["data"]["base_url_source"] == "remote_transcode_setting"
+
+    preserved = client.put(
+        "/api/v1/transcode-worker/config",
+        json={
+            "enabled": True,
+            "base_url": None,
+            "worker_token": None,
+            "max_artifact_bytes": 64 * 1024 * 1024,
+        },
+    )
+    assert preserved.status_code == 200
+    assert preserved.json()["data"]["base_url"] == "http://10.1.1.5:8096"
+
+    fallback = client.put(
+        "/api/v1/transcode-worker/config",
+        json={
+            "enabled": True,
+            "base_url": "",
+            "worker_token": None,
+            "max_artifact_bytes": 64 * 1024 * 1024,
+        },
+    )
+    assert fallback.status_code == 200
+    assert fallback.json()["data"]["base_url"] == "https://nas.example.com/movieclaw"
+    assert fallback.json()["data"]["base_url_override"] == ""
+    assert fallback.json()["data"]["base_url_source"] == "system_external_url"
+
+
+def test_remote_transcode_accepts_http_external_url(client):
+    client.put(
+        "/api/v1/app/config",
+        json={"external_url": "http://10.1.1.5:3000"},
+    )
+    response = client.put(
+        "/api/v1/transcode-worker/config",
+        json={
+            "enabled": True,
+            "worker_token": "test-worker-token",
+            "max_artifact_bytes": 64 * 1024 * 1024,
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["data"]["ready"] is True
+
+
+def test_remote_transcode_rejects_artifact_limit_above_worker_cap(client):
+    response = client.put(
+        "/api/v1/transcode-worker/config",
+        json={
+            "enabled": False,
+            "max_artifact_bytes": MAX_REMOTE_TRANSCODE_ARTIFACT_BYTES + 1,
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_legacy_remote_env_is_ignored(client, monkeypatch):
+    """远程转码只读取网页配置，旧环境变量不再改变运行状态。"""
+    remote_config.reset_remote_transcode_config()
+    monkeypatch.setenv("MOVIECLAW_REMOTE_TRANSCODE_ENABLED", "true")
+    monkeypatch.setenv("MOVIECLAW_REMOTE_TRANSCODE_WORKER_TOKEN", "legacy-token")
+    monkeypatch.setenv("MOVIECLAW_REMOTE_TRANSCODE_BASE_URL", "https://legacy.example.com")
+    monkeypatch.setenv("MOVIECLAW_REMOTE_TRANSCODE_MAX_ARTIFACT_BYTES", "3")
+    get_settings.cache_clear()
+
+    response = client.get("/api/v1/transcode-worker/config")
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["enabled"] is False
+    assert data["worker_token_configured"] is False
+    assert data["base_url"] == ""
+    assert data["base_url_source"] == "unset"
+    assert data["max_artifact_bytes"] == DEFAULT_REMOTE_TRANSCODE_MAX_ARTIFACT_BYTES
+    assert "legacy-token" not in response.text
 
 
 def test_save_tolerates_legacy_port_field(client):

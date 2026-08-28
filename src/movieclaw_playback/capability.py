@@ -79,6 +79,10 @@ class ClientCapability:
     mse: str = "full"
     # 移动端：软解虽然 supported 也会烧电池发热，powerEfficient=False 时应主动降档
     is_mobile: bool = False
+    # 移动端原生 HLS（当前主要是 iOS Safari/AVPlayer）。原生播放器对 4K
+    # 码流的实际解码余量比 decodingInfo 的 supported 更保守，服务端会把它
+    # 限制到既有的转码高度上限，避免把仍可能失败的 4K fMP4 交给 AVPlayer。
+    native_hls: bool = False
     universal: bool = False
 
     def video_support(self, codec: str | None) -> VideoSupport | None:

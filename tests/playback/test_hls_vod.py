@@ -86,6 +86,14 @@ def test_master_playlist_without_subtitles():
     assert "#EXT-X-STREAM-INF" in text
 
 
+def test_master_playlist_carries_exact_codecs():
+    text = build_master_playlist(
+        media_uri="media.m3u8",
+        codecs="avc1.640029,mp4a.40.2",
+    )
+    assert '#EXT-X-STREAM-INF:BANDWIDTH=80000000,CODECS="avc1.640029,mp4a.40.2"' in text
+
+
 def test_subtitle_playlist_single_segment():
     text = build_subtitle_playlist(vtt_uri="sub.vtt", duration_s=1800.5, query="?token=t")
     assert "#EXTINF:1800.500000," in text

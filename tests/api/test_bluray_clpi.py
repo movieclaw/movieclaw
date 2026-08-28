@@ -10,12 +10,74 @@ from movieclaw_api.services.library.bluray import (
     ClpiParseError,
     enrich_spec_with_clpi,
     parse_clpi_languages,
+    parse_mpls_playlist,
     read_clpi_languages,
+    read_main_playlist,
     streams_have_clpi_metadata,
 )
+from movieclaw_api.services.library.scan import disc_main_stream
 from movieclaw_api.services.media_probe import MediaSpec, _parse_probe
 from movieclaw_api.services.subtitle_gen.auto import _has_target_subtitle
 from movieclaw_db.models import LibraryFile
+
+
+def _mpls(*items: tuple[str, int, int]) -> bytes:
+    """构造只含主链 PlayItem 的最小合法 MPLS。时间单位为 45 kHz。"""
+    body = bytearray(b"\0\0" + len(items).to_bytes(2, "big") + b"\0\0")
+    for clip_id, in_time, out_time in items:
+        core = (
+            clip_id.encode("ascii")
+            + b"M2TS"
+            + b"\0\0"
+            + b"\0"
+            + in_time.to_bytes(4, "big")
+            + out_time.to_bytes(4, "big")
+        )
+        body += len(core).to_bytes(2, "big") + core
+    header = bytearray(b"MPLS0100" + (20).to_bytes(4, "big") + b"\0" * 8)
+    return bytes(header + len(body).to_bytes(4, "big") + body)
+
+
+def test_mpls_parser_and_main_playlist_selection(tmp_path):
+    disc = tmp_path / "Movie"
+    playlist_dir = disc / "BDMV" / "PLAYLIST"
+    stream_dir = disc / "BDMV" / "STREAM"
+    playlist_dir.mkdir(parents=True)
+    stream_dir.mkdir()
+    (stream_dir / "00001.m2ts").write_bytes(b"a")
+    (stream_dir / "00002.m2ts").write_bytes(b"bb")
+    (stream_dir / "99999.m2ts").write_bytes(b"menu-or-bonus" * 10)
+    short = _mpls(("00001", 0, 45_000 * 60))
+    long = _mpls(("00001", 0, 45_000 * 60), ("00002", 0, 45_000 * 120))
+    (playlist_dir / "00001.mpls").write_bytes(short)
+    (playlist_dir / "00800.mpls").write_bytes(long)
+    (playlist_dir / "broken.mpls").write_bytes(b"broken")
+
+    parsed = parse_mpls_playlist(long)
+    assert parsed.clip_ids == ("00001", "00002")
+    assert parsed.duration_seconds == 180
+    selected = read_main_playlist(disc)
+    assert selected is not None
+    assert selected.path.name == "00800.mpls"
+    assert selected.duration_seconds == 180
+    assert disc_main_stream(disc) == stream_dir / "00002.m2ts"
+
+
+def test_main_playlist_accepts_uppercase_disc_extensions(tmp_path):
+    """原盘扩展名大小写由制作/解包工具决定，Linux 上也必须正常识别。"""
+    disc = tmp_path / "Movie"
+    playlist_dir = disc / "BDMV" / "PLAYLIST"
+    stream_dir = disc / "BDMV" / "STREAM"
+    playlist_dir.mkdir(parents=True)
+    stream_dir.mkdir()
+    playlist = _mpls(("00001", 0, 45_000 * 60))
+    (playlist_dir / "00001.MPLS").write_bytes(playlist)
+    stream = stream_dir / "00001.M2TS"
+    stream.write_bytes(b"main")
+
+    selected = read_main_playlist(disc)
+    assert selected is not None and selected.path.suffix == ".MPLS"
+    assert disc_main_stream(disc) == stream
 
 
 def _coding_info(coding_type: int, language: str) -> bytes:

@@ -11,6 +11,7 @@ import pytest
 import pytest_asyncio
 
 from movieclaw_api.core.config import get_settings
+from movieclaw_api.schemas.playback import ClientCapabilityIn
 from movieclaw_api.services.playback import plan as playback_plan
 from movieclaw_api.settings import PlaybackPolicySetting
 from movieclaw_api.settings.store import (
@@ -31,6 +32,12 @@ CHROME = ClientCapability(
     audio=(AudioSupport("aac"),),
     containers=frozenset({"mp4", "hls-fmp4"}),
 )
+
+
+def test_capability_from_request_preserves_native_hls_flag():
+    capability = playback_plan.capability_from_request(ClientCapabilityIn(native_hls=True))
+
+    assert capability.native_hls is True
 
 
 @pytest_asyncio.fixture
@@ -160,6 +167,43 @@ async def test_software_transcode_switch_comes_from_settings(db):
 
     assert isinstance(second, PlaybackPlan)
     assert second.tier is PlaybackTier.SOFTWARE_TRANSCODE
+
+
+async def test_skips_keyframe_probe_for_candidates_that_transcode(db, monkeypatch):
+    """视频已经确定要转码时，不应为 Remux 安全门槛读取源片。"""
+    calls = []
+    monkeypatch.setattr(
+        playback_plan,
+        "probe_keyframe_interval",
+        lambda path, duration: calls.append((path, duration)) or 4.0,
+    )
+
+    row = _file(1, 1, codec="hevc", resolution="2160p")
+    decision = await playback_plan.decide_for_files(
+        [row], CHROME, can_self_enable=True
+    )
+
+    assert isinstance(decision, ConsentRequired)
+    assert calls == []
+
+
+async def test_keeps_keyframe_probe_for_remux_candidates(db, monkeypatch):
+    """视频复制的 Remux 候选仍需采样，未知时才能安全降级转码。"""
+    calls = []
+    monkeypatch.setattr(
+        playback_plan,
+        "probe_keyframe_interval",
+        lambda path, duration: calls.append((path, duration)) or 4.0,
+    )
+
+    row = _file(1, 1, codec="h264", resolution="1080p")
+    decision = await playback_plan.decide_for_files(
+        [row], CHROME, can_self_enable=True
+    )
+
+    assert isinstance(decision, PlaybackPlan)
+    assert decision.tier is PlaybackTier.REMUX
+    assert len(calls) == 1
 
 
 async def test_view_translation_covers_three_outcomes(db):

@@ -5,7 +5,8 @@
 > 关联文档：[jellyfin-compat.md](jellyfin-compat.md)（第三方播放器直连）、
 > [library.md](library.md)（媒体库架构）、[strm-workflow.md](strm-workflow.md)
 > （网盘零流量原则）、[jellyfin-subtitle.md](jellyfin-subtitle.md)（字幕轨中性引用）、
-> [library-home-recently-watched.md](library-home-recently-watched.md)（续播入口）。
+> [library-home-recently-watched.md](library-home-recently-watched.md)（续播入口）、
+> [remote-transcode.md](remote-transcode.md)（远程硬件转码 Worker）。
 >
 > **本文修订 [jellyfin-compat.md](jellyfin-compat.md) §0 硬边界 2「不转码」**，
 > 修订范围与理由见 §0.3。第三方播放器直连侧的行为不变。
@@ -98,6 +99,8 @@
     │   asyncio subprocess + hwaccel 后端矩阵              │
     ├────────────────────────────────────────────────────┤
     │ 硬件自检 services/playback/hwprobe.py                │
+    │ 外置硬件 services/playback/remote_worker.py           │
+    │   WebSocket 控制 + HTTP(S) Range/PUT 数据面           │
     └────────────────────────────────────────────────────┘
 ```
 
@@ -154,13 +157,17 @@ ffmpeg -hwaccel vaapi -hwaccel_output_format vaapi -hwaccel_device <dev>
        -copyts -start_at_zero -ss <t> -i <src>
        -vf "scale_vaapi=w=<W>:h=<H>:format=nv12<,tonemap_vaapi=...>"
        -c:v h264_vaapi -b:v <目标码率> -maxrate <1.5x> -bufsize <2x>
-       -c:a <见档2> -f hls -hls_segment_type fmp4 -hls_time 2 ...
+       -g <按最高帧率折算的 GOP 上限>
+       -force_key_frames "expr:gte(t,n_forced*4)"
+       -c:a <见档2> -f hls -hls_segment_type fmp4 -hls_time 4 ...
 ```
 
-**档 4 软件** — `-c:v libx264 -preset veryfast -crf 21`，其余同档 3。
+**档 4 软件** — `-c:v libx264 -preset veryfast -crf 21 -g <按最高帧率折算的 GOP 上限>`，
+`-force_key_frames "expr:gte(t,n_forced*4)"`，其余同档 3。
 
-> 档 3/4 自己控制 GOP，可以固定 2s 分片；**档 1/2 不行**——copy 模式下切点只能
-> 落在源片已有的 IDR 上。这是两组档位在分片策略上的根本差异，见 §7-②。
+> 档 3/4 自己控制 GOP，可以固定 4s 分片；同时设置 GOP 上限，避免 VideoToolbox
+> 在带绝对时间戳的高位点 seek 下自行插入过密 IDR 把分片切碎。**档 1/2 不行**——
+> copy 模式下切点只能落在源片已有的 IDR 上。这是两组档位在分片策略上的根本差异，见 §7-②。
 
 ---
 
@@ -191,13 +198,17 @@ ffmpeg -hwaccel vaapi -hwaccel_output_format vaapi -hwaccel_device <dev>
   ],
   "containers": ["mp4", "m3u8-fmp4"],
   "hdr": { "dynamicRange": "high", "colorGamut": "p3" },  // matchMedia + screen
-  "mse": "full" | "managed" | "none"                      // iOS 为 managed
+  "mse": "full" | "managed" | "none",                     // iOS 为 managed
+  "native_hls": true | false                                 // 是否会交给原生 HLS/AVPlayer
 }
 ```
 
 三态语义（2026-08 修订，动因见 §12.15 的 Jellyfin 对照与真实误判案例）：
 
-- `supported=false` → 必须转码。**这是三态里唯一作硬闸的一项。**
+- `supported=false` → 必须转码。**这是三态里唯一作能力硬闸的一项。**另外，
+  移动端原生 HLS（`native_hls=true`）的 2160p/1440p 即使探测为 supported，
+  也统一按服务端现有 `max_transcode_height`（默认 1080p）转为 H.264，避免
+  把仍可能触发 AVPlayer 解码失败的 4K fMP4 直接交给 iOS。
 - `smooth` / `powerEfficient` → **只作参考**，随快照上报供诊断与指标用，
   决策不消费。流畅与否由运行期真实证据回答：直通期间持续掉帧超阈值，
   framedrop watchdog（§6.3）报废当前档、换转码重来。
@@ -248,6 +259,7 @@ ffmpeg -hwaccel vaapi -hwaccel_output_format vaapi -hwaccel_device <dev>
                                               （软件 tone-map 4K 是幻灯片，不硬撑）
 
 5. 音频编码判定
+     移动端原生 HLS（native_hls=true）              → 选中音轨统一转 AAC-LC 双声道
      首选音轨 supported=true                → 音频可 copy
      否则在可用音轨里找一条 supported       → 换轨并提示
      都不行                                 → 音频需转（AAC 或 EAC3）
@@ -677,9 +689,19 @@ compression、参数集只在 CodecPrivate、开放 GOP……穷举不完。因�
 iOS Safari 是整件事最难的一块：MSE 只有 `ManagedMediaSource` 子集、原生全屏
 强制走系统控件（自定义 UI 在全屏时消失）、必须 `playsinline`、音量不可编程控制。
 
-**决策：iOS 上不硬撑自定义 UI。** 走原生 HLS + 系统播放控件，只在非全屏内联
-模式保留自有皮肤。硬撑的结果是投入巨大且永远差一口气。这条影响 UI 层抽象方式，
-所以必须在 P0 定下。
+**决策：现代 iOS 用 hls.js + ManagedMediaSource，只有完全没有 MSE 的老设备才走
+原生 HLS。** 这样内联播放可以继续使用自有皮肤；进入系统全屏、画中画时仍交给
+系统表面处理。不能把现代 iOS 一概按原生 HLS 处理：原生 AVPlayer 对服务端按需
+供片、从高位分片起播的 VOD 清单更严格，正是本项目曾经触发 `MEDIA_ERR_DECODE`
+的边界。
+
+原生 HLS 的 4K 也不直接交给 AVPlayer：移动端能力快照带上 `native_hls` 后，服务端
+对超过默认 1080p 上限的源强制走现有 H.264 转码档，输出固定为 `High@4.1`、
+`yuv420p`；同时将选中的音轨固定转成 AAC-LC 双声道。转码会话的 master playlist
+在这些输出参数已知时声明 `CODECS="avc1.640029,mp4a.40.2"`，让 Safari 在
+初始化 fMP4 前选择确定的解码路径。这样既保留原生 HLS 的全屏、画中画和 AirPlay
+能力，也避开 Safari 只报告 `supported` 但在 init/首片阶段仍解码失败的情况；旧的
+源流 copy 路径无法准确得出 profile 时不伪造 CODECS。
 
 ### 6.5 体验清单
 
@@ -1026,8 +1048,8 @@ ref——`setChromeVisible(true)` 是异步的，click 回调读到的可能已�
    播），`audio_track` 缺省时用记忆轨，整份观看状态随会话响应带回（`watch`
    字段，字幕记忆、时间轴兜底片长都从这来）。/resume 从起播链路里消失；
    顺带让「分享链接各看各的进度」天然成立，`?t=` 只是显式覆盖。
-3. **hls.js 与会话请求并行热身**（`preloadHlsEngine`，无 MediaSource 的
-   原生 HLS 路径不下）。
+3. **hls.js 与会话请求并行热身**（`preloadHlsEngine`，无 MSE 的原生 HLS
+   路径不下）。
 4. **条目页的播放键预取路由**：它是 button 不是 `<Link>`，Next 不会自动
    预取 /play 的路由包与 RSC 载荷；条目一加载完成就 `router.prefetch`。
 
@@ -1252,7 +1274,7 @@ Linux CI 做不到、Mac mini 独有的能力：
 |---|---|
 | **`hvc1` 陷阱（§7-①）** | **Safari 是唯一能验的浏览器**。喂 `hev1` 应黑屏，喂 `hvc1` 应正常 |
 | HEVC 硬解直通 | Apple Silicon 原生支持，验证档 1 的真实出画 |
-| 原生 HLS 路径 | Safari 不走 hls.js，单独一条链路 |
+| 原生 HLS 路径 | 仅无 MSE 的旧 Safari；ManagedMediaSource 走 hls.js |
 | **AirPlay** | 真机验证 |
 | Media Session | macOS 通知中心 / 媒体键 / 蓝牙耳机 |
 | **iOS**（§6.4） | 同局域网 iPhone/iPad 直连 Mac mini 上的实例 |
@@ -1357,7 +1379,7 @@ Mac mini 验证。做成发版前的人工清单，列进 `.claude/skills/releas
 - [x] Media Session、wakeLock、键盘快捷键
 - [x] **诊断面板**
 - [x] QoE 采集（`requestVideoFrameCallback` 等）；**CMCD 未做**（见 §12.13）
-- [x] iOS 走原生 HLS 分支（`createEngine` 按 MSE 形态分派）
+- [x] iOS 按 MSE 形态分派：ManagedMediaSource 走 hls.js，无 MSE 才走原生 HLS
 
 > 勾选说明：`[x]` 已完成并有测试覆盖，`[~]` 部分完成（同一行写清缺的是哪一块）。
 
@@ -1777,9 +1799,10 @@ watchdog 只在视频 copy 的档位武装：转码档的视频已是 h264，再
 转码产物都放不动，继续降档只会更卡。后台标签页与 seek 的假掉帧分别靠
 「不可见不喂样本 + 回前台清窗口」「seeking 清窗口」挡住。
 
-已知残留：h264 10bit（Hi10P 动漫）无浏览器硬解，我们家族级探测分不出它，
-直通失败走硬错误回退（decode error → failed → 降档），与 Jellyfin 桌面端
-行为一致；如需抢先拦截可在 MediaProfile.bit_depth 上加一条 h264+10bit 规则。
+已知残留：桌面浏览器以及移动端 1080p 以内的 h264 10bit（Hi10P 动漫）仍可能
+无法被家族级探测提前识别；直通失败走硬错误回退（decode error → failed → 降档），
+与 Jellyfin 桌面端行为一致；如需抢先拦截可在 MediaProfile.bit_depth 上加一条
+h264+10bit 规则。
 
 ## 13. VOD 架构与播放模式矩阵（2026-08-23 重构）
 
@@ -1814,7 +1837,7 @@ watchdog 只在视频 copy 的档位武装：转码档的视频已是 h264，再
 |------------|------------------------------|------------|-----------|---------|
 | direct     | 档 0                          | stream_url | 0         | overlay |
 | mse        | 有 MSE（hls.js）              | stream_url | 按会话    | overlay + PiP 补丁轨 |
-| native-hls | iOS + VOD + master（或无 MSE）| master_url | 0         | system-track |
+| native-hls | 无 MSE 的原生 HLS 设备（或兜底）| master_url | 0         | system-track |
 
 字幕渲染器**整会话恒定**：
 

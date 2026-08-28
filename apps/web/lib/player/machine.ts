@@ -45,6 +45,11 @@ export function awaitsUserDecision(phase: PlayerPhase): boolean {
   return phase === "error" || phase === "consent";
 }
 
+/** 只有这些阶段仍绑定着一条可接受媒体事件的当前会话。 */
+function acceptsMediaEvent(phase: PlayerPhase): boolean {
+  return phase === "buffering" || phase === "playing" || phase === "seeking" || phase === "ended";
+}
+
 /** 最高兜底档：软件转码。连败两次后直接跳到它，不再逐级试。 */
 const FALLBACK_TIER = 4;
 
@@ -139,6 +144,14 @@ export function playerReducer(state: PlayerState, event: PlayerEvent): PlayerSta
       };
 
     case "session": {
+      // 请求已被新的切集/切档动作超越时，旧请求的迟到响应不能复活旧会话。
+      if (
+        state.phase !== "deciding" &&
+        state.phase !== "degrading" &&
+        state.phase !== "session-starting"
+      ) {
+        return state;
+      }
       const { decision } = event.session;
       if (decision.outcome === "consent") {
         return { ...state, phase: "consent", decision, session: null };
@@ -175,7 +188,7 @@ export function playerReducer(state: PlayerState, event: PlayerEvent): PlayerSta
         : state;
 
     case "playing":
-      if (awaitsUserDecision(state.phase)) return state;
+      if (!acceptsMediaEvent(state.phase)) return state;
       // 出画即认为本档可用：清掉连败计数，之后再失败重新从逐级降开始。
       return { ...state, phase: "playing", failureCount: 0, error: null };
 
@@ -192,16 +205,32 @@ export function playerReducer(state: PlayerState, event: PlayerEvent): PlayerSta
         : state;
 
     case "restart":
-      // restart 也是一次新的起播尝试：换音轨/换画质可能在暂停下连续发生，
-      // 位置不变时若不递增 attempt，第二次会撞上起播 effect 的去重指纹
+      // 先摘掉旧会话，让引擎/会话释放 effect 立即执行；否则旧流的迟到事件会
+      // 污染新一轮起播，服务端也会在新会话启动期间继续保留旧 ffmpeg。
+      // restart 仍保留 failedTiers：它用于网络自愈与 seek 重开，不代表当前档
+      // 已经因为解码失败。
       return {
         ...state,
         phase: "session-starting",
+        session: null,
+        decision: null,
         startMs: event.startMs,
+        error: null,
+        // restart 也是一次新的起播尝试：位置不变时若不递增 attempt，会撞上
+        // 起播 effect 的去重指纹，第二次请求就发不出去。
         attempt: state.attempt + 1,
       };
 
     case "failed": {
+      // 解码/停滞错误只能由当前会话产生。切档或重开后，旧引擎可能还会发一
+      // 个迟到错误；没有这层不变式，它会把没有 decision 的新一轮直接顶成 error。
+      if (
+        !acceptsMediaEvent(state.phase) ||
+        state.session === null ||
+        state.decision === null
+      ) {
+        return state;
+      }
       const tier = state.decision?.tier;
       // 还没定档就失败（会话都没起来）：没有可降的档，直接错误态
       if (tier === null || tier === undefined) {
@@ -248,7 +277,7 @@ export function playerReducer(state: PlayerState, event: PlayerEvent): PlayerSta
       };
 
     case "ended":
-      if (awaitsUserDecision(state.phase)) return state;
+      if (!acceptsMediaEvent(state.phase)) return state;
       return { ...state, phase: "ended" };
 
     case "reset":

@@ -28,6 +28,7 @@ from movieclaw_playback.decide import (
     PlaybackPlan,
     PlaybackPolicy,
     decide_playback,
+    needs_keyframe_probe,
 )
 from movieclaw_playback.decide import PlaybackTier as Tier
 from movieclaw_playback.profile import media_profile_from_file
@@ -92,20 +93,34 @@ async def decide_for_files(
     policy = await _load_policy()
     decisions = []
     for file in files:
-        probe_started = time.perf_counter()
-        interval = await asyncio.to_thread(
-            probe_keyframe_interval, file.file_path, file.duration_seconds
-        )
-        probe_s = time.perf_counter() - probe_started
-        if probe_s > 1.0:
-            # 慢的几乎都是存储：三段采样约 90 秒码流的读取，网络挂载上会到
-            # 几十秒。条目详情页的起播预热（warmup.py）本该把它提前做掉——
-            # 这条日志出现说明预热没盖住（剧集多文件 / 分享直达播放页）。
-            logger.warning(
-                "关键帧采样耗时 %.1f 秒（%s）——存储较慢，首播延迟主要来自这里",
-                probe_s, file.file_path,
+        # 关键帧密度只服务于档 1/2 的视频复制。先用不需要源片 IO 的纯判定
+        # 判断候选是否可能落在这两个档位；iOS 4K 硬转、软件转码和 Direct
+        # Play 都直接跳过，避免为最终不会使用的安全信息等待慢存储。
+        profile = media_profile_from_file(file)
+        interval = None
+        if needs_keyframe_probe(
+            profile,
+            capability,
+            policy,
+            failed_tiers=failed_tiers,
+            preferred_audio=preferred_audio,
+            preferred_subtitle=preferred_subtitle,
+            max_height=max_height,
+        ):
+            probe_started = time.perf_counter()
+            interval = await asyncio.to_thread(
+                probe_keyframe_interval, file.file_path, file.duration_seconds
             )
-        profile = media_profile_from_file(file, keyframe_interval_s=interval)
+            probe_s = time.perf_counter() - probe_started
+            if probe_s > 1.0:
+                # 慢的几乎都是存储：三段采样约 90 秒码流的读取，网络挂载上会到
+                # 几十秒。条目详情页的起播预热（warmup.py）本该把它提前做掉——
+                # 这条日志出现说明预热没盖住（剧集多文件 / 分享直达播放页）。
+                logger.warning(
+                    "关键帧采样耗时 %.1f 秒（%s）——存储较慢，首播延迟主要来自这里",
+                    probe_s, file.file_path,
+                )
+            profile = media_profile_from_file(file, keyframe_interval_s=interval)
         decisions.append(
             (
                 decide_playback(
@@ -234,4 +249,5 @@ def capability_from_request(payload) -> ClientCapability:  # noqa: ANN001
         hdr_passthrough=payload.hdr_passthrough,
         mse=payload.mse,
         is_mobile=payload.is_mobile,
+        native_hls=payload.native_hls,
     )

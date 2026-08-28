@@ -42,6 +42,11 @@ from movieclaw_api.settings.network import (
     NetworkEgressSetting,
 )
 from movieclaw_api.settings.playback import PlaybackPolicySetting
+from movieclaw_api.settings.remote_transcode import (
+    DEFAULT_REMOTE_TRANSCODE_MAX_ARTIFACT_BYTES,
+    MAX_REMOTE_TRANSCODE_ARTIFACT_BYTES,
+    RemoteTranscodeSetting,
+)
 from movieclaw_api.settings.schemas import (
     AdminAccountSetting,
     ApiTokenRecord,
@@ -103,6 +108,9 @@ __all__ = [
     # 网络与代理
     "NetworkEgressSetting",
     "PlaybackPolicySetting",
+    "RemoteTranscodeSetting",
+    "DEFAULT_REMOTE_TRANSCODE_MAX_ARTIFACT_BYTES",
+    "MAX_REMOTE_TRANSCODE_ARTIFACT_BYTES",
     "ChannelPushSetting",
     "BUILTIN_EGRESS_SERVICES",
     # 应用服务（外部访问地址）

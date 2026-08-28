@@ -28,6 +28,7 @@ from movieclaw_playback.decide import (
     PlaybackTier,
     SubtitleTrack,
     decide_playback,
+    needs_keyframe_probe,
 )
 
 # ---------------------------------------------------------------------------
@@ -56,6 +57,13 @@ PHONE_SOFT_HEVC = ClientCapability(
     containers=frozenset({"mp4", "hls-fmp4"}),
     mse="managed",
     is_mobile=True,
+)
+IOS_NATIVE_HLS = ClientCapability(
+    video=(VideoSupport("h264"), VideoSupport("hevc")),
+    audio=(AudioSupport("aac"), AudioSupport("ac3"), AudioSupport("eac3")),
+    containers=frozenset({"hls-fmp4"}),
+    is_mobile=True,
+    native_hls=True,
 )
 
 WITH_GPU = PlaybackPolicy(hardware_available=True)
@@ -267,6 +275,28 @@ def test_keyframe_interval_gates_remux(interval, expected):
     assert decision.tier is expected
 
 
+def test_keyframe_probe_is_only_needed_for_video_copy_tiers():
+    """关键帧采样只为 Remux/音频单转服务，转码与原文件直出无需采样。"""
+    assert needs_keyframe_probe(media(), CHROME_NO_HEVC, WITH_GPU)
+    assert not needs_keyframe_probe(
+        media(video_codec="hevc"), CHROME_NO_HEVC, WITH_GPU
+    )
+    assert not needs_keyframe_probe(
+        media(video_codec="hevc", resolution="2160p"), IOS_NATIVE_HLS, WITH_GPU
+    )
+    assert not needs_keyframe_probe(
+        media(container="mp4"), CHROME_NO_HEVC, WITH_GPU
+    )
+    assert not needs_keyframe_probe(
+        media(),
+        CHROME_NO_HEVC,
+        WITH_GPU,
+        failed_tiers=frozenset(
+            {PlaybackTier.REMUX, PlaybackTier.AUDIO_TRANSCODE}
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # MediaCapabilities 三态：canPlayType 给不出的那两条
 # ---------------------------------------------------------------------------
@@ -347,6 +377,29 @@ def test_resolution_above_device_ceiling_transcodes():
     assert decision.video.height == 1080
 
 
+def test_mobile_native_hls_4k_uses_server_transcode_height():
+    """iOS 原生 HLS 不把 decodingInfo 的 4K supported 当成长期可播放保证。"""
+    cap = ClientCapability(
+        video=(VideoSupport("h264"), VideoSupport("hevc")),
+        audio=(AudioSupport("aac"),),
+        containers=frozenset({"hls-fmp4"}),
+        is_mobile=True,
+        native_hls=True,
+    )
+
+    decision = decide_playback(
+        media(video_codec="hevc", resolution="2160p", bit_depth=10), cap, WITH_GPU
+    )
+
+    assert isinstance(decision, PlaybackPlan)
+    assert decision.tier is PlaybackTier.HARDWARE_TRANSCODE
+    assert decision.video.action == "transcode"
+    assert decision.video.codec == "h264"
+    assert decision.video.height == 1080
+    assert decision.video.source_bit_depth == 10
+    assert "原生 HLS" in decision.reason
+
+
 # ---------------------------------------------------------------------------
 # 音轨：换轨优于转码；降混必须显式
 # ---------------------------------------------------------------------------
@@ -371,6 +424,21 @@ def test_downmix_marked_when_channels_exceed_device():
     assert decision.tier is PlaybackTier.AUDIO_TRANSCODE
     assert decision.audio.downmix is True
     assert decision.audio.channels == 2
+
+
+def test_mobile_native_hls_pins_audio_to_aac_lc_stereo():
+    """Safari 原生 HLS 即使声称支持 E-AC-3，也统一输出 AAC-LC 双声道。"""
+    decision = decide_playback(
+        media(video_codec="h264", audio_tracks=(TRUEHD_71,)),
+        IOS_NATIVE_HLS,
+        WITH_GPU,
+    )
+    assert isinstance(decision, PlaybackPlan)
+    assert decision.tier is PlaybackTier.AUDIO_TRANSCODE
+    assert decision.audio.codec == "aac"
+    assert decision.audio.channels == 2
+    assert decision.audio.downmix is True
+    assert "AAC-LC" in decision.reason
 
 
 def test_prefers_eac3_to_keep_multichannel():

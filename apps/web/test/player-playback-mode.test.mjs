@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { planSystemTrackModes, resolvePlaybackMode } from "../lib/player/playback-mode.ts";
+import {
+  planSystemTrackModes,
+  resolvePlaybackMode,
+  shouldApplyPostAttachSeek,
+} from "../lib/player/playback-mode.ts";
 
 const CAP_DESKTOP = { mse: "full", native_hls: false, is_mobile: false };
 const CAP_IPHONE = { mse: "managed", native_hls: true, is_mobile: true };
@@ -36,8 +40,16 @@ test("桌面 MSE：hls.js 吃媒体列表，自绘 + PiP 补丁轨", () => {
   assert.equal(mode.pipPatchTrack, true);
 });
 
-test("iPhone + VOD + master：原生 HLS，字幕交系统", () => {
+test("现代 iPhone + VOD：ManagedMediaSource 走 hls.js，避免原生 VOD 解码边界", () => {
   const mode = resolvePlaybackMode(session(), CAP_IPHONE);
+  assert.equal(mode.engine, "mse");
+  assert.equal(mode.streamUrl, "/s/index.m3u8?token=t");
+  assert.equal(mode.subtitleRenderer, "overlay");
+  assert.equal(mode.pipPatchTrack, true);
+});
+
+test("没有 MSE 的老 iPhone + VOD：保留原生 HLS 字幕轨兜底", () => {
+  const mode = resolvePlaybackMode(session(), CAP_LEGACY);
   assert.equal(mode.engine, "native-hls");
   assert.equal(mode.streamUrl, "/s/master.m3u8?token=t");
   assert.equal(mode.subtitleRenderer, "system-track");
@@ -69,6 +81,16 @@ test("无 MSE 老设备兜底：原生硬吃媒体列表，字幕自绘降级", 
   assert.equal(mode.engine, "native-hls");
   assert.equal(mode.streamUrl, "/s/index.m3u8?token=t");
   assert.equal(mode.subtitleRenderer, "overlay");
+});
+
+test("原生 HLS 的高位首次 seek 只由引擎执行，组件不得重复跳转", () => {
+  assert.equal(shouldApplyPostAttachSeek("native-hls", 2885.5), false);
+});
+
+test("其他引擎的高位首次 seek 仍由组件补齐，低位起播不需要 seek", () => {
+  assert.equal(shouldApplyPostAttachSeek("mse", 2885.5), true);
+  assert.equal(shouldApplyPostAttachSeek("direct", 2885.5), true);
+  assert.equal(shouldApplyPostAttachSeek("mse", 1), false);
 });
 
 test("consent/rejected（无 stream_url）返回 null", () => {

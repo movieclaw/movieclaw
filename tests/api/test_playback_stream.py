@@ -12,18 +12,25 @@ ffmpeg，也能进 CI 的默认门禁。真 ffmpeg 的验证在
 from __future__ import annotations
 
 import asyncio
+import errno
 import itertools
 from functools import partial
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 from movieclaw_api.api.routes import playback as routes_playback
+from movieclaw_api.api.routes import transcode_worker as routes_transcode_worker
+from movieclaw_api.api.routes.transcode_worker import put_transcode_artifact
 from movieclaw_api.core.config import get_settings
 from movieclaw_api.services.auth import reset_auth_state
 from movieclaw_api.services.playback import session as session_mod
 from movieclaw_api.services.playback.ffmpeg_args import TranscodeCommand
+from movieclaw_api.services.playback.remote_signing import issue_remote_grant
+from movieclaw_api.services.playback.remote_worker import get_remote_worker_registry
 from movieclaw_api.services.playback.session import (
     get_session_manager,
     reset_session_manager,
@@ -34,6 +41,8 @@ from movieclaw_db.crypto import reset_secret_box
 from movieclaw_db.engine import get_database
 from movieclaw_db.models import FileSource, FileState, LibraryFile, MediaItem
 from movieclaw_db.repositories.library_repo import LibraryRepository
+from movieclaw_playback.decide import AudioPlan, PlaybackPlan, PlaybackTier, VideoPlan
+from movieclaw_playback.hls_vod import SegmentPlan
 
 _PB = "/api/v1/playback"
 _ADMIN = {"username": "admin", "password": "Sup3rSecret!"}
@@ -166,6 +175,121 @@ def start_session(client: TestClient, file_id: int, **extra) -> dict:
     return resp.json()["data"]
 
 
+def test_transcoded_session_master_codecs_are_explicit():
+    session = SimpleNamespace(
+        plan=PlaybackPlan(
+            tier=PlaybackTier.HARDWARE_TRANSCODE,
+            file_id=1,
+            container="hls-fmp4",
+            video=VideoPlan(action="transcode", codec="h264", height=1080),
+            audio=AudioPlan(action="transcode", track_ref="embedded:0", codec="aac", channels=2),
+        )
+    )
+    assert routes_playback._master_playlist_codecs(session) == "avc1.640029,mp4a.40.2"
+
+
+def test_master_codecs_are_omitted_when_source_audio_is_copied():
+    session = SimpleNamespace(
+        plan=PlaybackPlan(
+            tier=PlaybackTier.HARDWARE_TRANSCODE,
+            file_id=1,
+            container="hls-fmp4",
+            video=VideoPlan(action="transcode", codec="h264", height=1080),
+            audio=AudioPlan(action="copy", track_ref="embedded:0", codec="aac"),
+        )
+    )
+    assert routes_playback._master_playlist_codecs(session) is None
+
+
+def test_decide_route_forwards_all_playback_preferences(client, tmp_path, monkeypatch):
+    """预览决策与开会话必须收到同一组音轨、字幕和清晰度偏好。"""
+    file_id = seed(client, tmp_path, container="mp4")
+    plan = PlaybackPlan(
+        tier=PlaybackTier.DIRECT_PLAY,
+        file_id=file_id,
+        container="mp4",
+        video=VideoPlan(action="copy"),
+        audio=AudioPlan(action="copy"),
+    )
+    file_call = {}
+
+    async def fake_decide_for_file(*args, **kwargs):
+        file_call.update(kwargs)
+        return plan
+
+    monkeypatch.setattr(
+        routes_playback.playback_plan, "decide_for_file", fake_decide_for_file
+    )
+    response = client.post(
+        f"{_PB}/decide",
+        json={
+            "file_id": file_id,
+            "capability": CAPABILITY,
+            "audio_track": "embedded:1",
+            "subtitle_track": "embedded:0",
+            "max_height": 720,
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert file_call["preferred_audio"] == "embedded:1"
+    assert file_call["preferred_subtitle"] == "embedded:0"
+    assert file_call["max_height"] == 720
+
+    unit_call = {}
+
+    async def fake_library_files(*args, **kwargs):
+        return []
+
+    async def fake_decide_for_files(*args, **kwargs):
+        unit_call.update(kwargs)
+        return plan
+
+    monkeypatch.setattr(
+        routes_playback.playback_plan,
+        "library_files_for_unit",
+        fake_library_files,
+    )
+    monkeypatch.setattr(
+        routes_playback.playback_plan,
+        "decide_for_files",
+        fake_decide_for_files,
+    )
+    response = client.post(
+        f"{_PB}/decide",
+        json={
+            "media_item_id": 123,
+            "capability": CAPABILITY,
+            "audio_track": "embedded:1",
+            "subtitle_track": "embedded:0",
+            "max_height": 480,
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert unit_call["preferred_audio"] == "embedded:1"
+    assert unit_call["preferred_subtitle"] == "embedded:0"
+    assert unit_call["max_height"] == 480
+
+
+def test_execution_backend_uses_remote_when_local_backend_is_incompatible():
+    """PGS 烧录不能因 VAAPI 排在首位而错过可用的远程 VideoToolbox。"""
+    decision = PlaybackPlan(
+        tier=PlaybackTier.HARDWARE_TRANSCODE,
+        file_id=1,
+        container="hls-fmp4",
+        video=VideoPlan(
+            action="transcode", codec="h264", height=1080, burn_subtitle="embedded:0"
+        ),
+        audio=AudioPlan(action="copy"),
+    )
+
+    assert routes_playback._select_execution_backend(
+        decision,
+        available=("vaapi", "videotoolbox"),
+        local_backends=("vaapi",),
+        remote_video_available=True,
+    ) == ("videotoolbox", True)
+
+
 # ---------------------------------------------------------------------------
 # 档 0：原文件直出
 # ---------------------------------------------------------------------------
@@ -285,6 +409,112 @@ def test_session_lifecycle_playlist_segment_ping_stop(client, tmp_path):
     # 停掉之后 playlist 与心跳都应 404
     assert client.get(data["stream_url"]).status_code == 404
     assert client.post(f"{_PB}/sessions/{session_id}/ping").status_code == 404
+
+
+def test_remote_only_backend_is_never_sent_to_local_ffmpeg(client, tmp_path, monkeypatch):
+    """远程能力短暂不可用时，未授权的软件转码不能被静默启动。"""
+    from movieclaw_api.services.playback import hwprobe
+
+    monkeypatch.setattr(hwprobe, "available_backends", lambda: ("videotoolbox",))
+    monkeypatch.setattr(routes_playback, "available_backends", lambda: ("videotoolbox",))
+    monkeypatch.setattr(routes_playback, "available_local_backends", lambda: ())
+    monkeypatch.setattr(routes_playback, "remote_worker_available", lambda _: False)
+
+    file_id = seed(client, tmp_path, container="mkv", codec="hevc")
+    response = client.post(
+        f"{_PB}/sessions", json={"file_id": file_id, "capability": CAPABILITY}
+    )
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["decision"]["outcome"] == "consent"
+    assert data["session_id"] is None
+    assert get_session_manager().active() == []
+
+
+def test_quality_switch_releases_remote_worker_before_final_decision(
+    client, tmp_path, monkeypatch
+):
+    """同一 Worker 只有一个槽位时，连续切画质仍应保持远程硬件转码。"""
+    from movieclaw_api.services.playback import hwprobe
+
+    availability = {"value": False}
+
+    def remote_available(_backend: str) -> bool:
+        return availability["value"]
+
+    monkeypatch.setattr(
+        hwprobe,
+        "available_backends",
+        lambda: ("videotoolbox",) if availability["value"] else (),
+    )
+    monkeypatch.setattr(
+        routes_playback,
+        "available_backends",
+        lambda: ("videotoolbox",) if availability["value"] else (),
+    )
+    monkeypatch.setattr(routes_playback, "available_local_backends", lambda: ())
+    monkeypatch.setattr(routes_playback, "remote_worker_available", remote_available)
+    monkeypatch.setattr(
+        routes_playback,
+        "effective_remote_transcode_config",
+        lambda: SimpleNamespace(base_url="http://nas.local"),
+    )
+
+    policy = client.put(
+        f"{_PB}/policy", json={"software_transcode_enabled": True}
+    )
+    assert policy.status_code == 200, policy.text
+
+    file_id = seed(client, tmp_path, container="mkv", codec="hevc")
+    manager = get_session_manager()
+    old_id = "old-remote-session"
+    old_directory = Path(get_settings().transcode_dir) / old_id
+    old_directory.mkdir(parents=True, exist_ok=True)
+    old_plan = PlaybackPlan(
+        tier=PlaybackTier.HARDWARE_TRANSCODE,
+        file_id=file_id,
+        container="hls-fmp4",
+        video=VideoPlan(action="transcode", codec="h264", height=1080),
+        audio=AudioPlan(action="copy", track_ref=None),
+        reason="测试",
+    )
+    manager._sessions[old_id] = session_mod.TranscodeSession(
+        id=old_id,
+        file_id=file_id,
+        member_id=0,
+        tier=PlaybackTier.HARDWARE_TRANSCODE,
+        directory=old_directory,
+        start_ms=0,
+        plan=old_plan,
+        remote=True,
+    )
+
+    original_stop_for_file = manager.stop_for_file
+
+    async def stop_and_release(file_id_value: int, member_id: int) -> int:
+        replaced = await original_stop_for_file(file_id_value, member_id)
+        if replaced:
+            availability["value"] = True
+        return replaced
+
+    monkeypatch.setattr(manager, "stop_for_file", stop_and_release)
+
+    async def fake_spawn_remote(remote_session, _base_url: str) -> None:
+        remote_session.state = "ready"
+        remote_session.remote_worker_id = "mac-mini"
+        # 模拟这次新会话占用唯一的 Worker 槽位，下一次切换必须先停它。
+        availability["value"] = False
+
+    monkeypatch.setattr(manager, "_spawn_remote", fake_spawn_remote)
+
+    for max_height in (720, 480):
+        data = start_session(client, file_id, max_height=max_height)
+        assert data["decision"]["tier"] == int(PlaybackTier.HARDWARE_TRANSCODE)
+        assert data["hw_backend"] == "videotoolbox"
+        current = manager.get(data["session_id"])
+        assert current is not None
+        assert current.remote is True
+        assert current.hw_backend == "videotoolbox"
 
 
 def test_init_segment_waits_until_fully_written(client, tmp_path, monkeypatch):
@@ -459,9 +689,12 @@ def test_pgs_subtitle_served_as_binary_sup(client, tmp_path, monkeypatch):
     raw = b"PG" + bytes(range(256)) * 4
     sup = tmp_path / "extracted.sup"
     sup.write_bytes(raw)
+    async def fake_extract(file, index):
+        return SubtitleRef(path=sup, format="sup")
+
     monkeypatch.setattr(
-        "movieclaw_api.api.routes.playback.extract_embedded_subtitle",
-        lambda file, index: SubtitleRef(path=sup, format="sup"),
+        "movieclaw_api.api.routes.playback.extract_embedded_subtitle_async",
+        fake_extract,
     )
     token = client.portal.call(
         partial(issue_stream_token, member_id=0, file_id=file_id, session_id=None)
@@ -470,3 +703,451 @@ def test_pgs_subtitle_served_as_binary_sup(client, tmp_path, monkeypatch):
     assert resp.status_code == 200, resp.text
     assert resp.headers["content-type"].startswith("application/octet-stream")
     assert resp.content == raw
+
+
+@pytest.mark.asyncio
+async def test_embedded_subtitle_disconnect_cancels_extraction_without_asgi_cancel(
+    monkeypatch,
+):
+    """客户端断开只产生受控的内部信号，不能把正常取消冒泡成 Uvicorn 错误。"""
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def hanging_extract(_file, _index):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    class DisconnectedRequest:
+        async def is_disconnected(self):
+            return True
+
+    monkeypatch.setattr(
+        routes_playback, "extract_embedded_subtitle_async", hanging_extract
+    )
+    awaitable = routes_playback._extract_subtitle_until_disconnect(
+        DisconnectedRequest(), object(), 0
+    )
+    with pytest.raises(routes_playback._SubtitleClientDisconnected):
+        await awaitable
+    assert started.is_set()
+    assert cancelled.is_set()
+
+
+def test_abandoned_embedded_subtitle_request_returns_no_content(client, tmp_path, monkeypatch):
+    """路由边界吞掉内部断开信号，真实服务端取消仍不被误报为 500。"""
+    file_id = seed(client, tmp_path)
+
+    async def disconnected_extract(_request, _file, _index):
+        raise routes_playback._SubtitleClientDisconnected
+
+    monkeypatch.setattr(
+        routes_playback, "_extract_subtitle_until_disconnect", disconnected_extract
+    )
+    token = client.portal.call(
+        partial(issue_stream_token, member_id=0, file_id=file_id, session_id=None)
+    )
+    resp = client.get(f"{_PB}/files/{file_id}/subtitles?track=embedded:0&token={token}")
+    assert resp.status_code == 204
+
+
+# ---------------------------------------------------------------------------
+# 外置 macOS Worker 数据面
+# ---------------------------------------------------------------------------
+
+
+def _install_remote_session(client: TestClient, tmp_path: Path, file_id: int) -> dict[str, str]:
+    """只装配一个远程会话，专测 Worker 的 HTTPS 源/产物边界。"""
+    session_id = "remote-session-test"
+    attempt_id = "remote-attempt-test"
+    directory = Path(get_settings().transcode_dir) / session_id
+    directory.mkdir(parents=True, exist_ok=True)
+    plan = PlaybackPlan(
+        tier=PlaybackTier.HARDWARE_TRANSCODE,
+        file_id=file_id,
+        container="hls-fmp4",
+        video=VideoPlan(action="transcode", codec="h264", height=1080),
+        audio=AudioPlan(action="copy", track_ref=None),
+        reason="测试",
+    )
+    remote = session_mod.TranscodeSession(
+        id=session_id,
+        file_id=file_id,
+        member_id=0,
+        tier=PlaybackTier.HARDWARE_TRANSCODE,
+        directory=directory,
+        start_ms=0,
+        plan=plan,
+        remote=True,
+        remote_job_id=attempt_id,
+    )
+    manager = get_session_manager()
+    manager._sessions[session_id] = remote
+    source = client.portal.call(
+        partial(issue_remote_grant, session_id=session_id, file_id=file_id, kind="source")
+    )
+    artifact = client.portal.call(
+        partial(
+            issue_remote_grant,
+            session_id=session_id,
+            file_id=file_id,
+            kind="artifact",
+            attempt_id=attempt_id,
+        )
+    )
+    return {"session_id": session_id, "source": source, "artifact": artifact}
+
+
+def test_remote_source_supports_range_without_mounting_nas(client, tmp_path):
+    file_id = seed(client, tmp_path, container="mkv")
+    grants = _install_remote_session(client, tmp_path, file_id)
+    response = client.get(
+        f"/api/v1/transcode-worker/sessions/{grants['session_id']}/source"
+        f"?token={grants['source']}",
+        headers={"Range": "bytes=0-15"},
+    )
+    assert response.status_code == 206
+    assert response.content == b"FAKE-MEDIA-BYTES"
+    assert response.headers["accept-ranges"] == "bytes"
+
+
+def test_remote_artifact_upload_is_atomic_and_attempt_scoped(client, tmp_path):
+    file_id = seed(client, tmp_path, container="mkv")
+    grants = _install_remote_session(client, tmp_path, file_id)
+    session_id = grants["session_id"]
+    endpoint = f"/api/v1/transcode-worker/sessions/{session_id}/artifacts/seg00000.m4s"
+    target = Path(get_settings().transcode_dir) / session_id / "seg00000.m4s"
+    target.write_bytes(b"OLD")
+
+    uploaded = client.put(f"{endpoint}?token={grants['artifact']}", content=b"NEW-SEGMENT")
+    assert uploaded.status_code == 201
+    assert target.read_bytes() == b"NEW-SEGMENT"
+
+    stale = client.portal.call(
+        partial(
+            issue_remote_grant,
+            session_id=session_id,
+            file_id=file_id,
+            kind="artifact",
+            attempt_id="old-attempt",
+        )
+    )
+    rejected = client.put(f"{endpoint}?token={stale}", content=b"STALE")
+    assert rejected.status_code == 404
+    assert target.read_bytes() == b"NEW-SEGMENT"
+
+
+def _request_that_disconnects_after_body(
+    body: bytes, *, declared_length: int
+) -> Request:
+    """模拟代理在请求体后关闭连接，覆盖 ffmpeg HLS PUT 的异常边界。"""
+    messages = iter(
+        [
+            {
+                "type": "http.request",
+                "body": body,
+                "more_body": True,
+            },
+            {"type": "http.disconnect"},
+        ]
+    )
+
+    async def receive() -> dict:
+        return next(messages)
+
+    path = "/api/v1/transcode-worker/sessions/remote-session-test/artifacts/live.m3u8"
+    return Request(
+        {
+            "type": "http",
+            "http_version": "1.1",
+            "method": "PUT",
+            "scheme": "https",
+            "path": path,
+            "raw_path": path.encode(),
+            "query_string": b"",
+            "headers": [(b"content-length", str(declared_length).encode())],
+            "client": ("worker", 1234),
+            "server": ("nas", 443),
+            "root_path": "",
+        },
+        receive,
+    )
+
+
+def test_remote_artifact_upload_keeps_complete_body_on_client_disconnect(client, tmp_path):
+    file_id = seed(client, tmp_path, container="mkv")
+    grants = _install_remote_session(client, tmp_path, file_id)
+    body = b"#EXTM3U\n#EXT-X-VERSION:7\n"
+    request = _request_that_disconnects_after_body(body, declared_length=len(body))
+
+    response = client.portal.call(
+        partial(
+            put_transcode_artifact,
+            session_id=grants["session_id"],
+            name="live.m3u8",
+            request=request,
+            token=grants["artifact"],
+        )
+    )
+
+    target = Path(get_settings().transcode_dir) / grants["session_id"] / "live.m3u8"
+    assert response.status_code == 201
+    assert target.read_bytes() == body
+    assert not list(target.parent.glob("*.upload"))
+
+
+def _request_with_chunked_body(body: bytes) -> Request:
+    """模拟 FFmpeg HLS 的 chunked PUT，覆盖无 Content-Length 的正常结束。"""
+    midpoint = max(1, len(body) // 2)
+    messages = iter(
+        [
+            {
+                "type": "http.request",
+                "body": body[:midpoint],
+                "more_body": True,
+            },
+            {
+                "type": "http.request",
+                "body": body[midpoint:],
+                "more_body": True,
+            },
+            {"type": "http.request", "body": b"", "more_body": False},
+        ]
+    )
+
+    async def receive() -> dict:
+        return next(messages)
+
+    path = "/api/v1/transcode-worker/sessions/remote-session-test/artifacts/live.m3u8"
+    return Request(
+        {
+            "type": "http",
+            "http_version": "1.1",
+            "method": "PUT",
+            "scheme": "http",
+            "path": path,
+            "raw_path": path.encode(),
+            "query_string": b"",
+            "headers": [(b"transfer-encoding", b"chunked")],
+            "client": ("worker", 1234),
+            "server": ("nas", 80),
+            "root_path": "",
+        },
+        receive,
+    )
+
+
+def test_remote_artifact_upload_accepts_complete_chunked_body(client, tmp_path):
+    file_id = seed(client, tmp_path, container="mkv")
+    grants = _install_remote_session(client, tmp_path, file_id)
+    body = b"#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\n"
+    request = _request_with_chunked_body(body)
+
+    response = client.portal.call(
+        partial(
+            put_transcode_artifact,
+            session_id=grants["session_id"],
+            name="live.m3u8",
+            request=request,
+            token=grants["artifact"],
+        )
+    )
+
+    target = Path(get_settings().transcode_dir) / grants["session_id"] / "live.m3u8"
+    assert response.status_code == 201
+    assert target.read_bytes() == body
+    assert not list(target.parent.glob("*.upload"))
+
+
+def test_remote_artifact_upload_discards_partial_body_on_client_disconnect(client, tmp_path):
+    file_id = seed(client, tmp_path, container="mkv")
+    grants = _install_remote_session(client, tmp_path, file_id)
+    body = b"partial-playlist"
+    request = _request_that_disconnects_after_body(body, declared_length=len(body) + 1)
+
+    response = client.portal.call(
+        partial(
+            put_transcode_artifact,
+            session_id=grants["session_id"],
+            name="live.m3u8",
+            request=request,
+            token=grants["artifact"],
+        )
+    )
+
+    target = Path(get_settings().transcode_dir) / grants["session_id"] / "live.m3u8"
+    assert response.status_code == 499
+    assert not target.exists()
+    assert not list(target.parent.glob("*.upload"))
+    session = get_session_manager().get(grants["session_id"])
+    assert session is not None
+    assert session.remote_failed_segments == set()
+    assert session.remote_uploads[-1].status == 499
+
+
+def test_playback_diagnostics_reports_remote_execution_and_upload_gap(client, tmp_path):
+    file_id = seed(client, tmp_path, container="mkv")
+    grants = _install_remote_session(client, tmp_path, file_id)
+    session = get_session_manager().get(grants["session_id"])
+    assert session is not None
+    session.remote_worker_id = "mac-mini"
+    session.hw_backend = "videotoolbox"
+    session.segment_plan = SegmentPlan(
+        boundaries=tuple(float(i * 4) for i in range(10)), duration_s=40.0
+    )
+    session.head_segment = 3
+    session.completed_segments = {3}
+    session.pending_segments[5] = 1
+    session.last_requested_segment = 5
+    session.last_requested_at_ms = 2_000
+    session.last_served_segment = 4
+    # 旧的并行请求可能晚于当前请求完成，不能让它把诊断游标退回 4。
+    session.last_served_at_ms = 3_000
+    session.last_segment_wait_ms = 2300
+    session.last_segment_status = 404
+    session.error = "source=https://nas.example/stream?token=secret"
+    session.record_remote_upload(
+        "seg00002.m4s",
+        status=499,
+        received_bytes=123,
+        content_length=456,
+        transfer_encoding="chunked",
+    )
+    session.record_remote_upload(
+        "seg00004.m4s",
+        status=499,
+        received_bytes=123,
+        content_length=456,
+        transfer_encoding="chunked",
+    )
+    session.record_remote_upload(
+        "seg00005.m4s",
+        status=499,
+        received_bytes=123,
+        content_length=456,
+        transfer_encoding="chunked",
+    )
+    token = client.portal.call(
+        partial(
+            issue_stream_token,
+            member_id=0,
+            file_id=file_id,
+            session_id=grants["session_id"],
+        )
+    )
+
+    response = client.get(
+        f"{_PB}/sessions/{grants['session_id']}/diagnostics?token={token}"
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["processing_mode"] == "remote-hardware"
+    assert data["execution_location"] == "remote_worker"
+    assert data["backend"] == "videotoolbox"
+    assert data["encoder"] == "h264_videotoolbox"
+    assert data["worker_id"] == "mac-mini"
+    assert data["worker_online"] is False
+    assert data["highest_produced_segment"] == 3
+    assert data["failed_segments"] == [5]
+    assert data["historical_failed_segments"] == [2, 4]
+    assert data["recent_uploads"][0]["name"] == "seg00005.m4s"
+    assert data["recent_uploads"][0]["status"] == 499
+    assert "secret" not in data["session_error"]
+
+
+def test_playback_diagnostics_reports_remote_ffmpeg_failure_details(client, tmp_path):
+    file_id = seed(client, tmp_path, container="mkv")
+    grants = _install_remote_session(client, tmp_path, file_id)
+    registry = get_remote_worker_registry()
+    registry._job_states["remote-attempt-test"] = {
+        "type": "job.failed",
+        "job_id": "remote-attempt-test",
+        "exit_code": 187,
+        "error": "ffmpeg 退出码：187",
+        "stderr_tail": "HTTP 输出失败 token=secret",
+    }
+    try:
+        token = client.portal.call(
+            partial(
+                issue_stream_token,
+                member_id=0,
+                file_id=file_id,
+                session_id=grants["session_id"],
+            )
+        )
+        response = client.get(
+            f"{_PB}/sessions/{grants['session_id']}/diagnostics?token={token}"
+        )
+    finally:
+        registry._job_states.pop("remote-attempt-test", None)
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["job_exit_code"] == 187
+    assert data["job_error"] == "ffmpeg 退出码：187"
+    assert "token=<redacted>" in data["job_stderr_tail"]
+
+
+def test_remote_artifact_upload_maps_disk_quota_to_507(
+    client, tmp_path, monkeypatch
+):
+    file_id = seed(client, tmp_path, container="mkv")
+    grants = _install_remote_session(client, tmp_path, file_id)
+
+    def fail_replace(_source, _target):
+        raise OSError(errno.EDQUOT, "Disc quota exceeded")
+
+    monkeypatch.setattr(routes_transcode_worker.os, "replace", fail_replace)
+    response = client.put(
+        f"/api/v1/transcode-worker/sessions/{grants['session_id']}/artifacts/init.mp4"
+        f"?token={grants['artifact']}",
+        content=b"INIT",
+    )
+
+    assert response.status_code == 507
+    assert response.json()["code"] == "INSUFFICIENT_STORAGE"
+    session = get_session_manager().get(grants["session_id"])
+    assert session is not None
+    assert session.remote_uploads[-1].status == 500
+
+
+def test_remote_artifact_upload_rejects_oversized_body(client, tmp_path):
+    file_id = seed(client, tmp_path, container="mkv")
+    grants = _install_remote_session(client, tmp_path, file_id)
+    configured = client.put(
+        "/api/v1/transcode-worker/config",
+        json={
+            "enabled": False,
+            "worker_token": None,
+            "max_artifact_bytes": 3,
+        },
+    )
+    assert configured.status_code == 200
+
+    response = client.put(
+        f"/api/v1/transcode-worker/sessions/{grants['session_id']}/artifacts/init.mp4"
+        f"?token={grants['artifact']}",
+        content=b"TOO-LONG",
+    )
+    assert response.status_code == 413
+    assert response.json()["code"] == "PAYLOAD_TOO_LARGE"
+
+
+def test_remote_artifact_upload_rejects_finished_job(client, tmp_path):
+    file_id = seed(client, tmp_path, container="mkv")
+    grants = _install_remote_session(client, tmp_path, file_id)
+    registry = get_remote_worker_registry()
+    registry._job_states["remote-attempt-test"] = {"type": "job.failed"}
+    try:
+        response = client.put(
+            f"/api/v1/transcode-worker/sessions/{grants['session_id']}/artifacts/init.mp4"
+            f"?token={grants['artifact']}",
+            content=b"STALE",
+        )
+        assert response.status_code == 404
+    finally:
+        registry._job_states.pop("remote-attempt-test", None)

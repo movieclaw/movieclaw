@@ -168,6 +168,55 @@ test("重新起播清空上一轮的失败记录", () => {
   assert.equal(state.startMs, 90_000);
 });
 
+test("手动切档开始新一轮请求：旧会话与自动降档记录都清空", () => {
+  const playing = run([
+    { type: "request", startMs: 0 },
+    { type: "session", session: planSession(3) },
+    { type: "playing" },
+  ]);
+  const switched = playerReducer(playing, { type: "request", startMs: 12_000 });
+  assert.equal(switched.phase, "deciding");
+  assert.equal(switched.session, null);
+  assert.equal(switched.decision, null);
+  assert.deepEqual(switched.failedTiers, []);
+  assert.equal(switched.startMs, 12_000);
+});
+
+test("新会话建立前，旧媒体事件不能污染切档请求", () => {
+  const playing = run([
+    { type: "request", startMs: 0 },
+    { type: "session", session: planSession(3) },
+    { type: "playing" },
+  ]);
+  const switching = playerReducer(playing, { type: "request", startMs: 12_000 });
+  for (const stale of [
+    { type: "playing" },
+    { type: "ended" },
+    { type: "buffering" },
+    { type: "seeking" },
+    { type: "failed", reason: "旧会话的解码错误" },
+  ]) {
+    const after = playerReducer(switching, stale);
+    assert.equal(after.phase, "deciding", `${stale.type} 不该改写新请求`);
+    assert.equal(after.session, null);
+    assert.deepEqual(after.failedTiers, []);
+  }
+});
+
+test("restart 先摘掉旧会话，但保留自动重试的失败历史", () => {
+  const state = run([
+    { type: "request", startMs: 0 },
+    { type: "session", session: planSession(3) },
+    { type: "playing" },
+    { type: "failed", reason: "网络中断" },
+  ]);
+  const restarted = playerReducer(state, { type: "restart", startMs: 8_000 });
+  assert.equal(restarted.phase, "session-starting");
+  assert.equal(restarted.session, null);
+  assert.equal(restarted.decision, null);
+  assert.deepEqual(restarted.failedTiers, [3]);
+});
+
 test("起播失败后原样重试，状态必须与上一次可区分", () => {
   // 编排层靠状态指纹给 effect 去重，指纹撞了请求就发不出去，界面会永远停在
   // 「正在判断播放方式」。重试恰恰是参数一模一样再来一次，全靠 attempt 区分。

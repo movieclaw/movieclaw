@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 
-import type { PlaybackSession } from "@/lib/api/playback";
+import type { PlaybackDiagnostics, PlaybackSession } from "@/lib/api/playback";
 import type { EngineStats, PlaybackEngine } from "@/lib/player/engine";
 import type { QoeLiveStats } from "@/lib/player/qoe";
 import { languageLabel } from "@/lib/language-labels";
@@ -27,12 +27,83 @@ const TIER_LABELS: Record<number, string> = {
   4: "软件转码",
 };
 
+const PROCESSING_LABELS: Record<string, string> = {
+  direct: "原文件直出",
+  remux: "仅容器重封装",
+  "audio-transcode": "仅音频转码",
+  "transcode-pending": "硬件转码（执行端读取中）",
+  "local-hardware": "本地硬件转码",
+  "local-software": "本地软件转码",
+  "remote-hardware": "远程硬件转码",
+};
+
+const LOCATION_LABELS: Record<string, string> = {
+  client: "客户端",
+  nas: "NAS",
+  remote_worker: "远程 Worker",
+};
+
+const BACKEND_LABELS: Record<string, string> = {
+  videotoolbox: "VideoToolbox",
+  vaapi: "VAAPI",
+  qsv: "Intel QSV",
+  nvenc: "NVENC",
+};
+
+const JOB_STATE_LABELS: Record<string, string> = {
+  "job.pending": "排队中",
+  "job.accepted": "已接单",
+  "job.progress": "转码中",
+  "job.failed": "任务失败",
+  "job.finished": "已完成",
+};
+
+const READY_STATE_LABELS: Record<number, string> = {
+  0: "无媒体",
+  1: "元数据",
+  2: "可播放",
+  3: "可播放且有数据",
+  4: "可持续播放",
+};
+
+const NETWORK_STATE_LABELS: Record<number, string> = {
+  0: "空闲",
+  1: "加载中",
+  2: "已加载",
+  3: "无资源",
+};
+
 /** 掉帧率高于这个比例就标红：能解但解不动，通常是该降一档了。 */
 const DROP_ALERT_RATIO = 0.02;
 
 function formatMbps(bps: number | null | undefined): string | null {
   if (!bps) return null;
   return `${(bps / 1_000_000).toFixed(bps >= 10_000_000 ? 0 : 1)} Mbps`;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KiB`;
+  if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MiB`;
+  return `${(bytes / 1024 ** 3).toFixed(2)} GiB`;
+}
+
+function segmentLabel(index: number | null | undefined): string {
+  if (index == null || index < 0) return "—";
+  return `seg${String(index).padStart(5, "0")}`;
+}
+
+function uploadLabel(upload: PlaybackDiagnostics["recent_uploads"][number]): string {
+  const status = upload.status === 201 ? "成功" : `HTTP ${upload.status}`;
+  const expected =
+    upload.content_length == null
+      ? upload.transfer_encoding === "chunked"
+        ? "chunked"
+        : null
+      : `${formatBytes(upload.content_length)} 期望`;
+  return [upload.name, status, formatBytes(upload.received_bytes), expected]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 /** 节标题 + 内容：Emby 式两级缩进。 */
@@ -65,6 +136,7 @@ export function DiagnosticsPanel({
   engine,
   qoe,
   landscape,
+  diagnostics,
   onClose,
 }: {
   session: PlaybackSession;
@@ -76,6 +148,8 @@ export function DiagnosticsPanel({
   /** 横屏中（真方向锁或 iOS 伪横屏）。见下方注释：伪横屏时视口仍是竖的，
    *  `max-md:` 按视口宽度判断会选错布局，必须由这个状态拍板 */
   landscape: boolean;
+  /** 服务端会话快照；直出档没有会话时为 null。 */
+  diagnostics: PlaybackDiagnostics | null;
   onClose: () => void;
 }) {
   const [stats, setStats] = useState<EngineStats | null>(null);
@@ -112,6 +186,33 @@ export function DiagnosticsPanel({
     decision.tier === 0
       ? "原文件直出"
       : `HLS · fMP4（${TIER_LABELS[decision.tier ?? -1] ?? "未知档位"}）`;
+
+  const fallbackProcessingMode =
+    session.session_id == null
+      ? "direct"
+      : decision.tier === 1
+        ? "remux"
+        : decision.tier === 2
+          ? "audio-transcode"
+          : session.hw_backend
+            ? "transcode-pending"
+            : "local-software";
+  const processingMode = diagnostics?.processing_mode ?? fallbackProcessingMode;
+  const processingLabel = PROCESSING_LABELS[processingMode] ?? processingMode;
+  const locationLabel = diagnostics
+    ? LOCATION_LABELS[diagnostics.execution_location] ?? diagnostics.execution_location
+    : session.session_id == null
+      ? "客户端直出"
+      : "读取中";
+  const backendLabel = diagnostics?.backend
+    ? BACKEND_LABELS[diagnostics.backend] ?? diagnostics.backend
+    : session.hw_backend
+      ? BACKEND_LABELS[session.hw_backend] ?? session.hw_backend
+      : null;
+  const latestUpload = diagnostics?.recent_uploads[0] ?? null;
+  const failedSegment = diagnostics?.failed_segments[0];
+  const historicalFailedSegment = diagnostics?.historical_failed_segments[0];
+  const pendingSegment = diagnostics?.pending_segments[0];
 
   // —— 视频节 ——
   const videoSource = source
@@ -238,6 +339,66 @@ export function DiagnosticsPanel({
           ) : null}
         </Section>
 
+        <Section title="执行">
+          <SourceLine>{processingLabel}</SourceLine>
+          <ActionLine>位置：{locationLabel}</ActionLine>
+          {backendLabel ? (
+            <ActionLine>
+              后端：{backendLabel}
+              {diagnostics?.encoder ? ` · ${diagnostics.encoder}` : null}
+            </ActionLine>
+          ) : null}
+          {diagnostics?.worker_id ? (
+            <ActionLine>
+              Worker：<span className="break-all">{diagnostics.worker_id}</span>
+              {diagnostics.worker_online === true
+                ? " · 在线"
+                : diagnostics.worker_online === false
+                  ? " · 离线"
+                  : " · 切换中"}
+            </ActionLine>
+          ) : null}
+          {diagnostics?.worker_version || diagnostics?.ffmpeg_version ? (
+            <ActionLine>
+              {diagnostics.worker_version ? `Worker ${diagnostics.worker_version}` : null}
+              {diagnostics.worker_version && diagnostics.ffmpeg_version ? " · " : null}
+              {diagnostics.ffmpeg_version ? `ffmpeg ${diagnostics.ffmpeg_version}` : null}
+            </ActionLine>
+          ) : null}
+          {diagnostics?.worker_platform || diagnostics?.worker_arch ? (
+            <ActionLine>
+              平台：{[diagnostics.worker_platform, diagnostics.worker_arch].filter(Boolean).join(" · ")}
+            </ActionLine>
+          ) : null}
+          {diagnostics?.job_id ? (
+            <ActionLine>
+              任务：<span className="break-all">{diagnostics.job_id}</span>
+              {diagnostics.job_state
+                ? ` · ${JOB_STATE_LABELS[diagnostics.job_state] ?? diagnostics.job_state}`
+                : null}
+              {diagnostics.job_speed ? ` · ${diagnostics.job_speed}` : null}
+            </ActionLine>
+          ) : null}
+          {diagnostics?.job_exit_code != null ? (
+            <ActionLine alert>ffmpeg 退出码：{diagnostics.job_exit_code}</ActionLine>
+          ) : null}
+          {diagnostics?.job_error && diagnostics.job_error !== diagnostics.session_error ? (
+            <ActionLine alert>
+              <span className="break-all">Worker：{diagnostics.job_error}</span>
+            </ActionLine>
+          ) : null}
+          {diagnostics?.job_stderr_tail ? (
+            <ActionLine alert>
+              <span className="break-all">ffmpeg stderr：{diagnostics.job_stderr_tail}</span>
+            </ActionLine>
+          ) : null}
+          {diagnostics?.session_error ? (
+            <ActionLine alert>
+              <span className="break-all">{diagnostics.session_error}</span>
+            </ActionLine>
+          ) : null}
+        </Section>
+
         <Section title="视频">
           {videoSource ? <SourceLine>{videoSource}</SourceLine> : null}
           {videoAction ? <ActionLine>{videoAction}</ActionLine> : null}
@@ -263,10 +424,22 @@ export function DiagnosticsPanel({
               stats?.engine ?? "—",
               formatMbps(stats?.bitrate) && `实时 ${formatMbps(stats?.bitrate)}`,
               stats ? `缓冲 ${stats.bufferedSeconds.toFixed(1)} 秒` : null,
+              stats ? `播放头 ${stats.currentTimeSeconds.toFixed(1)} 秒` : null,
             ]
               .filter(Boolean)
               .join(" · ")}
           </p>
+          {stats ? (
+            <p className="text-white/75">
+              {[
+                `媒体 ${READY_STATE_LABELS[stats.readyState] ?? `readyState ${stats.readyState}`}`,
+                `网络 ${NETWORK_STATE_LABELS[stats.networkState] ?? `networkState ${stats.networkState}`}`,
+                stats.seeking ? "定位中" : stats.paused ? "已暂停" : "播放中",
+              ]
+                .filter(Boolean)
+                .join(" · ")}
+            </p>
+          ) : null}
           {/* 「不丝滑」的量化行：用户拖一下进度条，这里马上告诉他等了多少秒；
               卡顿计数不含 seek 造成的等待（qoe.ts 的口径），所以这两个数字
               可以分开读——前者是跳转体验，后者是网络/转码跟不跟得上 */}
@@ -290,6 +463,52 @@ export function DiagnosticsPanel({
             会话 {session.session_id ?? "无（直出）"}
           </p>
         </Section>
+
+        {diagnostics?.total_segments != null ? (
+          <Section title="供片">
+            <SourceLine>
+              {pendingSegment != null
+                ? `等待 ${segmentLabel(pendingSegment)}`
+                : diagnostics.requested_segment != null
+                  ? `最近请求 ${segmentLabel(diagnostics.requested_segment)}`
+                  : "当前无等待分片"}
+            </SourceLine>
+            <ActionLine>
+              连续产出 {segmentLabel(diagnostics.highest_produced_segment)} · 头部{" "}
+              {segmentLabel(diagnostics.head_segment)} · 共 {diagnostics.total_segments} 段
+            </ActionLine>
+            <ActionLine>NAS 会话缓存 {formatBytes(diagnostics.cache_bytes)}</ActionLine>
+            {failedSegment != null ? (
+              <ActionLine alert>
+                当前缺口 {segmentLabel(failedSegment)}
+                {diagnostics.failed_segments.length > 1
+                  ? ` 等 ${diagnostics.failed_segments.length} 段`
+                  : " · 上传失败待重试"}
+              </ActionLine>
+            ) : null}
+            {historicalFailedSegment != null ? (
+              <ActionLine>
+                历史失败 {segmentLabel(historicalFailedSegment)}
+                {diagnostics.historical_failed_segments.length > 1
+                  ? ` 等 ${diagnostics.historical_failed_segments.length} 段`
+                  : " · 已落后当前播放位置"}
+              </ActionLine>
+            ) : null}
+            {latestUpload ? (
+              <ActionLine alert={latestUpload.status >= 400}>
+                最近上传 {uploadLabel(latestUpload)}
+              </ActionLine>
+            ) : null}
+            {diagnostics.segment_wait_ms != null ? (
+              <ActionLine>
+                最近供片等待 {(diagnostics.segment_wait_ms / 1000).toFixed(1)} 秒
+                {diagnostics.segment_status != null
+                  ? ` · HTTP ${diagnostics.segment_status}`
+                  : null}
+              </ActionLine>
+            ) : null}
+          </Section>
+        ) : null}
       </div>
 
       <p className="mt-2 border-t border-white/10 pt-1.5 leading-relaxed text-white/60">

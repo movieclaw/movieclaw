@@ -3,7 +3,17 @@ from __future__ import annotations
 from datetime import date, datetime
 from enum import StrEnum
 
-from sqlalchemy import JSON, Column, DateTime, ForeignKey, Index, Integer, UniqueConstraint, text
+from sqlalchemy import (
+    JSON,
+    Column,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlmodel import Field
 
 from movieclaw_db.models.base import TimestampMixin, utcnow
@@ -368,6 +378,16 @@ class SubscriptionDownloadAttempt(TimestampMixin, table=True):
     site_id: str | None = Field(default=None, description="候选来源站点")
     torrent_id: str | None = Field(default=None, description="站点内种子 ID")
     torrent_title: str = Field(default="", description="投递时的种子标题快照")
+    download_name: str | None = Field(
+        default=None,
+        sa_column=Column(Text, nullable=True, index=True),
+        description="下载器返回的真实任务/内容名；用于监听目录可靠关联",
+    )
+    save_path: str | None = Field(
+        default=None,
+        sa_column=Column(Text, nullable=True),
+        description="MovieClaw 视角的投递路径；用于同名任务消歧",
+    )
     units: list = Field(
         default_factory=list,
         sa_column=Column(JSON, nullable=False),

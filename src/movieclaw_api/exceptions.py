@@ -139,3 +139,19 @@ class ServiceUnavailableException(AppException):
             message=message,
             details=details,
         )
+
+
+class InsufficientStorageException(AppException):
+    """服务端缓存卷空间或配额不足。"""
+
+    def __init__(
+        self,
+        message: str = "insufficient storage",
+        details: list[dict[str, Any]] | None = None,
+    ) -> None:
+        super().__init__(
+            status_code=507,
+            code="INSUFFICIENT_STORAGE",
+            message=message,
+            details=details,
+        )

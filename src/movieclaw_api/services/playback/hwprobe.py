@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from movieclaw_api.services.playback.ffmpeg_args import HW_BACKENDS
+from movieclaw_api.services.playback.remote_worker import remote_worker_available
 
 logger = logging.getLogger("movieclaw_api.playback.hwprobe")
 
@@ -78,7 +79,7 @@ def probe_backends(*, force: bool = False) -> list[HwBackendStatus]:
     """
     global _cache
     if _cache is not None and not force:
-        return _cache
+        return _with_remote_backend(_cache)
 
     if shutil.which("ffmpeg") is None:
         _cache = [
@@ -90,7 +91,7 @@ def probe_backends(*, force: bool = False) -> list[HwBackendStatus]:
             )
             for name in HW_BACKENDS
         ]
-        return _cache
+        return _with_remote_backend(_cache)
 
     encoders = _list_encoders()
     _cache = [_probe_one(name, encoders) for name in HW_BACKENDS]
@@ -103,12 +104,26 @@ def probe_backends(*, force: bool = False) -> list[HwBackendStatus]:
             "（默认关闭，播放此类影片时会弹窗征求开启）。逐后端原因如下：%s",
             "；".join(f"{s.label}：{s.detail}" for s in _cache if not s.available),
         )
-    return _cache
+    return _with_remote_backend(_cache)
 
 
 def available_backends() -> tuple[str, ...]:
     """可用后端名，按优先级。决策引擎的 ``PlaybackPolicy`` 输入之一。"""
     return tuple(s.name for s in probe_backends() if s.available)
+
+
+def available_local_backends() -> tuple[str, ...]:
+    """只返回 NAS 当前进程实际探测通过的后端。
+
+    ``available_backends()`` 会叠加外置 Worker 的 VideoToolbox 能力，供播放
+    决策判断「是否存在硬件转码能力」。但这个合并结果不能直接拿来生成 NAS
+    进程的 ffmpeg 参数，否则 Worker 短暂断线的竞态会把
+    ``h264_videotoolbox`` 错交给 Linux ffmpeg。执行层必须使用这份本地快照，
+    远程执行则由会话路由单独选择。
+    """
+    if _cache is None:
+        probe_backends()
+    return tuple(status.name for status in (_cache or ()) if status.available)
 
 
 def hardware_available() -> bool:
@@ -123,6 +138,31 @@ def reset_probe_cache() -> None:
 
 async def probe_backends_async(*, force: bool = False) -> list[HwBackendStatus]:
     return await asyncio.to_thread(probe_backends, force=force)
+
+
+def _with_remote_backend(statuses: list[HwBackendStatus]) -> list[HwBackendStatus]:
+    """把在线远程 Worker 映射为决策层可识别的 VideoToolbox 后端。
+
+    远程 Worker 不参与 NAS 容器内的一秒探测；它在连接 hello 中已经完成了
+    ffmpeg 能力探测。动态追加而不是写入本地缓存，保证 Worker 断线后下一次
+    决策立即回到真实的本机结果。
+    """
+    if not remote_worker_available("videotoolbox"):
+        return statuses
+    remote_status = HwBackendStatus(
+        name="videotoolbox",
+        label=BACKEND_LABELS["videotoolbox"],
+        available=True,
+        detail="已连接远程 Worker，并通过其 VideoToolbox 能力声明。",
+    )
+    # Linux 探测矩阵也会包含 videotoolbox=False；在线 Worker 应覆盖这个
+    # “本机没有该后端”的诊断，而不是重复返回两个同名后端。
+    if any(status.name == "videotoolbox" for status in statuses):
+        return [
+            remote_status if status.name == "videotoolbox" else status
+            for status in statuses
+        ]
+    return [*statuses, remote_status]
 
 
 def _probe_one(name: str, encoders: frozenset[str]) -> HwBackendStatus:

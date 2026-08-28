@@ -9,16 +9,19 @@ PT 片源的字幕绝大多数是内封的，只服务外挂等于对大部分�
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
+import movieclaw_api.services.playback.embedded_subs as embedded_subs
 from movieclaw_api.services.playback.embedded_subs import (
     embedded_subtitle_format,
     embedded_track_codec,
     extract_embedded_subtitle,
+    extract_embedded_subtitle_async,
 )
 from movieclaw_db.models import FileSource, FileState, LibraryFile
 
@@ -109,6 +112,59 @@ def test_missing_video_file_is_none(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     file = make_file(tmp_path, [{"codec": "subrip"}], path=tmp_path / "gone.mkv")
     assert extract_embedded_subtitle(file, 0) is None
+
+
+@pytest.mark.asyncio
+async def test_async_extraction_cancels_ffmpeg_and_removes_partial_file(tmp_path, monkeypatch):
+    """播放器放弃字幕请求时，PGS 抽取进程和临时文件都必须回收。"""
+    monkeypatch.chdir(tmp_path)
+    video = tmp_path / "movie.mkv"
+    video.write_bytes(b"source")
+    file = make_file(tmp_path, [{"codec": "hdmv_pgs_subtitle"}], path=video)
+
+    started = asyncio.Event()
+    killed = asyncio.Event()
+    commands: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    class HangingProcess:
+        pid = 12345
+        returncode: int | None = None
+
+        async def communicate(self):
+            started.set()
+            await killed.wait()
+            self.returncode = -15
+            return b"", b""
+
+    process = HangingProcess()
+
+    async def fake_create_subprocess_exec(*argv, **kwargs):
+        commands.append((argv, kwargs))
+        return process
+
+    def fake_signal(_pid, _sig):
+        process.returncode = -15
+        killed.set()
+
+    monkeypatch.setattr(embedded_subs.shutil, "which", lambda _name: "/fake/ffmpeg")
+    monkeypatch.setattr(
+        embedded_subs.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
+    )
+    monkeypatch.setattr(embedded_subs, "_signal_process_group", fake_signal)
+
+    pending = asyncio.create_task(extract_embedded_subtitle_async(file, 0))
+    await started.wait()
+    pending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+
+    await asyncio.wait_for(killed.wait(), timeout=1)
+    for _ in range(3):
+        await asyncio.sleep(0)
+    cache = tmp_path / "data" / "cache" / "playback-subs"
+    leftovers = list(cache.glob("*")) if cache.exists() else []
+    assert leftovers == []
+    assert commands and "-nostdin" in commands[0][0]
 
 
 # ---------------------------------------------------------------------------

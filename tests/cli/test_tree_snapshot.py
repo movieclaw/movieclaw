@@ -48,6 +48,7 @@ KNOWN_NON_GENERATED = {
     "playback.session.stop",
     "playback.session.playlist",
     "playback.session.segment",
+    "playback.session.diagnostics",
     # VOD（§12）：master 列表与字幕子列表都是播放器取流端点，CLI 不生成
     "playback.session.master",
     "playback.session.subtitle-playlist",
@@ -63,6 +64,8 @@ KNOWN_NON_GENERATED = {
     "playback.client-log",
     "playback.stats",
     "playback.device.revoke",
+    "transcode.source",
+    "transcode.artifact.put",
     # 观看进度上报与续播点：播放器起播/心跳/退出时自动调用的内部链路，
     # CLI 手动上报一次进度没有意义。
     "playback.progress",

@@ -15,6 +15,7 @@ import { MembersSection } from "@/components/members-section";
 import { LlmConfigSection } from "@/components/llm-config-section";
 import { ImPushSection } from "@/components/im-push-section";
 import { NetworkConfigSection } from "@/components/network-config-section";
+import { RemoteTranscodeSection } from "@/components/remote-transcode-section";
 import { ScrapeSettingsSection } from "@/components/scrape-settings-section";
 import { SiteConfigSection, SitesSectionSubtitle } from "@/components/site-config-section";
 import { SubscriptionSettingsSection } from "@/components/subscription-settings-section";
@@ -491,7 +492,8 @@ function ChangePasswordCard() {
  * —— 应用分区：两类设置，胶囊标签切换（与外观分区同一交互语言） ——
  *
  *   - 版本与更新：当前版本、检查/执行更新、NER 模型、回退（AppUpdateSection）；
- *   - 网络与维护：外部访问地址、重启应用（AppConfigSection）。
+ *   - 网络与维护：外部访问地址、重启应用（AppConfigSection）；
+ *   - 远程转码：远程 Worker 的开关、令牌与传输限制（RemoteTranscodeSection）。
  *
  * 为什么「版本与更新」是默认标签：这一页的高频入口是侧栏的更新徽标（有新版
  * 才出现），用户带着"来更新"的意图落地，第一屏就该是更新卡片；外部访问地址
@@ -499,12 +501,13 @@ function ChangePasswordCard() {
  * 挤在一条长页里。有可用更新时标签上点一颗小蓝点，与设置侧栏的「应用」行同款。
  */
 function AppSection() {
-  const [tab, setTab] = useState<"update" | "maintain">("update");
+  const [tab, setTab] = useState<"update" | "maintain" | "remote">("update");
   // 本分区只对管理员渲染（成员的分区清单里没有 app），无需再按角色关轮询
   const pendingUpdate = usePendingUpdate();
   const tabs = [
     { id: "update" as const, label: "版本与更新" },
     { id: "maintain" as const, label: "网络与维护" },
+    { id: "remote" as const, label: "远程转码" },
   ] as const;
 
   return (
@@ -527,7 +530,13 @@ function AppSection() {
           </button>
         ))}
       </div>
-      {tab === "update" ? <AppUpdateSection /> : <AppConfigSection />}
+      {tab === "update" ? (
+        <AppUpdateSection />
+      ) : tab === "maintain" ? (
+        <AppConfigSection />
+      ) : (
+        <RemoteTranscodeSection onOpenMaintain={() => setTab("maintain")} />
+      )}
     </div>
   );
 }

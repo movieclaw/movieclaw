@@ -199,6 +199,9 @@ subscriptions set-tracking-state
 subscriptions unsubscribe
 subscriptions update
 subscriptions upgrade-run
+transcode config set
+transcode config show
+transcode status
 ui prefs show
 ui prefs update
 watch create

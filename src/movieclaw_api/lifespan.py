@@ -101,6 +101,13 @@ def build_lifespan(settings: Settings):
         from movieclaw_api.services.scrape_config import load_scrape_runtime
 
         await load_scrape_runtime()
+        # 加载远程转码网页配置；播放决策与 Worker WebSocket 的同步读取通过进程内
+        # 快照即时生效。
+        from movieclaw_api.services.playback.remote_config import (
+            load_remote_transcode_config,
+        )
+
+        await load_remote_transcode_config()
         # 加载站点目录（内置 sites/configs/*.yaml + 用户自定义 data/site-configs/
         # → registry），供"可选项"接口使用；用户目录同 site_id 覆盖内置配置
         load_all_sites(settings.site_configs_dir)
@@ -248,6 +255,13 @@ def build_lifespan(settings: Settings):
             # 整组，否则会留下满负荷烧 GPU、持续写盘的孤儿进程（§4.2 契约 3）。
             # entrypoint.sh 的 trap 只 kill 后端自己，不会连坐孙子进程。
             await get_session_manager().shutdown()
+            # 远程 Worker 没有本地 PID，先由会话管理器发送 job.stop，再关闭
+            # WebSocket 控制面，避免 Worker 继续向已经删除的 NAS 会话目录上传。
+            from movieclaw_api.services.playback.remote_worker import (
+                get_remote_worker_registry,
+            )
+
+            await get_remote_worker_registry().shutdown()
             # 先停媒体库监听（观察者线程持有事件循环引用，须在循环关闭前退出）
             from movieclaw_api.services.library.ingest import close_ingest_watcher
             from movieclaw_api.services.library.watch import close_library_watcher

@@ -60,6 +60,10 @@ SEGMENT_PATTERN = "seg%05d.m4s"
 #: 取 4：VOD 预生成列表的分片栅格与这里必须同值（hls_vod.compute_segment_plan），
 #: 2 秒的列表对两小时的片有三千多行，4 秒折半，起播首段转出也只多等两秒。
 SEGMENT_SECONDS = 4
+# VideoToolbox 在带 ``-copyts`` 的高位点 seek 下可能自行选择过短的 GOP。
+# 以常见最高 60fps 计算上限，配合下面的强制关键帧把转码档稳定在 4 秒分片；
+# 这不是目标 GOP，而是防止编码器提前插入关键帧把 fMP4 切碎。
+MAX_GOP_FRAMES = SEGMENT_SECONDS * 60
 
 #: 码率阶梯：转码目标高度 → maxrate。此前硬件档写死 8M 不随分辨率变——
 #: 480p 给 8M 等于没降（弱网选低画质白选），4K 给 8M 又明显不够。数值参考
@@ -104,6 +108,10 @@ def maxrate_for_height(height: int | None) -> str:
 READRATE = 1.5
 READRATE_COPY = 4
 READRATE_BURST_SECONDS = 60
+# 远程源读取与 HLS PUT 的单次网络读写超时。没有这一项时，NAS/网络异常可能让
+# ffmpeg 永久阻塞，既不再产出分片，也不退出释放 Worker 槽位；播放器的 30 秒
+# 分片等待窗口也能在它超时后走失败回路。
+REMOTE_IO_TIMEOUT_US = 30_000_000
 
 #: 软件 HDR→SDR 色调映射。必须用 BT.2390 EETF——简单 clip 会把高光全压成
 #: 死白（雪景、天空、爆炸场面直接糊掉）。
@@ -181,7 +189,9 @@ HW_BACKENDS: dict[str, HwBackend] = {
         name="videotoolbox",
         encoder="h264_videotoolbox",
         hwaccel="videotoolbox",
-        # VideoToolbox 解码输出就在系统内存，滤镜链直接用软件 scale
+        hwaccel_output_format="videotoolbox_vld",
+        # VideoToolbox 硬解输出是 videotoolbox_vld；软件 scale 前必须显式
+        # hwdownload + format=nv12，见 _filter_chain。没有其它软件滤镜时保留硬解。
         tonemap_filter=None,
         sw_frames_ok=True,
     ),
@@ -222,6 +232,8 @@ def build_hls_command(
     start_ms: int = 0,
     hw_backend: str | None = None,
     start_number: int | None = None,
+    output_base_url: str | None = None,
+    output_url_suffix: str = "",
 ) -> TranscodeCommand:
     """把播放计划翻成 ffmpeg 命令。档 0（Direct Play）不该走到这里。
 
@@ -240,12 +252,20 @@ def build_hls_command(
         HW_BACKENDS.get(effective_hw_backend(plan, hw_backend) or "") if transcoding_video else None
     )
     burn_index = _burn_subtitle_index(plan) if transcoding_video else None
+    videotoolbox_unknown_bit_depth = (
+        backend is not None
+        and backend.name == "videotoolbox"
+        and bool(plan.video.height)
+        and plan.video.source_bit_depth not in (8, 10)
+    )
     # 需要 tone-map 但该后端没有原生滤镜，或要烧录字幕（overlay 是软件滤镜）
-    # → 走软件解码，让软件滤镜链能接上
+    # → 走软件解码，让软件滤镜链能接上。VideoToolbox 只有软件 scale 时不在
+    # 这里回退：_filter_chain 会按源位深显式下载 videotoolbox_vld 帧后再缩放，
+    # 保留硬解；位深未知或不是 8/10 时无法安全选择下载格式，回退软件解码。
     software_filters = burn_index is not None or (
         bool(plan.video.tone_map)
         and (backend is None or backend.tonemap_filter is None)
-    )
+    ) or videotoolbox_unknown_bit_depth
 
     # -ss 必须在 -i 之前：input seek 快得多（不用解码到该点）
     if start_ms > 0:
@@ -274,6 +294,10 @@ def build_hls_command(
             argv += ["-hwaccel_output_format", backend.hwaccel_output_format]
         if backend.device:
             argv += ["-hwaccel_device", backend.device]
+    if output_base_url:
+        # 输入与输出分别设置一次：前者约束 HTTPS Range 读取，后者由 HLS muxer
+        # 传给每个 init/segment/playlist 的 HTTP PUT。
+        argv += ["-rw_timeout", str(REMOTE_IO_TIMEOUT_US)]
     argv += ["-i", source_path]
 
     # 只取一路视频一路音频；字幕流不进输出容器（-sn）——默认旁挂由前端渲染
@@ -301,10 +325,25 @@ def build_hls_command(
         # 不做归零平移——seek 重启后分片时间戳依旧是文件时间。start_at_zero
         # 处理 start_time != 0 的源（TS 转封装常见），照抄 Jellyfin。
         argv += ["-copyts", "-avoid_negative_ts", "disabled", "-start_at_zero"]
-    argv += _hls_args(session_dir, start_number=start_number)
+    argv += _hls_args(
+        session_dir,
+        start_number=start_number,
+        output_base_url=output_base_url,
+        output_url_suffix=output_url_suffix,
+    )
+    if output_base_url:
+        # 远程 Worker 将进度写到 stdout 管道并通过控制面低频上报；不把进度
+        # 写入 stderr，避免和含有源地址的 ffmpeg 警告混在一起。stdout 不会
+        # 进入 NAS 媒体目录，也不会改变 HLS 输出路径。
+        argv += ["-progress", "pipe:1"]
 
     playlist = session_dir / (LIVE_PLAYLIST_NAME if start_number is not None else PLAYLIST_NAME)
-    argv.append(str(playlist))
+    if output_base_url:
+        argv.append(
+            f"{output_base_url.rstrip('/')}/{playlist.name}{output_url_suffix}"
+        )
+    else:
+        argv.append(str(playlist))
     return TranscodeCommand(
         argv=argv, playlist_path=playlist, init_path=session_dir / INIT_NAME
     )
@@ -380,6 +419,18 @@ def _video_args(
     bufsize = f"{int(float(maxrate[:-1]) * 2)}M"
     if backend is not None:
         args += ["-c:v", backend.encoder]
+        # iOS 原生 HLS 对 10-bit/High 10 的硬件编码结果兼容性很差，统一锁
+        # 到 High profile + 8-bit yuv420p。VideoToolbox 不能在 4K 输出时强制
+        # 使用 High@4.1（会以 kVTParameterErr=-12902 拒绝创建编码器），因此
+        # 交给它按实际分辨率选择合法 level（2160p 通常为 5.1）。
+        args += ["-profile:v", "high"]
+        if backend.name != "videotoolbox":
+            args += ["-level:v", "4.1"]
+        if backend.name == "videotoolbox":
+            args += ["-pix_fmt", "yuv420p"]
+        # 明确 H.264 的 ISO BMFF sample entry。默认通常也是 avc1，但不同编码器
+        # 或封装器版本可能落成 avc3；Safari 原生 HLS 需要稳定、可预告的标签。
+        args += ["-tag:v", "avc1"]
         # 硬件编码器不认 CRF，用码率阶梯约束
         args += ["-b:v", "0", "-maxrate", maxrate, "-bufsize", bufsize]
     else:
@@ -399,10 +450,14 @@ def _video_args(
         # 但画质损失明显，1.67× 已够供片就不再降。
         args += [
             "-c:v", "libx264", "-preset", "superfast", "-crf", "21",
+            "-profile:v", "high", "-level:v", "4.1",
             "-pix_fmt", "yuv420p",
+            "-tag:v", "avc1",
             "-maxrate", maxrate, "-bufsize", bufsize,
         ]
-    # 强制 2 秒关键帧，让分片精确对齐（转码档自己控制 GOP，直通档做不到）
+    # 固定 GOP 上限，防止 VideoToolbox 在高位点 copyts seek 时生成过密 IDR，
+    # 把 HLS 切成 0.4 秒一段；force_key_frames 再把关键帧对齐到分片栅格。
+    args += ["-g", str(MAX_GOP_FRAMES)]
     args += ["-force_key_frames", f"expr:gte(t,n_forced*{SEGMENT_SECONDS})"]
     return args
 
@@ -422,7 +477,15 @@ def _filter_chain(
             parts.append(f"{backend.scale_filter}=w=-2:h={height}")
         else:
             # -2 保持宽高比并对齐到偶数（编码器要求）
+            if backend is not None and backend.name == "videotoolbox" and not software_filters:
+                # videotoolbox_vld 是硬件帧，不能让软件 scale 隐式协商格式；
+                # 8-bit 下载为 NV12，10-bit 下载为 P010；最后统一成 8-bit
+                # yuv420p 给 H.264 编码器，避免 macOS ffmpeg 报格式无效。
+                download_format = "p010le" if plan.video.source_bit_depth == 10 else "nv12"
+                parts.append(f"hwdownload,format={download_format}")
             parts.append(f"scale=-2:{height}")
+            if backend is not None and backend.name == "videotoolbox" and not software_filters:
+                parts.append("format=yuv420p")
     return ",".join(parts)
 
 
@@ -431,7 +494,12 @@ def _audio_args(plan: PlaybackPlan, *, has_audio: bool, absolute_ts: bool) -> li
         return []
     if plan.audio.action == "copy":
         return ["-c:a", "copy"]
-    args = ["-c:a", plan.audio.codec or "aac"]
+    codec = plan.audio.codec or "aac"
+    args = ["-c:a", codec]
+    if codec.lower() == "aac":
+        # iOS 原生 HLS 走 AVPlayer，显式锁 AAC-LC，避免编码器默认 profile
+        # 或源参数让输出变成 HE-AAC/其它 AAC profile，导致 init 阶段拒绝。
+        args += ["-profile:a", "aac_low"]
     if plan.audio.channels:
         args += ["-ac", str(plan.audio.channels)]
     args += ["-b:a", "256k" if (plan.audio.channels or 2) <= 2 else "640k"]
@@ -452,7 +520,13 @@ def _audio_args(plan: PlaybackPlan, *, has_audio: bool, absolute_ts: bool) -> li
     return args
 
 
-def _hls_args(session_dir: Path, *, start_number: int | None = None) -> list[str]:
+def _hls_args(
+    session_dir: Path,
+    *,
+    start_number: int | None = None,
+    output_base_url: str | None = None,
+    output_url_suffix: str = "",
+) -> list[str]:
     """fMP4/CMAF 分片。不用 MPEG-TS：同一份分片将来可同时喂 HLS 和 DASH，
     加 DASH/离线只是多一份 manifest。
 
@@ -461,13 +535,34 @@ def _hls_args(session_dir: Path, *, start_number: int | None = None) -> list[str
     进度追踪（客户端的列表由服务端预生成），``-start_number`` 让 seek 重启
     后的分片文件名接上全片编号。
     """
+    if output_base_url:
+        # HLS muxer 会把 fMP4 init、每个分片和 playlist 分别作为 HTTP 资源
+        # 打开。init 文件名是个例外：muxer 会把它按播放列表 URL 的目录解析，
+        # 这里必须传相对文件名；传完整 URL 会拼成
+        # ``/artifacts/http://host/.../artifacts/init.mp4``。分片模板则由
+        # muxer 直接作为 URL 使用。Worker 侧因此只在内存中暂存当前产物，NAS
+        # 端点负责把请求体写入临时文件后原子替换，避免浏览器读到半个 moof。
+        output_base = output_base_url.rstrip("/")
+        init_filename = f"{INIT_NAME}{output_url_suffix}"
+        segment_filename = f"{output_base}/{SEGMENT_PATTERN}{output_url_suffix}"
+    else:
+        init_filename = INIT_NAME
+        segment_filename = str(session_dir / SEGMENT_PATTERN)
+
     args = [
+        *(["-rw_timeout", str(REMOTE_IO_TIMEOUT_US)] if output_base_url else []),
         "-f", "hls",
         "-hls_time", str(SEGMENT_SECONDS),
         "-hls_segment_type", "fmp4",
-        "-hls_fmp4_init_filename", INIT_NAME,
-        "-hls_segment_filename", str(session_dir / SEGMENT_PATTERN),
+        "-hls_fmp4_init_filename", init_filename,
+        "-hls_segment_filename", segment_filename,
     ]
+    if output_base_url:
+        # HTTP 输出必须显式使用 PUT：POST 会被 Starlette 当成普通接口请求，
+        # 也无法用同一个 URL 做幂等重传。Jellyfin-ffmpeg 的 HLS muxer 会为
+        # init/分片/playlist 分别创建 HTTP 子请求，这些请求使用 chunked PUT
+        # 是其正常行为，NAS 端点必须完整读取请求体后再原子替换。
+        args += ["-method", "PUT"]
     if start_number is not None:
         args += ["-start_number", str(start_number)]
     args += [

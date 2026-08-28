@@ -49,3 +49,6 @@ apps/web/tmp/
 
 # uv 生成的锁文件（项目用 pip/venv，见 scripts/dev.sh）
 uv.lock
+
+# Swift Package Manager 构建产物
+macos/**/.build/

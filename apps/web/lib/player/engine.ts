@@ -12,6 +12,7 @@
 
 import type Hls from "hls.js";
 
+import type { MseKind } from "@/lib/api/playback";
 import { reportPlaybackClientLog } from "@/lib/api/playback";
 
 import { NUDGE_STEP_S, bufferedAhead, classifyStall, shouldNudge, stallReason } from "./stall";
@@ -45,11 +46,19 @@ export interface EngineStats {
   /** 累计掉帧数：判断「能解但解不动」的唯一硬指标 */
   droppedFrames: number | null;
   totalFrames: number | null;
+  /** HTMLMediaElement 的实时状态：定位「有缓冲但解码没推进」很有用。 */
+  currentTimeSeconds: number;
+  readyState: number;
+  networkState: number;
+  paused: boolean;
+  seeking: boolean;
 }
 
 export interface PlaybackEngine {
   attach(): Promise<void>;
   destroy(): void;
+  /** 在 MSE 流内跳转时，允许引擎取消旧分片并从目标时间重新装载。 */
+  seek?(seconds: number): void;
   stats(): EngineStats;
 }
 
@@ -58,9 +67,11 @@ export interface EngineOptions {
   streamUrl: string;
   /** "mp4" = 原文件直出；"hls-fmp4" = 转码会话的分片 */
   container: string;
-  /** 客户端有没有完整 MSE。没有（iOS）时 HLS 交给系统原生播放 */
+  /** 客户端有没有 MSE；managed 是 iOS 的 ManagedMediaSource */
   hasMse: boolean;
-  /** 走系统原生 HLS（iOS + VOD 列表时为 true），streamUrl 应传 master 列表 */
+  /** MSE 的具体形态，用于让 hls.js 在 iOS 明确选择 ManagedMediaSource */
+  mse?: MseKind;
+  /** 走系统原生 HLS（仅无 MSE 的旧设备），streamUrl 应传 master 列表 */
   preferNativeHls?: boolean;
   /**
    * 首帧起播位置（**列表时间轴**的秒数）。
@@ -111,6 +122,11 @@ function readCommonStats(video: HTMLVideoElement): Omit<EngineStats, "engine" | 
     bufferedSeconds: bufferedAhead(video),
     droppedFrames: quality?.droppedVideoFrames ?? legacy.webkitDroppedFrameCount ?? null,
     totalFrames: quality?.totalVideoFrames ?? legacy.webkitDecodedFrameCount ?? null,
+    currentTimeSeconds: video.currentTime,
+    readyState: video.readyState,
+    networkState: video.networkState,
+    paused: video.paused,
+    seeking: video.seeking,
   };
 }
 
@@ -326,6 +342,10 @@ class HlsEngine implements PlaybackEngine {
           errorRetry: { maxNumRetry: 6, retryDelayMs: 1_000, maxRetryDelayMs: 8_000 },
         },
       },
+      // iOS 只暴露 ManagedMediaSource 时显式选它；hls.js 在没有完整
+      // MediaSource 的浏览器也会自动回退，但这里把能力快照传进来能避免
+      // 同时暴露两种实现的 WebKit 版本选错后端。
+      preferManagedMediaSource: this.options.mse === "managed",
       // 必须显式给起播位置，不能留默认(-1)：EVENT playlist 没有 ENDLIST，
       // hls.js 把它当直播，默认从「直播边缘」起播——续播时 ffmpeg 已 burst
       // 转出几十秒，就会从几十秒处开播。会话相对制传 0（续播位置由服务端
@@ -370,6 +390,15 @@ class HlsEngine implements PlaybackEngine {
     this.stopStallWatch = watchStall(video, onFailed);
   }
 
+  seek(seconds: number): void {
+    const target = Math.max(0, seconds);
+    // 先更新 media.currentTime，让 hls.js 的 seeking 处理器同步丢弃旧
+    // fragment；再显式 stop/start，确保正在服务端等待的旧分片请求也被取消。
+    this.options.video.currentTime = target;
+    this.hls?.stopLoad();
+    this.hls?.startLoad(target, true);
+  }
+
   destroy(): void {
     this.stopStallWatch?.();
     this.stopStallWatch = null;
@@ -387,30 +416,28 @@ class HlsEngine implements PlaybackEngine {
 }
 
 /**
- * 按计划挑引擎。
- *
- * iOS（ManagedMediaSource）也走 hls.js（1.5+ 官方支持 MMS）。原来这里让
- * iOS 走系统原生 HLS，结果 Safari 把我们边转边追加的 event 型 playlist
- * 当成**直播**：始终贴着「直播边缘」播，缓冲只剩一两个分片，每隔几秒耗尽
- * 一次，屏幕周期性闪黑。hls.js 从头播、缓冲目标由我们配置管，没这个问题。
- * 当年选原生的理由（iOS 系统全屏强制系统控件）已被 CSS 伪横屏替代。
+ * 按计划挑引擎。支持 ManagedMediaSource 的 iOS 也走 hls.js；只有没有
+ * MSE 的老设备才把 HLS 交给系统原生播放器。
  */
 /**
  * 起播热身：把 hls.js 的动态包在**会话请求在途时**就开始下载解析（§6.10）。
- * 不热身的话 import 要等会话响应回来才发起，弱网上白排一跳。原生 HLS 路径
- * （iOS Safari 没有 MediaSource）用不上它，不下。
+ * 不热身的话 import 要等会话响应回来才发起，弱网上白排一跳。完全没有
+ * MSE 的原生 HLS 路径用不上它，不下。
  */
 export function preloadHlsEngine(): void {
   if (typeof window === "undefined") return;
-  if (typeof window.MediaSource === "undefined") return;
+  const w = window as unknown as { MediaSource?: unknown; ManagedMediaSource?: unknown };
+  if (typeof w.MediaSource === "undefined" && typeof w.ManagedMediaSource === "undefined") {
+    return;
+  }
   void import("hls.js").catch(() => undefined);
 }
 
 export function createEngine(options: EngineOptions): PlaybackEngine {
   if (options.container !== "hls-fmp4") return new DirectEngine(options, "direct");
-  // iOS 回归系统原生 HLS（AVPlayer）：字幕组由系统在任何表面（内联/全屏/
-  // 画中画）渲染，省电与 AirPlay 也是系统级的。前提是 VOD 列表（不然又被
-  // 当直播贴边播）——preferNativeHls 只在 timeline="file" 时为 true。
+  // 无 MSE 的设备才回归系统原生 HLS（AVPlayer）。现代 iOS 的
+  // ManagedMediaSource 由上层模式矩阵选 hls.js，避免原生 AVPlayer 对按需
+  // VOD 清单的严格限制。
   if (options.preferNativeHls) return new DirectEngine(options, "native-hls");
   if (options.hasMse) return new HlsEngine(options);
   return new DirectEngine(options, "native-hls");

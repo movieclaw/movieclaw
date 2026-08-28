@@ -177,6 +177,8 @@ export async function revokePlaybackDevice(deviceId: string): Promise<string> {
  * 用的 RFC 6381 串（avc1.640028）——服务端要拿它和 ffprobe 落库的 codec_name
  * 直接比对。翻译在 lib/player/capability.ts 里做。
  */
+export type MseKind = "full" | "managed" | "none";
+
 export interface ClientCapability {
   video: { codec: string; max_height: number; smooth: boolean; power_efficient: boolean }[];
   audio: { codec: string; max_channels: number }[];
@@ -184,7 +186,7 @@ export interface ClientCapability {
   containers: string[];
   hdr_passthrough: boolean;
   /** "full" | "managed"（iOS 的 ManagedMediaSource）| "none" */
-  mse: string;
+  mse: MseKind;
   is_mobile: boolean;
   /** 能原生播 HLS（Safari/AVPlayer）。服务端不消费，前端选引擎用 */
   native_hls: boolean;
@@ -275,6 +277,53 @@ export interface PlaybackSource {
   size_bytes: number | null;
 }
 
+export interface PlaybackArtifactUpload {
+  name: string;
+  status: number;
+  received_bytes: number;
+  content_length: number | null;
+  transfer_encoding: string | null;
+  occurred_at_ms: number;
+}
+
+/** 播放诊断接口的脱敏快照；不会包含源地址、签名 URL 或 Worker token。 */
+export interface PlaybackDiagnostics {
+  session_state: string;
+  session_error: string | null;
+  processing_mode: string;
+  execution_location: string;
+  backend: string | null;
+  encoder: string | null;
+  worker_id: string | null;
+  worker_version: string | null;
+  worker_platform: string | null;
+  worker_arch: string | null;
+  ffmpeg_version: string | null;
+  worker_online: boolean | null;
+  worker_last_seen_seconds: number | null;
+  job_id: string | null;
+  attempt_id: string | null;
+  job_state: string | null;
+  job_out_time_ms: number | null;
+  job_speed: string | null;
+  job_phase: string | null;
+  job_exit_code: number | null;
+  job_error: string | null;
+  job_stderr_tail: string | null;
+  head_segment: number | null;
+  highest_produced_segment: number | null;
+  requested_segment: number | null;
+  served_segment: number | null;
+  segment_wait_ms: number | null;
+  segment_status: number | null;
+  pending_segments: number[];
+  failed_segments: number[];
+  historical_failed_segments: number[];
+  recent_uploads: PlaybackArtifactUpload[];
+  cache_bytes: number;
+  total_segments: number | null;
+}
+
 export interface PlaybackSession {
   decision: PlaybackDecision;
   /** 档 0 没有会话（原文件直出），此处为 null */
@@ -337,6 +386,25 @@ export async function startPlaybackSession(body: DecideBody): Promise<PlaybackSe
     method: "POST",
     body: JSON.stringify(body),
   });
+  return response.data;
+}
+
+/** 读取当前会话诊断；从播放 URL 复用已有取流 token，不另发放凭据。 */
+export async function fetchPlaybackDiagnostics(
+  sessionId: string,
+  streamUrl: string,
+): Promise<PlaybackDiagnostics> {
+  const resolvedUrl = new URL(
+    resolveStreamUrl(streamUrl),
+    typeof window === "undefined" ? "http://localhost" : window.location.origin,
+  );
+  const token = resolvedUrl.searchParams.get("token");
+  if (!token) {
+    throw new Error("播放地址缺少诊断凭据");
+  }
+  const response = await request<ApiEnvelope<PlaybackDiagnostics>>(
+    `/playback/sessions/${encodeURIComponent(sessionId)}/diagnostics?token=${encodeURIComponent(token)}`,
+  );
   return response.data;
 }
 
@@ -592,4 +660,3 @@ export function reportPlaybackMetricOnUnload(payload: PlaybackMetricPayload): vo
     // 卸载路径上无处呈现错误
   }
 }
-

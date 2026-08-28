@@ -156,6 +156,16 @@ def test_result_is_cached_until_forced(monkeypatch):
     assert calls["n"] == 2, "设置页的「重新检测」必须真的重测"
 
 
+def test_local_available_backends_excludes_remote_overlay(monkeypatch):
+    """远程 Worker 的 VideoToolbox 能力不能变成本地 ffmpeg 参数。"""
+    monkeypatch.setattr(hwprobe.shutil, "which", lambda _n: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(hwprobe, "_list_encoders", lambda: frozenset())
+    monkeypatch.setattr(hwprobe, "remote_worker_available", lambda _backend: True)
+
+    assert hwprobe.available_backends() == ("videotoolbox",)
+    assert hwprobe.available_local_backends() == ()
+
+
 def test_every_backend_has_a_human_label():
     """设置页里「vaapi」不如「Intel / AMD 显卡」好懂。"""
     from movieclaw_api.services.playback.ffmpeg_args import HW_BACKENDS

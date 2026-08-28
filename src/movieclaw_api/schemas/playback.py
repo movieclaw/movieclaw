@@ -180,6 +180,7 @@ class ClientCapabilityIn(BaseModel):
     hdr_passthrough: bool = False
     mse: str = "full"
     is_mobile: bool = False
+    native_hls: bool = False
 
 
 class PlaybackDecideRequest(BaseModel):
@@ -306,6 +307,58 @@ class PlaybackStateView(BaseModel):
     duration_ms: int | None = None
     audio_track: str | None = None
     subtitle_track: str | None = None
+
+
+class PlaybackArtifactUploadView(BaseModel):
+    """远程 Worker 最近一次产物上传的脱敏记录。"""
+
+    name: str
+    status: int
+    received_bytes: int
+    content_length: int | None = None
+    transfer_encoding: str | None = None
+    occurred_at_ms: int
+
+
+class PlaybackDiagnosticsView(BaseModel):
+    """播放器诊断面板使用的会话快照，不包含任何签名 URL 或令牌。"""
+
+    session_state: str
+    session_error: str | None = None
+    processing_mode: str
+    execution_location: str
+    backend: str | None = None
+    encoder: str | None = None
+    worker_id: str | None = None
+    worker_version: str | None = None
+    worker_platform: str | None = None
+    worker_arch: str | None = None
+    ffmpeg_version: str | None = None
+    worker_online: bool | None = None
+    worker_last_seen_seconds: float | None = None
+    job_id: str | None = None
+    attempt_id: str | None = None
+    job_state: str | None = None
+    job_out_time_ms: int | None = None
+    job_speed: str | None = None
+    job_phase: str | None = None
+    job_exit_code: int | None = None
+    job_error: str | None = None
+    job_stderr_tail: str | None = None
+    head_segment: int | None = None
+    highest_produced_segment: int | None = None
+    requested_segment: int | None = None
+    served_segment: int | None = None
+    segment_wait_ms: int | None = None
+    segment_status: int | None = None
+    pending_segments: list[int] = Field(default_factory=list)
+    #: ``failed_segments`` 只列当前播放游标之后仍可能影响播放的缺口；旧轮次
+    #: 的失败记录单独返回，避免播放器已经走过后仍显示成当前卡点。
+    failed_segments: list[int] = Field(default_factory=list)
+    historical_failed_segments: list[int] = Field(default_factory=list)
+    recent_uploads: list[PlaybackArtifactUploadView] = Field(default_factory=list)
+    cache_bytes: int = 0
+    total_segments: int | None = None
 
 
 class PlaybackSessionView(BaseModel):

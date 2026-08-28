@@ -539,6 +539,9 @@ _MEMBER_ALLOWLIST = {
     ("POST", "/api/v1/playback/sessions"),
     ("POST", "/api/v1/playback/sessions/{session_id}/ping"),
     ("DELETE", "/api/v1/playback/sessions/{session_id}"),
+    # 播放诊断是成员播放器的自助排障入口；使用与取流相同的签名 token，
+    # 服务端按 token 中的 member_id 校验会话归属，不暴露其他成员的状态。
+    ("GET", "/api/v1/playback/sessions/{session_id}/diagnostics"),
     # 取流端点不挂登录依赖（<video src> 带不了 header），改用签名 token；
     # 无 token 或 token 不符一律 404，与「不存在」不可区分。
     ("GET", "/api/v1/playback/sessions/{session_id}/index.m3u8"),

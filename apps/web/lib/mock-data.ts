@@ -139,7 +139,7 @@ export const settingsSectionGroups: SettingsSectionGroup[] = [
       { id: "sites", label: "资源站点", description: "站点接入与鉴权、搜索分类、插件 Cookie 同步", icon: ServerIcon },
       { id: "downloaders", label: "下载器", description: "qBittorrent / Transmission 接入", icon: DownloadIcon },
       { id: "import-watch", label: "监听导入", description: "监听下载目录，完成后自动整理入库", icon: FolderIcon },
-      { id: "scrape", label: "刮削与整理", description: "元数据语言、海报与背景的选择、图片质量", icon: PhotoIcon },
+      { id: "scrape", label: "刮削与整理", description: "元数据语言、选图口味、命名模板与目录写入", icon: PhotoIcon },
     ],
   },
   {
@@ -152,7 +152,7 @@ export const settingsSectionGroups: SettingsSectionGroup[] = [
   {
     label: "系统",
     items: [
-      { id: "app", label: "应用", description: "版本与更新、外部访问地址与重启", icon: GearIcon },
+      { id: "app", label: "应用", description: "版本更新、外部访问地址、远程转码与重启", icon: GearIcon },
       { id: "webhook", label: "Webhook", description: "向外部服务推送播放、收藏等事件", icon: SendIcon },
       { id: "network", label: "网络与代理", description: "外部服务的代理与镜像地址，解决 TMDB 等不可达", icon: GlobeIcon },
       { id: "logs", label: "系统日志", description: "后端运行日志，按天存档", icon: TerminalIcon },

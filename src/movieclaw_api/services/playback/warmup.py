@@ -14,20 +14,20 @@ ffmpeg、等首片」一件事——Emby 快就快在它把这些全做在入库
   就有缓存与页缓存，收益也小。
 - **同一条目并发触发只做一次**（防止详情页反复刷新叠加探测 IO）；探测
   自身的结果缓存（media_probe / embedded_subs）保证真正的幂等。
-- 全程后台线程池执行、吞掉一切异常——预热失败的后果只是回到「首播现场
-  探测」的旧行为，绝不能影响详情页本身。
+- 关键帧探测放线程池，字幕抽取使用可取消的异步子进程；全部吞掉预热异常——
+  预热失败的后果只是回到「首播现场探测」的旧行为，绝不能影响详情页本身。
 """
 
 from __future__ import annotations
 
 import asyncio
-import contextlib
+import inspect
 import logging
 
 from movieclaw_api.services.media_probe import probe_keyframe_interval
 from movieclaw_api.services.playback.embedded_subs import (
     embedded_subtitle_format,
-    extract_embedded_subtitle,
+    extract_embedded_subtitle_async,
 )
 from movieclaw_db.models import LibraryFile
 
@@ -38,6 +38,8 @@ _MAX_FILES = 4
 
 #: 正在预热的条目 id 集合（进程内去重）。
 _in_flight: set[int] = set()
+# 保存任务句柄：用户真正开始播放时，详情页遗留的字幕预热应立即退出。
+_tasks: dict[int, asyncio.Task[None]] = {}
 
 
 def _pick_subtitle_index(file: LibraryFile) -> int | None:
@@ -61,12 +63,14 @@ def _pick_subtitle_index(file: LibraryFile) -> int | None:
     return fallback
 
 
-def _warm_file(file: LibraryFile) -> None:
-    """（阻塞，线程池执行）预热一个文件的关键帧采样与默认字幕。"""
-    interval = probe_keyframe_interval(file.file_path, file.duration_seconds)
+async def _warm_file(file: LibraryFile) -> None:
+    """预热一个文件；阻塞探测在线程池，字幕抽取保持可取消。"""
+    interval = await asyncio.to_thread(
+        probe_keyframe_interval, file.file_path, file.duration_seconds
+    )
     subtitle_index = _pick_subtitle_index(file)
     if subtitle_index is not None:
-        extract_embedded_subtitle(file, subtitle_index)
+        await extract_embedded_subtitle_async(file, subtitle_index)
     logger.debug(
         "起播预热完成：file_id=%s 关键帧间隔=%s 字幕轨=%s",
         file.id, interval, subtitle_index,
@@ -84,11 +88,26 @@ def schedule(media_item_id: int, files: list[LibraryFile]) -> None:
     async def run() -> None:
         try:
             for file in files:
-                await asyncio.to_thread(_warm_file, file)
+                result = _warm_file(file)
+                # 保留对旧版同步探测替身的兼容；正式实现是可取消的协程。
+                if inspect.isawaitable(result):
+                    await result
         except Exception:  # noqa: BLE001 — 预热失败绝不能影响详情页与播放
             logger.debug("起播预热失败：media_item_id=%s", media_item_id, exc_info=True)
         finally:
             _in_flight.discard(media_item_id)
+            _tasks.pop(media_item_id, None)
 
-    with contextlib.suppress(RuntimeError):  # 没有事件循环（同步上下文）时跳过
-        asyncio.create_task(run())
+    try:
+        task = asyncio.get_running_loop().create_task(run())
+    except RuntimeError:  # 没有事件循环（同步上下文）时跳过
+        _in_flight.discard(media_item_id)
+        return
+    _tasks[media_item_id] = task
+
+
+def cancel(media_item_id: int) -> None:
+    """取消该条目仍在进行的详情页预热，避免与正式播放抢 IO/进程槽位。"""
+    task = _tasks.get(media_item_id)
+    if task is not None and not task.done():
+        task.cancel()

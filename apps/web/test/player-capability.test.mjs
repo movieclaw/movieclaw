@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   buildCapabilitySnapshot,
+  detectMseKind,
   pickAudioChannels,
   pickVideoSupport,
 } from "../lib/player/capability.ts";
@@ -10,6 +11,12 @@ import {
 const yes = { supported: true, smooth: true, powerEfficient: true };
 const no = { supported: false, smooth: false, powerEfficient: false };
 const choppy = { supported: true, smooth: false, powerEfficient: false };
+
+test("同时暴露两种 MSE 时优先 ManagedMediaSource，与 hls.js 选择一致", () => {
+  assert.equal(detectMseKind({ MediaSource: {}, ManagedMediaSource: {} }), "managed");
+  assert.equal(detectMseKind({ MediaSource: {} }), "full");
+  assert.equal(detectMseKind({}), "none");
+});
 
 test("取能解码的最大高度；smooth 只作参考随行，不压低上限", () => {
   // §12.15：Safari 对 HEVC 整族报 smooth=false 而实际直通 0 掉帧。拿 smooth
