@@ -196,8 +196,8 @@ async def test_tool_calls_finish_reason_with_empty_calls_ends(monkeypatch):
     assert events[-1].result.steps == 1
 
 
-async def test_empty_response_ends_with_agent_error(monkeypatch):
-    """空响应（无工具调用且正文为空）→ agent_error，不能伪装成正常完成。
+async def test_empty_response_retries_then_ends_with_agent_error(monkeypatch):
+    """连续空响应（无工具调用且正文为空）→ 重试一次后 agent_error。
 
     伪装成 agent_done 的话，通道侧拿到空文本会静默丢弃，用户看到的是对话
     毫无征兆地中断。
@@ -215,9 +215,49 @@ async def test_empty_response_ends_with_agent_error(monkeypatch):
     events = await collect(runner, AgentStartParams(input="x"))
 
     assert events[-1].type == "agent_error"
-    assert "空响应" in events[-1].error
+    # 面向终端用户的文案：不出现「工具调用」「中转端点」这类开发者术语
+    assert events[-1].error == "我连续两次都没能生成回复，可能是临时故障。请稍后再发一遍试试。"
+    # 判定失败前原样重发过一次：共两次模型调用
+    assert len(_probe["requests"]) == 2
+    # 重试用的是同一份上下文，没有被空响应污染
+    assert [m.role for m in _probe["requests"][1].messages] == ["system", "user"]
     # 空的 assistant 消息不能写进会话历史，否则续聊会把空白带上
     assert not [m for m in recorded if m.role == "assistant"]
+
+
+async def test_empty_response_recovers_on_retry(monkeypatch):
+    """空响应多为瞬时故障：重试拿到正常回复就照常收尾，用户无感。"""
+
+    class FlakyProtocol(ToolLoopProtocol):
+        """首次调用空回，重试给出正文。"""
+
+        first_calls = []
+
+        async def chat_stream(self, request, model_id):
+            _probe["requests"].append(request)
+            snap = ChatResponse(model=model_id, provider=self.config.name)
+            yield ChatStreamEvent(type="start", partial=snap)
+            first_call = len(_probe["requests"]) == 1
+            content = "" if first_call else "重试之后的答复"
+            if content:
+                yield ChatStreamEvent(type="text_delta", delta=content, partial=snap)
+            yield ChatStreamEvent(
+                type="done",
+                partial=ChatResponse(
+                    content=content or None,
+                    finish_reason="stop",
+                    usage=TokenUsage(prompt_tokens=10, completion_tokens=0 if first_call else 6),
+                    model=model_id,
+                    provider=self.config.name,
+                ),
+            )
+
+    runner = make_runner(FlakyProtocol, monkeypatch)
+    events = await collect(runner, AgentStartParams(input="x"))
+
+    assert events[-1].type == "agent_done"
+    assert events[-1].result.text == "重试之后的答复"
+    assert len(_probe["requests"]) == 2
 
 
 async def test_invalid_tool_args_fed_back_as_error(monkeypatch):

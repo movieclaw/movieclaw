@@ -6,7 +6,8 @@
   「tool_calls 但数组为空」两类在案怪癖（vLLM/Kimi 等）；
 - 有工具调用 → 顺序执行每一个（参数先过 JSON Schema 校验），结果作为
   tool 消息回喂，进入下一步；无工具调用且有正文 → STOP，正常结束；
-  无工具调用且正文为空 → 判为空响应，以 agent_error 收尾（详见循环内注释）；
+  无工具调用且正文为空 → 判为空响应，原样重试一次，仍空则以 agent_error
+  收尾（详见循环内注释）；
 - 工具的校验失败与执行异常都不中断循环：错误文本作为失败结果回喂，
   让模型自行修正（pi-agent / Claude Code 同款韧性设计）；
 - max_steps（默认 200）防失控；错误一律以 agent_error 事件收尾，不抛异常。
@@ -49,6 +50,10 @@ logger = logging.getLogger(__name__)
 
 #: tool_result 事件里输出的截断长度（完整输出仍进对话上下文喂给模型）
 _EVENT_OUTPUT_LIMIT = 2000
+
+#: 空响应的原样重试次数。模型偶发返回 0 token 的 STOP（供应商抖动、限流降级、
+#: 安全过滤等），多为瞬时故障，原样重发一次通常就能拿到正常回复。
+_MAX_EMPTY_RETRIES = 1
 
 
 class AgentRunner:
@@ -123,6 +128,8 @@ class AgentRunner:
             yield compact_event
 
         usage = TokenUsage()
+        #: 连续空响应次数，收到有效响应即清零
+        empty_retries = 0
         for step in range(1, self._max_steps + 1):
             request = ChatRequest(
                 model=params.model,
@@ -171,31 +178,43 @@ class AgentRunner:
 
             usage = _add_usage(usage, final.usage)
 
-            # 循环判据：以 tool_calls 内容为准（finish_reason 只作参考）——
-            # 覆盖「stop 但带调用」与「tool_calls 但数组为空」两类兼容怪癖
-            if not final.tool_calls:
-                # 既没有工具调用、正文也是空的：这不是「答完了」，而是模型或中转
-                # 端点返回了空响应（实测成因之一：中转把缺了父调用的历史喂给模型，
-                # 模型回一个 0 token 的 STOP）。当成正常结束的话通道侧无话可发，
-                # 微信/Telegram 上就表现为对话毫无征兆地静默中断，日志里只留一行
-                # 「运行已结束」，排查时极难定位。这里明确按失败收尾。
-                # 注意要在 _notify 之前返回：空的 assistant 消息不该写进会话历史，
-                # 否则下一轮续聊会把这段空白也带上。
-                if not (final.content or "").strip():
+            # 空响应：既没有工具调用、正文也是空的。这不是「答完了」，而是模型
+            # 或中转端点这一轮什么都没返回（0 token 的 STOP）。当成正常结束的话
+            # 通道侧无话可发，微信/Telegram 上表现为对话毫无征兆地静默中断，
+            # 日志里只留一行「运行已结束」，排查时极难定位。
+            # 成因多为瞬时故障（供应商抖动、限流降级、安全过滤），所以先原样重发
+            # 一次——messages 没动过，continue 即重试；连续空才判定失败。
+            # 注意要在 _notify 之前处理：空的 assistant 消息不该写进会话历史，
+            # 否则下一轮续聊会把这段空白也带上。
+            if not final.tool_calls and not (final.content or "").strip():
+                if empty_retries < _MAX_EMPTY_RETRIES:
+                    empty_retries += 1
                     logger.warning(
-                        "Agent 收到空响应 run=%s step=%d finish_reason=%s",
+                        "Agent 收到空响应，原样重试第 %d 次 run=%s step=%d finish_reason=%s",
+                        empty_retries,
                         run_id,
                         step,
                         final.finish_reason,
                     )
-                    yield AgentEvent(
-                        type="agent_error",
-                        run_id=run_id,
-                        error="模型返回了空响应（既没有正文，也没有工具调用），本次运行没有结果。"
-                        "通常是模型服务或中转端点异常，请重试；若反复出现，请检查模型供应商配置。",
-                    )
-                    return
+                    continue
+                logger.warning(
+                    "Agent 连续空响应，判定失败 run=%s step=%d finish_reason=%s",
+                    run_id,
+                    step,
+                    final.finish_reason,
+                )
+                yield AgentEvent(
+                    type="agent_error",
+                    run_id=run_id,
+                    error="我连续两次都没能生成回复，可能是临时故障。请稍后再发一遍试试。",
+                )
+                return
+            # 拿到了有效响应，重置重试计数
+            empty_retries = 0
 
+            # 循环判据：以 tool_calls 内容为准（finish_reason 只作参考）——
+            # 覆盖「stop 但带调用」与「tool_calls 但数组为空」两类兼容怪癖
+            if not final.tool_calls:
                 await self._notify(final.to_message(), final)
                 yield AgentEvent(
                     type="agent_done",
