@@ -318,6 +318,9 @@ TMDB_API_KEY=你的key ./scripts/build-image.sh
 #   给 NAS 交叉构建：   PLATFORM=linux/amd64 TMDB_API_KEY=... ./scripts/build-image.sh
 ```
 
+Key 也可以写进仓库根目录的 `.env`——注意 `.env.example` 里那行 `# TMDB_API_KEY=` 是**注释掉的**，
+得先去掉 `#` 再填，否则脚本读不到。没提供 Key 时脚本会立刻报错退出，不会浪费时间开始构建。
+
 构建过程需要能出站访问 `deb.debian.org`、`repo.jellyfin.org`、`pypi.org`、
 `registry.npmjs.org` 和 GitHub。国内网络加 `CN_MIRROR=1` 即可；
 如果你在会拦截并重签 TLS 的企业代理后面，构建会停在 `curl ... exit code 60`
@@ -329,6 +332,10 @@ TMDB_API_KEY=你的key ./scripts/build-image.sh
 
 ## 本地开发
 
+**先确认 3000 和 8000 两个端口是空的。** 如果这台机器上正跑着 MovieClaw 的 Docker 容器，
+先 `docker compose down` 停掉——这是最典型的贡献者画像（先用了镜像，再想改代码），
+100% 会撞上。端口被占时脚本会直接报错退出并告诉你怎么查占用进程（依赖 `lsof`）。
+
 ```bash
 ./scripts/dev.sh          # 同时启动后端和前端
 ./scripts/dev.sh api      # 只启动后端
@@ -336,23 +343,39 @@ TMDB_API_KEY=你的key ./scripts/build-image.sh
 ```
 
 脚本会自动完成首次环境准备（建虚拟环境、装依赖、生成 `.env`、`pnpm install`），
-日志带 `[api]` / `[web]` 彩色前缀，`Ctrl-C` 一键停止全部。手动安装：
+日志带 `[api]` / `[web]` 彩色前缀，`Ctrl-C` 一键停止全部（子进程一起收走，端口会释放干净）。
+它建虚拟环境时挑本机最新的 Python（3.14 → 3.11），可能和你 `python3` 指向的不是同一个。
+
+手动安装要**两个终端**——后端和前端都是前台进程：
 
 ```bash
-python3 -m venv .venv && source .venv/bin/activate   # Python 3.11+
+# 终端 1：后端（Python 3.11+）
+python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 cp .env.example .env
 uvicorn movieclaw_api.main:app --factory --reload
+```
 
-pnpm install && pnpm web:dev                          # Node.js 20+
+```bash
+# 终端 2：前端（Node.js 20+）
+pnpm install && pnpm web:dev
 ```
 
 Web 控制台 `http://127.0.0.1:3000`，API 文档 `http://127.0.0.1:8000/docs`。
+空 `.env` 不填任何东西也能起来，只是 TMDB 相关功能不可用。
+
+> 要改端口得改两处。后端端口在 `.env` 的 `APP_PORT`，但前端的反代目标默认写死指向
+> `http://127.0.0.1:8000`，**必须同时**在 `apps/web/.env.local` 里设
+> `MOVIECLAW_API_PROXY_TARGET` 指向新端口——只改一处的话页面能打开，但所有接口都拿不到数据。
+> 前端的 3000 是硬编码的，不能配。手动路径下 uvicorn 撞端口只会甩一句
+> `[Errno 98] Address already in use`，没有 `dev.sh` 那层中文提示。
 
 源码方式运行时，**种子名结构化抽取依赖的 NER 模型需手动放置**（Docker 镜像已内置）：
 从 [Releases](https://github.com/yipengfei329/movieclaw/releases) 下载 `model.int8.onnx`、
 `tokenizer.json`、`labels.json` 放进 `data/models/torrent-ner/`（可用 `MOVIECLAW_NER_DIR` 改路径）后重启。
-不放模型服务照常启动，仅该功能不可用，日志里有明确提示。
+不放模型服务照常启动，仅该功能不可用：首次真正触发种子名抽取时，日志会打印
+「未找到种子名抽取模型（…），片名/年份/季集字段将保持空值」。
+注意这条提示是**懒加载**的——启动日志里看不到它，别以为没报错就是模型已就位。
 
 ## 文档与支持
 
