@@ -1,5 +1,10 @@
 # 远程硬件转码 Worker
 
+> **Worker 的认证方式已改由 `docs/design/device-auth.md` 定义**：
+> 共享 `worker_token` 与粘贴式配对码（`PairingCode.swift`）整体删除，
+> 改为「填地址 → 验证连接 → 网页批准」的设备授权流程，令牌逐设备签发、
+> 带 `transcode` scope、可单独吊销。本文其余部分（转码链路本身）不受影响。
+
 > 状态：远程 Worker 协议、网页配置和播放接入已实现；当前随项目提供的 Worker
 > 实现是 macOS Apple Silicon 菜单栏 App，其他平台可以复用协议扩展。
 

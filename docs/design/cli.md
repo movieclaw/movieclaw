@@ -349,6 +349,11 @@ message 到下一个 user message 之前的输出”组合展示时的派生概�
 
 ### 8.1 认证（唯一需要后端新增的功能点）
 
+> **本节已被 `docs/design/device-auth.md` 取代**：登录改走设备授权流程
+> （客户端出示配对码、人在网页批准、令牌只回到发起进程），令牌带 scope，
+> `mclaw login --password` 废弃。以下内容保留作为演进记录。
+
+
 - **P0**：`mclaw login` 走 Cookie 会话（后端零改动），凭证落
   `~/.config/movieclaw/credentials`（0600）。
 - **P1**：后端新增 PAT——`POST/GET/DELETE /auth/tokens`，`require_login` 扩展为
