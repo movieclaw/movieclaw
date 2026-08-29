@@ -1,0 +1,102 @@
+2026-08-29 17:25:17 | INFO | movieclaw_db.engine | 数据库引擎已初始化：sqlite+aiosqlite:////tmp/mclaw-e2e/live.db
+2026-08-29 17:25:17 | INFO | movieclaw_db.migrations | 开始执行数据库迁移（upgrade head）……
+2026-08-29 17:25:18 | WARNING | movieclaw_db.crypto | 已自动生成新的加密密钥文件：/tmp/mclaw-e2e/.secret_key —— 请务必随数据目录一并备份，该文件丢失将导致所有已加密配置无法恢复！
+2026-08-29 17:25:18 | INFO | movieclaw_net.egress | 网络出口配置已生效：模式=env，走代理的服务=['github', 'image', 'tmdb']
+2026-08-29 17:25:18 | INFO | movieclaw_tracker.registry | Registered site: agsvpt (AGSVPT)
+2026-08-29 17:25:18 | INFO | movieclaw_tracker.registry | Registered site: audiences (观众)
+2026-08-29 17:25:18 | INFO | movieclaw_tracker.registry | Registered site: chdbits (彩虹岛)
+2026-08-29 17:25:18 | INFO | movieclaw_tracker.registry | Registered site: hdarea (高清视界 HDArea)
+2026-08-29 17:25:18 | INFO | movieclaw_tracker.registry | Registered site: hddolby (高清杜比 HDDolby)
+2026-08-29 17:25:18 | INFO | movieclaw_tracker.registry | Registered site: hdfans (HDFans)
+2026-08-29 17:25:18 | INFO | movieclaw_tracker.registry | Registered site: hdhome (高清家园)
+2026-08-29 17:25:18 | INFO | movieclaw_tracker.registry | Registered site: hdsky (HDSky)
+2026-08-29 17:25:18 | INFO | movieclaw_tracker.registry | Registered site: hdtime (HDTime)
+2026-08-29 17:25:18 | INFO | movieclaw_tracker.registry | Registered site: hdvideo (HDVIDEO)
+2026-08-29 17:25:18 | INFO | movieclaw_tracker.registry | Registered site: hhanclub (憨憨)
+2026-08-29 17:25:18 | INFO | movieclaw_tracker.registry | Registered site: keepfrds (朋友)
+2026-08-29 17:25:18 | INFO | movieclaw_tracker.registry | Registered site: agsvpt (AGSVPT)
+2026-08-29 17:25:18 | INFO | movieclaw_tracker.registry | Registered site: audiences (观众)
+2026-08-29 17:25:18 | INFO | movieclaw_tracker.registry | Registered site: chdbits (彩虹岛)
+2026-08-29 17:25:18 | INFO | movieclaw_tracker.registry | Registered site: hdarea (高清视界 HDArea)
+2026-08-29 17:25:18 | INFO | movieclaw_tracker.registry | Registered site: hddolby (高清杜比 HDDolby)
+2026-08-29 17:25:18 | INFO | movieclaw_tracker.registry | Registered site: hdfans (HDFans)
+2026-08-29 17:25:18 | INFO | movieclaw_tracker.registry | Registered site: hdhome (高清家园)
+2026-08-29 17:25:18 | INFO | movieclaw_tracker.registry | Registered site: hdsky (HDSky)
+2026-08-29 17:25:18 | INFO | movieclaw_tracker.registry | Registered site: hdtime (HDTime)
+2026-08-29 17:25:18 | INFO | movieclaw_tracker.registry | Registered site: hdvideo (HDVIDEO)
+2026-08-29 17:25:18 | INFO | movieclaw_tracker.registry | Registered site: hhanclub (憨憨)
+2026-08-29 17:25:18 | INFO | movieclaw_tracker.registry | Registered site: keepfrds (朋友)
+2026-08-29 17:25:18 | INFO | movieclaw_tracker.registry | Registered site: mteam (M-Team)
+2026-08-29 17:25:18 | INFO | movieclaw_tracker.registry | Registered site: nicept (NicePT)
+2026-08-29 17:25:18 | INFO | movieclaw_tracker.registry | Registered site: ourbits (OurBits)
+2026-08-29 17:25:18 | INFO | movieclaw_tracker.registry | Registered site: piggo (猪猪网 Piggo)
+2026-08-29 17:25:18 | INFO | movieclaw_tracker.registry | Registered site: pter (猫站)
+2026-08-29 17:25:18 | INFO | movieclaw_tracker.registry | Registered site: pthome (铂金家)
+2026-08-29 17:25:18 | INFO | movieclaw_tracker.registry | Registered site: pttime (PTTime)
+2026-08-29 17:25:18 | INFO | movieclaw_tracker.registry | Registered site: soulvoice (聆音)
+2026-08-29 17:25:18 | INFO | movieclaw_tracker.registry | Registered site: ssd (不可说)
+2026-08-29 17:25:18 | INFO | movieclaw_tracker.registry | Registered site: tjupt (北洋园)
+2026-08-29 17:25:18 | INFO | movieclaw_tracker.registry | Registered site: ttg (听听歌)
+2026-08-29 17:25:18 | INFO | movieclaw_tracker.registry | Registered site: mteam (M-Team)
+2026-08-29 17:25:18 | INFO | movieclaw_tracker.registry | Registered site: nicept (NicePT)
+2026-08-29 17:25:18 | INFO | movieclaw_tracker.registry | Registered site: ourbits (OurBits)
+2026-08-29 17:25:18 | INFO | movieclaw_tracker.registry | Registered site: piggo (猪猪网 Piggo)
+2026-08-29 17:25:18 | INFO | movieclaw_tracker.registry | Registered site: pter (猫站)
+2026-08-29 17:25:18 | INFO | movieclaw_tracker.registry | Registered site: pthome (铂金家)
+2026-08-29 17:25:18 | INFO | movieclaw_tracker.registry | Registered site: pttime (PTTime)
+2026-08-29 17:25:18 | INFO | movieclaw_tracker.registry | Registered site: soulvoice (聆音)
+2026-08-29 17:25:18 | INFO | movieclaw_tracker.registry | Registered site: ssd (不可说)
+2026-08-29 17:25:18 | INFO | movieclaw_tracker.registry | Registered site: tjupt (北洋园)
+2026-08-29 17:25:18 | INFO | movieclaw_tracker.registry | Registered site: ttg (听听歌)
+2026-08-29 17:25:18 | INFO | movieclaw_api.lifespan | 定时任务调度器已按配置关闭（SCHEDULER_ENABLED=false）
+2026-08-29 17:25:18 | INFO | movieclaw_api.settings.store | 已保存配置域：jellyfin.compat
+2026-08-29 17:25:18 | INFO | movieclaw_jellyfin.udp | Jellyfin 自动发现已监听 UDP 7359
+2026-08-29 17:25:18 | INFO | movieclaw_api.jobs | 持久化任务执行器已启动：owner=worker_a4fd74763dfa453197bbe78673cd9191 parallel=4
+2026-08-29 17:25:18 | INFO | movieclaw_api.lifespan | 应用启动完成，数据库就绪
+2026-08-29 17:25:24 | INFO | movieclaw_api.access | method=GET path=/api/v1/health status_code=200 duration_ms=2013.67 message=request completed
+2026-08-29 17:25:24 | INFO | movieclaw_api.settings.store | 已保存配置域：auth.admin
+2026-08-29 17:25:24 | INFO | movieclaw_api.auth | 超级管理员账号已创建：admin
+2026-08-29 17:25:24 | INFO | movieclaw_api.settings.store | 已保存配置域：system.bootstrap
+2026-08-29 17:25:24 | INFO | movieclaw_api.settings.store | 已保存配置域：auth.session
+2026-08-29 17:25:24 | INFO | movieclaw_api.auth | 已自动生成登录会话签名密钥
+2026-08-29 17:25:24 | INFO | movieclaw_api.access | method=POST path=/api/v1/auth/bootstrap status_code=200 duration_ms=145.55 message=request completed
+2026-08-29 17:25:24 | INFO | movieclaw_api.access | method=GET path=/api/v1/health status_code=200 duration_ms=0.65 message=request completed
+2026-08-29 17:25:24 | WARNING | movieclaw_api.access | method=GET path=/api/v1/auth/me status_code=401 duration_ms=0.76 message=request completed
+2026-08-29 17:25:40 | INFO | movieclaw_api.auth | 管理员 admin 登录成功
+2026-08-29 17:25:40 | INFO | movieclaw_api.access | method=POST path=/api/v1/auth/login status_code=200 duration_ms=60.04 message=request completed
+2026-08-29 17:25:40 | INFO | movieclaw_api.access | method=GET path=/api/v1/health status_code=200 duration_ms=0.54 message=request completed
+2026-08-29 17:25:40 | INFO | movieclaw_api.auth | 收到设备接入请求：书房的 Mac（cli，来自 127.0.0.1），配对码 MCLW-URZX
+2026-08-29 17:25:40 | INFO | movieclaw_api.access | method=POST path=/api/v1/auth/device/authorize status_code=200 duration_ms=1.06 message=request completed
+2026-08-29 17:25:40 | INFO | movieclaw_api.access | method=GET path=/api/v1/auth/devices/requests status_code=200 duration_ms=1.43 message=request completed
+2026-08-29 17:25:40 | INFO | movieclaw_api.settings.store | 已保存配置域：auth.api_tokens
+2026-08-29 17:25:40 | INFO | movieclaw_api.auth | 已创建 API 令牌「书房的 Mac」（id=44b027c0ecd854fb，形态=cli）
+2026-08-29 17:25:40 | INFO | movieclaw_api.auth | 已批准设备接入：书房的 Mac（令牌 id=44b027c0ecd854fb）
+2026-08-29 17:25:40 | INFO | movieclaw_api.access | method=POST path=/api/v1/auth/devices/requests/MCLW-URZX/approve status_code=200 duration_ms=7.09 message=request completed
+2026-08-29 17:25:42 | INFO | movieclaw_api.auth | 设备已完成配对：书房的 Mac
+2026-08-29 17:25:42 | INFO | movieclaw_api.access | method=POST path=/api/v1/auth/device/token status_code=200 duration_ms=1.37 message=request completed
+2026-08-29 17:25:57 | INFO | movieclaw_api.access | method=GET path=/api/v1/health status_code=200 duration_ms=0.58 message=request completed
+2026-08-29 17:25:57 | INFO | movieclaw_api.settings.store | 已保存配置域：auth.api_tokens
+2026-08-29 17:25:57 | INFO | movieclaw_api.access | method=GET path=/api/v1/auth/me status_code=200 duration_ms=6.01 message=request completed
+2026-08-29 17:26:27 | INFO | movieclaw_api.auth | 管理员 admin 登录成功
+2026-08-29 17:26:27 | INFO | movieclaw_api.access | method=POST path=/api/v1/auth/login status_code=200 duration_ms=64.50 message=request completed
+2026-08-29 17:26:27 | INFO | movieclaw_api.access | method=GET path=/api/v1/health status_code=200 duration_ms=0.55 message=request completed
+2026-08-29 17:26:27 | INFO | movieclaw_api.auth | 收到设备接入请求：被拒的机器（cli，来自 127.0.0.1），配对码 MCLW-TUTC
+2026-08-29 17:26:27 | INFO | movieclaw_api.access | method=POST path=/api/v1/auth/device/authorize status_code=200 duration_ms=0.97 message=request completed
+2026-08-29 17:26:27 | INFO | movieclaw_api.access | method=GET path=/api/v1/auth/devices/requests status_code=200 duration_ms=1.14 message=request completed
+2026-08-29 17:26:27 | INFO | movieclaw_api.auth | 已拒绝设备接入：被拒的机器（来自 127.0.0.1）
+2026-08-29 17:26:27 | INFO | movieclaw_api.access | method=POST path=/api/v1/auth/devices/requests/MCLW-TUTC/deny status_code=200 duration_ms=1.23 message=request completed
+2026-08-29 17:26:29 | WARNING | movieclaw_api.access | method=POST path=/api/v1/auth/device/token status_code=400 duration_ms=1.01 message=request completed
+2026-08-29 17:26:29 | INFO | movieclaw_api.auth | 管理员 admin 登录成功
+2026-08-29 17:26:29 | INFO | movieclaw_api.access | method=POST path=/api/v1/auth/login status_code=200 duration_ms=57.77 message=request completed
+2026-08-29 17:26:29 | INFO | movieclaw_api.access | method=GET path=/api/v1/health status_code=200 duration_ms=0.53 message=request completed
+2026-08-29 17:26:29 | INFO | movieclaw_api.auth | 收到设备接入请求：logout测试（cli，来自 127.0.0.1），配对码 MCLW-KDA4
+2026-08-29 17:26:29 | INFO | movieclaw_api.access | method=POST path=/api/v1/auth/device/authorize status_code=200 duration_ms=0.73 message=request completed
+2026-08-29 17:26:29 | INFO | movieclaw_api.access | method=GET path=/api/v1/auth/devices/requests status_code=200 duration_ms=1.15 message=request completed
+2026-08-29 17:26:29 | INFO | movieclaw_api.settings.store | 已保存配置域：auth.api_tokens
+2026-08-29 17:26:29 | INFO | movieclaw_api.auth | 已创建 API 令牌「logout测试」（id=da8879d21b693194，形态=cli）
+2026-08-29 17:26:29 | INFO | movieclaw_api.auth | 已批准设备接入：logout测试（令牌 id=da8879d21b693194）
+2026-08-29 17:26:29 | INFO | movieclaw_api.access | method=POST path=/api/v1/auth/devices/requests/MCLW-KDA4/approve status_code=200 duration_ms=6.64 message=request completed
+2026-08-29 17:26:31 | INFO | movieclaw_api.auth | 设备已完成配对：logout测试
+2026-08-29 17:26:31 | INFO | movieclaw_api.access | method=POST path=/api/v1/auth/device/token status_code=200 duration_ms=1.16 message=request completed
+2026-08-29 17:26:31 | INFO | movieclaw_api.access | method=GET path=/api/v1/health status_code=200 duration_ms=0.59 message=request completed
+2026-08-29 17:26:31 | WARNING | movieclaw_api.access | method=GET path=/api/v1/auth/me status_code=401 duration_ms=0.72 message=request completed
