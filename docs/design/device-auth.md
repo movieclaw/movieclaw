@@ -12,7 +12,8 @@
 > 3. **一套机制服务所有客户端**。Worker 与 CLI 不允许各写一套认证。
 >
 > 结论先行：**实现一套「设备授权流程」——客户端出示短码、人在已登录的网页上
-> 批准、令牌只回到发起进程**；令牌带 scope，落进现有 `ApiTokensSetting` 存储；
+> 批准、令牌只回到发起进程**；令牌的权限继承批准者，落进现有 `ApiTokensSetting`
+> 存储；
 > Worker 的共享令牌与粘贴式配对码整个删除。
 >
 > 本文取代 `docs/design/cli.md` §8.1 的 PAT 方案与 `docs/design/remote-transcode.md`
@@ -28,7 +29,7 @@
 | 机制 | 落点 | 形态 | 问题 |
 |---|---|---|---|
 | 会话 Cookie | `services/auth.py:406-482` | itsdangerous 签名，7/30 天 | CLI 借用它，到期即断 |
-| PAT | `services/auth.py:489-521` | sha256 落库，`mclaw_` 前缀 | 只能在网页手工建；无过期、无 scope、无使用记录 |
+| PAT | `services/auth.py:489-521` | sha256 落库，`mclaw_` 前缀 | 只能在网页手工建；无过期、无归属、无使用记录 |
 | Worker 共享令牌 | `services/playback/remote_worker.py:508` | 设置里一个固定字符串 | 所有 Worker 共用一枚 |
 | 产品内 Agent 令牌 | `services/auth.py:523-529` | 无状态签名，2 小时 | 设计正确，保留不动 |
 
@@ -103,9 +104,10 @@ GET  /api/v1/health                                     匿名（已有）
      用途：地址可达性与版本验证。不新增接口。
 
 POST /api/v1/auth/device/authorize                      匿名 + 限流（新增）
-     ← {client_type: "worker"|"cli"|"other",
-        client_name: "Yi的Mac-mini",
-        scope: ["transcode"]}
+     ← {client_type: "worker"|"cli",
+        client_name: "Yi的Mac-mini"}
+     客户端不声明权限：它只说自己是什么形态、叫什么名字。
+     权限由批准者决定（§4）。
      → {user_code: "MCLW-7F3K",
         device_code: "<高熵不可猜>",
         verification_uri: "http://10.1.1.5:3000/settings/devices",
@@ -114,7 +116,8 @@ POST /api/v1/auth/device/authorize                      匿名 + 限流（新增
 POST /api/v1/auth/device/token                          匿名 + 限流（新增）
      ← {device_code}
      → 202 {status: "pending"}                          尚未批准
-       200 {token, scope, expires_at, client_name}      已批准，兑换一次即作废
+       200 {token, granted_by, expires_at, client_name}  已批准，兑换一次即作废
+                  granted_by 仅用于客户端回显「你现在是谁」，不是权限声明
        400 {code: "AUTHORIZATION_DENIED"}               人点了拒绝
        400 {code: "EXPIRED_TOKEN"}                      超过 expires_in
        429 {code: "SLOW_DOWN"}                          轮询过快
@@ -148,7 +151,7 @@ GET    /api/v1/auth/devices/requests                    require_admin（新增�
   │  （每 interval 秒重试）      │<── POST …/approve ────────────────┤  人点「批准」
   │                            │  ← 此刻才生成令牌明文并落库          │
   ├─ POST device/token ───────>│  challenge → approved，挂上令牌     │
-  │<── 200 {token, scope} ─────┤  兑换后立即置 consumed              │
+  │<── 200 {token, granted_by} ┤  兑换后立即置 consumed              │
   │  写入钥匙串 / credentials   │                                   │
 ```
 
@@ -201,7 +204,6 @@ class DeviceAuthChallenge:
     device_code_hash: str          # 只存哈希，与 PAT 同口径
     client_type: str               # worker | cli | other
     client_name: str
-    scope: list[str]
     source_ip: str
     status: Literal["pending", "approved", "denied", "expired", "consumed"] = "pending"
     granted_token: str | None = None   # 仅 approved→consumed 之间短暂持有
@@ -224,11 +226,16 @@ class ApiTokenRecord(BaseModel):
     token_hash: str
     created_at: str
     # ↓ 新增
-    client_type: str = "manual"    # worker | cli | manual
-    scope: list[str] = ["admin"]   # 老记录默认全权，语义不变
-    expires_at: str | None = None  # None = 长期有效
+    client_type: str = "manual"        # worker | cli | manual
+    owner_kind: str = "admin"          # admin | member —— 谁批准的
+    owner_member_id: int | None = None # owner_kind == "member" 时才有
+    owner_token_version: int = 0       # 签发时批准者的 token_version（成员用）
+    expires_at: str | None = None      # None = 长期有效
     last_used_at: str | None = None
 ```
+
+**记录里存的是「谁批准的」，不是「能干什么」**——权限在每次验签时按批准者的
+当前状态实时装配（§4）。老记录默认 `owner_kind="admin"`，语义与今天一致，零迁移。
 
 `last_used_at` 的写入频率要控制：**每次请求都写设置项等于每次请求一次磁盘写**。
 采用「进程内累积、按分钟粒度落盘」——同一枚令牌一分钟内只写一次，
@@ -236,7 +243,9 @@ class ApiTokenRecord(BaseModel):
 
 ### 3.3 `Principal` 扩展
 
-`services/auth.py:75`，补一个 `scope` 字段并纠正 `is_admin` 的语义：
+`services/auth.py:75`。**不新增权限字段**——令牌主体的 `is_admin` / `member`
+直接按批准者装配，与会话 Cookie 主体走完全相同的赋值逻辑。只补一个
+`client_type`，用于把 Worker 令牌挡在业务接口之外（§4.3）：
 
 ```python
 @dataclass(frozen=True)
@@ -247,65 +256,121 @@ class Principal:
     is_admin: bool = True
     member: Member | None = None
     agent_session_id: str | None = None
-    scope: frozenset[str] = frozenset({"admin"})   # ← 新增
+    client_type: str | None = None   # ← 新增：worker | cli | manual，仅令牌主体有值
 ```
 
-`is_admin` 保持现有语义（区分成员账号），**授权判定新增一层 scope**，
-两者是并列的前置条件而不是替代关系。
+`client_type` 是**客户端形态**，不是权限等级。权限完全来自 `is_admin` / `member`
+这两个既有字段——全站的授权判定（`require_admin`、`require_search_capability`
+等）一行都不用改，就能对令牌主体正确生效。
 
 ---
 
-## 4. 权限（scope）
+## 4. 权限：继承批准者
 
-### 4.1 四档
+### 4.1 原则
 
-| scope | 谁用 | 能做 | 拿不到 |
-|---|---|---|---|
-| `transcode` | Mac Worker | 转码 WebSocket、拉源分片、回传产物 | 其余全部 403 |
-| `operate` | mclaw CLI（默认）、第三方 Agent | 搜索、订阅、下载、媒体库整理、查任务 | 危险与破坏性端点 |
-| `admin` | 手工 PAT、用户显式要求的 CLI | 全部端点 | — |
-| `agent` | 产品内 Agent | 维持现状 | 递归发起会话（已有硬闸） |
+**一枚设备令牌的权限，等于批准它的那个人的权限。**
 
-### 4.2 边界由 `x-cli-dangerous` 推导，不新增分类工作
+不发明第二套权限词表。产品已经有一套完整且在用的权限体系——超管与成员两类
+身份、成员的能力开关（`allow_subscribe` / `allow_search` /
+`allow_direct_download`）、资源白名单（`all_libraries` / `all_sites` 与关联表）。
+设备令牌是这个人把自己的权限**委派**给一台机器，不是另开一个平行的权限维度。
 
-spec 里 274 个操作已经标注完毕：`x-cli-dangerous: confirm` 24 个、`destructive` 5 个。
-规则一句话：
+平行词表（`operate` / `admin` 之类）看起来更细，实则有两个硬伤：
+它与成员能力开关是两个事实源，迟早漂移；而且它回答不了「一个只能订阅、
+只能看 A 库的成员，他的 CLI 应该能做什么」——继承模型天然就答对了。
+
+唯一的例外是**客户端形态上限**：
 
 ```
-operate = 全部端点 − (x-cli-dangerous ∈ {confirm, destructive})
-admin   = 全部端点
-transcode = 显式白名单（转码 WS + 源读取 + 产物写入，共 4 个端点）
+有效权限 = 批准者的当前权限  ∩  client_type 的能力上限
 ```
 
-`transcode` 用白名单而非推导，因为它的可达面极小且必须精确。另外两档用推导，
-好处是**新增端点自动落到正确的档位**：标了 dangerous 就自动不在 `operate` 里，
-漏标会被现有的 CI 守护测试拦下——与「新 API 自动获得 CLI 能力」共用同一套元数据。
+| client_type | 上限 | 说明 |
+|---|---|---|
+| `worker` | 仅转码四个端点 | 无论谁批准，都只能连转码 WS、读源、写产物 |
+| `cli` / `manual` | 无上限 | 完全等同批准者本人在网页上的权限 |
 
-### 4.3 执行点
+Worker 的上限是必要的：它是一台长期在线、可能放在书房、可能被家人用的机器，
+没有任何理由让它能碰订阅或媒体库。CLI 不设上限，是因为它就是这个人的手。
 
-在 `api/deps.py` 加一个依赖工厂，router 按组挂载：
+### 4.2 权限在验签时实时装配，不在签发时冻结
+
+`verify_bearer_token`（`services/auth.py:531`）按 `owner_kind` 分流，与
+`verify_session_token` 用同一段装配逻辑：
 
 ```python
-def require_scope(*needed: str):
-    """在 require_login 之上断言 scope。
+# owner_kind == "admin"
+Principal(kind="pat", name=f"token:{record.name}", is_admin=True,
+          client_type=record.client_type)
 
-    会话 Cookie 主体（人在网页上操作）恒为 admin scope——网页本来就是
-    全功能界面，不在这里做二次限制；scope 只约束令牌主体。
-    """
-    async def dep(principal: Principal = Depends(require_login)) -> Principal:
-        if "admin" in principal.scope or set(needed) & principal.scope:
-            return principal
-        raise ForbiddenException(
-            f"当前凭证的权限（{'/'.join(sorted(principal.scope))}）不允许此操作"
-        )
-    return dep
+# owner_kind == "member"：查库拿当前成员行
+member = await repo.get(record.owner_member_id)
+if member is None or member.status != "active":
+    raise UnauthorizedException("授权这枚令牌的账号已被停用，令牌随之失效")
+if member.token_version != record.owner_token_version:
+    raise UnauthorizedException("授权这枚令牌的账号已改密，请重新配对")
+Principal(kind="member", name=f"token:{record.name}", member_id=member.id,
+          is_admin=False, member=member, client_type=record.client_type)
 ```
 
-配套一条**守护测试**（对标现有 `test_auth.py` 的全路由匿名扫描）：遍历全部路由，
-断言「标了 `x-cli-dangerous` 的端点，其 scope 依赖不包含 `operate`」，
-漏挂即 CI 红。
+三个白捡的性质：
 
----
+- **能力开关是活的**。管理员事后关掉某成员的 `allow_search`，他那台机器上的
+  CLI 立刻也搜不了——不需要吊销令牌，也不会出现「令牌里冻结的旧权限」。
+- **停用即失效**。成员被停用或改密（`token_version` +1，见 `Member` 模型注释），
+  他的全部设备令牌与会话一起失效，不需要额外的清理逻辑。
+- **审计口径统一**。`Principal.__str__` 仍返回 `token:<名字>`，访问日志里
+  「是谁改的」照旧可答。
+
+### 4.3 Worker 上限的执行点：默认拒绝
+
+不遍历标注、不做端点分类。**在 `require_login` 里直接拒绝 `client_type == "worker"`
+的主体**，只有转码专用依赖接受它：
+
+```python
+async def require_login(principal: Principal | None = Depends(optional_login)) -> Principal:
+    if principal is None:
+        raise UnauthorizedException("未登录，请先登录")
+    if principal.client_type == "worker":
+        # Worker 令牌只为转码链路签发，业务接口一律不认。白名单只有一处，
+        # 即 require_transcode_worker，新增业务路由自动被挡住。
+        raise ForbiddenException("转码 Worker 的凭证不能用于业务接口")
+    return principal
+
+
+async def require_transcode_worker(
+    principal: Principal | None = Depends(optional_login),
+) -> Principal:
+    """转码数据面与控制面专用：只接受 worker 令牌。"""
+    if principal is None or principal.client_type != "worker":
+        raise UnauthorizedException("需要转码 Worker 凭证")
+    return principal
+```
+
+这是**默认拒绝**而不是白名单枚举：新增的任何业务路由，只要照常挂
+`require_login`，就自动把 Worker 令牌挡在外面，不需要记得给它标注什么。
+
+配套一条守护测试（对标现有 `test_auth.py` 的全路由匿名扫描）：遍历全部路由，
+持 worker 令牌访问，除转码四个端点外一律断言 4xx。
+
+### 4.4 想要一个受限的 CLI 令牌怎么办
+
+**建一个成员账号，用它去批准。**
+
+成员管理页里已经能逐人开关订阅、搜索、一键下载，能划定可见的媒体库与可用的
+站点。想给某个第三方 Agent 一个「只能查、能订阅、看不到 A 库」的令牌，
+就用这样一个成员账号登录网页去批准它——得到的令牌恰好就是这个权限，
+而且以后调整这个成员的开关，令牌的权限跟着变。
+
+这条路径不需要写任何新代码，而一套 `operate` / `admin` 的平行词表需要，
+且能力还更弱。
+
+**这里明确接受的取舍**：超管批准的 CLI 令牌是全权的，包括破坏性端点。
+拦它的是 CLI 自己的门槛——`x-cli-dangerous` 驱动的 `--yes` 强制确认与
+`destructive` 级的影响面回显（`docs/design/cli.md` §5.6），以及产品内 Agent
+工具描述里那条「删除媒体文件必须先复述影响面并取得当轮同意」的硬规约。
+如果用户要的是「连误操作也不可能」，正确答案是上面那句：用成员账号批准。
 
 ## 5. 客户端一：Mac Worker
 
@@ -365,8 +430,8 @@ def require_scope(*needed: str):
 ### 5.4 握手改造
 
 `routes/transcode_worker.py:160` 的 `X-Worker-Token` 头改为标准
-`Authorization: Bearer`，走 `verify_bearer_token` 同一入口，然后断言
-`"transcode" in principal.scope`。`remote_worker.py:508` 的 `verify_worker_token`、
+`Authorization: Bearer`，改挂 `require_transcode_worker` 依赖（§4.3）——
+只接受 `client_type == "worker"` 的主体。`remote_worker.py:508` 的 `verify_worker_token`、
 `RemoteTranscodeSetting.worker_token` 字段、`schemas/transcode_worker.py` 里
 worker_token 的三态语义**全部删除**。
 
@@ -389,7 +454,8 @@ $ mclaw login --server http://10.1.1.5:3000
 ```
 
 - **`--password` 废弃**。密码只在浏览器里用。TTY 下也不再提供密码登录路径。
-- `--scope admin` 显式申请全权，默认 `operate`。
+- **不需要也不接受 `--scope` 之类的参数**。CLI 得到什么权限，取决于是谁在网页上
+  按下批准：超管批准就是全权，成员批准就是那个成员的权限（§4.4）。
 - `client_name` 默认取 `<程序名>@<主机名>`，可用 `--name` 覆盖。
 - 非 TTY（脚本 / CI）执行 `login` 直接以用法错误退出并提示：
   设备流需要人在浏览器确认，无人值守场景请在网页手工创建令牌后用
@@ -463,18 +529,36 @@ CLI 独立发版后「CLI 版本 ≠ 服务端版本」成为常态，`docs/desi
 
 **待批准的请求**（有请求时才出现，置顶）
 
+转码 Worker：
+
 > 名称 `Yi的Mac-mini` · 类型 `转码 Worker` · 来源 `10.1.1.22（同一局域网）`
-> 配对码 `MCLW-7F3K` · 将获得的权限 `transcode`
+> 配对码 `MCLW-7F3K`
+> **将获得：仅限转码。** 这台机器不能查看或修改你的订阅、媒体库和设置。
 > ⚠ 请确认配对码与设备上显示的完全一致。如果这不是你刚发起的操作，选择拒绝。
 > `[批准接入]` `[拒绝]`
 
+命令行 / Agent：
+
+> 名称 `claude-code@Yi的Mac-mini` · 类型 `命令行` · 来源 `127.0.0.1（本机）`
+> 配对码 `MCLW-9QT2`
+> **将获得：与你（`admin`）相同的权限。** 这台机器上的程序将能做你在网页上
+> 能做的一切。想给它更小的权限，请改用一个受限的成员账号登录后再批准。
+> ⚠ 请确认配对码与设备上显示的完全一致。如果这不是你刚发起的操作，选择拒绝。
+> `[批准接入]` `[拒绝]`
+
+「将获得」这一行必须写实：它是用户做决定的**唯一**依据，不能是含糊的技术名词。
+命令行那条的措辞刻意点破全权的含义，并给出收窄的具体做法（§4.4）。
+
 **已连接的设备**
 
-> ● `Yi的Mac-mini` — 转码 Worker · transcode · 刚刚活跃 `[吊销]`
-> ○ `claude-code@MacBook` — 命令行 · operate · 2 小时前 `[吊销]`
-> ○ `nas-cron` — 手工令牌 · admin · 从未使用 `[吊销]`
+> ● `Yi的Mac-mini` — 转码 Worker · 仅转码 · 刚刚活跃 `[吊销]`
+> ○ `claude-code@MacBook` — 命令行 · 授权自 `admin` · 2 小时前 `[吊销]`
+> ○ `家里人的 Mac` — 命令行 · 授权自成员 `xiaoyu` · 昨天 `[吊销]`
+> ○ `nas-cron` — 手工令牌 · 授权自 `admin` · 从未使用 `[吊销]`
 
-吊销一台不影响其他设备。手工创建的 PAT 也出现在这个列表里，入口统一。
+列表里显示「授权自谁」而不是抽象的权限名——这既是审计线索，也让用户一眼看出
+哪些设备握着全权。吊销一台不影响其他设备；手工创建的 PAT 也在这个列表里，
+入口统一。成员只能看到并吊销自己授权出去的设备，超管看到全部。
 
 ---
 
@@ -486,13 +570,13 @@ CLI 独立发版后「CLI 版本 ≠ 服务端版本」成为常态，`docs/desi
 | 猜 `user_code` 骗批准 | 码只在审批页可用，且审批页要管理员会话；错 5 次作废本轮 |
 | 猜 `device_code` 直接兑换 | 32 字节高熵 + 只存哈希 + 5 分钟 TTL + 只能兑换一次 |
 | 钓鱼式诱导批准 | 审批卡显示来源 IP 与设备名；文案明确要求核对码与「这不是你发起的就拒绝」 |
-| 令牌泄漏 | 每设备独立、带 scope、可单独吊销；Worker 令牌最多只能转码 |
+| 令牌泄漏 | 每设备独立、可单独吊销；Worker 令牌被业务接口默认拒绝；想要受限令牌用成员账号批准 |
 | 匿名端点被刷 | 单 IP 未决挑战上限 + 轮询退避 + 挑战全程不落库 |
 | 管理员改密 | 沿用现有密钥轮换机制：会话与 Agent 令牌一起失效；落库令牌按需在改密时一并清空（见开放问题） |
 
 **明确不解决的**：本机上已经能读到 `~/.config/movieclaw/credentials.json` 的进程，
 就等于持有该令牌。这是所有 CLI 的共同边界（gh、gcloud、aws 皆然），对策是文件
-权限与 scope 收窄，而不是加密——本机加密只能防到不会读文件的人。
+权限位与「用成员账号批准以收窄权限」，而不是加密——本机加密只能防到不会读文件的人。
 
 ---
 
@@ -503,8 +587,8 @@ CLI 独立发版后「CLI 版本 ≠ 服务端版本」成为常态，`docs/desi
 | 1 | `DeviceAuthChallenge` + 签发/批准/兑换 | `services/auth.py`（新增一节） | 核心 |
 | 2 | 两个匿名端点 + 一组管理端点 | `api/routes/auth.py` | 核心 |
 | 3 | `ApiTokenRecord` 四个新字段 + `last_used_at` 节流写入 | `settings/schemas.py:169` | 小 |
-| 4 | `Principal.scope` + `require_scope` 依赖 + router 挂载 | `services/auth.py:75`、`api/deps.py`、`api/router.py` | 中 |
-| 5 | scope 守护测试（危险端点不得落在 operate） | `tests/api/test_auth.py` 同款模式 | 小 |
+| 4 | `Principal.client_type` + 验签按批准者装配 + `require_login` 拒绝 worker | `services/auth.py:75,531`、`api/deps.py` | 中 |
+| 5 | Worker 令牌隔离守护测试（除转码端点外一律 4xx） | `tests/api/test_auth.py` 同款模式 | 小 |
 | 6 | Worker 握手改 Bearer；删共享令牌全链路 | `routes/transcode_worker.py:160`、`services/playback/remote_worker.py:508`、`settings/remote_transcode.py`、`schemas/transcode_worker.py` | 中 |
 | 7 | 网页「设备」分区 | `apps/web/components/settings-view.tsx`（新分区组件） | 中 |
 | 8 | Worker 设置窗重构；删 `PairingCode.swift` | `macos/…/SettingsWindowController.swift`、`ConfigurationStore.swift`、`AppMain.swift` | 中 |
@@ -523,9 +607,9 @@ CLI 独立发版后「CLI 版本 ≠ 服务端版本」成为常态，`docs/desi
    重放兑换 / SLOW_DOWN 五条异常路径各一例。
 2. **默认拒绝守护**（扩展现有全路由扫描）：新增的两个匿名端点在白名单里显式登记；
    其余路由匿名一律 401。
-3. **scope 守护**：遍历全部路由，`x-cli-dangerous` 端点的依赖链不得放行 `operate`。
-4. **令牌隔离**：`transcode` scope 的令牌调 `/subscriptions` 返回 403；
-   `operate` 令牌调 `library.items.delete` 返回 403。
+3. **Worker 隔离守护**：遍历全部路由，持 worker 令牌访问，除转码四个端点外一律 4xx。
+4. **权限继承**：成员批准的令牌，其 `allow_search` 关闭后调搜索接口返回 403；
+   该成员被停用或改密（`token_version` +1）后，令牌立即 401。
 5. **CLI 端到端**：真实 uvicorn + 真实 `mclaw login`，脚本模拟浏览器批准，
    断言凭证落盘位置与权限位（0600）、非 TTY 下 `login` 以用法错误退出。
 6. **Worker 端到端**：Swift 侧对 authorize/token 两个端点的状态机测试；
@@ -539,7 +623,7 @@ CLI 独立发版后「CLI 版本 ≠ 服务端版本」成为常态，`docs/desi
 
 | 阶段 | 内容 | 验收 |
 |---|---|---|
-| **P0 协议与存储** | 落点 1–5：挑战模型、端点、令牌字段、scope 依赖与守护测试 | 协议全路径测试通过；scope 守护红/绿可验证 |
+| **P0 协议与存储** | 落点 1–5：挑战模型、端点、令牌字段、验签装配与隔离守护测试 | 协议全路径测试通过；Worker 隔离与权限继承测试红/绿可验证 |
 | **P1 网页审批页** | 落点 7 | 能看到待批准请求、批准、吊销；手工 PAT 一并显示 |
 | **P2 两个客户端** | 落点 6、8、9、10（Worker 与 CLI 可并行） | 全新 Mac 走完 golden 流程；CLI 在 GUI 应用触发的终端里可用 |
 | **P3 分发** | 落点 11 | 干净机器上一行安装命令跑通；`mclaw` 在非登录 shell 里可执行 |
@@ -565,13 +649,15 @@ P0 与 P1 之间不能并行——审批页要按端点的真实返回来写。P
 
 ## 13. 开放问题
 
-1. **管理员改密时是否清空全部设备令牌**。现有机制下改密会轮换签名密钥，
-   Cookie 会话与 Agent 令牌瞬间失效，但落库令牌不受影响。倾向：改密时在网页上
-   给一个明确的选项「同时吊销所有已连接的设备」，默认不勾——用户改密的动机
-   多半是密码本身泄漏，而不是设备失窃，静默踢掉所有 Worker 的观感很差。
-2. **`operate` 是否要再切一档**。目前 `operate` 覆盖除危险端点外的全部接口，
-   包含「改下载器配置」这类不危险但很敏感的操作。倾向先不切，观察第三方 Agent
-   的实际使用后再定。
+1. **超管改密时是否清空其名下的设备令牌**。成员这条路已经自洽——改密即
+   `token_version` +1，他授权出去的令牌自动全失效（§4.2）。超管没有
+   `token_version`，改密只轮换签名密钥，落库令牌不受影响。倾向：改密时给一个
+   明确的选项「同时吊销我授权的所有设备」，默认不勾——改密的动机多半是密码
+   本身泄漏而非设备失窃，静默踢掉所有 Worker 的观感很差。
+2. **成员是否可以批准设备**。§4.4 的「用成员账号批准以收窄权限」要求成员能
+   进入设备页并按下批准。这意味着设备页不能整体挂 `require_admin`，而要按
+   「成员只见自己授权的设备」分流。倾向支持——它是 §4.4 那条路径成立的前提，
+   实现成本只是一个按 `owner_member_id` 过滤的查询。
 3. **令牌是否默认设过期**。默认长期有效最省事，但自部署用户的令牌泄漏是
    不可察觉的。倾向：设备流签发的令牌默认长期，但在设备列表里对
    「超过 90 天未使用」的令牌显示提示，把决定权交给用户。
