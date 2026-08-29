@@ -167,7 +167,10 @@ services:
       # - /volume2/movies:/movies
     environment:
       - TZ=Asia/Shanghai
-    # 想用核显 / 独显做硬件转码？取消下面两行注释（Intel / AMD）：
+    # 想用核显 / 独显做硬件转码？先在宿主上 `ls /dev/dri` 确认它存在（ARM 机型、
+    # 纯 CPU 主机通常没有）——不存在却打开下面两行，容器会被重建然后起不来，
+    # 只留一句英文 no such file or directory。不确定就先别动：装好后首启日志
+    # 会直接告诉你能不能硬解、缺什么。
     # devices:
     #   - /dev/dri:/dev/dri
     restart: unless-stopped
@@ -189,7 +192,7 @@ services:
 docker compose up -d
 ```
 
-首次启动要十几秒到一分钟（NAS 上更久）。这期间打开页面只会看到「正在连接服务…」，
+首次启动快的机器十来秒，慢一些的 NAS 可能要一两分钟。这期间打开页面只会看到「正在连接服务…」，
 属正常；`docker logs movieclaw` 里出现「前端反代 已就绪」就是真的起来了。
 如果这一步直接报 `failed to bind host port 0.0.0.0:3000/tcp: address already in use`，
 是 3000 端口被占了，见下面[常见问题](#常见问题)的第二条。
