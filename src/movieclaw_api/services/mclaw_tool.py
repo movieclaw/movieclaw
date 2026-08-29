@@ -1,9 +1,11 @@
 """mclaw 工具的一级服务目录渲染（docs/design/agent-cli-integration.md §2）。
 
 目录进工具 description，让模型「知道去哪个域找」；二级以下坚决不进
-（--help 现查）。数据源是 CLI 内置 spec——同仓构建保证与真实命令面同版；
-每域的一行说明在 _DOMAIN_LINES 手工润色（信息密度比 DOMAIN_HELP 的短标签
-高），守护测试保证与 spec 的域集合严格同步。
+（--help 现查）。数据源是构建期导出的 spec——同仓构建保证与真实命令面同版；
+每域的一行说明在 _DOMAIN_LINES 手工润色，守护测试保证与 spec 的域集合严格同步。
+
+域集合走 services.spec_catalog（读 spec.json），**不依赖 CLI 包**：那是个客户端，
+服务端不该在运行期 import 它（见 docs/design/cli-go-migration.md Stage 0）。
 """
 
 from __future__ import annotations
@@ -11,10 +13,7 @@ from __future__ import annotations
 import logging
 from functools import lru_cache
 
-from movieclaw_api.exceptions import AppException
-from movieclaw_cli.core.errors import CliError
-from movieclaw_cli.gen.spec_loader import load_baseline
-from movieclaw_cli.gen.tree_builder import DOMAIN_HELP, is_generable, iter_operations
+from movieclaw_api.services.spec_catalog import command_domains
 
 logger = logging.getLogger("movieclaw_api.mclaw_tool")
 
@@ -92,40 +91,23 @@ _EXCLUDED_DOMAINS = {"logs", "members"}
 
 def spec_domains() -> set[str]:
     """spec 里全部会生成命令、且对模型开放的域（守护测试与渲染共用）。"""
-    return {
-        op["operation_id"].split(".")[0]
-        for op in iter_operations(load_baseline())
-        if is_generable(op)
-    } - _EXCLUDED_DOMAINS
+    return set(command_domains()) - _EXCLUDED_DOMAINS
 
 
 @lru_cache(maxsize=1)
 def render_service_map() -> str:
     """渲染一级服务目录（进程内缓存；spec 是构建期产物，运行期不变）。
 
-    spec 装载失败只可能是部署产物不完整（基线文件没进镜像/安装包）。这类
-    故障必须给出可读结论：CliError 是 CLI 侧的异常，逃到 API 层会被兜底
-    处理器变成一句裸的 "internal server error"，自部署用户根本无从判断该
-    重新部署还是该改配置。
+    spec 读不到时 spec_catalog 会抛 SpecCatalogUnavailable（带可读结论的
+    AppException），这里不再包一层——裸的 "internal server error" 会让自部署
+    用户完全无从判断该重新部署还是该改配置。
     """
-    try:
-        domains = sorted(spec_domains())
-    except CliError as exc:
-        logger.error("CLI 基线 spec 装载失败，Agent 无法组装 mclaw 工具：%s", exc)
-        raise AppException(
-            status_code=500,
-            code="SPEC_BASELINE_MISSING",
-            message=(
-                "服务端缺少 CLI 基线 spec（src/movieclaw_cli/data/spec.json），"
-                "Agent 功能不可用。这通常是镜像或安装包不完整，请更新到新版镜像后重新部署。"
-            ),
-        ) from exc
-
+    domains = sorted(spec_domains())
     lines = [
         '可用服务（按用户意图选一级目录；参数细节用 --help 现查，如 args="subscriptions --help"）：'
     ]
     for domain in domains:
-        lines.append("- " + _DOMAIN_LINES.get(domain, f"{domain}   {DOMAIN_HELP.get(domain, '')}"))
+        lines.append("- " + _DOMAIN_LINES.get(domain, domain))
     for extra in _TOP_LEVEL_LINES:
         lines.append("- " + extra)
     return "\n".join(lines)
