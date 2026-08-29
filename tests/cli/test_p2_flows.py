@@ -854,26 +854,47 @@ def test_download_rejects_snapshot_from_other_server(run_cli, monkeypatch) -> No
     assert "另一台服务器" in err
 
 
-def test_wrong_password_shows_server_message(run_cli) -> None:
-    """401 透传服务端具体原因，而不是笼统的「未登录」。"""
+def test_login_denied_exits_3(run_cli, monkeypatch) -> None:
+    """配对被拒绝是终态：立刻以认证失败退出，不继续轮询。
+
+    密码登录已废弃（docs/design/device-auth.md §6.1），CLI 唯一的授权入口
+    是设备配对；这里用 mock transport 直接给出「已拒绝」的终态响应。
+    """
+    # login 要求 TTY（配对必须有人批准，非 TTY 直接以用法错误退出），
+    # pytest 捕获下的 stdin 不是 TTY，这里伪装成 TTY 以走到真正要测的分支。
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
+    monkeypatch.setattr("time.sleep", lambda _s: None)
     transport = _transport(
         {
-            ("POST", "/api/v1/auth/bootstrap"): httpx.Response(
-                200, json=_envelope({"initialized": True})
+            ("GET", "/api/v1/health"): httpx.Response(
+                200, json=_envelope({"status": "ok", "version": "0.18.0"})
             ),
-            ("GET", "/api/v1/auth/bootstrap"): httpx.Response(
-                200, json=_envelope({"initialized": True})
+            ("POST", "/api/v1/auth/device/authorize"): httpx.Response(
+                200,
+                json=_envelope(
+                    {
+                        "user_code": "MCLW-TEST",
+                        "device_code": "dev-code",
+                        "verification_uri": "http://server/settings/devices",
+                        "interval": 1,
+                        "expires_in": 60,
+                    }
+                ),
             ),
-            ("POST", "/api/v1/auth/login"): httpx.Response(
-                401,
-                json={"success": False, "code": "UNAUTHORIZED", "message": "用户名或密码错误"},
+            ("POST", "/api/v1/auth/device/token"): httpx.Response(
+                400,
+                json={
+                    "success": False,
+                    "code": "BAD_REQUEST",
+                    "message": "接入请求已被拒绝，请重新发起配对",
+                },
             ),
         },
         [],
     )
-    code, _out, err = run_cli(["login", "--username", "admin", "--password", "wrong"], transport)
+    code, _out, err = run_cli(["login", "--server", "http://server"], transport)
     assert code == 3
-    assert "用户名或密码错误" in err
+    assert "拒绝" in err
 
 
 def test_session_stream_reconnects_after_interruption(run_cli, monkeypatch) -> None:

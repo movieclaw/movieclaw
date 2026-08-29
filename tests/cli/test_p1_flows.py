@@ -5,19 +5,12 @@ from __future__ import annotations
 import json
 
 import httpx
+from tests.cli.conftest import pair_cli_token, store_cli_credentials
 
 
-def _login(run_mclaw, live_server, admin) -> None:
-    result = run_mclaw(
-        "login",
-        "--server",
-        live_server,
-        "--username",
-        admin["username"],
-        "--password",
-        admin["password"],
-    )
-    assert result.returncode == 0, result.stderr
+def _login(cli_home, live_server, admin) -> None:
+    """等价于用户跑完 mclaw login：走设备流拿令牌并落进 CLI 配置目录。"""
+    store_cli_credentials(cli_home, live_server, pair_cli_token(live_server, admin))
 
 
 def test_dangerous_without_yes_exits_5(run_mclaw) -> None:
@@ -28,30 +21,32 @@ def test_dangerous_without_yes_exits_5(run_mclaw) -> None:
     assert "--yes" in result.stderr
 
 
-def test_dangerous_with_yes_reaches_server(run_mclaw, live_server, admin) -> None:
-    _login(run_mclaw, live_server, admin)
+def test_dangerous_with_yes_reaches_server(run_mclaw, cli_home, live_server, admin) -> None:
+    _login(cli_home, live_server, admin)
     result = run_mclaw("subscriptions", "delete", "999", "--yes")
     assert result.returncode == 1  # 到达服务器：订阅不存在的业务错误
     assert "错误" in result.stderr
 
 
-def test_write_operation_with_body_flags(run_mclaw, live_server, admin) -> None:
-    _login(run_mclaw, live_server, admin)
+def test_write_operation_with_body_flags(run_mclaw, cli_home, live_server, admin) -> None:
+    _login(cli_home, live_server, admin)
     result = run_mclaw("auth", "profile", "update", "--nickname", "新昵称", "-o", "json")
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["nickname"] == "新昵称"
     assert "已更新" in result.stderr  # 服务端 message 透传到 stderr
 
 
-def test_missing_required_body_flag_exits_2_with_hint(run_mclaw, live_server, admin) -> None:
-    _login(run_mclaw, live_server, admin)
+def test_missing_required_body_flag_exits_2_with_hint(
+    run_mclaw, cli_home, live_server, admin
+) -> None:
+    _login(cli_home, live_server, admin)
     result = run_mclaw("auth", "profile", "update")
     assert result.returncode == 2
     assert "--nickname" in result.stderr
     assert "--input" in result.stderr  # hint 提到整体替代形态
 
 
-def test_pat_token_channel(run_mclaw, live_server, admin, tmp_path) -> None:
+def test_pat_token_channel(run_mclaw, cli_home, live_server, admin, tmp_path) -> None:
     """令牌全链路：网页上配对签发 → 全新环境仅凭 MOVIECLAW_TOKEN 调用成功
     → 吊销后立即 401（退出码 3）。这正是产品内 Agent 工作区的调用形态。
 

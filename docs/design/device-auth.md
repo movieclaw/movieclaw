@@ -478,7 +478,7 @@ $ mclaw login --server http://10.1.1.5:3000
 
 ⠋ 等待批准…（5 分钟内有效）
 ✓ 已授权：claude-code@Yi的Mac-mini（权限 operate）
-  凭证已写入 ~/.config/movieclaw/credentials.json（0600）
+  凭证已写入 ~/.config/movieclaw/credentials（0600）
 ```
 
 - **`--password` 废弃**。密码只在浏览器里用。TTY 下也不再提供密码登录路径。
@@ -488,6 +488,9 @@ $ mclaw login --server http://10.1.1.5:3000
 - 非 TTY（脚本 / CI）执行 `login` 直接以用法错误退出并提示：
   设备流需要人在浏览器确认，无人值守场景请在网页手工创建令牌后用
   `MOVIECLAW_TOKEN` 注入。
+- `logout` **只清本地凭证，不吊销服务端令牌**——吊销只认浏览器会话（§4.4），
+  CLI 拿令牌调不动。命令输出必须把这一点说清楚，并指向网页的设备页，
+  否则用户会以为 logout 等于停用了这台机器。
 
 ### 6.2 凭证的位置与优先级
 
@@ -501,16 +504,17 @@ $ mclaw login --server http://10.1.1.5:3000
   Linux/macOS  ~/.config/movieclaw/          目录 0700
   Windows      %APPDATA%\movieclaw\
     config.toml        [contexts.*] 服务器地址、默认上下文      0600
-    credentials.json   按 server 分键的令牌                     0600
+    credentials        按 server 分键的令牌（JSON）              0600
 
 机器级（只放地址，绝不放凭证）
   Linux/macOS  /etc/movieclaw/config.toml
   Windows      %PROGRAMDATA%\movieclaw\config.toml
 ```
 
-`core/config.py` 现在的 `credentials` 只存会话 Cookie（`config.py:138-159`），
-改为按 server 分键存令牌；`core/http.py:51` 的凭证优先级相应改为
-`MOVIECLAW_TOKEN` > credentials 里该 server 的令牌 > （删除 Cookie 通道）。
+`core/config.py` 的 `credentials` 从存会话 Cookie 改为按 server 分键存令牌
+（文件名不变——改名只会留下一个装着废弃 Cookie 的旧文件）；`core/http.py`
+的凭证通道收敛为一条：`MOVIECLAW_TOKEN` > credentials 里该 server 的令牌，
+Cookie 通道整个删除。
 
 ### 6.3 四个必须处理的工程陷阱
 
@@ -619,7 +623,7 @@ CLI 全部报 401，而他不会把这两件事联系起来，只会认为改密
 把不认识的设备吊销掉。因此列表要能回答「这是什么、什么时候活跃过」，
 并把吊销做成一次点击（§7）。安全兜底靠**可见 + 可吊销**，不靠连坐。
 
-**明确不解决的**：本机上已经能读到 `~/.config/movieclaw/credentials.json` 的进程，
+**明确不解决的**：本机上已经能读到 `~/.config/movieclaw/credentials` 的进程，
 就等于持有该令牌。这是所有 CLI 的共同边界（gh、gcloud、aws 皆然），对策是文件
 权限位、形态上限与可吊销，而不是加密——本机加密只能防到不会读文件的人。
 

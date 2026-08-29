@@ -1,6 +1,6 @@
 """HTTP 客户端封装（docs/design/cli.md §8.3）。
 
-职责：认证注入（会话 Cookie 或 Bearer 令牌）、统一超时、
+职责：认证注入（Bearer 设备令牌）、统一超时、
 `ApiResponse{success,code,message,data}` 信封拆解、错误 → 中文 CliError
 （带退出码与 hint）映射、文件上传/下载、spec 版本偏斜检测（读响应头
 X-Movieclaw-Spec-Hash）。业务命令层只拿到拆好信封的 data。
@@ -18,7 +18,6 @@ import httpx
 from movieclaw_cli.core import config as cfg
 from movieclaw_cli.core.errors import CliError, ExitCode
 
-SESSION_COOKIE_NAME = "movieclaw_session"
 API_PREFIX = "/api/v1"
 SPEC_HASH_HEADER = "X-Movieclaw-Spec-Hash"
 
@@ -45,22 +44,23 @@ class Api:
         self.server = server
         self.debug = debug
         self.last_message: str | None = None
-        cookies = {}
         headers = {"Accept": "application/json", "X-MovieClaw-Client": "cli"}
-        # Bearer 令牌通道：PAT 或产品内 Agent 工作区注入的短时效令牌。
-        # 有令牌时**不再附带本地 Cookie**——服务端鉴权 Cookie 优先，
-        # 过期的旧 Cookie 会把有效令牌拖成 401
-        if token := os.environ.get(cfg.ENV_TOKEN):
+        # 凭证只有 Bearer 一条通道（docs/design/device-auth.md §6.2）。
+        # 环境变量优先于落盘令牌：产品内 Agent 工作区注入的短时效令牌、
+        # 以及 CI 里注入的令牌都走这条，且完全不落盘。
+        if token := self.token_for(server):
             headers["Authorization"] = f"Bearer {token}"
-        elif cookie := cfg.load_session_cookie(server):
-            cookies[SESSION_COOKIE_NAME] = cookie
         self._client = httpx.Client(
             base_url=server,
             timeout=timeout,
-            cookies=cookies,
             headers=headers,
             transport=transport or default_transport,
         )
+
+    @staticmethod
+    def token_for(server: str) -> str | None:
+        """解析该服务器要用的令牌：环境变量 > 本地凭证。"""
+        return os.environ.get(cfg.ENV_TOKEN) or cfg.load_token(server)
 
     def close(self) -> None:
         self._client.close()

@@ -118,3 +118,46 @@ def live_server(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 @pytest.fixture
 def admin() -> dict[str, str]:
     return dict(_ADMIN)
+
+
+# ---------------------------------------------------------------------------
+# 设备配对助手（docs/design/device-auth.md §6.1）
+# ---------------------------------------------------------------------------
+#
+# CLI 已经没有密码登录：令牌只能由人在浏览器里批准后签发。测试要拿到一枚
+# 令牌，就得走完整的设备流——发起 → 用管理员会话批准 → 兑换。这既是取巧的
+# 最短路径，也顺带保证测试用的凭证与真实用户拿到的是同一种东西。
+
+
+def pair_cli_token(live_server: str, admin: dict[str, str], *, name: str = "pytest") -> str:
+    """走一遍设备流，返回令牌明文。"""
+    with httpx.Client(base_url=live_server, timeout=10) as client:
+        client.post("/api/v1/auth/login", json=admin)
+        grant = client.post(
+            "/api/v1/auth/device/authorize",
+            json={"client_type": "cli", "client_name": name},
+        ).json()["data"]
+        client.post(f"/api/v1/auth/devices/requests/{grant['user_code']}/approve")
+        redeemed = client.post(
+            "/api/v1/auth/device/token", json={"device_code": grant["device_code"]}
+        )
+        return redeemed.json()["data"]["token"]
+
+
+def store_cli_credentials(cli_home: Path, server: str, token: str) -> None:
+    """把令牌与上下文写进 CLI 的配置目录，等价于用户跑完 mclaw login。
+
+    走 cfg 的写入函数而不是手写文件，凭证格式才只有一个事实源。
+    """
+    from movieclaw_cli.core import config as cfg
+
+    previous = os.environ.get(cfg.ENV_CONFIG_DIR)
+    os.environ[cfg.ENV_CONFIG_DIR] = str(cli_home)
+    try:
+        cfg.save_token(server, token)
+        cfg.save_context(server)
+    finally:
+        if previous is None:
+            os.environ.pop(cfg.ENV_CONFIG_DIR, None)
+        else:
+            os.environ[cfg.ENV_CONFIG_DIR] = previous

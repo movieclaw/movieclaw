@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import json
 
-import httpx
 import pytest
+from tests.cli.conftest import pair_cli_token
 
 from movieclaw_cli.core import config as cfg
 from movieclaw_cli.core import http as http_mod
@@ -28,9 +28,9 @@ def isolated_home(tmp_path, monkeypatch):
     return home
 
 
-def _login_and_store_cookie(live_server: str, admin: dict[str, str]) -> None:
-    resp = httpx.post(f"{live_server}/api/v1/auth/login", json=admin, timeout=5)
-    cfg.save_session_cookie(live_server, resp.cookies[http_mod.SESSION_COOKIE_NAME])
+def _pair_and_store_token(live_server: str, admin: dict[str, str]) -> None:
+    """刷新 /spec 需要授权，先走设备流拿一枚令牌落进隔离的配置目录。"""
+    cfg.save_token(live_server, pair_cli_token(live_server, admin))
 
 
 class _Settings:
@@ -43,7 +43,7 @@ class _Settings:
 
 
 def test_refresh_writes_cache_and_next_load_uses_it(isolated_home, live_server, admin) -> None:
-    _login_and_store_cookie(live_server, admin)
+    _pair_and_store_token(live_server, admin)
 
     # 装载内置基线后，模拟「服务端指纹与本地不一致」（老 CLI × 新服务器）
     spec_loader.load_active(None)
@@ -58,7 +58,7 @@ def test_refresh_writes_cache_and_next_load_uses_it(isolated_home, live_server, 
 
 
 def test_no_refresh_when_hash_matches(isolated_home, live_server, admin) -> None:
-    _login_and_store_cookie(live_server, admin)
+    _pair_and_store_token(live_server, admin)
     spec_loader.load_active(None)
     http_mod.last_seen_spec_hash = spec_loader.active_spec_hash
     http_mod.last_seen_server = live_server
@@ -89,7 +89,7 @@ def test_refresh_failure_is_silent(isolated_home) -> None:
 
 
 def test_cached_spec_json_is_valid(isolated_home, live_server, admin) -> None:
-    _login_and_store_cookie(live_server, admin)
+    _pair_and_store_token(live_server, admin)
     spec_loader.load_active(None)
     http_mod.last_seen_spec_hash = "0000000000000000"
     http_mod.last_seen_server = live_server
@@ -101,7 +101,7 @@ def test_cached_spec_json_is_valid(isolated_home, live_server, admin) -> None:
 
 def test_known_bad_hash_stops_refetch_loop(isolated_home, live_server, admin) -> None:
     """缓存 spec 建树失败后登记坏指纹：同一服务端版本不再每次调用都重拉。"""
-    _login_and_store_cookie(live_server, admin)
+    _pair_and_store_token(live_server, admin)
     spec_loader.load_active(None)
     http_mod.last_seen_spec_hash = "0000000000000000"
     http_mod.last_seen_server = live_server
