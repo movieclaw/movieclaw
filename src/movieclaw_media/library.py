@@ -204,8 +204,10 @@ async def fetch_media_profile(
     translations = _translation_index(data)
     # 标题回落：主语言没有翻译时（TMDB 会静默退回原名），先用**主语言同地区**
     # 的 alternative_titles 补位，再按优先级取下一语言的译名。
-    # 主语言有翻译时 data 里的 title 就是它，不用动
-    if not _translation_text(translations, primary, "title", "name"):
+    # 判据要求 title 与原名相等——这才是"确实退回了原名"的证据。只看
+    # translations 里有没有主语言条目不够：载荷里译名缺席、而顶层 title 已经
+    # 是译名的情况存在，那时 title 是对的，任何回落都是把好数据换成差数据。
+    if title == original_title and not _translation_text(translations, primary, "title", "name"):
         fallback_title = _alt_region_title(data, primary)
         for lang in languages[1:]:
             if fallback_title:

@@ -166,8 +166,12 @@ async def test_fetch_movie_overview_falls_back_via_translations() -> None:
     assert profile.tagline == "EN tagline"
 
 
-async def test_fetch_movie_title_falls_back_when_primary_untranslated() -> None:
-    """主语言无标题翻译时，标题按优先级取下一语言的译名。"""
+async def test_fetch_movie_title_prefers_same_region_alias_when_primary_untranslated() -> None:
+    """主语言无译名时先取**同地区别名**（CN），而不是直接落到下一语言。
+
+    TMDB 的译名与地区别名是两套独立数据，华语内容常见 zh-CN 译名缺席、
+    CN 区别名却齐全；此时给简体用户回英文是明显更差的选择。
+    """
     detail = {
         **_MOVIE_DETAIL,
         "title": "Dune: Part Two",  # TMDB 无 zh 翻译时静默退回原名
@@ -185,7 +189,42 @@ async def test_fetch_movie_title_falls_back_when_primary_untranslated() -> None:
     profile = await fetch_media_profile(
         client, MediaKind.MOVIE, 693134, languages=["zh-CN", "en-US"]
     )
+    # _MOVIE_DETAIL 的 alternative_titles 里有 CN 区别名
+    assert profile.title == "沙丘：第二部"
+
+
+async def test_fetch_movie_title_falls_back_when_primary_untranslated() -> None:
+    """主语言既无译名、同地区也无别名时，才按优先级取下一语言的译名。"""
+    detail = {
+        **_MOVIE_DETAIL,
+        "title": "Dune: Part Two",  # TMDB 无 zh 翻译时静默退回原名
+        # CN 区别名一并去掉，只留无关地区——回落必须继续走到 en-US
+        "alternative_titles": {"titles": [{"iso_3166_1": "FR", "title": "Dune Deuxième Partie"}]},
+        "translations": {
+            "translations": [
+                {
+                    "iso_639_1": "en",
+                    "iso_3166_1": "US",
+                    "data": {"title": "Dune: Part Two", "overview": "x"},
+                },
+            ]
+        },
+    }
+    client = _client({"/3/movie/693134": detail})
+    profile = await fetch_media_profile(
+        client, MediaKind.MOVIE, 693134, languages=["zh-CN", "en-US"]
+    )
     assert profile.title == "Dune: Part Two"
+
+
+async def test_fetch_movie_title_keeps_translated_title_without_translations_payload() -> None:
+    """顶层 title 已是译名（≠ 原名）时不许回落——回落会把好数据换成差数据。"""
+    detail = {**_MOVIE_DETAIL, "translations": {"translations": []}}
+    client = _client({"/3/movie/693134": detail})
+    profile = await fetch_media_profile(
+        client, MediaKind.MOVIE, 693134, languages=["zh-CN", "en-US"]
+    )
+    assert profile.title == "沙丘2"
 
 
 _TV_DETAIL = {
