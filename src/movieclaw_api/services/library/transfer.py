@@ -49,6 +49,7 @@ from movieclaw_api.services.library.layout import entry_dir_of
 # 复用整理器的"只清理自己搬空的目录"实现（非空即停、绝不删文件）——同一
 # 语义两处各写一份迟早分叉，而这段克制正是搬运类操作的安全底线
 from movieclaw_api.services.library.organize import _prune_emptied_dirs
+from movieclaw_api.services.library.sidecar import find_sidecars
 from movieclaw_api.services.task_state import TaskState
 from movieclaw_db.engine import get_database
 from movieclaw_db.models import FileState, Library, LibraryFile, MediaItem, Subscription, utcnow
@@ -56,11 +57,6 @@ from movieclaw_db.repositories.library_file_repo import LibraryFileRepository
 from movieclaw_db.repositories.library_repo import LibraryRepository
 
 logger = logging.getLogger("movieclaw_api.library_transfer")
-
-# 跟随主文件一起搬的附属文件后缀判定：同目录、文件名以"主文件名."开头
-# （foo.zh.srt / foo.nfo）。同名不同容器的视频是独立版本不是附属，排除。
-# 与 library_organize 同一套约定
-_SIDECAR_SKIP_EXTS = {".mkv", ".mp4", ".avi", ".ts", ".m2ts", ".iso", ".wmv", ".mov", ".flv"}
 
 # 跨盘复制按块落入隐藏临时路径。每块独立交还事件循环，使取消和应用更新
 # 最多只损失当前块；下次执行按临时文件现有长度续传，不重新复制几十 GB。
@@ -307,23 +303,8 @@ def _add_file_move(
 
 
 def _find_sidecars(src: Path, dst: Path) -> list[tuple[str, str]]:
-    """主文件的附属文件（同目录、以"主文件名."开头的字幕/NFO/图片）。"""
-    if src.is_dir() or not src.suffix:
-        return []
-    try:
-        entries = sorted(src.parent.iterdir())
-    except OSError:
-        return []
-    prefix = src.stem + "."
-    moves = []
-    for entry in entries:
-        if not entry.is_file() or entry == src or not entry.name.startswith(prefix):
-            continue
-        if entry.suffix.lower() in _SIDECAR_SKIP_EXTS:
-            continue
-        tail = entry.name[len(src.stem) :]  # 含开头的 "."，如 ".zh.srt"
-        moves.append((str(entry), str(dst.parent / (dst.stem + tail))))
-    return moves
+    """主文件的附属文件，判定口径见 ``library.sidecar``（整理/转移/回收共用）。"""
+    return [(str(entry), str(dst.parent / (dst.stem + tail))) for entry, tail in find_sidecars(src)]
 
 
 def _inside_roots(path: Path, roots: list[Path]) -> bool:
