@@ -100,8 +100,11 @@ Mac Worker 尚未正式发版，**不需要保留任何兼容分支**，共享�
 
 ```
 GET  /api/v1/health                                     匿名（已有）
-     → {version, spec_hash}
-     用途：地址可达性与版本验证。不新增接口。
+     → {status, service, environment, spec_hash}
+     用途：地址可达性验证。不新增接口，也**不给它加版本号**——它是匿名
+     端点，为一句「已连接 movieclaw x.y.z」的文案而向未登录者公开精确
+     版本，对自部署用户不是好交易；service 字段已经能回答「连上的是不是
+     movieclaw」。
 
 POST /api/v1/auth/device/authorize                      匿名 + 限流（新增）
      ← {client_type: "worker"|"cli",
@@ -471,7 +474,7 @@ worker_token 的三态语义**全部删除**。
 
 ```
 $ mclaw login --server http://10.1.1.5:3000
-✓ 已连接 movieclaw 0.18.0
+✓ 已连接 movieclaw
 
 请在浏览器打开：http://10.1.1.5:3000/settings/devices
 核对配对码：      MCLW-7F3K

@@ -25,7 +25,7 @@ final class SettingsWindowController: NSWindowController {
     private enum Stage {
         case idle                       // 待验证
         case verifying
-        case verified(version: String)  // 已连接，尚未授权
+        case verified(service: String)  // 已连接，尚未授权
         case pairing(DevicePairing.Grant)
         case paired
         case failed(String)
@@ -216,8 +216,8 @@ final class SettingsWindowController: NSWindowController {
             hintLabel.stringValue = ""
             primaryButton.title = "验证中…"
             primaryButton.isEnabled = false
-        case let .verified(version):
-            statusLabel.stringValue = "● 已连接 · movieclaw \(version)"
+        case let .verified(service):
+            statusLabel.stringValue = "● 已连接 · \(service)"
             statusLabel.textColor = .systemGreen
             codeLabel.stringValue = ""
             hintLabel.stringValue = "这台 Mac 还没有获得授权。下一步会生成一个配对码，"
@@ -308,8 +308,8 @@ final class SettingsWindowController: NSWindowController {
         let pairing = DevicePairing(nasURL: url)
         Task { @MainActor in
             do {
-                let version = try await pairing.verifyConnection()
-                transition(to: .verified(version: version))
+                let service = try await pairing.verifyConnection()
+                transition(to: .verified(service: service))
             } catch {
                 transition(to: .failed("连不上：\(error.localizedDescription)"))
             }

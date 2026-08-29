@@ -52,16 +52,16 @@ struct DevicePairing {
     let nasURL: URL
     var session: URLSession = .shared
 
-    /// 探测服务器可达性，返回版本号。地址填错了要当场知道，而不是保存之后
+    /// 探测服务器可达性，返回服务名。地址填错了要当场知道，而不是保存之后
     /// 表现成「连不上」——那时用户已经无从判断是地址错了还是别的问题。
+    ///
+    /// 只取 service 不取版本号：/health 是匿名端点，为一句文案而向未登录者
+    /// 公开精确版本，对自部署用户不是好交易。
     func verifyConnection() async throws -> String {
         let (data, response) = try await send(path: "/api/v1/health", body: nil)
         try ensureSuccess(response, data: data)
         let payload = try envelope(data)
-        guard let version = payload["version"] as? String else {
-            return "未知版本"
-        }
-        return version
+        return payload["service"] as? String ?? "服务"
     }
 
     /// 发起接入请求。只声明自己是什么形态、叫什么名字——能做什么由批准者决定。

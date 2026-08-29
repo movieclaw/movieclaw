@@ -72,9 +72,11 @@ def login(settings, server: str | None, client_name: str | None):
 
     api = settings.make_api(server=target)
     try:
+        # 验证这一步的职责是「地址对不对、连不连得上」，用 /health 返回的
+        # service 名回答即可。刻意不显示版本号：/health 是匿名端点，为一句
+        # 文案而向未登录者公开精确版本，对自部署用户不是好交易。
         health = api.request("GET", "/health") or {}
-        version = health.get("version", "未知版本")
-        click.echo(f"✓ 已连接 movieclaw {version}", err=True)
+        click.echo(f"✓ 已连接 {health.get('service') or '服务'}", err=True)
 
         grant = api.request(
             "POST",
