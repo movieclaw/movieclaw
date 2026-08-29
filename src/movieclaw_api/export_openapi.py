@@ -1,17 +1,18 @@
 """OpenAPI spec 离线导出（CLI 内置基线 spec 的唯一产出口）。
 
 设计背景（docs/design/cli.md §2.1）：CLI 的命令树、参数、help 全部由
-OpenAPI spec 动态生成。spec 的主分发通道是「构建期导出、作为包数据随
-CLI 分发」——本模块就是那个导出口：
+OpenAPI spec 动态生成。spec 有两个消费方，都从这里拿：Go CLI 在构建期把它
+嵌进二进制（cli/internal/spec），服务端运行期读它渲染 Agent 的工具描述
+（movieclaw_api/services/spec_catalog.py）。
 
-    python -m movieclaw_api.export_openapi -o src/movieclaw_cli/data/spec.json
+    python -m movieclaw_api.export_openapi -o src/movieclaw_api/data/spec.json
 
 要点：
 - 不需要启动服务器：FastAPI 的 app.openapi() 纯内存构建；
 - 输出做了确定性处理（键排序），同一份代码导出的字节完全一致，
   spec_hash() 因此可作为「CLI 基线与服务器是否同版」的偏斜检测指纹；
-- tests/cli 中有守护测试保证仓库里的基线文件与当前代码导出一致，
-  改了路由忘了重新导出会直接测试失败。
+- tests/api/test_spec_baseline.py 有守护测试保证仓库里的基线文件与当前
+  代码导出一致，改了路由忘了重新导出会直接测试失败。
 """
 
 from __future__ import annotations

@@ -195,7 +195,7 @@ def get_agent_tools(cli_env: dict[str, str]) -> list[AgentTool]:
 ```
 
 `render_service_map()` 放 `movieclaw_api/services/mclaw_tool.py`：数据源为
-`movieclaw_cli.gen.spec_loader.load_baseline()`（自动发现开放域）+
+`movieclaw_api.services.spec_catalog.load_spec()`（自动发现开放域）+
 `_DOMAIN_LINES`（人工维护用户语义与关键入口），进程内缓存一次；`DOMAIN_HELP`
 同时承载 `mclaw --help` 的域级短简介，并作为新域运行期的安全回落。
 

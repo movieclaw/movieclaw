@@ -29,9 +29,10 @@ description: 发布 movieclaw 新版本。当用户要求发版、发布新版�
 ### 2. 发版步骤
 
 ```
-1. bump 两处版本号，并重导出 CLI 内置 spec 基线（OpenAPI spec 含应用
-   版本号，漏了这步 CI 的 test_baseline_spec_matches_code 必挂）：
-   `python -m movieclaw_api.export_openapi -o src/movieclaw_cli/data/spec.json`
+1. bump 两处版本号，并重导出基线 spec（OpenAPI spec 含应用版本号，漏了
+   这步 CI 的 test_baseline_spec_matches_code 必挂）：`scripts/export-spec.sh`
+   （一次写两处：服务端读的 `src/movieclaw_api/data/spec.json` 与 Go CLI
+   内嵌的 `cli/internal/spec/data/spec.json`，两份漂移 pytest 和 go test 都红）
    → 提交 PR 合入 main（changelog 可同 PR 一起写，见下）
 2. 以发版 PR 的 CI 全绿为准（CI 会跑 ruff / pytest / web lint / typecheck），
    无需在本地重跑全量测试——本地跑 pytest 还需先下载 NER 模型，且沙箱
@@ -147,10 +148,12 @@ ffmpeg 版本，发版前按下表逐项过一遍。
 ## 六、发版检查清单
 
 - [ ] 版本号三处一致（应用发版）
-- [ ] bump 版本号后已重导出 `src/movieclaw_cli/data/spec.json`
+- [ ] bump 版本号后已跑 `scripts/export-spec.sh`（服务端与 Go CLI 两份 spec）
 - [ ] 本次改动是否触碰运行时依赖？触碰了 → `docker/runtime-version` +1（镜像随发版自动发布）
 - [ ] 数据库迁移向前兼容（alembic 迁移是单向的，用户回退靠自动备份）
-- [ ] Release 产物三件齐全（CI 完成后到 Release 页核对）
+- [ ] Release 产物齐全（CI 完成后到 Release 页核对）：应用更新三件套 +
+      mclaw 五平台产物（`mclaw_{linux,darwin}_{amd64,arm64}.tar.gz`、
+      `mclaw_windows_amd64.zip`、`checksums.txt`）
 - [ ] 启用签名的仓库：`.sig` 已随产物上传
 - [ ] changelog 已写入 `docs/changelog/vX.Y.Z.md` 并合入 main（release-notes.yml
       自动同步为 Release body，应用内更新界面会原文展示给用户）

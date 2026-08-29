@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/yipengfei329/movieclaw/cli/internal/clierr"
+	"github.com/yipengfei329/movieclaw/cli/internal/flagx"
 	"github.com/yipengfei329/movieclaw/cli/internal/jsonval"
 	"github.com/yipengfei329/movieclaw/cli/internal/output"
 	"github.com/yipengfei329/movieclaw/cli/internal/wait"
@@ -53,7 +54,7 @@ func newLibraryOrganizeFilesCommand() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "只输出整理计划，不动磁盘")
 	cmd.Flags().BoolVar(&waitDone, "wait", true, "等待整理完成")
-	cmd.Flags().DurationVar(&waitTimeout, "wait-timeout", time.Hour, "--wait 的最长等待时间")
+	flagx.Var(cmd.Flags(), &waitTimeout, "wait-timeout", time.Hour, "--wait 的最长等待秒数")
 
 	return withOverrides(cmd, []string{"dry-run", "wait", "wait-timeout"},
 		func(s *Settings, _ *cobra.Command, args []string) error {

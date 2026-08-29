@@ -94,9 +94,9 @@ find "$STAGE/backend" -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null 
 # spec.json 直接导出到产物内：保证「存在」且「与产物代码严格同版」，
 # 与镜像构建的现场导出（Dockerfile 阶段 5）同一思路
 PYTHONPATH="$ROOT/src" "$PYTHON_BIN" -m movieclaw_api.export_openapi \
-    -o "$STAGE/backend/src/movieclaw_cli/data/spec.json"
+    -o "$STAGE/backend/src/movieclaw_api/data/spec.json"
 
-for f in src/movieclaw_api/main.py src/movieclaw_cli/data/spec.json alembic.ini alembic/env.py; do
+for f in src/movieclaw_api/main.py src/movieclaw_api/data/spec.json alembic.ini alembic/env.py; do
     if [[ ! -s "$STAGE/backend/$f" ]]; then
         echo "错误：backend 产物布局异常，缺少 $f" >&2
         exit 1

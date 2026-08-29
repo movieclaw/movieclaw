@@ -76,6 +76,42 @@ RUN python -c "import tomllib; deps = tomllib.load(open('pyproject.toml', 'rb'))
         -i "$PIP_INDEX_URL" -r requirements.txt
 
 # ---------------------------------------------------------------------------
+# 阶段 2.5：基线 spec 现场导出
+# ---------------------------------------------------------------------------
+# 现场导出而不是信任构建上下文里那份仓库产物：仓库产物可能过期（改了路由忘了
+# 重新导出）或干脆没进上下文，两种情况镜像都照样构建成功，故障要等用户发第一
+# 条对话才暴露。现场导出既堵死「缺失」，也保证 spec 与镜像内代码严格同版
+# （偏斜检测的前提）。
+#
+# 它有两个消费方，都从这一份来：服务端运行期读它渲染 Agent 的工具描述，
+# Go CLI 在下一阶段把它嵌进二进制。spec 与架构无关，固定在构建机原生架构上跑。
+FROM --platform=$BUILDPLATFORM py-deps AS spec-export
+WORKDIR /build
+COPY src ./src
+RUN PYTHONPATH=/build/src /venv/bin/python -m movieclaw_api.export_openapi -o /build/spec.json \
+    && test -s /build/spec.json
+
+# ---------------------------------------------------------------------------
+# 阶段 2.6：mclaw CLI（Go）
+# ---------------------------------------------------------------------------
+# CLI 是独立的静态二进制：Agent 的 mclaw 工具执行它，用户也可以直接从 Release
+# 下载同一份。CGO_ENABLED=0 保证不依赖运行镜像里的 glibc 版本。
+FROM --platform=$BUILDPLATFORM golang:1.24-bookworm AS go-builder
+ARG TARGETARCH
+ARG GOPROXY=https://proxy.golang.org,direct
+WORKDIR /build
+COPY cli/go.mod cli/go.sum ./
+RUN go mod download
+COPY cli ./
+# 内嵌 spec 用现场导出的那份，覆盖仓库里可能过期的副本
+COPY --from=spec-export /build/spec.json ./internal/spec/data/spec.json
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH \
+        go build -trimpath -ldflags="-s -w" -o /out/mclaw ./cmd/mclaw \
+    # 同架构时顺手冒烟一次：spec 坏了、命令树建不起来，在这里就断，
+    # 而不是等用户第一次跑 mclaw。交叉构建跑不了目标架构的二进制，跳过。
+    && if [ "$(go env GOHOSTARCH)" = "$TARGETARCH" ]; then /out/mclaw --help > /dev/null; fi
+
+# ---------------------------------------------------------------------------
 # 阶段 3：NER 模型（从 GitHub Release 下载，烧进镜像作为默认模型）
 # ---------------------------------------------------------------------------
 # 模型文件与架构无关，同样跑在构建机原生架构上
@@ -209,13 +245,13 @@ COPY src ./src
 COPY alembic ./alembic
 COPY alembic.ini ./
 
-# CLI 基线 spec 在这里现场导出，而不是信任构建上下文里那份仓库产物。
-# 它是运行期硬依赖：Agent 组装 mclaw 工具时要读它渲染服务目录，缺了就是每次
-# 对话都 500。而仓库产物可能过期（改了路由忘了重新导出）或干脆没进上下文，
-# 两种情况镜像都照样构建成功，故障要等用户发第一条对话才暴露。现场导出既堵
-# 死「缺失」，也顺带保证 spec 与镜像内代码严格同版（偏斜检测的前提）。
-RUN PYTHONPATH=/app/src /venv/bin/python -m movieclaw_api.export_openapi \
-    -o /app/src/movieclaw_cli/data/spec.json
+# 基线 spec（阶段 2.5 现场导出）：Agent 组装 mclaw 工具时要读它渲染服务目录，
+# 缺了就是每次对话都 500，属运行期硬依赖。
+COPY --from=spec-export /build/spec.json ./src/movieclaw_api/data/spec.json
+
+# mclaw CLI：Agent 的 mclaw 工具执行它（tools/mclaw.py 默认找这个路径）。
+# 用户也可以 docker cp 出来当本机 CLI 用，或直接从 Release 下载同一份。
+COPY --from=go-builder /out/mclaw /usr/local/bin/mclaw
 
 # 前端：standalone 产物 + 静态资源 + public（standalone 不自动包含后两者）
 COPY --from=web-builder /build/apps/web/.next/standalone ./web

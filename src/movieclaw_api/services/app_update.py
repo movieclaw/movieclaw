@@ -559,7 +559,7 @@ def _validate_layout(version_dir: Path) -> None:
     for rel in (
         "backend/src/movieclaw_api/main.py",
         "backend/alembic.ini",
-        "backend/src/movieclaw_cli/data/spec.json",
+        "backend/src/movieclaw_api/data/spec.json",
         "web/apps/web/server.js",
     ):
         if not (version_dir / rel).is_file():

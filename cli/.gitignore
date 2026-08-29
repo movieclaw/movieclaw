@@ -1,3 +1,5 @@
 # 构建产物
 /mclaw
 /dist/
+# 测试夹具现场编出来的二进制（tests/agent/conftest.py）
+/.build/

@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/spf13/pflag"
+	"github.com/yipengfei329/movieclaw/cli/internal/flagx"
 )
 
 // Overrides 是允许写在子命令尾部的全局标志（kubectl 惯例：
@@ -28,7 +29,7 @@ func (o *Overrides) Register(flags *pflag.FlagSet, taken map[string]bool) {
 		flags.StringVar(&o.Server, "server", "", "服务器地址（覆盖全局设置）")
 	}
 	if !taken["timeout"] {
-		flags.DurationVar(&o.Timeout, "timeout", 0, "请求超时（覆盖全局设置）")
+		flagx.Var(flags, &o.Timeout, "timeout", 0, "请求超时（秒，覆盖全局设置）")
 	}
 	if !taken["quiet"] {
 		flags.BoolVar(&o.Quiet, "quiet", false, "成功时不输出数据")

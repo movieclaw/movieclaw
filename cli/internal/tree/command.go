@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/yipengfei329/movieclaw/cli/internal/api"
 	"github.com/yipengfei329/movieclaw/cli/internal/clierr"
+	"github.com/yipengfei329/movieclaw/cli/internal/flagx"
 	"github.com/yipengfei329/movieclaw/cli/internal/jsonval"
 	"github.com/yipengfei329/movieclaw/cli/internal/output"
 	"github.com/yipengfei329/movieclaw/cli/internal/overlay"
@@ -83,8 +84,8 @@ func makeCommand(op Operation, opsByID map[string]Operation) *cobra.Command {
 			defaultWait = false
 		}
 		flags.BoolVar(&waitFlag, "wait", defaultWait, waitHelp)
-		flags.DurationVar(&waitTimeout, "wait-timeout", time.Hour,
-			"--wait 的最长等待时间，超时退出码 6（任务继续后台执行）")
+		flagx.Var(flags, &waitTimeout, "wait-timeout", time.Hour,
+			"--wait 的最长等待秒数，超时退出码 6（任务继续后台执行）")
 	}
 	// API 参数与全局覆盖标志重名时 API 参数优先（守护测试保证目前无重名）
 	taken := map[string]bool{}

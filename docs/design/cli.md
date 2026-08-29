@@ -386,28 +386,39 @@ message 到下一个 user message 之前的输出”组合展示时的派生概�
 
 ## 9. 技术选型与仓库落位
 
-**Python + click（动态构建命令树）+ httpx + rich。**
+**Go + cobra（动态构建命令树）。**
 
-- 与后端同栈同仓；httpx 已是后端依赖；**运行时动态生成命令树**要求框架支持
-  程序化注册——click 的 `Group`/`Command` 对象模型天然适合（Typer 偏静态
-  装饰器风格，动态场景反而别扭，故整体选 click）。
+CLI 最初用 Python + click 写成（与后端同栈，起步最快），2026-08 迁到 Go——
+迁移的动机、实测数据与完整过程见 `docs/design/cli-go-migration.md`。一句话：
+CLI 要装在 NAS、软路由、同事的机器和 CI 里，「先装个 Python」是装不上的
+第一名原因；Go 交叉编译出来的单个静态二进制冷启动 6ms、体积 7MB，Python
+方案（uv 拉独立运行时）是 172ms / 108MB。
+
+- **运行时动态生成命令树**要求框架支持程序化注册——cobra 的 `Command` 对象
+  模型与 pflag 的 `Changed()`（区分「没传」与「传了零值」）正好够用。
 - 分发：① Docker 镜像内置（产品内 Agent 与 `docker exec` 用户零安装）；
-  ② `pipx install movieclaw-cli` / `uv tool install`（远程人类用户）。
+  ② GitHub Release 的五平台二进制，`scripts/install-cli.sh` / `install-cli.ps1`
+  一行装好，不需要任何预装运行时。
 - 不做的事（防过度工程）：不做裸调逃生舱与结构化目录命令（less is more，
   见 §1/§4）、不做插件系统、不做本地数据库（仅「上次搜索快照」一个 JSON
   文件）、不做自动更新、不内嵌业务逻辑、不做 MCP 壳。
 
 ```
-src/movieclaw_cli/
-├── __main__.py        # 唯一入口 mclaw（不注册别名）
-├── core/              # config.py auth.py http.py sse.py task.py output.py errors.py
-├── gen/               # spec_loader.py（内置基线装载 + hash 偏斜检测/刷新）
-│                      # tree_builder.py（映射规则） invoker.py（参数→请求）
-│                      # helpgen.py（spec→help渲染）
-├── data/spec.json     # 构建期由 export_openapi 导出的内置基线 spec
-
-└── overlay/           # 精选命令，每条一个模块
-tests/cli/             # respx 测 core；对真实 app 导出 spec 做命令树快照测试
+cli/
+├── cmd/mclaw/         # 唯一入口 mclaw（不注册别名）：装配、退出码结算、偏斜刷新
+├── internal/
+│   ├── config/        # 全局凭证与上下文（config.toml + credentials）
+│   ├── api/           # HTTP 客户端：信封拆解、错误→退出码、SSE 连接
+│   ├── output/        # 三种输出格式，保持服务端字段顺序
+│   ├── jsonval/       # 保序 JSON 对象与取值助手
+│   ├── clierr/        # 错误模型与退出码契约
+│   ├── sse/           # SSE 分帧器
+│   ├── wait/          # 两种「等任务跑完」的循环，生成层与精选层共用
+│   ├── spec/          # 内嵌基线 spec + 指纹偏斜检测/刷新
+│   ├── tree/          # 生成层：spec → 命令树（映射规则、参数、帮助）
+│   └── overlay/       # 精选命令，每域一个文件
+├── testdata/          # 命令树快照（生成命令清单 + 装配后的整棵树）
+└── e2e/               # 对真服务器与协议桩的端到端验收脚本
 ```
 
 后端改动集中且小：spec 导出脚本、operation_id 约定、x-cli-* 标注、

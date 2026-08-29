@@ -58,7 +58,7 @@ def _make_manifest(download_dir: Path, version: str = "0.2.0") -> dict:
     backend = _tar_bytes(
         {
             "src/movieclaw_api/main.py": b"# main",
-            "src/movieclaw_cli/data/spec.json": b"{}",
+            "src/movieclaw_api/data/spec.json": b"{}",
             "alembic.ini": b"[alembic]",
             "alembic/env.py": b"# env",
         }

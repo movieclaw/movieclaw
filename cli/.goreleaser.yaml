@@ -1,0 +1,52 @@
+# mclaw 的多平台构建与打包（docs/design/cli-go-migration.md §6）。
+#
+# 打 v* tag 时由 .github/workflows 调用，产物直接附到 GitHub Release，
+# scripts/install-cli.sh 与 install-cli.ps1 按固定命名规则去取。
+version: 2
+
+project_name: mclaw
+
+before:
+  hooks:
+    # 内嵌 spec 必须与本次发版的代码同版：偏斜检测靠它，命令树也靠它。
+    # 这里现场重导一次，不信任仓库里可能过期的副本。
+    - sh -c "cd .. && scripts/export-spec.sh"
+
+builds:
+  - id: mclaw
+    main: ./cmd/mclaw
+    binary: mclaw
+    # 静态二进制：装它不该依赖目标机器的 glibc 版本（NAS 上的老发行版尤其常见）
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+
+archives:
+  # 命名规则是安装脚本的契约，改了要同步改两个脚本
+  - name_template: "mclaw_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - src: ../LICENSE
+        strip_parent: true
+
+checksums:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ .Tag }}-next"
+
+changelog:
+  disable: true
+
+release:
+  # Release 正文与产物由发版流程统一编排，这里只负责把二进制传上去
+  disable: false
+  mode: append

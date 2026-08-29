@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/yipengfei329/movieclaw/cli/internal/flagx"
 	"github.com/yipengfei329/movieclaw/cli/internal/output"
 	"github.com/yipengfei329/movieclaw/cli/internal/wait"
 )
@@ -34,8 +35,8 @@ func newJobsWaitCommand() *cobra.Command {
     mclaw jobs wait <job_id>`,
 		Args: cobra.ExactArgs(1),
 	}
-	cmd.Flags().DurationVar(&waitTimeout, "wait-timeout", time.Hour,
-		"最长等待时间；超时只停止等待，不取消任务")
+	flagx.Var(cmd.Flags(), &waitTimeout, "wait-timeout", time.Hour,
+		"最长等待秒数；超时只停止等待，不取消任务")
 	return withOverrides(cmd, []string{"wait-timeout"},
 		func(s *Settings, _ *cobra.Command, args []string) error {
 			client, err := s.NewAPI()

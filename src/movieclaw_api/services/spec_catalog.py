@@ -20,11 +20,7 @@ from movieclaw_api.exceptions import AppException
 
 #: spec 基线文件。构建期由 `movieclaw_api.export_openapi` 现场导出（Dockerfile
 #: 与发版脚本都会做），因此运行期一定存在且与代码严格同版。
-#:
-#: 路径目前仍落在 CLI 包目录下——那是历史位置。CLI 迁移到 Go 之后
-#: （docs/design/cli-go-migration.md Stage 5）随 Python CLI 包一起移到
-#: `movieclaw_api/data/`，届时只需改这一个常量。
-_SPEC_PATH = Path(__file__).resolve().parents[2] / "movieclaw_cli" / "data" / "spec.json"
+_SPEC_PATH = Path(__file__).resolve().parents[1] / "data" / "spec.json"
 
 _HTTP_METHODS = frozenset({"get", "post", "put", "patch", "delete"})
 

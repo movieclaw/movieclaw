@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shlex
-import sys
+import shutil
 from pathlib import Path
 
 from movieclaw_agent.toolkit import AgentTool
@@ -26,7 +26,30 @@ from movieclaw_llm import ToolDefinition
 
 _DEFAULT_TIMEOUT = 300.0
 
-# 退出码 → 给模型的下一步指引（与 movieclaw_cli.core.errors.ExitCode 契约一致）
+#: mclaw 二进制的位置。镜像里固定装在 /usr/local/bin/mclaw；
+#: 开发机上用 MOVIECLAW_CLI_BIN 指向 `go build` 的产物即可。
+_CLI_BIN_ENV = "MOVIECLAW_CLI_BIN"
+_DEFAULT_CLI_BIN = "/usr/local/bin/mclaw"
+
+
+def _cli_binary() -> str:
+    """定位 mclaw 可执行文件。
+
+    找不到时给出可读结论：这是部署产物不完整（镜像没带 CLI），不是模型
+    用错了参数——错误文案要让自部署用户知道该重新部署而不是改配置。
+    """
+    path = os.environ.get(_CLI_BIN_ENV) or _DEFAULT_CLI_BIN
+    if not Path(path).is_file():
+        found = shutil.which("mclaw")
+        if found:
+            return found
+        raise ValueError(
+            f"找不到 mclaw 可执行文件（{path}）。这通常是镜像或安装包不完整，"
+            f"请更新到新版镜像后重新部署；开发环境可用 {_CLI_BIN_ENV} 指定路径。"
+        )
+    return path
+
+# 退出码 → 给模型的下一步指引（与 cli/internal/clierr 的退出码契约一致）
 _EXIT_CODE_NOTES = {
     1: "业务错误——原因与建议见 stderr",
     2: "用法错误——先执行对应命令的 --help 纠正参数再试",
@@ -113,11 +136,8 @@ def make_mclaw_tool(
             )
         full_transcript = session_action == "get-transcript"
 
-        # 与当前解释器同环境的 CLI 入口（同 venv/镜像内必然可用，无需依赖 PATH）
         proc = await asyncio.create_subprocess_exec(
-            sys.executable,
-            "-m",
-            "movieclaw_cli",
+            _cli_binary(),
             *argv,
             cwd=workdir,
             env={**os.environ, **extra_env},

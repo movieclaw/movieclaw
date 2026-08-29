@@ -87,6 +87,43 @@ jobs:
           [ -f dist/release/manifest.json.sig ] && assets+=(dist/release/manifest.json.sig)
           gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --clobber "${assets[@]}"
 
+  # mclaw CLI（Go）。needs 只为等 Release 被创建出来，与 docker-image 并行。
+  # 不用 continue-on-error：CLI 是 Agent 操作产品的唯一入口，install-cli.sh
+  # 也直接来这里取产物；缺了它这个 Release 对 CLI 用户就是废的，该红就红。
+  cli:
+    needs: release-artifacts
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache-dependency-path: cli/go.sum
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装后端运行依赖（内嵌 spec 现场导出需要拉起 FastAPI app）
+        run: |
+          python -c "import tomllib; deps = tomllib.load(open('pyproject.toml', 'rb'))['project']['dependencies']; open('requirements.txt', 'w').write('\n'.join(deps))"
+          pip install --no-cache-dir -r requirements.txt
+
+      - name: 构建并上传五平台产物
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          workdir: cli
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GORELEASER_CURRENT_TAG: ${{ inputs.tag || github.ref_name }}
+
   # macOS 远程转码 Worker。needs 只为等 Release 被创建出来，与 docker-image
   # 并行；它构建失败不该拖住应用产物和镜像的发布，因此用 continue-on-error，
   # 失败时 Release 里就是少一个可选附件，主更新链路不受影响。

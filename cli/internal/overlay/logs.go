@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/yipengfei329/movieclaw/cli/internal/api"
 	"github.com/yipengfei329/movieclaw/cli/internal/clierr"
+	"github.com/yipengfei329/movieclaw/cli/internal/flagx"
 	"github.com/yipengfei329/movieclaw/cli/internal/jsonval"
 	"github.com/yipengfei329/movieclaw/cli/internal/output"
 )
@@ -56,7 +57,7 @@ func newLogsTailCommand() *cobra.Command {
 	cmd.Flags().StringVar(&day, "day", "", "日期（YYYY-MM-DD）；缺省取最新一天")
 	cmd.Flags().IntVar(&lines, "lines", 50, "初始输出的行数")
 	cmd.Flags().BoolVarP(&follow, "follow", "f", false, "持续跟随新日志（Ctrl-C 退出）")
-	cmd.Flags().DurationVar(&interval, "interval", 3*time.Second, "跟随的轮询间隔")
+	flagx.Var(cmd.Flags(), &interval, "interval", 3*time.Second, "跟随的轮询间隔（秒）")
 
 	return withOverrides(cmd, []string{"day", "lines", "follow", "interval"},
 		func(s *Settings, _ *cobra.Command, _ []string) error {

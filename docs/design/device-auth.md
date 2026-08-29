@@ -532,33 +532,24 @@ Cookie 通道整个删除。
 4. **并发写**。多个 Agent 同时跑很正常，credentials 写必须是
    「临时文件 + `os.replace`」原子替换。
 
-### 6.4 分发：CLI 必须先成为独立包
+### 6.4 分发：一个静态二进制
 
-目前 `movieclaw_cli` 与服务端同属一个 `movieclaw` 发行包，依赖里有 fastapi、
-onnxruntime、pillow、sqlmodel、openai 等几十个重依赖——远程用户装一个 CLI 要拖
-几百 MB。而 CLI 本体的第三方依赖只有 **click、httpx、pyyaml** 三个，且零 import
-服务端模块，拆包没有任何技术阻力。
+CLI 是独立的 Go 二进制（`cli/`，见 `docs/design/cli-go-migration.md`）。装它
+不需要 Python、Node 或任何包管理器——CLI 要装在 NAS、软路由、同事的机器和
+CI 里，每多一个运行时前置就多一批装不上的人。
 
 ```
-主通道   curl -fsSL <scripts/install-cli.sh> | sh
-         → 装 uv（单个静态二进制）→ uv tool install movieclaw-cli
-         → uv 自带独立 Python，用户什么都不用预装
-         → symlink 进 /usr/local/bin，GUI 应用与后台任务也能调到
-次通道   uv tool install / pipx install movieclaw-cli （Python 用户与 CI）
+主通道   curl -fsSL <scripts/install-cli.sh> | sh      （Linux / macOS）
+         irm <scripts/install-cli.ps1> | iex           （Windows）
+         → 从 Release 下载对应平台的二进制、校验 sha256
+         → 装进 /usr/local/bin（Windows 是用户级 PATH），
+           GUI 应用与后台任务也能调到
+次通道   直接从 Release 页下载 mclaw_<os>_<arch>.tar.gz 解压
 第三     Docker 镜像内置（现状不变，docker exec 零安装）
 ```
 
-发行包落在 `packaging/cli/pyproject.toml`，**源码不挪**——用相对 `package-dir`
-指向 `src/movieclaw_cli`。挪目录会打断 `pythonpath = ["src"]`、Docker 构建与
-既有导入路径，换来的只是目录好看一点。版本号用 setuptools 的 `attr:` 从
-`movieclaw_api.__version__` 静态读取（AST 解析，不导入模块），因此不新增第四个
-需要手工同步的版本位置。`tests/cli/test_dist_package.py` 守住两条不变量：
-CLI 只 import 标准库与已声明的三个依赖、不 import 任何服务端模块——否则拆包的
-意义（装 CLI 不用拖服务端依赖）会被一次随手的 import 悄悄破坏。
-
-选 uv 路线而非 PyInstaller 二进制的三个理由：用户视角完全等价；不需要维护五平台
-构建矩阵和 onefile 的冷启动开销；绕过 macOS Gatekeeper 与 Windows SmartScreen 的
-代码签名成本。真需要「一个文件拖过去就能用」时再补 Nuitka `--standalone`。
+命名规则 `mclaw_{os}_{arch}.{tar.gz|zip}` 是两个安装脚本与 `.goreleaser.yaml`
+之间的契约，改动要三处同步。
 
 CLI 独立发版后「CLI 版本 ≠ 服务端版本」成为常态，`docs/design/cli.md` §2.1 的
 `spec_hash` 偏斜检测从可选优化变成必需品。
@@ -653,14 +644,12 @@ CLI 全部报 401，而他不会把这两件事联系起来，只会认为改密
 | 6 | Worker 握手改 Bearer；删共享令牌全链路 | `routes/transcode_worker.py:160`、`services/playback/remote_worker.py:508`、`settings/remote_transcode.py`、`schemas/transcode_worker.py` | 中 |
 | 7 | 网页「设备」分区 | `apps/web/components/settings-view.tsx`（新分区组件） | 中 |
 | 8 | Worker 设置窗重构；删 `PairingCode.swift` | `macos/…/SettingsWindowController.swift`、`ConfigurationStore.swift`、`AppMain.swift` | 中 |
-| 9 | CLI `login` 改设备流，废弃 `--password` | `overlay/auth_cmds.py` | 中 |
-| 10 | CLI 凭证层：全局路径、按 server 分键、原子写、权限自检 | `core/config.py`、`core/http.py` | 中 |
-| 11 | 拆出独立 `movieclaw-cli` 发行包 + `install.sh` | `pyproject.toml`、`scripts/install.sh`（新） | 中 |
+| 9 | CLI `login` 改设备流，废弃 `--password` | `cli/internal/overlay/auth.go` | 中 |
+| 10 | CLI 凭证层：全局路径、按 server 分键、原子写、权限自检 | `cli/internal/config/config.go` | 中 |
+| 11 | 安装脚本：Linux/macOS 与 Windows 各一份 | `scripts/install-cli.sh`、`scripts/install-cli.ps1` | 中 |
 
-`docker/runtime-version` **不需要 bump**：CLI 拆包是新增一个独立发行包
-（`packaging/cli/pyproject.toml`），源码仍是 `src/movieclaw_cli` 那一份，
-根 `pyproject.toml` 的 dependencies、Dockerfile 与 entrypoint 契约都没有变化
-（见 `CLAUDE.md` 发布规范第 2 条）。
+第 9、10 两项最初写在 Python CLI 里，随后整体迁到 Go
+（`docs/design/cli-go-migration.md`），表里给的是迁移后的位置。
 
 ---
 

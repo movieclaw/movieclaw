@@ -1,8 +1,9 @@
-"""spec 目录视图与「服务端不依赖 CLI 包」的守护（docs/design/cli-go-migration.md Stage 0）。
+"""spec 目录视图与「服务端不依赖 CLI」的守护（docs/design/cli-go-migration.md Stage 0）。
 
 服务端曾经直接 `import movieclaw_cli` 来拿域清单。那是方向错误的依赖：被 import
 的函数做的是读 spec.json，与命令行客户端无关，却让服务端在运行期依赖了一个客户端
-包——CLI 换语言时会立刻变成硬阻塞。这里把「不许再依赖回去」钉死。
+包——CLI 换语言时立刻变成硬阻塞（后来确实换了，见 cli-go-migration.md）。
+这里把「不许再依赖回去」钉死：CLI 现在是 Go 二进制，服务端只能以子进程调用它。
 """
 
 from __future__ import annotations
@@ -30,17 +31,20 @@ def _top_level_imports(package: str) -> set[str]:
     return modules
 
 
-def test_api_package_does_not_import_the_cli_package() -> None:
-    """服务端不 import CLI。CLI 是客户端，方向反了就没法独立换实现。"""
-    assert "movieclaw_cli" not in _top_level_imports("movieclaw_api"), (
-        "movieclaw_api 又 import 了 movieclaw_cli。需要 spec 信息请走 "
-        "services.spec_catalog；需要执行命令请起子进程。"
+def test_no_python_cli_package_remains() -> None:
+    """Python CLI 已退役。留着一份会分叉：改了这边、Go 那边不动，命令面就对不上。"""
+    assert not (_SRC / "movieclaw_cli").exists(), (
+        "src/movieclaw_cli 又出现了。CLI 现在是 cli/ 下的 Go 二进制，"
+        "需要 spec 信息请走 services.spec_catalog；需要执行命令请起子进程。"
     )
 
 
-def test_agent_package_does_not_import_the_cli_package() -> None:
-    """Agent 侧同理：它只该以子进程方式调用 CLI，不 import 它的代码。"""
-    assert "movieclaw_cli" not in _top_level_imports("movieclaw_agent")
+def test_server_packages_do_not_import_any_cli_package() -> None:
+    """服务端与 Agent 都不 import CLI。方向反了就没法独立换实现。"""
+    for package in ("movieclaw_api", "movieclaw_agent"):
+        assert "movieclaw_cli" not in _top_level_imports(package), (
+            f"{package} 又 import 了 movieclaw_cli"
+        )
 
 
 # ---------------------------------------------------------------------------

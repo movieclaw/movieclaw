@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/yipengfei329/movieclaw/cli/internal/api"
 	"github.com/yipengfei329/movieclaw/cli/internal/clierr"
+	"github.com/yipengfei329/movieclaw/cli/internal/flagx"
 	"github.com/yipengfei329/movieclaw/cli/internal/jsonval"
 	"github.com/yipengfei329/movieclaw/cli/internal/output"
 	"github.com/yipengfei329/movieclaw/cli/internal/overlay"
@@ -87,7 +88,7 @@ func newRootCommand(settings *overlay.Settings) *cobra.Command {
 		"使用指定上下文（见 ~/.config/movieclaw/config.toml）")
 	flags.StringVarP(&settings.Output, "output", "o", "",
 		"输出格式；缺省 TTY 为 table、管道/Agent 为 json")
-	flags.DurationVar(&settings.Timeout, "timeout", 30*time.Second, "请求超时")
+	flagx.Var(flags, &settings.Timeout, "timeout", 30*time.Second, "请求超时（秒；也接受 90s、5m 这种带单位的写法）")
 	flags.BoolVar(&settings.Debug, "debug", false, "打印请求/响应调试信息到 stderr（凭证自动打码）")
 	flags.BoolVar(&settings.Quiet, "quiet", false, "成功时不输出数据（配合退出码使用）")
 	flags.BoolVar(&settings.Yes, "yes", false, "跳过确认提示（破坏性操作需要显式给出）")

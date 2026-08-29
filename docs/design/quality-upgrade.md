@@ -1064,7 +1064,7 @@ probe 都无法区分 profile——按"能播 HDR10"这一侧保守建模，错�
 | `movieclaw_matcher/models.py` | 加 `hdr_levels`，旧两键标注 deprecated；归一 validator；删互斥校验器 |
 | `movieclaw_matcher/rules.py` | HDR 硬过滤改读归一后的列表（`[]` = 不限） |
 | `apps/web/components/rule-sets-panel.tsx` | chips 文案与编辑器从三态按钮改为可拖拽有序列表（14.9） |
-| `src/movieclaw_cli/data/spec.json` | 契约基线重生成（`tests/cli/test_spec_baseline.py` 守护） |
+| `src/movieclaw_api/data/spec.json` | 契约基线重生成（`tests/api/test_spec_baseline.py` 守护） |
 | OpenAPI / `schemas` | 规则组读写契约加字段，旧字段保留 |
 | alembic | **不需要数据迁移**——双写让新旧形态在同一行共存，读取端归一 |
 

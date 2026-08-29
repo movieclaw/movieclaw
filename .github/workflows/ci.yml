@@ -9,6 +9,9 @@
 #     季集相关的一批测试会稳定失败——所以先从模型 Release 下载三个文件，
 #     并用 actions/cache 按 tag 缓存，避免每次跑 CI 都拉 15MB。
 #   - web 作业：eslint + tsc，与 release.yml 的前端环境保持同一套版本。
+#   - cli-go 作业：mclaw（Go）的 vet、gofmt、单测与五平台交叉编译。命令树
+#     快照、豁免端点清单、域帮助覆盖这些命令面守护全在 go test 里，改了路由
+#     忘了同步会在这里红。
 #   - worker-macos 作业：macOS Worker 的 Swift 构建与单测。它只能在 macOS
 #     runner 上编译，本地 Linux 开发机和容器都跑不了，因此这里是它唯一的
 #     机器把关。刻意不加 paths 过滤：被设为必需检查的作业一旦因路径过滤
@@ -61,6 +64,52 @@ jobs:
 
       - name: pytest
         run: python -m pytest -q -m "not integration"
+
+  cli-go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache-dependency-path: cli/go.sum
+
+      - name: gofmt
+        working-directory: cli
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "以下文件未格式化，请运行 gofmt -w：" >&2
+            echo "$unformatted" >&2
+            exit 1
+          fi
+
+      - name: go vet
+        working-directory: cli
+        run: go vet ./...
+
+      # 跨语言 spec 指纹比对要用服务端的 export_openapi，先把 Python 侧准备好
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装服务端依赖（跨语言指纹比对用）
+        run: pip install -e .
+
+      - name: go test
+        working-directory: cli
+        run: go test ./...
+
+      # 五个分发目标都得编得过：任何一个挂了，那批用户就装不上
+      - name: 交叉编译五平台
+        working-directory: cli
+        run: |
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+            CGO_ENABLED=0 GOOS=${target%/*} GOARCH=${target#*/} \
+              go build -trimpath -o /tmp/mclaw-check ./cmd/mclaw
+            echo "✓ $target"
+          done
 
   web:
     runs-on: ubuntu-latest

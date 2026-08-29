@@ -73,7 +73,7 @@ dependencies 段或 Dockerfile 关键行而没 bump `MOVIECLAW_RUNTIME_VERSION`�
    standalone 产物 + `.next/static` + `public`（含扩展 zip）。纯 JS 跨架构通用
    （sharp 已随 `images.unoptimized` 移除，产物内不得包含任何原生二进制——CI 校验）。
 2. 打包 `app-backend.tar.gz`：`src/` + `alembic/` + `alembic.ini`，
-   **并预置 CI 现场导出的 `movieclaw_cli/data/spec.json`**（运行期硬依赖，
+   **并预置 CI 现场导出的 `movieclaw_api/data/spec.json`**（运行期硬依赖，
    预置进产物同时保证「存在」与「与代码同版」，与镜像内现场导出同一思路）。
 3. 生成 `manifest.json`：`{ version, requires_runtime, min_model, sha256: {文件: 哈希}, changelog }`。
 4. 三个文件作为 Release assets 上传。模型更新维持现有独立 Release 通道。

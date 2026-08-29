@@ -11,9 +11,9 @@ import (
 	"github.com/yipengfei329/movieclaw/cli/internal/spec"
 )
 
-// snapshotPath 指向 Python CLI 时代留下的命令树快照。迁移期间它是唯一的
-// 「命令面没变」证据，Stage 5 退役 Python CLI 时随快照一起搬到 cli/testdata。
-const snapshotPath = "../../../tests/cli/command_tree_snapshot.txt"
+// snapshotPath 是生成命令的清单快照：路由增删改必然反映为这里的 diff，
+// 评审时一目了然；新端点没被生成器认出来也会在这里现形。
+const snapshotPath = "../../testdata/command_tree_snapshot.txt"
 
 func loadSpec(t *testing.T) spec.Spec {
 	t.Helper()
