@@ -353,8 +353,12 @@ Key 也可以写进仓库根目录的 `.env`——注意 `.env.example` 里那�
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 cp .env.example .env
-uvicorn movieclaw_api.main:app --factory --reload
+uvicorn movieclaw_api.main:app --factory --reload --reload-dir src
 ```
+
+> `--reload-dir src` 别省：uvicorn 默认监听整个当前目录，而运行期日志就写在
+> `data/logs/` 里——写日志触发重载检测、检测本身又写一行日志，刷屏到日志没法看。
+> 用 `./scripts/dev.sh` 起则不用操心，入口里已经钉好了。
 
 ```bash
 # 终端 2：前端（Node.js 20+）

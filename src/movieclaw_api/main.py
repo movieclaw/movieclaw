@@ -1,4 +1,5 @@
 import sys
+from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI
@@ -35,12 +36,23 @@ def run() -> None:
         # 开发热重载：沿用 uvicorn 的 reloader 进程模型（reloader 父进程 +
         # 应用子进程），拿不到应用子进程里的 Server 实例，设置页重启走
         # SIGTERM 退回路径即可——开发场景本就有热重载兜底。
+        #
+        # reload_dirs 必须显式钉在源码树，不能用 uvicorn 的默认值：默认监听
+        # 当前工作目录，而 dev.sh 从仓库根目录启动，按天落盘的日志（data/logs）
+        # 正好落在监听范围内——写日志触发 watchfiles 检测、检测本身又打一行
+        # 日志，形成自激循环。实测零请求空闲状态下日志 25 秒涨 24KB（约
+        # 83MB/天），"change detected" 把真实日志彻底淹没（不会真的反复重启，
+        # 但日志没法看了，磁盘也白涨）。
+        # 取包目录的上一级即 <仓库>/src：所有后端一方包都在这一层，可编辑安装
+        # （pip install -e）下恒成立，覆盖 dev.sh 与直接跑 movieclaw-api 两种起法。
+        src_root = Path(__file__).resolve().parent.parent
         uvicorn.run(
             "movieclaw_api.main:app",
             factory=True,
             host=settings.host,
             port=port,
             reload=True,
+            reload_dirs=[str(src_root)],
             log_config=None,
             access_log=False,
         )
