@@ -28,7 +28,7 @@ from typing import Any, Literal
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
-from movieclaw_api.services.library.layout import SCAN_VIDEO_EXTS
+from movieclaw_api.services.library.sidecar import find_sidecars
 from movieclaw_db.engine import get_database
 from movieclaw_db.models import FileState, LibraryFile, utcnow
 from movieclaw_db.models.library import Library
@@ -41,11 +41,6 @@ logger = logging.getLogger("movieclaw_api.library.recycle")
 # 避免跨盘搬几十 GB）；库扫描跳过点开头目录，不会被重新收编
 TRASH_DIR_NAME = ".movieclaw-trash"
 DEFAULT_RETENTION = timedelta(days=7)
-
-# 附属文件判定要跳过的扩展名：同名不同容器的视频（含 .iso 原盘镜像、
-# .strm 占位）是独立版本不是附属，绝不能被当作字幕/NFO 连带处理。
-# 判定规则与 transfer._find_sidecars 同一套约定
-_SIDECAR_SKIP_EXTS = SCAN_VIDEO_EXTS | {".iso"}
 
 # purge_after 的哨兵缺省："由机制决定"——一律按保留期倒计时。
 # 触发方有特殊语义（如联动删除）时可显式传值覆盖
@@ -73,24 +68,8 @@ async def _library_roots(session: AsyncSession, library_id: int | None) -> list[
 
 
 def _sidecar_paths(src: Path) -> list[Path]:
-    """主文件的附属文件：同目录、文件名以「主文件名.」开头的字幕/NFO/图片
-    （foo.zh.srt / foo.nfo）。视频扩展名是独立版本，排除；原盘目录没有
-    附属概念，返回空。判定规则与 transfer._find_sidecars 保持一致。"""
-    if src.is_dir() or not src.suffix:
-        return []
-    try:
-        entries = sorted(src.parent.iterdir())
-    except OSError:
-        return []
-    prefix = src.stem + "."
-    found: list[Path] = []
-    for entry in entries:
-        if not entry.is_file() or entry == src or not entry.name.startswith(prefix):
-            continue
-        if entry.suffix.lower() in _SIDECAR_SKIP_EXTS:
-            continue
-        found.append(entry)
-    return found
+    """主文件的附属文件，判定口径见 ``library.sidecar``（整理/转移/回收共用）。"""
+    return [entry for entry, _tail in find_sidecars(src)]
 
 
 def _move_sidecars(src: Path, target: Path) -> None:

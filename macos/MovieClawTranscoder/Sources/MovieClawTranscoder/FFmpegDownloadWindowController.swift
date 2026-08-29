@@ -117,6 +117,10 @@ final class FFmpegDownloadWindowController: NSWindowController, NSWindowDelegate
         progressIndicator.style = .bar
         progressIndicator.isIndeterminate = true
         progressIndicator.controlSize = .regular
+        // 本控制器全程用 0…1 的比例喂 doubleValue，而 NSProgressIndicator 默认量程是
+        // 0…100。不改量程的话「已完成」会渲染成 1%，看起来像下载卡死。
+        progressIndicator.minValue = 0
+        progressIndicator.maxValue = 1
         progressIndicator.startAnimation(nil)
 
         actionButton.target = self

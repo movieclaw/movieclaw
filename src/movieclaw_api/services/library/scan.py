@@ -104,6 +104,7 @@ from movieclaw_db.models.scheduled_task import TriggerType
 from movieclaw_db.repositories.library_file_repo import LibraryFileRepository
 from movieclaw_db.repositories.library_repo import LibraryRepository
 from movieclaw_enrich import enrich
+from movieclaw_enrich.models import TorrentAttrs
 from movieclaw_enrich.structure import title_candidates
 from movieclaw_media.models import MediaKind
 from movieclaw_scheduler.registry import register_task
@@ -1762,6 +1763,29 @@ def unit_name(file: Path, is_disc: bool) -> str:
     return file.name if is_disc else file.stem
 
 
+def scanned_media_source(attrs: TorrentAttrs) -> str | None:
+    """扫描落库用的片源值：把只存在于名称里的 remux 标记折进 ``media_source``。
+
+    ``library_file`` 没有 remux 布尔列——按既有设计，Remux 以 ``media_source``
+    取值 ``"Remux"`` 表达（``decision.source_tier`` 对该值直接判 T5，人工标注
+    走的也是这条路）。但 enrich 把 remux 解析成**独立布尔位**，而扫描此前只
+    落 ``media_source`` 与 ``release_group``，这一位就地丢失。
+
+    受害的是"写了 Remux、却没写片源词"的命名——Emby / MoviePilot 的整理模板
+    正是这种（``片名 (年份) - 2160p Remux CHD.mkv``）：enrich 解析结果是
+    ``media_source=None`` + ``remux=True``，落库后变成"片源未知"，洗版基线
+    不可比。更糟的是整理改名会把这段技术串一起抹掉，之后连重新解析的机会
+    都没有（``snapshot_from_file`` 正是靠 ``library_file.media_source`` 回补
+    才不受改名影响，remux 没有对应列可回补）。
+
+    只在 ``media_source`` 缺席时折入：名称同时给出片源与 remux（如
+    ``UHD BluRay REMUX``）时保留更具体的片源值，不覆盖既有信息。
+    """
+    if attrs.remux and not attrs.media_source:
+        return "Remux"
+    return attrs.media_source
+
+
 def disc_main_stream(disc_dir: Path) -> Path | None:
     """原盘主流文件（探测用）：蓝光优先按 MPLS 主播放列表，损坏盘降级取最大流。"""
     playlist = read_main_playlist(disc_dir)
@@ -2461,7 +2485,7 @@ async def _ingest_file(
             audio_streams=list(spec.audio_streams) if spec else None,
             subtitle_streams=list(spec.subtitle_streams) if spec else None,
             external_subtitles=external_subtitles,
-            media_source=attrs.media_source,
+            media_source=scanned_media_source(attrs),
             release_group=attrs.release_group,
             source=FileSource.SCANNED,
             added_batch_id=added_batch_id,

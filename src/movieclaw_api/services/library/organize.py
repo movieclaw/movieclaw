@@ -65,13 +65,14 @@ from sqlmodel import select
 from movieclaw_api.services import jobs
 from movieclaw_api.services.library.config import sanitize_folder_name
 from movieclaw_api.services.library.fsops import rename_no_replace
-from movieclaw_api.services.library.layout import SCAN_VIDEO_EXTS, entry_dir_of
+from movieclaw_api.services.library.layout import entry_dir_of
 from movieclaw_api.services.library.naming import (
     entry_dir_name_of,
     episode_file_name,
     movie_file_name,
     season_dir_name,
 )
+from movieclaw_api.services.library.sidecar import SIDECAR_SKIP_EXTS, find_sidecars
 from movieclaw_api.services.task_state import TaskState
 from movieclaw_db.engine import get_database
 from movieclaw_db.models import FileState, Library, LibraryFile, MediaItem, utcnow
@@ -80,9 +81,10 @@ from movieclaw_media.models import MediaKind
 
 logger = logging.getLogger("movieclaw_api.library_organize")
 
-# 视频类文件（含 strm 占位与原盘 iso）。两处用它：附属文件枚举时排除
-# （同名不同容器的视频是独立版本，不是附属）；判断旧条目目录是否已被搬空
-_VIDEO_LIKE_EXTS = SCAN_VIDEO_EXTS | {".iso"}
+# 视频类文件（含 strm 占位与原盘 iso）：判断旧条目目录是否已被搬空。
+# 与附属文件判定共用同一集合——``library.sidecar`` 是唯一定义处，那边把
+# 这些扩展名当"独立版本"排除，这边把它们当"还没搬完"的证据，同一份语义
+_VIDEO_LIKE_EXTS = SIDECAR_SKIP_EXTS
 
 # 条目目录级镜像资产的固定文件名（media_scrape.mirror_media_dir_assets 写出）。
 # 它们不以主文件名开头，附属文件规则（"主文件名."前缀）认不出来，条目目录
@@ -415,34 +417,14 @@ def _root_of(roots: list[str], file_path: str) -> str | None:
     return best
 
 
-# 附属文件的前缀形态：``主文件名.`` 是通例（字幕 foo.zh.srt、单文件 NFO
-# foo.nfo）；``主文件名-thumb.`` 是镜像写分集剧照用的 Kodi/Emby 约定
-# （foo-thumb.jpg），它不带那个点，按通例会被漏掉、留在旧目录变成垃圾
-_SIDECAR_PREFIX_SUFFIXES = (".", "-thumb.")
-
-
 def _find_sidecars(action: RenameAction) -> list[SidecarMove]:
-    """主文件的附属文件：同目录、文件名以"主文件名."或"主文件名-thumb."开头
-    （如 foo.zh.srt / foo.nfo / foo-thumb.jpg）。
-
-    同名不同容器的视频（foo.mkv 旁的 foo.mp4）是独立版本不是附属，排除。
-    """
+    """主文件的附属文件，判定口径见 ``library.sidecar``（整理/转移/回收共用）。"""
     src = Path(action.source_path)
     dst = Path(action.target_path)
-    moves = []
-    try:
-        entries = list(src.parent.iterdir())
-    except OSError:
-        return []
-    prefixes = tuple(src.stem + suffix for suffix in _SIDECAR_PREFIX_SUFFIXES)
-    for entry in sorted(entries):
-        if not entry.is_file() or entry == src or not entry.name.startswith(prefixes):
-            continue
-        if entry.suffix.lower() in _VIDEO_LIKE_EXTS:
-            continue
-        tail = entry.name[len(src.stem) :]  # 含前缀本身，如 ".zh.srt" / "-thumb.jpg"
-        moves.append(SidecarMove(str(entry), str(dst.parent / (dst.stem + tail))))
-    return moves
+    return [
+        SidecarMove(str(entry), str(dst.parent / (dst.stem + tail)))
+        for entry, tail in find_sidecars(src)
+    ]
 
 
 # ---------------------------------------------------------------------------
