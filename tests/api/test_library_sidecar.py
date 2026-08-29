@@ -7,8 +7,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from movieclaw_api.services.library.sidecar import (
