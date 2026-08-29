@@ -1,0 +1,297 @@
+# 装配完成后的整棵命令树（精选层 + 生成层，含分组名），一行一条命令路径。
+# 由退役中的 Python CLI 导出，是 Go 迁移的命令面契约：一条不多、一条不少。
+# 与 tests/cli/command_tree_snapshot.txt 的区别：那份只列生成命令，这份是最终命令面。
+#
+# 唯一一处有意的差异：`dl limits set`。click 里一个名字只能是组或命令二选一，
+# 它被同名的父命令 `dl limits` 挤掉了；cobra 允许一个节点既可执行又带子命令，
+# 于是这条命令补了回来（它本来就在 command_tree_snapshot.txt 里）。
+app
+app port
+app port set
+app restart
+app set
+app show
+app update
+app update apply
+app update check
+app update model-apply
+app update model-check
+app update pending
+app update progress
+app update retention
+app update rollback
+app update rollback-options
+app update status
+appearance
+appearance active
+appearance active set
+appearance backdrops
+appearance backdrops delete
+appearance backdrops download
+appearance backdrops upload
+appearance show
+auth
+auth avatar
+auth avatar download
+auth avatar upload
+auth bootstrap
+auth bootstrap create
+auth bootstrap status
+auth me
+auth password
+auth password update
+auth profile
+auth profile update
+channels
+channels im
+channels im accounts
+channels im accounts list
+channels im accounts unbind
+channels im bindings
+channels im bindings start
+channels im bindings status
+channels im push
+channels im push config
+channels im push config get
+channels im push config update
+channels im push test
+channels weixin
+channels weixin accounts
+channels weixin accounts list
+channels weixin accounts unbind
+channels weixin bindings
+channels weixin bindings start
+channels weixin bindings status
+channels weixin bindings verify
+discover
+discover browse-collection
+discover filter-options
+discover filter-titles
+discover get-title-details
+discover list-collections
+discover region
+discover region set
+discover region show
+dl
+dl add
+dl default
+dl default set
+dl delete
+dl limits
+dl limits set
+dl list
+dl resolve-target
+dl show
+dl status
+dl status set
+dl submit
+dl update
+dl verify
+download
+extension
+extension cookies
+extension cookies push
+extension ping
+extension sites
+extension sites list
+extension token
+extension token create
+extension token revoke
+extension token show
+health
+health check
+jobs
+jobs cancel
+jobs dismiss
+jobs dismiss-all
+jobs events
+jobs health
+jobs list
+jobs retry
+jobs show
+jobs undismiss
+jobs wait
+library
+library artwork
+library artwork download
+library artwork list-candidates
+library artwork select
+library create
+library delete
+library get
+library identification
+library identification assign-file-to-title
+library identification assign-files-to-title
+library identification ignore-all-unidentified-files
+library identification ignore-file
+library identification list-ignored-files
+library identification list-review-cases
+library identification list-unidentified-files
+library identification mark-files-as-extras
+library identification resolve-review
+library identification restore-files
+library items
+library items annotate-media-source
+library items delete
+library items delete-file
+library items get
+library items get-transfer-status
+library items list
+library items list-episodes
+library items list-media-source-annotation-candidates
+library items preview-reidentification
+library items preview-transfer
+library items purge-file
+library items refresh-metadata
+library items reidentify
+library items restore-file
+library items transfer
+library list
+library list-routing-options
+library metadata
+library metadata get-refresh-status
+library metadata refresh-library
+library metadata stop-refresh
+library missing
+library missing clear-records
+library missing list
+library missing redownload
+library organize-files
+library reconcile-paths
+library reorder
+library scan
+library scan start
+library scan stop
+library set-default
+library subtitles
+library subtitles calibrate-timing
+library subtitles delete
+library subtitles generate
+library subtitles preview-generation
+library update
+llm
+llm presets
+llm provider
+llm provider delete
+llm provider set
+llm provider show
+llm provider verify
+login
+logout
+logs
+logs days
+logs read
+logs tail
+members
+members avatar
+members avatar download
+members create
+members delete
+members list
+members password
+members password reset
+members show
+members status
+members status set
+members update
+net
+net set
+net show
+net test
+notices
+notices dismiss
+notices list
+people
+people show
+rules
+rules create
+rules default
+rules delete
+rules list
+rules update
+scrape
+scrape countries
+scrape languages
+scrape set
+scrape show
+search
+search history
+search history clear
+search history delete
+search history get-results
+search history list
+search library-items
+search presets
+search presets list
+search presets update
+search titles
+search torrents
+session
+session compact-context
+session delete
+session follow
+session get-transcript
+session list
+session rename
+session retry
+session start
+session stop
+site
+site add
+site boost-stats
+site catalog
+site delete
+site list
+site protection
+site protection set
+site ratio-boost
+site ratio-boost pause
+site ratio-boost set
+site show
+site stats
+site status
+site status set
+site update
+site verify
+status
+subscriptions
+subscriptions check-automation-readiness
+subscriptions create
+subscriptions delete
+subscriptions download-selected-torrent
+subscriptions get
+subscriptions list
+subscriptions list-active-downloads
+subscriptions list-activities
+subscriptions list-today-arrivals
+subscriptions preview-download-routing
+subscriptions search-missing-resources
+subscriptions set-follow-future
+subscriptions set-tracking-state
+subscriptions unsubscribe
+subscriptions update
+subscriptions upgrade-run
+transcode
+transcode config
+transcode config set
+transcode config show
+transcode status
+ui
+ui prefs
+ui prefs show
+ui prefs update
+watch
+watch create
+watch delete
+watch entries
+watch entries claim
+watch entries ignore
+watch entries restore
+watch list
+watch update
+webhook
+webhook deliveries
+webhook rotate-secret
+webhook set
+webhook show
+webhook test

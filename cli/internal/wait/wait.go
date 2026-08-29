@@ -1,4 +1,9 @@
-package tree
+// Package wait 是两种「等任务跑完」的等待循环（docs/design/cli.md §8.3）。
+//
+// 独立成包是因为生成层和精选层都要用：`mclaw library scan start --wait` 由
+// spec 的 x-cli-long-task 生成，`mclaw jobs wait` 与 `mclaw library
+// organize-files --wait` 是手写的精选命令，两边共用同一套节奏与文案。
+package wait
 
 import (
 	"bytes"
@@ -13,6 +18,7 @@ import (
 
 	"github.com/yipengfei329/movieclaw/cli/internal/api"
 	"github.com/yipengfei329/movieclaw/cli/internal/clierr"
+	"github.com/yipengfei329/movieclaw/cli/internal/jsonval"
 	"github.com/yipengfei329/movieclaw/cli/internal/output"
 )
 
@@ -56,23 +62,21 @@ func pollInterval(elapsed time.Duration) time.Duration {
 	}
 }
 
-// waitLongTask 是长任务 --wait：轮询进度端点直到终态（docs/design/cli.md §8.3）。
-func waitLongTask(
-	op Operation,
-	opsByID map[string]Operation,
-	client *api.Client,
-	pathArgs map[string]any,
-	waitTimeout time.Duration,
-) error {
-	task := op.LongTask
-	progressOp, ok := opsByID[task.ProgressOp]
-	if !ok {
-		return nil
-	}
-	path := apiPath(progressOp.Path)
-	for _, p := range progressOp.PathParams() {
-		path = strings.ReplaceAll(path, "{"+p.Name+"}", fmt.Sprint(pathArgs[p.Name]))
-	}
+// LongTask 描述一次长任务等待：进度从哪读、读哪个字段、超时了让用户敲什么。
+type LongTask struct {
+	// ProgressPath 是已经替换好路径参数的进度端点（相对 /api/v1）。
+	ProgressPath string
+	// ProgressField 非空时读该字段，字段变 null 即视为结束。
+	ProgressField string
+	// DoneField 是 ProgressField 为空时的备用判据：该字段转假即结束。
+	DoneField string
+	// ProgressCommand 是超时提示里让用户自己去查进度的命令。
+	ProgressCommand string
+}
+
+// Long 轮询进度端点直到终态（docs/design/cli.md §8.3）。
+func Long(client *api.Client, task LongTask, waitTimeout time.Duration) error {
+	path := task.ProgressPath
 
 	sig, stop := interrupted()
 	defer stop()
@@ -90,10 +94,9 @@ func waitLongTask(
 	for {
 		elapsed := time.Since(started)
 		if elapsed > waitTimeout {
-			progressCmd := "mclaw " + strings.ReplaceAll(progressOp.OperationID, ".", " ")
 			return clierr.Newf(clierr.TaskFailed,
 				"等待超时（%.0f 秒），任务仍在后台执行", waitTimeout.Seconds()).
-				WithHint("稍后可用 %s 查看进度，或调大 --wait-timeout", progressCmd)
+				WithHint("稍后可用 %s 查看进度，或调大 --wait-timeout", task.ProgressCommand)
 		}
 		data, err := client.Request(http.MethodGet, path, nil, nil)
 		if err != nil {
@@ -102,10 +105,10 @@ func waitLongTask(
 		var progress any = data
 		done := false
 		if task.ProgressField != "" {
-			progress = fieldOf(data, task.ProgressField)
+			progress = jsonval.At(data, task.ProgressField)
 			done = progress == nil
 		} else {
-			done = !truthy(fieldOf(data, task.DoneField))
+			done = !jsonval.Truthy(jsonval.At(data, task.DoneField))
 		}
 		if done {
 			if sawRunning {
@@ -137,14 +140,8 @@ func waitLongTask(
 	}
 }
 
-// waitPersistentJob 等待统一 Job 终态；本地停止等待不会取消服务端任务。
-func waitPersistentJob(client *api.Client, startData any, meta Job, waitTimeout time.Duration) error {
-	jobID, _ := fieldOf(startData, meta.IDPath).(string)
-	if jobID == "" {
-		return clierr.New("服务端已接收任务，但响应中没有可追踪的任务 ID").
-			WithHint("请用 mclaw jobs list --active-only 查找刚创建的任务")
-	}
-
+// Job 等待统一 Job 体系里的一个任务到终态；本地停止等待不会取消服务端任务。
+func Job(client *api.Client, jobID string, waitTimeout time.Duration) error {
 	sig, stop := interrupted()
 	defer stop()
 
@@ -176,13 +173,13 @@ func waitPersistentJob(client *api.Client, startData any, meta Job, waitTimeout 
 		if err != nil {
 			return err
 		}
-		job, _ := fieldOf(payload, "job").(map[string]any)
-		if rev := intOf(job["revision"]); rev > revision {
+		job := jsonval.Object(jsonval.At(payload, "job"))
+		if rev := jsonval.Int(job["revision"]); rev > revision {
 			revision = rev
 		}
-		status := str(job["status"])
-		progress, _ := job["progress"].(map[string]any)
-		line := str(progress["message"])
+		status := jsonval.Str(job["status"])
+		progress := jsonval.Object(job["progress"])
+		line := jsonval.Str(progress["message"])
 		if line == "" {
 			line = status
 		}
@@ -190,7 +187,7 @@ func waitPersistentJob(client *api.Client, startData any, meta Job, waitTimeout 
 			line = "等待执行"
 		}
 		if percent, ok := progress["percent"]; ok && percent != nil {
-			line = fmt.Sprintf("%s（%s%%）", line, plain(percent))
+			line = fmt.Sprintf("%s（%s%%）", line, jsonval.Plain(percent))
 		}
 		if line != lastLine {
 			output.Info("%s · %s", jobID, line)
@@ -203,10 +200,10 @@ func waitPersistentJob(client *api.Client, startData any, meta Job, waitTimeout 
 			output.Info("任务已完成：%s", jobID)
 			return nil
 		}
-		errObj, _ := job["error"].(map[string]any)
-		message := str(errObj["message"])
+		errObj := jsonval.Object(job["error"])
+		message := jsonval.Str(errObj["message"])
 		if message == "" {
-			message = str(progress["message"])
+			message = jsonval.Str(progress["message"])
 		}
 		if message == "" {
 			message = "任务状态：" + status
@@ -228,31 +225,12 @@ func abortWait(message string) error {
 }
 
 func hasHandoffAction(actions any) bool {
-	list, ok := actions.([]any)
-	if !ok {
-		return false
-	}
-	for _, item := range list {
-		if action, ok := item.(map[string]any); ok && str(action["type"]) == "handoff_agent" {
+	for _, item := range jsonval.Array(actions) {
+		if action, ok := item.(map[string]any); ok && jsonval.Str(action["type"]) == "handoff_agent" {
 			return true
 		}
 	}
 	return false
-}
-
-// fieldOf 按点分路径读取响应字段；不存在返回 nil。
-func fieldOf(value any, path string) any {
-	if path == "" {
-		return nil
-	}
-	for _, token := range strings.Split(path, ".") {
-		obj, ok := value.(map[string]any)
-		if !ok {
-			return nil
-		}
-		value = obj[token]
-	}
-	return value
 }
 
 func intOf(value any) int {

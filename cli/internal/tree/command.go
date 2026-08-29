@@ -12,8 +12,10 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/yipengfei329/movieclaw/cli/internal/api"
 	"github.com/yipengfei329/movieclaw/cli/internal/clierr"
+	"github.com/yipengfei329/movieclaw/cli/internal/jsonval"
 	"github.com/yipengfei329/movieclaw/cli/internal/output"
 	"github.com/yipengfei329/movieclaw/cli/internal/overlay"
+	"github.com/yipengfei329/movieclaw/cli/internal/wait"
 	"golang.org/x/term"
 )
 
@@ -30,7 +32,7 @@ func makeCommand(op Operation, opsByID map[string]Operation) *cobra.Command {
 	queryValues := map[string]*paramValue{}
 	bodyValues := map[string]*paramValue{}
 	var inputFile, uploadFile, outputFile string
-	var wait bool
+	var waitFlag bool
 	var waitTimeout time.Duration
 	overrides := &overlay.Overrides{}
 
@@ -80,7 +82,7 @@ func makeCommand(op Operation, opsByID map[string]Operation) *cobra.Command {
 			waitHelp = "等待持久化任务完成；默认立即返回任务 ID"
 			defaultWait = false
 		}
-		flags.BoolVar(&wait, "wait", defaultWait, waitHelp)
+		flags.BoolVar(&waitFlag, "wait", defaultWait, waitHelp)
 		flags.DurationVar(&waitTimeout, "wait-timeout", time.Hour,
 			"--wait 的最长等待时间，超时退出码 6（任务继续后台执行）")
 	}
@@ -103,7 +105,7 @@ func makeCommand(op Operation, opsByID map[string]Operation) *cobra.Command {
 			inputFile:   inputFile,
 			uploadFile:  uploadFile,
 			outputFile:  outputFile,
-			wait:        wait,
+			wait:        waitFlag,
 			waitTimeout: waitTimeout,
 		})
 	}
@@ -198,12 +200,43 @@ func execute(
 	if in.wait {
 		switch {
 		case op.Job != nil:
-			return waitPersistentJob(client, data, *op.Job, in.waitTimeout)
+			jobID := jsonval.Str(jsonval.At(data, op.Job.IDPath))
+			if jobID == "" {
+				return clierr.New("服务端已接收任务，但响应中没有可追踪的任务 ID").
+					WithHint("请用 mclaw jobs list --active-only 查找刚创建的任务")
+			}
+			return wait.Job(client, jobID, in.waitTimeout)
 		case op.LongTask != nil:
-			return waitLongTask(op, opsByID, client, pathArgs, in.waitTimeout)
+			task, ok := longTaskFor(op, opsByID, pathArgs)
+			if !ok {
+				return nil
+			}
+			return wait.Long(client, task, in.waitTimeout)
 		}
 	}
 	return nil
+}
+
+// longTaskFor 把 x-cli-long-task 的声明解析成一次具体的等待：进度端点的路径
+// 参数就地替换成本次调用的实参。progress_op 指向不存在的操作时不等待——
+// spec 写错了不该让命令本身失败，请求已经发出去了。
+func longTaskFor(
+	op Operation, opsByID map[string]Operation, pathArgs map[string]any,
+) (wait.LongTask, bool) {
+	progressOp, ok := opsByID[op.LongTask.ProgressOp]
+	if !ok {
+		return wait.LongTask{}, false
+	}
+	path := apiPath(progressOp.Path)
+	for _, p := range progressOp.PathParams() {
+		path = strings.ReplaceAll(path, "{"+p.Name+"}", fmt.Sprint(pathArgs[p.Name]))
+	}
+	return wait.LongTask{
+		ProgressPath:    path,
+		ProgressField:   op.LongTask.ProgressField,
+		DoneField:       op.LongTask.DoneField,
+		ProgressCommand: "mclaw " + strings.ReplaceAll(progressOp.OperationID, ".", " "),
+	}, true
 }
 
 // buildBody 从命令标志组装 JSON 请求体（或采用 --input 整体替代）。
