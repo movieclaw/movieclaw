@@ -51,6 +51,10 @@ class ApiTokenView(BaseModel):
     id: str
     name: str
     created_at: str
+    client_type: str = Field(default="manual", description="客户端形态：worker / cli / manual")
+    last_used_at: str | None = Field(
+        default=None, description="最近一次使用时间；None 表示从未使用过"
+    )
 
 
 class ApiTokenCreatedView(ApiTokenView):
@@ -80,3 +84,60 @@ class SessionView(BaseModel):
         default_factory=SessionCapabilities,
         description="能力开关快照；管理员恒为全开",
     )
+
+
+# ---------------------------------------------------------------------------
+# 设备授权（docs/design/device-auth.md §2）
+# ---------------------------------------------------------------------------
+
+
+class DeviceAuthorizeRequest(BaseModel):
+    """客户端发起接入请求。
+
+    刻意**没有权限字段**：客户端只声明自己是什么形态、叫什么名字，
+    能做什么由批准者决定。
+    """
+
+    client_type: str = Field(
+        description="客户端形态：worker（转码 Worker）或 cli（命令行 / Agent）"
+    )
+    client_name: str = Field(
+        min_length=1,
+        max_length=64,
+        description="设备名，批准页上给人看的，如 'Yi的Mac-mini'",
+    )
+
+
+class DeviceAuthorizeView(BaseModel):
+    """接入请求的回执。``user_code`` 给人看，``device_code`` 用于兑换。"""
+
+    user_code: str = Field(description="配对码，客户端显示给用户，在网页上核对")
+    device_code: str = Field(description="兑换凭据，仅客户端持有，不得展示给用户")
+    verification_uri: str = Field(description="用户应当打开的网页地址")
+    interval: int = Field(description="建议的轮询间隔（秒），不要比这更快")
+    expires_in: int = Field(description="配对码有效期（秒），超时需重新发起")
+
+
+class DeviceTokenRequest(BaseModel):
+    """客户端轮询兑换令牌。"""
+
+    device_code: str = Field(min_length=1, max_length=128)
+
+
+class DeviceTokenView(BaseModel):
+    """兑换成功的返回体：令牌明文仅此一次。"""
+
+    token: str = Field(description="令牌明文；服务端只存哈希，之后无法再次查看")
+    client_name: str
+    client_type: str
+    granted_by: str = Field(description="批准者身份，仅用于客户端回显「你现在是谁」")
+
+
+class DeviceRequestView(BaseModel):
+    """待批准的接入请求（网页审批卡的数据源）。"""
+
+    user_code: str
+    client_type: str
+    client_name: str
+    source_ip: str = Field(description="请求来源 IP，帮助用户判断这是不是自己那台机器")
+    expires_in: int = Field(description="剩余有效秒数")

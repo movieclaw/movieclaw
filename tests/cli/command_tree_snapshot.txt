@@ -24,9 +24,6 @@ auth bootstrap status
 auth me
 auth password update
 auth profile update
-auth tokens create
-auth tokens list
-auth tokens revoke
 channels im accounts list
 channels im accounts unbind
 channels im bindings start

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import httpx
+
 
 def _login(run_mclaw, live_server, admin) -> None:
     result = run_mclaw(
@@ -43,19 +45,29 @@ def test_write_operation_with_body_flags(run_mclaw, live_server, admin) -> None:
 
 def test_missing_required_body_flag_exits_2_with_hint(run_mclaw, live_server, admin) -> None:
     _login(run_mclaw, live_server, admin)
-    result = run_mclaw("auth", "tokens", "create")
+    result = run_mclaw("auth", "profile", "update")
     assert result.returncode == 2
-    assert "--name" in result.stderr
+    assert "--nickname" in result.stderr
     assert "--input" in result.stderr  # hint 提到整体替代形态
 
 
 def test_pat_token_channel(run_mclaw, live_server, admin, tmp_path) -> None:
-    """PAT 全链路：登录创建令牌 → 全新环境仅凭 MOVIECLAW_TOKEN 调用成功
-    → 吊销后立即 401（退出码 3）。这正是产品内 Agent 工作区的调用形态。"""
-    _login(run_mclaw, live_server, admin)
-    created = run_mclaw("auth", "tokens", "create", "--name", "ci", "-o", "json")
-    assert created.returncode == 0, created.stderr
-    payload = json.loads(created.stdout)
+    """令牌全链路：网页上配对签发 → 全新环境仅凭 MOVIECLAW_TOKEN 调用成功
+    → 吊销后立即 401（退出码 3）。这正是产品内 Agent 工作区的调用形态。
+
+    签发与吊销走 HTTP + 会话 Cookie 而不是 CLI：凭证管理面只认浏览器会话
+    （docs/design/device-auth.md §8），CLI 拿令牌调不动，这正是设计意图。
+    """
+    session = httpx.Client(base_url=live_server)
+    session.post("/api/v1/auth/login", json=admin)
+    grant = session.post(
+        "/api/v1/auth/device/authorize",
+        json={"client_type": "cli", "client_name": "ci"},
+    ).json()["data"]
+    session.post(f"/api/v1/auth/devices/requests/{grant['user_code']}/approve")
+    payload = session.post(
+        "/api/v1/auth/device/token", json={"device_code": grant["device_code"]}
+    ).json()["data"]
     token = payload["token"]
     assert token.startswith("mclaw_")
 
@@ -70,7 +82,8 @@ def test_pat_token_channel(run_mclaw, live_server, admin, tmp_path) -> None:
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == []
 
-    revoked = run_mclaw("auth", "tokens", "revoke", payload["id"], "--yes")
-    assert revoked.returncode == 0, revoked.stderr
+    token_id = session.get("/api/v1/auth/tokens").json()["data"][0]["id"]
+    assert session.delete(f"/api/v1/auth/tokens/{token_id}").status_code == 200
     result = run_mclaw("subscriptions", "list", env_extra=env)
     assert result.returncode == 3
+    session.close()

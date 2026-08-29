@@ -482,6 +482,10 @@ _MEMBER_ALLOWLIST = {
     ("POST", "/api/v1/auth/bootstrap"),
     ("POST", "/api/v1/auth/login"),
     ("POST", "/api/v1/auth/logout"),
+    # 设备授权的两个协议端点：设备在拿到令牌前无凭可用，必须匿名（成员自然可达）。
+    # 真正的闸在批准那一步——/auth/devices/* 全部挂 require_admin，成员批不了。
+    ("POST", "/api/v1/auth/device/authorize"),
+    ("POST", "/api/v1/auth/device/token"),
     # 个人信息自助（按 Principal 分流到成员表）
     ("GET", "/api/v1/auth/me"),
     ("PUT", "/api/v1/auth/profile"),
@@ -609,6 +613,7 @@ _PATH_DUMMIES = {
     "{entry_id}": "1",
     "{file_id}": "1",
     "{device_id}": "no-such-device",
+    "{user_code}": "MCLW-TEST",
     "{name}": "seg00000.m4s",
     "{token_id}": "1",
     "{notice_id}": "1",

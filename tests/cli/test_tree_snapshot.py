@@ -26,6 +26,18 @@ _SNAPSHOT = Path(__file__).parent / "command_tree_snapshot.txt"
 # 唯二允许不生成命令的类别：x-cli-hidden（Web 基础设施 / 由精选命令承担语义
 # 的端点）、x-cli-stream（SSE 流，P2 精选层接入）
 KNOWN_NON_GENERATED = {
+    # 设备授权（docs/design/device-auth.md）：authorize/token 是客户端之间的
+    # 协议端点，用户面对的是 `mclaw login` 而不是手工拼装配对流程；
+    # tokens/devices 那几个是凭证的签发与吊销，只认浏览器会话（require_admin_session），
+    # CLI 拿令牌根本调不动——签发闸门收在「人 + 浏览器」上，泄漏的令牌才无法自我复制。
+    "auth.device.authorize",
+    "auth.device.token",
+    "auth.tokens.create",
+    "auth.tokens.list",
+    "auth.tokens.revoke",
+    "auth.devices.requests",
+    "auth.devices.approve",
+    "auth.devices.deny",
     "images.asset",
     "images.proxy",
     "libraries.cover",  # 二进制图片直出（<img> 引用），CLI 无消费场景

@@ -69,9 +69,29 @@ async def require_login(
     本依赖（api/router.py 按组挂载，tests 里有守护测试兜底防漏挂）。
     未登录 / 会话过期 / 令牌无效统一 401。授权（管理员/能力开关）不在
     这里判——挂 ``require_admin`` 或在服务层消费 Principal。
+
+    唯一的例外是**转码 Worker 的形态上限**（docs/design/device-auth.md §4.3）：
+    Worker 令牌只为转码链路签发，在这里直接拒绝。这样做是默认拒绝而不是白名单
+    枚举——新增的任何业务路由只要照常挂本依赖，就自动把 Worker 令牌挡在外面，
+    不需要记得给它加标注。放行 Worker 的白名单只有一处：``require_transcode_worker``。
     """
     if principal is None:
         raise UnauthorizedException("未登录，请先登录")
+    if principal.client_type == "worker":
+        raise ForbiddenException("转码 Worker 的凭证只能用于转码，不能访问业务接口")
+    return principal
+
+
+async def require_transcode_worker(
+    principal: Principal | None = Depends(optional_login),
+) -> Principal:
+    """转码控制面与数据面专用：只接受 Worker 令牌。
+
+    与 ``require_login`` 互补——业务接口拒绝 Worker，转码接口只认 Worker。
+    两边都是显式判定，不存在「既能转码又能改订阅」的凭证。
+    """
+    if principal is None or principal.client_type != "worker":
+        raise UnauthorizedException("需要转码 Worker 凭证，请在 Worker 应用里完成配对")
     return principal
 
 
@@ -84,6 +104,27 @@ async def require_admin(principal: Principal = Depends(require_login)) -> Princi
     """
     if not principal.is_admin:
         raise ForbiddenException("该操作需要管理员权限")
+    return principal
+
+
+async def require_admin_session(
+    principal: Principal = Depends(require_admin),
+) -> Principal:
+    """在管理员之上再要求「这是人在浏览器里操作」——只接受会话 Cookie 主体。
+
+    用途只有一个：**凭证的签发与吊销**（创建/吊销令牌、批准/拒绝设备接入）。
+
+    为什么不能让 Bearer 令牌调这些接口：设备令牌一旦能签发新令牌，就能给自己
+    造一枚备份，吊销原来那枚也止不住损——而吊销是这套设计唯一的事后止损手段
+    （docs/design/device-auth.md §8）。把签发闸门收在「人 + 浏览器」上，
+    泄漏的令牌就无法自我复制，也无法把别的机器拉进来。
+
+    Agent 工作区令牌同样被挡住，这正是想要的：Agent 不该能给自己续命。
+    """
+    if principal.kind != "admin":
+        raise ForbiddenException(
+            "签发与吊销凭证只能在网页上完成，请用管理员账号登录 movieclaw 后操作"
+        )
     return principal
 
 

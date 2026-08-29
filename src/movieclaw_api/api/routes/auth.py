@@ -15,12 +15,13 @@ SameSite=Lax 挡跨站请求伪造）。
 from __future__ import annotations
 
 import logging
+import time
 
-from fastapi import APIRouter, Depends, File, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from movieclaw_api.api.deps import require_admin, require_login
+from movieclaw_api.api.deps import require_admin_session, require_login
 from movieclaw_api.core.config import get_settings
 from movieclaw_api.exceptions import BadRequestException, NotFoundException
 from movieclaw_api.schemas.auth import (
@@ -30,6 +31,11 @@ from movieclaw_api.schemas.auth import (
     BootstrapRequest,
     BootstrapStatus,
     ChangePasswordRequest,
+    DeviceAuthorizeRequest,
+    DeviceAuthorizeView,
+    DeviceRequestView,
+    DeviceTokenRequest,
+    DeviceTokenView,
     LoginRequest,
     SessionCapabilities,
     SessionView,
@@ -40,7 +46,12 @@ from movieclaw_api.services import auth as auth_service
 from movieclaw_api.services import avatar as avatar_media
 from movieclaw_api.services import members as members_service
 from movieclaw_api.services.auth import Principal
-from movieclaw_api.settings import AdminAccountSetting, mark_initialized
+from movieclaw_api.settings import (
+    AdminAccountSetting,
+    AppServerSetting,
+    get_setting_store,
+    mark_initialized,
+)
 from movieclaw_db.engine import get_session
 from movieclaw_db.models.member import Member
 
@@ -321,8 +332,10 @@ async def change_password(
     "/tokens",
     response_model=ApiResponse[ApiTokenCreatedView],
     summary="创建 CLI API 令牌（明文仅返回这一次，请立即保存）",
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_admin_session)],
     operation_id="auth.tokens.create",
+    # 签发凭证只能是人在浏览器里的动作，CLI 调不动，也就不该出现在命令树里
+    openapi_extra={"x-cli-hidden": True},
 )
 async def create_api_token(payload: ApiTokenCreateRequest) -> ApiResponse[ApiTokenCreatedView]:
     plaintext, record = await auth_service.create_api_token(payload.name.strip())
@@ -338,23 +351,187 @@ async def create_api_token(payload: ApiTokenCreateRequest) -> ApiResponse[ApiTok
     "/tokens",
     response_model=ApiResponse[list[ApiTokenView]],
     summary="列出已创建的 CLI API 令牌（仅元信息，不含明文）",
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_admin_session)],
     operation_id="auth.tokens.list",
+    openapi_extra={"x-cli-hidden": True},
 )
 async def list_api_tokens() -> ApiResponse[list[ApiTokenView]]:
     records = await auth_service.list_api_tokens()
-    return ok([ApiTokenView(id=r.id, name=r.name, created_at=r.created_at) for r in records])
+    return ok(
+        [
+            ApiTokenView(
+                id=r.id,
+                name=r.name,
+                created_at=r.created_at,
+                client_type=r.client_type,
+                last_used_at=r.last_used_at,
+            )
+            for r in records
+        ]
+    )
 
 
 @router.delete(
     "/tokens/{token_id}",
     response_model=ApiResponse[None],
     summary="吊销一枚 CLI API 令牌（立即失效，不影响其他令牌）",
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_admin_session)],
     operation_id="auth.tokens.revoke",
-    openapi_extra={"x-cli-dangerous": "confirm"},
+    openapi_extra={"x-cli-dangerous": "confirm", "x-cli-hidden": True},
 )
 async def revoke_api_token(token_id: str) -> ApiResponse[None]:
     if not await auth_service.revoke_api_token(token_id):
         raise NotFoundException("令牌不存在或已被吊销")
     return ok(None, message="令牌已吊销")
+
+
+# ---------------------------------------------------------------------------
+# 设备授权：客户端出示配对码，人在网页上批准
+# ---------------------------------------------------------------------------
+#
+# 两个匿名端点是本次唯一新增的匿名可达面（已在 tests/api/test_auth.py 的
+# 公开白名单里登记）。它们必须匿名——设备在拿到令牌之前无凭可用；防滥用靠
+# 服务层的三道约束：单 IP 未决请求上限、轮询退避、挑战全程不落库。
+# 设计见 docs/design/device-auth.md §2。
+
+
+async def _verification_uri(request: Request) -> str:
+    """用户应当打开的网页地址。
+
+    优先用配置好的「外部访问地址」——那是用户平时访问 movieclaw 的地址，
+    也是他浏览器里已经登录着的那个源。没配置时回落到本次请求的地址：
+    设备既然能连上这里，同一局域网的浏览器多半也能。
+    """
+    setting = await get_setting_store().get(AppServerSetting)
+    base = (setting.external_url or "").strip().rstrip("/")
+    if not base:
+        base = str(request.base_url).rstrip("/")
+    return f"{base}/settings/devices"
+
+
+@router.post(
+    "/device/authorize",
+    response_model=ApiResponse[DeviceAuthorizeView],
+    summary="设备发起接入请求，取得配对码（匿名）",
+    operation_id="auth.device.authorize",
+    openapi_extra={"x-cli-hidden": True},
+)
+async def authorize_device(
+    payload: DeviceAuthorizeRequest, request: Request
+) -> ApiResponse[DeviceAuthorizeView]:
+    """受理一次接入请求。客户端不声明权限，能做什么由批准者决定。
+
+    x-cli-hidden：这是客户端之间的协议端点，不该出现在 CLI 命令树里——
+    用户面对的是 ``mclaw login``，而不是手工拼装配对流程。
+    """
+    device_code, challenge = auth_service.authorize_device(
+        client_type=payload.client_type,
+        client_name=payload.client_name,
+        source_ip=request.client.host if request.client else "unknown",
+    )
+    return ok(
+        DeviceAuthorizeView(
+            user_code=challenge.user_code,
+            device_code=device_code,
+            verification_uri=await _verification_uri(request),
+            interval=auth_service.DEVICE_POLL_INTERVAL_SECONDS,
+            expires_in=auth_service.DEVICE_CODE_TTL_SECONDS,
+        ),
+        message="请在浏览器里核对配对码并批准",
+    )
+
+
+@router.post(
+    "/device/token",
+    # data 可空：202「等待批准」与 429「轮询过快」都是成功响应，只是还没有令牌
+    response_model=ApiResponse[DeviceTokenView | None],
+    summary="设备轮询兑换令牌（匿名）",
+    operation_id="auth.device.token",
+    openapi_extra={"x-cli-hidden": True},
+)
+async def redeem_device_token(
+    payload: DeviceTokenRequest, response: Response
+) -> ApiResponse[DeviceTokenView | None]:
+    """轮询兑换。四种结论各自对应明确的 HTTP 语义，客户端据此决定继续还是停止。
+
+    - 202 尚未批准，按 interval 继续轮询；
+    - 429 轮询过快，退避后再来（挑战不作废，正常重试不该被当成攻击）；
+    - 200 已批准，令牌明文仅此一次，挑战立即作废；
+    - 400 已拒绝 / 已过期 / 不存在——**停止轮询**，重新发起。
+    """
+    result = await auth_service.redeem_device_code(payload.device_code)
+
+    if result.status == "pending":
+        response.status_code = 202
+        return ok(None, code="AUTHORIZATION_PENDING", message="等待用户在浏览器里批准")
+    if result.status == "slow_down":
+        response.status_code = 429
+        return ok(None, code="SLOW_DOWN", message="轮询过快，请按 interval 退避后重试")
+    if result.status == "denied":
+        raise BadRequestException("接入请求已被拒绝，请重新发起配对")
+    if result.status == "expired":
+        raise BadRequestException("配对码已过期或不存在，请重新发起配对")
+
+    assert result.token is not None and result.record is not None  # status == "granted"
+    return ok(
+        DeviceTokenView(
+            token=result.token,
+            client_name=result.record.name,
+            client_type=result.record.client_type,
+            granted_by=result.record.owner_kind,
+        ),
+        message="配对成功；令牌明文不会再次显示，请立即保存",
+    )
+
+
+@router.get(
+    "/devices/requests",
+    response_model=ApiResponse[list[DeviceRequestView]],
+    summary="列出待批准的设备接入请求",
+    dependencies=[Depends(require_admin_session)],
+    operation_id="auth.devices.requests",
+    openapi_extra={"x-cli-hidden": True},
+)
+async def list_device_requests() -> ApiResponse[list[DeviceRequestView]]:
+    """网页审批卡的数据源。当前只有超管能看、能批准（device-auth.md §4.4）。"""
+    now = time.monotonic()
+    return ok(
+        [
+            DeviceRequestView(
+                user_code=ch.user_code,
+                client_type=ch.client_type,
+                client_name=ch.client_name,
+                source_ip=ch.source_ip,
+                expires_in=max(0, int(ch.expires_at - now)),
+            )
+            for ch in auth_service.list_device_requests()
+        ]
+    )
+
+
+@router.post(
+    "/devices/requests/{user_code}/approve",
+    response_model=ApiResponse[None],
+    summary="批准一台设备接入（此刻才签发令牌）",
+    dependencies=[Depends(require_admin_session)],
+    operation_id="auth.devices.approve",
+    openapi_extra={"x-cli-hidden": True},
+)
+async def approve_device_request(user_code: str) -> ApiResponse[None]:
+    """批准前请核对配对码与设备上显示的一致——这是防钓鱼的唯一一道人工闸。"""
+    challenge = await auth_service.approve_device_request(user_code)
+    return ok(None, message=f"已批准「{challenge.client_name}」接入")
+
+
+@router.post(
+    "/devices/requests/{user_code}/deny",
+    response_model=ApiResponse[None],
+    summary="拒绝一台设备接入",
+    dependencies=[Depends(require_admin_session)],
+    operation_id="auth.devices.deny",
+    openapi_extra={"x-cli-hidden": True},
+)
+async def deny_device_request(user_code: str) -> ApiResponse[None]:
+    """拒绝不生成任何令牌，也不在磁盘上留痕。"""
+    challenge = auth_service.deny_device_request(user_code)
+    return ok(None, message=f"已拒绝「{challenge.client_name}」的接入请求")

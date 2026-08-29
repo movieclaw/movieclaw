@@ -39,8 +39,9 @@ import logging
 import secrets
 import time
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import Literal
 
 from itsdangerous import BadSignature, URLSafeSerializer
 from pwdlib import PasswordHash
@@ -49,6 +50,7 @@ from movieclaw_api.exceptions import (
     AppException,
     BadRequestException,
     ConflictException,
+    NotFoundException,
     UnauthorizedException,
 )
 from movieclaw_api.settings import (
@@ -83,6 +85,10 @@ class Principal:
       供能力开关判定（allow_subscribe 等）免二次查库。
     - ``agent_session_id``：kind == "agent" 时携带令牌所属会话，供会话级
       自保护授权使用；其他主体恒为 None。
+    - ``client_type``：仅令牌主体有值（worker / cli / manual）。它是**客户端
+      形态**而非权限等级——权限完全来自 ``is_admin`` / ``member``，全站既有的
+      授权依赖对令牌主体自动生效。它只用来把 Worker 令牌挡在业务接口之外
+      （docs/design/device-auth.md §4.3）。
 
     ``__str__`` 返回与旧字符串身份一致的格式，日志归因处零改造。
     """
@@ -94,9 +100,12 @@ class Principal:
     member: Member | None = None
     #: 仅 Agent 工作区短时令牌携带，用于阻止当前 Agent 停止承载自己的会话。
     agent_session_id: str | None = None
+    #: 仅设备/手工令牌携带：worker | cli | manual。会话 Cookie 主体恒为 None。
+    client_type: str | None = None
 
     def __str__(self) -> str:  # pragma: no cover - 纯格式化
         return self.name
+
 
 # 会话 Cookie 名与有效期。签名令牌里带过期时间戳，轮换签名密钥即全端下线。
 SESSION_COOKIE_NAME = "movieclaw_session"
@@ -117,6 +126,7 @@ def hash_password(password: str) -> str:
 def verify_password(password: str, password_hash: str) -> bool:
     """校验密码与哈希是否匹配（常量时间比较）。"""
     return _password_hash.verify(password, password_hash)
+
 
 # 建号一次性锁（进程内串行化，详见模块 docstring）
 _bootstrap_lock = asyncio.Lock()
@@ -481,13 +491,49 @@ _AGENT_TOKEN_SALT = "movieclaw.agent-token.v1"
 AGENT_TOKEN_TTL_SECONDS = 2 * 3600  # 一次 Agent 运行的令牌有效期上限
 _PAT_PREFIX = "mclaw_"  # 令牌明文前缀：肉眼可辨认来源，误提交扫描器也好识别
 
+#: 令牌「最近使用」的落盘节流间隔：精度够回答「这台机器还活着吗」，又不至于
+#: 让每个请求都写一次设置项。
+_TOKEN_TOUCH_INTERVAL_S = 60
+#: token_id → 上次落盘时刻（time.monotonic）。纯进程内缓存，重启即重来。
+_token_touched_at: dict[str, float] = {}
+
+#: 配对码有效期：够人从设备走到浏览器，又不让未决请求长期挂着。
+DEVICE_CODE_TTL_SECONDS = 300
+#: 下发给客户端的轮询间隔（秒）。
+DEVICE_POLL_INTERVAL_SECONDS = 2
+#: 服务端判定「轮询过快」的下限，略小于下发值，容忍客户端的时钟与网络抖动。
+_DEVICE_MIN_POLL_INTERVAL_S = 1.0
+#: 终态挑战的留存期：客户端还在轮询，必须能读到确定结论而不是「挑战不存在」。
+_DEVICE_LINGER_S = 120
+#: 单来源 IP 的未决请求上限：防止刷屏把审批页淹掉。
+_DEVICE_MAX_PENDING_PER_IP = 5
+#: 配对码字母表：去掉 0/O/1/I 等易混淆字符，人要念得出、抄得对。
+_USER_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+#: 允许的客户端形态。worker 有形态上限（只能转码），cli 没有。
+_DEVICE_CLIENT_TYPES = ("worker", "cli")
+
+
+def _now_iso() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
 
 def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-async def create_api_token(name: str) -> tuple[str, ApiTokenRecord]:
-    """创建一枚 API 令牌，返回 (明文, 落库记录)。明文仅此一次，服务端不可再回显。"""
+async def create_api_token(
+    name: str,
+    *,
+    client_type: str = "manual",
+    owner_kind: str = "admin",
+) -> tuple[str, ApiTokenRecord]:
+    """创建一枚 API 令牌，返回 (明文, 落库记录)。明文仅此一次，服务端不可再回显。
+
+    ``client_type`` 决定这枚令牌能用在哪：``worker`` 只能走转码链路（业务接口
+    在 ``require_login`` 里直接拒绝），``cli`` / ``manual`` 无形态上限。
+    令牌不设过期（``expires_at`` 恒为 None）——失效只靠显式吊销，理由见
+    docs/design/device-auth.md §8「凭证生命周期的独立性」。
+    """
     store = get_setting_store()
     setting = await store.get(ApiTokensSetting)
     plaintext = _PAT_PREFIX + secrets.token_urlsafe(32)
@@ -495,11 +541,13 @@ async def create_api_token(name: str) -> tuple[str, ApiTokenRecord]:
         id=secrets.token_hex(8),
         name=name,
         token_hash=_hash_token(plaintext),
-        created_at=datetime.now(UTC).isoformat(timespec="seconds"),
+        created_at=_now_iso(),
+        client_type=client_type,
+        owner_kind=owner_kind,
     )
     setting.tokens.append(record)
     await store.set(setting)
-    logger.info("已创建 API 令牌「%s」（id=%s）", name, record.id)
+    logger.info("已创建 API 令牌「%s」（id=%s，形态=%s）", name, record.id, client_type)
     return plaintext, record
 
 
@@ -516,8 +564,29 @@ async def revoke_api_token(token_id: str) -> bool:
         return False
     setting.tokens = remaining
     await store.set(setting)
+    _token_touched_at.pop(token_id, None)
     logger.info("已吊销 API 令牌 id=%s", token_id)
     return True
+
+
+async def _touch_api_token(token_id: str) -> None:
+    """记录令牌的最近使用时间，按分钟粒度落盘。
+
+    设备列表要能回答「这台机器还活着吗」，但每次请求都写设置项等于每次请求
+    一次磁盘写。这里做进程内节流：同一枚令牌 60 秒内只落一次盘，精度对
+    「最近活跃」这个用途绰绰有余。
+    """
+    now = time.monotonic()
+    if now - _token_touched_at.get(token_id, 0.0) < _TOKEN_TOUCH_INTERVAL_S:
+        return
+    _token_touched_at[token_id] = now
+    store = get_setting_store()
+    setting = await store.get(ApiTokensSetting)
+    for record in setting.tokens:
+        if record.id == token_id:
+            record.last_used_at = _now_iso()
+            await store.set(setting)
+            return
 
 
 async def issue_agent_token(session_id: str) -> str:
@@ -529,11 +598,14 @@ async def issue_agent_token(session_id: str) -> str:
 
 
 async def verify_bearer_token(token: str) -> Principal:
-    """校验 Bearer 令牌（Agent 签名令牌或 PAT），装配 Principal。
+    """校验 Bearer 令牌（Agent 签名令牌或设备/手工令牌），装配 Principal。
 
-    两类令牌都只能由超管创建（PAT 创建接口为管理员专属），因此 is_admin=True。
+    权限**在这里按批准者装配，而不是从令牌里读出来**——当前只有超管能批准
+    设备，因此落库令牌一律 ``is_admin=True``；将来开放成员批准时在这里加一个
+    成员分支即可，能力开关的事后调整会立刻对令牌生效
+    （docs/design/device-auth.md §4.2）。
     """
-    # 先试无状态的 Agent 签名令牌（无 IO），再查落库的 PAT
+    # 先试无状态的 Agent 签名令牌（无 IO），再查落库的设备/手工令牌
     serializer = URLSafeSerializer(await _get_session_secret(), salt=_AGENT_TOKEN_SALT)
     try:
         payload = serializer.loads(token)
@@ -553,10 +625,238 @@ async def verify_bearer_token(token: str) -> Principal:
     provided_hash = _hash_token(token)
     for record in await list_api_tokens():
         if hmac.compare_digest(provided_hash, record.token_hash):
-            return Principal(kind="pat", name=f"token:{record.name}", is_admin=True)
-    raise UnauthorizedException("令牌无效或已吊销，请重新创建（mclaw auth tokens create）")
+            await _touch_api_token(record.id)
+            return Principal(
+                kind="pat",
+                name=f"token:{record.name}",
+                is_admin=True,
+                client_type=record.client_type,
+            )
+    raise UnauthorizedException("令牌无效或已吊销，请在网页「设备」页重新配对")
+
+
+# ---------------------------------------------------------------------------
+# 设备授权：客户端出示配对码，人在网页上批准
+# ---------------------------------------------------------------------------
+#
+# 设计见 docs/design/device-auth.md §2/§3。三条不可动摇的性质：
+#
+# 1. **令牌只回到发起进程**。网页上出现的只有一段几分钟就作废的短码，它不是
+#    凭据；真正的令牌通过 device_code 兑换，从不显示在任何屏幕上——也就不会
+#    进剪贴板、聊天记录、截图或 Agent 的上下文。
+# 2. **未获批准的请求不落库**。磁盘上不该出现「有人试图接入」的记录被当成
+#    凭据来源。进程重启则未决请求全部作废，客户端重发即可。
+# 3. **令牌在批准那一刻才生成，在兑换那一刻才交付，且只交付一次**。
+
+
+@dataclass(slots=True)
+class DeviceAuthChallenge:
+    """一次进行中的设备接入请求（内存对象，不落库）。
+
+    生命周期：authorize（客户端发起）→ pending，人在网页上看到 →
+    approve / deny → approved 时短暂持有刚生成的令牌明文 → 客户端兑换一次
+    → consumed。超时未批准转 expired。
+
+    ``device_code`` 只存哈希：它是真正的兑换凭据，与令牌本体同等对待。
+    """
+
+    user_code: str
+    device_code_hash: str
+    client_type: str
+    client_name: str
+    source_ip: str
+    status: Literal["pending", "approved", "denied", "expired", "consumed"] = "pending"
+    #: 仅 approved → consumed 之间短暂持有；兑换后立即清空
+    granted_token: str | None = None
+    token_id: str | None = None
+    created_at: float = field(default_factory=time.monotonic)
+    expires_at: float = field(default_factory=lambda: time.monotonic() + DEVICE_CODE_TTL_SECONDS)
+    #: 终态进入时刻，用于 linger 清理
+    settled_at: float | None = None
+    last_poll_at: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class DeviceTokenResult:
+    """兑换端点的结论。路由据此映射 HTTP 状态码，服务层不关心传输细节。"""
+
+    status: Literal["pending", "granted", "denied", "expired", "slow_down"]
+    token: str | None = None
+    record: ApiTokenRecord | None = None
+
+
+#: user_code → 挑战。进程级内存，刻意不落库（见上方设计注释第 2 条）。
+_device_challenges: dict[str, DeviceAuthChallenge] = {}
+
+
+def _new_user_code() -> str:
+    """生成人能念出、能抄对的配对码，形如 ``MCLW-7F3K``。
+
+    低熵是可接受的：它只能在**管理员已登录的浏览器里**用于批准，猜中也调不动
+    批准端点。真正需要高熵的是 device_code。
+    """
+    body = "".join(secrets.choice(_USER_CODE_ALPHABET) for _ in range(4))
+    return f"MCLW-{body}"
+
+
+def _purge_settled_challenges() -> None:
+    """清掉过期的未决请求与留存期已到的终态请求。
+
+    终态要留一会儿（``_DEVICE_LINGER_S``）：客户端还在轮询，必须让它读到
+    「被拒绝」「已过期」这样的确定结论，而不是含糊的「挑战不存在」。
+    """
+    now = time.monotonic()
+    for code, ch in list(_device_challenges.items()):
+        if ch.status == "pending" and now >= ch.expires_at:
+            ch.status = "expired"
+            ch.settled_at = now
+            continue
+        if ch.settled_at is not None and now - ch.settled_at >= _DEVICE_LINGER_S:
+            del _device_challenges[code]
+
+
+def authorize_device(
+    *, client_type: str, client_name: str, source_ip: str
+) -> tuple[str, DeviceAuthChallenge]:
+    """受理一次接入请求，返回 (device_code 明文, 挑战)。
+
+    客户端**不声明权限**——它只说自己是什么形态、叫什么名字，权限由批准者决定。
+    """
+    if client_type not in _DEVICE_CLIENT_TYPES:
+        raise BadRequestException(f"未知的客户端类型：{client_type}")
+    _purge_settled_challenges()
+
+    pending_from_ip = sum(
+        1
+        for ch in _device_challenges.values()
+        if ch.status == "pending" and ch.source_ip == source_ip
+    )
+    if pending_from_ip >= _DEVICE_MAX_PENDING_PER_IP:
+        raise BadRequestException(
+            "同一来源的待批准请求过多，请先在网页「设备」页处理或等待现有请求过期"
+        )
+
+    while (user_code := _new_user_code()) in _device_challenges:  # pragma: no cover - 概率极低
+        continue
+    device_code = secrets.token_urlsafe(32)
+    challenge = DeviceAuthChallenge(
+        user_code=user_code,
+        device_code_hash=_hash_token(device_code),
+        client_type=client_type,
+        client_name=client_name.strip() or "未命名设备",
+        source_ip=source_ip,
+    )
+    _device_challenges[user_code] = challenge
+    logger.info(
+        "收到设备接入请求：%s（%s，来自 %s），配对码 %s",
+        challenge.client_name,
+        client_type,
+        source_ip,
+        user_code,
+    )
+    return device_code, challenge
+
+
+def list_device_requests() -> list[DeviceAuthChallenge]:
+    """列出仍待批准的请求（供网页展示），按发起时间从新到旧。"""
+    _purge_settled_challenges()
+    pending = [ch for ch in _device_challenges.values() if ch.status == "pending"]
+    return sorted(pending, key=lambda ch: ch.created_at, reverse=True)
+
+
+def _get_pending(user_code: str) -> DeviceAuthChallenge:
+    _purge_settled_challenges()
+    challenge = _device_challenges.get(user_code.strip().upper())
+    if challenge is None:
+        raise NotFoundException("配对请求不存在或已过期，请让设备重新发起")
+    if challenge.status != "pending":
+        raise BadRequestException("这条配对请求已经处理过了，请让设备重新发起")
+    return challenge
+
+
+async def approve_device_request(user_code: str) -> DeviceAuthChallenge:
+    """批准一次接入请求：此刻才生成并落库令牌，等客户端来兑换。
+
+    **先改状态再签发**：``create_api_token`` 要 await（读写设置项），如果放在
+    状态变更之前，两个并发的批准请求会双双通过 ``_get_pending`` 的检查、
+    给同一条请求签出两枚令牌，其中一枚永远没人兑换也没人知道它存在。
+    签发失败则退回 pending，让用户能重试。
+    """
+    challenge = _get_pending(user_code)
+    challenge.status = "approved"
+    try:
+        plaintext, record = await create_api_token(
+            challenge.client_name, client_type=challenge.client_type
+        )
+    except Exception:
+        challenge.status = "pending"
+        raise
+    challenge.granted_token = plaintext
+    challenge.token_id = record.id
+    challenge.settled_at = time.monotonic()
+    logger.info("已批准设备接入：%s（令牌 id=%s）", challenge.client_name, record.id)
+    return challenge
+
+
+def deny_device_request(user_code: str) -> DeviceAuthChallenge:
+    """拒绝一次接入请求。不生成任何令牌，也不在磁盘上留痕。"""
+    challenge = _get_pending(user_code)
+    challenge.status = "denied"
+    challenge.settled_at = time.monotonic()
+    logger.info("已拒绝设备接入：%s（来自 %s）", challenge.client_name, challenge.source_ip)
+    return challenge
+
+
+async def redeem_device_code(device_code: str) -> DeviceTokenResult:
+    """客户端轮询兑换。兑换成功即作废，重放同一个 device_code 不再返回令牌。"""
+    _purge_settled_challenges()
+    provided_hash = _hash_token(device_code)
+    challenge = next(
+        (
+            ch
+            for ch in _device_challenges.values()
+            if hmac.compare_digest(ch.device_code_hash, provided_hash)
+        ),
+        None,
+    )
+    if challenge is None:
+        # 已过期被清理、或根本不存在——对客户端是同一件事：停止轮询，重新发起
+        return DeviceTokenResult(status="expired")
+
+    now = time.monotonic()
+    if challenge.status == "pending":
+        # 轮询过快只让客户端退避，**不作废挑战**：正常用户的重试不该被当成攻击
+        if now - challenge.last_poll_at < _DEVICE_MIN_POLL_INTERVAL_S:
+            return DeviceTokenResult(status="slow_down")
+        challenge.last_poll_at = now
+        return DeviceTokenResult(status="pending")
+
+    if challenge.status == "approved":
+        token = challenge.granted_token
+        record = next(
+            (r for r in await list_api_tokens() if r.id == challenge.token_id),
+            None,
+        )
+        if token is None or record is None:  # 令牌在兑换前被吊销
+            challenge.status = "denied"
+            challenge.settled_at = now
+            return DeviceTokenResult(status="denied")
+        challenge.status = "consumed"
+        challenge.granted_token = None
+        challenge.settled_at = now
+        logger.info("设备已完成配对：%s", challenge.client_name)
+        return DeviceTokenResult(status="granted", token=token, record=record)
+
+    if challenge.status == "denied":
+        return DeviceTokenResult(status="denied")
+    return DeviceTokenResult(status="expired")
 
 
 def reset_auth_state() -> None:
-    """清空模块级可变状态（登录限速分桶）。仅供测试在用例间隔离。"""
+    """清空模块级可变状态（登录限速分桶、设备挑战、令牌活跃缓存）。
+
+    仅供测试在用例间隔离——这些状态都在进程内存里，生产环境靠重启自然清零。
+    """
     _throttles.clear()
+    _device_challenges.clear()
+    _token_touched_at.clear()

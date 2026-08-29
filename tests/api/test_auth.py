@@ -288,6 +288,11 @@ _PUBLIC_ALLOWLIST = {
     ("POST", "/api/v1/auth/bootstrap"),  # 首次建号（服务端一次性锁自我封闭）
     ("POST", "/api/v1/auth/login"),  # 登录本身
     ("POST", "/api/v1/auth/logout"),  # 仅清 Cookie，无信息暴露
+    # 设备授权的两个协议端点（docs/design/device-auth.md §2.1）：设备在拿到
+    # 令牌之前无凭可用，必须匿名。防滥用不靠鉴权，靠服务层三道约束——单 IP
+    # 未决请求上限、轮询退避、挑战全程不落库；且批准这一步要管理员会话。
+    ("POST", "/api/v1/auth/device/authorize"),
+    ("POST", "/api/v1/auth/device/token"),
     ("GET", "/api/v1/appearance"),  # 登录页需要背景图地址
     ("GET", "/api/v1/appearance/backdrops/{backdrop_id}"),  # 登录页背景图文件
 }
@@ -339,6 +344,7 @@ def test_every_route_denies_anonymous_access(client: TestClient) -> None:
             .replace("{member_id}", "1")
             .replace("{job_id}", "job_test")
             .replace("{device_id}", "test-device")
+            .replace("{user_code}", "MCLW-TEST")
             .replace("{name}", "seg00000.m4s")
             .replace("{index}", "0")
         )

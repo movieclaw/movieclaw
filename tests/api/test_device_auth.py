@@ -1,0 +1,279 @@
+"""设备授权协议的端到端测试（docs/design/device-auth.md）。
+
+覆盖三块：
+1. 全链路：发起 → 待批准 → 批准 → 兑换 → 令牌可用；
+2. 五条异常路径：轮询过快、被拒绝、过期、重放兑换、来源限流；
+3. 形态上限：Worker 令牌被业务接口默认拒绝（这是 Worker 权限收窄的唯一执行点，
+   遍历全路由验证，新增业务路由不需要额外标注也会被挡住）。
+"""
+
+from __future__ import annotations
+
+import time
+
+import pytest
+from fastapi.testclient import TestClient
+
+import movieclaw_api.services.auth as auth_service
+from movieclaw_api.core.config import get_settings
+from movieclaw_api.services.auth import reset_auth_state
+from movieclaw_api.settings.store import reset_setting_store
+from movieclaw_db.crypto import reset_secret_box
+
+_AUTH = "/api/v1/auth"
+_ADMIN = {"username": "admin", "password": "s3cret-pass"}
+
+
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path / 'test.db'}")
+    monkeypatch.setenv("SECRET_KEY_FILE", str(tmp_path / ".secret_key"))
+    monkeypatch.setenv("SCHEDULER_ENABLED", "false")
+    get_settings.cache_clear()
+    reset_setting_store()
+    reset_secret_box()
+    reset_auth_state()
+
+    from movieclaw_api.app import create_app
+
+    with TestClient(create_app()) as c:
+        c.post(f"{_AUTH}/bootstrap", json=_ADMIN)
+        c.post(f"{_AUTH}/login", json=_ADMIN)
+        yield c
+
+    reset_setting_store()
+    reset_secret_box()
+    reset_auth_state()
+    get_settings.cache_clear()
+
+
+def _authorize(client: TestClient, *, client_type: str = "cli", name: str = "claude-code@mac"):
+    resp = client.post(
+        f"{_AUTH}/device/authorize",
+        json={"client_type": client_type, "client_name": name},
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()["data"]
+
+
+def _redeem(client: TestClient, device_code: str):
+    return client.post(f"{_AUTH}/device/token", json={"device_code": device_code})
+
+
+# ---------------------------------------------------------------------------
+# 全链路
+# ---------------------------------------------------------------------------
+
+
+def test_full_pairing_flow_grants_usable_token(client: TestClient) -> None:
+    """发起 → 批准 → 兑换 → 令牌能调业务接口，且令牌只交付这一次。"""
+    grant = _authorize(client)
+    assert grant["user_code"].startswith("MCLW-")
+    assert grant["verification_uri"].endswith("/settings/devices")
+    assert grant["expires_in"] == auth_service.DEVICE_CODE_TTL_SECONDS
+
+    # 配对码不是凭据：它出现在网页上，而 device_code 只有客户端有
+    assert grant["device_code"] != grant["user_code"]
+
+    pending = client.get(f"{_AUTH}/devices/requests").json()["data"]
+    assert [p["user_code"] for p in pending] == [grant["user_code"]]
+    assert pending[0]["client_name"] == "claude-code@mac"
+
+    assert _redeem(client, grant["device_code"]).status_code == 202
+
+    approve = client.post(f"{_AUTH}/devices/requests/{grant['user_code']}/approve")
+    assert approve.status_code == 200, approve.text
+
+    granted = _redeem(client, grant["device_code"])
+    assert granted.status_code == 200, granted.text
+    token = granted.json()["data"]["token"]
+    assert token.startswith("mclaw_")
+
+    # 令牌可用：Bearer 走的是与会话 Cookie 相同的授权路径
+    fresh = TestClient(client.app)
+    me = fresh.get(f"{_AUTH}/me", headers={"Authorization": f"Bearer {token}"})
+    assert me.status_code == 200, me.text
+
+    # 兑换一次即作废：重放同一个 device_code 不再返回令牌
+    assert _redeem(client, grant["device_code"]).status_code == 400
+
+    # 批准后请求离开待批准列表，令牌进入设备列表
+    assert client.get(f"{_AUTH}/devices/requests").json()["data"] == []
+    tokens = client.get(f"{_AUTH}/tokens").json()["data"]
+    assert [(t["name"], t["client_type"]) for t in tokens] == [("claude-code@mac", "cli")]
+
+
+def test_revoking_token_cuts_off_the_device(client: TestClient) -> None:
+    """吊销是唯一的事后止损手段，必须立即生效。"""
+    grant = _authorize(client)
+    client.post(f"{_AUTH}/devices/requests/{grant['user_code']}/approve")
+    token = _redeem(client, grant["device_code"]).json()["data"]["token"]
+
+    token_id = client.get(f"{_AUTH}/tokens").json()["data"][0]["id"]
+    assert client.delete(f"{_AUTH}/tokens/{token_id}").status_code == 200
+
+    fresh = TestClient(client.app)
+    assert fresh.get(f"{_AUTH}/me", headers={"Authorization": f"Bearer {token}"}).status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# 异常路径
+# ---------------------------------------------------------------------------
+
+
+def test_polling_too_fast_backs_off_without_voiding_the_challenge(client: TestClient) -> None:
+    """轮询过快只让客户端退避——正常用户的重试不该被当成攻击而作废挑战。"""
+    grant = _authorize(client)
+    assert _redeem(client, grant["device_code"]).status_code == 202
+    assert _redeem(client, grant["device_code"]).status_code == 429
+
+    # 挑战仍然活着：批准后照样能兑换
+    client.post(f"{_AUTH}/devices/requests/{grant['user_code']}/approve")
+    assert _redeem(client, grant["device_code"]).status_code == 200
+
+
+def test_denied_request_grants_nothing(client: TestClient) -> None:
+    """拒绝不生成任何令牌，客户端拿到 400 后应当停止轮询。"""
+    grant = _authorize(client)
+    assert client.post(f"{_AUTH}/devices/requests/{grant['user_code']}/deny").status_code == 200
+
+    assert _redeem(client, grant["device_code"]).status_code == 400
+    assert client.get(f"{_AUTH}/tokens").json()["data"] == []
+
+
+def test_expired_challenge_stops_the_client(client: TestClient, monkeypatch) -> None:
+    """超时未批准即作废；客户端收到 400 而不是含糊的「挑战不存在」。"""
+    grant = _authorize(client)
+    real_monotonic = time.monotonic
+    monkeypatch.setattr(
+        auth_service.time,
+        "monotonic",
+        lambda: real_monotonic() + auth_service.DEVICE_CODE_TTL_SECONDS + 1,
+    )
+    assert _redeem(client, grant["device_code"]).status_code == 400
+    assert client.get(f"{_AUTH}/devices/requests").json()["data"] == []
+
+
+def test_unknown_device_code_is_indistinguishable_from_expired(client: TestClient) -> None:
+    """乱猜 device_code 与「已过期」返回同一结论，不给探测者留判据。"""
+    assert _redeem(client, "definitely-not-a-real-device-code").status_code == 400
+
+
+def test_pending_requests_are_capped_per_source(client: TestClient) -> None:
+    """单来源未决请求有上限，防止刷屏把审批页淹掉。"""
+    for _ in range(auth_service._DEVICE_MAX_PENDING_PER_IP):
+        _authorize(client)
+    overflow = client.post(
+        f"{_AUTH}/device/authorize",
+        json={"client_type": "cli", "client_name": "flood"},
+    )
+    assert overflow.status_code == 400
+
+
+def test_authorize_rejects_unknown_client_type(client: TestClient) -> None:
+    resp = client.post(
+        f"{_AUTH}/device/authorize",
+        json={"client_type": "toaster", "client_name": "x"},
+    )
+    assert resp.status_code == 400
+
+
+def test_approving_twice_is_rejected(client: TestClient) -> None:
+    """重复批准同一条请求不会再签发一枚令牌。"""
+    grant = _authorize(client)
+    assert client.post(f"{_AUTH}/devices/requests/{grant['user_code']}/approve").status_code == 200
+    assert client.post(f"{_AUTH}/devices/requests/{grant['user_code']}/approve").status_code == 400
+    assert len(client.get(f"{_AUTH}/tokens").json()["data"]) == 1
+
+
+def test_device_management_requires_admin_session(client: TestClient) -> None:
+    """批准是防钓鱼的唯一人工闸，必须要管理员会话——匿名一律 401。"""
+    grant = _authorize(client)
+    anon = TestClient(client.app)
+    assert anon.get(f"{_AUTH}/devices/requests").status_code == 401
+    assert anon.post(f"{_AUTH}/devices/requests/{grant['user_code']}/approve").status_code == 401
+    assert anon.post(f"{_AUTH}/devices/requests/{grant['user_code']}/deny").status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# 形态上限：Worker 令牌只能转码
+# ---------------------------------------------------------------------------
+
+
+def test_worker_token_is_rejected_by_business_endpoints(client: TestClient) -> None:
+    """遍历全路由：Worker 令牌在 require_login 处被默认拒绝。
+
+    这条守护的价值在于「新增业务路由不需要记得标注什么」——只要照常挂
+    require_login，Worker 就自动进不来。放行 Worker 的白名单只有转码那一处。
+    """
+    grant = _authorize(client, client_type="worker", name="Yi的Mac-mini")
+    client.post(f"{_AUTH}/devices/requests/{grant['user_code']}/approve")
+    token = _redeem(client, grant["device_code"]).json()["data"]["token"]
+
+    worker = TestClient(client.app)
+    headers = {"Authorization": f"Bearer {token}"}
+    for path in (f"{_AUTH}/me", "/api/v1/subscriptions", "/api/v1/libraries", f"{_AUTH}/tokens"):
+        resp = worker.get(path, headers=headers)
+        assert resp.status_code == 403, f"{path} 竟然放行了 Worker 令牌：{resp.status_code}"
+
+
+def test_cli_token_is_not_restricted_by_client_type(client: TestClient) -> None:
+    """对照组：同一批准者签发的 CLI 令牌不受形态上限影响。"""
+    grant = _authorize(client)
+    client.post(f"{_AUTH}/devices/requests/{grant['user_code']}/approve")
+    token = _redeem(client, grant["device_code"]).json()["data"]["token"]
+
+    cli = TestClient(client.app)
+    resp = cli.get("/api/v1/subscriptions", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200, resp.text
+
+
+def test_tokens_cannot_mint_or_revoke_credentials(client: TestClient) -> None:
+    """凭证的签发与吊销只能由人在浏览器里完成。
+
+    这是「吊销是唯一止损手段」这句话成立的前提：设备令牌若能签发新令牌，
+    就能给自己造一枚备份，吊销原来那枚也止不住损。
+    """
+    grant = _authorize(client)
+    client.post(f"{_AUTH}/devices/requests/{grant['user_code']}/approve")
+    token = _redeem(client, grant["device_code"]).json()["data"]["token"]
+    token_id = client.get(f"{_AUTH}/tokens").json()["data"][0]["id"]
+
+    holder = TestClient(client.app)
+    headers = {"Authorization": f"Bearer {token}"}
+    # 令牌可用（业务接口通），但碰不到凭证管理面
+    assert holder.get("/api/v1/subscriptions", headers=headers).status_code == 200
+    assert (
+        holder.post(f"{_AUTH}/tokens", json={"name": "spare"}, headers=headers).status_code == 403
+    )
+    assert holder.get(f"{_AUTH}/tokens", headers=headers).status_code == 403
+    assert holder.delete(f"{_AUTH}/tokens/{token_id}", headers=headers).status_code == 403
+
+    # 也不能自我扩张：批准别的设备把更多机器拉进来
+    other = _authorize(client, name="attacker-box")
+    assert (
+        holder.post(
+            f"{_AUTH}/devices/requests/{other['user_code']}/approve", headers=headers
+        ).status_code
+        == 403
+    )
+    assert (
+        client.get(f"{_AUTH}/devices/requests").json()["data"][0]["client_name"] == "attacker-box"
+    )
+
+
+def test_concurrent_approvals_mint_at_most_one_token(client: TestClient) -> None:
+    """并发批准同一条请求只签出一枚令牌。
+
+    签发要 await（读写设置项），若状态变更放在 await 之后，两个并发请求会双双
+    通过「仍待批准」的检查，多签的那枚永远没人兑换、也不会有人知道它存在。
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    grant = _authorize(client)
+    url = f"{_AUTH}/devices/requests/{grant['user_code']}/approve"
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        codes = [f.result().status_code for f in [pool.submit(client.post, url) for _ in range(4)]]
+
+    assert codes.count(200) == 1, f"批准被重复受理：{codes}"
+    assert len(client.get(f"{_AUTH}/tokens").json()["data"]) == 1
