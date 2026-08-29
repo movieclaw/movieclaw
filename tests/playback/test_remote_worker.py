@@ -312,7 +312,6 @@ async def test_registry_rejects_non_string_worker_id():
 def test_remote_worker_requires_safe_http_base_url(base_url, expected, monkeypatch):
     config = RemoteTranscodeRuntimeConfig(
         enabled=True,
-        worker_token="secret",
         base_url=base_url,
         base_url_source="remote_transcode_setting",
         max_artifact_bytes=512 * 1024 * 1024,

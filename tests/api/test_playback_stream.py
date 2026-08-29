@@ -1122,7 +1122,6 @@ def test_remote_artifact_upload_rejects_oversized_body(client, tmp_path):
         "/api/v1/transcode-worker/config",
         json={
             "enabled": False,
-            "worker_token": None,
             "max_artifact_bytes": 3,
         },
     )
