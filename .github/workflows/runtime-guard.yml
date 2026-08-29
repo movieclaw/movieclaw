@@ -12,6 +12,11 @@
 # nginx.conf.template 与 entrypoint.sh 都属于这一类：#229 给前者加了
 # WebSocket 转发规则却没 bump，老镜像用户更新后远程转码 Worker 的 WS 握手
 # 会静默 404，因为他们镜像里的 nginx 仍是旧模板。
+#
+# mclaw（cli/）同样属于这一类：它是在 go-builder 阶段编好、COPY 进
+# /usr/local/bin 的二进制，应用包里没有它。Agent 操作产品全靠它，命令面
+# 变了却不发镜像，老镜像用户的 Agent 就用不上新命令。（好在不会坏：spec
+# 偏斜检测会让旧 CLI 从服务端拉新的接口目录，只是拿不到精选命令与修复。）
 # =============================================================================
 name: runtime-guard
 
@@ -23,6 +28,7 @@ on:
       - "docker/runtime-version"
       - "docker/nginx.conf.template"
       - "docker/entrypoint.sh"
+      - "cli/**"
 
 jobs:
   check:
@@ -58,15 +64,18 @@ jobs:
             | grep -cE '^[+-].*apt-get install|^[+-]FROM ' || true)
           # 只存在于镜像里的文件是否变化：它们不随应用包发布，老镜像做应用内
           # 更新时拿不到新版本，任何改动都必须跟一次镜像发布
+          # cli/ 里排除纯测试与验收脚本：它们不进镜像，改了不影响运行时
           image_only_changed=$(git diff --name-only "$BASE"...HEAD -- \
-            docker/nginx.conf.template docker/entrypoint.sh | wc -l)
+            docker/nginx.conf.template docker/entrypoint.sh cli \
+            | grep -vE '(_test\.go$|^cli/e2e/|^cli/testdata/|^cli/\.goreleaser\.yaml$)' \
+            | wc -l)
           rv_changed=$(git diff "$BASE"...HEAD -- docker/runtime-version \
             | grep -cE '^[+-][0-9]' || true)
 
           if { [ "$(cat deps_changed)" = "1" ] || [ "$docker_changed" -gt 0 ] \
                 || [ "$image_only_changed" -gt 0 ]; } \
               && [ "$rv_changed" -eq 0 ]; then
-            echo "::error::检测到运行时契约变化（pyproject dependencies、Dockerfile 的系统包/基础镜像，或 nginx.conf.template / entrypoint.sh 这类只存在于镜像里的文件），但 docker/runtime-version 未 bump。旧镜像的应用内更新拿不到这些改动，会表现为启动失败或功能静默失效——请把 docker/runtime-version +1，并在合并后发布新镜像。若确认本次变化向后兼容（如仅放宽版本上限、仅改注释），可由维护者说明后跳过本检查。"
+            echo "::error::检测到运行时契约变化（pyproject dependencies、Dockerfile 的系统包/基础镜像，或 nginx.conf.template / entrypoint.sh / cli 这类只存在于镜像里的文件），但 docker/runtime-version 未 bump。旧镜像的应用内更新拿不到这些改动，会表现为启动失败或功能静默失效——请把 docker/runtime-version +1，并在合并后发布新镜像。若确认本次变化向后兼容（如仅放宽版本上限、仅改注释），可由维护者说明后跳过本检查。"
             exit 1
           fi
           echo "runtime-version 契约检查通过"

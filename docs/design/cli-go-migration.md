@@ -56,22 +56,37 @@
 cli/
 ├── go.mod                       module github.com/yipengfei329/movieclaw/cli （go 1.24）
 ├── .goreleaser.yaml             多平台构建与分发
-├── data/spec.json               go:embed 的内置基线（构建期由 export_openapi 生成）
 ├── cmd/mclaw/main.go            唯一入口：装配 root 命令、全局标志、退出码收口
 ├── internal/
 │   ├── clierr/                  ← core/errors.py       退出码与带 hint 的错误
 │   ├── config/                  ← core/config.py       上下文、凭证、平台路径、权限自检
 │   ├── api/                     ← core/http.py         认证注入、信封拆解、错误映射
+│   ├── jsonval/                 （新）保序 JSON 对象与取值助手
+│   ├── flagx/                   （新）接受「裸数字＝秒」的时长标志
 │   ├── sse/                     ← core/sse.py          手写分帧、Last-Event-ID 续传
 │   ├── output/                  ← core/output.py       table/json/yaml、TTY 判定
+│   ├── wait/                    ← tree_builder 的两个等待循环（生成层与精选层共用）
 │   ├── spec/                    ← gen/spec_loader.py   内置基线 + hash 偏斜刷新
+│   │   └── data/spec.json       go:embed 的内置基线（scripts/export-spec.sh 生成）
 │   ├── tree/                    ← gen/tree_builder.py  spec → cobra 命令树（最大一块）
 │   └── overlay/                 ← overlay/*.py         精选命令
 │       ├── auth.go  login/logout/status（设备配对）
 │       ├── search.go download.go library.go session.go logs.go jobs.go
-│       └── group.go  DefaultCommandGroup 等价物
-└── testdata/                    与 Python 版共享的行为快照
+│       └── groups.go  DefaultCommandGroup 等价物
+├── testdata/                    命令面快照（生成命令清单 + 装配后的整棵树）
+└── e2e/                         对真服务器与协议桩的端到端验收脚本
 ```
+
+两个包是移植过程中长出来的，Python 版没有对应物：
+
+- **`jsonval`**：Go 的 map 无序、`encoding/json` 又按字典序输出，直接用
+  `map[string]any` 会把服务端排好的字段顺序打乱（`name`、`kind` 被
+  `auto_clear_missing` 挤到后面）。JSON 输出是 Agent 的稳定契约、表格列序是给
+  人扫一眼的，两者都得按服务端给的顺序。顺带用 `json.Number` 解数字，长 ID
+  不再退化成浮点近似值。
+- **`flagx`**：`time.ParseDuration` 要求带单位，但既有契约是秒
+  （`--timeout 30`、`--wait-timeout 3600` 已经写进脚本和 Agent 的用法）。
+  两种都收。
 
 依赖（刻意保持少，与 Python 版三个依赖的克制同口径）：
 
@@ -167,9 +182,14 @@ Python 版靠自定义 `click.Group.resolve_command`。cobra 的等价做法：�
 
 `internal/tree`：spec → 命令树、参数映射、help 渲染、`x-cli-*` 元数据消费。
 
-**验收**：`go test` 生成的命令树与 `tests/cli/command_tree_snapshot.txt`
-逐字节相同；`KNOWN_NON_GENERATED` 等价清单一致；抽样端点的 `--help` 含
-summary、参数说明与 `x-cli-examples`。
+**验收**：`go test` 生成的命令树与命令树快照逐字节相同；
+`KNOWN_NON_GENERATED` 等价清单一致；抽样端点的 `--help` 含 summary、
+参数说明与 `x-cli-examples`。
+
+**实际结果**：216 条生成命令逐字节一致。另外发现并修掉一处 click 的固有限制：
+一个名字在 click 里只能是组或命令二选一，`dl limits set` 与 `watch entries`
+因此被各自的同名节点挤掉——快照里一直列着它们，但从未真正挂上去过。cobra
+允许一个节点既可执行又带子命令，两条命令随之补齐。
 
 ### Stage 3 —— 精选层与流式
 
@@ -180,14 +200,20 @@ summary、参数说明与 `x-cli-examples`。
 **验收**：`tests/cli/test_p2_flows.py` 覆盖的行为逐条在 Go 侧有对应测试并通过；
 「搜索 → 下载 → 订阅 → 扫描入库」在真实服务器上跑通。
 
+**实际结果**：`cli/e2e/` 里落了两套可重复跑的验收脚本——`live.sh` 对真服务器
+（47 项：只读查询、三种输出格式、三种传参形态、七种退出码、帮助文案、长任务），
+`stub.py` + `sse.sh` 对协议桩（24 项：搜索流、会话流断线续传、Job 等待、
+行号快照 → 下载、歧义消解退出码 7）。搜索流、会话流在真环境要接 PT 站点和
+大模型，CI 里没有，所以协议本身用桩走完整。
+
 ### Stage 4 —— 集成进产品
 
 | 改动 | 位置 |
 |---|---|
 | Dockerfile 增加 `go-builder` 阶段，二进制装到 `/usr/local/bin/mclaw` | `Dockerfile` |
 | Agent 工具改执行二进制（`MOVIECLAW_CLI_BIN`，默认 `/usr/local/bin/mclaw`） | `src/movieclaw_agent/tools/mclaw.py` |
-| 发版产物带 `linux/amd64` 与 `linux/arm64` 两个二进制 | `scripts/build-release-artifacts.sh` |
-| 更新产物布局校验改为按运行架构检查二进制 | `services/app_update.py:_validate_layout` |
+| 发版流程新增 cli 作业，由 GoReleaser 出五平台产物附到 Release | `.github/workflows/release.yml`、`cli/.goreleaser.yaml` |
+| 基线 spec 搬到 `src/movieclaw_api/data/`，一次导出写两处 | `scripts/export-spec.sh`、`services/spec_catalog.py`、`app_update.py:_validate_layout` |
 | CI 增加 Go lane（`go vet` / `golangci-lint` / `go test`），与既有 Swift lane 同构 | `.github/workflows/ci.yml` |
 
 **Dockerfile 的阶段顺序**是这一步的关键：spec 必须先由 Python 侧导出，再进
@@ -202,8 +228,13 @@ go-builder 编译，否则内嵌基线与镜像代码不同版。
 `cli/testdata/`）、根 `pyproject.toml` 的 `mclaw` entry point 与 click 依赖。
 `scripts/install-cli.sh` 改为下载 GoReleaser 产物，并**补上 `install-cli.ps1`**。
 
-**验收**：`grep -rn "movieclaw_cli"` 全仓零命中；干净机器上一行安装跑通；
+**验收**：`grep -rn "movieclaw_cli"` 只剩讲历史的注释；干净机器上一行安装跑通；
 Windows 一行安装跑通；`pyproject.toml` 少掉 click 依赖（`runtime-version` 再 +1）。
+
+Python 侧的命令面守护测试（命令树快照、豁免端点清单、域帮助覆盖、参数不与内置
+标志重名、`x-cli` 标注）全部搬进 `cli/internal/tree/guards_test.go`；
+基线 spec 的漂移守护搬到 `tests/api/test_spec_baseline.py`，并新增一条
+「Go 内嵌副本与服务端副本逐字节一致」。
 
 ### Stage 6 —— 分发与验收
 
@@ -252,3 +283,29 @@ Windows 一行安装跑通；`pyproject.toml` 少掉 click 依赖（`runtime-ver
 - **不把服务端也 Go 化**。这次只换客户端。
 - **不保留 Python CLI 做双轨**。两份实现必然漂移，且 Agent 到底调哪个会变成
   一个说不清的问题。Stage 5 一次删干净。
+
+---
+
+## 7. 迁移期发现并修掉的问题
+
+移植不是逐行翻译，对着两版逐条比对输出反而暴露了原实现里的几处问题。记在这里，
+因为它们都不是「Go 特有」的，将来读代码的人会想知道为什么这么写：
+
+| 问题 | 影响 | 处理 |
+|---|---|---|
+| `dl limits set`、`watch entries` 从未挂上命令树 | 两条命令在快照里、在文档里，但敲了报「未知命令」 | cobra 允许一个节点既可执行又带子命令，补齐 |
+| `Stream` 的注释写着「防半开连接永久挂死」，代码只设了 `Timeout: 0` | NAT 超时、反代重启、服务假死时命令永久挂着，既不出结果也不报错 | 按读空闲计时的 `idleGuard`，120 秒无数据就取消请求 |
+| 搜索流在 `done` 之前断掉时报的是笼统的断流错误 | 调用方不知道收到几条、快照有没有落 | 改报「结果不完整（仅收到 N 条，未落快照）」 |
+| `require_admin` 接受 Bearer 令牌（Stage 0 之前就存在） | 泄漏的设备令牌可以自我复制：再签一枚令牌、批准攻击者的机器 | 新增 `require_admin_session`，凭证签发面收归浏览器会话 |
+
+**一个需要长期记住的后果**：mclaw 是 COPY 进镜像的二进制，应用包里没有它，
+所以它和 `nginx.conf.template`、`entrypoint.sh` 同属「只存在于镜像里的文件」——
+改了 `cli/` 就要 bump `docker/runtime-version` 并发新镜像，否则老镜像用户的
+Agent 拿不到新命令。`runtime-guard.yml` 已把 `cli/**` 纳入监控（排除
+`_test.go`、`e2e/`、`testdata/` 这些不进镜像的部分）。好在不会坏：spec 偏斜
+检测会让旧 CLI 从服务端拉新的接口目录，只是拿不到精选命令与修复。
+
+对着真服务器逐条比对退役中的 Python CLI 是这次迁移性价比最高的一步：32 条命令的
+JSON 输出、12 条命令的表格输出逐字节一致，YAML 因两边 emitter 风格不同
+（PyYAML 序列不缩进、偏好单引号）比数据等价。**字段顺序**这个问题就是这样发现的，
+靠读代码不可能看出来。
