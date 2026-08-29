@@ -54,16 +54,28 @@ func saveSnapshot(shot snapshot) error {
 
 // loadSnapshot 读上次搜索快照。读不到或坏了都返回 nil——调用方给的提示
 // （「先执行 mclaw search」）比一条解析错误有用。
+//
+// 解析走 jsonval.Decode 而不是 encoding/json：种子条目在这之后要按
+// *jsonval.Map 取字段（download 要读 attrs.titles_zh 之类），标准库解出来的
+// 是普通 map，取值会全部落空——下载会变成「什么都没识别到」。
 func loadSnapshot() *snapshot {
 	raw, err := os.ReadFile(snapshotPath())
 	if err != nil {
 		return nil
 	}
-	var shot snapshot
-	if err := json.Unmarshal(raw, &shot); err != nil {
+	decoded, err := jsonval.Decode(raw)
+	if err != nil {
 		return nil
 	}
-	return &shot
+	root := jsonval.Object(decoded)
+	if root == nil {
+		return nil
+	}
+	return &snapshot{
+		Server:  jsonval.Str(root.Get("server")),
+		Keyword: jsonval.Str(root.Get("keyword")),
+		Items:   jsonval.Array(root.Get("items")),
+	}
 }
 
 // NewSearchGroup 构造 `mclaw search` 组：三条精选子命令 + 生成层随后并入的
@@ -207,11 +219,15 @@ func newSearchTorrentsCommand() *cobra.Command {
 		var collected []any
 		sawDone := false
 		streamErr := runTorrentSearch(client, params, keyword, streamEvents, &collected, &sawDone)
-		if streamErr != nil && !sawDone {
-			return streamErr
-		}
 		if !sawDone {
-			// 流在 done 之前闭合：结果不完整，绝不能当完整结果输出/落快照
+			// 流在 done 之前闭合：结果不完整，绝不能当完整结果输出/落快照。
+			// 断流本身的报错（「事件流在终态前闭合」）不如这句有用——它说清了
+			// 收到几条、快照没落，调用方知道该重试而不是拿残缺结果继续。
+			// 但认证失败、服务端 4xx 这类确定性错误要原样透出。
+			var cliErr *clierr.Error
+			if streamErr != nil && asCliError(streamErr, &cliErr) && cliErr.ExitCode != clierr.Network {
+				return streamErr
+			}
 			return clierr.Newf(clierr.Network,
 				"搜索流提前中断，结果不完整（仅收到 %d 条，未落快照）", len(collected)).
 				WithHint("网络可能不稳或服务已重启，请重试 mclaw search torrents")

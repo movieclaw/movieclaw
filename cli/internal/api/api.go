@@ -8,6 +8,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -164,32 +165,73 @@ func (c *Client) Download(path string, params url.Values, target string) error {
 	return nil
 }
 
+// StreamIdleTimeout 是事件流「多久没数据就判定为断了」的阈值。
+//
+// 服务端有心跳和事件节奏，正常的流不会静默这么久；没有这个阈值，半开连接
+// （NAT 超时、反代重启、服务假死）会让命令永久挂着，既不出结果也不报错。
+const StreamIdleTimeout = 120 * time.Second
+
 // Stream 打开一个 SSE 端点，返回响应体供调用方分帧消费。
 func (c *Client) Stream(path string, params url.Values, lastEventID string) (io.ReadCloser, error) {
+	// 事件流是长连接，不受全局超时约束；改用「读空闲」超时看住它
+	ctx, cancel := context.WithCancel(context.Background())
 	req, err := c.newRequest(http.MethodGet, path, params, nil, "")
 	if err != nil {
+		cancel()
 		return nil, err
 	}
+	req = req.WithContext(ctx)
 	req.Header.Set("Accept", "text/event-stream")
 	if lastEventID != "" {
 		req.Header.Set("Last-Event-ID", lastEventID)
 	}
-	// 事件流不受全局超时约束（长连接），但要防半开连接永久挂死：
-	// 服务端有心跳/事件节奏，正常流不会触发 120 秒无数据。
 	streamer := &http.Client{Timeout: 0, Transport: c.http.Transport}
 	resp, err := streamer.Do(req)
 	if err != nil {
+		cancel()
 		return nil, c.transportError(err, req.URL.String())
 	}
 	if resp.StatusCode >= 400 {
 		defer resp.Body.Close()
+		cancel()
 		if _, parseErr := c.parse(resp); parseErr != nil {
 			return nil, parseErr
 		}
 		return nil, clierr.New("事件流打开失败（HTTP %d）", resp.StatusCode)
 	}
 	c.recordSpecHash(resp)
-	return resp.Body, nil
+	return newIdleGuard(resp.Body, cancel, StreamIdleTimeout), nil
+}
+
+// idleGuard 在读空闲超过 timeout 时取消请求，让阻塞中的 Read 返回错误。
+//
+// 定时器由每次成功的 Read 续期：有数据流动就一直读下去，真的静默了才断。
+type idleGuard struct {
+	body    io.ReadCloser
+	cancel  context.CancelFunc
+	timer   *time.Timer
+	timeout time.Duration
+}
+
+func newIdleGuard(body io.ReadCloser, cancel context.CancelFunc, timeout time.Duration) io.ReadCloser {
+	guard := &idleGuard{body: body, cancel: cancel}
+	guard.timer = time.AfterFunc(timeout, cancel)
+	guard.timeout = timeout
+	return guard
+}
+
+func (g *idleGuard) Read(p []byte) (int, error) {
+	n, err := g.body.Read(p)
+	if n > 0 {
+		g.timer.Reset(g.timeout)
+	}
+	return n, err
+}
+
+func (g *idleGuard) Close() error {
+	g.timer.Stop()
+	g.cancel()
+	return g.body.Close()
 }
 
 func (c *Client) newRequest(

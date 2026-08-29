@@ -226,7 +226,7 @@ func abortWait(message string) error {
 
 func hasHandoffAction(actions any) bool {
 	for _, item := range jsonval.Array(actions) {
-		if action, ok := item.(map[string]any); ok && jsonval.Str(action["type"]) == "handoff_agent" {
+		if jsonval.Str(jsonval.At(item, "type")) == "handoff_agent" {
 			return true
 		}
 	}

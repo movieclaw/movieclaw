@@ -287,24 +287,16 @@ func defaultClientName() string {
 }
 
 func stringField(data any, key, fallback string) string {
-	if m, ok := data.(map[string]any); ok {
-		if value, ok := m[key].(string); ok && value != "" {
-			return value
-		}
+	if value := jsonval.Str(jsonval.Object(data).Get(key)); value != "" {
+		return value
 	}
 	return fallback
 }
 
 func intField(data any, key string, fallback int) int {
-	m, ok := data.(map[string]any)
-	if !ok {
+	value := jsonval.Object(data).Get(key)
+	if value == nil {
 		return fallback
 	}
-	switch value := m[key].(type) {
-	case float64:
-		return int(value)
-	case int:
-		return value
-	}
-	return fallback
+	return jsonval.Int(value)
 }

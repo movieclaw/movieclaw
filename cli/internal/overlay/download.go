@@ -1,6 +1,7 @@
 package overlay
 
 import (
+	"encoding/json"
 	"strconv"
 	"strings"
 
@@ -191,10 +192,10 @@ func autoRouteBody(
 	switch status := jsonval.Str(target.Get("status")); status {
 	case "ambiguous":
 		// 歧义是机器可恢复状态：stdout 保持结构化，stderr 只写下一步。
-		if err := output.Emit(map[string]any{
-			"status":     status,
-			"candidates": jsonval.Array(target.Get("candidates")),
-		}, format, false); err != nil {
+		if err := output.Emit(jsonval.NewMap(
+			"status", status,
+			"candidates", jsonval.Array(target.Get("candidates")),
+		), format, false); err != nil {
 			return nil, err
 		}
 		return nil, clierr.Newf(clierr.Ambiguous, "识别到多个可能的影视条目，未提交下载").
@@ -258,8 +259,12 @@ func torrentIdentity(hit *jsonval.Map) (kind, title string, year int, ok bool) {
 	}
 	// 年份必须是整数：JSON 里 1994.0 与字符串 "1994" 都不接受，
 	// 与 Web 端的门槛保持一致，宁可让用户显式指定目标。
-	value, isNumber := attrs.Get("year").(float64)
-	if !isNumber || value != float64(int(value)) {
+	number, isNumber := attrs.Get("year").(json.Number)
+	if !isNumber {
+		return "", "", 0, false
+	}
+	value, err := number.Int64()
+	if err != nil {
 		return "", "", 0, false
 	}
 	year = int(value)

@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/yipengfei329/movieclaw/cli/internal/api"
 	"github.com/yipengfei329/movieclaw/cli/internal/clierr"
+	"github.com/yipengfei329/movieclaw/cli/internal/jsonval"
 	"github.com/yipengfei329/movieclaw/cli/internal/output"
 	"github.com/yipengfei329/movieclaw/cli/internal/overlay"
 	"github.com/yipengfei329/movieclaw/cli/internal/spec"
@@ -59,7 +60,9 @@ func run() int {
 		if err != nil {
 			return nil, err
 		}
-		doc, ok := data.(map[string]any)
+		// 生成层读的是标准库形态的 map（内置基线 spec 也走那条路），
+		// 这里把 api 层的保序对象还原回去
+		doc, ok := jsonval.Plainify(data).(map[string]any)
 		if !ok {
 			return nil, fmt.Errorf("响应不是 OpenAPI spec")
 		}

@@ -210,3 +210,27 @@ func decodeArray(decoder *json.Decoder) ([]any, error) {
 		items = append(items, value)
 	}
 }
+
+// Plainify 把保序结构还原成标准库形态的 map[string]any / []any。
+//
+// 只有一个用途：偏斜刷新时从 /spec 拉回来的 OpenAPI 文档要交给生成层，
+// 而生成层读的是 encoding/json 解出来的普通 map（内置基线 spec 走的就是
+// 那条路）。业务输出一律不要用它——顺序丢了就白保了。
+func Plainify(value any) any {
+	switch v := value.(type) {
+	case *Map:
+		out := make(map[string]any, v.Len())
+		for _, key := range v.Keys() {
+			out[key] = Plainify(v.Get(key))
+		}
+		return out
+	case []any:
+		out := make([]any, len(v))
+		for i, item := range v {
+			out[i] = Plainify(item)
+		}
+		return out
+	default:
+		return value
+	}
+}
