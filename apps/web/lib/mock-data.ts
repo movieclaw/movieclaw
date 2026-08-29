@@ -7,6 +7,7 @@ import type { ComponentType, SVGProps } from "react";
 import {
   BookmarkIcon,
   ChatIcon,
+  DeviceIcon,
   DownloadIcon,
   FilmIcon,
   FolderIcon,
@@ -152,6 +153,9 @@ export const settingsSectionGroups: SettingsSectionGroup[] = [
   {
     label: "系统",
     items: [
+      // 设备排在「应用」之前：它回答的是「谁能碰这台 movieclaw」，
+      // 属于要先看一眼的东西；应用/网络那些是装完配一次的低频项。
+      { id: "devices", label: "设备", description: "命令行与转码 Worker 的接入审批和吊销", icon: DeviceIcon },
       { id: "app", label: "应用", description: "版本更新、外部访问地址、远程转码与重启", icon: GearIcon },
       { id: "webhook", label: "Webhook", description: "向外部服务推送播放、收藏等事件", icon: SendIcon },
       { id: "network", label: "网络与代理", description: "外部服务的代理与镜像地址，解决 TMDB 等不可达", icon: GlobeIcon },

@@ -8,6 +8,7 @@ import { AppConfigSection } from "@/components/app-config-section";
 import { AppUpdateDot, usePendingUpdate } from "@/components/app-update-entry";
 import { AppUpdateSection } from "@/components/app-update-section";
 import { AvatarBadge } from "@/components/avatar-badge";
+import { DevicesSection } from "@/components/devices-section";
 import { DownloaderConfigSection } from "@/components/downloader-config-section";
 import { useConfirm } from "@/components/feedback";
 import { ImportWatchSection } from "@/components/import-watch-section";
@@ -203,6 +204,8 @@ export function SettingsPanel({ active }: SettingsPanelProps) {
           <ImPushSection />
         ) : section.id === "members" ? (
           <MembersSection />
+        ) : section.id === "devices" ? (
+          <DevicesSection />
         ) : section.id === "app" ? (
           <AppSection />
         ) : section.id === "webhook" ? (

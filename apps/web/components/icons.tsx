@@ -321,6 +321,13 @@ export const TerminalIcon = (p: IconProps) => (
   </Base>
 );
 
+export const DeviceIcon = (p: IconProps) => (
+  <Base {...p}>
+    <rect x="3" y="4" width="18" height="12" rx="2" />
+    <path d="M2 20h20" />
+  </Base>
+);
+
 export const GlobeIcon = (p: IconProps) => (
   <Base {...p}>
     <circle cx="12" cy="12" r="9" />
