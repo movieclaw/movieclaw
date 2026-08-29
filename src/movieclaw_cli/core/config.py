@@ -1,4 +1,4 @@
-"""CLI 本地配置与凭证（docs/design/device-auth.md §6.2）。
+r"""CLI 本地配置与凭证（docs/design/device-auth.md §6.2）。
 
 **凭证必须落在每用户的固定位置**——这是「任何终端、任何应用触发都能连」的
 前提：用户配一次，之后从 Dock 启动的 GUI 应用、cron、systemd 服务里跑

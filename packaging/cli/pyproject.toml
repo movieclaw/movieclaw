@@ -1,0 +1,57 @@
+# movieclaw-cli：CLI 的独立发行包（docs/design/device-auth.md §6.4）
+#
+# 为什么要拆：主包 `movieclaw` 的依赖里有 fastapi、onnxruntime、pillow、
+# sqlmodel、openai 等几十个重依赖，远程用户装一个命令行客户端要拖下几百 MB。
+# 而 CLI 本体只依赖 click / httpx / pyyaml 三个纯 Python 包，且零 import
+# 服务端模块——拆包没有任何技术阻力。
+#
+# 为什么不挪代码：源码仍然只有 `src/movieclaw_cli` 一份，本文件用相对
+# package-dir 指过去。挪目录会打断 `pythonpath = ["src"]`、Docker 构建和
+# 既有的导入路径，换来的只是目录好看一点。
+#
+# 构建（在本目录执行）：
+#     uv build --wheel
+# 版本号从 movieclaw_api.__version__ 静态读取（setuptools 走 AST，不导入
+# 模块），因此不新增第四个需要手工同步的版本位置。
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "movieclaw-cli"
+dynamic = ["version"]
+description = "movieclaw 的命令行客户端（mclaw）——面向 Agent 的薄客户端"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "yipengfei" }]
+keywords = ["movieclaw", "cli", "agent"]
+dependencies = [
+  # 命令树由 OpenAPI spec 运行时动态构建，click 的 Group/Command 对象模型
+  # 适合程序化注册（docs/design/cli.md §9）
+  "click>=8.1.0,<9.0.0",
+  # HTTP 与 SSE；[socks] 与服务端同口径，方便走代理访问远程 movieclaw
+  "httpx[socks]>=0.28.0,<1.0.0",
+  # -o yaml 输出
+  "pyyaml>=6.0,<7.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/yipengfei329/movieclaw"
+
+[project.scripts]
+mclaw = "movieclaw_cli.__main__:main"
+
+[tool.setuptools]
+package-dir = { "" = "../../src" }
+
+[tool.setuptools.dynamic]
+version = { attr = "movieclaw_api.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["../../src"]
+include = ["movieclaw_cli*"]
+
+[tool.setuptools.package-data]
+# 内置基线 spec：命令树离线可浏览，不依赖先连上服务器
+movieclaw_cli = ["data/spec.json"]

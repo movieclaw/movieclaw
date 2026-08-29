@@ -537,13 +537,21 @@ onnxruntime、pillow、sqlmodel、openai 等几十个重依赖——远程用户
 服务端模块，拆包没有任何技术阻力。
 
 ```
-主通道   curl -fsSL <install.sh> | sh
+主通道   curl -fsSL <scripts/install-cli.sh> | sh
          → 装 uv（单个静态二进制）→ uv tool install movieclaw-cli
          → uv 自带独立 Python，用户什么都不用预装
-         → symlink 进 /usr/local/bin，GUI 应用也能调到
+         → symlink 进 /usr/local/bin，GUI 应用与后台任务也能调到
 次通道   uv tool install / pipx install movieclaw-cli （Python 用户与 CI）
 第三     Docker 镜像内置（现状不变，docker exec 零安装）
 ```
+
+发行包落在 `packaging/cli/pyproject.toml`，**源码不挪**——用相对 `package-dir`
+指向 `src/movieclaw_cli`。挪目录会打断 `pythonpath = ["src"]`、Docker 构建与
+既有导入路径，换来的只是目录好看一点。版本号用 setuptools 的 `attr:` 从
+`movieclaw_api.__version__` 静态读取（AST 解析，不导入模块），因此不新增第四个
+需要手工同步的版本位置。`tests/cli/test_dist_package.py` 守住两条不变量：
+CLI 只 import 标准库与已声明的三个依赖、不 import 任何服务端模块——否则拆包的
+意义（装 CLI 不用拖服务端依赖）会被一次随手的 import 悄悄破坏。
 
 选 uv 路线而非 PyInstaller 二进制的三个理由：用户视角完全等价；不需要维护五平台
 构建矩阵和 onefile 的冷启动开销；绕过 macOS Gatekeeper 与 Windows SmartScreen 的
@@ -646,7 +654,9 @@ CLI 全部报 401，而他不会把这两件事联系起来，只会认为改密
 | 10 | CLI 凭证层：全局路径、按 server 分键、原子写、权限自检 | `core/config.py`、`core/http.py` | 中 |
 | 11 | 拆出独立 `movieclaw-cli` 发行包 + `install.sh` | `pyproject.toml`、`scripts/install.sh`（新） | 中 |
 
-`docker/runtime-version` **需要 +1**：第 11 项改动了 pyproject 的包结构与依赖组织
+`docker/runtime-version` **不需要 bump**：CLI 拆包是新增一个独立发行包
+（`packaging/cli/pyproject.toml`），源码仍是 `src/movieclaw_cli` 那一份，
+根 `pyproject.toml` 的 dependencies、Dockerfile 与 entrypoint 契约都没有变化
 （见 `CLAUDE.md` 发布规范第 2 条）。
 
 ---
