@@ -11,13 +11,14 @@
 package output
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
-	"sort"
 	"strings"
 
+	"github.com/yipengfei329/movieclaw/cli/internal/jsonval"
 	"golang.org/x/term"
 	"gopkg.in/yaml.v3"
 )
@@ -48,18 +49,18 @@ func Emit(data any, format string, quiet bool) error {
 	}
 	switch Format(format) {
 	case "json":
-		encoded, err := json.MarshalIndent(data, "", "  ")
-		if err != nil {
-			return err
-		}
-		_, err = fmt.Fprintln(Stdout, string(encoded))
-		return err
+		return emitJSON(data)
 	case "yaml":
-		encoded, err := yaml.Marshal(data)
-		if err != nil {
+		var buf bytes.Buffer
+		encoder := yaml.NewEncoder(&buf)
+		encoder.SetIndent(2)
+		if err := encoder.Encode(yamlValue(data)); err != nil {
 			return err
 		}
-		_, err = fmt.Fprint(Stdout, string(encoded))
+		if err := encoder.Close(); err != nil {
+			return err
+		}
+		_, err := fmt.Fprint(Stdout, buf.String())
 		return err
 	default:
 		return printTable(data)
@@ -83,14 +84,11 @@ func display(value any) string {
 		return "否"
 	case string:
 		return v
-	case float64:
-		// JSON 数字统一解成 float64；整数不显示小数点
-		if v == float64(int64(v)) {
-			return fmt.Sprintf("%d", int64(v))
-		}
-		return fmt.Sprintf("%g", v)
-	case map[string]any, []any:
-		encoded, err := json.Marshal(v)
+	case json.Number:
+		// 数字保留服务端给的字面量：39641 不写成 39641.0，长 ID 不丢精度
+		return v.String()
+	case *jsonval.Map, []any:
+		encoded, err := marshalCompact(v)
 		if err != nil {
 			return fmt.Sprint(v)
 		}
@@ -128,9 +126,9 @@ func printTable(data any) error {
 			fmt.Fprintln(Stderr, "（空）")
 			return nil
 		}
-		rows := make([]map[string]any, 0, len(v))
+		rows := make([]*jsonval.Map, 0, len(v))
 		for _, item := range v {
-			row, ok := item.(map[string]any)
+			row, ok := item.(*jsonval.Map)
 			if !ok {
 				// 非对象数组按 JSON 原样输出
 				return emitJSON(data)
@@ -138,18 +136,13 @@ func printTable(data any) error {
 			rows = append(rows, row)
 		}
 		return printRows(rows)
-	case map[string]any:
-		keys := make([]string, 0, len(v))
-		for key := range v {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
+	case *jsonval.Map:
 		w := 0
-		for _, key := range keys {
+		for _, key := range v.Keys() {
 			w = max(w, width(key))
 		}
-		for _, key := range keys {
-			fmt.Fprintf(Stdout, "%s  %s\n", pad(key, w), display(v[key]))
+		for _, key := range v.Keys() {
+			fmt.Fprintf(Stdout, "%s  %s\n", pad(key, w), display(v.Get(key)))
 		}
 		return nil
 	default:
@@ -157,16 +150,12 @@ func printTable(data any) error {
 	}
 }
 
-func printRows(rows []map[string]any) error {
+func printRows(rows []*jsonval.Map) error {
+	// 列序取各行字段的出现顺序（服务端 schema 的顺序），不排序
 	var columns []string
 	seen := map[string]bool{}
 	for _, row := range rows {
-		keys := make([]string, 0, len(row))
-		for key := range row {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		for _, key := range keys {
+		for _, key := range row.Keys() {
 			if !seen[key] {
 				seen[key] = true
 				columns = append(columns, key)
@@ -181,7 +170,7 @@ func printRows(rows []map[string]any) error {
 	for r, row := range rows {
 		cells[r] = make([]string, len(columns))
 		for c, col := range columns {
-			cells[r][c] = display(row[col])
+			cells[r][c] = display(row.Get(col))
 			widths[c] = max(widths[c], width(cells[r][c]))
 		}
 	}
@@ -189,23 +178,118 @@ func printRows(rows []map[string]any) error {
 	for i, col := range columns {
 		header[i] = pad(col, widths[i])
 	}
-	fmt.Fprintln(Stdout, strings.TrimRight(strings.Join(header, "  "), " "))
+	fmt.Fprintln(Stdout, strings.Join(header, "  "))
 	for _, row := range cells {
 		padded := make([]string, len(row))
 		for i, cell := range row {
 			padded[i] = pad(cell, widths[i])
 		}
-		fmt.Fprintln(Stdout, strings.TrimRight(strings.Join(padded, "  "), " "))
+		fmt.Fprintln(Stdout, strings.Join(padded, "  "))
 	}
 	fmt.Fprintf(Stderr, "（共 %d 条）\n", len(rows))
 	return nil
 }
 
 func emitJSON(data any) error {
-	encoded, err := json.MarshalIndent(data, "", "  ")
-	if err != nil {
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+	// 不转义 < > &：输出要喂给 jq 和人眼，把种子标题里的 & 变成 \u0026 只会碍事
+	encoder.SetEscapeHTML(false)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(data); err != nil {
 		return err
 	}
-	_, err = fmt.Fprintln(Stdout, string(encoded))
+	_, err := fmt.Fprint(Stdout, buf.String())
 	return err
+}
+
+// marshalCompact 是表格单元格里嵌套对象/数组的单行渲染。
+//
+// 分隔符用 `, ` 和 `: `（而非 encoding/json 的无空格形态）：单元格会被截到
+// 60 列，带空格的版本在这个宽度里明显更好读，也和其余输出的观感一致。
+func marshalCompact(value any) ([]byte, error) {
+	var buf bytes.Buffer
+	if err := writeCompact(&buf, value); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func writeCompact(buf *bytes.Buffer, value any) error {
+	switch v := value.(type) {
+	case *jsonval.Map:
+		buf.WriteByte('{')
+		for i, key := range v.Keys() {
+			if i > 0 {
+				buf.WriteString(", ")
+			}
+			if err := writeCompact(buf, key); err != nil {
+				return err
+			}
+			buf.WriteString(": ")
+			if err := writeCompact(buf, v.Get(key)); err != nil {
+				return err
+			}
+		}
+		buf.WriteByte('}')
+		return nil
+	case []any:
+		buf.WriteByte('[')
+		for i, item := range v {
+			if i > 0 {
+				buf.WriteString(", ")
+			}
+			if err := writeCompact(buf, item); err != nil {
+				return err
+			}
+		}
+		buf.WriteByte(']')
+		return nil
+	default:
+		encoder := json.NewEncoder(buf)
+		encoder.SetEscapeHTML(false)
+		if err := encoder.Encode(value); err != nil {
+			return err
+		}
+		buf.Truncate(buf.Len() - 1) // 去掉 Encode 追加的换行
+		return nil
+	}
+}
+
+// yamlValue 把保序对象转成 yaml.Node，让 YAML 输出也按服务端字段顺序走
+// （yaml.v3 对 Go map 会排序，那会和 JSON、表格三种格式各说一套）。
+func yamlValue(value any) any {
+	switch v := value.(type) {
+	case *jsonval.Map:
+		node := &yaml.Node{Kind: yaml.MappingNode}
+		for _, key := range v.Keys() {
+			keyNode := &yaml.Node{}
+			if err := keyNode.Encode(key); err != nil {
+				return value
+			}
+			valueNode := &yaml.Node{}
+			if err := valueNode.Encode(yamlValue(v.Get(key))); err != nil {
+				return value
+			}
+			node.Content = append(node.Content, keyNode, valueNode)
+		}
+		return node
+	case []any:
+		converted := make([]any, len(v))
+		for i, item := range v {
+			converted[i] = yamlValue(item)
+		}
+		return converted
+	case json.Number:
+		// json.Number 底层是 string，直接交给 yaml 会输出成带引号的字符串
+		if n, err := v.Int64(); err == nil {
+			return n
+		}
+		if f, err := v.Float64(); err == nil {
+			return f
+		}
+		return v.String()
+	default:
+		return value
+	}
 }

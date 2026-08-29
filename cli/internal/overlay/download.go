@@ -83,27 +83,27 @@ func NewDownloadCommand() *cobra.Command {
 		}
 
 		var body map[string]any
-		var hit map[string]any
+		var hit *jsonval.Map
 		switch {
 		case hasRow:
 			hit, err = snapshotRow(client.Server, row)
 			if err != nil {
 				return err
 			}
-			attrs := jsonval.Object(hit["attrs"])
-			titles := append(jsonval.Array(attrs["titles_zh"]), jsonval.Array(attrs["titles_en"])...)
+			attrs := jsonval.Object(hit.Get("attrs"))
+			titles := append(jsonval.Array(attrs.Get("titles_zh")), jsonval.Array(attrs.Get("titles_en"))...)
 			body = map[string]any{
-				"site_id":      hit["site_id"],
-				"download_url": hit["download_url"],
-				"year":         attrs["year"],
-				"subtitle":     emptyToNil(jsonval.Str(hit["subtitle"])),
+				"site_id":      hit.Get("site_id"),
+				"download_url": hit.Get("download_url"),
+				"year":         attrs.Get("year"),
+				"subtitle":     emptyToNil(jsonval.Str(hit.Get("subtitle"))),
 			}
 			if len(titles) > 0 {
 				body["title"] = titles[0]
 			} else {
 				body["title"] = nil
 			}
-			output.Info("下载：%s（%s）", jsonval.Str(hit["title"]), jsonval.Str(hit["site_name"]))
+			output.Info("下载：%s（%s）", jsonval.Str(hit.Get("title")), jsonval.Str(hit.Get("site_name")))
 		case siteID != "" && torrentURL != "":
 			body = map[string]any{"site_id": siteID, "download_url": torrentURL}
 		default:
@@ -142,7 +142,7 @@ func NewDownloadCommand() *cobra.Command {
 //
 // 快照带服务器地址：换了服务器还按老行号下载会把种子投到另一台机器上，
 // 那是最难排查的一类错误，所以宁可直接拒绝。
-func snapshotRow(server string, row int) (map[string]any, error) {
+func snapshotRow(server string, row int) (*jsonval.Map, error) {
 	shot := loadSnapshot()
 	if shot == nil {
 		return nil, clierr.Usagef("没有可用的搜索快照").
@@ -157,7 +157,7 @@ func snapshotRow(server string, row int) (map[string]any, error) {
 			row, shot.Keyword, len(shot.Items)).
 			WithHint("行号以 mclaw search 输出的 row 列为准")
 	}
-	return shot.Items[row-1], nil
+	return jsonval.Object(shot.Items[row-1]), nil
 }
 
 // autoRouteBody 复用 Web 的「识别预检 → 确认身份」协议，返回真实提交所需字段。
@@ -166,7 +166,7 @@ func snapshotRow(server string, row int) (map[string]any, error) {
 // 歧义把结构化候选写到 stdout 并以退出码 7 停止，调用方可带 --tmdb-id 重试。
 // 任何不确定或不可入库状态都不会静默落下载器默认目录。
 func autoRouteBody(
-	client *api.Client, hit map[string]any, row, tmdbID int, tmdbGiven bool, format string,
+	client *api.Client, hit *jsonval.Map, row, tmdbID int, tmdbGiven bool, format string,
 ) (map[string]any, error) {
 	kind, title, year, ok := torrentIdentity(hit)
 	if !ok {
@@ -178,7 +178,7 @@ func autoRouteBody(
 		"kind":     kind,
 		"title":    title,
 		"year":     year,
-		"subtitle": emptyToNil(jsonval.Str(hit["subtitle"])),
+		"subtitle": emptyToNil(jsonval.Str(hit.Get("subtitle"))),
 	}
 	if tmdbGiven {
 		resolveBody["selected_tmdb_id"] = tmdbID
@@ -188,26 +188,26 @@ func autoRouteBody(
 		return nil, err
 	}
 	target := jsonval.Object(raw)
-	switch status := jsonval.Str(target["status"]); status {
+	switch status := jsonval.Str(target.Get("status")); status {
 	case "ambiguous":
 		// 歧义是机器可恢复状态：stdout 保持结构化，stderr 只写下一步。
 		if err := output.Emit(map[string]any{
 			"status":     status,
-			"candidates": jsonval.Array(target["candidates"]),
+			"candidates": jsonval.Array(target.Get("candidates")),
 		}, format, false); err != nil {
 			return nil, err
 		}
 		return nil, clierr.Newf(clierr.Ambiguous, "识别到多个可能的影视条目，未提交下载").
 			WithHint("确认候选后重试：mclaw download %d --tmdb-id <候选 tmdb_id>", row)
 	case "ready":
-		if target["tmdb_id"] == nil {
+		if target.Get("tmdb_id") == nil {
 			return nil, notIdentified()
 		}
 	default:
 		return nil, notIdentified()
 	}
-	if !jsonval.Truthy(target["ok"]) || target["library_id"] == nil {
-		message := jsonval.Str(target["warning"])
+	if !jsonval.Truthy(target.Get("ok")) || target.Get("library_id") == nil {
+		message := jsonval.Str(target.Get("warning"))
 		if message == "" {
 			message = "已识别资源，但当前配置不能完成自动入库"
 		}
@@ -216,11 +216,11 @@ func autoRouteBody(
 				"--library/--save-path，或用 --downloader-default 跳过自动入库")
 	}
 
-	route := jsonval.Str(target["route_reason"])
+	route := jsonval.Str(target.Get("route_reason"))
 	if route == "" {
-		route = "入库到「" + jsonval.Str(target["library_name"]) + "」"
+		route = "入库到「" + jsonval.Str(target.Get("library_name")) + "」"
 	}
-	if path := jsonval.Str(target["path"]); path != "" {
+	if path := jsonval.Str(target.Get("path")); path != "" {
 		output.Info("智能入库：%s；投递目录 %s", route, path)
 	} else {
 		output.Info("智能入库：%s", route)
@@ -228,10 +228,10 @@ func autoRouteBody(
 	return map[string]any{
 		"auto_route": true,
 		"media_kind": kind,
-		"tmdb_id":    target["tmdb_id"],
+		"tmdb_id":    target.Get("tmdb_id"),
 		"title":      title,
 		"year":       year,
-		"subtitle":   emptyToNil(jsonval.Str(hit["subtitle"])),
+		"subtitle":   emptyToNil(jsonval.Str(hit.Get("subtitle"))),
 	}, nil
 }
 
@@ -242,10 +242,10 @@ func notIdentified() error {
 }
 
 // torrentIdentity 按 Web 下载弹窗的同一门槛，从搜索结果提取智能入库身份三件套。
-func torrentIdentity(hit map[string]any) (kind, title string, year int, ok bool) {
-	attrs := jsonval.Object(hit["attrs"])
-	titles := append(jsonval.Array(attrs["titles_zh"]), jsonval.Array(attrs["titles_en"])...)
-	kind = jsonval.Str(attrs["media_type"])
+func torrentIdentity(hit *jsonval.Map) (kind, title string, year int, ok bool) {
+	attrs := jsonval.Object(hit.Get("attrs"))
+	titles := append(jsonval.Array(attrs.Get("titles_zh")), jsonval.Array(attrs.Get("titles_en"))...)
+	kind = jsonval.Str(attrs.Get("media_type"))
 	if kind != "movie" && kind != "tv" {
 		return "", "", 0, false
 	}
@@ -258,7 +258,7 @@ func torrentIdentity(hit map[string]any) (kind, title string, year int, ok bool)
 	}
 	// 年份必须是整数：JSON 里 1994.0 与字符串 "1994" 都不接受，
 	// 与 Web 端的门槛保持一致，宁可让用户显式指定目标。
-	value, isNumber := attrs["year"].(float64)
+	value, isNumber := attrs.Get("year").(float64)
 	if !isNumber || value != float64(int(value)) {
 		return "", "", 0, false
 	}

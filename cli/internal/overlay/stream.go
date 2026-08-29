@@ -1,11 +1,11 @@
 package overlay
 
 import (
-	"encoding/json"
 	"net/url"
 
 	"github.com/yipengfei329/movieclaw/cli/internal/api"
 	"github.com/yipengfei329/movieclaw/cli/internal/clierr"
+	"github.com/yipengfei329/movieclaw/cli/internal/jsonval"
 	"github.com/yipengfei329/movieclaw/cli/internal/sse"
 )
 
@@ -21,7 +21,7 @@ func streamEvents(
 	path string,
 	params url.Values,
 	lastEventID string,
-	handle func(sse.Event, map[string]any) bool,
+	handle func(sse.Event, *jsonval.Map) bool,
 ) error {
 	body, err := client.Stream(path, params, lastEventID)
 	if err != nil {
@@ -35,13 +35,15 @@ func streamEvents(
 		if !ok {
 			break
 		}
-		var payload map[string]any
+		var payload *jsonval.Map
 		if event.Data != "" {
 			// 单帧解析失败不该中断整条流：跳过这一帧继续读，
 			// 后面的帧（尤其是终态帧）仍然有效。
-			if err := json.Unmarshal([]byte(event.Data), &payload); err != nil {
+			parsed, err := jsonval.Decode([]byte(event.Data))
+			if err != nil {
 				continue
 			}
+			payload = jsonval.Object(parsed)
 		}
 		if !handle(event, payload) {
 			return nil

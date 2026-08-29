@@ -19,28 +19,18 @@ import (
 )
 
 // sortKeys 是种子结果的可排序字段（一律降序）。
-var sortKeys = map[string]func(map[string]any) float64{
-	"seeders":  func(r map[string]any) float64 { return numberOf(r["seeders"]) },
-	"size":     func(r map[string]any) float64 { return numberOf(r["size_bytes"]) },
-	"snatched": func(r map[string]any) float64 { return numberOf(r["snatched"]) },
-}
-
-func numberOf(value any) float64 {
-	switch v := value.(type) {
-	case float64:
-		return v
-	case int:
-		return float64(v)
-	}
-	return 0
+var sortKeys = map[string]func(any) float64{
+	"seeders":  func(r any) float64 { return jsonval.Float(jsonval.At(r, "seeders")) },
+	"size":     func(r any) float64 { return jsonval.Float(jsonval.At(r, "size_bytes")) },
+	"snatched": func(r any) float64 { return jsonval.Float(jsonval.At(r, "snatched")) },
 }
 
 // snapshot 是 `mclaw search torrents` 落盘的结果快照，供 `mclaw download <行号>`
 // 引用——省掉复制一条长下载链接。
 type snapshot struct {
-	Server  string           `json:"server"`
-	Keyword string           `json:"keyword"`
-	Items   []map[string]any `json:"items"`
+	Server  string `json:"server"`
+	Keyword string `json:"keyword"`
+	Items   []any  `json:"items"`
 }
 
 func snapshotPath() string {
@@ -124,14 +114,14 @@ TMDB 与豆瓣单边失败时仍会返回另一边结果；默认记录搜索历
 			// 单边来源失败不影响另一边的结果，如实说明后照常输出
 			for _, item := range jsonval.Array(jsonval.At(result, "providers")) {
 				status := jsonval.Object(item)
-				if jsonval.Truthy(status["success"]) {
+				if jsonval.Truthy(status.Get("success")) {
 					continue
 				}
-				message := jsonval.Str(status["message"])
+				message := jsonval.Str(status.Get("message"))
 				if message == "" {
 					message = "未知错误"
 				}
-				output.Info("%s 搜索失败：%s", jsonval.Str(status["provider"]), message)
+				output.Info("%s 搜索失败：%s", jsonval.Str(status.Get("provider")), message)
 			}
 			return output.Emit(jsonval.At(result, "titles"), s.Output, s.Quiet)
 		})
@@ -214,7 +204,7 @@ func newSearchTorrentsCommand() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		var collected []map[string]any
+		var collected []any
 		sawDone := false
 		streamErr := runTorrentSearch(client, params, keyword, streamEvents, &collected, &sawDone)
 		if streamErr != nil && !sawDone {
@@ -233,19 +223,19 @@ func newSearchTorrentsCommand() *cobra.Command {
 		// 客户端侧筛选/排序：与页面筛选弹层同语义，但发生在完整结果集上
 		rows := collected
 		if resolution != "" {
-			var kept []map[string]any
+			var kept []any
 			for _, row := range rows {
-				attrs := jsonval.Object(row["attrs"])
-				if strings.EqualFold(jsonval.Str(attrs["resolution"]), resolution) {
+				attrs := jsonval.Object(jsonval.At(row, "attrs"))
+				if strings.EqualFold(jsonval.Str(attrs.Get("resolution")), resolution) {
 					kept = append(kept, row)
 				}
 			}
 			rows = kept
 		}
 		if freeOnly {
-			var kept []map[string]any
+			var kept []any
 			for _, row := range rows {
-				if jsonval.Truthy(row["free"]) {
+				if jsonval.Truthy(jsonval.At(row, "free")) {
 					kept = append(kept, row)
 				}
 			}
@@ -262,7 +252,7 @@ func newSearchTorrentsCommand() *cobra.Command {
 		if err := saveSnapshot(snapshot{Server: client.Server, Keyword: keyword, Items: rows}); err != nil {
 			return err
 		}
-		views := make([]map[string]any, 0, len(rows))
+		views := make([]any, 0, len(rows))
 		for i, row := range rows {
 			views = append(views, rowView(i+1, row))
 		}
@@ -283,15 +273,16 @@ func runTorrentSearch(
 	params url.Values,
 	keyword string,
 	raw bool,
-	collected *[]map[string]any,
+	collected *[]any,
 	sawDone *bool,
 ) error {
 	return streamEvents(client, "/search/torrents/stream", params, "",
-		func(event sse.Event, payload map[string]any) bool {
+		func(event sse.Event, payload *jsonval.Map) bool {
 			if raw {
-				line := map[string]any{"event": event.Event}
-				for key, value := range payload {
-					line[key] = value
+				// NDJSON 逐帧透传：事件名放最前，其余字段保持服务端顺序
+				line := jsonval.NewMap("event", event.Event)
+				for _, key := range payload.Keys() {
+					line.Set(key, payload.Get(key))
 				}
 				if encoded, err := json.Marshal(line); err == nil {
 					os.Stdout.Write(append(encoded, '\n'))
@@ -305,22 +296,22 @@ func runTorrentSearch(
 			switch event.Event {
 			case "start":
 				output.Info("开始搜索「%s」，共 %d 个站点",
-					keyword, len(jsonval.Array(payload["sites"])))
+					keyword, len(jsonval.Array(payload.Get("sites"))))
 			case "site_result":
-				for _, item := range jsonval.Array(payload["items"]) {
+				for _, item := range jsonval.Array(payload.Get("items")) {
 					if row := jsonval.Object(item); row != nil {
 						*collected = append(*collected, row)
 					}
 				}
-				output.Info("  %s：%s 条（%sms）", jsonval.Str(payload["site_name"]),
-					jsonval.Plain(payload["count"]), jsonval.Plain(payload["elapsed_ms"]))
+				output.Info("  %s：%s 条（%sms）", jsonval.Str(payload.Get("site_name")),
+					jsonval.Plain(payload.Get("count")), jsonval.Plain(payload.Get("elapsed_ms")))
 			case "site_error":
 				output.Info("  %s：失败——%s",
-					jsonval.Str(payload["site_name"]), jsonval.Str(payload["error"]))
+					jsonval.Str(payload.Get("site_name")), jsonval.Str(payload.Get("error")))
 			case "done":
 				*sawDone = true
 				output.Info("完成：共 %s 条（%sms）",
-					jsonval.Plain(payload["total"]), jsonval.Plain(payload["elapsed_ms"]))
+					jsonval.Plain(payload.Get("total")), jsonval.Plain(payload.Get("elapsed_ms")))
 				return false
 			}
 			return true
@@ -328,16 +319,17 @@ func runTorrentSearch(
 }
 
 // rowView 是种子结果在表格里的展示形态：行号在最前，方便直接 mclaw download。
-func rowView(index int, hit map[string]any) map[string]any {
-	attrs := jsonval.Object(hit["attrs"])
-	return map[string]any{
-		"row":        index,
-		"title":      hit["title"],
-		"size":       hit["size"],
-		"seeders":    hit["seeders"],
-		"resolution": attrs["resolution"],
-		"group":      attrs["release_group"],
-		"site":       hit["site_name"],
-		"free":       hit["free"],
-	}
+func rowView(index int, hit any) *jsonval.Map {
+	attrs := jsonval.Object(jsonval.At(hit, "attrs"))
+	// 顺序即表格列序：行号在最前，接着是挑种子时真正要看的几项
+	return jsonval.NewMap(
+		"row", index,
+		"title", jsonval.At(hit, "title"),
+		"size", jsonval.At(hit, "size"),
+		"seeders", jsonval.At(hit, "seeders"),
+		"resolution", attrs.Get("resolution"),
+		"group", attrs.Get("release_group"),
+		"site", jsonval.At(hit, "site_name"),
+		"free", jsonval.At(hit, "free"),
+	)
 }

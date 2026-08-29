@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/yipengfei329/movieclaw/cli/internal/clierr"
 	"github.com/yipengfei329/movieclaw/cli/internal/config"
+	"github.com/yipengfei329/movieclaw/cli/internal/jsonval"
 	"github.com/yipengfei329/movieclaw/cli/internal/output"
 	"github.com/yipengfei329/movieclaw/cli/internal/spec"
 	"golang.org/x/term"
@@ -245,21 +246,23 @@ credential 这一项是排障的关键：「我明明配对过了」十次里有
 			}
 
 			serverHash := stringField(health, "spec_hash", "")
-			payload := map[string]any{
-				"server":           target,
-				"service":          stringField(health, "service", ""),
-				"status":           stringField(health, "status", ""),
-				"environment":      stringField(health, "environment", ""),
-				"identity":         identity,
-				"credential":       credential,
-				"cli_spec_hash":    spec.ActiveHash,
-				"server_spec_hash": serverHash,
-			}
+			// 字段顺序即阅读顺序：先「连的是哪台、活着吗」，再「我是谁、凭证在哪」，
+			// 最后才是 spec 指纹这类排障细节。
+			var inSync any
 			if serverHash != "" {
-				payload["spec_in_sync"] = serverHash == spec.ActiveHash
-			} else {
-				payload["spec_in_sync"] = nil
+				inSync = serverHash == spec.ActiveHash
 			}
+			payload := jsonval.NewMap(
+				"server", target,
+				"service", stringField(health, "service", ""),
+				"status", stringField(health, "status", ""),
+				"environment", stringField(health, "environment", ""),
+				"identity", identity,
+				"credential", credential,
+				"cli_spec_hash", spec.ActiveHash,
+				"server_spec_hash", serverHash,
+				"spec_in_sync", inSync,
+			)
 			format := outputFlag
 			if format == "" {
 				format = s.Output

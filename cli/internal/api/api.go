@@ -23,6 +23,7 @@ import (
 
 	"github.com/yipengfei329/movieclaw/cli/internal/clierr"
 	"github.com/yipengfei329/movieclaw/cli/internal/config"
+	"github.com/yipengfei329/movieclaw/cli/internal/jsonval"
 	"github.com/yipengfei329/movieclaw/cli/internal/output"
 )
 
@@ -283,27 +284,29 @@ func (c *Client) parse(resp *http.Response) (any, error) {
 		return nil, clierr.Networkf("读取响应失败：%v", readErr)
 	}
 
-	var payload any
-	if err := json.Unmarshal(raw, &payload); err != nil {
+	// 保序解析：服务端字段顺序是输出契约的一部分（jsonval.Map 的注释说明了原因）
+	payload, err := jsonval.Decode(raw)
+	if err != nil {
 		return nil, clierr.New("服务器返回了无法解析的响应（HTTP %d）", resp.StatusCode).
 			WithHint("确认 --server 指向的是 movieclaw 服务而非其他程序")
 	}
 
 	// 统一信封：success 字段存在即为 ApiResponse / ErrorResponse
-	if envelope, ok := payload.(map[string]any); ok {
-		if success, hasSuccess := envelope["success"]; hasSuccess {
+	if envelope := jsonval.Object(payload); envelope.Len() > 0 {
+		if success := envelope.Get("success"); success != nil {
 			if ok, _ := success.(bool); ok {
-				if message, _ := envelope["message"].(string); message != "" {
+				if message := jsonval.Str(envelope.Get("message")); message != "" {
 					c.LastMessage = message
 				}
-				return envelope["data"], nil
+				return envelope.Get("data"), nil
 			}
-			message, _ := envelope["message"].(string)
+			message := jsonval.Str(envelope.Get("message"))
 			if message == "" {
 				message = fmt.Sprintf("请求失败（HTTP %d）", resp.StatusCode)
 			}
-			code, _ := envelope["code"].(string)
-			return nil, clierr.New("%s", message).WithCode(code).WithDetails(envelope["details"])
+			return nil, clierr.New("%s", message).
+				WithCode(jsonval.Str(envelope.Get("code"))).
+				WithDetails(envelope.Get("details"))
 		}
 	}
 
@@ -315,10 +318,9 @@ func (c *Client) parse(resp *http.Response) (any, error) {
 }
 
 func messageFrom(raw []byte) string {
-	var envelope map[string]any
-	if err := json.Unmarshal(raw, &envelope); err != nil {
+	payload, err := jsonval.Decode(raw)
+	if err != nil {
 		return ""
 	}
-	message, _ := envelope["message"].(string)
-	return message
+	return jsonval.Str(jsonval.Object(payload).Get("message"))
 }

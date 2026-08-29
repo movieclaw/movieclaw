@@ -57,11 +57,11 @@ func At(value any, path string) any {
 		return nil
 	}
 	for _, token := range strings.Split(path, ".") {
-		obj, ok := value.(map[string]any)
+		obj, ok := value.(*Map)
 		if !ok {
 			return nil
 		}
-		value = obj[token]
+		value = obj.Get(token)
 	}
 	return value
 }
@@ -83,9 +83,26 @@ func Int(value any) int {
 	return 0
 }
 
-// Object 把值当对象取；不是对象返回 nil（读 nil map 是安全的）。
-func Object(value any) map[string]any {
-	obj, _ := value.(map[string]any)
+// Float 取浮点字段（排序用）。
+func Float(value any) float64 {
+	switch v := value.(type) {
+	case json.Number:
+		n, err := v.Float64()
+		if err != nil {
+			return 0
+		}
+		return n
+	case float64:
+		return v
+	case int:
+		return float64(v)
+	}
+	return 0
+}
+
+// Object 把值当对象取；不是对象返回 nil（*Map 的取值方法对 nil 安全）。
+func Object(value any) *Map {
+	obj, _ := value.(*Map)
 	return obj
 }
 

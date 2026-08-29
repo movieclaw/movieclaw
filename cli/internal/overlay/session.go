@@ -171,14 +171,14 @@ func submitAndFollow(s *Settings, path string, body map[string]any, detach bool)
 // followSession 消费当前用户消息触发的事件流直到终态；断流自动续传。
 func followSession(
 	client *api.Client, sessionID, lastEventID string,
-) (string, map[string]any, error) {
+) (string, *jsonval.Map, error) {
 	cursor := lastEventID
 	failures := 0
 	for {
 		var finalEvent string
-		var finalPayload map[string]any
+		var finalPayload *jsonval.Map
 		err := streamEvents(client, "/sessions/"+sessionID+"/events", nil, cursor,
-			func(event sse.Event, payload map[string]any) bool {
+			func(event sse.Event, payload *jsonval.Map) bool {
 				failures = 0
 				if event.HasID {
 					cursor = strconv.Itoa(event.ID)
@@ -213,53 +213,53 @@ func followSession(
 //
 // 这条分工是给管道用的：`mclaw session start ... > answer.txt` 应该只拿到
 // 模型正文，工具调用与耗时统计不该混进去。
-func renderSessionEvent(event string, payload map[string]any) {
+func renderSessionEvent(event string, payload *jsonval.Map) {
 	switch event {
 	case "agent_start":
 		output.Info("[会话开始] %s/%s",
-			jsonval.Str(payload["provider"]), jsonval.Str(payload["model"]))
+			jsonval.Str(payload.Get("provider")), jsonval.Str(payload.Get("model")))
 	case "text_delta":
-		fmt.Print(jsonval.Str(payload["delta"]))
+		fmt.Print(jsonval.Str(payload.Get("delta")))
 	case "tool_call":
-		call := jsonval.Object(payload["tool_call"])
+		call := jsonval.Object(payload.Get("tool_call"))
 		args := "{}"
-		if encoded, err := json.Marshal(call["arguments"]); err == nil {
+		if encoded, err := json.Marshal(call.Get("arguments")); err == nil {
 			args = string(encoded)
 		}
 		if len([]rune(args)) > 120 {
 			args = string([]rune(args)[:117]) + "..."
 		}
-		output.Info("\n→ 工具 %s：%s", jsonval.Str(call["name"]), args)
+		output.Info("\n→ 工具 %s：%s", jsonval.Str(call.Get("name")), args)
 	case "tool_result":
-		result := jsonval.Object(payload["tool_result"])
+		result := jsonval.Object(payload.Get("tool_result"))
 		mark := "✓"
-		if jsonval.Truthy(result["is_error"]) {
+		if jsonval.Truthy(result.Get("is_error")) {
 			mark = "✗"
 		}
-		output.Info("  %s 完成（%sms）", mark, jsonval.Plain(result["elapsed_ms"]))
+		output.Info("  %s 完成（%sms）", mark, jsonval.Plain(result.Get("elapsed_ms")))
 	case "context_compacted":
-		compaction := jsonval.Object(payload["compaction"])
+		compaction := jsonval.Object(payload.Get("compaction"))
 		output.Info("\n[上下文已压缩] %s → %s tokens",
-			jsonval.Plain(compaction["tokens_before"]), jsonval.Plain(compaction["tokens_after"]))
+			jsonval.Plain(compaction.Get("tokens_before")), jsonval.Plain(compaction.Get("tokens_after")))
 	}
 }
 
 // finishSession 是终态渲染与退出码结算：只有 agent_error 算命令失败。
-func finishSession(event string, payload map[string]any) error {
+func finishSession(event string, payload *jsonval.Map) error {
 	switch event {
 	case "agent_done":
-		result := jsonval.Object(payload["result"])
-		usage := jsonval.Object(result["usage"])
+		result := jsonval.Object(payload.Get("result"))
+		usage := jsonval.Object(result.Get("usage"))
 		fmt.Fprintln(os.Stdout)
 		output.Info("[完成] %s 步，%sms，tokens in/out=%s/%s",
-			jsonval.Plain(result["steps"]), jsonval.Plain(result["elapsed_ms"]),
-			jsonval.Plain(usage["input_tokens"]), jsonval.Plain(usage["output_tokens"]))
+			jsonval.Plain(result.Get("steps")), jsonval.Plain(result.Get("elapsed_ms")),
+			jsonval.Plain(usage.Get("input_tokens")), jsonval.Plain(usage.Get("output_tokens")))
 		return nil
 	case "agent_cancelled":
 		output.Info("\n[已停止] 当前消息的模型处理已停止")
 		return nil
 	}
-	message := jsonval.Str(payload["error"])
+	message := jsonval.Str(payload.Get("error"))
 	if message == "" {
 		message = "AI 会话执行失败"
 	}

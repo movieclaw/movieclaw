@@ -71,10 +71,10 @@ func newLibraryOrganizeFilesCommand() *cobra.Command {
 				return err
 			}
 			preview := jsonval.Object(raw)
-			renames := jsonval.Array(preview["renames"])
+			renames := jsonval.Array(preview.Get("renames"))
 			output.Info("整理计划：共 %s 个文件——改名 %d 项，已规范 %s 项，跳过 %d 项",
-				jsonval.Plain(preview["total"]), len(renames),
-				jsonval.Plain(preview["already_ok"]), len(jsonval.Array(preview["skips"])))
+				jsonval.Plain(preview.Get("total")), len(renames),
+				jsonval.Plain(preview.Get("already_ok")), len(jsonval.Array(preview.Get("skips"))))
 			if dryRun {
 				return output.Emit(preview, s.Output, s.Quiet)
 			}
@@ -147,8 +147,8 @@ library_file 台账记录，绝不会删除任何媒体文件。`,
 			}
 			preview := jsonval.Object(raw)
 			output.Info("路径迁移预览：同相对路径 %s，可安全合并 %s，将标记缺失 %s，身份冲突 %d，磁盘删除 0",
-				plainOrZero(preview["same_path_candidates"]), plainOrZero(preview["safe_merges"]),
-				plainOrZero(preview["marked_missing"]), len(jsonval.Array(preview["conflicts"])))
+				plainOrZero(preview.Get("same_path_candidates")), plainOrZero(preview.Get("safe_merges")),
+				plainOrZero(preview.Get("marked_missing")), len(jsonval.Array(preview.Get("conflicts"))))
 			if dryRun {
 				return output.Emit(preview, s.Output, s.Quiet)
 			}

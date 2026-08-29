@@ -174,19 +174,19 @@ func Job(client *api.Client, jobID string, waitTimeout time.Duration) error {
 			return err
 		}
 		job := jsonval.Object(jsonval.At(payload, "job"))
-		if rev := jsonval.Int(job["revision"]); rev > revision {
+		if rev := jsonval.Int(job.Get("revision")); rev > revision {
 			revision = rev
 		}
-		status := jsonval.Str(job["status"])
-		progress := jsonval.Object(job["progress"])
-		line := jsonval.Str(progress["message"])
+		status := jsonval.Str(job.Get("status"))
+		progress := jsonval.Object(job.Get("progress"))
+		line := jsonval.Str(progress.Get("message"))
 		if line == "" {
 			line = status
 		}
 		if line == "" {
 			line = "等待执行"
 		}
-		if percent, ok := progress["percent"]; ok && percent != nil {
+		if percent := progress.Get("percent"); percent != nil {
 			line = fmt.Sprintf("%s（%s%%）", line, jsonval.Plain(percent))
 		}
 		if line != lastLine {
@@ -200,16 +200,16 @@ func Job(client *api.Client, jobID string, waitTimeout time.Duration) error {
 			output.Info("任务已完成：%s", jobID)
 			return nil
 		}
-		errObj := jsonval.Object(job["error"])
-		message := jsonval.Str(errObj["message"])
+		errObj := jsonval.Object(job.Get("error"))
+		message := jsonval.Str(errObj.Get("message"))
 		if message == "" {
-			message = jsonval.Str(progress["message"])
+			message = jsonval.Str(progress.Get("message"))
 		}
 		if message == "" {
 			message = "任务状态：" + status
 		}
 		hint := fmt.Sprintf("执行 mclaw jobs show %s 查看详情", jobID)
-		if hasHandoffAction(errObj["actions"]) {
+		if hasHandoffAction(errObj.Get("actions")) {
 			hint += "；也可以交给 MovieClaw Agent 处理"
 		}
 		return clierr.Newf(clierr.TaskFailed, "%s", message).WithHint("%s", hint)

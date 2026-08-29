@@ -74,13 +74,13 @@ func newLogsTailCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			for _, line := range jsonval.Array(data["lines"]) {
+			for _, line := range jsonval.Array(data.Get("lines")) {
 				fmt.Println(jsonval.Str(line))
 			}
 			if !follow {
 				return nil
 			}
-			return followLogs(client, day, autoDay, interval, jsonval.Int(data["total_lines"]))
+			return followLogs(client, day, autoDay, interval, jsonval.Int(data.Get("total_lines")))
 		})
 }
 
@@ -124,8 +124,8 @@ func followLogs(
 			}
 			return err
 		}
-		total := jsonval.Int(data["total_lines"])
-		fetched := jsonval.Array(data["lines"])
+		total := jsonval.Int(data.Get("total_lines"))
+		fetched := jsonval.Array(data.Get("lines"))
 		if total <= seenTotal {
 			continue
 		}
@@ -152,12 +152,12 @@ func latestLogDay(client *api.Client) (string, error) {
 		return "", clierr.New("还没有任何日志文件").WithHint("服务运行后会按天产生日志")
 	}
 	if entry := jsonval.Object(items[0]); entry != nil {
-		return jsonval.Str(entry["day"]), nil
+		return jsonval.Str(entry.Get("day")), nil
 	}
 	return jsonval.Str(items[0]), nil
 }
 
-func readLogDay(client *api.Client, day string, tail int) (map[string]any, error) {
+func readLogDay(client *api.Client, day string, tail int) (*jsonval.Map, error) {
 	data, err := client.Request("GET", "/system/logs/"+day,
 		url.Values{"tail": {fmt.Sprint(tail)}}, nil)
 	if err != nil {
