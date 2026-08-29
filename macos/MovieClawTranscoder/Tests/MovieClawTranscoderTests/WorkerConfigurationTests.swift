@@ -97,69 +97,86 @@ final class WorkerConfigurationTests: XCTestCase {
         )
     }
 
-    // MARK: - 配对码
+    // MARK: - 设备配对
 
-    func testPairingCodeRoundTripsURLAndToken() throws {
-        let code = try PairingCode.parse(makePairingCode(
-            url: "https://nas.example.com",
-            token: "s3cret-token"
-        ))
+    func testPairingParsesGrantFromEnvelope() throws {
+        let payload = #"""
+        {"success":true,"code":"OK","message":"请在浏览器里核对配对码并批准",
+         "data":{"user_code":"MCLW-7F3K","device_code":"dc-abc","interval":3,
+                 "verification_uri":"http://10.1.1.5:3000/settings/devices","expires_in":300}}
+        """#
+        let pairing = DevicePairing(nasURL: URL(string: "http://10.1.1.5:3000")!, session: stubSession(200, payload))
 
-        XCTAssertEqual(code.nasURL, "https://nas.example.com")
-        XCTAssertEqual(code.token, "s3cret-token")
+        let grant = try awaitValue { try await pairing.authorize(clientName: "Yi的Mac-mini") }
+
+        XCTAssertEqual(grant.userCode, "MCLW-7F3K")
+        XCTAssertEqual(grant.deviceCode, "dc-abc")
+        XCTAssertEqual(grant.interval, 3)
+        XCTAssertEqual(grant.expiresIn, 300)
+        XCTAssertEqual(grant.verificationURI, "http://10.1.1.5:3000/settings/devices")
     }
 
-    func testPairingCodeToleratesPastedWhitespaceAndNewlines() throws {
-        // 从聊天工具或邮件里复制回来常常带换行和空格
-        let raw = makePairingCode(url: "http://10.1.1.5:3000", token: "abc123")
-        let mangled = "  " + raw.prefix(20) + "\n  " + raw.dropFirst(20) + "\n"
+    func testPollMapsStatusCodesToDistinctOutcomes() throws {
+        // 四种结论必须泾渭分明：只有 pending 和 slowDown 该继续等，
+        // finished 必须停止轮询，否则用户会看着一个永远转不完的圈。
+        let url = URL(string: "http://10.1.1.5:3000")!
 
-        let code = try PairingCode.parse(String(mangled))
+        let pending = DevicePairing(nasURL: url, session: stubSession(202, #"{"data":null}"#))
+        XCTAssertEqual(try awaitValue { try await pending.poll(deviceCode: "dc") }, .pending)
 
-        XCTAssertEqual(code.nasURL, "http://10.1.1.5:3000")
-        XCTAssertEqual(code.token, "abc123")
-    }
+        let slow = DevicePairing(nasURL: url, session: stubSession(429, #"{"data":null}"#))
+        XCTAssertEqual(try awaitValue { try await slow.poll(deviceCode: "dc") }, .slowDown)
 
-    func testPairingCodeRejectsForeignTextWithActionableMessage() {
-        // 用户很可能误粘贴成 NAS 地址本身
-        XCTAssertThrowsError(try PairingCode.parse("https://nas.example.com")) { error in
-            XCTAssertEqual(error as? PairingCode.ParseError, .badPrefix)
-        }
-        XCTAssertThrowsError(try PairingCode.parse("   ")) { error in
-            XCTAssertEqual(error as? PairingCode.ParseError, .empty)
-        }
-    }
-
-    func testPairingCodeRejectsTruncatedPayload() {
-        let raw = makePairingCode(url: "https://nas.example.com", token: "s3cret")
-        // 少复制了尾巴：必须报「损坏」，不能静默解析出半个配置
-        let truncated = String(raw.dropLast(6))
-
-        XCTAssertThrowsError(try PairingCode.parse(truncated))
-    }
-
-    func testPairingCodeRejectsMissingToken() {
-        let payload = #"{"url":"https://nas.example.com"}"#
-        let encoded = Data(payload.utf8).base64EncodedString()
-            .replacingOccurrences(of: "+", with: "-")
-            .replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: "=", with: "")
-
-        XCTAssertThrowsError(try PairingCode.parse(PairingCode.prefix + encoded)) { error in
-            XCTAssertEqual(error as? PairingCode.ParseError, .missingFields)
-        }
-    }
-
-    /// 按网页端的生成规则拼一段配对码，用来验证两端格式一致。
-    private func makePairingCode(url: String, token: String) -> String {
-        let payload = try! JSONSerialization.data(
-            withJSONObject: ["url": url, "token": token]
+        let granted = DevicePairing(
+            nasURL: url,
+            session: stubSession(200, #"{"data":{"token":"mclaw_abc","client_name":"Yi的Mac-mini"}}"#)
         )
-        let encoded = payload.base64EncodedString()
-            .replacingOccurrences(of: "+", with: "-")
-            .replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: "=", with: "")
-        return PairingCode.prefix + encoded
+        XCTAssertEqual(
+            try awaitValue { try await granted.poll(deviceCode: "dc") },
+            .granted(token: "mclaw_abc", clientName: "Yi的Mac-mini")
+        )
+
+        let denied = DevicePairing(
+            nasURL: url,
+            session: stubSession(400, #"{"success":false,"message":"接入请求已被拒绝，请重新发起配对"}"#)
+        )
+        XCTAssertEqual(
+            try awaitValue { try await denied.poll(deviceCode: "dc") },
+            .finished(reason: "接入请求已被拒绝，请重新发起配对")
+        )
+    }
+
+    func testVerifyConnectionSurfacesServerMessage() {
+        // 服务端的中文 message 要原样透传：它比「HTTP 500」有用得多
+        let pairing = DevicePairing(
+            nasURL: URL(string: "http://10.1.1.5:3000")!,
+            session: stubSession(503, #"{"success":false,"message":"服务正在启动，请稍候"}"#)
+        )
+        XCTAssertThrowsError(try awaitValue { try await pairing.verifyConnection() }) { error in
+            XCTAssertEqual(error.localizedDescription, "服务正在启动，请稍候")
+        }
+    }
+
+    // MARK: - 测试基建
+
+    /// 把固定的状态码与响应体喂给 DevicePairing，不发真实网络请求。
+    private func stubSession(_ status: Int, _ body: String) -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        StubURLProtocol.status = status
+        StubURLProtocol.body = Data(body.utf8)
+        return URLSession(configuration: configuration)
+    }
+
+    private func awaitValue<T>(_ work: @escaping () async throws -> T) throws -> T {
+        let expectation = XCTestExpectation(description: "async")
+        var result: Result<T, Error>!
+        Task {
+            do { result = .success(try await work()) } catch { result = .failure(error) }
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 5)
+        return try result.get()
     }
 
     private func makeConfiguration(nasText: String) throws -> WorkerConfiguration {
@@ -171,4 +188,27 @@ final class WorkerConfigurationTests: XCTestCase {
             maxJobs: 1
         )
     }
+}
+
+/// 返回固定响应的 URLProtocol，用于给 DevicePairing 喂假服务器。
+final class StubURLProtocol: URLProtocol {
+    nonisolated(unsafe) static var status = 200
+    nonisolated(unsafe) static var body = Data()
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let response = HTTPURLResponse(
+            url: request.url!,
+            statusCode: Self.status,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "application/json"]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Self.body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }

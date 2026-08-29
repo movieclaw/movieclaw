@@ -15,17 +15,18 @@ MAX_REMOTE_TRANSCODE_ARTIFACT_BYTES = DEFAULT_REMOTE_TRANSCODE_MAX_ARTIFACT_BYTE
 @register_setting(
     namespace="playback.remote_transcode",
     title="远程转码",
-    secret_fields=["worker_token"],
 )
 class RemoteTranscodeSetting(SettingSchema):
     """远程转码的网页配置。
 
     ``base_url`` 是可选的远程转码专用根地址；留空时跟随系统「外部访问地址」，
     需要让 Worker 直连服务端内网端口时，可以只为远程转码设置另一条入口。
+
+    这里**没有令牌字段**：Worker 的凭证是逐台设备配对签发的
+    （docs/design/device-auth.md §5.4），在「设置 → 设备」里审批与吊销。
     """
 
     enabled: bool = Field(default=False, description="是否启用远程硬件转码")
-    worker_token: str = Field(default="", description="Worker 控制面共享令牌")
     base_url: str = Field(
         default="",
         description="远程转码专用根地址；为空时使用系统外部访问地址",

@@ -115,7 +115,10 @@ actor WorkerClient {
             throw ConfigurationError.message("NAS 地址协议无效，仅支持 HTTP 或 HTTPS")
         }
         var request = URLRequest(url: endpoint)
-        request.setValue(configuration.workerToken, forHTTPHeaderField: "X-MovieClaw-Worker-Token")
+        // 标准 Authorization: Bearer，与 CLI 走同一个验签入口
+        // （docs/design/device-auth.md §5.4）。放 Header 而不是查询参数，
+        // 避免长期令牌进反向代理访问日志与监控 URL。
+        request.setValue("Bearer \(configuration.workerToken)", forHTTPHeaderField: "Authorization")
         let session = URLSession(configuration: .ephemeral)
         let socket = session.webSocketTask(with: request)
         self.socket = socket

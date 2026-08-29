@@ -78,7 +78,8 @@ def test_save_rejects_bad_external_url(client):
     assert "http(s)" in resp.json()["message"]
 
 
-def test_remote_transcode_config_reuses_external_url_and_hides_token(client):
+def test_remote_transcode_config_reuses_external_url(client):
+    """配置面只剩地址与传输限制——凭证已收归「设置 → 设备」的配对流程。"""
     client.put(
         "/api/v1/app/config",
         json={"external_url": "https://nas.example.com/movieclaw/"},
@@ -89,43 +90,22 @@ def test_remote_transcode_config_reuses_external_url_and_hides_token(client):
     assert initial.json()["data"]["base_url"] == "https://nas.example.com/movieclaw"
     assert initial.json()["data"]["base_url_override"] == ""
     assert initial.json()["data"]["base_url_source"] == "system_external_url"
-    assert initial.json()["data"]["worker_token_configured"] is False
+    assert "worker_token" not in initial.text
 
     saved = client.put(
         "/api/v1/transcode-worker/config",
-        json={
-            "enabled": True,
-            "worker_token": "test-worker-token",
-            "max_artifact_bytes": 64 * 1024 * 1024,
-        },
+        json={"enabled": True, "max_artifact_bytes": 64 * 1024 * 1024},
     )
     assert saved.status_code == 200
+    # 地址就绪即可启用：令牌不再是配置前置条件，有没有 Worker 连着是运行时状态
     assert saved.json()["data"]["ready"] is True
-    assert saved.json()["data"]["worker_token_configured"] is True
-    assert "test-worker-token" not in saved.text
 
     kept = client.put(
         "/api/v1/transcode-worker/config",
-        json={
-            "enabled": True,
-            "worker_token": None,
-            "max_artifact_bytes": 128 * 1024 * 1024,
-        },
+        json={"enabled": True, "max_artifact_bytes": 128 * 1024 * 1024},
     )
     assert kept.status_code == 200
-    assert kept.json()["data"]["worker_token_configured"] is True
     assert kept.json()["data"]["max_artifact_bytes"] == 128 * 1024 * 1024
-
-    cleared = client.put(
-        "/api/v1/transcode-worker/config",
-        json={
-            "enabled": False,
-            "worker_token": "",
-            "max_artifact_bytes": 128 * 1024 * 1024,
-        },
-    )
-    assert cleared.status_code == 200
-    assert cleared.json()["data"]["worker_token_configured"] is False
 
 
 def test_remote_transcode_base_url_override_takes_precedence_and_can_fall_back(client):
@@ -139,7 +119,6 @@ def test_remote_transcode_base_url_override_takes_precedence_and_can_fall_back(c
         json={
             "enabled": True,
             "base_url": "http://10.1.1.5:8096/",
-            "worker_token": "test-worker-token",
             "max_artifact_bytes": 64 * 1024 * 1024,
         },
     )
@@ -153,7 +132,6 @@ def test_remote_transcode_base_url_override_takes_precedence_and_can_fall_back(c
         json={
             "enabled": True,
             "base_url": None,
-            "worker_token": None,
             "max_artifact_bytes": 64 * 1024 * 1024,
         },
     )
@@ -165,7 +143,6 @@ def test_remote_transcode_base_url_override_takes_precedence_and_can_fall_back(c
         json={
             "enabled": True,
             "base_url": "",
-            "worker_token": None,
             "max_artifact_bytes": 64 * 1024 * 1024,
         },
     )
@@ -184,7 +161,6 @@ def test_remote_transcode_accepts_http_external_url(client):
         "/api/v1/transcode-worker/config",
         json={
             "enabled": True,
-            "worker_token": "test-worker-token",
             "max_artifact_bytes": 64 * 1024 * 1024,
         },
     )
@@ -203,7 +179,6 @@ def test_remote_transcode_tells_user_scheme_is_missing_not_that_url_is_empty(cli
         json={
             "enabled": True,
             "base_url": "192.168.1.10:3000",
-            "worker_token": "test-worker-token",
             "max_artifact_bytes": 64 * 1024 * 1024,
         },
     )
@@ -224,7 +199,6 @@ def test_remote_transcode_still_reports_empty_url_as_unset(client):
         json={
             "enabled": True,
             "base_url": "",
-            "worker_token": "test-worker-token",
             "max_artifact_bytes": 64 * 1024 * 1024,
         },
     )
@@ -258,7 +232,6 @@ def test_legacy_remote_env_is_ignored(client, monkeypatch):
     assert response.status_code == 200
     data = response.json()["data"]
     assert data["enabled"] is False
-    assert data["worker_token_configured"] is False
     assert data["base_url"] == ""
     assert data["base_url_source"] == "unset"
     assert data["max_artifact_bytes"] == DEFAULT_REMOTE_TRANSCODE_MAX_ARTIFACT_BYTES

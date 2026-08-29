@@ -47,9 +47,11 @@ open "dist/MovieClaw Transcoder.app"
 先在 MovieClaw 网页打开「系统 → 应用 → 远程转码」：
 
 1. 打开远程硬件转码；
-2. 生成并保存一个高熵 Worker Token；
-3. 确认系统外部访问地址，或为远程转码填写专用地址；
-4. 按需要调整单个 HLS 产物大小上限。
+2. 确认系统外部访问地址，或为远程转码填写专用地址；
+3. 按需要调整单个 HLS 产物大小上限。
+
+这里**没有令牌要配**：Worker 的凭证是逐台设备配对签发的，在「设置 → 设备」
+里审批与吊销（见 `docs/design/device-auth.md`）。
 
 远程转码专用地址留空时，Worker 使用系统「网络与维护」中的外部访问地址。该地址
 必须是 Worker 实际能够访问的 HTTP(S) 地址，且不能包含用户名、密码、查询参数或片段。
@@ -57,23 +59,25 @@ open "dist/MovieClaw Transcoder.app"
 
 ## 3. App 首次配置
 
-打开菜单栏中的「设置」。**推荐用配对码**：在 NAS 网页「远程转码」页面保存 Token 后，
-页面会给出一段配对码，复制过来粘进「配对码」一栏点「填入」，服务端地址和 Worker
-Token 就自动填好了——这两项手抄最容易出错，而抄错的表现只是「连不上」，两边都看
-不出哪里不对。
+打开菜单栏中的「设置」，**唯一需要填的是 movieclaw 地址**，然后走两步：
 
-其余各项按需要填写：
+1. 填地址 → 点「验证连接」。建议填局域网地址和端口：转码要来回传输大量视频
+   分片，走公网或反向代理会明显变慢，也更容易中断。地址填错了这一步就会说，
+   而不是保存之后表现成「连不上」。
+2. 点「请求接入」→ App 显示一段配对码 → 到网页「设置 → 设备」核对后批准。
+   令牌会自动回到这台 Mac 并存进 Keychain，**全程不需要你看到或抄写任何密钥**。
 
-- 服务端地址：用配对码填入后核对一眼即可，也可手工填写；
-- Worker Token：同上；
-- Worker ID：当前机器的唯一标识，例如 `macmini-m1`；
+其余四项都有可用默认值，收在「高级设置」里：
+
+- Worker 名称：这台机器在网页设备列表里的名字，默认取机器名；
 - Jellyfin-ffmpeg 路径：可以使用 App 管理的版本，也可以指定已有的
   `jellyfin-ffmpeg`；
 - 最大并发：按 Mac 的性能和 NAS 网络情况设置，当前 App 会限制在 1 到 4；
-- 启动时自动连接：需要菜单栏 App 登录后自动登记 Worker 时打开。
+- 开机自动连接：默认打开。
 
-Token 只保存到 macOS Keychain，其他非敏感配置保存到 UserDefaults。修改服务端 Token
-后，必须在 App 中同步更新；服务端不会通过接口回传 Token 明文。
+令牌只保存到 macOS Keychain，界面上不再有它的展示位；其他非敏感配置保存到
+UserDefaults。要停用这台机器，到网页「设置 → 设备」里吊销它——本机的「清除配置」
+只删本地副本，不会吊销服务端的授权。
 
 ## 4. Jellyfin-ffmpeg
 
@@ -134,14 +138,15 @@ launchctl bootout gui/$(id -u)/com.movieclaw.transcoder
 .build/release/movieclaw-transcoder \
   --headless \
   --nas-url https://nas.example.com \
-  --token '<同一个 Worker Token>' \
+  --token '<在网页「设置 → 设备」里为这台机器签发的令牌>' \
   --ffmpeg /opt/homebrew/bin/jellyfin-ffmpeg \
   --worker-id macmini-m1 \
   --max-jobs 1
 ```
 
-启动时会检查 `h264_videotoolbox`；能力不满足时不会向服务端登记。Headless 适合临时
-验证连接和 ffmpeg，不建议把 Token 长期写入 shell 历史或启动脚本。
+Headless 没有界面，走不了配对流程，因此需要显式传令牌。启动时会检查
+`h264_videotoolbox`；能力不满足时不会向服务端登记。Headless 适合临时验证连接和
+ffmpeg，不建议把令牌长期写入 shell 历史或启动脚本。
 
 ## 8. 运行状态和日志
 

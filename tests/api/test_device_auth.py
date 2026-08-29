@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 
 import pytest
@@ -277,3 +278,29 @@ def test_concurrent_approvals_mint_at_most_one_token(client: TestClient) -> None
 
     assert codes.count(200) == 1, f"批准被重复受理：{codes}"
     assert len(client.get(f"{_AUTH}/tokens").json()["data"]) == 1
+
+
+def test_worker_token_is_accepted_by_the_transcode_control_plane(client: TestClient) -> None:
+    """形态上限的另一半：Worker 令牌进不了业务接口，但必须进得了转码控制面。
+
+    只断言鉴权这一关——WebSocket 握手之后的协议交换属于转码链路自己的测试。
+    """
+    from movieclaw_api.api.deps import resolve_worker_principal
+
+    grant = _authorize(client, client_type="worker", name="Yi的Mac-mini")
+    client.post(f"{_AUTH}/devices/requests/{grant['user_code']}/approve")
+    token = _redeem(client, grant["device_code"]).json()["data"]["token"]
+
+    async def resolve(header: str | None):
+        return await resolve_worker_principal(header)
+
+    principal = asyncio.run(resolve(f"Bearer {token}"))
+    assert principal is not None and principal.client_type == "worker"
+
+    # CLI 令牌不能冒充 Worker 去连转码控制面
+    cli_grant = _authorize(client)
+    client.post(f"{_AUTH}/devices/requests/{cli_grant['user_code']}/approve")
+    cli_token = _redeem(client, cli_grant["device_code"]).json()["data"]["token"]
+    assert asyncio.run(resolve(f"Bearer {cli_token}")) is None
+    assert asyncio.run(resolve(None)) is None
+    assert asyncio.run(resolve("Bearer 乱写的")) is None

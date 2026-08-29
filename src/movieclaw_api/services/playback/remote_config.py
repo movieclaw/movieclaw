@@ -34,14 +34,17 @@ class RemoteTranscodeRuntimeConfig:
     """供同步播放/Worker 代码读取的远程转码有效配置快照。"""
 
     enabled: bool
-    worker_token: str
     base_url: str
     base_url_source: RemoteTranscodeBaseUrlSource
     max_artifact_bytes: int
 
     @property
     def ready(self) -> bool:
-        """开关、令牌和合法的 HTTP(S) 根地址是否全部就绪。"""
+        """开关与合法的 HTTP(S) 根地址是否就绪。
+
+        令牌不在这里判：它是逐台设备配对签发的，「有没有 Worker 连着」是
+        运行时状态而不是配置前置条件（docs/design/device-auth.md §5.4）。
+        """
         return self.enabled and not remote_transcode_issues(self)
 
 
@@ -55,8 +58,6 @@ def _normalize_base_url(value: str) -> str:
 def remote_transcode_issues(config: RemoteTranscodeRuntimeConfig) -> list[str]:
     """返回启用远程转码所缺少的前置条件，内容可直接展示给管理员。"""
     issues: list[str] = []
-    if not config.worker_token:
-        issues.append("Worker 令牌未配置")
     try:
         parsed = urlsplit(config.base_url)
     except ValueError:
@@ -100,7 +101,6 @@ def _runtime_from_setting(
         source = "unset"
     return RemoteTranscodeRuntimeConfig(
         enabled=setting.enabled,
-        worker_token=setting.worker_token,
         base_url=base_url,
         base_url_source=source,
         # 旧版本允许管理员填入超过 Worker 内存代理能力的值。读取时先
@@ -174,7 +174,6 @@ async def build_remote_transcode_config_view() -> RemoteTranscodeConfigView:
     runtime = effective_remote_transcode_config()
     return RemoteTranscodeConfigView(
         enabled=setting.enabled,
-        worker_token_configured=bool(runtime.worker_token),
         base_url=runtime.base_url,
         base_url_override=_normalize_base_url(setting.base_url),
         base_url_source=runtime.base_url_source,
@@ -191,11 +190,6 @@ async def save_remote_transcode_config(
     await load_remote_transcode_config()
     store = get_setting_store()
     current = await store.get(RemoteTranscodeSetting)
-    worker_token = (
-        current.worker_token
-        if payload.worker_token is None
-        else payload.worker_token.strip()
-    )
     base_url = (
         current.base_url
         if payload.base_url is None
@@ -203,7 +197,6 @@ async def save_remote_transcode_config(
     )
     next_setting = RemoteTranscodeSetting(
         enabled=payload.enabled,
-        worker_token=worker_token,
         base_url=base_url,
         max_artifact_bytes=payload.max_artifact_bytes,
     )
@@ -224,10 +217,9 @@ async def save_remote_transcode_config(
     )
     if (
         previous.enabled != runtime.enabled
-        or previous.worker_token != runtime.worker_token
         or previous.base_url != runtime.base_url
     ):
-        # 修改令牌、地址或关闭功能时，旧 WebSocket 不能继续持有旧配置；断开后
+        # 修改地址或关闭功能时，旧 WebSocket 不能继续持有旧配置；断开后
         # 远程 Worker 会按既有重连逻辑重新握手。局部导入避免配置服务与注册表循环依赖。
         from movieclaw_api.services.playback.remote_worker import get_remote_worker_registry
 

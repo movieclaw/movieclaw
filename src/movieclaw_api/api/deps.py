@@ -82,15 +82,33 @@ async def require_login(
     return principal
 
 
+async def resolve_worker_principal(authorization: str | None) -> Principal | None:
+    """从 Authorization 头解析转码 Worker 主体；不是 Worker 令牌一律返回 None。
+
+    抽成普通函数是因为 WebSocket 与 HTTP 两条入口要共用它：WS 握手不能抛
+    HTTPException（只能关连接并给关闭码），FastAPI 的依赖那套在那里用不上。
+    判定逻辑只此一份，两边不会走偏。
+    """
+    token = _extract_bearer(authorization)
+    if not token:
+        return None
+    try:
+        principal = await auth_service.verify_bearer_token(token)
+    except UnauthorizedException:
+        return None
+    return principal if principal.client_type == "worker" else None
+
+
 async def require_transcode_worker(
-    principal: Principal | None = Depends(optional_login),
+    authorization: str | None = Header(default=None),
 ) -> Principal:
-    """转码控制面与数据面专用：只接受 Worker 令牌。
+    """转码控制面专用：只接受 Worker 令牌。
 
     与 ``require_login`` 互补——业务接口拒绝 Worker，转码接口只认 Worker。
     两边都是显式判定，不存在「既能转码又能改订阅」的凭证。
     """
-    if principal is None or principal.client_type != "worker":
+    principal = await resolve_worker_principal(authorization)
+    if principal is None:
         raise UnauthorizedException("需要转码 Worker 凭证，请在 Worker 应用里完成配对")
     return principal
 

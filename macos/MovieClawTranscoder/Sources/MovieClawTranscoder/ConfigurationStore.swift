@@ -1,8 +1,11 @@
 import Foundation
 
+/// 设置窗保存的东西。
+///
+/// **没有令牌字段**：令牌不是用户填的，是配对流程拿回来的
+/// （docs/design/device-auth.md §5），由 `saveToken` 单独写进钥匙串。
 struct WorkerSettingsDraft: Sendable {
     let nasURL: String
-    let workerToken: String
     let workerID: String
     let ffmpegPath: String
     let maxJobs: Int
@@ -23,6 +26,10 @@ struct WorkerSettingsSnapshot: Sendable {
 }
 
 /// 非敏感配置使用 UserDefaults，令牌只通过 KeychainStore 读写。
+///
+/// 地址与令牌的生命周期是分开的：改地址不动令牌（同一台 NAS 换了入口），
+/// 重新配对只换令牌（换机器或被吊销后）。把两者塞进一次保存会让「改个端口
+/// 结果掉线了」这种事无法解释。
 final class ConfigurationStore: @unchecked Sendable {
     private let defaults: UserDefaults
 
@@ -74,31 +81,29 @@ final class ConfigurationStore: @unchecked Sendable {
         )
     }
 
+    /// 保存非敏感设置。返回可运行的配置；尚未配对时返回 nil。
     @discardableResult
-    func save(_ draft: WorkerSettingsDraft) throws -> WorkerConfiguration {
-        let currentToken = try KeychainStore.readToken() ?? ""
-        let token = draft.workerToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? currentToken
-            : draft.workerToken
-        let configuration = try WorkerConfiguration.make(
-            nasText: draft.nasURL,
-            token: token,
-            workerID: draft.workerID,
-            ffmpegPath: draft.ffmpegPath,
-            maxJobs: draft.maxJobs
-        )
-        try KeychainStore.saveToken(configuration.workerToken)
-        defaults.set(configuration.nasURL.absoluteString, forKey: Keys.nasURL)
-        defaults.set(configuration.workerID, forKey: Keys.workerID)
-        defaults.set(configuration.ffmpegPath, forKey: Keys.ffmpegPath)
+    func save(_ draft: WorkerSettingsDraft) throws -> WorkerConfiguration? {
+        let nasURL = try WorkerConfiguration.normalizedNASURL(draft.nasURL)
+        let workerID = try WorkerConfiguration.validatedWorkerID(draft.workerID)
+        let ffmpegPath = try WorkerConfiguration.validatedFFmpegPath(draft.ffmpegPath)
+
+        defaults.set(nasURL.absoluteString, forKey: Keys.nasURL)
+        defaults.set(workerID, forKey: Keys.workerID)
+        defaults.set(ffmpegPath, forKey: Keys.ffmpegPath)
         let managedPath = defaults.string(forKey: Keys.managedFFmpegPath)
         defaults.set(
-            managedPath == configuration.ffmpegPath ? FFmpegSource.managed.rawValue : FFmpegSource.custom.rawValue,
+            managedPath == ffmpegPath ? FFmpegSource.managed.rawValue : FFmpegSource.custom.rawValue,
             forKey: Keys.ffmpegSource
         )
-        defaults.set(configuration.maxJobs, forKey: Keys.maxJobs)
+        defaults.set(max(1, min(4, draft.maxJobs)), forKey: Keys.maxJobs)
         defaults.set(draft.autoConnect, forKey: Keys.autoConnect)
-        return configuration
+        return try loadConfiguration()
+    }
+
+    /// 写入配对拿回来的令牌。明文只在这一步经过内存，不落 UserDefaults。
+    func saveToken(_ token: String) throws {
+        try KeychainStore.saveToken(token)
     }
 
     /// 记录已下载版本，但不改变当前正在使用的自定义 ffmpeg。

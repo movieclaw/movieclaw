@@ -6,8 +6,6 @@ import { CheckIcon } from "@/components/icons";
 import {
   type RemoteTranscodeConfigView,
   type RemoteTranscodeStatus,
-  buildPairingCode,
-  generateWorkerToken,
   getRemoteTranscodeConfig,
   getRemoteTranscodeStatus,
   saveRemoteTranscodeConfig,
@@ -38,20 +36,12 @@ export function RemoteTranscodeSection({ onOpenMaintain }: RemoteTranscodeSectio
   const [config, setConfig] = useState<RemoteTranscodeConfigView | null>(null);
   const [enabled, setEnabled] = useState(false);
   const [baseURLDraft, setBaseURLDraft] = useState("");
-  const [tokenDraft, setTokenDraft] = useState("");
-  const [clearToken, setClearToken] = useState(false);
   const [maxArtifactMiB, setMaxArtifactMiB] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [status, setStatus] = useState<RemoteTranscodeStatus | null>(null);
-  // 只在本次会话里持有：用于拼配对码。刷新页面即消失，服务端也读不回来。
-  const [plainToken, setPlainToken] = useState<string | null>(null);
-  const [pairingVisible, setPairingVisible] = useState(false);
-  const [copied, setCopied] = useState(false);
-  /** 当前草稿是不是刚生成的：生成的要明文给用户核对，手输的仍然遮蔽。 */
-  const [tokenGenerated, setTokenGenerated] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -62,9 +52,6 @@ export function RemoteTranscodeSection({ onOpenMaintain }: RemoteTranscodeSectio
       setEnabled(next.enabled);
       setBaseURLDraft(next.base_url_override);
       setMaxArtifactMiB(String(Math.max(1, Math.round(next.max_artifact_bytes / BYTES_PER_MIB))));
-      setTokenDraft("");
-      setTokenGenerated(false);
-      setClearToken(false);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -118,23 +105,12 @@ export function RemoteTranscodeSection({ onOpenMaintain }: RemoteTranscodeSectio
       const next = await saveRemoteTranscodeConfig({
         enabled,
         base_url: baseURLDraft.trim(),
-        worker_token: clearToken ? "" : tokenDraft.trim() || null,
         max_artifact_bytes: mib * BYTES_PER_MIB,
       });
       setConfig(next);
       setEnabled(next.enabled);
       setBaseURLDraft(next.base_url_override);
       setMaxArtifactMiB(String(Math.max(1, Math.round(next.max_artifact_bytes / BYTES_PER_MIB))));
-      // 保存成功才认这个明文——配对码里的 Token 必须和服务端存的一致
-      if (clearToken) {
-        setPlainToken(null);
-        setPairingVisible(false);
-      } else if (tokenDraft.trim()) {
-        setPlainToken(tokenDraft.trim());
-      }
-      setTokenDraft("");
-      setTokenGenerated(false);
-      setClearToken(false);
       setSaved(true);
       window.setTimeout(() => setSaved(false), 2200);
       void getRemoteTranscodeStatus().then(setStatus).catch(() => {});
@@ -176,28 +152,6 @@ export function RemoteTranscodeSection({ onOpenMaintain }: RemoteTranscodeSectio
     : config.ready && onlineWorkers.length > 0
       ? "text-emerald-300"
       : "text-amber-200";
-  const pairingCode =
-    plainToken && config.base_url ? buildPairingCode(config.base_url, plainToken) : null;
-
-  function applyGeneratedToken() {
-    const next = generateWorkerToken();
-    setTokenDraft(next);
-    setTokenGenerated(true);
-    setClearToken(false);
-    setError(null);
-  }
-
-  async function copyPairingCode() {
-    if (!pairingCode) return;
-    try {
-      await navigator.clipboard.writeText(pairingCode);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 2000);
-    } catch {
-      setError("浏览器拒绝了剪贴板访问，请手动选中配对码复制");
-    }
-  }
-
   return (
     <div className="space-y-7">
       {error && (
@@ -297,60 +251,16 @@ export function RemoteTranscodeSection({ onOpenMaintain }: RemoteTranscodeSectio
       </section>
 
       <section>
-        <h3 className="group-label mb-2.5 px-1">连接与安全</h3>
+        <h3 className="group-label mb-2.5 px-1">连接</h3>
         <div className="css-glass space-y-5 !rounded-2xl p-5 max-sm:p-4">
-          <div>
-            <div className="flex items-center justify-between gap-3">
-              <label htmlFor="remote-worker-token" className="text-body font-medium text-[var(--text)]">
-                Worker Token
-              </label>
-              <div className="flex items-center gap-3">
-                {/* 文档里写「设置一个高熵 Token」而页面上没有生成入口，实际
-                    结果一定是有人填 12345678。给个按钮比给个说明有效。 */}
-                <button
-                  type="button"
-                  onClick={applyGeneratedToken}
-                  className="text-caption text-[var(--accent)] underline decoration-dotted underline-offset-2"
-                >
-                  生成随机令牌
-                </button>
-                {config.worker_token_configured && !clearToken && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setTokenDraft("");
-                      setTokenGenerated(false);
-                      setClearToken(true);
-                    }}
-                    className="text-caption text-red-300/90 underline decoration-dotted underline-offset-2 hover:text-red-200"
-                  >
-                    清除令牌
-                  </button>
-                )}
-              </div>
-            </div>
-            <input
-              id="remote-worker-token"
-              // 刚生成的令牌要能被看见和核对；用户手输时仍然遮蔽
-              type={tokenGenerated ? "text" : "password"}
-              value={tokenDraft}
-              onChange={(event) => {
-                setTokenDraft(event.target.value);
-                setTokenGenerated(false);
-                setClearToken(false);
-              }}
-              placeholder={
-                clearToken
-                  ? "保存后清除当前令牌"
-                  : config.worker_token_configured
-                    ? "已配置，留空保持不变"
-                    : "输入与远程 Worker 相同的高熵令牌"
-              }
-              autoComplete="new-password"
-              className={`mt-2 ${INPUT_CLASS}`}
-            />
-            <p className="mt-1.5 text-caption leading-5 text-[var(--text-faint)]">
-              令牌会加密保存，页面和接口都不会回显明文。修改令牌后，远程 Worker 需要同步更新。
+          {/* 这里没有令牌输入框，也没有配对码：Worker 的凭证是逐台配对签发的，
+              在「设备」分区审批与吊销（docs/design/device-auth.md §5.4）。
+              让人在两个地方各抄一遍高熵字符串，正是这次要拆掉的东西。 */}
+          <div className="rounded-xl border border-white/[0.06] bg-black/15 px-4 py-3">
+            <p className="text-sub leading-relaxed text-[var(--text-muted)]">
+              在 Mac 上打开 MovieClaw Transcoder，填入下面这个地址并点「验证连接」，
+              它会显示一个配对码；到「设置 → 设备」核对后批准即可。这里不需要、
+              也不应该配置任何令牌。
             </p>
           </div>
 
@@ -394,55 +304,6 @@ export function RemoteTranscodeSection({ onOpenMaintain }: RemoteTranscodeSectio
           </div>
         </div>
       </section>
-
-      {/* 配对码：把地址和 Token 一次性交给 Mac，替掉两端手工抄写。
-          只在本次会话刚保存过 Token 时可用——服务端读不回明文，这既是安全
-          约束，也让「配对码 = 刚设好的这一份」语义保持清晰。 */}
-      {pairingCode && (
-        <section>
-          <h3 className="group-label mb-2.5 px-1">配对 Worker</h3>
-          <div className="css-glass space-y-3 !rounded-2xl p-5 max-sm:p-4">
-            <p className="text-sub leading-relaxed text-[var(--text-muted)]">
-              在 Mac 上打开 MovieClaw Transcoder 的「设置」，把下面这串粘贴到「配对码」
-              一栏点「填入」，地址和令牌会自动填好。
-            </p>
-            {pairingVisible ? (
-              <textarea
-                readOnly
-                value={pairingCode}
-                rows={3}
-                onFocus={(event) => event.target.select()}
-                className={`${INPUT_CLASS} resize-none break-all font-mono text-caption`}
-              />
-            ) : (
-              <p className="text-caption text-[var(--text-faint)]">
-                配对码包含令牌明文，等同于凭据本身，请只在信任的屏幕上显示。
-              </p>
-            )}
-            <div className="flex items-center gap-3">
-              <button
-                type="button"
-                onClick={() => setPairingVisible((value) => !value)}
-                className="btn-glass rounded-full px-4 py-1.5 text-sub"
-              >
-                {pairingVisible ? "隐藏" : "显示配对码"}
-              </button>
-              <button
-                type="button"
-                onClick={() => void copyPairingCode()}
-                className="btn-glass rounded-full px-4 py-1.5 text-sub"
-              >
-                复制
-              </button>
-              {copied && (
-                <span className="flex items-center gap-1 text-sub text-emerald-300">
-                  <CheckIcon className="size-4" /> 已复制
-                </span>
-              )}
-            </div>
-          </div>
-        </section>
-      )}
 
       <section>
         <h3 className="group-label mb-2.5 px-1">传输限制</h3>

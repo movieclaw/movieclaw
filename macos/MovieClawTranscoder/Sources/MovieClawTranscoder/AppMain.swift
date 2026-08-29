@@ -447,21 +447,19 @@ final class MovieClawAppDelegate: NSObject, NSApplicationDelegate {
         do {
             let snapshot = try configurationStore.snapshot()
             let controller = SettingsWindowController(snapshot: snapshot)
+            // 保存与配对是两回事：改地址不该动令牌，配对成功也不该改地址。
+            // 分成两个回调，「改个端口结果掉线了」这种事就不会发生。
             controller.onSave = { [weak self] draft in
                 guard let self else { return }
                 let newConfiguration = try self.configurationStore.save(draft)
-                self.configuration = newConfiguration
-                self.isConfigured = true
-                let snapshot = try self.configurationStore.snapshot()
-                self.ffmpegSource = snapshot.ffmpegSource
-                self.ffmpegManager.configure(
-                    managedPath: snapshot.managedFFmpegPath,
-                    managedVersion: snapshot.managedFFmpegVersion
-                )
-                self.menuBar.update(ffmpeg: self.ffmpegManager.menuState)
-                self.stopWorker()
-                self.startWorker()
-                AppLogger.shared.info("Worker 配置已保存：\(newConfiguration.nasURL.host ?? "未知主机")")
+                self.applyConfiguration(newConfiguration)
+                AppLogger.shared.info("Worker 设置已保存：\(draft.nasURL)")
+            }
+            controller.onPaired = { [weak self] token in
+                guard let self else { return }
+                try self.configurationStore.saveToken(token)
+                self.applyConfiguration(try self.configurationStore.loadConfiguration())
+                AppLogger.shared.info("Worker 已完成配对并获得授权")
             }
             controller.onClear = { [weak self] in
                 guard let self else { return }
@@ -484,6 +482,29 @@ final class MovieClawAppDelegate: NSObject, NSApplicationDelegate {
             controller.showWindowAndFocus()
         } catch {
             showStartupError(error)
+        }
+    }
+
+    /// 配置变更后的统一收尾：刷新 ffmpeg 状态、菜单栏，并重启 Worker 连接。
+    ///
+    /// 配置为 nil 表示还没配对完（地址填了但没授权）——此时不该去连，
+    /// 也不该把菜单栏显示成已配置。
+    private func applyConfiguration(_ newConfiguration: WorkerConfiguration?) {
+        configuration = newConfiguration
+        isConfigured = newConfiguration != nil
+        if let snapshot = try? configurationStore.snapshot() {
+            ffmpegSource = snapshot.ffmpegSource
+            ffmpegManager.configure(
+                managedPath: snapshot.managedFFmpegPath,
+                managedVersion: snapshot.managedFFmpegVersion
+            )
+        }
+        menuBar.update(ffmpeg: ffmpegManager.menuState)
+        stopWorker()
+        if newConfiguration != nil {
+            startWorker()
+        } else {
+            menuBar.update(status: nil, configured: false)
         }
     }
 

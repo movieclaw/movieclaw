@@ -44,21 +44,13 @@ struct WorkerConfiguration: Sendable {
         let nasURL = try normalizedNASURL(nasText)
         let trimmedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedToken.isEmpty else {
-            throw ConfigurationError.message("Worker Token 不能为空")
-        }
-        let trimmedID = workerID.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmedID.range(of: "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$", options: .regularExpression) != nil else {
-            throw ConfigurationError.message("Worker ID 只能包含字母、数字、下划线、点、冒号和短横线")
-        }
-        let path = ffmpegPath.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !path.isEmpty else {
-            throw ConfigurationError.message("Jellyfin-ffmpeg 路径不能为空")
+            throw ConfigurationError.message("这台 Mac 还没有配对，请在设置里完成配对")
         }
         return WorkerConfiguration(
             nasURL: nasURL,
             workerToken: trimmedToken,
-            workerID: trimmedID,
-            ffmpegPath: path,
+            workerID: try validatedWorkerID(workerID),
+            ffmpegPath: try validatedFFmpegPath(ffmpegPath),
             maxJobs: maxJobs
         )
     }
@@ -97,9 +89,10 @@ struct WorkerConfiguration: Sendable {
         print("""
         MovieClawTranscoder
 
-        菜单栏 App：直接打开 MovieClawTranscoder.app 后在设置中填写 NAS 地址和 Token。
+        菜单栏 App：直接打开 MovieClawTranscoder.app，在设置里填 movieclaw 地址，
+        按提示到网页「设置 → 设备」批准配对即可，不需要手工填任何令牌。
 
-        无界面兼容模式：
+        无界面模式（无人值守部署；令牌请在网页「设置 → 设备」创建）：
           movieclaw-transcoder --headless --nas-url https://nas.example.com --token <token>
                                [--ffmpeg /opt/homebrew/bin/jellyfin-ffmpeg]
                                [--worker-id macmini-m1] [--max-jobs 1]
@@ -108,7 +101,23 @@ struct WorkerConfiguration: Sendable {
         """)
     }
 
-    private static func normalizedNASURL(_ text: String) throws -> URL {
+    static func validatedWorkerID(_ workerID: String) throws -> String {
+        let trimmed = workerID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.range(of: "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$", options: .regularExpression) != nil else {
+            throw ConfigurationError.message("Worker 名称只能包含字母、数字、下划线、点、冒号和短横线")
+        }
+        return trimmed
+    }
+
+    static func validatedFFmpegPath(_ ffmpegPath: String) throws -> String {
+        let path = ffmpegPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty else {
+            throw ConfigurationError.message("Jellyfin-ffmpeg 路径不能为空")
+        }
+        return path
+    }
+
+    static func normalizedNASURL(_ text: String) throws -> URL {
         var value = text.trimmingCharacters(in: .whitespacesAndNewlines)
         while value.hasSuffix("/") {
             value.removeLast()

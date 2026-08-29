@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import ClientDisconnect
 from starlette.websockets import WebSocketDisconnect
 
-from movieclaw_api.api.deps import require_admin
+from movieclaw_api.api.deps import require_admin, resolve_worker_principal
 from movieclaw_api.exceptions import (
     InsufficientStorageException,
     NotFoundException,
@@ -35,10 +35,9 @@ from movieclaw_api.services.playback import remote_config as remote_transcode_co
 from movieclaw_api.services.playback.remote_signing import verify_remote_grant
 from movieclaw_api.services.playback.remote_worker import (
     REMOTE_WORKER_PROTOCOL_VERSION,
-    REMOTE_WORKER_TOKEN_HEADER,
     effective_remote_transcode_config,
     get_remote_worker_registry,
-    verify_worker_token,
+    remote_worker_enabled,
 )
 from movieclaw_api.services.playback.session import get_session_manager
 from movieclaw_db.engine import get_session
@@ -155,11 +154,13 @@ async def _verify_grant(
 @router.websocket("/ws")
 async def transcode_worker_websocket(websocket: WebSocket) -> None:
     """接收 Worker hello，并持续处理心跳与任务状态。"""
-    # 控制面令牌只允许放在 Header，避免把长期共享令牌写进反向代理访问日志、
-    # 浏览器历史或监控 URL。数据面 token 是短时会话凭据，才使用查询参数。
-    provided = websocket.headers.get(REMOTE_WORKER_TOKEN_HEADER)
-    if not verify_worker_token(provided):
-        await websocket.close(code=1008, reason="Worker 未启用或令牌无效")
+    # 凭证走标准 Authorization: Bearer，与 CLI 同一个验签入口
+    # （docs/design/device-auth.md §5.4）。放 Header 而不是查询参数，是为了
+    # 不把长期令牌写进反向代理访问日志与监控 URL；数据面用的短时签名 token
+    # 才走查询参数，那是另一套且随会话失效。
+    principal = await resolve_worker_principal(websocket.headers.get("authorization"))
+    if principal is None or not remote_worker_enabled():
+        await websocket.close(code=1008, reason="远程转码未启用，或凭证无效、已被吊销")
         return
 
     await websocket.accept()

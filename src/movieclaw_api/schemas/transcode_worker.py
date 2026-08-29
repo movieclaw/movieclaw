@@ -22,9 +22,8 @@ RemoteTranscodeBaseUrlSource = Literal[
 class RemoteTranscodeConfigPayload(BaseModel):
     """网页保存的远程转码配置。
 
-    ``worker_token`` 使用三态语义：``null`` 表示保持当前令牌，空字符串表示
-    清除令牌，其余字符串表示替换令牌。这样 GET 接口无需回传敏感值，
-    前端也能在不修改令牌时安全地保存其他字段。
+    没有令牌字段：Worker 的凭证在「设置 → 设备」里配对签发与吊销
+    （docs/design/device-auth.md §5.4）。
     """
 
     enabled: bool = Field(default=False, description="是否启用远程硬件转码")
@@ -32,11 +31,6 @@ class RemoteTranscodeConfigPayload(BaseModel):
         default=None,
         max_length=4096,
         description="远程转码专用根地址；null=保持，空字符串=清除并回退系统外部访问地址",
-    )
-    worker_token: str | None = Field(
-        default=None,
-        max_length=4096,
-        description="Worker 令牌；null=保持，空字符串=清除",
     )
     max_artifact_bytes: int = Field(
         default=DEFAULT_REMOTE_TRANSCODE_MAX_ARTIFACT_BYTES,
@@ -47,10 +41,9 @@ class RemoteTranscodeConfigPayload(BaseModel):
 
 
 class RemoteTranscodeConfigView(BaseModel):
-    """网页展示的远程转码配置，不包含令牌明文。"""
+    """网页展示的远程转码配置。"""
 
     enabled: bool
-    worker_token_configured: bool
     base_url: str = Field(default="", description="实际使用的远程转码根地址")
     base_url_override: str = Field(
         default="", description="网页配置的远程转码专用根地址；空表示跟随系统外部访问地址"

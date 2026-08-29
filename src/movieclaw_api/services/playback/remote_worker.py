@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import hmac
 import logging
 import re
 import threading
@@ -35,7 +34,6 @@ from movieclaw_api.services.playback.remote_config import (
 
 logger = logging.getLogger("movieclaw_api.playback.remote_worker")
 
-REMOTE_WORKER_TOKEN_HEADER = "x-movieclaw-worker-token"
 REMOTE_WORKER_PROTOCOL_VERSION = 1
 WORKER_IDLE_TIMEOUT_S = 45.0
 JOB_ACCEPT_TIMEOUT_S = 8.0
@@ -503,14 +501,6 @@ def remote_worker_enabled() -> bool:
 def effective_remote_transcode_config() -> RemoteTranscodeRuntimeConfig:
     """供同步调用方读取网页配置的运行时快照。"""
     return _effective_remote_transcode_config()
-
-
-def verify_worker_token(provided: str | None) -> bool:
-    """校验控制面共享令牌；使用常量时间比较，避免令牌时序泄漏。"""
-    configured = effective_remote_transcode_config().worker_token
-    if not remote_worker_enabled() or not provided or not configured:
-        return False
-    return hmac.compare_digest(provided, configured)
 
 
 def remote_worker_available(backend: str = "videotoolbox") -> bool:
