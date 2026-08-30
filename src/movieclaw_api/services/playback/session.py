@@ -49,6 +49,7 @@ from movieclaw_api.services.playback.ffmpeg_args import (
 from movieclaw_api.services.playback.remote_signing import issue_remote_grant
 from movieclaw_api.services.playback.remote_worker import (
     RemoteWorkerUnavailable,
+    effective_remote_transcode_config,
     get_remote_worker_registry,
 )
 from movieclaw_events import new_ulid
@@ -1131,27 +1132,65 @@ class TranscodeSessionManager:
             self._sync_completed(session)
             session.playlist_path.unlink(missing_ok=True)
             job_id = new_ulid()
-            artifact_token = await issue_remote_grant(
-                session_id=session.id,
-                file_id=session.file_id,
-                kind="artifact",
-                attempt_id=job_id,
-            )
-            session.remote_artifact_suffix = f"?token={quote(artifact_token, safe='')}"
-            command = build_hls_command(
-                session.plan,
-                source_path=session.remote_source_url,
-                session_dir=session.directory,
-                start_ms=session.start_ms,
-                hw_backend=session.hw_backend,
-                start_number=index,
-                output_base_url=session.remote_artifact_base_url,
-                output_url_suffix=session.remote_artifact_suffix,
-            )
             session.remote_job_id = job_id
             registry.create_job_waiter(job_id)
             try:
-                worker_id = await registry.dispatch(
+                # 先占位再拼地址，和首次下发同一条规矩：源地址与产物回传地址
+                # 必须用**接单的这台** Worker 连上来的地址拼（理由见
+                # ``_spawn_remote``）。不能沿用上一轮的地址——seek 完全可能被
+                # 另一台从不同入口连进来的 Worker 接走。
+                connection = registry.reserve(
+                    job_id,
+                    backend=session.hw_backend or "videotoolbox",
+                    attempt_id=job_id,
+                )
+                try:
+                    base = (
+                        effective_remote_transcode_config().base_url
+                        or connection.observed_base_url
+                    ).rstrip("/")
+                    if not base:
+                        raise SessionStartError(
+                            "无法确定远程转码地址：Worker 连接未携带可用的 Host，"
+                            "请在「应用 → 远程转码」填写专用地址"
+                        )
+                    source_token = await issue_remote_grant(
+                        session_id=session.id, file_id=session.file_id, kind="source"
+                    )
+                    artifact_token = await issue_remote_grant(
+                        session_id=session.id,
+                        file_id=session.file_id,
+                        kind="artifact",
+                        attempt_id=job_id,
+                    )
+                    source_url = (
+                        f"{base}/api/v1/transcode-worker/sessions/{session.id}/source"
+                        f"?token={quote(source_token, safe='')}"
+                    )
+                    artifact_base = (
+                        f"{base}/api/v1/transcode-worker/sessions/{session.id}/artifacts"
+                    )
+                    token_suffix = f"?token={quote(artifact_token, safe='')}"
+                    command = build_hls_command(
+                        session.plan,
+                        source_path=source_url,
+                        session_dir=session.directory,
+                        start_ms=session.start_ms,
+                        hw_backend=session.hw_backend,
+                        start_number=index,
+                        output_base_url=artifact_base,
+                        output_url_suffix=token_suffix,
+                    )
+                except BaseException:
+                    # 占位到下发之间的任何失败都要归还槽位，否则这台 Worker 的
+                    # 并发位会被一个从未下发的任务永久占住。
+                    registry.release_job(job_id)
+                    raise
+                session.remote_source_url = source_url
+                session.remote_artifact_base_url = artifact_base
+                session.remote_artifact_suffix = token_suffix
+                worker_id = await registry.start_job(
+                    connection,
                     job_id,
                     {
                         "file_id": session.file_id,
@@ -1160,7 +1199,6 @@ class TranscodeSessionManager:
                         "ffmpeg_args": command.argv[1:],
                         "display_name": session.display_name,
                     },
-                    backend=session.hw_backend or "videotoolbox",
                 )
                 session.remote_worker_id = worker_id
                 event = await registry.wait_job_event(job_id)

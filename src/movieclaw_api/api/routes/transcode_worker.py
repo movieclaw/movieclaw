@@ -245,8 +245,18 @@ async def transcode_worker_websocket(websocket: WebSocket) -> None:
             message = await websocket.receive_json()
             if isinstance(message, dict):
                 await registry.handle_message(connection, message)
-    except WebSocketDisconnect:
-        pass
+    except WebSocketDisconnect as exc:
+        # 断开码是区分「Worker 崩了」和「用户自己退出」的唯一线索，必须打出来：
+        # 1000/1001 是对端发了关闭帧的正常退出；1006 代表连关闭帧都没来得及发，
+        # 几乎总意味着 Mac 上的 Worker 进程异常终止（崩溃、被杀、拔网线）。
+        # 看到 1006 就该去那台 Mac 上翻 ~/Library/Logs/MovieClawTranscoder.log
+        # 的 [CRASH] 面包屑，以及 ~/Library/Logs/DiagnosticReports 里的 .ips。
+        logger.warning(
+            "远程 Worker 控制连接断开：worker=%s code=%s%s",
+            connection.worker_id if connection is not None else "未握手",
+            exc.code,
+            "（无关闭帧，Worker 进程多半是异常退出的）" if exc.code == 1006 else "",
+        )
     except Exception:  # noqa: BLE001
         logger.exception("远程 Worker 控制连接异常")
     finally:

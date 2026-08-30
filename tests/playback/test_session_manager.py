@@ -1028,7 +1028,12 @@ async def test_remote_restart_failure_cleans_up_new_job(manager, tmp_path, monke
     session.remote_artifact_base_url = "https://nas.example.com/artifacts"
     session.directory.mkdir(parents=True)
 
-    with pytest.raises(SessionStartError):
+    # 必须匹配失败原因，不能只断言「抛了 SessionStartError」：``_restart_remote``
+    # 把一切异常都包装成 SessionStartError，宽泛断言会让任何内部错误（比如
+    # 2026-08-30 那次调用了已被拆掉的 registry.dispatch，直接 AttributeError）
+    # 都伪装成本用例期望的失败，测试全绿而 seek 全坏。
+    expected = "Worker 拒绝 seek 任务" if failure == "rejected" else "远程 seek 不可用"
+    with pytest.raises(SessionStartError, match=expected):
         await manager._restart_remote(session, 0)
 
     assert registry.created is not None
@@ -1038,6 +1043,89 @@ async def test_remote_restart_failure_cleans_up_new_job(manager, tmp_path, monke
     assert session.remote_job_id is None
     assert session.remote_worker_id is None
     assert session.state == "failed"
+
+
+@pytest.mark.asyncio
+async def test_remote_seek_restart_uses_the_worker_that_took_the_job(
+    manager, tmp_path, monkeypatch
+):
+    """seek 重启要真的下发出去，且地址必须按**接单那台** Worker 的入口重拼。
+
+    这次的教训（2026-08-30）：上一次重构把 ``dispatch`` 拆成 ``reserve`` +
+    ``start_job``，首次下发改了、seek 重启这条路径漏改，一按快进就
+    ``AttributeError``，目标分片永远 404、播放器卡死。当时唯一碰这条路径的
+    用例只断言「会抛 SessionStartError」，而 AttributeError 恰好也被包装成了
+    SessionStartError——所以全绿。这条用例走成功路径，把漏改钉死。
+    """
+
+    class FakeRemoteRegistry:
+        def __init__(self) -> None:
+            self.reserved: list[tuple[str, str]] = []
+            self.started: list[tuple[str, dict]] = []
+            self.released: list[str] = []
+            self.cancelled: list[tuple[str, bool]] = []
+
+        def create_job_waiter(self, job_id: str) -> None:
+            self.created = job_id
+
+        def reserve(self, job_id: str, *, backend: str, attempt_id: str | None = None):
+            self.reserved.append((job_id, backend))
+            return SimpleNamespace(
+                worker_id="mac-mini-b", observed_base_url="http://192.168.1.10:3000"
+            )
+
+        def release_job(self, job_id: str) -> None:
+            self.released.append(job_id)
+
+        async def start_job(self, connection, job_id: str, payload: dict) -> str:
+            self.started.append((job_id, payload))
+            return connection.worker_id
+
+        async def wait_job_event(self, job_id: str) -> dict[str, str]:
+            return {"type": "job.accepted"}
+
+        async def cancel(self, job_id: str, *, force: bool = False) -> None:
+            self.cancelled.append((job_id, force))
+
+        def remove_job(self, job_id: str) -> None:
+            pass
+
+        def remove_job_waiter(self, job_id: str) -> None:
+            pass
+
+    registry = FakeRemoteRegistry()
+    monkeypatch.setattr(session_mod, "get_remote_worker_registry", lambda: registry)
+
+    async def fake_issue_remote_grant(**_: object) -> str:
+        return "grant"
+
+    monkeypatch.setattr(session_mod, "issue_remote_grant", fake_issue_remote_grant)
+    session = _vod_session(tmp_path / "session", head=0, completed=set())
+    session.remote = True
+    session.state = "ready"
+    session.hw_backend = "videotoolbox"
+    session.remote_job_id = "old-job"
+    # 上一轮留下的地址：换了一台 Worker 接单后就不该再被沿用。
+    session.remote_source_url = "http://stale.example.com/source"
+    session.remote_artifact_base_url = "http://stale.example.com/artifacts"
+    session.directory.mkdir(parents=True)
+
+    await manager._restart_remote(session, 3)
+
+    assert session.state == "ready"
+    assert session.remote_worker_id == "mac-mini-b"
+    assert registry.reserved == [(session.remote_job_id, "videotoolbox")]
+    assert registry.released == []
+    # 旧任务要被强杀，否则它会和新一轮并发读源、并发上传
+    assert registry.cancelled == [("old-job", True)]
+
+    job_id, payload = registry.started[0]
+    assert job_id == session.remote_job_id
+    assert payload["start_ms"] == session.start_ms
+    # 源地址与回传地址都按接单那台的入口重拼，绝不沿用上一轮的
+    assert session.remote_source_url.startswith("http://192.168.1.10:3000/")
+    assert session.remote_artifact_base_url.startswith("http://192.168.1.10:3000/")
+    assert "stale.example.com" not in " ".join(payload["ffmpeg_args"])
 
 
 @pytest.mark.asyncio

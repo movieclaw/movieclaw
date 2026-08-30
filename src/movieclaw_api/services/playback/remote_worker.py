@@ -152,10 +152,12 @@ class RemoteWorkerRegistry:
                 return
             self._workers.pop(connection.worker_id, None)
             lost_jobs = self._mark_jobs_lost(connection, "远程 Worker 已断开连接")
+        # 带上被判失败的任务 ID：Worker 崩在半路时，用户先看到的是「播放失败」，
+        # 而这一行是把那次失败和这台 Worker 的掉线对上号的唯一凭据。
         logger.warning(
-            "远程转码 Worker 已离线：%s，影响任务=%d",
+            "远程转码 Worker 已离线：%s，%s",
             connection.worker_id,
-            len(lost_jobs),
+            f"进行中的任务已判失败={','.join(lost_jobs)}" if lost_jobs else "无进行中的任务",
         )
 
     async def shutdown(self) -> None:
