@@ -69,7 +69,12 @@ final class MovieClawAppDelegate: NSObject, NSApplicationDelegate {
     private var startupCheckTask: Task<Void, Never>?
     private var ffmpegPreparationTask: Task<Void, Never>?
     private var configuration: WorkerConfiguration?
-    private var latestStatus: WorkerStatus?
+    /// 最近一次 Worker 状态。设置窗打开时也要跟着变——它的「状态」行显示的是
+    /// 现在通不通，不是钥匙串里有没有令牌。赋值点有好几处，用 didSet 统一推送，
+    /// 免得新增一处就漏一处。
+    private var latestStatus: WorkerStatus? {
+        didSet { settingsWindow?.update(status: latestStatus) }
+    }
     private var isConfigured = false
     private var ffmpegSource: FFmpegSource = .custom
     private var workerDrainedForFFmpeg = false
@@ -488,6 +493,8 @@ final class MovieClawAppDelegate: NSObject, NSApplicationDelegate {
                 AppLogger.shared.info("Worker 配置已清除")
             }
             settingsWindow = controller
+            // 窗口是现开的，didSet 推不到它，开窗时补一次当前状态
+            controller.update(status: latestStatus)
             controller.showWindowAndFocus()
         } catch {
             showStartupError(error)

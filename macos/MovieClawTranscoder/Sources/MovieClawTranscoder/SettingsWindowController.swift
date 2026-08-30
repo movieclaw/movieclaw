@@ -5,20 +5,23 @@ private let settingsFrameAutosaveName = "MovieClawTranscoderSettings"
 
 /// 配置窗口保持为 AppKit 原生窗口，兼容 macOS 12，不引入 SwiftUI 的最低系统版本约束。
 ///
-/// **首次配置只需要一次点击。** 填好地址点「连接并配对」，App 会连着做完
-/// 三件事：保存设置、验证地址真的通、发起接入请求并显示配对码。
+/// 布局照评审 demo（`device-pairing.html` 的 `workerShell`）逐条对齐：分区
+/// 小标题 + 圆角分组，组内每行「左标题 / 右取值」，行间发丝线，组下一行灰色
+/// 脚注，动作栏在底部右侧、左端放一句当前状态。
 ///
-/// 这里原本是两步（先「验证连接」，成功后再点「请求接入」）。拆开的初衷是让
-/// 地址填错当场可见，但代价是把一个中间结论摆成了必须点掉的关卡——「已连接」
-/// 从来不是用户想要的终点，他要的是配对完成。地址错了照样当场可见：验证失败
-/// 就停在失败态，根本走不到发起请求那一步，中间结论用一行进度文案交代即可。
+/// **每个状态只显示它需要的那几行。** 这是 demo 最关键的一点，也是这一版
+/// 主要补回来的东西：等批准时窗口里只有配对码，配好之后地址框整个消失、变成
+/// 一行「服务器 10.1.1.5:3000」。用户任何时刻看到的都只是当下要看的东西。
 ///
-/// 已经授权过之后按钮变成「保存并测试连接」——改端口不该动令牌，重新配对是
-/// 另一个明确的入口（docs/design/device-auth.md §5.1）。
+/// 配对是一次点击。填好地址点「连接并配对」，App 连着做完三件事：保存设置、
+/// 验证地址真的通、发起接入请求并显示配对码。原来这里是两步（先「验证连接」，
+/// 成功后再点「请求接入」），拆开的初衷是让地址填错当场可见，但代价是把一个
+/// 中间结论摆成了必须点掉的关卡——「已连接」从来不是用户想要的终点。地址错了
+/// 照样当场可见：验证失败就停在失败态，根本走不到发起请求那一步。
 ///
-/// 布局按 macOS 系统设置的语言组织：分组小标题 + 圆角卡片，卡片内每行左标签
-/// 右控件，卡片下一行灰色脚注。**主界面只有一个必填项——movieclaw 地址**，
-/// 其余四项都有可用默认值，收进折叠的「高级设置」。
+/// 配好之后地址不可编辑，要改就点「断开并重新配置」回到第一步。这样「保存并
+/// 测试连接」「重新配对」「清除配置」三个按钮收敛成一个：稳态下只有一件事
+/// 可做，就是推倒重来（docs/design/device-auth.md §5.1）。
 @MainActor
 final class SettingsWindowController: NSWindowController {
     /// 保存非敏感设置（地址、名称、ffmpeg、并发、自启）。
@@ -33,59 +36,78 @@ final class SettingsWindowController: NSWindowController {
     private enum Stage {
         /// 还没授权，等待用户点「连接并配对」。
         case idle
-        /// 正在验证地址。`pairing` 表示验证通过后会接着发起接入请求。
-        case connecting(pairing: Bool)
+        /// 正在验证地址。
+        case connecting
         /// 已连上，配对码已生成，等网页批准。
         case pairing(DevicePairing.Grant)
-        /// 已授权。`detail` 说明最近一次操作的结论。
-        case authorized(detail: String)
+        /// 已授权，稳态。
+        case authorized
         case failed(String)
     }
 
+    // 输入控件常驻，靠 isHidden 决定哪一行出现——重建视图树会丢掉正在输入的
+    // 地址框焦点，也容易让重复挂上去的约束越积越多。
     private let nasURLField = NSTextField()
     private let workerIDField = NSTextField()
     private let ffmpegPathField = NSTextField()
     private let maxJobsField = NSTextField()
     private let autoConnectButton = NSButton(
-        checkboxWithTitle: "开机自动连接", target: nil, action: nil
+        checkboxWithTitle: "", target: nil, action: nil
     )
 
+    private let serverValue = SettingsStyle.rowValue(mono: true)
     private let statusDot = StatusDot()
     private let statusSpinner = NSProgressIndicator()
-    private let statusLabel = NSTextField(labelWithString: "")
-    private let hintLabel = NSTextField(wrappingLabelWithString: "")
+    private let statusValue = SettingsStyle.rowValue()
+    private let identityValue = SettingsStyle.rowValue(mono: true)
+    private let expiryValue = SettingsStyle.rowValue(mono: true)
+
+    private let codeCaption = NSTextField(labelWithString: "在浏览器中核对这个配对码")
     private let codeLabel = NSTextField(labelWithString: "")
-    private let copyCodeButton = NSButton(title: "拷贝", target: nil, action: nil)
-    private let openBrowserButton = NSButton(title: "打开网页", target: nil, action: nil)
-    private var codePanel = CardView()
-    private var statusCard = CardView()
+    private let codeLink = NSButton(title: "", target: nil, action: nil)
 
     private let primaryButton = NSButton(title: "连接并配对", target: nil, action: nil)
-    private let repairButton = NSButton(title: "重新配对…", target: nil, action: nil)
     private let discoverButton = NSButton(title: "在局域网中查找", target: nil, action: nil)
-    private let advancedToggle = NSButton(title: "高级设置", target: nil, action: nil)
-    private var advancedCard = CardView()
+    private let resetButton = NSButton(title: "断开并重新配置", target: nil, action: nil)
+    private let cancelButton = NSButton(title: "取消", target: nil, action: nil)
+    private let barStatusLabel = SettingsStyle.caption("")
+    private let advancedToggle = NSButton(title: "", target: nil, action: nil)
+
+    // 行与分区。render() 只做一件事：决定这些的 isHidden。
+    private var addressRow = NSView()
+    private var serverRow = NSView()
+    private var statusRow = NSView()
+    private var codeRow = NSView()
+    private var expiryRow = NSView()
+    private var identityRow = NSView()
+    private var credentialRow = NSView()
+    private var connectSection: SectionView?
+    private var authSection: SectionView?
+    private var advancedSection: SectionView?
+
+    /// AppMain 推来的实时连接状态。
+    ///
+    /// 「已授权」和「连着」是两回事：Mac 睡了、网断了、服务端重启了，授权都
+    /// 还在。稳态下状态行要说的是后者——用户打开这扇窗，想知道的就是现在
+    /// 到底通不通，而不是钥匙串里有没有那把钥匙。
+    private var liveStatus: WorkerStatus?
 
     private var stage: Stage = .idle
     private var pollTask: Task<Void, Never>?
-    /// 本机是否已经持有令牌。决定主按钮是「连接并配对」还是「保存并测试连接」。
+    private var countdownTask: Task<Void, Never>?
+    /// 本机是否已经持有令牌。
     private var isAuthorized: Bool
 
     init(snapshot: WorkerSettingsSnapshot) {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: SettingsStyle.windowWidth, height: 520),
-            styleMask: [.titled, .closable, .fullSizeContentView],
+            contentRect: NSRect(x: 0, y: 0, width: SettingsStyle.windowWidth, height: 460),
+            styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
         )
         // 惯例是「<App 名> 设置」：菜单栏 App 的窗口会混在窗口列表里，
-        // 只写 App 名分不清这是设置窗还是别的什么
+        // 只写 App 名分不清这是设置窗还是 ffmpeg 下载窗
         window.title = "MovieClaw Transcoder 设置"
-        // 标题栏透明 + 隐藏标题文字：窗口内已经有一块带图标和名字的抬头，
-        // 再顶一行系统标题就重复了。window.title 保留，Mission Control 和
-        // 窗口菜单还要靠它认这扇窗。
-        window.titlebarAppearsTransparent = true
-        window.titleVisibility = .hidden
         window.isReleasedWhenClosed = false
         // 记住用户挪过的位置：每次打开都跳回屏幕正中是很烦的
         window.setFrameAutosaveName(settingsFrameAutosaveName)
@@ -98,9 +120,11 @@ final class SettingsWindowController: NSWindowController {
         ffmpegPathField.stringValue = snapshot.ffmpegPath
         maxJobsField.stringValue = String(snapshot.maxJobs)
         autoConnectButton.state = snapshot.autoConnect ? .on : .off
+        serverValue.stringValue = displayHost(snapshot.nasURL)
+        identityValue.stringValue = snapshot.workerID
 
         window.contentView = makeContentView()
-        stage = isAuthorized ? .authorized(detail: "开机后会自动连接。") : .idle
+        stage = isAuthorized ? .authorized : .idle
         render()
     }
 
@@ -110,6 +134,7 @@ final class SettingsWindowController: NSWindowController {
 
     deinit {
         pollTask?.cancel()
+        countdownTask?.cancel()
     }
 
     func showWindowAndFocus() {
@@ -128,7 +153,8 @@ final class SettingsWindowController: NSWindowController {
         }
         // 地址还空着就自动找一次：第一次配置的人正卡在「该填什么」上。
         // 已经填过的不动——用户敲进去的地址不该被一次后台广播覆盖。
-        if nasURLField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if !isAuthorized,
+           nasURLField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             discover(auto: true)
         }
     }
@@ -136,7 +162,25 @@ final class SettingsWindowController: NSWindowController {
     override func close() {
         pollTask?.cancel()
         pollTask = nil
+        countdownTask?.cancel()
+        countdownTask = nil
         super.close()
+    }
+
+    /// 连接状态变了就刷新状态行。只有稳态才用得上——其余状态里这一行说的是
+    /// 这次配对进行到哪儿了，不该被后台的重连消息盖掉。
+    func update(status: WorkerStatus?) {
+        liveStatus = status
+        // 窗口关掉之后控制器还被 AppMain 持有着，状态照样往这儿推。看不见的
+        // 窗口不必重排，下次打开时 render() 会带上最新的。
+        guard window?.isVisible == true, case .authorized = stage else { return }
+        render()
+    }
+
+    /// Esc 关窗。菜单栏 App 没有主菜单，⌘W 走不通，键盘用户只剩这条路；
+    /// 底部动作栏又不该为了一个「完成」按钮多占一格，所以直接接响应链。
+    override func cancelOperation(_ sender: Any?) {
+        close()
     }
 
     // MARK: - 布局
@@ -145,58 +189,32 @@ final class SettingsWindowController: NSWindowController {
         let root = NSStackView()
         root.orientation = .vertical
         root.alignment = .leading
-        root.spacing = 10
+        root.spacing = SettingsStyle.sectionSpacing
         root.translatesAutoresizingMaskIntoConstraints = false
         root.edgeInsets = NSEdgeInsets(
-            // 顶部留白比其余三边大：标题栏透明后内容会顶到窗口最上沿，
-            // 得自己空出原本标题栏占的那段
-            top: 34,
+            top: 20,
             left: SettingsStyle.windowPadding,
             bottom: SettingsStyle.windowPadding,
             right: SettingsStyle.windowPadding
         )
 
-        let header = makeHeader()
-        root.addArrangedSubview(header)
-        SettingsStyle.stretch(header, in: root)
-        root.setCustomSpacing(20, after: header)
+        let connect = makeConnectSection()
+        connectSection = connect
+        root.addArrangedSubview(connect)
+        SettingsStyle.stretch(connect, in: root)
 
-        statusCard = makeStatusCard()
-        root.addArrangedSubview(statusCard)
-        SettingsStyle.stretch(statusCard, in: root)
-        root.setCustomSpacing(20, after: statusCard)
+        let auth = makeAuthSection()
+        authSection = auth
+        root.addArrangedSubview(auth)
+        SettingsStyle.stretch(auth, in: root)
 
-        let serverLabel = SettingsStyle.groupLabel("服务器")
-        root.addArrangedSubview(serverLabel)
-        root.setCustomSpacing(6, after: serverLabel)
+        let advanced = makeAdvancedSection()
+        root.addArrangedSubview(advanced)
+        SettingsStyle.stretch(advanced, in: root)
 
-        let serverCard = makeServerCard()
-        root.addArrangedSubview(serverCard)
-        SettingsStyle.stretch(serverCard, in: root)
-
-        let serverNote = SettingsStyle.footnote(
-            "请填局域网地址和端口：转码要来回传输大量视频分片，走公网或反向代理会"
-                + "明显变慢，也更容易中断。"
-        )
-        root.addArrangedSubview(serverNote)
-        SettingsStyle.stretch(serverNote, in: root)
-        root.setCustomSpacing(18, after: serverNote)
-
-        advancedToggle.bezelStyle = .inline
-        advancedToggle.isBordered = false
-        advancedToggle.target = self
-        advancedToggle.action = #selector(toggleAdvanced)
-        advancedToggle.contentTintColor = .secondaryLabelColor
-        root.addArrangedSubview(advancedToggle)
-
-        advancedCard = makeAdvancedCard()
-        root.addArrangedSubview(advancedCard)
-        SettingsStyle.stretch(advancedCard, in: root)
-        root.setCustomSpacing(18, after: advancedCard)
-
-        let buttons = makeButtonBar()
-        root.addArrangedSubview(buttons)
-        SettingsStyle.stretch(buttons, in: root)
+        let bar = makeActionBar()
+        root.addArrangedSubview(bar)
+        SettingsStyle.stretch(bar, in: root)
 
         // 根视图不直接当 contentView：那样窗口的四边约束会和内容的固有高度
         // 打架，`fittingSize` 量不准，窗口自适应高度就跟着失灵。用一层容器把
@@ -215,172 +233,134 @@ final class SettingsWindowController: NSWindowController {
         return container
     }
 
-    /// 抬头：App 图标 + 名字 + 一句话说明这个 App 到底在干什么。
-    ///
-    /// 菜单栏 App 没有 Dock 图标，设置窗往往是用户唯一见到它「长什么样」的
-    /// 地方；一行说明也省得人对着一堆输入框猜这是什么。
-    private func makeHeader() -> NSView {
-        let icon = NSImageView()
-        icon.image = NSApp.applicationIconImage
-        icon.imageScaling = .scaleProportionallyUpOrDown
-        icon.translatesAutoresizingMaskIntoConstraints = false
-        icon.widthAnchor.constraint(equalToConstant: 44).isActive = true
-        icon.heightAnchor.constraint(equalToConstant: 44).isActive = true
+    /// 「连接」分区：未授权时是一个地址输入行，授权后变成一行只读的服务器地址。
+    private func makeConnectSection() -> SectionView {
+        nasURLField.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
+        addressRow = SettingsStyle.row("movieclaw 地址", trailing: nasURLField)
+        serverRow = SettingsStyle.row("服务器", trailing: serverValue)
 
-        let title = NSTextField(labelWithString: "MovieClaw Transcoder")
-        title.font = .systemFont(ofSize: 15, weight: .semibold)
-        let subtitle = NSTextField(labelWithString: "把这台 Mac 的硬件编码器借给 movieclaw")
-        subtitle.font = .systemFont(ofSize: 11)
-        subtitle.textColor = .secondaryLabelColor
-
-        let text = NSStackView(views: [title, subtitle])
-        text.orientation = .vertical
-        text.alignment = .leading
-        text.spacing = 2
-
-        let header = NSStackView(views: [icon, text])
-        header.orientation = .horizontal
-        header.alignment = .centerY
-        header.spacing = 12
-        return header
-    }
-
-    /// 状态卡：一行结论 + 一行说明，配对进行中时再展开配对码面板。
-    private func makeStatusCard() -> CardView {
         statusSpinner.style = .spinning
         statusSpinner.controlSize = .small
-        // 停下来就藏起来，省得留一个静止的转圈占位
         statusSpinner.isDisplayedWhenStopped = false
-        statusSpinner.translatesAutoresizingMaskIntoConstraints = false
-
-        statusLabel.font = .systemFont(ofSize: 13, weight: .medium)
-
-        let statusRow = NSStackView(views: [statusDot, statusSpinner, statusLabel])
-        statusRow.orientation = .horizontal
-        statusRow.alignment = .centerY
-        statusRow.spacing = 8
-
-        hintLabel.font = .systemFont(ofSize: 11)
-        hintLabel.textColor = .secondaryLabelColor
-        hintLabel.preferredMaxLayoutWidth = SettingsStyle.cardContentWidth
-
-        codePanel = makeCodePanel()
-
-        return SettingsStyle.card(rows: [statusRow, hintLabel, codePanel], spacing: 10)
-    }
-
-    /// 配对码面板。配对码是这一步唯一要人动脑的东西，给它独立的底色和字号，
-    /// 用户扫一眼就知道要核对哪串字符。
-    private func makeCodePanel() -> CardView {
-        // 等宽 + 加大字号：配对码要在屏幕和网页之间用眼睛核对，
-        // 0/O、1/l 分不清会直接让人对不上
-        codeLabel.font = .monospacedSystemFont(ofSize: 30, weight: .semibold)
-        codeLabel.textColor = .controlAccentColor
-
-        copyCodeButton.target = self
-        copyCodeButton.action = #selector(copyCode)
-        copyCodeButton.bezelStyle = .rounded
-        copyCodeButton.controlSize = .small
-
-        openBrowserButton.target = self
-        openBrowserButton.action = #selector(openVerificationPage)
-        openBrowserButton.bezelStyle = .rounded
-        openBrowserButton.controlSize = .small
-
-        let actions = NSStackView(views: [copyCodeButton, openBrowserButton])
-        actions.orientation = .horizontal
-        actions.spacing = 8
-
-        let row = NSStackView(views: [codeLabel, SettingsStyle.flexibleSpacer(), actions])
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = 12
-
-        let panel = SettingsStyle.card(rows: [row], spacing: 0)
-        panel.isHighlighted = true
-        panel.isHidden = true
-        return panel
-    }
-
-    private func makeServerCard() -> CardView {
-        // 「在局域网中查找」属于「填地址」这件事，放在地址输入框正下方；
-        // 底部动作栏只留窗口级动作（HIG：主按钮在右下角，右侧不堆多个动作）
-        discoverButton.target = self
-        discoverButton.action = #selector(discoverAction)
-        discoverButton.bezelStyle = .rounded
-        discoverButton.controlSize = .small
-
-        let discoverRow = NSStackView(views: [
-            makeSpacer(width: SettingsStyle.labelColumnWidth),
-            discoverButton,
-            SettingsStyle.flexibleSpacer(),
+        let statusContent = NSStackView(views: [
+            SettingsStyle.flexibleSpacer(), statusDot, statusSpinner, statusValue,
         ])
-        discoverRow.orientation = .horizontal
-        discoverRow.spacing = 10
-        discoverRow.alignment = .centerY
+        statusContent.orientation = .horizontal
+        statusContent.alignment = .centerY
+        statusContent.spacing = 7
+        statusRow = SettingsStyle.row("状态", trailing: statusContent)
 
-        return SettingsStyle.card(
-            rows: [SettingsStyle.formRow("地址", control: nasURLField), discoverRow],
-            spacing: 10
+        return SectionView(title: "连接", rows: [addressRow, serverRow, statusRow])
+    }
+
+    /// 「授权」分区：等批准时是配对码 + 倒计时，授权后是身份与凭证去向。
+    private func makeAuthSection() -> SectionView {
+        codeCaption.font = .systemFont(ofSize: 11.5)
+        codeCaption.textColor = .tertiaryLabelColor
+        // 等宽 + 加大字号 + 拉开字距（demo：31px / .15em）：配对码要在屏幕和
+        // 网页之间用眼睛核对，0/O、1/l 分不清会直接让人对不上
+        codeLabel.font = .monospacedSystemFont(ofSize: 31, weight: .semibold)
+        // 链接样式的按钮：demo 里这行是蓝色的 URL，看起来就该能点。浏览器被
+        // 误关了也不用取消重来。
+        codeLink.target = self
+        codeLink.action = #selector(openVerificationPage)
+        codeLink.isBordered = false
+        codeLink.font = .systemFont(ofSize: 12)
+        codeLink.contentTintColor = .linkColor
+        codeRow = SettingsStyle.stackedRow(views: [codeCaption, codeLabel, codeLink])
+
+        expiryRow = SettingsStyle.row("有效期", trailing: expiryValue)
+        identityRow = SettingsStyle.row("身份", trailing: identityValue)
+        let credentialValue = SettingsStyle.rowValue("已存入钥匙串 · 不再显示")
+        credentialRow = SettingsStyle.row("凭证", trailing: credentialValue)
+
+        return SectionView(
+            title: "授权",
+            rows: [codeRow, expiryRow, identityRow, credentialRow]
         )
     }
 
-    private func makeAdvancedCard() -> CardView {
-        let card = SettingsStyle.card(
+    /// 「高级设置」：默认折叠，四项都有可用默认值。
+    private func makeAdvancedSection() -> NSView {
+        let section = SectionView(
+            title: nil,
             rows: [
-                SettingsStyle.formRow("名称", control: workerIDField),
-                SettingsStyle.formRow("ffmpeg", control: ffmpegPathField),
-                SettingsStyle.formRow("并发", control: maxJobsField),
-                autoConnectButton,
-            ],
-            spacing: 10
+                SettingsStyle.row("Worker 名称", trailing: workerIDField),
+                SettingsStyle.row("ffmpeg 路径", trailing: ffmpegPathField),
+                SettingsStyle.row("最大并发", trailing: maxJobsField),
+                SettingsStyle.row("开机自动连接", trailing: autoConnectRow()),
+            ]
         )
-        // 直接折叠这张卡片本身，不再套一层容器：多一层就多一组要对齐的
-        // 宽度约束，而它什么也没多做
-        card.isHidden = true
-        return card
+        section.note = "这四项都有可用的默认值，通常不需要改动。"
+        section.isHidden = true
+        advancedSection = section
+
+        advancedToggle.target = self
+        advancedToggle.action = #selector(toggleAdvanced)
+        advancedToggle.isBordered = false
+        advancedToggle.font = .systemFont(ofSize: 12)
+        advancedToggle.contentTintColor = .secondaryLabelColor
+        advancedToggle.title = "▶ 高级设置"
+
+        let column = NSStackView(views: [advancedToggle, section])
+        column.orientation = .vertical
+        column.alignment = .leading
+        column.spacing = SettingsStyle.headingSpacing
+        column.translatesAutoresizingMaskIntoConstraints = false
+        section.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
+        return column
     }
 
-    private func makeButtonBar() -> NSView {
+    /// 复选框在「左标题右取值」的行里只需要那个小方块，标题由行自己出。
+    private func autoConnectRow() -> NSView {
+        // 行的无障碍标签挂在容器上，VoiceOver 落到复选框时读不到，得单独补
+        autoConnectButton.setAccessibilityLabel("开机自动连接")
+        let holder = NSStackView(views: [SettingsStyle.flexibleSpacer(), autoConnectButton])
+        holder.orientation = .horizontal
+        holder.alignment = .centerY
+        holder.spacing = 0
+        return holder
+    }
+
+    /// 动作栏：左端一句当前状态，右端按钮（demo：`.mac-actions`）。
+    private func makeActionBar() -> NSView {
         primaryButton.target = self
         primaryButton.action = #selector(primaryAction)
         primaryButton.bezelStyle = .rounded
         // 回车即主按钮，系统会自动把它画成强调色
         primaryButton.keyEquivalent = "\r"
 
-        repairButton.target = self
-        repairButton.action = #selector(repairAction)
-        repairButton.bezelStyle = .rounded
+        discoverButton.target = self
+        discoverButton.action = #selector(discoverAction)
+        discoverButton.bezelStyle = .rounded
 
-        let clearButton = NSButton(title: "清除配置", target: self, action: #selector(clearSettings))
-        clearButton.bezelStyle = .rounded
-        let closeButton = NSButton(title: "完成", target: self, action: #selector(finish))
-        closeButton.bezelStyle = .rounded
-        // Esc 关窗：菜单栏 App 没有主菜单，⌘W 走不通，键盘用户只剩这条路
-        closeButton.keyEquivalent = "\u{1b}"
+        resetButton.target = self
+        resetButton.action = #selector(resetAction)
+        resetButton.bezelStyle = .rounded
+
+        cancelButton.target = self
+        cancelButton.action = #selector(cancelPairing)
+        cancelButton.bezelStyle = .rounded
 
         let bar = NSStackView(views: [
-            clearButton, SettingsStyle.flexibleSpacer(), repairButton, closeButton, primaryButton,
+            barStatusLabel,
+            SettingsStyle.flexibleSpacer(),
+            resetButton,
+            discoverButton,
+            cancelButton,
+            primaryButton,
         ])
         bar.orientation = .horizontal
-        bar.spacing = 8
         bar.alignment = .centerY
+        bar.spacing = 9
         return bar
-    }
-
-    /// 占位视图：让分组内不带标签的行与上面带标签的行左对齐。
-    private func makeSpacer(width: CGFloat) -> NSView {
-        let spacer = NSView()
-        spacer.translatesAutoresizingMaskIntoConstraints = false
-        spacer.widthAnchor.constraint(equalToConstant: width).isActive = true
-        return spacer
     }
 
     /// 根 stack 的引用，`resizeToFit` 要拿它量高度。
     private var contentStack: NSView?
 
-    /// 让窗口高度贴合内容。展开/收起「高级设置」后内容高度会变，固定窗高要么
-    /// 底部空一大块，要么把按钮栏挤出可视区。
+    /// 让窗口高度贴合内容。每个状态显示的行数都不一样，固定窗高要么底部空
+    /// 一大块，要么把动作栏挤出可视区。
     private func resizeToFit() {
         guard let window, let contentStack else { return }
         contentStack.layoutSubtreeIfNeeded()
@@ -390,6 +370,7 @@ final class SettingsWindowController: NSWindowController {
             forContentRect: NSRect(x: 0, y: 0, width: SettingsStyle.windowWidth, height: height)
         )
         var frame = window.frame
+        guard abs(frame.height - target.height) > 0.5 else { return }
         // 只改高度并保持顶边不动：窗口原点在左下角，直接改 size 会让窗口
         // 「往上长」，标题栏跟着跑，看起来像窗口自己在跳
         frame.origin.y += frame.height - target.height
@@ -399,83 +380,141 @@ final class SettingsWindowController: NSWindowController {
 
     // MARK: - 渲染
 
+    /// 每个状态显示哪几行、动作栏放什么，全在这里一次说清。
     private func render() {
+        // 默认全收起来，各状态只打开自己要的——反过来写（默认全开、各状态
+        // 关掉不要的）漏一行就是一处撕裂，而且不会报错。
+        addressRow.isHidden = true
+        serverRow.isHidden = true
+        statusRow.isHidden = true
+        codeRow.isHidden = true
+        expiryRow.isHidden = true
+        identityRow.isHidden = true
+        credentialRow.isHidden = true
+        resetButton.isHidden = true
+        discoverButton.isHidden = true
+        cancelButton.isHidden = true
+        primaryButton.isHidden = false
+        setBusy(false)
+        // 连接过程中不让再去广播查找：结论马上就到了，这时候换地址只会打架
+        if case .connecting = stage {
+            discoverButton.isEnabled = false
+        } else {
+            discoverButton.isEnabled = true
+        }
+
+        let addressNote = "请填写局域网地址和端口。转码要来回传输大量视频分片，"
+            + "走公网或反向代理会明显变慢，也更容易中断。"
+
         switch stage {
         case .idle:
-            statusDot.color = .tertiaryLabelColor
-            setBusy(false)
-            statusLabel.stringValue = "尚未连接"
-            hintLabel.stringValue = "填好上面的地址，点「连接并配对」。"
-                + "接下来只需要在浏览器里确认一次，不用在这里输入任何密钥。"
-            codePanel.isHidden = true
+            addressRow.isHidden = false
+            discoverButton.isHidden = false
+            connectSection?.note = addressNote
+            authSection?.note = ""
+            barStatusLabel.stringValue = "尚未连接"
             primaryButton.title = "连接并配对"
             primaryButton.isEnabled = true
-            repairButton.isHidden = true
 
-        case let .connecting(pairing):
-            statusDot.color = .systemGray
+        case .connecting:
+            addressRow.isHidden = false
+            statusRow.isHidden = false
+            discoverButton.isHidden = false
             setBusy(true)
-            statusLabel.stringValue = pairing ? "正在连接并申请接入…" : "正在测试连接…"
-            hintLabel.stringValue = ""
-            codePanel.isHidden = true
-            primaryButton.title = pairing ? "连接并配对" : "保存并测试连接"
+            statusValue.stringValue = "正在连接…"
+            connectSection?.note = addressNote
+            authSection?.note = ""
+            barStatusLabel.stringValue = ""
+            primaryButton.title = "连接中…"
             primaryButton.isEnabled = false
-            repairButton.isHidden = true
 
         case let .pairing(grant):
-            statusDot.color = .systemOrange
-            setBusy(true)
-            statusLabel.stringValue = "等待网页批准"
-            hintLabel.stringValue = "已在浏览器打开 \(grant.verificationURI)。"
-                + "核对下面这串配对码后点「批准接入」即可。"
-                + "配对码不是密钥，被别人看到也拿不到权限。"
-            codeLabel.stringValue = grant.userCode
-            codePanel.isHidden = false
-            primaryButton.title = "取消"
-            primaryButton.isEnabled = true
-            repairButton.isHidden = true
+            // 等批准时窗口里只留配对码。地址、状态、高级设置这时候都不是
+            // 用户要看的东西，留着只会分散他核对那串字符的注意力。
+            codeRow.isHidden = false
+            expiryRow.isHidden = false
+            cancelButton.isHidden = false
+            primaryButton.isHidden = true
+            codeLabel.attributedStringValue = Self.trackedCode(grant.userCode)
+            codeLink.title = displayHost(grant.verificationURI) + "/settings/devices"
+            connectSection?.note = ""
+            authSection?.note = "浏览器已打开设备页。用你平时登录 movieclaw 的账号确认即可"
+                + "——配对码本身不是密钥，即使被别人看到也拿不到任何权限。"
+            barStatusLabel.stringValue = "等待批准…"
 
-        case let .authorized(detail):
-            statusDot.color = .systemGreen
-            setBusy(false)
-            statusLabel.stringValue = "已授权"
-            hintLabel.stringValue = detail
-                + "要停用这台机器，在网页「设置 → 设备」里吊销即可。"
-            codePanel.isHidden = true
-            primaryButton.title = "保存并测试连接"
-            primaryButton.isEnabled = true
-            repairButton.isHidden = false
+        case .authorized:
+            serverRow.isHidden = false
+            statusRow.isHidden = false
+            identityRow.isHidden = false
+            credentialRow.isHidden = false
+            resetButton.isHidden = false
+            primaryButton.isHidden = true
+            statusDot.color = Self.dotColor(for: liveStatus?.state)
+            statusValue.stringValue = liveStatus?.state.displayName ?? "已授权，未启动"
+            connectSection?.note = ""
+            authSection?.note = "配置完成，之后开机自动连接。"
+                + "要停用这台机器，在网页的设备列表里吊销即可。"
+            // 动作栏左端不再重复一句「运行中」：上面的状态行说的是同一件事，
+            // 而且它跟着实时连接状态走，说得更准
+            barStatusLabel.stringValue = ""
 
         case let .failed(message):
+            addressRow.isHidden = false
+            statusRow.isHidden = false
+            discoverButton.isHidden = false
             statusDot.color = .systemRed
-            setBusy(false)
-            statusLabel.stringValue = message
-            hintLabel.stringValue = "确认地址填写正确且 movieclaw 正在运行，然后重试。"
-            codePanel.isHidden = true
+            statusValue.stringValue = message
+            connectSection?.note = "确认地址填写正确且 movieclaw 正在运行，然后重试。"
+            authSection?.note = ""
+            barStatusLabel.stringValue = ""
             primaryButton.title = "重试"
             primaryButton.isEnabled = true
-            repairButton.isHidden = true
         }
-        finishRender()
+
+        // 等批准时高级设置也一并收起：那一刻窗口里只该有配对码。顺手把折叠
+        // 箭头复位，否则回到 idle 时会出现「箭头朝下、内容却没有」。
+        var pairingNow = false
+        if case .pairing = stage { pairingNow = true }
+        advancedToggle.isHidden = pairingNow
+        if pairingNow {
+            advancedSection?.isHidden = true
+            advancedToggle.title = "▶ 高级设置"
+        }
+        barStatusLabel.isHidden = barStatusLabel.stringValue.isEmpty
+        connectSection?.refresh()
+        authSection?.refresh()
+        resizeToFit()
     }
 
-    /// 每次渲染的统一收尾。
-    ///
-    /// 三件事都属于「由上面的状态推导出来、每一路都一样」的收尾动作，
-    /// 写在各个 case 里只会是五份一模一样的代码，漏掉一份就是一个撕裂。
-    private func finishRender() {
-        // 转圈和圆点是同一件事的两种画法，同时出现只是噪音
-        let busy = statusSpinner.isHidden == false
-        statusDot.isHidden = busy
-        // 空的折行标签仍然占一行行高，会在卡片里留一道空白
-        hintLabel.isHidden = hintLabel.stringValue.isEmpty
-        resizeToFit()
+    /// 连接状态到圆点颜色。绿=在干活或随时能干活，橙=还在路上，红=坏了。
+    private static func dotColor(for state: WorkerConnectionState?) -> NSColor {
+        switch state {
+        case .ready, .busy, .draining, .paused:
+            return .systemGreen
+        case .starting, .connecting, .reconnecting:
+            return .systemOrange
+        case .error, .stopped:
+            return .systemRed
+        case .unconfigured, .none:
+            return .tertiaryLabelColor
+        }
+    }
+
+    private func transition(to next: Stage) {
+        countdownTask?.cancel()
+        countdownTask = nil
+        stage = next
+        render()
+        if case let .pairing(grant) = next {
+            startCountdown(expiresIn: grant.expiresIn)
+        }
     }
 
     /// 开/停状态转圈。`isDisplayedWhenStopped` 只保证不画出来，是否还占位置
     /// 属于实现细节；显式改 `isHidden`，stack view 才一定会收掉那段空间。
     private func setBusy(_ busy: Bool) {
         statusSpinner.isHidden = !busy
+        statusDot.isHidden = busy
         if busy {
             statusSpinner.startAnimation(nil)
         } else {
@@ -483,63 +522,102 @@ final class SettingsWindowController: NSWindowController {
         }
     }
 
-    private func transition(to next: Stage) {
-        stage = next
-        render()
+    /// 配对码有效期倒计时。知道还剩多久，人才不会在浏览器那边慢慢找。
+    private func startCountdown(expiresIn: Int) {
+        let deadline = Date().addingTimeInterval(TimeInterval(expiresIn))
+        countdownTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                let left = Int(deadline.timeIntervalSinceNow)
+                guard left > 0 else {
+                    self.expiryValue.stringValue = "已过期"
+                    return
+                }
+                self.expiryValue.stringValue = String(
+                    format: "%d 分 %02d 秒", left / 60, left % 60
+                )
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+        }
+    }
+
+    // MARK: - 文本工具
+
+    /// 去掉 scheme，只留主机和端口——地址栏里用户认得的就是这一段。
+    private func displayHost(_ raw: String) -> String {
+        var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        for prefix in ["https://", "http://"] where text.hasPrefix(prefix) {
+            text.removeFirst(prefix.count)
+        }
+        while text.hasSuffix("/") {
+            text.removeLast()
+        }
+        // verification_uri 带路径时只取主机段，拼出来才是干净的设备页地址
+        if let slash = text.firstIndex(of: "/") {
+            text = String(text[text.startIndex..<slash])
+        }
+        return text
+    }
+
+    /// 配对码的字距（demo：`letter-spacing:.15em`）。
+    ///
+    /// AppKit 的 `stringValue` 没有字距，只能走 attributed string —— 代价是
+    /// 字体和颜色也得在这里一并写死，否则会退回系统默认。逐字符插空格看起来
+    /// 更省事，但 31pt 下一个空格差不多 18pt，远宽于 .15em 的约 4.6pt，
+    /// 反而会把一串码拆得难以整体辨认。
+    ///
+    /// 字距只加到倒数第二个字符：加在最后一个后面会多出一段尾随空白，让
+    /// 居中的码看上去整体偏左。
+    private static func trackedCode(_ code: String) -> NSAttributedString {
+        let attributed = NSMutableAttributedString(
+            string: code,
+            attributes: [
+                .font: NSFont.monospacedSystemFont(ofSize: 31, weight: .semibold),
+                .foregroundColor: NSColor.labelColor,
+            ]
+        )
+        let length = (code as NSString).length
+        if length > 1 {
+            attributed.addAttribute(
+                .kern, value: 4.6, range: NSRange(location: 0, length: length - 1)
+            )
+        }
+        return attributed
     }
 
     // MARK: - 动作
 
     @objc private func toggleAdvanced() {
-        advancedCard.isHidden.toggle()
-        advancedToggle.title = advancedCard.isHidden ? "高级设置" : "隐藏高级设置"
+        guard let advancedSection else { return }
+        advancedSection.isHidden.toggle()
+        advancedToggle.title = advancedSection.isHidden ? "▶ 高级设置" : "▼ 高级设置"
         resizeToFit()
     }
 
     @objc private func primaryAction() {
         switch stage {
         case .idle, .failed:
-            // 还没授权就一次做完（连接 + 配对）；已授权的失败重试只是重连，
-            // 不该顺手把现有令牌换掉
-            Task { await connect(alsoPair: !isAuthorized) }
-        case .authorized:
-            Task { await connect(alsoPair: false) }
-        case .pairing:
-            pollTask?.cancel()
-            pollTask = nil
-            transition(to: isAuthorized ? .authorized(detail: "已取消这次配对。") : .idle)
-        case .connecting:
+            Task { await connect() }
+        case .connecting, .pairing, .authorized:
             break
         }
     }
 
-    @objc private func repairAction() {
-        Task {
-            let alert = NSAlert()
-            alert.messageText = "重新配对这台 Mac？"
-            alert.informativeText = "会向服务端申请一份新授权，替换本机现有的令牌。"
-                + "旧授权仍留在网页「设置 → 设备」里，可以在那里吊销。"
-            alert.alertStyle = .informational
-            alert.addButton(withTitle: "重新配对")
-            alert.addButton(withTitle: "取消")
-            guard await runSheet(alert) == .alertFirstButtonReturn else { return }
-            await connect(alsoPair: true)
-        }
+    @objc private func cancelPairing() {
+        pollTask?.cancel()
+        pollTask = nil
+        transition(to: .idle)
     }
 
-    @objc private func copyCode() {
-        guard case let .pairing(grant) = stage else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(grant.userCode, forType: .string)
-        copyCodeButton.title = "已拷贝"
-        Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
-            self?.copyCodeButton.title = "拷贝"
-        }
+    /// 稳态下唯一可做的事：推倒重来。
+    ///
+    /// 把「保存并测试连接」「重新配对」「清除配置」收敛成这一个。改地址、
+    /// 换机器、被吊销，最终都要重新走一遍配对，分成三个按钮只是让用户在
+    /// 三个都不确定的选项里挑。
+    @objc private func resetAction() {
+        Task { await confirmAndClear() }
     }
 
-    /// 浏览器可能被用户不小心关掉了，或者压根没弹出来——留一个手动入口，
-    /// 免得只能取消重来。
     @objc private func openVerificationPage() {
         guard case let .pairing(grant) = stage,
               let url = URL(string: grant.verificationURI) else { return }
@@ -576,10 +654,9 @@ final class SettingsWindowController: NSWindowController {
         guard let chosen = await chooseDiscovered(found, auto: auto) else { return }
         nasURLField.stringValue = chosen.address
         // 回到待连接态：地址换了，之前那次连接的结论就作废了
-        transition(to: isAuthorized ? .authorized(detail: "地址已更新，点「保存并测试连接」确认。") : .idle)
-        hintLabel.stringValue = "已填入局域网中找到的地址（\(chosen.displayName)）。"
+        transition(to: .idle)
+        connectSection?.note = "已填入局域网中找到的地址（\(chosen.displayName)）。"
             + "走反向代理的地址传分片会明显变慢，内网直连地址更合适。"
-        // 这行文案是在 render() 之后盖上去的，长度变了得再量一次窗高
         resizeToFit()
     }
 
@@ -617,11 +694,11 @@ final class SettingsWindowController: NSWindowController {
         return found.indices.contains(index) ? found[index] : nil
     }
 
-    /// 保存设置 → 验证地址可达 →（可选）发起接入请求并等批准，一次做完。
+    /// 保存设置 → 验证地址可达 → 发起接入请求并等批准，一次做完。
     ///
     /// 验证仍然先做且失败即停：地址填错是自部署产品最容易劝退用户的一步，
     /// 得在发起请求之前给出确定结论。只是这个结论不再需要用户点一下才继续。
-    private func connect(alsoPair: Bool) async {
+    private func connect() async {
         guard let maxJobs = Int(
             maxJobsField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         ) else {
@@ -647,18 +724,15 @@ final class SettingsWindowController: NSWindowController {
             showError(error.localizedDescription)
             return
         }
+        serverValue.stringValue = displayHost(draft.nasURL)
+        identityValue.stringValue = draft.workerID
 
-        transition(to: .connecting(pairing: alsoPair))
+        transition(to: .connecting)
         let pairing = DevicePairing(nasURL: url)
-        let service: String
         do {
-            service = try await pairing.verifyConnection()
+            _ = try await pairing.verifyConnection()
         } catch {
             transition(to: .failed("连不上：\(error.localizedDescription)"))
-            return
-        }
-        guard alsoPair else {
-            transition(to: .authorized(detail: "连接正常（\(service)）。"))
             return
         }
         startPairing(pairing: pairing, fallbackURL: url)
@@ -698,7 +772,7 @@ final class SettingsWindowController: NSWindowController {
                 try onPaired?(token)
                 AppLogger.shared.info("已完成配对：\(clientName.isEmpty ? grant.userCode : clientName)")
                 isAuthorized = true
-                transition(to: .authorized(detail: "配置结束，之后开机自动连接。"))
+                transition(to: .authorized)
                 return
             case let .finished(reason):
                 transition(to: .failed(reason))
@@ -719,19 +793,15 @@ final class SettingsWindowController: NSWindowController {
         return await runSheet(alert) == .alertFirstButtonReturn
     }
 
-    @objc private func clearSettings() {
-        Task { await confirmAndClear() }
-    }
-
     private func confirmAndClear() async {
         let alert = NSAlert()
-        alert.messageText = "清除本机配置？"
+        alert.messageText = "断开并重新配置？"
         alert.informativeText = "这会删除本机保存的地址与授权，需要重新配对才能继续转码。"
             + "服务端的授权记录不会一起删除——要彻底停用，请到网页「设置 → 设备」里吊销。"
         alert.alertStyle = .warning
         // 破坏性动作标红，并把「取消」设为默认回车项——HIG：确认框里
         // 回车应当落在安全的那一侧，别让手快的人一路回车删掉配置
-        let destructive = alert.addButton(withTitle: "清除")
+        let destructive = alert.addButton(withTitle: "断开")
         destructive.hasDestructiveAction = true
         destructive.keyEquivalent = ""
         alert.addButton(withTitle: "取消").keyEquivalent = "\r"
@@ -740,14 +810,12 @@ final class SettingsWindowController: NSWindowController {
             pollTask?.cancel()
             pollTask = nil
             try onClear?()
-            close()
+            isAuthorized = false
+            nasURLField.stringValue = ""
+            transition(to: .idle)
         } catch {
             showError(error.localizedDescription)
         }
-    }
-
-    @objc private func finish() {
-        close()
     }
 
     // MARK: - 提示
