@@ -375,6 +375,14 @@ class SubscriptionService:
         assert item.id is not None
 
         selected = self._validate_selection(kind, selected_seasons or [], seasons)
+        # 剧集不勾季又不追新时 E 恒为空：订阅会落库成 0 工单，随即被派生重算判成
+        # 「已完成」，用户看到一条绿色的空壳订阅，实际一集都没搜过。Web 弹层的提交
+        # 守卫拦的就是这条不变量，API / CLI / Agent 直连服务层，这里补齐。
+        # 注意别塞进 _validate_selection：update 复用它，而“取消全部季”是合法操作。
+        if kind is MediaKind.TV and not selected and not follow_future:
+            raise BadRequestException(
+                "剧集订阅至少要勾选一季；若只想追以后播出的新集，请打开自动续订"
+            )
         if kind is MediaKind.MOVIE:
             follow_future = False  # 电影没有"生长"，开关无意义，落库前归一
 
@@ -755,7 +763,9 @@ class SubscriptionService:
         assert item.id is not None
         existing = await self._repo.get_by_media_item(item.id)
         if existing is None:
-            seasons = sorted({s for s, _ in units if s > 0}) if kind is MediaKind.TV else None
+            # 特别季（0）也要算进勾选：expected_units 只认勾选季，漏掉它既补不回
+            # 缺失的特别集，全是特别集时还会撞上 create 的“空勾选”校验。
+            seasons = sorted({s for s, _ in units}) if kind is MediaKind.TV else None
             subscription = await self.create(
                 kind, item.tmdb_id, selected_seasons=seasons, library_id=library_id
             )

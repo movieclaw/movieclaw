@@ -310,6 +310,21 @@ async def test_movie_rejects_season_selection(db) -> None:
             await _service(session).create(MediaKind.MOVIE, 100, selected_seasons=[1])
 
 
+async def test_tv_rejects_empty_selection_without_follow_future(db) -> None:
+    """剧集不勾季又不追新 → E 恒为空：必须拒绝，不能落一条 0 工单的「已完成」空订阅。
+
+    Web 弹层的提交守卫拦的就是这条不变量，API / CLI / Agent 走服务层，同样要拦。
+    """
+    async with db.session() as session:
+        service = _service(session)
+        with pytest.raises(BadRequestException):
+            await service.create(MediaKind.TV, 200, selected_seasons=[], follow_future=False)
+        # 拒绝要发生在落库之前：不能留下半成品订阅
+        item, _, existing = await service.prepare(MediaKind.TV, 200)
+        assert existing is None
+        assert item.id is not None
+
+
 # ---------------------------------------------------------------------------
 # diff 重算（不变量③：现实不可逆）
 # ---------------------------------------------------------------------------

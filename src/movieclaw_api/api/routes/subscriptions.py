@@ -206,6 +206,9 @@ async def create_subscription(
 
     同一条目已有订阅时不会重复创建工单，成员会加入现有共享订阅。管理员可
     指定过滤规则与目标媒体库；成员调用时这两项由系统默认路由决定。
+
+    剧集必须给出 ``selected_seasons``（或开启 ``follow_future`` 只追以后播出的
+    新集），两者都缺时订阅不会期望任何内容，接口直接 400。
     """
     service = _service(session)
     prepared = await _preview_title_ref(payload.title_ref, service=service, session=session)

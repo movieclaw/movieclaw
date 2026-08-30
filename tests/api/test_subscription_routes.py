@@ -172,10 +172,28 @@ def test_create_rejects_guessed_or_legacy_identity_fields(client: TestClient) ->
     assert legacy_shape.status_code == 422
 
 
+def test_create_tv_rejects_empty_season_selection(client: TestClient) -> None:
+    """剧集不给季又不开自动续订：以前静默建出一条 0 工单的「已完成」空订阅。"""
+    rejected = client.post(
+        "/api/v1/subscriptions",
+        json={"title_ref": "tmdb:tv:200", "selected_seasons": []},
+    )
+    assert rejected.status_code == 400, rejected.text
+    assert "季" in rejected.json()["message"]
+    assert client.get("/api/v1/subscriptions?kind=tv").json()["data"] == []
+
+    # 「只追新集」仍是合法组合：不勾季 + 自动续订
+    follow_only = client.post(
+        "/api/v1/subscriptions",
+        json={"title_ref": "tmdb:tv:200", "selected_seasons": [], "follow_future": True},
+    )
+    assert follow_only.status_code == 200, follow_only.text
+
+
 def test_set_follow_future_uses_dedicated_tv_endpoint(client: TestClient) -> None:
     created = client.post(
         "/api/v1/subscriptions",
-        json={"title_ref": "tmdb:tv:200", "selected_seasons": []},
+        json={"title_ref": "tmdb:tv:200", "selected_seasons": [1]},
     )
     assert created.status_code == 200, created.text
     subscription_id = created.json()["data"]["subscription"]["id"]
