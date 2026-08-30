@@ -17,6 +17,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useToast } from "@/components/feedback";
+import { ChevronDownIcon } from "@/components/icons";
 import {
   type CountryOption,
   type LanguageOption,
@@ -80,6 +81,81 @@ const COMMON_CERT_COUNTRIES: ChipOption[] = [
 const POSTER_SIZES = ["w342", "w500", "w780", "original"];
 const BACKDROP_SIZES = ["w780", "w1280", "original"];
 const STILL_SIZES = ["w185", "w300", "original"];
+
+/* ------------------------------------------------------------------ */
+/* 值的人话摘要（库设置页的折叠头与对照行用）                            */
+/* ------------------------------------------------------------------ */
+
+function labelOf(options: ChipOption[], id: string): string {
+  return options.find((o) => o.id === id)?.name ?? id;
+}
+
+function joinPriority(options: ChipOption[], values: string[]): string {
+  return values.map((v) => labelOf(options, v)).join(" → ");
+}
+
+/**
+ * 一组字段的可读摘要。**不给原始值**：`ja-JP → zh-CN`、`language；ja → orig`
+ * 这种是给开发者看的，折叠头上要露的是「日本語 → 中文（简体）」这类人话
+ * ——这是个开源软件，非开发者也在用（见 CLAUDE.md 注释与日志约定）。
+ *
+ * 未知语种/地区（用户从「更多」面板选的长尾项）回落显示代码本身，不编造名字。
+ */
+export function describeScrapeValues(
+  keys: (keyof ScrapeSetting)[],
+  setting: ScrapeSetting,
+): string {
+  const parts: string[] = [];
+  for (const key of keys) {
+    switch (key) {
+      case "language_priority":
+        parts.push(joinPriority(COMMON_META_LANGS, setting.language_priority));
+        break;
+      case "cert_country_priority":
+        parts.push(joinPriority(COMMON_CERT_COUNTRIES, setting.cert_country_priority));
+        break;
+      case "poster_mode":
+        // 海报卡把「模式 + 语言优先级」并成一句：默认模式下语言优先级不生效，
+        // 摘要里再列它只会误导
+        parts.push(
+          setting.poster_mode === "default"
+            ? "TMDB 默认"
+            : `按语言：${joinPriority(COMMON_IMAGE_LANGS, setting.poster_language_priority)}`,
+        );
+        break;
+      case "poster_language_priority":
+        if (!keys.includes("poster_mode")) {
+          parts.push(joinPriority(COMMON_IMAGE_LANGS, setting.poster_language_priority));
+        }
+        break;
+      case "backdrop_language_priority":
+        parts.push(joinPriority(COMMON_IMAGE_LANGS, setting.backdrop_language_priority));
+        break;
+      case "poster_min_width":
+        parts.push(
+          setting.poster_min_width > 0 ? `海报 ≥${setting.poster_min_width}` : "海报不限宽",
+        );
+        break;
+      case "backdrop_min_width":
+        parts.push(
+          setting.backdrop_min_width > 0 ? `背景 ≥${setting.backdrop_min_width}` : "背景不限宽",
+        );
+        break;
+      case "poster_size":
+      case "backdrop_size":
+      case "still_size": {
+        // 三个档位并成一句「档位 …」，空串统一说成"跟随环境"
+        if (key !== "poster_size") break;
+        const sizes = [setting.poster_size, setting.backdrop_size, setting.still_size];
+        parts.push(sizes.every((v) => !v) ? "档位跟随环境" : `档位 ${sizes.map((v) => v || "环境").join("/")}`);
+        break;
+      }
+      default:
+        break;
+    }
+  }
+  return parts.filter(Boolean).join(" · ");
+}
 
 /* ------------------------------------------------------------------ */
 /* 排序芯片                                                            */
@@ -297,11 +373,33 @@ function CardFollowSwitch({ follow }: { follow: CardFollowState }) {
   );
 }
 
-function Card({
+/**
+ * 库设置页给每张卡片套的壳：折叠 + 三态（设计文档 §14.5）。
+ *
+ * 为什么库设置页是**手风琴**而这里（全局设置页）是 tab：库设置里绝大多数卡片
+ * 停在"跟随全局"，用户只想改一两项——手风琴把全部卡片的状态摊在一屏（tab 得
+ * 逐个点开才知道自己改过什么），且没有横向空间压力（中文标签「命名与整理」
+ * 「目录写入」在 390px 的 tab 条里必然换行）。全局设置页正相反：宽度充足、
+ * 每张卡都要编辑，没有可省的静默态，折叠只是白多一次点击。
+ * 两处共用的是卡片**内部**的控件，外层容器各按各的空间与动线选。
+ */
+export interface CardShell {
+  open: boolean;
+  onToggleOpen: () => void;
+  /** 折叠头右侧的一行状态：「跟随全局：zh-CN → en-US」/「自定义：日本語 → …」 */
+  status: string;
+  /** 状态是否为"已改过"（点亮折叠头的小圆点与文字颜色） */
+  customized: boolean;
+  /** 卡片级三态开关；命名/目录写入走字段级三态，不传 */
+  follow?: CardFollowState;
+}
+
+export function Card({
   title,
   perLibrary,
   overriddenBy,
   follow,
+  shell,
   desc,
   children,
 }: {
@@ -310,11 +408,61 @@ function Card({
   /** 覆盖了本卡片字段的媒体库名。分层配置最经典的坑是"在全局改了半天不生效"，
    *  不把这个标出来用户无从自查（设计文档 §14.5） */
   overriddenBy?: string[];
-  /** 库设置页的三态壳；全局设置页不传 */
+  /** 库设置页的卡片级三态；与 shell 二选一（shell 里带着它） */
   follow?: CardFollowState;
+  /** 库设置页的折叠壳；全局设置页不传 */
+  shell?: CardShell;
   desc: string;
   children: React.ReactNode;
 }) {
+  const effectiveFollow = shell?.follow ?? follow;
+  const body = (
+    <>
+      <p className="mb-4 mt-1 max-w-[62ch] text-sub text-[var(--text-muted)]">{desc}</p>
+      {effectiveFollow && <CardFollowSwitch follow={effectiveFollow} />}
+      {/* 跟随全局时控件置灰只读：看得见全局值长什么样，但改不动 */}
+      <div className={effectiveFollow && !effectiveFollow.custom ? "pointer-events-none opacity-45" : ""}>
+        {children}
+      </div>
+    </>
+  );
+
+  if (shell) {
+    return (
+      <section className="overflow-hidden rounded-2xl border border-white/[0.08] bg-white/[0.04]">
+        <button
+          type="button"
+          aria-expanded={shell.open}
+          onClick={shell.onToggleOpen}
+          className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-white/[0.03]"
+        >
+          <span className="min-w-0 flex-1">
+            <span className="flex items-center gap-1.5 text-ui font-semibold">
+              {title}
+              {shell.customized && (
+                <span className="size-1.5 shrink-0 rounded-full bg-[var(--accent)]" aria-hidden />
+              )}
+            </span>
+            {/* 状态常显：不点开也知道这张卡是跟着全局还是本库自己配过 */}
+            <span
+              className={`mt-0.5 block truncate text-caption ${
+                shell.customized ? "text-[var(--accent)]" : "text-[var(--text-faint)]"
+              }`}
+            >
+              {shell.status}
+            </span>
+          </span>
+          <ChevronDownIcon
+            className={`size-4 shrink-0 text-[var(--text-faint)] transition-transform ${
+              shell.open ? "rotate-180" : ""
+            }`}
+          />
+        </button>
+        {shell.open && <div className="border-t border-white/[0.06] px-4 pb-4">{body}</div>}
+      </section>
+    );
+  }
+
   return (
     <section className="rounded-2xl border border-white/[0.08] bg-white/[0.04] p-5">
       <div className="flex flex-wrap items-center gap-2.5">
@@ -333,12 +481,7 @@ function Card({
           </span>
         )}
       </div>
-      <p className="mb-4 mt-1 max-w-[62ch] text-sub text-[var(--text-muted)]">{desc}</p>
-      {follow && <CardFollowSwitch follow={follow} />}
-      {/* 跟随全局时控件置灰只读：看得见全局值长什么样，但改不动 */}
-      <div className={follow && !follow.custom ? "pointer-events-none opacity-45" : ""}>
-        {children}
-      </div>
+      {body}
     </section>
   );
 }
@@ -785,7 +928,7 @@ export function MetaTab({
   extraMetaLangs,
   extraCountries,
   overriddenBy,
-  followFor,
+  shellFor,
 }: {
   setting: ScrapeSetting;
   patch: (changes: Partial<ScrapeSetting>) => void;
@@ -793,8 +936,8 @@ export function MetaTab({
   extraCountries: ChipOption[];
   /** 查"哪些库覆盖了这些字段"；库设置页不传（那里本来就在配某一个库） */
   overriddenBy?: (keys: (keyof ScrapeSetting)[]) => string[];
-  /** 卡片级三态壳；全局设置页不传 */
-  followFor?: (keys: (keyof ScrapeSetting)[]) => CardFollowState;
+  /** 库设置页的卡片壳（折叠 + 三态）工厂；全局设置页不传 */
+  shellFor?: (title: string, keys: (keyof ScrapeSetting)[]) => CardShell;
 }) {
   return (
     <>
@@ -802,7 +945,7 @@ export function MetaTab({
         title="元数据语言"
         perLibrary
         overriddenBy={overriddenBy?.(["language_priority"])}
-        follow={followFor?.(["language_priority"])}
+        shell={shellFor?.("元数据语言", ["language_priority"])}
         desc="标题、简介、类型名等文本的语言。点选语言即加入优先级，第 1 位是主语言（决定向 TMDB 请求的语言），缺失的字段按顺序回落——回落基于已拉取的翻译数据，不产生额外请求。"
       >
         <OrderChips
@@ -819,7 +962,7 @@ export function MetaTab({
         title="内容分级"
         perLibrary
         overriddenBy={overriddenBy?.(["cert_country_priority"])}
-        follow={followFor?.(["cert_country_priority"])}
+        shell={shellFor?.("内容分级", ["cert_country_priority"])}
         desc="条目分级（如 PG-13、TV-MA）按顺序取第一个有数据的地区。"
       >
         <OrderChips
@@ -842,7 +985,7 @@ export function ImagesTab({
   extraImageLangs,
   effective,
   overriddenBy,
-  followFor,
+  shellFor,
 }: {
   setting: ScrapeSetting;
   patch: (changes: Partial<ScrapeSetting>) => void;
@@ -850,7 +993,7 @@ export function ImagesTab({
   /** 档位下拉的「跟随环境」提示值；库设置页传全局生效值 */
   effective: Pick<ScrapeSetting, "poster_size" | "backdrop_size" | "still_size"> | null;
   overriddenBy?: (keys: (keyof ScrapeSetting)[]) => string[];
-  followFor?: (keys: (keyof ScrapeSetting)[]) => CardFollowState;
+  shellFor?: (title: string, keys: (keyof ScrapeSetting)[]) => CardShell;
 }) {
   const sizeHint = (value: string, fallback: string) =>
     value === "" ? `跟随环境变量（当前 ${fallback}）` : value;
@@ -861,7 +1004,7 @@ export function ImagesTab({
         title="海报"
         perLibrary
         overriddenBy={overriddenBy?.(["poster_mode", "poster_language_priority"])}
-        follow={followFor?.(["poster_mode", "poster_language_priority"])}
+        shell={shellFor?.("海报", ["poster_mode", "poster_language_priority"])}
         desc="海报和文本一样有语言：中文版、原版、无文字干净版是不同的候选图。你在条目详情页手动选定的图始终优先，不受这里影响。"
       >
         <div className="grid gap-2 md:grid-cols-2">
@@ -919,7 +1062,7 @@ export function ImagesTab({
         title="背景图（fanart）"
         perLibrary
         overriddenBy={overriddenBy?.(["backdrop_language_priority"])}
-        follow={followFor?.(["backdrop_language_priority"])}
+        shell={shellFor?.("背景图（fanart）", ["backdrop_language_priority"])}
         desc="铺在详情页全屏的沉浸底图。「无文字」是没有烧录任何片名文字的干净图——排第 1 位即无文字优先；想要带片名 logo 的横图，把语言排到前面。"
       >
         <OrderChips
@@ -942,7 +1085,7 @@ export function ImagesTab({
           "backdrop_size",
           "still_size",
         ])}
-        follow={followFor?.([
+        shell={shellFor?.("质量与门槛", [
           "poster_min_width",
           "backdrop_min_width",
           "poster_size",

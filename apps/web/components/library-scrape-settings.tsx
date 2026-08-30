@@ -3,16 +3,24 @@
 /**
  * 「编辑库 → 刮削设置」页签（docs/design/scrape-customization.md §14.5）。
  *
- * 与全局设置页**共用同一套控件**（`scrape-settings-section.tsx` 导出的四组
- * 字段），差别只在外面包了一层三态壳：每个字段要么跟随全局，要么显式覆盖。
- * 用户在这里学到的交互与设置页完全一致，只多了「跟随全局 ⇄ 自定义」这一个概念。
+ * 与全局设置页**共用同一套控件**（`scrape-settings-section.tsx` 导出的卡片与
+ * 字段组），差别在外层：全局页是 tab，这里是**手风琴**。
+ *
+ * 为什么这里不用 tab：
+ * - 库设置里绝大多数卡片停在"跟随全局"，用户只想改一两项。手风琴把全部卡片的
+ *   状态摊在一屏（「跟随全局：zh-CN → en-US」/「自定义：日本語 → …」），tab 得
+ *   逐个点开才知道自己改过什么——"我这个库到底改了哪几项"是这个页面最该一眼
+ *   回答的问题；
+ * - 中文标签压不短（「命名与整理」「目录写入」），390px 的 tab 条必然换行、
+ *   高度参差；竖排没有横向压力；
+ * - 弹窗里 tab → 卡片是两层嵌套，压成一层后分组标题降级为不可点的分节标签，
+ *   不再占点击预算。
  *
  * 三态怎么表达（设计文档 §14.5 的表）：
  * - 排序芯片与数字输入没有"空值"可表达跟随，用**卡片级**开关（由 Card 渲染）：
- *   切到自定义时拿全局当前值做种子，用户在这个基础上改；切回跟随即把这张卡的
- *   键从覆盖里删掉。粒度卡在"卡片"这一层是两头夹出来的——再粗（整个 tab 一个
- *   开关）会让只覆盖了语言的库把分级也显示成已自定义，状态是错的；再细（逐字段）
- *   对有序列表没有意义，排序芯片只能整张卡一起跟随或一起自定义；
+ *   切到自定义时拿全局当前值做种子。粒度卡在"卡片"是两头夹出来的——再粗（整个
+ *   分组一个开关）会让只覆盖了语言的库把分级也显示成已自定义，状态是错的；
+ *   再细（逐字段）对有序列表没有意义；
  * - 命名模板留空即跟随（沿用 P3 的 placeholder 机制）；
  * - 目录写入是「跟随全局 / 开 / 关」三档按钮（同样沿用 P3）。
  *
@@ -22,43 +30,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
+  Card,
+  type CardShell,
   ImagesTab,
   MetaTab,
+  describeScrapeValues,
   useScrapeChipOptions,
 } from "@/components/scrape-settings-section";
-import {
-  type ScrapeConfigView,
-  type ScrapeSetting,
-  getScrapeConfig,
-} from "@/lib/api/scrape";
-
-/** 页签内的分组：与全局设置页的四个 tab 一一对应。 */
-const GROUPS = [
-  { id: "meta", label: "元数据", detail: "语言与分级" },
-  { id: "images", label: "图片", detail: "海报与背景" },
-  { id: "naming", label: "命名与整理", detail: "目录与文件名" },
-  { id: "mirror", label: "目录写入", detail: "NFO 与图片镜像" },
-] as const;
-
-type GroupId = (typeof GROUPS)[number]["id"];
-
-/** 各分组管辖的键，只用来给页签点小圆点（"这组设过没有"）。
- *  三态开关本身是**卡片级**的，由 Card 自己渲染（见 followFor）。 */
-const GROUP_KEYS: Record<GroupId, string[]> = {
-  meta: ["language_priority", "cert_country_priority"],
-  images: [
-    "poster_mode",
-    "poster_language_priority",
-    "backdrop_language_priority",
-    "poster_min_width",
-    "backdrop_min_width",
-    "poster_size",
-    "backdrop_size",
-    "still_size",
-  ],
-  naming: ["naming_entry_dir", "naming_movie_file", "naming_season_dir", "naming_episode_file"],
-  mirror: ["mirror_images", "mirror_nfo", "mirror_episode_thumbs"],
-};
+import { type ScrapeConfigView, type ScrapeSetting, getScrapeConfig } from "@/lib/api/scrape";
 
 const NAMING_FIELDS = [
   { key: "naming_entry_dir", label: "条目目录", fallback: "{title} ({year})" },
@@ -77,20 +56,6 @@ const MIRROR_FIELDS = [
   { key: "mirror_episode_thumbs", label: "写入分集剧照" },
 ] as const;
 
-/** 全局值的可读摘要，供卡片里的「全局：…」对照行显示。 */
-function summarize(keys: (keyof ScrapeSetting)[], base: ScrapeSetting): string {
-  return keys
-    .map((key) => {
-      const value = base[key];
-      if (Array.isArray(value)) return value.join(" → ");
-      if (typeof value === "boolean") return value ? "开" : "关";
-      return String(value || "跟随环境");
-    })
-    .filter(Boolean)
-    .slice(0, 3)
-    .join("；");
-}
-
 export function LibraryScrapeSettings({
   overrides,
   onChange,
@@ -98,7 +63,8 @@ export function LibraryScrapeSettings({
   overrides: Record<string, unknown>;
   onChange: (next: Record<string, unknown>) => void;
 }) {
-  const [group, setGroup] = useState<GroupId>("meta");
+  // 展开的卡片标题（同时只开一张）；默认全收起——状态在折叠头上已经看得见
+  const [open, setOpen] = useState<string | null>(null);
   const [config, setConfig] = useState<ScrapeConfigView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const chipOptions = useScrapeChipOptions();
@@ -143,22 +109,55 @@ export function LibraryScrapeSettings({
     [overrides, onChange],
   );
 
-  /** 卡片的跟随/自定义状态与切换：自定义时用全局值做种子，跟随时删掉这张卡的键。 */
-  const followFor = useCallback(
-    (keys: (keyof ScrapeSetting)[]) => ({
-      custom: keys.some((key) => key in overrides),
-      globalSummary: base ? summarize(keys, base) : "",
-      onToggle: (custom: boolean) => {
-        if (!base) return;
-        const next = { ...overrides };
-        for (const key of keys) {
-          if (custom) next[key] = base[key];
-          else delete next[key];
-        }
-        onChange(next);
-      },
-    }),
-    [base, overrides, onChange],
+  const toggleOpen = useCallback(
+    (title: string) => setOpen((current) => (current === title ? null : title)),
+    [],
+  );
+
+  /** 卡片级三态那几张卡的壳：折叠 + 状态摘要 + 跟随/自定义开关。 */
+  const shellFor = useCallback(
+    (title: string, keys: (keyof ScrapeSetting)[]): CardShell => {
+      const custom = keys.some((key) => key in overrides);
+      return {
+        open: open === title,
+        onToggleOpen: () => toggleOpen(title),
+        customized: custom,
+        status:
+          custom && merged
+            ? `自定义：${describeScrapeValues(keys, merged)}`
+            : base
+              ? `跟随全局：${describeScrapeValues(keys, base)}`
+              : "跟随全局",
+        follow: {
+          custom,
+          globalSummary: base ? describeScrapeValues(keys, base) : "",
+          onToggle: (next: boolean) => {
+            if (!base) return;
+            const patched = { ...overrides };
+            for (const key of keys) {
+              if (next) patched[key] = base[key];
+              else delete patched[key];
+            }
+            onChange(patched);
+          },
+        },
+      };
+    },
+    [base, merged, open, overrides, onChange, toggleOpen],
+  );
+
+  /** 字段级三态那两张卡（命名/目录写入）的壳：没有卡片级开关，状态数覆盖项。 */
+  const fieldShellFor = useCallback(
+    (title: string, fields: readonly { key: string; label: string }[]): CardShell => {
+      const hit = fields.filter((f) => f.key in overrides);
+      return {
+        open: open === title,
+        onToggleOpen: () => toggleOpen(title),
+        customized: hit.length > 0,
+        status: hit.length > 0 ? `自定义：${hit.map((f) => f.label).join("、")}` : "跟随全局",
+      };
+    },
+    [open, overrides, toggleOpen],
   );
 
   if (error) {
@@ -180,62 +179,38 @@ export function LibraryScrapeSettings({
       <p className="text-sub leading-relaxed text-[var(--text-muted)]">
         本库单独的刮削口味，未显式修改的项跟随「设置 → 刮削与整理」。
         {overrideCount > 0 && (
-          <span className="ml-1.5 rounded-full bg-[var(--accent-soft)] px-2 py-px text-micro text-[var(--accent)]">
+          <span className="ml-1.5 whitespace-nowrap rounded-full bg-[var(--accent-soft)] px-2 py-px text-micro text-[var(--accent)]">
             已覆盖 {overrideCount} 项
           </span>
         )}
       </p>
 
-      <div className="flex gap-1.5 rounded-2xl border border-white/[0.08] bg-white/[0.03] p-1.5">
-        {GROUPS.map((g) => {
-          const dirty = GROUP_KEYS[g.id].some((key) => key in overrides);
-          return (
-            <button
-              key={g.id}
-              type="button"
-              onClick={() => setGroup(g.id)}
-              className={`flex flex-1 flex-col items-center gap-px rounded-xl px-2 py-2 transition-colors ${
-                group === g.id
-                  ? "bg-white/[0.12] text-[var(--text)]"
-                  : "text-[var(--text-muted)] hover:bg-white/[0.06]"
-              }`}
-            >
-              <span className="flex items-center gap-1 text-sub font-semibold">
-                {g.label}
-                {dirty && (
-                  <span className="size-1.5 rounded-full bg-[var(--accent)]" aria-hidden />
-                )}
-              </span>
-              <span className="text-micro text-[var(--text-faint)] max-md:hidden">{g.detail}</span>
-            </button>
-          );
-        })}
-      </div>
-
-      {group === "meta" && (
+      <Section label="元数据">
         <MetaTab
           setting={merged}
           patch={patch}
           extraMetaLangs={chipOptions.metaLangs}
           extraCountries={chipOptions.certCountries}
-          followFor={followFor}
+          shellFor={shellFor}
         />
-      )}
-      {group === "images" && (
+      </Section>
+
+      <Section label="图片">
         <ImagesTab
           setting={merged}
           patch={patch}
           extraImageLangs={chipOptions.imageLangs}
           effective={config?.effective ?? null}
-          followFor={followFor}
+          shellFor={shellFor}
         />
-      )}
+      </Section>
 
-      {group === "naming" && (
-        <div className="rounded-2xl border border-white/[0.08] bg-white/[0.04] p-4">
-          <p className="mb-3 text-caption leading-relaxed text-[var(--text-faint)]">
-            留空即跟随全局模板。命名的产物是本库目录树里的路径，所以每个库可以各用一套。
-          </p>
+      <Section label="命名与整理">
+        <Card
+          title="命名模板"
+          desc="留空即跟随全局模板。命名的产物是本库目录树里的路径，所以每个库可以各用一套。"
+          shell={fieldShellFor("命名模板", NAMING_FIELDS)}
+        >
           {NAMING_FIELDS.map((field) => (
             <div key={field.key} className="mb-2.5 last:mb-0">
               <label className="mb-1 block text-caption text-[var(--text-muted)]">
@@ -252,21 +227,21 @@ export function LibraryScrapeSettings({
               />
             </div>
           ))}
-        </div>
-      )}
+        </Card>
+      </Section>
 
-      {group === "mirror" && (
-        <div className="rounded-2xl border border-white/[0.08] bg-white/[0.04] p-4">
-          <p className="mb-1 text-caption leading-relaxed text-[var(--text-faint)]">
-            把刮削成果写入本库的媒体目录。基本信息里的「刮削图片/NFO 写入媒体目录」是总闸，
-            关掉则这三项全不写。
-          </p>
+      <Section label="目录写入">
+        <Card
+          title="媒体目录写入"
+          desc="把刮削成果写入本库的媒体目录。基本信息里的「刮削图片/NFO 写入媒体目录」是总闸，关掉则这三项全不写。"
+          shell={fieldShellFor("媒体目录写入", MIRROR_FIELDS)}
+        >
           {MIRROR_FIELDS.map((field) => {
             const value = overrides[field.key] as boolean | undefined;
             return (
               <div
                 key={field.key}
-                className="flex items-center justify-between gap-3 border-t border-white/[0.05] py-2.5"
+                className="flex flex-wrap items-center justify-between gap-2 border-t border-white/[0.05] py-2.5 first:border-t-0 first:pt-0"
               >
                 <span className="text-sub">{field.label}</span>
                 <div className="flex gap-1">
@@ -294,14 +269,24 @@ export function LibraryScrapeSettings({
               </div>
             );
           })}
-        </div>
-      )}
+        </Card>
+      </Section>
 
       <p className="text-caption leading-relaxed text-[var(--text-faint)]">
         语言与选图的产物挂在条目上（一部片一份档案、一张海报），所以它们按条目的
         <strong className="font-medium text-[var(--text-muted)]">刮削归属库</strong>
         生效——归属本库的条目才跟这里的设置。存量条目需在本库执行「刷新元数据」后按新设置重刮。
       </p>
+    </div>
+  );
+}
+
+/** 分节标签 + 该节的卡片。标签不可点，只做视觉分组。 */
+function Section({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="space-y-2">
+      <p className="text-micro uppercase tracking-widest text-[var(--text-faint)]">{label}</p>
+      {children}
     </div>
   );
 }
