@@ -356,7 +356,7 @@ export function RemoteTranscodeSection({ onOpenDevices }: RemoteTranscodeSection
               <p className="text-sub text-[var(--text-muted)]">还没有 Worker 接入。在 Mac 上：</p>
               <ol className="space-y-1 pl-4">
                 <li>1. 打开 MovieClaw Transcoder，点「在局域网中查找」或直接填 movieclaw 地址；</li>
-                <li>2. 点「验证连接」，再点「请求接入」，它会显示一段配对码；</li>
+                <li>2. 点「连接并配对」，它会显示一段配对码；</li>
                 <li>
                   3. 回到网页的「设置 → 设备」，核对配对码后批准
                   {onOpenDevices && (
