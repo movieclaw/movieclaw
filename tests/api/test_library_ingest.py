@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import os
 import threading
+import time
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -75,6 +76,7 @@ async def db(tmp_path, monkeypatch):
     monkeypatch.setattr(ingest_mod, "_stability", {})
     monkeypatch.setattr(ingest_mod, "_deferred", {})
     monkeypatch.setattr(ingest_mod, "_failed_retry", {})
+    monkeypatch.setattr(ingest_mod, "_last_swept", {})
     monkeypatch.setattr(ingest_mod, "QUIET_SECONDS", 0)
     monkeypatch.setattr(ingest_mod, "_briefs_cache", (float("-inf"), None))
     yield get_database()
@@ -2606,7 +2608,8 @@ async def test_wanted_identity_claim_via_info_hash(db, tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_fallback_only_sweeps_unwatched_dirs(db, tmp_path, monkeypatch):
-    """兜底巡检只扫监听覆盖不到的目录：被实时监听的目录绝不重复主动扫。"""
+    """兜底巡检只扫监听覆盖不到的目录：被实时监听的目录在保底重扫到期前
+    不主动扫（到期后的保底见 test_fallback_resweeps_silently_watched_dir）。"""
     root = tmp_path / "movies"
     watch1, watch2 = tmp_path / "watch1", tmp_path / "watch2"
     watch1.mkdir()
@@ -2675,6 +2678,79 @@ async def test_fallback_sweeps_watched_dir_with_pending_entries(db, tmp_path, mo
 
     await ingest_mod.ingest_tick()
     assert swept == [str(watch1)]
+
+
+@pytest.mark.asyncio
+async def test_fallback_resweeps_silently_watched_dir(db, tmp_path, monkeypatch):
+    """回归（issue #259）：「监听注册成功」不等于「事件可靠」。
+
+    网络挂载（CIFS/NFS）上写入方在远端时 observer.schedule() 会成功、但
+    inotify 永远收不到事件。此前兜底巡检据「已注册监听」一刀切跳过这类
+    目录，条目既收不到事件又不被巡检——永远不入库、台账无记录、日志无
+    输出，只有重启才能打破。修复后被监听的目录每 6 小时仍保底扫一次。
+    """
+    root = tmp_path / "movies"
+    fresh, silent = tmp_path / "fresh", tmp_path / "silent"
+    fresh.mkdir()
+    silent.mkdir()
+    library_id = await _make_library(db, kind=MediaKind.MOVIE, root=root)
+    await _make_rule(db, library_id=library_id, source=fresh)
+    await _make_rule(db, library_id=library_id, source=silent)
+
+    swept: list[str] = []
+
+    async def record_sweep(rule, library):
+        swept.append(rule.source_path)
+
+    monkeypatch.setattr(ingest_mod, "_sweep_dir", record_sweep)
+
+    class _StubWatcher:
+        """两个目录都「注册成功」、但都不投递任何事件的假观察者。"""
+
+        def watched_keys(self):
+            return frozenset({str(fresh), str(silent)})
+
+        async def refresh_watches(self):
+            pass
+
+    monkeypatch.setattr(ingest_mod, "_watcher", _StubWatcher())
+    # fresh 刚被事件驱动扫过；silent 上一次巡检已是保底窗口之前（事件路径死了）
+    now = time.monotonic()
+    ingest_mod._last_swept[str(fresh)] = now
+    ingest_mod._last_swept[str(silent)] = now - ingest_mod.WATCHED_RESWEEP_SECONDS - 1
+
+    await ingest_mod.ingest_tick()
+    assert swept == [str(silent)]
+
+
+@pytest.mark.asyncio
+async def test_watched_dir_not_reswept_within_window(db, tmp_path, monkeypatch):
+    """保底重扫不能退化成轮询：首次见到的目录以本轮为计时起点（refresh_watches
+    刚给新纳入监听的目录排过补扫），窗口未到的连续巡检一次都不扫。"""
+    root, watch = tmp_path / "movies", tmp_path / "watch"
+    watch.mkdir()
+    library_id = await _make_library(db, kind=MediaKind.MOVIE, root=root)
+    await _make_rule(db, library_id=library_id, source=watch)
+
+    swept: list[str] = []
+
+    async def record_sweep(rule, library):
+        swept.append(rule.source_path)
+
+    monkeypatch.setattr(ingest_mod, "_sweep_dir", record_sweep)
+
+    class _StubWatcher:
+        def watched_keys(self):
+            return frozenset({str(watch)})
+
+        async def refresh_watches(self):
+            pass
+
+    monkeypatch.setattr(ingest_mod, "_watcher", _StubWatcher())
+
+    await ingest_mod.ingest_tick()
+    await ingest_mod.ingest_tick()
+    assert swept == []
 
 
 @pytest.mark.asyncio

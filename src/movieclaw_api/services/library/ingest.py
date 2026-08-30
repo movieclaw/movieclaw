@@ -177,6 +177,15 @@ logger = logging.getLogger("movieclaw_api.library_ingest")
 # 兜底巡检节奏：正常路径是 watchdog 事件驱动，这里的低频全量巡检只兜底
 # 网络挂载不产生 fs 事件、进程停机期间错过事件两种场景
 FALLBACK_SWEEP_SECONDS = 3600
+# 被实时监听的目录多久必须主动扫一次（无论有没有事件）。
+# 「监听注册成功」不等于「事件可靠」：网络挂载（CIFS/SMB、NFS）上写入方在
+# 远端时，observer.schedule() 会成功但 inotify 永远收不到事件；emitter 线程
+# 意外死亡、事件队列丢失也是同一类静默失效。此前兜底巡检把「已注册监听」
+# 当成「事件路径负责」直接跳过，这类目录既收不到事件、又不被巡检，条目
+# 永远不入库、台账无记录、日志无输出，只有重启才能打破（issue #259）。
+# 因此对被监听的目录也保留一条低频保底：与媒体库的六小时对账同节奏，
+# 代价只是每 6 小时读一次源目录顶层。
+WATCHED_RESWEEP_SECONDS = 6 * 3600
 # 静默窗口：指纹连续稳定 5 分钟才认为下载落定（写入中 mtime 持续变化）
 QUIET_SECONDS = 300
 # 挂起条目（下载器报未完成）的状态轮询节奏：优先 API 核对，只有出现新的
@@ -237,6 +246,12 @@ _deferred: dict[str, float] = {}
 # 都看不见它，「自动退避重试」的承诺永远无法兑现。重启丢失由
 # _process_entry 的退避短路分支补记（见该处注释）
 _failed_retry: dict[str, float] = {}
+# 源目录 -> 最近一次真正读到该目录顶层的单调时钟（事件驱动与兜底巡检共用
+# 同一个记账口）。被实时监听的目录据此做低频保底重扫：只要事件路径还在
+# 正常干活，这个时间戳就一直被刷新，保底扫不会触发；一旦事件路径悄悄死了
+# （网络挂载收不到 inotify、emitter 线程死亡、消费协程异常退出），时间戳
+# 停止推进，最多 WATCHED_RESWEEP_SECONDS 后条目就会被巡检接住（issue #259）
+_last_swept: dict[str, float] = {}
 # 巡检串行锁：事件驱动与兜底巡检可能同时到达同一目录，串行化防同条目双处理
 _sweep_lock = asyncio.Lock()
 # 下载器种子概览缓存：(取样时刻, 概览列表或 None=不可用)
@@ -628,8 +643,9 @@ async def _load_rules() -> list[tuple[ImportWatch, Library | None]]:
     interval_seconds=FALLBACK_SWEEP_SECONDS,
     description=(
         "低频兜底：重建失效的目录监听，并巡检监听覆盖不到的源目录；"
-        "被实时监听的目录只在仍有等待中的条目（等静默窗口/等下载器完成）时"
-        "纳入巡检，其余由事件驱动、不主动扫。"
+        "被实时监听的目录在仍有等待中的条目（等静默窗口/等下载器完成）时"
+        "纳入巡检，其余由事件驱动，但每 6 小时仍保底扫一次"
+        "（防网络挂载收不到事件这类静默失效）。"
     ),
 )
 async def ingest_tick() -> None:
@@ -640,9 +656,24 @@ async def ingest_tick() -> None:
         await watcher.refresh_watches()
     watched = watcher.watched_keys() if watcher is not None else frozenset()
 
-    for rule, library in await _load_rules():
+    now = time.monotonic()
+    rules = await _load_rules()
+    for rule, library in rules:
         if rule.source_path in watched and not _has_pending(rule.source_path):
-            continue  # watchdog 在实时盯着且没有等待中的条目：事件路径负责
+            # watchdog 在实时盯着且没有等待中的条目：正常情况下事件路径负责。
+            # 但「注册成功」不等于「事件可靠」，所以仍留一条低频保底重扫；
+            # 首次见到的目录以本轮为起点计时（refresh_watches 刚给新纳入
+            # 监听的目录排过一次补扫，这里不重复扫）
+            last_swept = _last_swept.setdefault(rule.source_path, now)
+            idle = now - last_swept
+            if idle < WATCHED_RESWEEP_SECONDS:
+                continue
+            logger.info(
+                "监听导入保底巡检（%s）：距上次巡检已 %.1f 小时，本轮主动扫一次"
+                "（文件事件若送不到——网络挂载上很常见——完成的下载由此接住）",
+                rule.source_path,
+                idle / 3600,
+            )
         try:
             await _sweep_dir(rule, library)
         except Exception:  # noqa: BLE001 -- 单目录失败不拖垮整轮
@@ -651,6 +682,10 @@ async def ingest_tick() -> None:
                 rule_target_label(rule, library.name if library else None),
                 rule.source_path,
             )
+    # 规则删除后清掉它的巡检时间戳，防字典随规则增删无界增长
+    live = {rule.source_path for rule, _library in rules}
+    for stale in set(_last_swept) - live:
+        _last_swept.pop(stale, None)
 
 
 def _has_pending(source_path: str) -> bool:
@@ -681,7 +716,10 @@ async def _sweep_dir(
     """
     root = Path(rule.source_path)
     if not root.is_dir():
-        return  # 目录未就绪（挂载中/配置超前）：不告警刷屏，下轮再看
+        # 目录未就绪（挂载中/配置超前）：不告警刷屏，下轮再看。仍记一次账
+        # ——已经确认「没东西可看」，不必让保底重扫每小时回来重问一遍
+        _last_swept[rule.source_path] = time.monotonic()
+        return
     async with _sweep_lock:
         briefs = await _downloader_briefs()
         try:
@@ -689,6 +727,8 @@ async def _sweep_dir(
         except OSError as exc:
             logger.warning("读取监听目录失败（%s）：%s", rule.source_path, exc)
             return
+        # 记账口：事件驱动与兜底巡检都走这里，只要有人在扫，保底重扫就不触发
+        _last_swept[rule.source_path] = time.monotonic()
         if not rule.process_existing and not rule.baseline_done:
             # 「跳过存量」基线：本轮只盖章不处理，下轮起只有基线外的新条目
             # 会被消费（正在下载中的条目不进基线，完成后按新增处理）
