@@ -17,6 +17,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useToast } from "@/components/feedback";
+import { ChevronDownIcon } from "@/components/icons";
 import {
   type CountryOption,
   type LanguageOption,
@@ -27,6 +28,7 @@ import {
   listLanguageOptions,
   saveScrapeConfig,
 } from "@/lib/api/scrape";
+import { listLibraries } from "@/lib/api/libraries";
 
 const INPUT_CLASS =
   "rounded-xl border border-white/[0.08] bg-white/[0.04] px-3 py-2 text-sub " +
@@ -79,6 +81,103 @@ const COMMON_CERT_COUNTRIES: ChipOption[] = [
 const POSTER_SIZES = ["w342", "w500", "w780", "original"];
 const BACKDROP_SIZES = ["w780", "w1280", "original"];
 const STILL_SIZES = ["w185", "w300", "original"];
+
+/* ------------------------------------------------------------------ */
+/* 值的人话摘要（库设置页的折叠头与对照行用）                            */
+/* ------------------------------------------------------------------ */
+
+function labelOf(options: ChipOption[], id: string): string {
+  return options.find((o) => o.id === id)?.name ?? id;
+}
+
+function joinPriority(options: ChipOption[], values: string[]): string {
+  return values.map((v) => labelOf(options, v)).join(" → ");
+}
+
+/**
+ * 一组字段的可读摘要。**不给原始值**：`ja-JP → zh-CN`、`language；ja → orig`
+ * 这种是给开发者看的，折叠头上要露的是「日本語 → 中文（简体）」这类人话
+ * ——这是个开源软件，非开发者也在用（见 CLAUDE.md 注释与日志约定）。
+ *
+ * 未知语种/地区（用户从「更多」面板选的长尾项）回落显示代码本身，不编造名字。
+ */
+export function describeScrapeValues(
+  keys: (keyof ScrapeSetting)[],
+  setting: ScrapeSetting,
+): string {
+  const parts: string[] = [];
+  for (const key of keys) {
+    switch (key) {
+      case "language_priority":
+        parts.push(joinPriority(COMMON_META_LANGS, setting.language_priority));
+        break;
+      case "cert_country_priority":
+        parts.push(joinPriority(COMMON_CERT_COUNTRIES, setting.cert_country_priority));
+        break;
+      case "poster_mode":
+        // 海报卡把「模式 + 语言优先级」并成一句：默认模式下语言优先级不生效，
+        // 摘要里再列它只会误导
+        parts.push(
+          setting.poster_mode === "default"
+            ? "TMDB 默认"
+            : `按语言：${joinPriority(COMMON_IMAGE_LANGS, setting.poster_language_priority)}`,
+        );
+        break;
+      case "poster_language_priority":
+        if (!keys.includes("poster_mode")) {
+          parts.push(joinPriority(COMMON_IMAGE_LANGS, setting.poster_language_priority));
+        }
+        break;
+      case "backdrop_language_priority":
+        parts.push(joinPriority(COMMON_IMAGE_LANGS, setting.backdrop_language_priority));
+        break;
+      case "poster_min_width":
+        parts.push(
+          setting.poster_min_width > 0 ? `海报 ≥${setting.poster_min_width}` : "海报不限宽",
+        );
+        break;
+      case "backdrop_min_width":
+        parts.push(
+          setting.backdrop_min_width > 0 ? `背景 ≥${setting.backdrop_min_width}` : "背景不限宽",
+        );
+        break;
+      case "poster_size":
+      case "backdrop_size":
+      case "still_size": {
+        // 三个档位并成一句「档位 …」，空串统一说成"跟随环境"
+        if (key !== "poster_size") break;
+        const sizes = [setting.poster_size, setting.backdrop_size, setting.still_size];
+        parts.push(sizes.every((v) => !v) ? "档位跟随环境" : `档位 ${sizes.map((v) => v || "环境").join("/")}`);
+        break;
+      }
+      case "naming_entry_dir": {
+        // 四个模板并成一句：逐个列模板串太长，只说"哪几项不是默认"
+        const changed = NAMING_FIELDS.filter((f) => setting[f.key].trim());
+        parts.push(
+          changed.length === 0
+            ? "全部默认模板"
+            : `已改：${changed.map((f) => f.label).join("、")}`,
+        );
+        break;
+      }
+      case "naming_movie_file":
+      case "naming_season_dir":
+      case "naming_episode_file":
+        break; // 已在 naming_entry_dir 一并表达
+      case "mirror_images": {
+        const off = MIRROR_ROWS.filter((r) => !setting[r.key]);
+        parts.push(off.length === 0 ? "三项全写" : `不写：${off.map((r) => r.label).join("、")}`);
+        break;
+      }
+      case "mirror_nfo":
+      case "mirror_episode_thumbs":
+        break; // 已在 mirror_images 一并表达
+      default:
+        break;
+    }
+  }
+  return parts.filter(Boolean).join(" · ");
+}
 
 /* ------------------------------------------------------------------ */
 /* 排序芯片                                                            */
@@ -139,13 +238,6 @@ function OrderChips({
       .slice(0, 60);
   }, [extraOptions, inline, query]);
 
-  const summary = value
-    .map((id, i) => {
-      const name = inline.find((o) => o.id === id)?.name ?? id;
-      return i === 0 && primaryTag ? `${primaryTag} ${name}` : name;
-    })
-    .join(" → ");
-
   return (
     <div>
       <div className="flex flex-wrap gap-2">
@@ -168,13 +260,13 @@ function OrderChips({
               } ${disabled ? "pointer-events-none opacity-35" : ""}`}
             >
               <span
-                className={`flex size-4.5 items-center justify-center rounded-full text-micro font-bold tabular-nums ${
+                className={`flex size-4.5 items-center justify-center rounded-full text-micro font-bold ${
                   selected
                     ? "bg-[var(--accent)] text-[#12141c]"
                     : "bg-white/10 text-[var(--text-faint)]"
                 }`}
               >
-                {selected ? index + 1 : "+"}
+                {selected ? "✓" : "+"}
               </span>
               {option.name}
             </button>
@@ -228,11 +320,56 @@ function OrderChips({
           </div>
         </div>
       )}
-      <p className="mt-2 text-caption text-[var(--text-faint)]">
-        {value.length
-          ? `当前顺序：${summary}（点击已选项可移除，最多 ${max} 项）`
-          : "点击选择，按点击顺序排列优先级"}
-      </p>
+      {/* 已选序列条：候选区只管"加"，顺序与删除都在这里。
+          没有它的话，想把第 2 位提到第 1 位得"先移除再重加"——两步且不直观，
+          是这套芯片交互里唯一真正笨拙的地方。 */}
+      {value.length > 0 ? (
+        <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+          {value.map((id, i) => {
+            const name = inline.find((o) => o.id === id)?.name ?? id;
+            return (
+              <span
+                key={id}
+                className="flex items-center gap-1 rounded-full border border-[var(--accent-2)]/40 bg-[var(--accent-soft)] py-1 pl-2.5 pr-1 text-sub"
+              >
+                {i === 0 && primaryTag && (
+                  <span className="text-micro text-[var(--accent)]">{primaryTag}</span>
+                )}
+                <span className="text-[var(--text)]">{name}</span>
+                <button
+                  type="button"
+                  disabled={i === 0}
+                  aria-label={`把「${name}」上移一位`}
+                  onClick={() => {
+                    const next = [...value];
+                    [next[i - 1], next[i]] = [next[i], next[i - 1]];
+                    onChange(next);
+                  }}
+                  className="flex size-5 items-center justify-center rounded-full text-caption text-[var(--text-muted)] transition-colors hover:bg-white/10 hover:text-[var(--text)] disabled:pointer-events-none disabled:opacity-25"
+                >
+                  ↑
+                </button>
+                <button
+                  type="button"
+                  disabled={value.length <= 1}
+                  aria-label={`移除「${name}」`}
+                  onClick={() => onChange(value.filter((v) => v !== id))}
+                  className="flex size-5 items-center justify-center rounded-full text-caption text-[var(--text-muted)] transition-colors hover:bg-white/10 hover:text-[var(--text)] disabled:pointer-events-none disabled:opacity-25"
+                >
+                  ✕
+                </button>
+              </span>
+            );
+          })}
+          <span className="text-caption text-[var(--text-faint)]">
+            按此顺序回落（最多 {max} 项）
+          </span>
+        </div>
+      ) : (
+        <p className="mt-2 text-caption text-[var(--text-faint)]">
+          点击上方候选加入，加入后可在这里排序
+        </p>
+      )}
     </div>
   );
 }
@@ -241,40 +378,228 @@ function OrderChips({
 /* 分区主体                                                            */
 /* ------------------------------------------------------------------ */
 
-const TABS = [
-  { id: "meta", label: "元数据", detail: "语言与文本" },
-  { id: "images", label: "图片", detail: "海报与背景" },
-  { id: "naming", label: "命名与整理", detail: "目录与文件名" },
-  { id: "mirror", label: "目录写入", detail: "NFO 与图片镜像" },
-] as const;
+/**
+ * 卡片级的「跟随全局 ⇄ 自定义」三态壳（只在库设置页出现，全局设置页不传）。
+ *
+ * 为什么是**卡片级**而不是整组一个开关：一个 tab 里的几张卡片管的是互相独立的
+ * 设置（元数据 tab 里语言与分级各管各的），整组一个开关会让"只覆盖了语言"的库
+ * 把分级也显示成已自定义——用户看到的状态是错的。而卡片内部则相反：排序芯片是
+ * 有序列表，逐项三态没有意义，只能整张卡一起跟随或一起自定义。
+ */
+export interface CardFollowState {
+  custom: boolean;
+  /** 全局当前值的可读摘要，做对照 */
+  globalSummary: string;
+  onToggle: (custom: boolean) => void;
+}
 
-type TabId = (typeof TABS)[number]["id"];
+function CardFollowSwitch({ follow }: { follow: CardFollowState }) {
+  return (
+    <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/[0.08] bg-white/[0.03] px-3.5 py-2.5">
+      <span className="min-w-0 text-caption text-[var(--text-faint)]">
+        全局：{follow.globalSummary}
+      </span>
+      <div className="flex shrink-0 gap-1">
+        {(
+          [
+            [false, "跟随全局"],
+            [true, "自定义"],
+          ] as const
+        ).map(([option, label]) => (
+          <button
+            key={label}
+            type="button"
+            onClick={() => follow.onToggle(option)}
+            className={`rounded-lg px-2.5 py-1 text-caption transition-colors ${
+              follow.custom === option
+                ? "bg-[var(--accent-soft)] text-[var(--text)]"
+                : "text-[var(--text-faint)] hover:bg-white/[0.06]"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
 
-function Card({
+/**
+ * 库设置页给每张卡片套的壳：折叠 + 三态（设计文档 §14.5）。
+ *
+ * 为什么库设置页是**手风琴**而这里（全局设置页）是 tab：库设置里绝大多数卡片
+ * 停在"跟随全局"，用户只想改一两项——手风琴把全部卡片的状态摊在一屏（tab 得
+ * 逐个点开才知道自己改过什么），且没有横向空间压力（中文标签「命名与整理」
+ * 「目录写入」在 390px 的 tab 条里必然换行）。全局设置页正相反：宽度充足、
+ * 每张卡都要编辑，没有可省的静默态，折叠只是白多一次点击。
+ * 两处共用的是卡片**内部**的控件，外层容器各按各的空间与动线选。
+ */
+export interface CardShell {
+  open: boolean;
+  onToggleOpen: () => void;
+  /** 折叠头右侧的一行状态：「跟随全局：zh-CN → en-US」/「自定义：日本語 → …」 */
+  status: string;
+  /** 状态是否为"已改过"（点亮折叠头的小圆点与文字颜色） */
+  customized: boolean;
+  /** 卡片级三态开关；命名/目录写入走字段级三态，不传 */
+  follow?: CardFollowState;
+}
+
+export function Card({
   title,
-  perLibrary,
+  overriddenBy,
+  follow,
+  shell,
   desc,
   children,
 }: {
   title: string;
-  perLibrary?: boolean;
+  /** 覆盖了本卡片字段的媒体库名。分层配置最经典的坑是"在全局改了半天不生效"，
+   *  不把这个标出来用户无从自查（设计文档 §14.5）。
+   *  注意这里**没有**「可按库覆盖」徽标：P4 之后所有字段都可按库覆盖，
+   *  逐卡再标一遍就不区分任何东西了，改到分区顶部统一说一句。 */
+  overriddenBy?: string[];
+  /** 库设置页的卡片级三态；与 shell 二选一（shell 里带着它） */
+  follow?: CardFollowState;
+  /** 库设置页的折叠壳；全局设置页不传 */
+  shell?: CardShell;
   desc: string;
   children: React.ReactNode;
 }) {
+  const effectiveFollow = shell?.follow ?? follow;
+  const body = (
+    <>
+      <p className="mb-4 mt-1 max-w-[62ch] text-sub text-[var(--text-muted)]">{desc}</p>
+      {effectiveFollow && <CardFollowSwitch follow={effectiveFollow} />}
+      {/* 跟随全局时控件只读：看得见全局值长什么样，但改不动。
+          用 `inert` 而不是 `pointer-events-none`——后者只挡鼠标，键盘照样能
+          Tab 进去把值改掉（改动会静默写进库覆盖），那是功能缺陷不是观感问题。 */}
+      <div
+        inert={effectiveFollow ? !effectiveFollow.custom : undefined}
+        className={effectiveFollow && !effectiveFollow.custom ? "opacity-45" : ""}
+      >
+        {children}
+      </div>
+    </>
+  );
+
+  if (shell) {
+    return (
+      <CollapsibleCard shell={shell} title={title} overriddenBy={overriddenBy}>
+        {body}
+      </CollapsibleCard>
+    );
+  }
+
   return (
     <section className="rounded-2xl border border-white/[0.08] bg-white/[0.04] p-5">
-      <div className="flex items-center gap-2.5">
+      <div className="flex flex-wrap items-center gap-2.5">
         <h3 className="text-title-sm font-semibold">{title}</h3>
-        {perLibrary && (
-          <span className="rounded-full border border-white/[0.15] px-2 py-px text-micro text-[var(--accent-2)]">
-            可按库覆盖
+        {overriddenBy && overriddenBy.length > 0 && (
+          <span
+            title={`${overriddenBy.join("、")}不跟随此处的设置`}
+            className="rounded-full bg-[var(--accent-soft)] px-2 py-px text-micro text-[var(--accent)]"
+          >
+            {overriddenBy.length} 个库已覆盖
           </span>
         )}
       </div>
-      <p className="mb-4 mt-1 max-w-[62ch] text-sub text-[var(--text-muted)]">{desc}</p>
-      {children}
+      {body}
     </section>
   );
+}
+
+/**
+ * 折叠卡片。两处细节值得说明：
+ *
+ * - **高度过渡用 grid `0fr → 1fr`**，不是 max-height 猜一个够大的值——猜小了
+ *   长卡片（命名模板带实时预览）会被截断，猜大了短卡片的动画速度不对；
+ * - 内容**常驻挂载**（动画需要），所以收起时必须 `inert`，否则键盘能 Tab
+ *   进看不见的表单里。
+ *
+ * 展开后把卡片滚进视口：手风琴的经典毛病是点开靠底部的卡片，内容展开在视口
+ * 下方看不见。等过渡结束再滚（`block: nearest` 只做最小移动，不抢镜）。
+ */
+function CollapsibleCard({
+  shell,
+  title,
+  overriddenBy,
+  children,
+}: {
+  shell: CardShell;
+  title: string;
+  overriddenBy?: string[];
+  children: React.ReactNode;
+}) {
+  const ref = useRef<HTMLElement | null>(null);
+  const wasOpen = useRef(shell.open);
+
+  useEffect(() => {
+    if (shell.open && !wasOpen.current) {
+      const timer = window.setTimeout(
+        () => ref.current?.scrollIntoView({ block: "nearest", behavior: "smooth" }),
+        220,
+      );
+      wasOpen.current = true;
+      return () => window.clearTimeout(timer);
+    }
+    wasOpen.current = shell.open;
+  }, [shell.open]);
+
+  return (
+    <section
+      ref={ref}
+      className="overflow-hidden rounded-2xl border border-white/[0.08] bg-white/[0.04]"
+    >
+        <button
+          type="button"
+          aria-expanded={shell.open}
+          onClick={shell.onToggleOpen}
+          className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-white/[0.03]"
+        >
+          <span className="min-w-0 flex-1">
+            <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-ui font-semibold">
+              {title}
+              {shell.customized && (
+                <span className="size-1.5 shrink-0 rounded-full bg-[var(--accent)]" aria-hidden />
+              )}
+              {/* 收起时也要看得见"这项被几个库改了"——它正是"在全局改了不生效"
+                  的答案，藏在展开态里等于没有 */}
+              {overriddenBy && overriddenBy.length > 0 && (
+                <span
+                  title={`${overriddenBy.join("、")}不跟随此处的设置`}
+                  className="rounded-full bg-[var(--accent-soft)] px-2 py-px text-micro font-normal text-[var(--accent)]"
+                >
+                  {overriddenBy.length} 个库已覆盖
+                </span>
+              )}
+            </span>
+            {/* 状态常显：不点开也知道这张卡是跟着全局还是本库自己配过 */}
+            <span
+              className={`mt-0.5 block truncate text-caption ${
+                shell.customized ? "text-[var(--accent)]" : "text-[var(--text-faint)]"
+              }`}
+            >
+              {shell.status}
+            </span>
+          </span>
+          <ChevronDownIcon
+            className={`size-4 shrink-0 text-[var(--text-faint)] transition-transform ${
+              shell.open ? "rotate-180" : ""
+            }`}
+          />
+        </button>
+        <div
+          className={`grid transition-[grid-template-rows] duration-200 ease-out ${
+            shell.open ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
+          }`}
+        >
+          <div className="overflow-hidden" inert={!shell.open}>
+            <div className="border-t border-white/[0.06] px-4 pb-4">{children}</div>
+          </div>
+        </div>
+      </section>
+    );
 }
 
 /* ------------------------------------------------------------------ */
@@ -412,9 +737,13 @@ function templateError(key: string, template: string, allowed: string[]): string
 function NamingTab({
   setting,
   patch,
+  overriddenBy,
+  shellFor,
 }: {
   setting: ScrapeSetting;
   patch: (changes: Partial<ScrapeSetting>) => void;
+  overriddenBy?: (keys: (keyof ScrapeSetting)[]) => string[];
+  shellFor?: (title: string, keys: (keyof ScrapeSetting)[]) => CardShell;
 }) {
   const [focused, setFocused] = useState<string>("naming_episode_file");
   const refs = useRef<Record<string, HTMLInputElement | null>>({});
@@ -462,7 +791,11 @@ function NamingTab({
   return (
     <Card
       title="命名模板"
-      perLibrary
+      overriddenBy={overriddenBy?.(NAMING_FIELDS.map((f) => f.key))}
+      shell={shellFor?.(
+        "命名模板",
+        NAMING_FIELDS.map((f) => f.key),
+      )}
       desc="整理与入库的目录/文件命名。留空即使用默认模板；字段缺失时会连同相邻括号自动收缩。目录层级固定为「条目目录 / 季目录 / 文件」，不可自定义。"
     >
       {NAMING_FIELDS.map((field, i) => (
@@ -628,14 +961,22 @@ const MIRROR_ROWS = [
 function MirrorTab({
   setting,
   patch,
+  overriddenBy,
+  shellFor,
 }: {
   setting: ScrapeSetting;
   patch: (changes: Partial<ScrapeSetting>) => void;
+  overriddenBy?: (keys: (keyof ScrapeSetting)[]) => string[];
+  shellFor?: (title: string, keys: (keyof ScrapeSetting)[]) => CardShell;
 }) {
   return (
     <Card
       title="媒体目录写入"
-      perLibrary
+      overriddenBy={overriddenBy?.(MIRROR_ROWS.map((r) => r.key))}
+      shell={shellFor?.(
+        "媒体目录写入",
+        MIRROR_ROWS.map((r) => r.key),
+      )}
       desc="把刮削成果写入媒体目录，反哺 Emby / Jellyfin / Kodi（文件名遵循播放器规范）。只增不删除；已存在的 NFO 绝不覆盖。每个媒体库还有一个总开关，关掉则该库三项都不写。"
     >
       <div className="divide-y divide-white/[0.06]">
@@ -658,13 +999,316 @@ function MirrorTab({
   );
 }
 
+/* ------------------------------------------------------------------ */
+/* 可复用字段组：全局设置页与「编辑库 → 刮削设置」共用同一套控件          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 拉取语种/地区全量表并派生「更多」面板的候选。
+ *
+ * 全局页与库页各自调用一次即可——两处渲染的是同一批芯片，控件不同源
+ * 会随时间漂移成两套交互（设计文档 §14.5：用户学一次就够）。
+ */
+/** 分节标签 + 该节的卡片。标签不可点，只做视觉分组；全局页与库设置页共用。 */
+export function ScrapeSection({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="space-y-2">
+      <p className="text-micro uppercase tracking-widest text-[var(--text-faint)]">{label}</p>
+      {children}
+    </div>
+  );
+}
+
+export function useScrapeChipOptions() {
+  const [languages, setLanguages] = useState<LanguageOption[]>([]);
+  const [countries, setCountries] = useState<CountryOption[]>([]);
+
+  useEffect(() => {
+    // 全量表拉不到不阻断（面板回落只显示常用项）
+    listLanguageOptions()
+      .then(setLanguages)
+      .catch(() => {});
+    listCountryOptions()
+      .then(setCountries)
+      .catch(() => {});
+  }, []);
+
+  const metaLangs = useMemo<ChipOption[]>(
+    () =>
+      languages
+        .filter((l) => !COMMON_META_LANGS.some((c) => c.id.startsWith(`${l.code}-`)))
+        .map((l) => ({ id: l.code, name: l.name || l.english_name || l.code })),
+    [languages],
+  );
+  const imageLangs = useMemo<ChipOption[]>(
+    () =>
+      languages
+        .filter((l) => !COMMON_IMAGE_LANGS.some((c) => c.id === l.code))
+        .map((l) => ({ id: l.code, name: l.name || l.english_name || l.code })),
+    [languages],
+  );
+  const certCountries = useMemo<ChipOption[]>(
+    () =>
+      countries
+        .filter((c) => !COMMON_CERT_COUNTRIES.some((k) => k.id === c.code))
+        .map((c) => ({ id: c.code, name: c.name })),
+    [countries],
+  );
+
+  return { metaLangs, imageLangs, certCountries };
+}
+
+export function MetaTab({
+  setting,
+  patch,
+  extraMetaLangs,
+  extraCountries,
+  overriddenBy,
+  shellFor,
+}: {
+  setting: ScrapeSetting;
+  patch: (changes: Partial<ScrapeSetting>) => void;
+  extraMetaLangs: ChipOption[];
+  extraCountries: ChipOption[];
+  /** 查"哪些库覆盖了这些字段"；库设置页不传（那里本来就在配某一个库） */
+  overriddenBy?: (keys: (keyof ScrapeSetting)[]) => string[];
+  /** 库设置页的卡片壳（折叠 + 三态）工厂；全局设置页不传 */
+  shellFor?: (title: string, keys: (keyof ScrapeSetting)[]) => CardShell;
+}) {
+  return (
+    <>
+      <Card
+        title="元数据语言"
+        overriddenBy={overriddenBy?.(["language_priority"])}
+        shell={shellFor?.("元数据语言", ["language_priority"])}
+        desc="标题、简介、类型名等文本的语言。点选语言即加入优先级，第 1 位是主语言（决定向 TMDB 请求的语言），缺失的字段按顺序回落——回落基于已拉取的翻译数据，不产生额外请求。"
+      >
+        <OrderChips
+          options={COMMON_META_LANGS}
+          extraOptions={extraMetaLangs}
+          moreLabel="语言"
+          value={setting.language_priority}
+          max={3}
+          primaryTag="主语言"
+          onChange={(next) => patch({ language_priority: next })}
+        />
+      </Card>
+      <Card
+        title="内容分级"
+        overriddenBy={overriddenBy?.(["cert_country_priority"])}
+        shell={shellFor?.("内容分级", ["cert_country_priority"])}
+        desc="条目分级（如 PG-13、TV-MA）按顺序取第一个有数据的地区。"
+      >
+        <OrderChips
+          options={COMMON_CERT_COUNTRIES}
+          extraOptions={extraCountries}
+          moreLabel="地区"
+          value={setting.cert_country_priority}
+          max={6}
+          primaryTag=""
+          onChange={(next) => patch({ cert_country_priority: next })}
+        />
+      </Card>
+    </>
+  );
+}
+
+export function ImagesTab({
+  setting,
+  patch,
+  extraImageLangs,
+  effective,
+  overriddenBy,
+  shellFor,
+}: {
+  setting: ScrapeSetting;
+  patch: (changes: Partial<ScrapeSetting>) => void;
+  extraImageLangs: ChipOption[];
+  /** 档位下拉的「跟随环境」提示值；库设置页传全局生效值 */
+  effective: Pick<ScrapeSetting, "poster_size" | "backdrop_size" | "still_size"> | null;
+  overriddenBy?: (keys: (keyof ScrapeSetting)[]) => string[];
+  shellFor?: (title: string, keys: (keyof ScrapeSetting)[]) => CardShell;
+}) {
+  const sizeHint = (value: string, fallback: string) =>
+    value === "" ? `跟随环境变量（当前 ${fallback}）` : value;
+
+  return (
+    <>
+      <Card
+        title="海报"
+        overriddenBy={overriddenBy?.(["poster_mode", "poster_language_priority"])}
+        shell={shellFor?.("海报", ["poster_mode", "poster_language_priority"])}
+        desc="海报和文本一样有语言：中文版、原版、无文字干净版是不同的候选图。你在条目详情页手动选定的图始终优先，不受这里影响。"
+      >
+        <div className="grid gap-2 md:grid-cols-2">
+          {(
+            [
+              {
+                id: "default",
+                title: "TMDB 默认",
+                desc: "与发现页看到的一致，订阅前后海报不跳变（默认）",
+              },
+              {
+                id: "language",
+                title: "按语言优先级挑选",
+                desc: "逐级取第一档有候选图的语言，档内按分辨率与票数排序",
+              },
+            ] as const
+          ).map((mode) => (
+            <label
+              key={mode.id}
+              className={`cursor-pointer rounded-xl border p-3 transition-colors ${
+                setting.poster_mode === mode.id
+                  ? "border-[var(--accent-2)] bg-[var(--accent-soft)]"
+                  : "border-white/[0.08] bg-white/[0.04] hover:bg-white/[0.07]"
+              }`}
+            >
+              <input
+                type="radio"
+                name="poster-mode"
+                className="sr-only"
+                checked={setting.poster_mode === mode.id}
+                onChange={() => patch({ poster_mode: mode.id })}
+              />
+              <span className="block text-ui font-semibold">{mode.title}</span>
+              <span className="mt-0.5 block text-caption text-[var(--text-faint)]">
+                {mode.desc}
+              </span>
+            </label>
+          ))}
+        </div>
+        <div
+          className={`mt-4 ${setting.poster_mode === "language" ? "" : "pointer-events-none opacity-40"}`}
+        >
+          <OrderChips
+            options={COMMON_IMAGE_LANGS}
+            extraOptions={extraImageLangs}
+            moreLabel="语言"
+            value={setting.poster_language_priority}
+            max={4}
+            primaryTag="首选"
+            onChange={(next) => patch({ poster_language_priority: next })}
+          />
+        </div>
+      </Card>
+      <Card
+        title="背景图（fanart）"
+        overriddenBy={overriddenBy?.(["backdrop_language_priority"])}
+        shell={shellFor?.("背景图（fanart）", ["backdrop_language_priority"])}
+        desc="铺在详情页全屏的沉浸底图。「无文字」是没有烧录任何片名文字的干净图——排第 1 位即无文字优先；想要带片名 logo 的横图，把语言排到前面。"
+      >
+        <OrderChips
+          options={COMMON_IMAGE_LANGS}
+          extraOptions={extraImageLangs}
+          moreLabel="语言"
+          value={setting.backdrop_language_priority}
+          max={4}
+          primaryTag="首选"
+          onChange={(next) => patch({ backdrop_language_priority: next })}
+        />
+      </Card>
+      <Card
+        title="质量与门槛"
+        overriddenBy={overriddenBy?.([
+          "poster_min_width",
+          "backdrop_min_width",
+          "poster_size",
+          "backdrop_size",
+          "still_size",
+        ])}
+        shell={shellFor?.("质量与门槛", [
+          "poster_min_width",
+          "backdrop_min_width",
+          "poster_size",
+          "backdrop_size",
+          "still_size",
+        ])}
+        desc="分辨率门槛过滤模糊候选图；质量档位决定下载到本地的图片尺寸，调低可显著节省磁盘，改动后整库刷新会按新档位自动重下。"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.06] pb-3">
+          <div>
+            <span className="text-ui font-medium">最低分辨率门槛</span>
+            <span className="mt-0.5 block text-caption text-[var(--text-faint)]">
+              低于门槛的候选图不选；候选全部不达标时自动放宽
+            </span>
+          </div>
+          <div className="flex items-center gap-2.5 text-sub text-[var(--text-muted)]">
+            {(
+              [
+                ["poster_min_width", "海报"],
+                ["backdrop_min_width", "背景"],
+              ] as const
+            ).map(([key, label]) => (
+              <span key={key} className="flex items-center gap-1.5">
+                {label} ≥
+                <input
+                  type="number"
+                  min={0}
+                  step={100}
+                  className={`${INPUT_CLASS} w-24 tabular-nums`}
+                  value={setting[key]}
+                  onChange={(e) => patch({ [key]: Number(e.target.value) || 0 })}
+                />
+                {/* 0 在输入框里看不出是"不限制"还是"没填"，补一句 */}
+                {setting[key] === 0 && (
+                  <span className="text-caption text-[var(--text-faint)]">不限制</span>
+                )}
+              </span>
+            ))}
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-3 pt-3">
+          <span className="text-ui font-medium">图片质量档位</span>
+          <div className="flex flex-wrap gap-2">
+            {(
+              [
+                ["poster_size", "海报", POSTER_SIZES, effective?.poster_size],
+                ["backdrop_size", "背景", BACKDROP_SIZES, effective?.backdrop_size],
+                ["still_size", "剧照", STILL_SIZES, effective?.still_size],
+              ] as const
+            ).map(([key, label, sizes, fallback]) => (
+              <select
+                key={key}
+                className={INPUT_CLASS}
+                value={setting[key]}
+                title={sizeHint(setting[key], fallback ?? "")}
+                onChange={(e) => patch({ [key]: e.target.value } as Partial<ScrapeSetting>)}
+              >
+                <option value="">
+                  {label} · 跟随环境（{fallback}）
+                </option>
+                {sizes.map((size) => (
+                  <option key={size} value={size}>
+                    {label} · {size}
+                  </option>
+                ))}
+              </select>
+            ))}
+          </div>
+        </div>
+      </Card>
+    </>
+  );
+}
+
 export function ScrapeSettingsSection() {
   const toast = useToast();
   const [view, setView] = useState<ScrapeConfigView | null>(null);
   const [setting, setSetting] = useState<ScrapeSetting | null>(null);
-  const [languages, setLanguages] = useState<LanguageOption[]>([]);
-  const [countries, setCountries] = useState<CountryOption[]>([]);
-  const [tab, setTab] = useState<TabId>("meta");
+  const chipOptions = useScrapeChipOptions();
+  // 各库的覆盖情况：卡片上标「N 个库已覆盖」，避免"在全局改了不生效"的困惑
+  const [libraryOverrides, setLibraryOverrides] = useState<
+    { name: string; keys: string[] }[]
+  >([]);
+  // 展开的卡片标题（同时只开一张）；默认全收起——折叠头已经把当前值摊出来了，
+  // 一屏能扫完全站配置（用户决策 2026-08-30：与库设置页形态完全一致）
+  const [open, setOpen] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
@@ -686,14 +1330,47 @@ export function ScrapeSettingsSection() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载失败，请重试");
     }
-    // 全量表拉不到不阻断（面板回落只显示常用项）
-    listLanguageOptions().then(setLanguages).catch(() => {});
-    listCountryOptions().then(setCountries).catch(() => {});
   }, []);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    // 拉不到不阻断：标注只是可诊断性提示，没有它设置页照常可用
+    listLibraries()
+      .then((libraries) =>
+        setLibraryOverrides(
+          libraries
+            .map((library) => ({
+              name: library.name,
+              keys: Object.keys(library.scrape_overrides ?? {}),
+            }))
+            .filter((entry) => entry.keys.length > 0),
+        ),
+      )
+      .catch(() => {});
+  }, []);
+
+  const shellFor = useCallback(
+    (title: string, keys: (keyof ScrapeSetting)[]): CardShell => ({
+      open: open === title,
+      onToggleOpen: () => setOpen((current) => (current === title ? null : title)),
+      // 全局页没有"跟随/覆盖"这个静默态（它就是被跟随的那一层），折叠头只报
+      // 当前值；点亮与否交给「N 个库已覆盖」徽标表达
+      customized: false,
+      status: setting ? describeScrapeValues(keys, setting) : "",
+    }),
+    [open, setting],
+  );
+
+  const overriddenBy = useCallback(
+    (keys: (keyof ScrapeSetting)[]) =>
+      libraryOverrides
+        .filter((entry) => keys.some((key) => entry.keys.includes(key)))
+        .map((entry) => entry.name),
+    [libraryOverrides],
+  );
 
   const patch = useCallback((changes: Partial<ScrapeSetting>) => {
     setSetting((current) => (current ? { ...current, ...changes } : current));
@@ -716,28 +1393,6 @@ export function ScrapeSettingsSection() {
     }
   }, [setting, toast]);
 
-  const extraMetaLangs = useMemo<ChipOption[]>(
-    () =>
-      languages
-        .filter((l) => !COMMON_META_LANGS.some((c) => c.id.startsWith(`${l.code}-`)))
-        .map((l) => ({ id: l.code, name: l.name || l.english_name || l.code })),
-    [languages],
-  );
-  const extraImageLangs = useMemo<ChipOption[]>(
-    () =>
-      languages
-        .filter((l) => !COMMON_IMAGE_LANGS.some((c) => c.id === l.code))
-        .map((l) => ({ id: l.code, name: l.name || l.english_name || l.code })),
-    [languages],
-  );
-  const extraCountries = useMemo<ChipOption[]>(
-    () =>
-      countries
-        .filter((c) => !COMMON_CERT_COUNTRIES.some((k) => k.id === c.code))
-        .map((c) => ({ id: c.code, name: c.name })),
-    [countries],
-  );
-
   if (error) {
     return (
       <div className="rounded-xl bg-white/[0.03] px-4 py-6 text-center text-ui text-[var(--text-muted)]">
@@ -757,202 +1412,48 @@ export function ScrapeSettingsSection() {
     );
   }
 
-  const sizeHint = (value: string, effective: string) =>
-    value === "" ? `跟随环境变量（当前 ${effective}）` : value;
-
   return (
     <div className="space-y-5">
-      {/* tab 栏：编号即刮削管线的执行顺序 */}
-      <div className="flex gap-1.5 rounded-2xl border border-white/[0.08] bg-white/[0.03] p-1.5">
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            onClick={() => setTab(t.id)}
-            className={`flex flex-1 flex-col items-center gap-px rounded-xl px-3 py-2 transition-colors ${
-              tab === t.id
-                ? "bg-white/[0.12] text-[var(--text)]"
-                : "text-[var(--text-muted)] hover:bg-white/[0.06]"
-            }`}
-          >
-            <span className="text-ui font-semibold">{t.label}</span>
-            <span className="text-micro text-[var(--text-faint)] max-md:hidden">{t.detail}</span>
-          </button>
-        ))}
-      </div>
+      {/* 「可按库覆盖」这件事在分区顶部统一说一句：P4 之后所有字段都能按库
+          覆盖，逐卡贴徽标不区分任何东西，只是噪音（设计文档 §14.5） */}
+      <p className="text-sub leading-relaxed text-[var(--text-muted)]">
+        全站默认的刮削口味。
+        <strong className="font-medium text-[var(--text)]">任意一项</strong>
+        都可以在媒体库的「编辑库 → 刮削设置」里单独覆盖，没被覆盖的库跟随这里。
+      </p>
 
-      {tab === "mirror" ? (
-        <MirrorTab setting={setting} patch={patch} />
-      ) : tab === "naming" ? (
-        <NamingTab setting={setting} patch={patch} />
-      ) : tab === "meta" ? (
-        <>
-          <Card
-            title="元数据语言"
-            desc="标题、简介、类型名等文本的语言。点选语言即加入优先级，第 1 位是主语言（决定向 TMDB 请求的语言），缺失的字段按顺序回落——回落基于已拉取的翻译数据，不产生额外请求。"
-          >
-            <OrderChips
-              options={COMMON_META_LANGS}
-              extraOptions={extraMetaLangs}
-              moreLabel="语言"
-              value={setting.language_priority}
-              max={3}
-              primaryTag="主语言"
-              onChange={(next) => patch({ language_priority: next })}
-            />
-          </Card>
-          <Card
-            title="内容分级"
-            desc="条目分级（如 PG-13、TV-MA）按顺序取第一个有数据的地区。"
-          >
-            <OrderChips
-              options={COMMON_CERT_COUNTRIES}
-              extraOptions={extraCountries}
-              moreLabel="地区"
-              value={setting.cert_country_priority}
-              max={6}
-              primaryTag=""
-              onChange={(next) => patch({ cert_country_priority: next })}
-            />
-          </Card>
-        </>
-      ) : (
-        <>
-          <Card
-            title="海报"
-            perLibrary
-            desc="海报和文本一样有语言：中文版、原版、无文字干净版是不同的候选图。你在条目详情页手动选定的图始终优先，不受这里影响。"
-          >
-            <div className="grid gap-2 md:grid-cols-2">
-              {(
-                [
-                  {
-                    id: "default",
-                    title: "TMDB 默认",
-                    desc: "与发现页看到的一致，订阅前后海报不跳变（默认）",
-                  },
-                  {
-                    id: "language",
-                    title: "按语言优先级挑选",
-                    desc: "逐级取第一档有候选图的语言，档内按分辨率与票数排序",
-                  },
-                ] as const
-              ).map((mode) => (
-                <label
-                  key={mode.id}
-                  className={`cursor-pointer rounded-xl border p-3 transition-colors ${
-                    setting.poster_mode === mode.id
-                      ? "border-[var(--accent-2)] bg-[var(--accent-soft)]"
-                      : "border-white/[0.08] bg-white/[0.04] hover:bg-white/[0.07]"
-                  }`}
-                >
-                  <input
-                    type="radio"
-                    name="poster-mode"
-                    className="sr-only"
-                    checked={setting.poster_mode === mode.id}
-                    onChange={() => patch({ poster_mode: mode.id })}
-                  />
-                  <span className="block text-ui font-semibold">{mode.title}</span>
-                  <span className="mt-0.5 block text-caption text-[var(--text-faint)]">
-                    {mode.desc}
-                  </span>
-                </label>
-              ))}
-            </div>
-            <div
-              className={`mt-4 ${setting.poster_mode === "language" ? "" : "pointer-events-none opacity-40"}`}
-            >
-              <OrderChips
-                options={COMMON_IMAGE_LANGS}
-                extraOptions={extraImageLangs}
-                moreLabel="语言"
-                value={setting.poster_language_priority}
-                max={4}
-                primaryTag="首选"
-                onChange={(next) => patch({ poster_language_priority: next })}
-              />
-            </div>
-          </Card>
-          <Card
-            title="背景图（fanart）"
-            perLibrary
-            desc="铺在详情页全屏的沉浸底图。「无文字」是没有烧录任何片名文字的干净图——排第 1 位即无文字优先；想要带片名 logo 的横图，把语言排到前面。"
-          >
-            <OrderChips
-              options={COMMON_IMAGE_LANGS}
-              extraOptions={extraImageLangs}
-              moreLabel="语言"
-              value={setting.backdrop_language_priority}
-              max={4}
-              primaryTag="首选"
-              onChange={(next) => patch({ backdrop_language_priority: next })}
-            />
-          </Card>
-          <Card
-            title="质量与门槛"
-            desc="分辨率门槛过滤模糊候选图；质量档位决定下载到本地的图片尺寸，调低可显著节省磁盘，改动后整库刷新会按新档位自动重下。"
-          >
-            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.06] pb-3">
-              <div>
-                <span className="text-ui font-medium">最低分辨率门槛</span>
-                <span className="mt-0.5 block text-caption text-[var(--text-faint)]">
-                  低于门槛的候选图不选（0 = 不限制）；候选全部不达标时自动放宽
-                </span>
-              </div>
-              <div className="flex items-center gap-2.5 text-sub text-[var(--text-muted)]">
-                海报 ≥
-                <input
-                  type="number"
-                  min={0}
-                  step={100}
-                  className={`${INPUT_CLASS} w-24 tabular-nums`}
-                  value={setting.poster_min_width}
-                  onChange={(e) => patch({ poster_min_width: Number(e.target.value) || 0 })}
-                />
-                背景 ≥
-                <input
-                  type="number"
-                  min={0}
-                  step={100}
-                  className={`${INPUT_CLASS} w-24 tabular-nums`}
-                  value={setting.backdrop_min_width}
-                  onChange={(e) => patch({ backdrop_min_width: Number(e.target.value) || 0 })}
-                />
-              </div>
-            </div>
-            <div className="flex flex-wrap items-center justify-between gap-3 pt-3">
-              <span className="text-ui font-medium">图片质量档位</span>
-              <div className="flex flex-wrap gap-2">
-                {(
-                  [
-                    ["poster_size", "海报", POSTER_SIZES, view?.effective.poster_size],
-                    ["backdrop_size", "背景", BACKDROP_SIZES, view?.effective.backdrop_size],
-                    ["still_size", "剧照", STILL_SIZES, view?.effective.still_size],
-                  ] as const
-                ).map(([key, label, sizes, effective]) => (
-                  <select
-                    key={key}
-                    className={INPUT_CLASS}
-                    value={setting[key]}
-                    title={sizeHint(setting[key], effective ?? "")}
-                    onChange={(e) => patch({ [key]: e.target.value } as Partial<ScrapeSetting>)}
-                  >
-                    <option value="">
-                      {label} · 跟随环境（{effective}）
-                    </option>
-                    {sizes.map((size) => (
-                      <option key={size} value={size}>
-                        {label} · {size}
-                      </option>
-                    ))}
-                  </select>
-                ))}
-              </div>
-            </div>
-          </Card>
-        </>
-      )}
+      {/* 分节 + 手风琴卡片：与「编辑库 → 刮削设置」同一套结构与控件。
+          分节顺序沿用刮削管线的先后，只为读起来顺——四组之间没有依赖，
+          所以不编号（编号会把并列分组伪装成必须按序完成的向导）。 */}
+      <ScrapeSection label="元数据">
+        <MetaTab
+          setting={setting}
+          patch={patch}
+          extraMetaLangs={chipOptions.metaLangs}
+          extraCountries={chipOptions.certCountries}
+          overriddenBy={overriddenBy}
+          shellFor={shellFor}
+        />
+      </ScrapeSection>
+
+      <ScrapeSection label="图片">
+        <ImagesTab
+          setting={setting}
+          patch={patch}
+          extraImageLangs={chipOptions.imageLangs}
+          effective={view?.effective ?? null}
+          overriddenBy={overriddenBy}
+          shellFor={shellFor}
+        />
+      </ScrapeSection>
+
+      <ScrapeSection label="命名与整理">
+        <NamingTab setting={setting} patch={patch} overriddenBy={overriddenBy} shellFor={shellFor} />
+      </ScrapeSection>
+
+      <ScrapeSection label="目录写入">
+        <MirrorTab setting={setting} patch={patch} overriddenBy={overriddenBy} shellFor={shellFor} />
+      </ScrapeSection>
 
       <div className="flex items-center justify-between gap-3">
         <p className="text-caption text-[var(--text-faint)]">

@@ -160,8 +160,7 @@ class LibraryConfigService:
         unknown = sorted(set(raw) - LIBRARY_OVERRIDABLE)
         if unknown:
             raise BadRequestException(
-                f"这些设置不支持按库覆盖：{'、'.join(unknown)}"
-                "（选图与语言的产物跨库共享一份，只能在全局设置里改）"
+                f"这些设置不支持按库覆盖：{'、'.join(unknown)}（不是刮削设置里的字段）"
             )
         overrides = sanitize_overrides(raw)
         if not overrides:

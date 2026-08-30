@@ -1762,6 +1762,16 @@ async def _ingest_entry(
                 "无法自动路由入库；请先到「媒体库」创建",
             )
 
+    # 刮削归属库（设计文档 §14）：目标库要等识别完才路由得出来，所以在这里
+    # 回填而不是建档时传。本轮建档已按全局设置拉过文本档案，归属库若另有
+    # 语言口味，靠新条目 next_refresh_at=NULL（立即到期）的首轮刷新自愈；
+    # 图片由随后的 ensure_assets 下载，那时读的已经是归属库的设置了
+    if dest_library is not None:
+        from movieclaw_api.services.scrape_config import assign_scrape_library
+
+        if assign_scrape_library(item, dest_library):
+            session.add(item)
+
     if job_context is not None and dest_library is not None:
         assert dest_library.id is not None
         while not await job_context.acquire_target_resource("library", dest_library.id):

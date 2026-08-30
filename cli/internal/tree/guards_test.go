@@ -192,6 +192,7 @@ func TestDomainCommandSets(t *testing.T) {
 			"library.items.preview-transfer",
 			"library.items.refresh-metadata",
 			"library.items.reidentify",
+			"library.items.set-scrape-library",
 			"library.items.transfer",
 			"library.list",
 			"library.list-routing-options",

@@ -322,8 +322,8 @@ export interface LibraryPayload {
   auto_clear_missing?: boolean;
   /** 是否启用实时文件监控；不传=不改动（新建时默认开） */
   realtime_watch?: boolean;
-  /** 库级刮削覆盖（命名模板与目录写入细项）；不传=不改动，空对象=清空覆盖。
-   *  选图与语言不支持按库覆盖——它们的产物跨库共享一份 */
+  /** 库级刮削覆盖（「刮削与整理」的全部字段）；不传=不改动，空对象=清空覆盖。
+   *  语言与选图这类产物挂全局条目的设置，按条目的刮削归属库生效 */
   scrape_overrides?: Record<string, unknown>;
 }
 
@@ -637,6 +637,23 @@ export function selectArtwork(
     request<ApiEnvelope<{ locked: boolean }>>(
       `/libraries/${libraryId}/items/${mediaItemId}/artwork/select`,
       { method: "POST", body: JSON.stringify({ kind, file_path: filePath }) },
+    ),
+  );
+}
+
+/**
+ * 改条目的刮削归属库（决定这条目按哪个库的语言/选图设置刮）。
+ * `targetLibraryId` 传 null = 恢复自动，由系统按文件/订阅重新推断。
+ */
+export function setItemScrapeLibrary(
+  libraryId: number,
+  mediaItemId: number,
+  targetLibraryId: number | null,
+): Promise<{ scrape_library_id: number | null }> {
+  return unwrap(
+    request<ApiEnvelope<{ scrape_library_id: number | null }>>(
+      `/libraries/${libraryId}/items/${mediaItemId}/scrape-library`,
+      { method: "POST", body: JSON.stringify({ target_library_id: targetLibraryId }) },
     ),
   );
 }
@@ -1015,6 +1032,13 @@ export interface LibraryItemDetail {
   scraping: boolean;
   /** 刮削当前阶段（与整库刷新同一套文案）；没在刮为 null */
   scraping_phase: string | null;
+  /**
+   * 刮削归属库（docs/design/scrape-customization.md §14）：元数据与图片的产物
+   * 挂全局条目，一条目只能有一套语言/选图口味，由这个库说了算。文件散在两个
+   * 库时，这里显示的就是"哪个库赢了"。null = 无归属，跟全局设置。
+   */
+  scrape_library_id: number | null;
+  scrape_library_name: string | null;
 }
 
 /** 剧集分集区的一集（季集结构 + 本地分集刮削 + TMDB 兜底的合并结果）。 */

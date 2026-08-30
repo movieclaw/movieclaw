@@ -1496,11 +1496,16 @@ function milestonesOf(
   }
 
   // 4. 下载
-  if (w.downloaded_at) {
+  // 里程碑链是顺序的：入库发生过就说明下载必然已经完成。后端把 downloaded
+  // 这一档折叠掉了（文件落盘即整理入库，``wanted_item.downloaded_at`` 至今
+  // 没有任何写入方），只看它会让这一格在入库之后仍然停在"进行中"，与下一格
+  // 的"已整理入库"自相矛盾——用户据此以为没入库
+  const downloadedAt = w.downloaded_at ?? w.imported_at;
+  if (downloadedAt) {
     M.push({
       lab: "下载",
       state: "done",
-      time: formatRelativeTime(w.downloaded_at),
+      time: formatRelativeTime(downloadedAt),
       det: "全部落盘",
     });
   } else if (w.grabbed_at) {

@@ -60,6 +60,7 @@ from movieclaw_api.schemas.library import (
     ReviewResolvePayload,
     ScanProgressView,
     ScanResultView,
+    ScrapeLibraryPayload,
     SeasonEpisodesView,
     SubtitleCueView,
     SubtitleDeleteResultView,
@@ -142,6 +143,7 @@ from movieclaw_api.services.media_discover import get_tmdb_client
 from movieclaw_api.services.media_library import MediaLibraryService
 from movieclaw_api.services.media_server_notify import notify_media_server_refresh
 from movieclaw_api.services.playback import warmup as playback_warmup
+from movieclaw_api.services.scrape_config import resolve_scrape_library
 from movieclaw_api.services.subscription import SubscriptionService
 from movieclaw_api.services.title_discovery import parse_title_ref
 from movieclaw_db.engine import get_database, get_session
@@ -1491,6 +1493,54 @@ async def select_artwork_route(
     return ok({"locked": payload.file_path is not None}, message=message)
 
 
+@router.post(
+    "/{library_id}/items/{media_item_id}/scrape-library",
+    response_model=ApiResponse[dict],
+    summary="改条目的刮削归属库（决定这条目按哪个库的语言/选图设置刮）",
+    operation_id="library.items.set-scrape-library",
+    dependencies=[Depends(require_admin)],
+)
+async def set_item_scrape_library(
+    library_id: int,
+    media_item_id: int,
+    payload: ScrapeLibraryPayload,
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[dict]:
+    """元数据与图片的产物挂全局条目，一条目只有一套口味，由归属库决定
+    （docs/design/scrape-customization.md §14）。
+
+    ``target_library_id=null`` = 恢复自动：清空后由系统按"在位文件所属库 →
+    订阅目标库"重新推断。改完**不自动重刮**——重刮要重下全部图片，是用户该自己
+    按的按钮（详情页的「刷新元数据」），这里只返回提示。
+    """
+    await LibraryConfigService(session).get(library_id)  # 404 检查
+    await _item_rows(session, library_id, media_item_id)  # 404 检查
+    item = await session.get(MediaItem, media_item_id)
+    if item is None:
+        raise NotFoundException(f"媒体条目不存在：id={media_item_id}")
+
+    if payload.target_library_id is None:
+        item.scrape_library_id = None
+        session.add(item)
+        await session.commit()
+        return ok({"scrape_library_id": None}, message="已恢复自动判定，下次刮削时重新推断归属库")
+
+    target = await LibraryConfigService(session).get(payload.target_library_id)
+    if target.kind != item.kind:
+        # 类型不符的库，其刮削设置套到本条目上没有意义（电影库的模板/口味
+        # 不是给剧集用的），直接拒绝而不是静默忽略
+        raise BadRequestException(
+            f"媒体库「{target.name}」的类型与本条目不一致，不能作为刮削归属库"
+        )
+    item.scrape_library_id = target.id
+    session.add(item)
+    await session.commit()
+    return ok(
+        {"scrape_library_id": target.id},
+        message=f"刮削归属已改为「{target.name}」；刷新元数据后按该库的设置重刮",
+    )
+
+
 # ---------------------------------------------------------------------------
 # 整理（存量规范化）：预览 / 执行
 # ---------------------------------------------------------------------------
@@ -1895,6 +1945,10 @@ async def get_library_item(
         seasons = sorted({s for s in meta_seasons if s > 0} | owned_seasons)
 
     assert item.id is not None
+    # 归属库解析顺带固化推断结果（设计文档 §14）：详情页显示的必须是刮削
+    # 真正会用的那个库，而不是"列还空着所以显示跟全局"这种误导
+    scrape_library = await resolve_scrape_library(session, item)
+    await session.commit()
     file_views = [_file_view(row, bundle.external_subtitles.get(row.id or -1, [])) for row in rows]
     entry_dirs = bundle.entry_dirs
     if not principal.is_admin:
@@ -1924,6 +1978,8 @@ async def get_library_item(
             # 知道这部片还在刮、正在做什么，不依赖发起刷新的那个标签页还开着
             scraping=media_scrape.is_scraping(media_item_id),
             scraping_phase=media_scrape.scraping_phase(media_item_id),
+            scrape_library_id=scrape_library.id if scrape_library else None,
+            scrape_library_name=scrape_library.name if scrape_library else None,
         )
     )
 

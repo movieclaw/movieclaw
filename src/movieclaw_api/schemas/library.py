@@ -42,9 +42,9 @@ class LibraryPayload(BaseModel):
     scrape_overrides: dict | None = Field(
         default=None,
         description=(
-            "库级刮削偏好覆盖（命名模板与目录写入细项）；"
+            "库级刮削偏好覆盖（语言/选图/命名/目录写入，即「刮削与整理」的全部字段）；"
             "不传=不改动，空对象=清空覆盖回到全跟全局。"
-            "选图与语言不支持按库覆盖：它们的产物跨库共享一份"
+            "语言与选图这类产物挂全局条目的设置，按条目的**刮削归属库**生效"
         ),
     )
     realtime_watch: bool | None = Field(
@@ -557,6 +557,16 @@ class LibraryItemDetailView(BaseModel):
     # 阶段文案与整库刷新同一套（拉取 TMDB 档案 / 写入元数据 / 下载图片 / …）
     scraping: bool = Field(default=False, description="该条目正在后台刮削元数据")
     scraping_phase: str | None = Field(default=None, description="刮削当前阶段；没在刮为 null")
+    # 刮削归属库（docs/design/scrape-customization.md §14）：元数据与图片的
+    # 产物挂全局条目，一条目只能有一套语言/选图口味，由归属库决定。同一条目
+    # 的文件散在两个库时，这里显示的就是"哪个库说了算"——不摆出来用户无法
+    # 解释"为什么这部片没跟我的动漫库设置"
+    scrape_library_id: int | None = Field(
+        default=None, description="刮削归属库 id；null=无归属，跟全局设置"
+    )
+    scrape_library_name: str | None = Field(
+        default=None, description="刮削归属库名；null=无归属，跟全局设置"
+    )
 
 
 class EpisodeView(BaseModel):
@@ -624,6 +634,18 @@ class ArtworkSelectPayload(BaseModel):
     kind: Literal["poster", "backdrop"] = Field(description="poster=海报 / backdrop=背景图")
     file_path: str | None = Field(
         default=None, description="TMDB 图片路径；null=解锁并恢复自动选图"
+    )
+
+
+class ScrapeLibraryPayload(BaseModel):
+    """改条目的刮削归属库；``target_library_id=null`` 表示恢复自动（清空后重新推断）。
+
+    字段不叫 ``library_id``：路径上已经有一个同名参数（条目所在的库），重名会
+    让生成式 CLI 的两个参数互相覆盖（click 会直接告警）。
+    """
+
+    target_library_id: int | None = Field(
+        default=None, description="新的刮削归属库 id；null=清空，由系统按文件/订阅重新推断"
     )
 
 

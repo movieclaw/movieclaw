@@ -13,6 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import httpx
+import pytest
 import pytest_asyncio
 from fastapi import BackgroundTasks
 from sqlmodel import select
@@ -27,9 +28,11 @@ from movieclaw_api.api.routes.libraries import (
     get_item_artwork,
     get_library_item,
     reidentify_library_item,
+    set_item_scrape_library,
 )
 from movieclaw_api.core.config import get_settings
-from movieclaw_api.exceptions import NotFoundException
+from movieclaw_api.exceptions import BadRequestException, NotFoundException
+from movieclaw_api.schemas.library import ScrapeLibraryPayload
 from movieclaw_api.services.auth import Principal
 from movieclaw_api.services.library.nfo import read_entry_metadata, read_tmdb_id
 from movieclaw_api.services.library.resolve import ResolveOutcome
@@ -1568,3 +1571,85 @@ async def test_actor_thumb_missing_only_when_tmdb_has_no_profile(db, tmp_path) -
         ("线上演员甲", True),
         ("线上演员乙", False),
     ]
+
+
+# ---------------------------------------------------------------------------
+# 刮削归属库（docs/design/scrape-customization.md §14）
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_item_detail_reports_and_pins_scrape_library(db, tmp_path) -> None:
+    """详情页给出的归属库是**推断并固化后**的真实生效值，不是"列为空所以跟全局"。"""
+    root, _entry, _video = _make_movie_entry(tmp_path)
+    async with db.session() as session:
+        library = await LibraryRepository(session).create(
+            name="电影库", kind="movie", root_paths=[str(root)]
+        )
+    assert (await scan_library(library.id)).identified == 1
+
+    async with db.session() as session:
+        item = (
+            (await session.execute(select(MediaItem).where(MediaItem.tmdb_id == 300)))
+            .scalars()
+            .one()
+        )
+        # 扫描链路建档时就该把归属钉上；即便没钉，详情页读取也会推断出同一个库
+        view = (await get_library_item(library.id, item.id, _ADMIN, session)).data
+
+    assert view.scrape_library_id == library.id
+    assert view.scrape_library_name == "电影库"
+
+    async with db.session() as session:
+        pinned = await session.get(MediaItem, view.media_item_id)
+        assert pinned.scrape_library_id == library.id
+
+
+@pytest.mark.asyncio
+async def test_set_item_scrape_library_switches_and_resets(db, tmp_path) -> None:
+    """切换归属库：改到同类型的另一个库可以，类型不符拒绝，null 恢复自动。"""
+    root, _entry, _video = _make_movie_entry(tmp_path)
+    async with db.session() as session:
+        library = await LibraryRepository(session).create(
+            name="电影库", kind="movie", root_paths=[str(root)]
+        )
+        other = await LibraryRepository(session).create(
+            name="4K 电影库", kind="movie", root_paths=[str(tmp_path / "uhd")]
+        )
+        tv = await LibraryRepository(session).create(
+            name="剧集库", kind="tv", root_paths=[str(tmp_path / "tv")]
+        )
+    assert (await scan_library(library.id)).identified == 1
+
+    async with db.session() as session:
+        item = (
+            (await session.execute(select(MediaItem).where(MediaItem.tmdb_id == 300)))
+            .scalars()
+            .one()
+        )
+        item_id = item.id
+
+        resp = await set_item_scrape_library(
+            library.id, item_id, ScrapeLibraryPayload(target_library_id=other.id), session
+        )
+        assert resp.data["scrape_library_id"] == other.id
+
+    async with db.session() as session:
+        assert (await session.get(MediaItem, item_id)).scrape_library_id == other.id
+
+    # 类型不符的库不能作为归属（电影库的口味不该套到剧集上，反之亦然）
+    async with db.session() as session:
+        with pytest.raises(BadRequestException):
+            await set_item_scrape_library(
+                library.id, item_id, ScrapeLibraryPayload(target_library_id=tv.id), session
+            )
+
+    # null = 恢复自动：清空后由推断接管（文件都在电影库，于是又回到它）
+    async with db.session() as session:
+        await set_item_scrape_library(
+            library.id, item_id, ScrapeLibraryPayload(target_library_id=None), session
+        )
+    async with db.session() as session:
+        assert (await session.get(MediaItem, item_id)).scrape_library_id is None
+        view = (await get_library_item(library.id, item_id, _ADMIN, session)).data
+    assert view.scrape_library_id == library.id

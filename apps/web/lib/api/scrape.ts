@@ -36,8 +36,26 @@ export interface ScrapeSetting {
 }
 
 /** 可按库覆盖的字段（与后端 scrape_config.LIBRARY_OVERRIDABLE 一致）。
- *  选图与语言不在其中：它们的产物跨库共享一份。 */
-export const LIBRARY_OVERRIDABLE_KEYS = [
+ *
+ * 解析路径分两类（docs/design/scrape-customization.md §14.4）：
+ * - 条目态：产物挂全局条目（一份 media_metadata、按条目 id 存一份的图片），
+ *   按条目的**刮削归属库**生效；
+ * - 目录态：产物落在各库自己的目录树里，按**文件所在库**生效。
+ * 界面上不区分这两类（用户只关心"这个库怎么刮"），但文案要说清楚生效范围。 */
+export const ITEM_SCOPED_KEYS = [
+  "language_priority",
+  "cert_country_priority",
+  "poster_mode",
+  "poster_language_priority",
+  "backdrop_language_priority",
+  "poster_min_width",
+  "backdrop_min_width",
+  "poster_size",
+  "backdrop_size",
+  "still_size",
+] as const;
+
+export const DIR_SCOPED_KEYS = [
   "naming_entry_dir",
   "naming_movie_file",
   "naming_season_dir",
@@ -46,6 +64,8 @@ export const LIBRARY_OVERRIDABLE_KEYS = [
   "mirror_nfo",
   "mirror_episode_thumbs",
 ] as const;
+
+export const LIBRARY_OVERRIDABLE_KEYS = [...ITEM_SCOPED_KEYS, ...DIR_SCOPED_KEYS] as const;
 
 export type LibraryOverridableKey = (typeof LIBRARY_OVERRIDABLE_KEYS)[number];
 

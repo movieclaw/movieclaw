@@ -202,14 +202,19 @@ async def fetch_media_profile(
     release_date = data.get("release_date") or data.get("first_air_date") or ""
 
     translations = _translation_index(data)
-    # 标题回落：主语言没有翻译时（TMDB 会静默退回原名），按优先级取
-    # 下一语言的译名。主语言有翻译时 data 里的 title 就是它，不用动
-    if not _translation_text(translations, primary, "title", "name"):
+    # 标题回落：主语言没有翻译时（TMDB 会静默退回原名），先用**主语言同地区**
+    # 的 alternative_titles 补位，再按优先级取下一语言的译名。
+    # 判据要求 title 与原名相等——这才是"确实退回了原名"的证据。只看
+    # translations 里有没有主语言条目不够：载荷里译名缺席、而顶层 title 已经
+    # 是译名的情况存在，那时 title 是对的，任何回落都是把好数据换成差数据。
+    if title == original_title and not _translation_text(translations, primary, "title", "name"):
+        fallback_title = _alt_region_title(data, primary)
         for lang in languages[1:]:
-            fallback_title = _translation_text(translations, lang, "title", "name")
             if fallback_title:
-                title = fallback_title
                 break
+            fallback_title = _translation_text(translations, lang, "title", "name")
+        if fallback_title:
+            title = fallback_title
 
     seasons: list[SeasonProfile] = []
     if kind is MediaKind.TV:
@@ -722,6 +727,35 @@ async def _fetch_season(
         poster_path=data.get("poster_path"),
         episodes=episodes,
     )
+
+
+def _alt_region_title(data: dict, language_tag: str) -> str | None:
+    """``alternative_titles`` 里该语言标签对应地区的别名（``zh-CN`` → ``CN``）。
+
+    TMDB 的「译名」（translations）与「地区别名」（alternative_titles）是两套
+    独立维护的数据，缺一方是常态。华语内容尤其典型：大量条目的 ``zh-CN``
+    译名槽是空的，API 于是静默退回原名（英文），而大陆通行译名其实好端端
+    地躺在 ``alternative_titles`` 的 ``CN`` 区里。实测 8 部这类电影，7 部能
+    在这里取到译名，且给出的都是大陆通行译名——而回落到 ``zh-SG`` 拿到的
+    是新马/港台译名（「捍卫战士：独行侠」而非「壮志凌云2：独行侠」）。
+
+    只给**主语言**补位、且只在主语言没有译名时：别名是用户投稿，质量不如
+    译名，用来补"用户真正想要的那个语言"的缺是划算的；次位语言本来就是
+    妥协档，再翻它的别名收益有限，故不做——保守一点，够解决问题即可。
+
+    没有地区段的标签（如 ``zh``）无从定位地区，返回 None。
+    """
+    region = language_tag.partition("-")[2].upper()
+    if not region:
+        return None
+    alt = data.get("alternative_titles") or {}
+    # TMDB 的接口差异：电影用 "titles" 键，剧集用 "results" 键
+    for entry in alt.get("titles") or alt.get("results") or []:
+        if entry.get("iso_3166_1") == region:
+            value = (entry.get("title") or "").strip()
+            if value:
+                return value
+    return None
 
 
 def _build_aliases(data: dict, title: str, original_title: str) -> list[str]:

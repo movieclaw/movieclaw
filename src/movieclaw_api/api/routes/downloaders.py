@@ -172,6 +172,7 @@ async def submit_download(
         from movieclaw_api.services.library.routing import route_for_item
         from movieclaw_api.services.media_discover import get_tmdb_client
         from movieclaw_api.services.media_library import MediaLibraryService
+        from movieclaw_api.services.scrape_config import assign_scrape_library
         from movieclaw_media.models import MediaKind
 
         if payload.media_kind is None or payload.tmdb_id is None or not payload.title:
@@ -185,6 +186,9 @@ async def submit_download(
         route_reason = route.reason
         if library is None:
             raise BadRequestException("没有可用的目标媒体库，无法启用自动入库；请先创建媒体库")
+        # 目标库要等条目建好才路由得出来，所以归属库在这里回填（设计文档 §14）
+        if assign_scrape_library(manual_item, library):
+            session.add(manual_item)
         decision = await resolve_save_path(
             session,
             library,

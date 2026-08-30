@@ -59,7 +59,7 @@ from movieclaw_api.services.library.nfo import (
 from movieclaw_api.services.library.sort_key import title_initial, title_sort_key
 from movieclaw_api.services.media_probe import probe_media
 from movieclaw_api.services.media_scrape import asset_version, file_version
-from movieclaw_api.services.scrape_config import effective_language
+from movieclaw_api.services.scrape_config import effective_language, scrape_setting_for_item
 from movieclaw_db.models import FileState, Library, LibraryFile, MediaItem, MediaSeason, utcnow
 from movieclaw_db.repositories.library_repo import LibraryRepository
 from movieclaw_media.models import MediaKind
@@ -631,7 +631,7 @@ async def layered_item_meta(
     if local_meta is None:
         local_meta = await _db_meta(session, item)
     if local_meta is None:
-        local_meta = await _tmdb_fallback_meta(item)
+        local_meta = await _tmdb_fallback_meta(session, item)
         if item.id is not None:
             from movieclaw_api.services.media_scrape import scrape_media_item
 
@@ -859,7 +859,7 @@ async def build_season_episodes(
 
     # 条目还没刮削过（该季在库里毫无集数据）才实时兜底，顺带触发后台刮削自愈
     if not meta_by_number and infos:
-        await _fill_from_tmdb_season(item, season_number, infos)
+        await _fill_from_tmdb_season(session, item, season_number, infos)
         if item.id is not None:
             from movieclaw_api.services.media_scrape import scrape_media_item
 
@@ -895,7 +895,7 @@ async def build_season_episodes(
 
 
 async def _fill_from_tmdb_season(
-    item: MediaItem, season_number: int, infos: list[EpisodeInfo]
+    session: AsyncSession, item: MediaItem, season_number: int, infos: list[EpisodeInfo]
 ) -> None:
     """TMDB 分季详情兜底：只填空缺字段，绝不覆盖本地刮削成果。失败静默
     （分集区退化为无剧照/无简介，不阻断）。"""
@@ -903,15 +903,18 @@ async def _fill_from_tmdb_season(
     from movieclaw_api.services.media_discover import get_tmdb_client
 
     settings = get_settings()
+    # 语言按条目的刮削归属库（设计文档 §14）——缓存键必须带上它，否则动漫库
+    # 与剧集库的条目会互相串味（同一 tmdb_id 缓存一份，先访问的语言说了算）
+    language = effective_language(await scrape_setting_for_item(session, item))
     try:
         # 与条目展示信息同一套持久缓存：分季数据首访之后秒开
         data = await _get_display_cache().get_or_fetch(
-            f"season:{item.tmdb_id}:{season_number}",
+            f"season:{item.tmdb_id}:{season_number}:{language}",
             fresh_ttl=_DISPLAY_CACHE_FRESH_TTL,
             stale_ttl=_DISPLAY_CACHE_STALE_TTL,
             factory=lambda: get_tmdb_client().get(
                 f"tv/{item.tmdb_id}/season/{season_number}",
-                {"language": effective_language()},
+                {"language": language},
             ),
         )
     except Exception as exc:  # noqa: BLE001 -- 兜底信息拉不到不阻断
@@ -1013,7 +1016,7 @@ async def _db_meta(session: AsyncSession, item: MediaItem) -> EntryMetadata | No
     return meta if meta.has_content() else None
 
 
-async def _tmdb_fallback_meta(item: MediaItem) -> EntryMetadata | None:
+async def _tmdb_fallback_meta(session: AsyncSession, item: MediaItem) -> EntryMetadata | None:
     """本地无刮削 NFO 时的展示兜底：TMDB 实时拉简介/评分/片长/演职员。
 
     一次 append_to_response=credits 请求拿全；网络失败返回 None（页面退回
@@ -1026,15 +1029,17 @@ async def _tmdb_fallback_meta(item: MediaItem) -> EntryMetadata | None:
 
     settings = get_settings()
     kind = _Kind(item.kind)
+    # 同 _fill_from_tmdb_season：语言按归属库，缓存键带上语言避免跨库串味
+    language = effective_language(await scrape_setting_for_item(session, item))
     try:
         # 经持久缓存（SWR）：首次访问后同条目秒开，过期先回旧值后台刷新
         data = await _get_display_cache().get_or_fetch(
-            f"meta:{kind.value}:{item.tmdb_id}",
+            f"meta:{kind.value}:{item.tmdb_id}:{language}",
             fresh_ttl=_DISPLAY_CACHE_FRESH_TTL,
             stale_ttl=_DISPLAY_CACHE_STALE_TTL,
             factory=lambda: get_tmdb_client().get(
                 f"{kind.value}/{item.tmdb_id}",
-                {"language": effective_language(), "append_to_response": "credits"},
+                {"language": language, "append_to_response": "credits"},
             ),
         )
     except Exception as exc:  # noqa: BLE001 -- 兜底信息拉不到不阻断详情页
