@@ -606,7 +606,7 @@ async def test_schedule_failure_is_isolated_per_root(db, tmp_path, monkeypatch) 
 
 async def test_ingest_apply_watches_incremental_and_first_time_catchup(tmp_path) -> None:
     """监听导入差量重建：只有**初次**纳入的目录进补扫名单；未变目录零成本；
-    真实事件仍能送达（handler 挂接正确）。"""
+    事件经观察者分发线程仍能送达（handler 挂接正确）。"""
     pytest.importorskip("watchdog")
     d1 = tmp_path / "watch1"
     d2 = tmp_path / "watch2"
@@ -628,16 +628,15 @@ async def test_ingest_apply_watches_incremental_and_first_time_catchup(tmp_path)
         assert await asyncio.to_thread(watcher._apply_watches, [str(d2)]) == set()
         assert watcher.watched_keys() == {str(d2)}
 
-        # 真实事件送达：d2 里落文件 → 队列收到该源目录标识
-        (d2 / "Some.Movie.2020.mkv").write_bytes(b"x")
-        deadline = time_mod.monotonic() + 10
-        got = None
-        while time_mod.monotonic() < deadline:
-            try:
-                got = watcher._queue.get_nowait()
-                break
-            except asyncio.QueueEmpty:
-                await asyncio.sleep(0.05)
+        # 挂接验证：合成事件投进观察者的分发队列 → 仍走 watchdog 的
+        # dispatch 线程与 handler 注册表（拆 d1 时误拆 d2 的挂接会在此变红），
+        # 但不等真实 fs 事件——满载机器上 FSEvents 送达可超 10 秒，偶发超时
+        from watchdog.events import FileCreatedEvent
+
+        _handler, d2_watch = watcher._entries[str(d2)]
+        event = FileCreatedEvent(str(d2 / "Some.Movie.2020.mkv"))
+        watcher._observer.event_queue.put((event, d2_watch))
+        got = await asyncio.wait_for(watcher._queue.get(), timeout=10)
         assert got == str(d2)
     finally:
         await asyncio.to_thread(watcher._stop_observer)
