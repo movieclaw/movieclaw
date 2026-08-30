@@ -251,10 +251,57 @@ const TABS = [
 
 type TabId = (typeof TABS)[number]["id"];
 
+/**
+ * 卡片级的「跟随全局 ⇄ 自定义」三态壳（只在库设置页出现，全局设置页不传）。
+ *
+ * 为什么是**卡片级**而不是整组一个开关：一个 tab 里的几张卡片管的是互相独立的
+ * 设置（元数据 tab 里语言与分级各管各的），整组一个开关会让"只覆盖了语言"的库
+ * 把分级也显示成已自定义——用户看到的状态是错的。而卡片内部则相反：排序芯片是
+ * 有序列表，逐项三态没有意义，只能整张卡一起跟随或一起自定义。
+ */
+export interface CardFollowState {
+  custom: boolean;
+  /** 全局当前值的可读摘要，做对照 */
+  globalSummary: string;
+  onToggle: (custom: boolean) => void;
+}
+
+function CardFollowSwitch({ follow }: { follow: CardFollowState }) {
+  return (
+    <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/[0.08] bg-white/[0.03] px-3.5 py-2.5">
+      <span className="min-w-0 text-caption text-[var(--text-faint)]">
+        全局：{follow.globalSummary}
+      </span>
+      <div className="flex shrink-0 gap-1">
+        {(
+          [
+            [false, "跟随全局"],
+            [true, "自定义"],
+          ] as const
+        ).map(([option, label]) => (
+          <button
+            key={label}
+            type="button"
+            onClick={() => follow.onToggle(option)}
+            className={`rounded-lg px-2.5 py-1 text-caption transition-colors ${
+              follow.custom === option
+                ? "bg-[var(--accent-soft)] text-[var(--text)]"
+                : "text-[var(--text-faint)] hover:bg-white/[0.06]"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function Card({
   title,
   perLibrary,
   overriddenBy,
+  follow,
   desc,
   children,
 }: {
@@ -263,6 +310,8 @@ function Card({
   /** 覆盖了本卡片字段的媒体库名。分层配置最经典的坑是"在全局改了半天不生效"，
    *  不把这个标出来用户无从自查（设计文档 §14.5） */
   overriddenBy?: string[];
+  /** 库设置页的三态壳；全局设置页不传 */
+  follow?: CardFollowState;
   desc: string;
   children: React.ReactNode;
 }) {
@@ -285,7 +334,11 @@ function Card({
         )}
       </div>
       <p className="mb-4 mt-1 max-w-[62ch] text-sub text-[var(--text-muted)]">{desc}</p>
-      {children}
+      {follow && <CardFollowSwitch follow={follow} />}
+      {/* 跟随全局时控件置灰只读：看得见全局值长什么样，但改不动 */}
+      <div className={follow && !follow.custom ? "pointer-events-none opacity-45" : ""}>
+        {children}
+      </div>
     </section>
   );
 }
@@ -732,6 +785,7 @@ export function MetaTab({
   extraMetaLangs,
   extraCountries,
   overriddenBy,
+  followFor,
 }: {
   setting: ScrapeSetting;
   patch: (changes: Partial<ScrapeSetting>) => void;
@@ -739,6 +793,8 @@ export function MetaTab({
   extraCountries: ChipOption[];
   /** 查"哪些库覆盖了这些字段"；库设置页不传（那里本来就在配某一个库） */
   overriddenBy?: (keys: (keyof ScrapeSetting)[]) => string[];
+  /** 卡片级三态壳；全局设置页不传 */
+  followFor?: (keys: (keyof ScrapeSetting)[]) => CardFollowState;
 }) {
   return (
     <>
@@ -746,6 +802,7 @@ export function MetaTab({
         title="元数据语言"
         perLibrary
         overriddenBy={overriddenBy?.(["language_priority"])}
+        follow={followFor?.(["language_priority"])}
         desc="标题、简介、类型名等文本的语言。点选语言即加入优先级，第 1 位是主语言（决定向 TMDB 请求的语言），缺失的字段按顺序回落——回落基于已拉取的翻译数据，不产生额外请求。"
       >
         <OrderChips
@@ -762,6 +819,7 @@ export function MetaTab({
         title="内容分级"
         perLibrary
         overriddenBy={overriddenBy?.(["cert_country_priority"])}
+        follow={followFor?.(["cert_country_priority"])}
         desc="条目分级（如 PG-13、TV-MA）按顺序取第一个有数据的地区。"
       >
         <OrderChips
@@ -784,6 +842,7 @@ export function ImagesTab({
   extraImageLangs,
   effective,
   overriddenBy,
+  followFor,
 }: {
   setting: ScrapeSetting;
   patch: (changes: Partial<ScrapeSetting>) => void;
@@ -791,6 +850,7 @@ export function ImagesTab({
   /** 档位下拉的「跟随环境」提示值；库设置页传全局生效值 */
   effective: Pick<ScrapeSetting, "poster_size" | "backdrop_size" | "still_size"> | null;
   overriddenBy?: (keys: (keyof ScrapeSetting)[]) => string[];
+  followFor?: (keys: (keyof ScrapeSetting)[]) => CardFollowState;
 }) {
   const sizeHint = (value: string, fallback: string) =>
     value === "" ? `跟随环境变量（当前 ${fallback}）` : value;
@@ -801,6 +861,7 @@ export function ImagesTab({
         title="海报"
         perLibrary
         overriddenBy={overriddenBy?.(["poster_mode", "poster_language_priority"])}
+        follow={followFor?.(["poster_mode", "poster_language_priority"])}
         desc="海报和文本一样有语言：中文版、原版、无文字干净版是不同的候选图。你在条目详情页手动选定的图始终优先，不受这里影响。"
       >
         <div className="grid gap-2 md:grid-cols-2">
@@ -858,6 +919,7 @@ export function ImagesTab({
         title="背景图（fanart）"
         perLibrary
         overriddenBy={overriddenBy?.(["backdrop_language_priority"])}
+        follow={followFor?.(["backdrop_language_priority"])}
         desc="铺在详情页全屏的沉浸底图。「无文字」是没有烧录任何片名文字的干净图——排第 1 位即无文字优先；想要带片名 logo 的横图，把语言排到前面。"
       >
         <OrderChips
@@ -874,6 +936,13 @@ export function ImagesTab({
         title="质量与门槛"
         perLibrary
         overriddenBy={overriddenBy?.([
+          "poster_min_width",
+          "backdrop_min_width",
+          "poster_size",
+          "backdrop_size",
+          "still_size",
+        ])}
+        follow={followFor?.([
           "poster_min_width",
           "backdrop_min_width",
           "poster_size",

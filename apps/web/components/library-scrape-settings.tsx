@@ -8,9 +8,11 @@
  * 用户在这里学到的交互与设置页完全一致，只多了「跟随全局 ⇄ 自定义」这一个概念。
  *
  * 三态怎么表达（设计文档 §14.5 的表）：
- * - 排序芯片与数字输入没有"空值"可表达跟随，用**卡片组级**开关：切到自定义时
- *   拿全局当前值做种子，用户在这个基础上改；切回跟随即把这一组键从覆盖里删掉。
- *   有序列表逐项三态没有意义，所以是组级而不是字段级；
+ * - 排序芯片与数字输入没有"空值"可表达跟随，用**卡片级**开关（由 Card 渲染）：
+ *   切到自定义时拿全局当前值做种子，用户在这个基础上改；切回跟随即把这张卡的
+ *   键从覆盖里删掉。粒度卡在"卡片"这一层是两头夹出来的——再粗（整个 tab 一个
+ *   开关）会让只覆盖了语言的库把分级也显示成已自定义，状态是错的；再细（逐字段）
+ *   对有序列表没有意义，排序芯片只能整张卡一起跟随或一起自定义；
  * - 命名模板留空即跟随（沿用 P3 的 placeholder 机制）；
  * - 目录写入是「跟随全局 / 开 / 关」三档按钮（同样沿用 P3）。
  *
@@ -40,8 +42,9 @@ const GROUPS = [
 
 type GroupId = (typeof GROUPS)[number]["id"];
 
-/** 卡片组级三态开关管辖的键（命名与目录写入有各自的字段级机制，不在此列）。 */
-const CARD_GROUP_KEYS: Record<GroupId, (keyof ScrapeSetting)[]> = {
+/** 各分组管辖的键，只用来给页签点小圆点（"这组设过没有"）。
+ *  三态开关本身是**卡片级**的，由 Card 自己渲染（见 followFor）。 */
+const GROUP_KEYS: Record<GroupId, string[]> = {
   meta: ["language_priority", "cert_country_priority"],
   images: [
     "poster_mode",
@@ -53,8 +56,8 @@ const CARD_GROUP_KEYS: Record<GroupId, (keyof ScrapeSetting)[]> = {
     "backdrop_size",
     "still_size",
   ],
-  naming: [],
-  mirror: [],
+  naming: ["naming_entry_dir", "naming_movie_file", "naming_season_dir", "naming_episode_file"],
+  mirror: ["mirror_images", "mirror_nfo", "mirror_episode_thumbs"],
 };
 
 const NAMING_FIELDS = [
@@ -74,7 +77,7 @@ const MIRROR_FIELDS = [
   { key: "mirror_episode_thumbs", label: "写入分集剧照" },
 ] as const;
 
-/** 全局值的可读摘要，供「跟随全局：…」对照行显示。 */
+/** 全局值的可读摘要，供卡片里的「全局：…」对照行显示。 */
 function summarize(keys: (keyof ScrapeSetting)[], base: ScrapeSetting): string {
   return keys
     .map((key) => {
@@ -84,7 +87,7 @@ function summarize(keys: (keyof ScrapeSetting)[], base: ScrapeSetting): string {
       return String(value || "跟随环境");
     })
     .filter(Boolean)
-    .slice(0, 2)
+    .slice(0, 3)
     .join("；");
 }
 
@@ -140,17 +143,21 @@ export function LibraryScrapeSettings({
     [overrides, onChange],
   );
 
-  /** 卡片组的跟随/自定义切换：自定义时用全局值做种子，跟随时删掉这组键。 */
-  const toggleGroup = useCallback(
-    (keys: (keyof ScrapeSetting)[], custom: boolean) => {
-      if (!base) return;
-      const next = { ...overrides };
-      for (const key of keys) {
-        if (custom) next[key] = base[key];
-        else delete next[key];
-      }
-      onChange(next);
-    },
+  /** 卡片的跟随/自定义状态与切换：自定义时用全局值做种子，跟随时删掉这张卡的键。 */
+  const followFor = useCallback(
+    (keys: (keyof ScrapeSetting)[]) => ({
+      custom: keys.some((key) => key in overrides),
+      globalSummary: base ? summarize(keys, base) : "",
+      onToggle: (custom: boolean) => {
+        if (!base) return;
+        const next = { ...overrides };
+        for (const key of keys) {
+          if (custom) next[key] = base[key];
+          else delete next[key];
+        }
+        onChange(next);
+      },
+    }),
     [base, overrides, onChange],
   );
 
@@ -166,8 +173,6 @@ export function LibraryScrapeSettings({
     );
   }
 
-  const groupKeys = CARD_GROUP_KEYS[group];
-  const custom = groupKeys.length > 0 && groupKeys.some((key) => key in overrides);
   const overrideCount = Object.keys(overrides).length;
 
   return (
@@ -183,9 +188,7 @@ export function LibraryScrapeSettings({
 
       <div className="flex gap-1.5 rounded-2xl border border-white/[0.08] bg-white/[0.03] p-1.5">
         {GROUPS.map((g) => {
-          const dirty = [...CARD_GROUP_KEYS[g.id], ...groupFieldKeys(g.id)].some(
-            (key) => key in overrides,
-          );
+          const dirty = GROUP_KEYS[g.id].some((key) => key in overrides);
           return (
             <button
               key={g.id}
@@ -209,59 +212,24 @@ export function LibraryScrapeSettings({
         })}
       </div>
 
-      {groupKeys.length > 0 && (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/[0.08] bg-white/[0.03] px-3.5 py-2.5">
-          <div className="min-w-0">
-            <span className="text-sub font-medium">
-              {custom ? "本库自定义" : "跟随全局设置"}
-            </span>
-            <span className="mt-0.5 block truncate text-caption text-[var(--text-faint)]">
-              全局：{summarize(groupKeys, base)}
-            </span>
-          </div>
-          <div className="flex shrink-0 gap-1">
-            {(
-              [
-                [false, "跟随全局"],
-                [true, "自定义"],
-              ] as const
-            ).map(([option, label]) => (
-              <button
-                key={label}
-                type="button"
-                onClick={() => toggleGroup(groupKeys, option)}
-                className={`rounded-lg px-2.5 py-1 text-caption transition-colors ${
-                  custom === option
-                    ? "bg-[var(--accent-soft)] text-[var(--text)]"
-                    : "text-[var(--text-faint)] hover:bg-white/[0.06]"
-                }`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        </div>
+      {group === "meta" && (
+        <MetaTab
+          setting={merged}
+          patch={patch}
+          extraMetaLangs={chipOptions.metaLangs}
+          extraCountries={chipOptions.certCountries}
+          followFor={followFor}
+        />
       )}
-
-      {/* 跟随全局时把控件置灰只读：看得见全局值长什么样，但改不动 */}
-      <div className={groupKeys.length > 0 && !custom ? "pointer-events-none opacity-45" : ""}>
-        {group === "meta" && (
-          <MetaTab
-            setting={merged}
-            patch={patch}
-            extraMetaLangs={chipOptions.metaLangs}
-            extraCountries={chipOptions.certCountries}
-          />
-        )}
-        {group === "images" && (
-          <ImagesTab
-            setting={merged}
-            patch={patch}
-            extraImageLangs={chipOptions.imageLangs}
-            effective={config?.effective ?? null}
-          />
-        )}
-      </div>
+      {group === "images" && (
+        <ImagesTab
+          setting={merged}
+          patch={patch}
+          extraImageLangs={chipOptions.imageLangs}
+          effective={config?.effective ?? null}
+          followFor={followFor}
+        />
+      )}
 
       {group === "naming" && (
         <div className="rounded-2xl border border-white/[0.08] bg-white/[0.04] p-4">
@@ -336,11 +304,4 @@ export function LibraryScrapeSettings({
       </p>
     </div>
   );
-}
-
-/** 该分组里走字段级三态（而非组级开关）的键。 */
-function groupFieldKeys(group: GroupId): string[] {
-  if (group === "naming") return NAMING_FIELDS.map((f) => f.key);
-  if (group === "mirror") return MIRROR_FIELDS.map((f) => f.key);
-  return [];
 }
