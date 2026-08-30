@@ -15,6 +15,11 @@ import { DownloaderConfigSection } from "@/components/downloader-config-section"
 import { useConfirm } from "@/components/feedback";
 import { ImportWatchSection } from "@/components/import-watch-section";
 import { SettingsOverviewSection } from "@/components/settings-overview-section";
+import {
+  sectionBadgeTone,
+  SettingsBadgeDot,
+  useSettingsHealth,
+} from "@/components/settings-health";
 import { MembersSection } from "@/components/members-section";
 import { LlmConfigSection } from "@/components/llm-config-section";
 import { ImPushSection } from "@/components/im-push-section";
@@ -68,6 +73,9 @@ export function SettingsSidebar({ active, onSelect, onBack }: SettingsSidebarPro
   // 有可用更新时给「更新与维护」分区行点一颗小蓝点：从别的入口进了设置，
   // 也能一眼看出更新在哪一栏（与侧栏更新入口同一份快照数据）
   const pendingUpdate = usePendingUpdate(session.role !== "member");
+  // 各分区的异常（红）/待办（蓝）角标：服务端一次聚合下发，与概览分区的
+  // 异常聚合同一份数据（settings-health.tsx）；成员角色不轮询（管理员专属）
+  const health = useSettingsHealth(session.role !== "member");
   return (
     <GlassPanel
       backgroundImage={backdrop}
@@ -106,6 +114,7 @@ export function SettingsSidebar({ active, onSelect, onBack }: SettingsSidebarPro
             <div className="space-y-0.5">
               {group.items.map((section) => {
                 const Icon = section.icon;
+                const badgeTone = sectionBadgeTone(health, section.id);
                 return (
                   <button
                     key={section.id}
@@ -119,6 +128,7 @@ export function SettingsSidebar({ active, onSelect, onBack }: SettingsSidebarPro
                       {section.label}
                     </span>
                     {section.id === "app" && pendingUpdate && <AppUpdateDot />}
+                    {badgeTone && <SettingsBadgeDot tone={badgeTone} />}
                   </button>
                 );
               })}

@@ -53,6 +53,7 @@ from movieclaw_api.api.routes.playback import router as playback_router
 from movieclaw_api.api.routes.rule_sets import router as rule_sets_router
 from movieclaw_api.api.routes.scrape_settings import router as scrape_settings_router
 from movieclaw_api.api.routes.search import router as search_router
+from movieclaw_api.api.routes.settings_health import router as settings_health_router
 from movieclaw_api.api.routes.sites import router as sites_router
 from movieclaw_api.api.routes.spec import router as spec_router
 from movieclaw_api.api.routes.subscriptions import router as subscriptions_router
@@ -131,6 +132,8 @@ _ADMIN_ROUTERS = [
     # G2 额度护栏一起评估（docs/design/subtitle-ai-translate.md §6）
     subtitle_gen_router,
     webhook_router,
+    # 设置侧栏角标的聚合数据源（各分区异常/待办计数，管理员视角）
+    settings_health_router,
 ]
 for _router in _ADMIN_ROUTERS:
     api_router.include_router(_router, dependencies=[Depends(require_admin)])
