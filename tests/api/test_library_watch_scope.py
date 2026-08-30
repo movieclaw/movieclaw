@@ -432,10 +432,15 @@ async def test_watcher_passes_scope_to_scan(db, tmp_path, monkeypatch) -> None:
         assert watcher._startup is not None
         await watcher._startup
         entry = root / "影片X (2020)"
-        entry.mkdir()
-        (entry / "X.2020.mkv").write_bytes(b"x")
+        # 合成事件直投观察者分发队列：仍走 dispatch 线程与 handler 注册表
+        # （挂接被误拆时收不到），但不依赖真实文件系统送信时延——满载并行
+        # 跑测试时 FSEvents 送达可超限时，是偶发超时的根源
+        from watchdog.events import FileCreatedEvent
+
+        watch = next(iter(watcher._entries.values()))[1]
+        watcher._observer.event_queue.put((FileCreatedEvent(str(entry / "X.2020.mkv")), watch))
         for _ in range(100):
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.05)
             if calls:
                 break
         assert calls, "监控未触发扫描"
@@ -559,8 +564,12 @@ async def test_shared_root_survives_sibling_removal(db, tmp_path, monkeypatch) -
         assert set(watcher._entries) == {(lib_a.id, str(root))}
 
         entry = root / "影片Y (2020)"
-        entry.mkdir()
-        (entry / "Y.mkv").write_bytes(b"x")
+        # 合成事件直投观察者分发队列（不依赖真实文件系统送信时延）：事件仍
+        # 按 handler 注册表分发，lib_a 的挂接若被误拆则收不到
+        from watchdog.events import FileCreatedEvent
+
+        watch = watcher._entries[(lib_a.id, str(root))][1]
+        watcher._observer.event_queue.put((FileCreatedEvent(str(entry / "Y.mkv")), watch))
         deadline = time_mod.monotonic() + 10
         got = None
         while time_mod.monotonic() < deadline:
