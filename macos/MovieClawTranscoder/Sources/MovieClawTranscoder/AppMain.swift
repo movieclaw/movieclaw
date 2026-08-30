@@ -143,7 +143,12 @@ final class MovieClawAppDelegate: NSObject, NSApplicationDelegate {
 
     private func showStartupDownloadPrompt() {
         guard !ffmpegManager.isProcessing else { return }
-        NSApp.activate(ignoringOtherApps: true)
+        // activate(ignoringOtherApps:) 在 macOS 14 已废弃
+        if #available(macOS 14.0, *) {
+            NSApp.activate()
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+        }
         let alert = NSAlert()
         alert.messageText = "未检测到可用的 Jellyfin-ffmpeg"
         alert.informativeText = "MovieClaw Transcoder 需要带有 h264_videotoolbox 的 Jellyfin-ffmpeg 才能执行硬件转码。是否从 Jellyfin 官方下载 macOS arm64 版本？"
