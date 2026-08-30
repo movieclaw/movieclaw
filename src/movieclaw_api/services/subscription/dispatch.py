@@ -245,6 +245,9 @@ async def dispatch(
                 "last_progress_at": now,
                 "stalled_notified_at": None,
                 "missing_observations": 0,
+                # 同一 hash 重新投递是一次全新的下载，"曾经完成过"的记忆随
+                # 心跳基线一起清零，不能让旧记忆压住新任务的救援判定
+                "completed_at": None,
                 "next_search_at": None,
                 "cleanup_note": (
                     None

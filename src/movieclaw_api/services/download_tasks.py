@@ -650,7 +650,10 @@ def _task_dict(
         in (DownloadAttemptStatus.ACTIVE, DownloadAttemptStatus.REPLACEMENT_PENDING)
         and no_progress_seconds is not None
         and no_progress_seconds >= 15 * 60
-        and state != "unknown"
+        # unknown=下载器不可达，任务死活未知；missing=任务已经不在下载器里，
+        # "换掉旧源"无从谈起——救援巡检确证后会把工单退回重找，这段窗口里
+        # 换种只会平白多攒一个源。两种情况都不给按钮，只给解释
+        and state not in ("unknown", "missing")
         and not (
             rescue_state == DownloadAttemptStatus.REPLACEMENT_PENDING
             and next_search_at is None
@@ -703,8 +706,10 @@ def _task_dict(
         "can_replace": can_replace,
         "replacement_due_at": next_search_at,
         "rescue_message": (
+            # 任务已不在下载器里时，换源文案（"可立即换种…"）会指向一个不该
+            # 再点的动作；交回前端的 missing 解释文案
             None
-            if state == "unknown"
+            if state in ("unknown", "missing")
             else _rescue_message(
                 rescue_state,
                 no_progress_seconds,

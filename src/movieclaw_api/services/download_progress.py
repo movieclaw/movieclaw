@@ -465,7 +465,10 @@ async def _observe_attempt(
                     # 已完成任务若在入库前连任务本身也消失，不能永久藏在 completed。
                     # 文件可能仍在磁盘，因此仍沿用 15/30 分钟窗口寻找替代源，
                     # 晋升时旧任务查询不到只会幂等收口，不会删除未知文件。
+                    attempt.completed_at = attempt.completed_at or now
                     attempt.status = DownloadAttemptStatus.ACTIVE
+                elif await _requeue_missing_attempt(session, attempt, now):
+                    return False
                 return await _handle_stalled_attempt(session, attempt, now)
             return False
 
@@ -553,6 +556,7 @@ async def _observe_attempt(
 
         if status.completed:
             attempt.status = DownloadAttemptStatus.COMPLETED
+            attempt.completed_at = attempt.completed_at or now
             attempt.last_completed_bytes = current_bytes
             attempt.updated_at = now
             session.add(attempt)
@@ -647,6 +651,70 @@ async def _handle_stalled_attempt(
         session.add(attempt)
         await session.commit()
     return bool(attempt.next_search_at is not None and attempt.next_search_at <= now)
+
+
+async def _requeue_missing_attempt(
+    session: AsyncSession,
+    attempt: SubscriptionDownloadAttempt,
+    now,
+) -> bool:
+    """主源确证从所有可达下载器消失时，把工单退回 wanted 让常规搜索接手。
+
+    换源策略保守地"等新源产生真实进度才切换"，前提是旧源还在下载、值得保护；
+    源本身已经不在了的时候这个前提不成立。此时工单继续挂 grabbed，业务层会
+    把它当"在途"，用户的「立即搜索」「手动选种」都以"没有缺口"被拒，能点的
+    只剩「立即换种」——每点一次多攒一个同样下不动的源（issue #238）。退回
+    工单既恢复人工介入入口，也让常规缺口搜索重新接手。
+
+    调用方已保证：下载器可达（否则只是状态未知）且已连续 MISSING_CONFIRMATIONS
+    次查无任务。这里再守三条，任一不满足都维持原有的换源路径：
+
+    - 洗版投递（purpose=upgrade）的目标工单本就是 imported，不存在"退回缺口"
+      的语义，其成败由入库验证裁决；
+    - 名下还有试用替代源时先让试用裁决（晋升接管 / 超时失败）——工单此刻仍
+      指向旧源，退回会让试用源失去目标被判失败，连数据一起清掉；
+    - 曾经完成过的任务文件很可能已落盘等入库，退回只会重复下载同一份内容。
+
+    返回是否已退回。
+    """
+    if attempt.purpose != "download" or attempt.completed_at is not None:
+        return False
+    trial_exists = (
+        await session.execute(
+            select(SubscriptionDownloadAttempt.id).where(
+                SubscriptionDownloadAttempt.replaces_attempt_id == attempt.id,
+                SubscriptionDownloadAttempt.status == DownloadAttemptStatus.TRIAL,
+            )
+        )
+    ).first()
+    if trial_exists is not None:
+        return False
+    rows = await _attempt_wanted_rows(session, attempt)
+    if not rows:
+        return False
+    item = await session.get(MediaItem, rows[0].media_item_id)
+    if item is None:
+        return False
+
+    attempt.status = DownloadAttemptStatus.FAILED
+    attempt.next_search_at = None
+    attempt.cleanup_note = "任务已从所有可达下载器中消失，关联工单已退回重新寻找"
+    attempt.updated_at = now
+    session.add(attempt)
+    await _requeue(
+        session,
+        SubscriptionRepository(session),
+        item,
+        rows,
+        attempt.info_hash,
+        message=(
+            f"原下载任务已从所有可达的下载器中消失（连续 {MISSING_CONFIRMATIONS} 次确认，"
+            "可能被手动删除或被下载器清理），"
+            f"{units_text(rows)} 已退回重新寻找资源；也可在订阅详情页立即搜索或手动选种"
+        ),
+        reason="source_missing",
+    )
+    return True
 
 
 async def _attempt_wanted_rows(
@@ -1151,7 +1219,7 @@ async def subscription_download_snapshot(session: AsyncSession, subscription_id:
     仍归上面的救援巡检管，这里只回答"此刻下到哪了"。
 
     种子在所有下载器中都查不到时 state="missing"（可能刚被手动删除，
-    救援巡检稍后会把工单退回重找），前端据此给出解释而不是显示 0%。
+    救援巡检连续三次确认后会把工单退回重找），前端据此给出解释而不是显示 0%。
     """
     result = await session.execute(
         select(WantedItem).where(

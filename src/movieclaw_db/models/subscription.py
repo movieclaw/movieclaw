@@ -425,6 +425,12 @@ class SubscriptionDownloadAttempt(TimestampMixin, table=True):
     status: str = Field(default=DownloadAttemptStatus.ACTIVE, index=True)
     last_downloader_state: str | None = Field(default=None)
     last_observed_at: datetime | None = Field(default=None)
+    # "曾经下载完成过"的持久记忆：状态会在任务消失后从 completed 翻回 active
+    # 重新进入换源窗口，光看 status 分辨不出这一支。任务消失时文件很可能已
+    # 落盘等入库，据此**不**把工单退回重找，避免重复下载同一份内容。
+    completed_at: datetime | None = Field(
+        default=None, description="下载器首次确认该任务完成的时刻"
+    )
     baseline_completed_bytes: int | None = Field(
         default=None,
         description="完成块观测基线；试用源晋升只认累计网络下载字节",

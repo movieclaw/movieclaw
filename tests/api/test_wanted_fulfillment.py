@@ -9,16 +9,20 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+import httpx
 import pytest
 import pytest_asyncio
 from sqlmodel import select
 
 import movieclaw_api.services.download_progress as progress_mod
 from movieclaw_api.core.config import get_settings
+from movieclaw_api.services.media_library import MediaLibraryService
+from movieclaw_api.services.subscription import SubscriptionService
 from movieclaw_api.services.subscription.wanted_fulfillment import close_fulfilled_wanted
 from movieclaw_db.engine import dispose_db, get_database, init_db
 from movieclaw_db.migrations import run_migrations
 from movieclaw_db.models import (
+    ActivityType,
     DownloadAttemptStatus,
     FileSource,
     LibraryFile,
@@ -34,6 +38,17 @@ from movieclaw_db.models import (
     utcnow,
 )
 from movieclaw_db.repositories.library_repo import LibraryRepository
+from movieclaw_media.tmdb import TmdbClient
+
+_KEY = "0123456789abcdef0123456789abcdef"
+
+
+def _fake_tmdb() -> TmdbClient:
+    """本文件的用例都用已建好的条目，不再回源；给个恒 404 的传输层即可。"""
+    return TmdbClient(
+        _KEY,
+        transport=httpx.MockTransport(lambda request: httpx.Response(404, json={})),
+    )
 
 
 @pytest_asyncio.fixture
@@ -198,8 +213,8 @@ async def test_rescue_does_not_treat_unreachable_downloader_as_missing(db, monke
 
 
 @pytest.mark.asyncio
-async def test_reachable_missing_requires_three_observations_before_warning(db, monkeypatch):
-    """下载器可达但查无任务要连续确认三次，且仍保留旧 infohash。"""
+async def test_reachable_missing_keeps_infohash_until_three_observations(db, monkeypatch):
+    """下载器可达但查无任务要连续确认三次；证据不足前保留旧 infohash 不动。"""
     stale = utcnow() - timedelta(minutes=20)
     _library_id, _item_id, sub_id, wanted_id = await _seed(db, grabbed_at=stale)
 
@@ -207,7 +222,7 @@ async def test_reachable_missing_requires_three_observations_before_warning(db, 
         return progress_mod._TorrentLookup(match=None, reachable_count=1)
 
     monkeypatch.setattr(progress_mod, "_lookup_torrent", lookup_missing)
-    for _ in range(3):
+    for _ in range(2):
         await progress_mod._rescue_group(sub_id, "abc123", downloaders=[])
 
     async with db.session() as session:
@@ -221,19 +236,118 @@ async def test_reachable_missing_requires_three_observations_before_warning(db, 
                 )
             )
         ).scalar_one()
-        assert attempt.missing_observations == 3
-        assert attempt.stalled_notified_at is not None
+        assert attempt.missing_observations == 2
+        assert attempt.status == DownloadAttemptStatus.ACTIVE
+
+
+@pytest.mark.asyncio
+async def test_missing_main_source_requeues_wanted_and_reopens_manual_entries(db, monkeypatch):
+    """主源确证消失（三次可达查无）：工单退回 wanted，人工介入入口重新可用。
+
+    issue #238：换源保守策略只覆盖"源还在但没进度"，源已经从下载器消失时
+    工单继续挂在 grabbed，业务层判定"在途"，立即搜索/手动选种全被"没有缺口"
+    拒绝，用户只能反复点「立即换种」。
+    """
+    stale = utcnow() - timedelta(minutes=20)
+    _library_id, _item_id, sub_id, wanted_id = await _seed(db, grabbed_at=stale)
+
+    async def lookup_missing(*args, **kwargs):
+        return progress_mod._TorrentLookup(match=None, reachable_count=1)
+
+    monkeypatch.setattr(progress_mod, "_lookup_torrent", lookup_missing)
+    for _ in range(3):
+        await progress_mod._rescue_group(sub_id, "abc123", downloaders=[])
+
+    async with db.session() as session:
+        wanted = await session.get(WantedItem, wanted_id)
+        assert wanted.status == WantedStatus.WANTED
+        assert wanted.info_hash is None
+        assert wanted.grabbed_at is None
+        assert wanted.next_search_at is not None
+        attempt = (
+            await session.execute(
+                select(SubscriptionDownloadAttempt).where(
+                    SubscriptionDownloadAttempt.subscription_id == sub_id
+                )
+            )
+        ).scalar_one()
+        assert attempt.status == DownloadAttemptStatus.FAILED
+        assert attempt.next_search_at is None
+        assert attempt.cleanup_note
+        # 时间线上要看得到"发生了什么"，而不是按钮突然变了
         activities = list(
             (
                 await session.execute(
                     select(SubscriptionActivity).where(
                         SubscriptionActivity.subscription_id == sub_id,
-                        SubscriptionActivity.type == "download_stalled",
+                        SubscriptionActivity.type == ActivityType.DISPATCH_FAILED,
                     )
                 )
             ).scalars()
         )
         assert len(activities) == 1
+        assert (activities[0].payload or {}).get("reason") == "source_missing"
+        assert "下载器" in activities[0].message
+
+        # 报告里被拒的两个人工入口之一：现在有真实缺口，不再报"没有缺口"
+        service = SubscriptionService(session, MediaLibraryService(session, _fake_tmdb()))
+        assert await service.search_now(sub_id) == 1
+
+
+@pytest.mark.asyncio
+async def test_missing_main_source_waits_for_trial_verdict(db, monkeypatch):
+    """名下还有试用源时先让试用裁决；试用失败后的下一轮才退回工单。
+
+    否则退回会让试用源失去目标被判失败连数据一起清理——而它可能正在正常下载。
+    """
+    stale = utcnow() - timedelta(minutes=20)
+    _library_id, _item_id, sub_id, wanted_id = await _seed(db, grabbed_at=stale)
+    async with db.session() as session:
+        wanted = await session.get(WantedItem, wanted_id)
+        await progress_mod._ensure_attempts(session, {(sub_id, "abc123"): [wanted]})
+        parent = (
+            await session.execute(
+                select(SubscriptionDownloadAttempt).where(
+                    SubscriptionDownloadAttempt.subscription_id == sub_id
+                )
+            )
+        ).scalar_one()
+        trial = SubscriptionDownloadAttempt(
+            subscription_id=sub_id,
+            info_hash="def456",
+            torrent_title="Trial.Source",
+            units=[[1, 1]],
+            owned_by_movieclaw=True,
+            status=DownloadAttemptStatus.TRIAL,
+            replaces_attempt_id=parent.id,
+            last_progress_at=utcnow(),
+        )
+        session.add(trial)
+        await session.commit()
+        trial_id = trial.id
+
+    async def lookup_missing(*args, **kwargs):
+        return progress_mod._TorrentLookup(match=None, reachable_count=1)
+
+    monkeypatch.setattr(progress_mod, "_lookup_torrent", lookup_missing)
+    for _ in range(3):
+        await progress_mod._rescue_group(sub_id, "abc123", downloaders=[])
+
+    async with db.session() as session:
+        wanted = await session.get(WantedItem, wanted_id)
+        assert wanted.status == WantedStatus.GRABBED
+        assert wanted.info_hash == "abc123"
+        # 试用源自行失败后，主源消失的证据不变，下一轮才退回
+        trial = await session.get(SubscriptionDownloadAttempt, trial_id)
+        trial.status = DownloadAttemptStatus.FAILED
+        await session.commit()
+
+    await progress_mod._rescue_group(sub_id, "abc123", downloaders=[])
+
+    async with db.session() as session:
+        wanted = await session.get(WantedItem, wanted_id)
+        assert wanted.status == WantedStatus.WANTED
+        assert wanted.info_hash is None
 
 
 @pytest.mark.asyncio
@@ -263,10 +377,19 @@ async def test_completed_task_missing_before_import_reenters_rescue(db, monkeypa
         return progress_mod._TorrentLookup(match=None, reachable_count=1)
 
     monkeypatch.setattr(progress_mod, "_lookup_torrent", lookup_missing)
-    for _ in range(3):
+    # 多跑两轮：曾经完成过的任务文件可能已落盘等入库，任何一轮都不能退回工单
+    # 重复下载，只能沿用 15/30 分钟换源窗口。
+    for _ in range(5):
         await progress_mod._rescue_group(sub_id, "abc123", downloaders=[])
 
     async with db.session() as session:
+        wanted = (
+            await session.execute(
+                select(WantedItem).where(WantedItem.subscription_id == sub_id)
+            )
+        ).scalar_one()
+        assert wanted.status == WantedStatus.GRABBED
+        assert wanted.info_hash == "abc123"
         attempt = (
             await session.execute(
                 select(SubscriptionDownloadAttempt).where(

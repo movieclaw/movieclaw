@@ -373,9 +373,11 @@ def test_task_center_aggregates_live_downloads_and_subscription_context(client) 
     assert by_hash[missing_hash]["remux"] is False
     assert by_hash[external_hash]["site_id"] is None
     assert by_hash[external_hash]["page_url"] is None
-    assert by_hash[missing_hash]["can_replace"] is True
+    # 任务已经不在下载器里：换源无从谈起（救援巡检确证后会把工单退回重找），
+    # 不给「立即换种」按钮，也不给会诱导用户去点它的换源文案
+    assert by_hash[missing_hash]["can_replace"] is False
     assert by_hash[missing_hash]["no_progress_seconds"] >= 15 * 60
-    assert "立即换种" in by_hash[missing_hash]["rescue_message"]
+    assert by_hash[missing_hash]["rescue_message"] is None
     # 同一剧集的多个资源带回同一个稳定媒体 ID，前端据此安全合并；不按标题猜测。
     assert by_hash[missing_hash]["media_item_id"] == by_hash[linked_hash]["media_item_id"]
     assert payload["sources"] == [
