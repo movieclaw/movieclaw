@@ -56,7 +56,7 @@ final class MenuBarController: NSObject {
         if let jobID = status.currentJobID {
             // 显示片名而不是 job id：菜单栏是给人看的，一串 ULID 说明不了
             // 「正在转的是哪一部」。服务端没下发名字时才退回 id。
-            let label = status.currentJobName.map(Self.shorten) ?? jobID
+            let label = status.currentJobName.map { Self.shorten($0) } ?? jobID
             let progress = status.currentProgress?.outTimeMS.map { " · \(formatDuration(milliseconds: $0))" } ?? ""
             jobItem.title = "任务：\(label)\(progress)"
             jobItem.toolTip = status.currentJobName

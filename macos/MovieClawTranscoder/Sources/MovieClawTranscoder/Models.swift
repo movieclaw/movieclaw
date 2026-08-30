@@ -78,7 +78,26 @@ struct WorkerConfiguration: Sendable {
 
     static func defaultWorkerID() -> String {
         let name = Host.current().localizedName ?? "mac-worker"
-        return name.replacingOccurrences(of: " ", with: "-")
+        return sanitizedWorkerID(name)
+    }
+
+    /// 把机器名收敛成 validatedWorkerID 能接受的形状。
+    ///
+    /// 只替换空格是不够的：中文环境下 Mac 默认就叫「张三的Mac mini」，
+    /// 「的」过不了 ASCII 白名单，首次打开点「验证连接」就会被拦下，
+    /// 而用户完全没改过这个字段，根本想不到问题出在机器名上。
+    static func sanitizedWorkerID(_ name: String) -> String {
+        let allowed = Set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.:-")
+        var result = String(name.map { allowed.contains($0) ? $0 : "-" })
+        while result.contains("--") {
+            result = result.replacingOccurrences(of: "--", with: "-")
+        }
+        result = result.trimmingCharacters(in: CharacterSet(charactersIn: "-_.:"))
+        // 首字符必须是字母或数字；整串被清空（例如纯中文名）时退回通用名
+        guard let first = result.first, first.isLetter || first.isNumber else {
+            return "mac-worker"
+        }
+        return String(result.prefix(64))
     }
 
     static func defaultFFmpegPath() -> String {

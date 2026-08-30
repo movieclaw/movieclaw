@@ -60,8 +60,14 @@ struct DevicePairing {
     func verifyConnection() async throws -> String {
         let (data, response) = try await send(path: "/api/v1/health", body: nil)
         try ensureSuccess(response, data: data)
-        let payload = try envelope(data)
-        return payload["service"] as? String ?? "服务"
+        // /health 不走业务信封：后端 health.py 直接返回 HealthResponse
+        // （`{status,service,environment,spec_hash}`），根本没有 data 键。
+        // 这里若套 envelope() 解，任何一台正常的 movieclaw 都会被判成
+        //「服务器返回了预期之外的内容」，验证连接永远不可能通过。
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw PairingError.badResponse("健康检查返回的不是 JSON 对象")
+        }
+        return root["service"] as? String ?? "服务"
     }
 
     /// 发起接入请求。只声明自己是什么形态、叫什么名字——能做什么由批准者决定。
