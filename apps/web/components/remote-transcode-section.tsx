@@ -403,9 +403,10 @@ export function RemoteTranscodeSection({
               spellCheck={false}
             />
             <p className="mt-1.5 text-caption leading-5 text-[var(--text-faint)]">
-              Worker 取源视频、传 HLS 产物和控制连接都走这个地址。留空则跟随系统
-              「网络与维护」中的外部访问地址。建议填可信内网的 HTTP 地址：转码要来回
-              传大量分片，走公网或反向代理会明显变慢。
+              这不是 Worker 用来连过来的地址（那个在 Mac 上填），而是<b className="font-medium text-[var(--text-muted)]">服务端
+              告诉 Worker「去哪儿取源视频、往哪儿传 HLS 产物」</b>。留空则跟随系统
+              「网络与维护」中的外部访问地址——只有当那个地址是公网域名或反向代理时才需要在
+              这里单独填：转码要来回传大量分片，绕一圈公网会明显变慢，填内网直连地址更快。
             </p>
             <div className="mt-3 rounded-xl border border-white/[0.06] bg-black/15 px-3 py-2 text-sub">
               <span className="text-[var(--text-faint)]">当前生效地址：</span>{" "}
