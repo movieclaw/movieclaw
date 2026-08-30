@@ -217,10 +217,10 @@ def test_library_scrape_overrides_roundtrip(client: TestClient, tmp_path) -> Non
     assert effective_naming_templates(None).entry_dir == "{title} ({year})"
 
 
-def test_library_overrides_reject_non_overridable_and_invalid(client: TestClient, tmp_path) -> None:
-    """不可按库覆盖的字段、以及非法模板，保存时整体拒绝（中文 400）。"""
+def test_library_overrides_reject_unknown_and_invalid(client: TestClient, tmp_path) -> None:
+    """不属于刮削设置的字段、以及非法模板，保存时整体拒绝（中文 400）。"""
     root = str(tmp_path / "lib2")
-    # 选图不可按库覆盖：它的产物（poster_path/资产文件）跨库共享一份
+    # 选图**可以**按库覆盖（P4：按条目的刮削归属库生效，设计文档 §14）
     resp = client.post(
         "/api/v1/libraries",
         json={
@@ -228,6 +228,19 @@ def test_library_overrides_reject_non_overridable_and_invalid(client: TestClient
             "kind": "tv",
             "root_paths": [root],
             "scrape_overrides": {"poster_mode": "language"},
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["data"]["scrape_overrides"] == {"poster_mode": "language"}
+
+    # 压根不是刮削设置里的字段则拒绝
+    resp = client.post(
+        "/api/v1/libraries",
+        json={
+            "name": "野字段库",
+            "kind": "tv",
+            "root_paths": [str(tmp_path / "lib3")],
+            "scrape_overrides": {"not_a_setting": 1},
         },
     )
     assert resp.status_code == 400

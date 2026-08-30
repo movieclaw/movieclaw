@@ -81,7 +81,10 @@ async def claim_files(
 
     # 经模块属性取 TMDB 客户端（而非 from-import 绑定名），保证测试可打桩
     tmdb = media_discover.get_tmdb_client()
-    item = await MediaLibraryService(session, tmdb).ensure_media_item(kind, tmdb_id)
+    # 认领的文件就在这个库里，归属库当场定下（设计文档 §14）
+    item = await MediaLibraryService(session, tmdb).ensure_media_item(
+        kind, tmdb_id, library_id=library.id
+    )
     assert item.id is not None
     repo = LibraryFileRepository(session)
     movie = kind is MediaKind.MOVIE

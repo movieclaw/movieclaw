@@ -105,6 +105,7 @@ library items purge-file
 library items refresh-metadata
 library items reidentify
 library items restore-file
+library items set-scrape-library
 library items transfer
 library list
 library list-routing-options

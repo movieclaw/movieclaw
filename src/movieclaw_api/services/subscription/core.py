@@ -397,6 +397,16 @@ class SubscriptionService:
                 library_id = decision.library.id
                 route_note = decision.reason
 
+        # 订阅弹层打开时（prepare）用户还没选库，条目多半没有刮削归属；
+        # 这里入库目标定格了，同一时刻把归属补上（设计文档 §14），
+        # 之后的元数据刷新就按这个库的语言/选图口味来
+        if library_id is not None:
+            from movieclaw_api.services.scrape_config import assign_scrape_library
+
+            library = await self._session.get(Library, library_id)
+            if assign_scrape_library(item, library):
+                self._session.add(item)
+
         subscription = await self._repo.save(
             Subscription(
                 media_item_id=item.id,

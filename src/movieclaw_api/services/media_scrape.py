@@ -46,8 +46,10 @@ from movieclaw_api.services.scrape_config import (
     effective_language,
     effective_mirror_flags,
     profile_fetch_kwargs,
+    scrape_setting_for_item,
 )
 from movieclaw_api.services.task_state import TaskState
+from movieclaw_api.settings import MetadataScrapeSetting
 from movieclaw_db.engine import get_database
 from movieclaw_db.models import (
     ActivityType,
@@ -151,7 +153,9 @@ async def _scrape(media_item_id: int, *, force: bool, on_phase: PhaseHook = None
         if item is None:
             return False
         kind = MediaKind(item.kind)
-        fetch_kwargs = profile_fetch_kwargs()
+        # 语言/分级/选图按条目的**归属库**解析（设计文档 §14）：刷新任务没有
+        # 库上下文，归属钉在条目上才不会被全局值洗回去
+        fetch_kwargs = profile_fetch_kwargs(await scrape_setting_for_item(session, item))
         language = fetch_kwargs["languages"][0]
         client = get_tmdb_client()
         profile = await fetch_media_profile(client, kind, item.tmdb_id, **fetch_kwargs)
@@ -976,9 +980,12 @@ async def _sync_movie_schedule(
 # ---------------------------------------------------------------------------
 
 
-def _asset_sizes() -> tuple[str, str, str]:
-    """当前生效的 (海报, 背景, 剧照) 尺寸档位（设置页覆盖 > 环境变量）。"""
-    return effective_asset_sizes()
+def _asset_sizes(setting: MetadataScrapeSetting | None = None) -> tuple[str, str, str]:
+    """生效的 (海报, 背景, 剧照) 尺寸档位（库覆盖 > 设置页 > 环境变量）。
+
+    ``setting`` 传条目按归属库合并出来的设置；不传则全局口径。
+    """
+    return effective_asset_sizes(setting)
 
 
 def assets_root() -> Path:
@@ -1105,7 +1112,9 @@ async def download_item_assets(
 
         item_dir = assets_root() / str(media_item_id)
         base = get_settings().tmdb_image_base_url.rstrip("/")
-        poster_size, backdrop_size, still_size = _asset_sizes()
+        poster_size, backdrop_size, still_size = _asset_sizes(
+            await scrape_setting_for_item(session, item)
+        )
         sources = await asyncio.to_thread(_load_asset_sources, item_dir)
         saved_sources = dict(sources)
 
@@ -1278,9 +1287,11 @@ async def list_artwork_candidates(
         current_backdrop = item.backdrop_path
         meta = await repo.get_metadata(media_item_id)
         original_language = meta.original_language if meta else None
+        # 候选图的排序规则必须与自动选图完全同源，所以同样按归属库解析
+        scrape_setting = await scrape_setting_for_item(session, item)
     settings = get_settings()
-    prefs = effective_image_prefs()
-    language = effective_language()
+    prefs = effective_image_prefs(scrape_setting)
+    language = effective_language(scrape_setting)
     # 候选语言集由选图偏好推导；「原始语言」此处已知（档案落库过），直接并入
     include_param = image_language_param(prefs, language)
     if original_language and original_language not in include_param.split(","):

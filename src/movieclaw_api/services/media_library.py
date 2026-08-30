@@ -15,7 +15,16 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
-from movieclaw_db.models import MediaEpisode, MediaItem, MediaMetadata, MediaSeason, utcnow
+from movieclaw_api.services.scrape_config import ITEM_SCOPED_OVERRIDABLE, merge_for_library
+from movieclaw_api.settings import MetadataScrapeSetting
+from movieclaw_db.models import (
+    Library,
+    MediaEpisode,
+    MediaItem,
+    MediaMetadata,
+    MediaSeason,
+    utcnow,
+)
 from movieclaw_db.repositories import MediaItemRepository
 from movieclaw_media.library import (
     DoubanResolution,
@@ -39,10 +48,15 @@ class MediaLibraryService:
         tmdb_client: TmdbClient,
         *,
         languages: Sequence[str] | None = None,
+        scrape_library_id: int | None = None,
     ) -> None:
         self._session = session
         self._repo = MediaItemRepository(session)
         self._client = tmdb_client
+        # 本实例服务于哪个库：扫描、整库重识别这类"整个过程都围着一个库转"
+        # 的链路在构造期给一次，就不必把 library_id 顺着四层识别函数往下传。
+        # ``ensure_media_item`` 的显式入参优先级更高（设计文档 §14）
+        self._scrape_library_id = scrape_library_id
         # None = 跟随「设置 → 刮削与整理」的语言优先级（读取时取快照，
         # 设置保存立即生效）；显式传入仅供测试固定语言
         self._languages = list(languages) if languages else None
@@ -59,25 +73,42 @@ class MediaLibraryService:
         *,
         douban_id: str | None = None,
         extra_aliases: Sequence[str] = (),
+        library_id: int | None = None,
     ) -> MediaItem:
         """按锚建档或复用媒体条目（幂等）。
 
         - 已存在：不重复请求 TMDB（元数据保鲜是刷新任务的职责），只回填
-          调用方带来的新信息（douban_id、入口标题等别名）；
+          调用方带来的新信息（douban_id、入口标题等别名、刮削归属库）；
         - 不存在：一次拉齐 TMDB 档案落库——身份信息（media_item + 季集）
           与展示元数据（media_metadata / media_episode）同一事务写入，
           这就是"一次入库刮削"的文本部分（图片资产由 ensure_assets 补齐，
           docs/design/metadata.md 4.1）。
+
+        ``library_id`` 是条目的**刮削归属库**（设计文档 §14）：入库、扫描、
+        人工认领、手动下载四条链路本就握着目标库，传下来首次刮削就用对
+        该库的语言/选图设置，不必等下一轮刷新才变脸。不传（如订阅弹层打开
+        时用户还没选库）则留空，由读取端惰性推断。
         """
+        library = await self._scrape_library(
+            kind, library_id if library_id is not None else self._scrape_library_id
+        )
+        setting = merge_for_library(library, fields=ITEM_SCOPED_OVERRIDABLE)
+
         existing = await self._repo.get_by_anchor(kind.value, tmdb_id)
         if existing is not None:
             self.profile_cache.pop((kind, tmdb_id), None)  # 用不上了，别占内存
-            return await self._backfill(existing, douban_id, extra_aliases)
+            return await self._backfill(existing, douban_id, extra_aliases, library)
 
         profile = self.profile_cache.pop((kind, tmdb_id), None)
         if profile is None:
-            profile = await fetch_media_profile(self._client, kind, tmdb_id, **self._fetch_kwargs())
-        item, seasons, episodes, metadata = self._to_rows(profile, douban_id, extra_aliases)
+            profile = await fetch_media_profile(
+                self._client, kind, tmdb_id, **self._fetch_kwargs(setting)
+            )
+        item, seasons, episodes, metadata = self._to_rows(
+            profile, douban_id, extra_aliases, setting
+        )
+        if library is not None:
+            item.scrape_library_id = library.id
         try:
             item = await self._repo.create_with_seasons(item, seasons, episodes, metadata)
         except IntegrityError:
@@ -87,7 +118,7 @@ class MediaLibraryService:
             existing = await self._repo.get_by_anchor(kind.value, tmdb_id)
             if existing is None:  # 理论不可达：冲突意味着对方已提交
                 raise
-            return await self._backfill(existing, douban_id, extra_aliases)
+            return await self._backfill(existing, douban_id, extra_aliases, library)
         # 影人关系要等 media_item.id 落库后才能建（人物页的数据来源）。
         # 与刷新路径（media_scrape.apply_display_profile）同一个函数，口径一致。
         #
@@ -188,12 +219,21 @@ class MediaLibraryService:
     # ------------------------------------------------------------------
 
     async def _backfill(
-        self, item: MediaItem, douban_id: str | None, extra_aliases: Sequence[str]
+        self,
+        item: MediaItem,
+        douban_id: str | None,
+        extra_aliases: Sequence[str],
+        library: Library | None = None,
     ) -> MediaItem:
         """把调用方带来的新信息合并进已有条目；无变化则不产生写。"""
         changed = False
         if douban_id and not item.douban_id:
             item.douban_id = douban_id
+            changed = True
+        # 刮削归属库只**补空不改判**：条目已有归属（推断固化或用户手动指定）
+        # 时不动它——同一条目进第二个库，不该悄悄换掉它的刮削口味
+        if library is not None and item.scrape_library_id is None:
+            item.scrape_library_id = library.id
             changed = True
         merged = self._merge_aliases(item.aliases, extra_aliases)
         if merged is not None:
@@ -218,6 +258,7 @@ class MediaLibraryService:
         profile: MediaProfile,
         douban_id: str | None,
         extra_aliases: Sequence[str],
+        setting: MetadataScrapeSetting | None = None,
     ) -> tuple[MediaItem, list[MediaSeason], list[MediaEpisode], MediaMetadata]:
         """传输模型 → ORM 行（身份 + 展示层）。入口带来的别名合并进别名集合。"""
         from movieclaw_api.services.media_scrape import build_display_rows
@@ -242,16 +283,29 @@ class MediaLibraryService:
             # NULL=立即到期：刷新任务首个 tick 会处理并按 status 分档重排
             next_refresh_at=None,
         )
-        seasons, episodes, metadata = build_display_rows(profile, self._primary_language())
+        seasons, episodes, metadata = build_display_rows(profile, self._primary_language(setting))
         return item, seasons, episodes, metadata
 
-    def _fetch_kwargs(self) -> dict:
-        """``fetch_media_profile`` 的偏好参数：显式语言（测试）或当前设置快照。"""
+    def _fetch_kwargs(self, setting: MetadataScrapeSetting | None = None) -> dict:
+        """``fetch_media_profile`` 的偏好参数：显式语言（测试）或生效设置。
+
+        ``setting`` 由归属库合并而来（见 ``ensure_media_item``）；不传则全局口径。
+        """
         if self._languages is not None:
             return {"languages": self._languages}
         from movieclaw_api.services.scrape_config import profile_fetch_kwargs
 
-        return profile_fetch_kwargs()
+        return profile_fetch_kwargs(setting)
 
-    def _primary_language(self) -> str:
-        return self._fetch_kwargs()["languages"][0]
+    def _primary_language(self, setting: MetadataScrapeSetting | None = None) -> str:
+        return self._fetch_kwargs(setting)["languages"][0]
+
+    async def _scrape_library(self, kind: MediaKind, library_id: int | None) -> Library | None:
+        """归属库行；库不存在或类型不符时按"没有归属"处理（绝不拿类型不对的
+        库的设置去刮），不报错——调用方给的库 id 只是个偏好提示。"""
+        if library_id is None:
+            return None
+        library = await self._session.get(Library, library_id)
+        if library is None or library.kind != kind.value:
+            return None
+        return library

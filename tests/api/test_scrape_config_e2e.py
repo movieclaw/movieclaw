@@ -1036,9 +1036,20 @@ async def test_dirty_override_still_organizes_with_global_template(db, tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_non_overridable_field_in_row_is_ignored(db, tmp_path):
-    """库行里残留了不可覆盖的字段（如选图）时静默忽略，不影响全局选图。"""
-    from movieclaw_api.services.scrape_config import effective_image_prefs, merge_for_library
+async def test_item_scoped_and_dir_scoped_overrides_do_not_leak(db, tmp_path):
+    """两条解析路径各取自己那一半的覆盖，互不串味（设计文档 §14.4）。
+
+    条目态字段（选图/语言）只经**归属库**生效，目录态字段（命名/镜像）只经
+    **文件所在库**生效——两个集合走同一份 ``scrape_overrides``，但读取端各自
+    过滤，免得命名链路拿到选图口味、或反过来。
+    """
+    from movieclaw_api.services.scrape_config import (
+        DIR_SCOPED_OVERRIDABLE,
+        ITEM_SCOPED_OVERRIDABLE,
+        effective_image_prefs,
+        effective_naming_templates,
+        merge_for_library,
+    )
 
     _apply_setting(poster_mode="default")
     async with db.session() as session:
@@ -1048,10 +1059,109 @@ async def test_non_overridable_field_in_row_is_ignored(db, tmp_path):
         await session.commit()
         await session.refresh(library)
 
-    # 选图字段被忽略（跨库共享一份，不允许按库改）
-    assert merge_for_library(library).poster_mode == "default"
+    # 目录态路径看不见选图覆盖
+    assert merge_for_library(library, fields=DIR_SCOPED_OVERRIDABLE).poster_mode == "default"
+    # 条目态路径才看得见
+    assert merge_for_library(library, fields=ITEM_SCOPED_OVERRIDABLE).poster_mode == "language"
+    # 不带库的全局口径始终是全局值（发现页等"选库之前"的读取点）
     assert effective_image_prefs().poster_mode == "default"
-    # 同一份覆盖里合法的命名字段照常生效
-    from movieclaw_api.services.scrape_config import effective_naming_templates
-
+    # 同一份覆盖里的命名字段照常按目录态生效
     assert effective_naming_templates(library).season_dir == "S{season:02d}"
+
+
+@pytest.mark.asyncio
+async def test_scrape_library_decides_item_scoped_settings(db, tmp_path):
+    """条目的语言/选图按**归属库**解析——这是 P4 的核心承诺。"""
+    from movieclaw_api.services.scrape_config import (
+        effective_image_prefs,
+        effective_language,
+        scrape_setting_for_item,
+    )
+
+    _apply_setting(language_priority=["zh-CN"], poster_mode="default")
+    async with db.session() as session:
+        anime = await _make_library(
+            session,
+            kind=MediaKind.TV,
+            root=tmp_path / "anime",
+            name="动漫库",
+            scrape_overrides={"language_priority": ["ja"], "poster_mode": "language"},
+        )
+        item = await _make_item(session, kind=MediaKind.TV, tmdb_id=901, title="某动画", year=2020)
+        item.scrape_library_id = anime.id
+        session.add(item)
+        await session.commit()
+
+        setting = await scrape_setting_for_item(session, item)
+
+    assert effective_language(setting) == "ja"
+    assert effective_image_prefs(setting).poster_mode == "language"
+    # 全局口径不受影响：同一进程里"选库之前"的读取点还是中文
+    assert effective_language() == "zh-CN"
+
+
+@pytest.mark.asyncio
+async def test_scrape_library_inferred_from_files_and_pinned(db, tmp_path):
+    """归属为空时按在位文件推断（文件多的库胜出），并**回填固化**。"""
+    from movieclaw_api.services.scrape_config import resolve_scrape_library
+
+    _apply_setting()
+    async with db.session() as session:
+        few = await _make_library(session, kind=MediaKind.TV, root=tmp_path / "few", name="少库")
+        many = await _make_library(session, kind=MediaKind.TV, root=tmp_path / "many", name="多库")
+        item = await _make_item(session, kind=MediaKind.TV, tmdb_id=902, title="某剧", year=2021)
+        (tmp_path / "few" / "a.mkv").write_bytes(b"x")
+        (tmp_path / "many" / "b.mkv").write_bytes(b"x")
+        (tmp_path / "many" / "c.mkv").write_bytes(b"x")
+        _add_file(session, few, item, tmp_path / "few" / "a.mkv", season=1, episode=1)
+        _add_file(session, many, item, tmp_path / "many" / "b.mkv", season=1, episode=2)
+        _add_file(session, many, item, tmp_path / "many" / "c.mkv", season=1, episode=3)
+        await session.commit()
+
+        resolved = await resolve_scrape_library(session, item)
+        assert resolved is not None and resolved.id == many.id
+        await session.commit()
+
+    # 固化了：重新读出来的行上就带着归属，不必再推断
+    async with db.session() as session:
+        again = await session.get(MediaItem, item.id)
+        assert again.scrape_library_id == many.id
+
+
+@pytest.mark.asyncio
+async def test_pinned_scrape_library_is_never_overwritten_by_inference(db, tmp_path):
+    """用户指定过的归属库不会被推断推翻——哪怕文件全在另一个库。"""
+    from movieclaw_api.services.scrape_config import resolve_scrape_library
+
+    _apply_setting()
+    async with db.session() as session:
+        pinned = await _make_library(session, kind=MediaKind.TV, root=tmp_path / "p", name="钉库")
+        other = await _make_library(session, kind=MediaKind.TV, root=tmp_path / "o", name="别库")
+        item = await _make_item(session, kind=MediaKind.TV, tmdb_id=903, title="某剧", year=2021)
+        item.scrape_library_id = pinned.id
+        (tmp_path / "o" / "a.mkv").write_bytes(b"x")
+        _add_file(session, other, item, tmp_path / "o" / "a.mkv", season=1, episode=1)
+        await session.commit()
+
+        resolved = await resolve_scrape_library(session, item)
+
+    assert resolved is not None and resolved.id == pinned.id
+
+
+@pytest.mark.asyncio
+async def test_scrape_library_falls_back_to_global_without_files_or_subscription(db, tmp_path):
+    """既无文件也无订阅的条目不回落默认库：无归属 = 跟全局。
+
+    否则默认库的口味会悄悄套到所有发现页浏览过的条目上。
+    """
+    from movieclaw_api.services.scrape_config import resolve_scrape_library
+
+    _apply_setting()
+    async with db.session() as session:
+        await _make_library(
+            session, kind=MediaKind.TV, root=tmp_path / "d", name="默认库", is_default=True
+        )
+        item = await _make_item(session, kind=MediaKind.TV, tmdb_id=904, title="路过", year=2022)
+        await session.commit()
+
+        assert await resolve_scrape_library(session, item) is None

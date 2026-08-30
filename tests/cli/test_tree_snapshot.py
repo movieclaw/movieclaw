@@ -230,6 +230,7 @@ def test_library_exposes_only_semantic_domain_commands() -> None:
         "library.items.delete-file",
         "library.items.purge-file",
         "library.items.restore-file",
+        "library.items.set-scrape-library",
         "library.items.get",
         "library.items.get-transfer-status",
         "library.items.list",

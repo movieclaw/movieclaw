@@ -815,7 +815,9 @@ async def _scan(
         # 显式历史修复只给出一个目标根；普通根路径编辑则默认取完整的新配置。
         # 后续两个阶段必须使用同一组根，才能正确判断「旧根对应哪个新根」。
         effective_reconcile_new_roots = reconcile_new_root_paths or list(library.root_paths)
-        media_service = MediaLibraryService(session, get_tmdb_client())
+        media_service = MediaLibraryService(
+            session, get_tmdb_client(), scrape_library_id=library.id
+        )
         kind = MediaKind(library.kind)
         # 每轮扫描内的收敛缓存：同一部剧同一季几十集只查一次 TMDB
         resolve_cache: dict[tuple, MediaItem | None] = {}
@@ -3447,7 +3449,7 @@ async def preview_reidentify(
     preview = ReidentifyPreview(
         library_id=library.id, media_item_id=media_item_id, movie=kind is MediaKind.MOVIE
     )
-    media_service = MediaLibraryService(session, get_tmdb_client())
+    media_service = MediaLibraryService(session, get_tmdb_client(), scrape_library_id=library.id)
     resolve_cache: dict[tuple, tuple] = {}
     episodes_cache: dict[Path, int | None] = {}
     hints = await _load_hints(session)
@@ -3601,7 +3603,9 @@ async def _reidentify(
         if not rows:
             summary.errors.append("该条目在本库已没有台账文件")
             return summary
-        media_service = MediaLibraryService(session, get_tmdb_client())
+        media_service = MediaLibraryService(
+            session, get_tmdb_client(), scrape_library_id=library.id
+        )
         kind = MediaKind(library.kind)
         resolve_cache: dict[tuple, tuple] = {}
         episodes_cache: dict[Path, int | None] = {}

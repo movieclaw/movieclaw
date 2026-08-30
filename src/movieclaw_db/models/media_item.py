@@ -76,6 +76,29 @@ class MediaItem(TimestampMixin, table=True):
     poster_path: str | None = Field(default=None, description="TMDB 海报相对路径")
     backdrop_path: str | None = Field(default=None, description="TMDB 宽幅剧照相对路径")
 
+    # -- 刮削归属库（docs/design/scrape-customization.md §14）----------------
+    # "这条条目按哪套刮削配置"的答案。元数据与图片的产物挂**全局条目**
+    # （一部片一份档案、图片按条目 id 存一份），所以语言/选图/图片档位这类
+    # 设置没法像命名模板那样"按库各来一套"——同一条目的文件散在两个库时，
+    # 两库不同口味会轮流覆盖同一行、同一个文件。把归属库钉在条目上，这件事
+    # 就有了唯一确定的答案：刮削与后台刷新读同一列（**刷新任务是纯按条目
+    # 全表扫的，没有库上下文**，这才是非钉不可的根本原因），口味不会被洗回全局。
+    #
+    # NULL = 未定：读取端 ``scrape_config.resolve_scrape_library`` 惰性推断并
+    # 回填固化（在位文件所属库 → 订阅目标库 → 该类型默认库 → 仍无则跟全局）。
+    # 存量条目升级后全是 NULL，靠这条自愈，不需要数据迁移脚本。
+    # 库删除时置 NULL（FK ondelete SET NULL），下次读取重新推断。
+    scrape_library_id: int | None = Field(
+        default=None,
+        sa_column=Column(
+            Integer,
+            ForeignKey("library.id", ondelete="SET NULL"),
+            nullable=True,
+            index=True,
+        ),
+        description="刮削归属库；NULL=未定（读取时推断并回填）",
+    )
+
     # -- 元数据刷新台账（仿 SiteSyncCursor 的 tick 模式）--------------------
     metadata_refreshed_at: datetime | None = Field(
         default=None, description="上次成功刷新元数据；NULL=建档后未刷过"
