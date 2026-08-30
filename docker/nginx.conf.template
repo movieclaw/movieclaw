@@ -120,6 +120,18 @@ http {
             error_page 502 503 504 @api_starting;
             proxy_pass http://movieclaw_api;
             proxy_http_version 1.1;
+            # nginx 的 proxy_set_header 是「整组覆盖」而非逐条合并：本 location
+            # 只要写了一条，http 段那一整组就全部不再继承，Host 会退回默认的
+            # $proxy_host——也就是上游名 movieclaw_api。远程转码握手时服务端正是
+            # 从 Host 推断「该告诉 Worker 去哪儿读源、往哪儿回传」
+            # （routes/transcode_worker.py::_observed_base_url），推出来的
+            # http://movieclaw_api 只在容器里有意义，Worker 上的 ffmpeg 解析不了，
+            # 表现为退出码 187 / Error opening input。所以这里必须原样重写一遍。
+            proxy_set_header Host $http_host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $movieclaw_forwarded_proto;
+            proxy_set_header X-Forwarded-Host $movieclaw_forwarded_host;
             proxy_set_header Upgrade $http_upgrade;
             proxy_set_header Connection $movieclaw_connection_upgrade;
             proxy_read_timeout 3600s;

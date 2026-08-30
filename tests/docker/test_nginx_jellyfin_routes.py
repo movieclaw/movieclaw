@@ -61,3 +61,34 @@ def test_nginx_template_forwards_transcode_worker_websocket_upgrade() -> None:
         "proxy_set_header Connection $movieclaw_connection_upgrade;",
     ):
         assert directive in body, f"WebSocket location 缺少 {directive}"
+
+
+def test_nginx_template_keeps_forwarding_headers_on_websocket_location() -> None:
+    """WS location 一旦自己写 proxy_set_header，就得把 http 段那组原样带上。
+
+    这次的教训（2026-08-30）：nginx 的 proxy_set_header 是整组覆盖而非逐条
+    合并。WS location 为了转发 Upgrade 写了两条，http 段的 ``Host $http_host``
+    连同 X-Forwarded-* 全部失效，Host 退回默认的 $proxy_host（上游名
+    ``movieclaw_api``）。服务端握手时正是从 Host 推断下发给 Worker 的取源与
+    回传地址，于是 Worker 上的 ffmpeg 拿到一个只在容器内有意义的主机名，
+    直接 Error opening input（退出码 187）——远程转码全盘不可用。
+    """
+    text = _TEMPLATE.read_text(encoding="utf-8")
+    location = re.search(
+        r"location\s*=\s*/api/v1/transcode-worker/ws\s*\{(?P<body>.*?)\n\s*\}",
+        text,
+        flags=re.DOTALL,
+    )
+    assert location, "nginx 模板缺少外置转码 Worker 的精确 WebSocket location"
+    body = location.group("body")
+    for directive in (
+        "proxy_set_header Host $http_host;",
+        "proxy_set_header X-Real-IP $remote_addr;",
+        "proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;",
+        "proxy_set_header X-Forwarded-Proto $movieclaw_forwarded_proto;",
+        "proxy_set_header X-Forwarded-Host $movieclaw_forwarded_host;",
+    ):
+        assert directive in body, (
+            f"WebSocket location 缺少 {directive}——远程转码下发的地址会退化成"
+            "容器内部主机名"
+        )
