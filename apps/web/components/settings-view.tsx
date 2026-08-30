@@ -1,5 +1,7 @@
 "use client";
 
+import type { Route } from "next";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { LiquidGlassButton } from "@/vendor/liquid-glass";
@@ -496,7 +498,8 @@ function ChangePasswordCard() {
  *
  *   - 版本与更新：当前版本、检查/执行更新、NER 模型、回退（AppUpdateSection）；
  *   - 网络与维护：外部访问地址、重启应用（AppConfigSection）；
- *   - 远程转码：远程 Worker 的开关、令牌与传输限制（RemoteTranscodeSection）。
+ *   - 远程转码：远程 Worker 的开关、连接地址与传输限制（RemoteTranscodeSection）。
+ *     令牌不在这里——Worker 的凭证是逐台配对签发的，审批与吊销在「设备」分区。
  *
  * 为什么「版本与更新」是默认标签：这一页的高频入口是侧栏的更新徽标（有新版
  * 才出现），用户带着"来更新"的意图落地，第一屏就该是更新卡片；外部访问地址
@@ -504,6 +507,7 @@ function ChangePasswordCard() {
  * 挤在一条长页里。有可用更新时标签上点一颗小蓝点，与设置侧栏的「应用」行同款。
  */
 function AppSection() {
+  const router = useRouter();
   const [tab, setTab] = useState<"update" | "maintain" | "remote">("update");
   // 支持 /settings/app?tab=remote 深链接：软转同意弹窗要把管理员直接送到
   // 「远程转码」，落在默认的「版本与更新」等于让引导断在最后一步。
@@ -547,7 +551,10 @@ function AppSection() {
       ) : tab === "maintain" ? (
         <AppConfigSection />
       ) : (
-        <RemoteTranscodeSection onOpenMaintain={() => setTab("maintain")} />
+        <RemoteTranscodeSection
+          onOpenMaintain={() => setTab("maintain")}
+          onOpenDevices={() => router.push("/settings/devices" as Route)}
+        />
       )}
     </div>
   );

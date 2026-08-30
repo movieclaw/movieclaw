@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { CheckIcon } from "@/components/icons";
+import { type DeviceRequestView, listDeviceRequests } from "@/lib/api/devices";
 import {
   type RemoteTranscodeConfigView,
   type RemoteTranscodeStatus,
@@ -23,6 +24,8 @@ const INPUT_CLASS =
 export interface RemoteTranscodeSectionProps {
   /** 系统外部访问地址未配置且专用地址为空时，切回「网络与维护」Tab。 */
   onOpenMaintain?: () => void;
+  /** 去「设备」分区审批或吊销 Worker。批准是这条链路的必经一步，得能一键到。 */
+  onOpenDevices?: () => void;
 }
 
 /**
@@ -32,7 +35,10 @@ export interface RemoteTranscodeSectionProps {
  * 中的外部访问地址。源文件 URL、HLS 上传 URL 和 Worker 控制地址始终使用同一
  * 个有效入口，避免三类请求走到不同的主机或端口。
  */
-export function RemoteTranscodeSection({ onOpenMaintain }: RemoteTranscodeSectionProps) {
+export function RemoteTranscodeSection({
+  onOpenMaintain,
+  onOpenDevices,
+}: RemoteTranscodeSectionProps) {
   const [config, setConfig] = useState<RemoteTranscodeConfigView | null>(null);
   const [enabled, setEnabled] = useState(false);
   const [baseURLDraft, setBaseURLDraft] = useState("");
@@ -42,6 +48,10 @@ export function RemoteTranscodeSection({ onOpenMaintain }: RemoteTranscodeSectio
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [status, setStatus] = useState<RemoteTranscodeStatus | null>(null);
+  // 等待批准的 Worker 接入请求。用户在 Mac 上点完「请求接入」通常会切回浏览器，
+  // 而他多半落在这一页（他是来配远程转码的）——不在这里提示，他看到的就是
+  // 「还没有 Worker 连上来」，完全不知道有个请求正等他批。
+  const [pendingWorkers, setPendingWorkers] = useState<DeviceRequestView[]>([]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -73,6 +83,12 @@ export function RemoteTranscodeSection({ onOpenMaintain }: RemoteTranscodeSectio
         if (alive) setStatus(next);
       } catch {
         if (alive) setStatus(null);
+      }
+      try {
+        const requests = await listDeviceRequests();
+        if (alive) setPendingWorkers(requests.filter((r) => r.client_type === "worker"));
+      } catch {
+        if (alive) setPendingWorkers([]);
       }
     }
     void poll();
@@ -170,7 +186,7 @@ export function RemoteTranscodeSection({ onOpenMaintain }: RemoteTranscodeSectio
       </p>
 
       <section>
-        <h3 className="group-label mb-2.5 px-1">运行状态</h3>
+        <h3 className="group-label mb-2.5 px-1">状态</h3>
         <div className="css-glass space-y-4 !rounded-2xl p-5 max-sm:p-4">
           <label className="flex cursor-pointer items-center justify-between gap-4">
             <span>
@@ -194,79 +210,129 @@ export function RemoteTranscodeSection({ onOpenMaintain }: RemoteTranscodeSectio
               {config.issues.map((issue) => <li key={issue}>· {issue}</li>)}
             </ul>
           )}
+        </div>
+      </section>
 
-          {/* 已连接的 Worker。配完之后「成没成」全靠这一块回答，因此即使没有
-              Worker 也要显式说明，而不是把区域整个藏起来让人以为没这功能。 */}
-          {config.enabled && config.ready && (
-            <div className="border-t border-white/[0.06] pt-3">
-              {status == null ? (
-                <p className="text-caption text-[var(--text-faint)]">正在获取 Worker 状态…</p>
-              ) : status.workers.length === 0 ? (
-                <div className="space-y-1.5 text-caption leading-5 text-[var(--text-faint)]">
-                  <p>还没有 Worker 连接。请在 Mac 上打开 MovieClaw Transcoder，</p>
-                  <p>用下方的配对码填好设置后点「保存并连接」。</p>
-                </div>
-              ) : (
-                <ul className="space-y-2">
-                  {status.workers.map((worker) => (
-                    <li
-                      key={worker.worker_id}
-                      className="rounded-xl border border-white/[0.06] bg-black/15 px-3 py-2"
-                    >
-                      <div className="flex items-center justify-between gap-3">
-                        <span className="text-sub font-medium text-[var(--text)]">
-                          {worker.worker_id}
-                        </span>
-                        <span
-                          className={
-                            worker.online
-                              ? worker.draining
-                                ? "text-caption text-amber-200"
-                                : "text-caption text-emerald-300"
-                              : "text-caption text-[var(--text-faint)]"
-                          }
-                        >
-                          {worker.online ? (worker.draining ? "暂停接单" : "在线") : "已离线"}
-                        </span>
-                      </div>
-                      <p className="mt-1 text-caption leading-5 text-[var(--text-faint)]">
-                        {[
-                          worker.platform,
-                          worker.arch,
-                          worker.ffmpeg_version ? `ffmpeg ${worker.ffmpeg_version}` : null,
-                          worker.backends.length > 0 ? worker.backends.join("/") : null,
-                          `任务 ${worker.active_jobs}/${worker.max_jobs}`,
-                          `${Math.round(worker.last_seen_seconds)} 秒前活跃`,
-                        ]
-                          .filter(Boolean)
-                          .join(" · ")}
-                      </p>
-                    </li>
-                  ))}
-                </ul>
+      {/* Worker 单独成组，不再埋在状态卡的底部：配完之后「成没成」全靠这一块
+          回答，它是这一页最该被看见的内容。 */}
+      <section>
+        <h3 className="group-label mb-2.5 px-1">Worker</h3>
+        <div className="css-glass space-y-4 !rounded-2xl p-5 max-sm:p-4">
+          {/* 有请求在等批准时置顶。这是新授权流程下最容易卡住的一步：
+              Mac 那边已经点了「请求接入」，人却在这一页找不到任何线索。 */}
+          {pendingWorkers.length > 0 && (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-300/25 bg-amber-300/[0.07] px-4 py-3">
+              <p className="text-sub leading-relaxed text-amber-100">
+                有 {pendingWorkers.length} 台 Worker 正在等待批准
+                <span className="ml-1.5 font-mono text-caption text-amber-200/80">
+                  {pendingWorkers.map((r) => r.user_code).join(" · ")}
+                </span>
+              </p>
+              {onOpenDevices && (
+                <button
+                  type="button"
+                  onClick={onOpenDevices}
+                  className="btn-glass shrink-0 rounded-full px-3.5 py-1.5 text-sub font-medium"
+                >
+                  去审批
+                </button>
               )}
+            </div>
+          )}
+
+          {status != null && status.workers.length > 0 ? (
+            <>
+              <ul className="space-y-2">
+                {status.workers.map((worker) => (
+                  <li
+                    key={worker.worker_id}
+                    className="rounded-xl border border-white/[0.06] bg-black/15 px-3 py-2"
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-sub font-medium text-[var(--text)]">
+                        {worker.worker_id}
+                      </span>
+                      <span
+                        className={
+                          worker.online
+                            ? worker.draining
+                              ? "text-caption text-amber-200"
+                              : "text-caption text-emerald-300"
+                            : "text-caption text-[var(--text-faint)]"
+                        }
+                      >
+                        {worker.online ? (worker.draining ? "暂停接单" : "在线") : "已离线"}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-caption leading-5 text-[var(--text-faint)]">
+                      {[
+                        worker.platform,
+                        worker.arch,
+                        worker.ffmpeg_version ? `ffmpeg ${worker.ffmpeg_version}` : null,
+                        worker.backends.length > 0 ? worker.backends.join("/") : null,
+                        `任务 ${worker.active_jobs}/${worker.max_jobs}`,
+                        `${Math.round(worker.last_seen_seconds)} 秒前活跃`,
+                      ]
+                        .filter(Boolean)
+                        .join(" · ")}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+              {/* 这一页只回答「现在连着吗、在干什么」；「授权还在不在、要不要
+                  吊销」是设备页的事，两页各管一段，互相指路。 */}
+              {onOpenDevices && (
+                <button
+                  type="button"
+                  onClick={onOpenDevices}
+                  className="text-caption text-[var(--accent)] underline decoration-dotted underline-offset-2"
+                >
+                  在「设备」里查看授权或吊销
+                </button>
+              )}
+            </>
+          ) : status == null ? (
+            <p className="text-caption text-[var(--text-faint)]">正在获取 Worker 状态…</p>
+          ) : (
+            <div className="space-y-2 text-caption leading-5 text-[var(--text-faint)]">
+              <p className="text-sub text-[var(--text-muted)]">还没有 Worker 接入。在 Mac 上：</p>
+              <ol className="space-y-1 pl-4">
+                <li>1. 打开 MovieClaw Transcoder，点「在局域网中查找」或直接填 movieclaw 地址；</li>
+                <li>2. 点「验证连接」，再点「请求接入」，它会显示一段配对码；</li>
+                <li>
+                  3. 回到网页的「设置 → 设备」，核对配对码后批准
+                  {onOpenDevices && (
+                    <>
+                      {" "}
+                      <button
+                        type="button"
+                        onClick={onOpenDevices}
+                        className="text-[var(--accent)] underline decoration-dotted underline-offset-2"
+                      >
+                        去设备页
+                      </button>
+                    </>
+                  )}
+                  。
+                </li>
+              </ol>
+              <p className="pt-1">
+                全程不需要在任何一边输入令牌——Worker 的凭证是批准时签发的，直接回到那台
+                Mac，不经过屏幕。
+              </p>
             </div>
           )}
         </div>
       </section>
 
+      {/* 地址与分片上限都是「Worker 怎么和 NAS 说话」，合成一组。令牌被拿掉
+          之后，原来那个只剩一个可选输入框的「连接」分组已经名不副实。 */}
       <section>
-        <h3 className="group-label mb-2.5 px-1">连接</h3>
+        <h3 className="group-label mb-2.5 px-1">连接与传输</h3>
         <div className="css-glass space-y-5 !rounded-2xl p-5 max-sm:p-4">
-          {/* 这里没有令牌输入框，也没有配对码：Worker 的凭证是逐台配对签发的，
-              在「设备」分区审批与吊销（docs/design/device-auth.md §5.4）。
-              让人在两个地方各抄一遍高熵字符串，正是这次要拆掉的东西。 */}
-          <div className="rounded-xl border border-white/[0.06] bg-black/15 px-4 py-3">
-            <p className="text-sub leading-relaxed text-[var(--text-muted)]">
-              在 Mac 上打开 MovieClaw Transcoder，填入下面这个地址并点「验证连接」，
-              它会显示一个配对码；到「设置 → 设备」核对后批准即可。这里不需要、
-              也不应该配置任何令牌。
-            </p>
-          </div>
-
           <div>
             <label htmlFor="remote-base-url" className="text-body font-medium text-[var(--text)]">
-              远程转码外部访问地址（可选）
+              远程转码专用地址（可选）
             </label>
             <input
               id="remote-base-url"
@@ -278,8 +344,9 @@ export function RemoteTranscodeSection({ onOpenMaintain }: RemoteTranscodeSectio
               spellCheck={false}
             />
             <p className="mt-1.5 text-caption leading-5 text-[var(--text-faint)]">
-              填写后仅远程转码使用此地址；留空则回退到系统「网络与维护」中的外部访问地址。
-              可填写可信内网的 HTTP 地址，端口请使用 NAS 实际对外映射端口。
+              Worker 取源视频、传 HLS 产物和控制连接都走这个地址。留空则跟随系统
+              「网络与维护」中的外部访问地址。建议填可信内网的 HTTP 地址：转码要来回
+              传大量分片，走公网或反向代理会明显变慢。
             </p>
             <div className="mt-3 rounded-xl border border-white/[0.06] bg-black/15 px-3 py-2 text-sub">
               <span className="text-[var(--text-faint)]">当前生效地址：</span>{" "}
@@ -302,31 +369,28 @@ export function RemoteTranscodeSection({ onOpenMaintain }: RemoteTranscodeSectio
               </button>
             )}
           </div>
-        </div>
-      </section>
 
-      <section>
-        <h3 className="group-label mb-2.5 px-1">传输限制</h3>
-        <div className="css-glass !rounded-2xl p-5 max-sm:p-4">
-          <label htmlFor="remote-artifact-limit" className="text-body font-medium text-[var(--text)]">
-            单个 HLS 产物大小上限
-          </label>
-          <div className="mt-2 flex max-w-[300px] items-center gap-2">
-            <input
-              id="remote-artifact-limit"
-              type="number"
-              min={1}
-              max={MAX_ARTIFACT_MIB}
-              step={1}
-              value={maxArtifactMiB}
-              onChange={(event) => setMaxArtifactMiB(event.target.value)}
-              className={`min-w-0 flex-1 ${INPUT_CLASS}`}
-            />
-            <span className="text-sub text-[var(--text-muted)]">MiB</span>
+          <div className="border-t border-white/[0.06] pt-5">
+            <label htmlFor="remote-artifact-limit" className="text-body font-medium text-[var(--text)]">
+              单个 HLS 产物大小上限
+            </label>
+            <div className="mt-2 flex max-w-[300px] items-center gap-2">
+              <input
+                id="remote-artifact-limit"
+                type="number"
+                min={1}
+                max={MAX_ARTIFACT_MIB}
+                step={1}
+                value={maxArtifactMiB}
+                onChange={(event) => setMaxArtifactMiB(event.target.value)}
+                className={`min-w-0 flex-1 ${INPUT_CLASS}`}
+              />
+              <span className="text-sub text-[var(--text-muted)]">MiB</span>
+            </div>
+            <p className="mt-1.5 text-caption leading-5 text-[var(--text-faint)]">
+              限制 NAS 接收的 init、playlist 和 fMP4 分片大小，默认和最大值均为 512 MiB。
+            </p>
           </div>
-          <p className="mt-1.5 text-caption leading-5 text-[var(--text-faint)]">
-            限制 NAS 接收的 init、playlist 和 fMP4 分片大小，默认和最大值均为 512 MiB。
-          </p>
         </div>
       </section>
 

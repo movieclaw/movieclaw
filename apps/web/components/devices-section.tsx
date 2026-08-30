@@ -297,7 +297,7 @@ function EmptyState({ hasPending }: { hasPending: boolean }) {
       <p className="max-w-sm text-sub leading-relaxed text-[var(--text-muted)]">
         {hasPending
           ? "上面有一条待批准的请求，核对配对码后即可批准。"
-          : "在 Mac 转码 Worker 里填好本机地址，或在终端运行 mclaw login，设备会显示一个配对码，回到这里批准即可。"}
+          : "在 Mac 转码 Worker 里点「在局域网中查找」或填好地址，或在终端运行 mclaw login，设备会显示一段配对码，回到这里批准即可。"}
       </p>
     </div>
   );
