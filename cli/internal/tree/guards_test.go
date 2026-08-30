@@ -76,6 +76,7 @@ var knownNonGenerated = []string{
 	"ui.discovery.get",
 	"discover.get-person-details",
 	"ui.subscriptions.preview-title",
+	"settings.health",
 }
 
 // TestNonGeneratedEndpointsAreAllKnown 强制新端点显式表态：进命令树，或登记豁免。
