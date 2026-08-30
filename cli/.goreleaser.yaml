@@ -47,6 +47,8 @@ changelog:
   disable: true
 
 release:
-  # Release 正文与产物由发版流程统一编排，这里只负责把二进制传上去
-  disable: false
-  mode: append
+  # 上传由 release.yml 用 gh release upload 完成，goreleaser 只负责在
+  # dist/ 产出归档与校验和。原因：Release 以 draft 创建、产物齐全后才
+  # 转正，而 goreleaser 走的 GitHub API 按 tag 查不到 draft，会另建一个
+  # 重复的 Release；gh 能按 tag 名找到草稿。
+  disable: true

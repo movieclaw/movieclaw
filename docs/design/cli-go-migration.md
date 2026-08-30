@@ -212,7 +212,7 @@ Python 版靠自定义 `click.Group.resolve_command`。cobra 的等价做法：�
 |---|---|
 | Dockerfile 增加 `go-builder` 阶段，二进制装到 `/usr/local/bin/mclaw` | `Dockerfile` |
 | Agent 工具改执行二进制（`MOVIECLAW_CLI_BIN`，默认 `/usr/local/bin/mclaw`） | `src/movieclaw_agent/tools/mclaw.py` |
-| 发版流程新增 cli 作业，由 GoReleaser 出五平台产物附到 Release | `.github/workflows/release.yml`、`cli/.goreleaser.yaml` |
+| 发版流程新增 cli 作业，由 GoReleaser 出六平台产物附到 Release | `.github/workflows/release.yml`、`cli/.goreleaser.yaml` |
 | 基线 spec 搬到 `src/movieclaw_api/data/`，一次导出写两处 | `scripts/export-spec.sh`、`services/spec_catalog.py`、`app_update.py:_validate_layout` |
 | CI 增加 Go lane（`go vet` / `golangci-lint` / `go test`），与既有 Swift lane 同构 | `.github/workflows/ci.yml` |
 

@@ -9,7 +9,7 @@
 #     季集相关的一批测试会稳定失败——所以先从模型 Release 下载三个文件，
 #     并用 actions/cache 按 tag 缓存，避免每次跑 CI 都拉 15MB。
 #   - web 作业：eslint + tsc，与 release.yml 的前端环境保持同一套版本。
-#   - cli-go 作业：mclaw（Go）的 vet、gofmt、单测与五平台交叉编译。命令树
+#   - cli-go 作业：mclaw（Go）的 vet、gofmt、单测与六平台交叉编译。命令树
 #     快照、豁免端点清单、域帮助覆盖这些命令面守护全在 go test 里，改了路由
 #     忘了同步会在这里红。
 #   - worker-macos 作业：macOS Worker 的 Swift 构建与单测。它只能在 macOS
@@ -101,11 +101,12 @@ jobs:
         working-directory: cli
         run: go test ./...
 
-      # 五个分发目标都得编得过：任何一个挂了，那批用户就装不上
-      - name: 交叉编译五平台
+      # 六个分发目标都得编得过：任何一个挂了，那批用户就装不上
+      # （目标清单与 cli/.goreleaser.yaml 的 goos × goarch 保持一致）
+      - name: 交叉编译六平台
         working-directory: cli
         run: |
-          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
             CGO_ENABLED=0 GOOS=${target%/*} GOARCH=${target#*/} \
               go build -trimpath -o /tmp/mclaw-check ./cmd/mclaw
             echo "✓ $target"

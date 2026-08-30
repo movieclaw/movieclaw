@@ -397,7 +397,7 @@ CLI 要装在 NAS、软路由、同事的机器和 CI 里，「先装个 Python�
 - **运行时动态生成命令树**要求框架支持程序化注册——cobra 的 `Command` 对象
   模型与 pflag 的 `Changed()`（区分「没传」与「传了零值」）正好够用。
 - 分发：① Docker 镜像内置（产品内 Agent 与 `docker exec` 用户零安装）；
-  ② GitHub Release 的五平台二进制，`scripts/install-cli.sh` / `install-cli.ps1`
+  ② GitHub Release 的六平台二进制，`scripts/install-cli.sh` / `install-cli.ps1`
   一行装好，不需要任何预装运行时。
 - 不做的事（防过度工程）：不做裸调逃生舱与结构化目录命令（less is more，
   见 §1/§4）、不做插件系统、不做本地数据库（仅「上次搜索快照」一个 JSON

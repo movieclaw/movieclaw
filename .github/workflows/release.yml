@@ -1,23 +1,37 @@
 # =============================================================================
 # 发版流水线（docs/design/in-app-update.md M1）
 #
-# 打 v* tag 时构建应用内更新产物并上传到 GitHub Release：
-#   app-web.tar.gz / app-backend.tar.gz / manifest.json
-# 同时构建并上传 macOS 远程转码 Worker（MovieClawTranscoder-macos-arm64.zip）：
-# 此前这个 App 只能由用户自己 clone 仓库 + 装 Xcode + swift build，对一个
-# 面向 NAS 用户的开源项目来说等同于劝退。
+# 打 v* tag 时构建全部发版产物并发布 GitHub Release：
+#   - 应用更新三件套：app-web.tar.gz / app-backend.tar.gz / manifest.json
+#   - mclaw CLI 六平台归档 + checksums.txt（goreleaser 构建）
+#   - macOS 远程转码 Worker（MovieClawTranscoder-macos-arm64.zip）：
+#     此前这个 App 只能由用户自己 clone 仓库 + 装 Xcode + swift build，对一个
+#     面向 NAS 用户的开源项目来说等同于劝退。
 # 产物上传成功后自动调用 docker-image.yml，同步发布同版本号的
 # Docker 镜像（多架构，标签策略见该工作流头注释）。
+#
+# 发布是两段式的（draft → publish）：Release 先以 draft 创建，各作业往
+# draft 上传产物，最后 publish 作业校验产物齐全、镜像发布成功后才转正。
+# 为什么：Release 一旦可见，应用内更新检查器和 install-cli.sh 的
+# latest/download 立刻会读它——产物陆续上传的窗口期里，用户会撞上
+# 「latest 里没有 mclaw」的 404，或在应用内看到 --generate-notes 的 PR
+# 清单。draft 对两者都不可见（app_update.py 也显式过滤 draft），产物
+# 齐全前用户永远看不到半成品 Release。任何作业失败时 Release 停在
+# draft，修复后重跑本工作流即可——所有上传都带 --clobber，可安全重入。
 # =============================================================================
 name: release
+
+# 同一 tag 的发版串行执行，避免重跑/连发时产物与镜像标签交错
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
 
 on:
   push:
     tags: ["v*"]
   # 手动触发通道：远程会话（Claude Code 等）的 git 凭证通常只能推分支、
-  # 推不了 tag。这里输入目标 tag 后，由「创建 Release」步骤经 gh 一并创建
-  # tag（指向触发时的 main HEAD）。GITHUB_TOKEN 创建的 tag 不会再触发
-  # 本工作流的 push 事件，无递归风险。
+  # 推不了 tag。这里输入目标 tag 后先创建 draft Release（--target 指向
+  # 触发时的 main HEAD），publish 作业转正时才真正创建 tag。GITHUB_TOKEN
+  # 创建的 tag 不会再触发本工作流的 push 事件，无递归风险。
   workflow_dispatch:
     inputs:
       tag:
@@ -66,7 +80,7 @@ jobs:
         run: |
           VERSION="${RELEASE_TAG#v}" ./scripts/build-release-artifacts.sh dist/release
 
-      - name: 上传 Release assets（Release 不存在则创建）
+      - name: 上传 Release assets（Release 不存在则创建 draft）
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -76,20 +90,28 @@ jobs:
           case "$RELEASE_TAG" in
             *-*) PRERELEASE_FLAG="--prerelease" ;;
           esac
+          # Release body 优先取已合入的 changelog 文件——应用内更新界面会
+          # 原文展示 body，不该让用户看到 --generate-notes 的 PR 清单。
+          # changelog 后合入的情况仍由 release-notes.yml 兜底同步。
+          NOTES_ARGS=(--generate-notes)
+          if [ -f "docs/changelog/$RELEASE_TAG.md" ]; then
+            NOTES_ARGS=(--notes-file "docs/changelog/$RELEASE_TAG.md")
+          fi
           if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
-            # --target：tag 不存在时（手动触发通道）在该提交上创建 tag；
-            # tag 推送事件里 tag 已存在，此参数被忽略
+            # --draft：产物齐全前 Release 不可见，由 publish 作业最终转正。
+            # --target：手动触发通道里 tag 尚不存在，draft 转正时会在该提交
+            # 上创建 tag；tag 推送事件里 tag 已存在，此参数被忽略
             gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
-              --target "$GITHUB_SHA" \
-              --title "$RELEASE_TAG" --generate-notes $PRERELEASE_FLAG
+              --target "$GITHUB_SHA" --draft \
+              --title "$RELEASE_TAG" "${NOTES_ARGS[@]}" $PRERELEASE_FLAG
           fi
           assets=(dist/release/app-web.tar.gz dist/release/app-backend.tar.gz dist/release/manifest.json)
           [ -f dist/release/manifest.json.sig ] && assets+=(dist/release/manifest.json.sig)
           gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --clobber "${assets[@]}"
 
-  # mclaw CLI（Go）。needs 只为等 Release 被创建出来，与 docker-image 并行。
-  # 不用 continue-on-error：CLI 是 Agent 操作产品的唯一入口，install-cli.sh
-  # 也直接来这里取产物；缺了它这个 Release 对 CLI 用户就是废的，该红就红。
+  # mclaw CLI（Go）。needs 只为等 draft Release 被创建出来，与 docker-image
+  # 并行。CLI 是 Agent 操作产品的唯一入口，install-cli.sh 也直接来这里取
+  # 产物——缺了它 publish 作业不会让 Release 转正，该红就红。
   cli:
     needs: release-artifacts
     runs-on: ubuntu-latest
@@ -114,39 +136,64 @@ jobs:
           python -c "import tomllib; deps = tomllib.load(open('pyproject.toml', 'rb'))['project']['dependencies']; open('requirements.txt', 'w').write('\n'.join(deps))"
           pip install --no-cache-dir -r requirements.txt
 
-      - name: 构建并上传五平台产物
+      - name: 校验基线 spec 与代码一致
+        run: |
+          # 现场重导一次并与提交的副本比对。以前靠 goreleaser 的 before hook
+          # 重导 + dirty-state 拒绝发布来兜底，但那条报错（"git is in a
+          # dirty state"）和真实原因隔了两层；这里显式比对、报中文错误。
+          scripts/export-spec.sh
+          if ! git diff --exit-code --stat -- \
+              src/movieclaw_api/data/spec.json cli/internal/spec/data/spec.json; then
+            echo "::error::基线 spec 与代码漂移：发版 PR 里漏跑了 scripts/export-spec.sh。请在发版分支重跑该脚本、合入 main 后重新发版。"
+            exit 1
+          fi
+
+      - name: 构建六平台产物
         uses: goreleaser/goreleaser-action@v6
         with:
           version: "~> v2"
           workdir: cli
-          args: release --clean
+          # --skip=validate：手动触发通道里 tag 要等 draft 转正才真正创建，
+          # goreleaser 的 tag/HEAD 校验必挂；脏区与版本一致性已由上一步和
+          # build-release-artifacts.sh 显式把关。上传不走 goreleaser
+          # （GitHub API 按 tag 查不到 draft，goreleaser 会另建一个 Release），
+          # 由下一步用 gh 上传——gh 能按 tag 名找到草稿。
+          args: release --clean --skip=validate
         env:
-          GITHUB_TOKEN: ${{ github.token }}
           GORELEASER_CURRENT_TAG: ${{ inputs.tag || github.ref_name }}
 
-  # macOS 远程转码 Worker。needs 只为等 Release 被创建出来，与 docker-image
-  # 并行；它构建失败不该拖住应用产物和镜像的发布，因此用 continue-on-error，
-  # 失败时 Release 里就是少一个可选附件，主更新链路不受影响。
+      - name: 上传到 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --clobber \
+            cli/dist/mclaw_*.tar.gz cli/dist/mclaw_*.zip cli/dist/checksums.txt
+
+  # macOS 远程转码 Worker。needs 只为等 draft Release 被创建出来，与
+  # docker-image 并行。它构建失败不拦发布——publish 作业不看它的结果，
+  # Release 里就是少一个可选附件，主更新链路不受影响；但刻意不用
+  # continue-on-error：那样失败会藏在绿色 workflow 里没人发现，红出来
+  # 才有人去重跑补传。
   worker-macos:
     needs: release-artifacts
     runs-on: macos-14
-    continue-on-error: true
     env:
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
         with:
-          # needs 满足时 tag 可能刚由上一个作业创建，默认 ref 未必包含它；
-          # 显式取触发时的提交，保证打包的就是发版那份代码
+          # 手动触发通道里 tag 要等 draft 转正才创建，默认 ref 未必是发版
+          # 提交；显式取触发时的提交，保证打包的就是发版那份代码
           ref: ${{ github.sha }}
 
       - name: 单测
         run: swift test --package-path macos/MovieClawTranscoder
 
-      - name: 打包 App（ad-hoc 签名）
+      - name: 打包 App（ad-hoc 签名，版本号注入自发版 tag）
         run: |
           chmod +x macos/MovieClawTranscoder/scripts/package-app.sh
-          macos/MovieClawTranscoder/scripts/package-app.sh
+          MOVIECLAW_WORKER_VERSION="${RELEASE_TAG#v}" \
+            macos/MovieClawTranscoder/scripts/package-app.sh
 
       - name: 压缩 App Bundle
         run: |
@@ -171,3 +218,44 @@ jobs:
     with:
       tag: ${{ inputs.tag || github.ref_name }}
     secrets: inherit
+
+  # 终审：产物齐全 + 镜像发布成功后才把 draft Release 转正。
+  # 这是发布原子性的落点——转正之前，应用内更新、install-cli.sh 的
+  # latest/download、Release 页对用户都不可见，不存在「半成品 Release」。
+  # worker-macos 失败不拦转正（可选附件），但 cli 或镜像失败时 Release
+  # 停在 draft：修复后重跑本工作流即可，全链路可安全重入。
+  publish:
+    needs: [cli, worker-macos, docker-image]
+    if: ${{ !cancelled() && needs.cli.result == 'success' && needs.docker-image.result == 'success' }}
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+      # 只用于判断本仓库是否启用了清单签名（启用则 .sig 必须在场）
+      RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+    steps:
+      - name: 校验产物齐全并发布 Release
+        run: |
+          assets="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --json assets --jq '.assets[].name')"
+          required="app-web.tar.gz app-backend.tar.gz manifest.json
+            mclaw_linux_amd64.tar.gz mclaw_linux_arm64.tar.gz
+            mclaw_darwin_amd64.tar.gz mclaw_darwin_arm64.tar.gz
+            mclaw_windows_amd64.zip mclaw_windows_arm64.zip
+            checksums.txt"
+          if [ -n "$RELEASE_SIGNING_KEY" ]; then
+            required="$required manifest.json.sig"
+          fi
+          missing=""
+          for f in $required; do
+            echo "$assets" | grep -qx "$f" || missing="$missing $f"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Release 产物不齐，拒绝转正（缺少:$missing）。修复对应作业后重跑本工作流即可补传。"
+            exit 1
+          fi
+          if ! echo "$assets" | grep -qx "MovieClawTranscoder-macos-arm64.zip"; then
+            echo "::warning::缺少 macOS Worker 附件（可选产物），Release 照常发布；重跑 worker-macos 作业可补传"
+          fi
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false
+          echo "Release $RELEASE_TAG 已发布"

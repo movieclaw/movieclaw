@@ -45,14 +45,20 @@ description: 发布 movieclaw 新版本。当用户要求发版、发布新版�
    以 GITHUB_TOKEN 代为触发 release.yml（在 main HEAD 上创建 tag），
    并自动删除点火分支。人工兜底：到 Actions → release 手动
    Run workflow 输入 tag）
-4. release.yml 自动构建并上传 Release assets：
-   app-web.tar.gz / app-backend.tar.gz / manifest.json（可选 manifest.json.sig）；
-   产物上传成功后自动发布多架构 Docker 镜像到 Docker Hub
+4. release.yml 两段式发布（draft → publish）：先以 draft 创建 Release，
+   各作业往上传产物——应用三件套（app-web.tar.gz / app-backend.tar.gz /
+   manifest.json，可选 manifest.json.sig）、mclaw 六平台归档 + checksums、
+   macOS Worker zip（可选附件）——同时发布多架构 Docker 镜像到 Docker Hub
    （movieclaw/movieclaw，正式版打 vX.Y.Z + runtime-N + latest，
-   预发布版只打 vX.Y.Z-… 不动 latest）
-5. changelog：写 docs/changelog/vX.Y.Z.md 合入 main，release-notes.yml 会
-   自动把它同步为 Release body（应用内更新界面原文展示）；先合 changelog
-   后发 Release 也没关系，Release 创建后再触碰一次该文件即可触发同步。
+   预发布版只打 vX.Y.Z-… 不动 latest）。最后 publish 作业校验产物齐全、
+   镜像发布成功后把 draft 转正；此前 Release 对应用内更新和
+   install-cli.sh 都不可见。**任何作业失败时 Release 停在 draft，
+   修复后到 Actions 重跑整个 release 工作流即可**（上传均带 --clobber，
+   安全重入）；仅 Worker 挂了不拦转正，重跑 worker-macos 作业补传即可。
+5. changelog：写 docs/changelog/vX.Y.Z.md 合入 main。changelog 先于发版
+   合入（推荐，可与发版 PR 同 PR）时，release.yml 建 Release 会直接用它
+   当 body；后合入也没关系，release-notes.yml 会自动同步为 Release body
+   （应用内更新界面原文展示）。
    **撰写规则（保证不漏、不流水账）**：
    - 检索范围用 `git log --first-parent 上一tag..HEAD --oneline`，
      以合并 PR 为单位枚举区间内全部变更（含直接推 main 的提交），
@@ -97,10 +103,13 @@ docker-image 手动 Run workflow 输入标签即可。本地/离线构建仍可�
 1. 训练产出三件套：`model.int8.onnx`、`tokenizer.json`、`labels.json`
 2. 生成更新清单（tag 必须与将要创建的 Release tag 一致，后端会强校验）：
    `./scripts/build-model-manifest.sh <模型目录> torrent-ner-vN`
-3. 创建 tag 为 `torrent-ner-vN` 的 GitHub Release（N 递增），上传
-   三件套 + `manifest.json`（+ 签名时的 `manifest.json.sig`）
-4. **不要**把模型 Release 标成 latest 之外还需担心什么——应用更新检查
-   按 tag 正则过滤，模型 Release 不会干扰应用更新
+3. 创建 tag 为 `torrent-ner-vN` 的 GitHub Release（N 递增），**必须带
+   `--latest=false`**（如 `gh release create torrent-ner-vN --latest=false …`），
+   上传三件套 + `manifest.json`（+ 签名时的 `manifest.json.sig`）
+4. 为什么 `--latest=false` 是硬约束：install-cli.sh / install-cli.ps1 从
+   `releases/latest/download` 取 mclaw，模型 Release 一旦成为 latest，
+   CLI 安装立刻 404。除此之外无需担心其他干扰——应用更新检查按 tag
+   正则过滤，模型 Release 不会干扰应用更新
 5. 没带 manifest.json 的模型 Release 无法被应用内安装（会提示用户），
    只能作为镜像构建的 `NER_MODEL_BASE` 来源
 
@@ -150,11 +159,15 @@ ffmpeg 版本，发版前按下表逐项过一遍。
 - [ ] 版本号三处一致（应用发版）
 - [ ] bump 版本号后已跑 `scripts/export-spec.sh`（服务端与 Go CLI 两份 spec）
 - [ ] 本次改动是否触碰运行时依赖？触碰了 → `docker/runtime-version` +1（镜像随发版自动发布）
+- [ ] 改了 Worker 握手协议（`REMOTE_WORKER_PROTOCOL_VERSION` 与 macOS Worker
+      的 `BuildInfo.protocolVersion` 同步 +1）→ 旧 Worker 会被服务端拒绝握手，
+      changelog 显著位置写明「需要更新 Mac Worker」
 - [ ] 数据库迁移向前兼容（alembic 迁移是单向的，用户回退靠自动备份）
-- [ ] Release 产物齐全（CI 完成后到 Release 页核对）：应用更新三件套 +
-      mclaw 五平台产物（`mclaw_{linux,darwin}_{amd64,arm64}.tar.gz`、
-      `mclaw_windows_amd64.zip`、`checksums.txt`）
-- [ ] 启用签名的仓库：`.sig` 已随产物上传
+- [ ] Release 产物齐全：publish 作业已自动校验（应用三件套 + mclaw 六平台
+      归档 `mclaw_{linux,darwin}_{amd64,arm64}.tar.gz`、
+      `mclaw_windows_{amd64,arm64}.zip`、`checksums.txt`，启用签名时含
+      `.sig`），人工只需确认 release 工作流全绿、Release 已从 draft 转正；
+      worker-macos 作业红了 → Worker zip 缺失，重跑该作业补传
 - [ ] changelog 已写入 `docs/changelog/vX.Y.Z.md` 并合入 main（release-notes.yml
       自动同步为 Release body，应用内更新界面会原文展示给用户）
 - [ ] 改动了播放/转码 → 第五节的硬件矩阵人工验收已过（CI 覆盖不到）
