@@ -30,5 +30,9 @@
 	</dict>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<!-- macOS 14 起，往局域网广播要用户授权一次；没有这条说明，
+	     系统弹的框不会告诉用户为什么，「在局域网中查找」会静默失效。 -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>用于在局域网中查找你的 movieclaw 服务器地址，省去手工输入。不查找也可以直接填写地址。</string>
 </dict>
 </plist>

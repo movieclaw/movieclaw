@@ -9,6 +9,7 @@ import AppKit
 /// 配对是两步，且第二步必须在第一步验证通过之后才出现：
 ///
 ///   1. 填地址 → 「验证连接」拿到确定结论（版本 + 是否可达）；
+///      地址可以点「在局域网中查找」自动填（§6.5），首次打开且地址为空时自动跑一次；
 ///   2. 「请求接入」→ 显示配对码 → 人在网页批准 → 令牌自动回到本机。
 ///
 /// 顺序不能反：自部署产品最容易劝退用户的就是「该填哪个地址」，把它单独作为
@@ -41,6 +42,7 @@ final class SettingsWindowController: NSWindowController {
     private let codeLabel = NSTextField(labelWithString: "")
     private let hintLabel = NSTextField(labelWithString: "")
     private let primaryButton = NSButton(title: "验证连接", target: nil, action: nil)
+    private let discoverButton = NSButton(title: "在局域网中查找", target: nil, action: nil)
     private let advancedToggle = NSButton(title: "高级设置", target: nil, action: nil)
     private let advancedBox = NSStackView()
 
@@ -84,6 +86,11 @@ final class SettingsWindowController: NSWindowController {
         window?.center()
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        // 地址还空着就自动找一次：第一次配置的人正卡在「该填什么」上。
+        // 已经填过的不动——用户敲进去的地址不该被一次后台广播覆盖。
+        if nasURLField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            discover(auto: true)
+        }
     }
 
     override func close() {
@@ -144,9 +151,11 @@ final class SettingsWindowController: NSWindowController {
         primaryButton.target = self
         primaryButton.action = #selector(primaryAction)
         primaryButton.keyEquivalent = "\r"
+        discoverButton.target = self
+        discoverButton.action = #selector(discoverAction)
         let clearButton = NSButton(title: "清除配置", target: self, action: #selector(clearSettings))
         let closeButton = NSButton(title: "完成", target: self, action: #selector(finish))
-        let buttons = NSStackView(views: [clearButton, NSView(), closeButton, primaryButton])
+        let buttons = NSStackView(views: [clearButton, NSView(), discoverButton, closeButton, primaryButton])
         buttons.orientation = .horizontal
         buttons.spacing = 8
         root.addArrangedSubview(buttons)
@@ -277,6 +286,76 @@ final class SettingsWindowController: NSWindowController {
         case .verifying:
             break
         }
+    }
+
+    @objc private func discoverAction() {
+        discover(auto: false)
+    }
+
+    /// 在局域网里找 movieclaw，把结果填进地址框（docs/design/device-auth.md §6.5）。
+    ///
+    /// **只填不存**：发现到的地址交给用户过目，由他点「验证连接」拍板。服务端
+    /// 优先返回的是用户为播放器配的「对外访问地址」，那可能是反向代理域名——
+    /// 对 Worker 来说走反代明显更慢，这个判断得留给人。
+    ///
+    /// auto 为 true 表示是打开窗口时自动触发的：没找到就安静收场，
+    /// 不弹窗打断一个还没开口的用户。
+    private func discover(auto: Bool) {
+        discoverButton.isEnabled = false
+        discoverButton.title = "查找中…"
+        Task { [weak self] in
+            let found = await Task.detached(priority: .userInitiated) {
+                LANDiscovery.find(timeout: 1.5)
+            }.value
+            guard let self else { return }
+            self.discoverButton.isEnabled = true
+            self.discoverButton.title = "在局域网中查找"
+            self.applyDiscovery(found, auto: auto)
+        }
+    }
+
+    private func applyDiscovery(_ found: [LANDiscovery.Server], auto: Bool) {
+        guard let chosen = chooseDiscovered(found, auto: auto) else { return }
+        nasURLField.stringValue = chosen.address
+        // 回到待验证态：地址换了，之前那次验证的结论就作废了
+        transition(to: .idle)
+        hintLabel.stringValue = "已填入局域网中找到的地址（\(chosen.displayName)）。"
+            + "确认无误后点「验证连接」；走反向代理的地址传分片会明显变慢，"
+            + "内网直连地址更合适。"
+    }
+
+    /// 一台直接用，多台弹菜单让选，一台都没有按 auto 决定是否提示。
+    private func chooseDiscovered(
+        _ found: [LANDiscovery.Server], auto: Bool
+    ) -> LANDiscovery.Server? {
+        if found.isEmpty {
+            if !auto {
+                let alert = NSAlert()
+                alert.messageText = "局域网里没有找到 movieclaw"
+                alert.informativeText = "可能是跨网段或 VPN、服务端关掉了「Jellyfin 兼容层」，"
+                    + "或者它跑在桥接网络里。直接填写地址即可，形如 http://10.1.1.5:3000。"
+                alert.alertStyle = .informational
+                alert.addButton(withTitle: "好")
+                alert.runModal()
+            }
+            return nil
+        }
+        if found.count == 1 {
+            return found[0]
+        }
+        let alert = NSAlert()
+        alert.messageText = "局域网里找到 \(found.count) 台"
+        alert.informativeText = "选择要连接的那一台。"
+        let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
+        for server in found {
+            picker.addItem(withTitle: "\(server.displayName) — \(server.address)")
+        }
+        alert.accessoryView = picker
+        alert.addButton(withTitle: "使用这台")
+        alert.addButton(withTitle: "取消")
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        let index = picker.indexOfSelectedItem
+        return found.indices.contains(index) ? found[index] : nil
     }
 
     /// 第一步：保存非敏感设置并验证地址可达。
