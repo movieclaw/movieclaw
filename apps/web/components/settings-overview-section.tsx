@@ -3,9 +3,18 @@
 import Link from "next/link";
 
 import { usePendingUpdate } from "@/components/app-update-entry";
-import { ChevronRightIcon, UpgradeIcon } from "@/components/icons";
+import {
+  ChatIcon,
+  ChevronRightIcon,
+  DeviceIcon,
+  DownloadIcon,
+  ServerIcon,
+  UpgradeIcon,
+} from "@/components/icons";
+import { useSettingsHealth, type SettingsBadgeTone } from "@/components/settings-health";
 import { PipelineHealthPanel } from "@/components/subscription-settings-section";
 import type { PendingUpdateView } from "@/lib/api/app";
+import type { SettingsHealth } from "@/lib/api/settings";
 
 /**
  * 「概览」分区：管理员进设置的落地页（/settings 重定向到这里）。
@@ -21,17 +30,91 @@ import type { PendingUpdateView } from "@/lib/api/app";
  * 见 subscription-settings-section.tsx）；体检只读，修复动作全部跳回
  * 原配置页，概览绝不成为第二个配置入口。
  *
+ * 异常/待办聚合卡与设置侧栏的分区角标吃同一份数据（useSettingsHealth，
+ * 服务端 GET /settings/health 一次聚合下发）：侧栏红点指向哪个分区，
+ * 这里就有一张说明卡讲清楚是什么事、点击直达修复处——两处永远一致。
+ *
  * 更新提示卡与侧栏更新入口同一份快照数据（usePendingUpdate）：从别的
  * 入口进了设置也不漏看新版本；无更新时整卡不渲染，页面保持安静。
  */
 export function SettingsOverviewSection() {
   // 本分区只对管理员渲染（成员的分区清单里没有 overview），轮询无需按角色关
   const pending = usePendingUpdate();
+  const health = useSettingsHealth();
 
   return (
     <div className="space-y-10">
+      <SectionHealthNotices health={health} />
       {pending && <UpdateNoticeCard pending={pending} />}
       <PipelineHealthPanel />
+    </div>
+  );
+}
+
+/**
+ * 分区异常/待办聚合卡：每条对应一颗侧栏角标，红色是异常（要修）、
+ * 蓝色是待办（有人在等你操作），点击直达对应分区。全部为零时整块不渲染。
+ */
+function SectionHealthNotices({ health }: { health: SettingsHealth | null }) {
+  if (!health) return null;
+  const notices = [
+    {
+      count: health.sites_failed,
+      tone: "danger" as SettingsBadgeTone,
+      icon: ServerIcon,
+      label: `${health.sites_failed} 个资源站点验证失败`,
+      hint: "订阅在这些站点搜不到资源，去「资源站点」修复登录态（如更新 Cookie）",
+      href: "/settings/sites",
+    },
+    {
+      count: health.downloaders_failed,
+      tone: "danger" as SettingsBadgeTone,
+      icon: DownloadIcon,
+      label: `${health.downloaders_failed} 个下载器连接失败`,
+      hint: "无法向这些下载器投递任务，去「下载器」检查地址与凭据",
+      href: "/settings/downloaders",
+    },
+    {
+      count: health.im_push_need_rebind,
+      tone: "danger" as SettingsBadgeTone,
+      icon: ChatIcon,
+      label: `${health.im_push_need_rebind} 个推送通道需重新绑定`,
+      hint: "凭据已失效，推送与对话都收不到，去「消息推送」重新绑定",
+      href: "/settings/im-push",
+    },
+    {
+      count: health.device_requests_pending,
+      tone: "info" as SettingsBadgeTone,
+      icon: DeviceIcon,
+      label: `${health.device_requests_pending} 台设备在等待接入审批`,
+      hint: "有设备发起了配对请求，去「设备」核对配对码后批准或拒绝",
+      href: "/settings/devices",
+    },
+  ].filter((n) => n.count > 0);
+  if (notices.length === 0) return null;
+
+  return (
+    <div className="space-y-3">
+      {notices.map((notice) => {
+        const Icon = notice.icon;
+        return (
+          <Link
+            key={notice.href}
+            href={notice.href as never}
+            className="css-glass flex items-center gap-3 !rounded-2xl px-5 py-3.5 transition-colors hover:bg-white/[0.06]"
+            style={{ color: notice.tone === "danger" ? "var(--danger)" : "var(--info)" }}
+          >
+            <Icon className="size-[18px] shrink-0" />
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-body font-medium">{notice.label}</span>
+              <span className="mt-0.5 block text-caption text-[var(--text-muted)]">
+                {notice.hint}
+              </span>
+            </span>
+            <ChevronRightIcon className="size-4 shrink-0 opacity-70" />
+          </Link>
+        );
+      })}
     </div>
   );
 }
