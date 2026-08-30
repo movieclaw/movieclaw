@@ -645,11 +645,18 @@ def test_fork_api_rejects_missing_running_and_empty_source(client) -> None:
     asyncio.run(create_index())
     assert client.post(f"/api/v1/sessions/{empty_id}/fork").status_code == 400
 
-    started = client.post("/api/v1/sessions", json={"content": "仍在执行"})
-    running_id = started.json()["data"]["session_id"]
+    # 「运行中不可 fork」：不与真实后台执行赛跑（机器满载时后台 turn 可能在
+    # fork 请求前就结束），而是等会话跑完后按 is_running 的心跳定义直接构造
+    # 运行状态，让断言窗口完全可控。
+    running_id, _ = _send_message_and_wait(client, {"content": "仍在执行"})
+    _wait_not_running(client, running_id)
+
+    async def mark_running() -> None:
+        async with get_database().session() as db_session:
+            await AgentSessionRepository(db_session).mark_running(running_id, "run-fork-guard")
+
+    asyncio.run(mark_running())
     assert client.post(f"/api/v1/sessions/{running_id}/fork").status_code == 400
-    with client.stream("GET", f"/api/v1/sessions/{running_id}/events") as response:
-        response.read()
 
 
 def test_send_message_to_unknown_session_returns_404(client) -> None:
