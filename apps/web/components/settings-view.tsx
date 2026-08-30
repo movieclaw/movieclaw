@@ -49,6 +49,7 @@ import { useSession } from "@/lib/session";
 import { applyNavOrder, mergeNavOrder, sameNavOrder } from "@/lib/sidebar-nav";
 import { settingsSectionGroupsFor, settingsSections } from "@/lib/mock-data";
 import { useUiPrefs } from "@/lib/ui-prefs";
+import { useTabParam } from "@/lib/use-tab-param";
 
 /**
  * 设置模式的左栏：替换掉工作台侧边栏。
@@ -148,13 +149,22 @@ export interface SettingsPanelProps {
 }
 
 export function SettingsPanel({ active }: SettingsPanelProps) {
-  // 成员直达管理分区地址（书签/手输 URL）时回退到个人信息——界面兜底，
-  // 真正的安全边界在后端 403
+  // 成员直达管理分区地址（书签/手输 URL，含裸 /settings 服务端兜底到的概览）
+  // 时回退到首个可见分区——界面兜底，真正的安全边界在后端 403
   const { session } = useSession();
+  const router = useRouter();
   const allowed = settingsSectionGroupsFor(session.role).flatMap((g) => g.items);
   const section =
     allowed.find((s) => s.id === active) ?? allowed[0] ?? settingsSections[0];
   const Icon = section.icon;
+
+  // 兜底展示的同时把地址替换成实际分区：URL 与内容一致、侧栏高亮不落空，
+  // 刷新/分享当前页也不会再落回一个自己看不到的地址
+  useEffect(() => {
+    if (section.id !== active) {
+      router.replace(`/settings/${section.id}` as Route);
+    }
+  }, [active, section.id, router]);
 
   return (
     // 无外框、无玻璃卡片：内容直接铺在全屏深色蒙版（.page-scrim）之上，
@@ -524,16 +534,9 @@ function ChangePasswordCard() {
  * 的「更新与维护」行同款。
  */
 function AppSection() {
-  const [tab, setTab] = useState<"update" | "maintain">("update");
-  // 支持 /settings/app?tab=maintain 深链接直达维护标签。
-  // 用 useEffect 而不是初始值读取，避免服务端渲染与客户端首帧不一致。
-  // （旧的 ?tab=remote 深链在路由层重定向到 /settings/playback，到不了这里。）
-  useEffect(() => {
-    const requested = new URLSearchParams(window.location.search).get("tab");
-    if (requested === "maintain" || requested === "update") {
-      setTab(requested);
-    }
-  }, []);
+  // ?tab=maintain 深链直达维护标签，切换时写回地址栏（见 useTabParam）。
+  // 旧的 ?tab=remote 深链在路由层重定向到 /settings/playback，到不了这里。
+  const [tab, setTab] = useTabParam(["update", "maintain"] as const, "update");
   // 本分区只对管理员渲染（成员的分区清单里没有 app），无需再按角色关轮询
   const pendingUpdate = usePendingUpdate();
   const tabs = [
@@ -596,7 +599,8 @@ function PlaybackSection() {
  * 草稿自动撤销（组件卸载即触发既有的清理逻辑）。
  */
 function AppearanceSection() {
-  const [tab, setTab] = useState<"backdrop" | "texture" | "nav">("backdrop");
+  // ?tab= 深链 + 切换写回地址栏，与其余胶囊标签分区同一套（useTabParam）
+  const [tab, setTab] = useTabParam(["backdrop", "texture", "nav"] as const, "backdrop");
   const tabs = [
     { id: "backdrop" as const, label: "背景图" },
     { id: "texture" as const, label: "界面质感" },
