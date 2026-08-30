@@ -6,6 +6,8 @@
 	<string>MovieClaw Transcoder</string>
 	<key>CFBundleExecutable</key>
 	<string>movieclaw-transcoder</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.movieclaw.transcoder</string>
 	<key>CFBundleInfoDictionaryVersion</key>

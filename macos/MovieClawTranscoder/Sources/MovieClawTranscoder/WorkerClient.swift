@@ -14,6 +14,8 @@ actor WorkerClient {
     private var jobs: [String: JobExecution] = [:]
     private var uploadProxies: [String: ArtifactUploadProxy] = [:]
     private var jobAttempts: [String: String] = [:]
+    /// 任务的展示名（服务端下发的源文件名），只用于菜单栏显示。
+    private var jobNames: [String: String] = [:]
     private var lastProgressSent: [String: Date] = [:]
     private var currentProgress: [String: JobProgress] = [:]
     private var state: WorkerConnectionState = .stopped
@@ -236,6 +238,10 @@ actor WorkerClient {
             return
         }
         let attemptID = message["attempt_id"] as? String ?? jobID
+        // 旧版服务端不带这个字段，缺了就退回显示 job id
+        if let name = message["display_name"] as? String, !name.isEmpty {
+            jobNames[jobID] = name
+        }
         if draining {
             await sendFailure(jobID: jobID, attemptID: attemptID, error: "Worker 正在排空，不接受新任务")
             return
@@ -347,6 +353,7 @@ actor WorkerClient {
         let succeeded = result.succeeded && uploadFailure == nil
         let failure = uploadFailure ?? result.error
         let attemptID = jobAttempts.removeValue(forKey: jobID) ?? jobID
+        jobNames.removeValue(forKey: jobID)
         jobs.removeValue(forKey: jobID)
         uploadProxies.removeValue(forKey: jobID)?.stop()
         currentProgress.removeValue(forKey: jobID)
@@ -407,6 +414,7 @@ actor WorkerClient {
         jobs.removeAll()
         uploadProxies.removeAll()
         jobAttempts.removeAll()
+        jobNames.removeAll()
         currentProgress.removeAll()
         lastProgressSent.removeAll()
     }
@@ -435,6 +443,7 @@ actor WorkerClient {
                 activeJobs: jobs.count,
                 maxJobs: configuration.maxJobs,
                 currentJobID: currentJobID,
+                currentJobName: currentJobID.flatMap { jobNames[$0] },
                 currentProgress: currentJobID.flatMap { currentProgress[$0] },
                 ffmpegVersion: capabilities.ffmpegVersion,
                 encoders: capabilities.encoders,

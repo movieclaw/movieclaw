@@ -26,7 +26,11 @@ final class MenuBarController: NSObject {
     override init() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
-        statusItem.button?.title = "MC"
+        statusItem.button?.image = MenuBarIcon.statusItemImage()
+        // 忙时在图标右侧补一个圆点。图标本身保持不变——菜单栏图标频繁换形
+        // 会让人在一排图标里认不出自家 App
+        statusItem.button?.imagePosition = .imageLeading
+        statusItem.button?.title = ""
         statusItem.button?.toolTip = "MovieClaw Transcoder"
         statusItem.menu = menu
         buildMenu()
@@ -42,16 +46,22 @@ final class MenuBarController: NSObject {
             connectItem.isEnabled = true
             drainItem.isEnabled = false
             reconnectItem.isEnabled = false
-            statusItem.button?.title = "MC"
+            statusItem.button?.title = ""
+            statusItem.button?.toolTip = "MovieClaw Transcoder"
             return
         }
         let state = status.state.displayName
         stateItem.title = "状态：\(state)"
         workerItem.title = "Worker：\(status.workerID) · ffmpeg \(status.ffmpegVersion)"
         if let jobID = status.currentJobID {
+            // 显示片名而不是 job id：菜单栏是给人看的，一串 ULID 说明不了
+            // 「正在转的是哪一部」。服务端没下发名字时才退回 id。
+            let label = status.currentJobName.map(Self.shorten) ?? jobID
             let progress = status.currentProgress?.outTimeMS.map { " · \(formatDuration(milliseconds: $0))" } ?? ""
-            jobItem.title = "任务：\(jobID)\(progress)"
+            jobItem.title = "任务：\(label)\(progress)"
+            jobItem.toolTip = status.currentJobName
         } else {
+            jobItem.toolTip = nil
             jobItem.title = "任务：无（\(status.activeJobs)/\(status.maxJobs)）"
         }
         errorItem.title = "最近错误：\(status.lastError ?? "无")"
@@ -59,7 +69,7 @@ final class MenuBarController: NSObject {
         drainItem.title = status.state == .draining ? "恢复接收任务" : "暂停接收任务"
         drainItem.isEnabled = status.state != .stopped && status.state != .error
         reconnectItem.isEnabled = status.state != .stopped
-        statusItem.button?.title = status.state == .busy ? "MC•" : "MC"
+        statusItem.button?.title = status.state == .busy ? " •" : ""
         statusItem.button?.toolTip = "MovieClaw Transcoder：\(state)"
     }
 
@@ -124,6 +134,15 @@ final class MenuBarController: NSObject {
 
     @objc private func quit() {
         onQuit?()
+    }
+
+    /// 片名收窄到菜单可读的长度。发布组名往往很长，中间省略比截断更好认——
+    /// 片名在前、分辨率与压制组在后，两头都是信息量最大的部分。
+    private static func shorten(_ name: String, limit: Int = 42) -> String {
+        guard name.count > limit else { return name }
+        let head = name.prefix(limit / 2 - 1)
+        let tail = name.suffix(limit / 2 - 2)
+        return "\(head)…\(tail)"
     }
 
     private func formatDuration(milliseconds: Int64) -> String {

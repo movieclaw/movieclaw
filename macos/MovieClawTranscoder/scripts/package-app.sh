@@ -12,6 +12,8 @@ rm -rf "${APP_DIR}"
 mkdir -p "${APP_DIR}/Contents/MacOS" "${APP_DIR}/Contents/Resources"
 cp "${PROJECT_DIR}/.build/release/movieclaw-transcoder" "${APP_DIR}/Contents/MacOS/movieclaw-transcoder"
 cp "${PROJECT_DIR}/Resources/Info.plist" "${APP_DIR}/Contents/Info.plist"
+# App 图标：Finder、访达信息面板、⌘Tab 切换器都读它（CFBundleIconFile）
+cp "${PROJECT_DIR}/Resources/AppIcon.icns" "${APP_DIR}/Contents/Resources/AppIcon.icns"
 
 codesign --force --deep --options runtime --sign "${SIGNING_IDENTITY}" "${APP_DIR}"
 echo "已生成：${APP_DIR}"

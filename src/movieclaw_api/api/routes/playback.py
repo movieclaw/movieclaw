@@ -757,6 +757,9 @@ async def start_playback_session(
             quota_bytes=auto_quota_bytes(manager.cache_root),
             use_remote=use_remote,
             remote_base_url=remote_base_url if use_remote else None,
+            # 远程 Worker 的菜单栏拿它显示「正在转什么」；本地会话用不上，
+            # 但统一带上省得两条路径分叉
+            display_name=PathLib(file.file_path).name,
         )
     except (SessionLimitError, DiskQuotaError) as exc:
         raise ServiceUnavailableException(str(exc)) from exc

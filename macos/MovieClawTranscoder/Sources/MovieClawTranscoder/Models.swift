@@ -223,6 +223,8 @@ struct WorkerStatus: Sendable {
     let activeJobs: Int
     let maxJobs: Int
     let currentJobID: String?
+    /// 源文件名，服务端下发；旧版服务端为 nil，此时回退显示 job id。
+    let currentJobName: String?
     let currentProgress: JobProgress?
     let ffmpegVersion: String
     let encoders: [String]

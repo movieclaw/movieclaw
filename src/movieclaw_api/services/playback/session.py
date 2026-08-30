@@ -183,6 +183,10 @@ class TranscodeSession:
     remote: bool = False
     #: 当前 job 所属的 Worker；断线时用它快速判定远程分片等待应失败。
     remote_worker_id: str | None = None
+    #: 给远程 Worker 菜单栏显示的片名。用源文件名而不是 TMDB 标题：调用方
+    #: 手上就有它（零额外查询），而且对着 Worker 排查时，
+    #: 「Dune.2024.2160p...mkv」比「沙丘」更能说明正在转的是哪一版。
+    display_name: str = ""
     #: 当前这一轮下发给 Worker 的 job id；与 session id 分离，避免 seek 重启时
     #: 旧 ffmpeg 的迟到 finished 消息误伤新一轮任务。
     remote_job_id: str | None = None
@@ -368,6 +372,7 @@ class TranscodeSessionManager:
         segment_plan: SegmentPlan | None = None,
         use_remote: bool = False,
         remote_base_url: str | None = None,
+        display_name: str = "",
     ) -> TranscodeSession:
         """起一个会话。playlist 出现即返回，不等全部分片转完。
 
@@ -393,6 +398,7 @@ class TranscodeSessionManager:
         session = TranscodeSession(
             id=session_id,
             file_id=plan.file_id,
+            display_name=display_name,
             member_id=member_id,
             tier=plan.tier,
             # 目录名就用会话 id：排查问题时看一眼盘上的目录就知道是哪个会话
@@ -482,6 +488,8 @@ class TranscodeSessionManager:
                     "attempt_id": job_id,
                     "start_ms": session.start_ms,
                     "ffmpeg_args": command.argv[1:],
+                    # 只为 Worker 菜单栏显示用；旧版 Worker 忽略多余字段
+                    "display_name": session.display_name,
                 },
                 backend=session.hw_backend or "videotoolbox",
             )
@@ -1118,6 +1126,7 @@ class TranscodeSessionManager:
                         "attempt_id": job_id,
                         "start_ms": session.start_ms,
                         "ffmpeg_args": command.argv[1:],
+                        "display_name": session.display_name,
                     },
                     backend=session.hw_backend or "videotoolbox",
                 )
