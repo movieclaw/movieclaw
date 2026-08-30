@@ -232,7 +232,14 @@ struct WorkerStatus: Sendable {
     let updatedAt: Date
 }
 
-enum ConfigurationError: Error, CustomStringConvertible {
+/// 配置与运行期的可读错误。
+///
+/// **必须实现 LocalizedError**：界面和日志一律走 `error.localizedDescription`，
+/// 而它对普通 Error 返回的是「The operation couldn't be completed.
+/// (MovieClawTranscoder.ConfigurationError error 0.)」——精心写好的中文提示
+/// 一个字都到不了用户眼前。只实现 CustomStringConvertible 不够，那条路径
+/// 没人走。
+enum ConfigurationError: Error, LocalizedError, CustomStringConvertible {
     case message(String)
 
     var description: String {
@@ -240,6 +247,8 @@ enum ConfigurationError: Error, CustomStringConvertible {
         case let .message(text): return text
         }
     }
+
+    var errorDescription: String? { description }
 }
 
 private struct ArgumentParser {

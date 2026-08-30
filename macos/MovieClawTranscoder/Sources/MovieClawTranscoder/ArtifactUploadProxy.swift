@@ -129,7 +129,9 @@ final class ArtifactUploadProxy: @unchecked Sendable {
         }
     }
 
-    private enum ProxyError: Error, CustomStringConvertible {
+    // 同 ConfigurationError：日志走 localizedDescription，只实现
+    // CustomStringConvertible 的话中文提示到不了眼前。
+    private enum ProxyError: Error, LocalizedError, CustomStringConvertible {
         case stopped
         case listenerFailed(String)
 
@@ -141,6 +143,8 @@ final class ArtifactUploadProxy: @unchecked Sendable {
                 return "上传代理启动失败：\(message)"
             }
         }
+
+        var errorDescription: String? { description }
     }
 
     private static let maxHeaderBytes = 64 * 1024

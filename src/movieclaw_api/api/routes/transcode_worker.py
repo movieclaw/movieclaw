@@ -158,9 +158,27 @@ async def transcode_worker_websocket(websocket: WebSocket) -> None:
     # （docs/design/device-auth.md §5.4）。放 Header 而不是查询参数，是为了
     # 不把长期令牌写进反向代理访问日志与监控 URL；数据面用的短时签名 token
     # 才走查询参数，那是另一套且随会话失效。
+    # 两个拒绝理由必须分开报，且顺序不能反。
+    #
+    # 合成一句「远程转码未启用，或凭证无效、已被吊销」会把两件性质完全不同的
+    # 事混在一起：前者是管理员一个开关没打开、两秒能修；后者是授权出了问题、
+    # 要重新配对。用户刚配对成功就看到「凭证无效」，第一反应是再配一遍，
+    # 而真正该做的是回网页打开开关。
+    #
+    # 先判凭证再判开关：没有有效令牌的人不该从错误文案里读出这台服务器的
+    # 功能开关状态。
     principal = await resolve_worker_principal(websocket.headers.get("authorization"))
-    if principal is None or not remote_worker_enabled():
-        await websocket.close(code=1008, reason="远程转码未启用，或凭证无效、已被吊销")
+    if principal is None:
+        await websocket.close(
+            code=1008,
+            reason="凭证无效或已被吊销，请在网页「设置 → 设备」重新配对",
+        )
+        return
+    if not remote_worker_enabled():
+        await websocket.close(
+            code=1008,
+            reason="服务端尚未启用远程转码，请在网页「应用 → 远程转码」打开开关并确认地址",
+        )
         return
 
     await websocket.accept()
