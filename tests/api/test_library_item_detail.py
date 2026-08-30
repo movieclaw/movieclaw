@@ -1630,7 +1630,7 @@ async def test_set_item_scrape_library_switches_and_resets(db, tmp_path) -> None
         item_id = item.id
 
         resp = await set_item_scrape_library(
-            library.id, item_id, ScrapeLibraryPayload(library_id=other.id), session
+            library.id, item_id, ScrapeLibraryPayload(target_library_id=other.id), session
         )
         assert resp.data["scrape_library_id"] == other.id
 
@@ -1641,13 +1641,13 @@ async def test_set_item_scrape_library_switches_and_resets(db, tmp_path) -> None
     async with db.session() as session:
         with pytest.raises(BadRequestException):
             await set_item_scrape_library(
-                library.id, item_id, ScrapeLibraryPayload(library_id=tv.id), session
+                library.id, item_id, ScrapeLibraryPayload(target_library_id=tv.id), session
             )
 
     # null = 恢复自动：清空后由推断接管（文件都在电影库，于是又回到它）
     async with db.session() as session:
         await set_item_scrape_library(
-            library.id, item_id, ScrapeLibraryPayload(library_id=None), session
+            library.id, item_id, ScrapeLibraryPayload(target_library_id=None), session
         )
     async with db.session() as session:
         assert (await session.get(MediaItem, item_id)).scrape_library_id is None

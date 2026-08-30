@@ -1509,8 +1509,8 @@ async def set_item_scrape_library(
     """元数据与图片的产物挂全局条目，一条目只有一套口味，由归属库决定
     （docs/design/scrape-customization.md §14）。
 
-    ``library_id=null`` = 恢复自动：清空后由系统按"在位文件所属库 → 订阅
-    目标库"重新推断。改完**不自动重刮**——重刮要重下全部图片，是用户该自己
+    ``target_library_id=null`` = 恢复自动：清空后由系统按"在位文件所属库 →
+    订阅目标库"重新推断。改完**不自动重刮**——重刮要重下全部图片，是用户该自己
     按的按钮（详情页的「刷新元数据」），这里只返回提示。
     """
     await LibraryConfigService(session).get(library_id)  # 404 检查
@@ -1519,13 +1519,13 @@ async def set_item_scrape_library(
     if item is None:
         raise NotFoundException(f"媒体条目不存在：id={media_item_id}")
 
-    if payload.library_id is None:
+    if payload.target_library_id is None:
         item.scrape_library_id = None
         session.add(item)
         await session.commit()
         return ok({"scrape_library_id": None}, message="已恢复自动判定，下次刮削时重新推断归属库")
 
-    target = await LibraryConfigService(session).get(payload.library_id)
+    target = await LibraryConfigService(session).get(payload.target_library_id)
     if target.kind != item.kind:
         # 类型不符的库，其刮削设置套到本条目上没有意义（电影库的模板/口味
         # 不是给剧集用的），直接拒绝而不是静默忽略

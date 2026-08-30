@@ -653,7 +653,7 @@ export function setItemScrapeLibrary(
   return unwrap(
     request<ApiEnvelope<{ scrape_library_id: number | null }>>(
       `/libraries/${libraryId}/items/${mediaItemId}/scrape-library`,
-      { method: "POST", body: JSON.stringify({ library_id: targetLibraryId }) },
+      { method: "POST", body: JSON.stringify({ target_library_id: targetLibraryId }) },
     ),
   );
 }

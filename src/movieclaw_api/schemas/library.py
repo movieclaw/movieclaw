@@ -638,10 +638,14 @@ class ArtworkSelectPayload(BaseModel):
 
 
 class ScrapeLibraryPayload(BaseModel):
-    """改条目的刮削归属库；``library_id=null`` 表示恢复自动（清空后重新推断）。"""
+    """改条目的刮削归属库；``target_library_id=null`` 表示恢复自动（清空后重新推断）。
 
-    library_id: int | None = Field(
-        default=None, description="归属库 id；null=清空，由系统按文件/订阅重新推断"
+    字段不叫 ``library_id``：路径上已经有一个同名参数（条目所在的库），重名会
+    让生成式 CLI 的两个参数互相覆盖（click 会直接告警）。
+    """
+
+    target_library_id: int | None = Field(
+        default=None, description="新的刮削归属库 id；null=清空，由系统按文件/订阅重新推断"
     )
 
 
