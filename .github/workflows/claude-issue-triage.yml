@@ -31,6 +31,11 @@ on:
         description: "要分诊的 issue 编号"
         required: true
         type: string
+  # 【临时,合并进 main 前删除】未合并的 workflow 不被 GitHub 注册,
+  # workflow_dispatch 调不到;push 事件用的是被推分支上的文件本身,
+  # 借此在特性分支上实测。测试目标 issue 见下方 ISSUE_NUMBER 的兜底值。
+  push:
+    branches: ["claude/github-issue-automation-u6uhx0"]
 
 permissions:
   contents: read
@@ -48,7 +53,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
+      # 最后的 '244' 是 push 触发实测用的兜底目标,随临时 push 触发一起删除
+      ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number || '244' }}
     steps:
       - uses: actions/checkout@v4
         with:
