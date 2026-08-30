@@ -19,13 +19,18 @@ export type DeviceClientType = "worker" | "cli" | "manual" | string;
  * 一条待批准的接入请求（见 schemas.auth.DeviceRequestView）。
  *
  * 这是用户做批准决定的全部依据：谁在请求、从哪来、码是多少。所以四个字段
- * 都要原样展示，不做省略——尤其 source_ip，它是判断「这是不是我那台机器」
- * 的关键线索。
+ * 都要原样展示，不做省略。
+ *
+ * 真正的安全控制是 user_code——它要和设备屏幕上显示的那串对上。source_ip 是
+ * 辅助线索，而且**可能为空串**：容器桥接网络会把源地址 NAT 成网桥网关，
+ * 那时它认不出任何设备，服务端会如实返回空（见 api/client_address.py），
+ * 界面必须说「无法确定」而不是补一个占位地址。
  */
 export interface DeviceRequestView {
   user_code: string;
   client_type: DeviceClientType;
   client_name: string;
+  /** 可能为空串：容器网络改写了源地址，认不出是哪台机器。 */
   source_ip: string;
   expires_in: number;
 }

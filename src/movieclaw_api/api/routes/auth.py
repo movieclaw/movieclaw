@@ -21,6 +21,7 @@ from fastapi import APIRouter, Depends, File, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from movieclaw_api.api.client_address import client_address
 from movieclaw_api.api.deps import require_admin_session, require_login
 from movieclaw_api.core.config import get_settings
 from movieclaw_api.exceptions import BadRequestException, NotFoundException
@@ -427,7 +428,7 @@ async def authorize_device(
     device_code, challenge = auth_service.authorize_device(
         client_type=payload.client_type,
         client_name=payload.client_name,
-        source_ip=request.client.host if request.client else "unknown",
+        source_ip=client_address(request),
     )
     return ok(
         DeviceAuthorizeView(

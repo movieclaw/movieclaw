@@ -212,7 +212,20 @@ function ApprovalCard({
         <dt className="text-[var(--text-faint)]">类型</dt>
         <dd className="text-[var(--text-muted)]">{clientTypeLabel(request.client_type)}</dd>
         <dt className="text-[var(--text-faint)]">来源</dt>
-        <dd className="font-mono text-[var(--text-muted)]">{request.source_ip}</dd>
+        {request.source_ip ? (
+          <dd className="font-mono text-[var(--text-muted)]">{request.source_ip}</dd>
+        ) : (
+          /* 服务端判定这个地址认不出设备时会返回空串（api/client_address.py）：
+             桥接网络的容器看到的源地址是网桥网关，全网设备长得一模一样。
+             与其摆一个「172.17.0.1」让人以为那是对方的地址，不如直说看不到，
+             并把判断依据推回配对码——那本来就是这张卡真正的安全控制。 */
+          <dd className="text-[var(--text-faint)]">
+            无法确定
+            <span className="ml-1.5 text-caption">
+              容器网络改写了源地址，请以配对码为准
+            </span>
+          </dd>
+        )}
       </dl>
 
       <div className="rounded-xl border border-[var(--accent)]/20 bg-[var(--accent-soft)] px-4 py-3">

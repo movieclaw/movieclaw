@@ -48,6 +48,35 @@ def client(tmp_path, monkeypatch):
     get_settings.cache_clear()
 
 
+@pytest.fixture
+def lan_client(tmp_path, monkeypatch):
+    """来源地址可辨的客户端。
+
+    默认 TestClient 的 client host 是字符串 "testclient"，不是合法 IP，会被
+    判成「认不出来源」——那正好覆盖容器 NAT 的场景，但按来源限流的用例需要
+    一个真实地址。
+    """
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path / 'lan.db'}")
+    monkeypatch.setenv("SECRET_KEY_FILE", str(tmp_path / ".lan_secret_key"))
+    monkeypatch.setenv("SCHEDULER_ENABLED", "false")
+    get_settings.cache_clear()
+    reset_setting_store()
+    reset_secret_box()
+    reset_auth_state()
+
+    from movieclaw_api.app import create_app
+
+    with TestClient(create_app(), client=("192.168.1.42", 51000)) as c:
+        c.post(f"{_AUTH}/bootstrap", json=_ADMIN)
+        c.post(f"{_AUTH}/login", json=_ADMIN)
+        yield c
+
+    reset_setting_store()
+    reset_secret_box()
+    reset_auth_state()
+    get_settings.cache_clear()
+
+
 def _authorize(client: TestClient, *, client_type: str = "cli", name: str = "claude-code@mac"):
     resp = client.post(
         f"{_AUTH}/device/authorize",
@@ -160,15 +189,56 @@ def test_unknown_device_code_is_indistinguishable_from_expired(client: TestClien
     assert _redeem(client, "definitely-not-a-real-device-code").status_code == 400
 
 
-def test_pending_requests_are_capped_per_source(client: TestClient) -> None:
-    """单来源未决请求有上限，防止刷屏把审批页淹掉。"""
+def test_pending_requests_are_capped_per_source(lan_client: TestClient) -> None:
+    """来源可辨时，单来源未决请求有上限，防止刷屏把审批页淹掉。"""
     for _ in range(auth_service._DEVICE_MAX_PENDING_PER_IP):
-        _authorize(client)
-    overflow = client.post(
+        _authorize(lan_client)
+    overflow = lan_client.post(
         f"{_AUTH}/device/authorize",
         json={"client_type": "cli", "client_name": "flood"},
     )
     assert overflow.status_code == 400
+    assert "同一来源" in overflow.json()["message"]
+
+
+def test_records_the_real_source_when_it_identifies_a_machine(lan_client: TestClient) -> None:
+    _authorize(lan_client)
+    requests = lan_client.get(f"{_AUTH}/devices/requests").json()["data"]
+    assert requests[0]["source_ip"] == "192.168.1.42"
+
+
+def test_unidentifiable_source_is_reported_empty_not_faked(client: TestClient) -> None:
+    """取不到可辨地址时如实返回空串，不编一个占位地址。
+
+    审批卡让用户照着「来源」判断这是不是自己那台机器；桥接网络里所有设备的
+    源地址都会被 NAT 成同一个网关地址，摆出来只会误导。
+    """
+    _authorize(client)
+    requests = client.get(f"{_AUTH}/devices/requests").json()["data"]
+    assert requests[0]["source_ip"] == ""
+
+
+def test_unidentifiable_sources_do_not_share_one_rate_limit_bucket(client: TestClient) -> None:
+    """来源认不出来时不按来源分桶，否则一台机器刷屏就锁住整个局域网。
+
+    容器桥接网络下每台设备的源地址都是同一个网关地址。如果照旧按地址计数，
+    第 6 台机器根本配不上对——而它和前 5 台毫无关系。
+    """
+    for _ in range(auth_service._DEVICE_MAX_PENDING_PER_IP + 1):
+        _authorize(client)
+
+    # 但总数上限仍然兜着：审批页不该被淹掉
+    while True:
+        resp = client.post(
+            f"{_AUTH}/device/authorize",
+            json={"client_type": "cli", "client_name": "flood"},
+        )
+        if resp.status_code != 200:
+            break
+    assert resp.status_code == 400
+    assert "过多" in resp.json()["message"]
+    pending = client.get(f"{_AUTH}/devices/requests").json()["data"]
+    assert len(pending) == auth_service._DEVICE_MAX_PENDING_TOTAL
 
 
 def test_authorize_rejects_unknown_client_type(client: TestClient) -> None:

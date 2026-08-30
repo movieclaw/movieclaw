@@ -139,5 +139,10 @@ class DeviceRequestView(BaseModel):
     user_code: str
     client_type: str
     client_name: str
-    source_ip: str = Field(description="请求来源 IP，帮助用户判断这是不是自己那台机器")
+    source_ip: str = Field(
+        description=(
+            "请求来源 IP，帮助用户判断这是不是自己那台机器；"
+            "容器桥接网络会把源地址 NAT 掉，那种情况下为空串，界面应如实说无法确定"
+        )
+    )
     expires_in: int = Field(description="剩余有效秒数")

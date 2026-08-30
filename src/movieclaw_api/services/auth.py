@@ -506,7 +506,13 @@ _DEVICE_MIN_POLL_INTERVAL_S = 1.0
 #: 终态挑战的留存期：客户端还在轮询，必须能读到确定结论而不是「挑战不存在」。
 _DEVICE_LINGER_S = 120
 #: 单来源 IP 的未决请求上限：防止刷屏把审批页淹掉。
+#: 只在来源地址可用时才按它分桶——桥接网络里所有设备的源地址会被 NAT 成同一个
+#: 网关地址（api/client_address.py），那时按地址分桶等于全网共用一个计数桶，
+#: 一台机器刷屏就能把别人全锁在门外。
 _DEVICE_MAX_PENDING_PER_IP = 5
+#: 未决请求总数上限。来源地址不可用时它是唯一的闸；可用时它兜住「多个来源
+#: 一起刷」的情况。审批页一次也展示不了这么多卡片。
+_DEVICE_MAX_PENDING_TOTAL = 20
 #: 配对码字母表：去掉 0/O/1/I 等易混淆字符，人要念得出、抄得对。
 _USER_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 #: 允许的客户端形态。worker 有形态上限（只能转码），cli 没有。
@@ -721,20 +727,26 @@ def authorize_device(
     """受理一次接入请求，返回 (device_code 明文, 挑战)。
 
     客户端**不声明权限**——它只说自己是什么形态、叫什么名字，权限由批准者决定。
+
+    ``source_ip`` 允许为空串，表示取不到可用来区分设备的地址（桥接网络把源
+    地址 NAT 掉了，见 ``api/client_address.py``）。空串不参与按来源分桶，
+    只受总数上限约束。
     """
     if client_type not in _DEVICE_CLIENT_TYPES:
         raise BadRequestException(f"未知的客户端类型：{client_type}")
     _purge_settled_challenges()
 
-    pending_from_ip = sum(
-        1
-        for ch in _device_challenges.values()
-        if ch.status == "pending" and ch.source_ip == source_ip
-    )
-    if pending_from_ip >= _DEVICE_MAX_PENDING_PER_IP:
+    pending = [ch for ch in _device_challenges.values() if ch.status == "pending"]
+    if len(pending) >= _DEVICE_MAX_PENDING_TOTAL:
         raise BadRequestException(
-            "同一来源的待批准请求过多，请先在网页「设备」页处理或等待现有请求过期"
+            "待批准的接入请求过多，请先在网页「设备」页处理或等待现有请求过期"
         )
+    if source_ip:
+        pending_from_ip = sum(1 for ch in pending if ch.source_ip == source_ip)
+        if pending_from_ip >= _DEVICE_MAX_PENDING_PER_IP:
+            raise BadRequestException(
+                "同一来源的待批准请求过多，请先在网页「设备」页处理或等待现有请求过期"
+            )
 
     while (user_code := _new_user_code()) in _device_challenges:  # pragma: no cover - 概率极低
         continue
@@ -751,7 +763,7 @@ def authorize_device(
         "收到设备接入请求：%s（%s，来自 %s），配对码 %s",
         challenge.client_name,
         client_type,
-        source_ip,
+        source_ip or "来源不可辨（容器网络已改写源地址）",
         user_code,
     )
     return device_code, challenge
@@ -803,7 +815,11 @@ def deny_device_request(user_code: str) -> DeviceAuthChallenge:
     challenge = _get_pending(user_code)
     challenge.status = "denied"
     challenge.settled_at = time.monotonic()
-    logger.info("已拒绝设备接入：%s（来自 %s）", challenge.client_name, challenge.source_ip)
+    logger.info(
+        "已拒绝设备接入：%s（来自 %s）",
+        challenge.client_name,
+        challenge.source_ip or "来源不可辨",
+    )
     return challenge
 
 
