@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 import pytest_asyncio
+from sqlmodel import select
 
 from movieclaw_api.core.config import get_settings
 from movieclaw_api.services.library.organize import organize_library
@@ -100,6 +101,27 @@ def _add_file(session, library, item, path: Path, *, season=0, episode=0, **kw):
         **kw,
     )
     session.add(row)
+    return row
+
+
+async def _make_subscription(session, item, *, library_id: int | None):
+    """建一条最小可用的订阅（rule_set 非空，随手建一个默认规则组）。"""
+    from movieclaw_db.models import RuleSet, Subscription
+
+    rule_set = (await session.execute(select(RuleSet).limit(1))).scalars().first()
+    if rule_set is None:
+        rule_set = RuleSet(name="默认规则组", is_default=True, spec={})
+        session.add(rule_set)
+        await session.commit()
+        await session.refresh(rule_set)
+    row = Subscription(
+        media_item_id=item.id,
+        kind=item.kind,
+        rule_set_id=rule_set.id,
+        library_id=library_id,
+    )
+    session.add(row)
+    await session.commit()
     return row
 
 
@@ -1146,6 +1168,47 @@ async def test_pinned_scrape_library_is_never_overwritten_by_inference(db, tmp_p
         resolved = await resolve_scrape_library(session, item)
 
     assert resolved is not None and resolved.id == pinned.id
+
+
+@pytest.mark.asyncio
+async def test_scrape_library_inferred_from_subscription_before_any_file(db, tmp_path):
+    """订阅了但还没下载（零文件）的条目，归属落在订阅的目标库上。
+
+    这是"刮削发生在有文件之前"的主场景：订阅弹层打开时用户还没选库，条目
+    先建了档；等订阅创建定下入库目标，归属才有答案。
+    """
+    from movieclaw_api.services.scrape_config import resolve_scrape_library
+
+    _apply_setting()
+    async with db.session() as session:
+        target = await _make_library(session, kind=MediaKind.TV, root=tmp_path / "t", name="订阅库")
+        await _make_library(
+            session, kind=MediaKind.TV, root=tmp_path / "d", name="默认库", is_default=True
+        )
+        item = await _make_item(session, kind=MediaKind.TV, tmdb_id=905, title="追新中", year=2026)
+        await _make_subscription(session, item, library_id=target.id)
+
+        resolved = await resolve_scrape_library(session, item)
+
+    assert resolved is not None and resolved.id == target.id
+
+
+@pytest.mark.asyncio
+async def test_scrape_library_uses_default_library_for_subscription_without_target(db, tmp_path):
+    """订阅没指定库时取该类型的默认库——与订阅的落盘目标口径一致。"""
+    from movieclaw_api.services.scrape_config import resolve_scrape_library
+
+    _apply_setting()
+    async with db.session() as session:
+        default = await _make_library(
+            session, kind=MediaKind.TV, root=tmp_path / "d", name="默认库", is_default=True
+        )
+        item = await _make_item(session, kind=MediaKind.TV, tmdb_id=906, title="追新中", year=2026)
+        await _make_subscription(session, item, library_id=None)
+
+        resolved = await resolve_scrape_library(session, item)
+
+    assert resolved is not None and resolved.id == default.id
 
 
 @pytest.mark.asyncio
