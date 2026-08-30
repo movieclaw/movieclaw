@@ -217,6 +217,70 @@ async def test_fetch_movie_title_falls_back_when_primary_untranslated() -> None:
     assert profile.title == "Dune: Part Two"
 
 
+# 结构照搬 TMDB /movie/331253?language=zh-CN 的真实响应（宝莲灯 1999）：
+# zh-CN 译名槽为空，顶层 title 就是中文原名，而 CN 区别名是网友投稿的拼音
+_CHINESE_MOVIE_DETAIL = {
+    **_MOVIE_DETAIL,
+    "id": 331253,
+    "title": "宝莲灯",
+    "original_title": "宝莲灯",
+    "original_language": "zh",
+    "alternative_titles": {
+        "titles": [
+            {"iso_3166_1": "CN", "title": "Băo lián dēng"},
+            {"iso_3166_1": "US", "title": "Lotus Lantern"},
+        ]
+    },
+    "translations": {
+        "translations": [
+            {"iso_639_1": "zh", "iso_3166_1": "CN", "data": {"title": ""}},
+            {"iso_639_1": "en", "iso_3166_1": "US", "data": {"title": "Lotus Lantern"}},
+        ]
+    },
+}
+
+
+async def test_fetch_movie_title_keeps_original_when_primary_is_original_language() -> None:
+    """原声语言 == 主语言时，title 与原名相等是正确结果，不许当成"退回原名"。
+
+    华语片配 zh-CN 的现实病例：TMDB 的 zh-CN 译名槽是空的，但顶层 title
+    给的就是中文原名「宝莲灯」；旧判据把它误判为退回，转手用 CN 区别名
+    里的拼音投稿覆盖成 Băo lián dēng。
+    """
+    client = _client({"/3/movie/331253": _CHINESE_MOVIE_DETAIL})
+    profile = await fetch_media_profile(
+        client, MediaKind.MOVIE, 331253, languages=["zh-CN", "en-US"]
+    )
+    assert profile.title == "宝莲灯"
+
+
+async def test_fetch_movie_title_original_language_guard_blocks_secondary_language() -> None:
+    """同一守卫也要挡住次位语言：CN 区无别名时不许跌到 en-US 的英文译名。
+
+    病例：无名 / 顽主 —— CN 区别名缺席，旧逻辑一路落到 en-US，中文库里
+    出现 Hidden Blade / The Troubleshooters。
+    """
+    detail = {
+        **_CHINESE_MOVIE_DETAIL,
+        "alternative_titles": {"titles": [{"iso_3166_1": "US", "title": "Lotus Lantern"}]},
+    }
+    client = _client({"/3/movie/331253": detail})
+    profile = await fetch_media_profile(
+        client, MediaKind.MOVIE, 331253, languages=["zh-CN", "en-US"]
+    )
+    assert profile.title == "宝莲灯"
+
+
+async def test_fetch_movie_title_falls_back_when_original_language_differs() -> None:
+    """守卫只在原声语言 == 主语言时生效：外语片的回落链一如既往。"""
+    detail = {**_CHINESE_MOVIE_DETAIL, "original_language": "en"}
+    client = _client({"/3/movie/331253": detail})
+    profile = await fetch_media_profile(
+        client, MediaKind.MOVIE, 331253, languages=["zh-CN", "en-US"]
+    )
+    assert profile.title == "Băo lián dēng"
+
+
 async def test_fetch_movie_title_keeps_translated_title_without_translations_payload() -> None:
     """顶层 title 已是译名（≠ 原名）时不许回落——回落会把好数据换成差数据。"""
     detail = {**_MOVIE_DETAIL, "translations": {"translations": []}}

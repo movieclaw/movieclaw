@@ -207,7 +207,19 @@ async def fetch_media_profile(
     # 判据要求 title 与原名相等——这才是"确实退回了原名"的证据。只看
     # translations 里有没有主语言条目不够：载荷里译名缺席、而顶层 title 已经
     # 是译名的情况存在，那时 title 是对的，任何回落都是把好数据换成差数据。
-    if title == original_title and not _translation_text(translations, primary, "title", "name"):
+    # 这个判据还有个前提：原声语言与主语言不是同一种语言。华语片配 zh-CN
+    # 时（原声语言就是主语言）title 与原名相等是**正确结果**而非退回，此时
+    # 回落只会把 TMDB 给的中文原名换成 CN 区别名里的拼音投稿（宝莲灯 →
+    # Băo lián dēng）或次位语言的英文译名（无名 → Hidden Blade）。原声语言
+    # 是回落链的隐含底座（TMDB 无译名时返回的就是它），它就是主语言时，
+    # 链条到此为止。
+    original_language = data.get("original_language") or None
+    primary_is_original = original_language == primary.split("-")[0]
+    if (
+        not primary_is_original
+        and title == original_title
+        and not _translation_text(translations, primary, "title", "name")
+    ):
         fallback_title = _alt_region_title(data, primary)
         for lang in languages[1:]:
             if fallback_title:
@@ -237,7 +249,6 @@ async def fetch_media_profile(
         overview = overview or _translation_text(translations, lang, "overview")
         tagline = tagline or _translation_text(translations, lang, "tagline")
 
-    original_language = data.get("original_language") or None
     poster_langs = resolve_image_languages(
         prefs.poster_langs, primary_language=primary, original_language=original_language
     )
