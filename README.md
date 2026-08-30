@@ -263,12 +263,13 @@ docker compose up -d
 ## 用别的播放器看
 
 MovieClaw 对外提供 Jellyfin 兼容的播放接口，第三方播放器**把它当成一台 Jellyfin 服务器**填地址就能连。
-下表标注每种客户端的支持形态：
+下表标注每种客户端的支持形态，标「真机验证」的是在实际设备上连过、播过的：
 
 | 客户端 | 状态 | 说明 |
 | --- | --- | --- |
 | 网页播放器 | 内置 | 直连优先，浏览器放不了的编码才转码，转码前会告诉你代价 |
-| Infuse / Fileball / VidHub / SenPlayer | 兼容层支持 | 以 Jellyfin 服务器身份连接，浏览、直连播放、进度同步，播放器侧零改动 |
+| Infuse / VidHub | **真机验证可用** | 以 Jellyfin 服务器身份连接，浏览、直连播放、进度同步，播放器侧零改动 |
+| Fileball / SenPlayer | 同一套接口 | 走的是同一条 Jellyfin 兼容链路，但没有逐台真机验证过 |
 | Emby / Jellyfin 官方 App | 不适用 | 它们连的是自己的服务端；MovieClaw 可以在入库后通知 Emby/Jellyfin 刷新 |
 | 局域网自动发现 | 部分 | 桥接网络下广播到不了容器，需 host 网络或手动填地址 |
 | 远程硬件转码 | macOS Apple Silicon | 菜单栏 App，走 VideoToolbox 硬件编码（一台常开的 Mac mini 就够）。协议开放，其他平台可自行扩展 |
