@@ -58,12 +58,16 @@ class Library(TimestampMixin, table=True):
         sa_column=Column(JSON, nullable=False),
         description="收藏范围条件列表；空=未声明（只作兜底目标）",
     )
-    # 库级刮削偏好覆盖（docs/design/scrape-customization.md §1）：JSON 对象，
+    # 库级刮削偏好覆盖（docs/design/scrape-customization.md §1 / §14）：JSON 对象，
     # **只存显式覆盖的字段**，空/NULL = 全跟全局设置。动漫库要日文原名海报、
     # 电影库与剧集库各用一套命名模板，这类"按库口味"全局一套设置盖不住。
-    # 只允许覆盖设计文档标注〔可库级〕的字段（选图、命名、目录写入细项）——
-    # 语言不可库级：同一条目跨库共享一份 media_metadata，按库切语言会让两个
-    # 库抢写同一行。合并读取见 services/scrape_config.merge_for_library
+    # 「刮削与整理」的字段全都可以覆盖，但生效路径分两类（§14.4）：
+    # - 命名与目录写入的产物落在各库自己的目录树里 → 按**文件所在库**生效；
+    # - 语言/分级/选图/图片档位的产物挂全局条目（一份 media_metadata、按条目
+    #   id 存一份的图片）→ 按条目的**刮削归属库**生效
+    #   （media_item.scrape_library_id）。不先把归属收敛到条目上，同一条目分散
+    #   在两个库就会让两库轮流覆盖同一行、同一个文件。
+    # 合并读取见 services/scrape_config 的 merge_for_library / scrape_setting_for_item
     scrape_overrides: dict | None = Field(
         default=None,
         sa_column=Column(JSON, nullable=True),

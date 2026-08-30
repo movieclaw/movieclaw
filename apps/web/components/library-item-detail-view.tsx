@@ -48,6 +48,7 @@ import {
   purgeLibraryFile,
   refreshItemMetadata,
   restoreLibraryFile,
+  setItemScrapeLibrary,
   transferLibraryItem,
 } from "@/lib/api/libraries";
 import {
@@ -56,6 +57,7 @@ import {
   fetchResumeState,
 } from "@/lib/api/playback";
 import { useSubscribeEntry } from "@/components/subscribe-entry";
+import type { MediaType } from "@/lib/media-types";
 import { getDiscoveryReturnPath } from "@/lib/discovery-return-path";
 import { formatBytes, formatRuntimeMinutes, formatVideoResolution } from "@/lib/format";
 import { formatClock } from "@/lib/player/timeline";
@@ -143,6 +145,8 @@ export function LibraryItemDetailView({
   const [kicking, setKicking] = useState(false);
   // 「更换图片」弹层（手动选海报/背景，选后加锁）
   const [artworkOpen, setArtworkOpen] = useState(false);
+  // 「刮削归属」弹层（决定这条目按哪个库的语言/选图设置刮）
+  const [scrapeLibraryOpen, setScrapeLibraryOpen] = useState(false);
   // 删除确认弹窗
   const [deleteOpen, setDeleteOpen] = useState(false);
   // 单文件删除确认弹窗（非 null 即打开；多版本洗版 / 删某集重下的入口）
@@ -451,6 +455,8 @@ export function LibraryItemDetailView({
               onReidentify={() => setReidentifyOpen(true)}
               onRefreshMetadata={runMetadataRefresh}
               onChangeArtwork={() => setArtworkOpen(true)}
+              scrapeLibraryName={detail.scrape_library_name}
+              onChangeScrapeLibrary={() => setScrapeLibraryOpen(true)}
               onTransfer={() => setTransferOpen(true)}
               onDelete={() => setDeleteOpen(true)}
               // 未识别条目（tmdb_id=0）没有订阅锚点，不给洗版入口
@@ -752,6 +758,18 @@ export function LibraryItemDetailView({
         onClose={() => setArtworkOpen(false)}
         onChanged={reload}
       />}
+
+      {canManageLibraries && (
+        <ScrapeLibraryDialog
+          open={scrapeLibraryOpen}
+          libraryId={libraryId}
+          mediaItemId={mediaItemId}
+          kind={detail.kind}
+          current={detail.scrape_library_id}
+          onClose={() => setScrapeLibraryOpen(false)}
+          onChanged={reload}
+        />
+      )}
     </div>
   );
 }
@@ -868,6 +886,8 @@ function ItemActionsMenu({
   onReidentify,
   onRefreshMetadata,
   onChangeArtwork,
+  scrapeLibraryName,
+  onChangeScrapeLibrary,
   onTransfer,
   onDelete,
   onUpgrade,
@@ -880,6 +900,9 @@ function ItemActionsMenu({
   onReidentify: () => void;
   onRefreshMetadata: () => void;
   onChangeArtwork: () => void;
+  /** 当前刮削归属库名；null=无归属（跟全局设置） */
+  scrapeLibraryName: string | null;
+  onChangeScrapeLibrary: () => void;
   onTransfer: () => void;
   onDelete: () => void;
   /** 洗版入口（quality-upgrade.md §13.5）；无订阅权限或条目未识别时不传 */
@@ -942,6 +965,12 @@ function ItemActionsMenu({
               </DropdownMenu.Item>
               <DropdownMenu.Item onSelect={onChangeArtwork} className={itemClass}>
                 更换图片…
+              </DropdownMenu.Item>
+              {/* 刮削归属：一条目只有一份档案与一张海报，按哪个库的语言/选图
+                  设置刮由它决定。菜单里带出当前值——不摆出来用户无从解释
+                  "为什么这部片没跟我的动漫库设置"（设计文档 §14.5） */}
+              <DropdownMenu.Item onSelect={onChangeScrapeLibrary} className={itemClass}>
+                刮削归属：{scrapeLibraryName ?? "跟随全局"}…
               </DropdownMenu.Item>
               <DropdownMenu.Item onSelect={onTransfer} className={itemClass}>
                 转移到其他库…
@@ -2233,6 +2262,116 @@ function DeleteFileDialog({
             </div>
           </>
         )}
+      </div>
+    </Modal>
+  );
+}
+
+
+/**
+ * 刮削归属库弹层（docs/design/scrape-customization.md §14.5）。
+ *
+ * 元数据与图片的产物挂在**全局条目**上——一部片一份档案、一张海报——所以
+ * 语言与选图这类设置没法像命名模板那样"每个库各来一套"。归属库就是"这条
+ * 条目按谁的口味刮"的唯一答案；同一条目的文件散在两个库时，这里显示的就是
+ * 谁赢了，也是用户唯一能翻案的地方。
+ *
+ * 「跟随自动判定」= 清空归属，由系统按"在位文件所属库 → 订阅目标库"重新推断。
+ * 改完不自动重刮：重刮要重下全套图，是用户该自己按的按钮（菜单里的刷新元数据）。
+ */
+function ScrapeLibraryDialog({
+  open,
+  libraryId,
+  mediaItemId,
+  kind,
+  current,
+  onClose,
+  onChanged,
+}: {
+  open: boolean;
+  libraryId: number;
+  mediaItemId: number;
+  kind: MediaType;
+  current: number | null;
+  onClose: () => void;
+  onChanged: () => void;
+}) {
+  const toast = useToast();
+  const [libraries, setLibraries] = useState<MediaLibrary[]>([]);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    // 只列同类型的库：电影库的刮削口味套到剧集上没有意义，后端也会拒
+    listLibraries(kind)
+      .then(setLibraries)
+      .catch(() => setLibraries([]));
+  }, [open, kind]);
+
+  const apply = async (target: number | null) => {
+    setBusy(true);
+    try {
+      const result = await setItemScrapeLibrary(libraryId, mediaItemId, target);
+      toast.success(
+        result.scrape_library_id === null
+          ? "已恢复自动判定；刷新元数据后按推断出的库重刮"
+          : "刮削归属已更新；刷新元数据后按该库的设置重刮",
+      );
+      onChanged();
+      onClose();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "修改失败，请重试");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal open={open} onClose={busy ? () => {} : onClose} label="刮削归属" width="lg">
+      <div className="p-6">
+        <h3 className="text-title-sm font-semibold text-[var(--text)]">刮削归属</h3>
+        <p className="mt-2 text-sub leading-relaxed text-[var(--text-muted)]">
+          这部影片的语言、分级与选图按下面这个媒体库的刮削设置来。一部片只有一份档案与
+          一张海报，所以文件即使散在多个库，也只能有一个库说了算。
+        </p>
+        <div className="mt-4 space-y-2">
+          {libraries.map((library) => (
+            <button
+              key={library.id}
+              type="button"
+              disabled={busy}
+              onClick={() => apply(library.id)}
+              className={`flex w-full items-center justify-between gap-3 rounded-xl border px-3.5 py-2.5 text-left transition-colors disabled:opacity-50 ${
+                current === library.id
+                  ? "border-[var(--accent-2)] bg-[var(--accent-soft)]"
+                  : "border-white/[0.08] bg-white/[0.04] hover:bg-white/[0.07]"
+              }`}
+            >
+              <span className="min-w-0">
+                <span className="block truncate text-ui font-medium">{library.name}</span>
+                <span className="mt-0.5 block truncate text-caption text-[var(--text-faint)]">
+                  {library.root_paths[0] ?? "未配置根路径"}
+                </span>
+              </span>
+              {current === library.id && (
+                <span className="shrink-0 text-caption text-[var(--accent)]">当前</span>
+              )}
+            </button>
+          ))}
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => apply(null)}
+            className="flex w-full items-center justify-between gap-3 rounded-xl border border-dashed border-white/[0.15] px-3.5 py-2.5 text-left text-[var(--text-muted)] transition-colors hover:text-[var(--text)] disabled:opacity-50"
+          >
+            <span className="min-w-0">
+              <span className="block text-ui font-medium">跟随自动判定</span>
+              <span className="mt-0.5 block text-caption text-[var(--text-faint)]">
+                按在位文件所属的库推断；都没有则跟随全局刮削设置
+              </span>
+            </span>
+          </button>
+        </div>
       </div>
     </Modal>
   );

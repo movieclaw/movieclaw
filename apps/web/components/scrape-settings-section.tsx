@@ -27,6 +27,7 @@ import {
   listLanguageOptions,
   saveScrapeConfig,
 } from "@/lib/api/scrape";
+import { listLibraries } from "@/lib/api/libraries";
 
 const INPUT_CLASS =
   "rounded-xl border border-white/[0.08] bg-white/[0.04] px-3 py-2 text-sub " +
@@ -253,21 +254,33 @@ type TabId = (typeof TABS)[number]["id"];
 function Card({
   title,
   perLibrary,
+  overriddenBy,
   desc,
   children,
 }: {
   title: string;
   perLibrary?: boolean;
+  /** 覆盖了本卡片字段的媒体库名。分层配置最经典的坑是"在全局改了半天不生效"，
+   *  不把这个标出来用户无从自查（设计文档 §14.5） */
+  overriddenBy?: string[];
   desc: string;
   children: React.ReactNode;
 }) {
   return (
     <section className="rounded-2xl border border-white/[0.08] bg-white/[0.04] p-5">
-      <div className="flex items-center gap-2.5">
+      <div className="flex flex-wrap items-center gap-2.5">
         <h3 className="text-title-sm font-semibold">{title}</h3>
         {perLibrary && (
           <span className="rounded-full border border-white/[0.15] px-2 py-px text-micro text-[var(--accent-2)]">
             可按库覆盖
+          </span>
+        )}
+        {overriddenBy && overriddenBy.length > 0 && (
+          <span
+            title={`${overriddenBy.join("、")}不跟随此处的设置`}
+            className="rounded-full bg-[var(--accent-soft)] px-2 py-px text-micro text-[var(--accent)]"
+          >
+            {overriddenBy.length} 个库已覆盖
           </span>
         )}
       </div>
@@ -412,9 +425,11 @@ function templateError(key: string, template: string, allowed: string[]): string
 function NamingTab({
   setting,
   patch,
+  overriddenBy,
 }: {
   setting: ScrapeSetting;
   patch: (changes: Partial<ScrapeSetting>) => void;
+  overriddenBy?: (keys: (keyof ScrapeSetting)[]) => string[];
 }) {
   const [focused, setFocused] = useState<string>("naming_episode_file");
   const refs = useRef<Record<string, HTMLInputElement | null>>({});
@@ -463,6 +478,7 @@ function NamingTab({
     <Card
       title="命名模板"
       perLibrary
+      overriddenBy={overriddenBy?.(NAMING_FIELDS.map((f) => f.key))}
       desc="整理与入库的目录/文件命名。留空即使用默认模板；字段缺失时会连同相邻括号自动收缩。目录层级固定为「条目目录 / 季目录 / 文件」，不可自定义。"
     >
       {NAMING_FIELDS.map((field, i) => (
@@ -628,14 +644,17 @@ const MIRROR_ROWS = [
 function MirrorTab({
   setting,
   patch,
+  overriddenBy,
 }: {
   setting: ScrapeSetting;
   patch: (changes: Partial<ScrapeSetting>) => void;
+  overriddenBy?: (keys: (keyof ScrapeSetting)[]) => string[];
 }) {
   return (
     <Card
       title="媒体目录写入"
       perLibrary
+      overriddenBy={overriddenBy?.(MIRROR_ROWS.map((r) => r.key))}
       desc="把刮削成果写入媒体目录，反哺 Emby / Jellyfin / Kodi（文件名遵循播放器规范）。只增不删除；已存在的 NFO 绝不覆盖。每个媒体库还有一个总开关，关掉则该库三项都不写。"
     >
       <div className="divide-y divide-white/[0.06]">
@@ -658,12 +677,282 @@ function MirrorTab({
   );
 }
 
+/* ------------------------------------------------------------------ */
+/* 可复用字段组：全局设置页与「编辑库 → 刮削设置」共用同一套控件          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 拉取语种/地区全量表并派生「更多」面板的候选。
+ *
+ * 全局页与库页各自调用一次即可——两处渲染的是同一批芯片，控件不同源
+ * 会随时间漂移成两套交互（设计文档 §14.5：用户学一次就够）。
+ */
+export function useScrapeChipOptions() {
+  const [languages, setLanguages] = useState<LanguageOption[]>([]);
+  const [countries, setCountries] = useState<CountryOption[]>([]);
+
+  useEffect(() => {
+    // 全量表拉不到不阻断（面板回落只显示常用项）
+    listLanguageOptions()
+      .then(setLanguages)
+      .catch(() => {});
+    listCountryOptions()
+      .then(setCountries)
+      .catch(() => {});
+  }, []);
+
+  const metaLangs = useMemo<ChipOption[]>(
+    () =>
+      languages
+        .filter((l) => !COMMON_META_LANGS.some((c) => c.id.startsWith(`${l.code}-`)))
+        .map((l) => ({ id: l.code, name: l.name || l.english_name || l.code })),
+    [languages],
+  );
+  const imageLangs = useMemo<ChipOption[]>(
+    () =>
+      languages
+        .filter((l) => !COMMON_IMAGE_LANGS.some((c) => c.id === l.code))
+        .map((l) => ({ id: l.code, name: l.name || l.english_name || l.code })),
+    [languages],
+  );
+  const certCountries = useMemo<ChipOption[]>(
+    () =>
+      countries
+        .filter((c) => !COMMON_CERT_COUNTRIES.some((k) => k.id === c.code))
+        .map((c) => ({ id: c.code, name: c.name })),
+    [countries],
+  );
+
+  return { metaLangs, imageLangs, certCountries };
+}
+
+export function MetaTab({
+  setting,
+  patch,
+  extraMetaLangs,
+  extraCountries,
+  overriddenBy,
+}: {
+  setting: ScrapeSetting;
+  patch: (changes: Partial<ScrapeSetting>) => void;
+  extraMetaLangs: ChipOption[];
+  extraCountries: ChipOption[];
+  /** 查"哪些库覆盖了这些字段"；库设置页不传（那里本来就在配某一个库） */
+  overriddenBy?: (keys: (keyof ScrapeSetting)[]) => string[];
+}) {
+  return (
+    <>
+      <Card
+        title="元数据语言"
+        perLibrary
+        overriddenBy={overriddenBy?.(["language_priority"])}
+        desc="标题、简介、类型名等文本的语言。点选语言即加入优先级，第 1 位是主语言（决定向 TMDB 请求的语言），缺失的字段按顺序回落——回落基于已拉取的翻译数据，不产生额外请求。"
+      >
+        <OrderChips
+          options={COMMON_META_LANGS}
+          extraOptions={extraMetaLangs}
+          moreLabel="语言"
+          value={setting.language_priority}
+          max={3}
+          primaryTag="主语言"
+          onChange={(next) => patch({ language_priority: next })}
+        />
+      </Card>
+      <Card
+        title="内容分级"
+        perLibrary
+        overriddenBy={overriddenBy?.(["cert_country_priority"])}
+        desc="条目分级（如 PG-13、TV-MA）按顺序取第一个有数据的地区。"
+      >
+        <OrderChips
+          options={COMMON_CERT_COUNTRIES}
+          extraOptions={extraCountries}
+          moreLabel="地区"
+          value={setting.cert_country_priority}
+          max={6}
+          primaryTag=""
+          onChange={(next) => patch({ cert_country_priority: next })}
+        />
+      </Card>
+    </>
+  );
+}
+
+export function ImagesTab({
+  setting,
+  patch,
+  extraImageLangs,
+  effective,
+  overriddenBy,
+}: {
+  setting: ScrapeSetting;
+  patch: (changes: Partial<ScrapeSetting>) => void;
+  extraImageLangs: ChipOption[];
+  /** 档位下拉的「跟随环境」提示值；库设置页传全局生效值 */
+  effective: Pick<ScrapeSetting, "poster_size" | "backdrop_size" | "still_size"> | null;
+  overriddenBy?: (keys: (keyof ScrapeSetting)[]) => string[];
+}) {
+  const sizeHint = (value: string, fallback: string) =>
+    value === "" ? `跟随环境变量（当前 ${fallback}）` : value;
+
+  return (
+    <>
+      <Card
+        title="海报"
+        perLibrary
+        overriddenBy={overriddenBy?.(["poster_mode", "poster_language_priority"])}
+        desc="海报和文本一样有语言：中文版、原版、无文字干净版是不同的候选图。你在条目详情页手动选定的图始终优先，不受这里影响。"
+      >
+        <div className="grid gap-2 md:grid-cols-2">
+          {(
+            [
+              {
+                id: "default",
+                title: "TMDB 默认",
+                desc: "与发现页看到的一致，订阅前后海报不跳变（默认）",
+              },
+              {
+                id: "language",
+                title: "按语言优先级挑选",
+                desc: "逐级取第一档有候选图的语言，档内按分辨率与票数排序",
+              },
+            ] as const
+          ).map((mode) => (
+            <label
+              key={mode.id}
+              className={`cursor-pointer rounded-xl border p-3 transition-colors ${
+                setting.poster_mode === mode.id
+                  ? "border-[var(--accent-2)] bg-[var(--accent-soft)]"
+                  : "border-white/[0.08] bg-white/[0.04] hover:bg-white/[0.07]"
+              }`}
+            >
+              <input
+                type="radio"
+                name="poster-mode"
+                className="sr-only"
+                checked={setting.poster_mode === mode.id}
+                onChange={() => patch({ poster_mode: mode.id })}
+              />
+              <span className="block text-ui font-semibold">{mode.title}</span>
+              <span className="mt-0.5 block text-caption text-[var(--text-faint)]">
+                {mode.desc}
+              </span>
+            </label>
+          ))}
+        </div>
+        <div
+          className={`mt-4 ${setting.poster_mode === "language" ? "" : "pointer-events-none opacity-40"}`}
+        >
+          <OrderChips
+            options={COMMON_IMAGE_LANGS}
+            extraOptions={extraImageLangs}
+            moreLabel="语言"
+            value={setting.poster_language_priority}
+            max={4}
+            primaryTag="首选"
+            onChange={(next) => patch({ poster_language_priority: next })}
+          />
+        </div>
+      </Card>
+      <Card
+        title="背景图（fanart）"
+        perLibrary
+        overriddenBy={overriddenBy?.(["backdrop_language_priority"])}
+        desc="铺在详情页全屏的沉浸底图。「无文字」是没有烧录任何片名文字的干净图——排第 1 位即无文字优先；想要带片名 logo 的横图，把语言排到前面。"
+      >
+        <OrderChips
+          options={COMMON_IMAGE_LANGS}
+          extraOptions={extraImageLangs}
+          moreLabel="语言"
+          value={setting.backdrop_language_priority}
+          max={4}
+          primaryTag="首选"
+          onChange={(next) => patch({ backdrop_language_priority: next })}
+        />
+      </Card>
+      <Card
+        title="质量与门槛"
+        perLibrary
+        overriddenBy={overriddenBy?.([
+          "poster_min_width",
+          "backdrop_min_width",
+          "poster_size",
+          "backdrop_size",
+          "still_size",
+        ])}
+        desc="分辨率门槛过滤模糊候选图；质量档位决定下载到本地的图片尺寸，调低可显著节省磁盘，改动后整库刷新会按新档位自动重下。"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.06] pb-3">
+          <div>
+            <span className="text-ui font-medium">最低分辨率门槛</span>
+            <span className="mt-0.5 block text-caption text-[var(--text-faint)]">
+              低于门槛的候选图不选（0 = 不限制）；候选全部不达标时自动放宽
+            </span>
+          </div>
+          <div className="flex items-center gap-2.5 text-sub text-[var(--text-muted)]">
+            海报 ≥
+            <input
+              type="number"
+              min={0}
+              step={100}
+              className={`${INPUT_CLASS} w-24 tabular-nums`}
+              value={setting.poster_min_width}
+              onChange={(e) => patch({ poster_min_width: Number(e.target.value) || 0 })}
+            />
+            背景 ≥
+            <input
+              type="number"
+              min={0}
+              step={100}
+              className={`${INPUT_CLASS} w-24 tabular-nums`}
+              value={setting.backdrop_min_width}
+              onChange={(e) => patch({ backdrop_min_width: Number(e.target.value) || 0 })}
+            />
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-3 pt-3">
+          <span className="text-ui font-medium">图片质量档位</span>
+          <div className="flex flex-wrap gap-2">
+            {(
+              [
+                ["poster_size", "海报", POSTER_SIZES, effective?.poster_size],
+                ["backdrop_size", "背景", BACKDROP_SIZES, effective?.backdrop_size],
+                ["still_size", "剧照", STILL_SIZES, effective?.still_size],
+              ] as const
+            ).map(([key, label, sizes, fallback]) => (
+              <select
+                key={key}
+                className={INPUT_CLASS}
+                value={setting[key]}
+                title={sizeHint(setting[key], fallback ?? "")}
+                onChange={(e) => patch({ [key]: e.target.value } as Partial<ScrapeSetting>)}
+              >
+                <option value="">
+                  {label} · 跟随环境（{fallback}）
+                </option>
+                {sizes.map((size) => (
+                  <option key={size} value={size}>
+                    {label} · {size}
+                  </option>
+                ))}
+              </select>
+            ))}
+          </div>
+        </div>
+      </Card>
+    </>
+  );
+}
+
 export function ScrapeSettingsSection() {
   const toast = useToast();
   const [view, setView] = useState<ScrapeConfigView | null>(null);
   const [setting, setSetting] = useState<ScrapeSetting | null>(null);
-  const [languages, setLanguages] = useState<LanguageOption[]>([]);
-  const [countries, setCountries] = useState<CountryOption[]>([]);
+  const chipOptions = useScrapeChipOptions();
+  // 各库的覆盖情况：卡片上标「N 个库已覆盖」，避免"在全局改了不生效"的困惑
+  const [libraryOverrides, setLibraryOverrides] = useState<
+    { name: string; keys: string[] }[]
+  >([]);
   const [tab, setTab] = useState<TabId>("meta");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -686,14 +975,35 @@ export function ScrapeSettingsSection() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载失败，请重试");
     }
-    // 全量表拉不到不阻断（面板回落只显示常用项）
-    listLanguageOptions().then(setLanguages).catch(() => {});
-    listCountryOptions().then(setCountries).catch(() => {});
   }, []);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    // 拉不到不阻断：标注只是可诊断性提示，没有它设置页照常可用
+    listLibraries()
+      .then((libraries) =>
+        setLibraryOverrides(
+          libraries
+            .map((library) => ({
+              name: library.name,
+              keys: Object.keys(library.scrape_overrides ?? {}),
+            }))
+            .filter((entry) => entry.keys.length > 0),
+        ),
+      )
+      .catch(() => {});
+  }, []);
+
+  const overriddenBy = useCallback(
+    (keys: (keyof ScrapeSetting)[]) =>
+      libraryOverrides
+        .filter((entry) => keys.some((key) => entry.keys.includes(key)))
+        .map((entry) => entry.name),
+    [libraryOverrides],
+  );
 
   const patch = useCallback((changes: Partial<ScrapeSetting>) => {
     setSetting((current) => (current ? { ...current, ...changes } : current));
@@ -716,28 +1026,6 @@ export function ScrapeSettingsSection() {
     }
   }, [setting, toast]);
 
-  const extraMetaLangs = useMemo<ChipOption[]>(
-    () =>
-      languages
-        .filter((l) => !COMMON_META_LANGS.some((c) => c.id.startsWith(`${l.code}-`)))
-        .map((l) => ({ id: l.code, name: l.name || l.english_name || l.code })),
-    [languages],
-  );
-  const extraImageLangs = useMemo<ChipOption[]>(
-    () =>
-      languages
-        .filter((l) => !COMMON_IMAGE_LANGS.some((c) => c.id === l.code))
-        .map((l) => ({ id: l.code, name: l.name || l.english_name || l.code })),
-    [languages],
-  );
-  const extraCountries = useMemo<ChipOption[]>(
-    () =>
-      countries
-        .filter((c) => !COMMON_CERT_COUNTRIES.some((k) => k.id === c.code))
-        .map((c) => ({ id: c.code, name: c.name })),
-    [countries],
-  );
-
   if (error) {
     return (
       <div className="rounded-xl bg-white/[0.03] px-4 py-6 text-center text-ui text-[var(--text-muted)]">
@@ -756,9 +1044,6 @@ export function ScrapeSettingsSection() {
       </p>
     );
   }
-
-  const sizeHint = (value: string, effective: string) =>
-    value === "" ? `跟随环境变量（当前 ${effective}）` : value;
 
   return (
     <div className="space-y-5">
@@ -782,176 +1067,25 @@ export function ScrapeSettingsSection() {
       </div>
 
       {tab === "mirror" ? (
-        <MirrorTab setting={setting} patch={patch} />
+        <MirrorTab setting={setting} patch={patch} overriddenBy={overriddenBy} />
       ) : tab === "naming" ? (
-        <NamingTab setting={setting} patch={patch} />
+        <NamingTab setting={setting} patch={patch} overriddenBy={overriddenBy} />
       ) : tab === "meta" ? (
-        <>
-          <Card
-            title="元数据语言"
-            desc="标题、简介、类型名等文本的语言。点选语言即加入优先级，第 1 位是主语言（决定向 TMDB 请求的语言），缺失的字段按顺序回落——回落基于已拉取的翻译数据，不产生额外请求。"
-          >
-            <OrderChips
-              options={COMMON_META_LANGS}
-              extraOptions={extraMetaLangs}
-              moreLabel="语言"
-              value={setting.language_priority}
-              max={3}
-              primaryTag="主语言"
-              onChange={(next) => patch({ language_priority: next })}
-            />
-          </Card>
-          <Card
-            title="内容分级"
-            desc="条目分级（如 PG-13、TV-MA）按顺序取第一个有数据的地区。"
-          >
-            <OrderChips
-              options={COMMON_CERT_COUNTRIES}
-              extraOptions={extraCountries}
-              moreLabel="地区"
-              value={setting.cert_country_priority}
-              max={6}
-              primaryTag=""
-              onChange={(next) => patch({ cert_country_priority: next })}
-            />
-          </Card>
-        </>
+        <MetaTab
+          setting={setting}
+          patch={patch}
+          extraMetaLangs={chipOptions.metaLangs}
+          extraCountries={chipOptions.certCountries}
+          overriddenBy={overriddenBy}
+        />
       ) : (
-        <>
-          <Card
-            title="海报"
-            perLibrary
-            desc="海报和文本一样有语言：中文版、原版、无文字干净版是不同的候选图。你在条目详情页手动选定的图始终优先，不受这里影响。"
-          >
-            <div className="grid gap-2 md:grid-cols-2">
-              {(
-                [
-                  {
-                    id: "default",
-                    title: "TMDB 默认",
-                    desc: "与发现页看到的一致，订阅前后海报不跳变（默认）",
-                  },
-                  {
-                    id: "language",
-                    title: "按语言优先级挑选",
-                    desc: "逐级取第一档有候选图的语言，档内按分辨率与票数排序",
-                  },
-                ] as const
-              ).map((mode) => (
-                <label
-                  key={mode.id}
-                  className={`cursor-pointer rounded-xl border p-3 transition-colors ${
-                    setting.poster_mode === mode.id
-                      ? "border-[var(--accent-2)] bg-[var(--accent-soft)]"
-                      : "border-white/[0.08] bg-white/[0.04] hover:bg-white/[0.07]"
-                  }`}
-                >
-                  <input
-                    type="radio"
-                    name="poster-mode"
-                    className="sr-only"
-                    checked={setting.poster_mode === mode.id}
-                    onChange={() => patch({ poster_mode: mode.id })}
-                  />
-                  <span className="block text-ui font-semibold">{mode.title}</span>
-                  <span className="mt-0.5 block text-caption text-[var(--text-faint)]">
-                    {mode.desc}
-                  </span>
-                </label>
-              ))}
-            </div>
-            <div
-              className={`mt-4 ${setting.poster_mode === "language" ? "" : "pointer-events-none opacity-40"}`}
-            >
-              <OrderChips
-                options={COMMON_IMAGE_LANGS}
-                extraOptions={extraImageLangs}
-                moreLabel="语言"
-                value={setting.poster_language_priority}
-                max={4}
-                primaryTag="首选"
-                onChange={(next) => patch({ poster_language_priority: next })}
-              />
-            </div>
-          </Card>
-          <Card
-            title="背景图（fanart）"
-            perLibrary
-            desc="铺在详情页全屏的沉浸底图。「无文字」是没有烧录任何片名文字的干净图——排第 1 位即无文字优先；想要带片名 logo 的横图，把语言排到前面。"
-          >
-            <OrderChips
-              options={COMMON_IMAGE_LANGS}
-              extraOptions={extraImageLangs}
-              moreLabel="语言"
-              value={setting.backdrop_language_priority}
-              max={4}
-              primaryTag="首选"
-              onChange={(next) => patch({ backdrop_language_priority: next })}
-            />
-          </Card>
-          <Card
-            title="质量与门槛"
-            desc="分辨率门槛过滤模糊候选图；质量档位决定下载到本地的图片尺寸，调低可显著节省磁盘，改动后整库刷新会按新档位自动重下。"
-          >
-            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.06] pb-3">
-              <div>
-                <span className="text-ui font-medium">最低分辨率门槛</span>
-                <span className="mt-0.5 block text-caption text-[var(--text-faint)]">
-                  低于门槛的候选图不选（0 = 不限制）；候选全部不达标时自动放宽
-                </span>
-              </div>
-              <div className="flex items-center gap-2.5 text-sub text-[var(--text-muted)]">
-                海报 ≥
-                <input
-                  type="number"
-                  min={0}
-                  step={100}
-                  className={`${INPUT_CLASS} w-24 tabular-nums`}
-                  value={setting.poster_min_width}
-                  onChange={(e) => patch({ poster_min_width: Number(e.target.value) || 0 })}
-                />
-                背景 ≥
-                <input
-                  type="number"
-                  min={0}
-                  step={100}
-                  className={`${INPUT_CLASS} w-24 tabular-nums`}
-                  value={setting.backdrop_min_width}
-                  onChange={(e) => patch({ backdrop_min_width: Number(e.target.value) || 0 })}
-                />
-              </div>
-            </div>
-            <div className="flex flex-wrap items-center justify-between gap-3 pt-3">
-              <span className="text-ui font-medium">图片质量档位</span>
-              <div className="flex flex-wrap gap-2">
-                {(
-                  [
-                    ["poster_size", "海报", POSTER_SIZES, view?.effective.poster_size],
-                    ["backdrop_size", "背景", BACKDROP_SIZES, view?.effective.backdrop_size],
-                    ["still_size", "剧照", STILL_SIZES, view?.effective.still_size],
-                  ] as const
-                ).map(([key, label, sizes, effective]) => (
-                  <select
-                    key={key}
-                    className={INPUT_CLASS}
-                    value={setting[key]}
-                    title={sizeHint(setting[key], effective ?? "")}
-                    onChange={(e) => patch({ [key]: e.target.value } as Partial<ScrapeSetting>)}
-                  >
-                    <option value="">
-                      {label} · 跟随环境（{effective}）
-                    </option>
-                    {sizes.map((size) => (
-                      <option key={size} value={size}>
-                        {label} · {size}
-                      </option>
-                    ))}
-                  </select>
-                ))}
-              </div>
-            </div>
-          </Card>
-        </>
+        <ImagesTab
+          setting={setting}
+          patch={patch}
+          extraImageLangs={chipOptions.imageLangs}
+          effective={view?.effective ?? null}
+          overriddenBy={overriddenBy}
+        />
       )}
 
       <div className="flex items-center justify-between gap-3">
