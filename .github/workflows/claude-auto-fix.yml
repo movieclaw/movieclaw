@@ -99,7 +99,10 @@ jobs:
                正文说明根因、修法、验证结果,并包含
                "Closes #${{ github.event.issue.number }}"。
             6. 在 issue 下评论一句已开 PR 及编号。PR 的合并永远留给人工 review。
+          # 不设轮数上限:修复本来就该跑到"复现测试通过 + 门禁全绿"为止,
+          # 中途截断只会留下半成品。失控防线由两道硬约束兜底:
+          # timeout-minutes 的一小时墙钟,以及 label 门控(每次执行都经维护者
+          # 手动授权,不存在被批量触发的路径)。
           claude_args: |
             --model claude-opus-5
-            --max-turns 50
             --allowedTools "Edit,Write,Read,Glob,Grep,Bash(git:*),Bash(python:*),Bash(pytest:*),Bash(ruff:*),Bash(gh issue view:*),Bash(gh issue comment:*),Bash(gh pr create:*)"
