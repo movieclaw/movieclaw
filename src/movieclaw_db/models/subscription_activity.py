@@ -54,6 +54,8 @@ class ActivityType(StrEnum):
     UPGRADE_GRABBED = "upgrade_grabbed"  # 发现更高版本并提交下载
     UPGRADED = "upgraded"  # 洗版完成：新版本入库、旧版本清理
     UPGRADE_VERIFY_FAILED = "upgrade_verify_failed"  # 洗版候选实测证伪，已排除
+    # 入库规格核验（services/subscription/spec_audit.py）
+    SPEC_MISMATCH = "spec_mismatch"  # 入库文件实测规格与种子声称不符
 
 
 class SubscriptionActivity(TimestampMixin, table=True):

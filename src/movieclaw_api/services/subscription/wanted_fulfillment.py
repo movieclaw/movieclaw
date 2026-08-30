@@ -126,6 +126,11 @@ async def close_fulfilled_wanted(session: AsyncSession, media_item_id: int) -> i
         from movieclaw_api.services.system_notice import resolve_notices
 
         await resolve_notices(session, prefix=f"subscription.landing:{subscription_id}:")
+    # 入库规格核验：此刻实测值（快照）与种子声称值（attempt.quality）都在手上，
+    # "声称 1080p / 实测 540p"这类货不对板不该静默（services/subscription/spec_audit.py）
+    from movieclaw_api.services.subscription.spec_audit import audit_ingest_specs
+
+    await audit_ingest_specs(session, media_item_id, fulfilled)
     logger.info("库存对账：条目 #%s 关闭了 %d 个工单", media_item_id, len(fulfilled))
 
     # L4：通知媒体服务器刷新（未配置为 no-op；失败只告警）

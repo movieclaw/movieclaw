@@ -1086,6 +1086,7 @@ function activityColor(type: SubscriptionActivity["type"]): string {
     case "paused":
     case "download_stalled":
     case "upgrade_verify_failed":
+    case "spec_mismatch":
       return "var(--warn)";
     default:
       return "var(--info)";

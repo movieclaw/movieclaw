@@ -672,7 +672,8 @@ export interface SubscriptionActivity {
     | "replacement_cleanup"
     | "upgrade_grabbed"
     | "upgraded"
-    | "upgrade_verify_failed";
+    | "upgrade_verify_failed"
+    | "spec_mismatch";
   message: string;
   payload: Record<string, unknown>;
   created_at: string;
