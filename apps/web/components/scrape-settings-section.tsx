@@ -150,6 +150,28 @@ export function describeScrapeValues(
         parts.push(sizes.every((v) => !v) ? "档位跟随环境" : `档位 ${sizes.map((v) => v || "环境").join("/")}`);
         break;
       }
+      case "naming_entry_dir": {
+        // 四个模板并成一句：逐个列模板串太长，只说"哪几项不是默认"
+        const changed = NAMING_FIELDS.filter((f) => setting[f.key].trim());
+        parts.push(
+          changed.length === 0
+            ? "全部默认模板"
+            : `已改：${changed.map((f) => f.label).join("、")}`,
+        );
+        break;
+      }
+      case "naming_movie_file":
+      case "naming_season_dir":
+      case "naming_episode_file":
+        break; // 已在 naming_entry_dir 一并表达
+      case "mirror_images": {
+        const off = MIRROR_ROWS.filter((r) => !setting[r.key]);
+        parts.push(off.length === 0 ? "三项全写" : `不写：${off.map((r) => r.label).join("、")}`);
+        break;
+      }
+      case "mirror_nfo":
+      case "mirror_episode_thumbs":
+        break; // 已在 mirror_images 一并表达
       default:
         break;
     }
@@ -318,15 +340,6 @@ function OrderChips({
 /* 分区主体                                                            */
 /* ------------------------------------------------------------------ */
 
-const TABS = [
-  { id: "meta", label: "元数据", detail: "语言与文本" },
-  { id: "images", label: "图片", detail: "海报与背景" },
-  { id: "naming", label: "命名与整理", detail: "目录与文件名" },
-  { id: "mirror", label: "目录写入", detail: "NFO 与图片镜像" },
-] as const;
-
-type TabId = (typeof TABS)[number]["id"];
-
 /**
  * 卡片级的「跟随全局 ⇄ 自定义」三态壳（只在库设置页出现，全局设置页不传）。
  *
@@ -437,10 +450,20 @@ export function Card({
           className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-white/[0.03]"
         >
           <span className="min-w-0 flex-1">
-            <span className="flex items-center gap-1.5 text-ui font-semibold">
+            <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-ui font-semibold">
               {title}
               {shell.customized && (
                 <span className="size-1.5 shrink-0 rounded-full bg-[var(--accent)]" aria-hidden />
+              )}
+              {/* 收起时也要看得见"这项被几个库改了"——它正是"在全局改了不生效"
+                  的答案，藏在展开态里等于没有 */}
+              {overriddenBy && overriddenBy.length > 0 && (
+                <span
+                  title={`${overriddenBy.join("、")}不跟随此处的设置`}
+                  className="rounded-full bg-[var(--accent-soft)] px-2 py-px text-micro font-normal text-[var(--accent)]"
+                >
+                  {overriddenBy.length} 个库已覆盖
+                </span>
               )}
             </span>
             {/* 状态常显：不点开也知道这张卡是跟着全局还是本库自己配过 */}
@@ -617,10 +640,12 @@ function NamingTab({
   setting,
   patch,
   overriddenBy,
+  shellFor,
 }: {
   setting: ScrapeSetting;
   patch: (changes: Partial<ScrapeSetting>) => void;
   overriddenBy?: (keys: (keyof ScrapeSetting)[]) => string[];
+  shellFor?: (title: string, keys: (keyof ScrapeSetting)[]) => CardShell;
 }) {
   const [focused, setFocused] = useState<string>("naming_episode_file");
   const refs = useRef<Record<string, HTMLInputElement | null>>({});
@@ -669,6 +694,10 @@ function NamingTab({
     <Card
       title="命名模板"
       overriddenBy={overriddenBy?.(NAMING_FIELDS.map((f) => f.key))}
+      shell={shellFor?.(
+        "命名模板",
+        NAMING_FIELDS.map((f) => f.key),
+      )}
       desc="整理与入库的目录/文件命名。留空即使用默认模板；字段缺失时会连同相邻括号自动收缩。目录层级固定为「条目目录 / 季目录 / 文件」，不可自定义。"
     >
       {NAMING_FIELDS.map((field, i) => (
@@ -835,15 +864,21 @@ function MirrorTab({
   setting,
   patch,
   overriddenBy,
+  shellFor,
 }: {
   setting: ScrapeSetting;
   patch: (changes: Partial<ScrapeSetting>) => void;
   overriddenBy?: (keys: (keyof ScrapeSetting)[]) => string[];
+  shellFor?: (title: string, keys: (keyof ScrapeSetting)[]) => CardShell;
 }) {
   return (
     <Card
       title="媒体目录写入"
       overriddenBy={overriddenBy?.(MIRROR_ROWS.map((r) => r.key))}
+      shell={shellFor?.(
+        "媒体目录写入",
+        MIRROR_ROWS.map((r) => r.key),
+      )}
       desc="把刮削成果写入媒体目录，反哺 Emby / Jellyfin / Kodi（文件名遵循播放器规范）。只增不删除；已存在的 NFO 绝不覆盖。每个媒体库还有一个总开关，关掉则该库三项都不写。"
     >
       <div className="divide-y divide-white/[0.06]">
@@ -876,6 +911,22 @@ function MirrorTab({
  * 全局页与库页各自调用一次即可——两处渲染的是同一批芯片，控件不同源
  * 会随时间漂移成两套交互（设计文档 §14.5：用户学一次就够）。
  */
+/** 分节标签 + 该节的卡片。标签不可点，只做视觉分组；全局页与库设置页共用。 */
+export function ScrapeSection({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="space-y-2">
+      <p className="text-micro uppercase tracking-widest text-[var(--text-faint)]">{label}</p>
+      {children}
+    </div>
+  );
+}
+
 export function useScrapeChipOptions() {
   const [languages, setLanguages] = useState<LanguageOption[]>([]);
   const [countries, setCountries] = useState<CountryOption[]>([]);
@@ -1153,7 +1204,9 @@ export function ScrapeSettingsSection() {
   const [libraryOverrides, setLibraryOverrides] = useState<
     { name: string; keys: string[] }[]
   >([]);
-  const [tab, setTab] = useState<TabId>("meta");
+  // 展开的卡片标题（同时只开一张）；默认全收起——折叠头已经把当前值摊出来了，
+  // 一屏能扫完全站配置（用户决策 2026-08-30：与库设置页形态完全一致）
+  const [open, setOpen] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
@@ -1196,6 +1249,18 @@ export function ScrapeSettingsSection() {
       )
       .catch(() => {});
   }, []);
+
+  const shellFor = useCallback(
+    (title: string, keys: (keyof ScrapeSetting)[]): CardShell => ({
+      open: open === title,
+      onToggleOpen: () => setOpen((current) => (current === title ? null : title)),
+      // 全局页没有"跟随/覆盖"这个静默态（它就是被跟随的那一层），折叠头只报
+      // 当前值；点亮与否交给「N 个库已覆盖」徽标表达
+      customized: false,
+      status: setting ? describeScrapeValues(keys, setting) : "",
+    }),
+    [open, setting],
+  );
 
   const overriddenBy = useCallback(
     (keys: (keyof ScrapeSetting)[]) =>
@@ -1255,51 +1320,38 @@ export function ScrapeSettingsSection() {
         都可以在媒体库的「编辑库 → 刮削设置」里单独覆盖，没被覆盖的库跟随这里。
       </p>
 
-      {/* tab 栏：顺序沿用刮削管线的先后，只为读起来顺（四组无依赖，故不编号）。
-          窄屏改**横向滚动**而不是等分挤压：中文标签压不短（「命名与整理」
-          「目录写入」），等分到 390px 必然换行、tab 条高度翻倍、选中态胶囊
-          只包住第一行——横滚是移动端 tab 的标准解法，保留 tab 的全部优点。 */}
-      <div className="scroll-thin -mx-1 overflow-x-auto px-1">
-        <div className="flex min-w-max gap-1.5 rounded-2xl border border-white/[0.08] bg-white/[0.03] p-1.5 md:min-w-0">
-          {TABS.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => setTab(t.id)}
-              className={`flex shrink-0 flex-col items-center gap-px whitespace-nowrap rounded-xl px-4 py-2 transition-colors md:flex-1 ${
-                tab === t.id
-                  ? "bg-white/[0.12] text-[var(--text)]"
-                  : "text-[var(--text-muted)] hover:bg-white/[0.06]"
-              }`}
-            >
-              <span className="text-ui font-semibold">{t.label}</span>
-              <span className="text-micro text-[var(--text-faint)] max-md:hidden">{t.detail}</span>
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {tab === "mirror" ? (
-        <MirrorTab setting={setting} patch={patch} overriddenBy={overriddenBy} />
-      ) : tab === "naming" ? (
-        <NamingTab setting={setting} patch={patch} overriddenBy={overriddenBy} />
-      ) : tab === "meta" ? (
+      {/* 分节 + 手风琴卡片：与「编辑库 → 刮削设置」同一套结构与控件。
+          分节顺序沿用刮削管线的先后，只为读起来顺——四组之间没有依赖，
+          所以不编号（编号会把并列分组伪装成必须按序完成的向导）。 */}
+      <ScrapeSection label="元数据">
         <MetaTab
           setting={setting}
           patch={patch}
           extraMetaLangs={chipOptions.metaLangs}
           extraCountries={chipOptions.certCountries}
           overriddenBy={overriddenBy}
+          shellFor={shellFor}
         />
-      ) : (
+      </ScrapeSection>
+
+      <ScrapeSection label="图片">
         <ImagesTab
           setting={setting}
           patch={patch}
           extraImageLangs={chipOptions.imageLangs}
           effective={view?.effective ?? null}
           overriddenBy={overriddenBy}
+          shellFor={shellFor}
         />
-      )}
+      </ScrapeSection>
+
+      <ScrapeSection label="命名与整理">
+        <NamingTab setting={setting} patch={patch} overriddenBy={overriddenBy} shellFor={shellFor} />
+      </ScrapeSection>
+
+      <ScrapeSection label="目录写入">
+        <MirrorTab setting={setting} patch={patch} overriddenBy={overriddenBy} shellFor={shellFor} />
+      </ScrapeSection>
 
       <div className="flex items-center justify-between gap-3">
         <p className="text-caption text-[var(--text-faint)]">

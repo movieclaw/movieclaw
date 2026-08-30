@@ -34,6 +34,7 @@ import {
   type CardShell,
   ImagesTab,
   MetaTab,
+  ScrapeSection,
   describeScrapeValues,
   useScrapeChipOptions,
 } from "@/components/scrape-settings-section";
@@ -185,7 +186,7 @@ export function LibraryScrapeSettings({
         )}
       </p>
 
-      <Section label="元数据">
+      <ScrapeSection label="元数据">
         <MetaTab
           setting={merged}
           patch={patch}
@@ -193,9 +194,9 @@ export function LibraryScrapeSettings({
           extraCountries={chipOptions.certCountries}
           shellFor={shellFor}
         />
-      </Section>
+      </ScrapeSection>
 
-      <Section label="图片">
+      <ScrapeSection label="图片">
         <ImagesTab
           setting={merged}
           patch={patch}
@@ -203,9 +204,9 @@ export function LibraryScrapeSettings({
           effective={config?.effective ?? null}
           shellFor={shellFor}
         />
-      </Section>
+      </ScrapeSection>
 
-      <Section label="命名与整理">
+      <ScrapeSection label="命名与整理">
         <Card
           title="命名模板"
           desc="留空即跟随全局模板。命名的产物是本库目录树里的路径，所以每个库可以各用一套。"
@@ -228,9 +229,9 @@ export function LibraryScrapeSettings({
             </div>
           ))}
         </Card>
-      </Section>
+      </ScrapeSection>
 
-      <Section label="目录写入">
+      <ScrapeSection label="目录写入">
         <Card
           title="媒体目录写入"
           desc="把刮削成果写入本库的媒体目录。基本信息里的「刮削图片/NFO 写入媒体目录」是总闸，关掉则这三项全不写。"
@@ -270,23 +271,13 @@ export function LibraryScrapeSettings({
             );
           })}
         </Card>
-      </Section>
+      </ScrapeSection>
 
       <p className="text-caption leading-relaxed text-[var(--text-faint)]">
         语言与选图的产物挂在条目上（一部片一份档案、一张海报），所以它们按条目的
         <strong className="font-medium text-[var(--text-muted)]">刮削归属库</strong>
         生效——归属本库的条目才跟这里的设置。存量条目需在本库执行「刷新元数据」后按新设置重刮。
       </p>
-    </div>
-  );
-}
-
-/** 分节标签 + 该节的卡片。标签不可点，只做视觉分组。 */
-function Section({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="space-y-2">
-      <p className="text-micro uppercase tracking-widest text-[var(--text-faint)]">{label}</p>
-      {children}
     </div>
   );
 }
