@@ -11,7 +11,7 @@
 #   - 下面 job 级 if 只是省 runner:没有 @claude 的评论直接不起容器。
 #   - fork PR 的评论同样受写权限校验约束,不会替外部分支执行特权操作。
 #
-# 依赖的仓库配置:Settings → Secrets → Actions 添加 ANTHROPIC_API_KEY。
+# 依赖的仓库配置:Settings → Secrets → Actions 添加 CLAUDE_CODE_OAUTH_TOKEN
 # =============================================================================
 name: claude
 
@@ -58,7 +58,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # 不传 prompt → 交互模式,Claude 自行读取 @claude 所在的评论上下文
           claude_args: |
             --model claude-opus-5

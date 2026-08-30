@@ -15,7 +15,7 @@
 #   - 成本护栏:分诊用 Sonnet 足够,--max-turns 限轮次,timeout 限时长,
 #     concurrency 防同一 issue 并发处理。
 #
-# 依赖的仓库配置:Settings → Secrets → Actions 添加 ANTHROPIC_API_KEY。
+# 依赖的仓库配置:Settings → Secrets → Actions 添加 CLAUDE_CODE_OAUTH_TOKEN
 # 未配置该机密时工作流会失败但无副作用。
 # =============================================================================
 name: claude-issue-triage
@@ -60,7 +60,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
             你是 movieclaw 仓库的 issue 分诊助手。请处理刚开启的
             issue #${{ github.event.issue.number }}（作者 @${{ github.event.issue.user.login }}）。

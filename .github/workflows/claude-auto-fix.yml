@@ -14,7 +14,7 @@
 #     的 python 作业完全一致(含 NER 模型,缺模型会稳定挂一批测试)。
 #   - 合并仍走人工 review + CI 门禁,本工作流永不合并代码。
 #
-# 依赖的仓库配置:Settings → Secrets → Actions 添加 ANTHROPIC_API_KEY。
+# 依赖的仓库配置:Settings → Secrets → Actions 添加 CLAUDE_CODE_OAUTH_TOKEN
 # =============================================================================
 name: claude-auto-fix
 
@@ -75,7 +75,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
             维护者已给 issue #${{ github.event.issue.number }} 打上 claude-auto-fix
             标签,授权你尝试修复。请按下面的纪律执行。
