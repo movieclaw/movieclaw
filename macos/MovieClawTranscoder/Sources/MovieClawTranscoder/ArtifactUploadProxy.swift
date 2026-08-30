@@ -302,8 +302,9 @@ final class ArtifactUploadProxy: @unchecked Sendable {
         for connection in activeConnections {
             connection.stop()
         }
-        // 共享会话随代理一起结束；finishTasksAndInvalidate 会等已发出的请求
-        // 收尾，但此时 drain 已经跑过，剩下的都是该取消的。
+        // 共享会话随代理一起结束。注意不能假设「此时 drain 已经跑过」：seek 走
+        // job.stop 时，本方法和旧任务的收尾路径是并发的——所以先在锁内置了
+        // stopped，再在这里 invalidate，之后任何上传都会被 sendUpload 挡掉。
         uploadSession.invalidateAndCancel()
         continuation?.resume(throwing: ProxyError.stopped)
         AppLogger.shared.info("任务上传代理已停止：job=\(jobID)")
@@ -343,9 +344,12 @@ final class ArtifactUploadProxy: @unchecked Sendable {
         lock.lock()
         let pending = deferredPlaylist
         deferredPlaylist = nil
+        // 代理已停机就别补了：这份 playlist 只用于播放诊断，而 seek 场景下
+        // 它必然撞上刚被 invalidate 的会话（真正的兜底在 sendUpload）。
+        let alreadyStopped = stopped
         lock.unlock()
 
-        guard let pending else { return }
+        guard let pending, !alreadyStopped else { return }
         // 直接走网络实传，不能再经过 upload()——那里会把它重新攒起来。
         let result = await performUpload(
             data: pending.data,
@@ -493,7 +497,7 @@ final class ArtifactUploadProxy: @unchecked Sendable {
                 request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
                 request.httpBody = data
 
-                let (_, response) = try await session.data(for: request)
+                let response = try await sendUpload(request, on: session)
                 guard let httpResponse = response as? HTTPURLResponse else {
                     lastStatus = 502
                     lastMessage = "NAS 返回了无效 HTTP 响应"
@@ -524,6 +528,11 @@ final class ArtifactUploadProxy: @unchecked Sendable {
                 if Task.isCancelled {
                     return UploadResult(statusCode: 499, message: "上传任务已取消", attempts: attempt)
                 }
+                // 代理已停机（seek 触发的 job.stop）：会话没了，重试再多次也
+                // 没有出口，更不该把这轮已被主动放弃的产物记成上传失败。
+                if case ProxyError.stopped = error {
+                    return UploadResult(statusCode: 499, message: "上传代理已停止", attempts: attempt)
+                }
                 lastStatus = 502
                 lastMessage = LogSanitizer.redact(error.localizedDescription)
                 if attempt < Self.maxUploadAttempts {
@@ -538,6 +547,54 @@ final class ArtifactUploadProxy: @unchecked Sendable {
         rememberFailure(failure)
         AppLogger.shared.error("\(failure) job=\(jobID)")
         return UploadResult(statusCode: lastStatus, message: lastMessage, attempts: Self.maxUploadAttempts)
+    }
+
+    /// 发一次上传请求；代理已停机就抛 ``ProxyError.stopped``，绝不碰会话。
+    ///
+    /// 这次的教训（2026-08-30）：URLSession 一旦 ``invalidateAndCancel()``，
+    /// 再往上建任务会从 ``-[__NSURLSessionLocal taskForClassInfo:]`` 抛一个
+    /// **Objective-C** 异常。Swift 的 try/catch 拦不住它，进程当场 abort——
+    /// 用户看到的是「一 seek，菜单栏 App 直接消失，日志里什么都没有」。
+    ///
+    /// seek 必然制造这个竞态：服务端下发 job.stop，``stop()`` 在这边把会话
+    /// invalidate；与此同时旧任务的收尾路径还在 ``drainPendingUploads()`` 里
+    /// 往同一条会话上补传 live.m3u8。
+    ///
+    /// 所以建任务这一步必须和 ``stop()`` 抢同一把锁：``stop()`` 是先在锁内把
+    /// ``stopped`` 置位、出锁之后才 invalidate，于是锁内看到 ``stopped == false``
+    /// 时建出来的任务一定早于 invalidate，最坏只是随后被取消——而看到已置位
+    /// 就直接放弃，永远不会有「往废会话上建任务」这一幕。
+    private func sendUpload(
+        _ request: URLRequest,
+        on session: URLSession
+    ) async throws -> URLResponse? {
+        // 任务句柄要跨出闭包给取消回调用，闭包本身在锁内同步执行，不存在并发写。
+        final class TaskBox: @unchecked Sendable {
+            var task: URLSessionDataTask?
+        }
+        let box = TaskBox()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                lock.lock()
+                guard !stopped else {
+                    lock.unlock()
+                    continuation.resume(throwing: ProxyError.stopped)
+                    return
+                }
+                let task = session.dataTask(with: request) { _, response, error in
+                    if let error {
+                        continuation.resume(throwing: error)
+                    } else {
+                        continuation.resume(returning: response)
+                    }
+                }
+                box.task = task
+                task.resume()
+                lock.unlock()
+            }
+        } onCancel: {
+            box.task?.cancel()
+        }
     }
 
     private func retryDelay(after attempt: Int, filename: String, reason: String) async {

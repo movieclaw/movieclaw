@@ -6,6 +6,7 @@ import Foundation
 struct MovieClawTranscoderMain {
     @MainActor
     static func main() {
+        AppLogger.installCrashDiagnostics()
         if CommandLine.arguments.contains("--help") {
             WorkerConfiguration.printUsage()
             return
