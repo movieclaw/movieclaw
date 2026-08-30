@@ -396,7 +396,6 @@ export interface CardShell {
 
 export function Card({
   title,
-  perLibrary,
   overriddenBy,
   follow,
   shell,
@@ -404,9 +403,10 @@ export function Card({
   children,
 }: {
   title: string;
-  perLibrary?: boolean;
   /** 覆盖了本卡片字段的媒体库名。分层配置最经典的坑是"在全局改了半天不生效"，
-   *  不把这个标出来用户无从自查（设计文档 §14.5） */
+   *  不把这个标出来用户无从自查（设计文档 §14.5）。
+   *  注意这里**没有**「可按库覆盖」徽标：P4 之后所有字段都可按库覆盖，
+   *  逐卡再标一遍就不区分任何东西了，改到分区顶部统一说一句。 */
   overriddenBy?: string[];
   /** 库设置页的卡片级三态；与 shell 二选一（shell 里带着它） */
   follow?: CardFollowState;
@@ -467,11 +467,6 @@ export function Card({
     <section className="rounded-2xl border border-white/[0.08] bg-white/[0.04] p-5">
       <div className="flex flex-wrap items-center gap-2.5">
         <h3 className="text-title-sm font-semibold">{title}</h3>
-        {perLibrary && (
-          <span className="rounded-full border border-white/[0.15] px-2 py-px text-micro text-[var(--accent-2)]">
-            可按库覆盖
-          </span>
-        )}
         {overriddenBy && overriddenBy.length > 0 && (
           <span
             title={`${overriddenBy.join("、")}不跟随此处的设置`}
@@ -673,7 +668,6 @@ function NamingTab({
   return (
     <Card
       title="命名模板"
-      perLibrary
       overriddenBy={overriddenBy?.(NAMING_FIELDS.map((f) => f.key))}
       desc="整理与入库的目录/文件命名。留空即使用默认模板；字段缺失时会连同相邻括号自动收缩。目录层级固定为「条目目录 / 季目录 / 文件」，不可自定义。"
     >
@@ -849,7 +843,6 @@ function MirrorTab({
   return (
     <Card
       title="媒体目录写入"
-      perLibrary
       overriddenBy={overriddenBy?.(MIRROR_ROWS.map((r) => r.key))}
       desc="把刮削成果写入媒体目录，反哺 Emby / Jellyfin / Kodi（文件名遵循播放器规范）。只增不删除；已存在的 NFO 绝不覆盖。每个媒体库还有一个总开关，关掉则该库三项都不写。"
     >
@@ -943,7 +936,6 @@ export function MetaTab({
     <>
       <Card
         title="元数据语言"
-        perLibrary
         overriddenBy={overriddenBy?.(["language_priority"])}
         shell={shellFor?.("元数据语言", ["language_priority"])}
         desc="标题、简介、类型名等文本的语言。点选语言即加入优先级，第 1 位是主语言（决定向 TMDB 请求的语言），缺失的字段按顺序回落——回落基于已拉取的翻译数据，不产生额外请求。"
@@ -960,7 +952,6 @@ export function MetaTab({
       </Card>
       <Card
         title="内容分级"
-        perLibrary
         overriddenBy={overriddenBy?.(["cert_country_priority"])}
         shell={shellFor?.("内容分级", ["cert_country_priority"])}
         desc="条目分级（如 PG-13、TV-MA）按顺序取第一个有数据的地区。"
@@ -1002,7 +993,6 @@ export function ImagesTab({
     <>
       <Card
         title="海报"
-        perLibrary
         overriddenBy={overriddenBy?.(["poster_mode", "poster_language_priority"])}
         shell={shellFor?.("海报", ["poster_mode", "poster_language_priority"])}
         desc="海报和文本一样有语言：中文版、原版、无文字干净版是不同的候选图。你在条目详情页手动选定的图始终优先，不受这里影响。"
@@ -1060,7 +1050,6 @@ export function ImagesTab({
       </Card>
       <Card
         title="背景图（fanart）"
-        perLibrary
         overriddenBy={overriddenBy?.(["backdrop_language_priority"])}
         shell={shellFor?.("背景图（fanart）", ["backdrop_language_priority"])}
         desc="铺在详情页全屏的沉浸底图。「无文字」是没有烧录任何片名文字的干净图——排第 1 位即无文字优先；想要带片名 logo 的横图，把语言排到前面。"
@@ -1077,7 +1066,6 @@ export function ImagesTab({
       </Card>
       <Card
         title="质量与门槛"
-        perLibrary
         overriddenBy={overriddenBy?.([
           "poster_min_width",
           "backdrop_min_width",
@@ -1259,23 +1247,36 @@ export function ScrapeSettingsSection() {
 
   return (
     <div className="space-y-5">
-      {/* tab 栏：编号即刮削管线的执行顺序 */}
-      <div className="flex gap-1.5 rounded-2xl border border-white/[0.08] bg-white/[0.03] p-1.5">
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            onClick={() => setTab(t.id)}
-            className={`flex flex-1 flex-col items-center gap-px rounded-xl px-3 py-2 transition-colors ${
-              tab === t.id
-                ? "bg-white/[0.12] text-[var(--text)]"
-                : "text-[var(--text-muted)] hover:bg-white/[0.06]"
-            }`}
-          >
-            <span className="text-ui font-semibold">{t.label}</span>
-            <span className="text-micro text-[var(--text-faint)] max-md:hidden">{t.detail}</span>
-          </button>
-        ))}
+      {/* 「可按库覆盖」这件事在分区顶部统一说一句：P4 之后所有字段都能按库
+          覆盖，逐卡贴徽标不区分任何东西，只是噪音（设计文档 §14.5） */}
+      <p className="text-sub leading-relaxed text-[var(--text-muted)]">
+        全站默认的刮削口味。
+        <strong className="font-medium text-[var(--text)]">任意一项</strong>
+        都可以在媒体库的「编辑库 → 刮削设置」里单独覆盖，没被覆盖的库跟随这里。
+      </p>
+
+      {/* tab 栏：顺序沿用刮削管线的先后，只为读起来顺（四组无依赖，故不编号）。
+          窄屏改**横向滚动**而不是等分挤压：中文标签压不短（「命名与整理」
+          「目录写入」），等分到 390px 必然换行、tab 条高度翻倍、选中态胶囊
+          只包住第一行——横滚是移动端 tab 的标准解法，保留 tab 的全部优点。 */}
+      <div className="scroll-thin -mx-1 overflow-x-auto px-1">
+        <div className="flex min-w-max gap-1.5 rounded-2xl border border-white/[0.08] bg-white/[0.03] p-1.5 md:min-w-0">
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => setTab(t.id)}
+              className={`flex shrink-0 flex-col items-center gap-px whitespace-nowrap rounded-xl px-4 py-2 transition-colors md:flex-1 ${
+                tab === t.id
+                  ? "bg-white/[0.12] text-[var(--text)]"
+                  : "text-[var(--text-muted)] hover:bg-white/[0.06]"
+              }`}
+            >
+              <span className="text-ui font-semibold">{t.label}</span>
+              <span className="text-micro text-[var(--text-faint)] max-md:hidden">{t.detail}</span>
+            </button>
+          ))}
+        </div>
       </div>
 
       {tab === "mirror" ? (
