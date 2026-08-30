@@ -157,8 +157,15 @@ func ResolveServer(flagServer, flagContext string) (string, error) {
 	return "", clierr.Usagef("未指定 movieclaw 服务器地址").
 		WithHint("三种方式任选：mclaw login --server http://<主机>:3000 登录并记住；"+
 			"或设置环境变量 MOVIECLAW_SERVER；或加 --server 标志。（已查找：%s、%s）",
-			configPath(), SystemConfigPath())
+			configPath(), SystemConfigPath()).
+		Wrap(ErrNoServer)
 }
+
+// ErrNoServer 标记「哪儿都没配地址」这一种解析失败。
+//
+// 与「上下文写错了」区分开：前者可以退回局域网自动发现兜底，后者是用户明确
+// 指了一个不存在的东西，猜一台机器给他反而更糟。
+var ErrNoServer = errors.New("未指定服务器地址")
 
 // SaveContext 把服务器记进上下文；首个上下文自动设为当前。
 func SaveContext(server, name string) error {

@@ -94,6 +94,9 @@ fi
 
 say ""
 say "下一步：把这台机器配对到你的 movieclaw"
-say "  mclaw login --server http://<你的 movieclaw 地址>:3000"
+say "  mclaw login"
+say ""
+say "它会先在局域网里找一遍；找不到（跨网段、VPN，或服务端关了 Jellyfin"
+say "兼容层）就自己给地址：mclaw login --server http://<你的 movieclaw 地址>:3000"
 say ""
 say "命令会显示一段配对码，到网页「设置 → 设备」核对后批准即可。"

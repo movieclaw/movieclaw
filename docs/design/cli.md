@@ -408,6 +408,7 @@ cli/
 ├── cmd/mclaw/         # 唯一入口 mclaw（不注册别名）：装配、退出码结算、偏斜刷新
 ├── internal/
 │   ├── config/        # 全局凭证与上下文（config.toml + credentials）
+│   ├── discover/      # 局域网找服务器（复用服务端已有的 UDP 7359 应答）
 │   ├── api/           # HTTP 客户端：信封拆解、错误→退出码、SSE 连接
 │   ├── output/        # 三种输出格式，保持服务端字段顺序
 │   ├── jsonval/       # 保序 JSON 对象与取值助手

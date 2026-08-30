@@ -3,3 +3,5 @@
 /dist/
 # 测试夹具现场编出来的二进制（tests/agent/conftest.py）
 /.build/
+# 在 cli/ 下起过测试服务器时留下的运行期数据
+/data/

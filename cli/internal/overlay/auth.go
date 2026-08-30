@@ -1,14 +1,19 @@
 package overlay
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/yipengfei329/movieclaw/cli/internal/api"
 	"github.com/yipengfei329/movieclaw/cli/internal/clierr"
 	"github.com/yipengfei329/movieclaw/cli/internal/config"
+	"github.com/yipengfei329/movieclaw/cli/internal/discover"
 	"github.com/yipengfei329/movieclaw/cli/internal/jsonval"
 	"github.com/yipengfei329/movieclaw/cli/internal/output"
 	"github.com/yipengfei329/movieclaw/cli/internal/spec"
@@ -42,9 +47,13 @@ func NewLoginCommand() *cobra.Command {
 
 示例：
 
-    mclaw login --server http://192.168.1.10:3000
+    mclaw login                                      # 先在局域网里找一遍
+    mclaw login --server http://192.168.1.10:3000    # 直接指定
 
-命令会显示一段配对码，请在浏览器里打开 movieclaw 的「设置 → 设备」，
+不带 --server 时会广播查找同一局域网内的 movieclaw，找到后请你确认。跨网段、
+VPN，或服务端关掉了「Jellyfin 兼容层」时找不到，自己给地址即可。
+
+随后命令会显示一段配对码，请在浏览器里打开 movieclaw 的「设置 → 设备」，
 核对配对码后批准。配对成功后服务器地址会记入当前上下文，之后的命令
 无需再指定 --server。`,
 		Args: cobra.NoArgs,
@@ -62,16 +71,18 @@ func NewLoginCommand() *cobra.Command {
 }
 
 func runLogin(s *Settings, clientName string) error {
-	target, err := s.ResolveServer()
-	if err != nil {
-		return err
-	}
 	// 零交互原则（docs/design/cli.md §5.1）：配对必须有人在浏览器里点批准，
 	// 非 TTY 下执行它只会静默挂到超时。与其挂住，不如立刻说清该怎么办。
+	// 这一步放在解析地址之前：非交互环境下连自动发现都不该跑（要选、要确认）。
 	if !stdinIsTTY() {
 		return clierr.Usagef("非交互环境无法完成配对：配对需要有人在浏览器里批准").
 			WithHint("请在有终端的机器上执行 mclaw login；无人值守场景（CI / 容器）" +
 				"改为在网页「设置 → 设备」创建令牌后，用环境变量 MOVIECLAW_TOKEN 注入")
+	}
+
+	target, err := resolveOrDiscover(s)
+	if err != nil {
+		return err
 	}
 
 	client, err := s.NewAPIFor(target)
@@ -278,6 +289,156 @@ credential 这一项是排障的关键：「我明明配对过了」十次里有
 //
 // 它会显示在网页的审批卡和设备列表上，是用户判断「这是不是我那台机器」以及
 // 日后决定吊销哪台的依据，所以要能认得出来。
+// discoverTimeout 是等待局域网应答的时长。够短，短到用户不会觉得命令卡住；
+// 又够长，让 NAS 这类慢设备来得及回一包。
+const discoverTimeout = 1500 * time.Millisecond
+
+// resolveOrDiscover 解析服务器地址；哪儿都没配时退回局域网自动发现。
+//
+// 只在 ErrNoServer 这一种失败上兜底：用户明确指了一个不存在的上下文时，
+// 猜一台机器给他比报错更糟。
+func resolveOrDiscover(s *Settings) (string, error) {
+	target, err := s.ResolveServer()
+	if err == nil {
+		return target, nil
+	}
+	if !errors.Is(err, config.ErrNoServer) {
+		return "", err
+	}
+
+	output.Info("未指定服务器地址，正在局域网内查找 movieclaw…")
+	result := discoverServers()
+	if len(result.Confirmed) == 0 {
+		return "", noServerError(err, result)
+	}
+	return chooseServer(result.Confirmed)
+}
+
+// noServerError 在自动发现也没结果时，把原来的「怎么给地址」和这次查找的
+// 实际情况合成一条错误。
+//
+// 「找到了但连不上」要单独说：那是桥接部署下最常见的形态——服务端自报的是
+// 容器内网段地址。把它咽下去只报「没找到」，用户会一直以为是自己网络的问题，
+// 而真正的修法（网页里填对外发布地址）在别处。
+func noServerError(cause error, result discovery) error {
+	var cliErr *clierr.Error
+	if !asCliError(cause, &cliErr) {
+		return cause
+	}
+	if len(result.Unreachable) > 0 {
+		return clierr.Usagef("局域网里找到了 movieclaw，但它自报的地址连不上：%s",
+			strings.Join(result.Unreachable, "、")).
+			WithHint("桥接网络部署下服务端探测到的常是容器内地址。" +
+				"请到网页「设置 → 网络与维护」填写对外访问地址，" +
+				"或直接用 mclaw login --server http://<主机>:3000 指定")
+	}
+	return clierr.Usagef("%s（局域网内也没有找到）", cliErr.Message).
+		WithHint("%s 局域网查找依赖服务端的「Jellyfin 兼容层」开关，"+
+			"跨网段、VPN 或桥接网络下也可能找不到。", cliErr.Hint)
+}
+
+// discovery 是一次查找的结果：确认过的，和应答了但连不上的。
+type discovery struct {
+	Confirmed   []discover.Server
+	Unreachable []string
+}
+
+// discoverServers 广播查找，并逐个确认「这确实是 movieclaw」。
+//
+// 确认这一步不能省：局域网里的真 Jellyfin 会应答同一句问询，直接拿它的地址
+// 去配对只会得到一串看不懂的 404。
+//
+// 是变量而非函数，供测试替换——真广播在 CI 里既不可控也不该发。
+var discoverServers = func() discovery {
+	candidates, err := discover.Find(discoverTimeout)
+	if err != nil {
+		// 发不出广播（无可用网卡、防火墙）不该让 login 失败，退回手工给地址
+		output.Info("（局域网查找不可用：%v）", err)
+		return discovery{}
+	}
+	var result discovery
+	for _, candidate := range candidates {
+		name, ok := probeMovieclaw(candidate.Address)
+		if !ok {
+			result.Unreachable = append(result.Unreachable, candidate.Address)
+			continue
+		}
+		if candidate.Name == "" {
+			candidate.Name = name
+		}
+		result.Confirmed = append(result.Confirmed, candidate)
+	}
+	return result
+}
+
+// probeMovieclaw 打一次 /health，确认对面是 movieclaw 而不是别的服务。
+func probeMovieclaw(address string) (string, bool) {
+	client, err := api.New(address, 3*time.Second, false)
+	if err != nil {
+		return "", false
+	}
+	health, err := client.Request(http.MethodGet, "/health", nil, nil)
+	if err != nil {
+		return "", false
+	}
+	service := stringField(health, "service", "")
+	return service, service == "movieclaw"
+}
+
+// chooseServer 让用户确认发现结果：一台问 Y/n，多台列出来选。
+func chooseServer(found []discover.Server) (string, error) {
+	if len(found) == 1 {
+		one := found[0]
+		output.Info("✓ 找到 %s（%s）", displayName(one), one.Address)
+		if !askYesNo("使用这台吗？") {
+			return "", clierr.Usagef("已取消").
+				WithHint("用 mclaw login --server http://<主机>:3000 指定另一台")
+		}
+		return one.Address, nil
+	}
+	output.Info("✓ 局域网内找到 %d 台：", len(found))
+	for i, item := range found {
+		output.Info("  %d) %s  %s", i+1, displayName(item), item.Address)
+	}
+	index := askIndex("选择要配对的服务器（序号）：", len(found))
+	if index < 0 {
+		return "", clierr.Usagef("已取消").
+			WithHint("用 mclaw login --server http://<主机>:3000 指定另一台")
+	}
+	return found[index].Address, nil
+}
+
+func displayName(server discover.Server) string {
+	if server.Name == "" {
+		return "movieclaw"
+	}
+	return server.Name
+}
+
+// askYesNo 与 askIndex 供测试覆盖。
+var askYesNo = func(prompt string) bool {
+	fmt.Fprintf(os.Stderr, "  %s [Y/n] ", prompt)
+	var answer string
+	if _, err := fmt.Fscanln(os.Stdin, &answer); err != nil {
+		return true // 直接回车 = 默认同意
+	}
+	answer = strings.ToLower(strings.TrimSpace(answer))
+	return answer == "" || answer == "y" || answer == "yes"
+}
+
+var askIndex = func(prompt string, count int) int {
+	fmt.Fprintf(os.Stderr, "  %s", prompt)
+	var answer string
+	if _, err := fmt.Fscanln(os.Stdin, &answer); err != nil {
+		return -1
+	}
+	choice, err := strconv.Atoi(strings.TrimSpace(answer))
+	if err != nil || choice < 1 || choice > count {
+		return -1
+	}
+	return choice - 1
+}
+
 func defaultClientName() string {
 	host, err := os.Hostname()
 	if err != nil || host == "" {

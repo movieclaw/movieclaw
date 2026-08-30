@@ -100,6 +100,9 @@ try {
 
 Write-Host ''
 Write-Host '下一步：把这台机器配对到你的 movieclaw'
-Write-Host '  mclaw login --server http://<你的 movieclaw 地址>:3000'
+Write-Host '  mclaw login'
+Write-Host ''
+Write-Host '它会先在局域网里找一遍；找不到（跨网段、VPN，或服务端关了 Jellyfin'
+Write-Host '兼容层）就自己给地址：mclaw login --server http://<你的 movieclaw 地址>:3000'
 Write-Host ''
 Write-Host '命令会显示一段配对码，到网页「设置 → 设备」核对后批准即可。'
