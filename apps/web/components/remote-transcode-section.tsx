@@ -298,6 +298,22 @@ export function RemoteTranscodeSection({
             </>
           ) : status == null ? (
             <p className="text-caption text-[var(--text-faint)]">正在获取 Worker 状态…</p>
+          ) : !config.ready ? (
+            /* Worker 的 WebSocket 被 remote_worker_enabled（开关 + 地址合法）
+               挡着，此时给配对引导是误导——用户照着做完三步，照样连不上。
+               先说清真正拦路的是哪一项。 */
+            <div className="space-y-2 text-caption leading-5 text-[var(--text-faint)]">
+              <p className="text-sub text-[var(--text-muted)]">
+                {!config.enabled
+                  ? "远程转码还没开启，Worker 现在连不上来。"
+                  : "远程转码地址还没配好，Worker 现在连不上来。"}
+              </p>
+              <p>
+                {!config.enabled
+                  ? "打开上面的开关并保存，再去 Mac 上配对。"
+                  : "先按上面的提示把地址补齐并保存，再去 Mac 上配对。"}
+              </p>
+            </div>
           ) : (
             <div className="space-y-2 text-caption leading-5 text-[var(--text-faint)]">
               <p className="text-sub text-[var(--text-muted)]">还没有 Worker 接入。在 Mac 上：</p>
