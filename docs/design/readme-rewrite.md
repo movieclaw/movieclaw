@@ -300,6 +300,99 @@ README 定稿后派了两个 subagent 在干净环境里**逐字执行**指南�
 `watchfiles` 的 `change detected` 刷屏淹没真实日志（不会真的反复重启，只是刷屏）。
 建议 `--reload-dir src` 或排除 `data/`。
 
+## 4.6 文案句法：第二轮调研与重写（2026-08-30）
+
+前面几节解决的是**结构**（放什么、什么顺序、有没有截图）。定稿后复盘发现，
+**句子层面**基本是凭手感写的，而且方法上有个更根本的漏洞：调研样本全是英文项目
+（Emby / Plex / \*arr / Immich），然后把英文技巧直接用在中文句子上。中文科技文案有自己的
+失败模式，这一层当时完全没查。补两路调研后重写产品介绍全段。
+
+### 手法（英文样本，可直接迁移的部分）
+
+- **输入→结果句**：`Point Emby at your folders and it transforms them into a rich,
+  easy-to-browse library`（[emby.media](https://emby.media/)）。主语是用户的一个动作，
+  宾语是用户已有的东西。本 README 的主标语「指向你存片的目录，剩下的交给它」即由此而来，
+  并合并了 Plex 的**分工契约句** `You bring your media library, we'll do the rest.`
+- **否定式承诺三连**：`Jellyfin has no tracking, phone-home, or central servers collecting
+  your data.`（[jellyfin.org](https://jellyfin.org/)）。三个否定物抽象层级递进，最后一项最物理、最可信。
+- **边界声明**：`Emby is NOT a media streaming service. We provide no content.`
+  （[emby.media/premiere.html](https://emby.media/premiere.html)）四个短句全是断言，零形容词，印在付费页顶部。
+- **数字替形容词**：Stripe 全站几乎无 -ly 副词，用 `$1.9T in payments volume processed in 2025`
+  这类硬数据。反例是 Plex 的 `magically scans and organizes your files, sorting your media
+  intuitively and beautifully`——三个 -ly 副词删掉后信息量不变，这就是该删的判据。
+- **代码即演示**：`Intuitive syntax: fd PATTERN instead of find -iname '*PATTERN*'`（fd）。
+  形容词后面立刻用前后对照兑现。
+
+### one-liner 的分类统计（30 个头部项目）
+
+| 类别 | 数量 | 占比 | 平均分 |
+| --- | --- | --- | --- |
+| A 品类词 + 人群 | 18 | 60% | 3.6 |
+| B 对标替代（X 的开源替代 / 像你自己的 Spotify） | 5 | 17% | **4.8** |
+| C 输入→输出 | 4 | 13% | **4.5** |
+| D 立场宣言 | 3 | 10% | 3.7 |
+
+**数量上 A 是主流，质量上 B/C 明显更强。** A 类分数最散（2–5 分），因为它完全取决于品类词
+是否已在读者脑中：Radarr 的 `a movie collection manager for Usenet and BitTorrent users`
+得 5 分（品类 + 人群），Prometheus 的 `is a systems and service monitoring system` 得 2 分
+（把一个词拆开重说了一遍）。C 类的独特优势是**不需要读者事先知道任何词**。
+
+→ 本 README 的取法：主标语用 C（输入→结果），副标题用 B（锚 Jellyfin + \*arr 六件套）。
+
+### 中文特有的坑（这一层是纯增量）
+
+- **破折号是 2026 年的 AI 味标志。** V2EX 讨论串
+  [t/1231506](https://www.v2ex.com/t/1231506) 里，「乱用破折号」与「乱搞金句升华」并列被点名；
+  该站技术节点顶部现挂着「请不要在回答技术问题时复制粘贴 AI 生成的内容」。
+  **重写前本文档所属的 README 有 45 个「——」，全部清零**，改用冒号、句号或拆句。
+  英文 em dash 是加速器，中文破折号占两个字宽、是减速带，本来也不该等量代换。
+- **删「-ly 副词」在中文对应的是删自夸两字词**：智能、轻松、极速、海量、一键、完美、优雅、
+  强大、极致、无缝。旧 README 开头的「全新一代，智能化的」正是这一类。
+- **黑话有硬证据可查**：[justjavac/ali-words](https://github.com/justjavac/ali-words) 把赋能、
+  抓手、闭环、颗粒度、解决方案、重新定义编成分级词表；
+  [Wzy-CC/BlackSpeak](https://github.com/Wzy-CC/BlackSpeak) 能把它们随机拼成语法通顺、语义为零的段落。
+  **一句话如果能被马尔可夫链生成，它的信息量就是零**——这是最好用的自查测试。
+- **极限词在中文是合规问题不是品味问题**：《新华社新闻报道中的禁用词》禁止「最佳/最好/
+  最先进」等；《广告法》规制绝对化用语。英文写 the best 只是没品，中文写「业界领先」有风险。
+- **句长有硬标准**（[阮一峰《中文技术文档的写作规范》](https://www.ruanyifeng.com/blog/2016/10/document_style_guide.html)）：
+  逗号分隔的构件 20 字以内最佳，20–29 可接受，30–39 需语义明确，**超过 40 字任何情况下都不能接受**。
+- **人称禁止混用**（[中文技术文档写作风格指南](https://zh-style-guide.readthedocs.io/)）。
+  实抓十个中文产品样本，九个用「你」，零个用「您」；用「您」立刻像企业客服工单。
+  「我们」在开源项目里会被读成「某家公司」，已全部改成项目名或无主语（原 45 处破折号 + 1 处「我们」均清零）。
+- **排比上限三项。** flomo「无需格式、无需排版、无需分类」、Snipaste「没有广告、不会扫描你的
+  硬盘、更不会上传用户数据」都是三项。四项开始像 PPT，五项开始像生成器。
+
+### 这一轮最值钱的一处改动
+
+原来有一条纯黑话 bullet：「种子名用自训的 **NER 小模型**做**结构化抽取**……分辨率、片源、
+编码、字幕语言、音轨、制作组**分别成域**」——一句话三个术语，好处还是抽象的。
+按 AutoBangumi 的做法（一个 before/after 代码块顶十句形容词）换成真实解析结果：
+
+```text
+三体.Three-Body.2023.S01E05.2160p.WEB-DL.H265.AAC.国语中字-OurTV
+↓
+剧集 · 第 1 季第 5 集 · 2160p · H.265 · WEB-DL · AAC
+字幕：中文    音轨：普通话    制作组：OurTV
+```
+
+这段输出是在官方镜像里用真模型跑出来的，可复现（`movieclaw_enrich.enrich()`）。
+「国语中字」拆成字幕语言与音轨语言两个字段，是中文 PT 圈才有的写法，
+既是能力证明，也是**自己人暗号**——按调研的说法，「一处只有真用过的人才写得出来的细节」
+是判断一段文案是不是营销号写的唯一可靠标准。
+
+### 文案自查清单（改文案时逐句过）
+
+1. 命中 `ali-words` 词表没有？（赋能/抓手/闭环/沉淀/颗粒度/生态/痛点/解决方案/重新定义）
+2. 把名词随机换成同类名词，意思还成立吗？成立就是生成器写得出来的，删。
+3. 用户能自己验证真假吗？不能就删。
+4. 有数字吗？有没有口径（什么硬件、什么规模下测的）？
+5. 有极限词吗？（最/第一/唯一/领先/顶级）
+6. 有 AI 句式吗？（想象一下、不是……而是、不仅仅是、**破折号做金句升华**）
+7. 逗号间构件超 20 字了吗？整句超 40 字了吗？
+8. 全文人称统一吗？功能列表里混进人称了吗？
+9. 中英文之间加空格了吗？并列词用顿号而非半角逗号？「」和""混用了吗？
+10. 这一段里有没有至少一处「只有真用过的人才写得出来」的细节？一处都没有就是营销号文案。
+
 ## 5. 结构变更时的检查清单
 
 改 README 前对照这几条，任何一条答"否"就先回来看对应章节：
