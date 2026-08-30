@@ -44,6 +44,33 @@ export interface DeviceTokenView {
   last_used_at: string | null;
 }
 
+/**
+ * 刚创建出来的手工令牌：唯一一次能读到明文的地方。
+ *
+ * 服务端不保存明文（只存哈希），这个响应之后再也拿不到——界面必须让用户
+ * 当场存走，不能做成「以后再来复制」。
+ */
+export interface DeviceTokenCreatedView extends DeviceTokenView {
+  token: string;
+}
+
+/**
+ * 手工创建一枚令牌，给没法在浏览器里按下批准的环境用（NAS 定时任务、CI、
+ * 无界面容器）。
+ *
+ * 这个入口只认浏览器会话（服务端挂 require_admin_session），令牌自己调不动
+ * ——否则一枚泄漏的令牌就能给自己造备份，吊销也止不住损
+ * （docs/design/device-auth.md §4.4）。
+ */
+export function createDeviceToken(name: string): Promise<DeviceTokenCreatedView> {
+  return unwrap(
+    request<ApiEnvelope<DeviceTokenCreatedView>>("/auth/tokens", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    }),
+  );
+}
+
 /** 列出待批准的接入请求（管理员会话专属）。 */
 export function listDeviceRequests(): Promise<DeviceRequestView[]> {
   return unwrap(request<ApiEnvelope<DeviceRequestView[]>>("/auth/devices/requests"));

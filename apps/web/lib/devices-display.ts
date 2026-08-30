@@ -44,6 +44,22 @@ export function grantSummary(type: string): GrantSummary {
   };
 }
 
+/**
+ * 手工创建令牌前的权限说明。
+ *
+ * 与审批卡同权，但不能直接复用 `grantSummary`：那段话的收尾是「才批准」，
+ * 而手工创建这条路上根本没有批准这个动作——真正要点破的是另外两件事，
+ * 令牌不会自动过期，以及它一旦发出去就只能靠吊销收回。
+ */
+export function manualGrantSummary(): GrantSummary {
+  return {
+    title: "将获得：与你相同的完全权限",
+    body:
+      "持有这枚令牌的程序将能做你在网页上能做的一切，包括删除媒体文件。" +
+      "令牌不会自动过期，只能在这里吊销——只把它放进你自己掌握的机器。",
+  };
+}
+
 /** 已连接列表里的权限标注。同样是实话，不是内部权限名。 */
 export function grantBadge(type: string): string {
   return type === "worker" ? "仅转码" : "完全权限";
@@ -73,4 +89,40 @@ export function isLive(iso: string | null, now: number = Date.now()): boolean {
   if (!iso) return false;
   const then = Date.parse(iso);
   return !Number.isNaN(then) && now - then < 5 * 60 * 1000;
+}
+
+// ---------------------------------------------------------------------------
+// 手工令牌：给无人值守环境的环境变量片段
+// ---------------------------------------------------------------------------
+
+/** 解析出的注入地址，以及它是不是用户明确配过的。 */
+export interface ServerAddress {
+  url: string;
+  /** true = 取自「设置 → 网络与维护」的对外访问地址；false = 拿当前浏览器地址猜的 */
+  configured: boolean;
+}
+
+/**
+ * 决定环境变量片段里那行地址填什么。
+ *
+ * 优先用「对外访问地址」——那是用户明确声明的、从网络上访问得到本应用的地址。
+ * 没配时回落到当前浏览器地址，但必须把 `configured: false` 传出去让界面说破：
+ * 浏览器能打开不等于目标机器连得到（NAS 的定时任务、另一个网段的 CI 都可能不通），
+ * 悄悄给一个可能不通的地址，用户只会看到 mclaw 连接超时而查不到原因。
+ */
+export function resolveServerAddress(externalUrl: string, origin: string): ServerAddress {
+  const configured = externalUrl.trim().replace(/\/+$/, "");
+  if (configured) return { url: configured, configured: true };
+  return { url: origin.replace(/\/+$/, ""), configured: false };
+}
+
+/**
+ * 可直接粘贴的两行环境变量。
+ *
+ * 用 `KEY=value` 而不是 `export KEY=...`：同一份文本能同时用在 `.env`、
+ * `docker --env-file`、compose 的 `env_file` 和 shell 的 `source`，覆盖面最广。
+ * 顺序也不是随意的——地址在前、令牌在后，与 CLI 报错里的排查顺序一致。
+ */
+export function envSnippet(server: string, token: string): string {
+  return `MOVIECLAW_SERVER=${server}\nMOVIECLAW_TOKEN=${token}`;
 }

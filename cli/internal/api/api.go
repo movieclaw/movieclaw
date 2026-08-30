@@ -316,8 +316,7 @@ func (c *Client) parse(resp *http.Response) (any, error) {
 		if message == "" {
 			message = "未登录或会话已过期"
 		}
-		return nil, clierr.Authf("%s", message).
-			WithHint("请先执行 mclaw login（或检查 MOVIECLAW_TOKEN 是否有效）")
+		return nil, clierr.Authf("%s", message).WithHint("%s", unauthorizedHint())
 	}
 	if resp.StatusCode == http.StatusNoContent {
 		return nil, nil
@@ -357,6 +356,19 @@ func (c *Client) parse(resp *http.Response) (any, error) {
 		return nil, clierr.New("请求失败（HTTP %d）", resp.StatusCode).WithDetails(payload)
 	}
 	return payload, nil
+}
+
+// unauthorizedHint 按凭证的实际来源给出下一步。
+//
+// 分流是必需的：凭证来自环境变量时，「请先执行 mclaw login」是错的下一步——
+// 配对写进凭证文件的令牌会被环境变量继续遮住，用户照做只会白跑一趟，
+// 而真正的原因（令牌被吊销了、或者注进来的这枚本来就不对）一直没被指出来。
+func unauthorizedHint() string {
+	if os.Getenv(config.EnvToken) != "" {
+		return "当前凭证来自环境变量 " + config.EnvToken +
+			"：确认它没写错，或它是否已在网页「设置 → 设备」里被吊销（吊销后需要重建一枚）"
+	}
+	return "请先执行 mclaw login；无人值守环境改用环境变量 " + config.EnvToken + " 注入令牌"
 }
 
 func messageFrom(raw []byte) string {

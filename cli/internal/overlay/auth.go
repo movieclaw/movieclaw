@@ -71,13 +71,24 @@ VPN，或服务端关掉了「Jellyfin 兼容层」时找不到，自己给地�
 }
 
 func runLogin(s *Settings, clientName string) error {
+	// 环境变量的优先级高于凭证文件（api.TokenFor），所以带着 MOVIECLAW_TOKEN 配对
+	// 会得到一个「配对成功了，但身份还是老的」的结果——新令牌确实写进了凭证文件，
+	// 只是每次请求都被环境变量遮住。这种失败没有任何报错，用户查不出来，
+	// 所以宁可在这里停下。
+	if os.Getenv(config.EnvToken) != "" {
+		return clierr.Usagef("已设置环境变量 %s，配对结果会被它遮蔽", config.EnvToken).
+			WithHint("环境变量的优先级高于本地凭证：要么直接用这枚令牌（无需配对），" +
+				"要么先 unset " + config.EnvToken + " 再执行 mclaw login")
+	}
+
 	// 零交互原则（docs/design/cli.md §5.1）：配对必须有人在浏览器里点批准，
 	// 非 TTY 下执行它只会静默挂到超时。与其挂住，不如立刻说清该怎么办。
 	// 这一步放在解析地址之前：非交互环境下连自动发现都不该跑（要选、要确认）。
 	if !stdinIsTTY() {
 		return clierr.Usagef("非交互环境无法完成配对：配对需要有人在浏览器里批准").
-			WithHint("请在有终端的机器上执行 mclaw login；无人值守场景（CI / 容器）" +
-				"改为在网页「设置 → 设备」创建令牌后，用环境变量 MOVIECLAW_TOKEN 注入")
+			WithHint("请在有终端的机器上执行 mclaw login；无人值守场景（定时任务 / CI / 容器）" +
+				"改为在网页「设置 → 设备 → 手工创建令牌」建一枚，" +
+				"再用 MOVIECLAW_SERVER 和 MOVIECLAW_TOKEN 两个环境变量注入")
 	}
 
 	target, err := resolveOrDiscover(s)
@@ -201,6 +212,12 @@ func NewLogoutCommand() *cobra.Command {
 				return err
 			}
 			output.Info("已删除本机保存的授权：%s", target)
+			// 删文件删不掉环境变量。不说破的话，用户会以为 logout 之后就断了，
+			// 而下一条命令照样带着 MOVIECLAW_TOKEN 跑通。
+			if os.Getenv(config.EnvToken) != "" {
+				output.Info("注意：环境变量 %s 仍然设置着，后续命令会继续用它授权。", config.EnvToken)
+				output.Info("      要在本终端里真的断开，执行：unset %s", config.EnvToken)
+			}
 			output.Info("提示：服务端的令牌仍然有效。要彻底停用这台机器，请到网页「设置 → 设备」里吊销。")
 			return nil
 		},

@@ -3,10 +3,13 @@ import test from "node:test";
 
 import {
   clientTypeLabel,
+  envSnippet,
   grantBadge,
   grantSummary,
   isLive,
+  manualGrantSummary,
   relativeTime,
+  resolveServerAddress,
 } from "../lib/devices-display.ts";
 
 const MINUTE = 60_000;
@@ -69,4 +72,43 @@ test("在线判定用 5 分钟阈值，与令牌活跃时间的落盘粒度匹�
   assert.equal(isLive(null, NOW), false);
   assert.equal(isLive(ago(4 * MINUTE), NOW), true);
   assert.equal(isLive(ago(6 * MINUTE), NOW), false);
+});
+
+// ---------------------------------------------------------------------------
+// 手工令牌：环境变量片段
+// ---------------------------------------------------------------------------
+
+test("手工令牌的权限说明与审批卡同权，且点破不过期与只能吊销", () => {
+  const { title, body } = manualGrantSummary();
+  assert.equal(title, grantSummary("manual").title, "手工令牌不能显得比批准出来的权限小");
+  assert.ok(body.includes("删除媒体文件"), "全权的含义必须点破到具体后果");
+  assert.ok(body.includes("不会自动过期"));
+  assert.ok(body.includes("吊销"));
+  // 这条路上没有「批准」这个动作，照抄审批卡的收尾会指向一个不存在的按钮
+  assert.ok(!body.includes("才批准"), `手工创建的说明不该提批准：${body}`);
+});
+
+test("配过对外访问地址时直接用它，并去掉尾斜杠", () => {
+  const address = resolveServerAddress("https://movieclaw.example.com/", "http://192.168.1.24:3000");
+  assert.deepEqual(address, { url: "https://movieclaw.example.com", configured: true });
+});
+
+test("没配对外地址时回落当前地址，但必须标成「不是用户配的」", () => {
+  const address = resolveServerAddress("", "http://192.168.1.24:3000");
+  assert.deepEqual(address, { url: "http://192.168.1.24:3000", configured: false });
+  // configured=false 是界面弹出「这只是猜测」那段警示的唯一依据，不能悄悄当真
+});
+
+test("只有空白的对外地址等同没配", () => {
+  assert.equal(resolveServerAddress("   ", "http://127.0.0.1:3000").configured, false);
+});
+
+test("环境变量片段是可直接粘贴的两行，地址在前令牌在后", () => {
+  const snippet = envSnippet("http://192.168.1.10:3000", "mclaw_abc123");
+  assert.equal(snippet, "MOVIECLAW_SERVER=http://192.168.1.10:3000\nMOVIECLAW_TOKEN=mclaw_abc123");
+  // KEY=value 而非 export：同一份文本要能用在 .env / --env-file / compose / source
+  assert.ok(!snippet.includes("export "), "带 export 就不能直接当 .env 用");
+  for (const line of snippet.split("\n")) {
+    assert.match(line, /^[A-Z_]+=\S+$/, `不是干净的 KEY=value：${line}`);
+  }
 });

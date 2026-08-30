@@ -577,6 +577,44 @@ $ mclaw login --server http://10.1.1.5:3000
 的凭证通道收敛为一条：`MOVIECLAW_TOKEN` > credentials 里该 server 的令牌，
 Cookie 通道整个删除。
 
+### 6.2.1 无人值守环境：环境变量授权
+
+设备流的前提是「有人能在浏览器里按批准」。有一整类环境里没有那个人——NAS 上的
+定时任务、CI、无界面容器——在那里跑 `mclaw login` 只会挂到超时。这些环境走的是
+另一条路，两个环境变量：
+
+```
+MOVIECLAW_SERVER=http://192.168.1.10:3000
+MOVIECLAW_TOKEN=mclaw_...
+```
+
+令牌在网页「设置 → 设备 → 手工创建令牌」里签发（`POST /auth/tokens`，
+`client_type` 记为 `manual`），与设备流签出来的令牌进同一份存储、同一张设备列表、
+同一个吊销入口——**签发的入口有两个，管理的入口只有一个**。
+
+这条通道的三个性质是刻意的：
+
+1. **完全不落盘**。`MOVIECLAW_TOKEN` 命中时 CLI 根本不去读凭证文件
+   （`internal/api.TokenFor`），所以只读文件系统、没有 `$HOME`、`$HOME` 每次都变的
+   容器里都能跑，也不会触发凭证文件的权限自检。产品内 Agent 的工作区走的正是
+   这条路（`api/routes/agent.py`）。
+2. **令牌不进参数面**。只认环境变量，不提供 `--token` 标志——一旦令牌能写在
+   命令行上，它就会进 shell 历史、进 `ps` 输出、进 Agent 的上下文。
+   这是 §6.1「密码只在浏览器里用」同一条原则的延伸。
+3. **签发面不因此放宽**。手工创建仍然只认浏览器会话（`require_admin_session`，
+   §4.4），令牌自己造不出备份。
+
+**三处必须说破的相互作用**，否则用户会遇到查不出根因的现象：
+
+| 现象 | 根因 | 处理 |
+|---|---|---|
+| 配对成功了，身份却还是老的 | 环境变量优先级高于凭证文件，新令牌被完全遮蔽，且全程无报错 | `login` 在 `MOVIECLAW_TOKEN` 存在时直接以用法错误退出，让用户先 unset |
+| `logout` 之后命令照样能跑 | 删的是凭证文件，环境变量还在 | `logout` 额外提示该 unset 哪个变量 |
+| 401 之后照着提示去配对，白跑一趟 | 「请先执行 mclaw login」对环境变量凭证是错的下一步 | 401 的 hint 按凭证来源分流：环境变量在场时改为提示检查令牌本身或它是否已被吊销 |
+
+排查当前到底用的是哪套地址和凭证，一律看 `mclaw status` 的 `credential` 一行——
+它会如实回答是「环境变量 MOVIECLAW_TOKEN」还是某个凭证文件路径。
+
 ### 6.3 四个必须处理的工程陷阱
 
 这些才是「任何应用触发都能连」的真实难点，每一个都会表现为「我明明登录过了」：
@@ -711,6 +749,38 @@ CLI 独立发版后「CLI 版本 ≠ 服务端版本」成为常态，`docs/desi
 
 整个设备分区挂 `require_admin`——v1 只有超管能看、能批准、能吊销。
 
+**手工创建令牌**（分区第三块，排在设备列表之后）
+
+给 §6.2.1 那类没人能按批准的环境用。做成次要入口并主动劝退——收起态第一句话就是
+「能打开浏览器的机器请直接运行 mclaw login，不必走这里」：手工令牌是全权且不过期的，
+没有配对流「核对配对码」那道人工闸，不该和配对并列摆着让用户挑。
+
+创建只要一个名字（日后在设备列表里认出它、决定要不要吊销），旁边是与审批卡同权的
+「将获得」说明——同权就不能说得更轻，只是收尾换成这条路上真正要点破的两件事：
+令牌不会自动过期，发出去只能靠吊销收回。
+
+创建成功后给的是**可直接粘贴的两行环境变量**，不是一个裸令牌：
+
+```
+MOVIECLAW_SERVER=https://movieclaw.example.com
+MOVIECLAW_TOKEN=mclaw_...
+```
+
+三个细节都是有代价的选择：
+
+- **地址和令牌一起给**。用户接下来要做的事是「让那台机器连上这台 movieclaw」，
+  两样缺一不可；只给令牌等于把找地址这一步留给用户，而地址恰恰是自部署里最容易
+  填错的东西。
+- **`KEY=value` 而不是 `export KEY=...`**。同一份文本要能同时用在 `.env`、
+  `docker --env-file`、compose 的 `env_file` 和 shell 的 `source`。
+- **地址取自「对外访问地址」；没配时回落当前浏览器地址，并当场说破这是猜的**
+  （与 `_verification_uri` 同口径）。浏览器能打开不等于目标机器连得到——NAS 的
+  定时任务、另一个网段的 CI 都可能不通。悄悄给一个可能不通的地址，用户只会看到
+  mclaw 连接超时而查不到原因。
+
+明文只在创建响应里出现一次（服务端只存哈希），所以这张卡必须让用户当场存走：
+关闭前过一次确认，关闭后只能吊销重建。
+
 ---
 
 ## 8. 安全分析
@@ -757,8 +827,10 @@ CLI 全部报 401，而他不会把这两件事联系起来，只会认为改密
 | 5 | Worker 令牌隔离守护测试（除转码端点外一律 4xx） | `tests/api/test_auth.py` 同款模式 | 小 |
 | 6 | Worker 握手改 Bearer；删共享令牌全链路 | `routes/transcode_worker.py:160`、`services/playback/remote_worker.py:508`、`settings/remote_transcode.py`、`schemas/transcode_worker.py` | 中 |
 | 7 | 网页「设备」分区 | `apps/web/components/settings-view.tsx`（新分区组件） | 中 |
+| 7b | 手工创建令牌入口 + 环境变量片段 | `apps/web/components/devices-section.tsx`、`lib/api/devices.ts`、`lib/devices-display.ts` | 中 |
 | 8 | Worker 设置窗重构；删 `PairingCode.swift` | `macos/…/SettingsWindowController.swift`、`ConfigurationStore.swift`、`AppMain.swift` | 中 |
 | 9 | CLI `login` 改设备流，废弃 `--password` | `cli/internal/overlay/auth.go` | 中 |
+| 9b | 环境变量授权的可发现性与三处相互作用（§6.2.1） | `cli/cmd/mclaw/main.go`、`cli/internal/overlay/auth.go`、`cli/internal/api/api.go` | 小 |
 | 10 | CLI 凭证层：全局路径、按 server 分键、原子写、权限自检 | `cli/internal/config/config.go` | 中 |
 | 11 | 安装脚本：Linux/macOS 与 Windows 各一份 | `scripts/install-cli.sh`、`scripts/install-cli.ps1` | 中 |
 

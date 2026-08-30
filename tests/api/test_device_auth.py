@@ -374,3 +374,64 @@ def test_worker_token_is_accepted_by_the_transcode_control_plane(client: TestCli
     assert asyncio.run(resolve(f"Bearer {cli_token}")) is None
     assert asyncio.run(resolve(None)) is None
     assert asyncio.run(resolve("Bearer 乱写的")) is None
+
+
+# ---------------------------------------------------------------------------
+# 手工令牌：给没人能按批准的环境（docs/design/device-auth.md §6.2.1、§7）
+# ---------------------------------------------------------------------------
+
+
+def test_manual_token_is_usable_and_listed_alongside_paired_devices(client: TestClient) -> None:
+    """手工创建的令牌与配对出来的令牌同权、同列表、同一个吊销入口。
+
+    这是「签发的入口有两个，管理的入口只有一个」这句话的检验：网页上多开一个
+    创建入口，不能在设备列表之外再长出一套平行的管理面——否则用户改密后去清点
+    设备时，会漏掉整整一类凭证。
+    """
+    created = client.post(f"{_AUTH}/tokens", json={"name": "nas-cron"})
+    assert created.status_code == 200, created.text
+    payload = created.json()["data"]
+
+    # 明文只在这一次响应里出现，且形态与配对签出来的令牌一致
+    assert payload["token"].startswith("mclaw_")
+    assert payload["client_type"] == "manual"
+    assert payload["name"] == "nas-cron"
+
+    # 与超管同权：业务接口直接可用，不受 client_type 上限约束
+    holder = TestClient(client.app)
+    headers = {"Authorization": f"Bearer {payload['token']}"}
+    assert holder.get("/api/v1/subscriptions", headers=headers).status_code == 200
+
+    # 落在同一张设备列表里，吊销后立刻失效
+    listed = client.get(f"{_AUTH}/tokens").json()["data"]
+    assert [t["id"] for t in listed] == [payload["id"]]
+    assert client.delete(f"{_AUTH}/tokens/{payload['id']}").status_code == 200
+    assert holder.get("/api/v1/subscriptions", headers=headers).status_code == 401
+
+
+def test_manual_token_plaintext_is_never_readable_again(client: TestClient) -> None:
+    """明文只发这一次——所以网页那张卡必须让用户当场存走。
+
+    列表接口若哪天回读了明文，界面上「关掉就再也读不到」那句警示就变成假话，
+    而它正是用户愿意当场保存的唯一理由。
+    """
+    plaintext = client.post(f"{_AUTH}/tokens", json={"name": "ci"}).json()["data"]["token"]
+
+    listed = client.get(f"{_AUTH}/tokens").json()["data"]
+    assert plaintext not in str(listed)
+    for record in listed:
+        assert "token" not in record
+
+
+def test_manual_token_creation_requires_a_browser_session(client: TestClient) -> None:
+    """手工入口不放宽签发面：令牌仍然造不出令牌（§4.4）。
+
+    网页上多一个按钮，不该让一枚泄漏的令牌多一条自我复制的路。
+    """
+    plaintext = client.post(f"{_AUTH}/tokens", json={"name": "seed"}).json()["data"]["token"]
+
+    holder = TestClient(client.app)
+    headers = {"Authorization": f"Bearer {plaintext}"}
+    assert (
+        holder.post(f"{_AUTH}/tokens", json={"name": "spare"}, headers=headers).status_code == 403
+    )

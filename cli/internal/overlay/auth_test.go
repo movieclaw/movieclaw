@@ -223,3 +223,85 @@ func TestUnreachableDiscoveryIsReportedNotSwallowed(t *testing.T) {
 		t.Errorf("没指向真正的修法：%q", cliErr.Hint)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// 环境变量授权与配对流的相互作用
+// ---------------------------------------------------------------------------
+
+// TestLoginRefusesWhenEnvTokenPresent 校验带着 MOVIECLAW_TOKEN 配对会被拦下。
+//
+// 这是环境变量授权最隐蔽的一个坑：配对本身会成功，令牌也确实写进了凭证文件，
+// 但每次请求都被优先级更高的环境变量遮住——用户看到的是「我明明刚配对成功，
+// 身份却还是老的」，且全程没有任何报错。
+func TestLoginRefusesWhenEnvTokenPresent(t *testing.T) {
+	quiet(t)
+	t.Setenv("MOVIECLAW_CONFIG_DIR", t.TempDir())
+	t.Setenv("MOVIECLAW_TOKEN", "mclaw_环境变量里的令牌")
+
+	called := false
+	previous := discoverServers
+	discoverServers = func() discovery { called = true; return discovery{} }
+	defer func() { discoverServers = previous }()
+
+	err := runLogin(&Settings{Server: "http://192.168.1.10:3000"}, "")
+	var cliErr *clierr.Error
+	if !asCliError(err, &cliErr) || cliErr.ExitCode != clierr.Usage {
+		t.Fatalf("应当以用法错误退出：%v", err)
+	}
+	if !strings.Contains(cliErr.Message, "MOVIECLAW_TOKEN") {
+		t.Errorf("没点名是哪个环境变量在遮蔽：%q", cliErr.Message)
+	}
+	if !strings.Contains(cliErr.Hint, "unset") {
+		t.Errorf("提示里要给出可照做的下一步：%q", cliErr.Hint)
+	}
+	if called {
+		t.Error("拦下之前不该已经去广播了")
+	}
+}
+
+// TestLoginEnvGuardRunsBeforeTTYCheck 校验 env 令牌的拦截发生在 TTY 判断之前。
+//
+// 顺序有实际意义：容器和 CI 里两个条件同时成立，此时「你设了 MOVIECLAW_TOKEN，
+// 直接用就行」才是对的下一步，而「去有终端的机器上配对」是白跑一趟。
+func TestLoginEnvGuardRunsBeforeTTYCheck(t *testing.T) {
+	quiet(t)
+	t.Setenv("MOVIECLAW_CONFIG_DIR", t.TempDir())
+	t.Setenv("MOVIECLAW_TOKEN", "mclaw_令牌")
+
+	previous := stdinIsTTY
+	stdinIsTTY = func() bool { return false }
+	defer func() { stdinIsTTY = previous }()
+
+	err := runLogin(&Settings{Server: "http://192.168.1.10:3000"}, "")
+	var cliErr *clierr.Error
+	if !asCliError(err, &cliErr) {
+		t.Fatalf("应当是 CLI 错误：%v", err)
+	}
+	if !strings.Contains(cliErr.Message, "遮蔽") {
+		t.Errorf("非交互环境下也该先说环境变量的事：%q", cliErr.Message)
+	}
+}
+
+// TestLoginNonTTYPointsAtManualToken 校验非 TTY 的提示指向网页上真实存在的入口。
+//
+// 这条提示曾经指向一个没有创建按钮的页面，照做走不通。
+func TestLoginNonTTYPointsAtManualToken(t *testing.T) {
+	quiet(t)
+	t.Setenv("MOVIECLAW_CONFIG_DIR", t.TempDir())
+	t.Setenv("MOVIECLAW_TOKEN", "")
+
+	previous := stdinIsTTY
+	stdinIsTTY = func() bool { return false }
+	defer func() { stdinIsTTY = previous }()
+
+	err := runLogin(&Settings{Server: "http://192.168.1.10:3000"}, "")
+	var cliErr *clierr.Error
+	if !asCliError(err, &cliErr) || cliErr.ExitCode != clierr.Usage {
+		t.Fatalf("应当以用法错误退出：%v", err)
+	}
+	for _, want := range []string{"手工创建令牌", "MOVIECLAW_SERVER", "MOVIECLAW_TOKEN"} {
+		if !strings.Contains(cliErr.Hint, want) {
+			t.Errorf("提示里缺少 %q：%s", want, cliErr.Hint)
+		}
+	}
+}

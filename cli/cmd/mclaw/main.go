@@ -27,7 +27,19 @@ import (
 const rootLong = `movieclaw 命令行工具：发现电影/剧集、搜索和下载 PT 资源、订阅追更、管理本地媒体库；覆盖页面的主要业务流程和管理设置。
 
 探索方式：mclaw <域> --help 看该域全部命令，mclaw <域> <命令> --help 看参数与示例。
-机器输出：加 -o json（非终端环境默认即 JSON）。`
+机器输出：加 -o json（非终端环境默认即 JSON）。
+
+环境变量（无人值守环境的主通道，可完全不落盘）：
+
+  MOVIECLAW_SERVER      服务器地址，如 http://192.168.1.10:3000
+  MOVIECLAW_TOKEN       设备令牌；设了就完全不读本地凭证文件
+  MOVIECLAW_CONTEXT     选用 config.toml 里的哪个上下文
+  MOVIECLAW_CONFIG_DIR  配置目录；sudo / systemd / 容器下 $HOME 不同时用它兜底
+
+地址优先级 --server > MOVIECLAW_SERVER > 上下文；凭证优先级 MOVIECLAW_TOKEN >
+本地凭证文件。没人能在浏览器里按批准的环境（定时任务、CI、无界面容器）跑不了
+mclaw login，请在网页「设置 → 设备 → 手工创建令牌」建一枚，用上面两个变量注入。
+不确定当前用的是哪套地址和凭证时，跑 mclaw status 看 credential 那一行。`
 
 func main() {
 	os.Exit(run())
