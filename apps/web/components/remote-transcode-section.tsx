@@ -15,7 +15,18 @@ import {
 const BYTES_PER_MIB = 1024 * 1024;
 /** Worker 在线状态的轮询间隔；配这个页面时用户就盯着它看，要够跟手。 */
 const STATUS_POLL_MS = 5000;
-const MAX_ARTIFACT_MIB = 512;
+/**
+ * 单个 HLS 产物的上传上限，固定 512 MiB，不再让用户填。
+ *
+ * 它从来不是偏好，是 Worker 内存上传代理的实现上限——服务端的
+ * DEFAULT 与 MAX 是同一个数（settings/remote_transcode.py），所以这个值
+ * **只能往下调，而往下调只有坏处**：实际分片是 4 秒的 fMP4，通常几 MB 到
+ * 几十 MB，离 512 MiB 差两个数量级；调到分片大小以下，播放会在上传阶段
+ * 撞 413 失败。NAS 侧是流式落盘、不占内存，调低也省不出任何东西。
+ *
+ * 一个只能把事情弄坏、用户又无从判断该填多少的输入框，不该出现在界面上。
+ */
+const ARTIFACT_LIMIT_BYTES = 512 * BYTES_PER_MIB;
 const INPUT_CLASS =
   "w-full rounded-xl border border-white/[0.08] bg-white/[0.04] px-3 py-2 text-sub " +
   "text-[var(--text)] outline-none transition-colors placeholder:text-[var(--text-faint)] " +
@@ -42,7 +53,6 @@ export function RemoteTranscodeSection({
   const [config, setConfig] = useState<RemoteTranscodeConfigView | null>(null);
   const [enabled, setEnabled] = useState(false);
   const [baseURLDraft, setBaseURLDraft] = useState("");
-  const [maxArtifactMiB, setMaxArtifactMiB] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -61,7 +71,6 @@ export function RemoteTranscodeSection({
       setConfig(next);
       setEnabled(next.enabled);
       setBaseURLDraft(next.base_url_override);
-      setMaxArtifactMiB(String(Math.max(1, Math.round(next.max_artifact_bytes / BYTES_PER_MIB))));
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -100,20 +109,6 @@ export function RemoteTranscodeSection({
   }, []);
 
   async function save() {
-    const mib = Number(maxArtifactMiB.trim());
-    if (!Number.isSafeInteger(mib) || mib <= 0) {
-      setError("分片大小必须是大于 0 的整数 MiB");
-      return;
-    }
-    if (mib > MAX_ARTIFACT_MIB) {
-      setError(`分片大小不能超过 ${MAX_ARTIFACT_MIB} MiB`);
-      return;
-    }
-    if (mib > Math.floor(Number.MAX_SAFE_INTEGER / BYTES_PER_MIB)) {
-      setError("分片大小超出允许范围");
-      return;
-    }
-
     setBusy(true);
     setError(null);
     setSaved(false);
@@ -121,12 +116,12 @@ export function RemoteTranscodeSection({
       const next = await saveRemoteTranscodeConfig({
         enabled,
         base_url: baseURLDraft.trim(),
-        max_artifact_bytes: mib * BYTES_PER_MIB,
+        // 存量若被调低过，这一步顺手拉回默认值——高上限只会更少地误伤
+        max_artifact_bytes: ARTIFACT_LIMIT_BYTES,
       });
       setConfig(next);
       setEnabled(next.enabled);
       setBaseURLDraft(next.base_url_override);
-      setMaxArtifactMiB(String(Math.max(1, Math.round(next.max_artifact_bytes / BYTES_PER_MIB))));
       setSaved(true);
       window.setTimeout(() => setSaved(false), 2200);
       void getRemoteTranscodeStatus().then(setStatus).catch(() => {});
@@ -188,11 +183,21 @@ export function RemoteTranscodeSection({
       <section>
         <h3 className="group-label mb-2.5 px-1">状态</h3>
         <div className="css-glass space-y-4 !rounded-2xl p-5 max-sm:p-4">
+          {/* 开关刻意不依赖「有没有 Worker 连着」，两个方向的理由都很硬：
+              · 关着时 Worker 连 WebSocket 都握不上（routes/transcode_worker.py
+                的 remote_worker_enabled 闸），要求「先有连接才能开」是死锁；
+              · Worker 会掉线（Mac 睡眠、关机、网络抖动）。开关跟着连接走，
+                意味着睡一觉起来设置被改了，或者想关都关不掉。
+              开关是**意图**，连接是**现实**，绑在一起就等于掉线即失忆。
+              开着而没有 Worker 也无害：决策层每次播放都查 remote_worker_available，
+              没有就走本地。所以这里不禁用，只把两个方向的后果说清楚。 */}
           <label className="flex cursor-pointer items-center justify-between gap-4">
             <span>
               <span className="block text-body font-medium text-[var(--text)]">启用远程硬件转码</span>
-              <span className="mt-0.5 block text-caption text-[var(--text-faint)]">
-                关闭时所有播放任务继续使用 NAS 本地转码路径
+              <span className="mt-0.5 block text-caption leading-5 text-[var(--text-faint)]">
+                {enabled
+                  ? "没有 Worker 在线时，播放自动回落到 NAS 本地转码，不会失败"
+                  : "关闭后已配对的 Worker 也会断开连接，所有播放走 NAS 本地转码"}
               </span>
             </span>
             <input
@@ -325,10 +330,10 @@ export function RemoteTranscodeSection({
         </div>
       </section>
 
-      {/* 地址与分片上限都是「Worker 怎么和 NAS 说话」，合成一组。令牌被拿掉
-          之后，原来那个只剩一个可选输入框的「连接」分组已经名不副实。 */}
+      {/* 令牌拿掉、分片上限也拿掉之后，这一组只剩地址——那正是它该有的样子：
+          远程转码在这一页需要人做的决定，只有「用哪个地址」一件。 */}
       <section>
-        <h3 className="group-label mb-2.5 px-1">连接与传输</h3>
+        <h3 className="group-label mb-2.5 px-1">连接地址</h3>
         <div className="css-glass space-y-5 !rounded-2xl p-5 max-sm:p-4">
           <div>
             <label htmlFor="remote-base-url" className="text-body font-medium text-[var(--text)]">
@@ -370,27 +375,6 @@ export function RemoteTranscodeSection({
             )}
           </div>
 
-          <div className="border-t border-white/[0.06] pt-5">
-            <label htmlFor="remote-artifact-limit" className="text-body font-medium text-[var(--text)]">
-              单个 HLS 产物大小上限
-            </label>
-            <div className="mt-2 flex max-w-[300px] items-center gap-2">
-              <input
-                id="remote-artifact-limit"
-                type="number"
-                min={1}
-                max={MAX_ARTIFACT_MIB}
-                step={1}
-                value={maxArtifactMiB}
-                onChange={(event) => setMaxArtifactMiB(event.target.value)}
-                className={`min-w-0 flex-1 ${INPUT_CLASS}`}
-              />
-              <span className="text-sub text-[var(--text-muted)]">MiB</span>
-            </div>
-            <p className="mt-1.5 text-caption leading-5 text-[var(--text-faint)]">
-              限制 NAS 接收的 init、playlist 和 fMP4 分片大小，默认和最大值均为 512 MiB。
-            </p>
-          </div>
         </div>
       </section>
 
