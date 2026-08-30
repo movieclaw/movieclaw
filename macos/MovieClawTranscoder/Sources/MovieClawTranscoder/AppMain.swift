@@ -104,10 +104,18 @@ final class MovieClawAppDelegate: NSObject, NSApplicationDelegate {
                 managedPath: snapshot.managedFFmpegPath,
                 managedVersion: snapshot.managedFFmpegVersion
             )
+            // 「配没配过」只看 UserDefaults 里的标记，不读钥匙串
             isConfigured = !snapshot.nasURL.isEmpty && snapshot.tokenConfigured
-            if isConfigured {
-                configuration = try configurationStore.loadConfiguration()
-            }
+            // 这里**刻意不去读令牌**。
+            //
+            // 读令牌意味着敲钥匙串，而钥匙串可能弹窗要密码（见 KeychainStore
+            // 顶部关于代码签名的说明）。冷启动就甩用户一个系统授权框，他既不
+            // 知道为什么弹，也不知道点了会发生什么——尤其是他可能压根没打算
+            // 让 App 现在连上去。
+            //
+            // 令牌改成用到时才读（ensureConfiguration）：开了自动连接就在
+            // ffmpeg 检查通过、真要连的那一刻读；没开就等他点「连接」。
+            // 两种情况下弹窗都紧跟着一个他自己发起的动作，说得通。
             menuBar.update(status: nil, configured: isConfigured)
             menuBar.update(ffmpeg: ffmpegManager.menuState)
             prepareFFmpeg(snapshot: snapshot)
@@ -125,7 +133,8 @@ final class MovieClawAppDelegate: NSObject, NSApplicationDelegate {
             let usable = await self.probeFFmpeg(path: snapshot.ffmpegPath)
             guard !Task.isCancelled else { return }
             if usable {
-                if snapshot.autoConnect, self.configuration != nil {
+                // ffmpeg 不可用时根本不会连，也就不必为此读一次钥匙串
+                if snapshot.autoConnect, self.ensureConfiguration() != nil {
                     self.startWorker()
                 }
                 return
@@ -314,11 +323,9 @@ final class MovieClawAppDelegate: NSObject, NSApplicationDelegate {
                         await self.stopWorkerAndWait()
                         self.workerDrainedForFFmpeg = false
                     }
-                    if self.isConfigured {
-                        self.configuration = try self.configurationStore.loadConfiguration()
-                        if snapshot.autoConnect, self.configuration != nil {
-                            self.startWorker()
-                        }
+                    if self.isConfigured, snapshot.autoConnect,
+                       self.ensureConfiguration() != nil {
+                        self.startWorker()
                     }
                 }
                 AppLogger.shared.info(
@@ -334,15 +341,34 @@ final class MovieClawAppDelegate: NSObject, NSApplicationDelegate {
     private func connectOrOpenSettings() {
         if workerClient != nil {
             stopWorker()
-        } else if configuration != nil {
+        } else if ensureConfiguration() != nil {
             startWorker()
         } else {
             openSettings()
         }
     }
 
+    /// 需要令牌时才把配置装配出来。
+    ///
+    /// 启动时如果没开自动连接就不会去读钥匙串，`configuration` 于是是空的；
+    /// 用户点「连接」时在这里补上。读失败（比如他在系统弹窗上点了拒绝）就把
+    /// 原因说清楚，而不是默默什么也不发生。
+    @discardableResult
+    private func ensureConfiguration() -> WorkerConfiguration? {
+        if let configuration {
+            return configuration
+        }
+        guard isConfigured else { return nil }
+        do {
+            configuration = try configurationStore.loadConfiguration()
+        } catch {
+            showStartupError(error)
+        }
+        return configuration
+    }
+
     private func startWorker() {
-        guard let configuration else {
+        guard let configuration = ensureConfiguration() else {
             openSettings()
             return
         }

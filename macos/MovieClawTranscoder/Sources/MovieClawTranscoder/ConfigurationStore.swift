@@ -57,11 +57,20 @@ final class ConfigurationStore: @unchecked Sendable {
 
     /// 有没有配过令牌。**不读钥匙串**，只看 UserDefaults 里的标记。
     ///
-    /// 老版本没写过这个标记，第一次运行新版本时补一次（那一次可能弹窗，之后
-    /// 就不会了）。标记只是布尔值，泄露它不泄露任何秘密。
-    private func tokenConfigured() throws -> Bool {
+    /// 标记只是布尔值，泄露它不泄露任何秘密。老版本没写过它，需要补一次；
+    /// 但补的时候有个前提：
+    ///
+    /// **没配过服务器地址就绝不去敲钥匙串。** 没有地址就不可能配过令牌，答案
+    /// 是确定的 false，没有任何理由去问。而钥匙串条目在 App 被删掉之后仍然
+    /// 留在系统里——全新安装的用户如果机器上还留着上一次的残条，一启动就会
+    /// 被弹一个「请输入登录钥匙串密码」，而他什么都还没做过，完全无从理解。
+    private func tokenConfigured(hasServer: Bool) throws -> Bool {
         if let flag = defaults.object(forKey: Keys.tokenConfigured) as? Bool {
             return flag
+        }
+        guard hasServer else {
+            defaults.set(false, forKey: Keys.tokenConfigured)
+            return false
         }
         return try readTokenOnce()?.isEmpty == false
     }
@@ -92,7 +101,8 @@ final class ConfigurationStore: @unchecked Sendable {
     }
 
     func snapshot() throws -> WorkerSettingsSnapshot {
-        let tokenConfigured = try tokenConfigured()
+        let nasURL = defaults.string(forKey: Keys.nasURL) ?? ""
+        let tokenConfigured = try tokenConfigured(hasServer: !nasURL.isEmpty)
         let managedPath = defaults.string(forKey: Keys.managedFFmpegPath)
         let storedPath = defaults.string(forKey: Keys.ffmpegPath)
         let storedSource = defaults.string(forKey: Keys.ffmpegSource)
@@ -105,7 +115,7 @@ final class ConfigurationStore: @unchecked Sendable {
             activePath = storedPath ?? WorkerConfiguration.defaultFFmpegPath()
         }
         return WorkerSettingsSnapshot(
-            nasURL: defaults.string(forKey: Keys.nasURL) ?? "",
+            nasURL: nasURL,
             workerID: defaults.string(forKey: Keys.workerID) ?? WorkerConfiguration.defaultWorkerID(),
             ffmpegPath: activePath,
             ffmpegSource: source,
