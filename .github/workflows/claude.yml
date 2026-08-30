@@ -30,6 +30,10 @@ permissions:
   actions: read
   id-token: write
 
+env:
+  # 与 ci.yml / claude-auto-fix.yml 保持一致;模型发新版时三处同步改
+  NER_MODEL_TAG: torrent-ner-v3
+
 jobs:
   claude:
     if: |
@@ -52,6 +56,25 @@ jobs:
 
       - name: 安装依赖（含 dev 工具链）
         run: pip install -e ".[dev]"
+
+      # NER 模型也必须就位:缺模型时季集/片名抽取的一批测试会稳定失败,
+      # Claude 跑 pytest 会撞上一堆与自己改动无关、又永远修不好的红,
+      # 在环境问题上空转烧轮数(实测 run 33323170428 百轮触顶的主因)
+      - name: 恢复 NER 模型缓存
+        id: ner-cache
+        uses: actions/cache@v4
+        with:
+          path: data/models/torrent-ner
+          key: ner-model-${{ env.NER_MODEL_TAG }}
+
+      - name: 下载 NER 模型（缓存未命中时）
+        if: steps.ner-cache.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$NER_MODEL_TAG" \
+            --repo "${{ github.repository }}" \
+            --dir data/models/torrent-ner
 
       - name: Claude 交互
         uses: anthropics/claude-code-action@v1
