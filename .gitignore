@@ -52,3 +52,6 @@ uv.lock
 
 # Swift Package Manager 构建产物
 macos/**/.build/
+
+# goreleaser 打包前从仓库根复制进来的 LICENSE（构建产物，见 cli/.goreleaser.yaml）
+cli/LICENSE

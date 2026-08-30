@@ -11,6 +11,10 @@ before:
     # 内嵌 spec 必须与本次发版的代码同版：偏斜检测靠它，命令树也靠它。
     # 这里现场重导一次，不信任仓库里可能过期的副本。
     - sh -c "cd .. && scripts/export-spec.sh"
+    # 归档里的 LICENSE 先复制进工作目录：goreleaser 2.x 的 archives.files
+    # 不能引用工作目录之外的路径（../LICENSE 会报 globbing failed），
+    # 而仓库只有根目录一份 LICENSE。cli/LICENSE 是构建产物，已进 .gitignore。
+    - cp ../LICENSE ./LICENSE
 
 builds:
   - id: mclaw
@@ -34,10 +38,9 @@ archives:
       - goos: windows
         formats: [zip]
     files:
-      - src: ../LICENSE
-        strip_parent: true
+      - LICENSE
 
-checksums:
+checksum:
   name_template: checksums.txt
 
 snapshot:

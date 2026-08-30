@@ -96,7 +96,10 @@ RUN PYTHONPATH=/build/src /venv/bin/python -m movieclaw_api.export_openapi -o /b
 # ---------------------------------------------------------------------------
 # CLI 是独立的静态二进制：Agent 的 mclaw 工具执行它，用户也可以直接从 Release
 # 下载同一份。CGO_ENABLED=0 保证不依赖运行镜像里的 glibc 版本。
-FROM --platform=$BUILDPLATFORM golang:1.24-bookworm AS go-builder
+# 基础镜像的 Go 版本必须 >= cli/go.mod 的 go 指令：golang 官方镜像里
+# GOTOOLCHAIN=local，够不到的版本不会自动下载工具链，只会直接失败
+# （go.mod 要 1.25.0 而镜像是 1.24 时，go mod download 就报错退出）。
+FROM --platform=$BUILDPLATFORM golang:1.25-bookworm AS go-builder
 ARG TARGETARCH
 ARG GOPROXY=https://proxy.golang.org,direct
 WORKDIR /build
