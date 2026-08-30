@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from movieclaw_enrich.models import TorrentAttrs
@@ -299,6 +301,38 @@ def test_hdr_levels_filtering(tags, levels, accepted) -> None:
     assert verdict.accepted is accepted
     if not accepted:
         assert verdict.reason_code == "hdr_not_allowed"
+
+
+def test_bare_hdr_tag_is_accepted_as_hdr10() -> None:
+    """泛指 ``HDR`` 归一成 HDR10：``2160p WEB-DL … HDR …`` 是 4K WEB 最常见的
+    命名之一，enrich 会原样产出裸 ``HDR``。不做这层归一，它就落在"值域装不下"
+    的缝里——白名单非空时这类资源被无条件拒绝，而用户没有任何办法放行。
+    """
+    bare = _candidate(hdr=["HDR"])
+    assert evaluate_rules(bare, RuleSetSpec(hdr_levels=["HDR10+", "HDR10", "HLG", "SDR"])).accepted
+    assert evaluate_rules(bare, RuleSetSpec(hdr="require")).accepted
+    # 归一是双向的：只收 SDR 的用户不该因此收到 HDR 资源
+    sdr_only = evaluate_rules(bare, RuleSetSpec(hdr_levels=["SDR"]))
+    assert not sdr_only.accepted
+    assert sdr_only.reason_code == "hdr_not_allowed"
+    # 黑名单同构：排除 HDR10 就该连泛指 HDR 一起排除
+    assert evaluate_rules(bare, RuleSetSpec(hdr_block=["HDR10"])).reason_code == "hdr_blocked"
+
+
+def test_bare_hdr_in_rule_levels_normalizes_instead_of_being_dropped() -> None:
+    """规则组里写 ``HDR`` 也按 HDR10 存下，而不是被静默丢掉。"""
+    spec = RuleSetSpec.model_validate({"hdr_levels": ["HDR10+", "HDR10", "HDR", "SDR", "HLG"]})
+    assert spec.hdr_levels == ["HDR10+", "HDR10", "SDR", "HLG"]  # 与已有的 HDR10 合并
+    assert RuleSetSpec.model_validate({"hdr_levels": ["HDR"]}).hdr_levels == ["HDR10"]
+
+
+def test_unknown_hdr_value_is_dropped_with_a_warning(caplog) -> None:
+    """值域外的值仍然丢弃（读取路径永远宽容），但要留一条日志——静默吞掉
+    会让用户配出来的东西和自己以为的不一样，且毫无提示。"""
+    with caplog.at_level(logging.WARNING, logger="movieclaw_matcher.models"):
+        spec = RuleSetSpec.model_validate({"hdr_levels": ["HDR10", "HDR42"]})
+    assert spec.hdr_levels == ["HDR10"]
+    assert any("HDR42" in record.getMessage() for record in caplog.records)
 
 
 def test_hdr_block_is_needed_to_exclude_a_format() -> None:

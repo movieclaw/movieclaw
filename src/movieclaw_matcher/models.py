@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import datetime
@@ -20,6 +21,8 @@ from pydantic import BaseModel, Field, model_validator
 
 from movieclaw_enrich.models import TorrentAttrs
 from movieclaw_enrich.vocab import PLATFORM_IDS
+
+logger = logging.getLogger(__name__)
 
 # HDR 值域，按"越靠前越高"的内置顺序排列（仅作编辑器初始顺序与旧字段换算用，
 # 实际偏好序以用户列表为准）。"SDR" 是哨兵值，对应资源未标注任何 HDR 格式。
@@ -32,10 +35,24 @@ HDR_LEVELS: tuple[str, ...] = ("DV", "HDR10+", "HDR10", "HLG", "SDR")
 # probe 都区分不出 profile——按"能播 HDR10"这侧保守建模，错的方向是少洗一次。
 _HDR_IMPLIES: dict[str, set[str]] = {"DV": {"HDR10"}, "HDR10+": {"HDR10"}}
 
+# 别名：解析器与用户都可能给出值域里没有的写法，归一到最接近的那一档。
+# 泛指 `HDR`（`2160p WEB-DL … HDR H.265` 是 4K WEB 最常见的命名之一，enrich
+# 会原样产出）既不是"未标注"也不属于任何具体格式，正好落在 SDR 与具体格式的
+# 缝里：不归一的话它是一个白名单**永远装不下**的值，非空白名单会把这一大类
+# 4K 资源无条件拒掉且用户无从放行。HDR10 是 HDR 的基线格式，绝大多数只标
+# `HDR` 的发布就是 HDR10，按它算是无感的正确行为（issue #244）。
+_HDR_ALIASES: dict[str, str] = {"HDR": "HDR10"}
+
+
+def _canonical_hdr(value: str) -> str:
+    """HDR 值归一：统一大写并展开别名。"""
+    upper = value.upper()
+    return _HDR_ALIASES.get(upper, upper)
+
 
 def hdr_values(tags: list[str]) -> set[str]:
     """资源**声明**的 HDR 格式集合；未标注任何格式 = {"SDR"}。过滤用。"""
-    return {tag.upper() for tag in tags} if tags else {"SDR"}
+    return {_canonical_hdr(tag) for tag in tags} if tags else {"SDR"}
 
 
 def hdr_effective_values(tags: list[str], allowed: Collection[str]) -> set[str]:
@@ -72,12 +89,22 @@ _MEDIA_SOURCE_TIER_VALUES: frozenset[str] = frozenset(
 
 
 def _known_hdr_levels(values: list[str]) -> list[str]:
-    """保序去重地筛出值域内的 HDR 值（大小写不敏感）。"""
+    """保序去重地筛出值域内的 HDR 值（大小写不敏感，别名先归一）。
+
+    值域外的值仍然丢弃（读取路径永远宽容，与平台/片源档同一取向），但要留一条
+    日志：静默吞掉会让用户按文档配出来的东西和自己以为的不一样，且毫无提示。
+    """
     known = {v.casefold(): v for v in HDR_LEVELS}
     out: list[str] = []
     for value in values:
-        canon = known.get(value.casefold())
-        if canon and canon not in out:
+        canon = known.get(_canonical_hdr(value).casefold())
+        if canon is None:
+            logger.warning(
+                "规则组里的 HDR 值 %r 不在值域（%s）内，已忽略——该值不会产生任何约束",
+                value,
+                "/".join(HDR_LEVELS),
+            )
+        elif canon not in out:
             out.append(canon)
     return out
 
@@ -247,8 +274,8 @@ class RuleSetSpec(BaseModel):
     # model_validate 直接抛错、规则组全线解析失败，§14.8）。
     hdr_levels: list[str] = Field(
         default_factory=list,
-        description='HDR 白名单兼偏好序（值域 DV/HDR10+/HDR10/HLG/SDR，"SDR"=未标注）；'
-        "任一命中即过，顺序即偏好；空=不限",
+        description='HDR 白名单兼偏好序（值域 DV/HDR10+/HDR10/HLG/SDR，"SDR"=未标注，'
+        "资源只标注泛指 HDR 时按 HDR10 计）；任一命中即过，顺序即偏好；空=不限",
     )
     hdr_block: list[str] = Field(
         default_factory=list, description="HDR 黑名单；资源带其中任一格式即排除"
