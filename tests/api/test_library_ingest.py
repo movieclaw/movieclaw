@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import os
 import threading
+import time
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -75,6 +76,7 @@ async def db(tmp_path, monkeypatch):
     monkeypatch.setattr(ingest_mod, "_stability", {})
     monkeypatch.setattr(ingest_mod, "_deferred", {})
     monkeypatch.setattr(ingest_mod, "_failed_retry", {})
+    monkeypatch.setattr(ingest_mod, "_last_swept", {})
     monkeypatch.setattr(ingest_mod, "QUIET_SECONDS", 0)
     monkeypatch.setattr(ingest_mod, "_briefs_cache", (float("-inf"), None))
     yield get_database()
@@ -2675,6 +2677,83 @@ async def test_fallback_sweeps_watched_dir_with_pending_entries(db, tmp_path, mo
 
     await ingest_mod.ingest_tick()
     assert swept == [str(watch1)]
+
+
+@pytest.mark.asyncio
+async def test_fallback_resweeps_silently_watched_dir(db, tmp_path, monkeypatch):
+    """回归 issue #259：「注册成功」不等于「事件可靠」，跳过必须带保质期。
+
+    网络挂载（CIFS/NFS）上写入方在远端时，observer.schedule() 注册得上但
+    inotify 永远不投递。此前兜底巡检把「已注册监听」直接当成「事件路径
+    负责」跳过，该目录既收不到事件又不被巡检——下载完成的条目永远不入库，
+    台账无记录、日志无输出，只有重启才能打破。
+    """
+    root = tmp_path / "movies"
+    watch1, watch2 = tmp_path / "watch1", tmp_path / "watch2"
+    watch1.mkdir()
+    watch2.mkdir()
+    library_id = await _make_library(db, kind=MediaKind.MOVIE, root=root)
+    await _make_rule(db, library_id=library_id, source=watch1)
+    await _make_rule(db, library_id=library_id, source=watch2)
+
+    swept: list[str] = []
+
+    async def record_sweep(rule, library):
+        swept.append(rule.source_path)
+
+    monkeypatch.setattr(ingest_mod, "_sweep_dir", record_sweep)
+
+    class _StubWatcher:
+        """两个目录都「注册成功」、但一个事件也不投递的假观察者。"""
+
+        def watched_keys(self):
+            return frozenset({str(watch1), str(watch2)})
+
+        async def refresh_watches(self):
+            pass
+
+    monkeypatch.setattr(ingest_mod, "_watcher", _StubWatcher())
+    now = time.monotonic()
+    # watch1 距上次真正读到目录顶层已超过保底重扫窗口（事件路径悄悄死了）；
+    # watch2 刚扫过（事件路径健在），不该被重复主动扫
+    ingest_mod._last_swept[str(watch1)] = now - ingest_mod.WATCHED_RESWEEP_SECONDS - 1
+    ingest_mod._last_swept[str(watch2)] = now
+
+    await ingest_mod.ingest_tick()
+    assert swept == [str(watch1)]
+
+
+@pytest.mark.asyncio
+async def test_watched_dir_not_reswept_within_window(db, tmp_path, monkeypatch):
+    """保底重扫不能退化成轮询：窗口未到的被监听目录一次都不主动扫。
+
+    同时覆盖「进程内首次见到该目录」——refresh_watches 刚给初次纳入监听的
+    目录排过补扫，本轮不重复扫，以本轮为计时起点。
+    """
+    root, watch = tmp_path / "movies", tmp_path / "watch"
+    watch.mkdir()
+    library_id = await _make_library(db, kind=MediaKind.MOVIE, root=root)
+    await _make_rule(db, library_id=library_id, source=watch)
+
+    swept: list[str] = []
+
+    async def record_sweep(rule, library):
+        swept.append(rule.source_path)
+
+    monkeypatch.setattr(ingest_mod, "_sweep_dir", record_sweep)
+
+    class _StubWatcher:
+        def watched_keys(self):
+            return frozenset({str(watch)})
+
+        async def refresh_watches(self):
+            pass
+
+    monkeypatch.setattr(ingest_mod, "_watcher", _StubWatcher())
+
+    await ingest_mod.ingest_tick()  # 首次见到：以本轮为计时起点
+    await ingest_mod.ingest_tick()  # 窗口未到
+    assert swept == []
 
 
 @pytest.mark.asyncio
