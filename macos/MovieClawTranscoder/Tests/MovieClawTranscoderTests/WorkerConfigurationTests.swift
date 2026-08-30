@@ -99,7 +99,7 @@ final class WorkerConfigurationTests: XCTestCase {
 
     // MARK: - 设备配对
 
-    func testPairingParsesGrantFromEnvelope() throws {
+    func testPairingParsesGrantFromEnvelope() async throws {
         let payload = #"""
         {"success":true,"code":"OK","message":"请在浏览器里核对配对码并批准",
          "data":{"user_code":"MCLW-7F3K","device_code":"dc-abc","interval":3,
@@ -107,7 +107,7 @@ final class WorkerConfigurationTests: XCTestCase {
         """#
         let pairing = DevicePairing(nasURL: URL(string: "http://10.1.1.5:3000")!, session: stubSession(200, payload))
 
-        let grant = try awaitValue { try await pairing.authorize(clientName: "Yi的Mac-mini") }
+        let grant = try await pairing.authorize(clientName: "Yi的Mac-mini")
 
         XCTAssertEqual(grant.userCode, "MCLW-7F3K")
         XCTAssertEqual(grant.deviceCode, "dc-abc")
@@ -116,43 +116,49 @@ final class WorkerConfigurationTests: XCTestCase {
         XCTAssertEqual(grant.verificationURI, "http://10.1.1.5:3000/settings/devices")
     }
 
-    func testPollMapsStatusCodesToDistinctOutcomes() throws {
+    func testPollMapsStatusCodesToDistinctOutcomes() async throws {
         // 四种结论必须泾渭分明：只有 pending 和 slowDown 该继续等，
         // finished 必须停止轮询，否则用户会看着一个永远转不完的圈。
+        //
+        // 结果先落到局部量再断言：XCTAssertEqual 收的是**非 async** 的
+        // autoclosure，`try await` 塞不进去。
         let url = URL(string: "http://10.1.1.5:3000")!
 
         let pending = DevicePairing(nasURL: url, session: stubSession(202, #"{"data":null}"#))
-        XCTAssertEqual(try awaitValue { try await pending.poll(deviceCode: "dc") }, .pending)
+        let pendingResult = try await pending.poll(deviceCode: "dc")
+        XCTAssertEqual(pendingResult, .pending)
 
         let slow = DevicePairing(nasURL: url, session: stubSession(429, #"{"data":null}"#))
-        XCTAssertEqual(try awaitValue { try await slow.poll(deviceCode: "dc") }, .slowDown)
+        let slowResult = try await slow.poll(deviceCode: "dc")
+        XCTAssertEqual(slowResult, .slowDown)
 
         let granted = DevicePairing(
             nasURL: url,
             session: stubSession(200, #"{"data":{"token":"mclaw_abc","client_name":"Yi的Mac-mini"}}"#)
         )
-        XCTAssertEqual(
-            try awaitValue { try await granted.poll(deviceCode: "dc") },
-            .granted(token: "mclaw_abc", clientName: "Yi的Mac-mini")
-        )
+        let grantedResult = try await granted.poll(deviceCode: "dc")
+        XCTAssertEqual(grantedResult, .granted(token: "mclaw_abc", clientName: "Yi的Mac-mini"))
 
         let denied = DevicePairing(
             nasURL: url,
             session: stubSession(400, #"{"success":false,"message":"接入请求已被拒绝，请重新发起配对"}"#)
         )
-        XCTAssertEqual(
-            try awaitValue { try await denied.poll(deviceCode: "dc") },
-            .finished(reason: "接入请求已被拒绝，请重新发起配对")
-        )
+        let deniedResult = try await denied.poll(deviceCode: "dc")
+        XCTAssertEqual(deniedResult, .finished(reason: "接入请求已被拒绝，请重新发起配对"))
     }
 
-    func testVerifyConnectionSurfacesServerMessage() {
+    func testVerifyConnectionSurfacesServerMessage() async {
         // 服务端的中文 message 要原样透传：它比「HTTP 500」有用得多
         let pairing = DevicePairing(
             nasURL: URL(string: "http://10.1.1.5:3000")!,
             session: stubSession(503, #"{"success":false,"message":"服务正在启动，请稍候"}"#)
         )
-        XCTAssertThrowsError(try awaitValue { try await pairing.verifyConnection() }) { error in
+        // 手写 do/catch 而不是 XCTAssertThrowsError：后者同样只收非 async 的
+        // autoclosure。
+        do {
+            _ = try await pairing.verifyConnection()
+            XCTFail("503 必须抛错，不能当成连接成功")
+        } catch {
             XCTAssertEqual(error.localizedDescription, "服务正在启动，请稍候")
         }
     }
@@ -166,17 +172,6 @@ final class WorkerConfigurationTests: XCTestCase {
         StubURLProtocol.status = status
         StubURLProtocol.body = Data(body.utf8)
         return URLSession(configuration: configuration)
-    }
-
-    private func awaitValue<T>(_ work: @escaping () async throws -> T) throws -> T {
-        let expectation = XCTestExpectation(description: "async")
-        var result: Result<T, Error>!
-        Task {
-            do { result = .success(try await work()) } catch { result = .failure(error) }
-            expectation.fulfill()
-        }
-        wait(for: [expectation], timeout: 5)
-        return try result.get()
     }
 
     private func makeConfiguration(nasText: String) throws -> WorkerConfiguration {
