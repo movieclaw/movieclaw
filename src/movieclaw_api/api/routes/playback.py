@@ -719,8 +719,12 @@ async def start_playback_session(
         else None
     )
     # 仅把「硬件转码」任务交给远程硬件 Worker；直通/音频单转继续走 NAS，
-    # 软件转码也保留本地回路。远程 Worker 只有在配置固定 HTTP(S) 根地址时才
-    # 会被 remote_worker_enabled 暴露给决策层，不能从请求 Host 头推导地址。
+    # 软件转码也保留本地回路。
+    #
+    # 这里取到的是**覆盖项**，通常为空：源/产物地址默认用接单 Worker 自己
+    # 连上来的地址（remote_worker.py 的 observed_base_url），不需要配置。
+    # 注意不能改用**播放请求**的 Host 头推导——那是浏览器够得着的地址，
+    # 和 Worker 够得着的地址不是一回事。
     remote_base_url = effective_remote_transcode_config().base_url
     # VOD 预生成规划（§12）：直通档按全片关键帧索引算分片边界；转码档
     # force_key_frames 在绝对栅格上强插关键帧，用等长规划。规划失败（时长
@@ -756,7 +760,7 @@ async def start_playback_session(
             max_remux=MAX_REMUX_CONCURRENCY,
             quota_bytes=auto_quota_bytes(manager.cache_root),
             use_remote=use_remote,
-            remote_base_url=remote_base_url if use_remote else None,
+            remote_base_url=remote_base_url if use_remote else "",
             # 远程 Worker 的菜单栏拿它显示「正在转什么」；本地会话用不上，
             # 但统一带上省得两条路径分叉
             display_name=PathLib(file.file_path).name,

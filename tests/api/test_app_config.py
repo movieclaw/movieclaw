@@ -78,8 +78,14 @@ def test_save_rejects_bad_external_url(client):
     assert "http(s)" in resp.json()["message"]
 
 
-def test_remote_transcode_config_reuses_external_url(client):
-    """配置面只剩地址与传输限制——凭证已收归「设置 → 设备」的配对流程。"""
+def test_remote_transcode_config_ignores_system_external_url(client):
+    """系统外部访问地址不再参与远程转码取源/回传地址的取值。
+
+    它是「用户从外面怎么访问这个应用」，常常是公网域名或反向代理。拿它下发给
+    一台明明在同一局域网、刚从内网地址连进来的 Worker，会把大量分片绕出去再
+    绕回来。旧版正因如此才需要再填一个「专用地址」把它扳回内网——那个输入框
+    解决的问题是上一层自己制造的，所以这一层被整个去掉了。
+    """
     client.put(
         "/api/v1/app/config",
         json={"external_url": "https://nas.example.com/movieclaw/"},
@@ -87,9 +93,9 @@ def test_remote_transcode_config_reuses_external_url(client):
 
     initial = client.get("/api/v1/transcode-worker/config")
     assert initial.status_code == 200
-    assert initial.json()["data"]["base_url"] == "https://nas.example.com/movieclaw"
+    assert initial.json()["data"]["base_url"] == ""
     assert initial.json()["data"]["base_url_override"] == ""
-    assert initial.json()["data"]["base_url_source"] == "system_external_url"
+    assert initial.json()["data"]["base_url_source"] == "worker_connection"
     assert "worker_token" not in initial.text
 
     saved = client.put(
@@ -97,7 +103,8 @@ def test_remote_transcode_config_reuses_external_url(client):
         json={"enabled": True, "max_artifact_bytes": 64 * 1024 * 1024},
     )
     assert saved.status_code == 200
-    # 地址就绪即可启用：令牌不再是配置前置条件，有没有 Worker 连着是运行时状态
+    # 令牌和地址都不再是配置前置条件：前者在「设置 → 设备」配对签发，
+    # 后者由 Worker 的连接自报。
     assert saved.json()["data"]["ready"] is True
 
     kept = client.put(
@@ -109,11 +116,7 @@ def test_remote_transcode_config_reuses_external_url(client):
 
 
 def test_remote_transcode_base_url_override_takes_precedence_and_can_fall_back(client):
-    client.put(
-        "/api/v1/app/config",
-        json={"external_url": "https://nas.example.com/movieclaw"},
-    )
-
+    """覆盖地址压过自动推断；清空它就回到自动。"""
     overridden = client.put(
         "/api/v1/transcode-worker/config",
         json={
@@ -147,20 +150,18 @@ def test_remote_transcode_base_url_override_takes_precedence_and_can_fall_back(c
         },
     )
     assert fallback.status_code == 200
-    assert fallback.json()["data"]["base_url"] == "https://nas.example.com/movieclaw"
+    assert fallback.json()["data"]["base_url"] == ""
     assert fallback.json()["data"]["base_url_override"] == ""
-    assert fallback.json()["data"]["base_url_source"] == "system_external_url"
+    assert fallback.json()["data"]["base_url_source"] == "worker_connection"
 
 
-def test_remote_transcode_accepts_http_external_url(client):
-    client.put(
-        "/api/v1/app/config",
-        json={"external_url": "http://10.1.1.5:3000"},
-    )
+def test_remote_transcode_accepts_http_override(client):
+    """内网 HTTP 覆盖地址合法：远程转码本来就常跑在纯内网。"""
     response = client.put(
         "/api/v1/transcode-worker/config",
         json={
             "enabled": True,
+            "base_url": "http://10.1.1.5:3000",
             "max_artifact_bytes": 64 * 1024 * 1024,
         },
     )
@@ -172,7 +173,8 @@ def test_remote_transcode_tells_user_scheme_is_missing_not_that_url_is_empty(cli
     """漏写 http:// 的地址不能被报成「未配置」——用户明明填了。
 
     urlsplit 把 `192.168.1.10:3000` 解析成空 netloc，与真的没填无法区分。
-    照直说「未配置」会让用户对着自己刚填好的输入框完全找不到方向。
+    而真的没填是**合法**的（走自动推断），照直说「未配置」既不成立、也会
+    让用户对着自己刚填好的输入框完全找不到方向。
     """
     response = client.put(
         "/api/v1/transcode-worker/config",
@@ -191,8 +193,13 @@ def test_remote_transcode_tells_user_scheme_is_missing_not_that_url_is_empty(cli
     assert "未配置" not in message, message
 
 
-def test_remote_transcode_still_reports_empty_url_as_unset(client):
-    """真的没填时仍要说「未配置」，不能被上一条的改动带偏。"""
+def test_remote_transcode_enables_without_any_address(client):
+    """一个地址都没配也能启用：运行时用 Worker 自己连上来的地址。
+
+    地址曾经是启用的硬前置条件，用户必须先去「网络与维护」填外部访问地址。
+    但那个信息服务端本来就有——Worker 的控制连接就是从某个地址打进来的
+    （remote_worker.py 的 observed_base_url），让人再抄一遍纯属多余。
+    """
     client.put("/api/v1/app/config", json={"external_url": ""})
     response = client.put(
         "/api/v1/transcode-worker/config",
@@ -203,8 +210,12 @@ def test_remote_transcode_still_reports_empty_url_as_unset(client):
         },
     )
 
-    assert response.status_code == 400
-    assert "未配置" in response.json()["message"]
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["ready"] is True
+    assert data["issues"] == []
+    assert data["base_url"] == ""
+    assert data["base_url_source"] == "worker_connection"
 
 
 def test_remote_transcode_rejects_artifact_limit_above_worker_cap(client):
@@ -233,7 +244,7 @@ def test_legacy_remote_env_is_ignored(client, monkeypatch):
     data = response.json()["data"]
     assert data["enabled"] is False
     assert data["base_url"] == ""
-    assert data["base_url_source"] == "unset"
+    assert data["base_url_source"] == "worker_connection"
     assert data["max_artifact_bytes"] == DEFAULT_REMOTE_TRANSCODE_MAX_ARTIFACT_BYTES
     assert "legacy-token" not in response.text
 

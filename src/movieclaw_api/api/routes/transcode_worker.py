@@ -151,6 +151,37 @@ async def _verify_grant(
     return grant
 
 
+def _observed_base_url(websocket: WebSocket) -> str:
+    """推断 Worker 刚刚是从哪个根地址连进来的。
+
+    远程转码要下发两个 URL 给 Worker：去哪儿读源视频、把 HLS 产物传回哪儿。
+    这两个地址过去只能由管理员在网页上手填，可它其实是已知的——Worker 的
+    控制连接本身就是从某个地址打过来的，那个地址**必然**是这台 Worker 够得
+    着的，比任何猜测都可靠。
+
+    取值顺序：
+    * scheme 优先信 ``X-Forwarded-Proto``。TLS 在反向代理上终止时，Worker 用
+      的是 wss，转到应用的却是 ws，只看 scope 会拼出一个连不上的 http 地址。
+    * host 用 ``Host`` 头，也就是 Worker 拨号时写的那个主机名/端口。
+    * 末尾接上 ``root_path``，兼容把应用挂在子路径下的反向代理。
+
+    只有代理把 Host 改写成了上游地址（如 ``127.0.0.1:8000``）这种少见配置，
+    推断才会失真——那正是网页上「专用地址」覆盖项存在的意义。
+    """
+    forwarded = (websocket.headers.get("x-forwarded-proto") or "").split(",")[0].strip()
+    if forwarded in {"http", "https"}:
+        scheme = forwarded
+    elif forwarded in {"ws", "wss"}:
+        scheme = "http" if forwarded == "ws" else "https"
+    else:
+        scheme = "https" if websocket.url.scheme == "wss" else "http"
+    host = (websocket.headers.get("host") or "").strip()
+    if not host:
+        return ""
+    root_path = (websocket.scope.get("root_path") or "").rstrip("/")
+    return f"{scheme}://{host}{root_path}"
+
+
 @router.websocket("/ws")
 async def transcode_worker_websocket(websocket: WebSocket) -> None:
     """接收 Worker hello，并持续处理心跳与任务状态。"""
@@ -198,7 +229,9 @@ async def transcode_worker_websocket(websocket: WebSocket) -> None:
             await websocket.close(code=1008, reason="Worker hello 格式错误")
             return
         try:
-            connection = await registry.register(websocket, hello)
+            connection = await registry.register(
+                websocket, hello, observed_base_url=_observed_base_url(websocket)
+            )
         except ValueError as exc:
             await websocket.close(code=1008, reason=str(exc))
             return

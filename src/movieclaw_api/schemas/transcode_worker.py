@@ -13,9 +13,10 @@ from movieclaw_api.settings.remote_transcode import (
 )
 
 RemoteTranscodeBaseUrlSource = Literal[
+    # 网页「高级」里填了覆盖地址
     "remote_transcode_setting",
-    "system_external_url",
-    "unset",
+    # 默认：用接单 Worker 自己连上来的地址，没有静态值可展示
+    "worker_connection",
 ]
 
 
@@ -30,7 +31,7 @@ class RemoteTranscodeConfigPayload(BaseModel):
     base_url: str | None = Field(
         default=None,
         max_length=4096,
-        description="远程转码专用根地址；null=保持，空字符串=清除并回退系统外部访问地址",
+        description="取源/回传根地址的覆盖项；null=保持，空字符串=清除并回到自动推断",
     )
     max_artifact_bytes: int = Field(
         default=DEFAULT_REMOTE_TRANSCODE_MAX_ARTIFACT_BYTES,
@@ -44,16 +45,18 @@ class RemoteTranscodeConfigView(BaseModel):
     """网页展示的远程转码配置。"""
 
     enabled: bool
-    base_url: str = Field(default="", description="实际使用的远程转码根地址")
+    base_url: str = Field(
+        default="", description="静态配置出的根地址；空表示自动使用 Worker 连上来的地址"
+    )
     base_url_override: str = Field(
-        default="", description="网页配置的远程转码专用根地址；空表示跟随系统外部访问地址"
+        default="", description="网页配置的覆盖地址；空表示不覆盖"
     )
     base_url_source: RemoteTranscodeBaseUrlSource
     max_artifact_bytes: int
-    ready: bool = Field(description="配置是否满足启用远程转码的前置条件")
+    ready: bool = Field(description="开关已开，且填过的覆盖地址（如果填了）合法")
     issues: list[str] = Field(
         default_factory=list,
-        description="当前配置缺少的前置条件；不包含任何令牌内容",
+        description="覆盖地址的格式问题；地址留空不算问题，不包含任何令牌内容",
     )
 
 

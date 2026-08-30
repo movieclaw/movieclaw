@@ -88,13 +88,6 @@ async def save_config(payload: AppConfigPayload) -> AppConfigView:
         external_url=payload.external_url.strip().rstrip("/"),
     )
     await get_setting_store().set(setting)
-    # 系统外部访问地址变化后，重新计算远程转码的回退地址；如果远程转码配置了
-    # 专用 BASE_URL，则有效地址保持不变。下一次播放都会读取刷新后的快照。
-    from movieclaw_api.services.playback.remote_config import (
-        refresh_remote_transcode_config,
-    )
-
-    await refresh_remote_transcode_config()
     return await build_config_view()
 
 

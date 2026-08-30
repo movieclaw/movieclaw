@@ -17,6 +17,7 @@ import os
 import signal
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -724,15 +725,26 @@ async def test_remote_session_dispatches_job_without_local_process(manager, monk
     class FakeRemoteRegistry:
         def __init__(self) -> None:
             self.dispatches: list[tuple[str, dict, str]] = []
+            self.reserved: tuple[str, str] | None = None
+            self.released: list[str] = []
             self.cancelled: list[str] = []
             self.removed: list[str] = []
 
         def create_job_waiter(self, job_id: str) -> None:
             self.waiting = job_id
 
-        async def dispatch(self, job_id: str, payload: dict, *, backend: str) -> str:
-            self.dispatches.append((job_id, payload, backend))
-            return "mac-mini-a"
+        def reserve(self, job_id: str, *, backend: str, attempt_id: str | None = None):
+            self.reserved = (job_id, backend)
+            return SimpleNamespace(
+                worker_id="mac-mini-a", observed_base_url="http://192.168.1.10:8000"
+            )
+
+        def release_job(self, job_id: str) -> None:
+            self.released.append(job_id)
+
+        async def start_job(self, connection, job_id: str, payload: dict) -> str:
+            self.dispatches.append((job_id, payload, self.reserved[1]))
+            return connection.worker_id
 
         async def wait_job_event(self, job_id: str) -> dict[str, str]:
             assert job_id == self.waiting
@@ -795,6 +807,83 @@ async def test_remote_session_dispatches_job_without_local_process(manager, monk
 
 
 @pytest.mark.asyncio
+async def test_remote_session_uses_worker_connect_address_without_any_config(
+    manager, monkeypatch
+):
+    """一个地址都没配时，取源/回传用接单 Worker 自己连上来的地址。
+
+    这是默认路径：Worker 的控制连接就是从那个地址打进来的，它必然够得着。
+    过去这里必须由管理员在网页上手填一个 base_url，填错就是一次静默失败。
+    """
+
+    class FakeRemoteRegistry:
+        def __init__(self) -> None:
+            self.dispatched: dict | None = None
+
+        def reserve(self, job_id: str, *, backend: str, attempt_id: str | None = None):
+            return SimpleNamespace(
+                worker_id="mac-mini-a", observed_base_url="http://192.168.1.10:8000/"
+            )
+
+        def release_job(self, job_id: str) -> None:
+            pass
+
+        def create_job_waiter(self, job_id: str) -> None:
+            pass
+
+        async def start_job(self, connection, job_id: str, payload: dict) -> str:
+            self.dispatched = payload
+            return connection.worker_id
+
+        async def wait_job_event(self, job_id: str) -> dict[str, str]:
+            return {"type": "job.accepted"}
+
+        def job_state(self, job_id: str) -> dict[str, str]:
+            return {"type": "job.accepted"}
+
+        def remove_job_waiter(self, job_id: str) -> None:
+            pass
+
+        def remove_job(self, job_id: str) -> None:
+            pass
+
+        async def cancel(self, job_id: str, *, force: bool = False) -> None:
+            pass
+
+    async def fake_issue_remote_grant(**kwargs: object) -> str:
+        return f"{kwargs['kind']}-token"
+
+    registry = FakeRemoteRegistry()
+    monkeypatch.setattr(session_mod, "get_remote_worker_registry", lambda: registry)
+    monkeypatch.setattr(session_mod, "issue_remote_grant", fake_issue_remote_grant)
+
+    session = await manager.start(
+        PlaybackPlan(
+            tier=PlaybackTier.HARDWARE_TRANSCODE,
+            file_id=1,
+            container="hls-fmp4",
+            video=VideoPlan(action="transcode", codec="h264", height=1080),
+            audio=AudioPlan(action="copy", track_ref=None),
+            reason="测试",
+        ),
+        source_path="/media/movie.mkv",
+        member_id=1,
+        hw_backend="videotoolbox",
+        segment_plan=_boundaries(2),
+        use_remote=True,
+        # 刻意不传 remote_base_url：网页上什么都没配
+    )
+
+    args = " ".join(registry.dispatched["ffmpeg_args"])
+    assert "http://192.168.1.10:8000/api/v1/transcode-worker/sessions/" in args
+    # 末尾斜杠要被吃掉，否则拼出来的是 //api/v1/...
+    assert "8000//api" not in args
+    assert session.remote_source_url.startswith("http://192.168.1.10:8000/api/v1/")
+
+    assert await manager.stop(session.id) is True
+
+
+@pytest.mark.asyncio
 async def test_remote_start_failure_does_not_fallback_to_local_software(manager, monkeypatch):
     """远程 Worker 在首片前不可用时，不能绕过软件转码同意门槛。"""
 
@@ -806,8 +895,11 @@ async def test_remote_start_failure_does_not_fallback_to_local_software(manager,
         def create_job_waiter(self, job_id: str) -> None:
             self.job_id = job_id
 
-        async def dispatch(self, job_id: str, payload: dict, *, backend: str) -> str:
+        def reserve(self, job_id: str, *, backend: str, attempt_id: str | None = None):
             raise session_mod.RemoteWorkerUnavailable("Worker 刚刚断线")
+
+        def release_job(self, job_id: str) -> None:
+            pass
 
         def remove_job_waiter(self, job_id: str) -> None:
             pass
@@ -895,8 +987,16 @@ async def test_remote_restart_failure_cleans_up_new_job(manager, tmp_path, monke
         def create_job_waiter(self, job_id: str) -> None:
             self.created = job_id
 
-        async def dispatch(self, job_id: str, payload: dict, *, backend: str) -> str:
-            return "mac-mini-a"
+        def reserve(self, job_id: str, *, backend: str, attempt_id: str | None = None):
+            return SimpleNamespace(
+                worker_id="mac-mini-a", observed_base_url="http://192.168.1.10:8000"
+            )
+
+        def release_job(self, job_id: str) -> None:
+            pass
+
+        async def start_job(self, connection, job_id: str, payload: dict) -> str:
+            return connection.worker_id
 
         async def wait_job_event(self, job_id: str) -> dict[str, str]:
             assert job_id == self.created

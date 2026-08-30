@@ -39,8 +39,6 @@ const INPUT_CLASS =
   "focus:border-[var(--accent)]/50";
 
 export interface RemoteTranscodeSectionProps {
-  /** 系统外部访问地址未配置且专用地址为空时，切回「网络与维护」Tab。 */
-  onOpenMaintain?: () => void;
   /** 去「设备」分区审批或吊销 Worker。批准是这条链路的必经一步，得能一键到。 */
   onOpenDevices?: () => void;
 }
@@ -48,14 +46,14 @@ export interface RemoteTranscodeSectionProps {
 /**
  * 「应用 → 远程转码」设置。
  *
- * 远程转码可以使用专用的 HTTP(S) 入口；专用地址留空时跟随系统「网络与维护」
- * 中的外部访问地址。源文件 URL、HLS 上传 URL 和 Worker 控制地址始终使用同一
- * 个有效入口，避免三类请求走到不同的主机或端口。
+ * 这一页要人做的决定只剩一个：开还是不开。
+ *
+ * Worker 用哪个地址连过来，是在 Mac 那侧填的；服务端下发任务时用的取源地址和
+ * 产物回传地址，默认直接取用那条控制连接自报的地址（remote_worker.py 的
+ * observed_base_url）。所以地址在这一页降级成「高级」里的覆盖项，只服务于
+ * 反向代理改写 Host 的少数部署，也不再和系统外部访问地址有任何关系。
  */
-export function RemoteTranscodeSection({
-  onOpenMaintain,
-  onOpenDevices,
-}: RemoteTranscodeSectionProps) {
+export function RemoteTranscodeSection({ onOpenDevices }: RemoteTranscodeSectionProps) {
   const [config, setConfig] = useState<RemoteTranscodeConfigView | null>(null);
   const [enabled, setEnabled] = useState(false);
   const [baseURLDraft, setBaseURLDraft] = useState("");
@@ -172,12 +170,13 @@ export function RemoteTranscodeSection({
   const liveNames = new Set((status?.workers ?? []).map((w) => w.worker_id));
   const offlineWorkers = authorizedWorkers.filter((d) => !liveNames.has(d.name));
   const hasAnyWorker = (status?.workers.length ?? 0) > 0 || offlineWorkers.length > 0;
-  // 配置填全了 ≠ Worker 连上了。这两件事分开说，用户才知道下一步该干什么：
-  // 前者不满足要继续填表单，后者不满足要去 Mac 上看 App。
+  // 开关打开 ≠ Worker 连上了。这两件事分开说，用户才知道下一步该干什么：
+  // 前者不满足要打开开关（或改正「高级」里填错的覆盖地址），后者不满足
+  // 要去 Mac 上看 App。
   const statusText = !config.enabled
     ? "已关闭"
     : !config.ready
-      ? "配置不完整，暂不会分配远程转码任务"
+      ? "「高级」里的覆盖地址不合法，暂不会分配远程转码任务"
       : onlineWorkers.length > 0
         ? `已就绪，${onlineWorkers.length} 个 Worker 在线`
         : "配置已就绪，但还没有 Worker 连上来";
@@ -275,7 +274,7 @@ export function RemoteTranscodeSection({
             <div className="rounded-xl border border-amber-300/25 bg-amber-300/[0.07] px-4 py-3 text-sub leading-relaxed text-amber-100">
               {!config.enabled
                 ? "远程转码还没开启，Worker 现在连不上来。打开上面的开关并保存即可。"
-                : "远程转码地址还没配好，Worker 现在连不上来。按下方提示补齐地址并保存即可。"}
+                : "「高级」里填的覆盖地址不合法，Worker 现在连不上来。改正或清空它即可。"}
             </div>
           )}
 
@@ -384,52 +383,57 @@ export function RemoteTranscodeSection({
         </div>
       </section>
 
-      {/* 令牌拿掉、分片上限也拿掉之后，这一组只剩地址——那正是它该有的样子：
-          远程转码在这一页需要人做的决定，只有「用哪个地址」一件。 */}
+      {/* 地址不再是必填项，所以这一组默认收起来。
+          服务端下发任务时会用「这台 Worker 自己连上来的地址」拼源视频 URL 和
+          产物上传 URL（remote_worker.py 的 observed_base_url）——Worker 刚从
+          那个地址握上手，它必然够得着，没有任何理由再让人抄一遍。展开项只为
+          反向代理改写了 Host、推断失真的少数部署保留。 */}
       <section>
-        <h3 className="group-label mb-2.5 px-1">连接地址</h3>
-        <div className="css-glass space-y-5 !rounded-2xl p-5 max-sm:p-4">
-          <div>
-            <label htmlFor="remote-base-url" className="text-body font-medium text-[var(--text)]">
-              远程转码专用地址（可选）
-            </label>
-            <input
-              id="remote-base-url"
-              type="url"
-              value={baseURLDraft}
-              onChange={(event) => setBaseURLDraft(event.target.value)}
-              placeholder="留空时使用系统外部访问地址"
-              className={`mt-2 ${INPUT_CLASS}`}
-              spellCheck={false}
-            />
-            <p className="mt-1.5 text-caption leading-5 text-[var(--text-faint)]">
-              这不是 Worker 用来连过来的地址（那个在 Mac 上填），而是<b className="font-medium text-[var(--text-muted)]">服务端
-              告诉 Worker「去哪儿取源视频、往哪儿传 HLS 产物」</b>。留空则跟随系统
-              「网络与维护」中的外部访问地址——只有当那个地址是公网域名或反向代理时才需要在
-              这里单独填：转码要来回传大量分片，绕一圈公网会明显变慢，填内网直连地址更快。
-            </p>
-            <div className="mt-3 rounded-xl border border-white/[0.06] bg-black/15 px-3 py-2 text-sub">
-              <span className="text-[var(--text-faint)]">当前生效地址：</span>{" "}
-              <span className="font-mono text-[var(--text-muted)]">{config.base_url || "未设置"}</span>
+        <h3 className="group-label mb-2.5 px-1">高级</h3>
+        <div className="css-glass !rounded-2xl p-5 max-sm:p-4">
+          <details open={Boolean(config.base_url)} className="group">
+            <summary className="cursor-pointer list-none text-body font-medium text-[var(--text)] marker:hidden">
+              取源与回传地址
+              <span className="ml-2 text-caption font-normal text-[var(--text-faint)]">
+                {config.base_url_source === "worker_connection"
+                  ? "自动"
+                  : `已覆盖为 ${config.base_url}`}
+              </span>
+            </summary>
+            <div className="mt-4 space-y-3">
+              <p className="text-caption leading-5 text-[var(--text-faint)]">
+                服务端下发任务时要告诉 Worker「去哪儿取源视频、往哪儿传 HLS 产物」。
+                <b className="font-medium text-[var(--text-muted)]">
+                  默认自动取用这台 Worker 连上来时用的地址
+                </b>
+                ，不需要设置——它刚从那儿握上手，必然够得着，而且通常就是最快的那条
+                内网路径。只有当反向代理把 Host 改写成了上游地址（如 127.0.0.1:8000），
+                导致 Worker 拿到的地址回不来时，才需要在这里指定一个 Worker 够得着的地址。
+              </p>
+              <div>
+                <label
+                  htmlFor="remote-base-url"
+                  className="text-sub font-medium text-[var(--text-muted)]"
+                >
+                  覆盖地址
+                </label>
+                <input
+                  id="remote-base-url"
+                  type="url"
+                  value={baseURLDraft}
+                  onChange={(event) => setBaseURLDraft(event.target.value)}
+                  placeholder="留空 = 自动（推荐）"
+                  className={`mt-2 ${INPUT_CLASS}`}
+                  spellCheck={false}
+                />
+              </div>
+              <p className="text-caption leading-5 text-[var(--text-faint)]">
+                {config.base_url_source === "remote_transcode_setting"
+                  ? "当前使用上面填写的覆盖地址。"
+                  : "当前为自动：每台 Worker 各用自己连上来的地址。"}
+              </p>
             </div>
-            <p className="mt-1.5 text-caption leading-5 text-[var(--text-faint)]">
-              {config.base_url_source === "remote_transcode_setting"
-                ? "当前使用远程转码专用地址。"
-                : config.base_url_source === "system_external_url"
-                  ? "当前使用系统外部访问地址。"
-                  : "尚未设置可用的远程转码地址。"}
-            </p>
-            {!config.base_url && !baseURLDraft.trim() && onOpenMaintain && (
-              <button
-                type="button"
-                onClick={onOpenMaintain}
-                className="mt-2 text-caption text-[var(--accent)] underline decoration-dotted underline-offset-2"
-              >
-                去“网络与维护”设置外部访问地址
-              </button>
-            )}
-          </div>
-
+          </details>
         </div>
       </section>
 

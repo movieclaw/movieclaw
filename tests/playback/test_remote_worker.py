@@ -89,6 +89,14 @@ async def test_registry_rejects_capability_without_matching_encoder():
     assert capabilities.backends == ()
 
 
+async def _dispatch(registry, job_id, payload, *, backend):
+    """测试辅助：占位 + 下发，等价于拆分前的一步式 dispatch。"""
+    connection = registry.reserve(
+        job_id, backend=backend, attempt_id=payload.get("attempt_id")
+    )
+    return await registry.start_job(connection, job_id, payload)
+
+
 @pytest.mark.asyncio
 async def test_registry_routes_job_and_ignores_other_worker_status():
     monkeypatch = pytest.MonkeyPatch()
@@ -118,7 +126,7 @@ async def test_registry_routes_job_and_ignores_other_worker_status():
             },
         )
         registry.create_job_waiter("job-a")
-        worker_id = await registry.dispatch(
+        worker_id = await _dispatch(registry, 
             "job-a", {"ffmpeg_args": ["-version"]}, backend="videotoolbox"
         )
         assert worker_id == first.worker_id
@@ -161,7 +169,7 @@ async def test_registry_marks_jobs_failed_when_worker_disconnects():
         },
     )
     registry.create_job_waiter("job-a")
-    await registry.dispatch("job-a", {}, backend="videotoolbox")
+    await _dispatch(registry, "job-a", {}, backend="videotoolbox")
     await registry.unregister(connection)
     event = await registry.wait_job_event("job-a", timeout=0.1)
     assert event["type"] == "job.failed"
@@ -184,7 +192,7 @@ async def test_registry_pause_and_resume_keep_job_claimed(monkeypatch):
         },
     )
     registry.create_job_waiter("job-a")
-    await registry.dispatch("job-a", {}, backend="videotoolbox")
+    await _dispatch(registry, "job-a", {}, backend="videotoolbox")
 
     assert await registry.pause("job-a") is True
     assert websocket.messages[-1] == {"type": "job.pause", "job_id": "job-a"}
@@ -212,7 +220,7 @@ async def test_registry_force_cancel_marks_seek_stop_message(monkeypatch):
         },
     )
     registry.create_job_waiter("job-a")
-    await registry.dispatch("job-a", {}, backend="videotoolbox")
+    await _dispatch(registry, "job-a", {}, backend="videotoolbox")
 
     await registry.cancel("job-a", force=True)
 
@@ -241,7 +249,7 @@ async def test_registry_accepts_current_attempt_progress_and_ignores_stale_attem
         },
     )
     registry.create_job_waiter("job-a")
-    await registry.dispatch(
+    await _dispatch(registry, 
         "job-a",
         {"attempt_id": "attempt-a", "ffmpeg_args": ["-version"]},
         backend="videotoolbox",
@@ -361,3 +369,87 @@ def test_remote_hls_command_reports_progress_on_stdout():
 
     assert command.argv[-1].endswith("index.m3u8?token=artifact")
     assert command.argv[command.argv.index("-progress") + 1] == "pipe:1"
+
+
+def _ws_scope(
+    *,
+    scheme: str = "ws",
+    host: str = "192.168.1.10:8000",
+    root_path: str = "",
+    extra_headers: tuple[tuple[bytes, bytes], ...] = (),
+):
+    """构造一个够 ``_observed_base_url`` 读的最小 WebSocket 作用域。"""
+    from starlette.websockets import WebSocket
+
+    headers: list[tuple[bytes, bytes]] = list(extra_headers)
+    if host:
+        headers.append((b"host", host.encode()))
+    scope = {
+        "type": "websocket",
+        "asgi": {"version": "3.0"},
+        "scheme": scheme,
+        "path": "/api/v1/transcode-worker/ws",
+        "raw_path": b"/api/v1/transcode-worker/ws",
+        "query_string": b"",
+        "root_path": root_path,
+        "headers": headers,
+        "server": ("10.0.0.2", 8000),
+        "client": ("10.0.0.9", 51234),
+    }
+
+    async def _noop(*_args, **_kwargs):  # pragma: no cover - 不会被调用
+        raise AssertionError("测试不应触发 ASGI 收发")
+
+    return WebSocket(scope, receive=_noop, send=_noop)
+
+
+def test_observed_base_url_uses_the_address_the_worker_dialed():
+    """Worker 从哪个地址连进来，取源/回传就用哪个地址——不需要任何人去填。"""
+    from movieclaw_api.api.routes.transcode_worker import _observed_base_url
+
+    assert _observed_base_url(_ws_scope()) == "http://192.168.1.10:8000"
+
+
+def test_observed_base_url_trusts_forwarded_proto_over_scope_scheme():
+    """反向代理终止 TLS 时，到应用的是 ws，但 Worker 够得着的只有 https。"""
+    from movieclaw_api.api.routes.transcode_worker import _observed_base_url
+
+    websocket = _ws_scope(
+        host="nas.example.com",
+        extra_headers=((b"x-forwarded-proto", b"https, http"),),
+    )
+    assert _observed_base_url(websocket) == "https://nas.example.com"
+
+
+def test_observed_base_url_keeps_reverse_proxy_subpath():
+    """应用挂在子路径下时，少了 root_path 拼出来的 URL 会 404。"""
+    from movieclaw_api.api.routes.transcode_worker import _observed_base_url
+
+    websocket = _ws_scope(host="nas.example.com", root_path="/movieclaw/")
+    assert _observed_base_url(websocket) == "http://nas.example.com/movieclaw"
+
+
+def test_observed_base_url_is_empty_without_host_header():
+    """推断不出来时返回空串，交给网页上的覆盖项兜底，绝不瞎拼一个上游地址。"""
+    from movieclaw_api.api.routes.transcode_worker import _observed_base_url
+
+    assert _observed_base_url(_ws_scope(host="")) == ""
+
+
+@pytest.mark.asyncio
+async def test_registry_keeps_each_workers_own_connect_address():
+    """两台 Worker 从不同入口连进来时，各自的取源地址不能被对方覆盖。"""
+    registry = RemoteWorkerRegistry()
+    lan = await registry.register(
+        FakeWebSocket(),
+        {"worker_id": "mac-lan", "capabilities": {"backends": ["videotoolbox"]}},
+        observed_base_url="http://192.168.1.10:8000",
+    )
+    wan = await registry.register(
+        FakeWebSocket(),
+        {"worker_id": "mac-wan", "capabilities": {"backends": ["videotoolbox"]}},
+        observed_base_url="https://nas.example.com",
+    )
+
+    assert lan.observed_base_url == "http://192.168.1.10:8000"
+    assert wan.observed_base_url == "https://nas.example.com"

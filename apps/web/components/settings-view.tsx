@@ -498,7 +498,7 @@ function ChangePasswordCard() {
  *
  *   - 版本与更新：当前版本、检查/执行更新、NER 模型、回退（AppUpdateSection）；
  *   - 网络与维护：外部访问地址、重启应用（AppConfigSection）；
- *   - 远程转码：远程 Worker 的开关、连接地址与传输限制（RemoteTranscodeSection）。
+ *   - 远程转码：远程 Worker 的开关与在线状态（RemoteTranscodeSection）。
  *     令牌不在这里——Worker 的凭证是逐台配对签发的，审批与吊销在「设备」分区。
  *
  * 为什么「版本与更新」是默认标签：这一页的高频入口是侧栏的更新徽标（有新版
@@ -552,7 +552,6 @@ function AppSection() {
         <AppConfigSection />
       ) : (
         <RemoteTranscodeSection
-          onOpenMaintain={() => setTab("maintain")}
           onOpenDevices={() => router.push("/settings/devices" as Route)}
         />
       )}

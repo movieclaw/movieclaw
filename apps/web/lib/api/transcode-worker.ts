@@ -13,16 +13,17 @@ async function unwrap<T>(promise: Promise<ApiEnvelope<T>>): Promise<T> {
 }
 
 export type RemoteTranscodeBaseUrlSource =
+  /** 网页「高级」里填了覆盖地址。 */
   | "remote_transcode_setting"
-  | "system_external_url"
-  | "unset"
+  /** 默认：取源/回传用接单 Worker 自己连上来的地址，没有静态值。 */
+  | "worker_connection"
   | string;
 
 export interface RemoteTranscodeConfigView {
   enabled: boolean;
-  /** 实际使用的远程转码根地址。 */
+  /** 静态配置出的远程转码根地址；为空表示自动跟随 Worker 连上来的地址。 */
   base_url: string;
-  /** 网页配置的远程转码专用地址；为空时跟随系统外部访问地址。 */
+  /** 网页配置的远程转码专用地址覆盖项；为空表示不覆盖。 */
   base_url_override: string;
   base_url_source: RemoteTranscodeBaseUrlSource;
   max_artifact_bytes: number;
@@ -32,7 +33,7 @@ export interface RemoteTranscodeConfigView {
 
 export interface RemoteTranscodeConfigPayload {
   enabled: boolean;
-  /** null=保持当前专用地址，空字符串=清除并回退系统外部访问地址。 */
+  /** null=保持当前专用地址，空字符串=清除覆盖、回到自动。 */
   base_url?: string | null;
   max_artifact_bytes: number;
 }
