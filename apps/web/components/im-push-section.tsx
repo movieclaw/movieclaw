@@ -41,10 +41,12 @@ import {
 } from "@/lib/api/channels";
 import { useBackdrop } from "@/lib/backdrop";
 import { formatRelativeTime } from "@/lib/time";
+import { useTabParam } from "@/lib/use-tab-param";
 import { LiquidGlassButton } from "@/vendor/liquid-glass";
 
 export function ImPushSection() {
-  const [tab, setTab] = useState<"channels" | "content">("channels");
+  // ?tab=content 深链直达推送内容，切换写回地址栏（useTabParam，全设置页同一套）
+  const [tab, setTab] = useTabParam(["channels", "content"] as const, "channels");
   const tabs = [
     { id: "channels" as const, label: "接入通道" },
     { id: "content" as const, label: "推送内容" },

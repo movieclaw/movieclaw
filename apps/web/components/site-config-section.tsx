@@ -15,6 +15,7 @@ import {
 } from "@/components/icons";
 import { ExtensionCard } from "@/components/extension-settings";
 import { SearchSection } from "@/components/search-settings";
+import { useTabParam } from "@/lib/use-tab-param";
 import type { ConfiguredSite, SiteAuthType, SiteStatus } from "@/lib/api/extension";
 import {
   type AuthTypeRequirement,
@@ -136,7 +137,11 @@ export function SitesSectionSubtitle({ fallback }: { fallback: string }) {
 }
 
 export function SiteConfigSection() {
-  const [tab, setTab] = useState<SiteTab>("sites");
+  // ?tab=search 深链直达搜索分类，切换写回地址栏（useTabParam，全设置页同一套）
+  const [tab, setTab] = useTabParam<SiteTab>(
+    TABS.map((t) => t.id),
+    "sites",
+  );
   const [catalog, setCatalog] = useState<CatalogItem[]>([]);
   const [configured, setConfigured] = useState<ConfiguredSite[]>([]);
   // 各站点的种子缓存统计（定时同步任务维护），key 为 site_id；从未同步过的站点没有条目
