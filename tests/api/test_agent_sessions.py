@@ -624,12 +624,13 @@ def test_fork_api_creates_independent_session_and_resumes_snapshot(client, monke
     assert captured[-1][1:] == ["第一轮", "已找到资源", "从这里继续"]
 
 
-def test_fork_api_rejects_missing_running_and_empty_source(client) -> None:
+def test_fork_api_rejects_missing_running_and_empty_source(client, monkeypatch) -> None:
     configure_provider(client)
     assert client.post("/api/v1/sessions/missing/fork").status_code == 404
 
     # 存储层空会话虽然不会由普通 UI 产生，但 Fork 仍需给出明确业务错误。
     import asyncio
+    import threading
 
     from movieclaw_api.services.agent_sessions import get_agent_session_store
     from movieclaw_db.engine import get_database
@@ -645,9 +646,32 @@ def test_fork_api_rejects_missing_running_and_empty_source(client) -> None:
     asyncio.run(create_index())
     assert client.post(f"/api/v1/sessions/{empty_id}/fork").status_code == 400
 
+    # 「运行中拒绝分叉」不能依赖调度时序：mock LLM 即时返回时，后台运行可能
+    # 在 fork 请求发出前就已结束（会话不再运行中，fork 被合法接受）。用事件
+    # 闸门扣住流式返回，保证断言窗口内会话必然运行中，断言后放行正常收尾。
+    gate = threading.Event()
+
+    class _GatedProtocol(_StreamProtocol):
+        async def chat_stream(self, request, model_id):
+            # 超时兜底：断言失败提前退出时闸门不会 set，避免工作线程悬死
+            await asyncio.to_thread(gate.wait, 30)
+            async for event in super().chat_stream(request, model_id):
+                yield event
+
+    monkeypatch.setitem(PROTOCOLS, "openai_chat", _GatedProtocol)
+    # 进程级 _runtime_router 按配置指纹缓存协议客户端；换一个 Key 强制重建
+    client.put(
+        "/api/v1/llm/provider",
+        json={
+            "provider_type": "bailian",
+            "api_key": "sk-fork-running",
+            "default_model": "qwen3.7-max",
+        },
+    )
     started = client.post("/api/v1/sessions", json={"content": "仍在执行"})
     running_id = started.json()["data"]["session_id"]
     assert client.post(f"/api/v1/sessions/{running_id}/fork").status_code == 400
+    gate.set()
     with client.stream("GET", f"/api/v1/sessions/{running_id}/events") as response:
         response.read()
 
