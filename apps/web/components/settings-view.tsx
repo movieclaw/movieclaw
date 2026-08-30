@@ -80,7 +80,7 @@ export function SettingsSidebar({ active, onSelect, onBack }: SettingsSidebarPro
       fallbackAlpha={glass.fallbackAlpha}
     >
       {/* 顶部：返回按钮（玻璃胶囊，轮廓明确的「可点」入口） */}
-      <div className="px-3 pb-1 pt-3.5">
+      <div className="px-3 pb-3 pt-3.5">
         <button
           type="button"
           onClick={onBack}
@@ -89,11 +89,6 @@ export function SettingsSidebar({ active, onSelect, onBack }: SettingsSidebarPro
           <ArrowLeftIcon className="size-4" />
           <span>返回工作台</span>
         </button>
-      </div>
-
-      <div className="px-4 pb-4 pt-4">
-        <h2 className="text-sheen text-title-lg font-semibold tracking-tight">设置</h2>
-        <p className="mt-1 text-sub text-[var(--text-muted)]">管理账号与工作台偏好</p>
       </div>
 
       {/* 分区列表：标准 SaaS 设置菜单——紧凑单行（小图标内联 + 标签），
