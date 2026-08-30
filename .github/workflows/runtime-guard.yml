@@ -64,10 +64,14 @@ jobs:
             | grep -cE '^[+-].*apt-get install|^[+-]FROM ' || true)
           # 只存在于镜像里的文件是否变化：它们不随应用包发布，老镜像做应用内
           # 更新时拿不到新版本，任何改动都必须跟一次镜像发布
-          # cli/ 里排除纯测试与验收脚本：它们不进镜像，改了不影响运行时
+          # cli/ 里排除纯测试与验收脚本：它们不进镜像，改了不影响运行时。
+          # 也排除内嵌的基线 spec：镜像里那份由 spec-export 阶段现场导出后
+          # COPY 覆盖（Dockerfile 的 go-builder 阶段），仓库里这份的内容根本
+          # 进不了镜像——发版 bump 版本号后重导 spec 只改这一个文件时，
+          # 不构成运行时契约变化，不该要求 bump runtime-version
           image_only_changed=$(git diff --name-only "$BASE"...HEAD -- \
             docker/nginx.conf.template docker/entrypoint.sh cli \
-            | grep -vE '(_test\.go$|^cli/e2e/|^cli/testdata/|^cli/\.goreleaser\.yaml$)' \
+            | grep -vE '(_test\.go$|^cli/e2e/|^cli/testdata/|^cli/\.goreleaser\.yaml$|^cli/internal/spec/data/spec\.json$)' \
             | wc -l)
           rv_changed=$(git diff "$BASE"...HEAD -- docker/runtime-version \
             | grep -cE '^[+-][0-9]' || true)
