@@ -238,13 +238,6 @@ function OrderChips({
       .slice(0, 60);
   }, [extraOptions, inline, query]);
 
-  const summary = value
-    .map((id, i) => {
-      const name = inline.find((o) => o.id === id)?.name ?? id;
-      return i === 0 && primaryTag ? `${primaryTag} ${name}` : name;
-    })
-    .join(" → ");
-
   return (
     <div>
       <div className="flex flex-wrap gap-2">
@@ -267,13 +260,13 @@ function OrderChips({
               } ${disabled ? "pointer-events-none opacity-35" : ""}`}
             >
               <span
-                className={`flex size-4.5 items-center justify-center rounded-full text-micro font-bold tabular-nums ${
+                className={`flex size-4.5 items-center justify-center rounded-full text-micro font-bold ${
                   selected
                     ? "bg-[var(--accent)] text-[#12141c]"
                     : "bg-white/10 text-[var(--text-faint)]"
                 }`}
               >
-                {selected ? index + 1 : "+"}
+                {selected ? "✓" : "+"}
               </span>
               {option.name}
             </button>
@@ -327,11 +320,56 @@ function OrderChips({
           </div>
         </div>
       )}
-      <p className="mt-2 text-caption text-[var(--text-faint)]">
-        {value.length
-          ? `当前顺序：${summary}（点击已选项可移除，最多 ${max} 项）`
-          : "点击选择，按点击顺序排列优先级"}
-      </p>
+      {/* 已选序列条：候选区只管"加"，顺序与删除都在这里。
+          没有它的话，想把第 2 位提到第 1 位得"先移除再重加"——两步且不直观，
+          是这套芯片交互里唯一真正笨拙的地方。 */}
+      {value.length > 0 ? (
+        <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+          {value.map((id, i) => {
+            const name = inline.find((o) => o.id === id)?.name ?? id;
+            return (
+              <span
+                key={id}
+                className="flex items-center gap-1 rounded-full border border-[var(--accent-2)]/40 bg-[var(--accent-soft)] py-1 pl-2.5 pr-1 text-sub"
+              >
+                {i === 0 && primaryTag && (
+                  <span className="text-micro text-[var(--accent)]">{primaryTag}</span>
+                )}
+                <span className="text-[var(--text)]">{name}</span>
+                <button
+                  type="button"
+                  disabled={i === 0}
+                  aria-label={`把「${name}」上移一位`}
+                  onClick={() => {
+                    const next = [...value];
+                    [next[i - 1], next[i]] = [next[i], next[i - 1]];
+                    onChange(next);
+                  }}
+                  className="flex size-5 items-center justify-center rounded-full text-caption text-[var(--text-muted)] transition-colors hover:bg-white/10 hover:text-[var(--text)] disabled:pointer-events-none disabled:opacity-25"
+                >
+                  ↑
+                </button>
+                <button
+                  type="button"
+                  disabled={value.length <= 1}
+                  aria-label={`移除「${name}」`}
+                  onClick={() => onChange(value.filter((v) => v !== id))}
+                  className="flex size-5 items-center justify-center rounded-full text-caption text-[var(--text-muted)] transition-colors hover:bg-white/10 hover:text-[var(--text)] disabled:pointer-events-none disabled:opacity-25"
+                >
+                  ✕
+                </button>
+              </span>
+            );
+          })}
+          <span className="text-caption text-[var(--text-faint)]">
+            按此顺序回落（最多 {max} 项）
+          </span>
+        </div>
+      ) : (
+        <p className="mt-2 text-caption text-[var(--text-faint)]">
+          点击上方候选加入，加入后可在这里排序
+        </p>
+      )}
     </div>
   );
 }
@@ -433,8 +471,13 @@ export function Card({
     <>
       <p className="mb-4 mt-1 max-w-[62ch] text-sub text-[var(--text-muted)]">{desc}</p>
       {effectiveFollow && <CardFollowSwitch follow={effectiveFollow} />}
-      {/* 跟随全局时控件置灰只读：看得见全局值长什么样，但改不动 */}
-      <div className={effectiveFollow && !effectiveFollow.custom ? "pointer-events-none opacity-45" : ""}>
+      {/* 跟随全局时控件只读：看得见全局值长什么样，但改不动。
+          用 `inert` 而不是 `pointer-events-none`——后者只挡鼠标，键盘照样能
+          Tab 进去把值改掉（改动会静默写进库覆盖），那是功能缺陷不是观感问题。 */}
+      <div
+        inert={effectiveFollow ? !effectiveFollow.custom : undefined}
+        className={effectiveFollow && !effectiveFollow.custom ? "opacity-45" : ""}
+      >
         {children}
       </div>
     </>
@@ -442,7 +485,72 @@ export function Card({
 
   if (shell) {
     return (
-      <section className="overflow-hidden rounded-2xl border border-white/[0.08] bg-white/[0.04]">
+      <CollapsibleCard shell={shell} title={title} overriddenBy={overriddenBy}>
+        {body}
+      </CollapsibleCard>
+    );
+  }
+
+  return (
+    <section className="rounded-2xl border border-white/[0.08] bg-white/[0.04] p-5">
+      <div className="flex flex-wrap items-center gap-2.5">
+        <h3 className="text-title-sm font-semibold">{title}</h3>
+        {overriddenBy && overriddenBy.length > 0 && (
+          <span
+            title={`${overriddenBy.join("、")}不跟随此处的设置`}
+            className="rounded-full bg-[var(--accent-soft)] px-2 py-px text-micro text-[var(--accent)]"
+          >
+            {overriddenBy.length} 个库已覆盖
+          </span>
+        )}
+      </div>
+      {body}
+    </section>
+  );
+}
+
+/**
+ * 折叠卡片。两处细节值得说明：
+ *
+ * - **高度过渡用 grid `0fr → 1fr`**，不是 max-height 猜一个够大的值——猜小了
+ *   长卡片（命名模板带实时预览）会被截断，猜大了短卡片的动画速度不对；
+ * - 内容**常驻挂载**（动画需要），所以收起时必须 `inert`，否则键盘能 Tab
+ *   进看不见的表单里。
+ *
+ * 展开后把卡片滚进视口：手风琴的经典毛病是点开靠底部的卡片，内容展开在视口
+ * 下方看不见。等过渡结束再滚（`block: nearest` 只做最小移动，不抢镜）。
+ */
+function CollapsibleCard({
+  shell,
+  title,
+  overriddenBy,
+  children,
+}: {
+  shell: CardShell;
+  title: string;
+  overriddenBy?: string[];
+  children: React.ReactNode;
+}) {
+  const ref = useRef<HTMLElement | null>(null);
+  const wasOpen = useRef(shell.open);
+
+  useEffect(() => {
+    if (shell.open && !wasOpen.current) {
+      const timer = window.setTimeout(
+        () => ref.current?.scrollIntoView({ block: "nearest", behavior: "smooth" }),
+        220,
+      );
+      wasOpen.current = true;
+      return () => window.clearTimeout(timer);
+    }
+    wasOpen.current = shell.open;
+  }, [shell.open]);
+
+  return (
+    <section
+      ref={ref}
+      className="overflow-hidden rounded-2xl border border-white/[0.08] bg-white/[0.04]"
+    >
         <button
           type="button"
           aria-expanded={shell.open}
@@ -481,27 +589,17 @@ export function Card({
             }`}
           />
         </button>
-        {shell.open && <div className="border-t border-white/[0.06] px-4 pb-4">{body}</div>}
+        <div
+          className={`grid transition-[grid-template-rows] duration-200 ease-out ${
+            shell.open ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
+          }`}
+        >
+          <div className="overflow-hidden" inert={!shell.open}>
+            <div className="border-t border-white/[0.06] px-4 pb-4">{children}</div>
+          </div>
+        </div>
       </section>
     );
-  }
-
-  return (
-    <section className="rounded-2xl border border-white/[0.08] bg-white/[0.04] p-5">
-      <div className="flex flex-wrap items-center gap-2.5">
-        <h3 className="text-title-sm font-semibold">{title}</h3>
-        {overriddenBy && overriddenBy.length > 0 && (
-          <span
-            title={`${overriddenBy.join("、")}不跟随此处的设置`}
-            className="rounded-full bg-[var(--accent-soft)] px-2 py-px text-micro text-[var(--accent)]"
-          >
-            {overriddenBy.length} 个库已覆盖
-          </span>
-        )}
-      </div>
-      {body}
-    </section>
-  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -1137,28 +1235,32 @@ export function ImagesTab({
           <div>
             <span className="text-ui font-medium">最低分辨率门槛</span>
             <span className="mt-0.5 block text-caption text-[var(--text-faint)]">
-              低于门槛的候选图不选（0 = 不限制）；候选全部不达标时自动放宽
+              低于门槛的候选图不选；候选全部不达标时自动放宽
             </span>
           </div>
           <div className="flex items-center gap-2.5 text-sub text-[var(--text-muted)]">
-            海报 ≥
-            <input
-              type="number"
-              min={0}
-              step={100}
-              className={`${INPUT_CLASS} w-24 tabular-nums`}
-              value={setting.poster_min_width}
-              onChange={(e) => patch({ poster_min_width: Number(e.target.value) || 0 })}
-            />
-            背景 ≥
-            <input
-              type="number"
-              min={0}
-              step={100}
-              className={`${INPUT_CLASS} w-24 tabular-nums`}
-              value={setting.backdrop_min_width}
-              onChange={(e) => patch({ backdrop_min_width: Number(e.target.value) || 0 })}
-            />
+            {(
+              [
+                ["poster_min_width", "海报"],
+                ["backdrop_min_width", "背景"],
+              ] as const
+            ).map(([key, label]) => (
+              <span key={key} className="flex items-center gap-1.5">
+                {label} ≥
+                <input
+                  type="number"
+                  min={0}
+                  step={100}
+                  className={`${INPUT_CLASS} w-24 tabular-nums`}
+                  value={setting[key]}
+                  onChange={(e) => patch({ [key]: Number(e.target.value) || 0 })}
+                />
+                {/* 0 在输入框里看不出是"不限制"还是"没填"，补一句 */}
+                {setting[key] === 0 && (
+                  <span className="text-caption text-[var(--text-faint)]">不限制</span>
+                )}
+              </span>
+            ))}
           </div>
         </div>
         <div className="flex flex-wrap items-center justify-between gap-3 pt-3">

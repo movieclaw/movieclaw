@@ -177,14 +177,27 @@ export function LibraryScrapeSettings({
 
   return (
     <div className="space-y-4">
-      <p className="text-sub leading-relaxed text-[var(--text-muted)]">
-        本库单独的刮削口味，未显式修改的项跟随「设置 → 刮削与整理」。
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="min-w-0 flex-1 text-sub leading-relaxed text-[var(--text-muted)]">
+          本库单独的刮削口味，未显式修改的项跟随「设置 → 刮削与整理」。
+          {overrideCount > 0 && (
+            <span className="ml-1.5 whitespace-nowrap rounded-full bg-[var(--accent-soft)] px-2 py-px text-micro text-[var(--accent)]">
+              已覆盖 {overrideCount} 项
+            </span>
+          )}
+        </p>
+        {/* 一键回到全跟随：没有它，用户想撤掉本库的全部个性化得逐张卡切
+            「跟随全局」+ 逐个模板清空，覆盖越多越难收场 */}
         {overrideCount > 0 && (
-          <span className="ml-1.5 whitespace-nowrap rounded-full bg-[var(--accent-soft)] px-2 py-px text-micro text-[var(--accent)]">
-            已覆盖 {overrideCount} 项
-          </span>
+          <button
+            type="button"
+            onClick={() => onChange({})}
+            className="shrink-0 rounded-full border border-white/[0.12] px-3 py-1 text-caption text-[var(--text-muted)] transition-colors hover:bg-white/[0.06] hover:text-[var(--text)]"
+          >
+            全部恢复跟随
+          </button>
         )}
-      </p>
+      </div>
 
       <ScrapeSection label="元数据">
         <MetaTab
