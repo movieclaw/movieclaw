@@ -172,10 +172,26 @@ def test_create_rejects_guessed_or_legacy_identity_fields(client: TestClient) ->
     assert legacy_shape.status_code == 422
 
 
+def test_create_tv_rejects_empty_selection_without_follow_future(client: TestClient) -> None:
+    """API 路径也守住空订阅不变量（此前只有 Web 弹层的提交按钮拦得住）。"""
+    empty = client.post(
+        "/api/v1/subscriptions",
+        json={"title_ref": "tmdb:tv:200"},
+    )
+    assert empty.status_code == 400, empty.text
+    assert "selected_seasons" in empty.json()["message"]
+
+    follow_only = client.post(
+        "/api/v1/subscriptions",
+        json={"title_ref": "tmdb:tv:200", "follow_future": True},
+    )
+    assert follow_only.status_code == 200, follow_only.text  # 「只追新」仍是合法组合
+
+
 def test_set_follow_future_uses_dedicated_tv_endpoint(client: TestClient) -> None:
     created = client.post(
         "/api/v1/subscriptions",
-        json={"title_ref": "tmdb:tv:200", "selected_seasons": []},
+        json={"title_ref": "tmdb:tv:200", "selected_seasons": [1]},
     )
     assert created.status_code == 200, created.text
     subscription_id = created.json()["data"]["subscription"]["id"]

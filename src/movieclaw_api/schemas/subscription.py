@@ -231,7 +231,12 @@ class SubscriptionCreatePayload(BaseModel):
         ),
     )
     selected_seasons: list[int] = Field(
-        default_factory=list, description="剧集要订阅的季号数组，如 [1,2]；空=全部缺失季"
+        default_factory=list,
+        description=(
+            "剧集要订阅的季号数组，如 [1,2]；电影必须留空。"
+            "剧集必填，除非打开 follow_future 只追以后的新集——"
+            "两者都为空会被拒绝（那样的订阅一集都不会下）"
+        ),
     )
     follow_future: bool = Field(default=False, description="自动续订：未来新集与新季自动纳入订阅")
     rule_set_id: int | None = Field(default=None, description="缺省用默认规则组")

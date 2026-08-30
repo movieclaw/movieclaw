@@ -304,6 +304,16 @@ async def test_create_is_idempotent_per_media_item(db) -> None:
     assert len(wanted) == 2  # 仍是 S1 两集
 
 
+async def test_tv_rejects_empty_selection_without_follow_future(db) -> None:
+    """不勾季又不追新 → E 恒空：直接拒绝，而不是造一条 0 工单的「已完成」空订阅。
+
+    「只追新」（不勾季 + 追新）仍然合法，见 test_follow_future_only_excludes_aired。
+    """
+    async with db.session() as session:
+        with pytest.raises(BadRequestException):
+            await _service(session).create(MediaKind.TV, 200, selected_seasons=[])
+
+
 async def test_movie_rejects_season_selection(db) -> None:
     async with db.session() as session:
         with pytest.raises(BadRequestException):

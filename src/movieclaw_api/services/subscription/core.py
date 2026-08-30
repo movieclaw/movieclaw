@@ -375,6 +375,17 @@ class SubscriptionService:
         assert item.id is not None
 
         selected = self._validate_selection(kind, selected_seasons or [], seasons)
+        # 空订阅守卫：剧集不勾季又不追新时 E 恒为空，创建出来的订阅一个工单都没有，
+        # 状态重算会立刻把它判成 completed——用户看到一条绿色的「已完成」，其实
+        # 什么都没搜、没下、没入库。这条不变量原先只由 Web 弹层的提交按钮守着
+        # （apps/web/components/subscribe-dialog.tsx 的 canSubmit），API / CLI /
+        # 内置 AI 助手可以绕过。校验放在这里而不是 _validate_selection 里：后者被
+        # update() 复用，而 update(selected_seasons=[]) 是合法的「取消全部季」操作。
+        if kind is MediaKind.TV and not selected and not follow_future:
+            raise BadRequestException(
+                "剧集订阅至少要勾选一季（selected_seasons）；"
+                "只想追以后的新集请打开自动续订（follow_future）"
+            )
         if kind is MediaKind.MOVIE:
             follow_future = False  # 电影没有"生长"，开关无意义，落库前归一
 
