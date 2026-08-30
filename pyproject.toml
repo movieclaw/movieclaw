@@ -81,6 +81,9 @@ dependencies = [
 dev = [
   "pytest>=8.4.0,<9.0.0",
   "pytest-asyncio>=1.1.0,<2.0.0",
+  # CI 并行跑测试（-n auto --dist loadfile）：2900+ 用例串行要 9 分多钟，
+  # 4 核并行压到 1/3 左右。dev 工具依赖，不进运行时，无需 bump runtime-version
+  "pytest-xdist>=3.6.0,<4.0.0",
   # 锁小版本段：ruff 新版会带新规则，放宽上限会让 CI 门禁凭空变红
   "ruff>=0.16.0,<0.17.0",
 ]

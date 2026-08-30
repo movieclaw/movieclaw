@@ -29,16 +29,21 @@ def mclaw_binary() -> str:
     if shutil.which("go") is None:
         pytest.skip("找不到 go 工具链，跳过需要真实 mclaw 二进制的用例")
 
-    # 编到固定位置并复用：每个测试会话只编一次
+    # 编到固定位置并复用：每个测试会话只编一次。
+    # pytest-xdist 并行时多个 worker 会同时走到这里，直接 -o 到固定路径会
+    # 互相覆盖写、可能执行到半成品二进制——先编到各自的临时文件，再原子
+    # rename 到固定位置（POSIX 同目录 rename 原子，先到先得，结果等价）。
     target = _REPO_ROOT / "cli" / ".build" / "mclaw"
     target.parent.mkdir(parents=True, exist_ok=True)
+    scratch = target.with_name(f"mclaw.build-{os.getpid()}")
     result = subprocess.run(
-        ["go", "build", "-o", str(target), "./cmd/mclaw"],
+        ["go", "build", "-o", str(scratch), "./cmd/mclaw"],
         cwd=_REPO_ROOT / "cli",
         capture_output=True,
         text=True,
     )
     if result.returncode != 0:
         pytest.skip(f"mclaw 构建失败，跳过：{result.stderr.strip()[:300]}")
+    os.replace(scratch, target)
     os.environ["MOVIECLAW_CLI_BIN"] = str(target)
     return str(target)

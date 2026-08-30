@@ -62,8 +62,12 @@ jobs:
       - name: ruff
         run: ruff check .
 
+      # -n auto 按 runner 核数并行（ubuntu-latest 4 核，串行 9 分半 → 3 分内）。
+      # --dist loadfile 让同一文件的用例固定在同一 worker 串行执行：
+      # tests/docker/test_entrypoint_supervision.py 会绑定固定端口（8000/3001），
+      # 跨 worker 并发跑同文件用例会端口冲突，loadfile 从分发层面杜绝。
       - name: pytest
-        run: python -m pytest -q -m "not integration"
+        run: python -m pytest -q -m "not integration" -n auto --dist loadfile
 
   cli-go:
     runs-on: ubuntu-latest
