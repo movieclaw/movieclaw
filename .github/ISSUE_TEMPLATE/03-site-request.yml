@@ -1,0 +1,71 @@
+# =============================================================================
+# 新站点接入请求表单
+#
+# 站点接入是本项目高频且高度模式化的请求（声明式 YAML，见
+# src/movieclaw_tracker/sites/configs/_template.yaml），单独建表单把字段
+# 结构化：framework / auth 两个 dropdown 直接对应站点配置里的同名字段，
+# 后续自动化可以据此预生成配置草稿。
+# 「协助测试」确认项是关键：PT 站私有，没有账号根本无法开发调试——
+# 这一点必须在提交时讲清楚，避免请求挂着没人能推进。
+# =============================================================================
+name: "🌐 新站点接入请求"
+description: 希望 MovieClaw 支持一个新的资源站点
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        站点接入是声明式 YAML 配置（模板见 `src/movieclaw_tracker/sites/configs/_template.yaml`）。
+        动手能力强的话，你也可以自行适配后放进 `data/site-configs/` 立即使用，
+        并欢迎提交 PR 共享给大家。
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已确认该站点不在「设置 → 资源站点」的内置列表中，也没有相同的 issue
+          required: true
+  - type: input
+    id: site-name
+    attributes:
+      label: 站点名称
+    validations:
+      required: true
+  - type: input
+    id: site-url
+    attributes:
+      label: 站点地址
+      placeholder: "https://example.com"
+    validations:
+      required: true
+  - type: dropdown
+    id: framework
+    attributes:
+      label: 站点程序类型
+      description: 站点页面底部通常有标注；不清楚就选最后一项。
+      options:
+        - NexusPHP
+        - 提供官方 API
+        - 其他 / 不清楚
+    validations:
+      required: true
+  - type: dropdown
+    id: auth
+    attributes:
+      label: 站点支持的登录方式（可多选）
+      multiple: true
+      options:
+        - Cookie
+        - 账号密码
+        - API Key
+        - 不清楚
+    validations:
+      required: true
+  - type: checkboxes
+    id: help
+    attributes:
+      label: 协助测试
+      description: 私有站点没有账号无法开发调试，接入进度很大程度取决于是否有人配合验证。
+      options:
+        - label: 我有该站点账号，愿意在开发过程中协助测试并反馈结果
+          required: false

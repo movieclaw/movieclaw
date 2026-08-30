@@ -1,0 +1,104 @@
+# =============================================================================
+# Bug 报告表单（GitHub issue forms）
+#
+# 设计依据（不是拍脑袋定的，改字段前请先看这段）：
+#   - 采用 YAML issue forms 而非 Markdown 模板：官方对「需要结构化信息」的场景
+#     明确指向 forms，提交后按字段生成结构化正文，机器人/AI 分诊才拿得到可靠字段。
+#   - 字段集参照 Radarr / Jellyfin / Home Assistant / qBittorrent 四家自托管项目
+#     bug 表单的公约数：防重复 checkbox 全必填、描述必填、版本与部署方式用独立
+#     input/dropdown（Home Assistant 的 bot 正是靠这类带 id 的字段自动打标签）、
+#     日志用 render 代码块、其余从宽。
+#   - 必填项克制（社区公认反模式是必填过多劝退报告者、逼出满屏 n/a）：
+#     只保留没有就无法分诊的四项——描述、版本、部署方式、日志。
+#     复现步骤参照 Radarr 设为可选：偶发 bug 本来就写不出稳定步骤。
+#   - 各字段的 id（version / deploy / area / logs）是给自动分诊工作流解析用的，
+#     改 id 会破坏机器解析，慎动。
+# =============================================================================
+name: "🐛 Bug 报告"
+description: 功能不符合预期、报错、数据不对等问题
+labels: ["bug"]
+body:
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已搜索过现有 issue（包括已关闭的），没有找到相同问题
+          required: true
+        - label: 我已查看 README 的「常见问题」章节，不属于其中已解答的情况
+          required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述
+      description: 实际发生了什么？你期望的正确行为是什么？
+      placeholder: |
+        实际发生：……
+        期望行为：……
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      description: 能稳定复现最好；偶发问题就写清出现时正在做什么。
+      placeholder: |
+        1. 打开「设置 → ……」
+        2. 点击……
+        3. 出现……
+    validations:
+      required: false
+  - type: input
+    id: version
+    attributes:
+      label: MovieClaw 版本
+      description: 在「设置 → 应用 → 版本与更新」页面查看。
+      placeholder: "例：0.3.2"
+    validations:
+      required: true
+  - type: dropdown
+    id: deploy
+    attributes:
+      label: 部署方式
+      options:
+        - Docker Compose
+        - docker run 命令
+        - NAS 图形界面（群晖 Container Manager 等）
+        - 源码部署
+        - 其他
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: 问题涉及的功能
+      description: 不确定就选最后一项。
+      options:
+        - 媒体库 / 扫描 / 刮削识别
+        - 订阅 / 搜索 / 下载
+        - 站点接入
+        - 网页播放器 / 转码
+        - 第三方播放器连接（Infuse、VidHub 等）
+        - 应用内更新 / 回退
+        - AI 助手
+        - 界面与设置
+        - 其他 / 不确定
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 相关日志
+      description: |
+        Docker 部署执行 `docker logs movieclaw`（或查看 `data/logs/` 目录），截取出错前后的片段粘贴到这里；纯界面显示问题可改为粘贴页面上错误提示的原文。
+        **粘贴前请删掉 Cookie、API Key、Passkey 等敏感信息。** 没有日志的 bug 通常无法定位，会被要求补充后再处理。
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: 补充信息（可选）
+      description: 截图、NAS 型号与系统、浏览器/播放器版本、网络环境（反向代理、科学上网）等；文件可直接拖进此输入框上传。
+    validations:
+      required: false

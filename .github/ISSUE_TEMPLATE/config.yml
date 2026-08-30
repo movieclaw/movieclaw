@@ -1,0 +1,15 @@
+# =============================================================================
+# issue 模板选择器配置
+#
+# blank_issues_enabled: false 是参照的四个自托管项目（Radarr / Jellyfin /
+# Home Assistant / qBittorrent）的一致做法：不禁空白 issue，结构化模板就会被
+# 绕过，自动分诊拿不到字段。维护者（有写权限）仍能看到空白入口，不受影响。
+#
+# contact_links 目前只有 README 一条：仓库未启用 Discussions，没有更多引流
+# 目标。启用后应在此补充「提问 → Discussions」链接并移除 04-question.yml 表单。
+# =============================================================================
+blank_issues_enabled: false
+contact_links:
+  - name: 📖 先查一下 README
+    url: https://github.com/movieclaw/movieclaw/blob/main/README.md#常见问题
+    about: 端口冲突、路径挂载、忘记密码、TMDB 连不上等高频问题在「常见问题」章节已有现成答案。

@@ -1,0 +1,35 @@
+# =============================================================================
+# 使用疑问表单
+#
+# 参照的四个项目（Radarr / Jellyfin / HA / qBittorrent）都把提问引流出 issue 区
+# （Discussions / Discord / 论坛）。本仓库尚未启用 Discussions，没有引流目标，
+# 而 blank_issues_enabled: false 之后提问必须有个去处，否则会涌进 bug 表单
+# 污染分诊——所以先用这个轻量表单接住，并打上 question 标签方便过滤。
+# 将来若启用 Discussions，应删除本表单，改在 config.yml 用 contact_links 引流
+# （Home Assistant 模式）。
+# =============================================================================
+name: "❓ 使用疑问"
+description: 部署、配置、使用方法方面的问题
+labels: ["question"]
+body:
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已查看 README 的「5 分钟跑起来」与「常见问题」章节，没有找到答案
+          required: true
+  - type: textarea
+    id: question
+    attributes:
+      label: 你的问题
+      description: 说清你想达到的效果、已经尝试过的操作、卡在了哪一步。
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: MovieClaw 版本与部署方式（可选）
+      placeholder: "例：0.3.2，群晖 Container Manager 部署"
+    validations:
+      required: false
