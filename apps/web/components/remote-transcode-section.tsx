@@ -3,7 +3,13 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { CheckIcon } from "@/components/icons";
-import { type DeviceRequestView, listDeviceRequests } from "@/lib/api/devices";
+import {
+  type DeviceRequestView,
+  type DeviceTokenView,
+  listDeviceRequests,
+  listDevices,
+} from "@/lib/api/devices";
+import { relativeTime } from "@/lib/devices-display";
 import {
   type RemoteTranscodeConfigView,
   type RemoteTranscodeStatus,
@@ -62,6 +68,11 @@ export function RemoteTranscodeSection({
   // 而他多半落在这一页（他是来配远程转码的）——不在这里提示，他看到的就是
   // 「还没有 Worker 连上来」，完全不知道有个请求正等他批。
   const [pendingWorkers, setPendingWorkers] = useState<DeviceRequestView[]>([]);
+  // 已授权的 Worker。运行时注册表在断线时会把 Worker 整个摘掉
+  // （remote_worker.py 的 unregister），所以只看 status.workers 的话，Mac
+  // 一关机这台设备就从页面上凭空消失，用户会以为自己从来没配过、跟着引导
+  // 又配一遍。授权是持久的，这份清单补上「配过但现在没连着」的那些。
+  const [authorizedWorkers, setAuthorizedWorkers] = useState<DeviceTokenView[]>([]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -94,10 +105,15 @@ export function RemoteTranscodeSection({
         if (alive) setStatus(null);
       }
       try {
-        const requests = await listDeviceRequests();
-        if (alive) setPendingWorkers(requests.filter((r) => r.client_type === "worker"));
+        const [requests, devices] = await Promise.all([listDeviceRequests(), listDevices()]);
+        if (!alive) return;
+        setPendingWorkers(requests.filter((r) => r.client_type === "worker"));
+        setAuthorizedWorkers(devices.filter((d) => d.client_type === "worker"));
       } catch {
-        if (alive) setPendingWorkers([]);
+        if (alive) {
+          setPendingWorkers([]);
+          setAuthorizedWorkers([]);
+        }
       }
     }
     void poll();
@@ -149,6 +165,13 @@ export function RemoteTranscodeSection({
   }
 
   const onlineWorkers = status?.workers.filter((w) => w.online) ?? [];
+  // 已授权但此刻没连上的：按名字和运行时列表对齐。名字两边都取 Mac 设置里的
+  // 「Worker 名称」（配对时提交的 client_name 就是它），正常情况对得上；
+  // 用户配对后又改了名字才会多出一条，那种情况显示两行也不算错——确实有一份
+  // 旧授权还挂着，去设备页吊销即可。
+  const liveNames = new Set((status?.workers ?? []).map((w) => w.worker_id));
+  const offlineWorkers = authorizedWorkers.filter((d) => !liveNames.has(d.name));
+  const hasAnyWorker = (status?.workers.length ?? 0) > 0 || offlineWorkers.length > 0;
   // 配置填全了 ≠ Worker 连上了。这两件事分开说，用户才知道下一步该干什么：
   // 前者不满足要继续填表单，后者不满足要去 Mac 上看 App。
   const statusText = !config.enabled
@@ -245,7 +268,20 @@ export function RemoteTranscodeSection({
             </div>
           )}
 
-          {status != null && status.workers.length > 0 ? (
+          {/* Worker 的 WebSocket 被 remote_worker_enabled（开关打开 AND 地址
+              合法）挡着。做成横幅而不是替换整块内容：已授权的设备该照常列出来，
+              用户需要同时看到「我配过哪几台」和「现在为什么连不上」。 */}
+          {!config.ready && (
+            <div className="rounded-xl border border-amber-300/25 bg-amber-300/[0.07] px-4 py-3 text-sub leading-relaxed text-amber-100">
+              {!config.enabled
+                ? "远程转码还没开启，Worker 现在连不上来。打开上面的开关并保存即可。"
+                : "远程转码地址还没配好，Worker 现在连不上来。按下方提示补齐地址并保存即可。"}
+            </div>
+          )}
+
+          {status == null ? (
+            <p className="text-caption text-[var(--text-faint)]">正在获取 Worker 状态…</p>
+          ) : hasAnyWorker ? (
             <>
               <ul className="space-y-2">
                 {status.workers.map((worker) => (
@@ -283,6 +319,26 @@ export function RemoteTranscodeSection({
                     </p>
                   </li>
                 ))}
+                {/* 已授权但没连上来的。它们在运行时注册表里不存在，但授权还在，
+                    用户也确实配过——不显示的话，Mac 一关机这台就凭空消失，
+                    引导还会催他重新配对一遍。 */}
+                {offlineWorkers.map((device) => (
+                  <li
+                    key={device.id}
+                    className="rounded-xl border border-white/[0.06] bg-black/15 px-3 py-2"
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-sub font-medium text-[var(--text-muted)]">
+                        {device.name}
+                      </span>
+                      <span className="text-caption text-[var(--text-faint)]">未连接</span>
+                    </div>
+                    <p className="mt-1 text-caption leading-5 text-[var(--text-faint)]">
+                      已授权 · 最近活跃 {relativeTime(device.last_used_at)}
+                      {config.ready ? " · Mac 没开机或没联网时属正常" : ""}
+                    </p>
+                  </li>
+                ))}
               </ul>
               {/* 这一页只回答「现在连着吗、在干什么」；「授权还在不在、要不要
                   吊销」是设备页的事，两页各管一段，互相指路。 */}
@@ -296,25 +352,7 @@ export function RemoteTranscodeSection({
                 </button>
               )}
             </>
-          ) : status == null ? (
-            <p className="text-caption text-[var(--text-faint)]">正在获取 Worker 状态…</p>
-          ) : !config.ready ? (
-            /* Worker 的 WebSocket 被 remote_worker_enabled（开关 + 地址合法）
-               挡着，此时给配对引导是误导——用户照着做完三步，照样连不上。
-               先说清真正拦路的是哪一项。 */
-            <div className="space-y-2 text-caption leading-5 text-[var(--text-faint)]">
-              <p className="text-sub text-[var(--text-muted)]">
-                {!config.enabled
-                  ? "远程转码还没开启，Worker 现在连不上来。"
-                  : "远程转码地址还没配好，Worker 现在连不上来。"}
-              </p>
-              <p>
-                {!config.enabled
-                  ? "打开上面的开关并保存，再去 Mac 上配对。"
-                  : "先按上面的提示把地址补齐并保存，再去 Mac 上配对。"}
-              </p>
-            </div>
-          ) : (
+          ) : config.ready ? (
             <div className="space-y-2 text-caption leading-5 text-[var(--text-faint)]">
               <p className="text-sub text-[var(--text-muted)]">还没有 Worker 接入。在 Mac 上：</p>
               <ol className="space-y-1 pl-4">
@@ -342,7 +380,7 @@ export function RemoteTranscodeSection({
                 Mac，不经过屏幕。
               </p>
             </div>
-          )}
+          ) : null}
         </div>
       </section>
 
