@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { LiquidGlassButton } from "@/vendor/liquid-glass";
 
+import { ExternalAccessSection } from "@/components/external-access-section";
 import { CheckIcon, ChevronRightIcon, InfoIcon } from "@/components/icons";
 import { Tooltip } from "@/components/tooltip";
 import { useBackdrop } from "@/lib/backdrop";
@@ -18,7 +19,7 @@ import {
 } from "@/lib/api/network";
 
 /**
- * 网络与代理设置（设置 → 网络与代理）。
+ * 网络设置（设置 → 网络）。
  *
  * 交互模型：**自动保存，立即生效**。开关/模式点击即落库；地址输入框失焦落库；
  * 没有「保存」按钮，也就不存在「先保存才能测试」的中间态——「测试」随时可点，
@@ -27,7 +28,9 @@ import {
  * 分组（macOS 设置式字段组）：
  *   代理 —— 方式三选一 + （手动）地址 /（环境变量）探测结果
  *   走代理的服务 —— 内置服务开关 + 每行连通性测试；PT 站点单独一张卡
- *   镜像 / 反代地址 —— 高级项，默认折叠
+ *   外部访问 —— 外部访问地址 / 对外端口（原「应用」分区迁来，
+ *     见 external-access-section.tsx）
+ *   镜像 / 反代地址 —— 高级项，默认折叠，沉底
  */
 
 type TestState = { state: "pending" } | { state: "done"; result: NetworkTestResult };
@@ -340,6 +343,9 @@ export function NetworkConfigSection() {
           </div>
         </section>
       )}
+
+      {/* —— 外部访问：外部访问地址 / 对外端口（独立组件，走应用配置接口）—— */}
+      <ExternalAccessSection />
 
       {/* —— 高级：TMDB 镜像地址（默认折叠）—— */}
       <section>

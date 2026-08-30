@@ -2174,7 +2174,7 @@ function downloadTaskNote(
   }
   if (task.rescue_message) return task.rescue_message;
   if (task.state === "missing") return "已投递记录仍在，但下载器中找不到对应任务";
-  if (task.state === "completed") return "下载已完成，等待监听导入或媒体库扫描收尾";
+  if (task.state === "completed") return "下载已完成，等待自动入库或媒体库扫描收尾";
   if (task.state === "error") return "下载器报告任务异常";
   if (task.state === "paused") return "已在下载器中暂停";
   if (task.state === "queued") return "下载器正在排队，暂停无进度计时";

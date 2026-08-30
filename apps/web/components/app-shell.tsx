@@ -26,8 +26,9 @@ import { SearchPrefsProvider } from "@/lib/search-prefs";
 import { buildSearchPath } from "@/lib/search-url";
 import { UiPrefsProvider } from "@/lib/ui-prefs";
 import { useIsMobile } from "@/lib/use-media-query";
-import { settingsSections } from "@/lib/mock-data";
+import { settingsSectionGroupsFor, settingsSections } from "@/lib/mock-data";
 import { usePermissions } from "@/lib/permissions";
+import { useSession } from "@/lib/session";
 
 /**
  * 应用外壳：全站骨架布局（左栏 + 右区），所有导航态由 URL 驱动。
@@ -169,7 +170,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   );
 
   /** 从用户菜单进入设置：记下当前工作台地址（含查询串），返回时原样回跳 */
-  const openSettings = (sectionId: string = settingsSections[0].id) => {
+  // 设置入口的默认分区按角色取可见清单的第一项：管理员落「概览」，
+  // 成员的清单里没有概览，落「个人信息」——避免把成员送进一个 403 分区
+  const { session } = useSession();
+  const defaultSettingsSection =
+    settingsSectionGroupsFor(session.role)[0]?.items[0]?.id ?? settingsSections[0].id;
+  const openSettings = (sectionId: string = defaultSettingsSection) => {
     try {
       sessionStorage.setItem(
         SETTINGS_RETURN_KEY,

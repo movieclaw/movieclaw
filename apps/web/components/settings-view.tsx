@@ -6,7 +6,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { LiquidGlassButton } from "@/vendor/liquid-glass";
 
-import { AppConfigSection } from "@/components/app-config-section";
+import { AppMaintenanceSection } from "@/components/app-maintenance-section";
 import { AppUpdateDot, usePendingUpdate } from "@/components/app-update-entry";
 import { AppUpdateSection } from "@/components/app-update-section";
 import { AvatarBadge } from "@/components/avatar-badge";
@@ -14,6 +14,7 @@ import { DevicesSection } from "@/components/devices-section";
 import { DownloaderConfigSection } from "@/components/downloader-config-section";
 import { useConfirm } from "@/components/feedback";
 import { ImportWatchSection } from "@/components/import-watch-section";
+import { SettingsOverviewSection } from "@/components/settings-overview-section";
 import { MembersSection } from "@/components/members-section";
 import { LlmConfigSection } from "@/components/llm-config-section";
 import { ImPushSection } from "@/components/im-push-section";
@@ -63,8 +64,8 @@ export function SettingsSidebar({ active, onSelect, onBack }: SettingsSidebarPro
   // 这块面板就是实时预览的对象。
   const { prefs } = useUiPrefs();
   const glass = sidebarGlass(prefs.sidebar);
-  // 有可用更新时给「应用」分区行点一颗小蓝点：从别的入口进了设置，也能
-  // 一眼看出更新在哪一栏（与侧栏更新入口同一份快照数据）
+  // 有可用更新时给「更新与维护」分区行点一颗小蓝点：从别的入口进了设置，
+  // 也能一眼看出更新在哪一栏（与侧栏更新入口同一份快照数据）
   const pendingUpdate = usePendingUpdate(session.role !== "member");
   return (
     <GlassPanel
@@ -98,8 +99,9 @@ export function SettingsSidebar({ active, onSelect, onBack }: SettingsSidebarPro
           描述只在右侧面板头部展示，选中态仍用亮胶囊表达 */}
       <nav className="scroll-thin flex-1 space-y-4 overflow-y-auto px-3 pb-4">
         {sectionGroups.map((group) => (
-          <div key={group.label}>
-            <h3 className="group-label mb-1.5 px-2">{group.label}</h3>
+          // 概览组不设标题（label 为空串），空标题不渲染小节头；key 落到首个分区 id
+          <div key={group.label || group.items[0]?.id}>
+            {group.label && <h3 className="group-label mb-1.5 px-2">{group.label}</h3>}
             <div className="space-y-0.5">
               {group.items.map((section) => {
                 const Icon = section.icon;
@@ -186,7 +188,9 @@ export function SettingsPanel({ active }: SettingsPanelProps) {
         {/* 发丝分隔线：左亮右隐的渐变，呼应玻璃边缘的受光 */}
         <div className="mb-8 mt-7 h-px bg-gradient-to-r from-white/[0.14] via-white/[0.06] to-transparent" />
 
-        {section.id === "profile" ? (
+        {section.id === "overview" ? (
+          <SettingsOverviewSection />
+        ) : section.id === "profile" ? (
           <ProfileSection />
         ) : section.id === "appearance" ? (
           <AppearanceSection />
@@ -200,6 +204,8 @@ export function SettingsPanel({ active }: SettingsPanelProps) {
           <ImportWatchSection />
         ) : section.id === "scrape" ? (
           <ScrapeSettingsSection />
+        ) : section.id === "playback" ? (
+          <PlaybackSection />
         ) : section.id === "llm" ? (
           <LlmConfigSection />
         ) : section.id === "im-push" ? (
@@ -494,27 +500,27 @@ function ChangePasswordCard() {
 }
 
 /**
- * —— 应用分区：两类设置，胶囊标签切换（与外观分区同一交互语言） ——
+ * —— 更新与维护分区：两类设置，胶囊标签切换（与外观分区同一交互语言） ——
  *
  *   - 版本与更新：当前版本、检查/执行更新、NER 模型、回退（AppUpdateSection）；
- *   - 网络与维护：外部访问地址、重启应用（AppConfigSection）；
- *   - 远程转码：远程 Worker 的开关与在线状态（RemoteTranscodeSection）。
- *     令牌不在这里——Worker 的凭证是逐台配对签发的，审批与吊销在「设备」分区。
+ *   - 维护：重启应用（AppMaintenanceSection）。
+ *
+ * 设置页按功能重组前这里叫「应用」，还塞着外部访问地址与远程转码——前者迁去
+ * 「网络」分区（网络配置只留一个家），后者升级为「媒体库」组的「播放」分区。
  *
  * 为什么「版本与更新」是默认标签：这一页的高频入口是侧栏的更新徽标（有新版
- * 才出现），用户带着"来更新"的意图落地，第一屏就该是更新卡片；外部访问地址
- * 与重启是装完起初配一次/出问题才碰的低频项，收进第二个标签，不再和更新流程
- * 挤在一条长页里。有可用更新时标签上点一颗小蓝点，与设置侧栏的「应用」行同款。
+ * 才出现），用户带着"来更新"的意图落地，第一屏就该是更新卡片；重启是出问题
+ * 才碰的低频项，收进第二个标签。有可用更新时标签上点一颗小蓝点，与设置侧栏
+ * 的「更新与维护」行同款。
  */
 function AppSection() {
-  const router = useRouter();
-  const [tab, setTab] = useState<"update" | "maintain" | "remote">("update");
-  // 支持 /settings/app?tab=remote 深链接：软转同意弹窗要把管理员直接送到
-  // 「远程转码」，落在默认的「版本与更新」等于让引导断在最后一步。
+  const [tab, setTab] = useState<"update" | "maintain">("update");
+  // 支持 /settings/app?tab=maintain 深链接直达维护标签。
   // 用 useEffect 而不是初始值读取，避免服务端渲染与客户端首帧不一致。
+  // （旧的 ?tab=remote 深链在路由层重定向到 /settings/playback，到不了这里。）
   useEffect(() => {
     const requested = new URLSearchParams(window.location.search).get("tab");
-    if (requested === "remote" || requested === "maintain" || requested === "update") {
+    if (requested === "maintain" || requested === "update") {
       setTab(requested);
     }
   }, []);
@@ -522,8 +528,7 @@ function AppSection() {
   const pendingUpdate = usePendingUpdate();
   const tabs = [
     { id: "update" as const, label: "版本与更新" },
-    { id: "maintain" as const, label: "网络与维护" },
-    { id: "remote" as const, label: "远程转码" },
+    { id: "maintain" as const, label: "维护" },
   ] as const;
 
   return (
@@ -546,16 +551,25 @@ function AppSection() {
           </button>
         ))}
       </div>
-      {tab === "update" ? (
-        <AppUpdateSection />
-      ) : tab === "maintain" ? (
-        <AppConfigSection />
-      ) : (
-        <RemoteTranscodeSection
-          onOpenDevices={() => router.push("/settings/devices" as Route)}
-        />
-      )}
+      {tab === "update" ? <AppUpdateSection /> : <AppMaintenanceSection />}
     </div>
+  );
+}
+
+/**
+ * —— 播放分区（媒体库组）——
+ *
+ * 目前唯一的住户是远程转码（原「应用 → 远程转码」标签迁来）。按功能命名为
+ * 「播放」而不是按实现叫「远程转码」：将来的转码策略、字幕偏好等播放域设置
+ * 都落在这里，分区不用再改名。Worker 的审批与吊销仍在「设备」分区，
+ * 靠 onOpenDevices 一键直达。
+ */
+function PlaybackSection() {
+  const router = useRouter();
+  return (
+    <RemoteTranscodeSection
+      onOpenDevices={() => router.push("/settings/devices" as Route)}
+    />
   );
 }
 

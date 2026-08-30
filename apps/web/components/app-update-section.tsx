@@ -28,7 +28,7 @@ import { formatBytes } from "@/lib/format";
 import { formatDateTime, formatUnixDateTime } from "@/lib/time";
 
 /**
- * 版本与更新（设置 → 应用）。
+ * 版本与更新（设置 → 更新与维护）。
  *
  * 应用内更新的用户界面（机制见 docs/design/in-app-update.md）：
  *   - 状态区：当前版本 + 代码来源（镜像内置 / 应用内更新 vX / 源码部署）；

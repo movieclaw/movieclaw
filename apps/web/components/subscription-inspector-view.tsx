@@ -809,7 +809,7 @@ function RuleSetSwitchDialog({
         <h2 className="text-title font-bold text-white">更换规则组</h2>
         <p className="mt-1 text-sub leading-6 text-[var(--text-muted)]">
           点选即应用，只影响之后的资源评估；已下载/已入库的内容不受影响。
-          需要新的组合条件可去「设置 → 订阅 → 规则组」新建。
+          需要新的组合条件可去「设置 → 订阅规则 → 规则组」新建。
         </p>
         {error && (
           <p className="mt-3 rounded-lg border border-red-400/25 bg-red-500/10 px-3.5 py-2.5 text-sub leading-6 text-red-200">

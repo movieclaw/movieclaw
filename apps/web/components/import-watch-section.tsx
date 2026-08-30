@@ -53,7 +53,7 @@ function collectDownloaderDirs(downloaders: ConfiguredDownloader[]): DownloaderD
 }
 
 /**
- * 监听导入配置（设置 → 监听导入）：媒体库之上的独立功能。
+ * 自动入库配置（设置 → 自动入库，原名「监听导入」）：媒体库之上的独立功能。
  *
  * 每条规则 = 监听一个源目录，目录里下载完成的内容（下载器确认或指纹
  * 静默 + 探测通过）自动识别并按规范命名搬进目标库主根。媒体库本身
@@ -139,7 +139,7 @@ export function ImportWatchSection() {
 
       {failed && (
         <div className="flex items-center gap-3">
-          <p className="text-ui text-[var(--text-muted)]">监听导入配置加载失败</p>
+          <p className="text-ui text-[var(--text-muted)]">自动入库配置加载失败</p>
           <button type="button" onClick={reload} className="btn-glass px-3 py-1.5 text-sub font-medium">
             重试
           </button>
@@ -150,7 +150,7 @@ export function ImportWatchSection() {
         <div className="space-y-2">
           {rules.length === 0 && (
             <p className="rounded-xl bg-white/[0.03] px-4 py-6 text-center text-ui text-[var(--text-muted)]">
-              还没有监听导入规则。不需要「下载区 → 库」自动搬运的话，这里保持为空即可。
+              还没有自动入库规则。不需要「下载区 → 库」自动搬运的话，这里保持为空即可。
             </p>
           )}
           {rules.map((rule) => (
@@ -169,7 +169,7 @@ export function ImportWatchSection() {
             className="flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-white/15 px-3 py-2.5 text-ui font-medium text-[var(--text-muted)] transition-colors hover:border-[var(--accent)]/50 hover:text-white"
           >
             <PlusIcon className="size-4" />
-            添加监听导入规则
+            添加自动入库规则
           </button>
         </div>
       )}
@@ -541,10 +541,10 @@ function RuleFormDialog({
 
   return (
     <>
-      <Modal open onClose={onClose} label={rule ? "编辑监听导入规则" : "添加监听导入规则"}>
+      <Modal open onClose={onClose} label={rule ? "编辑自动入库规则" : "添加自动入库规则"}>
         <div className="space-y-4 p-6">
           <h2 className="text-title font-bold text-white">
-            {rule ? "编辑监听导入规则" : "添加监听导入规则"}
+            {rule ? "编辑自动入库规则" : "添加自动入库规则"}
           </h2>
 
           {error && (

@@ -128,7 +128,7 @@ export function SubscriptionsView() {
   const [ruleSets, setRuleSets] = useState<RuleSet[]>([]);
   const [libraries, setLibraries] = useState<MediaLibrary[]>([]);
   // 链路体检整体为 error 时顶部亮警示横幅（提醒推到用户在的地方，
-  // 全景与修复入口在 设置 → 订阅）。拉取失败静默——横幅只是提示层
+  // 全景与修复入口在 设置 → 概览）。拉取失败静默——横幅只是提示层
   const [healthIssue, setHealthIssue] = useState<{ libraryErrors: number } | null>(null);
 
   const reload = useCallback(() => {
@@ -295,10 +295,10 @@ export function SubscriptionsView() {
       </div>
 
       {/* 链路警示横幅：只在体检整体为 error 时出现——订阅不会丢（工单退避
-          重试），但在修好之前无法自动下载入库。点击进订阅设定看全景与修复 */}
+          重试），但在修好之前无法自动下载入库。点击进设置概览看体检全景与修复 */}
       {canManageSubscriptions && healthIssue && (
         <Link
-          href={"/settings/subscription" as Route}
+          href={"/settings/overview" as Route}
           className="mx-6 mt-4 block rounded-xl border border-amber-400/25 bg-amber-500/10 px-4 py-3 text-sub leading-relaxed text-amber-200 transition hover:bg-amber-500/15 max-md:mx-4"
         >
           {healthIssue.libraryErrors > 0

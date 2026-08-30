@@ -344,8 +344,8 @@ function DialogContent({
       const detail =
         manualTarget.mode === "watch"
           ? manualTarget.staging_path
-            ? `${manualTarget.route_reason ?? ""}；投递到监听导入目录 ${manualTarget.path}，完成后整理到 ${manualTarget.staging_path}（外部流转回库根后入账）`
-            : `${manualTarget.route_reason ?? ""}；投递到监听导入目录 ${manualTarget.path}，完成后自动整理入库`
+            ? `${manualTarget.route_reason ?? ""}；投递到自动入库的监听目录 ${manualTarget.path}，完成后整理到 ${manualTarget.staging_path}（外部流转回库根后入账）`
+            : `${manualTarget.route_reason ?? ""}；投递到自动入库的监听目录 ${manualTarget.path}，完成后自动整理入库`
           : manualTarget.mode === "inplace"
             ? `${manualTarget.route_reason ?? ""}；直接下载到 ${entryDir?.replace(/\/+$/, "")}，完成后自动入账`
             : null;
@@ -517,7 +517,7 @@ function DialogContent({
               )}
               {request.identity && manualTarget?.status === "ready" && !manualTarget.ok && (
                 <p className="rounded-lg border border-amber-400/20 bg-amber-500/10 px-3.5 py-2.5 text-caption leading-relaxed text-amber-100">
-                  已识别资源，但当前不能自动入库：{manualTarget.warning ?? "请检查媒体库和监听导入配置。"}
+                  已识别资源，但当前不能自动入库：{manualTarget.warning ?? "请检查媒体库和自动入库配置。"}
                 </p>
               )}
               {!showOtherTargets && (

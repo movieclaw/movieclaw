@@ -19,22 +19,21 @@ import {
 } from "@/lib/api/subscriptions";
 
 /**
- * 订阅设定（设置 → 订阅）：订阅相关配置的家。
+ * 订阅规则（设置 → 订阅规则）：订阅相关配置的家。
  *
- * 三个住户：
- * - 链路体检：把「资源搜索 → 下载器 → 投递 → 转移 → 入库」画成流水线，
- *   逐段陈述事实、红黄项给修复去处。全新用户看到的是同一份数据的另一种
- *   读法——开局清单（缺什么、下一步做什么）；
+ * 两个住户：
  * - 模拟一单：搜一部片，把路由选库/投递落点/入库方式完整预演一遍，
  *   不真正订阅——让用户主动验证自己对系统的理解；
  * - 规则组：完整管理入口（新建/编辑/删除，见 rule-sets-panel.tsx）。
  *
- * 体检只读、绝不成为第三个配置入口：修复动作全部跳回原配置页。
+ * 链路体检（PipelineHealthPanel）原本也住这里，设置页按功能重组后升级为
+ * 「概览」落地页的主体（settings-overview-section.tsx）——它体检的是整条
+ * 链路而非订阅规则本身，放在设置入口处让问题主动找人。面板仍定义在本文件：
+ * 它与模拟一单共享状态语义（STATUS_META）与修复跳转（fixTarget）。
  */
 export function SubscriptionSettingsSection() {
   return (
     <div className="space-y-10">
-      <PipelineHealthPanel />
       <SimulatePanel />
       <RuleSetsPanel />
     </div>
@@ -54,7 +53,7 @@ type Status = keyof typeof STATUS_META;
 function fixTarget(section: string | null): { href: string; label: string } | null {
   if (section === "sites") return { href: "/settings/sites", label: "去接入站点" };
   if (section === "downloaders") return { href: "/settings/downloaders", label: "去下载器设置" };
-  if (section === "import-watch") return { href: "/settings/import-watch", label: "去监听导入" };
+  if (section === "import-watch") return { href: "/settings/import-watch", label: "去自动入库" };
   if (section === "libraries") return { href: "/library", label: "去媒体库" };
   return null;
 }
@@ -77,7 +76,7 @@ function worst(statuses: Status[]): Status {
 // 链路体检
 // ---------------------------------------------------------------------------
 
-function PipelineHealthPanel() {
+export function PipelineHealthPanel() {
   const [health, setHealth] = useState<PipelineHealth | null>(null);
   const [failed, setFailed] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -237,7 +236,7 @@ function SetupChecklist({ health }: { health: PipelineHealth }) {
         ))}
       </div>
       <p className="mt-3 text-caption leading-relaxed text-[var(--text-faint)]">
-        可选第四步：「监听导入」让下载区与媒体库分离（PT 保种推荐）——下载器落盘的
+        可选第四步：「自动入库」让下载区与媒体库分离（PT 保种推荐）——下载器落盘的
         内容自动硬链接进库，源文件继续做种。不配置则直接下载进库根，同样能自动入账。
       </p>
     </div>
@@ -651,8 +650,8 @@ function SimulatePanel() {
                 text={
                   preview.mode === "watch"
                     ? preview.staging_path
-                      ? `投递到监听导入目录 ${preview.path}，下载完成后识别改名并整理到 ${preview.staging_path}`
-                      : `投递到监听导入目录 ${preview.path}，下载完成后自动整理入库`
+                      ? `投递到自动入库的监听目录 ${preview.path}，下载完成后识别改名并整理到 ${preview.staging_path}`
+                      : `投递到自动入库的监听目录 ${preview.path}，下载完成后自动整理入库`
                     : preview.mode === "inplace"
                       ? // 条目目录由后端按命名模板渲染，前端不自己拼「标题 (年份)」
                         `直接下载到库内目录 ${(preview.entry_dir ?? preview.path)?.replace(/\/+$/, "")}，完成后自动入账`

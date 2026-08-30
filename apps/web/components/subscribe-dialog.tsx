@@ -494,7 +494,7 @@ export function SubscribeDialog({
                     <p className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-4 py-3 text-sub leading-6 text-[var(--text-muted)]">
                       {canManageSubscriptions
                         ? "还没有配置洗版目标的规则组——点右上角「+ 新建规则组」，在编辑器里选择「洗到哪一档」即可。"
-                        : "还没有配置洗版目标的规则组，请联系管理员在「设置 → 订阅 → 规则组」中配置「洗到哪一档」。"}
+                        : "还没有配置洗版目标的规则组，请联系管理员在「设置 → 订阅规则 → 规则组」中配置「洗到哪一档」。"}
                     </p>
                   ) : (
                   <select
@@ -523,7 +523,7 @@ export function SubscribeDialog({
                           // 零做种死种，用琥珀色把风险讲在订阅之前
                           <span className="text-caption text-[var(--warn)]/90">
                             该规则组不限任何条件——可能抓到低画质或无人做种的资源，
-                            建议在「设置 → 订阅 → 规则组」里加上分辨率与做种数限制
+                            建议在「设置 → 订阅规则 → 规则组」里加上分辨率与做种数限制
                           </span>
                         ) : (
                           chips.map((chip) => (
@@ -569,7 +569,7 @@ export function SubscribeDialog({
                         {dispatchPreview.mode === "watch" ? (
                           dispatchPreview.staging_path ? (
                             <>
-                              将投递到监听导入目录{" "}
+                              将投递到自动入库的监听目录{" "}
                               <span className="font-mono">{dispatchPreview.path}</span>
                               ，下载完成后整理到{" "}
                               <span className="font-mono">{dispatchPreview.staging_path}</span>
@@ -577,7 +577,7 @@ export function SubscribeDialog({
                             </>
                           ) : (
                             <>
-                              将投递到监听导入目录{" "}
+                              将投递到自动入库的监听目录{" "}
                               <span className="font-mono">{dispatchPreview.path}</span>
                               ，下载完成后自动整理入库
                             </>

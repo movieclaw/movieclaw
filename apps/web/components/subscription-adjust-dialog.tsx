@@ -217,7 +217,7 @@ export function SubscriptionAdjustDialog({
                 (preview.ok ? (
                   <p className="mt-1.5 text-caption leading-relaxed text-[var(--text-faint)]">
                     {preview.mode === "watch"
-                      ? `将投递到监听导入目录 ${preview.path ?? ""}，下载完成后自动整理入库`
+                      ? `将投递到自动入库的监听目录 ${preview.path ?? ""}，下载完成后自动整理入库`
                       : // 条目目录由后端按命名模板渲染，前端不自己拼名字
                         `将直接下载到库内目录 ${preview.entry_dir ?? preview.path ?? ""}，完成后自动入账`}
                   </p>

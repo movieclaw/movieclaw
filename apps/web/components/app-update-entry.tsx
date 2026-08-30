@@ -73,7 +73,7 @@ export function AppUpdateEntry({
   onOpen,
 }: {
   collapsed: boolean;
-  /** 跳到「设置 → 应用」，那一页进去就会直接摆出新版本卡片 */
+  /** 跳到「设置 → 更新与维护」，那一页进去就会直接摆出新版本卡片 */
   onOpen: () => void;
 }) {
   // 更新是管理员的事：成员看不到入口，也不发起轮询（接口是管理员专属）
@@ -116,7 +116,7 @@ export function AppUpdateEntry({
   );
 }
 
-/** 「设置 → 应用」分区行右侧的小圆点：进了设置后仍能一眼找到更新在哪一栏。 */
+/** 「设置 → 更新与维护」分区行右侧的小圆点：进了设置后仍能一眼找到更新在哪一栏。 */
 export function AppUpdateDot() {
   return (
     <span
