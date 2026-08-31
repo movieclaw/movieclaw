@@ -908,7 +908,7 @@ function DownloaderActionsMenu({
           align="end"
           sideOffset={6}
           collisionPadding={12}
-          className="menu-surface z-50 min-w-[10rem] !rounded-xl p-1"
+          className="menu-surface z-50 min-w-[10rem] p-1"
           onClick={(e) => e.stopPropagation()}
         >
           <DropdownMenu.Item

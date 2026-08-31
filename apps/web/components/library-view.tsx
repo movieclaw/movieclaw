@@ -929,7 +929,7 @@ function LibraryCardMenu({
         createPortal(
           <div
             onMouseDown={(e) => e.stopPropagation()}
-            className="menu-surface w-36 overflow-hidden rounded-xl p-1.5"
+            className="menu-surface w-36 overflow-hidden p-1.5"
             style={{ position: "fixed", left: menuPos.left, top: menuPos.top, zIndex: 50 }}
           >
             {/* 扫描/整理中锁定编辑与删除：进行中的任务在按当前根路径读写台账 */}

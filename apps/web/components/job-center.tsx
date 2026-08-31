@@ -338,7 +338,7 @@ export function TaskActionsMenu({
           align="end"
           sideOffset={6}
           collisionPadding={12}
-          className="menu-surface z-50 min-w-[9rem] !rounded-xl p-1"
+          className="menu-surface z-50 min-w-[9rem] p-1"
         >
           {items.map((item) => (
             <DropdownMenu.Item

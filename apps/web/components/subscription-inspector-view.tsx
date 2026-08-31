@@ -629,7 +629,7 @@ function SubscriptionManageMenu({
           align="end"
           sideOffset={6}
           collisionPadding={12}
-          className="menu-surface z-50 min-w-[10.5rem] !rounded-xl p-1"
+          className="menu-surface z-50 min-w-[10.5rem] p-1"
         >
           {canSubscribe && (
             <DropdownMenu.Item onSelect={onAdjust} className={itemClass}>

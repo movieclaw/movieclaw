@@ -935,7 +935,7 @@ function ItemActionsMenu({
           align="end"
           sideOffset={6}
           collisionPadding={12}
-          className="menu-surface z-50 min-w-[11rem] !rounded-xl p-1"
+          className="menu-surface z-50 min-w-[11rem] p-1"
         >
           {canManage && (
             <DropdownMenu.Item

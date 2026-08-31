@@ -564,7 +564,7 @@ function RunRow({
         createPortal(
           <div
             ref={menuRef}
-            className="menu-surface w-44 overflow-hidden rounded-xl p-1.5"
+            className="menu-surface w-44 overflow-hidden p-1.5"
             // z 必须压过移动端抽屉（.mobile-drawer 是 60）：侧栏在窄屏上装进抽屉，
             // 菜单虽 Portal 到 body，z 不够会被抽屉盖住——表现为点 ⋯ 毫无反应
             style={{ position: "fixed", left: menuPos.left, top: menuPos.top, zIndex: 70 }}

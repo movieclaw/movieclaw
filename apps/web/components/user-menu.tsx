@@ -81,7 +81,7 @@ export function UserMenu({ onOpenSettings, collapsed = false }: UserMenuProps) {
   const menu = open && (
     <div
       ref={menuRef}
-      className={`menu-surface origin-bottom overflow-hidden rounded-2xl p-1.5 ${
+      className={`menu-surface origin-bottom overflow-hidden p-1.5 ${
         collapsed ? "w-60" : "absolute bottom-[calc(100%+10px)] left-0 right-0 z-30"
       }`}
       style={

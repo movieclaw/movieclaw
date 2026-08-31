@@ -257,7 +257,7 @@ function AddChannelMenu({
           align="end"
           sideOffset={6}
           collisionPadding={12}
-          className="menu-surface z-50 min-w-[14rem] !rounded-xl p-1"
+          className="menu-surface z-50 min-w-[14rem] p-1"
         >
           {CHANNEL_KINDS.map((channel) => {
             const meta = CHANNEL_META[channel];

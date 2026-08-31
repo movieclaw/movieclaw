@@ -1015,7 +1015,7 @@ function LibraryActionsMenu({
           align="end"
           sideOffset={6}
           collisionPadding={12}
-          className="menu-surface z-50 min-w-[11rem] !rounded-xl p-1"
+          className="menu-surface z-50 min-w-[11rem] p-1"
         >
           {/* 待处理清单的**常驻**入口。头部胶囊是条件渲染的（有待办才出现），
               光靠它意味着清单一空抽屉就整个不可达——「已忽略」更是从来没有
@@ -1850,7 +1850,7 @@ function GroupMoreMenu({
           // 抽屉挂在 window 的监听，把整个抽屉一起关掉（菜单照常关闭——
           // stopPropagation 不影响 Radix 自己的 dismiss）
           onEscapeKeyDown={(e) => e.stopPropagation()}
-          className="menu-surface z-[60] min-w-[9rem] !rounded-xl p-1"
+          className="menu-surface z-[60] min-w-[9rem] p-1"
         >
           {canExpand && (
             <DropdownMenu.Item onSelect={onToggleFiles} className={itemClass}>
