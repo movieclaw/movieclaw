@@ -70,11 +70,20 @@ export interface AgentEvent {
 
 /* —— 服务端会话（JSONL 转录的投影，见 movieclaw_api.schemas.agent）—— */
 
-/** 转录消息的内容块（movieclaw_llm ContentPart 的前端投影）。 */
+/** 转录消息的内容块（movieclaw_llm ContentPart 的前端投影）。
+ *  image 块只带引用（attachment_id）：字节永不进转录接口，
+ *  渲染时经 sessionAttachmentUrl 取图。 */
 export type AgentContentPart =
   | { type: "text"; text: string }
   | { type: "thinking"; text: string }
-  | { type: "image"; url?: string | null; data?: string | null; media_type?: string | null };
+  | {
+      type: "image";
+      url?: string | null;
+      data?: string | null;
+      media_type?: string | null;
+      attachment_id?: string | null;
+      name?: string | null;
+    };
 
 /** 转录里的一次工具调用（参数已由协议层解析为对象）。 */
 export interface AgentTranscriptToolCall {
@@ -163,13 +172,44 @@ interface ApiEnvelope<T> {
   data: T;
 }
 
-/** 提交一条用户消息；不传 sessionId 新建会话，传入则继续已有会话。 */
+/** 图片附件上传成功的回执；attachment_id 随后交给 startSession 引用。 */
+export interface AgentAttachmentUpload {
+  attachment_id: string;
+  name: string;
+  width: number;
+  height: number;
+  bytes: number;
+}
+
+/** 上传一张图片附件（先上传拿 id，发消息时引用；24h 未引用会被服务端回收）。 */
+export async function uploadSessionAttachment(
+  file: Blob,
+  name: string,
+): Promise<AgentAttachmentUpload> {
+  const form = new FormData();
+  form.append("file", file, name);
+  const response = await request<ApiEnvelope<AgentAttachmentUpload>>(
+    "/sessions/attachments",
+    { method: "POST", body: form },
+  );
+  return response.data;
+}
+
+/** 会话内附件的取图地址（immutable 内容，浏览器可长期缓存）。 */
+export function sessionAttachmentUrl(sessionId: string, attachmentId: string): string {
+  return resolveRequestUrl(`/sessions/${sessionId}/attachments/${attachmentId}`);
+}
+
+/** 提交一条用户消息；不传 sessionId 新建会话，传入则继续已有会话。
+ *  attachments 为已上传的图片附件编号（内容块由服务端组装）。 */
 export async function startSession(
   content: string,
   sessionId?: string,
+  attachments?: string[],
 ): Promise<{ sessionId: string; messageId: string }> {
-  const body: { content: string; session_id?: string } = { content };
+  const body: { content: string; session_id?: string; attachments?: string[] } = { content };
   if (sessionId) body.session_id = sessionId;
+  if (attachments && attachments.length > 0) body.attachments = attachments;
   const response = await request<ApiEnvelope<{ session_id: string; message_id: string }>>(
     "/sessions",
     {

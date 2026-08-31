@@ -78,6 +78,14 @@ export type AgentTurnSegment =
   | { kind: "text"; text: string }
   | { kind: "compaction"; summary: string; tokensBefore?: number; tokensAfter?: number };
 
+/** 用户消息携带的一张图片。previewUrl 是发送方本地的 objectURL（乐观渲染）；
+ *  回放数据没有它，渲染方按 attachmentId 走会话附件下载接口取图。 */
+export interface AgentTurnImage {
+  attachmentId: string;
+  name?: string;
+  previewUrl?: string;
+}
+
 /** 一轮对话：用户输入 + Agent 的完整产出。 */
 export interface AgentTurn {
   id: string;
@@ -85,6 +93,8 @@ export interface AgentTurn {
    *  Turn 只是前端从消息序列派生的展示分组，不是服务端协议实体。 */
   messageId?: string;
   input: string;
+  /** 随本轮用户消息发送的图片（气泡里渲染缩略图）；无图时省略 */
+  images?: AgentTurnImage[];
   status: "running" | "done" | "error";
   /** 本轮开始时刻（epoch ms）：进行中据此显示实时耗时；回放时取用户消息的转录时间戳 */
   startedAt: number;
@@ -132,11 +142,11 @@ interface AgentConversationsValue {
   /** 打开会话：详情未加载时从服务端回放，running 时用会话 id 重挂 SSE */
   open: (id: string) => Promise<void>;
   /** 新建服务端会话并发起首轮运行，成功后返回会话 id（调用方跳转 /sessions/[id]） */
-  start: (input: string) => Promise<string>;
+  start: (input: string, images?: AgentTurnImage[]) => Promise<string>;
   /** 从已有会话上下文创建独立新会话，不启动模型，成功后返回新会话 id。 */
   fork: (conversationId: string) => Promise<string>;
   /** 在既有会话中追问一轮（历史由服务端从转录重建，只传 session_id） */
-  send: (conversationId: string, input: string) => void;
+  send: (conversationId: string, input: string, images?: AgentTurnImage[]) => void;
   /** 请求后端停止当前正在生成的轮次。 */
   stop: (conversationId: string) => void;
   /** 重命名会话（改索引元数据，成功后同步本地标题）。 */
@@ -164,6 +174,17 @@ function messageText(message: AgentTranscriptMessage): string {
     .filter((part) => part.type === "text")
     .map((part) => part.text)
     .join("");
+}
+
+/** 提取用户消息里的图片引用（image 块；无 attachment_id 的历史块跳过）。 */
+function messageImages(message: AgentTranscriptMessage): AgentTurnImage[] {
+  if (typeof message.content === "string") return [];
+  return (message.content ?? [])
+    .filter((part) => part.type === "image" && part.attachment_id)
+    .map((part) => ({
+      attachmentId: (part as { attachment_id: string }).attachment_id,
+      name: (part as { name?: string | null }).name ?? undefined,
+    }));
 }
 
 /** 提取消息里的思考内容（thinking 块，仅 assistant 消息可能携带）。 */
@@ -208,10 +229,12 @@ function entriesToTurns(entries: SessionAnyEntry[]): AgentTurn[] {
     }
     const message = entry.message;
     if (message.role === "user") {
+      const images = messageImages(message);
       turns.push({
         id: entry.message_id,
         messageId: entry.message_id,
         input: messageText(message),
+        ...(images.length > 0 ? { images } : {}),
         status: "done",
         segments: [],
         startedAt: Date.parse(entry.timestamp),
@@ -698,8 +721,8 @@ export function AgentConversationsProvider({ children }: { children: React.React
 
   /** 继续会话：先落本地展示轮次，再取得持久化消息编号并连接 SSE。 */
   const runTurn = useCallback(
-    (conversationId: string, turnId: string, input: string) => {
-      void startSession(input, conversationId)
+    (conversationId: string, turnId: string, input: string, images?: AgentTurnImage[]) => {
+      void startSession(input, conversationId, images?.map((image) => image.attachmentId))
         .then(({ messageId }) => {
           updateTurn(conversationId, turnId, (current) => ({
             ...current,
@@ -719,16 +742,20 @@ export function AgentConversationsProvider({ children }: { children: React.React
   );
 
   const start = useCallback(
-    async (input: string) => {
+    async (input: string, images?: AgentTurnImage[]) => {
       // 新建必须等服务端分配 session_id 才能得到路由地址，因此这一步是
       // 同步等待的；创建失败直接抛给调用方（如尚未配置模型供应商）。
-      const { sessionId, messageId } = await startSession(input);
+      const { sessionId, messageId } = await startSession(
+        input,
+        undefined,
+        images?.map((image) => image.attachmentId),
+      );
       const turnId = nanoid();
       setConversations((previous) => [
         {
           id: sessionId,
-          // 标题取首轮输入的前 30 字（服务端索引同款朴素策略）
-          title: input.slice(0, 30),
+          // 标题取首轮输入的前 30 字（服务端索引同款朴素策略；纯图消息占位）
+          title: input.slice(0, 30) || (images?.length ? "[图片]" : ""),
           updatedAt: Date.now(),
           running: true,
           turns: [
@@ -736,6 +763,7 @@ export function AgentConversationsProvider({ children }: { children: React.React
               id: turnId,
               messageId,
               input,
+              ...(images && images.length > 0 ? { images } : {}),
               status: "running",
               segments: [],
               startedAt: Date.now(),
@@ -762,7 +790,7 @@ export function AgentConversationsProvider({ children }: { children: React.React
   }, []);
 
   const send = useCallback(
-    (conversationId: string, input: string) => {
+    (conversationId: string, input: string, images?: AgentTurnImage[]) => {
       const turnId = nanoid();
       setConversations((previous) =>
         previous.map((conversation) =>
@@ -777,13 +805,20 @@ export function AgentConversationsProvider({ children }: { children: React.React
                   conversation.turns.length === 0 ? input.slice(0, 30) : conversation.title,
                 turns: [
                   ...conversation.turns,
-                  { id: turnId, input, status: "running", segments: [], startedAt: Date.now() },
+                  {
+                    id: turnId,
+                    input,
+                    ...(images && images.length > 0 ? { images } : {}),
+                    status: "running",
+                    segments: [],
+                    startedAt: Date.now(),
+                  },
                 ],
               }
             : conversation,
         ),
       );
-      runTurn(conversationId, turnId, input);
+      runTurn(conversationId, turnId, input, images);
     },
     [runTurn],
   );
@@ -815,6 +850,8 @@ export function AgentConversationsProvider({ children }: { children: React.React
       const index = conversation?.turns.findIndex((turn) => turn.messageId === messageId) ?? -1;
       if (!conversation || index < 0) throw new Error("这条提问已不在当前会话里");
       const input = content ?? conversation.turns[index].input;
+      // 服务端 retry 不传 attachments 即沿用原消息的图；本地轮次同样保留
+      const images = conversation.turns[index].images;
       const accepted = await retrySessionMessage(conversationId, messageId, content);
       const turnId = nanoid();
       setConversations((previous) =>
@@ -831,6 +868,7 @@ export function AgentConversationsProvider({ children }: { children: React.React
                     id: turnId,
                     messageId: accepted.messageId,
                     input,
+                    ...(images && images.length > 0 ? { images } : {}),
                     status: "running",
                     segments: [],
                     startedAt: Date.now(),

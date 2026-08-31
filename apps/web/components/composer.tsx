@@ -1,9 +1,15 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import { GlassPanel } from "@/components/glass-panel";
 import { PlusIcon, SendIcon } from "@/components/icons";
+import {
+  type ComposerImage,
+  MAX_IMAGES_PER_MESSAGE,
+  isAcceptedImage,
+  prepareImageAttachment,
+} from "@/lib/agent-attachments";
 import { useBackdrop } from "@/lib/backdrop";
 import { LiquidGlassIconButton } from "@/vendor/liquid-glass";
 
@@ -12,8 +18,11 @@ export interface ComposerProps {
   /** 受控值（与 onChange 配套）；不传则组件内部管理输入状态 */
   value?: string;
   onChange?: (value: string) => void;
-  /** 提交回调（回车或点发送）；不传时输入框为纯展示，发送不可用 */
-  onSubmit?: (text: string) => void;
+  /** 提交回调（回车或点发送）；不传时输入框为纯展示，发送不可用。
+   * images 是随消息发送的已上传图片（未开启图片上传时恒为空数组） */
+  onSubmit?: (text: string, images: ComposerImage[]) => void;
+  /** 开启图片上传：加号键选图，支持粘贴截图与拖拽；图随消息一并提交 */
+  imageUpload?: boolean;
   /** 生成中：提交被阻断；配合 onStop 时发送键变为停止键（仿 ChatGPT） */
   busy?: boolean;
   /** 停止生成回调；仅在 busy 时生效 */
@@ -33,6 +42,7 @@ export function Composer({
   value,
   onChange,
   onSubmit,
+  imageUpload = false,
   busy = false,
   onStop,
   disabled = false,
@@ -44,23 +54,115 @@ export function Composer({
   const [inner, setInner] = useState("");
   const text = value ?? inner;
   const setText = onChange ?? setInner;
-  const canSubmit = !disabled && !busy && text.trim().length > 0 && onSubmit != null;
+  // —— 图片附件（imageUpload 开启时生效）——
+  // 图片状态关在组件内部：上传即时发生（拿到 attachment_id），提交时只把
+  // 结果交给 onSubmit；父组件不需要感知上传中间态。
+  const [images, setImages] = useState<ComposerImage[]>([]);
+  const [uploading, setUploading] = useState(0);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const hasImages = images.length > 0;
+  const canSubmit =
+    !disabled &&
+    !busy &&
+    uploading === 0 &&
+    (text.trim().length > 0 || hasImages) &&
+    onSubmit != null;
   // 生成中且可停止：发送键位变为停止键
   const showStop = busy && onStop != null;
 
+  function addFiles(files: Iterable<File>) {
+    if (!imageUpload || disabled) return;
+    setUploadError(null);
+    const accepted = [...files].filter(isAcceptedImage);
+    if (accepted.length === 0) {
+      setUploadError("不支持的图片格式，请选择 JPG / PNG / WebP / GIF 图片");
+      return;
+    }
+    // 按当前渲染值算余量即可：超发由服务端「单消息 ≤4 张」硬限兜底
+    const room = Math.max(0, MAX_IMAGES_PER_MESSAGE - images.length - uploading);
+    const taking = accepted.slice(0, room);
+    if (accepted.length > taking.length) {
+      setUploadError(`一条消息最多发送 ${MAX_IMAGES_PER_MESSAGE} 张图片`);
+    }
+    for (const file of taking) {
+      setUploading((n) => n + 1);
+      void prepareImageAttachment(file)
+        .then((image) => setImages((now) => [...now, image]))
+        .catch((error) => setUploadError((error as Error).message))
+        .finally(() => setUploading((n) => n - 1));
+    }
+  }
+
   function submit() {
     if (!canSubmit) return;
-    onSubmit?.(text.trim());
+    onSubmit?.(text.trim(), images);
+    setImages([]);
+    setUploadError(null);
   }
 
   const body = (
-    <>
+    <div
+      // 拖图进输入区：只在开启图片上传时监听（阻止浏览器默认打开图片）
+      onDragOver={imageUpload ? (e) => e.preventDefault() : undefined}
+      onDrop={
+        imageUpload
+          ? (e) => {
+              e.preventDefault();
+              addFiles(e.dataTransfer.files);
+            }
+          : undefined
+      }
+    >
+      {(hasImages || uploading > 0) && (
+        <div className="flex flex-wrap items-center gap-2 px-4 pt-3">
+          {images.map((image) => (
+            <div key={image.attachmentId} className="group/chip relative">
+              <img
+                src={image.previewUrl}
+                alt={image.name}
+                className="size-14 rounded-lg border border-white/10 object-cover"
+              />
+              <button
+                type="button"
+                aria-label={`移除图片 ${image.name}`}
+                onClick={() =>
+                  setImages((now) => now.filter((it) => it.attachmentId !== image.attachmentId))
+                }
+                className="absolute -right-1.5 -top-1.5 flex size-5 items-center justify-center rounded-full bg-[#232325] text-[11px] leading-none text-[var(--text-muted)] shadow ring-1 ring-white/15 transition-colors hover:text-[var(--text)]"
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+          {uploading > 0 && (
+            <div className="flex size-14 items-center justify-center rounded-lg border border-dashed border-white/15 text-[var(--text-faint)]">
+              <span className="size-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+            </div>
+          )}
+        </div>
+      )}
+      {uploadError && (
+        <p className="px-4 pt-2 text-caption text-[#ff6b6b]">{uploadError}</p>
+      )}
       <textarea
         rows={2}
         autoFocus={autoFocus}
         disabled={disabled}
         value={text}
         onChange={(e) => setText(e.target.value)}
+        onPaste={
+          imageUpload
+            ? (e) => {
+                // 粘贴截图：剪贴板里带图片文件时收进附件（文字照常走默认粘贴）
+                const files = [...e.clipboardData.files].filter(isAcceptedImage);
+                if (files.length > 0) {
+                  e.preventDefault();
+                  addFiles(files);
+                }
+              }
+            : undefined
+        }
         onKeyDown={(e) => {
           // 回车提交、Shift+回车换行（输入法组合期间的回车不触发）
           if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -75,9 +177,24 @@ export function Composer({
         }`}
       />
       <div className="flex items-center justify-between px-2.5 pb-2.5 pt-1">
+        {imageUpload && (
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/jpeg,image/png,image/webp,image/gif"
+            multiple
+            hidden
+            onChange={(e) => {
+              if (e.target.files) addFiles(e.target.files);
+              e.target.value = ""; // 允许重复选同一文件
+            }}
+          />
+        )}
         <button
           type="button"
-          aria-label="添加附件"
+          aria-label={imageUpload ? "添加图片" : "添加附件"}
+          disabled={disabled}
+          onClick={imageUpload ? () => fileInputRef.current?.click() : undefined}
           // 移动端 44px：iOS HIG 最小可点目标（桌面保持 32px 紧凑图标键）
           className="flex size-8 items-center justify-center rounded-xl text-[var(--text-muted)] transition-colors hover:bg-[var(--glass-fill-hover)] hover:text-[var(--text)] max-md:size-11"
         >
@@ -135,7 +252,7 @@ export function Composer({
           )}
         </div>
       </div>
-    </>
+    </div>
   );
 
   if (flat) {

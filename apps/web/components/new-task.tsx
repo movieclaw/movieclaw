@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation";
 
 import { Composer } from "@/components/composer";
 import { LlmSetupNotice, useLlmConfigured } from "@/components/llm-gate";
+import type { ComposerImage } from "@/lib/agent-attachments";
 import { useAgentConversations } from "@/lib/agent-conversations";
 
 /* —— 新任务（路由 /）：仅一个居中输入框，大图氛围页直出。
@@ -22,10 +23,17 @@ export function NewTask() {
   const llmConfigured = useLlmConfigured();
   const locked = llmConfigured === false;
 
-  function submit(text: string) {
+  function submit(text: string, images: ComposerImage[]) {
     setCreating(true);
     setError(null);
-    start(text)
+    start(
+      text,
+      images.map((image) => ({
+        attachmentId: image.attachmentId,
+        name: image.name,
+        previewUrl: image.previewUrl,
+      })),
+    )
       .then((id) => {
         router.push(`/sessions/${id}` as Route);
       })
@@ -44,6 +52,7 @@ export function NewTask() {
             value={input}
             onChange={setInput}
             onSubmit={submit}
+            imageUpload
             busy={creating}
             disabled={locked}
             placeholder={locked ? "请先接入 AI 模型，再开始对话" : undefined}

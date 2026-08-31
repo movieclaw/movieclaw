@@ -17,10 +17,13 @@ import {
   type AgentConversation,
   type AgentProcessItem,
   type AgentTurn,
+  type AgentTurnImage,
   type AgentTurnSegment,
   type AgentTurnToolCall,
   useAgentConversations,
 } from "@/lib/agent-conversations";
+import type { ComposerImage } from "@/lib/agent-attachments";
+import { sessionAttachmentUrl } from "@/lib/api/agent";
 import { usePageChrome } from "@/lib/page-chrome";
 import { usePageTitle } from "@/lib/use-page-title";
 
@@ -128,10 +131,18 @@ export function AgentConversationView({ conversationId }: { conversationId: stri
 
   const running = conversation.turns.some((t) => t.status === "running");
 
-  function submit(text: string) {
+  function submit(text: string, images: ComposerImage[]) {
     if (!activeRetryTarget) {
       setInput("");
-      send(conversationId, text);
+      send(
+        conversationId,
+        text,
+        images.map((image) => ({
+          attachmentId: image.attachmentId,
+          name: image.name,
+          previewUrl: image.previewUrl,
+        })),
+      );
       return;
     }
     void (async () => {
@@ -192,6 +203,7 @@ export function AgentConversationView({ conversationId }: { conversationId: stri
               <TurnView
                 key={turn.id}
                 turn={turn}
+                sessionId={conversationId}
                 onEdit={running || retrying ? undefined : handleEdit}
               />
             ))}
@@ -238,6 +250,9 @@ export function AgentConversationView({ conversationId }: { conversationId: stri
             value={input}
             onChange={setInput}
             onSubmit={submit}
+            // 改写模式不开图片入口：retry 默认沿用原消息的图，此时新加的图
+            // 无处安放，藏起入口比静默丢弃诚实
+            imageUpload={!activeRetryTarget}
             busy={running}
             onStop={() => stop(conversationId)}
             disabled={locked || (retrying && activeRetryTarget != null)}
@@ -289,9 +304,12 @@ function HandoffCard({
  *  重建全部历史轮次的元素树。 */
 const TurnView = memo(function TurnView({
   turn,
+  sessionId,
   onEdit,
 }: {
   turn: AgentTurn;
+  /** 会话 id：气泡里的图片按它拼附件下载地址 */
+  sessionId: string;
   /** 改写本轮重问；不给（运行中）则气泡上不出现该入口 */
   onEdit?: (messageId: string, input: string) => void;
 }) {
@@ -301,6 +319,8 @@ const TurnView = memo(function TurnView({
       {/* 用户消息：右侧玻璃气泡 */}
       <UserBubble
         text={turn.input}
+        images={turn.images}
+        sessionId={sessionId}
         onEdit={onEdit && messageId ? () => onEdit(messageId, turn.input) : undefined}
       />
 
@@ -349,7 +369,17 @@ const TurnView = memo(function TurnView({
  * flex-row-reverse：DOM 顺序保持「先正文、后操作」（读屏与 Tab 顺序更自然），
  * 视觉上仍是气泡贴右、操作键在它左边。
  */
-function UserBubble({ text, onEdit }: { text: string; onEdit?: () => void }) {
+function UserBubble({
+  text,
+  images,
+  sessionId,
+  onEdit,
+}: {
+  text: string;
+  images?: AgentTurnImage[];
+  sessionId: string;
+  onEdit?: () => void;
+}) {
   const { revealProps, toggle } = useTapReveal();
   return (
     <div className="group/copy flex flex-row-reverse items-end justify-start" {...revealProps}>
@@ -359,6 +389,28 @@ function UserBubble({ text, onEdit }: { text: string; onEdit?: () => void }) {
         onClick={toggle}
         className="selectable max-w-[80%] whitespace-pre-wrap break-words rounded-2xl bg-[var(--glass-fill-active)] px-4 py-3 text-body leading-6 text-[var(--text)]"
       >
+        {images && images.length > 0 && (
+          <span className={`flex flex-wrap gap-2 ${text ? "mb-2" : ""}`}>
+            {images.map((image) => (
+              // 乐观渲染优先本地 objectURL；回放走附件下载接口（immutable 缓存）。
+              // 点击开新页看原图——转录页不再实现单独的灯箱。
+              <a
+                key={image.attachmentId}
+                href={image.previewUrl ?? sessionAttachmentUrl(sessionId, image.attachmentId)}
+                target="_blank"
+                rel="noreferrer"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <img
+                  src={image.previewUrl ?? sessionAttachmentUrl(sessionId, image.attachmentId)}
+                  alt={image.name ?? "图片"}
+                  loading="lazy"
+                  className="max-h-40 max-w-[200px] rounded-lg border border-white/10 object-cover"
+                />
+              </a>
+            ))}
+          </span>
+        )}
         {text}
       </div>
       <CopyButton
