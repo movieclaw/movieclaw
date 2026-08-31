@@ -89,6 +89,50 @@ bash 命令（如一个 ffmpeg）**继续在后台跑完**；crash 场景子进�
 运行」），前端也显示运行中。30 秒自愈，属可接受的设计代价，但拒绝文案
 可以更诚实（提示稍候重试）。
 
+## 3.5 参照系调研：pi 与 maka 怎么处理同类问题
+
+出方案前把两家的中断/恢复实现读了一遍，结论与吸收点：
+
+**pi 现行版**（`packages/agent/src/agent-loop.ts`、`ai/src/api/*`）：
+
+- **协作式取消**：AbortSignal 贯穿整个 loop（传给流式请求与每个工具），
+  abort 后 loop **自己走完收尾再返回**——流式中的 assistant 以
+  `stopReason: "aborted"` **连同半截内容定稿落盘**；工具批次里未执行的
+  调用在循环内直接补 `Operation aborted` 错误回执。收尾发生在运行协程
+  内部，**结构上不存在外部收尾竞态**——印证并强化了我们 4.1 的方向；
+- **半截 assistant 落盘**是我们没有的：pi 里「用户看到的」与「转录存的」
+  永远一致，续聊时模型也知道自己说到哪被打断（吸收进 4.3）；
+- crash 遗留孤儿：pi 的加载修复只处理 JSONL 半行截断，孤儿 toolCall
+  **没有读取侧修复**（本地单用户 CLI，容忍度高）——我们的双保险 seal
+  在这点上比它完备；
+- pi harness 规格（下一代，`docs/harness.md` §4）把同一思想推到极致：
+  崩溃后重开发现 `effect_pending` → 按既定策略重试或**以合成错误封顶**，
+  `getLastResult()` 作为崩溃后对账口——「合成收尾而非自动续跑」是
+  两代一致的选择，佐证我们 4.6 的第一条。
+
+**maka**（`runtime/src/agent-run-recovery.ts`、`ai-sdk-backend.ts`、
+`docs/session-task-ledger-lifecycle.md`）：
+
+- **启动恢复分类器** `classifyAgentRunRecovery`：对非终态 run 按最后
+  一个事件分类（`tool_interrupted` / `stale_user_wait` /
+  `model_stream_completed_without_terminal` / `run_interrupted`…），统一
+  判 `failed` + `failureClass: app_restarted` + 结构化诊断——比我们
+  「一刀切 seal」多一层可观测性（吸收进 4.2 的日志分级）；
+- **读取侧成对丢弃**：回放层把「无回执的调用」与「无调用的回执」成对
+  丢弃（Anthropic 400 防御），记 non-blocking 诊断。maka 走读取侧修复
+  路线；我们坚持写入侧 seal（转录自含答案、无需每次读时修），但把
+  「成对丢弃」吸收为第三层最后防线（4.2）；
+- **resumeTrust 分级**（task ledger）：中断时活跃的任务标 `stale`、证据
+  缺失标 `needs_revalidation`、修复过的标 `repaired`，untrusted 不进
+  模型视野；任务完成必须携带 `completionEvidence`。这是「副作用结果
+  未知 → 引导核实」思想的重型版，验证 4.3 文案方向；其完整机制服务于
+  maka 的多任务账本，我们的场景用文案分级即够。
+
+**取舍总结**：pi 证明协作式「循环内收尾」是竞态问题的根治解；maka 证明
+启动分类诊断与读取侧防线的价值。我们的落点：**收尾进协程 finally（pi 的
+效果、最小改动）+ 写入侧 seal 双保险 + 读取侧成对丢弃兜底（maka）+
+半截落盘与 aborted 标志（pi）**。
+
 ## 4. 方案
 
 ### 4.1 终态收尾时序重构（修缺口 B，兼护 A）
@@ -117,13 +161,20 @@ begin/terminal 有序）。
 1. **启动自愈**：`rebuild_agent_session_index` 扫描时（本就逐文件读了
    全量 entry），对尾部存在未配对 tool_call 的会话调用
    `seal_pending_tool_calls`（crash 文案，见 4.3）。正常运行的部署里
-   命中数恒为 0，只有上次异常停机才有活干；
+   命中数恒为 0，只有上次异常停机才有活干。日志按中断位置分类记录
+   （maka `classifyAgentRunRecovery` 的轻量版）：死在工具执行中 /
+   流式输出中 / 刚启动——一行中文日志带会话号与分类，排查停机原因时
+   不用翻转录；
 2. **接受路径防御**：`_accept_user_message` / retry 在 `build_history`
    之前调用 `seal_pending_tool_calls`（已是幂等函数，无孤儿时零写入）。
    兜住「运行中 crash → 30 秒心跳窗过后、进程没重启，用户直接续聊」的
-   路径——此时启动自愈还没跑过。
+   路径——此时启动自愈还没跑过；
+3. **读取侧最后防线**（maka 的成对丢弃）：`build_history` 投影时若仍
+   发现未配对的 tool_call（前两层生效后理论不可达），**成对丢弃**该
+   assistant 的 tool_calls 与孤儿回执并记错误日志——宁可丢一步历史，
+   绝不把必 400 的上下文发向供应商。防御纵深，不是主路径。
 
-两处生效后，不变量 1（转录随时可回喂）在任何死法下成立，「会话永久
+三层生效后，不变量 1（转录随时可回喂）在任何死法下成立，「会话永久
 400」被彻底消灭。**用户在任一场景后都可以直接再次发消息运行**。
 
 ### 4.3 中断标志与合成回执文案分级（修缺口 C、D）
@@ -138,11 +189,18 @@ begin/terminal 有序）。
   「服务在工具执行期间重启，此调用的结果未知。继续任务前请先查询相关
   状态确认它是否已生效，避免重复执行有副作用的操作。」
 
-中断标志：终态为 cancelled / error 且本轮最后一条 assistant 行存在时，
-把该行信封的 `finish_reason` 落为 `"aborted"`（兑现格式注释的既有承诺，
-老读端忽略该字段）；本轮**没有任何 assistant 定稿**（纯流式阶段被打断）
-时，追加一条轻量的系统性 tool-free 标记不值得为此扩格式——由前端以
-「该 user 消息后无 assistant 回应」推断显示「已中断」，转录侧不加新行。
+**半截 assistant 落盘**（借鉴 pi 的 `stopReason: "aborted"` 语义）：
+取消发生在流式输出中时，runner 捕获 CancelledError，把已累积的部分
+文本/思维链以 `finish_reason="aborted"` 定稿 `_notify` 落盘后再抛出
+（实现要点：流式循环维护累积 partial，except CancelledError 分支定稿；
+无任何累积内容时不落空行）。收益双重：用户屏幕上看到的半截回答与转录
+一致（刷新不「消失」），续聊时模型知道自己上次说到哪被打断。
+
+中断标志：被打断的运行，本轮最后一条 assistant 行（含上述半截行）的
+信封 `finish_reason` 为 `"aborted"`（兑现格式注释的既有承诺，老读端
+忽略该字段）。半截落盘后「本轮无任何 assistant 行」只剩一种情况——
+模型还没吐出任何内容，此时前端以「该 user 消息后无 assistant 回应」
+推断显示「已中断」即可，转录不为此扩格式。
 前端会话回放据 `finish_reason=aborted` 在轮次页脚显示「已停止/已中断」。
 
 ### 4.4 子进程组收割（修缺口 E）
@@ -191,8 +249,8 @@ begin/terminal 有序）。
 | # | 改动 | 位置 | 修缺口 |
 |---|---|---|---|
 | 1 | on_terminal 触发点移至 `_execute` 的 finally；`close()` 加 10s 总超时 | `agent_runs.py` | B |
-| 2 | `seal_pending_tool_calls(reason=...)` 文案分级；启动自愈扫描时对孤儿会话 seal；`_accept_user_message`/retry 在 build_history 前防御 seal | `agent_sessions.py`、`recorder.py`、`routes/agent.py` | A、D |
-| 3 | 终态 cancelled/error 时给本轮最后 assistant 行落 `finish_reason="aborted"`（新增 store 方法，append-only 例外之二——只改信封不改消息，或以尾部追加修订行实现，实现时二选一并记录取舍） | `agent_sessions.py` | C |
+| 2 | `seal_pending_tool_calls(reason=...)` 文案分级；启动自愈扫描时对孤儿会话 seal（日志按中断位置分类）；`_accept_user_message`/retry 在 build_history 前防御 seal；`build_history` 读取侧成对丢弃兜底 | `agent_sessions.py`、`recorder.py`、`routes/agent.py` | A、D |
+| 3 | 取消时半截 assistant 以 `finish_reason="aborted"` 定稿落盘（runner 的 CancelledError 分支累积 partial 定稿后再抛，pi 同款语义）；已定稿收尾场景由 store 给最后 assistant 行补 aborted 标志（只改信封不改消息，或尾部追加修订行，实现时二选一并记录取舍） | `runner.py`、`agent_sessions.py` | C |
 | 4 | bash/mclaw 子进程 `start_new_session` + finally killpg | `tools/bash.py`、`tools/mclaw.py` | E |
 | 5 | 「已有正在进行的运行」拒绝文案区分心跳新鲜/陈旧两态 | `routes/agent.py` | F |
 | 6 | 前端：`finish_reason=aborted` 轮次显示「已停止」；无 assistant 回应的历史轮次显示「已中断」 | `agent-conversations.tsx` 等 | C |
