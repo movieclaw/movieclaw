@@ -104,6 +104,22 @@ jobs:
             gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" --draft \
               --title "$RELEASE_TAG" "${NOTES_ARGS[@]}" $PRERELEASE_FLAG
+          else
+            # 已存在的 draft 通常是上一轮失败留下的，它还锁着那一轮的
+            # target_commitish——转正时 tag 会创建在那个旧提交上，与本轮真正
+            # 构建、打包、做镜像的代码对不上（v0.19.0 就这么踩过：产物是 main
+            # HEAD 的，tag 却停在几小时前的发版提交）。重跑时把 target 校正到
+            # 本轮的 SHA，让 tag 落在被发布的那棵树上。
+            #
+            # 只对仍是 draft 的 Release 动手：已转正的 Release 不该被重跑改写。
+            # tag 推送通道里 tag 本就存在，target 不参与 tag 创建，改不改无所谓，
+            # 这里按 isDraft 判定即可，不必再分通道。
+            if [ "$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+                      --json isDraft --jq .isDraft)" = "true" ]; then
+              echo "draft Release 已存在，把 target 校正为本轮的 $GITHUB_SHA"
+              gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+                --target "$GITHUB_SHA"
+            fi
           fi
           assets=(dist/release/app-web.tar.gz dist/release/app-backend.tar.gz dist/release/manifest.json)
           [ -f dist/release/manifest.json.sig ] && assets+=(dist/release/manifest.json.sig)
