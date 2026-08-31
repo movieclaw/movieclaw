@@ -1,9 +1,10 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 import { GlassPanel } from "@/components/glass-panel";
-import { PlusIcon, SendIcon } from "@/components/icons";
+import { ChevronRightIcon, PlusIcon, SendIcon } from "@/components/icons";
 import {
   type ComposerImage,
   MAX_IMAGES_PER_MESSAGE,
@@ -13,6 +14,22 @@ import {
 import { THINKING_LEVEL_LABELS } from "@/lib/llm-thinking";
 import { useBackdrop } from "@/lib/backdrop";
 import { LiquidGlassIconButton } from "@/vendor/liquid-glass";
+
+/*
+ * 布局设计（调研 maka composer 与 Codex 输入框后的定案）：
+ *
+ *   ┌─ 附件托盘（有附件才出现）：小型 chip（缩略图 + 名字 + ×），不放大图 ─┐
+ *   ├─ 输入区：无边框 textarea（Codex 风格，固定 2 行高框内滚动）        ─┤
+ *   └─ 工具行（单行，永不换行/reflow）：                                  ─┘
+ *        左簇：＋（选图） · 思考档位（ghost pill，向上弹出菜单）
+ *        右簇：回车提示 · 发送/停止
+ *
+ * 三条从 maka 学来的原则：
+ * 1. 控件都是「安静的」ghost pill——描边与底色到 hover 才出现，弹层一律向上；
+ * 2. 能力不可用时整个控件不渲染（思考菜单为空、未开图片上传），而不是禁用态；
+ *    生成中则只 disable 不卸载，工具行不因运行状态改变布局；
+ * 3. 附件是紧凑 chip 而非大缩略图：输入框是写字的地方，预览细节交给会话气泡。
+ */
 
 export interface ComposerProps {
   autoFocus?: boolean;
@@ -124,36 +141,30 @@ export function Composer({
           : undefined
       }
     >
-      {(hasImages || uploading > 0) && (
-        <div className="flex flex-wrap items-center gap-2 px-4 pt-3">
+      {/* 附件托盘：有内容才占高度，错误提示与 chips 同区（不各自另起一行） */}
+      {(hasImages || uploading > 0 || uploadError) && (
+        <div className="flex flex-wrap items-center gap-2 px-3.5 pt-3">
           {images.map((image) => (
-            <div key={image.attachmentId} className="group/chip relative">
-              <img
-                src={image.previewUrl}
-                alt={image.name}
-                className="size-14 rounded-lg border border-white/10 object-cover"
-              />
-              <button
-                type="button"
-                aria-label={`移除图片 ${image.name}`}
-                onClick={() =>
-                  setImages((now) => now.filter((it) => it.attachmentId !== image.attachmentId))
-                }
-                className="absolute -right-1.5 -top-1.5 flex size-5 items-center justify-center rounded-full bg-[#232325] text-[11px] leading-none text-[var(--text-muted)] shadow ring-1 ring-white/15 transition-colors hover:text-[var(--text)]"
-              >
-                ✕
-              </button>
-            </div>
+            <AttachmentChip
+              key={image.attachmentId}
+              image={image}
+              onRemove={() =>
+                setImages((now) => now.filter((it) => it.attachmentId !== image.attachmentId))
+              }
+            />
           ))}
           {uploading > 0 && (
-            <div className="flex size-14 items-center justify-center rounded-lg border border-dashed border-white/15 text-[var(--text-faint)]">
-              <span className="size-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
-            </div>
+            <span className="flex h-9 items-center gap-2 rounded-lg bg-white/[0.05] px-2.5 text-caption text-[var(--text-faint)]">
+              <span className="size-3.5 animate-spin rounded-full border-2 border-current border-t-transparent" />
+              上传中…
+            </span>
+          )}
+          {uploadError && (
+            <span role="status" className="text-caption text-[#ff6b6b]">
+              {uploadError}
+            </span>
           )}
         </div>
-      )}
-      {uploadError && (
-        <p className="px-4 pt-2 text-caption text-[#ff6b6b]">{uploadError}</p>
       )}
       <textarea
         rows={2}
@@ -186,51 +197,44 @@ export function Composer({
           disabled ? "placeholder:text-[var(--text-muted)]" : "placeholder:text-[var(--text-faint)]"
         }`}
       />
-      <div className="flex items-center justify-between px-2.5 pb-2.5 pt-1">
-        {imageUpload && (
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/jpeg,image/png,image/webp,image/gif"
-            multiple
-            hidden
-            onChange={(e) => {
-              if (e.target.files) addFiles(e.target.files);
-              e.target.value = ""; // 允许重复选同一文件
-            }}
-          />
-        )}
-        <div className="flex items-center gap-1.5">
-          <button
-            type="button"
-            aria-label={imageUpload ? "添加图片" : "添加附件"}
-            disabled={disabled}
-            onClick={imageUpload ? () => fileInputRef.current?.click() : undefined}
-            // 移动端 44px：iOS HIG 最小可点目标（桌面保持 32px 紧凑图标键）
-            className="flex size-8 items-center justify-center rounded-xl text-[var(--text-muted)] transition-colors hover:bg-[var(--glass-fill-hover)] hover:text-[var(--text)] max-md:size-11"
-          >
-            <PlusIcon className="size-[18px] max-md:size-[22px]" />
-          </button>
+      {/* 工具行：左控件簇 + 右发送簇，单行永不换行 */}
+      <div className="flex items-center justify-between gap-2 px-2.5 pb-2.5 pt-1">
+        <div className="flex min-w-0 items-center gap-1">
+          {imageUpload && (
+            <>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/jpeg,image/png,image/webp,image/gif"
+                multiple
+                hidden
+                onChange={(e) => {
+                  if (e.target.files) addFiles(e.target.files);
+                  e.target.value = ""; // 允许重复选同一文件
+                }}
+              />
+              <button
+                type="button"
+                aria-label="添加图片"
+                disabled={disabled}
+                onClick={() => fileInputRef.current?.click()}
+                // 移动端 44px：iOS HIG 最小可点目标（桌面保持 32px 紧凑图标键）
+                className="flex size-8 shrink-0 items-center justify-center rounded-xl text-[var(--text-muted)] transition-colors hover:bg-[var(--glass-fill-hover)] hover:text-[var(--text)] max-md:size-11"
+              >
+                <PlusIcon className="size-[18px] max-md:size-[22px]" />
+              </button>
+            </>
+          )}
           {onThinkingChange && (thinkingLevels?.length ?? 0) > 0 && (
-            // 思考档位 pill：菜单按当前模型声明裁剪（服务端推导），空菜单的
-            // 模型整个控件不出现——选不到的档位不该存在（maka 同款诚实原则）
-            <select
-              aria-label="思维链强度"
+            <ThinkingLevelMenu
+              levels={thinkingLevels ?? []}
+              value={thinkingValue}
               disabled={disabled}
-              value={thinkingValue ?? ""}
-              onChange={(e) => onThinkingChange(e.target.value || null)}
-              className="h-8 max-w-[7.5rem] cursor-pointer appearance-none rounded-xl bg-transparent px-2 text-caption text-[var(--text-muted)] outline-none transition-colors hover:bg-[var(--glass-fill-hover)] hover:text-[var(--text)] max-md:h-11"
-            >
-              <option value="">思考：默认</option>
-              {thinkingLevels?.map((level) => (
-                <option key={level} value={level}>
-                  思考：{THINKING_LEVEL_LABELS[level] ?? level}
-                </option>
-              ))}
-            </select>
+              onChange={onThinkingChange}
+            />
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-2">
           <span className="hidden text-caption text-[var(--text-faint)] sm:block">
             {showStop ? (
               "生成中"
@@ -304,5 +308,140 @@ export function Composer({
     >
       {body}
     </GlassPanel>
+  );
+}
+
+/* —— 附件 chip：小缩略图 + 截断名 + 移除键（maka Token 的紧凑节奏） —— */
+
+function AttachmentChip({ image, onRemove }: { image: ComposerImage; onRemove: () => void }) {
+  return (
+    <span className="group/chip flex h-9 max-w-[13rem] items-center gap-2 rounded-lg bg-white/[0.05] py-1 pl-1 pr-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06)]">
+      <img
+        src={image.previewUrl}
+        alt=""
+        className="size-7 shrink-0 rounded-md object-cover"
+      />
+      <span className="min-w-0 truncate text-caption text-[var(--text-muted)]" title={image.name}>
+        {image.name}
+      </span>
+      <button
+        type="button"
+        aria-label={`移除图片 ${image.name}`}
+        onClick={onRemove}
+        className="flex size-5 shrink-0 items-center justify-center rounded-md text-[11px] leading-none text-[var(--text-faint)] transition-colors hover:bg-white/[0.08] hover:text-[var(--text)]"
+      >
+        ✕
+      </button>
+    </span>
+  );
+}
+
+/* —— 思考档位：ghost pill + 向上弹出的单选菜单（maka quiet-menu 的思路） ——
+ * 不用原生 <select>：弹层要向上、选中项要打勾、pill 文案要与菜单项分离
+ * （pill 只显示当前档，菜单里才是完整清单），原生控件三样都做不到。
+ * 弹层 Portal 到 body + fixed 定位（同 user-menu 折叠态）：composer 包在
+ * GlassPanel 里，面板 overflow:hidden 会把向上的弹层裁掉。 */
+
+function ThinkingLevelMenu({
+  levels,
+  value,
+  disabled,
+  onChange,
+}: {
+  levels: string[];
+  value: string | null;
+  disabled?: boolean;
+  onChange: (level: string | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  // 打开瞬间按 pill 当前位置算一次 fixed 坐标（菜单是瞬态浮层，不跟随滚动）
+  const [menuPos, setMenuPos] = useState<{ left: number; bottom: number } | null>(null);
+
+  // 点击弹层外任意处收起（Escape 同理）；Portal 出去的菜单不在 rootRef 内，需单独判断
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (rootRef.current?.contains(target) || menuRef.current?.contains(target)) return;
+      setOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  const toggleOpen = () => {
+    if (!open && rootRef.current) {
+      const rect = rootRef.current.getBoundingClientRect();
+      setMenuPos({ left: rect.left, bottom: window.innerHeight - rect.top + 8 });
+    }
+    setOpen((v) => !v);
+  };
+
+  const currentLabel = value === null ? "默认" : (THINKING_LEVEL_LABELS[value] ?? value);
+  const options: { value: string | null; label: string }[] = [
+    { value: null, label: "默认" },
+    ...levels.map((level) => ({ value: level, label: THINKING_LEVEL_LABELS[level] ?? level })),
+  ];
+
+  const menu = open && menuPos && (
+    <div
+      ref={menuRef}
+      role="listbox"
+      aria-label="思维链强度"
+      className="menu-surface min-w-[8rem] p-1.5"
+      // .menu-surface 自带 position:relative，须整体覆盖为 fixed
+      style={{ position: "fixed", left: menuPos.left, bottom: menuPos.bottom, zIndex: 50 }}
+    >
+      {options.map((option) => {
+        const selected = option.value === value;
+        return (
+          <button
+            key={option.value ?? "default"}
+            type="button"
+            role="option"
+            aria-selected={selected}
+            onClick={() => {
+              onChange(option.value);
+              setOpen(false);
+            }}
+            className={`flex w-full items-center justify-between gap-3 rounded-[10px] px-2.5 py-1.5 text-left text-ui transition-colors hover:bg-white/[0.06] ${
+              selected ? "text-[var(--text)]" : "text-[var(--text-muted)]"
+            }`}
+          >
+            {option.label}
+            {selected && <span aria-hidden>✓</span>}
+          </button>
+        );
+      })}
+    </div>
+  );
+
+  return (
+    <div ref={rootRef} className="relative shrink-0">
+      {menu && createPortal(menu, document.body)}
+      <button
+        type="button"
+        aria-label={`思维链强度：${currentLabel}`}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        disabled={disabled}
+        onClick={toggleOpen}
+        className="flex h-8 items-center gap-1 rounded-xl px-2.5 text-caption text-[var(--text-muted)] transition-colors hover:bg-[var(--glass-fill-hover)] hover:text-[var(--text)] max-md:h-11"
+      >
+        思考 · {currentLabel}
+        <ChevronRightIcon
+          className={`size-3 transition-transform ${open ? "rotate-[-90deg]" : "rotate-90"}`}
+        />
+      </button>
+    </div>
   );
 }
