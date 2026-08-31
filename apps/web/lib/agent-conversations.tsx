@@ -786,6 +786,11 @@ export function AgentConversationsProvider({ children }: { children: React.React
               messageId,
               input,
               ...(images && images.length > 0 ? { images } : {}),
+              // 与 send 同口径：跳转到会话页后选择器要能显示这一轮的档位，
+              // 不能等转录回放（SPA 导航不会重拉已 loaded 的会话）
+              ...(thinkingLevel !== undefined
+                ? { thinkingLevel: thinkingLevel === "default" ? null : thinkingLevel }
+                : {}),
               status: "running",
               segments: [],
               startedAt: Date.now(),
