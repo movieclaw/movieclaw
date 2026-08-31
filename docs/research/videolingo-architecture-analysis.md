@@ -221,3 +221,97 @@ CJK 字体（Linux 用 NotoSansCJK），可选 `h264_nvenc` GPU 编码；`burn_s
 局限性也明显：中间文件用 xlsx（依赖 pandas/openpyxl，diff 不友好）；时间戳匹配是
 精确子串匹配，ASR 词表与断句文本不一致时直接抛错；单 `output/` 目录导致同一部署
 同时只能处理一个视频；流水线无真正的任务队列/并发调度。
+
+## 六、深入细节：更多巧妙有效的设计
+
+以下是二刷源码（LLM 封装层、提示词、配音链路、调度层）后发现的设计亮点。
+
+### 6.1 LLM 工程层（`core/utils/ask_gpt.py` + `core/prompts.py`）
+
+1. **Prompt 级持久化缓存**：`ask_gpt()` 以 `(prompt, resp_type)` 为键，把每次响应
+   追加写入 `output/gpt_log/<log_title>.json`（线程锁保护）。重跑流水线时相同 prompt
+   直接命中缓存——"断点续跑"因此下沉到了**单次 LLM 调用粒度**，省钱且可复现。
+   更妙的是配套的 cache-busting 技巧：调用方重试时写 `ask_gpt(prompt + retry*" ")`，
+   尾部加空格让缓存失效、换一次采样，成本几乎为零。
+2. **json_repair 容错解析**：不指望模型输出严格合法的 JSON，统一用 `json_repair`
+   修复缺引号/尾逗号/代码块包裹等问题；`llm_support_json` 配置项决定是否启用原生
+   JSON mode——对不支持 response_format 的廉价模型同样可用。
+3. **验证器回调模式**：每个调用点传入 `valid_def` 结构校验函数；校验失败的响应
+   连同失败原因写入 `error.json` 供排查，并抛异常触发 `@except_handler(retry=5)`
+   的**指数退避**重试（`delay * 2^i`）。"生成→校验→重试"闭环完全通用化。
+4. **把 CoT 结构化进 JSON 字段**：所有 prompt 统一 Role/Task/Steps/INPUT/JSON-schema
+   模板，且 schema 刻意把"思考字段"排在"结果字段"之前——切分 prompt 要求先输出
+   `analysis`，再给 `split1`/`split2` 两个方案，再 `assess` 比较，最后 `choice` 选优
+   （generate-then-select）；反思翻译要求先 `reflect` 再 `free`。利用自回归顺序
+   强迫模型先想后答，同时全部结果机器可解析。
+5. **动态生成的按行号 JSON 骨架**：faithfulness prompt 的输出样例是运行时按输入
+   行数生成的 `{"1": {"origin": 原文, "direct": ...}, "2": ...}`——origin 预填原文、
+   行号做键，使"行数一致""逐行对应"的校验变成机械比对，杜绝 LLM 合并/漏行。
+6. **简易术语 RAG**：摘要阶段提取的术语表不整体塞进翻译 prompt，而是
+   `search_things_to_note_in_prompt()` 对每个翻译块做子串命中检索，只注入命中的
+   术语及其释义——控制 prompt 长度，同时保证术语一致性。
+
+### 6.2 配置层（`config_utils.py`）
+
+- `config.yaml` 既是配置文件也是**运行期状态存储**：ASR 检测出的语言写回
+  `whisper.detected_language`，供后续所有阶段（spaCy 选模型、joiner、prompt）读取。
+  用 ruamel.yaml `preserve_quotes` + 全局线程锁读写，注释与格式不被破坏——
+  UI 与 CLI 共享同一份事实源。
+- `get_joiner()`：语言按"是否空格分词"归入两张配置表，全链路文本拼接的语言差异
+  收敛到这一个函数。
+
+### 6.3 配音链路的时长对齐算法（全项目最精巧的部分）
+
+配音的根本矛盾：译文读出来的时长 ≠ 原字幕时长。VideoLingo 的解法是一条
+"预估 → 压缩 → 分块 → 统一变速 → 重排时间轴"的闭环：
+
+1. **不调 TTS 就能预估配音时长**（`tts_backend/estimate_duration.py`）：
+   `AdvancedSyllableEstimator` 按 Unicode 区间检测语言，逐语言数音节——中文用
+   pypinyin、英文用 syllables 库（g2p 音素回退）、日文处理拗音/促音、法语去尾 e——
+   音节数 × 语言相关的每音节时长（zh 0.21s / en 0.225s），再加标点 0.1s、
+   跨语言空格 0.15s 的停顿。混排文本分段各算各的。有了这个廉价估算器，
+   "译文会超时"在**翻译阶段**就能反馈（`check_len_then_trim` 让 LLM 按配音时长
+   压缩译文，且明确指示"删冗余修饰词而非改意思"）。
+2. **字幕可读性与 TTS 可行性预处理**（`_8_1`）：短于 `min_subtitle_duration` 的字幕
+   或与后一条合并、或延长时限；括号内注释、`-` 等 TTS 易读错的内容清洗掉。
+3. **三态语速判定 + 贪心借时**（`_8_2`）：每行算估算时长与
+   `tol_dur = duration + tolerance`（tolerance 是向后面字幕间隙 gap 借来的富余）
+   的关系，分级为 2（变速也救不了）/1（需加速）/-1（太慢）/0（正常）。
+   gap ≥ tolerance 的位置（说话人自然停顿处）天然成为切点；语速过快的行**贪心向后
+   合并**（最多 5 行）借邻行的富余时间，形成"配音 chunk"。
+4. **chunk 内统一变速**（`_10_gen_audio.py::process_chunk`）：四级瀑布决策——
+   优先"保留行间 gap 且不超过可接受速率"，不行则牺牲 gap，再不行借用尾部 tolerance，
+   最后才接受超速。整个 chunk 用同一个 ffmpeg `atempo` 系数变速，
+   比逐行各变各的速自然得多（不会一句快一句慢）。
+5. **时间轴跟着配音走**：变速后按实际音频时长顺序铺排 `new_sub_times`，
+   配音版字幕 `dub.srt` 用这条新时间轴——**字幕迁就配音而不是配音硬塞时间槽**，
+   保证音字同步。铺排完成后做守恒校验：超出 chunk 边界 ≤0.6s 截掉尾音频，
+   否则直接报错，配音总时长不会累积漂移。
+6. **原视频既是内容源也是音色源**：`_9_refer_audio.py` 按每条字幕的时间戳从
+   Demucs 人声轨切出对应片段存 `refers/<行号>.wav`，作为 GPT-SoVITS / CosyVoice /
+   F5-TTS 的 reference audio（refer_mode=3 时每行用说话人自己的声音克隆自己）——
+   零额外素材实现多说话人音色保持。
+7. **TTS 失败兜底梯度**（`tts_main.py`）：空/单字符文本直接产 100ms 静音（单字
+   配音易崩）；生成时长为 0 则删除重试；最后一次重试前先让 LLM 清洗文本
+   （只留基本标点）；仍失败用静音占位——个别行的失败永远不会中断整条流水线。
+   另有前 5 行**串行预热**再开线程池并发（`WARMUP_SIZE`），让模型加载/配置错误
+   在并发风暴前暴露。
+8. **背景音复用混音**：`_12` 用 ffmpeg `amix` 把 Demucs 分离出的背景轨与归一化
+   后的配音人声混合——原 BGM 和音效原样保留，只换了人声。
+
+### 6.4 调度与工程细节
+
+- **协作式取消/暂停**（`st_utils/task_runner.py`）：核心代码各长循环里撒
+  `TaskRunner.check_cancel()`（类方法经 `_current` 单例指针找到活动 runner，
+  **无 runner 时是 no-op**，CLI 单独跑各阶段零成本）；暂停用 `Event.wait()` 让
+  深层循环原地冻结；停止靠抛 `StopTask` 异常穿透线程池向上冒泡。
+  UI 线程与工作线程只通过这个 dataclass 的状态字段交互。
+- **输入清单文件**：下载/上传后写 `input_manifest.json` 记录媒体路径与类型
+  （video/audio），下游用它判断是否跳过视频合成环节——不靠扩展名猜。
+- **穷人版批处理队列**（`batch/`）：`tasks_setting.xlsx` 即任务队列，Status 列记
+  成败；失败任务的 `output/` 整体搬进 `ERROR/<视频名>/` 归档，重试时搬回——
+  用文件系统 + Excel 实现了与"单 output 目录"约束自洽的断点批处理。
+- **yt-dlp 每次运行前自升级**并重新 import（对抗 YouTube 频繁的反爬变更），
+  下载后统一 sanitize 文件名。
+- **对抗性小细节**：LLM 拒答敏感字幕压缩时降级为"手动去标点"；ffmpeg atempo
+  变速后校验输出时长与期望误差，短音频 ≤0.1s 的偏差自动截齐。
