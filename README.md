@@ -44,8 +44,8 @@
 
 Strip everything away and there's only one thing you actually want: see a show, hit
 **Subscribe**, and have it appear on your poster wall — downloaded, renamed, ready to
-play — the moment a release drops. Self-hosted at home, that one workflow traditionally
-takes six containers: Jellyfin to serve the library, Sonarr and Radarr for subscriptions,
+play — the moment a release drops. At home, that one workflow has traditionally meant six
+containers: Jellyfin to serve the library, Sonarr and Radarr for subscriptions,
 Prowlarr for indexers, Bazarr for subtitles, Overseerr so the family can request things —
 and it's on you to keep all six agreeing about the same library.
 
@@ -66,9 +66,9 @@ All-in-one has its trade-offs — they're laid out honestly in [Boundaries](#bou
 
 ## Screenshots
 
-Four screens, in the order you'd actually meet them: land on the home page, browse the
-library, open a title, subscribe. All screenshots come from a live instance, with metadata
-genuinely scraped from TMDB.
+Four screens, in the order you'll actually use them: land on the home page, browse the
+library, open a title, subscribe. Every screenshot is from a live instance, with real
+metadata scraped from TMDB.
 
 <table>
   <tr>
@@ -100,7 +100,7 @@ every device connected to the same instance.
 
 Your phone gets the same interface, not a cut-down companion app. On iOS,
 **Add to Home Screen** runs MovieClaw as a standalone app — no address bar, and the layout
-keeps clear of the notch and home indicator.
+respects the notch and home-indicator safe areas.
 
 <p align="center">
   <img src="docs/images/mobile.jpg" width="620" alt="Library and series detail on a phone">
@@ -123,11 +123,11 @@ keeps clear of the notch and home indicator.
 
   Even shorthand like "国语中字" (Mandarin audio, Chinese subs), which only exists on Chinese trackers, splits cleanly into separate subtitle and audio fields — courtesy of a small ML model shipped in the image, not a pile of regexes.
 
-- New tracker account to nurse? Turn on site protection and the subscription pipeline steers around that site while manual search keeps working — build up your share ratio first, open it up later.
+- Just joined a private tracker and need to protect your ratio? Turn on site protection: subscriptions steer around that site while manual search still works, so you can build up your ratio before opening it up.
 
 ### Media library
 
-- You open the app to a poster wall. Synopses, ratings, cast, and episode stills are all stored locally — browse the lot with no internet connection.
+- You open the app to a poster wall. Synopses, ratings, cast, and episode stills are all stored locally — browse it all completely offline.
 - It never demands renaming: point it at your existing directories and it works with them as-is. Letting MovieClaw organize your files is a separate opt-in, off by default — it doesn't touch your disks until you say so.
 - When it isn't sure, it doesn't guess. Ambiguous items land in a *pending identification* queue with a plain-language reason — "3 equally plausible matches; not choosing for you" — and one confirmation resolves the whole group.
 - Scraping is a matter of taste, so it's configurable: language, artwork, naming templates, NFO files, episode stills — all under **Settings → Scraping & Organizing**. Don't like an auto-picked poster? Replace it and lock it in.
@@ -155,7 +155,7 @@ endpoint). Skip it and everything else still works.
 
 - Talk to your library from WeChat — "subscribe to Three-Body season 2 as soon as it's out" — by text or voice. Telegram and Discord work too.
 - Under the hood, the assistant drives MovieClaw's own CLI rather than guessing at APIs. Ship a new backend endpoint and the assistant gains that ability automatically; long conversations compact their own context. The same CLI is [yours to install](#control-it-from-anywhere) — on any machine, for any agent.
-- Missing subtitles? It makes its own: when none exist in your target language, it finds a source track, translates it, and saves an external SRT alongside the file.
+- Missing subtitles? It makes its own: when none exist in your target language, it finds subtitles in another language, translates them, and saves the result as an external SRT next to the video.
 
 What the assistant is and isn't allowed to do is covered next.
 
@@ -177,9 +177,9 @@ What the assistant is and isn't allowed to do is covered next.
 ### Guardrails on the AI assistant
 
 A media library, a file organizer, and an assistant that can execute commands, all in one
-product — the risk is real. The community has already watched auto-organizing go wrong to
-the tune of "everything deleted, not one source file left." So the constraints here are
-enforced in code, not politely requested in a prompt:
+product — the risk is real. The self-hosting community already has horror stories of
+auto-organizers wiping libraries: "everything deleted, not one source file left." So the
+constraints here are enforced in code, not politely requested in a prompt:
 
 - Credentials never reach bash. The assistant operates the product only through dedicated tools; no token appears in the environment of any `bash` subprocess.
 - Dangerous operations require explicit confirmation. Deleting media files goes further still: the assistant must first list the exact items with a read-only command, read them back to you, and get your explicit yes in that same exchange. A hand-wavy "clean things up" is not consent.
@@ -235,7 +235,7 @@ see finished downloads and can't file them into your library.
 
 > **The left-hand directory must already exist on the machine.** Docker doesn't error on
 > a bad path — it quietly creates an empty folder for you, the container starts fine, the
-> logs look clean, and your library sits empty. Synology users, mind the volume number
+> logs look clean, and your library sits empty. Synology users, watch the volume number
 > and the capitalization (`/volume1` vs. `/volume2`, `media` vs. `Media`). `ls` the
 > directory before you paste, or double-check it in your file manager.
 
@@ -246,9 +246,10 @@ see finished downloads and can't file them into your library.
 docker compose up -d
 ```
 
-First start takes ten-odd seconds on a fast machine, a minute or two on a slower NAS.
-Meanwhile the page just shows "connecting to the service…" — that's normal. It's genuinely
-up once `docker logs movieclaw` prints `前端反代 已就绪` ("frontend proxy ready"). If the
+First start takes about ten seconds on a fast machine, a minute or two on a slower NAS.
+Meanwhile the page just shows "connecting to the service…" — that's normal. You'll know
+it's actually up when `docker logs movieclaw` prints `前端反代 已就绪` ("frontend proxy
+ready"). If the
 command instead fails with
 `failed to bind host port 0.0.0.0:3000/tcp: address already in use`, port 3000 is
 taken — see the [FAQ](#faq).
@@ -312,7 +313,7 @@ Details in [jellyfin-compat.md](docs/design/jellyfin-compat.md),
 
 `mclaw`, MovieClaw's command-line client, is a single static binary — no Python, no Node,
 no package manager. Install it on any machine, and that machine can drive your library:
-search titles, create subscriptions, watch jobs, organize files.
+search titles, create subscriptions, monitor jobs, organize files.
 
 **On the server itself there's nothing to install** — the image already ships it:
 
@@ -355,7 +356,7 @@ never touch disk.
 ### Built for agents, too
 
 The command tree is generated from the server's OpenAPI spec: add an endpoint to the
-backend and the CLI grows the matching command — nothing is guessed. Outside a terminal
+backend and the CLI picks up the matching command automatically — no guesswork. Outside a terminal
 (pipes, agents), it emits JSON by default, so there are no human-formatted tables to
 parse; destructive operations demand an explicit `--yes`. Any assistant that can run a
 shell can drive MovieClaw with it — the built-in AI assistant goes through exactly this
@@ -430,7 +431,7 @@ the colon and stay off host networking.**
 
 `无法连通 TMDB` ("cannot reach TMDB"), `ConnectTimeout`, `CircuitOpenError`, or
 `CERTIFICATE_VERIFY_FAILED` — whether in the logs or in the connectivity test under
-**Settings → Network & Proxy** — all point the same way.
+**Settings → Network & Proxy** — all point to the same problem.
 
 If your network can't reach `api.themoviedb.org` directly, set a proxy or mirror address
 under **Settings → Network & Proxy** and confirm with the built-in connectivity test. By
@@ -456,8 +457,8 @@ mounting.
 <summary><b>My library lives on an SMB / NFS network mount</b></summary>
 
 Turn off *real-time file watching* when you create the library. File events over network
-mounts are unreliable; periodic reconciliation plus a manual scan is the sturdier
-combination.
+mounts are unreliable; periodic reconciliation plus a manual scan is far more
+dependable.
 </details>
 
 ## Building from Source
@@ -474,7 +475,7 @@ TMDB_API_KEY=your_key ./scripts/build-image.sh
 #   Cross-building for a NAS:                PLATFORM=linux/amd64 TMDB_API_KEY=... ./scripts/build-image.sh
 ```
 
-The key can also live in a `.env` at the repo root. Mind that `.env.example` ships the
+The key can also live in a `.env` at the repo root. Note that `.env.example` ships the
 line **commented out** (`# TMDB_API_KEY=`) — drop the `#` or the script won't see it.
 With no key at all, the script fails fast instead of wasting your time on a build.
 
@@ -531,7 +532,7 @@ pnpm install && pnpm web:dev
 ```
 
 Web console at `http://127.0.0.1:3000`, API docs at `http://127.0.0.1:8000/docs`. A
-blank `.env` boots fine — only TMDB-dependent features go dark.
+blank `.env` boots fine — you just lose the TMDB-dependent features.
 
 > Changing the backend port means changing it in two places. `APP_PORT` in `.env` moves
 > the backend, but the frontend's proxy target is hardcoded to default to
@@ -545,15 +546,15 @@ When running from source, **the NER model behind torrent-name parsing needs plac
 hand** (the Docker image includes it): download `model.int8.onnx`, `tokenizer.json`, and
 `labels.json` from [Releases](https://github.com/movieclaw/movieclaw/releases), drop them
 into `data/models/torrent-ner/` (path configurable via `MOVIECLAW_NER_DIR`), and restart.
-Without the model, everything else runs; only this feature idles. The first time
+Without the model, the app runs fine — that one feature just stays off. The first time
 extraction is actually triggered, the log notes that the model is missing and that
-title/year/season/episode fields will stay empty — but that message is **lazy**: it never
-shows at startup, so a clean boot log is not proof the model is in place.
+title/year/season/episode fields will stay empty. But that warning is emitted **lazily**:
+it never appears at startup, so a clean boot log is not proof the model is in place.
 
 ## Docs & Support
 
-Every module's substantial design decisions — and the trade-offs behind them — live in
-[`docs/design/`](docs/design/), one file per topic: library, metadata, subscriptions,
+The major design decisions behind every module — and the trade-offs that shaped them —
+live in [`docs/design/`](docs/design/), one file per topic: library, metadata, subscriptions,
 quality upgrades, Jellyfin compatibility, in-app updates, the CLI… browse by filename.
 The reasoning behind this README's own structure is in
 [readme-rewrite.md](docs/design/readme-rewrite.md).
