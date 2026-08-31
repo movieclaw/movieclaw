@@ -143,6 +143,7 @@ MovieClaw 把这条线收进一个容器：
 - 在微信里说一句就行，比如"三体第二季出了就订"；还能发语音，Telegram 和 Discord 也能对话。
 - 助手调用 MovieClaw 自己的命令行，不靠猜接口；后端加接口，它就自动多一项能力，长会话也会自动压缩上下文。同一套命令行[你自己也能装](#在别的机器上操控它)，别的机器、别的 Agent 都能用。
 - 缺字幕就自己做一份：找不到目标语言字幕时，自动找源、翻译、落盘成外挂 SRT。
+- 可以用纯 Markdown 给它加"技能"：在 `data/agent-skills/` 下放一个目录 + `SKILL.md`（frontmatter 写 `description`，正文写指令，可带脚本），Web 会话里任务匹配时助手会自己加载执行，改完即生效不用重启。与产品内置技能同名时你的版本优先（日志会提示），细节见 [`docs/design/agent-skills.md`](docs/design/agent-skills.md)。
 
 权限边界见下一节。
 

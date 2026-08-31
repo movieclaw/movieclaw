@@ -122,6 +122,9 @@ class Settings(BaseSettings):
     # SQLite 里的 agent_session 表只是可从这里整体重建的查询索引。
     # 与 data/ 下其它持久化目录一样随 Docker volume 一并备份。
     agent_sessions_dir: str = Field(default="./data/agent-sessions", alias="AGENT_SESSIONS_DIR")
+    # 用户技能目录：管理员放入「目录 + SKILL.md」即给 Agent 扩展技能，与内置
+    # 技能（随源码打包）两层合并、同名覆盖内置（docs/design/agent-skills.md）。
+    agent_skills_dir: str = Field(default="./data/agent-skills", alias="AGENT_SKILLS_DIR")
 
     # ------------------------------------------------------------------
     # 登录会话 Cookie

@@ -7,7 +7,15 @@ from fastapi import APIRouter, Depends, File, Header, Query, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from movieclaw_agent import AgentRunner, AgentStartParams, AgentTool, build_system_prompt, compact
+from movieclaw_agent import (
+    AgentRunner,
+    AgentStartParams,
+    AgentTool,
+    build_skills_fragment,
+    build_system_prompt,
+    compact,
+    discover_skills,
+)
 from movieclaw_agent.tools import builtin_tools, make_mclaw_tool
 from movieclaw_api.api.deps import require_login
 from movieclaw_api.core.config import get_settings
@@ -110,7 +118,7 @@ _PAGE_ROUTES: list[tuple[str, str]] = [
 
 
 async def _agent_system_prompt() -> str:
-    """组装本次运行的系统提示词：通用正文 + 部署环境事实。
+    """组装本次运行的系统提示词：通用正文 + 部署环境事实 + 技能清单。
 
     日志目录是 API 层的配置（LOG_DIR），按 prompts.build_system_prompt 的
     设计走 extra_environment 传入——mclaw 已对 Agent 隐藏 logs 域（见
@@ -120,6 +128,12 @@ async def _agent_system_prompt() -> str:
     外部访问地址来自「设置 → 应用设置」（保存即生效），因此每次运行时
     现读设置存储，不做缓存；未配置时整块不输出——没有前缀，路由表也
     拼不出有效链接，避免模型给用户无效地址。
+
+    技能清单同样每次运行现扫（docs/design/agent-skills.md）：改技能无需
+    重启，下一轮生效。清单指令依赖 read 工具加载正文，因此只应出现在
+    含 read 的工具集里——本函数只服务 Web 会话（get_agent_tools 恒含
+    read）；IM/微信通道是无 read 的受限工具集且走 runner 默认提示词，
+    天然不含清单。若未来 IM 要接技能，必须同时给 read 工具。
     """
     log_dir = Path(get_settings().log_dir).resolve()
     lines = [
@@ -134,7 +148,11 @@ async def _agent_system_prompt() -> str:
             "尽量附上可点击的 Markdown 链接：以外部访问地址为前缀，路径按下表拼接。"
             f"只拼表内路径，不要用容器内地址拼链接。\n{routes}"
         )
-    return build_system_prompt("\n".join(lines))
+    prompt = build_system_prompt("\n".join(lines))
+    fragment = build_skills_fragment(
+        discover_skills(Path(get_settings().agent_skills_dir).resolve())
+    )
+    return prompt if fragment is None else f"{prompt}\n\n{fragment}"
 
 
 async def _cli_env(session_id: str) -> dict[str, str]:
