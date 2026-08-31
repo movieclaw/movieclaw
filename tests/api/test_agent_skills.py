@@ -101,17 +101,20 @@ def send_and_finish(client, payload: dict) -> str:
 def test_catalog_injected_and_updates_take_effect(client, skills_dir) -> None:
     configure_provider(client)
 
-    # 空目录：system prompt 不含清单段
+    # 用户目录为空：清单只含内置技能（skill-creator 随源码打包），
+    # 且创建引导指向用户技能目录
     send_and_finish(client, {"content": "第一问"})
     assert captured_system_prompts, "未捕获到 system 消息"
-    assert "<available_skills>" not in captured_system_prompts[0]
+    first = captured_system_prompts[0]
+    assert "<available_skills>" in first
+    assert "<name>skill-creator</name>" in first
+    assert f"用户技能目录 {skills_dir}" in first
 
-    # 放入技能：下一轮运行即生效，无需重启
+    # 放入用户技能：下一轮运行即生效，无需重启
     write_skill(skills_dir, "subtitle-workflow", "字幕整理流程")
     captured_system_prompts.clear()
     send_and_finish(client, {"content": "第二问"})
     prompt = captured_system_prompts[0]
-    assert "<available_skills>" in prompt
     assert "<name>subtitle-workflow</name>" in prompt
     assert "<description>字幕整理流程</description>" in prompt
     assert str(skills_dir / "subtitle-workflow" / "SKILL.md") in prompt
@@ -121,3 +124,14 @@ def test_catalog_injected_and_updates_take_effect(client, skills_dir) -> None:
     captured_system_prompts.clear()
     send_and_finish(client, {"content": "第三问"})
     assert "<description>改过的描述</description>" in captured_system_prompts[0]
+
+
+def test_user_skill_overrides_builtin(client, skills_dir) -> None:
+    """用户目录放同名 skill-creator：清单里 location 指向用户目录。"""
+    configure_provider(client)
+    write_skill(skills_dir, "skill-creator", "用户定制版技能创建器")
+    send_and_finish(client, {"content": "问一句"})
+    prompt = captured_system_prompts[0]
+    assert "<description>用户定制版技能创建器</description>" in prompt
+    assert str(skills_dir / "skill-creator" / "SKILL.md") in prompt
+    assert "builtin-skills" not in prompt

@@ -134,8 +134,8 @@ def test_same_layer_duplicate_warns_first_wins(tmp_path: Path, caplog) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_fragment_none_when_empty() -> None:
-    assert build_skills_fragment([]) is None
+def test_fragment_none_when_empty(tmp_path: Path) -> None:
+    assert build_skills_fragment([], tmp_path) is None
 
 
 def test_fragment_renders_and_escapes(tmp_path: Path) -> None:
@@ -143,16 +143,18 @@ def test_fragment_renders_and_escapes(tmp_path: Path) -> None:
         name="a<b",
         description='描述 & "引号"',
         file_path=tmp_path / "a" / "SKILL.md",
-        scope="user",
+        scope="builtin",
     )
-    fragment = build_skills_fragment([skill])
+    fragment = build_skills_fragment([skill], tmp_path / "user-skills")
     assert fragment is not None
     assert "<name>a&lt;b</name>" in fragment
     assert "&amp;" in fragment and "&quot;" in fragment
     assert f"<location>{tmp_path / 'a' / 'SKILL.md'}</location>" in fragment
     assert "read 工具" in fragment
+    # 创建引导指向用户技能目录
+    assert f"用户技能目录 {tmp_path / 'user-skills'}" in fragment
     # scope 不进清单
-    assert "user" not in fragment.replace(str(tmp_path), "")
+    assert "builtin" not in fragment
 
 
 def test_fragment_warns_when_oversized(tmp_path: Path, caplog) -> None:
@@ -166,6 +168,6 @@ def test_fragment_warns_when_oversized(tmp_path: Path, caplog) -> None:
         for i in range(60)
     ]
     with caplog.at_level(logging.WARNING, logger="movieclaw_agent.skills"):
-        fragment = build_skills_fragment(skills)
+        fragment = build_skills_fragment(skills, tmp_path)
     assert fragment is not None  # 只警告不截断
     assert any("常驻开销" in r.message for r in caplog.records)

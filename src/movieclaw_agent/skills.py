@@ -184,11 +184,15 @@ def discover_skills(user_dir: Path, builtin_dir: Path | None = None) -> list[Ski
     return list(merged.values())
 
 
-def build_skills_fragment(skills: list[Skill]) -> str | None:
+def build_skills_fragment(skills: list[Skill], user_skills_dir: Path) -> str | None:
     """渲染系统提示词的技能清单段；无技能时返回 None（整段不输出）。
 
     结构对齐 Agent Skills 标准的集成建议（pi 同款 XML 清单），指令行为
-    中文：匹配才 read、相对路径以技能目录为锚、技能目录只读。
+    中文：匹配才 read、相对路径以技能目录为锚、已有技能只读。
+
+    创建引导（pi 的做法是在自带文档里列出技能目录位置、模型读文档后自行
+    写入；我们把位置直接写进指令行）：新建/修改技能一律进用户技能目录——
+    内置目录随版本更新整体覆盖，写进去的东西升级就没了。
     """
     if not skills:
         return None
@@ -197,7 +201,12 @@ def build_skills_fragment(skills: list[Skill]) -> str | None:
         "以下技能提供特定任务的专项指令。当用户请求与某技能的描述匹配时，"
         "先用 read 工具读取该技能文件的完整内容，再按其中的指令行动。"
         "技能文件里的相对路径以该技能所在目录（SKILL.md 的父目录）为锚，"
-        "转换成绝对路径后再在工具调用中使用。技能目录是只读资料，不要修改其中的文件。",
+        "转换成绝对路径后再在工具调用中使用。已有技能目录是只读资料，不要修改其中的文件。",
+        f"需要创建或修改技能时，一律写入用户技能目录 {user_skills_dir}"
+        "（每个技能一个子目录，内含 SKILL.md，frontmatter 必须有 description）。"
+        "系统内置技能随版本更新会被整体覆盖，绝不能往内置技能目录写入；"
+        "要定制某个内置技能，先把它整个复制到用户技能目录再修改——"
+        "同名的用户技能会自动覆盖内置版。新技能在下一轮对话自动生效，无需重启。",
         "",
         "<available_skills>",
     ]

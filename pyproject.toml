@@ -121,8 +121,10 @@ markers = [
 line-length = 100
 target-version = "py311"
 src = ["src", "tests"]
-# ml/ 是离线训练脚本（不随服务部署、不进运行时），不作为合并门禁的检查对象
-extend-exclude = ["ml"]
+# ml/ 是离线训练脚本（不随服务部署、不进运行时），不作为合并门禁的检查对象；
+# builtin-skills/ 是内置 Agent 技能（含第三方原样引入的脚本，如 Anthropic 的
+# skill-creator），是数据不是本项目代码，保持原封不动、不做风格检查
+extend-exclude = ["ml", "src/movieclaw_agent/builtin-skills"]
 
 [tool.ruff.lint]
 select = [

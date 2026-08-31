@@ -149,9 +149,8 @@ async def _agent_system_prompt() -> str:
             f"只拼表内路径，不要用容器内地址拼链接。\n{routes}"
         )
     prompt = build_system_prompt("\n".join(lines))
-    fragment = build_skills_fragment(
-        discover_skills(Path(get_settings().agent_skills_dir).resolve())
-    )
+    user_skills_dir = Path(get_settings().agent_skills_dir).resolve()
+    fragment = build_skills_fragment(discover_skills(user_skills_dir), user_skills_dir)
     return prompt if fragment is None else f"{prompt}\n\n{fragment}"
 
 
