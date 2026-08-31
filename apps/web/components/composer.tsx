@@ -11,7 +11,7 @@ import {
   isAcceptedImage,
   prepareImageAttachment,
 } from "@/lib/agent-attachments";
-import { skillToken } from "@/lib/agent-skills";
+import { ComposerEditor, type ComposerEditorHandle } from "@/components/composer-editor";
 import { listSkills, type AgentSkill } from "@/lib/api/agent";
 import { THINKING_LEVEL_LABELS } from "@/lib/llm-thinking";
 import { useBackdrop } from "@/lib/backdrop";
@@ -94,7 +94,7 @@ export function Composer({
   const [uploading, setUploading] = useState(0);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const editorRef = useRef<ComposerEditorHandle>(null);
   const hasImages = images.length > 0;
   const canSubmit =
     !disabled &&
@@ -135,21 +135,9 @@ export function Composer({
     setUploadError(null);
   }
 
-  /** 在光标处插入 /skill:名字 占位符；插入后光标停在占位符之后。 */
+  /** 在光标处插入技能 token chip；插入后光标停在其后（加号菜单入口）。 */
   function insertSkill(name: string) {
-    const token = skillToken(name);
-    const el = textareaRef.current;
-    if (!el) {
-      setText(text.length > 0 && !text.endsWith(" ") ? `${text} ${token}` : text + token);
-      return;
-    }
-    const start = el.selectionStart ?? text.length;
-    const end = el.selectionEnd ?? start;
-    setText(text.slice(0, start) + token + text.slice(end));
-    requestAnimationFrame(() => {
-      el.focus();
-      el.selectionStart = el.selectionEnd = start + token.length;
-    });
+    editorRef.current?.insertSkill(name);
   }
 
   const body = (
@@ -190,37 +178,29 @@ export function Composer({
           )}
         </div>
       )}
-      <textarea
-        ref={textareaRef}
-        rows={2}
+      {/* Lexical 编辑器：对外仍是纯文本契约（含 /skill: 占位符），内部把
+          占位符渲染成技能 chip；输入「/」触发技能快捷菜单 */}
+      <ComposerEditor
+        ref={editorRef}
+        value={text}
+        onChange={setText}
+        onSubmit={submit}
         autoFocus={autoFocus}
         disabled={disabled}
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        onPaste={
+        skillPicker={skillPicker && !disabled}
+        onPasteFiles={
           imageUpload
-            ? (e) => {
+            ? (files) => {
                 // 粘贴截图：剪贴板里带图片文件时收进附件（文字照常走默认粘贴）
-                const files = [...e.clipboardData.files].filter(isAcceptedImage);
-                if (files.length > 0) {
-                  e.preventDefault();
-                  addFiles(files);
-                }
+                const accepted = [...files].filter(isAcceptedImage);
+                if (accepted.length > 0) addFiles(accepted);
               }
             : undefined
         }
-        onKeyDown={(e) => {
-          // 回车提交、Shift+回车换行（输入法组合期间的回车不触发）
-          if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-            e.preventDefault();
-            submit();
-          }
-        }}
-        placeholder={placeholder ?? (busy ? "生成中，可先输入下一条…" : "随心输入，描述一个新任务…")}
         // 锁定态的占位符是提示语（说明为何不可用）而非装饰，按 muted 档渲染保证可读
-        className={`scroll-thin block w-full resize-none bg-transparent px-4 pb-1 pt-3.5 text-body leading-6 text-[var(--text)] focus:outline-none ${
-          disabled ? "placeholder:text-[var(--text-muted)]" : "placeholder:text-[var(--text-faint)]"
-        }`}
+        placeholder={
+          placeholder ?? (busy ? "生成中，可先输入下一条…" : "随心输入，描述一个新任务…")
+        }
       />
       {/* 工具行：左控件簇 + 右发送簇，单行永不换行 */}
       <div className="flex items-center justify-between gap-2 px-2.5 pb-2.5 pt-1">

@@ -632,6 +632,18 @@ a {
     inset 0 0 0 1px color-mix(in srgb, var(--accent-ring) 55%, transparent);
 }
 
+/* composer 输入框里的技能 token（Lexical SkillTokenNode）：
+   与会话气泡里的技能 chip 同一视觉语言，行内原子实体、整体删除 */
+.skill-token-chip {
+  background: rgba(255, 255, 255, 0.09);
+  border-radius: 8px;
+  padding: 1px 6px;
+  margin: 0 1px;
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  white-space: nowrap;
+}
+
 /* 数字等宽（时间、计数），排版更整齐 */
 .tnum {
   font-variant-numeric: tabular-nums;
