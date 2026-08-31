@@ -24,6 +24,7 @@ from movieclaw_agent.prompts import COMPACT_PROMPT, SUMMARY_PREFIX
 from movieclaw_llm import (
     ChatMessage,
     ChatRequest,
+    ImagePart,
     LlmError,
     LlmRouter,
     ModelSettings,
@@ -41,6 +42,12 @@ RETAINED_USER_TOKEN_BUDGET = 20_000
 #: 一个汉字 3 字节 ≈ 0.75 token，与主流 tokenizer 的量级一致，偏保守即可
 APPROX_BYTES_PER_TOKEN = 4
 
+#: 每张图片的估算 token 数。qwen-vl 按 28×28 patch 计价（2048×1024 约
+#: 2600 token），前端上传前已压到最长边 2048，1000 取中等图的量级。估算
+#: 只服务 90% 水位的压缩触发时机，偏差可接受；按分辨率精算对各家供应商
+#: 公式不一，收益配不上复杂度（docs/design/agent-image-input.md §7）。
+IMAGE_TOKEN_ESTIMATE = 1000
+
 
 class CompactionResult(BaseModel):
     """一次压缩的完整产物：摘要 + 重建后的历史（不含 system，system 每次运行重拼）。"""
@@ -55,8 +62,9 @@ class CompactionResult(BaseModel):
 def estimate_tokens(target: list[ChatMessage] | ChatMessage | str) -> int:
     """按 UTF-8 字节数估算 token（约 4 字节/token）。
 
-    消息计入正文文本与工具调用的 raw_arguments/name；图片块不计
-    （当前 Agent 工具集不产图片输入，为它建模属过度设计）。
+    消息计入正文文本与工具调用的 raw_arguments/name；图片块按固定
+    IMAGE_TOKEN_ESTIMATE 计入（引用型与内联型同价——供应商按像素计费，
+    与我们本地是否已水合无关）。
     """
     if isinstance(target, str):
         return len(target.encode("utf-8")) // APPROX_BYTES_PER_TOKEN
@@ -65,7 +73,12 @@ def estimate_tokens(target: list[ChatMessage] | ChatMessage | str) -> int:
         for tc in target.tool_calls or []:
             total += len(tc.name.encode("utf-8"))
             total += len(tc.raw_arguments.encode("utf-8"))
-        return total // APPROX_BYTES_PER_TOKEN
+        tokens = total // APPROX_BYTES_PER_TOKEN
+        if isinstance(target.content, list):
+            tokens += IMAGE_TOKEN_ESTIMATE * sum(
+                1 for part in target.content if isinstance(part, ImagePart)
+            )
+        return tokens
     return sum(estimate_tokens(message) for message in target)
 
 
@@ -116,6 +129,12 @@ def build_replacement_history(messages: list[ChatMessage], summary: str) -> list
         if tokens <= remaining:
             retained.append(message)
             remaining -= tokens
+        elif isinstance(message.content, list) and any(
+            isinstance(part, ImagePart) for part in message.content
+        ):
+            # 带图消息不做中部截断：截断路径用 text() 重建 content 会把图丢掉。
+            # 整条按预算取舍——装不下就整条丢弃，信息由摘要承载。
+            break
         else:
             retained.append(
                 ChatMessage(role="user", content=_truncate_middle(message.text(), remaining))

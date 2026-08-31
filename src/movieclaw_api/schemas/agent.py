@@ -176,7 +176,18 @@ class SessionMessageView(BaseModel):
 
     @classmethod
     def from_model(cls, message: ChatMessage) -> SessionMessageView:
-        return cls.model_validate(message.model_dump())
+        dumped = message.model_dump()
+        # 防御性剔除图片字节：落库脱水（store 写入口）之外的第二道闸。
+        # 老数据或异常路径里若混入内联 base64，也不能把几 MB 推给前端——
+        # 引用型图片块的展示只依赖 attachment_id（下载接口取图）。
+        content = dumped.get("content")
+        if isinstance(content, list):
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") == "image" and part.get("attachment_id"):
+                    part["data"] = None
+        return cls.model_validate(dumped)
 
 
 class SessionMessageEntryView(BaseModel):

@@ -29,6 +29,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 import os
@@ -42,7 +43,7 @@ from PIL import Image
 from pydantic import BaseModel
 
 from movieclaw_api.exceptions import BadRequestException, NotFoundException
-from movieclaw_llm import ContentPart, ImagePart, TextPart
+from movieclaw_llm import ChatMessage, ContentPart, ImagePart, ModelInfo, TextPart
 
 logger = logging.getLogger("movieclaw_api.agent_attachments")
 
@@ -360,6 +361,156 @@ class AgentAttachmentStore:
         if removed:
             logger.info("已回收 %d 个未发送的过期图片附件", removed)
         return removed
+
+
+# ---------------------------------------------------------------------------
+# 请求水合（发模型前把引用换成字节；门控 / 缺文件 / 预算三级降级）
+# ---------------------------------------------------------------------------
+
+#: 附件提醒文本的固定前缀。它只存在于请求投影（发给模型的消息副本）里：
+#: 落盘时由 AgentSessionStore 按此前缀剥除，前端永远看不到这段样板文案
+#: （maka 定案："presentation layers never show the folded form"）。
+ATTACHMENT_NOTE_PREFIX = "[图片附件]"
+
+
+def _gate_placeholder(part: ImagePart) -> str:
+    name = part.name or "未命名"
+    return (
+        f"[用户发送了图片 {name}，当前模型不支持图片输入，无法查看。"
+        "请告知用户：可在设置中切换视觉模型（如 qwen3-vl-plus）；"
+        "若当前模型实际支持视觉，请在供应商设置的「补录模型」中为它声明"
+        " modalities 后重试。]"
+    )
+
+
+def _missing_placeholder(part: ImagePart) -> str:
+    name = part.name or "未命名"
+    return f"[图片 {name} 已过期或被清理，无法查看；如需请让用户重新发送。]"
+
+
+_BUDGET_PLACEHOLDER = "[更早的一张图片因请求体积限制已省略；如仍需要请让用户重发。]"
+
+
+def _attachment_note(images: list[ImagePart], has_user_text: bool) -> str:
+    """带图 user 消息的附件清单（确定性生成，跨请求稳定，永不落库）。"""
+    listing = "、".join(
+        f"{p.name or '未命名'}（{p.media_type or 'image'}）" for p in images
+    )
+    note = f"{ATTACHMENT_NOTE_PREFIX} 本条消息附带 {len(images)} 张图片：{listing}。"
+    if not has_user_text:
+        note += "用户未附文字，请直接查看图片内容并回应。"
+    return note
+
+
+def _is_attachment_note(part: ContentPart) -> bool:
+    return isinstance(part, TextPart) and part.text.startswith(ATTACHMENT_NOTE_PREFIX)
+
+
+async def hydrate_images(
+    messages: list[ChatMessage],
+    *,
+    session_id: str,
+    model_info: ModelInfo,
+    store: AgentAttachmentStore | None = None,
+) -> list[ChatMessage]:
+    """把消息里的引用型 ImagePart 换成可发送形态，返回新列表（原列表不动）。
+
+    两个调用点共用（发起运行的编排层 + 手动压缩接口），规则按优先级：
+
+    1. 视觉门控（fail-closed）：模型未声明 image modality 时所有图片替换为
+       占位文本，模型能向用户解释并给出 extra_models 声明的出路；
+    2. 读文件：按引用从会话 assets 目录读字节 → base64；缺文件降级占位；
+    3. 请求级预算：图片原始字节总量 ≤ MAX_REQUEST_IMAGE_BYTES，**从最新往旧
+       保留**（用户最近发的图才是当前任务对象），超预算的旧图替换占位。
+
+    带图的 user 消息在末尾追加附件清单文本（ATTACHMENT_NOTE_PREFIX 开头），
+    让模型跨轮记得图片的存在；它只属于请求投影，落盘时被剥除。
+    """
+    attachment_store = store if store is not None else get_agent_attachment_store()
+    vision = "image" in (model_info.modalities or [])
+
+    # 收集全部引用块的位置；没有图的消息原样透传
+    refs: list[tuple[int, int, ImagePart]] = []
+    for message_index, message in enumerate(messages):
+        if not isinstance(message.content, list):
+            continue
+        for part_index, part in enumerate(message.content):
+            if isinstance(part, ImagePart) and part.attachment_id:
+                refs.append((message_index, part_index, part))
+    if not refs:
+        return list(messages)
+
+    def read_meta_safe(attachment_id: str) -> AttachmentMeta | None:
+        try:
+            return attachment_store.read_meta(session_id, attachment_id)
+        except BadRequestException:
+            return None  # 历史里混入了非法 id：按缺失处理，不让整次运行失败
+
+    # 预算判定：倒序（最新优先）按 sidecar 记录的原始字节数装入
+    kept: set[tuple[int, int]] = set()
+    if vision:
+        remaining = MAX_REQUEST_IMAGE_BYTES
+        for message_index, part_index, part in reversed(refs):
+            meta = await asyncio.to_thread(read_meta_safe, part.attachment_id or "")
+            if meta is None:
+                continue  # 缺文件走 missing 占位，不占预算
+            if meta.bytes <= remaining:
+                kept.add((message_index, part_index))
+                remaining -= meta.bytes
+    omitted_by_budget = 0
+
+    out: list[ChatMessage] = []
+    for message_index, message in enumerate(messages):
+        if not isinstance(message.content, list) or not any(
+            r[0] == message_index for r in refs
+        ):
+            out.append(message)
+            continue
+        parts: list[ContentPart] = []
+        images_in_message: list[ImagePart] = []
+        for part_index, part in enumerate(message.content):
+            if not (isinstance(part, ImagePart) and part.attachment_id):
+                # 历史里可能残留旧的清单文本（理论上落盘已剥除），跳过防重复
+                if not _is_attachment_note(part):
+                    parts.append(part)
+                continue
+            images_in_message.append(part)
+            if not vision:
+                parts.append(TextPart(text=_gate_placeholder(part)))
+                continue
+            if (message_index, part_index) not in kept:
+                result = None
+            else:
+                result = await asyncio.to_thread(
+                    attachment_store.read_base64, session_id, part.attachment_id or ""
+                )
+            if result is not None:
+                encoded, meta = result
+                parts.append(part.model_copy(update={"data": encoded, "media_type": meta.mime}))
+            elif (message_index, part_index) in kept or (
+                await asyncio.to_thread(read_meta_safe, part.attachment_id or "") is None
+            ):
+                # 判定保留但读取失败（绑定后被清理），或元数据本就缺失
+                parts.append(TextPart(text=_missing_placeholder(part)))
+            else:
+                omitted_by_budget += 1
+                parts.append(TextPart(text=_BUDGET_PLACEHOLDER))
+        if vision and message.role == "user" and images_in_message:
+            has_user_text = any(
+                isinstance(p, TextPart) and p.text.strip() and not _is_attachment_note(p)
+                for p in message.content
+            )
+            parts.append(TextPart(text=_attachment_note(images_in_message, has_user_text)))
+        out.append(message.model_copy(update={"content": parts}))
+
+    if omitted_by_budget:
+        logger.info(
+            "会话 %s 的 %d 张历史图片超出单请求预算（%dMB），已替换为占位文本",
+            session_id,
+            omitted_by_budget,
+            MAX_REQUEST_IMAGE_BYTES // (1024 * 1024),
+        )
+    return out
 
 
 def compose_user_content(

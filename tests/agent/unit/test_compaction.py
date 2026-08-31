@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from movieclaw_agent.compaction import (
     APPROX_BYTES_PER_TOKEN,
+    IMAGE_TOKEN_ESTIMATE,
     RETAINED_USER_TOKEN_BUDGET,
     build_replacement_history,
     estimate_tokens,
@@ -11,7 +12,7 @@ from movieclaw_agent.compaction import (
     should_compact,
 )
 from movieclaw_agent.prompts import SUMMARY_PREFIX
-from movieclaw_llm import ChatMessage, ToolCall
+from movieclaw_llm import ChatMessage, ImagePart, TextPart, ToolCall
 
 
 def test_estimate_tokens_bytes_heuristic():
@@ -73,3 +74,41 @@ def test_build_replacement_history_budget_truncates_oldest():
     # 保留消息的估算总量不超预算（截断标记有少量溢出容忍，放宽 5%）
     retained_tokens = sum(estimate_tokens(m) for m in rebuilt[:-1])
     assert retained_tokens <= RETAINED_USER_TOKEN_BUDGET * 1.05
+
+
+def test_estimate_tokens_counts_images_flat_rate():
+    message = ChatMessage(
+        role="user",
+        content=[
+            TextPart(text="x" * 400),
+            ImagePart(attachment_id="a" * 32, media_type="image/png"),
+            ImagePart(data="QUJD", media_type="image/png"),
+        ],
+    )
+    # 文本 100 + 两张图（引用型与内联型同价）
+    assert estimate_tokens(message) == 100 + 2 * IMAGE_TOKEN_ESTIMATE
+
+
+def test_build_replacement_history_keeps_image_message_refs():
+    """预算内的带图消息连引用一起保留（转录里引用很便宜，请求预算另行兜底）。"""
+    image_message = ChatMessage(
+        role="user",
+        content=[TextPart(text="看这张图"), ImagePart(attachment_id="a" * 32, name="图.png")],
+    )
+    rebuilt = build_replacement_history([image_message], "摘要")
+    kept = rebuilt[0]
+    assert isinstance(kept.content, list)
+    assert any(isinstance(p, ImagePart) for p in kept.content)
+
+
+def test_build_replacement_history_drops_oversize_image_message_whole():
+    """带图消息超预算时不做中部截断（text() 重建会丢图），整条丢弃。"""
+    big_text = "x" * (RETAINED_USER_TOKEN_BUDGET * APPROX_BYTES_PER_TOKEN)
+    oversize_with_image = ChatMessage(
+        role="user",
+        content=[TextPart(text=big_text), ImagePart(attachment_id="b" * 32)],
+    )
+    rebuilt = build_replacement_history([oversize_with_image], "摘要")
+    # 只剩摘要收尾；不存在被截断成纯文本、图悄悄消失的消息
+    assert len(rebuilt) == 1
+    assert is_summary_message(rebuilt[0])

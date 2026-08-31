@@ -40,7 +40,7 @@ from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from movieclaw_agent import CompactionResult
 from movieclaw_api.exceptions import BadRequestException, NotFoundException
-from movieclaw_llm import ChatMessage, ImagePart, TokenUsage, ToolCall
+from movieclaw_llm import ChatMessage, ImagePart, TextPart, TokenUsage, ToolCall
 
 logger = logging.getLogger("movieclaw_api.agent_sessions")
 
@@ -148,6 +148,46 @@ class SessionSummary(BaseModel):
     last_prompt: str | None
     #: 最后一条 entry 的时间戳（文件为空时取头的 created_at）
     last_timestamp: str
+
+
+def dehydrate_message(message: ChatMessage) -> ChatMessage:
+    """落库脱水（引用化的不变量守门员，docs/design/agent-image-input.md §6）。
+
+    发请求前的水合会给引用型 ImagePart 补上 base64 字节、给带图 user 消息
+    追加附件清单文本；两者都只属于请求投影。压缩行的 replacement_history
+    来自运行内已水合的消息，不在这里剥掉就会把几 MB base64 写进转录。
+    规则：
+
+    - 带 attachment_id 的 ImagePart 一律置 data=None（字节的事实源在
+      assets 目录，转录只存引用）；
+    - 附件清单文本（固定前缀，见 agent_attachments.ATTACHMENT_NOTE_PREFIX）
+      仅在消息**同时含图**时剥除——用户自己打出前缀文字的纯文本消息不受
+      影响。
+
+    应用在本 store 的全部写入口（append / append_compaction / append_handoff），
+    store 是唯一写盘口，守在这里才覆盖手动压缩等不经 recorder 的路径。
+    """
+    from movieclaw_api.services.agent_attachments import ATTACHMENT_NOTE_PREFIX
+
+    if not isinstance(message.content, list):
+        return message
+    has_image = any(isinstance(p, ImagePart) for p in message.content)
+    changed = False
+    parts = []
+    for part in message.content:
+        if isinstance(part, ImagePart) and part.attachment_id and part.data is not None:
+            parts.append(part.model_copy(update={"data": None}))
+            changed = True
+            continue
+        if (
+            has_image
+            and isinstance(part, TextPart)
+            and part.text.startswith(ATTACHMENT_NOTE_PREFIX)
+        ):
+            changed = True
+            continue
+        parts.append(part)
+    return message.model_copy(update={"content": parts}) if changed else message
 
 
 def message_preview(message: ChatMessage) -> str:
@@ -300,7 +340,7 @@ class AgentSessionStore:
             uuid=uuid_mod.uuid4().hex[:12],
             parent_uuid=self._leaf_cache[session_id],
             timestamp=_now_iso(),
-            message=message,
+            message=dehydrate_message(message),
             model=model,
             usage=usage,
             finish_reason=finish_reason,
@@ -325,7 +365,7 @@ class AgentSessionStore:
             parent_uuid=self._leaf_cache[session_id],
             timestamp=_now_iso(),
             summary=result.summary,
-            replacement_history=result.replacement_history,
+            replacement_history=[dehydrate_message(m) for m in result.replacement_history],
             tokens_before=result.tokens_before,
             tokens_after=result.tokens_after,
         )
@@ -357,7 +397,7 @@ class AgentSessionStore:
             source_session_id=source_session_id,
             source_leaf_uuid=source_leaf_uuid,
             source_title=source_title,
-            replacement_history=replacement_history,
+            replacement_history=[dehydrate_message(m) for m in replacement_history],
         )
         with path.open("a", encoding="utf-8") as f:
             f.write(entry.model_dump_json(exclude_none=True) + "\n")

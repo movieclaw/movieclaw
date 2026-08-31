@@ -212,3 +212,29 @@ def test_delete_session_removes_attachments(client, tmp_path) -> None:
     r = client.delete(f"/api/v1/sessions/{session_id}")
     assert r.status_code == 200
     assert not assets.exists()
+
+
+def test_fork_copies_attachments_source_deletable(client, tmp_path) -> None:
+    """fork 同 id 复制附件：源会话删除后，新会话的图仍可下载（引用未改写）。"""
+    configure_provider(client)
+    attachment_id = upload_png(client)
+    session_id, _ = send_and_finish(client, {"content": "看图", "attachments": [attachment_id]})
+    wait_not_running(client, session_id)
+
+    forked = client.post(f"/api/v1/sessions/{session_id}/fork")
+    assert forked.status_code == 201, forked.text
+    new_id = forked.json()["data"]["session"]["id"]
+    # 快照里的引用未改写（同 id）
+    history = forked.json()["data"]["entries"][0]["replacement_history"]
+    image_parts = [
+        p
+        for message in history
+        for p in (message["content"] if isinstance(message["content"], list) else [])
+        if p["type"] == "image"
+    ]
+    assert [p["attachment_id"] for p in image_parts] == [attachment_id]
+
+    assert client.delete(f"/api/v1/sessions/{session_id}").status_code == 200
+    got = client.get(f"/api/v1/sessions/{new_id}/attachments/{attachment_id}")
+    assert got.status_code == 200
+    assert got.headers["content-type"] == "image/png"

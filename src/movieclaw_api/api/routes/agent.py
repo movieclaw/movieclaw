@@ -37,6 +37,7 @@ from movieclaw_api.services.agent_attachments import (
     compose_user_content,
     extract_attachment_ids,
     get_agent_attachment_store,
+    hydrate_images,
 )
 from movieclaw_api.services.agent_runs import get_agent_run_registry
 from movieclaw_api.services.agent_session_recorder import AgentSessionRecorder
@@ -55,7 +56,7 @@ from movieclaw_db.repositories.agent_session_repo import (
     AgentSessionRepository,
     is_running,
 )
-from movieclaw_llm import ChatMessage, LlmRouter, ModelSettings
+from movieclaw_llm import ChatMessage, LlmError, LlmRouter, ModelSettings
 
 router = APIRouter(prefix="/sessions", tags=["session"])
 
@@ -233,6 +234,22 @@ async def _launch_user_message(
     )
     message_id = await recorder.record_user_message(user_content)
 
+    # 请求水合：历史 + 本轮输入统一处理（视觉门控 / 读字节 / 预算，预算从
+    # 最新往旧保留——列表末位正是本轮消息）。路由解析失败时跳过水合，交给
+    # runner 以 agent_error 事件呈现同一个错误，不在这里提前 500。
+    history_for_run, input_for_run = history, user_content
+    try:
+        model_info = llm_router.get_model_info(model)
+    except LlmError:
+        model_info = None
+    if model_info is not None:
+        hydrated = await hydrate_images(
+            [*history, ChatMessage(role="user", content=user_content)],
+            session_id=session_id,
+            model_info=model_info,
+        )
+        history_for_run, input_for_run = hydrated[:-1], hydrated[-1].content
+
     runner = AgentRunner(
         llm_router,
         tools=actual_tools,
@@ -240,8 +257,8 @@ async def _launch_user_message(
         on_compaction=recorder.on_compaction,
     )
     params = AgentStartParams(
-        input=user_content,
-        history=history,
+        input=input_for_run,
+        history=history_for_run,
         model=model,
         system_prompt=actual_system_prompt,
     )
@@ -480,6 +497,18 @@ async def fork_session(
 
     source_title = source.title or source.last_prompt
     header, handoff = store.fork(session_id, source_title=source_title)
+    # 快照里引用的图片按同 id 复制到新会话目录（目录按会话隔离，id 不冲突，
+    # 引用无需改写）——handoff 的既有原则是「新会话不依赖源文件」，源会话
+    # 之后被删除，新会话的图仍可水合。源附件缺失只跳过，不阻断 fork。
+    referenced = {
+        attachment_id
+        for message in handoff.replacement_history
+        for attachment_id in extract_attachment_ids(message.content)
+    }
+    if referenced:
+        get_agent_attachment_store().copy_session_attachments(
+            session_id, header.session_id, referenced
+        )
     target_title = (
         (source_title if source_title.startswith("续：") else f"续：{source_title}")[:80]
         if source_title
@@ -558,6 +587,14 @@ async def compact_session_context(
     )
 
     messages = [ChatMessage(role="system", content=await _agent_system_prompt()), *history]
+    # 手动压缩不经过 runner，历史里的图片引用必须在这里水合——否则视觉模型
+    # 写摘要时只能看到协议层的降级占位，看不到图（设计 §6 的第二个调用点）。
+    try:
+        model_info = llm_router.get_model_info(model)
+    except LlmError:
+        model_info = None
+    if model_info is not None:
+        messages = await hydrate_images(messages, session_id=session_id, model_info=model_info)
     result = await compact(llm_router, model, messages, ModelSettings())
     if result is None:
         raise UpstreamServiceException("压缩失败：模型未能生成摘要，请稍后重试")
