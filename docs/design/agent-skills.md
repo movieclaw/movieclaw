@@ -226,9 +226,114 @@ description 写具体（「做什么 + 何时用」），这是技能作者的�
 
 ## 8. 分期
 
-- **P1**：前端技能管理页（列表/查看/启停——启停状态可仿 pi 存 settings 或
-  仿 maka 存 `data/agent-skills/.state.json`）；composer 显式调用（选技能 →
-  API 传 refs → 服务端组装进 user 消息信封，复用 thinking_level 的信封机制）；
-  届时一并支持 `disable-model-invocation`。
+- **P1（已设计，见 §9）**：composer 显式调用——加号菜单选技能、文本占位符
+  `/skill:名字`、服务端展开。
+- **P1 之后**：前端技能管理页（列表/查看/启停——启停状态可仿 pi 存 settings
+  或仿 maka 存 `data/agent-skills/.state.json`）；届时一并支持
+  `disable-model-invocation`。
 - **P2**：技能量级增长后的目录预算与 SkillSearch（maka 路线）；IM 通道技能
   （需先解决 IM 无 read 工具的问题）。
+
+## 9. P1：显式调用（加号菜单 + 占位符展开）
+
+### 9.1 参照系调研
+
+**pi 的机制**（`agent-session.ts::_expandSkillCommand`）：消息以
+`/skill:name args` 开头时，服务端在发送管线里**现场读盘** SKILL.md →
+剥 frontmatter → 包成
+`<skill name="..." location="...">\nReferences are relative to {baseDir}.\n\n{正文}</skill>\n\n{args}`
+→ **展开后的全文作为 user 消息入转录**；TUI 用正则
+（`^<skill name="([^"]+)" location="([^"]+)">\n([\s\S]*?)\n</skill>(?:\n\n([\s\S]+))?$`）
+识别这类消息，折叠渲染成一行 `[skill] name（可展开）`，用户文本单独渲染。
+未知技能名**原文透传**（当普通消息发出）。限制：token 只能在消息开头、
+一次一个。
+
+**maka 的机制**（`skill-invocation.ts` + `@maka/core` 共享语法）：token
+正则 `(?:^|(?<=\s))\/skill:([A-Za-z0-9._-]+)`——**行首或空白后**即可，
+支持任意位置、多个 token（首现序去重，上限 50）。展开时把**全部 token
+从外发文本剥除（含解析失败的）**，组装「信任框架前言 + `<invoked-skill>`
+块们 + `<user-message>` 包裹的剩余文本」；全部失败则 blocked、不产生
+模型轮次。UI（TUI/桌面）在草稿里把 token 高亮为芯片。
+
+取舍：**主体抄 pi（服务端展开 + 展开文入转录 + 前端折叠渲染），token
+语法抄 maka（任意位置 + 多个）**——加号菜单会把占位符插到光标处，pi 的
+「必须在消息开头」不适配；maka 的 blocked 语义、信任框架前言、receipt
+遥测则不引入（单来源可信技能用不到）。
+
+### 9.2 交互（前端）
+
+1. **加号升级为菜单**：复用 ThinkingLevelMenu 的向上弹出 `menu-surface`
+   浮层，两个入口——「上传图片」（原文件选择，仅 `imageUpload` 时出现）与
+   「使用技能」子列表（每项显示 name，description 做 title 提示）。加号的
+   渲染条件从「imageUpload」放宽为「imageUpload 或技能列表非空」；
+2. **技能列表**来自新接口 `GET /api/v1/skills`，打开菜单时现拉（个位数
+   条目、与「改技能即生效」语义一致，不做缓存）；
+3. **选中即插占位符**：在光标处插入文本 `/skill:名字 `。占位符就是纯文本
+   ——可见、可编辑、可删除、可手敲，不引入结构化 chip 状态（这是「占位符
+   然后替换」的最简形态；输入框内高亮芯片是纯增强，后续可加）；
+4. 发送链路完全不变：文本原样进 `POST /sessions`，展开是服务端的事。
+
+### 9.3 展开（服务端）
+
+落点 `_launch_user_message` 之前（与附件 compose 同层），新函数
+`expand_skill_invocations(content, skills) -> str`（放 `movieclaw_agent/skills.py`）：
+
+1. **解析**：maka 同款正则（名字字符集放宽为 `[A-Za-z0-9._-]+` 以容忍
+   大小写/下划线手误），首现序去重，**一条消息最多展开 8 个**（超出的
+   token 原样保留）；
+2. **匹配**：对 `discover_skills()` 结果按 name 小写比对；命中的现场读
+   SKILL.md、剥 frontmatter，正文超 **32_000 字符截断**并附中文截断注记
+   （一次性注入没有 read 分页兜底，必须设上限防单文件撑爆上下文）；
+3. **组装**（pi 块格式，中文锚语句）：
+
+   ```
+   <skill name="douban-picks" location="/abs/.../SKILL.md">
+   技能文件里的相对路径以 /abs/... 目录为锚。
+
+   {正文}
+   </skill>
+
+   {剥除已命中 token 后的用户文本}
+   ```
+
+   多个技能依次多个块；命中 token 从文本剥除（maka 的行内清理：残留
+   多余空白折叠）；剥完为空时补一句「用户未附加说明，按上述技能指令执行」；
+4. **未命中的 token 原样保留**（pi 式透传）：技能刚被删/名字敲错时，
+   模型看得见原文并能向用户解释，比静默吞掉或整条拒发（maka blocked）
+   更符合我们的会话产品形态；
+5. **展开后的全文替换 content 入转录**（pi 语义）：内容冻结在调用时刻、
+   历史可复现，续轮/压缩/retry 走既有链路零特判。幂等性天然成立：已展开
+   文本里的 `<skill ...>` 块不含裸 token，retry 复用旧文本不会二次展开；
+6. IM 通道不接入（不经此展开点，token 在 IM 里就是普通文本）——与清单
+   的 read 门控同一条边界，docstring 注明。
+
+### 9.4 渲染（前端会话页）
+
+- `entriesToTurns` 用 pi 同款正则解析 user 消息：开头连续的 `<skill>` 块
+  拆出 `skills: [{name}]`，余下是用户文本；
+- 气泡渲染成**技能 chip**（如 `⚡ douban-picks`）+ 用户文本，技能正文
+  P1 不做展开查看（转录里有全文，需要时后续加）；
+- 侧栏预览（后端 `message_preview`）：`<skill>` 块替换为 `[技能]` 占位，
+  与 `[图片]` 同一处理。
+
+### 9.5 实现清单（P1）
+
+| # | 改动 | 位置 |
+|---|---|---|
+| 1 | `SKILL_TOKEN_RE` + `expand_skill_invocations()`（解析/匹配/读盘剥 frontmatter/截断/组装）+ 消息解析辅助（供 preview） | `movieclaw_agent/skills.py` |
+| 2 | `GET /api/v1/skills`（name/description/scope 列表）+ `_launch_user_message` 前接展开 + retry 链路确认幂等 | `movieclaw_api/api/routes/agent.py`、schemas |
+| 3 | `message_preview` 的 `[技能]` 占位 | `movieclaw_api/services/agent_sessions.py` |
+| 4 | composer 加号菜单（图片/技能两入口）+ 光标处插 token；`lib/api/agent.ts` 加 listSkills | `apps/web/components/composer.tsx` 等 |
+| 5 | 会话页 user 气泡的技能 chip 解析与渲染 | `apps/web/lib/agent-conversations.tsx`、`agent-conversation-view.tsx` |
+| 6 | 测试：展开单元（命中/未命中透传/多 token 去重/上限/截断/幂等）、API（转录存展开文/preview 占位/skills 列表）、composer 交互 | `tests/agent`、`tests/api`、前端类型检查 |
+
+### 验收标准（P1）
+
+1. 加号菜单能列出全部技能（含内置 skill-creator），选中后输入框出现
+   `/skill:名字 ` 占位符；
+2. 发送后模型收到的 user 消息是展开后的技能正文 + 用户文本（真机验证
+   模型直接按技能行动、不再自己 read SKILL.md）；
+3. 会话气泡显示技能 chip + 用户原文，侧栏预览显示 `[技能]`；
+4. 敲错名字的 token 原样透传，模型能向用户解释；
+5. retry 不产生重复展开；技能改动后**新的**显式调用用新内容，历史轮次
+   保持调用时刻的旧内容。
