@@ -328,8 +328,10 @@ retry 同口径。
   成一条消息再触发（session_key 已串行，聚合天然安全）；
 - 两处 Agent 装配（`im_channel.py` 与 `weixin_channel.py`）都要接；
 - 服务端降采样（Pillow 压到 2048 边长）在此期落地——IM 进来的图没有前端可压；
-- 设置页开放 `extra_models` 的 `modalities` 编辑（自建端点用户放行视觉的
-  唯一出路，见 §6 门控文案）。
+- 设置页 `extra_models` 的图片声明（「视觉」勾选 → modalities）**已存在**，
+  即 §6 门控文案指引的出路；补录表单向完整「能力声明」表（图片/视频/
+  思考控制统一一节）的演进见 `agent-thinking-level.md` §4.4——视频声明
+  先行落表，Agent 侧视频输入落地时门控从只读 image 扩展。
 
 ## 11. P2 —— 暂不做但已想清楚的
 
