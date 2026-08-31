@@ -32,19 +32,36 @@
 
 ## 2. 技能的形态
 
-### 2.1 目录
+### 2.1 目录：内置 + 用户两层
 
-新增配置 `AGENT_SKILLS_DIR`（默认 `./data/agent-skills`，进 `core/config.py`），
-对齐「运行期数据全部落 `data/`」的项目约定——部署挂载 `data/` 卷即持久化，
-管理员把技能目录放进去（或再挂一层子卷）即完成安装。
+发现分两层，**用户层优先，同名覆盖内置**：
+
+| 层 | 位置 | 交付方式 |
+|---|---|---|
+| 系统内置 | `src/movieclaw_agent/builtin-skills/`（包内数据目录） | 随源码打包发版，产品自带的官方技能 |
+| 用户 | `AGENT_SKILLS_DIR`（默认 `./data/agent-skills`，新配置进 `core/config.py`） | 管理员放进 `data/` 卷即安装，对齐「运行期数据全落 data/」约定 |
+
+- 内置层路径从 `__file__` 反推（`Path(__file__).parent / "builtin-skills"`），
+  与 `prompts._SOURCE_ROOT` 同一机制——**应用内更新的 overlay 生效时自动指向
+  新版本的内置技能**，无需任何额外处理；打包上照抄 `spec.json` 的先例，在
+  pyproject `[tool.setuptools.package-data]` 加一行
+  `movieclaw_agent = ["builtin-skills/**/*"]`（Docker 部署本就整棵 src 拷贝，
+  这行是给 wheel 形态兜底）；
+- 用户层用来**新增**自己的技能，也用来**覆盖**内置技能：同名时用户版生效、
+  内置版不加载，并写一条中文 info 日志（见 §2.3）——想改官方技能的行为，
+  复制一份到用户目录改即可，升级不会吞掉定制。
 
 ```
-data/agent-skills/
-├── subtitle-workflow/
-│   ├── SKILL.md              # 必需：frontmatter + 指令正文
-│   └── scripts/fix-encoding.sh
+src/movieclaw_agent/builtin-skills/     # 内置层（随版本走，用户不改）
+└── subtitle-workflow/
+    ├── SKILL.md
+    └── scripts/fix-encoding.sh
+
+data/agent-skills/                      # 用户层（挂载持久化）
+├── subtitle-workflow/                  # 同名 → 覆盖内置版
+│   └── SKILL.md
 └── curation/
-    └── poster-wall/          # 允许分组文件夹，递归发现
+    └── poster-wall/                    # 允许分组文件夹，递归发现
         └── SKILL.md
 ```
 
@@ -67,9 +84,9 @@ description: 字幕文件的整理、重命名与编码修复流程。当用户�
   1024 字符只记 warning 日志照常加载；未知 frontmatter 字段忽略；
 - 无 frontmatter 的 SKILL.md 视为缺 description，不加载并警告。
 
-### 2.3 发现规则（pi 算法的简化版）
+### 2.3 发现规则（pi 算法的简化版 + 两层合并）
 
-`scan_skills(root)`，从 `AGENT_SKILLS_DIR` 出发：
+单目录扫描 `scan_skills(root)`：
 
 1. 目录含 `SKILL.md` → 整个目录是一个技能根，**不再深入**（`references/`
    里再放 SKILL.md 不会被当成新技能）；
@@ -78,11 +95,22 @@ description: 字幕文件的整理、重命名与编码修复流程。当用户�
    卷内没有共享技能目录的需求，一行检查同时防环与防逃逸；
 4. 根层裸 `.md` 单文件技能**不支持**（pi 支持，我们砍掉——少一种形态少一类
    歧义，需要时 P1 再加）；
-5. 同名（name 小写比对）先到先得，输家不加载并写 warning 日志（含双方路径）；
-6. 目录项按名字排序遍历，产出确定性。
+5. 目录项按名字排序遍历，产出确定性。
 
-产物 `Skill = {name, description, file_path}`（file_path 为 SKILL.md 绝对
-路径）。**不缓存正文**——正文永远在模型 read 的那一刻现读，改技能即时生效。
+两层合并 `discover_skills()`（pi 的多来源先到先得，收敛成固定两层）：
+
+1. **先扫用户层、后扫内置层**，同名（name 小写比对）先到先得——用户层
+   自然胜出；
+2. 用户技能覆盖内置技能时写中文 **info** 日志（这是覆盖机制的正常使用，
+   不是异常）：`用户技能「subtitle-workflow」已覆盖同名内置技能（{用户路径}
+   覆盖 {内置路径}）`；
+3. **同层**内同名仍是 warning（多半是配置失误）：输家不加载，日志含双方路径；
+4. 缺失的目录（用户层还没建、精简部署没带内置层）静默跳过。
+
+产物 `Skill = {name, description, file_path, scope}`（file_path 为 SKILL.md
+绝对路径；`scope: "builtin" | "user"` 供日志与未来管理页区分来源，**不进
+提示词清单**——模型不需要关心技能从哪来）。**不缓存正文**——正文永远在模型
+read 的那一刻现读，改技能即时生效。
 
 ## 3. 清单注入（系统提示词）
 
@@ -114,9 +142,9 @@ description: 字幕文件的整理、重命名与编码修复流程。当用户�
 ### 3.2 注入点与门控
 
 在 `routes/agent.py::_agent_system_prompt()` 末尾追加：每次运行现场
-`scan_skills` + `build_skills_fragment`，与 external_url「保存即生效、不做
-缓存」同一思路——**改技能无需重启，下一轮运行生效**。个位数技能的目录扫描
-是几次 stat + 小文件读，成本可忽略。
+`discover_skills`（两层合并）+ `build_skills_fragment`，与 external_url
+「保存即生效、不做缓存」同一思路——**改技能无需重启，下一轮运行生效**。
+个位数技能的目录扫描是几次 stat + 小文件读，成本可忽略。
 
 **read 门控（pi 规则照搬）**：清单只应在工具集含 read 工具时注入。落点上
 无需写显式判断——
@@ -164,11 +192,12 @@ description 写具体（「做什么 + 何时用」），这是技能作者的�
 | # | 改动 | 位置 |
 |---|---|---|
 | 1 | `AGENT_SKILLS_DIR` 配置（默认 `./data/agent-skills`） | `movieclaw_api/core/config.py` |
-| 2 | `Skill` dataclass + `scan_skills()` + `build_skills_fragment()`，frontmatter 解析（yaml），中文警告日志 | 新文件 `movieclaw_agent/skills.py`（纯库，不依赖 API 层） |
-| 3 | `_agent_system_prompt()` 追加扫描与注入 + read 门控依赖说明 | `movieclaw_api/api/routes/agent.py` |
-| 4 | 单元测试：发现规则 ×6（短路/递归/缺 description/`name` 回退/同名先到先得/symlink 跳过）、fragment 渲染（转义/空目录 None/超限警告） | `tests/agent/test_skills.py` |
-| 5 | API 测试：有技能时 system prompt 含清单、空目录不含；技能改动后新一轮生效 | `tests/api/test_agent_skills.py` |
-| 6 | 部署文档补技能目录说明 | README 部署章节 |
+| 2 | `Skill` dataclass（含 scope）+ `scan_skills()` + `discover_skills()`（两层合并、覆盖日志）+ `build_skills_fragment()`，frontmatter 解析（yaml），中文日志 | 新文件 `movieclaw_agent/skills.py`（纯库，不依赖 API 层） |
+| 3 | 内置技能目录（可先空建或放第一个官方技能）+ package-data 打包行 | `src/movieclaw_agent/builtin-skills/`、`pyproject.toml` |
+| 4 | `_agent_system_prompt()` 追加发现与注入 + read 门控依赖说明 | `movieclaw_api/api/routes/agent.py` |
+| 5 | 单元测试：单目录规则 ×6（短路/递归/缺 description/`name` 回退/同层同名/symlink 跳过）、两层合并 ×3（用户覆盖内置 + info 日志/两层互不同名全量保留/缺失目录静默）、fragment 渲染（转义/空清单 None/超限警告） | `tests/agent/test_skills.py` |
+| 6 | API 测试：有技能时 system prompt 含清单、空目录不含；技能改动后新一轮生效 | `tests/api/test_agent_skills.py` |
+| 7 | 部署文档补技能目录与覆盖机制说明 | README 部署章节 |
 
 预估全部改动 ≤ 300 行（含测试），不动 runner、不动前端、不加迁移。
 
@@ -179,7 +208,9 @@ description 写具体（「做什么 + 何时用」），这是技能作者的�
 2. 不匹配的任务不触发技能加载（清单只占元数据成本）；
 3. 修改 SKILL.md 后，无需重启，下一条消息的运行即用新内容；
 4. IM 通道的运行 system prompt 不含技能清单；
-5. 缺 description 的技能不出现在清单中，日志有可读的中文警告。
+5. 缺 description 的技能不出现在清单中，日志有可读的中文警告；
+6. 在用户目录放一个与内置技能同名的技能：清单里只出现用户版（location 指向
+   `data/`），日志有覆盖提示；删掉用户版后内置版恢复。
 
 ## 7. 设计权衡记录
 
