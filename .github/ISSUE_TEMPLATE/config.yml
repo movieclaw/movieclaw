@@ -11,5 +11,5 @@
 blank_issues_enabled: false
 contact_links:
   - name: 📖 先查一下 README
-    url: https://github.com/movieclaw/movieclaw/blob/main/README.md#常见问题
+    url: https://github.com/movieclaw/movieclaw/blob/main/README.zh-CN.md#常见问题
     about: 端口冲突、路径挂载、忘记密码、TMDB 连不上等高频问题在「常见问题」章节已有现成答案。
