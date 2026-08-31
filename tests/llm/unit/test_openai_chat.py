@@ -89,6 +89,32 @@ def test_convert_all_text_parts_flattened_to_string():
     assert p._convert_message(msg)["content"] == "ab"
 
 
+def test_convert_unhydrated_image_ref_degrades_to_placeholder_text():
+    """只有 attachment_id 的引用块（水合层漏了）：占位文本兜底，绝不发内部引用。"""
+    p = make_protocol()
+    msg = ChatMessage(
+        role="user",
+        content=[
+            TextPart(text="看这张图"),
+            ImagePart(attachment_id="a" * 32, name="截图.png", media_type="image/png"),
+        ],
+    )
+    # 占位后不再有图片块，整条回落为纯字符串形态
+    assert p._convert_message(msg)["content"] == "看这张图[图片未能加载，已略过]"
+
+
+def test_convert_hydrated_image_ref_sends_data_url():
+    """已水合的引用块（attachment_id 与 data 并存）：正常按 data URL 发送。"""
+    p = make_protocol()
+    msg = ChatMessage(
+        role="user",
+        content=[ImagePart(attachment_id="a" * 32, data="QUJD", media_type="image/jpeg")],
+    )
+    assert p._convert_message(msg)["content"] == [
+        {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,QUJD"}},
+    ]
+
+
 def test_convert_assistant_history_drops_thinking_keeps_raw_tool_args():
     p = make_protocol()
     msg = ChatMessage(

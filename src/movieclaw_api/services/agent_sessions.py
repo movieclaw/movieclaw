@@ -40,7 +40,7 @@ from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from movieclaw_agent import CompactionResult
 from movieclaw_api.exceptions import BadRequestException, NotFoundException
-from movieclaw_llm import ChatMessage, TokenUsage, ToolCall
+from movieclaw_llm import ChatMessage, ImagePart, TokenUsage, ToolCall
 
 logger = logging.getLogger("movieclaw_api.agent_sessions")
 
@@ -148,6 +148,24 @@ class SessionSummary(BaseModel):
     last_prompt: str | None
     #: 最后一条 entry 的时间戳（文件为空时取头的 created_at）
     last_timestamp: str
+
+
+def message_preview(message: ChatMessage) -> str:
+    """消息的列表预览文本：正文优先，纯图消息用「[图片]」占位。
+
+    供会话标题 / last_prompt 使用（summarize 与 recorder 共用同一口径，
+    重建索引与实时写入才不会出现两种预览）。
+    """
+    text = message.text().strip()
+    if text:
+        return text
+    if isinstance(message.content, list):
+        images = sum(1 for p in message.content if isinstance(p, ImagePart))
+        if images == 1:
+            return "[图片]"
+        if images > 1:
+            return f"[图片 ×{images}]"
+    return ""
 
 
 def _last_context_boundary_index(
@@ -492,11 +510,11 @@ class AgentSessionStore:
         # 回填的口径一致，用户后续发言不覆盖标题，重建索引时也保持同一语义。
         # 压缩/交接行都计入 entry_count 与链尾，但不伪造 last_prompt。
         user_texts = [
-            e.message.text().strip()
+            message_preview(e.message)
             for e in entries
             if isinstance(e, SessionMessageEntry)
             and e.message.role == "user"
-            and e.message.text().strip()
+            and message_preview(e.message)
         ]
         handoff_title = next(
             (

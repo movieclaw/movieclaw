@@ -107,6 +107,17 @@ class OpenAIChatProtocol(BaseLlmProtocol):
             if isinstance(part, TextPart):
                 parts.append({"type": "text", "text": part.text})
             elif isinstance(part, ImagePart):
+                if not part.url and not part.data:
+                    # 未水合的引用块（只有 attachment_id）：上游水合层漏了它。
+                    # fail-safe：降级为占位文本——宁可丢一张图，也不把内部
+                    # 引用漏给供应商（发出去必然 4xx，还暴露内部标识）。
+                    logger.warning(
+                        "图片内容块未水合（attachment_id=%s），已降级为占位文本；"
+                        "这是程序缺陷，请检查发请求前的水合逻辑",
+                        part.attachment_id,
+                    )
+                    parts.append({"type": "text", "text": "[图片未能加载，已略过]"})
+                    continue
                 has_image = True
                 url = part.url or f"data:{part.media_type};base64,{part.data}"
                 parts.append({"type": "image_url", "image_url": {"url": url}})

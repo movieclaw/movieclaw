@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Annotated, Literal
 
-from pydantic import ConfigDict, Field, field_serializer, field_validator
+from pydantic import ConfigDict, Field, field_serializer, field_validator, model_validator
 
 from movieclaw_api.schemas.base import BaseModel
 from movieclaw_db.models import AgentSession
@@ -21,11 +21,23 @@ def _iso_utc(value: datetime | None) -> str | None:
 
 
 class SessionStartPayload(BaseModel):
-    """提交一条用户消息；有 session_id 时继续已有会话，否则开始新会话。"""
+    """提交一条用户消息；有 session_id 时继续已有会话，否则开始新会话。
+
+    图片以 attachment_id 引用（先经 ``session.attachments.upload`` 上传）；
+    协议永不接受调用方直接提交内容块——ContentPart 由服务端组装，杜绝注入
+    任意 url 或内联 base64（docs/design/agent-image-input.md §8.1）。
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    content: str = Field(min_length=1, max_length=4000, description="用户消息正文")
+    content: str = Field(
+        default="", max_length=4000, description="用户消息正文；带图片时允许为空"
+    )
+    attachments: list[str] = Field(
+        default_factory=list,
+        max_length=4,
+        description="随消息发送的图片附件编号列表（上传接口返回的 attachment_id）",
+    )
     session_id: str | None = Field(
         default=None,
         min_length=1,
@@ -38,6 +50,22 @@ class SessionStartPayload(BaseModel):
     @classmethod
     def _strip(cls, value: str | None) -> str | None:
         return value.strip() if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def _require_content_or_attachments(self) -> SessionStartPayload:
+        if not self.content and not self.attachments:
+            raise ValueError("消息正文与图片附件不能同时为空")
+        return self
+
+
+class AttachmentUploadView(BaseModel):
+    """图片附件上传成功的回执；attachment_id 随后交给 session.start 引用。"""
+
+    attachment_id: str = Field(description="附件稳定编号，绑定会话前 24 小时内有效")
+    name: str = Field(description="原始文件名（服务端截断到 120 字符）")
+    width: int = Field(description="图片像素宽度")
+    height: int = Field(description="图片像素高度")
+    bytes: int = Field(description="原始字节数")
 
 
 class SessionMessageAcceptedView(BaseModel):
@@ -64,6 +92,14 @@ class SessionRetryPayload(BaseModel):
         min_length=1,
         max_length=4000,
         description="替换后的用户消息正文；留空时原文重试",
+    )
+    attachments: list[str] | None = Field(
+        default=None,
+        max_length=4,
+        description=(
+            "重试消息携带的图片附件编号：不传（null）沿用原消息的附件，"
+            "空数组显式去掉图片，非空数组替换为新附件"
+        ),
     )
     model: str = Field(default="", description="模型 ID；留空时使用默认供应商的默认模型")
 

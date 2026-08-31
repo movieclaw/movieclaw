@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Header, Query
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, File, Header, Query, UploadFile
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from movieclaw_agent import AgentRunner, AgentStartParams, AgentTool, build_system_prompt, compact
@@ -16,6 +17,7 @@ from movieclaw_api.exceptions import (
     UpstreamServiceException,
 )
 from movieclaw_api.schemas.agent import (
+    AttachmentUploadView,
     SessionCompactionEntryView,
     SessionContextCompactionView,
     SessionHandoffEntryView,
@@ -30,6 +32,12 @@ from movieclaw_api.schemas.agent import (
 )
 from movieclaw_api.schemas.response import ApiResponse, ok
 from movieclaw_api.services import auth as auth_service
+from movieclaw_api.services.agent_attachments import (
+    MAX_IMAGE_BYTES,
+    compose_user_content,
+    extract_attachment_ids,
+    get_agent_attachment_store,
+)
 from movieclaw_api.services.agent_runs import get_agent_run_registry
 from movieclaw_api.services.agent_session_recorder import AgentSessionRecorder
 from movieclaw_api.services.agent_sessions import (
@@ -186,6 +194,7 @@ async def _accept_user_message(
     return await _launch_user_message(
         session_id=session_id,
         content=payload.content,
+        attachment_ids=payload.attachments,
         model=payload.model,
         history=history,
         entry_count=entry_count,
@@ -201,16 +210,28 @@ async def _launch_user_message(
     history: list[ChatMessage],
     entry_count: int,
     llm_router: LlmRouter,
+    attachment_ids: list[str] | None = None,
     tools: list[AgentTool] | None = None,
     system_prompt: str | None = None,
 ) -> ApiResponse[SessionMessageAcceptedView]:
-    """在已校验的会话链尾追加用户消息并启动后台处理。"""
+    """在已校验的会话链尾追加用户消息并启动后台处理。
+
+    带图片时的顺序（docs/design/agent-image-input.md §3）：先把附件从
+    staging 绑定进会话目录（原子 rename），再落消息行——绑定失败不产生
+    悬空引用，落盘失败最多留下可回收的孤儿文件。
+    """
     actual_tools = tools if tools is not None else get_agent_tools(await _cli_env(session_id))
     actual_system_prompt = system_prompt or await _agent_system_prompt()
+    bound = (
+        get_agent_attachment_store().bind(session_id, attachment_ids)
+        if attachment_ids
+        else []
+    )
+    user_content = compose_user_content(content, bound)
     recorder = AgentSessionRecorder(
         get_agent_session_store(), session_id, entry_count=entry_count
     )
-    message_id = await recorder.record_user_message(content)
+    message_id = await recorder.record_user_message(user_content)
 
     runner = AgentRunner(
         llm_router,
@@ -219,7 +240,7 @@ async def _launch_user_message(
         on_compaction=recorder.on_compaction,
     )
     params = AgentStartParams(
-        input=content,
+        input=user_content,
         history=history,
         model=model,
         system_prompt=actual_system_prompt,
@@ -257,6 +278,72 @@ async def start_session(
     持内部 ``agent:`` 令牌调用会被拒绝，防止 Agent 递归启动 Agent。
     """
     return await _accept_user_message(payload, identity, session)
+
+
+@router.post(
+    "/attachments",
+    response_model=ApiResponse[AttachmentUploadView],
+    status_code=201,
+    summary="上传一张图片附件（随后在 session.start 中引用）",
+    operation_id="session.attachments.upload",
+    openapi_extra={"x-cli-hidden": True},
+)
+async def upload_session_attachment(
+    file: UploadFile = File(...),
+    identity: Principal = Depends(require_login),
+) -> ApiResponse[AttachmentUploadView]:
+    """校验并暂存一张图片，返回 attachment_id。
+
+    附件先落中转区，提交消息时才绑定到会话；上传后 24 小时内未被任何消息
+    引用会被自动清理。仅接受 JPG / PNG / WebP / GIF，单张不超过 5MB，格式
+    以文件内容嗅探为准（Content-Type 与扩展名不作数）。
+    """
+    # 与「Agent 不能递归发起运行」同口径：不允许 Agent 用产品令牌向会话注入图片
+    if identity.kind == "agent":
+        raise BadRequestException("Agent 工作区内不能上传会话附件")
+    store = get_agent_attachment_store()
+    # 顺手回收过期的未发送附件（staging 目录很小，扫描是廉价操作）
+    await asyncio.to_thread(store.cleanup_staging)
+    # 只读到限额 +1 字节就停：uvicorn 默认不限请求体，不能无脑全量读
+    data = await file.read(MAX_IMAGE_BYTES + 1)
+    meta = await asyncio.to_thread(store.save_staging, data, file.filename or "图片")
+    return ok(
+        AttachmentUploadView(
+            attachment_id=meta.attachment_id,
+            name=meta.original_name,
+            width=meta.width,
+            height=meta.height,
+            bytes=meta.bytes,
+        ),
+        message="图片已上传",
+    )
+
+
+@router.get(
+    "/{session_id}/attachments/{attachment_id}",
+    summary="读取会话内的一张图片附件",
+    response_class=FileResponse,
+    operation_id="session.attachments.download",
+    openapi_extra={"x-cli-hidden": True},
+)
+async def download_session_attachment(
+    session_id: str,
+    attachment_id: str,
+    identity: Principal = Depends(require_login),
+) -> FileResponse:
+    """返回图片文件本身，供会话气泡 <img> 渲染。
+
+    只服务已绑定到会话的附件；附件内容不可变（编号即内容），响应带
+    immutable 缓存头，浏览器缓存一次后翻历史会话零请求。
+    """
+    store = get_agent_attachment_store()
+    meta = store.read_meta(session_id, attachment_id)
+    path = store.bound_file_path(session_id, attachment_id)
+    return FileResponse(
+        path,
+        media_type=meta.mime if meta else None,
+        headers={"Cache-Control": "private, max-age=31536000, immutable"},
+    )
 
 
 @router.get(
@@ -530,6 +617,16 @@ async def retry_session_message(
     if not isinstance(target, SessionMessageEntry) or target.message.role != "user":
         raise BadRequestException("只能重试用户消息")
     content = payload.content or target.message.text()
+    # 附件三态：不传沿用原消息的图（text() 只取文本，图必须单独提取，否则
+    # 原文重试会丢图）；空数组显式去图；非空数组替换。原附件已绑定本会话，
+    # bind 对它们幂等成功。
+    attachment_ids = (
+        extract_attachment_ids(target.message.content)
+        if payload.attachments is None
+        else payload.attachments
+    )
+    if not content and not attachment_ids:
+        raise BadRequestException("消息正文与图片附件不能同时为空")
 
     # 供应商校验和运行所需上下文在删除轨迹前准备完成；下面才进入不可逆阶段。
     llm_router = await acquire_llm_router(session)
@@ -550,6 +647,7 @@ async def retry_session_message(
     return await _launch_user_message(
         session_id=session_id,
         content=content,
+        attachment_ids=attachment_ids,
         model=payload.model,
         history=history,
         entry_count=len(remaining_entries),
@@ -581,6 +679,7 @@ async def delete_session(
     if is_running(row):
         raise BadRequestException("该会话正在运行中，请先停止运行再删除")
     get_agent_session_store().delete(session_id)
+    get_agent_attachment_store().delete_session_attachments(session_id)
     await repo.delete(session_id)
     return ok({}, message="会话已删除")
 

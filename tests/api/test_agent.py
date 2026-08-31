@@ -58,10 +58,12 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("SECRET_KEY_FILE", str(tmp_path / ".secret_key"))
     monkeypatch.setenv("AGENT_SESSIONS_DIR", str(tmp_path / "agent-sessions"))
     get_settings.cache_clear()
-    # 会话存储是进程级单例（持有目录路径），换目录后必须重建
+    # 会话/附件存储是进程级单例（持有目录路径），换目录后必须重建
+    from movieclaw_api.services.agent_attachments import reset_agent_attachment_store
     from movieclaw_api.services.agent_sessions import reset_agent_session_store
 
     reset_agent_session_store()
+    reset_agent_attachment_store()
     monkeypatch.setitem(PROTOCOLS, "openai_chat", _StreamProtocol)
 
     from movieclaw_api.api.deps import require_login
@@ -74,6 +76,7 @@ def client(tmp_path, monkeypatch):
         yield c
     get_settings.cache_clear()
     reset_agent_session_store()
+    reset_agent_attachment_store()
 
 
 def parse_sse(body: str) -> list[tuple[int, str, dict]]:

@@ -136,6 +136,11 @@ def build_lifespan(settings: Settings):
         )
 
         await rebuild_agent_session_index()
+        # 回收上传后从未发送的过期图片附件（staging 区，24h TTL）。
+        # 平时由上传接口顺手清理，这里兜住「长期没人上传」的场景。
+        from movieclaw_api.services.agent_attachments import get_agent_attachment_store
+
+        get_agent_attachment_store().cleanup_staging()
         # 扩充属性重算：提取器升级（ENRICH_VERSION +1）后，把存量种子行按新
         # 逻辑重算。enrich 含 NER 推理，大库重算可达分钟级——排成后台任务，
         # 不占启动就绪窗口（硬约束与并发权衡见 enrich_backfill 模块注释）

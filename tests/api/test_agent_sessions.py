@@ -468,6 +468,9 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_SESSIONS_DIR", str(tmp_path / "agent-sessions"))
     get_settings.cache_clear()
     reset_agent_session_store()
+    from movieclaw_api.services.agent_attachments import reset_agent_attachment_store
+
+    reset_agent_attachment_store()
     monkeypatch.setitem(PROTOCOLS, "openai_chat", _StreamProtocol)
 
     from movieclaw_api.api.deps import require_login
@@ -480,6 +483,7 @@ def client(tmp_path, monkeypatch):
         yield c
     get_settings.cache_clear()
     reset_agent_session_store()
+    reset_agent_attachment_store()
 
 
 def _send_message_and_wait(client, payload: dict) -> tuple[str, str]:

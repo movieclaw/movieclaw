@@ -27,12 +27,22 @@ class TextPart(BaseModel):
 
 
 class ImagePart(BaseModel):
-    """图片输入。url 与 data(base64) 二选一，data 需配套 media_type。"""
+    """图片输入。三种形态（docs/design/agent-image-input.md）：
+
+    - ``url``：http(s) 直链，原样发给供应商；
+    - ``data`` + ``media_type``：base64 内联，仅存在于发请求前的内存消息里；
+    - ``attachment_id``：服务端附件引用（会话 assets 目录下的 id）。**转录里
+      只存引用**，发请求前由 API 层水合成 data；传输层遇到「只有引用、没有
+      data/url」的块会降级为占位文本，绝不把内部引用发给供应商。
+    """
 
     type: Literal["image"] = "image"
     url: str | None = None
     data: str | None = None
     media_type: str | None = None  # 如 image/jpeg，仅 data 形态需要
+    attachment_id: str | None = None
+    #: 原始文件名。前端 chip/alt 文案，也是水合层生成附件清单文本的原料
+    name: str | None = None
 
 
 class ThinkingPart(BaseModel):

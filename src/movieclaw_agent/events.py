@@ -26,7 +26,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from movieclaw_llm import ChatMessage, ModelSettings, TokenUsage, ToolCall
+from movieclaw_llm import ChatMessage, ContentPart, ModelSettings, TokenUsage, ToolCall
 
 AgentEventType = Literal[
     "agent_start",  # 运行开始：run_id / 实际路由到的 provider 与 model
@@ -49,8 +49,9 @@ class AgentStartParams(BaseModel):
     工具集不在此处——工具属于服务端编排职责，注册在 AgentRunner 上。
     """
 
-    #: 用户的任务描述（作为本轮 user 消息）
-    input: str
+    #: 用户的任务描述（作为本轮 user 消息）。日常是纯文本；带图片时是
+    #: text/image 内容块列表（图文混合，由 API 编排层组装并水合）
+    input: str | list[ContentPart]
     #: 多轮历史（可选）：追加在 system 之后、本轮 input 之前
     history: list[ChatMessage] = Field(default_factory=list)
     #: 模型引用（movieclaw_llm 路由写法）；空串 = 默认供应商的默认模型
