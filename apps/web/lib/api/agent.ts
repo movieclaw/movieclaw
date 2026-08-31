@@ -230,6 +230,21 @@ export async function startSession(
   return { sessionId: response.data.session_id, messageId: response.data.message_id };
 }
 
+/** 一个可显式调用的 Agent 技能（composer 加号菜单的数据源）。 */
+export interface AgentSkill {
+  /** 技能名，也是 /skill:名字 占位符里的名字 */
+  name: string;
+  description: string;
+  /** builtin=随产品内置，user=用户技能目录 */
+  scope: string;
+}
+
+/** 可显式调用的技能清单（服务端每次现扫，改技能即生效，因此不做缓存）。 */
+export async function listSkills(): Promise<AgentSkill[]> {
+  const response = await request<ApiEnvelope<AgentSkill[]>>("/skills");
+  return response.data;
+}
+
 /** 最近会话列表（按最后活跃时间倒序，limit/offset 分页）。 */
 export async function listSessions(
   params: { limit?: number; offset?: number } = {},

@@ -58,6 +58,7 @@ export function NewTask() {
             onChange={setInput}
             onSubmit={submit}
             imageUpload
+            skillPicker
             thinkingLevels={thinkingLevels}
             thinkingValue={thinkingChoice}
             onThinkingChange={setThinkingChoice}

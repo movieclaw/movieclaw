@@ -12,10 +12,14 @@ import logging
 from pathlib import Path
 
 from movieclaw_agent.skills import (
+    MAX_INVOCATION_BODY_CHARS,
+    MAX_INVOCATIONS_PER_MESSAGE,
     Skill,
     build_skills_fragment,
     discover_skills,
+    expand_skill_invocations,
     scan_skills,
+    strip_skill_blocks,
 )
 
 
@@ -171,3 +175,82 @@ def test_fragment_warns_when_oversized(tmp_path: Path, caplog) -> None:
         fragment = build_skills_fragment(skills, tmp_path)
     assert fragment is not None  # 只警告不截断
     assert any("常驻开销" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# 显式调用展开（docs/design/agent-skills.md §9.3）
+# ---------------------------------------------------------------------------
+
+
+def make_skill(tmp_path: Path, name: str, body: str = "# 指令正文") -> Skill:
+    path = write_skill(tmp_path, name, f"{name} 的描述")
+    path.write_text(f"---\nname: {name}\ndescription: 描述\n---\n\n{body}\n")
+    return Skill(name=name, description="描述", file_path=path.resolve(), scope="user")
+
+
+def test_expand_replaces_token_with_block(tmp_path: Path) -> None:
+    skill = make_skill(tmp_path, "demo", "做这个做那个")
+    out = expand_skill_invocations("帮我 /skill:demo 处理文件", [skill])
+    assert out.startswith('<skill name="demo" location="')
+    assert "做这个做那个" in out
+    assert f"以 {skill.file_path.parent} 目录为锚" in out
+    assert out.endswith("帮我 处理文件")
+    assert "/skill:demo" not in out
+
+
+def test_expand_unknown_token_passthrough(tmp_path: Path) -> None:
+    skill = make_skill(tmp_path, "demo")
+    assert expand_skill_invocations("/skill:nope 你好", [skill]) == "/skill:nope 你好"
+    # 与已知技能混用：已知的展开，未知的保留
+    out = expand_skill_invocations("/skill:demo /skill:nope 你好", [skill])
+    assert '<skill name="demo"' in out
+    assert "/skill:nope 你好" in out
+
+
+def test_expand_multiple_dedup_and_case_insensitive(tmp_path: Path) -> None:
+    a, b = make_skill(tmp_path, "aa"), make_skill(tmp_path, "bb")
+    out = expand_skill_invocations("/skill:aa /skill:AA /skill:bb 走起", [a, b])
+    assert out.count('<skill name="aa"') == 1
+    assert out.count('<skill name="bb"') == 1
+    assert out.endswith("走起")
+
+
+def test_expand_cap_leaves_extra_tokens(tmp_path: Path) -> None:
+    skills = [make_skill(tmp_path, f"sk-{i}") for i in range(MAX_INVOCATIONS_PER_MESSAGE + 2)]
+    tokens = " ".join(f"/skill:{s.name}" for s in skills)
+    out = expand_skill_invocations(tokens, skills)
+    assert out.count("<skill name=") == MAX_INVOCATIONS_PER_MESSAGE
+    # 超限的两个 token 原样保留在尾部文本里
+    assert out.count("/skill:sk-") == 2
+
+
+def test_expand_truncates_oversized_body(tmp_path: Path) -> None:
+    skill = make_skill(tmp_path, "big", "x" * (MAX_INVOCATION_BODY_CHARS + 500))
+    out = expand_skill_invocations("/skill:big", [skill])
+    assert "已截断" in out
+    assert len(out) < MAX_INVOCATION_BODY_CHARS + 1000
+
+
+def test_expand_idempotent_and_no_token_noop(tmp_path: Path) -> None:
+    skill = make_skill(tmp_path, "demo")
+    once = expand_skill_invocations("/skill:demo 干活", [skill])
+    assert expand_skill_invocations(once, [skill]) == once  # retry 复用旧文本
+    assert expand_skill_invocations("普通消息", [skill]) == "普通消息"
+    # 非空白前缀不触发（路径/URL 里的 /skill: 不是 token）
+    assert expand_skill_invocations("看 a/skill:demo 这个路径", [skill]).count("<skill") == 0
+
+
+def test_expand_token_only_message_gets_fallback_line(tmp_path: Path) -> None:
+    skill = make_skill(tmp_path, "demo")
+    out = expand_skill_invocations("/skill:demo", [skill])
+    assert out.endswith("用户未附加说明，按上述技能指令执行。")
+
+
+def test_strip_skill_blocks_roundtrip(tmp_path: Path) -> None:
+    a, b = make_skill(tmp_path, "aa"), make_skill(tmp_path, "bb")
+    out = expand_skill_invocations("/skill:aa /skill:bb 继续", [a, b])
+    names, rest = strip_skill_blocks(out)
+    assert names == ["aa", "bb"]
+    assert rest == "继续"
+    # 普通文本原样返回
+    assert strip_skill_blocks("你好") == ([], "你好")

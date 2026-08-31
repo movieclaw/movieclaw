@@ -17,7 +17,13 @@ from movieclaw_agent.events import (
 )
 from movieclaw_agent.prompts import SUMMARY_PREFIX, SYSTEM_PROMPT, build_system_prompt
 from movieclaw_agent.runner import AgentRunner
-from movieclaw_agent.skills import Skill, build_skills_fragment, discover_skills
+from movieclaw_agent.skills import (
+    Skill,
+    build_skills_fragment,
+    discover_skills,
+    expand_skill_invocations,
+    strip_skill_blocks,
+)
 from movieclaw_agent.toolkit import AgentTool
 
 __all__ = [
@@ -37,4 +43,6 @@ __all__ = [
     "build_system_prompt",
     "compact",
     "discover_skills",
+    "expand_skill_invocations",
+    "strip_skill_blocks",
 ]

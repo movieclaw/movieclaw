@@ -15,6 +15,7 @@ from movieclaw_agent import (
     build_system_prompt,
     compact,
     discover_skills,
+    expand_skill_invocations,
 )
 from movieclaw_agent.tools import builtin_tools, make_mclaw_tool
 from movieclaw_api.api.deps import require_login
@@ -37,6 +38,7 @@ from movieclaw_api.schemas.agent import (
     SessionStartPayload,
     SessionSummary,
     SessionTranscriptView,
+    SkillView,
 )
 from movieclaw_api.schemas.response import ApiResponse, ok
 from movieclaw_api.services import auth as auth_service
@@ -68,6 +70,28 @@ from movieclaw_db.repositories.agent_session_repo import (
 from movieclaw_llm import ChatMessage, LlmError, LlmRouter, ModelSettings
 
 router = APIRouter(prefix="/sessions", tags=["session"])
+skills_router = APIRouter(prefix="/skills", tags=["session"])
+
+
+@skills_router.get(
+    "",
+    response_model=ApiResponse[list[SkillView]],
+    summary="列出可显式调用的 Agent 技能",
+)
+async def list_skills() -> ApiResponse[list[SkillView]]:
+    """composer 加号菜单的数据源：内置 + 用户两层合并后的技能清单。
+
+    与系统提示词清单同一份发现结果（每次现扫，改技能即生效）；选中某项后
+    前端在输入框插入 ``/skill:名字`` 占位符，发送时由服务端展开为技能正文
+    （docs/design/agent-skills.md §9）。
+    """
+    skills = discover_skills(Path(get_settings().agent_skills_dir).resolve())
+    return ok(
+        [
+            SkillView(name=s.name, description=s.description, scope=s.scope)
+            for s in sorted(skills, key=lambda s: s.name)
+        ]
+    )
 
 
 def get_agent_tools(cli_env: dict[str, str]) -> list[AgentTool]:
@@ -254,6 +278,12 @@ async def _launch_user_message(
     """
     actual_tools = tools if tools is not None else get_agent_tools(await _cli_env(session_id))
     actual_system_prompt = system_prompt or await _agent_system_prompt()
+    # 显式技能调用：把 /skill:名字 占位符展开为技能正文块（docs/design/
+    # agent-skills.md §9）。展开结果入转录（内容冻结在调用时刻）；已展开
+    # 文本不含裸 token，retry 复用旧文本时这里天然是 no-op。
+    content = expand_skill_invocations(
+        content, discover_skills(Path(get_settings().agent_skills_dir).resolve())
+    )
     bound = (
         get_agent_attachment_store().bind(session_id, attachment_ids)
         if attachment_ids

@@ -41,6 +41,7 @@ import {
   stopSession,
   streamSession,
 } from "@/lib/api/agent";
+import { parseSkillTokens, toTokenForm } from "@/lib/agent-skills";
 import { HttpError } from "@/lib/http";
 import { nanoid } from "nanoid";
 import { usePermissions } from "@/lib/permissions";
@@ -242,7 +243,9 @@ function entriesToTurns(entries: SessionAnyEntry[]): AgentTurn[] {
       turns.push({
         id: entry.message_id,
         messageId: entry.message_id,
-        input: messageText(message),
+        // 显式技能调用的展开块还原成 /skill:名字 token 形态：气泡渲染 chip、
+        // 改写重问可直接编辑、重发时服务端重新展开（agent-skills.md §9.4）
+        input: toTokenForm(messageText(message)),
         ...(images.length > 0 ? { images } : {}),
         thinkingLevel: entry.thinking_level ?? null,
         status: "done",
@@ -773,11 +776,14 @@ export function AgentConversationsProvider({ children }: { children: React.React
         thinkingLevel,
       );
       const turnId = nanoid();
+      const { names: skillNames, text: plainInput } = parseSkillTokens(input);
+      const optimisticTitle = skillNames.length > 0 ? `[技能] ${plainInput}`.trim() : input;
       setConversations((previous) => [
         {
           id: sessionId,
-          // 标题取首轮输入的前 30 字（服务端索引同款朴素策略；纯图消息占位）
-          title: input.slice(0, 30) || (images?.length ? "[图片]" : ""),
+          // 标题取首轮输入的前 30 字（服务端索引同款朴素策略；纯图消息占位；
+          // 技能 token 折叠成 [技能] 占位，与服务端预览同口径）
+          title: optimisticTitle.slice(0, 30) || (images?.length ? "[图片]" : ""),
           updatedAt: Date.now(),
           running: true,
           turns: [

@@ -25,6 +25,7 @@ from movieclaw_api.api.deps import (
     require_login,
 )
 from movieclaw_api.api.routes.agent import router as session_router
+from movieclaw_api.api.routes.agent import skills_router as agent_skills_router
 from movieclaw_api.api.routes.app_config import router as app_config_router
 from movieclaw_api.api.routes.app_update import router as app_update_router
 from movieclaw_api.api.routes.appearance import router as appearance_router
@@ -114,6 +115,7 @@ _ADMIN_ROUTERS = [
     downloaders_router,
     llm_router,
     session_router,
+    agent_skills_router,
     channels_router,
     channels_im_router,
     import_watch_router,

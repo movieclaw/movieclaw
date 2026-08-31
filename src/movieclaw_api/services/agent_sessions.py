@@ -38,7 +38,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
-from movieclaw_agent import CompactionResult
+from movieclaw_agent import CompactionResult, strip_skill_blocks
 from movieclaw_api.exceptions import BadRequestException, NotFoundException
 from movieclaw_llm import ChatMessage, ImagePart, TextPart, TokenUsage, ToolCall
 
@@ -211,11 +211,17 @@ def latest_user_thinking_level(
 def message_preview(message: ChatMessage) -> str:
     """消息的列表预览文本：正文优先，纯图消息用「[图片]」占位。
 
+    显式技能调用的展开块（<skill> 开头的 user 消息）替换为「[技能]」占位，
+    预览只留用户自己的话——与图片占位同一思路。
+
     供会话标题 / last_prompt 使用（summarize 与 recorder 共用同一口径，
     重建索引与实时写入才不会出现两种预览）。
     """
     text = message.text().strip()
     if text:
+        skill_names, rest = strip_skill_blocks(text)
+        if skill_names:
+            return f"[技能] {rest}".strip()
         return text
     if isinstance(message.content, list):
         images = sum(1 for p in message.content if isinstance(p, ImagePart))

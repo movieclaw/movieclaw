@@ -11,6 +11,8 @@ import {
   isAcceptedImage,
   prepareImageAttachment,
 } from "@/lib/agent-attachments";
+import { skillToken } from "@/lib/agent-skills";
+import { listSkills, type AgentSkill } from "@/lib/api/agent";
 import { THINKING_LEVEL_LABELS } from "@/lib/llm-thinking";
 import { useBackdrop } from "@/lib/backdrop";
 import { LiquidGlassIconButton } from "@/vendor/liquid-glass";
@@ -21,7 +23,7 @@ import { LiquidGlassIconButton } from "@/vendor/liquid-glass";
  *   ┌─ 附件托盘（有附件才出现）：小型 chip（缩略图 + 名字 + ×），不放大图 ─┐
  *   ├─ 输入区：无边框 textarea（Codex 风格，固定 2 行高框内滚动）        ─┤
  *   └─ 工具行（单行，永不换行/reflow）：                                  ─┘
- *        左簇：＋（选图） · 思考档位（ghost pill，向上弹出菜单）
+ *        左簇：＋（图片/技能菜单） · 思考档位（ghost pill，向上弹出菜单）
  *        右簇：回车提示 · 发送/停止
  *
  * 三条从 maka 学来的原则：
@@ -39,8 +41,11 @@ export interface ComposerProps {
   /** 提交回调（回车或点发送）；不传时输入框为纯展示，发送不可用。
    * images 是随消息发送的已上传图片（未开启图片上传时恒为空数组） */
   onSubmit?: (text: string, images: ComposerImage[]) => void;
-  /** 开启图片上传：加号键选图，支持粘贴截图与拖拽；图随消息一并提交 */
+  /** 开启图片上传：加号菜单里出现「上传图片」，支持粘贴截图与拖拽；图随消息一并提交 */
   imageUpload?: boolean;
+  /** 开启技能选择：加号菜单里列出可显式调用的技能，选中在光标处插入
+   * /skill:名字 占位符（服务端发送时展开，docs/design/agent-skills.md §9） */
+  skillPicker?: boolean;
   /** 当前模型的思考档位菜单；空/缺省 = 隐藏档位选择器（模型强度不可控） */
   thinkingLevels?: string[];
   /** 当前选中的思考档位；null = 默认（模型自身行为） */
@@ -67,6 +72,7 @@ export function Composer({
   onChange,
   onSubmit,
   imageUpload = false,
+  skillPicker = false,
   thinkingLevels,
   thinkingValue = null,
   onThinkingChange,
@@ -88,6 +94,7 @@ export function Composer({
   const [uploading, setUploading] = useState(0);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const hasImages = images.length > 0;
   const canSubmit =
     !disabled &&
@@ -126,6 +133,23 @@ export function Composer({
     onSubmit?.(text.trim(), images);
     setImages([]);
     setUploadError(null);
+  }
+
+  /** 在光标处插入 /skill:名字 占位符；插入后光标停在占位符之后。 */
+  function insertSkill(name: string) {
+    const token = skillToken(name);
+    const el = textareaRef.current;
+    if (!el) {
+      setText(text.length > 0 && !text.endsWith(" ") ? `${text} ${token}` : text + token);
+      return;
+    }
+    const start = el.selectionStart ?? text.length;
+    const end = el.selectionEnd ?? start;
+    setText(text.slice(0, start) + token + text.slice(end));
+    requestAnimationFrame(() => {
+      el.focus();
+      el.selectionStart = el.selectionEnd = start + token.length;
+    });
   }
 
   const body = (
@@ -167,6 +191,7 @@ export function Composer({
         </div>
       )}
       <textarea
+        ref={textareaRef}
         rows={2}
         autoFocus={autoFocus}
         disabled={disabled}
@@ -201,29 +226,26 @@ export function Composer({
       <div className="flex items-center justify-between gap-2 px-2.5 pb-2.5 pt-1">
         <div className="flex min-w-0 items-center gap-1">
           {imageUpload && (
-            <>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/jpeg,image/png,image/webp,image/gif"
-                multiple
-                hidden
-                onChange={(e) => {
-                  if (e.target.files) addFiles(e.target.files);
-                  e.target.value = ""; // 允许重复选同一文件
-                }}
-              />
-              <button
-                type="button"
-                aria-label="添加图片"
-                disabled={disabled}
-                onClick={() => fileInputRef.current?.click()}
-                // 移动端 44px：iOS HIG 最小可点目标（桌面保持 32px 紧凑图标键）
-                className="flex size-8 shrink-0 items-center justify-center rounded-xl text-[var(--text-muted)] transition-colors hover:bg-[var(--glass-fill-hover)] hover:text-[var(--text)] max-md:size-11"
-              >
-                <PlusIcon className="size-[18px] max-md:size-[22px]" />
-              </button>
-            </>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/jpeg,image/png,image/webp,image/gif"
+              multiple
+              hidden
+              onChange={(e) => {
+                if (e.target.files) addFiles(e.target.files);
+                e.target.value = ""; // 允许重复选同一文件
+              }}
+            />
+          )}
+          {(imageUpload || skillPicker) && (
+            <ComposerPlusMenu
+              imageUpload={imageUpload}
+              skillPicker={skillPicker}
+              disabled={disabled}
+              onPickImage={() => fileInputRef.current?.click()}
+              onPickSkill={insertSkill}
+            />
           )}
           {onThinkingChange && (thinkingLevels?.length ?? 0) > 0 && (
             <ThinkingLevelMenu
@@ -333,6 +355,146 @@ function AttachmentChip({ image, onRemove }: { image: ComposerImage; onRemove: (
         ✕
       </button>
     </span>
+  );
+}
+
+/* —— 加号菜单：上传图片 + 技能选择（docs/design/agent-skills.md §9.2） ——
+ * 技能列表在每次展开时现拉（与服务端「改技能即生效」语义一致，不做缓存）；
+ * 选中技能在光标处插入 /skill:名字 占位符，发送时由服务端展开。
+ * 弹层同 ThinkingLevelMenu：Portal 到 body + fixed 定位，躲开玻璃面板的
+ * overflow:hidden 裁切。 */
+
+function ComposerPlusMenu({
+  imageUpload,
+  skillPicker,
+  disabled,
+  onPickImage,
+  onPickSkill,
+}: {
+  imageUpload: boolean;
+  skillPicker: boolean;
+  disabled?: boolean;
+  onPickImage: () => void;
+  onPickSkill: (name: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [menuPos, setMenuPos] = useState<{ left: number; bottom: number } | null>(null);
+  // null = 加载中；[] = 无技能；undefined = 未启用技能选择
+  const [skills, setSkills] = useState<AgentSkill[] | null | undefined>(
+    skillPicker ? null : undefined,
+  );
+  const [skillsError, setSkillsError] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (rootRef.current?.contains(target) || menuRef.current?.contains(target)) return;
+      setOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  const toggleOpen = () => {
+    if (!open && rootRef.current) {
+      const rect = rootRef.current.getBoundingClientRect();
+      setMenuPos({ left: rect.left, bottom: window.innerHeight - rect.top + 8 });
+      if (skillPicker) {
+        setSkills(null);
+        setSkillsError(false);
+        listSkills()
+          .then(setSkills)
+          .catch(() => {
+            setSkills([]);
+            setSkillsError(true);
+          });
+      }
+    }
+    setOpen((v) => !v);
+  };
+
+  const menu = open && menuPos && (
+    <div
+      ref={menuRef}
+      role="menu"
+      aria-label="添加内容"
+      className="menu-surface max-h-72 min-w-[15rem] max-w-[22rem] overflow-y-auto p-1.5"
+      style={{ position: "fixed", left: menuPos.left, bottom: menuPos.bottom, zIndex: 50 }}
+    >
+      {imageUpload && (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => {
+            onPickImage();
+            setOpen(false);
+          }}
+          className="flex w-full items-center gap-2 rounded-[10px] px-2.5 py-1.5 text-left text-ui text-[var(--text)] transition-colors hover:bg-white/[0.06]"
+        >
+          上传图片
+        </button>
+      )}
+      {skillPicker && (
+        <>
+          {imageUpload && <div className="mx-2.5 my-1 h-px bg-white/[0.08]" />}
+          <p className="px-2.5 pb-0.5 pt-1 text-caption text-[var(--text-faint)]">使用技能</p>
+          {skills === null && (
+            <p className="px-2.5 py-1.5 text-caption text-[var(--text-faint)]">加载中…</p>
+          )}
+          {skills != null && skills.length === 0 && (
+            <p className="px-2.5 py-1.5 text-caption text-[var(--text-faint)]">
+              {skillsError ? "技能列表加载失败" : "暂无可用技能"}
+            </p>
+          )}
+          {skills?.map((skill) => (
+            <button
+              key={skill.name}
+              type="button"
+              role="menuitem"
+              title={skill.description}
+              onClick={() => {
+                onPickSkill(skill.name);
+                setOpen(false);
+              }}
+              className="block w-full rounded-[10px] px-2.5 py-1.5 text-left transition-colors hover:bg-white/[0.06]"
+            >
+              <span className="block text-ui text-[var(--text)]">⚡ {skill.name}</span>
+              <span className="block truncate text-caption text-[var(--text-muted)]">
+                {skill.description}
+              </span>
+            </button>
+          ))}
+        </>
+      )}
+    </div>
+  );
+
+  return (
+    <div ref={rootRef} className="relative shrink-0">
+      {menu && createPortal(menu, document.body)}
+      <button
+        type="button"
+        aria-label="添加图片或技能"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        disabled={disabled}
+        onClick={toggleOpen}
+        // 移动端 44px：iOS HIG 最小可点目标（桌面保持 32px 紧凑图标键）
+        className="flex size-8 shrink-0 items-center justify-center rounded-xl text-[var(--text-muted)] transition-colors hover:bg-[var(--glass-fill-hover)] hover:text-[var(--text)] max-md:size-11"
+      >
+        <PlusIcon className="size-[18px] max-md:size-[22px]" />
+      </button>
+    </div>
   );
 }
 

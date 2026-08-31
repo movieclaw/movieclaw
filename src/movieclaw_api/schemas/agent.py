@@ -99,6 +99,14 @@ class AttachmentUploadView(BaseModel):
     bytes: int = Field(description="原始字节数")
 
 
+class SkillView(BaseModel):
+    """一个可显式调用的 Agent 技能（composer 加号菜单的数据源）。"""
+
+    name: str = Field(description="技能名，也是 /skill:名字 占位符里的名字")
+    description: str = Field(description="技能用途描述（菜单项的提示文案）")
+    scope: str = Field(description="来源层级：builtin=随产品内置，user=用户技能目录")
+
+
 class SessionMessageAcceptedView(BaseModel):
     """用户消息已持久化并开始处理的回执。"""
 

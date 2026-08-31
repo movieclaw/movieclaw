@@ -23,6 +23,7 @@ import {
   useAgentConversations,
 } from "@/lib/agent-conversations";
 import type { ComposerImage } from "@/lib/agent-attachments";
+import { parseSkillTokens } from "@/lib/agent-skills";
 import { sessionAttachmentUrl } from "@/lib/api/agent";
 import { useDefaultModelThinkingLevels } from "@/lib/llm-thinking";
 import { usePageChrome } from "@/lib/page-chrome";
@@ -266,6 +267,7 @@ export function AgentConversationView({ conversationId }: { conversationId: stri
             // 改写模式不开图片入口：retry 默认沿用原消息的图，此时新加的图
             // 无处安放，藏起入口比静默丢弃诚实
             imageUpload={!activeRetryTarget}
+            skillPicker
             thinkingLevels={thinkingLevels}
             thinkingValue={displayedThinking}
             onThinkingChange={setThinkingChoice}
@@ -397,6 +399,9 @@ function UserBubble({
   onEdit?: () => void;
 }) {
   const { revealProps, toggle } = useTapReveal();
+  // /skill:名字 占位符渲染成技能 chip，正文只留用户自己的话（复制与
+  // 改写重问仍用完整的 token 形态原文）
+  const { names: skillNames, text: plainText } = parseSkillTokens(text);
   return (
     <div className="group/copy flex flex-row-reverse items-end justify-start" {...revealProps}>
       {/* 触摸端点气泡浮现操作键（桌面端靠 hover，这一下点击是多余但无害的）。
@@ -405,8 +410,22 @@ function UserBubble({
         onClick={toggle}
         className="selectable max-w-[80%] whitespace-pre-wrap break-words rounded-2xl bg-[var(--glass-fill-active)] px-4 py-3 text-body leading-6 text-[var(--text)]"
       >
+        {skillNames.length > 0 && (
+          <span
+            className={`flex flex-wrap gap-1.5 ${plainText || images?.length ? "mb-2" : ""}`}
+          >
+            {skillNames.map((name) => (
+              <span
+                key={name}
+                className="inline-flex items-center gap-1 rounded-lg bg-white/[0.08] px-2 py-0.5 text-caption text-[var(--text-muted)]"
+              >
+                ⚡ {name}
+              </span>
+            ))}
+          </span>
+        )}
         {images && images.length > 0 && (
-          <span className={`flex flex-wrap gap-2 ${text ? "mb-2" : ""}`}>
+          <span className={`flex flex-wrap gap-2 ${plainText ? "mb-2" : ""}`}>
             {images.map((image) => (
               // 乐观渲染优先本地 objectURL；回放走附件下载接口（immutable 缓存）。
               // 点击开新页看原图——转录页不再实现单独的灯箱。
@@ -427,7 +446,7 @@ function UserBubble({
             ))}
           </span>
         )}
-        {text}
+        {plainText}
       </div>
       <CopyButton
         text={text}

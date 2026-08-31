@@ -20,6 +20,8 @@ from movieclaw_llm.protocols import PROTOCOLS
 
 #: 每次模型调用的 system 消息内容（按调用顺序）
 captured_system_prompts: list[str] = []
+#: 每次模型调用的 user 消息文本（验证显式调用展开后的实际请求体）
+captured_user_messages: list[str] = []
 
 
 class _CapturingProtocol(_StreamProtocol):
@@ -27,6 +29,8 @@ class _CapturingProtocol(_StreamProtocol):
         for message in request.messages:
             if message.role == "system":
                 captured_system_prompts.append(message.text())
+            elif message.role == "user":
+                captured_user_messages.append(message.text())
         async for event in super().chat_stream(request, model_id):
             yield event
 
@@ -63,6 +67,7 @@ def client(tmp_path, skills_dir, monkeypatch):
     reset_agent_session_store()
     reset_agent_attachment_store()
     captured_system_prompts.clear()
+    captured_user_messages.clear()
     monkeypatch.setitem(PROTOCOLS, "openai_chat", _CapturingProtocol)
 
     from movieclaw_api.api.deps import require_login
@@ -135,3 +140,57 @@ def test_user_skill_overrides_builtin(client, skills_dir) -> None:
     assert "<description>用户定制版技能创建器</description>" in prompt
     assert str(skills_dir / "skill-creator" / "SKILL.md") in prompt
     assert "builtin-skills" not in prompt
+
+
+def test_skills_endpoint_lists_merged_layers(client, skills_dir) -> None:
+    """GET /skills：内置 + 用户合并清单（composer 加号菜单的数据源）。"""
+    write_skill(skills_dir, "douban-picks", "按类型推荐豆瓣高分电影")
+    r = client.get("/api/v1/skills")
+    assert r.status_code == 200, r.text
+    by_name = {s["name"]: s for s in r.json()["data"]}
+    assert by_name["douban-picks"]["scope"] == "user"
+    assert by_name["douban-picks"]["description"] == "按类型推荐豆瓣高分电影"
+    assert by_name["skill-creator"]["scope"] == "builtin"
+
+
+def test_invocation_expands_into_transcript_and_llm_request(client, skills_dir) -> None:
+    """/skill:名字 占位符：服务端展开、入转录、发给模型的是展开文，预览打 [技能] 占位。"""
+    configure_provider(client)
+    skill_dir = skills_dir / "douban-picks"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: douban-picks\ndescription: 推荐高分电影\n---\n\n"
+        "# 推荐流程\n先拉榜单再核对库存\n"
+    )
+
+    sid = send_and_finish(client, {"content": "/skill:douban-picks 来点科幻片"})
+
+    # 转录里的 user 消息是展开后的全文（内容冻结在调用时刻）
+    detail = client.get(f"/api/v1/sessions/{sid}").json()["data"]
+    user_entries = [
+        e for e in detail["entries"] if e["type"] == "message" and e["message"]["role"] == "user"
+    ]
+    stored = user_entries[0]["message"]["content"]
+    assert stored.startswith('<skill name="douban-picks" location="')
+    assert "先拉榜单再核对库存" in stored
+    assert stored.endswith("来点科幻片")
+    assert "/skill:douban-picks" not in stored
+
+    # 发给模型的 user 消息与转录一致（capture 协议记录的请求消息）
+    assert captured_user_messages, "未捕获到 user 消息"
+    assert captured_user_messages[-1] == stored
+
+    # 侧栏预览：技能块折叠为 [技能] 占位
+    items = client.get("/api/v1/sessions").json()["data"]
+    item = next(i for i in items if i["id"] == sid)
+    assert item["title"].startswith("[技能] 来点科幻片")
+
+
+def test_unknown_token_passthrough_to_transcript(client, skills_dir) -> None:
+    configure_provider(client)
+    sid = send_and_finish(client, {"content": "/skill:no-such-skill 你好"})
+    detail = client.get(f"/api/v1/sessions/{sid}").json()["data"]
+    user = next(
+        e for e in detail["entries"] if e["type"] == "message" and e["message"]["role"] == "user"
+    )
+    assert user["message"]["content"] == "/skill:no-such-skill 你好"

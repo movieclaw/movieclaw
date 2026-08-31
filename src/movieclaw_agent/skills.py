@@ -137,17 +137,24 @@ def _load_skill(skill_file: Path, scope: SkillScope) -> Skill | None:
 
 def _parse_frontmatter(text: str) -> dict | None:
     """提取 YAML frontmatter；无 frontmatter 返回空 dict，解析失败返回 None。"""
+    parsed = _split_frontmatter(text)
+    return None if parsed is None else parsed[0]
+
+
+def _split_frontmatter(text: str) -> tuple[dict, str] | None:
+    """拆出 (frontmatter, 正文)；无 frontmatter 时正文即全文，解析失败返回 None。"""
     normalized = text.replace("\r\n", "\n")
     if not normalized.startswith("---"):
-        return {}
+        return {}, normalized
     end = normalized.find("\n---", 3)
     if end == -1:
-        return {}
+        return {}, normalized
     try:
         data = yaml.safe_load(normalized[4:end])
     except yaml.YAMLError:
         return None
-    return data if isinstance(data, dict) else {}
+    body = normalized[end + 4 :].lstrip("\n")
+    return (data if isinstance(data, dict) else {}), body
 
 
 def discover_skills(user_dir: Path, builtin_dir: Path | None = None) -> list[Skill]:
@@ -232,3 +239,140 @@ def _escape_xml(value: str) -> str:
     return (
         value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
     )
+
+
+# ---------------------------------------------------------------------------
+# 显式调用：/skill:名字 占位符的服务端展开（docs/design/agent-skills.md §9）
+# ---------------------------------------------------------------------------
+
+#: token 语法取自 maka（行首或空白后 + /skill: + 名字），比 pi 的「整条消息
+#: 开头」宽松——加号菜单把占位符插到光标处，前后都可能有文字。名字字符集
+#: 放宽到大小写/点/下划线，容忍手误后仍能按小写匹配到技能。
+SKILL_TOKEN_RE = re.compile(r"(?:^|(?<=\s))/skill:([A-Za-z0-9._-]+)")
+
+#: 一条消息最多展开的技能数；超出的 token 原样保留
+MAX_INVOCATIONS_PER_MESSAGE = 8
+
+#: 单个技能正文注入上限：一次性进 user 消息没有 read 分页兜底，必须设限
+MAX_INVOCATION_BODY_CHARS = 32_000
+
+#: 已展开消息里技能块的识别正则（pi parseSkillBlock 同款思路，前端 TS 镜像
+#: 一份）。只匹配消息开头的连续块——展开产物的固定形态。
+_SKILL_BLOCK_RE = re.compile(r'^<skill name="([^"]*)" location="[^"]*">\n.*?\n</skill>\n*', re.S)
+
+
+def expand_skill_invocations(content: str, skills: list[Skill]) -> str:
+    """把消息里的 /skill:名字 占位符展开为技能正文块（pi 展开语义）。
+
+    - 命中的 token 从文本剥除，技能正文现场读盘、剥 frontmatter、超限截断，
+      包成 ``<skill name= location=>`` 块置于消息开头；
+    - 未命中的 token 原样保留（pi 式透传：技能被删/名字敲错时模型看得见
+      原文，能向用户解释，比静默吞掉或整条拒发更符合会话产品）；
+    - 展开结果替换原文入转录：内容冻结在调用时刻，历史可复现；已展开文本
+      不再含裸 token，retry 复用旧文本天然幂等。
+    """
+    matches = list(SKILL_TOKEN_RE.finditer(content))
+    if not matches:
+        return content
+
+    by_name = {s.name.lower(): s for s in skills}
+    # 首现序去重 + 上限；只展开能匹配到技能的名字
+    requested: list[str] = []
+    for m in matches:
+        key = m.group(1).lower()
+        if key in requested or key not in by_name:
+            continue
+        if len(requested) >= MAX_INVOCATIONS_PER_MESSAGE:
+            logger.warning(
+                "一条消息的技能调用超过 %d 个上限，多余的占位符原样保留",
+                MAX_INVOCATIONS_PER_MESSAGE,
+            )
+            break
+        requested.append(key)
+    if not requested:
+        return content
+
+    blocks: list[str] = []
+    expanded_names: set[str] = set()
+    for key in requested:
+        block = _render_invocation_block(by_name[key])
+        if block is None:
+            continue  # 读盘失败：token 保留在文本里，模型可见可解释
+        blocks.append(block)
+        expanded_names.add(key)
+    if not blocks:
+        return content
+
+    remaining = _strip_tokens(content, expanded_names).strip()
+    tail = remaining if remaining else "用户未附加说明，按上述技能指令执行。"
+    return "\n\n".join([*blocks, tail])
+
+
+def _render_invocation_block(skill: Skill) -> str | None:
+    try:
+        text = skill.file_path.read_text(errors="replace")
+    except OSError as exc:
+        logger.warning("显式调用读取技能文件失败：%s（%s）", skill.file_path, exc)
+        return None
+    parsed = _split_frontmatter(text)
+    body = (text if parsed is None else parsed[1]).strip()
+    if len(body) > MAX_INVOCATION_BODY_CHARS:
+        body = (
+            body[:MAX_INVOCATION_BODY_CHARS]
+            + f"\n[技能正文超过 {MAX_INVOCATION_BODY_CHARS} 字符已截断，"
+            f"完整内容可用 read 工具读取 {skill.file_path}]"
+        )
+    name = _sanitize_attribute(skill.name)
+    location = _sanitize_attribute(str(skill.file_path))
+    return (
+        f'<skill name="{name}" location="{location}">\n'
+        f"技能文件里的相对路径以 {skill.file_path.parent} 目录为锚。\n\n"
+        f"{body}\n"
+        "</skill>"
+    )
+
+
+def _strip_tokens(content: str, names: set[str]) -> str:
+    """剥除已展开的 token（maka 的行内清理：被触碰的行折叠多余空白）。"""
+    out: list[str] = []
+    for line in content.split("\n"):
+        touched = False
+
+        def replace(m: re.Match[str]) -> str:
+            nonlocal touched
+            if m.group(1).lower() in names:
+                touched = True
+                return ""
+            return m.group(0)
+
+        stripped = SKILL_TOKEN_RE.sub(replace, line)
+        if not touched:
+            out.append(line)
+            continue
+        tidied = re.sub(r"[ \t]+", " ", stripped).strip()
+        if tidied:
+            out.append(tidied)
+    return "\n".join(out)
+
+
+def _sanitize_attribute(value: str) -> str:
+    """XML 属性清洗（maka 同款思路）：剥控制字符，中和引号与尖括号。"""
+    cleaned = re.sub(r"[\x00-\x1f\x7f]", "", value)
+    return re.sub(r'["<>&]', "_", cleaned)
+
+
+def strip_skill_blocks(text: str) -> tuple[list[str], str]:
+    """从已展开的消息里拆出 (技能名列表, 剩余用户文本)。
+
+    供列表预览（``[技能]`` 占位）与前端气泡 chip 渲染使用（TS 侧镜像同一
+    正则）。非展开消息原样返回 ([], text)。
+    """
+    names: list[str] = []
+    rest = text
+    while True:
+        m = _SKILL_BLOCK_RE.match(rest)
+        if m is None:
+            break
+        names.append(m.group(1))
+        rest = rest[m.end() :]
+    return names, rest
