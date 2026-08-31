@@ -86,6 +86,10 @@ class SessionMessageEntry(BaseModel):
     model: str | None = None
     usage: TokenUsage | None = None
     finish_reason: str | None = None
+    #: 仅 user 消息携带：这条消息生效的思维链档位（None = 默认）。会话的
+    #: 「当前档位」= 最近一条 user 行的值（与压缩接口沿用最近模型同一先例），
+    #: 不给 agent_session 表加列。老读端忽略该字段（向前兼容）。
+    thinking_level: str | None = None
 
 
 class SessionCompactionEntry(BaseModel):
@@ -188,6 +192,20 @@ def dehydrate_message(message: ChatMessage) -> ChatMessage:
             continue
         parts.append(part)
     return message.model_copy(update={"content": parts}) if changed else message
+
+
+def latest_user_thinking_level(
+    entries: list[SessionMessageEntry | SessionCompactionEntry | SessionHandoffEntry],
+) -> str | None:
+    """会话当前生效的思维链档位：最近一条 user 行的信封值（None = 默认）。
+
+    续聊未显式传档位时沿用它——与手动压缩「沿用会话最近一次使用的模型」
+    同一口径。没有任何 user 行（新会话/纯交接会话）即默认。
+    """
+    for entry in reversed(entries):
+        if isinstance(entry, SessionMessageEntry) and entry.message.role == "user":
+            return entry.thinking_level
+    return None
 
 
 def message_preview(message: ChatMessage) -> str:
@@ -328,6 +346,7 @@ class AgentSessionStore:
         model: str | None = None,
         usage: TokenUsage | None = None,
         finish_reason: str | None = None,
+        thinking_level: str | None = None,
     ) -> SessionMessageEntry:
         """追加一条定稿消息，自动接到当前链尾，返回写入的 entry。"""
         path = self.path(session_id)
@@ -344,6 +363,7 @@ class AgentSessionStore:
             model=model,
             usage=usage,
             finish_reason=finish_reason,
+            thinking_level=thinking_level,
         )
         with path.open("a", encoding="utf-8") as f:
             f.write(entry.model_dump_json(exclude_none=True) + "\n")

@@ -117,6 +117,8 @@ export interface SessionMessageEntry {
   usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | null;
   /** 约定含 "aborted"：该步产出时运行被取消 */
   finish_reason?: string | null;
+  /** user 消息生效的思维链档位；null/缺省 = 模型默认 */
+  thinking_level?: string | null;
 }
 
 /** 会话详情里的一条压缩行；replacement_history 是续聊所用的完整替代上下文。 */
@@ -201,15 +203,23 @@ export function sessionAttachmentUrl(sessionId: string, attachmentId: string): s
 }
 
 /** 提交一条用户消息；不传 sessionId 新建会话，传入则继续已有会话。
- *  attachments 为已上传的图片附件编号（内容块由服务端组装）。 */
+ *  attachments 为已上传的图片附件编号（内容块由服务端组装）；
+ *  thinkingLevel 为思维链档位（"default" 清回模型默认，不传沿用上一条）。 */
 export async function startSession(
   content: string,
   sessionId?: string,
   attachments?: string[],
+  thinkingLevel?: string,
 ): Promise<{ sessionId: string; messageId: string }> {
-  const body: { content: string; session_id?: string; attachments?: string[] } = { content };
+  const body: {
+    content: string;
+    session_id?: string;
+    attachments?: string[];
+    thinking_level?: string;
+  } = { content };
   if (sessionId) body.session_id = sessionId;
   if (attachments && attachments.length > 0) body.attachments = attachments;
+  if (thinkingLevel) body.thinking_level = thinkingLevel;
   const response = await request<ApiEnvelope<{ session_id: string; message_id: string }>>(
     "/sessions",
     {

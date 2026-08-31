@@ -10,6 +10,7 @@ import {
   isAcceptedImage,
   prepareImageAttachment,
 } from "@/lib/agent-attachments";
+import { THINKING_LEVEL_LABELS } from "@/lib/llm-thinking";
 import { useBackdrop } from "@/lib/backdrop";
 import { LiquidGlassIconButton } from "@/vendor/liquid-glass";
 
@@ -23,6 +24,12 @@ export interface ComposerProps {
   onSubmit?: (text: string, images: ComposerImage[]) => void;
   /** 开启图片上传：加号键选图，支持粘贴截图与拖拽；图随消息一并提交 */
   imageUpload?: boolean;
+  /** 当前模型的思考档位菜单；空/缺省 = 隐藏档位选择器（模型强度不可控） */
+  thinkingLevels?: string[];
+  /** 当前选中的思考档位；null = 默认（模型自身行为） */
+  thinkingValue?: string | null;
+  /** 档位切换回调；不传则不渲染选择器 */
+  onThinkingChange?: (level: string | null) => void;
   /** 生成中：提交被阻断；配合 onStop 时发送键变为停止键（仿 ChatGPT） */
   busy?: boolean;
   /** 停止生成回调；仅在 busy 时生效 */
@@ -43,6 +50,9 @@ export function Composer({
   onChange,
   onSubmit,
   imageUpload = false,
+  thinkingLevels,
+  thinkingValue = null,
+  onThinkingChange,
   busy = false,
   onStop,
   disabled = false,
@@ -190,16 +200,36 @@ export function Composer({
             }}
           />
         )}
-        <button
-          type="button"
-          aria-label={imageUpload ? "添加图片" : "添加附件"}
-          disabled={disabled}
-          onClick={imageUpload ? () => fileInputRef.current?.click() : undefined}
-          // 移动端 44px：iOS HIG 最小可点目标（桌面保持 32px 紧凑图标键）
-          className="flex size-8 items-center justify-center rounded-xl text-[var(--text-muted)] transition-colors hover:bg-[var(--glass-fill-hover)] hover:text-[var(--text)] max-md:size-11"
-        >
-          <PlusIcon className="size-[18px] max-md:size-[22px]" />
-        </button>
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            aria-label={imageUpload ? "添加图片" : "添加附件"}
+            disabled={disabled}
+            onClick={imageUpload ? () => fileInputRef.current?.click() : undefined}
+            // 移动端 44px：iOS HIG 最小可点目标（桌面保持 32px 紧凑图标键）
+            className="flex size-8 items-center justify-center rounded-xl text-[var(--text-muted)] transition-colors hover:bg-[var(--glass-fill-hover)] hover:text-[var(--text)] max-md:size-11"
+          >
+            <PlusIcon className="size-[18px] max-md:size-[22px]" />
+          </button>
+          {onThinkingChange && (thinkingLevels?.length ?? 0) > 0 && (
+            // 思考档位 pill：菜单按当前模型声明裁剪（服务端推导），空菜单的
+            // 模型整个控件不出现——选不到的档位不该存在（maka 同款诚实原则）
+            <select
+              aria-label="思维链强度"
+              disabled={disabled}
+              value={thinkingValue ?? ""}
+              onChange={(e) => onThinkingChange(e.target.value || null)}
+              className="h-8 max-w-[7.5rem] cursor-pointer appearance-none rounded-xl bg-transparent px-2 text-caption text-[var(--text-muted)] outline-none transition-colors hover:bg-[var(--glass-fill-hover)] hover:text-[var(--text)] max-md:h-11"
+            >
+              <option value="">思考：默认</option>
+              {thinkingLevels?.map((level) => (
+                <option key={level} value={level}>
+                  思考：{THINKING_LEVEL_LABELS[level] ?? level}
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
         <div className="flex items-center gap-2">
           <span className="hidden text-caption text-[var(--text-faint)] sm:block">
             {showStop ? (

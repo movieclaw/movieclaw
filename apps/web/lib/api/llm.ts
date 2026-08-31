@@ -40,7 +40,21 @@ export interface LlmModelInfo {
   supports_thinking: boolean;
   /** 思维链预算上限（thinking_budget 最大值）；null = 不支持或未公布 */
   max_thinking_tokens: number | null;
+  /** 思考控制方言声明；null/缺省 = 强度不可控 */
+  thinking_control?: LlmThinkingControl | null;
+  /** 服务端推导的思考档位菜单（按声明裁剪）；空数组 = 隐藏档位选择器 */
+  thinking_levels?: string[];
   modalities: string[];
+}
+
+/** 思考控制方言（movieclaw_llm.ThinkingControl 的前端投影）。 */
+export interface LlmThinkingControl {
+  /** effort=档位直传 / budget=预算分段 / toggle=仅开关 */
+  kind: "effort" | "budget" | "toggle";
+  /** effort 制的原生档位子集 */
+  levels?: string[];
+  /** 是否有真关闭协议（菜单出现「关」） */
+  supports_off?: boolean;
 }
 
 /** 供应商预设（见 schemas.llm.LlmPresetView）：设置页渲染选项用。 */

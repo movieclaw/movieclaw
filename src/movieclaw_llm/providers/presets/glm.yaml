@@ -1,7 +1,8 @@
 # 智谱 GLM 官方开放平台（open.bigmodel.cn，OpenAI 兼容端点）。
 # 模型数据以官方文档为准（docs.bigmodel.cn，抓取于 2026-07-13）。
-# 5 系默认开思考；官方渠道以 thinking.type 控制思考、无预算参数，
-# max_thinking_tokens 留空。
+# 5 系默认开思考；官方渠道以 thinking.type 控制思考、无预算与强度参数，
+# max_thinking_tokens 留空，thinking_control 按 toggle 方言声明（菜单仅
+# 默认/关）。
 id: glm
 display_name: 智谱 GLM 官方
 protocol: openai_chat
@@ -16,28 +17,43 @@ models:
     max_output_tokens: 131072
     supports_tools: true
     supports_thinking: true
+    thinking_control:
+      kind: toggle
+      supports_off: true
     modalities: [text]
   - id: glm-5.1
     context_window: 204800
     max_output_tokens: 131072
     supports_tools: true
     supports_thinking: true
+    thinking_control:
+      kind: toggle
+      supports_off: true
     modalities: [text]
   - id: glm-5
     context_window: 204800
     max_output_tokens: 131072
     supports_tools: true
     supports_thinking: true
+    thinking_control:
+      kind: toggle
+      supports_off: true
     modalities: [text]
   - id: glm-4.7
     context_window: 204800
     max_output_tokens: 131072
     supports_tools: true
     supports_thinking: true
+    thinking_control:
+      kind: toggle
+      supports_off: true
     modalities: [text]
   # 免费档：30B-A3B MoE，200K 上下文，输出上限官方未公布
   - id: glm-4.7-flash
     context_window: 204800
     supports_tools: true
     supports_thinking: true
+    thinking_control:
+      kind: toggle
+      supports_off: true
     modalities: [text]

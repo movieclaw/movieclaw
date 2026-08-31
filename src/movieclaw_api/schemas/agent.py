@@ -9,6 +9,25 @@ from movieclaw_api.schemas.base import BaseModel
 from movieclaw_db.models import AgentSession
 from movieclaw_db.repositories.agent_session_repo import is_running
 from movieclaw_llm import ChatMessage, ContentPart, TokenUsage, ToolCall
+from movieclaw_llm.models import THINKING_LEVELS
+
+#: 思维链档位的对外取值：词汇表 + 「default」（显式清回模型默认）。
+#: None/未传 = 沿用会话最近一条 user 消息的档位。
+_THINKING_LEVEL_CHOICES = {*THINKING_LEVELS, "default"}
+
+
+def _validate_thinking_level(value: str | None) -> str | None:
+    if value is None:
+        return None
+    value = value.strip()
+    if not value:
+        return None
+    if value not in _THINKING_LEVEL_CHOICES:
+        raise ValueError(
+            f"思维链档位「{value}」不在支持的取值里："
+            f"{', '.join(sorted(_THINKING_LEVEL_CHOICES))}"
+        )
+    return value
 
 
 def _iso_utc(value: datetime | None) -> str | None:
@@ -45,11 +64,23 @@ class SessionStartPayload(BaseModel):
         description="已有会话编号；留空时创建新会话",
     )
     model: str = Field(default="", description="模型 ID；留空时使用默认供应商的默认模型")
+    thinking_level: str | None = Field(
+        default=None,
+        description=(
+            "思维链强度档位（off/minimal/low/medium/high/xhigh/max），"
+            "传 default 显式清回模型默认；不传时沿用会话最近一条消息的档位"
+        ),
+    )
 
     @field_validator("content", "session_id", "model", mode="before")
     @classmethod
     def _strip(cls, value: str | None) -> str | None:
         return value.strip() if isinstance(value, str) else value
+
+    @field_validator("thinking_level")
+    @classmethod
+    def _thinking_level_vocab(cls, value: str | None) -> str | None:
+        return _validate_thinking_level(value)
 
     @model_validator(mode="after")
     def _require_content_or_attachments(self) -> SessionStartPayload:
@@ -102,11 +133,20 @@ class SessionRetryPayload(BaseModel):
         ),
     )
     model: str = Field(default="", description="模型 ID；留空时使用默认供应商的默认模型")
+    thinking_level: str | None = Field(
+        default=None,
+        description="思维链强度档位；传 default 清回模型默认，不传沿用原消息的档位",
+    )
 
     @field_validator("message_id", "content", "model", mode="before")
     @classmethod
     def _strip(cls, value: str | None) -> str | None:
         return value.strip() if isinstance(value, str) else value
+
+    @field_validator("thinking_level")
+    @classmethod
+    def _thinking_level_vocab(cls, value: str | None) -> str | None:
+        return _validate_thinking_level(value)
 
 
 class SessionRenamePayload(BaseModel):
@@ -202,6 +242,9 @@ class SessionMessageEntryView(BaseModel):
     usage: TokenUsage | None = Field(default=None, description="assistant 消息的 token 用量")
     finish_reason: str | None = Field(
         default=None, description="assistant 消息的模型结束原因"
+    )
+    thinking_level: str | None = Field(
+        default=None, description="user 消息生效的思维链档位；null = 模型默认"
     )
 
 

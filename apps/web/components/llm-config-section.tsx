@@ -18,6 +18,7 @@ import {
   reverifyLlmProvider,
   saveLlmProvider,
 } from "@/lib/api/llm";
+import { invalidateThinkingMenuCache } from "@/lib/llm-thinking";
 import { formatRelativeTime } from "@/lib/time";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
 
@@ -135,6 +136,8 @@ export function LlmConfigSection() {
             presets={presets}
             onSubmit={async (payload) => {
               setConfig(await saveLlmProvider(payload));
+              // 默认模型/目录可能已变，让会话输入框的思考档位菜单重新拉取
+              invalidateThinkingMenuCache();
               setEditing(false);
               refreshLlmCapability();
             }}
@@ -327,6 +330,13 @@ interface NewModelDraft {
   parallel: boolean;
   thinking: boolean;
   vision: boolean;
+  video: boolean;
+  /** 思考控制方言：none = 不可控（只展示思考内容，即不声明 thinking_control） */
+  thinkingKind: "none" | "effort" | "budget" | "toggle";
+  /** effort 制的原生档位子集（多选） */
+  thinkingLevels: string[];
+  /** 是否有真关闭协议（菜单出现「关」）；toggle 制隐含为真 */
+  supportsOff: boolean;
 }
 
 const EMPTY_DRAFT: NewModelDraft = {
@@ -339,6 +349,22 @@ const EMPTY_DRAFT: NewModelDraft = {
   parallel: false,
   thinking: false,
   vision: false,
+  video: false,
+  thinkingKind: "none",
+  thinkingLevels: [],
+  supportsOff: false,
+};
+
+/** effort 制可声明的档位（词汇表排除 off——关闭走「支持关闭」勾选）。 */
+const DECLARABLE_THINKING_LEVELS = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
+
+const THINKING_LEVEL_LABEL: Record<string, string> = {
+  minimal: "最少",
+  low: "低",
+  medium: "中",
+  high: "高",
+  xhigh: "超高",
+  max: "最高",
 };
 
 function LlmProviderForm({ config, presets, onSubmit, onCancel, onError }: LlmProviderFormProps) {
@@ -385,12 +411,14 @@ function LlmProviderForm({ config, presets, onSubmit, onCancel, onError }: LlmPr
   // 端点没有预设默认值 = 用户自定义接入点（OpenAI 可配镜像 / 通用兼容端点），
   // 只有这类才需要端点与 User-Agent 输入；官方固定渠道两者都不展示
   const canCustomizeEndpoint = !preset?.base_url;
-  // 新增模型的必填校验：id / 上下文 / 最大输出；开思考则思考预算也必填
+  // 新增模型的必填校验：id / 上下文 / 最大输出；开思考则思考预算也必填；
+  // 档位直传制至少声明一档（空声明 = 没有菜单，等于没声明）
   const draftValid =
     draft.id.trim().length > 0 &&
     Number(draft.contextWindow) > 0 &&
     Number(draft.maxOutput) > 0 &&
-    (!draft.thinking || Number(draft.thinkingBudget) > 0);
+    (!draft.thinking || Number(draft.thinkingBudget) > 0) &&
+    (draft.thinkingKind !== "effort" || draft.thinkingLevels.length > 0);
   const baseUrlValid =
     baseUrl.trim() === "" ? !needBaseUrl : /^https?:\/\/.+/.test(baseUrl.trim());
   // 请求头值只能是可打印 ASCII（与后端校验同一判据），空即用 SDK 默认
@@ -401,7 +429,9 @@ function LlmProviderForm({ config, presets, onSubmit, onCancel, onError }: LlmPr
       : !baseUrlValid
         ? "请填写以 http:// 或 https:// 开头的完整 API 端点。"
         : isNew && !draftValid
-          ? "请补全新模型参数中标有 * 的项目。"
+          ? draft.thinkingKind === "effort" && draft.thinkingLevels.length === 0
+            ? "档位直传模式至少要勾选一个可选档位。"
+            : "请补全新模型参数中标有 * 的项目。"
           : !isNew && model.trim().length === 0
             ? "请选择默认模型。"
             : !userAgentValid
@@ -422,7 +452,20 @@ function LlmProviderForm({ config, presets, onSubmit, onCancel, onError }: LlmPr
         supports_parallel_tool_calls: draft.parallel,
         supports_thinking: draft.thinking,
         max_thinking_tokens: draft.thinking ? Number(draft.thinkingBudget) : null,
-        modalities: draft.vision ? ["text", "image"] : ["text"],
+        thinking_control:
+          !draft.thinking || draft.thinkingKind === "none"
+            ? null
+            : {
+                kind: draft.thinkingKind,
+                levels: draft.thinkingKind === "effort" ? draft.thinkingLevels : [],
+                // toggle 的意义就是可关，隐含 supports_off；其余按勾选
+                supports_off: draft.thinkingKind === "toggle" ? true : draft.supportsOff,
+              },
+        modalities: [
+          "text",
+          ...(draft.vision ? ["image"] : []),
+          ...(draft.video ? ["video"] : []),
+        ],
       };
       defaultModel = custom.id;
       // 同 id 覆盖旧条目：改参数重存是常见操作
@@ -718,12 +761,19 @@ function LlmProviderForm({ config, presets, onSubmit, onCancel, onError }: LlmPr
               <CheckField
                 label="输出思考内容"
                 checked={draft.thinking}
-                onChange={(v) => setDraft({ ...draft, thinking: v })}
+                onChange={(v) =>
+                  setDraft({ ...draft, thinking: v, ...(v ? {} : { thinkingKind: "none" as const }) })
+                }
               />
               <CheckField
                 label="支持图片输入"
                 checked={draft.vision}
                 onChange={(v) => setDraft({ ...draft, vision: v })}
+              />
+              <CheckField
+                label="支持视频输入"
+                checked={draft.video}
+                onChange={(v) => setDraft({ ...draft, video: v })}
               />
             </div>
             {draft.thinking && (
@@ -741,6 +791,63 @@ function LlmProviderForm({ config, presets, onSubmit, onCancel, onError }: LlmPr
                 <p className="mt-1.5 text-caption leading-relaxed text-[var(--text-faint)]">
                   思维链可用的最大 token 数（thinking_budget 上限），超配供应商会直接报错。
                 </p>
+              </div>
+            )}
+            {draft.thinking && (
+              <div>
+                <label className={labelClass}>思考强度控制</label>
+                <select
+                  value={draft.thinkingKind}
+                  onChange={(e) =>
+                    setDraft({
+                      ...draft,
+                      thinkingKind: e.target.value as NewModelDraft["thinkingKind"],
+                    })
+                  }
+                  className={inputClass}
+                >
+                  <option value="none">不可控（只展示思考内容）</option>
+                  <option value="effort">档位直传（reasoning_effort）</option>
+                  <option value="budget">预算分段（enable_thinking + thinking_budget）</option>
+                  <option value="toggle">仅开关（thinking.type）</option>
+                </select>
+                <p className="mt-1.5 text-caption leading-relaxed text-[var(--text-faint)]">
+                  按端点方言选择；声明后会话输入框出现思考档位选择器，
+                  档位只从声明的菜单里选（不做就近换算）。
+                </p>
+                {draft.thinkingKind === "effort" && (
+                  <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2">
+                    {DECLARABLE_THINKING_LEVELS.map((level) => (
+                      <CheckField
+                        key={level}
+                        label={THINKING_LEVEL_LABEL[level]}
+                        checked={draft.thinkingLevels.includes(level)}
+                        onChange={(v) =>
+                          setDraft({
+                            ...draft,
+                            // 固定词汇表顺序归一，声明不是有序集合
+                            thinkingLevels: DECLARABLE_THINKING_LEVELS.filter(
+                              (l) => (l === level ? v : draft.thinkingLevels.includes(l)),
+                            ),
+                          })
+                        }
+                      />
+                    ))}
+                  </div>
+                )}
+                {(draft.thinkingKind === "effort" || draft.thinkingKind === "budget") && (
+                  <div className="mt-3">
+                    <CheckField
+                      label="支持关闭思考"
+                      checked={draft.supportsOff}
+                      onChange={(v) => setDraft({ ...draft, supportsOff: v })}
+                    />
+                    <p className="mt-1 text-caption leading-relaxed text-[var(--text-faint)]">
+                      仅当端点有真正的关闭参数时勾选（如 enable_thinking=false）；
+                      勾选后档位菜单多出「关」。
+                    </p>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -827,11 +934,13 @@ function formatTokens(n: number): string {
   return `${Math.round(n / 1000)}K`;
 }
 
-/** 下拉选项后缀的能力短标（思考 / 视觉）。 */
+/** 下拉选项后缀的能力短标（思考 / 视觉 / 视频 / 档位可控）。 */
 function modelHints(model: LlmModelInfo): string {
   return [
     model.supports_thinking ? "思考" : null,
+    (model.thinking_levels?.length ?? 0) > 0 ? "档位可控" : null,
     model.modalities.includes("image") ? "视觉" : null,
+    model.modalities.includes("video") ? "视频" : null,
   ]
     .filter(Boolean)
     .join(" · ");

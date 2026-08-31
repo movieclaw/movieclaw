@@ -46,6 +46,7 @@ from movieclaw_api.services.agent_sessions import (
     SessionHandoffEntry,
     SessionMessageEntry,
     get_agent_session_store,
+    latest_user_thinking_level,
 )
 from movieclaw_api.services.auth import Principal
 from movieclaw_api.services.llm_config import acquire_llm_router
@@ -190,13 +191,25 @@ async def _accept_user_message(
         session_id = header.session_id
         await repo.create(session_id, title=None)
         history = []
+        existing_entries = []
         entry_count = 0
+
+    # 思维链档位三态：显式档位 / "default" 清回默认 / 未传沿用会话最近一条
+    # user 消息的档位（新会话即默认）。生效值存进消息信封供下次沿用。
+    thinking_level = (
+        None
+        if payload.thinking_level == "default"
+        else payload.thinking_level
+        if payload.thinking_level is not None
+        else latest_user_thinking_level(existing_entries)
+    )
 
     return await _launch_user_message(
         session_id=session_id,
         content=payload.content,
         attachment_ids=payload.attachments,
         model=payload.model,
+        thinking_level=thinking_level,
         history=history,
         entry_count=entry_count,
         llm_router=llm_router,
@@ -212,6 +225,7 @@ async def _launch_user_message(
     entry_count: int,
     llm_router: LlmRouter,
     attachment_ids: list[str] | None = None,
+    thinking_level: str | None = None,
     tools: list[AgentTool] | None = None,
     system_prompt: str | None = None,
 ) -> ApiResponse[SessionMessageAcceptedView]:
@@ -232,7 +246,9 @@ async def _launch_user_message(
     recorder = AgentSessionRecorder(
         get_agent_session_store(), session_id, entry_count=entry_count
     )
-    message_id = await recorder.record_user_message(user_content)
+    message_id = await recorder.record_user_message(
+        user_content, thinking_level=thinking_level
+    )
 
     # 请求水合：历史 + 本轮输入统一处理（视觉门控 / 读字节 / 预算，预算从
     # 最新往旧保留——列表末位正是本轮消息）。路由解析失败时跳过水合，交给
@@ -261,6 +277,9 @@ async def _launch_user_message(
         history=history_for_run,
         model=model,
         system_prompt=actual_system_prompt,
+        # 思维链档位随每次模型调用生效；压缩等内部调用另建 ModelSettings，
+        # 不带档位（不放大成本）
+        settings=ModelSettings(thinking_level=thinking_level),  # type: ignore[arg-type]
     )
     run_id = get_agent_run_registry().start(
         runner,
@@ -458,6 +477,7 @@ def _entry_view(
         model=entry.model,
         usage=entry.usage,
         finish_reason=entry.finish_reason,
+        thinking_level=entry.thinking_level,
     )
 
 
@@ -664,6 +684,14 @@ async def retry_session_message(
     )
     if not content and not attachment_ids:
         raise BadRequestException("消息正文与图片附件不能同时为空")
+    # 思维链档位三态：与 start 同口径，不传时沿用被重试消息的信封值
+    thinking_level = (
+        None
+        if payload.thinking_level == "default"
+        else payload.thinking_level
+        if payload.thinking_level is not None
+        else target.thinking_level
+    )
 
     # 供应商校验和运行所需上下文在删除轨迹前准备完成；下面才进入不可逆阶段。
     llm_router = await acquire_llm_router(session)
@@ -686,6 +714,7 @@ async def retry_session_message(
         content=content,
         attachment_ids=attachment_ids,
         model=payload.model,
+        thinking_level=thinking_level,
         history=history,
         entry_count=len(remaining_entries),
         llm_router=llm_router,

@@ -95,6 +95,9 @@ export interface AgentTurn {
   input: string;
   /** 随本轮用户消息发送的图片（气泡里渲染缩略图）；无图时省略 */
   images?: AgentTurnImage[];
+  /** 本轮生效的思维链档位（null=模型默认）；回放数据必有值，乐观轮次
+   *  仅在发送时显式指定过才有 */
+  thinkingLevel?: string | null;
   status: "running" | "done" | "error";
   /** 本轮开始时刻（epoch ms）：进行中据此显示实时耗时；回放时取用户消息的转录时间戳 */
   startedAt: number;
@@ -141,12 +144,18 @@ interface AgentConversationsValue {
   get: (id: string) => AgentConversation | undefined;
   /** 打开会话：详情未加载时从服务端回放，running 时用会话 id 重挂 SSE */
   open: (id: string) => Promise<void>;
-  /** 新建服务端会话并发起首轮运行，成功后返回会话 id（调用方跳转 /sessions/[id]） */
-  start: (input: string, images?: AgentTurnImage[]) => Promise<string>;
+  /** 新建服务端会话并发起首轮运行，成功后返回会话 id（调用方跳转 /sessions/[id]）。
+   *  thinkingLevel 是提交给服务端的线上值（档位或 "default"；undefined=沿用） */
+  start: (input: string, images?: AgentTurnImage[], thinkingLevel?: string) => Promise<string>;
   /** 从已有会话上下文创建独立新会话，不启动模型，成功后返回新会话 id。 */
   fork: (conversationId: string) => Promise<string>;
   /** 在既有会话中追问一轮（历史由服务端从转录重建，只传 session_id） */
-  send: (conversationId: string, input: string, images?: AgentTurnImage[]) => void;
+  send: (
+    conversationId: string,
+    input: string,
+    images?: AgentTurnImage[],
+    thinkingLevel?: string,
+  ) => void;
   /** 请求后端停止当前正在生成的轮次。 */
   stop: (conversationId: string) => void;
   /** 重命名会话（改索引元数据，成功后同步本地标题）。 */
@@ -235,6 +244,7 @@ function entriesToTurns(entries: SessionAnyEntry[]): AgentTurn[] {
         messageId: entry.message_id,
         input: messageText(message),
         ...(images.length > 0 ? { images } : {}),
+        thinkingLevel: entry.thinking_level ?? null,
         status: "done",
         segments: [],
         startedAt: Date.parse(entry.timestamp),
@@ -721,8 +731,19 @@ export function AgentConversationsProvider({ children }: { children: React.React
 
   /** 继续会话：先落本地展示轮次，再取得持久化消息编号并连接 SSE。 */
   const runTurn = useCallback(
-    (conversationId: string, turnId: string, input: string, images?: AgentTurnImage[]) => {
-      void startSession(input, conversationId, images?.map((image) => image.attachmentId))
+    (
+      conversationId: string,
+      turnId: string,
+      input: string,
+      images?: AgentTurnImage[],
+      thinkingLevel?: string,
+    ) => {
+      void startSession(
+        input,
+        conversationId,
+        images?.map((image) => image.attachmentId),
+        thinkingLevel,
+      )
         .then(({ messageId }) => {
           updateTurn(conversationId, turnId, (current) => ({
             ...current,
@@ -742,13 +763,14 @@ export function AgentConversationsProvider({ children }: { children: React.React
   );
 
   const start = useCallback(
-    async (input: string, images?: AgentTurnImage[]) => {
+    async (input: string, images?: AgentTurnImage[], thinkingLevel?: string) => {
       // 新建必须等服务端分配 session_id 才能得到路由地址，因此这一步是
       // 同步等待的；创建失败直接抛给调用方（如尚未配置模型供应商）。
       const { sessionId, messageId } = await startSession(
         input,
         undefined,
         images?.map((image) => image.attachmentId),
+        thinkingLevel,
       );
       const turnId = nanoid();
       setConversations((previous) => [
@@ -790,7 +812,12 @@ export function AgentConversationsProvider({ children }: { children: React.React
   }, []);
 
   const send = useCallback(
-    (conversationId: string, input: string, images?: AgentTurnImage[]) => {
+    (
+      conversationId: string,
+      input: string,
+      images?: AgentTurnImage[],
+      thinkingLevel?: string,
+    ) => {
       const turnId = nanoid();
       setConversations((previous) =>
         previous.map((conversation) =>
@@ -809,6 +836,11 @@ export function AgentConversationsProvider({ children }: { children: React.React
                     id: turnId,
                     input,
                     ...(images && images.length > 0 ? { images } : {}),
+                    // 线上值 "default" 即模型默认（null）；未显式指定时留
+                    // undefined，回放后由转录信封给出真值
+                    ...(thinkingLevel !== undefined
+                      ? { thinkingLevel: thinkingLevel === "default" ? null : thinkingLevel }
+                      : {}),
                     status: "running",
                     segments: [],
                     startedAt: Date.now(),
@@ -818,7 +850,7 @@ export function AgentConversationsProvider({ children }: { children: React.React
             : conversation,
         ),
       );
-      runTurn(conversationId, turnId, input, images);
+      runTurn(conversationId, turnId, input, images, thinkingLevel);
     },
     [runTurn],
   );
@@ -869,6 +901,8 @@ export function AgentConversationsProvider({ children }: { children: React.React
                     messageId: accepted.messageId,
                     input,
                     ...(images && images.length > 0 ? { images } : {}),
+                    // 服务端 retry 不传档位即沿用原消息，本地轮次同样保留
+                    thinkingLevel: conversation.turns[index].thinkingLevel,
                     status: "running",
                     segments: [],
                     startedAt: Date.now(),

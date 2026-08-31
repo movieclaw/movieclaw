@@ -300,7 +300,9 @@ class AgentRunner:
         if not should_compact(context_tokens, context_window):
             return None
         try:
-            result = await compact(self._router, params.model, messages, params.settings)
+            # 压缩是内部调用：思维链档位不随会话设置放大摘要成本，清掉再传
+            compact_settings = params.settings.model_copy(update={"thinking_level": None})
+            result = await compact(self._router, params.model, messages, compact_settings)
         except Exception:  # noqa: BLE001 - 压缩是优化路径，任何故障都不应拖垮运行
             logger.exception("上下文压缩发生意外错误，本次跳过压缩 run=%s", run_id)
             return None

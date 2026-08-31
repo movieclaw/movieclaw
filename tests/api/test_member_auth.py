@@ -594,6 +594,7 @@ _PATH_DUMMIES = {
     "{site_id}": "mteam",
     "{history_id}": "1",
     "{backdrop_id}": "f" * 32,
+    "{attachment_id}": "f" * 32,
     "{downloader_id}": "1",
     "{info_hash}": "f" * 40,
     "{kind}": "movie",

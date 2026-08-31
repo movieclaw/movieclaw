@@ -12,14 +12,20 @@ compat:
   supports_stream_usage: true
 models:
   # 旗舰（2026-07-17 发布）：2.8T 总参 MoE，1M 上下文。思考始终开启、
-  # 不可关闭，强度走请求顶层 reasoning_effort（low/high/max，默认 max）——
-  # 需要调强度时用实例的 extra_body 传入。temperature/top_p 官方固定
-  # （1.0/0.95），实例配置里请勿另设。官方文档未标注多模态，仅收 text。
+  # 不可关闭（无 supports_off），强度走请求顶层 reasoning_effort
+  # （low/high/max，默认 max），由 thinking_control 声明供档位选择器使用。
+  # temperature/top_p 官方固定（1.0/0.95），实例配置里请勿另设。
+  # 官方文档未标注多模态，仅收 text。
   - id: kimi-k3
     context_window: 1048576
     supports_tools: true
     supports_thinking: true
+    thinking_control:
+      kind: effort
+      levels: [low, high, max]
     modalities: [text]
+  # K2 系的思考控制参数官方文档未明确（混合思考），暂不声明——
+  # 核实后按实际方言补 thinking_control。
   # K2 主力：1T 总参 / 32B 激活 MoE，混合思考，原生多模态
   - id: kimi-k2.6
     context_window: 262144

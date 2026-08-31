@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, computed_field, field_validator
 
 # ---------------------------------------------------------------------------
 # 内容块：消息正文的最小单元
@@ -123,7 +123,12 @@ class ModelSettings(BaseModel):
     frequency_penalty: float | None = None
     seed: int | None = None
     response_format: Literal["text", "json_object"] | None = None
-    #: 供应商私有参数逃生舱，原样并入请求体（如百炼的 enable_search）
+    #: 思维链强度档位（docs/design/agent-thinking-level.md）。None = 默认，
+    #: 不发送任何思考参数；具体档位由协议层按模型的 thinking_control 声明
+    #: 翻译成该端点的方言，模型菜单不含该档位时静默回落默认（不就近取整）
+    thinking_level: ThinkingLevel | None = None
+    #: 供应商私有参数逃生舱，原样并入请求体（如百炼的 enable_search）。
+    #: 与思考翻译结果冲突时**用户显式值优先**
     extra_body: dict | None = None
 
 
@@ -203,6 +208,52 @@ class ChatStreamEvent(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# 思维链强度（docs/design/agent-thinking-level.md）
+# ---------------------------------------------------------------------------
+
+#: 统一档位词汇表：各家原生 effort 枚举词的**并集**（maka 同款七档），不是
+#: 自创梯子。off 是关闭线协议而非强度档，只有声明 supports_off 的模型才在
+#: 菜单出现。供应商发明新词时扩表收编，未收编前静默丢弃。
+ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh", "max"]
+
+#: 展示顺序（浅 → 深）；菜单渲染与声明归一都按它排序
+THINKING_LEVELS: tuple[str, ...] = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
+
+#: budget 制的档位 → 思考预算比例（占 max_thinking_tokens 的份额）。
+#: maka 无预算制先例，25/50/100 是本项目自创约定，等真实反馈再调。
+BUDGET_LEVEL_RATIOS: dict[str, float] = {"low": 0.25, "medium": 0.5, "high": 1.0}
+
+
+class ThinkingControl(BaseModel):
+    """模型的思考控制方言声明（能力事实，不是功能承诺）。
+
+    三种 kind 覆盖已知端点：
+    - ``effort``：档位原词直传（请求体 reasoning_effort），levels 声明该模型
+      的原生档位子集 = 用户菜单；off 编码为 reasoning_effort="none"；
+    - ``budget``：enable_thinking + thinking_budget，档位按模型
+      max_thinking_tokens 比例分段（低 25% / 中 50% / 高 100%）；未声明
+      预算上限的模型退化为仅开关；
+    - ``toggle``：仅开/关（如 GLM 的 thinking.type），菜单只有「关」。
+
+    未声明本字段的模型没有菜单、档位永不落请求（fail-closed）。
+    """
+
+    kind: Literal["effort", "budget", "toggle"]
+    #: effort 制的原生档位子集；词汇表外的值静默丢弃，off 不在此声明
+    levels: list[str] = Field(default_factory=list)
+    #: 是否存在真正的关闭线协议；true 时菜单多出「关」
+    supports_off: bool = False
+
+    @field_validator("levels")
+    @classmethod
+    def _known_levels_in_order(cls, value: list[str]) -> list[str]:
+        # maka 同款宽进：未知词与 off 静默丢弃（off 走 supports_off 声明），
+        # 归一为词汇表固定顺序——声明不是有序集合
+        known = {v for v in value if v in THINKING_LEVELS and v != "off"}
+        return [level for level in THINKING_LEVELS if level in known]
+
+
+# ---------------------------------------------------------------------------
 # 供应商配置与元数据
 # ---------------------------------------------------------------------------
 
@@ -228,7 +279,31 @@ class ModelInfo(BaseModel):
     #: 思维链预算上限（thinking_budget 可设的最大 token 数）；
     #: None = 不支持思考或官方未公布（百炼部分模型仅控制台模型卡片可见）
     max_thinking_tokens: int | None = None
+    #: 思考控制方言声明；None = 强度不可控（supports_thinking 只表示会输出
+    #: 思考内容，不兼职暗示可控性）
+    thinking_control: ThinkingControl | None = None
     modalities: list[str] = Field(default_factory=lambda: ["text"])
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def thinking_levels(self) -> list[str]:
+        """本模型的思考档位菜单（服务端推导，前端不必理解方言）。
+
+        空列表 = 无菜单，UI 隐藏选择器。budget 制未声明预算上限时退化为
+        仅开关（没有预算可分段）。
+        """
+        control = self.thinking_control
+        if control is None:
+            return []
+        if control.kind == "effort":
+            menu = list(control.levels)
+        elif control.kind == "budget" and self.max_thinking_tokens:
+            menu = ["low", "medium", "high"]
+        else:  # toggle，或退化的 budget
+            menu = []
+        if control.supports_off:
+            menu = ["off", *menu]
+        return menu
 
 
 class ProviderCompat(BaseModel):

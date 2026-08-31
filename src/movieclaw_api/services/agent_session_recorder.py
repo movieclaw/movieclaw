@@ -81,15 +81,21 @@ class AgentSessionRecorder:
                 name=f"agent-session-heartbeat-{self._session_id}",
             )
 
-    async def record_user_message(self, content: str | list[ContentPart]) -> str:
+    async def record_user_message(
+        self,
+        content: str | list[ContentPart],
+        *,
+        thinking_level: str | None = None,
+    ) -> str:
         """落盘 user message，刷新标题（仅首条）与最后提示预览，返回 message id。
 
         内部仍以 uuid 存储，API 将它作为 message_id 返回；刚提交的消息还没
         经历 transcript 回放，调用方需要该编号作为 retry 锚点。
-        带图消息以内容块形态传入（图片是引用型 ImagePart，落盘不含字节）。
+        带图消息以内容块形态传入（图片是引用型 ImagePart，落盘不含字节）；
+        thinking_level 是本条消息生效的思维链档位（信封元数据，续聊沿用）。
         """
         message = ChatMessage(role="user", content=content)
-        entry = self._store.append(self._session_id, message)
+        entry = self._store.append(self._session_id, message, thinking_level=thinking_level)
         self._entry_count += 1
         preview = message_preview(message)[:PREVIEW_MAX_CHARS]
         async with get_database().session() as session:

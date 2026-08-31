@@ -9,6 +9,7 @@ import { Composer } from "@/components/composer";
 import { LlmSetupNotice, useLlmConfigured } from "@/components/llm-gate";
 import type { ComposerImage } from "@/lib/agent-attachments";
 import { useAgentConversations } from "@/lib/agent-conversations";
+import { useDefaultModelThinkingLevels } from "@/lib/llm-thinking";
 
 /* —— 新任务（路由 /）：仅一个居中输入框，大图氛围页直出。
      发起任务 = 创建会话并立即跳转到会话页（/sessions/[id]），流式过程在会话页渲染。 —— */
@@ -16,6 +17,9 @@ export function NewTask() {
   const router = useRouter();
   const { start } = useAgentConversations();
   const [input, setInput] = useState("");
+  // 新会话没有可沿用的历史，null 即「默认」；用户切换后显式随消息提交
+  const [thinkingChoice, setThinkingChoice] = useState<string | null>(null);
+  const thinkingLevels = useDefaultModelThinkingLevels();
   // 创建会话需等服务端返回 session_id 才能跳转；等待期锁住输入框
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -33,6 +37,7 @@ export function NewTask() {
         name: image.name,
         previewUrl: image.previewUrl,
       })),
+      thinkingChoice ?? undefined,
     )
       .then((id) => {
         router.push(`/sessions/${id}` as Route);
@@ -53,6 +58,9 @@ export function NewTask() {
             onChange={setInput}
             onSubmit={submit}
             imageUpload
+            thinkingLevels={thinkingLevels}
+            thinkingValue={thinkingChoice}
+            onThinkingChange={setThinkingChoice}
             busy={creating}
             disabled={locked}
             placeholder={locked ? "请先接入 AI 模型，再开始对话" : undefined}

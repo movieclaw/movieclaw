@@ -24,6 +24,7 @@ import {
 } from "@/lib/agent-conversations";
 import type { ComposerImage } from "@/lib/agent-attachments";
 import { sessionAttachmentUrl } from "@/lib/api/agent";
+import { useDefaultModelThinkingLevels } from "@/lib/llm-thinking";
 import { usePageChrome } from "@/lib/page-chrome";
 import { usePageTitle } from "@/lib/use-page-title";
 
@@ -54,6 +55,11 @@ export function AgentConversationView({ conversationId }: { conversationId: stri
     return chrome.setTopBarTitle(title);
   }, [chrome, title]);
   const [input, setInput] = useState("");
+  // 思维链档位：undefined = 用户没动过选择器（发送时不传，服务端沿用会话
+  // 上一条）；null = 显式「默认」；string = 显式档位。展示值回落到会话最近
+  // 一轮的档位（转录信封回放）。
+  const [thinkingChoice, setThinkingChoice] = useState<string | null | undefined>(undefined);
+  const thinkingLevels = useDefaultModelThinkingLevels();
   const [retryTarget, setRetryTarget] = useState<{
     conversationId: string;
     messageId: string;
@@ -130,6 +136,11 @@ export function AgentConversationView({ conversationId }: { conversationId: stri
   }
 
   const running = conversation.turns.some((t) => t.status === "running");
+  // 会话当前生效的档位 = 最近一轮的信封值（乐观轮次可能没有，取最近的有值项）
+  const sessionThinkingLevel =
+    [...conversation.turns].reverse().find((t) => t.thinkingLevel !== undefined)
+      ?.thinkingLevel ?? null;
+  const displayedThinking = thinkingChoice === undefined ? sessionThinkingLevel : thinkingChoice;
 
   function submit(text: string, images: ComposerImage[]) {
     if (!activeRetryTarget) {
@@ -142,6 +153,8 @@ export function AgentConversationView({ conversationId }: { conversationId: stri
           name: image.name,
           previewUrl: image.previewUrl,
         })),
+        // 没动过选择器就不传（服务端沿用）；动过则显式传档位或 "default"
+        thinkingChoice === undefined ? undefined : (thinkingChoice ?? "default"),
       );
       return;
     }
@@ -253,6 +266,9 @@ export function AgentConversationView({ conversationId }: { conversationId: stri
             // 改写模式不开图片入口：retry 默认沿用原消息的图，此时新加的图
             // 无处安放，藏起入口比静默丢弃诚实
             imageUpload={!activeRetryTarget}
+            thinkingLevels={thinkingLevels}
+            thinkingValue={displayedThinking}
+            onThinkingChange={setThinkingChoice}
             busy={running}
             onStop={() => stop(conversationId)}
             disabled={locked || (retrying && activeRetryTarget != null)}

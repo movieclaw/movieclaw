@@ -5,7 +5,10 @@
 # 模型卡片公布预算上限，公开文档未给出——用户可用 extra_models 覆盖补全。
 #
 # 思考类模型的推理内容在 reasoning_content 字段返回；Qwen3.7/3.6 与
-# DeepSeek-V4 系列默认开启思考，可用 extra_body.enable_thinking=false 关闭。
+# DeepSeek-V4 系列默认开启思考，可用 enable_thinking=false 关闭。
+# Qwen 系按 budget 方言声明 thinking_control（enable_thinking +
+# thinking_budget，档位按 max_thinking_tokens 比例分段）；DeepSeek/Kimi
+# 第三方的控制参数以百炼文档核实后再补声明。
 id: bailian
 display_name: 阿里云百炼
 protocol: openai_chat
@@ -22,6 +25,9 @@ models:
     supports_parallel_tool_calls: true
     supports_thinking: true
     max_thinking_tokens: 262144
+    thinking_control:
+      kind: budget
+      supports_off: true
     modalities: [text]
   # 多模态全能：MoE 架构，支持图像/视频输入与 GUI 交互 agent
   - id: qwen3.7-plus
@@ -31,6 +37,9 @@ models:
     supports_parallel_tool_calls: true
     supports_thinking: true
     max_thinking_tokens: 262144
+    thinking_control:
+      kind: budget
+      supports_off: true
     modalities: [text, image, video]
   # 轻量快速：3B 激活参数 MoE，百炼卡片 1024K 上下文（原生 262K 扩展而来）。
   # 输出与输入共享窗口、无独立上限，max_output_tokens 留空。
@@ -41,6 +50,9 @@ models:
     supports_parallel_tool_calls: true
     supports_thinking: true
     max_thinking_tokens: 81920
+    thinking_control:
+      kind: budget
+      supports_off: true
     modalities: [text, image, video]
   # DeepSeek 第三方：1M 上下文 / 384K 最大输出（官方口径）。
   # 官方未提供思考预算参数信息，max_thinking_tokens 留空。
