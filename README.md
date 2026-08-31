@@ -18,6 +18,7 @@
   <a href="#界面预览">截图</a> ·
   <a href="#能做什么">功能</a> ·
   <a href="#boundaries">边界</a> ·
+  <a href="#在别的机器上操控它">命令行</a> ·
   <a href="docs/design/">设计文档</a> ·
   <a href="https://github.com/movieclaw/movieclaw/issues">反馈</a>
 </p>
@@ -140,7 +141,7 @@ MovieClaw 把这条线收进一个容器：
 需要接入一个大模型（"设置 → AI 模型"，OpenAI 兼容端点都行），不接不影响其他功能。
 
 - 在微信里说一句就行，比如"三体第二季出了就订"；还能发语音，Telegram 和 Discord 也能对话。
-- 助手调用 MovieClaw 自己的命令行，不靠猜接口；后端加接口，它就自动多一项能力，长会话也会自动压缩上下文。
+- 助手调用 MovieClaw 自己的命令行，不靠猜接口；后端加接口，它就自动多一项能力，长会话也会自动压缩上下文。同一套命令行[你自己也能装](#在别的机器上操控它)，别的机器、别的 Agent 都能用。
 - 缺字幕就自己做一份：找不到目标语言字幕时，自动找源、翻译、落盘成外挂 SRT。
 
 权限边界见下一节。
@@ -269,6 +270,63 @@ MovieClaw 对外提供 Jellyfin 兼容的播放接口，第三方播放器**把�
 
 细节见 [jellyfin-compat.md](docs/design/jellyfin-compat.md)、[web-player.md](docs/design/web-player.md)、
 [remote-transcode.md](docs/design/remote-transcode.md)。
+
+## 在别的机器上操控它
+
+MovieClaw 的命令行 `mclaw` 是一个静态二进制，装它不需要 Python、Node 或任何包管理器。
+装在哪台机器上，那台机器就能操控你的媒体库：搜条目、建订阅、看任务、整理文件都在命令里。
+
+**服务器本机不用装**，镜像里已经带了：
+
+```sh
+docker exec -it movieclaw mclaw status   # 容器名按你 compose 里的实际值改
+```
+
+**别的机器一条命令装好。** 脚本自己认系统和架构（Linux 与 macOS 的 x86、ARM 都覆盖），
+核对校验和，装进默认 PATH，这样 cron、systemd 和从 Dock 启动的应用也找得到它：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/movieclaw/movieclaw/main/scripts/install-cli.sh | sh
+```
+
+<details>
+<summary><b>Windows 用这一条</b></summary>
+
+PowerShell 接不了 `sh`，所以 Windows 单独一条，装的是同一份东西（amd64 与 ARM64 都覆盖）：
+
+```powershell
+irm https://raw.githubusercontent.com/movieclaw/movieclaw/main/scripts/install-cli.ps1 | iex
+```
+
+</details>
+
+装完跑 `mclaw login` 配对：不带参数会先在局域网里找一遍，跨网段或走 VPN 就自己给地址
+（`mclaw login --server http://192.168.1.10:3000`）。命令会显示一段配对码，到网页
+「设置 → 成员与设备 → 设备」核对后批准就行。令牌直接回到这个进程，不上屏，
+也就不会进剪贴板和 shell 历史。
+
+没人能去浏览器点批准的环境（NAS 的定时任务、CI、无界面容器），在同一个设备页
+「手工创建令牌」，把它给出的 `MOVIECLAW_SERVER` 和 `MOVIECLAW_TOKEN` 两行注入进去即可，
+凭证完全不落盘。
+
+### 任何 Agent 都能用
+
+命令树由服务端的 OpenAPI 规格生成，后端加一个接口，命令行就自动多一项能力，不靠猜。
+非终端环境（管道、Agent）默认输出 JSON，不必去解析给人看的表格；破坏性操作必须显式加
+`--yes`。所以任何能跑 shell 的助手，装上它就能操控 MovieClaw，产品内置的 AI 助手走的
+也是同一条路。
+
+```sh
+mclaw status                           # 服务器与授权状态
+mclaw search titles "三体"             # 搜影视条目
+mclaw subscriptions list               # 看订阅
+mclaw jobs list                        # 看后台任务
+mclaw library organize-files 1 --yes   # 按命名模板整理 1 号库的存量文件名
+mclaw subscriptions --help             # 每个域都有 --help，命令和参数都在里面
+```
+
+交给外部 Agent 之前先看一眼 [AI 助手的权限边界](#boundaries)：这类令牌与批准它的人同权，
+不想给了随时能在设备页一键吊销。
 
 ## 常见问题
 
