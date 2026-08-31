@@ -2,7 +2,7 @@
 
 覆盖：只写 Remux 不写片源词的命名要折进 media_source（Emby/MoviePilot 的
 整理模板就是这种）、片源词已存在时不覆盖、非 Remux 与无信息命名保持原样，
-以及折入后能被洗版阶梯判成 T5。
+折入后能被洗版阶梯判成 T5，以及原盘容器按结构判 T6（issue #163）。
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ import pytest
 
 from movieclaw_api.services.library.scan import scanned_media_source
 from movieclaw_enrich import enrich
+from movieclaw_matcher import DISC_SOURCE
 from movieclaw_matcher.decision import source_tier
 
 
@@ -50,3 +51,22 @@ def test_no_regression_for_named_sources():
     ):
         attrs = enrich(name)
         assert scanned_media_source(attrs) == attrs.media_source
+
+
+@pytest.mark.parametrize("container", ["bluray", "dvd", "iso"])
+def test_disc_container_wins_over_name(container):
+    """原盘容器（BDMV/VIDEO_TS/ISO）按结构判 T6，压过名称里的一切片源词。
+
+    此前一张完整原盘最好也只能落成 Blu-ray(T4)，低于 Remux(T5)——而 Remux
+    正是从这张盘剥出来的，于是一个 Remux 候选会被判成升级，把原盘洗进
+    回收站（issue #163）。
+    """
+    attrs = enrich("Casino Royale 2006 UHD BluRay REMUX 2160p HEVC-CHD")
+    assert scanned_media_source(attrs, container) == DISC_SOURCE
+    assert source_tier(DISC_SOURCE, False) > source_tier("Remux", False)
+
+
+def test_non_disc_container_keeps_name_parsed_source():
+    """普通视频文件不受影响：容器是 mkv/mp4 时仍走名称解析那条路。"""
+    attrs = enrich("Some Movie 2020 1080p WEB-DL DDP5.1 x264-GRP")
+    assert scanned_media_source(attrs, "mkv") == "WEB-DL"

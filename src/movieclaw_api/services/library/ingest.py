@@ -169,6 +169,7 @@ from movieclaw_db.repositories.library_file_repo import LibraryFileRepository
 from movieclaw_db.repositories.library_repo import LibraryRepository
 from movieclaw_enrich import enrich
 from movieclaw_enrich.inference import model_release_tag
+from movieclaw_matcher import DISC_SOURCE
 from movieclaw_media.models import MediaKind
 from movieclaw_scheduler.registry import register_task
 
@@ -1919,7 +1920,10 @@ async def _ingest_entry(
                 color_space=spec.color_space if spec else None,
                 audio_streams=list(spec.audio_streams) if spec else None,
                 subtitle_streams=list(spec.subtitle_streams) if spec else None,
-                media_source=release_attrs.media_source,
+                # 完整原盘入库：片源按结构判顶档（T6），压过种子名里的
+                # "Blu-ray"——原盘高于从它剥出来的 Remux，否则一个 Remux
+                # 候选会把刚入库的原盘洗掉（issue #163）
+                media_source=DISC_SOURCE,
                 release_group=release_attrs.release_group,
                 source=FileSource.IMPORTED,
                 site_id=prov_site,

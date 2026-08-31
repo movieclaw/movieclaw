@@ -10,6 +10,7 @@ import pytest
 
 from movieclaw_enrich.models import TorrentAttrs
 from movieclaw_matcher import (
+    DISC_SOURCE,
     USER_LOWEST_SOURCE,
     QualitySnapshot,
     RuleSetSpec,
@@ -18,6 +19,7 @@ from movieclaw_matcher import (
     candidate_ladder_rank,
     compare_ladder,
     compare_upgrade,
+    ladder_vector,
     provably_at_cutoff,
     provably_below_cutoff,
     quality_label,
@@ -37,6 +39,13 @@ def _spec(**kwargs) -> RuleSetSpec:
 
 def _snap(**kwargs) -> QualitySnapshot:
     return QualitySnapshot(**kwargs)
+
+
+def _ladder(snap: QualitySnapshot, spec: RuleSetSpec | None = None) -> tuple[int | None, ...]:
+    """档位向量：原盘这类"不会作为候选出现"的档只能直接比向量。"""
+    return ladder_vector(
+        snap, spec or _spec(upgrade_source="remux", resolutions=["2160p", "1080p"])
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -495,6 +504,76 @@ def test_user_lowest_label_is_human_readable() -> None:
     """哨兵值不能把 user-lowest 原样亮给用户。"""
     snap = _snap(resolution="2160p", media_source=USER_LOWEST_SOURCE)
     assert quality_label(snap) == "2160p 最低档（人工标注）"
+
+
+# ---------------------------------------------------------------------------
+# 原盘档 T6（issue #163 / quality-upgrade.md §2.1.1）：Remux 是从原盘剥出来的，
+# 拿 Remux 洗原盘是降级——而默认 upgrade_keep_old=False 会把原盘送进回收站
+# ---------------------------------------------------------------------------
+
+
+def test_remux_never_upgrades_a_disc() -> None:
+    """同分辨率下 Remux 候选不构成对原盘的升级——这条是本档位存在的理由。"""
+    verdict = compare_upgrade(
+        _candidate(resolution="2160p", media_source="Blu-ray", remux=True),
+        _snap(resolution="2160p", media_source=DISC_SOURCE),
+        _spec(upgrade_source="remux", resolutions=["2160p", "1080p"]),
+    )
+    assert verdict.accepted is False
+
+
+def test_disc_upgrades_a_remux() -> None:
+    """反向成立：同分辨率下原盘候选高于已入库的 Remux（阶梯是个全序）。"""
+    assert (
+        compare_ladder(
+            _ladder(_snap(resolution="2160p", media_source=DISC_SOURCE)),
+            _ladder(_snap(resolution="2160p", media_source="Remux")),
+        )
+        == 1
+    )
+
+
+def test_disc_reaches_any_cutoff() -> None:
+    """原盘已在顶档：可证明达标，洗版就此停下，不再排期。"""
+    snap = _snap(resolution="2160p", media_source=DISC_SOURCE)
+    spec = _spec(upgrade_source="remux", resolutions=["2160p", "1080p"])
+    assert provably_at_cutoff(snap, spec) is True
+    assert provably_below_cutoff(snap, spec) is False
+
+
+def test_disc_beats_name_parsed_remux_flag() -> None:
+    """目录名里带 Remux 的原盘仍是原盘：结构证据压过名称解析的布尔位，
+    否则 T6 会被那个词拉回 T5，Remux 候选又变成"平档"。"""
+    snap = _snap(resolution="2160p", media_source=DISC_SOURCE, remux=True)
+    assert (
+        compare_ladder(
+            _ladder(snap), _ladder(_snap(resolution="2160p", media_source="Remux"))
+        )
+        == 1
+    )
+
+
+def test_disc_still_comparable_under_whitelist() -> None:
+    """配了片源白名单时，T6 的语义是"高于白名单里的一切"（与 T0 对称）。
+
+    原盘本身不在白名单值域里——白名单说的是"愿意下载哪类资源"——但它不能
+    因此退回不可比，否则这类单元会永远停在"无法确认"上等人工介入。
+    """
+    spec = _spec(
+        resolutions=["2160p"], media_sources=["web-dl", "blu-ray"], upgrade_source="blu-ray"
+    )
+    snap = _snap(resolution="2160p", media_source=DISC_SOURCE)
+    assert provably_at_cutoff(snap, spec) is True
+    assert provably_below_cutoff(snap, spec) is False
+    verdict = compare_upgrade(
+        _candidate(resolution="2160p", media_source="Blu-ray"), snap, spec
+    )
+    assert verdict.accepted is False
+
+
+def test_disc_label_is_human_readable() -> None:
+    """档位值不能把内部的 "Disc" 原样亮给用户。"""
+    assert quality_label(_snap(resolution="2160p", media_source=DISC_SOURCE)) == "2160p 原盘"
 
 
 # ---------------------------------------------------------------------------

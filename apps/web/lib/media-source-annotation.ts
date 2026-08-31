@@ -10,6 +10,13 @@
 /** 「不确定，按最低档」哨兵（与后端 movieclaw_matcher.USER_LOWEST_SOURCE 同值） */
 export const USER_LOWEST_SOURCE = "user-lowest";
 
+/**
+ * 原盘档（T6，与后端 movieclaw_matcher.DISC_SOURCE 同值）。由台账结构自动写入
+ * （BDMV / VIDEO_TS / ISO），**不在标注选项里**——用户不需要、也无法把一个
+ * 非原盘文件说成原盘。这里只为把它显示成人话。
+ */
+export const DISC_SOURCE = "Disc";
+
 export type AnnotatableSource =
   | "Remux"
   | "Blu-ray"
@@ -31,7 +38,7 @@ export const MEDIA_SOURCE_OPTIONS: MediaSourceOption[] = [
   {
     value: "Remux",
     label: "Remux",
-    consequence: "原盘无损重封装，最高档；达到任何洗版目标，停止洗版",
+    consequence: "原盘无损重封装，可标注的最高档；达到任何洗版目标，停止洗版",
   },
   {
     value: "Blu-ray",
@@ -61,10 +68,12 @@ export const MEDIA_SOURCE_OPTIONS: MediaSourceOption[] = [
   },
 ];
 
-/** 片源值 → 展示名：哨兵值不能把 "user-lowest" 直接亮给用户。 */
+/** 片源值 → 展示名：哨兵值与内部档位值不能直接亮给用户。 */
 export function mediaSourceDisplayLabel(value: string | null | undefined): string | null {
   if (!value) return null;
-  return value === USER_LOWEST_SOURCE ? "最低档（人工标注）" : value;
+  if (value === USER_LOWEST_SOURCE) return "最低档（人工标注）";
+  if (value === DISC_SOURCE) return "原盘";
+  return value;
 }
 
 /** 洗版报告：存在「无法确认」单元的季号集合（标注入口的显示条件）。 */

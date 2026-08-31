@@ -99,13 +99,18 @@ from movieclaw_db.models import (
     MediaItem,
     utcnow,
 )
-from movieclaw_db.models.library_file import IdentitySource, UnidentifiedCode
+from movieclaw_db.models.library_file import (
+    DISC_CONTAINERS,
+    IdentitySource,
+    UnidentifiedCode,
+)
 from movieclaw_db.models.scheduled_task import TriggerType
 from movieclaw_db.repositories.library_file_repo import LibraryFileRepository
 from movieclaw_db.repositories.library_repo import LibraryRepository
 from movieclaw_enrich import enrich
 from movieclaw_enrich.models import TorrentAttrs
 from movieclaw_enrich.structure import title_candidates
+from movieclaw_matcher import DISC_SOURCE
 from movieclaw_media.models import MediaKind
 from movieclaw_scheduler.registry import register_task
 
@@ -1765,8 +1770,9 @@ def unit_name(file: Path, is_disc: bool) -> str:
     return file.name if is_disc else file.stem
 
 
-def scanned_media_source(attrs: TorrentAttrs) -> str | None:
-    """扫描落库用的片源值：把只存在于名称里的 remux 标记折进 ``media_source``。
+def scanned_media_source(attrs: TorrentAttrs, container: str | None = None) -> str | None:
+    """扫描落库用的片源值：原盘按结构判顶档，其余把名称里的 remux 标记折进
+    ``media_source``。
 
     ``library_file`` 没有 remux 布尔列——按既有设计，Remux 以 ``media_source``
     取值 ``"Remux"`` 表达（``decision.source_tier`` 对该值直接判 T5，人工标注
@@ -1782,7 +1788,14 @@ def scanned_media_source(attrs: TorrentAttrs) -> str | None:
 
     只在 ``media_source`` 缺席时折入：名称同时给出片源与 remux（如
     ``UHD BluRay REMUX``）时保留更具体的片源值，不覆盖既有信息。
+
+    ``container`` 命中原盘容器（BDMV/VIDEO_TS/ISO）时直接判 ``Disc``（T6），
+    **压过名称解析的一切结论**：结构证据说"这是一张完整的盘"，而目录名里的
+    ``BluRay`` 只是压制来源词——此前原盘只能落成 Blu-ray(T4)，一个 Remux(T5)
+    候选就会被判成升级，把原盘洗进回收站（issue #163）。
     """
+    if (container or "") in DISC_CONTAINERS:
+        return DISC_SOURCE
     if attrs.remux and not attrs.media_source:
         return "Remux"
     return attrs.media_source
@@ -2487,7 +2500,7 @@ async def _ingest_file(
             audio_streams=list(spec.audio_streams) if spec else None,
             subtitle_streams=list(spec.subtitle_streams) if spec else None,
             external_subtitles=external_subtitles,
-            media_source=scanned_media_source(attrs),
+            media_source=scanned_media_source(attrs, container),
             release_group=attrs.release_group,
             source=FileSource.SCANNED,
             added_batch_id=added_batch_id,

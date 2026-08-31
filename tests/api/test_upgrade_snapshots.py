@@ -23,6 +23,7 @@ from movieclaw_db.models import (
     utcnow,
 )
 from movieclaw_db.repositories.library_repo import LibraryRepository
+from movieclaw_matcher import SNAPSHOT_VERSION
 
 
 @pytest_asyncio.fixture
@@ -103,7 +104,7 @@ async def test_fulfillment_snapshot_probe_overrides_name(db):
         wanted = await session.get(WantedItem, wanted_id)
         # 落库一律全键（§16.2）：{} 因此在结构上专属于"无法识别"哨兵
         assert wanted.quality == {
-            "v": 2,  # 结构版本，驱动新增维度后的存量重算（§16.3）
+            "v": 3,  # 结构版本，驱动新增维度后的存量重算（§16.3）
             "resolution": "1080p",  # 实测覆盖名称的 2160p 虚标
             "media_source": "WEB-DL",  # 出处采信名称
             "remux": False,
@@ -113,6 +114,45 @@ async def test_fulfillment_snapshot_probe_overrides_name(db):
             "platforms": [],
             "bit_rate": 8_000_000,
         }
+
+
+@pytest.mark.asyncio
+async def test_disc_snapshot_outranks_torrent_name_source(db):
+    """原盘入库：快照片源按结构判 T6，压过投递记录里名称解析出的 Blu-ray。
+
+    少这一条，一个 Remux 候选（T5）就会被判成对原盘（曾记为 T4）的升级，
+    而 Remux 正是从这张盘剥出来的——默认 upgrade_keep_old=False 还会把
+    原盘送进回收站（issue #163）。
+    """
+    library_id, item_id, sub_id, wanted_id = await _seed(db)
+    async with db.session() as session:
+        session.add(
+            SubscriptionDownloadAttempt(
+                subscription_id=sub_id,
+                info_hash="abc123",
+                units=[[1, 1]],
+                quality={"resolution": "2160p", "media_source": "Blu-ray"},
+                last_progress_at=utcnow(),
+            )
+        )
+        session.add(
+            LibraryFile(
+                library_id=library_id,
+                media_item_id=item_id,
+                season_number=1,
+                episode_number=1,
+                file_path="/media/tv/测试剧集 (2024)/Season 01/S01E01 BDMV",
+                size_bytes=1,
+                source=FileSource.IMPORTED,
+                container="bluray",  # BDMV 目录：整张盘，不是从盘里剥出来的文件
+                resolution="2160p",
+            )
+        )
+        await session.commit()
+        assert await close_fulfilled_wanted(session, item_id) == 1
+        wanted = await session.get(WantedItem, wanted_id)
+        assert wanted.quality["media_source"] == "Disc"
+        assert wanted.quality["remux"] is False
 
 
 @pytest.mark.asyncio
@@ -233,7 +273,7 @@ async def test_stale_snapshot_is_recomputed_to_current_version(db, monkeypatch):
 
     async with db.session() as session:
         wanted = await session.get(WantedItem, wanted_id)
-    assert wanted.quality["v"] == 2
+    assert wanted.quality["v"] == SNAPSHOT_VERSION
     # probe 定族、名称定写法：文件名写 x265、probe 给 hevc，同族 → 留 x265
     assert wanted.quality["video_codec"] == "x265"
     assert wanted.quality["platforms"] == ["netflix"]
@@ -310,7 +350,7 @@ async def test_manual_source_annotation_survives_snapshot_rebuild(db, monkeypatc
 
     async with db.session() as session:
         wanted = await session.get(WantedItem, wanted_id)
-    assert wanted.quality["v"] == 2  # 确实重算过
+    assert wanted.quality["v"] == SNAPSHOT_VERSION  # 确实重算过
     assert wanted.quality["media_source"] == "Blu-ray"  # 人工标注仍在
 
 

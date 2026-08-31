@@ -49,6 +49,7 @@ from movieclaw_db.models import (
 from movieclaw_db.models.scheduled_task import TriggerType
 from movieclaw_enrich import enrich
 from movieclaw_matcher import (
+    DISC_SOURCE,
     SNAPSHOT_VERSION,
     QualitySnapshot,
     RuleSetSpec,
@@ -121,11 +122,24 @@ def snapshot_from_file(
             name_attrs.media_source = file.media_source
         if file.release_group is not None:
             name_attrs.release_group = file.release_group
+    # 原盘（BDMV / VIDEO_TS / ISO）的片源由**结构**决定，压过名称解析：
+    # attempt.quality 里的 "Blu-ray"（T4）会让一个 Remux 候选被判成升级，
+    # 而 Remux 正是从这张盘剥出来的——那是降级，且默认会把原盘送进回收站
+    # （issue #163）。remux 一并清零：布尔位同样来自名称，不能把 T6 拉回 T5。
+    #
+    # 它排在人工标注之前是有意的：原盘台账行自带非空片源，进不了标注候选池
+    # （source_annotation._candidate_filter 只收未知与此前人工标注的行），
+    # 整个标注体系对它不适用；能撞上这一条的只有本次修复之前留下的存量标注
+    # ——而那份菜单里根本没有「原盘」这个选项，用户当时选的是次优解。
+    if file.is_disc():
+        name_attrs = name_attrs.model_copy(
+            update={"media_source": DISC_SOURCE, "remux": False}
+        )
     # 人工标注的片源是**权威值**：保护位的语义就是"自动名称解析不得覆盖"
     # （media-source-annotation.md），而 attempt.quality 恰恰是名称解析的产物。
     # 少这一条，任何一次快照重算都会把用户的标注静默抹回名称值，被解卡的
     # 「无法确认」单元又卡回去。remux 一并清零，与标注服务同一口径
-    if file.media_source_manual and file.media_source is not None:
+    elif file.media_source_manual and file.media_source is not None:
         name_attrs = name_attrs.model_copy(
             update={"media_source": file.media_source, "remux": False}
         )

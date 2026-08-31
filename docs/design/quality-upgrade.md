@@ -101,13 +101,38 @@ rank = (分辨率位次, 片源档)          # 字典序比较，分辨率严格
            （与 rules._DEFAULT_RESOLUTION_SCORE 同源）
 
 片源档（source tier，内置固定，不暴露配置）：
+  T6  原盘             （BDMV / VIDEO_TS / ISO 完整盘，见 2.1.1）
   T5  Remux            （attrs.remux=True）
   T4  Blu-ray 重编码    （Blu-ray / UHD Blu-ray，remux=False）
   T3  WEB-DL
   T2  Rip 类           （WEBRip / BDRip / HDRip / DVDRip）
   T1  TV 录制类        （HDTV / TVRip / DVD）
+  T0  用户判定最低档    （人工标注 user-lowest，可比；见 media-source-annotation.md §2.2）
   ——  未知             （不可比，见 2.4）
 ```
+
+#### 2.1.1 原盘为什么在 Remux 之上（issue #163）
+
+**Remux 是从原盘剥出来的**——扔掉菜单、导航与部分音轨，留下正片流。所以
+"原盘被 Remux 洗版"是降级，而不是升级。补 T6 之前，一张完整原盘在台账里
+最好也只能记成 `Blu-ray`(T4)：低于 Remux(T5)，于是一个 2160p Remux 候选
+会被 `compare_upgrade` 判成升级，叠加默认 `upgrade_keep_old=False`，原盘
+就被送进回收站。issue #163 的实测（918 部电影、339 个原盘）里，199 个
+BDMV 目录已探测出分辨率、真的暴露在这条路径上；140 个 ISO 只是因为
+ffprobe 读不了镜像、分辨率位未知而"侥幸"停在不可比。
+
+两条与其余档位不同的性质：
+
+- **只由结构证据写入，enrich 永远解析不出它**。判据是台账的 `container`
+  列（BDMV 落 `bluray`、VIDEO_TS 落 `dvd`、ISO 落 `iso`，见
+  `LibraryFile.is_disc`），因此它压过名称解析的一切结论——包括名字里的
+  `Remux` 布尔位与 `attempt.quality` 里的 `Blu-ray`。种子标题里的
+  "Blu-ray" 说的是**压制来源**，不是"这是一张完整的盘"。
+- **不进 `media_sources` 白名单值域**。白名单回答的是"愿意下载哪类资源"，
+  没有"洗到原盘"这一档（`UPGRADE_SOURCE_VALUES` 同理）——原盘只在快照侧
+  存在。但配了白名单时它仍然可比：`media_source_rank` 对 T6 返回
+  "高于白名单里的一切"，与 T0 哨兵的"低于一切"严格对称，否则原盘会退回
+  不可比、白白停在那里等。
 
 **升级判定**：`rank(候选) > rank(当前快照)` 严格成立才算升级。
 **停止判定**：`rank(当前快照) ≥ rank(洗版目标)` 即到顶，不再调度。
@@ -1328,7 +1353,7 @@ def codec_family(value: str | None) -> str | None: ...   # 表外编码各自成
 
 **关于"想精确区分二压与原封"的诉求**：诉求是真的，但用编码写法表达它本来
 就不可靠——大量原封 WEB-DL 也标 `x265`，写法是发布组的命名习惯而非事实。
-可靠的维度是 `media_source` + `remux`（片源档 T3/T4/T5），洗版阶梯的第二位
+可靠的维度是 `media_source` + `remux`（片源档 T3/T4/T5/T6），洗版阶梯的第二位
 用的正是它。所以族归一没有牺牲任何**可靠**的表达力，它去掉的是一个假的
 表达力——这也是前端当初直接按族做、没留"精确写法"开关的原因。
 
@@ -1358,6 +1383,11 @@ def codec_family(value: str | None) -> str | None: ...   # 表外编码各自成
 处置：快照结构加版本键 `v`，回填条件改为 `quality IS NULL OR v < 当前版本`。
 重算仍是**纯 DB 变换**（probe 各列与 `library_file` 都在，不重新探测文件），
 成本与 §4.4 的既有回填一致。这是 §14 落地的**前置迁移动作**，不是可选项。
+
+**v3（issue #163）**：片源维度补上原盘档 T6 后，存量快照里的原盘单元仍记着
+修复前的 `Blu-ray`/未知，光改阶梯表救不了它们——版本键因此 +1，让既有的
+陈旧扫描把这些快照按台账重算一遍（台账侧的存量行由一次性数据迁移回填，
+秒过行的增量刷新不重写 `media_source`，不迁移就永远不自愈）。
 
 ### 16.4 前车之鉴：平台值域的向前兼容
 

@@ -20,6 +20,13 @@ from movieclaw_db.models.base import TimestampMixin
 _NullableJson = JSON(none_as_null=True)
 
 
+# 原盘（完整盘）在台账里的判别依据：容器列。扫描/入库落 BDMV 目录时写
+# "bluray"、VIDEO_TS 写 "dvd"，ISO 镜像按扩展名落 "iso"——三者都是**整张盘**
+# 而不是从盘里剥出来的单个文件（.m2ts 单流、Remux 单 mkv 都不算）。
+# 片源阶梯据此判 T6（movieclaw_matcher.DISC_SOURCE），见 issue #163。
+DISC_CONTAINERS: frozenset[str] = frozenset({"bluray", "dvd", "iso"})
+
+
 class FileSource(StrEnum):
     """library_file.source 的取值。"""
 
@@ -117,6 +124,14 @@ class LibraryFile(TimestampMixin, table=True):
     )
 
     id: int | None = Field(default=None, primary_key=True)
+
+    def is_disc(self) -> bool:
+        """本行是否是一张完整原盘（BDMV / VIDEO_TS / ISO）。
+
+        判据取容器列而不是重新探路径：台账行在文件所在存储卸载时也要能
+        回答这个问题（洗版比较发生在数据库里，不碰磁盘）。
+        """
+        return (self.container or "") in DISC_CONTAINERS
 
     @classmethod
     def in_place(cls):

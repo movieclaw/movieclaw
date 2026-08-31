@@ -499,7 +499,10 @@ class RuleVerdict:
 # 快照结构版本：新增可比维度时 +1，驱动存量快照重算（quality-upgrade.md §16.3）。
 # v1 = 历史快照（无版本键，只有 resolution/media_source/remux/release_group/hdr/bit_rate）
 # v2 = 增加 video_codec 与 platforms
-SNAPSHOT_VERSION = 2
+# v3 = 片源维度新增原盘档 T6（DISC_SOURCE）。不是新增维度，但存量快照里的
+#      原盘单元此前被记成 Blu-ray(T4)/未知，重算才能把它们抬到正确的档位
+#      ——不重算的话，一个 Remux 候选仍会被判成升级并把原盘洗掉（issue #163）
+SNAPSHOT_VERSION = 3
 
 
 class QualitySnapshot(BaseModel):

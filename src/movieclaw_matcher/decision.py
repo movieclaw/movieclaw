@@ -53,6 +53,19 @@ def pick_best(entries: list[Entry]) -> Entry | None:
 # 片源档阶梯（内置，不暴露配置；值域对齐 movieclaw_enrich.vocab.MEDIA_SOURCE）
 # ---------------------------------------------------------------------------
 
+# 原盘（BDMV / VIDEO_TS / ISO 完整盘）：片源阶梯的顶档 T6，高于 Remux。
+# Remux 本来就是**从原盘剥出来的**——把原盘压在 Remux 之下（此前只能标成
+# Blu-ray T4）会让一个 Remux 候选被判成升级，而默认 upgrade_keep_old=False
+# 会把原盘送进回收站，这是把更好的文件洗掉（issue #163 评论区实测：
+# 918 部电影的库里 339 个原盘，其中 199 个 BDMV 目录已探测出分辨率、
+# 真的暴露在这条路径上）。
+#
+# 该值只由**结构证据**写入（台账 container 为 bluray/dvd/iso，见
+# LibraryFile.is_disc），enrich 词表永远解析不出它——种子标题里的
+# "Blu-ray" 说的是压制来源，不是"这是一张完整的盘"。
+DISC_SOURCE = "Disc"
+_DISC_TIER = 6
+
 # Remux 是封装方式不是片源，单独用 remux 布尔判定为最高档 T5
 _REMUX_TIER = 5
 
@@ -65,6 +78,8 @@ USER_LOWEST_SOURCE = "user-lowest"
 # 与换源 replacement._SOURCE_RANK 相比补全了 BDRip/HDRip/DVD 等档
 # （Phase 7 会把换源迁移到本表，消除两套片源序）。
 _SOURCE_TIER: dict[str, int] = {
+    # T6 原盘：完整盘结构（BDMV / VIDEO_TS / ISO），高于从它剥出来的 Remux
+    DISC_SOURCE.casefold(): _DISC_TIER,
     # T5：人工标注的 Remux 存为 media_source 值（library_file 无 remux 布尔列，
     # 快照出处维度由 file.media_source 覆盖，走值比走布尔位更省一列）
     "remux": _REMUX_TIER,
@@ -128,8 +143,11 @@ def media_source_rank(
     不在白名单内的档返回 ``None`` 而不是"最低"，与 ``_resolution_ladder`` 的
     取向一字不差：位次未知时宁可让该单元安静，也不做数值猜测——把"白名单外"
     一律当最低，会让 [WEB-DL, 蓝光] 这种倒序偏好把已入库的 Remux 判成最低档
-    而白洗一次，那是删掉更好的文件。唯一例外是 T0 哨兵（人工标注"按最低档"），
-    它的语义就是"低于一切"，保留可比。
+    而白洗一次，那是删掉更好的文件。两个例外是阶梯的两端哨兵：T0（人工标注
+    "按最低档"）语义就是"低于一切"，T6（原盘）语义就是"高于一切"，两者都
+    保留可比——原盘不在白名单里（白名单是"愿意下载哪类资源"，没人会去下载
+    一张 40GB 的盘），但它必须能证明自己已经高于任何洗版目标，否则配了白名单
+    的规则组会让原盘退回"不可比"，白白等在那里。
     """
     tier = source_tier(media_source, remux)
     if tier is None:
@@ -138,6 +156,8 @@ def media_source_rank(
         return tier
     if tier == 0:  # USER_LOWEST_SOURCE：显式的"低于白名单里的一切"
         return 0
+    if tier == _DISC_TIER:  # 原盘：显式的"高于白名单里的一切"
+        return len(spec.media_sources) + 1
     ladder = [_MEDIA_SOURCE_CHOICE_TIER[value] for value in spec.media_sources]
     if tier not in ladder:
         return None
@@ -145,12 +165,18 @@ def media_source_rank(
 
 
 def source_tier(media_source: str | None, remux: bool) -> int | None:
-    """片源 → 档位；未知片源返回 None（不可比，绝不当最低档处理）。"""
+    """片源 → 档位；未知片源返回 None（不可比，绝不当最低档处理）。
+
+    原盘（T6）压过 ``remux`` 布尔位：那个布尔位来自**名称解析**，而原盘值
+    来自台账的结构证据（BDMV/VIDEO_TS/ISO）。一张目录名里带 "Remux" 的
+    完整原盘仍然是原盘，不能因为名字里的一个词降到 T5。
+    """
+    tier = _SOURCE_TIER.get(media_source.casefold()) if media_source else None
+    if tier == _DISC_TIER:
+        return tier
     if remux:
         return _REMUX_TIER
-    if not media_source:
-        return None
-    return _SOURCE_TIER.get(media_source.casefold())
+    return tier
 
 
 def _resolution_ladder(spec: RuleSetSpec) -> list[str]:
@@ -385,7 +411,9 @@ def quality_label(
     分辨率与片源都一样、只差在编码上，标签不带那一位就没法解释拒绝理由。
     """
     resolution = snapshot.resolution or "分辨率未知"
-    if snapshot.remux:
+    if (snapshot.media_source or "").casefold() == DISC_SOURCE.casefold():
+        head = f"{resolution} 原盘"
+    elif snapshot.remux:
         head = f"{resolution} Remux"
     elif (snapshot.media_source or "").casefold() == USER_LOWEST_SOURCE:
         head = f"{resolution} 最低档（人工标注）"
