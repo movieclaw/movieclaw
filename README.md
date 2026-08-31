@@ -5,7 +5,7 @@
   </picture>
 </p>
 
-<h3 align="center">The intelligent, all-in-one media server — with an AI agent built in</h3>
+<h3 align="center">The all-in-one media server with an AI agent built in</h3>
 
 <p align="center">
   Point MovieClaw at the folders where your media lives, and everything downstream just works:<br>
