@@ -29,7 +29,7 @@ class _StubClient:
         self._responses = responses
         self.requested: list[str] = []
 
-    async def download_media(self, url: str, *, max_bytes: int, timeout_s: float = 30.0) -> bytes:
+    async def download_media(self, url: str, **_: Any) -> bytes:
         self.requested.append(url)
         result = self._responses[url]
         if isinstance(result, Exception):

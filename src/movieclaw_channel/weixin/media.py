@@ -35,11 +35,6 @@ CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c"
 #: 消息 item 类型:2=图片(1=文本 3=语音 4=文件 5=视频,后三者本期不接)
 ITEM_IMAGE = 2
 
-#: 单张图片的下载上限:超过直接放弃。API 层还会把图压到 5MB 以内入库,
-#: 这里只是防「一条消息拖垮收消息循环」的粗闸。
-MAX_IMAGE_BYTES = 30 * 1024 * 1024
-
-
 @dataclass(frozen=True, slots=True)
 class ImageRef:
     """一张待下载图片的引用(下载地址 + 可选解密密钥)。"""

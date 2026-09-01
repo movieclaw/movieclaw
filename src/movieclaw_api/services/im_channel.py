@@ -7,6 +7,10 @@
 
 Agent 装配与微信同款红线:受限工具集(仅 mclaw 产品操作),不开宿主 shell;
 会话与 Web「最近会话」共用 agent_session 体系,/reset 换新会话。
+
+图片:两个平台的入站图片(TG 的 photo/图片 document、Discord 的图片附件)
+由各自 adapter 下载后挂在 InboundMessage.images 上,本服务与微信共用
+im_attachments.prepare_agent_input 完成入库、提醒与请求水合。
 """
 
 from __future__ import annotations
@@ -30,6 +34,7 @@ from movieclaw_api.exceptions import NotFoundException
 from movieclaw_api.services import auth as auth_service
 from movieclaw_api.services.agent_session_recorder import AgentSessionRecorder
 from movieclaw_api.services.agent_sessions import get_agent_session_store
+from movieclaw_api.services.im_attachments import prepare_agent_input
 from movieclaw_api.services.llm_config import acquire_llm_router
 from movieclaw_api.services.mclaw_tool import render_service_map
 from movieclaw_channel import ChannelManager, InboundMessage
@@ -535,7 +540,19 @@ class ImChannelService:
         session_id = await self._ensure_agent_session(msg)
         history = store.build_history(session_id)
         recorder = AgentSessionRecorder(store, session_id, entry_count=len(history))
-        await recorder.record_user_message(msg.text)
+
+        # 图片入库 + 提醒回执 + 请求水合:与微信共用同一入口,行为不会两处走样
+        prepared = await prepare_agent_input(
+            llm_router=llm_router,
+            session_id=session_id,
+            msg=msg,
+            history=history,
+            emit=emit,
+        )
+        if prepared is None:
+            # 纯图消息且图片全军覆没:失败原因已回执,不留空消息进转录
+            return
+        await recorder.record_user_message(prepared.user_content)
 
         runner = AgentRunner(
             llm_router,
@@ -551,7 +568,10 @@ class ImChannelService:
         last_event: AgentEvent | None = None
         try:
             async for ev in runner.start(
-                AgentStartParams(input=msg.text, history=history), run_id=run_id
+                AgentStartParams(
+                    input=prepared.input_for_run, history=prepared.history_for_run
+                ),
+                run_id=run_id,
             ):
                 last_event = ev
                 await pusher.feed(ev)

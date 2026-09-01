@@ -1,8 +1,15 @@
 """TelegramAdapter —— 实现通道协议的 Telegram 收发实现。
 
 收消息循环:getUpdates 长轮询,游标 = 已确认的 update_id + 1(字符串形式
-持久化到 channel_account.cursor,重启续传)。只处理私聊文本消息——群聊
-场景的鉴权与打扰控制是另一回事,P0 不做。
+持久化到 channel_account.cursor,重启续传)。只处理私聊消息——群聊场景的
+鉴权与打扰控制是另一回事,P0 不做。
+
+图片(官方文档口径):
+- ``message.photo`` 是同一张图的多档尺寸(PhotoSize 数组,末位最大),取最大档;
+- 用户「以文件发送」的图落在 ``message.document``,按 ``mime_type`` 认领;
+- 两者都只给 file_id,要 getFile 换 file_path 再下载(Bot API 限 20MB);
+- 相册(media_group)在 Bot API 里是**多条独立消息**共享 media_group_id,
+  合并由 dispatcher 的入站聚合窗口负责,这里不做特殊处理。
 """
 
 from __future__ import annotations
@@ -10,13 +17,19 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from dataclasses import replace
 from typing import Any
 
 import httpx
 
 from movieclaw_channel.adapter import ChannelContext
 from movieclaw_channel.telegram.client import TelegramApiError, TelegramClient
-from movieclaw_channel.types import ChannelAuthError, InboundMessage, ReplyContext
+from movieclaw_channel.types import (
+    ChannelAuthError,
+    InboundImage,
+    InboundMessage,
+    ReplyContext,
+)
 
 logger = logging.getLogger("movieclaw_channel.telegram.adapter")
 
@@ -26,6 +39,27 @@ CHANNEL_ID = "telegram"
 _RETRY_DELAY_S = 2.0
 #: 退避间隔上限
 _BACKOFF_DELAY_S = 30.0
+
+
+def _collect_image_files(message: dict[str, Any]) -> list[tuple[str, str]]:
+    """挑出消息里可下载的图片,返回 [(file_id, 展示名)](无图返回空表)。
+
+    photo 数组是同一张图的多档尺寸,末位最大——取最大档喂模型(小档是缩略图,
+    文字细节会糊)。以文件形式发来的图在 document 里,按 mime_type 认领。
+    """
+    files: list[tuple[str, str]] = []
+    photo = message.get("photo")
+    if isinstance(photo, list) and photo:
+        largest = max(photo, key=lambda p: p.get("file_size") or p.get("width") or 0)
+        file_id = str(largest.get("file_id") or "")
+        if file_id:
+            files.append((file_id, "Telegram 图片"))
+    document = message.get("document") or {}
+    mime = str(document.get("mime_type") or "")
+    file_id = str(document.get("file_id") or "")
+    if file_id and mime.startswith("image/"):
+        files.append((file_id, str(document.get("file_name") or "Telegram 图片")))
+    return files
 
 
 class TelegramAdapter:
@@ -75,7 +109,7 @@ class TelegramAdapter:
                     await ctx.save_cursor(str(offset))
                 msg = self._normalize(update)
                 if msg is not None:
-                    await ctx.on_inbound(msg)
+                    await ctx.on_inbound(await self._with_images(update, msg))
 
         logger.info("Telegram 收消息循环退出 account=%s", self._account_id)
 
@@ -107,6 +141,28 @@ class TelegramAdapter:
             provider_message_id=f"{chat.get('id')}:{message.get('message_id')}",
             timestamp_ms=int(message.get("date") or 0) * 1000,
         )
+
+    async def _with_images(self, update: dict[str, Any], msg: InboundMessage) -> InboundMessage:
+        """下载消息里的图片并挂回入站消息(无图或全失败则原样返回)。
+
+        单张失败只跳过这一张:随图的 caption 与其他图都还在,比整条消息丢掉
+        体验好得多。与微信/Discord 三家同一套语义。
+        """
+        files = _collect_image_files(update.get("message") or {})
+        if not files:
+            return msg
+        images: list[InboundImage] = []
+        for file_id, name in files:
+            try:
+                data = await self._client.download_file(file_id)
+            except Exception as exc:  # noqa: BLE001 -- 丢一张图,不丢整条消息
+                logger.error("Telegram 图片下载失败,已跳过该图:%s", exc)
+                continue
+            images.append(InboundImage(data=data, name=name))
+        if not images:
+            return msg
+        logger.info("Telegram 入站图片 %d 张 user=%s", len(images), msg.user_id)
+        return replace(msg, images=tuple(images))
 
     async def send_text(self, reply: ReplyContext, text: str) -> None:
         # 主动推送时 token 里没有 chat_id,私聊场景 chat_id == user_id

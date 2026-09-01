@@ -33,11 +33,7 @@ from movieclaw_channel.weixin.client import (
     WeixinApiError,
     WeixinClient,
 )
-from movieclaw_channel.weixin.media import (
-    MAX_IMAGE_BYTES,
-    collect_image_refs,
-    decrypt_image,
-)
+from movieclaw_channel.weixin.media import collect_image_refs, decrypt_image
 
 logger = logging.getLogger("movieclaw_channel.weixin.adapter")
 
@@ -218,7 +214,7 @@ class WeixinAdapter:
         images: list[InboundImage] = []
         for index, ref in enumerate(refs, start=1):
             try:
-                data = await self._client.download_media(ref.url, max_bytes=MAX_IMAGE_BYTES)
+                data = await self._client.download_media(ref.url)
                 if ref.aes_key is not None:
                     data = decrypt_image(data, ref.aes_key)
             except Exception as exc:  # noqa: BLE001 -- 丢一张图,不丢整条消息

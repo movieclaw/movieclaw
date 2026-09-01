@@ -36,17 +36,11 @@ from movieclaw_agent import AgentRunner, AgentStartParams
 from movieclaw_agent.events import AgentEvent
 from movieclaw_agent.tools import make_mclaw_tool
 from movieclaw_api.core.config import get_settings
-from movieclaw_api.exceptions import BadRequestException, NotFoundException
+from movieclaw_api.exceptions import NotFoundException
 from movieclaw_api.services import auth as auth_service
-from movieclaw_api.services.agent_attachments import (
-    MAX_ATTACHMENTS_PER_MESSAGE,
-    compose_user_content,
-    get_agent_attachment_store,
-    hydrate_images,
-    shrink_for_attachment,
-)
 from movieclaw_api.services.agent_session_recorder import AgentSessionRecorder
 from movieclaw_api.services.agent_sessions import get_agent_session_store
+from movieclaw_api.services.im_attachments import prepare_agent_input
 from movieclaw_api.services.llm_config import acquire_llm_router
 from movieclaw_api.services.mclaw_tool import render_service_map
 from movieclaw_channel import ChannelManager, InboundMessage
@@ -62,7 +56,6 @@ from movieclaw_db.engine import get_database
 from movieclaw_db.models.channel_account import ChannelAccount, ChannelAccountStatus
 from movieclaw_db.repositories.agent_session_repo import AgentSessionRepository
 from movieclaw_db.repositories.channel_account_repo import ChannelAccountRepository
-from movieclaw_llm import ChatMessage, ContentPart, LlmError
 
 logger = logging.getLogger("movieclaw_api.weixin_channel")
 
@@ -339,29 +332,18 @@ class WeixinChannelService:
         history = store.build_history(session_id)
         recorder = AgentSessionRecorder(store, session_id, entry_count=len(history))
 
-        # 3) 本轮输入:图片落会话附件目录,与文字组装成内容块(无图时仍是纯字符串)
-        user_content = await self._compose_input(msg, session_id, emit)
-        if not user_content:
+        # 3) 本轮输入:图片入库 + 提醒回执 + 请求水合(三通道共用的同一入口)
+        prepared = await prepare_agent_input(
+            llm_router=llm_router,
+            session_id=session_id,
+            msg=msg,
+            history=history,
+            emit=emit,
+        )
+        if prepared is None:
             # 纯图消息且图片全军覆没:失败原因已回执,不留空消息进转录
             return
-        await recorder.record_user_message(user_content)
-
-        # 4) 请求水合:历史 + 本轮输入统一处理(视觉门控 / 读字节 / 请求预算)。
-        #    微信侧不选模型,用默认模型(model="")的元数据判定视觉能力;路由
-        #    解析失败时跳过水合,交给 runner 以 agent_error 呈现同一个错误。
-        history_for_run: list[ChatMessage] = history
-        input_for_run: str | list[ContentPart] = user_content
-        try:
-            model_info = llm_router.get_model_info("")
-        except LlmError:
-            model_info = None
-        if model_info is not None:
-            hydrated = await hydrate_images(
-                [*history, ChatMessage(role="user", content=user_content)],
-                session_id=session_id,
-                model_info=model_info,
-            )
-            history_for_run, input_for_run = hydrated[:-1], hydrated[-1].content
+        await recorder.record_user_message(prepared.user_content)
 
         runner = AgentRunner(
             llm_router,
@@ -373,13 +355,16 @@ class WeixinChannelService:
         run_id = uuid.uuid4().hex[:12]
         await recorder.begin(run_id)
 
-        # 5) 「正在输入」状态:生成期间每 5s 保活,结束取消
+        # 4) 「正在输入」状态:生成期间每 5s 保活,结束取消
         stop_typing = await self._start_typing(msg)
         pusher = StepReplyPusher(emit)
         last_event: AgentEvent | None = None
         try:
             async for ev in runner.start(
-                AgentStartParams(input=input_for_run, history=history_for_run), run_id=run_id
+                AgentStartParams(
+                    input=prepared.input_for_run, history=prepared.history_for_run
+                ),
+                run_id=run_id,
             ):
                 last_event = ev
                 await pusher.feed(ev)
@@ -394,56 +379,6 @@ class WeixinChannelService:
             )
             # 微信通道没有用户主动停止入口，取消只可能来自停机——按「服务中断」收尾
             await recorder.on_terminal(terminal, reason="service_interrupted")
-
-    @staticmethod
-    async def _compose_input(
-        msg: InboundMessage,
-        session_id: str,
-        emit: Callable[[str], Awaitable[None]],
-    ) -> str | list[ContentPart]:
-        """把入站消息组装成本轮 Agent 输入,图片落进会话附件目录。
-
-        微信来的图没有前端可压,先服务端兜底缩到 2048 边长再入库。**单张图
-        失败只跳过这一张**并把原因回执给用户——用户能看懂发生了什么,也能决定
-        是否重发;整条消息不因此中断。
-
-        返回纯字符串(无图)或 text/image 内容块列表;纯图消息且图片全部失败
-        时返回空串,由调用方放弃本轮。
-        """
-        if not msg.images:
-            return msg.text
-
-        store = get_agent_attachment_store()
-        images = list(msg.images)
-        notices: list[str] = []
-        if len(images) > MAX_ATTACHMENTS_PER_MESSAGE:
-            notices.append(
-                f"一次最多处理 {MAX_ATTACHMENTS_PER_MESSAGE} 张图片,"
-                f"本轮只看前 {MAX_ATTACHMENTS_PER_MESSAGE} 张。"
-            )
-            images = images[:MAX_ATTACHMENTS_PER_MESSAGE]
-
-        attachment_ids: list[str] = []
-        for image in images:
-            try:
-                data = await asyncio.to_thread(shrink_for_attachment, image.data)
-                meta = await asyncio.to_thread(store.save_staging, data, image.name)
-            except BadRequestException as exc:
-                logger.warning("微信图片入库失败,已跳过:%s", exc.message)
-                notices.append(f"有一张图片没能处理({exc.message})。")
-                continue
-            attachment_ids.append(meta.attachment_id)
-
-        bound = []
-        if attachment_ids:
-            try:
-                bound = await asyncio.to_thread(store.bind, session_id, attachment_ids)
-            except BadRequestException as exc:
-                logger.warning("微信图片绑定会话失败:%s", exc.message)
-                notices.append(exc.message)
-        if notices:
-            await emit("⚠️ " + " ".join(notices))
-        return compose_user_content(msg.text, bound)
 
     async def _restricted_tools(self, session_id: str):
         """微信侧的受限工具集:仅 mclaw 产品操作工具,不开工作区 shell。"""
