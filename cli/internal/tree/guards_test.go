@@ -13,6 +13,11 @@ import (
 // knownNonGenerated 是唯二允许不生成命令的两类端点：x-cli-hidden（Web 基础
 // 设施，或语义由精选命令承担）与 x-cli-stream（SSE 流，精选层手写接入）。
 var knownNonGenerated = []string{
+	// 会话图片附件：二进制上传/下载是 Web 基础设施，CLI 场景无消费方
+	"session.attachments.upload",
+	"session.attachments.download",
+	// 技能清单：Web composer 数据源；Agent 侧技能走系统提示词注入
+	"skills.list",
 	"auth.device.authorize",
 	"auth.device.token",
 	"auth.tokens.create",
@@ -246,6 +251,9 @@ func TestSessionExposesOnlyMessageSemantics(t *testing.T) {
 		}
 	}
 	compareSets(t, "session 域端点", []string{
+		// 图片附件从属于 message 语义（消息携带的图），不引入新的调度概念
+		"session.attachments.download",
+		"session.attachments.upload",
 		"session.compact-context",
 		"session.delete",
 		"session.follow",

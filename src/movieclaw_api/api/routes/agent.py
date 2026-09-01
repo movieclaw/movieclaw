@@ -80,6 +80,10 @@ skills_router = APIRouter(prefix="/skills", tags=["session"])
     "",
     response_model=ApiResponse[list[SkillView]],
     summary="列出可显式调用的 Agent 技能",
+    operation_id="skills.list",
+    # Web composer 的数据源；Agent 侧技能清单走系统提示词注入，CLI 不需要
+    # 这个端点，隐藏避免生成无产品语义的命令
+    openapi_extra={"x-cli-hidden": True},
 )
 async def list_skills() -> ApiResponse[list[SkillView]]:
     """composer 加号菜单的数据源：内置 + 用户两层合并后的技能清单。
