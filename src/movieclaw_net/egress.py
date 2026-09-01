@@ -38,11 +38,18 @@ from movieclaw_net.breaker import CircuitBreaker, get_breaker
 
 logger = logging.getLogger("movieclaw_net.egress")
 
-# 熔断器只统计这些"线路不通"级别的失败；HTTP 状态码错误不计入
-_NETWORK_FAILURES = (httpx.TimeoutException, httpx.NetworkError)
+# 熔断器只统计这些"线路不通"级别的失败；HTTP 状态码错误不计入。
+# ProxyError 必须单列：它不是 NetworkError 的子类，而是 TransportError 下与之
+# 平级的分支。漏掉它意味着**代理故障一次都不计数**——对走 SOCKS5 的用户
+# （节点掉线、分流规则 REJECT、认证失败全归 ProxyError）整个熔断形同虚设，
+# 每个请求都得等满超时，正是熔断本该消灭的那种体验。
+_NETWORK_FAILURES = (httpx.TimeoutException, httpx.NetworkError, httpx.ProxyError)
 
-# 允许的代理协议：http(s) 与 socks5（socks5h 表示由代理端解析域名，
-# 对被 DNS 污染的域名更稳，Clash/sing-box 均支持）
+# 允许的代理协议：http(s) 与 socks5。
+# 注意 socks5 与 socks5h 在 httpx 下**行为完全一致**：httpcore 把目标主机名
+# 原样以 ATYP=DOMAINNAME 发给代理（见 socksio.utils.encode_address），域名
+# 一律由代理端解析，本地不做 DNS。保留 socks5h 只为兼容用户从别处抄来的
+# 地址，改写成它并不会改变解析行为，不必拿它去试被污染的域名。
 PROXY_SCHEMES = ("http", "https", "socks5", "socks5h")
 
 

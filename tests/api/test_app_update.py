@@ -996,6 +996,61 @@ async def test_fetch_releases_gives_up_after_retries_with_proxy_hint(
 
 
 @pytest.mark.asyncio
+async def test_fetch_releases_retries_proxy_error(updates_dir, monkeypatch):
+    """代理故障也要重试。
+
+    httpx.ProxyError 不是 NetworkError 的子类而是它的兄弟，只捕获 NetworkError
+    会把代理故障整类漏掉——而 SOCKS5 用户最常撞上的恰恰就是它。
+    """
+    import httpx
+
+    assert not issubclass(httpx.ProxyError, httpx.NetworkError)  # 漏写的根源
+    attempts: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise httpx.ProxyError("proxy: host unreachable")
+        return httpx.Response(200, json=[{"tag_name": "v0.2.0"}])
+
+    _mock_releases_client(monkeypatch, handler)
+
+    async def fake_sleep(delay: float) -> None:
+        return None
+
+    monkeypatch.setattr(app_update.asyncio, "sleep", fake_sleep)
+    try:
+        releases = await app_update._fetch_releases("更新")
+    finally:
+        app_update.reset_release_cache_for_tests()
+    assert releases == [{"tag_name": "v0.2.0"}]
+    assert len(attempts) == 2
+
+
+@pytest.mark.asyncio
+async def test_fetch_releases_proxy_error_message_points_at_proxy(updates_dir, monkeypatch):
+    """代理拒绝转发时要点名是代理的问题，不能说成 GitHub 不可达。"""
+    import httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ProxyError("host unreachable")
+
+    _mock_releases_client(monkeypatch, handler)
+
+    async def fake_sleep(delay: float) -> None:
+        return None
+
+    monkeypatch.setattr(app_update.asyncio, "sleep", fake_sleep)
+    try:
+        with pytest.raises(BadRequestException) as excinfo:
+            await app_update._fetch_releases("更新")
+    finally:
+        app_update.reset_release_cache_for_tests()
+    assert "代理拒绝" in excinfo.value.message
+    assert "REJECT" in excinfo.value.message
+
+
+@pytest.mark.asyncio
 async def test_fetch_releases_strips_trailing_slash_of_api_base(updates_dir, monkeypatch):
     """反代地址带尾斜杠时不能拼出 //repos（不少反代对双斜杠直接 404）。"""
     import httpx

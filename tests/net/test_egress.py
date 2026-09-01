@@ -155,6 +155,36 @@ def test_transport_follows_breaker_registry_reset():
     fresh.before_request()  # 不抛 CircuitOpenError 即为通过
 
 
+@pytest.mark.asyncio
+async def test_breaker_counts_proxy_failures():
+    """回归：代理故障必须计入熔断。
+
+    httpx.ProxyError 不是 NetworkError 的子类，而是 TransportError 下与之平级的
+    分支。_NETWORK_FAILURES 漏掉它时，走 SOCKS5 的用户（节点掉线、分流规则
+    REJECT、认证失败全归 ProxyError）整个熔断形同虚设——每个请求都要等满超时，
+    正是熔断本该消灭的那种体验。
+    """
+    import httpx
+
+    from movieclaw_net import get_breaker
+    from movieclaw_net.egress import current_epoch
+
+    assert not issubclass(httpx.ProxyError, httpx.NetworkError)  # 漏写的根源
+
+    class _ProxyRefusing(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            raise httpx.ProxyError("host unreachable")
+
+    transport = egress_transport("tmdb")
+    transport._inner = _ProxyRefusing()
+    transport._inner_epoch = current_epoch()
+    request = httpx.Request("GET", "https://example.com/")
+    for _ in range(3):
+        with pytest.raises(httpx.ProxyError):
+            await transport.handle_async_request(request)
+    assert get_breaker("tmdb").is_open
+
+
 def test_transport_rebuilds_inner_on_config_change():
     transport = egress_transport("tmdb")
     inner_before = transport._ensure_inner()

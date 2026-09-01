@@ -432,6 +432,18 @@ def reset_release_cache_for_tests() -> None:
 # 远低于给用户报一次假的「网络不可达」——原先零重试，一次抖动就报错。
 _RETRY_BACKOFF_SECONDS = (1.0, 3.0)
 
+# 值得重试的瞬时故障。**httpx.ProxyError 必须单列**：它不是 NetworkError 的
+# 子类，而是 TransportError 下与之平级的分支，只写 NetworkError 会把代理故障
+# 整类漏掉——而 SOCKS5 用户最常撞上的恰恰就是它（代理握手失败、Clash 回
+# 「host unreachable」、认证被拒都归到 ProxyError）。RemoteProtocolError
+# （代理未回响应就断开）同理，检查更新是幂等 GET，重试安全。
+_RETRYABLE_NETWORK_ERRORS = (
+    httpx.TimeoutException,
+    httpx.NetworkError,
+    httpx.ProxyError,
+    httpx.RemoteProtocolError,
+)
+
 
 def _proxy_hint() -> str:
     """当前 GitHub 出口的中文描述，拼进错误信息里。
@@ -474,6 +486,15 @@ def _describe_github_error(exc: httpx.HTTPError, what: str) -> str:
         return (
             f"GitHub 返回异常状态（HTTP {response.status_code}），无法检查{what}，"
             f"请稍后重试。{_proxy_hint()}"
+        )
+    if isinstance(exc, httpx.ProxyError):
+        # SOCKS5 用户最常撞上的一类：代理进程在线（所以「设置 → 网络」的测试
+        # 可能刚好赶上一次成功），但本次转发被拒——节点掉线、分流规则命中
+        # REJECT、认证失败都会走到这里。必须点名是代理拒绝而非 GitHub 不可达。
+        return (
+            f"代理拒绝了到 GitHub 的转发，无法检查{what}（{exc}）。{_proxy_hint()}；"
+            "请确认代理节点在线、认证信息正确，且 api.github.com 命中的分流规则"
+            "不是 REJECT/DIRECT"
         )
     if isinstance(exc, httpx.TimeoutException):
         return (
@@ -518,7 +539,7 @@ async def _fetch_releases(what: str) -> list[dict]:
                 if resp.status_code == 304 and _releases_cached is not None:
                     return _releases_cached
                 resp.raise_for_status()
-            except (httpx.TimeoutException, httpx.NetworkError) as exc:
+            except _RETRYABLE_NETWORK_ERRORS as exc:
                 if attempt == len(_RETRY_BACKOFF_SECONDS):
                     raise BadRequestException(_describe_github_error(exc, what)) from exc
                 delay = _RETRY_BACKOFF_SECONDS[attempt]
