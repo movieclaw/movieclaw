@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 import uuid
@@ -130,158 +131,187 @@ class AgentRunner:
         usage = TokenUsage()
         #: 连续空响应次数，收到有效响应即清零
         empty_retries = 0
-        for step in range(1, self._max_steps + 1):
-            request = ChatRequest(
-                model=params.model,
-                messages=messages,
-                tools=definitions or None,
-                settings=params.settings,
-            )
+        #: 本步流式已累积的半截输出。取消打断流式时以 finish_reason=aborted
+        #: 定稿落盘（pi 的 stopReason:"aborted" 同款语义）：用户屏幕上看到的
+        #: 半截回答与转录一致，续聊时模型也知道自己说到哪被打断。
+        partial_text = ""
+        partial_thinking = ""
+        try:
+            for step in range(1, self._max_steps + 1):
+                request = ChatRequest(
+                    model=params.model,
+                    messages=messages,
+                    tools=definitions or None,
+                    settings=params.settings,
+                )
 
-            final: ChatResponse | None = None
-            async for event in self._router.chat_stream(request):
-                if event.type == "thinking_delta":
-                    yield AgentEvent(type="thinking_delta", run_id=run_id, delta=event.delta)
-                elif event.type == "text_delta":
-                    yield AgentEvent(type="text_delta", run_id=run_id, delta=event.delta)
-                elif event.type == "toolcall_start":
-                    # 名称一确定就上报，前端从这一刻起即可展示「正在调用 xx 工具」
+                final: ChatResponse | None = None
+                partial_text = ""
+                partial_thinking = ""
+                async for event in self._router.chat_stream(request):
+                    if event.type == "thinking_delta":
+                        partial_thinking += event.delta or ""
+                        yield AgentEvent(type="thinking_delta", run_id=run_id, delta=event.delta)
+                    elif event.type == "text_delta":
+                        partial_text += event.delta or ""
+                        yield AgentEvent(type="text_delta", run_id=run_id, delta=event.delta)
+                    elif event.type == "toolcall_start":
+                        # 名称一确定就上报，前端从这一刻起即可展示「正在调用 xx 工具」
+                        yield AgentEvent(
+                            type="tool_call_start", run_id=run_id, tool_call=event.tool_call
+                        )
+                    elif event.type == "toolcall_delta":
+                        # 参数 JSON 逐片上报；tool_call_id 让前端把增量归到正确的调用
+                        yield AgentEvent(
+                            type="tool_call_delta",
+                            run_id=run_id,
+                            delta=event.delta,
+                            tool_call_id=event.tool_call.id if event.tool_call else None,
+                        )
+                    elif event.type == "toolcall_end":
+                        yield AgentEvent(type="tool_call", run_id=run_id, tool_call=event.tool_call)
+                    elif event.type == "error":
+                        logger.warning("Agent 运行失败 run=%s：%s", run_id, event.partial.error)
+                        yield AgentEvent(
+                            type="agent_error",
+                            run_id=run_id,
+                            error=event.partial.error or "模型调用失败，原因未知",
+                        )
+                        return
+                    elif event.type == "done":
+                        final = event.partial
+
+                if final is None:
                     yield AgentEvent(
-                        type="tool_call_start", run_id=run_id, tool_call=event.tool_call
-                    )
-                elif event.type == "toolcall_delta":
-                    # 参数 JSON 逐片上报；tool_call_id 让前端把增量归到正确的调用
-                    yield AgentEvent(
-                        type="tool_call_delta",
-                        run_id=run_id,
-                        delta=event.delta,
-                        tool_call_id=event.tool_call.id if event.tool_call else None,
-                    )
-                elif event.type == "toolcall_end":
-                    yield AgentEvent(type="tool_call", run_id=run_id, tool_call=event.tool_call)
-                elif event.type == "error":
-                    logger.warning("Agent 运行失败 run=%s：%s", run_id, event.partial.error)
-                    yield AgentEvent(
-                        type="agent_error",
-                        run_id=run_id,
-                        error=event.partial.error or "模型调用失败，原因未知",
+                        type="agent_error", run_id=run_id, error="模型流异常终止，未返回结果"
                     )
                     return
-                elif event.type == "done":
-                    final = event.partial
 
-            if final is None:
-                yield AgentEvent(
-                    type="agent_error", run_id=run_id, error="模型流异常终止，未返回结果"
-                )
-                return
+                usage = _add_usage(usage, final.usage)
 
-            usage = _add_usage(usage, final.usage)
-
-            # 空响应：既没有工具调用、正文也是空的。这不是「答完了」，而是模型
-            # 或中转端点这一轮什么都没返回（0 token 的 STOP）。当成正常结束的话
-            # 通道侧无话可发，微信/Telegram 上表现为对话毫无征兆地静默中断，
-            # 日志里只留一行「运行已结束」，排查时极难定位。
-            # 成因多为瞬时故障（供应商抖动、限流降级、安全过滤），所以先原样重发
-            # 一次——messages 没动过，continue 即重试；连续空才判定失败。
-            # 注意要在 _notify 之前处理：空的 assistant 消息不该写进会话历史，
-            # 否则下一轮续聊会把这段空白也带上。
-            if not final.tool_calls and not (final.content or "").strip():
-                if empty_retries < _MAX_EMPTY_RETRIES:
-                    empty_retries += 1
+                # 空响应：既没有工具调用、正文也是空的。这不是「答完了」，而是模型
+                # 或中转端点这一轮什么都没返回（0 token 的 STOP）。当成正常结束的话
+                # 通道侧无话可发，微信/Telegram 上表现为对话毫无征兆地静默中断，
+                # 日志里只留一行「运行已结束」，排查时极难定位。
+                # 成因多为瞬时故障（供应商抖动、限流降级、安全过滤），所以先原样重发
+                # 一次——messages 没动过，continue 即重试；连续空才判定失败。
+                # 注意要在 _notify 之前处理：空的 assistant 消息不该写进会话历史，
+                # 否则下一轮续聊会把这段空白也带上。
+                if not final.tool_calls and not (final.content or "").strip():
+                    if empty_retries < _MAX_EMPTY_RETRIES:
+                        empty_retries += 1
+                        logger.warning(
+                            "Agent 收到空响应，原样重试第 %d 次 run=%s step=%d finish_reason=%s",
+                            empty_retries,
+                            run_id,
+                            step,
+                            final.finish_reason,
+                        )
+                        continue
                     logger.warning(
-                        "Agent 收到空响应，原样重试第 %d 次 run=%s step=%d finish_reason=%s",
-                        empty_retries,
+                        "Agent 连续空响应，判定失败 run=%s step=%d finish_reason=%s",
                         run_id,
                         step,
                         final.finish_reason,
                     )
-                    continue
-                logger.warning(
-                    "Agent 连续空响应，判定失败 run=%s step=%d finish_reason=%s",
-                    run_id,
-                    step,
-                    final.finish_reason,
-                )
-                yield AgentEvent(
-                    type="agent_error",
-                    run_id=run_id,
-                    error="我连续两次都没能生成回复，可能是临时故障。请稍后再发一遍试试。",
-                )
-                return
-            # 拿到了有效响应，重置重试计数
-            empty_retries = 0
+                    yield AgentEvent(
+                        type="agent_error",
+                        run_id=run_id,
+                        error="我连续两次都没能生成回复，可能是临时故障。请稍后再发一遍试试。",
+                    )
+                    return
+                # 拿到了有效响应，重置重试计数
+                empty_retries = 0
 
-            # 循环判据：以 tool_calls 内容为准（finish_reason 只作参考）——
-            # 覆盖「stop 但带调用」与「tool_calls 但数组为空」两类兼容怪癖
-            if not final.tool_calls:
+                # 循环判据：以 tool_calls 内容为准（finish_reason 只作参考）——
+                # 覆盖「stop 但带调用」与「tool_calls 但数组为空」两类兼容怪癖
+                if not final.tool_calls:
+                    await self._notify(final.to_message(), final)
+                    yield AgentEvent(
+                        type="agent_done",
+                        run_id=run_id,
+                        result=AgentDone(
+                            text=final.content,
+                            thinking=final.thinking,
+                            finish_reason=final.finish_reason,
+                            usage=usage,
+                            steps=step,
+                            model=final.model,
+                            provider=final.provider,
+                            elapsed_ms=int((time.monotonic() - started) * 1000),
+                        ),
+                    )
+                    return
+
+                # assistant 消息（含 tool_calls）入上下文，随后逐个执行工具
+                messages.append(final.to_message())
                 await self._notify(final.to_message(), final)
-                yield AgentEvent(
-                    type="agent_done",
-                    run_id=run_id,
-                    result=AgentDone(
-                        text=final.content,
-                        thinking=final.thinking,
-                        finish_reason=final.finish_reason,
-                        usage=usage,
-                        steps=step,
-                        model=final.model,
-                        provider=final.provider,
-                        elapsed_ms=int((time.monotonic() - started) * 1000),
-                    ),
-                )
-                return
+                # 本步 assistant 已定稿落盘，清空半截缓存：随后工具执行期间
+                # 若被取消，不应把同样内容再以 aborted 重复落盘一次
+                partial_text = ""
+                partial_thinking = ""
+                step_tool_messages: list[ChatMessage] = []
+                for tc in final.tool_calls:
+                    result = await self._execute_tool(tc, definitions)
+                    yield AgentEvent(
+                        type="tool_result",
+                        run_id=run_id,
+                        tool_result=AgentToolResult(
+                            tool_call_id=result.tool_call_id,
+                            name=result.name,
+                            output=result.output[:_EVENT_OUTPUT_LIMIT],
+                            is_error=result.is_error,
+                            elapsed_ms=result.elapsed_ms,
+                        ),
+                    )
+                    tool_message = ChatMessage(
+                        role="tool",
+                        content=result.output,
+                        tool_call_id=tc.id,
+                        name=tc.name,
+                    )
+                    messages.append(tool_message)
+                    step_tool_messages.append(tool_message)
+                    await self._notify(tool_message, None)
 
-            # assistant 消息（含 tool_calls）入上下文，随后逐个执行工具
-            messages.append(final.to_message())
-            await self._notify(final.to_message(), final)
-            step_tool_messages: list[ChatMessage] = []
-            for tc in final.tool_calls:
-                result = await self._execute_tool(tc, definitions)
-                yield AgentEvent(
-                    type="tool_result",
-                    run_id=run_id,
-                    tool_result=AgentToolResult(
-                        tool_call_id=result.tool_call_id,
-                        name=result.name,
-                        output=result.output[:_EVENT_OUTPUT_LIMIT],
-                        is_error=result.is_error,
-                        elapsed_ms=result.elapsed_ms,
-                    ),
+                # mid-run 检查：本步全部工具结果已回喂、call/output 配对完整，
+                # 此刻丢弃历史不会产生孤儿调用，是压缩的安全点。用量以服务端
+                # 上报为准（模型实际看到的部分），仅对尚未发送的新工具结果补估
+                step_usage = final.usage.prompt_tokens + final.usage.completion_tokens
+                context_tokens = (
+                    step_usage + estimate_tokens(step_tool_messages)
+                    if step_usage > 0
+                    # 供应商不回用量时退化为全量字节估算
+                    else estimate_tokens(messages)
                 )
-                tool_message = ChatMessage(
-                    role="tool",
-                    content=result.output,
-                    tool_call_id=tc.id,
-                    name=tc.name,
+                compact_event = await self._maybe_compact(
+                    run_id, messages, context_tokens, context_window, params
                 )
-                messages.append(tool_message)
-                step_tool_messages.append(tool_message)
-                await self._notify(tool_message, None)
+                if compact_event is not None:
+                    yield compact_event
 
-            # mid-run 检查：本步全部工具结果已回喂、call/output 配对完整，
-            # 此刻丢弃历史不会产生孤儿调用，是压缩的安全点。用量以服务端
-            # 上报为准（模型实际看到的部分），仅对尚未发送的新工具结果补估
-            step_usage = final.usage.prompt_tokens + final.usage.completion_tokens
-            context_tokens = (
-                step_usage + estimate_tokens(step_tool_messages)
-                if step_usage > 0
-                # 供应商不回用量时退化为全量字节估算
-                else estimate_tokens(messages)
+            logger.warning("Agent 达到最大步数上限 run=%s steps=%d", run_id, self._max_steps)
+            yield AgentEvent(
+                type="agent_error",
+                run_id=run_id,
+                error=f"已达到最大执行步数上限（{self._max_steps} 步）仍未完成，运行终止。"
+                "请把任务拆小后重试，或检查是否陷入了循环。",
             )
-            compact_event = await self._maybe_compact(
-                run_id, messages, context_tokens, context_window, params
-            )
-            if compact_event is not None:
-                yield compact_event
-
-        logger.warning("Agent 达到最大步数上限 run=%s steps=%d", run_id, self._max_steps)
-        yield AgentEvent(
-            type="agent_error",
-            run_id=run_id,
-            error=f"已达到最大执行步数上限（{self._max_steps} 步）仍未完成，运行终止。"
-            "请把任务拆小后重试，或检查是否陷入了循环。",
-        )
+        except asyncio.CancelledError:
+            # 取消打断流式时的半截定稿：用户屏幕上已经看到多少，转录里就落多少，
+            # 以 finish_reason="aborted" 标记（pi 的 stopReason:"aborted" 同款
+            # 语义），续聊时模型知道自己说到哪被打断。已定稿的步不会重复落盘
+            # （定稿后 partial 缓存即清零）。
+            if partial_text or partial_thinking:
+                aborted = ChatResponse(
+                    content=partial_text or None,
+                    thinking=partial_thinking or None,
+                    finish_reason="aborted",
+                    model=model_id,
+                    provider=provider.name,
+                )
+                await self._notify(aborted.to_message(), aborted)
+            raise
 
     async def _maybe_compact(
         self,

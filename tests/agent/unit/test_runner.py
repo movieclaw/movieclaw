@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+
+import pytest
 
 from movieclaw_agent import SUMMARY_PREFIX, AgentRunner, AgentStartParams, AgentTool
 from movieclaw_agent.prompts import COMPACT_PROMPT
@@ -508,6 +511,83 @@ async def test_no_context_window_disables_auto_compact(monkeypatch):
     assert all(e.type != "context_compacted" for e in events)
     assert all(request.tools is not None for request in _probe["requests"])
     assert events[-1].type == "agent_done"
+
+
+async def test_cancel_mid_stream_persists_partial_as_aborted(monkeypatch):
+    """取消打断流式：已流出的半截思考+正文以 finish_reason=aborted 定稿落盘。
+
+    docs/design/agent-runtime-resilience.md §4.3（pi 的 stopReason:"aborted"
+    同款语义）：用户屏幕上看到多少、转录里就有多少，续聊时模型知道自己
+    说到哪被打断。
+    """
+    recorded: list = []
+
+    async def record(message, response):
+        recorded.append((message, response))
+
+    class HangingStreamProtocol(ToolLoopProtocol):
+        async def chat_stream(self, request, model_id):
+            snap = ChatResponse(model=model_id, provider=self.config.name)
+            yield ChatStreamEvent(type="start", partial=snap)
+            yield ChatStreamEvent(type="thinking_delta", delta="推理中", partial=snap)
+            yield ChatStreamEvent(type="text_delta", delta="已找到", partial=snap)
+            yield ChatStreamEvent(type="text_delta", delta="一半", partial=snap)
+            await asyncio.Event().wait()  # 永不返回，等外部取消
+
+    runner = make_runner(HangingStreamProtocol, monkeypatch, on_message=record)
+    reached_half = asyncio.Event()
+
+    async def consume() -> None:
+        async for event in runner.start(AgentStartParams(input="找沙丘")):
+            if event.type == "text_delta" and event.delta == "一半":
+                reached_half.set()
+
+    task = asyncio.create_task(consume())
+    await reached_half.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert len(recorded) == 1
+    message, response = recorded[0]
+    assert message.role == "assistant"
+    assert response.finish_reason == "aborted"
+    assert response.content == "已找到一半"
+    assert response.thinking == "推理中"
+
+
+async def test_cancel_during_tool_execution_does_not_duplicate_step(monkeypatch):
+    """工具执行期取消：本步 assistant 已定稿，不再以 aborted 重复落盘。"""
+    recorded: list = []
+
+    async def record(message, response):
+        recorded.append((message, response))
+
+    tool_started = asyncio.Event()
+
+    async def hanging_handler(args: dict) -> str:
+        tool_started.set()
+        await asyncio.Event().wait()
+        return ""  # pragma: no cover
+
+    runner = make_runner(ToolLoopProtocol, monkeypatch, handler=hanging_handler, on_message=record)
+
+    async def consume() -> None:
+        async for _ in runner.start(AgentStartParams(input="找沙丘")):
+            pass
+
+    task = asyncio.create_task(consume())
+    await tool_started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # 只有那条带 tool_calls 的 assistant，没有多余的 aborted 半截行；
+    # 孤儿 tool_call 的回执由持久化层 seal 补齐，不归 runner 管
+    assistants = [(m, r) for m, r in recorded if m.role == "assistant"]
+    assert len(assistants) == 1
+    assert assistants[0][0].tool_calls
+    assert assistants[0][1].finish_reason != "aborted"
 
 
 async def test_system_prompt_override_and_history(monkeypatch):

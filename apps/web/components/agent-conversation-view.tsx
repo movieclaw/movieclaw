@@ -526,11 +526,12 @@ function TurnFooter({ turn }: { turn: AgentTurn }) {
     .map((segment) => segment.text)
     .join("\n\n")
     .trim();
-  if (!duration && !turn.stopped && !answer) return null;
+  if (!duration && !turn.stopped && !turn.interrupted && !answer) return null;
 
   return (
     <div className="flex items-center gap-2 text-caption text-[var(--text-faint)]">
       {turn.stopped && <span>已停止</span>}
+      {!turn.stopped && turn.interrupted && <span title="本轮运行未正常结束（停机或异常中断），可直接继续对话">已中断</span>}
       {duration && (
         <span
           className="tabular-nums"

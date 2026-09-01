@@ -51,6 +51,20 @@ SESSION_FORMAT_VERSION = 3
 #: 会话标题 / 最后提示预览的截断长度（DB 索引列用，全文始终在文件里）
 PREVIEW_MAX_CHARS = 80
 
+#: 中断收尾的来源分级（决定合成回执的文案，见 seal_pending_tool_calls）
+SealReason = Literal["user_cancelled", "service_interrupted"]
+
+_SEAL_TEXTS: dict[str, str] = {
+    "user_cancelled": (
+        "用户停止了本次运行，此工具调用被中断。它可能已产生部分效果；"
+        "如需确认实际结果，请先用查询类操作核实，不要盲目重发。"
+    ),
+    "service_interrupted": (
+        "运行被中断（服务重启或异常），此工具调用的结果未知。"
+        "继续任务前请先查询相关状态确认它是否已生效，避免重复执行有副作用的操作。"
+    ),
+}
+
 
 def _now_iso() -> str:
     """当前 UTC 时间的 ISO 串（带 +00:00，文件格式统一用 aware 时间）。"""
@@ -232,6 +246,25 @@ def message_preview(message: ChatMessage) -> str:
     return ""
 
 
+def _repair_unpaired_tool_messages(
+    session_id: str, messages: list[ChatMessage]
+) -> list[ChatMessage]:
+    """读取侧最后防线：把未配对的 tool_call / tool 回执修复成协议完整的历史。
+
+    复用交接快照的修复逻辑（补「结果未知」回执 / 降级孤立回执），只在
+    内存里的投影上生效，不回写文件。命中即记错误日志——正常部署下写入侧
+    seal 保证这里永远是直通路径（docs/design/agent-runtime-resilience.md §4.2）。
+    """
+    repaired = _repair_handoff_history(messages)
+    if repaired != messages:
+        logger.error(
+            "会话 %s 重建上下文时发现未配对的工具消息，已在内存中修复"
+            "（正常情况下写入侧收尾应保证配对完整，请检查日志中的中断收尾记录）",
+            session_id,
+        )
+    return repaired
+
+
 def _last_context_boundary_index(
     entries: list[SessionMessageEntry | SessionCompactionEntry | SessionHandoffEntry],
 ) -> int:
@@ -251,12 +284,13 @@ def _messages_after_last_compaction(
 
 
 def _repair_handoff_history(history: list[ChatMessage]) -> list[ChatMessage]:
-    """为新会话复制一份协议完整的历史，不修改源会话。
+    """复制一份协议完整的历史，不修改源数据（交接快照与读取侧兜底共用）。
 
-    硬崩可能留下 assistant tool_call 却没有 tool 回执；原会话直接续聊时部分
-    供应商会因此拒绝整次请求。交接快照在每个缺口处补一条「结果未知」，提醒
-    新 Agent 先查询真实状态，不能武断地把外部操作判成未执行。孤立 tool 回执
+    硬崩可能留下 assistant tool_call 却没有 tool 回执；直接回喂时部分
+    供应商会因此拒绝整次请求。在每个缺口处补一条「结果未知」，提醒
+    Agent 先查询真实状态，不能武断地把外部操作判成未执行。孤立 tool 回执
     则降级成普通历史说明，既保住信息，也不把非法 tool 消息喂给供应商。
+    无缺口时逐条原样返回（调用方可用相等比较判断是否发生过修复）。
     """
     repaired: list[ChatMessage] = []
     pending: list[ToolCall] = []
@@ -267,7 +301,7 @@ def _repair_handoff_history(history: list[ChatMessage]) -> list[ChatMessage]:
                 ChatMessage(
                     role="tool",
                     content=(
-                        f"旧会话在此处异常中断，工具「{tool_call.name}」的结果未知。"
+                        f"会话在此处异常中断，工具「{tool_call.name}」的结果未知。"
                         "继续前请先查询实际状态，避免重复操作。"
                     ),
                     tool_call_id=tool_call.id,
@@ -293,7 +327,7 @@ def _repair_handoff_history(history: list[ChatMessage]) -> list[ChatMessage]:
                     ChatMessage(
                         role="user",
                         content=(
-                            f"【旧会话中的孤立工具回执：{message.name or '未知工具'}】\n"
+                            f"【历史中的孤立工具回执：{message.name or '未知工具'}】\n"
                             f"{message.text()}"
                         ),
                     )
@@ -323,6 +357,11 @@ class AgentSessionStore:
         self._root = root
         #: session_id → 最后一条 entry 的 uuid（避免每次 append 都重读文件）
         self._leaf_cache: dict[str, str | None] = {}
+
+    @property
+    def root(self) -> Path:
+        """转录目录（启动自愈遍历用）。"""
+        return self._root
 
     def path(self, session_id: str) -> Path:
         return self._root / f"{session_id}.jsonl"
@@ -453,15 +492,22 @@ class AgentSessionStore:
         )
         return header, handoff
 
-    def seal_pending_tool_calls(self, session_id: str) -> int:
+    def seal_pending_tool_calls(
+        self, session_id: str, *, reason: SealReason = "user_cancelled"
+    ) -> int:
         """中断收尾：给没有结果的 tool_call 补写错误回执，返回补写条数。
 
         保证文件里 assistant 的 tool_calls 与 tool 消息任何时刻都配对完整，
         resume 直接回喂 API 不需要修复逻辑（Claude Code 是吃到 400 再反应式
         修复，我们在写入侧一次做对更省事）。
 
+        文案按中断来源分级（docs/design/agent-runtime-resilience.md §4.3）：
+        两种场景下工具都**可能已产生副作用**（提交下载、创建订阅），合成
+        回执必须表达「结果未知、先查询核实」，绝不能断言「未执行」——
+        否则模型会盲目重发，副作用工具被重复执行。
+
         只检查最后一条压缩行之后的消息：更早的往返已被压缩挡在上下文之外，
-        给死上下文补回执毫无意义。
+        给死上下文补回执毫无意义。幂等：无孤儿时零写入。
         """
         _, entries, _ = self._read(self.path(session_id))
         messages = _messages_after_last_compaction(entries)
@@ -475,7 +521,7 @@ class AgentSessionStore:
                     session_id,
                     ChatMessage(
                         role="tool",
-                        content="操作已被中断，工具未执行完成。",
+                        content=_SEAL_TEXTS[reason],
                         tool_call_id=tc.id,
                         name=tc.name,
                     ),
@@ -559,15 +605,21 @@ class AgentSessionStore:
         有压缩或交接行时，从**最后一个**上下文边界的替换历史起步、只追加
         其后的增量消息。交接因此只在新会话文件里保存一次快照，之后与普通
         会话完全相同，不再读取源文件。
+
+        末端过一道读取侧防线（maka 回放层的成对丢弃）：写入侧 seal 的
+        双保险生效后这里理论上永远命中 0，但绝不把必被供应商拒绝的
+        非法配对发出去——防御纵深的最后一层。
         """
         _, entries = self.read(session_id)
         last = _last_context_boundary_index(entries)
         if last < 0:
-            return [e.message for e in entries if isinstance(e, SessionMessageEntry)]
-        return [
-            *entries[last].replacement_history,
-            *(e.message for e in entries[last + 1 :] if isinstance(e, SessionMessageEntry)),
-        ]
+            messages = [e.message for e in entries if isinstance(e, SessionMessageEntry)]
+        else:
+            messages = [
+                *entries[last].replacement_history,
+                *(e.message for e in entries[last + 1 :] if isinstance(e, SessionMessageEntry)),
+            ]
+        return _repair_unpaired_tool_messages(session_id, messages)
 
     def summarize(self, session_id: str) -> SessionSummary:
         """扫描单个会话文件生成索引摘要。"""

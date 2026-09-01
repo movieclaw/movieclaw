@@ -22,6 +22,7 @@ from movieclaw_agent.events import AgentEvent
 from movieclaw_api.services.agent_sessions import (
     PREVIEW_MAX_CHARS,
     AgentSessionStore,
+    SealReason,
     message_preview,
 )
 from movieclaw_db.engine import get_database
@@ -136,12 +137,20 @@ class AgentSessionRecorder:
                 entry_count=self._entry_count,
             )
 
-    async def on_terminal(self, event: AgentEvent) -> None:
+    async def on_terminal(self, event: AgentEvent, reason: str = "user_cancelled") -> None:
         """运行终态收尾（done / error / cancelled 统一路径）。
+
+        由运行协程在自身 finally 里调用（registry._finalize）——此刻 runner
+        必然不再落盘，补配对读到的就是转录终态。``reason`` 决定合成回执的
+        文案：用户停止 vs 服务中断（停机/异常），见 agent_sessions 的
+        SealReason。
 
         与 begin 持同一把锁：保证 finish_run 一定在 mark_running 提交之后
         读行（清空才会真正落库），或者 begin 尚未执行时由终态标志令其跳过。
         """
+        seal_reason: SealReason = (
+            "service_interrupted" if reason == "service_interrupted" else "user_cancelled"
+        )
         async with self._lifecycle_lock:
             self._terminated = True
             if self._heartbeat_task is not None:
@@ -149,7 +158,9 @@ class AgentSessionRecorder:
                 self._heartbeat_task = None
             # 取消/出错的运行可能留下没有回执的 tool_call，补齐保证配对完整
             try:
-                sealed = self._store.seal_pending_tool_calls(self._session_id)
+                sealed = self._store.seal_pending_tool_calls(
+                    self._session_id, reason=seal_reason
+                )
             except Exception:  # noqa: BLE001 - 收尾尽力而为，文件被删等异常不再连锁
                 logger.exception("会话中断收尾失败 session=%s", self._session_id)
                 sealed = 0
@@ -182,14 +193,20 @@ class AgentSessionRecorder:
 
 
 async def rebuild_agent_session_index() -> None:
-    """启动自愈：扫描转录目录，把 DB 索引整体校准到与文件一致。
+    """启动自愈：先补上次异常停机的孤儿工具调用，再把索引校准到与文件一致。
 
-    覆盖三种失步：进程在「写文件、更 DB」之间崩溃（索引落后）、用户手工
-    增删转录文件、索引库整个丢失。文件是事实源，扫描结果单向覆盖索引。
+    补配对（seal）必须在索引重建**之前**：seal 会追加 entry，先重建的话
+    索引里的 entry_count / leaf 立即过期。覆盖三种失步：进程在「写文件、
+    更 DB」之间崩溃（索引落后）、用户手工增删转录文件、索引库整个丢失。
+    文件是事实源，扫描结果单向覆盖索引。
     失败只告警不阻断启动——索引暂时不准不影响会话内容安全。
     """
     from movieclaw_api.services.agent_sessions import get_agent_session_store
 
+    try:
+        _seal_interrupted_sessions(get_agent_session_store())
+    except Exception:  # noqa: BLE001 - 自愈路径自身出错不能拖垮应用启动
+        logger.exception("启动自愈补配对失败（不影响启动，接受路径仍有兜底）")
     try:
         summaries = get_agent_session_store().scan_all()
         async with get_database().session() as session:
@@ -210,3 +227,29 @@ async def rebuild_agent_session_index() -> None:
             logger.info("Agent 会话索引重建完成：校准了 %d 行", changed)
     except Exception:  # noqa: BLE001 - 自愈路径自身出错不能拖垮应用启动
         logger.exception("Agent 会话索引重建失败（不影响启动，会话文件仍完好）")
+
+
+def _seal_interrupted_sessions(store: AgentSessionStore) -> None:
+    """对上次异常停机遗留孤儿工具调用的会话补配对（幂等，正常时命中恒为 0）。
+
+    优雅停机/用户取消在运行收尾里已经补过；这里只兜 kill -9 / 断电这类
+    没有收尾机会的死法——不补的话，孤儿 tool_call 会让该会话此后每次
+    发消息都被供应商以 400 拒绝（docs/design/agent-runtime-resilience.md
+    缺口 A）。日志记明会话与条数，排查上次停机原因时不用翻转录。
+    """
+    if not store.root.is_dir():
+        return
+    for path in sorted(store.root.glob("*.jsonl")):
+        session_id = path.stem
+        try:
+            sealed = store.seal_pending_tool_calls(session_id, reason="service_interrupted")
+        except Exception:  # noqa: BLE001 - 单个坏文件不阻断其它会话自愈
+            logger.exception("会话补配对自愈失败，已跳过 session=%s", session_id)
+            continue
+        if sealed:
+            logger.warning(
+                "上次停机时会话 %s 有 %d 个工具调用在执行中被中断，已补写回执"
+                "（模型将被引导先核实这些操作的实际结果）",
+                session_id,
+                sealed,
+            )

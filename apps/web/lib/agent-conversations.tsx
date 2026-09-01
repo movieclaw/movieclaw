@@ -114,6 +114,10 @@ export interface AgentTurn {
   error?: string;
   /** 用户主动停止：status 为 done 但结果不完整 */
   stopped?: boolean;
+  /** 回放派生的中断标记：本轮没有以「无工具调用的 assistant 正文」正常收
+   *  尾（停机/崩溃/模型报错都长这样），页脚提示「已中断」让用户知道这轮
+   *  不完整、可以直接继续发消息 */
+  interrupted?: boolean;
 }
 
 export interface AgentConversation {
@@ -213,6 +217,10 @@ function messageThinking(message: AgentTranscriptMessage): string {
  */
 function entriesToTurns(entries: SessionAnyEntry[]): AgentTurn[] {
   const turns: AgentTurn[] = [];
+  // 每轮是否已「正常收尾」：终答 = 无 tool_calls 的 assistant 正文。没等到
+  // 终答的轮次（停机被中断、模型报错断流、用户在流式前停止）在循环后统一
+  // 标记 interrupted，页脚提示这轮不完整
+  const closed: boolean[] = [];
   for (const entry of entries) {
     // handoff 是会话级来源卡片，旧消息已作为服务端上下文快照保存，不能在
     // 新会话里再次派生成可重试的历史轮次。
@@ -252,6 +260,7 @@ function entriesToTurns(entries: SessionAnyEntry[]): AgentTurn[] {
         segments: [],
         startedAt: Date.parse(entry.timestamp),
       });
+      closed.push(false);
       continue;
     }
     // system 不入转录；万一出现无归属轮次的孤儿消息也直接跳过
@@ -273,6 +282,9 @@ function entriesToTurns(entries: SessionAnyEntry[]): AgentTurn[] {
         });
       }
       if (entry.finish_reason === "aborted") turn = { ...turn, stopped: true };
+      // 终答（无工具调用且非中断半截）意味着本轮完整走完
+      closed[turns.length - 1] =
+        !(message.tool_calls ?? []).length && entry.finish_reason !== "aborted";
     } else if (message.role === "tool") {
       turn =
         patchTool(
@@ -284,7 +296,9 @@ function entriesToTurns(entries: SessionAnyEntry[]): AgentTurn[] {
     // 轮内每来一条消息就把结束时刻推后，最终停在本轮最后一条上
     turns[turns.length - 1] = { ...turn, endedAt: Date.parse(entry.timestamp) };
   }
-  return turns;
+  return turns.map((turn, index) =>
+    closed[index] || turn.stopped ? turn : { ...turn, interrupted: true },
+  );
 }
 
 /** 列表摘要 → 未加载的会话壳（turns 留空，打开时再回放详情）。 */
@@ -317,6 +331,7 @@ function conversationFromDetail(detail: SessionTranscript): AgentConversation {
         result: undefined,
         error: undefined,
         stopped: undefined,
+        interrupted: undefined,
       };
     }
   }

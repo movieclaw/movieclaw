@@ -26,6 +26,15 @@ logger = logging.getLogger("movieclaw_api.agent_runs")
 
 TERMINAL_EVENT_TYPES = {"agent_done", "agent_error", "agent_cancelled"}
 DEFAULT_RETENTION_SECONDS = 24 * 60 * 60
+#: 停机时等待全部运行收尾的总超时（秒）；超时强制放行，交给启动自愈
+CLOSE_TIMEOUT_SECONDS = 10
+#: 取消看门狗：首次 cancel 后任务仍未停下时，每隔该秒数再投递一次取消。
+#: 实测中偶发首次 CancelledError 被吞（深层 await 的取消竞态，如
+#: wait_for/子进程管道；也防御第三方工具代码捕获后不抛），复投一次即可
+#: 解卡——没有它，卡住的运行要等 30 秒心跳超时才对外显示结束，收尾
+#: （补配对、清运行标记）则一直悬着。
+CANCEL_RETRY_SECONDS = 3
+CANCEL_RETRY_MAX = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,9 +56,14 @@ class _AgentRun:
     task: asyncio.Task[None] | None = None
     terminal: bool = False
     completed_at: float | None = None
-    #: 终态钩子：运行进入终态（done/error/cancelled）后调用一次，
-    #: 供会话持久化做收尾（停心跳、补配对、清运行标记）
-    on_terminal: Callable[[AgentEvent], Awaitable[None]] | None = None
+    #: 应用停机触发的取消：终态钩子据此把补配对文案从「用户停止」切换为
+    #: 「服务中断」（docs/design/agent-runtime-resilience.md §4.3）
+    shutdown: bool = False
+    #: 终态钩子：**运行协程真正结束后**（_execute 的 finally）调用一次，
+    #: 供会话持久化做收尾（停心跳、补配对、清运行标记）。刻意不挂在
+    #: 「第一个终态事件」上：取消时事件先落、协程可能还在写盘，此刻收尾
+    #: 会与 runner 的落盘竞态产生重复回执（§3 缺口 B）。
+    on_terminal: Callable[[AgentEvent, str], Awaitable[None]] | None = None
 
 
 class AgentRunRegistry:
@@ -74,6 +88,8 @@ class AgentRunRegistry:
         # 公开接口只接受 session_id；映射仅用于把会话动作解析到内部运行。
         self._latest_by_session: dict[str, str] = {}
         self._closing = False
+        # 取消看门狗任务的强引用（fire-and-forget task 无引用会被 GC 掉）
+        self._watchdogs: set[asyncio.Task[None]] = set()
 
     def start(
         self,
@@ -81,7 +97,7 @@ class AgentRunRegistry:
         params: AgentStartParams,
         *,
         session_id: str,
-        on_terminal: Callable[[AgentEvent], Awaitable[None]] | None = None,
+        on_terminal: Callable[[AgentEvent, str], Awaitable[None]] | None = None,
     ) -> str:
         """分配运行编号并把 runner 放入后台执行，立即返回编号。"""
         if self._closing:
@@ -159,19 +175,41 @@ class AgentRunRegistry:
         if run.task is not None and not run.task.done():
             logger.info("用户请求取消 Agent 运行 run=%s", run_id)
             run.task.cancel()
+            self._spawn_cancel_watchdog(run)
 
     async def cancel_session(self, session_id: str) -> None:
         """按公开会话编号幂等取消当前一轮。"""
         await self.cancel(self._get_session_run(session_id).run_id)
 
     async def close(self) -> None:
-        """应用关闭时取消并等待全部活动任务，避免遗留悬空协程。"""
+        """应用关闭时取消并等待全部活动任务（含各自的持久化收尾）。
+
+        每个任务在自己的 finally 里补配对、清运行标记，等它们完成即保证
+        优雅停机后转录配对完整、状态干净。总超时兜底：单个收尾卡死（如
+        文件系统 hang）不能拖死整个停机——超时强制放行，遗留状态交给
+        下次启动自愈（seal + 心跳超时），并记错误日志供排查。
+        """
         self._closing = True
-        tasks = [run.task for run in self._runs.values() if run.task and not run.task.done()]
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        pending = [run for run in self._runs.values() if run.task and not run.task.done()]
+        for run in pending:
+            run.shutdown = True  # 收尾文案按「服务中断」走，而非「用户停止」
+            assert run.task is not None
+            run.task.cancel()
+        if pending:
+            done, not_done = await asyncio.wait(
+                [run.task for run in pending if run.task is not None],
+                timeout=CLOSE_TIMEOUT_SECONDS,
+            )
+            if not_done:
+                logger.error(
+                    "停机时 %d 个 Agent 运行的收尾在 %d 秒内未完成，已强制放行"
+                    "（转录配对与运行标记将由下次启动自愈修复）",
+                    len(not_done),
+                    CLOSE_TIMEOUT_SECONDS,
+                )
+        for watchdog in self._watchdogs:
+            watchdog.cancel()
+        self._watchdogs.clear()
         self._runs.clear()
         self._latest_by_session.clear()
         logger.info("Agent 运行注册表已关闭，活动任务均已回收")
@@ -182,7 +220,14 @@ class AgentRunRegistry:
         runner: AgentRunner,
         params: AgentStartParams,
     ) -> None:
-        """消费 runner 事件并写入日志，兜住取消、异常和异常断流三种出口。"""
+        """消费 runner 事件并写入日志，兜住取消、异常和异常断流三种出口。
+
+        持久化收尾（补配对、清运行标记）在 finally 里由协程自己执行——
+        此刻 runner 必然不再落盘，收尾读到的转录就是最终形态，不存在
+        「seal 与真实回执同 id 并存」的竞态。取消路径的终态事件仍由
+        cancel()/close() 先行写入（防 task 从未调度导致订阅者永久等待），
+        这里只负责收尾，不重复发事件。
+        """
         try:
             async for event in runner.start(params, run_id=run.run_id):
                 await self._publish(run, event)
@@ -215,10 +260,67 @@ class AgentRunRegistry:
                 )
         finally:
             run.task = None
+            await self._finalize(run)
+
+    def _spawn_cancel_watchdog(self, run: _AgentRun) -> None:
+        """派出后台看门狗盯着被取消的任务真正停下（强引用挂在注册表上防 GC）。"""
+        watchdog = asyncio.create_task(
+            self._watch_cancelled(run),
+            name=f"agent-cancel-watchdog-{run.run_id}",
+        )
+        self._watchdogs.add(watchdog)
+        watchdog.add_done_callback(self._watchdogs.discard)
+
+    async def _watch_cancelled(self, run: _AgentRun) -> None:
+        """首次取消后若任务迟迟不结束，按间隔复投取消，超过上限记错误日志。"""
+        task = run.task
+        if task is None:
+            return
+        for _ in range(CANCEL_RETRY_MAX):
+            done, _pending = await asyncio.wait([task], timeout=CANCEL_RETRY_SECONDS)
+            if done:
+                return
+            logger.warning(
+                "Agent 运行取消后 %d 秒仍未停下，再次投递取消 run=%s",
+                CANCEL_RETRY_SECONDS,
+                run.run_id,
+            )
+            task.cancel()
+        done, _pending = await asyncio.wait([task], timeout=CANCEL_RETRY_SECONDS)
+        if not done:
+            logger.error(
+                "Agent 运行多次取消后仍未停下，放弃等待（收尾将由停机/启动自愈兜底）run=%s",
+                run.run_id,
+            )
+
+    async def _finalize(self, run: _AgentRun) -> None:
+        """运行协程末尾的持久化收尾；被取消的任务里 await 仍会执行完。
+
+        再次被取消（停机窗口内二次 cancel）时也不放弃：收尾失败只记日志，
+        遗留状态由启动自愈兜底。
+        """
+        if run.on_terminal is None:
+            return
+        terminal_event = next(
+            (s.event for s in reversed(run.events) if s.event.type in TERMINAL_EVENT_TYPES),
+            AgentEvent(type="agent_error", run_id=run.run_id, error="运行未留下终态事件"),
+        )
+        # 补配对文案：停机取消 → 服务中断；用户取消 → 用户停止；
+        # 其余终态（done 无孤儿 / error 断流）按「服务中断」的中性文案兜底
+        reason = (
+            "user_cancelled"
+            if terminal_event.type == "agent_cancelled" and not run.shutdown
+            else "service_interrupted"
+        )
+        try:
+            await run.on_terminal(terminal_event, reason)
+        except asyncio.CancelledError:
+            logger.error("Agent 运行收尾期间再次被取消，遗留状态待启动自愈 run=%s", run.run_id)
+        except Exception:  # noqa: BLE001 - 收尾失败不能影响事件流的终态语义
+            logger.exception("Agent 运行终态钩子执行失败 run=%s", run.run_id)
 
     async def _publish(self, run: _AgentRun, event: AgentEvent) -> None:
         """原子追加事件并广播通知；终态之后的迟到事件直接忽略。"""
-        became_terminal = False
         async with run.condition:
             if run.terminal:
                 return
@@ -226,16 +328,8 @@ class AgentRunRegistry:
             if event.type in TERMINAL_EVENT_TYPES:
                 run.terminal = True
                 run.completed_at = self._clock()
-                became_terminal = True
                 logger.info("Agent 后台运行已结束 run=%s status=%s", run.run_id, event.type)
             run.condition.notify_all()
-        # 终态钩子在锁外调用：收尾涉及文件与数据库 IO，不应阻塞事件广播；
-        # terminal 置位保证本钩子最多触发一次
-        if became_terminal and run.on_terminal is not None:
-            try:
-                await run.on_terminal(event)
-            except Exception:  # noqa: BLE001 - 收尾失败不能影响事件流的终态语义
-                logger.exception("Agent 运行终态钩子执行失败 run=%s", run.run_id)
 
     def _get_run(self, run_id: str) -> _AgentRun:
         self._prune_expired()

@@ -141,3 +141,54 @@ async def test_bash_timeout_raises(tmp_path):
     tools = toolmap(tmp_path)
     with pytest.raises(ValueError, match="超时"):
         await tools["bash"].handler({"command": "sleep 5", "timeout": 0.3})
+
+
+async def test_bash_timeout_kills_descendants(tmp_path):
+    """超时按进程组整组击杀：命令派生的子进程不能留成孤儿继续跑。"""
+    import subprocess
+
+    tools = toolmap(tmp_path)
+    marker = "movieclaw-test-reap-timeout"
+    with pytest.raises(ValueError, match="超时"):
+        await tools["bash"].handler(
+            {"command": f"sleep 987654 # {marker}", "timeout": 0.3}
+        )
+    check = subprocess.run(["pgrep", "-f", marker], capture_output=True, text=True)
+    assert check.stdout.strip() == "", f"超时后仍有残留进程：{check.stdout}"
+
+
+async def test_bash_cancel_kills_process_group(tmp_path):
+    """取消（用户停止/停机）同样整组收割，子进程不残留。
+
+    docs/design/agent-runtime-resilience.md §4.4（修缺口 E）。
+    """
+    import asyncio
+    import subprocess
+    import time
+
+    tools = toolmap(tmp_path)
+    marker = "movieclaw-test-reap-cancel"
+    task = asyncio.create_task(
+        tools["bash"].handler({"command": f"sleep 987654 # {marker} & wait"})
+    )
+    # 等命令真正跑起来（后台 sleep 属于同一进程组）
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        probe = subprocess.run(["pgrep", "-f", marker], capture_output=True, text=True)
+        if probe.stdout.strip():
+            break
+        await asyncio.sleep(0.05)
+    else:
+        pytest.fail("测试命令未在期限内启动")
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    # SIGKILL 后给内核一点回收时间
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        leftover = subprocess.run(["pgrep", "-f", marker], capture_output=True, text=True)
+        if leftover.stdout.strip() == "":
+            return
+        await asyncio.sleep(0.05)
+    pytest.fail(f"取消后仍有残留进程：{leftover.stdout}")

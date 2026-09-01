@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Header, Query, UploadFile
@@ -68,6 +69,8 @@ from movieclaw_db.repositories.agent_session_repo import (
     is_running,
 )
 from movieclaw_llm import ChatMessage, LlmError, LlmRouter, ModelSettings
+
+logger = logging.getLogger("movieclaw_api.agent")
 
 router = APIRouter(prefix="/sessions", tags=["session"])
 skills_router = APIRouter(prefix="/skills", tags=["session"])
@@ -223,7 +226,21 @@ async def _accept_user_message(
         if row is None:
             raise NotFoundException("Agent 会话不存在")
         if is_running(row):
-            raise BadRequestException("该会话已有正在进行的运行，请先停止或等待完成")
+            raise BadRequestException(
+                "该会话已有正在进行的运行，请先停止或等待完成；"
+                "若服务刚重启过，运行状态最多 30 秒后会自动恢复为已结束"
+            )
+        # 接受路径兜底（三层 seal 的最后一层，见 docs/design/
+        # agent-runtime-resilience.md §4.2）：启动自愈自身出异常时孤儿
+        # tool_call 仍可能残留，这里再补一次配对，保证喂给供应商的历史
+        # 永远 call/output 完整。幂等操作，正常会话命中恒为 0。
+        sealed = store.seal_pending_tool_calls(session_id, reason="service_interrupted")
+        if sealed:
+            logger.warning(
+                "会话 %s 存在 %d 个未配对的工具调用（启动自愈未覆盖到），已在接受消息前补写回执",
+                session_id,
+                sealed,
+            )
         history = store.build_history(session_id)
         _, existing_entries = store.read(session_id)
         entry_count = len(existing_entries)
@@ -746,6 +763,9 @@ async def retry_session_message(
     tools = get_agent_tools(await _cli_env(session_id))
 
     store.discard_from_user_message(session_id, payload.message_id)
+    # 重试路径同款兜底：截断后若仍残留未配对的工具调用（上次异常停机遗留），
+    # 先补齐回执再重建历史，避免供应商 400。幂等，正常命中恒为 0。
+    store.seal_pending_tool_calls(session_id, reason="service_interrupted")
     history = store.build_history(session_id)
     _, remaining_entries = store.read(session_id)
     summary = store.summarize(session_id)

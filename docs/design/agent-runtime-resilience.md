@@ -130,7 +130,7 @@ bash 命令（如一个 ffmpeg）**继续在后台跑完**；crash 场景子进�
 
 **取舍总结**：pi 证明协作式「循环内收尾」是竞态问题的根治解；maka 证明
 启动分类诊断与读取侧防线的价值。我们的落点：**收尾进协程 finally（pi 的
-效果、最小改动）+ 写入侧 seal 双保险 + 读取侧成对丢弃兜底（maka）+
+效果、最小改动）+ 写入侧 seal 双保险 + 读取侧修复兜底（maka 思路）+
 半截落盘与 aborted 标志（pi）**。
 
 ## 4. 方案
@@ -154,6 +154,13 @@ bash 命令（如一个 ffmpeg）**继续在后台跑完**；crash 场景子进�
 recorder 侧无需改动（`_lifecycle_lock` + `_terminated` 已保证幂等与
 begin/terminal 有序）。
 
+**取消看门狗（实现期补充）**：压测中偶发首次 `task.cancel()` 的
+CancelledError 在深层 await（wait_for/子进程管道）的取消竞态中被吞，
+任务卡住不进 finally——收尾悬着、会话对外要等 30 秒心跳超时才显示结束。
+`cancel()` 现在会派出一个看门狗任务：每 3 秒检查一次，任务仍未停下就
+再投递一次取消（至多 3 次，仍不停则记错误日志交由停机/启动自愈兜底）。
+同时防御第三方工具代码捕获 CancelledError 后不重新抛出的情况。
+
 ### 4.2 启动自愈 seal + 接受路径防御（修缺口 A）
 
 双保险，两处都幂等：
@@ -169,10 +176,11 @@ begin/terminal 有序）。
    之前调用 `seal_pending_tool_calls`（已是幂等函数，无孤儿时零写入）。
    兜住「运行中 crash → 30 秒心跳窗过后、进程没重启，用户直接续聊」的
    路径——此时启动自愈还没跑过；
-3. **读取侧最后防线**（maka 的成对丢弃）：`build_history` 投影时若仍
-   发现未配对的 tool_call（前两层生效后理论不可达），**成对丢弃**该
-   assistant 的 tool_calls 与孤儿回执并记错误日志——宁可丢一步历史，
-   绝不把必 400 的上下文发向供应商。防御纵深，不是主路径。
+3. **读取侧最后防线**（借 maka 的读取侧防线思路，落地取修复而非丢弃）：
+   `build_history` 投影时若仍发现未配对的 tool_call（前两层生效后理论
+   不可达），复用交接快照的修复逻辑在内存中补「结果未知」回执 / 降级
+   孤立回执，并记错误日志——比成对丢弃多保住一步历史，同样绝不把必
+   400 的上下文发向供应商。只改投影不回写文件。防御纵深，不是主路径。
 
 三层生效后，不变量 1（转录随时可回喂）在任何死法下成立，「会话永久
 400」被彻底消灭。**用户在任一场景后都可以直接再次发消息运行**。
@@ -249,8 +257,8 @@ begin/terminal 有序）。
 | # | 改动 | 位置 | 修缺口 |
 |---|---|---|---|
 | 1 | on_terminal 触发点移至 `_execute` 的 finally；`close()` 加 10s 总超时 | `agent_runs.py` | B |
-| 2 | `seal_pending_tool_calls(reason=...)` 文案分级；启动自愈扫描时对孤儿会话 seal（日志按中断位置分类）；`_accept_user_message`/retry 在 build_history 前防御 seal；`build_history` 读取侧成对丢弃兜底 | `agent_sessions.py`、`recorder.py`、`routes/agent.py` | A、D |
-| 3 | 取消时半截 assistant 以 `finish_reason="aborted"` 定稿落盘（runner 的 CancelledError 分支累积 partial 定稿后再抛，pi 同款语义）；已定稿收尾场景由 store 给最后 assistant 行补 aborted 标志（只改信封不改消息，或尾部追加修订行，实现时二选一并记录取舍） | `runner.py`、`agent_sessions.py` | C |
+| 2 | `seal_pending_tool_calls(reason=...)` 文案分级；启动自愈扫描时对孤儿会话 seal（日志按中断位置分类）；`_accept_user_message`/retry 在 build_history 前防御 seal；`build_history` 读取侧修复兜底（复用交接快照修复逻辑） | `agent_sessions.py`、`recorder.py`、`routes/agent.py` | A、D |
+| 3 | 取消时半截 assistant 以 `finish_reason="aborted"` 定稿落盘（runner 的 CancelledError 分支累积 partial 定稿后再抛，pi 同款语义）。**取舍已定**：aborted 只落在这条半截行上，不给已定稿的历史行补写/修订信封——已定稿行内容本就完整，重写历史行会破坏「转录只追加」的不变量；无半截内容的中断轮次由前端按「没有终答 assistant」的形状推导「已中断」标记（见 #6） | `runner.py` | C |
 | 4 | bash/mclaw 子进程 `start_new_session` + finally killpg | `tools/bash.py`、`tools/mclaw.py` | E |
 | 5 | 「已有正在进行的运行」拒绝文案区分心跳新鲜/陈旧两态 | `routes/agent.py` | F |
 | 6 | 前端：`finish_reason=aborted` 轮次显示「已停止」；无 assistant 回应的历史轮次显示「已中断」 | `agent-conversations.tsx` 等 | C |

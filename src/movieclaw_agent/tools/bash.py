@@ -13,7 +13,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
+import signal
 import tempfile
 from pathlib import Path
 
@@ -41,19 +43,28 @@ def make_bash_tool(workdir: Path, extra_env: dict[str, str] | None = None) -> Ag
     async def handler(args: dict) -> str:
         command: str = args["command"]
         timeout = float(args.get("timeout") or _DEFAULT_TIMEOUT)
-        proc = await asyncio.create_subprocess_shell(
-            command,
-            cwd=workdir,
-            env={**os.environ, **(extra_env or {})},
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        proc = await _spawn_reapable(
+            asyncio.create_subprocess_shell(
+                command,
+                cwd=workdir,
+                env={**os.environ, **(extra_env or {})},
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                # 独立进程组：超时/取消时按组击杀，命令派生的子进程（管道、
+                # 后台 &、包装脚本）不会成为继续运行的孤儿
+                start_new_session=True,
+            )
         )
         try:
             stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout)
         except TimeoutError:
-            proc.kill()
+            _kill_process_group(proc)
             await proc.communicate()
             raise ValueError(f"命令执行超时（{timeout:.0f} 秒），已终止") from None
+        except asyncio.CancelledError:
+            # 用户停止运行 / 服务停机：不能让子进程留成孤儿继续跑
+            _kill_process_group(proc)
+            raise
 
         sections: list[str] = []
         stdout = stdout_b.decode(errors="replace")
@@ -84,6 +95,34 @@ def make_bash_tool(workdir: Path, extra_env: dict[str, str] | None = None) -> Ag
         ),
         handler=handler,
     )
+
+
+async def _spawn_reapable(factory) -> asyncio.subprocess.Process:
+    """启动子进程；创建期间被取消时，进程一旦建成立即整组击杀。
+
+    直接 ``await create_subprocess_*`` 的话，取消恰好落在创建过程中会拿不到
+    进程句柄——子进程可能已经 fork 出来，从此无人收割。shield 让创建自身
+    完成，取消到达时挂回调兜底击杀。"""
+    creation = asyncio.ensure_future(factory)
+    try:
+        return await asyncio.shield(creation)
+    except asyncio.CancelledError:
+        creation.add_done_callback(_kill_late_arrival)
+        raise
+
+
+def _kill_late_arrival(creation: asyncio.Future) -> None:
+    if not creation.cancelled() and creation.exception() is None:
+        _kill_process_group(creation.result())
+
+
+def _kill_process_group(proc: asyncio.subprocess.Process) -> None:
+    """SIGKILL 整个进程组（子进程以 start_new_session 启动，组号即其 pid）。
+
+    只杀 proc 本身会漏掉它派生的子进程；进程已自行退出（ProcessLookupError）
+    则视为收割完成。"""
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
 
 
 def _truncate_tail(text: str, *, label: str) -> str:

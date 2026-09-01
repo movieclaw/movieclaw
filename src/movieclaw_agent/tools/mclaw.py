@@ -21,7 +21,7 @@ import shutil
 from pathlib import Path
 
 from movieclaw_agent.toolkit import AgentTool
-from movieclaw_agent.tools.bash import _truncate_tail
+from movieclaw_agent.tools.bash import _kill_process_group, _spawn_reapable, _truncate_tail
 from movieclaw_llm import ToolDefinition
 
 _DEFAULT_TIMEOUT = 300.0
@@ -136,23 +136,31 @@ def make_mclaw_tool(
             )
         full_transcript = session_action == "get-transcript"
 
-        proc = await asyncio.create_subprocess_exec(
-            _cli_binary(),
-            *argv,
-            cwd=workdir,
-            env={**os.environ, **extra_env},
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        proc = await _spawn_reapable(
+            asyncio.create_subprocess_exec(
+                _cli_binary(),
+                *argv,
+                cwd=workdir,
+                env={**os.environ, **extra_env},
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                # 独立进程组：超时/取消时按组击杀，CLI 派生的子进程不会留成孤儿
+                start_new_session=True,
+            )
         )
         try:
             stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout)
         except TimeoutError:
-            proc.kill()
+            _kill_process_group(proc)
             await proc.communicate()
             raise ValueError(
                 f"命令执行超时（{timeout:.0f} 秒），已终止；"
                 "长任务可用 --no-wait 启动后轮询，或调大 timeout 参数"
             ) from None
+        except asyncio.CancelledError:
+            # 用户停止运行 / 服务停机：不能让 CLI 子进程留成孤儿继续跑
+            _kill_process_group(proc)
+            raise
 
         sections: list[str] = []
         stdout = stdout_b.decode(errors="replace")
