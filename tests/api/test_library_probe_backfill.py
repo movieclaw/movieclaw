@@ -7,9 +7,11 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import httpx
+import pytest
 import pytest_asyncio
 from sqlmodel import select
 
@@ -62,6 +64,14 @@ def _body(tmdb_id: int) -> dict:
     }
 
 
+@pytest.fixture(autouse=True)
+def _fresh_probe_retry_state():
+    """探测失败记忆是进程级内存表，测试之间必须互不串味。"""
+    probe_mod._retry_state.clear()
+    yield
+    probe_mod._retry_state.clear()
+
+
 @pytest_asyncio.fixture
 async def db(tmp_path, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path / 'probe.db'}")
@@ -102,6 +112,26 @@ def _with_ffprobe(monkeypatch, calls: list | None = None) -> None:
     monkeypatch.setattr(probe_mod, "ffprobe_available", lambda: True)
     monkeypatch.setattr(scan_mod, "probe_media", _probe)
     monkeypatch.setattr(items_mod, "probe_media", _probe)
+
+
+def _with_failing_ffprobe(monkeypatch, calls: list | None = None) -> None:
+    """模拟"ffmpeg 已装但探测失败"（半截文件/挂载抖动/坏文件）。"""
+
+    def _probe(path, *_a, **_k):
+        if calls is not None:
+            calls.append(str(path))
+        return None
+
+    monkeypatch.setattr(probe_mod, "ffprobe_available", lambda: True)
+    monkeypatch.setattr(scan_mod, "probe_media", _probe)
+    monkeypatch.setattr(items_mod, "probe_media", _probe)
+
+
+def _rewind_retry_state(seconds: float) -> None:
+    """把失败记忆的失败时刻拨到 seconds 秒之前，模拟退避到点。"""
+    now = time.monotonic()
+    for path, (failures, _last) in list(probe_mod._retry_state.items()):
+        probe_mod._retry_state[path] = (failures, now - seconds)
 
 
 async def _build(db, tmp_path, count: int = 3) -> int:
@@ -185,20 +215,23 @@ async def test_background_scan_skips_historical_spec_backfill(db, tmp_path, monk
 
 
 async def test_periodic_reconcile_skips_historical_spec_backfill(db, tmp_path, monkeypatch) -> None:
-    """定时对账传入关闭开关，避免后台周期扫到全库历史规格。"""
+    """定时对账关闭全量补探（避免后台周期扫到全库历史规格），
+    只带限量自愈参数与失败记忆的到点点名。"""
     library_id = await _build(db, tmp_path, count=1)
-    calls: list[tuple[int, bool]] = []
+    calls: list[dict] = []
 
-    async def fake_scan(
-        current_library_id: int, *, backfill_existing_specs: bool = True
-    ) -> ScanSummary:
-        calls.append((current_library_id, backfill_existing_specs))
+    async def fake_scan(current_library_id: int, **kwargs) -> ScanSummary:
+        calls.append({"library_id": current_library_id, **kwargs})
         return ScanSummary(library_id=current_library_id)
 
     monkeypatch.setattr(scan_mod, "scan_library", fake_scan)
     await scan_mod.reconcile_libraries()
 
-    assert calls == [(library_id, False)]
+    assert len(calls) == 1
+    assert calls[0]["library_id"] == library_id
+    assert calls[0]["backfill_existing_specs"] is False
+    assert calls[0]["probe_retry_limit"] == scan_mod._RECONCILE_PROBE_LIMIT
+    assert calls[0]["reprobe_paths"] is None  # 失败记忆为空时不点名
 
 
 async def test_backfill_skipped_when_ffprobe_missing(db, tmp_path, monkeypatch) -> None:
@@ -412,3 +445,77 @@ async def test_backfill_missing_clpi_still_completes_candidate_progress(
 
     assert summary.probed == 0
     assert state.processed == state.total == 1
+
+
+# ---------------------------------------------------------------------------
+# 探测失败记忆与退避重试（media_probe 的进程内失败表）
+# ---------------------------------------------------------------------------
+
+
+def test_retry_backoff_escalates() -> None:
+    """连续失败翻倍退避，封顶 24 小时——纯函数，直接验时间表。"""
+    hour = 3600.0
+    assert probe_mod._retry_due((1, 0.0), hour - 1) is False
+    assert probe_mod._retry_due((1, 0.0), hour) is True
+    assert probe_mod._retry_due((3, 0.0), 4 * hour - 1) is False
+    assert probe_mod._retry_due((3, 0.0), 4 * hour) is True
+    assert probe_mod._retry_due((10, 0.0), 24 * hour - 1) is False  # 封顶后不再翻倍
+    assert probe_mod._retry_due((10, 0.0), 24 * hour) is True
+
+
+async def test_manual_scan_backs_off_recent_probe_failures(db, tmp_path, monkeypatch) -> None:
+    """探测失败进退避：手动重扫不再每轮为同一个坏文件全额付一次超时。"""
+    calls: list[str] = []
+    _with_failing_ffprobe(monkeypatch, calls)
+    library_id = await _build(db, tmp_path, count=1)
+    await scan_library(library_id)  # 入库探测失败，进入失败记忆
+    assert len(calls) == 1
+    calls.clear()
+
+    summary = await scan_library(library_id)  # 退避未到点：补探阶段跳过该行
+    assert summary.probed == 0
+    assert calls == []
+
+    _rewind_retry_state(2 * 3600)  # 退避到点，且这次文件恢复可读
+    _with_ffprobe(monkeypatch, calls)
+    summary = await scan_library(library_id)
+    assert summary.probed == 1
+    row = (await _rows(db))[0]
+    assert row.audio_streams and row.resolution == "1080p"
+    assert row.file_path not in probe_mod._retry_state, "成功后失败记忆应被抹掉"
+
+
+async def test_reconcile_style_scan_heals_failed_probe_after_backoff(
+    db, tmp_path, monkeypatch
+) -> None:
+    """无 watch 库的自愈路径：对账限量补探到点重试，退避未到点不动媒体盘。"""
+    _with_failing_ffprobe(monkeypatch)
+    library_id = await _build(db, tmp_path, count=1)
+    await scan_library(library_id)
+
+    calls: list[str] = []
+    _with_ffprobe(monkeypatch, calls)
+    summary = await scan_library(library_id, backfill_existing_specs=False, probe_retry_limit=10)
+    assert summary.probed == 0 and calls == [], "退避未到点，对账不该重试"
+
+    _rewind_retry_state(2 * 3600)
+    summary = await scan_library(library_id, backfill_existing_specs=False, probe_retry_limit=10)
+    assert summary.probed == 1
+    assert (await _rows(db))[0].audio_streams is not None
+
+
+async def test_reconcile_budget_caps_probe_count(db, tmp_path, monkeypatch) -> None:
+    """ffprobe 后装的存量库：对账每轮只补一小批，绝不演变成整库读盘。"""
+    _no_ffprobe(monkeypatch)
+    library_id = await _build(db, tmp_path)  # 3 个文件，规格全 NULL 且无失败记录
+    await scan_library(library_id)
+
+    calls: list[str] = []
+    _with_ffprobe(monkeypatch, calls)
+    summary = await scan_library(library_id, backfill_existing_specs=False, probe_retry_limit=2)
+    assert summary.probed == 2 and len(calls) == 2
+
+    summary = await scan_library(library_id, backfill_existing_specs=False, probe_retry_limit=2)
+    assert summary.probed == 1, "下一轮接着补剩下的行"
+    rows = await _rows(db)
+    assert all(row.audio_streams is not None for row in rows)

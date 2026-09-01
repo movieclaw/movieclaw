@@ -19,6 +19,7 @@ import json
 import logging
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -98,6 +99,71 @@ def probe_media(path: str | Path) -> MediaSpec | None:
     except json.JSONDecodeError:
         return None
     return _parse_probe(payload, include_mpegts_pids=Path(path).suffix.lower() == ".m2ts")
+
+
+# --- 探测失败记忆（媒体库入库/补探/点名重探共用）---------------------------
+#
+# probe_media 失败分两类：瞬时环境故障（网络挂载抖动、文件还在写入）与
+# 确定性坏文件（损坏/截断，每探一次就是 30 秒超时）。台账侧只有
+# ``audio_streams IS NULL`` 一个「从未探测成功」标记，区分不了两者——没有
+# 这张表，坏文件每轮手动扫描都要全额付超时，瞬时失败又只能等用户手动扫描
+# 才有第二次机会（无 watch 的网络挂载库尤甚）。
+#
+# 进程内存表，不落库（同监听导入 ingest.py 的 _failed_retry 先例）：重启即
+# 清空，代价只是重启后的首轮补探把失败行都再试一遍——这本来就是期望行为，
+# 不值得为它做一次数据库迁移。键统一用**台账行路径**（原盘条目是目录而非
+# 其内的 m2ts），三处调用方（入库、补探、秒过行点名重探）以它查/记。
+
+_RETRY_BASE_SECONDS = 3600.0  # 首次失败后 1 小时可重试（对齐监听导入的小时级退避）
+_RETRY_MAX_SECONDS = 24 * 3600.0  # 连续失败翻倍退避，封顶一天
+_RETRY_STATE_MAX = 4096
+
+# 台账路径 -> (连续失败次数, 最近失败时刻 time.monotonic())
+_retry_state: dict[str, tuple[int, float]] = {}
+
+
+def note_probe_failure(path: str | Path) -> None:
+    """记一次探测失败；连续失败的重试间隔翻倍增长。
+
+    ffprobe 根本不在系统里时**不记**：那不是这个文件的问题，装好 ffmpeg 后
+    的首轮补探不该背着一张全库退避表起步。
+    """
+    if not ffprobe_available():
+        return
+    key = str(path)
+    if len(_retry_state) >= _RETRY_STATE_MAX and key not in _retry_state:
+        # 先清掉已到重试点的旧条目挪位置；仍然满（几千个坏文件，几乎不
+        # 可能）就整体放弃——重试提早无害，表无限膨胀才是问题
+        now = time.monotonic()
+        for stale in [p for p, s in _retry_state.items() if _retry_due(s, now)]:
+            _retry_state.pop(stale, None)
+        if len(_retry_state) >= _RETRY_STATE_MAX:
+            _retry_state.clear()
+    failures = _retry_state.get(key, (0, 0.0))[0] + 1
+    _retry_state[key] = (failures, time.monotonic())
+
+
+def note_probe_success(path: str | Path) -> None:
+    """探测成功即抹掉失败记忆，之后再失败从最短退避重新起算。"""
+    _retry_state.pop(str(path), None)
+
+
+def probe_retry_due(path: str | Path) -> bool:
+    """该路径现在值不值得再探：从没失败过，或退避已到点。"""
+    state = _retry_state.get(str(path))
+    return state is None or _retry_due(state, time.monotonic())
+
+
+def probe_retry_paths() -> set[str]:
+    """退避到点的失败路径集合（定期对账用它点名，重探规格陈旧的秒过行）。"""
+    now = time.monotonic()
+    return {p for p, s in _retry_state.items() if _retry_due(s, now)}
+
+
+def _retry_due(state: tuple[int, float], now: float) -> bool:
+    failures, last = state
+    delay = min(_RETRY_BASE_SECONDS * (2 ** (failures - 1)), _RETRY_MAX_SECONDS)
+    return now - last >= delay
 
 
 # --- 关键帧密度探测（docs/design/web-player.md §3.5 / §7-②）-----------------

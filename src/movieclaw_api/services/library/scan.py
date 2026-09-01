@@ -84,7 +84,13 @@ from movieclaw_api.services.library.subtitles import discover_external_subtitles
 from movieclaw_api.services.library.units import resolve_units
 from movieclaw_api.services.media_discover import get_tmdb_client
 from movieclaw_api.services.media_library import MediaLibraryService
-from movieclaw_api.services.media_probe import MediaSpec, probe_media
+from movieclaw_api.services.media_probe import (
+    MediaSpec,
+    note_probe_failure,
+    note_probe_success,
+    probe_media,
+    probe_retry_paths,
+)
 from movieclaw_api.services.task_state import TaskState
 from movieclaw_db.engine import get_database
 from movieclaw_db.models import (
@@ -589,6 +595,7 @@ async def scan_library(
     library_id: int,
     *,
     backfill_existing_specs: bool = True,
+    probe_retry_limit: int | None = None,
     reprobe_paths: set[str] | None = None,
     scope_paths: set[str] | None = None,
     reconcile_root_change: bool = False,
@@ -605,11 +612,18 @@ async def scan_library(
     会让一次很小的目录事件演变为对整个机械盘媒体库的长时间读取。新入库文件
     仍在主流程中即时探测，不受此开关影响。
 
-    ``reprobe_paths``：watchdog 点名的"内容被修改过"的视频路径集合
-    （jellyfin-subtitle.md §2.4）。秒过时对名单内的行 stat 比对
-    (size, mtime)，确认变化才重探——视频原地替换（洗版/重灌同路径）后
-    介质规格与内封字幕轨不再永久陈旧。手动扫描（backfill_existing_specs
-    开启）则对全部在位行做该比对，无需点名。
+    ``probe_retry_limit``：定期对账传入的限量自愈补探——只重探「从未探测
+    成功且失败退避到点」的行（media_probe 的失败记忆），每轮最多 limit 个。
+    暂时性探测失败（挂载抖动/半截文件）由此自动到点重试，无 watch 的网络
+    挂载库不再只能靠用户手动扫描补救。与 backfill_existing_specs=True 同给
+    时后者优先（全量补探已覆盖）。
+
+    ``reprobe_paths``：需要重探的在位行点名集合，来自 watchdog 的"内容被
+    修改过"事件（jellyfin-subtitle.md §2.4）与定期对账的失败记忆到点名单
+    （probe_retry_paths）。秒过时对名单内的行 stat 比对 (size, mtime)，
+    确认变化才重探——视频原地替换（洗版/重灌同路径）后介质规格与内封
+    字幕轨不再永久陈旧。手动扫描（backfill_existing_specs 开启）则对全部
+    在位行做该比对，无需点名。
 
     ``scope_paths``：watch 事件限定的扫描范围（根下第一级条目的绝对路径
     集合，仅监听触发的扫描传入）。范围内的子树照常遍历入账、范围内的
@@ -685,6 +699,7 @@ async def scan_library(
             summary,
             state,
             backfill_existing_specs=backfill_existing_specs,
+            probe_retry_limit=probe_retry_limit,
             reprobe_paths=reprobe_paths or set(),
             scope_paths=scope_paths,
             reconcile_root_change=reconcile_root_change,
@@ -802,6 +817,7 @@ async def _scan(
     state: ScanState,
     *,
     backfill_existing_specs: bool,
+    probe_retry_limit: int | None,
     reprobe_paths: set[str],
     scope_paths: set[str] | None,
     reconcile_root_change: bool,
@@ -1195,6 +1211,12 @@ async def _scan(
         # 用户只能一个条目一个条目点开、靠详情页那点限量补探慢慢磨。
         if backfill_existing_specs:
             await _probe_backfill(session, library_id, summary, state, bridge=bridge)
+        elif probe_retry_limit:
+            # 定期对账的限量自愈：只补「从未探测成功且失败退避到点」的行，
+            # 上限 probe_retry_limit 个，见 _probe_backfill 的 limit 说明
+            await _probe_backfill(
+                session, library_id, summary, state, bridge=bridge, limit=probe_retry_limit
+            )
 
     # 文件台账已经收口就立刻发布统计，不等后续可能耗时数分钟的图片资产
     # 下载。扫描仍显示进行中，但首页的作品数与容量已经是本轮最新结果。
@@ -2296,7 +2318,13 @@ async def _refresh_known_row(
             return changed
         if (st.st_size, st.st_mtime_ns) != (row.size_bytes, row.file_mtime_ns):
             spec = await asyncio.to_thread(probe_media, file)
-            if spec is not None:
+            if spec is None:
+                # 重探失败（半截替换文件/挂载抖动）：保留旧值与旧新鲜度键，
+                # stat 差异仍在；记入失败记忆，定期对账退避到点会再点名重试
+                # （probe_retry_paths），不再陈旧到下次手动扫描
+                note_probe_failure(str(file))
+            else:
+                note_probe_success(str(file))
                 row.size_bytes = st.st_size
                 row.file_mtime_ns = st.st_mtime_ns
                 row.resolution = spec.resolution
@@ -2387,6 +2415,14 @@ async def _ingest_file(
         spec = await prefetched_probe
     else:
         spec = await asyncio.to_thread(probe_media, probe_target)
+    # 失败记忆（media_probe）：ffprobe 在位却探不出来（半截文件/挂载抖动/
+    # 坏文件）要记账，之后由定期对账带退避限量重试，不再只能等手动扫描；
+    # 成功则抹掉记录，退避从头起算
+    if probe_target is not None:
+        if spec is None:
+            note_probe_failure(str(file))
+        else:
+            note_probe_success(str(file))
     if spec is not None and is_disc and (file / "BDMV").is_dir():
         # m2ts 常常不带语言描述符；同编号 CLPI 用 PID 补齐，已有 ffprobe
         # 语言保持不动。缺失/损坏 CLPI 只降级，不影响原盘入账。
@@ -2623,8 +2659,14 @@ async def _probe_backfill(
     state: ScanState,
     *,
     bridge: _ScanJobBridge | None = None,
+    limit: int | None = None,
 ) -> None:
     """补齐未探测规格，并给存量 BDMV 回填 CLPI 语言。
+
+    ``limit`` 是定期对账的限量自愈模式：只挑「从未探测成功且失败退避到点」
+    的行，每轮最多 limit 个——瞬时探测失败不用等用户手动扫描，又不会让
+    后台周期演变成对整个媒体盘的长时间读取；BDMV 的 CLPI 历史回填仍只属
+    手动扫描。None = 手动扫描的全量补探。
 
     判据用 ``audio_streams IS NULL``：它是"这行从没探测成功过"的标记
     （空列表 = 探过、文件确实没有音轨，两者必须分开）。BDMV 另以流 JSON
@@ -2635,7 +2677,7 @@ async def _probe_backfill(
     否则每轮扫描都会白跑一遍必然失败的探测。
     """
     from movieclaw_api.services.library.items import backfill_streams
-    from movieclaw_api.services.media_probe import ffprobe_available
+    from movieclaw_api.services.media_probe import ffprobe_available, probe_retry_due
 
     if not ffprobe_available():
         return
@@ -2670,6 +2712,12 @@ async def _probe_backfill(
     # strm 占位文件永远探不出规格（本体没有媒体流），不进分母——否则
     # strm 库每轮扫描都会报"待补 N、探测 0"，像坏了一样
     rows = [row for row in rows if not row.file_path.lower().endswith(STRM_EXT)]
+    if limit is not None:
+        # 限量自愈：只挑从未探测成功且退避到点的行，取前 limit 个。ffprobe
+        # 后装的存量库也借此每轮慢慢补上一小批，而不是干等手动扫描
+        rows = [
+            row for row in rows if row.audio_streams is None and probe_retry_due(row.file_path)
+        ][:limit]
     if not rows:
         return
     state.phase = ScanPhase.PROBING
@@ -3721,6 +3769,11 @@ async def _reidentify(
 # 监听失效（如网络挂载不产生 fs 事件）的场景
 RECONCILE_INTERVAL_SECONDS = 6 * 3600
 
+# 对账顺带的限量自愈补探上限（每库每轮）：只重探失败退避到点/从未探测的
+# 行。取小值——对账是后台兜底，一轮十个足够让瞬时失败在几个周期内收敛，
+# 也保证最坏情况（全是坏文件、各吃 30 秒超时）只占用媒体盘几分钟
+_RECONCILE_PROBE_LIMIT = 10
+
 
 @register_task(
     "library_reconcile",
@@ -3739,9 +3792,16 @@ async def reconcile_libraries() -> None:
         libraries = list((await session.execute(select(Library))).scalars().all())
     for library in libraries:
         assert library.id is not None
-        # 对账负责让台账追上文件新增/删除；规格补探是可长达数小时的用户主动
-        # 维护任务，不能在空闲后台周期里抢占媒体盘。
-        summary = await scan_library(library.id, backfill_existing_specs=False)
+        # 对账负责让台账追上文件新增/删除；**全量**规格补探是可长达数小时的
+        # 用户主动维护任务，不能在空闲后台周期里抢占媒体盘。这里只做两件
+        # 有上限的自愈（media_probe 的失败记忆）：限量补探从未探测成功的行、
+        # 点名重探「上次点名重探失败、规格已陈旧」的行——都带退避且到点才做
+        summary = await scan_library(
+            library.id,
+            backfill_existing_specs=False,
+            probe_retry_limit=_RECONCILE_PROBE_LIMIT,
+            reprobe_paths=probe_retry_paths() or None,
+        )
         if summary.errors:
             logger.warning(
                 "媒体库「%s」对账补扫存在问题：%s", library.name, "；".join(summary.errors)

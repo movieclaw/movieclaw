@@ -57,7 +57,12 @@ from movieclaw_api.services.library.nfo import (
     read_episode_metadata,
 )
 from movieclaw_api.services.library.sort_key import title_initial, title_sort_key
-from movieclaw_api.services.media_probe import probe_media
+from movieclaw_api.services.media_probe import (
+    note_probe_failure,
+    note_probe_success,
+    probe_media,
+    probe_retry_due,
+)
 from movieclaw_api.services.media_scrape import asset_version, file_version
 from movieclaw_api.services.scrape_config import effective_language, scrape_setting_for_item
 from movieclaw_db.models import FileState, Library, LibraryFile, MediaItem, MediaSeason, utcnow
@@ -1097,6 +1102,8 @@ async def backfill_streams(
     就是流量与延迟），未探测的行由前端提示用户重新扫描补齐。
 
     探测失败的行保持原值、下次再试：失败常常是暂时的（挂载还没就绪）。
+    失败会记入 media_probe 的失败记忆（进程内、翻倍退避）：退避未到点的行
+    本轮直接跳过，坏文件不再让每轮手动扫描都全额付一次 30 秒超时。
     BDMV 已有流但缺 CLPI 版本戳时先读对应 CLPI；只有 CLPI 有效才重探 m2ts，
     随后用 PID 合并，避免缺失元数据导致无意义的大文件读取。
     """
@@ -1144,6 +1151,13 @@ async def backfill_streams(
             if not await keep_going():
                 break
             continue  # strm 占位文件没有媒体流，探了必失败，别每轮白试
+        if not probe_retry_due(row.file_path):
+            # 失败退避中（media_probe 的失败记忆）：上次探测失败且还没到
+            # 重试点，跳过省一次几乎必然的失败——坏文件一次就是 30 秒超时。
+            # 退避到点后自然回到这条链路。
+            if not await keep_going():
+                break
+            continue
         path = Path(row.file_path)
         target = disc_main_stream(path) if row.container in ("bluray", "dvd") else path
         if target is None or not await asyncio.to_thread(target.exists):
@@ -1161,6 +1175,10 @@ async def backfill_streams(
                 continue
         probed += 1
         spec = await asyncio.to_thread(probe_media, target)
+        if spec is None:
+            note_probe_failure(row.file_path)
+        else:
+            note_probe_success(row.file_path)
         if spec is not None:
             if languages is not None:
                 spec = enrich_spec_with_clpi(spec, languages)
