@@ -22,7 +22,7 @@ import contextlib
 import logging
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from movieclaw_channel.adapter import ChannelAdapter
 from movieclaw_channel.types import InboundMessage, OutboundEnvelope, ReplyContext
@@ -47,6 +47,10 @@ _SEND_RETRY_DELAY_S = 2.0
 #: 图文消息的文案上限:Telegram caption 1024 字符是各平台里最紧的口径,
 #: 超过就放弃随图发送、退回纯文本分片(推送文案实际都很短,达不到)
 _PHOTO_CAPTION_LIMIT = 1000
+#: 纯图消息的入站聚合窗口(秒):IM 用户习惯「先甩图、再打字」,图一到就
+#: 触发会白跑一轮并逼出一句「请问要做什么」。窗口内到达的后续消息合并成
+#: 一条再交给 Agent;拿到文字即刻结束等待,纯文字对话完全不受影响。
+_IMAGE_AGGREGATE_WINDOW_S = 2.5
 
 
 def split_message(text: str, limit: int) -> list[str]:
@@ -174,9 +178,12 @@ class ChannelDispatcher:
         if await self._handle_command(msg):
             return
 
-        if not msg.text.strip():
+        if not msg.has_content:
+            # 视频/文件/位置等还没接的类型:图片与文字都为空
             await self.push_outbound(
-                OutboundEnvelope(reply=msg.reply, text="暂时只支持文字消息哦。", origin="system")
+                OutboundEnvelope(
+                    reply=msg.reply, text="暂时只支持文字和图片消息哦。", origin="system"
+                )
             )
             return
 
@@ -233,7 +240,7 @@ class ChannelDispatcher:
     async def _session_worker(self, session_key: str, session: _Session) -> None:
         """会话 worker:串行消费本会话队列,每条消息驱动一次 Agent 运行。"""
         while not self._closing:
-            msg = await session.queue.get()
+            msg = await self._aggregate(session, await session.queue.get())
 
             async def emit(text: str, *, _reply: ReplyContext = msg.reply) -> None:
                 await self.push_outbound(OutboundEnvelope(reply=_reply, text=text))
@@ -263,6 +270,36 @@ class ChannelDispatcher:
                     )
                 finally:
                     session.current_run = None
+
+    @staticmethod
+    async def _aggregate(session: _Session, first: InboundMessage) -> InboundMessage:
+        """纯图消息的入站聚合:等一小会儿,把紧随其后的图/文并成一条。
+
+        只有「有图且还没有文字」的消息会等待——这正是「先甩图再打字」的形态;
+        一旦并进文字(或窗口到期)立即返回。纯文字消息一秒都不等。
+        会话内本来就是串行消费,合并不会打乱顺序。
+        """
+        msg = first
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _IMAGE_AGGREGATE_WINDOW_S
+        while msg.images and not msg.text.strip():
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                break
+            try:
+                extra = await asyncio.wait_for(session.queue.get(), timeout=remaining)
+            except TimeoutError:
+                break
+            # 会话令牌以最新一条为准(旧令牌可能已被服务端换掉)
+            texts = [t for t in (msg.text.strip(), extra.text.strip()) if t]
+            msg = replace(
+                msg,
+                text="\n".join(texts),
+                images=msg.images + extra.images,
+                reply=extra.reply,
+                timestamp_ms=extra.timestamp_ms or msg.timestamp_ms,
+            )
+        return msg
 
     # ------------------------------------------------------------------
     # 出站

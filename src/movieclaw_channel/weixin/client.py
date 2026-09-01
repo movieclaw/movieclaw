@@ -180,6 +180,28 @@ class WeixinClient:
         _raise_for_business_error(payload, "sendmessage")
 
     # ------------------------------------------------------------------
+    # CDN 下载(入站图片)
+    # ------------------------------------------------------------------
+    async def download_media(self, url: str, *, max_bytes: int, timeout_s: float = 30.0) -> bytes:
+        """从微信 CDN 下载一份媒体字节(可能是密文,解密由 media 模块负责)。
+
+        CDN 与 iLink 网关同口径国内直连,复用同一连接池;超过 max_bytes 直接
+        中断,不把一条超大消息的字节全读进内存。
+        """
+        # CDN 地址本身带鉴权参数,不需要(也不接受)iLink 的身份头
+        async with self._client.stream("GET", url, timeout=httpx.Timeout(timeout_s)) as resp:
+            if resp.status_code != 200:
+                raise WeixinApiError(f"CDN 下载失败 HTTP {resp.status_code}")
+            chunks: list[bytes] = []
+            total = 0
+            async for chunk in resp.aiter_bytes():
+                total += len(chunk)
+                if total > max_bytes:
+                    raise WeixinApiError(f"媒体文件超过 {max_bytes // (1024 * 1024)}MB 上限")
+                chunks.append(chunk)
+        return b"".join(chunks)
+
+    # ------------------------------------------------------------------
     # 「正在输入」状态(getconfig 换 typing_ticket → sendtyping)
     # ------------------------------------------------------------------
     async def get_config(self, ilink_user_id: str, context_token: str | None) -> str:

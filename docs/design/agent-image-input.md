@@ -298,7 +298,7 @@ retry 同口径。
 - 上传 `read(MAX+1)` 提前掐断超大 body；
 - 单图 5MB、单消息 4 张、单请求 8MB、单会话 100 张四级限额。
 
-## 10. P1 —— IM 通道图片接入（三通道均可支持，微信协议已验证）
+## 10. P1 —— IM 通道图片接入（微信已落地，Telegram/Discord 待接）
 
 三个通道的入站图片能力已逐一核实（微信对照参考实现
 `Tencent/openclaw-weixin` 源码验证），**没有不可行项**：
@@ -307,7 +307,7 @@ retry 同口径。
 |---|---|---|
 | Telegram | `message.photo` 是多尺寸 `PhotoSize` 数组（caption 现已在读、图被丢弃），取最大档 `file_id` → `getFile` → `https://api.telegram.org/file/bot<token>/<file_path>` 下载；走既有 `egress_transport("telegram")` 代理。TG 的 photo 经服务端压缩（通常几百 KB），天然 ≤5MB；`document` 形式的原图先不接 | 最容易，约 1 天 |
 | Discord | `message.attachments[]` 直接带 CDN url + `content_type/size/width/height`，按 content_type 过滤图片 GET 下载即可；走 `egress_transport("discord")` | 容易，约 1 天 |
-| 微信 iLink | **协议支持收图**：`MessageItemType.IMAGE = 2`（现有 adapter 只解析 1=文本/3=语音，注释里未列图片枚举）。`image_item.media` 携带 `full_url`（新协议：服务端直接给完整下载 URL）或 `encrypt_query_param`（回退拼 `{cdn_base}/download?encrypted_query_param=…`，默认 CDN 基址 `https://novac2c.cdn.weixin.qq.com/c2c`）；密文需 **AES-128-ECB（PKCS7）** 解密，key 优先取 `image_item.aeskey`（hex），否则 `media.aes_key`（base64，历史上还有 base64(hex) 双重编码，两种都要认）；无 key 时是明文 CDN 直下。解密用已有依赖 `cryptography`——**无新增运行时依赖，不用 bump `docker/runtime-version`**。CDN 与 iLink 网关同口径国内直连、不走代理。`thumb_media`（缩略图）可作原图过大时的降级 | 可行，参考实现完整可对照移植，约 2~3 天 + 真机验证 |
+| 微信 iLink | **协议支持收图**：`MessageItemType.IMAGE = 2`（本期之前 adapter 只解析 1=文本/3=语音，注释里未列图片枚举）。`image_item.media` 携带 `full_url`（新协议：服务端直接给完整下载 URL）或 `encrypt_query_param`（回退拼 `{cdn_base}/download?encrypted_query_param=…`，默认 CDN 基址 `https://novac2c.cdn.weixin.qq.com/c2c`）；密文需 **AES-128-ECB（PKCS7）** 解密，key 优先取 `image_item.aeskey`（hex），否则 `media.aes_key`（base64，历史上还有 base64(hex) 双重编码，两种都要认）；无 key 时是明文 CDN 直下。解密用已有依赖 `cryptography`——**无新增运行时依赖，不用 bump `docker/runtime-version`**。CDN 与 iLink 网关同口径国内直连、不走代理。`thumb_media`（缩略图）可作原图过大时的降级 | 可行，参考实现完整可对照移植，约 2~3 天 + 真机验证 |
 
 已知风险与顺带发现：
 
@@ -316,18 +316,30 @@ retry 同口径。
 - 现有注释「iLink 未开放图片上传」已过时——参考实现已有完整上传路径
   （GetUploadUrl + AES 加密上传），未来 bot 主动发海报可以升级，与本期无关。
 
-通用管线（三通道共享）：
+通用管线（三通道共享，微信已按此落地）：
 
-- `InboundMessage` 增加 `images: list[tuple[bytes, str]]`（字节 + mime）；
-  各 adapter 下载后落 §3 的同一存储、组装同样的 parts，Agent 侧零改动；
+- `InboundMessage` 增加 `images: tuple[InboundImage, ...]`（字节 + 展示名）。
+  **不带 mime**：真实类型一律由落盘时的魔数嗅探判定，平台声明的
+  Content-Type/扩展名不进入判定链；各 adapter 下载后落 §3 的同一存储、
+  组装同样的 parts，Agent 侧零改动；
 - **纯图消息直接触发运行**：`content=[ImagePart]`，靠 §5.4 的请求投影提醒
   文本让模型知道「用户发来一张图」并主动回应；多轮记忆由清单文本 + assistant
   首轮描述承载，与 Web 同一套机制，IM 侧不需要特殊逻辑；
 - **入站聚合（debounce）**：微信用户习惯先甩图再打字，图一到就触发会浪费一轮
-  并逼出一句「请问要做什么」。入站侧做 2~3 秒聚合窗口，把连续到达的图+文合并
-  成一条消息再触发（session_key 已串行，聚合天然安全）；
+  并逼出一句「请问要做什么」。dispatcher 的会话 worker 里做 2.5 秒聚合窗口，
+  把连续到达的图+文合并成一条消息再触发（session_key 已串行，聚合天然安全）。
+  **只有「有图且还没有文字」的消息才等**——拿到文字立即结束等待，纯文字对话
+  零延迟；
 - 两处 Agent 装配（`im_channel.py` 与 `weixin_channel.py`）都要接；
-- 服务端降采样（Pillow 压到 2048 边长）在此期落地——IM 进来的图没有前端可压；
+- 服务端降采样（`shrink_for_attachment`：超限时缩到 2048 边长转 JPEG，
+  逐档降质量直到进 5MB）在此期落地——IM 进来的图没有前端可压；已在限额内的
+  图原样入库，不重编码（保住 PNG 截图的锐利文字）；
+- **失败只丢一张图，不丢整条消息**：下载/解密失败在 adapter 侧跳过该图，
+  入库失败在服务层跳过并把中文原因回执给用户；纯图消息全部失败时放弃本轮，
+  不往转录里写空消息；
+- 微信侧不选模型，视觉门控按默认模型（`model=""`）的 `modalities` 判定：
+  默认模型不支持视觉时，用户照常能发图，Agent 收到的是 §6 的降级占位文本，
+  会告诉用户去设置里换视觉模型——比在通道层直接顶回去更好懂；
 - 设置页 `extra_models` 的图片声明（「视觉」勾选 → modalities）**已存在**，
   即 §6 门控文案指引的出路；补录表单向完整「能力声明」表（图片/视频/
   思考控制统一一节）的演进见 `agent-thinking-level.md` §4.4——视频声明
