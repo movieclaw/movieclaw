@@ -59,6 +59,10 @@ class _AgentRun:
     #: 应用停机触发的取消：终态钩子据此把补配对文案从「用户停止」切换为
     #: 「服务中断」（docs/design/agent-runtime-resilience.md §4.3）
     shutdown: bool = False
+    #: 运行协程已停笔、进入持久化收尾（_finalize）。取消看门狗见此标志即
+    #: 停止复投——看门狗的职责是解卡「吞掉取消的 runner」，合法的慢收尾
+    #: （杀进程组、大转录 seal、DB 提交）不该被自家看门狗再补一刀
+    finalizing: bool = False
     #: 终态钩子：**运行协程真正结束后**（_execute 的 finally）调用一次，
     #: 供会话持久化做收尾（停心跳、补配对、清运行标记）。刻意不挂在
     #: 「第一个终态事件」上：取消时事件先落、协程可能还在写盘，此刻收尾
@@ -259,6 +263,7 @@ class AgentRunRegistry:
                     ),
                 )
         finally:
+            run.finalizing = True
             run.task = None
             await self._finalize(run)
 
@@ -272,13 +277,18 @@ class AgentRunRegistry:
         watchdog.add_done_callback(self._watchdogs.discard)
 
     async def _watch_cancelled(self, run: _AgentRun) -> None:
-        """首次取消后若任务迟迟不结束，按间隔复投取消，超过上限记错误日志。"""
+        """首次取消后若 runner 迟迟不停笔，按间隔复投取消，超过上限记错误日志。
+
+        只盯「runner 是否停笔」（finalizing 标志），不盯任务整体结束：收尾
+        （_finalize）本身可能合法地超过复投间隔，被复投的取消打断反而会让
+        finish_run 被跳过、会话多挂 30 秒心跳窗。
+        """
         task = run.task
         if task is None:
             return
         for _ in range(CANCEL_RETRY_MAX):
             done, _pending = await asyncio.wait([task], timeout=CANCEL_RETRY_SECONDS)
-            if done:
+            if done or run.finalizing:
                 return
             logger.warning(
                 "Agent 运行取消后 %d 秒仍未停下，再次投递取消 run=%s",
@@ -287,7 +297,7 @@ class AgentRunRegistry:
             )
             task.cancel()
         done, _pending = await asyncio.wait([task], timeout=CANCEL_RETRY_SECONDS)
-        if not done:
+        if not done and not run.finalizing:
             logger.error(
                 "Agent 运行多次取消后仍未停下，放弃等待（收尾将由停机/启动自愈兜底）run=%s",
                 run.run_id,

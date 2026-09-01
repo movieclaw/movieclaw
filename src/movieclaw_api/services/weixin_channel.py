@@ -350,14 +350,15 @@ class WeixinChannelService:
                 await pusher.feed(ev)
         finally:
             await stop_typing()
-            # /stop 取消时事件流没有终态事件,合成 cancelled 供收尾统一处理
+            # 任务被取消（服务停机）时事件流没有终态事件,合成 cancelled 供收尾统一处理
             terminal = (
                 last_event
                 if last_event is not None
                 and last_event.type in ("agent_done", "agent_error", "agent_cancelled")
                 else AgentEvent(type="agent_cancelled", run_id=run_id)
             )
-            await recorder.on_terminal(terminal)
+            # 微信通道没有用户主动停止入口，取消只可能来自停机——按「服务中断」收尾
+            await recorder.on_terminal(terminal, reason="service_interrupted")
 
     async def _restricted_tools(self, session_id: str):
         """微信侧的受限工具集:仅 mclaw 产品操作工具,不开工作区 shell。"""

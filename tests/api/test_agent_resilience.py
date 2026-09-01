@@ -134,6 +134,39 @@ async def test_on_terminal_runs_after_runner_cleanup_with_user_cancelled() -> No
         await registry.close()
 
 
+async def test_cancel_watchdog_spares_slow_finalize(monkeypatch) -> None:
+    """看门狗只解卡「不停笔的 runner」：合法的慢收尾不能被复投的取消打断。
+
+    收尾（杀进程组、大转录 seal、DB 提交）超过复投间隔时，若看门狗对整个
+    任务计时就会把 CancelledError 打进 on_terminal，finish_run 被跳过、
+    会话多挂 30 秒心跳窗——finalizing 标志让看门狗在 runner 停笔后收手。
+    """
+    from movieclaw_api.services import agent_runs
+
+    monkeypatch.setattr(agent_runs, "CANCEL_RETRY_SECONDS", 0.1)
+    journal: list[str] = []
+    finalized = asyncio.Event()
+
+    async def slow_on_terminal(event: AgentEvent, reason: str) -> None:
+        await asyncio.sleep(0.5)  # 远超复投间隔的合法慢收尾
+        journal.append(f"terminal:{reason}")
+        finalized.set()
+
+    registry = AgentRunRegistry()
+    runner = _CleanupOrderRunner(journal)
+    registry.start(
+        runner, AgentStartParams(input="x"), session_id="s1", on_terminal=slow_on_terminal
+    )
+    try:
+        await runner.started.wait()
+        await registry.cancel_session("s1")
+        await asyncio.wait_for(finalized.wait(), timeout=5)
+        # 收尾完整执行过一次；没有被看门狗二次取消而放弃
+        assert journal == ["runner-cleanup", "terminal:user_cancelled"]
+    finally:
+        await registry.close()
+
+
 async def test_close_finalizes_with_service_interrupted_reason() -> None:
     """停机取消：同为 agent_cancelled 终态，reason 必须切到 service_interrupted。"""
     journal: list[str] = []

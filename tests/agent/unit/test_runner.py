@@ -556,6 +556,37 @@ async def test_cancel_mid_stream_persists_partial_as_aborted(monkeypatch):
     assert response.thinking == "推理中"
 
 
+async def test_generator_close_persists_partial_as_aborted(monkeypatch):
+    """取消落在 yield 悬停点：生成器收到 aclose 的 GeneratorExit（而非
+    CancelledError），半截输出同样要以 aborted 定稿落盘。"""
+    recorded: list = []
+
+    async def record(message, response):
+        recorded.append((message, response))
+
+    class HangAfterDeltaProtocol(ToolLoopProtocol):
+        async def chat_stream(self, request, model_id):
+            snap = ChatResponse(model=model_id, provider=self.config.name)
+            yield ChatStreamEvent(type="start", partial=snap)
+            yield ChatStreamEvent(type="text_delta", delta="写到一半", partial=snap)
+            await asyncio.Event().wait()  # 永不返回
+
+    runner = make_runner(HangAfterDeltaProtocol, monkeypatch, on_message=record)
+    agen = runner.start(AgentStartParams(input="x"))
+    # 消费到 text_delta 事件为止——此刻生成器悬停在 yield 上
+    while True:
+        event = await agen.__anext__()
+        if event.type == "text_delta":
+            break
+    await agen.aclose()
+
+    assert len(recorded) == 1
+    message, response = recorded[0]
+    assert message.role == "assistant"
+    assert response.finish_reason == "aborted"
+    assert response.content == "写到一半"
+
+
 async def test_cancel_during_tool_execution_does_not_duplicate_step(monkeypatch):
     """工具执行期取消：本步 assistant 已定稿，不再以 aborted 重复落盘。"""
     recorded: list = []

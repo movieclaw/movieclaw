@@ -112,9 +112,11 @@ models:
       kind: budget
       supports_off: true
     modalities: [text, image, video]
-  # GLM 第三方：直供 glm-5.2（适用 thinking_budget，默认开思考、可关）
-  # 与智谱直连的新旗舰 ZHIPU/GLM-5.3（仅思考模式，控制方言未公布）。
-  # 旧的 glm-5.1 / glm-5 / glm-4.7 无前缀 id 已从百炼文档消失，随目录移除
+  # GLM 第三方：直供 glm-5.2（适用 thinking_budget，默认开思考、可关）。
+  # 旧的 glm-5.1 / glm-5 / glm-4.7 无前缀 id 已从百炼文档消失，随目录移除。
+  # 智谱直连款「ZHIPU/GLM-5.3」暂不收录：id 含「/」与路由 ref 的
+  # 「实例名/模型id」语法冲突（resolve 会把 ZHIPU 当实例名解析失败），
+  # 需要的用户可用「实例名/ZHIPU/GLM-5.3」显式指定
   - id: glm-5.2
     context_window: 1048576
     max_output_tokens: 131072
@@ -124,10 +126,4 @@ models:
     thinking_control:
       kind: budget
       supports_off: true
-    modalities: [text]
-  - id: ZHIPU/GLM-5.3
-    context_window: 1048576
-    max_output_tokens: 131072
-    supports_tools: true
-    supports_thinking: true
     modalities: [text]

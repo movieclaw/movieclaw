@@ -132,6 +132,17 @@ def test_bind_rejects_too_many_per_message(tmp_path) -> None:
         store.bind("s1", ids)
 
 
+def test_bind_duplicate_ids_count_once_toward_session_cap(tmp_path, monkeypatch) -> None:
+    """同一 id 重复传只占一份会话额度（校验先于路径拼接的守门重构回归）。"""
+    from movieclaw_api.services import agent_attachments
+
+    monkeypatch.setattr(agent_attachments, "MAX_SESSION_ATTACHMENTS", 1)
+    store = AgentAttachmentStore(tmp_path)
+    meta = store.save_staging(png_bytes(), "a.png")
+    bound = store.bind("s1", [meta.attachment_id, meta.attachment_id])
+    assert [b.attachment_id for b in bound] == [meta.attachment_id, meta.attachment_id]
+
+
 def test_read_base64_roundtrip(tmp_path) -> None:
     store = AgentAttachmentStore(tmp_path)
     data = jpeg_bytes()

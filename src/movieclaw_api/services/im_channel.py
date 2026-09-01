@@ -562,7 +562,9 @@ class ImChannelService:
                 and last_event.type in ("agent_done", "agent_error", "agent_cancelled")
                 else AgentEvent(type="agent_cancelled", run_id=run_id)
             )
-            await recorder.on_terminal(terminal)
+            # IM 通道没有用户主动停止入口，运行被取消只可能来自停机——
+            # 合成回执按「服务中断」文案走（引导模型先核实工具实际结果）
+            await recorder.on_terminal(terminal, reason="service_interrupted")
 
     async def _restricted_tools(self, session_id: str, channel_id: str):
         """IM 侧受限工具集:仅 mclaw 产品操作工具,与微信同一安全红线。"""

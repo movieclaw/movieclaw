@@ -24,6 +24,7 @@ import {
 } from "@/lib/agent-conversations";
 import type { ComposerImage } from "@/lib/agent-attachments";
 import { parseSkillTokens } from "@/lib/agent-skills";
+import { useSkillNames } from "@/lib/skill-names";
 import { sessionAttachmentUrl } from "@/lib/api/agent";
 import { useDefaultModelThinkingLevels } from "@/lib/llm-thinking";
 import { usePageChrome } from "@/lib/page-chrome";
@@ -400,8 +401,14 @@ function UserBubble({
 }) {
   const { revealProps, toggle } = useTapReveal();
   // /skill:名字 占位符渲染成技能 chip，正文只留用户自己的话（复制与
-  // 改写重问仍用完整的 token 形态原文）
-  const { names: skillNames, text: plainText } = parseSkillTokens(text);
+  // 改写重问仍用完整的 token 形态原文）。只拆已知技能：拼错/不存在的
+  // token 服务端不会展开，气泡保留字面文本，不冒充「已调用」的 chip；
+  // 名单加载完成前（null）暂不过滤，避免 chip 闪烁成字面文本
+  const knownSkills = useSkillNames();
+  const { names: skillNames, text: plainText } = parseSkillTokens(
+    text,
+    knownSkills ?? undefined,
+  );
   return (
     <div className="group/copy flex flex-row-reverse items-end justify-start" {...revealProps}>
       {/* 触摸端点气泡浮现操作键（桌面端靠 hover，这一下点击是多余但无害的）。

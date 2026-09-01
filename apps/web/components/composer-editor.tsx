@@ -425,14 +425,28 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
             const space = $createTextNode(" ");
             const selection = $getSelection();
             if ($isRangeSelection(selection)) {
-              selection.insertNodes([token, space]);
+              // token 序列化后必须处在行首或空白之后（前后端 SKILL_TOKEN_RE
+              // 同款前置断言），紧贴文字插入时先补一个空格，否则服务端不展开
+              let needsLeadingSpace = false;
+              const anchor = selection.anchor;
+              if (selection.isCollapsed() && anchor.type === "text") {
+                const anchorNode = anchor.getNode();
+                const before =
+                  anchor.offset > 0
+                    ? anchorNode.getTextContent().slice(anchor.offset - 1, anchor.offset)
+                    : (anchorNode.getPreviousSibling()?.getTextContent().slice(-1) ?? "");
+                needsLeadingSpace = before !== "" && !/\s/.test(before);
+              }
+              selection.insertNodes(
+                needsLeadingSpace ? [$createTextNode(" "), token, space] : [token, space],
+              );
             } else {
               const paragraph = $getRoot().getLastChild() ?? $createParagraphNode();
               if (paragraph.getParent() === null) $getRoot().append(paragraph);
-              (paragraph as never as { append(...nodes: LexicalNode[]): void }).append(
-                token,
-                space,
-              );
+              const tail = paragraph.getTextContent();
+              const nodes: LexicalNode[] =
+                tail !== "" && !/\s$/.test(tail) ? [$createTextNode(" "), token, space] : [token, space];
+              (paragraph as never as { append(...nodes: LexicalNode[]): void }).append(...nodes);
             }
             space.select(1, 1);
           });

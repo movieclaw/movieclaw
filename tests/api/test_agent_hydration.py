@@ -108,6 +108,11 @@ async def test_missing_file_degrades_to_placeholder(tmp_path) -> None:
     texts = [p.text for p in hydrated.content if isinstance(p, TextPart)]
     assert any("已过期或被清理" in t and "没了.png" in t for t in texts)
     assert not any(isinstance(p, ImagePart) for p in hydrated.content)
+    # 图全部降级后消息是纯文本：附件清单注文不得追加，否则 dehydrate 的
+    # 「含图才剥注文」判据失效，注文会泄漏进压缩 replacement_history 落库
+    from movieclaw_api.services.agent_attachments import ATTACHMENT_NOTE_PREFIX
+
+    assert not any(t.startswith(ATTACHMENT_NOTE_PREFIX) for t in texts)
 
 
 async def test_messages_without_images_pass_through_unchanged(tmp_path) -> None:

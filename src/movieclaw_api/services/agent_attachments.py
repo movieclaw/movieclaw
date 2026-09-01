@@ -214,11 +214,14 @@ class AgentAttachmentStore:
         """
         if len(attachment_ids) > MAX_ATTACHMENTS_PER_MESSAGE:
             raise BadRequestException(f"单条消息最多携带 {MAX_ATTACHMENTS_PER_MESSAGE} 张图片")
+        # 不变量守门：所有 id 先过 32 位 hex 校验，之后才允许参与路径拼接
+        attachment_ids = [_validate_attachment_id(a) for a in attachment_ids]
         assets = self._assets_dir(session_id)
         staging = self._staging_dir()
 
         existing = self.count_session_attachments(session_id)
-        pending = [a for a in attachment_ids if self._read_meta(assets, a) is None]
+        # 去重后计数：同一 id 重复传只占一份会话上限额度
+        pending = {a for a in attachment_ids if self._read_meta(assets, a) is None}
         if existing + len(pending) > MAX_SESSION_ATTACHMENTS:
             raise BadRequestException(
                 f"会话附件数量已达上限（{MAX_SESSION_ATTACHMENTS} 张），"
@@ -226,8 +229,7 @@ class AgentAttachmentStore:
             )
 
         out: list[AttachmentMeta] = []
-        for raw_id in attachment_ids:
-            attachment_id = _validate_attachment_id(raw_id)
+        for attachment_id in attachment_ids:
             bound = self._read_meta(assets, attachment_id)
             if bound is not None:
                 out.append(bound)
@@ -495,7 +497,14 @@ async def hydrate_images(
             else:
                 omitted_by_budget += 1
                 parts.append(TextPart(text=_BUDGET_PLACEHOLDER))
-        if vision and message.role == "user" and images_in_message:
+        # 注文只在至少一张图真正进入请求时追加：图全部降级为占位文本的消息
+        # 是纯文本，dehydrate 的「含图才剥注文」判据会失效，注文将泄漏进
+        # 压缩 replacement_history 落库（违反「注文永不落库」的不变量）
+        if (
+            vision
+            and message.role == "user"
+            and any(isinstance(p, ImagePart) for p in parts)
+        ):
             has_user_text = any(
                 isinstance(p, TextPart) and p.text.strip() and not _is_attachment_note(p)
                 for p in message.content

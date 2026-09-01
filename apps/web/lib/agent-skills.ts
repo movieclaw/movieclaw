@@ -15,17 +15,28 @@ export function skillToken(name: string): string {
   return `/skill:${name} `;
 }
 
-/** 从文本中提取占位符名字（首现序去重），供乐观轮次先渲染 chip。 */
-export function parseSkillTokens(text: string): { names: string[]; text: string } {
+/**
+ * 从文本中提取占位符名字（首现序去重），供乐观轮次先渲染 chip。
+ *
+ * ``allow``：已知技能名允许集（小写）。传入时只把名单内的 token 拆成
+ * chip——服务端只展开已知技能、未知 token 原样保留给模型解释，气泡的
+ * 拆分口径必须一致，否则拼错的技能名也会渲染成「已调用」的 chip。
+ * 不传 = 全拆（乐观标题等不掌握名单的场景沿用旧行为）。
+ */
+export function parseSkillTokens(
+  text: string,
+  allow?: ReadonlySet<string>,
+): { names: string[]; text: string } {
   const names: string[] = [];
   const seen = new Set<string>();
   const stripped = text
     .split("\n")
     .map((line) => {
       let touched = false;
-      const out = line.replace(new RegExp(SKILL_TOKEN_SOURCE, "g"), (_whole, name: string) => {
-        touched = true;
+      const out = line.replace(new RegExp(SKILL_TOKEN_SOURCE, "g"), (whole, name: string) => {
         const key = name.toLowerCase();
+        if (allow && !allow.has(key)) return whole; // 未知技能：保留字面文本
+        touched = true;
         if (!seen.has(key)) {
           seen.add(key);
           names.push(name);

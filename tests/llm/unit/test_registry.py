@@ -40,6 +40,15 @@ def test_bailian_preset_dialect():
     assert any(m.id == "qwen3.7-max" for m in preset.models)
 
 
+def test_preset_model_ids_have_no_slash():
+    """模型 id 含「/」会与路由 ref 的「实例名/模型id」语法冲突：resolve 会把
+    id 前半段当实例名解析失败（如百炼的 ZHIPU/GLM-5.3，见 bailian.yaml 注释），
+    这类模型不允许进预设目录。"""
+    for preset in list_presets():
+        for model in preset.models:
+            assert "/" not in model.id, f"{preset.id} 目录里的 {model.id} 含保留字符「/」"
+
+
 def test_unknown_preset_raises_chinese_error():
     with pytest.raises(LlmRoutingError, match="未知的供应商类型"):
         get_preset("nonexistent")

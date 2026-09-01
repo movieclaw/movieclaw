@@ -297,11 +297,14 @@ class AgentRunner:
                 error=f"已达到最大执行步数上限（{self._max_steps} 步）仍未完成，运行终止。"
                 "请把任务拆小后重试，或检查是否陷入了循环。",
             )
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, GeneratorExit):
             # 取消打断流式时的半截定稿：用户屏幕上已经看到多少，转录里就落多少，
             # 以 finish_reason="aborted" 标记（pi 的 stopReason:"aborted" 同款
             # 语义），续聊时模型知道自己说到哪被打断。已定稿的步不会重复落盘
             # （定稿后 partial 缓存即清零）。
+            # GeneratorExit：取消恰好落在 yield 悬停点时，本生成器收到的是
+            # aclose 的 GeneratorExit 而非 CancelledError——清理期允许 await
+            # （不允许再 yield），同样把半截定稿落盘后原样抛出。
             if partial_text or partial_thinking:
                 aborted = ChatResponse(
                     content=partial_text or None,
