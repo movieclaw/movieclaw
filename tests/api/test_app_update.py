@@ -2,7 +2,9 @@
 
 重点覆盖安全性质：sha256 不匹配/路径穿越/布局异常时绝不切换版本指针，
 切换与回退的符号链接操作正确且可互换，非 Docker 部署形态拒绝更新。
-网络部分（GitHub API）不在此测——那是薄封装，错误路径已转成中文提示。
+GitHub API 部分只测**失败路径的结论**（错误分类、退避重试、地址拼接、
+不上熔断）——这些口径必须与「设置 → 网络」的连通性测试一致，否则会出现
+「测试绿灯、检查更新报网络不可达」的割裂；成功路径是薄封装，不在此测。
 """
 
 from __future__ import annotations
@@ -857,6 +859,193 @@ async def test_fetch_releases_uses_etag_cache(updates_dir, monkeypatch):
     assert first == second == [{"tag_name": "v0.2.0"}]
     assert "if-none-match" not in calls[0]
     assert calls[1].get("if-none-match") == 'W/"abc"'
+
+
+# ---------------------------------------------------------------------------
+# 检查更新的失败路径：错误分类、退避重试、反代地址拼接
+#
+# 这一组的由来：用户在「设置 → 网络」测 GitHub 是绿的，点「检查更新」却
+# 偶发报「无法连接 GitHub」。根因是检查路径与连通性测试的口径不一致——
+# 测试绕过熔断、把 403 判为连通、且 rstrip 了反代地址，检查路径三样都没做，
+# 且异常原因被 BadRequestException 吞掉，日志与界面都查不出真凶。
+# ---------------------------------------------------------------------------
+
+
+def _mock_releases_client(monkeypatch, handler):
+    """把 _fetch_releases 用的 AsyncClient 换成 MockTransport 驱动的客户端。"""
+    import httpx
+
+    real_client = httpx.AsyncClient
+
+    def patched_client(**kwargs):
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_client(**kwargs)
+
+    monkeypatch.setattr(app_update.httpx, "AsyncClient", patched_client)
+    app_update.reset_release_cache_for_tests()
+
+
+@pytest.mark.asyncio
+async def test_fetch_releases_reports_rate_limit_instead_of_unreachable(
+    updates_dir, monkeypatch
+):
+    """403 + 配额耗尽要说清是限流，不能糊成「网络不可达」。
+
+    连通性测试对同一个 403 判的是「网络连通，但限流中」，两处结论必须一致，
+    否则用户拿着绿灯的测试结果对着红色的「网络不可达」无从下手。
+    """
+    import httpx
+
+    reset_at = int(time.time()) + 15 * 60
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            403,
+            json={"message": "API rate limit exceeded"},
+            headers={"x-ratelimit-remaining": "0", "x-ratelimit-reset": str(reset_at)},
+        )
+
+    _mock_releases_client(monkeypatch, handler)
+    try:
+        with pytest.raises(BadRequestException) as excinfo:
+            await app_update._fetch_releases("更新")
+    finally:
+        app_update.reset_release_cache_for_tests()
+    message = excinfo.value.message
+    assert "配额" in message and "60 次" in message
+    assert "无法连接" not in message
+    assert "分钟后自动恢复" in message
+
+
+@pytest.mark.asyncio
+async def test_fetch_releases_rate_limit_is_not_retried(updates_dir, monkeypatch):
+    """限流不重试：重试只会加速耗尽配额。"""
+    import httpx
+
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(403, headers={"x-ratelimit-remaining": "0"})
+
+    _mock_releases_client(monkeypatch, handler)
+    try:
+        with pytest.raises(BadRequestException):
+            await app_update._fetch_releases("更新")
+    finally:
+        app_update.reset_release_cache_for_tests()
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_fetch_releases_retries_transient_network_failure(updates_dir, monkeypatch):
+    """线路抖动退避重试后成功：一次抖动不该报成「网络不可达」。"""
+    import httpx
+
+    attempts: list[int] = []
+    slept: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise httpx.ConnectError("connection reset by peer")
+        return httpx.Response(200, json=[{"tag_name": "v0.2.0"}])
+
+    _mock_releases_client(monkeypatch, handler)
+
+    async def fake_sleep(delay: float) -> None:
+        slept.append(delay)
+
+    monkeypatch.setattr(app_update.asyncio, "sleep", fake_sleep)
+    try:
+        releases = await app_update._fetch_releases("更新")
+    finally:
+        app_update.reset_release_cache_for_tests()
+    assert releases == [{"tag_name": "v0.2.0"}]
+    assert len(attempts) == 2
+    assert slept == [app_update._RETRY_BACKOFF_SECONDS[0]]
+
+
+@pytest.mark.asyncio
+async def test_fetch_releases_gives_up_after_retries_with_proxy_hint(
+    updates_dir, monkeypatch
+):
+    """重试用尽后报错要带上「当前是直连还是走代理」——排查的第一个疑问。"""
+    import httpx
+
+    attempts: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(1)
+        raise httpx.ConnectTimeout("timed out")
+
+    _mock_releases_client(monkeypatch, handler)
+
+    async def fake_sleep(delay: float) -> None:
+        return None
+
+    monkeypatch.setattr(app_update.asyncio, "sleep", fake_sleep)
+    try:
+        with pytest.raises(BadRequestException) as excinfo:
+            await app_update._fetch_releases("更新")
+    finally:
+        app_update.reset_release_cache_for_tests()
+    assert len(attempts) == len(app_update._RETRY_BACKOFF_SECONDS) + 1
+    assert "超时" in excinfo.value.message
+    assert "直连" in excinfo.value.message or "代理" in excinfo.value.message
+
+
+@pytest.mark.asyncio
+async def test_fetch_releases_strips_trailing_slash_of_api_base(updates_dir, monkeypatch):
+    """反代地址带尾斜杠时不能拼出 //repos（不少反代对双斜杠直接 404）。"""
+    import httpx
+
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, json=[])
+
+    monkeypatch.setenv("UPDATE_API_BASE_URL", "https://gh.example.com/")
+    get_settings.cache_clear()
+    _mock_releases_client(monkeypatch, handler)
+    try:
+        await app_update._fetch_releases("更新")
+    finally:
+        app_update.reset_release_cache_for_tests()
+        get_settings.cache_clear()
+    assert seen[0].startswith("https://gh.example.com/repos/")
+    assert "//repos" not in seen[0]
+
+
+@pytest.mark.asyncio
+async def test_github_egress_never_uses_breaker(updates_dir, monkeypatch):
+    """github 标签的出口一律不上熔断：后台任务攒下的失败不该让手动检查秒失败。
+
+    熔断是给「用户正等着结果的高频请求」用的快速失败；更新检查每小时一次，
+    熔断在这里只会误伤手动操作——而同一时刻连通性测试（同样 use_breaker=False，
+    且成功后还会 reset）却是绿的，正是「测试可达但检查更新报不可达」的成因。
+    """
+    import httpx
+
+    real_egress = app_update.egress_transport
+    kwargs_seen: list[dict] = []
+
+    def spy(service: str, **kwargs):
+        kwargs_seen.append({"service": service, **kwargs})
+        return real_egress(service, **kwargs)
+
+    monkeypatch.setattr(app_update, "egress_transport", spy)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[{"tag_name": "v0.2.0"}])
+
+    _mock_releases_client(monkeypatch, handler)
+    try:
+        await app_update._fetch_releases("更新")
+    finally:
+        app_update.reset_release_cache_for_tests()
+    assert kwargs_seen == [{"service": "github", "use_breaker": False}]
 
 
 @pytest.mark.asyncio
