@@ -46,6 +46,7 @@ from movieclaw_api.services.scrape_config import (
     effective_language,
     effective_mirror_flags,
     profile_fetch_kwargs,
+    resolve_scrape_library,
     scrape_setting_for_item,
 )
 from movieclaw_api.services.task_state import TaskState
@@ -264,6 +265,54 @@ def request_stop_library_refresh(library_id: int) -> bool:
     return True
 
 
+async def _library_refresh_targets(session: AsyncSession, library_id: int) -> list[tuple[int, str]]:
+    """整库刷新的目标条目：库内有台账行的 ∪ 刮削归属到该库的无文件条目。
+
+    第二类是订阅追踪中的条目（已订阅、尚无任何库存文件）：它们在库页
+    「追踪中」区块带海报展示，若只按台账行取目标，改选图偏好后整库刷新
+    对它们会静默失效——进度显示全量成功，用户无从察觉有条目不在范围内
+    （#278）。候选面很小（有订阅或显式归属的无文件条目），逐个按
+    docs/design/scrape-customization.md §14 的规则解析归属即可。
+    """
+    result = await session.execute(
+        select(LibraryFile.media_item_id, MediaItem.title)
+        .join(MediaItem, MediaItem.id == LibraryFile.media_item_id)  # type: ignore[arg-type]
+        .where(LibraryFile.library_id == library_id)
+        .distinct()
+        .order_by(LibraryFile.media_item_id)
+    )
+    targets = [(i, t) for i, t in result.all() if i is not None]
+
+    library = await session.get(Library, library_id)
+    if library is None:
+        return targets
+    any_file = select(LibraryFile.media_item_id).where(
+        LibraryFile.media_item_id.is_not(None)  # type: ignore[union-attr]
+    )
+    subscribed = select(Subscription.media_item_id)
+    candidates = (
+        (
+            await session.execute(
+                select(MediaItem)
+                .where(
+                    MediaItem.kind == library.kind,
+                    MediaItem.id.not_in(any_file),  # type: ignore[union-attr]
+                    (MediaItem.scrape_library_id == library_id)
+                    | MediaItem.id.in_(subscribed),  # type: ignore[union-attr]
+                )
+                .order_by(MediaItem.id)  # type: ignore[arg-type]
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for item in candidates:
+        resolved = await resolve_scrape_library(session, item)
+        if resolved is not None and resolved.id == library_id and item.id is not None:
+            targets.append((item.id, item.title))
+    return targets
+
+
 async def refresh_library_metadata(library_id: int) -> None:
     """整库刷新（后台任务入口）：库内全部已识别条目**全量重刮**。
 
@@ -281,13 +330,7 @@ async def refresh_library_metadata(library_id: int) -> None:
     try:
         db = get_database()
         async with db.session() as session:
-            result = await session.execute(
-                select(LibraryFile.media_item_id, MediaItem.title)
-                .join(MediaItem, MediaItem.id == LibraryFile.media_item_id)  # type: ignore[arg-type]
-                .where(LibraryFile.library_id == library_id)
-                .distinct()
-            )
-            targets = [(i, t) for i, t in result.all() if i is not None]
+            targets = await _library_refresh_targets(session, library_id)
         state.total = len(targets)
 
         queue: asyncio.Queue = asyncio.Queue()
@@ -349,17 +392,9 @@ async def enqueue_library_metadata_refresh_job(
     origin: str = "web",
 ) -> jobs.CreateJobResult:
     """把整库刷新固化成可恢复 Job；目标快照保证更新前后处理口径一致。"""
-    result = await session.execute(
-        select(LibraryFile.media_item_id, MediaItem.title)
-        .join(MediaItem, MediaItem.id == LibraryFile.media_item_id)  # type: ignore[arg-type]
-        .where(LibraryFile.library_id == library_id)
-        .distinct()
-        .order_by(LibraryFile.media_item_id)
-    )
     targets = [
         {"media_item_id": item_id, "title": title}
-        for item_id, title in result.all()
-        if item_id is not None
+        for item_id, title in await _library_refresh_targets(session, library_id)
     ]
     return await jobs.create_job(
         session,

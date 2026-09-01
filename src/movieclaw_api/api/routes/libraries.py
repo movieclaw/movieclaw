@@ -1411,7 +1411,7 @@ async def refresh_item_metadata(
 ) -> ApiResponse[dict]:
 
     await LibraryConfigService(session).get(library_id)  # 404 检查
-    item, _rows = await _item_rows(session, library_id, media_item_id)  # 404 检查
+    item = await _metadata_item(session, library_id, media_item_id)  # 404 检查（不要求文件）
     created = await media_scrape.enqueue_item_metadata_refresh_job(
         session,
         library_id=library_id,
@@ -1445,7 +1445,7 @@ async def list_artwork_candidates_route(
     海报中文优先），首张即当前自动策略会选的那张。"""
 
     await LibraryConfigService(session).get(library_id)  # 404 检查
-    await _item_rows(session, library_id, media_item_id)  # 404 检查
+    await _metadata_item(session, library_id, media_item_id)  # 404 检查（不要求文件）
     (
         posters,
         backdrops,
@@ -1482,7 +1482,7 @@ async def select_artwork_route(
     ``file_path=null`` 解锁恢复自动选图。同步执行（单张图，秒级）。"""
 
     await LibraryConfigService(session).get(library_id)  # 404 检查
-    await _item_rows(session, library_id, media_item_id)  # 404 检查
+    await _metadata_item(session, library_id, media_item_id)  # 404 检查（不要求文件）
     await media_scrape.select_artwork(media_item_id, kind=payload.kind, file_path=payload.file_path)
     label = "海报" if payload.kind == "poster" else "背景图"
     message = (
@@ -1514,10 +1514,7 @@ async def set_item_scrape_library(
     按的按钮（详情页的「刷新元数据」），这里只返回提示。
     """
     await LibraryConfigService(session).get(library_id)  # 404 检查
-    await _item_rows(session, library_id, media_item_id)  # 404 检查
-    item = await session.get(MediaItem, media_item_id)
-    if item is None:
-        raise NotFoundException(f"媒体条目不存在：id={media_item_id}")
+    item = await _metadata_item(session, library_id, media_item_id)  # 404 检查（不要求文件）
 
     if payload.target_library_id is None:
         item.scrape_library_id = None
@@ -1736,6 +1733,40 @@ def _trash_note(row: LibraryFile) -> str | None:
     if note and label:
         return f"{note}（{label}）"
     return note or label or None
+
+
+async def _metadata_item(
+    session: AsyncSession, library_id: int, media_item_id: int
+) -> MediaItem:
+    """纯元数据操作（重刮/选图/改刮削归属）的条目校验：**不要求库存文件**。
+
+    订阅追踪中的条目（已订阅、下载尚未入库）在库页「追踪中」区块展示的
+    就是 ``media_item`` 的图片字段。这类操作的数据源是 TMDB、产物挂在
+    ``media_item`` 上，与磁盘上有没有媒体文件无关——若沿用「有台账行」
+    前置，改选图偏好对它们会静默失效，且没有任何手动出口（#278）。
+    无台账行时按刮削归属库（docs/design/scrape-customization.md §14）
+    判定条目与库的关联。
+    """
+    item = await session.get(MediaItem, media_item_id)
+    if item is None:
+        raise NotFoundException("媒体条目不存在（可能已被删除）")
+    has_row = (
+        await session.execute(
+            select(LibraryFile.id)
+            .where(
+                LibraryFile.library_id == library_id,
+                LibraryFile.media_item_id == media_item_id,
+            )
+            .limit(1)
+        )
+    ).first() is not None
+    if has_row:
+        return item
+    resolved = await resolve_scrape_library(session, item)
+    if resolved is None or resolved.id != library_id:
+        raise NotFoundException(f"「{item.title}」不在该媒体库中（无库存文件，刮削归属也不是该库）")
+    await session.commit()  # resolve 可能刚推断并固化了归属，落库保持口径稳定
+    return item
 
 
 async def _item_rows(

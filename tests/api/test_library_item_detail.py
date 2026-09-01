@@ -1653,3 +1653,126 @@ async def test_set_item_scrape_library_switches_and_resets(db, tmp_path) -> None
         assert (await session.get(MediaItem, item_id)).scrape_library_id is None
         view = (await get_library_item(library.id, item_id, _ADMIN, session)).data
     assert view.scrape_library_id == library.id
+
+
+# ---------------------------------------------------------------------------
+# 订阅追踪中（无库存文件）的条目：纯元数据入口不再被"没有库存文件"挡住（#278）
+# ---------------------------------------------------------------------------
+
+
+async def _make_tracked_fileless_item(db, library_id: int, *, tmdb_id: int = 300) -> int:
+    """建一个"已订阅、尚无任何库存文件"的条目（媒体库页「追踪中」区块的形态）。"""
+    from movieclaw_db.models import RuleSet, Subscription
+
+    async with db.session() as session:
+        item = MediaItem(
+            kind="movie", tmdb_id=tmdb_id, title="某电影", original_title="Some Movie", year=2020
+        )
+        session.add(item)
+        rule_set = RuleSet(name="默认规则组", is_default=True, spec={})
+        session.add(rule_set)
+        await session.commit()
+        await session.refresh(item)
+        await session.refresh(rule_set)
+        session.add(
+            Subscription(
+                media_item_id=item.id,
+                kind="movie",
+                rule_set_id=rule_set.id,
+                library_id=library_id,
+            )
+        )
+        await session.commit()
+        return item.id
+
+
+async def test_fileless_tracked_item_opens_metadata_routes(db, tmp_path) -> None:
+    """无库存文件的追踪中条目：重刮 / 候选图 / 选图三个入口都能用，选图不因
+    没有条目目录而失败；刮削归属不是该库的照旧 404（#278）。"""
+    from movieclaw_api.api.routes.libraries import (
+        list_artwork_candidates_route,
+        refresh_item_metadata,
+        select_artwork_route,
+    )
+    from movieclaw_api.schemas.library import ArtworkSelectPayload
+    from movieclaw_db.repositories import MediaItemRepository
+
+    async with db.session() as session:
+        library = await LibraryRepository(session).create(
+            name="电影库", kind="movie", root_paths=[str(tmp_path / "movies")]
+        )
+        other = await LibraryRepository(session).create(
+            name="4K 电影库", kind="movie", root_paths=[str(tmp_path / "uhd")]
+        )
+    item_id = await _make_tracked_fileless_item(db, library.id)
+
+    # 候选图：TMDB 候选照常返回
+    async with db.session() as session:
+        resp = await list_artwork_candidates_route(library.id, item_id, session)
+        assert "/poster.jpg" in [p.file_path for p in resp.data.posters]
+
+    # 重刮：能正常入队后台作业
+    async with db.session() as session:
+        resp = await refresh_item_metadata(library.id, item_id, client_name=None, session=session)
+        assert resp.data["started"] is True
+
+    # 选图：更新条目图片字段并加锁；镜像落盘对无文件条目是安全 no-op
+    async with db.session() as session:
+        await select_artwork_route(
+            library.id,
+            item_id,
+            ArtworkSelectPayload(kind="poster", file_path="/poster.jpg"),
+            session,
+        )
+    async with db.session() as session:
+        refreshed = await session.get(MediaItem, item_id)
+        assert refreshed.poster_path == "/poster.jpg"
+        meta = await MediaItemRepository(session).get_metadata(item_id)
+        assert meta.poster_locked is True
+        # 校验时按订阅目标库推断出的归属已固化
+        assert refreshed.scrape_library_id == library.id
+
+    # 刮削归属不是该库 → 条目不属于那个库，仍然 404
+    async with db.session() as session:
+        with pytest.raises(NotFoundException):
+            await list_artwork_candidates_route(other.id, item_id, session)
+
+
+async def test_library_refresh_targets_include_fileless_tracked_items(db, tmp_path) -> None:
+    """整库刷新的目标 = 有台账行的条目 ∪ 刮削归属到该库的无文件条目——
+    追踪中条目从此进刷新范围，改选图偏好后不再静默失效（#278）。"""
+    from movieclaw_api.services import media_scrape
+
+    root, _entry, _video = _make_movie_entry(tmp_path)
+    async with db.session() as session:
+        library = await LibraryRepository(session).create(
+            name="电影库", kind="movie", root_paths=[str(root)]
+        )
+    assert (await scan_library(library.id)).identified == 1
+    tracked_id = await _make_tracked_fileless_item(db, library.id, tmdb_id=969681)
+
+    async with db.session() as session:
+        # 无订阅也无归属的纯浏览条目不进名单（它不在任何库的界面上展示）
+        stray = MediaItem(
+            kind="movie", tmdb_id=301, title="路过的电影", original_title="Passerby", year=2021
+        )
+        session.add(stray)
+        await session.commit()
+        await session.refresh(stray)
+        stray_id = stray.id
+
+        created = await media_scrape.enqueue_library_metadata_refresh_job(
+            session, library.id, "电影库"
+        )
+        target_ids = {t["media_item_id"] for t in created.job.input_data["targets"]}
+
+    async with db.session() as session:
+        scanned = (
+            (await session.execute(select(MediaItem).where(MediaItem.tmdb_id == 300)))
+            .scalars()
+            .all()
+        )
+    scanned_ids = {i.id for i in scanned}
+    assert tracked_id in target_ids
+    assert scanned_ids & target_ids  # 有文件的条目照旧在名单里
+    assert stray_id not in target_ids
