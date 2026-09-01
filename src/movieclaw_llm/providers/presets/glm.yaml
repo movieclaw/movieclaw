@@ -1,8 +1,12 @@
 # 智谱 GLM 官方开放平台（open.bigmodel.cn，OpenAI 兼容端点）。
-# 模型数据以官方文档为准（docs.bigmodel.cn，抓取于 2026-07-13）。
-# 5 系默认开思考；官方渠道以 thinking.type 控制思考、无预算与强度参数，
-# max_thinking_tokens 留空，thinking_control 按 toggle 方言声明（菜单仅
-# 默认/关）。
+# 模型数据以官方文档为准（docs.bigmodel.cn，核实于 2026-09-01）。
+# 思考控制分两代方言：5.3 系思考不可关闭、强度走 reasoning_effort
+# （该系仅支持 low/high/max，默认 max）；5.2/5.1/5 走 thinking.type
+# （enabled 默认 / disabled 可关）。4.7 系官方标注"强制思考"且无强度
+# 参数，不声明 thinking_control（无菜单）。官方无思考预算参数，
+# max_thinking_tokens 留空。tool_choice 仅支持 auto、并行工具调用
+# 官方未公布，不声明 parallel。面向 OpenClaw 场景的 glm-5-turbo /
+# glm-5v-turbo 未收录（智能体基座定位，非通用对话主力）。
 id: glm
 display_name: 智谱 GLM 官方
 protocol: openai_chat
@@ -11,7 +15,28 @@ compat:
   thinking_field: reasoning_content
   supports_stream_usage: true
 models:
-  # 旗舰：1M 上下文，Coding 开源 SOTA
+  # 旗舰（文本）：1M 上下文，思考始终开启
+  - id: glm-5.3
+    context_window: 1000000
+    max_output_tokens: 131072
+    supports_tools: true
+    supports_thinking: true
+    thinking_control:
+      kind: effort
+      levels: [low, high, max]
+    modalities: [text]
+  # 旗舰多模态：原生视频/图像/文本/文件输入，价格为 5.3 的 1/10。
+  # 官方推荐参数 temperature 1 / top_p 0.95 / reasoning_effort max
+  - id: glm-5.3-flash
+    context_window: 1000000
+    max_output_tokens: 131072
+    supports_tools: true
+    supports_thinking: true
+    thinking_control:
+      kind: effort
+      levels: [low, high, max]
+    modalities: [text, image, video]
+  # 上代旗舰：1M 上下文，思考默认开、可关
   - id: glm-5.2
     context_window: 1000000
     max_output_tokens: 131072
@@ -39,21 +64,18 @@ models:
       kind: toggle
       supports_off: true
     modalities: [text]
+  # 4.7 系：官方 API 文档标注"强制思考"（不可关、无强度参数）→ 无菜单
   - id: glm-4.7
     context_window: 204800
     max_output_tokens: 131072
     supports_tools: true
     supports_thinking: true
-    thinking_control:
-      kind: toggle
-      supports_off: true
     modalities: [text]
-  # 免费档：30B-A3B MoE，200K 上下文，输出上限官方未公布
+  # 免费档：30B-A3B MoE，200K 上下文；输出上限官方现已公布（128K）。
+  # 思考控制官方仅明确"支持 enabled"，是否可关未写，按同系不声明
   - id: glm-4.7-flash
     context_window: 204800
+    max_output_tokens: 131072
     supports_tools: true
     supports_thinking: true
-    thinking_control:
-      kind: toggle
-      supports_off: true
     modalities: [text]

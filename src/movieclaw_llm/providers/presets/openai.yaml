@@ -1,11 +1,14 @@
 # OpenAI 官方。base_url 留空走 SDK 默认（https://api.openai.com/v1）。
-# 目录只维护当前主力模型（GPT-5.6 系列，2026-07-09 发布），数据以官方文档
-# 为准（developers.openai.com/api/docs/models，抓取于 2026-07-12）；
-# 用户可通过实例配置的 extra_models 补录未收录的模型。
+# 目录只维护当前主力模型（GPT-5.6 系列，2026-07-09 发布，截至 2026-09-01
+# 仍为最新一代），数据以官方文档为准（developers.openai.com/api/docs/models，
+# 核实于 2026-09-01）；用户可通过实例配置的 extra_models 补录未收录的模型。
+# 仅 Responses API 可用的 gpt-5.6-cyber 不收录（Chat Completions 不支持）。
 #
 # supports_thinking 语义是"思考内容是否通过 API 字段返回"——GPT-5.6 的
-# 推理强度可调（reasoning_effort），但推理过程不通过 Chat Completions
-# 返回，故标 false、无思考预算。
+# 推理过程不通过 Chat Completions 返回，故标 false、无思考预算。但推理
+# 强度可控：reasoning_effort 支持 none/low/medium(默认)/high/xhigh/max
+# （5.6 系不含 API 全集里的 minimal），按 effort 方言声明档位菜单，
+# none 即关闭走 supports_off。
 id: openai
 display_name: OpenAI
 protocol: openai_chat
@@ -21,6 +24,10 @@ models:
     supports_tools: true
     supports_parallel_tool_calls: true
     supports_thinking: false
+    thinking_control:
+      kind: effort
+      levels: [low, medium, high, xhigh, max]
+      supports_off: true
     modalities: [text, image]
   # 均衡：日常编码 / 推理 / agent 任务
   - id: gpt-5.6-terra
@@ -29,6 +36,10 @@ models:
     supports_tools: true
     supports_parallel_tool_calls: true
     supports_thinking: false
+    thinking_control:
+      kind: effort
+      levels: [low, medium, high, xhigh, max]
+      supports_off: true
     modalities: [text, image]
   # 轻量：成本敏感的大批量任务
   - id: gpt-5.6-luna
@@ -37,4 +48,8 @@ models:
     supports_tools: true
     supports_parallel_tool_calls: true
     supports_thinking: false
+    thinking_control:
+      kind: effort
+      levels: [low, medium, high, xhigh, max]
+      supports_off: true
     modalities: [text, image]

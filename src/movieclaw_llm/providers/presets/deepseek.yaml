@@ -1,7 +1,10 @@
 # DeepSeek 官方开放平台（api.deepseek.com，OpenAI 兼容）。
-# 模型数据以官方文档为准（api-docs.deepseek.com，抓取于 2026-07-13）。
-# 注意：deepseek-chat / deepseek-reasoner 旧别名将于 2026-07-24 停用，
-# 目录只收录正式模型 id。官方 API 无思考预算参数，max_thinking_tokens 留空。
+# 模型数据以官方文档为准（api-docs.deepseek.com，核实于 2026-09-01）。
+# 384000 是官方公布的最大输出上限（"最大 384K"），默认值未公布。
+# 思考强度走 reasoning_effort（low/high/max，默认 high，2026-08-13 引入）；
+# 关闭思考走另一方言 thinking.type=disabled，与 effort 参数不同通道，
+# 档位菜单不提供「关」（不做混合协议）。思考内容走 reasoning_content。
+# parallel_tool_calls 官方未公布，不声明。
 id: deepseek
 display_name: DeepSeek 官方
 protocol: openai_chat
@@ -16,6 +19,9 @@ models:
     max_output_tokens: 384000
     supports_tools: true
     supports_thinking: true
+    thinking_control:
+      kind: effort
+      levels: [low, high, max]
     modalities: [text]
   # 轻量：284B 总参 / 13B 激活 MoE，性价比主力
   - id: deepseek-v4-flash
@@ -23,4 +29,18 @@ models:
     max_output_tokens: 384000
     supports_tools: true
     supports_thinking: true
+    thinking_control:
+      kind: effort
+      levels: [low, high, max]
     modalities: [text]
+  # 多模态实验版（2026-08-21 发布）：纯文本能力与 v4-flash 正式版一致，
+  # 增加图片输入（JPEG/PNG/GIF/WebP）；exp 后缀表示官方定位为实验模型
+  - id: deepseek-v4-flash-vision-exp
+    context_window: 1048576
+    max_output_tokens: 384000
+    supports_tools: true
+    supports_thinking: true
+    thinking_control:
+      kind: effort
+      levels: [low, high, max]
+    modalities: [text, image]

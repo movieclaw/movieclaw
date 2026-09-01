@@ -1,14 +1,15 @@
 # 阿里云百炼（DashScope）OpenAI 兼容模式。
-# 目录只维护当前主力模型（Qwen3.7 / Qwen3.6 / DeepSeek-V4 系列），数据
-# 以官方文档为准（help.aliyun.com/zh/model-studio/models，抓取于
-# 2026-07-12）。max_thinking_tokens 为 null 的思考模型，官方仅在控制台
-# 模型卡片公布预算上限，公开文档未给出——用户可用 extra_models 覆盖补全。
+# 目录只维护当前主力模型（Qwen3.8/3.7 系 + DeepSeek/Kimi/GLM 第三方），
+# 数据以官方文档为准（help.aliyun.com/zh/model-studio/models，核实于
+# 2026-09-01）。
 #
-# 思考类模型的推理内容在 reasoning_content 字段返回；Qwen3.7/3.6 与
-# DeepSeek-V4 系列默认开启思考，可用 enable_thinking=false 关闭。
-# Qwen 系按 budget 方言声明 thinking_control（enable_thinking +
-# thinking_budget，档位按 max_thinking_tokens 比例分段）；DeepSeek/Kimi
-# 第三方的控制参数以百炼文档核实后再补声明。
+# 思考类模型的推理内容在 reasoning_content 字段返回。思考控制方言
+# enable_thinking + thinking_budget 的适用范围以官方深度思考文档为准：
+# Qwen3.x 全系与「阿里云直供」的 GLM/Kimi 系适用（按 budget 方言声明，
+# 档位按 max_thinking_tokens 比例分段）；DeepSeek 第三方与 ZHIPU/ 前缀
+# 直连款、kimi-k3（官方注明不支持 thinking_budget）不适用，不声明
+# thinking_control。max_thinking_tokens 取模型页「最大思维链长度」，
+# 仅控制台可见的用注释标明推断来源。
 id: bailian
 display_name: 阿里云百炼
 protocol: openai_chat
@@ -17,10 +18,46 @@ compat:
   thinking_field: reasoning_content
   supports_stream_usage: true
 models:
-  # 文本旗舰：全参数密集架构，极致推理与长文本
+  # 旗舰：Qwen3.8 Max，混合思考默认开；本代起原生多模态（图像/视频输入）
+  - id: qwen3.8-max
+    context_window: 1000000
+    max_output_tokens: 131072
+    supports_tools: true
+    supports_parallel_tool_calls: true
+    supports_thinking: true
+    max_thinking_tokens: 262144
+    thinking_control:
+      kind: budget
+      supports_off: true
+    modalities: [text, image, video]
+  # 轻量快速：与 3.8 Max 同窗口/输出规格，价格约为其 1/15
+  - id: qwen3.8-flash
+    context_window: 1000000
+    max_output_tokens: 131072
+    supports_tools: true
+    supports_parallel_tool_calls: true
+    supports_thinking: true
+    max_thinking_tokens: 262144
+    thinking_control:
+      kind: budget
+      supports_off: true
+    modalities: [text, image, video]
+  # 均衡档：多模态，支持图像/视频输入与 GUI 交互 agent
+  - id: qwen3.7-plus
+    context_window: 1000000
+    max_output_tokens: 131072
+    supports_tools: true
+    supports_parallel_tool_calls: true
+    supports_thinking: true
+    max_thinking_tokens: 262144
+    thinking_control:
+      kind: budget
+      supports_off: true
+    modalities: [text, image, video]
+  # 上代文本旗舰：全参数密集架构，仍在售、未标下线；仅文本
   - id: qwen3.7-max
     context_window: 1000000
-    max_output_tokens: 65536
+    max_output_tokens: 131072
     supports_tools: true
     supports_parallel_tool_calls: true
     supports_thinking: true
@@ -29,88 +66,68 @@ models:
       kind: budget
       supports_off: true
     modalities: [text]
-  # 多模态全能：MoE 架构，支持图像/视频输入与 GUI 交互 agent
-  - id: qwen3.7-plus
-    context_window: 1000000
-    max_output_tokens: 32768
-    supports_tools: true
-    supports_parallel_tool_calls: true
-    supports_thinking: true
-    max_thinking_tokens: 262144
-    thinking_control:
-      kind: budget
-      supports_off: true
-    modalities: [text, image, video]
-  # 轻量快速：3B 激活参数 MoE，百炼卡片 1024K 上下文（原生 262K 扩展而来）。
-  # 输出与输入共享窗口、无独立上限，max_output_tokens 留空。
-  # 思考预算按同代 qwen3.6-plus 的控制台值（81920）推断，以控制台为准。
-  - id: qwen3.6-flash
-    context_window: 1048576
-    supports_tools: true
-    supports_parallel_tool_calls: true
-    supports_thinking: true
-    max_thinking_tokens: 81920
-    thinking_control:
-      kind: budget
-      supports_off: true
-    modalities: [text, image, video]
-  # DeepSeek 第三方：1M 上下文 / 384K 最大输出（官方口径）。
-  # 官方未提供思考预算参数信息，max_thinking_tokens 留空。
+  # DeepSeek 第三方：1M 上下文 / 384K（393216）最大输出，思考默认开。
+  # thinking_budget 不适用于 DeepSeek 系，控制方言未公布，不声明
   - id: deepseek-v4-pro
-    context_window: 1048576
-    max_output_tokens: 384000
+    context_window: 1000000
+    max_output_tokens: 393216
     supports_tools: true
     supports_thinking: true
     modalities: [text]
   - id: deepseek-v4-flash
-    context_window: 1048576
-    max_output_tokens: 384000
+    context_window: 1000000
+    max_output_tokens: 393216
     supports_tools: true
     supports_thinking: true
     modalities: [text]
-  # Kimi 第三方（月之暗面）：混合思考，原生多模态。输出与输入共享 256K 窗口，
-  # 无独立输出上限故 max_output_tokens 留空。k2.5 思考预算来自百炼控制台，
-  # k2.6 未单独公布、按同系值推断。编程专用的 kimi-k2.7-code 系未收录。
-  - id: kimi-k2.5
-    context_window: 262144
+  # Kimi 第三方旗舰：仅思考模式（不可关）、保留式思考；百炼口径收图不收视频。
+  # 官方注明 kimi-k3 不支持 thinking_budget，强度参数百炼未公布，不声明
+  - id: kimi-k3
+    context_window: 1048576
+    max_output_tokens: 1048576
     supports_tools: true
     supports_thinking: true
-    max_thinking_tokens: 81920
-    modalities: [text, image, video]
+    modalities: [text, image]
+  # Kimi 第三方 K2 系（阿里云直供，适用 enable_thinking + thinking_budget，
+  # 默认不思考）：混合思考，原生多模态。思考预算 81920 来自百炼控制台
+  # 模型卡片（公开文档未列），以控制台为准。k2.5 月之暗面官方渠道已于
+  # 2026-08-31 下线，百炼仍在售，保留至其同步下架
   - id: kimi-k2.6
     context_window: 262144
+    max_output_tokens: 16384
     supports_tools: true
     supports_thinking: true
     max_thinking_tokens: 81920
+    thinking_control:
+      kind: budget
+      supports_off: true
     modalities: [text, image, video]
-  # GLM 第三方（智谱）：5 系默认开思考，全系 200K/128K（5.2 升到 1M 上下文）。
-  # 思考预算 glm-5 / glm-4.7 为百炼控制台值（32768），5.1/5.2 未单独公布、
-  # 按同系值推断，以控制台为准。
+  - id: kimi-k2.5
+    context_window: 262144
+    max_output_tokens: 16384
+    supports_tools: true
+    supports_thinking: true
+    max_thinking_tokens: 81920
+    thinking_control:
+      kind: budget
+      supports_off: true
+    modalities: [text, image, video]
+  # GLM 第三方：直供 glm-5.2（适用 thinking_budget，默认开思考、可关）
+  # 与智谱直连的新旗舰 ZHIPU/GLM-5.3（仅思考模式，控制方言未公布）。
+  # 旧的 glm-5.1 / glm-5 / glm-4.7 无前缀 id 已从百炼文档消失，随目录移除
   - id: glm-5.2
-    context_window: 1000000
+    context_window: 1048576
     max_output_tokens: 131072
     supports_tools: true
     supports_thinking: true
-    max_thinking_tokens: 32768
+    max_thinking_tokens: 131072
+    thinking_control:
+      kind: budget
+      supports_off: true
     modalities: [text]
-  - id: glm-5.1
-    context_window: 204800
+  - id: ZHIPU/GLM-5.3
+    context_window: 1048576
     max_output_tokens: 131072
     supports_tools: true
     supports_thinking: true
-    max_thinking_tokens: 32768
-    modalities: [text]
-  - id: glm-5
-    context_window: 204800
-    max_output_tokens: 131072
-    supports_tools: true
-    supports_thinking: true
-    max_thinking_tokens: 32768
-    modalities: [text]
-  - id: glm-4.7
-    context_window: 204800
-    max_output_tokens: 131072
-    supports_tools: true
-    supports_thinking: true
-    max_thinking_tokens: 32768
     modalities: [text]

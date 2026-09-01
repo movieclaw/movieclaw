@@ -31,10 +31,13 @@ def test_bailian_preset_dialect():
     assert preset.protocol == "openai_chat"
     assert preset.base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
     assert preset.compat.thinking_field == "reasoning_content"
-    flagship = next(m for m in preset.models if m.id == "qwen3.7-max")
+    flagship = next(m for m in preset.models if m.id == "qwen3.8-max")
     assert flagship.supports_thinking
     assert flagship.max_thinking_tokens == 262144
-    assert flagship.max_output_tokens == 65536
+    assert flagship.max_output_tokens == 131072
+    # 3.8 代起旗舰原生多模态；上代 qwen3.7-max 仍在售（多处测试以它为默认模型）
+    assert flagship.modalities == ["text", "image", "video"]
+    assert any(m.id == "qwen3.7-max" for m in preset.models)
 
 
 def test_unknown_preset_raises_chinese_error():
