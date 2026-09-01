@@ -5,22 +5,27 @@
   </picture>
 </p>
 
-<h3 align="center">全新一代智能影音产品，最佳影视Agent</h3>
+<h3 align="center">The all-in-one media server with an AI agent built in</h3>
 
 <p align="center">
-  把存片的目录指给 MovieClaw，海报墙、追剧订阅、多端播放一条线跑通。<br>
-  一个容器替代 Jellyfin + Sonarr + Radarr + Prowlarr + Bazarr + Overseerr 六件套。<br>
-  数据全在你自己的机器上。
+  Point MovieClaw at the folders where your media lives, and everything downstream just works:<br>
+  the poster wall, series subscriptions, playback on every device.<br>
+  One container replaces Jellyfin + Sonarr + Radarr + Prowlarr + Bazarr + Overseerr.<br>
+  Everything stays on your own hardware.
 </p>
 
 <p align="center">
-  <a href="#5-分钟跑起来">快速开始</a> ·
-  <a href="#界面预览">截图</a> ·
-  <a href="#能做什么">功能</a> ·
-  <a href="#boundaries">边界</a> ·
-  <a href="#在别的机器上操控它">命令行</a> ·
-  <a href="docs/design/">设计文档</a> ·
-  <a href="https://github.com/movieclaw/movieclaw/issues">反馈</a>
+  <b>English</b> | <a href="README.zh-CN.md">简体中文</a>
+</p>
+
+<p align="center">
+  <a href="#quick-start">Quick Start</a> ·
+  <a href="#screenshots">Screenshots</a> ·
+  <a href="#features">Features</a> ·
+  <a href="#boundaries">Boundaries</a> ·
+  <a href="#control-it-from-anywhere">CLI</a> ·
+  <a href="docs/design/">Design Docs</a> ·
+  <a href="https://github.com/movieclaw/movieclaw/issues">Feedback</a>
 </p>
 
 <p align="center">
@@ -32,155 +37,165 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/home-library.jpg" width="900" alt="MovieClaw 媒体库首页">
+  <img src="docs/images/home-library.jpg" width="900" alt="MovieClaw library home page">
 </p>
 
-## 为什么用它
+## Why MovieClaw
 
-你想做的事其实只有一件：想看什么，点一下"订阅"，资源一出就自动下好、改好名、放进海报墙，
-打开就能播。这一条线，在家里通常要拼六个容器：Jellyfin 放片，Sonarr、Radarr 管订阅，
-Prowlarr 接站点，Bazarr 抓字幕，Overseerr 给家人点播，还要保证它们对同一个媒体库的理解一致。
+Strip everything away and there's only one thing you actually want: see a show, hit
+**Subscribe**, and have it appear on your poster wall — downloaded, renamed, ready to
+play — the moment a release drops. At home, that one workflow has traditionally meant six
+containers: Jellyfin to serve the library, Sonarr and Radarr for subscriptions,
+Prowlarr for indexers, Bazarr for subtitles, Overseerr so the family can request things —
+and it's on you to keep all six agreeing about the same library.
 
-MovieClaw 把这条线收进一个容器：
+MovieClaw collapses the whole pipeline into one container:
 
-| 你想做的事 | 常见做法 | MovieClaw |
+| The job | The usual stack | MovieClaw |
 | --- | --- | --- |
-| 看片、海报墙、进度同步 | Jellyfin / Emby / Plex | 内置 |
-| 元数据刮削 | 上面自带，认不准再上 tinyMediaManager | 内置，TMDB 与豆瓣双源 |
-| 订阅追剧、自动下载 | Sonarr + Radarr | 内置 |
-| 站点、索引器接入 | Prowlarr / Jackett | 内置 23 个 PT 站点配置 |
-| 字幕 | Bazarr | 内置，含 PGS 图形字幕转 SRT |
-| 家人点播与权限 | Overseerr / Jellyseerr | 内置成员管理 |
-| 在微信里一句话操作这一切 | 没有现成的 | 内置 AI 助手 |
-| 加起来 | 6 个容器 / 6 份配置 | 1 个容器 / 1 个 `data` 目录 |
+| Playback, poster wall, watch progress | Jellyfin / Emby / Plex | Built in |
+| Metadata | Whatever the server ships, plus tinyMediaManager for the hard cases | Built in, with TMDB and Douban as dual sources |
+| Subscriptions and automatic downloads | Sonarr + Radarr | Built in |
+| Indexers and tracker sites | Prowlarr / Jackett | Built in, 23 private trackers preconfigured |
+| Subtitles | Bazarr | Built in, including PGS-to-SRT conversion |
+| Family requests and permissions | Overseerr / Jellyseerr | Built-in member management |
+| Running all of the above from a chat message | Nothing does this | Built-in AI assistant |
+| Total | 6 containers, 6 configs | 1 container, 1 `data` directory |
 
-一体化有代价，边界写在[下一节](#boundaries)。
+All-in-one has its trade-offs — they're laid out honestly in [Boundaries](#boundaries).
 
-## 界面预览
+## Screenshots
 
-下面四张按实际使用顺序排：进来、逛库、看详情、订阅追更。截图取自真实运行的实例，
-元数据由 TMDB 真实刮削。
+Four screens, in the order you'll actually use them: land on the home page, browse the
+library, open a title, subscribe. Every screenshot is from a live instance, with real
+metadata scraped from TMDB.
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/images/library-movies.jpg" alt="电影库"></td>
-    <td width="50%"><img src="docs/images/series-detail.jpg" alt="剧集详情"></td>
+    <td width="50%"><img src="docs/images/library-movies.jpg" alt="Movie library"></td>
+    <td width="50%"><img src="docs/images/series-detail.jpg" alt="Series detail"></td>
   </tr>
   <tr>
-    <td><b>媒体库</b>：中文片名、海报、年份，右侧字母索引快速跳转</td>
-    <td><b>剧集详情</b>：分集剧照、音轨与字幕清单，缺的集数直接标灰</td>
+    <td><b>Library</b>: localized titles, posters, and years, with an A–Z index down the right edge for fast jumps</td>
+    <td><b>Series detail</b>: episode stills, audio and subtitle track listings — missing episodes are greyed out, so gaps are obvious at a glance</td>
   </tr>
   <tr>
-    <td><img src="docs/images/discover.jpg" alt="发现页"></td>
-    <td><img src="docs/images/subscriptions.jpg" alt="订阅"></td>
+    <td><img src="docs/images/discover.jpg" alt="Discover page"></td>
+    <td><img src="docs/images/subscriptions.jpg" alt="Subscriptions"></td>
   </tr>
   <tr>
-    <td><b>发现</b>：TMDB 与豆瓣榜单随时切换，看到就能订</td>
-    <td><b>订阅</b>：每部剧的到货进度，以及未来七天可能入库什么</td>
+    <td><b>Discover</b>: flip between TMDB and Douban charts — anything you see, you can subscribe to on the spot</td>
+    <td><b>Subscriptions</b>: delivery progress for every show, plus a forecast of what may land over the next seven days</td>
   </tr>
 </table>
 
-界面是液态玻璃：侧栏、输入框、悬浮按钮会折射你设的背景图，边缘带一点色差。
-背景图在"设置 → 外观"里换，换完折射跟着变，跨设备访问同一实例保持一致。
+The interface is liquid glass: the sidebar, inputs, and floating buttons refract whatever
+background image you choose, with a touch of chromatic aberration at the edges. Swap the
+background under **Settings → Appearance** and the refraction follows — consistently, on
+every device connected to the same instance.
 
 <p align="center">
-  <img src="docs/images/glass.jpg" width="900" alt="工作台，液态玻璃面板折射背景图">
+  <img src="docs/images/glass.jpg" width="900" alt="Workbench with liquid glass panels refracting the background image">
 </p>
 
-手机上是同一套界面，不是另做一份缩水版。iOS 里"添加到主屏幕"按独立 App 跑，
-没有浏览器地址栏，刘海和底部指示条也都让开了。
+Your phone gets the same interface, not a cut-down companion app. On iOS,
+**Add to Home Screen** runs MovieClaw as a standalone app — no address bar, and the layout
+respects the notch and home-indicator safe areas.
 
 <p align="center">
-  <img src="docs/images/mobile.jpg" width="620" alt="手机上的媒体库与剧集详情">
+  <img src="docs/images/mobile.jpg" width="620" alt="Library and series detail on a phone">
 </p>
 
-## 能做什么
+## Features
 
-### 追剧与下载
+### Subscriptions & downloads
 
-- 想看的剧点一下"订阅"，资源一出就自动下载、改名、入库，你什么都不用管。
-- 洗版：把目标画质写成规则，出了更好的版本自动换，旧文件进"待回收"延迟删除；想 1080p REMUX 和 4K 都留着，就打开"保留旧版本共存"。
-- 种子名不用正则硬猜，分辨率、片源、编码、字幕、音轨、制作组各占一字段：
+- Hit **Subscribe** on a show and forget about it: when a release appears, it's downloaded, renamed, and filed into your library automatically.
+- Quality upgrades: describe your target quality as a rule and MovieClaw swaps in better releases as they appear. Replaced files go to a delayed-deletion recycle queue — and if you'd rather keep the 1080p REMUX *and* the 4K, turn on side-by-side versions.
+- Torrent names aren't guessed at with regexes. Resolution, source, codec, subtitles, audio, and release group each get parsed into their own field:
 
   ```text
   三体.Three-Body.2023.S01E05.2160p.WEB-DL.H265.AAC.国语中字-OurTV
   ↓
-  剧集 · 第 1 季第 5 集 · 2160p · H.265 · WEB-DL · AAC
-  字幕：中文    音轨：普通话    制作组：OurTV
+  Series · Season 1 Episode 5 · 2160p · H.265 · WEB-DL · AAC
+  Subtitles: Chinese    Audio: Mandarin    Release group: OurTV
   ```
 
-  "国语中字"这种只有中文站才有的写法，也能拆成字幕和音轨两个字段，用随镜像内置的小模型，不是一堆正则。
+  Even shorthand like "国语中字" (Mandarin audio, Chinese subs), which only exists on Chinese trackers, splits cleanly into separate subtitle and audio fields — courtesy of a small ML model shipped in the image, not a pile of regexes.
 
-- 新站先养着：打开站点保护，订阅链路绕开这个站，手动搜索不受影响，配合刷流把分享率养起来再放开。
+- Just joined a private tracker and need to protect your ratio? Turn on site protection: subscriptions steer around that site while manual search still works, so you can build up your ratio before opening it up.
 
-### 媒体库
+### Media library
 
-- 打开就是海报墙，简介、评分、演职员、分集剧照都在本地，断网也能翻。
-- 不要求重命名任何文件，指向已有目录就能用；想让它整理是另一个开关，默认不动你的盘。
-- 认不准就不猜：识别不了的进"待识别"，界面写清原因，比如"有 3 个同样可信的候选，机器不敢替你选"，一次认领整组生效。
-- 刮削口味可调：语言、海报、命名模板、是否写 NFO 和分集剧照，都在"设置 → 刮削与整理"；自动挑的图不满意就手动换一张并锁住。
+- You open the app to a poster wall. Synopses, ratings, cast, and episode stills are all stored locally — browse it all completely offline.
+- It never demands renaming: point it at your existing directories and it works with them as-is. Letting MovieClaw organize your files is a separate opt-in, off by default — it doesn't touch your disks until you say so.
+- When it isn't sure, it doesn't guess. Ambiguous items land in a *pending identification* queue with a plain-language reason — "3 equally plausible matches; not choosing for you" — and one confirmation resolves the whole group.
+- Scraping is a matter of taste, so it's configurable: language, artwork, naming templates, NFO files, episode stills — all under **Settings → Scraping & Organizing**. Don't like an auto-picked poster? Replace it and lock it in.
 
-### 播放
+### Playback
 
-- Infuse 里填个地址就能连，MovieClaw 对外就是一台 Jellyfin 服务器，看到哪一集会同步回来。
-- 浏览器里直接播，音轨、字幕、续播位置都在；能直连就直连，只有放不了的编码才转码，转之前告诉你代价。
-- 没有硬解？把转码交给一台 Mac：远程转码 Worker 是 Apple Silicon 的菜单栏 App，走 VideoToolbox 硬编。
-- 手机是同一套界面，iOS 里"添加到主屏幕"就是独立 App，没有地址栏。
+- Add the server address to Infuse and you're in: MovieClaw looks exactly like a Jellyfin server to third-party players, and watch progress syncs back.
+- Or play straight in the browser — audio tracks, subtitles, and resume positions all there. Direct play whenever possible; transcoding only kicks in for codecs the browser can't handle, and it tells you the cost first.
+- No hardware transcoding on your box? Hand it to a Mac: the remote transcode worker is a menu-bar app for Apple Silicon that encodes through VideoToolbox.
+- On the phone it's the same UI; on iOS, **Add to Home Screen** makes it a standalone app with no address bar.
 
-### 家人与权限
+### Family & permissions
 
-- 一人一个账号，能看哪些库、能不能订阅、能不能直接下载逐项开关；进度和收藏各存各的。
+- Everyone gets their own account, with per-person switches for which libraries they see, whether they can subscribe, and whether they can download directly. Watch progress and favorites are kept separate.
 
-### 维护
+### Maintenance
 
-- 更新和回退都在网页上点，日常升级只下几 MB 产物包，坏了会自动回落，数据不动。
-- 出错说人话：日志和界面提示都是中文，写给"部署了但不写代码"的人。
+- Updates and rollbacks are buttons in the web UI. Routine upgrades download only a few megabytes, a broken update rolls itself back, and your data is never touched.
+- Errors are written for humans — for the person who deploys things but doesn't write code. (Log and UI messages are currently in Chinese.)
 
-### AI 助手
+### AI assistant
 
-需要接入一个大模型（"设置 → AI 模型"，OpenAI 兼容端点都行），不接不影响其他功能。
+The assistant needs an LLM connected under **Settings → AI Models** (any OpenAI-compatible
+endpoint). Skip it and everything else still works.
 
-- 在微信里说一句就行，比如"三体第二季出了就订"；还能发语音，Telegram 和 Discord 也能对话。
-- 助手调用 MovieClaw 自己的命令行，不靠猜接口；后端加接口，它就自动多一项能力，长会话也会自动压缩上下文。同一套命令行[你自己也能装](#在别的机器上操控它)，别的机器、别的 Agent 都能用。
-- 缺字幕就自己做一份：找不到目标语言字幕时，自动找源、翻译、落盘成外挂 SRT。
-- 可以用纯 Markdown 给它加"技能"：在 `data/agent-skills/` 下放一个目录 + `SKILL.md`（frontmatter 写 `description`，正文写指令，可带脚本），Web 会话里任务匹配时助手会自己加载执行，改完即生效不用重启。与产品内置技能同名时你的版本优先（日志会提示），细节见 [`docs/design/agent-skills.md`](docs/design/agent-skills.md)。
+- Talk to your library from WeChat — "subscribe to Three-Body season 2 as soon as it's out" — by text or voice. Telegram and Discord work too.
+- Under the hood, the assistant drives MovieClaw's own CLI rather than guessing at APIs. Ship a new backend endpoint and the assistant gains that ability automatically; long conversations compact their own context. The same CLI is [yours to install](#control-it-from-anywhere) — on any machine, for any agent.
+- Missing subtitles? It makes its own: when none exist in your target language, it finds subtitles in another language, translates them, and saves the result as an external SRT next to the video.
+- Teach it "skills" in plain Markdown: drop a directory with a `SKILL.md` into `data/agent-skills/` (a `description` in the frontmatter, instructions in the body, scripts welcome) and the assistant loads it on its own whenever a web-session task matches — changes take effect immediately, no restart. A skill sharing a name with a built-in one overrides it (the log says so). Details in [`docs/design/agent-skills.md`](docs/design/agent-skills.md).
 
-权限边界见下一节。
+What the assistant is and isn't allowed to do is covered next.
 
-<a id="boundaries"></a>
+## Boundaries
 
-## 不做什么、不锁你什么
+### What it won't do
 
-### 不做什么
+- Downloading stays with qBittorrent or Transmission — MovieClaw doesn't replace your download client.
+- Hardware transcoding either exists on your machine or it doesn't; MovieClaw can't invent it. Software transcoding eats CPU, and the UI says so plainly before you turn it on.
+- Remote access is yours to arrange (Tailscale, WireGuard, a reverse proxy). MovieClaw never touches your traffic.
+- It ships no media content, ever. Tracker accounts are your own; the bundled site configs just save you setup time.
 
-- 下载交给 qBittorrent 或 Transmission，MovieClaw 不替代下载器。
-- 硬件编解码有就有、没有就没有，MovieClaw 变不出来；软件转码很吃 CPU，开之前界面会先说清代价。
-- 远程访问用你自己的方案（Tailscale、WireGuard、反向代理），MovieClaw 不经手你的流量。
-- 不提供任何影视资源，站点账号是你自己的，站点配置只是让它用起来省事。
+### What stays yours
 
-### 数据归你
+- Your file names and directory layout are never touched unless you explicitly turn on organizing — and you can hand the library back to Jellyfin or Emby at any time.
+- Runtime state lives in a single `data/` directory. Back that up, delete the container: nothing is lost.
+- No telemetry, no phoning home, no cloud account. Your watch history never leaves the machine.
 
-- 不改你的文件名和目录结构，除非你主动让它整理，随时可以换回 Jellyfin 或 Emby 接管。
-- 运行数据只有一个 `data/` 目录，备份它、删容器都不动数据。
-- 不采集、不回连、不需要注册云端账号，观看记录不离开这台机器。
+### Guardrails on the AI assistant
 
-### AI 助手的权限边界
+A media library, a file organizer, and an assistant that can execute commands, all in one
+product — the risk is real. The self-hosting community already has horror stories of
+auto-organizers wiping libraries: "everything deleted, not one source file left." So the
+constraints here are enforced in code, not politely requested in a prompt:
 
-把媒体库、文件整理和一个能执行命令的助手放进同一个产品，风险是真的。社区里已经有人被自动整理"删了个精光，一个源文件都没剩"。所以这里的约束写在代码里，不是提示词里的君子协定：
+- Credentials never reach bash. The assistant operates the product only through dedicated tools; no token appears in the environment of any `bash` subprocess.
+- Dangerous operations require explicit confirmation. Deleting media files goes further still: the assistant must first list the exact items with a read-only command, read them back to you, and get your explicit yes in that same exchange. A hand-wavy "clean things up" is not consent.
+- Deletion means delayed recycling, not an instant `rm`. Copies that are still seeding are left alone.
+- Every tool call is visible in the conversation and traceable after the fact — if something goes wrong, you can see exactly which step did it.
 
-- 凭证不进 bash。助手操作产品只能走专用工具，`bash` 子进程的环境变量里看不到任何令牌。
-- 危险操作必须显式确认。其中"删除媒体文件"还要先用只读命令查清将删除的具体条目、向你复述、拿到本轮明确同意才能动手。你泛泛说一句"清理一下"，不算同意。
-- 删除走延迟回收，不是立刻 `rm`。正在做种的副本不动。
-- 每一步工具调用在会话里可见、可回溯，出了问题能查是哪一步。
+## Quick Start
 
-## 5 分钟跑起来
+One prerequisite: Docker (Synology's built-in Container Manager counts; other NAS brands
+have their own Docker packages). The official image
+[`movieclaw/movieclaw`](https://hub.docker.com/r/movieclaw/movieclaw) runs everything in
+a single container — no separate database, no Redis, and a TMDB key is already baked in,
+so there's nothing to apply for. One tag covers both x86_64 and ARM64.
 
-前提只有一个：机器上装好 Docker（群晖用自带的 Container Manager，其他 NAS 用各自的 Docker 套件）。
-官方镜像 [`movieclaw/movieclaw`](https://hub.docker.com/r/movieclaw/movieclaw) 单容器跑全部：
-不用另装数据库、不用配 Redis，连 TMDB Key 都已内置（不必自己去申请）。
-同一个标签同时支持 x86_64 与 ARM64。
-
-**第 1 步**：新建一个文件夹，在里面创建 `docker-compose.yml`，粘贴：
+**Step 1**: Create a new folder, create a `docker-compose.yml` inside it, and paste:
 
 ```yaml
 services:
@@ -189,111 +204,137 @@ services:
     container_name: movieclaw
     init: true
     ports:
-      # 左边是宿主端口，被占了就改左边（比如 "8096:3000"），右边保持 3000
+      # Left side is the host port — if it's taken, change the left side
+      # (e.g. "8096:3000") and keep the right side at 3000
       - "3000:3000"
     volumes:
-      - ./data:/app/data              # 运行数据，备份这个文件夹就够了
-                                      # （含隐藏文件 .secret_key，备份工具别跳过点文件）
-      - /volume1/media:/media         # ← 改成你的媒体目录
-      - /volume1/downloads:/downloads # ← 改成下载器的保存目录
-      # 多个媒体盘 / 多个下载目录？每个加一行即可，数量不限：
+      - ./data:/app/data              # Runtime data — backing up this folder is all you need
+                                      # (includes the hidden file .secret_key; make sure your
+                                      # backup tool doesn't skip dotfiles)
+      - /volume1/media:/media         # ← change to your media directory
+      - /volume1/downloads:/downloads # ← change to your download client's save directory
+      # Multiple media disks / download directories? Add one line each — no limit:
       # - /volume2/movies:/movies
     environment:
-      - TZ=Asia/Shanghai
-    # 想用核显 / 独显做硬件转码？先在宿主上 `ls /dev/dri` 确认它存在（ARM 机型、
-    # 纯 CPU 主机通常没有）。不存在却打开下面两行，容器会被重建然后起不来，
-    # 只留一句英文 no such file or directory。不确定就先别动：装好后首启日志
-    # 会直接告诉你能不能硬解、缺什么。
+      - TZ=Asia/Shanghai              # ← change to your timezone
+    # Want hardware transcoding with an iGPU / dGPU? First run `ls /dev/dri` on the host
+    # to confirm it exists (ARM boxes and CPU-only hosts usually don't have it). Enable
+    # the two lines below without it, and the container gets recreated and then fails to
+    # start, leaving nothing but "no such file or directory". When in doubt, leave them
+    # alone: the first-start log will tell you outright whether hardware decoding is
+    # available and what's missing.
     # devices:
     #   - /dev/dri:/dev/dri
     restart: unless-stopped
 ```
 
-**第 2 步**：把 `volumes` 里的路径改成你机器上的真实路径。规则只有一条：
-冒号**左边**是你机器上的目录，**右边**是 MovieClaw 在容器里看到的路径；
-之后在网页里填路径时，填的都是右边那个。下载器的保存目录一定要挂进来，
-否则 MovieClaw 看不到下载完成的文件，也就没法整理入库。
+**Step 2**: Point the `volumes` entries at real paths on your machine. There's one rule
+to remember: **left of the colon** is a directory on your machine; **right of the colon**
+is what MovieClaw sees inside the container — and it's the right-hand path you'll type
+into the web UI later. Do mount your download client's save directory, or MovieClaw can't
+see finished downloads and can't file them into your library.
 
-> **冒号左边必须是机器上已经存在的目录。** 路径写错了 Docker 不会报错，
-> 它会默默替你新建一个空文件夹，容器照常启动、日志干干净净，然后你的媒体库一片空白。
-> 群晖用户尤其注意盘符和大小写（`/volume1` 还是 `/volume2`、`media` 还是 `Media`）。
-> 粘贴前先 `ls` 一下要挂的目录，或在文件管理器里核对一遍。
+> **The left-hand directory must already exist on the machine.** Docker doesn't error on
+> a bad path — it quietly creates an empty folder for you, the container starts fine, the
+> logs look clean, and your library sits empty. Synology users, watch the volume number
+> and the capitalization (`/volume1` vs. `/volume2`, `media` vs. `Media`). `ls` the
+> directory before you paste, or double-check it in your file manager.
 
-**第 3 步**：在这个文件夹下启动（NAS 图形界面用户：Container Manager →"项目 → 新增"，指向这个文件夹）：
+**Step 3**: From that folder, bring it up (NAS GUI users: Container Manager →
+**Project → Create**, pointed at the folder):
 
 ```bash
 docker compose up -d
 ```
 
-首次启动快的机器十来秒，慢一些的 NAS 可能要一两分钟。这期间打开页面只会看到"正在连接服务…"，
-属正常；`docker logs movieclaw` 里出现"前端反代 已就绪"就是真的起来了。
-如果这一步直接报 `failed to bind host port 0.0.0.0:3000/tcp: address already in use`，
-是 3000 端口被占了，见下面[常见问题](#常见问题)的第二条。
+First start takes about ten seconds on a fast machine, a minute or two on a slower NAS.
+Meanwhile the page just shows "connecting to the service…" — that's normal. You'll know
+it's actually up when `docker logs movieclaw` prints `前端反代 已就绪` ("frontend proxy
+ready"). If the
+command instead fails with
+`failed to bind host port 0.0.0.0:3000/tcp: address already in use`, port 3000 is
+taken — see the [FAQ](#faq).
 
-**第 4 步**：浏览器打开 `http://<主机IP>:3000`，按引导创建管理员账号，然后：
+**Step 4**: Open `http://<host-ip>:3000`, follow the wizard to create the admin account,
+then:
 
-1. **建媒体库**："媒体库 → 添加媒体库"，根路径填**容器内路径**，也就是第 2 步冒号右边那个：
-   按上面的例子是 `/media`，**不是** `/volume1/media`。建好即开始扫描，存量文件会被识别刮削，
-   认不准的进"待识别"等你确认。
-   填错了页面同样会提示"正在扫描"，但扫完是 0 个文件，扫描结果里写着"根路径不存在，已跳过"。
-   看到这句就是路径填错了。
-2. **接下载器**："设置 → 下载器"接入 qBittorrent / Transmission；下载器与 MovieClaw 看到的路径不一致时，在这里配好路径映射。
-3. **接站点**："设置 → 资源站点"填 Cookie / API Key，或装浏览器扩展自动同步。
-4. 可选："设置 → AI 模型"接入大模型解锁 AI 助手；"设置 → 监听导入"加一条"源目录 → 目标库"规则，让任意来源的下载也自动入库。
+1. **Add a library**: **Library → Add Library**. The root path is the **in-container**
+   path — the right-hand side of the colon from Step 2: `/media` in the example above,
+   **not** `/volume1/media`. Scanning starts immediately; existing files get identified
+   and scraped, and anything ambiguous waits in *pending identification* for your
+   confirmation.
+   Enter a wrong path and the page still says "scanning" — but it finishes with 0 files
+   and the results read "root path does not exist, skipped". That line means the path is
+   wrong.
+2. **Connect your download client**: **Settings → Download Clients**, for qBittorrent /
+   Transmission. If the client and MovieClaw see different paths, set up the path mapping
+   here.
+3. **Connect your sites**: **Settings → Resource Sites** — paste cookies / API keys, or
+   let the browser extension sync them automatically.
+4. Optional: **Settings → AI Models** to hook up an LLM and unlock the assistant;
+   **Settings → Watched Import** to add "source directory → target library" rules, so
+   downloads from any source flow into the library too.
 
-> 只想试一条命令？
+> Just want one command to try it out?
 > `docker run -d --name movieclaw --init -p 3000:3000 --restart unless-stopped -e TZ=Asia/Shanghai -v "$(pwd)/data:/app/data" -v /volume1/media:/media -v /volume1/downloads:/downloads movieclaw/movieclaw:latest`
-> 挂载路径的规则和上面完全一样。
+> The mount rules are exactly the same as above.
 
-### 日常升级：不用重拉镜像
+### Everyday upgrades skip the image pull
 
-装完之后的日常升级在"设置 → 应用 → 版本与更新"里直接完成：下载的是 GitHub Release 上
-几 MB 的产物包（可配加速镜像），更新落在 `data` 卷上，容器重建也不丢。更新出问题可在同一页面
-直接回退，坏更新还会被容器自动回落到可用版本。
+From then on, day-to-day upgrades happen in **Settings → App → Version & Updates**:
+MovieClaw pulls a few-megabyte artifact package from GitHub Releases (mirrors
+configurable), applies it on the `data` volume, and the result survives container
+recreation. If an update misbehaves, roll back on the same page — and a genuinely broken
+one rolls itself back automatically.
 
-只有当更新说明里明确写着"包含依赖变化，需升级 Docker 镜像"时，才需要
-`docker compose pull && docker compose up -d`。这种情况很少发生。
-（机制见 [in-app-update.md](docs/design/in-app-update.md)）
+`docker compose pull && docker compose up -d` is only needed when the release notes
+explicitly say an update carries dependency changes and requires a new image. That's rare.
+(How it works: [in-app-update.md](docs/design/in-app-update.md).)
 
-## 用别的播放器看
+## Bring Your Own Player
 
-MovieClaw 对外提供 Jellyfin 兼容的播放接口，第三方播放器**把它当成一台 Jellyfin 服务器**填地址就能连。
-下表标注每种客户端的支持形态，标"真机验证"的是在实际设备上连过、播过的：
+MovieClaw speaks Jellyfin's playback API, so third-party players connect to it **as if it
+were a Jellyfin server** — just add the address. Support by client below; "verified on
+device" means someone actually connected and played on real hardware:
 
-| 客户端 | 状态 | 说明 |
+| Client | Status | Notes |
 | --- | --- | --- |
-| 网页播放器 | 内置 | 直连优先，浏览器放不了的编码才转码，转码前会告诉你代价 |
-| Infuse / VidHub | **真机验证可用** | 以 Jellyfin 服务器身份连接，浏览、直连播放、进度同步，播放器侧零改动 |
-| Fileball / SenPlayer | 同一套接口 | 走的是同一条 Jellyfin 兼容链路，但没有逐台真机验证过 |
-| Emby / Jellyfin 官方 App | 不适用 | 它们连的是自己的服务端；MovieClaw 可以在入库后通知 Emby/Jellyfin 刷新 |
-| 局域网自动发现 | 部分 | 桥接网络下广播到不了容器，需 host 网络或手动填地址 |
-| 远程硬件转码 | macOS Apple Silicon | 菜单栏 App，走 VideoToolbox 硬件编码（一台常开的 Mac mini 就够）。协议开放，其他平台可自行扩展 |
+| Web player | Built in | Direct play first; transcodes only what the browser can't handle, and tells you the cost before it starts |
+| Infuse / VidHub | **Verified on device** | Connects as a Jellyfin server: browsing, direct play, progress sync — zero changes on the player side |
+| Fileball / SenPlayer | Same API | Rides the same Jellyfin-compatible path, but hasn't been individually verified on device |
+| Emby / Jellyfin official apps | Not applicable | They connect to their own servers; MovieClaw can notify an Emby/Jellyfin instance to refresh after imports |
+| LAN auto-discovery | Partial | Broadcasts can't reach the container on a bridged network; needs host networking or a manually entered address |
+| Remote hardware transcoding | macOS Apple Silicon | Menu-bar app encoding through VideoToolbox (an always-on Mac mini is plenty). The protocol is open — other platforms can implement it |
 
-细节见 [jellyfin-compat.md](docs/design/jellyfin-compat.md)、[web-player.md](docs/design/web-player.md)、
-[remote-transcode.md](docs/design/remote-transcode.md)。
+Details in [jellyfin-compat.md](docs/design/jellyfin-compat.md),
+[web-player.md](docs/design/web-player.md), and
+[remote-transcode.md](docs/design/remote-transcode.md).
 
-## 在别的机器上操控它
+## Control It from Anywhere
 
-MovieClaw 的命令行 `mclaw` 是一个静态二进制，装它不需要 Python、Node 或任何包管理器。
-装在哪台机器上，那台机器就能操控你的媒体库：搜条目、建订阅、看任务、整理文件都在命令里。
+`mclaw`, MovieClaw's command-line client, is a single static binary — no Python, no Node,
+no package manager. Install it on any machine, and that machine can drive your library:
+search titles, create subscriptions, monitor jobs, organize files.
 
-**服务器本机不用装**，镜像里已经带了：
+**On the server itself there's nothing to install** — the image already ships it:
 
 ```sh
-docker exec -it movieclaw mclaw status   # 容器名按你 compose 里的实际值改
+docker exec -it movieclaw mclaw status   # container name as in your compose file
 ```
 
-**别的机器一条命令装好。** 脚本自己认系统和架构（Linux 与 macOS 的 x86、ARM 都覆盖），
-核对校验和，装进默认 PATH，这样 cron、systemd 和从 Dock 启动的应用也找得到它：
+**Everywhere else, it's one command.** The installer detects OS and architecture on its
+own (x86 and ARM, on both Linux and macOS), verifies checksums, and installs into the
+default PATH — so cron, systemd, and Dock-launched apps can find it too:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/movieclaw/movieclaw/main/scripts/install-cli.sh | sh
 ```
 
 <details>
-<summary><b>Windows 用这一条</b></summary>
+<summary><b>On Windows, use this instead</b></summary>
 
-PowerShell 接不了 `sh`，所以 Windows 单独一条，装的是同一份东西（amd64 与 ARM64 都覆盖）：
+PowerShell won't pipe into `sh`, so Windows gets its own one-liner — it installs the same
+thing (amd64 and ARM64 both covered):
 
 ```powershell
 irm https://raw.githubusercontent.com/movieclaw/movieclaw/main/scripts/install-cli.ps1 | iex
@@ -301,193 +342,232 @@ irm https://raw.githubusercontent.com/movieclaw/movieclaw/main/scripts/install-c
 
 </details>
 
-装完跑 `mclaw login` 配对：不带参数会先在局域网里找一遍，跨网段或走 VPN 就自己给地址
-（`mclaw login --server http://192.168.1.10:3000`）。命令会显示一段配对码，到网页
-「设置 → 成员与设备 → 设备」核对后批准就行。令牌直接回到这个进程，不上屏，
-也就不会进剪贴板和 shell 历史。
+Then run `mclaw login` to pair. With no arguments it scans the local network first;
+across subnets or over a VPN, pass the address yourself
+(`mclaw login --server http://192.168.1.10:3000`). The command displays a pairing code —
+verify and approve it in the web UI under **Settings → Members & Devices → Devices**. The
+token is handed straight back to the process, never printed, so it never ends up in your
+clipboard or shell history.
 
-没人能去浏览器点批准的环境（NAS 的定时任务、CI、无界面容器），在同一个设备页
-「手工创建令牌」，把它给出的 `MOVIECLAW_SERVER` 和 `MOVIECLAW_TOKEN` 两行注入进去即可，
-凭证完全不落盘。
+Where nobody can click "approve" in a browser (NAS cron jobs, CI, headless containers),
+use **Create token manually** on the same Devices page and inject the two lines it gives
+you — `MOVIECLAW_SERVER` and `MOVIECLAW_TOKEN` — as environment variables. Credentials
+never touch disk.
 
-### 任何 Agent 都能用
+### Built for agents, too
 
-命令树由服务端的 OpenAPI 规格生成，后端加一个接口，命令行就自动多一项能力，不靠猜。
-非终端环境（管道、Agent）默认输出 JSON，不必去解析给人看的表格；破坏性操作必须显式加
-`--yes`。所以任何能跑 shell 的助手，装上它就能操控 MovieClaw，产品内置的 AI 助手走的
-也是同一条路。
+The command tree is generated from the server's OpenAPI spec: add an endpoint to the
+backend and the CLI picks up the matching command automatically — no guesswork. Outside a terminal
+(pipes, agents), it emits JSON by default, so there are no human-formatted tables to
+parse; destructive operations demand an explicit `--yes`. Any assistant that can run a
+shell can drive MovieClaw with it — the built-in AI assistant goes through exactly this
+path.
 
 ```sh
-mclaw status                           # 服务器与授权状态
-mclaw search titles "三体"             # 搜影视条目
-mclaw subscriptions list               # 看订阅
-mclaw jobs list                        # 看后台任务
-mclaw library organize-files 1 --yes   # 按命名模板整理 1 号库的存量文件名
-mclaw subscriptions --help             # 每个域都有 --help，命令和参数都在里面
+mclaw status                           # server and auth status
+mclaw search titles "Three-Body"       # search titles
+mclaw subscriptions list               # list subscriptions
+mclaw jobs list                        # list background jobs
+mclaw library organize-files 1 --yes   # organize existing file names in library 1 per the naming template
+mclaw subscriptions --help             # every domain has --help, listing its commands and flags
 ```
 
-交给外部 Agent 之前先看一眼 [AI 助手的权限边界](#boundaries)：这类令牌与批准它的人同权，
-不想给了随时能在设备页一键吊销。
+Before handing a token to an external agent, read the
+[assistant guardrails](#boundaries): a token carries the same privileges as the person
+who approved it, and revoking one is a single click on the Devices page.
 
-## 常见问题
+## FAQ
 
 <details>
-<summary><b>忘记管理员密码了怎么办</b></summary>
+<summary><b>I forgot the admin password</b></summary>
 
-在跑着 MovieClaw 的机器上执行一条命令即可重置，**不动任何配置与数据**：站点、下载器、
-媒体库、订阅全部原样保留，只换密码：
+Run one command on the machine hosting MovieClaw. **Nothing else is touched** — sites,
+download clients, libraries, and subscriptions all stay put; only the password changes:
 
 ```bash
-# Docker 部署（容器名按你 compose 里的实际值改）
+# Docker deployment (container name as in your compose file)
 docker exec -it movieclaw python -m movieclaw_api.reset_password
 
-# 源码部署：先 cd 到项目根目录（data/ 的上一级）
+# Source deployment: cd to the project root first (the parent of data/)
 python -m movieclaw_api.reset_password
 ```
 
-按提示输入两次新密码即可，不必重启服务。连用户名也忘了就加 `--show` 先看一眼。
-想让别处已登录的设备一并下线，再 `docker restart movieclaw`。
+Type the new password twice at the prompt; no restart needed. Forgot the username as
+well? Add `--show` to see it first. To force other signed-in devices out too, follow up
+with `docker restart movieclaw`.
 
-为什么不做网页版"忘记密码"：自托管没有可信第三方能证明"你是账号主人"，真做邮件找回
-就得要求每位部署者先配 SMTP。这里把身份证明换成更硬的一件事：**能访问这台机器的
-`data/` 目录，就是主人**。Jellyfin、Vaultwarden、Gitea 同理。
+Why there's no "forgot password" link in the web UI: with self-hosting, there's no
+trusted third party to vouch that you own the account, and real email recovery would
+force every deployer to set up SMTP first. Instead, ownership is proven by something
+stronger: **whoever can reach this machine's `data/` directory owns the server.**
+Jellyfin, Vaultwarden, and Gitea make the same call.
 
-家人朋友的**成员**账号忘了密码不用这条命令：管理员在"设置 → 成员"里点一下重置就行。
+Family **members** who forget their passwords don't need any of this — an admin resets
+them with one click under **Settings → Members**.
 </details>
 
 <details>
-<summary><b>3000 端口被别的服务占了</b></summary>
+<summary><b>Port 3000 is taken by another service</b></summary>
 
-改 `ports` 冒号**左边**即可，比如 `"8096:3000"`，之后用 `http://<主机IP>:8096` 访问，
-容器内端口不用动。
+Change the **left** side of the `ports` colon — e.g. `"8096:3000"` — and browse to
+`http://<host-ip>:8096`. The container-side port stays as it is.
 
-只有用 `--network host` 时容器内端口就是宿主端口，这时才需要真正换监听端口：
-加 `-e MOVIECLAW_WEB_PORT=8096`，或装好后在"设置 → 应用 → 网络与维护"里改（保存后自动重启生效）。
+Only under `--network host` does the container port become the host port, and only then
+do you actually change the listening port: add `-e MOVIECLAW_WEB_PORT=8096`, or change it
+after setup under **Settings → App → Network & Maintenance** (restarts itself on save).
 
-**但 host 网络还有个坑**：容器内部的前端（3001）和后端（8000）也会直接占用宿主的这两个端口，
-它们目前不可改，`MOVIECLAW_WEB_PORT` 管不到。任一个被别的服务占了，容器会启动失败并退出，
-`docker logs` 里是一行英文 `EADDRINUSE: address already in use`。另外 host 网络下还会监听
-UDP 7359（Jellyfin 局域网自动发现），和已有的 Jellyfin / Emby 会撞。
+**Host networking has a further trap**: the container's internal frontend (3001) and
+backend (8000) also bind directly on the host. They're not currently configurable, and
+`MOVIECLAW_WEB_PORT` doesn't reach them. If either port is taken, the container exits at
+startup with `EADDRINUSE: address already in use` in `docker logs`. Host mode also
+listens on UDP 7359 for Jellyfin LAN discovery, which collides with an existing Jellyfin
+or Emby.
 
-**所以：除非你确实需要局域网自动发现，否则用上面改冒号左边的办法，别上 host 网络。**
+**Bottom line: unless you specifically need LAN auto-discovery, change the left side of
+the colon and stay off host networking.**
 </details>
 
 <details>
-<summary><b>刮削一直失败，日志说连不上 TMDB</b></summary>
+<summary><b>Scraping keeps failing; the logs say TMDB is unreachable</b></summary>
 
-日志或"设置 → 网络与代理"的连通性测试里出现 `无法连通 TMDB`、`ConnectTimeout`、
-`CircuitOpenError`、`CERTIFICATE_VERIFY_FAILED` 这类字样，都属于这一类。
+`无法连通 TMDB` ("cannot reach TMDB"), `ConnectTimeout`, `CircuitOpenError`, or
+`CERTIFICATE_VERIFY_FAILED` — whether in the logs or in the connectivity test under
+**Settings → Network & Proxy** — all point to the same problem.
 
-所在网络直连不到 `api.themoviedb.org` 时，到"设置 → 网络与代理"配置代理或镜像地址，
-并用页面上的连通性测试验证。默认走代理的服务是 TMDB、图片回源和 GitHub 更新，
-PT 站点保持直连（通常直连更快）。
+If your network can't reach `api.themoviedb.org` directly, set a proxy or mirror address
+under **Settings → Network & Proxy** and confirm with the built-in connectivity test. By
+default the proxy covers TMDB, artwork fetches, and GitHub updates, while tracker sites
+stay on direct connections (usually faster that way).
 </details>
 
 <details>
-<summary><b>容器以什么身份跑？支持 PUID / PGID 吗</b></summary>
+<summary><b>What user does the container run as? Is PUID / PGID supported?</b></summary>
 
-**以 root 跑，目前不支持 PUID / PGID。** `data/` 里的数据库、密钥文件属主都是 `root:root`。
+**It runs as root; PUID / PGID aren't supported yet.** The database and key files under
+`data/` are owned by `root:root`.
 
-挂进来的媒体目录**需要可写**，整理入库、洗版回收都要动文件；只读挂载会让这些功能失败。
-如果你的 NAS 上这些目录属于别的用户，root 通常仍可读写，但反过来你用自己的账号
-去看 MovieClaw 新建的目录可能会遇到权限问题。介意的话，先在宿主上把目录权限放开再挂。
+Mounted media directories **must be writable** — filing imports and recycling replaced
+versions both move files, and a read-only mount breaks those features. If the directories
+belong to another user on your NAS, root can generally still write there; the friction
+runs the other way — your own account may lack permissions on directories MovieClaw
+creates. If that matters to you, loosen the directory permissions on the host before
+mounting.
 </details>
 
 <details>
-<summary><b>媒体库放在 SMB / NFS 网络挂载上</b></summary>
+<summary><b>My library lives on an SMB / NFS network mount</b></summary>
 
-建库时把"实时文件监控"关掉。网络挂载上的文件事件不可靠，靠定期对账与手动扫描更稳。
+Turn off *real-time file watching* when you create the library. File events over network
+mounts are unreliable; periodic reconciliation plus a manual scan is far more
+dependable.
 </details>
 
-## 从源码构建
+## Building from Source
 
-需要先在 [themoviedb.org](https://www.themoviedb.org/settings/api) 免费申请一个 TMDB API Key
-（官方镜像已内置，自建才需要）。
+You'll need a free TMDB API key from
+[themoviedb.org](https://www.themoviedb.org/settings/api) — the official image has one
+baked in; only self-builds need their own.
 
 ```bash
 git clone https://github.com/movieclaw/movieclaw.git
 cd movieclaw
-TMDB_API_KEY=你的key ./scripts/build-image.sh
-#   国内网络加速：      CN_MIRROR=1 TMDB_API_KEY=... ./scripts/build-image.sh
-#   给 NAS 交叉构建：   PLATFORM=linux/amd64 TMDB_API_KEY=... ./scripts/build-image.sh
+TMDB_API_KEY=your_key ./scripts/build-image.sh
+#   Mirror acceleration for mainland China:  CN_MIRROR=1 TMDB_API_KEY=... ./scripts/build-image.sh
+#   Cross-building for a NAS:                PLATFORM=linux/amd64 TMDB_API_KEY=... ./scripts/build-image.sh
 ```
 
-Key 也可以写进仓库根目录的 `.env`。注意 `.env.example` 里那行 `# TMDB_API_KEY=` 是**注释掉的**，
-得先去掉 `#` 再填，否则脚本读不到。没提供 Key 时脚本会立刻报错退出，不会浪费时间开始构建。
+The key can also live in a `.env` at the repo root. Note that `.env.example` ships the
+line **commented out** (`# TMDB_API_KEY=`) — drop the `#` or the script won't see it.
+With no key at all, the script fails fast instead of wasting your time on a build.
 
-构建过程需要能出站访问 `deb.debian.org`、`repo.jellyfin.org`、`pypi.org`、
-`registry.npmjs.org` 和 GitHub。国内网络加 `CN_MIRROR=1` 即可；
-如果你在会拦截并重签 TLS 的企业代理后面，构建会停在 `curl ... exit code 60`
-或 pip 的 `CERTIFICATE_VERIFY_FAILED`。那是证书信任问题，不是脚本的问题。
+The build reaches out to `deb.debian.org`, `repo.jellyfin.org`, `pypi.org`,
+`registry.npmjs.org`, and GitHub. On mainland-China networks, add `CN_MIRROR=1`. Behind
+a corporate proxy that intercepts and re-signs TLS, the build dies at
+`curl ... exit code 60` or pip's `CERTIFICATE_VERIFY_FAILED` — that's a certificate-trust
+problem, not a script bug.
 
-然后把 `docker-compose.yml` 的 `image` 一行改成 `movieclaw:latest` 再启动。
-构建会自动生成 PGS 测试样本并 OCR 回 SRT，失败即阻断。字幕运行时的架构与发布门禁见
-[docker-subtitle-runtime.md](docs/design/docker-subtitle-runtime.md)。
+Then point the `image:` line in `docker-compose.yml` at `movieclaw:latest` and start.
+As a self-check, the build generates PGS test samples and OCRs them back to SRT, failing
+hard on any mismatch. The subtitle runtime and its release gates are described in
+[docker-subtitle-runtime.md](docs/design/docker-subtitle-runtime.md).
 
-## 本地开发
+## Local Development
 
-**先确认 3000 和 8000 两个端口是空的。** 如果这台机器上正跑着 MovieClaw 的 Docker 容器，
-先 `docker compose down` 停掉。这是最典型的贡献者画像（先用了镜像，再想改代码），
-100% 会撞上。端口被占时脚本会直接报错退出并告诉你怎么查占用进程（依赖 `lsof`）。
+**First, free up ports 3000 and 8000.** If this machine also runs the MovieClaw Docker
+container, `docker compose down` it first — "used the image, now wants to hack on the
+code" is the single most common contributor story, and the collision is guaranteed. When
+a port is taken, the dev script fails immediately and tells you how to find the culprit
+(requires `lsof`).
 
 ```bash
-./scripts/dev.sh          # 同时启动后端和前端
-./scripts/dev.sh api      # 只启动后端
-./scripts/dev.sh web      # 只启动前端
+./scripts/dev.sh          # start backend and frontend together
+./scripts/dev.sh api      # backend only
+./scripts/dev.sh web      # frontend only
 ```
 
-脚本会自动完成首次环境准备（建虚拟环境、装依赖、生成 `.env`、`pnpm install`），
-日志带 `[api]` / `[web]` 彩色前缀，`Ctrl-C` 一键停止全部（子进程一起收走，端口会释放干净）。
-它建虚拟环境时挑本机最新的 Python（3.14 → 3.11），可能和你 `python3` 指向的不是同一个。
+The script handles first-run setup on its own (virtualenv, dependencies, `.env`,
+`pnpm install`). Logs carry colored `[api]` / `[web]` prefixes, and `Ctrl-C` tears
+everything down cleanly — child processes included, ports freed. Note that it picks the
+newest Python it can find for the virtualenv (3.14 → 3.11), which may not be the one
+your `python3` points at.
 
-手动安装要**两个终端**，后端和前端都是前台进程：
+Going manual takes **two terminals** — backend and frontend are both foreground
+processes:
 
 ```bash
-# 终端 1：后端（Python 3.11+）
+# Terminal 1: backend (Python 3.11+)
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 cp .env.example .env
 uvicorn movieclaw_api.main:app --factory --reload --reload-dir src
 ```
 
-> `--reload-dir src` 别省：uvicorn 默认监听整个当前目录，而运行期日志就写在
-> `data/logs/` 里，写日志触发重载检测、检测本身又写一行日志，刷屏到日志没法看。
-> 用 `./scripts/dev.sh` 起则不用操心，入口里已经钉好了。
+> Keep `--reload-dir src`. By default uvicorn watches the whole working directory, and
+> runtime logs land in `data/logs/` — so every log write triggers reload detection, the
+> detection writes another log line, and the loop floods the log until it's unreadable.
+> `./scripts/dev.sh` pins this for you.
 
 ```bash
-# 终端 2：前端（Node.js 20+）
+# Terminal 2: frontend (Node.js 20+)
 pnpm install && pnpm web:dev
 ```
 
-Web 控制台 `http://127.0.0.1:3000`，API 文档 `http://127.0.0.1:8000/docs`。
-空 `.env` 不填任何东西也能起来，只是 TMDB 相关功能不可用。
+Web console at `http://127.0.0.1:3000`, API docs at `http://127.0.0.1:8000/docs`. A
+blank `.env` boots fine — you just lose the TMDB-dependent features.
 
-> 要改端口得改两处。后端端口在 `.env` 的 `APP_PORT`，但前端的反代目标默认写死指向
-> `http://127.0.0.1:8000`，**必须同时**在 `apps/web/.env.local` 里设
-> `MOVIECLAW_API_PROXY_TARGET` 指向新端口。只改一处的话页面能打开，但所有接口都拿不到数据。
-> 前端的 3000 是硬编码的，不能配。手动路径下 uvicorn 撞端口只会甩一句
-> `[Errno 98] Address already in use`，没有 `dev.sh` 那层中文提示。
+> Changing the backend port means changing it in two places. `APP_PORT` in `.env` moves
+> the backend, but the frontend's proxy target is hardcoded to default to
+> `http://127.0.0.1:8000` — you **must also** set `MOVIECLAW_API_PROXY_TARGET` in
+> `apps/web/.env.local` to the new port. Change only one, and the page loads while every
+> API call comes back empty. The frontend's own 3000 is hardcoded and not configurable.
+> And on the manual path, a uvicorn port collision says only
+> `[Errno 98] Address already in use`, without `dev.sh`'s friendlier hint.
 
-源码方式运行时，**种子名结构化抽取依赖的 NER 模型需手动放置**（Docker 镜像已内置）：
-从 [Releases](https://github.com/movieclaw/movieclaw/releases) 下载 `model.int8.onnx`、
-`tokenizer.json`、`labels.json` 放进 `data/models/torrent-ner/`（可用 `MOVIECLAW_NER_DIR` 改路径）后重启。
-不放模型服务照常启动，仅该功能不可用：首次真正触发种子名抽取时，日志会打印
-"未找到种子名抽取模型（…），片名/年份/季集字段将保持空值"。
-注意这条提示是**懒加载**的。启动日志里看不到它，别以为没报错就是模型已就位。
+When running from source, **the NER model behind torrent-name parsing needs placing by
+hand** (the Docker image includes it): download `model.int8.onnx`, `tokenizer.json`, and
+`labels.json` from [Releases](https://github.com/movieclaw/movieclaw/releases), drop them
+into `data/models/torrent-ner/` (path configurable via `MOVIECLAW_NER_DIR`), and restart.
+Without the model, the app runs fine — that one feature just stays off. The first time
+extraction is actually triggered, the log notes that the model is missing and that
+title/year/season/episode fields will stay empty. But that warning is emitted **lazily**:
+it never appears at startup, so a clean boot log is not proof the model is in place.
 
-源码方式运行还有一条已知边界：AI 助手执行命令期间如果进程被 `kill -9` 或断电这类
-无法收尾的方式杀死，助手启动的子进程可能残留在系统里继续运行（正常停止、超时和
-用户点停止都会整组回收，Docker 部署下容器重启也会连带清干净）。裸机上遇到异常
-停机后可以 `ps` 检查一下有没有残留进程。
+One more known boundary when running from source: if the process is killed in a way that
+allows no cleanup — `kill -9`, a power cut — while the AI assistant is executing a command,
+the subprocesses it spawned may be left running (normal shutdown, timeouts, and the user's
+stop button all reap the whole process group, and under Docker a container restart cleans
+up as well). After a hard crash on bare metal, a quick `ps` check for leftovers is worth it.
 
-## 文档与支持
+## Docs & Support
 
-各模块的重大设计与取舍都记录在 [`docs/design/`](docs/design/)，一事一档：媒体库、元数据、
-订阅、洗版、Jellyfin 兼容、应用内更新、CLI……按文件名找感兴趣的主题即可。
-本 README 自身的结构依据见 [readme-rewrite.md](docs/design/readme-rewrite.md)。
+The major design decisions behind every module — and the trade-offs that shaped them —
+live in [`docs/design/`](docs/design/), one file per topic: library, metadata, subscriptions,
+quality upgrades, Jellyfin compatibility, in-app updates, the CLI… browse by filename.
+The reasoning behind this README's own structure is in
+[readme-rewrite.md](docs/design/readme-rewrite.md).
 
-有问题、有建议、发现 Bug，都欢迎开
-[Issue](https://github.com/movieclaw/movieclaw/issues)。
+Questions, ideas, bug reports — please
+[open an issue](https://github.com/movieclaw/movieclaw/issues).
 
 ## License
 

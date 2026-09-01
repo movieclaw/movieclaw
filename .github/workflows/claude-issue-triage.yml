@@ -92,7 +92,7 @@ jobs:
                （留空、"无"、与模板占位符相同都算没填）。缺关键信息 → 打
                needs-more-info 标签,评论逐条列出缺什么、去哪取
                （日志:`docker logs movieclaw` 或 data/logs/ 目录,提醒脱敏 Cookie/Passkey）。
-            4. question 类:在仓库 README.md 和 docs/ 里检索答案（用 Read/Grep）。
+            4. question 类:在仓库 README.md、README.zh-CN.md 和 docs/ 里检索答案（用 Read/Grep）。
                能找到明确依据 → 评论作答并注明出处文件路径;找不到 → 不要编造,
                简短说明已记录、等维护者跟进。
             5. 新站点接入请求:核对 src/movieclaw_tracker/sites/configs/ 目录是否
