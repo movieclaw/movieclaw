@@ -24,7 +24,7 @@ import {
   useAgentConversations,
 } from "@/lib/agent-conversations";
 import type { ComposerImage } from "@/lib/agent-attachments";
-import { describeMediaCardGroup, parseMediaCardsArgs } from "@/lib/agent-media-cards";
+import { isMediaCardsTool } from "@/lib/agent-media-cards";
 import { parseSkillTokens } from "@/lib/agent-skills";
 import { useSkillNames } from "@/lib/skill-names";
 import { sessionAttachmentUrl } from "@/lib/api/agent";
@@ -621,6 +621,13 @@ function processSummary(items: AgentProcessItem[]): string {
  */
 const ProcessBlock = memo(function ProcessBlock({ segment, active }: { segment: AgentTurnSegment & { kind: "process" }; active: boolean }) {
   const [open, setOpen] = useState(false);
+  // 生成式 UI 的绘制调用不算「处理过程」：它的产出就是紧随其后的卡片本身，
+  // 再列一行「调用 render_media_cards_v1」只是噪音。整块只剩它时连折叠头也不出
+  const items = useMemo(
+    () => segment.items.filter((item) => item.kind !== "tool" || !isMediaCardsTool(item.name)),
+    [segment.items],
+  );
+  if (items.length === 0) return null;
   return (
     <div>
       <button
@@ -630,12 +637,12 @@ const ProcessBlock = memo(function ProcessBlock({ segment, active }: { segment: 
       >
         <ChevronRightIcon className={`size-3.5 transition-transform ${open ? "rotate-90" : ""}`} />
         <span className={active ? "animate-pulse" : undefined}>
-          {active ? processStatus(segment.items) : processSummary(segment.items)}
+          {active ? processStatus(items) : processSummary(items)}
         </span>
       </button>
       {open && (
         <div className="mt-1.5 space-y-2 border-l-2 border-white/[0.08] pl-3">
-          {segment.items.map((item, index) =>
+          {items.map((item, index) =>
             item.kind === "thinking" ? (
               // break-words 必须有：思考文本常出现资源名这种几十字符无空格的长
               // token（点号不是换行机会点），不断词会把整个消息列撑出横向溢出
@@ -681,9 +688,6 @@ function toolInput(tool: AgentTurnToolCall): { lang: CodeLang; code: string } | 
 function toolSummary(tool: AgentTurnToolCall): string {
   const raw = tool.label.slice(tool.name.length + 1, -1);
   if (!raw || raw === "{}") return "";
-  // 卡片工具的参数是一串编号，逐键平铺没有可读性，换成「绘制 N 张 xx 卡片」
-  const cards = parseMediaCardsArgs(tool.name, tool.args);
-  if (cards) return describeMediaCardGroup(cards);
   try {
     const args = JSON.parse(raw) as Record<string, unknown>;
     if (tool.name === "bash" && typeof args.command === "string") {

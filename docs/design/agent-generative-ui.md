@@ -80,10 +80,21 @@ description 承担全部领域语义（与 mclaw 同一原则，系统提示词�
 每个组件传什么、编号从哪来（`tmdb:movie:123 → tmdb_id=123, media_type=movie`）、
 什么时候该画（先用 mclaw 查证编号真实存在）、以及画完不要复述。
 
-## 2. 注册面
+## 2. 启用开关
 
-- **网页会话**：`routes/agent.py::get_agent_tools` 追加 `make_media_ui_tool()`；
-- **IM / 微信通道**：不注册。那边没有绘制卡片的界面，注册只会让模型白调一次。
+工具的效果完全依赖前端拦截 tool_call 后绘制，因此**是否带上它由装配方按通道决定**：
+
+- `routes/agent.py::get_agent_tools(cli_env, *, generative_ui=False)`：开关默认关，
+  新接入的通道不会因为忘记关而误带；网页会话的两条装配路径（发消息 / 改写重问）
+  显式传 `generative_ui=True`；
+- **IM / 微信通道**（`im_channel` / `weixin_channel` 的受限工具集）永远不带：那边
+  无法解析卡片，模型调了只会收到一句「已展示卡片」而用户什么都看不到；
+- `tests/api/test_media_ui_tool_wiring.py` 三条守护：默认关、网页显式开、IM/微信
+  模块连 `make_media_ui_tool` 的 import 都不允许出现。
+
+description 除了「能画什么、编号从哪来」，还写明**为什么要画**（海报是影音产品的
+第一印象、卡片上能直接订阅/播放、纯文字罗列显得单薄）——模型知道好处才会在
+合适的时机主动使用，而不是把它当成可有可无的装饰。
 
 ## 3. 前端渲染（`apps/web`）
 
@@ -94,9 +105,10 @@ lib/agent-conversations.tsx     AgentTurnToolCall 新增 args（tool_call 事件
 components/agent-conversation-view.tsx  process 段之后渲染该段内的卡片组
 ```
 
-时间线接入：工具调用行仍收在折叠的「处理过程」块里（诚实展示模型做了什么），
-卡片组作为**常显内容**紧跟在该块之后——卡片是给用户看的，不能藏在折叠块里。
-折叠块里该工具行的摘要显示为「绘制 N 张影片海报卡片」而不是一串编号。
+时间线接入：卡片组作为**常显内容**紧跟在对应「处理过程」折叠块之后——卡片是给
+用户看的，不能藏在折叠块里。折叠块本身**不再列出**这次绘制调用：它的产出就是
+紧随其后的卡片，再列一行「调用 render_media_cards_v1」只是噪音；整块只剩这一个
+调用时连折叠头也不出现，用户看到的就是「模型的回答里直接带着卡片」。
 
 绘制时机：
 

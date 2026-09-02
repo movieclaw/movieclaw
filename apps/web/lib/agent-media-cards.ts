@@ -138,11 +138,3 @@ function parseItem(
   const key = `item:${mediaItemId}${episode ? `:s${season}e${episode}` : ""}:${index}`;
   return { kind: "library_item", key, mediaItemId, ...unit };
 }
-
-/** 卡片组的一句话摘要（处理过程块里的工具行用）：如「绘制 3 张影片海报卡片」。 */
-export function describeMediaCardGroup(group: MediaCardGroup): string {
-  const label = { library: "媒体库卡片", title: "影片海报卡片", library_item: "播放卡片" }[
-    group.component
-  ];
-  return `绘制 ${group.cards.length} 张${label}`;
-}

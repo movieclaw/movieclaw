@@ -40,6 +40,8 @@ def test_description_teaches_every_component_and_id_source() -> None:
         assert keyword in description
     assert "tmdb:movie:123" in description and "douban:456" in description
     assert "不要再" in description  # 渲染后不复述卡片信息
+    # 不只说「能画什么」，还要说清「为什么画」：模型知道好处才会主动用
+    assert "为什么要画" in description and "体验" in description
 
 
 def test_schema_accepts_valid_calls_via_runner_validation() -> None:

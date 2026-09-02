@@ -3,7 +3,6 @@ import { test } from "node:test";
 
 import {
   MEDIA_CARDS_TOOL_V1,
-  describeMediaCardGroup,
   isMediaCardsTool,
   parseMediaCardsArgs,
 } from "../lib/agent-media-cards.ts";
@@ -90,12 +89,4 @@ test("整组无一张可画时返回 null；未知组件返回 null", () => {
   assert.equal(parseMediaCardsArgs(MEDIA_CARDS_TOOL_V1, { component: "library", items: [{}] }), null);
   assert.equal(parseMediaCardsArgs(MEDIA_CARDS_TOOL_V1, { component: "chart", items: [{ id: 1 }] }), null);
   assert.equal(parseMediaCardsArgs(MEDIA_CARDS_TOOL_V1, undefined), null);
-});
-
-test("卡片组摘要给处理过程块的工具行用", () => {
-  const group = parseMediaCardsArgs(MEDIA_CARDS_TOOL_V1, {
-    component: "title",
-    items: [{ douban_id: "1" }, { douban_id: "2" }],
-  });
-  assert.equal(describeMediaCardGroup(group), "绘制 2 张影片海报卡片");
 });
