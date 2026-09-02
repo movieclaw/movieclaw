@@ -355,7 +355,7 @@ const TurnView = memo(function TurnView({
             // 生成式 UI：该块里 show_media_cards 调用绘制的卡片组紧跟在折叠块之后——
             // 工具行本身收在折叠块里，卡片是给用户看的内容，必须常显
             return (
-              <div key={index} className="space-y-2.5">
+              <div key={index} className="min-w-0 space-y-2.5">
                 <ProcessBlock segment={segment} active={active} />
                 <AgentMediaCardsForSegment segment={segment} />
               </div>
