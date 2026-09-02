@@ -18,7 +18,7 @@ from movieclaw_agent import (
     discover_skills,
     expand_skill_invocations,
 )
-from movieclaw_agent.tools import builtin_tools, make_mclaw_tool
+from movieclaw_agent.tools import builtin_tools, make_mclaw_tool, make_media_ui_tool
 from movieclaw_api.api.deps import require_login
 from movieclaw_api.core.config import get_settings
 from movieclaw_api.exceptions import (
@@ -102,17 +102,21 @@ async def list_skills() -> ApiResponse[list[SkillView]]:
 
 
 def get_agent_tools(cli_env: dict[str, str]) -> list[AgentTool]:
-    """Agent 的工具集：内置基础工具 + mclaw 产品操作工具。
+    """Agent 的工具集：内置基础工具 + mclaw 产品操作工具 + 卡片绘制工具。
 
     bash/read/write/edit 是纯工作区工具，**不携带**产品授权；mclaw 工具
     单独构建，令牌只注入它的子进程（每次运行的令牌不同，因此每次运行都
     重新构建工具集）。服务目录渲染自 CLI 内置 spec，与命令面严格同版。
+
+    render_media_cards 只在这里（网页会话）注册：它的效果是前端拦截
+    tool_call 后绘制卡片，IM 通道没有这层界面（docs/design/agent-generative-ui.md）。
     """
     workdir = Path(get_settings().agent_workspace_dir).resolve()
     workdir.mkdir(parents=True, exist_ok=True)
     return [
         *builtin_tools(workdir),
         make_mclaw_tool(workdir, cli_env, render_service_map()),
+        make_media_ui_tool(),
     ]
 
 

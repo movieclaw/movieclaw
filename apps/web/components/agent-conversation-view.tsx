@@ -5,6 +5,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Route } from "next";
 import Link from "next/link";
 
+import { AgentMediaCardsForSegment } from "@/components/agent-media-cards";
 import { Composer } from "@/components/composer";
 import { CopyButton, REVEAL_CLASS, useTapReveal } from "@/components/copy-button";
 import { useConfirm, useToast } from "@/components/feedback";
@@ -23,6 +24,7 @@ import {
   useAgentConversations,
 } from "@/lib/agent-conversations";
 import type { ComposerImage } from "@/lib/agent-attachments";
+import { describeMediaCardGroup, parseMediaCardsArgs } from "@/lib/agent-media-cards";
 import { parseSkillTokens } from "@/lib/agent-skills";
 import { useSkillNames } from "@/lib/skill-names";
 import { sessionAttachmentUrl } from "@/lib/api/agent";
@@ -350,7 +352,14 @@ const TurnView = memo(function TurnView({
           const isLast = index === turn.segments.length - 1;
           const active = turn.status === "running" && isLast;
           if (segment.kind === "process") {
-            return <ProcessBlock key={index} segment={segment} active={active} />;
+            // 生成式 UI：该块里 render_media_cards 调用绘制的卡片组紧跟在折叠块之后——
+            // 工具行本身收在折叠块里，卡片是给用户看的内容，必须常显
+            return (
+              <div key={index} className="space-y-2.5">
+                <ProcessBlock segment={segment} active={active} />
+                <AgentMediaCardsForSegment segment={segment} />
+              </div>
+            );
           }
           if (segment.kind === "compaction") {
             return <CompactionCard key={index} segment={segment} />;
@@ -672,6 +681,9 @@ function toolInput(tool: AgentTurnToolCall): { lang: CodeLang; code: string } | 
 function toolSummary(tool: AgentTurnToolCall): string {
   const raw = tool.label.slice(tool.name.length + 1, -1);
   if (!raw || raw === "{}") return "";
+  // 卡片工具的参数是一串编号，逐键平铺没有可读性，换成「绘制 N 张 xx 卡片」
+  const cards = parseMediaCardsArgs(tool.name, tool.args);
+  if (cards) return describeMediaCardGroup(cards);
   try {
     const args = JSON.parse(raw) as Record<string, unknown>;
     if (tool.name === "bash" && typeof args.command === "string") {
