@@ -5,7 +5,9 @@ Hello → Identify → 心跳保活 → MESSAGE_CREATE 事件。刻意不做 RES
 断线后直接重新 Identify,本场景消息量极小,丢 RESUME 换实现简单。
 
 只处理私聊(无 guild_id 的消息):私聊内容不需要 MESSAGE CONTENT 特权
-intent,用户在开发者后台建 bot 时零额外配置。发消息走 REST(client.py)。
+intent,用户在开发者后台建 bot 时零额外配置。官方文档明确 content /
+attachments 等字段的特权限制对「与本 app 的私聊」豁免,所以私聊里的图片
+附件同样能收到。发消息走 REST(client.py)。
 
 代理:websocket 连接按 egress 配置解析 "discord" 标签的代理地址,
 与 REST 同一开关(websockets 库原生支持 http/socks 代理)。
@@ -18,6 +20,7 @@ import contextlib
 import json
 import logging
 import random
+from dataclasses import replace
 from typing import Any
 
 from websockets.asyncio.client import connect
@@ -25,7 +28,12 @@ from websockets.exceptions import ConnectionClosed
 
 from movieclaw_channel.adapter import ChannelContext
 from movieclaw_channel.discord.client import DiscordClient
-from movieclaw_channel.types import ChannelAuthError, InboundMessage, ReplyContext
+from movieclaw_channel.types import (
+    ChannelAuthError,
+    InboundImage,
+    InboundMessage,
+    ReplyContext,
+)
 from movieclaw_net import resolve_proxy_url
 
 logger = logging.getLogger("movieclaw_channel.discord.adapter")
@@ -45,6 +53,29 @@ _OP_IDENTIFY = 2
 _OP_RECONNECT = 7
 _OP_INVALID_SESSION = 9
 _OP_HELLO = 10
+
+#: 没有 content_type 时兜底认扩展名(官方文档里该字段是可选的)
+_IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".gif", ".webp")
+
+
+def _collect_image_attachments(data: dict[str, Any]) -> list[tuple[str, str]]:
+    """挑出消息里的图片附件,返回 [(下载 url, 文件名)]。
+
+    ``content_type`` 是官方给的媒体类型,优先按它过滤;字段缺失时退回扩展名。
+    真实类型最终仍由入库时的魔数嗅探判定,这里只做粗筛。
+    """
+    out: list[tuple[str, str]] = []
+    for item in data.get("attachments") or []:
+        url = str(item.get("url") or item.get("proxy_url") or "")
+        name = str(item.get("filename") or "Discord 图片")
+        if not url:
+            continue
+        content_type = str(item.get("content_type") or "")
+        if content_type.startswith("image/") or (
+            not content_type and name.lower().endswith(_IMAGE_SUFFIXES)
+        ):
+            out.append((url, name))
+    return out
 
 
 class DiscordAdapter:
@@ -128,9 +159,10 @@ class DiscordAdapter:
                             )
                         )
                     elif op == _OP_DISPATCH and payload.get("t") == "MESSAGE_CREATE":
-                        msg = self._normalize(payload.get("d") or {})
+                        data = payload.get("d") or {}
+                        msg = self._normalize(data)
                         if msg is not None:
-                            await ctx.on_inbound(msg)
+                            await ctx.on_inbound(await self._with_images(data, msg))
                     elif op in (_OP_RECONNECT, _OP_INVALID_SESSION):
                         logger.info("Discord 要求重连(op=%s)", op)
                         return
@@ -184,6 +216,31 @@ class DiscordAdapter:
             reply=reply,
             provider_message_id=str(data.get("id") or ""),
         )
+
+    async def _with_images(self, data: dict[str, Any], msg: InboundMessage) -> InboundMessage:
+        """下载消息里的图片附件并挂回入站消息(无图或全失败则原样返回)。
+
+        单张失败只跳过这一张:随图正文与其他图都还在。签名 CDN 链接收到即
+        有效,所以在收事件的当下就下完,不留到后面用。
+
+        下载期间 Gateway 收事件循环会阻塞,但心跳跑在独立任务里,连接不会因此
+        被判死;私聊消息量极小,排队几秒无感。
+        """
+        attachments = _collect_image_attachments(data)
+        if not attachments:
+            return msg
+        images: list[InboundImage] = []
+        for url, name in attachments:
+            try:
+                content = await self._client.download_attachment(url)
+            except Exception as exc:  # noqa: BLE001 -- 丢一张图,不丢整条消息
+                logger.error("Discord 附件下载失败,已跳过该图:%s", exc)
+                continue
+            images.append(InboundImage(data=content, name=name))
+        if not images:
+            return msg
+        logger.info("Discord 入站图片 %d 张 user=%s", len(images), msg.user_id)
+        return replace(msg, images=tuple(images))
 
     async def send_text(self, reply: ReplyContext, text: str) -> None:
         channel_id = reply.token.get("dm_channel_id") or await self._client.get_dm_channel(

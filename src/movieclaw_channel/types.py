@@ -33,18 +33,39 @@ class ReplyContext:
 
 
 @dataclass(frozen=True, slots=True)
+class InboundImage:
+    """随入站消息附带的一张图片(已由 adapter 下载/解密成明文字节)。
+
+    只带字节与展示名:真实图片类型由 API 层落盘时按魔数嗅探判定,平台声明的
+    Content-Type/扩展名一律不信(见 agent_attachments.sniff_image_mime)。
+    """
+
+    data: bytes
+    #: 展示名(前端 chip 与模型的附件清单文案用),如「微信图片」
+    name: str = "图片"
+
+
+@dataclass(frozen=True, slots=True)
 class InboundMessage:
     """归一化后的入站消息(adapter 产出,dispatcher 消费)。"""
 
     channel_id: str
     account_id: str
     user_id: str
-    #: 文本正文(语音消息取平台转写文字;P0 不含媒体)
+    #: 文本正文(语音消息取平台转写文字)
     text: str
     reply: ReplyContext
     #: 平台侧消息标识,用于幂等去重(getUpdates 游标是至少一次投递)
     provider_message_id: str
     timestamp_ms: int = 0
+    #: 随消息附带的图片(纯图消息 text 为空);adapter 下载解密后填充,
+    #: 服务层落进会话附件目录再喂给视觉模型(docs/design/agent-image-input.md)
+    images: tuple[InboundImage, ...] = ()
+
+    @property
+    def has_content(self) -> bool:
+        """是否有可交给 Agent 的内容(文字或图片)。"""
+        return bool(self.text.strip() or self.images)
 
     @property
     def session_key(self) -> str:

@@ -20,6 +20,7 @@ from movieclaw_channel.manager import ChannelManager
 from movieclaw_channel.pusher import StepReplyPusher
 from movieclaw_channel.types import (
     ChannelAuthError,
+    InboundImage,
     InboundMessage,
     OutboundEnvelope,
     ReplyContext,
@@ -31,6 +32,7 @@ __all__ = [
     "ChannelContext",
     "ChannelDispatcher",
     "ChannelManager",
+    "InboundImage",
     "InboundMessage",
     "OutboundEnvelope",
     "ReplyContext",

@@ -62,6 +62,8 @@ MAX_REQUEST_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_SESSION_ATTACHMENTS = 100
 #: 图片最长边上限（超过提示用户缩图；Web 前端上传前已压到 2048）
 MAX_IMAGE_EDGE_PX = 8000
+#: IM 通道兜底压缩的目标最长边（对齐 Web 前端上传前的压缩口径）
+IM_MAX_IMAGE_EDGE_PX = 2048
 #: staging 孤儿附件的回收时限
 STAGING_TTL_SECONDS = 24 * 60 * 60
 
@@ -92,6 +94,41 @@ def sniff_image_mime(data: bytes) -> str | None:
     if data.startswith(_RIFF) and data[8:12] == _WEBP:
         return "image/webp"
     return None
+
+
+def shrink_for_attachment(data: bytes) -> bytes:
+    """把 IM 通道进来的原图压到能入库的体积/尺寸（Web 侧由前端压，这里兜底）。
+
+    已在限额内的图**原样返回**（不重编码：保真、省 CPU，也保住 PNG 截图的
+    锐利文字）；超限时等比缩到最长边 2048 并转 JPEG，仍超限就逐档降质量。
+    解码失败时原样返回，交由 ``save_staging`` 的校验链给出中文报错——本函数
+    只负责「尽量救回来」，不承担校验职责。
+    """
+    within_limits = len(data) <= MAX_IMAGE_BYTES and sniff_image_mime(data) is not None
+    try:
+        with Image.open(io.BytesIO(data)) as img:
+            if within_limits and max(img.size) <= IM_MAX_IMAGE_EDGE_PX:
+                return data
+            frame = img.convert("RGB")
+            frame.thumbnail((IM_MAX_IMAGE_EDGE_PX, IM_MAX_IMAGE_EDGE_PX))
+            out = data
+            for quality in (85, 70, 55):
+                buffer = io.BytesIO()
+                frame.save(buffer, format="JPEG", quality=quality)
+                out = buffer.getvalue()
+                if len(out) <= MAX_IMAGE_BYTES:
+                    break
+            logger.info(
+                "IM 图片已压缩：%d 字节 %s → %d 字节 %s",
+                len(data),
+                f"{img.size[0]}x{img.size[1]}",
+                len(out),
+                f"{frame.size[0]}x{frame.size[1]}",
+            )
+            return out
+    except Exception as exc:  # noqa: BLE001 - Pillow 异常族杂；压不动就交给校验链
+        logger.warning("IM 图片压缩失败，按原图交由校验链处理：%s", exc)
+        return data
 
 
 class AttachmentMeta(BaseModel):

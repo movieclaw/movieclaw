@@ -23,6 +23,8 @@ from typing import Any
 
 import httpx
 
+from movieclaw_channel.media import MAX_INBOUND_IMAGE_BYTES, download_capped
+
 logger = logging.getLogger("movieclaw_channel.weixin.client")
 
 DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com"
@@ -178,6 +180,21 @@ class WeixinClient:
             )
         payload = await self._post("ilink/bot/sendmessage", {"msg": msg})
         _raise_for_business_error(payload, "sendmessage")
+
+    # ------------------------------------------------------------------
+    # CDN 下载(入站图片)
+    # ------------------------------------------------------------------
+    async def download_media(
+        self, url: str, *, max_bytes: int = MAX_INBOUND_IMAGE_BYTES, timeout_s: float = 30.0
+    ) -> bytes:
+        """从微信 CDN 下载一份媒体字节(可能是密文,解密由 media 模块负责)。
+
+        CDN 与 iLink 网关同口径国内直连,复用同一连接池。**不带 iLink 身份头**:
+        CDN 地址自带鉴权参数,把 bot_token 发到 CDN 域名有害无益。
+        """
+        return await download_capped(
+            self._client, url, max_bytes=max_bytes, timeout_s=timeout_s, label="微信图片"
+        )
 
     # ------------------------------------------------------------------
     # 「正在输入」状态(getconfig 换 typing_ticket → sendtyping)

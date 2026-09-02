@@ -14,6 +14,10 @@
 (channel_account.agent_session_id),首条消息时创建、/reset 后换新;
 历史从转录重建,重启不丢,且在 Web 侧栏可见、可回放。
 
+图片:微信发来的图片由 adapter 下载解密,本服务落进会话附件目录、组装成
+图文内容块喂给视觉模型(docs/design/agent-image-input.md)。模型不支持视觉时
+水合层会降级为占位文本并让 Agent 向用户说明,不会报错中断。
+
 体验:收到消息立即回执「思考中💭」,随后开启微信「正在输入」状态
 (getconfig 换 typing_ticket,sendtyping 每 5 秒保活),生成结束取消。
 """
@@ -36,6 +40,7 @@ from movieclaw_api.exceptions import NotFoundException
 from movieclaw_api.services import auth as auth_service
 from movieclaw_api.services.agent_session_recorder import AgentSessionRecorder
 from movieclaw_api.services.agent_sessions import get_agent_session_store
+from movieclaw_api.services.im_attachments import prepare_agent_input
 from movieclaw_api.services.llm_config import acquire_llm_router
 from movieclaw_api.services.mclaw_tool import render_service_map
 from movieclaw_channel import ChannelManager, InboundMessage
@@ -326,7 +331,19 @@ class WeixinChannelService:
         session_id = await self._ensure_agent_session(msg)
         history = store.build_history(session_id)
         recorder = AgentSessionRecorder(store, session_id, entry_count=len(history))
-        await recorder.record_user_message(msg.text)
+
+        # 3) 本轮输入:图片入库 + 提醒回执 + 请求水合(三通道共用的同一入口)
+        prepared = await prepare_agent_input(
+            llm_router=llm_router,
+            session_id=session_id,
+            msg=msg,
+            history=history,
+            emit=emit,
+        )
+        if prepared is None:
+            # 纯图消息且图片全军覆没:失败原因已回执,不留空消息进转录
+            return
+        await recorder.record_user_message(prepared.user_content)
 
         runner = AgentRunner(
             llm_router,
@@ -338,13 +355,16 @@ class WeixinChannelService:
         run_id = uuid.uuid4().hex[:12]
         await recorder.begin(run_id)
 
-        # 3) 「正在输入」状态:生成期间每 5s 保活,结束取消
+        # 4) 「正在输入」状态:生成期间每 5s 保活,结束取消
         stop_typing = await self._start_typing(msg)
         pusher = StepReplyPusher(emit)
         last_event: AgentEvent | None = None
         try:
             async for ev in runner.start(
-                AgentStartParams(input=msg.text, history=history), run_id=run_id
+                AgentStartParams(
+                    input=prepared.input_for_run, history=prepared.history_for_run
+                ),
+                run_id=run_id,
             ):
                 last_event = ev
                 await pusher.feed(ev)

@@ -1,11 +1,17 @@
-"""ChannelDispatcher:分片、去重、鉴权、同会话串行、/stop 与 /reset。"""
+"""ChannelDispatcher:分片、去重、鉴权、同会话串行、/stop 与 /reset、图片聚合。"""
 
 from __future__ import annotations
 
 import asyncio
 
+from movieclaw_channel import dispatcher as dispatcher_mod
 from movieclaw_channel.dispatcher import make_dispatcher, split_message
-from movieclaw_channel.types import InboundMessage, OutboundEnvelope, ReplyContext
+from movieclaw_channel.types import (
+    InboundImage,
+    InboundMessage,
+    OutboundEnvelope,
+    ReplyContext,
+)
 
 # ---------------------------------------------------------------------------
 # split_message(纯函数)
@@ -52,7 +58,13 @@ class FakeAdapter:
         self.sent.append((reply.user_id, text))
 
 
-def _msg(text: str, *, msg_id: str, user: str = "u1@im.wechat") -> InboundMessage:
+def _msg(
+    text: str,
+    *,
+    msg_id: str,
+    user: str = "u1@im.wechat",
+    images: tuple[InboundImage, ...] = (),
+) -> InboundMessage:
     reply = ReplyContext(channel_id="weixin", account_id="bot1", user_id=user)
     return InboundMessage(
         channel_id="weixin",
@@ -61,6 +73,7 @@ def _msg(text: str, *, msg_id: str, user: str = "u1@im.wechat") -> InboundMessag
         text=text,
         reply=reply,
         provider_message_id=msg_id,
+        images=images,
     )
 
 
@@ -299,5 +312,95 @@ async def test_oversized_caption_skips_photo():
         await _drain(d, adapter, expect=1)
         assert adapter.sent_photos == []
         assert adapter.sent[0][1] == "字" * 1001
+    finally:
+        await d.close()
+
+
+# ---------------------------------------------------------------------------
+# 图片消息(docs/design/agent-image-input.md §10)
+# ---------------------------------------------------------------------------
+
+
+def _image(tag: bytes = b"\x89PNG") -> InboundImage:
+    return InboundImage(data=tag, name="微信图片1")
+
+
+async def test_unsupported_message_type_gets_hint():
+    """既无文字也无图片(视频/文件等还没接):明确回执,不静默丢弃。"""
+    adapter = FakeAdapter()
+
+    async def run_agent(msg, emit):  # pragma: no cover - 不该进 Agent
+        raise AssertionError("空内容消息不应进入 Agent")
+
+    d = make_dispatcher(adapter, is_allowed=lambda _u: True, run_agent=run_agent)
+    d.start()
+    try:
+        await d.submit_inbound(_msg("", msg_id="m1"))
+        await _drain(d, adapter, expect=1)
+        assert adapter.sent[0][1] == "暂时只支持文字和图片消息哦。"
+    finally:
+        await d.close()
+
+
+async def test_pure_image_message_reaches_agent(monkeypatch):
+    """纯图消息(用户只甩了张图)照常触发 Agent。"""
+    monkeypatch.setattr(dispatcher_mod, "_IMAGE_AGGREGATE_WINDOW_S", 0.05)
+    adapter = FakeAdapter()
+    seen: list[InboundMessage] = []
+
+    async def run_agent(msg, emit):
+        seen.append(msg)
+        await emit("收到")
+
+    d = make_dispatcher(adapter, is_allowed=lambda _u: True, run_agent=run_agent)
+    d.start()
+    try:
+        await d.submit_inbound(_msg("", msg_id="m1", images=(_image(),)))
+        await _drain(d, adapter, expect=1)
+        assert len(seen) == 1
+        assert seen[0].images == (_image(),)
+    finally:
+        await d.close()
+
+
+async def test_image_then_text_merged_into_one_run(monkeypatch):
+    """「先甩图、再打字」合并成一轮:不白跑一次「请问要做什么」。"""
+    monkeypatch.setattr(dispatcher_mod, "_IMAGE_AGGREGATE_WINDOW_S", 1.0)
+    adapter = FakeAdapter()
+    seen: list[InboundMessage] = []
+
+    async def run_agent(msg, emit):
+        seen.append(msg)
+        await emit("收到")
+
+    d = make_dispatcher(adapter, is_allowed=lambda _u: True, run_agent=run_agent)
+    d.start()
+    try:
+        await d.submit_inbound(_msg("", msg_id="m1", images=(_image(b"a"),)))
+        await d.submit_inbound(_msg("", msg_id="m2", images=(_image(b"b"),)))
+        await d.submit_inbound(_msg("这两张有什么区别", msg_id="m3"))
+        await _drain(d, adapter, expect=1)
+        await asyncio.sleep(0.1)
+        assert len(seen) == 1
+        assert seen[0].text == "这两张有什么区别"
+        assert [i.data for i in seen[0].images] == [b"a", b"b"]
+    finally:
+        await d.close()
+
+
+async def test_text_message_is_not_delayed(monkeypatch):
+    """纯文字对话不进聚合窗口:一秒都不等。"""
+    monkeypatch.setattr(dispatcher_mod, "_IMAGE_AGGREGATE_WINDOW_S", 30.0)
+    adapter = FakeAdapter()
+
+    async def run_agent(msg, emit):
+        await emit(f"回复:{msg.text}")
+
+    d = make_dispatcher(adapter, is_allowed=lambda _u: True, run_agent=run_agent)
+    d.start()
+    try:
+        await d.submit_inbound(_msg("在吗", msg_id="m1"))
+        await _drain(d, adapter, expect=1, timeout=2.0)
+        assert adapter.sent[0][1] == "回复:在吗"
     finally:
         await d.close()

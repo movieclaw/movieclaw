@@ -4,6 +4,8 @@
 - getupdates 长轮询,服务端可通过 longpolling_timeout_ms 动态调整下轮超时;
 - ``get_updates_buf`` 是增量游标:每轮返回新值就持久化,重启续传(至少一次
   投递,幂等去重由 dispatcher 负责);
+- 图片 item 在归一化后按 CDN 引用下载+解密(见 media 模块),随消息带给
+  dispatcher;下载失败只丢这张图,消息本身照常投递;
 - errcode -14(token 失效)→ 抛 ChannelAuthError,由 manager 停账号标 stale;
 - 其余错误:连续失败 <3 次退避 2s,达到 3 次退避 30s,自愈后清零。
 """
@@ -14,17 +16,24 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from typing import Any
 
 import httpx
 
 from movieclaw_channel.adapter import ChannelContext
-from movieclaw_channel.types import ChannelAuthError, InboundMessage, ReplyContext
+from movieclaw_channel.types import (
+    ChannelAuthError,
+    InboundImage,
+    InboundMessage,
+    ReplyContext,
+)
 from movieclaw_channel.weixin.client import (
     STALE_TOKEN_ERRCODE,
     WeixinApiError,
     WeixinClient,
 )
+from movieclaw_channel.weixin.media import collect_image_refs, decrypt_image
 
 logger = logging.getLogger("movieclaw_channel.weixin.adapter")
 
@@ -35,7 +44,7 @@ _RETRY_DELAY_S = 2.0
 _BACKOFF_DELAY_S = 30.0
 _DEFAULT_LONG_POLL_S = 35.0
 
-#: 消息 item 类型(iLink 协议):1=文本 3=语音
+#: 消息 item 类型(iLink 协议):1=文本 2=图片 3=语音
 _ITEM_TEXT = 1
 _ITEM_VOICE = 3
 #: message_type:2=BOT(自己发出的,收侧跳过)
@@ -155,6 +164,7 @@ class WeixinAdapter:
                 for raw in resp.get("msgs") or []:
                     msg = self._normalize(raw)
                     if msg is not None:
+                        msg = await self._with_images(raw, msg)
                         await self._remember_context_token(msg)
                         await ctx.on_inbound(msg)
         finally:
@@ -190,6 +200,31 @@ class WeixinAdapter:
             provider_message_id=provider_id,
             timestamp_ms=int(raw.get("create_time_ms") or 0),
         )
+
+    async def _with_images(self, raw: dict[str, Any], msg: InboundMessage) -> InboundMessage:
+        """下载并解密消息里的图片,挂回入站消息(无图或全失败则原样返回)。
+
+        单张图失败只跳过这一张:用户发的另外几张、以及随图的文字都还在,
+        比整条消息丢掉体验好得多。下载是串行的——收消息循环本来就串行投递,
+        且图片数量个位数,并发的复杂度换不来收益。
+        """
+        refs = collect_image_refs(raw.get("item_list"))
+        if not refs:
+            return msg
+        images: list[InboundImage] = []
+        for index, ref in enumerate(refs, start=1):
+            try:
+                data = await self._client.download_media(ref.url)
+                if ref.aes_key is not None:
+                    data = decrypt_image(data, ref.aes_key)
+            except Exception as exc:  # noqa: BLE001 -- 丢一张图,不丢整条消息
+                logger.error("微信图片下载/解密失败,已跳过该图:%s", exc)
+                continue
+            images.append(InboundImage(data=data, name=f"微信图片{index}"))
+        if not images:
+            return msg
+        logger.info("微信入站图片 %d 张 user=%s", len(images), msg.user_id)
+        return replace(msg, images=tuple(images))
 
     async def _remember_context_token(self, msg: InboundMessage) -> None:
         """记住并持久化绑定人的会话令牌(仅在变化时写库,正常一次会话只写一次)。"""

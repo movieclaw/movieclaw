@@ -1,7 +1,7 @@
 """Telegram Bot API 的最小 HTTP 客户端。
 
 只封装本项目用到的方法(getMe / getUpdates / sendMessage / sendPhoto /
-sendChatAction),不引入 python-telegram-bot 这类重依赖。出口走
+sendChatAction / getFile + 文件下载),不引入 python-telegram-bot 这类重依赖。出口走
 egress_transport("telegram"):国内部署 api.telegram.org 被墙,用户在
 「设置 → 网络」勾选 telegram 走代理即可。
 """
@@ -13,6 +13,7 @@ from typing import Any
 
 import httpx
 
+from movieclaw_channel.media import MAX_INBOUND_IMAGE_BYTES, download_capped
 from movieclaw_net import egress_transport
 
 #: 401/404 = bot token 无效或被吊销,对应通道层的凭据失效语义
@@ -32,6 +33,8 @@ class TelegramClient:
 
     def __init__(self, token: str) -> None:
         self._base = f"https://api.telegram.org/bot{token}"
+        #: 文件下载走另一个前缀(官方文档:/file/bot<token>/<file_path>)
+        self._file_base = f"https://api.telegram.org/file/bot{token}"
         # 长轮询 50s + 余量;连接池与微信客户端同款「每账号一个」
         self._http = httpx.AsyncClient(
             transport=egress_transport("telegram"),
@@ -89,6 +92,26 @@ class TelegramClient:
             return []
         finally:
             stop_wait.cancel()
+
+    async def download_file(
+        self, file_id: str, *, max_bytes: int = MAX_INBOUND_IMAGE_BYTES
+    ) -> bytes:
+        """按 file_id 取回文件字节(官方两步:getFile 换 file_path,再下载)。
+
+        下载地址是 ``https://api.telegram.org/file/bot<token>/<file_path>``
+        (官方文档口径,token 就在路径里,同域名复用同一连接池与代理)。
+        Bot API 明确只支持下载 20MB 以内的文件,超出时 getFile 直接报错。
+        """
+        info = await self._call("getFile", {"file_id": file_id})
+        file_path = str((info or {}).get("file_path") or "")
+        if not file_path:
+            raise TelegramApiError("getFile 未返回 file_path,无法下载该文件")
+        return await download_capped(
+            self._http,
+            f"{self._file_base}/{file_path}",
+            max_bytes=max_bytes,
+            label="Telegram 文件",
+        )
 
     async def send_message(self, chat_id: str | int, text: str) -> None:
         # 纯文本发送:Agent 输出是 Markdown,但 TG 的 parse_mode 对不配对的
