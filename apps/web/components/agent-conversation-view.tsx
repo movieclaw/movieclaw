@@ -5,6 +5,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Route } from "next";
 import Link from "next/link";
 
+import { AgentMediaCardsForSegment } from "@/components/agent-media-cards";
 import { Composer } from "@/components/composer";
 import { CopyButton, REVEAL_CLASS, useTapReveal } from "@/components/copy-button";
 import { useConfirm, useToast } from "@/components/feedback";
@@ -23,6 +24,7 @@ import {
   useAgentConversations,
 } from "@/lib/agent-conversations";
 import type { ComposerImage } from "@/lib/agent-attachments";
+import { isMediaCardsTool } from "@/lib/agent-media-cards";
 import { parseSkillTokens } from "@/lib/agent-skills";
 import { useSkillNames } from "@/lib/skill-names";
 import { sessionAttachmentUrl } from "@/lib/api/agent";
@@ -350,7 +352,14 @@ const TurnView = memo(function TurnView({
           const isLast = index === turn.segments.length - 1;
           const active = turn.status === "running" && isLast;
           if (segment.kind === "process") {
-            return <ProcessBlock key={index} segment={segment} active={active} />;
+            // 生成式 UI：该块里 show_media_cards 调用绘制的卡片组紧跟在折叠块之后——
+            // 工具行本身收在折叠块里，卡片是给用户看的内容，必须常显
+            return (
+              <div key={index} className="min-w-0 space-y-2.5">
+                <ProcessBlock segment={segment} active={active} />
+                <AgentMediaCardsForSegment segment={segment} />
+              </div>
+            );
           }
           if (segment.kind === "compaction") {
             return <CompactionCard key={index} segment={segment} />;
@@ -612,6 +621,13 @@ function processSummary(items: AgentProcessItem[]): string {
  */
 const ProcessBlock = memo(function ProcessBlock({ segment, active }: { segment: AgentTurnSegment & { kind: "process" }; active: boolean }) {
   const [open, setOpen] = useState(false);
+  // 生成式 UI 的绘制调用不算「处理过程」：它的产出就是紧随其后的卡片本身，
+  // 再列一行「调用 show_media_cards_v1」只是噪音。整块只剩它时连折叠头也不出
+  const items = useMemo(
+    () => segment.items.filter((item) => item.kind !== "tool" || !isMediaCardsTool(item.name)),
+    [segment.items],
+  );
+  if (items.length === 0) return null;
   return (
     <div>
       <button
@@ -621,12 +637,12 @@ const ProcessBlock = memo(function ProcessBlock({ segment, active }: { segment: 
       >
         <ChevronRightIcon className={`size-3.5 transition-transform ${open ? "rotate-90" : ""}`} />
         <span className={active ? "animate-pulse" : undefined}>
-          {active ? processStatus(segment.items) : processSummary(segment.items)}
+          {active ? processStatus(items) : processSummary(items)}
         </span>
       </button>
       {open && (
         <div className="mt-1.5 space-y-2 border-l-2 border-white/[0.08] pl-3">
-          {segment.items.map((item, index) =>
+          {items.map((item, index) =>
             item.kind === "thinking" ? (
               // break-words 必须有：思考文本常出现资源名这种几十字符无空格的长
               // token（点号不是换行机会点），不断词会把整个消息列撑出横向溢出

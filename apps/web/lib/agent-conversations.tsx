@@ -54,6 +54,9 @@ export interface AgentTurnToolCall {
   name: string;
   /** 展示用摘要，如 search({"q":"沙丘"})；参数生成中为逐片追加的半成品 */
   label: string;
+  /** 定稿后的结构化参数（tool_call 事件 / 转录 tool_calls）；生成式 UI 工具
+   *  按它绘制卡片（lib/agent-media-cards.ts）。参数生成中或旧转录只有原始串时缺省 */
+  args?: Record<string, unknown>;
   /** 参数是否已生成完整（tool_call 事件到达）；undefined 视为已完整（回放数据） */
   argsDone?: boolean;
   /** 执行回执（未返回时为 undefined = 执行中） */
@@ -272,13 +275,14 @@ function entriesToTurns(entries: SessionAnyEntry[]): AgentTurn[] {
       const text = messageText(message);
       if (text) turn = appendText(turn, text);
       for (const call of message.tool_calls ?? []) {
-        const args = call.arguments && Object.keys(call.arguments).length > 0
-          ? JSON.stringify(call.arguments)
-          : (call.raw_arguments ?? "{}");
+        const parsed =
+          call.arguments && Object.keys(call.arguments).length > 0 ? call.arguments : undefined;
+        const args = parsed ? JSON.stringify(parsed) : (call.raw_arguments ?? "{}");
         turn = appendTool(turn, {
           id: call.id,
           name: call.name,
           label: `${call.name}(${args})`,
+          ...(parsed ? { args: parsed } : {}),
         });
       }
       if (entry.finish_reason === "aborted") turn = { ...turn, stopped: true };
@@ -462,14 +466,16 @@ function applyAgentEvent(turn: AgentTurn, event: AgentEvent): AgentTurn {
     case "tool_call": {
       const call = event.tool_call;
       if (!call) return turn;
-      // 参数定稿：用解析后的完整参数重写 label，替换流式期间的半成品
+      // 参数定稿：用解析后的完整参数重写 label，替换流式期间的半成品；
+      // 结构化参数一并留下，卡片渲染器不必再从 label 反解析
       const label = `${call.name}(${JSON.stringify(call.arguments)})`;
+      const args = call.arguments;
       return (
         patchTool(
           turn,
           (tool) => tool.id === call.id,
-          () => ({ label, argsDone: true }),
-        ) ?? appendTool(turn, { id: call.id, name: call.name, label, argsDone: true })
+          () => ({ label, args, argsDone: true }),
+        ) ?? appendTool(turn, { id: call.id, name: call.name, label, args, argsDone: true })
       );
     }
     case "tool_result": {

@@ -18,7 +18,7 @@ from movieclaw_agent import (
     discover_skills,
     expand_skill_invocations,
 )
-from movieclaw_agent.tools import builtin_tools, make_mclaw_tool
+from movieclaw_agent.tools import builtin_tools, make_mclaw_tool, make_media_ui_tool
 from movieclaw_api.api.deps import require_login
 from movieclaw_api.core.config import get_settings
 from movieclaw_api.exceptions import (
@@ -101,19 +101,28 @@ async def list_skills() -> ApiResponse[list[SkillView]]:
     )
 
 
-def get_agent_tools(cli_env: dict[str, str]) -> list[AgentTool]:
-    """Agent 的工具集：内置基础工具 + mclaw 产品操作工具。
+def get_agent_tools(cli_env: dict[str, str], *, generative_ui: bool = False) -> list[AgentTool]:
+    """Agent 的工具集：内置基础工具 + mclaw 产品操作工具 [+ 卡片绘制工具]。
 
     bash/read/write/edit 是纯工作区工具，**不携带**产品授权；mclaw 工具
     单独构建，令牌只注入它的子进程（每次运行的令牌不同，因此每次运行都
     重新构建工具集）。服务目录渲染自 CLI 内置 spec，与命令面严格同版。
+
+    ``generative_ui`` 是卡片绘制工具（show_media_cards）的开关，**默认关**：
+    它的效果完全依赖前端拦截 tool_call 后绘制卡片，只有网页会话有这层界面。
+    IM/微信通道看不到卡片，带上它只会让模型白调一次、用户收到一句「已展示
+    卡片」却什么都没有——所以由调用方按所在通道显式打开，新接入的通道不会
+    因为忘记关而误带（docs/design/agent-generative-ui.md §2）。
     """
     workdir = Path(get_settings().agent_workspace_dir).resolve()
     workdir.mkdir(parents=True, exist_ok=True)
-    return [
+    tools = [
         *builtin_tools(workdir),
         make_mclaw_tool(workdir, cli_env, render_service_map()),
     ]
+    if generative_ui:
+        tools.append(make_media_ui_tool())
+    return tools
 
 
 # 前端页面路由表：模型拼可点击链接的唯一依据（(路径模式, 一行说明)）。
@@ -297,7 +306,11 @@ async def _launch_user_message(
     staging 绑定进会话目录（原子 rename），再落消息行——绑定失败不产生
     悬空引用，落盘失败最多留下可回收的孤儿文件。
     """
-    actual_tools = tools if tools is not None else get_agent_tools(await _cli_env(session_id))
+    actual_tools = (
+        tools
+        if tools is not None
+        else get_agent_tools(await _cli_env(session_id), generative_ui=True)
+    )
     actual_system_prompt = system_prompt or await _agent_system_prompt()
     # 显式技能调用：把 /skill:名字 占位符展开为技能正文块（docs/design/
     # agent-skills.md §9）。展开结果入转录（内容冻结在调用时刻）；已展开
@@ -764,7 +777,7 @@ async def retry_session_message(
     # 供应商校验和运行所需上下文在删除轨迹前准备完成；下面才进入不可逆阶段。
     llm_router = await acquire_llm_router(session)
     system_prompt = await _agent_system_prompt()
-    tools = get_agent_tools(await _cli_env(session_id))
+    tools = get_agent_tools(await _cli_env(session_id), generative_ui=True)
 
     store.discard_from_user_message(session_id, payload.message_id)
     # 重试路径同款兜底：截断后若仍残留未配对的工具调用（上次异常停机遗留），

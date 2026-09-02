@@ -16,6 +16,7 @@ from movieclaw_agent.toolkit import AgentTool
 from movieclaw_agent.tools.bash import make_bash_tool
 from movieclaw_agent.tools.files import make_edit_tool, make_read_tool, make_write_tool
 from movieclaw_agent.tools.mclaw import make_mclaw_tool
+from movieclaw_agent.tools.media_ui import make_media_ui_tool
 
 
 def builtin_tools(workdir: Path | None = None) -> list[AgentTool]:
@@ -34,4 +35,4 @@ def builtin_tools(workdir: Path | None = None) -> list[AgentTool]:
     ]
 
 
-__all__ = ["AgentTool", "builtin_tools", "make_mclaw_tool"]
+__all__ = ["AgentTool", "builtin_tools", "make_mclaw_tool", "make_media_ui_tool"]
