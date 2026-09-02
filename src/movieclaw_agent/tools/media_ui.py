@@ -35,16 +35,13 @@ from movieclaw_llm import ToolDefinition
 #: 的匹配更直接，render 偏前端工程术语。
 TOOL_NAME = "show_media_cards_v1"
 
-#: 一次调用最多展示的卡片数：再多会话页也放不下，模型应分组或挑重点。
-MAX_ITEMS = 12
-
 #: 可展示的组件（与 mclaw 的域/命令同名：library / titles / library items / subscriptions）
 COMPONENTS = ("library", "title", "library_item", "subscription")
 
 #: title_ref 的两种合法形态（与 movieclaw_api.services.title_discovery.parse_title_ref 同）
 _TITLE_REF = re.compile(r"^(tmdb:(movie|tv):\d+|douban:[^:/\s]+)$")
 
-_DESCRIPTION = f"""\
+_DESCRIPTION = """\
 向用户展示可交互的影音卡片（生成式 UI）。你只需给出编号，会话页就会画出带封面/海报的\
 卡片，用户可以直接在卡片上订阅、播放、进入详情。
 
@@ -65,9 +62,8 @@ media_item_id ← library items list / search library-items 的 media_item_id；
 - subscription：订阅卡片（海报、追更范围、收录进度、自动续订/已收齐状态）。\
 subscription_id ← subscriptions list 的 id。
 
-同一组件的多项放进一次调用（最多 {MAX_ITEMS} 项），不同组件分别调用；可用 title 给\
-卡片组加一行小标题。卡片内容由界面实时加载，展示后不要再用文字复述海报、评分、\
-状态这些卡片上已有的信息。"""
+同一组件的多项放进一次调用，不同组件分别调用；可用 title 给卡片组加一行小标题。\
+卡片内容由界面实时加载，展示后不要再用文字复述海报、评分、状态这些卡片上已有的信息。"""
 
 _PARAMETERS: dict[str, Any] = {
     "type": "object",
@@ -81,7 +77,6 @@ _PARAMETERS: dict[str, Any] = {
         "items": {
             "type": "array",
             "minItems": 1,
-            "maxItems": MAX_ITEMS,
             "description": "要展示的条目列表，每项只需带对应组件要求的编号字段",
             "items": {
                 "type": "object",
@@ -155,8 +150,6 @@ def validate_items(component: str, items: list[dict]) -> None:
         raise ValueError(f"未知组件 {component!r}；可选：{', '.join(COMPONENTS)}")
     if not items:
         raise ValueError("items 不能为空")
-    if len(items) > MAX_ITEMS:
-        raise ValueError(f"一次最多展示 {MAX_ITEMS} 张卡片，请挑重点或分批调用")
     for index, item in enumerate(items):
         if not isinstance(item, dict):
             raise ValueError(f"items[{index}] 必须是对象")

@@ -72,8 +72,8 @@ name: show_media_cards_v1
 
 handler 语义：
 
-- 只做跨字段校验（title 必须给合法的 title_ref 或 tmdb_id+media_type、季集成对、
-  一次最多 12 项），错误文案带 `items[i].字段` 指向该改哪里，由 runner 作为失败
+- 只做跨字段校验（title 必须给合法的 title_ref 或 tmdb_id+media_type、季集成对），
+  错误文案带 `items[i].字段` 指向该改哪里，由 runner 作为失败
   结果回喂，模型自行修正后重发；
 - **不查编号是否存在**，也不取任何数据：卡片数据由前端现取，转录里不留过期
   快照；编号不存在时卡片显示「未找到」，用户能看出模型引用了不存在的东西；

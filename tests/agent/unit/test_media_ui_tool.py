@@ -13,7 +13,6 @@ import pytest
 
 from movieclaw_agent.tools.media_ui import (
     COMPONENTS,
-    MAX_ITEMS,
     TOOL_NAME,
     make_media_ui_tool,
     validate_items,
@@ -131,11 +130,6 @@ def test_item_index_appears_in_error_for_batches() -> None:
     items = [{"library_id": 1}, {"library_id": 2}, {"library_id": "3"}]
     with pytest.raises(ValueError, match=r"items\[2\]\.library_id"):
         validate_items("library", items)
-
-
-def test_too_many_items_rejected() -> None:
-    with pytest.raises(ValueError, match=f"最多展示 {MAX_ITEMS} 张"):
-        validate_items("library", [{"library_id": i + 1} for i in range(MAX_ITEMS + 1)])
 
 
 def test_title_ref_and_tmdb_items_can_mix_in_one_call() -> None:
