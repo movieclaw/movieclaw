@@ -34,7 +34,13 @@ from movieclaw_api.services.network_egress import (
     effective_tmdb_image_base_url,
     save_network_egress,
 )
-from movieclaw_api.settings import BUILTIN_EGRESS_SERVICES, NetworkEgressSetting
+from movieclaw_api.settings import (
+    BUILTIN_EGRESS_SERVICES,
+    NetworkEgressSetting,
+    WebhookSetting,
+    get_setting_store,
+)
+from movieclaw_db.repositories.channel_account_repo import ChannelAccountRepository
 from movieclaw_db.repositories.credential_repo import CredentialRepository
 from movieclaw_net import (
     PROXY_SCHEMES,
@@ -184,6 +190,29 @@ async def _probe_target(service: str, session: AsyncSession) -> tuple[str, dict[
         if user_agent:
             headers["User-Agent"] = user_agent
         return f"{base.rstrip('/')}/models", headers
+    if service in ("telegram", "discord"):
+        channel_name = "Telegram" if service == "telegram" else "Discord"
+        accounts = await ChannelAccountRepository(session).list_by_channel(service)
+        if not accounts:
+            raise BadRequestException(f"尚未绑定 {channel_name} bot，无法测试")
+        try:
+            token = ChannelAccountRepository.decrypted_token(accounts[0])
+        except Exception as exc:  # noqa: BLE001 -- 凭据损坏时返回可操作的中文错误
+            raise BadRequestException(
+                f"{channel_name} bot 凭据不可用，请重新绑定"
+            ) from exc
+        if service == "telegram":
+            return f"https://api.telegram.org/bot{token}/getMe", {}
+        return "https://discord.com/api/v10/users/@me", {"Authorization": f"Bot {token}"}
+    if service == "webhook":
+        setting = await get_setting_store().get(WebhookSetting)
+        endpoint = next(
+            (item for item in setting.endpoints if item.enabled and item.url.strip()),
+            None,
+        )
+        if endpoint is None:
+            raise BadRequestException("尚未配置可用的 Webhook endpoint，无法测试")
+        return endpoint.url, dict(endpoint.headers)
     if service == "github":
         # 与应用内更新的检查请求同源（api.github.com 或 UPDATE_API_BASE_URL 反代）
         settings = get_settings()
@@ -230,6 +259,11 @@ def _classify_probe(service: str, status_code: int) -> NetworkTestResult:
         else:
             message = f"网络连通（HTTP {status_code}）"
         return NetworkTestResult(ok=True, message=message)
+    if service in ("telegram", "discord") and status_code in (401, 403, 404):
+        channel_name = "Telegram" if service == "telegram" else "Discord"
+        return NetworkTestResult(
+            ok=True, message=f"网络连通，但 {channel_name} bot Token 无效"
+        )
     return NetworkTestResult(ok=True, message=f"网络连通（HTTP {status_code}）")
 
 

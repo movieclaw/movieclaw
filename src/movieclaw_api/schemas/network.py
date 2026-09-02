@@ -35,8 +35,8 @@ class NetworkConfigPayload(BaseModel):
     )
     proxy_services: list[str] = Field(
         default_factory=list,
-        description="走代理的服务 id 列表：tmdb / image / douban / llm / site:<站点id>；"
-        "不在列表内的服务直连",
+        description="走代理的服务 id 列表：tmdb / image / douban / llm / telegram / "
+        "discord / webhook / github / site:<站点id>；不在列表内的服务直连",
     )
     tmdb_api_base_url: str = Field(
         default="", description="TMDB 接口镜像地址；留空用默认（见读取接口的 mirror_defaults）"
@@ -61,7 +61,8 @@ class NetworkTestPayload(BaseModel):
     service: str = Field(
         min_length=1,
         max_length=100,
-        description="要测试连通性的服务 id：tmdb / image / douban / llm / site:<站点id>",
+        description="要测试连通性的服务 id：tmdb / image / douban / llm / telegram / "
+        "discord / webhook / github / site:<站点id>",
     )
 
 

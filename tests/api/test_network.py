@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
 from movieclaw_api.core.config import get_settings
+from movieclaw_api.services import network_config
 from movieclaw_api.services.auth import reset_auth_state
 from movieclaw_api.services.media_discover import reset_media_service
 from movieclaw_api.services.network_egress import reset_network_egress
+from movieclaw_api.settings import WebhookEndpoint, WebhookSetting
 from movieclaw_api.settings.store import reset_setting_store
 from movieclaw_db.crypto import reset_secret_box
+from movieclaw_db.repositories.channel_account_repo import ChannelAccountRepository
 from movieclaw_net import EgressConfig, apply_egress_config, resolve_proxy_url
 
 
@@ -139,6 +145,72 @@ def test_test_endpoint_llm_unconfigured(client):
     resp = client.post("/api/v1/network/test", json={"service": "llm"})
     assert resp.status_code == 400
     assert "尚未配置" in resp.json()["message"]
+
+
+@pytest.mark.parametrize(
+    ("service", "message"),
+    [
+        ("telegram", "尚未绑定 Telegram bot"),
+        ("discord", "尚未绑定 Discord bot"),
+        ("webhook", "尚未配置可用的 Webhook endpoint"),
+    ],
+)
+def test_test_endpoint_reports_missing_integration_config(client, monkeypatch, service, message):
+    async def no_accounts(self, channel_id):
+        return []
+
+    monkeypatch.setattr(ChannelAccountRepository, "list_by_channel", no_accounts)
+    resp = client.post("/api/v1/network/test", json={"service": service})
+    assert resp.status_code == 400
+    assert message in resp.json()["message"]
+
+
+def test_test_endpoint_probes_telegram_discord_and_webhook(client, monkeypatch):
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200)
+
+    monkeypatch.setattr(
+        network_config,
+        "egress_transport",
+        lambda service, **kwargs: httpx.MockTransport(handler),
+    )
+
+    async def one_account(self, channel_id):
+        return [SimpleNamespace(token="encrypted-token")]
+
+    monkeypatch.setattr(ChannelAccountRepository, "list_by_channel", one_account)
+    monkeypatch.setattr(
+        ChannelAccountRepository,
+        "decrypted_token",
+        lambda row: "test-bot-token",
+    )
+
+    class FakeSettingStore:
+        async def get(self, model):
+            return WebhookSetting(
+                endpoints=[
+                    WebhookEndpoint(
+                        url="http://receiver.test/hook",
+                        headers={"X-Test": "1"},
+                    )
+                ]
+            )
+
+    monkeypatch.setattr(network_config, "get_setting_store", lambda: FakeSettingStore())
+
+    for service in ("telegram", "discord", "webhook"):
+        response = client.post("/api/v1/network/test", json={"service": service})
+        assert response.status_code == 200, response.text
+        assert response.json()["data"]["ok"] is True
+
+    assert str(requests[0].url) == "https://api.telegram.org/bottest-bot-token/getMe"
+    assert str(requests[1].url) == "https://discord.com/api/v10/users/@me"
+    assert requests[1].headers["Authorization"] == "Bot test-bot-token"
+    assert str(requests[2].url) == "http://receiver.test/hook"
+    assert requests[2].headers["X-Test"] == "1"
 
 
 def test_requires_login(tmp_path, monkeypatch):
