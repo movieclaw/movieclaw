@@ -9,12 +9,12 @@ import {
 
 test("只有带版本的工具名才由卡片渲染器负责", () => {
   assert.equal(isMediaCardsTool(MEDIA_CARDS_TOOL_V1), true);
-  assert.equal(isMediaCardsTool("render_media_cards"), false);
-  assert.equal(isMediaCardsTool("render_media_cards_v2"), false);
+  assert.equal(isMediaCardsTool("show_media_cards"), false);
+  assert.equal(isMediaCardsTool("show_media_cards_v2"), false);
   assert.equal(isMediaCardsTool("mclaw"), false);
   // 未知版本返回 null：会话页退回普通工具行，不会整轮渲染失败
   assert.equal(
-    parseMediaCardsArgs("render_media_cards_v2", { component: "library", items: [{ library_id: 1 }] }),
+    parseMediaCardsArgs("show_media_cards_v2", { component: "library", items: [{ library_id: 1 }] }),
     null,
   );
 });
@@ -35,39 +35,36 @@ test("media library 卡片按 library_id 解析，非法项跳过、重复项去
   });
 });
 
-test("title 卡片：tmdb_id+media_type 或 douban_id 拼成服务端 title_ref", () => {
+test("title 卡片：首选 mclaw 的 title_ref，只有 tmdb_id+media_type 时拼成同一形态", () => {
   const group = parseMediaCardsArgs(MEDIA_CARDS_TOOL_V1, {
     component: "title",
     items: [
-      { tmdb_id: 693134, media_type: "movie" },
+      { title_ref: "tmdb:movie:693134" },
+      { title_ref: " douban:1292052 " },
       { tmdb_id: 1399, media_type: "tv" },
-      { tmdb_id: 7, media_type: "anime" },
+      { title_ref: "tmdb:movie:693134" },
+      { title_ref: "693134" },
+      { title_ref: "tmdb:anime:7" },
       { tmdb_id: 8 },
-      { douban_id: " 1292052 " },
-      { douban_id: 26752088 },
-      { douban_id: "bad:ref" },
+      { tmdb_id: 9, media_type: "anime" },
       {},
     ],
   });
   assert.ok(group);
   assert.deepEqual(
     group.cards.map((c) => c.titleRef),
-    ["tmdb:movie:693134", "tmdb:tv:1399", "douban:1292052", "douban:26752088"],
+    ["tmdb:movie:693134", "douban:1292052", "tmdb:tv:1399"],
   );
-  assert.equal(group.cards[0].source, "tmdb");
-  assert.equal(group.cards[0].mediaType, "movie");
-  assert.equal(group.cards[2].source, "douban");
-  assert.equal(group.cards[2].mediaType, undefined);
-  assert.equal(group.cards[2].externalId, "1292052");
+  assert.equal(group.cards[0].key, "tmdb:movie:693134");
 });
 
-test("library_item 卡片：季集成对才生效，缺一半按整部处理", () => {
+test("library_item 卡片：season_number/episode_number 成对才生效，缺一半按整部处理", () => {
   const group = parseMediaCardsArgs(MEDIA_CARDS_TOOL_V1, {
     component: "library_item",
     items: [
-      { media_item_id: 42, season: 1, episode: 3 },
-      { media_item_id: 42, season: 2 },
-      { media_item_id: 42, season: 0, episode: 1 },
+      { media_item_id: 42, season_number: 1, episode_number: 3 },
+      { media_item_id: 42, season_number: 2 },
+      { media_item_id: 42, season_number: 0, episode_number: 1 },
       { media_item_id: -1 },
     ],
   });
@@ -77,12 +74,24 @@ test("library_item 卡片：季集成对才生效，缺一半按整部处理", (
     kind: "library_item",
     key: "item:42:s1e3:0",
     mediaItemId: 42,
-    season: 1,
-    episode: 3,
+    seasonNumber: 1,
+    episodeNumber: 3,
   });
-  assert.equal(group.cards[1].season, undefined);
-  assert.equal(group.cards[1].episode, undefined);
-  assert.equal(group.cards[2].season, 0);
+  assert.equal(group.cards[1].seasonNumber, undefined);
+  assert.equal(group.cards[1].episodeNumber, undefined);
+  assert.equal(group.cards[2].seasonNumber, 0);
+});
+
+test("subscription 卡片按 subscription_id 解析", () => {
+  const group = parseMediaCardsArgs(MEDIA_CARDS_TOOL_V1, {
+    component: "subscription",
+    items: [{ subscription_id: 12 }, { subscription_id: "12" }, { subscription_id: 12 }],
+  });
+  assert.deepEqual(group, {
+    component: "subscription",
+    title: undefined,
+    cards: [{ kind: "subscription", key: "subscription:12", subscriptionId: 12 }],
+  });
 });
 
 test("整组无一张可画时返回 null；未知组件返回 null", () => {

@@ -1,4 +1,4 @@
-"""render_media_cards 工具的装配开关（docs/design/agent-generative-ui.md §2）。
+"""show_media_cards 工具的装配开关（docs/design/agent-generative-ui.md §2）。
 
 卡片只有网页会话能画：开关默认关、网页会话显式开、IM/微信通道的受限工具集
 永远不含它——三条各一个守护测试，新接通道忘了关也会被拦下。

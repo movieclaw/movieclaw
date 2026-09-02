@@ -108,7 +108,7 @@ def get_agent_tools(cli_env: dict[str, str], *, generative_ui: bool = False) -> 
     单独构建，令牌只注入它的子进程（每次运行的令牌不同，因此每次运行都
     重新构建工具集）。服务目录渲染自 CLI 内置 spec，与命令面严格同版。
 
-    ``generative_ui`` 是卡片绘制工具（render_media_cards）的开关，**默认关**：
+    ``generative_ui`` 是卡片绘制工具（show_media_cards）的开关，**默认关**：
     它的效果完全依赖前端拦截 tool_call 后绘制卡片，只有网页会话有这层界面。
     IM/微信通道看不到卡片，带上它只会让模型白调一次、用户收到一句「已展示
     卡片」却什么都没有——所以由调用方按所在通道显式打开，新接入的通道不会

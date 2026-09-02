@@ -1,4 +1,4 @@
-# Agent 生成式 UI：render_media_cards 工具与前端卡片渲染
+# Agent 生成式 UI：show_media_cards 工具与前端卡片渲染
 
 > 背景：Agent 的工具集（bash/read/write/edit/mclaw）是通用的，模型的产出只有
 > Markdown 正文。影音产品的核心资产——海报、库封面、订阅与播放入口——在会话
@@ -37,48 +37,54 @@ tool_result`，见 `movieclaw_agent/events.py`）与 AG-UI 的三段式一一对
 ## 1. 工具定义（`movieclaw_agent/tools/media_ui.py`）
 
 ```
-name: render_media_cards_v1
+name: show_media_cards_v1
 ```
 
 **名字带版本**是本设计的硬约束：工具名就是前端渲染器的匹配键。参数契约发生
 不兼容变更时发 `_v2` 并在前端新增一套解析器；旧会话转录里的 `_v1` 调用继续
 按旧规则绘制，永远不会出现「升级后历史会话的卡片认不出来」。兼容的新增
-可选字段不升版本。
+可选字段不升版本。动词用 `show`（向用户展示）而不是 `render`：模型对「把结果
+展示给用户」这类意图的匹配更直接，render 偏前端工程术语。
 
-参数（刻意扁平，不用 oneOf——不少 OpenAI 兼容端点对 oneOf 支持很差）：
+**字段名与 mclaw 输出一致**：模型从命令结果里原样搬编号，不需要换算、也就不会
+搬错。参数刻意扁平，不用 oneOf——不少 OpenAI 兼容端点对 oneOf 支持很差：
 
 ```json
 {
-  "component": "library | title | library_item",
+  "component": "library | title | library_item | subscription",
   "items": [
     { "library_id": 3 },
-    { "tmdb_id": 693134, "media_type": "movie" },
-    { "douban_id": "1292052" },
-    { "media_item_id": 42, "season": 1, "episode": 3 }
+    { "title_ref": "tmdb:movie:693134" },
+    { "tmdb_id": 1399, "media_type": "tv" },
+    { "media_item_id": 42, "season_number": 1, "episode_number": 3 },
+    { "subscription_id": 12 }
   ],
   "title": "可选的一行小标题"
 }
 ```
 
-| component | 画什么 | 每项参数 | 编号来源 |
+| component | 画什么 | 每项参数 | 来自哪条 mclaw 命令的哪个字段 |
 |---|---|---|---|
-| `library` | 媒体库卡片：封面拼贴 + 库名 + 类型与库存统计 | `library_id` | `mclaw library list` |
-| `title` | 影片/剧集海报卡片：海报、评分、年份，自动标注已入库/已订阅，悬停一键订阅 | `tmdb_id`+`media_type` 或 `douban_id` | `search titles` / `discover` 的 `title_ref` 换算 |
-| `library_item` | 库内条目播放卡片：剧照或海报 + 一键播放 + 观看进度 + 片源规格 | `media_item_id`，剧集可选 `season`+`episode` | `library items list` / `search library-items` |
+| `library` | 媒体库卡片：封面拼贴 + 库名 + 类型与库存统计 | `library_id` | `library list` → `id` |
+| `title` | 影片/剧集海报卡片：海报、评分、年份，自动标注已入库/已订阅，悬停一键订阅 | `title_ref`；只有 TMDB 编号时 `tmdb_id`+`media_type` | `search titles` / `discover …` → `title_ref` |
+| `library_item` | 库内条目播放卡片：剧照或海报 + 一键播放 + 观看进度 + 片源规格 | `media_item_id`，剧集可选 `season_number`+`episode_number` | `library items list` / `search library-items` → `media_item_id` |
+| `subscription` | 订阅卡片：海报 + 追更范围 + 收录进度 + 自动续订/已收齐斜标 | `subscription_id` | `subscriptions list` → `id` |
 
 handler 语义：
 
-- 只做跨字段校验（title 必须给 tmdb_id+media_type 或 douban_id、season/episode
-  成对、一次最多 12 项），错误文案带 `items[i].字段` 指向该改哪里，由 runner
-  作为失败结果回喂，模型自行修正后重发；
+- 只做跨字段校验（title 必须给合法的 title_ref 或 tmdb_id+media_type、季集成对、
+  一次最多 12 项），错误文案带 `items[i].字段` 指向该改哪里，由 runner 作为失败
+  结果回喂，模型自行修正后重发；
 - **不查编号是否存在**，也不取任何数据：卡片数据由前端现取，转录里不留过期
   快照；编号不存在时卡片显示「未找到」，用户能看出模型引用了不存在的东西；
-- 返回固定回执：`已在会话页展示 N 张xx卡片。卡片内容由界面实时加载，无需再用
-  文字复述……`。
+- 回执固定为 `ok`：展示由前端完成，怎么用、用后别复述都在 description 里说过，
+  回执不再占上下文。
 
-description 承担全部领域语义（与 mclaw 同一原则，系统提示词正文零改动）：
-每个组件传什么、编号从哪来（`tmdb:movie:123 → tmdb_id=123, media_type=movie`）、
-什么时候该画（先用 mclaw 查证编号真实存在）、以及画完不要复述。
+description 承担全部领域语义（与 mclaw 同一原则，系统提示词正文零改动），
+以**用户问题**为触发点组织：只要问题涉及影片/剧集、媒体库、库里的内容或订阅，
+就主动把结果展示成卡片再讲结论——海报和一键操作比文字罗列片名直观得多，用户
+喜欢这种呈现；随后才是每个组件传什么、编号从哪条命令来、编号必须来自本轮
+mclaw 的真实结果、画完不复述。
 
 ## 2. 启用开关
 
@@ -92,22 +98,19 @@ description 承担全部领域语义（与 mclaw 同一原则，系统提示词�
 - `tests/api/test_media_ui_tool_wiring.py` 三条守护：默认关、网页显式开、IM/微信
   模块连 `make_media_ui_tool` 的 import 都不允许出现。
 
-description 除了「能画什么、编号从哪来」，还写明**为什么要画**（海报是影音产品的
-第一印象、卡片上能直接订阅/播放、纯文字罗列显得单薄）——模型知道好处才会在
-合适的时机主动使用，而不是把它当成可有可无的装饰。
 
 ## 3. 前端渲染（`apps/web`）
 
 ```
 lib/agent-media-cards.ts        纯逻辑：工具名版本匹配 + 参数 → 卡片规格（node --test 覆盖）
-components/agent-media-cards.tsx 三种卡片 + 卡片组 + 处理过程块的接入组件
+components/agent-media-cards.tsx 四种卡片 + 卡片组 + 处理过程块的接入组件
 lib/agent-conversations.tsx     AgentTurnToolCall 新增 args（tool_call 事件与转录回放都填）
 components/agent-conversation-view.tsx  process 段之后渲染该段内的卡片组
 ```
 
 时间线接入：卡片组作为**常显内容**紧跟在对应「处理过程」折叠块之后——卡片是给
 用户看的，不能藏在折叠块里。折叠块本身**不再列出**这次绘制调用：它的产出就是
-紧随其后的卡片，再列一行「调用 render_media_cards_v1」只是噪音；整块只剩这一个
+紧随其后的卡片，再列一行「调用 show_media_cards_v1」只是噪音；整块只剩这一个
 调用时连折叠头也不出现，用户看到的就是「模型的回答里直接带着卡片」。
 
 绘制时机：
@@ -128,14 +131,15 @@ components/agent-conversation-view.tsx  process 段之后渲染该段内的卡�
 | 媒体库 | `GET /libraries/{id}` | 服务端封面拼贴 `GET /libraries/{id}/cover`（媒体库首页同图），空库/失败退回类型图标 |
 | 影片 | `GET /discover/titles/{title_ref}` → `MediaItem` | `PosterCardVisual`（发现页同款：评分、已入库斜标、悬停订阅键）；订阅状态来自 `SubscribeEntryProvider`，另加「已订阅」斜标 |
 | 库内条目 | `GET /playback/items/{id}` → 库归属，再并行 `GET /libraries/{lib}/items/{id}`（剧照/规格）与 `GET /playback/resume`（进度） | 最近观看卡同款：16:9 剧照 + 中央播放键（兄弟节点 `<a>`）+ 进度条 + 规格行 |
+| 订阅 | `GET /subscriptions/{id}` | 订阅墙同款海报卡：`subscriptionRibbon`（自动续订/已收齐/已入库）+ `subscriptionCollectionMeta`（海报底部收录进度），点击进订阅详情 |
 
 失败与加载占位与真实卡片同尺寸——卡片组出现在正文中间，尺寸抖动会把正在阅读
 的内容推来推去。
 
 ## 4. 扩展新组件的步骤
 
-1. `media_ui.py`：`COMPONENT_LABELS` 加一项、`_DESCRIPTION` 写清参数与编号来源、
-   `validate_items` 加跨字段校验、schema 的 `items.properties` 加字段；
+1. `media_ui.py`：`COMPONENTS` 加一项、`_DESCRIPTION` 写清参数与编号来源（字段名
+   沿用 mclaw 输出）、`validate_items` 加跨字段校验、schema 的 `items.properties` 加字段；
 2. `lib/agent-media-cards.ts`：`MediaCardSpec` 加一种、`parseItem` 加分支、补测试；
 3. `components/agent-media-cards.tsx`：写卡片组件并接进 `MediaCard`；
 4. 只加组件属于兼容扩展，不升版本。改动已有组件的参数含义才升 `_v2`：后端
@@ -144,6 +148,6 @@ components/agent-conversation-view.tsx  process 段之后渲染该段内的卡�
 ## 5. 测试
 
 - `tests/agent/unit/test_media_ui_tool.py`：名字带版本、description 覆盖每个组件与
-  编号换算、schema 过 `validate_tool_call`、跨字段校验错误指向具体字段、回执文案；
-- `apps/web/test/agent-media-cards.test.mjs`：版本匹配、三种组件的参数解析、非法项
+  mclaw 字段名、schema 过 `validate_tool_call`、跨字段校验错误指向具体字段、回执为 ok；
+- `apps/web/test/agent-media-cards.test.mjs`：版本匹配、四种组件的参数解析、非法项
   跳过与去重、未知版本返回 null。

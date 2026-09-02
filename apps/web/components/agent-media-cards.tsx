@@ -11,6 +11,7 @@ import { FilmIcon, PlayIcon, TvIcon } from "@/components/icons";
 import { PosterCardVisual, type PosterVisualItem } from "@/components/poster-card";
 import { PosterImage } from "@/components/poster-image";
 import { useSubscribeEntry } from "@/components/subscribe-entry";
+import { subscriptionCollectionMeta, subscriptionRibbon } from "@/lib/subscription-ui";
 import { parseMediaCardsArgs, type MediaCardGroup, type MediaCardSpec } from "@/lib/agent-media-cards";
 import type { AgentProcessItem, AgentTurnSegment } from "@/lib/agent-conversations";
 import { fetchDiscoveredTitleDetails } from "@/lib/api/discover";
@@ -26,9 +27,10 @@ import {
   type PlaybackItemInfo,
   type PlaybackWatchState,
 } from "@/lib/api/playback";
+import { getSubscription, type Subscription } from "@/lib/api/subscriptions";
 import { publicEnv } from "@/lib/env";
 import { formatBytes } from "@/lib/format";
-import { imageUrl } from "@/lib/image-proxy";
+import { cachedImageUrl, imageUrl } from "@/lib/image-proxy";
 import type { MediaItem, MediaType } from "@/lib/media-types";
 import { playHref, rememberPlayerReturnPath } from "@/lib/player/play-links";
 import { useTapGuard } from "@/lib/use-tap-guard";
@@ -36,7 +38,7 @@ import { useTapGuard } from "@/lib/use-tap-guard";
 /**
  * Agent 生成式 UI 的渲染端（docs/design/agent-generative-ui.md）。
  *
- * 模型调用 render_media_cards_v1 时只给编号；这里按编号调产品既有接口现取数据，
+ * 模型调用 show_media_cards_v1 时只给编号；这里按编号调产品既有接口现取数据，
  * 复用全站同款的海报卡、库封面拼贴与播放卡视觉，卡片因此与发现页/媒体库页
  * 长得一模一样，订阅、入库、观看进度也永远是此刻的真实状态。
  *
@@ -238,8 +240,8 @@ const LibraryItemPlayCard = memo(function LibraryItemPlayCard({
       getLibraryItemDetail(info.library_id, info.media_item_id).catch(() => null),
       fetchResumeState({
         media_item_id: info.media_item_id,
-        season_number: spec.season,
-        episode_number: spec.episode,
+        season_number: spec.seasonNumber,
+        episode_number: spec.episodeNumber,
       }).catch(() => null),
     ]);
     return { info, detail, watch };
@@ -291,8 +293,8 @@ function LibraryItemPlayCardBody({
   const pathname = usePathname();
   const meta = KIND_META[info.kind];
   const unit =
-    info.kind === "tv" && spec.season !== undefined && spec.episode !== undefined
-      ? { season: spec.season, episode: spec.episode }
+    info.kind === "tv" && spec.seasonNumber !== undefined && spec.episodeNumber !== undefined
+      ? { season: spec.seasonNumber, episode: spec.episodeNumber }
       : null;
   const itemHref = (
     unit
@@ -393,15 +395,72 @@ function PosterFill({ title, posterUrl }: { title: string; posterUrl: string | n
   );
 }
 
+/* —— 订阅卡片：订阅墙同款海报卡（追更范围 + 收录进度 + 自动续订/已收齐斜标） —— */
+
+const SubscriptionPosterCard = memo(function SubscriptionPosterCard({
+  subscriptionId,
+}: {
+  subscriptionId: number;
+}) {
+  const state = useCardData(`subscription:${subscriptionId}`, () => getSubscription(subscriptionId));
+  const box = "w-[152px] shrink-0 max-md:w-[126px]";
+  if (state.status !== "ready") {
+    return (
+      <div className={box}>
+        <CardPlaceholder className="aspect-[2/3] w-full" failed={state.status === "error"}>
+          {state.status === "error" ? (
+            <span className="text-caption text-[var(--text-faint)]">未找到订阅 #{subscriptionId}</span>
+          ) : null}
+        </CardPlaceholder>
+      </div>
+    );
+  }
+  return (
+    <div className={box}>
+      <SubscriptionPosterCardBody sub={state.data} />
+    </div>
+  );
+});
+
+/** 订阅 → 海报卡视觉（与订阅墙 toVisualItem 同一口径：斜标讲状态、海报底部讲收录进度）。 */
+function SubscriptionPosterCardBody({ sub }: { sub: Subscription }) {
+  const ribbon = subscriptionRibbon(sub);
+  const visual: PosterVisualItem = {
+    id: String(sub.media.tmdb_id),
+    source: "tmdb",
+    type: sub.media.kind,
+    title: sub.media.title,
+    year: sub.media.year ?? undefined,
+    rating: 0,
+    posterUrl: sub.media.poster_url ? cachedImageUrl(sub.media.poster_url) : "",
+    ribbon: ribbon?.label,
+    ribbonTone: ribbon?.tone,
+    ribbonVariant: "compact-left",
+    posterFooter: subscriptionCollectionMeta(sub),
+  };
+  // 点击进订阅详情（追踪明细 + 活动时间线）而非影片详情；已是订阅，不再给订阅键
+  return (
+    <PosterCardVisual
+      item={visual}
+      href={`/subscriptions/${sub.id}` as Route}
+      action="none"
+      revealInfoOnTouch
+    />
+  );
+}
+
 /* —— 卡片组与时间线接入 —— */
 
 function MediaCard({ spec }: { spec: MediaCardSpec }) {
   if (spec.kind === "library") return <LibraryMiniCard libraryId={spec.libraryId} />;
   if (spec.kind === "title") return <TitlePosterCard spec={spec} />;
+  if (spec.kind === "subscription") {
+    return <SubscriptionPosterCard subscriptionId={spec.subscriptionId} />;
+  }
   return <LibraryItemPlayCard spec={spec} />;
 }
 
-/** 一次 render_media_cards 调用绘制的一组卡片：可选小标题 + 横滚行。 */
+/** 一次 show_media_cards 调用绘制的一组卡片：可选小标题 + 横滚行。 */
 export const AgentMediaCardsBlock = memo(function AgentMediaCardsBlock({
   group,
 }: {
@@ -428,7 +487,7 @@ function toolFailed(tool: Extract<AgentProcessItem, { kind: "tool" }>): boolean 
 }
 
 /**
- * 处理过程块里所有 render_media_cards 调用的卡片组，按调用顺序排在该块之后。
+ * 处理过程块里所有 show_media_cards 调用的卡片组，按调用顺序排在该块之后。
  * 参数尚未生成完（argsDone=false）或调用已失败（后端校验拒绝）的不画：
  * 前者还没有可画的东西，后者模型会按错误回执重发一次正确的调用。
  */

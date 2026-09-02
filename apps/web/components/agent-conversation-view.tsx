@@ -352,7 +352,7 @@ const TurnView = memo(function TurnView({
           const isLast = index === turn.segments.length - 1;
           const active = turn.status === "running" && isLast;
           if (segment.kind === "process") {
-            // 生成式 UI：该块里 render_media_cards 调用绘制的卡片组紧跟在折叠块之后——
+            // 生成式 UI：该块里 show_media_cards 调用绘制的卡片组紧跟在折叠块之后——
             // 工具行本身收在折叠块里，卡片是给用户看的内容，必须常显
             return (
               <div key={index} className="space-y-2.5">
@@ -622,7 +622,7 @@ function processSummary(items: AgentProcessItem[]): string {
 const ProcessBlock = memo(function ProcessBlock({ segment, active }: { segment: AgentTurnSegment & { kind: "process" }; active: boolean }) {
   const [open, setOpen] = useState(false);
   // 生成式 UI 的绘制调用不算「处理过程」：它的产出就是紧随其后的卡片本身，
-  // 再列一行「调用 render_media_cards_v1」只是噪音。整块只剩它时连折叠头也不出
+  // 再列一行「调用 show_media_cards_v1」只是噪音。整块只剩它时连折叠头也不出
   const items = useMemo(
     () => segment.items.filter((item) => item.kind !== "tool" || !isMediaCardsTool(item.name)),
     [segment.items],
