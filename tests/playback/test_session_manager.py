@@ -1255,8 +1255,11 @@ def test_record_remote_upload_only_books_real_failures(tmp_path):
     session.record_remote_upload("seg00003.m4s", status=500, attempt_id="attempt-new", **kwargs)
     assert session.remote_failed_segments == {3}
 
+    session.remote_segment_retries[3] = 2
     session.record_remote_upload("seg00003.m4s", status=201, attempt_id="attempt-new", **kwargs)
     assert session.remote_failed_segments == set()
+    # 分片落盘即结案，补片计数一起清零，下次偶发失败仍有补片资格
+    assert 3 not in session.remote_segment_retries
     # 诊断记录照单全收，只有补片台账才挑剔
     assert [u.status for u in session.remote_uploads] == [499, 500, 500, 201]
 

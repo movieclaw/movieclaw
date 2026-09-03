@@ -305,7 +305,11 @@ class TranscodeSession:
         if attempt_id is not None and attempt_id != self.remote_job_id:
             return
         if 200 <= status < 300:
+            # 落盘即结案：失败标记和补片计数一起清掉。计数是按「一次失败事件」
+            # 算的，不能跨事件累计，否则一个小时前补过一次的分片再遇到一次
+            # 偶发失败就直接没了补片资格。
             self.remote_failed_segments.discard(index)
+            self.remote_segment_retries.pop(index, None)
         elif status >= 400 and status != 499:
             self.remote_failed_segments.add(index)
 
