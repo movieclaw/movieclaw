@@ -316,15 +316,7 @@ def build_hls_command(
         argv += ["-map", f"0:a:{audio_index}"]
     argv += ["-sn", "-dn", "-map_metadata", "-1"]
 
-    argv += _video_args(
-        plan,
-        backend,
-        software_filters,
-        skip_filters=burn_index is not None,
-        # 只有 copyts 路径（VOD）保留文件绝对时间戳，强制关键帧的栅格要从
-        # 起播边界起算；会话相对制的时间戳从 0 起，偏移必须是 0
-        keyframe_offset_s=start_ms / 1000 if start_number is not None else 0.0,
-    )
+    argv += _video_args(plan, backend, software_filters, skip_filters=burn_index is not None)
     argv += _audio_args(
         plan, has_audio=audio_index is not None, absolute_ts=start_number is not None
     )
@@ -408,7 +400,6 @@ def _video_args(
     software_filters: bool,
     *,
     skip_filters: bool = False,
-    keyframe_offset_s: float = 0.0,
 ) -> list[str]:
     if plan.video.action == "copy":
         args = ["-c:v", "copy"]
@@ -467,23 +458,8 @@ def _video_args(
     # 固定 GOP 上限，防止 VideoToolbox 在高位点 copyts seek 时生成过密 IDR，
     # 把 HLS 切成 0.4 秒一段；force_key_frames 再把关键帧对齐到分片栅格。
     args += ["-g", str(MAX_GOP_FRAMES)]
-    # 表达式里的 t 是输出时间戳。VOD 走 -copyts，t 从起播边界（例如 1800）
-    # 起算而不是 0，而 n_forced 从 0 起每强制一次加一：不带偏移时要连续强制
-    # 约 t/4 帧（续播 30 分钟 ≈ 19 秒、2 小时 ≈ 75 秒全是 I 帧）n_forced×4
-    # 才追得上 t，这段被 maxrate 压着的全 I 帧画面明显发糊。把起播边界作为
-    # 偏移加进去（Jellyfin 同款 ``gte(t,start+n_forced*seg)``），第一帧仍是
-    # 关键帧，之后每 4 秒一个，落点与不带偏移时追平后的绝对栅格完全一致。
-    grid = f"n_forced*{SEGMENT_SECONDS}"
-    if keyframe_offset_s > 0:
-        grid = f"{_expr_number(keyframe_offset_s)}+{grid}"
-    args += ["-force_key_frames", f"expr:gte(t,{grid})"]
+    args += ["-force_key_frames", f"expr:gte(t,n_forced*{SEGMENT_SECONDS})"]
     return args
-
-
-def _expr_number(value: float) -> str:
-    """ffmpeg 表达式里的数字：整数不带小数点，非整数保留到毫秒。"""
-    text = f"{value:.3f}".rstrip("0").rstrip(".")
-    return text or "0"
 
 
 def _filter_chain(
