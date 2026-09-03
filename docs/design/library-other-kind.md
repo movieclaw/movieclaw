@@ -1,6 +1,7 @@
 # 媒体库「其他」类型：不刮削内容的入账、展示与播放
 
-> 状态：**v1（2026-09-03）——方案已拍板，待实施**。v0 草案的八个待决问题
+> 状态：**v1.1（2026-09-03）——方案已拍板，待实施**；v1.1 增补第 1.5 节
+> Jellyfin 源码考察并据此修正 3.2 / 4.1 / 4.2 / 4.3 / 4.6 / 第 5 节。v0 草案的八个待决问题
 > 已由用户逐条决定（第 8 节决策记录），本文按决策改写；第 9 节是实施前
 > 剩余的两个小口子。
 > 关联文档：[library.md](library.md)（媒体库架构）、[metadata.md](metadata.md)
@@ -61,6 +62,176 @@ Other Videos 都是同一心智。
 结论：难点不在扫描，在**身份与寻址**——展示、播放、进度、Jellyfin 四条链
 要么给它一个假的 `media_item`，要么给它一条文件寻址的并行通道。
 
+## 1.5 参考考察：Jellyfin 对非影视视频的处理（2026-09-03）
+
+对照 `jellyfin/jellyfin` 源码（HEAD `1ccec11`，12.0 dev）逐条核实 Jellyfin 是
+如何支撑 `homevideos`（Home Videos & Photos）这类库的。结论先行：**本文的
+核心决策与 Jellyfin 的做法同构**，另外捞出七处可以直接抄的实现细节与三处
+需要对齐的协议行为。
+
+### 1.5.1 模型：条目就是文件，身份就是条目 id
+
+- 库类型枚举 `CollectionType`（`Jellyfin.Data/Enums/CollectionType.cs`）：
+  `movies / tvshows / music / musicvideos / trailers / homevideos / boxsets /
+  books / photos / livetv / playlists / folders / unknown`。家庭视频对应
+  `homevideos`；`folders` 是"什么都不猜"的通用目录库。
+- **视频文件 → 裸 `Video` 类**，不是 `Movie`：`MovieResolver.Resolve`
+  对 `homevideos`/`photos` 走 `ResolveVideo<Video>(args, false)`
+  （`MovieResolver.cs:163-165`），`musicvideos` 走 `MusicVideo`，`movies`
+  才是 `Movie`。第二个参数 `parseName=false` 意味着**文件名主干原样当
+  Name，不做年份剥离与发布组清洗**（`Emby.Naming/Video/VideoResolver.cs:83-93`：
+  `name = GetFileNameWithoutExtension(path)`，只有 `parseName` 为真才跑
+  `CleanDateTime` / `CleanString`）。与本文 4.1「不跑影视 NER 清洗」一致。
+- **观看状态键 = 条目 id**：`BaseItem.GetUserDataKeys()` 默认只返回
+  `Id.ToString()`（`BaseItem.cs:1704-1717`）；`Video.GetUserDataKeys` 只在
+  条目是 extra 时才插入 TMDB/IMDb 键（`Video.cs:293-310`）。`Movie` 才有
+  provider id 键。也就是说 Jellyfin 的家庭视频**没有任何外部身份**，进度
+  与已看直接钉在文件条目上——正是本文第 2 节的方案 C。而 Jellyfin 的条目
+  id 是路径哈希，改名即换 id、进度丢失；我们靠尺寸+时长指纹归并保住
+  `library_file.id`，这一点比它强。
+- `Video.SupportsPlayedStatus` / `SupportsPositionTicksResume` 均为真
+  （`Video.cs:54, 63`）：家庭视频进「继续观看」，不进 NextUp（TV 专属）。
+- **无远程刮削**：`Video` 类型没有任何远程 metadata provider（TMDB 插件只
+  注册在 `Movie`/`Series`/…上），Screen Grabber 与 Image Extractor 是
+  该类型默认开启的两个图片来源（`LibraryController.cs:1067-1082`）。
+- **多版本不合并**：`homevideos` 的目录级解析 `ResolveMultipleInternal`
+  传 `supportMultiEditions=false`（`MovieResolver.cs:206-208`），且
+  `FindMovie` 对 photos/homevideos 集合跳过"整目录=一部片"的折叠
+  （`MovieResolver.cs:478-479`）。一个文件一个条目，与本文平铺决策一致。
+- 子目录由兜底的 `FolderResolver` 解析成 `Folder` 条目（浏览是层级的）；
+  `EnablePhotos` 默认开（`LibraryOptions.cs:29`），图片文件解析成 `Photo`
+  条目（`PhotoResolver.cs`），`homevideos` 的代表类型是 `["Video","Photo"]`
+  （`LibraryController.cs:1026`）。**本文有意偏离**：不建目录层级、不收
+  图片（第 7 节开口）。
+
+### 1.5.2 元数据：NFO 只认 sidecar，日期来自容器标签
+
+- **NFO 读取**：`VideoNfoProvider : BaseVideoNfoProvider<Video>` 与
+  `MovieNfoProvider` 共用同一个 `MovieNfoParser`（`BaseVideoNfoProvider.cs:45-56`）。
+  文件查找 `MovieNfoSaver.GetMovieSavePaths`（`MovieNfoSaver.cs:47-69`）：
+  `movie.nfo` **只对 `Movie` 类型且非混合目录**放行（源码注释："not owned
+  videos, which will be itemtype video"），`Video` 只读**视频同名 `.nfo`**
+  （原盘目录读 `<目录名>.nfo`）。**解析器不校验根元素名**：
+  `BaseNfoParser.Fetch` 直接 `MoveToContent(); Read();` 跳过根元素后遍历
+  子节点（`BaseNfoParser.cs:133-147`），`<movie>` / `<video>` / 任何根都行。
+  写出时根元素：`MusicVideo` 写 `<musicvideo>`，其余一律 `<movie>`
+  （`MovieNfoSaver.cs:72-73`）。本文第 5 节「待核实」就此闭环。
+- 读取的标签（`BaseNfoParser.cs:271-600`）：`title/name/localtitle` →
+  Name；`sorttitle` → 排序名；`plot/outline`；**`dateadded` → DateCreated
+  （入库时间）**；`premiered/aired/releasedate` → PremiereDate 并回填
+  ProductionYear（`:556-566`）；`year`；`runtime`；`genre`/`tag`；以及
+  `watched/playcount/lastplayed` 会导入观看状态。
+- **NFO 写出默认关**：`MovieNfoSaver.IsEnabledFor` 对任何非分集、非 extra
+  的 `Video` 都返回真（`MovieNfoSaver.cs:76-88`），但 `IsSaverEnabledByDefault`
+  对新库恒 `false`（`LibraryController.cs:1033-1038`）。本文「永不写」比它
+  更保守，方向一致。
+- **日期来自容器标签**（`ProbeResultNormalizer.cs:164-174`）：
+  `ProductionYear ← tags.date`；`PremiereDate ← originaldate → retaildate →
+  retail date → retail_date → date_released → date → creation_time`。
+  `FFProbeVideoInfo.FetchEmbeddedInfo` 对非 extra 的视频**无条件**把它们
+  填进空着的 PremiereDate/ProductionYear（`FFProbeVideoInfo.cs:436-449, 486-489`）。
+  这与本文 3.2 `recorded_at` 的三级回落完全同构，并补了一条：`date` 标签
+  排在 `creation_time` 前。
+- **容器 `title` 标签默认不用**：`EnableEmbeddedTitles` 默认关
+  （`LibraryOptions.cs:68`；`FFProbeVideoInfo.cs:471-476`）——嵌入标题常是
+  编码器或"Untitled"之类的垃圾，Jellyfin 把它做成 opt-in。我们 v1 不读，
+  留作开口。
+- **入库时间**：`ResolverHelper.SetDateCreated` 按 `UseFileCreationTimeForDateAdded`
+  （默认真，`MetadataConfiguration.cs:9`）取文件创建时间，否则取当前时间
+  （`ResolverHelper.cs:131-153`）。我们的 `created_at` 是入账时间，语义同后者。
+
+### 1.5.3 图片：本地文件名规范 + 抓帧
+
+`LocalImageProvider`（`MediaBrowser.LocalMetadata/Images/LocalImageProvider.cs`）
+对混合目录中的 `Video`：
+
+| 图类型 | 认的文件名（`<主干>` = 视频文件名主干） |
+|---|---|
+| Primary | `<主干>.jpg`（精确同名，`:288-294`）→ `<主干>-poster` / `-folder` / `-cover` / `-default` / `-movie`（`:59, :296-302`） |
+| Thumb | `<主干>-landscape` → `<主干>-thumb`（`:246-250`） |
+| Backdrop | `<主干>-fanart`（`:314-322`） |
+
+不带前缀的 `poster.jpg`/`folder.jpg` 只在**非混合目录**（一个视频独占一个
+目录）才认（`:304-312`）。**修正本文 4.2**：`<主干>-thumb.jpg` 在 Jellyfin
+语义里是 Thumb 而非 Primary，我们的 16:9 卡片取用顺序应为
+`-thumb`/`-landscape` → `<主干>.jpg`/`-poster` → 抓帧。
+
+**Screen Grabber**（`MediaBrowser.Providers/MediaInfo/VideoImageProvider.cs`）：
+
+- 只出 Primary；`Order = 100` 排在网络图源之后（`:36-41`）；
+- 条件：`IsFileProtocol`（**strm 不抓**）、非快捷方式、非占位、非 DVD、
+  探测到视频流（`:47-58, :116-128`）；
+- 位置：已知时长取 **10%** 处，否则第 10 秒（`:72-74`）；
+- ffmpeg（`MediaEncoder.cs:674-800`）：`-ss <t> -i in -threads N -v quiet
+  -vframes 1 -vf <滤镜> -f image2 out.jpg`。滤镜链：隔行则 `bwdif` 反交错 →
+  `scale=round(iw*sar/2)*2:round(ih/2)*2`（只修正 SAR 与奇数尺寸，**不缩小**，
+  缩放在出图时按请求做）→ **`thumbnail=n=24`**（24 帧里挑最有代表性的一帧，
+  避开黑场/转场；性能取舍配置开启时省掉）→ **HDR 软件 tonemap**
+  （`tonemapx` 或 `zscale+tonemap=hable`，杜比视界只在 `tonemapx` 可用时做）。
+  mpegts 容器加 `-skip_frame nokey`（无法按关键帧 seek）。全局信号量限并发；
+- 图片长宽比：`DtoService.GetPrimaryImageAspectRatio` 读**真实图片尺寸**
+  （`DtoService.cs:1745-1774`），`Video` 的默认值是 0（`BaseItem.cs:834`），
+  `Movie` 才是 2/3。客户端据此把家庭视频排成 16:9 卡片。
+
+**Image Extractor**（`EmbeddedImageProvider`）排在 Screen Grabber 之前：
+容器里带 `attached_pic` 封面流时直接取封面。手机录像不会有，但值得作为
+零成本的前置一档（ffprobe 已列出全部流）。
+
+### 1.5.4 忽略规则：通用适用，但只做精确/后缀匹配
+
+- 全局 glob（`IgnorePatterns.cs`）：`sample.*`、`*.sample.*`、`sample/`
+  目录、`metadata/`、`extrafanart/`、`.actors/`、`subs/`、`@eaDir` 类系统目录、
+  `*.trickplay`——**对所有库类型生效**，`homevideos` 不例外；
+- extras 规则（`NamingOptions.cs:497-704`）在 `VideoResolver.Resolve` 里
+  **无视库类型**计算，`MovieResolver` 对 `ExtraType != null` 的条目一律丢弃
+  （`:176-179`）。但匹配语义是**精确或后缀**：文件名规则要求主干**整体等于**
+  `trailer`/`sample`（`ExtraRuleResolver.cs:48`），后缀规则是 `-trailer`
+  `-sample` `-scene` `-clip` `-interview` `-behindthescenes` `-deleted`
+  `-featurette` `-short` `-extra` `-other` 等；目录名规则 `trailers` `extras`
+  `other` `clips` `shorts` `samples` … 对**库根下的一级目录不生效**
+  （`CoreResolutionIgnoreRule.cs:37-41`，"Don't ignore top level folders"），
+  更深层才忽略。**没有任何子串关键词匹配**。
+- 对照我们：影视库的 `_IGNORE_MARKERS`（`sample` 子串）与 `_EXTRAS_KEYWORDS`
+  （「花絮/预告片」子串）比 Jellyfin 激进得多，用在家庭视频上必伤
+  （`婚礼花絮.mp4`、`采样测试.mp4`）。**修正本文 4.1**：其他库采用 Jellyfin
+  口径——隐藏目录 + 系统目录 + 主干精确等于 `sample`，不做任何子串规则，
+  也不做 extras 目录名规则（我们对其他库没有 extras 概念，`clips/`、`other/`
+  这种名字恰恰是家庭视频的常见分类目录）。
+
+### 1.5.5 协议面：`homevideos` 视图的接口行为
+
+- `UserViews`：`homevideos` 属于 `_originalFolderViewTypes`（`UserView.cs:31-39`），
+  按原样目录视图输出，`CollectionType: "homevideos"`；
+- `/Items?parentId=<库>` **不传 `includeItemTypes`** 时保持空、**非递归**
+  （`ItemsController.cs:326-333`，只有 boxsets 有特例）→ 返回直接子项
+  （Folder + Video）；传了类型则默认递归（`:335-340`）。我们平铺，两种请求
+  都直接返回全部 Video，协议合法（一个所有文件都在根下的 homevideos 库
+  就长这样）；
+- `Latest`：`homevideos` 的 `MediaTypes=[Photo, Video]`、`IsFolder=false`、
+  按 `DateCreated` 倒序（`UserViewManager.cs:325-333, 367-380`）；`Video` 的
+  `LatestItemsIndexContainer` 为 null（`BaseItem.cs:737`）→ **不聚合**，逐条
+  输出。与本文 4.6 一致；
+- `/Items/Counts`：`Video` 只计入 `ItemCount`，没有 `VideoCount`
+  （`ItemCountService.cs:70-100`）；
+- DTO：`Type: "Video"`、`MediaType: "Video"`、`IsFolder: false`、`VideoType`、
+  多源时 `MediaSourceCount`（`DtoService.cs:1303-1345`）；有效 `Type` 全集见
+  `BaseItemKind`（含 `Video` `Folder` `Photo` `PhotoAlbum` `MusicVideo`）。
+
+### 1.5.6 对本计划的修正与吸收
+
+| # | 结论 | 落到哪 |
+|---|---|---|
+| 1 | 方案 C（文件即单元、观看状态钉文件、无远程身份、无版本合并、文件名不清洗）与 Jellyfin `Video` 的处理**全部同构**，不再有"我们是不是发明了奇怪东西"的顾虑 | 第 2 节 |
+| 2 | NFO：只读 sidecar `<主干>.nfo`，根元素不校验；`premiered/aired` → 拍摄时间，`dateadded` 是入库时间不是拍摄时间 | 3.2 / 4.1 / 第 5 节改写 |
+| 3 | `recorded_at` 回落链补 `date` 标签：NFO `premiered/aired` → 容器 `date` → `creation_time` → mtime | 3.2 |
+| 4 | 本地图片文件名对齐 `LocalImageProvider`：`-thumb`/`-landscape` 是 Thumb，`<主干>.jpg`/`-poster` 是 Primary，`-fanart` 是背景 | 4.2 |
+| 5 | 抓帧照抄：10% 位置、`thumbnail=n=24` 选帧、HDR tonemap（iPhone 录像大量 HLG/杜比视界，不 tonemap 会灰）、反交错、strm 不抓、限并发；`attached_pic` 封面流优先 | 4.3 |
+| 6 | 忽略规则改 Jellyfin 口径：无子串匹配，只精确 `sample` + 系统/隐藏目录 | 4.1 |
+| 7 | Jellyfin 层 `Video` 条目必须输出 **`PrimaryImageAspectRatio`**（按真实图片尺寸），否则客户端按海报比例裁 16:9 帧图。我们现有 catalog 从未输出该字段，影视条目靠客户端默认 2/3 蒙对了，Video 蒙不对 | 4.6 |
+| 8 | `Counts` 只加 `ItemCount`；`Latest` 逐条不聚合；`Resume` 含 Video；不传类型的库级 `/Items` 返回全部 Video | 4.6 |
+| 9 | 有意偏离登记：不建 `Folder` 层级、不收 `Photo`。实施时写进 jellyfin-compat.md 的偏离清单 | 4.6 / 第 7 节 |
+| 10 | 开口：容器 `title` 标签作标题（Jellyfin opt-in）、NFO 的 `watched/playcount` 导入、图片收录做成"相册" | 第 7 节 |
+
 ## 2. 核心决策：不造假身份，播放单元升级为「条目单元 | 文件」
 
 | 方案 | 做法 | 评价 |
@@ -101,7 +272,7 @@ PlayUnit = ItemUnit(media_item_id, season, episode)   # 影视：现状不变
 | 列 | 说明 |
 |---|---|
 | `title` | 展示标题：NFO `<title>` → 文件名主干。列表/排序/搜索都靠它 |
-| `recorded_at` | 拍摄/录制时间：NFO `premiered`/`aired`/`dateadded` → ffprobe `format.tags.creation_time`（手机拍摄都写）→ 文件 mtime。相册排序轴 |
+| `recorded_at` | 拍摄/录制时间：NFO `premiered`/`aired` → ffprobe 容器标签 `date` → `creation_time`（手机拍摄都写）→ 文件 mtime。相册排序轴。（`dateadded` 在 Kodi/Jellyfin 语义里是**入库时间**，不参与，见 1.5.2） |
 | `thumb_file` | 缩略图资产相对路径（`data/metadata/thumbs/{file_id}.jpg`）；NULL=未生成/生成失败（下次扫描重试） |
 
 简介等其余 NFO 字段不落库，详情时按需读文件（与影视详情页 NFO 层同款）。
@@ -143,8 +314,8 @@ UNIQUE (member_id, library_file_id) WHERE library_file_id IS NOT NULL
 `_ingest_file` 里走 `_local_video_identity(file)`：
 
 ```
-sidecar NFO（<主干>.nfo，根元素 movie / video / musicvideo / episodedetails 任一）
-  → title / plot / premiered|aired|dateadded / runtime
+sidecar NFO（<主干>.nfo；根元素不校验——Jellyfin 同款，见 1.5.2）
+  → title / sorttitle / plot / premiered|aired / runtime / genre|tag
 无 NFO → title = 文件名主干（不跑影视 NER 清洗，那套规则会把 "2019.10.01 国庆" 切碎）
 recorded_at 按 3.2 的三级回落
 ```
@@ -153,8 +324,10 @@ recorded_at 按 3.2 的三级回落
 
 - **extras 过滤**：`_IGNORE_MARKERS` 的 `sample`、`_EXTRAS_KEYWORDS` 的
   「花絮/预告片」子串匹配——`婚礼花絮.mp4` 会被当作影视花絮直接跳过；
-  `_IGNORE_DIRS` 里的中文花絮目录名同理。other 库只保留隐藏目录与 `@eaDir`
-  类系统目录的忽略；
+  `_IGNORE_DIRS` 里的花絮/extras 目录名同理（`clips/`、`other/` 恰是家庭
+  视频常见的分类目录）。other 库改用 Jellyfin 口径（1.5.4）：隐藏目录 +
+  `@eaDir`/`metadata`/`.actors`/`lost+found` 类系统目录 + 文件名主干**精确
+  等于** `sample`，不做任何子串规则、不做 extras 目录名规则；
 - `_kind_conflict`、路径 `[tmdbid=N]`、TMDB 名称收敛、身份复核
   （`_review_due`）、条目目录 `movie.nfo`/`tvshow.nfo` 查找：整段不进；
 - 收尾 ASSETS 阶段的 `ensure_assets`（刮削图片/NFO 镜像）不进；换成
@@ -194,9 +367,12 @@ FileSection 上，保持一致就得有这个页面。页面结构是影视详�
 
 **没有海报怎么办**——三级回落，全部在网格与详情页共用：
 
-1. sidecar 图（Kodi 惯例 `<主干>-thumb.jpg` / `<主干>.jpg`）；
-2. ffmpeg 抓帧缩略图（4.3）；
-3. 兜底：中性占位（图标 + 标题 + 时长 + 日期）。
+1. sidecar 图，文件名对齐 Jellyfin `LocalImageProvider`（1.5.3）：横图
+   `<主干>-thumb.jpg` / `<主干>-landscape.jpg` 优先（本就是 16:9 语义），
+   其次 `<主干>.jpg` / `<主干>-poster.jpg`；`<主干>-fanart.jpg` 作详情页背景；
+2. 容器内 `attached_pic` 封面流（ffprobe 已列出，零额外探测）；
+3. ffmpeg 抓帧缩略图（4.3）；
+4. 兜底：中性占位（图标 + 标题 + 时长 + 日期）。
 
 库卡片封面：现有「氛围光货架」拼贴只取 `media_metadata.poster_file`，other
 库改用 4 张最新缩略图做 16:9 变体；没有缩略图时用纯色卡。媒体库首页汇总
@@ -205,10 +381,23 @@ FileSection 上，保持一致就得有这个页面。页面结构是影视详�
 ### 4.3 缩略图（P1，用户决策：体验分水岭）
 
 扫描收尾新增 THUMBS 阶段（替代影视库的 ASSETS 阶段）：对 `thumb_file`
-为 NULL 且已探测成功的在位文件，`ffmpeg -ss <10% 时长> -frames:v 1` 抓一帧
-缩到 480px 宽，写 `data/metadata/thumbs/{file_id}.jpg`。
+为 NULL 且已探测成功的在位文件抓一帧，写 `data/metadata/thumbs/{file_id}.jpg`，
+参数照抄 Jellyfin Screen Grabber（1.5.3）：
 
-- 优先级：sidecar 图存在则直接登记为 `thumb_file`（不抓帧）；
+```
+ffmpeg -ss <10% 时长；未知时长则 10s> -i <文件> -threads N -v quiet -vframes 1
+       -vf [bwdif,]scale=round(iw*sar/2)*2:round(ih/2)*2[,thumbnail=n=24][,tonemap]
+       -f image2 <输出>
+```
+
+- `thumbnail=n=24` 在 24 帧里挑最有代表性的一帧（避开黑场/转场）；
+- **HDR → SDR tonemap**（`zscale`+`tonemap=hable`，或 `tonemapx`）：iPhone
+  录像大量是 HLG/杜比视界，不做这一步帧图发灰发白。播放侧
+  `ffmpeg_args.py` 已有 tonemap 滤镜构造，复用；
+- 隔行源加 `bwdif`；mpegts 容器加 `-skip_frame nokey`；
+- 输出宽度上限 1280（Jellyfin 存原尺寸、出图时缩放；我们有 `image_variants`
+  管线，存一档中等尺寸再按请求缩放即可），JPEG 质量中档；
+- 优先级：sidecar 图 / `attached_pic` 存在则直接登记为 `thumb_file`（不抓帧）；
 - 限并发（复用 ASSETS 的 3 路队列）、strm 跳过、探测失败跳过、抓帧失败
   只记日志（下次扫描重试）；
 - 与 trickplay 同一类 IO 顾虑（云盘挂载唤醒休眠盘）：只对新文件做，
@@ -259,12 +448,20 @@ FileSection 上，保持一致就得有这个页面。页面结构是影视详�
   `_files_for_ref` 对 VIDEO 直接取该文件——MediaSource 构造本就是文件级的
   （`media_source_dto`），复用；
 - playstate 的 `_resolve_units` 对 VIDEO 返回 `FileUnit`，UserData 读统一表；
-- images：VIDEO 的 `Primary` = `thumb_file`；库封面走 4.2 的变体；
-- `/Items/Counts`（other 库计入 `MovieCount` 之外的 `ItemCount`）、Latest
-  （按 `created_at` 出 Video 条目）、Resume（`FileUnit` 行）、NextUp
-  （不涉及）、搜索（按 `title`）逐一补上；
+- images：VIDEO 的 `Primary` = `thumb_file`；有 `-fanart` 时给 `Backdrop`；
+  库封面走 4.2 的变体；
+- **`PrimaryImageAspectRatio` 必须输出**（1.5.6 第 7 条）：按缩略图真实
+  宽高比给（通常 1.777…），`Video` 在 Jellyfin 里没有 2/3 的默认值，客户端
+  靠这个字段决定卡片形状。现有影视条目也顺手补上（2/3 或按资产尺寸），
+  与真 Jellyfin 对齐；
+- `/Items/Counts`：`Video` 只计入 `ItemCount`（Jellyfin 没有 `VideoCount`）；
+  Latest 逐条输出 Video、按 `created_at` 倒序、不聚合；Resume 含 `FileUnit`
+  行；NextUp 不涉及；搜索按 `title`；
 - 排序：`SortName` 用 `title`、`DateCreated` 用 `created_at`、
-  `PremiereDate` 用 `recorded_at`。
+  `PremiereDate` 用 `recorded_at`；
+- 有意偏离（实施时登记进 jellyfin-compat.md 的偏离清单）：不输出 `Folder`
+  层级、不输出 `Photo` 条目；`/Items?parentId=<库>` 不论是否递归都返回全部
+  Video。
 
 ### 4.7 必须关掉的身份级入口（守卫清单）
 
@@ -277,15 +474,16 @@ FileSection 上，保持一致就得有这个页面。页面结构是影视详�
 
 ## 5. NFO 兼容的边界
 
-读：sidecar `<主干>.nfo`，根元素 `movie` / `video` / `musicvideo` /
-`episodedetails` 任一，取 `title`、`plot`、`premiered|aired|dateadded`、
-`runtime`、`genre`/`tag`；`tmdbid`/`uniqueid` **忽略**（有也不建身份）。
+读：只读 sidecar `<主干>.nfo`（**不读目录级 `movie.nfo`**——Jellyfin 对
+`Video` 类型同样不读，见 1.5.2），根元素**不校验**（`<movie>`/`<video>`/
+`<musicvideo>` 都行，Jellyfin 解析器同款），取 `title`、`sorttitle`、`plot`、
+`premiered|aired|releasedate`、`year`、`runtime`、`genre`/`tag`；
+`tmdbid`/`uniqueid` **忽略**（有也不建身份）；`dateadded` 是入库时间语义，
+不当拍摄时间用。
 
 写：**永不**。影视库写 NFO 的价值是把 tmdb id 交给下游；other 库没有
-任何我们比用户更清楚的信息，写出只会污染用户目录。
-
-> 待核实：Jellyfin 对 homevideos 库中 `Video` 条目的 NFO 读写具体走哪个
-> 根元素（记忆中沿用 `<movie>` 解析器），实施前对照源码确认一次。
+任何我们比用户更清楚的信息，写出只会污染用户目录。Jellyfin 对新库的
+NFO saver 默认也是关的（`IsSaverEnabledByDefault` 恒 false）。
 
 ## 6. 分期实施
 
@@ -311,7 +509,14 @@ FileSection 上，保持一致就得有这个页面。页面结构是影视详�
 5. **超大其他库**（万级文件）的网格分页与缩略图磁盘占用（480px JPEG
    约 30KB/张，一万个文件 300MB）：可接受，随「清理无引用资产」一并清理；
 6. 目录层级：当前不做；若日后要，按 v0 草案的派生目录方案补
-   `browse?path=` 与 Jellyfin FOLDER GUID，本设计的接口形态不变。
+   `browse?path=` 与 Jellyfin FOLDER GUID，本设计的接口形态不变；
+7. 图片收录：Jellyfin 的 homevideos 默认把 jpg/heic 也当 `Photo` 条目收进来
+   （1.5.1），做成真正的相册。我们 v1 只收视频；要做的话是独立的类型
+   （`photo`）而不是往 other 里塞，Jellyfin 也单独有 `photos` 类型；
+8. 容器 `title` 标签作标题：Jellyfin 做成 opt-in（嵌入标题常是垃圾），我们
+   v1 不读；有诉求时加库级开关，落在 NFO 与文件名之间；
+9. NFO 里的 `watched/playcount/lastplayed`：Jellyfin 会导入为观看状态，
+   我们不导（观看状态是成员维度的，NFO 里的是谁的说不清）。
 
 ## 8. 决策记录（用户拍板 2026-09-03）
 
