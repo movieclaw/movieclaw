@@ -12,6 +12,7 @@ import { useConfirm, useToast } from "@/components/feedback";
 import { HighlightedCode } from "@/components/highlighted-code";
 import { LlmSetupNotice, useLlmConfigured } from "@/components/llm-gate";
 import { ChevronRightIcon, PencilIcon } from "@/components/icons";
+import { ImageLightbox } from "@/components/image-lightbox";
 import { Markdown } from "@/components/markdown";
 import type { CodeLang } from "@/lib/shiki";
 import {
@@ -418,6 +419,18 @@ function UserBubble({
     text,
     knownSkills ?? undefined,
   );
+  // 图片灯箱：记录被点开的下标（null 为关闭）。一轮里带几张图就一组浏览，
+  // 灯箱内 ←→ 可在同轮图片间切换。乐观渲染优先本地 objectURL；回放走附件
+  // 下载接口（immutable 缓存）——灯箱大图与缩略图共用同一地址，不重复下载。
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  const imageUrls = useMemo(
+    () =>
+      (images ?? []).map(
+        (image) => image.previewUrl ?? sessionAttachmentUrl(sessionId, image.attachmentId),
+      ),
+    [images, sessionId],
+  );
+  const closeLightbox = useCallback(() => setLightboxIndex(null), []);
   return (
     <div className="group/copy flex flex-row-reverse items-end justify-start" {...revealProps}>
       {/* 触摸端点气泡浮现操作键（桌面端靠 hover，这一下点击是多余但无害的）。
@@ -442,28 +455,39 @@ function UserBubble({
         )}
         {images && images.length > 0 && (
           <span className={`flex flex-wrap gap-2 ${plainText ? "mb-2" : ""}`}>
-            {images.map((image) => (
-              // 乐观渲染优先本地 objectURL；回放走附件下载接口（immutable 缓存）。
-              // 点击开新页看原图——转录页不再实现单独的灯箱。
-              <a
+            {images.map((image, i) => (
+              // 点击就地打开灯箱放大预览，不跳新页；stopPropagation 避免触发
+              // 气泡的 toggle（否则点完图操作键的浮现态会被切回去）
+              <button
                 key={image.attachmentId}
-                href={image.previewUrl ?? sessionAttachmentUrl(sessionId, image.attachmentId)}
-                target="_blank"
-                rel="noreferrer"
-                onClick={(event) => event.stopPropagation()}
+                type="button"
+                aria-label={`放大预览：${image.name ?? "图片"}`}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setLightboxIndex(i);
+                }}
+                className="cursor-zoom-in overflow-hidden rounded-lg border border-white/10 transition-opacity hover:opacity-90"
               >
                 <img
-                  src={image.previewUrl ?? sessionAttachmentUrl(sessionId, image.attachmentId)}
+                  src={imageUrls[i]}
                   alt={image.name ?? "图片"}
                   loading="lazy"
-                  className="max-h-40 max-w-[200px] rounded-lg border border-white/10 object-cover"
+                  className="block max-h-40 max-w-[200px] object-cover"
                 />
-              </a>
+              </button>
             ))}
           </span>
         )}
         {plainText}
       </div>
+      {lightboxIndex !== null && (
+        <ImageLightbox
+          images={imageUrls}
+          initialIndex={lightboxIndex}
+          thumbAspect="landscape"
+          onClose={closeLightbox}
+        />
+      )}
       <CopyButton
         text={text}
         className={`${REVEAL_CLASS} touch-target mb-1 mr-1 shrink-0 p-1 text-[var(--text-faint)] hover:text-[var(--text)]`}
