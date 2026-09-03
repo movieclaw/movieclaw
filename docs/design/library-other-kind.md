@@ -51,7 +51,7 @@ Other Videos 都是同一心智。
    地址、`playback_state`（`media_item_id` NOT NULL 外键）、最近观看、
    Jellyfin 目录（`item_ids_with_files` 同样过滤 NULL）**全部只认这个锚**。
    今天产品对「没有 TMDB 身份的文件」的唯一答案是**待识别清单**——一个
-   待办队列，不是可浏览内容。
+   待办队列，不是可浏览内容（v2 第 11 节改为给临时本地身份，可见可播）。
 3. **`library_file` 没有任何展示标题字段**。待识别清单的名字是请求时用
    条目目录名/文件名临时拼的。
 4. **两处现成的缝**：① 播放决策与取流已经是文件寻址的——
@@ -605,7 +605,8 @@ README「其他视频库」一节。
 
 用户拍板（2026-09-03）：单一通用类型；平铺；缩略图入一期；播放状态不拆表；
 Jellyfin 高优先级；video 库可作下载/导入目标；文件级原生能力一致；
-命名暂用 `video` / 「其他」。
+命名暂用 `video` / 「其他」；用 `video` 库存放暂不刮削的成人内容属预期用法。
+影视库里认不出的文件给临时本地身份、可见可播（第 11 节，用户提出 2026-09-03）。
 
 设计演进：v0 文件寻址草案 → v1 决策落地 → v1.1 Jellyfin 考察 → v1.2
 能力档案 / 独立表 / 统一单元 → **v2 身份泛化**（本版）。v1.2 的三项改动
@@ -710,6 +711,94 @@ Emby 都不允许改库类型（只能删库重建），我们能做是因为身
 - 不做跨形态的**部分**转换（一个库里一半电影一半剧集）——那是两个库，
   用转移功能拆；
 - 不为转换预建任何表或列。
+
+## 11. 影视库里认不出的文件：给临时身份，照常可见可播（2026-09-03）
+
+### 11.1 问题
+
+T0 剧集（TMDB 还没建条）、冷门片、自压内容进了电影/剧集库，今天的下场是
+`media_item_id = NULL` → 只出现在「待处理」抽屉，海报墙不显示、网页与
+Jellyfin 都播不了、不记进度。库存台账里明明有文件，用户却"看不见、放不了"。
+library.md 决策 4「未识别落账 + 人工认领」解决的是**不错挂**，没解决
+**能不能看**。
+
+### 11.2 答案：识别失败 → 建 `source=local` 的临时条目
+
+v2 把身份来源做成了维度，这个问题就不需要新机制：**影视库的识别链在 TMDB
+策略失败后，回落到 local 策略**，为文件建一条 `media_item(kind=库形态,
+source=local)` 临时条目。文件从此有锚，海报墙、详情页、播放、进度、最近观看、
+Jellyfin 全部照常工作——与 `video` 库的条目走的是完全同一条路。
+
+```
+_ingest_file:
+  tmdb 策略 identify(file)
+    ├─ 命中 → 现状
+    └─ 失败（no_match / ambiguous / unparsable / tmdb_unreachable）
+         → local 策略 ensure_local_item(kind, group=…, evidence=…)
+         → library_file.media_item_id = 临时条目；unidentified_code/reason/candidates 照记
+```
+
+与 `video` 库的两点不同：
+
+- **标题用解析结果，不用文件名原样**：影视库的文件名是发布名，
+  `guess_evidence` 已经把 `Show.Name.S01E01.1080p.WEB-DL` 解析成
+  `title="Show Name", year=2024`（Jellyfin 对 movies 库同样 `parseName=true`）；
+  解析不出（`unparsable`）才退回文件名主干；
+- **按作品分组，不是一文件一条目**：一部 T0 剧的 5 个分集文件要成一张卡，
+  不是五张。分组键：在条目目录（`entry_dir_of`）内的文件共享一条临时条目；
+  库根下的散文件按解析出的 `(title, year)` 分组（同名两版本合成一条目的
+  两个版本，与 Jellyfin `GetVideosGroupedByVersion` 同义）。季集号沿用
+  `_unit_for` 的既有解析（不依赖 TMDB），详情页的季集区用现有
+  `build_season_episodes` 的"库里实际有的集"那一半（无 `media_episode`
+  行时集名取自文件名）。
+
+临时条目的资产走 local 的 `ensure_assets`：目录里有第三方 NFO/图就吸收
+（11.4），否则抓帧——T0 剧集在 Infuse 里立刻有 16:9 帧图而不是空白卡。
+
+### 11.3 「待识别」从"看不见的队列"变成"条目上的状态"
+
+- `library_file.unidentified_code/reason/candidates` 语义不变，继续是
+  认领面板的输入；`stats_unidentified_count` 口径改为
+  `unidentified_code IS NOT NULL AND ignored_at IS NULL`（不再依赖锚为空）；
+- 海报墙卡片对 `source=local` 且库为影视形态的条目打「未识别」角标，
+  详情页顶部给显眼的「识别 / 认领」入口（复用现有认领面板与候选点选），
+  「待处理」抽屉保留为筛选视图，条目链接到详情页；
+- 重扫**照旧对未识别文件重跑识别链**（现状语义：`retried` 计数），T0 内容
+  几天后 TMDB 建条即自动转正；
+- 转正 = **改锚 + 迁进度 + 清孤儿**：文件行的 `media_item_id` 从临时条目改到
+  TMDB 条目，`playback_state` 按 (文件 → 旧单元 → 新单元) 复制，临时条目被
+  `cleanup_orphan_items` 收走。这正是第 10 节 ⑤ 的原语，抽成一个服务
+  `reanchor_files(files, new_unit_of)`，供扫描自动转正、人工认领、重新识别、
+  将来的库类型转换四处共用；
+- **仍然保持 NULL 锚的只剩两类**：用户点过「忽略」的文件（不想看见），
+  以及 `kind_mismatch`（剧集放进电影库）——后者不是"认不出"而是"放错了"，
+  给它一条电影形态的临时条目会把分集摆成版本，比不显示更误导，仍走
+  「放错库了」引导转移。
+
+### 11.4 与 `video` 库的关系
+
+同一套 local 策略、同一套资产回落、同一个转正原语；差别只在两处参数：
+影视库用解析标题并按作品分组，`video` 库用文件名原样、一文件一条目、
+且不会再被 TMDB 策略"抢走"。
+
+library.md 决策 4 相应修订为：「未识别文件落账并挂**临时本地身份**（可见
+可播），待识别清单人工认领；NULL 锚只用于忽略与类型错放」。
+
+### 11.5 落到实施计划
+
+并入**一期**（都是同一条链的参数化，不是新链路）：
+
+| 事项 | 落点 |
+|---|---|
+| tmdb 策略失败回落 local 策略；`ensure_local_item` 支持 `group` 提示（条目目录 / 解析 `(title, year)`）与解析标题 | `scan.py:2942-3107`（`_identify`）、`services/media_library.py` |
+| `reanchor_files()` 原语：改锚 + `playback_state` 迁移 + 触发孤儿清理；接入扫描转正、`claim_files`、`reidentify_item` | 新 `services/library/reanchor.py`；`claim.py:40`、`scan.py:3611` |
+| 统计口径改 `unidentified_code`；待处理清单查询改按 code 而非 NULL 锚 | `library_repo.py:60-120`、`library_file_repo.list_unidentified` |
+| 海报墙/详情页「未识别」角标与认领入口；Jellyfin 无 `ProviderIds` 即可 | `library-detail-view.tsx`、`library-item-detail-view.tsx`、`catalog.py` |
+| 存量：现有 NULL 锚的未识别行不需迁移——下次扫描重跑识别链自然落到 local 策略；文档写明"升级后重扫一次" | — |
+
+验收补三条：T0 剧 5 集文件 → 一张「未识别」卡、季集区五集可播、进度落库；
+之后 TMDB 有了条目 → 重扫自动转正，卡片变海报、**进度仍在**；`婚礼花絮`
+类忽略文件与 `kind_mismatch` 文件不出卡。
 
 ## 附录 A：两值假设的高风险点（实施时逐个处理）
 
