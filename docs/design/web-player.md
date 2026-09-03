@@ -158,12 +158,17 @@ ffmpeg -hwaccel vaapi -hwaccel_output_format vaapi -hwaccel_device <dev>
        -vf "scale_vaapi=w=<W>:h=<H>:format=nv12<,tonemap_vaapi=...>"
        -c:v h264_vaapi -b:v <目标码率> -maxrate <1.5x> -bufsize <2x>
        -g <按最高帧率折算的 GOP 上限>
-       -force_key_frames "expr:gte(t,n_forced*4)"
+       -force_key_frames "expr:gte(t,<起播边界秒数>+n_forced*4)"
        -c:a <见档2> -f hls -hls_segment_type fmp4 -hls_time 4 ...
 ```
 
 **档 4 软件** — `-c:v libx264 -preset veryfast -crf 21 -g <按最高帧率折算的 GOP 上限>`，
-`-force_key_frames "expr:gte(t,n_forced*4)"`，其余同档 3。
+`-force_key_frames "expr:gte(t,<起播边界秒数>+n_forced*4)"`，其余同档 3。
+
+> 表达式里的 `t` 是输出时间戳，`-copyts` 下从起播边界起算而不是 0。偏移必须
+> 带上（Jellyfin 同款）：不带的话 `n_forced*4` 要追上 `t` 之前每一帧都被强制成
+> 关键帧，续播 30 分钟约 19 秒、2 小时约 75 秒全是被 maxrate 压扁的 I 帧。
+> 会话相对制（非 VOD）时间戳从 0 起，偏移为 0，表达式退化为 `gte(t,n_forced*4)`。
 
 > 档 3/4 自己控制 GOP，可以固定 4s 分片；同时设置 GOP 上限，避免 VideoToolbox
 > 在带绝对时间戳的高位点 seek 下自行插入过密 IDR 把分片切碎。**档 1/2 不行**——

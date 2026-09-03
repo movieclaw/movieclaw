@@ -251,6 +251,26 @@ def test_transcode_forces_keyframes_for_exact_segments():
 
 
 @pytest.mark.parametrize("backend", [None, "videotoolbox"])
+def test_vod_keyframe_grid_starts_at_seek_boundary(backend):
+    """回归：copyts 下 t 是文件绝对时间，栅格不从起播边界起算的话，n_forced×4
+    追上 t 之前每一帧都被强制成关键帧（续播 30 分钟 ≈ 19 秒全 I 帧）。"""
+    tier = PlaybackTier.SOFTWARE_TRANSCODE if backend is None else PlaybackTier.HARDWARE_TRANSCODE
+    transcode = plan(tier, video=VideoPlan(action="transcode", codec="h264", height=1080))
+
+    argv = argv_of(transcode, hw_backend=backend, start_number=450, start_ms=1_800_000)
+    assert pair(argv, "-force_key_frames") == f"expr:gte(t,1800+n_forced*{SEGMENT_SECONDS})"
+
+    # 从头起播：偏移为 0，表达式保持原样
+    argv = argv_of(transcode, hw_backend=backend, start_number=0, start_ms=0)
+    assert pair(argv, "-force_key_frames") == f"expr:gte(t,n_forced*{SEGMENT_SECONDS})"
+
+    # 会话相对制（非 VOD）：时间戳从 0 起，即使有 -ss 也不能加偏移
+    argv = argv_of(transcode, hw_backend=backend, start_ms=1_800_000)
+    assert "-copyts" not in argv
+    assert pair(argv, "-force_key_frames") == f"expr:gte(t,n_forced*{SEGMENT_SECONDS})"
+
+
+@pytest.mark.parametrize("backend", [None, "videotoolbox"])
 def test_transcode_bounds_gop_for_stable_fmp4_segments(backend):
     """高位点 copyts seek 时也不能让编码器自行切出极短的分片。"""
     tier = PlaybackTier.SOFTWARE_TRANSCODE if backend is None else PlaybackTier.HARDWARE_TRANSCODE
