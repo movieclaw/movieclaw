@@ -306,45 +306,73 @@ v1.x 为了不碰身份核心，在四条链上各造了一条平行的文件通
 
 ## 3. 数据模型
 
-### 3.1 `MediaKind`（内容形态）+ `KindProfile`：一个枚举，一份能力档案
+### 3.1 形态 × 来源：一份按 `(kind, source)` 建的能力档案
 
-`MediaKind` 更名语义为**内容形态**（存储值不变：`movie` / `tv`，新增
-`video`），库与条目共用。每个值对应一份不可变能力档案，**所有消费方读
-能力位，不按枚举值分叉**：
+`MediaKind` 的语义改为**内容形态**（存储值 `movie` / `tv` + 新增 `video`），
+只描述结构：
+
+| 形态 | 单元 | 结构假设 |
+|---|---|---|
+| `movie` | 单本 | 有标题/年份/演职员/制作方/封面，有可识别的外部身份，目录按作品整理，可写 NFO，可刮削 |
+| `tv` | 季集 | 同上，另有季/集结构 |
+| `video` | 单本 | **没有结构假设**：标题来自文件名或 sidecar，不整理、不写 NFO、不识别 |
+
+形态**不是题材、不是来源**。"成人"不是一种形态：番号体系下的作品在结构上
+就是 `movie`（标题、演员、厂牌、封面、可识别、按作品整理），只是身份不来自
+TMDB——那正是 `source` 的事。把它放进 `video` 形态等于放弃它本可以有的
+全部元数据能力。同理"动漫"是 `tv` 形态、TMDB 来源、库名叫动漫。
+
+**能力档案按 `(kind, source)` 这一对建**，不按形态单独建——`video` 单独看
+显得宽泛，是因为它本来就只是半个坐标：
 
 ```python
 @dataclass(frozen=True)
-class KindProfile:
-    kind: MediaKind              # movie / tv / video
-    label: str                   # "电影" / "剧集" / "其他"
-    unit: UnitShape              # SINGLE / SEASON_EPISODE
-    card: CardShape              # POSTER(2:3) / THUMB(16:9)
-    naming: NamingScheme | None  # MOVIE / TV / None（不整理）
-    ignore_rules: IgnoreProfile  # SCRAPED / PLAIN
+class LibraryProfile:
+    kind: MediaKind              # 形态
+    source: str                  # 身份来源：tmdb / local / (future) jav / douban …
+    label: str                   # 创建库时用户看到的名字
+    identity: IdentityStrategy   # 识别与建档（tmdb 包住现有链；local 读 sidecar/文件名）
+    scraper: Scraper | None      # 刮削/资产（tmdb 现有；local = 抓帧；None 不刮）
+    naming: NamingScheme | None  # 命名模板组：MOVIE / TV / None（不整理）
+    ignore_rules: IgnoreProfile  # 扫描忽略口径：SCRAPED / PLAIN
+    write_nfo: bool
+    subscribable: bool
     jellyfin_type: str           # "Movie" / "Series" / "Video"
     jellyfin_collection: str     # "movies" / "tvshows" / "homevideos"
-    default_source: str          # 该形态的库扫描时用哪个身份来源：tmdb / tmdb / local
+    default_aspect: float        # 无主图时卡片兜底比例：2/3 或 16/9
 
-PROFILES: dict[MediaKind, KindProfile]
+PROFILES = {
+    ("movie", "tmdb"):  LibraryProfile(label="电影", …),
+    ("tv",    "tmdb"):  LibraryProfile(label="剧集", …),
+    ("video", "local"): LibraryProfile(label="其他", …),
+    # 将来：("movie","jav") 成人（番号）、("movie","douban") 豆瓣独有条目、("tv","bangumi") …
+}
 ```
 
-身份来源的行为由 `IdentityStrategy` 按 `source` 注册：`tmdb`（现有
-`_identify` + `ensure_media_item`）、`local`（读 sidecar NFO / 文件名 →
-`ensure_local_item`）。`KindProfile.default_source` 决定某形态的库走哪条；
-将来"成人库"= `kind=movie` 形态 + `source=jav` 策略，档案表加一行、
-策略表加一项。
+用户创建库时选的"库类型"就是这一对加它的标签；`library` 表因此除 `kind`
+外还要记 `source`（`media_item.source` 的默认值来源于此）。
+
+**卡片形态不在档案里**：2:3 还是 16:9 由**主图的真实长宽比**决定，与
+Jellyfin 一致（`PrimaryImageAspectRatio` 按图片尺寸算，客户端据此选竖版或
+横版卡）。否则番号作品的封面会被硬套 2:3，家庭视频放了 sidecar 海报却被
+硬套 16:9。`default_aspect` 只在没有主图时兜底。网页端 `poster-card` 与
+Jellyfin DTO 同一口径：资产落盘时记下宽高（`sources.json` 已有溯源结构，
+加两个字段），列表接口带出 `primary_aspect`。
+
+各消费方读法：
 
 | 消费方 | 原先 | 改为 |
 |---|---|---|
-| 扫描识别 | `MediaKind(library.kind)` 再 if movie/tv | `strategies[profile.default_source].identify(file, ctx)` |
-| 扫描单元 / 遍历忽略 / 整理命名 | 按 kind 二分 | `profile.unit` / `profile.ignore_rules` / `profile.naming` |
-| 订阅目标库校验、路由候选 | `library.kind == subscription.kind` | 不变，再加 `profile.default_source == 'tmdb'`（video 库不可订阅） |
-| 统计快照 | `kind == "tv"` 算分集 | `profile.unit is SEASON_EPISODE` |
+| 扫描识别 / 刮削 / 资产 | `MediaKind(library.kind)` 再 if movie/tv | `profile.identity` / `profile.scraper` |
+| 扫描单元 / 遍历忽略 / 整理命名 / NFO 写出 | 按 kind 二分 | `kind` 的单元形态 / `profile.ignore_rules` / `profile.naming` / `profile.write_nfo` |
+| 订阅目标库校验、路由候选 | `library.kind == subscription.kind` | 再加 `profile.subscribable` |
+| 统计快照 | `kind == "tv"` 算分集 | `kind is tv` 才算分集（单元形态是 kind 的固有属性） |
 | Jellyfin 条目 / 视图 | 二分 | `profile.jellyfin_type` / `profile.jellyfin_collection` |
-| 前端 | `kind === "movie"` 散落 | 库与条目接口带 `capabilities`（`unit / card / naming / subscribable / scraped`），组件按能力位分叉 |
+| 卡片形态 | 无 | 主图长宽比 → `default_aspect` 兜底 |
+| 前端 | `kind === "movie"` 散落 | 库与条目接口带 `capabilities`（`unit / naming / subscribable / scraped / default_aspect`），组件按能力位分叉 |
 
-现有 8 处 `MediaKind(library.kind)` 不再抛错（`video` 是合法值），但其中
-拿 kind 去拼 TMDB 请求的调用只发生在 `source=tmdb` 路径，由策略对象保证。
+现有 8 处 `MediaKind(library.kind)` 不再抛错（`video` 是合法值）；拿 kind 去
+拼 TMDB 请求的调用只发生在 `source=tmdb` 的策略内部。
 
 ### 3.2 `media_item` 迁移
 
@@ -371,7 +399,8 @@ PROFILES: dict[MediaKind, KindProfile]
 内容时间的时分秒（同一天多段录像的排序）用 `library_file.file_mtime_ns`
 作次序键，不为此加列。
 
-`library` 加一列 `generate_thumbnails`（默认真）。`library_file` 不动。
+`library` 加两列：`source`（该库的身份来源，与 `kind` 一起定位能力档案；
+存量回填 `tmdb`）与 `generate_thumbnails`（默认真）。`library_file` 不动。
 
 ### 3.3 `playback_state` 不动
 
@@ -488,14 +517,14 @@ strm 跳过、失败留 NULL 下次重试），产物写
 | 事项 | 落点 |
 |---|---|
 | `media_item` 迁移（3.2）；`MediaItem` 模型加 `source`/`external_id`，`tmdb_id` 可空；`media_repo.get_by_anchor` 改按 `(source, kind, external_id)`；3 处 `MediaItem.tmdb_id ==` 查询改 `external_id` | `models/media_item.py`、`repositories/media_repo.py`、`routing.py`、`subscription/dispatch.py`、`alembic/versions/` |
-| `MediaKind` 加 `video`；`KindProfile` + `PROFILES`；`IdentityStrategy` 注册表（tmdb 包住现有链、local 新写）；`ensure_local_item` | 新 `services/library/profile.py`；`services/media_library.py` |
+| `MediaKind` 加 `video`；`LibraryProfile` 按 `(kind, source)` 建 `PROFILES`；`IdentityStrategy` 注册表（tmdb 包住现有链、local 新写）；`ensure_local_item`；资产落盘记宽高、接口带 `primary_aspect` | 新 `services/library/profile.py`；`services/media_library.py` |
 | 8 处 `MediaKind(library.kind)` 周边二分改读能力位；`_KIND_NAMES`/`_KIND_LABELS` 补项；`genres.py` 对 video 返回空 | `scan.py`、`organize.py`、`claim.py`、`items.py`、`ingest.py`、`nfo.py`、`import_watch_config.py`、`genres.py` |
 | 4.7 守卫清单五处 `source` 守卫 + 零 TMDB 请求回归测试 | 见 4.7 |
 | 扫描：策略分派、PLAIN 忽略口径、sidecar 重读；`MediaSpec` 加 `creation_time`/`tag_date` | `scan.py:2378-2560, 134-216, 1876-1950, 2284`、`media_probe.py` |
 | 统计快照按 `profile.unit`；待识别/复核清单自然不含本地条目（它们已识别） | `library_repo.py:146-176` |
 | `ensure_assets` 的 local 分派 + `thumbs.py`；`library.generate_thumbnails` | `media_scrape.py`、新 `services/library/thumbs.py` |
 | 接口：`LibraryView`/`LibraryItemView`/`LibraryItemDetailView` 加 `capabilities`，`tmdb_id` 可空；库列表 `?kind=video`；海报墙排序加 `release_date` | `schemas/library.py`、`api/routes/libraries.py`、`items.py` |
-| 前端：`MediaType` 加 `"video"`；`LIBRARY_KIND_META` 加「其他」；海报墙卡片按 `capabilities.card` 出 16:9；条目详情页按能力位隐藏影视区块；TMDB 链接/订阅入口判空；首页汇总；库封面变体 | `lib/media-types.ts`、`library-view.tsx`、`library-detail-view.tsx`、`library-item-detail-view.tsx`、`poster-card.tsx`、`cover.py` |
+| 前端：`MediaType` 加 `"video"`；`LIBRARY_KIND_META` 加「其他」；海报墙卡片按 `primary_aspect`（无图按 `default_aspect`）选竖/横版；条目详情页按能力位隐藏影视区块；TMDB 链接/订阅入口判空；首页汇总；库封面变体 | `lib/media-types.ts`、`library-view.tsx`、`library-detail-view.tsx`、`library-item-detail-view.tsx`、`poster-card.tsx`、`cover.py` |
 | 播放器相邻条目连播（4.4） | `components/player/player-page.tsx` |
 | OpenAPI 基线重生成；`mclaw_tool.py` 域说明 | `export_openapi.py`、两份 `spec.json` |
 
@@ -571,7 +600,9 @@ Jellyfin 高优先级；video 库可作下载/导入目标；文件级原生能�
    将来的番号来源；"家庭录像""课程""监控"都是 `video`，库名区分。
    形态才需要新值——将来若收图片是 `photo`（无时长、相册）、收音频是
    `music`（曲目/专辑），与 Jellyfin 的 `Photo` / `Audio` 类型对应，本期不做。
-   存储值定 **`video`**，展示名「其他」。
+   存储值二选一待定：`video`（Jellyfin/Emby 词汇，与 `movie`/`tv` 同层级，
+   推荐）或 `other`（Plex 词汇，即展示名）；展示名「其他」。
+   **档案按 `(kind, source)` 建**（3.1），`video` 只是半个坐标，成人=`(movie, jav)`。
 3. **不需要新的文件详情页**。v1.x 曾计划新建 `library/[id]/file/[fileId]`
    页面，因为当时本地文件没有 `media_item`，进不了现有的条目详情页
    （`library/[id]/item/[mediaItemId]`）。v2 里本地视频就是条目，直接复用
