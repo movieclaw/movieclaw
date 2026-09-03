@@ -1217,9 +1217,10 @@ async def test_remote_failed_segment_upload_is_retried(manager, tmp_path, monkey
     session.remote_job_id = "remote-job"
     session.pending_segments[3] = 1
     session.pending_since[3] = time.monotonic()
+    # 500 = NAS 写盘失败这类真实失败；499（客户端中断）自 issue #286 起不再记账
     session.record_remote_upload(
         "seg00003.m4s",
-        status=499,
+        status=500,
         received_bytes=123,
         content_length=456,
         transfer_encoding="chunked",
@@ -1235,6 +1236,57 @@ async def test_remote_failed_segment_upload_is_retried(manager, tmp_path, monkey
 
     assert restarted == [3]
     assert session.restart_generation == 1
+
+
+def test_record_remote_upload_only_books_real_failures(tmp_path):
+    """回归（issue #286）：499 是 NAS 自己 force-stop 旧轮次掐断上传的产物，
+    不能记成待补片；旧轮次的迟到记录也不能写进新轮次的台账。"""
+    session = _vod_session(tmp_path, head=0, completed=set())
+    session.remote = True
+    session.remote_job_id = "attempt-new"
+    kwargs = dict(received_bytes=1, content_length=2, transfer_encoding=None)
+
+    session.record_remote_upload("seg00003.m4s", status=499, **kwargs)
+    assert session.remote_failed_segments == set()
+
+    session.record_remote_upload("seg00003.m4s", status=500, attempt_id="attempt-old", **kwargs)
+    assert session.remote_failed_segments == set()
+
+    session.record_remote_upload("seg00003.m4s", status=500, attempt_id="attempt-new", **kwargs)
+    assert session.remote_failed_segments == {3}
+
+    session.record_remote_upload("seg00003.m4s", status=201, attempt_id="attempt-new", **kwargs)
+    assert session.remote_failed_segments == set()
+    # 诊断记录照单全收，只有补片台账才挑剔
+    assert [u.status for u in session.remote_uploads] == [499, 500, 500, 201]
+
+
+@pytest.mark.asyncio
+async def test_remote_failed_segment_retry_is_capped(manager, tmp_path, monkeypatch):
+    """回归（issue #286）：同一分片补片到上限后不再重启远程任务，改走普通等待；
+    否则任何持续失败都会变成每 2~3 秒杀一次 ffmpeg 的重启风暴。"""
+    session = _vod_session(tmp_path, head=3, completed=set())
+    session.remote = True
+    session.remote_job_id = "remote-job"
+    session.pending_segments[3] = 1
+    session.pending_since[3] = time.monotonic()
+    restarted: list[int] = []
+
+    async def fake_restart(_session, index: int) -> None:
+        restarted.append(index)
+        # 模拟 _restart_remote 之后分片再次上传失败
+        _session.remote_failed_segments.add(index)
+
+    monkeypatch.setattr(manager, "_restart_remote", fake_restart)
+    session.remote_failed_segments.add(3)
+
+    for _ in range(manager._MAX_SEGMENT_RETRIES + 3):
+        await manager._maybe_restart_for(session, 3)
+
+    assert restarted == [3] * manager._MAX_SEGMENT_RETRIES
+    assert session.remote_segment_retries[3] == manager._MAX_SEGMENT_RETRIES
+    # 达到上限后从台账摘掉：head==3 的普通等待路径不会再把它当成失败
+    assert session.remote_failed_segments == set()
 
 
 @pytest.mark.asyncio

@@ -202,7 +202,15 @@ class TranscodeSession:
         default_factory=lambda: deque(maxlen=24)
     )
     #: 上传中断的分片号。后续请求再次需要它时，重启远程任务补这一段。
+    #: 只记**真实**失败：客户端中断（499）多半是 NAS 自己 force-stop 旧轮次
+    #: 时掐断的上传，不算；非当前轮次（attempt）的迟到记录也不算——
+    #: 见 ``record_remote_upload``。
     remote_failed_segments: set[int] = field(default_factory=set)
+    #: 分片号 → 已为它做过几次「上传失败补片」重启。每次补片都是一次完整的
+    #: 远端 ffmpeg 重启（杀旧任务 + 接单 + 起转，2~3 秒），同一分片补到上限
+    #: 仍拿不到就说明失败原因不是偶发中断，继续重启只会变成风暴
+    #: （issue #286：任务每 2~3 秒被杀一次，播放器永远等不到片）。
+    remote_segment_retries: dict[int, int] = field(default_factory=dict)
     #: 最近一次分片供给请求，用于把「卡在哪里」直接显示给用户。
     last_requested_segment: int | None = None
     last_requested_at_ms: int | None = None
@@ -260,8 +268,27 @@ class TranscodeSession:
         received_bytes: int,
         content_length: int | None,
         transfer_encoding: str | None,
+        attempt_id: str | None = None,
     ) -> None:
-        """记录远程产物结果，并把失败的分片加入待补片台账。"""
+        """记录远程产物结果，并把**真实**失败的分片加入待补片台账。
+
+        诊断记录（``remote_uploads``）照单全收，但补片台账只认两种情况：
+
+        - 2xx：分片完整落盘，撤销它的失败标记；
+        - 4xx/5xx 且不是 499：NAS 明确拒绝或写盘失败，需要补片。
+
+        499（客户端中断）**不记失败**：seek/补片重启会 force-stop 旧轮次，
+        Worker 收到后当场掐断正在传的分片，这个中断是 NAS 自己造成的；把它
+        记成失败会让下一轮请求到同一分片时再次重启，重启又制造新的 499——
+        闭环就是 issue #286 里「任务每 2~3 秒被杀一次」的重启风暴。真正的
+        网络中断同样表现为 499，但 Worker 侧会自行重传（三次退避），最终
+        要么 2xx 落盘、要么 Worker 报 job.failed 让整个会话失败，都不需要
+        NAS 这边靠补片兜底。
+
+        ``attempt_id`` 是上传令牌里的轮次号：旧轮次的迟到记录（被杀任务在
+        取消之后才断开）不能写进新轮次的台账，否则 ``_restart_remote`` 刚
+        清掉的分片会被重新标脏。为 ``None`` 时视为当前轮次（单测便利）。
+        """
         self.remote_uploads.append(
             RemoteArtifactUpload(
                 name=name,
@@ -275,9 +302,11 @@ class TranscodeSession:
         index = _segment_index_from_name(name)
         if index is None:
             return
+        if attempt_id is not None and attempt_id != self.remote_job_id:
+            return
         if 200 <= status < 300:
             self.remote_failed_segments.discard(index)
-        elif status >= 400:
+        elif status >= 400 and status != 499:
             self.remote_failed_segments.add(index)
 
     def size_bytes(self) -> int:
@@ -764,6 +793,12 @@ class TranscodeSessionManager:
     #: 单个分片的等待上限。局域网起播 + burst 下正常几百毫秒就好；超时说明
     #: ffmpeg 卡死或存储极慢，让客户端拿 404 重试比挂着请求强
     _SEGMENT_WAIT_S = 30.0
+    #: 同一分片最多做几次「上传失败补片」重启。补片是为偶发的单片上传失败
+    #: 准备的，一次就该补上；补两次还失败，说明原因在别处（NAS 拒收、盘写
+    #: 不进、Worker 那边持续出错），再重启只是把远端 ffmpeg 杀了又拉、
+    #: 播放器永远等不到片。达到上限后该分片退出补片路径，交给常规的
+    #: 「等它转过来 / 30 秒超时 404」处理，让播放器的重试与降档接手。
+    _MAX_SEGMENT_RETRIES = 2
 
     async def ensure_segment(self, session: TranscodeSession, index: int) -> Path | None:
         """确保 VOD 会话的第 index 个分片就绪，返回文件路径；超时返回 None。
@@ -1018,11 +1053,11 @@ class TranscodeSessionManager:
             waiting = [
                 i for i in session.pending_segments if i not in session.completed_segments
             ]
-            failed_uploads = [
-                i
-                for i in waiting
-                if session.remote and i in session.remote_failed_segments
-            ]
+            failed_uploads = (
+                self._retryable_failed_segments(session, waiting)
+                if session.remote
+                else []
+            )
             retry_failed = bool(failed_uploads)
             if retry_failed:
                 # 后续分片可能已经落盘，不能再用「连续产出头」推断这个分片
@@ -1067,14 +1102,23 @@ class TranscodeSessionManager:
             ):
                 return
             index = wanted
+            if retry_failed:
+                # 先记账再重启：重启过程中新的失败记录可能落地，计数必须
+                # 在它们之前生效，否则上限会被多算掉一轮。
+                session.remote_segment_retries[index] = (
+                    session.remote_segment_retries.get(index, 0) + 1
+                )
             logger.info(
-                "转码重启直奔分片：session=%s seg=%05d（原因=%s 当前头=%d 已产出到=%d 在等=%s）",
+                "转码重启直奔分片：session=%s seg=%05d（原因=%s 当前头=%d 已产出到=%d "
+                "在等=%s 失败台账=%s 本片第 %d 次补片）",
                 session.id,
                 index,
                 "上传失败补片" if retry_failed else "seek/追赶",
                 session.head_segment,
                 produced,
                 sorted(session.pending_segments),
+                sorted(session.remote_failed_segments),
+                session.remote_segment_retries.get(index, 0),
             )
             session.restart_generation += 1
             session.restart_target = index
@@ -1102,6 +1146,31 @@ class TranscodeSessionManager:
             self._sync_completed(session)
             session.playlist_path.unlink(missing_ok=True)
             await self._spawn(session, command)
+
+    def _retryable_failed_segments(
+        self, session: TranscodeSession, waiting: list[int]
+    ) -> list[int]:
+        """在等的分片里挑出还值得做补片重启的那些。
+
+        达到 ``_MAX_SEGMENT_RETRIES`` 的分片从失败台账里摘掉并告警：它不再
+        触发重启，后续按普通分片等待。摘掉而不是留着，是为了让诊断面板和
+        日志里的「失败台账」只剩下还在起作用的项。"""
+        retryable: list[int] = []
+        for index in waiting:
+            if index not in session.remote_failed_segments:
+                continue
+            if session.remote_segment_retries.get(index, 0) < self._MAX_SEGMENT_RETRIES:
+                retryable.append(index)
+                continue
+            session.remote_failed_segments.discard(index)
+            logger.warning(
+                "分片补片重启已达上限，不再为它重启远程任务：session=%s seg=%05d "
+                "已补片 %d 次（请查看 Worker 日志与「远程转码产物上传」诊断记录）",
+                session.id,
+                index,
+                session.remote_segment_retries.get(index, 0),
+            )
+        return retryable
 
     async def _restart_remote(self, session: TranscodeSession, index: int) -> None:
         """远程 seek：停止旧任务后，从目标分片重新下发 ffmpeg。"""
