@@ -416,9 +416,18 @@ Jellyfin DTO 同一口径：资产落盘时记下宽高（`sources.json` 已有�
 
 - **tmdb 策略**：现有 `_identify`（NFO tmdbid → 路径标记 → 名称收敛）+
   `ensure_media_item`，不变；
-- **local 策略**：sidecar `<主干>.nfo`（根元素不校验，1.5.2）→ title /
-  sorttitle / plot / premiered\|aired\|releasedate / year / runtime / genre\|tag；
-  无 NFO 则 title = 文件名主干（不清洗）。内容日期：NFO → 容器标签 `date` →
+- **local 策略**：sidecar `<主干>.nfo`（根元素不校验，1.5.2）**全字段吸收**
+  ——title / sorttitle / plot / premiered\|aired\|releasedate / year / runtime /
+  genre\|tag / studio / director / actor（含 thumb 头像地址）/ rating，分别落
+  `media_item` 与 `media_metadata`（`overview` / `genres` / `studios` /
+  `directors` / `cast` / `vote_average` / `runtime_minutes`）。现有
+  `nfo.read_entry_metadata` 已解析这些字段，复用即可。动机：大量"不想让
+  movieclaw 刮削"的内容其实早被第三方工具（TMM、各类番号整理器）刮过一遍，
+  目录里躺着完整 NFO 与图片；local 策略把它们原样吸收，用户零成本得到
+  完整展示，而我们仍然一个请求都不发。无 NFO 则 title = 文件名主干（不清洗）。
+  图片同理：除 sidecar 前缀图外，**目录里只有一个视频时**接受不带前缀的
+  `poster.jpg` / `folder.jpg` / `fanart.jpg`（Jellyfin 的 `IsInMixedFolder`
+  语义，1.5.3）——"一部一目录"正是这类整理器的默认布局。内容日期：NFO → 容器标签 `date` →
   `creation_time` → mtime（`MediaSpec` 加可选 `creation_time` / `tag_date`）。
   然后 `ensure_local_item(kind=video, ...)` 同一事务写 `media_item` +
   `media_metadata`，返回条目——从这里往下与 tmdb 路径完全一样：
@@ -520,7 +529,7 @@ strm 跳过、失败留 NULL 下次重试），产物写
 | `MediaKind` 加 `video`；`LibraryProfile` 按 `(kind, source)` 建 `PROFILES`；`IdentityStrategy` 注册表（tmdb 包住现有链、local 新写）；`ensure_local_item`；资产落盘记宽高、接口带 `primary_aspect` | 新 `services/library/profile.py`；`services/media_library.py` |
 | 8 处 `MediaKind(library.kind)` 周边二分改读能力位；`_KIND_NAMES`/`_KIND_LABELS` 补项；`genres.py` 对 video 返回空 | `scan.py`、`organize.py`、`claim.py`、`items.py`、`ingest.py`、`nfo.py`、`import_watch_config.py`、`genres.py` |
 | 4.7 守卫清单五处 `source` 守卫 + 零 TMDB 请求回归测试 | 见 4.7 |
-| 扫描：策略分派、PLAIN 忽略口径、sidecar 重读；`MediaSpec` 加 `creation_time`/`tag_date` | `scan.py:2378-2560, 134-216, 1876-1950, 2284`、`media_probe.py` |
+| 扫描：策略分派、PLAIN 忽略口径、sidecar NFO 全字段吸收（复用 `read_entry_metadata`）、单视频目录接受不带前缀的 poster/folder/fanart、sidecar 重读；`MediaSpec` 加 `creation_time`/`tag_date` | `scan.py:2378-2560, 134-216, 1876-1950, 2284`、`media_probe.py` |
 | 统计快照按 `profile.unit`；待识别/复核清单自然不含本地条目（它们已识别） | `library_repo.py:146-176` |
 | `ensure_assets` 的 local 分派 + `thumbs.py`；`library.generate_thumbnails` | `media_scrape.py`、新 `services/library/thumbs.py` |
 | 接口：`LibraryView`/`LibraryItemView`/`LibraryItemDetailView` 加 `capabilities`，`tmdb_id` 可空；库列表 `?kind=video`；海报墙排序加 `release_date` | `schemas/library.py`、`api/routes/libraries.py`、`items.py` |
@@ -571,8 +580,21 @@ README「其他视频库」一节。
 3. **三值 `kind`**：所有新分叉必须读能力档案，PR 评审拒绝新增
    `kind == "movie"` 字面比较（现有约 40 处随本期一并改掉）；
 4. **抓帧 IO**：只对新条目、限并发、strm 跳过、库级开关；
-5. 目录层级、图片收录（相册）、容器 `title` 标签、NFO 观看状态导入：开口不变；
-6. 将来的新来源：`source` 是通用维度，不限于"成人/番号"。豆瓣今天只是
+5. **敏感内容的暴露面**（用户明确会用 `video` 库放成人内容）：三道既有或
+   低成本的闸——① 库级 `generate_thumbnails` 关掉后不抓帧，只用目录里已有
+   的图或占位；② 成员可见库（member-management，`visible_library_ids`）本就
+   按库授权，播放、浏览、最近观看、Jellyfin 视图都经它过滤；③ **建议新增**
+   库级 `exclude_from_home`（不进首页「最近添加」聚合区、不参与首页封面
+   拼贴，Plex "Include in dashboard" / Jellyfin `LatestItemsExcludes` 同款），
+   一列一处过滤，首页只剩它自己的库卡片。③ 未拍板，一期顺手做成本最低；
+6. **以后想给这些文件加身份**（如番号刮削）：那是库从 `(video, local)` 换到
+   `(movie, jav)`。库类型今天"创建后不可改"是因为订阅挂在 kind 上，而
+   `video` 库没有订阅，放开转换是安全的：重扫按新档案建新条目、
+   `library_file` 行不动、观看状态按文件映射到新条目。本期不做转换器，
+   但数据模型不阻碍它；在转换器出现前，换类型 = 删库重建 + 丢观看状态，
+   文档里要写明；
+7. 目录层级、图片收录（相册）、容器 `title` 标签、NFO 观看状态导入：开口不变；
+8. 将来的新来源：`source` 是通用维度，不限于"成人/番号"。豆瓣今天只是
    `media_item.douban_id` 这个辅助列（条目必须先收敛到 TMDB），有了 `source`
    之后，TMDB 没有而豆瓣有的条目可以以 `source=douban` 建档并刮削展示；
    同理 Bangumi、TVDB、Fanart.tv 等都是加一个 `source` 值 + 识别策略 +
