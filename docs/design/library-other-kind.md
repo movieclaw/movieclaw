@@ -1,9 +1,11 @@
 # 媒体库「其他」类型：不刮削内容的入账、展示与播放
 
-> 状态：**v1.2（2026-09-03）——方案已拍板，待实施**。v1.1 增补第 1.5 节
-> Jellyfin 源码考察；v1.2 按评审意见重做三处：3.1 类型改为能力档案
-> （不再按枚举值分叉）、3.2 文件展示层独立成表（不往 `library_file` 贴列）、
-> 4.4 播放单元统一为一个判别联合（不分接口）。v0 草案的八个待决问题
+> 状态：**v2（2026-09-03）——方案重做，待拍板**。v1.x 走的是"给无身份文件另开
+> 一条文件寻址通道"；评审追问「`media_item` 一定是 TMDB 专属吗」后重新核了
+> 身份内核的约束（第 2 节），结论是可以且应该泛化：把「身份来源」做成
+> `media_item` 的一个维度，本地视频成为真正的条目。整条并行通道（文件单元、
+> `file_metadata`、`/play/f/`、Jellyfin VIDEO GUID）随之消失，设计反而变简单。
+> v1.x 的 Jellyfin 考察（1.5 节）与拍板决策（第 8 节）保留。v0 草案的八个待决问题
 > 已由用户逐条决定（第 8 节决策记录），本文按决策改写；第 9 节是实施前
 > 剩余的两个小口子。
 > 关联文档：[library.md](library.md)（媒体库架构）、[metadata.md](metadata.md)
@@ -61,8 +63,9 @@ Other Videos 都是同一心智。
    只有 `_identify` / `_unit_for` / `_kind_conflict` / 资产阶段四处是影视
    专属。新类型**不是另写一个扫描器**，而是在这四处分叉。
 
-结论：难点不在扫描，在**身份与寻址**——展示、播放、进度、Jellyfin 四条链
-要么给它一个假的 `media_item`，要么给它一条文件寻址的并行通道。
+结论：难点不在扫描，在**身份**——展示、播放、进度、Jellyfin 四条链全都
+吊在 `media_item` 上。v1.x 的答案是绕开它另开一条文件寻址通道；v2 的答案
+是把它泛化到能容纳没有 TMDB 身份的内容（第 2 节）。
 
 ## 1.5 参考考察：Jellyfin 对非影视视频的处理（2026-09-03）
 
@@ -234,541 +237,333 @@ Other Videos 都是同一心智。
 | 9 | 有意偏离登记：不建 `Folder` 层级、不收 `Photo`。实施时写进 jellyfin-compat.md 的偏离清单 | 4.6 / 第 7 节 |
 | 10 | 开口：容器 `title` 标签作标题（Jellyfin opt-in）、NFO 的 `watched/playcount` 导入、图片收录做成"相册" | 第 7 节 |
 
-## 2. 核心决策：不造假身份，播放单元升级为「条目单元 | 文件」
+## 2. 核心决策：身份来源成为 `media_item` 的一个维度
 
-| 方案 | 做法 | 评价 |
+### 2.1 重新核实：`media_item` 到底被 TMDB 钉死在哪
+
+v1.x 把 `media_item` 当成不可触碰的 TMDB 专属内核，理由是 subscription.md 的
+「不允许创建无 tmdb_id 的无锚条目」。逐条核实后，这个判断过重了：
+
+| 约束 | 现状 | 能不能改 |
 |---|---|---|
-| A 合成 `media_item` | 每个文件造一条 `kind=other, tmdb_id=负数/哈希` 的条目，复用全部下游 | 改动最少，但污染身份中枢：定时刷新按条目全表扫会拿假 id 打 TMDB、匹配内核与订阅按 `(kind,tmdb_id)` 比对、前端拼 themoviedb 链接、`cleanup_orphan_items` 等都要加守卫。与 library.md 决策 4、metadata.md「一部片一份档案」同一精神相悖 |
-| B `media_item` 泛化 | `tmdb_id` 可空 + `source` 列 | 触面最大：所有读 `tmdb_id` 的地方都要判空，为一类**没有身份**的内容改造身份核心 |
-| **C 文件寻址（采用）** | 其他库的文件 `media_item_id` 恒 NULL；展示、播放、进度、Jellyfin 以 `library_file.id` 为键各加一条通道 | 边界干净：影视链路零改动、新链路不带任何 TMDB 概念 |
+| `tmdb_id NOT NULL`、`UNIQUE(kind, tmdb_id)` | `models/media_item.py:36, 45` | 能。`media_item` 已有 batch 重建先例（迁移 `d9f4b1c73e85` 加 `scrape_library_id` 外键就是整表重建），入向外键 9 处按表名引用不受影响 |
+| `ensure_media_item(kind, tmdb_id)` | 11 个调用点 | 全部在 TMDB 路径上（订阅、发现页、扫描识别、认领、入库）。本地条目走另一个构造函数，不碰它们 |
+| `item.tmdb_id` 引用 258 处 / 38 个文件 | 集中在 `scan.py`(31)、`resolve.py`(29)、`movieclaw_media/library.py`(26)、`media_library.py`(17)、`nfo.py`(16)、`downloaders.py`(13)… | 这些模块本身就是 TMDB 识别/刮削/订阅链，本地条目**不会进入**。真正会"全表扫到"本地条目的只有 5 处：定时刷新 `media_refresh.py:46`、`scrape_media_item`/`ensure_assets`、NFO 写出、Jellyfin `ProviderIds`、前端 TMDB 链接与 `LibraryItemView.tmdb_id: int` |
+| 「无锚条目」禁令的本意 | subscription.md 1.1/1.3：匹配内核依赖 TMDB 的别名/季集/播出日期 | 禁的是**订阅与匹配**拿到没有 TMDB 数据的条目。本地条目永不参与订阅与匹配（能力档案 `subscribable=False`、`source` 守卫），禁令的目的完好 |
+| 类型门禁 | CI 只跑 ruff + pytest + 前端 typecheck，后端无 mypy | 后端把 `tmdb_id` 改可空不会掀起类型雪崩；前端 `tmdb_id: number \| null` 会被 typecheck 逼着在 22 个文件里判空——这是好事 |
 
-C 引入第二种播放单元。为避免每个消费方各自 if/else，**播放单元在领域层
-统一为一个联合类型，观看状态统一在一张表**（用户决策：不拆表）：
+所以"TMDB 专属"不是结构性的，是历史上只有一个数据源时的默认。把它做成
+显式维度，代价可控。
+
+### 2.2 方案：`source` + `external_id` 泛化锚，本地视频是真条目
 
 ```
-PlaybackUnit = ItemUnit(media_item_id, season, episode)   # 有身份的内容：现状不变
-             | FileUnit(library_file_id)                   # 无身份的内容：文件即单元
+media_item
+  kind         movie / tv / video          内容形态（决定单元、卡片、Jellyfin 类型）
+  source       tmdb / local / (future: jav…)  身份来源（决定谁负责识别与刮削）
+  external_id  TEXT NOT NULL               来源内的 id：tmdb → "603"；local → 入账时生成的稳定键
+  tmdb_id      INT NULL                    保留：source=tmdb 时等于 external_id 的整数形式，便于 258 处调用点少改；CHECK ((source='tmdb') = (tmdb_id IS NOT NULL))
+  UNIQUE (source, kind, external_id)       替代 UNIQUE(kind, tmdb_id)
 ```
 
-`movieclaw_playback/state.py` 的读写、`playback_recent`、Jellyfin UserData、
-活动面板全部只认这个联合类型，按变体落到同一张 `playback_state` 的两组列
-（3.3 节）。这是本设计唯一允许出现「按类型分派」的地方；其余消费方拿到
-的都是已经解析好的单元。
+- **`kind` 从「TMDB 路径段」变成「内容形态」**，与库类型是同一个枚举
+  （movie / tv / video）。v1.x 把库类型和媒体类型拆成两个枚举，是因为
+  当时 `kind` 兼任了 TMDB 命名空间；命名空间挪进 `source` 后，两者的
+  区别消失，**一个枚举、一份能力档案**（3.1）。TMDB 请求拼
+  `kind.value` 的地方只在 `source == tmdb` 的路径上，天然成立；
+- **本地视频 = `media_item(kind=video, source=local)` + `media_metadata`**：
+  标题、简介、内容时间、缩略图分别落 `media_item.title`、
+  `media_metadata.overview`、`release_date`、`poster_file`（Primary 图，
+  形态由能力档案决定是 2:3 还是 16:9，Jellyfin 对所有类型同样只有一个
+  Primary）。一个文件一个条目（能力档案 `unit=SINGLE`，且 `source=local`
+  不合并版本）；
+- **播放单元不变**：仍是 `(media_item_id, season, episode)`，本地视频用
+  `(item, 0, 0)`。`playback_state`、最近观看、活动面板、Jellyfin UserData、
+  `/play/{media_item_id}` 地址**一行不改**；
+- **守卫收敛在 `source` 上**，只有 5 处：定时刷新只选 `source='tmdb'`；
+  `scrape_media_item`/`ensure_assets` 按 `source` 分派（local 的"资产"就是
+  抓帧）；NFO 写出只对 tmdb；Jellyfin `ProviderIds` 只对 tmdb；前端 TMDB
+  链接与订阅入口按 `tmdb_id != null`。加一条测试：用 MockTransport 起一个
+  本地条目走完全部后台任务，断言零 TMDB 请求。
+
+### 2.3 与 v1.x 方案 C 的对比：为什么这次是简化不是加码
+
+| | v1.x（文件寻址并行通道） | v2（泛化锚） |
+|---|---|---|
+| 新表 / 迁移 | `file_metadata` 新表 + `playback_state` 重建（可空列 + 部分唯一索引） | 只重建 `media_item`（加 2 列、改 1 个唯一键、`tmdb_id` 改可空） |
+| 播放单元 | 领域层引入 `ItemUnit \| FileUnit` 判别联合，会话/进度/续播/最近观看/活动面板/Jellyfin UserData 全部按变体分派 | 不变 |
+| 播放地址 | `/play/[...unit]` 三种写法 | 不变 |
+| 展示 | 新 `/videos` 接口 + 新文件详情页 | 复用海报墙与条目详情页，按能力档案换卡片形态与隐藏影视区块 |
+| Jellyfin | 新 GUID 类型 VIDEO，6 条路由加分支 | 条目 GUID 不变，`Type` 按 `kind` 出 `"Video"`，库视图 `homevideos` |
+| 身份核心 | 不碰 | 重建一次、加 5 处 `source` 守卫 |
+| 三值 `kind` 的影响面 | 库类型三值：约 40 处 `library.kind` 分叉要改 | 内容形态三值：同样约 40 处（`library.kind` 与 `item.kind` 的分叉大半是同一批），改法同为读能力档案 |
+| 将来加有身份的类型（成人/番号） | 库侧加档案 + **另做**一次身份内核泛化 | 加一个 `source` 值 + 一个识别策略 + 一个刮削器，内核已就位 |
+
+v1.x 为了不碰身份核心，在四条链上各造了一条平行的文件通道；v2 碰一次
+身份核心，四条平行通道全部不需要。触面更小、概念更少、扩展路径更直。
+先前对"合成 `media_item`"的否决（方案 A）针对的是**用假 TMDB id 冒充**——
+`source` 是显式维度，不是冒充。
 
 ## 3. 数据模型
 
-### 3.1 库类型：`LibraryKind` 存值 + `LibraryProfile` 能力档案
+### 3.1 `ContentKind` + `LibraryProfile`：一个枚举，一份能力档案
 
-**两个枚举描述的是两个维度，不是一个枚举的父子集。**
-
-- `MediaKind`（movie / tv）描述的是**身份命名空间**：`media_item` 以
-  `(kind, tmdb_id)` 为锚，`kind` 决定这个 id 属于 TMDB 的哪套 id 空间
-  （`resolve.py` 直接拼 `search/{kind.value}`，`ensure_media_item(kind, tmdb_id)`
-  按它去重）。它回答的是"这条身份是谁发的"。
-- `LibraryKind`（movie / tv / other，将来更多）描述的是**一个库装的是哪类
-  内容**。它回答的是"这个库怎么扫、怎么摆、怎么播、对外报什么类型"。
-
-动漫库就是两者不重合的现成例子：库类型是"动漫"这个用户心智，身份空间却
-是 TMDB tv。把 `other` 塞进 `MediaKind`，就会有一个永远不能出现在
-`media_item.kind` 里、每次拼 TMDB 请求都要排除的枚举值——这正是 bug 的
-温床。反过来，让 `LibraryKind` 单独存在，"库类型"就可以自由增长而不碰
-身份内核。
-
-**扩展性的关键不是枚举，而是不再让代码按枚举值分叉。** 前一版的写法是
-在十处入口 `if library.kind == other:`，加一个类型就是十处再加一个分支，
-类型 × 分叉点线性膨胀。改为**能力档案**：每个 `LibraryKind` 对应一份
-不可变的 `LibraryProfile`，把类型间真正会变的几个轴声明出来，所有消费方
-只读档案上的能力位，不看枚举值：
+`MediaKind` 更名语义为**内容形态**（存储值不变：`movie` / `tv`，新增
+`video`），库与条目共用。每个值对应一份不可变能力档案，**所有消费方读
+能力位，不按枚举值分叉**：
 
 ```python
 @dataclass(frozen=True)
-class LibraryProfile:
-    kind: LibraryKind            # 存储值
-    label: str                   # 展示名（"电影"/"剧集"/"其他"）
-    identity: IdentityStrategy   # 身份从哪来：TMDB_MOVIE / TMDB_TV / LOCAL
-    media_kind: MediaKind | None # 身份命名空间；LOCAL 为 None
-    unit: UnitShape              # 播放/台账单元：SINGLE / SEASON_EPISODE
-    naming: NamingScheme | None  # 命名模板组：MOVIE / TV / None（不整理）
-    card: CardShape              # 卡片形态：POSTER(2:3) / THUMB(16:9)
-    ignore_rules: IgnoreProfile  # 扫描忽略口径：SCRAPED / PLAIN
+class KindProfile:
+    kind: MediaKind              # movie / tv / video
+    label: str                   # "电影" / "剧集" / "其他"
+    unit: UnitShape              # SINGLE / SEASON_EPISODE
+    card: CardShape              # POSTER(2:3) / THUMB(16:9)
+    naming: NamingScheme | None  # MOVIE / TV / None（不整理）
+    ignore_rules: IgnoreProfile  # SCRAPED / PLAIN
+    jellyfin_type: str           # "Movie" / "Series" / "Video"
     jellyfin_collection: str     # "movies" / "tvshows" / "homevideos"
-    subscribable: bool           # 能否作为订阅目标库
+    default_source: str          # 该形态的库扫描时用哪个身份来源：tmdb / tmdb / local
 
-PROFILES: dict[LibraryKind, LibraryProfile]   # 全部类型在此一处声明
+PROFILES: dict[MediaKind, KindProfile]
 ```
 
-各消费方对应的读法：
+身份来源的行为由 `IdentityStrategy` 按 `source` 注册：`tmdb`（现有
+`_identify` + `ensure_media_item`）、`local`（读 sidecar NFO / 文件名 →
+`ensure_local_item`）。`KindProfile.default_source` 决定某形态的库走哪条；
+将来"成人库"= `kind=movie` 形态 + `source=jav` 策略，档案表加一行、
+策略表加一项。
 
 | 消费方 | 原先 | 改为 |
 |---|---|---|
-| 扫描 `_ingest_file` 的识别 | `MediaKind(library.kind)` 再 if movie/tv | `profile.identity.identify(file, ctx)`——三个策略对象各自实现（TMDB 两个包住现有 `_identify`，LOCAL 读 NFO/文件名） |
-| 扫描单元 `_unit_for` | if movie → (0,0) else 解析季集 | `profile.unit` |
-| 遍历忽略规则 | 写死一套 | `profile.ignore_rules` |
-| 整理 / 命名 | if movie 模板 else tv 模板 | `profile.naming`；None 则整理入口不可用 |
-| 订阅 `_validate_library`、路由候选 | `library.kind == subscription.kind` | `profile.subscribable and profile.media_kind == subscription.kind` |
-| 统计快照 | `kind == "tv"` 算分集 | `profile.unit is SEASON_EPISODE`；`identity is LOCAL` 时"待识别"恒 0 |
-| Jellyfin 视图 | `"movies" if movie else "tvshows"` | `profile.jellyfin_collection` |
-| 网页 | `kind === "movie"` 散落各处 | 库接口带 `capabilities`（由档案导出：`scraped / unit / card / naming / subscribable`），前端按能力位分叉，不认字符串 |
+| 扫描识别 | `MediaKind(library.kind)` 再 if movie/tv | `strategies[profile.default_source].identify(file, ctx)` |
+| 扫描单元 / 遍历忽略 / 整理命名 | 按 kind 二分 | `profile.unit` / `profile.ignore_rules` / `profile.naming` |
+| 订阅目标库校验、路由候选 | `library.kind == subscription.kind` | 不变，再加 `profile.default_source == 'tmdb'`（video 库不可订阅） |
+| 统计快照 | `kind == "tv"` 算分集 | `profile.unit is SEASON_EPISODE` |
+| Jellyfin 条目 / 视图 | 二分 | `profile.jellyfin_type` / `profile.jellyfin_collection` |
+| 前端 | `kind === "movie"` 散落 | 库与条目接口带 `capabilities`（`unit / card / naming / subscribable / scraped`），组件按能力位分叉 |
 
-现有 `MediaKind(library.kind)` 的 8 处调用点改读 `profile.media_kind`
-（None 时抛中文错误），"第三个值崩溃"变成"进不到这里"。
+现有 8 处 `MediaKind(library.kind)` 不再抛错（`video` 是合法值），但其中
+拿 kind 去拼 TMDB 请求的调用只发生在 `source=tmdb` 路径，由策略对象保证。
 
-**以后加类型怎么做——两种情形，代价差一个量级：**
+### 3.2 `media_item` 迁移
 
-1. **新的本地类型**（比如把"家庭视频"从"其他"里独立出来、"课程"、
-   "监控录像"）：`PROFILES` 加一行（identity=LOCAL，其余按需选），前端
-   多一个图标与文案。不改任何消费方——它们读的是能力位。
-2. **新的有身份类型**（比如成人内容按番号识别）：库这一侧同样只是加一行
-   `LibraryProfile`（identity=JAV，unit=SINGLE，card=POSTER，naming=MOVIE，
-   jellyfin=movies）+ 实现一个 `IdentityStrategy`（番号解析 + 数据源查询）。
-   **真正的工作量在身份内核**：`media_item` 今天是 TMDB 专属
-   （`tmdb_id NOT NULL`、唯一键 `(kind, tmdb_id)`），要装第二个数据源必须把
-   锚泛化成 `(source, external_id)`——一次迁移 + 匹配/订阅/刮削读写点跟着改。
-   本设计**不做**这一步（成人库不是当前需求，为它预改身份内核违反"配置与
-   消费同期落地"），但把库侧的接缝留好：新类型到来时只碰身份层，不用再
-   碰扫描、展示、播放、Jellyfin 这四条链。
-
-本期 `PROFILES` 只有三行；`other` 展示名「其他」，类别由库名承担，
-`is_default` 不变量照旧。
-
-### 3.2 文件级展示元数据：新表 `file_metadata`，`library_file` 不动
-
-前一版往 `library_file` 加三个可空列，被问到"电影和剧集的行填什么"——答案
-只能是 NULL，而"一张通用表上的列只对一类行有意义"就是设计有问题的信号。
-换个角度看现有分层：`media_metadata` 是**条目**的展示层（1:1 `media_item`），
-`library_file` 是**文件本体**真相（路径/状态/ffprobe）。本地类型缺的是
-**文件的展示层**——按同样的分层规则，它该是一张 1:1 `library_file` 的
-独立表，而不是往真相表上贴字段：
+一次 batch 重建（先例：`d9f4b1c73e85`）：
 
 ```
-media_item ── 1:1 ── media_metadata     条目展示层（影视）
-library_file ─ 1:1 ── file_metadata     文件展示层（新）
++ source        TEXT NOT NULL DEFAULT 'tmdb'
++ external_id   TEXT NOT NULL              回填 = CAST(tmdb_id AS TEXT)
+~ tmdb_id       INT NULL                   存量全部保留；CHECK ((source='tmdb') = (tmdb_id IS NOT NULL))
+- uq_media_item_kind_tmdb
++ uq_media_item_anchor (source, kind, external_id)
++ ix_media_item_source
 ```
 
-`file_metadata`（`library_file_id` 主键兼外键，CASCADE）：
+`local` 条目的 `external_id` 是入账时生成的稳定随机键（uuid），只承担
+唯一性；条目与文件的配对靠 `library_file.media_item_id`。改名/移动由扫描
+的尺寸+时长指纹归并保住 `library_file` 行，条目随之保留；文件删除后
+`cleanup_orphan_items` 按既有规则（无文件、无订阅）清掉条目与资产。
 
-| 列 | 说明 |
-|---|---|
-| `title` | 展示标题：NFO `<title>` → 文件名主干 |
-| `sort_title` | NFO `<sorttitle>`；空则由 `title` 派生 |
-| `plot` | NFO 简介；无则 NULL |
-| `recorded_at` | 内容时间：NFO `premiered`/`aired` → 容器标签 `date` → `creation_time` → 文件 mtime。（`dateadded` 是入库时间语义，不用） |
-| `year` | NFO `<year>` 或 `recorded_at` 的年 |
-| `tags` | NFO `genre`/`tag` 合并，JSON 列表 |
-| `thumb_file` | 缩略图资产相对路径；NULL=未生成 |
-| `thumb_source` | `sidecar` / `embedded` / `frame`；重新生成时据此决定是否覆盖 |
-| `source` | `nfo` / `filename`；重扫时若 sidecar NFO 新出现且当前是 `filename` 才重读 |
+`media_metadata` 不加列：`overview` ← NFO plot、`release_date` ← 内容日期、
+`genres` ← NFO genre/tag、`poster_file` ← 缩略图、`scraped_at` ← 入账时间。
+`media_item.title/original_title` ← NFO title / 文件名主干，`year` ← 内容年份，
+`aliases=[]`，`status/imdb_id/douban_id/poster_path/backdrop_path` 为 NULL。
+内容时间的时分秒（同一天多段录像的排序）用 `library_file.file_mtime_ns`
+作次序键，不为此加列。
 
-**影视文件没有这张表的行**，不是 NULL 列——两个问题就此都有了干净的答案：
+`library` 加一列 `generate_thumbnails`（默认真）。`library_file` 不动。
 
-- `recorded_at` 对电影/剧集回填什么？**不回填**。影视的内容时间在条目层
-  （`media_metadata.release_date` / `media_episode.air_date`），本来就不该
-  落在文件上；
-- 影片海报写不写 `thumb_file`？**不写**。海报是条目层资产
-  （`media_metadata.poster_file`）。`thumb_file` 是文件层资产，语义是
-  "这个文件本体的一帧"。它对影视文件并非无意义——分集没有 TMDB 剧照
-  （国产剧/动画很常见）时，用文件抓帧兜底恰好就是往这张表插一行只有
-  `thumb_file` 的记录——但那是后续开口，本期只为 LOCAL 类型生成。
+### 3.3 `playback_state` 不动
 
-这张表让 `library_file` 保持"文件本体真相"的纯度，也让"哪些文件有本地
-展示数据"变成一个存在性问题（有行/没行），而不是一串 NULL 判断。列表
-接口按主键 1:1 连接，没有成本。
-
-`library` 加一列 `generate_thumbnails`（默认真）作为库级开关。
-
-### 3.3 `playback_state` 统一为多态单元（一张表）
-
-现状唯一约束 `(member_id, media_item_id, season, episode)`，`media_item_id`
-NOT NULL。改为：
-
-```
-media_item_id      可空 FK media_item CASCADE
-season_number / episode_number   不变（FileUnit 行恒 0）
-+ library_file_id  可空 FK library_file CASCADE
-CHECK ((media_item_id IS NULL) <> (library_file_id IS NULL))     -- 恰有其一
-UNIQUE (member_id, media_item_id, season_number, episode_number)
-        WHERE media_item_id IS NOT NULL                          -- 部分唯一索引
-UNIQUE (member_id, library_file_id) WHERE library_file_id IS NOT NULL
-```
-
-- 用**部分唯一索引**而不是把可空列塞进普通 UNIQUE：SQLite 视 NULL 互不
-  相等，可空列进唯一约束会插出无限行（模型注释已把这个坑写明）。仓库已有
-  `sqlite_where` 部分索引与 `batch_alter_table` 先例，迁移可行；
-- 迁移要重建表（SQLite 改 NOT NULL 只能 batch 重建）。按发布规范第 3 条，
-  迁移单向、回退靠更新前备份，可接受；
-- 文件删除（回收站清理）级联删掉进度，对无外部身份的内容是正确语义；
-  改名/移动由扫描的指纹归并保住 `library_file.id`，进度自然延续。
-
-### 3.4 不建目录表
-
-平铺展示（用户决策），目录不建模；`file_path` 只作为文件事实展示。
+播放单元仍是 `(media_item_id, season_number, episode_number)`，本地视频
+`(item, 0, 0)`。v1.x 的多态重建取消。
 
 ## 4. 机制
 
-### 4.1 扫描：同一台机器，四处分叉
+### 4.1 扫描：策略分派，其余复用
 
-复用 `scan.py` 的遍历/探测/落账/归并/对账/统计/监听全套，other 库在
-`_ingest_file` 里走 `_local_video_identity(file)`：
+复用 `scan.py` 的遍历/探测/落账/归并/对账/统计/监听全套。`_ingest_file`
+把识别交给 `strategies[profile.default_source]`：
 
-```
-sidecar NFO（<主干>.nfo；根元素不校验——Jellyfin 同款，见 1.5.2）
-  → title / sorttitle / plot / premiered|aired / runtime / genre|tag
-无 NFO → title = 文件名主干（不跑影视 NER 清洗，那套规则会把 "2019.10.01 国庆" 切碎）
-recorded_at 按 3.2 的三级回落
-```
+- **tmdb 策略**：现有 `_identify`（NFO tmdbid → 路径标记 → 名称收敛）+
+  `ensure_media_item`，不变；
+- **local 策略**：sidecar `<主干>.nfo`（根元素不校验，1.5.2）→ title /
+  sorttitle / plot / premiered\|aired\|releasedate / year / runtime / genre\|tag；
+  无 NFO 则 title = 文件名主干（不清洗）。内容日期：NFO → 容器标签 `date` →
+  `creation_time` → mtime（`MediaSpec` 加可选 `creation_time` / `tag_date`）。
+  然后 `ensure_local_item(kind=video, ...)` 同一事务写 `media_item` +
+  `media_metadata`，返回条目——从这里往下与 tmdb 路径完全一样：
+  `library_file.media_item_id` 挂锚、单元 `(0,0)`、`identity_source=NFO|LOCAL`。
+  **本地文件永远是"已识别"**，待识别清单与身份复核天然与它无关。
 
-必须关掉的影视规则（会误伤家庭视频的）：
+遍历忽略按 `profile.ignore_rules`：`PLAIN` 口径 = 隐藏目录 + 系统目录
+（`@eaDir` / `metadata` / `.actors` / `lost+found` / `#recycle`）+ 主干精确等于
+`sample`；不做子串规则、不做 extras 目录名规则（1.5.4）。
 
-- **extras 过滤**：`_IGNORE_MARKERS` 的 `sample`、`_EXTRAS_KEYWORDS` 的
-  「花絮/预告片」子串匹配——`婚礼花絮.mp4` 会被当作影视花絮直接跳过；
-  `_IGNORE_DIRS` 里的花絮/extras 目录名同理（`clips/`、`other/` 恰是家庭
-  视频常见的分类目录）。other 库改用 Jellyfin 口径（1.5.4）：隐藏目录 +
-  `@eaDir`/`metadata`/`.actors`/`lost+found` 类系统目录 + 文件名主干**精确
-  等于** `sample`，不做任何子串规则、不做 extras 目录名规则；
-- `_kind_conflict`、路径 `[tmdbid=N]`、TMDB 名称收敛、身份复核
-  （`_review_due`）、条目目录 `movie.nfo`/`tvshow.nfo` 查找：整段不进；
-- 收尾 ASSETS 阶段的 `ensure_assets`（刮削图片/NFO 镜像）不进；换成
-  **缩略图阶段**（4.3）。**other 库永不写 NFO**。
+已知行重扫：`dir_files` 里出现 `<主干>.nfo` 且条目 `identity_source=LOCAL`
+（即标题来自文件名）时重读 sidecar 并更新条目（零额外目录 IO）。
 
-保持一致的收尾钩子：AI 字幕自动生成 `queue_after_scan`、外挂字幕发现、
-探测回填、统计快照——照常。
+扫描收尾：`summary.identified_item_ids` 照常收集，ASSETS 阶段照常调
+`ensure_assets(item_id)`——它内部按 `source` 分派：tmdb 下图/镜像，local
+抓帧（4.3）。不再需要独立的 THUMBS 阶段。
 
-统计快照按类型算：`stats_unidentified_count` 现口径是
-`media_item_id IS NULL AND ignored_at IS NULL`，对 other 库会把**每个文件**
-都算成待识别，改为 other 库恒 0；`stats_item_count` 对 other 库取在位文件
-数。全局待识别清单（`list_unidentified(library_id=None)`）与身份复核清单
-排除 other 库。
+`.strm`、原盘、改名归并、缺失标记、回收站、外挂字幕、AI 字幕 `queue_after_scan`、
+探测回填：不动。
 
-`.strm`、原盘目录、改名归并、缺失标记、回收站：类型无关，照常。
-探测层 `MediaSpec` 加一个可选 `creation_time`（读 `format.tags`），影视
-行不消费。
+### 4.2 展示：同一套海报墙与详情页，换形态
 
-### 4.2 展示：平铺网格 + 文件详情页
+- 海报墙 `build_library_wall` 不改查询（本地条目有 `media_item_id`）；
+  `LibraryItemView.tmdb_id` 改 `int | None`，新增 `capabilities`；卡片按
+  `profile.card` 渲染 16:9（缩略图 + 时长角标 + 进度条），排序多一档
+  `release_date`（内容时间）；
+- 条目详情页 `build_item_detail` 复用：本地条目读 `media_metadata`
+  （overview/图）与文件行；前端按能力位隐藏演职员、季集、订阅/洗版入口、
+  TMDB 链接、刮削归属，保留播放键、事实芯片、`MediaTrackRows`、
+  `FileSection`（回收、字幕）——**不需要新的文件详情页**；
+- 图片三级回落对本地条目：sidecar 图（`-thumb`/`-landscape` → 同名 →
+  `-poster`；`-fanart` 作背景，1.5.3）→ 容器 `attached_pic` → 抓帧 → 占位；
+- 库封面：`cover.py` 按 `profile.card` 出 16:9 变体；首页汇总补「K 个视频」；
+  库内搜索 `search_library_items` 天然覆盖（按条目标题）。
 
-```
-GET /libraries/{id}/videos?sort=recorded_at|title|added_at&offset&limit
-→ [{file_id, title, recorded_at, duration_seconds, resolution, size_bytes,
-    thumb_url, missing, watch: {position_ms, played}}]
-```
+### 4.3 缩略图 = 本地条目的 `ensure_assets`
 
-网页端 `library/[id]` 对 other 库渲染**视频网格**而非海报墙：卡片 16:9
-（缩略图 + 时长角标 + 观看进度条），默认按 `recorded_at` 倒序，可切按名/
-按入库时间；复用海报墙的分页与索引条机制（索引条按标题拼音）。
+`media_scrape.ensure_assets(item_id)` 按 `source` 分派：`local` 走
+`thumbs.py`（4.3 v1.1 的参数照抄 Jellyfin：sidecar/`attached_pic` 优先；
+否则 ffmpeg 10% 位置、`thumbnail=n=24`、反交错、HDR tonemap 复用
+`playback/ffmpeg_args.py`、mpegts `-skip_frame nokey`、宽度上限 1280、
+strm 跳过、失败留 NULL 下次重试），产物写
+`data/metadata/images/{media_item_id}/poster.jpg`（**与影视海报同一资产
+目录规范**，`sources.json` 记 `thumb_source`），登记 `media_metadata.poster_file`。
+经 `image_variants` 出卡片尺寸；库级开关 `generate_thumbnails`。
 
-点卡片进**文件详情页** `library/[id]/file/[fileId]`——不直接播放，因为
-文件级原生能力（回收、AI 字幕、轨道信息、外挂字幕）都长在详情页的
-FileSection 上，保持一致就得有这个页面。页面结构是影视详情页的子集：
-缩略图沉浸背景、标题、日期、事实芯片（分辨率/HDR/时长/大小）、
-`MediaTrackRows`（音轨/字幕）、播放键、NFO 简介（若有）、FileSection
-（路径、回收、字幕操作）。没有海报/演职员/季集区。
+### 4.4 播放与进度：零改动
 
-**没有海报怎么办**——三级回落，全部在网格与详情页共用：
-
-1. sidecar 图，文件名对齐 Jellyfin `LocalImageProvider`（1.5.3）：横图
-   `<主干>-thumb.jpg` / `<主干>-landscape.jpg` 优先（本就是 16:9 语义），
-   其次 `<主干>.jpg` / `<主干>-poster.jpg`；`<主干>-fanart.jpg` 作详情页背景；
-2. 容器内 `attached_pic` 封面流（ffprobe 已列出，零额外探测）；
-3. ffmpeg 抓帧缩略图（4.3）；
-4. 兜底：中性占位（图标 + 标题 + 时长 + 日期）。
-
-库卡片封面：现有「氛围光货架」拼贴只取 `media_metadata.poster_file`，other
-库改用 4 张最新缩略图做 16:9 变体；没有缩略图时用纯色卡。媒体库首页汇总
-「N 部电影 · M 部剧集」补「K 个视频」。库内搜索补按 `title` 搜文件。
-
-### 4.3 缩略图（P1，用户决策：体验分水岭）
-
-扫描收尾新增 THUMBS 阶段（替代影视库的 ASSETS 阶段）：对 `thumb_file`
-为 NULL 且已探测成功的在位文件抓一帧，写 `data/metadata/thumbs/{file_id}.jpg`，
-参数照抄 Jellyfin Screen Grabber（1.5.3）：
-
-```
-ffmpeg -ss <10% 时长；未知时长则 10s> -i <文件> -threads N -v quiet -vframes 1
-       -vf [bwdif,]scale=round(iw*sar/2)*2:round(ih/2)*2[,thumbnail=n=24][,tonemap]
-       -f image2 <输出>
-```
-
-- `thumbnail=n=24` 在 24 帧里挑最有代表性的一帧（避开黑场/转场）；
-- **HDR → SDR tonemap**（`zscale`+`tonemap=hable`，或 `tonemapx`）：iPhone
-  录像大量是 HLG/杜比视界，不做这一步帧图发灰发白。播放侧
-  `ffmpeg_args.py` 已有 tonemap 滤镜构造，复用；
-- 隔行源加 `bwdif`；mpegts 容器加 `-skip_frame nokey`；
-- 输出宽度上限 1280（Jellyfin 存原尺寸、出图时缩放；我们有 `image_variants`
-  管线，存一档中等尺寸再按请求缩放即可），JPEG 质量中档；
-- 优先级：sidecar 图 / `attached_pic` 存在则直接登记为 `thumb_file`（不抓帧）；
-- 限并发（复用 ASSETS 的 3 路队列）、strm 跳过、探测失败跳过、抓帧失败
-  只记日志（下次扫描重试）；
-- 与 trickplay 同一类 IO 顾虑（云盘挂载唤醒休眠盘）：只对新文件做，
-  且一次 seek 一帧，不通读容器；
-- 服务路由复用 `/images/assets/{path}`（同 metadata 资产，长缓存头）；
-- 库级开关 `generate_thumbnails`（默认开）。
-
-### 4.4 播放与进度：一个 `PlaybackUnit`，不分接口
-
-前一版写成"`/play/f/{file_id}` 与 `/play/{media_item_id}` 并列、进度接口
-接受 `file_id`"，读起来像两套接口。重新表述并收紧：**播放、进度、续播、
-最近观看、活动面板、Jellyfin UserData 全部只认一个类型 `PlaybackUnit`**，
-它是一个二选一的判别联合，在每一层都只有一个字段、一个解析器：
-
-```
-PlaybackUnit
-  = ItemUnit { media_item_id, season_number, episode_number }   # 有身份的内容
-  | FileUnit { library_file_id }                                # 没身份的内容
-
-后端 schema     unit: ItemUnit | FileUnit（Pydantic 判别联合，一个字段）
-领域层         movieclaw_playback/state.py 的 Unit 改为该联合
-存储           playback_state 两组列（3.3）
-前端类型       PlaybackUnit 同构；unitKeyOf() 一个函数
-URL            /play/[...unit]  一条路由、一个解析器：
-                 /play/127            → ItemUnit(127, 0, 0)
-                 /play/127/s01e03     → ItemUnit(127, 1, 3)
-                 /play/f456           → FileUnit(456)
-Jellyfin       GUID 类型 ITEM / EPISODE → ItemUnit；VIDEO → FileUnit
-```
-
-为什么是两个变体而不是一个：进度是**跟着内容身份走**的——同一部电影的
-1080p 与 2160p 两个文件共享一份进度（切版本续播），所以有身份的内容不能
-按文件记进度；没身份的内容除了文件没有别的可依附。这两个变体分别覆盖
-"有身份 / 无身份"两种情形，将来任何新类型都落在其一（成人库有番号身份 →
-ItemUnit；照片/监控 → FileUnit），联合不会再长第三个分支。
-
-**考虑过并否决的"更统一"方案——全部按文件寻址**：URL 只有
-`/play/f/{file_id}`，进度只收 `file_id`，服务端再把文件反解成单元。看似
-只剩一个标识，但破坏了 web-player.md §6.10 的既定决策（地址锚定作品而非
-某个版本文件：文件 id 删了再放回会变、分享链接分享的是作品不是版本、
-`/play/127/s01e03` 由服务端挑最佳版本）；Jellyfin 层的 Movie/Episode 条目
-也天然是单元寻址。为一种"表面上少一个变体"的统一去推翻已验证的产品
-决策，不值。
-
-其余不变：起播链路（单元从地址可算出，播放器立即挂载，条目信息晚到再补），
-`GET /playback/items/{id}` 与 `GET /playback/files/{id}` 是同一个信息接口
-的两个变体入口（返回同构的 `PlaybackItemView`：标题 / 库 / 图 / 时长）；
-文件单元的上一个/下一个 = 同库按当前排序的相邻文件；最近观看按单元变体
-渲染（文件单元无剧集字段），聚合键即单元键。
+`/play/{media_item_id}`、会话、进度、续播、最近观看、活动面板对本地条目
+原样工作（单元 `(item,0,0)`）。`GET /playback/items/{id}` 的海报即缩略图。
+上一个/下一个：`player-page.tsx` 对 `unit=SINGLE` 且 `card=THUMB` 的库，
+用库内按当前排序的相邻条目（相册连播）——这是唯一的前端增量。
 
 ### 4.5 下载与导入目标：原样落库
 
-用户决策：other 库可作为手动下载与监听导入的目标。语义定义为
-**「原样落库」**——不识别、不改名、不建条目：
+（v1.x 4.5 不变）目标为 `video` 库时 save_path = `{主根}`，监听导入
+「指定库」退化为原样转移，不识别不改名；订阅与自动路由排除
+`default_source != tmdb` 的库。
 
-- **手动下载选库**：目标为 other 库时 save_path = `{主根}`（种子自带的
-  目录结构原样落下），下载完成由实时监控/扫描按文件入账；
-- **监听导入规则「指定库」**：目标为 other 库时整理器退化为原样转移
-  （硬链/复制整个下载条目到 `{主根}/`，保留原名），跳过识别与命名，
-  `ingest_entry` 台账照记（幂等与退避不变）；
-- **不参与**：订阅（订阅对象是 TMDB 条目）、自动路由（按影视类型与
-  收藏范围）、自定义目录规则的识别改名。选库弹窗里 other 库照常列出，
-  自动路由的 kind 仍只有 movie/tv。
+### 4.6 Jellyfin
 
-这与 library.md「库根里有什么，库就是什么」一致：other 库的整理规则就是
-没有规则。
+- 库视图 `CollectionType = profile.jellyfin_collection`（`homevideos`）；
+- 条目 DTO：`Type = profile.jellyfin_type`（`"Video"`）、`MediaType: "Video"`、
+  `IsFolder: false`、`PremiereDate/ProductionYear` ← `release_date`、
+  `ProviderIds` 仅 `source=tmdb` 输出、**`PrimaryImageAspectRatio` 按真实
+  图片尺寸输出**（影视条目顺手补）；GUID 仍是条目 GUID（0x02），
+  `_entries_for_parent` 的 LIBRARY 分支对 `video` 库返回全部条目；
+- PlaybackInfo / stream / 字幕 / playstate / images：**零改动**（都按条目
+  GUID 与 `(item,0,0)` 单元工作）；
+- `Counts`：`Video` 只计 `ItemCount`；`Latest` 对 `video` 库逐条不聚合；
+  `Resume` 天然包含；
+- 偏离登记：不输出 `Folder` 层级、不输出 `Photo`。
 
-### 4.6 Jellyfin 兼容（P1 同期，用户决策：外部播放器高优先级）
+### 4.7 守卫清单（按 `source` / 能力位）
 
-- other 库 → `CollectionType: "homevideos"`；子条目 `Type: "Video"`
-  （`MediaType: "Video"`、`IsFolder: false`），**平铺**——Infuse 等对
-  homevideos 库直接列视频；
-- GUID 新增 0x08 `VIDEO(library_file_id)`；`_entries_for_parent` 的 LIBRARY
-  分支对 other 库返回 Video 列表（`Recursive` 语义天然成立，无子层级）；
-- `/Items/{id}` 加 VIDEO 分支；PlaybackInfo/stream/Download/字幕接口的
-  `_files_for_ref` 对 VIDEO 直接取该文件——MediaSource 构造本就是文件级的
-  （`media_source_dto`），复用；
-- playstate 的 `_resolve_units` 对 VIDEO 返回 `FileUnit`，UserData 读统一表；
-- images：VIDEO 的 `Primary` = `thumb_file`；有 `-fanart` 时给 `Backdrop`；
-  库封面走 4.2 的变体；
-- **`PrimaryImageAspectRatio` 必须输出**（1.5.6 第 7 条）：按缩略图真实
-  宽高比给（通常 1.777…），`Video` 在 Jellyfin 里没有 2/3 的默认值，客户端
-  靠这个字段决定卡片形状。现有影视条目也顺手补上（2/3 或按资产尺寸），
-  与真 Jellyfin 对齐；
-- `/Items/Counts`：`Video` 只计入 `ItemCount`（Jellyfin 没有 `VideoCount`）；
-  Latest 逐条输出 Video、按 `created_at` 倒序、不聚合；Resume 含 `FileUnit`
-  行；NextUp 不涉及；搜索按 `title`；
-- 排序：`SortName` 用 `title`、`DateCreated` 用 `created_at`、
-  `PremiereDate` 用 `recorded_at`；
-- 有意偏离（实施时登记进 jellyfin-compat.md 的偏离清单）：不输出 `Folder`
-  层级、不输出 `Photo` 条目；`/Items?parentId=<库>` 不论是否递归都返回全部
-  Video。
-
-### 4.7 必须关掉的身份级入口（守卫清单）
-
-- 订阅目标库与自动路由：`resolve_for_subscription`、`route()`、
-  import-watch 的自动路由 kind 只列 movie/tv；
-- 整理（命名模板）、认领/重新识别/身份复核面板、刮削设置 tab、元数据
-  刷新、收藏范围（match_rules）：other 库隐藏或 400 中文拒绝；
-- 转移：仅同类型（other↔other），不改名；
-- 创建库弹窗类型选项加「其他」，类型创建后不可改（现状约定）。
+| 守卫 | 位置 |
+|---|---|
+| 定时刷新只取 `source='tmdb'` | `media_refresh.py:46` |
+| `scrape_media_item` / `ensure_assets` 按 `source` 分派 | `media_scrape.py` |
+| NFO 写出（身份/完整/分集）只对 `source='tmdb'` | `media_scrape.py:1521,1535`、`nfo.py` |
+| Jellyfin `ProviderIds` 只对 tmdb | `catalog.py` |
+| 前端 TMDB 链接 / 订阅 / 洗版 / 认领 / 重识别入口按 `tmdb_id != null` 与 `capabilities` | `library-item-detail-view.tsx:450-479, 665-673` 等 |
+| 订阅目标库、路由、自动导入规则排除 `default_source != tmdb` 的库 | `subscription/core.py:1349`、`routing.py`、`import_watch_config.py` |
+| 整理 / 认领 / 重识别 / 复核 / 刮削设置对 `naming is None` 或 `source=local` 拒绝 | 各入口 |
+| 回归测试：本地条目跑完全部后台任务与详情页，MockTransport 断言零 TMDB 请求 | `tests/api/test_library_video_kind.py` |
 
 ## 5. NFO 兼容的边界
 
-读：只读 sidecar `<主干>.nfo`（**不读目录级 `movie.nfo`**——Jellyfin 对
-`Video` 类型同样不读，见 1.5.2），根元素**不校验**（`<movie>`/`<video>`/
-`<musicvideo>` 都行，Jellyfin 解析器同款），取 `title`、`sorttitle`、`plot`、
-`premiered|aired|releasedate`、`year`、`runtime`、`genre`/`tag`；
-`tmdbid`/`uniqueid` **忽略**（有也不建身份）；`dateadded` 是入库时间语义，
-不当拍摄时间用。
+（同 v1.1）只读 sidecar `<主干>.nfo`，不校验根元素，忽略 `tmdbid`；
+`dateadded` 不当内容时间；**永不写**。
 
-写：**永不**。影视库写 NFO 的价值是把 tmdb id 交给下游；other 库没有
-任何我们比用户更清楚的信息，写出只会污染用户目录。Jellyfin 对新库的
-NFO saver 默认也是关的（`IsSaverEnabledByDefault` 恒 false）。
+## 6. 实施计划（v2）
 
-## 6. 实施计划（完整版，2026-09-03 定稿）
-
-三期在同一个发布周期内完成，按依赖排序：一期是二、三期的地基；二、三期
-互不依赖。每一项都标了代码落点与验收判据，实施时逐项勾。
-
-### 一期：类型、入账、展示、缩略图、播放
-
-**1.1 库类型与守卫**
+### 一期：身份泛化 + 入账 + 展示 + 缩略图
 
 | 事项 | 落点 |
 |---|---|
-| `LibraryKind`（movie/tv/other）枚举 | `movieclaw_db/models/library.py`（db 层不反向依赖 media 层，枚举放这里） |
-| `LibraryProfile` 能力档案与 `PROFILES` 表、三个 `IdentityStrategy`（3.1）；`profile_of(library)` | 新 `services/library/profile.py` |
-| 8 处 `MediaKind(library.kind)` 改读 `profile.media_kind`（None 抛中文错误）；统计/订阅/路由/整理/Jellyfin 视图改读能力位 | 调用点 `scan.py:842/3508/3670`、`organize.py:194`、`claim.py:74`、`items.py:671`、`ingest.py:1663/3690`、`schemas/library.py:231` |
-| `LibraryPayload.kind` / `LibraryView.kind` 改 `LibraryKind`；`LibraryItemView.kind` 保持 `MediaKind`（只描述已识别条目） | `schemas/library.py` |
-| 统计快照按类型：other 库 `stats_item_count` = 在位文件数、`stats_unidentified_count` = 0、`stats_episode_count` = 0 | `movieclaw_db/repositories/library_repo.py:146-176` |
-| 全局待识别清单、身份复核清单、忽略清单排除 other 库 | `api/routes/libraries.py:638-675`，`library_file_repo.list_unidentified` |
-| 守卫：订阅 `_validate_library` 拒绝 other（中文文案）；整理/认领/重识别/复核/刮削设置/元数据刷新对 other 库 400；转移仅同类型 | `subscription/core.py:1349`、`organize.py`、`claim.py`、`scan.py:3490`、`scrape_config.py`、`transfer.py:349` |
-| `_KIND_NAMES` / `_KIND_LABELS` 字典补 other 或改 `.get` | `scan.py:237`、`nfo.py:31`、`import_watch_config.py:50` |
-| `genres.py:64` 对 other 返回空表；`media_scrape` 资产写出按 `kind` 匹配已天然排除 | `movieclaw_media/genres.py` |
-| 前端：`LibraryView` 带 `capabilities`（由档案导出），组件按能力位分叉；`LIBRARY_KIND_META` 只剩图标与文案并加「其他」→ 创建弹窗自动多一项；首页汇总补「K 个视频」；`defaultLibraryFor`；`listLibraries(kind)` | `apps/web/lib/media-types.ts`、`lib/api/libraries.ts`、`components/library-view.tsx:56/198/1233` |
-| OpenAPI 基线重生成（两份 spec.json）；`mclaw_tool.py` 域说明补「其他视频库」 | `export_openapi.py`、`cli/internal/spec/data/spec.json`、`services/mclaw_tool.py:41` |
+| `media_item` 迁移（3.2）；`MediaItem` 模型加 `source`/`external_id`，`tmdb_id` 可空；`media_repo.get_by_anchor` 改按 `(source, kind, external_id)`；3 处 `MediaItem.tmdb_id ==` 查询改 `external_id` | `models/media_item.py`、`repositories/media_repo.py`、`routing.py`、`subscription/dispatch.py`、`alembic/versions/` |
+| `MediaKind` 加 `video`；`KindProfile` + `PROFILES`；`IdentityStrategy` 注册表（tmdb 包住现有链、local 新写）；`ensure_local_item` | 新 `services/library/profile.py`；`services/media_library.py` |
+| 8 处 `MediaKind(library.kind)` 周边二分改读能力位；`_KIND_NAMES`/`_KIND_LABELS` 补项；`genres.py` 对 video 返回空 | `scan.py`、`organize.py`、`claim.py`、`items.py`、`ingest.py`、`nfo.py`、`import_watch_config.py`、`genres.py` |
+| 4.7 守卫清单五处 `source` 守卫 + 零 TMDB 请求回归测试 | 见 4.7 |
+| 扫描：策略分派、PLAIN 忽略口径、sidecar 重读；`MediaSpec` 加 `creation_time`/`tag_date` | `scan.py:2378-2560, 134-216, 1876-1950, 2284`、`media_probe.py` |
+| 统计快照按 `profile.unit`；待识别/复核清单自然不含本地条目（它们已识别） | `library_repo.py:146-176` |
+| `ensure_assets` 的 local 分派 + `thumbs.py`；`library.generate_thumbnails` | `media_scrape.py`、新 `services/library/thumbs.py` |
+| 接口：`LibraryView`/`LibraryItemView`/`LibraryItemDetailView` 加 `capabilities`，`tmdb_id` 可空；库列表 `?kind=video`；海报墙排序加 `release_date` | `schemas/library.py`、`api/routes/libraries.py`、`items.py` |
+| 前端：`MediaType` 加 `"video"`；`LIBRARY_KIND_META` 加「其他」；海报墙卡片按 `capabilities.card` 出 16:9；条目详情页按能力位隐藏影视区块；TMDB 链接/订阅入口判空；首页汇总；库封面变体 | `lib/media-types.ts`、`library-view.tsx`、`library-detail-view.tsx`、`library-item-detail-view.tsx`、`poster-card.tsx`、`cover.py` |
+| 播放器相邻条目连播（4.4） | `components/player/player-page.tsx` |
+| OpenAPI 基线重生成；`mclaw_tool.py` 域说明 | `export_openapi.py`、两份 `spec.json` |
 
-**1.2 台账与扫描分叉**
+验收：建 `video` 库 → 放入带 NFO、无 NFO、`婚礼花絮.mp4`、`sample.mp4`、
+HLG 录像、`.strm` → 扫描后全部为已识别条目（`source=local`）、标题与
+`release_date` 正确、花絮在账、`sample.mp4` 不在账、缩略图落
+`data/metadata/images/{id}/poster.jpg`、strm 无图 → 海报墙 16:9 → 详情页无
+影视区块 → `/play/{id}` 播放 → 进度落 `playback_state` → 改名重扫进度仍在 →
+最近观看出现 → 后台刷新/刮削/NFO 写出对本地条目零 TMDB 请求、零 NFO
+写出；`media_item` 迁移升降、存量 `(kind, tmdb_id)` 全部保留且唯一。
+影视既有用例零改动全绿。
 
-| 事项 | 落点 |
-|---|---|
-| 新表 `file_metadata`（1:1 `library_file`，见 3.2）；`library` 加 `generate_thumbnails`（默认真）——同一个迁移 | 新 `models/file_metadata.py`、`models/library.py`、`alembic/versions/` |
-| `MediaSpec` 加可选 `creation_time` / `tag_date`（读 `format.tags` 的 `creation_time`、`date`、`com.apple.quicktime.creationdate`） | `services/media_probe.py:380` |
-| `nfo.read_video_sidecar(path) -> VideoNfo`：不校验根元素，取 title / sorttitle / plot / premiered\|aired\|releasedate / year / runtime / genre\|tag；忽略 tmdbid | `services/library/nfo.py` |
-| `_ingest_file` 改为 `profile.identity.identify(...)`：LOCAL 策略读 sidecar NFO → 文件名主干，写 `file_metadata` 行（`recorded_at` = NFO → tags.date → creation_time → mtime），`library_file` 的 `media_item_id`/`unidentified_*`/`identity_source` 恒 NULL；单元按 `profile.unit` | `scan.py:2378-2560`、`services/library/profile.py` |
-| 遍历规则按 `profile.ignore_rules`：PLAIN 口径不做 `_IGNORE_MARKERS` 子串、`_EXTRAS_KEYWORDS`、`extras_marker` 后缀、`_IGNORE_DIRS` 中的花絮/extras 目录名；只保留隐藏目录、系统目录（`@eaDir` / `metadata` / `.actors` / `lost+found` / `#recycle`）与主干精确等于 `sample` | `scan.py:134-216, 1876-1950` |
-| other 库跳过：TMDB 预取、`_kind_conflict`、路径 tmdbid、`_review_due`/`_review_identity`、ASSETS 阶段；改进 THUMBS 阶段（1.3） | `scan.py:963, 1005-1010, 1298-1352` |
-| 已知行重扫：`dir_files` 里出现 `<主干>.nfo` 且 `file_metadata.source == filename` 时重读 sidecar（零额外目录 IO）；缺 `thumb_file` 的行进 THUMBS 队列 | `scan.py:2284`（`_refresh_known_row`） |
-| 改名归并、缺失对账、回收站、实时监控、外挂字幕发现、AI 字幕 `queue_after_scan`、探测回填：不动 | — |
-
-**1.3 缩略图**
+### 二期：Jellyfin
 
 | 事项 | 落点 |
 |---|---|
-| `services/library/thumbs.py`：`resolve_sidecar_thumb(file, dir_names)`（`-thumb`/`-landscape` → 同名 → `-poster`）、`has_attached_pic(spec)`、`extract_frame(file, spec) -> Path`（4.3 的 ffmpeg 参数：10% 位置、`thumbnail=n=24`、反交错、HDR tonemap 复用 `playback/ffmpeg_args.py` 的滤镜构造、mpegts `-skip_frame nokey`、宽度上限 1280、超时） | 新文件 |
-| 资产目录 `data/metadata/thumbs/{file_id}.jpg`；服务路由复用元数据资产路由（长缓存头）；卡片尺寸经 `image_variants` | `services/image_variants.py`、`api/routes/images.py` |
-| 扫描 THUMBS 阶段：3 路队列、strm 跳过、探测失败跳过、失败只记日志；`ScanPhase.THUMBS` 中文标签 | `scan.py:280-297, 1298` |
-| 库级开关 `generate_thumbnails`；删库/删文件时清理缩略图（挂到 `cleanup_orphan_items` 同类路径） | `services/library/recycle.py`、`media_scrape.cleanup_orphan_items` |
+| 库视图 `homevideos`；条目 DTO `Type: "Video"`、`ProviderIds` 守卫、`PremiereDate`；**`PrimaryImageAspectRatio` 按真实尺寸**（影视顺手补） | `catalog.py:1245-1484`、`routes/library.py:281` |
+| `_entries_for_parent` LIBRARY 分支对 video 库返回全部条目；`Counts` 只计 `ItemCount`；`Latest` 不聚合 | `routes/library.py:790-895, 913-932, 1125-1145` |
+| 偏离清单登记 | `docs/design/jellyfin-compat.md` |
 
-**1.4 浏览接口与网页**
+验收：协议用例 + Infuse 真机（列出、16:9 缩略图、直连、进度回传、继续观看）。
+播放/进度/图片路由不需要改动，用例只做回归。
 
-| 事项 | 落点 |
-|---|---|
-| `GET /libraries/{id}/videos?sort=recorded_at\|title\|added_at&offset&limit`（in_place、含观看状态、`thumb_url`）；`GET /libraries/{id}/files/{file_id}`（文件详情：台账字段 + title/recorded_at/thumb/NFO plot + 观看状态） | 新 `services/library/videos.py`；`api/routes/libraries.py`；`schemas/library.py` 新 `LibraryVideoView` / `LibraryFileDetailView` |
-| 库内搜索补按 `title` 搜 other 库文件 | `services/library/items.py:554`、`components/library-search-results.tsx` |
-| 库封面：other 库用 4 张最新缩略图的 16:9 变体，无图纯色卡 | `services/library/cover.py` |
-| 网页：`library-detail-view.tsx` 按 `library.capabilities.card` 分叉 → 新 `library-video-grid.tsx`（16:9 卡、时长角标、进度条、排序切换、复用分页与索引条） | `apps/web/components/` |
-| 新路由 `library/[id]/file/[fileId]` → `library-file-detail-view.tsx`（沉浸背景、标题/日期、事实芯片、`MediaTrackRows`、播放键、NFO 简介、`FileSection` 含回收与字幕操作） | `apps/web/app/(app)/library/[id]/file/[fileId]/page.tsx` |
-| 隐藏 other 库的：待处理抽屉、认领/复核面板、整理入口、刮削设置 tab、收藏范围、订阅相关按钮 | `library-detail-view.tsx`、`library-view.tsx` |
+### 三期：下载与导入目标
 
-**1.5 播放与进度**
+（同 v1.x 三期）`resolve_save_path` 对 video 库 = `{主根}`；手动下载选库含
+video 库（Go CLI 校验放行）；监听导入「指定库」原样转移；订阅/自动路由
+维持排除。
 
-| 事项 | 落点 |
-|---|---|
-| `playback_state` 多态迁移（batch 重建）：`media_item_id` 可空、加 `library_file_id` 可空 FK CASCADE、CHECK 恰有其一、两条部分唯一索引 | `models/playback_state.py`、`alembic/versions/` |
-| 领域层 `PlaybackUnit = ItemUnit \| FileUnit`；`get_states` / `record_playback_*` / `mark_played` / `get_remembered_tracks` / `unit_runtime_ms` 按变体落列 | `movieclaw_playback/state.py` |
-| `PlaybackUnit` 判别联合替换所有接口里的 `media_item_id/season/episode` 三元组与 `file_id` 二选一写法：会话、`/progress`、`/resume` 统一 `unit` 字段；信息接口加 `GET /playback/files/{id}` 变体（同构 `PlaybackItemView`）；`_visible_unit` 覆盖两种变体 | `api/routes/playback.py:482-643, 1244-1357`、`schemas/playback.py` |
-| 网页：`/play/[...unit]` 单一路由，`play-links.ts` 一个解析器识别 `127` / `127/s01e03` / `f456`；`PlaybackUnit` 前端类型同构；`player-page.tsx` 按变体取信息与上一/下一；`video-player.tsx` 进度上报只传 `unit` | `apps/web/app/play/`、`lib/player/play-links.ts`、`components/player/` |
-| 最近观看：`playback_recent` 增 `FileUnit` 路（标题/缩略图/进度，无剧集字段，聚合键 `file_id`）；`recent-watch-row.tsx` 跳文件详情 | `services/playback_recent.py`、`schemas/playback.py:13`、`components/recent-watch-row.tsx` |
-| 活动面板 `MediaActivityTarget` 支持文件目标（已有 `file_id` 字段） | `services/playback_activity.py` |
-| 起播预热 `warmup.py`、trickplay：确认按文件工作，other 库照常 | `services/playback/warmup.py`、`trickplay.py` |
+### 跨期
 
-**一期验收**（e2e，`tests/api/test_library_other_kind.py` 新建）：建 other 库 →
-放入带 sidecar NFO、不带 NFO、`婚礼花絮.mp4`、`sample.mp4`、HLG 录像、
-`.strm` 各一 → 扫描：零待识别、标题与 `recorded_at` 正确、花絮文件在账、
-`sample.mp4` 不在账、缩略图落盘、strm 无缩略图 → `/videos` 排序正确 →
-文件详情 → 播放会话 `file_id` → 进度落 `playback_state` 的 `library_file_id`
-列 → 改名重扫进度仍在 → 最近观看出现该文件；`playback_state` 迁移升降与
-存量行保留；影视库全套既有用例（scan/ingest/organize/claim/playback/jellyfin）
-零改动全绿。
-
-### 二期：Jellyfin 兼容层
-
-| 事项 | 落点 |
-|---|---|
-| `EntityKind.VIDEO = 0x08`，`video_guid(file_id)` | `movieclaw_jellyfin/ids.py` |
-| `video_dto(file)`：`Type: "Video"`、`MediaType: "Video"`、`IsFolder: false`、`Name = title`、`PremiereDate`/`ProductionYear` ← `recorded_at`、`RunTimeTicks`、`DateCreated`、`VideoType`、`UserData` ← `FileUnit`、`ImageTags.Primary`（缩略图）/ `BackdropImageTags`（`-fanart`）、**`PrimaryImageAspectRatio` 按真实图片尺寸**、fields 门控的 `MediaSources`/`MediaStreams`/`Path`；影视 DTO 顺手补 `PrimaryImageAspectRatio` | `catalog.py` |
-| 库视图 `CollectionType: "homevideos"`，`RecursiveItemCount` = 文件数 | `catalog.py:1453-1484`、`routes/library.py:281` |
-| `_entries_for_parent` LIBRARY 分支：other 库无论是否递归、`includeItemTypes` 为空或含 `Video` 都返回全部 Video；`/Items/{id}` VIDEO 分支；`Latest` 逐条不聚合按 `created_at`；`Resume` 含 `FileUnit`；`Counts` 只计 `ItemCount`；`searchTerm` 按 `title`；`sortBy` 映射 SortName/DateCreated/PremiereDate | `routes/library.py:790-895, 913-932, 1027, 1125-1145, 1290` |
-| PlaybackInfo / stream / Download / File / 外挂字幕：`_files_for_ref` VIDEO 直接取该文件（MediaSource 构造本就文件级） | `routes/playback.py:68-92, 111, 255, 322, 408` |
-| playstate：`_resolve_units` VIDEO → `FileUnit`；已看/收藏/进度 | `routes/playstate.py:95-159` |
-| images：VIDEO 的 Primary/Backdrop；库封面走一期变体 | `routes/images.py:64-112` |
-| jellyfin-compat.md 偏离清单登记：不输出 `Folder` 层级、不输出 `Photo`、库级 `/Items` 恒返回全部 Video | `docs/design/jellyfin-compat.md` |
-
-**二期验收**：`tests/jellyfin/` 协议用例（UserViews 出现 homevideos、
-Items 列出 Video、PlaybackInfo/stream 206、Playing/Progress/Stopped 落
-`FileUnit`、Images 200 + 正确长宽比、Counts/Latest/Resume）；Infuse 真机：
-列出视频、缩略图 16:9 显示、直连播放、进度回传、继续观看出现。
-
-### 三期：下载与导入目标（原样落库）
-
-| 事项 | 落点 |
-|---|---|
-| `resolve_save_path` / `derive_save_path`：目标为 other 库时 save_path = `{主根}`，不推导条目目录 | `services/library/routing.py:224`、`config.py:43-71` |
-| 手动下载选库：`torrent_submit` 接受 other 库 id；下载目标弹窗列出 other 库（`RememberKind` 已有 `other` 桶）；Go CLI 的 kind 校验放行 | `services/torrent_submit.py`、`components/download-target-dialog.tsx`、`cli/internal/overlay/download.go:249` |
-| 监听导入「指定库」为 other 时：`_ingest_entry` 走原样转移（整个下载条目硬链/复制到 `{主根}/`，保留原名，跳过识别与命名；`ingest_entry` 台账、幂等、退避不变；完成文案陈述事实） | `services/library/ingest.py:1662-1800` |
-| 自动路由与自定义目录规则的 kind 维持 movie/tv；订阅目标库维持排除 other | `import_watch_config.py:202-244`、`subscription/core.py` |
-| 手动下载后由实时监控/扫描入账（一期能力） | — |
-
-**三期验收**：下载到 other 库原名落 `{主根}` → 监控入账带缩略图；监听导入
-原样硬链（同 inode）→ 台账；订阅弹窗与自动路由不出现 other 库；
-`download.go` 接受 other 库。
-
-### 跨期事项
-
-- **不需要 bump `docker/runtime-version`**：抓帧只用镜像里已有的 ffmpeg，
-  无新运行时依赖；
-- 迁移两个（一期 1.2 与 1.5 各一个），均单向；`playback_state` 重建前后
-  行数与存量键逐一断言；
-- 文档：本文随实施补「实施记录」；jellyfin-compat.md 偏离清单；README
-  用户手册加「其他视频库」一节（NFO/图片文件命名惯例、缩略图开关）。
+不 bump `runtime-version`（ffmpeg 已在镜像）；迁移一个（`media_item`），
+单向，重建前后行数与锚逐一断言；文档随实施补实施记录、Jellyfin 偏离清单、
+README「其他视频库」一节。
 
 ## 7. 风险与开口
 
-1. **抓帧 IO**：只在扫描收尾对新文件做、限并发、strm 跳过、库级开关；
-2. **第二种播放单元**的扩散：收敛在 `state.py` 的联合类型与
-   `playback_recent` 一处，其余消费方按变体分派，不允许各自拼键；
-3. **`playback_state` 表重建**：迁移里对存量行逐一校验 CHECK 成立
-   （存量 `media_item_id` 全非空，天然满足）；升降测试必做；
-4. **文件名即标题**的粗糙：不做清洗规则是有意的（家庭视频命名没有规律，
-   任何清洗都有误伤），用户想要好名字就放 NFO 或改文件名；
-5. **超大其他库**（万级文件）的网格分页与缩略图磁盘占用（480px JPEG
-   约 30KB/张，一万个文件 300MB）：可接受，随「清理无引用资产」一并清理；
-6. 目录层级：当前不做；若日后要，按 v0 草案的派生目录方案补
-   `browse?path=` 与 Jellyfin FOLDER GUID，本设计的接口形态不变；
-7. 图片收录：Jellyfin 的 homevideos 默认把 jpg/heic 也当 `Photo` 条目收进来
-   （1.5.1），做成真正的相册。我们 v1 只收视频；要做的话是独立的类型
-   （`photo`）而不是往 other 里塞，Jellyfin 也单独有 `photos` 类型；
-8. 容器 `title` 标签作标题：Jellyfin 做成 opt-in（嵌入标题常是垃圾），我们
-   v1 不读；有诉求时加库级开关，落在 NFO 与文件名之间；
-9. NFO 里的 `watched/playcount/lastplayed`：Jellyfin 会导入为观看状态，
-   我们不导（观看状态是成员维度的，NFO 里的是谁的说不清）。
+1. **`media_item` 重建**：入向外键 9 处，SQLite batch 按表名引用无影响，
+   但迁移必须在 `PRAGMA foreign_keys` 处理上与 `d9f4b1c73e85` 同一写法；
+   升降测试与存量锚断言必做；
+2. **本地条目泄漏进 TMDB 路径**：五处守卫 + 零请求回归测试；新增任何
+   "遍历全部条目"的任务时按 `source` 过滤是硬约定，写进 `media_item` 模型
+   注释；
+3. **三值 `kind`**：所有新分叉必须读能力档案，PR 评审拒绝新增
+   `kind == "movie"` 字面比较（现有约 40 处随本期一并改掉）；
+4. **抓帧 IO**：只对新条目、限并发、strm 跳过、库级开关；
+5. 目录层级、图片收录（相册）、容器 `title` 标签、NFO 观看状态导入：开口不变；
+6. 将来有身份的新来源（成人/番号）：加 `source` 值、识别策略、刮削器；若要
+   订阅，匹配内核需要该来源的别名与发布信息，届时另议。
 
-## 8. 决策记录（用户拍板 2026-09-03）
+## 8. 决策记录
 
-1. 类型只加一个通用 `other`，不细分家庭录像/音乐视频等；
-2. **平铺**展示，不引入目录层级；
-3. 缩略图抓帧要做，且是一期内容；
-4. 播放状态**不拆表**，统一在 `playback_state`（3.3 的多态方案由此而来）；
-5. Jellyfin 与外部播放器高优先级，与一期同周期；
-6. other 库**可以**作为下载与导入目标（4.5 定义为原样落库）；
-7. AI 字幕等文件级原生能力对 other 库保持一致，不做排除；
-8. 命名暂用 `other` / 「其他」。
+用户拍板（2026-09-03）：单一通用类型；平铺；缩略图入一期；播放状态不拆表；
+Jellyfin 高优先级；video 库可作下载/导入目标；文件级原生能力一致；
+命名暂用 `video` / 「其他」。
 
-## 9. 实施前剩余的两个小口子
+设计演进：v0 文件寻址草案 → v1 决策落地 → v1.1 Jellyfin 考察 → v1.2
+能力档案 / 独立表 / 统一单元 → **v2 身份泛化**（本版）。v1.2 的三项改动
+中，能力档案保留并简化为一个枚举一份档案；`file_metadata` 与统一
+`PlaybackUnit` 因不再需要而取消。
 
-1. **文件详情页**：本文选择「点卡片进详情页再播放」，理由是回收/AI 字幕/
-   轨道等文件级能力都长在详情页上（4.2）。若更想要相册那种点即播放，
-   可以把详情收成卡片上的「⋯」菜单，播放键直接放卡片——两种都不影响
-   数据与接口，只是前端形态。
-2. **原样落库的目录形态**：手动下载到 other 库时，种子是单文件就直接落
-   `{主根}/文件`，是目录就落 `{主根}/种子目录/`（4.5）。要不要给一个
-   「按下载日期分目录」之类的选项，暂不做，等真实反馈。
+## 9. 待拍板
+
+1. 是否接受重建 `media_item` 并引入 `source`/`external_id`（v2 的前提）。
+2. 存储值用 `video` 还是 `other`：`kind` 现在是内容形态，`video` 更准确；
+   展示名仍「其他」。
+3. 点卡片进条目详情页（复用现有页面）——v1.x 的"文件详情页"不再需要，
+   相册式"点即播放"仍可作为该形态的卡片行为另议。
 
 ## 附录 A：两值假设的高风险点（实施时逐个处理）
 
