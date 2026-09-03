@@ -671,7 +671,7 @@ NFO saver 默认也是关的（`IsSaverEnabledByDefault` 恒 false）。
 | 事项 | 落点 |
 |---|---|
 | `playback_state` 多态迁移（batch 重建）：`media_item_id` 可空、加 `library_file_id` 可空 FK CASCADE、CHECK 恰有其一、两条部分唯一索引 | `models/playback_state.py`、`alembic/versions/` |
-| 领域层 `PlayUnit = ItemUnit \| FileUnit`；`get_states` / `record_playback_*` / `mark_played` / `get_remembered_tracks` / `unit_runtime_ms` 按变体落列 | `movieclaw_playback/state.py` |
+| 领域层 `PlaybackUnit = ItemUnit \| FileUnit`；`get_states` / `record_playback_*` / `mark_played` / `get_remembered_tracks` / `unit_runtime_ms` 按变体落列 | `movieclaw_playback/state.py` |
 | `PlaybackUnit` 判别联合替换所有接口里的 `media_item_id/season/episode` 三元组与 `file_id` 二选一写法：会话、`/progress`、`/resume` 统一 `unit` 字段；信息接口加 `GET /playback/files/{id}` 变体（同构 `PlaybackItemView`）；`_visible_unit` 覆盖两种变体 | `api/routes/playback.py:482-643, 1244-1357`、`schemas/playback.py` |
 | 网页：`/play/[...unit]` 单一路由，`play-links.ts` 一个解析器识别 `127` / `127/s01e03` / `f456`；`PlaybackUnit` 前端类型同构；`player-page.tsx` 按变体取信息与上一/下一；`video-player.tsx` 进度上报只传 `unit` | `apps/web/app/play/`、`lib/player/play-links.ts`、`components/player/` |
 | 最近观看：`playback_recent` 增 `FileUnit` 路（标题/缩略图/进度，无剧集字段，聚合键 `file_id`）；`recent-watch-row.tsx` 跳文件详情 | `services/playback_recent.py`、`schemas/playback.py:13`、`components/recent-watch-row.tsx` |
