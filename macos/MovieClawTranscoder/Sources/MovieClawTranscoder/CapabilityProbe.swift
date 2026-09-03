@@ -17,13 +17,7 @@ enum CapabilityProbe {
             .split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: true)
             .first
             .map(String.init) ?? "unknown"
-        let encoders = encoderOutput
-            .split(separator: "\n")
-            .compactMap { line -> String? in
-                let fields = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
-                guard fields.count >= 2, fields[0].count == 6 else { return nil }
-                return String(fields[1])
-            }
+        let encoders = Self.parseEncoders(encoderOutput)
         let backends = encoders.contains("h264_videotoolbox") ? ["videotoolbox"] : []
         guard !backends.isEmpty else {
             throw ConfigurationError.message(
@@ -35,6 +29,23 @@ enum CapabilityProbe {
             encoders: encoders,
             backends: backends
         )
+    }
+
+    /// 从 `ffmpeg -encoders` 的输出里取编码器名。
+    ///
+    /// 输出开头是 8 行标志位图例（` V..... = Video`、` .F.... = Frame-level
+    /// multithreading` …），它们的第一列同样是 6 个字符，只按列宽过滤会把
+    /// 图例的 `=` 当成 8 个编码器收进来（issue #286 的能力快照里
+    /// `encoders==,=,=,…` 就是这么来的）。图例行第二列固定是 `=`，据此排除；
+    /// `------` 分隔行只有一列，本来就过不了。
+    static func parseEncoders(_ output: String) -> [String] {
+        output
+            .split(separator: "\n")
+            .compactMap { line -> String? in
+                let fields = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
+                guard fields.count >= 2, fields[0].count == 6, fields[1] != "=" else { return nil }
+                return String(fields[1])
+            }
     }
 
     private static func execute(_ path: String, arguments: [String]) throws -> String {

@@ -404,6 +404,7 @@ async def put_transcode_artifact(
             received_bytes=written,
             content_length=content_length_value,
             transfer_encoding=transfer_encoding,
+            attempt_id=grant.attempt_id,
         )
         if name in {"init.mp4", "live.m3u8"}:
             logger.info(
@@ -430,6 +431,7 @@ async def put_transcode_artifact(
                     received_bytes=written,
                     content_length=content_length_value,
                     transfer_encoding=transfer_encoding,
+                    attempt_id=grant.attempt_id,
                 )
                 raise _artifact_write_failure(
                     exc,
@@ -443,6 +445,7 @@ async def put_transcode_artifact(
                 received_bytes=written,
                 content_length=content_length_value,
                 transfer_encoding=transfer_encoding,
+                attempt_id=grant.attempt_id,
             )
             logger.warning(
                 "远程转码产物上传客户端提前断开，但请求体已完整接收："
@@ -460,6 +463,7 @@ async def put_transcode_artifact(
             received_bytes=written,
             content_length=content_length_value,
             transfer_encoding=transfer_encoding,
+            attempt_id=grant.attempt_id,
         )
         logger.warning(
             "远程转码产物上传中断：session=%s name=%s received_bytes=%s "
@@ -479,6 +483,7 @@ async def put_transcode_artifact(
             received_bytes=written,
             content_length=content_length_value,
             transfer_encoding=transfer_encoding,
+            attempt_id=grant.attempt_id,
         )
         raise
     except OSError as exc:
@@ -490,6 +495,7 @@ async def put_transcode_artifact(
             received_bytes=written,
             content_length=content_length_value,
             transfer_encoding=transfer_encoding,
+            attempt_id=grant.attempt_id,
         )
         raise _artifact_write_failure(
             exc,
