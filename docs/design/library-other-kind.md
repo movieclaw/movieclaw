@@ -485,17 +485,122 @@ ffmpeg -ss <10% 时长；未知时长则 10s> -i <文件> -threads N -v quiet -v
 任何我们比用户更清楚的信息，写出只会污染用户目录。Jellyfin 对新库的
 NFO saver 默认也是关的（`IsSaverEnabledByDefault` 恒 false）。
 
-## 6. 分期实施
+## 6. 实施计划（完整版，2026-09-03 定稿）
 
-三期同一个发布周期内完成，顺序按依赖排：
+三期在同一个发布周期内完成，按依赖排序：一期是二、三期的地基；二、三期
+互不依赖。每一项都标了代码落点与验收判据，实施时逐项勾。
 
-| 期 | 内容 | 验证 |
-|---|---|---|
-| **一 入账 + 展示 + 播放 + 缩略图** | `LibraryKind` + 守卫清单；扫描分叉（标题/时间/NFO、关 extras 过滤、统计口径、清单排除）；三列迁移；`playback_state` 多态迁移；视频网格接口与页面；文件详情页；缩略图阶段；`/play/f/{id}` + `GET /playback/files/{id}`；进度/续播/最近观看按 `FileUnit` 补路 | e2e：建 other 库 → 放带 NFO 与不带 NFO 的文件 → 扫描零待识别、标题/时间正确、`婚礼花絮.mp4` 不被跳过、缩略图落盘 → 网格 → 详情 → 播放 → 进度落统一表 → 改名后进度仍在；影视库全套既有用例零改动；`playback_state` 迁移升降与存量数据不丢 |
-| **二 Jellyfin** | homevideos 视图、Video 条目、播放/进度/图片/搜索/Counts/Latest/Resume 分支 | 协议单测 + Infuse 真机：列出视频、直连播放、进度回传、缩略图显示 |
-| **三 下载与导入目标** | 手动下载选库含 other；监听导入「指定库」原样转移；订阅/自动路由维持排除 | e2e：下载到 other 库原名落盘 → 监控入账；监听导入原样硬链 → 台账；订阅弹窗不出现 other 库 |
+### 一期：类型、入账、展示、缩略图、播放
 
-一期独立可发版；二、三期互不依赖。
+**1.1 库类型与守卫**
+
+| 事项 | 落点 |
+|---|---|
+| `LibraryKind`（movie/tv/other）枚举；`Library.is_scraped` 属性 | `movieclaw_db/models/library.py`（db 层不反向依赖 media 层，枚举放这里） |
+| `library_media_kind(library) -> MediaKind`，other 抛中文错误；替换全部 8 处 `MediaKind(library.kind)` | `services/library/config.py`；调用点 `scan.py:842/3508/3670`、`organize.py:194`、`claim.py:74`、`items.py:671`、`ingest.py:1663/3690`、`schemas/library.py:231` |
+| `LibraryPayload.kind` / `LibraryView.kind` 改 `LibraryKind`；`LibraryItemView.kind` 保持 `MediaKind`（只描述已识别条目） | `schemas/library.py` |
+| 统计快照按类型：other 库 `stats_item_count` = 在位文件数、`stats_unidentified_count` = 0、`stats_episode_count` = 0 | `movieclaw_db/repositories/library_repo.py:146-176` |
+| 全局待识别清单、身份复核清单、忽略清单排除 other 库 | `api/routes/libraries.py:638-675`，`library_file_repo.list_unidentified` |
+| 守卫：订阅 `_validate_library` 拒绝 other（中文文案）；整理/认领/重识别/复核/刮削设置/元数据刷新对 other 库 400；转移仅同类型 | `subscription/core.py:1349`、`organize.py`、`claim.py`、`scan.py:3490`、`scrape_config.py`、`transfer.py:349` |
+| `_KIND_NAMES` / `_KIND_LABELS` 字典补 other 或改 `.get` | `scan.py:237`、`nfo.py:31`、`import_watch_config.py:50` |
+| `genres.py:64` 对 other 返回空表；`media_scrape` 资产写出按 `kind` 匹配已天然排除 | `movieclaw_media/genres.py` |
+| 前端：`LibraryKind = MediaType \| "other"`；`LIBRARY_KIND_META` 加「其他」（图标 Video）→ 创建弹窗自动多一项；首页汇总补「K 个视频」；`defaultLibraryFor`；`listLibraries(kind)` | `apps/web/lib/media-types.ts`、`lib/api/libraries.ts`、`components/library-view.tsx:56/198/1233` |
+| OpenAPI 基线重生成（两份 spec.json）；`mclaw_tool.py` 域说明补「其他视频库」 | `export_openapi.py`、`cli/internal/spec/data/spec.json`、`services/mclaw_tool.py:41` |
+
+**1.2 台账与扫描分叉**
+
+| 事项 | 落点 |
+|---|---|
+| `library_file` 加 `title` / `recorded_at` / `thumb_file`（可空）；`library` 加 `generate_thumbnails`（默认真）——同一个迁移 | `models/library_file.py`、`models/library.py`、`alembic/versions/` |
+| `MediaSpec` 加可选 `creation_time` / `tag_date`（读 `format.tags` 的 `creation_time`、`date`、`com.apple.quicktime.creationdate`） | `services/media_probe.py:380` |
+| `nfo.read_video_sidecar(path) -> VideoNfo`：不校验根元素，取 title / sorttitle / plot / premiered\|aired\|releasedate / year / runtime / genre\|tag；忽略 tmdbid | `services/library/nfo.py` |
+| `_ingest_file` 按 `library.is_scraped` 分叉：other 走 `_local_video_identity`（sidecar NFO → 文件名主干；`recorded_at` = NFO → tags.date → creation_time → mtime），`media_item_id`/`unidentified_*`/`identity_source` 恒 NULL，单元 (0,0) | `scan.py:2378-2560` |
+| 遍历规则按类型：other 库不做 `_IGNORE_MARKERS` 子串、`_EXTRAS_KEYWORDS`、`extras_marker` 后缀、`_IGNORE_DIRS` 中的花絮/extras 目录名；只保留隐藏目录、系统目录（`@eaDir` / `metadata` / `.actors` / `lost+found` / `#recycle`）与主干精确等于 `sample` | `scan.py:134-216, 1876-1950` |
+| other 库跳过：TMDB 预取、`_kind_conflict`、路径 tmdbid、`_review_due`/`_review_identity`、ASSETS 阶段；改进 THUMBS 阶段（1.3） | `scan.py:963, 1005-1010, 1298-1352` |
+| 已知行重扫：`dir_files` 里出现 `<主干>.nfo` 且当前 `title` 来自文件名时重读 sidecar（零额外目录 IO）；缺 `thumb_file` 的行进 THUMBS 队列 | `scan.py:2284`（`_refresh_known_row`） |
+| 改名归并、缺失对账、回收站、实时监控、外挂字幕发现、AI 字幕 `queue_after_scan`、探测回填：不动 | — |
+
+**1.3 缩略图**
+
+| 事项 | 落点 |
+|---|---|
+| `services/library/thumbs.py`：`resolve_sidecar_thumb(file, dir_names)`（`-thumb`/`-landscape` → 同名 → `-poster`）、`has_attached_pic(spec)`、`extract_frame(file, spec) -> Path`（4.3 的 ffmpeg 参数：10% 位置、`thumbnail=n=24`、反交错、HDR tonemap 复用 `playback/ffmpeg_args.py` 的滤镜构造、mpegts `-skip_frame nokey`、宽度上限 1280、超时） | 新文件 |
+| 资产目录 `data/metadata/thumbs/{file_id}.jpg`；服务路由复用元数据资产路由（长缓存头）；卡片尺寸经 `image_variants` | `services/image_variants.py`、`api/routes/images.py` |
+| 扫描 THUMBS 阶段：3 路队列、strm 跳过、探测失败跳过、失败只记日志；`ScanPhase.THUMBS` 中文标签 | `scan.py:280-297, 1298` |
+| 库级开关 `generate_thumbnails`；删库/删文件时清理缩略图（挂到 `cleanup_orphan_items` 同类路径） | `services/library/recycle.py`、`media_scrape.cleanup_orphan_items` |
+
+**1.4 浏览接口与网页**
+
+| 事项 | 落点 |
+|---|---|
+| `GET /libraries/{id}/videos?sort=recorded_at\|title\|added_at&offset&limit`（in_place、含观看状态、`thumb_url`）；`GET /libraries/{id}/files/{file_id}`（文件详情：台账字段 + title/recorded_at/thumb/NFO plot + 观看状态） | 新 `services/library/videos.py`；`api/routes/libraries.py`；`schemas/library.py` 新 `LibraryVideoView` / `LibraryFileDetailView` |
+| 库内搜索补按 `title` 搜 other 库文件 | `services/library/items.py:554`、`components/library-search-results.tsx` |
+| 库封面：other 库用 4 张最新缩略图的 16:9 变体，无图纯色卡 | `services/library/cover.py` |
+| 网页：`library-detail-view.tsx` 按 kind 分叉 → 新 `library-video-grid.tsx`（16:9 卡、时长角标、进度条、排序切换、复用分页与索引条） | `apps/web/components/` |
+| 新路由 `library/[id]/file/[fileId]` → `library-file-detail-view.tsx`（沉浸背景、标题/日期、事实芯片、`MediaTrackRows`、播放键、NFO 简介、`FileSection` 含回收与字幕操作） | `apps/web/app/(app)/library/[id]/file/[fileId]/page.tsx` |
+| 隐藏 other 库的：待处理抽屉、认领/复核面板、整理入口、刮削设置 tab、收藏范围、订阅相关按钮 | `library-detail-view.tsx`、`library-view.tsx` |
+
+**1.5 播放与进度**
+
+| 事项 | 落点 |
+|---|---|
+| `playback_state` 多态迁移（batch 重建）：`media_item_id` 可空、加 `library_file_id` 可空 FK CASCADE、CHECK 恰有其一、两条部分唯一索引 | `models/playback_state.py`、`alembic/versions/` |
+| 领域层 `PlayUnit = ItemUnit \| FileUnit`；`get_states` / `record_playback_*` / `mark_played` / `get_remembered_tracks` / `unit_runtime_ms` 按变体落列 | `movieclaw_playback/state.py` |
+| `GET /playback/files/{file_id}`（title / library_id / thumb_url / recorded_at / duration）；会话、`/progress`、`/resume` 接受 `file_id`；`_visible_file` 可见性 | `api/routes/playback.py:514-643, 1269-1357`、`schemas/playback.py` |
+| 网页：`/play/f/[fileId]` 路由；`play-links.ts` 加 `fileHref`；`player-page.tsx` 文件模式（信息接口、上一/下一 = 同库同排序相邻文件）；`video-player.tsx` 进度上报带 `file_id` | `apps/web/app/play/`、`lib/player/play-links.ts`、`components/player/` |
+| 最近观看：`playback_recent` 增 `FileUnit` 路（标题/缩略图/进度，无剧集字段，聚合键 `file_id`）；`recent-watch-row.tsx` 跳文件详情 | `services/playback_recent.py`、`schemas/playback.py:13`、`components/recent-watch-row.tsx` |
+| 活动面板 `MediaActivityTarget` 支持文件目标（已有 `file_id` 字段） | `services/playback_activity.py` |
+| 起播预热 `warmup.py`、trickplay：确认按文件工作，other 库照常 | `services/playback/warmup.py`、`trickplay.py` |
+
+**一期验收**（e2e，`tests/api/test_library_other_kind.py` 新建）：建 other 库 →
+放入带 sidecar NFO、不带 NFO、`婚礼花絮.mp4`、`sample.mp4`、HLG 录像、
+`.strm` 各一 → 扫描：零待识别、标题与 `recorded_at` 正确、花絮文件在账、
+`sample.mp4` 不在账、缩略图落盘、strm 无缩略图 → `/videos` 排序正确 →
+文件详情 → 播放会话 `file_id` → 进度落 `playback_state` 的 `library_file_id`
+列 → 改名重扫进度仍在 → 最近观看出现该文件；`playback_state` 迁移升降与
+存量行保留；影视库全套既有用例（scan/ingest/organize/claim/playback/jellyfin）
+零改动全绿。
+
+### 二期：Jellyfin 兼容层
+
+| 事项 | 落点 |
+|---|---|
+| `EntityKind.VIDEO = 0x08`，`video_guid(file_id)` | `movieclaw_jellyfin/ids.py` |
+| `video_dto(file)`：`Type: "Video"`、`MediaType: "Video"`、`IsFolder: false`、`Name = title`、`PremiereDate`/`ProductionYear` ← `recorded_at`、`RunTimeTicks`、`DateCreated`、`VideoType`、`UserData` ← `FileUnit`、`ImageTags.Primary`（缩略图）/ `BackdropImageTags`（`-fanart`）、**`PrimaryImageAspectRatio` 按真实图片尺寸**、fields 门控的 `MediaSources`/`MediaStreams`/`Path`；影视 DTO 顺手补 `PrimaryImageAspectRatio` | `catalog.py` |
+| 库视图 `CollectionType: "homevideos"`，`RecursiveItemCount` = 文件数 | `catalog.py:1453-1484`、`routes/library.py:281` |
+| `_entries_for_parent` LIBRARY 分支：other 库无论是否递归、`includeItemTypes` 为空或含 `Video` 都返回全部 Video；`/Items/{id}` VIDEO 分支；`Latest` 逐条不聚合按 `created_at`；`Resume` 含 `FileUnit`；`Counts` 只计 `ItemCount`；`searchTerm` 按 `title`；`sortBy` 映射 SortName/DateCreated/PremiereDate | `routes/library.py:790-895, 913-932, 1027, 1125-1145, 1290` |
+| PlaybackInfo / stream / Download / File / 外挂字幕：`_files_for_ref` VIDEO 直接取该文件（MediaSource 构造本就文件级） | `routes/playback.py:68-92, 111, 255, 322, 408` |
+| playstate：`_resolve_units` VIDEO → `FileUnit`；已看/收藏/进度 | `routes/playstate.py:95-159` |
+| images：VIDEO 的 Primary/Backdrop；库封面走一期变体 | `routes/images.py:64-112` |
+| jellyfin-compat.md 偏离清单登记：不输出 `Folder` 层级、不输出 `Photo`、库级 `/Items` 恒返回全部 Video | `docs/design/jellyfin-compat.md` |
+
+**二期验收**：`tests/jellyfin/` 协议用例（UserViews 出现 homevideos、
+Items 列出 Video、PlaybackInfo/stream 206、Playing/Progress/Stopped 落
+`FileUnit`、Images 200 + 正确长宽比、Counts/Latest/Resume）；Infuse 真机：
+列出视频、缩略图 16:9 显示、直连播放、进度回传、继续观看出现。
+
+### 三期：下载与导入目标（原样落库）
+
+| 事项 | 落点 |
+|---|---|
+| `resolve_save_path` / `derive_save_path`：目标为 other 库时 save_path = `{主根}`，不推导条目目录 | `services/library/routing.py:224`、`config.py:43-71` |
+| 手动下载选库：`torrent_submit` 接受 other 库 id；下载目标弹窗列出 other 库（`RememberKind` 已有 `other` 桶）；Go CLI 的 kind 校验放行 | `services/torrent_submit.py`、`components/download-target-dialog.tsx`、`cli/internal/overlay/download.go:249` |
+| 监听导入「指定库」为 other 时：`_ingest_entry` 走原样转移（整个下载条目硬链/复制到 `{主根}/`，保留原名，跳过识别与命名；`ingest_entry` 台账、幂等、退避不变；完成文案陈述事实） | `services/library/ingest.py:1662-1800` |
+| 自动路由与自定义目录规则的 kind 维持 movie/tv；订阅目标库维持排除 other | `import_watch_config.py:202-244`、`subscription/core.py` |
+| 手动下载后由实时监控/扫描入账（一期能力） | — |
+
+**三期验收**：下载到 other 库原名落 `{主根}` → 监控入账带缩略图；监听导入
+原样硬链（同 inode）→ 台账；订阅弹窗与自动路由不出现 other 库；
+`download.go` 接受 other 库。
+
+### 跨期事项
+
+- **不需要 bump `docker/runtime-version`**：抓帧只用镜像里已有的 ffmpeg，
+  无新运行时依赖；
+- 迁移两个（一期 1.2 与 1.5 各一个），均单向；`playback_state` 重建前后
+  行数与存量键逐一断言；
+- 文档：本文随实施补「实施记录」；jellyfin-compat.md 偏离清单；README
+  用户手册加「其他视频库」一节（NFO/图片文件命名惯例、缩略图开关）。
 
 ## 7. 风险与开口
 
