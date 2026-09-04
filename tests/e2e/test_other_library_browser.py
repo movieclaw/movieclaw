@@ -99,9 +99,18 @@ def stack(tmp_path_factory):
         encoding="utf-8",
     )
     _gen_clip(home_root / "旅行 Vlog 第三期.mp4", 8)
+    # 电影库：一部假 TMDB 认得出的正片 + 一个认不出的文件（混合展示）
+    _gen_clip(movie_root / "某电影 (2020)" / "某电影.2020.1080p.mp4", 8)
     _gen_clip(movie_root / "zzqx" / "zzqx.mp4", 8)
+    # 剧集库：规范目录两集 + 一个认不出的文件
+    tv_root = root / "media" / "tv"
+    for ep in (1, 2):
+        _gen_clip(tv_root / "测试剧集 (2024)" / "Season 01" / f"测试剧集.S01E{ep:02d}.1080p.mp4", 8)
+    _gen_clip(tv_root / "未知内容目录" / "zzqx.mp4", 8)
     pending = root / "pending-派对全程.mp4"
     _gen_clip(pending, 8)
+    tmdb_log = root / "tmdb-requests.log"
+    tmdb_log.touch()
 
     api_port, web_port = _free_port(), _free_port()
     data = root / "data"
@@ -115,6 +124,7 @@ def stack(tmp_path_factory):
         "METADATA_DIR": str(data / "metadata"),
         "LOG_DIR": str(data / "logs"),
         "SECRET_KEY_FILE": str(data / ".secret_key"),
+        "E2E_TMDB_LOG": str(tmdb_log),
     }
     api_log = (root / "api.log").open("w")
     api = subprocess.Popen(  # noqa: S603
@@ -144,6 +154,8 @@ def stack(tmp_path_factory):
             "api": f"http://127.0.0.1:{api_port}",
             "home_root": home_root,
             "movie_root": movie_root,
+            "tv_root": tv_root,
+            "tmdb_log": tmdb_log,
             "watch": watch,
             "pending": pending,
             "shots": root / "shots",
@@ -185,6 +197,25 @@ def _pick_directory(page, path: str) -> None:
     box.fill(path)
     box.press("Enter")
     page.get_by_role("button", name="选择此目录").click()
+
+
+def _create_library(page, expect, kind_label: str, name: str, root: Path) -> None:
+    page.get_by_role("button", name=re.compile("创建第一个媒体库|添加媒体库")).first.click()
+    dialog = page.get_by_role("dialog")
+    dialog.get_by_role("button", name=kind_label, exact=True).click()
+    dialog.locator("input[type=text]").first.fill(name)
+    dialog.get_by_role("button", name="浏览服务器目录并添加").click()
+    _pick_directory(page, str(root))
+    dialog.get_by_role("button", name="保存", exact=True).click()
+    expect(dialog).to_have_count(0)
+
+
+def _wait_scan_done(page, api_get, library_id: int, *, timeout: float = 120):
+    def done():
+        lib = next(x for x in api_get(page, "/libraries")["data"] if x["id"] == library_id)
+        return lib if not lib["scanning"] and lib["last_scan"] else None
+
+    return _wait_for(done, timeout=timeout, what=f"库 #{library_id} 扫描完成")
 
 
 def test_other_library_full_flow(stack) -> None:  # noqa: PLR0915
@@ -259,6 +290,8 @@ def test_other_library_full_flow(stack) -> None:  # noqa: PLR0915
         items = api_get(page, f"/libraries/{home['id']}/items")["data"]
         assert {i["title"] for i in items} == {"春节团圆饭", "旅行 Vlog 第三期"}
         assert all(i["source"] == "local" and i["tmdb_id"] is None for i in items)
+        # 其他库从建库到入账全程没有碰过 TMDB（假 TMDB 的请求日志为空）
+        assert stack["tmdb_log"].read_text(encoding="utf-8") == ""
 
         def thumbed():
             rows = api_get(page, f"/libraries/{home['id']}/items")["data"]
@@ -332,43 +365,102 @@ def test_other_library_full_flow(stack) -> None:  # noqa: PLR0915
             timeout=30_000
         )
 
-        # ---- 影视库里认不出的文件：临时身份上墙、未识别角标、可播、保留修正识别 ----
+        # ---- 电影库（混合）：认得出的正片 2:3 海报 + 认不出的文件 16:9 临时条目同墙 ----
         page.goto(f"{base}/library")
-        page.get_by_role("button", name="添加媒体库").first.click()
-        dialog = page.get_by_role("dialog")
-        dialog.get_by_role("button", name="电影", exact=True).click()
-        dialog.locator("input[type=text]").first.fill("电影库")
-        dialog.get_by_role("button", name="浏览服务器目录并添加").click()
-        _pick_directory(page, str(stack["movie_root"]))
-        dialog.get_by_role("button", name="保存", exact=True).click()
-        expect(dialog).to_have_count(0)
+        _create_library(page, expect, "电影", "电影库", stack["movie_root"])
         movie_lib = next(
             lib for lib in api_get(page, "/libraries")["data"] if lib["name"] == "电影库"
         )
-
-        def movie_scanned():
-            lib = next(x for x in api_get(page, "/libraries")["data"] if x["id"] == movie_lib["id"])
-            return lib if not lib["scanning"] and lib["last_scan"] else None
-
-        _wait_for(movie_scanned, timeout=120, what="电影库扫描完成")
-        rows = api_get(page, f"/libraries/{movie_lib['id']}/items")["data"]
-        assert len(rows) == 1 and rows[0]["source"] == "local" and rows[0]["tmdb_id"] is None
+        assert movie_lib["capabilities"]["scraped"] is True
+        movie_lib = _wait_scan_done(page, api_get, movie_lib["id"])
+        assert movie_lib["stats"]["item_count"] == 1, movie_lib["stats"]
+        assert movie_lib["stats"]["unidentified_count"] == 1, movie_lib["stats"]
+        rows = {r["title"]: r for r in api_get(page, f"/libraries/{movie_lib['id']}/items")["data"]}
+        assert len(rows) == 2 and "某电影" in rows, rows.keys()
+        identified = rows["某电影"]
+        assert identified["source"] == "tmdb" and identified["tmdb_id"] == 300
+        assert abs(identified["primary_aspect"] - 2 / 3) < 0.01
+        provisional = next(r for r in rows.values() if r["source"] == "local")
+        assert provisional["tmdb_id"] is None and abs(provisional["primary_aspect"] - 16 / 9) < 0.01
         pending = api_get(
             page,
             f"/libraries/identification/unidentified-files?library_id={movie_lib['id']}",
         )
-        assert len(pending["data"]) >= 1
+        assert len(pending["data"]) == 1
+        # 假 TMDB 确实被识别链请求过（对照其他库的零请求）
+        assert "/3/search/movie" in stack["tmdb_log"].read_text(encoding="utf-8")
+
         page.goto(f"{base}/library/{movie_lib['id']}")
-        expect(page.locator("[data-library-item-id]")).to_have_count(1)
-        expect(page.get_by_label("未识别").first).to_be_visible()
-        page.screenshot(path=str(shots / "04-movie-unidentified.png"))
-        page.locator("[data-library-item-id] a").first.click()
-        page.wait_for_url(lambda u: "/item/" in u)
+        cards = page.locator("[data-library-item-id]")
+        expect(cards).to_have_count(2)
+        expect(page.get_by_text("某电影").first).to_be_visible()
+        # 同一张墙上两种比例：正片 2:3、临时条目 16:9；只有临时条目打「未识别」角标
+        ratios = page.evaluate(
+            "() => Array.from(document.querySelectorAll('[data-library-item-id]')).map(c => ({"
+            "id: c.dataset.libraryItemId,"
+            " ratio: getComputedStyle(c.querySelector('[style*=aspect-ratio]')).aspectRatio,"
+            " ribbon: !!c.querySelector('[aria-label=未识别]')}))"
+        )
+        by_id = {int(r["id"]): r for r in ratios}
+        assert by_id[identified["media_item_id"]]["ratio"].startswith("0.66")
+        assert by_id[identified["media_item_id"]]["ribbon"] is False
+        assert by_id[provisional["media_item_id"]]["ratio"].startswith("1.7")
+        assert by_id[provisional["media_item_id"]]["ribbon"] is True
+        expect(page.get_by_text("1 个文件待识别")).to_be_visible()
+        # 影视库的 ⋯ 菜单保留整理与刷新元数据
+        page.get_by_role("button", name="更多操作").click()
+        expect(page.get_by_role("menuitem", name="整理文件名")).to_be_visible()
+        expect(page.get_by_role("menuitem", name="刷新元数据")).to_be_visible()
+        page.keyboard.press("Escape")
+        page.screenshot(path=str(shots / "04-movie-mixed-wall.png"))
+
+        # 已识别条目详情：TMDB 外链 + 完整的识别/刮削/选图菜单
+        page.goto(f"{base}/library/{movie_lib['id']}/item/{identified['media_item_id']}")
+        expect(page.get_by_role("heading", name="某电影")).to_be_visible()
+        expect(page.get_by_role("link", name=re.compile("TMDB"))).to_have_attribute(
+            "href", re.compile(r"themoviedb\.org/movie/300")
+        )
+        page.get_by_role("button", name="更多操作").click()
+        for present in ("修正识别结果…", "刷新元数据", "更换图片…", "转移到其他库…"):
+            expect(page.get_by_role("menuitem", name=present)).to_be_visible()
+        page.keyboard.press("Escape")
+        page.screenshot(path=str(shots / "05-movie-identified-detail.png"))
+
+        # 未识别条目详情：可播放，保留「修正识别结果」这条转正通道，无刷新元数据/选图
+        page.goto(f"{base}/library/{movie_lib['id']}/item/{provisional['media_item_id']}")
         expect(page.get_by_role("button", name="播放", exact=True)).to_be_visible()
         page.get_by_role("button", name="更多操作").click()
         expect(page.get_by_role("menuitem", name="修正识别结果…")).to_be_visible()
         expect(page.get_by_role("menuitem", name="刷新元数据")).to_have_count(0)
+        expect(page.get_by_role("menuitem", name="更换图片…")).to_have_count(0)
         page.keyboard.press("Escape")
+
+        # ---- 剧集库（混合）：两集识别成一部剧 + 认不出的文件 ----
+        page.goto(f"{base}/library")
+        _create_library(page, expect, "剧集", "剧集库", stack["tv_root"])
+        tv_lib = next(lib for lib in api_get(page, "/libraries")["data"] if lib["name"] == "剧集库")
+        tv_lib = _wait_scan_done(page, api_get, tv_lib["id"])
+        assert tv_lib["stats"]["item_count"] == 1 and tv_lib["stats"]["unidentified_count"] == 1
+        tv_rows = api_get(page, f"/libraries/{tv_lib['id']}/items")["data"]
+        show = next(r for r in tv_rows if r["source"] == "tmdb")
+        assert show["title"] == "测试剧集" and show["tmdb_id"] == 200
+        assert show["episode_count"] == 2 and show["seasons"] == [1]
+        assert any(r["source"] == "local" for r in tv_rows)
+        page.goto(f"{base}/library/{tv_lib['id']}")
+        expect(page.locator("[data-library-item-id]")).to_have_count(2)
+        expect(page.get_by_text("测试剧集").first).to_be_visible()
+        expect(page.locator("[data-library-item-id] [aria-label=未识别]")).to_have_count(1)
+        page.screenshot(path=str(shots / "06-tv-mixed-wall.png"))
+        page.goto(f"{base}/library/{tv_lib['id']}/item/{show['media_item_id']}")
+        expect(page.get_by_role("heading", name="测试剧集")).to_be_visible()
+        # 分集区拿到了假 TMDB 的第 1 季两集
+        expect(page.get_by_text(re.compile(r"1\. E1")).first).to_be_visible(timeout=30_000)
+        page.screenshot(path=str(shots / "07-tv-detail.png"))
+
+        # 首页：三个库的「最近添加」行都在（其他库未勾排除）
+        page.goto(f"{base}/library")
+        for name in ("家庭录像", "电影库", "剧集库"):
+            expect(page.get_by_role("heading", name=name).first).to_be_visible()
 
         # ---- 监听导入：落入其他库 → 丢文件 → 原样入库 ----
         page.goto(f"{base}/settings/import-watch")
@@ -410,7 +502,7 @@ def test_other_library_full_flow(stack) -> None:  # noqa: PLR0915
         assert newest["title"] == "生日派对" and newest["source"] == "local"
         page.goto(f"{base}/library/{home['id']}")
         expect(page.locator("[data-library-item-id]")).to_have_count(3)
-        page.screenshot(path=str(shots / "05-wall-after-import.png"))
+        page.screenshot(path=str(shots / "08-wall-after-import.png"))
 
         # ---- Jellyfin 视角：homevideos 视图、Video 叶子、真实比例 ----
         auth = page.request.post(
@@ -433,6 +525,19 @@ def test_other_library_full_flow(stack) -> None:  # noqa: PLR0915
         assert jf_items["TotalRecordCount"] == 3
         assert {i["Type"] for i in jf_items["Items"]} == {"Video"}
         assert all(abs(i["PrimaryImageAspectRatio"] - 16 / 9) < 0.01 for i in jf_items["Items"])
+        # 影视库视图不受影响：电影库 CollectionType=movies，正片是带 Tmdb 的 Movie，
+        # 临时条目同样以 Movie 叶子出现但没有外部 id
+        assert by_name["电影库"]["CollectionType"] == "movies"
+        assert by_name["剧集库"]["CollectionType"] == "tvshows"
+        movies = page.request.get(
+            f"{api}/Items",
+            params={"ApiKey": token, "parentId": by_name["电影库"]["Id"], "fields": "ProviderIds"},
+        ).json()
+        assert movies["TotalRecordCount"] == 2
+        providers = {m["Name"]: m.get("ProviderIds", {}) for m in movies["Items"]}
+        assert providers["某电影"].get("Tmdb") == "300"
+        assert all(m["Type"] == "Movie" for m in movies["Items"])
+        assert sum(1 for p in providers.values() if "Tmdb" not in p) == 1
 
         assert not page_errors, page_errors
         (shots / "summary.json").write_text(
