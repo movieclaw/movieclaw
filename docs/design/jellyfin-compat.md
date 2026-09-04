@@ -62,7 +62,12 @@
 ⑥ Latest 聚合简化为两态（见 5.5）；⑦ strm 条目的 `Container` 从 URL 猜而非
 Jellyfin 的 `"strm"` 字面量、`ETag` 省略（见 6.4）；⑧ 未知 `parentId` 返回
 404（Jellyfin 是 400，见 5.2）；⑨ `stream` 无 `static=true` 时返回 400
-（Jellyfin 会走 ffmpeg 转码）。
+（Jellyfin 会走 ffmpeg 转码）；⑩ 「其他」库（`homevideos`）**平铺不建
+`Folder` 层级、不收 `Photo`**：真 Jellyfin 的家庭录像库把子目录映射成
+Folder、图片映射成 Photo，我们的库模型一文件一条目、只收视频，视图下直接
+列 `Video` 叶子（docs/design/library-other-kind.md 5.1）；⑪ `Video` 条目没有
+`ProviderIds.Tmdb`（本地来源没有外部 id），`/Items/Counts` 里它只计入
+`ItemCount`（真 Jellyfin 的 ItemCounts 没有 VideoCount 字段）。
 （原偏离⑩"图片原图直出"已于 2026-08-03 撤销：库封面拼贴引入 Pillow 后，
 `maxWidth/maxHeight/width/height/fillWidth/fillHeight` 已按 fit-within
 等比缩小实现，变体缓存于 data/cache/jellyfin-images。）

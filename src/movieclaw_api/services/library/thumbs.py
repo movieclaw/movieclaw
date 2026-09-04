@@ -194,8 +194,13 @@ def _extract_stream(video: Path, index: int, dest: Path) -> bool:
 
 
 def _grab_frame(video: Path, dest: Path, duration_seconds: int | None, hdr: str | None) -> bool:
-    """抓帧：跳到 10% 处、只解关键帧、在 24 帧里选代表帧。HDR 先尝试色调映射，
-    滤镜不可用（ffmpeg 没编 zimg）时退回不映射。"""
+    """抓帧：跳到 10% 处，在 24 帧里选代表帧。
+
+    三级回退：① 只解关键帧（大文件最快，Jellyfin 同款）；② 关键帧稀疏
+    （短片/单 GOP 编码，10% 处之后没有关键帧，ffmpeg 会零帧退出且不报错）
+    时全解码；③ 仍拿不到（时长未知的超短片）从头再来。HDR 先尝试色调映射，
+    滤镜不可用（ffmpeg 没编 zimg）时退回不映射。
+    """
     position = max(1.0, duration_seconds * 0.1) if duration_seconds else 10.0
     base = ["bwdif=mode=send_frame:deint=interlaced", "thumbnail=n=24", _scale_filter()]
     chains = [base]
@@ -208,16 +213,15 @@ def _grab_frame(video: Path, dest: Path, duration_seconds: int | None, hdr: str 
             "zscale=t=bt709:m=bt709:r=tv",
         ]
         chains.insert(0, base[:2] + tonemap + base[2:])
-    for chain in chains:
-        ok = _run(
-            [
-                "ffmpeg",
-                "-v",
-                "error",
-                "-skip_frame",
-                "nokey",
+    attempts = [(position, True), (position, False), (0.0, False)]
+    for start, keyframes_only in attempts:
+        for chain in chains:
+            cmd = ["ffmpeg", "-v", "error"]
+            if keyframes_only:
+                cmd += ["-skip_frame", "nokey"]
+            cmd += [
                 "-ss",
-                f"{position:.3f}",
+                f"{start:.3f}",
                 "-i",
                 str(video),
                 "-an",
@@ -226,12 +230,8 @@ def _grab_frame(video: Path, dest: Path, duration_seconds: int | None, hdr: str 
                 ",".join([*chain, "format=yuv420p"]),
                 *_output_args(dest),
             ]
-        )
-        if ok and dest.is_file():
-            return True
-    # 短片/时长未知时 10 秒处可能已越界：从头再试一次
-    if position > 1.0:
-        return _grab_frame(video, dest, 1, hdr) if duration_seconds else False
+            if _run(cmd) and dest.is_file():
+                return True
     return False
 
 

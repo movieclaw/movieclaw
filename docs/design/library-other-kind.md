@@ -1,6 +1,10 @@
 # 媒体库「其他」类型：不刮削内容的入账、展示与播放
 
-> 状态：**v2.1 最终版（2026-09-03）——已拍板，待实施**。仅一项待定（第 9 节）。
+> 状态：**v2.1 已实施（2026-09-04）**。一至三期均已落地：模型迁移
+> `e5a1b2c3d4f6`、`services/library/profile.py`（能力档案）、
+> `local_identity.py` / `thumbs.py` / `reanchor.py`、扫描与监听导入的分派、
+> 接口/前端/Jellyfin 输出；回归测试见 `tests/api/test_library_video_kind.py`
+> 与 `tests/jellyfin/test_video_kind.py`。第 8 节的类型切换仍为前瞻。
 > 演进：v0 文件寻址草案 → v1 决策落地 → v1.1 Jellyfin 源码考察（1.5 节保留）
 > → v1.2 能力档案 → v2 身份来源成为 `media_item` 的维度 → v2.1 整合全部
 > 评审结论（形态 × 来源档案、未识别文件临时身份、类型切换前瞻），并清理

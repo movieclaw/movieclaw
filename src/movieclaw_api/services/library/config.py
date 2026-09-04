@@ -83,6 +83,11 @@ def derive_save_path(
     root = library.primary_root
     if not root:
         return None
+    from movieclaw_api.services.library.profile import profile_of
+
+    if not profile_of(library).naming:
+        # 其他库原样落库：没有「标题 (年份)」这种条目目录约定，下载直接进主根
+        return root
     # 库自己就是覆盖来源：命名模板可按库覆盖（动漫库与电影库各用一套）
     return derive_entry_dir(root, title=title, year=year, item=item, library=library)
 

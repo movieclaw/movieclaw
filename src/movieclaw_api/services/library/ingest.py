@@ -138,6 +138,7 @@ from movieclaw_api.services.library.naming import (
     movie_file_name,
     season_dir_name,
 )
+from movieclaw_api.services.library.profile import kind_label, profile_for, profile_of
 from movieclaw_api.services.library.resolve import verify_resolve
 from movieclaw_api.services.library.scan import disc_main_stream, guess_evidence
 from movieclaw_api.services.library.units import FileUnit, resolve_units
@@ -1661,6 +1662,31 @@ async def _ingest_entry(
 
     # kind 先验：指定库取库类型；auto 规则取规则声明（识别链按 movie/tv 分叉）
     kind = MediaKind(library.kind if library is not None else rule.kind)
+
+    # 本地内容库（「其他」，docs/design/library-other-kind.md 第 7 节）：不识别、
+    # 不改名，条目原样落到库主根，视频逐文件建本地条目。auto 规则声明为其他
+    # 时没有收藏范围可路由，直接落该形态的默认库
+    if staging is None and dest_library is None and not profile_for(kind).scraped:
+        dest_library = await LibraryRepository(session).get_default(kind.value)
+        if dest_library is None:
+            return await conclude(
+                IngestStatus.FAILED,
+                f"没有可用的{kind_label(kind)}库承接自动路由，无法入库；请先到「媒体库」创建",
+            )
+    if staging is None and dest_library is not None and not profile_of(dest_library).scraped:
+        item, imported, verdict = await _ingest_raw_drop(
+            session,
+            dest_library,
+            entry,
+            snap,
+            strategy=strategy,
+            job_context=job_context,
+            rule=rule,
+            imported_files=imported_files,
+            added_batch_id=added_batch_id,
+        )
+        return await conclude(verdict[0], verdict[1], imported)
+
     disc_root: Path | None = None
     if snap.has_disc:
         if kind is not MediaKind.MOVIE:
@@ -2292,6 +2318,207 @@ async def _ingest_entry(
     else:
         # 全部文件都已在库（此前处理过/多下载器重复下载）：结论记 imported
         return await conclude(IngestStatus.IMPORTED, f"《{item.title}》的内容已全部在库，无需搬运")
+
+
+async def _ingest_raw_drop(
+    session,
+    library: Library,
+    entry: Path,
+    snap: _EntrySnapshot,
+    *,
+    strategy: str,
+    job_context: jobs.JobContext | None,
+    rule: ImportWatch,
+    imported_files: list[str],
+    added_batch_id: str,
+) -> tuple[MediaItem | None, int, tuple[IngestStatus, str]]:
+    """其他库的「原样落库」：条目整体搬到库主根（目录条目保持内部结构，
+    单文件条目直接落主根），视频逐文件建本地条目并落台账，同名的 NFO/字幕/
+    图片一并带过去。不识别、不改名、不写 NFO（sidecar 是用户自己的）。
+
+    返回 (首个建档条目, 入库视频数, (状态, 文案))：条目只用于台账的作品归属，
+    其他库一文件一条目，多个视频时台账记第一个。
+    """
+    from movieclaw_api.services.library.local_identity import build_local_identity
+    from movieclaw_api.services.media_scrape import ensure_assets
+
+    if snap.has_disc:
+        return None, 0, (
+            IngestStatus.PENDING,
+            f"{kind_label(library.kind)}库暂不接收原盘目录（BDMV/VIDEO_TS），请人工整理",
+        )
+    if not snap.videos:
+        return None, 0, (IngestStatus.SKIPPED, "条目中没有视频文件，已跳过")
+    root = library.primary_root
+    if not root:
+        return None, 0, (
+            IngestStatus.FAILED,
+            f"媒体库「{library.name}」没有配置根路径，无法入库",
+        )
+    assert library.id is not None
+    if job_context is not None:
+        while not await job_context.acquire_target_resource("library", library.id):
+            await job_context.raise_if_cancelled()
+            await job_context.update_progress(
+                mode="waiting",
+                phase="waiting_library",
+                message=f"媒体库「{library.name}」正在执行其他作业，等待安全入库",
+                phase_index=3,
+                phase_count=4,
+                details={"entry_name": entry.name, "rule_id": rule.id, "library_id": library.id},
+            )
+            await asyncio.sleep(2)
+    # 主视频先做完整性门禁（与影视库同一口径：探测失败多半是还没下完）
+    main = max(snap.videos, key=lambda f: f.stat().st_size)
+    spec = await asyncio.to_thread(probe_media, main)
+    if spec is None and ffprobe_available():
+        return None, 0, (
+            IngestStatus.FAILED,
+            f"主视频「{main.name}」探测失败——可能尚未下载完成或已损坏，文件变化后自动重试",
+        )
+    dest_base = Path(root) / entry.name if entry.is_dir() else Path(root)
+    # 全部常规文件原样搬（视频 + NFO/字幕/图片），隐藏文件与下载器标记不带
+    if entry.is_dir():
+        sources = sorted(p for p in entry.rglob("*") if p.is_file() and not p.name.startswith("."))
+    else:
+        sources = [entry]
+    notes: list[str] = []
+    env_error = conflict = False
+    transferred: list[tuple[Path, Path]] = []
+    total_bytes = sum(f.stat().st_size for f in sources)
+    completed_bytes = 0
+    for file in sources:
+        if job_context is not None:
+            await job_context.raise_if_cancelled()
+        rel = file.relative_to(entry) if entry.is_dir() else Path(file.name)
+        target = dest_base / rel
+        try:
+            if job_context is None:
+                final = await asyncio.to_thread(_transfer, file, target, strategy, "V2")
+            else:
+
+                async def report_copy(
+                    copied: int,
+                    _total: int,
+                    *,
+                    _file=file,
+                    _completed=completed_bytes,
+                ) -> None:
+                    current = min(_completed + copied, total_bytes)
+                    await job_context.update_progress(
+                        mode="determinate",
+                        phase="transferring",
+                        message=f"正在{'复制' if strategy == 'copy' else '硬链接'}「{_file.name}」",
+                        current=current,
+                        total=total_bytes,
+                        percent=round(current / total_bytes * 100 if total_bytes else 100.0, 1),
+                        phase_index=3,
+                        phase_count=4,
+                        details={
+                            "entry_name": entry.name,
+                            "file_name": _file.name,
+                            "library_id": library.id,
+                            "bytes_copied": current,
+                        },
+                    )
+
+                final = await _transfer_for_job(
+                    file, target, strategy, "V2", job_context, report_copy
+                )
+        except IngestConflictError as exc:
+            notes.append(str(exc))
+            conflict = True
+            continue
+        except IngestError as exc:
+            notes.append(str(exc))
+            env_error = True
+            continue
+        finally:
+            completed_bytes += file.stat().st_size
+        if final is None:
+            continue  # 同一内容已在目标（重复处理），静默幂等
+        transferred.append((file, final))
+        imported_files.append(str(rel))
+
+    repo = LibraryFileRepository(session)
+    media_service = MediaLibraryService(session, get_tmdb_client())
+    kind = MediaKind(library.kind)
+    video_set = set(snap.videos)
+    first_item: MediaItem | None = None
+    imported = 0
+    new_item_ids: list[int] = []
+    for src_file, final in transferred:
+        if src_file not in video_set:
+            continue
+        file_spec = spec if src_file == main else await asyncio.to_thread(probe_media, final)
+        identity = await asyncio.to_thread(
+            build_local_identity,
+            library_id=library.id,
+            kind=kind,
+            root=Path(root),
+            file=final,
+            spec=file_spec,
+        )
+        local_item = await media_service.ensure_local_item(kind, identity, library_id=library.id)
+        assert local_item.id is not None
+        first_item = first_item or local_item
+        final_stat = final.stat()
+        await repo.upsert_by_path(
+            LibraryFile(
+                library_id=library.id,
+                media_item_id=local_item.id,
+                season_number=0,
+                episode_number=0,
+                file_path=str(final),
+                size_bytes=final_stat.st_size,
+                file_mtime_ns=final_stat.st_mtime_ns,
+                container=final.suffix.lstrip(".").lower() or None,
+                resolution=file_spec.resolution if file_spec else None,
+                video_codec=file_spec.video_codec if file_spec else None,
+                hdr=file_spec.hdr if file_spec else None,
+                bit_depth=file_spec.bit_depth if file_spec else None,
+                duration_seconds=file_spec.duration_seconds if file_spec else None,
+                bit_rate=file_spec.bit_rate if file_spec else None,
+                frame_rate=file_spec.frame_rate if file_spec else None,
+                color_space=file_spec.color_space if file_spec else None,
+                audio_streams=list(file_spec.audio_streams) if file_spec else None,
+                subtitle_streams=list(file_spec.subtitle_streams) if file_spec else None,
+                source=FileSource.IMPORTED,
+                identity_source=identity.identity_source.value,
+                added_batch_id=added_batch_id,
+            )
+        )
+        imported += 1
+        new_item_ids.append(local_item.id)
+    if imported:
+        await LibraryRepository(session).refresh_stats([library.id])
+        await session.commit()
+        for item_id in new_item_ids:
+            # 缩略图属于锦上添花：作业内顺手做完，后台 tick 则丢给事件循环
+            if job_context is None:
+                asyncio.get_running_loop().create_task(ensure_assets(item_id))
+            else:
+                await job_context.update_progress(
+                    mode="indeterminate",
+                    phase="finalizing",
+                    message="正在生成缩略图",
+                    phase_index=4,
+                    phase_count=4,
+                    details={"entry_name": entry.name, "library_id": library.id},
+                )
+                await ensure_assets(item_id)
+    verb = "硬链接" if strategy == "hardlink" else "复制"
+    suffix = f"；{'；'.join(notes)}" if notes else ""
+    if imported:
+        return first_item, imported, (
+            IngestStatus.IMPORTED,
+            f"已原样{verb}到「{library.name}」（{dest_base}），入库 {imported} 个视频{suffix}",
+        )
+    if conflict:
+        return None, 0, (IngestStatus.PENDING, f"目标目录已有同名文件，未覆盖{suffix}")
+    if env_error:
+        return None, 0, (IngestStatus.FAILED, f"搬运失败，将自动重试{suffix}")
+    return None, 0, (IngestStatus.SKIPPED, "全部文件已在目标库，无需再入库")
 
 
 async def _wanted_identity(session, info_hashes: list[str]) -> tuple[MediaItem | None, int | None]:

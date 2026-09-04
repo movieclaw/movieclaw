@@ -20,6 +20,7 @@ from movieclaw_api.schemas.response import ApiResponse, ok
 from movieclaw_api.services.import_watch_config import ImportWatchConfigService
 from movieclaw_api.services.library import ingest
 from movieclaw_api.services.library.config import LibraryConfigService
+from movieclaw_api.services.library.profile import kind_label
 from movieclaw_db.engine import get_session
 from movieclaw_db.models import ImportWatch, IngestEntry, IngestStatus
 
@@ -46,8 +47,11 @@ class ImportWatchPayload(BaseModel):
         default=None,
         description="自定义目录目标（绝对路径，不得与库根/监听源重叠）；与 library_id 互斥",
     )
-    kind: Literal["movie", "tv"] | None = Field(
-        default=None, description="自动路由/自定义目录的媒体类型；指定库时忽略"
+    kind: Literal["movie", "tv", "video"] | None = Field(
+        default=None,
+        description=(
+            "自动路由/自定义目录的媒体类型；指定库时忽略（video 只用于自动路由：原样落其他库）"
+        ),
     )
     process_existing: bool = Field(
         default=True,
@@ -67,7 +71,7 @@ class ImportWatchView(BaseModel):
     library_id: int | None = Field(default=None, description="null=自动路由或自定义目录")
     library_name: str | None = None
     target_path: str | None = Field(default=None, description="自定义目录目标（其余目标为 null）")
-    kind: Literal["movie", "tv"] | None = Field(
+    kind: Literal["movie", "tv", "video"] | None = Field(
         default=None, description="自动路由/自定义目录的媒体类型（指定库时为 null）"
     )
     target_label: str = Field(
@@ -105,9 +109,9 @@ class ImportWatchView(BaseModel):
         if row.library_id is not None:
             label = library_name or "?"
         elif row.target_path:
-            label = f"自定义目录（{'电影' if row.kind == 'movie' else '剧集'} · {row.target_path}）"
+            label = f"自定义目录（{kind_label(row.kind or '')} · {row.target_path}）"
         else:
-            label = f"自动路由（{'电影' if row.kind == 'movie' else '剧集'}）"
+            label = f"自动路由（{kind_label(row.kind or '')}）"
         return cls(
             id=row.id,  # type: ignore[arg-type]
             source_path=row.source_path,

@@ -278,6 +278,15 @@ save_path（同机/同挂载假设），路径不可达时给容器映射引导�
     正片目录里是压制片源的普遍现象。忽略名单同时扩到 Emby/Jellyfin 的
     extras 目录惯例与 `-trailer` 文件名后缀；`specials`（剧集 Season 0 是
     正片）、`shorts`/`other`（太像用户自建的内容分组）刻意不收。
+11. **库由「形态 × 来源」定位能力，条目锚泛化为 `(source, kind, external_id)`**
+    （2026-09-04，[library-other-kind.md](library-other-kind.md)）：决策 1 的
+    "每库单一类型（movie/tv）"扩为 movie / tv / video 三种形态，再乘一个身份
+    来源维度（tmdb / local）。`video × local` 即「其他」库：不识别、不刮削、
+    不改名、不可订阅，有 sidecar NFO 读 NFO、否则按文件名成条目，海报从文件
+    抓帧。决策 4 的「NULL 锚 + 待识别清单」相应修订：影视库里认不出的文件
+    现在挂**临时本地条目**（`source=local`），海报墙可见、可播、记进度，
+    待识别清单照旧列出，认领/重识别转正时把观看进度迁到正式条目。所有消费方
+    读 `LibraryProfile` 的能力位，不再新增 `kind == "movie"` 字面分叉。
 
 ## 6. 风险与开口
 
