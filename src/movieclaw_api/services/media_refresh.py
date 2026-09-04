@@ -19,7 +19,7 @@ from sqlmodel import select
 from movieclaw_api.services.media_scrape import scrape_media_item
 from movieclaw_api.services.subscription import REFRESH_PER_TICK
 from movieclaw_db.engine import get_database
-from movieclaw_db.models import MediaItem, utcnow
+from movieclaw_db.models import MediaItem, MediaSource, utcnow
 from movieclaw_db.models.scheduled_task import TriggerType
 from movieclaw_scheduler.registry import register_task
 
@@ -45,8 +45,11 @@ async def refresh_media_metadata() -> None:
         result = await session.execute(
             select(MediaItem)
             .where(
+                # 本地来源条目没有上游可刷（docs/design/library-other-kind.md 4.8
+                # 的 source 守卫）：它们的档案来自 sidecar NFO/文件本身，扫描时同步
+                MediaItem.source == MediaSource.TMDB,
                 (MediaItem.next_refresh_at.is_(None))  # type: ignore[union-attr]
-                | (MediaItem.next_refresh_at <= utcnow())  # type: ignore[operator]
+                | (MediaItem.next_refresh_at <= utcnow()),  # type: ignore[operator]
             )
             .order_by(MediaItem.next_refresh_at)  # type: ignore[arg-type]
             .limit(REFRESH_PER_TICK)

@@ -14,10 +14,28 @@ from movieclaw_media.models import MediaKind
 
 
 class LibraryPayload(BaseModel):
-    """创建/更新库的请求体。kind 仅创建时生效，更新时忽略（创建后不可改）。"""
+    """创建/更新库的请求体。kind/source 仅创建时生效，更新时忽略（创建后不可改）。"""
 
     name: str = Field(description="库的展示名（全局唯一）")
-    kind: MediaKind = Field(description="媒体类型：movie / tv")
+    kind: MediaKind = Field(description="内容形态：movie=电影 / tv=剧集 / video=其他（无结构假设）")
+    source: str | None = Field(
+        default=None,
+        description=(
+            "身份来源：tmdb / local；不传按形态默认（movie、tv → tmdb，video → local）。"
+            "与 kind 一起定位库的能力档案，创建后不可改"
+        ),
+    )
+    generate_thumbnails: bool | None = Field(
+        default=None,
+        description=(
+            "本地来源内容是否从文件抓帧生成缩略图（网络挂载库抓帧等于全量下载，可关）；"
+            "不传表示不改动，新建时默认开启"
+        ),
+    )
+    exclude_from_home: bool | None = Field(
+        default=None,
+        description="是否从首页「最近添加」等汇总里排除该库；不传表示不改动，新建时默认关闭",
+    )
     root_paths: list[str] = Field(
         description="根路径列表（绝对路径），第一个为主根——新入库落在这里"
     )
@@ -69,9 +87,7 @@ class LibraryStats(BaseModel):
     item_count: int = Field(default=0, description="在位且已识别的媒体条目数")
     file_count: int = Field(default=0, description="在位文件总数（含待识别）")
     total_size_bytes: int = Field(default=0, description="在位文件总大小（字节）")
-    unidentified_count: int = Field(
-        default=0, description="在位待识别文件数（不含已忽略）"
-    )
+    unidentified_count: int = Field(default=0, description="在位待识别文件数（不含已忽略）")
     missing_count: int = Field(default=0, description="标记 missing 的文件数（缺失清单入口）")
     ignored_count: int = Field(
         default=0,
@@ -174,10 +190,27 @@ class MetadataRefreshView(BaseModel):
     )
 
 
+class LibraryCapabilitiesView(BaseModel):
+    """库的能力位（docs/design/library-other-kind.md 3.1）：前端按位显隐功能，
+    不按 kind 字面分叉——新增类型/来源时前端零改动。"""
+
+    scraped: bool = Field(description="有外部刮削链（识别/刷新元数据/选图/待识别清单）")
+    episodic: bool = Field(description="有季集结构（分集区、缺集统计）")
+    naming: bool = Field(description="有规范命名（整理功能）")
+    subscribable: bool = Field(description="可作为订阅入库目标")
+    write_nfo: bool = Field(description="向媒体目录写 NFO/图片镜像")
+    default_aspect: float = Field(description="卡片主图默认宽高比（无真实尺寸时）")
+    jellyfin_collection: str = Field(description="Jellyfin 视图类型：movies / tvshows / homevideos")
+
+
 class LibraryView(BaseModel):
     id: int
     name: str
     kind: MediaKind
+    source: str = Field(default="tmdb", description="身份来源：tmdb / local")
+    capabilities: LibraryCapabilitiesView
+    generate_thumbnails: bool = Field(default=True, description="本地来源内容是否抓帧生成缩略图")
+    exclude_from_home: bool = Field(default=False, description="是否从首页汇总里排除")
     root_paths: list[str]
     primary_root: str | None = Field(description="主根路径（root_paths 第一项）")
     is_default: bool
@@ -225,10 +258,16 @@ class LibraryView(BaseModel):
         last_organize: LastOrganizeView | None = None,
         metadata_refresh: MetadataRefreshView | None = None,
     ) -> LibraryView:
+        from movieclaw_api.services.library.profile import capabilities_of, profile_of
+
         return cls(
             id=row.id,  # type: ignore[arg-type]  # 落库后必有主键
             name=row.name,
             kind=MediaKind(row.kind),
+            source=row.source,
+            capabilities=LibraryCapabilitiesView(**capabilities_of(profile_of(row))),
+            generate_thumbnails=row.generate_thumbnails,
+            exclude_from_home=row.exclude_from_home,
             root_paths=list(row.root_paths),
             primary_root=row.primary_root,
             is_default=row.is_default,
@@ -298,9 +337,7 @@ class LibraryInventorySummaryView(BaseModel):
 
     season_count: int = Field(description="在位正季数；仅特别篇时为 0")
     episode_count: int = Field(description="摘要覆盖的在位去重集数")
-    season_number: int | None = Field(
-        description="只覆盖一季时的季号（0=特别篇）；多季为 NULL"
-    )
+    season_number: int | None = Field(description="只覆盖一季时的季号（0=特别篇）；多季为 NULL")
     total_episode_count: int | None = Field(
         description="摘要所覆盖季的 TMDB 已知总集数；任一季未知时为 NULL"
     )
@@ -313,10 +350,16 @@ class LibraryItemView(BaseModel):
 
     media_item_id: int
     kind: MediaKind
+    source: str = Field(
+        default="tmdb", description="身份来源：tmdb / local（local=未识别或其他库）"
+    )
     tmdb_id: int | None = Field(default=None, description="TMDB 条目 ID；本地来源条目为 null")
     title: str
     year: int | None
     poster_url: str | None
+    primary_aspect: float = Field(
+        default=0.6667, description="主图宽高比（真实像素尺寸或来源惯例），卡片按它排版"
+    )
     file_count: int
     total_size_bytes: int
     # 在库的季号列表（电影为空）；集数 = 去重的 (季,集) 单元数
@@ -532,6 +575,9 @@ class LibraryItemDetailView(BaseModel):
 
     media_item_id: int
     kind: MediaKind
+    source: str = Field(
+        default="tmdb", description="身份来源：tmdb / local（local=未识别或其他库）"
+    )
     tmdb_id: int | None = Field(default=None, description="TMDB 条目 ID；本地来源条目为 null")
     imdb_id: str | None
     douban_id: str | None
@@ -540,6 +586,7 @@ class LibraryItemDetailView(BaseModel):
     year: int | None
     poster_url: str | None
     backdrop_url: str | None
+    primary_aspect: float = Field(default=0.6667, description="主图宽高比（同海报墙）")
     local_meta: LocalMetaView | None = Field(
         default=None, description="NFO 本地刮削元数据；目录里没有可用 NFO 时为 null"
     )
@@ -854,8 +901,8 @@ class MediaSourceAnnotationPayload(BaseModel):
 
     media_item_id: int = Field(description="媒体条目 id")
     season_number: int = Field(ge=0, description="季号；电影固定 0")
-    media_source: Literal["Remux", "Blu-ray", "WEB-DL", "WEBRip", "HDTV", "user-lowest"] = (
-        Field(description="标注的片源档")
+    media_source: Literal["Remux", "Blu-ray", "WEB-DL", "WEBRip", "HDTV", "user-lowest"] = Field(
+        description="标注的片源档"
     )
 
 

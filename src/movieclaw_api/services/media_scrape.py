@@ -61,6 +61,7 @@ from movieclaw_db.models import (
     MediaItemPerson,
     MediaMetadata,
     MediaSeason,
+    MediaSource,
     Person,
     Subscription,
     SubscriptionActivity,
@@ -153,7 +154,21 @@ async def _scrape(media_item_id: int, *, force: bool, on_phase: PhaseHook = None
         item = await session.get(MediaItem, media_item_id)
         if item is None:
             return False
+        # 本地来源条目（docs/design/library-other-kind.md 4.8 source 守卫）：
+        # 没有上游档案可拉，"刷新"只剩重建缩略图这一件事，全程零 TMDB 请求
+        local_only = item.source != MediaSource.TMDB
         kind = MediaKind(item.kind)
+    if local_only:
+        _phase("生成缩略图")
+        from movieclaw_api.services.library.thumbs import ensure_local_assets
+
+        await ensure_local_assets(media_item_id, force=force)
+        return True
+    async with db.session() as session:
+        repo = MediaItemRepository(session)
+        item = await session.get(MediaItem, media_item_id)
+        if item is None:
+            return False
         # 语言/分级/选图按条目的**归属库**解析（设计文档 §14）：刷新任务没有
         # 库上下文，归属钉在条目上才不会被全局值洗回去
         fetch_kwargs = profile_fetch_kwargs(await scrape_setting_for_item(session, item))
@@ -213,6 +228,16 @@ async def ensure_assets(media_item_id: int) -> None:
     记日志，任一后续刷新入口自愈。
     """
     try:
+        db = get_database()
+        async with db.session() as session:
+            item = await session.get(MediaItem, media_item_id)
+            source = item.source if item is not None else None
+        if source == MediaSource.LOCAL:
+            # 本地来源：资产 = 从文件本身抓的缩略图（sidecar 图 / 内嵌封面 / 抓帧）
+            from movieclaw_api.services.library.thumbs import ensure_local_assets
+
+            await ensure_local_assets(media_item_id)
+            return
         await download_item_assets(media_item_id)
         await mirror_media_dir_assets(media_item_id)
     except Exception:  # noqa: BLE001 -- 资产是锦上添花，绝不影响主流程
@@ -1178,7 +1203,8 @@ async def download_item_assets(
     async with db.session() as session:
         repo = MediaItemRepository(session)
         item = await session.get(MediaItem, media_item_id)
-        if item is None:
+        if item is None or item.source != MediaSource.TMDB:
+            # 本地来源条目的图片不来自图床（见 thumbs.ensure_local_assets）
             return
         meta = await repo.get_metadata(media_item_id)
         if meta is None:
@@ -1363,7 +1389,8 @@ async def list_artwork_candidates(
     async with db.session() as session:
         repo = MediaItemRepository(session)
         item = await session.get(MediaItem, media_item_id)
-        if item is None:
+        if item is None or item.source != MediaSource.TMDB:
+            # 本地来源条目没有在线候选图（前端按 capabilities.scraped 隐藏入口）
             return [], [], None, None
         kind = MediaKind(item.kind)
         current_poster = item.poster_path
@@ -1440,7 +1467,7 @@ async def select_artwork(media_item_id: int, *, kind: str, file_path: str | None
     async with db.session() as session:
         repo = MediaItemRepository(session)
         item = await session.get(MediaItem, media_item_id)
-        if item is None:
+        if item is None or item.source != MediaSource.TMDB:
             return False
         meta = await repo.get_metadata(media_item_id)
         if meta is None:
@@ -1504,7 +1531,9 @@ async def mirror_media_dir_assets(media_item_id: int, *, force: bool = False) ->
     async with db.session() as session:
         repo = MediaItemRepository(session)
         item = await session.get(MediaItem, media_item_id)
-        if item is None:
+        if item is None or item.source != MediaSource.TMDB:
+            # 本地来源条目没有"刮削成果"可镜像：NFO 本来就是用户自己放的，
+            # 缩略图只存资产目录（docs/design/library-other-kind.md 4.7）
             return
         meta = await repo.get_metadata(media_item_id)
         seasons = await repo.list_seasons(media_item_id)

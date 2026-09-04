@@ -47,7 +47,7 @@ router = APIRouter(dependencies=[Depends(require_device)])
 
 # includeMedia=false 时，只有这些"按名"类型还留在结果里（SearchManager.cs:417）。
 # movieclaw 没有 Genre/Studio/MusicArtist 实体，能给的按名类型只有 Person。
-_MEDIA_KINDS = {"Movie", "Series", "Season", "Episode"}
+_MEDIA_KINDS = {"Movie", "Video", "Series", "Season", "Episode"}
 
 
 def _hint(ctx: DtoContext, entry: Entry) -> dict[str, Any]:

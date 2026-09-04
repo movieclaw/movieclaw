@@ -10,7 +10,7 @@ import { DirectoryPicker } from "@/components/directory-picker";
 import { ContentEmptyState } from "@/components/content-empty-state";
 import { useConfirm } from "@/components/feedback";
 import { HScroller } from "@/components/h-scroller";
-import { FilmIcon, FolderIcon, MoreIcon, PlusIcon, TvIcon, XIcon } from "@/components/icons";
+import { FilmIcon, FolderIcon, MoreIcon, PlusIcon, TvIcon, VideoIcon, XIcon } from "@/components/icons";
 import { LibraryOrganizeDialog } from "@/components/library-organize-dialog";
 import { LibraryScrapeSettings } from "@/components/library-scrape-settings";
 import { Modal } from "@/components/modal";
@@ -45,7 +45,7 @@ import { publicEnv } from "@/lib/env";
 import { formatBytes } from "@/lib/format";
 import { imageUrl } from "@/lib/image-proxy";
 import { libraryInventoryAction } from "@/lib/library-inventory-summary";
-import type { MediaItem, MediaType } from "@/lib/media-types";
+import { LIBRARY_KIND_LABELS, type LibraryKind, type MediaItem } from "@/lib/media-types";
 import { usePermissions } from "@/lib/permissions";
 import { buildRecentAdditionOverlay } from "@/lib/recent-addition";
 import { formatRelativeTime } from "@/lib/time";
@@ -53,9 +53,17 @@ import { useVisiblePolling } from "@/lib/use-visible-polling";
 import { useScrollRestoration } from "@/lib/use-scroll-restoration";
 
 /** 库类型 → 展示名与图标 */
-export const LIBRARY_KIND_META: Record<MediaType, { label: string; Icon: typeof FilmIcon }> = {
-  movie: { label: "电影", Icon: FilmIcon },
-  tv: { label: "剧集", Icon: TvIcon },
+export const LIBRARY_KIND_META: Record<
+  LibraryKind,
+  { label: string; Icon: typeof FilmIcon; hint: string }
+> = {
+  movie: { label: LIBRARY_KIND_LABELS.movie, Icon: FilmIcon, hint: "按 TMDB 识别与刮削" },
+  tv: { label: LIBRARY_KIND_LABELS.tv, Icon: TvIcon, hint: "按 TMDB 识别与刮削，有季集结构" },
+  video: {
+    label: LIBRARY_KIND_LABELS.video,
+    Icon: VideoIcon,
+    hint: "家庭录像、录屏、暂不刮削的内容：不识别不改名，有 NFO 读 NFO，否则按文件名展示",
+  },
 };
 
 /** 每个库「最近添加」行的格数（也是本页向服务端要的条目数上限）。 */
@@ -200,11 +208,15 @@ export function libraryStatsSummary(libraries: MediaLibrary[] | null): string {
   const tvCount = libraries
     .filter((library) => library.kind === "tv")
     .reduce((total, library) => total + library.stats.item_count, 0);
+  const videoCount = libraries
+    .filter((library) => library.kind === "video")
+    .reduce((total, library) => total + library.stats.item_count, 0);
   const totalSizeBytes = libraries.reduce(
     (total, library) => total + library.stats.total_size_bytes,
     0,
   );
-  return `${libraries.length} 个媒体库 · ${movieCount} 部电影 · ${tvCount} 部剧集 · 共占用 ${formatBytes(totalSizeBytes)} 存储空间`;
+  const videoPart = videoCount > 0 ? ` · ${videoCount} 个其他视频` : "";
+  return `${libraries.length} 个媒体库 · ${movieCount} 部电影 · ${tvCount} 部剧集${videoPart} · 共占用 ${formatBytes(totalSizeBytes)} 存储空间`;
 }
 
 /**
@@ -356,13 +368,15 @@ export function LibraryView() {
   const recentRows = useMemo(
     () =>
       (libraries ?? [])
+        // 勾了「从首页排除」的库不上首页（库卡片仍在，进库内看照常）
+        .filter((library) => !library.exclude_from_home)
         .map((library) => {
           const recent = itemsByLibrary.get(library.id) ?? [];
           // 已在库的条目点击进**媒体库条目详情**（本地刮削信息 + 片源规格 +
           // 条目操作），与单库页库存格同一目标，不再跳发现页的 TMDB 详情
           const hrefs = new Map(
             recent.map((it) => [
-              String(it.tmdb_id),
+              libraryItemKey(it),
               `/library/${library.id}/item/${it.media_item_id}` as Route,
             ]),
           );
@@ -563,6 +577,12 @@ export function LibraryView() {
  * （与单库页库存格同一目标）。卡片底部只留片名与年份；本批季集范围和入库
  * 时间进入 hover，不能拿累计库存季集数冒充新增内容。海报不打清晰度徽章。
  */
+/** 海报卡的 id：TMDB 条目用 tmdb_id（订阅状态按它对齐），本地条目没有外部 id，
+ *  用带前缀的条目 id 占位——只用来当 Map 键与 React key，不会被当成 TMDB id 请求。 */
+function libraryItemKey(item: LibraryItem): string {
+  return item.tmdb_id != null ? String(item.tmdb_id) : `local:${item.media_item_id}`;
+}
+
 function libraryItemToMediaItem(item: LibraryItem): MediaItem {
   const overlayDetails = buildRecentAdditionOverlay(
     item.kind,
@@ -570,9 +590,11 @@ function libraryItemToMediaItem(item: LibraryItem): MediaItem {
     item.added_at ? `${formatRelativeTime(item.added_at)}入库` : null,
   );
   return {
-    id: String(item.tmdb_id),
+    id: libraryItemKey(item),
     source: "tmdb",
-    type: item.kind,
+    // 其他库条目没有发现页类型；卡片只当本地内容展示，不给订阅入口
+    type: item.kind === "video" ? "movie" : item.kind,
+    aspect: item.primary_aspect,
     title: item.title,
     originalTitle: "",
     year: item.year ?? 0,
@@ -1072,7 +1094,7 @@ export function LibraryFormDialog({
   const library = state === "new" ? null : state;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [kind, setKind] = useState<MediaType>("movie");
+  const [kind, setKind] = useState<LibraryKind>("movie");
   const [name, setName] = useState("");
   // 根路径列表：第一项为主根；通过目录选择器逐个添加
   const [roots, setRoots] = useState<string[]>([]);
@@ -1086,6 +1108,10 @@ export function LibraryFormDialog({
   // 实时文件监控（默认开）：SMB/NFS 网络挂载收不到远端变更事件、递归建
   // 监听还很慢，按库关闭后靠定期对账与手动扫描（见 Library.realtime_watch）
   const [realtimeWatch, setRealtimeWatch] = useState(true);
+  // 本地来源内容抓帧生成缩略图（默认开）：网络挂载库抓帧等于把整库拉一遍，可关
+  const [generateThumbnails, setGenerateThumbnails] = useState(true);
+  // 从首页「最近添加」等汇总里排除（默认关）：私密内容不想在首页露脸
+  const [excludeFromHome, setExcludeFromHome] = useState(false);
   // 库级刮削覆盖（语言/选图/命名/目录写入，即刮削设置的全部字段）：
   // **只存显式覆盖的键**，空对象 = 全跟全局设置
   const [scrapeOverrides, setScrapeOverrides] = useState<Record<string, unknown>>({});
@@ -1106,6 +1132,8 @@ export function LibraryFormDialog({
     setMatchRegions(parsed.regions);
     setAutoClearMissing(library?.auto_clear_missing ?? false);
     setRealtimeWatch(library?.realtime_watch ?? true);
+    setGenerateThumbnails(library?.generate_thumbnails ?? true);
+    setExcludeFromHome(library?.exclude_from_home ?? false);
     setScrapeOverrides({ ...(library?.scrape_overrides ?? {}) });
     setPickerTarget(null);
     setTab("basic");
@@ -1115,6 +1143,8 @@ export function LibraryFormDialog({
 
   const canSubmit = !busy && name.trim().length > 0 && roots.length > 0;
   const effectiveKind = library?.kind ?? kind;
+  // 能力位：已有库直接读服务端给的；新建时按形态推（video → 本地来源，其余 TMDB）
+  const scraped = library ? library.capabilities.scraped : effectiveKind !== "video";
   const genreOptions =
     routingOptions === null
       ? []
@@ -1137,7 +1167,9 @@ export function LibraryFormDialog({
       match_rules: buildMatchRules(genres, matchRegions),
       auto_clear_missing: autoClearMissing,
       realtime_watch: realtimeWatch,
-      scrape_overrides: scrapeOverrides,
+      generate_thumbnails: generateThumbnails,
+      exclude_from_home: excludeFromHome,
+      scrape_overrides: scraped ? scrapeOverrides : {},
     };
     void (library ? updateLibrary(library.id, payload) : createLibrary(payload))
       .then(onSaved)
@@ -1198,7 +1230,10 @@ export function LibraryFormDialog({
                 ["scope", "收藏范围"],
                 ["scrape", "刮削设置"],
               ] as const
-            ).map(([key, tabLabel]) => (
+            )
+              // 本地内容库没有识别链：收藏范围（按 TMDB 类型/地区路由）与刮削设置都无从谈起
+              .filter(([key]) => scraped || key === "basic")
+              .map(([key, tabLabel]) => (
               <button
                 key={key}
                 type="button"
@@ -1234,12 +1269,15 @@ export function LibraryFormDialog({
           <div>
             <label className={labelClass}>库类型{library ? "（创建后不可修改）" : ""}</label>
             <div className="flex flex-wrap gap-2">
-              {(Object.keys(LIBRARY_KIND_META) as MediaType[]).map((k) => (
+              {(Object.keys(LIBRARY_KIND_META) as LibraryKind[]).map((k) => (
                 <button
                   key={k}
                   type="button"
                   disabled={library !== null}
-                  onClick={() => setKind(k)}
+                  onClick={() => {
+                    setKind(k);
+                    if (tab !== "basic") setTab("basic");
+                  }}
                   data-active={(library?.kind ?? kind) === k}
                   className="glass-row nav-item !w-auto px-3 py-1.5 text-sub font-medium disabled:opacity-60"
                 >
@@ -1247,6 +1285,9 @@ export function LibraryFormDialog({
                 </button>
               ))}
             </div>
+            <p className="mt-1.5 text-caption leading-relaxed text-[var(--text-faint)]">
+              {LIBRARY_KIND_META[effectiveKind].hint}
+            </p>
           </div>
 
           <div>
@@ -1389,6 +1430,49 @@ export function LibraryFormDialog({
                   不必再手动清一次缺失。<strong className="font-medium text-[var(--text-muted)]">只删台账、不动磁盘，但记录删了不可恢复</strong>
                   ——「缺失」清单里的「重新下载」也会随之消失。关闭时记录保留，文件回归自动恢复。
                   目录读不动（权限/掉盘/网络挂载抖动）的那一轮不会清理。
+                </span>
+              </span>
+            </label>
+          </div>
+
+          {/* 本地来源内容的缩略图：其他库（以及影视库里认不出的文件）没有图床可拉，
+              海报只能从文件本身抓帧。网络挂载库抓帧等于把整库读一遍，给个开关 */}
+          <div>
+            <label className="flex cursor-pointer select-none items-start gap-2.5">
+              <input
+                type="checkbox"
+                checked={generateThumbnails}
+                onChange={(e) => setGenerateThumbnails(e.target.checked)}
+                className="mt-0.5 size-4 shrink-0 accent-[var(--accent)]"
+              />
+              <span className="min-w-0">
+                <span className="block text-ui font-medium text-[var(--text)]">
+                  为本地内容生成缩略图
+                </span>
+                <span className="mt-1 block text-caption leading-relaxed text-[var(--text-faint)]">
+                  没有在线海报的内容（其他库、影视库里尚未识别的文件）从视频本身抓一帧当封面：
+                  优先用同名图片或内嵌封面，没有再抓帧。
+                  <strong className="font-medium text-[var(--text-muted)]">网络挂载库抓帧需要读取每个文件</strong>
+                  ，介意流量可关闭，关闭后显示占位图。
+                </span>
+              </span>
+            </label>
+          </div>
+
+          <div>
+            <label className="flex cursor-pointer select-none items-start gap-2.5">
+              <input
+                type="checkbox"
+                checked={excludeFromHome}
+                onChange={(e) => setExcludeFromHome(e.target.checked)}
+                className="mt-0.5 size-4 shrink-0 accent-[var(--accent)]"
+              />
+              <span className="min-w-0">
+                <span className="block text-ui font-medium text-[var(--text)]">
+                  不在首页展示
+                </span>
+                <span className="mt-1 block text-caption leading-relaxed text-[var(--text-faint)]">
+                  首页「最近添加」与 Jellyfin 客户端的「最新媒体」都跳过这个库；库卡片仍在，进库内看照常。
                 </span>
               </span>
             </label>

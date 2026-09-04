@@ -478,13 +478,15 @@ def test_large_library_list_skips_large_json_columns(
         conn.executemany(
             """
             INSERT INTO media_item
-                (id, kind, tmdb_id, title, original_title, aliases, created_at, updated_at)
-            VALUES (?, 'movie', ?, ?, ?, '[]', ?, ?)
+                (id, kind, tmdb_id, source, external_id, title, original_title, aliases,
+                 created_at, updated_at)
+            VALUES (?, 'movie', ?, 'tmdb', ?, ?, ?, '[]', ?, ?)
             """,
             [
                 (
                     item_id,
                     item_id,
+                    str(item_id),
                     f"Large library item {item_id}",
                     f"Item {item_id}",
                     timestamp,

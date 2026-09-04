@@ -21,6 +21,7 @@ import {
 import { LibraryOrganizeDialog } from "@/components/library-organize-dialog";
 import { PosterCardVisual, type PosterVisualItem } from "@/components/poster-card";
 import {
+  type LibraryCapabilities,
   type LibraryItem,
   type MediaLibrary,
   type MissingItem,
@@ -487,6 +488,10 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   const probing = Boolean(
     library?.scanning && library.scan_progress?.phase === "probing",
   );
+  // 其他库（本地内容、无结构）：卡片是 16:9 抓帧缩略图，墙按内容时间倒序
+  // （家庭录像按拍摄日期最自然），没有拼音字母档
+  const timeline = Boolean(library && !library.capabilities.scraped);
+  const wideCards = Boolean(library && library.capabilities.default_aspect > 1);
   const initialByOffset = useMemo(
     () => new Map(wallIndex.map((entry) => [entry.offset, entry.initial])),
     [wallIndex],
@@ -530,7 +535,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   // 排序切换是**服务端**的事（墙是分页的，本地排只能排到已加载的那几屏）：
   // 阶段一变就换排序键重拉第一页，回到首屏看的就是正在处理的那几部
   useEffect(() => {
-    const next: LibraryItemSort = probing ? "probing" : "title";
+    const next: LibraryItemSort = probing ? "probing" : timeline ? "release_date" : "title";
     if (wallSort.current === next) return;
     wallSort.current = next;
     wallLoaded.current = WALL_PAGE_SIZE;
@@ -538,7 +543,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
     wallOffset.current = 0;
     setWallStart(0);
     reload();
-  }, [probing, reload]);
+  }, [probing, timeline, reload]);
 
   // 追踪中：目标是本库、且尚未在库存中出现的订阅
   const pending = useMemo(() => {
@@ -659,6 +664,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
           : null
       }
       busy={busy}
+      capabilities={library.capabilities}
       onOrganize={() => {
         setNotice(null);
         setOrganizeTarget(library);
@@ -888,13 +894,18 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
             <div className="flex items-start gap-2 px-6 max-md:gap-1 max-md:px-4">
               <div
                 ref={wallGrid}
-                className="grid flex-1 gap-x-4 gap-y-7 [grid-template-columns:repeat(auto-fill,minmax(148px,1fr))] max-md:gap-x-3 max-md:gap-y-5 max-md:[grid-template-columns:repeat(auto-fill,minmax(140px,1fr))]"
+                className={
+                  wideCards
+                    ? "grid flex-1 gap-x-4 gap-y-7 [grid-template-columns:repeat(auto-fill,minmax(220px,1fr))] max-md:gap-x-3 max-md:gap-y-5 max-md:[grid-template-columns:repeat(auto-fill,minmax(160px,1fr))]"
+                    : "grid flex-1 gap-x-4 gap-y-7 [grid-template-columns:repeat(auto-fill,minmax(148px,1fr))] max-md:gap-x-3 max-md:gap-y-5 max-md:[grid-template-columns:repeat(auto-fill,minmax(140px,1fr))]"
+                }
               >
                 {items.map((item, index) => (
                   <InventoryCell
                     key={item.media_item_id}
                     item={item}
                     libraryId={libraryId}
+                    unidentified={library.capabilities.scraped && item.source === "local"}
                     wallInitial={initialByOffset.get(wallStart + index)}
                     workingLabel={
                       refreshPhaseById.get(item.media_item_id) ??
@@ -904,8 +915,9 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
                   />
                 ))}
               </div>
-              {/* 补探阶段排序不是拼音序，字母跳转会跳错位置——那几分钟里收起来 */}
-              {!probing && (
+              {/* 补探阶段排序不是拼音序，字母跳转会跳错位置——那几分钟里收起来；
+                  其他库按内容时间排，同理没有字母档 */}
+              {!probing && !timeline && (
                 <WallIndexBar index={wallIndex} active={activeWallInitial} onJump={jumpTo} />
               )}
             </div>
@@ -961,6 +973,8 @@ interface LibraryActionsMenuProps {
   busy: boolean;
   /** 待处理总件数（缺失 + 待识别 + 身份复核）；0 也照常给入口，见下方说明 */
   pendingCount: number;
+  /** 库的能力位：没有命名能力不给「整理文件名」，没有刮削链不给「刷新元数据」 */
+  capabilities: LibraryCapabilities;
   onOpenPending: () => void;
   onOrganize: () => void;
   onToggleMetaRefresh: () => void;
@@ -978,6 +992,7 @@ function LibraryActionsMenu({
   metaProgress,
   busy,
   pendingCount,
+  capabilities,
   onOpenPending,
   onOrganize,
   onToggleMetaRefresh,
@@ -1037,19 +1052,23 @@ function LibraryActionsMenu({
                 ? `停止扫描${scanPercent === null ? "" : ` ${scanPercent}%`}`
                 : `${SCAN_PHASE_LABELS[scanPhase ?? "ingesting"]}…`}
           </DropdownMenu.Item>
-          <DropdownMenu.Item
-            onSelect={onOrganize}
-            disabled={busy && !organizing}
-            className={itemClass}
-          >
-            {organizing
-              ? `整理中…${organizePercent === null ? "" : ` ${organizePercent}%`}`
-              : "整理文件名"}
-          </DropdownMenu.Item>
+          {capabilities.naming && (
+            <DropdownMenu.Item
+              onSelect={onOrganize}
+              disabled={busy && !organizing}
+              className={itemClass}
+            >
+              {organizing
+                ? `整理中…${organizePercent === null ? "" : ` ${organizePercent}%`}`
+                : "整理文件名"}
+            </DropdownMenu.Item>
+          )}
           <DropdownMenu.Item onSelect={onToggleMetaRefresh} className={itemClass}>
             {refreshingMeta
               ? `停止刷新${metaProgress === null ? "" : ` ${metaProgress}`}`
-              : "刷新元数据"}
+              : capabilities.scraped
+                ? "刷新元数据"
+                : "重新生成缩略图"}
           </DropdownMenu.Item>
           <DropdownMenu.Item onSelect={onEdit} disabled={busy} className={itemClass}>
             编辑库
@@ -1130,11 +1149,14 @@ function MetadataRefreshPanel({
 const InventoryCell = memo(function InventoryCell({
   item,
   libraryId,
+  unidentified,
   wallInitial,
   workingLabel,
 }: {
   item: LibraryItem;
   libraryId: number;
+  /** 影视库里尚未识别、按文件名临时展示的条目（其他库恒 false） */
+  unidentified: boolean;
   /** 该格是否为某个拼音首字母档的第一部影片；滚动联动只标记这些锚点。 */
   wallInitial?: string;
   /** 这一格正被后台处理（整库刷新的阶段 / 扫描补探）时的文案；不在处理为 undefined */
@@ -1145,12 +1167,19 @@ const InventoryCell = memo(function InventoryCell({
       ? formatLibraryInventorySummary(item.inventory_summary)
       : null;
   const visual: PosterVisualItem = {
-    id: String(item.tmdb_id),
+    // 本地条目没有 TMDB id：占位 id 只做 key，不会被当成外部 id 请求
+    id: item.tmdb_id != null ? String(item.tmdb_id) : `local:${item.media_item_id}`,
     source: "tmdb",
-    type: item.kind,
+    type: item.kind === "video" ? undefined : item.kind,
     title: item.title,
     year: item.year ?? undefined,
     rating: 0,
+    aspect: item.primary_aspect,
+    // 影视库里认不出的文件也上墙（可见可播，docs/design/library-other-kind.md 4.2），
+    // 打「未识别」角标提醒去待处理里认领；其他库的本地条目是常态，不打
+    ribbon: unidentified ? "未识别" : undefined,
+    ribbonVariant: unidentified ? "compact-left" : undefined,
+    ribbonTone: unidentified ? "warning" : undefined,
     overlayDetails: inventoryLabel ? { primary: inventoryLabel } : undefined,
     // 海报可能是本地刮削资产的相对路径（断网可用），也可能是 TMDB 图床地址。
     // 与首页海报墙同样取 poster-card 派生图：海报墙是全站最大的一张图片网格，

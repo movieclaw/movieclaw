@@ -87,8 +87,10 @@ export interface PosterVisualItem {
   ribbon?: string;
   /** 人物作品页使用更小的左上角斜标；缺省保持订阅墙现有样式。 */
   ribbonVariant?: "compact-left";
-  /** 斜标的语义色：已入库为绿色，已订阅为蓝色。 */
-  ribbonTone?: "owned" | "subscribed";
+  /** 斜标的语义色：已入库为绿色，已订阅为蓝色，未识别为琥珀色。 */
+  ribbonTone?: "owned" | "subscribed" | "warning";
+  /** 主图宽高比；缺省 2:3 海报框。本地抓帧的缩略图是 16:9，硬塞进海报框会裁掉两边 */
+  aspect?: number;
   /** 海报底部常显的一行左右信息；订阅墙用来承载剧集范围与收录进度。
    *  tracking=追更中绿点；upgrading=洗版中青点（绿点优先，同槽位只亮一个）；
    *  upgradingCount=青点旁的「洗 N」数量——只有点没有字用户感知不到洗版仍在进行。 */
@@ -117,7 +119,7 @@ export interface PosterVisualItem {
  */
 function resolveRibbon(
   item: PosterVisualItem,
-): { label: string; compactLeft: boolean; tone: "owned" | "subscribed" } | null {
+): { label: string; compactLeft: boolean; tone: "owned" | "subscribed" | "warning" } | null {
   if (item.ribbon) {
     return {
       label: item.ribbon,
@@ -303,11 +305,17 @@ function PosterCardContent({
   const compactRibbonTone =
     ribbon?.tone === "owned"
       ? "from-emerald-500 via-green-500 to-teal-500 shadow-[0_2px_8px_rgba(16,185,129,0.38)]"
-      : "from-sky-500 via-blue-500 to-indigo-500 shadow-[0_2px_8px_rgba(59,130,246,0.38)]";
+      : ribbon?.tone === "warning"
+        ? "from-amber-500 via-orange-500 to-amber-600 shadow-[0_2px_8px_rgba(245,158,11,0.38)]"
+        : "from-sky-500 via-blue-500 to-indigo-500 shadow-[0_2px_8px_rgba(59,130,246,0.38)]";
   return (
     <>
       {/* 海报区（自身 relative：徽章与 hover 信息层都绝对定位在它内部） */}
-      <div className="relative aspect-[2/3] w-full overflow-hidden rounded-2xl bg-[#141824] shadow-[0_10px_28px_rgba(0,0,0,0.4)] ring-1 ring-white/[0.08] transition-all duration-300 ease-out group-hover/card:-translate-y-1.5 group-hover/card:shadow-[0_22px_50px_rgba(0,0,0,0.6)] group-hover/card:ring-white/25">
+      <div
+        // 比例走内联样式：其他库的抓帧缩略图是 16:9，TMDB 海报是 2:3，同一张墙上按条目各自排版
+        style={{ aspectRatio: item.aspect ?? 2 / 3 }}
+        className="relative w-full overflow-hidden rounded-2xl bg-[#141824] shadow-[0_10px_28px_rgba(0,0,0,0.4)] ring-1 ring-white/[0.08] transition-all duration-300 ease-out group-hover/card:-translate-y-1.5 group-hover/card:shadow-[0_22px_50px_rgba(0,0,0,0.6)] group-hover/card:ring-white/25"
+      >
         <PosterImage
           src={item.posterUrl}
           alt={`${item.title} 海报`}

@@ -131,6 +131,7 @@ from movieclaw_api.services.library.subtitles import (
     match_subtitle_filename,
     parse_subtitle_tokens,
 )
+from movieclaw_api.services.library.thumbs import primary_aspect
 from movieclaw_api.services.library.transfer import (
     assert_transferable,
     build_transfer_plan,
@@ -890,11 +891,14 @@ async def create_library(
     row = await service.create(
         name=payload.name,
         kind=payload.kind,
+        source=payload.source,
         root_paths=payload.root_paths,
         match_rules=payload.match_rules,
         auto_clear_missing=payload.auto_clear_missing,
         realtime_watch=payload.realtime_watch,
         scrape_overrides=payload.scrape_overrides,
+        generate_thumbnails=payload.generate_thumbnails,
+        exclude_from_home=payload.exclude_from_home,
     )
     # 建库即扫描：根路径下的存量文件立刻开始识别入账，不用用户再手动点一次
     assert row.id is not None
@@ -1043,6 +1047,8 @@ async def update_library(
         auto_clear_missing=payload.auto_clear_missing,
         realtime_watch=payload.realtime_watch,
         scrape_overrides=payload.scrape_overrides,
+        generate_thumbnails=payload.generate_thumbnails,
+        exclude_from_home=payload.exclude_from_home,
     )
     # 根路径变了就自动补扫：新目录的存量立刻入账，移除目录下的文件标记 missing
     if roots_changed:
@@ -1664,8 +1670,13 @@ async def list_library_items(
     # 这三个参数用 Annotated 写法（而非 `= Query(...)`）：函数被直接调用时
     # 拿到的是真实默认值而不是 Query 对象——测试与内部调用都走这条路
     sort: Annotated[
-        Literal["title", "added_at", "probing"],
-        Query(description="排序：title=按标题 / added_at=最近入账优先 / probing=待补探优先"),
+        Literal["title", "added_at", "release_date", "probing"],
+        Query(
+            description=(
+                "排序：title=按标题 / added_at=最近入账优先 / "
+                "release_date=按内容时间倒序 / probing=待补探优先"
+            )
+        ),
     ] = "title",
     limit: Annotated[
         int | None, Query(ge=1, le=200, description="本页条目数；不给则返回整库")
@@ -2004,6 +2015,7 @@ async def get_library_item(
         LibraryItemDetailView(
             media_item_id=item.id,
             kind=MediaKind(item.kind),
+            source=item.source,
             tmdb_id=item.tmdb_id,
             imdb_id=item.imdb_id,
             douban_id=item.douban_id,
@@ -2012,6 +2024,11 @@ async def get_library_item(
             year=item.year,
             poster_url=poster_url,
             backdrop_url=backdrop_url,
+            primary_aspect=primary_aspect(
+                item,
+                meta_row.poster_width if meta_row else None,
+                meta_row.poster_height if meta_row else None,
+            ),
             local_meta=local_meta,
             entry_dirs=entry_dirs,
             files=file_views,

@@ -115,13 +115,39 @@ class ItemBundle:
         for f in self.files.get((season, episode), []):
             if f.duration_seconds:
                 return f.duration_seconds * 1000
-        if self.item.kind == "tv":
+        if not is_leaf_kind(self.item.kind):
             ep = self.episodes.get((season, episode))
             if ep and ep.runtime_minutes:
                 return ep.runtime_minutes * 60_000
         if self.metadata and self.metadata.runtime_minutes:
             return self.metadata.runtime_minutes * 60_000
         return None
+
+
+# 条目形态 → Jellyfin BaseItem 类型（docs/design/library-other-kind.md 5.1）。
+# 只有 tv 是文件夹型（Series → Season → Episode）；movie 与 video 都是可播叶子，
+# 区别只在 Type 字面：video 对应真 Jellyfin 家庭录像库里的 ``Video`` 条目。
+# 全层只认这张表，不再散落 ``kind == "movie"`` 字面比较
+_ITEM_TYPES = {"movie": "Movie", "tv": "Series", "video": "Video"}
+LEAF_ITEM_TYPES = frozenset({"Movie", "Video"})
+PLAYABLE_TYPES = frozenset({"Movie", "Video", "Episode"})
+
+
+def item_type_of(kind: str) -> str:
+    """条目形态的 Jellyfin Type。"""
+    return _ITEM_TYPES[kind]
+
+
+def is_leaf_kind(kind: str) -> bool:
+    """该形态是否为可播叶子（单元恒 (0,0)，没有季集层级）。"""
+    return item_type_of(kind) in LEAF_ITEM_TYPES
+
+
+def collection_type_of(library: Library) -> str:
+    """库的 Jellyfin CollectionType（movies / tvshows / homevideos）。"""
+    from movieclaw_api.services.library.profile import profile_of
+
+    return profile_of(library).jellyfin_collection
 
 
 # 叶子单元三元组 (media_item_id, season_number, episode_number)。
@@ -198,6 +224,8 @@ def _list_load_columns(
             [
                 MediaMetadata.poster_file,
                 MediaMetadata.backdrop_file,
+                MediaMetadata.poster_width,
+                MediaMetadata.poster_height,
                 MediaMetadata.updated_at,
             ]
         )
@@ -629,6 +657,11 @@ async def latest_unit_candidates(
     )
     if library_id is not None:
         q = q.where(LibraryFile.library_id == library_id)
+    else:
+        # 首页级「最新」：勾了"从首页排除"的库不上首页（进库内看仍然有）
+        q = q.join(Library, Library.id == LibraryFile.library_id).where(
+            Library.exclude_from_home.is_(False)
+        )
     if visible_library_ids is not None:
         q = q.where(LibraryFile.library_id.in_(visible_library_ids))
     if is_played is not None:
@@ -766,8 +799,9 @@ async def movie_library_page(
     *,
     start_index: int,
     limit: int,
+    kind: str = "movie",
 ) -> tuple[int, list[int]]:
-    """电影库无筛选列表的 SQL 计数和分页，只返回最终要装载的条目 id。"""
+    """叶子型库（电影/其他）无筛选列表的 SQL 计数和分页，只返回最终要装载的条目 id。"""
     file_exists = (
         select(LibraryFile.id)
         .where(
@@ -779,7 +813,7 @@ async def movie_library_page(
         )
         .exists()
     )
-    condition = and_(MediaItem.kind == "movie", file_exists)
+    condition = and_(MediaItem.kind == kind, file_exists)
     total = int(
         (
             await session.execute(
@@ -1160,7 +1194,9 @@ def _item_library_guid(bundle: ItemBundle) -> str | None:
 def _apply_provider_ids(dto: dict[str, Any], bundle: ItemBundle, options: DtoOptions) -> None:
     if not options.has("ProviderIds"):
         return
-    providers: dict[str, str] = {"Tmdb": str(bundle.item.tmdb_id)}
+    providers: dict[str, str] = {}
+    if bundle.item.tmdb_id is not None:  # 本地来源条目没有外部 id
+        providers["Tmdb"] = str(bundle.item.tmdb_id)
     if bundle.item.imdb_id:
         providers["Imdb"] = bundle.item.imdb_id
     dto["ProviderIds"] = providers
@@ -1189,6 +1225,12 @@ def _apply_item_images(
     ) or _tmdb_tag(bundle.item.poster_path)
     if poster:
         tags["Primary"] = poster
+        # 真 Jellyfin 有主图就输出 PrimaryImageAspectRatio，客户端据此排版卡片：
+        # 本地抓帧的缩略图是 16:9，硬塞进 2:3 海报框会被裁掉两边
+        if meta and meta.poster_width and meta.poster_height:
+            dto["PrimaryImageAspectRatio"] = round(meta.poster_width / meta.poster_height, 4)
+        else:
+            dto["PrimaryImageAspectRatio"] = round(2 / 3, 4)
     dto["ImageTags"] = tags
     backdrop = _asset_tag(
         meta.backdrop_file if meta else None, meta.updated_at if meta else None
@@ -1243,8 +1285,9 @@ def _apply_leaf_media_fields(
 
 
 def movie_dto(ctx: DtoContext, bundle: ItemBundle, options: DtoOptions) -> dict[str, Any]:
+    """可播叶子条目（Movie / Video）的 DTO：两者字段完全一致，只有 Type 不同。"""
     guid = item_guid(bundle.item.id)
-    dto = _common(ctx, guid, bundle.item.title, "Movie", "Video")
+    dto = _common(ctx, guid, bundle.item.title, item_type_of(bundle.item.kind), "Video")
     dto["IsFolder"] = False
     _apply_leaf_media_fields(dto, bundle.files.get((0, 0), []), options)
     if bundle.item.year:
@@ -1457,7 +1500,7 @@ def library_view_dto(
 ) -> dict[str, Any]:
     dto = _common(ctx, library_guid(library.id), library.name, "CollectionFolder", "Unknown")
     dto["IsFolder"] = True
-    dto["CollectionType"] = "movies" if library.kind == "movie" else "tvshows"
+    dto["CollectionType"] = collection_type_of(library)
     # 封面 = 服务端渲染的氛围光货架拼贴（library.cover 服务），tag 即素材指纹
     dto["ImageTags"] = {"Primary": cover_tag} if cover_tag else {}
     dto["BackdropImageTags"] = []
@@ -1467,9 +1510,9 @@ def library_view_dto(
     # Jellyfin 浏览请求扫描 library_file 全表。
     dto["ChildCount"] = library.stats_item_count
     dto["RecursiveItemCount"] = (
-        library.stats_episode_count
-        if library.kind == "tv"
-        else library.stats_item_count
+        library.stats_item_count
+        if is_leaf_kind(library.kind)
+        else library.stats_episode_count
     )
     # 库视图不做已看聚合（CollectionFolder.SupportsPlayedStatus=false）
     guid = library_guid(library.id)

@@ -37,6 +37,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from movieclaw_api.exceptions import BadRequestException, NotFoundException
+from movieclaw_api.services.library.profile import KIND_LABELS
 from movieclaw_db.models import ImportWatch, Library
 from movieclaw_db.models.base import utcnow
 
@@ -47,7 +48,7 @@ _refresh_tasks: set[asyncio.Task] = set()
 
 STRATEGIES = ("hardlink", "copy")
 _KINDS = ("movie", "tv")
-_KIND_LABELS = {"movie": "电影", "tv": "剧集"}
+_KIND_LABELS = KIND_LABELS
 
 
 def _routable_cause(lib: Library) -> str:

@@ -105,6 +105,10 @@ class MediaMetadata(TimestampMixin, table=True):
     # -- 本地图片资产（相对 data/metadata/images/，NULL=未下载/下载失败）------
     poster_file: str | None = Field(default=None, description="本地海报资产相对路径")
     backdrop_file: str | None = Field(default=None, description="本地剧照资产相对路径")
+    # 海报像素尺寸（本地来源条目的抓帧/内嵌封面才记；TMDB 海报固定 2:3 不记）：
+    # 卡片按真实比例排版，见 docs/design/library-other-kind.md 4.7
+    poster_width: int | None = Field(default=None, description="本地海报像素宽；NULL=未知")
+    poster_height: int | None = Field(default=None, description="本地海报像素高；NULL=未知")
 
     # -- 手动选图锁（Emby/TMM 同款语义：改过即锁）---------------------------
     # 用户在「更换图片」里挑过的图，自动选图策略与 force 刷新都**不再覆盖**

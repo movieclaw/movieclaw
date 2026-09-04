@@ -194,10 +194,13 @@ class LibraryRepository:
         name: str,
         kind: str,
         root_paths: list[str],
+        source: str = "tmdb",
         match_rules: list | None = None,
         auto_clear_missing: bool = False,
         realtime_watch: bool = True,
         scrape_overrides: dict | None = None,
+        generate_thumbnails: bool = True,
+        exclude_from_home: bool = False,
     ) -> Library:
         """新增一个库。该 kind 尚无默认库时，新库自动成为默认。新库置于
         展示顺序末尾（现有最大 sort_order + 1，不打乱用户排好的顺序）。"""
@@ -205,11 +208,14 @@ class LibraryRepository:
         row = Library(
             name=name,
             kind=kind,
+            source=source,
             root_paths=list(root_paths),
             match_rules=list(match_rules or []),
             auto_clear_missing=auto_clear_missing,
             realtime_watch=realtime_watch,
             scrape_overrides=scrape_overrides or None,
+            generate_thumbnails=generate_thumbnails,
+            exclude_from_home=exclude_from_home,
             is_default=await self.get_default(kind) is None,
             sort_order=max((lib.sort_order for lib in existing), default=0) + 1,
         )
@@ -240,6 +246,8 @@ class LibraryRepository:
         auto_clear_missing: bool | None = None,
         realtime_watch: bool | None = None,
         scrape_overrides: dict | None = None,
+        generate_thumbnails: bool | None = None,
+        exclude_from_home: bool | None = None,
     ) -> Library | None:
         """更新名称/根路径/收藏范围（kind 创建后不可改）；不存在返回 None。
 
@@ -258,6 +266,10 @@ class LibraryRepository:
             row.auto_clear_missing = auto_clear_missing
         if realtime_watch is not None:
             row.realtime_watch = realtime_watch
+        if generate_thumbnails is not None:
+            row.generate_thumbnails = generate_thumbnails
+        if exclude_from_home is not None:
+            row.exclude_from_home = exclude_from_home
         if scrape_overrides is not None:
             # 空字典 = 显式清空覆盖（回到全跟全局）；None = 不改动
             row.scrape_overrides = scrape_overrides or None

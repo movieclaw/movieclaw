@@ -26,6 +26,7 @@ from movieclaw_jellyfin.catalog import (
     _folder_user_data,
     _leaf_user_data,
     audio_track_for_index,
+    is_leaf_kind,
     load_bundles,
     subtitle_track_for_index,
 )
@@ -499,7 +500,7 @@ async def _user_data_response(
         return JSONResponse(_leaf_user_data(bundle, ref.season, ref.episode, guid))
     if ref.kind == EntityKind.SEASON:
         return JSONResponse(_folder_user_data(bundle, guid, season=ref.season))
-    if bundle.item.kind == "movie":
+    if is_leaf_kind(bundle.item.kind):
         return JSONResponse(_leaf_user_data(bundle, 0, 0, guid))
     return JSONResponse(_folder_user_data(bundle, guid))
 

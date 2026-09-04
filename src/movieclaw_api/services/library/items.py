@@ -57,6 +57,7 @@ from movieclaw_api.services.library.nfo import (
     read_episode_metadata,
 )
 from movieclaw_api.services.library.sort_key import title_initial, title_sort_key
+from movieclaw_api.services.library.thumbs import primary_aspect
 from movieclaw_api.services.media_probe import (
     note_probe_failure,
     note_probe_success,
@@ -65,7 +66,15 @@ from movieclaw_api.services.media_probe import (
 )
 from movieclaw_api.services.media_scrape import asset_version, file_version
 from movieclaw_api.services.scrape_config import effective_language, scrape_setting_for_item
-from movieclaw_db.models import FileState, Library, LibraryFile, MediaItem, MediaSeason, utcnow
+from movieclaw_db.models import (
+    FileState,
+    Library,
+    LibraryFile,
+    MediaItem,
+    MediaMetadata,
+    MediaSeason,
+    utcnow,
+)
 from movieclaw_db.repositories.library_repo import LibraryRepository
 from movieclaw_media.models import MediaKind
 
@@ -230,7 +239,7 @@ def _build_inventory_summary(
     )
 
 
-WallSort = Literal["title", "added_at", "probing"]
+WallSort = Literal["title", "added_at", "release_date", "probing"]
 
 
 async def _titles_sorted(session: AsyncSession, library_id: int) -> list[tuple[int, str]]:
@@ -304,6 +313,29 @@ async def _wall_page_ids(
             .group_by(LibraryFile.media_item_id)  # type: ignore[arg-type]
             .order_by(
                 func.max(LibraryFile.created_at).desc(),
+                LibraryFile.media_item_id.desc(),  # type: ignore[union-attr]
+            )
+        )
+        if limit is not None:
+            query = query.limit(limit).offset(offset)
+        return [i for i in (await session.execute(query)).scalars().all() if i is not None]
+
+    if sort == "release_date":
+        # 「按内容时间」：其他库的家庭录像按拍摄日期倒序最自然（release_date 由
+        # 扫描从 sidecar NFO / 容器日期标签 / 文件 mtime 回落而来，见
+        # local_identity）；影视库则是上映/首播日期。缺日期的退到年份、再到 id
+        query = (
+            select(LibraryFile.media_item_id)
+            .join(MediaItem, MediaItem.id == LibraryFile.media_item_id)  # type: ignore[arg-type]
+            .outerjoin(MediaMetadata, MediaMetadata.media_item_id == MediaItem.id)  # type: ignore[arg-type]
+            .where(
+                LibraryFile.library_id == library_id,
+                LibraryFile.media_item_id.is_not(None),  # type: ignore[union-attr]
+            )
+            .group_by(LibraryFile.media_item_id)  # type: ignore[arg-type]
+            .order_by(
+                func.max(MediaMetadata.release_date).desc(),
+                func.max(MediaItem.year).desc(),
                 LibraryFile.media_item_id.desc(),  # type: ignore[union-attr]
             )
         )
@@ -451,17 +483,23 @@ async def _aggregate_wall_views(
 
     base = get_settings().tmdb_image_base_url.rstrip("/")
     # 海报优先本地刮削资产（断网可用），没有资产的回落 TMDB 图床
-    poster_assets: dict[int, str] = {
-        item_id: poster_file
-        for item_id, poster_file in (
-            await session.execute(
-                select(MediaMetadata.media_item_id, MediaMetadata.poster_file).where(
-                    MediaMetadata.media_item_id.in_(grouped.keys()),  # type: ignore[attr-defined]
-                    MediaMetadata.poster_file.is_not(None),  # type: ignore[union-attr]
-                )
+    poster_assets: dict[int, str] = {}
+    poster_sizes: dict[int, tuple[int | None, int | None]] = {}
+    for item_id, poster_file, width, height in (
+        await session.execute(
+            select(
+                MediaMetadata.media_item_id,
+                MediaMetadata.poster_file,
+                MediaMetadata.poster_width,
+                MediaMetadata.poster_height,
+            ).where(
+                MediaMetadata.media_item_id.in_(grouped.keys()),  # type: ignore[attr-defined]
+                MediaMetadata.poster_file.is_not(None),  # type: ignore[union-attr]
             )
-        ).all()
-    }
+        )
+    ).all():
+        poster_assets[item_id] = poster_file
+        poster_sizes[item_id] = (width, height)
     by_id: dict[int, LibraryItemView] = {}
     for item, files in grouped.values():
         season_episode_counts = season_episode_counts_by_item.get(item.id, {})  # type: ignore[arg-type]
@@ -523,10 +561,12 @@ async def _aggregate_wall_views(
         by_id[item.id] = LibraryItemView(  # type: ignore[index]
             media_item_id=item.id,  # type: ignore[arg-type]
             kind=MediaKind(item.kind),
+            source=item.source,
             tmdb_id=item.tmdb_id,
             title=item.title,
             year=item.year,
             poster_url=poster_url,
+            primary_aspect=primary_aspect(item, *poster_sizes.get(item.id, (None, None))),
             file_count=len(files),
             total_size_bytes=sum(f.size_bytes for f in files),
             seasons=sorted({s for s, _ in units if item.kind == "tv"}),

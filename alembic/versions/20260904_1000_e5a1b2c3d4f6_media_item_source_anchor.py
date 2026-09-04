@@ -10,7 +10,9 @@ docs/design/library-other-kind.md 第 2、3 节：媒体库要能容纳没有 TM
 - ``media_item.tmdb_id`` 改可空，CHECK 保证与 source 同进退；
 - 唯一键从 ``(kind, tmdb_id)`` 改为 ``(source, kind, external_id)``；
 - ``library.source``（与 kind 一起定位能力档案，存量回填 tmdb）、
-  ``library.generate_thumbnails``（默认开）、``library.exclude_from_home``（默认关）。
+  ``library.generate_thumbnails``（默认开）、``library.exclude_from_home``（默认关）；
+- ``media_metadata.poster_width/poster_height``：本地抓帧海报的像素尺寸
+  （卡片按真实比例排版）。
 
 向前兼容：迁移单向（发布规范第 3 条，回退靠更新前备份）。存量 TMDB 条目的
 锚与 id 全部保留；旧代码回退后读到的 ``tmdb_id`` 仍是原值。
@@ -77,11 +79,19 @@ def upgrade() -> None:
             )
         )
 
+    # ---- media_metadata：海报像素尺寸 ---------------------------------------
+    with op.batch_alter_table("media_metadata", schema=None) as batch_op:
+        batch_op.add_column(sa.Column("poster_width", sa.Integer(), nullable=True))
+        batch_op.add_column(sa.Column("poster_height", sa.Integer(), nullable=True))
+
 
 def downgrade() -> None:
     # 本地来源条目在旧结构里没有位置（tmdb_id NOT NULL），降级前先删掉它们；
     # 它们的文件行外键 SET NULL 回到"未识别"，与旧版本语义一致
     op.execute("DELETE FROM media_item WHERE source <> 'tmdb'")
+    with op.batch_alter_table("media_metadata", schema=None) as batch_op:
+        batch_op.drop_column("poster_height")
+        batch_op.drop_column("poster_width")
     with op.batch_alter_table("library", schema=None) as batch_op:
         batch_op.drop_column("exclude_from_home")
         batch_op.drop_column("generate_thumbnails")

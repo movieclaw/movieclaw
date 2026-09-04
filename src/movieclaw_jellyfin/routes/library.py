@@ -19,14 +19,18 @@ from movieclaw_api.services.library.access import member_visible_ids
 from movieclaw_db.engine import get_database
 from movieclaw_db.models import Library
 from movieclaw_jellyfin.catalog import (
+    PLAYABLE_TYPES,
     DtoContext,
     DtoOptions,
     ItemBundle,
     LatestUnitCandidate,
     ResumeUnitCandidate,
+    collection_type_of,
     episode_dto,
     hydrate_leaves,
+    is_leaf_kind,
     item_ids_with_files,
+    item_type_of,
     latest_unit_candidates,
     library_view_dto,
     list_libraries,
@@ -278,7 +282,7 @@ async def library_virtual_folders(
             {
                 "Name": lib.name,
                 "Locations": roots,
-                "CollectionType": "movies" if lib.kind == "movie" else "tvshows",
+                "CollectionType": collection_type_of(lib),
                 "ItemId": library_guid(lib.id),
                 "RefreshStatus": status,
                 "LibraryOptions": {
@@ -316,7 +320,7 @@ async def library_virtual_folders(
 
 def _entry_played(entry: Entry) -> bool:
     kind, bundle, season, _ = entry
-    if kind in ("Movie", "Episode"):
+    if kind in PLAYABLE_TYPES:
         st = bundle.state(entry[2], entry[3])
         return bool(st and st.played)
     units = [u for u in bundle.units if kind != "Season" or u[0] == season]
@@ -327,7 +331,7 @@ def _entry_played(entry: Entry) -> bool:
 
 def _entry_resumable(entry: Entry) -> bool:
     kind, bundle, season, episode = entry
-    if kind not in ("Movie", "Episode"):
+    if kind not in PLAYABLE_TYPES:
         return False
     st = bundle.state(season, episode)
     return bool(st and st.position_ms > 0)
@@ -369,9 +373,10 @@ def _build_entries(
 ) -> list[Entry]:
     entries: list[Entry] = []
     for bundle in bundles.values():
-        if bundle.item.kind == "movie":
-            if "Movie" in types and (0, 0) in bundle.files:
-                entries.append(("Movie", bundle, 0, 0))
+        if is_leaf_kind(bundle.item.kind):
+            leaf = item_type_of(bundle.item.kind)
+            if leaf in types and (0, 0) in bundle.files:
+                entries.append((leaf, bundle, 0, 0))
             continue
         if "Series" in types:
             entries.append(("Series", bundle, 0, 0))
@@ -422,13 +427,13 @@ def _entry_sort_value(name: str, entry: Entry):
     if name == "Runtime":
         return bundle.unit_runtime_ms(season, episode) or 0
     if name == "DateCreated":
-        units = [(season, episode)] if kind in ("Movie", "Episode") else bundle.units
+        units = [(season, episode)] if kind in PLAYABLE_TYPES else bundle.units
         stamps = [
             f.created_at for u in units for f in bundle.files.get(u, [])
         ]
         return max(stamps).isoformat() if stamps else ""
     if name == "DatePlayed":
-        units = [(season, episode)] if kind in ("Movie", "Episode") else bundle.units
+        units = [(season, episode)] if kind in PLAYABLE_TYPES else bundle.units
         stamps = [
             st.last_played_at
             for u in units
@@ -479,7 +484,7 @@ def _entry_dto(ctx: DtoContext, entry: Entry, options: DtoOptions) -> dict[str, 
     kind, bundle, season, episode = entry
     if kind == "Person":
         return person_dto(ctx, bundle)
-    if kind == "Movie":
+    if kind in ("Movie", "Video"):
         return movie_dto(ctx, bundle, options)
     if kind == "Series":
         return series_dto(ctx, bundle, options)
@@ -521,7 +526,7 @@ async def _query_items(request: Request, scope: ViewerScope) -> JSONResponse:
             not ids_raw
             and parent_ref is not None
             and parent_ref.kind == EntityKind.LIBRARY
-            and include_types in (set(), {"Movie"})
+            and include_types in (set(), {"Movie"}, {"Video"})
             and not exclude_types
             and not search_term
             and not parse_comma(q.get("years"))
@@ -544,13 +549,19 @@ async def _query_items(request: Request, scope: ViewerScope) -> JSONResponse:
             raise not_found()
         if can_page_movies and parent_ref is not None:
             library = await session.get(Library, parent_ref.entity_id)
-            can_page_movies = library is not None and library.kind == "movie"
-        if can_page_movies and parent_ref is not None:
+            # 叶子型库（电影/其他）且请求的类型与库一致才走 SQL 分页快路径
+            can_page_movies = (
+                library is not None
+                and is_leaf_kind(library.kind)
+                and include_types in (set(), {item_type_of(library.kind)})
+            )
+        if can_page_movies and parent_ref is not None and library is not None:
             simple_total, page_ids = await movie_library_page(
                 session,
                 parent_ref.entity_id,
                 start_index=start_index,
                 limit=limit,
+                kind=library.kind,
             )
             bundles = await load_bundles(
                 session,
@@ -562,7 +573,7 @@ async def _query_items(request: Request, scope: ViewerScope) -> JSONResponse:
                 leaf_scope={(item_id, 0, 0) for item_id in page_ids},
             )
             page_entries = [
-                ("Movie", bundles[item_id], 0, 0)
+                (item_type_of(library.kind), bundles[item_id], 0, 0)
                 for item_id in page_ids
                 if item_id in bundles and (0, 0) in bundles[item_id].files
             ]
@@ -656,14 +667,14 @@ async def _query_items(request: Request, scope: ViewerScope) -> JSONResponse:
         leaves = {
             (entry[1].item.id, entry[2], entry[3])
             for entry in page
-            if entry[0] in ("Movie", "Episode")
+            if entry[0] in PLAYABLE_TYPES
         }
         if leaves:
             async with get_database().session() as session:
                 await hydrate_leaves(
                     session,
                     {entry[1].item.id: entry[1] for entry in page
-                     if entry[0] in ("Movie", "Episode")},
+                     if entry[0] in PLAYABLE_TYPES},
                     leaves,
                     library_id=lazy.library_id,
                     visible_library_ids=scope.visible,
@@ -763,9 +774,7 @@ async def _entries_for_ids(
         if bundle is None:
             continue
         if ref.kind == EntityKind.ITEM:
-            entries.append(
-                ("Movie" if bundle.item.kind == "movie" else "Series", bundle, 0, 0)
-            )
+            entries.append((item_type_of(bundle.item.kind), bundle, 0, 0))
         elif ref.kind == EntityKind.SEASON:
             entries.append(("Season", bundle, ref.season, 0))
         elif ref.kind == EntityKind.EPISODE:
@@ -802,7 +811,7 @@ async def _entries_for_parent(
     if not parent_raw or is_empty_guid(parent_raw):
         if search is not None or include_types:
             # 无 parent 的全局搜索/类型查询：跨**可见**库递归
-            types = include_types or {"Movie", "Series"}
+            types = include_types or {"Movie", "Series", "Video"}
             ids = await item_ids_with_files(session, visible_library_ids=scope.visible)
             ids = await _narrow_by_search(session, ids, search)
             bundles = await load_bundles(
@@ -831,9 +840,11 @@ async def _entries_for_parent(
         effective_recursive = recursive
         if include_types and recursive is None:
             effective_recursive = True
-        default_types = {"Movie"} if library.kind == "movie" else {"Series"}
+        default_types = {item_type_of(library.kind)}
         all_types = (
-            {"Movie"} if library.kind == "movie" else {"Series", "Season", "Episode"}
+            default_types
+            if is_leaf_kind(library.kind)
+            else {"Series", "Season", "Episode"}
         )
         if effective_recursive:
             types = include_types or all_types
@@ -963,7 +974,7 @@ async def items_latest(
             for candidate in latest_units:
                 if len(selected_units) >= limit:
                     break
-                if candidate.kind == "movie":
+                if is_leaf_kind(candidate.kind):
                     selected_units.append(candidate)
                     continue
                 # 剧集：两态简化（设计文档偏离⑥），同剧多集新入库聚合为 Series。
@@ -1003,7 +1014,7 @@ async def items_latest(
             continue
         season = candidate.season_number
         episode = candidate.episode_number
-        if candidate.kind == "movie":
+        if is_leaf_kind(candidate.kind):
             dtos.append(movie_dto(ctx, bundle, options))
         else:
             dtos.append(episode_dto(ctx, bundle, season, episode, options))
@@ -1080,9 +1091,9 @@ async def items_resume(
         bundle = bundles.get(candidate.media_item_id)
         if bundle is None:
             continue
-        if bundle.item.kind == "movie":
+        if is_leaf_kind(bundle.item.kind):
             if (0, 0) in bundle.files:
-                page.append(("Movie", bundle, 0, 0))
+                page.append((item_type_of(bundle.item.kind), bundle, 0, 0))
         elif (candidate.season_number, candidate.episode_number) in bundle.files:
             page.append(
                 (
@@ -1138,6 +1149,13 @@ async def items_counts(
             for library in libraries
             if library.kind == "tv" and library.stats_item_count > 0
         ]
+        # 其他库（Video 条目）：真 Jellyfin 的 ItemCounts 没有 VideoCount 字段，
+        # 只计入 ItemCount 总数（docs/design/library-other-kind.md 5.1）
+        video_count = sum(
+            library.stats_item_count
+            for library in libraries
+            if library.kind == "video" and library.stats_item_count > 0
+        )
 
         movie_count = sum(library.stats_item_count for library in movie_libraries)
         series_count = sum(library.stats_item_count for library in tv_libraries)
@@ -1211,7 +1229,7 @@ async def items_counts(
             "MusicVideoCount": 0,
             "BoxSetCount": 0,
             "BookCount": 0,
-            "ItemCount": movie_count + series_count + episode_count,
+            "ItemCount": movie_count + series_count + episode_count + video_count,
         }
     )
 
@@ -1366,7 +1384,7 @@ async def get_item(
     if ref.kind == EntityKind.ITEM:
         dto = (
             movie_dto(ctx, bundle, options)
-            if bundle.item.kind == "movie"
+            if is_leaf_kind(bundle.item.kind)
             else series_dto(ctx, bundle, options)
         )
         await _overlay_layered_meta(dto, bundle)
