@@ -216,9 +216,7 @@ async def test_scan_video_library_makes_local_items_without_tmdb(db, tmp_path) -
         # 一文件一条目，全部本地来源、单播放单元 (0,0)
         assert all(r.media_item_id is not None and r.unidentified_code is None for r in rows)
         assert {(r.season_number, r.episode_number) for r in rows} == {(0, 0)}
-        items = {
-            i.id: i for i in (await session.execute(select(MediaItem))).scalars().all()
-        }
+        items = {i.id: i for i in (await session.execute(select(MediaItem))).scalars().all()}
         assert len(items) == 2
         assert all(i.source == "local" and i.tmdb_id is None for i in items.values())
         by_name = {Path(r.file_path).name: r for r in rows}
@@ -315,10 +313,16 @@ async def test_movie_library_unidentified_file_gets_provisional_item(
         # ……但已经挂着一个可见可播的临时本地条目
         assert row.media_item_id is not None
         item = await session.get(MediaItem, row.media_item_id)
-        # 影视库的临时身份标题取解析证据（可能与文件名不完全一致），但一定非空
-        assert item.source == "local" and item.kind == "movie" and item.title
-        wall = await items_mod.build_library_wall(session, library.id)
-        assert [(v.title, v.source, v.tmdb_id) for v in wall] == [(item.title, "local", None)]
+        # 标题用条目目录名（用户在文件管理器里看到的），不写推断年份
+        assert item.source == "local" and item.kind == "movie" and item.title == "zzqx"
+        assert item.year is None
+        # 主墙（正式条目口径）看不到它，独立的临时口径才有：两者不混排
+        assert await items_mod.build_library_wall(session, library.id) == []
+        wall = await items_mod.build_library_wall(session, library.id, identity="provisional")
+        assert [(v.title, v.source, v.tmdb_id) for v in wall] == [("zzqx", "local", None)]
+        assert await items_mod.build_library_index(session, library.id) == []
+        # 搜索也只搜正式条目
+        assert await items_mod.search_library_items(session, "zzqx") == {}
         # 临时条目不算「已识别」，统计口径与待识别数一致
         fresh = await session.get(Library, library.id)
         assert fresh.stats_item_count == 0 and fresh.stats_unidentified_count == 1

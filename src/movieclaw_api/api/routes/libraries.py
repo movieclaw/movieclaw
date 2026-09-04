@@ -1682,11 +1682,24 @@ async def list_library_items(
         int | None, Query(ge=1, le=200, description="本页条目数；不给则返回整库")
     ] = None,
     offset: Annotated[int, Query(ge=0, description="跳过的条目数（滚动加载翻页用）")] = 0,
+    identity: Annotated[
+        Literal["confirmed", "provisional"],
+        Query(
+            description=(
+                "confirmed=正式条目（默认）/ provisional=影视库里尚未识别、按文件名"
+                "临时挂着的条目（库页单独一段展示；其他库恒空）"
+            )
+        ),
+    ] = "confirmed",
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[list[LibraryItemView]]:
 
     await LibraryConfigService(session).get(library_id)  # 404 检查
-    return ok(await build_library_wall(session, library_id, sort=sort, limit=limit, offset=offset))
+    return ok(
+        await build_library_wall(
+            session, library_id, sort=sort, limit=limit, offset=offset, identity=identity
+        )
+    )
 
 
 @router.get(

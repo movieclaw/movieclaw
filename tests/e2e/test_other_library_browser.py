@@ -375,13 +375,19 @@ def test_other_library_full_flow(stack) -> None:  # noqa: PLR0915
         movie_lib = _wait_scan_done(page, api_get, movie_lib["id"])
         assert movie_lib["stats"]["item_count"] == 1, movie_lib["stats"]
         assert movie_lib["stats"]["unidentified_count"] == 1, movie_lib["stats"]
-        rows = {r["title"]: r for r in api_get(page, f"/libraries/{movie_lib['id']}/items")["data"]}
-        assert len(rows) == 2 and "某电影" in rows, rows.keys()
-        identified = rows["某电影"]
+        # 默认口径只有正式条目；认不出的文件在独立的 provisional 口径里
+        confirmed = api_get(page, f"/libraries/{movie_lib['id']}/items")["data"]
+        assert [r["title"] for r in confirmed] == ["某电影"], confirmed
+        identified = confirmed[0]
         assert identified["source"] == "tmdb" and identified["tmdb_id"] == 300
         assert abs(identified["primary_aspect"] - 2 / 3) < 0.01
-        provisional = next(r for r in rows.values() if r["source"] == "local")
-        assert provisional["tmdb_id"] is None and abs(provisional["primary_aspect"] - 16 / 9) < 0.01
+        provisional_rows = api_get(
+            page, f"/libraries/{movie_lib['id']}/items?identity=provisional"
+        )["data"]
+        assert len(provisional_rows) == 1, provisional_rows
+        provisional = provisional_rows[0]
+        assert provisional["source"] == "local" and provisional["tmdb_id"] is None
+        assert abs(provisional["primary_aspect"] - 16 / 9) < 0.01
         pending = api_get(
             page,
             f"/libraries/identification/unidentified-files?library_id={movie_lib['id']}",
@@ -390,23 +396,40 @@ def test_other_library_full_flow(stack) -> None:  # noqa: PLR0915
         # 假 TMDB 确实被识别链请求过（对照其他库的零请求）
         assert "/3/search/movie" in stack["tmdb_log"].read_text(encoding="utf-8")
 
+        assert (
+            provisional["title"] == "zzqx" and provisional["year"] is None
+        )  # 目录名，不写推断年份
         page.goto(f"{base}/library/{movie_lib['id']}")
-        cards = page.locator("[data-library-item-id]")
-        expect(cards).to_have_count(2)
-        expect(page.get_by_text("某电影").first).to_be_visible()
-        # 同一张墙上两种比例：正片 2:3、临时条目 16:9；只有临时条目打「未识别」角标
+        # 正式条目在主墙（2:3 海报、拼音序），认不出的文件在下方独立的「未识别」分区
+        # （16:9 抓帧、按入账时间），两者不混排
+        main_cards = page.locator("[data-library-item-id]:not([data-wall=provisional] *)")
+        expect(main_cards).to_have_count(1)
+        expect(main_cards.first).to_have_attribute(
+            "data-library-item-id", str(identified["media_item_id"])
+        )
+        shelf = page.locator("[data-wall=provisional]")
+        expect(shelf.get_by_role("heading", name="未识别 1")).to_be_visible()
+        shelf_cards = shelf.locator("[data-library-item-id]")
+        expect(shelf_cards).to_have_count(1)
+        expect(shelf_cards.first).to_have_attribute(
+            "data-library-item-id", str(provisional["media_item_id"])
+        )
+        expect(shelf.get_by_text("zzqx")).to_be_visible()
         ratios = page.evaluate(
             "() => Array.from(document.querySelectorAll('[data-library-item-id]')).map(c => ({"
             "id: c.dataset.libraryItemId,"
-            " ratio: getComputedStyle(c.querySelector('[style*=aspect-ratio]')).aspectRatio,"
-            " ribbon: !!c.querySelector('[aria-label=未识别]')}))"
+            " ratio: getComputedStyle(c.querySelector('[style*=aspect-ratio]')).aspectRatio}))"
         )
         by_id = {int(r["id"]): r for r in ratios}
         assert by_id[identified["media_item_id"]]["ratio"].startswith("0.66")
-        assert by_id[identified["media_item_id"]]["ribbon"] is False
         assert by_id[provisional["media_item_id"]]["ratio"].startswith("1.7")
-        assert by_id[provisional["media_item_id"]]["ribbon"] is True
         expect(page.get_by_text("1 个文件待识别")).to_be_visible()
+        # 分区里的「去待处理认领」打开待处理抽屉的待识别页
+        shelf.get_by_role("button", name="去待处理认领").click()
+        drawer = page.get_by_role("dialog", name="待处理")
+        expect(drawer.get_by_role("button", name="待识别 1")).to_be_visible()
+        expect(drawer.get_by_text(re.compile("^zzqx"))).to_be_visible()
+        page.keyboard.press("Escape")
         # 影视库的 ⋯ 菜单保留整理与刷新元数据
         page.get_by_role("button", name="更多操作").click()
         expect(page.get_by_role("menuitem", name="整理文件名")).to_be_visible()
@@ -442,14 +465,20 @@ def test_other_library_full_flow(stack) -> None:  # noqa: PLR0915
         tv_lib = _wait_scan_done(page, api_get, tv_lib["id"])
         assert tv_lib["stats"]["item_count"] == 1 and tv_lib["stats"]["unidentified_count"] == 1
         tv_rows = api_get(page, f"/libraries/{tv_lib['id']}/items")["data"]
-        show = next(r for r in tv_rows if r["source"] == "tmdb")
+        assert [r["source"] for r in tv_rows] == ["tmdb"], tv_rows
+        show = tv_rows[0]
         assert show["title"] == "测试剧集" and show["tmdb_id"] == 200
         assert show["episode_count"] == 2 and show["seasons"] == [1]
-        assert any(r["source"] == "local" for r in tv_rows)
+        tv_provisional = api_get(page, f"/libraries/{tv_lib['id']}/items?identity=provisional")
+        assert [r["title"] for r in tv_provisional["data"]] == ["未知内容目录"]
         page.goto(f"{base}/library/{tv_lib['id']}")
-        expect(page.locator("[data-library-item-id]")).to_have_count(2)
+        expect(page.locator("[data-library-item-id]:not([data-wall=provisional] *)")).to_have_count(
+            1
+        )
         expect(page.get_by_text("测试剧集").first).to_be_visible()
-        expect(page.locator("[data-library-item-id] [aria-label=未识别]")).to_have_count(1)
+        tv_shelf = page.locator("[data-wall=provisional]")
+        expect(tv_shelf.get_by_role("heading", name="未识别 1")).to_be_visible()
+        expect(tv_shelf.get_by_text("未知内容目录")).to_be_visible()  # 目录名而非解析残片
         page.screenshot(path=str(shots / "06-tv-mixed-wall.png"))
         page.goto(f"{base}/library/{tv_lib['id']}/item/{show['media_item_id']}")
         expect(page.get_by_role("heading", name="测试剧集")).to_be_visible()
@@ -457,10 +486,15 @@ def test_other_library_full_flow(stack) -> None:  # noqa: PLR0915
         expect(page.get_by_text(re.compile(r"1\. E1")).first).to_be_visible(timeout=30_000)
         page.screenshot(path=str(shots / "07-tv-detail.png"))
 
-        # 首页：三个库的「最近添加」行都在（其他库未勾排除）
+        # 首页：三个库的「最近添加」行都在（其他库未勾排除）；影视库的临时条目不上首页
         page.goto(f"{base}/library")
         for name in ("家庭录像", "电影库", "剧集库"):
             expect(page.get_by_role("heading", name=name).first).to_be_visible()
+        expect(page.get_by_text("某电影").first).to_be_visible()
+        expect(page.get_by_text("zzqx")).to_have_count(0)
+        expect(page.get_by_text("未知内容目录")).to_have_count(0)
+        recent_movie = api_get(page, f"/libraries/{movie_lib['id']}/items?sort=added_at&limit=20")
+        assert [r["title"] for r in recent_movie["data"]] == ["某电影"]
 
         # ---- 监听导入：落入其他库 → 丢文件 → 原样入库 ----
         page.goto(f"{base}/settings/import-watch")

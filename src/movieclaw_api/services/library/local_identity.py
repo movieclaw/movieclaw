@@ -105,18 +105,24 @@ def build_local_identity(
     if not is_disc:
         nfo = read_local_sidecar(file.with_suffix(".nfo"))
     title_from_nfo = bool(nfo and nfo.title)
+    dirs = [] if kind is MediaKind.VIDEO else entry_dirs(root, file)
     if title_from_nfo:
         title = nfo.title  # type: ignore[union-attr]
-    elif kind is not MediaKind.VIDEO and evidence is not None and evidence.title:
-        title = evidence.title
+    elif dirs:
+        # 影视库的临时身份：用户在文件管理器里看到的就是条目目录名，展示它
+        # 而不是解析器切出来的半截片名（``zzqx`` 被切成 ``qx`` 只会让人困惑）；
+        # 解析证据只用于 external_id 的作品分组，不上卡片
+        title = dirs[0].name
     else:
         title = file.name if is_disc else file.stem
     title = title.strip() or file.name
 
     content_date = _content_date(nfo, spec, file)
-    year = (nfo.year if nfo and nfo.year else None) or (content_date.year if content_date else None)
-    if year is None and kind is not MediaKind.VIDEO and evidence is not None:
-        year = evidence.year
+    year = nfo.year if nfo and nfo.year else None
+    if year is None and kind is MediaKind.VIDEO and content_date is not None:
+        # 其他库：内容时间（容器日期 / mtime）就是这段录像的年份；影视库的
+        # 临时条目不写推断年份——mtime 推出的"2026"挂在认不出的片子上是误导
+        year = content_date.year
 
     identity = LocalIdentity(
         external_id=local_external_id(library_id, kind, root, file, evidence),

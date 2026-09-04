@@ -653,6 +653,8 @@ async def latest_unit_candidates(
         .where(
             LibraryFile.media_item_id.is_not(None),
             LibraryFile.in_place(),
+            # 影视库里认不出的文件（临时本地条目）不进「最新媒体」：那是作品语义
+            LibraryFile.unidentified_code.is_(None),
         )
     )
     if library_id is not None:

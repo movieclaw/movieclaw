@@ -240,9 +240,21 @@ def _build_inventory_summary(
 
 
 WallSort = Literal["title", "added_at", "release_date", "probing"]
+# 海报墙口径：confirmed=正式条目（默认，首页/搜索/索引同口径）；provisional=
+# 影视库里认不出、按文件名挂着的临时条目（库页单独一段展示）。其他库没有
+# 临时条目，两口径下 provisional 恒空
+WallIdentity = Literal["confirmed", "provisional"]
 
 
-async def _titles_sorted(session: AsyncSession, library_id: int) -> list[tuple[int, str]]:
+def _identity_clause(identity: WallIdentity):
+    """临时条目的判别只看文件行的 ``unidentified_code``：挂了原因的行就是临时的。"""
+    column = LibraryFile.unidentified_code
+    return column.is_(None) if identity == "confirmed" else column.is_not(None)  # type: ignore[union-attr]
+
+
+async def _titles_sorted(
+    session: AsyncSession, library_id: int, identity: WallIdentity = "confirmed"
+) -> list[tuple[int, str]]:
     """本库全部条目的 (id, 标题)，按拼音序排好。
 
     按标题排序不走 SQL：SQLite 对中文按码点排，出来的顺序对用户没有意义
@@ -257,6 +269,7 @@ async def _titles_sorted(session: AsyncSession, library_id: int) -> list[tuple[i
             .where(
                 LibraryFile.library_id == library_id,
                 LibraryFile.media_item_id.is_not(None),  # type: ignore[union-attr]
+                _identity_clause(identity),
             )
             .distinct()
         )
@@ -291,6 +304,7 @@ async def _wall_page_ids(
     sort: WallSort,
     limit: int | None,
     offset: int,
+    identity: WallIdentity = "confirmed",
 ) -> list[int]:
     """按 sort 排好序的本页条目 id（无 limit 时是全库）。
 
@@ -299,7 +313,7 @@ async def _wall_page_ids(
     否则翻页会出现某条目重复出现、另一条目永远刷不到的漏项。
     """
     if sort == "title":
-        ids = [i for i, _ in await _titles_sorted(session, library_id)]
+        ids = [i for i, _ in await _titles_sorted(session, library_id, identity)]
         return ids if limit is None else ids[offset : offset + limit]
 
     if sort == "added_at":
@@ -309,6 +323,7 @@ async def _wall_page_ids(
             .where(
                 LibraryFile.library_id == library_id,
                 LibraryFile.media_item_id.is_not(None),  # type: ignore[union-attr]
+                _identity_clause(identity),
             )
             .group_by(LibraryFile.media_item_id)  # type: ignore[arg-type]
             .order_by(
@@ -331,6 +346,7 @@ async def _wall_page_ids(
             .where(
                 LibraryFile.library_id == library_id,
                 LibraryFile.media_item_id.is_not(None),  # type: ignore[union-attr]
+                _identity_clause(identity),
             )
             .group_by(LibraryFile.media_item_id)  # type: ignore[arg-type]
             .order_by(
@@ -347,7 +363,7 @@ async def _wall_page_ids(
     # 用户能看见"在处理哪几部"；两段各自保持拼音序（sorted 稳定排序）。
     # strm 占位文件不算"没读出"——它永远探不出规格，算进来会让网盘库
     # 每轮扫描都全墙置顶、永不落位
-    ordered = await _titles_sorted(session, library_id)
+    ordered = await _titles_sorted(session, library_id, identity)
     unprobed = {
         i
         for i in (
@@ -377,8 +393,12 @@ async def build_library_wall(
     sort: WallSort = "title",
     limit: int | None = None,
     offset: int = 0,
+    identity: WallIdentity = "confirmed",
 ) -> list[LibraryItemView]:
     """库内媒体条目的库存聚合（单库海报墙数据源）。
+
+    ``identity`` 选正式条目还是临时条目（见 ``WallIdentity``）：两者不混排——
+    正片的 2:3 海报和认不出的文件的 16:9 抓帧塞进同一套拼音序里只会两败俱伤。
 
     ``limit`` 给定时只聚合这一页的条目——首页「最近添加」只要 20 格，
     海报墙滚动加载一次要一屏，都不该为此把整库的台账行捞出来算一遍。
@@ -386,7 +406,7 @@ async def build_library_wall(
 
     调用方需自行完成库存在性检查（404）。
     """
-    page_ids = await _wall_page_ids(session, library_id, sort, limit, offset)
+    page_ids = await _wall_page_ids(session, library_id, sort, limit, offset, identity)
     if not page_ids:
         return []
     # 分页时按 id 列表收窄（一页几十个，绑定变量绰绰有余）；全库时走子查询
@@ -607,6 +627,7 @@ async def search_library_items(
             .join(MediaItem, MediaItem.id == LibraryFile.media_item_id)  # type: ignore[arg-type]
             .where(
                 LibraryFile.media_item_id.is_not(None),  # type: ignore[union-attr]
+                LibraryFile.unidentified_code.is_(None),  # type: ignore[union-attr]  # 临时条目不进搜索
                 or_(
                     func.lower(MediaItem.title).like(pattern),
                     func.lower(MediaItem.original_title).like(pattern),

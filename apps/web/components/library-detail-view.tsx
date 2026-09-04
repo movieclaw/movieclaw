@@ -105,6 +105,8 @@ function busyText(progress: ScanProgress | null): string {
  * 3. 待识别：扫描认不出身份的文件，按条目目录成组，点候选或填 TMDB ID 整组认领。
  */
 /** 海报墙每次向服务端要的格数（首屏一批，滚到底再追加一批）。 */
+/** 未识别分区一次拉取的上限：它不分页，超出的去待处理清单看 */
+const PROVISIONAL_LIMIT = 200;
 const WALL_PAGE_SIZE = 60;
 /** 后端单次分页的硬上限；轮询已加载窗口时按此上限分块请求。 */
 const WALL_API_PAGE_SIZE = 200;
@@ -142,6 +144,8 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   const confirm = useConfirm();
   const [libraries, setLibraries] = useState<MediaLibrary[] | null>(initialSnapshot?.libraries ?? null);
   const [items, setItems] = useState<LibraryItem[]>(initialSnapshot?.items ?? []);
+  // 影视库里认不出、按文件名临时挂着的条目：不进主墙，单独一段展示（其他库恒空）
+  const [provisional, setProvisional] = useState<LibraryItem[]>([]);
   // 服务端还有没有下一页；滚动加载的哨兵据此决定是否继续观察
   const [wallHasMore, setWallHasMore] = useState(initialSnapshot?.wallHasMore ?? false);
   // 本库全部条目 id：海报墙分页后这份名单仍要完整——「追踪中」要靠它把
@@ -249,6 +253,12 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
     Promise.all([
       listLibraries(),
       Promise.all(itemPages).then((pages) => pages.flat()),
+      // 临时条目通常是几个到几十个，一次拉全、按入账时间倒序；不参与主墙分页与索引
+      listLibraryItems(libraryId, {
+        identity: "provisional",
+        sort: "added_at",
+        limit: PROVISIONAL_LIMIT,
+      }).catch(() => [] as LibraryItem[]),
       listLibraryItemIds(libraryId).catch(() => []),
       listLibraryItemIndex(libraryId).catch(() => []),
       canManageLibraries
@@ -265,7 +275,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
         : Promise.resolve([]),
       listSubscriptions().catch(() => []),
     ])
-      .then(([libs, libraryItems, ids, index, unknown, reviewGroups, ignoredGroups, missingItems, subs]) => {
+      .then(([libs, libraryItems, provisionalItems, ids, index, unknown, reviewGroups, ignoredGroups, missingItems, subs]) => {
         if (seq !== reloadSeq.current) return;
         setSnapshotStale(false);
         // 四张待办清单只要有一张没拿到，就保留上一份快照并点亮顶部提示条。
@@ -279,6 +289,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
         // 每 3 秒就把几百个格子全部重画一遍，表现为周期性卡顿
         setLibraries((prev) => (prev ? keepIfEqual(prev, libs) : libs));
         setItems((prev) => reconcileList(prev, libraryItems, (i) => i.media_item_id));
+        setProvisional((prev) => reconcileList(prev, provisionalItems, (i) => i.media_item_id));
         wallLoaded.current = Math.max(WALL_PAGE_SIZE, libraryItems.length);
         // 拿满这一页就假定后面还有；真到底时下一次追加会拿到空数组并收尾
         setWallHasMore(libraryItems.length >= wanted);
@@ -874,7 +885,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
       )}
 
       {/* —— 库存海报墙（追踪中置顶时补「已入库」标题，两片海报墙不致连读）—— */}
-      {items.length === 0 && unidentified.length === 0 ? (
+      {items.length === 0 && provisional.length === 0 ? (
         <p className="mt-16 text-center text-ui leading-7 text-[var(--text-muted)]">
           这个库还没有内容。
           <br />
@@ -905,7 +916,6 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
                     key={item.media_item_id}
                     item={item}
                     libraryId={libraryId}
-                    unidentified={library.capabilities.scraped && item.source === "local"}
                     wallInitial={initialByOffset.get(wallStart + index)}
                     workingLabel={
                       refreshPhaseById.get(item.media_item_id) ??
@@ -930,6 +940,52 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
             onReach={loadMore}
           />
         </>
+      )}
+
+      {/* —— 未识别分区（只有影视库会有）：认不出的文件按文件名/目录名临时挂着，
+          可直接播放、记进度；和正式条目分开摆——2:3 海报与 16:9 抓帧混排、
+          又混进拼音序里，正片的墙会被打散。认领后条目并入主墙 —— */}
+      {provisional.length > 0 && (
+        <section
+          data-wall="provisional"
+          aria-labelledby="provisional-title"
+          className="mt-12 px-6 max-md:mt-9 max-md:px-4"
+        >
+          <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-2">
+            <div>
+              <h3
+                id="provisional-title"
+                className="text-on-image text-body-lg font-semibold text-white/85"
+              >
+                未识别 {provisional.length}
+              </h3>
+              <p className="text-on-image mt-1 text-caption text-[var(--text-muted)]">
+                按文件名展示，可以直接播放；认领身份后会并入上方的正式条目。
+              </p>
+            </div>
+            {canManageLibraries && (
+              <button
+                type="button"
+                onClick={() => setIssueTab("unidentified")}
+                className="btn-glass h-7 shrink-0 px-2.5 text-caption font-medium"
+              >
+                去待处理认领
+              </button>
+            )}
+          </div>
+          <div className="mt-4 grid gap-x-4 gap-y-7 [grid-template-columns:repeat(auto-fill,minmax(220px,1fr))] max-md:gap-x-3 max-md:gap-y-5 max-md:[grid-template-columns:repeat(auto-fill,minmax(160px,1fr))]">
+            {provisional.map((item) => (
+              <InventoryCell
+                key={item.media_item_id}
+                item={item}
+                libraryId={libraryId}
+                workingLabel={
+                  probing && item.probe_pending_count > 0 ? "正在读取规格" : undefined
+                }
+              />
+            ))}
+          </div>
+        </section>
       )}
 
       {canManageLibraries && (
@@ -1149,14 +1205,11 @@ function MetadataRefreshPanel({
 const InventoryCell = memo(function InventoryCell({
   item,
   libraryId,
-  unidentified,
   wallInitial,
   workingLabel,
 }: {
   item: LibraryItem;
   libraryId: number;
-  /** 影视库里尚未识别、按文件名临时展示的条目（其他库恒 false） */
-  unidentified: boolean;
   /** 该格是否为某个拼音首字母档的第一部影片；滚动联动只标记这些锚点。 */
   wallInitial?: string;
   /** 这一格正被后台处理（整库刷新的阶段 / 扫描补探）时的文案；不在处理为 undefined */
@@ -1175,11 +1228,6 @@ const InventoryCell = memo(function InventoryCell({
     year: item.year ?? undefined,
     rating: 0,
     aspect: item.primary_aspect,
-    // 影视库里认不出的文件也上墙（可见可播，docs/design/library-other-kind.md 4.2），
-    // 打「未识别」角标提醒去待处理里认领；其他库的本地条目是常态，不打
-    ribbon: unidentified ? "未识别" : undefined,
-    ribbonVariant: unidentified ? "compact-left" : undefined,
-    ribbonTone: unidentified ? "warning" : undefined,
     overlayDetails: inventoryLabel ? { primary: inventoryLabel } : undefined,
     // 海报可能是本地刮削资产的相对路径（断网可用），也可能是 TMDB 图床地址。
     // 与首页海报墙同样取 poster-card 派生图：海报墙是全站最大的一张图片网格，

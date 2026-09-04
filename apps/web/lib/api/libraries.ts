@@ -469,12 +469,22 @@ export type LibraryItemSort = "title" | "added_at" | "release_date" | "probing";
  * 排序与分页都在服务端做：调用方要几格就取几格——首页「最近添加」只要 20 格，
  * 海报墙滚动加载一次要一屏，不给 limit 才是整库（几千条目要几百 KB，别默认走这条）。
  */
+/** 海报墙口径：confirmed=正式条目（默认）/ provisional=影视库里认不出、按文件名
+ *  临时挂着的条目（库页单独一段，其他库恒空）。 */
+export type LibraryItemIdentity = "confirmed" | "provisional";
+
 export function listLibraryItems(
   id: number,
-  params?: { sort?: LibraryItemSort; limit?: number; offset?: number },
+  params?: {
+    sort?: LibraryItemSort;
+    limit?: number;
+    offset?: number;
+    identity?: LibraryItemIdentity;
+  },
 ): Promise<LibraryItem[]> {
   const query = new URLSearchParams();
   if (params?.sort) query.set("sort", params.sort);
+  if (params?.identity) query.set("identity", params.identity);
   if (params?.limit !== undefined) query.set("limit", String(params.limit));
   if (params?.offset) query.set("offset", String(params.offset));
   const suffix = query.size > 0 ? `?${query}` : "";
