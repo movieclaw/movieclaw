@@ -19,6 +19,7 @@ from movieclaw_api.services import SiteConfigService
 from movieclaw_db.engine import dispose_db, get_database, init_db
 from movieclaw_db.migrations import run_migrations
 from movieclaw_db.models.site_credential import AuthType, ConfigStatus
+from movieclaw_db.repositories.cookie_repo import CookieRepository
 from movieclaw_db.repositories.credential_repo import CredentialRepository
 from movieclaw_db.repositories.profile_repo import ProfileRepository
 from movieclaw_tracker import load_all_sites
@@ -176,6 +177,37 @@ def test_update_credentials_resets_and_reverifies(client: TestClient) -> None:
     assert r.status_code == 200
     # 更新后重新验证，最终仍 active
     assert client.get("/api/v1/sites/mteam").json()["data"]["status"] == "active"
+
+
+def test_update_credentials_drops_stale_cookie_snapshot(client: TestClient) -> None:
+    """换凭据必须连带清掉旧的 cookie 会话快照。
+
+    AuthManager 认证时先加载快照，且 CookieAuthProvider.check 恒判「已登录」，
+    快照不清则新 cookie 永远不会被注入，验证会一直拿旧 cookie 失败。
+    """
+    client.post(
+        "/api/v1/sites",
+        json={"site_id": "ttg", "auth_type": "cookie", "cookie": "uid=1; pass=old"},
+    )
+
+    async def seed_snapshot() -> None:
+        async with get_database().session() as session:
+            await CookieRepository(session).upsert("ttg", {"uid": "1", "pass": "old"})
+
+    async def load_snapshot() -> dict[str, str] | None:
+        async with get_database().session() as session:
+            return await CookieRepository(session).get("ttg")
+
+    # TestClient 的 portal 在 app 的事件循环里执行，与请求共用同一个库连接池
+    client.portal.call(seed_snapshot)
+    assert client.portal.call(load_snapshot) == {"uid": "1", "pass": "old"}
+
+    r = client.put(
+        "/api/v1/sites/ttg",
+        json={"auth_type": "cookie", "cookie": "uid=1; pass=new", "enabled": True},
+    )
+    assert r.status_code == 200
+    assert client.portal.call(load_snapshot) is None
 
 
 def test_delete_removes_site(client: TestClient) -> None:
