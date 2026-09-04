@@ -901,29 +901,86 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
             </h3>
           )}
           <div ref={wallTop} className={pending.length > 0 ? "mt-4" : "mt-6 max-md:mt-4"}>
-            {/* 索引条与墙并排：条固定在视口右侧（sticky），墙照常滚 */}
+            {/* 索引条与内容列并排：条固定在视口右侧（sticky），列照常滚。索引条
+                有固定高度，加载哨兵与未识别分区必须放进同一列里——否则卡片少时
+                这一行被索引条撑高，分区会被推到一大段空白之下 */}
             <div className="flex items-start gap-2 px-6 max-md:gap-1 max-md:px-4">
-              <div
-                ref={wallGrid}
-                className={
-                  wideCards
-                    ? "grid flex-1 gap-x-4 gap-y-7 [grid-template-columns:repeat(auto-fill,minmax(220px,1fr))] max-md:gap-x-3 max-md:gap-y-5 max-md:[grid-template-columns:repeat(auto-fill,minmax(160px,1fr))]"
-                    : "grid flex-1 gap-x-4 gap-y-7 [grid-template-columns:repeat(auto-fill,minmax(148px,1fr))] max-md:gap-x-3 max-md:gap-y-5 max-md:[grid-template-columns:repeat(auto-fill,minmax(140px,1fr))]"
-                }
-              >
-                {items.map((item, index) => (
-                  <InventoryCell
-                    key={item.media_item_id}
-                    item={item}
-                    libraryId={libraryId}
-                    wallInitial={initialByOffset.get(wallStart + index)}
-                    workingLabel={
-                      refreshPhaseById.get(item.media_item_id) ??
-                      jobPhaseById.get(item.media_item_id) ??
-                      (probing && item.probe_pending_count > 0 ? "正在读取规格" : undefined)
-                    }
-                  />
-                ))}
+              <div className="min-w-0 flex-1">
+                <div
+                  ref={wallGrid}
+                  className={
+                    wideCards
+                      ? "grid gap-x-4 gap-y-7 [grid-template-columns:repeat(auto-fill,minmax(220px,1fr))] max-md:gap-x-3 max-md:gap-y-5 max-md:[grid-template-columns:repeat(auto-fill,minmax(160px,1fr))]"
+                      : "grid gap-x-4 gap-y-7 [grid-template-columns:repeat(auto-fill,minmax(148px,1fr))] max-md:gap-x-3 max-md:gap-y-5 max-md:[grid-template-columns:repeat(auto-fill,minmax(140px,1fr))]"
+                  }
+                >
+                  {items.map((item, index) => (
+                    <InventoryCell
+                      key={item.media_item_id}
+                      item={item}
+                      libraryId={libraryId}
+                      wallInitial={initialByOffset.get(wallStart + index)}
+                      workingLabel={
+                        refreshPhaseById.get(item.media_item_id) ??
+                        jobPhaseById.get(item.media_item_id) ??
+                        (probing && item.probe_pending_count > 0 ? "正在读取规格" : undefined)
+                      }
+                    />
+                  ))}
+                </div>
+                <WallLoadMore
+                  hasMore={wallHasMore}
+                  loaded={items.length}
+                  start={wallStart}
+                  total={library.stats.item_count}
+                  onReach={loadMore}
+                />
+
+                {/* —— 未识别分区（只有影视库会有）：认不出的文件按文件名/目录名
+                    临时挂着，可直接播放、记进度；和正式条目分开摆——2:3 海报与
+                    16:9 抓帧混排、又混进拼音序里，正片的墙会被打散。认领后并入主墙 —— */}
+                {provisional.length > 0 && (
+                  <section
+                    data-wall="provisional"
+                    aria-labelledby="provisional-title"
+                    className="mt-6 max-md:mt-4"
+                  >
+                    <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-2">
+                      <div>
+                        <h3
+                          id="provisional-title"
+                          className="text-on-image text-body-lg font-semibold text-white/85"
+                        >
+                          未识别 {provisional.length}
+                        </h3>
+                        <p className="text-on-image mt-1 text-caption text-[var(--text-muted)]">
+                          按文件名展示，可以直接播放；认领身份后会并入上方的正式条目。
+                        </p>
+                      </div>
+                      {canManageLibraries && (
+                        <button
+                          type="button"
+                          onClick={() => setIssueTab("unidentified")}
+                          className="btn-glass h-7 shrink-0 px-2.5 text-caption font-medium"
+                        >
+                          去待处理认领
+                        </button>
+                      )}
+                    </div>
+                    <div className="mt-4 grid gap-x-4 gap-y-7 [grid-template-columns:repeat(auto-fill,minmax(220px,1fr))] max-md:gap-x-3 max-md:gap-y-5 max-md:[grid-template-columns:repeat(auto-fill,minmax(160px,1fr))]">
+                      {provisional.map((item) => (
+                        <InventoryCell
+                          key={item.media_item_id}
+                          item={item}
+                          libraryId={libraryId}
+                          workingLabel={
+                            probing && item.probe_pending_count > 0 ? "正在读取规格" : undefined
+                          }
+                        />
+                      ))}
+                    </div>
+                  </section>
+                )}
               </div>
               {/* 补探阶段排序不是拼音序，字母跳转会跳错位置——那几分钟里收起来；
                   其他库按内容时间排，同理没有字母档 */}
@@ -932,60 +989,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
               )}
             </div>
           </div>
-          <WallLoadMore
-            hasMore={wallHasMore}
-            loaded={items.length}
-            start={wallStart}
-            total={library.stats.item_count}
-            onReach={loadMore}
-          />
         </>
-      )}
-
-      {/* —— 未识别分区（只有影视库会有）：认不出的文件按文件名/目录名临时挂着，
-          可直接播放、记进度；和正式条目分开摆——2:3 海报与 16:9 抓帧混排、
-          又混进拼音序里，正片的墙会被打散。认领后条目并入主墙 —— */}
-      {provisional.length > 0 && (
-        <section
-          data-wall="provisional"
-          aria-labelledby="provisional-title"
-          className="mt-12 px-6 max-md:mt-9 max-md:px-4"
-        >
-          <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-2">
-            <div>
-              <h3
-                id="provisional-title"
-                className="text-on-image text-body-lg font-semibold text-white/85"
-              >
-                未识别 {provisional.length}
-              </h3>
-              <p className="text-on-image mt-1 text-caption text-[var(--text-muted)]">
-                按文件名展示，可以直接播放；认领身份后会并入上方的正式条目。
-              </p>
-            </div>
-            {canManageLibraries && (
-              <button
-                type="button"
-                onClick={() => setIssueTab("unidentified")}
-                className="btn-glass h-7 shrink-0 px-2.5 text-caption font-medium"
-              >
-                去待处理认领
-              </button>
-            )}
-          </div>
-          <div className="mt-4 grid gap-x-4 gap-y-7 [grid-template-columns:repeat(auto-fill,minmax(220px,1fr))] max-md:gap-x-3 max-md:gap-y-5 max-md:[grid-template-columns:repeat(auto-fill,minmax(160px,1fr))]">
-            {provisional.map((item) => (
-              <InventoryCell
-                key={item.media_item_id}
-                item={item}
-                libraryId={libraryId}
-                workingLabel={
-                  probing && item.probe_pending_count > 0 ? "正在读取规格" : undefined
-                }
-              />
-            ))}
-          </div>
-        </section>
       )}
 
       {canManageLibraries && (
