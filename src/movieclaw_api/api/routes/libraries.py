@@ -573,6 +573,23 @@ async def routing_options() -> ApiResponse[dict]:
     )
 
 
+def _schedule_orphan_cleanup(item_ids: set[int]) -> None:
+    """被腾空的临时本地条目交给孤儿清理（后台任务，不拖住响应）。
+
+    不用 BackgroundTasks：这两个路由被测试与 CLI 直接以函数形态调用，
+    多一个注入参数就要改全部调用方；`create_task` 的语义在这里完全等价。
+    """
+    import asyncio
+
+    loop = asyncio.get_running_loop()
+    task = loop.create_task(media_scrape.cleanup_orphan_items(sorted(item_ids)))
+    _cleanup_tasks.add(task)
+    task.add_done_callback(_cleanup_tasks.discard)
+
+
+_cleanup_tasks: set = set()
+
+
 async def _group_by_entry_dir(
     session: AsyncSession, rows: list[LibraryFile]
 ) -> list[UnidentifiedGroupView]:
@@ -970,9 +987,7 @@ async def _quiesce_scan_for_mutation(
         if not remaining and busy_phase(library_id) is None:
             return
         await asyncio.sleep(0.05)
-    raise ConflictException(
-        f"「{library_name}」的扫描正在安全停止，请稍后重试；可到活动页查看进度"
-    )
+    raise ConflictException(f"「{library_name}」的扫描正在安全停止，请稍后重试；可到活动页查看进度")
 
 
 @router.put(
@@ -1735,9 +1750,7 @@ def _trash_note(row: LibraryFile) -> str | None:
     return note or label or None
 
 
-async def _metadata_item(
-    session: AsyncSession, library_id: int, media_item_id: int
-) -> MediaItem:
+async def _metadata_item(session: AsyncSession, library_id: int, media_item_id: int) -> MediaItem:
     """纯元数据操作（重刮/选图/改刮削归属）的条目校验：**不要求库存文件**。
 
     订阅追踪中的条目（已订阅、下载尚未入库）在库页「追踪中」区块展示的
@@ -2834,9 +2847,12 @@ async def clear_unidentified(
     await service.get(payload.library_id)  # 404 检查
     repo = LibraryFileRepository(session)
     rows = await repo.list_unidentified(library_id=payload.library_id)
-    cleared = await repo.mark_ignored([row.id for row in rows if row.id is not None])
+    cleared, displaced = await repo.mark_ignored([row.id for row in rows if row.id is not None])
     if cleared:
         await LibraryRepository(session).refresh_stats([payload.library_id])
+    # 忽略掉的临时本地条目已没有文件挂着：连同抓帧资产一起清掉（后台执行）
+    if displaced:
+        _schedule_orphan_cleanup(displaced)
     return ok(
         {"cleared": cleared},
         message=f"已忽略 {cleared} 个待识别文件（磁盘未动；可在「已忽略」里恢复）",
@@ -2960,8 +2976,10 @@ async def ignore_file(
     row = await session.get(LibraryFile, file_id)
     if row is None:
         raise NotFoundException(f"台账记录不存在：id={file_id}")
-    await repo.mark_ignored([file_id])
+    _marked, displaced = await repo.mark_ignored([file_id])
     await LibraryRepository(session).refresh_stats([row.library_id])
+    if displaced:
+        _schedule_orphan_cleanup(displaced)
     return ok({}, message="已忽略，之后扫描不再过问（磁盘文件未受影响；可在「已忽略」里恢复）")
 
 

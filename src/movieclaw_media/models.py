@@ -14,10 +14,17 @@ from pydantic import BaseModel, Field
 
 
 class MediaKind(str, Enum):  # noqa: UP042 —— 改 StrEnum 会改变 str()/f-string 输出，牵连面大，维持现状
-    """媒体类型：电影 / 剧集。取值与 TMDB 的路径段一致，可直接拼接 URL。"""
+    """内容形态：电影 / 剧集 / 其他视频（docs/design/library-other-kind.md 3.1）。
+
+    ``movie`` 与 ``tv`` 的取值与 TMDB 的路径段一致，在 ``source=tmdb`` 的
+    识别/刮削路径里可直接拼接 URL；``video`` 是没有结构假设的单本视频
+    （家庭录像、自录内容），只在本地来源下出现，永远不会进 TMDB 请求。
+    形态描述结构，不描述题材也不描述来源。
+    """
 
     MOVIE = "movie"
     TV = "tv"
+    VIDEO = "video"
 
 
 class MediaSource(StrEnum):

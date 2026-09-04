@@ -35,8 +35,14 @@ class Library(TimestampMixin, table=True):
     id: int | None = Field(default=None, primary_key=True)
     # 展示名（如"电影库"/"剧集库"/"动漫库"），全局唯一
     name: str = Field(index=True, unique=True, description="库的展示名")
-    # movie / tv——创建后不可改（订阅按 kind 挂库，改类型会让既有关联失义）
-    kind: str = Field(index=True, description="媒体类型：movie / tv")
+    # 内容形态 movie / tv / video——创建后不可经编辑接口改（订阅按 kind 挂库，
+    # 改类型会让既有关联失义；将来的「转换库类型」作业另有前置校验，见
+    # docs/design/library-other-kind.md 第 8 节）。故意不在模型层加约束
+    kind: str = Field(index=True, description="内容形态：movie / tv / video")
+    # 身份来源 tmdb / local——与 kind 一起定位能力档案（services/library/profile.py）：
+    # (movie, tmdb) 电影库、(tv, tmdb) 剧集库、(video, local) 其他库。
+    # 存量库回填 tmdb
+    source: str = Field(default="tmdb", index=True, description="身份来源：tmdb / local")
     # 根路径数组，第一个为主根；路径指 movieclaw 视角的绝对路径
     root_paths: list = Field(
         default_factory=list,
@@ -96,6 +102,18 @@ class Library(TimestampMixin, table=True):
     # real-time monitoring 开关同一语义
     realtime_watch: bool = Field(
         default=True, description="是否启用实时文件监控（关闭后靠定期对账与手动扫描）"
+    )
+    # 本地来源条目的主图抓帧开关（docs/design/library-other-kind.md 4.4）。
+    # 关掉后只用目录里已有的图或占位——敏感内容库的第一道闸，也是云盘挂载
+    # 上省 IO 的开关。影视库不消费（它们的主图来自刮削）
+    generate_thumbnails: bool = Field(
+        default=True, description="本地来源条目缺主图时是否抓帧生成缩略图"
+    )
+    # 首页排除（Plex "Include in dashboard" / Jellyfin LatestItemsExcludes 同款）：
+    # 开启后本库的条目不进首页「最近添加」聚合区、不参与首页封面拼贴，
+    # 首页只剩它自己的库卡片。敏感内容库的第二道闸
+    exclude_from_home: bool = Field(
+        default=False, description="是否从首页聚合区（最近添加/封面拼贴）排除本库"
     )
 
     # —— 库存统计快照 ----------------------------------------------------

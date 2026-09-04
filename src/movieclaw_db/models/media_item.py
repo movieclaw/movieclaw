@@ -2,10 +2,37 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from sqlalchemy import JSON, Column, ForeignKey, Integer, UniqueConstraint
+from sqlalchemy import JSON, CheckConstraint, Column, ForeignKey, Integer, String, UniqueConstraint
 from sqlmodel import Field
 
 from movieclaw_db.models.base import TimestampMixin
+
+
+class MediaSource:
+    """``media_item.source`` 的取值——身份来源（docs/design/library-other-kind.md 2.2）。
+
+    身份来源回答"这条身份是谁发的"：``tmdb`` 是 TMDB 的 movie/tv id 空间；
+    ``local`` 是没有外部身份的本地内容（「其他」库的文件、影视库里认不出的
+    文件），入账时生成一个稳定随机键当 ``external_id``，只承担唯一性。
+    将来接入番号/豆瓣等来源就是再加一个取值 + 一个识别策略 + 一个刮削器。
+
+    用普通类而不是枚举：db 层不反向依赖上层枚举，取值是开放集合。
+    """
+
+    TMDB = "tmdb"
+    LOCAL = "local"
+
+
+def _default_external_id(context) -> str | None:  # noqa: ANN001 —— SQLAlchemy 默认值回调
+    """``external_id`` 的列默认：TMDB 来源直接取 ``tmdb_id`` 的字符串形式。
+
+    绝大多数建档代码（含全部既有测试）只给 ``kind`` 与 ``tmdb_id``，在
+    INSERT 时由此回调补齐锚的第三个分量；本地条目由 ``ensure_local_item``
+    显式传入，不走这里。
+    """
+    params = context.get_current_parameters()
+    tmdb_id = params.get("tmdb_id")
+    return str(tmdb_id) if tmdb_id is not None else None
 
 
 class MediaItem(TimestampMixin, table=True):
@@ -32,17 +59,35 @@ class MediaItem(TimestampMixin, table=True):
 
     __tablename__ = "media_item"
     __table_args__ = (
-        # 同一类型下 TMDB ID 唯一——ensure_media_item 幂等复用的依据
-        UniqueConstraint("kind", "tmdb_id", name="uq_media_item_kind_tmdb"),
+        # 身份锚 = (来源, 形态, 来源内 id)——ensure_media_item / ensure_local_item
+        # 幂等复用的依据。TMDB 的 movie 与 tv 是两套独立 id 空间，所以 kind
+        # 仍在键里；本地来源的 external_id 是入账时生成的随机键
+        UniqueConstraint("source", "kind", "external_id", name="uq_media_item_anchor"),
+        # tmdb_id 与 source 必须同进退：来源是 TMDB 就一定有 tmdb_id，反之为 NULL
+        CheckConstraint(
+            "(source = 'tmdb') = (tmdb_id IS NOT NULL)", name="ck_media_item_tmdb_anchor"
+        ),
     )
 
     id: int | None = Field(default=None, primary_key=True)
 
     # -- 身份锚（唯一键，永不为空）-----------------------------------------
-    # 存 MediaKind 的字符串值（"movie"/"tv"），db 层不反向依赖 media 层枚举
+    # 内容形态：movie / tv / video（docs/design/library-other-kind.md 3.1）。
+    # 存 MediaKind 的字符串值，db 层不反向依赖 media 层枚举
     # （同 site_torrent.category 的处理方式）
-    kind: str = Field(index=True, description="媒体类型：movie / tv")
-    tmdb_id: int = Field(description="TMDB 条目 ID（锚）")
+    kind: str = Field(index=True, description="内容形态：movie / tv / video")
+    # 身份来源（MediaSource）：tmdb / local / …。**任何遍历全部条目的任务
+    # 都必须按它过滤**——本地条目没有 TMDB 数据，定时刷新/刮削/NFO 写出
+    # 拿到它只会白打请求或写错文件
+    source: str = Field(default=MediaSource.TMDB, index=True, description="身份来源：tmdb / local")
+    # 来源内的 id：tmdb → tmdb_id 的字符串；local → 入账时生成的稳定随机键
+    external_id: str = Field(
+        sa_column=Column("external_id", String, nullable=False, default=_default_external_id),
+        description="来源内的条目 id（tmdb=数字串；local=随机键）",
+    )
+    # 保留为便捷列：source=tmdb 时等于 external_id 的整数形式，258 处调用点
+    # 不必逐一改读 external_id；其他来源恒 NULL（CHECK 约束保证同进退）
+    tmdb_id: int | None = Field(default=None, description="TMDB 条目 ID；非 TMDB 来源为 NULL")
 
     # -- 外部 ID：与 site_torrent 详情层精确匹配的桥 ------------------------
     # imdb_id / douban_id 与种子富化带回的同名字段精确相等时，是比标题匹配

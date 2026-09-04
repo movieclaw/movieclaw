@@ -25,6 +25,8 @@ from movieclaw_api.services import media_discover
 from movieclaw_api.services.library.config import LibraryConfigService
 from movieclaw_api.services.library.layout import entry_dirs
 from movieclaw_api.services.library.nfo import read_entry_identity, rewrite_identity_nfo
+from movieclaw_api.services.library.profile import profile_of
+from movieclaw_api.services.library.reanchor import migrate_watch_state
 from movieclaw_api.services.library.scan import RESOLVER_VERSION, entry_nfo_candidates
 from movieclaw_api.services.media_library import MediaLibraryService
 from movieclaw_api.services.subscription import close_fulfilled_wanted
@@ -71,7 +73,10 @@ async def claim_files(
     if len(library_ids) > 1:
         raise BadRequestException("一次只能认领同一个媒体库内的文件")
     library = await LibraryConfigService(session).get(rows[0].library_id)
-    kind = MediaKind(library.kind)
+    profile = profile_of(library)
+    kind = profile.kind
+    if not profile.scraped:
+        raise BadRequestException(f"「{library.name}」是本地内容库，其中的文件没有可认领的外部身份")
     if target_kind is not None and target_kind is not kind:
         raise BadRequestException(
             f"影视条目类型 {target_kind.value} 与媒体库类型 {kind.value} 不一致"
@@ -101,6 +106,13 @@ async def claim_files(
         else:
             season_number = 0 if movie else row.season_number
             episode_number = 0 if movie else row.episode_number
+        # 改挂：观看状态随文件迁到新单元（临时本地身份转正、错挂纠正都适用）
+        if row.media_item_id is not None and row.media_item_id != item.id:
+            await migrate_watch_state(
+                session,
+                (row.media_item_id, row.season_number, row.episode_number),
+                (item.id, season_number or 0, episode_number or 0),
+            )
         await repo.claim_identity(
             row.id,
             media_item_id=item.id,
@@ -177,6 +189,11 @@ async def resolve_review(
         if accept and suggestion.get("media_item_id"):
             if row.media_item_id is not None and row.media_item_id != suggestion["media_item_id"]:
                 displaced.add(row.media_item_id)
+                await migrate_watch_state(
+                    session,
+                    (row.media_item_id, row.season_number, row.episode_number),
+                    (suggestion["media_item_id"], row.season_number, row.episode_number),
+                )
             row.media_item_id = suggestion["media_item_id"]
             title = suggestion.get("title") or title
             accepted_items.add(suggestion["media_item_id"])

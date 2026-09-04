@@ -297,8 +297,7 @@ async def _library_refresh_targets(session: AsyncSession, library_id: int) -> li
                 .where(
                     MediaItem.kind == library.kind,
                     MediaItem.id.not_in(any_file),  # type: ignore[union-attr]
-                    (MediaItem.scrape_library_id == library_id)
-                    | MediaItem.id.in_(subscribed),  # type: ignore[union-attr]
+                    (MediaItem.scrape_library_id == library_id) | MediaItem.id.in_(subscribed),  # type: ignore[union-attr]
                 )
                 .order_by(MediaItem.id)  # type: ignore[arg-type]
             )
@@ -850,6 +849,55 @@ def build_display_rows(
         scrape_language=language,
     )
     return seasons, episodes, metadata
+
+
+def local_metadata_row(identity) -> MediaMetadata:
+    """本地来源条目的展示档案行（``media_item_id`` 由 Repository 落库时补）。
+
+    字段来自 sidecar NFO 的全字段吸收（services/library/local_identity）；
+    没有 NFO 时只有内容日期与实测时长。``scrape_language`` 留空串：本地
+    来源没有"刮削语言"这回事。
+    """
+    return MediaMetadata(
+        media_item_id=0,
+        overview=identity.plot,
+        genres=list(identity.genres),
+        runtime_minutes=identity.runtime_minutes,
+        release_date=identity.release_date,
+        studios=list(identity.studios),
+        vote_average=identity.rating,
+        directors=list(identity.directors),
+        cast=list(identity.cast),
+        scraped_at=utcnow(),
+        scrape_language="",
+    )
+
+
+async def apply_local_identity(session: AsyncSession, item: MediaItem, identity) -> None:
+    """把一份（更权威的）本地识别结论写回已有本地条目的展示档案。
+
+    只覆盖 NFO 提供了的字段，主图与选图锁不动（图片走 ``ensure_assets`` 的
+    本地分派，与文本档案解耦）。
+    """
+    row = (
+        await session.execute(select(MediaMetadata).where(MediaMetadata.media_item_id == item.id))
+    ).scalar_one_or_none()
+    if row is None:
+        row = local_metadata_row(identity)
+        row.media_item_id = item.id  # type: ignore[assignment]
+        session.add(row)
+        return
+    row.overview = identity.plot if identity.plot else row.overview
+    row.genres = list(identity.genres) or row.genres
+    row.runtime_minutes = identity.runtime_minutes or row.runtime_minutes
+    row.release_date = identity.release_date or row.release_date
+    row.studios = list(identity.studios) or row.studios
+    row.vote_average = identity.rating if identity.rating is not None else row.vote_average
+    row.directors = list(identity.directors) or row.directors
+    row.cast = list(identity.cast) or row.cast
+    row.scraped_at = utcnow()
+    row.updated_at = utcnow()
+    session.add(row)
 
 
 def _parse_iso_date(raw: str | None):

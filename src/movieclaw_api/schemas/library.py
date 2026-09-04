@@ -313,7 +313,7 @@ class LibraryItemView(BaseModel):
 
     media_item_id: int
     kind: MediaKind
-    tmdb_id: int
+    tmdb_id: int | None = Field(default=None, description="TMDB 条目 ID；本地来源条目为 null")
     title: str
     year: int | None
     poster_url: str | None
@@ -532,7 +532,7 @@ class LibraryItemDetailView(BaseModel):
 
     media_item_id: int
     kind: MediaKind
-    tmdb_id: int
+    tmdb_id: int | None = Field(default=None, description="TMDB 条目 ID；本地来源条目为 null")
     imdb_id: str | None
     douban_id: str | None
     title: str
@@ -990,7 +990,7 @@ class MissingItemView(BaseModel):
 
     media_item_id: int
     kind: MediaKind
-    tmdb_id: int
+    tmdb_id: int | None = Field(default=None, description="TMDB 条目 ID；本地来源条目为 null")
     title: str
     year: int | None
     poster_url: str | None

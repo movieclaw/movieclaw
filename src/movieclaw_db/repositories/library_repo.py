@@ -72,11 +72,14 @@ class LibraryRepository:
             return
 
         present = LibraryFile.in_place()  # type: ignore[union-attr]
+        # "已识别"排除挂着临时本地身份的行（unidentified_code 非空）：它们
+        # 在海报墙上可见可播，但库卡片上归入"待识别"而不是"作品数"
         identified_item = case(
             (
                 and_(
                     present,
                     LibraryFile.media_item_id.is_not(None),  # type: ignore[union-attr]
+                    LibraryFile.unidentified_code.is_(None),  # type: ignore[union-attr]
                 ),
                 LibraryFile.media_item_id,
             ),
@@ -96,7 +99,7 @@ class LibraryRepository:
                             (
                                 and_(
                                     present,
-                                    LibraryFile.media_item_id.is_(None),  # type: ignore[union-attr]
+                                    LibraryFile.unidentified_code.is_not(None),  # type: ignore[union-attr]
                                     LibraryFile.ignored_at.is_(None),  # type: ignore[union-attr]
                                 ),
                                 1,
@@ -115,7 +118,6 @@ class LibraryRepository:
                             (
                                 and_(
                                     present,
-                                    LibraryFile.media_item_id.is_(None),  # type: ignore[union-attr]
                                     LibraryFile.ignored_at.is_not(None),  # type: ignore[union-attr]
                                 ),
                                 1,
@@ -146,6 +148,7 @@ class LibraryRepository:
                 Library.kind == "tv",
                 present,
                 LibraryFile.media_item_id.is_not(None),  # type: ignore[union-attr]
+                LibraryFile.unidentified_code.is_(None),  # type: ignore[union-attr]
             )
             .distinct()
             .subquery()
@@ -159,8 +162,7 @@ class LibraryRepository:
             )
         ).mappings()
         episode_counts = {
-            int(values["library_id"]): int(values["episode_count"] or 0)
-            for values in episode_rows
+            int(values["library_id"]): int(values["episode_count"] or 0) for values in episode_rows
         }
         libraries = list(
             (
@@ -175,9 +177,7 @@ class LibraryRepository:
             library.stats_item_count = int(values["item_count"] or 0) if values else 0
             library.stats_episode_count = episode_counts.get(library.id or -1, 0)
             library.stats_file_count = int(values["file_count"] or 0) if values else 0
-            library.stats_total_size_bytes = (
-                int(values["total_size_bytes"] or 0) if values else 0
-            )
+            library.stats_total_size_bytes = int(values["total_size_bytes"] or 0) if values else 0
             library.stats_unidentified_count = (
                 int(values["unidentified_count"] or 0) if values else 0
             )

@@ -26,7 +26,7 @@ from dataclasses import dataclass, field, replace
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
-from movieclaw_db.models import MediaItem, MediaMetadata
+from movieclaw_db.models import MediaItem, MediaMetadata, MediaSource
 from movieclaw_db.models.library import Library
 from movieclaw_db.repositories.library_repo import LibraryRepository
 from movieclaw_media.genres import country_label, genre_label
@@ -180,7 +180,11 @@ async def route_for_tmdb(session: AsyncSession, kind: str, tmdb_id: int) -> Rout
     """
     existing = (
         await session.execute(
-            select(MediaItem).where(MediaItem.kind == kind, MediaItem.tmdb_id == tmdb_id)
+            select(MediaItem).where(
+                MediaItem.source == MediaSource.TMDB,
+                MediaItem.kind == kind,
+                MediaItem.external_id == str(tmdb_id),
+            )
         )
     ).scalar_one_or_none()
     item = existing or MediaItem(

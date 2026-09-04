@@ -302,9 +302,7 @@ class EntryMetadata:
 
     def has_content(self) -> bool:
         """是否解出了任何有展示价值的字段（最小身份 NFO 会返回 False）。"""
-        return bool(
-            self.plot or self.rating or self.runtime_minutes or self.genres or self.actors
-        )
+        return bool(self.plot or self.rating or self.runtime_minutes or self.genres or self.actors)
 
 
 # 演员数量上限：TMM 会把全量 cast 写进 NFO（上百人），详情页展示前 40 位足够
@@ -449,6 +447,81 @@ def read_episode_metadata(nfo_path: Path) -> EpisodeNfo | None:
         season=_to_nonneg_int(root.findtext("season")),
         episode=_to_positive_int(root.findtext("episode")),
     )
+
+
+@dataclass
+class LocalNfo:
+    """本地来源条目从 sidecar NFO 里**全字段吸收**的信息（docs/design/library-other-kind.md 4.1）。
+
+    与 ``EntryMetadata`` 的差别：这里连标题/年份/日期一起读——本地条目没有
+    远程档案可回填，NFO 是它唯一的元数据来源。``tmdbid``/``uniqueid`` 一律
+    忽略（有也不建身份，身份来源是本地）。字段 None/空 = NFO 里没有。
+    """
+
+    title: str | None = None
+    sort_title: str | None = None
+    plot: str | None = None
+    year: int | None = None
+    release_date: str | None = None  # ISO 日期串（premiered / aired / releasedate）
+    runtime_minutes: int | None = None
+    rating: float | None = None
+    genres: list[str] = field(default_factory=list)
+    studios: list[str] = field(default_factory=list)
+    directors: list[str] = field(default_factory=list)
+    actors: list[NfoActor] = field(default_factory=list)
+    nfo_name: str = ""
+
+
+def read_local_sidecar(nfo_path: Path) -> LocalNfo | None:
+    """解析视频同名 sidecar NFO，**不校验根元素**（Jellyfin 同款：``<movie>`` /
+    ``<video>`` / ``<musicvideo>`` / ``<episodedetails>`` 任何根都行，直接读子节点）。
+
+    同步函数（调用方放线程池）。文件不存在或 XML 无法解析返回 None；
+    个别字段畸形只跳过该字段。
+    """
+    try:
+        text = nfo_path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return None
+    root = _parse_xml(text)
+    if root is None:
+        return None
+    nfo = LocalNfo(nfo_name=nfo_path.name)
+    nfo.title = (
+        _first_text(root, "title") or _first_text(root, "name") or _first_text(root, "localtitle")
+    )
+    nfo.sort_title = _first_text(root, "sorttitle")
+    nfo.plot = _first_text(root, "plot") or _first_text(root, "outline")
+    nfo.year = _to_positive_int(_first_text(root, "year"))
+    nfo.release_date = (
+        _first_text(root, "premiered")
+        or _first_text(root, "aired")
+        or _first_text(root, "releasedate")
+    )
+    nfo.runtime_minutes = _to_positive_int(_first_text(root, "runtime"))
+    nfo.rating = _parse_rating(root)
+    nfo.genres = [
+        *_all_texts(root, "genre"),
+        *[t for t in _all_texts(root, "tag") if t not in _all_texts(root, "genre")],
+    ]
+    nfo.studios = _all_texts(root, "studio")
+    nfo.directors = _all_texts(root, "director")
+    for actor in root.findall("actor")[:_MAX_ACTORS]:
+        name = (actor.findtext("name") or "").strip()
+        if not name:
+            continue
+        thumb = (actor.findtext("thumb") or "").strip() or None
+        if thumb and not thumb.lower().startswith(("http://", "https://")):
+            thumb = None
+        nfo.actors.append(
+            NfoActor(
+                name=name,
+                role=(actor.findtext("role") or "").strip() or None,
+                thumb=thumb,
+                tmdb_person_id=_to_positive_int(actor.findtext("tmdbid")),
+            )
+        )
+    return nfo
 
 
 def _parse_xml(text: str) -> ET.Element | None:

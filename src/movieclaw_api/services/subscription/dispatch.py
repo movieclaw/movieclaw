@@ -23,6 +23,7 @@ from movieclaw_db.models import (
     ActivityType,
     DownloadAttemptStatus,
     MediaItem,
+    MediaSource,
     SiteTorrent,
     Subscription,
     SubscriptionActivity,
@@ -490,7 +491,11 @@ async def preview_dispatch_route(
 
         routed_item = (
             await session.execute(
-                select(MediaItem).where(MediaItem.kind == kind, MediaItem.tmdb_id == tmdb_id)
+                select(MediaItem).where(
+                    MediaItem.source == MediaSource.TMDB,
+                    MediaItem.kind == kind,
+                    MediaItem.external_id == str(tmdb_id),
+                )
             )
         ).scalar_one_or_none()
     if routed_item is not None and routed_item.id is not None:
