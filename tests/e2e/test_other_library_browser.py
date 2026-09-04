@@ -202,11 +202,19 @@ def _pick_directory(page, path: str) -> None:
 def _create_library(page, expect, kind_label: str, name: str, root: Path) -> None:
     page.get_by_role("button", name=re.compile("创建第一个媒体库|添加媒体库")).first.click()
     dialog = page.get_by_role("dialog")
-    dialog.get_by_role("button", name=kind_label, exact=True).click()
+    # 第 1 步：类型卡片（可访问名 = 标题 + 一句话说明，按开头匹配）
+    dialog.get_by_role("button", name=re.compile(f"^{kind_label}")).click()
+    # 第 2 步：名称按类型预填，改成指定名；添加根目录
     dialog.locator("input[type=text]").first.fill(name)
     dialog.get_by_role("button", name="浏览服务器目录并添加").click()
     _pick_directory(page, str(root))
-    dialog.get_by_role("button", name="保存", exact=True).click()
+    if kind_label == "其他":
+        dialog.get_by_role("button", name="创建并开始扫描").click()
+    else:
+        # 影视库多一步收藏范围：留空跳过（=默认库）
+        dialog.get_by_role("button", name="下一步：收藏范围").click()
+        expect(dialog.get_by_text("当前：未声明")).to_be_visible()
+        dialog.get_by_role("button", name="跳过，创建并开始扫描").click()
     expect(dialog).to_have_count(0)
 
 
@@ -236,6 +244,8 @@ def test_other_library_full_flow(stack) -> None:  # noqa: PLR0915
             viewport={"width": 1440, "height": 900}, locale="zh-CN"
         ).new_page()
         page.set_default_timeout(20_000)
+        # dev server 首次访问要现编译页面，冷启动可达一分钟；只放宽导航超时
+        page.set_default_navigation_timeout(120_000)
         page_errors: list[str] = []
         page.on("pageerror", lambda e: page_errors.append(str(e)))
 
@@ -260,16 +270,24 @@ def test_other_library_full_flow(stack) -> None:  # noqa: PLR0915
         page.goto(f"{base}/library")
         page.get_by_role("button", name=re.compile("创建第一个媒体库|添加媒体库")).first.click()
         dialog = page.get_by_role("dialog")
-        dialog.get_by_role("button", name="其他", exact=True).click()
-        expect(dialog.get_by_role("tab", name="收藏范围")).to_have_count(0)
-        expect(dialog.get_by_role("tab", name="刮削设置")).to_have_count(0)
-        expect(dialog.get_by_text("为本地内容生成缩略图")).to_be_visible()
-        expect(dialog.get_by_text("不在首页展示")).to_be_visible()
+        # 三张类型卡片，「其他」的文案不替用户定义内容、不提数据源
+        expect(dialog.get_by_role("button", name=re.compile("^电影 自动识别影片"))).to_be_visible()
+        expect(dialog.get_by_text("放什么由你定")).to_be_visible()
+        expect(dialog.get_by_text("TMDB")).to_have_count(0)
+        dialog.get_by_role("button", name=re.compile("^其他")).click()
+        # 其他库只有两步：没有收藏范围；开关不出现在新建里，只提示已按推荐值设好
+        expect(dialog.get_by_text("3 · 收藏范围")).to_have_count(0)
+        expect(dialog.get_by_text("第 2 步，共 2 步")).to_be_visible()
+        expect(dialog.get_by_text("已按推荐值设好")).to_be_visible()
+        expect(dialog.get_by_role("switch")).to_have_count(0)
+        assert dialog.locator("input[type=text]").first.input_value() == "其他"  # 按类型预填
         dialog.locator("input[type=text]").first.fill("家庭录像")
+        create = dialog.get_by_role("button", name="创建并开始扫描")
+        expect(create).to_be_disabled()  # 没有根目录不能建
         dialog.get_by_role("button", name="浏览服务器目录并添加").click()
         _pick_directory(page, str(stack["home_root"]))
         page.screenshot(path=str(shots / "01-create-video-library.png"))
-        dialog.get_by_role("button", name="保存", exact=True).click()
+        create.click()
         expect(dialog).to_have_count(0)
         home = next(lib for lib in api_get(page, "/libraries")["data"] if lib["name"] == "家庭录像")
         assert home["kind"] == "video" and home["source"] == "local"
@@ -320,6 +338,25 @@ def test_other_library_full_flow(stack) -> None:  # noqa: PLR0915
         expect(page.get_by_role("menuitem", name="重新生成缩略图")).to_be_visible()
         page.keyboard.press("Escape")
         page.screenshot(path=str(shots / "02-video-wall.png"))
+
+        # 编辑面板：分区折叠 + 摘要行；其他库没有收藏范围/刮削设置两区；开关在分区里
+        page.get_by_role("button", name="更多操作").click()
+        page.get_by_role("menuitem", name="编辑库").click()
+        edit = page.get_by_role("dialog")
+        expect(edit.get_by_role("button", name=re.compile("^扫描与监控"))).to_be_visible()
+        expect(edit.get_by_text("抓帧缩略图")).to_be_visible()
+        expect(edit.get_by_role("button", name=re.compile("^收藏范围"))).to_have_count(0)
+        expect(edit.get_by_role("button", name=re.compile("^刮削设置"))).to_have_count(0)
+        edit.get_by_role("button", name=re.compile("^扫描与监控")).click()
+        expect(edit.get_by_role("switch", name="在首页展示")).to_have_attribute(
+            "aria-checked", "true"
+        )
+        edit.get_by_role("switch", name="在首页展示").click()
+        edit.get_by_role("button", name="保存", exact=True).click()
+        expect(edit).to_have_count(0)
+        home = next(lib for lib in api_get(page, "/libraries")["data"] if lib["id"] == home["id"])
+        assert home["exclude_from_home"] is True
+        page.screenshot(path=str(shots / "02b-edit-video-library.png"))
 
         # ---- 详情页：NFO 简介；菜单无识别/刮削/选图 ----
         nfo_item = next(i for i in items if i["title"] == "春节团圆饭")
@@ -437,6 +474,16 @@ def test_other_library_full_flow(stack) -> None:  # noqa: PLR0915
         page.keyboard.press("Escape")
         page.screenshot(path=str(shots / "04-movie-mixed-wall.png"))
 
+        # 影视库的编辑面板多两区：收藏范围（未声明）与刮削设置（跟随全局）
+        page.get_by_role("button", name="更多操作").click()
+        page.get_by_role("menuitem", name="编辑库").click()
+        edit = page.get_by_role("dialog")
+        expect(edit.get_by_text("未声明（承接该类型未命中的作品）")).to_be_visible()
+        expect(edit.get_by_text("跟随全局设置")).to_be_visible()
+        expect(edit.get_by_text("未识别文件缩略图")).to_be_visible()
+        page.keyboard.press("Escape")
+        expect(edit).to_have_count(0)
+
         # 已识别条目详情：TMDB 外链 + 完整的识别/刮削/选图菜单
         page.goto(f"{base}/library/{movie_lib['id']}/item/{identified['media_item_id']}")
         expect(page.get_by_role("heading", name="某电影")).to_be_visible()
@@ -486,7 +533,8 @@ def test_other_library_full_flow(stack) -> None:  # noqa: PLR0915
         expect(page.get_by_text(re.compile(r"1\. E1")).first).to_be_visible(timeout=30_000)
         page.screenshot(path=str(shots / "07-tv-detail.png"))
 
-        # 首页：三个库的「最近添加」行都在（其他库未勾排除）；影视库的临时条目不上首页
+        # 首页：库卡片都在；家庭录像勾了「不在首页展示」后没有它的「最近添加」行，
+        # 影视库的临时条目也不上首页
         page.goto(f"{base}/library")
         for name in ("家庭录像", "电影库", "剧集库"):
             expect(page.get_by_role("heading", name=name).first).to_be_visible()

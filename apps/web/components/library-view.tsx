@@ -10,7 +10,17 @@ import { DirectoryPicker } from "@/components/directory-picker";
 import { ContentEmptyState } from "@/components/content-empty-state";
 import { useConfirm } from "@/components/feedback";
 import { HScroller } from "@/components/h-scroller";
-import { FilmIcon, FolderIcon, MoreIcon, PlusIcon, TvIcon, VideoIcon, XIcon } from "@/components/icons";
+import {
+  ChevronDownIcon,
+  FilmIcon,
+  FolderIcon,
+  InfoIcon,
+  MoreIcon,
+  PlusIcon,
+  TvIcon,
+  VideoIcon,
+  XIcon,
+} from "@/components/icons";
 import { LibraryOrganizeDialog } from "@/components/library-organize-dialog";
 import { LibraryScrapeSettings } from "@/components/library-scrape-settings";
 import { Modal } from "@/components/modal";
@@ -52,18 +62,11 @@ import { formatRelativeTime } from "@/lib/time";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
 import { useScrollRestoration } from "@/lib/use-scroll-restoration";
 
-/** 库类型 → 展示名与图标 */
-export const LIBRARY_KIND_META: Record<
-  LibraryKind,
-  { label: string; Icon: typeof FilmIcon; hint: string }
-> = {
-  movie: { label: LIBRARY_KIND_LABELS.movie, Icon: FilmIcon, hint: "按 TMDB 识别与刮削" },
-  tv: { label: LIBRARY_KIND_LABELS.tv, Icon: TvIcon, hint: "按 TMDB 识别与刮削，有季集结构" },
-  video: {
-    label: LIBRARY_KIND_LABELS.video,
-    Icon: VideoIcon,
-    hint: "家庭录像、录屏、暂不刮削的内容：不识别不改名，有 NFO 读 NFO，否则按文件名展示",
-  },
+/** 库类型 → 展示名与图标（卡片文案见 KIND_CARDS） */
+export const LIBRARY_KIND_META: Record<LibraryKind, { label: string; Icon: typeof FilmIcon }> = {
+  movie: { label: LIBRARY_KIND_LABELS.movie, Icon: FilmIcon },
+  tv: { label: LIBRARY_KIND_LABELS.tv, Icon: TvIcon },
+  video: { label: LIBRARY_KIND_LABELS.video, Icon: VideoIcon },
 };
 
 /** 每个库「最近添加」行的格数（也是本页向服务端要的条目数上限）。 */
@@ -1078,8 +1081,345 @@ function LibraryCardMenu({
   );
 }
 
-/* —— 新增 / 编辑库的弹窗（订阅弹层同款视觉），库页与单库页共用 —— */
+/* —— 媒体库表单：新建极简（向导），编辑分层（分区折叠） ——
+ *
+ * 新建只问必答题——类型、名称与目录、（影视库）收藏范围；四个扫描开关全有
+ * 安全默认值，刮削偏好覆盖是少数人的精调，都放到编辑里。编辑按用途分区折叠，
+ * 折叠态的摘要行先回答"这个库配成了什么样"，改哪项点哪项。
+ * 设计稿：docs/design/library-other-kind.md 4.3 的表单节。 */
 
+const INPUT_CLASS =
+  "w-full rounded-xl border border-white/[0.08] bg-white/[0.04] px-3 py-2 text-ui " +
+  "text-[var(--text)] outline-none focus:border-[var(--accent)]/60";
+const LABEL_CLASS = "mb-1.5 block text-sub font-medium text-[var(--text-muted)]";
+
+/** 类型卡片的文案：讲清后果，不提识别用的是哪个数据源；「其他」放什么由用户定。 */
+const KIND_CARDS: Record<
+  LibraryKind,
+  { blurb: string; traits: string; chosen: string; defaultName: string; defaults: string }
+> = {
+  movie: {
+    blurb: "自动识别影片，补齐简介、评分、演职员与海报剧照；一部片一个目录。",
+    traits: "可订阅 · 可整理文件名",
+    chosen: "自动识别并补齐元数据与图片",
+    defaultName: "电影库",
+    defaults:
+      "实时监控目录变化、扫描后保留丢失记录、为未识别文件生成缩略图、在首页展示。" +
+      "第一个电影库自动成为默认库；刮削偏好建好后在「编辑库」里设。",
+  },
+  tv: {
+    blurb: "自动识别剧集与季集，补齐分集信息与图片；追新订阅按集补齐。",
+    traits: "可订阅 · 可整理文件名",
+    chosen: "自动识别季集并补齐元数据与图片",
+    defaultName: "剧集库",
+    defaults:
+      "实时监控目录变化、扫描后保留丢失记录、为未识别文件生成缩略图、在首页展示。" +
+      "第一个剧集库自动成为默认库；刮削偏好建好后在「编辑库」里设。",
+  },
+  video: {
+    blurb:
+      "不识别、不刮削、不改名的视频：放什么由你定。有 NFO 就读 NFO，否则按文件名展示，封面从视频里抓帧。",
+    traits: "不识别 · 可播放 · 记进度",
+    chosen: "不识别不刮削，按 NFO / 文件名展示",
+    defaultName: "其他",
+    defaults:
+      "实时监控目录变化、扫描后保留丢失记录、从视频抓帧生成缩略图、在首页展示。" +
+      "网络挂载的目录建议建好后到「编辑库 → 扫描与监控」关掉实时监控与抓帧。",
+  },
+};
+
+/** 新建时的类型是否带识别链（决定有没有收藏范围这一步）；已有库读服务端能力位。 */
+function kindIsScraped(kind: LibraryKind): boolean {
+  return kind !== "video";
+}
+
+/** 根目录列表：第一项为主根；行内可原位更改、设为主根、移除。 */
+function RootsEditor({
+  roots,
+  onChange,
+  onPick,
+}: {
+  roots: string[];
+  onChange: (next: string[]) => void;
+  /** 打开目录选择器："add"=追加，数字=原位更改该下标 */
+  onPick: (target: "add" | number) => void;
+}) {
+  return (
+    <div className="space-y-1.5">
+      {roots.map((root, i) => (
+        <div
+          key={root}
+          className="group flex items-center gap-2 rounded-xl border border-white/[0.08] bg-white/[0.04] px-3 py-2"
+        >
+          <FolderIcon className="size-4 shrink-0 text-[var(--accent)]/80" />
+          {/* 保尾截断（dir=rtl）：路径的区分信息在尾部，省略号出现在头部；
+              LRM 标记防止首尾的 "/" 在 RTL 下跳位。点击可原位更改目录 */}
+          <Tooltip
+            content={
+              <>
+                <p className="mb-1 break-all font-mono text-caption text-[var(--text-muted)]">{root}</p>
+                点击更改：从当前路径开始重新选择目录。
+              </>
+            }
+          >
+            <button
+              type="button"
+              dir="rtl"
+              onClick={() => onPick(i)}
+              className="min-w-0 flex-1 truncate rounded text-left font-mono text-ui text-[var(--text)] transition-colors hover:text-[var(--accent)]"
+            >
+              {"‎" + root + "‎"}
+            </button>
+          </Tooltip>
+          {i === 0 ? (
+            <Tooltip
+              content={
+                <>
+                  <strong>主根 = 新内容的落盘位置。</strong>
+                  订阅与手动下载完成后，按「主根/标题 (年份)」建目录入库；
+                  一个库可挂多个根，但写入点只有主根这一个。
+                </>
+              }
+            >
+              <span className="shrink-0 cursor-default rounded-full bg-[var(--accent)]/15 px-2 py-0.5 text-micro font-semibold text-[var(--accent)]">
+                主根
+              </span>
+            </Tooltip>
+          ) : (
+            <Tooltip content="把该路径设为新内容的落盘位置（移到列表第一位）。已有文件不会被移动。">
+              <button
+                type="button"
+                onClick={() => onChange([root, ...roots.filter((r) => r !== root)])}
+                className="touch-reveal shrink-0 rounded-full px-2 py-0.5 text-micro font-medium text-[var(--text-faint)] opacity-0 transition-opacity hover:bg-white/10 hover:text-white group-hover:opacity-100"
+              >
+                设为主根
+              </button>
+            </Tooltip>
+          )}
+          <button
+            type="button"
+            aria-label={`移除 ${root}`}
+            onClick={() => onChange(roots.filter((r) => r !== root))}
+            className="shrink-0 rounded-md p-1 text-[var(--text-faint)] transition-colors hover:bg-white/10 hover:text-white"
+          >
+            <XIcon className="size-3.5" />
+          </button>
+        </div>
+      ))}
+      <button
+        type="button"
+        onClick={() => onPick("add")}
+        className="flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-white/15 px-3 py-2.5 text-ui font-medium text-[var(--text-muted)] transition-colors hover:border-[var(--accent)]/50 hover:text-white"
+      >
+        <PlusIcon className="size-4" />
+        {roots.length === 0 ? "浏览服务器目录并添加" : "添加目录"}
+      </button>
+    </div>
+  );
+}
+
+/** 服务端目录选择器的接线：追加时从最近添加的根起步，更改时从被改的根起步；
+ *  追加去重，更改为原位替换（改主根仍是主根），撞上已有路径时合并去重。 */
+function RootsPicker({
+  target,
+  roots,
+  onChange,
+  onClose,
+}: {
+  target: "add" | number | null;
+  roots: string[];
+  onChange: (next: string[]) => void;
+  onClose: () => void;
+}) {
+  return (
+    <DirectoryPicker
+      open={target !== null}
+      initialPath={
+        target === "add" || target === null
+          ? roots.length > 0
+            ? roots[roots.length - 1]
+            : undefined
+          : roots[target]
+      }
+      onClose={onClose}
+      onSelect={(path) => {
+        if (target === "add" || target === null) {
+          onChange(roots.includes(path) ? roots : [...roots, path]);
+        } else {
+          const next = roots.map((r, idx) => (idx === target ? path : r));
+          onChange(next.filter((r, idx) => r !== path || idx === target));
+        }
+        onClose();
+      }}
+    />
+  );
+}
+
+/** 收藏范围：区域逐国勾选（预设组是一键整组的快捷键）+ 类型多选，两个维度间是"且"。 */
+function ScopeEditor({
+  kind,
+  regions,
+  genres,
+  onRegions,
+  onGenres,
+  options,
+}: {
+  kind: LibraryKind;
+  regions: string[];
+  genres: number[];
+  onRegions: (next: string[]) => void;
+  onGenres: (next: number[]) => void;
+  options: RoutingOptions | null;
+}) {
+  if (options === null) {
+    return (
+      <p className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2.5 text-sub text-[var(--text-faint)]">
+        正在加载可选项…
+      </p>
+    );
+  }
+  const genreOptions = kind === "movie" ? options.movie_genres : options.tv_genres;
+  const allCountries = Object.keys(options.country_names);
+  return (
+    <>
+      <div>
+        <label className={LABEL_CLASS}>区域（勾选任一即匹配）</label>
+        {/* 已选中但不在内置映射里的码补进列表，保证选了就能看见、能取消 */}
+        <div className="flex flex-wrap gap-1.5">
+          {[
+            ...Object.entries(options.country_names),
+            ...regions
+              .filter((c) => !(c in options.country_names))
+              .map((c): [string, string] => [c, c]),
+          ].map(([code, label]) => (
+            <button
+              key={code}
+              type="button"
+              data-active={regions.includes(code)}
+              onClick={() =>
+                onRegions(
+                  regions.includes(code) ? regions.filter((c) => c !== code) : [...regions, code],
+                )
+              }
+              className="glass-row nav-item !w-auto px-3 py-1.5 text-sub font-medium"
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+          <span className="text-caption text-[var(--text-faint)]">快捷组合</span>
+          <button
+            type="button"
+            onClick={() =>
+              onRegions(
+                allCountries.every((c) => regions.includes(c))
+                  ? []
+                  : [...new Set([...regions, ...allCountries])],
+              )
+            }
+            className="glass-row nav-item !w-auto px-2.5 py-1 text-caption font-medium"
+          >
+            {allCountries.every((c) => regions.includes(c)) ? "清空" : "全选"}
+          </button>
+          {options.region_presets.map((preset) => {
+            const active = preset.countries.every((c) => regions.includes(c));
+            return (
+              <button
+                key={preset.key}
+                type="button"
+                data-active={active}
+                title={preset.countries.map((c) => options.country_names[c] ?? c).join(" / ")}
+                onClick={() =>
+                  onRegions(
+                    active
+                      ? regions.filter((c) => !preset.countries.includes(c))
+                      : [...new Set([...regions, ...preset.countries])],
+                  )
+                }
+                className="glass-row nav-item !w-auto px-2.5 py-1 text-caption font-medium"
+              >
+                {preset.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      <div>
+        <label className={LABEL_CLASS}>类型（勾选任一即匹配）</label>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() =>
+              onGenres(
+                genreOptions.every((g) => genres.includes(g.id))
+                  ? []
+                  : [...new Set([...genres, ...genreOptions.map((g) => g.id)])],
+              )
+            }
+            className="glass-row nav-item !w-auto px-2.5 py-1 text-caption font-medium"
+          >
+            {genreOptions.every((g) => genres.includes(g.id)) ? "清空" : "全选"}
+          </button>
+          {genreOptions.map((g) => (
+            <button
+              key={g.id}
+              type="button"
+              data-active={genres.includes(g.id)}
+              onClick={() =>
+                onGenres(
+                  genres.includes(g.id) ? genres.filter((id) => id !== g.id) : [...genres, g.id],
+                )
+              }
+              className="glass-row nav-item !w-auto px-3 py-1.5 text-sub font-medium"
+            >
+              {g.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      {regions.length > 0 && genres.length > 0 && (
+        <p className="text-caption leading-relaxed text-[var(--text-faint)]">
+          区域与类型须<strong className="font-medium text-[var(--text-muted)]">同时满足</strong>
+          （如「日韩 + 动画」= 只收日韩的动画）。
+        </p>
+      )}
+    </>
+  );
+}
+
+/** 收藏范围的一句话摘要（新建第 3 步底部与编辑分区的折叠行共用）。 */
+function scopeSummary(
+  kind: LibraryKind,
+  regions: string[],
+  genres: number[],
+  options: RoutingOptions | null,
+): { declared: boolean; text: string } {
+  if (options === null) {
+    const declared = regions.length > 0 || genres.length > 0;
+    return { declared, text: declared ? "已声明收藏范围" : "未声明" };
+  }
+  const genreOptions = kind === "movie" ? options.movie_genres : options.tv_genres;
+  const parts = [
+    regionLabels(regions, options).join(" / "),
+    genreOptions
+      .filter((g) => genres.includes(g.id))
+      .map((g) => g.label)
+      .join(" / "),
+  ].filter(Boolean);
+  return parts.length > 0
+    ? { declared: true, text: parts.join(" 的 ") }
+    : { declared: false, text: "未声明" };
+}
+
+/** 类型 ID 只保留当前库类型下有效的（切换过类型时另一类型独有的 ID 不带进声明）。 */
+function validGenres(kind: LibraryKind, genres: number[], options: RoutingOptions | null): number[] {
+  if (options === null) return genres;
+  const valid = new Set((kind === "movie" ? options.movie_genres : options.tv_genres).map((g) => g.id));
+  return genres.filter((id) => valid.has(id));
+}
+
+/** 表单入口：新建走向导，编辑走分区面板；调用方只关心 state 三态。 */
 export function LibraryFormDialog({
   state,
   onClose,
@@ -1091,540 +1431,542 @@ export function LibraryFormDialog({
   /** 保存成功回调，带上服务端返回的库（新建时调用方据此把新卡片滚进视野） */
   onSaved: (saved: MediaLibrary) => void;
 }) {
-  const library = state === "new" ? null : state;
+  if (state === null) return null;
+  if (state === "new") return <CreateLibraryDialog onClose={onClose} onSaved={onSaved} />;
+  return <EditLibraryDialog key={state.id} library={state} onClose={onClose} onSaved={onSaved} />;
+}
+
+/* —— 新建：选类型 → 名称与目录 → （影视库）收藏范围 —— */
+
+function CreateLibraryDialog({
+  onClose,
+  onSaved,
+}: {
+  onClose: () => void;
+  onSaved: (saved: MediaLibrary) => void;
+}) {
+  const [step, setStep] = useState<1 | 2 | 3>(1);
+  const [kind, setKind] = useState<LibraryKind | null>(null);
+  const [name, setName] = useState("");
+  const [roots, setRoots] = useState<string[]>([]);
+  const [pickerTarget, setPickerTarget] = useState<"add" | number | null>(null);
+  const [regions, setRegions] = useState<string[]>([]);
+  const [genres, setGenres] = useState<number[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [kind, setKind] = useState<LibraryKind>("movie");
-  const [name, setName] = useState("");
-  // 根路径列表：第一项为主根；通过目录选择器逐个添加
-  const [roots, setRoots] = useState<string[]>([]);
-  // 选择器目标："add"=追加新根；数字=更改该下标的既有根（原位替换）；null=关闭
-  const [pickerTarget, setPickerTarget] = useState<"add" | number | null>(null);
-  // 收藏范围（可选声明）：类型 ID 多选 + 区域国家码多选，条件间是"且"
-  const [matchGenres, setMatchGenres] = useState<number[]>([]);
-  const [matchRegions, setMatchRegions] = useState<string[]>([]);
-  // 扫描后自动清理已确认丢失的库存记录（默认关，见 Library.auto_clear_missing）
-  const [autoClearMissing, setAutoClearMissing] = useState(false);
-  // 实时文件监控（默认开）：SMB/NFS 网络挂载收不到远端变更事件、递归建
-  // 监听还很慢，按库关闭后靠定期对账与手动扫描（见 Library.realtime_watch）
-  const [realtimeWatch, setRealtimeWatch] = useState(true);
-  // 本地来源内容抓帧生成缩略图（默认开）：网络挂载库抓帧等于把整库拉一遍，可关
-  const [generateThumbnails, setGenerateThumbnails] = useState(true);
-  // 从首页「最近添加」等汇总里排除（默认关）：私密内容不想在首页露脸
-  const [excludeFromHome, setExcludeFromHome] = useState(false);
-  // 库级刮削覆盖（语言/选图/命名/目录写入，即刮削设置的全部字段）：
-  // **只存显式覆盖的键**，空对象 = 全跟全局设置
-  const [scrapeOverrides, setScrapeOverrides] = useState<Record<string, unknown>>({});
-  // 表单分三个页签：必填的基本信息 / 可选的收藏范围 / 可选的刮削设置，
-  // 避免单页长滚动拥挤（刮削设置见 docs/design/scrape-customization.md §14.5）
-  const [tab, setTab] = useState<"basic" | "scope" | "scrape">("basic");
   const routingOptions = useRoutingOptions();
 
-  // 每次打开时按目标重置表单（编辑带入现值，新增清空）
-  useEffect(() => {
-    if (state === null) return;
-    setError(null);
-    setKind(library?.kind ?? "movie");
-    setName(library?.name ?? "");
-    setRoots(library?.root_paths ?? []);
-    const parsed = parseMatchRules(library?.match_rules ?? []);
-    setMatchGenres(parsed.genres);
-    setMatchRegions(parsed.regions);
-    setAutoClearMissing(library?.auto_clear_missing ?? false);
-    setRealtimeWatch(library?.realtime_watch ?? true);
-    setGenerateThumbnails(library?.generate_thumbnails ?? true);
-    setExcludeFromHome(library?.exclude_from_home ?? false);
-    setScrapeOverrides({ ...(library?.scrape_overrides ?? {}) });
-    setPickerTarget(null);
-    setTab("basic");
-  }, [state, library]);
+  const hasScope = kind !== null && kindIsScraped(kind);
+  const totalSteps = hasScope ? 3 : 2;
+  const ready = name.trim().length > 0 && roots.length > 0;
+  const scope = kind ? scopeSummary(kind, regions, genres, routingOptions) : null;
 
-  if (state === null) return null;
-
-  const canSubmit = !busy && name.trim().length > 0 && roots.length > 0;
-  const effectiveKind = library?.kind ?? kind;
-  // 能力位：已有库直接读服务端给的；新建时按形态推（video → 本地来源，其余 TMDB）
-  const scraped = library ? library.capabilities.scraped : effectiveKind !== "video";
-  const genreOptions =
-    routingOptions === null
-      ? []
-      : effectiveKind === "movie"
-        ? routingOptions.movie_genres
-        : routingOptions.tv_genres;
+  const chooseKind = (next: LibraryKind) => {
+    // 名称按类型预填；用户已经改过的名字不动
+    const untouched = name.trim() === "" || (kind !== null && name === KIND_CARDS[kind].defaultName);
+    setKind(next);
+    if (untouched) setName(KIND_CARDS[next].defaultName);
+    if (next === "video") {
+      setRegions([]);
+      setGenres([]);
+    }
+    setStep(2);
+  };
 
   const submit = () => {
+    if (kind === null || !ready || busy) return;
     setBusy(true);
     setError(null);
-    // 类型 ID 按当前库类型过滤：新建时切换过库类型的话，另一类型独有的
-    // ID（如剧集的"真人秀"）不带进电影库的声明
-    const validIds = new Set(genreOptions.map((g) => g.id));
-    const genres =
-      routingOptions === null ? matchGenres : matchGenres.filter((id) => validIds.has(id));
     const payload: LibraryPayload = {
       name: name.trim(),
       kind,
       root_paths: roots,
-      match_rules: buildMatchRules(genres, matchRegions),
+      match_rules: hasScope ? buildMatchRules(validGenres(kind, genres, routingOptions), regions) : [],
+      // 四个开关全按推荐值：监控开、自动清理关、缩略图开、首页展示；建好后在编辑里调
+      auto_clear_missing: false,
+      realtime_watch: true,
+      generate_thumbnails: true,
+      exclude_from_home: false,
+      scrape_overrides: {},
+    };
+    void createLibrary(payload)
+      .then(onSaved)
+      .catch((e) => setError((e as Error).message))
+      .finally(() => setBusy(false));
+  };
+
+  // 主按钮随步骤变化：第 2 步对影视库是「下一步」，最后一步保存即扫描
+  const primary =
+    step === 1
+      ? { label: "创建并开始扫描", disabled: true, action: () => {} }
+      : step === 2 && hasScope
+        ? { label: "下一步：收藏范围", disabled: !ready, action: () => setStep(3) }
+        : {
+            label: busy
+              ? "创建中…"
+              : step === 3 && scope !== null && !scope.declared
+                ? "跳过，创建并开始扫描"
+                : "创建并开始扫描",
+            disabled: !ready || busy,
+            action: submit,
+          };
+  const footNote =
+    `第 ${step} 步，共 ${totalSteps} 步` + (step === totalSteps ? " · 保存即开始扫描存量文件" : "");
+
+  return (
+    <>
+      <Modal open onClose={onClose} label="添加媒体库" width="2xl" panelClassName="flex max-h-[86dvh] flex-col">
+        <div className="shrink-0 border-b border-white/[0.06] px-6 pt-5 max-md:px-5">
+          <h2 className="text-title font-bold text-white">添加媒体库</h2>
+          <ol className="mt-3.5 flex gap-5 text-caption font-semibold uppercase tracking-[0.06em]">
+            {(
+              [
+                [1, "1 · 选类型"],
+                [2, "2 · 名称与目录"],
+                [3, "3 · 收藏范围"],
+              ] as const
+            )
+              .filter(([n]) => n !== 3 || hasScope)
+              .map(([n, label]) => (
+                <li
+                  key={n}
+                  aria-current={step === n ? "step" : undefined}
+                  className={`relative pb-2.5 ${step === n ? "text-white" : "text-[var(--text-faint)]"}`}
+                >
+                  {label}
+                  {step === n && (
+                    <span className="absolute inset-x-0 bottom-0 h-0.5 rounded-full bg-[var(--accent)]" />
+                  )}
+                </li>
+              ))}
+          </ol>
+        </div>
+
+        <div className="scroll-thin min-h-0 flex-1 space-y-4 overflow-y-auto p-6 max-md:p-5">
+          {step === 1 && (
+            <>
+              <div className="grid grid-cols-3 gap-2.5 max-md:grid-cols-1">
+                {(Object.keys(LIBRARY_KIND_META) as LibraryKind[]).map((k) => {
+                  const { label, Icon } = LIBRARY_KIND_META[k];
+                  const card = KIND_CARDS[k];
+                  return (
+                    <button
+                      key={k}
+                      type="button"
+                      onClick={() => chooseKind(k)}
+                      data-active={kind === k}
+                      className="flex min-h-[148px] flex-col gap-2.5 rounded-2xl border border-white/[0.08] bg-white/[0.04] p-4 text-left transition-colors hover:border-white/20 hover:bg-white/[0.075] data-[active=true]:border-[var(--accent-2)] data-[active=true]:bg-white/[0.12]"
+                    >
+                      <Icon className="size-[22px] text-[var(--accent)]" />
+                      <span className="text-body font-semibold text-white">{label}</span>
+                      <span className="text-caption leading-relaxed text-[var(--text-muted)]">{card.blurb}</span>
+                      <span className="mt-auto text-micro text-[var(--text-faint)]">{card.traits}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="text-caption leading-relaxed text-[var(--text-faint)]">
+                类型决定这个库怎么扫、怎么摆、能不能订阅，创建后不可更改。
+              </p>
+            </>
+          )}
+
+          {step === 2 && kind !== null && (
+            <>
+              {(() => {
+                const { label, Icon } = LIBRARY_KIND_META[kind];
+                return (
+                  <div className="flex items-center gap-2.5 rounded-xl border border-white/[0.08] bg-white/[0.04] px-3 py-2.5">
+                    <Icon className="size-[18px] shrink-0 text-[var(--accent)]" />
+                    <span className="font-semibold text-white">{label}</span>
+                    <span className="min-w-0 truncate text-caption text-[var(--text-muted)]">
+                      {KIND_CARDS[kind].chosen}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setStep(1)}
+                      className="ml-auto shrink-0 text-caption text-[var(--text-faint)] underline underline-offset-4 hover:text-white"
+                    >
+                      换类型
+                    </button>
+                  </div>
+                );
+              })()}
+              <div>
+                <label className={LABEL_CLASS}>名称</label>
+                <input
+                  type="text"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  onKeyDown={(e) => {
+                    // isComposing：中文输入法选词的回车不当提交
+                    if (e.key === "Enter" && !e.nativeEvent.isComposing && !primary.disabled) primary.action();
+                  }}
+                  placeholder="如：电影库 / 动漫库"
+                  autoComplete="off"
+                  className={INPUT_CLASS}
+                />
+              </div>
+              <div>
+                <label className={LABEL_CLASS}>
+                  根目录
+                  <span className="font-normal text-[var(--text-faint)]">（第一个为主根，新内容落在这里）</span>
+                </label>
+                <RootsEditor roots={roots} onChange={setRoots} onPick={setPickerTarget} />
+              </div>
+              <div className="flex items-start gap-2.5 rounded-xl border border-[var(--info)]/20 bg-[var(--info)]/[0.07] px-3.5 py-3 text-caption leading-relaxed text-[var(--text-muted)]">
+                <InfoIcon className="mt-0.5 size-4 shrink-0 text-[var(--info)]" />
+                <p>
+                  <strong className="font-medium text-[var(--text)]">已按推荐值设好：</strong>
+                  {KIND_CARDS[kind].defaults}
+                </p>
+              </div>
+            </>
+          )}
+
+          {step === 3 && kind !== null && (
+            <>
+              <p className="text-sub leading-relaxed text-[var(--text-muted)]">
+                声明「本库收什么」，订阅与自动入库就会按作品的区域和类型自动选进这个库。
+                <strong className="font-medium text-[var(--text)]">全部留空也可以</strong>
+                ：作为默认库承接所有未命中的作品；订阅时永远可以手动改库。
+              </p>
+              <ScopeEditor
+                kind={kind}
+                regions={regions}
+                genres={genres}
+                onRegions={setRegions}
+                onGenres={setGenres}
+                options={routingOptions}
+              />
+              <p className="text-caption leading-relaxed text-[var(--text-faint)]">
+                {scope?.declared
+                  ? `当前：收 ${scope.text}；其他作品去该类型的默认库。`
+                  : "当前：未声明，本库将承接该类型全部未命中的作品。"}
+              </p>
+            </>
+          )}
+        </div>
+
+        <div className="shrink-0 border-t border-white/[0.06] px-6 py-4 max-md:px-5">
+          {error && (
+            <p className="mb-3 rounded-lg border border-red-400/25 bg-red-500/10 px-3.5 py-2.5 text-ui leading-6 text-red-200">
+              {error}
+            </p>
+          )}
+          <div className="flex items-center justify-between gap-3">
+            <p className="min-w-0 truncate text-caption text-[var(--text-faint)]">{footNote}</p>
+            <div className="flex shrink-0 items-center gap-3">
+              <button
+                type="button"
+                onClick={step === 1 ? onClose : () => setStep(step === 3 ? 2 : 1)}
+                className="btn-glass h-9 px-4 text-ui font-medium"
+              >
+                {step === 1 ? "取消" : "上一步"}
+              </button>
+              <button
+                type="button"
+                onClick={primary.action}
+                disabled={primary.disabled}
+                className="btn-accent h-9 rounded-full px-5 text-ui font-semibold disabled:opacity-40"
+              >
+                {primary.label}
+              </button>
+            </div>
+          </div>
+        </div>
+      </Modal>
+      <RootsPicker target={pickerTarget} roots={roots} onChange={setRoots} onClose={() => setPickerTarget(null)} />
+    </>
+  );
+}
+
+/* —— 编辑：分区折叠，每区一行摘要 —— */
+
+type EditSectionId = "basic" | "scan" | "scope" | "scrape";
+
+/** 开关行：一句话标题 + ⓘ 长说明 + 开关；长篇解释不再常驻表单里。 */
+function SwitchRow({
+  title,
+  detail,
+  checked,
+  onChange,
+}: {
+  title: string;
+  detail: React.ReactNode;
+  checked: boolean;
+  onChange: (next: boolean) => void;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3 border-t border-white/[0.06] py-2.5 first:border-t-0">
+      <div className="flex items-center gap-1.5 text-ui font-medium text-[var(--text)]">
+        {title}
+        <Tooltip content={detail} openOnClick>
+          <button
+            type="button"
+            aria-label={`${title}的说明`}
+            className="grid size-4 place-items-center rounded-full border border-white/[0.14] text-[10px] font-semibold text-[var(--text-faint)] hover:border-[var(--accent-2)] hover:text-white"
+          >
+            i
+          </button>
+        </Tooltip>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        aria-label={title}
+        onClick={() => onChange(!checked)}
+        className="relative h-[22px] w-[38px] shrink-0 rounded-full bg-white/20 transition-colors aria-checked:bg-[var(--ok,#5fd39b)]"
+      >
+        <span
+          className={`absolute left-[3px] top-[3px] size-4 rounded-full bg-white transition-transform ${
+            checked ? "translate-x-4" : ""
+          }`}
+        />
+      </button>
+    </div>
+  );
+}
+
+/** 刮削覆盖的摘要："已覆盖 3 项 · 元数据 · 命名与整理"；键按前缀归到设置页的四个分区。 */
+function scrapeOverrideSummary(overrides: Record<string, unknown>): string | null {
+  const keys = Object.keys(overrides);
+  if (keys.length === 0) return null;
+  const groups = new Set<string>();
+  for (const key of keys) {
+    if (key.startsWith("naming_")) groups.add("命名与整理");
+    else if (key.startsWith("mirror_")) groups.add("目录写入");
+    else if (/^(poster|backdrop|still)_/.test(key)) groups.add("图片");
+    else groups.add("元数据");
+  }
+  return `已覆盖 ${keys.length} 项 · ${[...groups].join(" · ")}`;
+}
+
+function EditLibraryDialog({
+  library,
+  onClose,
+  onSaved,
+}: {
+  library: MediaLibrary;
+  onClose: () => void;
+  onSaved: (saved: MediaLibrary) => void;
+}) {
+  const scraped = library.capabilities.scraped;
+  const parsed = parseMatchRules(library.match_rules);
+  const [name, setName] = useState(library.name);
+  const [roots, setRoots] = useState<string[]>(library.root_paths);
+  const [pickerTarget, setPickerTarget] = useState<"add" | number | null>(null);
+  const [realtimeWatch, setRealtimeWatch] = useState(library.realtime_watch);
+  const [autoClearMissing, setAutoClearMissing] = useState(library.auto_clear_missing);
+  const [generateThumbnails, setGenerateThumbnails] = useState(library.generate_thumbnails);
+  const [excludeFromHome, setExcludeFromHome] = useState(library.exclude_from_home);
+  const [regions, setRegions] = useState<string[]>(parsed.regions);
+  const [genres, setGenres] = useState<number[]>(parsed.genres);
+  const [scrapeOverrides, setScrapeOverrides] = useState<Record<string, unknown>>({
+    ...(library.scrape_overrides ?? {}),
+  });
+  // 展开的分区（同时只开一个）；默认全收起——摘要行已经把现状说清
+  const [open, setOpen] = useState<EditSectionId | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const routingOptions = useRoutingOptions();
+
+  const ready = name.trim().length > 0 && roots.length > 0;
+  const missing = [name.trim() ? null : "名称", roots.length > 0 ? null : "根目录"].filter(
+    (v): v is string => v !== null,
+  );
+  const scope = scopeSummary(library.kind, regions, genres, routingOptions);
+  const scrapeText = scrapeOverrideSummary(scrapeOverrides);
+  const { label: kindLabel, Icon: KindIcon } = LIBRARY_KIND_META[library.kind];
+
+  const submit = () => {
+    if (!ready || busy) return;
+    setBusy(true);
+    setError(null);
+    const payload: LibraryPayload = {
+      name: name.trim(),
+      kind: library.kind,
+      root_paths: roots,
+      match_rules: scraped ? buildMatchRules(validGenres(library.kind, genres, routingOptions), regions) : [],
       auto_clear_missing: autoClearMissing,
       realtime_watch: realtimeWatch,
       generate_thumbnails: generateThumbnails,
       exclude_from_home: excludeFromHome,
       scrape_overrides: scraped ? scrapeOverrides : {},
     };
-    void (library ? updateLibrary(library.id, payload) : createLibrary(payload))
+    void updateLibrary(library.id, payload)
       .then(onSaved)
       .catch((e) => setError((e as Error).message))
       .finally(() => setBusy(false));
   };
 
-  const inputClass =
-    "w-full rounded-xl border border-white/[0.08] bg-white/[0.04] px-3 py-2 text-ui " +
-    "text-[var(--text)] outline-none focus:border-[var(--accent)]/60";
-  const labelClass = "mb-1.5 block text-sub font-medium text-[var(--text-muted)]";
-
-  // 收藏范围的当前声明摘要（底栏常显）：切到基本信息页签也能看到已设了什么。
-  // 区域走 regionLabels 折叠（整组折叠 + 零散国家码兜底）；genre 只算当前
-  // 库类型下有效的（另一类型独有的提交时会被过滤）
-  const activeRegionLabels = routingOptions === null ? [] : regionLabels(matchRegions, routingOptions);
-  const activeGenreLabels = genreOptions.filter((g) => matchGenres.includes(g.id)).map((g) => g.label);
-  const scopeParts = [activeRegionLabels.join(" / "), activeGenreLabels.join(" / ")].filter(Boolean);
-  // 可选项未加载完时按原始选择兜底，避免编辑刚打开的一瞬小圆点闪灭
-  const scopeDeclared =
-    routingOptions === null
-      ? matchRegions.length > 0 || matchGenres.length > 0
-      : scopeParts.length > 0;
-  const scopeSummary =
-    scopeParts.length > 0
-      ? `只收：${scopeParts.join(" + ")}`
-      : scopeDeclared
-        ? "已声明收藏范围"
-        : "收藏范围未声明";
-  // 保存按钮置灰时说明缺什么，不让用户对着灰按钮猜
-  const missingFields = [name.trim() ? null : "名称", roots.length > 0 ? null : "根路径"].filter(
-    (v): v is string => v !== null,
+  const dot = (on: boolean, text: string) => (
+    <span key={text} className="inline-flex items-center gap-1.5">
+      <span className={`size-1.5 rounded-full ${on ? "bg-[var(--ok,#5fd39b)]" : "bg-white/25"}`} />
+      {text}
+    </span>
   );
 
-  return (
-    <>
-      <Modal
-        open
-        onClose={onClose}
-        label={library ? `编辑「${library.name}」` : "添加媒体库"}
-        width="lg"
-        panelClassName="flex max-h-[82dvh] flex-col"
-      >
-        {/* 头部：标题 + 分段页签 */}
-        <div className="shrink-0 border-b border-white/[0.06] px-6 pt-5 max-md:px-5">
-          <h2 className="text-title font-bold text-white">
-            {library ? "编辑媒体库" : "添加媒体库"}
-            {library && (
-              <span className="ml-2 text-ui font-normal text-[var(--text-muted)]">
-                {library.name}
-              </span>
-            )}
-          </h2>
-          <div role="tablist" aria-label="表单分区" className="mt-3 flex gap-5">
-            {(
-              [
-                ["basic", "基本信息"],
-                ["scope", "收藏范围"],
-                ["scrape", "刮削设置"],
-              ] as const
-            )
-              // 本地内容库没有识别链：收藏范围（按 TMDB 类型/地区路由）与刮削设置都无从谈起
-              .filter(([key]) => scraped || key === "basic")
-              .map(([key, tabLabel]) => (
-              <button
-                key={key}
-                type="button"
-                role="tab"
-                aria-selected={tab === key}
-                onClick={() => setTab(key)}
-                className={`relative pb-2.5 text-ui font-medium transition-colors ${
-                  tab === key ? "text-white" : "text-[var(--text-muted)] hover:text-white"
-                }`}
-              >
-                {tabLabel}
-                {/* 收藏范围已有声明 / 刮削设置有覆盖时点亮小圆点：
-                    不点开页签也知道设过 */}
-                {((key === "scope" && scopeDeclared) ||
-                  (key === "scrape" && Object.keys(scrapeOverrides).length > 0)) && (
-                  <span className="ml-1 inline-block size-1.5 -translate-y-1 rounded-full bg-[var(--accent)]" />
-                )}
-                {tab === key && (
-                  <span className="absolute inset-x-0 bottom-0 h-0.5 rounded-full bg-[var(--accent)]" />
-                )}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* 主体：当前页签的表单区。视口够高时 min-h 抑制切页签的高度跳动；
-            矮视口（横屏手机）必须允许收缩，否则底栏会被挤出面板裁掉——
-            这里跟的是高度不是宽度，故用 min-height 媒体查询而非 md: 断点 */}
-        <div className="scroll-thin min-h-0 flex-1 space-y-4 overflow-y-auto p-6 max-md:p-5 [@media(min-height:600px)]:min-h-[280px]">
-          {tab === "basic" && (
-            <>
-          {/* 类型：创建后不可改（订阅按类型挂库） */}
+  const sections: { id: EditSectionId; title: string; summary: React.ReactNode; body: React.ReactNode }[] = [
+    {
+      id: "basic",
+      title: "基本信息",
+      summary: (
+        <>
+          <span className="text-[var(--text)]">{name.trim() || "未命名"}</span>
+          <span dir="rtl" className="min-w-0 truncate font-mono text-[var(--text-faint)]">
+            {roots[0] ? "‎" + roots[0] + "‎" : "未设根目录"}
+          </span>
+          {roots.length > 1 && <span className="text-[var(--text-faint)]">等 {roots.length} 个目录</span>}
+        </>
+      ),
+      body: (
+        <>
           <div>
-            <label className={labelClass}>库类型{library ? "（创建后不可修改）" : ""}</label>
-            <div className="flex flex-wrap gap-2">
-              {(Object.keys(LIBRARY_KIND_META) as LibraryKind[]).map((k) => (
-                <button
-                  key={k}
-                  type="button"
-                  disabled={library !== null}
-                  onClick={() => {
-                    setKind(k);
-                    if (tab !== "basic") setTab("basic");
-                  }}
-                  data-active={(library?.kind ?? kind) === k}
-                  className="glass-row nav-item !w-auto px-3 py-1.5 text-sub font-medium disabled:opacity-60"
-                >
-                  {LIBRARY_KIND_META[k].label}
-                </button>
-              ))}
-            </div>
-            <p className="mt-1.5 text-caption leading-relaxed text-[var(--text-faint)]">
-              {LIBRARY_KIND_META[effectiveKind].hint}
-            </p>
-          </div>
-
-          <div>
-            <label className={labelClass}>名称</label>
+            <label className={LABEL_CLASS}>名称</label>
             <input
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              onKeyDown={(e) => {
-                // isComposing：中文输入法选词的回车不当提交
-                if (e.key === "Enter" && !e.nativeEvent.isComposing && canSubmit) submit();
-              }}
-              placeholder="如：电影库 / 动漫库"
               autoComplete="off"
-              className={inputClass}
+              className={INPUT_CLASS}
             />
           </div>
-
           <div>
-            <label className={labelClass}>根路径（第一个为主根）</label>
-            <div className="space-y-1.5">
-              {roots.map((root, i) => (
-                <div
-                  key={root}
-                  className="group flex items-center gap-2 rounded-xl border border-white/[0.08] bg-white/[0.04] px-3 py-2"
-                >
-                  <FolderIcon className="size-4 shrink-0 text-[var(--accent)]/80" />
-                  {/* 保尾截断（dir=rtl）：路径的区分信息在尾部，省略号出现在头部；
-                      LRM 标记防止首尾的 "/" 在 RTL 下跳位。点击可原位更改目录 */}
-                  <Tooltip
-                    content={
-                      <>
-                        <p className="mb-1 break-all font-mono text-caption text-[var(--text-muted)]">{root}</p>
-                        点击更改：从当前路径开始重新选择目录。
-                      </>
-                    }
-                  >
-                    <button
-                      type="button"
-                      dir="rtl"
-                      onClick={() => setPickerTarget(i)}
-                      className="min-w-0 flex-1 truncate rounded text-left font-mono text-ui text-[var(--text)] transition-colors hover:text-[var(--accent)]"
-                    >
-                      {"‎" + root + "‎"}
-                    </button>
-                  </Tooltip>
-                  {i === 0 ? (
-                    <Tooltip
-                      content={
-                        <>
-                          <strong>主根 = 新内容的落盘位置。</strong>
-                          订阅与手动下载完成后，按「主根/标题 (年份)」建目录入库；
-                          一个库可挂多个根，但写入点只有主根这一个。
-                        </>
-                      }
-                    >
-                      <span className="shrink-0 cursor-default rounded-full bg-[var(--accent)]/15 px-2 py-0.5 text-micro font-semibold text-[var(--accent)]">
-                        主根
-                      </span>
-                    </Tooltip>
-                  ) : (
-                    <Tooltip content="把该路径设为新内容的落盘位置（移到列表第一位）。已有文件不会被移动。">
-                      <button
-                        type="button"
-                        onClick={() => setRoots([root, ...roots.filter((r) => r !== root)])}
-                        className="touch-reveal shrink-0 rounded-full px-2 py-0.5 text-micro font-medium text-[var(--text-faint)] opacity-0 transition-opacity hover:bg-white/10 hover:text-white group-hover:opacity-100"
-                      >
-                        设为主根
-                      </button>
-                    </Tooltip>
-                  )}
-                  <button
-                    type="button"
-                    aria-label={`移除 ${root}`}
-                    onClick={() => setRoots(roots.filter((r) => r !== root))}
-                    className="shrink-0 rounded-md p-1 text-[var(--text-faint)] transition-colors hover:bg-white/10 hover:text-white"
-                  >
-                    <XIcon className="size-3.5" />
-                  </button>
-                </div>
-              ))}
-              <button
-                type="button"
-                onClick={() => setPickerTarget("add")}
-                className="flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-white/15 px-3 py-2.5 text-ui font-medium text-[var(--text-muted)] transition-colors hover:border-[var(--accent)]/50 hover:text-white"
-              >
-                <PlusIcon className="size-4" />
-                {roots.length === 0 ? "浏览服务器目录并添加" : "添加目录"}
-              </button>
-            </div>
-            <p className="mt-1.5 text-caption leading-relaxed text-[var(--text-faint)]">
-              新入库的内容落在<strong className="font-medium text-[var(--text-muted)]">主根</strong>下：主根/标题
-              (年份)。其余为扩展根：扫描与监控照常覆盖，但不写入新内容。
+            <label className={LABEL_CLASS}>
+              根目录<span className="font-normal text-[var(--text-faint)]">（第一个为主根，新内容落在这里）</span>
+            </label>
+            <RootsEditor roots={roots} onChange={setRoots} onPick={setPickerTarget} />
+          </div>
+        </>
+      ),
+    },
+    {
+      id: "scan",
+      title: "扫描与监控",
+      summary: (
+        <>
+          {dot(realtimeWatch, "实时监控")}
+          {dot(autoClearMissing, "自动清理丢失")}
+          {dot(generateThumbnails, scraped ? "未识别文件缩略图" : "抓帧缩略图")}
+          {dot(!excludeFromHome, "首页展示")}
+        </>
+      ),
+      body: (
+        <div>
+          <SwitchRow
+            title="实时监控目录变化"
+            checked={realtimeWatch}
+            onChange={setRealtimeWatch}
+            detail="新文件落盘后自动增量扫描入库。SMB/NFS 等网络挂载收不到远端变化通知、建立监听还很慢，建议关闭；关闭后由定期对账和手动扫描发现新文件，不实时但不会缺失。"
+          />
+          <SwitchRow
+            title="扫描后自动清理丢失记录"
+            checked={autoClearMissing}
+            onChange={setAutoClearMissing}
+            detail="自己在磁盘上删了片子后，扫描结束即把这些记录清出台账。只删记录、不动磁盘，但记录删了不可恢复——「缺失」清单里的「重新下载」也会随之消失。关闭时记录保留，文件回归自动恢复；目录读不动的那一轮不会清理。"
+          />
+          <SwitchRow
+            title={scraped ? "为未识别文件生成缩略图" : "从视频抓帧生成缩略图"}
+            checked={generateThumbnails}
+            onChange={setGenerateThumbnails}
+            detail="没有在线海报的内容从视频本身抓一帧当封面：优先用同名图片或内嵌封面，没有再抓帧。网络挂载库抓帧需要读取每个文件，介意流量可关闭，关闭后显示占位图。"
+          />
+          <SwitchRow
+            title="在首页展示"
+            checked={!excludeFromHome}
+            onChange={(next) => setExcludeFromHome(!next)}
+            detail="关闭后首页「最近添加」与 Jellyfin 客户端的「最新媒体」都跳过这个库；库卡片仍在，进库内看照常。"
+          />
+        </div>
+      ),
+    },
+  ];
+  if (scraped) {
+    sections.push(
+      {
+        id: "scope",
+        title: "收藏范围",
+        summary: scope.declared ? (
+          <span className="text-[var(--text)]">{scope.text}</span>
+        ) : (
+          <span className="text-[var(--text-faint)]">未声明（承接该类型未命中的作品）</span>
+        ),
+        body: (
+          <>
+            <p className="text-caption leading-relaxed text-[var(--text-faint)]">
+              声明「本库收什么」，订阅与自动入库按作品特征自动选进本库；全部留空 = 不声明。
             </p>
+            <ScopeEditor
+              kind={library.kind}
+              regions={regions}
+              genres={genres}
+              onRegions={setRegions}
+              onGenres={setGenres}
+              options={routingOptions}
+            />
+          </>
+        ),
+      },
+      {
+        id: "scrape",
+        title: "刮削设置",
+        summary: scrapeText ? (
+          <span className="text-[var(--text)]">{scrapeText}</span>
+        ) : (
+          <span className="text-[var(--text-faint)]">跟随全局设置</span>
+        ),
+        body: <LibraryScrapeSettings overrides={scrapeOverrides} onChange={setScrapeOverrides} />,
+      },
+    );
+  }
+
+  return (
+    <>
+      <Modal open onClose={onClose} label={`编辑「${library.name}」`} width="2xl" panelClassName="flex max-h-[86dvh] flex-col">
+        <div className="shrink-0 border-b border-white/[0.06] px-6 pb-4 pt-5 max-md:px-5">
+          <div className="flex flex-wrap items-center gap-2.5">
+            <h2 className="text-title font-bold text-white">编辑「{library.name}」</h2>
+            {/* 类型创建后不可改：只读展示，不再摆一排灰按钮 */}
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-white/[0.08] bg-white/[0.04] py-0.5 pl-1.5 pr-2.5 text-caption text-[var(--text-muted)]">
+              <KindIcon className="size-3.5 text-[var(--accent)]" />
+              {kindLabel}
+            </span>
           </div>
-
-          {/* 实时文件监控：默认开。SMB/NFS 网络挂载收不到远端变更事件、
-              递归建监听又慢（大库可达分钟级），按库关闭后新文件由定期
-              对账与手动扫描发现（不实时但不缺失） */}
-          <div>
-            <label className="flex cursor-pointer select-none items-start gap-2.5">
-              <input
-                type="checkbox"
-                checked={realtimeWatch}
-                onChange={(e) => setRealtimeWatch(e.target.checked)}
-                className="mt-0.5 size-4 shrink-0 accent-[var(--accent)]"
-              />
-              <span className="min-w-0">
-                <span className="block text-ui font-medium text-[var(--text)]">
-                  实时监控目录变化
-                </span>
-                <span className="mt-1 block text-caption leading-relaxed text-[var(--text-faint)]">
-                  监听根路径的文件变动，新文件落盘后自动增量扫描入库。
-                  <strong className="font-medium text-[var(--text-muted)]">
-                    SMB/NFS 等网络挂载建议关闭
-                  </strong>
-                  ——远端的文件变化收不到通知，建立监听还可能非常缓慢。关闭后新文件由定期对账和手动扫描发现，不实时但不会缺失。
-                </span>
-              </span>
-            </label>
-          </div>
-
-          {/* 自动清理丢失记录：默认关。开着才在扫描收尾把"磁盘上确认没了"的
-              台账行删掉——自己在磁盘上删片的用户不必每次扫完再手动清一遍；
-              不开则保留记录（缺失清单的「重新下载」与改名归并都靠它） */}
-          <div>
-            <label className="flex cursor-pointer select-none items-start gap-2.5">
-              <input
-                type="checkbox"
-                checked={autoClearMissing}
-                onChange={(e) => setAutoClearMissing(e.target.checked)}
-                className="mt-0.5 size-4 shrink-0 accent-[var(--accent)]"
-              />
-              <span className="min-w-0">
-                <span className="block text-ui font-medium text-[var(--text)]">
-                  扫描后自动清理丢失记录
-                </span>
-                <span className="mt-1 block text-caption leading-relaxed text-[var(--text-faint)]">
-                  自己在磁盘上删了片子后，扫描结束即把这些记录清出台账，文件数与磁盘保持一致，
-                  不必再手动清一次缺失。<strong className="font-medium text-[var(--text-muted)]">只删台账、不动磁盘，但记录删了不可恢复</strong>
-                  ——「缺失」清单里的「重新下载」也会随之消失。关闭时记录保留，文件回归自动恢复。
-                  目录读不动（权限/掉盘/网络挂载抖动）的那一轮不会清理。
-                </span>
-              </span>
-            </label>
-          </div>
-
-          {/* 本地来源内容的缩略图：其他库（以及影视库里认不出的文件）没有图床可拉，
-              海报只能从文件本身抓帧。网络挂载库抓帧等于把整库读一遍，给个开关 */}
-          <div>
-            <label className="flex cursor-pointer select-none items-start gap-2.5">
-              <input
-                type="checkbox"
-                checked={generateThumbnails}
-                onChange={(e) => setGenerateThumbnails(e.target.checked)}
-                className="mt-0.5 size-4 shrink-0 accent-[var(--accent)]"
-              />
-              <span className="min-w-0">
-                <span className="block text-ui font-medium text-[var(--text)]">
-                  为本地内容生成缩略图
-                </span>
-                <span className="mt-1 block text-caption leading-relaxed text-[var(--text-faint)]">
-                  没有在线海报的内容（其他库、影视库里尚未识别的文件）从视频本身抓一帧当封面：
-                  优先用同名图片或内嵌封面，没有再抓帧。
-                  <strong className="font-medium text-[var(--text-muted)]">网络挂载库抓帧需要读取每个文件</strong>
-                  ，介意流量可关闭，关闭后显示占位图。
-                </span>
-              </span>
-            </label>
-          </div>
-
-          <div>
-            <label className="flex cursor-pointer select-none items-start gap-2.5">
-              <input
-                type="checkbox"
-                checked={excludeFromHome}
-                onChange={(e) => setExcludeFromHome(e.target.checked)}
-                className="mt-0.5 size-4 shrink-0 accent-[var(--accent)]"
-              />
-              <span className="min-w-0">
-                <span className="block text-ui font-medium text-[var(--text)]">
-                  不在首页展示
-                </span>
-                <span className="mt-1 block text-caption leading-relaxed text-[var(--text-faint)]">
-                  首页「最近添加」与 Jellyfin 客户端的「最新媒体」都跳过这个库；库卡片仍在，进库内看照常。
-                </span>
-              </span>
-            </label>
-          </div>
-
-            </>
-          )}
-
-          {/* 收藏范围（可选）：声明"本库收什么"，订阅与自动入库按它自动选库。
-              区域逐国勾选（条件本就是 any_of，预设组降级为一键整组勾选的快捷键）；
-              两个维度间是"且" */}
-          {tab === "scope" && (
-            <>
-          <p className="text-sub leading-relaxed text-[var(--text-muted)]">
-            可选：声明「本库收什么」后，订阅与自动入库按作品特征自动选进本库。
-            全部留空 = 不声明，该类型的默认库承接未命中的作品；订阅时永远可以手动改库。
-          </p>
-          {routingOptions === null ? (
-            <p className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2.5 text-sub text-[var(--text-faint)]">
-              正在加载可选项…
-            </p>
-          ) : (
-            <>
-              <div>
-                <label className={labelClass}>区域（勾选任一即匹配）</label>
-                {/* 逐个国家勾选是真正的选项（可任意组合，如只收日本）；
-                    已选中但不在内置映射里的码补进列表，保证选了就能看见、能取消 */}
-                <div className="flex flex-wrap gap-1.5">
-                  {[
-                    ...Object.entries(routingOptions.country_names),
-                    ...matchRegions
-                      .filter((c) => !(c in routingOptions.country_names))
-                      .map((c): [string, string] => [c, c]),
-                  ].map(([code, name]) => (
-                    <button
-                      key={code}
-                      type="button"
-                      data-active={matchRegions.includes(code)}
-                      onClick={() =>
-                        setMatchRegions((prev) =>
-                          prev.includes(code)
-                            ? prev.filter((c) => c !== code)
-                            : [...prev, code],
-                        )
-                      }
-                      className="glass-row nav-item !w-auto px-3 py-1.5 text-sub font-medium"
-                    >
-                      {name}
-                    </button>
-                  ))}
-                </div>
-                {/* 预设组保留为快捷键：一键选中/取消整组，避免「欧美」要点十下 */}
-                <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                  <span className="text-caption text-[var(--text-faint)]">快捷组合</span>
-                  {/* 全选/清空：如「纪录片库收全部区域」这类声明逐个点太费劲；
-                      全选后条件数 +1，还能顺带压过单条件区域库消除重叠歧义 */}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const all = Object.keys(routingOptions.country_names);
-                      setMatchRegions((prev) =>
-                        all.every((c) => prev.includes(c)) ? [] : [...new Set([...prev, ...all])],
-                      );
-                    }}
-                    className="glass-row nav-item !w-auto px-2.5 py-1 text-caption font-medium"
-                  >
-                    {Object.keys(routingOptions.country_names).every((c) =>
-                      matchRegions.includes(c),
-                    )
-                      ? "清空"
-                      : "全选"}
-                  </button>
-                  {routingOptions.region_presets.map((preset) => {
-                    const active = preset.countries.every((c) => matchRegions.includes(c));
-                    return (
-                      <button
-                        key={preset.key}
-                        type="button"
-                        data-active={active}
-                        title={preset.countries
-                          .map((c) => routingOptions.country_names[c] ?? c)
-                          .join(" / ")}
-                        onClick={() =>
-                          setMatchRegions((prev) =>
-                            active
-                              ? prev.filter((c) => !preset.countries.includes(c))
-                              : [...new Set([...prev, ...preset.countries])],
-                          )
-                        }
-                        className="glass-row nav-item !w-auto px-2.5 py-1 text-caption font-medium"
-                      >
-                        {preset.label}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-              <div>
-                <label className={labelClass}>类型（勾选任一即匹配）</label>
-                <div className="flex flex-wrap items-center gap-1.5">
-                  {/* 与区域侧同款的全选/清空快捷键（类型没有预设组，只此一个） */}
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setMatchGenres((prev) =>
-                        genreOptions.every((g) => prev.includes(g.id))
-                          ? []
-                          : [...new Set([...prev, ...genreOptions.map((g) => g.id)])],
-                      )
-                    }
-                    className="glass-row nav-item !w-auto px-2.5 py-1 text-caption font-medium"
-                  >
-                    {genreOptions.every((g) => matchGenres.includes(g.id)) ? "清空" : "全选"}
-                  </button>
-                  {genreOptions.map((g) => (
-                    <button
-                      key={g.id}
-                      type="button"
-                      data-active={matchGenres.includes(g.id)}
-                      onClick={() =>
-                        setMatchGenres((prev) =>
-                          prev.includes(g.id)
-                            ? prev.filter((id) => id !== g.id)
-                            : [...prev, g.id],
-                        )
-                      }
-                      className="glass-row nav-item !w-auto px-3 py-1.5 text-sub font-medium"
-                    >
-                      {g.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              {matchRegions.length > 0 && matchGenres.length > 0 && (
-                <p className="text-caption leading-relaxed text-[var(--text-faint)]">
-                  区域与类型须<strong className="font-medium text-[var(--text-muted)]">同时满足</strong>
-                  （如「日韩 + 动画」= 只收日韩的动画）。
-                </p>
-              )}
-            </>
-          )}
-            </>
-          )}
-
-          {/* 刮削设置（可选）：本库单独的语言/选图/命名/目录写入口味。
-              控件与「设置 → 刮削与整理」共用一套，外面包三态壳 */}
-          {tab === "scrape" && (
-            <LibraryScrapeSettings overrides={scrapeOverrides} onChange={setScrapeOverrides} />
-          )}
         </div>
 
-        {/* 底栏：错误 + 范围摘要 + 操作，任一页签下常显 */}
+        <div className="scroll-thin min-h-0 flex-1 space-y-2 overflow-y-auto p-6 max-md:p-5">
+          {sections.map((s) => {
+            const expanded = open === s.id;
+            return (
+              <section
+                key={s.id}
+                data-section={s.id}
+                className="overflow-hidden rounded-[14px] border border-white/[0.08] bg-white/[0.04]"
+              >
+                <button
+                  type="button"
+                  aria-expanded={expanded}
+                  onClick={() => setOpen(expanded ? null : s.id)}
+                  className="grid w-full grid-cols-[6.5rem_1fr_auto] items-center gap-3.5 px-3.5 py-3 text-left transition-colors hover:bg-white/[0.075] max-md:grid-cols-[5.5rem_1fr_auto]"
+                >
+                  <span className="font-semibold text-white">{s.title}</span>
+                  <span className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1 text-caption text-[var(--text-muted)]">
+                    {s.summary}
+                  </span>
+                  <ChevronDownIcon
+                    className={`size-3.5 text-[var(--text-faint)] transition-transform ${expanded ? "rotate-180" : ""}`}
+                  />
+                </button>
+                {expanded && (
+                  <div className="space-y-4 border-t border-white/[0.06] px-3.5 pb-4 pt-3">{s.body}</div>
+                )}
+              </section>
+            );
+          })}
+        </div>
+
         <div className="shrink-0 border-t border-white/[0.06] px-6 py-4 max-md:px-5">
           {error && (
             <p className="mb-3 rounded-lg border border-red-400/25 bg-red-500/10 px-3.5 py-2.5 text-ui leading-6 text-red-200">
@@ -1633,7 +1975,7 @@ export function LibraryFormDialog({
           )}
           <div className="flex items-center justify-between gap-3">
             <p className="min-w-0 truncate text-caption text-[var(--text-faint)]">
-              {missingFields.length > 0 ? `还需填写：${missingFields.join("、")}` : scopeSummary}
+              {missing.length > 0 ? `还需填写：${missing.join("、")}` : "类型创建后不可更改"}
             </p>
             <div className="flex shrink-0 items-center gap-3">
               <button type="button" onClick={onClose} className="btn-glass h-9 px-4 text-ui font-medium">
@@ -1642,7 +1984,7 @@ export function LibraryFormDialog({
               <button
                 type="button"
                 onClick={submit}
-                disabled={!canSubmit}
+                disabled={!ready || busy}
                 className="btn-accent h-9 rounded-full px-5 text-ui font-semibold disabled:opacity-40"
               >
                 {busy ? "保存中…" : "保存"}
@@ -1651,30 +1993,7 @@ export function LibraryFormDialog({
           </div>
         </div>
       </Modal>
-
-      {/* 服务端目录选择器：追加时从最近添加的根起步，更改时从被改的根起步；
-          追加去重，更改为原位替换（改主根仍是主根），撞上已有路径时合并去重 */}
-      <DirectoryPicker
-        open={pickerTarget !== null}
-        initialPath={
-          pickerTarget === "add" || pickerTarget === null
-            ? roots.length > 0
-              ? roots[roots.length - 1]
-              : undefined
-            : roots[pickerTarget]
-        }
-        onClose={() => setPickerTarget(null)}
-        onSelect={(path) => {
-          setRoots((prev) => {
-            if (pickerTarget === "add" || pickerTarget === null) {
-              return prev.includes(path) ? prev : [...prev, path];
-            }
-            const next = prev.map((r, idx) => (idx === pickerTarget ? path : r));
-            return next.filter((r, idx) => r !== path || idx === pickerTarget);
-          });
-          setPickerTarget(null);
-        }}
-      />
+      <RootsPicker target={pickerTarget} roots={roots} onChange={setRoots} onClose={() => setPickerTarget(null)} />
     </>
   );
 }
