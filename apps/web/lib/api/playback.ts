@@ -150,6 +150,31 @@ export interface MediaActivitySnapshot {
   downloads: ActiveFileDownload[];
   devices: PlaybackDevice[];
   recent: MediaRecentPlay[];
+  /** 落在当前超管不可浏览的库里的最近观看条数（只报个数，不出片名） */
+  hidden_recent_count: number;
+}
+
+export interface PlaybackHistoryClearResult {
+  deleted_states: number;
+  deleted_metrics: number;
+}
+
+/**
+ * 清除**自己的**观看记录（续播点、已看标记、播放次数与播放质量指标）。
+ * scope=item 需 mediaItemId，scope=library 需 libraryId，scope=all 清全部。
+ */
+export async function clearPlaybackHistory(
+  scope: "item" | "library" | "all",
+  target: { mediaItemId?: number; libraryId?: number } = {},
+): Promise<{ result: PlaybackHistoryClearResult; message: string }> {
+  const params = new URLSearchParams({ scope });
+  if (target.mediaItemId != null) params.set("media_item_id", String(target.mediaItemId));
+  if (target.libraryId != null) params.set("library_id", String(target.libraryId));
+  const response = await request<ApiEnvelope<PlaybackHistoryClearResult>>(
+    `/playback/history?${params}`,
+    { method: "DELETE" },
+  );
+  return { result: response.data, message: response.message };
 }
 
 /** 任务中心媒体库分类的完整快照：正在播放/下载、设备清单与全成员最近观看。 */

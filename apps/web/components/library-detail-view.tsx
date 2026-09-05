@@ -7,9 +7,9 @@ import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import type { Route } from "next";
 import Link from "next/link";
 
-import { useConfirm } from "@/components/feedback";
+import { useConfirm, useToast } from "@/components/feedback";
 import { refreshLibraryConfirm, scanLibraryConfirm } from "@/lib/library-confirm";
-import { MoreIcon, XIcon } from "@/components/icons";
+import { LockIcon, MoreIcon, XIcon } from "@/components/icons";
 import { PAGE_NAV_BUTTON_CLASS, PageNav } from "@/components/page-nav";
 import { usePageTitle } from "@/lib/use-page-title";
 import {
@@ -61,7 +61,9 @@ import {
   type ClaimSeed,
   searchSeedFromLabel,
 } from "@/components/claim-panels";
+import { clearPlaybackHistory } from "@/lib/api/playback";
 import { listSubscriptions, type Subscription } from "@/lib/api/subscriptions";
+import { HttpError } from "@/lib/http";
 import { formatBytes } from "@/lib/format";
 import { formatLibraryInventorySummary } from "@/lib/library-inventory-summary";
 import { activeWallInitialAtViewport, wallInitialAtOffset } from "@/lib/library-wall-index";
@@ -125,7 +127,6 @@ function keepOnError<T>(rows: Promise<T[]>): Promise<T[] | null> {
 
 export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   const initialSnapshot = getLibraryDetailSnapshot(libraryId);
-  const restoredFromSnapshot = useRef(initialSnapshot !== undefined);
   const { canManageLibraries } = usePermissions();
   const { activeJobs } = useJobs();
   const restoreScrollRef = useScrollRestoration(`library:${libraryId}`, {
@@ -142,6 +143,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
     [restoreScrollRef],
   );
   const confirm = useConfirm();
+  const toast = useToast();
   const [libraries, setLibraries] = useState<MediaLibrary[] | null>(initialSnapshot?.libraries ?? null);
   const [items, setItems] = useState<LibraryItem[]>(initialSnapshot?.items ?? []);
   // 影视库里认不出、按文件名临时挂着的条目：不进主墙，单独一段展示（其他库恒空）
@@ -252,7 +254,14 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
     );
     Promise.all([
       listLibraries(),
-      Promise.all(itemPages).then((pages) => pages.flat()),
+      // 超管不在这个库的浏览范围内时海报墙接口按 404 拒绝（管理视图不渲染墙），
+      // 不是拉取失败，别点亮顶部的重试提示条
+      Promise.all(itemPages)
+        .then((pages) => pages.flat())
+        .catch((e) => {
+          if (e instanceof HttpError && e.status === 404) return [] as LibraryItem[];
+          throw e;
+        }),
       // 临时条目通常是几个到几十个，一次拉全、按入账时间倒序；不参与主墙分页与索引
       listLibraryItems(libraryId, {
         identity: "provisional",
@@ -317,13 +326,14 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   }, [canManageLibraries, libraryId]);
 
   useEffect(() => {
-    // 从详情页返回时，已加载分页窗口就在会话快照中。立刻重拉会先把墙缩成
-    // 首批 60 条，深处的滚动目标又会失去高度；之后仍由可见页轮询负责对账。
-    if (!restoredFromSnapshot.current || snapshotStale) {
-      restoredFromSnapshot.current = true;
-      reload();
-    }
-  }, [reload, snapshotStale]);
+    // 挂载即对账，有会话快照也不例外：快照只负责首帧先把上次的分页窗口画
+    // 出来（滚动位置有落脚点），内容必须以服务端为准。曾经有快照就跳过重拉、
+    // 只等 30 秒空闲轮询——线上因此出过事：建库后马上点进去（空）、退出、
+    // 导入完成再点进来，看到的还是那份空快照，停留不满 30 秒永远看不到新内容。
+    // 重拉不会缩墙：wallLoaded/wallOffset 都从快照恢复，拉的是同一个窗口，
+    // reconcileList 又按 id 复用旧引用，滚动锚点不会丢
+    reload();
+  }, [reload]);
 
   // 海报墙滚到底时向服务端追加一页。并发闸门用 ref：哨兵在快速滚动中会
   // 连续触发几次，不挡住就是同一页被拉好几遍
@@ -625,9 +635,29 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   const meta = LIBRARY_KIND_META[library.kind];
   const { stats } = library;
 
-  // 库操作全部收进 ⋯ 菜单，顶栏只留这一个入口；运行状态看头部下方的胶囊
-  const actionsMenu = canManageLibraries ? (
+  // 清除自己在本库的观看记录（docs/design/library-access.md 2.6）：只删当前
+  // 登录身份自己的行，成员与超管都有这个入口
+  const clearHistory = () => {
+    void confirm({
+      title: `清空你在「${library.name}」的观看记录？`,
+      description:
+        "这个库里所有作品的续播进度、已看标记和播放次数都会清除，无法恢复。只影响你自己的记录。",
+      confirmLabel: "清空",
+      tone: "danger",
+    }).then((ok) => {
+      if (!ok) return;
+      clearPlaybackHistory("library", { libraryId })
+        .then(({ message }) => toast.success(message))
+        .catch((e) => toast.error((e as Error).message));
+    });
+  };
+
+  // 库操作全部收进 ⋯ 菜单，顶栏只留这一个入口；运行状态看头部下方的胶囊。
+  // 成员没有管理项，菜单里只剩「清空我的观看记录」
+  const actionsMenu = (
     <LibraryActionsMenu
+      canManage={canManageLibraries}
+      onClearHistory={clearHistory}
       scanning={Boolean(library.scanning)}
       scanPhase={library.scan_progress?.phase ?? null}
       scanPercent={
@@ -702,7 +732,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
       onOpenPending={() => setIssueTab(pendingTab)}
       onEdit={() => setEditing(library)}
     />
-  ) : null;
+  );
 
   return (
     <div ref={scrollRef} className="scroll-thin scroll-safe flex-1 overflow-y-auto pb-10">
@@ -723,6 +753,12 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
               默认
             </span>
           )}
+          {!library.viewer_access ? (
+            <span className="flex shrink-0 items-center gap-1 rounded-full border border-[var(--warn)]/35 bg-[var(--warn)]/[0.12] px-2 py-0.5 text-caption font-semibold text-[var(--warn)]">
+              <LockIcon className="size-3" />
+              仅管理
+            </span>
+          ) : null}
         </div>
         <p className="text-on-image mt-1.5 truncate text-ui text-[var(--text-muted)] max-md:text-sub">
           {meta.label}库 · {stats.item_count} 部作品 · {stats.file_count} 个文件 ·{" "}
@@ -867,6 +903,29 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
         />
       )}
 
+      {/* —— 管理视图：超管不在本库的浏览范围内（docs/design/library-access.md 2.4）。
+          设置 / 扫描 / 待处理 / 回收站照常（都在上方头部与 ⋯ 菜单里），海报墙、
+          未识别分区与追踪中一概不渲染——内容对当前身份就是不存在 —— */}
+      {!library.viewer_access ? (
+        <div className="mt-16 flex flex-col items-center gap-3 px-6 text-center">
+          <LockIcon className="size-9 text-white/[0.28]" />
+          <p className="text-ui leading-7 text-[var(--text-muted)]">
+            内容已隐藏：你不在这个库的可见范围内。
+            <br />
+            设置、扫描与待处理仍可使用；把自己加入可见范围即可浏览。
+          </p>
+          {canManageLibraries && (
+            <button
+              type="button"
+              onClick={() => setEditing(library)}
+              className="btn-glass mt-1 h-9 px-4 text-ui font-medium"
+            >
+              把我加入可见范围
+            </button>
+          )}
+        </div>
+      ) : (
+      <>
       {/* —— 追踪中（订阅已指向本库、文件未落地）：自动化正在进行的部分，置顶优先 —— */}
       {pending.length > 0 && (
         <div className="mt-6 px-6 max-md:mt-4 max-md:px-4">
@@ -992,6 +1051,9 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
         </>
       )}
 
+      </>
+      )}
+
       {canManageLibraries && (
         <>
           <LibraryFormDialog
@@ -1017,6 +1079,10 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
  *  三个长任务在菜单里就能看进度并原地停止，运行状态另由头部胶囊常驻呈现。 */
 
 interface LibraryActionsMenuProps {
+  /** 媒体库管理权限：没有时菜单只剩「清空我的观看记录」 */
+  canManage: boolean;
+  /** 清除当前登录身份自己在本库的观看记录 */
+  onClearHistory: () => void;
   scanning: boolean;
   /** 扫描类任务的当前阶段；没在跑为 null——决定停止入口给不给 */
   scanPhase: ScanPhase | null;
@@ -1042,6 +1108,8 @@ interface LibraryActionsMenuProps {
 }
 
 function LibraryActionsMenu({
+  canManage,
+  onClearHistory,
   scanning,
   scanPhase,
   scanPercent,
@@ -1096,6 +1164,8 @@ function LibraryActionsMenu({
               光靠它意味着清单一空抽屉就整个不可达——「已忽略」更是从来没有
               自己的胶囊，把待识别全忽略掉之后就再也回不去了。这里恒在，
               计数为 0 时也不隐藏：归档随时可查，空清单本身也是有效答案 */}
+          {canManage && (
+          <>
           <DropdownMenu.Item onSelect={onOpenPending} className={itemClass}>
             待处理{pendingCount > 0 ? ` ${pendingCount}` : ""}
           </DropdownMenu.Item>
@@ -1132,6 +1202,13 @@ function LibraryActionsMenu({
           </DropdownMenu.Item>
           <DropdownMenu.Item onSelect={onEdit} disabled={busy} className={itemClass}>
             编辑库
+          </DropdownMenu.Item>
+          <DropdownMenu.Separator className="my-1 h-px bg-white/[0.07]" />
+          </>
+          )}
+          {/* 观看记录是个人数据：成员与超管都能清自己的，与管理权无关 */}
+          <DropdownMenu.Item onSelect={onClearHistory} className={itemClass}>
+            清空我的观看记录…
           </DropdownMenu.Item>
         </DropdownMenu.Content>
       </DropdownMenu.Portal>

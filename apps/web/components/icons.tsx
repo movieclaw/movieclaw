@@ -71,6 +71,14 @@ export const CheckIcon = (p: IconProps) => (
   </Base>
 );
 
+/** 锁：库的「仅管理」状态（超管不在浏览范围内）。 */
+export const LockIcon = (p: IconProps) => (
+  <Base {...p}>
+    <rect x="5" y="11" width="14" height="10" rx="2" />
+    <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+  </Base>
+);
+
 export const XIcon = (p: IconProps) => (
   <Base {...p}>
     <path d="M6 6l12 12M18 6L6 18" />

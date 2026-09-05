@@ -61,6 +61,9 @@ export interface LibraryCapabilities {
   jellyfin_collection: string;
 }
 
+/** 库的可见范围模式：everyone=对全部成员自动开放 / selected=只对指定成员开放。 */
+export type LibraryAccessMode = "everyone" | "selected";
+
 export interface MediaLibrary {
   id: number;
   name: string;
@@ -73,6 +76,17 @@ export interface MediaLibrary {
   generate_thumbnails: boolean;
   /** 是否从首页「最近添加」等汇总里排除 */
   exclude_from_home: boolean;
+  /** 可见范围（docs/design/library-access.md）：everyone / selected */
+  access_mode: LibraryAccessMode;
+  /** 超管本人是否在浏览范围内（管理权不受影响） */
+  admin_visible: boolean;
+  /** 显式授权的成员 id；成员端恒空 */
+  member_ids: number[];
+  /**
+   * 当前登录身份能否浏览本库内容。成员端恒 true（看不到的库不在列表里）；
+   * 超管端为 false 表示只有管理权：卡片带锁、海报墙/详情/播放不可用。
+   */
+  viewer_access: boolean;
   /** 根路径列表（绝对路径），第一个为主根——新入库落在这里 */
   root_paths: string[];
   primary_root: string | null;
@@ -352,6 +366,12 @@ export interface LibraryPayload {
   generate_thumbnails?: boolean;
   /** 是否从首页汇总里排除该库；不传=不改动（新建时默认关） */
   exclude_from_home?: boolean;
+  /** 可见范围模式；不传=不改动（新建时默认 everyone） */
+  access_mode?: LibraryAccessMode;
+  /** 超管本人是否可浏览；不传=不改动（新建时默认可浏览） */
+  admin_visible?: boolean;
+  /** 显式授权的成员 id（整体覆盖）；不传=不改动 */
+  member_ids?: number[];
   /** 收藏范围条件；缺省/空=不声明 */
   match_rules?: MatchRule[];
   /** 扫描后自动清理已确认丢失的库存记录；不传=不改动（新建时默认关） */

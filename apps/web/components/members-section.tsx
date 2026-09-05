@@ -143,7 +143,7 @@ export function MembersSection() {
       </div>
 
       <div className="css-glass overflow-hidden !rounded-xl">
-        <div className="grid grid-cols-[minmax(170px,1.25fr)_minmax(160px,1fr)_minmax(135px,.8fr)_130px_36px] gap-4 border-b border-white/[0.07] px-4 py-2.5 text-caption font-medium text-[var(--text-faint)] max-md:hidden">
+        <div className="grid grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)_minmax(0,.8fr)_minmax(88px,130px)_36px] gap-4 border-b border-white/[0.07] px-4 py-2.5 text-caption font-medium text-[var(--text-faint)] max-md:hidden">
           <span>成员</span>
           <span>功能权限</span>
           <span>媒体库范围</span>
@@ -232,14 +232,23 @@ function MemberTableRow({
   const visibleNames = libraries
     .filter((library) => member.library_ids.includes(library.id))
     .map((library) => library.name);
+  // 「全部库」只自动包含对所有成员开放的库；「指定成员」的库要单独勾选，
+  // 摘要里把勾了的单独列出来（docs/design/library-access.md 2.2）
+  const grantedSelected = libraries
+    .filter(
+      (library) => library.access_mode === "selected" && member.library_ids.includes(library.id),
+    )
+    .map((library) => library.name);
   const libraryScope = member.all_libraries
-    ? "全部媒体库"
+    ? grantedSelected.length > 0
+      ? `全部共享库 + 指定成员的库：${grantedSelected.join("、")}`
+      : "全部共享库"
     : visibleNames.length > 0
       ? visibleNames.join("、")
       : "未分配媒体库";
 
   return (
-    <div className="grid grid-cols-[minmax(170px,1.25fr)_minmax(160px,1fr)_minmax(135px,.8fr)_130px_36px] items-center gap-4 px-4 py-3.5 transition-colors hover:bg-white/[0.025] max-md:grid-cols-[minmax(0,1fr)_36px] max-md:gap-x-3 max-md:gap-y-2.5">
+    <div className="grid grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)_minmax(0,.8fr)_minmax(88px,130px)_36px] items-center gap-4 px-4 py-3.5 transition-colors hover:bg-white/[0.025] max-md:grid-cols-[minmax(0,1fr)_36px] max-md:gap-x-3 max-md:gap-y-2.5">
       <div className="flex min-w-0 items-center gap-3">
         <AvatarBadge nickname={member.nickname} avatarUrl={member.avatar_url} className="size-9" />
         <div className="min-w-0">
@@ -262,10 +271,12 @@ function MemberTableRow({
           <span className="text-caption text-[var(--text-faint)]">仅浏览与播放</span>
         )}
       </div>
-      <p className="truncate text-sub text-[var(--text-muted)] max-md:col-start-1" title={libraryScope}>
+      {/* min-w-0：网格子项默认 min-width:auto，会把整行撑到内容宽度、把最右的
+          ⋯ 列挤出 overflow-hidden 的容器外——PC 上窄一点的设置面板就看不到菜单 */}
+      <p className="min-w-0 truncate text-sub text-[var(--text-muted)] max-md:col-start-1" title={libraryScope}>
         {libraryScope}
       </p>
-      <p className="text-caption text-[var(--text-faint)] max-md:col-start-1">
+      <p className="min-w-0 truncate text-caption text-[var(--text-faint)] max-md:col-start-1">
         {member.last_login_at ? formatRelativeTime(member.last_login_at) : "从未登录"}
       </p>
       <MemberActionsMenu
@@ -464,6 +475,11 @@ function EditMemberDialog({
   const [siteIds, setSiteIds] = useState(member.site_ids);
   const [busy, setBusy] = useState(false);
 
+  // 「指定成员」的库：成员即使是「全部库」也要单独勾选才可见——保存时不能把
+  // 这些显式授权当成白名单一起清掉
+  const selectedModeIds = libraries
+    .filter((library) => library.access_mode === "selected")
+    .map((library) => library.id);
   const save = async () => {
     setBusy(true);
     const payload: MemberUpdatePayload = {
@@ -472,7 +488,7 @@ function EditMemberDialog({
       allow_search: allowSearch,
       allow_direct_download: allowSearch && allowDirectDownload,
       all_libraries: allLibraries,
-      library_ids: allLibraries ? [] : libraryIds,
+      library_ids: allLibraries ? libraryIds.filter((id) => selectedModeIds.includes(id)) : libraryIds,
       all_sites: allSites,
       site_ids: allSites ? [] : siteIds,
     };
@@ -538,16 +554,52 @@ function EditMemberDialog({
         </div>
 
         <div className="mt-6 border-t border-white/[0.07] pt-5">
-          <SectionTitle title="媒体库范围" />
+          <SectionTitle
+            title="媒体库范围"
+            description="「全部媒体库」自动包含对所有成员开放的库，含以后新建的；「指定成员」的库需要单独勾选。"
+          />
           <AccessPicker
             allSelected={allLibraries}
             allLabel="全部媒体库"
             limitedLabel="指定媒体库"
-            options={libraries.map((library) => ({ id: library.id, label: library.name }))}
+            options={libraries.map((library) => ({
+              id: library.id,
+              label: library.access_mode === "selected" ? `${library.name} · 指定成员` : library.name,
+            }))}
             selected={libraryIds}
             onModeChange={setAllLibraries}
             onSelectedChange={setLibraryIds}
           />
+          {allLibraries && selectedModeIds.length > 0 && (
+            <div className="mt-3">
+              <p className="text-caption text-[var(--text-faint)]">指定成员的库（需单独勾选）</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {libraries
+                  .filter((library) => library.access_mode === "selected")
+                  .map((library) => {
+                    const on = libraryIds.includes(library.id);
+                    return (
+                      <button
+                        key={library.id}
+                        type="button"
+                        onClick={() =>
+                          setLibraryIds(
+                            on ? libraryIds.filter((id) => id !== library.id) : [...libraryIds, library.id],
+                          )
+                        }
+                        className={`rounded-lg border px-3 py-1.5 text-sub font-medium transition-colors ${
+                          on
+                            ? "border-[var(--accent)]/50 bg-[var(--accent-soft)] text-[var(--accent)]"
+                            : "border-white/[0.09] bg-white/[0.035] text-[var(--text-muted)] hover:text-[var(--text)]"
+                        }`}
+                      >
+                        {library.name}
+                      </button>
+                    );
+                  })}
+              </div>
+            </div>
+          )}
         </div>
 
         {allowSearch && (

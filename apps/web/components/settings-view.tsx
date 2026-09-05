@@ -12,7 +12,7 @@ import { AppUpdateSection } from "@/components/app-update-section";
 import { AvatarBadge } from "@/components/avatar-badge";
 import { DevicesSection } from "@/components/devices-section";
 import { DownloaderConfigSection } from "@/components/downloader-config-section";
-import { useConfirm } from "@/components/feedback";
+import { useConfirm, useToast } from "@/components/feedback";
 import { ImportWatchSection } from "@/components/import-watch-section";
 import { SettingsOverviewSection } from "@/components/settings-overview-section";
 import { MembersSection } from "@/components/members-section";
@@ -38,6 +38,7 @@ import { useVisibleNavItems } from "@/components/sidebar";
 import { fileToCompressedJpeg, useBackdrop } from "@/lib/backdrop";
 import { BACKDROP, sidebarGlass } from "@/lib/glass";
 import { changePassword, updateProfile, uploadAvatar } from "@/lib/api/auth";
+import { clearPlaybackHistory } from "@/lib/api/playback";
 import { DEFAULT_UI_PREFS } from "@/lib/api/ui";
 import { HttpError } from "@/lib/http";
 import { useSession } from "@/lib/session";
@@ -332,6 +333,54 @@ function ProfileSection() {
       <SettingsGroup label="安全">
         <ChangePasswordCard />
       </SettingsGroup>
+
+      <SettingsGroup label="观看历史">
+        <WatchHistoryCard />
+      </SettingsGroup>
+    </div>
+  );
+}
+
+/** 清空自己全部观看记录（docs/design/library-access.md 2.6）：只删当前登录身份自己的行。 */
+function WatchHistoryCard() {
+  const confirm = useConfirm();
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const clearAll = async () => {
+    const ok = await confirm({
+      title: "清空全部观看记录？",
+      description:
+        "所有作品的续播进度、已看标记和播放次数都会清除，首页「最近观看」与播放器的「继续观看」随即清空，无法恢复。只影响你自己的记录；应用更新前的自动备份仍包含历史记录。",
+      confirmLabel: "清空",
+      tone: "danger",
+    });
+    if (!ok) return;
+    setBusy(true);
+    try {
+      const { message } = await clearPlaybackHistory("all");
+      toast.success(message);
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="css-glass flex items-center justify-between gap-4 !rounded-2xl px-5 py-4">
+      <div>
+        <p className="text-body font-medium text-[var(--text)]">清空全部观看记录</p>
+        <p className="mt-0.5 text-caption text-[var(--text-faint)]">
+          续播进度、已看标记与播放次数一并清除；单部作品或单个库的记录可在对应页面的 ⋯ 菜单里清
+        </p>
+      </div>
+      <button
+        type="button"
+        onClick={() => void clearAll()}
+        disabled={busy}
+        className="btn-glass h-9 shrink-0 px-4 text-ui font-medium !text-[#ff9f9f] disabled:opacity-40"
+      >
+        {busy ? "清空中…" : "清空"}
+      </button>
     </div>
   );
 }

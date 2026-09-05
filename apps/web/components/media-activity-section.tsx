@@ -39,6 +39,7 @@ const EMPTY_SNAPSHOT: MediaActivitySnapshot = {
   downloads: [],
   devices: [],
   recent: [],
+  hidden_recent_count: 0,
 };
 
 export interface MediaActivityState {
@@ -558,7 +559,8 @@ export function MediaActivityPanel({
   const [pendingRevoke, setPendingRevoke] = useState<RevokeTarget | null>(null);
   const [revoking, setRevoking] = useState<string | null>(null);
   const liveCount = snapshot.sessions.length + snapshot.downloads.length;
-  const empty = liveCount === 0 && snapshot.recent.length === 0;
+  const empty =
+    liveCount === 0 && snapshot.recent.length === 0 && snapshot.hidden_recent_count === 0;
 
   const requestRevoke = useCallback((deviceId: string, label: string) => {
     setPendingRevoke({ deviceId, label });
@@ -641,12 +643,12 @@ export function MediaActivityPanel({
         </section>
       )}
 
-      {snapshot.recent.length > 0 && (
+      {(snapshot.recent.length > 0 || snapshot.hidden_recent_count > 0) && (
         <section className="mt-7" aria-label="最近观看">
           <SectionHeading
             icon={<HistoryIcon className="size-4 text-white/40" />}
             title="最近观看"
-            count={snapshot.recent.length}
+            count={snapshot.recent.length + snapshot.hidden_recent_count}
           />
           <div className="divide-y divide-white/[0.06] rounded-2xl border border-white/[0.08] bg-white/[0.02]">
             {snapshot.recent.map((entry, index) => (
@@ -655,6 +657,13 @@ export function MediaActivityPanel({
                 entry={entry}
               />
             ))}
+            {/* 落在超管不可浏览的库里的记录：只报个数，不出片名与海报
+                （docs/design/library-access.md 2.5） */}
+            {snapshot.hidden_recent_count > 0 && (
+              <p className="px-4 py-2.5 text-caption text-white/45 max-md:px-3.5">
+                另有 {snapshot.hidden_recent_count} 条记录不在你的可见范围内
+              </p>
+            )}
           </div>
         </section>
       )}

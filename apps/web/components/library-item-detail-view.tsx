@@ -55,6 +55,7 @@ import {
   type PlaybackUnit,
   type PlaybackWatchState,
   fetchResumeState,
+  clearPlaybackHistory,
 } from "@/lib/api/playback";
 import { useSubscribeEntry } from "@/components/subscribe-entry";
 import { LIBRARY_KIND_LABELS, type LibraryKind } from "@/lib/media-types";
@@ -454,9 +455,22 @@ export function LibraryItemDetailView({
         title={detail.title}
         fallback={navFallback}
         actions={
-          canManageLibraries || (canSubscribe && tmdbId > 0) ? (
             <ItemActionsMenu
               canManage={canManageLibraries}
+              onClearHistory={() => {
+                void confirm({
+                  title: `清除《${detail.title}》的观看记录？`,
+                  description:
+                    "续播进度、已看标记和播放次数都会清除，无法恢复。只影响你自己的记录。",
+                  confirmLabel: "清除",
+                  tone: "danger",
+                }).then((ok) => {
+                  if (!ok) return;
+                  clearPlaybackHistory("item", { mediaItemId: detail.media_item_id })
+                    .then(({ message }) => toast.success(message))
+                    .catch((e) => toast.error((e as Error).message));
+                });
+              }}
               identifiable={scrapedLibrary}
               scraped={detail.source === "tmdb"}
               scraping={scrapingNow}
@@ -498,7 +512,6 @@ export function LibraryItemDetailView({
                   : undefined
               }
             />
-          ) : null
         }
       />
 
@@ -902,6 +915,7 @@ function ItemActionsMenu({
   onTransfer,
   onDelete,
   onUpgrade,
+  onClearHistory,
 }: {
   /** 媒体库管理权限：识别/刮削/图片/转移/删除这些条目管理项按它显隐 */
   canManage: boolean;
@@ -922,6 +936,8 @@ function ItemActionsMenu({
   onDelete: () => void;
   /** 洗版入口（quality-upgrade.md §13.5）；无订阅权限或条目未识别时不传 */
   onUpgrade?: () => void;
+  /** 清除当前登录身份自己对这部作品的观看记录：个人数据，与管理权无关 */
+  onClearHistory: () => void;
 }) {
   const router = useRouter();
   const itemClass =
@@ -1016,6 +1032,12 @@ function ItemActionsMenu({
               </DropdownMenu.Item>
             </>
           )}
+          {(canManage || onUpgrade) && (
+            <DropdownMenu.Separator className="my-1 h-px bg-white/[0.07]" />
+          )}
+          <DropdownMenu.Item onSelect={onClearHistory} className={itemClass}>
+            清除观看记录…
+          </DropdownMenu.Item>
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>
