@@ -43,16 +43,21 @@ class LibraryFileRepository:
         return list(result.scalars().all())
 
     async def list_unidentified(self, *, library_id: int | None = None) -> list[LibraryFile]:
-        """待识别清单：**在位**、没挂上身份锚、且用户没忽略过的文件。
+        """待识别清单：**在位**、识别失败（``unidentified_code`` 非空）、且用户没忽略过的文件。
 
         在位口径不能省：文件已经不在磁盘上了还催人去认领，是让用户对着
         一个认领完也没有片源的条目做决定；那类行属于「缺失」清单。少了这
         个条件，清单还会与库卡片上的 ``stats_unidentified_count`` 角标对不上
         （后者一直只算在位，见 LibraryRepository.refresh_stats）——同一件事
         两个数，用户没法判断该信哪个。
+
+        判据是 ``unidentified_code``（识别失败分类）而不是"锚为空"：影视库里
+        认不出的文件如今挂着**临时本地身份**（可见可播），锚不空但仍是
+        待识别；锚为空只剩用户忽略与类型错放两种情形
+        （docs/design/library-other-kind.md 3.4）。
         """
         stmt = select(LibraryFile).where(
-            LibraryFile.media_item_id.is_(None),  # type: ignore[union-attr]
+            LibraryFile.unidentified_code.is_not(None),  # type: ignore[union-attr]
             LibraryFile.ignored_at.is_(None),  # type: ignore[union-attr]
             LibraryFile.in_place(),
         )
@@ -90,9 +95,7 @@ class LibraryFileRepository:
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
 
-    async def delete_missing(
-        self, library_id: int, *, media_item_id: int | None = None
-    ) -> int:
+    async def delete_missing(self, library_id: int, *, media_item_id: int | None = None) -> int:
         """删除缺失记录（只删台账，绝不动磁盘），返回删除条数。"""
         rows = await self.list_missing(library_id, media_item_id=media_item_id)
         for row in rows:
@@ -144,9 +147,7 @@ class LibraryFileRepository:
         )
         return {(row[0], row[1]) for row in result.all()}
 
-    async def owned_units_many(
-        self, media_item_ids: list[int]
-    ) -> dict[int, set[tuple[int, int]]]:
+    async def owned_units_many(self, media_item_ids: list[int]) -> dict[int, set[tuple[int, int]]]:
         """批量版 owned_units（海报墙等列表页一次查完避免 N+1）。
 
         口径与 owned_units 完全一致：**跨库**统计（同一部剧的集可能分散在
@@ -363,24 +364,35 @@ class LibraryFileRepository:
         row.updated_at = utcnow()
         await self._session.commit()
 
-    async def mark_ignored(self, file_ids: list[int]) -> int:
-        """待识别清单的「忽略」：打标记而非删行，返回实际标记的条数。
+    async def mark_ignored(self, file_ids: list[int]) -> tuple[int, set[int]]:
+        """待识别清单的「忽略」：打标记而非删行，返回 ``(实际标记的条数, 被腾空的临时条目 id)``。
 
         **不能删行**——扫描器判定"新文件"的唯一依据就是台账里有没有这条
         路径，删了下轮扫描就当新文件重走识别链，认不出照样回清单（对活跃
         的库连几分钟都撑不住）。打标记后扫描直接秒过，且行还在、可恢复。
+
+        挂着**临时本地身份**的行（``unidentified_code`` 非空且有锚）忽略时
+        连锚一起摘：忽略的语义是"别再让我看见它"，临时条目继续留在海报墙
+        上就违背了这个语义。腾空的条目 id 交给调用方做孤儿清理。
         """
         marked = 0
+        displaced: set[int] = set()
         now = utcnow()
         for file_id in file_ids:
             row = await self._session.get(LibraryFile, file_id)
             if row is None or row.ignored_at is not None:
                 continue
+            if row.unidentified_code is not None and row.media_item_id is not None:
+                displaced.add(row.media_item_id)
+                row.media_item_id = None
+                row.identity_source = None
+                row.resolved_version = None
+                row.review_suggestion = None
             row.ignored_at = now
             row.updated_at = now
             marked += 1
         await self._session.commit()
-        return marked
+        return marked, displaced
 
     async def restore_ignored(self, file_ids: list[int]) -> int:
         """恢复已忽略的文件：清标记，重新参与识别与待识别清单。"""

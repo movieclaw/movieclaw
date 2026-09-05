@@ -131,6 +131,7 @@ from movieclaw_api.services.library.subtitles import (
     match_subtitle_filename,
     parse_subtitle_tokens,
 )
+from movieclaw_api.services.library.thumbs import primary_aspect
 from movieclaw_api.services.library.transfer import (
     assert_transferable,
     build_transfer_plan,
@@ -573,6 +574,23 @@ async def routing_options() -> ApiResponse[dict]:
     )
 
 
+def _schedule_orphan_cleanup(item_ids: set[int]) -> None:
+    """被腾空的临时本地条目交给孤儿清理（后台任务，不拖住响应）。
+
+    不用 BackgroundTasks：这两个路由被测试与 CLI 直接以函数形态调用，
+    多一个注入参数就要改全部调用方；`create_task` 的语义在这里完全等价。
+    """
+    import asyncio
+
+    loop = asyncio.get_running_loop()
+    task = loop.create_task(media_scrape.cleanup_orphan_items(sorted(item_ids)))
+    _cleanup_tasks.add(task)
+    task.add_done_callback(_cleanup_tasks.discard)
+
+
+_cleanup_tasks: set = set()
+
+
 async def _group_by_entry_dir(
     session: AsyncSession, rows: list[LibraryFile]
 ) -> list[UnidentifiedGroupView]:
@@ -873,11 +891,14 @@ async def create_library(
     row = await service.create(
         name=payload.name,
         kind=payload.kind,
+        source=payload.source,
         root_paths=payload.root_paths,
         match_rules=payload.match_rules,
         auto_clear_missing=payload.auto_clear_missing,
         realtime_watch=payload.realtime_watch,
         scrape_overrides=payload.scrape_overrides,
+        generate_thumbnails=payload.generate_thumbnails,
+        exclude_from_home=payload.exclude_from_home,
     )
     # 建库即扫描：根路径下的存量文件立刻开始识别入账，不用用户再手动点一次
     assert row.id is not None
@@ -970,9 +991,7 @@ async def _quiesce_scan_for_mutation(
         if not remaining and busy_phase(library_id) is None:
             return
         await asyncio.sleep(0.05)
-    raise ConflictException(
-        f"「{library_name}」的扫描正在安全停止，请稍后重试；可到活动页查看进度"
-    )
+    raise ConflictException(f"「{library_name}」的扫描正在安全停止，请稍后重试；可到活动页查看进度")
 
 
 @router.put(
@@ -1028,6 +1047,8 @@ async def update_library(
         auto_clear_missing=payload.auto_clear_missing,
         realtime_watch=payload.realtime_watch,
         scrape_overrides=payload.scrape_overrides,
+        generate_thumbnails=payload.generate_thumbnails,
+        exclude_from_home=payload.exclude_from_home,
     )
     # 根路径变了就自动补扫：新目录的存量立刻入账，移除目录下的文件标记 missing
     if roots_changed:
@@ -1649,18 +1670,36 @@ async def list_library_items(
     # 这三个参数用 Annotated 写法（而非 `= Query(...)`）：函数被直接调用时
     # 拿到的是真实默认值而不是 Query 对象——测试与内部调用都走这条路
     sort: Annotated[
-        Literal["title", "added_at", "probing"],
-        Query(description="排序：title=按标题 / added_at=最近入账优先 / probing=待补探优先"),
+        Literal["title", "added_at", "release_date", "probing"],
+        Query(
+            description=(
+                "排序：title=按标题 / added_at=最近入账优先 / "
+                "release_date=按内容时间倒序 / probing=待补探优先"
+            )
+        ),
     ] = "title",
     limit: Annotated[
         int | None, Query(ge=1, le=200, description="本页条目数；不给则返回整库")
     ] = None,
     offset: Annotated[int, Query(ge=0, description="跳过的条目数（滚动加载翻页用）")] = 0,
+    identity: Annotated[
+        Literal["confirmed", "provisional"],
+        Query(
+            description=(
+                "confirmed=正式条目（默认）/ provisional=影视库里尚未识别、按文件名"
+                "临时挂着的条目（库页单独一段展示；其他库恒空）"
+            )
+        ),
+    ] = "confirmed",
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[list[LibraryItemView]]:
 
     await LibraryConfigService(session).get(library_id)  # 404 检查
-    return ok(await build_library_wall(session, library_id, sort=sort, limit=limit, offset=offset))
+    return ok(
+        await build_library_wall(
+            session, library_id, sort=sort, limit=limit, offset=offset, identity=identity
+        )
+    )
 
 
 @router.get(
@@ -1735,9 +1774,7 @@ def _trash_note(row: LibraryFile) -> str | None:
     return note or label or None
 
 
-async def _metadata_item(
-    session: AsyncSession, library_id: int, media_item_id: int
-) -> MediaItem:
+async def _metadata_item(session: AsyncSession, library_id: int, media_item_id: int) -> MediaItem:
     """纯元数据操作（重刮/选图/改刮削归属）的条目校验：**不要求库存文件**。
 
     订阅追踪中的条目（已订阅、下载尚未入库）在库页「追踪中」区块展示的
@@ -1991,6 +2028,7 @@ async def get_library_item(
         LibraryItemDetailView(
             media_item_id=item.id,
             kind=MediaKind(item.kind),
+            source=item.source,
             tmdb_id=item.tmdb_id,
             imdb_id=item.imdb_id,
             douban_id=item.douban_id,
@@ -1999,6 +2037,11 @@ async def get_library_item(
             year=item.year,
             poster_url=poster_url,
             backdrop_url=backdrop_url,
+            primary_aspect=primary_aspect(
+                item,
+                meta_row.poster_width if meta_row else None,
+                meta_row.poster_height if meta_row else None,
+            ),
             local_meta=local_meta,
             entry_dirs=entry_dirs,
             files=file_views,
@@ -2834,9 +2877,12 @@ async def clear_unidentified(
     await service.get(payload.library_id)  # 404 检查
     repo = LibraryFileRepository(session)
     rows = await repo.list_unidentified(library_id=payload.library_id)
-    cleared = await repo.mark_ignored([row.id for row in rows if row.id is not None])
+    cleared, displaced = await repo.mark_ignored([row.id for row in rows if row.id is not None])
     if cleared:
         await LibraryRepository(session).refresh_stats([payload.library_id])
+    # 忽略掉的临时本地条目已没有文件挂着：连同抓帧资产一起清掉（后台执行）
+    if displaced:
+        _schedule_orphan_cleanup(displaced)
     return ok(
         {"cleared": cleared},
         message=f"已忽略 {cleared} 个待识别文件（磁盘未动；可在「已忽略」里恢复）",
@@ -2960,8 +3006,10 @@ async def ignore_file(
     row = await session.get(LibraryFile, file_id)
     if row is None:
         raise NotFoundException(f"台账记录不存在：id={file_id}")
-    await repo.mark_ignored([file_id])
+    _marked, displaced = await repo.mark_ignored([file_id])
     await LibraryRepository(session).refresh_stats([row.library_id])
+    if displaced:
+        _schedule_orphan_cleanup(displaced)
     return ok({}, message="已忽略，之后扫描不再过问（磁盘文件未受影响；可在「已忽略」里恢复）")
 
 

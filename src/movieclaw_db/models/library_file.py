@@ -80,6 +80,9 @@ class IdentitySource(StrEnum):
     PATH_TAG = "path_tag"  # 目录名 [tmdbid=N] 显式标记
     NFO = "nfo"  # NFO 里的条目级 tmdb id
     RESOLVED = "resolved"  # 名称解析 + TMDB 证据收敛
+    # 本地推断：没有外部身份，标题来自文件名/目录名解析（sidecar NFO 给了
+    # 标题时记 NFO）。「其他」库的文件与影视库里认不出的文件都用它
+    LOCAL = "local"
 
 
 class LibraryFile(TimestampMixin, table=True):

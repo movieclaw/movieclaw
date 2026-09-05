@@ -7,6 +7,16 @@
  */
 
 export type MediaType = "movie" | "tv";
+/** 媒体库的内容形态：发现/订阅只认 movie/tv，库还多一种「其他」（video，
+ *  无结构假设的本地视频，见 docs/design/library-other-kind.md）。 */
+export type LibraryKind = MediaType | "video";
+/** 库内条目的身份来源：tmdb=有外部档案；local=本地内容或影视库里尚未识别的文件。 */
+export type ItemSource = "tmdb" | "local";
+export const LIBRARY_KIND_LABELS: Record<LibraryKind, string> = {
+  movie: "电影",
+  tv: "剧集",
+  video: "其他",
+};
 export type MediaSource = "tmdb" | "douban";
 
 /** 发现列表的轻量库存摘要；只用于入库标记，不携带文件详情。 */
@@ -37,6 +47,8 @@ export interface MediaItem {
   /** 来源与 id 共同构成媒体条目的稳定身份 */
   source?: MediaSource;
   type: MediaType;
+  /** 主图宽高比；缺省 2:3。媒体库里本地抓帧的缩略图是 16:9（见 LibraryItem.primary_aspect） */
+  aspect?: number;
   /** 中文标题 */
   title: string;
   /** 原名（拉丁/原语言） */

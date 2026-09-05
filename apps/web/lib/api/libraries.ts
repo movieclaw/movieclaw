@@ -1,5 +1,5 @@
 import { request } from "@/lib/http";
-import type { MediaType } from "@/lib/media-types";
+import type { ItemSource, LibraryKind, MediaType } from "@/lib/media-types";
 
 /** 后端统一响应信封（见 movieclaw_api.schemas.response.ApiResponse） */
 interface ApiEnvelope<T> {
@@ -43,11 +43,36 @@ export interface MatchRule {
   values: (number | string)[];
 }
 
+/** 库的能力位（后端 LibraryProfile 的投影）：前端按位显隐功能，不按 kind 字面分叉。 */
+export interface LibraryCapabilities {
+  /** 有外部刮削链（识别/刷新元数据/选图/待识别清单） */
+  scraped: boolean;
+  /** 有季集结构（分集区、缺集统计） */
+  episodic: boolean;
+  /** 有规范命名（整理功能） */
+  naming: boolean;
+  /** 可作为订阅入库目标 */
+  subscribable: boolean;
+  /** 向媒体目录写 NFO/图片镜像 */
+  write_nfo: boolean;
+  /** 卡片主图默认宽高比（无真实尺寸时） */
+  default_aspect: number;
+  /** Jellyfin 视图类型：movies / tvshows / homevideos */
+  jellyfin_collection: string;
+}
+
 export interface MediaLibrary {
   id: number;
   name: string;
-  /** 每库单一类型（movie / tv），创建后不可改 */
-  kind: MediaType;
+  /** 每库单一形态（movie / tv / video），创建后不可改 */
+  kind: LibraryKind;
+  /** 身份来源（tmdb / local），与 kind 一起定位能力档案，创建后不可改 */
+  source: ItemSource;
+  capabilities: LibraryCapabilities;
+  /** 本地来源内容是否从文件抓帧生成缩略图 */
+  generate_thumbnails: boolean;
+  /** 是否从首页「最近添加」等汇总里排除 */
+  exclude_from_home: boolean;
   /** 根路径列表（绝对路径），第一个为主根——新入库落在这里 */
   root_paths: string[];
   primary_root: string | null;
@@ -209,11 +234,16 @@ export interface OrganizePreview {
 /** 库内一个媒体条目的库存聚合（单库海报墙的一格）。 */
 export interface LibraryItem {
   media_item_id: number;
-  kind: MediaType;
-  tmdb_id: number;
+  kind: LibraryKind;
+  /** 身份来源：local=其他库条目，或影视库里尚未识别、按文件名展示的临时条目 */
+  source: ItemSource;
+  /** TMDB 条目 ID；本地来源条目为 null */
+  tmdb_id: number | null;
   title: string;
   year: number | null;
   poster_url: string | null;
+  /** 主图宽高比（真实像素尺寸或来源惯例：TMDB 海报 2:3、本地抓帧 16:9），卡片按它排版 */
+  primary_aspect: number;
   file_count: number;
   total_size_bytes: number;
   /** 在库的季号列表（电影为空） */
@@ -311,11 +341,17 @@ export interface UnidentifiedGroup {
   files: UnidentifiedFile[];
 }
 
-/** 创建/更新库的请求体。kind 仅创建时生效。 */
+/** 创建/更新库的请求体。kind/source 仅创建时生效。 */
 export interface LibraryPayload {
   name: string;
-  kind: MediaType;
+  kind: LibraryKind;
+  /** 身份来源；不传按形态默认（movie/tv → tmdb，video → local） */
+  source?: ItemSource;
   root_paths: string[];
+  /** 本地来源内容是否抓帧生成缩略图；不传=不改动（新建时默认开） */
+  generate_thumbnails?: boolean;
+  /** 是否从首页汇总里排除该库；不传=不改动（新建时默认关） */
+  exclude_from_home?: boolean;
   /** 收藏范围条件；缺省/空=不声明 */
   match_rules?: MatchRule[];
   /** 扫描后自动清理已确认丢失的库存记录；不传=不改动（新建时默认关） */
@@ -352,7 +388,7 @@ export function listLibraryRoutingOptions(): Promise<RoutingOptions> {
 }
 
 /** 列出全部媒体库（可按类型过滤）。 */
-export function listLibraries(kind?: MediaType, init?: RequestInit): Promise<MediaLibrary[]> {
+export function listLibraries(kind?: LibraryKind, init?: RequestInit): Promise<MediaLibrary[]> {
   const qs = kind ? `?kind=${kind}` : "";
   return unwrap(request<ApiEnvelope<MediaLibrary[]>>(`/libraries${qs}`, init));
 }
@@ -424,8 +460,8 @@ export function deleteLibrary(id: number): Promise<Record<string, never>> {
   return unwrap(request<ApiEnvelope<Record<string, never>>>(`/libraries/${id}`, { method: "DELETE" }));
 }
 
-/** 海报墙排序：按标题 / 最近入账 / 待补探优先（扫描补探阶段）。 */
-export type LibraryItemSort = "title" | "added_at" | "probing";
+/** 海报墙排序：按标题 / 最近入账 / 按内容时间倒序（其他库默认）/ 待补探优先（扫描补探阶段）。 */
+export type LibraryItemSort = "title" | "added_at" | "release_date" | "probing";
 
 /**
  * 库内媒体条目的库存聚合（单库海报墙数据源）。
@@ -433,12 +469,22 @@ export type LibraryItemSort = "title" | "added_at" | "probing";
  * 排序与分页都在服务端做：调用方要几格就取几格——首页「最近添加」只要 20 格，
  * 海报墙滚动加载一次要一屏，不给 limit 才是整库（几千条目要几百 KB，别默认走这条）。
  */
+/** 海报墙口径：confirmed=正式条目（默认）/ provisional=影视库里认不出、按文件名
+ *  临时挂着的条目（库页单独一段，其他库恒空）。 */
+export type LibraryItemIdentity = "confirmed" | "provisional";
+
 export function listLibraryItems(
   id: number,
-  params?: { sort?: LibraryItemSort; limit?: number; offset?: number },
+  params?: {
+    sort?: LibraryItemSort;
+    limit?: number;
+    offset?: number;
+    identity?: LibraryItemIdentity;
+  },
 ): Promise<LibraryItem[]> {
   const query = new URLSearchParams();
   if (params?.sort) query.set("sort", params.sort);
+  if (params?.identity) query.set("identity", params.identity);
   if (params?.limit !== undefined) query.set("limit", String(params.limit));
   if (params?.offset) query.set("offset", String(params.offset));
   const suffix = query.size > 0 ? `?${query}` : "";
@@ -858,8 +904,8 @@ export interface MissingFile {
 /** 缺失清单的一行：按媒体条目聚合。 */
 export interface MissingItem {
   media_item_id: number;
-  kind: MediaType;
-  tmdb_id: number;
+  kind: LibraryKind;
+  tmdb_id: number | null;
   title: string;
   year: number | null;
   poster_url: string | null;
@@ -1007,8 +1053,11 @@ export interface LocalMeta {
  */
 export interface LibraryItemDetail {
   media_item_id: number;
-  kind: MediaType;
-  tmdb_id: number;
+  kind: LibraryKind;
+  /** 身份来源：local=其他库条目，或影视库里尚未识别的临时条目 */
+  source: ItemSource;
+  /** TMDB 条目 ID；本地来源条目为 null */
+  tmdb_id: number | null;
   imdb_id: string | null;
   douban_id: string | null;
   title: string;
@@ -1016,6 +1065,8 @@ export interface LibraryItemDetail {
   year: number | null;
   poster_url: string | null;
   backdrop_url: string | null;
+  /** 主图宽高比（同海报墙） */
+  primary_aspect: number;
   /** NFO 本地刮削元数据；目录里没有可用 NFO 时为 null */
   local_meta: LocalMeta | null;
   /** 条目在磁盘上的目录（删除确认时展示） */

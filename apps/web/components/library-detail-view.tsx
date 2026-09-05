@@ -21,6 +21,7 @@ import {
 import { LibraryOrganizeDialog } from "@/components/library-organize-dialog";
 import { PosterCardVisual, type PosterVisualItem } from "@/components/poster-card";
 import {
+  type LibraryCapabilities,
   type LibraryItem,
   type MediaLibrary,
   type MissingItem,
@@ -104,6 +105,8 @@ function busyText(progress: ScanProgress | null): string {
  * 3. 待识别：扫描认不出身份的文件，按条目目录成组，点候选或填 TMDB ID 整组认领。
  */
 /** 海报墙每次向服务端要的格数（首屏一批，滚到底再追加一批）。 */
+/** 未识别分区一次拉取的上限：它不分页，超出的去待处理清单看 */
+const PROVISIONAL_LIMIT = 200;
 const WALL_PAGE_SIZE = 60;
 /** 后端单次分页的硬上限；轮询已加载窗口时按此上限分块请求。 */
 const WALL_API_PAGE_SIZE = 200;
@@ -141,6 +144,8 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   const confirm = useConfirm();
   const [libraries, setLibraries] = useState<MediaLibrary[] | null>(initialSnapshot?.libraries ?? null);
   const [items, setItems] = useState<LibraryItem[]>(initialSnapshot?.items ?? []);
+  // 影视库里认不出、按文件名临时挂着的条目：不进主墙，单独一段展示（其他库恒空）
+  const [provisional, setProvisional] = useState<LibraryItem[]>([]);
   // 服务端还有没有下一页；滚动加载的哨兵据此决定是否继续观察
   const [wallHasMore, setWallHasMore] = useState(initialSnapshot?.wallHasMore ?? false);
   // 本库全部条目 id：海报墙分页后这份名单仍要完整——「追踪中」要靠它把
@@ -248,6 +253,12 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
     Promise.all([
       listLibraries(),
       Promise.all(itemPages).then((pages) => pages.flat()),
+      // 临时条目通常是几个到几十个，一次拉全、按入账时间倒序；不参与主墙分页与索引
+      listLibraryItems(libraryId, {
+        identity: "provisional",
+        sort: "added_at",
+        limit: PROVISIONAL_LIMIT,
+      }).catch(() => [] as LibraryItem[]),
       listLibraryItemIds(libraryId).catch(() => []),
       listLibraryItemIndex(libraryId).catch(() => []),
       canManageLibraries
@@ -264,7 +275,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
         : Promise.resolve([]),
       listSubscriptions().catch(() => []),
     ])
-      .then(([libs, libraryItems, ids, index, unknown, reviewGroups, ignoredGroups, missingItems, subs]) => {
+      .then(([libs, libraryItems, provisionalItems, ids, index, unknown, reviewGroups, ignoredGroups, missingItems, subs]) => {
         if (seq !== reloadSeq.current) return;
         setSnapshotStale(false);
         // 四张待办清单只要有一张没拿到，就保留上一份快照并点亮顶部提示条。
@@ -278,6 +289,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
         // 每 3 秒就把几百个格子全部重画一遍，表现为周期性卡顿
         setLibraries((prev) => (prev ? keepIfEqual(prev, libs) : libs));
         setItems((prev) => reconcileList(prev, libraryItems, (i) => i.media_item_id));
+        setProvisional((prev) => reconcileList(prev, provisionalItems, (i) => i.media_item_id));
         wallLoaded.current = Math.max(WALL_PAGE_SIZE, libraryItems.length);
         // 拿满这一页就假定后面还有；真到底时下一次追加会拿到空数组并收尾
         setWallHasMore(libraryItems.length >= wanted);
@@ -487,6 +499,10 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   const probing = Boolean(
     library?.scanning && library.scan_progress?.phase === "probing",
   );
+  // 其他库（本地内容、无结构）：卡片是 16:9 抓帧缩略图，墙按内容时间倒序
+  // （家庭录像按拍摄日期最自然），没有拼音字母档
+  const timeline = Boolean(library && !library.capabilities.scraped);
+  const wideCards = Boolean(library && library.capabilities.default_aspect > 1);
   const initialByOffset = useMemo(
     () => new Map(wallIndex.map((entry) => [entry.offset, entry.initial])),
     [wallIndex],
@@ -530,7 +546,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   // 排序切换是**服务端**的事（墙是分页的，本地排只能排到已加载的那几屏）：
   // 阶段一变就换排序键重拉第一页，回到首屏看的就是正在处理的那几部
   useEffect(() => {
-    const next: LibraryItemSort = probing ? "probing" : "title";
+    const next: LibraryItemSort = probing ? "probing" : timeline ? "release_date" : "title";
     if (wallSort.current === next) return;
     wallSort.current = next;
     wallLoaded.current = WALL_PAGE_SIZE;
@@ -538,7 +554,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
     wallOffset.current = 0;
     setWallStart(0);
     reload();
-  }, [probing, reload]);
+  }, [probing, timeline, reload]);
 
   // 追踪中：目标是本库、且尚未在库存中出现的订阅
   const pending = useMemo(() => {
@@ -659,6 +675,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
           : null
       }
       busy={busy}
+      capabilities={library.capabilities}
       onOrganize={() => {
         setNotice(null);
         setOrganizeTarget(library);
@@ -868,7 +885,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
       )}
 
       {/* —— 库存海报墙（追踪中置顶时补「已入库」标题，两片海报墙不致连读）—— */}
-      {items.length === 0 && unidentified.length === 0 ? (
+      {items.length === 0 && provisional.length === 0 ? (
         <p className="mt-16 text-center text-ui leading-7 text-[var(--text-muted)]">
           这个库还没有内容。
           <br />
@@ -884,39 +901,94 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
             </h3>
           )}
           <div ref={wallTop} className={pending.length > 0 ? "mt-4" : "mt-6 max-md:mt-4"}>
-            {/* 索引条与墙并排：条固定在视口右侧（sticky），墙照常滚 */}
+            {/* 索引条与内容列并排：条固定在视口右侧（sticky），列照常滚。索引条
+                有固定高度，加载哨兵与未识别分区必须放进同一列里——否则卡片少时
+                这一行被索引条撑高，分区会被推到一大段空白之下 */}
             <div className="flex items-start gap-2 px-6 max-md:gap-1 max-md:px-4">
-              <div
-                ref={wallGrid}
-                className="grid flex-1 gap-x-4 gap-y-7 [grid-template-columns:repeat(auto-fill,minmax(148px,1fr))] max-md:gap-x-3 max-md:gap-y-5 max-md:[grid-template-columns:repeat(auto-fill,minmax(140px,1fr))]"
-              >
-                {items.map((item, index) => (
-                  <InventoryCell
-                    key={item.media_item_id}
-                    item={item}
-                    libraryId={libraryId}
-                    wallInitial={initialByOffset.get(wallStart + index)}
-                    workingLabel={
-                      refreshPhaseById.get(item.media_item_id) ??
-                      jobPhaseById.get(item.media_item_id) ??
-                      (probing && item.probe_pending_count > 0 ? "正在读取规格" : undefined)
-                    }
-                  />
-                ))}
+              <div className="min-w-0 flex-1">
+                <div
+                  ref={wallGrid}
+                  className={
+                    wideCards
+                      ? "grid gap-x-4 gap-y-7 [grid-template-columns:repeat(auto-fill,minmax(220px,1fr))] max-md:gap-x-3 max-md:gap-y-5 max-md:[grid-template-columns:repeat(auto-fill,minmax(160px,1fr))]"
+                      : "grid gap-x-4 gap-y-7 [grid-template-columns:repeat(auto-fill,minmax(148px,1fr))] max-md:gap-x-3 max-md:gap-y-5 max-md:[grid-template-columns:repeat(auto-fill,minmax(140px,1fr))]"
+                  }
+                >
+                  {items.map((item, index) => (
+                    <InventoryCell
+                      key={item.media_item_id}
+                      item={item}
+                      libraryId={libraryId}
+                      wallInitial={initialByOffset.get(wallStart + index)}
+                      workingLabel={
+                        refreshPhaseById.get(item.media_item_id) ??
+                        jobPhaseById.get(item.media_item_id) ??
+                        (probing && item.probe_pending_count > 0 ? "正在读取规格" : undefined)
+                      }
+                    />
+                  ))}
+                </div>
+                <WallLoadMore
+                  hasMore={wallHasMore}
+                  loaded={items.length}
+                  start={wallStart}
+                  total={library.stats.item_count}
+                  onReach={loadMore}
+                />
+
+                {/* —— 未识别分区（只有影视库会有）：认不出的文件按文件名/目录名
+                    临时挂着，可直接播放、记进度；和正式条目分开摆——2:3 海报与
+                    16:9 抓帧混排、又混进拼音序里，正片的墙会被打散。认领后并入主墙 —— */}
+                {provisional.length > 0 && (
+                  <section
+                    data-wall="provisional"
+                    aria-labelledby="provisional-title"
+                    className="mt-6 max-md:mt-4"
+                  >
+                    <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-2">
+                      <div>
+                        <h3
+                          id="provisional-title"
+                          className="text-on-image text-body-lg font-semibold text-white/85"
+                        >
+                          未识别 {provisional.length}
+                        </h3>
+                        <p className="text-on-image mt-1 text-caption text-[var(--text-muted)]">
+                          按文件名展示，可以直接播放；认领身份后会并入上方的正式条目。
+                        </p>
+                      </div>
+                      {canManageLibraries && (
+                        <button
+                          type="button"
+                          onClick={() => setIssueTab("unidentified")}
+                          className="btn-glass h-7 shrink-0 px-2.5 text-caption font-medium"
+                        >
+                          去待处理认领
+                        </button>
+                      )}
+                    </div>
+                    <div className="mt-4 grid gap-x-4 gap-y-7 [grid-template-columns:repeat(auto-fill,minmax(220px,1fr))] max-md:gap-x-3 max-md:gap-y-5 max-md:[grid-template-columns:repeat(auto-fill,minmax(160px,1fr))]">
+                      {provisional.map((item) => (
+                        <InventoryCell
+                          key={item.media_item_id}
+                          item={item}
+                          libraryId={libraryId}
+                          workingLabel={
+                            probing && item.probe_pending_count > 0 ? "正在读取规格" : undefined
+                          }
+                        />
+                      ))}
+                    </div>
+                  </section>
+                )}
               </div>
-              {/* 补探阶段排序不是拼音序，字母跳转会跳错位置——那几分钟里收起来 */}
-              {!probing && (
+              {/* 补探阶段排序不是拼音序，字母跳转会跳错位置——那几分钟里收起来；
+                  其他库按内容时间排，同理没有字母档 */}
+              {!probing && !timeline && (
                 <WallIndexBar index={wallIndex} active={activeWallInitial} onJump={jumpTo} />
               )}
             </div>
           </div>
-          <WallLoadMore
-            hasMore={wallHasMore}
-            loaded={items.length}
-            start={wallStart}
-            total={library.stats.item_count}
-            onReach={loadMore}
-          />
         </>
       )}
 
@@ -961,6 +1033,8 @@ interface LibraryActionsMenuProps {
   busy: boolean;
   /** 待处理总件数（缺失 + 待识别 + 身份复核）；0 也照常给入口，见下方说明 */
   pendingCount: number;
+  /** 库的能力位：没有命名能力不给「整理文件名」，没有刮削链不给「刷新元数据」 */
+  capabilities: LibraryCapabilities;
   onOpenPending: () => void;
   onOrganize: () => void;
   onToggleMetaRefresh: () => void;
@@ -978,6 +1052,7 @@ function LibraryActionsMenu({
   metaProgress,
   busy,
   pendingCount,
+  capabilities,
   onOpenPending,
   onOrganize,
   onToggleMetaRefresh,
@@ -1037,19 +1112,23 @@ function LibraryActionsMenu({
                 ? `停止扫描${scanPercent === null ? "" : ` ${scanPercent}%`}`
                 : `${SCAN_PHASE_LABELS[scanPhase ?? "ingesting"]}…`}
           </DropdownMenu.Item>
-          <DropdownMenu.Item
-            onSelect={onOrganize}
-            disabled={busy && !organizing}
-            className={itemClass}
-          >
-            {organizing
-              ? `整理中…${organizePercent === null ? "" : ` ${organizePercent}%`}`
-              : "整理文件名"}
-          </DropdownMenu.Item>
+          {capabilities.naming && (
+            <DropdownMenu.Item
+              onSelect={onOrganize}
+              disabled={busy && !organizing}
+              className={itemClass}
+            >
+              {organizing
+                ? `整理中…${organizePercent === null ? "" : ` ${organizePercent}%`}`
+                : "整理文件名"}
+            </DropdownMenu.Item>
+          )}
           <DropdownMenu.Item onSelect={onToggleMetaRefresh} className={itemClass}>
             {refreshingMeta
               ? `停止刷新${metaProgress === null ? "" : ` ${metaProgress}`}`
-              : "刷新元数据"}
+              : capabilities.scraped
+                ? "刷新元数据"
+                : "重新生成缩略图"}
           </DropdownMenu.Item>
           <DropdownMenu.Item onSelect={onEdit} disabled={busy} className={itemClass}>
             编辑库
@@ -1145,12 +1224,14 @@ const InventoryCell = memo(function InventoryCell({
       ? formatLibraryInventorySummary(item.inventory_summary)
       : null;
   const visual: PosterVisualItem = {
-    id: String(item.tmdb_id),
+    // 本地条目没有 TMDB id：占位 id 只做 key，不会被当成外部 id 请求
+    id: item.tmdb_id != null ? String(item.tmdb_id) : `local:${item.media_item_id}`,
     source: "tmdb",
-    type: item.kind,
+    type: item.kind === "video" ? undefined : item.kind,
     title: item.title,
     year: item.year ?? undefined,
     rating: 0,
+    aspect: item.primary_aspect,
     overlayDetails: inventoryLabel ? { primary: inventoryLabel } : undefined,
     // 海报可能是本地刮削资产的相对路径（断网可用），也可能是 TMDB 图床地址。
     // 与首页海报墙同样取 poster-card 派生图：海报墙是全站最大的一张图片网格，

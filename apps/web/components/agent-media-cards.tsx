@@ -7,7 +7,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 import { HScroller } from "@/components/h-scroller";
-import { FilmIcon, PlayIcon, TvIcon } from "@/components/icons";
+import { FilmIcon, PlayIcon, TvIcon, VideoIcon } from "@/components/icons";
 import { PosterCardVisual, type PosterVisualItem } from "@/components/poster-card";
 import { PosterImage } from "@/components/poster-image";
 import { useSubscribeEntry } from "@/components/subscribe-entry";
@@ -31,7 +31,7 @@ import { getSubscription, type Subscription } from "@/lib/api/subscriptions";
 import { publicEnv } from "@/lib/env";
 import { formatBytes } from "@/lib/format";
 import { cachedImageUrl, imageUrl } from "@/lib/image-proxy";
-import type { MediaItem, MediaType } from "@/lib/media-types";
+import type { LibraryKind, MediaItem } from "@/lib/media-types";
 import { playHref, rememberPlayerReturnPath } from "@/lib/player/play-links";
 import { useTapGuard } from "@/lib/use-tap-guard";
 
@@ -48,9 +48,10 @@ import { useTapGuard } from "@/lib/use-tap-guard";
  */
 
 /** 媒体类型的图标与文案（与媒体库页同款，此处内联避免把整个 library-view 拉进会话页）。 */
-const KIND_META: Record<MediaType, { label: string; Icon: typeof FilmIcon }> = {
+const KIND_META: Record<LibraryKind, { label: string; Icon: typeof FilmIcon }> = {
   movie: { label: "电影", Icon: FilmIcon },
   tv: { label: "剧集", Icon: TvIcon },
+  video: { label: "其他", Icon: VideoIcon },
 };
 
 type Loaded<T> = { status: "loading" } | { status: "ready"; data: T } | { status: "error" };

@@ -57,6 +57,7 @@ from movieclaw_api.services.library.nfo import (
     read_episode_metadata,
 )
 from movieclaw_api.services.library.sort_key import title_initial, title_sort_key
+from movieclaw_api.services.library.thumbs import primary_aspect
 from movieclaw_api.services.media_probe import (
     note_probe_failure,
     note_probe_success,
@@ -65,7 +66,15 @@ from movieclaw_api.services.media_probe import (
 )
 from movieclaw_api.services.media_scrape import asset_version, file_version
 from movieclaw_api.services.scrape_config import effective_language, scrape_setting_for_item
-from movieclaw_db.models import FileState, Library, LibraryFile, MediaItem, MediaSeason, utcnow
+from movieclaw_db.models import (
+    FileState,
+    Library,
+    LibraryFile,
+    MediaItem,
+    MediaMetadata,
+    MediaSeason,
+    utcnow,
+)
 from movieclaw_db.repositories.library_repo import LibraryRepository
 from movieclaw_media.models import MediaKind
 
@@ -230,10 +239,22 @@ def _build_inventory_summary(
     )
 
 
-WallSort = Literal["title", "added_at", "probing"]
+WallSort = Literal["title", "added_at", "release_date", "probing"]
+# 海报墙口径：confirmed=正式条目（默认，首页/搜索/索引同口径）；provisional=
+# 影视库里认不出、按文件名挂着的临时条目（库页单独一段展示）。其他库没有
+# 临时条目，两口径下 provisional 恒空
+WallIdentity = Literal["confirmed", "provisional"]
 
 
-async def _titles_sorted(session: AsyncSession, library_id: int) -> list[tuple[int, str]]:
+def _identity_clause(identity: WallIdentity):
+    """临时条目的判别只看文件行的 ``unidentified_code``：挂了原因的行就是临时的。"""
+    column = LibraryFile.unidentified_code
+    return column.is_(None) if identity == "confirmed" else column.is_not(None)  # type: ignore[union-attr]
+
+
+async def _titles_sorted(
+    session: AsyncSession, library_id: int, identity: WallIdentity = "confirmed"
+) -> list[tuple[int, str]]:
     """本库全部条目的 (id, 标题)，按拼音序排好。
 
     按标题排序不走 SQL：SQLite 对中文按码点排，出来的顺序对用户没有意义
@@ -248,6 +269,7 @@ async def _titles_sorted(session: AsyncSession, library_id: int) -> list[tuple[i
             .where(
                 LibraryFile.library_id == library_id,
                 LibraryFile.media_item_id.is_not(None),  # type: ignore[union-attr]
+                _identity_clause(identity),
             )
             .distinct()
         )
@@ -282,6 +304,7 @@ async def _wall_page_ids(
     sort: WallSort,
     limit: int | None,
     offset: int,
+    identity: WallIdentity = "confirmed",
 ) -> list[int]:
     """按 sort 排好序的本页条目 id（无 limit 时是全库）。
 
@@ -290,7 +313,7 @@ async def _wall_page_ids(
     否则翻页会出现某条目重复出现、另一条目永远刷不到的漏项。
     """
     if sort == "title":
-        ids = [i for i, _ in await _titles_sorted(session, library_id)]
+        ids = [i for i, _ in await _titles_sorted(session, library_id, identity)]
         return ids if limit is None else ids[offset : offset + limit]
 
     if sort == "added_at":
@@ -300,6 +323,7 @@ async def _wall_page_ids(
             .where(
                 LibraryFile.library_id == library_id,
                 LibraryFile.media_item_id.is_not(None),  # type: ignore[union-attr]
+                _identity_clause(identity),
             )
             .group_by(LibraryFile.media_item_id)  # type: ignore[arg-type]
             .order_by(
@@ -311,11 +335,35 @@ async def _wall_page_ids(
             query = query.limit(limit).offset(offset)
         return [i for i in (await session.execute(query)).scalars().all() if i is not None]
 
+    if sort == "release_date":
+        # 「按内容时间」：其他库的家庭录像按拍摄日期倒序最自然（release_date 由
+        # 扫描从 sidecar NFO / 容器日期标签 / 文件 mtime 回落而来，见
+        # local_identity）；影视库则是上映/首播日期。缺日期的退到年份、再到 id
+        query = (
+            select(LibraryFile.media_item_id)
+            .join(MediaItem, MediaItem.id == LibraryFile.media_item_id)  # type: ignore[arg-type]
+            .outerjoin(MediaMetadata, MediaMetadata.media_item_id == MediaItem.id)  # type: ignore[arg-type]
+            .where(
+                LibraryFile.library_id == library_id,
+                LibraryFile.media_item_id.is_not(None),  # type: ignore[union-attr]
+                _identity_clause(identity),
+            )
+            .group_by(LibraryFile.media_item_id)  # type: ignore[arg-type]
+            .order_by(
+                func.max(MediaMetadata.release_date).desc(),
+                func.max(MediaItem.year).desc(),
+                LibraryFile.media_item_id.desc(),  # type: ignore[union-attr]
+            )
+        )
+        if limit is not None:
+            query = query.limit(limit).offset(offset)
+        return [i for i in (await session.execute(query)).scalars().all() if i is not None]
+
     # probing：扫描补探阶段把「还有文件没读出规格」的条目提到墙最前面，
     # 用户能看见"在处理哪几部"；两段各自保持拼音序（sorted 稳定排序）。
     # strm 占位文件不算"没读出"——它永远探不出规格，算进来会让网盘库
     # 每轮扫描都全墙置顶、永不落位
-    ordered = await _titles_sorted(session, library_id)
+    ordered = await _titles_sorted(session, library_id, identity)
     unprobed = {
         i
         for i in (
@@ -345,8 +393,12 @@ async def build_library_wall(
     sort: WallSort = "title",
     limit: int | None = None,
     offset: int = 0,
+    identity: WallIdentity = "confirmed",
 ) -> list[LibraryItemView]:
     """库内媒体条目的库存聚合（单库海报墙数据源）。
+
+    ``identity`` 选正式条目还是临时条目（见 ``WallIdentity``）：两者不混排——
+    正片的 2:3 海报和认不出的文件的 16:9 抓帧塞进同一套拼音序里只会两败俱伤。
 
     ``limit`` 给定时只聚合这一页的条目——首页「最近添加」只要 20 格，
     海报墙滚动加载一次要一屏，都不该为此把整库的台账行捞出来算一遍。
@@ -354,7 +406,7 @@ async def build_library_wall(
 
     调用方需自行完成库存在性检查（404）。
     """
-    page_ids = await _wall_page_ids(session, library_id, sort, limit, offset)
+    page_ids = await _wall_page_ids(session, library_id, sort, limit, offset, identity)
     if not page_ids:
         return []
     # 分页时按 id 列表收窄（一页几十个，绑定变量绰绰有余）；全库时走子查询
@@ -451,17 +503,23 @@ async def _aggregate_wall_views(
 
     base = get_settings().tmdb_image_base_url.rstrip("/")
     # 海报优先本地刮削资产（断网可用），没有资产的回落 TMDB 图床
-    poster_assets: dict[int, str] = {
-        item_id: poster_file
-        for item_id, poster_file in (
-            await session.execute(
-                select(MediaMetadata.media_item_id, MediaMetadata.poster_file).where(
-                    MediaMetadata.media_item_id.in_(grouped.keys()),  # type: ignore[attr-defined]
-                    MediaMetadata.poster_file.is_not(None),  # type: ignore[union-attr]
-                )
+    poster_assets: dict[int, str] = {}
+    poster_sizes: dict[int, tuple[int | None, int | None]] = {}
+    for item_id, poster_file, width, height in (
+        await session.execute(
+            select(
+                MediaMetadata.media_item_id,
+                MediaMetadata.poster_file,
+                MediaMetadata.poster_width,
+                MediaMetadata.poster_height,
+            ).where(
+                MediaMetadata.media_item_id.in_(grouped.keys()),  # type: ignore[attr-defined]
+                MediaMetadata.poster_file.is_not(None),  # type: ignore[union-attr]
             )
-        ).all()
-    }
+        )
+    ).all():
+        poster_assets[item_id] = poster_file
+        poster_sizes[item_id] = (width, height)
     by_id: dict[int, LibraryItemView] = {}
     for item, files in grouped.values():
         season_episode_counts = season_episode_counts_by_item.get(item.id, {})  # type: ignore[arg-type]
@@ -523,10 +581,12 @@ async def _aggregate_wall_views(
         by_id[item.id] = LibraryItemView(  # type: ignore[index]
             media_item_id=item.id,  # type: ignore[arg-type]
             kind=MediaKind(item.kind),
+            source=item.source,
             tmdb_id=item.tmdb_id,
             title=item.title,
             year=item.year,
             poster_url=poster_url,
+            primary_aspect=primary_aspect(item, *poster_sizes.get(item.id, (None, None))),
             file_count=len(files),
             total_size_bytes=sum(f.size_bytes for f in files),
             seasons=sorted({s for s, _ in units if item.kind == "tv"}),
@@ -567,6 +627,7 @@ async def search_library_items(
             .join(MediaItem, MediaItem.id == LibraryFile.media_item_id)  # type: ignore[arg-type]
             .where(
                 LibraryFile.media_item_id.is_not(None),  # type: ignore[union-attr]
+                LibraryFile.unidentified_code.is_(None),  # type: ignore[union-attr]  # 临时条目不进搜索
                 or_(
                     func.lower(MediaItem.title).like(pattern),
                     func.lower(MediaItem.original_title).like(pattern),
