@@ -118,6 +118,7 @@
   .st .s{font-size:11px;color:var(--faint)}
   .acts{display:flex;gap:6px;justify-content:flex-end;white-space:nowrap}
   .acts .btn{padding:3px 9px;font-size:12px;background:transparent}
+  .acts .btn.icon{padding:3px 10px}
   .menu{position:absolute;right:14px;top:34px;z-index:5;background:#181b25;border:1px solid var(--line-strong);border-radius:12px;padding:6px;width:168px;box-shadow:0 18px 40px rgba(0,0,0,.6)}
   .menu div{padding:7px 10px;border-radius:8px;font-size:13px;color:var(--text);display:flex;justify-content:space-between}
   .menu div small{color:var(--faint)}
@@ -226,7 +227,7 @@
 
 <!-- ② 管理页 · 桌面 -->
 <section class="screen" id="s2">
-  <p class="note"><b>新页面</b> <span class="path" style="color:var(--muted)">/library/manage</span>：一个库一行，纵向列表随库数增长只是变长，不会把新库藏进横滚外。侧栏「媒体库」下多一个二级项，标签栏沿用上次样稿的「媒体库 / 自动入库 / 待处理」。行首 ⠿ 拖拽即改首页展示顺序（替代左移/右移，一次提交整单）；「电影」和「4K 电影」范围重叠的黄条从首页搬到这里；点库名进单库页。所有现有菜单项原样平移到行尾 ⋯ 菜单，图中以「港片」为例展开。</p>
+  <p class="note"><b>新页面</b> <span class="path" style="color:var(--muted)">/library/manage</span>：一个库一行，纵向列表随库数增长只是变长，不会把新库藏进横滚外。侧栏「媒体库」下多一个二级项，标签栏沿用上次样稿的「媒体库 / 自动入库 / 待处理」。行首 ⠿ 拖拽即改首页展示顺序（替代左移/右移，一次提交整单）；「电影」和「4K 电影」范围重叠的黄条从首页搬到这里；点库名进单库页。每行只有一个「···」按钮，所有操作（扫描库 / 待处理 / 整理文件名 / 刷新元数据 / 编辑库 / 设为默认库 / 从首页排除 / 删除库）都收在这个菜单里，扫描中时「扫描库」换成「停止扫描 42%」、「编辑库」置灰。图中以「港片」为例展开。</p>
   <div class="frame">
     <aside class="side">
       <div class="brand">movieclaw</div>
@@ -271,7 +272,7 @@
               <td class="num">1,284 部<small>2,104 个文件</small></td>
               <td><div class="st"><div class="l">空闲</div><div class="s">最近扫描 2 小时前 · 实时监控开</div></div></td>
               <td>全员</td>
-              <td><div class="acts"><span class="btn">扫描</span><span class="btn">编辑</span><span class="btn icon">···</span></div></td>
+              <td><div class="acts"><span class="btn icon">···</span></div></td>
             </tr>
             <tr>
               <td><span class="grip">⠿</span></td>
@@ -280,7 +281,7 @@
               <td class="num">312 部<small>2,940 集</small></td>
               <td><div class="st run"><div class="l">扫描 · 入账中 42%</div><div class="bar"><i style="width:42%"></i></div><div class="s">1,234 / 2,940 · 开始于 6 分钟前</div></div></td>
               <td>全员</td>
-              <td><div class="acts"><span class="btn">停止扫描</span><span class="btn" style="opacity:.4">编辑</span><span class="btn icon">···</span></div></td>
+              <td><div class="acts"><span class="btn icon">···</span></div></td>
             </tr>
             <tr>
               <td><span class="grip">⠿</span></td>
@@ -289,7 +290,7 @@
               <td class="num">96 部<small>1,420 集</small></td>
               <td><div class="st run"><div class="l">3 个新文件入库中</div><div class="s">等文件写完自动补扫</div></div></td>
               <td>全员</td>
-              <td><div class="acts"><span class="btn">扫描</span><span class="btn">编辑</span><span class="btn icon">···</span></div></td>
+              <td><div class="acts"><span class="btn icon">···</span></div></td>
             </tr>
             <tr>
               <td><span class="grip">⠿</span></td>
@@ -298,7 +299,7 @@
               <td class="num">58 部<small>61 个文件</small></td>
               <td><div class="st warn"><div class="l">4 个待识别</div><div class="s">最近扫描 昨天</div></div></td>
               <td>全员</td>
-              <td><div class="acts"><span class="btn">扫描</span><span class="btn">编辑</span><span class="btn icon">···</span></div></td>
+              <td><div class="acts"><span class="btn icon">···</span></div></td>
             </tr>
             <tr>
               <td><span class="grip">⠿</span></td>
@@ -307,7 +308,7 @@
               <td class="num">41 部<small>688 集</small></td>
               <td><div class="st"><div class="l">空闲</div><div class="s">最近扫描 3 天前</div></div></td>
               <td>指定成员 <span class="tag">2</span></td>
-              <td><div class="acts"><span class="btn">扫描</span><span class="btn">编辑</span><span class="btn icon">···</span></div></td>
+              <td><div class="acts"><span class="btn icon">···</span></div></td>
             </tr>
             <tr>
               <td><span class="grip">⠿</span></td>
@@ -316,7 +317,7 @@
               <td class="num">217 部<small>217 个文件</small></td>
               <td><div class="st run"><div class="l">刷新元数据 12%</div><div class="bar"><i style="width:12%"></i></div><div class="s">正在处理「银翼杀手 2049」· 下载海报</div></div></td>
               <td>全员</td>
-              <td><div class="acts"><span class="btn">停止刷新</span><span class="btn">编辑</span><span class="btn icon">···</span></div></td>
+              <td><div class="acts"><span class="btn icon">···</span></div></td>
             </tr>
             <tr>
               <td><span class="grip">⠿</span></td>
@@ -325,7 +326,7 @@
               <td class="num">33 个条目<small>41 个文件</small></td>
               <td><div class="st"><div class="l">空闲</div><div class="s">最近扫描 1 周前</div></div></td>
               <td>全员</td>
-              <td><div class="acts"><span class="btn">扫描</span><span class="btn">编辑</span><span class="btn icon">···</span></div></td>
+              <td><div class="acts"><span class="btn icon">···</span></div></td>
             </tr>
             <tr>
               <td><span class="grip">⠿</span></td>
@@ -334,7 +335,7 @@
               <td class="num">120 个条目<small>120 个文件</small></td>
               <td><div class="st"><div class="l">空闲</div><div class="s">最近扫描 2 周前</div></div></td>
               <td>指定成员 <span class="tag">1</span></td>
-              <td><div class="acts"><span class="btn">扫描</span><span class="btn">编辑</span><span class="btn icon">···</span></div></td>
+              <td><div class="acts"><span class="btn icon">···</span></div></td>
             </tr>
             <tr>
               <td><span class="grip">⠿</span></td>
@@ -343,7 +344,7 @@
               <td class="num">452 个条目<small>452 个文件</small></td>
               <td><div class="st"><div class="l">空闲</div><div class="s">最近扫描 5 天前</div></div></td>
               <td><span class="tag">仅管理</span></td>
-              <td><div class="acts"><span class="btn">扫描</span><span class="btn">编辑</span><span class="btn icon">···</span></div></td>
+              <td><div class="acts"><span class="btn icon">···</span></div></td>
             </tr>
             <tr class="sel" style="position:relative">
               <td><span class="grip">⠿</span></td>
@@ -352,12 +353,14 @@
               <td class="num">640 部<small>655 个文件</small></td>
               <td><div class="st danger"><div class="l">12 个待识别 · 2 个缺失</div><div class="s">最近扫描 昨天</div></div></td>
               <td>全员</td>
-              <td><div class="acts"><span class="btn">扫描</span><span class="btn">编辑</span><span class="btn icon" style="background:rgba(255,255,255,.12)">···</span></div>
+              <td><div class="acts"><span class="btn icon" style="background:rgba(255,255,255,.12)">···</span></div>
                 <div class="menu">
-                  <div class="hover">待处理 <small>14</small></div>
+                  <div class="hover">扫描库</div>
+                  <div>待处理 <small>14</small></div>
                   <div>整理文件名</div>
                   <div>刷新元数据</div>
                   <hr>
+                  <div>编辑库</div>
                   <div>设为默认库</div>
                   <div>从首页排除</div>
                   <hr>
@@ -372,7 +375,7 @@
               <td class="num">88 部<small>3,102 集</small></td>
               <td><div class="st"><div class="l">空闲</div><div class="s">最近扫描 4 小时前</div></div></td>
               <td>全员</td>
-              <td><div class="acts"><span class="btn">扫描</span><span class="btn">编辑</span><span class="btn icon">···</span></div></td>
+              <td><div class="acts"><span class="btn icon">···</span></div></td>
             </tr>
             <tr>
               <td><span class="grip">⠿</span></td>
@@ -381,7 +384,7 @@
               <td class="num">2,011 部<small>2,011 个 strm</small></td>
               <td><div class="st"><div class="l">空闲</div><div class="s">最近扫描 昨天 · 定时对账 每天 04:00</div></div></td>
               <td>全员</td>
-              <td><div class="acts"><span class="btn">扫描</span><span class="btn">编辑</span><span class="btn icon">···</span></div></td>
+              <td><div class="acts"><span class="btn icon">···</span></div></td>
             </tr>
           </tbody>
         </table>
