@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>媒体库 × 自动入库 重构样稿</title>
+<style>
+  :root{
+    --bg:#0a0b10;--raised:rgba(30,33,43,.74);--inset:rgba(255,255,255,.05);
+    --text:#f3f5f9;--muted:rgba(243,245,249,.62);--faint:rgba(243,245,249,.36);
+    --line:rgba(255,255,255,.08);--line-strong:rgba(255,255,255,.15);
+    --accent:#cdd6e6;--accent-soft:rgba(205,214,230,.14);
+    --ok:#4ade80;--info:#7fb0ff;--warn:#f5c451;--danger:#ff6b6b;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:#000;color:var(--text);font:15px/1.5 -apple-system,"PingFang SC","Noto Sans SC",sans-serif;-webkit-font-smoothing:antialiased}
+  .nav{position:sticky;top:0;z-index:9;display:flex;gap:6px;overflow-x:auto;padding:10px 12px;background:rgba(10,11,16,.92);backdrop-filter:blur(12px);border-bottom:1px solid var(--line)}
+  .nav button{flex:none;border:1px solid var(--line-strong);background:transparent;color:var(--muted);border-radius:999px;padding:6px 12px;font-size:13px}
+  .nav button.on{background:var(--accent);color:#0a0b10;border-color:var(--accent)}
+  .screen{display:none;max-width:430px;margin:0 auto;padding:16px 16px 60px;background:var(--bg);min-height:100vh}
+  .screen.on{display:block}
+  .note{font-size:12px;color:var(--faint);border-left:2px solid var(--warn);padding:4px 10px;margin:0 0 14px}
+  h1{font-size:22px;margin:6px 0 2px}
+  .sub{color:var(--muted);font-size:14px;margin:0 0 14px}
+  .tabs{display:flex;gap:18px;border-bottom:1px solid var(--line);margin:0 0 14px}
+  .tabs span{padding:8px 0;color:var(--faint);font-size:15px}
+  .tabs span.on{color:var(--text);border-bottom:2px solid var(--text)}
+  .card{background:var(--raised);border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:12px}
+  .card .row{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}
+  .path{font-family:ui-monospace,Menlo,monospace;font-size:14px}
+  .arrow{color:var(--faint);margin:0 4px}
+  .meta{color:var(--muted);font-size:13px;margin-top:2px}
+  .foot{border-top:1px solid var(--line);margin-top:10px;padding-top:8px;color:var(--muted);font-size:13px}
+  .tag{display:inline-block;font-size:11px;padding:1px 7px;border-radius:999px;border:1px solid var(--line-strong);color:var(--muted);vertical-align:middle;margin-left:6px}
+  .tag.warn{color:var(--warn);border-color:rgba(245,196,81,.4)}
+  .tag.ok{color:var(--ok);border-color:rgba(74,222,128,.4)}
+  .btn{border:1px solid var(--line-strong);background:transparent;color:var(--text);border-radius:999px;padding:6px 14px;font-size:14px}
+  .btn.primary{background:var(--accent);color:#0a0b10;border-color:var(--accent)}
+  .btn.ghost{border-style:dashed;width:100%;padding:12px;color:var(--muted);background:transparent}
+  .btn.link{border:none;padding:0;color:var(--info);font-size:13px;text-decoration:underline}
+  .btn.sm{font-size:12px;padding:3px 10px}
+  label.f{display:block;color:var(--muted);font-size:13px;margin:14px 0 6px}
+  .input{background:var(--inset);border:1px solid var(--line);border-radius:10px;padding:11px 12px;font-family:ui-monospace,Menlo,monospace;font-size:14px;display:flex;justify-content:space-between;align-items:center}
+  .opt{border:1px solid var(--line);border-radius:12px;padding:11px 12px;margin-bottom:8px;display:flex;gap:10px;align-items:flex-start}
+  .opt.sel{border-color:var(--accent);background:var(--accent-soft)}
+  .opt.dim{opacity:.55}
+  .radio{width:16px;height:16px;border-radius:50%;border:1.5px solid var(--line-strong);flex:none;margin-top:3px}
+  .opt.sel .radio{border:5px solid var(--accent)}
+  .opt b{font-weight:600;font-size:14px}
+  .opt .d{color:var(--muted);font-size:12px;margin-top:2px}
+  .opt .p{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--text);margin-top:4px}
+  .inline{margin:6px 0 10px 26px;border:1px dashed var(--line-strong);border-radius:12px;padding:12px;background:rgba(255,255,255,.02)}
+  details{margin-top:14px;border-top:1px solid var(--line);padding-top:10px}
+  summary{color:var(--faint);font-size:13px;cursor:pointer}
+  .alert{border-radius:12px;padding:12px;font-size:13px;margin-top:14px}
+  .alert.info{background:rgba(127,176,255,.1);border:1px solid rgba(127,176,255,.3)}
+  .alert.warn{background:rgba(245,196,81,.1);border:1px solid rgba(245,196,81,.35)}
+  .alert.danger{background:rgba(255,107,107,.1);border:1px solid rgba(255,107,107,.35)}
+  .steps{display:flex;gap:16px;font-size:14px;color:var(--faint);margin:0 0 14px;border-bottom:1px solid var(--line)}
+  .steps span{padding-bottom:8px}
+  .steps span.on{color:var(--text);border-bottom:2px solid var(--text)}
+  .footer{display:flex;justify-content:space-between;align-items:center;margin-top:20px;gap:8px}
+  .footer .hint{color:var(--faint);font-size:12px}
+  .switch{display:flex;justify-content:space-between;align-items:center;padding:10px 0}
+  .switch .t{width:42px;height:24px;border-radius:12px;background:var(--ok);position:relative;flex:none}
+  .switch .t::after{content:"";position:absolute;right:2px;top:2px;width:20px;height:20px;border-radius:50%;background:#fff}
+  .switch .t.off{background:rgba(255,255,255,.15)}.switch .t.off::after{right:auto;left:2px}
+  .kicker{font-size:12px;color:var(--faint);letter-spacing:.04em;margin:18px 0 8px}
+</style>
+</head>
+<body>
+
+<div class="nav">
+  <button class="on" data-s="s1">① 媒体库页·自动入库标签</button>
+  <button data-s="s2">② 新建规则·选目标</button>
+  <button data-s="s3">③ 建库向导·第 3 步</button>
+  <button data-s="s4">④ 撞中转目录时</button>
+</div>
+
+<!-- ① -->
+<section class="screen on" id="s1">
+  <p class="note">改动：自动入库从「设置」搬到媒体库页做第二个标签；每张规则卡直接写「源 → 落点路径」；中转目录卡片明确标「不进库」。</p>
+  <h1>媒体库</h1>
+  <p class="sub">库负责盘点与守护；自动入库负责把下载完成的内容搬进库。</p>
+  <div class="tabs"><span>媒体库 3</span><span class="on">自动入库 3</span><span>待处理 2</span></div>
+
+  <div class="card">
+    <div class="row">
+      <div>
+        <div class="path">/download/电影</div>
+        <div class="meta">复制 <span class="arrow">→</span> 自动路由（电影）</div>
+        <div class="path" style="color:var(--muted);font-size:13px">落点 /remote/media/电影 <span class="tag">默认库「电影」</span></div>
+      </div>
+      <div style="display:flex;gap:6px"><button class="btn sm">编辑</button><button class="btn sm">×</button></div>
+    </div>
+    <div class="foot">已入库 1 部</div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <div>
+        <div class="path">/download/剧集</div>
+        <div class="meta">复制 <span class="arrow">→</span> 自动路由（剧集）</div>
+        <div class="path" style="color:var(--muted);font-size:13px">落点 /remote/media/剧集 <span class="tag">默认库「剧集」</span></div>
+        <div class="path" style="color:var(--faint);font-size:12px">动画按收藏范围分流到 /remote/media/动漫</div>
+      </div>
+      <div style="display:flex;gap:6px"><button class="btn sm">编辑</button><button class="btn sm">×</button></div>
+    </div>
+    <div class="foot">已入库 15 部（61 个条目 · 440 个文件）</div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <div>
+        <div class="path">/download/AV</div>
+        <div class="meta">复制 <span class="arrow">→</span> 落入其他库 <span class="tag ok">进库</span></div>
+        <div class="path" style="color:var(--muted);font-size:13px">落点 /remote/media/AV <span class="tag">默认库「AV」</span></div>
+      </div>
+      <div style="display:flex;gap:6px"><button class="btn sm">编辑</button><button class="btn sm">×</button></div>
+    </div>
+    <div class="foot">已忽略 1（跳过存量）</div>
+  </div>
+
+  <div class="kicker">中转（不进库）</div>
+  <div class="card" style="border-style:dashed">
+    <div class="row">
+      <div>
+        <div class="path">/download/网盘待传</div>
+        <div class="meta">硬链接 <span class="arrow">→</span> 中转目录（剧集） <span class="tag warn">不进库</span></div>
+        <div class="path" style="color:var(--muted);font-size:13px">落点 /staging/剧集 · 等外部上传后由 strm 回流入库</div>
+      </div>
+      <div style="display:flex;gap:6px"><button class="btn sm">编辑</button><button class="btn sm">×</button></div>
+    </div>
+  </div>
+
+  <button class="btn ghost">＋ 添加自动入库规则</button>
+</section>
+
+<!-- ② -->
+<section class="screen" id="s2">
+  <p class="note">改动：目标选项直接显示落点路径；某类型还没有库时不灰掉、不等保存报错，而是就地「新建一个库」；中转目录改名并收进「高级」。</p>
+  <h1 style="font-size:20px">添加自动入库规则</h1>
+
+  <label class="f">监听源目录（下载器的保存目录）</label>
+  <div class="input"><span>/download/AV</span><span style="color:var(--faint)">浏览</span></div>
+
+  <label class="f">下载完成后放到</label>
+
+  <div class="opt"><div class="radio"></div><div><b>电影库</b><div class="d">识别作品、按「标题 (年份)」改名，按收藏范围分流</div><div class="p">/remote/media/电影</div></div></div>
+  <div class="opt"><div class="radio"></div><div><b>剧集库</b><div class="d">识别作品、按季集整理，按收藏范围分流</div><div class="p">/remote/media/剧集 · 动画 → /remote/media/动漫</div></div></div>
+
+  <div class="opt sel"><div class="radio"></div><div style="flex:1"><b>其他库</b><div class="d">不识别不改名，原样搬进去；家庭录像、自录、AV 等放这里</div>
+    <div class="alert warn" style="margin-top:8px;padding:10px">还没有「其他」类型的库。先建一个，这条规则就能用：</div>
+    <div class="inline">
+      <label class="f" style="margin-top:0">库名称</label>
+      <div class="input" style="font-family:inherit"><span>AV</span></div>
+      <label class="f">根目录（内容会复制到这里，这里就是库）</label>
+      <div class="input"><span>/remote/media/AV</span><span style="color:var(--faint)">浏览</span></div>
+      <div style="margin-top:10px;display:flex;gap:8px;align-items:center">
+        <button class="btn primary sm">创建库并选中</button>
+        <span style="font-size:12px;color:var(--faint)">扫描、缩略图等按推荐值，稍后可到库设置改</span>
+      </div>
+    </div>
+  </div></div>
+
+  <label class="f">搬运方式</label>
+  <div class="opt sel"><div class="radio"></div><div><b>复制</b><div class="d">可跨盘；源文件保留可继续做种</div></div></div>
+  <div class="opt dim"><div class="radio"></div><div><b>硬链接</b><div class="d">零占用；要求 /download 与 /remote/media 同一文件系统 <span class="tag warn">检测到跨盘</span></div></div></div>
+
+  <div class="switch"><div><div>整理目录里已有的内容</div><div class="d" style="color:var(--muted);font-size:12px">关掉则只处理之后新下载的，存量标记为已忽略</div></div><div class="t off"></div></div>
+
+  <details>
+    <summary>高级 · 中转目录（不进库）</summary>
+    <div class="opt" style="margin-top:10px"><div class="radio"></div><div><b>中转目录</b><div class="d">整理后放到一个不属于任何库的目录，等你上传网盘 / 转存 / 人工确认后再回流进库。<b style="color:var(--warn)">这个目录以后不能再建成媒体库。</b>想让目录直接成为库，请用上面的「XX 库」选项。</div></div></div>
+  </details>
+
+  <div class="footer"><span class="hint">保存后立即开始监听</span><button class="btn primary">保存规则</button></div>
+</section>
+
+<!-- ③ -->
+<section class="screen" id="s3">
+  <p class="note">改动：建库向导多一步「自动入库（可选）」，从库这边进也能一次配完；保存时前端先建库、再建规则，后端接口和校验不变。</p>
+  <h1 style="font-size:20px">添加媒体库</h1>
+  <div class="steps"><span>1 · 选类型</span><span>2 · 名称与目录</span><span class="on">3 · 自动入库</span></div>
+
+  <div class="card" style="padding:10px 12px;display:flex;gap:10px;align-items:center">
+    <div><b>AV</b> · 其他 <span class="tag">不识别不刮削</span></div>
+    <div class="path" style="margin-left:auto;color:var(--muted);font-size:13px">/remote/media/AV</div>
+  </div>
+
+  <div class="switch"><div><div>下载完成后自动搬进这个库</div><div style="color:var(--muted);font-size:12px">监听一个下载目录，完成的内容自动复制或硬链接到库根</div></div><div class="t"></div></div>
+
+  <label class="f">监听的下载目录</label>
+  <div class="input"><span>/download/AV</span><span style="color:var(--faint)">浏览</span></div>
+  <div style="font-size:12px;color:var(--faint);margin-top:6px">把下载器里这类内容的保存目录设成它即可。</div>
+
+  <label class="f">搬运方式</label>
+  <div class="opt sel"><div class="radio"></div><div><b>复制</b><div class="d">可跨盘；源文件保留可继续做种</div></div></div>
+  <div class="opt dim"><div class="radio"></div><div><b>硬链接</b><div class="d">零占用；要求同一文件系统 <span class="tag warn">检测到跨盘</span></div></div></div>
+
+  <div class="switch"><div><div>整理目录里已有的内容</div><div style="color:var(--muted);font-size:12px">关掉则只处理之后新下载的</div></div><div class="t off"></div></div>
+
+  <div class="alert info">这会同时创建一条自动入库规则「/download/AV → 落入其他库」，之后可在「媒体库 → 自动入库」里改。</div>
+
+  <div class="footer"><span class="hint">第 3 步，共 3 步 · 可跳过</span><div style="display:flex;gap:8px"><button class="btn">上一步</button><button class="btn primary">创建并开始扫描</button></div></div>
+</section>
+
+<!-- ④ -->
+<section class="screen" id="s4">
+  <p class="note">改动：建库根路径撞上已有「中转目录」规则时，不再一句「请先调整监听导入」了事。给两条出口：A 报错但说清改什么（最小改动）；B 就地转换（可选，唯一动语义的一条）。</p>
+  <h1 style="font-size:20px">添加媒体库</h1>
+  <div class="steps"><span>1 · 选类型</span><span class="on">2 · 名称与目录</span></div>
+  <label class="f">根目录</label>
+  <div class="input"><span>/remote/media/AV</span><span class="tag">主根</span></div>
+
+  <div class="kicker">方案 A · 报错给出口</div>
+  <div class="alert danger">
+    这个目录已经是自动入库规则「/download/AV」的<b>中转目录</b>（不进库）。中转目录不能同时是库根。<br>
+    要让它成为媒体库：把那条规则的目标改成「其他库」。
+    <div style="margin-top:8px"><button class="btn sm">去修改规则</button></div>
+  </div>
+
+  <div class="kicker">方案 B · 就地转换</div>
+  <div class="alert warn">
+    这个目录是自动入库规则「/download/AV」的中转目录。创建本库后，那条规则会改为<b>直接搬进本库</b>（行为不变：不识别不改名，原样复制）。
+    <div style="margin-top:8px;display:flex;gap:8px"><button class="btn primary sm">创建库并转换规则</button><button class="btn sm">换个目录</button></div>
+  </div>
+
+  <div class="footer"><span class="hint">第 2 步，共 2 步</span><div style="display:flex;gap:8px"><button class="btn">上一步</button><button class="btn primary">创建并开始扫描</button></div></div>
+</section>
+
+<script>
+  document.querySelectorAll('.nav button').forEach(b=>b.onclick=()=>{
+    document.querySelectorAll('.nav button').forEach(x=>x.classList.toggle('on',x===b));
+    document.querySelectorAll('.screen').forEach(s=>s.classList.toggle('on',s.id===b.dataset.s));
+    window.scrollTo(0,0);
+  });
+</script>
+</body>
+</html>
