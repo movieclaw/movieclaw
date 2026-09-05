@@ -249,9 +249,17 @@ async def _recent_plays(
 
 
 async def media_activity_overview(
-    session: AsyncSession, *, recent_limit: int = 30
+    session: AsyncSession,
+    *,
+    recent_limit: int = 30,
+    browsable_library_ids: set[int] | None = None,
 ) -> MediaActivityView:
-    """装配活动页「观看」视角的完整快照。"""
+    """装配活动页「观看」视角的完整快照。
+
+    ``browsable_library_ids``：当前超管的可浏览库集合。落在范围外的最近观看
+    记录折叠成一个计数（``hidden_recent_count``），不出片名与海报——活动页是
+    管理视角，但「不可见就彻底不可见」对超管自己摘掉的库同样成立。None = 不折叠。
+    """
     play_sessions, meters = activity.snapshot()
     play_meters = [m for m in meters if m.kind == activity.STREAM_KIND_PLAY]
     download_meters = [m for m in meters if m.kind == activity.STREAM_KIND_DOWNLOAD]
@@ -274,6 +282,12 @@ async def media_activity_overview(
 
     recent_rows = await _recent_plays(session, names_needed, limit=recent_limit)
     names = await _member_names(session, names_needed)
+    # 条目可能同时存在于多个库：只要有一个库在可浏览范围内就展示，详情落点
+    # 取范围内 id 最小的库；一个都不在的折叠进 hidden_recent_count
+    libraries_by_item = await _libraries_by_item(
+        session, {row[1].id for row in recent_rows if row[1].id is not None}
+    )
+    hidden_recent_count = 0
 
     session_views: list[ActivePlaybackSessionView] = []
     for play in sorted(play_sessions, key=lambda s: s.started_at, reverse=True):
@@ -390,6 +404,14 @@ async def media_activity_overview(
         file_duration_seconds,
         library_id,
     ) in recent_rows:
+        item_libraries = libraries_by_item.get(item.id, set())  # type: ignore[arg-type]
+        if browsable_library_ids is not None and item_libraries:
+            # 没有任何台账行的条目不属于任何库（文件已删/只剩记录），不受范围约束
+            allowed = sorted(item_libraries & browsable_library_ids)
+            if not allowed:
+                hidden_recent_count += 1
+                continue
+            library_id = allowed[0]
         duration_ms = _runtime_ms(
             file_duration_seconds,
             episode_runtime_minutes if item.kind == "tv" else None,
@@ -423,7 +445,26 @@ async def media_activity_overview(
         downloads=download_views,
         devices=device_views,
         recent=recent_views,
+        hidden_recent_count=hidden_recent_count,
     )
+
+
+async def _libraries_by_item(session: AsyncSession, item_ids: set[int]) -> dict[int, set[int]]:
+    """条目 id → 它有在位台账的库 id 集合（最近观看那几十条一次取回）。"""
+    if not item_ids:
+        return {}
+    rows = await session.execute(
+        select(LibraryFile.media_item_id, LibraryFile.library_id)
+        .where(
+            LibraryFile.media_item_id.in_(item_ids),  # type: ignore[union-attr]
+            LibraryFile.library_id.is_not(None),  # type: ignore[union-attr]
+        )
+        .distinct()
+    )
+    grouped: dict[int, set[int]] = {}
+    for item_id, library_id in rows.all():
+        grouped.setdefault(item_id, set()).add(library_id)
+    return grouped
 
 
 async def revoke_device(session: AsyncSession, device_id: str) -> str | None:

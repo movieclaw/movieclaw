@@ -61,7 +61,13 @@ async def test_empty_snapshot(client: TestClient) -> None:
     resp = client.get("/api/v1/playback/activity")
     assert resp.status_code == 200
     data = resp.json()["data"]
-    assert data == {"sessions": [], "downloads": [], "devices": [], "recent": []}
+    assert data == {
+        "sessions": [],
+        "downloads": [],
+        "devices": [],
+        "recent": [],
+        "hidden_recent_count": 0,
+    }
 
 
 async def test_assembles_sessions_devices_and_recent(client: TestClient) -> None:

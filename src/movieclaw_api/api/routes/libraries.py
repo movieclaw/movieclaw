@@ -163,6 +163,7 @@ from movieclaw_db.models import (
 from movieclaw_db.repositories import MediaItemRepository
 from movieclaw_db.repositories.library_file_repo import LibraryFileRepository
 from movieclaw_db.repositories.library_repo import LibraryRepository
+from movieclaw_db.repositories.member_repo import MemberRepository
 from movieclaw_media.genres import COUNTRY_NAMES, MOVIE_GENRES, REGION_PRESETS, TV_GENRES
 from movieclaw_media.models import MediaKind, MediaSource
 
@@ -201,6 +202,32 @@ async def require_library_visible(
     """
     await assert_library_visible(session, principal, library_id)
     return principal
+
+
+async def require_library_readable(
+    library_id: int,
+    principal: Principal = Depends(require_login),
+    session: AsyncSession = Depends(get_session),
+) -> Principal:
+    """库**配置**的读依赖：超管对任何库都有管理权（含自己不在浏览范围内的库），
+    成员仍按可浏览集判定。只挂在「读库配置」这一类路由上；浏览内容的路由
+    一律用 require_library_visible，超管也不例外（docs/design/library-access.md）。"""
+    if not principal.is_admin:
+        await assert_library_visible(session, principal, library_id)
+    return principal
+
+
+async def _member_ids_by_library(session: AsyncSession) -> dict[int, list[int]]:
+    """全部库的显式授权成员，一次取回按库分组（列表接口避免 N+1）。"""
+    from movieclaw_db.models.member import MemberLibraryAccess
+
+    rows = await session.execute(
+        select(MemberLibraryAccess.library_id, MemberLibraryAccess.member_id)
+    )
+    grouped: dict[int, list[int]] = {}
+    for library_id, member_id in rows.all():
+        grouped.setdefault(library_id, []).append(member_id)
+    return grouped
 
 
 @router.get(
@@ -514,10 +541,13 @@ async def list_libraries(
 ) -> ApiResponse[list[LibraryView]]:
     service = LibraryConfigService(session)
     rows = await service.list_all(kind=kind)
-    # 成员：按可见性白名单过滤，并抹掉落盘路径（成员不该知道服务器目录结构）
+    # 成员：按可浏览集过滤，并抹掉落盘路径（成员不该知道服务器目录结构）。
+    # 超管：全量保留（管理权），不在浏览范围内的库以 viewer_access=false 标出，
+    # 前端据此渲染带锁的管理卡片而不是海报墙
     visible = await visible_library_ids(session, principal)
-    if visible is not None:
+    if not principal.is_admin:
         rows = [r for r in rows if r.id in visible]
+    members_by_library = await _member_ids_by_library(session) if principal.is_admin else {}
     # 逐库 await 一次 list_jobs 就是一次 N+1：79 个库 = 79 次 join 查询，
     # 且随 job 台账增长持续变慢。这里一次批量取回再逐库套用，口径与单库页
     # 共用 _scan_views_from_jobs，不会分叉。
@@ -543,6 +573,8 @@ async def list_libraries(
             organize_progress=_organize_progress_view(r.id or -1),
             last_organize=_last_organize_view(r.id or -1),
             metadata_refresh=_metadata_refresh_view(r.id or -1),
+            member_ids=members_by_library.get(r.id or -1, []),
+            viewer_access=r.id in visible,
         )
         for r in rows
     ]
@@ -821,8 +853,7 @@ async def search_library_items(
     matched = await search_visible_library_items(session, keyword)
     libraries = await LibraryConfigService(session).list_all()
     visible = await visible_library_ids(session, principal)
-    if visible is not None:
-        libraries = [lib for lib in libraries if lib.id in visible]
+    libraries = [lib for lib in libraries if lib.id in visible]
     # 分组顺序沿用库列表的顺序（与媒体库首页一致），空组不出现
     return ok(
         [
@@ -843,7 +874,7 @@ async def search_library_items(
     response_model=ApiResponse[LibraryView],
     summary="获取单个媒体库详情",
     operation_id="library.get",
-    dependencies=[Depends(require_library_visible)],
+    dependencies=[Depends(require_library_readable)],
 )
 async def get_library(
     library_id: int,
@@ -852,6 +883,12 @@ async def get_library(
 ) -> ApiResponse[LibraryView]:
     service = LibraryConfigService(session)
     row = await service.get(library_id)
+    viewer_access = library_id in await visible_library_ids(session, principal)
+    member_ids = (
+        await MemberRepository(session).get_library_member_ids(library_id)
+        if principal.is_admin
+        else []
+    )
     scanning, scan_view, last_scan_view = await _persistent_scan_views(session, library_id)
     organizing, organize_view, last_organize_view = await _persistent_organize_views(
         session, library_id
@@ -867,6 +904,8 @@ async def get_library(
         organize_progress=organize_view,
         last_organize=last_organize_view,
         metadata_refresh=await _persistent_metadata_refresh_view(session, library_id),
+        member_ids=member_ids,
+        viewer_access=viewer_access,
     )
     if not principal.is_admin:
         # 成员不暴露服务器目录结构（与列表接口同一口径）
@@ -899,12 +938,21 @@ async def create_library(
         scrape_overrides=payload.scrape_overrides,
         generate_thumbnails=payload.generate_thumbnails,
         exclude_from_home=payload.exclude_from_home,
+        access_mode=payload.access_mode,
+        admin_visible=payload.admin_visible,
+        member_ids=payload.member_ids,
     )
     # 建库即扫描：根路径下的存量文件立刻开始识别入账，不用用户再手动点一次
     assert row.id is not None
     await enqueue_scan_job(session, row.id, row.name, origin=_job_origin(client_name))
     return ok(
-        LibraryView.from_model(row, scanning=True, scan_progress=_queued_scan_view()),
+        LibraryView.from_model(
+            row,
+            scanning=True,
+            scan_progress=_queued_scan_view(),
+            member_ids=payload.member_ids or [],
+            viewer_access=row.admin_visible,
+        ),
         message=f"已创建媒体库「{row.name}」，正在扫描存量文件",
     )
 
@@ -1049,7 +1097,11 @@ async def update_library(
         scrape_overrides=payload.scrape_overrides,
         generate_thumbnails=payload.generate_thumbnails,
         exclude_from_home=payload.exclude_from_home,
+        access_mode=payload.access_mode,
+        admin_visible=payload.admin_visible,
+        member_ids=payload.member_ids,
     )
+    member_ids = await MemberRepository(session).get_library_member_ids(library_id)
     # 根路径变了就自动补扫：新目录的存量立刻入账，移除目录下的文件标记 missing
     if roots_changed:
         # 这轮扫描额外按 inode 对账旧根遗留台账：根路径只是换了挂载别名/软链接
@@ -1064,10 +1116,19 @@ async def update_library(
             previous_root_paths=previous_root_paths,
         )
         return ok(
-            LibraryView.from_model(row, scanning=True, scan_progress=_queued_scan_view()),
+            LibraryView.from_model(
+                row,
+                scanning=True,
+                scan_progress=_queued_scan_view(),
+                member_ids=member_ids,
+                viewer_access=row.admin_visible,
+            ),
             message="已更新，正在按新的根路径重新扫描",
         )
-    return ok(LibraryView.from_model(row), message="已更新")
+    return ok(
+        LibraryView.from_model(row, member_ids=member_ids, viewer_access=row.admin_visible),
+        message="已更新",
+    )
 
 
 @router.post(

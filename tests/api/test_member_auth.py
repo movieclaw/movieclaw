@@ -532,6 +532,9 @@ _MEMBER_ALLOWLIST = {
     ("GET", "/api/v1/libraries/{library_id}/items/{media_item_id}/episodes"),
     # 最近观看是按成员隔离的个人播放数据，并继续受媒体库白名单过滤。
     ("GET", "/api/v1/playback/recent"),
+    # 清除观看记录只作用于当前成员自己的行（超管删超管的），跨成员不提供；
+    # 按条目/按库清除还要求目标在可浏览范围内（docs/design/library-access.md 2.6）
+    ("DELETE", "/api/v1/playback/history"),
     # 播放页条目信息/分集清单：按可见库解析归属，不可见与不存在同样 404
     ("GET", "/api/v1/playback/items/{media_item_id}"),
     ("GET", "/api/v1/playback/items/{media_item_id}/episodes"),

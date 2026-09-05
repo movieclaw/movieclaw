@@ -36,6 +36,28 @@ class LibraryPayload(BaseModel):
         default=None,
         description="是否从首页「最近添加」等汇总里排除该库；不传表示不改动，新建时默认关闭",
     )
+    # —— 可见范围（docs/design/library-access.md）：三个字段都是"不传 = 不改动"
+    access_mode: Literal["everyone", "selected"] | None = Field(
+        default=None,
+        description=(
+            "可见范围：everyone=对全部成员自动开放（含以后新建的成员）/ "
+            "selected=只对 member_ids 里显式授权的成员开放；不传表示不改动，新建时默认 everyone"
+        ),
+    )
+    admin_visible: bool | None = Field(
+        default=None,
+        description=(
+            "超管本人是否可浏览本库内容（管理权不受影响）；"
+            "不传表示不改动，新建时默认可浏览"
+        ),
+    )
+    member_ids: list[int] | None = Field(
+        default=None,
+        description=(
+            "显式授权的成员 id（整体覆盖式；与成员管理页的可见库白名单是同一份数据）；"
+            "不传表示不改动"
+        ),
+    )
     root_paths: list[str] = Field(
         description="根路径列表（绝对路径），第一个为主根——新入库落在这里"
     )
@@ -211,6 +233,20 @@ class LibraryView(BaseModel):
     capabilities: LibraryCapabilitiesView
     generate_thumbnails: bool = Field(default=True, description="本地来源内容是否抓帧生成缩略图")
     exclude_from_home: bool = Field(default=False, description="是否从首页汇总里排除")
+    access_mode: Literal["everyone", "selected"] = Field(
+        default="everyone", description="可见范围：everyone=所有成员 / selected=指定成员"
+    )
+    admin_visible: bool = Field(default=True, description="超管本人是否可浏览本库内容")
+    member_ids: list[int] = Field(
+        default_factory=list, description="显式授权的成员 id（仅管理员可见，成员端恒空）"
+    )
+    viewer_access: bool = Field(
+        default=True,
+        description=(
+            "当前请求主体能否浏览本库内容。成员端恒 true（看不到的库根本不在列表里）；"
+            "超管端为 false 时表示只有管理权：首页显示带锁的管理卡片，海报墙/详情/播放不可用"
+        ),
+    )
     root_paths: list[str]
     primary_root: str | None = Field(description="主根路径（root_paths 第一项）")
     is_default: bool
@@ -257,6 +293,8 @@ class LibraryView(BaseModel):
         organize_progress: ScanProgressView | None = None,
         last_organize: LastOrganizeView | None = None,
         metadata_refresh: MetadataRefreshView | None = None,
+        member_ids: list[int] | None = None,
+        viewer_access: bool = True,
     ) -> LibraryView:
         from movieclaw_api.services.library.profile import capabilities_of, profile_of
 
@@ -268,6 +306,10 @@ class LibraryView(BaseModel):
             capabilities=LibraryCapabilitiesView(**capabilities_of(profile_of(row))),
             generate_thumbnails=row.generate_thumbnails,
             exclude_from_home=row.exclude_from_home,
+            access_mode=row.access_mode,  # type: ignore[arg-type]
+            admin_visible=row.admin_visible,
+            member_ids=list(member_ids or []),
+            viewer_access=viewer_access,
             root_paths=list(row.root_paths),
             primary_root=row.primary_root,
             is_default=row.is_default,

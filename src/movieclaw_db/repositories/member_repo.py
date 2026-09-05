@@ -100,6 +100,27 @@ class MemberRepository:
             self._session.add(MemberLibraryAccess(member_id=member_id, library_id=library_id))
         await self._session.commit()
 
+    async def get_library_member_ids(self, library_id: int) -> list[int]:
+        """某个库的显式授权成员 id（库设置页「可见成员」名单的反向读取）。"""
+        result = await self._session.execute(
+            select(MemberLibraryAccess.member_id).where(
+                MemberLibraryAccess.library_id == library_id
+            )
+        )
+        return list(result.scalars().all())
+
+    async def set_library_member_ids(self, library_id: int, member_ids: list[int]) -> None:
+        """整体覆盖某个库的显式授权成员（不提交事务，随库更新一起落盘）。
+
+        与 ``set_library_access`` 写的是同一张表的同一种行——库设置页勾成员
+        与成员管理页勾库互通，两处看到的名单永远一致。
+        """
+        await self._session.execute(
+            sa_delete(MemberLibraryAccess).where(MemberLibraryAccess.library_id == library_id)
+        )
+        for member_id in dict.fromkeys(member_ids):
+            self._session.add(MemberLibraryAccess(member_id=member_id, library_id=library_id))
+
     # -- 站点可用性白名单 --------------------------------------------------
 
     async def get_site_ids(self, member_id: int) -> list[str]:

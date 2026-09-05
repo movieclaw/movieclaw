@@ -8,7 +8,7 @@ import logging
 import re
 import time
 from pathlib import Path as PathLib
-from typing import Annotated
+from typing import Annotated, Literal
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Path, Query, Request, Response
@@ -34,6 +34,7 @@ from movieclaw_api.schemas.playback import (
     PlaybackDecisionView,
     PlaybackDiagnosticsView,
     PlaybackFontsView,
+    PlaybackHistoryClearView,
     PlaybackItemView,
     PlaybackMetricPayload,
     PlaybackPolicyPayload,
@@ -50,7 +51,11 @@ from movieclaw_api.schemas.playback import (
 from movieclaw_api.schemas.response import ApiResponse, ok
 from movieclaw_api.services import media_scrape
 from movieclaw_api.services.auth import Principal
-from movieclaw_api.services.library.access import visible_library_ids
+from movieclaw_api.services.library.access import (
+    assert_item_visible,
+    assert_library_visible,
+    visible_library_ids,
+)
 from movieclaw_api.services.library.items import build_season_episodes, episode_view
 from movieclaw_api.services.media_probe import probe_keyframe_before
 from movieclaw_api.services.playback import metrics, trickplay
@@ -335,13 +340,68 @@ async def list_recent_watch(
 )
 async def get_media_activity(
     recent_limit: Annotated[int, Query(ge=1, le=100)] = 30,
+    principal: Principal = Depends(require_login),
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[MediaActivityView]:
     """活动页「观看」视角：正在播放/下载、设备清单与全成员最近观看。
 
     管理员运维视角（跨成员可见），与首页按成员隔离的最近观看接口分离。
+    落在当前超管不可浏览的库里的记录只报个数，不出片名。
     """
-    return ok(await media_activity_overview(session, recent_limit=recent_limit))
+    return ok(
+        await media_activity_overview(
+            session,
+            recent_limit=recent_limit,
+            browsable_library_ids=await visible_library_ids(session, principal),
+        )
+    )
+
+
+@router.delete(
+    "/history",
+    response_model=ApiResponse[PlaybackHistoryClearView],
+    summary="清除自己的观看记录（按条目 / 按库 / 全部）",
+    operation_id="playback.history.clear",
+    openapi_extra={"x-cli-hidden": True, "x-cli-dangerous": "destructive"},
+)
+async def clear_playback_history(
+    scope: Annotated[Literal["item", "library", "all"], Query(description="清除范围")],
+    media_item_id: Annotated[int | None, Query(description="scope=item 时的条目 id")] = None,
+    library_id: Annotated[int | None, Query(description="scope=library 时的库 id")] = None,
+    principal: Principal = Depends(require_login),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[PlaybackHistoryClearView]:
+    """只删**当前登录主体自己**的记录（续播点、已看标记、播放次数与播放质量
+    指标），超管删的是超管自己的；跨成员删除不提供（docs/design/library-access.md 2.6）。
+
+    按条目/按库清除要求目标在主体的可浏览范围内——范围外无从得知条目，也不该能删。
+    """
+    from movieclaw_api.services import playback_history
+
+    member_id = principal.member_id if principal.member_id is not None else 0
+    if scope == "item":
+        if media_item_id is None:
+            raise BadRequestException("按条目清除需要 media_item_id")
+        await assert_item_visible(session, principal, media_item_id)
+        result = await playback_history.clear(session, member_id, media_item_id=media_item_id)
+        message = "已清除这部作品的观看记录"
+    elif scope == "library":
+        if library_id is None:
+            raise BadRequestException("按库清除需要 library_id")
+        await assert_library_visible(session, principal, library_id)
+        result = await playback_history.clear(session, member_id, library_id=library_id)
+        message = "已清除你在这个库里的观看记录"
+    else:
+        result = await playback_history.clear(session, member_id)
+        message = "已清除你的全部观看记录"
+    logger.info(
+        "观看记录已清除：主体=%s 范围=%s 状态 %d 条 / 指标 %d 条",
+        principal,
+        scope,
+        result.deleted_states,
+        result.deleted_metrics,
+    )
+    return ok(result, message=message)
 
 
 @router.delete(

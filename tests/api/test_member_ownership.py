@@ -262,18 +262,34 @@ async def test_usable_site_ids_semantics(db) -> None:
 
 @pytest.mark.asyncio
 async def test_member_visible_ids_semantics(db) -> None:
-    """None=不受限（超管 / all_libraries 成员）；白名单成员返回集合；
+    """总是返回具体集合（docs/design/library-access.md）：超管 = admin_visible
+    的库；all_libraries 成员 = everyone 库 ∪ 白名单；白名单成员只有白名单；
     成员行不存在（凭据竞态）按空集合处理。"""
+    from movieclaw_db.repositories.library_repo import LibraryRepository
+
     async with db.session() as session:
         repo = MemberRepository(session)
+        libraries = LibraryRepository(session)
+        shared = await libraries.create(name="共享", kind="movie", root_paths=["/m/shared"])
+        selected = await libraries.create(
+            name="指定", kind="movie", root_paths=["/m/selected"], access_mode="selected"
+        )
         member_id = await _create_member(session, "alice")
 
-        assert await member_visible_ids(session, 0) is None  # 超管哨兵
-        assert await member_visible_ids(session, member_id) is None  # 默认全可见
+        assert await member_visible_ids(session, 0) == {shared.id, selected.id}  # 超管默认可浏览
+        assert await member_visible_ids(session, member_id) == {shared.id}  # 默认只含 everyone 库
+
+        await repo.set_library_access(member_id, [selected.id])
+        assert await member_visible_ids(session, member_id) == {shared.id, selected.id}
 
         member = await repo.get(member_id)
         member.all_libraries = False
         await repo.save(member)
-        assert await member_visible_ids(session, member_id) == set()  # 白名单为空
+        assert await member_visible_ids(session, member_id) == {selected.id}  # 只剩白名单
+
+        await libraries.update(
+            selected.id, name="指定", root_paths=["/m/selected"], admin_visible=False
+        )
+        assert await member_visible_ids(session, 0) == {shared.id}  # 超管把自己摘掉
 
         assert await member_visible_ids(session, 99999) == set()  # 行不存在

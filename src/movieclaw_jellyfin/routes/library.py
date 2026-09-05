@@ -95,7 +95,10 @@ async def _item_visible(session: AsyncSession, item_id: int, scope: ViewerScope)
 
 @dataclass(frozen=True)
 class ViewerScope:
-    """一次请求的观看者范围：身份 + 可见库（None=不受限）。
+    """一次请求的观看者范围：身份 + 可浏览库集合。
+
+    ``visible`` 对超管设备也是具体集合（不在浏览范围内的库被摘掉）；None 仅
+    保留给内部调用表示不受限，设备请求不会产出。
 
     多用户投影的两个自由度都在这里：``member_id`` 决定 UserData（进度/
     已看/收藏）装谁的行，``visible`` 决定库/条目枚举的范围。
@@ -113,8 +116,8 @@ async def viewer_scope(
 ) -> ViewerScope:
     """从设备凭据解析观看者范围（require_device 有依赖缓存，不重复查库）。"""
     member_id = identity.device.member_id
-    if member_id == 0:
-        return ViewerScope(0, None)
+    # 超管设备也按可浏览集投影：把自己从某个库的可见范围里摘掉后，电视端
+    # 同样看不到它（docs/design/library-access.md 2.5）
     async with get_database().session() as session:
         visible = await member_visible_ids(session, member_id)
     return ViewerScope(member_id, visible)

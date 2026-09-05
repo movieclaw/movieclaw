@@ -83,13 +83,14 @@ async def authenticate_by_name(request: Request) -> JSONResponse:
         device.updated_at = utcnow()
         await session.commit()
 
+    # 超管与成员都按可浏览集投影 EnabledFolders（超管摘掉自己的库也不在电视端出现）
+    async with get_database().session() as session:
+        visible = await member_visible_ids(session, member_id)
     if member is not None:
-        async with get_database().session() as session:
-            visible = await member_visible_ids(session, member_id)
         user_payload = await user_dto(setting.server_id, member, visible)
         user_name = member.username
     else:
-        user_payload = await user_dto(setting.server_id)
+        user_payload = await user_dto(setting.server_id, visible_library_ids=visible)
         user_name = (await auth_service.get_admin_account()).username
     return JSONResponse(
         {
@@ -119,7 +120,9 @@ async def _member_user_dto(server_id: str, member: Member) -> dict:
 async def _identity_user_dto(server_id: str, member_id: int) -> dict:
     """按设备登录身份装配用户 DTO；成员行已不存在（竞态）按 404 处理。"""
     if member_id == 0:
-        return await user_dto(server_id)
+        async with get_database().session() as session:
+            visible = await member_visible_ids(session, 0)
+        return await user_dto(server_id, visible_library_ids=visible)
     async with get_database().session() as session:
         member = await MemberRepository(session).get(member_id)
     if member is None:

@@ -115,6 +115,19 @@ class Library(TimestampMixin, table=True):
     exclude_from_home: bool = Field(
         default=False, description="是否从首页聚合区（最近添加/封面拼贴）排除本库"
     )
+    # —— 可见范围（docs/design/library-access.md）——
+    # 「谁能浏览这个库」由两侧共同决定：库侧 access_mode 说它是否对全部成员
+    # 自动开放，成员侧 all_libraries + member_library_access 白名单说成员能看
+    # 哪些库。判定收口在 services/library/access.py，别处不自行拼条件。
+    # - everyone：对全部成员自动开放（含以后新建的成员），今天全部存量库都是它；
+    # - selected：只对白名单里显式授权的成员开放，成员的 all_libraries 不含它。
+    access_mode: str = Field(
+        default="everyone", index=True, description="可见范围：everyone / selected"
+    )
+    # 超管本人是否在浏览范围内。超管不是成员行，进不了白名单表，所以单独一列。
+    # 管理权（配置/扫描/待处理）永远属于超管，这一列只管**浏览**：为 false 时
+    # 超管在首页只见带锁的管理卡片，海报墙/详情/播放/聚合面都不含本库内容。
+    admin_visible: bool = Field(default=True, description="超管本人是否可浏览本库内容")
 
     # —— 库存统计快照 ----------------------------------------------------
     # 媒体库首页是高频读路径，不能每次打开都扫描 library_file 全表再聚合。

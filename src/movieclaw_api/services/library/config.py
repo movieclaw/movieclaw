@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from movieclaw_api.exceptions import BadRequestException, ConflictException, NotFoundException
 from movieclaw_db.models.library import Library
 from movieclaw_db.repositories.library_repo import LibraryRepository
+from movieclaw_db.repositories.member_repo import MemberRepository
 from movieclaw_media.models import MediaKind
 
 logger = logging.getLogger("movieclaw_api.library_config")
@@ -179,6 +180,33 @@ class LibraryConfigService:
             raise BadRequestException(f"库级刮削设置不合法：{detail}") from exc
         return overrides
 
+    @staticmethod
+    def _validate_access_mode(raw: str | None) -> str | None:
+        """可见范围模式只认 everyone / selected；None = 不改动。"""
+        if raw is None:
+            return None
+        from movieclaw_api.services.library.access import ACCESS_MODES
+
+        if raw not in ACCESS_MODES:
+            raise BadRequestException(
+                f"可见范围只能是 everyone（所有成员）或 selected（指定成员），收到：{raw}"
+            )
+        return raw
+
+    async def _validate_member_ids(self, raw: list[int] | None) -> list[int] | None:
+        """显式授权成员必须都存在——存不上的授权等于成员莫名看不到库。"""
+        if raw is None:
+            return None
+        ids = list(dict.fromkeys(int(i) for i in raw))
+        if not ids:
+            return []
+        repo = MemberRepository(self._session)
+        existing = {m.id for m in await repo.list_all()}
+        unknown = [i for i in ids if i not in existing]
+        if unknown:
+            raise BadRequestException(f"可见成员里有不存在的成员：{unknown}")
+        return ids
+
     async def _assert_roots_clear_of_import_watch(self, roots: list[str]) -> None:
         """根路径不得与任何监听导入规则的源目录或自定义目录前缀重叠。
 
@@ -278,8 +306,14 @@ class LibraryConfigService:
         scrape_overrides: dict | None = None,
         generate_thumbnails: bool | None = None,
         exclude_from_home: bool | None = None,
+        access_mode: str | None = None,
+        admin_visible: bool | None = None,
+        member_ids: list[int] | None = None,
     ) -> Library:
         """新增一个库。该类型尚无默认库时自动成为默认。
+
+        可见范围（access_mode / admin_visible / member_ids）不传按默认：对全部
+        成员开放、超管可浏览、没有显式授权行——与没有这层概念时的行为一致。
 
         ``source`` 不传按形态默认；(kind, source) 组合必须是已定义的能力档案
         （profile_for 会拒绝 movie+local 这类没有识别策略的组合）。
@@ -294,6 +328,8 @@ class LibraryConfigService:
         await self._assert_roots_clear_of_import_watch(roots)
         await self._assert_roots_clear_of_other_libraries(roots)
         await self._assert_name_available(name)
+        mode = self._validate_access_mode(access_mode)
+        members = await self._validate_member_ids(member_ids)
         row = await self._repo.create(
             name=name.strip(),
             kind=kind.value,
@@ -306,7 +342,13 @@ class LibraryConfigService:
             scrape_overrides=overrides,
             generate_thumbnails=True if generate_thumbnails is None else bool(generate_thumbnails),
             exclude_from_home=bool(exclude_from_home),
+            access_mode=mode or "everyone",
+            admin_visible=True if admin_visible is None else bool(admin_visible),
         )
+        if members is not None:
+            assert row.id is not None
+            await MemberRepository(self._session).set_library_member_ids(row.id, members)
+            await self._session.commit()
         self._refresh_watcher()
         return row
 
@@ -322,11 +364,16 @@ class LibraryConfigService:
         scrape_overrides: dict | None = None,
         generate_thumbnails: bool | None = None,
         exclude_from_home: bool | None = None,
+        access_mode: str | None = None,
+        admin_visible: bool | None = None,
+        member_ids: list[int] | None = None,
     ) -> Library:
-        """更新名称/根路径/收藏范围。kind 创建后不可改（订阅按类型挂库）。
+        """更新名称/根路径/收藏范围/可见范围。kind 创建后不可改（订阅按类型挂库）。
 
-        ``auto_clear_missing`` / ``realtime_watch`` 为 None 时保持原值
-        （见 LibraryRepository.update）。
+        ``auto_clear_missing`` / ``realtime_watch`` / ``access_mode`` /
+        ``admin_visible`` / ``member_ids`` 为 None 时保持原值（老客户端的请求体
+        没带这些字段，不能把用户设好的范围悄悄改掉）。``member_ids`` 是整体
+        覆盖式：传空列表 = 清空显式授权。
         """
         await self.get(library_id)
         from movieclaw_api.services.library.routing import validate_match_rules
@@ -337,6 +384,11 @@ class LibraryConfigService:
         await self._assert_roots_clear_of_import_watch(roots)
         await self._assert_roots_clear_of_other_libraries(roots, exclude_id=library_id)
         await self._assert_name_available(name, exclude_id=library_id)
+        mode = self._validate_access_mode(access_mode)
+        members = await self._validate_member_ids(member_ids)
+        if members is not None:
+            # 先写授权行、后由 repo.update 一并提交：名单与模式同一事务落盘
+            await MemberRepository(self._session).set_library_member_ids(library_id, members)
         updated = await self._repo.update(
             library_id,
             name=name.strip(),
@@ -347,6 +399,8 @@ class LibraryConfigService:
             scrape_overrides=overrides,
             generate_thumbnails=generate_thumbnails,
             exclude_from_home=exclude_from_home,
+            access_mode=mode,
+            admin_visible=admin_visible,
         )
         assert updated is not None  # get() 已确认存在
         # 开关切换也走同一次后台差量重建：关掉的库拆监听、打开的库建监听

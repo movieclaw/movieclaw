@@ -148,6 +148,16 @@ class MediaActivityView(BaseModel):
     downloads: list[ActiveFileDownloadView]
     devices: list[PlaybackDeviceView]
     recent: list[MediaRecentPlayView]
+    # 落在当前超管不可浏览的库里的最近观看条数：不出片名与海报，只报个数
+    # （docs/design/library-access.md 2.5）
+    hidden_recent_count: int = Field(default=0, description="不在你可见范围内的最近观看条数")
+
+
+class PlaybackHistoryClearView(BaseModel):
+    """清除观看记录的结果：删掉了多少条状态与多少条播放质量指标。"""
+
+    deleted_states: int = Field(description="删除的观看状态行数（续播点/已看/播放次数）")
+    deleted_metrics: int = Field(description="删除的播放质量指标行数")
 
 
 # ---------------------------------------------------------------------------
