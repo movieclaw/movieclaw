@@ -102,6 +102,24 @@ def _normalize_state(state: str, *, completed: bool) -> str:
     return "unknown"
 
 
+def _error_message(state: str) -> str | None:
+    """把 qBittorrent 的错误态翻译成用户能据此行动的中文原因。
+
+    qBittorrent 的列表接口不带错误文本，只有状态词：``missingFiles`` 是最常见
+    的一种——已下载的文件被移走/删除，或存储目录在下载器重启后没有挂载，
+    整批任务会同时变成这个状态。区分它和泛化的 ``error``，用户才知道该去
+    检查存储还是去看下载器日志。非错误态返回 None。
+    """
+    if state == "missingFiles":
+        return (
+            "下载器找不到已下载的文件（文件被移动、删除，或存储目录未挂载），"
+            "请在下载器中重新校验或删除该任务"
+        )
+    if state == "error":
+        return "下载器报告该任务出错，请在下载器中查看具体原因"
+    return None
+
+
 @contextmanager
 def _translate_errors(url: str) -> Iterator[None]:
     """把 qbittorrent-api 的异常翻译成本模块的统一异常。"""
@@ -251,6 +269,9 @@ class QBittorrentDownloader(BaseDownloader):
             dlspeed_bytes=int(getattr(torrent, "dlspeed", 0) or 0),
             eta_seconds=eta if 0 < eta < 8640000 else None,
             state=_normalize_state(str(getattr(torrent, "state", "")), completed=completed),
+            error_message=(
+                None if completed else _error_message(str(getattr(torrent, "state", "")))
+            ),
         )
 
     async def list_torrents(self) -> list[TorrentBrief]:
@@ -317,6 +338,11 @@ class QBittorrentDownloader(BaseDownloader):
                     ),
                     eta_seconds=eta if 0 < eta < 8640000 else None,
                     state=_normalize_state(str(getattr(torrent, "state", "")), completed=completed),
+                    error_message=(
+                        None
+                        if completed
+                        else _error_message(str(getattr(torrent, "state", "")))
+                    ),
                 )
             )
         return briefs

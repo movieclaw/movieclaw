@@ -726,6 +726,9 @@ class SubscriptionDownloadView(BaseModel):
     state: str = Field(
         description="downloading / stalled / paused / completed / error / missing / unknown"
     )
+    error_message: str | None = Field(
+        default=None, description="state 为 error 时下载器给出的可读原因；其余为空"
+    )
     downloader_name: str | None = None
     units: list[DownloadUnitView] = Field(default_factory=list)
 

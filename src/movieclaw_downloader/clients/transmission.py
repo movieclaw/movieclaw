@@ -44,15 +44,24 @@ from movieclaw_downloader.models import (
 logger = logging.getLogger("movieclaw_downloader.transmission")
 
 
+# Transmission 的 error 枚举：TR_STAT_LOCAL_ERROR，磁盘/权限/文件缺失等本地故障
+_TR_LOCAL_ERROR = 3
+
+
 def _normalize_state(torrent, completed: bool) -> str:  # noqa: ANN001 -- transmission_rpc.Torrent
     """把 Transmission 的任务状态收敛到 TorrentStatus.state 的统一词表。
 
     原始 status 词表（transmission-rpc）：stopped / check pending / checking /
     download pending / downloading / seed pending / seeding。
+
+    error 字段：0 正常 / 1 tracker 警告 / 2 tracker 错误 / 3 本地错误。只有本地
+    错误（磁盘、权限、文件缺失）才归入 ``error``——它表示下载器这条任务本身坏了，
+    换源无济于事，救援巡检会暂停死种判定。tracker 错误（如种子已从站点撤下）
+    恰恰是没有做种的死种，按 status/速度落入 stalled，由换源机制接手。
     """
     if completed:
         return "completed"
-    if int(torrent.fields.get("error", 0)) != 0:
+    if int(torrent.fields.get("error", 0)) == _TR_LOCAL_ERROR:
         return "error"
     status = str(torrent.fields.get("status", ""))
     # fields 里 status 是数字枚举：0=stopped 3=download pending 4=downloading
@@ -66,6 +75,15 @@ def _normalize_state(torrent, completed: bool) -> str:  # noqa: ANN001 -- transm
     if status in ("1", "2"):
         return "checking"
     return "unknown"
+
+
+def _error_message(torrent, *, completed: bool) -> str | None:  # noqa: ANN001 -- transmission_rpc.Torrent
+    """错误态的可读原因：Transmission 自带 errorString（如 "No data found!"），
+    原样透出给任务中心；非本地错误或已完成时为 None（与 ``error`` 态同口径）。"""
+    if completed or int(torrent.fields.get("error", 0)) != _TR_LOCAL_ERROR:
+        return None
+    text = str(torrent.fields.get("errorString") or "").strip()
+    return f"下载器报告：{text}" if text else "下载器报告该任务出错，请在下载器中查看具体原因"
 
 
 @contextmanager
@@ -216,6 +234,7 @@ class TransmissionDownloader(BaseDownloader):
             dlspeed_bytes=int(torrent.fields.get("rateDownload", 0)),
             eta_seconds=eta if eta > 0 else None,
             state=_normalize_state(torrent, completed=completed),
+            error_message=_error_message(torrent, completed=completed),
         )
 
     async def list_torrents(self) -> list[TorrentBrief]:
@@ -288,6 +307,7 @@ class TransmissionDownloader(BaseDownloader):
                     swarm_leechers=swarm_leechers,
                     eta_seconds=eta if eta > 0 else None,
                     state=_normalize_state(torrent, completed=completed),
+                    error_message=_error_message(torrent, completed=completed),
                 )
             )
         return briefs

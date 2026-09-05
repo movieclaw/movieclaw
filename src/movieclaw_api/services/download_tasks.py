@@ -40,6 +40,7 @@ from movieclaw_db.models import (
     WantedStatus,
     utcnow,
 )
+from movieclaw_db.models.system_notice import NoticeStatus, SystemNotice
 from movieclaw_db.repositories.downloader_repo import DownloaderRepository
 from movieclaw_downloader import (
     DownloaderConfig,
@@ -609,6 +610,7 @@ def _task_dict(
     manual: dict[str, Any] | None,
     boost: dict[str, Any] | None = None,
     absent_state: str = "missing",
+    landing_error: str | None = None,
 ) -> dict[str, Any]:
     # 来源优先级：订阅/手动（媒体下载语义）> 刷流台账 > 外部。被订阅接管的
     # 刷流种子台账已置 missing（不在 boost 映射里），不会出现双重归属
@@ -683,6 +685,12 @@ def _task_dict(
         "completed_bytes": torrent.completed_bytes if torrent is not None else None,
         "eta_seconds": torrent.eta_seconds if torrent is not None else None,
         "state": state,
+        # 下载器给出的错误原因（文件缺失/出错），让"下载异常"卡片说清该去哪处理
+        "error_message": torrent.error_message if torrent is not None else None,
+        # 落点核验失败（下载完成但 movieclaw 看不到文件）：与「待处理事项」里的
+        # 红灯是同一条信息。不带上它，卡片会写"下载已完成，等待自动入库"，
+        # 而侧栏红灯说"无法入库"——同一件事两种说法，用户不知道信谁
+        "landing_error": landing_error,
         "source": source,
         "site_id": site_id,
         "site_name": _site_display_name(site_id),
@@ -922,6 +930,24 @@ async def delete_download_task(
                 if (target.season_number, target.episode_number) in allowed
             ]
         if target_rows:
+            # 工单仍在域内：用户亲手删掉了它的主源。"消失"在这里是确定事实，
+            # 不必等巡检连续三次确认（约 15 分钟）——那段时间里任务中心会先冒出
+            # "任务缺失"待办、订阅页提示"种子已不在下载器中"，刚删完就被追问要
+            # 处理。能立即退回的（主源、没有试用源在跑）当场退回；试用源裁决中
+            # 的仍交给巡检按原有语义处理
+            if attempt.status in (
+                DownloadAttemptStatus.ACTIVE,
+                DownloadAttemptStatus.REPLACEMENT_PENDING,
+                # 下载完成却无法入库（落点核验失败）的任务，用户删掉它就是放弃
+                # 这份内容：同样当场退回，顺带熄灭"下载完成但无法入库"红灯
+                DownloadAttemptStatus.COMPLETED,
+            ):
+                from movieclaw_api.services.download_progress import _requeue_missing_attempt
+
+                if await _requeue_missing_attempt(
+                    session, attempt, utcnow(), deleted_by_user=True
+                ):
+                    changed = True
             continue
         attempt.status = DownloadAttemptStatus.CANCELLED
         attempt.next_search_at = None
@@ -978,10 +1004,36 @@ async def _boost_relations(session: AsyncSession) -> dict[str, dict[str, Any]]:
     return boost
 
 
+async def _landing_errors(session: AsyncSession) -> dict[tuple[int, str], str]:
+    """活跃的落点核验红灯：(订阅 id, infohash) → 完整说明。
+
+    救援巡检发现"下载完成但 movieclaw 看不到文件"时写入 system_notice（见
+    download_progress._verify_landing），任务中心把它挂回对应任务，卡片与
+    侧栏红灯说同一句话、给同一个出口。
+    """
+    rows = (
+        await session.execute(
+            select(SystemNotice).where(
+                SystemNotice.status == NoticeStatus.ACTIVE.value,
+                SystemNotice.dedupe_key.startswith("subscription.landing:"),  # type: ignore[attr-defined]
+            )
+        )
+    ).scalars()
+    result: dict[tuple[int, str], str] = {}
+    for notice in rows:
+        payload = notice.payload or {}
+        subscription_id = payload.get("subscription_id")
+        info_hash = payload.get("info_hash")
+        if isinstance(subscription_id, int) and isinstance(info_hash, str):
+            result[(subscription_id, info_hash.lower())] = notice.message
+    return result
+
+
 async def download_task_snapshot(session: AsyncSession) -> dict[str, list[dict[str, Any]]]:
     """并行读取下载器，返回活跃下载与仍在业务管线内的完成/缺失任务。"""
     subscriptions, manual = await _relations(session)
     boost = await _boost_relations(session)
+    landing_errors = await _landing_errors(session)
     repository = DownloaderRepository(session)
     downloaders = await repository.list_all()
 
@@ -1098,6 +1150,14 @@ async def download_task_snapshot(session: AsyncSession) -> dict[str, list[dict[s
                     subscriptions=linked_subscriptions,
                     manual=linked_manual,
                     boost=linked_boost,
+                    landing_error=next(
+                        (
+                            landing_errors[(entry["id"], info_hash)]
+                            for entry in linked_subscriptions
+                            if (entry["id"], info_hash) in landing_errors
+                        ),
+                        None,
+                    ),
                 )
             )
         sources.append({**source_view, "task_count": visible_count})

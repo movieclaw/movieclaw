@@ -1823,7 +1823,11 @@ function downloadNote(d: SubscriptionDownload): string {
   const pct = d.progress != null ? `${Math.floor(d.progress * 100)}%` : "";
   if (d.state === "completed") return "已下载完成，等待整理入库";
   if (d.state === "paused") return `${pct} · 已在下载器中暂停`;
-  if (d.state === "error") return `${pct} · 下载器报告任务出错`;
+  if (d.state === "error") {
+    // 下载器里这条任务坏了（多半是文件缺失），不是死种：说清原因，并交代
+    // 换源判定已暂停、要去下载器里处理
+    return `${pct} · ${d.error_message || "下载器报告任务出错"}；换源判定已暂停，请在下载器中处理`;
+  }
   if (d.state === "stalled") return `${pct} · 等待连接做种`;
   // downloading / unknown：速度与 ETA 有则展示
   const parts = [pct];

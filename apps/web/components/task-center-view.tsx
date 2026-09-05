@@ -53,6 +53,7 @@ import { useJobs } from "@/lib/jobs";
 import type { TaskCenterViewName } from "@/lib/task-center";
 import {
   contentMissingLabel,
+  downloadTaskNeedsAttention,
   useTaskActivity,
   type DownloadTaskGroup,
 } from "@/lib/task-activity";
@@ -1599,8 +1600,6 @@ function DownloadTaskCard({
   onDelete: (task: DownloadTask) => void;
   onReplace: (task: DownloadTask) => void;
 }) {
-  const ingestNeedsAttention =
-    ingestJob !== null && ["blocked", "failed"].includes(ingestJob.status);
   const ingestOwnsCardState = ingestOwnsTaskState(task, ingestJob);
   const meta =
     ingestOwnsCardState && ingestJob
@@ -1625,8 +1624,8 @@ function DownloadTaskCard({
   const progressLabel = ingestOwnsCardState ? "入库进度" : "下载进度";
   const firstSubscription = task.subscriptions[0];
   const showInlineReplace = shouldOfferInlineReplacement(task);
-  const needsAttention =
-    ingestNeedsAttention || task.state === "error" || task.state === "missing" || task.can_replace;
+  // 与侧栏角标、「需要处理」分区同一口径（download-attention）：外部任务只观察不报警
+  const needsAttention = downloadTaskNeedsAttention(task, ingestJob);
   const taskNote = downloadTaskNote(task, ingestJob);
   const showDownloadRuntime = !ingestOwnsCardState && task.state === "downloading";
 
@@ -1748,16 +1747,23 @@ function DownloadTaskCard({
         </div>
       )}
       <DownloadLifecycle task={task} ingestJob={ingestJob} />
-      {["error", "missing"].includes(task.state) && (
+      {/* 出错的是下载器里的**这条任务**，不是下载器本身：以前这里只给"检查下载器"
+          入口，用户点过去看到连接正常、更不知道该做什么。能在 MovieClaw 里完成的
+          动作只有删掉它——订阅任务删掉后巡检会把工单退回重新寻找资源；错误原因和
+          去下载器重新校验的提示由上方备注说明。下载完成但 movieclaw 看不到文件
+          （landing_error）时同理：修路径映射是首选，实在找不回文件就删掉重下。
+          任务缺失（missing）时下载器里已经没有它，巡检会自动退回工单，不需要
+          用户动手，因此不再给任何按钮 */}
+      {(task.state === "error" || task.landing_error != null) && task.downloader_id != null && (
         <footer className="mt-3 flex flex-wrap items-center justify-end gap-2 border-t border-white/[0.06] pt-3">
-          {["error", "missing"].includes(task.state) && (
-            <Link
-              href={"/settings/downloaders" as Route}
-              className="rounded-lg border border-[var(--danger)]/25 bg-[var(--danger)]/[0.07] px-3 py-1.5 text-caption font-medium text-[var(--danger)]"
-            >
-              检查下载器
-            </Link>
-          )}
+          <button
+            type="button"
+            onClick={() => onDelete(task)}
+            disabled={deleting}
+            className="rounded-lg border border-[var(--danger)]/25 bg-[var(--danger)]/[0.07] px-3 py-1.5 text-caption font-medium text-[var(--danger)] transition hover:bg-[var(--danger)]/[0.14] disabled:cursor-wait disabled:opacity-55"
+          >
+            {deleting ? "删除中…" : "删除下载任务"}
+          </button>
         </footer>
       )}
     </article>
@@ -1924,7 +1930,9 @@ function DownloadLifecycle({
   if (downloadAttention) {
     downloadStep = {
       label: DOWNLOAD_STATE_META[task.state].label,
-      detail: task.state === "missing" ? "等待恢复关联" : "等待下载器恢复",
+      // error 是下载器里这条任务出了问题（多半是文件缺失），下载器本身并没有坏，
+      // 不能说"等待下载器恢复"——那会把用户引去检查一个正常的下载器
+      detail: task.state === "missing" ? "等待恢复关联" : "需要在下载器中处理",
       tone: "attention",
     };
   } else if (downloaded) {
@@ -2019,6 +2027,12 @@ function DownloadLifecycle({
       label: "入库已取消",
       detail: "等待重新处理",
       tone: "waiting",
+    };
+  } else if (task.landing_error) {
+    ingestStep = {
+      label: "无法入库",
+      detail: "movieclaw 看不到已下载的文件",
+      tone: "attention",
     };
   } else if (upgrade) {
     ingestStep = {
@@ -2172,10 +2186,24 @@ function downloadTaskNote(
   ) {
     return ingestJob.progress.message;
   }
+  if (task.landing_error) {
+    // 与侧栏「待处理事项」同一句话：下载完成但 movieclaw 看不到文件。放在最前，
+    // 否则下面会按 completed 说"等待自动入库"，和红灯自相矛盾
+    return task.landing_error;
+  }
+  if (task.state === "error") {
+    // 下载器给出的具体原因（文件缺失 / errorString）必须放在最前——它回答的是
+    // "错在哪"；换源提示只是"还能怎么办"，不能把原因盖掉。外部任务再补一句
+    // 它不归 MovieClaw 管，免得用户在这里找不到处理入口
+    const reason = task.error_message || "下载器报告该任务出错，请在下载器中查看具体原因";
+    if (task.source === "external") return `${reason}（非 MovieClaw 投递的任务，仅观察）`;
+    return task.rescue_message ? `${reason}；${task.rescue_message}` : reason;
+  }
   if (task.rescue_message) return task.rescue_message;
-  if (task.state === "missing") return "已投递记录仍在，但下载器中找不到对应任务";
+  if (task.state === "missing") {
+    return "已投递记录仍在，但下载器中找不到对应任务；系统确认后会自动退回重新寻找资源";
+  }
   if (task.state === "completed") return "下载已完成，等待自动入库或媒体库扫描收尾";
-  if (task.state === "error") return "下载器报告任务异常";
   if (task.state === "paused") return "已在下载器中暂停";
   if (task.state === "queued") return "下载器正在排队，暂停无进度计时";
   if (task.state === "checking") return "下载器正在校验数据，暂停无进度计时";

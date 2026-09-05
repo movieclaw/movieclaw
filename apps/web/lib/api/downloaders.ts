@@ -135,6 +135,10 @@ export interface DownloadTask {
   completed_bytes: number | null;
   eta_seconds: number | null;
   state: DownloadTaskState;
+  /** state 为 error 时下载器给出的可读原因（文件缺失 / 出错详情）；其余为 null */
+  error_message: string | null;
+  /** 下载完成但 movieclaw 看不到文件（落点核验失败）的说明；与「待处理事项」同源，正常为 null */
+  landing_error: string | null;
   /** boost = 自动刷分享率抢下的种子：无媒体身份与入库流转，折叠为独立分组 */
   source: "subscription" | "manual" | "boost" | "external";
   /** 来源站点 ID / 显示名；movieclaw 投递的任务才有，外部任务为 null */
