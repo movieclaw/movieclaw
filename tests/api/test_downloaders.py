@@ -487,6 +487,42 @@ def test_task_center_manual_task_links_site_torrent_page(client) -> None:
     assert items[0]["page_url"] == "https://pt.example.com/details.php?id=777"
 
 
+def test_task_center_passes_downloader_error_reason(client) -> None:
+    """下载器报错的任务要带上可读原因：用户看到"下载异常"时必须知道错在哪。"""
+    c, _ = client
+    c.post("/api/v1/downloaders", json=_PAYLOAD)
+    _fake_torrents.append(
+        TorrentBrief(
+            name="Broken.Torrent",
+            content_name="Broken.Torrent",
+            completed=False,
+            info_hash="e" * 40,
+            progress=0.3,
+            state="error",
+            error_message="下载器找不到已下载的文件",
+        )
+    )
+    _fake_torrents.append(
+        TorrentBrief(
+            name="Healthy.Torrent",
+            content_name="Healthy.Torrent",
+            completed=False,
+            info_hash="f" * 40,
+            progress=0.5,
+            state="downloading",
+        )
+    )
+
+    body = c.get("/api/v1/downloaders/tasks").json()
+    assert body["success"] is True
+    by_hash = {item["info_hash"]: item for item in body["data"]["items"]}
+    assert by_hash["e" * 40]["state"] == "error"
+    assert by_hash["e" * 40]["error_message"] == "下载器找不到已下载的文件"
+    assert by_hash["f" * 40]["error_message"] is None
+    # 异常任务置顶，用户不必在正常任务里翻找
+    assert body["data"]["items"][0]["info_hash"] == "e" * 40
+
+
 def test_task_center_degrades_single_downloader_failure(client) -> None:
     """一台下载器读取失败只标记来源异常，不能拖垮其余下载器任务。"""
     c, _ = client

@@ -18,9 +18,14 @@ import { useMemo } from "react";
 
 import type { DownloadTask } from "@/lib/api/downloaders";
 import type { JobView } from "@/lib/api/jobs";
+// 单条下载任务 / 单条 Job 的档位判定分别放在 download-attention 与
+// job-attention（无 React、可单测）；本模块只做跨领域的分组与计数。
+import {
+  downloadGroupNeedsAttention,
+  groupDownloadTasks,
+  type DownloadTaskGroup,
+} from "@/lib/download-attention";
 import { useDownloadTasks } from "@/lib/download-tasks";
-// 单条 Job 的档位判定放在 job-attention（无 React、可单测）；本模块只做
-// 跨领域的分组与计数。
 import {
   ACTIVE_FEED_JOB_STATUSES,
   jobIsHistorical,
@@ -28,70 +33,13 @@ import {
 } from "@/lib/job-attention";
 import { useJobs } from "@/lib/jobs";
 
-export interface DownloadTaskGroup {
-  key: string;
-  mediaItemId: number | null;
-  title: string;
-  kind: string | null;
-  posterUrl: string | null;
-  tasks: DownloadTask[];
-}
-
-export function groupDownloadTasks(tasks: DownloadTask[]): DownloadTaskGroup[] {
-  const groups = new Map<string, DownloadTaskGroup>();
-  for (const task of tasks) {
-    // 只用数据库里的媒体条目主键合并。同名但未识别的资源必须各自保留，
-    // 不能因为标题解析相似就把两个版本或两部同名作品错误折叠。
-    const key = task.media_item_id != null ? `media:${task.media_item_id}` : `task:${task.id}`;
-    const existing = groups.get(key);
-    if (existing) {
-      existing.tasks.push(task);
-      if (!existing.posterUrl && task.poster_url) existing.posterUrl = task.poster_url;
-      continue;
-    }
-    groups.set(key, {
-      key,
-      mediaItemId: task.media_item_id,
-      title: task.media_title || task.name || task.info_hash,
-      kind: task.media_kind,
-      posterUrl: task.poster_url,
-      tasks: [task],
-    });
-  }
-  return [...groups.values()];
-}
-
-/**
- * 内容核验证明种子里没有的集（声明的覆盖范围与实际文件不符）。
- *
- * 这些集已经退回重新寻找资源，等这个种子永远等不到——不能再按"其余等待下载
- * 完成"讲，否则会出现「下载完成 7.59 GB」和「等待下载完成」同框的自相矛盾。
- */
-export function contentMissingLabel(task: DownloadTask): string | null {
-  const units = (task.subscriptions[0]?.units ?? []).filter((unit) => unit.content_missing);
-  if (units.length === 0) return null;
-  const first = units[0];
-  const label = `S${String(first.season_number).padStart(2, "0")}E${String(
-    first.episode_number,
-  ).padStart(2, "0")}`;
-  return units.length === 1 ? label : `${label} 等 ${units.length} 集`;
-}
-
-export function downloadGroupNeedsAttention(
-  group: DownloadTaskGroup,
-  ingestJobsByHash: Map<string, JobView>,
-): boolean {
-  return group.tasks.some((task) => {
-    const ingestJob = ingestJobsByHash.get(task.info_hash.toLowerCase());
-    return (
-      task.can_replace ||
-      task.state === "error" ||
-      task.state === "missing" ||
-      contentMissingLabel(task) != null ||
-      (ingestJob != null && jobNeedsAttention(ingestJob))
-    );
-  });
-}
+export {
+  contentMissingLabel,
+  downloadGroupNeedsAttention,
+  downloadTaskNeedsAttention,
+  groupDownloadTasks,
+  type DownloadTaskGroup,
+} from "@/lib/download-attention";
 
 export interface TaskActivity {
   /** infohash（小写）→ 关联的入库 Job：下载与入库是同一件事的两段。 */

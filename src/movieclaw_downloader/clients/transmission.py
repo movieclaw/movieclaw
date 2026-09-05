@@ -68,6 +68,15 @@ def _normalize_state(torrent, completed: bool) -> str:  # noqa: ANN001 -- transm
     return "unknown"
 
 
+def _error_message(torrent, *, completed: bool) -> str | None:  # noqa: ANN001 -- transmission_rpc.Torrent
+    """错误态的可读原因：Transmission 自带 errorString（如 "No data found!"），
+    原样透出给任务中心；没有错误或已完成时为 None。"""
+    if completed or int(torrent.fields.get("error", 0)) == 0:
+        return None
+    text = str(torrent.fields.get("errorString") or "").strip()
+    return f"下载器报告：{text}" if text else "下载器报告该任务出错，请在下载器中查看具体原因"
+
+
 @contextmanager
 def _translate_errors(url: str, *, operation: str = "submit") -> Iterator[None]:
     """把 transmission-rpc 的异常翻译成本模块的统一异常。"""
@@ -216,6 +225,7 @@ class TransmissionDownloader(BaseDownloader):
             dlspeed_bytes=int(torrent.fields.get("rateDownload", 0)),
             eta_seconds=eta if eta > 0 else None,
             state=_normalize_state(torrent, completed=completed),
+            error_message=_error_message(torrent, completed=completed),
         )
 
     async def list_torrents(self) -> list[TorrentBrief]:
@@ -288,6 +298,7 @@ class TransmissionDownloader(BaseDownloader):
                     swarm_leechers=swarm_leechers,
                     eta_seconds=eta if eta > 0 else None,
                     state=_normalize_state(torrent, completed=completed),
+                    error_message=_error_message(torrent, completed=completed),
                 )
             )
         return briefs

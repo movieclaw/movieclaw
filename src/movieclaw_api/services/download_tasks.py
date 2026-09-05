@@ -683,6 +683,8 @@ def _task_dict(
         "completed_bytes": torrent.completed_bytes if torrent is not None else None,
         "eta_seconds": torrent.eta_seconds if torrent is not None else None,
         "state": state,
+        # 下载器给出的错误原因（文件缺失/出错），让"下载异常"卡片说清该去哪处理
+        "error_message": torrent.error_message if torrent is not None else None,
         "source": source,
         "site_id": site_id,
         "site_name": _site_display_name(site_id),

@@ -159,6 +159,10 @@ class TorrentBrief(BaseModel):
     swarm_leechers: int | None = None
     eta_seconds: int | None = None
     state: str = "unknown"
+    # state == "error" 时下载器给出的可读原因（如 qBittorrent 的"文件缺失"、
+    # Transmission 的 errorString）。任务中心据此告诉用户"错在哪、该去哪处理"，
+    # 而不是笼统的"任务异常"；下载器没给原因或非错误态时为 None
+    error_message: str | None = None
 
 
 class TorrentStatus(BaseModel):
@@ -195,3 +199,5 @@ class TorrentStatus(BaseModel):
     # completed / error / unknown。
     # 各适配器把自家状态收敛到这几个词，前端据此定色与文案
     state: str = "unknown"
+    # 错误态的可读原因，语义同 TorrentBrief.error_message
+    error_message: str | None = None
