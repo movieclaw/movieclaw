@@ -83,6 +83,11 @@ def derive_save_path(
     root = library.primary_root
     if not root:
         return None
+    from movieclaw_api.services.library.profile import profile_of
+
+    if not profile_of(library).naming:
+        # 其他库原样落库：没有「标题 (年份)」这种条目目录约定，下载直接进主根
+        return root
     # 库自己就是覆盖来源：命名模板可按库覆盖（动漫库与电影库各用一套）
     return derive_entry_dir(root, title=title, year=year, item=item, library=library)
 
@@ -266,14 +271,23 @@ class LibraryConfigService:
         name: str,
         kind: MediaKind,
         root_paths: list[str],
+        source: str | None = None,
         match_rules: list | None = None,
         auto_clear_missing: bool | None = None,
         realtime_watch: bool | None = None,
         scrape_overrides: dict | None = None,
+        generate_thumbnails: bool | None = None,
+        exclude_from_home: bool | None = None,
     ) -> Library:
-        """新增一个库。该类型尚无默认库时自动成为默认。"""
+        """新增一个库。该类型尚无默认库时自动成为默认。
+
+        ``source`` 不传按形态默认；(kind, source) 组合必须是已定义的能力档案
+        （profile_for 会拒绝 movie+local 这类没有识别策略的组合）。
+        """
+        from movieclaw_api.services.library.profile import profile_for
         from movieclaw_api.services.library.routing import validate_match_rules
 
+        profile = profile_for(kind, source)
         roots = self._validate(name=name, root_paths=root_paths)
         rules = validate_match_rules(match_rules)
         overrides = self._validate_overrides(scrape_overrides)
@@ -283,12 +297,15 @@ class LibraryConfigService:
         row = await self._repo.create(
             name=name.strip(),
             kind=kind.value,
+            source=str(profile.source),
             root_paths=roots,
             match_rules=rules,
             auto_clear_missing=bool(auto_clear_missing),
             # 实时监控默认开（与 Emby/Plex 一致）；不传按默认
             realtime_watch=True if realtime_watch is None else bool(realtime_watch),
             scrape_overrides=overrides,
+            generate_thumbnails=True if generate_thumbnails is None else bool(generate_thumbnails),
+            exclude_from_home=bool(exclude_from_home),
         )
         self._refresh_watcher()
         return row
@@ -303,6 +320,8 @@ class LibraryConfigService:
         auto_clear_missing: bool | None = None,
         realtime_watch: bool | None = None,
         scrape_overrides: dict | None = None,
+        generate_thumbnails: bool | None = None,
+        exclude_from_home: bool | None = None,
     ) -> Library:
         """更新名称/根路径/收藏范围。kind 创建后不可改（订阅按类型挂库）。
 
@@ -326,6 +345,8 @@ class LibraryConfigService:
             auto_clear_missing=auto_clear_missing,
             realtime_watch=realtime_watch,
             scrape_overrides=overrides,
+            generate_thumbnails=generate_thumbnails,
+            exclude_from_home=exclude_from_home,
         )
         assert updated is not None  # get() 已确认存在
         # 开关切换也走同一次后台差量重建：关掉的库拆监听、打开的库建监听

@@ -62,6 +62,7 @@ from pathlib import Path
 
 from sqlmodel import select
 
+from movieclaw_api.exceptions import BadRequestException
 from movieclaw_api.services import jobs
 from movieclaw_api.services.library.config import sanitize_folder_name
 from movieclaw_api.services.library.fsops import rename_no_replace
@@ -72,10 +73,11 @@ from movieclaw_api.services.library.naming import (
     movie_file_name,
     season_dir_name,
 )
+from movieclaw_api.services.library.profile import profile_of
 from movieclaw_api.services.library.sidecar import SIDECAR_SKIP_EXTS, find_sidecars
 from movieclaw_api.services.task_state import TaskState
 from movieclaw_db.engine import get_database
-from movieclaw_db.models import FileState, Library, LibraryFile, MediaItem, utcnow
+from movieclaw_db.models import FileState, Library, LibraryFile, MediaItem, MediaSource, utcnow
 from movieclaw_db.repositories.library_file_repo import LibraryFileRepository
 from movieclaw_media.models import MediaKind
 
@@ -96,6 +98,7 @@ _SEASON_POSTER_RE = re.compile(r"^season(?:\d{2}|-specials)-poster\.jpg$")
 def _is_entry_asset(name: str) -> bool:
     """是不是镜像写出的条目级资产（白名单，用户自己的文件一律不算）。"""
     return name in _ENTRY_ASSET_NAMES or _SEASON_POSTER_RE.match(name) is not None
+
 
 # 每库单飞互斥 + 实时进度 (已完成, 总数) + 最近一次结论，容器统一为 TaskState
 _organize_tasks: TaskState[tuple[int, int]] = TaskState()
@@ -184,6 +187,10 @@ async def build_organize_plan(session, library: Library) -> OrganizePlan:
     另一块盘上，跨根改名等于跨盘复制，不是本功能的职责）。
     """
     assert library.id is not None
+    if not profile_of(library).naming:
+        raise BadRequestException(
+            f"「{library.name}」是本地内容库，文件按原名保存，没有可套用的规范命名"
+        )
     result = await session.execute(
         select(LibraryFile, MediaItem)
         .join(MediaItem, LibraryFile.media_item_id == MediaItem.id, isouter=True)  # type: ignore[arg-type]
@@ -211,7 +218,8 @@ def _build_plan_sync(
             continue  # 缺失文件不计入总数也不展示——它不在磁盘上，无从整理
         plan.total += 1
         src = Path(row.file_path)
-        if item is None:
+        if item is None or item.source != MediaSource.TMDB:
+            # 临时本地身份的文件（识别失败、按文件名展示）没有可靠的作品名可套模板
             plan.skips.append(SkipEntry(row.file_path, "尚未识别身份，请先在「待识别」里认领"))
             continue
         root = _root_of(roots, row.file_path)

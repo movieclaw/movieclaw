@@ -350,9 +350,9 @@ def assert_transferable(source: Library, target: Library) -> None:
     """转移前的合法性校验（预览与执行共用；不合法抛中文报错）。"""
     if source.id == target.id:
         raise BadRequestException("目标库与当前库相同，无需转移")
-    if source.kind != target.kind:
+    if source.kind != target.kind or source.source != target.source:
         raise BadRequestException(
-            "只能转移到同类型的媒体库（电影 ↔ 电影、剧集 ↔ 剧集）；"
+            "只能转移到同类型的媒体库（电影 ↔ 电影、剧集 ↔ 剧集、其他 ↔ 其他）；"
             "如果是类型判错，请用「重新识别」或在待识别清单里人工认领"
         )
     if not target.primary_root:

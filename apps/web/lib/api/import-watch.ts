@@ -28,7 +28,7 @@ export interface ImportWatchRule {
   /** 自定义目录目标（其余目标为 null）：识别改名后落该目录、不进入任何媒体库 */
   target_path: string | null;
   /** 自动路由/自定义目录的媒体类型（指定库时为 null） */
-  kind: "movie" | "tv" | null;
+  kind: "movie" | "tv" | "video" | null;
   /** 目标展示名：库名 /「自动路由（电影/剧集）」/「自定义目录 …」 */
   target_label: string;
   /** 是否整理存量（false=跳过存量只处理新增，存量条目被标记为已忽略） */
@@ -72,7 +72,7 @@ export interface ImportWatchPayload {
   source_path: string;
   strategy: "hardlink" | "copy";
   library_id: number | null;
-  kind?: "movie" | "tv" | null;
+  kind?: "movie" | "tv" | "video" | null;
   target_path?: string | null;
   /** 是否整理存量；false=跳过规则生效时已有的内容，只处理新增 */
   process_existing?: boolean;

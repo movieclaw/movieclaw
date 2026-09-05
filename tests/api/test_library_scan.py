@@ -268,14 +268,19 @@ async def test_scan_identifies_by_name_and_flags_unknown(db, tmp_path) -> None:
 
     async with db.session() as session:
         files = list((await session.execute(select(LibraryFile))).scalars().all())
-        identified = [f for f in files if f.media_item_id is not None]
+        identified = [f for f in files if f.unidentified_code is None]
         assert {(f.season_number, f.episode_number) for f in identified} == {(1, 1), (1, 2)}
         assert all(f.source == "scanned" for f in files)
         # 同轮首次发现的文件共享批次号，首页才能只摘要这轮新增内容。
         assert len({f.added_batch_id for f in files}) == 1
         assert files[0].added_batch_id is not None
-        unknown = [f for f in files if f.media_item_id is None]
+        # 认不出的文件挂着**临时本地身份**（可见可播），但仍是待识别
+        # （docs/design/library-other-kind.md 4.2）
+        unknown = [f for f in files if f.unidentified_code is not None]
         assert len(unknown) == 1 and unknown[0].file_path.endswith("zzqx.mkv")
+        assert unknown[0].media_item_id is not None
+        provisional = await session.get(MediaItem, unknown[0].media_item_id)
+        assert provisional is not None and provisional.source == "local"
 
     # 增量重扫：已识别的秒过；待识别的自动重试识别（TMDB 恢复的补救通道）
     summary2 = await scan_library(library.id)
@@ -343,7 +348,7 @@ async def test_scan_persists_file_mtime(db, tmp_path) -> None:
     assert summary.skipped_known == 2
     async with db.session() as session:
         files = list((await session.execute(select(LibraryFile))).scalars().all())
-        identified = [f for f in files if f.media_item_id is not None]
+        identified = [f for f in files if f.unidentified_code is None]
         assert all(f.file_mtime_ns is not None for f in identified)
 
 
@@ -932,8 +937,8 @@ async def test_removed_root_unreadable_scan_never_auto_clears_ledger(
 
     original_walk = scan_mod._walk_videos
 
-    def unreadable_walk(walk_root, unreadable=None, dir_files=None):
-        yield from original_walk(walk_root, unreadable, dir_files)
+    def unreadable_walk(walk_root, unreadable=None, dir_files=None, **kwargs):
+        yield from original_walk(walk_root, unreadable, dir_files, **kwargs)
         if unreadable is not None:
             unreadable.append(str(walk_root / "temporarily-unreadable"))
 
@@ -1948,9 +1953,9 @@ async def test_auto_clear_missing_skips_unreadable_dirs(db, tmp_path, monkeypatc
     season = root / "测试剧集 (2024)" / "Season 01"
     original_walk = scan_mod._walk_videos
 
-    def flaky_walk(walk_root, unreadable=None, dir_files=None):
+    def flaky_walk(walk_root, unreadable=None, dir_files=None, **kwargs):
         """整个季目录列不动：底下两集本轮都遍历不到。"""
-        for entry, is_disc in original_walk(walk_root, unreadable, dir_files):
+        for entry, is_disc in original_walk(walk_root, unreadable, dir_files, **kwargs):
             if not str(entry).startswith(str(season)):
                 yield entry, is_disc
         if unreadable is not None:
@@ -2169,7 +2174,7 @@ async def test_scan_records_unidentified_reason_and_claim_clears(db, tmp_path) -
         unknown = (await repo.list_unidentified(library_id=library.id))[0]
         assert unknown.unidentified_reason  # 有可读的失败原因
         identified = [
-            f for f in await repo.list_by_library(library.id) if f.media_item_id is not None
+            f for f in await repo.list_by_library(library.id) if f.unidentified_code is None
         ]
         assert all(f.unidentified_reason is None for f in identified)
 
@@ -2230,9 +2235,11 @@ async def test_rescan_retries_unidentified_after_tmdb_recovery(db, tmp_path, mon
 
     async with db.session() as session:
         row = (await session.execute(select(LibraryFile))).scalars().one()
-        assert row.media_item_id is None
+        # TMDB 不通也先挂临时本地身份（文件可见可播），失败原因照记
+        assert row.media_item_id is not None
         assert row.unidentified_reason and "TMDB 查询失败" in row.unidentified_reason
         row_id = row.id
+        provisional_id = row.media_item_id
 
     # 网络恢复后重扫：同一行补上身份锚，原因清除
     monkeypatch.setattr(scan_mod, "resolve_with_candidates", real_verify)
@@ -2243,8 +2250,10 @@ async def test_rescan_retries_unidentified_after_tmdb_recovery(db, tmp_path, mon
     async with db.session() as session:
         row = (await session.execute(select(LibraryFile))).scalars().one()
         assert row.id == row_id  # 原地更新，不是删了重建
-        assert row.media_item_id is not None
+        assert row.media_item_id is not None and row.media_item_id != provisional_id
         assert row.unidentified_reason is None
+        # 转正后临时条目被孤儿清理收走
+        assert await session.get(MediaItem, provisional_id) is None
 
 
 async def test_missing_file_return_keeps_identity_without_reidentify(

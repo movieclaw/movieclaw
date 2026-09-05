@@ -58,6 +58,12 @@ class MediaSpec:
     color_space: str | None = None
     audio_streams: list[dict] = field(default_factory=list)
     subtitle_streams: list[dict] = field(default_factory=list)
+    # 容器级内容日期标签（本地来源条目的"内容时间"来源，docs/design/
+    # library-other-kind.md 4.1；Jellyfin 的 ProbeResultNormalizer 同款回落）：
+    # ``date`` 是制作/发行日期标签，``creation_time`` 是手机/相机录制时写的
+    # 创建时间。原样保留字符串，解析成日期是消费方的事
+    tag_date: str | None = None
+    creation_time: str | None = None
 
 
 def probe_media(path: str | Path) -> MediaSpec | None:
@@ -188,9 +194,7 @@ _KEYFRAME_SAMPLE_POSITIONS = (0.10, 0.50, 0.90)
 _KEYFRAME_FULL_SCAN_MAX_S = _KEYFRAME_WINDOW_S * len(_KEYFRAME_SAMPLE_POSITIONS)
 
 
-def probe_keyframe_interval(
-    path: str | Path, duration_seconds: int | None
-) -> float | None:
+def probe_keyframe_interval(path: str | Path, duration_seconds: int | None) -> float | None:
     """采样估算视频轨的关键帧平均间隔（秒）。
 
     返回 None = 无法判定（ffprobe 缺失/超时/无关键帧信息）。决策引擎见到
@@ -395,6 +399,7 @@ def _parse_probe(payload: dict, *, include_mpegts_pids: bool = False) -> MediaSp
         bit_depth = _bit_depth(video)
 
     streams = payload.get("streams", [])
+    fmt_tags = {str(k).lower(): v for k, v in (fmt.get("tags") or {}).items()}
     return MediaSpec(
         resolution=resolution,
         video_codec=codec,
@@ -403,8 +408,7 @@ def _parse_probe(payload: dict, *, include_mpegts_pids: bool = False) -> MediaSp
         duration_seconds=_to_int(fmt.get("duration")),
         bit_rate=_to_int(fmt.get("bit_rate")),
         frame_rate=(
-            _frame_rate(video.get("avg_frame_rate"))
-            or _frame_rate(video.get("r_frame_rate"))
+            _frame_rate(video.get("avg_frame_rate")) or _frame_rate(video.get("r_frame_rate"))
             if video
             else None
         ),
@@ -419,7 +423,17 @@ def _parse_probe(payload: dict, *, include_mpegts_pids: bool = False) -> MediaSp
             for s in streams
             if s.get("codec_type") == "subtitle"
         ],
+        tag_date=_first_tag(fmt_tags, "date", "originaldate", "date_released"),
+        creation_time=_first_tag(fmt_tags, "creation_time", "com.apple.quicktime.creationdate"),
     )
+
+
+def _first_tag(tags: dict, *keys: str) -> str | None:
+    for key in keys:
+        value = tags.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
 
 
 def _audio_stream_info(stream: dict, *, include_pid: bool = False) -> dict:

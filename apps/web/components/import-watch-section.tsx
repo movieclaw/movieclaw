@@ -470,7 +470,7 @@ function RuleFormDialog({
   /** 下载器的本地目录候选：源目录大概率就是其中之一（或其子目录） */
   downloaderDirs: DownloaderDirOption[];
   /** 新建时的目标预选（体检修复卡跳转预填「自动路由 + 类型」；变化会重置表单） */
-  initialTarget?: { type: "auto"; kind: "movie" | "tv" } | null;
+  initialTarget?: { type: "auto"; kind: "movie" | "tv" | "video" } | null;
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -484,7 +484,7 @@ function RuleFormDialog({
   // 识别改名后落所选目录、不进任何库（整理结果需外部流转再进库的场景）
   const [target, setTarget] = useState<
     | { type: "library"; id: number }
-    | { type: "auto"; kind: "movie" | "tv" }
+    | { type: "auto"; kind: "movie" | "tv" | "video" }
     | { type: "path"; path: string; kind: "movie" | "tv" }
     | null
   >(null);
@@ -500,7 +500,11 @@ function RuleFormDialog({
     if (rule?.library_id != null) {
       setTarget({ type: "library", id: rule.library_id });
     } else if (rule?.target_path) {
-      setTarget({ type: "path", path: rule.target_path, kind: rule.kind ?? "movie" });
+      setTarget({
+        type: "path",
+        path: rule.target_path,
+        kind: rule.kind === "tv" ? "tv" : "movie",
+      });
     } else if (rule?.kind) {
       setTarget({ type: "auto", kind: rule.kind });
     } else if (initialTarget) {
@@ -648,17 +652,18 @@ function RuleFormDialog({
               ))}
               {(
                 [
-                  ["movie", "自动路由（电影）"],
-                  ["tv", "自动路由（剧集）"],
+                  ["movie", "自动路由（电影）", "识别出作品后，按各库的收藏范围自动选库；未命中进该类型的默认库"],
+                  ["tv", "自动路由（剧集）", "识别出作品后，按各库的收藏范围自动选库；未命中进该类型的默认库"],
+                  ["video", "落入其他库", "不识别不改名，原样搬进默认的「其他」库（家庭录像、暂不刮削的内容）"],
                 ] as const
-              ).map(([k, label]) => (
+              ).map(([k, label, hint]) => (
                 <button
                   key={k}
                   type="button"
                   onClick={() => setTarget({ type: "auto", kind: k })}
                   data-active={target?.type === "auto" && target.kind === k}
                   className="glass-row nav-item !w-auto px-3 py-1.5 text-sub font-medium"
-                  title="识别出作品后，按各库的收藏范围自动选库；未命中进该类型的默认库"
+                  title={hint}
                 >
                   {label}
                 </button>

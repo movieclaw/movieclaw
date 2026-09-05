@@ -1351,9 +1351,14 @@ class SubscriptionService:
         row = await LibraryRepository(self._session).get(library_id)
         if row is None:
             raise BadRequestException(f"媒体库不存在：id={library_id}")
+        from movieclaw_api.services.library.profile import kind_label, profile_of
+
         if row.kind != kind:
-            kind_text = "电影" if row.kind == MediaKind.MOVIE.value else "剧集"
-            raise BadRequestException(f"媒体库「{row.name}」是{kind_text}库，与该订阅的类型不匹配")
+            raise BadRequestException(
+                f"媒体库「{row.name}」是{kind_label(row.kind)}库，与该订阅的类型不匹配"
+            )
+        if not profile_of(row).subscribable:
+            raise BadRequestException(f"媒体库「{row.name}」是本地内容库，不能作为订阅的入库目标")
         return row
 
     @staticmethod

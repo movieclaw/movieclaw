@@ -61,6 +61,7 @@ from movieclaw_db.models import (
     MediaItemPerson,
     MediaMetadata,
     MediaSeason,
+    MediaSource,
     Person,
     Subscription,
     SubscriptionActivity,
@@ -153,7 +154,21 @@ async def _scrape(media_item_id: int, *, force: bool, on_phase: PhaseHook = None
         item = await session.get(MediaItem, media_item_id)
         if item is None:
             return False
+        # 本地来源条目（docs/design/library-other-kind.md 4.8 source 守卫）：
+        # 没有上游档案可拉，"刷新"只剩重建缩略图这一件事，全程零 TMDB 请求
+        local_only = item.source != MediaSource.TMDB
         kind = MediaKind(item.kind)
+    if local_only:
+        _phase("生成缩略图")
+        from movieclaw_api.services.library.thumbs import ensure_local_assets
+
+        await ensure_local_assets(media_item_id, force=force)
+        return True
+    async with db.session() as session:
+        repo = MediaItemRepository(session)
+        item = await session.get(MediaItem, media_item_id)
+        if item is None:
+            return False
         # 语言/分级/选图按条目的**归属库**解析（设计文档 §14）：刷新任务没有
         # 库上下文，归属钉在条目上才不会被全局值洗回去
         fetch_kwargs = profile_fetch_kwargs(await scrape_setting_for_item(session, item))
@@ -213,6 +228,16 @@ async def ensure_assets(media_item_id: int) -> None:
     记日志，任一后续刷新入口自愈。
     """
     try:
+        db = get_database()
+        async with db.session() as session:
+            item = await session.get(MediaItem, media_item_id)
+            source = item.source if item is not None else None
+        if source == MediaSource.LOCAL:
+            # 本地来源：资产 = 从文件本身抓的缩略图（sidecar 图 / 内嵌封面 / 抓帧）
+            from movieclaw_api.services.library.thumbs import ensure_local_assets
+
+            await ensure_local_assets(media_item_id)
+            return
         await download_item_assets(media_item_id)
         await mirror_media_dir_assets(media_item_id)
     except Exception:  # noqa: BLE001 -- 资产是锦上添花，绝不影响主流程
@@ -297,8 +322,7 @@ async def _library_refresh_targets(session: AsyncSession, library_id: int) -> li
                 .where(
                     MediaItem.kind == library.kind,
                     MediaItem.id.not_in(any_file),  # type: ignore[union-attr]
-                    (MediaItem.scrape_library_id == library_id)
-                    | MediaItem.id.in_(subscribed),  # type: ignore[union-attr]
+                    (MediaItem.scrape_library_id == library_id) | MediaItem.id.in_(subscribed),  # type: ignore[union-attr]
                 )
                 .order_by(MediaItem.id)  # type: ignore[arg-type]
             )
@@ -852,6 +876,55 @@ def build_display_rows(
     return seasons, episodes, metadata
 
 
+def local_metadata_row(identity) -> MediaMetadata:
+    """本地来源条目的展示档案行（``media_item_id`` 由 Repository 落库时补）。
+
+    字段来自 sidecar NFO 的全字段吸收（services/library/local_identity）；
+    没有 NFO 时只有内容日期与实测时长。``scrape_language`` 留空串：本地
+    来源没有"刮削语言"这回事。
+    """
+    return MediaMetadata(
+        media_item_id=0,
+        overview=identity.plot,
+        genres=list(identity.genres),
+        runtime_minutes=identity.runtime_minutes,
+        release_date=identity.release_date,
+        studios=list(identity.studios),
+        vote_average=identity.rating,
+        directors=list(identity.directors),
+        cast=list(identity.cast),
+        scraped_at=utcnow(),
+        scrape_language="",
+    )
+
+
+async def apply_local_identity(session: AsyncSession, item: MediaItem, identity) -> None:
+    """把一份（更权威的）本地识别结论写回已有本地条目的展示档案。
+
+    只覆盖 NFO 提供了的字段，主图与选图锁不动（图片走 ``ensure_assets`` 的
+    本地分派，与文本档案解耦）。
+    """
+    row = (
+        await session.execute(select(MediaMetadata).where(MediaMetadata.media_item_id == item.id))
+    ).scalar_one_or_none()
+    if row is None:
+        row = local_metadata_row(identity)
+        row.media_item_id = item.id  # type: ignore[assignment]
+        session.add(row)
+        return
+    row.overview = identity.plot if identity.plot else row.overview
+    row.genres = list(identity.genres) or row.genres
+    row.runtime_minutes = identity.runtime_minutes or row.runtime_minutes
+    row.release_date = identity.release_date or row.release_date
+    row.studios = list(identity.studios) or row.studios
+    row.vote_average = identity.rating if identity.rating is not None else row.vote_average
+    row.directors = list(identity.directors) or row.directors
+    row.cast = list(identity.cast) or row.cast
+    row.scraped_at = utcnow()
+    row.updated_at = utcnow()
+    session.add(row)
+
+
 def _parse_iso_date(raw: str | None):
     from datetime import date
 
@@ -1130,7 +1203,8 @@ async def download_item_assets(
     async with db.session() as session:
         repo = MediaItemRepository(session)
         item = await session.get(MediaItem, media_item_id)
-        if item is None:
+        if item is None or item.source != MediaSource.TMDB:
+            # 本地来源条目的图片不来自图床（见 thumbs.ensure_local_assets）
             return
         meta = await repo.get_metadata(media_item_id)
         if meta is None:
@@ -1315,7 +1389,8 @@ async def list_artwork_candidates(
     async with db.session() as session:
         repo = MediaItemRepository(session)
         item = await session.get(MediaItem, media_item_id)
-        if item is None:
+        if item is None or item.source != MediaSource.TMDB:
+            # 本地来源条目没有在线候选图（前端按 capabilities.scraped 隐藏入口）
             return [], [], None, None
         kind = MediaKind(item.kind)
         current_poster = item.poster_path
@@ -1392,7 +1467,7 @@ async def select_artwork(media_item_id: int, *, kind: str, file_path: str | None
     async with db.session() as session:
         repo = MediaItemRepository(session)
         item = await session.get(MediaItem, media_item_id)
-        if item is None:
+        if item is None or item.source != MediaSource.TMDB:
             return False
         meta = await repo.get_metadata(media_item_id)
         if meta is None:
@@ -1456,7 +1531,9 @@ async def mirror_media_dir_assets(media_item_id: int, *, force: bool = False) ->
     async with db.session() as session:
         repo = MediaItemRepository(session)
         item = await session.get(MediaItem, media_item_id)
-        if item is None:
+        if item is None or item.source != MediaSource.TMDB:
+            # 本地来源条目没有"刮削成果"可镜像：NFO 本来就是用户自己放的，
+            # 缩略图只存资产目录（docs/design/library-other-kind.md 4.7）
             return
         meta = await repo.get_metadata(media_item_id)
         seasons = await repo.list_seasons(media_item_id)

@@ -37,6 +37,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from movieclaw_api.exceptions import BadRequestException, NotFoundException
+from movieclaw_api.services.library.profile import KIND_LABELS
 from movieclaw_db.models import ImportWatch, Library
 from movieclaw_db.models.base import utcnow
 
@@ -46,8 +47,11 @@ logger = logging.getLogger("movieclaw_api.import_watch_config")
 _refresh_tasks: set[asyncio.Task] = set()
 
 STRATEGIES = ("hardlink", "copy")
-_KINDS = ("movie", "tv")
-_KIND_LABELS = {"movie": "电影", "tv": "剧集"}
+# 自动路由可声明的形态：movie/tv 走识别链路由；video 直接落该形态默认库（原样落库）
+_KINDS = ("movie", "tv", "video")
+# 自定义目录规则要「识别改名」，其他库形态没有这一步
+_PATH_KINDS = ("movie", "tv")
+_KIND_LABELS = KIND_LABELS
 
 
 def _routable_cause(lib: Library) -> str:
@@ -199,7 +203,7 @@ class ImportWatchConfigService:
             target = target_path.strip().rstrip("/")
             if not target or not target.startswith("/"):
                 raise BadRequestException("自定义目录必须是绝对路径")
-            if kind not in _KINDS:
+            if kind not in _PATH_KINDS:
                 raise BadRequestException("自定义目录规则必须指定媒体类型（movie / tv）")
             # 每 kind 至多一条：投递查找链（resolve_dispatch_rule）的落点不能歧义
             existing_target = (
@@ -227,7 +231,7 @@ class ImportWatchConfigService:
             hardlink_targets = [library]
         else:
             if kind not in _KINDS:
-                raise BadRequestException("自动路由规则必须指定媒体类型（movie / tv）")
+                raise BadRequestException("自动路由规则必须指定媒体类型（movie / tv / video）")
             # 每 kind 至多一条 auto 规则：多条会让订阅投递的落点歧义。
             # 自定义目录规则的 library_id 同为 NULL，须按 target_path 区分
             existing_auto = (

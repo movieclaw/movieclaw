@@ -344,6 +344,13 @@ export const ServerIcon = (p: IconProps) => (
   </Base>
 );
 
+/** 其他库（家庭录像等本地视频）：摄像机 */
+export const VideoIcon = (p: IconProps) => (
+  <Base {...p}>
+    <rect x="3" y="7" width="13" height="10" rx="2" />
+    <path d="m16 10 5-2.5v9L16 14" />
+  </Base>
+);
 export const FolderIcon = (p: IconProps) => (
   <Base {...p}>
     <path d="M3 7a2 2 0 0 1 2-2h4l2.2 2.5H19a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />

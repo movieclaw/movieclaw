@@ -15,6 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
+from movieclaw_api.services.library.local_identity import LocalIdentity
 from movieclaw_api.services.scrape_config import ITEM_SCOPED_OVERRIDABLE, merge_for_library
 from movieclaw_api.settings import MetadataScrapeSetting
 from movieclaw_db.models import (
@@ -23,6 +24,7 @@ from movieclaw_db.models import (
     MediaItem,
     MediaMetadata,
     MediaSeason,
+    MediaSource,
     utcnow,
 )
 from movieclaw_db.repositories import MediaItemRepository
@@ -141,6 +143,78 @@ class MediaLibraryService:
             len(seasons),
         )
         return item
+
+    async def ensure_local_item(
+        self,
+        kind: MediaKind,
+        identity: LocalIdentity,
+        *,
+        library_id: int | None = None,
+    ) -> MediaItem:
+        """本地来源建档或复用（幂等；docs/design/library-other-kind.md 2.2 / 4.1）。
+
+        锚是 ``(source=local, kind, identity.external_id)``。已存在时只在
+        NFO 给出了更权威的信息（此前标题来自文件名推断）时更新标题与档案；
+        不存在时 ``media_item`` + ``media_metadata`` 同一事务落库。永远不碰
+        TMDB。``next_refresh_at`` 留空无妨——定时刷新按 ``source`` 过滤，本地
+        条目不在它的候选里。
+        """
+        from movieclaw_api.services.media_scrape import local_metadata_row
+
+        existing = await self._repo.get_by_external(
+            MediaSource.LOCAL, kind.value, identity.external_id
+        )
+        if existing is not None:
+            return await self._refresh_local(existing, identity, library_id)
+        item = MediaItem(
+            kind=kind.value,
+            source=MediaSource.LOCAL,
+            external_id=identity.external_id,
+            title=identity.title,
+            original_title=identity.title,
+            year=identity.year,
+            aliases=[],
+            metadata_refreshed_at=utcnow(),
+            next_refresh_at=None,
+            scrape_library_id=library_id if library_id is not None else self._scrape_library_id,
+        )
+        metadata = local_metadata_row(identity)
+        try:
+            item = await self._repo.create_with_seasons(item, [], [], metadata)
+        except IntegrityError:
+            await self._repo.rollback()
+            existing = await self._repo.get_by_external(
+                MediaSource.LOCAL, kind.value, identity.external_id
+            )
+            if existing is None:
+                raise
+            return await self._refresh_local(existing, identity, library_id)
+        logger.info(
+            "本地条目已建档：%s《%s》(%s)（来源：%s）",
+            kind.value,
+            item.title,
+            item.year or "年份未知",
+            "NFO" if identity.from_nfo else "文件名",
+        )
+        return item
+
+    async def _refresh_local(
+        self, item: MediaItem, identity: LocalIdentity, library_id: int | None
+    ) -> MediaItem:
+        """已有本地条目的回填：NFO 来的信息压过文件名推断；同源不改。"""
+        from movieclaw_api.services.media_scrape import apply_local_identity
+
+        changed = False
+        if library_id is not None and item.scrape_library_id is None:
+            item.scrape_library_id = library_id
+            changed = True
+        if identity.from_nfo and (item.title != identity.title or item.year != identity.year):
+            item.title = identity.title
+            item.original_title = identity.title
+            item.year = identity.year
+            changed = True
+            await apply_local_identity(self._session, item, identity)
+        return await self._repo.save(item) if changed else item
 
     async def prefetch_profile(self, kind: MediaKind, tmdb_id: int) -> None:
         """把一份 TMDB 档案提前拉进缓存，供随后的 ``ensure_media_item`` 直接取用。

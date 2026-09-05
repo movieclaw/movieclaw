@@ -142,6 +142,7 @@ async def test_clear_unidentified_bulk(db) -> None:
                     file_path=f"/tv/junk{i}.mkv",
                     size_bytes=1,
                     source=FileSource.SCANNED,
+                    unidentified_code="no_match",
                 )
                 for i in range(3)
             ]
@@ -186,6 +187,7 @@ async def test_unidentified_list_excludes_missing_files(db) -> None:
                     file_path="/tv/未知/在位.mkv",
                     size_bytes=1,
                     source=FileSource.SCANNED,
+                    unidentified_code="no_match",
                 ),
                 # 未识别但文件已消失：属于「缺失」，不该进待识别清单
                 LibraryFile(
@@ -196,6 +198,7 @@ async def test_unidentified_list_excludes_missing_files(db) -> None:
                     file_path="/tv/未知/已消失.mkv",
                     size_bytes=1,
                     source=FileSource.SCANNED,
+                    unidentified_code="no_match",
                     missing_since=now,
                     state=FileState.MISSING,
                 ),

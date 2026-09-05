@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from movieclaw_db.models.base import utcnow
-from movieclaw_db.models.media_item import MediaItem, MediaSeason
+from movieclaw_db.models.media_item import MediaItem, MediaSeason, MediaSource
 from movieclaw_db.models.media_metadata import MediaEpisode, MediaMetadata
 
 
@@ -20,9 +20,21 @@ class MediaItemRepository:
         self._session = session
 
     async def get_by_anchor(self, kind: str, tmdb_id: int) -> MediaItem | None:
-        """按唯一锚 (kind, tmdb_id) 读取条目；不存在返回 None。"""
+        """按 TMDB 锚 (kind, tmdb_id) 读取条目；不存在返回 None。
+
+        是 ``get_by_external`` 的 TMDB 便捷形式；本地条目没有 tmdb_id，
+        按 ``(source, kind, external_id)`` 走 ``get_by_external``。
+        """
+        return await self.get_by_external(MediaSource.TMDB, kind, str(tmdb_id))
+
+    async def get_by_external(self, source: str, kind: str, external_id: str) -> MediaItem | None:
+        """按唯一锚 (source, kind, external_id) 读取条目；不存在返回 None。"""
         result = await self._session.execute(
-            select(MediaItem).where(MediaItem.kind == kind, MediaItem.tmdb_id == tmdb_id)
+            select(MediaItem).where(
+                MediaItem.source == source,
+                MediaItem.kind == kind,
+                MediaItem.external_id == external_id,
+            )
         )
         return result.scalar_one_or_none()
 

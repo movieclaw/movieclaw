@@ -117,12 +117,13 @@ export function LibrarySearchResults({
 /** 一格结果：海报卡链到库内条目详情，格下标注库存概况（与单库海报墙同口径）。 */
 function LibraryResultCell({ item, libraryId }: { item: LibraryItem; libraryId: number }) {
   const visual: PosterVisualItem = {
-    id: String(item.tmdb_id),
+    id: item.tmdb_id != null ? String(item.tmdb_id) : `local:${item.media_item_id}`,
     source: "tmdb",
-    type: item.kind,
+    type: item.kind === "video" ? undefined : item.kind,
     title: item.title,
     year: item.year ?? undefined,
     rating: 0,
+    aspect: item.primary_aspect,
     posterUrl: imageUrl(item.poster_url),
   };
   const parts: string[] = [];

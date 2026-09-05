@@ -51,7 +51,7 @@ export function formatRecentAddition(addition: RecentAddition): string | null {
  * 电影或没有批次信息的旧条目只显示入库时间，不制造空白或累计库存信息。
  */
 export function buildRecentAdditionOverlay(
-  kind: "movie" | "tv",
+  kind: "movie" | "tv" | "video",
   addition: RecentAddition | null | undefined,
   addedTimeLabel: string | null,
 ): RecentAdditionOverlay | undefined {

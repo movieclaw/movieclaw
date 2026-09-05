@@ -1405,7 +1405,8 @@ async def test_reidentify_failure_moves_to_unidentified(db, tmp_path, monkeypatc
     assert resp.data.new_media_item_id is None
     async with db.session() as session:
         row = (await session.execute(select(LibraryFile))).scalars().one()
-        assert row.media_item_id is None
+        # 认不出 → 挂临时本地身份（可见可播），失败原因照记
+        assert row.media_item_id is not None and row.unidentified_code is not None
         assert row.unidentified_reason and "未能确认身份" in row.unidentified_reason
 
 

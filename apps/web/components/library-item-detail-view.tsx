@@ -57,7 +57,7 @@ import {
   fetchResumeState,
 } from "@/lib/api/playback";
 import { useSubscribeEntry } from "@/components/subscribe-entry";
-import type { MediaType } from "@/lib/media-types";
+import { LIBRARY_KIND_LABELS, type LibraryKind } from "@/lib/media-types";
 import { getDiscoveryReturnPath } from "@/lib/discovery-return-path";
 import { formatBytes, formatRuntimeMinutes, formatVideoResolution } from "@/lib/format";
 import { formatClock } from "@/lib/player/timeline";
@@ -169,7 +169,8 @@ export function LibraryItemDetailView({
    */
   const playUnit = useMemo<PlaybackUnit | null>(() => {
     if (!detail) return null;
-    if (detail.kind === "movie") {
+    if (detail.kind !== "tv") {
+      // 电影与其他库条目都是单一播放单元 (0, 0)
       return { media_item_id: detail.media_item_id, season_number: 0, episode_number: 0 };
     }
     if (!selectedSeriesEpisode) return null;
@@ -345,7 +346,13 @@ export function LibraryItemDetailView({
     );
   }
 
-  const isMovie = detail.kind === "movie";
+  // 「非剧集」= 单文件叶子：电影与其他库条目的分集区、文件区、播放单元都同一套
+  const isMovie = detail.kind !== "tv";
+  // 有 TMDB 锚点才有订阅/洗版/外链；本地条目（其他库、影视库里未识别的文件）没有
+  const tmdbId = detail.tmdb_id ?? 0;
+  // 条目所在库有刮削链，且条目本身来自 TMDB 才有「刷新元数据/更换图片/刮削归属」；
+  // 影视库里尚未识别的本地条目只留「修正识别结果」这条转正通道
+  const scrapedLibrary = library?.capabilities.scraped ?? detail.source === "tmdb";
   const meta = detail.local_meta;
   // 片长：NFO 的 runtime 优先，其次任意文件的实测时长
   const runtimeMinutes =
@@ -447,9 +454,11 @@ export function LibraryItemDetailView({
         title={detail.title}
         fallback={navFallback}
         actions={
-          canManageLibraries || (canSubscribe && detail.tmdb_id > 0) ? (
+          canManageLibraries || (canSubscribe && tmdbId > 0) ? (
             <ItemActionsMenu
               canManage={canManageLibraries}
+              identifiable={scrapedLibrary}
+              scraped={detail.source === "tmdb"}
               scraping={scrapingNow}
               searchHref={`/search?q=${encodeURIComponent(detail.title)}` as Route}
               onReidentify={() => setReidentifyOpen(true)}
@@ -459,13 +468,13 @@ export function LibraryItemDetailView({
               onChangeScrapeLibrary={() => setScrapeLibraryOpen(true)}
               onTransfer={() => setTransferOpen(true)}
               onDelete={() => setDeleteOpen(true)}
-              // 未识别条目（tmdb_id=0）没有订阅锚点，不给洗版入口
+              // 未识别/本地条目没有订阅锚点，不给洗版入口
               onUpgrade={
-                canSubscribe && detail.tmdb_id > 0
+                canSubscribe && tmdbId > 0 && detail.kind !== "video"
                   ? () => {
                       const existing = subscriptionOf({
-                        id: String(detail.tmdb_id),
-                        type: detail.kind,
+                        id: String(tmdbId),
+                        type: detail.kind === "tv" ? "tv" : "movie",
                       });
                       if (existing) {
                         // 一部影片只有一个订阅：并入既有订阅，跳详情直接开弹层
@@ -476,11 +485,11 @@ export function LibraryItemDetailView({
                       }
                       void openSubscribe(
                         {
-                          id: String(detail.tmdb_id),
+                          id: String(tmdbId),
                           title: detail.title,
                           rating: 0,
                           posterUrl: detail.poster_url ?? "",
-                          type: detail.kind,
+                          type: detail.kind === "tv" ? "tv" : "movie",
                           year: detail.year ?? undefined,
                         },
                         { upgradeIntent: true },
@@ -662,15 +671,15 @@ export function LibraryItemDetailView({
 
         {/* 外部词条像友情链接一样固定在文件区之后，继续使用原有的新窗口跳转；
             豆瓣在移动端沿用 App 唤起逻辑。 */}
-        {(detail.tmdb_id > 0 || detail.imdb_id || detail.douban_id) && (
+        {(tmdbId > 0 || detail.imdb_id || detail.douban_id) && (
           <nav
             aria-label="外部词条"
             className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-white/[0.04] pt-4 text-caption"
           >
             <span className="text-[var(--text-faint)]">相关链接</span>
-            {detail.tmdb_id > 0 && (
+            {tmdbId > 0 && (
               <SourceLink
-                href={`https://www.themoviedb.org/${detail.kind}/${detail.tmdb_id}`}
+                href={`https://www.themoviedb.org/${detail.kind}/${tmdbId}`}
                 label="TMDB"
               />
             )}
@@ -881,6 +890,8 @@ function PlayAction({
  */
 function ItemActionsMenu({
   canManage,
+  identifiable,
+  scraped,
   scraping,
   searchHref,
   onReidentify,
@@ -894,6 +905,10 @@ function ItemActionsMenu({
 }: {
   /** 媒体库管理权限：识别/刮削/图片/转移/删除这些条目管理项按它显隐 */
   canManage: boolean;
+  /** 所在库有识别链（影视库）：给「修正识别结果」；其他库没有可认领的外部身份 */
+  identifiable: boolean;
+  /** 条目本身来自 TMDB：给刷新元数据/更换图片/刮削归属；本地条目只有缩略图 */
+  scraped: boolean;
   scraping: boolean;
   /** 站点资源搜索直达（预填片名）：手动补版本/换版本的入口 */
   searchHref: Route;
@@ -953,9 +968,12 @@ function ItemActionsMenu({
           {canManage && (
             <>
               <DropdownMenu.Separator className="my-1 h-px bg-white/[0.07]" />
-              <DropdownMenu.Item onSelect={onReidentify} className={itemClass}>
-                修正识别结果…
-              </DropdownMenu.Item>
+              {identifiable && (
+                <DropdownMenu.Item onSelect={onReidentify} className={itemClass}>
+                  修正识别结果…
+                </DropdownMenu.Item>
+              )}
+              {scraped && (
               <DropdownMenu.Item
                 onSelect={onRefreshMetadata}
                 disabled={scraping}
@@ -963,15 +981,29 @@ function ItemActionsMenu({
               >
                 {scraping ? "正在刷新元数据…" : "刷新元数据"}
               </DropdownMenu.Item>
+              )}
+              {!scraped && (
+                <DropdownMenu.Item
+                  onSelect={onRefreshMetadata}
+                  disabled={scraping}
+                  className={itemClass}
+                >
+                  {scraping ? "正在生成缩略图…" : "重新生成缩略图"}
+                </DropdownMenu.Item>
+              )}
+              {scraped && (
               <DropdownMenu.Item onSelect={onChangeArtwork} className={itemClass}>
                 更换图片…
               </DropdownMenu.Item>
+              )}
               {/* 刮削归属：一条目只有一份档案与一张海报，按哪个库的语言/选图
                   设置刮由它决定。菜单里带出当前值——不摆出来用户无从解释
                   "为什么这部片没跟我的动漫库设置"（设计文档 §14.5） */}
-              <DropdownMenu.Item onSelect={onChangeScrapeLibrary} className={itemClass}>
-                刮削归属：{scrapeLibraryName ?? "跟随全局"}…
-              </DropdownMenu.Item>
+              {scraped && (
+                <DropdownMenu.Item onSelect={onChangeScrapeLibrary} className={itemClass}>
+                  刮削归属：{scrapeLibraryName ?? "跟随全局"}…
+                </DropdownMenu.Item>
+              )}
               <DropdownMenu.Item onSelect={onTransfer} className={itemClass}>
                 转移到其他库…
               </DropdownMenu.Item>
@@ -1644,9 +1676,12 @@ function TransferDialog({
     setStatus(null);
     setError(null);
     listLibraries(detail.kind)
-      .then((libs) => setCandidates(libs.filter((l) => l.id !== libraryId)))
+      // 同形态且同来源才能收（其他库 ↔ 其他库）
+      .then((libs) =>
+        setCandidates(libs.filter((l) => l.id !== libraryId && l.source === detail.source)),
+      )
       .catch(() => setError("读取媒体库列表失败，请稍后重试"));
-  }, [open, detail.kind, libraryId]);
+  }, [open, detail.kind, detail.source, libraryId]);
 
   // 选中目标库就立刻算预览：用户要先看清"搬到哪、搬多少"才谈得上确认
   useEffect(() => {
@@ -1737,7 +1772,7 @@ function TransferDialog({
               <p className="mt-2 text-sub text-[var(--text-muted)]">正在读取媒体库…</p>
             ) : candidates.length === 0 ? (
               <p className="mt-2 text-sub leading-6 text-[#ffd08a]">
-                没有其他{detail.kind === "movie" ? "电影" : "剧集"}
+                没有其他{LIBRARY_KIND_LABELS[detail.kind]}
                 库可选——请先在「媒体库」页新建一个，再回来转移。
               </p>
             ) : (
@@ -2291,7 +2326,7 @@ function ScrapeLibraryDialog({
   open: boolean;
   libraryId: number;
   mediaItemId: number;
-  kind: MediaType;
+  kind: LibraryKind;
   current: number | null;
   onClose: () => void;
   onChanged: () => void;
