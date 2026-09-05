@@ -127,6 +127,10 @@ class SiteConfigService:
             password=password,
             enabled=enabled,
         )
+        # 3.5 凭据已换，旧的 cookie 会话快照必须一并作废。否则 AuthManager 会先加载
+        #     快照并直接判定「已登录」（CookieAuthProvider.check 无法主动校验），
+        #     新凭据永远没有机会注入，验证会一直拿着过期 cookie 失败。
+        await self._cookies.delete(site_id)
         # 4. 建立同步游标：以「此刻」为跟踪起点 t0，next_sync_at 保持 NULL（立即到期），
         #    使站点通过验证后，下一个 tick 即触发首刷。幂等——已存在则不改动既有 t0。
         await self._torrents.ensure_cursor(site_id)
