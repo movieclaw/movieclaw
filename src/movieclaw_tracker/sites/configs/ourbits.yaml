@@ -1,10 +1,14 @@
 # OurBits（我堡）站点配置
 # 官网：https://ourbits.club/
+#
+# 分类筛选参数与标准 NexusPHP 不同：站点只认重复的 cat[]=401，忽略 cat401=1，
+# 由 sites/custom/ourbits.py 覆盖参数拼法；其余解析沿用框架默认实现。
 
 site_id: ourbits
 display_name: OurBits
 base_url: https://ourbits.club
 framework: nexusphp
+custom_class: movieclaw_tracker.sites.custom.ourbits.OurBitsSite
 
 selectors:
   # ── 种子列表 ─────────────────────────────────────────────────────
@@ -36,6 +40,11 @@ selectors:
   profile_downloaded_css: "font.color_downloaded::next_sibling_text"
   profile_seeding_css: "img[alt='Torrents seeding'] + *"
   profile_leeching_css: "img[alt='Torrents leeching'] + *"
+
+# ── 支持的授权类型 ────────────────────────────────────────────────
+# 登录页有 Cloudflare 人机挑战，账号密码模拟登录无法通过，仅支持粘贴 Cookie。
+auth:
+  supported: [cookie]
 
 # ── 分类映射 ──────────────────────────────────────────────────────
 categories:
