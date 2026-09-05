@@ -12,9 +12,9 @@ import { refreshLibraryConfirm, scanLibraryConfirm } from "@/lib/library-confirm
 import { LockIcon, MoreIcon, XIcon } from "@/components/icons";
 import { PAGE_NAV_BUTTON_CLASS, PageNav } from "@/components/page-nav";
 import { usePageTitle } from "@/lib/use-page-title";
+import { LibraryFormDialog } from "@/components/library-form-dialog";
 import {
   LIBRARY_KIND_META,
-  LibraryFormDialog,
   effectiveLibraryId,
   libraryCardAction,
 } from "@/components/library-view";
