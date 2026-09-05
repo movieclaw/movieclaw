@@ -30,9 +30,9 @@ router = APIRouter(prefix="/import-watch", tags=["import-watch"])
 class ImportWatchPayload(BaseModel):
     """创建/更新监听导入规则的请求体。
 
-    目标三态：``library_id`` 指定库；``target_path`` 自定义目录（识别改名后
-    落该目录、不进任何媒体库——整理结果需外部流转再进库的场景，此时
-    ``kind`` 必填）；两者都为 null 即**自动路由**（识别出作品后按各库收藏
+    目标三态：``library_id`` 指定库；``target_path`` 自定义目录（movie/tv
+    识别改名、video 原样搬运后落该目录，不进任何媒体库——整理结果需外部
+    流转再进库的场景，此时 ``kind`` 必填）；两者都为 null 即**自动路由**（识别出作品后按各库收藏
     范围选库，``kind`` 同样必填）。``library_id`` 与 ``target_path`` 互斥。
     """
 
@@ -50,7 +50,8 @@ class ImportWatchPayload(BaseModel):
     kind: Literal["movie", "tv", "video"] | None = Field(
         default=None,
         description=(
-            "自动路由/自定义目录的媒体类型；指定库时忽略（video 只用于自动路由：原样落其他库）"
+            "自动路由/自定义目录的媒体类型；指定库时忽略"
+            "（video：不识别不改名，自动路由落默认其他库、自定义目录原样落该目录）"
         ),
     )
     process_existing: bool = Field(

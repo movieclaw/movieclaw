@@ -458,15 +458,56 @@ async def test_import_watch_config_accepts_video_auto_rule(db, tmp_path) -> None
             source_path=str(watch), strategy="copy", library_id=None, kind="video"
         )
         assert row.kind == "video"
-        # 自定义目录规则要识别改名，其他形态没有这一步
-        with pytest.raises(BadRequestException, match="movie / tv"):
+        # 自定义目录同样可声明其他形态：原样搬进该目录、不涉及任何库
+        staged = await service.create(
+            source_path=str(tmp_path / "w2"),
+            strategy="copy",
+            library_id=None,
+            kind="video",
+            target_path=str(tmp_path / "out"),
+        )
+        assert staged.kind == "video" and staged.target_path == str(tmp_path / "out")
+        with pytest.raises(BadRequestException, match="movie / tv / video"):
             await service.create(
-                source_path=str(tmp_path / "w2"),
+                source_path=str(tmp_path / "w3"),
                 strategy="copy",
                 library_id=None,
-                kind="video",
-                target_path=str(tmp_path / "out"),
+                kind=None,
+                target_path=str(tmp_path / "out2"),
             )
+
+
+async def test_import_watch_custom_dir_video_raw_drops_without_library(
+    db, tmp_path, monkeypatch
+) -> None:
+    """自定义目录 + 其他形态：不识别不改名原样搬进该目录，不建条目不写库台账。"""
+    out = tmp_path / "out"
+    out.mkdir()
+    watch = tmp_path / "watch"
+    watch.mkdir()
+    monkeypatch.setattr(ingest_mod, "probe_media", lambda _p: _FAKE_SPEC)
+    entry = watch / "随手拍"
+    entry.mkdir()
+    (entry / "片段一.mp4").write_bytes(b"a" * 10)
+    (entry / "片段一.srt").write_text("1", encoding="utf-8")
+    (watch / "单文件.mp4").write_bytes(b"b" * 10)
+
+    rule = ImportWatch(
+        source_path=str(watch), strategy="copy", library_id=None, kind="video", target_path=str(out)
+    )
+    await _sweep_twice(db, rule, None)
+
+    assert _NoTmdb.calls == []
+    assert sorted(p.name for p in (out / "随手拍").iterdir()) == ["片段一.mp4", "片段一.srt"]
+    assert (out / "单文件.mp4").is_file()
+    async with db.session() as session:
+        records = list((await session.execute(select(IngestEntry))).scalars().all())
+        assert len(records) == 2
+        assert all(r.status == IngestStatus.IMPORTED and r.library_id is None for r in records)
+        assert all("自定义目录" in (r.message or "") for r in records)
+        # 过客文件：不建本地条目、不写库文件台账
+        assert (await session.execute(select(LibraryFile))).scalars().all() == []
+        assert (await session.execute(select(MediaItem))).scalars().all() == []
 
 
 # ---------------------------------------------------------------------------

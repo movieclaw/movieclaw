@@ -5,7 +5,8 @@
 建库即扫描 → 抓帧缩略图 → 16:9 海报墙与能力位收敛的菜单 → 详情页读 sidecar
 NFO → 播放 → 服务端记进度、详情页「继续观看」→ 影视库认不出的文件以临时
 身份上墙（未识别角标、可播、保留修正识别）→ 监听导入规则「落入其他库」→
-往监听目录丢文件 → 原样入库 → Jellyfin 视图输出 homevideos/Video。
+往监听目录丢文件 → 原样入库 → 监听导入「自定义目录 + 其他」原样搬进中转目录
+且不进任何库 → Jellyfin 视图输出 homevideos/Video。
 
 标 integration：要 ffmpeg、pnpm（apps/web 已 install）与 Playwright Chromium，
 CI 不跑。本地：``pytest -m integration tests/e2e``。前端 dev server 用独立的
@@ -91,6 +92,11 @@ def stack(tmp_path_factory):
     movie_root = root / "media" / "movies"
     watch = root / "watch"
     watch.mkdir(parents=True)
+    # 第二条监听：自定义目录 + 其他（原样搬进中转目录、不进任何库）
+    watch2 = root / "watch2"
+    watch2.mkdir()
+    staging = root / "staging"
+    staging.mkdir()
     # 续播点按 Jellyfin 阈值落库（片长 ≥5 分钟、进度 ≥5%），主片给 6 分钟
     _gen_clip(home_root / "2019" / "春节团圆饭.mp4", 360)
     (home_root / "2019" / "春节团圆饭.nfo").write_text(
@@ -157,6 +163,8 @@ def stack(tmp_path_factory):
             "tv_root": tv_root,
             "tmdb_log": tmdb_log,
             "watch": watch,
+            "watch2": watch2,
+            "staging": staging,
             "pending": pending,
             "shots": root / "shots",
         }
@@ -585,6 +593,41 @@ def test_other_library_full_flow(stack) -> None:  # noqa: PLR0915
         page.goto(f"{base}/library/{home['id']}")
         expect(page.locator("[data-library-item-id]")).to_have_count(3)
         page.screenshot(path=str(shots / "08-wall-after-import.png"))
+
+        # ---- 监听导入：自定义目录 + 其他 → 原样搬进该目录、不进任何库 ----
+        page.goto(f"{base}/settings/import-watch")
+        page.get_by_role("button", name="添加自动入库规则").first.click()
+        dialog = page.get_by_role("dialog")
+        dialog.get_by_role("button", name="浏览服务器目录并选择…").click()
+        _pick_directory(page, str(stack["watch2"]))
+        dialog.get_by_role("button", name="自定义目录…").click()
+        dialog.get_by_role("button", name="选择整理结果的存放目录…").click()
+        _pick_directory(page, str(stack["staging"]))
+        # 类型选择里有「其他」，选中后说明文案切到"不识别不改名"
+        dialog.get_by_role("button", name="其他", exact=True).click()
+        expect(dialog.get_by_text("自定义目录（其他）：不识别不改名")).to_be_visible()
+        dialog.get_by_role("button", name="复制", exact=True).click()
+        page.screenshot(path=str(shots / "08b-import-watch-custom-dir-video.png"))
+        dialog.get_by_role("button", name="保存", exact=True).click()
+        expect(dialog).to_have_count(0)
+        rule2 = next(
+            r
+            for r in api_get(page, "/import-watch")["data"]
+            if r["source_path"] == str(stack["watch2"])
+        )
+        assert rule2["kind"] == "video" and rule2["target_path"] == str(stack["staging"])
+        shutil.copyfile(stack["pending"], stack["watch2"] / "随手拍.mp4")
+        _wait_for(
+            lambda: (stack["staging"] / "随手拍.mp4").is_file() or None,
+            timeout=120,
+            what="监听导入把随手拍原样搬进自定义目录",
+            interval=2,
+        )
+        # 过客文件：其他库条目数不变，没有任何库收下它
+        home_after = next(x for x in api_get(page, "/libraries")["data"] if x["id"] == home["id"])
+        assert home_after["stats"]["item_count"] == 3
+        page.reload()
+        expect(page.get_by_text("自定义目录（其他 · ")).to_be_visible()
 
         # ---- Jellyfin 视角：homevideos 视图、Video 叶子、真实比例 ----
         auth = page.request.post(

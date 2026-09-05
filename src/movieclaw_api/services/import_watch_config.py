@@ -9,7 +9,8 @@ docs/design/strm-workflow.md）：
   识别出作品后按各库的收藏范围声明选库。kind 仍须先验（识别链按
   movie/tv 分叉）；每 kind 至多一条 auto 规则——多条会让订阅投递的
   落点歧义；
-- **自定义目录**（``target_path`` 非空 + ``kind`` 必填）：识别改名后落
+- **自定义目录**（``target_path`` 非空 + ``kind`` 必填）：movie/tv 识别改名后落
+  该目录、video 不识别不改名原样落该目录，
   该目录、不进入任何媒体库——"整理结果需外部流转再进库"场景的落点。
   每 kind 至多一条（投递查找链同 auto 理由）。
 
@@ -47,10 +48,10 @@ logger = logging.getLogger("movieclaw_api.import_watch_config")
 _refresh_tasks: set[asyncio.Task] = set()
 
 STRATEGIES = ("hardlink", "copy")
-# 自动路由可声明的形态：movie/tv 走识别链路由；video 直接落该形态默认库（原样落库）
+# 自动路由 / 自定义目录可声明的形态：movie/tv 走识别链（自动路由按收藏范围选库、
+# 自定义目录识别改名后落该目录）；video 不识别不改名——自动路由落该形态默认库，
+# 自定义目录原样落该目录
 _KINDS = ("movie", "tv", "video")
-# 自定义目录规则要「识别改名」，其他库形态没有这一步
-_PATH_KINDS = ("movie", "tv")
 _KIND_LABELS = KIND_LABELS
 
 
@@ -203,8 +204,8 @@ class ImportWatchConfigService:
             target = target_path.strip().rstrip("/")
             if not target or not target.startswith("/"):
                 raise BadRequestException("自定义目录必须是绝对路径")
-            if kind not in _PATH_KINDS:
-                raise BadRequestException("自定义目录规则必须指定媒体类型（movie / tv）")
+            if kind not in _KINDS:
+                raise BadRequestException("自定义目录规则必须指定媒体类型（movie / tv / video）")
             # 每 kind 至多一条：投递查找链（resolve_dispatch_rule）的落点不能歧义
             existing_target = (
                 await self._session.execute(
