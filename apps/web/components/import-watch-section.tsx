@@ -485,7 +485,7 @@ function RuleFormDialog({
   const [target, setTarget] = useState<
     | { type: "library"; id: number }
     | { type: "auto"; kind: "movie" | "tv" | "video" }
-    | { type: "path"; path: string; kind: "movie" | "tv" }
+    | { type: "path"; path: string; kind: "movie" | "tv" | "video" }
     | null
   >(null);
   // 目录浏览弹窗当前服务的字段：源目录 / 自定义目录
@@ -503,7 +503,7 @@ function RuleFormDialog({
       setTarget({
         type: "path",
         path: rule.target_path,
-        kind: rule.kind === "tv" ? "tv" : "movie",
+        kind: rule.kind ?? "movie",
       });
     } else if (rule?.kind) {
       setTarget({ type: "auto", kind: rule.kind });
@@ -654,7 +654,7 @@ function RuleFormDialog({
                 [
                   ["movie", "自动路由（电影）", "识别出作品后，按各库的收藏范围自动选库；未命中进该类型的默认库"],
                   ["tv", "自动路由（剧集）", "识别出作品后，按各库的收藏范围自动选库；未命中进该类型的默认库"],
-                  ["video", "落入其他库", "不识别不改名，原样搬进默认的「其他」库（家庭录像、暂不刮削的内容）"],
+                  ["video", "落入其他库", "不识别不改名，原样搬进默认的「其他」库；放什么由你定"],
                 ] as const
               ).map(([k, label, hint]) => (
                 <button
@@ -677,7 +677,7 @@ function RuleFormDialog({
                 }
                 data-active={target?.type === "path"}
                 className="glass-row nav-item !w-auto px-3 py-1.5 text-sub font-medium"
-                title="识别改名后放入指定目录、不进入任何媒体库——适合整理结果还需外部流转（如上传、转存）再进库的场景"
+                title="整理后放入指定目录、不进入任何媒体库（电影/剧集识别改名，其他原样搬运）——适合整理结果还需外部流转（如上传、转存）再进库的场景"
               >
                 自定义目录…
               </button>
@@ -706,17 +706,18 @@ function RuleFormDialog({
                 <div className="flex gap-2">
                   {(
                     [
-                      ["movie", "电影"],
-                      ["tv", "剧集"],
+                      ["movie", "电影", "识别链需要先知道内容是电影还是剧集（命名与季集解析不同）"],
+                      ["tv", "剧集", "识别链需要先知道内容是电影还是剧集（命名与季集解析不同）"],
+                      ["video", "其他", "不识别不改名，原样搬进该目录；放什么由你定"],
                     ] as const
-                  ).map(([k, label]) => (
+                  ).map(([k, label, hint]) => (
                     <button
                       key={k}
                       type="button"
                       onClick={() => setTarget({ type: "path", path: target.path, kind: k })}
                       data-active={target.kind === k}
                       className="glass-row nav-item !w-auto px-3 py-1.5 text-sub font-medium"
-                      title="识别链需要先知道内容是电影还是剧集（命名与季集解析不同）"
+                      title={hint}
                     >
                       {label}
                     </button>
@@ -728,7 +729,9 @@ function RuleFormDialog({
               {target?.type === "auto"
                 ? "自动路由：识别出作品后按各媒体库的「收藏范围」分流（如动画进动漫库），未命中进该类型的默认库；订阅投递的内容始终进订阅指定的库。每个类型至多一条自动路由规则。"
                 : target?.type === "path"
-                  ? "自定义目录：下载整理（识别改名）后的文件放入该目录，不进入任何媒体库。适合整理结果还需外部流转（如上传网盘、转存、人工确认）再进入媒体库的场景——文件后续出现在某个库的根目录时会被自动扫描入账。目录不得与库根或监听源重叠，每个类型至多一条。"
+                  ? target.kind === "video"
+                    ? "自定义目录（其他）：不识别不改名，条目原样搬进该目录，不进入任何媒体库。文件后续出现在某个「其他」库的根目录时会被自动扫描入账。目录不得与库根或监听源重叠，每个类型至多一条。"
+                    : "自定义目录：下载整理（识别改名）后的文件放入该目录，不进入任何媒体库。适合整理结果还需外部流转（如上传网盘、转存、人工确认）再进入媒体库的场景——文件后续出现在某个库的根目录时会被自动扫描入账。目录不得与库根或监听源重叠，每个类型至多一条。"
                   : "指定库：这个目录里的内容固定导入所选库（落其主根）。"}
             </p>
           </div>

@@ -522,7 +522,9 @@ HLG/杜比视界）、mpegts `-skip_frame nokey`、宽度上限 1280、strm 跳�
 目标为 `video` 库时 save_path = `{主根}`（种子结构原样落下）；监听导入
 「指定库」为 `video` 库时整理器退化为原样转移（硬链/复制到 `{主根}/`，
 保留原名，不识别不改名；`ingest_entry` 台账、幂等、退避不变）；落盘后由
-实时监控/扫描入账。订阅与自动路由排除 `subscribable=False` 的库。
+实时监控/扫描入账。自动路由声明为 `video` 时落该形态默认库；自定义目录
+声明为 `video` 时原样搬进该目录、不涉及任何库（`_ingest_raw_drop` 的
+`library=None` 分支）。订阅排除 `subscribable=False` 的库。
 
 ### 4.7 Jellyfin
 

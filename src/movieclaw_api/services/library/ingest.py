@@ -138,7 +138,7 @@ from movieclaw_api.services.library.naming import (
     movie_file_name,
     season_dir_name,
 )
-from movieclaw_api.services.library.profile import kind_label, profile_for, profile_of
+from movieclaw_api.services.library.profile import kind_label, profile_for
 from movieclaw_api.services.library.resolve import verify_resolve
 from movieclaw_api.services.library.scan import disc_main_stream, guess_evidence
 from movieclaw_api.services.library.units import FileUnit, resolve_units
@@ -1663,17 +1663,17 @@ async def _ingest_entry(
     # kind 先验：指定库取库类型；auto 规则取规则声明（识别链按 movie/tv 分叉）
     kind = MediaKind(library.kind if library is not None else rule.kind)
 
-    # 本地内容库（「其他」，docs/design/library-other-kind.md 第 7 节）：不识别、
-    # 不改名，条目原样落到库主根，视频逐文件建本地条目。auto 规则声明为其他
-    # 时没有收藏范围可路由，直接落该形态的默认库
-    if staging is None and dest_library is None and not profile_for(kind).scraped:
-        dest_library = await LibraryRepository(session).get_default(kind.value)
-        if dest_library is None:
-            return await conclude(
-                IngestStatus.FAILED,
-                f"没有可用的{kind_label(kind)}库承接自动路由，无法入库；请先到「媒体库」创建",
-            )
-    if staging is None and dest_library is not None and not profile_of(dest_library).scraped:
+    # 本地内容形态（「其他」，docs/design/library-other-kind.md 4.6 节）：不识别、
+    # 不改名，条目原样落盘——指定库落库主根并逐视频建本地条目；auto 规则没有
+    # 收藏范围可路由，直接落该形态的默认库；自定义目录则原样落该目录、不涉及任何库
+    if not profile_for(kind).scraped:
+        if staging is None and dest_library is None:
+            dest_library = await LibraryRepository(session).get_default(kind.value)
+            if dest_library is None:
+                return await conclude(
+                    IngestStatus.FAILED,
+                    f"没有可用的{kind_label(kind)}库承接自动路由，无法入库；请先到「媒体库」创建",
+                )
         item, imported, verdict = await _ingest_raw_drop(
             session,
             dest_library,
@@ -1684,6 +1684,7 @@ async def _ingest_entry(
             rule=rule,
             imported_files=imported_files,
             added_batch_id=added_batch_id,
+            dest_root=staging,
         )
         return await conclude(verdict[0], verdict[1], imported)
 
@@ -2322,7 +2323,7 @@ async def _ingest_entry(
 
 async def _ingest_raw_drop(
     session,
-    library: Library,
+    library: Library | None,
     entry: Path,
     snap: _EntrySnapshot,
     *,
@@ -2331,13 +2332,18 @@ async def _ingest_raw_drop(
     rule: ImportWatch,
     imported_files: list[str],
     added_batch_id: str,
+    dest_root: str | None = None,
 ) -> tuple[MediaItem | None, int, tuple[IngestStatus, str]]:
-    """其他库的「原样落库」：条目整体搬到库主根（目录条目保持内部结构，
-    单文件条目直接落主根），视频逐文件建本地条目并落台账，同名的 NFO/字幕/
-    图片一并带过去。不识别、不改名、不写 NFO（sidecar 是用户自己的）。
+    """其他形态的「原样落盘」：条目整体搬到落点（目录条目保持内部结构，
+    单文件条目直接落根），同名的 NFO/字幕/图片一并带过去。不识别、不改名、
+    不写 NFO（sidecar 是用户自己的）。
+
+    落点二选一：``library`` 非空即其他库的主根，视频逐文件建本地条目并落台账；
+    ``library`` 为空时落 ``dest_root``（自定义目录规则），文件是"过客"，
+    只搬运、不建条目不写台账。
 
     返回 (首个建档条目, 入库视频数, (状态, 文案))：条目只用于台账的作品归属，
-    其他库一文件一条目，多个视频时台账记第一个。
+    其他库一文件一条目，多个视频时台账记第一个；自定义目录恒为 None。
     """
     from movieclaw_api.services.library.local_identity import build_local_identity
     from movieclaw_api.services.media_scrape import ensure_assets
@@ -2345,18 +2351,20 @@ async def _ingest_raw_drop(
     if snap.has_disc:
         return None, 0, (
             IngestStatus.PENDING,
-            f"{kind_label(library.kind)}库暂不接收原盘目录（BDMV/VIDEO_TS），请人工整理",
+            "原样落盘暂不接收原盘目录（BDMV/VIDEO_TS），请人工整理",
         )
     if not snap.videos:
         return None, 0, (IngestStatus.SKIPPED, "条目中没有视频文件，已跳过")
-    root = library.primary_root
+    root = library.primary_root if library is not None else dest_root
     if not root:
         return None, 0, (
             IngestStatus.FAILED,
-            f"媒体库「{library.name}」没有配置根路径，无法入库",
+            f"媒体库「{library.name}」没有配置根路径，无法入库"
+            if library is not None
+            else "自定义目录规则没有目标目录，无法搬运",
         )
-    assert library.id is not None
-    if job_context is not None:
+    assert library is None or library.id is not None
+    if job_context is not None and library is not None:
         while not await job_context.acquire_target_resource("library", library.id):
             await job_context.raise_if_cancelled()
             await job_context.update_progress(
@@ -2417,7 +2425,7 @@ async def _ingest_raw_drop(
                         details={
                             "entry_name": entry.name,
                             "file_name": _file.name,
-                            "library_id": library.id,
+                            "library_id": library.id if library is not None else None,
                             "bytes_copied": current,
                         },
                     )
@@ -2440,10 +2448,26 @@ async def _ingest_raw_drop(
         transferred.append((file, final))
         imported_files.append(str(rel))
 
+    video_set = set(snap.videos)
+    verb = "硬链接" if strategy == "hardlink" else "复制"
+    suffix = f"；{'；'.join(notes)}" if notes else ""
+    if library is None:
+        # 自定义目录：过客文件只搬不记账（后续出现在某个库根时由扫描入账）
+        imported = sum(1 for src_file, _final in transferred if src_file in video_set)
+        if imported:
+            return None, imported, (
+                IngestStatus.IMPORTED,
+                f"已原样{verb}到自定义目录（{dest_base}），共 {imported} 个视频{suffix}",
+            )
+        if conflict:
+            return None, 0, (IngestStatus.PENDING, f"目标目录已有同名文件，未覆盖{suffix}")
+        if env_error:
+            return None, 0, (IngestStatus.FAILED, f"搬运失败，将自动重试{suffix}")
+        return None, 0, (IngestStatus.IMPORTED, "全部文件已在目标目录，无需搬运")
+
     repo = LibraryFileRepository(session)
     media_service = MediaLibraryService(session, get_tmdb_client())
     kind = MediaKind(library.kind)
-    video_set = set(snap.videos)
     first_item: MediaItem | None = None
     imported = 0
     new_item_ids: list[int] = []
@@ -2507,8 +2531,6 @@ async def _ingest_raw_drop(
                     details={"entry_name": entry.name, "library_id": library.id},
                 )
                 await ensure_assets(item_id)
-    verb = "硬链接" if strategy == "hardlink" else "复制"
-    suffix = f"；{'；'.join(notes)}" if notes else ""
     if imported:
         return first_item, imported, (
             IngestStatus.IMPORTED,
