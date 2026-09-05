@@ -8,7 +8,7 @@ import Link from "next/link";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 
 import { GripIcon, LockIcon, MoreIcon } from "@/components/icons";
-import { LIBRARY_KIND_META } from "@/components/library-view";
+import { LIBRARY_KIND_META } from "@/components/library-kind-meta";
 import { type MediaLibrary, SCAN_PHASE_LABELS } from "@/lib/api/libraries";
 import { publicEnv } from "@/lib/env";
 import {
@@ -51,8 +51,8 @@ export interface LibraryRowActions {
 /** 拖拽/键盘换位的接线；筛选中或手机端不传，行首不渲染拖拽柄。 */
 export interface LibraryRowDrag {
   dragging: boolean;
-  /** 另一行正拖到本行上方（落点提示） */
-  over: boolean;
+  /** 另一行正拖到本行：落在本行之前还是之后（落点提示线画在上沿或下沿）；null = 没拖到本行 */
+  over: "before" | "after" | null;
   onDragStart: (e: React.DragEvent) => void;
   onDragOver: (e: React.DragEvent) => void;
   onDrop: (e: React.DragEvent) => void;
@@ -83,15 +83,22 @@ export function LibraryManageRow({
 
   return (
     <div
+      role="row"
       data-library-row={library.id}
       onDragOver={drag?.onDragOver}
       onDrop={drag?.onDrop}
       className={`group/row relative grid items-center gap-4 px-4 py-3 transition-colors hover:bg-white/[0.025] ${MANAGE_GRID_COLS} max-md:grid-cols-[minmax(0,1fr)_40px] max-md:gap-x-3 max-md:gap-y-2 max-md:px-4 max-md:py-3.5 ${
         drag?.dragging ? "opacity-40" : ""
-      } ${drag?.over ? "shadow-[inset_0_2px_0_0_var(--accent-2)]" : ""}`}
+      } ${
+        drag?.over === "before"
+          ? "shadow-[inset_0_2px_0_0_var(--accent-2)]"
+          : drag?.over === "after"
+            ? "shadow-[inset_0_-2px_0_0_var(--accent-2)]"
+            : ""
+      }`}
     >
       {/* 拖拽柄：只在桌面端且未筛选时出现；键盘用户 Alt+↑/↓ 换位 */}
-      <div className="max-md:hidden">
+      <div role="cell" className="max-md:hidden">
         {drag ? (
           <button
             type="button"
@@ -119,7 +126,7 @@ export function LibraryManageRow({
       </div>
 
       {/* 库：缩略图 + 名称（进单库页）+ 默认标；第二行类型 · 收藏范围 · 首页展示 */}
-      <div className="flex min-w-0 items-center gap-3">
+      <div role="cell" className="flex min-w-0 items-center gap-3">
         <LibraryThumb library={library} Icon={meta.Icon} />
         <div className="min-w-0">
           <div className="flex items-center gap-2">
@@ -135,12 +142,17 @@ export function LibraryManageRow({
               </span>
             )}
           </div>
-          <div className="truncate text-caption text-[var(--text-faint)]">{scopeSummary}</div>
+          <div className="truncate text-caption text-[var(--text-faint)]">
+            {scopeSummary}
+            {/* 手机端没有「可见范围」列，并进这一行 */}
+            <span className="hidden max-md:inline"> · {accessLabel(library)}</span>
+          </div>
         </div>
       </div>
 
       {/* 根目录：主根 + 其余折叠成「+N」，悬停 title 展开全部 */}
       <div
+        role="cell"
         className="min-w-0 font-mono text-caption text-[var(--text-muted)] max-md:col-span-2 max-md:text-micro"
         title={library.root_paths.join("\n")}
       >
@@ -153,7 +165,7 @@ export function LibraryManageRow({
       </div>
 
       {/* 库存 */}
-      <div className="whitespace-nowrap text-ui tabular-nums max-md:col-span-2 max-md:text-caption max-md:text-[var(--text-muted)]">
+      <div role="cell" className="whitespace-nowrap text-ui tabular-nums max-md:col-span-2 max-md:text-caption max-md:text-[var(--text-muted)]">
         {inventory.primary}
         <span className="ml-1.5 text-caption text-[var(--text-faint)]">{inventory.secondary}</span>
       </div>
@@ -162,7 +174,7 @@ export function LibraryManageRow({
       <StatusCell status={status} />
 
       {/* 可见范围 */}
-      <div className="whitespace-nowrap text-ui text-[var(--text-muted)] max-md:hidden">
+      <div role="cell" className="whitespace-nowrap text-ui text-[var(--text-muted)] max-md:hidden">
         {library.viewer_access ? (
           accessLabel(library)
         ) : (
@@ -174,7 +186,7 @@ export function LibraryManageRow({
       </div>
 
       {/* 操作：唯一的 ··· 菜单 */}
-      <div className="flex justify-end max-md:col-start-2 max-md:row-start-1">
+      <div role="cell" className="flex justify-end max-md:col-start-2 max-md:row-start-1">
         <RowMenu library={library} status={status} actions={actions} />
       </div>
     </div>
@@ -215,7 +227,7 @@ function LibraryThumb({ library, Icon }: { library: MediaLibrary; Icon: typeof L
 
 function StatusCell({ status }: { status: LibraryStatus }) {
   return (
-    <div className="min-w-0 max-md:col-span-2">
+    <div role="cell" className="min-w-0 max-md:col-span-2">
       <div className="flex items-center gap-2 text-ui">
         <span className={`size-1.5 shrink-0 rounded-full ${TONE_DOT[status.tone]}`} />
         <span className="truncate">{status.title}</span>
@@ -258,7 +270,9 @@ function RowMenu({
   const busy = scanning || organizing || refreshing;
   // 重识别占同一把库级锁但不接受中途停止（后端会拒绝），入口置灰并如实标出
   const stoppable = scanning && library.scan_progress?.phase !== "reidentifying";
-  const pending = library.stats.unidentified_count + library.stats.missing_count;
+  // 库快照只有**文件**级计数（待识别 + 缺失）；单库页菜单里的「待处理 N」数的是
+  // 分组（一部剧几十集算一件），两个数天然不同——这里把单位写明，避免被当成同一口径
+  const pendingFiles = library.stats.unidentified_count + library.stats.missing_count;
   const caps = library.capabilities;
   const pct = status.percent === null ? "" : ` ${status.percent}%`;
 
@@ -294,7 +308,7 @@ function RowMenu({
           {/* 待处理常驻：计数为 0 也可进（已忽略清单只有这里能到） */}
           {caps.scraped && (
             <DropdownMenu.Item onSelect={() => actions.onOpenPending(library)} className={itemClass}>
-              待处理{pending > 0 ? ` ${pending}` : ""}
+              待处理{pendingFiles > 0 ? ` · ${pendingFiles} 个文件` : ""}
             </DropdownMenu.Item>
           )}
           {caps.naming && (

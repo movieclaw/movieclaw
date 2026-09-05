@@ -7,7 +7,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 
 import { ContentEmptyState } from "@/components/content-empty-state";
-import { useConfirm } from "@/components/feedback";
+import { useConfirm, useToast } from "@/components/feedback";
 import { ChevronDownIcon, PlusIcon, SearchIcon, XIcon } from "@/components/icons";
 import { LibraryFormDialog } from "@/components/library-form-dialog";
 import {
@@ -17,7 +17,6 @@ import {
   MANAGE_GRID_COLS,
 } from "@/components/library-manage-row";
 import { LibraryOrganizeDialog } from "@/components/library-organize-dialog";
-import { routingOverlapWarnings } from "@/components/library-view";
 import { Modal } from "@/components/modal";
 import { PageNav } from "@/components/page-nav";
 import {
@@ -33,6 +32,7 @@ import {
   updateLibrary,
 } from "@/lib/api/libraries";
 import { refreshLibraryConfirm, scanLibraryConfirm } from "@/lib/library-confirm";
+import { routingOverlapWarnings } from "@/lib/library-routing-warnings";
 import {
   EMPTY_FILTER,
   type LibraryFilter,
@@ -48,6 +48,12 @@ import { useVisiblePolling } from "@/lib/use-visible-polling";
 
 const KIND_ORDER: LibraryKind[] = ["movie", "tv", "video"];
 
+/** 指针落在目标行的上半还是下半：决定放到它之前还是之后。 */
+function dropPosition(e: React.DragEvent): "before" | "after" {
+  const rect = e.currentTarget.getBoundingClientRect();
+  return e.clientY < rect.top + rect.height / 2 ? "before" : "after";
+}
+
 /**
  * 媒体库管理页（/library/manage）：一库一行的纵向列表，库多了只是变长。
  *
@@ -61,11 +67,11 @@ export function LibraryManageView() {
   const { canManageLibraries } = usePermissions();
   const router = useRouter();
   const confirm = useConfirm();
+  const toast = useToast();
   const isMobile = useIsMobile();
 
   const [libraries, setLibraries] = useState<MediaLibrary[] | null>(null);
   const [failed, setFailed] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<LibraryFilter>(EMPTY_FILTER);
   // 弹窗态：新增（"new"）/ 编辑（库对象）/ 关闭(null)
   const [editing, setEditing] = useState<MediaLibrary | "new" | null>(null);
@@ -145,13 +151,18 @@ export function LibraryManageView() {
     return counts;
   }, [libraries]);
 
-  /** 动作统一收口：成功后立刻拉一次列表，失败把后端的中文错误挂到顶部提示条 */
+  /** 动作统一收口：成功后立刻拉一次列表（可选给一句回执），失败用 toast 报后端的
+   *  中文错误——列表可能很长，用户在底部点的按钮，顶部横条根本看不见 */
   const run = useCallback(
-    (action: Promise<unknown>) => {
-      setError(null);
-      void action.then(reload).catch((e) => setError((e as Error).message));
+    (action: Promise<unknown>, done?: string) => {
+      void action
+        .then(() => {
+          reload();
+          if (done) toast.success(done);
+        })
+        .catch((e) => toast.error((e as Error).message));
     },
-    [reload],
+    [reload, toast],
   );
 
   /** 提交新顺序：先乐观换位，失败回滚。全量 id 一次提交（后端接口要求） */
@@ -159,15 +170,17 @@ export function LibraryManageView() {
     (next: readonly MediaLibrary[]) => {
       const prev = libraries;
       setLibraries([...next]);
-      setError(null);
       void reorderLibraries(next.map((l) => l.id))
-        .then(reload)
+        .then(() => {
+          reload();
+          toast.success("顺序已更新，首页「我的媒体库」同步生效");
+        })
         .catch((e) => {
           setLibraries(prev);
-          setError((e as Error).message);
+          toast.error((e as Error).message);
         });
     },
-    [libraries, reload],
+    [libraries, reload, toast],
   );
 
   const moveLibrary = useCallback(
@@ -206,7 +219,8 @@ export function LibraryManageView() {
         });
       },
       onEdit: (library) => setEditing(library),
-      onSetDefault: (library) => run(setDefaultLibrary(library.id)),
+      onSetDefault: (library) =>
+        run(setDefaultLibrary(library.id), `已将「${library.name}」设为默认库`),
       // 只改这一个字段：payload 里没传的字段后端按"不改动"处理
       onToggleHome: (library) =>
         run(
@@ -216,6 +230,7 @@ export function LibraryManageView() {
             root_paths: library.root_paths,
             exclude_from_home: !library.exclude_from_home,
           }),
+          library.exclude_from_home ? `「${library.name}」已在首页展示` : `「${library.name}」已从首页排除`,
         ),
       onDelete: (library) => {
         void confirm({
@@ -224,7 +239,7 @@ export function LibraryManageView() {
           confirmLabel: "删除库",
           tone: "danger",
         }).then((ok) => {
-          if (ok) run(deleteLibrary(library.id));
+          if (ok) run(deleteLibrary(library.id), `已删除媒体库「${library.name}」`);
         });
       },
       onReorder: isMobile ? () => setReorderOpen(true) : undefined,
@@ -234,34 +249,45 @@ export function LibraryManageView() {
 
   // —— 拖拽排序（桌面端、未筛选时）——
   const [dragId, setDragId] = useState<number | null>(null);
-  const [overId, setOverId] = useState<number | null>(null);
+  // 拖到哪一行、落在它之前还是之后（按指针在行内的上下半判定）
+  const [over, setOver] = useState<{ id: number; pos: "before" | "after" } | null>(null);
   const dragEnabled = !isMobile && !filterIsActive(filter) && (libraries?.length ?? 0) > 1;
   const dragFor = (library: MediaLibrary): LibraryRowDrag | null => {
     if (!dragEnabled || !libraries) return null;
     const index = libraries.findIndex((l) => l.id === library.id);
     return {
       dragging: dragId === library.id,
-      over: overId === library.id && dragId !== library.id,
+      over: over?.id === library.id && dragId !== library.id ? over.pos : null,
       onDragStart: (e) => {
         e.dataTransfer.effectAllowed = "move";
         e.dataTransfer.setData("text/plain", String(library.id));
+        // 拖影用整行而不是那颗小把手，用户才看得出自己拖的是哪个库
+        const row = (e.currentTarget as HTMLElement).closest("[data-library-row]");
+        if (row instanceof HTMLElement) e.dataTransfer.setDragImage(row, 24, row.offsetHeight / 2);
         setDragId(library.id);
       },
       onDragOver: (e) => {
         if (dragId === null) return;
         e.preventDefault();
         e.dataTransfer.dropEffect = "move";
-        if (overId !== library.id) setOverId(library.id);
+        const pos = dropPosition(e);
+        if (over?.id !== library.id || over.pos !== pos) setOver({ id: library.id, pos });
       },
       onDrop: (e) => {
         e.preventDefault();
-        if (dragId !== null && dragId !== library.id) moveLibrary(dragId, index);
+        if (dragId !== null && dragId !== library.id) {
+          const from = libraries.findIndex((l) => l.id === dragId);
+          const before = dropPosition(e) === "before";
+          // 目标位置以「拿走被拖的那一行之后」的列表计：从上往下拖时目标行会前移一位
+          const to = before ? (from < index ? index - 1 : index) : from < index ? index : index + 1;
+          moveLibrary(dragId, to);
+        }
         setDragId(null);
-        setOverId(null);
+        setOver(null);
       },
       onDragEnd: () => {
         setDragId(null);
-        setOverId(null);
+        setOver(null);
       },
       onMoveKey: (offset) => moveLibrary(library.id, index + offset),
     };
@@ -311,11 +337,6 @@ export function LibraryManageView() {
         </p>
       </div>
 
-      {error && (
-        <div className="mx-6 mt-4 rounded-xl border border-[#ff6b6b]/30 bg-[#ff6b6b]/10 px-4 py-3 text-body text-[#ff6b6b] max-md:mx-4">
-          {error}
-        </div>
-      )}
       {failed && libraries !== null && (
         <div className="mx-6 mt-4 rounded-xl border border-amber-400/25 bg-amber-500/10 px-4 py-3 text-sub text-amber-200 max-md:mx-4">
           与后端通信失败，正在自动重试；下方显示的是最近一次成功加载的数据
@@ -420,17 +441,25 @@ export function LibraryManageView() {
           ))}
 
           {/* 列表 */}
-          <div className="mx-6 mt-4 overflow-hidden rounded-2xl border border-white/[0.08] bg-white/[0.02] max-md:mx-4">
+          <div
+            role="table"
+            aria-label="媒体库列表"
+            className="mx-6 mt-4 overflow-hidden rounded-2xl border border-white/[0.08] bg-white/[0.02] max-md:mx-4"
+          >
+            {/* 表头只在桌面端显示；手机端一库一卡，列名由卡片内的文案自带 */}
             <div
+              role="row"
               className={`grid gap-4 border-b border-white/[0.07] px-4 py-2.5 text-caption font-medium text-[var(--text-faint)] max-md:hidden ${MANAGE_GRID_COLS}`}
             >
-              <span />
-              <span>库</span>
-              <span>根目录</span>
-              <span>库存</span>
-              <span>状态</span>
-              <span>可见范围</span>
-              <span className="text-right">操作</span>
+              <span role="columnheader" aria-label="排序" />
+              <span role="columnheader">库</span>
+              <span role="columnheader">根目录</span>
+              <span role="columnheader">库存</span>
+              <span role="columnheader">状态</span>
+              <span role="columnheader">可见范围</span>
+              <span role="columnheader" className="text-right">
+                操作
+              </span>
             </div>
             {visible.length === 0 ? (
               <div className="px-4 py-10 text-center text-ui text-[var(--text-muted)]">
@@ -444,7 +473,7 @@ export function LibraryManageView() {
                 </button>
               </div>
             ) : (
-              <div className="divide-y divide-white/[0.06]">
+              <div role="rowgroup" className="divide-y divide-white/[0.06]">
                 {visible.map((library) => (
                   <LibraryManageRow
                     key={library.id}

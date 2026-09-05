@@ -259,8 +259,10 @@ def test_library_manage_full_flow(stack) -> None:  # noqa: PLR0915
         assert hk["is_default"] is False, "同类型第二个库不自动成为默认"
         expect(page.locator("[data-library-row]")).to_have_count(3)
         # 表头列名齐全，行内只有一个操作按钮（按钮统一收进菜单）
+        table = page.get_by_role("table", name="媒体库列表")
         for col in ("库", "根目录", "库存", "状态", "可见范围", "操作"):
-            expect(page.get_by_text(col, exact=True).first).to_be_visible()
+            expect(table.get_by_role("columnheader", name=col, exact=True)).to_be_visible()
+        expect(table.get_by_role("row")).to_have_count(4)  # 表头 + 3 行
         expect(_row(page, "港片").get_by_role("button")).to_have_count(2)  # 拖拽柄 + ···
 
         def all_idle():
@@ -300,6 +302,7 @@ def test_library_manage_full_flow(stack) -> None:  # noqa: PLR0915
         menu = _open_menu(page, "港片")
         page.screenshot(path=str(shots / "02-row-menu.png"))
         menu.get_by_role("menuitem", name="设为默认库").click()
+        expect(page.get_by_text("已将「港片」设为默认库")).to_be_visible()  # toast 回执
         expect(_row(page, "港片").get_by_text("默认", exact=True)).to_be_visible()
         expect(_row(page, "电影").get_by_text("默认", exact=True)).to_have_count(0)
         assert lib_by_name(page, "港片")["is_default"] is True
@@ -336,7 +339,8 @@ def test_library_manage_full_flow(stack) -> None:  # noqa: PLR0915
 
         # ---- 拖拽换位：把「港片」拖到「美剧」的位置（第一位） ----
         grip = _row(page, "港片").get_by_role("button", name=re.compile("拖动调整"))
-        grip.drag_to(_row(page, "美剧"))
+        # 落点按指针在目标行的上下半判定：放到「美剧」上沿 = 排在它之前
+        grip.drag_to(_row(page, "美剧"), target_position={"x": 40, "y": 4})
         _wait_for(
             lambda: [x["name"] for x in libs(page)] == ["港片", "美剧", "电影"] or None,
             timeout=10,
@@ -346,7 +350,7 @@ def test_library_manage_full_flow(stack) -> None:  # noqa: PLR0915
         page.screenshot(path=str(shots / "03-after-reorder.png"), full_page=True)
 
         # ---- 待处理：跳单库页并自动打开抽屉，地址里的 ?pending=1 读完即抹掉 ----
-        _open_menu(page, "电影").get_by_role("menuitem", name=re.compile(r"^待处理 1$")).click()
+        _open_menu(page, "电影").get_by_role("menuitem", name=re.compile(r"^待处理 · 1 个文件$")).click()
         page.wait_for_url(re.compile(rf"/library/{lib_by_name(page, '电影')['id']}"))
         drawer = page.get_by_label("待处理", exact=True)
         expect(drawer).to_be_visible()
@@ -387,6 +391,7 @@ def test_library_manage_full_flow(stack) -> None:  # noqa: PLR0915
         mobile.goto(f"{base}/library/manage")
         expect(mobile.locator("[data-library-row]")).to_have_count(2)
         expect(mobile.get_by_role("button", name=re.compile("拖动调整"))).to_have_count(0)
+        expect(mobile.locator("[data-library-row]").first).to_contain_text("全员")  # 可见范围并进卡片
         mobile.get_by_role("button", name="「港片」的操作").click()
         mobile.get_by_role("menuitem", name="调整顺序").click()
         order = mobile.get_by_role("dialog")

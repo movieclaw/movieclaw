@@ -12,7 +12,7 @@ import {
   XIcon,
 } from "@/components/icons";
 import { LibraryScrapeSettings } from "@/components/library-scrape-settings";
-import { LIBRARY_KIND_META } from "@/components/library-view";
+import { LIBRARY_KIND_META } from "@/components/library-kind-meta";
 import { Modal } from "@/components/modal";
 import { Tooltip } from "@/components/tooltip";
 import {

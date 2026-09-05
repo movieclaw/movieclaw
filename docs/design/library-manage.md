@@ -93,7 +93,7 @@
 
 ```text
 扫描库                  ← scanning 时变「停止扫描 42%」
-待处理 14               ← 跳 /library/{id}?pending=1，数字 = unidentified + missing
+待处理 · 14 个文件      ← 跳 /library/{id}?pending=1；库快照只有文件数，写明单位，与单库页按「组」数的待处理区分
 整理文件名              ← 打开 LibraryOrganizeDialog（busy 时置灰）
 刷新元数据              ← refreshing 时变「停止刷新」；无刮削能力的库不显示
 ──────
@@ -118,7 +118,8 @@
 
 - HTML5 原生拖放（`draggable` + `onDragStart/onDragOver/onDrop`），不引入新依赖；表格行拖拽只需
   同列表内上下换位，原生 API 够用。指针设备 hover 到 ⠿ 才显示抓手光标。
-- 松手后乐观更新本地顺序，调 `reorderLibraries(全部 id)`；失败回滚并显示错误条。这与首页现有
+- 落点按指针在目标行的上半/下半判定「之前/之后」，提示线画在对应边沿；拖影用整行。
+- 松手后乐观更新本地顺序，调 `reorderLibraries(全部 id)`；失败回滚并 toast 报错。这与首页现有
   `moveLibrary` 的提交模型一致，后端接口不变。
 - 键盘可达：⠿ 聚焦后 `Alt+↑ / Alt+↓` 换位，读屏用户不依赖拖拽。
 - 手机端（`max-md`）不做长按拖拽：··· 菜单里多一项「调整顺序」，进入一个只列库名的
@@ -131,8 +132,11 @@
 **创建 / 编辑**：`LibraryFormDialog` 搬到管理页。`?create=1` 进入页面即打开创建弹窗（首页空状态
 的落点）。创建成功后新行滚进视野（`scrollIntoView`），不再需要高亮。
 
-**手机端**：同一行组件按断点切成卡片（见样稿第三屏）：第一行库名 + 类型 + ···，之后是
-根目录、库存、状态。「添加媒体库」在顶栏。
+**手机端**：同一行组件按断点切成卡片（见样稿第三屏）：第一行库名 + 类型 + 可见范围 + ···，
+之后是根目录、库存、状态。「添加媒体库」在顶栏。
+
+**反馈**：动作成功/失败都走全站 toast（设默认、首页展示开关、删除、排序有一句回执），不用页顶
+横条——列表长时用户在底部操作，看不到顶部。表格带 `role="table"/row/columnheader/cell` 语义。
 
 ### 2.3 权限
 
@@ -156,8 +160,9 @@
 
 | 文件 | 改动 |
 |---|---|
-| `apps/web/components/library-view.tsx` | 删 `LibraryCardMenu`、`highlightId`、`moveLibrary`、`routingWarnings` 渲染、弹窗挂载；`LibraryCard` 瘦身；页头换「管理媒体库」；过滤 `viewer_access === false`。从 2320 行减到 671 行 |
-| `apps/web/components/library-form-dialog.tsx`（新拆） | 把 `LibraryFormDialog / CreateLibraryDialog / EditLibraryDialog / RootsEditor / ScopeEditor / AccessScopeEditor / ViewerCombobox / SwitchRow` 等表单组件从 `library-view.tsx` 拆出，首页不再 import 它们。`routingOverlapWarnings`、`LIBRARY_KIND_META` 等仍从原处导出 |
+| `apps/web/components/library-view.tsx` | 删 `LibraryCardMenu`、`highlightId`、`moveLibrary`、`routingWarnings` 渲染、弹窗挂载；`LibraryCard` 瘦身；页头换「管理媒体库」；卡片与页头统计同用过滤掉 `viewer_access === false` 后的列表。从 2320 行减到约 610 行 |
+| `apps/web/components/library-form-dialog.tsx`（新拆） | 把 `LibraryFormDialog / CreateLibraryDialog / EditLibraryDialog / RootsEditor / ScopeEditor / AccessScopeEditor / ViewerCombobox / SwitchRow` 等表单组件从 `library-view.tsx` 拆出，首页不再 import 它们 |
+| `apps/web/components/library-kind-meta.ts`、`apps/web/lib/library-routing-warnings.ts`（新拆） | `LIBRARY_KIND_META` 与 `routingOverlapWarnings` 从首页模块抽出，管理页、表单弹窗、单库页从这里导入，不再为一张表把首页整个模块图拖进依赖 |
 | `apps/web/components/library-detail-view.tsx` | 挂载时读 `?pending=1` 打开待处理抽屉（落在第一个有内容的 tab，与 ⋯ 菜单进抽屉同一规则）；头部不另加管理入口，⋯ 菜单里的编辑/扫描/整理/刷新原样保留 |
 | `docs/design/library.md` | 「页面」一节补一行指向本文 |
 

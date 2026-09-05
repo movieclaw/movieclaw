@@ -13,11 +13,8 @@ import { LockIcon, MoreIcon, XIcon } from "@/components/icons";
 import { PAGE_NAV_BUTTON_CLASS, PageNav } from "@/components/page-nav";
 import { usePageTitle } from "@/lib/use-page-title";
 import { LibraryFormDialog } from "@/components/library-form-dialog";
-import {
-  LIBRARY_KIND_META,
-  effectiveLibraryId,
-  libraryCardAction,
-} from "@/components/library-view";
+import { LIBRARY_KIND_META } from "@/components/library-kind-meta";
+import { effectiveLibraryId, libraryCardAction } from "@/components/library-view";
 import { LibraryOrganizeDialog } from "@/components/library-organize-dialog";
 import { PosterCardVisual, type PosterVisualItem } from "@/components/poster-card";
 import {
