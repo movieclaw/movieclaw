@@ -229,8 +229,10 @@ export function LibraryView() {
 
   return (
     <div ref={scrollRef} className="scroll-thin scroll-safe flex-1 overflow-y-auto pb-10">
-      <div className="px-6 pt-7 max-md:px-4 max-md:pt-4">
-        <div>
+      {/* 页头：标题 + 统计，右侧是页面级操作「管理媒体库」（SaaS 惯例：页面
+          动作放标题行右端；分区标题行只留分区自己的东西） */}
+      <div className="flex items-start justify-between gap-4 px-6 pt-7 max-md:px-4 max-md:pt-4">
+        <div className="min-w-0">
           <h2 className="text-on-image text-[26px] font-bold leading-tight tracking-[-0.02em] text-white max-md:text-[21px]">
             媒体库
           </h2>
@@ -240,6 +242,15 @@ export function LibraryView() {
               : libraryStatsSummary(libraries === null ? null : visibleLibraries)}
           </p>
         </div>
+        {canManageLibraries && (
+          <Link
+            href={"/library/manage" as Route}
+            className="btn-glass mt-1 h-8 shrink-0 gap-1.5 px-3 text-sub font-medium max-md:mt-0"
+          >
+            <GearIcon className="size-4" />
+            管理媒体库
+          </Link>
+        )}
       </div>
 
       {libraries === null && !failed && (
@@ -307,15 +318,6 @@ export function LibraryView() {
             >
               我的媒体库
             </h3>
-            {canManageLibraries && (
-              <Link
-                href={"/library/manage" as Route}
-                className="btn-glass h-7 shrink-0 gap-1 px-2.5 text-caption font-medium"
-              >
-                <GearIcon className="size-3.5" />
-                管理媒体库
-              </Link>
-            )}
           </div>
           <HScroller className="mt-3 gap-5 px-6 pb-1 pt-1 max-md:gap-3.5 max-md:px-4">
             {visibleLibraries.map((library) => (
