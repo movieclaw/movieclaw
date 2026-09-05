@@ -350,7 +350,9 @@ def test_library_manage_full_flow(stack) -> None:  # noqa: PLR0915
         page.screenshot(path=str(shots / "03-after-reorder.png"), full_page=True)
 
         # ---- 待处理：跳单库页并自动打开抽屉，地址里的 ?pending=1 读完即抹掉 ----
-        _open_menu(page, "电影").get_by_role("menuitem", name=re.compile(r"^待处理 · 1 个文件$")).click()
+        _open_menu(page, "电影").get_by_role(
+            "menuitem", name=re.compile(r"^待处理 · 1 个文件$")
+        ).click()
         page.wait_for_url(re.compile(rf"/library/{lib_by_name(page, '电影')['id']}"))
         drawer = page.get_by_label("待处理", exact=True)
         expect(drawer).to_be_visible()
@@ -391,7 +393,8 @@ def test_library_manage_full_flow(stack) -> None:  # noqa: PLR0915
         mobile.goto(f"{base}/library/manage")
         expect(mobile.locator("[data-library-row]")).to_have_count(2)
         expect(mobile.get_by_role("button", name=re.compile("拖动调整"))).to_have_count(0)
-        expect(mobile.locator("[data-library-row]").first).to_contain_text("全员")  # 可见范围并进卡片
+        # 可见范围并进卡片第二行
+        expect(mobile.locator("[data-library-row]").first).to_contain_text("全员")
         mobile.get_by_role("button", name="「港片」的操作").click()
         mobile.get_by_role("menuitem", name="调整顺序").click()
         order = mobile.get_by_role("dialog")
