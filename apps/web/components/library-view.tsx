@@ -4,40 +4,27 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { Route } from "next";
 import Link from "next/link";
-import { createPortal } from "react-dom";
 
 import { ContentEmptyState } from "@/components/content-empty-state";
-import { useConfirm } from "@/components/feedback";
 import { HScroller } from "@/components/h-scroller";
 import {
   FilmIcon,
-  MoreIcon,
+  GearIcon,
   PlusIcon,
   TvIcon,
   VideoIcon,
-  LockIcon,
 } from "@/components/icons";
-import { LibraryFormDialog } from "@/components/library-form-dialog";
-import { LibraryOrganizeDialog } from "@/components/library-organize-dialog";
 import { MediaRow } from "@/components/media-row";
 import type { PosterCardAction } from "@/components/poster-card";
 import { RecentWatchRow } from "@/components/recent-watch-row";
 import {
   type LibraryItem,
   type MediaLibrary,
-  deleteLibrary,
   listLibraries,
   listLibraryItems,
-  reorderLibraries,
   SCAN_PHASE_LABELS,
-  setDefaultLibrary,
-  startLibraryMetadataRefresh,
-  startLibraryScan,
-  stopLibraryMetadataRefresh,
-  stopLibraryScan,
 } from "@/lib/api/libraries";
 import { listRecentWatch, type RecentWatchItem } from "@/lib/api/playback";
-import { refreshLibraryConfirm, scanLibraryConfirm } from "@/lib/library-confirm";
 import type { Subscription } from "@/lib/api/subscriptions";
 import { publicEnv } from "@/lib/env";
 import { formatBytes } from "@/lib/format";
@@ -151,12 +138,13 @@ export function libraryStatsSummary(libraries: MediaLibrary[] | null): string {
 }
 
 /**
- * 媒体库页（/library）：全部库的 Emby 风格卡片横排。
+ * 媒体库页（/library）：全部库的 Emby 风格卡片横排——**只做浏览入口**。
  *
  * 每张卡是一个库：封面用库内作品的海报做「货架」展示（最多 4 张站立海报
  * 带底部倒影，纯前端 CSS 合成、零后端开销），叠库名/类型/统计；
- * 点击进入单库海报墙（/library/[id]）。库的增删改/设默认/扫描都在本页
- * 完成——媒体库是内容的一等入口，不是配置项。
+ * 点击进入单库海报墙（/library/[id]）。库的增删改/设默认/扫描/排序全部在
+ * 管理页（/library/manage）完成，见 docs/design/library-manage.md——卡片上只留
+ * 预告"马上会看到新内容"的信息：扫描进度环与「入库中」徽标。
  *
  * 数据源是 library_file 台账的**真实库存**（L3 起）：入库管线与存量扫描
  * 落账的文件聚合，不再用订阅占位。
@@ -170,15 +158,6 @@ export function LibraryView() {
   );
   const [recentWatch, setRecentWatch] = useState<RecentWatchItem[] | null>(null);
   const [failed, setFailed] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  // 弹窗态：新增（"new"）/ 编辑（库对象）/ 关闭(null)
-  const [editing, setEditing] = useState<MediaLibrary | "new" | null>(null);
-  // 整理文件名对话框的目标库；null = 关闭
-  const [organizeTarget, setOrganizeTarget] = useState<MediaLibrary | null>(null);
-  // 刚创建的库：卡片区是横滚，新库排在末位，库一多就落在可视区外——
-  // 用户会以为"没建上"。这里记下 id，列表刷新后把它滚进视野并短暂高亮
-  const [highlightId, setHighlightId] = useState<number | null>(null);
-  const routingWarnings = useMemo(() => routingOverlapWarnings(libraries ?? []), [libraries]);
 
   // 轮询乱序守卫：扫描期间后端响应时间抖动大，上一轮的慢响应可能晚于
   // 下一轮到达，不作废就会用旧快照覆盖新状态（进度回跳、卡片状态闪烁）
@@ -267,39 +246,16 @@ export function LibraryView() {
     busyAny || recentlyBusy ? 3000 : refreshingAny ? 5000 : importingAny ? 10_000 : 30_000,
   );
 
-  // 调整展示顺序：与相邻库换位后整单提交（后端要求一次给全所有 id）。
-  // 先乐观换位（卡片区与下方「最近添加」分区同吃 libraries 的顺序，立即
-  // 一起换位），失败回滚并提示
-  const moveLibrary = (libraryId: number, offset: -1 | 1) => {
-    if (!libraries) return;
-    const index = libraries.findIndex((l) => l.id === libraryId);
-    const target = index + offset;
-    if (index < 0 || target < 0 || target >= libraries.length) return;
-    const next = [...libraries];
-    [next[index], next[target]] = [next[target], next[index]];
-    const prev = libraries;
-    setLibraries(next);
-    void reorderLibraries(next.map((l) => l.id))
-      .then(reload)
-      .catch((e) => {
-        setLibraries(prev);
-        setError((e as Error).message);
-      });
-  };
-
-  // 新建的库进入列表后滚进视野（依赖 libraries：创建到列表刷新之间隔着
-  // 一次请求，元素这时才存在），高亮 2.5 秒后自行褪去
-  useEffect(() => {
-    if (highlightId === null) return;
-    const el = document.querySelector(`[data-library-card="${highlightId}"]`);
-    el?.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
-    const timer = setTimeout(() => setHighlightId(null), 2500);
-    return () => clearTimeout(timer);
-  }, [highlightId, libraries]);
-
   // 每个非空库一行「最近添加」：服务端已按最近入账倒序给到前 20，复用发现页的
   // 横滚海报行。这里只呈现入库上下文，订阅/补齐操作留在单库页，避免 hover
   // 被“已订阅”等与最近添加无关的状态占据。
+  // 卡片区只放当前身份能浏览的库：超管把自己摘出浏览范围的库（「仅管理」）
+  // 对首页来说就是不存在，它只在管理页出现（带锁标）
+  const visibleLibraries = useMemo(
+    () => (libraries ?? []).filter((library) => library.viewer_access),
+    [libraries],
+  );
+
   const recentRows = useMemo(
     () =>
       (libraries ?? [])
@@ -340,23 +296,6 @@ export function LibraryView() {
           </p>
         </div>
       </div>
-
-      {error && (
-        <div className="mx-6 mt-4 rounded-xl border border-[#ff6b6b]/30 bg-[#ff6b6b]/10 px-4 py-3 text-body text-[#ff6b6b] max-md:mx-4">
-          {error}
-        </div>
-      )}
-
-      {/* 收藏范围重叠提示（只读不阻断）：同类型两库范围重叠且特异性相同时，
-          命中顺序只能靠创建先后——亮出来让用户自己拍板要不要加条件消解 */}
-      {canManageLibraries && routingWarnings.map((w) => (
-        <div
-          key={w}
-          className="mx-6 mt-4 rounded-xl border border-amber-400/25 bg-amber-500/10 px-4 py-3 text-sub leading-relaxed text-amber-200 max-md:mx-4"
-        >
-          {w}
-        </div>
-      ))}
 
       {libraries === null && !failed && (
         <div className="mt-16 flex items-center justify-center gap-2.5 text-ui text-[var(--text-muted)]">
@@ -400,14 +339,13 @@ export function LibraryView() {
           }
           action={
             canManageLibraries ? (
-              <button
-                type="button"
-                onClick={() => setEditing("new")}
+              <Link
+                href={"/library/manage?create=1" as Route}
                 className="btn-accent flex items-center gap-1 rounded-full py-2 pl-3 pr-4 text-ui font-semibold"
               >
                 <PlusIcon className="size-4" />
                 创建第一个媒体库
-              </button>
+              </Link>
             ) : undefined
           }
         />
@@ -415,7 +353,7 @@ export function LibraryView() {
 
       {/* 库卡片横排：库多了不换行堆高，改为一行横滚（与下方「最近添加」
           同一交互），首屏始终保住「最近观看 → 我的媒体库 → 最近添加」的层次。 */}
-      {libraries !== null && libraries.length > 0 && (
+      {libraries !== null && visibleLibraries.length > 0 && (
         <section className="mt-8 max-md:mt-6" aria-labelledby="my-libraries-title">
           <div className="flex items-center justify-between gap-4 px-6 max-md:px-4">
             <h3
@@ -425,37 +363,23 @@ export function LibraryView() {
               我的媒体库
             </h3>
             {canManageLibraries && (
-              <button
-                type="button"
-                onClick={() => setEditing("new")}
+              <Link
+                href={"/library/manage" as Route}
                 className="btn-glass h-7 shrink-0 gap-1 px-2.5 text-caption font-medium"
               >
-                <PlusIcon className="size-3.5" />
-                添加媒体库
-              </button>
+                <GearIcon className="size-3.5" />
+                管理媒体库
+              </Link>
             )}
           </div>
           <HScroller className="mt-3 gap-5 px-6 pb-1 pt-1 max-md:gap-3.5 max-md:px-4">
-            {libraries.map((library, index) => (
+            {visibleLibraries.map((library) => (
               <div
                 key={library.id}
                 data-library-card={library.id}
-                className={`w-[268px] shrink-0 rounded-2xl transition max-md:w-[230px] ${
-                  highlightId === library.id ? "ring-2 ring-[var(--accent-2)] ring-offset-4 ring-offset-transparent" : ""
-                }`}
+                className="w-[268px] shrink-0 rounded-2xl max-md:w-[230px]"
               >
-                <LibraryCard
-                  library={library}
-                  items={itemsByLibrary.get(library.id) ?? []}
-                  canManage={canManageLibraries}
-                  onEdit={() => setEditing(library)}
-                  onOrganize={() => setOrganizeTarget(library)}
-                  onRefresh={reload}
-                  onError={setError}
-                  canMoveLeft={index > 0}
-                  canMoveRight={index < libraries.length - 1}
-                  onMove={(offset) => moveLibrary(library.id, offset)}
-                />
+                <LibraryCard library={library} items={itemsByLibrary.get(library.id) ?? []} />
               </div>
             ))}
           </HScroller>
@@ -483,27 +407,6 @@ export function LibraryView() {
         </div>
       )}
 
-      {canManageLibraries && (
-        <>
-          <LibraryFormDialog
-            state={editing}
-            onClose={() => setEditing(null)}
-            onSaved={(saved) => {
-              const isNew = editing === "new";
-              setEditing(null);
-              // 新库排在末位（按创建顺序），卡片区又是横滚——库多了新卡片直接
-              // 落在可视区外，用户以为"没建上"。滚进视野并短暂高亮
-              if (isNew) setHighlightId(saved.id);
-              reload();
-            }}
-          />
-          <LibraryOrganizeDialog
-            library={organizeTarget}
-            onClose={() => setOrganizeTarget(null)}
-            onChanged={reload}
-          />
-        </>
-      )}
     </div>
   );
 }
@@ -551,36 +454,13 @@ function libraryItemToMediaItem(item: LibraryItem): MediaItem {
 
 /* —— 库卡片：海报货架封面 + 库名/徽标/计数，Emby「我的媒体」磁贴风 —— */
 
-function LibraryCard({
-  library,
-  items,
-  canManage,
-  onEdit,
-  onOrganize,
-  onRefresh,
-  onError,
-  canMoveLeft,
-  canMoveRight,
-  onMove,
-}: {
-  library: MediaLibrary;
-  items: LibraryItem[];
-  canManage: boolean;
-  onEdit: () => void;
-  onOrganize: () => void;
-  onRefresh: () => void;
-  onError: (message: string) => void;
-  canMoveLeft: boolean;
-  canMoveRight: boolean;
-  onMove: (offset: -1 | 1) => void;
-}) {
+function LibraryCard({ library, items }: { library: MediaLibrary; items: LibraryItem[] }) {
   const meta = LIBRARY_KIND_META[library.kind];
   // 封面海报取最近入库的 4 部（items 已是服务端按最近入账排好的那批）
   const posters = items
     .map((s) => s.poster_url)
     .filter((u): u is string => Boolean(u))
     .slice(0, 4);
-  const { stats } = library;
   // 扫描/整理/元数据刷新进行中：封面归进度环，其余状态徽标一律让位。
   // 三种长任务在卡片上同一套呈现——用户不该因为"哪种任务"而看不到进度
   const refreshingMeta = Boolean(library.metadata_refresh?.refreshing);
@@ -597,32 +477,16 @@ function LibraryCard({
         className="block overflow-hidden rounded-2xl ring-1 ring-white/10 outline-none transition duration-300 hover:ring-white/35 focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]"
       >
         <div className="relative aspect-[21/10] bg-[#0a0c12]">
-          {library.viewer_access ? (
-            <LibraryCover libraryId={library.id} posters={posters} Icon={meta.Icon} />
-          ) : (
-            // 「仅管理」：超管不在这个库的浏览范围内——没有封面拼图，只有一把锁。
-            // 点进去是管理视图（设置/扫描/待处理可用，海报墙不渲染）
-            <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 bg-gradient-to-br from-[#1c2230] to-[#10131c]">
-              <LockIcon className="size-9 text-white/[0.28]" />
-              <span className="text-caption font-semibold text-white/45">仅管理 · 内容已隐藏</span>
-            </div>
-          )}
+          <LibraryCover libraryId={library.id} posters={posters} Icon={meta.Icon} />
           {/* 状态徽标叠在封面左下的倒影暗区：那块本就没有信息、又足够暗
               压得住字；标题行因此永远只有库名，长库名不会被徽标挤没。
               扫描/整理时封面归进度环，徽标让位（否则隔着蒙版透出来像脏渲染） */}
-          {!busy && (importing > 0 || stats.unidentified_count > 0) && (
+          {!busy && importing > 0 && (
             <div className="absolute inset-x-2.5 bottom-2 flex flex-wrap items-center gap-1.5">
-              {importing > 0 && (
-                <span className="flex items-center gap-1.5 rounded-full border border-[var(--info)]/35 bg-black/55 px-2 py-0.5 text-micro font-semibold text-[var(--info)] backdrop-blur-md">
-                  <span className="size-1.5 animate-pulse rounded-full bg-[var(--info)]" />
-                  {importing} 个新文件入库中
-                </span>
-              )}
-              {stats.unidentified_count > 0 && (
-                <span className="rounded-full border border-[var(--warn)]/35 bg-black/55 px-2 py-0.5 text-micro font-semibold text-[var(--warn)] backdrop-blur-md">
-                  {stats.unidentified_count} 个待识别
-                </span>
-              )}
+              <span className="flex items-center gap-1.5 rounded-full border border-[var(--info)]/35 bg-black/55 px-2 py-0.5 text-micro font-semibold text-[var(--info)] backdrop-blur-md">
+                <span className="size-1.5 animate-pulse rounded-full bg-[var(--info)]" />
+                {importing} 个新文件入库中
+              </span>
             </div>
           )}
           {busy && (
@@ -669,24 +533,6 @@ function LibraryCard({
           </span>
         )}
       </div>
-      {/* 管理操作：悬停浮现在右上角（Link 外层，避免点菜单触发跳转） */}
-      {canManage && (
-        <LibraryCardMenu
-          library={library}
-          onEdit={onEdit}
-          onScan={() => {
-            void startLibraryScan(library.id)
-              .then(onRefresh)
-              .catch((e) => onError((e as Error).message));
-          }}
-          onOrganize={onOrganize}
-          onRefresh={onRefresh}
-          onError={onError}
-          canMoveLeft={canMoveLeft}
-          canMoveRight={canMoveRight}
-          onMove={onMove}
-        />
-      )}
     </div>
   );
 }
@@ -821,204 +667,5 @@ function LibraryCover({
           实现单次扫过，移出卡片后自动滑回原位待命） */}
       <div className="pointer-events-none absolute -left-[45%] bottom-0 h-[25%] w-[45%] -skew-x-12 bg-gradient-to-r from-transparent via-white/[0.14] to-transparent transition-transform duration-700 ease-out group-hover/lib:translate-x-[350%]" />
     </div>
-  );
-}
-
-/** 卡片右上角的管理菜单（Portal 到 body，同侧栏会话菜单的处理）。 */
-function LibraryCardMenu({
-  library,
-  onEdit,
-  onScan,
-  onOrganize,
-  onRefresh,
-  onError,
-  canMoveLeft,
-  canMoveRight,
-  onMove,
-}: {
-  library: MediaLibrary;
-  onEdit: () => void;
-  onScan: () => void;
-  onOrganize: () => void;
-  onRefresh: () => void;
-  onError: (message: string) => void;
-  canMoveLeft: boolean;
-  canMoveRight: boolean;
-  onMove: (offset: -1 | 1) => void;
-}) {
-  const confirm = useConfirm();
-  const [menuPos, setMenuPos] = useState<{ left: number; top: number } | null>(null);
-  const open = menuPos != null;
-
-  useEffect(() => {
-    if (!open) return;
-    const close = () => setMenuPos(null);
-    document.addEventListener("mousedown", close);
-    // passive：只做关闭动作、不会 preventDefault，别让浏览器为它放弃滚动快路径
-    document.addEventListener("scroll", close, { capture: true, passive: true });
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && close();
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", close);
-      document.removeEventListener("scroll", close, { capture: true });
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
-  const guard = (fn: () => Promise<unknown>) => {
-    setMenuPos(null);
-    void fn()
-      .then(onRefresh)
-      .catch((e) => onError((e as Error).message));
-  };
-
-  return (
-    <>
-      <button
-        type="button"
-        aria-label={`管理「${library.name}」`}
-        onClick={(e) => {
-          if (open) {
-            setMenuPos(null);
-            return;
-          }
-          const rect = e.currentTarget.getBoundingClientRect();
-          setMenuPos({ left: rect.right - 144, top: rect.bottom + 6 });
-        }}
-        className={`absolute right-3 top-3 flex size-8 items-center justify-center rounded-lg border border-white/[0.14] bg-black/45 text-white/90 backdrop-blur-md transition-opacity duration-200 hover:bg-black/65 ${
-          open ? "opacity-100" : "touch-reveal opacity-0 group-hover/lib:opacity-100"
-        }`}
-      >
-        <MoreIcon className="size-4" />
-      </button>
-
-      {open &&
-        createPortal(
-          <div
-            onMouseDown={(e) => e.stopPropagation()}
-            className="menu-surface w-36 overflow-hidden p-1.5"
-            style={{ position: "fixed", left: menuPos.left, top: menuPos.top, zIndex: 50 }}
-          >
-            {/* 扫描/整理中锁定编辑与删除：进行中的任务在按当前根路径读写台账 */}
-            <button
-              type="button"
-              disabled={library.scanning || library.organizing}
-              onClick={() => {
-                setMenuPos(null);
-                onEdit();
-              }}
-              className="glass-row px-2.5 py-2 text-ui font-medium disabled:opacity-40"
-            >
-              编辑库
-            </button>
-            {/* 重识别与扫描共用库级锁，但它不接受中途停止（后端会拒绝）：
-                入口置灰并如实标出阶段，不给一个按了没反应的按钮 */}
-            <button
-              type="button"
-              disabled={
-                library.organizing ||
-                (library.scanning && library.scan_progress?.phase === "reidentifying")
-              }
-              onClick={() => {
-                setMenuPos(null);
-                if (library.scanning) {
-                  guard(() => stopLibraryScan(library.id));
-                  return;
-                }
-                // 重操作先确认（停止不确认：停止本身就是在纠正）
-                void confirm(scanLibraryConfirm(library.name)).then((ok) => {
-                  if (ok) onScan();
-                });
-              }}
-              className="glass-row px-2.5 py-2 text-ui font-medium disabled:opacity-40"
-            >
-              {!library.scanning
-                ? "扫描库"
-                : library.scan_progress?.phase === "reidentifying"
-                  ? "正在重新识别…"
-                  : "停止扫描"}
-            </button>
-            {/* 整库元数据刷新（与库详情页 ⋯ 菜单同款入口）：与扫描不互斥
-                ——刷新只写元数据表，不碰台账与文件 */}
-            <button
-              type="button"
-              onClick={() => {
-                setMenuPos(null);
-                if (library.metadata_refresh) {
-                  guard(() => stopLibraryMetadataRefresh(library.id));
-                  return;
-                }
-                void confirm(refreshLibraryConfirm(library.name)).then((ok) => {
-                  if (ok) guard(() => startLibraryMetadataRefresh(library.id));
-                });
-              }}
-              className="glass-row px-2.5 py-2 text-ui font-medium"
-            >
-              {library.metadata_refresh ? "停止刷新元数据" : "刷新元数据"}
-            </button>
-            <button
-              type="button"
-              disabled={library.scanning || library.organizing}
-              onClick={() => {
-                setMenuPos(null);
-                onOrganize();
-              }}
-              className="glass-row px-2.5 py-2 text-ui font-medium disabled:opacity-40"
-            >
-              {library.organizing ? "正在整理…" : "整理文件名"}
-            </button>
-            <button
-              type="button"
-              disabled={library.is_default}
-              onClick={() => guard(() => setDefaultLibrary(library.id))}
-              className="glass-row px-2.5 py-2 text-ui font-medium disabled:opacity-40"
-            >
-              设为默认库
-            </button>
-            {/* 展示顺序：决定首页卡片与「最近添加」分区的排列（两处同步换位） */}
-            <button
-              type="button"
-              disabled={!canMoveLeft}
-              onClick={() => {
-                setMenuPos(null);
-                onMove(-1);
-              }}
-              className="glass-row px-2.5 py-2 text-ui font-medium disabled:opacity-40"
-            >
-              向前移动
-            </button>
-            <button
-              type="button"
-              disabled={!canMoveRight}
-              onClick={() => {
-                setMenuPos(null);
-                onMove(1);
-              }}
-              className="glass-row px-2.5 py-2 text-ui font-medium disabled:opacity-40"
-            >
-              向后移动
-            </button>
-            <button
-              type="button"
-              disabled={library.scanning || library.organizing}
-              onClick={() => {
-                setMenuPos(null);
-                void confirm({
-                  title: `删除媒体库「${library.name}」？`,
-                  description: "磁盘文件不受影响，挂在它上面的订阅将回落到该类型的默认库。",
-                  confirmLabel: "删除库",
-                  tone: "danger",
-                }).then((ok) => {
-                  if (ok) guard(() => deleteLibrary(library.id));
-                });
-              }}
-              className="glass-row px-2.5 py-2 text-ui font-medium !text-[var(--danger)] hover:!bg-[rgba(255,107,107,0.12)] disabled:opacity-40"
-            >
-              删除库
-            </button>
-          </div>,
-          document.body,
-        )}
-    </>
   );
 }

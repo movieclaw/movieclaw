@@ -182,6 +182,17 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   const [snapshotStale, setSnapshotStale] = useState(initialSnapshot?.stale ?? false);
   // 待处理抽屉：从哪个入口点进来就落在哪个 tab；null = 关闭
   const [issueTab, setIssueTab] = useState<IssueTab | null>(null);
+  // 管理页「待处理」跳过来带 ?pending=1：首轮数据到齐后自动打开抽屉。
+  // 读 location 而不是 useSearchParams（全站惯例），读完即抹掉参数，刷新不再弹
+  const pendingRequested = useRef(false);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("pending") !== "1") return;
+    pendingRequested.current = true;
+    params.delete("pending");
+    const rest = params.toString();
+    window.history.replaceState(null, "", `${window.location.pathname}${rest ? `?${rest}` : ""}`);
+  }, []);
 
   // 轮询乱序守卫：扫描期间后端响应时间抖动大，上一轮的慢响应可能晚于
   // 下一轮到达，不作废就会用旧快照覆盖新状态（进度回跳、胶囊闪烁）
@@ -471,6 +482,14 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
           : ignored.length > 0
             ? "ignored"
             : "unidentified";
+
+  // ?pending=1 的落地：库与四份清单在同一轮 reload 里一起就位（见 reload），
+  // 所以 library 一出现 pendingTab 就是准的
+  useEffect(() => {
+    if (!pendingRequested.current || !library || !canManageLibraries) return;
+    pendingRequested.current = false;
+    setIssueTab(pendingTab);
+  }, [library, pendingTab, canManageLibraries]);
 
   // 整库刷新中"正在处理哪几部、各在什么阶段"：海报墙据此点亮对应的格，
   // 用户不必在进度面板与墙之间对片名
