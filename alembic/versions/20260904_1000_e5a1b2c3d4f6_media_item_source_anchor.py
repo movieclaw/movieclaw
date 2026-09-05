@@ -43,7 +43,9 @@ def upgrade() -> None:
         )
         batch_op.add_column(sa.Column("external_id", sa.String(), nullable=True))
     # 回填：存量条目全部来自 TMDB
-    op.execute("UPDATE media_item SET external_id = CAST(tmdb_id AS TEXT) WHERE external_id IS NULL")
+    op.execute(
+        "UPDATE media_item SET external_id = CAST(tmdb_id AS TEXT) WHERE external_id IS NULL"
+    )
     with op.batch_alter_table("media_item", schema=None) as batch_op:
         batch_op.alter_column("external_id", existing_type=sa.String(), nullable=False)
         batch_op.alter_column("tmdb_id", existing_type=sa.Integer(), nullable=True)
