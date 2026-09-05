@@ -53,6 +53,10 @@ var knownNonGenerated = []string{
 	"playback.file.trickplay",
 	"playback.file.trickplay.sheet",
 	"playback.metric.report",
+	// 清观看记录是 Web 个人数据入口（destructive，见 library-access.md 2.6），不进命令树
+	"playback.history.clear",
+	// 待处理事项 → Agent 诊断工单：Web 活动页专用，命令行用户直接开会话即可
+	"session.handoff.prompt",
 	"playback.client-log",
 	"playback.stats",
 	"playback.device.revoke",
@@ -259,6 +263,8 @@ func TestSessionExposesOnlyMessageSemantics(t *testing.T) {
 		"session.follow",
 		"session.fork",
 		"session.get-transcript",
+		// 为待处理事项生成首条用户消息：仍是 message 语义（产出即 session.start 的输入）
+		"session.handoff.prompt",
 		"session.list",
 		"session.rename",
 		"session.retry",

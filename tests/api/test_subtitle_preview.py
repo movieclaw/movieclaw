@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -30,6 +30,10 @@ def _file(tmp_path, *, embedded: list[dict] | None, external: list[dict] | None)
 def _session_for(file: LibraryFile) -> AsyncMock:
     session = AsyncMock()
     session.get.return_value = file
+    # 路由先过可见范围校验（library-access.md）：它整取全部库的 (id, access_mode,
+    # admin_visible)。给出文件所属库、超管可见，校验放行；`all()` 是同步方法，
+    # 不能让 AsyncMock 把它也变成协程
+    session.execute.return_value = MagicMock(all=lambda: [(file.library_id, "everyone", True)])
     return session
 
 

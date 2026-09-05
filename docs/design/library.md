@@ -4,6 +4,8 @@
 > 结论并修正两处失实，补充第 1.5 节 Emby/Plex 考察与工程加固项。设计与分期结论不变。
 > 关联文档：[subscription.md](subscription.md)（订阅架构）、[subscription-plan.md](subscription-plan.md)
 > （订阅实施计划——其 Phase 5.1 下载完成判定并入本计划 L2）。
+> 页面结构（2026-09）：首页 `/library` 只做浏览入口，库的增删改/扫描/排序在独立的
+> 管理页 `/library/manage`，见 [library-manage.md](library-manage.md)。
 
 ## 0. 定位与第一性
 
