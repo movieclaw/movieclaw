@@ -969,6 +969,7 @@ async def _scan(
         min_remaining: float | None = None
         mtime_backfilled = 0
         rows_refreshed = 0  # 秒过行的外挂字幕/规格刷新计数（批量一次 commit）
+        identity_refreshed = 0  # 秒过行吸收了新出现的 sidecar NFO（同样批量一次 commit）
 
         async def advance(done: int) -> None:
             state.processed = done
@@ -1091,9 +1092,10 @@ async def _scan(
                     and (file.stem + ".nfo") in (dir_files.get(str(file.parent)) or [])
                 ):
                     try:
-                        await _refresh_local_identity(
+                        if await _refresh_local_identity(
                             media_service, library, kind, root_path, file, existing
-                        )
+                        ):
+                            identity_refreshed += 1
                     except Exception as exc:  # noqa: BLE001 -- 单文件失败不断整轮
                         await recover_failed_session()
                         logger.exception("本地条目重读 NFO 失败：%s", file)
@@ -1147,7 +1149,9 @@ async def _scan(
                 leftover.cancel()
         probe_ahead.clear()
 
-        if mtime_backfilled or rows_refreshed:
+        # 台账行的这几类原地改动都靠这一次 commit 落盘：身份来源改 NFO 不能
+        # 指望同轮恰好有规格刷新（没装 ffprobe 的环境里就没有）
+        if mtime_backfilled or rows_refreshed or identity_refreshed:
             await session.commit()
         if rows_refreshed:
             logger.info(
@@ -3089,8 +3093,10 @@ async def _refresh_local_identity(
     root: Path,
     file: Path,
     row: LibraryFile,
-) -> None:
-    """秒过行的 sidecar NFO 重读：目录里新出现了 NFO，把它吸收进已有本地条目。"""
+) -> bool:
+    """秒过行的 sidecar NFO 重读：目录里新出现了 NFO，把它吸收进已有本地条目。
+
+    返回是否改了台账行（身份来源 LOCAL → NFO）；调用方据此决定收尾 commit。"""
     assert library.id is not None
     identity = await asyncio.to_thread(
         build_local_identity,
@@ -3103,11 +3109,13 @@ async def _refresh_local_identity(
         is_disc=False,
     )
     if not identity.from_nfo:
-        return
+        return False
     item = await media_service.ensure_local_item(kind, identity, library_id=library.id)
-    if row.media_item_id == item.id:
-        row.identity_source = IdentitySource.NFO
-        row.updated_at = utcnow()
+    if row.media_item_id != item.id:
+        return False
+    row.identity_source = IdentitySource.NFO
+    row.updated_at = utcnow()
+    return True
 
 
 @dataclass
