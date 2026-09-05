@@ -226,12 +226,19 @@ actor WorkerClient {
             if let jobID = message["job_id"] as? String {
                 // 先从槽位表移除，再请求进程退出。seek 重启会带 force，直接
                 // 杀掉没有交付价值的旧轮次；普通 stop 仍允许 ffmpeg 优雅收尾。
+                let force = message["force"] as? Bool ?? false
                 let job = jobs.removeValue(forKey: jobID)
                 let uploadProxy = uploadProxies.removeValue(forKey: jobID)
                 jobAttempts.removeValue(forKey: jobID)
                 currentProgress.removeValue(forKey: jobID)
                 lastProgressSent.removeValue(forKey: jobID)
-                job?.stop(force: message["force"] as? Bool ?? false)
+                // 这一行必须有：被 NAS 停掉的任务不会走 finish() 上报，日志里
+                // 只剩「上传代理已停止」，看不出是谁停的、为什么停。issue #286
+                // 里 NAS 每 2~3 秒杀一次任务，Worker 日志却完全无法自证清白。
+                AppLogger.shared.info(
+                    "NAS 要求停止任务：job=\(jobID) force=\(force) 在跑=\(job != nil)"
+                )
+                job?.stop(force: force)
                 uploadProxy?.stop()
                 publishCurrent(message: "任务已停止")
             }
@@ -370,8 +377,15 @@ actor WorkerClient {
         uploadFailure: String? = nil
     ) async {
         // 旧任务可能在同一个 ID 的 seek 新任务之后才退出，只有仍登记的那一
-        // 个 execution 才能释放槽位和上报状态。
-        guard jobs[jobID] === execution else { return }
+        // 个 execution 才能释放槽位和上报状态。被 NAS job.stop 摘掉的任务也
+        // 走到这里：留一行日志说明退出结果被有意忽略，排查时才能把
+        // 「NAS 要求停止」和 ffmpeg 的真实退出对上。
+        guard jobs[jobID] === execution else {
+            AppLogger.shared.info(
+                "任务已不在登记表中，忽略其退出结果：job=\(jobID) exit_code=\(result.exitCode)"
+            )
+            return
+        }
         let succeeded = result.succeeded && uploadFailure == nil
         let failure = uploadFailure ?? result.error
         let attemptID = jobAttempts.removeValue(forKey: jobID) ?? jobID

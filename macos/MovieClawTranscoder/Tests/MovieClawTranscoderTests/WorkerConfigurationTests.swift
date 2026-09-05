@@ -207,3 +207,28 @@ final class StubURLProtocol: URLProtocol {
 
     override func stopLoading() {}
 }
+
+final class CapabilityProbeTests: XCTestCase {
+    func testParseEncodersSkipsLegendRows() {
+        let output = """
+        Encoders:
+         V..... = Video
+         A..... = Audio
+         S..... = Subtitle
+         .F.... = Frame-level multithreading
+         ..S... = Slice-level multithreading
+         ...X.. = Codec is experimental
+         ....B. = Supports draw_horiz_band
+         .....D = Supports direct rendering method 1
+         ------
+         V....D libx264              libx264 H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10 (codec h264)
+         V....D h264_videotoolbox    VideoToolbox H.264 Encoder (codec h264)
+         A....D aac                  AAC (Advanced Audio Coding)
+        """
+
+        XCTAssertEqual(
+            CapabilityProbe.parseEncoders(output),
+            ["libx264", "h264_videotoolbox", "aac"]
+        )
+    }
+}

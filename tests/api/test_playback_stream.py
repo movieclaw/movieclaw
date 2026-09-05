@@ -19,6 +19,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from starlette.requests import Request
 
@@ -988,6 +989,60 @@ def test_remote_artifact_upload_discards_partial_body_on_client_disconnect(clien
     assert session.remote_uploads[-1].status == 499
 
 
+def test_remote_artifact_segment_client_disconnect_is_not_booked_as_failure(client, tmp_path):
+    """回归（issue #286）：分片上传被客户端掐断（多半是 NAS 自己 force-stop
+    旧轮次造成的）只留诊断记录，不进补片台账，否则会触发无限补片重启。"""
+    file_id = seed(client, tmp_path, container="mkv")
+    grants = _install_remote_session(client, tmp_path, file_id)
+    body = b"half-a-segment"
+    request = _request_that_disconnects_after_body(body, declared_length=len(body) + 1)
+
+    response = client.portal.call(
+        partial(
+            put_transcode_artifact,
+            session_id=grants["session_id"],
+            name="seg00003.m4s",
+            request=request,
+            token=grants["artifact"],
+        )
+    )
+
+    assert response.status_code == 499
+    session = get_session_manager().get(grants["session_id"])
+    assert session is not None
+    assert session.remote_failed_segments == set()
+    assert session.remote_uploads[-1].name == "seg00003.m4s"
+    assert session.remote_uploads[-1].status == 499
+
+
+def test_remote_artifact_rejected_segment_is_booked_for_retry(client, tmp_path, monkeypatch):
+    """NAS 明确拒收（413）仍然记进补片台账——补片机制是为这类真实失败准备的。"""
+    file_id = seed(client, tmp_path, container="mkv")
+    grants = _install_remote_session(client, tmp_path, file_id)
+    monkeypatch.setattr(
+        routes_transcode_worker,
+        "effective_remote_transcode_config",
+        lambda: SimpleNamespace(max_artifact_bytes=8),
+    )
+    request = _request_with_chunked_body(b"x" * 32)
+
+    with pytest.raises(HTTPException) as excinfo:
+        client.portal.call(
+            partial(
+                put_transcode_artifact,
+                session_id=grants["session_id"],
+                name="seg00004.m4s",
+                request=request,
+                token=grants["artifact"],
+            )
+        )
+
+    assert excinfo.value.status_code == 413
+    session = get_session_manager().get(grants["session_id"])
+    assert session is not None
+    assert session.remote_failed_segments == {4}
+
+
 def test_playback_diagnostics_reports_remote_execution_and_upload_gap(client, tmp_path):
     file_id = seed(client, tmp_path, container="mkv")
     grants = _install_remote_session(client, tmp_path, file_id)
@@ -1009,27 +1064,21 @@ def test_playback_diagnostics_reports_remote_execution_and_upload_gap(client, tm
     session.last_segment_wait_ms = 2300
     session.last_segment_status = 404
     session.error = "source=https://nas.example/stream?token=secret"
-    session.record_remote_upload(
-        "seg00002.m4s",
-        status=499,
-        received_bytes=123,
-        content_length=456,
-        transfer_encoding="chunked",
-    )
-    session.record_remote_upload(
-        "seg00004.m4s",
-        status=499,
-        received_bytes=123,
-        content_length=456,
-        transfer_encoding="chunked",
-    )
-    session.record_remote_upload(
-        "seg00005.m4s",
-        status=499,
-        received_bytes=123,
-        content_length=456,
-        transfer_encoding="chunked",
-    )
+    # 500 = NAS 写盘失败这类真实失败，进补片台账；499（客户端中断）自
+    # issue #286 起只留诊断记录，不进台账。
+    for name, status in (
+        ("seg00002.m4s", 500),
+        ("seg00004.m4s", 500),
+        ("seg00005.m4s", 500),
+        ("seg00005.m4s", 499),
+    ):
+        session.record_remote_upload(
+            name,
+            status=status,
+            received_bytes=123,
+            content_length=456,
+            transfer_encoding="chunked",
+        )
     token = client.portal.call(
         partial(
             issue_stream_token,
