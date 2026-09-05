@@ -1,0 +1,463 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>媒体库 预览与管理分离样稿</title>
+<style>
+  :root{
+    --bg:#0a0b10;--panel:#10121a;--raised:rgba(30,33,43,.74);--inset:rgba(255,255,255,.05);
+    --text:#f3f5f9;--muted:rgba(243,245,249,.62);--faint:rgba(243,245,249,.36);
+    --line:rgba(255,255,255,.08);--line-strong:rgba(255,255,255,.15);
+    --accent:#cdd6e6;--accent-soft:rgba(205,214,230,.14);
+    --ok:#4ade80;--info:#7fb0ff;--warn:#f5c451;--danger:#ff6b6b;
+    --mono:ui-monospace,Menlo,"SF Mono",monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:#000;color:var(--text);font:14px/1.5 -apple-system,"PingFang SC","Noto Sans SC",sans-serif;-webkit-font-smoothing:antialiased}
+  .nav{position:sticky;top:0;z-index:9;display:flex;gap:6px;overflow-x:auto;padding:10px 12px;background:rgba(10,11,16,.92);backdrop-filter:blur(12px);border-bottom:1px solid var(--line)}
+  .nav button{flex:none;border:1px solid var(--line-strong);background:transparent;color:var(--muted);border-radius:999px;padding:6px 12px;font-size:13px;cursor:pointer}
+  .nav button.on{background:var(--accent);color:#0a0b10;border-color:var(--accent)}
+  .screen{display:none;padding:18px 16px 60px}
+  .screen.on{display:block}
+  .note{max-width:1180px;margin:0 auto 14px;font-size:12px;color:var(--faint);border-left:2px solid var(--warn);padding:4px 10px;line-height:1.6}
+  .note b{color:var(--muted);font-weight:600}
+
+  /* —— 桌面机框：左侧栏 + 主区 —— */
+  .frame{max-width:1180px;margin:0 auto;display:grid;grid-template-columns:184px 1fr;background:var(--bg);border:1px solid var(--line-strong);border-radius:18px;overflow:hidden;min-height:720px}
+  .side{border-right:1px solid var(--line);padding:16px 10px;background:linear-gradient(180deg,rgba(255,255,255,.04),rgba(255,255,255,.01))}
+  .brand{font-weight:700;letter-spacing:.02em;padding:4px 10px 16px;color:var(--text)}
+  .side a{display:block;padding:7px 10px;border-radius:9px;color:var(--muted);font-size:13px;text-decoration:none}
+  .side a.on{background:rgba(255,255,255,.1);color:var(--text)}
+  .side .subnav{margin:2px 0 0 10px;border-left:1px solid var(--line);padding-left:6px}
+  .side .subnav a{padding:4px 8px;font-size:12px}
+  .side .subnav a.on{background:none;color:var(--text)}
+  .main{padding:26px 24px 30px;min-width:0}
+
+  h1{font-size:24px;letter-spacing:-.02em;margin:0 0 4px;text-wrap:balance}
+  .sub{color:var(--muted);font-size:13px;margin:0}
+  .head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px}
+  .btn{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line-strong);background:rgba(255,255,255,.04);color:var(--text);border-radius:999px;padding:6px 13px;font-size:13px;white-space:nowrap;cursor:pointer}
+  .btn.primary{background:var(--accent);color:#0a0b10;border-color:var(--accent);font-weight:600}
+  .btn.sm{font-size:12px;padding:3px 10px}
+  .btn.icon{padding:3px 8px;font-weight:700;letter-spacing:1px}
+  .btn.danger{color:var(--danger)}
+  .tag{display:inline-block;font-size:11px;line-height:1.5;padding:0 7px;border-radius:999px;border:1px solid var(--line-strong);color:var(--muted);vertical-align:middle;white-space:nowrap}
+  .tag.warn{color:var(--warn);border-color:rgba(245,196,81,.4)}
+  .tag.ok{color:var(--ok);border-color:rgba(74,222,128,.4)}
+  .tag.info{color:var(--info);border-color:rgba(127,176,255,.4)}
+  .tag.danger{color:var(--danger);border-color:rgba(255,107,107,.4)}
+  .kicker{font-size:12px;color:var(--faint);letter-spacing:.04em}
+
+  /* —— 首页：横滚分区 —— */
+  .sec{margin-top:26px}
+  .sec-h{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-bottom:10px}
+  .sec-h h3{margin:0;font-size:16px;font-weight:600;letter-spacing:-.01em}
+  .sec-h .more{color:var(--muted);font-size:12px}
+  .hs{display:flex;gap:16px;overflow-x:auto;padding:4px 2px 8px;scrollbar-width:thin}
+  .hs::-webkit-scrollbar{height:6px}.hs::-webkit-scrollbar-thumb{background:rgba(255,255,255,.14);border-radius:3px}
+  .libcard{flex:none;width:236px}
+  .cover{position:relative;aspect-ratio:21/10;border-radius:14px;overflow:hidden;border:1px solid var(--line);background:#0a0c12}
+  .glow{position:absolute;inset:-30%;filter:blur(26px);opacity:.55}
+  .shelf{position:absolute;left:0;right:0;bottom:16%;display:flex;justify-content:center;gap:6px;align-items:flex-end}
+  .shelf i{display:block;width:34px;height:52px;border-radius:3px;box-shadow:0 8px 20px rgba(0,0,0,.5)}
+  .shelf i:nth-child(2),.shelf i:nth-child(3){height:58px;width:38px}
+  .floor{position:absolute;left:0;right:0;bottom:0;height:20%;background:linear-gradient(180deg,rgba(0,0,0,.1),rgba(0,0,0,.6))}
+  .lname{display:flex;justify-content:center;align-items:center;gap:8px;margin-top:9px;font-weight:600;font-size:14px}
+  .busy{position:absolute;inset:0;background:rgba(0,0,0,.55);backdrop-filter:blur(2px);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;font-size:12px;color:rgba(255,255,255,.85);font-weight:600}
+  .ring{width:38px;height:38px;border-radius:50%;background:conic-gradient(var(--text) 0 42%,rgba(255,255,255,.18) 42% 100%);display:grid;place-items:center;font-size:10px}
+  .ring span{width:30px;height:30px;border-radius:50%;background:rgba(10,12,18,.9);display:grid;place-items:center}
+  .dot{position:absolute;left:10px;bottom:9px;display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:600;color:var(--info);background:rgba(0,0,0,.55);border:1px solid rgba(127,176,255,.35);border-radius:999px;padding:1px 8px;backdrop-filter:blur(6px)}
+  .dot::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--info)}
+  .poster{flex:none;width:126px}
+  .poster .p{aspect-ratio:2/3;border-radius:10px;border:1px solid var(--line);position:relative;overflow:hidden}
+  .poster .p::after{content:attr(data-ep);position:absolute;right:6px;top:6px;font-size:10px;font-weight:600;background:rgba(0,0,0,.6);border-radius:999px;padding:1px 6px}
+  .poster .p[data-ep=""]::after{display:none}
+  .poster .prog{position:absolute;left:0;right:0;bottom:0;height:3px;background:rgba(255,255,255,.2)}
+  .poster .prog i{display:block;height:100%;background:var(--text)}
+  .poster .t{font-size:12px;margin-top:6px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .poster .m{font-size:11px;color:var(--faint)}
+
+  /* —— 管理页 —— */
+  .back{display:inline-flex;align-items:center;gap:6px;color:var(--muted);font-size:12px;margin-bottom:12px}
+  .tabs{display:flex;gap:20px;border-bottom:1px solid var(--line);margin:18px 0 14px}
+  .tabs span{padding:8px 0;color:var(--faint);font-size:14px}
+  .tabs span.on{color:var(--text);border-bottom:2px solid var(--text)}
+  .tabs em{font-style:normal;color:var(--faint);font-size:12px;margin-left:4px}
+  .tabs span.on em{color:var(--muted)}
+  .toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+  .search{flex:1;min-width:220px;max-width:320px;display:flex;align-items:center;gap:8px;background:var(--inset);border:1px solid var(--line);border-radius:999px;padding:6px 12px;color:var(--faint);font-size:13px}
+  .chips{display:flex;gap:6px}
+  .chip{border:1px solid var(--line-strong);border-radius:999px;padding:3px 10px;font-size:12px;color:var(--muted)}
+  .chip.on{background:rgba(255,255,255,.12);color:var(--text)}
+  .alert{border-radius:12px;padding:10px 12px;font-size:12.5px;margin-bottom:12px;line-height:1.55}
+  .alert.warn{background:rgba(245,196,81,.08);border:1px solid rgba(245,196,81,.3);color:#f2dc9c}
+  .tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:14px;background:rgba(255,255,255,.02)}
+  table{width:100%;border-collapse:collapse;min-width:920px;font-variant-numeric:tabular-nums}
+  th{text-align:left;font-size:11px;letter-spacing:.05em;color:var(--faint);font-weight:600;padding:10px 12px;border-bottom:1px solid var(--line);white-space:nowrap}
+  td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:middle;font-size:13px}
+  tr:last-child td{border-bottom:none}
+  tr.sel td{background:rgba(255,255,255,.04)}
+  tr.drag td{background:var(--accent-soft);outline:1px dashed var(--line-strong)}
+  .grip{color:var(--faint);cursor:grab;font-size:17px;user-select:none}
+  .lib{display:flex;gap:10px;align-items:center;min-width:190px}
+  .thumb{width:46px;height:30px;border-radius:6px;flex:none;border:1px solid var(--line);display:grid;place-items:center;font-size:11px;color:rgba(255,255,255,.75)}
+  .lib .n{font-weight:600;display:flex;align-items:center;gap:6px}
+  .lib .k{font-size:11.5px;color:var(--faint)}
+  .path{font-family:var(--mono);font-size:12px;color:var(--muted);white-space:nowrap}
+  .path small{color:var(--faint);font-family:inherit}
+  .num{white-space:nowrap}.num small{color:var(--faint);margin-left:4px}
+  .st{display:flex;flex-direction:column;gap:3px;min-width:150px}
+  .st .l{display:flex;align-items:center;gap:6px;font-size:12.5px;white-space:nowrap}
+  .st .l::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--faint);flex:none}
+  .st.run .l::before{background:var(--info);box-shadow:0 0 0 3px rgba(127,176,255,.18)}
+  .st.warn .l::before{background:var(--warn)}
+  .st.danger .l::before{background:var(--danger)}
+  .st .bar{height:3px;border-radius:2px;background:rgba(255,255,255,.12);overflow:hidden;width:130px}
+  .st .bar i{display:block;height:100%;background:var(--info)}
+  .st .s{font-size:11px;color:var(--faint)}
+  .acts{display:flex;gap:6px;justify-content:flex-end;white-space:nowrap}
+  .acts .btn{padding:3px 9px;font-size:12px;background:transparent}
+  .menu{position:absolute;right:14px;top:34px;z-index:5;background:#181b25;border:1px solid var(--line-strong);border-radius:12px;padding:6px;width:168px;box-shadow:0 18px 40px rgba(0,0,0,.6)}
+  .menu div{padding:7px 10px;border-radius:8px;font-size:13px;color:var(--text);display:flex;justify-content:space-between}
+  .menu div small{color:var(--faint)}
+  .menu div.hover{background:rgba(255,255,255,.08)}
+  .menu hr{border:none;border-top:1px solid var(--line);margin:4px 0}
+  .menu div.danger{color:var(--danger)}
+  .foot{margin-top:10px;display:flex;justify-content:space-between;color:var(--faint);font-size:12px}
+  .legend{display:flex;gap:14px;flex-wrap:wrap}
+
+  /* —— 手机端管理页 —— */
+  .phone{max-width:400px;margin:0 auto;background:var(--bg);border:1px solid var(--line-strong);border-radius:28px;padding:18px 14px 30px;min-height:760px}
+  .mrow{border:1px solid var(--line);border-radius:14px;padding:11px 12px;margin-bottom:8px;background:var(--raised)}
+  .mrow .top{display:flex;justify-content:space-between;align-items:center;gap:8px}
+  .mrow .top .lib .n{font-size:14px}
+  .mrow .meta{display:flex;gap:10px;flex-wrap:wrap;color:var(--muted);font-size:12px;margin-top:8px}
+  .mrow .meta .st{min-width:0}
+  .mrow .path{margin-top:6px;font-size:11.5px}
+  .sticky-add{position:sticky;bottom:12px;display:flex;justify-content:center;margin-top:14px}
+
+  @media (max-width:900px){.frame{grid-template-columns:1fr}.side{display:none}}
+</style>
+</head>
+<body>
+
+<div class="nav">
+  <button class="on" data-s="s1">① 媒体库页 · 改后</button>
+  <button data-s="s2">② 媒体库管理 · 桌面</button>
+  <button data-s="s3">③ 媒体库管理 · 手机</button>
+</div>
+
+<!-- ① 媒体库页（改后） -->
+<section class="screen on" id="s1">
+  <p class="note"><b>改动</b>：库卡片横滚保留，但只做「入口」。卡片上撤掉悬停 ⋯ 菜单、左移/右移、「待识别 N」徽标和「仅管理」锁卡；顶部「添加媒体库」和收藏范围重叠黄条一并搬到管理页。留下的只有扫描进度环和「入库中」小徽标——它们说明你马上会看到新内容，是预览信息。页头右侧新增「管理媒体库」入口（仅有管理权限的账号可见）。</p>
+  <div class="frame">
+    <aside class="side">
+      <div class="brand">movieclaw</div>
+      <a>＋ 新会话</a>
+      <a class="on">媒体库</a>
+      <a>发现电影</a>
+      <a>发现剧集</a>
+      <a>我的订阅</a>
+      <a>活动</a>
+    </aside>
+    <div class="main">
+      <div class="head">
+        <div>
+          <h1>媒体库</h1>
+          <p class="sub">12 个媒体库 · 4,896 部影片 · 8,214 个文件 · 31.6 TB</p>
+        </div>
+        <span class="btn">⚙ 管理媒体库</span>
+      </div>
+
+      <div class="sec">
+        <div class="sec-h"><h3>最近观看</h3><span class="more">‹ ›</span></div>
+        <div class="hs">
+          <div class="poster"><div class="p" data-ep="" style="background:linear-gradient(160deg,#4b3a6e,#1a1626)"><div class="prog"><i style="width:10%"></i></div></div><div class="t">触不可及</div><div class="m">继续观看 · 10%</div></div>
+          <div class="poster"><div class="p" data-ep="S01E01" style="background:linear-gradient(160deg,#6e5a3a,#261d16)"><div class="prog"><i style="width:100%"></i></div></div><div class="t">老友记</div><div class="m">已看完 · 未看 23 集</div></div>
+          <div class="poster"><div class="p" data-ep="" style="background:linear-gradient(160deg,#2f4a6e,#131a26)"><div class="prog"><i style="width:0"></i></div></div><div class="t">星际穿越</div><div class="m">播放过 · 4 天前</div></div>
+          <div class="poster"><div class="p" data-ep="S01E03" style="background:linear-gradient(160deg,#3a5a3a,#16261a)"><div class="prog"><i style="width:68%"></i></div></div><div class="t">权力的游戏</div><div class="m">S01E03 · 68%</div></div>
+          <div class="poster"><div class="p" data-ep="" style="background:linear-gradient(160deg,#6e3a3a,#261616)"><div class="prog"><i style="width:100%"></i></div></div><div class="t">流浪地球</div><div class="m">已看完 · 1 周前</div></div>
+          <div class="poster"><div class="p" data-ep="S02E07" style="background:linear-gradient(160deg,#3a6e6a,#162624)"><div class="prog"><i style="width:35%"></i></div></div><div class="t">怪奇物语</div><div class="m">S02E07 · 35%</div></div>
+          <div class="poster"><div class="p" data-ep="" style="background:linear-gradient(160deg,#5a5a3a,#242416)"><div class="prog"><i style="width:82%"></i></div></div><div class="t">奥本海默</div><div class="m">继续观看 · 82%</div></div>
+        </div>
+      </div>
+
+      <div class="sec">
+        <div class="sec-h"><h3>我的媒体库</h3><span class="more">‹ ›</span></div>
+        <div class="hs">
+          <div class="libcard"><div class="cover"><div class="glow" style="background:#5b3f8a"></div><div class="shelf"><i style="background:#4b3a6e"></i><i style="background:#6e5a3a"></i><i style="background:#2f4a6e"></i><i style="background:#6e3a3a"></i></div><div class="floor"></div></div><div class="lname">电影 <span class="tag">默认</span></div></div>
+          <div class="libcard"><div class="cover"><div class="glow" style="background:#3a6e5a"></div><div class="shelf"><i style="background:#3a5a3a"></i><i style="background:#3a6e6a"></i><i style="background:#5a5a3a"></i><i style="background:#2f4a6e"></i></div><div class="floor"></div><div class="busy"><div class="ring"><span>42%</span></div>入账中 · 1,234 / 2,940</div></div><div class="lname">剧集 <span class="tag">默认</span></div></div>
+          <div class="libcard"><div class="cover"><div class="glow" style="background:#8a5b3f"></div><div class="shelf"><i style="background:#8a5b3f"></i><i style="background:#6e3a5a"></i><i style="background:#3f6e8a"></i><i style="background:#6e6e3a"></i></div><div class="floor"></div><span class="dot">3 个新文件入库中</span></div><div class="lname">动漫</div></div>
+          <div class="libcard"><div class="cover"><div class="glow" style="background:#3f5b8a"></div><div class="shelf"><i style="background:#2f4a6e"></i><i style="background:#3a5a6e"></i><i style="background:#4a5a3a"></i><i style="background:#3a3a5a"></i></div><div class="floor"></div></div><div class="lname">纪录片</div></div>
+          <div class="libcard"><div class="cover"><div class="glow" style="background:#8a3f5b"></div><div class="shelf"><i style="background:#8a3f5b"></i><i style="background:#8a6e3f"></i><i style="background:#3f8a6e"></i><i style="background:#5b3f8a"></i></div><div class="floor"></div></div><div class="lname">儿童</div></div>
+          <div class="libcard"><div class="cover"><div class="glow" style="background:#3f6e8a"></div><div class="shelf"><i style="background:#1a2a3a"></i><i style="background:#2a3a4a"></i><i style="background:#3a2a1a"></i><i style="background:#1a3a2a"></i></div><div class="floor"></div></div><div class="lname">4K 电影</div></div>
+          <div class="libcard"><div class="cover"><div class="glow" style="background:#6e6e3a"></div><div class="shelf"><i style="background:#5a5a3a"></i><i style="background:#6e5a3a"></i><i style="background:#3a3a3a"></i></div><div class="floor"></div></div><div class="lname">演唱会</div></div>
+        </div>
+      </div>
+
+      <div class="sec">
+        <div class="sec-h"><h3>最近添加的电影</h3><span class="more">查看全部 ›</span></div>
+        <div class="hs">
+          <div class="poster"><div class="p" data-ep="" style="background:linear-gradient(160deg,#4a3a5a,#16121a)"></div><div class="t">沙丘 2</div><div class="m">2024</div></div>
+          <div class="poster"><div class="p" data-ep="" style="background:linear-gradient(160deg,#5a4a3a,#1a1612)"></div><div class="t">周处除三害</div><div class="m">2023</div></div>
+          <div class="poster"><div class="p" data-ep="" style="background:linear-gradient(160deg,#3a4a5a,#12161a)"></div><div class="t">坠落的审判</div><div class="m">2023</div></div>
+          <div class="poster"><div class="p" data-ep="" style="background:linear-gradient(160deg,#5a3a3a,#1a1212)"></div><div class="t">热辣滚烫</div><div class="m">2024</div></div>
+          <div class="poster"><div class="p" data-ep="" style="background:linear-gradient(160deg,#3a5a4a,#121a16)"></div><div class="t">可怜的东西</div><div class="m">2023</div></div>
+          <div class="poster"><div class="p" data-ep="" style="background:linear-gradient(160deg,#4a4a3a,#161612)"></div><div class="t">机器人之梦</div><div class="m">2023</div></div>
+          <div class="poster"><div class="p" data-ep="" style="background:linear-gradient(160deg,#3a3a5a,#12121a)"></div><div class="t">利益区域</div><div class="m">2023</div></div>
+        </div>
+      </div>
+
+      <div class="sec">
+        <div class="sec-h"><h3>最近添加的剧集</h3><span class="more">查看全部 ›</span></div>
+        <div class="hs">
+          <div class="poster"><div class="p" data-ep="S02" style="background:linear-gradient(160deg,#3a4a5a,#12161a)"></div><div class="t">幕府将军</div><div class="m">2024</div></div>
+          <div class="poster"><div class="p" data-ep="S01" style="background:linear-gradient(160deg,#4a3a4a,#161216)"></div><div class="t">三体</div><div class="m">2024</div></div>
+          <div class="poster"><div class="p" data-ep="S03 E08–E10" style="background:linear-gradient(160deg,#5a4a3a,#1a1612)"></div><div class="t">熊家餐馆</div><div class="m">2024</div></div>
+          <div class="poster"><div class="p" data-ep="S01" style="background:linear-gradient(160deg,#3a5a5a,#121a1a)"></div><div class="t">驯鹿宝贝</div><div class="m">2024</div></div>
+          <div class="poster"><div class="p" data-ep="S04 E01" style="background:linear-gradient(160deg,#5a3a4a,#1a1216)"></div><div class="t">继承之战</div><div class="m">2023</div></div>
+          <div class="poster"><div class="p" data-ep="S01" style="background:linear-gradient(160deg,#4a5a3a,#161a12)"></div><div class="t">繁花</div><div class="m">2023</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ② 管理页 · 桌面 -->
+<section class="screen" id="s2">
+  <p class="note"><b>新页面</b> <span class="path" style="color:var(--muted)">/library/manage</span>：一个库一行，纵向列表随库数增长只是变长，不会把新库藏进横滚外。侧栏「媒体库」下多一个二级项，标签栏沿用上次样稿的「媒体库 / 自动入库 / 待处理」。行首 ⠿ 拖拽即改首页展示顺序（替代左移/右移，一次提交整单）；「电影」和「4K 电影」范围重叠的黄条从首页搬到这里；点库名进单库页。所有现有菜单项原样平移到行尾 ⋯ 菜单，图中以「港片」为例展开。</p>
+  <div class="frame">
+    <aside class="side">
+      <div class="brand">movieclaw</div>
+      <a>＋ 新会话</a>
+      <a class="on">媒体库</a>
+      <div class="subnav"><a class="on">管理</a></div>
+      <a>发现电影</a>
+      <a>发现剧集</a>
+      <a>我的订阅</a>
+      <a>活动</a>
+    </aside>
+    <div class="main">
+      <div class="back">‹ 返回媒体库</div>
+      <div class="head">
+        <div>
+          <h1>媒体库管理</h1>
+          <p class="sub">库负责盘点与守护；自动入库负责把下载完成的内容搬进库。</p>
+        </div>
+        <span class="btn primary">＋ 添加媒体库</span>
+      </div>
+      <div class="tabs"><span class="on">媒体库<em>12</em></span><span>自动入库<em>3</em></span><span>待处理<em>21</em></span></div>
+
+      <div class="toolbar">
+        <div class="search">⌕ 按库名或根目录搜索</div>
+        <div class="chips"><span class="chip on">全部 12</span><span class="chip">电影 5</span><span class="chip">剧集 4</span><span class="chip">其他 3</span></div>
+        <span style="flex:1"></span>
+        <span class="chip">2 个在跑任务</span>
+      </div>
+
+      <div class="alert warn">「电影」与「4K 电影」都是电影类型且收藏范围相同，新内容命中哪一个只看创建先后。给「4K 电影」加一条分辨率条件，或把它并回「电影」。</div>
+
+      <div class="tablewrap">
+        <table>
+          <thead><tr>
+            <th style="width:28px"></th><th>库</th><th>根目录</th><th>库存</th><th>状态</th><th>可见范围</th><th style="text-align:right">操作</th>
+          </tr></thead>
+          <tbody>
+            <tr>
+              <td><span class="grip">⠿</span></td>
+              <td><div class="lib"><div class="thumb" style="background:linear-gradient(135deg,#4b3a6e,#6e5a3a)"></div><div><div class="n">电影 <span class="tag">默认</span></div><div class="k">电影 · 在首页展示</div></div></div></td>
+              <td><div class="path">/remote/media/电影</div></td>
+              <td class="num">1,284 部<small>2,104 个文件</small></td>
+              <td><div class="st"><div class="l">空闲</div><div class="s">最近扫描 2 小时前 · 实时监控开</div></div></td>
+              <td>全员</td>
+              <td><div class="acts"><span class="btn">扫描</span><span class="btn">编辑</span><span class="btn icon">···</span></div></td>
+            </tr>
+            <tr>
+              <td><span class="grip">⠿</span></td>
+              <td><div class="lib"><div class="thumb" style="background:linear-gradient(135deg,#3a5a3a,#3a6e6a)"></div><div><div class="n">剧集 <span class="tag">默认</span></div><div class="k">剧集 · 在首页展示</div></div></div></td>
+              <td><div class="path">/remote/media/剧集</div></td>
+              <td class="num">312 部<small>2,940 集</small></td>
+              <td><div class="st run"><div class="l">扫描 · 入账中 42%</div><div class="bar"><i style="width:42%"></i></div><div class="s">1,234 / 2,940 · 开始于 6 分钟前</div></div></td>
+              <td>全员</td>
+              <td><div class="acts"><span class="btn">停止扫描</span><span class="btn" style="opacity:.4">编辑</span><span class="btn icon">···</span></div></td>
+            </tr>
+            <tr>
+              <td><span class="grip">⠿</span></td>
+              <td><div class="lib"><div class="thumb" style="background:linear-gradient(135deg,#8a5b3f,#6e3a5a)"></div><div><div class="n">动漫</div><div class="k">剧集 · 收藏范围：动画 · 日本</div></div></div></td>
+              <td><div class="path">/remote/media/动漫</div></td>
+              <td class="num">96 部<small>1,420 集</small></td>
+              <td><div class="st run"><div class="l">3 个新文件入库中</div><div class="s">等文件写完自动补扫</div></div></td>
+              <td>全员</td>
+              <td><div class="acts"><span class="btn">扫描</span><span class="btn">编辑</span><span class="btn icon">···</span></div></td>
+            </tr>
+            <tr>
+              <td><span class="grip">⠿</span></td>
+              <td><div class="lib"><div class="thumb" style="background:linear-gradient(135deg,#2f4a6e,#3a5a6e)"></div><div><div class="n">纪录片</div><div class="k">电影 · 收藏范围：纪录</div></div></div></td>
+              <td><div class="path">/remote/media/纪录片</div></td>
+              <td class="num">58 部<small>61 个文件</small></td>
+              <td><div class="st warn"><div class="l">4 个待识别</div><div class="s">最近扫描 昨天</div></div></td>
+              <td>全员</td>
+              <td><div class="acts"><span class="btn">扫描</span><span class="btn">编辑</span><span class="btn icon">···</span></div></td>
+            </tr>
+            <tr>
+              <td><span class="grip">⠿</span></td>
+              <td><div class="lib"><div class="thumb" style="background:linear-gradient(135deg,#8a3f5b,#8a6e3f)"></div><div><div class="n">儿童</div><div class="k">剧集 · 收藏范围：儿童</div></div></div></td>
+              <td><div class="path">/remote/media/儿童</div></td>
+              <td class="num">41 部<small>688 集</small></td>
+              <td><div class="st"><div class="l">空闲</div><div class="s">最近扫描 3 天前</div></div></td>
+              <td>指定成员 <span class="tag">2</span></td>
+              <td><div class="acts"><span class="btn">扫描</span><span class="btn">编辑</span><span class="btn icon">···</span></div></td>
+            </tr>
+            <tr>
+              <td><span class="grip">⠿</span></td>
+              <td><div class="lib"><div class="thumb" style="background:linear-gradient(135deg,#1a2a3a,#3a2a1a)"></div><div><div class="n">4K 电影</div><div class="k">电影 · 在首页展示</div></div></div></td>
+              <td><div class="path">/remote/media/4K</div></td>
+              <td class="num">217 部<small>217 个文件</small></td>
+              <td><div class="st run"><div class="l">刷新元数据 12%</div><div class="bar"><i style="width:12%"></i></div><div class="s">正在处理「银翼杀手 2049」· 下载海报</div></div></td>
+              <td>全员</td>
+              <td><div class="acts"><span class="btn">停止刷新</span><span class="btn">编辑</span><span class="btn icon">···</span></div></td>
+            </tr>
+            <tr>
+              <td><span class="grip">⠿</span></td>
+              <td><div class="lib"><div class="thumb" style="background:linear-gradient(135deg,#5a5a3a,#3a3a3a)"></div><div><div class="n">演唱会</div><div class="k">其他 · 不识别不改名</div></div></div></td>
+              <td><div class="path">/remote/media/演唱会</div></td>
+              <td class="num">33 个条目<small>41 个文件</small></td>
+              <td><div class="st"><div class="l">空闲</div><div class="s">最近扫描 1 周前</div></div></td>
+              <td>全员</td>
+              <td><div class="acts"><span class="btn">扫描</span><span class="btn">编辑</span><span class="btn icon">···</span></div></td>
+            </tr>
+            <tr>
+              <td><span class="grip">⠿</span></td>
+              <td><div class="lib"><div class="thumb" style="background:linear-gradient(135deg,#3a4a3a,#2a3a4a)"></div><div><div class="n">家庭录像</div><div class="k">其他 · 从首页排除</div></div></div></td>
+              <td><div class="path">/mnt/nas2/home-video</div></td>
+              <td class="num">120 个条目<small>120 个文件</small></td>
+              <td><div class="st"><div class="l">空闲</div><div class="s">最近扫描 2 周前</div></div></td>
+              <td>指定成员 <span class="tag">1</span></td>
+              <td><div class="acts"><span class="btn">扫描</span><span class="btn">编辑</span><span class="btn icon">···</span></div></td>
+            </tr>
+            <tr>
+              <td><span class="grip">⠿</span></td>
+              <td><div class="lib"><div class="thumb" style="background:#1c2230">🔒</div><div><div class="n">AV</div><div class="k">其他 · 从首页排除</div></div></div></td>
+              <td><div class="path">/remote/media/AV</div></td>
+              <td class="num">452 个条目<small>452 个文件</small></td>
+              <td><div class="st"><div class="l">空闲</div><div class="s">最近扫描 5 天前</div></div></td>
+              <td><span class="tag">仅管理</span></td>
+              <td><div class="acts"><span class="btn">扫描</span><span class="btn">编辑</span><span class="btn icon">···</span></div></td>
+            </tr>
+            <tr class="sel" style="position:relative">
+              <td><span class="grip">⠿</span></td>
+              <td><div class="lib"><div class="thumb" style="background:linear-gradient(135deg,#6e3a3a,#8a6e3f)"></div><div><div class="n">港片</div><div class="k">电影 · 收藏范围：香港</div></div></div></td>
+              <td><div class="path">/remote/media/港片</div></td>
+              <td class="num">640 部<small>655 个文件</small></td>
+              <td><div class="st danger"><div class="l">12 个待识别 · 2 个缺失</div><div class="s">最近扫描 昨天</div></div></td>
+              <td>全员</td>
+              <td><div class="acts"><span class="btn">扫描</span><span class="btn">编辑</span><span class="btn icon" style="background:rgba(255,255,255,.12)">···</span></div>
+                <div class="menu">
+                  <div class="hover">待处理 <small>14</small></div>
+                  <div>整理文件名</div>
+                  <div>刷新元数据</div>
+                  <hr>
+                  <div>设为默认库</div>
+                  <div>从首页排除</div>
+                  <hr>
+                  <div class="danger">删除库 <small>不动磁盘</small></div>
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td><span class="grip">⠿</span></td>
+              <td><div class="lib"><div class="thumb" style="background:linear-gradient(135deg,#3a3a5a,#4a3a4a)"></div><div><div class="n">美剧</div><div class="k">剧集 · 收藏范围：美国</div></div></div></td>
+              <td><div class="path">/remote/media/美剧<br><small>+1 · /mnt/nas2/美剧</small></div></td>
+              <td class="num">88 部<small>3,102 集</small></td>
+              <td><div class="st"><div class="l">空闲</div><div class="s">最近扫描 4 小时前</div></div></td>
+              <td>全员</td>
+              <td><div class="acts"><span class="btn">扫描</span><span class="btn">编辑</span><span class="btn icon">···</span></div></td>
+            </tr>
+            <tr>
+              <td><span class="grip">⠿</span></td>
+              <td><div class="lib"><div class="thumb" style="background:linear-gradient(135deg,#3f6e8a,#1a2a3a)"></div><div><div class="n">网盘 strm</div><div class="k">电影 · 实时监控关</div></div></div></td>
+              <td><div class="path">/strm/电影</div></td>
+              <td class="num">2,011 部<small>2,011 个 strm</small></td>
+              <td><div class="st"><div class="l">空闲</div><div class="s">最近扫描 昨天 · 定时对账 每天 04:00</div></div></td>
+              <td>全员</td>
+              <td><div class="acts"><span class="btn">扫描</span><span class="btn">编辑</span><span class="btn icon">···</span></div></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="foot">
+        <span>拖动 ⠿ 调整首页「我的媒体库」的展示顺序，松手即保存</span>
+        <div class="legend"><span>● 空闲</span><span style="color:var(--info)">● 任务进行中</span><span style="color:var(--warn)">● 有待处理</span><span style="color:var(--danger)">● 有缺失</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ③ 管理页 · 手机 -->
+<section class="screen" id="s3">
+  <p class="note"><b>手机端</b>：表格压成一库一卡，同样纵向滚动。状态、库存、可见范围收进卡片第二行；⋯ 菜单与桌面一致；排序在手机上走「⋯ → 调整顺序」进入专门的拖拽列表，不在这一屏做长按拖拽。</p>
+  <div class="phone">
+    <div class="back">‹ 媒体库</div>
+    <h1 style="font-size:21px">媒体库管理</h1>
+    <div class="tabs" style="margin-top:12px"><span class="on">媒体库<em>12</em></span><span>自动入库<em>3</em></span><span>待处理<em>21</em></span></div>
+    <div class="search" style="max-width:none;margin-bottom:10px">⌕ 按库名或根目录搜索</div>
+    <div class="chips" style="margin-bottom:12px;overflow-x:auto"><span class="chip on">全部</span><span class="chip">电影</span><span class="chip">剧集</span><span class="chip">其他</span><span class="chip">在跑任务</span></div>
+
+    <div class="mrow">
+      <div class="top"><div class="lib"><div class="thumb" style="background:linear-gradient(135deg,#4b3a6e,#6e5a3a)"></div><div><div class="n">电影 <span class="tag">默认</span></div><div class="k">电影 · 全员</div></div></div><span class="btn icon">···</span></div>
+      <div class="meta"><div class="st"><div class="l">空闲 · 2 小时前扫过</div></div><span>1,284 部</span></div>
+      <div class="path">/remote/media/电影</div>
+    </div>
+    <div class="mrow">
+      <div class="top"><div class="lib"><div class="thumb" style="background:linear-gradient(135deg,#3a5a3a,#3a6e6a)"></div><div><div class="n">剧集 <span class="tag">默认</span></div><div class="k">剧集 · 全员</div></div></div><span class="btn icon">···</span></div>
+      <div class="meta"><div class="st run" style="width:100%"><div class="l">扫描 · 入账中 42%</div><div class="bar" style="width:100%"><i style="width:42%"></i></div></div></div>
+      <div class="path">/remote/media/剧集</div>
+    </div>
+    <div class="mrow">
+      <div class="top"><div class="lib"><div class="thumb" style="background:linear-gradient(135deg,#8a5b3f,#6e3a5a)"></div><div><div class="n">动漫</div><div class="k">剧集 · 动画 · 日本 · 全员</div></div></div><span class="btn icon">···</span></div>
+      <div class="meta"><div class="st run"><div class="l">3 个新文件入库中</div></div><span>96 部</span></div>
+      <div class="path">/remote/media/动漫</div>
+    </div>
+    <div class="mrow">
+      <div class="top"><div class="lib"><div class="thumb" style="background:linear-gradient(135deg,#2f4a6e,#3a5a6e)"></div><div><div class="n">纪录片</div><div class="k">电影 · 纪录 · 全员</div></div></div><span class="btn icon">···</span></div>
+      <div class="meta"><div class="st warn"><div class="l">4 个待识别</div></div><span>58 部</span></div>
+      <div class="path">/remote/media/纪录片</div>
+    </div>
+    <div class="mrow">
+      <div class="top"><div class="lib"><div class="thumb" style="background:linear-gradient(135deg,#8a3f5b,#8a6e3f)"></div><div><div class="n">儿童</div><div class="k">剧集 · 儿童 · 指定成员 2</div></div></div><span class="btn icon">···</span></div>
+      <div class="meta"><div class="st"><div class="l">空闲 · 3 天前扫过</div></div><span>41 部</span></div>
+      <div class="path">/remote/media/儿童</div>
+    </div>
+    <div class="mrow">
+      <div class="top"><div class="lib"><div class="thumb" style="background:linear-gradient(135deg,#1a2a3a,#3a2a1a)"></div><div><div class="n">4K 电影</div><div class="k">电影 · 全员</div></div></div><span class="btn icon">···</span></div>
+      <div class="meta"><div class="st run" style="width:100%"><div class="l">刷新元数据 12%</div><div class="bar" style="width:100%"><i style="width:12%"></i></div></div></div>
+      <div class="path">/remote/media/4K</div>
+    </div>
+    <div class="mrow">
+      <div class="top"><div class="lib"><div class="thumb" style="background:#1c2230">🔒</div><div><div class="n">AV</div><div class="k">其他 · 仅管理 · 从首页排除</div></div></div><span class="btn icon">···</span></div>
+      <div class="meta"><div class="st"><div class="l">空闲 · 5 天前扫过</div></div><span>452 个条目</span></div>
+      <div class="path">/remote/media/AV</div>
+    </div>
+    <div class="mrow">
+      <div class="top"><div class="lib"><div class="thumb" style="background:linear-gradient(135deg,#6e3a3a,#8a6e3f)"></div><div><div class="n">港片</div><div class="k">电影 · 香港 · 全员</div></div></div><span class="btn icon">···</span></div>
+      <div class="meta"><div class="st danger"><div class="l">12 个待识别 · 2 个缺失</div></div><span>640 部</span></div>
+      <div class="path">/remote/media/港片</div>
+    </div>
+    <div class="sticky-add"><span class="btn primary">＋ 添加媒体库</span></div>
+  </div>
+</section>
+
+<script>
+  document.querySelectorAll('.nav button').forEach(function(b){
+    b.addEventListener('click',function(){
+      document.querySelectorAll('.nav button').forEach(function(x){x.classList.remove('on')});
+      document.querySelectorAll('.screen').forEach(function(x){x.classList.remove('on')});
+      b.classList.add('on');
+      document.getElementById(b.dataset.s).classList.add('on');
+      window.scrollTo(0,0);
+    });
+  });
+</script>
+</body>
+</html>
