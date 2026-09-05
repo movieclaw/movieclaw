@@ -1,6 +1,6 @@
 # 媒体库：预览与管理分离
 
-> 状态：方案已确认，待实施
+> 状态：已实现（2026-09-05）；浏览器端到端见 `tests/e2e/test_library_manage_browser.py`
 >
 > 样稿：`docs/design/mockups/library-manage-demo.html`（三屏：首页改后 / 管理页桌面 / 管理页手机）
 >
@@ -122,17 +122,17 @@
   `moveLibrary` 的提交模型一致，后端接口不变。
 - 键盘可达：⠿ 聚焦后 `Alt+↑ / Alt+↓` 换位，读屏用户不依赖拖拽。
 - 手机端（`max-md`）不做长按拖拽：··· 菜单里多一项「调整顺序」，进入一个只列库名的
-  上下箭头列表（复用 `SwitchRow` 的行样式），确认后一次提交。
+  上下箭头列表弹窗，确认后一次提交。
 
 **轮询**：复用首页那套 `useVisiblePolling` 与节奏（busy 3s → 刷新 5s → 入库中 10s → 空闲 30s）
-和 `reloadSeq` 乱序守卫。管理页不需要拉每个库的条目列表（缩略图取 `listLibraryItems(limit 4)`
-只在库快照变化时拉，与首页现有的 `lastLibsSnapshot` 判定相同）。
+和 `reloadSeq` 乱序守卫。管理页只打 `listLibraries` 一个接口：缩略图直接用服务端拼贴图
+`/libraries/{id}/cover`（与首页卡片封面同源），不逐库拉条目。
 
 **创建 / 编辑**：`LibraryFormDialog` 搬到管理页。`?create=1` 进入页面即打开创建弹窗（首页空状态
 的落点）。创建成功后新行滚进视野（`scrollIntoView`），不再需要高亮。
 
-**手机端**：表格换成 `mrow` 卡片列表（见样稿第三屏）。列信息压成：第一行库名 + 类型 + 可见范围 +
-···，第二行状态 + 库存，第三行根目录。「添加媒体库」sticky 在底部。
+**手机端**：同一行组件按断点切成卡片（见样稿第三屏）：第一行库名 + 类型 + ···，之后是
+根目录、库存、状态。「添加媒体库」在顶栏。
 
 ### 2.3 权限
 
@@ -156,9 +156,9 @@
 
 | 文件 | 改动 |
 |---|---|
-| `apps/web/components/library-view.tsx` | 删 `LibraryCardMenu`、`highlightId`、`moveLibrary`、`routingWarnings` 渲染、弹窗挂载；`LibraryCard` 瘦身；页头换「管理媒体库」；过滤 `viewer_access === false`。预计从 2320 行减到约 1500 行 |
+| `apps/web/components/library-view.tsx` | 删 `LibraryCardMenu`、`highlightId`、`moveLibrary`、`routingWarnings` 渲染、弹窗挂载；`LibraryCard` 瘦身；页头换「管理媒体库」；过滤 `viewer_access === false`。从 2320 行减到 671 行 |
 | `apps/web/components/library-form-dialog.tsx`（新拆） | 把 `LibraryFormDialog / CreateLibraryDialog / EditLibraryDialog / RootsEditor / ScopeEditor / AccessScopeEditor / ViewerCombobox / SwitchRow` 等表单组件从 `library-view.tsx` 拆出，首页不再 import 它们。`routingOverlapWarnings`、`LIBRARY_KIND_META` 等仍从原处导出 |
-| `apps/web/components/library-detail-view.tsx` | 挂载时读 `?pending=1` 打开待处理抽屉（`setIssueTab("missing" 或 "unidentified"`，按哪个有数）；顶部加一个「管理」小入口跳 `/library/manage` |
+| `apps/web/components/library-detail-view.tsx` | 挂载时读 `?pending=1` 打开待处理抽屉（落在第一个有内容的 tab，与 ⋯ 菜单进抽屉同一规则）；头部不另加管理入口，⋯ 菜单里的编辑/扫描/整理/刷新原样保留 |
 | `docs/design/library.md` | 「页面」一节补一行指向本文 |
 
 ### 不动
