@@ -313,28 +313,27 @@ export function LibraryManageView() {
 
   return (
     <div className="scroll-thin scroll-safe flex-1 overflow-y-auto pb-10">
-      <PageNav
-        title="媒体库管理"
-        fallback={{ label: "媒体库", href: "/library" as Route }}
-        actions={
-          <button
-            type="button"
-            onClick={() => setEditing("new")}
-            className="btn-accent flex h-9 items-center gap-1 rounded-full py-0 pl-3 pr-4 text-ui font-semibold max-md:h-11"
-          >
-            <PlusIcon className="size-4" />
-            添加媒体库
-          </button>
-        }
-      />
+      <PageNav title="媒体库管理" fallback={{ label: "媒体库", href: "/library" as Route }} />
 
-      <div className="px-6 pt-3 max-md:px-4">
-        <h2 className="text-on-image text-[26px] font-bold leading-tight tracking-[-0.02em] text-white max-md:text-[21px]">
-          媒体库管理
-        </h2>
-        <p className="text-on-image mt-1.5 text-ui text-[var(--text-muted)] max-md:text-sub">
-          库负责盘点与守护；这里改的是库本身，浏览内容请回媒体库首页。
-        </p>
+      {/* 页头：标题 + 说明，右侧是页面级动作「创建媒体库」（与首页「管理媒体库」
+          同一位置约定：页面动作放标题行右端，顶栏只留返回与吸顶标题） */}
+      <div className="flex items-start justify-between gap-4 px-6 pt-3 max-md:px-4">
+        <div className="min-w-0">
+          <h2 className="text-on-image text-[26px] font-bold leading-tight tracking-[-0.02em] text-white max-md:text-[21px]">
+            媒体库管理
+          </h2>
+          <p className="text-on-image mt-1.5 text-ui text-[var(--text-muted)] max-md:text-sub">
+            库负责盘点与守护；这里改的是库本身，浏览内容请回媒体库首页。
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setEditing("new")}
+          className="btn-accent mt-1 flex h-9 shrink-0 items-center gap-1 rounded-full py-0 pl-3 pr-4 text-ui font-semibold max-md:mt-0"
+        >
+          <PlusIcon className="size-4" />
+          创建媒体库
+        </button>
       </div>
 
       {failed && libraries !== null && (

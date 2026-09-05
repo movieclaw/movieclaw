@@ -250,10 +250,10 @@ def test_library_manage_full_flow(stack) -> None:  # noqa: PLR0915
         assert movie["stats"]["unidentified_count"] == 1
         expect(_row(page, "电影").get_by_text("1 个待识别")).to_be_visible()
 
-        # ---- 再建两个库：管理页头部的「添加媒体库」按钮 ----
-        page.get_by_role("button", name="添加媒体库").click()
+        # ---- 再建两个库：管理页页头右侧的「创建媒体库」按钮 ----
+        page.get_by_role("button", name="创建媒体库").click()
         _fill_create_dialog(page, expect, "剧集", "剧集", roots["tv"])
-        page.get_by_role("button", name="添加媒体库").click()
+        page.get_by_role("button", name="创建媒体库").click()
         _fill_create_dialog(page, expect, "电影", "港片", roots["hk-movies"])
         hk = lib_by_name(page, "港片")
         assert hk["is_default"] is False, "同类型第二个库不自动成为默认"
