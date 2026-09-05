@@ -131,10 +131,11 @@ class DownloaderRepository:
         *,
         last_error: str | None = None,
         version: str | None = None,
+        path_health: list[dict[str, str]] | None = None,
     ) -> bool:
         """回写连接测试结论。返回是否命中记录。
 
-        - 成功（ACTIVE）：清空 last_error，记录版本号与检查时间。
+        - 成功（ACTIVE）：清空 last_error，记录版本号、路径体检结果与检查时间。
         - 失败（FAILED）：记录 last_error 与检查时间。
         - 中间态（VERIFYING）：仅改状态。
         """
@@ -146,6 +147,7 @@ class DownloaderRepository:
         if status == ConfigStatus.ACTIVE:
             row.last_error = None
             row.version = version
+            row.path_health = path_health
             row.last_checked_at = now
         elif status == ConfigStatus.FAILED:
             if last_error is not None:

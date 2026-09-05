@@ -74,6 +74,17 @@ class DownloaderClient(TimestampMixin, table=True):
     # 最近一次连接成功时获取的下载器版本号（如 v5.0.2），供管理页展示
     version: str | None = Field(default=None, description="下载器版本号")
 
+    # 路径映射的可达性体检结果（movieclaw_api.services.downloader_paths.PathProbe
+    # 的扁平列表）。「API 通、路径瞎」是真实发生过的组合：容器 bind mount 静默
+    # 失效成空目录、配置看着完全正常、下载器绿灯常亮，而所有下载都无法入库。
+    # 连接测试通过后顺带体检每条映射的 local 侧，让"可用"不再只等于"API 通"。
+    # NULL = 尚未体检（存量行或未配置映射），不参与任何判定
+    path_health: list[dict[str, str]] | None = Field(
+        default=None,
+        sa_column=Column(JSON, nullable=True),
+        description="路径映射体检结果（每条映射的可达状态与说明）",
+    )
+
     # 刷流带宽哨兵学到的安全下载包络（字节/秒）：AIMD 闭环的持久化状态。
     # 上行受压时乘性回退、健康时加性恢复，收敛到"该环境下不伤上传的刷流
     # 下载总速度"。NULL = 尚未观测到拥塞（不限速）——对称大带宽环境会

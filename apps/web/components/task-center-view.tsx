@@ -13,6 +13,7 @@ import {
   TaskStatusDot,
 } from "@/components/job-center";
 import { useToast } from "@/components/feedback";
+import { HandoffButton } from "@/components/handoff-button";
 import {
   ChevronRightIcon,
   CheckIcon,
@@ -1754,16 +1755,21 @@ function DownloadTaskCard({
           （landing_error）时同理：修路径映射是首选，实在找不回文件就删掉重下。
           任务缺失（missing）时下载器里已经没有它，巡检会自动退回工单，不需要
           用户动手，因此不再给任何按钮 */}
-      {(task.state === "error" || task.landing_error != null) && task.downloader_id != null && (
+      {/* 需要处理的任务一律给「交给 AI 分析」作为第二出口：确定性动作（删除/换种）
+          仍是第一按钮；用户不知道该选哪个时，AI 拿到的是带现场自检的完整工单 */}
+      {downloadTaskNeedsAttention(task, ingestJob) && (
         <footer className="mt-3 flex flex-wrap items-center justify-end gap-2 border-t border-white/[0.06] pt-3">
-          <button
-            type="button"
-            onClick={() => onDelete(task)}
-            disabled={deleting}
-            className="rounded-lg border border-[var(--danger)]/25 bg-[var(--danger)]/[0.07] px-3 py-1.5 text-caption font-medium text-[var(--danger)] transition hover:bg-[var(--danger)]/[0.14] disabled:cursor-wait disabled:opacity-55"
-          >
-            {deleting ? "删除中…" : "删除下载任务"}
-          </button>
+          <HandoffButton kind="download" refId={task.info_hash} className="text-caption" />
+          {(task.state === "error" || task.landing_error != null) && task.downloader_id != null && (
+            <button
+              type="button"
+              onClick={() => onDelete(task)}
+              disabled={deleting}
+              className="rounded-lg border border-[var(--danger)]/25 bg-[var(--danger)]/[0.07] px-3 py-1.5 text-caption font-medium text-[var(--danger)] transition hover:bg-[var(--danger)]/[0.14] disabled:cursor-wait disabled:opacity-55"
+            >
+              {deleting ? "删除中…" : "删除下载任务"}
+            </button>
+          )}
         </footer>
       )}
     </article>

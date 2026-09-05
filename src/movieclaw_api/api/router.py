@@ -26,6 +26,7 @@ from movieclaw_api.api.deps import (
 )
 from movieclaw_api.api.routes.agent import router as session_router
 from movieclaw_api.api.routes.agent import skills_router as agent_skills_router
+from movieclaw_api.api.routes.agent_handoff import router as agent_handoff_router
 from movieclaw_api.api.routes.app_config import router as app_config_router
 from movieclaw_api.api.routes.app_update import router as app_update_router
 from movieclaw_api.api.routes.appearance import router as appearance_router
@@ -112,6 +113,8 @@ _ADMIN_ROUTERS = [
     # 系统通知是运维告警（站点认证过期等），dismiss 是全局操作——成员一点
     # 全家消失、管理员错过故障；且告警详情本就是管理员视角的信息
     system_notices_router,
+    # 诊断工单内含下载器地址、路径与订阅明细，与告警同为管理员视角
+    agent_handoff_router,
     downloaders_router,
     llm_router,
     session_router,

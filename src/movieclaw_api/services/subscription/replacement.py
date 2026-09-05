@@ -18,6 +18,7 @@ from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
+from movieclaw_api.services.download_health import landing_brake, record_stalled
 from movieclaw_api.services.subscription.matching import (
     covered_units,
     load_season_titles,
@@ -280,6 +281,35 @@ async def run_replacement_search(attempt_id: int, *, force: bool = False) -> boo
                 return False
             if await _has_trial(session, attempt.id):
                 return False
+            if not force:
+                # 刹车：投递目录处在目录级落点故障中（movieclaw 看不见它）时，
+                # 自动换源只会把新源投进同一个黑洞——试用源同样"无法入库"、
+                # 30 分钟后失败、再换下一个，45 小时能白烧 90GB（真实教训）。
+                # 红灯必须是控制信号而不只是状态展示：修好前不自动换，一小时后
+                # 再看；用户手动「立即换种」（force）不受限，那是他的明确决定
+                group = await landing_brake(session, attempt.downloader_id, attempt.save_path)
+                if group is not None:
+                    attempt.next_search_at = now + timedelta(hours=1)
+                    attempt.updated_at = now
+                    session.add(attempt)
+                    await session.commit()
+                    await record_stalled(
+                        session,
+                        subscription_id=attempt.subscription_id,
+                        info_hash=attempt.info_hash,
+                        units=attempt.units,
+                        reason="landing_brake",
+                        message=(
+                            f"自动换源已暂停：{group.title}。修好后自动恢复；"
+                            "确认要换也可在活动页手动立即换种"
+                        ),
+                    )
+                    logger.info(
+                        "自动换源刹车：attempt=%s 的投递目录 %s 处于目录级落点故障，一小时后再看",
+                        attempt.id,
+                        attempt.save_path,
+                    )
+                    return False
             subscription = await session.get(Subscription, attempt.subscription_id)
             # paused 才拦：洗版源换源发生在已收齐（completed）的订阅上
             if subscription is None or subscription.status == SubscriptionStatus.PAUSED:

@@ -15,6 +15,7 @@ import { useLlmCapability } from "@/components/llm-gate";
 import { Modal } from "@/components/modal";
 import { OverflowText } from "@/components/overflow-text";
 import { useAgentConversations } from "@/lib/agent-conversations";
+import { fetchHandoffPrompt } from "@/lib/api/handoff";
 import {
   cancelJob,
   dismissJob,
@@ -455,17 +456,10 @@ export function JobCard({ job, onNavigate }: { job: JobView; onNavigate: () => v
         return;
       }
       if (type === "handoff_agent") {
-        const sessionId = await startAgent(
-          [
-            "请帮我诊断并处理 MovieClaw 后台任务问题。",
-            `任务 ID：${job.id}`,
-            `任务类型：${job.job_type}`,
-            `当前状态：${job.status}`,
-            `错误代码：${job.error?.code ?? "未知"}`,
-            `错误说明：${job.error?.message ?? job.progress.message}`,
-            "请先查询任务详情和事件时间线；能安全处理就直接处理，否则给出明确步骤。",
-          ].join("\n"),
-        );
+        // 工单由后端组装：带任务事件时间线、关联条目/种子的现场自检、与界面
+        // 一致的动作清单。前端只拼标题的话，Agent 看到的和用户一样少
+        const { prompt } = await fetchHandoffPrompt("job", job.id);
+        const sessionId = await startAgent(prompt);
         onNavigate();
         router.push(`/sessions/${sessionId}` as Route);
         return;

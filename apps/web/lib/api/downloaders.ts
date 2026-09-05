@@ -49,8 +49,21 @@ export interface ConfiguredDownloader {
   version: string | null;
   last_error: string | null;
   last_checked_at: string | null;
+  /** 路径映射体检结果（连接测试通过后顺带体检）；null = 尚未体检或未配置映射 */
+  path_health: PathProbe[] | null;
+  /** 路径映射是否全部可达。API 通但路径瞎是真实会发生的组合，绿灯要两者都过 */
+  paths_healthy: boolean;
   created_at: string;
   updated_at: string;
+}
+
+/** 一条路径映射在 movieclaw 侧的体检结论（见 services.downloader_paths） */
+export interface PathProbe {
+  local: string;
+  remote: string;
+  state: "ok" | "empty" | "not_dir" | "missing" | "unmapped";
+  /** 结论 + 该做什么，直接可展示 */
+  detail: string;
 }
 
 export type DownloadTaskState =

@@ -23,6 +23,12 @@ from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
+from movieclaw_api.services.download_health import (
+    record_stalled,
+    resolve_landing_group,
+    upsert_landing_group,
+)
+from movieclaw_api.services.downloader_paths import diagnose_landing
 from movieclaw_api.services.subscription import units_text
 from movieclaw_api.services.system_notice import resolve_notices, upsert_notice
 from movieclaw_db.engine import get_database
@@ -517,16 +523,16 @@ async def _observe_attempt(
             if previous_state != "error":
                 # 只在首次进入错误态时记一条时间线，避免每 5 分钟刷屏
                 reason = getattr(status, "error_message", None) or "下载器报告该任务出错"
-                await SubscriptionRepository(session).add_activity(
-                    SubscriptionActivity(
-                        subscription_id=attempt.subscription_id,
-                        type=ActivityType.DOWNLOAD_STALLED,
-                        message=(
-                            f"{reason}。这不是死种，已暂停换源判定；"
-                            "请在下载器中重新校验或删除该任务，处理后自动恢复观察"
-                        ),
-                        payload={"info_hash": attempt.info_hash, "reason": "downloader_error"},
-                    )
+                await record_stalled(
+                    session,
+                    subscription_id=attempt.subscription_id,
+                    info_hash=attempt.info_hash,
+                    units=attempt.units,
+                    reason="downloader_error",
+                    message=(
+                        f"{reason}。这不是死种，已暂停换源判定；"
+                        "请在下载器中重新校验或删除该任务，处理后自动恢复观察"
+                    ),
                 )
             return False
 
@@ -666,7 +672,6 @@ async def _handle_stalled_attempt(
 ) -> bool:
     """应用 15 分钟提醒和 30 分钟自动换源边界。"""
     elapsed = now - attempt.last_progress_at
-    repo = SubscriptionRepository(session)
     if (
         elapsed >= timedelta(minutes=STALLED_WARNING_MINUTES)
         and attempt.stalled_notified_at is None
@@ -675,16 +680,18 @@ async def _handle_stalled_attempt(
         attempt.updated_at = now
         session.add(attempt)
         await session.commit()
-        await repo.add_activity(
-            SubscriptionActivity(
-                subscription_id=attempt.subscription_id,
-                type=ActivityType.DOWNLOAD_STALLED,
-                message=(
-                    "下载已连续 15 分钟没有进度，可在活动页立即换种；"
-                    "30 分钟时将自动寻找同品质替代源"
-                ),
-                payload={"info_hash": attempt.info_hash, "reason": "no_byte_progress"},
-            )
+        # 同订阅同单元的停滞在 24 小时内折叠成一条计数：每换一次源就新建一个
+        # attempt、各记一条，一晚上几十条会把真正的 import_failed 淹没
+        await record_stalled(
+            session,
+            subscription_id=attempt.subscription_id,
+            info_hash=attempt.info_hash,
+            units=attempt.units,
+            reason="no_byte_progress",
+            message=(
+                "下载已连续 15 分钟没有进度，可在活动页立即换种；"
+                "30 分钟时将自动寻找同品质替代源"
+            ),
         )
     if elapsed < timedelta(minutes=AUTO_REPLACEMENT_MINUTES):
         return False
@@ -1037,21 +1044,36 @@ async def _verify_landing(
     root = status.files[0].path.split("/")[0] if status.files else status.name
     if not local_dir or not root:
         return False
+    # 目录级分组以下载器 id 为键；落库的 DownloaderClient 必有 id，
+    # 测试替身可能没有——没有就只做单种子告警，不做分组
+    downloader_id = getattr(downloader, "id", None)
     if (Path(local_dir) / root).exists():
         # 落点可见，等监听导入/库扫描接管即可；此前若报过"看不到"（映射
-        # 刚修好/卷刚挂上），问题已消失，红灯就地熄灭
+        # 刚修好/卷刚挂上），问题已消失，红灯就地熄灭——目录级红灯一并熄灭：
+        # 这个目录里的内容看得见了，"目录不可见"的前提已不成立
         await resolve_notices(
             session,
             dedupe_key=f"subscription.landing:{rows[0].subscription_id}:{info_hash}",
         )
+        if downloader_id is not None:
+            await resolve_landing_group(session, downloader_id, local_dir)
         return True
 
-    message = (
-        f"「{status.name}」已下载完成，但 movieclaw 在 {local_dir} 看不到它——"
-        f"下载器「{downloader.name}」可能无法访问该路径（路径映射缺失或卷未挂载），"
-        "或文件已在下载器中被移动。请检查「设置 → 下载器」的路径映射，"
-        "或改用监听导入规则后把文件移入监听目录"
-    )
+    # 不给"可能是映射缺失、或卷未挂载、或文件被移动"的选择题——系统自己
+    # 能判定是哪一种，就把确切结论和该做的事直接说出来
+    probe = diagnose_landing(local_dir, downloader.path_mappings)
+    if probe.healthy:
+        # 目录本身可见、只是这个种子的内容不在：种子级问题，不牵连目录
+        message = (
+            f"「{status.name}」已下载完成，movieclaw 能看到目录 {local_dir}，"
+            f"但里面没有「{root}」——文件可能已在下载器「{downloader.name}」中被移动或改名。"
+            "请在下载器里核对该任务的保存位置，或删除任务后重新下载"
+        )
+    else:
+        message = (
+            f"「{status.name}」已下载完成，但 movieclaw 在 {local_dir} 看不到它。"
+            f"{probe.detail}"
+        )
     # 全局红灯（幂等 upsert，问题在就常亮）：时间线活动埋在单个订阅详情页里，
     # 这类"不修就永远卡着"的错误必须在任何页面都能被感受到
     await upsert_notice(
@@ -1061,8 +1083,21 @@ async def _verify_landing(
         source="subscription",
         title=f"「{status.name}」下载完成但无法入库",
         message=message,
-        payload={"subscription_id": rows[0].subscription_id, "info_hash": info_hash},
+        payload={
+            "subscription_id": rows[0].subscription_id,
+            "info_hash": info_hash,
+            # 以下三项供目录级分组与代价累计使用（download_health）
+            "downloader_id": downloader_id,
+            "local_dir": local_dir,
+            "size_bytes": getattr(status, "size_bytes", None) or 0,
+            "state": probe.state.value,
+        },
     )
+    if not probe.healthy and downloader_id is not None:
+        # 目录级根因（空目录/不存在/未覆盖）：一个种子就足以确认是目录的问题，
+        # 升格为目录级红灯并把同目录的单种子告警收编——告警的粒度必须等于
+        # 修复动作的粒度，用户要修的是一个目录，就只该看到一条
+        await upsert_landing_group(session, downloader, local_dir, probe)
 
     # 去重：同一（订阅, 种子）只告警一次，避免每 5 分钟刷屏
     existing = (

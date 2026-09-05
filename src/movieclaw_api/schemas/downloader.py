@@ -30,6 +30,15 @@ class PathMapping(BaseModel):
         return value
 
 
+class PathProbeView(BaseModel):
+    """一条路径映射的可达性体检结论（services.downloader_paths.PathProbe）。"""
+
+    local: str = Field(description="movieclaw 视角路径")
+    remote: str = Field(description="下载器视角路径")
+    state: str = Field(description="ok / empty / not_dir / missing / unmapped")
+    detail: str = Field(description="结论与该做什么（中文）")
+
+
 class DownloaderView(BaseModel):
     """下载器配置的对外视图（**脱敏**：绝不回传密码）。"""
 
@@ -51,6 +60,12 @@ class DownloaderView(BaseModel):
     version: str | None = Field(default=None, description="最近一次连接成功获取的版本号")
     last_error: str | None = Field(default=None, description="最近测试失败原因（清晰中文）")
     last_checked_at: datetime | None = Field(default=None, description="最近一次测试时间")
+    path_health: list[PathProbeView] | None = Field(
+        default=None, description="路径映射体检结果；null = 尚未体检或未配置映射"
+    )
+    paths_healthy: bool = Field(
+        description="路径映射是否全部可达（未体检/未配置映射视为健康，不误报）"
+    )
     created_at: datetime
     updated_at: datetime
 
@@ -81,6 +96,8 @@ class DownloaderView(BaseModel):
             version=row.version,
             last_error=row.last_error,
             last_checked_at=row.last_checked_at,
+            path_health=row.path_health,  # type: ignore[arg-type]  # 落库形态即 PathProbe.as_dict
+            paths_healthy=all(p.get("state") == "ok" for p in (row.path_health or [])),
             created_at=row.created_at,
             updated_at=row.updated_at,
         )

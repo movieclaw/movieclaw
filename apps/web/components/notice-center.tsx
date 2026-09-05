@@ -19,6 +19,7 @@ import { useSession } from "@/lib/session";
 import type { Route } from "next";
 import { useRouter } from "next/navigation";
 
+import { HandoffButton } from "@/components/handoff-button";
 import { BellIcon, ChevronRightIcon } from "@/components/icons";
 import { Modal } from "@/components/modal";
 import {
@@ -68,7 +69,15 @@ function NoticeCenterInner({ collapsed }: { collapsed: boolean }) {
     };
   }, [refresh]);
 
-  if (notices.length === 0) return null;
+  // 目录级根因告警（payload.group_key）存在时，被它收编的单种子告警
+  // （payload.grouped_under 指向那个 key）折叠不显示：用户看到的是一条
+  // "这个目录 movieclaw 看不到"，而不是 16 条"《某剧》无法入库"。
+  // 子告警在服务端仍活跃——任务卡片靠它们挂"无法入库"红标，两边不冲突
+  const groupKeys = new Set(notices.map((n) => n.payload.group_key).filter(Boolean));
+  const visible = notices.filter(
+    (n) => !n.payload.grouped_under || !groupKeys.has(n.payload.grouped_under),
+  );
+  if (visible.length === 0) return null;
 
   const goto = (notice: SystemNotice) => {
     setOpen(false);
@@ -86,7 +95,7 @@ function NoticeCenterInner({ collapsed }: { collapsed: boolean }) {
       <button
         type="button"
         onClick={() => setOpen(true)}
-        title={collapsed ? `待处理（${notices.length}）` : undefined}
+        title={collapsed ? `待处理（${visible.length}）` : undefined}
         className={`glass-row nav-item py-2 !text-[var(--danger)] max-md:py-2.5 ${
           collapsed ? "justify-center px-0" : "px-3"
         }`}
@@ -101,7 +110,7 @@ function NoticeCenterInner({ collapsed }: { collapsed: boolean }) {
           <>
             <span className="flex-1 text-ui font-medium">待处理</span>
             <span className="rounded-full bg-[var(--danger-solid)] px-1.5 py-0.5 text-[11px] font-semibold leading-none text-white">
-              {notices.length}
+              {visible.length}
             </span>
           </>
         )}
@@ -122,11 +131,11 @@ function NoticeCenterInner({ collapsed }: { collapsed: boolean }) {
           <BellIcon className="size-5 shrink-0 text-[var(--danger)]" />
           <h2 className="flex-1 text-title-sm font-semibold text-[var(--text)]">待处理事项</h2>
           <span className="shrink-0 rounded-full bg-white/[0.07] px-2 py-0.5 text-caption font-semibold text-[var(--text-muted)]">
-            {notices.length}
+            {visible.length}
           </span>
         </div>
         <div className="scroll-thin flex-1 space-y-2.5 overflow-y-auto px-5 pb-4">
-          {notices.map((notice) => (
+          {visible.map((notice) => (
             // 卡片刻意不用 .glass-row：那个类是给"单行可点行"用的，它在
             // globals.css 里是无 @layer 的普通规则，align-items:center 与
             // gap:11px 会压过 Tailwind 工具类——套在竖排卡片上会把每一行都
@@ -166,6 +175,12 @@ function NoticeCenterInner({ collapsed }: { collapsed: boolean }) {
                 >
                   忽略
                 </button>
+                {/* 第二出口：不知道怎么办就交给 AI——后端带着现场自检组装工单 */}
+                <HandoffButton
+                  kind="notice"
+                  refId={String(notice.id)}
+                  onBeforeNavigate={() => setOpen(false)}
+                />
                 <button
                   type="button"
                   onClick={() => goto(notice)}

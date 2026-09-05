@@ -2222,3 +2222,52 @@ def test_delete_then_404(client) -> None:
     assert c.delete(f"/api/v1/downloaders/{did}").status_code == 200
     assert c.get(f"/api/v1/downloaders/{did}").status_code == 404
     assert c.delete(f"/api/v1/downloaders/{did}").status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# 路径可达性体检：「API 通、路径瞎」必须被看见
+# ---------------------------------------------------------------------------
+
+
+def test_verify_probes_path_mappings_and_raises_notice(client, tmp_path) -> None:
+    """连接通过但映射的本地侧是空目录：状态仍 active（API 确实通），但
+    paths_healthy=False、体检结论落库、全局红灯点亮；目录恢复后重测即熄灯。"""
+    c, _ = client
+    download_dir = tmp_path / "download"
+    download_dir.mkdir()  # 存在但空 —— 挂载失效的典型形态
+    payload = {
+        **_PAYLOAD,
+        "path_mappings": [{"local": str(download_dir), "remote": "/downloads"}],
+    }
+    downloader_id = c.post("/api/v1/downloaders", json=payload).json()["data"]["id"]
+
+    detail = c.get(f"/api/v1/downloaders/{downloader_id}").json()["data"]
+    assert detail["status"] == "active"
+    assert detail["paths_healthy"] is False
+    assert detail["path_health"][0]["state"] == "empty"
+    assert "重启" in detail["path_health"][0]["detail"]
+
+    notices = c.get("/api/v1/system/notices").json()["data"]
+    path_notices = [n for n in notices if n["payload"].get("downloader_id") == downloader_id]
+    assert len(path_notices) == 1
+    assert "看不到" in path_notices[0]["title"]
+    assert path_notices[0]["payload"]["paths"][0]["state"] == "empty"
+
+    # 目录恢复（挂载修好）→ 手动重测 → 绿灯为真、红灯熄灭
+    (download_dir / "剧集").mkdir()
+    assert c.post(f"/api/v1/downloaders/{downloader_id}/verify").status_code == 200
+    detail = c.get(f"/api/v1/downloaders/{downloader_id}").json()["data"]
+    assert detail["paths_healthy"] is True
+    assert detail["path_health"][0]["state"] == "ok"
+    notices = c.get("/api/v1/system/notices").json()["data"]
+    assert not [n for n in notices if n["payload"].get("downloader_id") == downloader_id]
+
+
+def test_verify_without_mappings_reports_healthy(client) -> None:
+    """未配置映射（直装部署）没有路径可验，不能因此误报。"""
+    c, _ = client
+    downloader_id = c.post("/api/v1/downloaders", json=_PAYLOAD).json()["data"]["id"]
+    detail = c.get(f"/api/v1/downloaders/{downloader_id}").json()["data"]
+    assert detail["status"] == "active"
+    assert detail["paths_healthy"] is True
+    assert detail["path_health"] is None

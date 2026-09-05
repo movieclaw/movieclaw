@@ -33,6 +33,7 @@ import {
   setDownloaderLimits,
   updateDownloader,
 } from "@/lib/api/downloaders";
+import type { PathProbe } from "@/lib/api/downloaders";
 import { formatRelativeTime } from "@/lib/time";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
 import { LiquidGlassButton } from "@/vendor/liquid-glass";
@@ -295,8 +296,17 @@ function DownloaderRow({
   useEffect(() => {
     if (autoOpenLimits) setLimitsOpen(true);
   }, [autoOpenLimits]);
-  const meta = STATUS_META[downloader.status];
+  // 「API 通、路径瞎」是独立于连接状态的故障面：连接测试通过但映射的本地侧
+  // 不可达时，绿灯是假的——下载全部无法入库。胶囊直接改口，不让用户从绿灯
+  // 推断"下载器没问题"，再去别处找原因
+  const pathsBroken = downloader.status === "active" && !downloader.paths_healthy;
+  const meta = pathsBroken
+    ? { label: "路径异常", color: "var(--danger)" }
+    : STATUS_META[downloader.status];
   const failed = downloader.status === "failed" && !!downloader.last_error;
+  const worstPath = pathsBroken
+    ? downloader.path_health?.find((p) => p.state !== "ok")
+    : undefined;
 
   async function guard(fn: () => Promise<void>) {
     setBusy(true);
@@ -379,10 +389,13 @@ function DownloaderRow({
           </div>
         </div>
 
-        {/* P1：连接失败时把原因亮出来——那一刻没有比它更重要的信息 */}
-        {failed && (
-          <p className="order-3 basis-full truncate text-caption text-[var(--danger)] sm:order-none sm:max-w-[40%] sm:basis-auto">
-            {downloader.last_error}
+        {/* P1：连接失败或路径异常时把原因亮出来——那一刻没有比它更重要的信息 */}
+        {(failed || worstPath) && (
+          <p
+            className="order-3 basis-full truncate text-caption text-[var(--danger)] sm:order-none sm:max-w-[40%] sm:basis-auto"
+            title={failed ? downloader.last_error ?? undefined : worstPath?.detail}
+          >
+            {failed ? downloader.last_error : worstPath?.detail}
           </p>
         )}
 
@@ -473,7 +486,10 @@ function DownloaderRow({
                 </StatGrid>
               </DetailSection>
               <DetailSection label="映射">
-                <PathMappingTable mappings={downloader.path_mappings ?? []} />
+                <PathMappingTable
+                  mappings={downloader.path_mappings ?? []}
+                  health={downloader.path_health ?? []}
+                />
               </DetailSection>
             </>
           )}
@@ -553,7 +569,26 @@ function DetailStat({
  * 同一个位置，中间箭头表达"翻译"方向。跨容器部署时两边对同一块盘叫不同名字，
  * 这张表就是核对"投递时路径会被翻成什么"的地方——比一行分号串好读得多。
  */
-function PathMappingTable({ mappings }: { mappings: PathMapping[] }) {
+/** 路径体检状态 → 展示。ok 不额外标注（正常不该抢注意力），异常各给一个短词 */
+const PATH_STATE_LABEL: Record<Exclude<PathProbe["state"], "ok">, string> = {
+  empty: "目录为空",
+  not_dir: "不是目录",
+  missing: "不存在",
+  unmapped: "未覆盖",
+};
+
+/**
+ * 映射表。每行右侧挂本地侧的体检结论：配置"看起来对"而运行时挂载失效时，
+ * 这里是唯一能让用户不靠命令行就看出"目录是空的"的地方——那正是文案
+ * "请检查路径映射"把人引过来之后，必须能给出答案的位置。
+ */
+function PathMappingTable({
+  mappings,
+  health,
+}: {
+  mappings: PathMapping[];
+  health: PathProbe[];
+}) {
   if (mappings.length === 0) {
     return (
       <p className="pt-1.5 text-sub text-[var(--text-muted)]">
@@ -561,6 +596,7 @@ function PathMappingTable({ mappings }: { mappings: PathMapping[] }) {
       </p>
     );
   }
+  const probeOf = (local: string) => health.find((p) => p.local === local);
   return (
     <div className="overflow-hidden rounded-lg border border-white/[0.07]">
       <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-x-3 bg-white/[0.03] px-3 py-1.5 text-micro font-medium tracking-wide text-[var(--text-faint)]">
@@ -569,22 +605,40 @@ function PathMappingTable({ mappings }: { mappings: PathMapping[] }) {
         <span>下载器视角</span>
       </div>
       <ul className="divide-y divide-white/[0.05]">
-        {mappings.map((m, i) => (
-          <li
-            key={`${m.local}→${m.remote}:${i}`}
-            className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-x-3 px-3 py-2"
-          >
-            <code className="truncate font-mono text-sub text-[var(--text)]" title={m.local}>
-              {m.local}
-            </code>
-            <span aria-hidden="true" className="w-4 text-center text-[var(--text-faint)]">
-              →
-            </span>
-            <code className="truncate font-mono text-sub text-[var(--text)]" title={m.remote}>
-              {m.remote}
-            </code>
-          </li>
-        ))}
+        {mappings.map((m, i) => {
+          const probe = probeOf(m.local);
+          const broken = probe && probe.state !== "ok";
+          return (
+            <li key={`${m.local}→${m.remote}:${i}`} className="px-3 py-2">
+              <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-x-3">
+                <span className="flex min-w-0 items-center gap-2">
+                  <code
+                    className={`truncate font-mono text-sub ${broken ? "text-[var(--danger)]" : "text-[var(--text)]"}`}
+                    title={m.local}
+                  >
+                    {m.local}
+                  </code>
+                  {broken && (
+                    <span className="shrink-0 rounded-full bg-[color-mix(in_oklab,var(--danger)_14%,transparent)] px-1.5 py-px text-micro font-medium text-[var(--danger)]">
+                      {PATH_STATE_LABEL[probe.state as keyof typeof PATH_STATE_LABEL]}
+                    </span>
+                  )}
+                </span>
+                <span aria-hidden="true" className="w-4 text-center text-[var(--text-faint)]">
+                  →
+                </span>
+                <code className="truncate font-mono text-sub text-[var(--text)]" title={m.remote}>
+                  {m.remote}
+                </code>
+              </div>
+              {broken && (
+                <p className="mt-1 text-caption leading-snug text-[var(--text-muted)]">
+                  {probe.detail}
+                </p>
+              )}
+            </li>
+          );
+        })}
       </ul>
     </div>
   );

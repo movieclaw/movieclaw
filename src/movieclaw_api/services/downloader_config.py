@@ -13,6 +13,8 @@ import logging
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from movieclaw_api.exceptions import ConflictException, NotFoundException
+from movieclaw_api.services.download_health import adopt_landing_groups
+from movieclaw_api.services.downloader_paths import PathProbe, probe_mappings, summarize
 from movieclaw_db.engine import get_database
 from movieclaw_db.models.downloader_client import ClientType, DownloaderClient
 from movieclaw_db.models.site_credential import ConfigStatus
@@ -201,11 +203,63 @@ async def verify_downloader(downloader_id: int) -> None:
             await downloader.close()
 
         logger.info("下载器连接测试通过：%s（%s %s）", row.name, info.type.value, info.version)
-        await repo.update_status(downloader_id, ConfigStatus.ACTIVE, version=info.version)
+        # API 通了，再体检路径映射：两者是独立的故障面，绿灯必须两者都过才算数。
+        # 只在连接成功后做——连接都不通时路径结论没有意义，也别让两种失败互相遮盖
+        probes = probe_mappings(row.path_mappings)
+        await repo.update_status(
+            downloader_id,
+            ConfigStatus.ACTIVE,
+            version=info.version,
+            path_health=[p.as_dict() for p in probes] or None,
+        )
         # 连接恢复，红灯熄灭
         from movieclaw_api.services.system_notice import resolve_notices
 
         await resolve_notices(session, dedupe_key=f"downloader:{downloader_id}")
+        await _notify_paths(session, downloader_id, row.name, probes)
+
+
+async def _notify_paths(
+    session: AsyncSession, downloader_id: int, name: str, probes: list[PathProbe]
+) -> None:
+    """路径体检结论 → 全局红灯（或熄灯）。
+
+    与连接失败的红灯分开 key：连接失败是"下载器不可达"，路径异常是"下载器
+    好好的、movieclaw 看不到它放的文件"。两者的修法完全不同，混成一盏灯会把
+    用户引去重启下载器，而真正要重启的是 movieclaw 自己。
+    """
+    from movieclaw_api.services.system_notice import resolve_notices, upsert_notice
+    from movieclaw_db.models import NoticeSeverity
+
+    key = f"downloader.paths:{downloader_id}"
+    worst = summarize(probes)
+    if worst is None:
+        await resolve_notices(session, dedupe_key=key)
+        return
+    state, detail = worst
+    broken = [p for p in probes if not p.healthy]
+    logger.warning(
+        "下载器「%s」路径体检发现 %d 条映射异常（最严重：%s）", name, len(broken), state.value
+    )
+    await upsert_notice(
+        session,
+        dedupe_key=key,
+        severity=NoticeSeverity.ERROR,
+        source="downloader",
+        title=f"下载器「{name}」的下载目录 movieclaw 看不到",
+        message=(
+            f"连接正常，但 {len(broken)} 条路径映射的本地侧不可用，"
+            f"下载完成的内容将无法入库。{detail}"
+        ),
+        payload={
+            "group_key": key,
+            "downloader_id": downloader_id,
+            "paths": [p.as_dict() for p in broken],
+        },
+    )
+    # 同一挂载故障可能已经被完成种子的落点核验撞上、亮了目录级红灯：收编到
+    # 这盏更上游的灯下面，告警中心只显示一条
+    await adopt_landing_groups(session, downloader_id)
 
 
 async def _notify_failed(session: AsyncSession, downloader_id: int, name: str, error: str) -> None:
