@@ -210,6 +210,9 @@ class DownloadTaskView(BaseModel):
     ]
     # state == error 时下载器给出的可读原因（文件缺失 / 出错详情）；其余为 None
     error_message: str | None = None
+    # 下载完成但 movieclaw 看不到文件（落点核验失败）的完整说明；与「待处理
+    # 事项」里的红灯同一条信息。正常为 None
+    landing_error: str | None = None
     # boost = 自动刷分享率抢下的种子：无媒体身份与入库流转，前端折叠为独立分组
     source: Literal["subscription", "manual", "boost", "external"]
     # -- 种子来源与规格（movieclaw 投递的任务才有）：站点身份、详情页入口

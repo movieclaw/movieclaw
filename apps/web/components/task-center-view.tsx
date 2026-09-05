@@ -1750,9 +1750,11 @@ function DownloadTaskCard({
       {/* 出错的是下载器里的**这条任务**，不是下载器本身：以前这里只给"检查下载器"
           入口，用户点过去看到连接正常、更不知道该做什么。能在 MovieClaw 里完成的
           动作只有删掉它——订阅任务删掉后巡检会把工单退回重新寻找资源；错误原因和
-          去下载器重新校验的提示由上方备注说明。任务缺失（missing）时下载器里已经
-          没有它，巡检会自动退回工单，不需要用户动手，因此不再给任何按钮 */}
-      {task.state === "error" && task.downloader_id != null && (
+          去下载器重新校验的提示由上方备注说明。下载完成但 movieclaw 看不到文件
+          （landing_error）时同理：修路径映射是首选，实在找不回文件就删掉重下。
+          任务缺失（missing）时下载器里已经没有它，巡检会自动退回工单，不需要
+          用户动手，因此不再给任何按钮 */}
+      {(task.state === "error" || task.landing_error != null) && task.downloader_id != null && (
         <footer className="mt-3 flex flex-wrap items-center justify-end gap-2 border-t border-white/[0.06] pt-3">
           <button
             type="button"
@@ -2026,6 +2028,12 @@ function DownloadLifecycle({
       detail: "等待重新处理",
       tone: "waiting",
     };
+  } else if (task.landing_error) {
+    ingestStep = {
+      label: "无法入库",
+      detail: "movieclaw 看不到已下载的文件",
+      tone: "attention",
+    };
   } else if (upgrade) {
     ingestStep = {
       label: downloaded ? "等待替换" : "等待下载完成",
@@ -2177,6 +2185,11 @@ function downloadTaskNote(
     ["queued", "running", "retry_wait", "cancelling", "waiting"].includes(ingestJob.status)
   ) {
     return ingestJob.progress.message;
+  }
+  if (task.landing_error) {
+    // 与侧栏「待处理事项」同一句话：下载完成但 movieclaw 看不到文件。放在最前，
+    // 否则下面会按 completed 说"等待自动入库"，和红灯自相矛盾
+    return task.landing_error;
   }
   if (task.state === "error") {
     // 下载器给出的具体原因（文件缺失 / errorString）必须放在最前——它回答的是

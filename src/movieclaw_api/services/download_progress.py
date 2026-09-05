@@ -729,7 +729,12 @@ async def _requeue_missing_attempt(
 
     返回是否已退回。
     """
-    if attempt.purpose != "download" or attempt.completed_at is not None:
+    if attempt.purpose != "download":
+        return False
+    # 曾经完成过的任务，巡检被动发现消失时不退回（文件很可能已落盘等入库）；
+    # 但用户亲手删掉它就是放弃这份内容——包括"下载完成但无法入库"的那些，
+    # 不退回的话它们会滑进死种换源，而侧栏红灯永远不灭
+    if attempt.completed_at is not None and not deleted_by_user:
         return False
     trial_exists = (
         await session.execute(

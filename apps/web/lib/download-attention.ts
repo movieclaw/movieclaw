@@ -78,6 +78,8 @@ export function downloadTaskNeedsAttention(
     task.can_replace ||
     task.state === "error" ||
     task.state === "missing" ||
+    // 下载完成但 movieclaw 看不到文件：侧栏红灯亮着，卡片不能还写"等待入库"
+    task.landing_error != null ||
     contentMissingLabel(task) != null ||
     (ingestJob != null && jobNeedsAttention(ingestJob))
   );

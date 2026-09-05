@@ -1734,6 +1734,115 @@ def test_deleting_subscription_task_requeues_wanted_immediately(client) -> None:
     assert "已按你的操作删除下载任务" in activities[0]
 
 
+def test_landing_notice_is_attached_to_task_and_cleared_by_user_delete(client) -> None:
+    """落点核验红灯要挂回任务卡片；用户删掉该任务后工单退回、红灯熄灭。
+
+    真实教训：侧栏「待处理事项」说"下载完成但无法入库"，活动页同一条任务却写
+    "等待入库"，用户不知道该信谁、该做什么；删掉任务后红灯还常亮，attempt 又
+    因 completed 被巡检当成死种去换源。
+    """
+    from movieclaw_api.services.system_notice import upsert_notice
+    from movieclaw_db.engine import get_database
+    from movieclaw_db.models import (
+        DownloadAttemptStatus,
+        MediaItem,
+        RuleSet,
+        Subscription,
+        SubscriptionDownloadAttempt,
+        WantedItem,
+        WantedStatus,
+        utcnow,
+    )
+    from movieclaw_db.models.system_notice import NoticeSeverity, NoticeStatus, SystemNotice
+
+    c, _ = client
+    downloader_id = c.post("/api/v1/downloaders", json=_PAYLOAD).json()["data"]["id"]
+    info_hash = "8" * 40
+    _fake_torrents.append(
+        TorrentBrief(
+            name="Landed.Nowhere.S01",
+            content_name="Landed.Nowhere.S01",
+            completed=True,
+            info_hash=info_hash,
+            progress=1,
+            state="completed",
+        )
+    )
+    ids: dict[str, int] = {}
+
+    async def seed() -> None:
+        async with get_database().session() as session:
+            media = MediaItem(kind="tv", tmdb_id=5252, title="落点测试剧", original_title="Land")
+            rule = RuleSet(name="落点测试规则")
+            session.add_all([media, rule])
+            await session.flush()
+            subscription = Subscription(
+                media_item_id=media.id, kind="tv", selected_seasons=[1], rule_set_id=rule.id
+            )
+            session.add(subscription)
+            await session.flush()
+            wanted = WantedItem(
+                subscription_id=subscription.id,
+                media_item_id=media.id,
+                season_number=1,
+                episode_number=1,
+                status=WantedStatus.DOWNLOADED,
+                info_hash=info_hash,
+                grabbed_at=utcnow(),
+            )
+            attempt = SubscriptionDownloadAttempt(
+                subscription_id=subscription.id,
+                downloader_id=downloader_id,
+                info_hash=info_hash,
+                units=[[1, 1]],
+                status=DownloadAttemptStatus.COMPLETED,
+                completed_at=utcnow(),
+                last_progress_at=utcnow(),
+            )
+            session.add_all([wanted, attempt])
+            await session.commit()
+            await upsert_notice(
+                session,
+                dedupe_key=f"subscription.landing:{subscription.id}:{info_hash}",
+                severity=NoticeSeverity.ERROR,
+                source="subscription",
+                title="「Landed.Nowhere.S01」下载完成但无法入库",
+                message="「Landed.Nowhere.S01」已下载完成，但 movieclaw 在 /download/剧集 看不到它",
+                payload={"subscription_id": subscription.id, "info_hash": info_hash},
+            )
+            ids["wanted"] = wanted.id
+            ids["attempt"] = attempt.id
+
+    asyncio.run(seed())
+    items = c.get("/api/v1/downloaders/tasks").json()["data"]["items"]
+    assert len(items) == 1
+    assert items[0]["state"] == "completed"
+    assert "看不到它" in items[0]["landing_error"]
+
+    response = c.delete(f"/api/v1/downloaders/{downloader_id}/torrents/{info_hash}")
+    assert response.status_code == 200
+    assert c.get("/api/v1/downloaders/tasks").json()["data"]["items"] == []
+
+    async def state() -> tuple[str, str, str]:
+        async with get_database().session() as session:
+            wanted = await session.get(WantedItem, ids["wanted"])
+            attempt = await session.get(SubscriptionDownloadAttempt, ids["attempt"])
+            notice = (
+                await session.execute(
+                    select(SystemNotice).where(
+                        SystemNotice.dedupe_key.startswith("subscription.landing:")
+                    )
+                )
+            ).scalar_one()
+            return wanted.status, attempt.status, notice.status
+
+    wanted_status, attempt_status, notice_status = asyncio.run(state())
+    assert wanted_status == WantedStatus.WANTED
+    assert attempt_status == DownloadAttemptStatus.FAILED
+    # 红灯随工单退回自动熄灭，不需要用户再去点"忽略"
+    assert notice_status == NoticeStatus.RESOLVED.value
+
+
 def test_delete_download_task_can_remove_data_files(client) -> None:
     """用户显式选择后，删除文件参数必须完整透传到下载器。"""
     c, _ = client

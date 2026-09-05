@@ -33,6 +33,12 @@ test("订阅任务在下载器里报错要用户处理", () => {
   assert.equal(downloadTaskNeedsAttention(task({ can_replace: true }), null), true);
 });
 
+test("下载完成但 movieclaw 看不到文件（落点核验失败）算待办，与侧栏红灯同口径", () => {
+  const stuck = task({ state: "completed", landing_error: "movieclaw 在 /download 看不到它" });
+  assert.equal(downloadTaskNeedsAttention(stuck, null), true);
+  assert.equal(downloadTaskNeedsAttention(task({ state: "completed" }), null), false);
+});
+
 test("手动下载的任务同样受 MovieClaw 照看", () => {
   assert.equal(downloadTaskNeedsAttention(task({ source: "manual", state: "error" }), null), true);
 });
