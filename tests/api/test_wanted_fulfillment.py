@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -292,6 +293,108 @@ async def test_missing_main_source_requeues_wanted_and_reopens_manual_entries(db
         # 报告里被拒的两个人工入口之一：现在有真实缺口，不再报"没有缺口"
         service = SubscriptionService(session, MediaLibraryService(session, _fake_tmdb()))
         assert await service.search_now(sub_id) == 1
+
+
+@pytest.mark.asyncio
+async def test_downloader_error_is_not_a_dead_seed(db, monkeypatch):
+    """下载器报告任务出错（文件缺失等）时冻结死种计时，不进入换源。
+
+    真实教训：存储掉挂让整批种子变成 missingFiles，无进度 30 分钟后全部进入
+    换源；新源投进同一个坏掉的下载器照样报错，试用超时→再搜→再投，一部剧被
+    换了十几次源。这不是死种，换源无济于事，要等的是用户把下载器修好。
+    """
+    stale = utcnow() - timedelta(minutes=45)
+    _library_id, _item_id, sub_id, wanted_id = await _seed(db, grabbed_at=stale)
+
+    fake_downloader = SimpleNamespace(id=None, name="测试下载器", path_mappings=[])
+    status = SimpleNamespace(
+        name="Broken",
+        completed=False,
+        completed_bytes=0,
+        downloaded_bytes=0,
+        progress=0.0,
+        state="error",
+        error_message="下载器找不到已下载的文件",
+        save_path="/downloads",
+        files=[],
+    )
+
+    async def lookup(*args, **kwargs):
+        return progress_mod._TorrentLookup(match=(fake_downloader, status), reachable_count=1)
+
+    async def must_not_search(*args, **kwargs):
+        raise AssertionError("下载器故障期间不应发起替代源搜索")
+
+    import movieclaw_api.services.subscription as subscription_pkg
+
+    monkeypatch.setattr(progress_mod, "_lookup_torrent", lookup)
+    # 巡检在函数内部延迟导入 run_replacement_search，打桩要打在来源包上
+    monkeypatch.setattr(subscription_pkg, "run_replacement_search", must_not_search)
+    before = utcnow()
+    await progress_mod._rescue_group(sub_id, "abc123", downloaders=[])
+    # 模拟故障发生前就已经排上换源（等待退避到点再搜）的任务
+    async with db.session() as session:
+        attempt = (
+            await session.execute(
+                select(SubscriptionDownloadAttempt).where(
+                    SubscriptionDownloadAttempt.subscription_id == sub_id
+                )
+            )
+        ).scalar_one()
+        attempt.status = DownloadAttemptStatus.REPLACEMENT_PENDING
+        attempt.next_search_at = utcnow() - timedelta(minutes=1)
+        attempt.search_attempts = 2
+        session.add(attempt)
+        await session.commit()
+    for _ in range(2):
+        await progress_mod._rescue_group(sub_id, "abc123", downloaders=[])
+
+    async with db.session() as session:
+        wanted = await session.get(WantedItem, wanted_id)
+        assert wanted.status == WantedStatus.GRABBED
+        assert wanted.info_hash == "abc123"
+        attempt = (
+            await session.execute(
+                select(SubscriptionDownloadAttempt).where(
+                    SubscriptionDownloadAttempt.subscription_id == sub_id
+                )
+            )
+        ).scalar_one()
+        # 45 分钟无进度本该换源；错误态下计时基准被不断刷新，状态退回并维持主源，
+        # 已到点的待办搜索也被撤销——否则任务中心会一直写着"正在跨站寻找替代源"
+        assert attempt.status == DownloadAttemptStatus.ACTIVE
+        assert attempt.next_search_at is None
+        assert attempt.last_progress_at >= before
+        assert attempt.last_downloader_state == "error"
+        # 时间线只记一次，说明原因与"不是死种"，而不是每 5 分钟刷一条
+        activities = list(
+            (
+                await session.execute(
+                    select(SubscriptionActivity).where(
+                        SubscriptionActivity.subscription_id == sub_id,
+                        SubscriptionActivity.type == ActivityType.DOWNLOAD_STALLED,
+                    )
+                )
+            ).scalars()
+        )
+        assert len(activities) == 1
+        assert "找不到已下载的文件" in activities[0].message
+        assert "不是死种" in activities[0].message
+        assert (activities[0].payload or {}).get("reason") == "downloader_error"
+
+    # 用户修好下载器后任务恢复下载：从头计时，不能沿用故障前的旧基准立刻换源
+    status.state = "downloading"
+    await progress_mod._rescue_group(sub_id, "abc123", downloaders=[])
+    async with db.session() as session:
+        attempt = (
+            await session.execute(
+                select(SubscriptionDownloadAttempt).where(
+                    SubscriptionDownloadAttempt.subscription_id == sub_id
+                )
+            )
+        ).scalar_one()
+        assert attempt.status == DownloadAttemptStatus.ACTIVE
+        assert attempt.last_downloader_state == "downloading"
 
 
 @pytest.mark.asyncio

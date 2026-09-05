@@ -629,6 +629,8 @@ export interface SubscriptionDownload {
   eta_seconds: number | null;
   /** missing = 种子已不在任何可用下载器中（救援巡检稍后会退回工单重找） */
   state: "downloading" | "stalled" | "paused" | "completed" | "error" | "missing" | "unknown";
+  /** state 为 error 时下载器给出的可读原因（文件缺失 / 出错详情）；其余为 null */
+  error_message: string | null;
   downloader_name: string | null;
   units: { season_number: number; episode_number: number }[];
 }

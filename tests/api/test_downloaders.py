@@ -1624,6 +1624,116 @@ def test_cancelled_season_task_becomes_external_then_disappears_after_delete(cli
     assert asyncio.run(attempt_status()) == DownloadAttemptStatus.CANCELLED
 
 
+def test_deleting_subscription_task_requeues_wanted_immediately(client) -> None:
+    """用户在活动页删掉订阅主源后，工单立即退回 wanted，不再先冒出"任务缺失"。
+
+    真实教训：删除只动了下载器，工单继续挂 grabbed；巡检要连续三次（约 15 分钟）
+    确认消失才退回，期间任务中心多出一条"已投递记录仍在，但下载器中找不到任务"
+    的待办、订阅页提示"种子已不在下载器中"——刚删完就被追问要处理。
+    """
+    from movieclaw_db.engine import get_database
+    from movieclaw_db.models import (
+        ActivityType,
+        DownloadAttemptStatus,
+        MediaItem,
+        RuleSet,
+        Subscription,
+        SubscriptionActivity,
+        SubscriptionDownloadAttempt,
+        WantedItem,
+        WantedStatus,
+        utcnow,
+    )
+
+    c, _ = client
+    downloader_id = c.post("/api/v1/downloaders", json=_PAYLOAD).json()["data"]["id"]
+    info_hash = "9" * 40
+    _fake_torrents.append(
+        TorrentBrief(
+            name="Broken.Show.S01E01",
+            content_name="Broken.Show.S01E01",
+            completed=False,
+            info_hash=info_hash,
+            progress=0.0,
+            state="error",
+            error_message="下载器找不到已下载的文件",
+        )
+    )
+    ids: dict[str, int] = {}
+
+    async def seed() -> None:
+        async with get_database().session() as session:
+            media = MediaItem(kind="tv", tmdb_id=4242, title="删除测试剧", original_title="Del")
+            rule = RuleSet(name="删除测试规则")
+            session.add_all([media, rule])
+            await session.flush()
+            subscription = Subscription(
+                media_item_id=media.id, kind="tv", selected_seasons=[1], rule_set_id=rule.id
+            )
+            session.add(subscription)
+            await session.flush()
+            wanted = WantedItem(
+                subscription_id=subscription.id,
+                media_item_id=media.id,
+                season_number=1,
+                episode_number=1,
+                status=WantedStatus.GRABBED,
+                info_hash=info_hash,
+                grabbed_at=utcnow(),
+            )
+            attempt = SubscriptionDownloadAttempt(
+                subscription_id=subscription.id,
+                downloader_id=downloader_id,
+                info_hash=info_hash,
+                units=[[1, 1]],
+                status=DownloadAttemptStatus.ACTIVE,
+                last_progress_at=utcnow(),
+            )
+            session.add_all([wanted, attempt])
+            await session.commit()
+            ids["subscription"] = subscription.id
+            ids["wanted"] = wanted.id
+            ids["attempt"] = attempt.id
+
+    asyncio.run(seed())
+    before = c.get("/api/v1/downloaders/tasks").json()["data"]["items"]
+    assert [item["state"] for item in before] == ["error"]
+
+    response = c.delete(f"/api/v1/downloaders/{downloader_id}/torrents/{info_hash}")
+    assert response.status_code == 200
+    # 删除后任务中心不再有这条记录——既不是 error，也不会变成 missing
+    assert c.get("/api/v1/downloaders/tasks").json()["data"]["items"] == []
+
+    async def state() -> tuple[str, str | None, str, list[str]]:
+        async with get_database().session() as session:
+            wanted = await session.get(WantedItem, ids["wanted"])
+            attempt = await session.get(SubscriptionDownloadAttempt, ids["attempt"])
+            activities = list(
+                (
+                    await session.execute(
+                        select(SubscriptionActivity).where(
+                            SubscriptionActivity.subscription_id == ids["subscription"],
+                            SubscriptionActivity.type == ActivityType.DISPATCH_FAILED,
+                        )
+                    )
+                ).scalars()
+            )
+            return (
+                wanted.status,
+                wanted.info_hash,
+                attempt.status,
+                [f"{(a.payload or {}).get('reason')}|{a.message}" for a in activities],
+            )
+
+    wanted_status, wanted_hash, attempt_status, activities = asyncio.run(state())
+    assert wanted_status == WantedStatus.WANTED
+    assert wanted_hash is None
+    assert attempt_status == DownloadAttemptStatus.FAILED
+    assert len(activities) == 1
+    assert activities[0].startswith("deleted_by_user|")
+    assert "已按你的操作删除下载任务" in activities[0]
+
+
 def test_delete_download_task_can_remove_data_files(client) -> None:
     """用户显式选择后，删除文件参数必须完整透传到下载器。"""
     c, _ = client

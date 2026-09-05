@@ -34,8 +34,14 @@ def test_transmission_state_words() -> None:
     assert tr_state(_FakeTrTorrent({"status": 4, "rateDownload": 0}), completed=False) == "stalled"
     assert tr_state(_FakeTrTorrent({"status": 3}), completed=False) == "queued"
     assert tr_state(_FakeTrTorrent({"status": 0}), completed=False) == "paused"
-    # 错误标记优先于状态枚举
+    # 本地错误（磁盘/权限/文件缺失）优先于状态枚举：下载器这条任务本身坏了
     assert tr_state(_FakeTrTorrent({"status": 4, "error": 3}), completed=False) == "error"
+    # tracker 警告/错误不是本地故障：种子从站点撤下就是没有做种的死种，
+    # 必须落入 stalled 交给换源机制，而不是被当成下载器故障冻结救援
+    tracker_warning = _FakeTrTorrent({"status": 4, "error": 1, "rateDownload": 0})
+    tracker_error = _FakeTrTorrent({"status": 4, "error": 2, "rateDownload": 0})
+    assert tr_state(tracker_warning, completed=False) == "stalled"
+    assert tr_state(tracker_error, completed=False) == "stalled"
     assert tr_state(_FakeTrTorrent({"status": 6}), completed=True) == "completed"
     assert tr_state(_FakeTrTorrent({"status": 6}), completed=False) == "unknown"
 
@@ -53,7 +59,10 @@ def test_transmission_error_reason_passes_through_error_string() -> None:
     torrent = _FakeTrTorrent({"status": 4, "error": 3, "errorString": "No data found!"})
     assert tr_error(torrent, completed=False) == "下载器报告：No data found!"
     # 没有错误文本时也要给出可行动的兜底说明
-    assert "查看具体原因" in (tr_error(_FakeTrTorrent({"error": 1}), completed=False) or "")
+    assert "查看具体原因" in (tr_error(_FakeTrTorrent({"error": 3}), completed=False) or "")
     assert tr_error(_FakeTrTorrent({"status": 4, "error": 0}), completed=False) is None
+    # tracker 错误不属于 error 态，也就没有"下载器故障"原因可说
+    unregistered = _FakeTrTorrent({"error": 2, "errorString": "Unregistered"})
+    assert tr_error(unregistered, completed=False) is None
     # 已完成的任务即使带错误标记也不算下载异常
     assert tr_error(_FakeTrTorrent({"error": 3, "errorString": "x"}), completed=True) is None

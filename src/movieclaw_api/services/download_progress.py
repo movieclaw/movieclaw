@@ -475,6 +475,7 @@ async def _observe_attempt(
         downloader, status = lookup.match
         attempt.downloader_id = downloader.id
         attempt.missing_observations = 0
+        previous_state = attempt.last_downloader_state
         attempt.last_downloader_state = status.state
         current_bytes = status.completed_bytes
 
@@ -485,6 +486,49 @@ async def _observe_attempt(
             attempt.last_progress_at = now
             attempt.stalled_notified_at = None
             attempt.next_search_at = None
+
+        if status.state == "error":
+            # 下载器报告的是**这条任务本身**出错（文件缺失、磁盘、权限），不是没有
+            # 做种的死种。此时换源只会把新源投进同一个出故障的下载器：试用源同样
+            # 报错 → 30 分钟超时失败 → 退避后再搜再投，一台坏掉的下载器能让一部剧
+            # 换上十几次源（真实教训）。冻结 15/30 分钟计时，等用户在下载器里处理，
+            # 恢复后从头计时；期间同样不发起待办中的替代源搜索。
+            attempt.last_progress_at = now
+            attempt.stalled_notified_at = None
+            if attempt.status == DownloadAttemptStatus.REPLACEMENT_PENDING:
+                # 故障前已排上换源的，若还没有试用源在跑就退回主源态并撤销待办搜索，
+                # 否则任务中心会一直写着"正在跨站寻找替代源"而实际什么都没发生；
+                # 有试用源时让试用自行裁决（它同样受本冻结保护）
+                trial_exists = (
+                    await session.execute(
+                        select(SubscriptionDownloadAttempt.id).where(
+                            SubscriptionDownloadAttempt.replaces_attempt_id == attempt.id,
+                            SubscriptionDownloadAttempt.status == DownloadAttemptStatus.TRIAL,
+                        )
+                    )
+                ).first()
+                if trial_exists is None:
+                    attempt.status = DownloadAttemptStatus.ACTIVE
+                    attempt.next_search_at = None
+                    attempt.search_attempts = 0
+            attempt.updated_at = now
+            session.add(attempt)
+            await session.commit()
+            if previous_state != "error":
+                # 只在首次进入错误态时记一条时间线，避免每 5 分钟刷屏
+                reason = getattr(status, "error_message", None) or "下载器报告该任务出错"
+                await SubscriptionRepository(session).add_activity(
+                    SubscriptionActivity(
+                        subscription_id=attempt.subscription_id,
+                        type=ActivityType.DOWNLOAD_STALLED,
+                        message=(
+                            f"{reason}。这不是死种，已暂停换源判定；"
+                            "请在下载器中重新校验或删除该任务，处理后自动恢复观察"
+                        ),
+                        payload={"info_hash": attempt.info_hash, "reason": "downloader_error"},
+                    )
+                )
+            return False
 
         if status.state in {"paused", "queued", "checking"}:
             # 用户暂停、下载器排队和校验都不是死种；不断刷新计时基准，恢复后
@@ -657,8 +701,16 @@ async def _requeue_missing_attempt(
     session: AsyncSession,
     attempt: SubscriptionDownloadAttempt,
     now,
+    *,
+    deleted_by_user: bool = False,
 ) -> bool:
     """主源确证从所有可达下载器消失时，把工单退回 wanted 让常规搜索接手。
+
+    ``deleted_by_user``：用户在活动页亲手删掉了下载任务。"消失"在这里是确定
+    事实，不必再等巡检连续三次确认（每 5 分钟一次，即 15 分钟）——那段时间里
+    任务中心会先冒出一条"任务缺失"的待办、订阅页提示"种子已不在下载器中"，
+    用户刚删完就被追问"要处理"，比不删还困惑（真实教训）。删除接口据此立即
+    退回工单，时间线上的措辞也如实说是用户删除的。
 
     换源策略保守地"等新源产生真实进度才切换"，前提是旧源还在下载、值得保护；
     源本身已经不在了的时候这个前提不成立。此时工单继续挂 grabbed，业务层会
@@ -698,21 +750,32 @@ async def _requeue_missing_attempt(
 
     attempt.status = DownloadAttemptStatus.FAILED
     attempt.next_search_at = None
-    attempt.cleanup_note = "任务已从所有可达下载器中消失，关联工单已退回重新寻找"
+    attempt.cleanup_note = (
+        "用户已删除下载任务，关联工单已退回重新寻找"
+        if deleted_by_user
+        else "任务已从所有可达下载器中消失，关联工单已退回重新寻找"
+    )
     attempt.updated_at = now
     session.add(attempt)
+    if deleted_by_user:
+        message = (
+            f"已按你的操作删除下载任务，{units_text(rows)} 已退回重新寻找资源；"
+            "也可在订阅详情页立即搜索或手动选种"
+        )
+    else:
+        message = (
+            f"原下载任务已从所有可达的下载器中消失（连续 {MISSING_CONFIRMATIONS} 次确认，"
+            "可能被手动删除或被下载器清理），"
+            f"{units_text(rows)} 已退回重新寻找资源；也可在订阅详情页立即搜索或手动选种"
+        )
     await _requeue(
         session,
         SubscriptionRepository(session),
         item,
         rows,
         attempt.info_hash,
-        message=(
-            f"原下载任务已从所有可达的下载器中消失（连续 {MISSING_CONFIRMATIONS} 次确认，"
-            "可能被手动删除或被下载器清理），"
-            f"{units_text(rows)} 已退回重新寻找资源；也可在订阅详情页立即搜索或手动选种"
-        ),
-        reason="source_missing",
+        message=message,
+        reason="deleted_by_user" if deleted_by_user else "source_missing",
     )
     return True
 
@@ -1275,6 +1338,7 @@ async def subscription_download_snapshot(session: AsyncSession, subscription_id:
                 "dlspeed_bytes": status.dlspeed_bytes,
                 "eta_seconds": status.eta_seconds,
                 "state": status.state,
+                "error_message": status.error_message,
                 "downloader_name": downloader_row.name,
                 "units": units,
             }

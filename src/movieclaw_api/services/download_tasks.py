@@ -924,6 +924,21 @@ async def delete_download_task(
                 if (target.season_number, target.episode_number) in allowed
             ]
         if target_rows:
+            # 工单仍在域内：用户亲手删掉了它的主源。"消失"在这里是确定事实，
+            # 不必等巡检连续三次确认（约 15 分钟）——那段时间里任务中心会先冒出
+            # "任务缺失"待办、订阅页提示"种子已不在下载器中"，刚删完就被追问要
+            # 处理。能立即退回的（主源、未完成、没有试用源在跑）当场退回；其余
+            # 情形（已完成待入库、试用源裁决中）仍交给巡检按原有语义处理
+            if attempt.status in (
+                DownloadAttemptStatus.ACTIVE,
+                DownloadAttemptStatus.REPLACEMENT_PENDING,
+            ):
+                from movieclaw_api.services.download_progress import _requeue_missing_attempt
+
+                if await _requeue_missing_attempt(
+                    session, attempt, utcnow(), deleted_by_user=True
+                ):
+                    changed = True
             continue
         attempt.status = DownloadAttemptStatus.CANCELLED
         attempt.next_search_at = None
