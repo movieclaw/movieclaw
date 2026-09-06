@@ -478,6 +478,104 @@ async def verify_session_token(token: str | None) -> Principal:
 
 
 # ---------------------------------------------------------------------------
+# 多账号：一个浏览器同时持有多个会话令牌（docs/design/account-switching.md）
+# ---------------------------------------------------------------------------
+# 设计要点：不新增任何凭证形态——"账号袋" Cookie 里装的就是上面签发的会话
+# 令牌本身，切换账号只是把袋子里的一枚令牌写回 movieclaw_session。因此
+# 鉴权层（deps.py）零改动，超管改密轮换密钥 / 成员停用与改密这些既有的失效
+# 语义对袋子里的令牌自动生效，本模块没有自己的失效逻辑。
+
+#: 账号袋 Cookie 名。与会话 Cookie 安全属性一致（HttpOnly / SameSite=Lax）。
+ACCOUNTS_COOKIE_NAME = "movieclaw_accounts"
+#: 一个浏览器最多同时保存的账号数。单枚令牌约 150 字节，Cookie 总量 4KB，留足余量。
+MAX_SAVED_ACCOUNTS = 5
+#: 账号袋自身的签名域，与会话令牌 / Agent 令牌 / 取流 token 隔离。
+_ACCOUNTS_SALT = "movieclaw.accounts.v1"
+
+
+@dataclass(frozen=True)
+class SavedAccount:
+    """账号袋里的一个有效账号：令牌原文 + 验签后装配的主体。"""
+
+    token: str
+    principal: Principal
+
+
+def account_key(principal: Principal) -> str:
+    """账号袋内的去重键：超管只有一个位置，成员按 id 区分。"""
+    if principal.kind == "member" and principal.member_id is not None:
+        return f"member:{principal.member_id}"
+    return "admin"
+
+
+async def _decode_saved_tokens(accounts_cookie: str | None) -> list[str]:
+    """解开账号袋；签名不对或结构不符一律当成空袋（旧令牌会在逐枚验签时再筛）。"""
+    if not accounts_cookie:
+        return []
+    serializer = URLSafeSerializer(await _get_session_secret(), salt=_ACCOUNTS_SALT)
+    try:
+        payload = serializer.loads(accounts_cookie)
+    except BadSignature:
+        return []
+    tokens = payload.get("t") if isinstance(payload, dict) else None
+    if not isinstance(tokens, list):
+        return []
+    return [t for t in tokens if isinstance(t, str) and t]
+
+
+async def encode_saved_accounts(accounts: list[SavedAccount]) -> str:
+    """把账号列表打包成账号袋 Cookie 值（截到上限，防止袋子无界增长）。"""
+    serializer = URLSafeSerializer(await _get_session_secret(), salt=_ACCOUNTS_SALT)
+    return serializer.dumps({"t": [a.token for a in accounts[:MAX_SAVED_ACCOUNTS]]})
+
+
+async def resolve_saved_accounts(
+    accounts_cookie: str | None, active_token: str | None
+) -> list[SavedAccount]:
+    """解析出"当前浏览器持有的全部有效账号"，激活账号排第一。
+
+    规则（docs/design/account-switching.md §2.2）：
+    1. 激活令牌置顶，再接上袋子里的令牌；
+    2. 逐枚验签，失效的静默丢弃——改密 / 停用 / 过期都在这里自然生效；
+    3. 按身份去重，先出现者胜：改密后重签的激活令牌总能覆盖袋子里同身份的旧令牌；
+    4. 截到上限。
+
+    激活令牌也并进来是为了：超管改密会轮换密钥让整个袋子验签失败，此时列表
+    至少还有当前账号，不会出现"我明明登着，账号列表却是空的"。
+    """
+    candidates: list[str] = []
+    if active_token:
+        candidates.append(active_token)
+    candidates.extend(await _decode_saved_tokens(accounts_cookie))
+
+    seen: set[str] = set()
+    result: list[SavedAccount] = []
+    for token in candidates:
+        try:
+            principal = await verify_session_token(token)
+        except UnauthorizedException:
+            continue
+        key = account_key(principal)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(SavedAccount(token=token, principal=principal))
+        if len(result) >= MAX_SAVED_ACCOUNTS:
+            break
+    return result
+
+
+def merge_saved_account(
+    accounts: list[SavedAccount], token: str, principal: Principal
+) -> list[SavedAccount]:
+    """登录成功后把新账号并入袋子：置顶、同身份替换、超限淘汰袋尾（最久未用）。"""
+    key = account_key(principal)
+    merged = [SavedAccount(token=token, principal=principal)]
+    merged.extend(a for a in accounts if account_key(a.principal) != key)
+    return merged[:MAX_SAVED_ACCOUNTS]
+
+
+# ---------------------------------------------------------------------------
 # Bearer 令牌：CLI 长期令牌（PAT）+ 产品内 Agent 短时效令牌
 # ---------------------------------------------------------------------------
 # 两类令牌共用同一个验签入口 verify_bearer_token（docs/design/cli.md §6.2/§8.1）：

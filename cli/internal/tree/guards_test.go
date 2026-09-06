@@ -77,6 +77,10 @@ var knownNonGenerated = []string{
 	"system.spec",
 	"auth.login",
 	"auth.logout",
+	// 多账号切换只操作浏览器 Cookie（docs/design/account-switching.md），命令行没有对应形态
+	"auth.accounts.list",
+	"auth.accounts.switch",
+	"auth.accounts.remove",
 	"workflow.search.torrents.stream",
 	"session.fork",
 	"session.follow",

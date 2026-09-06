@@ -343,6 +343,7 @@ def test_every_route_denies_anonymous_access(client: TestClient) -> None:
             .replace("{account_id}", "test-bot")
             .replace("{channel}", "weixin")
             .replace("{endpoint_id}", "test-endpoint")
+            .replace("{username}", "family")
             .replace("{member_id}", "1")
             .replace("{job_id}", "job_test")
             .replace("{device_id}", "test-device")
