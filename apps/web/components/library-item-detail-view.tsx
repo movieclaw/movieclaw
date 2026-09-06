@@ -666,7 +666,19 @@ export function LibraryItemDetailView({
       )}
 
       <div className="mt-9 space-y-8 px-12 max-md:mt-6 max-md:space-y-6 max-md:px-4">
+        {/* —— 剧集分集区：季选择 + 分集横滚卡 + 选中集的简介/规格/文件 —— */}
+        {!isMovie && detail.seasons.length > 0 && (
+          <SeasonEpisodesSection
+            libraryId={libraryId}
+            detail={detail}
+            initialSeason={initialSeason}
+            initialEpisode={initialEpisode}
+            onEpisodeChange={setSelectedSeriesEpisode}
+          />
+        )}
+
         {/* —— 场景横排：当前选中文件（电影随版本选择器、剧集随选中集）的章节。
+            放在分集区之下：先选集、再看这一集的场景，阅读顺序才顺。
             点图看大图，从那一帧起播；原盘/strm 没有章节自然不渲染 —— */}
         {selectedTrackFile?.chapters && selectedTrackFile.chapters.length > 0 && (
           <ChapterStrip
@@ -689,17 +701,6 @@ export function LibraryItemDetailView({
                 }) as Route,
               );
             }}
-          />
-        )}
-
-        {/* —— 剧集分集区：季选择 + 分集横滚卡 + 选中集的简介/规格/文件 —— */}
-        {!isMovie && detail.seasons.length > 0 && (
-          <SeasonEpisodesSection
-            libraryId={libraryId}
-            detail={detail}
-            initialSeason={initialSeason}
-            initialEpisode={initialEpisode}
-            onEpisodeChange={setSelectedSeriesEpisode}
           />
         )}
 
