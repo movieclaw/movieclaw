@@ -244,23 +244,19 @@ async def test_selected_library_requires_explicit_member_grant(client: TestClien
 # ---------------------------------------------------------------------------
 
 
-async def test_recent_watch_and_activity_hide_out_of_scope(client: TestClient) -> None:
+async def test_recent_watch_hides_out_of_scope(client: TestClient) -> None:
+    """首页最近观看随超管的浏览范围折叠；活动页的同类折叠见
+    test_playback_activity.py（播放记录的 hidden_count）。"""
     lib = _create_library(client, "私藏", "/m/private", access_mode="selected", admin_visible=False)
     item = await _seed_item(lib, "私藏片", 3001)
     await _seed_state(0, item)
 
     assert client.get("/api/v1/playback/recent").json()["data"]["items"] == []
-    activity = client.get("/api/v1/playback/activity").json()["data"]
-    assert activity["recent"] == []
-    assert activity["hidden_recent_count"] == 1
 
     _update_library(client, lib, admin_visible=True)
     assert [
         i["media_item_id"] for i in client.get("/api/v1/playback/recent").json()["data"]["items"]
     ] == [item]
-    activity = client.get("/api/v1/playback/activity").json()["data"]
-    assert [r["media"]["title"] for r in activity["recent"]] == ["私藏片"]
-    assert activity["hidden_recent_count"] == 0
 
 
 # ---------------------------------------------------------------------------

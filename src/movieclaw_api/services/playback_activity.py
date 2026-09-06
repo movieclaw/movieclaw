@@ -1,12 +1,11 @@
 """活动页「观看」视角的聚合查询（docs/design/activity.md）。
 
-三段数据、三个事实源，本服务只做只读投影，不新增任何状态表：
+正在播放 / 正在下载来自 ``movieclaw_playback.activity`` 的进程内实时快照
+（播放器上报 + 取流字节计量），重启即清空；本服务只做只读投影，不新增任何
+状态表。``jellyfin_device`` 凭据表只用来判断一条会话能否「注销设备」。
 
-- 正在播放 / 正在下载：``movieclaw_playback.activity`` 的进程内实时快照
-  （播放器上报 + 取流字节计量），重启即清空；
-- 设备清单：``jellyfin_device`` 凭据表，叠加"当前是否有活跃会话"的在线标记；
-- 最近观看：``playback_state`` 领域表的全成员视角（管理员运维口径，
-  与首页按成员隔离的 /playback/recent 不同）。
+「播放记录」与「观看统计」另有读侧（services/playback_stats.py），复用这里的
+单元上下文装配（``_load_unit_contexts``）与可见范围口径（``VisibilityScope``）。
 """
 
 from __future__ import annotations
@@ -14,7 +13,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from movieclaw_api.core.config import get_settings
@@ -23,8 +22,6 @@ from movieclaw_api.schemas.playback import (
     ActivePlaybackSessionView,
     MediaActivityTarget,
     MediaActivityView,
-    MediaRecentPlayView,
-    PlaybackDeviceView,
     PlaybackFileSpec,
 )
 from movieclaw_api.services import auth as auth_service
@@ -40,7 +37,6 @@ from movieclaw_db.models import (
     MediaItem,
     MediaMetadata,
     Member,
-    PlaybackState,
 )
 from movieclaw_media.models import MediaKind
 from movieclaw_playback import activity
@@ -163,11 +159,24 @@ async def _load_unit_contexts(
             )
         ).scalars()
     }
+    # 分集档案与台账行都按 (条目, 季, 集) 精确命中，而不是按条目整表拉取：
+    # 一页 30 条播放记录若落在几部几百集的长剧上，按条目拉会把几千行分集
+    # 简介与带音轨/字幕 JSON 的台账行全部水合进 ORM，实测 15 条日志的接口从
+    # 10 毫秒涨到 140 毫秒以上，且这段 CPU 工作跑在事件循环上，同进程的其他
+    # 请求一起停顿——这正是活动页「最近播放」偶尔打开特别卡的根源。
+    # 行值 IN 走 uq_media_episode_unit / ix_library_file_media_unit 两棵索引。
+    unit_keys = list(units)
     episode_rows = {
         (e.media_item_id, e.season_number, e.episode_number): e
         for e in (
             await session.execute(
-                select(MediaEpisode).where(MediaEpisode.media_item_id.in_(item_ids))
+                select(MediaEpisode).where(
+                    tuple_(
+                        MediaEpisode.media_item_id,
+                        MediaEpisode.season_number,
+                        MediaEpisode.episode_number,
+                    ).in_(unit_keys)
+                )
             )
         ).scalars()
     }
@@ -175,7 +184,12 @@ async def _load_unit_contexts(
     for f in (
         await session.execute(
             select(LibraryFile).where(
-                LibraryFile.media_item_id.in_(item_ids), LibraryFile.in_place()
+                tuple_(
+                    LibraryFile.media_item_id,
+                    LibraryFile.season_number,
+                    LibraryFile.episode_number,
+                ).in_(unit_keys),
+                LibraryFile.in_place(),
             )
         )
     ).scalars():
@@ -244,85 +258,24 @@ def _file_spec(f: LibraryFile | None) -> PlaybackFileSpec | None:
     )
 
 
-async def _recent_plays(
-    session: AsyncSession, names_needed: set[int], *, limit: int
-) -> list[tuple]:
-    """全成员最近观看的原始行：每个 (成员, 作品) 只保留最后活动的那一集。"""
-    ranked_states = (
-        select(
-            PlaybackState.id.label("state_id"),
-            func.row_number()
-            .over(
-                partition_by=(PlaybackState.member_id, PlaybackState.media_item_id),
-                order_by=(PlaybackState.last_played_at.desc(), PlaybackState.id.desc()),
-            )
-            .label("rank"),
-        )
-        .where(
-            PlaybackState.last_played_at.is_not(None),  # type: ignore[union-attr]
-            PlaybackState.season_number >= 0,
-            PlaybackState.episode_number >= 0,
-        )
-        .subquery()
-    )
-    statement = (
-        select(
-            PlaybackState,
-            MediaItem,
-            MediaMetadata.poster_file,
-            MediaMetadata.runtime_minutes,
-            MediaEpisode.name,
-            MediaEpisode.runtime_minutes,
-            func.max(LibraryFile.duration_seconds).label("file_duration_seconds"),
-            # 详情页落点：跨库时取 id 最小的库，保证链接确定且可达
-            func.min(LibraryFile.library_id).label("library_id"),
-        )
-        .join(ranked_states, ranked_states.c.state_id == PlaybackState.id)
-        .join(MediaItem, MediaItem.id == PlaybackState.media_item_id)
-        .outerjoin(MediaMetadata, MediaMetadata.media_item_id == MediaItem.id)
-        .outerjoin(
-            MediaEpisode,
-            and_(
-                MediaEpisode.media_item_id == PlaybackState.media_item_id,
-                MediaEpisode.season_number == PlaybackState.season_number,
-                MediaEpisode.episode_number == PlaybackState.episode_number,
-            ),
-        )
-        .outerjoin(
-            LibraryFile,
-            and_(
-                LibraryFile.media_item_id == PlaybackState.media_item_id,
-                LibraryFile.season_number == PlaybackState.season_number,
-                LibraryFile.episode_number == PlaybackState.episode_number,
-                LibraryFile.in_place(),
-            ),
-        )
-        .where(ranked_states.c.rank == 1)
-        .group_by(PlaybackState.id, MediaItem.id, MediaMetadata.id, MediaEpisode.id)
-        .order_by(PlaybackState.last_played_at.desc(), PlaybackState.id.desc())
-        .limit(limit)
-    )
-    rows = (await session.execute(statement)).all()
-    for state, *_ in rows:
-        names_needed.add(state.member_id)
-    return rows
-
-
 async def media_activity_overview(
     session: AsyncSession,
     *,
-    recent_limit: int = 30,
     browsable_library_ids: set[int] | None = None,
     fold_hidden: bool = True,
 ) -> MediaActivityView:
-    """装配活动页「观看」视角的完整快照。
+    """装配活动页「观看」视角的实时快照：正在播放与正在下载。
 
     ``browsable_library_ids``：当前超管的可浏览库集合（None = 内部流程不受限）。
-    ``fold_hidden`` 为真是「我的浏览范围」口径：落在范围外的正在播放、正在下载
-    与最近观看统一折叠成计数（``hidden_*_count``），不出片名与海报——活动页是
-    管理视角，但「不可见就彻底不可见」对超管自己摘掉的库同样成立。为假是
-    「全部」口径：跨成员、跨库全量展示，范围外记录只带 ``browsable=false``，
-    前端据此不渲染详情链接（浏览类接口对范围外超管是 404）。
+    ``fold_hidden`` 为真是「我的浏览范围」口径：落在范围外的正在播放与正在下载
+    统一折叠成计数（``hidden_*_count``），不出片名与海报——活动页是管理视角，
+    但「不可见就彻底不可见」对超管自己摘掉的库同样成立。为假是「全部」口径：
+    跨成员、跨库全量展示，范围外记录只带 ``browsable=false``，前端据此不渲染
+    详情链接（浏览类接口对范围外超管是 404）。
+
+    这个接口被活动页每 8 秒轮询一次，只装配页面真正渲染的两段实时数据；
+    「最近观看」与设备清单曾经也在这里算，前端撤掉之后仍每轮白算一遍窗口函数
+    与全表设备行，已一并去掉——历史看播放记录（/playback/history）。
     """
     play_sessions, meters = activity.snapshot()
     play_meters = [m for m in meters if m.kind == activity.STREAM_KIND_PLAY]
@@ -335,30 +288,19 @@ async def media_activity_overview(
     names_needed = {s.member_id for s in play_sessions}
     names_needed.update(m.member_id for m in download_meters)
 
-    device_rows = list(
-        (
-            await session.execute(
-                select(JellyfinDevice).order_by(JellyfinDevice.last_seen_at.desc())
-            )
-        ).scalars()
-    )
-    names_needed.update(d.member_id for d in device_rows)
     # 只有持 Jellyfin 设备凭据的会话才能「注销」；网页播放器走登录会话，
     # 没有可撤销的设备凭据，前端据此隐藏菜单
-    revocable_device_ids = {d.device_id for d in device_rows}
+    revocable_device_ids = set(
+        (await session.execute(select(JellyfinDevice.device_id))).scalars()
+    )
 
-    recent_rows = await _recent_plays(session, names_needed, limit=recent_limit)
     names = await _member_names(session, names_needed)
     # 条目可能同时存在于多个库：只要有一个库在可浏览范围内就展示，详情落点
     # 取范围内 id 最小的库；一个都不在的按口径折叠或标记为不可浏览
-    item_libraries = await libraries_by_item(
-        session,
-        {u[0] for u in units} | {row[1].id for row in recent_rows if row[1].id is not None},
-    )
+    item_libraries = await libraries_by_item(session, {u[0] for u in units})
     scope = VisibilityScope(item_libraries, browsable_library_ids, fold_hidden=fold_hidden)
     hidden_session_count = 0
     hidden_download_count = 0
-    hidden_recent_count = 0
 
     session_views: list[ActivePlaybackSessionView] = []
     for play in sorted(play_sessions, key=lambda s: s.started_at, reverse=True):
@@ -475,80 +417,16 @@ async def media_activity_overview(
             )
         )
 
-    active_device_ids = {s.device_id for s in play_sessions} | {
-        m.device_id for m in meters
-    }
-    device_views = [
-        PlaybackDeviceView(
-            device_id=d.device_id,
-            device_name=d.device_name,
-            client=d.client,
-            client_version=d.version,
-            member_name=names[d.member_id],
-            last_seen_at=d.last_seen_at,
-            online=d.device_id in active_device_ids,
-        )
-        for d in device_rows
-    ]
-
-    recent_views: list[MediaRecentPlayView] = []
-    image_base = get_settings().tmdb_image_base_url.rstrip("/")
-    for (
-        state,
-        item,
-        poster_file,
-        item_runtime_minutes,
-        episode_name,
-        episode_runtime_minutes,
-        file_duration_seconds,
-        library_id,
-    ) in recent_rows:
-        placement = scope.place(item.id, library_id)  # type: ignore[arg-type]
-        if placement.hidden:
-            hidden_recent_count += 1
-            continue
-        duration_ms = _runtime_ms(
-            file_duration_seconds,
-            episode_runtime_minutes if item.kind == "tv" else None,
-            item_runtime_minutes,
-        )
-        recent_views.append(
-            MediaRecentPlayView(
-                member_name=names[state.member_id],
-                media=MediaActivityTarget(
-                    media_item_id=item.id,
-                    library_id=placement.library_id,
-                    browsable=placement.browsable,
-                    kind=MediaKind(item.kind),
-                    title=item.title,
-                    year=item.year,
-                    poster_url=_poster_url(item, poster_file, image_base),
-                    season_number=state.season_number,
-                    episode_number=state.episode_number,
-                    episode_title=episode_name if item.kind == "tv" else None,
-                ),
-                position_ms=state.position_ms,
-                duration_ms=duration_ms,
-                progress_percent=_progress_percent(state.position_ms, duration_ms),
-                played=state.played,
-                play_count=state.play_count,
-                last_played_at=state.last_played_at,
-            )
-        )
-
     return MediaActivityView(
         sessions=session_views,
         downloads=download_views,
-        devices=device_views,
-        recent=recent_views,
         hidden_session_count=hidden_session_count,
         hidden_download_count=hidden_download_count,
-        hidden_recent_count=hidden_recent_count,
     )
 
 
 async def libraries_by_item(session: AsyncSession, item_ids: set[int]) -> dict[int, set[int]]:
-    """条目 id → 它有在位台账的库 id 集合（最近观看那几十条一次取回）。"""
+    """条目 id → 它有在位台账的库 id 集合（一页播放记录涉及的几十个条目一次取回）。"""
     if not item_ids:
         return {}
     rows = await session.execute(

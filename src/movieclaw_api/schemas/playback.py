@@ -128,43 +128,19 @@ class ActiveFileDownloadView(BaseModel):
     started_at: datetime
 
 
-class PlaybackDeviceView(BaseModel):
-    """已登记的播放器设备。"""
-
-    device_id: str
-    device_name: str
-    client: str
-    client_version: str
-    member_name: str
-    last_seen_at: datetime | None
-    online: bool
-
-
-class MediaRecentPlayView(BaseModel):
-    """全成员维度的一条最近观看记录。"""
-
-    member_name: str
-    media: MediaActivityTarget
-    position_ms: int
-    duration_ms: int | None
-    progress_percent: int | None
-    played: bool
-    play_count: int
-    last_played_at: datetime
-
-
 class MediaActivityView(BaseModel):
-    """活动页「观看」视角的完整数据载荷。"""
+    """活动页「观看」视角的实时快照：正在播放与正在下载。
+
+    历史（每场一行的播放记录）走 ``PlaybackHistoryView``，本载荷只装页面 8 秒
+    轮询真正要刷新的实时部分。
+    """
 
     sessions: list[ActivePlaybackSessionView]
     downloads: list[ActiveFileDownloadView]
-    devices: list[PlaybackDeviceView]
-    recent: list[MediaRecentPlayView]
     # 「我的浏览范围」口径下落在当前超管不可浏览的库里的记录：不出片名与海报，
     # 只报个数（docs/design/library-access.md 2.5）。「全部」口径恒为 0。
     hidden_session_count: int = Field(default=0, description="不在你可见范围内的正在播放数")
     hidden_download_count: int = Field(default=0, description="不在你可见范围内的正在下载数")
-    hidden_recent_count: int = Field(default=0, description="不在你可见范围内的最近观看条数")
 
 
 class PlaybackLogEntryView(BaseModel):

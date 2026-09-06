@@ -169,37 +169,14 @@ export interface ActiveFileDownload {
   started_at: string;
 }
 
-export interface PlaybackDevice {
-  device_id: string;
-  device_name: string;
-  client: string;
-  client_version: string;
-  member_name: string;
-  last_seen_at: string | null;
-  online: boolean;
-}
-
-export interface MediaRecentPlay {
-  member_name: string;
-  media: MediaActivityTarget;
-  position_ms: number;
-  duration_ms: number | null;
-  progress_percent: number | null;
-  played: boolean;
-  play_count: number;
-  last_played_at: string;
-}
-
+/** 活动页「观看」视角的实时快照：正在播放与正在下载。历史走 fetchPlaybackHistory。 */
 export interface MediaActivitySnapshot {
   sessions: ActivePlaybackSession[];
   downloads: ActiveFileDownload[];
-  devices: PlaybackDevice[];
-  recent: MediaRecentPlay[];
   /** 「我的浏览范围」口径下落在超管不可浏览的库里的记录数（只报个数，不出片名）；
    *  「全部」口径恒为 0。 */
   hidden_session_count: number;
   hidden_download_count: number;
-  hidden_recent_count: number;
 }
 
 /**
@@ -234,7 +211,7 @@ export async function clearPlaybackHistory(
   return { result: response.data, message: response.message };
 }
 
-/** 活动页「观看」视角的完整快照：正在播放/下载、设备清单与全成员最近观看。 */
+/** 活动页「观看」视角的实时快照：正在播放与正在下载。 */
 export async function fetchMediaActivity(
   scope: MediaActivityScope = "visible",
 ): Promise<MediaActivitySnapshot> {

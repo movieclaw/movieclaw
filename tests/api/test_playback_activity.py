@@ -60,23 +60,20 @@ def client(tmp_path, monkeypatch):
 
 
 async def test_empty_snapshot(client: TestClient) -> None:
-    """全新实例：三段数据都为空，但结构完整。"""
+    """全新实例：两段实时数据都为空，但结构完整。"""
     resp = client.get("/api/v1/playback/activity")
     assert resp.status_code == 200
     data = resp.json()["data"]
     assert data == {
         "sessions": [],
         "downloads": [],
-        "devices": [],
-        "recent": [],
         "hidden_session_count": 0,
         "hidden_download_count": 0,
-        "hidden_recent_count": 0,
     }
 
 
-async def test_assembles_sessions_devices_and_recent(client: TestClient) -> None:
-    """实时会话补齐媒体信息，设备叠加在线标记，历史来自 playback_state。"""
+async def test_assembles_sessions(client: TestClient) -> None:
+    """实时会话补齐媒体信息与文件规格；持 Jellyfin 凭据的会话标为可注销。"""
     async with get_database().session() as session:
         movie = MediaItem(
             kind="movie",
@@ -171,18 +168,13 @@ async def test_assembles_sessions_devices_and_recent(client: TestClient) -> None
     # 速率此刻不可测 → null，而不是伪造成 0
     assert live["play_method"] == "local"
     assert live["rate_bytes_per_second"] is None
-
-    devices = {d["device_id"]: d for d in data["devices"]}
-    assert devices["dev-1"]["online"] is True
-    assert devices["dev-2"]["online"] is False
-    assert devices["dev-1"]["member_name"] == "admin"
-
-    assert len(data["recent"]) == 1
-    recent = data["recent"][0]
-    assert recent["member_name"] == "admin"
-    assert recent["media"]["title"] == "盗梦空间"
-    assert recent["media"]["library_id"] == library_id
-    assert recent["progress_percent"] == 11
+    # 快照只装页面渲染的实时数据：不再随轮询带回设备清单与最近观看
+    assert set(data) == {
+        "sessions",
+        "downloads",
+        "hidden_session_count",
+        "hidden_download_count",
+    }
 
 
 async def test_download_connections_aggregate_per_file(client: TestClient) -> None:
@@ -397,7 +389,6 @@ async def test_revoke_device_drops_credential_and_live_session(client: TestClien
 
     data = client.get("/api/v1/playback/activity").json()["data"]
     # 凭据行与实时会话同时消失，不留一台"已注销却还在播"的幽灵设备
-    assert data["devices"] == []
     assert data["sessions"] == []
 
     # 凭据确实失效：该 token 不再能通过 Jellyfin 设备鉴权
@@ -449,7 +440,7 @@ async def _seed_movie_in_library(
 
 async def test_web_player_progress_feeds_live_session(client: TestClient) -> None:
     """网页播放器的上报走与 Jellyfin 同一条服务：开始后立刻出现在「正在播放」，
-    带浏览器推导的设备名、不可注销；停止后从实时视图消失、留在最近观看。"""
+    带浏览器推导的设备名、不可注销；停止后从实时视图消失、留在播放记录。"""
     movie_id, library_id = await _seed_movie_in_library(
         title="盗梦空间", tmdb_id=27205, library_name="电影"
     )
@@ -498,12 +489,13 @@ async def test_web_player_progress_feeds_live_session(client: TestClient) -> Non
     )
     data = client.get("/api/v1/playback/activity").json()["data"]
     assert data["sessions"] == []
-    assert [r["media"]["title"] for r in data["recent"]] == ["盗梦空间"]
-    assert data["recent"][0]["position_ms"] == 700_000
+    history = client.get("/api/v1/playback/history").json()["data"]
+    assert [e["media"]["title"] for e in history["entries"]] == ["盗梦空间"]
+    assert history["entries"][0]["end_position_ms"] == 700_000
 
 
 async def test_scope_folds_live_sessions_outside_browsable_range(client: TestClient) -> None:
-    """默认口径：落在超管不可浏览的库里的正在播放同样折叠成计数，与最近观看一致；
+    """默认口径：落在超管不可浏览的库里的正在播放 / 正在下载折叠成计数；
     「全部」口径全量展示，但范围外记录标 browsable=false。"""
     hidden_id, hidden_library = await _seed_movie_in_library(
         title="隐藏之作", tmdb_id=1, library_name="私密库", admin_visible=False
@@ -529,25 +521,12 @@ async def test_scope_folds_live_sessions_outside_browsable_range(client: TestCli
         size_bytes=1_000,
         client=info,
     )
-    async with get_database().session() as session:
-        session.add(
-            PlaybackState(
-                member_id=0,
-                media_item_id=hidden_id,
-                position_ms=1_000,
-                play_count=1,
-                last_played_at=utcnow(),
-            )
-        )
-        await session.commit()
 
     data = client.get("/api/v1/playback/activity").json()["data"]
     assert [s["media"]["title"] for s in data["sessions"]] == ["公开之作"]
     assert data["downloads"] == []
-    assert data["recent"] == []
     assert data["hidden_session_count"] == 1
     assert data["hidden_download_count"] == 1
-    assert data["hidden_recent_count"] == 1
 
     data = client.get("/api/v1/playback/activity", params={"scope": "all"}).json()["data"]
     titles = {s["media"]["title"]: s["media"] for s in data["sessions"]}
@@ -556,11 +535,8 @@ async def test_scope_folds_live_sessions_outside_browsable_range(client: TestCli
     assert titles["隐藏之作"]["library_id"] == hidden_library
     assert titles["公开之作"]["browsable"] is True
     assert data["downloads"][0]["media"]["browsable"] is False
-    assert [r["media"]["title"] for r in data["recent"]] == ["隐藏之作"]
-    assert data["recent"][0]["media"]["browsable"] is False
     assert data["hidden_session_count"] == 0
     assert data["hidden_download_count"] == 0
-    assert data["hidden_recent_count"] == 0
 
 
 async def test_end_playback_drops_live_session_and_signals_the_player(client: TestClient) -> None:
@@ -835,6 +811,77 @@ async def test_revoke_device_keeps_watch_history(client: TestClient) -> None:
         await session.commit()
 
     assert client.delete("/api/v1/playback/devices/dev-x").status_code == 200
-    recent = client.get("/api/v1/playback/activity").json()["data"]["recent"]
-    assert len(recent) == 1
-    assert recent[0]["media"]["title"] == "低俗小说"
+    async with get_database().session() as session:
+        states = list(
+            (
+                await session.execute(
+                    select(PlaybackState).where(PlaybackState.media_item_id == movie.id)
+                )
+            ).scalars()
+        )
+    assert len(states) == 1
+    assert states[0].position_ms == 900_000
+
+
+async def test_unit_contexts_fetch_only_the_played_units(client: TestClient) -> None:
+    """长剧回归：补齐一场播放的集名/片长/台账只按 (条目, 季, 集) 精确取行。
+
+    曾经按条目整表拉分集与台账，几部几百集的剧就把几千行（带简介、音轨字幕
+    JSON）水合进 ORM，15 条播放记录的接口从 10 毫秒涨到 140 毫秒以上，且卡的是
+    整个事件循环——活动页「最近播放」偶尔打开特别卡的根源。用 ORM 装载事件数
+    守住：一个单元只该装入条目、档案、那一集的分集行与台账行。
+    """
+    from sqlalchemy import event
+
+    from movieclaw_api.services.playback_activity import _load_unit_contexts
+    from movieclaw_db.models import MediaEpisode
+
+    episodes = 40
+    async with get_database().session() as session:
+        show = MediaItem(
+            kind="tv", tmdb_id=1396, title="长剧", original_title="Long Show", year=2008, aliases=[]
+        )
+        library = Library(name="剧集库", kind="tv", root_paths=["/media/tv"])
+        session.add_all([show, library])
+        await session.commit()
+        session.add(MediaMetadata(media_item_id=show.id, runtime_minutes=45))
+        for e in range(1, episodes + 1):
+            session.add(
+                MediaEpisode(
+                    media_item_id=show.id,
+                    season_number=1,
+                    episode_number=e,
+                    name=f"第 {e} 集",
+                    runtime_minutes=40 + e,
+                )
+            )
+            session.add(
+                LibraryFile(
+                    library_id=library.id,
+                    media_item_id=show.id,
+                    season_number=1,
+                    episode_number=e,
+                    file_path=f"/media/tv/S01E{e:02d}.mkv",
+                    source="scanned",
+                    duration_seconds=2_000 + e,
+                )
+            )
+        await session.commit()
+        show_id = show.id
+
+    unit = (show_id, 1, 7)
+    loaded: list[str] = []
+    async with get_database().session() as session:
+        event.listen(
+            session.sync_session,
+            "loaded_as_persistent",
+            lambda _session, instance: loaded.append(type(instance).__name__),
+        )
+        contexts = await _load_unit_contexts(session, {unit}, set())
+    # 条目 + 档案 + 这一集的分集行 + 这一集的台账行，别的集一行都不该进来
+    assert sorted(loaded) == ["LibraryFile", "MediaEpisode", "MediaItem", "MediaMetadata"]
+
+    ctx = contexts[unit]
+    assert ctx.episode_title == "第 7 集"
+    assert ctx.duration_ms == 2_007 * 1000
+    assert ctx.file is not None and ctx.file.file_path == "/media/tv/S01E07.mkv"

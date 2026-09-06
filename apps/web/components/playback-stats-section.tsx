@@ -240,8 +240,11 @@ function HistoryRow({ entry }: { entry: PlaybackLogEntry }) {
       <span className="tnum w-11 shrink-0 text-caption text-white/40">
         {formatClockTime(entry.started_at)}
       </span>
+      {/* 28×42 的小图走 poster-card 派生图：一页 30 行若取 w780 原图（设置里选了
+          original 就是 MB 级），冷缓存那次要下几 MB 并在主线程同步解码，
+          就是「最近播放偶尔打开特别卡」的浏览器侧那一半 */}
       <PosterImage
-        src={entry.media.poster_url ? imageUrl(entry.media.poster_url) : null}
+        src={entry.media.poster_url ? imageUrl(entry.media.poster_url, "poster-card") : null}
         alt={entry.media.title}
         className="h-[42px] w-[28px] shrink-0 rounded-lg object-cover ring-1 ring-white/10"
       />

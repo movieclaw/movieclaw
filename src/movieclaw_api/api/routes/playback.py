@@ -364,7 +364,6 @@ async def list_recent_watch(
     openapi_extra={"x-cli-hidden": True},
 )
 async def get_media_activity(
-    recent_limit: Annotated[int, Query(ge=1, le=100)] = 30,
     scope: Annotated[
         Literal["visible", "all"],
         Query(description="visible=按我的浏览范围折叠范围外记录；all=跨库全量"),
@@ -372,9 +371,9 @@ async def get_media_activity(
     principal: Principal = Depends(require_login),
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[MediaActivityView]:
-    """活动页「观看」视角：正在播放/下载、设备清单与全成员最近观看。
+    """活动页「观看」视角的实时快照：正在播放与正在下载（每 8 秒轮询）。
 
-    管理员运维视角（跨成员可见），与首页按成员隔离的最近观看接口分离。
+    管理员运维视角（跨成员可见）；历史看 /playback/history。
     ``scope=visible``（默认）把落在当前超管不可浏览的库里的记录折叠成计数，
     不出片名；``scope=all`` 是管控视角的全量口径——``admin_visible`` 是超管
     给自己设的浏览过滤而非安全边界，管理员有权看到所有人的全部播放活动。
@@ -382,7 +381,6 @@ async def get_media_activity(
     return ok(
         await media_activity_overview(
             session,
-            recent_limit=recent_limit,
             browsable_library_ids=await visible_library_ids(session, principal),
             fold_hidden=scope == "visible",
         )

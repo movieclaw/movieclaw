@@ -43,11 +43,8 @@ const POLL_INTERVAL_MS = 8_000;
 const EMPTY_SNAPSHOT: MediaActivitySnapshot = {
   sessions: [],
   downloads: [],
-  devices: [],
-  recent: [],
   hidden_session_count: 0,
   hidden_download_count: 0,
-  hidden_recent_count: 0,
 };
 
 export interface MediaActivityState {
