@@ -116,7 +116,7 @@ const KIND_CARDS: Record<
     chosen: "自动识别并补齐元数据与图片",
     defaultName: "电影库",
     defaults:
-      "实时监控目录变化、扫描后保留丢失记录、为未识别文件生成缩略图、在首页展示。" +
+      "实时监控目录变化、扫描后保留丢失记录、为未识别文件生成封面、在首页展示。" +
       "第一个电影库自动成为默认库；刮削偏好建好后在「编辑库」里设。",
   },
   tv: {
@@ -125,7 +125,7 @@ const KIND_CARDS: Record<
     chosen: "自动识别季集并补齐元数据与图片",
     defaultName: "剧集库",
     defaults:
-      "实时监控目录变化、扫描后保留丢失记录、为未识别文件生成缩略图、在首页展示。" +
+      "实时监控目录变化、扫描后保留丢失记录、为未识别文件生成封面、在首页展示。" +
       "第一个剧集库自动成为默认库；刮削偏好建好后在「编辑库」里设。",
   },
   video: {
@@ -135,7 +135,7 @@ const KIND_CARDS: Record<
     chosen: "不识别不刮削，按 NFO / 文件名展示",
     defaultName: "其他",
     defaults:
-      "实时监控目录变化、扫描后保留丢失记录、从视频抓帧生成缩略图、在首页展示。" +
+      "实时监控目录变化、扫描后保留丢失记录、从视频抓帧生成封面、在首页展示。" +
       "网络挂载的目录建议建好后到「编辑库 → 扫描与监控」关掉实时监控与抓帧。",
   },
   photo: {
@@ -513,10 +513,11 @@ function CreateLibraryDialog({
       kind,
       root_paths: roots,
       match_rules: hasScope ? buildMatchRules(validGenres(kind, genres, routingOptions), regions) : [],
-      // 四个开关全按推荐值：监控开、自动清理关、缩略图开、首页展示；建好后在编辑里调
+      // 开关全按推荐值：监控开、自动清理关、封面开、场景图开、首页展示；建好后在编辑里调
       auto_clear_missing: false,
       realtime_watch: true,
       generate_thumbnails: true,
+      extract_chapter_images: true,
       exclude_from_home: kindExcludedFromHome(kind),
       scrape_overrides: {},
       access_mode: accessMode,
@@ -1067,6 +1068,9 @@ function EditLibraryDialog({
   const [realtimeWatch, setRealtimeWatch] = useState(library.realtime_watch);
   const [autoClearMissing, setAutoClearMissing] = useState(library.auto_clear_missing);
   const [generateThumbnails, setGenerateThumbnails] = useState(library.generate_thumbnails);
+  const [extractChapterImages, setExtractChapterImages] = useState(
+    library.extract_chapter_images,
+  );
   const [excludeFromHome, setExcludeFromHome] = useState(library.exclude_from_home);
   const [accessMode, setAccessMode] = useState<LibraryAccessMode>(library.access_mode);
   const [adminVisible, setAdminVisible] = useState(library.admin_visible);
@@ -1102,6 +1106,7 @@ function EditLibraryDialog({
       auto_clear_missing: autoClearMissing,
       realtime_watch: realtimeWatch,
       generate_thumbnails: generateThumbnails,
+      extract_chapter_images: extractChapterImages,
       exclude_from_home: excludeFromHome,
       scrape_overrides: scraped ? scrapeOverrides : {},
       access_mode: accessMode,
@@ -1164,8 +1169,9 @@ function EditLibraryDialog({
           {dot(autoClearMissing, "自动清理丢失")}
           {dot(
             generateThumbnails,
-            scraped ? "未识别文件缩略图" : playable ? "抓帧缩略图" : "缩略图",
+            scraped ? "未识别文件封面" : playable ? "抓帧封面" : "缩略图",
           )}
+          {playable && dot(extractChapterImages, "章节场景图")}
           {dot(!excludeFromHome, "首页展示")}
         </>
       ),
@@ -1186,9 +1192,9 @@ function EditLibraryDialog({
           <SwitchRow
             title={
               scraped
-                ? "为未识别文件生成缩略图"
+                ? "为未识别文件生成封面"
                 : playable
-                  ? "从视频抓帧生成缩略图"
+                  ? "从视频抓帧生成封面"
                   : "生成缩略图"
             }
             checked={generateThumbnails}
@@ -1199,6 +1205,15 @@ function EditLibraryDialog({
                 : "把原图缩到长边 720 像素当相册墙上的缩略图，网格只加载缩略图。关闭后墙会直接加载原图，大照片会很慢；只有网络挂载的大库介意流量时才建议关。"
             }
           />
+          {/* 章节是视频的事：图片库（不可播）没有这一项 */}
+          {playable && (
+            <SwitchRow
+              title="抓取章节场景图"
+              checked={extractChapterImages}
+              onChange={setExtractChapterImages}
+              detail="每个视频按章节（有内嵌章节用内嵌，没有按时长切成 3～12 段）各抓一张画面：条目页出「场景」横排、点一张从那里开始播，Infuse 等播放器也能按章节跳转。扫描后在后台低优先级生成，每个文件要定位读取若干次，网络挂载的大库介意读取量可关闭；关闭后已生成的图保留。"
+            />
+          )}
           <SwitchRow
             title="在首页展示"
             checked={!excludeFromHome}

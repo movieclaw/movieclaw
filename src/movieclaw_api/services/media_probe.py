@@ -17,6 +17,7 @@ from __future__ import annotations
 import functools
 import json
 import logging
+import re
 import shutil
 import subprocess
 import time
@@ -66,6 +67,10 @@ class MediaSpec:
     # 创建时间。原样保留字符串，解析成日期是消费方的事
     tag_date: str | None = None
     creation_time: str | None = None
+    # 内嵌章节（``-show_chapters``）：空列表 = 探测成功但容器里没有章节。
+    # 元素 {"start_ms", "end_ms", "title"}，结构见 ``_chapter_info``；有效章节
+    # （内嵌不足两个时按时长合成）由 library/chapters.py 决定，这里只记事实
+    chapters: list[dict] = field(default_factory=list)
 
 
 def probe_media(path: str | Path) -> MediaSpec | None:
@@ -88,6 +93,9 @@ def probe_media(path: str | Path) -> MediaSpec | None:
                 "json",
                 "-show_format",
                 "-show_streams",
+                # 章节顺带一起读（docs/design/video-chapters.md §4.5）：章节在
+                # 容器头里，与流信息同一次读取，零额外 IO
+                "-show_chapters",
                 str(path),
             ],
             capture_output=True,
@@ -176,6 +184,29 @@ def probe_image(path: str | Path) -> MediaSpec | None:
         subtitle_streams=[],
         tag_date=taken,
     )
+
+
+def probe_chapters(path: str | Path) -> list[dict] | None:
+    """只读容器头里的章节（存量行补探用，docs/design/video-chapters.md §4.5）。
+
+    比整套 ``probe_media`` 轻：不列流、不读时长。ffprobe 缺失或失败返回
+    None（调用方保持 NULL，下次再试）。
+    """
+    try:
+        proc = subprocess.run(
+            ["ffprobe", "-v", "error", "-print_format", "json", "-show_chapters", str(path)],
+            capture_output=True,
+            timeout=_PROBE_TIMEOUT,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        payload = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return None
+    return parse_chapters(payload.get("chapters"))
 
 
 # --- 探测失败记忆（媒体库入库/补探/点名重探共用）---------------------------
@@ -496,7 +527,72 @@ def _parse_probe(payload: dict, *, include_mpegts_pids: bool = False) -> MediaSp
         ],
         tag_date=_first_tag(fmt_tags, "date", "originaldate", "date_released"),
         creation_time=_first_tag(fmt_tags, "creation_time", "com.apple.quicktime.creationdate"),
+        chapters=parse_chapters(payload.get("chapters")),
     )
+
+
+# 形如时间戳的章节标题（某些压制工具把起点时间写进 title），视同没有标题
+# ——Jellyfin 的 NormalizeChapterNames 同款判断（TimeSpan.TryParse）
+_TIMESTAMP_TITLE = re.compile(r"^\s*\d{1,2}:\d{2}(:\d{2})?([.,]\d+)?\s*$")
+
+
+def normalize_chapter_title(title: object) -> str | None:
+    """章节标题规范化：空、纯空白、或本身就是个时间戳的一律记 None。
+
+    控制台对无标题章节只显示时间戳，Jellyfin DTO 补 ``第 N 章``——都比把
+    "00:12:30.000" 当标题展示强。
+    """
+    if not isinstance(title, str):
+        return None
+    stripped = title.strip()
+    if not stripped or _TIMESTAMP_TITLE.match(stripped):
+        return None
+    return stripped
+
+
+def _chapter_info(chapter: dict) -> dict | None:
+    """ffprobe 的一条 chapter → 台账元素；起点解析不出来的丢弃。"""
+    start = _to_float(chapter.get("start_time"))
+    if start is None or start < 0:
+        return None
+    end = _to_float(chapter.get("end_time"))
+    tags = chapter.get("tags") or {}
+    return {
+        "start_ms": int(round(start * 1000)),
+        "end_ms": int(round(end * 1000)) if end is not None and end >= start else None,
+        "title": normalize_chapter_title(tags.get("title")),
+    }
+
+
+def parse_chapters(raw: object) -> list[dict]:
+    """``-show_chapters`` 的 ``chapters[]`` → 按起点升序、去重的章节列表。
+
+    同一起点出现两次（个别压制工具的产物）只留第一条；乱序的按起点排好，
+    下游（有效章节、抓图、Jellyfin 序号）都依赖这个顺序。
+    """
+    if not isinstance(raw, list):
+        return []
+    parsed: list[dict] = []
+    seen: set[int] = set()
+    for chapter in raw:
+        if not isinstance(chapter, dict):
+            continue
+        info = _chapter_info(chapter)
+        if info is None or info["start_ms"] in seen:
+            continue
+        seen.add(info["start_ms"])
+        parsed.append(info)
+    parsed.sort(key=lambda c: c["start_ms"])
+    return parsed
+
+
+def _to_float(value: object) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _first_tag(tags: dict, *keys: str) -> str | None:

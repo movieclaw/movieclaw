@@ -804,6 +804,14 @@ async def _run_scan_job(
             ),
         )
     summary = await scan_library(library_id, **scan_kwargs)
+    # 章节是可播内容的事：图片库（playable=False）没有章节，不起这个作业
+    if library.extract_chapter_images and profile_of(library).playable:
+        # 章节场景图走独立的低优先级作业（docs/design/video-chapters.md §4.5）：
+        # 覆盖新文件与存量回填，不拖长扫描本身；同库已有一份在跑则复用
+        from movieclaw_api.services.library.chapters import enqueue_library_chapter_images_job
+
+        async with db.session() as session:
+            await enqueue_library_chapter_images_job(session, library_id, library.name)
     payload = scan_summary_payload(summary)
     message = (
         f"扫描完成：新入账 {summary.scanned - summary.relinked} 个文件，"
@@ -2442,6 +2450,10 @@ async def _refresh_known_row(
                 row.color_space = spec.color_space
                 row.audio_streams = list(spec.audio_streams)
                 row.subtitle_streams = list(spec.subtitle_streams)
+                # 文件内容变了：章节按新探测的记，旧场景图作废（NULL 让抓图作业
+                # 重来；旧图文件由作业按 start_ms 对不上时清掉）
+                row.chapters = list(spec.chapters)
+                row.chapter_images = None
                 row.updated_at = utcnow()
                 changed = True
                 logger.info("视频文件内容已变化，介质规格与内封字幕轨已重探：%s", file)
@@ -2674,6 +2686,7 @@ async def _ingest_file(
             color_space=spec.color_space if spec else None,
             audio_streams=list(spec.audio_streams) if spec else None,
             subtitle_streams=list(spec.subtitle_streams) if spec else None,
+            chapters=list(spec.chapters) if spec else None,
             external_subtitles=external_subtitles,
             media_source=scanned_media_source(attrs, container) if profile.scraped else None,
             release_group=attrs.release_group if profile.scraped else None,

@@ -40,6 +40,8 @@ export interface ImageLightboxProps {
   initialIndex?: number;
   /** 顶部标题（如种子名），可省略 */
   title?: string;
+  /** 逐张说明（如章节「标题 · 12:30」）；有则顶栏按当前张显示，优先于 title */
+  captions?: string[];
   /** 顶栏操作按钮（可省略）；耗时操作执行期间按钮转菊花并禁用，不阻断继续浏览 */
   action?: LightboxAction;
   /** 底部缩略图形状：竖版 2:3（海报/截图，默认）或宽幅 16:9（剧照） */
@@ -51,6 +53,7 @@ export function ImageLightbox({
   images,
   initialIndex = 0,
   title,
+  captions,
   action,
   thumbAspect = "portrait",
   onClose,
@@ -129,6 +132,7 @@ export function ImageLightbox({
     setBroken((prev) => (prev.has(i) ? prev : new Set(prev).add(i)));
 
   if (images.length === 0) return null;
+  const heading = captions?.[index] ?? title;
 
   return createPortal(
     // 点击空白处关闭；内容区各元素自行 stopPropagation。
@@ -137,7 +141,7 @@ export function ImageLightbox({
     <div
       role="dialog"
       aria-modal="true"
-      aria-label={title ? `图片浏览：${title}` : "图片浏览"}
+      aria-label={heading ? `图片浏览：${heading}` : "图片浏览"}
       onClick={onClose}
       className="fixed inset-0 z-[70] flex flex-col bg-black/85 backdrop-blur-md [bottom:calc(-1*var(--vp-overshoot))]"
     >
@@ -146,7 +150,7 @@ export function ImageLightbox({
         <span className="tnum shrink-0 rounded-full bg-white/[0.1] px-2.5 py-0.5 text-sub">
           {index + 1} / {images.length}
         </span>
-        {title && <p className="min-w-0 flex-1 truncate text-ui text-white/70">{title}</p>}
+        {heading && <p className="min-w-0 flex-1 truncate text-ui text-white/70">{heading}</p>}
 
         {/* 可选操作按钮（如「设为背景」）：busy 转菊花禁用，done 变对勾，错误就地提示 */}
         {action && (

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import time
+from datetime import UTC, datetime
 
 import pytest
 
@@ -219,3 +220,33 @@ def test_finished_connection_bytes_do_not_leak_to_next_unit() -> None:
     sessions, _ = activity.snapshot()
     assert sessions[0].unit == next_unit
     assert sessions[0].bytes_transferred == 0
+
+
+def test_restore_session_only_when_device_has_none() -> None:
+    """取流证据重建会话：设备无会话时建（带库里补的位置/开始时间、标本地直连），
+    已有会话时不动，拒绝窗口内不建。"""
+    started = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
+    activity.restore_session(
+        "dev-1", member_id=3, client=CLIENT, unit=UNIT, position_ms=42_000, started_at=started
+    )
+    sessions, _ = activity.snapshot()
+    assert len(sessions) == 1
+    restored = sessions[0]
+    assert restored.member_id == 3
+    assert restored.position_ms == 42_000
+    assert restored.started_at == started
+    assert restored.local_streamed is True
+
+    # 已有会话（哪怕单元不同）不被顶掉
+    activity.restore_session(
+        "dev-1", member_id=3, client=CLIENT, unit=(2, 1, 1), position_ms=None, started_at=None
+    )
+    sessions, _ = activity.snapshot()
+    assert sessions[0].unit == UNIT
+
+    # 管理员刚结束的设备不能靠取流建回来
+    activity.end_device("dev-1")
+    activity.restore_session(
+        "dev-1", member_id=3, client=CLIENT, unit=UNIT, position_ms=None, started_at=None
+    )
+    assert activity.snapshot()[0] == []

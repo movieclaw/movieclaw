@@ -305,6 +305,7 @@ class LibraryConfigService:
         realtime_watch: bool | None = None,
         scrape_overrides: dict | None = None,
         generate_thumbnails: bool | None = None,
+        extract_chapter_images: bool | None = None,
         exclude_from_home: bool | None = None,
         access_mode: str | None = None,
         admin_visible: bool | None = None,
@@ -341,6 +342,9 @@ class LibraryConfigService:
             realtime_watch=True if realtime_watch is None else bool(realtime_watch),
             scrape_overrides=overrides,
             generate_thumbnails=True if generate_thumbnails is None else bool(generate_thumbnails),
+            extract_chapter_images=(
+                True if extract_chapter_images is None else bool(extract_chapter_images)
+            ),
             exclude_from_home=bool(exclude_from_home),
             access_mode=mode or "everyone",
             admin_visible=True if admin_visible is None else bool(admin_visible),
@@ -363,6 +367,7 @@ class LibraryConfigService:
         realtime_watch: bool | None = None,
         scrape_overrides: dict | None = None,
         generate_thumbnails: bool | None = None,
+        extract_chapter_images: bool | None = None,
         exclude_from_home: bool | None = None,
         access_mode: str | None = None,
         admin_visible: bool | None = None,
@@ -398,6 +403,7 @@ class LibraryConfigService:
             realtime_watch=realtime_watch,
             scrape_overrides=overrides,
             generate_thumbnails=generate_thumbnails,
+            extract_chapter_images=extract_chapter_images,
             exclude_from_home=exclude_from_home,
             access_mode=mode,
             admin_visible=admin_visible,

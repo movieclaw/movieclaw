@@ -159,7 +159,7 @@ async def _scrape(media_item_id: int, *, force: bool, on_phase: PhaseHook = None
         local_only = item.source != MediaSource.TMDB
         kind = MediaKind(item.kind)
     if local_only:
-        _phase("生成缩略图")
+        _phase("生成封面")
         from movieclaw_api.services.library.thumbs import ensure_local_assets
 
         await ensure_local_assets(media_item_id, force=force)

@@ -31,7 +31,7 @@ export type WatchViewName = (typeof WATCH_VIEWS)[number];
 
 export const WATCH_VIEW_LABELS: readonly { id: WatchViewName; label: string }[] = [
   { id: "playing", label: "正在播放" },
-  { id: "plays", label: "播放记录" },
+  { id: "plays", label: "最近播放" },
   { id: "stats", label: "观看统计" },
 ] as const;
 

@@ -8,8 +8,8 @@
 向前兼容：纯新增可空列，旧代码回退后忽略它。
 
 Revision ID: d1e2f3a4b5c6
-Revises: c9e4f5a6b7d8
-Create Date: 2026-09-06 12:00:00.000000
+Revises: d4e5f6a7b8c9
+Create Date: 2026-09-06 13:00:00.000000
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "d1e2f3a4b5c6"
-down_revision = "c9e4f5a6b7d8"
+down_revision = "d4e5f6a7b8c9"
 branch_labels = None
 depends_on = None
 

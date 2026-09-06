@@ -116,6 +116,8 @@ library artwork
 library artwork download
 library artwork list-candidates
 library artwork select
+library chapter-images
+library chapter-images generate
 library create
 library delete
 library get
@@ -143,6 +145,7 @@ library items preview-reidentification
 library items preview-transfer
 library items purge-file
 library items refresh-metadata
+library items regenerate-chapter-images
 library items reidentify
 library items restore-file
 library items set-scrape-library

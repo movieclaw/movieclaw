@@ -27,13 +27,18 @@ import {
   listTrashedFiles,
   reorderLibraries,
   setDefaultLibrary,
+  startLibraryChapterImages,
   startLibraryMetadataRefresh,
   startLibraryScan,
   stopLibraryMetadataRefresh,
   stopLibraryScan,
   updateLibrary,
 } from "@/lib/api/libraries";
-import { refreshLibraryConfirm, scanLibraryConfirm } from "@/lib/library-confirm";
+import {
+  chapterImagesConfirm,
+  refreshLibraryConfirm,
+  scanLibraryConfirm,
+} from "@/lib/library-confirm";
 import { routingOverlapWarnings } from "@/lib/library-routing-warnings";
 import {
   EMPTY_FILTER,
@@ -236,6 +241,11 @@ export function LibraryManageView() {
         }
         void confirm(refreshLibraryConfirm(library.name)).then((ok) => {
           if (ok) run(startLibraryMetadataRefresh(library.id));
+        });
+      },
+      onChapterImages: (library, force) => {
+        void confirm(chapterImagesConfirm(library.name, force)).then((ok) => {
+          if (ok) run(startLibraryChapterImages(library.id, { force }));
         });
       },
       onEdit: (library) => setEditing(library),

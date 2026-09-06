@@ -177,6 +177,7 @@ func TestDomainCommandSets(t *testing.T) {
 			"library.artwork.download",
 			"library.artwork.list-candidates",
 			"library.artwork.select",
+			"library.chapter-images.generate",
 			"library.create",
 			"library.delete",
 			"library.get",
@@ -203,6 +204,7 @@ func TestDomainCommandSets(t *testing.T) {
 			"library.items.preview-reidentification",
 			"library.items.preview-transfer",
 			"library.items.refresh-metadata",
+			"library.items.regenerate-chapter-images",
 			"library.items.reidentify",
 			"library.items.set-scrape-library",
 			"library.items.transfer",
@@ -328,6 +330,7 @@ func TestDangerousAndLongTaskAnnotations(t *testing.T) {
 		"library.metadata.refresh-library":      "job_id",
 		"workflow.library.organize-files.start": "job_id",
 		"library.items.refresh-metadata":        "job_id",
+		"library.chapter-images.generate":       "job_id",
 		"library.items.transfer":                "job_id",
 		"library.subtitles.generate":            "id",
 	} {

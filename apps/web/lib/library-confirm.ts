@@ -53,3 +53,20 @@ export function refreshItemConfirm(title: string): ConfirmOptions {
     confirmLabel: "刷新",
   };
 }
+
+/** 整库生成章节场景图：补缺（默认）或全部重抓（force）。 */
+export function chapterImagesConfirm(name: string, force: boolean): ConfirmOptions {
+  return force
+    ? {
+        title: `重新生成「${name}」的全部场景图？`,
+        description:
+          "已有的图也会重抓，按当前章节与合成策略重新生成。后台低优先级执行，可在任务中心观察或取消；每个文件按章节数定位读取若干次，网络挂载的库会有读取流量。",
+        confirmLabel: "重新生成",
+      }
+    : {
+        title: `为「${name}」生成场景图？`,
+        description:
+          "只补还没有图的文件，后台低优先级执行，可在任务中心观察或取消。每个文件按章节数定位读取若干次，网络挂载的库会有读取流量。",
+        confirmLabel: "开始生成",
+      };
+}

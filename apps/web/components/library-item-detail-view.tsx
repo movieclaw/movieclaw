@@ -10,6 +10,7 @@ import { useRouter } from "next/navigation";
 
 import { ArtworkPickerDialog } from "@/components/artwork-picker-dialog";
 import { CastRow } from "@/components/cast-row";
+import { ChapterStrip } from "@/components/chapter-strip";
 import { MediaTrackRows } from "@/components/media-track-rows";
 import { PAGE_NAV_BUTTON_CLASS, PageNav } from "@/components/page-nav";
 import { HScroller } from "@/components/h-scroller";
@@ -30,6 +31,7 @@ import { ReidentifyDialog } from "@/components/reidentify-dialog";
 import { Tooltip } from "@/components/tooltip";
 import {
   type ItemDeleteResult,
+  type LibraryChapter,
   type LibraryEpisode,
   type LibraryItemDetail,
   type LibraryItemFile,
@@ -47,6 +49,7 @@ import {
   previewItemTransfer,
   purgeLibraryFile,
   refreshItemMetadata,
+  regenerateItemChapterImages,
   restoreLibraryFile,
   setItemScrapeLibrary,
   transferLibraryItem,
@@ -293,13 +296,22 @@ export function LibraryItemDetailView({
   // **无论刷新是从这个页面发起的、还是别处发起后你才打开这一页**，都会
   // 看到"正在刷新"并在结束时自动呈现新档案/新图；离开页面也不影响后台跑完
   const scrapingNow = Boolean(detail?.scraping) || kicking;
+  // 章节场景图在后台生成（打开页面时懒触发）：每 3 秒重拉一次、最多 20 轮，
+  // 图一张张补上；超出轮数就不再追（图缺几张不影响使用，下次打开继续）
+  const chapterPolls = useRef(0);
+  useEffect(() => {
+    if (!detail?.chapters_pending) chapterPolls.current = 0;
+  }, [detail?.chapters_pending]);
+  const chaptersPolling =
+    Boolean(detail?.chapters_pending) && !detail?.scraping && chapterPolls.current < 20;
   useVisiblePolling(
     () => {
+      if (!detail?.scraping) chapterPolls.current += 1;
       getLibraryItemDetail(libraryId, mediaItemId)
         .then(setDetail)
         .catch(() => {});
     },
-    detail?.scraping ? 2000 : null,
+    detail?.scraping ? 2000 : chaptersPolling ? 3000 : null,
   );
 
   // 兜底态（加载中/失败）的顶栏：条目标题未知，末项留空——渲染 PageNav 是为了
@@ -477,6 +489,23 @@ export function LibraryItemDetailView({
               searchHref={`/search?q=${encodeURIComponent(detail.title)}` as Route}
               onReidentify={() => setReidentifyOpen(true)}
               onRefreshMetadata={runMetadataRefresh}
+              // 场景图与元数据刷新相互独立：库开了开关才给入口
+              onRegenerateChapterImages={
+                library?.extract_chapter_images
+                  ? () => {
+                      regenerateItemChapterImages(libraryId, mediaItemId)
+                        .then(() => {
+                          toast.success("已开始重新生成场景图");
+                          // 后台任务在响应发出后才起跑：立刻拉一次让 chapters_pending
+                          // 接管轮询，再兜一次防止抢在标志立起之前
+                          reload();
+                          setTimeout(reload, 1500);
+                        })
+                        .catch((e) => toast.error((e as Error).message));
+                    }
+                  : undefined
+              }
+              chaptersPending={Boolean(detail.chapters_pending)}
               onChangeArtwork={() => setArtworkOpen(true)}
               scrapeLibraryName={detail.scrape_library_name}
               onChangeScrapeLibrary={() => setScrapeLibraryOpen(true)}
@@ -645,6 +674,33 @@ export function LibraryItemDetailView({
             initialSeason={initialSeason}
             initialEpisode={initialEpisode}
             onEpisodeChange={setSelectedSeriesEpisode}
+          />
+        )}
+
+        {/* —— 场景横排：当前选中文件（电影随版本选择器、剧集随选中集）的章节。
+            放在分集区之下：先选集、再看这一集的场景，阅读顺序才顺。
+            点图看大图，从那一帧起播；原盘/strm 没有章节自然不渲染 —— */}
+        {selectedTrackFile?.chapters && selectedTrackFile.chapters.length > 0 && (
+          <ChapterStrip
+            chapters={selectedTrackFile.chapters}
+            pending={Boolean(detail.chapters_pending)}
+            resumeMs={watched && !watched.played ? watched.position_ms : null}
+            onPlay={(chapter: LibraryChapter) => {
+              rememberPlayerReturnPath(window.location.pathname + window.location.search);
+              router.push(
+                playHref(detail.media_item_id, {
+                  season:
+                    !isMovie && selectedSeriesEpisode
+                      ? selectedSeriesEpisode.seasonNumber
+                      : undefined,
+                  episode:
+                    !isMovie && selectedSeriesEpisode
+                      ? selectedSeriesEpisode.episode.episode_number
+                      : undefined,
+                  tSeconds: (chapter.frame_ms ?? chapter.start_ms) / 1000,
+                }) as Route,
+              );
+            }}
           />
         )}
 
@@ -909,6 +965,8 @@ function ItemActionsMenu({
   searchHref,
   onReidentify,
   onRefreshMetadata,
+  onRegenerateChapterImages,
+  chaptersPending,
   onChangeArtwork,
   scrapeLibraryName,
   onChangeScrapeLibrary,
@@ -921,13 +979,17 @@ function ItemActionsMenu({
   canManage: boolean;
   /** 所在库有识别链（影视库）：给「修正识别结果」；其他库没有可认领的外部身份 */
   identifiable: boolean;
-  /** 条目本身来自 TMDB：给刷新元数据/更换图片/刮削归属；本地条目只有缩略图 */
+  /** 条目本身来自 TMDB：给刷新元数据/更换图片/刮削归属；本地条目只有封面 */
   scraped: boolean;
   scraping: boolean;
   /** 站点资源搜索直达（预填片名）：手动补版本/换版本的入口 */
   searchHref: Route;
   onReidentify: () => void;
   onRefreshMetadata: () => void;
+  /** 重新生成章节场景图（与刷新元数据独立）；所在库关了开关时不传 */
+  onRegenerateChapterImages?: () => void;
+  /** 场景图正在后台生成：菜单项置灰 */
+  chaptersPending: boolean;
   onChangeArtwork: () => void;
   /** 当前刮削归属库名；null=无归属（跟全局设置） */
   scrapeLibraryName: string | null;
@@ -1004,7 +1066,16 @@ function ItemActionsMenu({
                   disabled={scraping}
                   className={itemClass}
                 >
-                  {scraping ? "正在生成缩略图…" : "重新生成缩略图"}
+                  {scraping ? "正在生成封面…" : "重新生成封面"}
+                </DropdownMenu.Item>
+              )}
+              {onRegenerateChapterImages && (
+                <DropdownMenu.Item
+                  onSelect={onRegenerateChapterImages}
+                  disabled={chaptersPending}
+                  className={itemClass}
+                >
+                  {chaptersPending ? "正在生成场景图…" : "重新生成场景图"}
                 </DropdownMenu.Item>
               )}
               {scraped && (

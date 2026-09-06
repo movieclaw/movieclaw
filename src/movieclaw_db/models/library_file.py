@@ -214,6 +214,27 @@ class LibraryFile(TimestampMixin, table=True):
         sa_column=Column(_NullableJson, nullable=True),
         description="外挂字幕清单 JSON；NULL=未发现过",
     )
+    # 章节（docs/design/video-chapters.md §4.3）。两列分开存，理由与外挂字幕
+    # 同：数据来源与失效键不同（章节=容器头里的内嵌章节，图=抽帧产物），
+    # 各自刷新互不牵连——合成策略调档、抓图失败都不动探测事实。
+    # chapters 三态：NULL=未探测（旧行，抓图作业顺带补探），[]=探测过没有章节。
+    #   元素 {"start_ms", "end_ms", "title"}；标题为空或形如时间戳的存 null。
+    #   有效章节列表由 library/chapters.py 的 effective_chapters 决定：内嵌
+    #   ≥2 个用内嵌，否则按时长合成（Jellyfin：0 或 1 个都算"没有章节"）。
+    chapters: list | None = Field(
+        default=None,
+        sa_column=Column(_NullableJson, nullable=True),
+        description="内嵌章节清单 JSON；NULL=未探测",
+    )
+    # chapter_images 三态：NULL=没抓过图，[]=抓过无产物（无章节/跳过/失败）。
+    #   元素 {"start_ms", "frame_ms", "image"}：start_ms 是与有效章节 join 的键，
+    #   frame_ms 是图上那一帧的真实时间（只解关键帧会比章节起点晚几秒），
+    #   image 是相对资产根目录的路径 {item}/chapters/{file_id}/{start_ms}.jpg
+    chapter_images: list | None = Field(
+        default=None,
+        sa_column=Column(_NullableJson, nullable=True),
+        description="章节场景图清单 JSON；NULL=没抓过",
+    )
 
     # -- 发布信息（来自文件名解析，enrich 复用）------------------------------
     media_source: str | None = Field(default=None, description="片源：WEB-DL/Blu-ray/…")
