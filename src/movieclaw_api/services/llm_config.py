@@ -1,11 +1,15 @@
-"""LLM 供应商配置服务：多实例配置的读写、连接验证与对话框的模型清单。
+"""LLM 供应商配置服务：实例接入、AI 设定（各用途默认模型）、连接验证与模型清单。
 
-与下载器配置（downloader_config）同构：可接入多个实例、有且仅有一个默认。
-差异只在验证判据：用 default_model 发一次最小对话（max_tokens=1）——比只调
-/models 列表更真实，能一次性证明 key、端点、模型 id 三者都有效；
-模型列表另行 best-effort 拉取，仅用于设置页的补录提示，失败不影响结论。
+接入与设定是两件事：
+- **接入**（llm_provider 表，多实例）只回答「怎么连上」：实例名、类型、端点、
+  Key、自定义模型目录。连接测试用目录里第一个模型发一次 max_tokens=1 的
+  最小对话——比只调 /models 列表更真实，能一次性证明 key、端点、模型三者
+  都有效；模型列表另行 best-effort 拉取，仅作设置页补录提示；
+- **设定**（LlmDefaultsSetting）回答「什么场景用哪个模型」：智能体默认模型、
+  字幕处理默认模型，值是对话框同款的模型引用。未设置时按第一个接入实例的
+  连接测试模型兜底，设定失效（实例被删）时同样兜底，设置页会展示实际生效值。
 
-模型选择（对话框「模型」入口）的口径：
+模型清单（对话框「模型」入口与 AI 设定的选项）的口径：
 - 一个实例接入后，它目录里的全部模型都可选：预设目录 ∪ 用户补录
   （extra_models，按 id 覆盖预设），与 LlmRouter._catalog 同口径；
 - 端点上报的 available_models 不进清单——它们没有上下文窗口 / 思考能力
@@ -17,6 +21,8 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
+from typing import Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,7 +31,8 @@ from movieclaw_api.exceptions import (
     ConflictException,
     NotFoundException,
 )
-from movieclaw_api.schemas.llm import LlmModelOptionView
+from movieclaw_api.schemas.llm import LlmDefaultsView, LlmModelOptionView
+from movieclaw_api.settings import LlmDefaultsSetting, get_setting_store
 from movieclaw_db.engine import get_database
 from movieclaw_db.models.llm_provider import LlmProvider
 from movieclaw_db.models.site_credential import ConfigStatus
@@ -40,6 +47,9 @@ logger = logging.getLogger("movieclaw_api.llm_config")
 # 验证用较短超时：只回答"通不通"，没必要等 SDK 默认的十分钟
 _TEST_TIMEOUT = 30.0
 
+#: 有默认模型设定的用途；新增用途时同步扩展 LlmDefaultsSetting 与 resolve_defaults
+Purpose = Literal["agent", "subtitle"]
+
 
 def to_domain_config(row: LlmProvider, api_key: str) -> LlmProviderConfig:
     """ORM 记录 → movieclaw_llm 领域配置（LlmRouter 按它构建协议客户端）。"""
@@ -50,7 +60,6 @@ def to_domain_config(row: LlmProvider, api_key: str) -> LlmProviderConfig:
         base_url=row.base_url,
         default_model=row.default_model,
         extra_models=[ModelInfo.model_validate(m) for m in row.extra_models or []],
-        is_default=row.is_default,
         user_agent=row.user_agent,
     )
 
@@ -66,12 +75,15 @@ def provider_catalog(row: LlmProvider) -> list[ModelInfo]:
     return list(merged.values())
 
 
-def build_model_options(rows: list[LlmProvider]) -> list[LlmModelOptionView]:
-    """把全部实例的目录拍平成对话框的模型清单（rows 须默认实例在前）。
+def build_model_options(
+    rows: list[LlmProvider], agent_default: str | None = None
+) -> list[LlmModelOptionView]:
+    """把全部实例的目录拍平成模型清单（rows 按添加顺序）。
 
     重复 id 的处理策略：同一模型 id 只在一个实例里有，引用与展示都是裸 id；
     出现在多个实例里，引用改用「实例名/模型id」精确路由（LlmRouter 的显式
     分支），展示加括号「模型id（实例名）」让用户分得清走哪家。
+    ``agent_default`` 是智能体默认模型的引用，命中的选项标 is_default。
     """
     catalogs = [(row, provider_catalog(row)) for row in rows]
     owners: dict[str, int] = {}
@@ -82,22 +94,78 @@ def build_model_options(rows: list[LlmProvider]) -> list[LlmModelOptionView]:
     for row, catalog in catalogs:
         for model in catalog:
             ambiguous = owners[model.id] > 1
+            ref = f"{row.name}/{model.id}" if ambiguous else model.id
             options.append(
                 LlmModelOptionView(
-                    ref=f"{row.name}/{model.id}" if ambiguous else model.id,
+                    ref=ref,
                     label=f"{model.id}（{row.name}）" if ambiguous else model.id,
                     model_id=model.id,
                     provider_id=row.id or 0,
                     provider_name=row.name,
-                    is_default=row.is_default and model.id == row.default_model,
+                    is_default=ref == agent_default,
                     thinking_levels=model.thinking_levels,
                 )
             )
     return options
 
 
+@dataclass(frozen=True)
+class ResolvedDefaults:
+    """各用途实际生效的模型引用（None = 一个实例都没有）。"""
+
+    agent: str | None
+    subtitle: str | None
+
+    def ref(self, purpose: Purpose) -> str | None:
+        return self.agent if purpose == "agent" else self.subtitle
+
+
+def resolve_defaults(rows: list[LlmProvider], setting: LlmDefaultsSetting) -> ResolvedDefaults:
+    """设定 → 实际生效：设定的引用仍能在清单里找到就用它，否则兜底。
+
+    兜底 = 第一个接入实例的连接测试模型（它一定在目录里），让「刚接入一家、
+    还没进 AI 设定」的用户也能直接用；实例被删导致设定失效时同理。
+    """
+    options = build_model_options(rows)
+    refs = {o.ref for o in options}
+    fallback: str | None = None
+    if rows:
+        first = rows[0]
+        fallback = next(
+            (
+                o.ref
+                for o in options
+                if o.provider_id == first.id and o.model_id == first.default_model
+            ),
+            options[0].ref if options else None,
+        )
+
+    def pick(configured: str | None) -> str | None:
+        return configured if configured in refs else fallback
+
+    return ResolvedDefaults(agent=pick(setting.agent_model), subtitle=pick(setting.subtitle_model))
+
+
+async def default_model_ref(session: AsyncSession, purpose: Purpose) -> str:
+    """某用途实际生效的默认模型引用；一个实例都没有时返回空串（交给路由报错）。"""
+    rows = await LlmProviderRepository(session).list_all()
+    setting = await get_setting_store().get(LlmDefaultsSetting)
+    return resolve_defaults(rows, setting).ref(purpose) or ""
+
+
+def _owner_of(rows: list[LlmProvider], ref: str | None) -> tuple[LlmProvider, str] | None:
+    """模型引用 → (所属实例, 模型 id)；引用为空或解析不到返回 None。"""
+    if not ref:
+        return None
+    for option in build_model_options(rows):
+        if option.ref == ref:
+            row = next((r for r in rows if r.id == option.provider_id), None)
+            return (row, option.model_id) if row is not None else None
+    return None
+
+
 async def resolve_provider_endpoint(session: AsyncSession) -> tuple[str, str, str | None]:
-    """解析默认实例的接入参数，返回 ``(base_url, api_key, user_agent)``。
+    """解析智能体默认模型所属实例的接入参数，返回 ``(base_url, api_key, user_agent)``。
 
     端点取值：显式配置 → 预设默认；两者皆空抛 BadRequest。
     user_agent 未配置时为 None（调用方保持自己的默认 UA）。
@@ -105,9 +173,12 @@ async def resolve_provider_endpoint(session: AsyncSession) -> tuple[str, str, st
     复用本函数，不允许在别处再实现一遍取值顺序。
     """
     repo = LlmProviderRepository(session)
-    row = await repo.get_default()
-    if row is None:
+    rows = await repo.list_all()
+    if not rows:
         raise BadRequestException("尚未配置 AI 模型供应商，无法测试")
+    setting = await get_setting_store().get(LlmDefaultsSetting)
+    owner = _owner_of(rows, resolve_defaults(rows, setting).agent)
+    row = owner[0] if owner else rows[0]
     base = row.base_url or (get_preset(row.provider_type).base_url or "")
     if not base:
         raise BadRequestException(f"供应商「{row.name}」未配置 API 端点地址")
@@ -115,7 +186,7 @@ async def resolve_provider_endpoint(session: AsyncSession) -> tuple[str, str, st
 
 
 class LlmConfigService:
-    """LLM 供应商实例配置的业务服务。绑定一个数据库会话。"""
+    """LLM 供应商实例接入与 AI 设定的业务服务。绑定一个数据库会话。"""
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -130,7 +201,7 @@ class LlmConfigService:
     # -- 查询 --------------------------------------------------------------
 
     async def list_all(self) -> list[LlmProvider]:
-        """全部实例，默认实例在前。"""
+        """全部实例，按添加顺序。"""
         return await self._repo.list_all()
 
     async def get(self, provider_id: int) -> LlmProvider:
@@ -141,21 +212,51 @@ class LlmConfigService:
         return row
 
     async def list_model_options(self) -> list[LlmModelOptionView]:
-        """对话框的模型清单（口径见模块说明）。"""
-        return build_model_options(await self._repo.list_all())
+        """对话框与 AI 设定的模型清单（口径见模块说明），智能体默认项标 is_default。"""
+        rows = await self._repo.list_all()
+        setting = await get_setting_store().get(LlmDefaultsSetting)
+        return build_model_options(rows, resolve_defaults(rows, setting).agent)
 
-    # -- 写入 --------------------------------------------------------------
+    # -- AI 设定 -----------------------------------------------------------
+
+    async def get_defaults(self) -> LlmDefaultsView:
+        rows = await self._repo.list_all()
+        setting = await get_setting_store().get(LlmDefaultsSetting)
+        effective = resolve_defaults(rows, setting)
+        return LlmDefaultsView(
+            agent_model=setting.agent_model,
+            subtitle_model=setting.subtitle_model,
+            effective_agent_model=effective.agent,
+            effective_subtitle_model=effective.subtitle,
+        )
+
+    async def update_defaults(
+        self, *, agent_model: str | None, subtitle_model: str | None
+    ) -> LlmDefaultsView:
+        """保存各用途默认模型；引用必须能在当前清单里找到（null = 清除设定）。"""
+        refs = {o.ref for o in build_model_options(await self._repo.list_all())}
+        for label, ref in (("智能体", agent_model), ("字幕处理", subtitle_model)):
+            if ref is not None and ref not in refs:
+                raise BadRequestException(
+                    f"{label}默认模型「{ref}」不在已接入供应商的模型清单中，请重新选择"
+                )
+        await get_setting_store().set(
+            LlmDefaultsSetting(agent_model=agent_model, subtitle_model=subtitle_model)
+        )
+        return await self.get_defaults()
+
+    # -- 接入写入 ----------------------------------------------------------
 
     @staticmethod
-    def _assert_default_model_configured(
+    def _assert_model_configured(
         preset: ProviderPreset,
         extra_models: list[ModelInfo],
-        default_model: str,
+        model_id: str,
     ) -> None:
-        """默认模型的严格校验，按供应商类型分两条规则：
+        """连接测试模型的严格校验，按供应商类型分两条规则：
 
-        - 有内置目录的供应商（官方渠道）：默认模型必须在目录内，自定义
-          模型不参与——官方渠道的模型集合以预设目录为准；
+        - 有内置目录的供应商（官方渠道）：模型必须在目录内，自定义模型不
+          参与——官方渠道的模型集合以预设目录为准；
         - 无目录的自定义端点：模型必须在 extra_models 里带完整参数。
           其中「借用」自其它预设目录的模型（按 id 识别）参数随目录，
           豁免手填规则——共享窗口类模型（如 Kimi）本就没有独立输出上限。
@@ -164,16 +265,15 @@ class LlmConfigService:
         缺参数会让下游全部退化成瞎猜，所以在入口就拦住。
         """
         if preset.models:
-            if any(m.id == default_model for m in preset.models):
+            if any(m.id == model_id for m in preset.models):
                 return
             raise BadRequestException(
-                f"模型「{default_model}」不在「{preset.display_name}」的模型目录中，"
-                "请从下拉列表中选择"
+                f"模型「{model_id}」不在「{preset.display_name}」的模型目录中，请从下拉列表中选择"
             )
-        custom = next((m for m in extra_models if m.id == default_model), None)
+        custom = next((m for m in extra_models if m.id == model_id), None)
         if custom is None:
             raise BadRequestException(
-                f"模型「{default_model}」不在预设目录中，请先补全它的参数配置"
+                f"模型「{model_id}」不在预设目录中，请先补全它的参数配置"
                 "（上下文长度、最大输出等）后再保存"
             )
         # 借用目录模型：任一预设目录里有同 id 条目即豁免手填参数规则
@@ -181,11 +281,11 @@ class LlmConfigService:
             return
         if not custom.context_window or not custom.max_output_tokens:
             raise BadRequestException(
-                f"自定义模型「{default_model}」缺少必要参数：上下文长度与最大输出为必填"
+                f"自定义模型「{model_id}」缺少必要参数：上下文长度与最大输出为必填"
             )
         if custom.supports_thinking and not custom.max_thinking_tokens:
             raise BadRequestException(
-                f"自定义模型「{default_model}」开启了思考模式，必须填写思考预算上限"
+                f"自定义模型「{model_id}」开启了思考模式，必须填写思考预算上限"
             )
 
     async def _validate(
@@ -194,11 +294,16 @@ class LlmConfigService:
         name: str,
         provider_type: str,
         base_url: str | None,
-        default_model: str,
+        default_model: str | None,
         extra_models: list[ModelInfo],
         exclude_id: int | None = None,
-    ) -> None:
-        """新增与编辑共用的入参校验：类型存在、端点必填、默认模型合法、实例名唯一。"""
+    ) -> str:
+        """新增与编辑共用的入参校验，返回实际使用的连接测试模型 id。
+
+        校验：类型存在、端点必填、实例名唯一；测试模型未指定时取目录第一个
+        （预设目录 → 自定义目录），兼容端点一个模型都没补录时拒绝——没有
+        目录的实例接入了也无模型可用。自定义目录里的每个模型都要参数齐全。
+        """
         try:
             preset = get_preset(provider_type)
         except LlmError as exc:
@@ -206,10 +311,21 @@ class LlmConfigService:
             raise BadRequestException(str(exc)) from exc
         if preset.requires_base_url and not base_url:
             raise BadRequestException(f"接入「{preset.display_name}」必须填写 API 端点地址")
-        self._assert_default_model_configured(preset, extra_models, default_model)
+        if not preset.models:
+            if not extra_models:
+                raise BadRequestException(
+                    f"接入「{preset.display_name}」至少要补录一个模型（含上下文长度、最大输出等参数）"
+                )
+            for model in extra_models:
+                self._assert_model_configured(preset, extra_models, model.id)
+        test_model = default_model or (
+            preset.models[0].id if preset.models else extra_models[0].id
+        )
+        self._assert_model_configured(preset, extra_models, test_model)
         existing = await self._repo.get_by_name(name)
         if existing is not None and existing.id != exclude_id:
             raise ConflictException(f"实例名「{name}」已被使用，请换一个名字")
+        return test_model
 
     async def create(
         self,
@@ -218,13 +334,13 @@ class LlmConfigService:
         provider_type: str,
         base_url: str | None,
         api_key: str,
-        default_model: str,
+        default_model: str | None = None,
         extra_models: list[ModelInfo] | None = None,
         user_agent: str | None = None,
     ) -> LlmProvider:
-        """新增实例。状态置 PENDING，等待后台验证；第一个实例自动成为默认。"""
+        """新增实例。状态置 PENDING，等待后台验证。"""
         extras = extra_models or []
-        await self._validate(
+        test_model = await self._validate(
             name=name,
             provider_type=provider_type,
             base_url=base_url,
@@ -236,7 +352,7 @@ class LlmConfigService:
             provider_type=provider_type,
             base_url=base_url,
             api_key=api_key,
-            default_model=default_model,
+            default_model=test_model,
             extra_models=[m.model_dump() for m in extras] or None,
             user_agent=user_agent,
         )
@@ -249,7 +365,7 @@ class LlmConfigService:
         provider_type: str,
         base_url: str | None,
         api_key: str,
-        default_model: str,
+        default_model: str | None = None,
         extra_models: list[ModelInfo] | None = None,
         user_agent: str | None = None,
     ) -> LlmProvider:
@@ -257,7 +373,7 @@ class LlmConfigService:
         row = await self.get(provider_id)
         self._assert_not_verifying(row)
         extras = extra_models or []
-        await self._validate(
+        test_model = await self._validate(
             name=name,
             provider_type=provider_type,
             base_url=base_url,
@@ -271,7 +387,7 @@ class LlmConfigService:
             provider_type=provider_type,
             base_url=base_url,
             api_key=api_key,
-            default_model=default_model,
+            default_model=test_model,
             extra_models=[m.model_dump() for m in extras] or None,
             user_agent=user_agent,
         )
@@ -288,14 +404,8 @@ class LlmConfigService:
         await self._repo.update_status(provider_id, ConfigStatus.VERIFYING)
         return await self.get(provider_id)
 
-    async def set_default(self, provider_id: int) -> LlmProvider:
-        """把某实例设为全局默认；不存在抛 404。"""
-        await self.get(provider_id)
-        await self._repo.set_default(provider_id)
-        return await self.get(provider_id)
-
     async def delete(self, provider_id: int) -> None:
-        """删除实例；不存在抛 404，正在验证中抛 409。默认让位规则见 Repository。"""
+        """删除实例；不存在抛 404，正在验证中抛 409。"""
         row = await self.get(provider_id)
         self._assert_not_verifying(row)
         await self._repo.delete(provider_id)
@@ -314,12 +424,24 @@ async def acquire_llm_router(session: AsyncSession) -> LlmRouter:
     每次取用都重新读配置并 update_providers：配置指纹未变时底层客户端
     缓存直接复用（零开销），变了则自动重建——不需要「配置已修改」的
     显式通知链路。一个实例都没有时抛 404（中文提示引导去设置页）。
+
+    路由层的 ``default`` / 空引用 = 智能体默认模型：把它所属的实例标为
+    is_default 并把该实例的 default_model 设成它，所有不显式选模型的调用
+    （IM 通道、会话续聊、手动压缩、CLI）就都跟着 AI 设定走，不必逐处传参。
     """
     repo = LlmProviderRepository(session)
     rows = await repo.list_all()
     if not rows:
-        raise NotFoundException("尚未配置模型供应商，请先在「设置 → AI 模型」中接入")
-    configs = [to_domain_config(row, repo.decrypted_api_key(row)) for row in rows]
+        raise NotFoundException("尚未配置模型供应商，请先在「设置 → 模型接入」中接入")
+    setting = await get_setting_store().get(LlmDefaultsSetting)
+    owner = _owner_of(rows, resolve_defaults(rows, setting).agent)
+    configs = []
+    for row in rows:
+        config = to_domain_config(row, repo.decrypted_api_key(row))
+        if owner is not None and owner[0].id == row.id:
+            config.is_default = True
+            config.default_model = owner[1]
+        configs.append(config)
     await _runtime_router.update_providers(configs)
     return _runtime_router
 
@@ -332,9 +454,9 @@ async def acquire_llm_router(session: AsyncSession) -> LlmRouter:
 async def verify_llm_provider(provider_id: int) -> None:
     """异步验证一个 LLM 供应商实例，并把结论写回状态字段。
 
-    验证判据：用 default_model 发一次 max_tokens=1 的最小对话，能收到
-    响应即证明 key、端点、模型 id 均有效。可用模型列表 best-effort
-    拉取（部分兼容端点不提供 /models），失败只记日志不影响结论。
+    验证判据：用连接测试模型（default_model）发一次 max_tokens=1 的最小
+    对话，能收到响应即证明 key、端点、模型 id 均有效。可用模型列表
+    best-effort 拉取（部分兼容端点不提供 /models），失败只记日志不影响结论。
 
     前置约定：调用前状态已被 start_verification 置为 VERIFYING。
     作为背景任务：自开独立数据库会话，绝不向外抛异常 ——

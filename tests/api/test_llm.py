@@ -166,34 +166,76 @@ _COMPAT_PAYLOAD = {
 }
 
 
-def test_multiple_instances_and_default_invariant(client) -> None:
-    """可接入多家；第一个自动成为默认，设为默认可切换，删除默认时让位给最早的。"""
+def test_multiple_instances(client) -> None:
+    """可同时接入多家，按添加顺序列出。"""
     c, db_file = client
-    first = c.post("/api/v1/llm/providers", json=_PAYLOAD).json()["data"]
-    second = c.post("/api/v1/llm/providers", json=_COMPAT_PAYLOAD).json()["data"]
-    assert first["is_default"] is True
-    assert second["is_default"] is False
+    c.post("/api/v1/llm/providers", json=_PAYLOAD)
+    c.post("/api/v1/llm/providers", json=_COMPAT_PAYLOAD)
     rows = sqlite3.connect(db_file).execute("SELECT COUNT(*) FROM llm_provider").fetchone()
     assert rows[0] == 2
-    # 列表默认实例在前
     assert [r["name"] for r in _list(c)] == ["百炼", "家里的 vLLM"]
     detail = _list(c)[1]
     assert detail["provider_type"] == "openai_compat"
     assert detail["base_url"] == "http://192.168.1.5:8000/v1"
-    # 自定义模型目录随配置持久化，参数完整回传（设置页下拉框的数据源）
+    # 自定义模型目录随配置持久化，参数完整回传（设置页的数据源）
     assert detail["extra_models"][0]["id"] == "my-local-model"
     assert detail["extra_models"][0]["context_window"] == 131072
 
-    # 切换默认
-    r = c.post(f"/api/v1/llm/providers/{second['id']}/default")
-    assert r.status_code == 200
-    assert [(x["name"], x["is_default"]) for x in _list(c)] == [
-        ("家里的 vLLM", True),
-        ("百炼", False),
-    ]
-    # 删除默认 → 让位给剩下最早添加的
-    assert c.delete(f"/api/v1/llm/providers/{second['id']}").status_code == 200
-    assert [(x["name"], x["is_default"]) for x in _list(c)] == [("百炼", True)]
+
+def test_test_model_defaults_to_first_catalog_entry(client) -> None:
+    """接入时不选模型：连接测试模型自动取目录第一个（预设目录 / 自定义目录）。"""
+    c, _ = client
+    payload = {k: v for k, v in _PAYLOAD.items() if k != "default_model"}
+    created = c.post("/api/v1/llm/providers", json=payload).json()["data"]
+    presets = {p["id"]: p for p in c.get("/api/v1/llm/presets").json()["data"]}
+    assert created["default_model"] == presets["bailian"]["models"][0]["id"]
+    assert _captured_configs[-1].default_model == created["default_model"]
+    compat = {k: v for k, v in _COMPAT_PAYLOAD.items() if k != "default_model"}
+    created = c.post("/api/v1/llm/providers", json=compat).json()["data"]
+    assert created["default_model"] == "my-local-model"
+
+
+def test_ai_defaults_fallback_then_configured(client) -> None:
+    """AI 设定：未设置时按第一个实例的连接测试模型兜底；设定后各用途独立生效；
+    引用失效（实例被删）时回到兜底。"""
+    c, _ = client
+    assert c.get("/api/v1/llm/defaults").json()["data"] == {
+        "agent_model": None,
+        "subtitle_model": None,
+        "effective_agent_model": None,
+        "effective_subtitle_model": None,
+    }
+    c.post("/api/v1/llm/providers", json=_PAYLOAD)
+    compat = c.post("/api/v1/llm/providers", json=_COMPAT_PAYLOAD).json()["data"]
+    defaults = c.get("/api/v1/llm/defaults").json()["data"]
+    assert defaults["agent_model"] is None
+    assert defaults["effective_agent_model"] == "qwen3.7-max"
+    assert defaults["effective_subtitle_model"] == "qwen3.7-max"
+
+    r = c.put(
+        "/api/v1/llm/defaults",
+        json={"agent_model": "my-local-model", "subtitle_model": "qwen3.7-max"},
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()["data"]
+    assert data["agent_model"] == "my-local-model"
+    assert data["effective_agent_model"] == "my-local-model"
+    assert data["effective_subtitle_model"] == "qwen3.7-max"
+    # 模型清单里的 is_default 跟随智能体默认模型
+    options = {o["ref"]: o for o in c.get("/api/v1/llm/models").json()["data"]}
+    assert options["my-local-model"]["is_default"] is True
+    assert options["qwen3.7-max"]["is_default"] is False
+
+    # 引用不在清单里 → 400
+    r = c.put("/api/v1/llm/defaults", json={"agent_model": "nope"})
+    assert r.status_code == 400
+    assert "不在已接入供应商的模型清单中" in r.json()["message"]
+
+    # 删除实例后设定失效 → 兜底到第一个实例的测试模型，设定值原样保留供页面提示
+    assert c.delete(f"/api/v1/llm/providers/{compat['id']}").status_code == 200
+    data = c.get("/api/v1/llm/defaults").json()["data"]
+    assert data["agent_model"] == "my-local-model"
+    assert data["effective_agent_model"] == "qwen3.7-max"
 
 
 def test_duplicate_name_rejected(client) -> None:
@@ -225,12 +267,10 @@ def test_update_instance_reverifies(client) -> None:
     assert detail["status"] == "active"
     assert _captured_configs[-1].api_key == "sk-updated"
     assert _captured_configs[-1].name == "百炼-改名"
-    # 改名不影响默认标记
-    assert detail["is_default"] is True
 
 
 def test_model_options_bare_ids_when_unique(client) -> None:
-    """只有一家时清单里全是裸 id；默认实例的默认模型带 is_default。"""
+    """只有一家时清单里全是裸 id；智能体默认模型（未设定时兜底到测试模型）带 is_default。"""
     c, _ = client
     c.post("/api/v1/llm/providers", json=_PAYLOAD)
     options = c.get("/api/v1/llm/models").json()["data"]
@@ -268,7 +308,7 @@ def test_model_options_qualify_conflicting_ids(client) -> None:
         ("百炼/qwen3.7-max", "qwen3.7-max（百炼）"),
         ("中转/qwen3.7-max", "qwen3.7-max（中转）"),
     ]
-    # 默认实例排前；只有默认实例的默认模型标 is_default
+    # 按添加顺序；未设定时兜底到第一个实例的测试模型，只有它标 is_default
     assert conflicted[0]["is_default"] is True
     assert conflicted[1]["is_default"] is False
     others = [o for o in options if o["model_id"] != "qwen3.7-max"]
@@ -316,12 +356,23 @@ def test_borrowed_catalog_model_exempt_from_manual_param_rules(client) -> None:
     assert detail["default_model"] == "kimi-k2.5"
 
 
-def test_custom_model_without_metadata_rejected(client) -> None:
-    """自定义端点只给裸模型 id、不带参数 → 400，提示先补全参数。"""
+def test_custom_endpoint_requires_at_least_one_model(client) -> None:
+    """自定义端点一个模型都没补录 → 400（没有目录的实例接入了也无模型可用）。"""
     c, _ = client
     r = c.post(
         "/api/v1/llm/providers",
         json={**_COMPAT_PAYLOAD, "extra_models": []},
+    )
+    assert r.status_code == 400
+    assert "至少要补录一个模型" in r.json()["message"]
+
+
+def test_custom_test_model_must_be_in_catalog(client) -> None:
+    """指定的连接测试模型不在自定义目录里 → 400，提示先补全参数。"""
+    c, _ = client
+    r = c.post(
+        "/api/v1/llm/providers",
+        json={**_COMPAT_PAYLOAD, "default_model": "ghost-model"},
     )
     assert r.status_code == 400
     assert "补全它的参数配置" in r.json()["message"]

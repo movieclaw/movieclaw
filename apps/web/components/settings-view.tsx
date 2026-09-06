@@ -16,6 +16,7 @@ import { useConfirm, useToast } from "@/components/feedback";
 import { ImportWatchSection } from "@/components/import-watch-section";
 import { SettingsOverviewSection } from "@/components/settings-overview-section";
 import { MembersSection } from "@/components/members-section";
+import { AiSettingsSection } from "@/components/ai-settings-section";
 import { LlmConfigSection } from "@/components/llm-config-section";
 import { ImPushSection } from "@/components/im-push-section";
 import { NetworkConfigSection } from "@/components/network-config-section";
@@ -214,6 +215,8 @@ export function SettingsPanel({ active }: SettingsPanelProps) {
           <PlaybackSection />
         ) : section.id === "llm" ? (
           <LlmConfigSection />
+        ) : section.id === "ai" ? (
+          <AiSettingsSection />
         ) : section.id === "im-push" ? (
           <ImPushSection />
         ) : section.id === "members" ? (

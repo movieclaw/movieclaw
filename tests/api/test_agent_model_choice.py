@@ -3,7 +3,8 @@
 - 显式引用（裸 id 或「实例名/模型id」）/ "default" 清回默认 / 未传沿用最近一条
   user 消息的引用；
 - 生效值存转录信封的 user 行（零迁移），transcript 透出供前端初始化选择器；
-- 同 id 在两个实例里都有时，「实例名/模型id」精确路由到指定实例。
+- 同 id 在两个实例里都有时，「实例名/模型id」精确路由到指定实例；
+- 不选模型时走 AI 设定的智能体默认模型（未设定时兜底到第一个实例）。
 """
 
 from __future__ import annotations
@@ -129,6 +130,13 @@ def test_bare_id_prefers_default_instance(client) -> None:
 
 def test_new_session_without_model_uses_default(client) -> None:
     configure_two_providers(client)
+    # 未设定：兜底到第一个实例的连接测试模型
     session_id = send_and_finish(client, {"content": "你好"})
     assert captured_routes[-1] == ("百炼", "qwen3.7-max")
     assert user_models(client, session_id) == [None]
+    # 设定智能体默认模型后，不选模型的会话（含续聊）都跟着走
+    r = client.put("/api/v1/llm/defaults", json={"agent_model": "中转/qwen3.7-max"})
+    assert r.status_code == 200, r.text
+    send_and_finish(client, {"content": "继续", "session_id": session_id})
+    assert captured_routes[-1] == ("中转", "qwen3.7-max")
+    assert user_models(client, session_id) == [None, None]

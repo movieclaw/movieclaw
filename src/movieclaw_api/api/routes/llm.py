@@ -4,6 +4,8 @@ from fastapi import APIRouter, BackgroundTasks, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from movieclaw_api.schemas.llm import (
+    LlmDefaultsPayload,
+    LlmDefaultsView,
     LlmModelOptionView,
     LlmPresetView,
     LlmProviderPayload,
@@ -38,10 +40,42 @@ async def list_llm_presets() -> ApiResponse[list[LlmPresetView]]:
 async def list_llm_models(
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[list[LlmModelOptionView]]:
-    """已接入实例目录里的全部模型，默认实例在前。同一模型 id 只在一个实例里
+    """已接入实例目录里的全部模型（按实例添加顺序）。同一模型 id 只在一个实例里
     有时 ref 是裸 id；出现在多个实例里时 ref 为「实例名/模型id」、label 带括号
-    标注实例名。把 ref 原样填进 session.start 的 model 即可。"""
+    标注实例名。把 ref 原样填进 session.start 的 model 或 AI 设定即可；
+    is_default 标记智能体默认模型。"""
     return ok(await LlmConfigService(session).list_model_options())
+
+
+@router.get(
+    "/defaults",
+    response_model=ApiResponse[LlmDefaultsView],
+    summary="查看 AI 设定（各用途的默认模型）",
+    operation_id="llm.defaults.show",
+)
+async def get_llm_defaults(
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[LlmDefaultsView]:
+    """agent_model / subtitle_model 是用户设定（null = 未设置）；effective_* 是
+    实际生效的引用——设定可解析就用设定，否则按第一个实例的连接测试模型兜底。"""
+    return ok(await LlmConfigService(session).get_defaults())
+
+
+@router.put(
+    "/defaults",
+    response_model=ApiResponse[LlmDefaultsView],
+    summary="保存 AI 设定（各用途的默认模型）",
+    operation_id="llm.defaults.update",
+)
+async def update_llm_defaults(
+    payload: LlmDefaultsPayload,
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[LlmDefaultsView]:
+    """引用取自 llm.models 的 ref；传 null 清除该用途的设定（回到兜底）。"""
+    view = await LlmConfigService(session).update_defaults(
+        agent_model=payload.agent_model, subtitle_model=payload.subtitle_model
+    )
+    return ok(view, message="AI 设定已保存")
 
 
 @router.get(
@@ -53,7 +87,7 @@ async def list_llm_models(
 async def list_llm_providers(
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[list[LlmProviderView]]:
-    """默认实例排最前；一个都没接入时 data 为空数组，设置页据此渲染空态。"""
+    """按添加顺序；一个都没接入时 data 为空数组，设置页据此渲染空态。"""
     rows = await LlmConfigService(session).list_all()
     return ok([LlmProviderView.from_model(r) for r in rows])
 
@@ -69,8 +103,8 @@ async def create_llm_provider(
     background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[LlmProviderView]:
-    """第一个接入的实例自动成为默认。保存后状态置 pending 并在后台用默认模型
-    发一次最小对话验证；调用方可轮询实例（CLI：mclaw llm providers show）观察
+    """保存后状态置 pending 并在后台用连接测试模型（目录里第一个）发一次最小
+    对话验证；调用方可轮询实例（CLI：mclaw llm providers show）观察
     status：pending → verifying → active / failed（见 last_error）。"""
     service = LlmConfigService(session)
     row = await service.create(
@@ -114,7 +148,7 @@ async def update_llm_provider(
     background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[LlmProviderView]:
-    """整体覆盖接入配置（API Key 需重新填写）；是否默认不在此处改（见 default）。"""
+    """整体覆盖接入配置（API Key 需重新填写）。"""
     service = LlmConfigService(session)
     await service.update(
         provider_id,
@@ -149,22 +183,6 @@ async def reverify_llm_provider(
     return ok(LlmProviderView.from_model(row), message="已重新发起连接测试")
 
 
-@router.post(
-    "/providers/{provider_id}/default",
-    response_model=ApiResponse[LlmProviderView],
-    summary="把一个实例设为全局默认",
-    operation_id="llm.providers.default",
-)
-async def set_default_llm_provider(
-    provider_id: int,
-    session: AsyncSession = Depends(get_session),
-) -> ApiResponse[LlmProviderView]:
-    """默认实例 + 它的默认模型 = 没有模型选择器的调用（IM 通道、字幕翻译、
-    CLI 不带 --model）所用的模型。"""
-    row = await LlmConfigService(session).set_default(provider_id)
-    return ok(LlmProviderView.from_model(row), message=f"已把「{row.name}」设为默认")
-
-
 @router.delete(
     "/providers/{provider_id}",
     response_model=ApiResponse[dict],
@@ -176,6 +194,6 @@ async def delete_llm_provider(
     provider_id: int,
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[dict]:
-    """删除的是默认实例时，默认自动让给剩下最早添加的一个。"""
+    """AI 设定里指向它的默认模型会自动按第一个实例兜底，设置页可重新选择。"""
     await LlmConfigService(session).delete(provider_id)
     return ok({}, message="已删除")

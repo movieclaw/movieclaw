@@ -772,10 +772,11 @@ async def enqueue_generation_job(
         pgs_ocr_language=pgs_ocr_language,
     )
     row = await _load_row(session, file_id)
-    from movieclaw_api.services.llm_config import acquire_llm_router
+    from movieclaw_api.services.llm_config import acquire_llm_router, default_model_ref
 
     router = await acquire_llm_router(session)
-    provider, model_id = router.resolve("default")
+    # 字幕处理默认模型来自 AI 设定（未设置时按第一个实例兜底）
+    provider, model_id = router.resolve(await default_model_ref(session, "subtitle"))
     provider_ref = provider.name
     selected_source_key = pv.selected_source_key
     if selected_source_key is None:

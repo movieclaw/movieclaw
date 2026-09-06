@@ -124,10 +124,11 @@ library subtitles delete
 library subtitles generate
 library subtitles preview-generation
 library update
+llm defaults show
+llm defaults update
 llm models
 llm presets
 llm providers create
-llm providers default
 llm providers delete
 llm providers list
 llm providers show

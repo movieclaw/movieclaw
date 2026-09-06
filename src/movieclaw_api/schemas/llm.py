@@ -40,13 +40,12 @@ class LlmProviderView(BaseModel):
 
     id: int
     name: str = Field(description="实例名（全局唯一，路由键）")
-    is_default: bool = Field(description="是否为全局默认实例（无模型选择器的场景都走它）")
     provider_type: str
     base_url: str | None = None
     user_agent: str | None = Field(
         default=None, description="自定义 User-Agent；null 表示用 SDK 默认 UA"
     )
-    default_model: str
+    default_model: str = Field(description="连接测试用的模型 id（目录里第一个）")
     status: ConfigStatus
     usable: bool = Field(description="是否可用 = 连接测试通过（status=active）")
     last_error: str | None = Field(default=None, description="最近测试失败原因（清晰中文）")
@@ -75,7 +74,6 @@ class LlmProviderView(BaseModel):
         return cls(
             id=row.id or 0,
             name=row.name,
-            is_default=row.is_default,
             provider_type=row.provider_type,
             base_url=row.base_url,
             user_agent=row.user_agent,
@@ -103,10 +101,43 @@ class LlmModelOptionView(BaseModel):
     model_id: str = Field(description="模型 id")
     provider_id: int = Field(description="所属实例 id")
     provider_name: str = Field(description="所属实例名")
-    is_default: bool = Field(description="是否为全局默认（默认实例的默认模型）")
+    is_default: bool = Field(description="是否为智能体默认模型（AI 设定），清单里恰有一个")
     thinking_levels: list[str] = Field(
         default_factory=list, description="该模型的思考档位菜单；空 = 隐藏档位选择器"
     )
+
+
+class LlmDefaultsView(BaseModel):
+    """AI 设定（各用途默认模型）的对外视图。
+
+    ``*_model`` 是用户设定的引用（null = 未设置），``effective_*`` 是运行时
+    实际生效的引用：设定可解析就用设定，否则按第一个实例的连接测试模型兜底；
+    一个实例都没有时为 null。
+    """
+
+    agent_model: str | None = Field(default=None, description="智能体默认模型引用（null = 未设置）")
+    subtitle_model: str | None = Field(
+        default=None, description="字幕处理默认模型引用（null = 未设置）"
+    )
+    effective_agent_model: str | None = Field(default=None, description="智能体实际生效的引用")
+    effective_subtitle_model: str | None = Field(
+        default=None, description="字幕处理实际生效的引用"
+    )
+
+
+class LlmDefaultsPayload(BaseModel):
+    """保存 AI 设定：各用途的默认模型引用（取自 llm.models 的 ref），传 null 清除。"""
+
+    agent_model: str | None = Field(default=None, description="智能体默认模型引用")
+    subtitle_model: str | None = Field(default=None, description="字幕处理默认模型引用")
+
+    @field_validator("agent_model", "subtitle_model", mode="before")
+    @classmethod
+    def _strip(cls, value: str | None) -> str | None:
+        if isinstance(value, str):
+            value = value.strip()
+            return value or None
+        return value
 
 
 class LlmProviderPayload(BaseModel):
@@ -126,14 +157,16 @@ class LlmProviderPayload(BaseModel):
         description="自定义 User-Agent 请求头（留空使用 openai SDK 自带 UA）",
     )
     api_key: str = Field(min_length=1, description="API Key")
-    default_model: str = Field(min_length=1, description="默认使用的模型 id")
-    # 自定义端点的 default_model 必须能在这里找到——只有裸 id 没有参数，
-    # agent 无法做预算决策
+    default_model: str | None = Field(
+        default=None,
+        description="连接测试用的模型 id；留空取目录里第一个（预设目录或自定义目录）",
+    )
+    # 自定义端点的模型只有裸 id 没有参数，agent 无法做预算决策，所以必须带参数补录
     extra_models: list[ModelInfo] = Field(
         default_factory=list,
         description="自定义模型目录 JSON 数组，元素形如 "
         '{"id":"模型id","context_window":131072,"max_output_tokens":8192}'
-        "（openai_compat 端点必填，且须包含 default_model 对应的条目）",
+        "（openai_compat 端点至少一条）",
     )
 
     @field_validator(

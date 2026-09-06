@@ -18,10 +18,10 @@ class LlmProvider(TimestampMixin, table=True):
 
     - ``name`` 是实例名，全局唯一、不能含斜杠：对话框选模型时若同一模型 id
       出现在多个实例，前端用「实例名/模型id」精确路由，实例名就是路由键；
-    - ``is_default`` 标记全局默认实例：IM 通道、字幕翻译、CLI 这些没有
-      模型选择器的场景都走「默认实例 + 它的 default_model」。任何时刻至多
-      一行为真（由 Repository 的 set_default 维护）；
-    - ``default_model`` 是该实例的默认模型，也是连接测试发 ping 用的模型；
+    - ``default_model`` 是连接测试发 ping 用的模型（目录里第一个，服务层
+      自动填）。「哪个模型是默认」不在本表——智能体 / 字幕处理各自的默认
+      模型是 AI 设定（settings/llm.py 的 LlmDefaultsSetting），接入与设定
+      是两件事；
     - ``provider_type`` 关联 movieclaw_llm 的供应商预设（openai / bailian /
       openai_compat …），base_url 留空时用预设默认端点。
 
@@ -43,11 +43,8 @@ class LlmProvider(TimestampMixin, table=True):
     # 自定义 User-Agent：留空用 openai SDK 自带 UA。自建网关/反代常按 UA
     # 放行或限流，官方渠道用不到，故仅在可自填端点的供应商上开放配置。
     user_agent: str | None = Field(default=None, description="自定义 User-Agent（留空用 SDK 默认）")
-    # 该实例的默认模型：连接测试用它发 ping；本实例为全局默认时，未显式
-    # 选模型的调用（IM / 字幕 / CLI）也都用它
-    default_model: str = Field(description="该实例的默认模型 id，如 qwen-plus")
-    # 全局默认实例标记：至多一行为真
-    is_default: bool = Field(default=False, description="是否为全局默认实例")
+    # 连接测试用的模型：目录里第一个，服务层自动填；也是 AI 设定未配置时的兜底
+    default_model: str = Field(description="连接测试用的模型 id，如 qwen-plus")
 
     # 验证状态机（语义见 ConfigStatus）
     status: ConfigStatus = Field(default=ConfigStatus.PENDING, description="连接验证状态")

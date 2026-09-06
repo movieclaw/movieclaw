@@ -12,8 +12,7 @@ from movieclaw_db.models.site_credential import ConfigStatus
 class LlmProviderRepository:
     """LLM 供应商实例配置表的数据访问层（多实例）。
 
-    - 与 DownloaderRepository 同构：按 id 读写、按 name 查重、维护
-      「只要还有实例就有且仅有一个默认」的不变量；
+    - 与 DownloaderRepository 同构：按 id 读写、按 name 查重；
     - api_key 的加解密统一收口在本层。
     """
 
@@ -32,22 +31,13 @@ class LlmProviderRepository:
         return result.scalar_one_or_none()
 
     async def list_all(self) -> list[LlmProvider]:
-        """返回全部实例，默认实例排最前，其余按添加顺序。
+        """返回全部实例，按添加顺序。
 
-        顺序即路由优先级：裸模型 id 在多个实例目录里都有时，LlmRouter 按
-        这个顺序命中（默认实例优先）。
+        顺序是裸模型 id 路由的兜底优先级：多个实例目录里都有同一 id 时，
+        LlmRouter 先看 AI 设定指定的默认实例，其次按这个顺序命中。
         """
-        result = await self._session.execute(
-            select(LlmProvider).order_by(LlmProvider.is_default.desc(), LlmProvider.id)
-        )
+        result = await self._session.execute(select(LlmProvider).order_by(LlmProvider.id))
         return list(result.scalars().all())
-
-    async def get_default(self) -> LlmProvider | None:
-        """返回默认实例；一个都没配置时返回 None。"""
-        result = await self._session.execute(
-            select(LlmProvider).where(LlmProvider.is_default == True).limit(1)  # noqa: E712
-        )
-        return result.scalar_one_or_none()
 
     async def has_any(self) -> bool:
         """是否至少接入了一个实例（各 AI 入口的「已配置」判据）。"""
@@ -72,7 +62,7 @@ class LlmProviderRepository:
         extra_models: list[dict] | None = None,
         user_agent: str | None = None,
     ) -> LlmProvider:
-        """新增实例。第一个接入的实例自动成为默认（不变量：有实例就有默认）。"""
+        """新增实例。"""
         row = LlmProvider(
             name=name,
             provider_type=provider_type,
@@ -81,7 +71,6 @@ class LlmProviderRepository:
             default_model=default_model,
             extra_models=extra_models,
             user_agent=user_agent,
-            is_default=not await self.has_any(),
         )
         self._session.add(row)
         await self._session.commit()
@@ -103,7 +92,6 @@ class LlmProviderRepository:
         """整体覆盖一个实例的接入配置；不存在返回 None。
 
         连接信息变更后验证状态重置为 PENDING、清空历史错误与模型列表。
-        is_default 不在此处改动（走 set_default）。
         """
         row = await self.get(provider_id)
         if row is None:
@@ -155,21 +143,6 @@ class LlmProviderRepository:
         await self._session.commit()
         return True
 
-    async def set_default(self, provider_id: int) -> bool:
-        """把某实例设为全局默认（同时清掉其它实例的默认标记）。返回是否命中记录。"""
-        row = await self.get(provider_id)
-        if row is None:
-            return False
-        now = utcnow()
-        for other in await self.list_all():
-            if other.is_default and other.id != provider_id:
-                other.is_default = False
-                other.updated_at = now
-        row.is_default = True
-        row.updated_at = now
-        await self._session.commit()
-        return True
-
     async def reset_stale_verifying(self) -> int:
         """把残留在 VERIFYING 的实例重置为 PENDING（进程重启自愈），返回条数。"""
         result = await self._session.execute(
@@ -187,22 +160,12 @@ class LlmProviderRepository:
     async def delete(self, provider_id: int) -> bool:
         """删除某实例。返回是否命中记录。
 
-        删除的是默认实例时，自动把默认让给剩下最早添加的一个，保证
-        「只要还有实例就有默认」——IM 通道与字幕翻译永远有模型可用。
+        AI 设定里指向它的默认模型不在此处清理：设定层按「引用是否仍可解析」
+        动态兜底（见 services.llm_config.effective_defaults）。
         """
         row = await self.get(provider_id)
         if row is None:
             return False
-        was_default = row.is_default
         await self._session.delete(row)
-        await self._session.flush()
-        if was_default:
-            result = await self._session.execute(
-                select(LlmProvider).order_by(LlmProvider.id).limit(1)
-            )
-            successor = result.scalar_one_or_none()
-            if successor is not None:
-                successor.is_default = True
-                successor.updated_at = utcnow()
         await self._session.commit()
         return True
