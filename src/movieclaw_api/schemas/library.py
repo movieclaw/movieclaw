@@ -28,8 +28,8 @@ class LibraryPayload(BaseModel):
     generate_thumbnails: bool | None = Field(
         default=None,
         description=(
-            "本地来源内容是否从文件抓帧生成缩略图（网络挂载库抓帧等于全量下载，可关）；"
-            "不传表示不改动，新建时默认开启"
+            "缺图时是否从视频抓帧生成缩略图：本地来源内容的封面、剧集库里 TMDB 没有剧照的分集"
+            "（网络挂载库抓帧等于全量下载，可关）；不传表示不改动，新建时默认开启"
         ),
     )
     extract_chapter_images: bool | None = Field(
@@ -259,7 +259,9 @@ class LibraryView(BaseModel):
     kind: MediaKind
     source: str = Field(default="tmdb", description="身份来源：tmdb / local")
     capabilities: LibraryCapabilitiesView
-    generate_thumbnails: bool = Field(default=True, description="本地来源内容是否抓帧生成缩略图")
+    generate_thumbnails: bool = Field(
+        default=True, description="缺图时是否抓帧生成缩略图（本地内容封面、TMDB 无剧照的分集）"
+    )
     extract_chapter_images: bool = Field(default=True, description="是否为视频章节抓取场景图")
     exclude_from_home: bool = Field(default=False, description="是否从首页汇总里排除")
     access_mode: Literal["everyone", "selected"] = Field(
