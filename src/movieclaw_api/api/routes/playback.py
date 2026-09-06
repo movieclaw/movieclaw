@@ -25,6 +25,7 @@ from movieclaw_api.exceptions import (
     NotFoundException,
     ServiceUnavailableException,
 )
+from movieclaw_api.schemas.base import utc_isoformat
 from movieclaw_api.schemas.library import SeasonEpisodesView
 from movieclaw_api.schemas.playback import (
     HwBackendStatusView,
@@ -532,7 +533,7 @@ async def clear_playback_history(
         "观看记录已清除：主体=%s 范围=%s 起点=%s 状态 %d 条 / 指标 %d 条",
         principal,
         scope,
-        since.isoformat() if since is not None else "不限",
+        utc_isoformat(since) if since is not None else "不限",
         result.deleted_states,
         result.deleted_metrics,
     )
