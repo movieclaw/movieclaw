@@ -744,9 +744,9 @@ export function MediaActivityPanel({
             <EmptyState
               icon={<PlayIcon className="size-5" />}
               title="现在没有人在看"
-              description="设备开始播放后几秒内会出现在这里，网页播放器和 Jellyfin 客户端都算；想看之前谁看了什么，去播放记录。"
+              description="设备开始播放后几秒内会出现在这里，网页播放器和 Jellyfin 客户端都算；想看之前谁看了什么，去最近播放。"
               actions={
-                <EmptyAction onClick={() => onViewChange("plays")}>查看播放记录</EmptyAction>
+                <EmptyAction onClick={() => onViewChange("plays")}>查看最近播放</EmptyAction>
               }
             />
           ) : (
