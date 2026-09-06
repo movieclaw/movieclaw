@@ -156,63 +156,111 @@ export function layoutSparseRow(
 }
 
 /**
- * 月份跳转轨道：与海报墙的 A-Z 索引条同一位置、同一交互（点档名跳到该档
- * 第一格），档名换成月份、按年分组。月份数量不定，不像 26 个字母那样等分，
- * 所以是可滚动的列表而不是按比例换算的滑条。
+ * 悬浮时间刻度（Google Photos 式）：覆在墙的右缘、不占宽度，平时几乎不可见，
+ * 滚动中或把鼠标移到右缘时浮现。
+ *
+ * 之前是一条常驻的月份列表放在墙旁边，占 56px 宽还一直亮着，浏览照片时是个
+ * 干扰。这里换成零宽的占位列 + sticky 的刻度条向左负边距叠在墙上：墙用满整个
+ * 宽度，刻度只在需要时出现。刻度按每月张数**按比例**分布（张数多的月份占的
+ * 刻度段长），年份标签立在该年第一个月处；悬停某段浮出「2026 年 8 月 · 16 张」
+ * 气泡，点击跳到该月第一张；当前所在月份常亮。
  */
-export function PhotoMonthIndex({
+export function PhotoTimelineScrubber({
   index,
   active,
+  scrollElement,
   onJump,
 }: {
   index: readonly { initial: string; count: number; offset: number }[];
   active: string | null;
+  /** 真实滚动容器：滚动时刻度浮现，停下 1.4 秒后隐去 */
+  scrollElement: HTMLElement | null;
   onJump: (offset: number) => void;
 }) {
-  const years = useMemo(() => {
-    const out: { year: string; months: { initial: string; count: number; offset: number }[] }[] = [];
-    for (const entry of index) {
-      const year = entry.initial === "未知" ? "未知" : entry.initial.slice(0, 4);
-      const last = out[out.length - 1];
-      if (last && last.year === year) last.months.push(entry);
-      else out.push({ year, months: [entry] });
-    }
-    return out;
-  }, [index]);
+  const [scrolling, setScrolling] = useState(false);
+  const [hover, setHover] = useState<string | null>(null);
+  useEffect(() => {
+    if (!scrollElement) return;
+    let timer = 0;
+    const onScroll = () => {
+      setScrolling(true);
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => setScrolling(false), 1400);
+    };
+    scrollElement.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      scrollElement.removeEventListener("scroll", onScroll);
+      window.clearTimeout(timer);
+    };
+  }, [scrollElement]);
+
+  const total = useMemo(() => index.reduce((sum, entry) => sum + entry.count, 0), [index]);
+  const segments = useMemo(() => {
+    let acc = 0;
+    return index.map((entry) => {
+      const year = entry.initial === "未知" ? null : entry.initial.slice(0, 4);
+      const start = acc / Math.max(total, 1);
+      acc += entry.count;
+      return { ...entry, year, start, size: entry.count / Math.max(total, 1) };
+    });
+  }, [index, total]);
   if (index.length === 0) return null;
+  const shown = scrolling || hover !== null;
+  const hovered = hover ? segments.find((s) => s.initial === hover) : undefined;
+
   return (
-    <nav
-      aria-label="按月份跳转"
-      // top-20：让开页头右上角悬浮的「⋯」操作按钮（滚动后它仍固定在那一角）
-      className="scroll-none sticky top-20 max-h-[calc(100dvh-96px)] w-14 shrink-0 select-none overflow-y-auto text-micro leading-none max-md:hidden"
-    >
-      {years.map((group) => (
-        <div key={group.year} className="mb-2">
-          <div className="tnum px-1.5 pb-1 pt-1 font-semibold text-[var(--text-faint)]">
-            {group.year}
-          </div>
-          {group.months.map((entry) => {
-            const label = entry.initial === "未知" ? "未知" : `${Number(entry.initial.slice(5))} 月`;
-            const isActive = entry.initial === active;
-            return (
-              <button
-                key={entry.initial}
-                type="button"
-                title={`${formatPhotoMonth(entry.initial)} · ${entry.count} 张`}
-                onClick={() => onJump(entry.offset)}
-                className={`tnum block w-full rounded-md px-1.5 py-1 text-left transition-colors ${
-                  isActive
-                    ? "bg-white/[0.14] font-semibold text-white"
-                    : "text-[var(--text-muted)] hover:bg-white/[0.08] hover:text-white"
+    // 零宽占位列：墙不为它让路；刻度条向左负边距叠在墙的右缘（-ml-11 = 自身
+    // 宽 36px + 与墙之间的 8px 列间距，右缘恰与墙的右缘对齐）
+    <div className="relative w-0 shrink-0 self-stretch max-md:hidden">
+      <nav
+        aria-label="按月份跳转"
+        onPointerEnter={() => setHover((h) => h ?? "")}
+        onPointerLeave={() => setHover(null)}
+        // 浮现时带一层向右加深的暗色渐变垫底：刻度与年份叠在亮色照片上也读得清
+        className={`sticky top-24 -ml-11 flex h-[calc(100dvh-160px)] w-9 flex-col justify-stretch select-none rounded-l-lg bg-gradient-to-r from-transparent via-[rgba(6,8,14,0.55)] to-[rgba(6,8,14,0.85)] transition-opacity duration-300 ${
+          shown ? "opacity-100" : "opacity-0 hover:opacity-100"
+        }`}
+      >
+        {segments.map((seg) => {
+          const isActive = seg.initial === active;
+          const isHover = seg.initial === hover;
+          return (
+            <button
+              key={seg.initial}
+              type="button"
+              aria-label={`${formatPhotoMonth(seg.initial)} · ${seg.count} 张`}
+              onPointerEnter={() => setHover(seg.initial)}
+              onClick={() => onJump(seg.offset)}
+              className="group/tick relative flex min-h-[10px] items-start justify-end pr-2"
+              style={{ flexGrow: Math.max(seg.size, 0.02), flexBasis: 0 }}
+            >
+              {/* 年份标签：立在该年第一个月处 */}
+              {seg.year && (segments.find((s) => s.year === seg.year) === seg) && (
+                <span className="tnum pointer-events-none absolute right-2 top-0 -translate-y-1/2 text-[10px] font-semibold leading-none text-white/85 [text-shadow:0_1px_2px_rgba(0,0,0,0.8)]">
+                  {seg.year}
+                </span>
+              )}
+              <span
+                className={`mt-2 h-px transition-all ${
+                  isActive || isHover
+                    ? "w-4 bg-white"
+                    : "w-2 bg-white/55 group-hover/tick:bg-white/85"
                 }`}
-              >
-                {label}
-              </button>
-            );
-          })}
-        </div>
-      ))}
-    </nav>
+              />
+            </button>
+          );
+        })}
+        {/* 气泡：悬停段的月份与张数，浮在刻度条左侧 */}
+        {hovered && (
+          <span
+            className="tnum pointer-events-none absolute right-10 whitespace-nowrap rounded-full bg-[rgba(16,18,26,0.92)] px-2.5 py-1 text-caption font-semibold text-white shadow-[0_6px_18px_rgba(0,0,0,0.5)] ring-1 ring-white/[0.12]"
+            style={{ top: `calc(${(hovered.start + hovered.size / 2) * 100}% - 12px)` }}
+          >
+            {formatPhotoMonth(hovered.initial)} · {hovered.count} 张
+          </span>
+        )}
+      </nav>
+    </div>
   );
 }
 

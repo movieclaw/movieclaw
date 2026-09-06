@@ -9,7 +9,7 @@ import Link from "next/link";
 
 import { useConfirm, useToast } from "@/components/feedback";
 import { refreshLibraryConfirm, scanLibraryConfirm } from "@/lib/library-confirm";
-import { LockIcon, MoreIcon, XIcon } from "@/components/icons";
+import { CheckIcon, LockIcon, MoreIcon, XIcon } from "@/components/icons";
 import { PAGE_NAV_BUTTON_CLASS, PageNav } from "@/components/page-nav";
 import { usePageTitle } from "@/lib/use-page-title";
 import { LibraryFormDialog } from "@/components/library-form-dialog";
@@ -17,7 +17,12 @@ import { LIBRARY_KIND_META } from "@/components/library-kind-meta";
 import { effectiveLibraryId, libraryCardAction } from "@/components/library-view";
 import { LibraryOrganizeDialog } from "@/components/library-organize-dialog";
 import { PhotoLightbox } from "@/components/photo-lightbox";
-import { PhotoMonthIndex, PhotoWall, usePhotoWallDensity, type PhotoWallDensity } from "@/components/photo-wall";
+import {
+  PhotoTimelineScrubber,
+  PhotoWall,
+  usePhotoWallDensity,
+  type PhotoWallDensity,
+} from "@/components/photo-wall";
 import { PosterCardVisual, type PosterVisualItem } from "@/components/poster-card";
 import {
   type LibraryCapabilities,
@@ -717,6 +722,8 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   const actionsMenu = (
     <LibraryActionsMenu
       canManage={canManageLibraries}
+      density={photoWall ? photoDensity : undefined}
+      onDensityChange={photoWall ? setPhotoDensity : undefined}
       onClearHistory={clearHistory}
       scanning={Boolean(library.scanning)}
       scanPhase={library.scan_progress?.phase ?? null}
@@ -1027,10 +1034,6 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
               <div className="min-w-0 flex-1">
                 {photoWall ? (
                   <div ref={wallGrid}>
-                    <div className="mb-4 flex items-center justify-end gap-2">
-                      <span className="text-caption text-[var(--text-faint)]">密度</span>
-                      <PhotoDensitySwitch value={photoDensity} onChange={setPhotoDensity} />
-                    </div>
                     <PhotoWall
                       items={items}
                       density={photoDensity}
@@ -1142,7 +1145,12 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
                 <WallIndexBar index={wallIndex} active={activeWallInitial} onJump={jumpTo} />
               )}
               {photoWall && (
-                <PhotoMonthIndex index={wallIndex} active={activeWallInitial} onJump={jumpTo} />
+                <PhotoTimelineScrubber
+                  index={wallIndex}
+                  active={activeWallInitial}
+                  scrollElement={scrollElement}
+                  onJump={jumpTo}
+                />
               )}
             </div>
           </div>
@@ -1214,6 +1222,9 @@ interface LibraryActionsMenuProps {
   onOrganize: () => void;
   onToggleMetaRefresh: () => void;
   onEdit: () => void;
+  /** 图片库：相册墙的密度（个人偏好，与管理权无关）；不传不渲染这一组 */
+  density?: PhotoWallDensity;
+  onDensityChange?: (next: PhotoWallDensity) => void;
 }
 
 function LibraryActionsMenu({
@@ -1234,6 +1245,8 @@ function LibraryActionsMenu({
   onOrganize,
   onToggleMetaRefresh,
   onEdit,
+  density,
+  onDensityChange,
 }: LibraryActionsMenuProps) {
   // 与站点配置一致用 Radix DropdownMenu：Portal 到 body + 碰撞检测，
   // 不会被头部容器裁切；开合/外部点击/键盘导航全交给 Radix。
@@ -1314,6 +1327,34 @@ function LibraryActionsMenu({
           </DropdownMenu.Item>
           <DropdownMenu.Separator className="my-1 h-px bg-white/[0.07]" />
           </>
+          )}
+          {/* 图片库的墙密度：收在菜单里不占墙上的位置，三档单选，选完即生效并记住 */}
+          {density && onDensityChange && (
+            <>
+              <DropdownMenu.Label className="px-3 pb-1 pt-1.5 text-caption text-[var(--text-faint)]">
+                相册墙密度
+              </DropdownMenu.Label>
+              <DropdownMenu.RadioGroup
+                value={density}
+                onValueChange={(next) => onDensityChange(next as PhotoWallDensity)}
+              >
+                {(
+                  [
+                    ["compact", "紧凑"],
+                    ["standard", "标准"],
+                    ["loose", "宽松"],
+                  ] as [PhotoWallDensity, string][]
+                ).map(([key, label]) => (
+                  <DropdownMenu.RadioItem key={key} value={key} className={`${itemClass} flex items-center justify-between`}>
+                    {label}
+                    <DropdownMenu.ItemIndicator>
+                      <CheckIcon className="size-3.5 text-[var(--accent)]" />
+                    </DropdownMenu.ItemIndicator>
+                  </DropdownMenu.RadioItem>
+                ))}
+              </DropdownMenu.RadioGroup>
+              <DropdownMenu.Separator className="my-1 h-px bg-white/[0.07]" />
+            </>
           )}
           {/* 观看记录是个人数据：成员与超管都能清自己的，与管理权无关 */}
           <DropdownMenu.Item onSelect={onClearHistory} className={itemClass}>
@@ -1473,38 +1514,6 @@ const InventoryCell = memo(function InventoryCell({
     </div>
   );
 });
-
-/** 图片墙的密度切换：紧凑 / 标准 / 宽松三档目标列宽 */
-function PhotoDensitySwitch({
-  value,
-  onChange,
-}: {
-  value: PhotoWallDensity;
-  onChange: (next: PhotoWallDensity) => void;
-}) {
-  const options: [PhotoWallDensity, string][] = [
-    ["compact", "紧凑"],
-    ["standard", "标准"],
-    ["loose", "宽松"],
-  ];
-  return (
-    <div role="group" aria-label="密度" className="flex rounded-lg border border-white/[0.08] bg-white/[0.05] p-0.5">
-      {options.map(([key, label]) => (
-        <button
-          key={key}
-          type="button"
-          aria-pressed={value === key}
-          onClick={() => onChange(key)}
-          className={`rounded-md px-2.5 py-1 text-caption transition-colors ${
-            value === key ? "bg-white/[0.12] text-white" : "text-[var(--text-muted)] hover:text-white"
-          }`}
-        >
-          {label}
-        </button>
-      ))}
-    </div>
-  );
-}
 
 /**
  * 海报墙底部的滚动加载哨兵。
