@@ -93,6 +93,29 @@ var knownNonGenerated = []string{
 	"ui.discovery.get",
 	"discover.get-person-details",
 	"ui.subscriptions.preview-title",
+	// 影片分享（docs/design/media-share.md）：管理侧是详情页 ⋯ 菜单与管理页
+	// 「分享」标签的 Web 动作；访客侧靠 slug 与解锁 Cookie 而不是账号，CLI 无消费方
+	"library.items.share.get",
+	"library.items.share.create",
+	"library.items.share.revoke",
+	"shares.list",
+	"shares.revoke",
+	"share.probe",
+	"share.unlock",
+	"share.item",
+	"share.episodes",
+	"share.artwork",
+	"share.asset",
+	"share.image-proxy",
+	"share.thumb",
+	"share.playback.decide",
+	"share.playback.session.start",
+	"share.playback.session.ping",
+	"share.playback.session.stop",
+	"share.playback.session.diagnostics",
+	"share.playback.progress",
+	"share.playback.item",
+	"share.playback.item.episodes",
 }
 
 // TestNonGeneratedEndpointsAreAllKnown 强制新端点显式表态：进命令树，或登记豁免。
