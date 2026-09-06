@@ -16,7 +16,8 @@ import { imageUrl } from "@/lib/image-proxy";
  * 观看统计（docs/design/activity.md「观看统计」）。
  *
  * 骨架照仪表盘的通行做法：**指标卡 → 一张主图 → 一组同构的分解面板**，每一层都能
- * 点进下一层。指标卡带较上一周期的变化和迷你走势，点哪张主图就切到哪个指标；主图
+ * 点进下一层。指标卡只有数字与较上一周期的变化——走势交给主图画，卡片里再画一遍
+ * 迷你图是没有标注的重复信息，容易误读；点哪张主图就切到哪个指标。主图
  * 把当前周期与上一周期画在同一坐标系里；分解面板同一个模板，成员行可点即钻取；
  * 最后一张星期 × 小时的热力图回答「家里什么时候有人在看」——决定扫描、整理这类
  * 重活该排在什么时候。图全部是内联 SVG：只有一种图型，不值得引图表库，且能严格
@@ -30,7 +31,7 @@ interface MetricDef {
   label: string;
   /**
    * 从一段连续日期的数据里取值（看完率为 0~1 的比例）。传一天就是当天的值，
-   * 传一周就是这周的值——主图与迷你走势在柱子摆不下时会按周折桶。
+   * 传一周就是这周的值——主图在柱子摆不下时会按周折桶。
    */
   ofDays: (rows: PlaybackStatsDayRow[]) => number;
   /** 汇总值 */
@@ -173,42 +174,6 @@ function useElementWidth<T extends HTMLElement>(): [React.RefObject<T | null>, n
 // 指标卡
 // ---------------------------------------------------------------------------
 
-/**
- * 迷你柱图：与主图同一形态（按天合计是离散量，柱子比折线诚实）。用 viewBox 撑满
- * 卡片宽度，横向拉伸只影响柱宽不影响读数；最多 30 根，再多就折桶。
- */
-function SparkBars({ values, dimmed }: { values: number[]; dimmed: boolean }) {
-  const W = 100;
-  const H = 28;
-  const n = values.length;
-  if (n === 0) return <div className="h-7" />;
-  const max = Math.max(1e-9, ...values);
-  const slot = W / n;
-  const gap = Math.min(1.5, slot * 0.3);
-  return (
-    <svg
-      viewBox={`0 0 ${W} ${H}`}
-      preserveAspectRatio="none"
-      aria-hidden="true"
-      className={`h-7 w-full transition-opacity ${dimmed ? "opacity-40" : "opacity-90"}`}
-    >
-      {values.map((v, i) => {
-        const h = v > 0 ? Math.max(1.5, (v / max) * H) : 1;
-        return (
-          <rect
-            key={i}
-            x={(i * slot + gap / 2).toFixed(2)}
-            y={(H - h).toFixed(2)}
-            width={(slot - gap).toFixed(2)}
-            height={h.toFixed(2)}
-            fill={v > 0 ? SERIES_COLOR : "rgba(255,255,255,0.12)"}
-          />
-        );
-      })}
-    </svg>
-  );
-}
-
 /** 较上一周期的变化，做成一枚小标签：涨绿、跌红、持平灰；没有上期就不出。 */
 function DeltaChip({
   current,
@@ -270,9 +235,6 @@ function MetricCard({
   const current = metric.ofTotals(stats.current);
   const previous = metric.ofTotals(stats.previous);
   const [value, unit] = metric.parts(current);
-  // 迷你走势最多 30 根柱子
-  const size = Math.max(1, Math.ceil(stats.by_day.length / 30));
-  const spark = bucketize(stats.by_day, size).map(metric.ofDays);
   return (
     <button
       type="button"
@@ -284,26 +246,23 @@ function MetricCard({
           : "border-white/[0.08] bg-white/[0.03] hover:border-white/[0.14] hover:bg-white/[0.05]"
       }`}
     >
-      <div className="flex items-center justify-between gap-2">
-        <p className="truncate text-caption font-medium text-white/55">{metric.label}</p>
+      <p className="truncate text-caption font-medium text-white/55">{metric.label}</p>
+      <p className="mt-2 whitespace-nowrap leading-none">
+        <span className="tnum text-[26px] font-bold tracking-tight text-white">{value}</span>
+        <span className="ml-1 text-sub font-medium text-white/45">{unit}</span>
+      </p>
+      <div className="mt-2.5 flex min-w-0 items-center gap-2">
         <DeltaChip
           current={current}
           previous={previous}
           available={stats.previous_available}
           inPoints={metric.deltaInPoints}
-          title={`较上一周期（${metric.format(previous)}）`}
+          title="较上一周期"
         />
+        <span className="tnum truncate text-[11px] text-white/35">
+          {stats.previous_available ? `上期 ${metric.format(previous)}` : "暂无上一周期数据"}
+        </span>
       </div>
-      <p className="mt-2 whitespace-nowrap leading-none">
-        <span className="tnum text-[26px] font-bold tracking-tight text-white">{value}</span>
-        <span className="ml-1 text-sub font-medium text-white/45">{unit}</span>
-      </p>
-      <div className="mt-3">
-        <SparkBars values={spark} dimmed={!selected} />
-      </div>
-      <p className="tnum mt-2 truncate text-[11px] text-white/35">
-        {stats.previous_available ? `上期 ${metric.format(previous)}` : "暂无上一周期数据"}
-      </p>
     </button>
   );
 }
