@@ -677,8 +677,8 @@ export function LibraryItemDetailView({
           />
         )}
 
-        {/* —— 场景横排：当前选中文件（电影随版本选择器、剧集随选中集）的章节。
-            放在分集区之下：先选集、再看这一集的场景，阅读顺序才顺。
+        {/* —— 章节横排：当前选中文件（电影随版本选择器、剧集随选中集）的章节。
+            放在分集区之下：先选集、再看这一集的章节，阅读顺序才顺。
             点图看大图，从那一帧起播；原盘/strm 没有章节自然不渲染 —— */}
         {selectedTrackFile?.chapters && selectedTrackFile.chapters.length > 0 && (
           <ChapterStrip

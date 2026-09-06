@@ -11,9 +11,14 @@ import { imageUrl } from "@/lib/image-proxy";
 import { formatClock } from "@/lib/player/timeline";
 
 /**
- * 条目详情页的「场景」横排（docs/design/video-chapters.md §1.1）：每个章节一张
- * 16:9 场景图 + 时间戳角标 + 标题；点图进灯箱看大图，从灯箱或 hover 出现的
+ * 条目详情页的「章节」横排（docs/design/video-chapters.md §1.1）：每个章节一张
+ * 16:9 章节图 + 时间戳角标 + 标题；点图进灯箱看大图，从灯箱或 hover 出现的
  * 播放键从那一帧起播。
+ *
+ * 用户可见文案统一叫「章节」（用户决策 2026-09-06）：与菜单「生成章节」、
+ * Jellyfin 输出的「第 N 章」同一个词；不叫「场景」（Jellyfin 的叫法，与菜单
+ * 对不上），也不叫「片段」（项目里指花絮/预告这类独立短片，会让人以为是
+ * 几个可以单独播的小视频）。合成章节与内嵌章节在文案上不区分。
  *
  * 看图优先，播放键不常驻（用户决策 2026-09-06）：桌面 hover 才浮出中央播放键；
  * 触摸屏没有 hover，直接点卡片进灯箱，灯箱顶栏有「从 xx:xx 播放」——大图与
@@ -73,14 +78,12 @@ export function ChapterStrip({
   };
 
   return (
-    <section ref={sectionRef} aria-label="场景">
+    <section ref={sectionRef} aria-label="章节">
       <div className="mb-3 flex items-center gap-3">
         <h2 className="text-on-image text-body-lg font-semibold tracking-[-0.01em] text-[var(--text)]">
-          场景
+          章节
         </h2>
-        <span className="tnum text-sub text-[var(--text-faint)]">
-          {chapters[0].synthetic ? `${chapters.length} 个片段` : `${chapters.length} 个章节`}
-        </span>
+        <span className="tnum text-sub text-[var(--text-faint)]">{chapters.length} 个章节</span>
         {pending && (
           <span className="ml-auto flex items-center gap-2 text-caption text-[var(--text-muted)]">
             <span className="size-3 shrink-0 animate-spin rounded-full border-[1.5px] border-white/20 border-t-white/70" />
@@ -142,7 +145,7 @@ function ChapterCard({
   onPlay: () => void;
 }) {
   const clock = formatClock(chapter.frame_ms ?? chapter.start_ms);
-  const label = chapter.title ?? `第 ${chapter.index + 1} 段`;
+  const label = chapter.title ?? `第 ${chapter.index + 1} 章`;
   return (
     <div className="group/chapter w-[240px] shrink-0 max-md:w-[200px]" data-chapter-index={chapter.index}>
       {/* 画面区单独一个相对定位盒：播放键按它居中，不受下面标题行高度影响 */}
@@ -150,12 +153,12 @@ function ChapterCard({
         <button
           type="button"
           onClick={onOpen}
-          aria-label={chapter.image_url ? `查看场景图：${label} ${clock}` : `从 ${clock} 播放`}
+          aria-label={chapter.image_url ? `查看章节图：${label} ${clock}` : `从 ${clock} 播放`}
           className="relative block size-full overflow-hidden rounded-xl bg-[#141824] text-left outline-none ring-1 ring-white/[0.08] transition duration-200 hover:ring-white/35 focus-visible:ring-2 focus-visible:ring-white/70"
         >
           <PosterImage
             src={imageUrl(chapter.image_url, "landscape-card")}
-            alt={`${label} 场景图`}
+            alt={`${label} 章节图`}
             className="size-full object-cover"
             fallback={
               <span className="tnum flex size-full items-center justify-center text-[20px] font-bold text-white/20">
