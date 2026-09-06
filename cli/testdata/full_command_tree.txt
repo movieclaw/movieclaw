@@ -11,6 +11,9 @@ app port set
 app restart
 app set
 app show
+app storage
+app storage clean
+app storage usage
 app update
 app update apply
 app update check

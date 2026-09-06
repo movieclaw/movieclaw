@@ -252,6 +252,12 @@ def build_lifespan(settings: Settings):
         transcode_sessions = get_session_manager()
         await asyncio.to_thread(transcode_sessions.cleanup_orphans)
         transcode_sessions.start_reaper()
+        # 缓存管理的运行时兜底守卫：data/ 根下出现登记表之外的目录说明有代码绕过了
+        # 登记（docs/design/cache-management.md §3），只告警不动它，面板同样会列出
+        from movieclaw_api.services.storage.registry import unregistered_entries
+
+        for stray in await asyncio.to_thread(unregistered_entries):
+            logger.warning("数据目录下发现未登记的条目：%s（请在 storage/registry.py 登记）", stray)
         # 硬件加速自检放后台预热：逐个后端真跑一秒编码要几秒钟，不该拖慢启动；
         # 但也不能等到第一次播放才做——那会让首帧白等。异常吞掉，探测失败
         # 只意味着「按软件转码处理」，不该阻断应用启动。

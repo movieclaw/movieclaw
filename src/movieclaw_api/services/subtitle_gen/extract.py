@@ -16,6 +16,7 @@ import subprocess
 import uuid
 from pathlib import Path
 
+from movieclaw_api.core.config import get_settings
 from movieclaw_api.services.subtitle_gen.source import SourceCandidate
 from movieclaw_db.models import LibraryFile
 
@@ -28,8 +29,9 @@ _EXTRACT_TIMEOUT = 120.0  # 抽取要读遍整个容器，比探测慢得多
 
 
 def cache_dir() -> Path:
-    """中间品目录（抽取产物/断点暂存）；跟随既有 data/ 相对路径惯例。"""
-    return Path("data/cache/subtitle_gen")
+    """中间品目录（抽取产物/断点暂存）；根目录来自配置，缓存管理面板按登记表
+    统计/清理它（清理会避开正在运行的字幕任务的断点）。"""
+    return Path(get_settings().subtitle_gen_cache_dir)
 
 
 @functools.cache

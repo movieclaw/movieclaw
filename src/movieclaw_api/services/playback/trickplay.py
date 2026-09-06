@@ -33,6 +33,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+from movieclaw_api.core.config import get_settings
 from movieclaw_db.models import LibraryFile
 
 logger = logging.getLogger("movieclaw_api.playback.trickplay")
@@ -74,7 +75,8 @@ class TrickplayIndex:
 
 
 def trickplay_dir(file_id: int) -> Path:
-    return Path("data/cache/playback-trickplay") / str(file_id)
+    """一部片的雪碧图目录；根目录来自配置（缓存管理面板按登记表统计/清理它）。"""
+    return Path(get_settings().trickplay_cache_dir) / str(file_id)
 
 
 def load_index(file_id: int) -> TrickplayIndex | None:

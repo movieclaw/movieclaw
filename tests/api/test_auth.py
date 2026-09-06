@@ -349,6 +349,7 @@ def test_every_route_denies_anonymous_access(client: TestClient) -> None:
             .replace("{user_code}", "MCLW-TEST")
             .replace("{name}", "seg00000.m4s")
             .replace("{index}", "0")
+            .replace("{key}", "cache.images")  # 缓存管理的登记目录 key
         )
         assert "{" not in url, f"守护测试不认识路径参数，请补充哑值：{path}"
         for method in methods:
