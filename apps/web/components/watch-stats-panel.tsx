@@ -500,8 +500,19 @@ interface BreakdownRow {
   leading?: React.ReactNode;
   onSelect?: () => void;
   selected?: boolean;
+  /** 「其他」这类合成行：字色与条色都压暗，不可点 */
+  muted?: boolean;
 }
 
+/**
+ * 分解面板：同一个模板（名称 · 值 · 占比条）。
+ *
+ * 行数**封顶**：成员三五个、客户端两三个、作品榜十个、播放方式最多五档，不封顶四块
+ * 面板高矮参差。默认五行，多出来的按 fold 处理——`other` 把余下的合成一行「其他 N 个」
+ * （占比仍合计 100%，高度钉死在六行内，Stripe / GA 的做法）；`expand` 留一个「展开
+ * 全部」，作品不适合合并成「其他」，再长是用户自己点开的。面板撑满网格行高，同一行
+ * 两块底边对齐，留白在卡片里而不是卡片外。
+ */
 function BreakdownPanel({
   title,
   note,
@@ -509,6 +520,10 @@ function BreakdownPanel({
   total,
   footer,
   emptyText = "本周期没有数据",
+  unit,
+  formatValue,
+  fold = "other",
+  limit = 5,
 }: {
   title: string;
   note?: string;
@@ -517,26 +532,75 @@ function BreakdownPanel({
   footer?: React.ReactNode;
   /** 没有行时的说明；传 null 表示由 footer（如范围外折叠行）自己解释 */
   emptyText?: string | null;
+  /** 行的量词：「个成员」「部」，用在「其他 3 个成员」「展开全部 10 部」 */
+  unit: string;
+  /** 合成「其他」行时给值配文案 */
+  formatValue: (value: number) => string;
+  fold?: "other" | "expand";
+  limit?: number;
 }) {
-  const max = Math.max(1e-9, ...rows.map((r) => r.value));
+  const [expanded, setExpanded] = useState(false);
+  let visible = rows;
+  let tail: React.ReactNode = null;
+  if (rows.length > limit) {
+    if (fold === "expand") {
+      visible = expanded ? rows : rows.slice(0, limit);
+      tail = (
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="w-full px-4 py-2.5 text-left text-caption font-medium text-[var(--info)] transition hover:text-white max-md:px-3.5"
+        >
+          {expanded ? "收起" : `展开全部 ${rows.length} ${unit}`}
+        </button>
+      );
+    } else {
+      const rest = rows.slice(limit);
+      const value = rest.reduce((acc, r) => acc + r.value, 0);
+      visible = [
+        ...rows.slice(0, limit),
+        {
+          key: "__other",
+          label: `其他 ${rest.length} ${unit}`,
+          value,
+          valueLabel: formatValue(value),
+          muted: true,
+        },
+      ];
+    }
+  }
+  const max = Math.max(1e-9, ...visible.map((r) => r.value));
   return (
-    <section aria-label={title}>
+    <section aria-label={title} className="flex h-full flex-col">
       <div className="mb-1.5 flex items-baseline gap-2">
         <p className="text-caption font-semibold text-white/55">{title}</p>
         {note && <p className="text-[11px] text-white/30">{note}</p>}
       </div>
-      <div className="divide-y divide-white/[0.06] rounded-2xl border border-white/[0.08] bg-white/[0.02]">
+      <div className="flex flex-1 flex-col divide-y divide-white/[0.06] rounded-2xl border border-white/[0.08] bg-white/[0.02]">
         {rows.length === 0 && emptyText && (
           <p className="px-4 py-3 text-caption text-white/40">{emptyText}</p>
         )}
-        {rows.map((row) => {
+        {visible.map((row) => {
           const share = total > 0 ? Math.round((row.value / total) * 100) : 0;
           const body = (
             <>
               {row.leading}
               <div className="min-w-0 flex-1">
                 <div className="flex items-baseline justify-between gap-3">
-                  <div className="min-w-0 text-ui font-medium text-white/85">{row.label}</div>
+                  {/* 附注跟在名称后面而不是另起一行：四块面板的行高才一致，
+                      同一行两块面板的高矮只由行数决定 */}
+                  <div className="flex min-w-0 items-baseline gap-2">
+                    <div
+                      className={`min-w-0 text-ui font-medium ${row.muted ? "text-white/50" : "text-white/85"}`}
+                    >
+                      {row.label}
+                    </div>
+                    {row.secondary && (
+                      <span className="tnum shrink-0 text-[11px] text-white/35">
+                        {row.secondary}
+                      </span>
+                    )}
+                  </div>
                   <div className="tnum shrink-0 text-caption text-white/70">
                     {row.valueLabel}
                     <span className="ml-1.5 text-white/35">{share}%</span>
@@ -547,11 +611,14 @@ function BreakdownPanel({
                     className="h-full rounded-full"
                     style={{
                       width: `${Math.max(2, (row.value / max) * 100)}%`,
-                      background: row.selected ? "var(--ok)" : SERIES_COLOR,
+                      background: row.selected
+                        ? "var(--ok)"
+                        : row.muted
+                          ? "rgba(255,255,255,0.22)"
+                          : SERIES_COLOR,
                     }}
                   />
                 </div>
-                {row.secondary && <p className="mt-1 text-[11px] text-white/35">{row.secondary}</p>}
               </div>
             </>
           );
@@ -572,6 +639,7 @@ function BreakdownPanel({
             </div>
           );
         })}
+        {tail}
         {footer}
       </div>
     </section>
@@ -992,6 +1060,8 @@ export function WatchStatsPanel({
           title="按成员"
           note={memberId != null ? "已钻取到一个成员，再点一次取消" : "点成员名钻取"}
           total={totalWatched}
+          unit="个成员"
+          formatValue={formatWatched}
           rows={stats.by_member.map((row) => ({
             key: String(row.member_id),
             label: row.member_name,
@@ -1005,6 +1075,8 @@ export function WatchStatsPanel({
         <BreakdownPanel
           title="按客户端"
           total={totalWatched}
+          unit="个客户端"
+          formatValue={formatWatched}
           rows={stats.by_client.map((row) => ({
             key: row.client,
             label: row.client,
@@ -1016,6 +1088,9 @@ export function WatchStatsPanel({
         <BreakdownPanel
           title="看得最多"
           total={totalWatched}
+          unit="部"
+          formatValue={formatWatched}
+          fold="expand"
           rows={stats.top_titles.map((row, index) => ({
             key: `${row.media.media_item_id}-${index}`,
             label: <TitleText media={row.media} />,
@@ -1026,7 +1101,7 @@ export function WatchStatsPanel({
               <PosterImage
                 src={row.media.poster_url ? imageUrl(row.media.poster_url) : null}
                 alt={row.media.title}
-                className="h-[42px] w-[28px] shrink-0 rounded-lg object-cover ring-1 ring-white/10"
+                className="h-9 w-6 shrink-0 rounded-md object-cover ring-1 ring-white/10"
               />
             ),
           }))}
@@ -1039,6 +1114,8 @@ export function WatchStatsPanel({
           title="按播放方式"
           note="仅网页播放；Jellyfin 客户端恒为直连"
           total={tierTotal}
+          unit="种"
+          formatValue={(v) => `${v} 场`}
           emptyText="本周期没有网页播放；Jellyfin 客户端不经过转码，不在这里分解"
           rows={stats.by_tier.map((row) => ({
             key: String(row.tier),
