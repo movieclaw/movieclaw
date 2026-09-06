@@ -30,6 +30,7 @@ from movieclaw_api.schemas.library import (
     LastOrganizeView,
     LastScanView,
     LibraryFileView,
+    LibraryGalleryGroupView,
     LibraryIndexEntryView,
     LibraryItemDetailView,
     LibraryItemView,
@@ -93,6 +94,7 @@ from movieclaw_api.services.library.access import (
 from movieclaw_api.services.library.config import LibraryConfigService
 from movieclaw_api.services.library.items import (
     build_item_detail,
+    build_library_gallery,
     build_library_index,
     build_library_wall,
     build_season_episodes,
@@ -1937,6 +1939,30 @@ async def list_library_item_index(
             for initial, count, offset in buckets
         ]
     )
+
+
+@router.get(
+    "/{library_id}/gallery",
+    response_model=ApiResponse[list[LibraryGalleryGroupView]],
+    summary="库内条目的图廊：海报 / 剧照 / 章节场景图按条目分组铺平（图床浏览模式数据源）",
+    operation_id="ui.library.gallery",
+    openapi_extra={"x-cli-hidden": True},
+    dependencies=[Depends(require_library_visible)],
+)
+async def list_library_gallery(
+    library_id: int,
+    limit: Annotated[
+        int | None, Query(ge=1, le=100, description="本页条目数（按作品分页，不按图）；不给则整库")
+    ] = None,
+    offset: Annotated[int, Query(ge=0, description="跳过的条目数（滚动加载翻页用）")] = 0,
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[list[LibraryGalleryGroupView]]:
+    """影视库 / 其他库的图床浏览模式：与 ``/items?sort=title`` 同一份排序与
+    分页口径，一组就是一部作品的全部图（海报 → 剧照 → 逐集剧照与章节图）。
+    没有任何图的条目也占一组（images 为空），一页的组数恒等于条目数。"""
+
+    await LibraryConfigService(session).get(library_id)  # 404 检查
+    return ok(await build_library_gallery(session, library_id, limit=limit, offset=offset))
 
 
 # ---------------------------------------------------------------------------

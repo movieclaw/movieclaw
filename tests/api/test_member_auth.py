@@ -551,6 +551,8 @@ _MEMBER_ALLOWLIST = {
     ("GET", "/api/v1/libraries/files/{file_id}/subtitles/preview"),
     ("GET", "/api/v1/libraries/{library_id}"),
     ("GET", "/api/v1/libraries/{library_id}/cover"),
+    # 图床浏览模式的数据源：与 /items 同一浏览面，同样按库可见性鉴权
+    ("GET", "/api/v1/libraries/{library_id}/gallery"),
     ("GET", "/api/v1/libraries/{library_id}/item-ids"),
     ("GET", "/api/v1/libraries/{library_id}/item-index"),
     ("GET", "/api/v1/libraries/{library_id}/items"),

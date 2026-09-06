@@ -1777,3 +1777,67 @@ async def test_library_refresh_targets_include_fileless_tracked_items(db, tmp_pa
     assert tracked_id in target_ids
     assert scanned_ids & target_ids  # 有文件的条目照旧在名单里
     assert stray_id not in target_ids
+
+
+# ---------------------------------------------------------------------------
+# 图廊（图床浏览模式）
+# ---------------------------------------------------------------------------
+
+
+async def test_library_gallery_flattens_posters_stills_and_chapters(db, tmp_path) -> None:
+    """图廊按条目分组铺平：海报 → 剧照 → 逐集（分集剧照 → 该集章节图），
+    章节图带起播秒数与季集号；分页按条目数走，与海报墙同口径。"""
+    from movieclaw_api.api.routes.libraries import list_library_gallery
+
+    root = tmp_path / "media" / "tv"
+    show = root / "测试剧集 (2024)" / "Season 01"
+    show.mkdir(parents=True)
+    (show / "测试剧集.S01E01.1080p.mkv").write_bytes(b"e1")
+    (show / "测试剧集.S01E02.1080p.mkv").write_bytes(b"e2")
+    async with db.session() as session:
+        library = await LibraryRepository(session).create(
+            name="剧集库", kind="tv", root_paths=[str(root)]
+        )
+    summary = await scan_library(library.id)
+    assert summary.identified == 2
+
+    # 给 E01 挂两个内嵌章节，其中首章已抓到场景图（frame_ms 是实际抓到的那一帧）
+    async with db.session() as session:
+        e1 = (
+            (
+                await session.execute(
+                    select(LibraryFile).where(LibraryFile.file_path.like("%S01E01%"))
+                )
+            )
+            .scalars()
+            .one()
+        )
+        e1.chapters = [
+            {"start_ms": 0, "end_ms": 60_000, "title": "开场"},
+            {"start_ms": 60_000, "end_ms": None, "title": None},
+        ]
+        e1.chapter_images = [
+            {"start_ms": 0, "image": "chapters/1/1/0.jpg", "frame_ms": 15_000},
+        ]
+        session.add(e1)
+        await session.commit()
+
+    async with db.session() as session:
+        groups = (await list_library_gallery(library.id, None, 0, session)).data
+        assert [g.title for g in groups] == ["测试剧集"]
+        images = groups[0].images
+        # 剧集条目在假 TMDB 里没有海报/横幅，图只来自分集剧照与章节图：
+        # E01 剧照 → E01 首章场景图 → E02 剧照（第二章没抓到图，不出现）
+        assert [(i.kind, i.season, i.episode) for i in images] == [
+            ("still", 1, 1),
+            ("chapter", 1, 1),
+            ("still", 1, 2),
+        ]
+        assert images[0].url.endswith("/w1280/s1e1.jpg") and images[0].label == "第 1 集 · E1"
+        chapter = images[1]
+        assert chapter.label == "开场" and chapter.t_seconds == 15.0
+        assert chapter.url.startswith("/images/assets/chapters/1/1/0.jpg?v=")
+        assert abs(chapter.aspect - 16 / 9) < 1e-6
+
+        # 分页按条目数：跳过唯一的条目就什么都没有
+        assert (await list_library_gallery(library.id, 1, 1, session)).data == []

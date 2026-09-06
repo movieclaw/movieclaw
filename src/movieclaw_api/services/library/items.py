@@ -41,6 +41,8 @@ from sqlmodel import select
 
 from movieclaw_api.schemas.library import (
     EpisodeView,
+    LibraryGalleryGroupView,
+    LibraryGalleryImageView,
     LibraryInventorySummaryView,
     LibraryItemView,
     LibraryRecentAdditionView,
@@ -658,6 +660,199 @@ async def _aggregate_wall_views(
         )
     # 顺序以调用方给定的 ordered_ids 为准，不在这里二次排序
     return [by_id[i] for i in ordered_ids if i in by_id]
+
+
+#: 剧照 / 分集剧照 / 章节场景图的比例：横幅与抓帧都按 16:9 惯例
+_LANDSCAPE_ASPECT = 16 / 9
+
+
+async def build_library_gallery(
+    session: AsyncSession,
+    library_id: int,
+    *,
+    limit: int | None = None,
+    offset: int = 0,
+) -> list[LibraryGalleryGroupView]:
+    """影视库 / 其他库的「图床浏览模式」数据源：条目的图铺平成组。
+
+    与海报墙共用同一份按标题排好的正式条目名单与分页口径（``offset`` /
+    ``limit`` 都按**条目**数），一组就是一部作品的全部图，顺序固定为
+    海报 → 横幅剧照 → 逐集（分集剧照 → 该集章节图）。只取库里**在位**文件
+    名下的章节图与分集剧照：图廊看的是"我库里有的"，缺集的剧照不混进来。
+    没有任何图的条目也占一组（``images`` 为空）——一页的组数恒等于条目数，
+    前端据此判断还有没有下一页。
+
+    图片来源与海报墙、详情页同一优先级：本地刮削资产（断网可用，带
+    ``?v=`` 版本戳）优先，其次 TMDB 图床——但海报取 w780、剧照取 w1280
+    而不是墙上的 w500 / w300：图廊的灯箱要放大看，小图会糊。条目目录里
+    的 poster.jpg / fanart.jpg 这一层这里不探（要逐条目摸文件系统，一页
+    几十部太贵），与海报墙一致。
+    """
+    from movieclaw_api.core.config import get_settings
+    from movieclaw_api.services.library import chapters as chapters_mod
+    from movieclaw_db.models import MediaEpisode
+
+    page_ids = await _wall_page_ids(session, library_id, "title", limit, offset)
+    if not page_ids:
+        return []
+    items_by_id: dict[int, MediaItem] = {
+        item.id: item
+        for item in (
+            await session.execute(select(MediaItem).where(MediaItem.id.in_(page_ids)))  # type: ignore[attr-defined]
+        )
+        .scalars()
+        .all()
+        if item.id is not None
+    }
+    meta_by_id: dict[int, tuple[str | None, int | None, int | None, str | None]] = {
+        item_id: (poster_file, width, height, backdrop_file)
+        for item_id, poster_file, width, height, backdrop_file in (
+            await session.execute(
+                select(
+                    MediaMetadata.media_item_id,
+                    MediaMetadata.poster_file,
+                    MediaMetadata.poster_width,
+                    MediaMetadata.poster_height,
+                    MediaMetadata.backdrop_file,
+                ).where(MediaMetadata.media_item_id.in_(page_ids))  # type: ignore[attr-defined]
+            )
+        ).all()
+    }
+    # 在位文件：只取章节相关的几列，不整行取（音轨/字幕 JSON 用不上）
+    file_rows = (
+        await session.execute(
+            select(
+                LibraryFile.media_item_id,
+                LibraryFile.id,
+                LibraryFile.season_number,
+                LibraryFile.episode_number,
+                LibraryFile.duration_seconds,
+                LibraryFile.chapters,
+                LibraryFile.chapter_images,
+            )
+            .where(
+                LibraryFile.library_id == library_id,
+                LibraryFile.media_item_id.in_(page_ids),  # type: ignore[union-attr]
+                LibraryFile.in_place(),
+            )
+            .order_by(LibraryFile.season_number, LibraryFile.episode_number, LibraryFile.id)
+        )
+    ).all()
+    files_by_item: dict[int, list[tuple]] = {}
+    for media_item_id, *facts in file_rows:
+        files_by_item.setdefault(media_item_id, []).append(tuple(facts))
+    tv_ids = [i for i in page_ids if (item := items_by_id.get(i)) and item.kind == "tv"]
+    stills_by_unit: dict[tuple[int, int, int], tuple[str, str]] = {}
+    if tv_ids:
+        for item_id, season, episode, name, still_file, still_path in (
+            await session.execute(
+                select(
+                    MediaEpisode.media_item_id,
+                    MediaEpisode.season_number,
+                    MediaEpisode.episode_number,
+                    MediaEpisode.name,
+                    MediaEpisode.still_file,
+                    MediaEpisode.still_path,
+                ).where(MediaEpisode.media_item_id.in_(tv_ids))  # type: ignore[attr-defined]
+            )
+        ).all():
+            if still_file:
+                url = f"/images/assets/{still_file}?v={asset_version(still_file)}"
+            elif still_path:
+                url = f"{get_settings().tmdb_image_base_url.rstrip('/')}/w1280{still_path}"
+            else:
+                continue
+            stills_by_unit[(item_id, season, episode)] = (url, (name or "").strip())
+
+    base = get_settings().tmdb_image_base_url.rstrip("/")
+    groups: list[LibraryGalleryGroupView] = []
+    for item_id in page_ids:
+        item = items_by_id.get(item_id)
+        if item is None:
+            continue
+        poster_file, width, height, backdrop_file = meta_by_id.get(
+            item_id, (None, None, None, None)
+        )
+        images: list[LibraryGalleryImageView] = []
+        if poster_file:
+            poster_url: str | None = f"/images/assets/{poster_file}?v={asset_version(poster_file)}"
+        else:
+            poster_url = f"{base}/w780{item.poster_path}" if item.poster_path else None
+        if poster_url:
+            images.append(
+                LibraryGalleryImageView(
+                    kind="poster",
+                    url=poster_url,
+                    aspect=primary_aspect(item, width, height),
+                    label="海报",
+                )
+            )
+        if backdrop_file:
+            backdrop_url: str | None = (
+                f"/images/assets/{backdrop_file}?v={asset_version(backdrop_file)}"
+            )
+        else:
+            backdrop_url = f"{base}/w1280{item.backdrop_path}" if item.backdrop_path else None
+        if backdrop_url:
+            images.append(
+                LibraryGalleryImageView(
+                    kind="backdrop", url=backdrop_url, aspect=_LANDSCAPE_ASPECT, label="剧照"
+                )
+            )
+        is_tv = item.kind == "tv"
+        seen_units: set[tuple[int, int]] = set()
+        for _file_id, season, episode, duration, chapters, chapter_images in files_by_item.get(
+            item_id, []
+        ):
+            unit = (season, episode)
+            if is_tv and unit not in seen_units:
+                seen_units.add(unit)
+                still = stills_by_unit.get((item_id, season, episode))
+                if still is not None:
+                    still_url, name = still
+                    images.append(
+                        LibraryGalleryImageView(
+                            kind="still",
+                            url=still_url,
+                            aspect=_LANDSCAPE_ASPECT,
+                            label=f"第 {episode} 集" + (f" · {name}" if name else ""),
+                            season=season,
+                            episode=episode,
+                        )
+                    )
+            if chapters is None:
+                continue  # 旧行没探过章节
+            image_map = chapters_mod.chapter_image_map(chapter_images)
+            for chapter in chapters_mod.effective_chapters(chapters, duration):
+                entry = image_map.get(chapter.start_ms)
+                if entry is None:
+                    continue
+                rel = str(entry["image"])
+                frame_raw = entry.get("frame_ms")
+                frame_ms = int(frame_raw) if isinstance(frame_raw, int | float) else None
+                images.append(
+                    LibraryGalleryImageView(
+                        kind="chapter",
+                        url=f"/images/assets/{rel}?v={asset_version(rel)}",
+                        aspect=_LANDSCAPE_ASPECT,
+                        label=chapter.title or f"章节 {chapter.index + 1}",
+                        season=season if is_tv else None,
+                        episode=episode if is_tv else None,
+                        t_seconds=(frame_ms if frame_ms is not None else chapter.start_ms) / 1000,
+                    )
+                )
+        # 没图的条目也占一组（images 为空）：分页按条目数走，前端靠「拿到的组数
+        # 是否满一页」判断有没有下一页，滤掉空组是前端的事
+        groups.append(
+            LibraryGalleryGroupView(
+                media_item_id=item_id,
+                kind=MediaKind(item.kind),
+                title=item.title,
+                year=item.year,
+                images=images,
+            )
+        )
+    return groups
 
 
 async def search_library_items(

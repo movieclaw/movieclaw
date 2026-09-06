@@ -400,6 +400,37 @@ class LibraryIndexEntryView(BaseModel):
     )
 
 
+class LibraryGalleryImageView(BaseModel):
+    """图廊里的一张图：条目的海报 / 剧照 / 分集剧照 / 章节场景图之一。
+
+    影视库与其他库的「图床浏览模式」把这些图铺平成一面瀑布流墙，灯箱里
+    除了看图还能一键进条目详情、从这一帧起播——所以每张图都带着它在
+    作品里的坐标（季集号 + 起播秒数），前端拼播放地址时不必再查详情。
+    """
+
+    kind: Literal["poster", "backdrop", "still", "chapter"] = Field(
+        description="poster=海报 / backdrop=横幅剧照 / still=分集剧照 / chapter=章节场景图"
+    )
+    url: str = Field(description="图片地址：本地资产相对路径或 TMDB 图床绝对地址（前端走缓存代理）")
+    aspect: float = Field(description="宽高比：海报按真实像素或 2:3 惯例，剧照与场景图 16:9")
+    label: str = Field(description="角标文案：海报 / 剧照 / 第 N 集 / 章节标题")
+    season: int | None = Field(default=None, description="分集剧照与剧集章节图所属的季号")
+    episode: int | None = Field(default=None, description="分集剧照与剧集章节图所属的集号")
+    t_seconds: float | None = Field(
+        default=None, description="章节场景图对应的起播秒数（「从此处播放」）；其它图为 null"
+    )
+
+
+class LibraryGalleryGroupView(BaseModel):
+    """图廊按条目分的一组（一部作品的全部图），墙上是一段标题 + 一面瀑布流。"""
+
+    media_item_id: int
+    kind: MediaKind
+    title: str
+    year: int | None = None
+    images: list[LibraryGalleryImageView]
+
+
 class LibraryRecentAdditionView(BaseModel):
     """让条目进入「最近添加」的最后一批剧集的紧凑摘要。"""
 

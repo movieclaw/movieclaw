@@ -566,6 +566,45 @@ export function listLibraryItemIndex(
   );
 }
 
+/** 图廊里的一张图：海报 / 横幅剧照 / 分集剧照 / 章节场景图之一。 */
+export interface LibraryGalleryImage {
+  kind: "poster" | "backdrop" | "still" | "chapter";
+  /** 本地资产相对路径或 TMDB 图床绝对地址，一律经 imageUrl 解析 */
+  url: string;
+  aspect: number;
+  /** 角标文案：海报 / 剧照 / 第 N 集 / 章节标题 */
+  label: string;
+  season: number | null;
+  episode: number | null;
+  /** 章节场景图的起播秒数（「从此处播放」）；其它图为 null */
+  t_seconds: number | null;
+}
+
+/** 图廊按条目分的一组：一部作品的全部图，墙上是一段标题 + 一面瀑布流。 */
+export interface LibraryGalleryGroup {
+  media_item_id: number;
+  kind: LibraryKind;
+  title: string;
+  year: number | null;
+  images: LibraryGalleryImage[];
+}
+
+/**
+ * 影视库 / 其他库的图床浏览模式数据源：与 listLibraryItems 按标题排序同一份
+ * 顺序与分页口径（offset / limit 都按条目数）。没有图的条目也占一组（images
+ * 为空），一页的组数恒等于条目数——拿满一页就还有下一页，空组前端自己滤掉。
+ */
+export function listLibraryGallery(
+  id: number,
+  params?: { limit?: number; offset?: number },
+): Promise<LibraryGalleryGroup[]> {
+  const query = new URLSearchParams();
+  if (params?.limit !== undefined) query.set("limit", String(params.limit));
+  if (params?.offset) query.set("offset", String(params.offset));
+  const suffix = query.size > 0 ? `?${query}` : "";
+  return unwrap(request<ApiEnvelope<LibraryGalleryGroup[]>>(`/libraries/${id}/gallery${suffix}`));
+}
+
 /**
  * 图片库原图地址（按台账文件 id，服务端按库可见性鉴权）。
  * - `size: "screen"`：长边 ≤2048 的屏幕适配 WebP，灯箱先看它（几百 KB），放大才拉原图；

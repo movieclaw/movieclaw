@@ -14,7 +14,7 @@ import {
   scanLibraryConfirm,
 } from "@/lib/library-confirm";
 import { chapterJobLabel } from "@/lib/library-manage";
-import { CheckIcon, LockIcon, MoreIcon, XIcon } from "@/components/icons";
+import { CheckIcon, LayersIcon, LockIcon, MoreIcon, PhotoIcon, XIcon } from "@/components/icons";
 import { PAGE_NAV_BUTTON_CLASS, PageNav } from "@/components/page-nav";
 import { usePageTitle } from "@/lib/use-page-title";
 import { LibraryFormDialog } from "@/components/library-form-dialog";
@@ -30,8 +30,15 @@ import {
 } from "@/components/photo-wall";
 import { PosterCardVisual, type PosterVisualItem } from "@/components/poster-card";
 import {
+  VideoGalleryLightbox,
+  VideoGalleryWall,
+  flattenGallery,
+  useVideoGalleryMode,
+} from "@/components/video-gallery";
+import {
   type ChapterJobProgress,
   type LibraryCapabilities,
+  type LibraryGalleryGroup,
   type LibraryItem,
   type MediaLibrary,
   type MissingItem,
@@ -46,6 +53,7 @@ import {
   listIgnoredLibraryFiles,
   listLibraryIdentityReviewCases,
   listLibraries,
+  listLibraryGallery,
   listLibraryItemIds,
   listLibraryItemIndex,
   listLibraryItems,
@@ -129,6 +137,8 @@ const PROVISIONAL_LIMIT = 200;
 const WALL_PAGE_SIZE = 60;
 /** 后端单次分页的硬上限；轮询已加载窗口时按此上限分块请求。 */
 const WALL_API_PAGE_SIZE = 200;
+/** 图床浏览模式一页的作品数：一部作品十来张图，24 部约一屏半 */
+const GALLERY_PAGE_SIZE = 24;
 
 /**
  * 列表拉取失败折成 ``null``（而不是空数组）。
@@ -564,6 +574,45 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   );
   // 灯箱翻到最后一张时：已加载列表被跳转替换过也无妨，loadMore 按当前窗口追加
   const closeLightbox = useCallback(() => setLightboxIndex(null), []);
+  // 影视库 / 其他库的图床浏览模式（video-gallery.tsx）：海报墙换成每部作品的
+  // 海报 / 剧照 / 章节图瀑布流，点开灯箱能直接播放或进详情。偏好记在浏览器里；
+  // 图片库本身就是相册墙，这个开关对它没有意义
+  const [galleryPreferred, setGalleryMode] = useVideoGalleryMode();
+  const gallery = galleryPreferred && Boolean(library?.capabilities.playable);
+  const [galleryGroups, setGalleryGroups] = useState<LibraryGalleryGroup[]>([]);
+  const [galleryHasMore, setGalleryHasMore] = useState(false);
+  // 已请求到的条目数（按页长推进，不按拿到的组数——没图的条目也占一组）
+  const galleryLoaded = useRef(0);
+  const galleryLoading = useRef(false);
+  const galleryEntries = useMemo(() => flattenGallery(galleryGroups), [galleryGroups]);
+  const loadMoreGallery = useCallback(() => {
+    if (galleryLoading.current) return;
+    galleryLoading.current = true;
+    const offset = galleryLoaded.current;
+    listLibraryGallery(libraryId, { limit: GALLERY_PAGE_SIZE, offset })
+      .then((page) => {
+        galleryLoaded.current = offset + page.length;
+        setGalleryGroups((current) => {
+          const seen = new Set(current.map((g) => g.media_item_id));
+          return [
+            ...current,
+            ...page.filter((g) => g.images.length > 0 && !seen.has(g.media_item_id)),
+          ];
+        });
+        setGalleryHasMore(page.length >= GALLERY_PAGE_SIZE);
+      })
+      .catch(() => setGalleryHasMore(false))
+      .finally(() => {
+        galleryLoading.current = false;
+      });
+  }, [libraryId]);
+  // 切进图廊（或换库）从第一页拉起；切回海报墙清空，别让旧图占着内存
+  useEffect(() => {
+    galleryLoaded.current = 0;
+    setGalleryGroups([]);
+    setGalleryHasMore(false);
+    if (gallery) loadMoreGallery();
+  }, [gallery, loadMoreGallery]);
   const wideCards = Boolean(library && library.capabilities.default_aspect > 1);
   // 其他库的主图两种形态并存：刮削器放好 -poster 的是 2:3 竖版海报，只有 -thumb /
   // 抓帧的是横版缩略图。竖横混在一个网格里对不齐，按主图比例切成两区，各自用
@@ -707,14 +756,37 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   const meta = LIBRARY_KIND_META[library.kind];
   const { stats } = library;
 
+  // 图床浏览模式的开关：长在顶栏、与 ⋯ 菜单并排。只有能播的库（影视库 /
+  // 其他库）才有——图片库本身就是相册墙。切换时顺手关掉灯箱：两种模式的
+  // 灯箱翻的不是同一份列表，下标不能沿用
+  const galleryToggle = library.capabilities.playable && (
+    <button
+      type="button"
+      title={gallery ? "回到海报墙" : "图床浏览"}
+      aria-label={gallery ? "回到海报墙" : "图床浏览"}
+      aria-pressed={gallery}
+      onClick={() => {
+        setLightboxIndex(null);
+        setGalleryMode(!gallery);
+      }}
+      className={`${PAGE_NAV_BUTTON_CLASS} ${gallery ? "bg-black/55 text-white" : ""}`}
+    >
+      {gallery ? (
+        <LayersIcon className="size-[18px] max-md:size-[22px]" />
+      ) : (
+        <PhotoIcon className="size-[18px] max-md:size-[22px]" />
+      )}
+    </button>
+  );
+
   // 库操作全部收进 ⋯ 菜单，顶栏只留这一个入口；运行状态看头部下方的胶囊。
   // 清空观看记录不在这里——那是跨库的个人数据，入口在首页「最近观看」的 ⋯
   // 里。成员没有管理项时菜单只剩相册墙密度（图片库），普通库连菜单都不给
-  const actionsMenu = (canManageLibraries || photoWall) && (
+  const actionsMenu = (canManageLibraries || photoWall || gallery) && (
     <LibraryActionsMenu
       canManage={canManageLibraries}
-      density={photoWall ? photoDensity : undefined}
-      onDensityChange={photoWall ? setPhotoDensity : undefined}
+      density={photoWall || gallery ? photoDensity : undefined}
+      onDensityChange={photoWall || gallery ? setPhotoDensity : undefined}
       scanning={Boolean(library.scanning)}
       scanPhase={library.scan_progress?.phase ?? null}
       scanPercent={
@@ -818,7 +890,14 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
       <PageNav
         title={library.name}
         fallback={navFallback}
-        actions={actionsMenu}
+        actions={
+          galleryToggle || actionsMenu ? (
+            <>
+              {galleryToggle}
+              {actionsMenu}
+            </>
+          ) : undefined
+        }
       />
       {/* —— 库头部 —— */}
       <div className="px-6 max-md:px-4">
@@ -1043,7 +1122,14 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
                 这一行被索引条撑高，分区会被推到一大段空白之下 */}
             <div className="flex items-start gap-2 px-6 max-md:gap-1 max-md:px-4">
               <div className="min-w-0 flex-1">
-                {photoWall ? (
+                {gallery ? (
+                  <VideoGalleryWall
+                    groups={galleryGroups}
+                    density={photoDensity}
+                    onOpen={setLightboxIndex}
+                    libraryId={libraryId}
+                  />
+                ) : photoWall ? (
                   <div ref={wallGrid}>
                     <PhotoWall
                       items={items}
@@ -1096,18 +1182,19 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
                     ))}
                   </div>
                 )}
+                {/* 图廊与海报墙各自分页，哨兵按当前模式接线（图廊按作品数计） */}
                 <WallLoadMore
-                  hasMore={wallHasMore}
-                  loaded={items.length}
-                  start={wallStart}
+                  hasMore={gallery ? galleryHasMore : wallHasMore}
+                  loaded={gallery ? galleryLoaded.current : items.length}
+                  start={gallery ? 0 : wallStart}
                   total={library.stats.item_count}
-                  onReach={loadMore}
+                  onReach={gallery ? loadMoreGallery : loadMore}
                 />
 
                 {/* —— 未识别分区（只有影视库会有）：认不出的文件按文件名/目录名
                     临时挂着，可直接播放、记进度；和正式条目分开摆——2:3 海报与
                     16:9 抓帧混排、又混进拼音序里，正片的墙会被打散。认领后并入主墙 —— */}
-                {provisional.length > 0 && (
+                {!gallery && provisional.length > 0 && (
                   <section
                     data-wall="provisional"
                     aria-labelledby="provisional-title"
@@ -1152,7 +1239,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
               </div>
               {/* 补探阶段排序不是拼音序，字母跳转会跳错位置——那几分钟里收起来；
                   其他库按内容时间排，同理没有字母档 */}
-              {!probing && !timeline && (
+              {!probing && !timeline && !gallery && (
                 <WallIndexBar index={wallIndex} active={activeWallInitial} onJump={jumpTo} />
               )}
               {photoWall && (
@@ -1165,6 +1252,17 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
               )}
             </div>
           </div>
+          {gallery && lightboxIndex !== null && galleryEntries[lightboxIndex] && (
+            <VideoGalleryLightbox
+              libraryId={libraryId}
+              entries={galleryEntries}
+              index={lightboxIndex}
+              hasMore={galleryHasMore}
+              onIndexChange={setLightboxIndex}
+              onReachEnd={loadMoreGallery}
+              onClose={closeLightbox}
+            />
+          )}
           {photoWall && lightboxIndex !== null && items[lightboxIndex] && (
             <PhotoLightbox
               libraryId={libraryId}

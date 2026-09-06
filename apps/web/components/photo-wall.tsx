@@ -36,7 +36,7 @@ export type PhotoWallDensity = "compact" | "standard" | "loose";
  * 紧凑在手机上也是三列、间距 6px，宽松在手机上是单列大图、间距 18px——
  * 任何宽度下三档都是三种明显不同的画面。
  */
-interface DensitySpec {
+export interface DensitySpec {
   /** 目标列宽（px）：列数 = floor((容器宽 + 间距) / (目标列宽 + 间距)) */
   column: number;
   minColumns: number;
@@ -45,7 +45,7 @@ interface DensitySpec {
    *  宽松密度列宽更大，直接用 720px 的缩略图本体 */
   variant: ImageVariant | undefined;
 }
-const DENSITY: Record<PhotoWallDensity, DensitySpec> = {
+export const DENSITY: Record<PhotoWallDensity, DensitySpec> = {
   compact: { column: 150, minColumns: 3, gap: 6, variant: "photo-tile" },
   standard: { column: 230, minColumns: 2, gap: 12, variant: "photo-tile" },
   loose: { column: 340, minColumns: 1, gap: 18, variant: undefined },
