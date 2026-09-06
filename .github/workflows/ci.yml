@@ -79,6 +79,18 @@ jobs:
           go-version: "1.24"
           cache-dependency-path: cli/go.sum
 
+      # 内嵌基线 spec 是构建产物不入 git，go:embed 找不到文件连 vet 都过不去：
+      # 先用服务端的 export_openapi 现场导出（跨语言指纹比对测试也要 Python）
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装服务端依赖（导出内嵌 spec 与跨语言指纹比对用）
+        run: pip install -e .
+
+      - name: 导出内嵌基线 spec
+        run: scripts/export-spec.sh
+
       - name: gofmt
         working-directory: cli
         run: |
@@ -92,14 +104,6 @@ jobs:
       - name: go vet
         working-directory: cli
         run: go vet ./...
-
-      # 跨语言 spec 指纹比对要用服务端的 export_openapi，先把 Python 侧准备好
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: 安装服务端依赖（跨语言指纹比对用）
-        run: pip install -e .
 
       - name: go test
         working-directory: cli

@@ -9,10 +9,13 @@
 from __future__ import annotations
 
 import ast
+import json
 from pathlib import Path
 
 import pytest
 
+from movieclaw_api import export_openapi
+from movieclaw_api.export_openapi import build_spec, spec_hash
 from movieclaw_api.services import spec_catalog
 from movieclaw_api.services.mclaw_tool import render_service_map, spec_domains
 
@@ -76,12 +79,27 @@ def test_real_spec_yields_a_sane_catalog() -> None:
     assert {"subscriptions", "library", "search", "auth"} <= domains
 
 
-def test_missing_spec_gives_an_actionable_error(monkeypatch, tmp_path) -> None:
-    """产物不完整时必须给可读结论，不能变成一句裸的 internal server error。"""
+def test_missing_spec_falls_back_to_live_export(monkeypatch, tmp_path) -> None:
+    """基线文件是构建产物、不入 git：本地没有它时从代码现算，结果与导出一致。"""
     monkeypatch.setattr(spec_catalog, "_SPEC_PATH", tmp_path / "nope.json")
+    assert spec_hash(spec_catalog.load_spec()) == spec_hash(build_spec())
+
+
+def test_exported_file_matches_live_export(tmp_path) -> None:
+    """导出到文件再读回，与现算逐字节同内容——两条路径不能有第二种口径。"""
+    target = tmp_path / "spec.json"
+    assert export_openapi.main(["-o", str(target)]) == 0
+    assert spec_hash(json.loads(target.read_text(encoding="utf-8"))) == spec_hash(build_spec())
+
+
+def test_corrupt_spec_gives_an_actionable_error(monkeypatch, tmp_path) -> None:
+    """产物损坏时必须给可读结论，不能变成一句裸的 internal server error。"""
+    broken = tmp_path / "broken.json"
+    broken.write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(spec_catalog, "_SPEC_PATH", broken)
     with pytest.raises(spec_catalog.SpecCatalogUnavailable) as excinfo:
         spec_catalog.load_spec()
-    assert excinfo.value.code == "SPEC_BASELINE_MISSING"
+    assert excinfo.value.code == "SPEC_BASELINE_CORRUPT"
     assert "镜像或安装包不完整" in excinfo.value.message
 
 

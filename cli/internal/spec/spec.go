@@ -29,6 +29,11 @@ import (
 // EnvSpecFile 让部署方显式指定 spec 文件（镜像内由 entrypoint 设置）。
 const EnvSpecFile = "MOVIECLAW_SPEC_FILE"
 
+// data/spec.json 是构建产物，不入 git（600KB 单行生成物入库会让所有改路由的
+// PR 互相冲突）。本地编译或跑测试前先生成一次：`go generate ./...`（需要能
+// import movieclaw_api 的 Python 环境）；镜像与 goreleaser 都在构建期现场导出。
+//
+//go:generate sh -c "cd ../../.. && scripts/export-spec.sh"
 //go:embed data/spec.json
 var baseline []byte
 

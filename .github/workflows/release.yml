@@ -152,17 +152,11 @@ jobs:
           python -c "import tomllib; deps = tomllib.load(open('pyproject.toml', 'rb'))['project']['dependencies']; open('requirements.txt', 'w').write('\n'.join(deps))"
           pip install --no-cache-dir -r requirements.txt
 
-      - name: 校验基线 spec 与代码一致
-        run: |
-          # 现场重导一次并与提交的副本比对。以前靠 goreleaser 的 before hook
-          # 重导 + dirty-state 拒绝发布来兜底，但那条报错（"git is in a
-          # dirty state"）和真实原因隔了两层；这里显式比对、报中文错误。
-          scripts/export-spec.sh
-          if ! git diff --exit-code --stat -- \
-              src/movieclaw_api/data/spec.json cli/internal/spec/data/spec.json; then
-            echo "::error::基线 spec 与代码漂移：发版 PR 里漏跑了 scripts/export-spec.sh。请在发版分支重跑该脚本、合入 main 后重新发版。"
-            exit 1
-          fi
+      # 内嵌基线 spec 是构建产物不入 git，这里显式导出一次（goreleaser 的
+      # before hook 还会再导一次，两次结果相同）：导出失败在这一步就以清楚的
+      # Python 报错暴露，而不是埋在 goreleaser 的 hook 输出里。
+      - name: 导出内嵌基线 spec
+        run: scripts/export-spec.sh
 
       - name: 构建六平台产物
         uses: goreleaser/goreleaser-action@v6

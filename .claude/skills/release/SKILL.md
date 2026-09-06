@@ -29,11 +29,9 @@ description: 发布 movieclaw 新版本。当用户要求发版、发布新版�
 ### 2. 发版步骤
 
 ```
-1. bump 两处版本号，并重导出基线 spec（OpenAPI spec 含应用版本号，漏了
-   这步 CI 的 test_baseline_spec_matches_code 必挂）：`scripts/export-spec.sh`
-   （一次写两处：服务端读的 `src/movieclaw_api/data/spec.json` 与 Go CLI
-   内嵌的 `cli/internal/spec/data/spec.json`，两份漂移 pytest 和 go test 都红）
-   → 提交 PR 合入 main（changelog 可同 PR 一起写，见下）
+1. bump 两处版本号 → 提交 PR 合入 main（changelog 可同 PR 一起写，见下）。
+   基线 spec（`spec.json`）是构建产物不入 git，镜像、发版脚本、goreleaser
+   都在构建期现场导出，不需要也不能手动提交它
 2. 以发版 PR 的 CI 全绿为准（CI 会跑 ruff / pytest / web lint / typecheck），
    无需在本地重跑全量测试——本地跑 pytest 还需先下载 NER 模型，且沙箱
    代理环境会造成与代码无关的误报

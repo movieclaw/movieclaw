@@ -11,8 +11,8 @@ OpenAPI spec 动态生成。spec 有两个消费方，都从这里拿：Go CLI �
 - 不需要启动服务器：FastAPI 的 app.openapi() 纯内存构建；
 - 输出做了确定性处理（键排序），同一份代码导出的字节完全一致，
   spec_hash() 因此可作为「CLI 基线与服务器是否同版」的偏斜检测指纹；
-- tests/api/test_spec_baseline.py 有守护测试保证仓库里的基线文件与当前
-  代码导出一致，改了路由忘了重新导出会直接测试失败。
+- 导出文件是构建产物，不入 git：镜像、发版脚本与 CI 都在构建期现场导出，
+  所以不存在「改了路由忘了重新导出」的漂移问题，也不需要守护测试。
 """
 
 from __future__ import annotations
