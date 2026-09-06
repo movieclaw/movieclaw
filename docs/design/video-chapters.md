@@ -43,12 +43,20 @@ Jellyfin 官方客户端可以直接消费。
 - 每张卡 16:9，左下角时间戳角标（`00:12:30`），卡下一行章节标题；
   没有标题的章节（合成章节、无名内嵌章节）只显示时间戳。
 - 图未生成时卡片为深色占位 + 时间戳，仍可点击。
-- hover 浮起并显示中央播放键；触摸屏常驻播放键（同最近观看卡片的
-  理由，library-home-recently-watched.md §201-205）。
-- 点击：`rememberPlayerReturnPath()` 后 `router.push(playHref(id, {season,
+- **看图优先，播放键不常驻**（用户决策 2026-09-06）。桌面：hover 浮起并
+  显示中央播放键，点播放键从该点起播，点图片其他区域进灯箱；触摸屏：
+  没有 hover，直接点卡片进灯箱。灯箱复用 `image-lightbox.tsx`（已支持
+  16:9 剧照形态与底部缩略图条），左右切换章节，底部一行「从 00:12:30
+  播放」按钮——大图与播放键都在灯箱里，小卡片上什么都不盖。
+- 点击起播：`rememberPlayerReturnPath()` 后 `router.push(playHref(id, {season,
   episode, tSeconds}))`。**`?t=<秒>` 跳播链路今天已端到端存在**
   （`play-links.ts:24` → `play/[mediaItemId]/page.tsx` 的 `startMsOverride`
   → `POST /playback/sessions` 的 `start_ms` → 关键帧对齐），前端零新协议。
+  起播时间用 `frame_ms`（图上那一帧的真实时间，§4.3），不是章节的名义
+  起点——用户点的是"这一帧"，进度条就要落在这一帧。
+- 卡片可键盘聚焦，Enter 进灯箱。
+- 上次看到的位置落在哪一章，那张卡右上角标「上次看到这里」，横排初始
+  滚动到它；数据来自详情页已有的观看状态，零新接口。
 - 横排跟随当前选中的文件：电影随版本选择器（`selectedTrackFileId`），
   剧集随分集横排里选中的一集（`selectedSeriesEpisode`）。没有在位文件、
   原盘目录（bluray/dvd）、strm 时整个区块不渲染。
@@ -136,6 +144,8 @@ HLS 转码不携带容器章节（Jellyfin 自己也是 `-map_chapters -1`，
 | 名字为空/时间戳 → `Chapter N` | 存储侧置 `null`；控制台显示时间戳，Jellyfin DTO 补 `第 N 章` |
 | 第 0 章 15s 抓、平均间隔 <1s 跳过、越界停止 | 照抄 |
 | `thumbnail=n=24` | 改 `n=5`：只解关键帧时 24 个关键帧可能已离章节起点数分钟，图与时间戳对不上 |
+| 图的真实帧时间不记录，跳播用章节起点 | `showinfo` 记 `frame_ms`，控制台跳播落在图上那一帧 |
+| 抽帧失败整文件作废 | 部分产物落库，超时预算内能抓几张是几张 |
 | 分辨率跟源 | 固定宽 960（§4.4） |
 | 图片路径含 mtime | 路径按 `start_ms` 命名，失效靠文件 `file_mtime_ns` 变化触发重抓 |
 | 每日计划任务 + 失败记忆文件 | 持久化 Job（§4.5），失败写 `[]` 由 force 重试 |
@@ -208,13 +218,20 @@ effective_chapters(file):
 chapters        JSON NULL   -- 探测事实。NULL=未探测（旧行）；[]=探测过没有
                             -- 元素 {"start_ms": int, "end_ms": int|null, "title": str|null}
 chapter_images  JSON NULL   -- 抓图状态。NULL=没抓过；[]=抓过无产物（无章节/跳过/失败）
-                            -- 元素 {"start_ms": int, "image": "<相对 assets_root 的路径>"}
+                            -- 元素 {"start_ms": int, "frame_ms": int, "image": "<相对 assets_root 的路径>"}
+                            -- start_ms 是与有效章节 join 的键；frame_ms 是图上那一帧的真实时间
 ```
 
 两列分开的理由与 `external_subtitles` 相同：数据来源与失效键不同
 （章节=容器头，图=抽帧产物），各自刷新互不牵连；合成策略调整、抓图
 失败都不会动探测事实。图按 `start_ms` 与有效章节列表 join；有效列表变了
 （比如内嵌章节从 1 个变 3 个），对不上的图是死图，下次抓图清理。
+
+`frame_ms` 的用法：只解关键帧时抓到的是章节起点之后最近的关键帧，可能
+晚几秒。控制台的跳播与角标一律用 `frame_ms`——用户看到哪一帧就从哪一帧
+播。Jellyfin 的 `StartPositionTicks` 对内嵌章节用 `start_ms`（章节起点是
+权威语义，播放器"下一章"要跳到那里），对合成章节用 `frame_ms`（名义起点
+本来就是算出来的，没有比"图上这一帧"更好的定义）。
 
 图片路径：`{media_item_id}/chapters/{file_id}/{start_ms:010d}.jpg`，
 落在 `assets_root()` 下。首段是 media_item_id，`/images/assets` 的
@@ -231,9 +248,9 @@ chapter_images  JSON NULL   -- 抓图状态。NULL=没抓过；[]=抓过无产�
 对网络挂载比单次通读 `select` 友好）：
 
 ```
-ffmpeg -v error -y -skip_frame nokey -ss <t> -i <file> -an -sn \
-  -vf "bwdif=mode=send_frame:deint=interlaced,[tonemap…,]thumbnail=n=5,scale='min(960,iw)':-2,format=yuv420p" \
-  -frames:v 1 -q:v 3 <dest>
+ffmpeg -v info -y -skip_frame nokey -ss <t> -copyts -i <file> -an -sn \
+  -vf "bwdif=mode=send_frame:deint=interlaced,[tonemap…,]thumbnail=n=5,scale='min(960,iw)':-2,format=yuv420p,showinfo" \
+  -frames:v 1 -q:v 4 <dest>
 ```
 
 规则（照抄 Jellyfin §2.3，差异已在 §2.4 登记）：
@@ -250,7 +267,23 @@ ffmpeg -v error -y -skip_frame nokey -ss <t> -i <file> -an -sn \
 - 失效：`chapter_images` 里记录时的 `file_mtime_ns` 不必单独存——Job 用
   "`chapter_images IS NULL` 或 force"选目标，文件内容变更走扫描的
   重探测路径把 `chapters` 与 `chapter_images` 一并置 NULL。
+- **真实帧时间**：滤镜链末尾加 `showinfo`，从 stderr 解析被选中那一帧的
+  `pts_time` 得到 `frame_ms`（`thumbnail` 选帧后 showinfo 只打印一行）。
+  必须带 `-copyts`，否则输入侧 `-ss` 会把时间戳归零、`pts_time` 变成相对
+  定位点的偏移。实测：测试片 `-ss 45` 时 `thumbnail=n=5` 选中的是 52s 的
+  关键帧——7 秒的漂移正是要记 `frame_ms` 的理由。解析失败退回 `start_ms`，
+  不影响出图。
+- **部分产物也落库**：单条命令超时 60s，单文件总预算 5 分钟；预算耗尽
+  把已抓到的写进 `chapter_images`，没抓到的章节没图但仍在列表里。
+  比"整个文件算失败"好——网络抖动时用户至少看到前几张。
+- **抓取顺序按新近优先**：Job 目标按 `library_file.created_at DESC`，刚入库、
+  用户最可能去看的先有图；单条目懒触发（§4.5）再兜住点开的那一部。
+- **体积**：JPEG `-q:v 4`，960 宽一张约 60～90KB，一部片 10 张 ≈ 0.8MB，
+  1000 部 ≈ 0.8GB（对照 metadata.md §289 的海报估算 2.3GB）。发版说明写明。
 - 失败（ffmpeg 缺失/超时/损坏）写 `[]` 并记中文日志，force 重试。
+- **孤儿清理**：文件行被删除/洗版替换后，`{item}/chapters/{old_file_id}/`
+  成为孤儿。Job 处理某条目时顺手删掉该条目下不再对应任何在位文件行的
+  chapters 子目录；条目删除时随资产目录一起清。
 
 ### 4.5 触发时机
 
@@ -268,7 +301,17 @@ ffmpeg -v error -y -skip_frame nokey -ss <t> -i <file> -an -sn \
 2. 库管理菜单「生成场景图」/「重新生成场景图」（force）；
 3. 单条目「刷新元数据」/「重新生成缩略图」（`scrape_media_item(force=True)`）
    末尾对该条目文件 `refresh_chapter_images(item_id, force=True)`——
-   单条目十来次 seek，同步做完不另起 Job。
+   单条目十来次 seek，同步做完不另起 Job。未刮削条目的菜单文案随之改为
+   「重新生成缩略图与场景图」（三处：`library-item-detail-view.tsx:1007`、
+   `library-manage-row.tsx:360`、`library-detail-view.tsx:1264`），后端
+   进度短语 `media_scrape.py:162` 同步。
+
+4. **详情页懒触发**：`GET /libraries/{lib}/items/{id}` 发现选中文件
+   `chapter_images IS NULL` 且库开关打开时，`asyncio.create_task(
+   refresh_chapter_images(item_id))`，用 `_in_flight` 集合去重（与
+   `trickplay.py:58` 同款）；响应里 `chapters_pending: true`，前端每 3 秒
+   重拉详情、最多 20 次，图一张张补上。这是升级后第一次打开旧条目的体验
+   保障——不用等整库 Job 排到它。
 
 不放进 `ScanPhase.ASSETS`：那一阶段只覆盖本轮新挂锚条目，且一部电影
 8～12 次 seek 乘以整库会把"扫描"拖长数倍；独立 Job 让扫描进度语义不变，
@@ -284,9 +327,12 @@ ffmpeg -v error -y -skip_frame nokey -ss <t> -i <file> -an -sn \
 
 ```
 chapters: list[ChapterView] | None    # null=尚未探测（ffprobe 缺失/文件不可达）
-ChapterView = {index, start_ms, end_ms, title, synthetic, image_url}
+chapters_pending: bool                # 正在后台抓图（§4.5 懒触发），前端据此轮询
+ChapterView = {index, start_ms, end_ms, frame_ms, title, synthetic, image_url}
 image_url = "/images/assets/{path}?v={mtime}" | null
 ```
+
+前端跳播、角标、灯箱标题都用 `frame_ms`（无图时退回 `start_ms`）。
 
 `build_item_detail()` 不触发 ffprobe（保持"探测只在入库/扫描时做"），
 只读两列做 join。`SeasonEpisodesView` 不动：分集横排选中某集后，前端从
@@ -336,7 +382,7 @@ Agent 工具无需改动：`spec.json` 重导出后 `library.items.get` 自动�
 | 期 | 内容 | 验收 |
 |---|---|---|
 | 一 | 迁移（3 列）；`probe_media` 加 `-show_chapters` 与标题规范化；`MediaSpec.chapters`；5 处落库；`effective_chapters` + `synthesize` 纯函数 | 单测：ffprobe JSON 夹具解析、标题规范化（空/时间戳）、合成表每档位与边界（89s/90s/…）、≤1 章视为无；新入库文件 `chapters` 非 NULL |
-| 二 | `chapters.py` 抓图；Job `library.chapter_images` 与三处入口；库开关（模型/schema/config/repo/表单）；`LibraryFileView.chapters`；`chapter-strip.tsx` 与跳播 | ffmpeg 合成测试片（lavfi `testsrc` + FFMETADATA 章节，见附录）跑完整链路：列表→图→详情接口→点击后 `start_ms` 正确；无 ffmpeg 环境按现有约定跳过 |
+| 二 | `chapters.py` 抓图（含 `frame_ms`、部分产物）；Job `library.chapter_images` 与四处入口（含详情页懒触发）；库开关（模型/schema/config/repo/表单）；`LibraryFileView.chapters`；`chapter-strip.tsx` + 灯箱起播 + 「上次看到这里」角标 | ffmpeg 合成测试片（lavfi `testsrc` + FFMETADATA 章节，见附录）跑完整链路：列表→图→详情接口→点击后 `start_ms` 正确；无 ffmpeg 环境按现有约定跳过 |
 | 三 | Jellyfin `Chapters`、章节图路由、LibraryOptions、compat 文档 | `tests/jellyfin`：不传 fields 无 `Chapters`；传了有；单条目全开有；图路由 200/越界 404；ImageTag 仅有图时出现。Infuse 手工验证章节列表与跳转 |
 | 四 | 播放器章节刻度/快捷键/OSD | 手工验证 |
 
@@ -351,10 +397,11 @@ Agent 工具无需改动：`spec.json` 重导出后 `library.items.get` 自动�
   不是真实场景切换。这与 Jellyfin 开虚拟章节的体验一致，且不输出就没有
   章节跳转可用。若评审倾向保守，改为"仅内嵌章节输出、合成章节只在控制台
   展示"只需在 `movie_dto` 里加一个条件——**待用户定夺，本文默认输出**。
-- **章节起点落在关键帧**：`-skip_frame nokey` 下图片是章节起点之后最近
-  的关键帧（通常 ≤ 数秒），跳播用的是章节 `start_ms` 而非图的实际帧时间，
-  两者可能差几秒。播放侧本来就按关键帧对齐（`playback.py:926`），用户
-  感知不到。
+- **`showinfo` 解析依赖 stderr 格式**：ffmpeg 各版本 `showinfo` 输出格式
+  稳定（`pts_time:` 字段十多年未变），但仍是文本解析；解析失败退回
+  `start_ms`，只损失几秒精度。
+- **磁盘**：1000 部约 0.8GB（§4.4）。应用内更新的自动备份若包含
+  `data/metadata`，备份时长随之增加——实现时确认备份范围。
 - **多版本条目**：Jellyfin DTO 只能带一份章节，取首文件；控制台按选中
   版本切换，无此限制。
 - **主图是否改从场景图里选**：`thumbnail=n=24` 在 10% 处的主图与场景图
@@ -408,3 +455,6 @@ ffprobe 输出 `chapters[].{id,time_base,start,start_time,end,end_time,tags.titl
 `start_time` 为秒字符串；无章节文件输出 `"chapters": []`。`-c copy` 转
 mp4 章节保留；HLS 分片无章节。逐章 `-ss` + `-skip_frame nokey` 抓 3 张
 0.33s，单次通读 `select` 0.18s（但要读完整个文件的关键帧）。
+`-ss 20 -copyts … showinfo` 报 `pts_time:20`，`-ss 45` 报 `pts_time:52`
+（`thumbnail=n=5` 在 5 个关键帧里选了最后一个）；不带 `-copyts` 报的是
+`0.023` 这种相对偏移。
