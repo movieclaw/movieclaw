@@ -2,6 +2,8 @@
 
 import { useEffect } from "react";
 
+import { softKeyboardPossible } from "@/lib/soft-keyboard";
+
 /**
  * 软键盘适配的全站收口：撑出键盘占位 + 窗口滚动归位。两件事同源（都由
  * 可视视口的变化驱动），放在一个 effect 里，也保证「先改高度、再归位」的顺序。
@@ -21,6 +23,11 @@ import { useEffect } from "react";
  *
  * 这个式子在「键盘改的是布局视口」的浏览器上（部分 Android 形态）自动退化为
  * 0——innerHeight 跟着一起变矮，差值恒为 0，布局本就由 dvh 收好了，不重复让位。
+ *
+ * 差值只在**焦点确实落在可输入元素上**时才当作键盘（见 lib/soft-keyboard.ts）：
+ * iOS 上焦点元素随组件卸载消失时，可视视口经常停在变矮的状态不恢复，光凭差值
+ * 会把外壳永久缩着。除视口 resize 外，focusout 与 pointerdown 也重算一次，
+ * 保证键盘一收起（哪怕 WebKit 没补发 resize）高度立刻还原。
  *
  * —— 二、窗口滚动归位 ——
  *
@@ -49,7 +56,7 @@ export function ViewportKeyboard() {
     let applied = 0;
     const applyInset = () => {
       if (!vv) return;
-      const gap = zoomed() ? 0 : Math.round(window.innerHeight - vv.height);
+      const gap = zoomed() || !softKeyboardPossible() ? 0 : Math.round(window.innerHeight - vv.height);
       // 24px 以下按取整误差 / 浏览器自身工具条的收放处理，不当键盘
       const next = gap > 24 ? gap : 0;
       if (next === applied) return;
@@ -70,14 +77,24 @@ export function ViewportKeyboard() {
       applyInset();
       window.setTimeout(resetScroll, 0);
     };
-    const onFocusOut = () => window.setTimeout(resetScroll, 0);
+    // 推迟一拍等焦点落定（focusout 触发时 activeElement 还没换过去），
+    // 再按新焦点重算键盘占高并归位
+    const onFocusOut = () =>
+      window.setTimeout(() => {
+        applyInset();
+        resetScroll();
+      }, 0);
 
     window.addEventListener("scroll", resetScroll, { passive: true });
     window.addEventListener("focusout", onFocusOut);
+    // 兜底：焦点元素被卸载时 focusout 可能整个不发，界面会一直缩着；
+    // 用户下一次触屏就把它纠正回来（无键盘时这里恒等于把占位清零）
+    window.addEventListener("pointerdown", applyInset, { passive: true });
     vv?.addEventListener("resize", onResize);
     return () => {
       window.removeEventListener("scroll", resetScroll);
       window.removeEventListener("focusout", onFocusOut);
+      window.removeEventListener("pointerdown", applyInset);
       vv?.removeEventListener("resize", onResize);
       root.style.removeProperty("--keyboard-inset");
     };

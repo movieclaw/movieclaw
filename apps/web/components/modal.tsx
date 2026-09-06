@@ -23,6 +23,8 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
+import { softKeyboardPossible } from "@/lib/soft-keyboard";
+
 /**
  * 软键盘对视口底部的遮挡高度（px）。
  *
@@ -31,6 +33,11 @@ import { createPortal } from "react-dom";
  * 键盘底下。VisualViewport API 给出真实可见区域，据此算出底部被遮挡量，
  * 弹窗容器把 bottom 抬高同样的距离即可始终落在可见区内。
  * 桌面端与键盘收起时恒为 0，行为不变；不支持该 API 的环境静默退化。
+ *
+ * 只在焦点确实落在可输入元素上时才认这份遮挡（见 lib/soft-keyboard.ts）：
+ * iOS 收起键盘后可视视口常停在变矮的状态不恢复，照单全收会把弹窗凭空抬起
+ * ——底部抽屉比容器还高，从屏幕上沿溢出，标题与关闭按钮跑到状态栏外面。
+ * focusout 同样重算一次，弹窗里的输入框一失焦，抽屉立刻落回屏幕底边。
  */
 function useKeyboardInset(active: boolean): number {
   const [inset, setInset] = useState(0);
@@ -39,16 +46,20 @@ function useKeyboardInset(active: boolean): number {
     const vv = window.visualViewport;
     if (!vv) return;
     const update = () => {
-      const occluded = window.innerHeight - vv.height - vv.offsetTop;
+      const occluded = softKeyboardPossible() ? window.innerHeight - vv.height - vv.offsetTop : 0;
       setInset(Math.max(0, Math.round(occluded)));
     };
+    // 推迟一拍等焦点落定：focusout 触发时 activeElement 还没换过去
+    const onFocusOut = () => window.setTimeout(update, 0);
     update();
     vv.addEventListener("resize", update);
     vv.addEventListener("scroll", update);
+    window.addEventListener("focusout", onFocusOut);
     return () => {
       setInset(0);
       vv.removeEventListener("resize", update);
       vv.removeEventListener("scroll", update);
+      window.removeEventListener("focusout", onFocusOut);
     };
   }, [active]);
   return active ? inset : 0;
@@ -110,6 +121,9 @@ export function Modal({
     // bottom 越出视口 --vp-overshoot：iOS 独立 App 的视口比屏幕矮一截（见
     // globals.css），不越出的话遮罩在屏幕底部留一条没压暗的缝、移动端 bottom
     // sheet 也会悬在物理底边上方。面板内容用加大的 pb 留在视口内（见下方）。
+    // 面板另有 max-md:!max-h-full 夹住高度：键盘抬起容器底边后容器会变矮，
+    // 调用方按视口给的 max-h-[N vh] 就可能超过容器，而 items-end 的溢出方向
+    // 是**上**，头部与关闭按钮会被顶出屏幕且无法滚回（! 压过调用方的 max-h）。
     <div
       className={`fixed inset-0 [bottom:calc(-1*var(--vp-overshoot))] ${topmost ? "z-[90]" : raised ? "z-[60]" : "z-50"} flex items-center justify-center p-6 max-md:items-end max-md:p-0`}
       // 键盘弹出时容器底边抬到键盘上沿（覆盖 className 里的 overshoot 负值）：
@@ -129,7 +143,7 @@ export function Modal({
         className="absolute inset-0 cursor-default bg-black/60 backdrop-blur-sm"
       />
       <div
-        className={`relative w-full ${WIDTH_CLS[width]} overflow-hidden rounded-2xl border border-white/10 bg-[rgba(16,18,26,0.92)] shadow-[0_32px_90px_rgba(0,0,0,0.7)] backdrop-blur-2xl max-md:!max-w-none max-md:rounded-b-none max-md:border-x-0 max-md:border-b-0 max-md:pb-[calc(var(--safe-bottom)+var(--vp-overshoot))] ${panelClassName}`}
+        className={`relative w-full ${WIDTH_CLS[width]} overflow-hidden rounded-2xl border border-white/10 bg-[rgba(16,18,26,0.92)] shadow-[0_32px_90px_rgba(0,0,0,0.7)] backdrop-blur-2xl max-md:!max-h-full max-md:!max-w-none max-md:rounded-b-none max-md:border-x-0 max-md:border-b-0 max-md:pb-[calc(var(--safe-bottom)+var(--vp-overshoot))] ${panelClassName}`}
       >
         {children}
       </div>
