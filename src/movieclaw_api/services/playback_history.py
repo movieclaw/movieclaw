@@ -10,10 +10,15 @@
 
 只作用于**一个成员自己**的记录（超管 = 哨兵 0），跨成员清除不在这里提供。
 三种范围：按条目（该条目全部季集）、按库（该库台账里出现过的全部条目）、
-全部。同一事务内落盘，删了一半的状态不会出现。
+全部。任一范围都可再叠一个时间窗口 ``since``（首页「清空今天 / 最近一周」
+用它）：只删最近一次播放落在窗口内的状态行与窗口内产生的指标行——一部片
+上周看到一半、今天又接着看了，它的续播点也会被清掉，这正是「清空今天看过
+的」应有的含义。同一事务内落盘，删了一半的状态不会出现。
 """
 
 from __future__ import annotations
+
+from datetime import datetime
 
 from sqlalchemy import delete as sa_delete
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,10 +36,20 @@ async def clear(
     *,
     media_item_id: int | None = None,
     library_id: int | None = None,
+    since: datetime | None = None,
 ) -> PlaybackHistoryClearView:
-    """删除 ``member_id`` 在给定范围内的全部观看记录；两个范围参数都不给 = 全部。"""
+    """删除 ``member_id`` 在给定范围内的全部观看记录；两个范围参数都不给 = 全部。
+
+    ``since``（UTC 朴素时间）非空时只删这个时刻之后有播放活动的记录。
+    """
     state_stmt = sa_delete(PlaybackState).where(PlaybackState.member_id == member_id)  # type: ignore[arg-type]
     metric_stmt = sa_delete(PlaybackMetric).where(PlaybackMetric.member_id == member_id)  # type: ignore[arg-type]
+
+    if since is not None:
+        # 状态行按「最近一次播放时间」判定：从未播放过（只被标记已看/收藏）的
+        # 行没有时间可比，不在时间窗口的语义里，留下
+        state_stmt = state_stmt.where(PlaybackState.last_played_at >= since)  # type: ignore[arg-type]
+        metric_stmt = metric_stmt.where(PlaybackMetric.created_at >= since)  # type: ignore[arg-type]
 
     if media_item_id is not None:
         state_stmt = state_stmt.where(PlaybackState.media_item_id == media_item_id)  # type: ignore[arg-type]

@@ -6,6 +6,8 @@ import Link from "next/link";
 import { HScroller } from "@/components/h-scroller";
 import { CheckIcon, PlayIcon } from "@/components/icons";
 import { PosterImage } from "@/components/poster-image";
+import { RecentWatchMenu } from "@/components/recent-watch-menu";
+import type { MediaLibrary } from "@/lib/api/libraries";
 import type { RecentWatchItem } from "@/lib/api/playback";
 import { playHref, rememberPlayerReturnPath } from "@/lib/player/play-links";
 import { cardVariantFor, imageUrl } from "@/lib/image-proxy";
@@ -82,20 +84,34 @@ function stateLabel(item: RecentWatchItem, hasClock: boolean): string {
 }
 
 /** 媒体库首页顶部的最近观看横排；空列表整段隐藏。 */
-export function RecentWatchRow({ items }: { items: RecentWatchItem[] | null }) {
+export function RecentWatchRow({
+  items,
+  libraries,
+  onCleared,
+}: {
+  items: RecentWatchItem[] | null;
+  /** 当前身份可浏览的库：⋯ 菜单「清空某个媒体库」的候选 */
+  libraries: MediaLibrary[];
+  /** 清除观看记录成功后回调：父组件重新拉数据，这一行随之刷新或隐藏 */
+  onCleared: () => void;
+}) {
   // 首页不存在观看记录时完全不占位；首次请求尚未返回也先保持原布局，
   // 避免从未使用播放器的用户看到一个没有实际内容的分区骨架。
+  // 清空入口也随之隐藏——没有记录就没有可清的东西。
   if (!items?.length) return null;
 
   return (
     <section className="mt-8 max-md:mt-6" aria-labelledby="recent-watch-title">
-      <div className="px-6 max-md:px-4">
+      <div className="flex items-center justify-between gap-4 px-6 max-md:px-4">
         <h3
           id="recent-watch-title"
           className="text-on-image text-body-lg font-semibold tracking-[-0.01em] text-[var(--text)]"
         >
           最近观看
         </h3>
+        {/* 清空观看记录收在标题行右端的 ⋯ 里：与「我的媒体库」等分区标题
+            行同一布局，分区自己的操作长在分区上 */}
+        <RecentWatchMenu libraries={libraries} onCleared={onCleared} />
       </div>
       <HScroller className="mt-3 gap-4 px-6 pb-2 pt-1 max-md:gap-3 max-md:px-4">
         {items.map((item) => <RecentWatchCard key={item.media_item_id} item={item} />)}
