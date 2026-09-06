@@ -30,6 +30,13 @@ export const PlusIcon = (p: IconProps) => (
   </Base>
 );
 
+/** 减号：与 PlusIcon 成对（灯箱的缩小 / 放大） */
+export const MinusIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="M5 12h14" />
+  </Base>
+);
+
 export const SparkIcon = (p: IconProps) => (
   <Base {...p}>
     <path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3Z" />
