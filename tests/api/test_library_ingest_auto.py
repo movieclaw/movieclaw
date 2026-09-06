@@ -48,6 +48,7 @@ _FAKE_SPEC = SimpleNamespace(
     color_space="BT.709",
     audio_streams=[],
     subtitle_streams=[],
+    chapters=[],
 )
 
 _ANIME_RULES = [{"field": "genres", "op": "any_of", "values": [16]}]

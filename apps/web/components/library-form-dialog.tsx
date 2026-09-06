@@ -501,6 +501,7 @@ function CreateLibraryDialog({
       auto_clear_missing: false,
       realtime_watch: true,
       generate_thumbnails: true,
+      extract_chapter_images: true,
       exclude_from_home: false,
       scrape_overrides: {},
       access_mode: accessMode,
@@ -1049,6 +1050,9 @@ function EditLibraryDialog({
   const [realtimeWatch, setRealtimeWatch] = useState(library.realtime_watch);
   const [autoClearMissing, setAutoClearMissing] = useState(library.auto_clear_missing);
   const [generateThumbnails, setGenerateThumbnails] = useState(library.generate_thumbnails);
+  const [extractChapterImages, setExtractChapterImages] = useState(
+    library.extract_chapter_images,
+  );
   const [excludeFromHome, setExcludeFromHome] = useState(library.exclude_from_home);
   const [accessMode, setAccessMode] = useState<LibraryAccessMode>(library.access_mode);
   const [adminVisible, setAdminVisible] = useState(library.admin_visible);
@@ -1084,6 +1088,7 @@ function EditLibraryDialog({
       auto_clear_missing: autoClearMissing,
       realtime_watch: realtimeWatch,
       generate_thumbnails: generateThumbnails,
+      extract_chapter_images: extractChapterImages,
       exclude_from_home: excludeFromHome,
       scrape_overrides: scraped ? scrapeOverrides : {},
       access_mode: accessMode,
@@ -1145,6 +1150,7 @@ function EditLibraryDialog({
           {dot(realtimeWatch, "实时监控")}
           {dot(autoClearMissing, "自动清理丢失")}
           {dot(generateThumbnails, scraped ? "未识别文件缩略图" : "抓帧缩略图")}
+          {dot(extractChapterImages, "章节场景图")}
           {dot(!excludeFromHome, "首页展示")}
         </>
       ),
@@ -1167,6 +1173,12 @@ function EditLibraryDialog({
             checked={generateThumbnails}
             onChange={setGenerateThumbnails}
             detail="没有在线海报的内容从视频本身抓一帧当封面：优先用同名图片或内嵌封面，没有再抓帧。网络挂载库抓帧需要读取每个文件，介意流量可关闭，关闭后显示占位图。"
+          />
+          <SwitchRow
+            title="抓取章节场景图"
+            checked={extractChapterImages}
+            onChange={setExtractChapterImages}
+            detail="每个视频按章节（有内嵌章节用内嵌，没有按时长切成 3～12 段）各抓一张画面：条目页出「场景」横排、点一张从那里开始播，Infuse 等播放器也能按章节跳转。扫描后在后台低优先级生成，每个文件要定位读取若干次，网络挂载的大库介意读取量可关闭；关闭后已生成的图保留。"
           />
           <SwitchRow
             title="在首页展示"

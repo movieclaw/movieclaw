@@ -40,6 +40,8 @@ export interface LibraryRowActions {
   onOpenPending: (library: MediaLibrary) => void;
   onOrganize: (library: MediaLibrary) => void;
   onToggleRefresh: (library: MediaLibrary) => void;
+  /** 整库生成章节场景图（库开了开关才给入口） */
+  onChapterImages: (library: MediaLibrary) => void;
   onEdit: (library: MediaLibrary) => void;
   onSetDefault: (library: MediaLibrary) => void;
   onToggleHome: (library: MediaLibrary) => void;
@@ -359,6 +361,15 @@ function RowMenu({
           >
             {refreshing ? `停止刷新${pct}` : caps.scraped ? "刷新元数据" : "重新生成缩略图"}
           </DropdownMenu.Item>
+          {library.extract_chapter_images && (
+            <DropdownMenu.Item
+              onSelect={() => actions.onChapterImages(library)}
+              disabled={busy}
+              className={itemClass}
+            >
+              生成章节场景图
+            </DropdownMenu.Item>
+          )}
           <DropdownMenu.Separator className="my-1 h-px bg-white/[0.07]" />
           {/* 扫描/整理正按当前根路径读写台账，期间不允许改库配置 */}
           <DropdownMenu.Item

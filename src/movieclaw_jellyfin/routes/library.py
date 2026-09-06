@@ -122,6 +122,7 @@ async def viewer_scope(
         visible = await member_visible_ids(session, member_id)
     return ViewerScope(member_id, visible)
 
+
 # 这些排序键要读**每一个候选条目**的文件行（入库时间 / 时长），骨架不够用
 _FULL_LEAF_SORTS = {"DateCreated", "Runtime"}
 # 这些排序/筛选口径在候选里含 Episode 时要读**每一集**的分集元数据
@@ -163,9 +164,7 @@ class _LazyLeaves:
 Entry = tuple[str, Any, int, int]
 
 
-async def _items_with_persons(
-    session: AsyncSession, person_guids: list[str]
-) -> set[int]:
+async def _items_with_persons(session: AsyncSession, person_guids: list[str]) -> set[int]:
     """personIds 过滤：解出人物 id → 反查参演/执导的条目集合。"""
     from sqlalchemy import select as sa_select
 
@@ -180,9 +179,7 @@ async def _items_with_persons(
         return set()
     rows = (
         await session.execute(
-            sa_select(MediaItemPerson.media_item_id).where(
-                MediaItemPerson.person_id.in_(ids)
-            )
+            sa_select(MediaItemPerson.media_item_id).where(MediaItemPerson.person_id.in_(ids))
         )
     ).scalars()
     return set(rows)
@@ -210,10 +207,7 @@ async def user_views(
     ctx = await dto_context()
     async with get_database().session() as session:
         libraries = await list_libraries(session, visible_ids=scope.visible)
-    dtos = [
-        library_view_dto(ctx, lib, await _cover_tag(lib.id))
-        for lib in libraries
-    ]
+    dtos = [library_view_dto(ctx, lib, await _cover_tag(lib.id)) for lib in libraries]
     return JSONResponse(query_result(dtos, len(dtos)))
 
 
@@ -292,7 +286,8 @@ async def library_virtual_folders(
                     "Enabled": True,
                     "EnablePhotos": False,
                     "EnableRealtimeMonitor": True,
-                    "EnableChapterImageExtraction": False,
+                    # 章节场景图开关如实反映（docs/design/video-chapters.md §4.7）
+                    "EnableChapterImageExtraction": bool(lib.extract_chapter_images),
                     "ExtractChapterImagesDuringLibraryScan": False,
                     "EnableTrickplayImageExtraction": False,
                     "ExtractTrickplayImagesDuringLibraryScan": False,
@@ -419,7 +414,7 @@ def _entry_sort_value(name: str, entry: Entry):
     if name == "PremiereDate":
         if kind == "Episode":
             row = bundle.episodes.get((season, episode))
-            return (row.air_date.isoformat() if row and row.air_date else "")
+            return row.air_date.isoformat() if row and row.air_date else ""
         meta = bundle.metadata
         return meta.release_date.isoformat() if meta and meta.release_date else ""
     if name == "CommunityRating":
@@ -431,16 +426,12 @@ def _entry_sort_value(name: str, entry: Entry):
         return bundle.unit_runtime_ms(season, episode) or 0
     if name == "DateCreated":
         units = [(season, episode)] if kind in PLAYABLE_TYPES else bundle.units
-        stamps = [
-            f.created_at for u in units for f in bundle.files.get(u, [])
-        ]
+        stamps = [f.created_at for u in units for f in bundle.files.get(u, [])]
         return max(stamps).isoformat() if stamps else ""
     if name == "DatePlayed":
         units = [(season, episode)] if kind in PLAYABLE_TYPES else bundle.units
         stamps = [
-            st.last_played_at
-            for u in units
-            if (st := bundle.state(*u)) and st.last_played_at
+            st.last_played_at for u in units if (st := bundle.state(*u)) and st.last_played_at
         ]
         return max(stamps).isoformat() if stamps else ""
     if name in ("ParentIndexNumber", "AiredEpisodeOrder", "IndexNumber"):
@@ -449,9 +440,17 @@ def _entry_sort_value(name: str, entry: Entry):
 
 
 _SORTABLE = {
-    "SortName", "Name", "ProductionYear", "PremiereDate", "CommunityRating",
-    "Runtime", "DateCreated", "DatePlayed", "ParentIndexNumber",
-    "AiredEpisodeOrder", "IndexNumber",
+    "SortName",
+    "Name",
+    "ProductionYear",
+    "PremiereDate",
+    "CommunityRating",
+    "Runtime",
+    "DateCreated",
+    "DatePlayed",
+    "ParentIndexNumber",
+    "AiredEpisodeOrder",
+    "IndexNumber",
 }
 
 
@@ -586,8 +585,7 @@ async def _query_items(request: Request, scope: ViewerScope) -> JSONResponse:
         else:
             lazy = _LazyLeaves(
                 allowed=not (set(sort_by) & _FULL_LEAF_SORTS),
-                episode_sensitive=bool(search_term)
-                or bool(set(sort_by) & _EPISODE_LEAF_SORTS),
+                episode_sensitive=bool(search_term) or bool(set(sort_by) & _EPISODE_LEAF_SORTS),
             )
             entries = await _entries_for_parent(
                 session,
@@ -602,10 +600,7 @@ async def _query_items(request: Request, scope: ViewerScope) -> JSONResponse:
             if entries is None:
                 # 根级：返回视图列表
                 libraries = await list_libraries(session, visible_ids=scope.visible)
-                dtos = [
-                    library_view_dto(ctx, lib, await _cover_tag(lib.id))
-                    for lib in libraries
-                ]
+                dtos = [library_view_dto(ctx, lib, await _cover_tag(lib.id)) for lib in libraries]
                 return JSONResponse(query_result(dtos, len(dtos)))
 
         if not simple_movie_page and person_ids_raw:
@@ -636,16 +631,12 @@ async def _query_items(request: Request, scope: ViewerScope) -> JSONResponse:
         genres = set(parse_pipe(q.get("genres")))
         if genres:
             entries = [
-                e
-                for e in entries
-                if e[1].metadata and genres & set(e[1].metadata.genres or [])
+                e for e in entries if e[1].metadata and genres & set(e[1].metadata.genres or [])
             ]
         ratings = set(parse_pipe(q.get("officialRatings")))
         if ratings:
             entries = [
-                e
-                for e in entries
-                if e[1].metadata and e[1].metadata.content_rating in ratings
+                e for e in entries if e[1].metadata and e[1].metadata.content_rating in ratings
             ]
 
         filters = set(parse_comma(q.get("filters")))
@@ -668,16 +659,13 @@ async def _query_items(request: Request, scope: ViewerScope) -> JSONResponse:
         # 两段式装载的第二段：这一页要渲染的叶子单元现在才确定，
         # 回头只为它们补文件行与分集元数据（骨架里没有重复行，不会叠加）
         leaves = {
-            (entry[1].item.id, entry[2], entry[3])
-            for entry in page
-            if entry[0] in PLAYABLE_TYPES
+            (entry[1].item.id, entry[2], entry[3]) for entry in page if entry[0] in PLAYABLE_TYPES
         }
         if leaves:
             async with get_database().session() as session:
                 await hydrate_leaves(
                     session,
-                    {entry[1].item.id: entry[1] for entry in page
-                     if entry[0] in PLAYABLE_TYPES},
+                    {entry[1].item.id: entry[1] for entry in page if entry[0] in PLAYABLE_TYPES},
                     leaves,
                     library_id=lazy.library_id,
                     visible_library_ids=scope.visible,
@@ -720,9 +708,7 @@ async def collect_search_entries(
             dto_options=DtoOptions(),
         )
         entries = [
-            e
-            for e in _build_entries(bundles, media_types)
-            if _entry_search_match(e, search)
+            e for e in _build_entries(bundles, media_types) if _entry_search_match(e, search)
         ]
     if include_persons:
         entries += await _person_entries(session, scope, search, library_id=library_id)
@@ -748,9 +734,7 @@ async def _person_entries(
             session, library_id=library_id, visible_library_ids=scope.visible
         )
     elif scope.visible is not None:
-        visible_ids = await item_ids_with_files(
-            session, visible_library_ids=scope.visible
-        )
+        visible_ids = await item_ids_with_files(session, visible_library_ids=scope.visible)
     _, persons = await query_persons(session, visible_item_ids=visible_ids)
     if search is not None:
         persons = [p for p in persons if search.matches(p.name, p.original_name)]
@@ -844,11 +828,7 @@ async def _entries_for_parent(
         if include_types and recursive is None:
             effective_recursive = True
         default_types = {item_type_of(library.kind)}
-        all_types = (
-            default_types
-            if is_leaf_kind(library.kind)
-            else {"Series", "Season", "Episode"}
-        )
+        all_types = default_types if is_leaf_kind(library.kind) else {"Series", "Season", "Episode"}
         if effective_recursive:
             types = include_types or all_types
         else:
@@ -942,9 +922,7 @@ async def items_latest(
     )
     parent_ref = decode_guid(q.get("parentId") or "") if q.get("parentId") else None
     library_id = (
-        parent_ref.entity_id
-        if parent_ref and parent_ref.kind == EntityKind.LIBRARY
-        else None
+        parent_ref.entity_id if parent_ref and parent_ref.kind == EntityKind.LIBRARY else None
     )
     is_played = parse_bool(q.get("isPlayed"))
     if is_played is None:
@@ -990,9 +968,7 @@ async def items_latest(
                 grouped_series[candidate.media_item_id] = 1
                 selected_units.append(candidate)
             # 选够了，或候选本身就没被截断（说明库里就这么多）→ 结果已是最终态
-            if len(selected_units) >= limit or row_limit is None or len(
-                latest_units
-            ) < row_limit:
+            if len(selected_units) >= limit or row_limit is None or len(latest_units) < row_limit:
                 break
 
         selected_ids = list(dict.fromkeys(c.media_item_id for c in selected_units))
@@ -1005,8 +981,7 @@ async def items_latest(
             dto_options=options,
             # 只渲染选中的这些单元：同剧聚合成 Series 的那几条也只吃单元键集合
             leaf_scope={
-                (c.media_item_id, c.season_number, c.episode_number)
-                for c in selected_units
+                (c.media_item_id, c.season_number, c.episode_number) for c in selected_units
             },
         )
     dtos: list[dict[str, Any]] = []
@@ -1185,9 +1160,7 @@ async def items_counts(
                 )
                 return int(
                     (
-                        await session.execute(
-                            sa_select(func.count()).select_from(distinct_items)
-                        )
+                        await session.execute(sa_select(func.count()).select_from(distinct_items))
                     ).scalar_one()
                 )
 
@@ -1196,9 +1169,7 @@ async def items_counts(
                     [library.id for library in movie_libraries if library.id is not None]
                 )
             if len(tv_libraries) > 1:
-                tv_library_ids = [
-                    library.id for library in tv_libraries if library.id is not None
-                ]
+                tv_library_ids = [library.id for library in tv_libraries if library.id is not None]
                 series_count = await distinct_item_count(tv_library_ids)
                 distinct_units = (
                     sa_select(
@@ -1216,9 +1187,7 @@ async def items_counts(
                 )
                 episode_count = int(
                     (
-                        await session.execute(
-                            sa_select(func.count()).select_from(distinct_units)
-                        )
+                        await session.execute(sa_select(func.count()).select_from(distinct_units))
                     ).scalar_one()
                 )
         movie_count += video_count
@@ -1341,9 +1310,7 @@ async def get_item(
             library = await session.get(Library, ref.entity_id)
             if library is None:
                 raise not_found()
-            return JSONResponse(
-                library_view_dto(ctx, library, await _cover_tag(library.id))
-            )
+            return JSONResponse(library_view_dto(ctx, library, await _cover_tag(library.id)))
         # 单条目是全字段语义，People 恒输出；可见性先行（GUID 可枚举）
         if not await _item_visible(session, ref.entity_id, scope):
             raise not_found()
@@ -1577,11 +1544,7 @@ async def shows_episodes(
             # seasonId 指向不存在（无文件）的季 → 404（对齐 TvShowsController.cs:238）
             raise not_found_message(f"No season exists with Id {season_id}")
 
-        units = [
-            u
-            for u in bundle.units
-            if season_scope is None or u[0] == season_scope
-        ]
+        units = [u for u in bundle.units if season_scope is None or u[0] == season_scope]
         # 洗牌对象从 DTO 换成单元：random.shuffle 只按下标置换、与元素类型无关，
         # 同一 RNG 状态下得到的排列完全相同，但不必先把整季都构建成 DTO
         if q.get("sortBy") == "Random":
@@ -1590,11 +1553,7 @@ async def shows_episodes(
             random.shuffle(units)
 
         total = len(units)
-        page_units = (
-            units[start_index : start_index + limit]
-            if limit >= 0
-            else units[start_index:]
-        )
+        page_units = units[start_index : start_index + limit] if limit >= 0 else units[start_index:]
         if not whole_series:
             await hydrate_leaves(
                 session,

@@ -18,6 +18,7 @@ from movieclaw_api.schemas.library import (
     ArtworkCandidateView,
     ArtworkSelectPayload,
     AudioStreamView,
+    ChapterView,
     ClaimBatchPayload,
     ClaimPayload,
     DetachPayload,
@@ -80,6 +81,7 @@ from movieclaw_api.schemas.library import (
 from movieclaw_api.schemas.response import ApiResponse, ok
 from movieclaw_api.services import jobs, media_scrape
 from movieclaw_api.services.auth import Principal
+from movieclaw_api.services.library import chapters as chapters_mod
 from movieclaw_api.services.library import claim as library_claim
 from movieclaw_api.services.library import source_annotation
 from movieclaw_api.services.library.access import (
@@ -937,6 +939,7 @@ async def create_library(
         realtime_watch=payload.realtime_watch,
         scrape_overrides=payload.scrape_overrides,
         generate_thumbnails=payload.generate_thumbnails,
+        extract_chapter_images=payload.extract_chapter_images,
         exclude_from_home=payload.exclude_from_home,
         access_mode=payload.access_mode,
         admin_visible=payload.admin_visible,
@@ -1096,6 +1099,7 @@ async def update_library(
         realtime_watch=payload.realtime_watch,
         scrape_overrides=payload.scrape_overrides,
         generate_thumbnails=payload.generate_thumbnails,
+        extract_chapter_images=payload.extract_chapter_images,
         exclude_from_home=payload.exclude_from_home,
         access_mode=payload.access_mode,
         admin_visible=payload.admin_visible,
@@ -1372,6 +1376,47 @@ async def stop_scan(
             raise ConflictException(f"「{library.name}」{PHASE_LABELS[phase]}，该任务不能中途停止")
         raise ConflictException(f"「{library.name}」当前没有进行中的扫描")
     return ok({}, message=f"正在停止「{library.name}」的扫描（当前单位处理完即停下）")
+
+
+# ---------------------------------------------------------------------------
+# 章节场景图（docs/design/video-chapters.md §4.5）：整库后台作业
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/{library_id}/chapter-images",
+    response_model=ApiResponse[dict],
+    summary="生成整库的章节场景图（可恢复后台作业；force=true 全部重抓）",
+    operation_id="library.chapter-images.generate",
+    dependencies=[Depends(require_admin)],
+    openapi_extra={"x-cli-job": {"id_path": "job_id", "wait_op": "jobs.wait"}},
+    status_code=202,
+)
+async def start_chapter_images(
+    library_id: int,
+    force: bool = Query(default=False, description="true=已有的图也重抓；默认只补缺"),
+    client_name: str | None = Header(default=None, alias="X-MovieClaw-Client"),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[dict]:
+    """每个在位文件按章节（内嵌章节或按时长合成）抓若干张场景图，供详情页
+    「场景」横排与 Jellyfin 客户端的章节列表使用。扫描结束会自动排一份，这里是
+    手动入口；库关了「章节场景图」开关时直接拒绝。"""
+
+    service = LibraryConfigService(session)
+    library = await service.get(library_id)
+    if not library.extract_chapter_images:
+        raise ConflictException(f"「{library.name}」已关闭章节场景图，请先在编辑库里打开")
+    created = await chapters_mod.enqueue_library_chapter_images_job(
+        session, library_id, library.name, force=force, origin=_job_origin(client_name)
+    )
+    return ok(
+        {"started": True, "job_id": created.job.id, "created": created.created},
+        message=(
+            f"已开始生成「{library.name}」的章节场景图，可在任务中心继续观察"
+            if created.created
+            else f"「{library.name}」的章节场景图正在生成中"
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1893,6 +1938,38 @@ async def _item_rows(
     return item, rows
 
 
+def _chapter_views(row: LibraryFile) -> list[ChapterView] | None:
+    """台账行的有效章节 + 已抓到的场景图（docs/design/video-chapters.md §4.6）。
+
+    章节未探测（旧行）返回 None；图地址带 ``?v=`` 版本戳，重抓后浏览器不会拿旧图。
+    """
+    if row.chapters is None:
+        return None
+    images = chapters_mod.chapter_image_map(row.chapter_images)
+    views: list[ChapterView] = []
+    for chapter in chapters_mod.effective_chapters(row.chapters, row.duration_seconds):
+        entry = images.get(chapter.start_ms)
+        image_url = None
+        frame_ms = None
+        if entry is not None:
+            rel = str(entry["image"])
+            image_url = f"/images/assets/{rel}?v={media_scrape.asset_version(rel)}"
+            frame_raw = entry.get("frame_ms")
+            frame_ms = int(frame_raw) if isinstance(frame_raw, int | float) else None
+        views.append(
+            ChapterView(
+                index=chapter.index,
+                start_ms=chapter.start_ms,
+                end_ms=chapter.end_ms,
+                frame_ms=frame_ms,
+                title=chapter.title,
+                synthetic=chapter.synthetic,
+                image_url=image_url,
+            )
+        )
+    return views
+
+
 def _file_view(row: LibraryFile, external_subs: list[str]) -> LibraryFileView:
     """台账行 → 详情页文件视图：内封字幕轨与外挂字幕文件合并成一份清单。"""
     subtitles = [
@@ -1961,6 +2038,7 @@ def _file_view(row: LibraryFile, external_subs: list[str]) -> LibraryFileView:
             ]
         ),
         subtitle_streams=subtitles,
+        chapters=_chapter_views(row),
         added_at=row.created_at,
     )
 
@@ -1993,6 +2071,15 @@ async def get_library_item(
     playback_warmup.schedule(
         media_item_id, [row for row in rows if row.state == FileState.IN_PLACE]
     )
+    # 章节场景图懒触发（docs/design/video-chapters.md §4.5）：有在位文件没抓过
+    # 图就后台抓这一个条目，前端按 chapters_pending 轮询几轮把图补上——升级后
+    # 第一次打开旧条目不用等整库作业排到它
+    chapters_pending = chapters_mod.item_pending(media_item_id)
+    needs_stills = any(
+        row.chapter_images is None and chapters_mod.stills_eligible(row) for row in rows
+    )
+    if library.extract_chapter_images and not chapters_pending and needs_stills:
+        chapters_pending = chapters_mod.schedule_item_chapter_images(media_item_id)
     bundle = await build_item_detail(session, library, item, rows)
 
     base = get_settings().tmdb_image_base_url.rstrip("/")
@@ -2113,6 +2200,7 @@ async def get_library_item(
             # 知道这部片还在刮、正在做什么，不依赖发起刷新的那个标签页还开着
             scraping=media_scrape.is_scraping(media_item_id),
             scraping_phase=media_scrape.scraping_phase(media_item_id),
+            chapters_pending=chapters_pending,
             scrape_library_id=scrape_library.id if scrape_library else None,
             scrape_library_name=scrape_library.name if scrape_library else None,
         )

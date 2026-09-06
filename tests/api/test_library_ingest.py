@@ -61,6 +61,7 @@ _FAKE_SPEC = SimpleNamespace(
     color_space="BT.709",
     audio_streams=[],
     subtitle_streams=[],
+    chapters=[],
 )
 
 

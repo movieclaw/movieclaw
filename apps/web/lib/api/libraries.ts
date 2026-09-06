@@ -74,6 +74,8 @@ export interface MediaLibrary {
   capabilities: LibraryCapabilities;
   /** 本地来源内容是否从文件抓帧生成缩略图 */
   generate_thumbnails: boolean;
+  /** 是否为视频章节抓取场景图（后台低优先级作业） */
+  extract_chapter_images: boolean;
   /** 是否从首页「最近添加」等汇总里排除 */
   exclude_from_home: boolean;
   /** 可见范围（docs/design/library-access.md）：everyone / selected */
@@ -364,6 +366,8 @@ export interface LibraryPayload {
   root_paths: string[];
   /** 本地来源内容是否抓帧生成缩略图；不传=不改动（新建时默认开） */
   generate_thumbnails?: boolean;
+  /** 是否为视频章节抓取场景图；不传=不改动（新建时默认开） */
+  extract_chapter_images?: boolean;
   /** 是否从首页汇总里排除该库；不传=不改动（新建时默认关） */
   exclude_from_home?: boolean;
   /** 可见范围模式；不传=不改动（新建时默认 everyone） */
@@ -635,6 +639,22 @@ export function stopLibraryMetadataRefresh(id: number): Promise<Record<string, n
 export function getMetadataRefreshProgress(id: number): Promise<MetadataRefreshProgress> {
   return unwrap(
     request<ApiEnvelope<MetadataRefreshProgress>>(`/libraries/${id}/metadata/refresh/progress`),
+  );
+}
+
+/**
+ * 整库生成章节场景图（docs/design/video-chapters.md §4.5）：低优先级后台作业，
+ * 默认只补缺，force 全部重抓。扫描结束会自动排一份，这是手动入口。
+ */
+export function startLibraryChapterImages(
+  id: number,
+  { force = false }: { force?: boolean } = {},
+): Promise<PersistentJobStart> {
+  return unwrap(
+    request<ApiEnvelope<PersistentJobStart>>(
+      `/libraries/${id}/chapter-images${force ? "?force=true" : ""}`,
+      { method: "POST" },
+    ),
   );
 }
 
@@ -1030,7 +1050,26 @@ export interface LibraryItemFile {
   audio_streams: AudioStream[] | null;
   /** 字幕列表：内封轨 + 外挂文件 */
   subtitle_streams: SubtitleStream[];
+  /** 有效章节（内嵌或按时长合成）；null=尚未探测章节 */
+  chapters: LibraryChapter[] | null;
   added_at: string;
+}
+
+/** 一个章节（docs/design/video-chapters.md）：详情页「场景」横排的一张卡。 */
+export interface LibraryChapter {
+  /** 章节序号（0 起） */
+  index: number;
+  start_ms: number;
+  /** 章节终点；末章无终点时为 null */
+  end_ms: number | null;
+  /** 场景图上那一帧的真实时间；跳播用它，无图时为 null（退回 start_ms） */
+  frame_ms: number | null;
+  /** 章节标题；合成章节与无名章节为 null */
+  title: string | null;
+  /** 按时长合成（容器里没有内嵌章节） */
+  synthetic: boolean;
+  /** 场景图地址（/images/assets 相对路径）；未生成为 null */
+  image_url: string | null;
 }
 
 /** 本地刮削（NFO）的一位演员。 */
@@ -1103,6 +1142,8 @@ export interface LibraryItemDetail {
   scraping: boolean;
   /** 刮削当前阶段（与整库刷新同一套文案）；没在刮为 null */
   scraping_phase: string | null;
+  /** 章节场景图正在后台生成（打开详情页时懒触发）；前端据此轮询几轮 */
+  chapters_pending: boolean;
   /**
    * 刮削归属库（docs/design/scrape-customization.md §14）：元数据与图片的产物
    * 挂全局条目，一条目只能有一套语言/选图口味，由这个库说了算。文件散在两个

@@ -1,6 +1,16 @@
 # 视频章节与场景图：探测、抓图、详情页跳播与 Jellyfin 输出
 
-> 状态：**v1 方案，待评审（2026-09-06）**。本文是"按时长多抓几张剧照、
+> 状态：**v1 一至三期已实施（2026-09-06）**。迁移 `d4e5f6a7b8c9`、
+> `services/library/chapters.py`（有效章节、抓图、单条目刷新、懒触发、整库作业
+> `library.chapter_images`）、`media_probe.parse_chapters`、详情接口
+> `LibraryFileView.chapters` + `chapters_pending`、前端 `chapter-strip.tsx`、
+> Jellyfin `Chapters` 与 `Images/Chapter/{index}`；回归测试
+> `tests/media/test_chapters.py`、`tests/api/test_chapter_images.py`、
+> `tests/jellyfin/test_chapters.py`。第四期（网页播放器章节刻度）未做。
+> 实施偏差：整库「重新生成缩略图」菜单文案未改（整库刷新不重抓场景图，
+> 场景图整库入口是独立的「生成章节场景图」菜单项）；合成章节输出给 Jellyfin
+> 客户端（用户决策 2026-09-06）。
+> 本文是"按时长多抓几张剧照、
 > 每张记时间点、hover 后点击从该时间点播放"这一诉求的完整设计。核心结论：
 > 把它建模成 **章节（chapter）** 而不是"多张缩略图"——内嵌章节有则用之，
 > 没有再按时长合成，图是章节的附属物；这样详情页横排、网页播放器进度条

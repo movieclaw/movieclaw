@@ -27,6 +27,7 @@ import {
   listTrashedFiles,
   reorderLibraries,
   setDefaultLibrary,
+  startLibraryChapterImages,
   startLibraryMetadataRefresh,
   startLibraryScan,
   stopLibraryMetadataRefresh,
@@ -236,6 +237,16 @@ export function LibraryManageView() {
         }
         void confirm(refreshLibraryConfirm(library.name)).then((ok) => {
           if (ok) run(startLibraryMetadataRefresh(library.id));
+        });
+      },
+      onChapterImages: (library) => {
+        void confirm({
+          title: `为「${library.name}」生成章节场景图？`,
+          description:
+            "只补还没有图的文件，后台低优先级执行，可在任务中心观察或取消。每个文件按章节数定位读取若干次，网络挂载的库会有读取流量。",
+          confirmLabel: "开始生成",
+        }).then((ok) => {
+          if (ok) run(startLibraryChapterImages(library.id));
         });
       },
       onEdit: (library) => setEditing(library),

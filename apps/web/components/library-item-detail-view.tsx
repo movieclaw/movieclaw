@@ -10,6 +10,7 @@ import { useRouter } from "next/navigation";
 
 import { ArtworkPickerDialog } from "@/components/artwork-picker-dialog";
 import { CastRow } from "@/components/cast-row";
+import { ChapterStrip } from "@/components/chapter-strip";
 import { MediaTrackRows } from "@/components/media-track-rows";
 import { PAGE_NAV_BUTTON_CLASS, PageNav } from "@/components/page-nav";
 import { HScroller } from "@/components/h-scroller";
@@ -30,6 +31,7 @@ import { ReidentifyDialog } from "@/components/reidentify-dialog";
 import { Tooltip } from "@/components/tooltip";
 import {
   type ItemDeleteResult,
+  type LibraryChapter,
   type LibraryEpisode,
   type LibraryItemDetail,
   type LibraryItemFile,
@@ -293,13 +295,22 @@ export function LibraryItemDetailView({
   // **无论刷新是从这个页面发起的、还是别处发起后你才打开这一页**，都会
   // 看到"正在刷新"并在结束时自动呈现新档案/新图；离开页面也不影响后台跑完
   const scrapingNow = Boolean(detail?.scraping) || kicking;
+  // 章节场景图在后台生成（打开页面时懒触发）：每 3 秒重拉一次、最多 20 轮，
+  // 图一张张补上；超出轮数就不再追（图缺几张不影响使用，下次打开继续）
+  const chapterPolls = useRef(0);
+  useEffect(() => {
+    if (!detail?.chapters_pending) chapterPolls.current = 0;
+  }, [detail?.chapters_pending]);
+  const chaptersPolling =
+    Boolean(detail?.chapters_pending) && !detail?.scraping && chapterPolls.current < 20;
   useVisiblePolling(
     () => {
+      if (!detail?.scraping) chapterPolls.current += 1;
       getLibraryItemDetail(libraryId, mediaItemId)
         .then(setDetail)
         .catch(() => {});
     },
-    detail?.scraping ? 2000 : null,
+    detail?.scraping ? 2000 : chaptersPolling ? 3000 : null,
   );
 
   // 兜底态（加载中/失败）的顶栏：条目标题未知，末项留空——渲染 PageNav 是为了
@@ -637,6 +648,32 @@ export function LibraryItemDetailView({
       )}
 
       <div className="mt-9 space-y-8 px-12 max-md:mt-6 max-md:space-y-6 max-md:px-4">
+        {/* —— 场景横排：当前选中文件（电影随版本选择器、剧集随选中集）的章节。
+            点图看大图，从那一帧起播；原盘/strm 没有章节自然不渲染 —— */}
+        {selectedTrackFile?.chapters && selectedTrackFile.chapters.length > 0 && (
+          <ChapterStrip
+            chapters={selectedTrackFile.chapters}
+            pending={Boolean(detail.chapters_pending)}
+            resumeMs={watched && !watched.played ? watched.position_ms : null}
+            onPlay={(chapter: LibraryChapter) => {
+              rememberPlayerReturnPath(window.location.pathname + window.location.search);
+              router.push(
+                playHref(detail.media_item_id, {
+                  season:
+                    !isMovie && selectedSeriesEpisode
+                      ? selectedSeriesEpisode.seasonNumber
+                      : undefined,
+                  episode:
+                    !isMovie && selectedSeriesEpisode
+                      ? selectedSeriesEpisode.episode.episode_number
+                      : undefined,
+                  tSeconds: (chapter.frame_ms ?? chapter.start_ms) / 1000,
+                }) as Route,
+              );
+            }}
+          />
+        )}
+
         {/* —— 剧集分集区：季选择 + 分集横滚卡 + 选中集的简介/规格/文件 —— */}
         {!isMovie && detail.seasons.length > 0 && (
           <SeasonEpisodesSection
@@ -1004,7 +1041,7 @@ function ItemActionsMenu({
                   disabled={scraping}
                   className={itemClass}
                 >
-                  {scraping ? "正在生成缩略图…" : "重新生成缩略图"}
+                  {scraping ? "正在生成缩略图…" : "重新生成缩略图与场景图"}
                 </DropdownMenu.Item>
               )}
               {scraped && (

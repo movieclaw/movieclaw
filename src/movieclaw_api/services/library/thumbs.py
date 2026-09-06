@@ -45,6 +45,20 @@ _MAX_BACKDROP_WIDTH = 1920  # 背景图：电视端全屏铺底，1280 会糊
 _JPEG_QUALITY = "3"  # ffmpeg -q:v，2~5 是"肉眼无损"区间
 _FFMPEG_TIMEOUT = 90  # 秒；网络挂载上抓帧要读几十 MB，给足余量
 
+# HDR 抓帧的色调映射链（HDR10/HLG/DV 基础层 → BT.709 SDR）。章节场景图
+# （library/chapters.py）复用同一条链，两处出的图观感一致
+TONEMAP_FILTERS: tuple[str, ...] = (
+    "zscale=t=linear:npl=100",
+    "format=gbrpf32le",
+    "zscale=p=bt709",
+    "tonemap=hable",
+    "zscale=t=bt709:m=bt709:r=tv",
+)
+
+# 抓帧闸：主图与章节场景图共用，扫描期间最多两路 ffmpeg 同时解码，
+# 不把 CPU 打满、也不让网络挂载被并发读打散
+FRAME_GRAB_GATE = asyncio.Semaphore(2)
+
 
 async def ensure_local_assets(media_item_id: int, *, force: bool = False) -> None:
     """给本地来源条目补主图与背景图（缺失才做，``force`` 重做）。TMDB 条目直接返回。"""
@@ -82,14 +96,15 @@ async def ensure_local_assets(media_item_id: int, *, force: bool = False) -> Non
             poster_dest.is_file
         )
         if force or not poster_ready:
-            size = await asyncio.to_thread(
-                build_thumbnail,
-                video,
-                poster_dest,
-                duration_seconds=file.duration_seconds,
-                is_disc=file.container in ("bluray", "dvd"),
-                hdr=file.hdr,
-            )
+            async with FRAME_GRAB_GATE:
+                size = await asyncio.to_thread(
+                    build_thumbnail,
+                    video,
+                    poster_dest,
+                    duration_seconds=file.duration_seconds,
+                    is_disc=file.container in ("bluray", "dvd"),
+                    hdr=file.hdr,
+                )
             if size is not None:
                 meta.poster_file = poster_rel
                 meta.poster_width, meta.poster_height = size
@@ -249,14 +264,7 @@ def _grab_frame(video: Path, dest: Path, duration_seconds: int | None, hdr: str 
     base = ["bwdif=mode=send_frame:deint=interlaced", "thumbnail=n=24", _scale_filter()]
     chains = [base]
     if hdr:  # 台账探测出的 HDR 格式（HDR10/HLG/DV…），SDR 为 NULL
-        tonemap = [
-            "zscale=t=linear:npl=100",
-            "format=gbrpf32le",
-            "zscale=p=bt709",
-            "tonemap=hable",
-            "zscale=t=bt709:m=bt709:r=tv",
-        ]
-        chains.insert(0, base[:2] + tonemap + base[2:])
+        chains.insert(0, base[:2] + list(TONEMAP_FILTERS) + base[2:])
     attempts = [(position, True), (position, False), (0.0, False)]
     for start, keyframes_only in attempts:
         for chain in chains:

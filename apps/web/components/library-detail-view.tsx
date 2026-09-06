@@ -47,6 +47,7 @@ import {
   SCAN_PHASE_LABELS,
   type ScanPhase,
   type ScanProgress,
+  startLibraryChapterImages,
   startLibraryMetadataRefresh,
   startLibraryScan,
   stopLibraryMetadataRefresh,
@@ -772,6 +773,25 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
       }}
       pendingCount={pendingCount}
       onOpenPending={() => setIssueTab(pendingTab)}
+      onChapterImages={
+        library.extract_chapter_images
+          ? () => {
+              setNotice(null);
+              void confirm({
+                title: `为「${library.name}」生成章节场景图？`,
+                description:
+                  "只补还没有图的文件，后台低优先级执行，可在任务中心观察或取消。每个文件按章节数定位读取若干次，网络挂载的库会有读取流量。",
+                confirmLabel: "开始生成",
+              }).then((ok) => {
+                if (ok) {
+                  startLibraryChapterImages(libraryId).catch((e) =>
+                    setNotice((e as Error).message),
+                  );
+                }
+              });
+            }
+          : undefined
+      }
       onEdit={() => setEditing(library)}
     />
   );
@@ -1167,6 +1187,8 @@ interface LibraryActionsMenuProps {
   onOpenPending: () => void;
   onOrganize: () => void;
   onToggleMetaRefresh: () => void;
+  /** 整库生成章节场景图；库关了开关时不传，菜单不给入口 */
+  onChapterImages?: () => void;
   onEdit: () => void;
 }
 
@@ -1187,6 +1209,7 @@ function LibraryActionsMenu({
   onOpenPending,
   onOrganize,
   onToggleMetaRefresh,
+  onChapterImages,
   onEdit,
 }: LibraryActionsMenuProps) {
   // 与站点配置一致用 Radix DropdownMenu：Portal 到 body + 碰撞检测，
@@ -1263,6 +1286,11 @@ function LibraryActionsMenu({
                 ? "刷新元数据"
                 : "重新生成缩略图"}
           </DropdownMenu.Item>
+          {onChapterImages && (
+            <DropdownMenu.Item onSelect={onChapterImages} disabled={busy} className={itemClass}>
+              生成章节场景图
+            </DropdownMenu.Item>
+          )}
           <DropdownMenu.Item onSelect={onEdit} disabled={busy} className={itemClass}>
             编辑库
           </DropdownMenu.Item>

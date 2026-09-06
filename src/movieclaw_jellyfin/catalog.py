@@ -25,6 +25,7 @@ from sqlalchemy import and_, func, or_, select, tuple_
 from sqlalchemy.orm import Load, load_only
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from movieclaw_api.services.library.chapters import chapter_image_map, effective_chapters
 from movieclaw_api.services.library.thumbs import primary_aspect
 from movieclaw_db.models import (
     Library,
@@ -253,6 +254,11 @@ def _list_load_columns(
     ]
     if options.has("ParentId"):
         file_columns.append(LibraryFile.library_id)
+    if options.has("Chapters"):
+        # 章节两列是 JSON，只在客户端要 Chapters 时读；updated_at 派生 ImageTag
+        file_columns.extend(
+            [LibraryFile.chapters, LibraryFile.chapter_images, LibraryFile.updated_at]
+        )
     if options.has("MediaSources") or options.has("MediaStreams"):
         file_columns.extend(
             [
@@ -400,9 +406,7 @@ async def hydrate_leaves(
         file_scope.append(LibraryFile.library_id == library_id)
     if visible_library_ids is not None:
         file_scope.append(LibraryFile.library_id.in_(visible_library_ids))
-    await _load_scoped_files(
-        session, bundles, leaf_scope, file_scope, summary_columns
-    )
+    await _load_scoped_files(session, bundles, leaf_scope, file_scope, summary_columns)
     await _load_scoped_episodes(session, bundles, leaf_scope, summary_columns)
 
 
@@ -531,9 +535,7 @@ async def load_bundles(
                     b.files.setdefault((season_no, episode_no), [])
         else:
             unit_q = select(*unit_cols, LibraryFile.library_id).where(*file_scope)
-            for mid, season_no, episode_no, lib in (
-                await session.execute(unit_q)
-            ).all():
+            for mid, season_no, episode_no, lib in (await session.execute(unit_q)).all():
                 b = bundles.get(mid)
                 if b is None:
                     continue
@@ -560,9 +562,7 @@ async def load_bundles(
                 b = bundles.get(mid)
                 if b is not None:
                     b.primary_library_id = lib
-        await _load_scoped_files(
-            session, bundles, leaf_scope, file_scope, summary_columns
-        )
+        await _load_scoped_files(session, bundles, leaf_scope, file_scope, summary_columns)
 
     if tv_ids and include_seasons:
         # 季元数据只有 Season/Episode DTO 会读（季名、季海报继承）。一部剧
@@ -606,9 +606,7 @@ async def load_bundles(
         for link, person in people_rows:
             b = bundles.get(link.media_item_id)
             if b is not None:
-                b.people.append(
-                    (link.department, link.character, link.credit_order, person)
-                )
+                b.people.append((link.department, link.character, link.credit_order, person))
         for b in bundles.values():
             # 演员在前（按剧组主次序），导演/主创随后——对齐 Jellyfin People 惯例
             b.people.sort(key=lambda t: (0 if t[0] == "cast" else 1, t[2]))
@@ -681,9 +679,7 @@ async def latest_unit_candidates(
         if is_played:
             q = q.where(PlaybackState.played.is_(True))
         else:
-            q = q.where(
-                or_(PlaybackState.id.is_(None), PlaybackState.played.is_(False))
-            )
+            q = q.where(or_(PlaybackState.id.is_(None), PlaybackState.played.is_(False)))
     q = q.group_by(
         LibraryFile.media_item_id,
         LibraryFile.season_number,
@@ -820,9 +816,7 @@ async def movie_library_page(
     condition = and_(MediaItem.kind == kind, file_exists)
     total = int(
         (
-            await session.execute(
-                select(func.count()).select_from(MediaItem).where(condition)
-            )
+            await session.execute(select(func.count()).select_from(MediaItem).where(condition))
         ).scalar_one()
     )
     q = (
@@ -982,8 +976,7 @@ async def query_persons(
         return total, []
     loaded = {
         p.id: p
-        for p in (await session.execute(select(Person).where(Person.id.in_(page_ids))))
-        .scalars()
+        for p in (await session.execute(select(Person).where(Person.id.in_(page_ids)))).scalars()
     }
     return total, [loaded[i] for i in page_ids if i in loaded]
 
@@ -1051,9 +1044,7 @@ def _asset_tag(rel_path: str | None, version: datetime | None) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def _leaf_user_data(
-    bundle: ItemBundle, season: int, episode: int, guid: str
-) -> dict[str, Any]:
+def _leaf_user_data(bundle: ItemBundle, season: int, episode: int, guid: str) -> dict[str, Any]:
     st = bundle.state(season, episode)
     runtime_ms = bundle.unit_runtime_ms(season, episode)
     data: dict[str, Any] = {
@@ -1096,11 +1087,7 @@ def _folder_user_data(
         data["Played"] = played >= total
     else:
         data["Played"] = True
-    last = [
-        st.last_played_at
-        for u in units
-        if (st := bundle.state(*u)) and st.last_played_at
-    ]
+    last = [st.last_played_at for u in units if (st := bundle.state(*u)) and st.last_played_at]
     if last:
         data["LastPlayedDate"] = format_datetime(max(last))
     return data
@@ -1129,9 +1116,7 @@ def _common(
     }
 
 
-def _apply_metadata_fields(
-    dto: dict[str, Any], bundle: ItemBundle, options: DtoOptions
-) -> None:
+def _apply_metadata_fields(dto: dict[str, Any], bundle: ItemBundle, options: DtoOptions) -> None:
     meta = bundle.metadata
     if meta is None:
         return
@@ -1163,9 +1148,7 @@ def people_dto(bundle: ItemBundle) -> list[dict[str, Any]]:
         if character:
             entry["Role"] = character
         if person.profile_path:
-            entry["PrimaryImageTag"] = hashlib.md5(
-                person.profile_path.encode()
-            ).hexdigest()
+            entry["PrimaryImageTag"] = hashlib.md5(person.profile_path.encode()).hexdigest()
         result.append(entry)
     return result
 
@@ -1255,6 +1238,36 @@ _RESOLUTION_WH = {
 }
 
 
+def _apply_chapters(dto: dict[str, Any], files: list[LibraryFile], options: DtoOptions) -> None:
+    """``Chapters``（docs/design/video-chapters.md §4.7）：受 fields 门控，单条目全开。
+
+    取单元首文件的有效章节（与 MediaSources[0] / Path 同一个 files[0]）：内嵌
+    章节按起点输出；合成章节输出图上那一帧的真实时间（名义起点是算出来的，
+    没有比"图上这一帧"更好的定义）。有图才给 ImageTag，客户端据此决定要不要
+    来取 ``/Items/{id}/Images/Chapter/{index}``。``ImagePath`` 省略（偏离⑫：
+    服务器内部路径对客户端无意义）。没有章节输出空列表——真 Jellyfin 同款。
+    """
+    if not options.has("Chapters") or not files:
+        return
+    f = files[0]
+    images = chapter_image_map(f.chapter_images)
+    rows: list[dict[str, Any]] = []
+    for chapter in effective_chapters(f.chapters, f.duration_seconds):
+        entry = images.get(chapter.start_ms)
+        start_ms = chapter.start_ms
+        if chapter.synthetic and entry and isinstance(entry.get("frame_ms"), int):
+            start_ms = int(entry["frame_ms"])
+        row: dict[str, Any] = {
+            "StartPositionTicks": start_ms * TICKS_PER_MS,
+            "Name": chapter.title or f"第 {chapter.index + 1} 章",
+        }
+        if entry:
+            row["ImageTag"] = _asset_tag(str(entry["image"]), f.updated_at)
+            row["ImageDateModified"] = format_datetime(f.updated_at)
+        rows.append(row)
+    dto["Chapters"] = rows
+
+
 def _apply_leaf_media_fields(
     dto: dict[str, Any], files: list[LibraryFile], options: DtoOptions
 ) -> None:
@@ -1323,6 +1336,7 @@ def movie_dto(ctx: DtoContext, bundle: ItemBundle, options: DtoOptions) -> dict[
             dto["MediaSources"] = sources
         if options.has("MediaStreams") and sources:
             dto["MediaStreams"] = sources[0]["MediaStreams"]
+    _apply_chapters(dto, bundle.files.get((0, 0), []), options)
     if options.enable_user_data:
         dto["UserData"] = _leaf_user_data(bundle, 0, 0, guid)
     return dto
@@ -1368,9 +1382,7 @@ def season_dto(
 ) -> dict[str, Any]:
     guid = season_guid(bundle.item.id, season)
     row = bundle.seasons.get(season)
-    name = (row.name if row else "") or (
-        "Specials" if season == 0 else f"Season {season}"
-    )
+    name = (row.name if row else "") or ("Specials" if season == 0 else f"Season {season}")
     dto = _common(ctx, guid, name, "Season", "Unknown")
     dto["IsFolder"] = True
     if options.has("CanDownload"):
@@ -1393,9 +1405,7 @@ def season_dto(
         dto["ProductionYear"] = row.air_date.year
     if options.enable_images:
         tags: dict[str, str] = {}
-        poster = _asset_tag(
-            row.poster_file if row else None, row.updated_at if row else None
-        )
+        poster = _asset_tag(row.poster_file if row else None, row.updated_at if row else None)
         if poster:
             tags["Primary"] = poster
         dto["ImageTags"] = tags
@@ -1433,8 +1443,9 @@ def episode_dto(
     dto["SeriesName"] = bundle.item.title
     _apply_parent_id(dto, season_guid(bundle.item.id, season), options)
     season_row = bundle.seasons.get(season)
-    dto["SeasonName"] = ((season_row.name if season_row else "") or
-                         ("Specials" if season == 0 else f"Season {season}"))
+    dto["SeasonName"] = (season_row.name if season_row else "") or (
+        "Specials" if season == 0 else f"Season {season}"
+    )
     if row and row.air_date:
         dto["PremiereDate"] = row.air_date.strftime("%Y-%m-%dT00:00:00.0000000Z")
         dto["ProductionYear"] = row.air_date.year
@@ -1447,9 +1458,7 @@ def episode_dto(
         dto["CommunityRating"] = round(row.vote_average, 1)
     if options.enable_images:
         tags = {}
-        still = _asset_tag(
-            row.still_file if row else None, row.updated_at if row else None
-        )
+        still = _asset_tag(row.still_file if row else None, row.updated_at if row else None)
         if still:
             tags["Primary"] = still
         dto["ImageTags"] = tags
@@ -1486,13 +1495,12 @@ def episode_dto(
         if files:
             dto["DateCreated"] = format_datetime(min(f.created_at for f in files))
     if options.has("MediaSources") or options.has("MediaStreams"):
-        sources = [
-            s for f in bundle.files.get((season, episode), []) if (s := media_source_dto(f))
-        ]
+        sources = [s for f in bundle.files.get((season, episode), []) if (s := media_source_dto(f))]
         if options.has("MediaSources"):
             dto["MediaSources"] = sources
         if options.has("MediaStreams") and sources:
             dto["MediaStreams"] = sources[0]["MediaStreams"]
+    _apply_chapters(dto, bundle.files.get((season, episode), []), options)
     _apply_people(dto, bundle, options)
     if options.enable_user_data:
         dto["UserData"] = _leaf_user_data(bundle, season, episode, guid)
@@ -1516,9 +1524,7 @@ def library_view_dto(
     # Jellyfin 浏览请求扫描 library_file 全表。
     dto["ChildCount"] = library.stats_item_count
     dto["RecursiveItemCount"] = (
-        library.stats_item_count
-        if is_leaf_kind(library.kind)
-        else library.stats_episode_count
+        library.stats_item_count if is_leaf_kind(library.kind) else library.stats_episode_count
     )
     # 库视图不做已看聚合（CollectionFolder.SupportsPlayedStatus=false）
     guid = library_guid(library.id)
@@ -1538,11 +1544,24 @@ def library_view_dto(
 # ---------------------------------------------------------------------------
 
 _LANG_DISPLAY = {
-    "chi": "Chinese", "zho": "Chinese", "eng": "English", "jpn": "Japanese",
-    "kor": "Korean", "fre": "French", "fra": "French", "ger": "German",
-    "deu": "German", "spa": "Spanish", "rus": "Russian", "ita": "Italian",
-    "por": "Portuguese", "tha": "Thai", "hin": "Hindi", "ara": "Arabic",
-    "can": "Cantonese", "yue": "Cantonese",
+    "chi": "Chinese",
+    "zho": "Chinese",
+    "eng": "English",
+    "jpn": "Japanese",
+    "kor": "Korean",
+    "fre": "French",
+    "fra": "French",
+    "ger": "German",
+    "deu": "German",
+    "spa": "Spanish",
+    "rus": "Russian",
+    "ita": "Italian",
+    "por": "Portuguese",
+    "tha": "Thai",
+    "hin": "Hindi",
+    "ara": "Arabic",
+    "can": "Cantonese",
+    "yue": "Cantonese",
 }
 
 
@@ -1578,9 +1597,7 @@ def _video_stream(f: LibraryFile, index: int) -> dict[str, Any]:
     video_range, range_type = _video_range(f)
     codec = (f.video_codec or "").lower()
     title_parts = [
-        p
-        for p in (_resolution_text(f), codec.upper(), video_range)
-        if p and p != "Unknown"
+        p for p in (_resolution_text(f), codec.upper(), video_range) if p and p != "Unknown"
     ]
     stream: dict[str, Any] = {
         "Type": "Video",

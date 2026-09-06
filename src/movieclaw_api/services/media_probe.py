@@ -115,6 +115,29 @@ def probe_media(path: str | Path) -> MediaSpec | None:
     return _parse_probe(payload, include_mpegts_pids=Path(path).suffix.lower() == ".m2ts")
 
 
+def probe_chapters(path: str | Path) -> list[dict] | None:
+    """只读容器头里的章节（存量行补探用，docs/design/video-chapters.md §4.5）。
+
+    比整套 ``probe_media`` 轻：不列流、不读时长。ffprobe 缺失或失败返回
+    None（调用方保持 NULL，下次再试）。
+    """
+    try:
+        proc = subprocess.run(
+            ["ffprobe", "-v", "error", "-print_format", "json", "-show_chapters", str(path)],
+            capture_output=True,
+            timeout=_PROBE_TIMEOUT,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        payload = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return None
+    return parse_chapters(payload.get("chapters"))
+
+
 # --- 探测失败记忆（媒体库入库/补探/点名重探共用）---------------------------
 #
 # probe_media 失败分两类：瞬时环境故障（网络挂载抖动、文件还在写入）与

@@ -795,6 +795,13 @@ async def _run_scan_job(
             ),
         )
     summary = await scan_library(library_id, **scan_kwargs)
+    if library.extract_chapter_images:
+        # 章节场景图走独立的低优先级作业（docs/design/video-chapters.md §4.5）：
+        # 覆盖新文件与存量回填，不拖长扫描本身；同库已有一份在跑则复用
+        from movieclaw_api.services.library.chapters import enqueue_library_chapter_images_job
+
+        async with db.session() as session:
+            await enqueue_library_chapter_images_job(session, library_id, library.name)
     payload = scan_summary_payload(summary)
     message = (
         f"扫描完成：新入账 {summary.scanned - summary.relinked} 个文件，"

@@ -67,7 +67,10 @@ Jellyfin 的 `"strm"` 字面量、`ETag` 省略（见 6.4）；⑧ 未知 `paren
 Folder、图片映射成 Photo，我们的库模型一文件一条目、只收视频，视图下直接
 列 `Video` 叶子（docs/design/library-other-kind.md 5.1）；⑪ `Video` 条目没有
 `ProviderIds.Tmdb`（本地来源没有外部 id），`/Items/Counts` 里它只计入
-`ItemCount`（真 Jellyfin 的 ItemCounts 没有 VideoCount 字段）。
+`ItemCount`（真 Jellyfin 的 ItemCounts 没有 VideoCount 字段）；⑫ `Chapters[]`
+的 `ChapterInfo` **省略 `ImagePath`**（真 Jellyfin 输出服务器本地路径，对
+客户端无意义；`ImageTag`/`ImageDateModified` 照给，见 5.3 与
+docs/design/video-chapters.md §4.7）。
 （原偏离⑩"图片原图直出"已于 2026-08-03 撤销：库封面拼贴引入 Pillow 后，
 `maxWidth/maxHeight/width/height/fillWidth/fillHeight` 已按 fit-within
 等比缩小实现，变体缓存于 data/cache/jellyfin-images。）
@@ -441,7 +444,12 @@ Movie/Episode=`"Video"`，Series/Season=`"Unknown"`）`IndexNumber`
 **fields 门控**（传了才输出）：`Overview` `Genres` `People` `MediaSources`
 `MediaStreams` `Path` `DateCreated` **`ParentId`**（陷阱：不传 fields=ParentId
 就不输出，而 SeriesId/SeasonId 是无条件的）`Studios` `ProviderIds` `Taglines`
-`OriginalTitle` `ChildCount` `RecursiveItemCount`。
+`OriginalTitle` `ChildCount` `RecursiveItemCount` `Chapters`（2026-09-06 起：
+Movie/Video/Episode 输出单元首文件的有效章节——内嵌章节按起点，无内嵌时按
+时长合成的章节按图上那一帧的真实时间；无标题补 `第 N 章`；有场景图才给
+`ImageTag`/`ImageDateModified`，`ImagePath` 省略（偏离⑫）；没有章节输出空列表。
+数据源 `library_file.chapters` ⋈ `chapter_images`，见
+docs/design/video-chapters.md §4.7）。
 
 **绝不输出清单**（协议合法且是"明确不做"的前提）：`PartCount`（否则客户端
 调 /AdditionalParts）、`Trickplay`（否则调 Trickplay 接口）。
@@ -539,6 +547,7 @@ Backdrop 数组下标即 index，本设计每条目至多 1 张背景，只需�
 | Movie/Series `Backdrop/0` | `media_metadata.backdrop_file` |
 | Season `Primary` | `media_season.poster_file`（无 → 404，客户端自动退剧海报） |
 | Episode `Primary` | `media_episode.still_file` |
+| Movie/Video/Episode `Chapter/{index}` | 单元首文件第 index 个有效章节的场景图（`library_file.chapter_images`，路径 `{item}/chapters/{file}/{start_ms}.jpg`）；该章无图或 index 越界 → 404 text 文案 |
 | `Logo` / `Thumb` / `Banner` | 无资产，404（合法降级） |
 
 - 缩放参数：`maxWidth/maxHeight/quality` 按需缩放（产物落 `data/` 缓存目录）；

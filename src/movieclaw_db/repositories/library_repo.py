@@ -200,6 +200,7 @@ class LibraryRepository:
         realtime_watch: bool = True,
         scrape_overrides: dict | None = None,
         generate_thumbnails: bool = True,
+        extract_chapter_images: bool = True,
         exclude_from_home: bool = False,
         access_mode: str = "everyone",
         admin_visible: bool = True,
@@ -217,6 +218,7 @@ class LibraryRepository:
             realtime_watch=realtime_watch,
             scrape_overrides=scrape_overrides or None,
             generate_thumbnails=generate_thumbnails,
+            extract_chapter_images=extract_chapter_images,
             exclude_from_home=exclude_from_home,
             access_mode=access_mode,
             admin_visible=admin_visible,
@@ -251,6 +253,7 @@ class LibraryRepository:
         realtime_watch: bool | None = None,
         scrape_overrides: dict | None = None,
         generate_thumbnails: bool | None = None,
+        extract_chapter_images: bool | None = None,
         exclude_from_home: bool | None = None,
         access_mode: str | None = None,
         admin_visible: bool | None = None,
@@ -274,6 +277,8 @@ class LibraryRepository:
             row.realtime_watch = realtime_watch
         if generate_thumbnails is not None:
             row.generate_thumbnails = generate_thumbnails
+        if extract_chapter_images is not None:
+            row.extract_chapter_images = extract_chapter_images
         if exclude_from_home is not None:
             row.exclude_from_home = exclude_from_home
         if access_mode is not None:
