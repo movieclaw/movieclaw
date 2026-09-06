@@ -629,7 +629,7 @@ async def shared_ping_session(
     response_model=ApiResponse[dict],
     summary="分享页结束播放",
     operation_id="share.playback.session.stop",
-    openapi_extra={"x-cli-hidden": True},
+    openapi_extra={"x-cli-hidden": True, "x-cli-dangerous": "confirm"},
 )
 async def shared_stop_session(
     session_id: Annotated[str, Path()],
