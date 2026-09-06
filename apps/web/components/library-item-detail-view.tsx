@@ -1268,7 +1268,7 @@ export function ExpandablePlot({ text }: { text: string }) {
 }
 
 /** 外部信息源链接：新窗口打开站点词条，样式与「在 TMDB 打开核对」保持一致。 */
-function SourceLink({ href, label }: { href: string; label: string }) {
+export function SourceLink({ href, label }: { href: string; label: string }) {
   return (
     <a
       href={href}

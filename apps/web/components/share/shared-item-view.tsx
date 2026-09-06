@@ -12,7 +12,9 @@ import {
   PlayAction,
   SeasonEpisodesSection,
   type SelectedEpisodeContext,
+  SourceLink,
 } from "@/components/library-item-detail-view";
+import { ReadOnlyTrackRows } from "@/components/media-track-rows";
 import { type SharedFile, type SharedItem, getSharedEpisodes, getSharedItem } from "@/lib/api/shares";
 import {
   type PlaybackUnit,
@@ -208,7 +210,8 @@ export function SharedItemView({ slug }: { slug: string }) {
 
         <div className="h-[28vh] min-h-[160px] max-md:h-[20vh] max-md:min-h-[110px]" />
 
-        <div className="px-12 pb-16 max-md:px-4">
+        {/* 底部留足呼吸：最后一段内容不贴屏幕底边，手机端再加安全区 */}
+        <div className="px-12 pb-24 [padding-bottom:calc(6rem+var(--safe-bottom))] max-md:px-4">
           <div className="max-w-5xl">
             <h1 className="text-on-image text-[42px] font-bold leading-[1.1] tracking-[-0.02em] text-white max-md:text-[28px]">
               {item.title}
@@ -241,6 +244,14 @@ export function SharedItemView({ slug }: { slug: string }) {
                   .filter(Boolean)
                   .join(" · ")}
               </p>
+            )}
+            {/* 音轨 / 字幕：与详情页同一套分组与折叠，只读（无预览 / 删除 / 生成） */}
+            {currentFile && (
+              <ReadOnlyTrackRows
+                key={currentFile.id}
+                audioStreams={currentFile.audio_streams}
+                subtitleStreams={currentFile.subtitle_streams}
+              />
             )}
 
             {canPlay ? (
@@ -283,6 +294,31 @@ export function SharedItemView({ slug }: { slug: string }) {
             )}
 
             {cast.length > 0 && <CastRow cast={cast} />}
+
+            {/* 外部词条：与详情页同款，固定在最后；新窗口打开，不是站内入口 */}
+            {(item.tmdb_id || item.imdb_id || item.douban_id) && (
+              <div
+                aria-label="外部词条"
+                className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-white/[0.04] pt-4 text-caption"
+              >
+                <span className="text-[var(--text-faint)]">相关链接</span>
+                {item.tmdb_id ? (
+                  <SourceLink
+                    href={`https://www.themoviedb.org/${item.kind === "tv" ? "tv" : "movie"}/${item.tmdb_id}`}
+                    label="TMDB"
+                  />
+                ) : null}
+                {item.imdb_id && (
+                  <SourceLink href={`https://www.imdb.com/title/${item.imdb_id}/`} label="IMDb" />
+                )}
+                {item.douban_id && (
+                  <SourceLink
+                    href={`https://movie.douban.com/subject/${item.douban_id}/`}
+                    label="豆瓣"
+                  />
+                )}
+              </div>
+            )}
           </div>
         </div>
       </div>

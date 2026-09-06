@@ -69,14 +69,35 @@ def _wait_http(url: str, timeout: float) -> None:
     raise RuntimeError(f"服务未就绪：{url}（{last}）")
 
 
-def _gen_clip(dest: Path, seconds: int) -> None:
-    """VP9 + Opus 的 MP4：Playwright 自带的 Chromium 没有 H.264，这是它能直接播的组合。"""
+def _gen_clip(dest: Path, seconds: int, *, chapters: list[tuple[int, str]] | None = None) -> None:
+    """VP9 + Opus 的 MP4：Playwright 自带的 Chromium 没有 H.264，这是它能直接播的组合。
+
+    ``chapters`` 是 (起点秒, 标题) 列表：写成 FFMETADATA 内嵌进容器，分享页要验
+    「场景」横排真的渲染出来。
+    """
     dest.parent.mkdir(parents=True, exist_ok=True)
+    extra: list[str] = []
+    if chapters:
+        lines = [";FFMETADATA1"]
+        for index, (start, title) in enumerate(chapters):
+            end = chapters[index + 1][0] if index + 1 < len(chapters) else seconds
+            lines += [
+                "[CHAPTER]",
+                "TIMEBASE=1/1000",
+                f"START={start * 1000}",
+                f"END={end * 1000}",
+                f"title={title}",
+            ]
+        meta = dest.with_suffix(".ffmeta")
+        meta.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        extra = ["-i", str(meta), "-map_metadata", "2"]
     subprocess.run(
         [
             "ffmpeg", "-v", "error", "-y",
             "-f", "lavfi", "-i", f"testsrc2=duration={seconds}:size=640x360:rate=25",
             "-f", "lavfi", "-i", f"sine=frequency=440:duration={seconds}",
+            *extra,
+            "-map", "0:v", "-map", "1:a",
             "-c:v", "libvpx-vp9", "-b:v", "300k", "-deadline", "realtime", "-cpu-used", "8",
             "-g", "50", "-c:a", "libopus", "-b:a", "48k", "-strict", "-2", "-shortest",
             "-movflags", "+faststart", str(dest),
@@ -84,6 +105,8 @@ def _gen_clip(dest: Path, seconds: int) -> None:
         check=True,
         timeout=300,
     )  # fmt: skip
+    if chapters:
+        dest.with_suffix(".ffmeta").unlink()
 
 
 @pytest.fixture(scope="module")
@@ -92,7 +115,18 @@ def stack(tmp_path_factory):
     root = tmp_path_factory.mktemp("media-share-e2e")
     movie_root = root / "media" / "movies"
     tv_root = root / "media" / "tv"
-    _gen_clip(movie_root / "某电影 (2020)" / "某电影.2020.1080p.mp4", 20)
+    # 电影带两个内嵌章节 + 一份写了导演 / 演员的 NFO：分享页要把「场景」横排、
+    # 演职员、音轨字幕、相关链接都渲染出来（假 TMDB 没有这些，只能靠本地）
+    movie_file = movie_root / "某电影 (2020)" / "某电影.2020.1080p.mp4"
+    _gen_clip(movie_file, 20, chapters=[(0, "开场"), (8, "高潮")])
+    movie_file.with_suffix(".nfo").write_text(
+        "<movie><title>某电影</title><year>2020</year>"
+        "<plot>一部用于端到端验收的假电影。</plot><genre>剧情</genre>"
+        "<director>张三</director>"
+        "<actor><name>李四</name><role>主角</role></actor>"
+        "<actor><name>王五</name><role>配角</role></actor></movie>",
+        encoding="utf-8",
+    )
     season_dir = tv_root / "测试剧集 (2024)" / "Season 01"
     for ep in (1, 2):
         _gen_clip(season_dir / f"测试剧集.S01E{ep:02d}.1080p.mp4", 10)
@@ -341,8 +375,19 @@ def test_media_share_full_flow(stack) -> None:  # noqa: PLR0915
         expect(visitor.get_by_text("2020")).to_be_visible()
         expect(visitor.get_by_text(re.compile("失效"))).to_be_visible()
         expect(visitor.get_by_role("button", name="播放", exact=True)).to_be_visible()
+        # 浏览面要完整：音轨 / 字幕两行、「场景」横排（内嵌章节）、演职员、相关链接
+        expect(visitor.get_by_text("音轨", exact=True)).to_be_visible()
+        expect(visitor.get_by_text("字幕", exact=True)).to_be_visible()
+        expect(visitor.get_by_role("heading", name="场景")).to_be_visible()
+        expect(visitor.get_by_text("2 个章节")).to_be_visible()
+        expect(visitor.get_by_text("开场")).to_be_visible()
+        expect(visitor.get_by_text("李四")).to_be_visible()
+        expect(visitor.get_by_text("张三")).to_be_visible()
+        tmdb_link = visitor.get_by_role("link", name="TMDB")
+        expect(tmdb_link).to_be_visible()
+        assert (tmdb_link.get_attribute("href") or "").startswith("https://www.themoviedb.org/movie/300")
         _no_site_entrances(visitor)
-        visitor.screenshot(path=str(shots / "04-visitor-item-page.png"))
+        visitor.screenshot(path=str(shots / "04-visitor-item-page.png"), full_page=True)
 
         # 解锁 Cookie：HttpOnly、Path 收窄到这一条分享的接口
         unlock_cookie = next(c for c in visitor_ctx.cookies() if c["name"] == "movieclaw_share")

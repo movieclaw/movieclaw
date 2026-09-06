@@ -411,6 +411,9 @@ def project_item(detail: LibraryItemDetailView, principal: Principal) -> SharedI
     return SharedItemView(
         media_item_id=detail.media_item_id,
         kind=detail.kind,
+        tmdb_id=detail.tmdb_id,
+        imdb_id=detail.imdb_id,
+        douban_id=detail.douban_id,
         title=detail.title,
         original_title=detail.original_title,
         year=detail.year,

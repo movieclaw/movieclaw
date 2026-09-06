@@ -366,6 +366,9 @@ async def test_shared_item_view_projection(client: TestClient) -> None:
     assert set(data) == {
         "media_item_id",
         "kind",
+        "tmdb_id",
+        "imdb_id",
+        "douban_id",
         "title",
         "original_title",
         "year",

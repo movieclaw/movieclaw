@@ -633,6 +633,46 @@ export function MediaTrackRows({
   );
 }
 
+/**
+ * 只读的音轨 / 字幕两行（影片分享页用，docs/design/media-share.md §5.2）。
+ *
+ * 与 MediaTrackRows 同一套分组、标签与折叠交互，只是没有版本选择、字幕预览、
+ * 删除与生成入口——访客没有账号，这些动作对他不存在；也因此不依赖会话 /
+ * 权限 / 提示上下文，可以在裸路由里直接渲染。
+ */
+export function ReadOnlyTrackRows({
+  audioStreams,
+  subtitleStreams,
+}: {
+  audioStreams: AudioStream[] | null;
+  subtitleStreams: SubtitleStream[];
+}) {
+  const audioGroups = useMemo(() => groupByLanguage(audioEntries(audioStreams ?? [])), [audioStreams]);
+  const subtitleGroups = useMemo(
+    () => groupByLanguage(subtitleEntries(subtitleStreams, "")),
+    [subtitleStreams],
+  );
+  const audioSpec = topAudioSpec(audioStreams ?? []);
+  return (
+    <div className="mt-4 max-w-4xl space-y-2.5">
+      <TrackRow
+        label="音轨"
+        kind="音轨"
+        groups={audioGroups}
+        trailing={
+          audioSpec ? (
+            <span className="tnum shrink-0 rounded-[7px] md:ml-auto border border-white/[0.14] bg-white/[0.04] px-2.5 py-1 text-caption font-semibold text-white/80">
+              {audioSpec}
+            </span>
+          ) : null
+        }
+        empty={audioStreams === null ? "尚未探测" : "文件内没有音轨"}
+      />
+      <TrackRow label="字幕" kind="字幕" groups={subtitleGroups} empty="无内封或外挂字幕" />
+    </div>
+  );
+}
+
 /** 折叠态芯片：统一中性色，颜色留给展开态的格式色块。 */
 const CHIP_CLASS =
   "tnum inline-flex h-7 items-center gap-1.5 rounded-[7px] bg-white/[0.075] px-2.5 " +

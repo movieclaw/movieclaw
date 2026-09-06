@@ -90,6 +90,10 @@ class SharedItemView(BaseModel):
 
     media_item_id: int
     kind: MediaKind
+    #: 外部词条锚点（TMDB / IMDb / 豆瓣），分享页底部「相关链接」；公开信息
+    tmdb_id: int | None
+    imdb_id: str | None
+    douban_id: str | None
     title: str
     original_title: str
     year: int | None

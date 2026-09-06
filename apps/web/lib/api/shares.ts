@@ -124,6 +124,10 @@ export interface SharedFile {
 export interface SharedItem {
   media_item_id: number;
   kind: LibraryKind;
+  /** 外部词条锚点：分享页底部「相关链接」；本地条目为 null */
+  tmdb_id: number | null;
+  imdb_id: string | null;
+  douban_id: string | null;
   title: string;
   original_title: string;
   year: number | null;
