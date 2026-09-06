@@ -68,6 +68,10 @@ var knownNonGenerated = []string{
 	"transcode.artifact.put",
 	"playback.progress",
 	"playback.resume",
+	// 已看 / 收藏标记与首页「我的收藏」：详情页与首页的 Web 动作，命令行无消费方
+	"playback.marks.get",
+	"playback.marks.set",
+	"playback.favorites",
 	"playback.policy.show",
 	"playback.policy.set",
 	"workflow.library.organize-files.preview",
