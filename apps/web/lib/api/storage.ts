@@ -20,7 +20,9 @@ async function unwrap<T>(promise: Promise<ApiEnvelope<T>>): Promise<T> {
 export interface DirUsage {
   key: string;
   title: string;
-  /** 用途与清理后果，直接展示 */
+  /** 一句话用途，行内展示 */
+  summary: string;
+  /** 完整说明与清理后果，悬停与确认时展示 */
   description: string;
   path: string;
   /** cache = 派生物（可清理）；data = 用户数据/系统状态（只展示） */

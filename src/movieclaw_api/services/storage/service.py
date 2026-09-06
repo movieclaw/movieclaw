@@ -37,6 +37,7 @@ _TTL = 120.0
 class DirUsage:
     key: str
     title: str
+    summary: str
     description: str
     path: str
     group: str
@@ -116,6 +117,7 @@ def _dir_usage(spec: DataDir, path: Path) -> DirUsage:
     return DirUsage(
         key=spec.key,
         title=spec.title,
+        summary=spec.summary,
         description=spec.description,
         path=str(path),
         group=spec.group.value,

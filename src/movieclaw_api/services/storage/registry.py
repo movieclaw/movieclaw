@@ -57,6 +57,7 @@ class DataDir:
     """一条目录登记。
 
     - ``key``：稳定标识，接口与前端用它指代目录，改名字不改 key；
+    - ``summary`` 行内一句话，``description`` 完整说明（悬停与确认时展示）；
     - ``default``：相对项目根的默认路径（如 ``data/cache/images``），CI 守卫用它
       做前缀匹配；``resolve`` 才是运行期真正的位置（用户可能用环境变量改到别处）；
     - ``clearable``：是否允许「全部清空」；``orphans`` 非空即提供「清理孤儿」；
@@ -66,6 +67,8 @@ class DataDir:
 
     key: str
     title: str
+    #: 一句话用途（面板行内显示，十几个字）；``description`` 是完整说明与清理后果
+    summary: str
     description: str
     default: str
     resolve: Callable[[Settings], Path]
@@ -174,6 +177,7 @@ DATA_DIRS: tuple[DataDir, ...] = (
     DataDir(
         key="cache.images",
         title="图片缓存",
+        summary="远程图片的本地副本与缩略图",
         description=(
             "海报、剧照、站点图片等远程图片的本地副本与缩略图（含 Jellyfin 客户端的"
             "缩放变体）。超过容量上限会自动淘汰最久未访问的条目；清空后下次访问重新"
@@ -188,6 +192,7 @@ DATA_DIRS: tuple[DataDir, ...] = (
     DataDir(
         key="cache.playback_subs",
         title="播放字幕缓存",
+        summary="播放器抽取的内封字幕与字体",
         description=(
             "网页播放器从视频内封轨抽取出来的字幕与字体文件。清空后下次播放会重新"
             "抽取，首次开播稍慢几秒。"
@@ -203,6 +208,7 @@ DATA_DIRS: tuple[DataDir, ...] = (
     DataDir(
         key="cache.subtitle_gen",
         title="AI 字幕中间品",
+        summary="AI 字幕生成的抽取产物与翻译断点",
         description=(
             "AI 字幕生成过程中的抽取产物、PGS 图片与翻译断点。正在运行的字幕任务"
             "所属文件会被跳过；已完成任务的中间品可放心清理。"
@@ -218,6 +224,7 @@ DATA_DIRS: tuple[DataDir, ...] = (
     DataDir(
         key="cache.trickplay",
         title="进度条预览图",
+        summary="播放器拖动进度条的缩略图",
         description=(
             "网页播放器拖动进度条时显示的缩略图。重新生成需要通读整部影片抽帧，"
             "建议只清理媒体库里已不存在的文件对应的孤儿目录。"
@@ -233,6 +240,7 @@ DATA_DIRS: tuple[DataDir, ...] = (
     DataDir(
         key="transcodes",
         title="转码分片",
+        summary="网页播放器实时转码的 HLS 分片",
         description=(
             "网页播放器实时转码产生的 HLS 分片，会话结束即删、重启时清残留，正常"
             "情况下不应有大量占用。正在播放的会话会被跳过。"
@@ -247,6 +255,7 @@ DATA_DIRS: tuple[DataDir, ...] = (
     DataDir(
         key="metadata.covers",
         title="媒体库封面",
+        summary="服务端渲染的媒体库封面拼贴",
         description="服务端渲染的媒体库封面拼贴，清空后下次访问自动重新渲染。",
         default="data/metadata/library-covers",
         resolve=lambda s: Path(s.metadata_dir) / "library-covers",
@@ -257,6 +266,7 @@ DATA_DIRS: tuple[DataDir, ...] = (
     DataDir(
         key="metadata.images",
         title="刮削图片资产",
+        summary="刮削下载的海报、背景与剧照",
         description=(
             "刮削下载的海报、背景与剧照，是媒体库展示的事实源。整体重建等于整库"
             "刷新元数据（大量外网流量并受 TMDB 限速），因此只提供清理孤儿条目。"
@@ -272,6 +282,7 @@ DATA_DIRS: tuple[DataDir, ...] = (
     DataDir(
         key="database",
         title="数据库",
+        summary="SQLite 主库与 WAL 日志",
         description="SQLite 主库（含 WAL 日志），所有配置、媒体库台账与观看记录。",
         default="data/movieclaw.db",
         resolve=lambda s: _sqlite_path(s),
@@ -279,6 +290,7 @@ DATA_DIRS: tuple[DataDir, ...] = (
     DataDir(
         key="logs",
         title="运行日志",
+        summary="按天写入的后端日志，30 天自动轮转",
         description="按天写入的后端日志，超过保留天数自动删除（LOG_RETENTION_DAYS，默认 30 天）。",
         default="data/logs",
         resolve=lambda s: Path(s.log_dir),
@@ -286,6 +298,7 @@ DATA_DIRS: tuple[DataDir, ...] = (
     DataDir(
         key="uploads",
         title="上传文件",
+        summary="成员头像与首页背景图",
         description="成员头像与首页背景图库，用户上传的原件，无法重建。",
         default="data/uploads",
         resolve=lambda s: Path(s.media_dir),
@@ -293,6 +306,7 @@ DATA_DIRS: tuple[DataDir, ...] = (
     DataDir(
         key="updates",
         title="应用更新",
+        summary="应用内更新的版本代码与数据库备份",
         description=(
             "应用内更新下载的版本代码、启动状态标记与更新前的数据库自动备份。"
             "版本数量在「版本与更新」标签的「本地保留版本数」里调整；备份是回退时"
@@ -304,6 +318,7 @@ DATA_DIRS: tuple[DataDir, ...] = (
     DataDir(
         key="models",
         title="模型文件",
+        summary="NER 模型与语音检测模型",
         description="种子命名识别（NER）模型与字幕同步用的语音检测模型，由应用内更新维护。",
         default="data/models",
         resolve=lambda s: Path(s.data_dir) / "models",
@@ -311,6 +326,7 @@ DATA_DIRS: tuple[DataDir, ...] = (
     DataDir(
         key="site_configs",
         title="站点配置",
+        summary="用户自行适配的站点 YAML",
         description="用户自行适配的站点 YAML，无法重建。",
         default="data/site-configs",
         resolve=lambda s: Path(s.site_configs_dir),
@@ -318,6 +334,7 @@ DATA_DIRS: tuple[DataDir, ...] = (
     DataDir(
         key="agent.workspace",
         title="Agent 工作区",
+        summary="Agent 文件操作的工作目录",
         description="Agent 执行文件操作的工作目录，可能包含它替你生成的文件。",
         default="data/agent-workspace",
         resolve=lambda s: Path(s.agent_workspace_dir),
@@ -325,6 +342,7 @@ DATA_DIRS: tuple[DataDir, ...] = (
     DataDir(
         key="agent.sessions",
         title="Agent 会话记录",
+        summary="Agent 对话转录与附件",
         description="Agent 对话转录与附件，是会话历史的事实源，删除即丢失对话。",
         default="data/agent-sessions",
         resolve=lambda s: Path(s.agent_sessions_dir),
@@ -332,6 +350,7 @@ DATA_DIRS: tuple[DataDir, ...] = (
     DataDir(
         key="agent.skills",
         title="Agent 技能",
+        summary="管理员放入的自定义技能",
         description="管理员放入的自定义 Agent 技能。",
         default="data/agent-skills",
         resolve=lambda s: Path(s.agent_skills_dir),
@@ -339,6 +358,7 @@ DATA_DIRS: tuple[DataDir, ...] = (
     DataDir(
         key="config",
         title="应用配置文件",
+        summary="对外端口等数据库之外的设置文件",
         description="对外端口等需要在数据库之外读取的设置文件。",
         default="data/config",
         resolve=lambda s: Path(s.web_port_file).parent,
@@ -346,6 +366,7 @@ DATA_DIRS: tuple[DataDir, ...] = (
     DataDir(
         key="secret_key",
         title="配置加密主密钥",
+        summary="保护敏感配置的主密钥",
         description="保护站点凭据等敏感配置的主密钥，删除后所有密文永久无法恢复。",
         default="data/.secret_key",
         resolve=lambda s: Path(s.secret_key_file),

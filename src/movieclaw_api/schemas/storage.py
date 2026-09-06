@@ -10,7 +10,8 @@ from pydantic import BaseModel, Field
 class DirUsageView(BaseModel):
     key: str = Field(description="登记目录的稳定标识")
     title: str
-    description: str = Field(description="用途与清理后果（中文，直接展示）")
+    summary: str = Field(description="一句话用途（行内展示）")
+    description: str = Field(description="完整说明与清理后果（悬停/确认时展示）")
     path: str = Field(description="运行期实际路径")
     group: Literal["cache", "data"] = Field(description="cache=可清理派生物，data=只展示")
     rebuild_cost: Literal["cheap", "expensive", "none"]
