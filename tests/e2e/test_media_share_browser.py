@@ -73,7 +73,7 @@ def _gen_clip(dest: Path, seconds: int, *, chapters: list[tuple[int, str]] | Non
     """VP9 + Opus 的 MP4：Playwright 自带的 Chromium 没有 H.264，这是它能直接播的组合。
 
     ``chapters`` 是 (起点秒, 标题) 列表：写成 FFMETADATA 内嵌进容器，分享页要验
-    「场景」横排真的渲染出来。
+    「章节」横排真的渲染出来。
     """
     dest.parent.mkdir(parents=True, exist_ok=True)
     extra: list[str] = []
@@ -115,7 +115,7 @@ def stack(tmp_path_factory):
     root = tmp_path_factory.mktemp("media-share-e2e")
     movie_root = root / "media" / "movies"
     tv_root = root / "media" / "tv"
-    # 电影带两个内嵌章节 + 一份写了导演 / 演员的 NFO：分享页要把「场景」横排、
+    # 电影带两个内嵌章节 + 一份写了导演 / 演员的 NFO：分享页要把「章节」横排、
     # 演职员、音轨字幕、相关链接都渲染出来（假 TMDB 没有这些，只能靠本地）
     movie_file = movie_root / "某电影 (2020)" / "某电影.2020.1080p.mp4"
     _gen_clip(movie_file, 20, chapters=[(0, "开场"), (8, "高潮")])
@@ -297,6 +297,14 @@ def test_media_share_full_flow(stack) -> None:  # noqa: PLR0915
         show = _wait_for(lambda: scanned(tv_lib, "测试剧集"), timeout=180, what="剧集库扫描识别")
         movie_id, show_id = movie["media_item_id"], show["media_item_id"]
 
+        # 章节在扫描之后异步探测：等它落库再走分享流程，分享页不轮询（只有详情页轮询）
+        def chapters_probed():
+            detail = api_json(admin, f"/libraries/{movie_lib}/items/{movie_id}")
+            files = detail.get("files") or []
+            return files if files and (files[0].get("chapters") or []) else None
+
+        _wait_for(chapters_probed, timeout=120, what="电影章节探测落库", interval=2)
+
         # ---- 超管：详情页 ⋯ → 分享… → 3 天 + 密码 → 生成链接 ----
         admin.goto(f"{base}/library/{movie_lib}/item/{movie_id}")
         expect(admin.get_by_role("heading", name="某电影")).to_be_visible(timeout=60_000)
@@ -378,7 +386,7 @@ def test_media_share_full_flow(stack) -> None:  # noqa: PLR0915
         # 浏览面要完整：音轨 / 字幕两行、「场景」横排（内嵌章节）、演职员、相关链接
         expect(visitor.get_by_text("音轨", exact=True)).to_be_visible()
         expect(visitor.get_by_text("字幕", exact=True)).to_be_visible()
-        expect(visitor.get_by_role("heading", name="场景")).to_be_visible()
+        expect(visitor.get_by_role("heading", name="章节")).to_be_visible()
         expect(visitor.get_by_text("2 个章节")).to_be_visible()
         expect(visitor.get_by_text("开场")).to_be_visible()
         expect(visitor.get_by_text("李四")).to_be_visible()
@@ -388,6 +396,17 @@ def test_media_share_full_flow(stack) -> None:  # noqa: PLR0915
         assert (tmdb_link.get_attribute("href") or "").startswith("https://www.themoviedb.org/movie/300")
         _no_site_entrances(visitor)
         visitor.screenshot(path=str(shots / "04-visitor-item-page.png"), full_page=True)
+        # 手机视口：全站 body 不滚（overflow hidden），分享页必须自己是滚动容器，
+        # 否则一屏之外的章节 / 演职员 / 相关链接永远看不到
+        visitor.set_viewport_size({"width": 390, "height": 844})
+        scrolled = visitor.evaluate(
+            "() => { const el = document.querySelector('[data-share-scroll]');"
+            " el.scrollTo(0, 100000); return el.scrollTop; }"
+        )
+        assert scrolled > 300, f"分享页在手机视口下滚不动（scrollTop={scrolled}）"
+        expect(visitor.get_by_role("link", name="TMDB")).to_be_in_viewport()
+        visitor.screenshot(path=str(shots / "04b-visitor-item-page-mobile-bottom.png"))
+        visitor.set_viewport_size({"width": 1280, "height": 800})
 
         # 解锁 Cookie：HttpOnly、Path 收窄到这一条分享的接口
         unlock_cookie = next(c for c in visitor_ctx.cookies() if c["name"] == "movieclaw_share")
