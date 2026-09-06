@@ -45,7 +45,11 @@ function isAddingAccount(): boolean {
  * 登录成功后后端自动把新账号并入本浏览器的账号列表，前端不需要传任何额外参数。
  */
 export default function LoginPage() {
-  const [adding] = useState(isAddingAccount);
+  // 挂载后再读 URL：服务端渲染没有 window，初值若按 URL 算会造成水合不一致
+  const [adding, setAdding] = useState(false);
+  useEffect(() => {
+    setAdding(isAddingAccount());
+  }, []);
   usePageTitle(adding ? "添加账号" : "登录");
   const router = useRouter();
   const [username, setUsername] = useState("");
@@ -64,7 +68,9 @@ export default function LoginPage() {
           router.replace("/setup");
           return;
         }
-        if (adding) return; // 添加账号：已登录也留在本页
+        // 添加账号：已登录也留在本页。直接读 URL 而不用 adding 状态——
+        // 状态要等首个 effect 才更新，这里不能抢在它前面把人跳走
+        if (isAddingAccount()) return;
         const session = await getSession(); // 已登录则不抛错
         if (!cancelled) router.replace(resolveNext(session) as Route);
       } catch {
@@ -74,7 +80,7 @@ export default function LoginPage() {
     return () => {
       cancelled = true;
     };
-  }, [adding, router]);
+  }, [router]);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();

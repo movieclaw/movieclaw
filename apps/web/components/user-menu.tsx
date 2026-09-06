@@ -15,7 +15,7 @@ import {
 } from "@/lib/api/auth";
 import { clearBackdropCache } from "@/lib/backdrop-cache";
 import { clearUiPrefsCache } from "@/lib/ui-prefs-cache";
-import { roleLabel } from "@/lib/permissions";
+import { accessiblePathFor, roleLabel } from "@/lib/permissions";
 import { useSession } from "@/lib/session";
 
 /**
@@ -105,21 +105,23 @@ export function UserMenu({ onOpenSettings, collapsed = false }: UserMenuProps) {
     } catch {
       // 即使请求失败（如网络断开），也照常跳登录页；会话在后端仍会自然过期
     }
-    reloadTo(next ? "/" : "/login");
+    // 切到的账号若是成员，直接落到它能进的页面（首页对成员会被转去 /library）
+    reloadTo(next ? accessiblePathFor(next, "/") : "/login");
   };
 
   /** 切换到另一个已登录账号：后端换激活 Cookie，随后整页回首页。 */
   const handleSwitch = async (account: AccountView) => {
     if (switching) return;
     setSwitching(true);
+    let next: Awaited<ReturnType<typeof switchAccount>>;
     try {
-      await switchAccount(account.username);
+      next = await switchAccount(account.username);
     } catch {
       // 多半是该账号登录态已过期 / 被停用（后端已把它移出列表）：引导重新登录该账号
       reloadTo("/login?add=1");
       return;
     }
-    reloadTo("/");
+    reloadTo(accessiblePathFor(next, "/"));
   };
 
   /** 从本浏览器移除一个非当前账号（不影响当前会话）。 */
