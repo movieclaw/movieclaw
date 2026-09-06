@@ -258,11 +258,8 @@ def test_library_manage_full_flow(stack) -> None:  # noqa: PLR0915
         hk = lib_by_name(page, "港片")
         assert hk["is_default"] is False, "同类型第二个库不自动成为默认"
         expect(page.locator("[data-library-row]")).to_have_count(3)
-        # 表头列名齐全，行内只有一个操作按钮（按钮统一收进菜单）
-        table = page.get_by_role("table", name="媒体库列表")
-        for col in ("库", "根目录", "库存", "状态", "可见范围", "操作"):
-            expect(table.get_by_role("columnheader", name=col, exact=True)).to_be_visible()
-        expect(table.get_by_role("row")).to_have_count(4)  # 表头 + 3 行
+        # 列表不设表头，一库一项；行内只有一个操作按钮（按钮统一收进菜单）
+        expect(page.get_by_role("list", name="媒体库列表").get_by_role("listitem")).to_have_count(3)
         expect(_row(page, "港片").get_by_role("button")).to_have_count(2)  # 拖拽柄 + ···
 
         def all_idle():
@@ -271,12 +268,20 @@ def test_library_manage_full_flow(stack) -> None:  # noqa: PLR0915
 
         _wait_for(all_idle, timeout=120, what="三个库都扫完")
         # 界面按 3 秒轮询跟上：三行都离开扫描态后再继续（否则菜单里是「停止扫描」）
-        # 空闲不再写状态词，只留「最近扫描 …」这行事实
+        # 空闲不再写状态词，只留「最近扫描 …」这行事实；实时监控开着是默认，行内不占字
         expect(_row(page, "剧集").get_by_text(re.compile("最近扫描"))).to_be_visible()
         expect(_row(page, "港片").get_by_text(re.compile("最近扫描"))).to_be_visible()
         expect(_row(page, "电影").get_by_text("1 个待识别")).to_be_visible()
+        expect(_row(page, "剧集").get_by_text(re.compile("实时监控"))).to_have_count(0)
+        # 页头摘要：没有在跑任务就不挂胶囊；有待处理的库数做成胶囊，点即筛选
         expect(page.get_by_role("button", name=re.compile("在跑任务"))).to_have_count(0)
-        expect(_row(page, "剧集").get_by_text(re.compile("最近扫描 .*实时监控开"))).to_be_visible()
+        attention = page.get_by_role("button", name=re.compile(r"^1 个库有待处理文件$"))
+        expect(attention).to_be_visible()
+        attention.click()
+        expect(page.locator("[data-library-row]")).to_have_count(1)
+        expect(_row(page, "电影")).to_be_visible()
+        attention.click()  # 再点一次取消
+        expect(page.locator("[data-library-row]")).to_have_count(3)
         page.screenshot(path=str(shots / "01-manage-desktop.png"), full_page=True)
 
         # ---- 类型筛选与搜索都在客户端：行数随之变；筛选中拖拽柄隐藏 ----
@@ -352,10 +357,13 @@ def test_library_manage_full_flow(stack) -> None:  # noqa: PLR0915
         expect(page.locator("[data-library-row]").nth(0)).to_contain_text("港片")
         page.screenshot(path=str(shots / "03-after-reorder.png"), full_page=True)
 
-        # ---- 待处理：跳单库页并自动打开抽屉，地址里的 ?pending=1 读完即抹掉 ----
-        _open_menu(page, "电影").get_by_role(
-            "menuitem", name=re.compile(r"^待处理 · 1 个文件$")
-        ).click()
+        # ---- 待处理：菜单里常驻一项；状态胶囊本身也可点——跳单库页并自动打开抽屉，
+        #      地址里的 ?pending=1 读完即抹掉 ----
+        menu = _open_menu(page, "电影")
+        pending_item = menu.get_by_role("menuitem", name=re.compile(r"^待处理 · 1 个文件$"))
+        expect(pending_item).to_be_visible()
+        page.keyboard.press("Escape")
+        _row(page, "电影").get_by_role("link", name="1 个待识别").click()
         page.wait_for_url(re.compile(rf"/library/{lib_by_name(page, '电影')['id']}"))
         drawer = page.get_by_label("待处理", exact=True)
         expect(drawer).to_be_visible()

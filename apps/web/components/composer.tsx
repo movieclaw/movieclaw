@@ -895,7 +895,8 @@ function ThinkingLevelSlider({
         disabled={disabled}
         onClick={toggle}
         title="思维链强度"
-        className={`${PILL_CLASS} ${value !== null ? "bg-white/[0.06] text-[var(--text)]" : ""}`}
+        // 与模型 pill 同款的安静样式：选了档位由文案本身体现，不常驻高亮底色
+        className={PILL_CLASS}
       >
         {currentLabel}
       </button>

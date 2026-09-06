@@ -29,6 +29,7 @@ import { isMediaCardsTool } from "@/lib/agent-media-cards";
 import { parseSkillTokens } from "@/lib/agent-skills";
 import { useSkillNames } from "@/lib/skill-names";
 import { sessionAttachmentUrl } from "@/lib/api/agent";
+import { saveComposerPrefs } from "@/lib/composer-prefs";
 import { resolveModelOption, useLlmModelOptions } from "@/lib/llm-thinking";
 import { usePageChrome } from "@/lib/page-chrome";
 import { usePageTitle } from "@/lib/use-page-title";
@@ -294,10 +295,15 @@ export function AgentConversationView({ conversationId }: { conversationId: stri
               setModelChoice(ref);
               // 换模型后旧档位可能不在新菜单里，显式清回默认
               setThinkingChoice(null);
+              // 本浏览器记住最近一次的选择，新任务页以它为起点
+              saveComposerPrefs({ model: ref, thinking: null });
             }}
             thinkingLevels={thinkingLevels}
             thinkingValue={displayedThinking}
-            onThinkingChange={setThinkingChoice}
+            onThinkingChange={(level) => {
+              setThinkingChoice(level);
+              saveComposerPrefs({ model: displayedModel, thinking: level });
+            }}
             busy={running}
             onStop={() => stop(conversationId)}
             disabled={locked || (retrying && activeRetryTarget != null)}

@@ -567,6 +567,15 @@ async def list_libraries(
         library_id: _scan_views_from_jobs(library_id, scan_jobs.get(str(library_id), []))
         for library_id in library_ids
     }
+    # 章节作业是低优先级后台 Job，常排在扫描/刷新后面才跑；随库带出它的
+    # 排队/进度，管理页才看得到"点了有没有反应、生成到第几个"。同样批量取。
+    chapter_jobs = await jobs.list_jobs_by_resource(
+        session,
+        resource_type="library",
+        resource_ids=library_ids,
+        job_type=chapters_mod.JOB_TYPE,
+        limit_per_resource=1,
+    )
     views = [
         LibraryView.from_model(
             r,
@@ -577,6 +586,9 @@ async def list_libraries(
             organize_progress=_organize_progress_view(r.id or -1),
             last_organize=_last_organize_view(r.id or -1),
             metadata_refresh=_metadata_refresh_view(r.id or -1),
+            chapter_job=chapters_mod.chapter_job_view(
+                next(iter(chapter_jobs.get(str(r.id), [])), None)
+            ),
             member_ids=members_by_library.get(r.id or -1, []),
             viewer_access=r.id in visible,
         )
@@ -908,6 +920,11 @@ async def get_library(
         organize_progress=organize_view,
         last_organize=last_organize_view,
         metadata_refresh=await _persistent_metadata_refresh_view(session, library_id),
+        chapter_job=chapters_mod.chapter_job_view(
+            await jobs.latest_job_for_resource(
+                session, "library", library_id, job_type=chapters_mod.JOB_TYPE
+            )
+        ),
         member_ids=member_ids,
         viewer_access=viewer_access,
     )
@@ -1390,7 +1407,7 @@ async def stop_scan(
 @router.post(
     "/{library_id}/chapter-images",
     response_model=ApiResponse[dict],
-    summary="生成整库的章节场景图（可恢复后台作业；force=true 全部重抓）",
+    summary="生成整库的章节（可恢复后台作业；force=true 已有的也重新生成）",
     operation_id="library.chapter-images.generate",
     dependencies=[Depends(require_admin)],
     openapi_extra={"x-cli-job": {"id_path": "job_id", "wait_op": "jobs.wait"}},
@@ -1409,16 +1426,16 @@ async def start_chapter_images(
     service = LibraryConfigService(session)
     library = await service.get(library_id)
     if not library.extract_chapter_images:
-        raise ConflictException(f"「{library.name}」已关闭章节场景图，请先在编辑库里打开")
+        raise ConflictException(f"「{library.name}」已关闭章节生成，请先在编辑库里打开")
     created = await chapters_mod.enqueue_library_chapter_images_job(
         session, library_id, library.name, force=force, origin=_job_origin(client_name)
     )
     return ok(
         {"started": True, "job_id": created.job.id, "created": created.created},
         message=(
-            f"已开始生成「{library.name}」的章节场景图，可在任务中心继续观察"
+            f"已开始生成「{library.name}」的章节，可在任务中心继续观察"
             if created.created
-            else f"「{library.name}」的章节场景图正在生成中"
+            else f"「{library.name}」的章节正在生成中"
         ),
     )
 
@@ -1426,7 +1443,7 @@ async def start_chapter_images(
 @router.post(
     "/{library_id}/items/{media_item_id}/chapter-images",
     response_model=ApiResponse[dict],
-    summary="重新生成单个条目的章节场景图（全部重抓，后台执行）",
+    summary="重新生成单个条目的章节（全部重抓，后台执行）",
     operation_id="library.items.regenerate-chapter-images",
     dependencies=[Depends(require_admin)],
     status_code=202,
@@ -1443,15 +1460,15 @@ async def regenerate_item_chapter_images(
     library = await LibraryConfigService(session).get(library_id)
     item, _rows = await _item_rows(session, library_id, media_item_id)
     if not library.extract_chapter_images:
-        raise ConflictException(f"「{library.name}」已关闭章节场景图，请先在编辑库里打开")
+        raise ConflictException(f"「{library.name}」已关闭章节生成，请先在编辑库里打开")
     already = chapters_mod.item_pending(media_item_id)
     chapters_mod.schedule_item_chapter_images(media_item_id, force=True)
     return ok(
         {"started": True},
         message=(
-            f"《{item.title}》的场景图正在生成中"
+            f"《{item.title}》的章节正在生成中"
             if already
-            else f"已开始重新生成《{item.title}》的场景图"
+            else f"已开始重新生成《{item.title}》的章节"
         ),
     )
 

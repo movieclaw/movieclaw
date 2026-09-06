@@ -14,7 +14,6 @@ import {
   type LibraryRowActions,
   type LibraryRowDrag,
   LibraryManageRow,
-  MANAGE_GRID_COLS,
 } from "@/components/library-manage-row";
 import { LibraryOrganizeDialog } from "@/components/library-organize-dialog";
 import { LibraryRecycleBin } from "@/components/library-recycle-bin";
@@ -39,14 +38,16 @@ import {
   refreshLibraryConfirm,
   scanLibraryConfirm,
 } from "@/lib/library-confirm";
+import { useJobs } from "@/lib/jobs";
 import { routingOverlapWarnings } from "@/lib/library-routing-warnings";
 import {
   EMPTY_FILTER,
   type LibraryFilter,
+  type LibraryFocus,
   filterIsActive,
   filterLibraries,
-  libraryIsBusy,
   moveInList,
+  summarizeLibraries,
 } from "@/lib/library-manage";
 import { LIBRARY_KIND_LABELS, type LibraryKind } from "@/lib/media-types";
 import { usePermissions } from "@/lib/permissions";
@@ -64,6 +65,10 @@ function dropPosition(e: React.DragEvent): "before" | "after" {
 
 /**
  * 媒体库管理页（/library/manage）：一库一行的纵向列表，库多了只是变长。
+ *
+ * 页面回答的第一个问题是「有没有事要我管」：页头摘要里只挂两枚带色胶囊——
+ * 在跑任务、有待处理文件——点即筛选；两样都没有就写「一切正常」。列表行只有
+ * 两个视觉重心（库名、状态），其余信息是库名下的小字。
  *
  * 首页（/library）只做浏览入口；建库、编辑、扫描、整理、刷新、设默认、
  * 首页展示开关、排序、删除全部在这里完成。设计见 docs/design/library-manage.md。
@@ -125,6 +130,26 @@ export function LibraryManageView() {
     reload();
   }, [reload]);
 
+  // 不是从这页发起的任务（实时监控触发的自动扫描、CLI、另一台设备点的）只靠轮询要
+  // 等到下个周期才被发现，空闲时最长 30 秒。JobsProvider 的 SSE 一收到任务事件就会
+  // 更新 activeJobs，这里盯着「库相关活跃作业的 id + 状态」这份指纹：作业出现、状态
+  // 变化、结束都立即重拉一次库列表；进度更新仍交给轮询（否则每条进度都触发一次请求）
+  const { activeJobs } = useJobs();
+  const libraryJobsKey = useMemo(
+    () =>
+      activeJobs
+        .filter((job) => job.resources.some((r) => r.resource_type === "library"))
+        .map((job) => `${job.id}:${job.status}`)
+        .join("|"),
+    [activeJobs],
+  );
+  const seenJobsKey = useRef(libraryJobsKey);
+  useEffect(() => {
+    if (seenJobsKey.current === libraryJobsKey) return;
+    seenJobsKey.current = libraryJobsKey;
+    reload();
+  }, [libraryJobsKey, reload]);
+
   // 首页空状态的「创建第一个媒体库」落到 /library/manage?create=1：进页即开建库弹窗。
   // 读 location 而不是 useSearchParams（全站惯例，免去 Suspense 边界）；读完把参数抹掉，
   // 刷新页面不会再弹
@@ -169,7 +194,12 @@ export function LibraryManageView() {
 
   const warnings = useMemo(() => routingOverlapWarnings(libraries ?? []), [libraries]);
   const visible = useMemo(() => filterLibraries(libraries ?? [], filter), [libraries, filter]);
-  const busyCount = (libraries ?? []).filter(libraryIsBusy).length;
+  const summary = useMemo(() => summarizeLibraries(libraries ?? []), [libraries]);
+  /** 页头摘要胶囊即筛选：再点一次取消；在回收站标签上点则先切回库列表 */
+  const toggleFocus = (focus: LibraryFocus) => {
+    setFilter((f) => ({ ...f, focus: f.focus === focus ? null : focus }));
+    setTab("libraries");
+  };
   const kindCounts = useMemo(() => {
     const counts = new Map<LibraryKind, number>();
     for (const l of libraries ?? []) counts.set(l.kind, (counts.get(l.kind) ?? 0) + 1);
@@ -225,9 +255,11 @@ export function LibraryManageView() {
           run(stopLibraryScan(library.id));
           return;
         }
-        // 重操作先确认；停止不确认——停止本身就是在纠正
+        // 重操作先确认；停止不确认——停止本身就是在纠正。
+        // 开始要给一句回执：已是最新的库扫描毫秒级就结束，行内只会从
+        // 「最近扫描 3 分钟前」变成「几秒前」，没有这句用户会以为没点上
         void confirm(scanLibraryConfirm(library.name)).then((ok) => {
-          if (ok) run(startLibraryScan(library.id));
+          if (ok) run(startLibraryScan(library.id), `已开始扫描「${library.name}」`);
         });
       },
       onOpenPending: (library) => {
@@ -347,23 +379,53 @@ export function LibraryManageView() {
 
       {/* 页头：标题 + 说明，右侧是页面级动作「创建媒体库」（与首页「管理媒体库」
           同一位置约定：页面动作放标题行右端，顶栏只留返回与吸顶标题） */}
-      <div className="flex items-start justify-between gap-4 px-6 pt-3 max-md:px-4">
-        <div className="min-w-0">
+      <div className="px-6 pt-3 max-md:px-4">
+        <div className="flex items-start justify-between gap-4">
           <h2 className="text-on-image text-[26px] font-bold leading-tight tracking-[-0.02em] text-white max-md:text-[21px]">
             媒体库管理
           </h2>
-          <p className="text-on-image mt-1.5 text-ui text-[var(--text-muted)] max-md:text-sub">
-            库负责盘点与守护；这里改的是库本身，浏览内容请回媒体库首页。
-          </p>
+          <button
+            type="button"
+            onClick={() => setEditing("new")}
+            className="btn-accent mt-1 flex h-9 shrink-0 items-center gap-1 rounded-full py-0 pl-3 pr-4 text-ui font-semibold max-md:mt-0"
+          >
+            <PlusIcon className="size-4" />
+            创建媒体库
+          </button>
         </div>
-        <button
-          type="button"
-          onClick={() => setEditing("new")}
-          className="btn-accent mt-1 flex h-9 shrink-0 items-center gap-1 rounded-full py-0 pl-3 pr-4 text-ui font-semibold max-md:mt-0"
-        >
-          <PlusIcon className="size-4" />
-          创建媒体库
-        </button>
+        {/* 副标题是一行活的摘要，独占一行（不与按钮争宽，手机端才不会把数字挤断）：
+            规模事实之后紧跟这页真正要你看的两件事——在跑任务与待处理文件——做成带色胶囊，
+            点即筛选；两样都没有就明说「一切正常」 */}
+        <div className="text-on-image mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-ui text-[var(--text-muted)] max-md:text-sub">
+          <span>
+            {libraries === null
+              ? "正在汇总媒体库…"
+              : libraries.length === 0
+                ? "还没有媒体库"
+                : summary.facts}
+          </span>
+          {summary.busy > 0 && (
+            <FilterChip active={filter.focus === "busy"} onClick={() => toggleFocus("busy")}>
+              <span className="size-1.5 rounded-full bg-[var(--info)]" />
+              {summary.busy} 个在跑任务
+            </FilterChip>
+          )}
+          {summary.attention > 0 && (
+            <FilterChip
+              active={filter.focus === "attention"}
+              onClick={() => toggleFocus("attention")}
+            >
+              <span
+                className={`size-1.5 rounded-full ${summary.missing ? "bg-[var(--danger)]" : "bg-[var(--warn)]"}`}
+              />
+              {summary.attention} 个库有待处理文件
+            </FilterChip>
+          )}
+          {libraries !== null &&
+            libraries.length > 0 &&
+            summary.busy === 0 &&
+            summary.attention === 0 && <span className="text-[var(--text-faint)]">一切正常</span>}
+        </div>
       </div>
 
       {/* 标签栏：媒体库 / 回收站。回收站计数为 0 时标签照常渲染（入口要被看见），只是不带数字 */}
@@ -439,7 +501,7 @@ export function LibraryManageView() {
 
       {tab === "libraries" && libraries !== null && libraries.length > 0 && (
         <>
-          {/* 工具栏：搜索 / 类型筛选 / 在跑任务 */}
+          {/* 工具栏：搜索 / 类型筛选（状态筛选在页头摘要的胶囊上） */}
           <div className="mt-5 flex flex-wrap items-center gap-2.5 px-6 max-md:px-4">
             <label className="flex h-9 min-w-[220px] flex-1 items-center gap-2 rounded-full border border-white/[0.08] bg-white/[0.04] px-3 text-ui text-[var(--text-muted)] focus-within:border-[var(--accent)]/60 max-md:min-w-0 max-md:basis-full sm:max-w-[320px]">
               <SearchIcon className="size-4 shrink-0" />
@@ -479,16 +541,6 @@ export function LibraryManageView() {
                 </FilterChip>
               ))}
             </div>
-            {busyCount > 0 && (
-              <FilterChip
-                active={filter.busyOnly}
-                onClick={() => setFilter((f) => ({ ...f, busyOnly: !f.busyOnly }))}
-                className="ml-auto"
-              >
-                <span className="size-1.5 rounded-full bg-[var(--info)]" />
-                {busyCount} 个在跑任务
-              </FilterChip>
-            )}
           </div>
 
           {/* 收藏范围重叠提示：只读不阻断，原在首页，现在只在这里出现 */}
@@ -501,27 +553,9 @@ export function LibraryManageView() {
             </div>
           ))}
 
-          {/* 列表 */}
-          <div
-            role="table"
-            aria-label="媒体库列表"
-            className="mx-6 mt-4 overflow-hidden rounded-2xl border border-white/[0.08] bg-white/[0.02] max-md:mx-4"
-          >
-            {/* 表头只在桌面端显示；手机端一库一卡，列名由卡片内的文案自带 */}
-            <div
-              role="row"
-              className={`grid gap-4 border-b border-white/[0.07] px-4 py-2.5 text-caption font-medium text-[var(--text-faint)] max-md:hidden ${MANAGE_GRID_COLS}`}
-            >
-              <span role="columnheader" aria-label="排序" />
-              <span role="columnheader">库</span>
-              <span role="columnheader">根目录</span>
-              <span role="columnheader">库存</span>
-              <span role="columnheader">状态</span>
-              <span role="columnheader">可见范围</span>
-              <span role="columnheader" className="text-right">
-                操作
-              </span>
-            </div>
+          {/* 列表：不设表头——一行只有库名 / 库存 / 状态三样，各自的形态已经说明了自己是什么，
+              一条表头只会让它更像一张表。筛选空结果时给「清除筛选」 */}
+          <div className="mx-6 mt-4 overflow-hidden rounded-2xl border border-white/[0.08] bg-white/[0.02] max-md:mx-4">
             {visible.length === 0 ? (
               <div className="px-4 py-10 text-center text-ui text-[var(--text-muted)]">
                 没有符合条件的媒体库
@@ -534,7 +568,7 @@ export function LibraryManageView() {
                 </button>
               </div>
             ) : (
-              <div role="rowgroup" className="divide-y divide-white/[0.06]">
+              <div role="list" aria-label="媒体库列表" className="divide-y divide-white/[0.06]">
                 {visible.map((library) => (
                   <LibraryManageRow
                     key={library.id}
@@ -547,22 +581,16 @@ export function LibraryManageView() {
             )}
           </div>
 
-          <div className="mx-6 mt-3 flex flex-wrap items-center justify-between gap-2 text-caption text-[var(--text-faint)] max-md:mx-4">
-            <span>
-              {isMobile
-                ? "顺序即首页「我的媒体库」的展示顺序，在 ··· 菜单里「调整顺序」"
-                : dragEnabled
-                  ? "拖动行首的把手调整首页「我的媒体库」的展示顺序，松手即保存"
-                  : filterIsActive(filter)
-                    ? "清除筛选后可拖拽排序"
-                    : ""}
-            </span>
-            <span className="flex items-center gap-3">
-              <Legend className="bg-[var(--info)]">任务进行中</Legend>
-              <Legend className="bg-[var(--warn)]">有待处理</Legend>
-              <Legend className="bg-[var(--danger)]">有缺失</Legend>
-            </span>
-          </div>
+          {/* 底部只留一句排序提示；状态胶囊自带文字，不需要颜色图例 */}
+          <p className="mx-6 mt-3 text-caption text-[var(--text-faint)] max-md:mx-4">
+            {isMobile
+              ? "顺序即首页「我的媒体库」的展示顺序，在 ··· 菜单里「调整顺序」"
+              : dragEnabled
+                ? "把指针停在行上，拖动行首的把手调整首页「我的媒体库」的展示顺序，松手即保存"
+                : filterIsActive(filter)
+                  ? "清除筛选后可拖拽排序"
+                  : ""}
+          </p>
         </>
       )}
 
@@ -620,15 +648,6 @@ function FilterChip({
     >
       {children}
     </button>
-  );
-}
-
-function Legend({ className, children }: { className: string; children: React.ReactNode }) {
-  return (
-    <span className="flex items-center gap-1.5">
-      <span className={`size-1.5 rounded-full ${className}`} />
-      {children}
-    </span>
   );
 }
 

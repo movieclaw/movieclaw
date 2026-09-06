@@ -35,12 +35,14 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
+from movieclaw_api.schemas.library import ChapterJobView
 from movieclaw_api.services import jobs
 from movieclaw_api.services.library.layout import STRM_EXT
 from movieclaw_api.services.library.thumbs import FRAME_GRAB_GATE, TONEMAP_FILTERS
 from movieclaw_api.services.media_probe import probe_chapters
 from movieclaw_db.engine import get_database
 from movieclaw_db.models import Library, LibraryFile, utcnow
+from movieclaw_db.models.job import Job
 
 logger = logging.getLogger("movieclaw_api.library.chapters")
 
@@ -493,7 +495,34 @@ async def enqueue_library_chapter_images_job(
         actor_name=actor_name,
         actor_id=actor_id,
         origin=origin,
-        progress=jobs.default_progress("等待生成章节场景图"),
+        progress=jobs.default_progress("等待生成章节"),
+    )
+
+
+#: Job 的未完成态：这些状态下管理页要把作业当"在跑"显示
+_ACTIVE_JOB_STATUSES = frozenset(
+    {"queued", "running", "retry_wait", "cancelling", "waiting", "blocked"}
+)
+
+
+def chapter_job_view(job: Job | None) -> ChapterJobView | None:
+    """把该库最近一个章节作业投影成随库下发的状态；跑完/失败/取消的不再带出。
+
+    进度字段沿用 JobContext.update_progress 写进 progress 的口径
+    （current/total/percent，失败数在 details.failed）。
+    """
+    if job is None or str(job.status) not in _ACTIVE_JOB_STATUSES:
+        return None
+    progress = job.progress or {}
+    details = progress.get("details") or {}
+    return ChapterJobView(
+        job_id=job.id,
+        status=str(job.status),
+        processed=int(progress.get("current") or 0),
+        total=int(progress.get("total") or 0),
+        failed=int(details.get("failed") or 0),
+        percent=progress.get("percent"),
+        stopping=job.cancel_requested_at is not None or str(job.status) == "cancelling",
     )
 
 
@@ -531,9 +560,9 @@ async def _run_chapter_images_job(
     async with db.session() as session:
         library = await session.get(Library, library_id)
         if library is None:
-            raise jobs.JobFailed("媒体库已不存在，无法生成章节场景图", code="LIBRARY_NOT_FOUND")
+            raise jobs.JobFailed("媒体库已不存在，无法生成章节", code="LIBRARY_NOT_FOUND")
         if not library.extract_chapter_images:
-            return {"message": f"「{library.name}」已关闭章节场景图，本次未生成", "processed": 0}
+            return {"message": f"「{library.name}」已关闭章节生成，本次未生成", "processed": 0}
         targets = await _job_targets(session, library_id, force=force)
     total = len(targets)
     processed = failed = 0
@@ -554,13 +583,13 @@ async def _run_chapter_images_job(
             await context.update_progress(
                 mode="determinate",
                 phase="extracting",
-                message=f"正在生成章节场景图 {processed}/{total}",
+                message=f"正在生成章节 {processed}/{total}",
                 current=processed,
                 total=total,
                 percent=round(processed * 100 / total, 1) if total else 100.0,
                 details={"failed": failed},
             )
-    message = f"章节场景图生成完成：处理 {processed} 个文件"
+    message = f"章节生成完成：处理 {processed} 个文件"
     if failed:
         message += f"，{failed} 个失败（可在库菜单重新生成）"
     return {"message": message, "processed": processed, "failed": failed}
