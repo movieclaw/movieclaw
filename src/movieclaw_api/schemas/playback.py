@@ -176,12 +176,17 @@ class PlaybackLogEntryView(BaseModel):
     watched_ms: int = Field(description="实际观看时长（毫秒）")
     start_position_ms: int
     end_position_ms: int
+    # 这一场结束时看到哪：分母是服务端算的片长，条目已删时为 None
+    duration_ms: int | None = None
+    progress_percent: int | None = None
     completed: bool = Field(description="本场是否看完")
 
 
 class PlaybackHistoryView(BaseModel):
     entries: list[PlaybackLogEntryView]
     hidden_count: int = Field(default=0, description="不在你可见范围内的记录数")
+    # 本页之后还有没有更多（按 offset 翻页的「加载更多」）
+    has_more: bool = False
 
 
 class PlaybackStatsMemberRow(BaseModel):

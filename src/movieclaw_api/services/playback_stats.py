@@ -37,6 +37,7 @@ from movieclaw_api.services.playback_activity import (
     _target,
     libraries_by_item,
 )
+from movieclaw_api.services.playback_recent import _progress_percent
 from movieclaw_db.models import PlaybackLog
 from movieclaw_db.models.base import utcnow
 from movieclaw_media.models import MediaKind
@@ -83,8 +84,8 @@ async def _targets_for(
     *,
     browsable_library_ids: set[int] | None,
     fold_hidden: bool,
-) -> tuple[dict[Unit, MediaActivityTarget | None], VisibilityScope]:
-    """一批日志行的媒体目标；范围内折叠的单元映射为 None。"""
+) -> tuple[dict[Unit, MediaActivityTarget | None], dict[Unit, int | None]]:
+    """一批日志行的媒体目标与片长；范围内折叠的单元目标映射为 None。"""
     units = {(r.media_item_id, r.season_number, r.episode_number) for r in rows}
     contexts = await _load_unit_contexts(session, units, set())
     scope = VisibilityScope(
@@ -94,8 +95,10 @@ async def _targets_for(
     )
     by_row = {(r.media_item_id, r.season_number, r.episode_number): r for r in rows}
     targets: dict[Unit, MediaActivityTarget | None] = {}
+    durations: dict[Unit, int | None] = {}
     for unit in units:
         ctx = contexts.get(unit)
+        durations[unit] = ctx.duration_ms if ctx else None
         if ctx is None:
             targets[unit] = _fallback_target(by_row[unit])
             continue
@@ -106,37 +109,46 @@ async def _targets_for(
         targets[unit] = _target(
             unit, ctx, library_id=placement.library_id, browsable=placement.browsable
         )
-    return targets, scope
+    return targets, durations
 
 
 async def playback_history(
     session: AsyncSession,
     *,
     limit: int,
+    offset: int = 0,
     days: int | None,
     member_id: int | None,
     browsable_library_ids: set[int] | None,
     fold_hidden: bool,
 ) -> PlaybackHistoryView:
-    """最近的播放记录（每场一行）。"""
+    """最近的播放记录（每场一行），按开始时间倒序、offset 翻页。
+
+    多取一行判断 ``has_more``；折叠掉的行仍占翻页位置（offset 按日志行数
+    而不是按展示行数走），换口径重拉即可。
+    """
     statement = select(PlaybackLog).order_by(PlaybackLog.started_at.desc(), PlaybackLog.id.desc())  # type: ignore[union-attr]
     if days is not None:
         statement = statement.where(PlaybackLog.started_at >= utcnow() - timedelta(days=days))
     if member_id is not None:
         statement = statement.where(PlaybackLog.member_id == member_id)
-    rows = list((await session.execute(statement.limit(limit))).scalars())
+    rows = list((await session.execute(statement.offset(offset).limit(limit + 1))).scalars())
+    has_more = len(rows) > limit
+    rows = rows[:limit]
     names = await _member_names(session, {r.member_id for r in rows})
-    targets, _ = await _targets_for(
+    targets, durations = await _targets_for(
         session, rows, browsable_library_ids=browsable_library_ids, fold_hidden=fold_hidden
     )
     now = utcnow()
     entries: list[PlaybackLogEntryView] = []
     hidden = 0
     for row in rows:
-        target = targets[(row.media_item_id, row.season_number, row.episode_number)]
+        unit = (row.media_item_id, row.season_number, row.episode_number)
+        target = targets[unit]
         if target is None:
             hidden += 1
             continue
+        duration_ms = durations[unit]
         entries.append(
             PlaybackLogEntryView(
                 id=row.id or 0,
@@ -149,10 +161,12 @@ async def playback_history(
                 watched_ms=row.watched_ms,
                 start_position_ms=row.start_position_ms,
                 end_position_ms=row.end_position_ms,
+                duration_ms=duration_ms,
+                progress_percent=_progress_percent(row.end_position_ms, duration_ms),
                 completed=row.completed,
             )
         )
-    return PlaybackHistoryView(entries=entries, hidden_count=hidden)
+    return PlaybackHistoryView(entries=entries, hidden_count=hidden, has_more=has_more)
 
 
 async def playback_stats(

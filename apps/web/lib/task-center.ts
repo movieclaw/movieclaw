@@ -19,6 +19,22 @@ export const TASK_CENTER_VIEWS = [
 
 export type TaskCenterViewName = (typeof TASK_CENTER_VIEWS)[number];
 
+/**
+ * 观看视角下的切片：此刻在播 / 每场一行的播放记录 / 一段时间的观看统计。
+ * 三者时间语义与刷新节奏都不同，摞在一页里读不出重点，所以和任务一样分片
+ * （docs/design/activity.md「观看视角的三个切片」）。值与任务切片共用同一个
+ * `view` 查询参数，不能撞名（任务已占 history）。
+ */
+export const WATCH_VIEWS = ["playing", "plays", "stats"] as const;
+
+export type WatchViewName = (typeof WATCH_VIEWS)[number];
+
+export const WATCH_VIEW_LABELS: readonly { id: WatchViewName; label: string }[] = [
+  { id: "playing", label: "正在播放" },
+  { id: "plays", label: "播放记录" },
+  { id: "stats", label: "观看统计" },
+] as const;
+
 /** 一级视角：观看（媒体库实时活动）/ 任务（按状态分组）。 */
 export type ActivityScope = "media" | "tasks";
 
@@ -39,6 +55,16 @@ export function activityScopeFromQuery(
   value: string | string[] | undefined,
 ): ActivityScope {
   return isTaskView(readQuery(value)) ? "tasks" : "media";
+}
+
+function isWatchView(candidate: string | undefined): candidate is WatchViewName {
+  return WATCH_VIEWS.includes(candidate as WatchViewName);
+}
+
+/** 观看切片：缺省与非法值都落「正在播放」——它是本页的默认落点。 */
+export function watchViewFromQuery(value: string | string[] | undefined): WatchViewName {
+  const candidate = readQuery(value);
+  return isWatchView(candidate) ? candidate : "playing";
 }
 
 /** 非法或重复查询值安全回退「全部」，避免 URL 直接控制内部状态。 */

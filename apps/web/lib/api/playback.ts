@@ -230,12 +230,17 @@ export interface PlaybackLogEntry {
   watched_ms: number;
   start_position_ms: number;
   end_position_ms: number;
+  /** 这一场结束时看到哪；条目已删时为 null */
+  duration_ms: number | null;
+  progress_percent: number | null;
   completed: boolean;
 }
 
 export interface PlaybackHistory {
   entries: PlaybackLogEntry[];
   hidden_count: number;
+  /** 按 offset 翻页：本页之后还有没有 */
+  has_more: boolean;
 }
 
 export interface PlaybackStatsMemberRow {
@@ -279,11 +284,20 @@ export interface PlaybackWatchStats {
 }
 
 export async function fetchPlaybackHistory(
-  options: { limit?: number; days?: number; scope?: MediaActivityScope } = {},
+  options: {
+    limit?: number;
+    offset?: number;
+    days?: number;
+    /** 按成员筛选；0 = 超管 */
+    memberId?: number | null;
+    scope?: MediaActivityScope;
+  } = {},
 ): Promise<PlaybackHistory> {
   const params = new URLSearchParams({ scope: options.scope ?? "visible" });
   if (options.limit != null) params.set("limit", String(options.limit));
+  if (options.offset) params.set("offset", String(options.offset));
   if (options.days != null) params.set("days", String(options.days));
+  if (options.memberId != null) params.set("member_id", String(options.memberId));
   const response = await request<ApiEnvelope<PlaybackHistory>>(`/playback/history?${params}`);
   return response.data;
 }

@@ -1,11 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import Link from "next/link";
 import type { Route } from "next";
 
-import { CheckIcon, HistoryIcon } from "@/components/icons";
+import { CheckIcon } from "@/components/icons";
 import { OverflowText } from "@/components/overflow-text";
 import { PosterImage } from "@/components/poster-image";
 import {
@@ -13,29 +13,29 @@ import {
   fetchPlaybackWatchStats,
   type MediaActivityScope,
   type MediaActivityTarget,
-  type PlaybackHistory,
   type PlaybackLogEntry,
   type PlaybackWatchStats,
 } from "@/lib/api/playback";
 import { formatRuntimeMinutes } from "@/lib/format";
 import { imageUrl } from "@/lib/image-proxy";
-import { formatRelativeTime } from "@/lib/time";
+import { formatClockTime, formatTimelineDayLabel, timelineDayKey } from "@/lib/time";
 
 /**
- * 活动页「观看统计」与「播放记录」（docs/design/activity.md「播放日志与统计」）。
+ * 活动页观看视角的两个历史切片：「播放记录」与「观看统计」
+ * （docs/design/activity.md「播放日志与统计」）。
  *
- * 数据来自 playback_log——每场播放一行，所以这里回答的是「最近谁在什么时候用
- * 什么看了多久」，与上面按成员×作品保留进度的「最近观看」是两个口径。
- * 不轮询：日志按场记，几秒一刷没有意义，切周期或口径时重拉一次即可。
+ * 数据来自 playback_log——每场播放一行，回答「最近谁在什么时候用什么看了多久」。
+ * 不轮询：日志按场记，几秒一刷没有意义，切周期、成员或口径时重拉一次即可。
+ * 切片切换与筛选条件由外层工具栏持有，这里只吃 props。
  */
 
-const PERIODS: readonly { days: number; label: string }[] = [
-  { days: 7, label: "7 天" },
-  { days: 30, label: "30 天" },
-  { days: 90, label: "90 天" },
+export const STATS_PERIODS: readonly { value: number; label: string }[] = [
+  { value: 7, label: "最近 7 天" },
+  { value: 30, label: "最近 30 天" },
+  { value: 90, label: "最近 90 天" },
 ] as const;
 
-const HISTORY_LIMIT = 20;
+const HISTORY_PAGE = 30;
 
 /** 毫秒 → 「2 小时 6 分钟」；不足一分钟按一分钟，零显示「—」。 */
 function formatWatched(ms: number): string {
@@ -62,6 +62,9 @@ function TitleText({ media }: { media: MediaActivityTarget }) {
     <>
       {media.title || "（条目已删除）"}
       {unit && <span className="tnum ml-1.5 font-normal text-white/60">{unit}</span>}
+      {media.episode_title && (
+        <span className="ml-1.5 font-normal text-white/45">{media.episode_title}</span>
+      )}
       {!media.browsable && media.library_id != null && (
         <span className="ml-1.5 rounded-md border border-white/15 px-1.5 py-px text-[11px] font-medium text-white/50">
           仅管理
@@ -82,37 +85,202 @@ function TitleText({ media }: { media: MediaActivityTarget }) {
   );
 }
 
-function PeriodSelect({
-  value,
-  onChange,
-}: {
-  value: number;
-  onChange: (days: number) => void;
-}) {
+function EmptyHint({ children }: { children: React.ReactNode }) {
   return (
-    <div
-      role="group"
-      aria-label="统计周期"
-      className="flex shrink-0 rounded-full border border-white/10 bg-black/30 p-0.5"
-    >
-      {PERIODS.map((option) => (
-        <button
-          key={option.days}
-          type="button"
-          aria-pressed={value === option.days}
-          onClick={() => onChange(option.days)}
-          className={`rounded-full px-2.5 py-0.5 text-caption font-semibold transition ${
-            value === option.days
-              ? "bg-white/15 text-white shadow-sm"
-              : "text-[var(--text-muted)] hover:text-white"
-          }`}
-        >
-          {option.label}
-        </button>
-      ))}
+    <p className="rounded-2xl border border-white/[0.07] bg-white/[0.02] px-4 py-6 text-center text-sub text-[var(--text-muted)]">
+      {children}
+    </p>
+  );
+}
+
+/** 范围外记录的折叠行：只报个数，不出片名与海报；就地可切到「全部」。 */
+export function HiddenCountRow({
+  count,
+  noun,
+  onShowAll,
+}: {
+  count: number;
+  noun: string;
+  onShowAll?: () => void;
+}) {
+  if (count <= 0) return null;
+  return (
+    <p className="px-4 py-2.5 text-caption text-white/45 max-md:px-3.5">
+      另有 {count} {noun}不在你的浏览范围内
+      {onShowAll && (
+        <>
+          <span className="mx-1.5 text-white/20">·</span>
+          <button
+            type="button"
+            onClick={onShowAll}
+            className="font-medium text-[var(--info)] transition hover:text-white"
+          >
+            显示全部
+          </button>
+        </>
+      )}
+    </p>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 播放记录：每场一行，按天分组
+// ---------------------------------------------------------------------------
+
+function HistoryRow({ entry }: { entry: PlaybackLogEntry }) {
+  const live = entry.ended_at === null;
+  const device = [entry.client, entry.device_name].filter(Boolean).join(" · ");
+  return (
+    <div className="flex items-center gap-3 px-4 py-2.5 max-md:px-3.5">
+      <span className="tnum w-11 shrink-0 text-caption text-white/40">
+        {formatClockTime(entry.started_at)}
+      </span>
+      <PosterImage
+        src={entry.media.poster_url ? imageUrl(entry.media.poster_url) : null}
+        alt={entry.media.title}
+        className="h-[42px] w-[28px] shrink-0 rounded-lg object-cover ring-1 ring-white/10"
+      />
+      <div className="min-w-0 flex-1">
+        <TitleText media={entry.media} />
+        <p className="mt-0.5 truncate text-caption leading-5 text-white/40">
+          {entry.member_name}
+          {device && (
+            <>
+              <span className="mx-1.5 text-white/20">·</span>
+              {device}
+            </>
+          )}
+        </p>
+      </div>
+      <div className="shrink-0 text-right text-caption leading-5">
+        {live ? (
+          <span className="text-[var(--ok)]">播放中</span>
+        ) : entry.completed ? (
+          <span className="inline-flex items-center gap-1 text-[var(--ok)]">
+            <CheckIcon className="size-3" />
+            看完
+          </span>
+        ) : (
+          <span className="tnum text-white/60">
+            {entry.progress_percent != null ? `看到 ${entry.progress_percent}%` : "播放过"}
+          </span>
+        )}
+        {entry.watched_ms > 0 && (
+          <p className="tnum text-white/35">{formatWatched(entry.watched_ms)}</p>
+        )}
+      </div>
     </div>
   );
 }
+
+export function PlaybackHistoryList({
+  scope,
+  memberId,
+  onShowAll,
+}: {
+  scope: MediaActivityScope;
+  /** 按成员筛选；null = 全部 */
+  memberId: number | null;
+  onShowAll: () => void;
+}) {
+  const [entries, setEntries] = useState<PlaybackLogEntry[]>([]);
+  const [hiddenCount, setHiddenCount] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(
+    async (offset: number) => {
+      const page = await fetchPlaybackHistory({ limit: HISTORY_PAGE, offset, scope, memberId });
+      setEntries((prev) => (offset === 0 ? page.entries : [...prev, ...page.entries]));
+      setHiddenCount((prev) => (offset === 0 ? page.hidden_count : prev + page.hidden_count));
+      setHasMore(page.has_more);
+    },
+    [scope, memberId],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    void load(0)
+      .then(() => {
+        if (!cancelled) setError(null);
+      })
+      .catch((caught) => {
+        if (!cancelled) setError((caught as Error).message || "播放记录加载失败");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [load]);
+
+  const groups = useMemo(() => {
+    const byDay = new Map<string, PlaybackLogEntry[]>();
+    for (const entry of entries) {
+      const key = timelineDayKey(entry.started_at);
+      const bucket = byDay.get(key);
+      if (bucket) bucket.push(entry);
+      else byDay.set(key, [entry]);
+    }
+    return [...byDay.entries()];
+  }, [entries]);
+
+  if (error) {
+    return (
+      <p className="rounded-xl border border-amber-400/25 bg-amber-500/10 px-4 py-3 text-sub leading-6 text-amber-100">
+        {error}
+      </p>
+    );
+  }
+  if (loading && entries.length === 0) {
+    return <EmptyHint>正在读取播放记录…</EmptyHint>;
+  }
+  if (entries.length === 0 && hiddenCount === 0) {
+    return <EmptyHint>还没有播放记录；从现在起的每一场播放都会记在这里。</EmptyHint>;
+  }
+  return (
+    <div className="space-y-5">
+      {groups.map(([day, items]) => (
+        <section key={day} aria-label={day}>
+          <h3 className="mb-2 text-caption font-semibold text-white/45">
+            {formatTimelineDayLabel(items[0].started_at)}
+            <span className="tnum ml-1.5 font-normal text-white/30">{items.length} 场</span>
+          </h3>
+          <div className="divide-y divide-white/[0.06] rounded-2xl border border-white/[0.08] bg-white/[0.02]">
+            {items.map((entry) => (
+              <HistoryRow key={entry.id} entry={entry} />
+            ))}
+          </div>
+        </section>
+      ))}
+      {hiddenCount > 0 && (
+        <div className="rounded-2xl border border-white/[0.07] bg-white/[0.02]">
+          <HiddenCountRow count={hiddenCount} noun="场播放" onShowAll={onShowAll} />
+        </div>
+      )}
+      {hasMore && (
+        <button
+          type="button"
+          disabled={loading}
+          onClick={() => {
+            setLoading(true);
+            void load(entries.length + hiddenCount).finally(() => setLoading(false));
+          }}
+          className="glass-row w-full rounded-xl py-2.5 text-center text-sub text-white/70 disabled:opacity-40"
+        >
+          {loading ? "正在加载…" : "加载更多"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 观看统计
+// ---------------------------------------------------------------------------
 
 /** 汇总数字：不是图，一个数一句话（dataviz「hero number」形态）。 */
 function StatTile({ label, value }: { label: string; value: string }) {
@@ -195,7 +363,7 @@ function MemberTable({ rows }: { rows: PlaybackWatchStats["by_member"] }) {
   );
 }
 
-function TitleRank({ stats }: { stats: PlaybackWatchStats }) {
+function TitleRank({ stats, onShowAll }: { stats: PlaybackWatchStats; onShowAll: () => void }) {
   if (stats.top_titles.length === 0 && stats.hidden_title_count === 0) return null;
   return (
     <div className="divide-y divide-white/[0.06] rounded-2xl border border-white/[0.08] bg-white/[0.02]">
@@ -218,77 +386,34 @@ function TitleRank({ stats }: { stats: PlaybackWatchStats }) {
           </span>
         </div>
       ))}
-      {stats.hidden_title_count > 0 && (
-        <p className="px-4 py-2 text-caption text-white/45 max-md:px-3.5">
-          另有 {stats.hidden_title_count} 部作品不在你的可见范围内
-        </p>
-      )}
+      <HiddenCountRow count={stats.hidden_title_count} noun="部作品" onShowAll={onShowAll} />
     </div>
   );
 }
 
-function HistoryRow({ entry }: { entry: PlaybackLogEntry }) {
-  const live = entry.ended_at === null;
-  const device = [entry.client, entry.device_name].filter(Boolean).join(" · ");
-  return (
-    <div className="flex items-center gap-3 px-4 py-2.5 max-md:px-3.5">
-      <PosterImage
-        src={entry.media.poster_url ? imageUrl(entry.media.poster_url) : null}
-        alt={entry.media.title}
-        className="h-[42px] w-[28px] shrink-0 rounded-lg object-cover ring-1 ring-white/10"
-      />
-      <div className="min-w-0 flex-1">
-        <TitleText media={entry.media} />
-        <p className="mt-0.5 truncate text-caption leading-5 text-white/40">
-          {formatRelativeTime(entry.started_at)}
-          <span className="mx-1.5 text-white/20">·</span>
-          {entry.member_name}
-          {device && (
-            <>
-              <span className="mx-1.5 text-white/20">·</span>
-              {device}
-            </>
-          )}
-        </p>
-      </div>
-      <div className="shrink-0 text-right text-caption">
-        {live ? (
-          <span className="text-[var(--ok)]">播放中</span>
-        ) : entry.completed ? (
-          <span className="inline-flex items-center gap-1 text-[var(--ok)]">
-            <CheckIcon className="size-3" />
-            看完
-          </span>
-        ) : (
-          <span className="text-white/45">{formatWatched(entry.watched_ms)}</span>
-        )}
-      </div>
-    </div>
-  );
-}
-
-export function PlaybackStatsSection({ scope }: { scope: MediaActivityScope }) {
-  const [days, setDays] = useState(30);
+export function PlaybackStatsPanel({
+  scope,
+  days,
+  onShowAll,
+}: {
+  scope: MediaActivityScope;
+  days: number;
+  onShowAll: () => void;
+}) {
   const [stats, setStats] = useState<PlaybackWatchStats | null>(null);
-  const [history, setHistory] = useState<PlaybackHistory | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    void (async () => {
-      try {
-        const [nextStats, nextHistory] = await Promise.all([
-          fetchPlaybackWatchStats(days, scope),
-          fetchPlaybackHistory({ limit: HISTORY_LIMIT, scope }),
-        ]);
+    void fetchPlaybackWatchStats(days, scope)
+      .then((next) => {
         if (cancelled) return;
-        setStats(nextStats);
-        setHistory(nextHistory);
+        setStats(next);
         setError(null);
-      } catch (caught) {
+      })
+      .catch((caught) => {
         if (!cancelled) setError((caught as Error).message || "观看统计加载失败");
-      }
-    })();
+      });
     return () => {
       cancelled = true;
     };
@@ -307,89 +432,43 @@ export function PlaybackStatsSection({ scope }: { scope: MediaActivityScope }) {
     [stats],
   );
 
-  const nothingYet =
-    stats != null &&
-    stats.plays === 0 &&
-    history != null &&
-    history.entries.length === 0 &&
-    history.hidden_count === 0;
-
+  if (error) {
+    return (
+      <p className="rounded-xl border border-amber-400/25 bg-amber-500/10 px-4 py-3 text-sub leading-6 text-amber-100">
+        {error}
+      </p>
+    );
+  }
+  if (!stats) return <EmptyHint>正在读取观看统计…</EmptyHint>;
+  if (stats.plays === 0) {
+    return <EmptyHint>最近 {days} 天没有播放记录；从现在起的每一场播放都会计入。</EmptyHint>;
+  }
   return (
-    <>
-      <section className="mt-7" aria-label="观看统计">
-        <div className="mb-3 flex items-center gap-2.5">
-          <HistoryIcon className="size-4 text-white/40" />
-          <h2 className="text-ui font-semibold text-white/65">观看统计</h2>
-          <span aria-hidden="true" className="h-px min-w-8 flex-1 bg-white/[0.09]" />
-          <PeriodSelect value={days} onChange={setDays} />
+    <div className="space-y-3">
+      <div className="grid grid-cols-4 gap-2.5 max-md:grid-cols-2">
+        {tiles.map((tile) => (
+          <StatTile key={tile.label} label={tile.label} value={tile.value} />
+        ))}
+      </div>
+      <div className="rounded-2xl border border-white/[0.08] bg-white/[0.02] px-4 pb-3 pt-6">
+        <DailyBars rows={stats.by_day} />
+      </div>
+      <div className="grid grid-cols-2 gap-2.5 max-md:grid-cols-1">
+        <div>
+          <p className="mb-1.5 text-caption text-white/45">按成员</p>
+          <MemberTable rows={stats.by_member} />
+          {stats.by_client.length > 0 && (
+            <p className="mt-2 text-caption leading-5 text-white/40">
+              客户端：
+              {stats.by_client.map((row) => `${row.client} ${row.plays} 场`).join(" · ")}
+            </p>
+          )}
         </div>
-        {error && (
-          <p className="rounded-xl border border-amber-400/25 bg-amber-500/10 px-4 py-3 text-sub leading-6 text-amber-100">
-            {error}
-          </p>
-        )}
-        {nothingYet ? (
-          <p className="rounded-2xl border border-white/[0.07] bg-white/[0.02] px-4 py-6 text-center text-sub text-[var(--text-muted)]">
-            最近 {days} 天没有播放记录；从现在起的每一场播放都会记在这里。
-          </p>
-        ) : (
-          stats && (
-            <div className="space-y-3">
-              <div className="grid grid-cols-4 gap-2.5 max-md:grid-cols-2">
-                {tiles.map((tile) => (
-                  <StatTile key={tile.label} label={tile.label} value={tile.value} />
-                ))}
-              </div>
-              {stats.plays > 0 && (
-                <div className="rounded-2xl border border-white/[0.08] bg-white/[0.02] px-4 pb-3 pt-6">
-                  <DailyBars rows={stats.by_day} />
-                </div>
-              )}
-              <div className="grid grid-cols-2 gap-2.5 max-md:grid-cols-1">
-                <div>
-                  <p className="mb-1.5 text-caption text-white/45">按成员</p>
-                  <MemberTable rows={stats.by_member} />
-                  {stats.by_client.length > 0 && (
-                    <p className="mt-2 text-caption leading-5 text-white/40">
-                      客户端：
-                      {stats.by_client
-                        .map((row) => `${row.client} ${row.plays} 场`)
-                        .join(" · ")}
-                    </p>
-                  )}
-                </div>
-                <div>
-                  <p className="mb-1.5 text-caption text-white/45">看得最多</p>
-                  <TitleRank stats={stats} />
-                </div>
-              </div>
-            </div>
-          )
-        )}
-      </section>
-
-      {history && (history.entries.length > 0 || history.hidden_count > 0) && (
-        <section className="mt-7" aria-label="播放记录">
-          <div className="mb-3 flex items-center gap-2.5">
-            <HistoryIcon className="size-4 text-white/40" />
-            <h2 className="text-ui font-semibold text-white/65">播放记录</h2>
-            <span className="tnum text-caption text-white/30">
-              {history.entries.length + history.hidden_count}
-            </span>
-            <span aria-hidden="true" className="h-px min-w-8 flex-1 bg-white/[0.09]" />
-          </div>
-          <div className="divide-y divide-white/[0.06] rounded-2xl border border-white/[0.08] bg-white/[0.02]">
-            {history.entries.map((entry) => (
-              <HistoryRow key={entry.id} entry={entry} />
-            ))}
-            {history.hidden_count > 0 && (
-              <p className="px-4 py-2.5 text-caption text-white/45 max-md:px-3.5">
-                另有 {history.hidden_count} 条记录不在你的可见范围内，切到「全部」可查看
-              </p>
-            )}
-          </div>
-        </section>
-      )}
-    </>
+        <div>
+          <p className="mb-1.5 text-caption text-white/45">看得最多</p>
+          <TitleRank stats={stats} onShowAll={onShowAll} />
+        </div>
+      </div>
+    </div>
   );
 }

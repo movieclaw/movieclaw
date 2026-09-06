@@ -11,7 +11,7 @@ import { TaskCenterView } from "@/components/task-center-view";
 import { usePageChrome } from "@/lib/page-chrome";
 import { usePermissions } from "@/lib/permissions";
 import { taskActivityBadge, useTaskActivity } from "@/lib/task-activity";
-import type { ActivityScope, TaskCenterViewName } from "@/lib/task-center";
+import type { ActivityScope, TaskCenterViewName, WatchViewName } from "@/lib/task-center";
 import { useIsMobile } from "@/lib/use-media-query";
 
 /**
@@ -28,14 +28,17 @@ import { useIsMobile } from "@/lib/use-media-query";
 export function ActivityView({
   initialScope = "media",
   initialView = "all",
+  initialWatchView = "playing",
 }: {
   initialScope?: ActivityScope;
   initialView?: TaskCenterViewName;
+  initialWatchView?: WatchViewName;
 }) {
   const router = useRouter();
   const pathname = usePathname();
   const [scope, setScope] = useState<ActivityScope>(initialScope);
   const [view, setView] = useState<TaskCenterViewName>(initialView);
+  const [watchView, setWatchView] = useState<WatchViewName>(initialWatchView);
   // 轮询按**权限**门控，不按视角：「观看」旁的实时圆点要在任务视角也能亮——
   // 那正是它存在的意义（你在处理任务时一眼看到家里有人在播）；只在观看视角
   // 轮询的话，圆点只有在你已经盯着播放卡片时才亮，等于没用。
@@ -44,10 +47,17 @@ export function ActivityView({
   const { isAdmin } = usePermissions();
   const mediaActivity = useMediaActivity(isAdmin);
 
-  /** 视角与状态都反映到 URL，保证刷新和分享后落回同一处。 */
+  /** 视角与切片都反映到 URL，保证刷新和分享后落回同一处。两个视角共用一个
+   * `view` 参数：任务切片与观看切片的值集合不相交；观看的默认切片「正在播放」
+   * 不带参数，与历史深链保持一致。 */
   const syncUrl = useCallback(
-    (nextScope: ActivityScope, nextView: TaskCenterViewName) => {
-      const query = nextScope === "tasks" ? `?view=${nextView}` : "";
+    (nextScope: ActivityScope, nextView: TaskCenterViewName, nextWatch: WatchViewName) => {
+      const query =
+        nextScope === "tasks"
+          ? `?view=${nextView}`
+          : nextWatch === "playing"
+            ? ""
+            : `?view=${nextWatch}`;
       router.replace(`${pathname}${query}` as Route, { scroll: false });
     },
     [pathname, router],
@@ -57,17 +67,25 @@ export function ActivityView({
     (next: ActivityScope) => {
       if (next === scope) return;
       setScope(next);
-      syncUrl(next, view);
+      syncUrl(next, view, watchView);
     },
-    [scope, syncUrl, view],
+    [scope, syncUrl, view, watchView],
   );
 
   const changeView = useCallback(
     (next: TaskCenterViewName) => {
       setView(next);
-      syncUrl("tasks", next);
+      syncUrl("tasks", next, watchView);
     },
-    [syncUrl],
+    [syncUrl, watchView],
+  );
+
+  const changeWatchView = useCallback(
+    (next: WatchViewName) => {
+      setWatchView(next);
+      syncUrl("media", view, next);
+    },
+    [syncUrl, view],
   );
 
   // 浏览器前进/后退会改写查询串但不重挂载本组件，这里把视角同步回 URL 表达的
@@ -76,7 +94,8 @@ export function ActivityView({
   useEffect(() => {
     setScope(initialScope);
     setView(initialView);
-  }, [initialScope, initialView]);
+    setWatchView(initialWatchView);
+  }, [initialScope, initialView, initialWatchView]);
 
   // 范围外折叠的会话也算「此刻有人在播」：圆点只表达有无，不出片名
   const liveCount =
@@ -135,7 +154,7 @@ export function ActivityView({
         </header>
 
         {scope === "media" ? (
-          <MediaActivityPanel {...mediaActivity} />
+          <MediaActivityPanel {...mediaActivity} view={watchView} onViewChange={changeWatchView} />
         ) : (
           <TaskCenterView view={view} onViewChange={changeView} />
         )}

@@ -12,11 +12,6 @@ import type { MediaActivityScope } from "@/lib/api/playback";
 
 const STORAGE_KEY = "movieclaw.activity.scope";
 
-export const ACTIVITY_SCOPE_OPTIONS: readonly { value: MediaActivityScope; label: string }[] = [
-  { value: "visible", label: "我的浏览范围" },
-  { value: "all", label: "全部" },
-] as const;
-
 /** 读持久化的范围口径。没存过、存的值非法、或没有 localStorage 都回默认。 */
 export function loadActivityScope(): MediaActivityScope {
   try {

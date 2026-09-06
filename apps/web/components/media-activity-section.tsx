@@ -1,23 +1,24 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { Route } from "next";
 import Link from "next/link";
 
-import {
-  CheckIcon,
-  ChevronRightIcon,
-  DownloadIcon,
-  HistoryIcon,
-  PlayIcon,
-} from "@/components/icons";
+import { ChevronRightIcon, DownloadIcon } from "@/components/icons";
 import { useToast } from "@/components/feedback";
+import { FilterMenu } from "@/components/filter-menu";
 import { TaskActionsMenu } from "@/components/job-center";
 import { Modal } from "@/components/modal";
 import { OverflowText } from "@/components/overflow-text";
-import { PlaybackStatsSection } from "@/components/playback-stats-section";
+import {
+  HiddenCountRow,
+  PlaybackHistoryList,
+  PlaybackStatsPanel,
+  STATS_PERIODS,
+} from "@/components/playback-stats-section";
 import { PosterImage } from "@/components/poster-image";
+import { listMembers, type MemberView } from "@/lib/api/members";
 import {
   endDevicePlayback,
   fetchMediaActivity,
@@ -27,16 +28,11 @@ import {
   type MediaActivityScope,
   type MediaActivitySnapshot,
   type MediaActivityTarget,
-  type MediaRecentPlay,
 } from "@/lib/api/playback";
-import {
-  ACTIVITY_SCOPE_OPTIONS,
-  loadActivityScope,
-  saveActivityScope,
-} from "@/lib/activity-scope";
+import { loadActivityScope, saveActivityScope } from "@/lib/activity-scope";
 import { formatBytes } from "@/lib/format";
 import { imageUrl } from "@/lib/image-proxy";
-import { formatRelativeTime } from "@/lib/time";
+import { WATCH_VIEW_LABELS, type WatchViewName } from "@/lib/task-center";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
 
 /** 实时会话的轮询节奏：比下载快照（10s）稍快，速率读数才跟得上直觉。 */
@@ -556,31 +552,6 @@ function DownloadCard({
   );
 }
 
-function RecentRow({ entry }: { entry: MediaRecentPlay }) {
-  return (
-    <div className="flex items-center gap-3 px-4 py-2.5 max-md:px-3.5">
-      <ActivityPoster media={entry.media} className="h-[42px] w-[28px]" />
-      <div className="min-w-0 flex-1">
-        <ActivityTitle media={entry.media} />
-        <MetaLine
-          className="mt-0.5"
-          parts={[formatRelativeTime(entry.last_played_at), entry.member_name]}
-        />
-      </div>
-      {entry.played ? (
-        <span className="inline-flex shrink-0 items-center gap-1 text-caption text-[var(--ok)]">
-          <CheckIcon className="size-3" />
-          已看完
-        </span>
-      ) : (
-        <span className="tnum shrink-0 text-caption text-white/45">
-          {entry.progress_percent != null ? `看到 ${entry.progress_percent}%` : "播放过"}
-        </span>
-      )}
-    </div>
-  );
-}
-
 function SectionHeading({
   icon,
   title,
@@ -604,56 +575,60 @@ function SectionHeading({
   );
 }
 
+/** 可见范围口径的下拉选项：带一句说明，第一次用的人不必猜「范围」指什么。 */
+const SCOPE_OPTIONS: readonly { value: MediaActivityScope; label: string; hint: string }[] = [
+  { value: "visible", label: "我的浏览范围", hint: "对自己隐藏的库只报个数，不出片名" },
+  { value: "all", label: "全部", hint: "跨成员、跨库，管理视角" },
+] as const;
+
 /**
- * 可见范围切换（docs/design/activity.md「范围切换」）。形态沿用页头的视角
- * 切换器，尺寸收小一档挂在分区标题行里——它是本视角内部的口径开关，
- * 不该与「观看 / 任务」的一级切换平起平坐。
+ * 观看视角的工具栏：左边是三个切片（与任务视角的状态切片同一形态），右边是
+ * 作用于整个切片的筛选条件。范围口径管的是整个观看视角，站在这里而不是
+ * 挂在某个分区的标题上，作用域才一目了然（docs/design/activity.md）。
  */
-function ScopeSelect({
-  value,
-  onChange,
+function WatchToolbar({
+  view,
+  onViewChange,
+  liveCount,
+  children,
 }: {
-  value: MediaActivityScope;
-  onChange: (scope: MediaActivityScope) => void;
+  view: WatchViewName;
+  onViewChange: (view: WatchViewName) => void;
+  liveCount: number;
+  children: React.ReactNode;
 }) {
   return (
-    <div
-      role="group"
-      aria-label="可见范围"
-      className="flex shrink-0 rounded-full border border-white/10 bg-black/30 p-0.5"
-    >
-      {ACTIVITY_SCOPE_OPTIONS.map((option) => (
-        <button
-          key={option.value}
-          type="button"
-          aria-pressed={value === option.value}
-          onClick={() => onChange(option.value)}
-          className={`rounded-full px-2.5 py-0.5 text-caption font-semibold transition ${
-            value === option.value
-              ? "bg-white/15 text-white shadow-sm"
-              : "text-[var(--text-muted)] hover:text-white"
-          }`}
-        >
-          {option.label}
-        </button>
-      ))}
+    <div className="mt-6 flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-white/[0.08] max-md:mt-5">
+      {/* 窄屏切片独占一行，筛选条件换到下一行；不然切片会被筛选挤到只剩两个字 */}
+      <div className="scroll-thin flex min-w-0 flex-1 gap-1 overflow-x-auto pb-2 max-md:basis-full">
+        {WATCH_VIEW_LABELS.map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            aria-pressed={view === item.id}
+            onClick={() => onViewChange(item.id)}
+            className={`shrink-0 rounded-full px-3.5 py-1.5 text-ui font-medium transition ${
+              view === item.id
+                ? "bg-white/[0.14] text-white"
+                : "text-[var(--text-muted)] hover:bg-white/[0.06] hover:text-white"
+            }`}
+          >
+            {item.label}
+            {item.id === "playing" && liveCount > 0 && (
+              <span className="tnum ml-1.5 text-caption text-white/45">{liveCount}</span>
+            )}
+          </button>
+        ))}
+      </div>
+      <div className="flex shrink-0 items-center gap-1.5 pb-2">{children}</div>
     </div>
   );
 }
 
-/** 范围外记录的折叠行：只报个数，不出片名与海报（library-access.md 2.5）。 */
-function HiddenCountRow({ count, noun }: { count: number; noun: string }) {
-  if (count <= 0) return null;
-  return (
-    <p className="px-4 py-2.5 text-caption text-white/45 max-md:px-3.5">
-      另有 {count} {noun}不在你的可见范围内，切到「全部」可查看
-    </p>
-  );
-}
-
 /**
- * 「观看」视角主体：正在播放（含整文件下载）→ 设备 → 最近观看。
- * 实时段来自内存快照（服务重启即清空），历史段来自 playback_state 领域表。
+ * 「观看」视角主体，三个切片各看各的（docs/design/activity.md「观看视角的三个切片」）：
+ * 正在播放（实时快照，轮询）/ 播放记录（每场一行，按天分组）/ 观看统计（按周期汇总）。
+ * 三者时间语义与刷新节奏都不同，摞在一页里读不出重点。
  */
 export function MediaActivityPanel({
   snapshot,
@@ -663,18 +638,38 @@ export function MediaActivityPanel({
   refresh,
   scope,
   setScope,
-}: MediaActivityState) {
+  view,
+  onViewChange,
+}: MediaActivityState & {
+  view: WatchViewName;
+  onViewChange: (view: WatchViewName) => void;
+}) {
   const toast = useToast();
   const [pendingRevoke, setPendingRevoke] = useState<RevokeTarget | null>(null);
   const [pendingEnd, setPendingEnd] = useState<RevokeTarget | null>(null);
   const [revoking, setRevoking] = useState<string | null>(null);
+  const [memberId, setMemberId] = useState<number | null>(null);
+  const [days, setDays] = useState(30);
+  const [members, setMembers] = useState<MemberView[]>([]);
   const liveCount = snapshot.sessions.length + snapshot.downloads.length;
   const hiddenLiveCount = snapshot.hidden_session_count + snapshot.hidden_download_count;
-  const empty =
-    liveCount === 0 &&
-    hiddenLiveCount === 0 &&
-    snapshot.recent.length === 0 &&
-    snapshot.hidden_recent_count === 0;
+  const showAll = useCallback(() => setScope("all"), [setScope]);
+
+  // 成员筛选的候选项只在「播放记录」切片用得上，进到那片再拉一次
+  useEffect(() => {
+    if (!enabled || view !== "plays" || members.length > 0) return;
+    void listMembers()
+      .then(setMembers)
+      .catch(() => undefined);
+  }, [enabled, view, members.length]);
+  const memberOptions = useMemo(
+    () => [
+      { value: -1, label: "全部成员" },
+      { value: 0, label: "超级管理员" },
+      ...members.map((m) => ({ value: m.id, label: m.nickname || m.username })),
+    ],
+    [members],
+  );
 
   const requestRevoke = useCallback((deviceId: string, label: string) => {
     setPendingRevoke({ deviceId, label });
@@ -711,104 +706,112 @@ export function MediaActivityPanel({
     }
   }
 
-  if (loading && empty) {
-    return (
-      <div className="flex items-center justify-center gap-2.5 py-20 text-ui text-[var(--text-muted)]">
-        <span className="size-4 animate-spin rounded-full border-2 border-white/20 border-t-white/70" />
-        正在读取媒体库活动…
-      </div>
-    );
-  }
+  const scopeFilter = (
+    <FilterMenu label="范围" value={scope} options={SCOPE_OPTIONS} onChange={setScope} />
+  );
+
   return (
     <div>
+      <WatchToolbar view={view} onViewChange={onViewChange} liveCount={liveCount + hiddenLiveCount}>
+        {view === "plays" && (
+          <FilterMenu
+            label="成员"
+            value={memberId ?? -1}
+            options={memberOptions}
+            onChange={(value) => setMemberId(value < 0 ? null : value)}
+          />
+        )}
+        {view === "stats" && (
+          <FilterMenu label="周期" value={days} options={STATS_PERIODS} onChange={setDays} />
+        )}
+        {scopeFilter}
+      </WatchToolbar>
+
       {error && (
         <p className="mt-4 rounded-xl border border-amber-400/25 bg-amber-500/10 px-4 py-3 text-sub leading-6 text-amber-100">
           {error}
         </p>
       )}
 
-      {/* 播放与下载分属两个分区：把下载塞进「正在播放」会让标题名不副实，
-          计数也会把不是播放的东西算进去。下载相对少见，因此「正在下载」
-          只在真有下载时出现，常态下页面仍只有一个实时分区。 */}
-      <section className="mt-6" aria-label="正在播放">
-        <SectionHeading
-          icon={<PlayIcon className="size-4 text-[var(--info)]" />}
-          title="正在播放"
-          count={snapshot.sessions.length + snapshot.hidden_session_count}
-          trailing={<ScopeSelect value={scope} onChange={setScope} />}
-        />
-        {snapshot.sessions.length === 0 && snapshot.hidden_session_count === 0 ? (
-          <p className="rounded-2xl border border-white/[0.07] bg-white/[0.02] px-4 py-6 text-center text-sub text-[var(--text-muted)]">
-            当前没有设备在播放；设备开始播放后几秒内会出现在这里。
-          </p>
-        ) : (
-          <div className="space-y-2.5">
-            {snapshot.sessions.map((session) => (
-              <SessionCard
-                key={`${session.device_id}-${session.media.media_item_id}-${session.media.season_number}-${session.media.episode_number}`}
-                session={session}
-                onEnd={requestEnd}
-                onRevoke={requestRevoke}
-                busy={revoking != null}
-              />
-            ))}
-            {snapshot.hidden_session_count > 0 && (
-              <div className="rounded-2xl border border-white/[0.07] bg-white/[0.02]">
-                <HiddenCountRow count={snapshot.hidden_session_count} noun="台设备正在播放的内容" />
-              </div>
-            )}
-          </div>
-        )}
-      </section>
+      {view === "playing" && (
+        <div className="mt-4">
+          {loading && liveCount === 0 && hiddenLiveCount === 0 ? (
+            <div className="flex items-center justify-center gap-2.5 py-16 text-ui text-[var(--text-muted)]">
+              <span className="size-4 animate-spin rounded-full border-2 border-white/20 border-t-white/70" />
+              正在读取媒体库活动…
+            </div>
+          ) : snapshot.sessions.length === 0 && snapshot.hidden_session_count === 0 ? (
+            <p className="rounded-2xl border border-white/[0.07] bg-white/[0.02] px-4 py-6 text-center text-sub text-[var(--text-muted)]">
+              当前没有设备在播放；设备开始播放后几秒内会出现在这里。
+            </p>
+          ) : (
+            <div className="space-y-2.5">
+              {snapshot.sessions.map((session) => (
+                <SessionCard
+                  key={`${session.device_id}-${session.media.media_item_id}-${session.media.season_number}-${session.media.episode_number}`}
+                  session={session}
+                  onEnd={requestEnd}
+                  onRevoke={requestRevoke}
+                  busy={revoking != null}
+                />
+              ))}
+              {snapshot.hidden_session_count > 0 && (
+                <div className="rounded-2xl border border-white/[0.07] bg-white/[0.02]">
+                  <HiddenCountRow
+                    count={snapshot.hidden_session_count}
+                    noun="台设备在播放的内容"
+                    onShowAll={showAll}
+                  />
+                </div>
+              )}
+            </div>
+          )}
 
-      {(snapshot.downloads.length > 0 || snapshot.hidden_download_count > 0) && (
-        <section className="mt-7" aria-label="正在下载">
-          <SectionHeading
-            icon={<DownloadIcon className="size-4 text-[var(--info)]" />}
-            title="正在下载"
-            count={snapshot.downloads.length + snapshot.hidden_download_count}
-          />
-          <div className="space-y-2.5">
-            {snapshot.downloads.map((download) => (
-              <DownloadCard
-                key={`${download.device_id}-${download.file_name}`}
-                download={download}
-                onRevoke={requestRevoke}
-                busy={revoking != null}
+          {/* 播放与下载分属两个分区：把下载塞进「正在播放」会让标题名不副实，
+              计数也会把不是播放的东西算进去。下载相对少见，因此「正在下载」
+              只在真有下载时出现，常态下本片仍只有一组卡片。 */}
+          {(snapshot.downloads.length > 0 || snapshot.hidden_download_count > 0) && (
+            <section className="mt-7" aria-label="正在下载">
+              <SectionHeading
+                icon={<DownloadIcon className="size-4 text-[var(--info)]" />}
+                title="正在下载"
+                count={snapshot.downloads.length + snapshot.hidden_download_count}
               />
-            ))}
-            {snapshot.hidden_download_count > 0 && (
-              <div className="rounded-2xl border border-white/[0.07] bg-white/[0.02]">
-                <HiddenCountRow count={snapshot.hidden_download_count} noun="条下载" />
+              <div className="space-y-2.5">
+                {snapshot.downloads.map((download) => (
+                  <DownloadCard
+                    key={`${download.device_id}-${download.file_name}`}
+                    download={download}
+                    onRevoke={requestRevoke}
+                    busy={revoking != null}
+                  />
+                ))}
+                {snapshot.hidden_download_count > 0 && (
+                  <div className="rounded-2xl border border-white/[0.07] bg-white/[0.02]">
+                    <HiddenCountRow
+                      count={snapshot.hidden_download_count}
+                      noun="条下载"
+                      onShowAll={showAll}
+                    />
+                  </div>
+                )}
               </div>
-            )}
-          </div>
-        </section>
+            </section>
+          )}
+        </div>
       )}
 
-      {(snapshot.recent.length > 0 || snapshot.hidden_recent_count > 0) && (
-        <section className="mt-7" aria-label="最近观看">
-          <SectionHeading
-            icon={<HistoryIcon className="size-4 text-white/40" />}
-            title="最近观看"
-            count={snapshot.recent.length + snapshot.hidden_recent_count}
-          />
-          <div className="divide-y divide-white/[0.06] rounded-2xl border border-white/[0.08] bg-white/[0.02]">
-            {snapshot.recent.map((entry, index) => (
-              <RecentRow
-                key={`${entry.member_name}-${entry.media.media_item_id}-${index}`}
-                entry={entry}
-              />
-            ))}
-            {/* 落在超管不可浏览的库里的记录：只报个数，不出片名与海报
-                （docs/design/library-access.md 2.5） */}
-            <HiddenCountRow count={snapshot.hidden_recent_count} noun="条记录" />
-          </div>
-        </section>
+      {view === "plays" && enabled && (
+        <div className="mt-4">
+          <PlaybackHistoryList scope={scope} memberId={memberId} onShowAll={showAll} />
+        </div>
       )}
 
-      {/* 观看统计与播放记录来自播放日志（每场一行），口径跟随上面的范围切换 */}
-      {enabled && <PlaybackStatsSection scope={scope} />}
+      {view === "stats" && enabled && (
+        <div className="mt-4">
+          <PlaybackStatsPanel scope={scope} days={days} onShowAll={showAll} />
+        </div>
+      )}
 
       {pendingEnd && (
         <EndPlaybackDialog
