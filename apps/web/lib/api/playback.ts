@@ -181,14 +181,17 @@ export interface PlaybackHistoryClearResult {
 /**
  * 清除**自己的**观看记录（续播点、已看标记、播放次数与播放质量指标）。
  * scope=item 需 mediaItemId，scope=library 需 libraryId，scope=all 清全部。
+ * `since` 叠加时间窗口：只清这个时刻之后播放过的记录（首页「清空今天 /
+ * 最近一周」用它，起点按浏览器本地时间算好再传）。
  */
 export async function clearPlaybackHistory(
   scope: "item" | "library" | "all",
-  target: { mediaItemId?: number; libraryId?: number } = {},
+  target: { mediaItemId?: number; libraryId?: number; since?: Date } = {},
 ): Promise<{ result: PlaybackHistoryClearResult; message: string }> {
   const params = new URLSearchParams({ scope });
   if (target.mediaItemId != null) params.set("media_item_id", String(target.mediaItemId));
   if (target.libraryId != null) params.set("library_id", String(target.libraryId));
+  if (target.since != null) params.set("since", target.since.toISOString());
   const response = await request<ApiEnvelope<PlaybackHistoryClearResult>>(
     `/playback/history?${params}`,
     { method: "DELETE" },

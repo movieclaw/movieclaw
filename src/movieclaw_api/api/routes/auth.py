@@ -6,10 +6,15 @@
   logout 只是清 Cookie，无需登录也无危害（会话过期后也能顺利登出）。
 - 登录后：GET /auth/me、PUT /auth/password、PUT /auth/profile、
   POST/GET /auth/avatar（头像上传与读取；头像属于个人信息，读取也要求登录，
-  同源部署下 <img> 自动携带会话 Cookie，前端零改造）。
+  同源部署下 <img> 自动携带会话 Cookie，前端零改造）、
+  GET/POST/DELETE /auth/accounts*（多账号列表 / 切换 / 移除）。
 
 会话凭证放 HttpOnly Cookie（同源部署下前端零改造自动携带；XSS 偷不走，
 SameSite=Lax 挡跨站请求伪造）。
+
+多账号（docs/design/account-switching.md）：除激活会话 Cookie 外，还有一个同样
+HttpOnly 的"账号袋" Cookie 装着本浏览器登录过的全部会话令牌。登录总是并入袋子，
+切换账号就是把袋子里的一枚令牌写回激活 Cookie——鉴权层只认激活 Cookie，零改动。
 """
 
 from __future__ import annotations
@@ -17,7 +22,7 @@ from __future__ import annotations
 import logging
 import time
 
-from fastapi import APIRouter, Depends, File, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,6 +31,7 @@ from movieclaw_api.api.deps import require_admin_session, require_login
 from movieclaw_api.core.config import get_settings
 from movieclaw_api.exceptions import BadRequestException, NotFoundException
 from movieclaw_api.schemas.auth import (
+    AccountView,
     ApiTokenCreatedView,
     ApiTokenCreateRequest,
     ApiTokenView,
@@ -38,15 +44,17 @@ from movieclaw_api.schemas.auth import (
     DeviceTokenRequest,
     DeviceTokenView,
     LoginRequest,
+    LogoutRequest,
     SessionCapabilities,
     SessionView,
+    SwitchAccountRequest,
     UpdateProfileRequest,
 )
 from movieclaw_api.schemas.response import ApiResponse, ok
 from movieclaw_api.services import auth as auth_service
 from movieclaw_api.services import avatar as avatar_media
 from movieclaw_api.services import members as members_service
-from movieclaw_api.services.auth import Principal
+from movieclaw_api.services.auth import Principal, SavedAccount
 from movieclaw_api.settings import (
     AdminAccountSetting,
     AppServerSetting,
@@ -122,6 +130,91 @@ def _set_session_cookie(response: Response, token: str, max_age: int) -> None:
     )
 
 
+async def _set_accounts_cookie(response: Response, accounts: list[SavedAccount]) -> None:
+    """写账号袋 Cookie。空列表直接删掉 Cookie，不留一个签过名的空袋子。
+
+    有效期取"记住我"的 30 天上限：袋子里每枚令牌自带过期时间，袋子本身活得
+    久一点既无意义也无危害，但活得短会把仍然有效的令牌提前丢掉。
+    """
+    if not accounts:
+        response.delete_cookie(auth_service.ACCOUNTS_COOKIE_NAME, path="/")
+        return
+    response.set_cookie(
+        key=auth_service.ACCOUNTS_COOKIE_NAME,
+        value=await auth_service.encode_saved_accounts(accounts),
+        max_age=auth_service.SESSION_TTL_REMEMBER_SECONDS,
+        httponly=True,
+        samesite="lax",
+        secure=get_settings().session_cookie_secure,
+        path="/",
+    )
+
+
+async def _saved_accounts(request: Request) -> list[SavedAccount]:
+    """解析本浏览器持有的全部有效账号（激活账号排第一）。"""
+    return await auth_service.resolve_saved_accounts(
+        request.cookies.get(auth_service.ACCOUNTS_COOKIE_NAME),
+        request.cookies.get(auth_service.SESSION_COOKIE_NAME),
+    )
+
+
+async def _remember_login(
+    request: Request, response: Response, token: str, max_age: int, principal: Principal
+) -> None:
+    """登录成功后的统一收尾：种激活 Cookie，并把新账号并入账号袋。
+
+    普通登录与"添加账号"在后端没有区别——会话过期后重新登录，袋子里其余账号
+    照样保留，这正是用户期望的行为。
+    """
+    _set_session_cookie(response, token, max_age)
+    accounts = auth_service.merge_saved_account(await _saved_accounts(request), token, principal)
+    await _set_accounts_cookie(response, accounts)
+
+
+async def _activate(
+    response: Response, accounts: list[SavedAccount], target: SavedAccount | None
+) -> SessionView | None:
+    """把 target 写成激活会话并回写袋子；target 为空表示袋子已空，清掉两个 Cookie。
+
+    切换时激活 Cookie 的 max_age 统一给 30 天：真正的有效期由令牌内的过期
+    时间戳决定（过期照样 401 → 登录页），Cookie 多活几天没有危害；而给短了
+    会把"记住我"登录的账号提前踢掉。
+    """
+    if target is None:
+        response.delete_cookie(auth_service.SESSION_COOKIE_NAME, path="/")
+        await _set_accounts_cookie(response, [])
+        return None
+    _set_session_cookie(response, target.token, auth_service.SESSION_TTL_REMEMBER_SECONDS)
+    ordered = [target, *[a for a in accounts if a.token != target.token]]
+    await _set_accounts_cookie(response, ordered)
+    return await _principal_session_view(target.principal)
+
+
+async def _account_view(saved: SavedAccount, *, active: bool) -> AccountView:
+    """账号袋里的一个账号 → 列表项。头像地址带 account 参数，让 <img> 能读到
+    非激活账号的头像（GET /auth/avatar?account=）。"""
+    view = await _principal_session_view(saved.principal)
+    avatar_url = view.avatar_url
+    if avatar_url is not None:
+        avatar_url = f"{avatar_url}&account={view.username}"
+    return AccountView(
+        username=view.username,
+        nickname=view.nickname,
+        avatar_url=avatar_url,
+        role=view.role,
+        active=active,
+    )
+
+
+def _find_account(accounts: list[SavedAccount], username: str) -> SavedAccount | None:
+    """按用户名在袋子里找账号（用户名在超管与成员间全局唯一，大小写不敏感）。"""
+    wanted = username.strip().lower()
+    for saved in accounts:
+        if saved.principal.name.lower() == wanted:
+            return saved
+    return None
+
+
 @router.get(
     "/bootstrap",
     response_model=ApiResponse[BootstrapStatus],
@@ -140,14 +233,16 @@ async def bootstrap_status() -> ApiResponse[BootstrapStatus]:
     operation_id="auth.bootstrap.create",
 )
 async def bootstrap_create(
-    payload: BootstrapRequest, response: Response
+    payload: BootstrapRequest, request: Request, response: Response
 ) -> ApiResponse[SessionView]:
     """创建管理员并自动登录。管理员已存在时一律 409，锁在服务端，不可绕过。"""
     account = await auth_service.create_admin(payload.username, payload.password)
     await mark_initialized()
 
     token, max_age = await auth_service.issue_session_token(account.username)
-    _set_session_cookie(response, token, max_age)
+    await _remember_login(
+        request, response, token, max_age, Principal(kind="admin", name=account.username)
+    )
     return ok(_session_view(account), message="初始化完成，已自动登录")
 
 
@@ -160,36 +255,65 @@ async def bootstrap_create(
     # 生成层隐藏本端点避免出现语义不完整的同名命令
     openapi_extra={"x-cli-hidden": True},
 )
-async def login(payload: LoginRequest, response: Response) -> ApiResponse[SessionView]:
-    """校验账号密码并种下会话 Cookie（超管或成员）。连续失败触发限速（429）。"""
+async def login(
+    payload: LoginRequest, request: Request, response: Response
+) -> ApiResponse[SessionView]:
+    """校验账号密码并种下会话 Cookie（超管或成员）。连续失败触发限速（429）。
+
+    登录成功的账号同时并入账号袋（docs/design/account-switching.md §3）：
+    浏览器里其余已登录账号原样保留，用户菜单里可一键切换。
+    """
     identity = await auth_service.authenticate(payload.username, payload.password)
     if isinstance(identity, Member):
         token, max_age = await auth_service.issue_member_session_token(
             identity, remember=payload.remember
         )
-        _set_session_cookie(response, token, max_age)
+        principal = Principal(
+            kind="member",
+            name=identity.username,
+            member_id=identity.id,
+            is_admin=False,
+            member=identity,
+        )
+        await _remember_login(request, response, token, max_age, principal)
         return ok(_member_session_view(identity), message="登录成功")
 
     token, max_age = await auth_service.issue_session_token(
         identity.username, remember=payload.remember
     )
-    _set_session_cookie(response, token, max_age)
+    await _remember_login(
+        request, response, token, max_age, Principal(kind="admin", name=identity.username)
+    )
     return ok(_session_view(identity), message="登录成功")
 
 
 @router.post(
     "/logout",
-    response_model=ApiResponse[None],
-    summary="退出登录",
+    response_model=ApiResponse[SessionView | None],
+    summary="退出当前账号（自动切到浏览器里的下一个账号）；all=true 退出全部",
     operation_id="auth.logout",
     # CLI 侧登录/登出由精选命令 mclaw login/logout 负责（要持久化本地凭证），
     # 生成层隐藏本端点避免出现语义不完整的同名命令
     openapi_extra={"x-cli-hidden": True},
 )
-async def logout(response: Response) -> ApiResponse[None]:
-    """清除会话 Cookie。无需登录态即可调用（会话已过期时也能正常登出）。"""
-    response.delete_cookie(auth_service.SESSION_COOKIE_NAME, path="/")
-    return ok(None, message="已退出登录")
+async def logout(
+    request: Request, response: Response, payload: LogoutRequest | None = None
+) -> ApiResponse[SessionView | None]:
+    """退出当前账号。无需登录态即可调用（会话已过期时也能正常登出）。
+
+    返回体是退出后浏览器所处的账号：袋子里还有别的账号就自动切过去并返回它，
+    空则返回 null（前端据此决定回首页还是去登录页）。``all=true`` 清空全部。
+    """
+    if payload is not None and payload.all:
+        await _activate(response, [], None)
+        return ok(None, message="已退出全部账号")
+
+    active_token = request.cookies.get(auth_service.SESSION_COOKIE_NAME)
+    remaining = [a for a in await _saved_accounts(request) if a.token != active_token]
+    view = await _activate(response, remaining, remaining[0] if remaining else None)
+    if view is None:
+        return ok(None, message="已退出登录")
+    return ok(view, message=f"已退出登录，已切换到 {view.nickname}")
 
 
 @router.get(
@@ -271,8 +395,21 @@ async def upload_avatar(
     response_class=Response,
     operation_id="auth.avatar.download",
 )
-async def read_avatar(principal: Principal = Depends(require_login)) -> FileResponse:
-    """直接返回当前主体的头像本体，供 <img> 加载；地址由会话视图的 avatar_url 给出。"""
+async def read_avatar(
+    request: Request,
+    principal: Principal = Depends(require_login),
+    account: str | None = Query(default=None, description="读取账号袋里某个账号的头像"),
+) -> FileResponse:
+    """直接返回当前主体的头像本体，供 <img> 加载；地址由会话视图的 avatar_url 给出。
+
+    带 ``account`` 时读取的是账号袋里另一个账号的头像——只有本浏览器确实持有
+    该账号的登录态才能读到，天然按持有者隔离，不会变成"按用户名查任何人头像"。
+    """
+    if account is not None:
+        saved = _find_account(await _saved_accounts(request), account)
+        if saved is None:
+            raise NotFoundException("尚未上传头像")
+        principal = saved.principal
     stem = _avatar_stem_for(principal)
     path = avatar_media.find_avatar(stem) if stem else avatar_media.find_avatar()
     if path is None:
@@ -293,6 +430,7 @@ async def read_avatar(principal: Principal = Depends(require_login)) -> FileResp
 )
 async def change_password(
     payload: ChangePasswordRequest,
+    request: Request,
     response: Response,
     principal: Principal = Depends(require_login),
     session: AsyncSession = Depends(get_session),
@@ -302,6 +440,9 @@ async def change_password(
     失效范围按身份不同（docs/design/member-management.md §3.3）：
     - 超管：轮换全局签名密钥，**所有端**全部下线（密钥可能泄露时的正确行为）；
     - 成员：token_version+1，只踢该成员自己的其他设备。
+
+    账号袋同步重写（新令牌置顶）：成员改密不影响袋子里的其他账号；超管改密
+    轮换了密钥，袋子里其余令牌随之失效，重写后只剩超管自己。
     """
     if principal.kind == "member" and principal.member_id is not None:
         member = await members_service.change_own_password(
@@ -311,16 +452,91 @@ async def change_password(
             new_password=payload.new_password,
         )
         token, max_age = await auth_service.issue_member_session_token(member)
-        _set_session_cookie(response, token, max_age)
+        refreshed = Principal(
+            kind="member",
+            name=member.username,
+            member_id=member.id,
+            is_admin=False,
+            member=member,
+        )
+        await _remember_login(request, response, token, max_age, refreshed)
         return ok(_member_session_view(member), message="密码已修改，其他设备已全部下线")
 
     await auth_service.change_password(payload.old_password, payload.new_password)
     token, max_age = await auth_service.issue_session_token(str(principal))
-    _set_session_cookie(response, token, max_age)
+    await _remember_login(
+        request, response, token, max_age, Principal(kind="admin", name=str(principal))
+    )
     return ok(
         _session_view(await auth_service.get_admin_account()),
         message="密码已修改，其他设备已全部下线",
     )
+
+
+# ---------------------------------------------------------------------------
+# 多账号：列表 / 切换 / 移除（docs/design/account-switching.md §3）
+# ---------------------------------------------------------------------------
+# 三个接口都只操作本浏览器的两个 Cookie，不碰数据库里的任何账号数据；成员
+# 也可用（已登记进成员白名单守护测试）。
+
+
+@router.get(
+    "/accounts",
+    response_model=ApiResponse[list[AccountView]],
+    summary="列出本浏览器已登录的全部账号（激活账号排第一）",
+    dependencies=[Depends(require_login)],
+    operation_id="auth.accounts.list",
+    openapi_extra={"x-cli-hidden": True},
+)
+async def list_accounts(request: Request) -> ApiResponse[list[AccountView]]:
+    accounts = await _saved_accounts(request)
+    return ok(
+        [await _account_view(saved, active=index == 0) for index, saved in enumerate(accounts)]
+    )
+
+
+@router.post(
+    "/accounts/switch",
+    response_model=ApiResponse[SessionView],
+    summary="切换到本浏览器已登录的另一个账号（无需再输密码）",
+    dependencies=[Depends(require_login)],
+    operation_id="auth.accounts.switch",
+    openapi_extra={"x-cli-hidden": True},
+)
+async def switch_account(
+    payload: SwitchAccountRequest, request: Request, response: Response
+) -> ApiResponse[SessionView]:
+    """把袋子里对应的令牌写回激活 Cookie。目标账号的登录态已失效（过期 /
+    被停用 / 改密）时返回 404，前端引导用户重新登录该账号。"""
+    accounts = await _saved_accounts(request)
+    target = _find_account(accounts, payload.username)
+    if target is None:
+        raise NotFoundException("该账号的登录状态已失效，请重新登录该账号")
+    view = await _activate(response, accounts, target)
+    assert view is not None  # target 非空时 _activate 必有返回
+    return ok(view, message=f"已切换到 {view.nickname}")
+
+
+@router.delete(
+    "/accounts/{username}",
+    response_model=ApiResponse[SessionView | None],
+    summary="从本浏览器移除一个已登录账号（移除的是当前账号时自动切到下一个）",
+    dependencies=[Depends(require_login)],
+    operation_id="auth.accounts.remove",
+    # confirm：只是让本浏览器忘掉一个登录态，不删任何数据；契约测试要求所有 DELETE 都声明
+    openapi_extra={"x-cli-dangerous": "confirm", "x-cli-hidden": True},
+)
+async def remove_account(
+    username: str, request: Request, response: Response
+) -> ApiResponse[SessionView | None]:
+    """返回体语义与 /auth/logout 相同：移除后浏览器所处的账号，null 表示已全部退出。"""
+    accounts = await _saved_accounts(request)
+    target = _find_account(accounts, username)
+    if target is None:
+        raise NotFoundException("该账号不在本浏览器的已登录列表里")
+    remaining = [a for a in accounts if a.token != target.token]
+    view = await _activate(response, remaining, remaining[0] if remaining else None)
+    return ok(view, message="已移除该账号")
 
 
 # ---------------------------------------------------------------------------

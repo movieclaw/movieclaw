@@ -281,8 +281,11 @@ export function LibraryView() {
         </div>
       )}
 
-      {/* 当前账号跨可见库聚合的播放状态；空列表时组件整段隐藏。 */}
-      {(!failed || libraries !== null) && <RecentWatchRow items={recentWatch} />}
+      {/* 当前账号跨可见库聚合的播放状态；空列表时组件整段隐藏。
+          清空观看记录的入口就在这一行的标题右侧，清完重新拉一次数据。 */}
+      {(!failed || libraries !== null) && (
+        <RecentWatchRow items={recentWatch} libraries={visibleLibraries} onCleared={reload} />
+      )}
 
       {libraries !== null && libraries.length === 0 && (
         <ContentEmptyState

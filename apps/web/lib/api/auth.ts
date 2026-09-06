@@ -69,9 +69,62 @@ export function login(
   );
 }
 
-/** 退出登录（清除会话 Cookie；会话已过期时调用也不会报错）。 */
-export function logout(): Promise<void> {
-  return unwrap(request<ApiEnvelope<void>>("/auth/logout", { method: "POST" }));
+/**
+ * 退出登录（会话已过期时调用也不会报错）。
+ * 默认只退当前账号：浏览器里还有别的账号就自动切过去并返回它；返回 null 表示
+ * 已没有任何账号。all=true 退出全部账号。
+ */
+export function logout(all = false): Promise<SessionView | null> {
+  return unwrap(
+    request<ApiEnvelope<SessionView | null>>("/auth/logout", {
+      method: "POST",
+      body: JSON.stringify({ all }),
+    }),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 多账号切换（docs/design/account-switching.md）：浏览器同时保存多个账号的
+// 登录态，切换不需要再输密码。凭证全部在 HttpOnly Cookie 里，前端只拿列表。
+// ---------------------------------------------------------------------------
+
+/** 浏览器已登录账号数上限（与后端 MAX_SAVED_ACCOUNTS 一致），满员时隐藏"添加账号"。 */
+export const MAX_SAVED_ACCOUNTS = 5;
+
+/** 浏览器当前持有的一个账号（见 schemas.auth.AccountView）。 */
+export interface AccountView {
+  username: string;
+  nickname: string;
+  /** 头像相对 URL（带 account 参数，非激活账号的头像也能读到）；未上传过为空 */
+  avatar_url: string | null;
+  role: "admin" | "member";
+  /** 是否为当前激活账号；列表里恰有一个为 true，且排在第一 */
+  active: boolean;
+}
+
+/** 列出本浏览器已登录的全部账号（激活账号排第一）。 */
+export function listAccounts(): Promise<AccountView[]> {
+  return unwrap(request<ApiEnvelope<AccountView[]>>("/auth/accounts"));
+}
+
+/** 切换到已登录的另一个账号。目标登录态已失效时抛 404，需重新登录该账号。 */
+export function switchAccount(username: string): Promise<SessionView> {
+  return unwrap(
+    request<ApiEnvelope<SessionView>>("/auth/accounts/switch", {
+      method: "POST",
+      body: JSON.stringify({ username }),
+    }),
+  );
+}
+
+/** 从本浏览器移除一个账号。返回体语义与 logout 相同：移除后所处的账号，null 表示已全部退出。 */
+export function removeAccount(username: string): Promise<SessionView | null> {
+  return unwrap(
+    request<ApiEnvelope<SessionView | null>>(
+      `/auth/accounts/${encodeURIComponent(username)}`,
+      { method: "DELETE" },
+    ),
+  );
 }
 
 /** 查询当前登录状态；未登录时抛 401（由 http.ts 统一跳转登录页）。 */

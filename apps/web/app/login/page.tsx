@@ -29,14 +29,28 @@ function resolveNext(session?: SessionView): string {
   return session ? accessiblePathFor(session, "/") : "/";
 }
 
+/** 是否处于"添加账号"形态（用户菜单里点「添加账号」带 ?add=1 进来）。 */
+function isAddingAccount(): boolean {
+  if (typeof window === "undefined") return false;
+  return new URLSearchParams(window.location.search).get("add") === "1";
+}
+
 /**
  * 登录页。挂载时做两个跳转判断：
  * 1. 系统尚未初始化 → 转 /setup 引导页（首次部署的入口）；
  * 2. 已持有效会话 → 直接回 next 目标（默认首页），不重复登录。
  * 安全性完全由后端保证，这里的跳转只是导航体验。
+ *
+ * "添加账号"形态（?add=1，docs/design/account-switching.md §4）：已登录也不跳走，
+ * 登录成功后后端自动把新账号并入本浏览器的账号列表，前端不需要传任何额外参数。
  */
 export default function LoginPage() {
-  usePageTitle("登录");
+  // 挂载后再读 URL：服务端渲染没有 window，初值若按 URL 算会造成水合不一致
+  const [adding, setAdding] = useState(false);
+  useEffect(() => {
+    setAdding(isAddingAccount());
+  }, []);
+  usePageTitle(adding ? "添加账号" : "登录");
   const router = useRouter();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -54,6 +68,9 @@ export default function LoginPage() {
           router.replace("/setup");
           return;
         }
+        // 添加账号：已登录也留在本页。直接读 URL 而不用 adding 状态——
+        // 状态要等首个 effect 才更新，这里不能抢在它前面把人跳走
+        if (isAddingAccount()) return;
         const session = await getSession(); // 已登录则不抛错
         if (!cancelled) router.replace(resolveNext(session) as Route);
       } catch {
@@ -84,7 +101,14 @@ export default function LoginPage() {
   };
 
   return (
-    <AuthScreen title="登录" subtitle="使用你的 MovieClaw 账号进入。">
+    <AuthScreen
+      title={adding ? "添加账号" : "登录"}
+      subtitle={
+        adding
+          ? "登录另一个账号；之后可在用户菜单里一键切换，不用再输密码。"
+          : "使用你的 MovieClaw 账号进入。"
+      }
+    >
       <form onSubmit={submit} className="space-y-4">
         <AuthField
           label="用户名"
@@ -116,8 +140,17 @@ export default function LoginPage() {
           disabled={busy || !username.trim() || !password}
           className="btn-accent w-full rounded-full px-4.5 py-2.5 text-ui font-semibold disabled:opacity-40"
         >
-          {busy ? "登录中…" : "登录"}
+          {busy ? "登录中…" : adding ? "添加并切换" : "登录"}
         </button>
+        {adding && (
+          <button
+            type="button"
+            onClick={() => router.replace("/")}
+            className="w-full text-center text-sub text-[var(--text-muted)] hover:text-[var(--text)]"
+          >
+            取消，回到当前账号
+          </button>
+        )}
       </form>
     </AuthScreen>
   );

@@ -87,6 +87,33 @@ class SessionView(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# 多账号切换（docs/design/account-switching.md §3）
+# ---------------------------------------------------------------------------
+
+
+class LogoutRequest(BaseModel):
+    """退出登录。默认只退当前账号并切到袋子里的下一个；all=True 清空全部。"""
+
+    all: bool = Field(default=False, description="true=退出本浏览器里的全部账号")
+
+
+class SwitchAccountRequest(BaseModel):
+    """切换到浏览器已保存的某个账号（按用户名，用户名在超管与成员间全局唯一）。"""
+
+    username: str = Field(min_length=1, max_length=32)
+
+
+class AccountView(BaseModel):
+    """浏览器当前持有的一个账号（GET /auth/accounts 列表项）。"""
+
+    username: str
+    nickname: str
+    avatar_url: str | None = Field(default=None, description="头像相对 URL；未上传过为空")
+    role: str = Field(default="admin", description="admin=超级管理员；member=成员")
+    active: bool = Field(description="是否为当前激活账号（列表里恰有一个为 true）")
+
+
+# ---------------------------------------------------------------------------
 # 设备授权（docs/design/device-auth.md §2）
 # ---------------------------------------------------------------------------
 
