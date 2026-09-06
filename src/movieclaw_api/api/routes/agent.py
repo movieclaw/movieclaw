@@ -145,7 +145,8 @@ _PAGE_ROUTES: list[tuple[str, str]] = [
     ("/media/douban/{豆瓣ID}", "豆瓣词条详情页"),
     ("/subscriptions", "订阅列表"),
     ("/subscriptions/{订阅ID}", "订阅详情（ID 来自 subscriptions list/get）"),
-    ("/library", "媒体库总览（浏览入口：最近观看、各库最近添加）"),
+    ("/library", "媒体库总览（浏览入口：最近观看、我的收藏、各库最近添加）"),
+    ("/library/favorites", "我的收藏（当前账号收藏的全部作品，与 Jellyfin 客户端里点的心同一份）"),
     ("/library/manage", "媒体库管理（建库、扫描、整理、排序、可见范围；仅管理员）"),
     ("/library/{库ID}", "某个媒体库的内容（库 ID 来自 library list）"),
     (
