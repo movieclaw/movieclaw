@@ -23,6 +23,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 from sqlalchemy import select
 
 from movieclaw_api.services.library.access import member_visible_ids
+from movieclaw_api.services.playback import watch as playback_watch
 from movieclaw_db.engine import get_database
 from movieclaw_db.models import LibraryFile
 from movieclaw_jellyfin.catalog import (
@@ -298,13 +299,22 @@ async def video_stream(
     # 停止播放并不保证客户端立刻关闭 Range 连接。按已认证设备登记这条流，
     # 让 /Sessions/Playing/Stopped 能主动停止读盘；TCP 断连仍是第二道兜底。
     device_id = identity.device.device_id
+    unit = _stream_unit(ref)
+    if request.method == "GET" and not activity.has_session(device_id):
+        # 服务重启后注册表已清空，而 Infuse 一类直连播放器正常播放阶段不发
+        # 心跳，只会一直拉字节：把取流当作播放仍在进行的证据把会话建回来，
+        # 否则活动页要等用户暂停再播才看得到。HEAD 只是探测，不算播放。
+        async with get_database().session() as db:
+            await playback_watch.restore_session_from_stream(
+                db, unit, member_id=identity.device.member_id, client=_identity_client(identity)
+            )
     session_stopped = register_device_stream(device_id)
     # 顺带登记到播放活动注册表：活动页「观看」视角据此展示实时传输速率
     meter = activity.register_stream(
         device_id=device_id,
         kind=activity.STREAM_KIND_PLAY,
         member_id=identity.device.member_id,
-        unit=_stream_unit(ref),
+        unit=unit,
         file_id=f.id,
         file_name=path.name,
         size_bytes=f.size_bytes,

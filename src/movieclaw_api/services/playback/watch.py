@@ -284,6 +284,38 @@ def report_heartbeat(
     )
 
 
+async def restore_session_from_stream(
+    session: AsyncSession, unit: Unit, *, member_id: int, client: ClientInfo
+) -> None:
+    """取流到达但设备没有实时会话：从库里补位置与开始时间，把会话重建回来。
+
+    典型场景是服务重启：Infuse 正常播放阶段不发心跳，重启后只有源源不断的
+    Range 取流，活动页却看不到它。同设备同单元尚未收口的 ``playback_log``
+    行是本场播放的记录（开始时间、最近上报位置），优先用它；没有就退回
+    ``playback_state`` 的续播点；再没有就留空，等下一次上报补齐。
+    调用方只在 :func:`activity.has_session` 为假时进来，Range 连接很密，
+    不能每条都查库。
+    """
+    position_ms: int | None = None
+    started_at = None
+    row = await _open_log(session, unit, member_id=member_id, device_id=client.device_id)
+    if row is not None:
+        position_ms = row.end_position_ms
+        started_at = row.started_at
+    else:
+        state = (await playback_state.get_states(session, [unit[0]], member_id=member_id)).get(unit)
+        if state is not None:
+            position_ms = state.position_ms
+    activity.restore_session(
+        client.device_id,
+        member_id=member_id,
+        client=client,
+        unit=unit,
+        position_ms=position_ms,
+        started_at=started_at,
+    )
+
+
 async def record_start(
     session: AsyncSession,
     unit: Unit,
