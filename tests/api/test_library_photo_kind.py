@@ -387,6 +387,35 @@ async def test_ensure_local_assets_for_photo_records_real_aspect(db, tmp_path, m
     assert not poster.exists()
 
 
+async def test_delete_then_recreate_same_root_keeps_every_photo(db, tmp_path) -> None:
+    """删库后立刻用同一目录重建：SQLite 复用库 id，新库的本地条目键与旧条目同键。
+    删库接口须等孤儿条目的数据库清理做完再放行，否则后台清理会删掉新库刚认领的
+    条目（端到端模拟时暴露：外键报错 + 一批照片从墙上消失）。"""
+    from movieclaw_api.api.routes.libraries import delete_library
+    from movieclaw_api.services.media_scrape import cleanup_orphan_items
+
+    root = _make_photo_root(tmp_path)
+    first = await _make_photo_library(db, root)
+    await scan_library(first.id)
+    async with db.session() as session:
+        await delete_library(first.id, session=session)
+    # 库 id 被复用（SQLite rowid），条目键因此与旧库相同
+    second = await _make_photo_library(db, root)
+    assert second.id == first.id
+    summary = await scan_library(second.id)
+    assert summary.errors == [] and summary.identified == 4
+    # 旧条目在删库时已同步清干净，新库的 4 张各有条目、条目各有台账行
+    async with db.session() as session:
+        items = list((await session.execute(select(MediaItem))).scalars().all())
+        rows = list((await session.execute(select(LibraryFile))).scalars().all())
+        assert len(items) == 4 and len(rows) == 4
+        assert {r.media_item_id for r in rows} == {i.id for i in items}
+        fresh = await session.get(Library, second.id)
+        assert fresh.stats_item_count == 4 and fresh.stats_file_count == 4
+    # 清理是幂等的：再跑一次不会误删有台账的条目
+    assert await cleanup_orphan_items([i.id for i in items]) == 0
+
+
 # ---------------------------------------------------------------------------
 # 监听 / Jellyfin
 # ---------------------------------------------------------------------------

@@ -1101,7 +1101,7 @@ def assets_root() -> Path:
     return Path(get_settings().metadata_dir) / "images"
 
 
-async def cleanup_orphan_items(media_item_ids: Iterable[int]) -> int:
+async def cleanup_orphan_items(media_item_ids: Iterable[int], *, defer_assets: bool = False) -> int:
     """清理孤儿条目：**已不在任何媒体库、也没有订阅**的条目连同其图片资产
     一起删除，返回清理数量。
 
@@ -1111,6 +1111,13 @@ async def cleanup_orphan_items(media_item_ids: Iterable[int]) -> int:
     - 还在别的库里（同一部剧的集分散在两个库是常态）→ 保留；
     - 还有订阅盯着（追新中，文件迟早回来）→ 保留。
     条目删除后 media_metadata / media_season / media_episode 由外键级联清掉。
+
+    **数据库阶段必须在调用方等待它完成后再放行后续操作**（``defer_assets``
+    只把磁盘删除放到后台）。删库接口曾把整个清理放后台：SQLite 会复用被删
+    的库 id，用户删库后立刻用同一目录重建（端到端模拟时就是这么做的），新库
+    的本地条目键 ``{库id}:path:…`` 与旧条目完全相同，扫描 ``ensure_local_item``
+    拿到的正是旧条目，随即被后台清理删掉——台账行插入报外键错误、已插入的行
+    被级联置空，一批照片就此在墙上消失。
 
     磁盘删除单独放线程池；某个目录删不掉只记日志，不阻断其余清理
     （宁可留点垃圾，也不能让删库这类操作半途失败）。
@@ -1123,34 +1130,61 @@ async def cleanup_orphan_items(media_item_ids: Iterable[int]) -> int:
     removed: list[int] = []
     db = get_database()
     async with db.session() as session:
-        for item_id in ids:
-            in_library = (
-                await session.execute(
-                    select(LibraryFile.id).where(LibraryFile.media_item_id == item_id).limit(1)
-                )
-            ).scalar_one_or_none()
-            if in_library is not None:
-                continue
-            subscribed = (
-                await session.execute(
-                    select(Subscription.id).where(Subscription.media_item_id == item_id).limit(1)
-                )
-            ).scalar_one_or_none()
-            if subscribed is not None:
-                continue
-            item = await session.get(MediaItem, item_id)
-            if item is None:
-                continue
-            await session.delete(item)
-            removed.append(item_id)
+        # 成批判定：删一个几万张图的库要看几万个条目，逐条三次查询太慢
+        for start in range(0, len(ids), 500):
+            chunk = ids[start : start + 500]
+            in_library = set(
+                (
+                    await session.execute(
+                        select(LibraryFile.media_item_id)
+                        .where(LibraryFile.media_item_id.in_(chunk))  # type: ignore[union-attr]
+                        .distinct()
+                    )
+                ).scalars()
+            )
+            subscribed = set(
+                (
+                    await session.execute(
+                        select(Subscription.media_item_id)
+                        .where(Subscription.media_item_id.in_(chunk))  # type: ignore[union-attr]
+                        .distinct()
+                    )
+                ).scalars()
+            )
+            existing = set(
+                (
+                    await session.execute(
+                        select(MediaItem.id).where(MediaItem.id.in_(chunk))  # type: ignore[union-attr]
+                    )
+                ).scalars()
+            )
+            for item_id in chunk:
+                if item_id in in_library or item_id in subscribed or item_id not in existing:
+                    continue
+                item = await session.get(MediaItem, item_id)
+                if item is not None:
+                    await session.delete(item)
+                    removed.append(item_id)
         if removed:
             await session.commit()
 
-    for item_id in removed:
-        await asyncio.to_thread(_remove_asset_dir, item_id)
     if removed:
-        logger.info("已清理 %d 个无引用条目及其图片资产（条目 %s）", len(removed), removed)
+        logger.info("已清理 %d 个无引用条目（条目 %s）", len(removed), removed)
+    if defer_assets:
+        task = asyncio.get_running_loop().create_task(_remove_asset_dirs(removed))
+        _asset_cleanup_tasks.add(task)
+        task.add_done_callback(_asset_cleanup_tasks.discard)
+    else:
+        await _remove_asset_dirs(removed)
     return len(removed)
+
+
+_asset_cleanup_tasks: set[asyncio.Task[None]] = set()
+
+
+async def _remove_asset_dirs(media_item_ids: list[int]) -> None:
+    for item_id in media_item_ids:
+        await asyncio.to_thread(_remove_asset_dir, item_id)
 
 
 def _remove_asset_dir(media_item_id: int) -> None:

@@ -1161,7 +1161,6 @@ async def set_default_library(
 )
 async def delete_library(
     library_id: int,
-    background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[dict]:
 
@@ -1187,8 +1186,11 @@ async def delete_library(
         if i is not None
     ]
     await service.delete(library_id)
-    # 孤儿清理放后台：删几百个资产目录是纯磁盘活，不该拖住删库这一次请求
-    background_tasks.add_task(media_scrape.cleanup_orphan_items, affected)
+    # 孤儿条目的**数据库清理**在这里等它做完再返回：SQLite 会复用被删的库 id，
+    # 用户删库后立刻用同一目录重建，新库的本地条目会与旧条目同键，后台清理
+    # 晚一步就把新库刚认领的条目删掉（见 cleanup_orphan_items 的说明）。
+    # 删几百个资产目录是纯磁盘活，仍放后台，不拖住这一次请求
+    await media_scrape.cleanup_orphan_items(affected, defer_assets=True)
     return ok({}, message="已删除（磁盘上的媒体文件未受影响）")
 
 

@@ -29,7 +29,7 @@ import { imageUrl } from "@/lib/image-proxy";
  *   - 渐进：先显示墙上的缩略图（模糊放大），原图加载完成后替换——原图走按文件
  *     鉴权的路由，几 MB 到几十 MB，不能让用户对着黑屏等；
  *   - 缩放：滚轮 / 双击放大到 5×，放大后拖拽平移，`0` 复位；
- *   - 翻页：←→ 与两侧按钮，触屏左右滑；翻到已加载列表末尾且服务端还有下一页
+ *   - 翻页：←→ 与两侧按钮（手机上靠滑动，按钮隐去），触屏左右滑；翻到已加载列表末尾且服务端还有下一页
  *     时向外要一页（onReachEnd），拿到后继续翻；
  *   - 缩略条只渲染当前位置前后各 30 张：万张库不铺满 DOM；
  *   - 信息面板（`i`）：文件名、拍摄日期、原图尺寸、大小、格式、路径，按需从
@@ -40,7 +40,6 @@ import { imageUrl } from "@/lib/image-proxy";
  */
 const STRIP_WINDOW = 30;
 const MAX_ZOOM = 5;
-const ZOOM_STEP = 1.12;
 
 function formatDate(iso: string | null): string {
   return iso ?? "—";
@@ -176,10 +175,13 @@ export function PhotoLightbox({
     };
   }, [infoOpen, item, libraryId]);
 
+  // 缩放幅度随滚动量走：鼠标滚轮一格（约 100）≈ 1.2×，触控板的细碎事件各自
+  // 只走一点点，一次大幅滚动最多翻倍——比固定步长更跟手
   const onWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault();
+    const factor = Math.min(2, Math.max(0.5, Math.exp(-e.deltaY * 0.002)));
     setZoom((current) => {
-      const next = Math.min(MAX_ZOOM, Math.max(1, current * (e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP)));
+      const next = Math.min(MAX_ZOOM, Math.max(1, current * factor));
       if (next === 1) setPan({ x: 0, y: 0 });
       return next;
     });
@@ -363,7 +365,7 @@ export function PhotoLightbox({
                 e.stopPropagation();
                 step(-1);
               }}
-              className="absolute left-3 top-1/2 -translate-y-1/2 rounded-full bg-white/[0.08] p-2.5 text-white/80 backdrop-blur transition-colors hover:bg-white/[0.18] hover:text-white"
+              className="absolute left-3 top-1/2 -translate-y-1/2 rounded-full bg-white/[0.08] p-2.5 text-white/80 backdrop-blur transition-colors hover:bg-white/[0.18] hover:text-white max-md:hidden"
             >
               <ChevronLeftIcon className="size-6" />
             </button>
@@ -376,7 +378,7 @@ export function PhotoLightbox({
                 e.stopPropagation();
                 step(1);
               }}
-              className="absolute right-3 top-1/2 -translate-y-1/2 rounded-full bg-white/[0.08] p-2.5 text-white/80 backdrop-blur transition-colors hover:bg-white/[0.18] hover:text-white"
+              className="absolute right-3 top-1/2 -translate-y-1/2 rounded-full bg-white/[0.08] p-2.5 text-white/80 backdrop-blur transition-colors hover:bg-white/[0.18] hover:text-white max-md:hidden"
             >
               <ChevronRightIcon className="size-6" />
             </button>
