@@ -2419,6 +2419,10 @@ async def _refresh_known_row(
                 row.color_space = spec.color_space
                 row.audio_streams = list(spec.audio_streams)
                 row.subtitle_streams = list(spec.subtitle_streams)
+                # 文件内容变了：章节按新探测的记，旧场景图作废（NULL 让抓图作业
+                # 重来；旧图文件由作业按 start_ms 对不上时清掉）
+                row.chapters = list(spec.chapters)
+                row.chapter_images = None
                 row.updated_at = utcnow()
                 changed = True
                 logger.info("视频文件内容已变化，介质规格与内封字幕轨已重探：%s", file)
@@ -2651,6 +2655,7 @@ async def _ingest_file(
             color_space=spec.color_space if spec else None,
             audio_streams=list(spec.audio_streams) if spec else None,
             subtitle_streams=list(spec.subtitle_streams) if spec else None,
+            chapters=list(spec.chapters) if spec else None,
             external_subtitles=external_subtitles,
             media_source=scanned_media_source(attrs, container) if profile.scraped else None,
             release_group=attrs.release_group if profile.scraped else None,

@@ -1232,6 +1232,8 @@ async def backfill_streams(
                 spec = enrich_spec_with_clpi(spec, languages)
             row.audio_streams = list(spec.audio_streams)
             row.subtitle_streams = list(spec.subtitle_streams)
+            if row.chapters is None:
+                row.chapters = list(spec.chapters)
             # 顺手回填缺失的视频规格（同一次探测的免费产出，不覆盖已有值）
             row.resolution = row.resolution or spec.resolution
             row.video_codec = row.video_codec or spec.video_codec

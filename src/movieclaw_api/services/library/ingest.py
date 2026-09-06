@@ -1947,6 +1947,7 @@ async def _ingest_entry(
                 color_space=spec.color_space if spec else None,
                 audio_streams=list(spec.audio_streams) if spec else None,
                 subtitle_streams=list(spec.subtitle_streams) if spec else None,
+                chapters=list(spec.chapters) if spec else None,
                 # 完整原盘入库：片源按结构判顶档（T6），压过种子名里的
                 # "Blu-ray"——原盘高于从它剥出来的 Remux，否则一个 Remux
                 # 候选会把刚入库的原盘洗掉（issue #163）
@@ -2205,6 +2206,7 @@ async def _ingest_entry(
                 color_space=file_spec.color_space if file_spec else None,
                 audio_streams=list(file_spec.audio_streams) if file_spec else None,
                 subtitle_streams=list(file_spec.subtitle_streams) if file_spec else None,
+                chapters=list(file_spec.chapters) if file_spec else None,
                 media_source=release_attrs.media_source,
                 release_group=release_attrs.release_group,
                 source=FileSource.IMPORTED,
@@ -2507,6 +2509,7 @@ async def _ingest_raw_drop(
                 color_space=file_spec.color_space if file_spec else None,
                 audio_streams=list(file_spec.audio_streams) if file_spec else None,
                 subtitle_streams=list(file_spec.subtitle_streams) if file_spec else None,
+                chapters=list(file_spec.chapters) if file_spec else None,
                 source=FileSource.IMPORTED,
                 identity_source=identity.identity_source.value,
                 added_batch_id=added_batch_id,
