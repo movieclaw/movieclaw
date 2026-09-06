@@ -40,6 +40,8 @@ from movieclaw_api.schemas.playback import (
     PlaybackHistoryClearView,
     PlaybackHistoryView,
     PlaybackItemView,
+    PlaybackMarksRequest,
+    PlaybackMarksView,
     PlaybackMetricPayload,
     PlaybackPolicyPayload,
     PlaybackPolicyView,
@@ -63,6 +65,7 @@ from movieclaw_api.services.library.access import (
 )
 from movieclaw_api.services.library.items import build_season_episodes, episode_view
 from movieclaw_api.services.media_probe import probe_keyframe_before
+from movieclaw_api.services.playback import marks as playback_marks
 from movieclaw_api.services.playback import metrics, trickplay
 from movieclaw_api.services.playback import plan as playback_plan
 from movieclaw_api.services.playback import warmup as playback_warmup
@@ -1685,6 +1688,97 @@ async def get_playback_resume(
 # ---------------------------------------------------------------------------
 # 网页播放器：播放页条目信息（§6.10 路由只带 media_item_id）
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# 网页端：已看 / 收藏标记
+# ---------------------------------------------------------------------------
+
+
+def _marks_view(state: playback_marks.MarkState) -> PlaybackMarksView:
+    return PlaybackMarksView(
+        played=state.played,
+        is_favorite=state.is_favorite,
+        unplayed_count=state.unplayed_count,
+    )
+
+
+async def _mark_target(
+    session: AsyncSession,
+    principal: Principal,
+    media_item_id: int,
+    season_number: int | None,
+    episode_number: int | None,
+) -> playback_marks.MarkTarget:
+    """请求里的目标 → 标记服务的目标；条目对当前成员不可见按 404。
+
+    可见性按条目（而不是播放单元）判：标记整剧 / 整季没有具体单元可查，
+    而「能看到这部片的详情页」正是能给它点心的前提。
+    """
+    if season_number is None and episode_number is not None:
+        raise BadRequestException("给了集号就必须同时给季号")
+    await assert_item_visible(session, principal, media_item_id)
+    return playback_marks.MarkTarget(media_item_id, season_number, episode_number)
+
+
+@router.get(
+    "/marks",
+    response_model=ApiResponse[PlaybackMarksView],
+    summary="已看 / 收藏状态",
+    operation_id="playback.marks.get",
+    openapi_extra={"x-cli-hidden": True},
+)
+async def get_playback_marks(
+    media_item_id: Annotated[int, Query()],
+    season_number: Annotated[int | None, Query(ge=0)] = None,
+    episode_number: Annotated[int | None, Query(ge=0)] = None,
+    principal: Principal = Depends(require_login),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[PlaybackMarksView]:
+    """详情页的心与对勾的初始状态。不带季集 = 整个条目（电影 / 整剧），只带
+    季 = 整季，都带 = 单集——与 Jellyfin 客户端点的是同一份数据。"""
+    target = await _mark_target(session, principal, media_item_id, season_number, episode_number)
+    member_id = principal.member_id if principal.member_id is not None else 0
+    return ok(_marks_view(await playback_marks.get_state(session, target, member_id=member_id)))
+
+
+@router.post(
+    "/marks",
+    response_model=ApiResponse[PlaybackMarksView],
+    summary="标记已看 / 收藏",
+    operation_id="playback.marks.set",
+    openapi_extra={"x-cli-hidden": True},
+)
+async def set_playback_marks(
+    payload: PlaybackMarksRequest,
+    request: Request,
+    principal: Principal = Depends(require_login),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[PlaybackMarksView]:
+    """与 Jellyfin 的 UserPlayedItems / UserFavoriteItems 走同一个服务：落
+    ``playback_state``、发 webhook。整剧 / 整季的「已看」级联到全部集，收藏
+    落在整剧 / 整季自己的哨兵单元上——在 Infuse 里看到的与这里点的完全一致。"""
+    if payload.played is None and payload.favorite is None:
+        raise BadRequestException("played 与 favorite 至少要给一个")
+    target = await _mark_target(
+        session, principal, payload.media_item_id, payload.season_number, payload.episode_number
+    )
+    member_id = principal.member_id if principal.member_id is not None else 0
+    client = playback_watch.web_client_info(
+        device_id=playback_watch.web_device_id(payload.device_id, member_id=member_id),
+        user_agent=request.headers.get("user-agent"),
+    )
+    if payload.played is not None:
+        hit = await playback_marks.set_played(
+            session, target, member_id=member_id, client=client, played=payload.played
+        )
+        if not hit:
+            raise NotFoundException("没有找到可标记的季或集")
+    if payload.favorite is not None:
+        await playback_marks.set_favorite(
+            session, target, member_id=member_id, client=client, favorite=payload.favorite
+        )
+    return ok(_marks_view(await playback_marks.get_state(session, target, member_id=member_id)))
 
 
 async def _visible_item(

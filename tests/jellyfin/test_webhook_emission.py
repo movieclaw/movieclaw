@@ -11,9 +11,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from jellyfin.helpers import jf_login
-from movieclaw_api.services.playback import watch
+from movieclaw_api.services.playback import marks, watch
 from movieclaw_jellyfin.ids import episode_guid, item_guid, season_guid
-from movieclaw_jellyfin.routes import playstate
 
 TICKS_PER_MS = 10_000
 RUNTIME_MS = 47 * 60 * 1000  # 播种剧集单集时长
@@ -24,12 +23,12 @@ def emitted(monkeypatch) -> list:
     """捕获投递的全部事件（替换 emit_events，不走真实投递链路）。
 
     播放类事件由网页端与 Jellyfin 端共用的 watch 服务发出，标记/收藏类事件
-    仍由协议路由自己发，两处都要截。
+    由同样共用的 marks 服务发出，两处都要截。
     """
     watch._progress_last_emit.clear()  # progress 节流状态在用例间隔离
     captured: list = []
     monkeypatch.setattr(watch, "emit_events", captured.extend)
-    monkeypatch.setattr(playstate, "emit_events", captured.extend)
+    monkeypatch.setattr(marks, "emit_events", captured.extend)
     return captured
 
 
@@ -40,10 +39,7 @@ def _auth(client: TestClient) -> dict:
 def test_started_event_with_client_info(client, seeded, emitted):
     auth = _auth(client)
     ep = episode_guid(seeded["show"], 1, 1)
-    assert (
-        client.post("/Sessions/Playing", params=auth, json={"ItemId": ep}).status_code
-        == 204
-    )
+    assert client.post("/Sessions/Playing", params=auth, json={"ItemId": ep}).status_code == 204
     assert [e.event for e in emitted] == ["playback.started"]
     event = emitted[0]
     media = event.data["media"]

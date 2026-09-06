@@ -597,6 +597,39 @@ class PlaybackProgressRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# 网页端：已看 / 收藏标记（与 Jellyfin 的 UserPlayedItems / UserFavoriteItems 同一落点）
+# ---------------------------------------------------------------------------
+
+
+class PlaybackMarksRequest(BaseModel):
+    """一次标记：目标 + 要改成什么。
+
+    目标的表达与 Jellyfin 的 Series / Season / Episode 三级一一对应：不带季集
+    = 整个条目（电影，或整剧级联到全部集）；只带季 = 整季；季集都带 = 单集。
+    电影也可以像播放接口那样带哨兵 ``(0, 0)``，落到同一个单元。
+    ``played`` 与 ``favorite`` 至少给一个，没给的那个保持原值。
+    """
+
+    media_item_id: int
+    season_number: int | None = Field(default=None, ge=0)
+    episode_number: int | None = Field(default=None, ge=0)
+    played: bool | None = None
+    favorite: bool | None = None
+    #: 浏览器的稳定标识（同进度上报），webhook 事件的 client 字段据此归因
+    device_id: str | None = Field(default=None, max_length=128)
+
+
+class PlaybackMarksView(BaseModel):
+    """目标在当前成员名下的已看 / 收藏状态。读接口与写接口同一形状，
+    写完直接拿它刷新按钮，不必再查一次。"""
+
+    played: bool
+    is_favorite: bool
+    #: 整剧 / 整季尚未看完的集数；电影与单集为 null
+    unplayed_count: int | None = None
+
+
+# ---------------------------------------------------------------------------
 # 网页播放器：策略配置（软件转码同意链路 §3.6；独立设置页已撤，上限自动推导）
 # ---------------------------------------------------------------------------
 

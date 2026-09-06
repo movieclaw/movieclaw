@@ -808,6 +808,54 @@ export async function fetchResumeState(
   return response.data;
 }
 
+/**
+ * 已看 / 收藏标记的目标。不带季集 = 整个条目（电影，或整剧级联到全部集）；
+ * 只带季 = 整季；季集都带 = 单集——与 Jellyfin 客户端的 Series / Season /
+ * Episode 三级一一对应，后端落的是同一张表、同一套哨兵约定。
+ */
+export interface PlaybackMarkTarget {
+  media_item_id: number;
+  season_number?: number;
+  episode_number?: number;
+}
+
+export interface PlaybackMarks {
+  played: boolean;
+  is_favorite: boolean;
+  /** 整剧 / 整季尚未看完的集数；电影与单集为 null */
+  unplayed_count: number | null;
+}
+
+function markParams(target: PlaybackMarkTarget): URLSearchParams {
+  const params = new URLSearchParams({ media_item_id: String(target.media_item_id) });
+  if (target.season_number != null) params.set("season_number", String(target.season_number));
+  if (target.episode_number != null) params.set("episode_number", String(target.episode_number));
+  return params;
+}
+
+/** 目标的已看 / 收藏状态（详情页心与对勾的初始态）。 */
+export async function fetchPlaybackMarks(target: PlaybackMarkTarget): Promise<PlaybackMarks> {
+  const response = await request<ApiEnvelope<PlaybackMarks>>(
+    `/playback/marks?${markParams(target)}`,
+  );
+  return response.data;
+}
+
+/**
+ * 标记已看 / 收藏。与 Jellyfin 的 UserPlayedItems / UserFavoriteItems 走同一个
+ * 服务：Infuse 里看到的与这里点的完全一致。返回写完后的状态，直接刷新按钮。
+ */
+export async function setPlaybackMarks(
+  target: PlaybackMarkTarget,
+  change: { played?: boolean; favorite?: boolean },
+): Promise<PlaybackMarks> {
+  const response = await request<ApiEnvelope<PlaybackMarks>>("/playback/marks", {
+    method: "POST",
+    body: JSON.stringify({ ...target, ...change, device_id: getPlayerDeviceId() }),
+  });
+  return response.data;
+}
+
 export interface PlaybackProgressBody extends PlaybackUnit {
   event: "start" | "progress" | "stop";
   /** 播到文件的哪个位置。**不报（undefined）视同播到结尾**，与报 0 不同。 */

@@ -72,6 +72,13 @@ export const CopyIcon = (p: IconProps) => (
   </Base>
 );
 
+/** 心形：收藏。默认描边；传 fill="currentColor" 即为「已收藏」的实心态 */
+export const HeartIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="M12 20.3s-7.5-4.6-7.5-10A4.2 4.2 0 0 1 12 7.6a4.2 4.2 0 0 1 7.5 2.7c0 5.4-7.5 10-7.5 10Z" />
+  </Base>
+);
+
 export const CheckIcon = (p: IconProps) => (
   <Base {...p}>
     <path d="M5 12.5l4 4 10-10" />

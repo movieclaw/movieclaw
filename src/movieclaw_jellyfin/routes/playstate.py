@@ -7,10 +7,11 @@
 - UserPlayedItems：datePlayed 才 +1，否则 max(count,1)；DELETE 全清零；
 - 作用于 Series/Season GUID 时级联全部有文件的子单元。
 
-播放上报（Playing / Progress / Stopped 及 legacy PlayingItems）本路由只做
-协议翻译——解 GUID、换算轨序号、读 PositionTicks——落库、webhook 与活动页
-实时会话统一交给 ``movieclaw_api.services.playback.watch``，与网页播放器
-同一份逻辑；已看/收藏标记没有网页端对应物，仍留在这里。
+本路由只做协议翻译——解 GUID、换算轨序号、读 PositionTicks——落库、webhook
+与活动页实时会话统一交给 ``movieclaw_api.services.playback``：播放上报
+（Playing / Progress / Stopped 及 legacy PlayingItems）走 ``watch``，已看/收藏
+标记走 ``marks``，与网页端（``/api/v1/playback/marks``）同一份逻辑，两边写的
+是同一张 ``playback_state`` 表，「在 Infuse 里点心、网页上立刻看到」天然成立。
 """
 
 from __future__ import annotations
@@ -20,12 +21,10 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse
-from sqlalchemy import select
 
+from movieclaw_api.services.playback import marks as playback_marks
 from movieclaw_api.services.playback import watch as playback_watch
-from movieclaw_api.services.webhook import emit_events
 from movieclaw_db.engine import get_database
-from movieclaw_db.models import LibraryFile, MediaEpisode, MediaItem
 from movieclaw_jellyfin.catalog import (
     TICKS_PER_MS,
     _folder_user_data,
@@ -39,11 +38,7 @@ from movieclaw_jellyfin.errors import bad_request_text, not_found
 from movieclaw_jellyfin.ids import EntityKind, EntityRef, decode_guid
 from movieclaw_jellyfin.security import RequestIdentity, require_device
 from movieclaw_playback import state as playback_state
-from movieclaw_playback.events import (
-    ClientInfo,
-    build_favorite_event,
-    build_marked_events,
-)
+from movieclaw_playback.events import ClientInfo
 from movieclaw_playback.subtitles import SUBTITLE_OFF
 
 router = APIRouter(dependencies=[Depends(require_device)])
@@ -95,50 +90,20 @@ def _position_ms(body: dict[str, Any], query_ticks: str | None = None) -> int | 
     return max(0, ticks // TICKS_PER_MS)
 
 
-async def _resolve_units(ref: EntityRef) -> list[playback_state.Unit]:
-    """GUID → 受影响的 (item, season, episode) 单元列表（文件夹级联）。"""
-    async with get_database().session() as session:
-        q = select(LibraryFile.season_number, LibraryFile.episode_number).where(
-            LibraryFile.media_item_id == ref.entity_id,
-            LibraryFile.in_place(),
-        )
-        rows = list((await session.execute(q)).all())
-        if not rows and ref.kind in (EntityKind.ITEM, EntityKind.SEASON):
-            # 文件全部丢失的剧：真 Jellyfin 只要条目存在就允许手动标记已看
-            # （走元数据级联），不应因文件不在位而 404。退回元数据集清单
-            eq = select(
-                MediaEpisode.season_number, MediaEpisode.episode_number
-            ).where(MediaEpisode.media_item_id == ref.entity_id)
-            rows = list((await session.execute(eq)).all())
-    units = sorted({(ref.entity_id, s, e) for s, e in rows})
-    if ref.kind == EntityKind.EPISODE:
-        return [(ref.entity_id, ref.season, ref.episode)]
-    if ref.kind == EntityKind.SEASON:
-        return [u for u in units if u[1] == ref.season]
-    if ref.kind == EntityKind.ITEM:
-        # 电影 = (0,0) 单元；剧 = 全部集
-        return units or [(ref.entity_id, 0, 0)]
-    return []
-
-
 def _leaf_unit(ref: EntityRef) -> playback_state.Unit:
     if ref.kind == EntityKind.EPISODE:
         return (ref.entity_id, ref.season, ref.episode)
     return (ref.entity_id, 0, 0)
 
 
-async def _favorite_unit(ref: EntityRef) -> playback_state.Unit:
-    """收藏的落点单元：叶子用真实单元；Season/Series 用哨兵（-1）——
-    与 catalog._folder_user_data 的读取侧约定一致，绝不污染 S00E00。"""
+def _mark_target(ref: EntityRef) -> playback_marks.MarkTarget:
+    """结构化 GUID → 协议无关的标记目标（Series/Movie → 整条目，Season →
+    整季，Episode → 单集）；级联与哨兵落点由标记服务统一解析。"""
     if ref.kind == EntityKind.EPISODE:
-        return (ref.entity_id, ref.season, ref.episode)
+        return playback_marks.MarkTarget(ref.entity_id, ref.season, ref.episode)
     if ref.kind == EntityKind.SEASON:
-        return (ref.entity_id, ref.season, -1)
-    async with get_database().session() as session:
-        item = await session.get(MediaItem, ref.entity_id)
-    if item is not None and item.kind == "tv":
-        return (ref.entity_id, -1, -1)
-    return (ref.entity_id, 0, 0)
+        return playback_marks.MarkTarget(ref.entity_id, ref.season)
+    return playback_marks.MarkTarget(ref.entity_id)
 
 
 def _decode_item_ref(raw: Any) -> EntityRef | None:
@@ -457,23 +422,18 @@ async def mark_played(
     ref = _decode_item_ref(item_id)
     if ref is None:
         raise not_found()
-    units = await _resolve_units(ref)
-    if not units:
-        raise not_found()
     date_played = _parse_date_played(request.query_params.get("datePlayed"))
     async with get_database().session() as session:
-        await playback_state.mark_played(
-            session, units, member_id=identity.device.member_id, date_played=date_played
-        )
-        await session.commit()
-        events = await build_marked_events(
+        hit = await playback_marks.set_played(
             session,
-            "playback.marked_played",
-            units,
+            _mark_target(ref),
             member_id=identity.device.member_id,
             client=_client_info(identity),
+            played=True,
+            date_played=date_played,
         )
-    emit_events(events)
+    if not hit:
+        raise not_found()
     return await _user_data_response(ref, item_id, member_id=identity.device.member_id)
 
 
@@ -487,40 +447,27 @@ async def mark_unplayed(
     ref = _decode_item_ref(item_id)
     if ref is None:
         raise not_found()
-    units = await _resolve_units(ref)
-    if not units:
-        raise not_found()
     async with get_database().session() as session:
-        await playback_state.mark_unplayed(
-            session, units, member_id=identity.device.member_id
-        )
-        await session.commit()
-        events = await build_marked_events(
+        hit = await playback_marks.set_played(
             session,
-            "playback.marked_unplayed",
-            units,
+            _mark_target(ref),
             member_id=identity.device.member_id,
             client=_client_info(identity),
+            played=False,
         )
-    emit_events(events)
+    if not hit:
+        raise not_found()
     return await _user_data_response(ref, item_id, member_id=identity.device.member_id)
 
 
 async def _set_favorite(
     ref: EntityRef, *, member_id: int, favorite: bool, client: ClientInfo
 ) -> None:
-    """收藏落库 + commit 后装配/投递 ``item.(un)favorited`` 事件。"""
-    unit = await _favorite_unit(ref)
+    """收藏：落库、commit、``item.(un)favorited`` 事件全部由标记服务完成。"""
     async with get_database().session() as session:
-        await playback_state.set_favorite(
-            session, unit, member_id=member_id, favorite=favorite
+        await playback_marks.set_favorite(
+            session, _mark_target(ref), member_id=member_id, client=client, favorite=favorite
         )
-        await session.commit()
-        event = await build_favorite_event(
-            session, unit, favorite=favorite, client=client
-        )
-    if event is not None:
-        emit_events([event])
 
 
 @router.post("/UserFavoriteItems/{item_id}")
