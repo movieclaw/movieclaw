@@ -28,57 +28,110 @@ type MetricKey = "watched_ms" | "plays" | "completion" | "active_members";
 interface MetricDef {
   key: MetricKey;
   label: string;
-  /** 从一天的数据里取值（看完率为 0~1 的比例） */
-  ofDay: (day: PlaybackStatsDayRow) => number;
+  /**
+   * 从一段连续日期的数据里取值（看完率为 0~1 的比例）。传一天就是当天的值，
+   * 传一周就是这周的值——主图与迷你走势在柱子摆不下时会按周折桶。
+   */
+  ofDays: (rows: PlaybackStatsDayRow[]) => number;
   /** 汇总值 */
   ofTotals: (t: PlaybackWatchStats["current"]) => number;
   /** 汇总值的展示 */
   format: (value: number) => string;
+  /** 指标卡上的大数字：[数值, 单位]，单位单独排小字 */
+  parts: (value: number) => [string, string];
   /** 坐标轴刻度的紧凑展示 */
   axis: (value: number) => string;
   /** 变化用百分点而不是百分比（看完率本身就是比例） */
   deltaInPoints?: boolean;
+  /** 折桶后的值不是求和而是日均，提示里要说清 */
+  bucketNote?: string;
 }
+
+const sum = (rows: PlaybackStatsDayRow[], pick: (d: PlaybackStatsDayRow) => number) =>
+  rows.reduce((acc, d) => acc + pick(d), 0);
+
+/** 小时数：一位小数，过百取整。 */
+const hours = (ms: number) => (ms / 3_600_000).toFixed(ms >= 360_000_000 ? 0 : 1);
 
 const METRICS: readonly MetricDef[] = [
   {
     key: "watched_ms",
     label: "观看时长",
-    ofDay: (d) => d.watched_ms,
+    ofDays: (rows) => sum(rows, (d) => d.watched_ms),
     ofTotals: (t) => t.watched_ms,
-    // 指标卡只有一行的位置，「45 小时 28 分钟」在窄屏会折成三行，改成「45.5 小时」
-    format: (v) =>
+    // 「45 小时 28 分钟」在指标卡上占不下一行，满一小时就按「45.5 小时」
+    format: (v) => (v >= 3_600_000 ? `${hours(v)} 小时` : formatWatched(v)),
+    parts: (v) =>
       v >= 3_600_000
-        ? `${(v / 3_600_000).toFixed(v >= 360_000_000 ? 0 : 1)} 小时`
-        : formatWatched(v),
+        ? [hours(v), "小时"]
+        : [`${Math.max(v > 0 ? 1 : 0, Math.round(v / 60_000))}`, "分钟"],
     axis: (v) => `${(v / 3_600_000).toFixed(v >= 36_000_000 ? 0 : 1)}h`,
   },
   {
     key: "plays",
     label: "播放场次",
-    ofDay: (d) => d.plays,
+    ofDays: (rows) => sum(rows, (d) => d.plays),
     ofTotals: (t) => t.plays,
-    format: (v) => `${v}`,
+    format: (v) => `${v} 场`,
+    parts: (v) => [`${v}`, "场"],
     axis: (v) => `${Math.round(v)}`,
   },
   {
     key: "completion",
     label: "看完率",
-    ofDay: (d) => (d.plays > 0 ? d.completed / d.plays : 0),
+    ofDays: (rows) => {
+      const plays = sum(rows, (d) => d.plays);
+      return plays > 0 ? sum(rows, (d) => d.completed) / plays : 0;
+    },
     ofTotals: (t) => (t.plays > 0 ? t.completed / t.plays : 0),
     format: (v) => `${Math.round(v * 100)}%`,
+    parts: (v) => [`${Math.round(v * 100)}`, "%"],
     axis: (v) => `${Math.round(v * 100)}%`,
     deltaInPoints: true,
   },
   {
     key: "active_members",
     label: "活跃成员",
-    ofDay: (d) => d.members,
+    // 按天是当天的去重人数；折成一周没法从日数据里去重，退而取日均
+    ofDays: (rows) => (rows.length > 0 ? sum(rows, (d) => d.members) / rows.length : 0),
     ofTotals: (t) => t.active_members,
-    format: (v) => `${v}`,
+    format: (v) => `${Math.round(v * 10) / 10} 人`,
+    parts: (v) => [`${Math.round(v * 10) / 10}`, "人"],
     axis: (v) => `${Math.round(v)}`,
+    bucketNote: "日均",
   },
 ] as const;
+
+/**
+ * 把按天的序列折成若干桶：从末尾往前每 size 天一桶，最新的桶一定是满的，
+ * 首桶可能不满（提示里会标出天数）。size=1 即不折。
+ */
+function bucketize(rows: PlaybackStatsDayRow[], size: number): PlaybackStatsDayRow[][] {
+  const out: PlaybackStatsDayRow[][] = [];
+  for (let end = rows.length; end > 0; end -= size) {
+    out.unshift(rows.slice(Math.max(0, end - size), end));
+  }
+  return out;
+}
+
+function bucketLabel(rows: PlaybackStatsDayRow[]): string {
+  if (rows.length === 1) return dayLabel(rows[0].date);
+  return `${dayLabel(rows[0].date)} – ${dayLabel(rows[rows.length - 1].date)}`;
+}
+
+/** 顶部圆角的柱子：圆角只在数据端，底边贴着基线。 */
+function barPath(x: number, y: number, w: number, h: number): string {
+  const r = Math.min(3, w / 2, h);
+  if (h <= 0) return "";
+  return [
+    `M${x.toFixed(1)},${(y + h).toFixed(1)}`,
+    `V${(y + r).toFixed(1)}`,
+    `Q${x.toFixed(1)},${y.toFixed(1)} ${(x + r).toFixed(1)},${y.toFixed(1)}`,
+    `H${(x + w - r).toFixed(1)}`,
+    `Q${(x + w).toFixed(1)},${y.toFixed(1)} ${(x + w).toFixed(1)},${(y + r).toFixed(1)}`,
+    `V${(y + h).toFixed(1)} Z`,
+  ].join(" ");
+}
 
 const SERIES_COLOR = "var(--info)";
 const PREVIOUS_COLOR = "rgba(255,255,255,0.32)";
@@ -120,62 +173,85 @@ function useElementWidth<T extends HTMLElement>(): [React.RefObject<T | null>, n
 // 指标卡
 // ---------------------------------------------------------------------------
 
-function Sparkline({ values }: { values: number[] }) {
-  const width = 88;
-  const height = 26;
+/**
+ * 迷你柱图：与主图同一形态（按天合计是离散量，柱子比折线诚实）。用 viewBox 撑满
+ * 卡片宽度，横向拉伸只影响柱宽不影响读数；最多 30 根，再多就折桶。
+ */
+function SparkBars({ values, dimmed }: { values: number[]; dimmed: boolean }) {
+  const W = 100;
+  const H = 28;
+  const n = values.length;
+  if (n === 0) return <div className="h-7" />;
   const max = Math.max(1e-9, ...values);
-  if (values.length < 2) return <svg width={width} height={height} aria-hidden="true" />;
-  const step = width / (values.length - 1);
-  const points = values
-    .map((v, i) => `${(i * step).toFixed(1)},${(height - 2 - (v / max) * (height - 4)).toFixed(1)}`)
-    .join(" ");
+  const slot = W / n;
+  const gap = Math.min(1.5, slot * 0.3);
   return (
-    <svg width={width} height={height} aria-hidden="true" className="shrink-0">
-      <polyline
-        points={points}
-        fill="none"
-        stroke={SERIES_COLOR}
-        strokeWidth={1.5}
-        strokeLinejoin="round"
-        strokeLinecap="round"
-      />
+    <svg
+      viewBox={`0 0 ${W} ${H}`}
+      preserveAspectRatio="none"
+      aria-hidden="true"
+      className={`h-7 w-full transition-opacity ${dimmed ? "opacity-40" : "opacity-90"}`}
+    >
+      {values.map((v, i) => {
+        const h = v > 0 ? Math.max(1.5, (v / max) * H) : 1;
+        return (
+          <rect
+            key={i}
+            x={(i * slot + gap / 2).toFixed(2)}
+            y={(H - h).toFixed(2)}
+            width={(slot - gap).toFixed(2)}
+            height={h.toFixed(2)}
+            fill={v > 0 ? SERIES_COLOR : "rgba(255,255,255,0.12)"}
+          />
+        );
+      })}
     </svg>
   );
 }
 
-function Delta({
+/** 较上一周期的变化，做成一枚小标签：涨绿、跌红、持平灰；没有上期就不出。 */
+function DeltaChip({
   current,
   previous,
   available,
   inPoints,
+  title,
 }: {
   current: number;
   previous: number;
   available: boolean;
   inPoints?: boolean;
+  title: string;
 }) {
-  if (!available) {
-    return <span className="text-caption text-white/35">暂无上一周期数据</span>;
-  }
+  if (!available) return null;
   let text: string;
-  let tone: string;
+  let direction: 1 | 0 | -1;
   if (inPoints) {
     const points = Math.round((current - previous) * 100);
-    text = `${points > 0 ? "▲" : points < 0 ? "▼" : "—"} ${Math.abs(points)} 个百分点`;
-    tone = points > 0 ? "text-[var(--ok)]" : points < 0 ? "text-[var(--danger)]" : "text-white/45";
+    direction = points > 0 ? 1 : points < 0 ? -1 : 0;
+    text = `${Math.abs(points)} 个百分点`;
   } else if (previous <= 0) {
-    text = current > 0 ? "▲ 上一周期为 0" : "— 持平";
-    tone = current > 0 ? "text-[var(--ok)]" : "text-white/45";
+    direction = current > 0 ? 1 : 0;
+    text = current > 0 ? "新增" : "持平";
   } else {
     const ratio = (current - previous) / previous;
-    const pct = Math.round(Math.abs(ratio) * 100);
-    text = `${ratio > 0 ? "▲" : ratio < 0 ? "▼" : "—"} ${pct}%`;
-    tone = ratio > 0 ? "text-[var(--ok)]" : ratio < 0 ? "text-[var(--danger)]" : "text-white/45";
+    direction = ratio > 0 ? 1 : ratio < 0 ? -1 : 0;
+    text = direction === 0 ? "持平" : `${Math.round(Math.abs(ratio) * 100)}%`;
   }
+  const tone =
+    direction > 0
+      ? "bg-[var(--ok)]/15 text-[var(--ok)]"
+      : direction < 0
+        ? "bg-[var(--danger)]/15 text-[var(--danger)]"
+        : "bg-white/[0.08] text-white/55";
+  const arrow = direction > 0 ? "▲" : direction < 0 ? "▼" : "";
   return (
-    <span className="text-caption">
-      <span className={`tnum font-semibold ${tone}`}>{text}</span>
-      <span className="ml-1 text-white/35">较上一周期</span>
+    <span
+      title={title}
+      className={`tnum inline-flex shrink-0 items-center gap-0.5 rounded-md px-1.5 py-0.5 text-[11px] font-semibold leading-4 ${tone}`}
+    >
+      {arrow && <span className="text-[9px]">{arrow}</span>}
+      {text}
     </span>
   );
 }
@@ -193,74 +269,98 @@ function MetricCard({
 }) {
   const current = metric.ofTotals(stats.current);
   const previous = metric.ofTotals(stats.previous);
+  const [value, unit] = metric.parts(current);
+  // 迷你走势最多 30 根柱子
+  const size = Math.max(1, Math.ceil(stats.by_day.length / 30));
+  const spark = bucketize(stats.by_day, size).map(metric.ofDays);
   return (
     <button
       type="button"
       aria-pressed={selected}
       onClick={onSelect}
-      className={`rounded-2xl border px-4 py-3 text-left transition ${
+      className={`rounded-2xl border px-4 py-3.5 text-left transition max-md:px-3.5 ${
         selected
-          ? "border-[var(--info)]/50 bg-[var(--info)]/[0.08]"
-          : "border-white/[0.08] bg-white/[0.03] hover:bg-white/[0.05]"
+          ? "border-[var(--info)]/60 bg-[var(--info)]/[0.07]"
+          : "border-white/[0.08] bg-white/[0.03] hover:border-white/[0.14] hover:bg-white/[0.05]"
       }`}
     >
-      <p className="text-caption text-white/45">{metric.label}</p>
-      <div className="mt-1 flex items-end justify-between gap-2">
-        <p className="tnum whitespace-nowrap text-[22px] font-bold leading-tight text-white">
-          {metric.format(current)}
-        </p>
-        <Sparkline values={stats.by_day.map(metric.ofDay)} />
-      </div>
-      <div className="mt-1.5">
-        <Delta
+      <div className="flex items-center justify-between gap-2">
+        <p className="truncate text-caption font-medium text-white/55">{metric.label}</p>
+        <DeltaChip
           current={current}
           previous={previous}
           available={stats.previous_available}
           inPoints={metric.deltaInPoints}
+          title={`较上一周期（${metric.format(previous)}）`}
         />
       </div>
+      <p className="mt-2 whitespace-nowrap leading-none">
+        <span className="tnum text-[26px] font-bold tracking-tight text-white">{value}</span>
+        <span className="ml-1 text-sub font-medium text-white/45">{unit}</span>
+      </p>
+      <div className="mt-3">
+        <SparkBars values={spark} dimmed={!selected} />
+      </div>
+      <p className="tnum mt-2 truncate text-[11px] text-white/35">
+        {stats.previous_available ? `上期 ${metric.format(previous)}` : "暂无上一周期数据"}
+      </p>
     </button>
   );
 }
 
 // ---------------------------------------------------------------------------
-// 主图：当前周期实线 + 上一周期虚线，同一坐标系
+// 主图：当前周期的柱子 + 上一周期的虚线，同一坐标系
 // ---------------------------------------------------------------------------
 
 const CHART_HEIGHT = 220;
 const PAD = { top: 14, right: 12, bottom: 26, left: 46 };
+/** 一根柱子（含间隙）至少占这么宽，摆不下就按周折桶 */
+const MIN_SLOT = 6;
 
 function TrendChart({ stats, metric }: { stats: PlaybackWatchStats; metric: MetricDef }) {
   const [ref, width] = useElementWidth<HTMLDivElement>();
   const [hover, setHover] = useState<number | null>(null);
-  const current = stats.by_day.map(metric.ofDay);
-  const previous = stats.previous_by_day.map(metric.ofDay);
-  const showPrevious = stats.previous_available;
-  const count = current.length;
   const innerWidth = Math.max(0, width - PAD.left - PAD.right);
   const innerHeight = CHART_HEIGHT - PAD.top - PAD.bottom;
+  // 按天合计是离散量，柱子比折线诚实：零值日就是空位，有观看的日子一眼可数。
+  // 90 天在手机上每根不到 4px，这时按周折桶（最新一桶一定是完整的一周）。
+  const weekly = stats.by_day.length > 0 && innerWidth / stats.by_day.length < MIN_SLOT;
+  const buckets = bucketize(stats.by_day, weekly ? 7 : 1);
+  const prevBuckets = bucketize(stats.previous_by_day, weekly ? 7 : 1);
+  const current = buckets.map(metric.ofDays);
+  const previous = prevBuckets.map(metric.ofDays);
+  const showPrevious = stats.previous_available && previous.length === current.length;
+  const count = current.length;
   const yMax = niceMax(Math.max(...current, ...(showPrevious ? previous : [0])));
-  const x = (i: number) => PAD.left + (count > 1 ? (i / (count - 1)) * innerWidth : innerWidth / 2);
+  const slot = count > 0 ? innerWidth / count : 0;
+  const gap = Math.min(6, Math.max(1, slot * 0.3));
+  const barWidth = Math.max(1, slot - gap);
+  const cx = (i: number) => PAD.left + slot * i + slot / 2;
   const y = (v: number) => PAD.top + innerHeight - (v / yMax) * innerHeight;
-  const path = (values: number[]) =>
-    values.map((v, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
-  const area = `${path(current)} L${x(count - 1).toFixed(1)},${(PAD.top + innerHeight).toFixed(1)} L${PAD.left},${(PAD.top + innerHeight).toFixed(1)} Z`;
+  const baseline = PAD.top + innerHeight;
+  const previousLine = previous
+    .map((v, i) => `${i === 0 ? "M" : "L"}${cx(i).toFixed(1)},${y(v).toFixed(1)}`)
+    .join(" ");
   const gridSteps = 4;
-  // x 轴刻度：按宽度定个数（一个「8月12日」约 60px），落在整天上，窄屏就少画几个
+  // x 轴刻度：按宽度定个数（一个「8月12日」约 60px），落在柱子中心
   const tickTarget = Math.max(2, Math.min(6, Math.floor(innerWidth / 70)));
   const tickEvery = Math.max(1, Math.round(count / tickTarget));
-  const ticks = stats.by_day.map((d, i) => i).filter((i) => i % tickEvery === 0 || i === count - 1);
+  const ticks = buckets.map((_, i) => i).filter((i) => i % tickEvery === 0 || i === count - 1);
+  const bucketNote = weekly && metric.bucketNote ? `${metric.bucketNote} ` : "";
 
   const onMove = (event: React.MouseEvent<SVGSVGElement>) => {
-    if (innerWidth <= 0 || count === 0) return;
+    if (slot <= 0) return;
     const rect = event.currentTarget.getBoundingClientRect();
     const px = event.clientX - rect.left - PAD.left;
-    const index = Math.round((px / innerWidth) * (count - 1));
-    setHover(Math.max(0, Math.min(count - 1, index)));
+    setHover(Math.max(0, Math.min(count - 1, Math.floor(px / slot))));
   };
 
   return (
     <div ref={ref} className="relative">
+      <p className="mb-1 px-1 text-caption font-semibold text-white/55">
+        {metric.label}
+        <span className="ml-1.5 font-normal text-white/35">{weekly ? "按周" : "按天"}</span>
+      </p>
       {width > 0 && (
         <svg
           width={width}
@@ -280,7 +380,7 @@ function TrendChart({ stats, metric }: { stats: PlaybackWatchStats; metric: Metr
                   x2={width - PAD.right}
                   y1={yy}
                   y2={yy}
-                  stroke="rgba(255,255,255,0.07)"
+                  stroke={i === 0 ? "rgba(255,255,255,0.16)" : "rgba(255,255,255,0.07)"}
                 />
                 <text
                   x={PAD.left - 8}
@@ -298,18 +398,28 @@ function TrendChart({ stats, metric }: { stats: PlaybackWatchStats; metric: Metr
           {ticks.map((i) => (
             <text
               key={i}
-              x={x(i)}
+              x={cx(i)}
               y={CHART_HEIGHT - 8}
               textAnchor={i === 0 ? "start" : i === count - 1 ? "end" : "middle"}
               fontSize={10}
               fill="rgba(255,255,255,0.4)"
             >
-              {dayLabel(stats.by_day[i].date)}
+              {dayLabel(buckets[i][0].date)}
             </text>
           ))}
+          {current.map((v, i) =>
+            v > 0 ? (
+              <path
+                key={i}
+                d={barPath(cx(i) - barWidth / 2, y(v), barWidth, baseline - y(v))}
+                fill={SERIES_COLOR}
+                opacity={hover === null || hover === i ? 0.95 : 0.55}
+              />
+            ) : null,
+          )}
           {showPrevious && (
             <path
-              d={path(previous)}
+              d={previousLine}
               fill="none"
               stroke={PREVIOUS_COLOR}
               strokeWidth={1.5}
@@ -317,67 +427,73 @@ function TrendChart({ stats, metric }: { stats: PlaybackWatchStats; metric: Metr
               strokeLinejoin="round"
             />
           )}
-          <path d={area} fill={SERIES_COLOR} opacity={0.1} />
-          <path
-            d={path(current)}
-            fill="none"
-            stroke={SERIES_COLOR}
-            strokeWidth={2}
-            strokeLinejoin="round"
-            strokeLinecap="round"
-          />
           {hover !== null && (
             <g>
-              <line
-                x1={x(hover)}
-                x2={x(hover)}
-                y1={PAD.top}
-                y2={PAD.top + innerHeight}
-                stroke="rgba(255,255,255,0.25)"
+              <rect
+                x={cx(hover) - slot / 2}
+                y={PAD.top}
+                width={slot}
+                height={innerHeight}
+                fill="rgba(255,255,255,0.05)"
               />
               {showPrevious && (
-                <circle cx={x(hover)} cy={y(previous[hover])} r={3.5} fill={PREVIOUS_COLOR} />
+                <circle
+                  cx={cx(hover)}
+                  cy={y(previous[hover])}
+                  r={3.5}
+                  fill={PREVIOUS_COLOR}
+                  stroke="rgba(10,12,18,0.9)"
+                  strokeWidth={1.5}
+                />
               )}
-              <circle
-                cx={x(hover)}
-                cy={y(current[hover])}
-                r={4.5}
-                fill={SERIES_COLOR}
-                stroke="rgba(10,12,18,0.9)"
-                strokeWidth={2}
-              />
             </g>
           )}
         </svg>
       )}
       {hover !== null && width > 0 && (
+        // menu-surface 自带 position: relative，定位交给外层
         <div
-          className="menu-surface pointer-events-none absolute z-10 min-w-[10rem] px-3 py-2 text-caption"
+          className="pointer-events-none absolute z-10"
           style={{
-            left: Math.min(Math.max(x(hover) - 80, 0), width - 170),
-            top: 0,
+            left: Math.min(Math.max(cx(hover) - 80, 0), width - 170),
+            top: 24,
           }}
         >
-          <p className="font-semibold text-white/85">{dayLabel(stats.by_day[hover].date)}</p>
-          <p className="tnum mt-1 flex items-center gap-1.5 text-white/80">
-            <span className="inline-block size-2 rounded-full" style={{ background: SERIES_COLOR }} />
-            本周期 {metric.format(current[hover])}
-          </p>
-          {showPrevious && (
-            <p className="tnum mt-0.5 flex items-center gap-1.5 text-white/55">
-              <span
-                className="inline-block h-0 w-2 border-t border-dashed"
-                style={{ borderColor: PREVIOUS_COLOR }}
-              />
-              上一周期 {metric.format(previous[hover])}
-              <span className="text-white/35">{dayLabel(stats.previous_by_day[hover].date)}</span>
+          <div className="menu-surface min-w-[10rem] px-3 py-2 text-caption">
+            <p className="font-semibold text-white/85">
+              {bucketLabel(buckets[hover])}
+              {weekly && buckets[hover].length < 7 && (
+                <span className="ml-1 font-normal text-white/35">{buckets[hover].length} 天</span>
+              )}
             </p>
-          )}
+            <p className="tnum mt-1 flex items-center gap-1.5 text-white/80">
+              <span
+                className="inline-block size-2 rounded-[2px]"
+                style={{ background: SERIES_COLOR }}
+              />
+              本周期 {bucketNote}
+              {metric.format(current[hover])}
+            </p>
+            {showPrevious && (
+              <p className="tnum mt-0.5 flex items-center gap-1.5 text-white/55">
+                <span
+                  className="inline-block h-0 w-2 border-t border-dashed"
+                  style={{ borderColor: PREVIOUS_COLOR }}
+                />
+                上一周期 {bucketNote}
+                {metric.format(previous[hover])}
+                <span className="text-white/35">{bucketLabel(prevBuckets[hover])}</span>
+              </p>
+            )}
+          </div>
         </div>
       )}
       <div className="mt-1 flex items-center gap-4 text-caption text-white/45">
         <span className="flex items-center gap-1.5">
-          <span className="inline-block h-0.5 w-4 rounded" style={{ background: SERIES_COLOR }} />
+          <span
+            className="inline-block size-2.5 rounded-[3px]"
+            style={{ background: SERIES_COLOR }}
+          />
           本周期
         </span>
         {showPrevious && (
@@ -455,9 +571,7 @@ function BreakdownPanel({
                     }}
                   />
                 </div>
-                {row.secondary && (
-                  <p className="mt-1 text-[11px] text-white/35">{row.secondary}</p>
-                )}
+                {row.secondary && <p className="mt-1 text-[11px] text-white/35">{row.secondary}</p>}
               </div>
             </>
           );
@@ -615,10 +729,6 @@ export function WatchStatsPanel({
       </div>
 
       <div className="rounded-2xl border border-white/[0.08] bg-white/[0.02] px-3 pb-3 pt-3">
-        <p className="mb-1 px-1 text-caption font-semibold text-white/55">
-          {metric.label}
-          <span className="ml-1.5 font-normal text-white/35">按天</span>
-        </p>
         <TrendChart stats={stats} metric={metric} />
       </div>
 
