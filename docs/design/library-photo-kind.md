@@ -1,7 +1,12 @@
 # 媒体库「图片」类型：照片的入账、瀑布流展示与全屏查看
 
-> 状态：**v1 方案定稿（2026-09-06），待实施**。产品方向已由交互 demo 确认：
-> 瀑布流（按月分组、组内最短列放置）、点击全屏查看。
+> 状态：**v1 已实施（2026-09-06）**。产品方向由交互 demo 确认：瀑布流
+> （按月分组、组内最短列放置）、点击全屏查看。落点：`profile.py`（档案行与
+> 三个能力位）、`media_probe.probe_image`、`thumbs._build_image_thumbnail`、
+> `items.build_library_index(sort)`、`/libraries/files/{id}/original`、
+> `watch.py` 按库扩展名判定、前端 `photo-wall.tsx` / `photo-lightbox.tsx`；
+> 回归测试 `tests/api/test_library_photo_kind.py`。
+> 实施时与定稿方案的两处偏离见第 6 节。
 > 关联文档：[library-other-kind.md](library-other-kind.md)（形态 × 来源能力档案，
 > 本文所有复用的地基）、[library.md](library.md)、[library-manage.md](library-manage.md)、
 > [library-file-recycle.md](library-file-recycle.md)、[member-management.md](member-management.md)。
@@ -322,3 +327,22 @@ Infuse 不支持照片库，Jellyfin 官方客户端的 `photos` 视图留二期
 | 同日次序 | 文件名 | 不加列；精确到秒留待 `captured_at` |
 | 原图尺寸 | `library_file.resolution` 存 `WxH` | 不加列 |
 | 探测/缩略图两次打开 | 接受 | 探测只读头，网络挂载额外流量可忽略 |
+
+## 6. 实施记录（2026-09-06）
+
+按第 4 节的 11 项全部落地，与定稿方案的偏离只有两处：
+
+1. **灯箱是独立组件，没有扩展 `ImageLightbox`**。搜索页的灯箱是"一组外链 URL
+   的浏览器"，图片库翻的是分页加载的条目列表、每张有缩略图与原图两级、有台账
+   信息，两种数据模型硬塞进一个组件只会让搜索页那份变复杂。`photo-lightbox.tsx`
+   沿用同一视觉与层叠约定，搜索页与详情页的调用方零改动。
+2. **灯箱一期没有「移到回收站」**。核实后发现现有的文件级删除
+   （`delete_single_file`）是从磁盘删除并连带清掉同主干的 sidecar 图片
+   （`IMG_001.jpg` 会带走 `IMG_001-edited.jpg`），用户可见的回收站只服务于
+   订阅洗版的替换文件，没有"把一个文件移进回收站"的接口。给照片做一条安全的
+   删除路径（不碰同主干文件、进回收站可恢复）是独立的一小步，留待下一期；
+   一期灯箱只有「下载原图」。
+
+顺手收掉的旧债：`primary_aspect` 的兜底比例改读能力档案的 `default_aspect`
+（此前写死 TMDB 2:3 / 本地 16:9），`local_identity.py` 三处 `kind is VIDEO`
+改为按来源分叉，`_wall_page_ids` 的内容时间排序第二键改为标题。

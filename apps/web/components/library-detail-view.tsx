@@ -16,6 +16,8 @@ import { LibraryFormDialog } from "@/components/library-form-dialog";
 import { LIBRARY_KIND_META } from "@/components/library-kind-meta";
 import { effectiveLibraryId, libraryCardAction } from "@/components/library-view";
 import { LibraryOrganizeDialog } from "@/components/library-organize-dialog";
+import { PhotoLightbox } from "@/components/photo-lightbox";
+import { PhotoMonthIndex, PhotoWall, usePhotoWallDensity, type PhotoWallDensity } from "@/components/photo-wall";
 import { PosterCardVisual, type PosterVisualItem } from "@/components/poster-card";
 import {
   type LibraryCapabilities,
@@ -283,7 +285,11 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
         limit: PROVISIONAL_LIMIT,
       }).catch(() => [] as LibraryItem[]),
       listLibraryItemIds(libraryId).catch(() => []),
-      listLibraryItemIndex(libraryId).catch(() => []),
+      // 跳转索引与当前排序同口径：按标题是 A-Z 首字母档，按内容时间是月份档
+      listLibraryItemIndex(
+        libraryId,
+        wallSort.current === "release_date" ? "release_date" : "title",
+      ).catch(() => []),
       canManageLibraries
         ? keepOnError(listUnidentifiedLibraryFiles(libraryId))
         : Promise.resolve([]),
@@ -393,7 +399,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
       // 位置又拽回去（表现为"点了字母，一秒后自己跳回墙首"）
       reloadSeq.current += 1;
       wallOffset.current = offset;
-      listLibraryItems(libraryId, { sort: "title", limit: WALL_PAGE_SIZE, offset })
+      listLibraryItems(libraryId, { sort: wallSort.current, limit: WALL_PAGE_SIZE, offset })
         .then((page) => {
           wallLoaded.current = Math.max(WALL_PAGE_SIZE, page.length);
           setWallStart(offset);
@@ -534,6 +540,18 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   // 其他库（本地内容、无结构）：墙按内容时间倒序（家庭录像按拍摄日期最自然），
   // 没有拼音字母档
   const timeline = Boolean(library && !library.capabilities.scraped);
+  // 图片库：条目只看不播，墙是按月分组的瀑布流，点击开灯箱而不是进详情页
+  // （docs/design/library-photo-kind.md 3.2）
+  const photoWall = Boolean(library && !library.capabilities.playable);
+  const [photoDensity, setPhotoDensity] = usePhotoWallDensity();
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  // 月份索引给出全库每月张数，墙上的月份标题据此显示总数而不是已加载数
+  const photoMonthCounts = useMemo(
+    () => (photoWall ? new Map(wallIndex.map((entry) => [entry.initial, entry.count])) : undefined),
+    [photoWall, wallIndex],
+  );
+  // 灯箱翻到最后一张时：已加载列表被跳转替换过也无妨，loadMore 按当前窗口追加
+  const closeLightbox = useCallback(() => setLightboxIndex(null), []);
   const wideCards = Boolean(library && library.capabilities.default_aspect > 1);
   // 其他库的主图两种形态并存：刮削器放好 -poster 的是 2:3 竖版海报，只有 -thumb /
   // 抓帧的是横版缩略图。竖横混在一个网格里对不齐，按主图比例切成两区，各自用
@@ -803,8 +821,8 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
           ) : null}
         </div>
         <p className="text-on-image mt-1.5 truncate text-ui text-[var(--text-muted)] max-md:text-sub">
-          {meta.label}库 · {stats.item_count} 部作品 · {stats.file_count} 个文件 ·{" "}
-          {formatBytes(stats.total_size_bytes)}
+          {meta.label}库 · {stats.item_count} {library.kind === "photo" ? "张" : "部作品"} ·{" "}
+          {stats.file_count} 个文件 · {formatBytes(stats.total_size_bytes)}
         </p>
         {/* 这一行是**那一次扫描的成绩单**，每个数都是历史（last_scan 只在扫描
             收尾时覆写，见 _last_scan_view）。所以说「未识别 N」——它是当轮
@@ -1007,7 +1025,21 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
                 这一行被索引条撑高，分区会被推到一大段空白之下 */}
             <div className="flex items-start gap-2 px-6 max-md:gap-1 max-md:px-4">
               <div className="min-w-0 flex-1">
-                {splitWall && wallGroups ? (
+                {photoWall ? (
+                  <div ref={wallGrid}>
+                    <div className="mb-4 flex items-center justify-end gap-2">
+                      <span className="text-caption text-[var(--text-faint)]">密度</span>
+                      <PhotoDensitySwitch value={photoDensity} onChange={setPhotoDensity} />
+                    </div>
+                    <PhotoWall
+                      items={items}
+                      density={photoDensity}
+                      monthCounts={photoMonthCounts}
+                      onOpen={setLightboxIndex}
+                      workingLabelOf={workingLabelOf}
+                    />
+                  </div>
+                ) : splitWall && wallGroups ? (
                   <>
                     {/* 标题不带数字：分区是在已加载的分页上切的，数字会随滚动加载变 */}
                     <h3 className="text-on-image mb-4 text-body-lg font-semibold text-white/85">
@@ -1109,8 +1141,22 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
               {!probing && !timeline && (
                 <WallIndexBar index={wallIndex} active={activeWallInitial} onJump={jumpTo} />
               )}
+              {photoWall && (
+                <PhotoMonthIndex index={wallIndex} active={activeWallInitial} onJump={jumpTo} />
+              )}
             </div>
           </div>
+          {photoWall && lightboxIndex !== null && items[lightboxIndex] && (
+            <PhotoLightbox
+              libraryId={libraryId}
+              items={items}
+              index={lightboxIndex}
+              hasMore={wallHasMore}
+              onIndexChange={setLightboxIndex}
+              onReachEnd={loadMore}
+              onClose={closeLightbox}
+            />
+          )}
         </>
       )}
 
@@ -1367,7 +1413,7 @@ const InventoryCell = memo(function InventoryCell({
     // 本地条目没有 TMDB id：占位 id 只做 key，不会被当成外部 id 请求
     id: item.tmdb_id != null ? String(item.tmdb_id) : `local:${item.media_item_id}`,
     source: "tmdb",
-    type: item.kind === "video" ? undefined : item.kind,
+    type: item.kind === "video" || item.kind === "photo" ? undefined : item.kind,
     title: item.title,
     year: item.year ?? undefined,
     rating: 0,
@@ -1427,6 +1473,38 @@ const InventoryCell = memo(function InventoryCell({
     </div>
   );
 });
+
+/** 图片墙的密度切换：紧凑 / 标准 / 宽松三档目标列宽 */
+function PhotoDensitySwitch({
+  value,
+  onChange,
+}: {
+  value: PhotoWallDensity;
+  onChange: (next: PhotoWallDensity) => void;
+}) {
+  const options: [PhotoWallDensity, string][] = [
+    ["compact", "紧凑"],
+    ["standard", "标准"],
+    ["loose", "宽松"],
+  ];
+  return (
+    <div role="group" aria-label="密度" className="flex rounded-lg border border-white/[0.08] bg-white/[0.05] p-0.5">
+      {options.map(([key, label]) => (
+        <button
+          key={key}
+          type="button"
+          aria-pressed={value === key}
+          onClick={() => onChange(key)}
+          className={`rounded-md px-2.5 py-1 text-caption transition-colors ${
+            value === key ? "bg-white/[0.12] text-white" : "text-[var(--text-muted)] hover:text-white"
+          }`}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 /**
  * 海报墙底部的滚动加载哨兵。

@@ -65,6 +65,7 @@ from movieclaw_api.services.library.bluray import (
 from movieclaw_api.services.library.layout import (
     SCAN_VIDEO_EXTS,
     STRM_EXT,
+    VIDEO_EXTS,
     entry_dirs,
     season_from_dir,
     trailing_index_episode,
@@ -168,6 +169,9 @@ _IGNORE_MARKERS = ("sample",)
 _SYSTEM_DIRS = {
     "@eadir",
     ".deletedbytmm",
+    # 相册工具的缩略图/原图备份目录：不挡的话图片库一张照片入账两次
+    ".thumbnails",
+    ".picasaoriginals",
     "metadata",
     ".actors",
     "lost+found",
@@ -251,7 +255,12 @@ _ID_SOURCE_NAMES = {
     IdentitySource.PATH_TAG: "目录名 tmdbid 标记",
     IdentitySource.NFO: "NFO",
 }
-_KIND_NAMES = {MediaKind.MOVIE: "电影", MediaKind.TV: "剧集", MediaKind.VIDEO: "其他"}
+_KIND_NAMES = {
+    MediaKind.MOVIE: "电影",
+    MediaKind.TV: "剧集",
+    MediaKind.VIDEO: "其他",
+    MediaKind.PHOTO: "图片",
+}
 
 # 钉死身份的年份反证阈值（年）：同一部作品在 TMDB 与文件名上的年份不会差
 # 这么多；超出才有资格参与"推翻用户显式声明"的判定（见 _pinned_mismatch）
@@ -915,7 +924,13 @@ async def _scan(
                 continue
             scanned_roots.append(str(root_path))
             walker = (
-                _walk_videos(root_path, unreadable_dirs, dir_files, ignore=profile.ignore_rules)
+                _walk_videos(
+                    root_path,
+                    unreadable_dirs,
+                    dir_files,
+                    ignore=profile.ignore_rules,
+                    exts=profile.media_exts,
+                )
                 if only_top is None
                 else _walk_videos(
                     root_path,
@@ -923,6 +938,7 @@ async def _scan(
                     dir_files,
                     only_top=only_top,
                     ignore=profile.ignore_rules,
+                    exts=profile.media_exts,
                 )
             )
             while True:
@@ -1950,6 +1966,7 @@ def _walk_videos(
     only_top: set[str] | None = None,
     *,
     ignore: IgnoreProfile = IgnoreProfile.SCRAPED,
+    exts: frozenset[str] | set[str] = SCAN_VIDEO_EXTS,
 ):
     """深度遍历，产出 (路径, 是否原盘目录)。
 
@@ -1979,8 +1996,14 @@ def _walk_videos(
     ``ignore``：忽略口径（能力档案 ``ignore_rules``）。``SCRAPED`` 是影视库的
     全套花絮/样片规则；``PLAIN`` 只挡隐藏目录、系统目录与主干精确等于
     ``sample`` 的文件——本地内容库里「花絮」「clips」都是正片。
+
+    ``exts``：入账对象的扩展名集合（能力档案 ``media_exts``）。影视库与其他库
+    是视频 + strm，图片库是图片；影视库目录里的 jpg 是海报 sidecar、图片库
+    目录里的 mp4 不是内容，都按库的口径挡在门外。
     """
     plain = ignore is IgnoreProfile.PLAIN
+    # 光盘镜像只在收视频的库里是内容；图片库目录里的 .iso 不是
+    accept_iso = not VIDEO_EXTS.isdisjoint(exts)
     # 栈元素 (目录路径, 是否做原盘判定, 第一级名字限制)：根不做原盘判定
     # 且带范围限制；下钻的子目录都要判原盘、不再限制
     stack: list[tuple[str, bool, set[str] | None]] = [(str(root), False, only_top)]
@@ -2019,7 +2042,7 @@ def _walk_videos(
                 continue
             lower = name.lower()
             suffix = Path(lower).suffix
-            if suffix not in SCAN_VIDEO_EXTS and suffix != ".iso":
+            if suffix not in exts and not (accept_iso and suffix == ".iso"):
                 continue
             if plain:
                 if Path(lower).stem == "sample":
@@ -3074,6 +3097,7 @@ async def _identify_with_fallback(
         spec=spec,
         evidence=evidence,
         is_disc=is_disc,
+        scraped=profile.scraped,
     )
     item = await media_service.ensure_local_item(kind, identity, library_id=library.id)
     return replace(
@@ -3107,6 +3131,7 @@ async def _refresh_local_identity(
         spec=None,
         evidence=None,
         is_disc=False,
+        scraped=profile_of(library).scraped,
     )
     if not identity.from_nfo:
         return False

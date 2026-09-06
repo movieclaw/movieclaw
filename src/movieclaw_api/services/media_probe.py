@@ -23,6 +23,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from movieclaw_api.services.library.layout import IMAGE_EXTS
+
 logger = logging.getLogger("movieclaw_api.media_probe")
 
 # ffprobe 缺失只告警一次（每次探测都刷屏毫无意义）
@@ -67,8 +69,15 @@ class MediaSpec:
 
 
 def probe_media(path: str | Path) -> MediaSpec | None:
-    """探测单个视频文件；ffprobe 缺失或探测失败返回 None（调用方规格置 NULL）。"""
+    """探测单个媒体文件；ffprobe 缺失或探测失败返回 None（调用方规格置 NULL）。
+
+    图片文件（扩展名在 ``IMAGE_EXTS``）分派给 ``probe_image``：不起 ffprobe
+    子进程，用 Pillow 只读文件头。两者返回**同一个** ``MediaSpec``，下游的
+    入账、内容时间回落、预取、失败记忆、退避补探全部不用区分。
+    """
     global _missing_warned
+    if Path(path).suffix.lower() in IMAGE_EXTS:
+        return probe_image(path)
     try:
         proc = subprocess.run(
             [
@@ -105,6 +114,68 @@ def probe_media(path: str | Path) -> MediaSpec | None:
     except json.JSONDecodeError:
         return None
     return _parse_probe(payload, include_mpegts_pids=Path(path).suffix.lower() == ".m2ts")
+
+
+# --- 图片探测（docs/design/library-photo-kind.md 2.3）------------------------
+
+# EXIF 标签号：拍摄时间在 Exif 子 IFD，方向在主 IFD
+_EXIF_DATETIME_ORIGINAL = 0x9003
+_EXIF_DATETIME = 0x0132
+_EXIF_ORIENTATION = 0x0112
+_EXIF_IFD = 0x8769
+# 方向 5–8 是带 90° 旋转的，显示时宽高对调
+_ROTATED_ORIENTATIONS = {5, 6, 7, 8}
+
+
+def probe_image(path: str | Path) -> MediaSpec | None:
+    """用 Pillow 读图片的尺寸与 EXIF 拍摄时间，装进 ``MediaSpec``。
+
+    - ``resolution`` 存原图像素尺寸 ``宽x高``（方向标签为旋转时已对调），
+      灯箱的信息面板从这里读，不为它加列；
+    - 拍摄时间 ``DateTimeOriginal``（形如 ``2024:05:01 10:20:30``）原样放进
+      ``tag_date``：本地身份的 ``_content_date`` 已经会解析这种冒号日期，
+      于是 ``release_date`` = 拍摄日 → 时间线排序、年份都不用另写；
+    - ``audio_streams`` / ``subtitle_streams`` **必须是空列表而不是 None**：
+      定期对账的补探条件是 ``audio_streams IS NULL``，写 None 会让每张照片
+      每轮都被重探；
+    - 只 ``Image.open`` 不 ``load``：Pillow 惰性解码，读尺寸与 EXIF 只碰文件头，
+      网络挂载上也是几十 KB 的事；
+    - 解压炸弹（``DecompressionBombError``）与损坏文件都按探测失败处理，
+      一张畸形图不能打断整轮扫描。
+    """
+    from PIL import Image, UnidentifiedImageError
+
+    try:
+        with Image.open(path) as img:
+            width, height = img.size
+            exif = img.getexif()
+            orientation = exif.get(_EXIF_ORIENTATION)
+            taken: str | None = None
+            try:
+                sub = exif.get_ifd(_EXIF_IFD)
+            except (KeyError, TypeError, ValueError):
+                sub = {}
+            raw = sub.get(_EXIF_DATETIME_ORIGINAL) or exif.get(_EXIF_DATETIME)
+            if isinstance(raw, bytes):
+                raw = raw.decode("ascii", errors="ignore")
+            if isinstance(raw, str) and raw.strip():
+                taken = raw.strip()
+    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as exc:
+        logger.warning("图片探测失败：%s（%s）", path, exc)
+        return None
+    if isinstance(orientation, int) and orientation in _ROTATED_ORIENTATIONS:
+        width, height = height, width
+    return MediaSpec(
+        resolution=f"{width}x{height}" if width and height else None,
+        video_codec=None,
+        hdr=None,
+        bit_depth=None,
+        duration_seconds=None,
+        bit_rate=None,
+        audio_streams=[],
+        subtitle_streams=[],
+        tag_date=taken,
+    )
 
 
 # --- 探测失败记忆（媒体库入库/补探/点名重探共用）---------------------------

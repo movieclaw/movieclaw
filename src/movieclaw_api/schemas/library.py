@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from enum import StrEnum
 from typing import Literal
 
@@ -221,7 +221,12 @@ class LibraryCapabilitiesView(BaseModel):
     subscribable: bool = Field(description="可作为订阅入库目标")
     write_nfo: bool = Field(description="向媒体目录写 NFO/图片镜像")
     default_aspect: float = Field(description="卡片主图默认宽高比（无真实尺寸时）")
-    jellyfin_collection: str = Field(description="Jellyfin 视图类型：movies / tvshows / homevideos")
+    jellyfin_collection: str = Field(
+        description="Jellyfin 视图类型：movies / tvshows / homevideos / photos"
+    )
+    playable: bool = Field(
+        default=True, description="条目可播放；假 = 只可查看（图片库：点击开灯箱而非播放器）"
+    )
 
 
 class LibraryView(BaseModel):
@@ -400,6 +405,14 @@ class LibraryItemView(BaseModel):
     poster_url: str | None
     primary_aspect: float = Field(
         default=0.6667, description="主图宽高比（真实像素尺寸或来源惯例），卡片按它排版"
+    )
+    release_date: date | None = Field(
+        default=None,
+        description="内容日期：影视为上映/首播日，本地条目为拍摄/录制日（图片库按月分组与悬停日期用）",
+    )
+    primary_file_id: int | None = Field(
+        default=None,
+        description="条目的首个在位文件 id（一文件一条目的库用它取原图；多文件条目取最早入账的）",
     )
     file_count: int
     total_size_bytes: int

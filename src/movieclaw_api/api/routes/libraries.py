@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import mimetypes
 from pathlib import Path, PurePath
 from typing import Annotated, Literal
+from urllib.parse import quote
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, Query, Request, Response
 from fastapi.responses import FileResponse
@@ -101,7 +103,7 @@ from movieclaw_api.services.library.items import (
 from movieclaw_api.services.library.items import (
     search_library_items as search_visible_library_items,
 )
-from movieclaw_api.services.library.layout import entry_dir_of
+from movieclaw_api.services.library.layout import IMAGE_EXTS, entry_dir_of
 from movieclaw_api.services.library.organize import (
     build_organize_plan,
     enqueue_organize_job,
@@ -1793,23 +1795,27 @@ async def list_library_item_ids(
 @router.get(
     "/{library_id}/item-index",
     response_model=ApiResponse[list[LibraryIndexEntryView]],
-    summary="海报墙的 A-Z 首字母索引（按标题排序下的分档与起始位置）",
+    summary="海报墙的跳转索引（按标题：A-Z 首字母档；按内容时间：月份档）",
     operation_id="ui.library.items.index",
     openapi_extra={"x-cli-hidden": True},
     dependencies=[Depends(require_library_visible)],
 )
 async def list_library_item_index(
     library_id: int,
+    sort: Literal["title", "release_date"] = Query(
+        default="title", description="title=首字母档；release_date=月份档（图片库/其他库时间线）"
+    ),
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[list[LibraryIndexEntryView]]:
     """索引条数据：每档的条目数与起始 offset，只回非空档。
 
-    与 ``/items?sort=title`` 共用同一份拼音排序，因此 offset 直接可用——
-    前端点「S」就是拉 ``?sort=title&offset=<该档 offset>``。
+    与 ``/items?sort=<同一排序>`` 共用同一份排序，因此 offset 直接可用——
+    前端点「S」就是拉 ``?sort=title&offset=<该档 offset>``，点「2026-08」
+    就是拉 ``?sort=release_date&offset=<该档 offset>``。
     """
 
     await LibraryConfigService(session).get(library_id)  # 404 检查
-    buckets = await build_library_index(session, library_id)
+    buckets = await build_library_index(session, library_id, sort)
     return ok(
         [
             LibraryIndexEntryView(initial=initial, count=count, offset=offset)
@@ -2177,6 +2183,39 @@ async def get_file_thumb(
     if thumb is None:
         raise NotFoundException("该文件没有本地缩略图")
     return FileResponse(thumb, headers={"Cache-Control": "private, max-age=3600"})
+
+
+@router.get(
+    "/files/{file_id}/original",
+    response_class=FileResponse,
+    summary="图片库的原图（灯箱全屏查看与下载；按台账行推导路径、按库可见性鉴权）",
+    operation_id="ui.library.files.original",
+    openapi_extra={"x-cli-hidden": True},
+)
+async def get_file_original(
+    file_id: int,
+    download: bool = Query(default=False, description="true=作为附件下载（Content-Disposition）"),
+    principal: Principal = Depends(require_login),
+    session: AsyncSession = Depends(get_session),
+) -> FileResponse:
+    """只服务图片文件（docs/design/library-photo-kind.md 2.7）：视频走播放器与直连，
+    不从这里出。路径由台账行推导（客户端只给 id），不存在路径注入面；
+    ``FileResponse`` 自带 Last-Modified / ETag / Range。原图含完整 EXIF，
+    库的可见范围就是它的访问边界。
+    """
+    row = await session.get(LibraryFile, file_id)
+    if row is None or Path(row.file_path).suffix.lower() not in IMAGE_EXTS:
+        raise NotFoundException("台账文件不存在或不是图片")
+    if row.library_id is not None:
+        await assert_library_visible(session, principal, row.library_id)
+    path = Path(row.file_path)
+    if not await asyncio.to_thread(path.is_file):
+        raise NotFoundException("图片文件不在磁盘上（可能已被移动或删除）")
+    media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    headers = {"Cache-Control": "private, max-age=3600"}
+    if download:
+        headers["Content-Disposition"] = f"attachment; filename*=UTF-8''{quote(path.name)}"
+    return FileResponse(path, media_type=media_type, headers=headers)
 
 
 @router.get(

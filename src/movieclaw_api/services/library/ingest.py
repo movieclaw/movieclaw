@@ -2482,6 +2482,7 @@ async def _ingest_raw_drop(
             root=Path(root),
             file=final,
             spec=file_spec,
+            scraped=False,  # 原样落库只发生在本地内容库（其他库）
         )
         local_item = await media_service.ensure_local_item(kind, identity, library_id=library.id)
         assert local_item.id is not None

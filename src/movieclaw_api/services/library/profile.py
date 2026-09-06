@@ -21,6 +21,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from movieclaw_api.exceptions import BadRequestException
+from movieclaw_api.services.library.layout import IMAGE_EXTS, SCAN_VIDEO_EXTS
 from movieclaw_db.models.media_item import MediaSource
 from movieclaw_media.models import MediaKind
 
@@ -57,8 +58,17 @@ class LibraryProfile:
     write_nfo: bool
     subscribable: bool  # 可作为订阅/自动路由的目标库
     jellyfin_type: str  # 条目对外报的 Jellyfin 类型：Movie / Series / Video
-    jellyfin_collection: str  # 库视图的 CollectionType：movies / tvshows / homevideos
+    jellyfin_collection: str  # 库视图的 CollectionType：movies / tvshows / homevideos / photos
     default_aspect: float  # 无主图时卡片的兜底长宽比（有主图按真实尺寸）
+    # 入账对象的扩展名集合：扫描遍历与实时监听都按它过滤（影视库目录里的
+    # jpg 是海报 sidecar 不是内容；图片库目录里的 mp4 同样不是）
+    media_exts: frozenset[str]
+    # 条目可播放：假 = 只可看（图片）。前端卡片点击/播放路由、Jellyfin 的
+    # 可播放类型都读它，没有它就得回到 ``kind == "photo"`` 的字面比较
+    playable: bool
+    # 是否对 Jellyfin 兼容层暴露库视图与最新媒体：Infuse 不支持照片库，
+    # 图片库一期不暴露（docs/design/library-photo-kind.md 2.10）
+    jellyfin_exposed: bool
 
     @property
     def episodic(self) -> bool:
@@ -72,6 +82,9 @@ class LibraryProfile:
 
 _POSTER = 2 / 3
 _THUMB = 16 / 9
+_PHOTO = 4 / 3
+_VIDEO_EXTS = frozenset(SCAN_VIDEO_EXTS)
+_IMAGE_EXTS = frozenset(IMAGE_EXTS)
 
 PROFILES: dict[tuple[str, str], LibraryProfile] = {
     (MediaKind.MOVIE.value, MediaSource.TMDB): LibraryProfile(
@@ -83,6 +96,9 @@ PROFILES: dict[tuple[str, str], LibraryProfile] = {
         ignore_rules=IgnoreProfile.SCRAPED,
         write_nfo=True,
         subscribable=True,
+        media_exts=_VIDEO_EXTS,
+        playable=True,
+        jellyfin_exposed=True,
         jellyfin_type="Movie",
         jellyfin_collection="movies",
         default_aspect=_POSTER,
@@ -96,6 +112,9 @@ PROFILES: dict[tuple[str, str], LibraryProfile] = {
         ignore_rules=IgnoreProfile.SCRAPED,
         write_nfo=True,
         subscribable=True,
+        media_exts=_VIDEO_EXTS,
+        playable=True,
+        jellyfin_exposed=True,
         jellyfin_type="Series",
         jellyfin_collection="tvshows",
         default_aspect=_POSTER,
@@ -112,6 +131,25 @@ PROFILES: dict[tuple[str, str], LibraryProfile] = {
         jellyfin_type="Video",
         jellyfin_collection="homevideos",
         default_aspect=_THUMB,
+        media_exts=_VIDEO_EXTS,
+        playable=True,
+        jellyfin_exposed=True,
+    ),
+    (MediaKind.PHOTO.value, MediaSource.LOCAL): LibraryProfile(
+        kind=MediaKind.PHOTO,
+        source=MediaSource.LOCAL,
+        label="图片",
+        scraped=False,
+        naming=False,
+        ignore_rules=IgnoreProfile.PLAIN,
+        write_nfo=False,
+        subscribable=False,
+        jellyfin_type="Photo",
+        jellyfin_collection="photos",
+        default_aspect=_PHOTO,
+        media_exts=_IMAGE_EXTS,
+        playable=False,
+        jellyfin_exposed=False,
     ),
 }
 
@@ -120,6 +158,7 @@ KIND_LABELS: dict[MediaKind, str] = {
     MediaKind.MOVIE: "电影",
     MediaKind.TV: "剧集",
     MediaKind.VIDEO: "其他",
+    MediaKind.PHOTO: "图片",
 }
 
 
@@ -168,7 +207,16 @@ def capabilities_of(profile: LibraryProfile) -> dict:
         "write_nfo": profile.write_nfo,
         "default_aspect": round(profile.default_aspect, 4),
         "jellyfin_collection": profile.jellyfin_collection,
+        "playable": profile.playable,
     }
+
+
+def jellyfin_hidden_kinds() -> set[str]:
+    """不对 Jellyfin 兼容层暴露的形态集合（库视图 / 最新媒体查询用 ``kind NOT IN``）。
+
+    按能力位聚合而不是写死 ``"photo"``：将来某个形态改为暴露只改档案表。
+    """
+    return {kind for (kind, _source), profile in PROFILES.items() if not profile.jellyfin_exposed}
 
 
 def library_kind_options() -> list[dict]:

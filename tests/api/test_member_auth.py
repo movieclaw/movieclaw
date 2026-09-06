@@ -519,6 +519,10 @@ _MEMBER_ALLOWLIST = {
     ("GET", "/api/v1/libraries"),
     ("GET", "/api/v1/search/library-items"),
     ("GET", "/api/v1/libraries/files/{file_id}/thumb"),
+    # 图片库的原图（灯箱全屏查看与下载）是成员的浏览面；路径由台账行推导、
+    # 接口自身按文件所属库校验成员可见性，只服务图片扩展名的文件
+    # （docs/design/library-photo-kind.md 2.7）
+    ("GET", "/api/v1/libraries/files/{file_id}/original"),
     # 字幕预览是媒体详情的浏览面；接口自身按文件所属库校验成员可见性，
     # 且轨引用只能命中该文件已登记的内封/外挂字幕，不能读取任意路径。
     ("GET", "/api/v1/libraries/files/{file_id}/subtitles/preview"),

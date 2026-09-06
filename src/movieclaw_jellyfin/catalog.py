@@ -129,7 +129,9 @@ class ItemBundle:
 # 只有 tv 是文件夹型（Series → Season → Episode）；movie 与 video 都是可播叶子，
 # 区别只在 Type 字面：video 对应真 Jellyfin 家庭录像库里的 ``Video`` 条目。
 # 全层只认这张表，不再散落 ``kind == "movie"`` 字面比较
-_ITEM_TYPES = {"movie": "Movie", "tv": "Series", "video": "Video"}
+# photo：图片库一期不对 Jellyfin 暴露（库视图与最新媒体按能力位过滤），映射
+# 只为万一有条目 GUID 被直接请求时不至于 KeyError
+_ITEM_TYPES = {"movie": "Movie", "tv": "Series", "video": "Video", "photo": "Photo"}
 LEAF_ITEM_TYPES = frozenset({"Movie", "Video"})
 PLAYABLE_TYPES = frozenset({"Movie", "Video", "Episode"})
 
@@ -142,6 +144,12 @@ def item_type_of(kind: str) -> str:
 def is_leaf_kind(kind: str) -> bool:
     """该形态是否为可播叶子（单元恒 (0,0)，没有季集层级）。"""
     return item_type_of(kind) in LEAF_ITEM_TYPES
+
+
+def _hidden_kinds() -> set[str]:
+    from movieclaw_api.services.library.profile import jellyfin_hidden_kinds
+
+    return jellyfin_hidden_kinds()
 
 
 def collection_type_of(library: Library) -> str:
@@ -657,6 +665,8 @@ async def latest_unit_candidates(
             LibraryFile.in_place(),
             # 影视库里认不出的文件（临时本地条目）不进「最新媒体」：那是作品语义
             LibraryFile.unidentified_code.is_(None),
+            # 不对 Jellyfin 暴露的形态（图片）不进「最新媒体」
+            MediaItem.kind.not_in(_hidden_kinds()),
         )
     )
     if library_id is not None:
@@ -1021,8 +1031,12 @@ def person_dto(ctx: DtoContext, person: Person) -> dict[str, Any]:
 async def list_libraries(
     session: AsyncSession, *, visible_ids: set[int] | None = None
 ) -> list[Library]:
-    """全部库；``visible_ids`` 限定成员可见库（None=不受限）。"""
-    q = select(Library)
+    """全部对 Jellyfin 暴露的库；``visible_ids`` 限定成员可见库（None=不受限）。
+
+    不暴露的形态（图片库，能力位 ``jellyfin_exposed=False``）在这里统一挡掉，
+    五个调用方（视图、计数、最新媒体……）不必各自判断。
+    """
+    q = select(Library).where(Library.kind.not_in(_hidden_kinds()))  # type: ignore[union-attr]
     if visible_ids is not None:
         q = q.where(Library.id.in_(visible_ids))
     return list((await session.execute(q)).scalars())

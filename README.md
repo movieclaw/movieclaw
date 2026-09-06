@@ -132,6 +132,7 @@ respects the notch and home-indicator safe areas.
 - When it isn't sure, it doesn't guess. Ambiguous items land in a *pending identification* queue with a plain-language reason — "3 equally plausible matches; not choosing for you" — and one confirmation resolves the whole group.
 - Scraping is a matter of taste, so it's configurable: language, artwork, naming templates, NFO files, episode stills — all under **Settings → Scraping & Organizing**. Don't like an auto-picked poster? Replace it and lock it in.
 - Not everything is a movie or a show. An **"Other"** library takes home videos, recordings, and anything you'd rather not scrape: nothing gets identified or renamed, a sidecar NFO is honored when present, otherwise the file name is the title, and thumbnails are grabbed from the video itself. Files a movie or TV library can't identify stay visible and playable too, flagged for you to claim later.
+- Photos have a home too. A **"Photos"** library scans every image under its folders and lays them out as a Pinterest-style masonry wall grouped by month, ordered by EXIF capture time. Click any photo to view the original full-screen, zoom with the wheel, flip with the arrow keys. The wall only ever loads thumbnails downscaled from the originals — never the originals themselves.
 
 ### Playback
 

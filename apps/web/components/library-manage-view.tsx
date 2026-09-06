@@ -49,7 +49,7 @@ import { useIsMobile } from "@/lib/use-media-query";
 import { useTabParam } from "@/lib/use-tab-param";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
 
-const KIND_ORDER: LibraryKind[] = ["movie", "tv", "video"];
+const KIND_ORDER: LibraryKind[] = ["movie", "tv", "video", "photo"];
 
 /** 指针落在目标行的上半还是下半：决定放到它之前还是之后。 */
 function dropPosition(e: React.DragEvent): "before" | "after" {

@@ -15,7 +15,7 @@ export type LibraryInventoryAction = "follow" | "backfill" | "none";
  * 是否已经订阅属于全局用户状态，由海报组件在渲染操作前另行拦截。
  */
 export function libraryInventoryAction(
-  kind: "movie" | "tv" | "video",
+  kind: "movie" | "tv" | "video" | "photo",
   summary: LibraryInventorySummary | null,
 ): LibraryInventoryAction {
   if (kind !== "tv" || summary === null) return "none";

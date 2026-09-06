@@ -119,7 +119,7 @@ function LibraryResultCell({ item, libraryId }: { item: LibraryItem; libraryId: 
   const visual: PosterVisualItem = {
     id: item.tmdb_id != null ? String(item.tmdb_id) : `local:${item.media_item_id}`,
     source: "tmdb",
-    type: item.kind === "video" ? undefined : item.kind,
+    type: item.kind === "video" || item.kind === "photo" ? undefined : item.kind,
     title: item.title,
     year: item.year ?? undefined,
     rating: 0,

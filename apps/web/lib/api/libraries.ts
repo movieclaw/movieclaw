@@ -1,4 +1,4 @@
-import { request } from "@/lib/http";
+import { request, resolveRequestUrl } from "@/lib/http";
 import type { ItemSource, LibraryKind, MediaType } from "@/lib/media-types";
 
 /** 后端统一响应信封（见 movieclaw_api.schemas.response.ApiResponse） */
@@ -57,6 +57,8 @@ export interface LibraryCapabilities {
   write_nfo: boolean;
   /** 卡片主图默认宽高比（无真实尺寸时） */
   default_aspect: number;
+  /** 条目可播放；假 = 只可查看（图片库：点击开灯箱而非播放器） */
+  playable: boolean;
   /** Jellyfin 视图类型：movies / tvshows / homevideos */
   jellyfin_collection: string;
 }
@@ -258,6 +260,10 @@ export interface LibraryItem {
   poster_url: string | null;
   /** 主图宽高比（真实像素尺寸或来源惯例：TMDB 海报 2:3、本地抓帧 16:9），卡片按它排版 */
   primary_aspect: number;
+  /** 内容日期（ISO 日期）：影视为上映/首播日，本地条目为拍摄/录制日 */
+  release_date: string | null;
+  /** 条目的首个在位文件 id：图片库取原图/回收站用 */
+  primary_file_id: number | null;
   file_count: number;
   total_size_bytes: number;
   /** 在库的季号列表（电影为空） */
@@ -526,7 +532,7 @@ export interface LibrarySearchGroup {
 
 /** 海报墙 A-Z 索引条的一档（按标题排序下的首字母分组）。 */
 export interface LibraryIndexEntry {
-  /** 首字母档：A-Z；数字/符号/假名等落不进的归 # */
+  /** 档名：按标题排序是首字母 A-Z（落不进的归 #）；按内容时间排序是月份 2026-08（缺日期归「未知」） */
   initial: string;
   count: number;
   /** 该档第一格的位置——即 listLibraryItems 的 offset 取值 */
@@ -534,8 +540,19 @@ export interface LibraryIndexEntry {
 }
 
 /** 海报墙的首字母索引（只回非空档）。中文按拼音首字母分档，与按标题排序同源。 */
-export function listLibraryItemIndex(id: number): Promise<LibraryIndexEntry[]> {
-  return unwrap(request<ApiEnvelope<LibraryIndexEntry[]>>(`/libraries/${id}/item-index`));
+export function listLibraryItemIndex(
+  id: number,
+  sort: "title" | "release_date" = "title",
+): Promise<LibraryIndexEntry[]> {
+  const suffix = sort === "title" ? "" : `?sort=${sort}`;
+  return unwrap(
+    request<ApiEnvelope<LibraryIndexEntry[]>>(`/libraries/${id}/item-index${suffix}`),
+  );
+}
+
+/** 图片库原图地址（按台账文件 id，服务端按库可见性鉴权）；download=true 作为附件下载。 */
+export function libraryFileOriginalUrl(fileId: number, download = false): string {
+  return resolveRequestUrl(`/libraries/files/${fileId}/original${download ? "?download=1" : ""}`);
 }
 
 /** 触发一次可恢复的库扫描；重复点击复用同一条后台作业。 */

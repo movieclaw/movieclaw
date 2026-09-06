@@ -484,7 +484,7 @@ export function LibraryItemDetailView({
               onDelete={() => setDeleteOpen(true)}
               // 未识别/本地条目没有订阅锚点，不给洗版入口
               onUpgrade={
-                canSubscribe && tmdbId > 0 && detail.kind !== "video"
+                canSubscribe && tmdbId > 0 && detail.kind !== "video" && detail.kind !== "photo"
                   ? () => {
                       const existing = subscriptionOf({
                         id: String(tmdbId),
