@@ -611,48 +611,8 @@ function HourHeatmap({ matrix }: { matrix: number[][] }) {
 }
 
 // ---------------------------------------------------------------------------
-// 最受欢迎：领奖台，整页唯一允许「隆重」的地方
+// 最受欢迎：Netflix「TOP 10」式的前三，整页唯一允许「隆重」的地方
 // ---------------------------------------------------------------------------
-
-/**
- * 金银铜三枚徽标：底色是金属感的斜向渐变，外圈一点同色辉光，数字用深色压在上面
- * 保证对比；卡片底色带同色的极淡渐变，三张卡不用看数字也分得出名次。
- */
-const MEDALS = [
-  {
-    face: "linear-gradient(135deg, #ffe89a 0%, #f2b83d 48%, #b06f14 100%)",
-    glow: "rgba(242, 184, 61, 0.45)",
-    tint: "rgba(242, 184, 61, 0.11)",
-  },
-  {
-    face: "linear-gradient(135deg, #f7f9fc 0%, #c5ced9 48%, #74808f 100%)",
-    glow: "rgba(197, 206, 217, 0.35)",
-    tint: "rgba(197, 206, 217, 0.07)",
-  },
-  {
-    face: "linear-gradient(135deg, #f3c19a 0%, #c9824d 48%, #74421c 100%)",
-    glow: "rgba(201, 130, 77, 0.38)",
-    tint: "rgba(201, 130, 77, 0.08)",
-  },
-] as const;
-
-function RankBadge({ rank, large }: { rank: number; large: boolean }) {
-  const medal = MEDALS[rank];
-  return (
-    <span
-      aria-label={`第 ${rank + 1} 名`}
-      className={`tnum inline-flex items-center justify-center rounded-full font-black text-[#1b1509] ring-2 ring-[#0b0d13] ${
-        large ? "size-9 text-[15px]" : "size-7 text-[12px]"
-      }`}
-      style={{
-        background: medal.face,
-        boxShadow: `0 0 ${large ? 20 : 14}px ${medal.glow}, inset 0 1px 0 rgba(255,255,255,0.65)`,
-      }}
-    >
-      {rank + 1}
-    </span>
-  );
-}
 
 /** 与上一周期前三的对照：同名次「蝉联」，换了名次「上期第 n」，上期不在榜「新上榜」。 */
 function rankChange(
@@ -670,48 +630,59 @@ function rankChange(
   };
 }
 
-function PodiumCard({
+const KIND_LABELS: Partial<Record<string, string>> = { movie: "电影", tv: "剧集" };
+
+/**
+ * 一个名次：巨大的描边数字压在海报左后方，海报盖住数字的右侧——Netflix 的 TOP 10
+ * 就是这套语法，数字本身就是装饰，不再需要徽标。第一名的数字与海报都更大。
+ */
+function TopEntry({
   row,
   rank,
-  large,
+  hero,
   drilled,
   previous,
 }: {
   row: PlaybackStatsTitleRow;
   rank: number;
-  large: boolean;
+  hero: boolean;
   drilled: boolean;
   previous: PlaybackStatsTitleRow[];
 }) {
-  const medal = MEDALS[rank];
   const change = rankChange(row, rank, previous);
-  // 小卡片一行放不下三段，人数单独一行，别让「· 7 场」孤零零折到下一行
-  const usage = `${formatWatched(row.watched_ms)} · ${row.plays} 场`;
-  const audience = drilled ? null : `${row.members} 位成员看过`;
-  const meta = large && audience ? [`${audience} · ${usage}`] : [audience, usage].filter(Boolean);
+  const kind = KIND_LABELS[row.media.kind];
+  const facts = [row.media.year, kind].filter(Boolean).join(" · ");
+  const watched = formatWatched(row.watched_ms);
+  const plays = `${row.plays} 场`;
+  const audience = drilled ? null : `${row.members} 人看过`;
+  // 文字栏窄：人数与场次并一行、时长单独一行，别让「· 7 场」孤零零折到下一行
+  const meta = [[audience, plays].filter(Boolean).join(" · "), watched];
   return (
-    <div
-      className={`flex items-center rounded-xl border border-white/[0.08] ${
-        large ? "gap-4 p-3.5 pr-4" : "gap-3 p-3"
-      }`}
-      style={{ background: `linear-gradient(135deg, ${medal.tint}, rgba(255,255,255,0.02) 65%)` }}
-    >
-      <div className="relative shrink-0">
-        <PosterImage
-          src={row.media.poster_url ? imageUrl(row.media.poster_url) : null}
-          alt={row.media.title}
-          className={`object-cover ring-1 ring-white/10 ${
-            large ? "h-[132px] w-[88px] rounded-xl" : "h-[84px] w-[56px] rounded-lg"
-          }`}
-        />
-        <span className="absolute -left-2 -top-2">
-          <RankBadge rank={rank} large={large} />
-        </span>
-      </div>
-      <div className="min-w-0 flex-1">
-        <TitleText media={row.media} episode={false} large={large} />
+    <div className="flex min-w-0 items-end">
+      {/* 数字盒子定宽（按 em）、靠左排，「1」「2」「3」宽窄不一也只让海报盖住右侧一角 */}
+      <span
+        aria-hidden="true"
+        className={`relative inline-block shrink-0 select-none text-left font-black leading-[0.78] tracking-[-0.06em] text-transparent [-webkit-text-stroke:2px_rgba(255,255,255,0.62)] ${
+          hero ? "-mr-[0.12em] w-[0.6em] text-[128px]" : "-mr-[0.12em] w-[0.6em] text-[96px]"
+        }`}
+      >
+        {rank + 1}
+      </span>
+      <PosterImage
+        src={row.media.poster_url ? imageUrl(row.media.poster_url, "poster-card") : null}
+        alt={row.media.title}
+        className={`relative z-10 shrink-0 rounded-lg object-cover shadow-[0_18px_40px_rgba(0,0,0,0.6)] ring-1 ring-white/15 ${
+          hero ? "h-[180px] w-[120px]" : "h-[120px] w-[80px]"
+        }`}
+      />
+      <div className="relative z-10 ml-3 min-w-0 flex-1 self-center">
+        <p className="mb-1 text-[10px] font-bold tracking-[0.2em] text-white/40">
+          {["冠军", "亚军", "季军"][rank]}
+        </p>
+        <TitleText media={row.media} episode={false} large={hero} />
+        {facts && <p className="tnum mt-0.5 text-caption text-white/45">{facts}</p>}
         {meta.map((line) => (
-          <p key={line} className="tnum mt-1 text-caption leading-5 text-white/45">
+          <p key={line} className="tnum mt-1 text-caption leading-5 text-white/60">
             {line}
           </p>
         ))}
@@ -731,8 +702,9 @@ function PodiumCard({
 
 /**
  * 本期最受欢迎前三：看过的成员最多，并列取时长长的。与「看得最多」（按时长）是
- * 两个问题，同一部片同时占两头也是信息——既有人看又看得久。第一名的卡片更大、
- * 海报更高；钻取到单个成员时人数没有意义，退成「TA 本期看得最多」。
+ * 两个问题，同一部片同时占两头也是信息——既有人看又看得久。背景是第一名海报
+ * 放大模糊后的环境光，整块随作品换色；钻取到单个成员时人数没有意义，退成
+ * 「本期看得最多」。
  */
 function FavoritePodium({
   favorites,
@@ -746,36 +718,52 @@ function FavoritePodium({
   if (favorites.length === 0) return null;
   const drilled = memberId != null;
   const [first, ...rest] = favorites;
+  const ambient = first.media.poster_url ? imageUrl(first.media.poster_url, "poster-card") : null;
   // 不足三部时列数跟着少，别留空位
   const columns = ["1.5fr", ...rest.map(() => "1fr")].join(" ");
   return (
     <section
       aria-label={drilled ? "本期看得最多" : "本期最受欢迎"}
-      className="rounded-2xl border border-white/[0.08] bg-white/[0.02] p-3"
+      className="relative overflow-hidden rounded-2xl border border-white/[0.08] bg-white/[0.02]"
     >
-      <div className="mb-2.5 flex items-baseline gap-2 px-1">
-        <p className="text-caption font-semibold text-white/55">
-          {drilled ? "本期看得最多" : "本期最受欢迎"}
-        </p>
-        <p className="text-[11px] text-white/30">
-          {drilled ? "按观看时长" : "按看过的人数，并列看时长"}
-        </p>
-      </div>
-      <div
-        className="grid gap-2.5 md:[grid-template-columns:var(--podium-cols)]"
-        style={{ "--podium-cols": columns } as React.CSSProperties}
-      >
-        <PodiumCard row={first} rank={0} large drilled={drilled} previous={previous} />
-        {rest.map((row, i) => (
-          <PodiumCard
-            key={row.media.media_item_id}
-            row={row}
-            rank={i + 1}
-            large={false}
-            drilled={drilled}
-            previous={previous}
+      {ambient && (
+        <div aria-hidden="true" className="pointer-events-none absolute inset-0">
+          <PosterImage
+            src={ambient}
+            alt=""
+            className="h-full w-full scale-150 object-cover opacity-45 blur-3xl saturate-150"
           />
-        ))}
+          <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(11,13,19,0.88),rgba(11,13,19,0.72)_45%,rgba(11,13,19,0.9))]" />
+        </div>
+      )}
+      <div className="relative p-4 md:p-5">
+        <div className="flex items-center gap-2.5">
+          <span className="rounded-[3px] bg-[var(--info)] px-1.5 py-[3px] text-[10px] font-black leading-none tracking-[0.12em] text-[#0b0d13]">
+            TOP 3
+          </span>
+          <p className="text-ui font-semibold text-white/90">
+            {drilled ? "本期看得最多" : "本期最受欢迎"}
+          </p>
+          <p className="text-caption text-white/35">
+            {drilled ? "按观看时长" : "按看过的人数，并列看时长"}
+          </p>
+        </div>
+        <div
+          className="mt-5 grid items-end gap-x-5 gap-y-6 md:[grid-template-columns:var(--podium-cols)]"
+          style={{ "--podium-cols": columns } as React.CSSProperties}
+        >
+          <TopEntry row={first} rank={0} hero drilled={drilled} previous={previous} />
+          {rest.map((row, i) => (
+            <TopEntry
+              key={row.media.media_item_id}
+              row={row}
+              rank={i + 1}
+              hero={false}
+              drilled={drilled}
+              previous={previous}
+            />
+          ))}
+        </div>
       </div>
     </section>
   );
