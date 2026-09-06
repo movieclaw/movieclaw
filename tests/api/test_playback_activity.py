@@ -473,7 +473,7 @@ async def test_web_player_progress_feeds_live_session(client: TestClient) -> Non
     data = client.get("/api/v1/playback/activity").json()["data"]
     assert len(data["sessions"]) == 1
     live = data["sessions"][0]
-    assert live["device_id"] == "web-browser-a"
+    assert live["device_id"] == "web-0-browser-a"
     assert live["client"] == "MovieClaw Web"
     assert live["device_name"] == "Safari · iPhone"
     assert live["member_name"] == "admin"

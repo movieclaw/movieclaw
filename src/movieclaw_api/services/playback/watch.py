@@ -94,15 +94,15 @@ def describe_user_agent(user_agent: str | None) -> str:
 
 
 def web_device_id(raw: str | None, *, member_id: int) -> str:
-    """网页端设备标识：前端带来的浏览器 id 加命名空间；没带就按成员兜底。
+    """网页端设备标识：``web-<成员 id>-<浏览器 id>``；没带浏览器 id 就按成员兜底。
 
-    兜底键让老版本前端（或 sendBeacon 丢字段）的播放仍出现在活动页——代价是
-    同一成员的两台浏览器会合并成一个会话，好过完全不可见。
+    浏览器 id 是客户端自报的，命名空间里带上成员 id，成员就不可能用别人的
+    浏览器 id 顶掉别人在活动页上的会话卡片。兜底键让老版本前端（或 sendBeacon
+    丢字段）的播放仍出现在活动页——代价是同一成员的两台浏览器会合并成一个
+    会话，好过完全不可见。
     """
     cleaned = _DEVICE_ID_SAFE.sub("", raw or "")[:64]
-    if cleaned:
-        return f"{_WEB_DEVICE_PREFIX}{cleaned}"
-    return f"{_WEB_DEVICE_PREFIX}member-{member_id}"
+    return f"{_WEB_DEVICE_PREFIX}{member_id}-{cleaned or 'browser'}"
 
 
 def web_client_info(*, device_id: str, user_agent: str | None) -> ClientInfo:

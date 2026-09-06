@@ -438,7 +438,7 @@ def test_direct_play_bytes_are_metered_for_the_browser_session(client, tmp_path)
 
     live = client.get(f"{_PB}/activity").json()["data"]["sessions"]
     assert len(live) == 1
-    assert live[0]["device_id"] == "web-browser-x"
+    assert live[0]["device_id"] == "web-0-browser-x"
     assert live[0]["play_method"] == "local"
     # 连接已结束，字节结转进会话累计
     assert live[0]["bytes_sent"] == len(resp.content)
@@ -461,7 +461,7 @@ def test_hls_segments_are_metered_per_session_and_released_on_stop(client, tmp_p
 
     _, meters = activity.snapshot()
     assert len(meters) == 1
-    assert meters[0].device_id == "web-browser-y"
+    assert meters[0].device_id == "web-0-browser-y"
     assert meters[0].kind == activity.STREAM_KIND_PLAY
     assert meters[0].bytes_sent == len(b"SEGMENT-DATA") + len(b"INIT")
 
