@@ -116,7 +116,7 @@ const KIND_CARDS: Record<
     chosen: "自动识别并补齐元数据与图片",
     defaultName: "电影库",
     defaults:
-      "实时监控目录变化、扫描后保留丢失记录、为未识别文件生成缩略图、在首页展示。" +
+      "实时监控目录变化、扫描后保留丢失记录、为未识别文件生成封面、在首页展示。" +
       "第一个电影库自动成为默认库；刮削偏好建好后在「编辑库」里设。",
   },
   tv: {
@@ -125,7 +125,7 @@ const KIND_CARDS: Record<
     chosen: "自动识别季集并补齐元数据与图片",
     defaultName: "剧集库",
     defaults:
-      "实时监控目录变化、扫描后保留丢失记录、为未识别文件生成缩略图、在首页展示。" +
+      "实时监控目录变化、扫描后保留丢失记录、为未识别文件生成封面、在首页展示。" +
       "第一个剧集库自动成为默认库；刮削偏好建好后在「编辑库」里设。",
   },
   video: {
@@ -135,7 +135,7 @@ const KIND_CARDS: Record<
     chosen: "不识别不刮削，按 NFO / 文件名展示",
     defaultName: "其他",
     defaults:
-      "实时监控目录变化、扫描后保留丢失记录、从视频抓帧生成缩略图、在首页展示。" +
+      "实时监控目录变化、扫描后保留丢失记录、从视频抓帧生成封面、在首页展示。" +
       "网络挂载的目录建议建好后到「编辑库 → 扫描与监控」关掉实时监控与抓帧。",
   },
 };
@@ -497,7 +497,7 @@ function CreateLibraryDialog({
       kind,
       root_paths: roots,
       match_rules: hasScope ? buildMatchRules(validGenres(kind, genres, routingOptions), regions) : [],
-      // 四个开关全按推荐值：监控开、自动清理关、缩略图开、首页展示；建好后在编辑里调
+      // 开关全按推荐值：监控开、自动清理关、封面开、场景图开、首页展示；建好后在编辑里调
       auto_clear_missing: false,
       realtime_watch: true,
       generate_thumbnails: true,
@@ -1149,7 +1149,7 @@ function EditLibraryDialog({
         <>
           {dot(realtimeWatch, "实时监控")}
           {dot(autoClearMissing, "自动清理丢失")}
-          {dot(generateThumbnails, scraped ? "未识别文件缩略图" : "抓帧缩略图")}
+          {dot(generateThumbnails, scraped ? "未识别文件封面" : "抓帧封面")}
           {dot(extractChapterImages, "章节场景图")}
           {dot(!excludeFromHome, "首页展示")}
         </>
@@ -1169,7 +1169,7 @@ function EditLibraryDialog({
             detail="自己在磁盘上删了片子后，扫描结束即把这些记录清出台账。只删记录、不动磁盘，但记录删了不可恢复——「缺失」清单里的「重新下载」也会随之消失。关闭时记录保留，文件回归自动恢复；目录读不动的那一轮不会清理。"
           />
           <SwitchRow
-            title={scraped ? "为未识别文件生成缩略图" : "从视频抓帧生成缩略图"}
+            title={scraped ? "为未识别文件生成封面" : "从视频抓帧生成封面"}
             checked={generateThumbnails}
             onChange={setGenerateThumbnails}
             detail="没有在线海报的内容从视频本身抓一帧当封面：优先用同名图片或内嵌封面，没有再抓帧。网络挂载库抓帧需要读取每个文件，介意流量可关闭，关闭后显示占位图。"

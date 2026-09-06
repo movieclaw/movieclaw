@@ -2528,7 +2528,7 @@ async def _ingest_raw_drop(
                 await job_context.update_progress(
                     mode="indeterminate",
                     phase="finalizing",
-                    message="正在生成缩略图",
+                    message="正在生成封面",
                     phase_index=4,
                     phase_count=4,
                     details={"entry_name": entry.name, "library_id": library.id},

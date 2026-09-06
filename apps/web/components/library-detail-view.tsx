@@ -8,7 +8,11 @@ import type { Route } from "next";
 import Link from "next/link";
 
 import { useConfirm, useToast } from "@/components/feedback";
-import { refreshLibraryConfirm, scanLibraryConfirm } from "@/lib/library-confirm";
+import {
+  chapterImagesConfirm,
+  refreshLibraryConfirm,
+  scanLibraryConfirm,
+} from "@/lib/library-confirm";
 import { LockIcon, MoreIcon, XIcon } from "@/components/icons";
 import { PAGE_NAV_BUTTON_CLASS, PageNav } from "@/components/page-nav";
 import { usePageTitle } from "@/lib/use-page-title";
@@ -775,17 +779,18 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
       onOpenPending={() => setIssueTab(pendingTab)}
       onChapterImages={
         library.extract_chapter_images
-          ? () => {
+          ? (force) => {
               setNotice(null);
-              void confirm({
-                title: `为「${library.name}」生成章节场景图？`,
-                description:
-                  "只补还没有图的文件，后台低优先级执行，可在任务中心观察或取消。每个文件按章节数定位读取若干次，网络挂载的库会有读取流量。",
-                confirmLabel: "开始生成",
-              }).then((ok) => {
+              void confirm(chapterImagesConfirm(library.name, force)).then((ok) => {
                 if (ok) {
-                  startLibraryChapterImages(libraryId)
-                    .then(() => toast.success("已开始生成章节场景图，可在任务中心查看进度"))
+                  startLibraryChapterImages(libraryId, { force })
+                    .then(() =>
+                      toast.success(
+                        force
+                          ? "已开始重新生成场景图，可在任务中心查看进度"
+                          : "已开始生成场景图，可在任务中心查看进度",
+                      ),
+                    )
                     .catch((e) => toast.error((e as Error).message));
                 }
               });
@@ -1187,8 +1192,8 @@ interface LibraryActionsMenuProps {
   onOpenPending: () => void;
   onOrganize: () => void;
   onToggleMetaRefresh: () => void;
-  /** 整库生成章节场景图；库关了开关时不传，菜单不给入口 */
-  onChapterImages?: () => void;
+  /** 整库生成章节场景图（force=true 全部重抓，否则只补缺）；库关了开关时不传 */
+  onChapterImages?: (force: boolean) => void;
   onEdit: () => void;
 }
 
@@ -1284,12 +1289,25 @@ function LibraryActionsMenu({
               ? `停止刷新${metaProgress === null ? "" : ` ${metaProgress}`}`
               : capabilities.scraped
                 ? "刷新元数据"
-                : "重新生成缩略图"}
+                : "重新生成封面"}
           </DropdownMenu.Item>
           {onChapterImages && (
-            <DropdownMenu.Item onSelect={onChapterImages} disabled={busy} className={itemClass}>
-              生成章节场景图
-            </DropdownMenu.Item>
+            <>
+              <DropdownMenu.Item
+                onSelect={() => onChapterImages(false)}
+                disabled={busy}
+                className={itemClass}
+              >
+                生成场景图
+              </DropdownMenu.Item>
+              <DropdownMenu.Item
+                onSelect={() => onChapterImages(true)}
+                disabled={busy}
+                className={itemClass}
+              >
+                重新生成场景图
+              </DropdownMenu.Item>
+            </>
           )}
           <DropdownMenu.Item onSelect={onEdit} disabled={busy} className={itemClass}>
             编辑库

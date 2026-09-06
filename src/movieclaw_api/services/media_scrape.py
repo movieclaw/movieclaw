@@ -159,7 +159,7 @@ async def _scrape(media_item_id: int, *, force: bool, on_phase: PhaseHook = None
         local_only = item.source != MediaSource.TMDB
         kind = MediaKind(item.kind)
     if local_only:
-        _phase("生成缩略图")
+        _phase("生成封面")
         from movieclaw_api.services.library.thumbs import ensure_local_assets
 
         await ensure_local_assets(media_item_id, force=force)
@@ -599,11 +599,6 @@ async def _run_item_metadata_refresh_job(
                     {"type": "open_settings", "label": "检查设置", "target": "metadata"},
                 ],
             )
-        # 单条目刷新顺手重抓章节场景图（十来次 seek，同步做完不另起作业）；
-        # 整库刷新不这么做——那会把整库的图全部重抓一遍，走独立作业
-        from movieclaw_api.services.library.chapters import refresh_chapter_images
-
-        await refresh_chapter_images(media_item_id, force=True)
         return {
             "message": f"《{title}》元数据刷新完成",
             "library_id": int(input_data["library_id"]),

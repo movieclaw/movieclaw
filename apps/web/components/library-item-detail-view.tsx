@@ -49,6 +49,7 @@ import {
   previewItemTransfer,
   purgeLibraryFile,
   refreshItemMetadata,
+  regenerateItemChapterImages,
   restoreLibraryFile,
   setItemScrapeLibrary,
   transferLibraryItem,
@@ -488,6 +489,23 @@ export function LibraryItemDetailView({
               searchHref={`/search?q=${encodeURIComponent(detail.title)}` as Route}
               onReidentify={() => setReidentifyOpen(true)}
               onRefreshMetadata={runMetadataRefresh}
+              // 场景图与元数据刷新相互独立：库开了开关才给入口
+              onRegenerateChapterImages={
+                library?.extract_chapter_images
+                  ? () => {
+                      regenerateItemChapterImages(libraryId, mediaItemId)
+                        .then(() => {
+                          toast.success("已开始重新生成场景图");
+                          // 后台任务在响应发出后才起跑：立刻拉一次让 chapters_pending
+                          // 接管轮询，再兜一次防止抢在标志立起之前
+                          reload();
+                          setTimeout(reload, 1500);
+                        })
+                        .catch((e) => toast.error((e as Error).message));
+                    }
+                  : undefined
+              }
+              chaptersPending={Boolean(detail.chapters_pending)}
               onChangeArtwork={() => setArtworkOpen(true)}
               scrapeLibraryName={detail.scrape_library_name}
               onChangeScrapeLibrary={() => setScrapeLibraryOpen(true)}
@@ -946,6 +964,8 @@ function ItemActionsMenu({
   searchHref,
   onReidentify,
   onRefreshMetadata,
+  onRegenerateChapterImages,
+  chaptersPending,
   onChangeArtwork,
   scrapeLibraryName,
   onChangeScrapeLibrary,
@@ -958,13 +978,17 @@ function ItemActionsMenu({
   canManage: boolean;
   /** 所在库有识别链（影视库）：给「修正识别结果」；其他库没有可认领的外部身份 */
   identifiable: boolean;
-  /** 条目本身来自 TMDB：给刷新元数据/更换图片/刮削归属；本地条目只有缩略图 */
+  /** 条目本身来自 TMDB：给刷新元数据/更换图片/刮削归属；本地条目只有封面 */
   scraped: boolean;
   scraping: boolean;
   /** 站点资源搜索直达（预填片名）：手动补版本/换版本的入口 */
   searchHref: Route;
   onReidentify: () => void;
   onRefreshMetadata: () => void;
+  /** 重新生成章节场景图（与刷新元数据独立）；所在库关了开关时不传 */
+  onRegenerateChapterImages?: () => void;
+  /** 场景图正在后台生成：菜单项置灰 */
+  chaptersPending: boolean;
   onChangeArtwork: () => void;
   /** 当前刮削归属库名；null=无归属（跟全局设置） */
   scrapeLibraryName: string | null;
@@ -1041,7 +1065,16 @@ function ItemActionsMenu({
                   disabled={scraping}
                   className={itemClass}
                 >
-                  {scraping ? "正在生成缩略图…" : "重新生成缩略图与场景图"}
+                  {scraping ? "正在生成封面…" : "重新生成封面"}
+                </DropdownMenu.Item>
+              )}
+              {onRegenerateChapterImages && (
+                <DropdownMenu.Item
+                  onSelect={onRegenerateChapterImages}
+                  disabled={chaptersPending}
+                  className={itemClass}
+                >
+                  {chaptersPending ? "正在生成场景图…" : "重新生成场景图"}
                 </DropdownMenu.Item>
               )}
               {scraped && (

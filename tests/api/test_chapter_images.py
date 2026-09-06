@@ -306,3 +306,29 @@ async def test_probe_failure_and_missing_ffmpeg_leave_row_untouched(db, tmp_path
         row = await session.get(LibraryFile, file_id)
         assert not await chapters_mod.refresh_file_chapter_images(session, row)
         assert row.chapter_images is None
+
+
+async def test_item_regenerate_route_schedules_force(db, tmp_path, monkeypatch):
+    """条目菜单「重新生成场景图」：独立于刷新元数据，后台 force 重抓；库关了开关拒绝。"""
+    from movieclaw_api.api.routes.libraries import regenerate_item_chapter_images
+    from movieclaw_api.exceptions import ConflictException
+
+    video = tmp_path / "media" / "r.mkv"
+    video.parent.mkdir()
+    video.write_bytes(b"x")
+    lib_id, item_id, _file_id = await _seed(db, video, chapters=[], chapter_images=[])
+    calls: list[tuple[int, bool]] = []
+    monkeypatch.setattr(
+        chapters_mod,
+        "schedule_item_chapter_images",
+        lambda i, *, force=False: calls.append((i, force)) or True,
+    )
+    async with db.session() as session:
+        resp = await regenerate_item_chapter_images(lib_id, item_id, session)
+        assert resp.data == {"started": True} and calls == [(item_id, True)]
+
+        lib = await session.get(Library, lib_id)
+        lib.extract_chapter_images = False
+        await session.commit()
+        with pytest.raises(ConflictException):
+            await regenerate_item_chapter_images(lib_id, item_id, session)

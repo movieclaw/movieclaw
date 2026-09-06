@@ -436,10 +436,12 @@ def item_pending(media_item_id: int) -> bool:
     return media_item_id in _in_flight
 
 
-def schedule_item_chapter_images(media_item_id: int) -> bool:
-    """详情页懒触发：条目有文件没抓过图就后台抓一次（去重），返回是否在抓。
+def schedule_item_chapter_images(media_item_id: int, *, force: bool = False) -> bool:
+    """单条目后台抓图（去重），返回是否在抓。
 
-    升级后第一次打开旧条目的体验保障——不用等整库作业排到它。
+    两个入口共用：详情页懒触发（``force=False``，只补没抓过的——升级后第一次
+    打开旧条目不用等整库作业排到它）与条目菜单「重新生成场景图」
+    （``force=True``，全部重抓）。前端都靠 ``chapters_pending`` 轮询把图补上。
     """
     if media_item_id in _in_flight:
         return True
@@ -447,7 +449,7 @@ def schedule_item_chapter_images(media_item_id: int) -> bool:
 
     async def _run() -> None:
         try:
-            await refresh_chapter_images(media_item_id)
+            await refresh_chapter_images(media_item_id, force=force)
         except Exception:  # noqa: BLE001 -- 锦上添花的图，绝不影响详情页
             logger.exception("条目 #%s 章节场景图后台生成失败", media_item_id)
         finally:

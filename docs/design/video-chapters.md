@@ -7,9 +7,9 @@
 > Jellyfin `Chapters` 与 `Images/Chapter/{index}`；回归测试
 > `tests/media/test_chapters.py`、`tests/api/test_chapter_images.py`、
 > `tests/jellyfin/test_chapters.py`。第四期（网页播放器章节刻度）未做。
-> 实施偏差：整库「重新生成缩略图」菜单文案未改（整库刷新不重抓场景图，
-> 场景图整库入口是独立的「生成章节场景图」菜单项）；合成章节输出给 Jellyfin
-> 客户端（用户决策 2026-09-06）。
+> 实施说明：场景图的重新生成是独立动作（条目菜单「重新生成场景图」、库菜单
+> 「生成场景图」/「重新生成场景图」），不挂在刷新元数据上；原「重新生成缩略图」
+> 改名「重新生成封面」；合成章节输出给 Jellyfin 客户端（均为用户决策 2026-09-06）。
 > 本文是"按时长多抓几张剧照、
 > 每张记时间点、hover 后点击从该时间点播放"这一诉求的完整设计。核心结论：
 > 把它建模成 **章节（chapter）** 而不是"多张缩略图"——内嵌章节有则用之，
@@ -309,12 +309,12 @@ ffmpeg -v info -y -skip_frame nokey -ss <t> -copyts -i <file> -an -sn \
 
 1. 扫描结束后自动入队（库开关打开时）——覆盖新文件与存量回填；
 2. 库管理菜单「生成场景图」/「重新生成场景图」（force）；
-3. 单条目「刷新元数据」/「重新生成缩略图」（`scrape_media_item(force=True)`）
-   末尾对该条目文件 `refresh_chapter_images(item_id, force=True)`——
-   单条目十来次 seek，同步做完不另起 Job。未刮削条目的菜单文案随之改为
-   「重新生成缩略图与场景图」（三处：`library-item-detail-view.tsx:1007`、
-   `library-manage-row.tsx:360`、`library-detail-view.tsx:1264`），后端
-   进度短语 `media_scrape.py:162` 同步。
+3. 条目菜单「重新生成场景图」（`POST /libraries/{lib}/items/{id}/chapter-images`）：
+   该条目全部在位文件 force 重抓，后台完成、前端按 `chapters_pending` 轮询。
+   **与刷新元数据相互独立**（用户决策 2026-09-06：重新生成章节应独立，
+   条目与库两级都要有）；库菜单同样分「生成场景图」（补缺）与「重新生成
+   场景图」（force）两项。原「重新生成缩略图」菜单改名「重新生成封面」，
+   后端进度短语同步（封面 = 主图，与场景图是两件事）。
 
 4. **详情页懒触发**：`GET /libraries/{lib}/items/{id}` 发现选中文件
    `chapter_images IS NULL` 且库开关打开时，`asyncio.create_task(

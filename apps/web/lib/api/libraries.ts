@@ -658,6 +658,19 @@ export function startLibraryChapterImages(
   );
 }
 
+/** 重新生成单个条目的章节场景图（全部重抓，后台执行；详情接口 chapters_pending 期间为 true）。 */
+export function regenerateItemChapterImages(
+  libraryId: number,
+  mediaItemId: number,
+): Promise<{ started: boolean }> {
+  return unwrap(
+    request<ApiEnvelope<{ started: boolean }>>(
+      `/libraries/${libraryId}/items/${mediaItemId}/chapter-images`,
+      { method: "POST" },
+    ),
+  );
+}
+
 /** 刷新单个条目的元数据：强制重刮 TMDB 并重新下载图片（后台执行）。 */
 export function refreshItemMetadata(
   libraryId: number,

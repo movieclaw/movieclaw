@@ -34,7 +34,11 @@ import {
   stopLibraryScan,
   updateLibrary,
 } from "@/lib/api/libraries";
-import { refreshLibraryConfirm, scanLibraryConfirm } from "@/lib/library-confirm";
+import {
+  chapterImagesConfirm,
+  refreshLibraryConfirm,
+  scanLibraryConfirm,
+} from "@/lib/library-confirm";
 import { routingOverlapWarnings } from "@/lib/library-routing-warnings";
 import {
   EMPTY_FILTER,
@@ -239,14 +243,9 @@ export function LibraryManageView() {
           if (ok) run(startLibraryMetadataRefresh(library.id));
         });
       },
-      onChapterImages: (library) => {
-        void confirm({
-          title: `为「${library.name}」生成章节场景图？`,
-          description:
-            "只补还没有图的文件，后台低优先级执行，可在任务中心观察或取消。每个文件按章节数定位读取若干次，网络挂载的库会有读取流量。",
-          confirmLabel: "开始生成",
-        }).then((ok) => {
-          if (ok) run(startLibraryChapterImages(library.id));
+      onChapterImages: (library, force) => {
+        void confirm(chapterImagesConfirm(library.name, force)).then((ok) => {
+          if (ok) run(startLibraryChapterImages(library.id, { force }));
         });
       },
       onEdit: (library) => setEditing(library),
