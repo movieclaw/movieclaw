@@ -28,6 +28,7 @@ from movieclaw_api.exceptions import (
 from movieclaw_api.schemas.base import utc_isoformat
 from movieclaw_api.schemas.library import SeasonEpisodesView
 from movieclaw_api.schemas.playback import (
+    FavoritesView,
     HwBackendStatusView,
     HwProbeView,
     MediaActivityView,
@@ -117,6 +118,7 @@ from movieclaw_api.services.playback_activity import (
     media_activity_overview,
     revoke_device,
 )
+from movieclaw_api.services.playback_favorites import favorite_items
 from movieclaw_api.services.playback_recent import recent_watch_items
 from movieclaw_api.services.playback_stats import playback_history, playback_stats
 from movieclaw_api.settings import PlaybackPolicySetting
@@ -356,6 +358,30 @@ async def list_recent_watch(
         limit=limit,
     )
     return ok(RecentWatchView(items=items))
+
+
+@router.get(
+    "/favorites",
+    response_model=ApiResponse[FavoritesView],
+    summary="我的收藏",
+    operation_id="playback.favorites",
+    openapi_extra={"x-cli-hidden": True},
+)
+async def list_favorites(
+    limit: Annotated[int, Query(ge=1, le=200)] = 100,
+    principal: Principal = Depends(require_login),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[FavoritesView]:
+    """列出当前账号在可见媒体库中收藏的作品（网页与 Jellyfin 客户端点的心同一份）。"""
+    visible_ids = await visible_library_ids(session, principal)
+    member_id = principal.member_id if principal.member_id is not None else 0
+    items, total = await favorite_items(
+        session,
+        member_id=member_id,
+        visible_library_ids=visible_ids,
+        limit=limit,
+    )
+    return ok(FavoritesView(items=items, total=total))
 
 
 @router.get(

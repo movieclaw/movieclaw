@@ -2,7 +2,7 @@ import { publicEnv } from "@/lib/env";
 import { getPlayerDeviceId } from "@/lib/player/device";
 import type { TrickplayIndex } from "@/lib/player/trickplay";
 import { HttpError, request, resolveRequestUrl } from "@/lib/http";
-import type { LibraryEpisode } from "@/lib/api/libraries";
+import type { LibraryEpisode, LibraryItem } from "@/lib/api/libraries";
 import type { LibraryKind, MediaType } from "@/lib/media-types";
 import { readLocalProgress, writeLocalProgress } from "@/lib/player/local-progress";
 
@@ -94,6 +94,33 @@ export async function listRecentWatch(limit = 20): Promise<RecentWatchItem[]> {
     `/playback/recent?limit=${limit}`,
   );
   return response.data.items;
+}
+
+/**
+ * 首页「我的收藏」的一格：单库海报墙的条目视图 + 收藏上下文。
+ * 收藏层级来自最近一次收藏：整剧两者皆 null，整季只有季号，单集季集都有；
+ * 电影恒为 null。
+ */
+export interface FavoriteItem extends LibraryItem {
+  /** 卡片的详情落点库（同一作品跨库时取首页顺序第一个可见库） */
+  library_id: number;
+  favorite_season_number: number | null;
+  favorite_episode_number: number | null;
+}
+
+export interface FavoritesPage {
+  items: FavoriteItem[];
+  /** 去重后的收藏作品总数；items 受 limit 截断 */
+  total: number;
+}
+
+/** 当前账号在可见媒体库中收藏的作品（网页与 Jellyfin 客户端点的心同一份）。
+ *  缺省取服务端上限：首页「展开全部」要把收藏铺开，而收藏本来就是个人精选的小集合。 */
+export async function listFavorites(limit = 200): Promise<FavoritesPage> {
+  const response = await request<ApiEnvelope<FavoritesPage>>(
+    `/playback/favorites?limit=${limit}`,
+  );
+  return response.data;
 }
 
 // ---------------------------------------------------------------------------
