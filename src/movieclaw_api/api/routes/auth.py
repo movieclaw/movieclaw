@@ -523,7 +523,8 @@ async def switch_account(
     summary="从本浏览器移除一个已登录账号（移除的是当前账号时自动切到下一个）",
     dependencies=[Depends(require_login)],
     operation_id="auth.accounts.remove",
-    openapi_extra={"x-cli-hidden": True},
+    # confirm：只是让本浏览器忘掉一个登录态，不删任何数据；契约测试要求所有 DELETE 都声明
+    openapi_extra={"x-cli-dangerous": "confirm", "x-cli-hidden": True},
 )
 async def remove_account(
     username: str, request: Request, response: Response
