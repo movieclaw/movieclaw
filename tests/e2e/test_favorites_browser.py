@@ -363,18 +363,27 @@ def test_favorites_and_played_end_to_end(stack) -> None:  # noqa: PLR0915
         expect(page.get_by_role("button", name="标记为未看")).to_have_attribute(
             "aria-pressed", "true"
         )
-        expect(page.get_by_text("已看完")).to_be_visible()
+        # 已看态由对勾自己的实心绿底表达（不再另写「已看完」）；播放键改为重播
         expect(page.get_by_role("button", name=re.compile("^重新播放"))).to_be_visible()
         _eventually(lambda: jf_user_data(movie_1)["Played"], True)
         resume = api(page, "get", f"/playback/resume?media_item_id={movie_1}")["data"]
         assert resume["played"] is True and resume["position_ms"] == 0
         page.screenshot(path=str(shots / "02-movie-detail-favorited-played.png"), full_page=True)
 
+        # 窄屏：两枚键变成「图标 + 文字」的胶囊、文字随状态变（触屏没有悬停提示）
+        page.set_viewport_size({"width": 390, "height": 844})
+        expect(page.get_by_role("button", name="取消收藏")).to_have_text("已收藏")
+        expect(page.get_by_role("button", name="标记为未看")).to_have_text("已看完")
+        page.screenshot(path=str(shots / "02b-movie-detail-mobile.png"), full_page=True)
+        page.set_viewport_size({"width": 1440, "height": 900})
+        # 桌面端只留图标，文字藏起来（说明走悬停提示）
+        expect(page.get_by_role("button", name="取消收藏").get_by_text("已收藏")).to_be_hidden()
+
         page.get_by_role("button", name="标记为未看").click()
         expect(page.get_by_role("button", name="标记为已看")).to_have_attribute(
             "aria-pressed", "false"
         )
-        expect(page.get_by_text("已看完")).to_have_count(0)
+        expect(page.get_by_role("button", name=re.compile("^播放"))).to_be_visible()
         _eventually(lambda: jf_user_data(movie_1)["Played"], False)
         assert (
             api(page, "get", f"/playback/resume?media_item_id={movie_1}")["data"]["play_count"] == 0

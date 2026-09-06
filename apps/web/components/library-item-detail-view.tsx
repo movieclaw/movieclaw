@@ -968,8 +968,29 @@ export function LibraryItemDetailView({
   );
 }
 
-/** 播放键旁的心 / 对勾：与顶栏 ⋯ 键同一副圆形玻璃键长相，多一个禁用态。 */
-const MARK_BUTTON_CLASS = `${PAGE_NAV_BUTTON_CLASS} disabled:pointer-events-none disabled:opacity-60`;
+/**
+ * 播放键旁的心 / 对勾的骨架：桌面端是与播放键**等高**（48px）的圆形玻璃键，
+ * 只放图标（说明走悬停提示）；窄屏没有悬停，改成「图标 + 文字」的胶囊，两枚
+ * 平分播放键下面的一整行（Netflix / Apple TV 手机端的做法）。
+ *
+ * 曾经直接复用顶栏 ⋯ 键的 36px 规格：与 48px 的播放键排在同一行，一大两小，
+ * 看起来像播放键旁边挂了两个页面工具，而不是同一组动作。
+ *
+ * 颜色不在这里：静息态与选中态的底色 / 文字色各自一整套、互斥拼接（见
+ * MARK_TONE_*），不让两套文字色工具类同时出现——谁赢由样式表顺序决定，
+ * 不由 class 顺序决定。
+ */
+const MARK_BUTTON_BASE =
+  "inline-flex h-12 shrink-0 items-center justify-center gap-2 rounded-full border backdrop-blur-md transition duration-200 active:scale-[0.96] disabled:pointer-events-none disabled:opacity-60 md:size-12 max-md:h-11 max-md:flex-1 max-md:px-4";
+/** 静息态：与页面其他玻璃键同一副长相 */
+const MARK_TONE_IDLE =
+  "border-white/[0.12] bg-white/[0.08] text-white/85 hover:bg-white/[0.14] hover:text-white";
+/** 已收藏：红心 + 一层淡红底 */
+const MARK_TONE_FAVORITE =
+  "border-[var(--danger)]/40 bg-[var(--danger)]/15 text-[var(--danger)] hover:bg-[var(--danger)]/25";
+/** 已看完：实心绿底 + 深色勾，与分集卡 / 最近观看卡的角标同款 */
+const MARK_TONE_PLAYED =
+  "border-transparent bg-[var(--ok)] text-[#07120c] hover:bg-[var(--ok)]/90";
 
 /**
  * 播放入口（主行动按钮 + 续播进度）。
@@ -987,10 +1008,12 @@ const MARK_BUTTON_CLASS = `${PAGE_NAV_BUTTON_CLASS} disabled:pointer-events-none
  * 的小胶囊放在这样的版面里明显不像主行动按钮，因此抬到 h-12 + text-body，
  * 窄屏改为整行铺满（拇指区最容易命中的形状）。
  *
- * 播放键右侧是两枚圆形玻璃键：心（收藏整个条目）与对勾（标记当前单元已看 /
+ * 播放键右侧是两枚等高的圆键：心（收藏整个条目）与对勾（标记当前单元已看 /
  * 未看）——Jellyfin 客户端条目页上那两个按钮的网页对应物，点的是同一份数据
- * （同一张 playback_state 表），在 Infuse 里点过的这里立刻能看到。传了
- * onToggle* 才渲染；影片分享页的访客没有成员身份，不传就没有这两枚键。
+ * （同一张 playback_state 表），在 Infuse 里点过的这里立刻能看到。已看态由
+ * 对勾自己的实心绿底表达，不再另写一行「已看完」；只有看过不止一次时才在
+ * 旁边补一句次数。传了 onToggle* 才渲染；影片分享页的访客没有成员身份，
+ * 不传就没有这两枚键。
  */
 export function PlayAction({
   watched,
@@ -1054,7 +1077,7 @@ export function PlayAction({
       </button>
 
       {(onToggleFavorite || onTogglePlayed) && (
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-2.5 max-md:w-full">
           {onToggleFavorite && (
             <Tooltip
               content={favorite ? `取消收藏${favoriteLabel}` : `收藏${favoriteLabel}`}
@@ -1066,15 +1089,11 @@ export function PlayAction({
                 disabled={marking}
                 aria-pressed={Boolean(favorite)}
                 aria-label={favorite ? "取消收藏" : "收藏"}
-                className={MARK_BUTTON_CLASS}
+                className={`${MARK_BUTTON_BASE} ${favorite ? MARK_TONE_FAVORITE : MARK_TONE_IDLE}`}
               >
-                {/* 已收藏 / 已看的语义色走内联样式：按钮基类自带 text-white，
-                    再叠一个文字色工具类谁赢由样式表顺序决定，不由 class 顺序决定 */}
-                <HeartIcon
-                  className="size-[18px] max-md:size-[22px]"
-                  style={favorite ? { color: "var(--danger)" } : undefined}
-                  fill={favorite ? "currentColor" : "none"}
-                />
+                <HeartIcon className="size-5" fill={favorite ? "currentColor" : "none"} />
+                {/* 窄屏没有悬停提示，按钮自己带文字；文字随状态变，一眼知道现在是什么 */}
+                <span className="text-ui font-medium md:hidden">{favorite ? "已收藏" : "收藏"}</span>
               </button>
             </Tooltip>
           )}
@@ -1086,12 +1105,12 @@ export function PlayAction({
                 disabled={marking}
                 aria-pressed={finished}
                 aria-label={finished ? "标记为未看" : "标记为已看"}
-                className={MARK_BUTTON_CLASS}
+                className={`${MARK_BUTTON_BASE} ${finished ? MARK_TONE_PLAYED : MARK_TONE_IDLE}`}
               >
-                <CheckIcon
-                  className="size-[18px] stroke-[2.2] max-md:size-[22px]"
-                  style={finished ? { color: "var(--ok)" } : undefined}
-                />
+                <CheckIcon className="size-5 stroke-[2.4]" />
+                <span className="text-ui font-medium md:hidden">
+                  {finished ? "已看完" : "标为已看"}
+                </span>
               </button>
             </Tooltip>
           )}
@@ -1114,12 +1133,9 @@ export function PlayAction({
         </div>
       )}
 
-      {finished && (
-        <p className="flex items-center gap-1.5 text-caption text-white/55">
-          <CheckIcon className="size-3.5 text-emerald-300/90" />
-          已看完
-          {watched && watched.play_count > 1 ? ` · 看过 ${watched.play_count} 次` : ""}
-        </p>
+      {/* 已看态已由对勾的实心绿底表达；只有看过不止一次才值得多说一句 */}
+      {finished && watched && watched.play_count > 1 && (
+        <p className="tnum text-caption text-white/55">看过 {watched.play_count} 次</p>
       )}
     </div>
   );
