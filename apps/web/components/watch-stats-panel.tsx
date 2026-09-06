@@ -569,7 +569,6 @@ function BreakdownPanel({
       ];
     }
   }
-  const max = Math.max(1e-9, ...visible.map((r) => r.value));
   return (
     <section aria-label={title} className="flex h-full flex-col">
       <div className="mb-1.5 flex items-baseline gap-2">
@@ -606,16 +605,19 @@ function BreakdownPanel({
                     <span className="ml-1.5 text-white/35">{share}%</span>
                   </div>
                 </div>
-                <div className="mt-1.5 h-1 rounded-full bg-white/[0.06]">
+                {/* 条的长度就是份额：与右边的百分比、与总量三者自洽，几根条加起来
+                    正好填满一行；不按第一名满格来缩放，那样条与数字会打架 */}
+                <div className="mt-1.5 h-[3px] rounded-full bg-white/[0.06]">
                   <div
                     className="h-full rounded-full"
                     style={{
-                      width: `${Math.max(2, (row.value / max) * 100)}%`,
+                      width: `${Math.max(1, share)}%`,
                       background: row.selected
                         ? "var(--ok)"
                         : row.muted
                           ? "rgba(255,255,255,0.22)"
                           : SERIES_COLOR,
+                      opacity: row.selected || row.muted ? 1 : 0.9,
                     }}
                   />
                 </div>
