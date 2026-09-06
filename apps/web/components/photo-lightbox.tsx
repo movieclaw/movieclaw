@@ -26,8 +26,9 @@ import { imageUrl } from "@/lib/image-proxy";
  * 与搜索页的 ImageLightbox（一组外链 URL 的浏览器）是两种数据模型：这里翻的是
  * **分页加载的条目列表**，每张有缩略图与原图两级、有台账信息，所以单独成组件，
  * 不往通用灯箱里塞分支：
- *   - 渐进：先显示墙上的缩略图（模糊放大），原图加载完成后替换——原图走按文件
- *     鉴权的路由，几 MB 到几十 MB，不能让用户对着黑屏等；
+ *   - 渐进三级：先显示墙上的缩略图（模糊放大）→ 长边 2048 的屏幕适配图
+ *     （几百 KB，服务端按原图惰性派生并缓存）→ 只有放大到 1:1 时才拉几 MB 的
+ *     原图。相邻两张预加载的也是屏幕适配图；下载永远给原图；
  *   - 缩放：滚轮 / 双击放大到 5×，放大后拖拽平移，`0` 复位；
  *   - 翻页：←→ 与两侧按钮（手机上靠滑动，按钮隐去），触屏左右滑；翻到已加载列表末尾且服务端还有下一页
  *     时向外要一页（onReachEnd），拿到后继续翻；
@@ -67,7 +68,10 @@ export function PhotoLightbox({
   const item = items[index];
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
-  const [fullReady, setFullReady] = useState(false);
+  // 屏幕适配图 / 原图各自的就绪态；原图只在放大后才开始加载
+  const [screenReady, setScreenReady] = useState(false);
+  const [wantOriginal, setWantOriginal] = useState(false);
+  const [originalReady, setOriginalReady] = useState(false);
   const [broken, setBroken] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
   const [detail, setDetail] = useState<LibraryItemDetail | null>(null);
@@ -78,7 +82,10 @@ export function PhotoLightbox({
   const waitingMore = useRef(false);
 
   const thumbUrl = item ? imageUrl(item.poster_url) : "";
-  const fullUrl = item?.primary_file_id != null ? libraryFileOriginalUrl(item.primary_file_id) : "";
+  const fileId = item?.primary_file_id ?? null;
+  const screenUrl = fileId != null ? libraryFileOriginalUrl(fileId, { size: "screen" }) : "";
+  const fullUrl = fileId != null ? libraryFileOriginalUrl(fileId) : "";
+  const fullReady = screenReady || originalReady;
 
   const resetZoom = useCallback(() => {
     setZoom(1);
@@ -88,9 +95,16 @@ export function PhotoLightbox({
   // 换图：复位缩放与加载态
   useEffect(() => {
     resetZoom();
-    setFullReady(false);
+    setScreenReady(false);
+    setWantOriginal(false);
+    setOriginalReady(false);
     setBroken(false);
   }, [index, resetZoom]);
+
+  // 放大到超过屏幕适配图的分辨率时才拉原图（第三级）
+  useEffect(() => {
+    if (zoom > 1) setWantOriginal(true);
+  }, [zoom]);
 
   // 列表变长了（要的下一页到了）：闸门放开
   useEffect(() => {
@@ -143,13 +157,13 @@ export function PhotoLightbox({
     };
   }, []);
 
-  // 预加载相邻两张的原图：翻过去不用再等
+  // 预加载相邻两张的屏幕适配图：翻过去不用再等（不预拉原图，几 MB 一张太贵）
   useEffect(() => {
     for (const neighbor of [index - 1, index + 1]) {
-      const fileId = items[neighbor]?.primary_file_id;
-      if (fileId != null) {
+      const neighborFile = items[neighbor]?.primary_file_id;
+      if (neighborFile != null) {
         const img = new Image();
-        img.src = libraryFileOriginalUrl(fileId);
+        img.src = libraryFileOriginalUrl(neighborFile, { size: "screen" });
       }
     }
   }, [index, items]);
@@ -239,7 +253,7 @@ export function PhotoLightbox({
           </button>
           {fullUrl && (
             <a
-              href={libraryFileOriginalUrl(item.primary_file_id as number, true)}
+              href={libraryFileOriginalUrl(item.primary_file_id as number, { download: true })}
               title="下载原图"
               aria-label="下载原图"
               className="rounded-full p-2 text-white/70 transition-colors hover:bg-white/[0.12] hover:text-white"
@@ -325,7 +339,7 @@ export function PhotoLightbox({
                 transition: drag.current ? "none" : "transform 120ms ease-out",
               }}
             >
-              {/* 缩略图垫底（模糊），原图到了盖上去 */}
+              {/* 三级渐进：缩略图垫底（模糊）→ 屏幕适配图盖上 → 放大后原图再盖上 */}
               {thumbUrl && (
                 <img
                   src={thumbUrl}
@@ -337,24 +351,42 @@ export function PhotoLightbox({
                   }`}
                 />
               )}
-              {fullUrl && (
+              {screenUrl && (
+                <img
+                  key={screenUrl}
+                  src={screenUrl}
+                  alt={item.title}
+                  data-stage="screen"
+                  draggable={false}
+                  onLoad={() => setScreenReady(true)}
+                  onError={() => {
+                    // 派生失败（格式 Pillow 不认等）：直接退到原图
+                    setWantOriginal(true);
+                  }}
+                  className={`max-h-[calc(100dvh-140px)] max-w-full rounded-lg object-contain shadow-[0_24px_80px_rgba(0,0,0,0.8)] ${
+                    screenReady && !originalReady ? "" : "absolute inset-0 opacity-0"
+                  }`}
+                />
+              )}
+              {fullUrl && wantOriginal && (
                 <img
                   key={fullUrl}
                   src={fullUrl}
                   alt={item.title}
+                  data-stage="original"
                   draggable={false}
-                  onLoad={() => setFullReady(true)}
+                  onLoad={() => setOriginalReady(true)}
                   onError={() => setBroken(true)}
                   className={`max-h-[calc(100dvh-140px)] max-w-full rounded-lg object-contain shadow-[0_24px_80px_rgba(0,0,0,0.8)] ${
-                    fullReady ? "" : "absolute inset-0 opacity-0"
+                    originalReady ? "" : "absolute inset-0 opacity-0"
                   }`}
                 />
               )}
             </div>
           )}
-          {!fullReady && !broken && fullUrl && (
+          {!broken && fullUrl && (!fullReady || (wantOriginal && !originalReady)) && (
             <span className="pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-black/50 px-2.5 py-0.5 text-micro tracking-wide text-white/50">
-              正在加载原图
+              {fullReady ? "正在加载原图" : "正在加载"}
             </span>
           )}
           {index > 0 && (

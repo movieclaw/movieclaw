@@ -35,6 +35,7 @@ import asyncio
 import json
 import logging
 import subprocess
+from io import BytesIO
 from pathlib import Path
 
 from sqlmodel import select
@@ -103,6 +104,8 @@ async def ensure_local_assets(media_item_id: int, *, force: bool = False) -> Non
             if size is not None:
                 meta.poster_file = poster_rel
                 meta.poster_width, meta.poster_height = size
+                # 微缩占位图随缩略图一起算：列表下发，缩略图到达前先铺模糊色块
+                meta.poster_blur = await asyncio.to_thread(blur_placeholder, poster_dest)
                 changed = True
 
         backdrop_ready = meta.backdrop_file == backdrop_rel and await asyncio.to_thread(
@@ -157,6 +160,33 @@ def build_thumbnail(
     except OSError as exc:
         logger.warning("生成缩略图失败：%s（%s）", video, exc)
     return None
+
+
+_BLUR_WIDTH = 16  # 微缩占位图宽度：够铺出色块与明暗，base64 后约 300 字节
+
+
+def blur_placeholder(thumbnail: Path) -> str | None:
+    """把缩略图压成 16px 宽的 JPEG data URI（渐进式加载的第一级）。
+
+    前端把它当背景铺在瓦片底下并加 CSS 模糊，缩略图到达前用户看到的是照片的
+    大致颜色而不是空格子。失败返回 None，不影响缩略图本身。
+    """
+    import base64
+
+    from PIL import Image, UnidentifiedImageError
+
+    try:
+        with Image.open(thumbnail) as img:
+            ratio = _BLUR_WIDTH / max(img.width, 1)
+            tiny = img.convert("RGB").resize(
+                (_BLUR_WIDTH, max(1, round(img.height * ratio))), Image.Resampling.BOX
+            )
+            buffer = BytesIO()
+            tiny.save(buffer, "JPEG", quality=45, optimize=True)
+    except (UnidentifiedImageError, OSError, ValueError) as exc:
+        logger.debug("微缩占位图生成失败：%s（%s）", thumbnail, exc)
+        return None
+    return "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
 def _build_image_thumbnail(image: Path, dest: Path) -> tuple[int, int] | None:

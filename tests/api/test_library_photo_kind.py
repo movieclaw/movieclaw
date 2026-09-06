@@ -272,8 +272,10 @@ async def test_scan_photo_library_one_item_per_image(db, tmp_path) -> None:
         assert str(view1.release_date) == "2024-05-01"
         assert view1.primary_file_id == first.id
         assert view1.resolutions == ["300x400"]
-        # 没生成缩略图时按档案兜底比例 4:3
-        assert view1.primary_aspect == pytest.approx(4 / 3, abs=1e-3)
+        # 缩略图还没生成：比例来自入账时探到的原图尺寸（300x400），墙一开始就是
+        # 最终布局；只有连尺寸都没有的才按档案兜底 4:3
+        assert view1.primary_aspect == pytest.approx(300 / 400, abs=1e-3)
+        assert view1.poster_blur is None
 
         # 月份索引与分页同口径：最新的月份（mtime 回落）在前，2024-05 两张在后
         buckets = await items_mod.build_library_index(session, library.id, "release_date")
@@ -366,9 +368,13 @@ async def test_ensure_local_assets_for_photo_records_real_aspect(db, tmp_path, m
         assert meta.poster_file == f"{item.id}/poster.jpg"
         assert (meta.poster_width, meta.poster_height) == (720, 540)
         assert meta.backdrop_file is None
+        # 微缩占位图：16px 宽的 JPEG data URI，几百字节
+        assert meta.poster_blur and meta.poster_blur.startswith("data:image/jpeg;base64,")
+        assert len(meta.poster_blur) < 1200
         wall = await items_mod.build_library_wall(session, library.id, sort="release_date")
         assert wall[0].primary_aspect == pytest.approx(1600 / 1200, abs=1e-3)
         assert wall[0].poster_url.startswith(f"/images/assets/{item.id}/poster.jpg")
+        assert wall[0].poster_blur == meta.poster_blur
 
     # 关掉缩略图开关：不生成
     async with db.session() as session:
@@ -414,6 +420,23 @@ async def test_delete_then_recreate_same_root_keeps_every_photo(db, tmp_path) ->
         assert fresh.stats_item_count == 4 and fresh.stats_file_count == 4
     # 清理是幂等的：再跑一次不会误删有台账的条目
     assert await cleanup_orphan_items([i.id for i in items]) == 0
+
+
+def test_photo_variants_fit_without_cropping(tmp_path) -> None:
+    """瓦片与屏幕适配派生图：等比装进盒子、不裁切、不放大（照片的比例就是内容）。"""
+    from io import BytesIO
+
+    from movieclaw_api.services.image_variants import _PRESETS, ImageVariant, _render_webp
+
+    photo = tmp_path / "wide.jpg"
+    _save_jpeg(photo, (1600, 1000), orientation=6)  # 显示为 1000x1600 竖版
+    tile = Image.open(BytesIO(_render_webp(photo, _PRESETS[ImageVariant.PHOTO_TILE])))
+    assert tile.format == "WEBP" and tile.size == (300, 480)  # 长边 480、方向已纠正、不裁
+    screen = Image.open(BytesIO(_render_webp(photo, _PRESETS[ImageVariant.PHOTO_SCREEN])))
+    assert screen.size == (1000, 1600)  # 小于 2048 不放大
+    # 卡片预设仍是裁切语义（不受影响）
+    card = Image.open(BytesIO(_render_webp(photo, _PRESETS[ImageVariant.POSTER_CARD])))
+    assert card.size == (328, 492)
 
 
 # ---------------------------------------------------------------------------
@@ -553,6 +576,13 @@ async def test_original_route_serves_images_by_visibility(client: TestClient, tm
     down = client.get(f"{_LIBS}/files/{photo_id}/original", params={"download": "1"})
     assert down.status_code == 200
     assert down.headers["content-disposition"].startswith("attachment; filename*=UTF-8''IMG_1.jpg")
+    # 屏幕适配图：按原图派生的 WebP，走图片缓存
+    screen = client.get(f"{_LIBS}/files/{photo_id}/original", params={"size": "screen"})
+    assert screen.status_code == 200, screen.text
+    assert screen.headers["content-type"].startswith("image/webp")
+    assert screen.content[:4] == b"RIFF"
+    not_image = client.get(f"{_LIBS}/files/{video_id}/original", params={"size": "screen"})
+    assert not_image.status_code == 404
     # 非图片文件与磁盘上不存在的文件都是 404
     assert client.get(f"{_LIBS}/files/{video_id}/original").status_code == 404
     assert client.get(f"{_LIBS}/files/{missing_id}/original").status_code == 404

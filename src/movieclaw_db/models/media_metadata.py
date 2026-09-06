@@ -109,6 +109,9 @@ class MediaMetadata(TimestampMixin, table=True):
     # 卡片按真实比例排版，见 docs/design/library-other-kind.md 4.7
     poster_width: int | None = Field(default=None, description="本地海报像素宽；NULL=未知")
     poster_height: int | None = Field(default=None, description="本地海报像素高；NULL=未知")
+    # 主图的微缩占位图：16px 宽的 JPEG data URI（约 300 字节），随列表下发，
+    # 缩略图到达前先铺一层模糊色块（渐进式加载，docs/design/library-photo-kind.md 3.4）
+    poster_blur: str | None = Field(default=None, description="主图微缩占位图 data URI；NULL=没有")
 
     # -- 手动选图锁（Emby/TMM 同款语义：改过即锁）---------------------------
     # 用户在「更换图片」里挑过的图，自动选图策略与 force 刷新都**不再覆盖**

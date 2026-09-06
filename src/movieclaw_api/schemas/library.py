@@ -410,6 +410,10 @@ class LibraryItemView(BaseModel):
         default=None,
         description="内容日期：影视为上映/首播日，本地条目为拍摄/录制日（图片库按月分组与悬停日期用）",
     )
+    poster_blur: str | None = Field(
+        default=None,
+        description="主图的微缩占位图 data URI（约 300 字节）：缩略图到达前铺一层模糊色块",
+    )
     primary_file_id: int | None = Field(
         default=None,
         description="条目的首个在位文件 id（一文件一条目的库用它取原图；多文件条目取最早入账的）",

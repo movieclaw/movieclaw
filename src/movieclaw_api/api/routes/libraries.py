@@ -2197,6 +2197,10 @@ async def get_file_thumb(
 async def get_file_original(
     file_id: int,
     download: bool = Query(default=False, description="true=作为附件下载（Content-Disposition）"),
+    size: Literal["original", "screen"] = Query(
+        default="original",
+        description="original=原图；screen=长边 ≤2048 的屏幕适配 WebP（灯箱先看它，放大才拉原图）",
+    ),
     principal: Principal = Depends(require_login),
     session: AsyncSession = Depends(get_session),
 ) -> FileResponse:
@@ -2204,6 +2208,10 @@ async def get_file_original(
     不从这里出。路径由台账行推导（客户端只给 id），不存在路径注入面；
     ``FileResponse`` 自带 Last-Modified / ETag / Range。原图含完整 EXIF，
     库的可见范围就是它的访问边界。
+
+    ``size=screen``：按原图惰性生成长边 2048 的 WebP 派生图，走图片缓存
+    （磁盘 LRU + singleflight），同一张只编码一次；原图改动（mtime/大小变）
+    自动失效。灯箱的渐进式加载靠它：几百 KB 先上屏，放大到 1:1 才拉几 MB 的原图。
     """
     row = await session.get(LibraryFile, file_id)
     if row is None or Path(row.file_path).suffix.lower() not in IMAGE_EXTS:
@@ -2213,6 +2221,24 @@ async def get_file_original(
     path = Path(row.file_path)
     if not await asyncio.to_thread(path.is_file):
         raise NotFoundException("图片文件不在磁盘上（可能已被移动或删除）")
+    if size == "screen" and not download:
+        from movieclaw_api.services.image_variants import (
+            ImageVariant,
+            get_image_variant_service,
+            local_source_version,
+        )
+
+        cached = await get_image_variant_service().get_or_create(
+            path,
+            source_key=f"library-file:{file_id}",
+            source_version=await asyncio.to_thread(local_source_version, path),
+            variant=ImageVariant.PHOTO_SCREEN,
+        )
+        return FileResponse(
+            cached.path,
+            media_type=cached.content_type,
+            headers={"Cache-Control": "private, max-age=86400"},
+        )
     media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
     headers = {"Cache-Control": "private, max-age=3600"}
     if download:

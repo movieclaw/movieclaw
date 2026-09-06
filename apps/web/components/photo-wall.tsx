@@ -4,7 +4,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 
 import { PosterImage } from "@/components/poster-image";
 import type { LibraryItem } from "@/lib/api/libraries";
-import { imageUrl } from "@/lib/image-proxy";
+import { imageUrl, type ImageVariant } from "@/lib/image-proxy";
 
 /**
  * 图片库的瀑布流墙（docs/design/library-photo-kind.md 3.2）。
@@ -41,11 +41,14 @@ interface DensitySpec {
   column: number;
   minColumns: number;
   gap: number;
+  /** 瓦片取哪个规格的图：列宽 ≤230 CSS px 用 480px 的 photo-tile 派生图（2x 屏够用），
+   *  宽松密度列宽更大，直接用 720px 的缩略图本体 */
+  variant: ImageVariant | undefined;
 }
 const DENSITY: Record<PhotoWallDensity, DensitySpec> = {
-  compact: { column: 150, minColumns: 3, gap: 6 },
-  standard: { column: 230, minColumns: 2, gap: 12 },
-  loose: { column: 340, minColumns: 1, gap: 18 },
+  compact: { column: 150, minColumns: 3, gap: 6, variant: "photo-tile" },
+  standard: { column: 230, minColumns: 2, gap: 12, variant: "photo-tile" },
+  loose: { column: 340, minColumns: 1, gap: 18, variant: undefined },
 };
 const GAP = 12;
 const MIN_ASPECT = 0.5;
@@ -385,6 +388,7 @@ const PhotoMonthSection = memo(function PhotoMonthSection({
             key={item.media_item_id}
             item={item}
             placement={layout.placements[i]}
+            variant={spec.variant}
             onOpen={() => onOpen(index)}
             workingLabel={workingLabelOf?.(item)}
           />
@@ -397,11 +401,13 @@ const PhotoMonthSection = memo(function PhotoMonthSection({
 const PhotoTile = memo(function PhotoTile({
   item,
   placement,
+  variant,
   onOpen,
   workingLabel,
 }: {
   item: LibraryItem;
   placement: Placement;
+  variant: ImageVariant | undefined;
   onOpen: () => void;
   workingLabel?: string;
 }) {
@@ -423,8 +429,17 @@ const PhotoTile = memo(function PhotoTile({
         height: Math.round(placement.height),
       }}
     >
+      {/* 渐进式加载第一级：列表自带的 16px 微缩图铺底并模糊，缩略图到达前先看到
+          照片的大致颜色；缩略图加载完成后盖在上面（缩放 1.1 让模糊边缘不露底） */}
+      {item.poster_blur && (
+        <span
+          aria-hidden="true"
+          className="absolute inset-0 scale-110 bg-cover bg-center blur-md"
+          style={{ backgroundImage: `url(${item.poster_blur})` }}
+        />
+      )}
       <PosterImage
-        src={imageUrl(item.poster_url)}
+        src={imageUrl(item.poster_url, variant)}
         alt={item.title}
         className={`absolute inset-0 size-full object-cover transition-transform duration-500 ease-out group-hover/tile:scale-[1.04] motion-reduce:transition-none ${
           dead ? "opacity-50 grayscale" : ""

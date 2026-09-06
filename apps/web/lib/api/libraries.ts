@@ -262,6 +262,8 @@ export interface LibraryItem {
   primary_aspect: number;
   /** 内容日期（ISO 日期）：影视为上映/首播日，本地条目为拍摄/录制日 */
   release_date: string | null;
+  /** 主图的微缩占位图 data URI（约 300 字节）：缩略图到达前铺一层模糊色块 */
+  poster_blur: string | null;
   /** 条目的首个在位文件 id：图片库取原图/回收站用 */
   primary_file_id: number | null;
   file_count: number;
@@ -550,9 +552,20 @@ export function listLibraryItemIndex(
   );
 }
 
-/** 图片库原图地址（按台账文件 id，服务端按库可见性鉴权）；download=true 作为附件下载。 */
-export function libraryFileOriginalUrl(fileId: number, download = false): string {
-  return resolveRequestUrl(`/libraries/files/${fileId}/original${download ? "?download=1" : ""}`);
+/**
+ * 图片库原图地址（按台账文件 id，服务端按库可见性鉴权）。
+ * - `size: "screen"`：长边 ≤2048 的屏幕适配 WebP，灯箱先看它（几百 KB），放大才拉原图；
+ * - `download`：原图作为附件下载。
+ */
+export function libraryFileOriginalUrl(
+  fileId: number,
+  options: { download?: boolean; size?: "screen" } = {},
+): string {
+  const query = new URLSearchParams();
+  if (options.download) query.set("download", "1");
+  else if (options.size) query.set("size", options.size);
+  const suffix = query.size > 0 ? `?${query}` : "";
+  return resolveRequestUrl(`/libraries/files/${fileId}/original${suffix}`);
 }
 
 /** 触发一次可恢复的库扫描；重复点击复用同一条后台作业。 */

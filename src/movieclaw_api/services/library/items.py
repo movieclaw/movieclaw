@@ -27,6 +27,7 @@ import contextlib
 import inspect
 import logging
 import os
+import re
 import shutil
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -166,6 +167,19 @@ class _FileFacts(NamedTuple):
     added_batch_id: str | None
     # 尚未探出介质规格（audio_streams IS NULL 在 SQL 里算好，不取 JSON 本体）
     unprobed: bool
+
+
+_PIXEL_SIZE = re.compile(r"^(\d+)x(\d+)$")
+
+
+def _pixel_size_of(files: list[_FileFacts]) -> tuple[int | None, int | None]:
+    """台账行记的原图像素尺寸（图片库入账时探测得到，形如 ``4032x3024``）；
+    视频的规格是 ``1080p`` 这类，不匹配即 (None, None)。"""
+    for facts in files:
+        match = _PIXEL_SIZE.match(facts.resolution or "")
+        if match:
+            return int(match.group(1)), int(match.group(2))
+    return None, None
 
 
 def _build_inventory_summary(
@@ -523,8 +537,9 @@ async def _aggregate_wall_views(
     # 海报优先本地刮削资产（断网可用），没有资产的回落 TMDB 图床
     poster_assets: dict[int, str] = {}
     poster_sizes: dict[int, tuple[int | None, int | None]] = {}
+    poster_blurs: dict[int, str] = {}
     release_dates: dict[int, date | None] = {}
-    for item_id, poster_file, width, height, released in (
+    for item_id, poster_file, width, height, released, blur in (
         await session.execute(
             select(
                 MediaMetadata.media_item_id,
@@ -532,6 +547,7 @@ async def _aggregate_wall_views(
                 MediaMetadata.poster_width,
                 MediaMetadata.poster_height,
                 MediaMetadata.release_date,
+                MediaMetadata.poster_blur,
             ).where(
                 MediaMetadata.media_item_id.in_(grouped.keys()),  # type: ignore[attr-defined]
             )
@@ -541,6 +557,8 @@ async def _aggregate_wall_views(
         if poster_file:
             poster_assets[item_id] = poster_file
             poster_sizes[item_id] = (width, height)
+            if blur:
+                poster_blurs[item_id] = blur
     by_id: dict[int, LibraryItemView] = {}
     for item, files in grouped.values():
         season_episode_counts = season_episode_counts_by_item.get(item.id, {})  # type: ignore[arg-type]
@@ -607,7 +625,12 @@ async def _aggregate_wall_views(
             title=item.title,
             year=item.year,
             poster_url=poster_url,
-            primary_aspect=primary_aspect(item, *poster_sizes.get(item.id, (None, None))),
+            # 缩略图还没生成时用扫描入账记下的原图尺寸定比例：墙一开始就是最终
+            # 布局，缩略图到达不会引起重排（渐进式加载的第 0 级）
+            primary_aspect=primary_aspect(
+                item, *(poster_sizes.get(item.id) or _pixel_size_of(files))
+            ),
+            poster_blur=poster_blurs.get(item.id),
             release_date=release_dates.get(item.id),
             # 首个在位文件：一文件一条目的库就是那一个；多文件条目取最早入账的
             primary_file_id=min(

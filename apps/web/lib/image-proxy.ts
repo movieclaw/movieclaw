@@ -1,7 +1,7 @@
 import { resolveRequestUrl } from "@/lib/http";
 
 /** 后端允许的固定图片派生预设；固定枚举避免调用方制造任意尺寸缓存。 */
-export type ImageVariant = "landscape-card" | "poster-card";
+export type ImageVariant = "landscape-card" | "poster-card" | "photo-tile";
 
 function appendVariant(url: string, variant: ImageVariant): string {
   return `${url}${url.includes("?") ? "&" : "?"}variant=${variant}`;
