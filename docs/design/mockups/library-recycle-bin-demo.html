@@ -74,7 +74,7 @@
   /* —— 表格：一条目一行，剧集/多版本可展开 —— */
   .tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:14px;background:rgba(255,255,255,.02)}
   table{width:100%;border-collapse:collapse;min-width:900px;table-layout:fixed;font-variant-numeric:tabular-nums}
-  th:nth-child(1){width:34px}th:nth-child(2){width:17%}th:nth-child(3){width:14%}th:nth-child(4){width:21%}th:nth-child(5){width:19%}th:nth-child(6){width:11%}
+  th:nth-child(1){width:34px}th:nth-child(2){width:20%}th:nth-child(3){width:33%}th:nth-child(4){width:19%}th:nth-child(5){width:11%}
   th{text-align:left;font-size:11px;letter-spacing:.05em;color:var(--faint);font-weight:600;padding:10px 12px;border-bottom:1px solid var(--line);white-space:nowrap}
   td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:middle;font-size:13px;overflow:hidden}
   tr:last-child td{border-bottom:none}
@@ -95,7 +95,7 @@
   .item .t{font-weight:600;display:flex;align-items:center;gap:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .item .t small{color:var(--faint);font-weight:400}
   .item .lib{font-size:11.5px;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .ep{display:flex;gap:8px;align-items:baseline;padding-left:70px;white-space:nowrap;overflow:hidden}
+  .ep{display:flex;gap:8px;align-items:baseline;padding-left:56px;white-space:nowrap;overflow:hidden}
   .ep code{font-family:var(--mono);font-size:12px;color:var(--text)}
   .ep span{color:var(--muted);font-size:12px;overflow:hidden;text-overflow:ellipsis}
   .fname{font-family:var(--mono);font-size:12px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -103,13 +103,14 @@
   .fsum b{font-weight:600}
   .fsub{font-size:11.5px;color:var(--faint);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;gap:6px;align-items:center}
   tr.sub .fname{color:var(--muted)}
-  /* 品质列：第一行分辨率 + 片源（+HDR 徽标），第二行编码 · 音轨 · 制作组 · 大小 */
-  .q .l1{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;gap:6px;align-items:center}
-  .q .l1 em{font-style:normal;color:var(--faint);font-weight:400;font-size:11.5px}
-  .q .l2{font-size:11.5px;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
-  .q .l2 b{color:var(--muted);font-weight:500}
-  tr.sub .q .l1{font-weight:400;font-size:12.5px;color:var(--muted)}
-  tr.sub .q .l2{margin-top:0}
+  /* 文件 · 品质：第一行文件名（等宽、整格宽度），第二行解析出来的品质：分辨率 片源（加粗，+HDR 徽标）· 大小 · 编码 · 音轨 · 制作组 */
+  .fq .fname,.fq .fsum{margin-bottom:3px}
+  .ql{font-size:12px;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .ql b{color:var(--text);font-weight:600;font-size:12.5px}
+  .ql b em{font-style:normal;color:var(--faint);font-weight:400;font-size:11px}
+  .ql .sz{font-style:normal;color:var(--muted)}
+  tr.sub .ql b{font-weight:500;color:var(--muted)}
+  .fq .fsub,.fq .err{margin-top:4px}
   .why .n{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .why .n .arrow{color:var(--faint);margin:0 3px}
   .why .by{font-size:11.5px;color:var(--faint);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -161,9 +162,9 @@
   .mrow .top .t small{color:var(--faint);font-weight:400;font-size:12px}
   .mrow .top .lib{font-size:11.5px;color:var(--faint)}
   .mrow .top .due{margin-left:auto;text-align:right}
-  .mrow .q{margin-top:8px}
-  .mrow .q .l1{font-size:13px}
-  .mrow .fname{margin-top:3px;color:var(--faint);font-size:11.5px}
+  .mrow .fname{margin-top:8px;color:var(--text);font-size:12px}
+  .mrow .q{margin-top:3px}
+  .mrow .q .ql b{font-size:13px}
   .mrow .why{margin-top:4px}
   .mrow .why .n{font-size:12.5px;color:var(--muted)}
   .mrow .bottom{display:flex;justify-content:space-between;align-items:center;gap:6px;margin-top:8px}
@@ -192,7 +193,7 @@
 
 <!-- ① 桌面 -->
 <section class="screen on" id="s1">
-  <p class="note"><b>新分区</b>：管理页标题下插入标签栏，「回收站」是第二个标签（<span style="font-family:var(--mono)">?tab=recycle</span>）。<b>一个条目一行</b>：一部电影一行，一部剧无论多少集都是一行；行首 › 展开看每一集（图中「权力的游戏」已展开，24 集只画了 4 集）。<b>「品质」独立成列</b>：第一行分辨率 + 片源（HDR 另加徽标），第二行编码 · 音轨 · 制作组 · 大小；剧集条目行是组内汇总（规格一致写一种，混合写计数），展开后每集有自己的品质行，与洗版前后对比的「原因」列并排看。文件列只剩文件名（等宽）与「原地」等状态标。条目行的「自动清理」取最早那个文件，行内动作作用于该条目全部待回收文件（按钮带数字）。勾选：条目复选框 = 整组，展开后可勾单集，组框显示「–」半选。摘要行数字按<b>文件</b>算，分页按<b>条目</b>算。</p>
+  <p class="note"><b>新分区</b>：管理页标题下插入标签栏，「回收站」是第二个标签（<span style="font-family:var(--mono)">?tab=recycle</span>）。<b>一个条目一行</b>：一部电影一行，一部剧无论多少集都是一行；行首 › 展开看每一集（图中「权力的游戏」已展开，24 集只画了 4 集）。<b>「文件 · 品质」一格两行</b>：第一行文件名（等宽，拿整格宽度，悬停显示原路径），第二行是从它解析出来的品质：分辨率 + 片源加粗（HDR 另加徽标）· 大小 · 编码 · 音轨 · 制作组。文件名本身就是发布名，下面一行是它的结构化读法，两行挨着比拆两列顺。剧集条目行第一行写「24 集 · 3 季」，第二行是组内汇总（规格一致写一种，混合写计数）；展开后每集有自己的两行，与洗版前后对比的「原因」列并排看。「原地」标和批量清理失败的原因放在这一格最下面。条目行的「自动清理」取最早那个文件，行内动作作用于该条目全部待回收文件（按钮带数字）。勾选：条目复选框 = 整组，展开后可勾单集，组框显示「–」半选。摘要行数字按<b>文件</b>算，分页按<b>条目</b>算。</p>
   <div class="frame">
     <aside class="side">
       <div class="brand">movieclaw</div>
@@ -234,15 +235,14 @@
       <div class="tablewrap">
         <table>
           <thead><tr>
-            <th><span class="cb"></span></th><th>条目</th><th>文件</th><th>品质</th><th>原因</th><th>自动清理</th><th style="text-align:right">操作</th>
+            <th><span class="cb"></span></th><th>条目</th><th>文件 · 品质</th><th>原因</th><th>自动清理</th><th style="text-align:right">操作</th>
           </tr></thead>
           <tbody>
             <!-- 电影 · 单文件 -->
             <tr>
               <td><span class="cb"></span></td>
               <td><div class="item"><span class="chev"></span><div class="poster" style="background:linear-gradient(160deg,#4b3a6e,#1a1626)"></div><div><div class="t">九门 <small>2025</small></div><div class="lib">电影</div></div></div></td>
-              <td><div class="fname">九门.2025.1080p.WEB-DL.H264.AAC-XXX.mkv</div></td>
-              <td class="q"><div class="l1">1080p WEB-DL</div><div class="l2"><b>4.2 GB</b> · H.264 · AAC 2.0 · XXX</div></td>
+              <td class="fq"><div class="fname" title="原路径：/remote/media/电影/九门 (2025)/九门.2025.1080p.WEB-DL.H264.AAC-XXX.mkv">九门.2025.1080p.WEB-DL.H264.AAC-XXX.mkv</div><div class="ql"><b>1080p WEB-DL</b><span> · <i class="sz">4.2 GB</i> · H.264 · AAC 2.0 · XXX</span></div></td>
               <td class="why"><div class="n">洗版替换：1080p WEB-DL<span class="arrow">→</span>2160p Remux</div><div class="by">《九门》订阅洗版 · 6 天前</div></td>
               <td><div class="due soon"><div class="v">6 小时后</div><div class="d">今天 22:40</div></div></td>
               <td><div class="acts"><span class="btn">恢复</span><span class="btn danger">清理</span></div></td>
@@ -252,8 +252,7 @@
             <tr class="open">
               <td><span class="cb part">–</span></td>
               <td><div class="item open"><span class="chev">›</span><div class="poster" style="background:linear-gradient(160deg,#3a5a3a,#16261a)"></div><div><div class="t">权力的游戏</div><div class="lib">剧集 · S01–S03</div></div></div></td>
-              <td><div class="fsum"><b>24 集</b></div><div class="fsub">3 季</div></td>
-              <td class="q"><div class="l1">720p HDTV</div><div class="l2"><b>26.4 GB</b> · x264 · AC3 5.1 · CTU</div></td>
+              <td class="fq"><div class="fsum"><b>24 集</b> · 3 季</div><div class="ql"><b>720p HDTV</b><span> · <i class="sz">26.4 GB</i> · x264 · AC3 5.1 · CTU</span></div></td>
               <td class="why"><div class="n">洗版替换：720p HDTV<span class="arrow">→</span>1080p BluRay</div><div class="by">《权力的游戏》订阅洗版 · 6 天前</div></td>
               <td><div class="due soon"><div class="v"><small>最早</small>9 小时后</div><div class="d">最晚 3 天后</div></div></td>
               <td><div class="acts"><span class="btn">恢复 24</span><span class="btn danger">清理 24</span></div></td>
@@ -261,8 +260,7 @@
             <tr class="sub sel">
               <td><span class="cb on">✓</span></td>
               <td><div class="ep"><code>S01E03</code><span>雪诺大人</span></div></td>
-              <td><div class="fname">Game.of.Thrones.S01E03.720p.HDTV.x264-CTU.mkv</div></td>
-              <td class="q"><div class="l1">720p HDTV</div><div class="l2">1.1 GB · x264 · AC3 5.1</div></td>
+              <td class="fq"><div class="fname">Game.of.Thrones.S01E03.720p.HDTV.x264-CTU.mkv</div><div class="ql"><b>720p HDTV</b><span> · 1.1 GB · x264 · AC3 5.1</span></div></td>
               <td class="why"></td>
               <td><div class="due soon"><div class="v">9 小时后</div></div></td>
               <td><div class="acts"><span class="btn">恢复</span><span class="btn danger">清理</span></div></td>
@@ -270,8 +268,7 @@
             <tr class="sub sel">
               <td><span class="cb on">✓</span></td>
               <td><div class="ep"><code>S01E04</code><span>残缺者、庶子和破碎之物</span></div></td>
-              <td><div class="fname">Game.of.Thrones.S01E04.720p.HDTV.x264-CTU.mkv</div></td>
-              <td class="q"><div class="l1">720p HDTV</div><div class="l2">1.1 GB · x264 · AC3 5.1</div></td>
+              <td class="fq"><div class="fname">Game.of.Thrones.S01E04.720p.HDTV.x264-CTU.mkv</div><div class="ql"><b>720p HDTV</b><span> · 1.1 GB · x264 · AC3 5.1</span></div></td>
               <td class="why"></td>
               <td><div class="due soon"><div class="v">9 小时后</div></div></td>
               <td><div class="acts"><span class="btn">恢复</span><span class="btn danger">清理</span></div></td>
@@ -279,8 +276,7 @@
             <tr class="sub">
               <td><span class="cb"></span></td>
               <td><div class="ep"><code>S01E05</code><span>狼与狮</span></div></td>
-              <td><div class="fname">Game.of.Thrones.S01E05.720p.HDTV.x264-CTU.mkv</div></td>
-              <td class="q"><div class="l1">720p HDTV</div><div class="l2">1.1 GB · x264 · AC3 5.1</div></td>
+              <td class="fq"><div class="fname">Game.of.Thrones.S01E05.720p.HDTV.x264-CTU.mkv</div><div class="ql"><b>720p HDTV</b><span> · 1.1 GB · x264 · AC3 5.1</span></div></td>
               <td class="why"></td>
               <td><div class="due"><div class="v">2 天 3 小时后</div></div></td>
               <td><div class="acts"><span class="btn">恢复</span><span class="btn danger">清理</span></div></td>
@@ -288,20 +284,18 @@
             <tr class="sub">
               <td><span class="cb"></span></td>
               <td><div class="ep"><code>S02E01</code><span>北境记住</span></div></td>
-              <td><div class="fname">Game.of.Thrones.S02E01.720p.HDTV.x264-KILLERS.mkv</div></td>
-              <td class="q"><div class="l1">720p HDTV</div><div class="l2">0.9 GB · x264 · AAC 2.0 · KILLERS</div></td>
+              <td class="fq"><div class="fname">Game.of.Thrones.S02E01.720p.HDTV.x264-KILLERS.mkv</div><div class="ql"><b>720p HDTV</b><span> · 0.9 GB · x264 · AAC 2.0 · KILLERS</span></div></td>
               <td class="why"><div class="n">720p HDTV → 1080p WEB-DL</div></td>
               <td><div class="due"><div class="v">2 天 3 小时后</div></div></td>
               <td><div class="acts"><span class="btn">恢复</span><span class="btn danger">清理</span></div></td>
             </tr>
-            <tr class="more sub last"><td></td><td colspan="6" style="padding-left:82px">… 样稿省略其余 20 集（实际展开后全部列出，按季集排序；原因列只在与条目行不同时写出，如 S02E01）</td></tr>
+            <tr class="more sub last"><td></td><td colspan="5" style="padding-left:68px">… 样稿省略其余 20 集（实际展开后全部列出，按季集排序；原因列只在与条目行不同时写出，如 S02E01）</td></tr>
 
             <!-- 电影 · 批量清理失败，HDR -->
             <tr class="failed">
               <td><span class="cb"></span></td>
               <td><div class="item"><span class="chev"></span><div class="poster" style="background:linear-gradient(160deg,#2f4a6e,#131a26)"></div><div><div class="t">星际穿越 <small>2014</small></div><div class="lib">4K 电影</div></div></div></td>
-              <td><div class="fname">Interstellar.2014.2160p.UHD.BluRay.x265-TERMiNAL.mkv</div><div class="fsub"><span class="tag warn" title="移入回收站失败，文件仍在原路径">原地</span></div><div class="err">上次清理失败：权限不足（只读挂载）</div></td>
-              <td class="q"><div class="l1">2160p BluRay <span class="tag hdr">HDR10</span></div><div class="l2"><b>22.6 GB</b> · x265 10bit · DTS-HD MA 5.1 · TERMiNAL</div></td>
+              <td class="fq"><div class="fname">Interstellar.2014.2160p.UHD.BluRay.x265-TERMiNAL.mkv</div><div class="ql"><b>2160p BluRay <span class="tag hdr">HDR10</span></b><span> · <i class="sz">22.6 GB</i> · x265 10bit · DTS-HD MA 5.1 · TERMiNAL</span></div><div class="fsub"><span class="tag warn" title="移入回收站失败，文件仍在原路径">原地</span></div><div class="err">上次清理失败：权限不足（只读挂载）</div></td>
               <td class="why"><div class="n">洗版替换：2160p BluRay<span class="arrow">→</span>2160p Remux</div><div class="by">《星际穿越》订阅洗版 · 5 天前</div></td>
               <td><div class="due"><div class="v">1 天 14 小时后</div><div class="d">9 月 8 日 06:05</div></div></td>
               <td><div class="acts"><span class="btn">恢复</span><span class="btn danger">清理</span></div></td>
@@ -311,8 +305,7 @@
             <tr>
               <td><span class="cb"></span></td>
               <td><div class="item"><span class="chev">›</span><div class="poster" style="background:linear-gradient(160deg,#6e5a3a,#261d16)"></div><div><div class="t">老友记</div><div class="lib">剧集 · S02</div></div></div></td>
-              <td><div class="fsum"><b>6 集</b></div><div class="fsub">1 季</div></td>
-              <td class="q"><div class="l1">1080p WEB-DL <em>4</em> · 1080p BluRay <em>2</em></div><div class="l2"><b>9.4 GB</b> · H.264 · DD5.1 · NTb / FLUX</div></td>
+              <td class="fq"><div class="fsum"><b>6 集</b> · 1 季</div><div class="ql"><b>1080p WEB-DL <em>4</em> · 1080p BluRay <em>2</em></b><span> · <i class="sz">9.4 GB</i> · H.264 · DD5.1 · NTb / FLUX</span></div></td>
               <td class="why"><div class="n">洗版证伪 4 · 洗版替换 2</div><div class="by">《老友记》订阅洗版 · 3 天前</div></td>
               <td><div class="due"><div class="v"><small>最早</small>3 天 4 小时后</div><div class="d">最晚 5 天后</div></div></td>
               <td><div class="acts"><span class="btn">恢复 6</span><span class="btn danger">清理 6</span></div></td>
@@ -322,8 +315,7 @@
             <tr class="sel">
               <td><span class="cb on">✓</span></td>
               <td><div class="item"><span class="chev"></span><div class="poster" style="background:linear-gradient(160deg,#6e3a3a,#261616)"></div><div><div class="t">流浪地球 <small>2019</small></div><div class="lib">电影</div></div></div></td>
-              <td><div class="fname">流浪地球.2019.1080p.WEB-DL.H265.DDP5.1-HDSWEB.mp4</div></td>
-              <td class="q"><div class="l1">1080p WEB-DL</div><div class="l2"><b>4.3 GB</b> · H.265 · DDP 5.1 · HDSWEB</div></td>
+              <td class="fq"><div class="fname">流浪地球.2019.1080p.WEB-DL.H265.DDP5.1-HDSWEB.mp4</div><div class="ql"><b>1080p WEB-DL</b><span> · <i class="sz">4.3 GB</i> · H.265 · DDP 5.1 · HDSWEB</span></div></td>
               <td class="why"><div class="n">洗版替换：1080p WEB-DL<span class="arrow">→</span>1080p BluRay</div><div class="by">《流浪地球》订阅洗版 · 2 天前</div></td>
               <td><div class="due"><div class="v">4 天 18 小时后</div><div class="d">9 月 11 日 10:02</div></div></td>
               <td><div class="acts"><span class="btn">恢复</span><span class="btn danger">清理</span></div></td>
@@ -333,8 +325,7 @@
             <tr>
               <td><span class="cb"></span></td>
               <td><div class="item"><span class="chev">›</span><div class="poster" style="background:linear-gradient(160deg,#5a5a3a,#242416)"></div><div><div class="t">奥本海默 <small>2023</small></div><div class="lib">电影</div></div></div></td>
-              <td><div class="fsum"><b>2 个版本</b></div></td>
-              <td class="q"><div class="l1">1080p BluRay <em>1</em> · 1080p WEB-DL <em>1</em></div><div class="l2"><b>22.7 GB</b> · x264 · DTS 5.1 / DDP 5.1</div></td>
+              <td class="fq"><div class="fsum"><b>2 个版本</b></div><div class="ql"><b>1080p BluRay <em>1</em> · 1080p WEB-DL <em>1</em></b><span> · <i class="sz">22.7 GB</i> · x264 · DTS 5.1 / DDP 5.1</span></div></td>
               <td class="why"><div class="n">洗版替换：1080p<span class="arrow">→</span>2160p Remux</div><div class="by">《奥本海默》订阅洗版 · 昨天</div></td>
               <td><div class="due"><div class="v"><small>最早</small>6 天 2 小时后</div></div></td>
               <td><div class="acts"><span class="btn">恢复 2</span><span class="btn danger">清理 2</span></div></td>
@@ -343,8 +334,7 @@
             <tr>
               <td><span class="cb"></span></td>
               <td><div class="item"><span class="chev">›</span><div class="poster" style="background:linear-gradient(160deg,#3a6e6a,#162624)"></div><div><div class="t">怪奇物语</div><div class="lib">剧集 · S04</div></div></div></td>
-              <td><div class="fsum"><b>9 集</b></div><div class="fsub">1 季</div></td>
-              <td class="q"><div class="l1">1080p WEB-DL</div><div class="l2"><b>35.1 GB</b> · x264 · DDP 5.1 Atmos · CMRG</div></td>
+              <td class="fq"><div class="fsum"><b>9 集</b> · 1 季</div><div class="ql"><b>1080p WEB-DL</b><span> · <i class="sz">35.1 GB</i> · x264 · DDP 5.1 Atmos · CMRG</span></div></td>
               <td class="why"><div class="n">洗版替换：1080p WEB-DL<span class="arrow">→</span>2160p WEB-DL</div><div class="by">《怪奇物语》订阅洗版 · 昨天</div></td>
               <td><div class="due"><div class="v"><small>最早</small>6 天 9 小时后</div></div></td>
               <td><div class="acts"><span class="btn">恢复 9</span><span class="btn danger">清理 9</span></div></td>
@@ -397,11 +387,11 @@
       </div>
       <div class="tablewrap" style="opacity:.55">
         <table>
-          <thead><tr><th><span class="cb"></span></th><th>条目</th><th>文件</th><th>品质</th><th>原因</th><th>自动清理</th><th style="text-align:right">操作</th></tr></thead>
+          <thead><tr><th><span class="cb"></span></th><th>条目</th><th>文件 · 品质</th><th>原因</th><th>自动清理</th><th style="text-align:right">操作</th></tr></thead>
           <tbody>
-            <tr><td><span class="cb"></span></td><td><div class="item"><span class="chev">›</span><div class="poster" style="background:linear-gradient(160deg,#3a5a3a,#16261a)"></div><div><div class="t">权力的游戏</div><div class="lib">剧集 · S01</div></div></div></td><td><div class="fsum"><b>2 集</b></div></td><td class="q"><div class="l1">720p HDTV</div><div class="l2"><b>2.2 GB</b> · x264 · AC3 5.1</div></td><td class="why"><div class="n">洗版替换：720p HDTV<span class="arrow">→</span>1080p BluRay</div><div class="by">《权力的游戏》订阅洗版 · 6 天前</div></td><td><div class="due soon"><div class="v"><small>最早</small>9 小时后</div></div></td><td><div class="acts"><span class="btn">恢复 2</span><span class="btn danger">清理 2</span></div></td></tr>
-            <tr><td><span class="cb"></span></td><td><div class="item"><span class="chev">›</span><div class="poster" style="background:linear-gradient(160deg,#6e5a3a,#261d16)"></div><div><div class="t">老友记</div><div class="lib">剧集 · S02</div></div></div></td><td><div class="fsum"><b>6 集</b></div></td><td class="q"><div class="l1">1080p WEB-DL <em>4</em> · 1080p BluRay <em>2</em></div><div class="l2"><b>9.4 GB</b> · H.264 · DD5.1</div></td><td class="why"><div class="n">洗版证伪 4 · 洗版替换 2</div><div class="by">《老友记》订阅洗版 · 3 天前</div></td><td><div class="due"><div class="v"><small>最早</small>3 天 4 小时后</div></div></td><td><div class="acts"><span class="btn">恢复 6</span><span class="btn danger">清理 6</span></div></td></tr>
-            <tr><td><span class="cb"></span></td><td><div class="item"><span class="chev">›</span><div class="poster" style="background:linear-gradient(160deg,#3a6e6a,#162624)"></div><div><div class="t">怪奇物语</div><div class="lib">剧集 · S04</div></div></div></td><td><div class="fsum"><b>6 集</b></div></td><td class="q"><div class="l1">1080p WEB-DL</div><div class="l2"><b>1.0 GB</b> · x264 · DDP 5.1 Atmos</div></td><td class="why"><div class="n">洗版替换：1080p WEB-DL<span class="arrow">→</span>2160p WEB-DL</div><div class="by">《怪奇物语》订阅洗版 · 昨天</div></td><td><div class="due"><div class="v"><small>最早</small>6 天 9 小时后</div></div></td><td><div class="acts"><span class="btn">恢复 6</span><span class="btn danger">清理 6</span></div></td></tr>
+            <tr><td><span class="cb"></span></td><td><div class="item"><span class="chev">›</span><div class="poster" style="background:linear-gradient(160deg,#3a5a3a,#16261a)"></div><div><div class="t">权力的游戏</div><div class="lib">剧集 · S01</div></div></div></td><td class="fq"><div class="fsum"><b>2 集</b></div><div class="ql"><b>720p HDTV</b><span> · <i class="sz">2.2 GB</i> · x264 · AC3 5.1</span></div></td><td class="why"><div class="n">洗版替换：720p HDTV<span class="arrow">→</span>1080p BluRay</div><div class="by">《权力的游戏》订阅洗版 · 6 天前</div></td><td><div class="due soon"><div class="v"><small>最早</small>9 小时后</div></div></td><td><div class="acts"><span class="btn">恢复 2</span><span class="btn danger">清理 2</span></div></td></tr>
+            <tr><td><span class="cb"></span></td><td><div class="item"><span class="chev">›</span><div class="poster" style="background:linear-gradient(160deg,#6e5a3a,#261d16)"></div><div><div class="t">老友记</div><div class="lib">剧集 · S02</div></div></div></td><td class="fq"><div class="fsum"><b>6 集</b></div><div class="ql"><b>1080p WEB-DL <em>4</em> · 1080p BluRay <em>2</em></b><span> · <i class="sz">9.4 GB</i> · H.264 · DD5.1</span></div></td><td class="why"><div class="n">洗版证伪 4 · 洗版替换 2</div><div class="by">《老友记》订阅洗版 · 3 天前</div></td><td><div class="due"><div class="v"><small>最早</small>3 天 4 小时后</div></div></td><td><div class="acts"><span class="btn">恢复 6</span><span class="btn danger">清理 6</span></div></td></tr>
+            <tr><td><span class="cb"></span></td><td><div class="item"><span class="chev">›</span><div class="poster" style="background:linear-gradient(160deg,#3a6e6a,#162624)"></div><div><div class="t">怪奇物语</div><div class="lib">剧集 · S04</div></div></div></td><td class="fq"><div class="fsum"><b>6 集</b></div><div class="ql"><b>1080p WEB-DL</b><span> · <i class="sz">1.0 GB</i> · x264 · DDP 5.1 Atmos</span></div></td><td class="why"><div class="n">洗版替换：1080p WEB-DL<span class="arrow">→</span>2160p WEB-DL</div><div class="by">《怪奇物语》订阅洗版 · 昨天</div></td><td><div class="due"><div class="v"><small>最早</small>6 天 9 小时后</div></div></td><td><div class="acts"><span class="btn">恢复 6</span><span class="btn danger">清理 6</span></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -426,7 +416,7 @@
 
 <!-- ③ 手机 -->
 <section class="screen" id="s3">
-  <p class="note"><b>手机端</b>：一个条目一卡。第一行海报 + 片名 + 最早到期倒计时（右对齐，24 小时内警示色）；第二行就是<b>品质</b>：分辨率 + 片源 + HDR 徽标，其下编码 · 音轨 · 制作组 · 大小；文件名退到小字第三行；第四行原因；底部左侧「展开 N 集」开关，右侧「恢复 / 清理」。展开后每集两行：集号 + 集名 + 倒计时，其下该集的品质与大小。多选保留在卡片左侧，批量操作条改成底部悬浮。</p>
+  <p class="note"><b>手机端</b>：一个条目一卡。第一行海报 + 片名 + 最早到期倒计时（右对齐，24 小时内警示色）；第二行文件名，第三行紧贴着它的<b>品质</b>一行（分辨率 + 片源加粗 · 大小 · 编码 · 音轨 · 制作组），与桌面同一格两行的读法；第四行原因；底部左侧「展开 N 集」开关，右侧「恢复 / 清理」。展开后每集两行：集号 + 集名 + 倒计时，其下该集的品质与大小。多选保留在卡片左侧，批量操作条改成底部悬浮。</p>
   <div class="phone">
     <div class="back">‹ 媒体库</div>
     <h1 style="font-size:21px">媒体库管理</h1>
@@ -438,15 +428,15 @@
 
     <div class="mrow">
       <div class="top"><span class="cb"></span><div class="poster" style="background:linear-gradient(160deg,#4b3a6e,#1a1626)"></div><div><div class="t">九门 <small>2025</small></div><div class="lib">电影</div></div><div class="due soon"><div class="v">6 小时后</div><div class="d">自动清理</div></div></div>
-      <div class="q"><div class="l1">1080p WEB-DL</div><div class="l2"><b>4.2 GB</b> · H.264 · AAC 2.0 · XXX</div></div>
       <div class="fname">九门.2025.1080p.WEB-DL.H264.AAC-XXX.mkv</div>
+      <div class="q"><div class="ql"><b>1080p WEB-DL</b><span> · <i class="sz">4.2 GB</i> · H.264 · AAC 2.0 · XXX</span></div></div>
       <div class="why"><div class="n">洗版替换：1080p WEB-DL → 2160p Remux</div></div>
       <div class="bottom"><span></span><div class="acts"><span class="btn sm">恢复</span><span class="btn sm danger">清理</span></div></div>
     </div>
 
     <div class="mrow">
       <div class="top"><span class="cb part">–</span><div class="poster" style="background:linear-gradient(160deg,#3a5a3a,#16261a)"></div><div><div class="t">权力的游戏</div><div class="lib">剧集 · S01–S03 · 24 集</div></div><div class="due soon"><div class="v">最早 9 小时后</div><div class="d">自动清理</div></div></div>
-      <div class="q"><div class="l1">720p HDTV</div><div class="l2"><b>26.4 GB</b> · x264 · AC3 5.1 · CTU</div></div>
+      <div class="q"><div class="ql"><b>720p HDTV</b><span> · <i class="sz">26.4 GB</i> · x264 · AC3 5.1 · CTU</span></div></div>
       <div class="why"><div class="n">洗版替换：720p HDTV → 1080p BluRay</div></div>
       <div class="bottom"><span class="toggle">▾ 收起 24 集</span><div class="acts"><span class="btn sm">恢复 24</span><span class="btn sm danger">清理 24</span></div></div>
       <div class="eps">
@@ -460,23 +450,23 @@
 
     <div class="mrow">
       <div class="top"><span class="cb"></span><div class="poster" style="background:linear-gradient(160deg,#6e5a3a,#261d16)"></div><div><div class="t">老友记</div><div class="lib">剧集 · S02 · 6 集</div></div><div class="due"><div class="v">最早 3 天后</div><div class="d">自动清理</div></div></div>
-      <div class="q"><div class="l1">1080p WEB-DL <em>4</em> · 1080p BluRay <em>2</em></div><div class="l2"><b>9.4 GB</b> · H.264 · DD5.1 · NTb / FLUX</div></div>
+      <div class="q"><div class="ql"><b>1080p WEB-DL <em>4</em> · 1080p BluRay <em>2</em></b><span> · <i class="sz">9.4 GB</i> · H.264 · DD5.1 · NTb / FLUX</span></div></div>
       <div class="why"><div class="n">洗版证伪 4 · 洗版替换 2</div></div>
       <div class="bottom"><span class="toggle">› 展开 6 集</span><div class="acts"><span class="btn sm">恢复 6</span><span class="btn sm danger">清理 6</span></div></div>
     </div>
 
     <div class="mrow sel">
       <div class="top"><span class="cb on">✓</span><div class="poster" style="background:linear-gradient(160deg,#6e3a3a,#261616)"></div><div><div class="t">流浪地球 <small>2019</small></div><div class="lib">电影</div></div><div class="due"><div class="v">4 天 18 小时后</div><div class="d">自动清理</div></div></div>
-      <div class="q"><div class="l1">1080p WEB-DL</div><div class="l2"><b>4.3 GB</b> · H.265 · DDP 5.1 · HDSWEB</div></div>
       <div class="fname">流浪地球.2019.1080p.WEB-DL.H265.DDP5.1-HDSWEB.mp4</div>
+      <div class="q"><div class="ql"><b>1080p WEB-DL</b><span> · <i class="sz">4.3 GB</i> · H.265 · DDP 5.1 · HDSWEB</span></div></div>
       <div class="why"><div class="n">洗版替换：1080p WEB-DL → 1080p BluRay</div></div>
       <div class="bottom"><span></span><div class="acts"><span class="btn sm">恢复</span><span class="btn sm danger">清理</span></div></div>
     </div>
 
     <div class="mrow">
       <div class="top"><span class="cb"></span><div class="poster" style="background:linear-gradient(160deg,#2f4a6e,#131a26)"></div><div><div class="t">星际穿越 <small>2014</small> <span class="tag warn">原地</span></div><div class="lib">4K 电影</div></div><div class="due"><div class="v">1 天 14 小时后</div><div class="d">自动清理</div></div></div>
-      <div class="q"><div class="l1">2160p BluRay <span class="tag hdr">HDR10</span></div><div class="l2"><b>22.6 GB</b> · x265 10bit · DTS-HD MA 5.1 · TERMiNAL</div></div>
       <div class="fname">Interstellar.2014.2160p.UHD.BluRay.x265-TERMiNAL.mkv</div>
+      <div class="q"><div class="ql"><b>2160p BluRay <span class="tag hdr">HDR10</span></b><span> · <i class="sz">22.6 GB</i> · x265 10bit · DTS-HD MA 5.1 · TERMiNAL</span></div></div>
       <div class="why"><div class="n">洗版替换：2160p BluRay → 2160p Remux</div></div>
       <div class="bottom"><span></span><div class="acts"><span class="btn sm">恢复</span><span class="btn sm danger">清理</span></div></div>
     </div>
