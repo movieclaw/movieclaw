@@ -5,13 +5,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Route } from "next";
 import Link from "next/link";
 
-import { ChevronRightIcon, DownloadIcon } from "@/components/icons";
+import { ChevronRightIcon, DownloadIcon, PlayIcon } from "@/components/icons";
 import { useToast } from "@/components/feedback";
 import { FilterMenu } from "@/components/filter-menu";
 import { TaskActionsMenu } from "@/components/job-center";
 import { Modal } from "@/components/modal";
 import { OverflowText } from "@/components/overflow-text";
 import {
+  EmptyAction,
+  EmptyState,
   HiddenCountRow,
   PlaybackHistoryList,
   STATS_PERIODS,
@@ -304,9 +306,7 @@ function DeviceActionsMenu({
   busy: boolean;
 }) {
   const items = [
-    ...(onEnd
-      ? [{ id: "end", label: "结束播放", onSelect: () => onEnd(deviceId, label) }]
-      : []),
+    ...(onEnd ? [{ id: "end", label: "结束播放", onSelect: () => onEnd(deviceId, label) }] : []),
     ...(onRevoke
       ? [
           {
@@ -535,9 +535,7 @@ function DownloadCard({
               <span className="text-white/25"> / {formatBytes(download.size_bytes)}</span>
             )}
             {download.progress_percent != null && (
-              <span className="ml-1.5 font-medium text-white/60">
-                {download.progress_percent}%
-              </span>
+              <span className="ml-1.5 font-medium text-white/60">{download.progress_percent}%</span>
             )}
           </span>
           {download.connections > 1 && <span>{download.connections} 条连接</span>}
@@ -709,6 +707,8 @@ export function MediaActivityPanel({
   const scopeFilter = (
     <FilterMenu label="范围" value={scope} options={SCOPE_OPTIONS} onChange={setScope} />
   );
+  const memberLabel =
+    memberId == null ? null : (memberOptions.find((o) => o.value === memberId)?.label ?? null);
 
   return (
     <div>
@@ -741,9 +741,14 @@ export function MediaActivityPanel({
               正在读取媒体库活动…
             </div>
           ) : snapshot.sessions.length === 0 && snapshot.hidden_session_count === 0 ? (
-            <p className="rounded-2xl border border-white/[0.07] bg-white/[0.02] px-4 py-6 text-center text-sub text-[var(--text-muted)]">
-              当前没有设备在播放；设备开始播放后几秒内会出现在这里。
-            </p>
+            <EmptyState
+              icon={<PlayIcon className="size-5" />}
+              title="现在没有人在看"
+              description="设备开始播放后几秒内会出现在这里，网页播放器和 Jellyfin 客户端都算；想看之前谁看了什么，去播放记录。"
+              actions={
+                <EmptyAction onClick={() => onViewChange("plays")}>查看播放记录</EmptyAction>
+              }
+            />
           ) : (
             <div className="space-y-2.5">
               {snapshot.sessions.map((session) => (
@@ -803,7 +808,13 @@ export function MediaActivityPanel({
 
       {view === "plays" && enabled && (
         <div className="mt-4">
-          <PlaybackHistoryList scope={scope} memberId={memberId} onShowAll={showAll} />
+          <PlaybackHistoryList
+            scope={scope}
+            memberId={memberId}
+            memberLabel={memberLabel}
+            onClearMember={() => setMemberId(null)}
+            onShowAll={showAll}
+          />
         </div>
       )}
 
@@ -813,7 +824,9 @@ export function MediaActivityPanel({
             scope={scope}
             days={days}
             memberId={memberId}
+            memberLabel={memberLabel}
             onMemberSelect={setMemberId}
+            onDaysChange={setDays}
             onShowAll={showAll}
           />
         </div>

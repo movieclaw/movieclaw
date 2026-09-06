@@ -2,8 +2,16 @@
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
+import { ActivityIcon, LockIcon, StarIcon } from "@/components/icons";
 import { PosterImage } from "@/components/poster-image";
-import { HiddenCountRow, TitleText, formatWatched } from "@/components/playback-stats-section";
+import {
+  EmptyAction,
+  EmptyState,
+  HiddenCountRow,
+  Skeleton,
+  TitleText,
+  formatWatched,
+} from "@/components/playback-stats-section";
 import {
   fetchPlaybackWatchStats,
   type MediaActivityScope,
@@ -197,8 +205,10 @@ function DeltaChip({
     direction = points > 0 ? 1 : points < 0 ? -1 : 0;
     text = `${Math.abs(points)} 个百分点`;
   } else if (previous <= 0) {
-    direction = current > 0 ? 1 : 0;
-    text = current > 0 ? "新增" : "持平";
+    // 两期都是 0，没什么可比的，不出标签
+    if (current <= 0) return null;
+    direction = 1;
+    text = "新增";
   } else {
     const ratio = (current - previous) / previous;
     direction = ratio > 0 ? 1 : ratio < 0 ? -1 : 0;
@@ -410,6 +420,13 @@ function TrendChart({ stats, metric }: { stats: PlaybackWatchStats; metric: Metr
           )}
         </svg>
       )}
+      {width > 0 && current.every((v) => v <= 0) && (
+        <p className="pointer-events-none absolute inset-x-0 top-[44px] text-center">
+          <span className="rounded-full bg-[#0b0d13]/85 px-3 py-1 text-caption text-white/50 ring-1 ring-white/[0.08]">
+            本周期没有播放{showPrevious ? "，虚线是上一周期" : ""}
+          </span>
+        </p>
+      )}
       {hover !== null && width > 0 && (
         // menu-surface 自带 position: relative，定位交给外层
         <div
@@ -491,12 +508,15 @@ function BreakdownPanel({
   rows,
   total,
   footer,
+  emptyText = "本周期没有数据",
 }: {
   title: string;
   note?: string;
   rows: BreakdownRow[];
   total: number;
   footer?: React.ReactNode;
+  /** 没有行时的说明；传 null 表示由 footer（如范围外折叠行）自己解释 */
+  emptyText?: string | null;
 }) {
   const max = Math.max(1e-9, ...rows.map((r) => r.value));
   return (
@@ -506,8 +526,8 @@ function BreakdownPanel({
         {note && <p className="text-[11px] text-white/30">{note}</p>}
       </div>
       <div className="divide-y divide-white/[0.06] rounded-2xl border border-white/[0.08] bg-white/[0.02]">
-        {rows.length === 0 && (
-          <p className="px-4 py-3 text-caption text-white/40">本周期没有数据</p>
+        {rows.length === 0 && emptyText && (
+          <p className="px-4 py-3 text-caption text-white/40">{emptyText}</p>
         )}
         {rows.map((row) => {
           const share = total > 0 ? Math.round((row.value / total) * 100) : 0;
@@ -572,9 +592,13 @@ function HourHeatmap({ matrix }: { matrix: number[][] }) {
         <p className="text-[11px] text-white/30">星期 × 小时的观看时长，越深越多</p>
       </div>
       <div className="overflow-x-auto rounded-2xl border border-white/[0.08] bg-white/[0.02] px-4 py-3">
-        {total === 0 ? (
-          <p className="text-caption text-white/40">本周期没有数据</p>
-        ) : (
+        {/* 没数据也把 7×24 的格子画出来：空格子本身就在说明这里会是什么 */}
+        {total === 0 && (
+          <p className="mb-2 text-caption text-white/40">
+            本周期还没有累计到观看时长；有人看过之后这里会显示星期 × 小时的分布
+          </p>
+        )}
+        {
           <div className="min-w-[520px]">
             <div className="ml-6 grid grid-cols-24 gap-[2px] text-[10px] text-white/35">
               {Array.from({ length: 24 }, (_, h) => (
@@ -604,7 +628,7 @@ function HourHeatmap({ matrix }: { matrix: number[][] }) {
               </div>
             ))}
           </div>
-        )}
+        }
       </div>
     </section>
   );
@@ -710,12 +734,40 @@ function FavoritePodium({
   favorites,
   previous,
   memberId,
+  hiddenCount,
+  onShowAll,
 }: {
   favorites: PlaybackStatsTitleRow[];
   previous: PlaybackStatsTitleRow[];
   memberId: number | null;
+  /** 作品榜里不在浏览范围内的条数：前三全被折掉时要说明去向 */
+  hiddenCount: number;
+  onShowAll: () => void;
 }) {
-  if (favorites.length === 0) return null;
+  if (favorites.length === 0) {
+    // 有播放却没有上榜作品：要么都在范围外，要么条目已被删除；说清去向，不留空白
+    return (
+      <div className="rounded-2xl border border-white/[0.08] bg-white/[0.02]">
+        <EmptyState
+          compact
+          icon={
+            hiddenCount > 0 ? <LockIcon className="size-3.5" /> : <StarIcon className="size-3.5" />
+          }
+          title={
+            hiddenCount > 0 ? "本期最受欢迎的作品都在你的浏览范围外" : "本期还没有可以上榜的作品"
+          }
+          description={
+            hiddenCount > 0
+              ? `${hiddenCount} 部作品来自你设为不可见的库`
+              : "播放过的条目已被删除，不再进榜"
+          }
+          actions={
+            hiddenCount > 0 ? <EmptyAction onClick={onShowAll}>显示全部</EmptyAction> : undefined
+          }
+        />
+      </div>
+    );
+  }
   const drilled = memberId != null;
   const [first, ...rest] = favorites;
   const ambient = first.media.poster_url ? imageUrl(first.media.poster_url, "poster-card") : null;
@@ -773,18 +825,60 @@ function FavoritePodium({
 // 面板
 // ---------------------------------------------------------------------------
 
+/** 读取中的骨架：与真实布局同形（指标卡、主图、TOP 3、四块分解），内容到达时不跳动。 */
+function StatsSkeleton() {
+  return (
+    <div aria-busy="true" aria-label="正在读取观看统计" className="space-y-4">
+      <div className="grid grid-cols-4 gap-2.5 max-md:grid-cols-2">
+        {Array.from({ length: 4 }, (_, i) => (
+          <div
+            key={i}
+            className="rounded-2xl border border-white/[0.08] bg-white/[0.03] px-4 py-3.5"
+          >
+            <Skeleton className="h-3 w-14" />
+            <Skeleton className="mt-3 h-7 w-24" />
+            <Skeleton className="mt-3 h-3 w-28" />
+          </div>
+        ))}
+      </div>
+      <div className="rounded-2xl border border-white/[0.08] bg-white/[0.02] p-3">
+        <Skeleton className="h-3 w-20" />
+        <Skeleton className="mt-3 h-[220px] w-full" />
+      </div>
+      <div className="rounded-2xl border border-white/[0.08] bg-white/[0.02] p-5">
+        <Skeleton className="h-4 w-32" />
+        <div className="mt-5 flex items-end gap-6 max-md:flex-col max-md:items-stretch">
+          <Skeleton className="h-[180px] w-full md:w-[38%]" />
+          <Skeleton className="h-[120px] w-full md:w-[26%]" />
+          <Skeleton className="h-[120px] w-full md:w-[26%]" />
+        </div>
+      </div>
+      <div className="grid grid-cols-2 gap-4 max-md:grid-cols-1">
+        {Array.from({ length: 4 }, (_, i) => (
+          <Skeleton key={i} className="h-40 w-full rounded-2xl" />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function WatchStatsPanel({
   scope,
   days,
   memberId,
+  memberLabel,
   onMemberSelect,
+  onDaysChange,
   onShowAll,
 }: {
   scope: MediaActivityScope;
   days: number;
   /** 钻取到某个成员；null = 全部 */
   memberId: number | null;
+  /** 钻取中成员的显示名，空状态里点名用 */
+  memberLabel: string | null;
   onMemberSelect: (memberId: number | null) => void;
+  onDaysChange: (days: number) => void;
   onShowAll: () => void;
 }) {
   const [stats, setStats] = useState<PlaybackWatchStats | null>(null);
@@ -816,45 +910,81 @@ export function WatchStatsPanel({
     );
   }
   if (!stats) {
-    return (
-      <p className="rounded-2xl border border-white/[0.07] bg-white/[0.02] px-4 py-6 text-center text-sub text-[var(--text-muted)]">
-        正在读取观看统计…
-      </p>
-    );
+    return <StatsSkeleton />;
   }
+
+  // 空状态里能做的事：清掉成员钻取、把周期拉到最长——两者都是「换个口径再看」
+  const widenActions = (
+    <>
+      {memberId != null && (
+        <EmptyAction onClick={() => onMemberSelect(null)}>查看全部成员</EmptyAction>
+      )}
+      {days < 90 && <EmptyAction onClick={() => onDaysChange(90)}>看最近 90 天</EmptyAction>}
+    </>
+  );
+  const who = memberId != null ? (memberLabel ?? "这位成员") : null;
+
   if (stats.current.plays === 0 && !stats.previous_available) {
+    // 两个周期都没有日志：整块用一个空状态承接，不摆一排 0
     return (
-      <p className="rounded-2xl border border-white/[0.07] bg-white/[0.02] px-4 py-6 text-center text-sub text-[var(--text-muted)]">
-        最近 {days} 天没有播放记录；从现在起的每一场播放都会计入。
-      </p>
+      <EmptyState
+        icon={<ActivityIcon className="size-5" />}
+        title={who ? `${who}最近 ${days} 天没有播放` : `最近 ${days} 天没有播放记录`}
+        description="统计从播放日志来：从现在起每一场播放都会计入，看得越久这里越有得看。"
+        actions={widenActions}
+      />
     );
   }
 
   const totalWatched = stats.current.watched_ms;
   const tierTotal = stats.by_tier.reduce((sum, r) => sum + r.plays, 0);
+  const cards = (
+    <div className="grid grid-cols-4 gap-2.5 max-md:grid-cols-2">
+      {METRICS.map((m) => (
+        <MetricCard
+          key={m.key}
+          metric={m}
+          stats={stats}
+          selected={m.key === metricKey}
+          onSelect={() => setMetricKey(m.key)}
+        />
+      ))}
+    </div>
+  );
+  const chart = (
+    <div className="rounded-2xl border border-white/[0.08] bg-white/[0.02] px-3 pb-3 pt-3">
+      <TrendChart stats={stats} metric={metric} />
+    </div>
+  );
+
+  if (stats.current.plays === 0) {
+    // 本期一场都没有、上期有：指标卡与主图仍有对照价值，其余分解没有内容，
+    // 用一个空状态代替五块各自写「没有数据」
+    return (
+      <div className="space-y-4">
+        {cards}
+        {chart}
+        <EmptyState
+          icon={<ActivityIcon className="size-5" />}
+          title={who ? `${who}本周期没有播放` : "本周期没有播放"}
+          description={`上一周期有 ${stats.previous.plays} 场；本周期一场都没有，没有可以分解的数据。`}
+          actions={widenActions}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-4 gap-2.5 max-md:grid-cols-2">
-        {METRICS.map((m) => (
-          <MetricCard
-            key={m.key}
-            metric={m}
-            stats={stats}
-            selected={m.key === metricKey}
-            onSelect={() => setMetricKey(m.key)}
-          />
-        ))}
-      </div>
-
-      <div className="rounded-2xl border border-white/[0.08] bg-white/[0.02] px-3 pb-3 pt-3">
-        <TrendChart stats={stats} metric={metric} />
-      </div>
+      {cards}
+      {chart}
 
       <FavoritePodium
         favorites={stats.favorites}
         previous={stats.previous_favorites}
         memberId={memberId}
+        hiddenCount={stats.hidden_title_count}
+        onShowAll={onShowAll}
       />
 
       <div className="grid grid-cols-2 gap-4 max-md:grid-cols-1">
@@ -903,11 +1033,13 @@ export function WatchStatsPanel({
           footer={
             <HiddenCountRow count={stats.hidden_title_count} noun="部作品" onShowAll={onShowAll} />
           }
+          emptyText={stats.hidden_title_count > 0 ? null : "播放过的条目已被删除"}
         />
         <BreakdownPanel
           title="按播放方式"
           note="仅网页播放；Jellyfin 客户端恒为直连"
           total={tierTotal}
+          emptyText="本周期没有网页播放；Jellyfin 客户端不经过转码，不在这里分解"
           rows={stats.by_tier.map((row) => ({
             key: String(row.tier),
             label: row.label,

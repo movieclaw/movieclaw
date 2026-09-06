@@ -1,11 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import Link from "next/link";
 import type { Route } from "next";
 
-import { CheckIcon } from "@/components/icons";
+import { CheckIcon, HistoryIcon, LockIcon } from "@/components/icons";
 import { OverflowText } from "@/components/overflow-text";
 import { PosterImage } from "@/components/poster-image";
 import {
@@ -96,11 +96,83 @@ export function TitleText({
   );
 }
 
-function EmptyHint({ children }: { children: React.ReactNode }) {
+/** 骨架块：读取中用来占住最终布局，内容到达时整页不跳动。 */
+export function Skeleton({ className = "" }: { className?: string }) {
   return (
-    <p className="rounded-2xl border border-white/[0.07] bg-white/[0.02] px-4 py-6 text-center text-sub text-[var(--text-muted)]">
+    <div
+      aria-hidden="true"
+      className={`animate-pulse rounded-lg bg-white/[0.06] motion-reduce:animate-none ${className}`}
+    />
+  );
+}
+
+/**
+ * 空状态：不是故障，不用警告色，也不留一片空白。说清三件事——这里本来会有什么、
+ * 为什么现在没有、接下来能做什么（可选的动作，如清掉筛选、放宽范围、换个周期）。
+ * compact 版用在面板内部，只占一两行，不抢整页的空状态。
+ */
+export function EmptyState({
+  icon,
+  title,
+  description,
+  actions,
+  compact = false,
+}: {
+  icon?: ReactNode;
+  title: string;
+  description?: ReactNode;
+  actions?: ReactNode;
+  compact?: boolean;
+}) {
+  if (compact) {
+    return (
+      <div className="flex items-center gap-3 px-4 py-4 max-md:px-3.5">
+        {icon && (
+          <span className="grid size-7 shrink-0 place-items-center rounded-full bg-white/[0.05] text-white/40">
+            {icon}
+          </span>
+        )}
+        <div className="min-w-0 flex-1">
+          <p className="text-sub text-white/60">{title}</p>
+          {description && <p className="mt-0.5 text-caption text-white/40">{description}</p>}
+        </div>
+        {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
+      </div>
+    );
+  }
+  return (
+    <section
+      aria-label={title}
+      className="rounded-2xl border border-white/[0.07] bg-white/[0.02] px-6 py-10 text-center max-md:px-4 max-md:py-8"
+    >
+      <div className="mx-auto flex max-w-[420px] flex-col items-center">
+        {icon && (
+          <span className="mb-3 grid size-12 place-items-center rounded-full border border-white/[0.08] bg-white/[0.04] text-white/55 shadow-[0_0_40px_rgba(159,176,201,0.10)]">
+            {icon}
+          </span>
+        )}
+        <h3 className="text-ui font-semibold text-white/90">{title}</h3>
+        {description && (
+          <p className="mt-1.5 text-caption leading-6 text-white/45">{description}</p>
+        )}
+        {actions && (
+          <div className="mt-4 flex flex-wrap items-center justify-center gap-2">{actions}</div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+/** 空状态里的动作：文字按钮，与「显示全部」同一套语气。 */
+export function EmptyAction({ onClick, children }: { onClick: () => void; children: ReactNode }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="inline-flex items-center rounded-full border border-white/[0.12] bg-white/[0.05] px-3.5 py-1.5 text-caption font-medium text-white/80 transition hover:border-white/20 hover:bg-white/[0.09] hover:text-white"
+    >
       {children}
-    </p>
+    </button>
   );
 }
 
@@ -137,6 +209,28 @@ export function HiddenCountRow({
 // ---------------------------------------------------------------------------
 // 播放记录：每场一行，按天分组
 // ---------------------------------------------------------------------------
+
+/** 读取中的骨架：一个日期组头 + 四行，与真实行同高。 */
+function HistorySkeleton() {
+  return (
+    <div aria-busy="true" aria-label="正在读取播放记录">
+      <Skeleton className="mb-2 h-4 w-24" />
+      <div className="divide-y divide-white/[0.06] rounded-2xl border border-white/[0.08] bg-white/[0.02]">
+        {Array.from({ length: 4 }, (_, i) => (
+          <div key={i} className="flex items-center gap-3 px-4 py-2.5 max-md:px-3.5">
+            <Skeleton className="h-3 w-11" />
+            <Skeleton className="h-[42px] w-[28px]" />
+            <div className="flex-1 space-y-2">
+              <Skeleton className="h-3.5 w-1/3" />
+              <Skeleton className="h-3 w-1/2" />
+            </div>
+            <Skeleton className="h-3 w-14" />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 function HistoryRow({ entry }: { entry: PlaybackLogEntry }) {
   const live = entry.ended_at === null;
@@ -192,11 +286,16 @@ function HistoryRow({ entry }: { entry: PlaybackLogEntry }) {
 export function PlaybackHistoryList({
   scope,
   memberId,
+  memberLabel,
+  onClearMember,
   onShowAll,
 }: {
   scope: MediaActivityScope;
   /** 按成员筛选；null = 全部 */
   memberId: number | null;
+  /** 筛选中成员的显示名，空状态里点名用 */
+  memberLabel: string | null;
+  onClearMember: () => void;
   onShowAll: () => void;
 }) {
   const [entries, setEntries] = useState<PlaybackLogEntry[]>([]);
@@ -284,10 +383,33 @@ export function PlaybackHistoryList({
     );
   }
   if (loading && entries.length === 0) {
-    return <EmptyHint>正在读取播放记录…</EmptyHint>;
+    return <HistorySkeleton />;
   }
   if (entries.length === 0 && hiddenCount === 0) {
-    return <EmptyHint>还没有播放记录；从现在起的每一场播放都会记在这里。</EmptyHint>;
+    return memberId != null ? (
+      <EmptyState
+        icon={<HistoryIcon className="size-5" />}
+        title={`${memberLabel ?? "这位成员"}还没有播放记录`}
+        description="从这位成员下一次播放起，谁、什么时候、用什么设备、看了多久都会记在这里。"
+        actions={<EmptyAction onClick={onClearMember}>查看全部成员</EmptyAction>}
+      />
+    ) : (
+      <EmptyState
+        icon={<HistoryIcon className="size-5" />}
+        title="还没有播放记录"
+        description="从现在起每一场播放都会记在这里：谁、什么时候、用什么设备、看到哪、看了多久。网页播放器和 Jellyfin 客户端都算。"
+      />
+    );
+  }
+  if (entries.length === 0) {
+    return (
+      <EmptyState
+        icon={<LockIcon className="size-5" />}
+        title="这些播放都在你的浏览范围外"
+        description={`另有 ${hiddenCount} 场播放来自你设为不可见的库；切到「全部」即可看到片名。`}
+        actions={<EmptyAction onClick={onShowAll}>显示全部</EmptyAction>}
+      />
+    );
   }
   return (
     <div className="space-y-5">
