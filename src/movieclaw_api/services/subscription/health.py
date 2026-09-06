@@ -437,6 +437,7 @@ def _aggregate_issues(
 
 async def pipeline_health(session: AsyncSession) -> dict:
     """全部库的链路体检。返回 dict（路由层直接进响应模型）。"""
+    from movieclaw_api.services.library.profile import profile_of
     from movieclaw_api.services.library.routing import resolve_save_path
     from movieclaw_api.services.torrent_submit import mapping_covers
 
@@ -447,7 +448,13 @@ async def pipeline_health(session: AsyncSession) -> dict:
         await session.execute(select(DownloaderClient))
     ).scalars().first() is not None
     watched = _watched_dirs()
-    libraries = await LibraryRepository(session).list_all()
+    # 只演练能作为订阅目标的库（能力位 subscribable，不按 kind 字面分叉）：
+    # 图片/其他这类本地内容库不会被订阅命中——路由只在同 kind 的影视库里选，
+    # 订阅侧也拒绝把它们设为入库目标——它们的根路径没配进下载器映射是常态，
+    # 拿来演练投递链路只会报出一条永远修不掉也不需要修的红项
+    libraries = [
+        lib for lib in await LibraryRepository(session).list_all() if profile_of(lib).subscribable
+    ]
 
     # 映射修复建议的锚点：全部库根的公共父目录。映射按前缀覆盖，一条公共
     # 父目录的映射即可覆盖其下所有库——建议里给出这个目录，避免用户把
