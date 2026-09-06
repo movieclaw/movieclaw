@@ -183,12 +183,14 @@ export function moveInList<T>(list: readonly T[], from: number, to: number): rea
   return next;
 }
 
-/** 可见范围列的文案。 */
+/** 可见范围的文案：只看库自己的开放模式（谁能浏览）。
+ *  「你本人在不在浏览范围内」是另一个维度，由行内的锁图标表达，不混进这段文字——
+ *  否则超管把自己摘出某个库后，管理页只剩「仅管理」三个字，看不出成员到底能不能看。 */
 export function accessLabel(library: MediaLibrary): string {
-  if (!library.viewer_access) return "仅管理";
-  if (library.access_mode === "everyone") return "全员";
-  const n = library.member_ids.length + (library.admin_visible ? 1 : 0);
-  return `指定成员 ${n}`;
+  if (library.access_mode === "everyone") return "全部成员";
+  const n = library.member_ids.length;
+  if (n > 0) return `指定成员 ${n}`;
+  return library.admin_visible ? "仅自己" : "无人可见";
 }
 
 /** 库存列的文案：影视库按「部」、其他库按「条目」。 */

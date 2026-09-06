@@ -26,7 +26,7 @@ import { formatRelativeTime } from "@/lib/time";
 export const MANAGE_GRID_COLS =
   "grid-cols-[28px_minmax(0,1.6fr)_minmax(0,1.4fr)_minmax(96px,.8fr)_minmax(180px,1.3fr)_minmax(84px,.6fr)_40px]";
 
-/** 状态圆点：灰 = 空闲，蓝 = 任务进行中，黄 = 有待处理，红 = 有缺失。 */
+/** 状态圆点：蓝 = 任务进行中，黄 = 有待处理，红 = 有缺失；空闲不画点（见 StatusCell）。 */
 const TONE_DOT: Record<LibraryStatusTone, string> = {
   idle: "bg-white/30",
   busy: "bg-[var(--info)] shadow-[0_0_0_3px_rgba(127,176,255,0.18)]",
@@ -79,7 +79,7 @@ export function LibraryManageRow({
   const status = libraryStatus(library, STATUS_CTX);
   const inventory = inventoryLabel(library);
   const meta = LIBRARY_KIND_META[library.kind];
-  const scopeSummary = describeScope(library);
+  const notes = configNotes(library);
 
   return (
     <div
@@ -125,7 +125,7 @@ export function LibraryManageRow({
         )}
       </div>
 
-      {/* 库：缩略图 + 名称（进单库页）+ 默认标；第二行类型 · 收藏范围 · 首页展示 */}
+      {/* 库：缩略图 + 名称（进单库页）+ 默认标；第二行：类型 · 可见范围（手机端）· 需要留意的配置 */}
       <div role="cell" className="flex min-w-0 items-center gap-3">
         <LibraryThumb library={library} Icon={meta.Icon} />
         <div className="min-w-0">
@@ -136,16 +136,22 @@ export function LibraryManageRow({
             >
               {library.name}
             </Link>
-            {library.is_default && (
-              <span className="shrink-0 rounded-full border border-white/[0.14] bg-white/[0.08] px-1.5 py-px text-micro font-semibold text-white/75">
-                默认
-              </span>
-            )}
+            {library.is_default && <span className={BADGE}>默认</span>}
+            {/* 手机端没有「可见范围」列，胶囊挨着「默认」标放在库名这一行 */}
+            <span className="hidden shrink-0 max-md:inline-flex">
+              <AccessChip library={library} />
+            </span>
           </div>
-          <div className="truncate text-caption text-[var(--text-faint)]">
-            {scopeSummary}
-            {/* 手机端没有「可见范围」列，并进这一行 */}
-            <span className="hidden max-md:inline"> · {accessLabel(library)}</span>
+          <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-caption text-[var(--text-faint)]">
+            <span>{LIBRARY_KIND_LABELS[library.kind]}</span>
+            {notes.map((note) => (
+              <span key={note.text} className="inline-flex items-center gap-x-1.5">
+                <span aria-hidden>·</span>
+                <span className={note.tone === "warn" ? "text-[var(--warn)]" : undefined}>
+                  {note.text}
+                </span>
+              </span>
+            ))}
           </div>
         </div>
       </div>
@@ -174,15 +180,8 @@ export function LibraryManageRow({
       <StatusCell status={status} />
 
       {/* 可见范围 */}
-      <div role="cell" className="whitespace-nowrap text-ui text-[var(--text-muted)] max-md:hidden">
-        {library.viewer_access ? (
-          accessLabel(library)
-        ) : (
-          <span className="inline-flex items-center gap-1 rounded-full border border-white/[0.14] px-2 py-px text-caption">
-            <LockIcon className="size-3" />
-            仅管理
-          </span>
-        )}
+      <div role="cell" className="whitespace-nowrap max-md:hidden">
+        <AccessChip library={library} />
       </div>
 
       {/* 操作：唯一的 ··· 菜单 */}
@@ -193,13 +192,37 @@ export function LibraryManageRow({
   );
 }
 
-function describeScope(library: MediaLibrary): string {
-  const parts = [LIBRARY_KIND_LABELS[library.kind]];
-  if (!library.viewer_access) parts.push("仅管理");
-  if (library.match_rules.length > 0) parts.push(`收藏范围 ${library.match_rules.length} 项条件`);
-  else if (library.capabilities.scraped) parts.push("未声明收藏范围");
-  parts.push(library.exclude_from_home ? "从首页排除" : "在首页展示");
-  return parts.join(" · ");
+/**
+ * 副标题里跟在类型后面的「需要留意的配置」：只说偏离默认或有待办的部分，默认态不占字。
+ * 「在首页展示」是默认，不说；「你不在浏览范围内」由锁图标表达，也不说。
+ * 影视库没声明收藏范围是一个待办信号（自动入库不知道该把什么收进来），用警示色。
+ */
+function configNotes(library: MediaLibrary): { text: string; tone?: "warn" }[] {
+  const notes: { text: string; tone?: "warn" }[] = [];
+  if (library.match_rules.length > 0) {
+    notes.push({ text: `收藏范围 ${library.match_rules.length} 项条件` });
+  } else if (library.capabilities.scraped) {
+    notes.push({ text: "未声明收藏范围", tone: "warn" });
+  }
+  if (library.exclude_from_home) notes.push({ text: "从首页排除" });
+  return notes;
+}
+
+/** 库名旁的小标签样式：「默认」与可见范围胶囊共用一套。 */
+const BADGE =
+  "inline-flex shrink-0 items-center gap-1 rounded-full border border-white/[0.14] bg-white/[0.08] px-1.5 py-px text-micro font-semibold text-white/75";
+
+/** 可见范围胶囊：文案只说库开放给谁；你本人不在范围内时前面带一把锁。桌面端列与手机端库名行共用。 */
+function AccessChip({ library }: { library: MediaLibrary }) {
+  return (
+    <span
+      className={BADGE}
+      title={library.viewer_access ? undefined : "你不在这个库的浏览范围内，只能管理"}
+    >
+      {!library.viewer_access && <LockIcon className="size-2.5" aria-label="你不在浏览范围内" />}
+      {accessLabel(library)}
+    </span>
+  );
 }
 
 /** 小缩略图：服务端拼贴图（与首页卡片同源），失败或空库退回类型图标。 */
@@ -226,14 +249,23 @@ function LibraryThumb({ library, Icon }: { library: MediaLibrary; Icon: typeof L
 }
 
 function StatusCell({ status }: { status: LibraryStatus }) {
+  // 空闲不是一种需要看的状态：不画圆点不写「空闲」，只留最近扫描时间与实时监控开关这行事实
+  if (status.kind === "idle") {
+    return (
+      <div role="cell" className="min-w-0 truncate text-caption text-[var(--text-faint)] max-md:col-span-2">
+        {status.detail}
+      </div>
+    );
+  }
   return (
     <div role="cell" className="min-w-0 max-md:col-span-2">
       <div className="flex items-center gap-2 text-ui">
         <span className={`size-1.5 shrink-0 rounded-full ${TONE_DOT[status.tone]}`} />
         <span className="truncate">{status.title}</span>
       </div>
+      {/* 进度条：桌面端受状态列宽约束；手机端状态格已跨整行，通栏填满卡片 */}
       {status.percent !== null && (
-        <div className="mt-1 h-[3px] w-full max-w-[160px] overflow-hidden rounded-full bg-white/[0.1]">
+        <div className="mt-1 h-[3px] w-full max-w-[160px] overflow-hidden rounded-full bg-white/[0.1] max-md:max-w-none">
           <div
             className="h-full rounded-full bg-[var(--info)] transition-[width] duration-500"
             style={{ width: `${status.percent}%` }}

@@ -167,10 +167,14 @@ test("换位：向后、向前、越界与原地", () => {
 });
 
 test("可见范围与库存文案", () => {
-  assert.equal(accessLabel(lib()), "全员");
+  assert.equal(accessLabel(lib()), "全部成员");
+  // 只数成员：超管本人在不在范围内由锁图标表达，不计入 N
   assert.equal(accessLabel(lib({ access_mode: "selected", member_ids: [1, 2], admin_visible: false })), "指定成员 2");
-  assert.equal(accessLabel(lib({ access_mode: "selected", member_ids: [1], admin_visible: true })), "指定成员 2");
-  assert.equal(accessLabel(lib({ viewer_access: false })), "仅管理");
+  assert.equal(accessLabel(lib({ access_mode: "selected", member_ids: [1], admin_visible: true })), "指定成员 1");
+  assert.equal(accessLabel(lib({ access_mode: "selected", member_ids: [], admin_visible: true })), "仅自己");
+  assert.equal(accessLabel(lib({ access_mode: "selected", member_ids: [], admin_visible: false })), "无人可见");
+  // 你看不到的库照样说清它开放给谁，不再退化成「仅管理」
+  assert.equal(accessLabel(lib({ viewer_access: false })), "全部成员");
   assert.deepEqual(inventoryLabel(lib()), { primary: "10 部", secondary: "12 个文件" });
   assert.deepEqual(inventoryLabel(lib({ kind: "video" })), { primary: "10 个条目", secondary: "12 个文件" });
 });

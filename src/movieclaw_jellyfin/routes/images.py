@@ -210,8 +210,11 @@ async def get_item_image(
     if ref is not None and ref.kind == EntityKind.PERSON:
         return await _person_image(ref.entity_id, image_type)
     # 条目 Primary/Backdrop 走与 Web 相同的三层解析（docs/design/metadata.md 5）：
-    # 条目目录美术图（用户/第三方刮削器放的 poster.jpg，最优先）→ 刮削资产
-    # → TMDB 图床兜底（经图片代理缓存；资产还没落地时的自愈网）
+    # 条目目录美术图（用户/第三方刮削器放的图，最优先；规则见 services/library/
+    # artwork.py：文件自己的 <主干>-poster 精确匹配，目录级 poster.jpg 只在目录归
+    # 这个条目时才认）→ 刮削资产 → TMDB 图床兜底（经图片代理缓存；资产还没落地
+    # 时的自愈网）。本地条目的资产本身就是按同一规则从 sidecar 转出来的，所以
+    # DTO 里按资产尺寸报的 PrimaryImageAspectRatio 与实际取到的图一致
     dir_art: Path | None = None
     tmdb_fallback: str | None = None
     is_item_image = (

@@ -1153,7 +1153,9 @@ async def items_counts(
             if library.kind == "tv" and library.stats_item_count > 0
         ]
         # 其他库（Video 条目）：真 Jellyfin 的 ItemCounts 没有 VideoCount 字段，
-        # 只计入 ItemCount 总数（docs/design/library-other-kind.md 5.1）
+        # 严格对齐只能计入 ItemCount。但 VidHub 这类播放器的服务器卡片只画
+        # MovieCount / SeriesCount，只被授权「其他」库的成员会看到 0 部电影——
+        # 这里刻意偏离：Video 条目并入 MovieCount（docs/design/library-other-kind.md 5.1）
         video_count = sum(
             library.stats_item_count
             for library in libraries
@@ -1219,6 +1221,7 @@ async def items_counts(
                         )
                     ).scalar_one()
                 )
+        movie_count += video_count
     return JSONResponse(
         {
             "MovieCount": movie_count,
@@ -1232,7 +1235,7 @@ async def items_counts(
             "MusicVideoCount": 0,
             "BoxSetCount": 0,
             "BookCount": 0,
-            "ItemCount": movie_count + series_count + episode_count + video_count,
+            "ItemCount": movie_count + series_count + episode_count,
         }
     )
 

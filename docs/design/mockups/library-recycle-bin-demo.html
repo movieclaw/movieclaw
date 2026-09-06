@@ -1,0 +1,527 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>媒体库回收站</title>
+<style>
+  :root{
+    --bg:#0a0b10;--panel:#10121a;--raised:rgba(30,33,43,.74);--inset:rgba(255,255,255,.05);
+    --text:#f3f5f9;--muted:rgba(243,245,249,.62);--faint:rgba(243,245,249,.36);
+    --line:rgba(255,255,255,.08);--line-strong:rgba(255,255,255,.15);
+    --accent:#cdd6e6;--accent-soft:rgba(205,214,230,.14);
+    --ok:#4ade80;--info:#7fb0ff;--warn:#f5c451;--danger:#ff6b6b;--hdr:#e8c98a;
+    --mono:ui-monospace,Menlo,"SF Mono",monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:#000;color:var(--text);font:14px/1.5 -apple-system,"PingFang SC","Noto Sans SC",sans-serif;-webkit-font-smoothing:antialiased}
+
+  /* ====== 样稿导航 ====== */
+  .nav{position:sticky;top:0;z-index:9;display:flex;gap:6px;overflow-x:auto;padding:10px 12px;background:rgba(10,11,16,.92);backdrop-filter:blur(12px);border-bottom:1px solid var(--line)}
+  .nav button{flex:none;border:1px solid var(--line-strong);background:transparent;color:var(--muted);border-radius:999px;padding:6px 12px;font-size:13px;cursor:pointer}
+  .nav button.on{background:var(--accent);color:#0a0b10;border-color:var(--accent)}
+  .nav button:focus-visible{outline:2px solid var(--info);outline-offset:2px}
+  .screen{display:none;padding:18px 16px 60px}
+  .screen.on{display:block}
+  .note{max-width:1180px;margin:0 auto 14px;font-size:12px;color:var(--faint);border-left:2px solid var(--warn);padding:4px 10px;line-height:1.6}
+  .note b{color:var(--muted);font-weight:600}
+
+  /* ====== 桌面机框 ====== */
+  .frame{position:relative;max-width:1180px;margin:0 auto;display:grid;grid-template-columns:184px 1fr;background:var(--bg);border:1px solid var(--line-strong);border-radius:18px;overflow:hidden;min-height:720px}
+  .side{border-right:1px solid var(--line);padding:16px 10px;background:linear-gradient(180deg,rgba(255,255,255,.04),rgba(255,255,255,.01))}
+  .brand{font-weight:700;letter-spacing:.02em;padding:4px 10px 16px}
+  .side a{display:block;padding:7px 10px;border-radius:9px;color:var(--muted);font-size:13px;text-decoration:none}
+  .side a.on{background:rgba(255,255,255,.1);color:var(--text)}
+  .side .subnav{margin:2px 0 0 10px;border-left:1px solid var(--line);padding-left:6px}
+  .side .subnav a{padding:4px 8px;font-size:12px}
+  .side .subnav a.on{background:none;color:var(--text)}
+  .main{padding:26px 24px 30px;min-width:0;position:relative}
+
+  /* ====== 页头 / 标签 / 通用控件 ====== */
+  h1{font-size:24px;letter-spacing:-.02em;margin:0 0 4px;text-wrap:balance}
+  .sub{color:var(--muted);font-size:13px;margin:0}
+  .head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px}
+  .back{display:inline-flex;align-items:center;gap:6px;color:var(--muted);font-size:12px;margin-bottom:12px}
+  .tabs{display:flex;gap:20px;border-bottom:1px solid var(--line);margin:18px 0 14px}
+  .tabs span{padding:8px 0;color:var(--faint);font-size:14px}
+  .tabs span.on{color:var(--text);border-bottom:2px solid var(--text)}
+  .tabs em{font-style:normal;color:var(--faint);font-size:12px;margin-left:4px}
+  .tabs span.on em{color:var(--muted)}
+  .btn{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line-strong);background:rgba(255,255,255,.04);color:var(--text);border-radius:999px;padding:6px 13px;font-size:13px;white-space:nowrap;cursor:pointer}
+  .btn.primary{background:var(--accent);color:#0a0b10;border-color:var(--accent);font-weight:600}
+  .btn.sm{font-size:12px;padding:3px 10px}
+  .btn.danger{color:var(--danger);border-color:rgba(255,107,107,.35)}
+  .btn.danger.solid{background:var(--danger);color:#1a0808;border-color:var(--danger);font-weight:600}
+  .btn.ghost{border-color:transparent;background:transparent;color:var(--muted)}
+  .tag{display:inline-block;font-size:11px;line-height:1.5;padding:0 7px;border-radius:999px;border:1px solid var(--line-strong);color:var(--muted);vertical-align:middle;white-space:nowrap}
+  .tag.warn{color:var(--warn);border-color:rgba(245,196,81,.4)}
+  .tag.hdr{color:var(--hdr);border-color:rgba(232,201,138,.45);font-weight:600;font-size:10px;padding:0 5px;letter-spacing:.02em}
+  .cb{width:15px;height:15px;border-radius:4px;border:1px solid var(--line-strong);display:inline-grid;place-items:center;font-size:10px;color:#0a0b10;vertical-align:middle;flex:none}
+  .cb.on{background:var(--accent);border-color:var(--accent)}
+  .cb.part{border-color:var(--accent);color:var(--accent);font-weight:700}
+  .chev{display:inline-block;width:12px;color:var(--faint);font-size:11px;flex:none;text-align:center;transition:transform .15s}
+  .chev.open{transform:rotate(90deg)}
+
+  /* ====== 回收站：摘要行 + 筛选行 ====== */
+  .summary{display:flex;justify-content:space-between;align-items:center;gap:12px;margin:0 0 10px;font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums}
+  .summary b{color:var(--text);font-weight:600}
+  .summary .soon{color:var(--warn)}
+  .toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+  .search{flex:1;min-width:220px;max-width:300px;display:flex;align-items:center;gap:8px;background:var(--inset);border:1px solid var(--line);border-radius:999px;padding:6px 12px;color:var(--faint);font-size:13px}
+  .chips{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+  .chip{border:1px solid var(--line-strong);border-radius:999px;padding:3px 10px;font-size:12px;color:var(--muted);white-space:nowrap}
+  .chip.on{background:rgba(255,255,255,.12);color:var(--text)}
+  .chips .sep{width:1px;height:16px;background:var(--line);margin:0 4px}
+
+  /* ====== 表格：一条目一行，五列 ====== */
+  .tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:14px;background:rgba(255,255,255,.02)}
+  table{width:100%;border-collapse:collapse;min-width:900px;table-layout:fixed;font-variant-numeric:tabular-nums}
+  th:nth-child(1){width:34px}th:nth-child(2){width:20%}th:nth-child(3){width:35%}th:nth-child(4){width:21%}
+  th{text-align:left;font-size:11px;letter-spacing:.05em;color:var(--faint);font-weight:600;padding:10px 12px;border-bottom:1px solid var(--line);white-space:nowrap}
+  th.r{text-align:right}
+  td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:middle;font-size:13px;overflow:hidden}
+  tr:last-child td{border-bottom:none}
+  tr.sel td{background:rgba(205,214,230,.07)}
+  tr.failed td{background:rgba(255,107,107,.06)}
+  tr.open td{border-bottom-color:transparent}
+  /* 展开的文件行 */
+  tr.sub td{padding-top:6px;padding-bottom:6px;font-size:12.5px;background:rgba(255,255,255,.018);border-bottom-color:transparent}
+  tr.sub.last td{border-bottom-color:var(--line)}
+  tr.sub.sel td{background:rgba(205,214,230,.07)}
+  td.epi{padding-left:70px}
+  tr.omit td{padding:4px 12px 8px 70px;font-size:12px;color:var(--faint);background:rgba(255,255,255,.018);white-space:nowrap;text-overflow:ellipsis}
+
+  /* 条目格：›（多文件时）· 海报 · 片名 + 年份 / 库名 + 季 */
+  .item{display:flex;gap:8px;align-items:center;min-width:0}
+  .item>div:last-child{min-width:0}
+  .poster{width:30px;height:44px;border-radius:5px;flex:none;border:1px solid var(--line)}
+  .item .t{font-weight:600;display:flex;align-items:center;gap:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .item .t small{color:var(--faint);font-weight:400}
+  .item .lib{font-size:11.5px;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+  /* 文件 · 品质格：第一行文件名 / N 集 · N 季；第二行解析出的品质；状态标与失败原因在最后 */
+  .fname{font-family:var(--mono);font-size:12px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .fsum{font-size:13px;white-space:nowrap}
+  .fsum b{font-weight:600}
+  .fq .fname,.fq .fsum{margin-bottom:3px}
+  .ql{font-size:12px;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .ql b{color:var(--text);font-weight:600;font-size:12.5px}
+  .ql b em{font-style:normal;color:var(--faint);font-weight:400;font-size:11px}
+  .ql .sz{font-style:normal;color:var(--muted)}
+  .ql code{font-family:var(--mono);font-size:11.5px;color:var(--text);font-weight:600}
+  .ql .et{color:var(--muted);margin-left:5px}
+  tr.sub .fname{color:var(--muted)}
+  tr.sub .ql b{font-weight:500;color:var(--muted)}
+  .flags{margin-top:4px;display:flex;gap:6px;align-items:center}
+  .err{font-size:11.5px;color:var(--danger);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+  /* 原因格 */
+  .why .n{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .why .n .arrow{color:var(--faint);margin:0 3px}
+  .why .by{font-size:11.5px;color:var(--faint);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  tr.sub .why .n{font-size:12px;color:var(--faint)}
+
+  /* 自动清理 · 操作格：倒计时在按钮正上方，右对齐 */
+  .ops{text-align:right}
+  .due{font-size:12.5px;white-space:nowrap;margin-bottom:5px}
+  .due small{color:var(--faint);font-size:11px;margin-right:3px}
+  .due.soon{color:var(--warn);font-weight:600}
+  .due.never{color:var(--faint)}
+  tr.sub .due{font-weight:400;margin-bottom:3px}
+  .acts{display:flex;gap:6px;justify-content:flex-end;white-space:nowrap}
+  .acts .btn{padding:3px 8px;font-size:12px;background:transparent}
+  tr.sub .acts .btn{padding:1px 8px;font-size:11.5px;border-color:var(--line)}
+
+  .foot{margin-top:10px;display:flex;justify-content:space-between;align-items:center;color:var(--faint);font-size:12px;font-variant-numeric:tabular-nums}
+  .pager{display:flex;gap:4px;align-items:center}
+  .pager span{min-width:26px;height:26px;display:inline-grid;place-items:center;border-radius:8px;border:1px solid transparent;color:var(--muted);font-size:12px}
+  .pager span.on{background:rgba(255,255,255,.12);color:var(--text);border-color:var(--line-strong)}
+  .pager span.dis{color:var(--faint);opacity:.5}
+
+  /* ====== 选中后的批量条：底部悬浮，桌面与手机同一形态 ====== */
+  .selbar{position:sticky;bottom:14px;margin:14px auto 0;width:max-content;max-width:100%;display:flex;align-items:center;gap:14px;padding:8px 10px 8px 16px;border-radius:999px;background:#1b1f2b;border:1px solid var(--line-strong);box-shadow:0 14px 40px rgba(0,0,0,.55);font-size:13px}
+  .selbar b{font-weight:600}
+  .selbar .acts{gap:8px}
+
+  /* ====== 确认弹窗 ====== */
+  .scrim{position:absolute;inset:0;background:rgba(0,0,0,.55);backdrop-filter:blur(3px);display:grid;place-items:center;z-index:6}
+  .dialog{width:440px;background:#161923;border:1px solid var(--line-strong);border-radius:16px;padding:22px 22px 18px;box-shadow:0 30px 80px rgba(0,0,0,.7)}
+  .dialog h3{margin:0 0 8px;font-size:17px;letter-spacing:-.01em}
+  .dialog p{margin:0 0 10px;color:var(--muted);font-size:13px;line-height:1.6}
+  .dialog .facts{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;font-size:13px;margin:12px 0 14px;padding:10px 12px;border-radius:10px;background:var(--inset);font-variant-numeric:tabular-nums}
+  .dialog .facts dt{color:var(--faint);margin:0}
+  .dialog .facts dd{margin:0}
+  .dialog .warnline{display:flex;gap:8px;align-items:flex-start;color:#f2dc9c;font-size:12.5px;line-height:1.55;margin-bottom:16px}
+  .dialog .warnline::before{content:"!";flex:none;width:16px;height:16px;border-radius:50%;border:1px solid rgba(245,196,81,.6);display:grid;place-items:center;font-size:10px;font-weight:700;margin-top:2px}
+  .dialog .btns{display:flex;justify-content:flex-end;gap:8px}
+
+  /* ====== 空状态 ====== */
+  .empty{border:1px dashed var(--line-strong);border-radius:14px;padding:56px 24px;text-align:center;color:var(--muted)}
+  .empty .ico{width:44px;height:44px;border-radius:12px;border:1px solid var(--line-strong);display:inline-grid;place-items:center;margin-bottom:12px;color:var(--faint);font-size:20px}
+  .empty h3{margin:0 0 6px;font-size:15px;color:var(--text)}
+  .empty p{margin:0;font-size:12.5px;max-width:34em;margin-inline:auto;line-height:1.6}
+
+  /* ====== 手机端：一条目一卡 ====== */
+  .phone{max-width:400px;margin:0 auto;background:var(--bg);border:1px solid var(--line-strong);border-radius:28px;padding:18px 14px 30px;min-height:760px;position:relative}
+  .card{border:1px solid var(--line);border-radius:14px;padding:11px 12px;margin-bottom:8px;background:var(--raised)}
+  .card.sel{border-color:var(--line-strong);background:rgba(205,214,230,.08)}
+  .card .top{display:flex;gap:10px;align-items:center}
+  .card .top .poster{width:34px;height:50px}
+  .card .top .t{font-weight:600;font-size:14px;display:flex;gap:6px;align-items:baseline;flex-wrap:wrap}
+  .card .top .t small{color:var(--faint);font-weight:400;font-size:12px}
+  .card .top .lib{font-size:11.5px;color:var(--faint)}
+  .card .fname{margin-top:8px;white-space:normal;word-break:break-all;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;line-height:1.4}
+  .card .fsum{margin-top:8px;display:flex;align-items:center;gap:6px}
+  .card .fsum em{font-style:normal;font-size:11.5px;color:var(--faint);margin-left:2px}
+  .card .ql{margin-top:3px;white-space:normal}
+  .card .ql b{font-size:13px}
+  .card .why{margin-top:4px}
+  .card .why .n{font-size:12.5px;color:var(--muted)}
+  .card .bottom{display:flex;justify-content:space-between;align-items:center;gap:6px;margin-top:8px}
+  .card .bottom .due{margin:0;color:var(--muted)}
+  .card .bottom .due.soon{color:var(--warn)}
+  .card .flags{margin-top:6px}
+  .card .err{white-space:normal}
+  /* 展开的每集：种子名 / 集号 集名 · 品质，右侧倒计时贯通两行 */
+  .eps{margin-top:8px;border-top:1px solid var(--line);padding-top:4px}
+  .eps .e{display:grid;grid-template-columns:15px 1fr auto;gap:2px 8px;align-items:start;padding:7px 0;border-bottom:1px solid var(--line);font-size:12px}
+  .eps .e:last-of-type{border-bottom:none}
+  .eps .e .cb{margin-top:2px}
+  .eps .e .fname{grid-column:2;margin:0;font-size:11.5px;color:var(--muted)}
+  .eps .e .ql{grid-column:2;margin:0;font-size:11.5px}
+  .eps .e .ql b{font-size:11.5px;color:var(--muted);font-weight:500}
+  .eps .e .dv{grid-column:3;grid-row:1/3;color:var(--faint);white-space:nowrap;text-align:right;font-size:12px}
+  .eps .e .dv.soon{color:var(--warn)}
+  .eps .omit{padding:6px 0 0 23px;font-size:11.5px;color:var(--faint)}
+
+  @media (max-width:900px){.frame{grid-template-columns:1fr}.side{display:none}}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+
+<div class="nav">
+  <button class="on" data-s="s1">① 回收站 · 桌面</button>
+  <button data-s="s2">② 立即清理全部 · 确认</button>
+  <button data-s="s3">③ 回收站 · 手机</button>
+  <button data-s="s4">④ 空状态</button>
+</div>
+
+<!-- ① 桌面 -->
+<section class="screen on" id="s1">
+  <p class="note"><b>回收站分区</b>：管理页标题下插入标签栏，「回收站」是第二个标签（<span style="font-family:var(--mono)">?tab=recycle</span>）。摘要行一句话回答"多少、多大、多急"，右侧是页面唯一的页级动作「立即清理全部」（作用域 = 当前筛选命中的全部文件，不只本页）。<b>一个条目一行</b>：电影一行、剧集无论多少集一行，行首 › 展开每一集（图中「权力的游戏」已展开，24 集只画 4 集）。<b>「文件 · 品质」一格两行</b>：种子名在上（悬停显示原路径），解析出的品质在下——分辨率 + 片源加粗 · 大小 · 编码 · 音轨 · 制作组；展开的每集跨过「条目」列，第二行以「集号 集名」开头。<b>倒计时在按钮正上方</b>：倒计时是"不管它会怎样"，恢复 / 清理是"你可以怎样"。勾选后底部悬浮批量条（图中已选 3 个文件），摘要行不动。「星际穿越」是一次批量清理后留下的失败项。</p>
+  <div class="frame">
+    <aside class="side">
+      <div class="brand">movieclaw</div>
+      <a>＋ 新会话</a>
+      <a class="on">媒体库</a>
+      <div class="subnav"><a class="on">管理</a></div>
+      <a>发现电影</a>
+      <a>发现剧集</a>
+      <a>我的订阅</a>
+      <a>活动</a>
+    </aside>
+    <div class="main">
+      <div class="back">‹ 返回媒体库</div>
+      <div class="head">
+        <div>
+          <h1>媒体库管理</h1>
+          <p class="sub">库负责盘点与守护；自动入库负责把下载完成的内容搬进库。</p>
+        </div>
+        <span class="btn primary">＋ 创建媒体库</span>
+      </div>
+      <div class="tabs"><span>媒体库<em>12</em></span><span class="on">回收站<em>57</em></span></div>
+
+      <div class="summary">
+        <span><b>57</b> 个文件 · 31 个条目 · <b>53.2 GB</b> · <span class="soon">12 个将在 24 小时内自动清理</span> · 1 个仍在原位</span>
+        <span class="btn sm danger">立即清理全部 · 57</span>
+      </div>
+      <div class="toolbar">
+        <div class="search">⌕ 按片名、剧名或文件名搜索</div>
+        <div class="chips">
+          <span class="chip on">全部库 57</span><span class="chip">电影 41</span><span class="chip">剧集 14</span><span class="chip">4K 电影 2</span>
+          <span class="sep"></span>
+          <span class="chip">洗版替换 52</span><span class="chip">洗版证伪 5</span>
+        </div>
+      </div>
+
+      <div class="tablewrap">
+        <table>
+          <thead><tr>
+            <th><span class="cb"></span></th><th>条目</th><th>文件 · 品质</th><th>原因</th><th class="r">自动清理 · 操作</th>
+          </tr></thead>
+          <tbody>
+            <!-- 电影 · 单文件 -->
+            <tr>
+              <td><span class="cb"></span></td>
+              <td><div class="item"><span class="chev"></span><div class="poster" style="background:linear-gradient(160deg,#4b3a6e,#1a1626)"></div><div><div class="t">九门 <small>2025</small></div><div class="lib">电影</div></div></div></td>
+              <td class="fq"><div class="fname" title="原路径：/remote/media/电影/九门 (2025)/九门.2025.1080p.WEB-DL.H264.AAC-XXX.mkv">九门.2025.1080p.WEB-DL.H264.AAC-XXX.mkv</div><div class="ql"><b>1080p WEB-DL</b> · <i class="sz">4.2 GB</i> · H.264 · AAC 2.0 · XXX</div></td>
+              <td class="why"><div class="n">洗版替换：1080p WEB-DL<span class="arrow">→</span>2160p Remux</div><div class="by">《九门》订阅洗版 · 6 天前</div></td>
+              <td class="ops"><div class="due soon" title="今天 22:40">6 小时后</div><div class="acts"><span class="btn">恢复</span><span class="btn danger">清理</span></div></td>
+            </tr>
+
+            <!-- 剧集 · 已展开，半选 -->
+            <tr class="open">
+              <td><span class="cb part">–</span></td>
+              <td><div class="item"><span class="chev open">›</span><div class="poster" style="background:linear-gradient(160deg,#3a5a3a,#16261a)"></div><div><div class="t">权力的游戏</div><div class="lib">剧集 · S01–S03</div></div></div></td>
+              <td class="fq"><div class="fsum"><b>24 集</b> · 3 季</div><div class="ql"><b>720p HDTV</b> · <i class="sz">26.4 GB</i> · x264 · AC3 5.1 · CTU</div></td>
+              <td class="why"><div class="n">洗版替换：720p HDTV<span class="arrow">→</span>1080p BluRay</div><div class="by">《权力的游戏》订阅洗版 · 6 天前</div></td>
+              <td class="ops"><div class="due soon" title="最晚 3 天后"><small>最早</small>9 小时后</div><div class="acts"><span class="btn">恢复 24</span><span class="btn danger">清理 24</span></div></td>
+            </tr>
+            <tr class="sub sel">
+              <td><span class="cb on">✓</span></td>
+              <td colspan="2" class="fq epi"><div class="fname">Game.of.Thrones.S01E03.720p.HDTV.x264-CTU.mkv</div><div class="ql"><code>S01E03</code><span class="et">雪诺大人</span> · <b>720p HDTV</b> · <i class="sz">1.1 GB</i> · x264 · AC3 5.1</div></td>
+              <td class="why"></td>
+              <td class="ops"><div class="due soon">9 小时后</div><div class="acts"><span class="btn">恢复</span><span class="btn danger">清理</span></div></td>
+            </tr>
+            <tr class="sub sel">
+              <td><span class="cb on">✓</span></td>
+              <td colspan="2" class="fq epi"><div class="fname">Game.of.Thrones.S01E04.720p.HDTV.x264-CTU.mkv</div><div class="ql"><code>S01E04</code><span class="et">残缺者、庶子和破碎之物</span> · <b>720p HDTV</b> · <i class="sz">1.1 GB</i> · x264 · AC3 5.1</div></td>
+              <td class="why"></td>
+              <td class="ops"><div class="due soon">9 小时后</div><div class="acts"><span class="btn">恢复</span><span class="btn danger">清理</span></div></td>
+            </tr>
+            <tr class="sub">
+              <td><span class="cb"></span></td>
+              <td colspan="2" class="fq epi"><div class="fname">Game.of.Thrones.S01E05.720p.HDTV.x264-CTU.mkv</div><div class="ql"><code>S01E05</code><span class="et">狼与狮</span> · <b>720p HDTV</b> · <i class="sz">1.1 GB</i> · x264 · AC3 5.1</div></td>
+              <td class="why"></td>
+              <td class="ops"><div class="due">2 天 3 小时后</div><div class="acts"><span class="btn">恢复</span><span class="btn danger">清理</span></div></td>
+            </tr>
+            <tr class="sub">
+              <td><span class="cb"></span></td>
+              <td colspan="2" class="fq epi"><div class="fname">Game.of.Thrones.S02E01.720p.HDTV.x264-KILLERS.mkv</div><div class="ql"><code>S02E01</code><span class="et">北境记住</span> · <b>720p HDTV</b> · <i class="sz">0.9 GB</i> · x264 · AAC 2.0 · KILLERS</div></td>
+              <td class="why"><div class="n">720p HDTV<span class="arrow">→</span>1080p WEB-DL</div></td>
+              <td class="ops"><div class="due">2 天 3 小时后</div><div class="acts"><span class="btn">恢复</span><span class="btn danger">清理</span></div></td>
+            </tr>
+            <tr class="omit sub last"><td></td><td colspan="4">… 样稿省略其余 20 集（实际展开后全部列出，按季集排序；原因列只在与条目行不同时写出，如 S02E01）</td></tr>
+
+            <!-- 电影 · 批量清理失败 · HDR -->
+            <tr class="failed">
+              <td><span class="cb"></span></td>
+              <td><div class="item"><span class="chev"></span><div class="poster" style="background:linear-gradient(160deg,#2f4a6e,#131a26)"></div><div><div class="t">星际穿越 <small>2014</small></div><div class="lib">4K 电影</div></div></div></td>
+              <td class="fq"><div class="fname">Interstellar.2014.2160p.UHD.BluRay.x265-TERMiNAL.mkv</div><div class="ql"><b>2160p BluRay <span class="tag hdr">HDR10</span></b> · <i class="sz">22.6 GB</i> · x265 10bit · DTS-HD MA 5.1 · TERMiNAL</div><div class="flags"><span class="tag warn" title="移入回收站失败，文件仍在原路径">原地</span></div><div class="err">上次清理失败：权限不足（只读挂载）</div></td>
+              <td class="why"><div class="n">洗版替换：2160p BluRay<span class="arrow">→</span>2160p Remux</div><div class="by">《星际穿越》订阅洗版 · 5 天前</div></td>
+              <td class="ops"><div class="due" title="9 月 8 日 06:05">1 天 14 小时后</div><div class="acts"><span class="btn">恢复</span><span class="btn danger">清理</span></div></td>
+            </tr>
+
+            <!-- 剧集 · 折叠，品质与原因都混合 -->
+            <tr>
+              <td><span class="cb"></span></td>
+              <td><div class="item"><span class="chev">›</span><div class="poster" style="background:linear-gradient(160deg,#6e5a3a,#261d16)"></div><div><div class="t">老友记</div><div class="lib">剧集 · S02</div></div></div></td>
+              <td class="fq"><div class="fsum"><b>6 集</b> · 1 季</div><div class="ql"><b>1080p WEB-DL <em>4</em> · 1080p BluRay <em>2</em></b> · <i class="sz">9.4 GB</i> · H.264 · DD5.1 · NTb / FLUX</div></td>
+              <td class="why"><div class="n">洗版证伪 4 · 洗版替换 2</div><div class="by">《老友记》订阅洗版 · 3 天前</div></td>
+              <td class="ops"><div class="due" title="最晚 5 天后"><small>最早</small>3 天 4 小时后</div><div class="acts"><span class="btn">恢复 6</span><span class="btn danger">清理 6</span></div></td>
+            </tr>
+
+            <!-- 电影 · 整组选中 -->
+            <tr class="sel">
+              <td><span class="cb on">✓</span></td>
+              <td><div class="item"><span class="chev"></span><div class="poster" style="background:linear-gradient(160deg,#6e3a3a,#261616)"></div><div><div class="t">流浪地球 <small>2019</small></div><div class="lib">电影</div></div></div></td>
+              <td class="fq"><div class="fname">流浪地球.2019.1080p.WEB-DL.H265.DDP5.1-HDSWEB.mp4</div><div class="ql"><b>1080p WEB-DL</b> · <i class="sz">4.3 GB</i> · H.265 · DDP 5.1 · HDSWEB</div></td>
+              <td class="why"><div class="n">洗版替换：1080p WEB-DL<span class="arrow">→</span>1080p BluRay</div><div class="by">《流浪地球》订阅洗版 · 2 天前</div></td>
+              <td class="ops"><div class="due" title="9 月 11 日 10:02">4 天 18 小时后</div><div class="acts"><span class="btn">恢复</span><span class="btn danger">清理</span></div></td>
+            </tr>
+
+            <!-- 电影 · 两个旧版本 -->
+            <tr>
+              <td><span class="cb"></span></td>
+              <td><div class="item"><span class="chev">›</span><div class="poster" style="background:linear-gradient(160deg,#5a5a3a,#242416)"></div><div><div class="t">奥本海默 <small>2023</small></div><div class="lib">电影</div></div></div></td>
+              <td class="fq"><div class="fsum"><b>2 个版本</b></div><div class="ql"><b>1080p BluRay <em>1</em> · 1080p WEB-DL <em>1</em></b> · <i class="sz">22.7 GB</i> · x264 · DTS 5.1 / DDP 5.1</div></td>
+              <td class="why"><div class="n">洗版替换：1080p<span class="arrow">→</span>2160p Remux</div><div class="by">《奥本海默》订阅洗版 · 昨天</div></td>
+              <td class="ops"><div class="due"><small>最早</small>6 天 2 小时后</div><div class="acts"><span class="btn">恢复 2</span><span class="btn danger">清理 2</span></div></td>
+            </tr>
+
+            <tr>
+              <td><span class="cb"></span></td>
+              <td><div class="item"><span class="chev">›</span><div class="poster" style="background:linear-gradient(160deg,#3a6e6a,#162624)"></div><div><div class="t">怪奇物语</div><div class="lib">剧集 · S04</div></div></div></td>
+              <td class="fq"><div class="fsum"><b>9 集</b> · 1 季</div><div class="ql"><b>1080p WEB-DL</b> · <i class="sz">35.1 GB</i> · x264 · DDP 5.1 Atmos · CMRG</div></td>
+              <td class="why"><div class="n">洗版替换：1080p WEB-DL<span class="arrow">→</span>2160p WEB-DL</div><div class="by">《怪奇物语》订阅洗版 · 昨天</div></td>
+              <td class="ops"><div class="due"><small>最早</small>6 天 9 小时后</div><div class="acts"><span class="btn">恢复 9</span><span class="btn danger">清理 9</span></div></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="foot">
+        <span>第 1–20 个条目，共 31 个条目 · 57 个文件 · 回收站内文件保留 7 天后自动删除</span>
+        <div class="pager"><span class="dis">‹</span><span class="on">1</span><span>2</span><span>›</span></div>
+      </div>
+
+      <div class="selbar"><span>已选 <b>3</b> 个文件 · 6.5 GB</span><div class="acts"><span class="btn sm">恢复所选</span><span class="btn sm danger">立即清理所选</span><span class="btn sm ghost">取消</span></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ② 确认弹窗 -->
+<section class="screen" id="s2">
+  <p class="note"><b>「立即清理全部」确认</b>：作用域是当前筛选（图中筛到「剧集」库，摘要行与按钮数字随筛选变化），弹窗把文件数与涉及条目数、总大小、其中「原地待回收」的数量列成事实，再讲清两句后果：删除不可撤销；仍在做种的文件会中断做种。确认按钮带文件数，避免误以为只清理本页。条目行的「清理 N」、批量条的「立即清理所选」、展开行的「清理」复用同一弹窗，只是数字不同。恢复不弹确认——恢复是可逆的。</p>
+  <div class="frame">
+    <aside class="side">
+      <div class="brand">movieclaw</div>
+      <a>＋ 新会话</a>
+      <a class="on">媒体库</a>
+      <div class="subnav"><a class="on">管理</a></div>
+      <a>发现电影</a>
+      <a>发现剧集</a>
+      <a>我的订阅</a>
+      <a>活动</a>
+    </aside>
+    <div class="main">
+      <div class="back">‹ 返回媒体库</div>
+      <div class="head">
+        <div>
+          <h1>媒体库管理</h1>
+          <p class="sub">库负责盘点与守护；自动入库负责把下载完成的内容搬进库。</p>
+        </div>
+        <span class="btn primary">＋ 创建媒体库</span>
+      </div>
+      <div class="tabs"><span>媒体库<em>12</em></span><span class="on">回收站<em>57</em></span></div>
+      <div class="summary">
+        <span><b>14</b> 个文件 · 3 部剧 · <b>12.6 GB</b> · <span class="soon">2 个将在 24 小时内自动清理</span></span>
+        <span class="btn sm danger" style="background:rgba(255,107,107,.12)">立即清理全部 · 14</span>
+      </div>
+      <div class="toolbar">
+        <div class="search">⌕ 按片名、剧名或文件名搜索</div>
+        <div class="chips">
+          <span class="chip">全部库 57</span><span class="chip">电影 41</span><span class="chip on">剧集 14</span><span class="chip">4K 电影 2</span>
+          <span class="sep"></span>
+          <span class="chip">洗版替换 10</span><span class="chip">洗版证伪 4</span>
+        </div>
+      </div>
+      <div class="tablewrap" style="opacity:.55">
+        <table>
+          <thead><tr><th><span class="cb"></span></th><th>条目</th><th>文件 · 品质</th><th>原因</th><th class="r">自动清理 · 操作</th></tr></thead>
+          <tbody>
+            <tr><td><span class="cb"></span></td><td><div class="item"><span class="chev">›</span><div class="poster" style="background:linear-gradient(160deg,#3a5a3a,#16261a)"></div><div><div class="t">权力的游戏</div><div class="lib">剧集 · S01</div></div></div></td><td class="fq"><div class="fsum"><b>2 集</b> · 1 季</div><div class="ql"><b>720p HDTV</b> · <i class="sz">2.2 GB</i> · x264 · AC3 5.1 · CTU</div></td><td class="why"><div class="n">洗版替换：720p HDTV<span class="arrow">→</span>1080p BluRay</div><div class="by">《权力的游戏》订阅洗版 · 6 天前</div></td><td class="ops"><div class="due soon"><small>最早</small>9 小时后</div><div class="acts"><span class="btn">恢复 2</span><span class="btn danger">清理 2</span></div></td></tr>
+            <tr><td><span class="cb"></span></td><td><div class="item"><span class="chev">›</span><div class="poster" style="background:linear-gradient(160deg,#6e5a3a,#261d16)"></div><div><div class="t">老友记</div><div class="lib">剧集 · S02</div></div></div></td><td class="fq"><div class="fsum"><b>6 集</b> · 1 季</div><div class="ql"><b>1080p WEB-DL <em>4</em> · 1080p BluRay <em>2</em></b> · <i class="sz">9.4 GB</i> · H.264 · DD5.1</div></td><td class="why"><div class="n">洗版证伪 4 · 洗版替换 2</div><div class="by">《老友记》订阅洗版 · 3 天前</div></td><td class="ops"><div class="due"><small>最早</small>3 天 4 小时后</div><div class="acts"><span class="btn">恢复 6</span><span class="btn danger">清理 6</span></div></td></tr>
+            <tr><td><span class="cb"></span></td><td><div class="item"><span class="chev">›</span><div class="poster" style="background:linear-gradient(160deg,#3a6e6a,#162624)"></div><div><div class="t">怪奇物语</div><div class="lib">剧集 · S04</div></div></div></td><td class="fq"><div class="fsum"><b>6 集</b> · 1 季</div><div class="ql"><b>1080p WEB-DL</b> · <i class="sz">1.0 GB</i> · x264 · DDP 5.1 Atmos</div></td><td class="why"><div class="n">洗版替换：1080p WEB-DL<span class="arrow">→</span>2160p WEB-DL</div><div class="by">《怪奇物语》订阅洗版 · 昨天</div></td><td class="ops"><div class="due"><small>最早</small>6 天 9 小时后</div><div class="acts"><span class="btn">恢复 6</span><span class="btn danger">清理 6</span></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="foot"><span>第 1–3 个条目，共 3 个条目 · 14 个文件 · 回收站内文件保留 7 天后自动删除</span><div class="pager"><span class="dis">‹</span><span class="on">1</span><span class="dis">›</span></div></div>
+    </div>
+
+    <div class="scrim">
+      <div class="dialog" role="dialog" aria-modal="true">
+        <h3>清理「剧集」库的全部待回收文件？</h3>
+        <p>会立即从磁盘删除当前筛选命中的全部文件，不只是本页。</p>
+        <dl class="facts">
+          <dt>文件</dt><dd>14 个，涉及 3 部剧</dd>
+          <dt>释放空间</dt><dd>12.6 GB</dd>
+          <dt>仍在原位</dt><dd>0 个</dd>
+        </dl>
+        <div class="warnline">删除不可撤销。若其中有文件仍在下载器里做种，删除会中断做种任务。</div>
+        <div class="btns"><span class="btn">取消</span><span class="btn danger solid">清理 14 个文件</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ③ 手机 -->
+<section class="screen" id="s3">
+  <p class="note"><b>手机端</b>：一个条目一卡，读法与桌面同构。第一行海报 + 片名 + 库名；第二行种子名（等宽，最多折两行不截断）；第三行紧贴着它的品质（可换行）；第四行原因；底部左侧倒计时（24 小时内警示色）、右侧「恢复 / 清理」，与桌面同一对。剧集卡片第二行是「› 24 集 · 3 季」，这一行本身就是展开开关；展开后每集也是两行：种子名，其下「集号 集名 · 该集品质 · 大小」，右侧倒计时贯通两行。勾选后底部悬浮批量条，与桌面同一形态。</p>
+  <div class="phone">
+    <div class="back">‹ 媒体库</div>
+    <h1 style="font-size:21px">媒体库管理</h1>
+    <div class="tabs" style="margin-top:12px"><span>媒体库<em>12</em></span><span class="on">回收站<em>57</em></span></div>
+    <div class="summary" style="flex-wrap:wrap;gap:6px 10px"><span><b>57</b> 个文件 · <b>53.2 GB</b> · <span class="soon">12 个 24 小时内清理</span></span><span class="btn sm danger">立即清理全部 · 57</span></div>
+    <div class="search" style="max-width:none;margin-bottom:10px">⌕ 按片名、剧名或文件名搜索</div>
+    <div class="chips" style="margin-bottom:12px;overflow-x:auto;flex-wrap:nowrap"><span class="chip on">全部库</span><span class="chip">电影 41</span><span class="chip">剧集 14</span><span class="chip">4K 2</span><span class="sep"></span><span class="chip">洗版替换</span><span class="chip">洗版证伪</span></div>
+
+    <div class="card">
+      <div class="top"><span class="cb"></span><div class="poster" style="background:linear-gradient(160deg,#4b3a6e,#1a1626)"></div><div><div class="t">九门 <small>2025</small></div><div class="lib">电影</div></div></div>
+      <div class="fname">九门.2025.1080p.WEB-DL.H264.AAC-XXX.mkv</div>
+      <div class="ql"><b>1080p WEB-DL</b> · <i class="sz">4.2 GB</i> · H.264 · AAC 2.0 · XXX</div>
+      <div class="why"><div class="n">洗版替换：1080p WEB-DL → 2160p Remux</div></div>
+      <div class="bottom"><span class="due soon">6 小时后自动清理</span><div class="acts"><span class="btn sm">恢复</span><span class="btn sm danger">清理</span></div></div>
+    </div>
+
+    <div class="card">
+      <div class="top"><span class="cb part">–</span><div class="poster" style="background:linear-gradient(160deg,#3a5a3a,#16261a)"></div><div><div class="t">权力的游戏</div><div class="lib">剧集 · S01–S03</div></div></div>
+      <div class="fsum"><span class="chev open">›</span><b>24 集</b> · 3 季<em>收起</em></div>
+      <div class="ql"><b>720p HDTV</b> · <i class="sz">26.4 GB</i> · x264 · AC3 5.1 · CTU</div>
+      <div class="why"><div class="n">洗版替换：720p HDTV → 1080p BluRay</div></div>
+      <div class="bottom"><span class="due soon">最早 9 小时后自动清理</span><div class="acts"><span class="btn sm">恢复 24</span><span class="btn sm danger">清理 24</span></div></div>
+      <div class="eps">
+        <div class="e"><span class="cb on">✓</span><div class="fname">Game.of.Thrones.S01E03.720p.HDTV.x264-CTU.mkv</div><span class="dv soon">9 小时</span><div class="ql"><code>S01E03</code><span class="et">雪诺大人</span> · <b>720p HDTV</b> · <i class="sz">1.1 GB</i> · x264 · AC3 5.1</div></div>
+        <div class="e"><span class="cb on">✓</span><div class="fname">Game.of.Thrones.S01E04.720p.HDTV.x264-CTU.mkv</div><span class="dv soon">9 小时</span><div class="ql"><code>S01E04</code><span class="et">残缺者、庶子和破碎之物</span> · <b>720p HDTV</b> · <i class="sz">1.1 GB</i> · x264 · AC3 5.1</div></div>
+        <div class="e"><span class="cb"></span><div class="fname">Game.of.Thrones.S01E05.720p.HDTV.x264-CTU.mkv</div><span class="dv">2 天</span><div class="ql"><code>S01E05</code><span class="et">狼与狮</span> · <b>720p HDTV</b> · <i class="sz">1.1 GB</i> · x264 · AC3 5.1</div></div>
+        <div class="e"><span class="cb"></span><div class="fname">Game.of.Thrones.S02E01.720p.HDTV.x264-KILLERS.mkv</div><span class="dv">2 天</span><div class="ql"><code>S02E01</code><span class="et">北境记住</span> · <b>720p HDTV</b> · <i class="sz">0.9 GB</i> · x264 · AAC 2.0 · KILLERS</div></div>
+        <div class="omit">… 样稿省略其余 20 集</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="top"><span class="cb"></span><div class="poster" style="background:linear-gradient(160deg,#6e5a3a,#261d16)"></div><div><div class="t">老友记</div><div class="lib">剧集 · S02</div></div></div>
+      <div class="fsum"><span class="chev">›</span><b>6 集</b> · 1 季<em>展开</em></div>
+      <div class="ql"><b>1080p WEB-DL <em>4</em> · 1080p BluRay <em>2</em></b> · <i class="sz">9.4 GB</i> · H.264 · DD5.1 · NTb / FLUX</div>
+      <div class="why"><div class="n">洗版证伪 4 · 洗版替换 2</div></div>
+      <div class="bottom"><span class="due">最早 3 天后自动清理</span><div class="acts"><span class="btn sm">恢复 6</span><span class="btn sm danger">清理 6</span></div></div>
+    </div>
+
+    <div class="card sel">
+      <div class="top"><span class="cb on">✓</span><div class="poster" style="background:linear-gradient(160deg,#6e3a3a,#261616)"></div><div><div class="t">流浪地球 <small>2019</small></div><div class="lib">电影</div></div></div>
+      <div class="fname">流浪地球.2019.1080p.WEB-DL.H265.DDP5.1-HDSWEB.mp4</div>
+      <div class="ql"><b>1080p WEB-DL</b> · <i class="sz">4.3 GB</i> · H.265 · DDP 5.1 · HDSWEB</div>
+      <div class="why"><div class="n">洗版替换：1080p WEB-DL → 1080p BluRay</div></div>
+      <div class="bottom"><span class="due">4 天 18 小时后自动清理</span><div class="acts"><span class="btn sm">恢复</span><span class="btn sm danger">清理</span></div></div>
+    </div>
+
+    <div class="card">
+      <div class="top"><span class="cb"></span><div class="poster" style="background:linear-gradient(160deg,#2f4a6e,#131a26)"></div><div><div class="t">星际穿越 <small>2014</small></div><div class="lib">4K 电影</div></div></div>
+      <div class="fname">Interstellar.2014.2160p.UHD.BluRay.x265-TERMiNAL.mkv</div>
+      <div class="ql"><b>2160p BluRay <span class="tag hdr">HDR10</span></b> · <i class="sz">22.6 GB</i> · x265 10bit · DTS-HD MA 5.1 · TERMiNAL</div>
+      <div class="flags"><span class="tag warn">原地</span><span class="err" style="margin:0">上次清理失败：权限不足（只读挂载）</span></div>
+      <div class="why"><div class="n">洗版替换：2160p BluRay → 2160p Remux</div></div>
+      <div class="bottom"><span class="due">1 天 14 小时后自动清理</span><div class="acts"><span class="btn sm">恢复</span><span class="btn sm danger">清理</span></div></div>
+    </div>
+    <div class="foot"><span>1–20 / 31 个条目</span><div class="pager"><span class="dis">‹</span><span class="on">1</span><span>2</span><span>›</span></div></div>
+
+    <div class="selbar"><span>已选 <b>3</b> 个文件 · 6.5 GB</span><div class="acts"><span class="btn sm">恢复</span><span class="btn sm danger">清理</span></div></div>
+  </div>
+</section>
+
+<!-- ④ 空状态 -->
+<section class="screen" id="s4">
+  <p class="note"><b>空状态</b>：标签照常渲染（不带数字），用户要知道这个入口存在。文案解释回收站的规则一句话，不放按钮——回收站里的东西只能由洗版等触发方送进来。</p>
+  <div class="frame">
+    <aside class="side">
+      <div class="brand">movieclaw</div>
+      <a>＋ 新会话</a>
+      <a class="on">媒体库</a>
+      <div class="subnav"><a class="on">管理</a></div>
+      <a>发现电影</a>
+      <a>发现剧集</a>
+      <a>我的订阅</a>
+      <a>活动</a>
+    </aside>
+    <div class="main">
+      <div class="back">‹ 返回媒体库</div>
+      <div class="head">
+        <div>
+          <h1>媒体库管理</h1>
+          <p class="sub">库负责盘点与守护；自动入库负责把下载完成的内容搬进库。</p>
+        </div>
+        <span class="btn primary">＋ 创建媒体库</span>
+      </div>
+      <div class="tabs"><span>媒体库<em>12</em></span><span class="on">回收站</span></div>
+      <div class="empty">
+        <div class="ico">⌫</div>
+        <h3>回收站是空的</h3>
+        <p>洗版替换下来的旧版本会先停在这里 7 天再自动删除，期间可以恢复；文件本身放在各库根目录的 <span style="font-family:var(--mono)">.movieclaw-trash</span> 里。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<script>
+  document.querySelectorAll('.nav button').forEach(function(b){
+    b.addEventListener('click',function(){
+      document.querySelectorAll('.nav button').forEach(function(x){x.classList.remove('on')});
+      document.querySelectorAll('.screen').forEach(function(x){x.classList.remove('on')});
+      b.classList.add('on');
+      document.getElementById(b.dataset.s).classList.add('on');
+      window.scrollTo(0,0);
+    });
+  });
+</script>
+</body>
+</html>

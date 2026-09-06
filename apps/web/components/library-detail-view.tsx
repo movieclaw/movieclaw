@@ -103,6 +103,12 @@ function busyText(progress: ScanProgress | null): string {
  * 2. 库存（library_file 台账聚合）：已在磁盘上的作品，格下标注集数/规格/大小；
  * 3. 待识别：扫描认不出身份的文件，按条目目录成组，点候选或填 TMDB ID 整组认领。
  */
+/** 墙的两种列宽：竖版海报（电影库）与横版缩略图（其他库 / 未识别区） */
+const WALL_GRID_POSTER =
+  "grid gap-x-4 gap-y-7 [grid-template-columns:repeat(auto-fill,minmax(148px,1fr))] max-md:gap-x-3 max-md:gap-y-5 max-md:[grid-template-columns:repeat(auto-fill,minmax(140px,1fr))]";
+const WALL_GRID_WIDE =
+  "grid gap-x-4 gap-y-7 [grid-template-columns:repeat(auto-fill,minmax(220px,1fr))] max-md:gap-x-3 max-md:gap-y-5 max-md:[grid-template-columns:repeat(auto-fill,minmax(160px,1fr))]";
+
 /** 海报墙每次向服务端要的格数（首屏一批，滚到底再追加一批）。 */
 /** 未识别分区一次拉取的上限：它不分页，超出的去待处理清单看 */
 const PROVISIONAL_LIMIT = 200;
@@ -525,10 +531,30 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   const probing = Boolean(
     library?.scanning && library.scan_progress?.phase === "probing",
   );
-  // 其他库（本地内容、无结构）：卡片是 16:9 抓帧缩略图，墙按内容时间倒序
-  // （家庭录像按拍摄日期最自然），没有拼音字母档
+  // 其他库（本地内容、无结构）：墙按内容时间倒序（家庭录像按拍摄日期最自然），
+  // 没有拼音字母档
   const timeline = Boolean(library && !library.capabilities.scraped);
   const wideCards = Boolean(library && library.capabilities.default_aspect > 1);
+  // 其他库的主图两种形态并存：刮削器放好 -poster 的是 2:3 竖版海报，只有 -thumb /
+  // 抓帧的是横版缩略图。竖横混在一个网格里对不齐，按主图比例切成两区，各自用
+  // 合适的列宽；只有一种形态时仍是普通的一面墙（docs/design/library-other-kind.md 4.3）
+  const wallGroups = useMemo(() => {
+    if (!timeline) return null;
+    return {
+      posters: items.filter((item) => item.primary_aspect < 1),
+      thumbs: items.filter((item) => item.primary_aspect >= 1),
+    };
+  }, [items, timeline]);
+  const splitWall = Boolean(
+    wallGroups && wallGroups.posters.length > 0 && wallGroups.thumbs.length > 0,
+  );
+  // 单区时列宽跟着实际形态走：其他库里全是海报就用电影库的窄列
+  const wideWall = wallGroups ? wallGroups.posters.length === 0 : wideCards;
+  // 这一格正被后台处理时的文案（整库刷新阶段 / 单条目任务 / 扫描补探）
+  const workingLabelOf = (item: LibraryItem) =>
+    refreshPhaseById.get(item.media_item_id) ??
+    jobPhaseById.get(item.media_item_id) ??
+    (probing && item.probe_pending_count > 0 ? "正在读取规格" : undefined);
   const initialByOffset = useMemo(
     () => new Map(wallIndex.map((entry) => [entry.offset, entry.initial])),
     [wallIndex],
@@ -981,28 +1007,49 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
                 这一行被索引条撑高，分区会被推到一大段空白之下 */}
             <div className="flex items-start gap-2 px-6 max-md:gap-1 max-md:px-4">
               <div className="min-w-0 flex-1">
-                <div
-                  ref={wallGrid}
-                  className={
-                    wideCards
-                      ? "grid gap-x-4 gap-y-7 [grid-template-columns:repeat(auto-fill,minmax(220px,1fr))] max-md:gap-x-3 max-md:gap-y-5 max-md:[grid-template-columns:repeat(auto-fill,minmax(160px,1fr))]"
-                      : "grid gap-x-4 gap-y-7 [grid-template-columns:repeat(auto-fill,minmax(148px,1fr))] max-md:gap-x-3 max-md:gap-y-5 max-md:[grid-template-columns:repeat(auto-fill,minmax(140px,1fr))]"
-                  }
-                >
-                  {items.map((item, index) => (
-                    <InventoryCell
-                      key={item.media_item_id}
-                      item={item}
-                      libraryId={libraryId}
-                      wallInitial={initialByOffset.get(wallStart + index)}
-                      workingLabel={
-                        refreshPhaseById.get(item.media_item_id) ??
-                        jobPhaseById.get(item.media_item_id) ??
-                        (probing && item.probe_pending_count > 0 ? "正在读取规格" : undefined)
-                      }
-                    />
-                  ))}
-                </div>
+                {splitWall && wallGroups ? (
+                  <>
+                    {/* 标题不带数字：分区是在已加载的分页上切的，数字会随滚动加载变 */}
+                    <h3 className="text-on-image mb-4 text-body-lg font-semibold text-white/85">
+                      海报
+                    </h3>
+                    <div ref={wallGrid} className={WALL_GRID_POSTER}>
+                      {wallGroups.posters.map((item) => (
+                        <InventoryCell
+                          key={item.media_item_id}
+                          item={item}
+                          libraryId={libraryId}
+                          workingLabel={workingLabelOf(item)}
+                        />
+                      ))}
+                    </div>
+                    <h3 className="text-on-image mb-4 mt-8 text-body-lg font-semibold text-white/85">
+                      缩略图
+                    </h3>
+                    <div className={WALL_GRID_WIDE}>
+                      {wallGroups.thumbs.map((item) => (
+                        <InventoryCell
+                          key={item.media_item_id}
+                          item={item}
+                          libraryId={libraryId}
+                          workingLabel={workingLabelOf(item)}
+                        />
+                      ))}
+                    </div>
+                  </>
+                ) : (
+                  <div ref={wallGrid} className={wideWall ? WALL_GRID_WIDE : WALL_GRID_POSTER}>
+                    {items.map((item, index) => (
+                      <InventoryCell
+                        key={item.media_item_id}
+                        item={item}
+                        libraryId={libraryId}
+                        wallInitial={initialByOffset.get(wallStart + index)}
+                        workingLabel={workingLabelOf(item)}
+                      />
+                    ))}
+                  </div>
+                )}
                 <WallLoadMore
                   hasMore={wallHasMore}
                   loaded={items.length}
@@ -1042,7 +1089,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
                         </button>
                       )}
                     </div>
-                    <div className="mt-4 grid gap-x-4 gap-y-7 [grid-template-columns:repeat(auto-fill,minmax(220px,1fr))] max-md:gap-x-3 max-md:gap-y-5 max-md:[grid-template-columns:repeat(auto-fill,minmax(160px,1fr))]">
+                    <div className={`mt-4 ${WALL_GRID_WIDE}`}>
                       {provisional.map((item) => (
                         <InventoryCell
                           key={item.media_item_id}

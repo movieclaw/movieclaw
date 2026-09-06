@@ -250,10 +250,10 @@ def test_library_manage_full_flow(stack) -> None:  # noqa: PLR0915
         assert movie["stats"]["unidentified_count"] == 1
         expect(_row(page, "电影").get_by_text("1 个待识别")).to_be_visible()
 
-        # ---- 再建两个库：管理页头部的「添加媒体库」按钮 ----
-        page.get_by_role("button", name="添加媒体库").click()
+        # ---- 再建两个库：管理页页头右侧的「创建媒体库」按钮 ----
+        page.get_by_role("button", name="创建媒体库").click()
         _fill_create_dialog(page, expect, "剧集", "剧集", roots["tv"])
-        page.get_by_role("button", name="添加媒体库").click()
+        page.get_by_role("button", name="创建媒体库").click()
         _fill_create_dialog(page, expect, "电影", "港片", roots["hk-movies"])
         hk = lib_by_name(page, "港片")
         assert hk["is_default"] is False, "同类型第二个库不自动成为默认"
@@ -271,8 +271,9 @@ def test_library_manage_full_flow(stack) -> None:  # noqa: PLR0915
 
         _wait_for(all_idle, timeout=120, what="三个库都扫完")
         # 界面按 3 秒轮询跟上：三行都离开扫描态后再继续（否则菜单里是「停止扫描」）
-        expect(_row(page, "剧集").get_by_text("空闲")).to_be_visible()
-        expect(_row(page, "港片").get_by_text("空闲")).to_be_visible()
+        # 空闲不再写状态词，只留「最近扫描 …」这行事实
+        expect(_row(page, "剧集").get_by_text(re.compile("最近扫描"))).to_be_visible()
+        expect(_row(page, "港片").get_by_text(re.compile("最近扫描"))).to_be_visible()
         expect(_row(page, "电影").get_by_text("1 个待识别")).to_be_visible()
         expect(page.get_by_role("button", name=re.compile("在跑任务"))).to_have_count(0)
         expect(_row(page, "剧集").get_by_text(re.compile("最近扫描 .*实时监控开"))).to_be_visible()
@@ -313,7 +314,9 @@ def test_library_manage_full_flow(stack) -> None:  # noqa: PLR0915
         tv = lib_by_name(page, "剧集")
         assert tv["exclude_from_home"] is True and tv["root_paths"] == [str(roots["tv"])]
         _open_menu(page, "剧集").get_by_role("menuitem", name="在首页展示").click()
-        expect(_row(page, "剧集").get_by_text(re.compile("在首页展示"))).to_be_visible()
+        # 「在首页展示」是默认态，副标题不再念它：排除标记消失即为切回
+        expect(_row(page, "剧集").get_by_text(re.compile("从首页排除"))).to_have_count(0)
+        assert lib_by_name(page, "剧集")["exclude_from_home"] is False
 
         # ---- 编辑库：弹窗标题带库名；改名后行内更新 ----
         _open_menu(page, "剧集").get_by_role("menuitem", name="编辑库").click()
@@ -394,7 +397,7 @@ def test_library_manage_full_flow(stack) -> None:  # noqa: PLR0915
         expect(mobile.locator("[data-library-row]")).to_have_count(2)
         expect(mobile.get_by_role("button", name=re.compile("拖动调整"))).to_have_count(0)
         # 可见范围并进卡片第二行
-        expect(mobile.locator("[data-library-row]").first).to_contain_text("全员")
+        expect(mobile.locator("[data-library-row]").first).to_contain_text("全部成员")
         mobile.get_by_role("button", name="「港片」的操作").click()
         mobile.get_by_role("menuitem", name="调整顺序").click()
         order = mobile.get_by_role("dialog")

@@ -25,6 +25,7 @@ from sqlalchemy import and_, func, or_, select, tuple_
 from sqlalchemy.orm import Load, load_only
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from movieclaw_api.services.library.thumbs import primary_aspect
 from movieclaw_db.models import (
     Library,
     LibraryFile,
@@ -199,6 +200,7 @@ def _list_load_columns(
     item_columns = [
         MediaItem.id,
         MediaItem.kind,
+        MediaItem.source,  # PrimaryImageAspectRatio 的兜底按来源定（TMDB 2:3 / 本地 16:9）
         MediaItem.tmdb_id,
         MediaItem.imdb_id,
         MediaItem.title,
@@ -1228,11 +1230,13 @@ def _apply_item_images(
     if poster:
         tags["Primary"] = poster
         # 真 Jellyfin 有主图就输出 PrimaryImageAspectRatio，客户端据此排版卡片：
-        # 本地抓帧的缩略图是 16:9，硬塞进 2:3 海报框会被裁掉两边
-        if meta and meta.poster_width and meta.poster_height:
-            dto["PrimaryImageAspectRatio"] = round(meta.poster_width / meta.poster_height, 4)
-        else:
-            dto["PrimaryImageAspectRatio"] = round(2 / 3, 4)
+        # 本地抓帧的缩略图是 16:9，硬塞进 2:3 海报框会被裁掉两边。口径与 Web
+        # 海报墙同一个函数：有真实尺寸按尺寸，否则按来源惯例（TMDB 2:3、本地 16:9）
+        dto["PrimaryImageAspectRatio"] = primary_aspect(
+            bundle.item,
+            meta.poster_width if meta else None,
+            meta.poster_height if meta else None,
+        )
     dto["ImageTags"] = tags
     backdrop = _asset_tag(
         meta.backdrop_file if meta else None, meta.updated_at if meta else None

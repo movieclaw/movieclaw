@@ -47,8 +47,7 @@ class LibraryPayload(BaseModel):
     admin_visible: bool | None = Field(
         default=None,
         description=(
-            "超管本人是否可浏览本库内容（管理权不受影响）；"
-            "不传表示不改动，新建时默认可浏览"
+            "超管本人是否可浏览本库内容（管理权不受影响）；不传表示不改动，新建时默认可浏览"
         ),
     )
     member_ids: list[int] | None = Field(
@@ -1200,3 +1199,161 @@ class OrganizeStartView(BaseModel):
     message: str
     job_id: str = Field(description="持久化后台作业 ID，可在活动页继续观察")
     created: bool = Field(default=True, description="false 表示复用了仍在进行的同一作业")
+
+
+# ---------------------------------------------------------------------------
+# 回收站分区（docs/design/library-recycle-bin.md §3）：跨库待回收文件按条目分组
+# ---------------------------------------------------------------------------
+
+
+class TrashedFileView(BaseModel):
+    """回收站里的一个待回收文件（一集 / 一个旧版本）。
+
+    品质字段来自台账行的 ffprobe 探测列；``audio_label`` 由服务端从首条音轨拼
+    「编码 声道」（与条目详情页文件区同一读法），前端不再解析音轨数组。
+    """
+
+    id: int
+    file_name: str
+    file_path: str = Field(description="当前物理位置（已移入回收站时是回收站内路径）")
+    trash_original_path: str | None = Field(
+        description="移入回收站前的原路径；NULL=原地待回收（移动失败降级），file_path 即原位"
+    )
+    kept_in_place: bool = Field(description="原地待回收形态（trash_original_path 为空）")
+    size_bytes: int
+    resolution: str | None
+    media_source: str | None
+    hdr: str | None
+    video_codec: str | None
+    bit_depth: int | None
+    audio_label: str | None = Field(
+        description="首条音轨的「编码 声道」，如 DTS-HD MA 5.1；未探测为 null"
+    )
+    release_group: str | None
+    season_number: int = Field(description="季号；电影=0")
+    episode_number: int = Field(description="集号；电影=0")
+    episode_title: str | None = Field(description="集名（media_episode 表）；电影或未刮到为 null")
+    trashed_at: datetime | None
+    purge_after: datetime | None = Field(description="预计自动清理时间；null=不自动清理")
+    reason: str | None = Field(
+        description="审计快照 reason：upgrade_replaced / upgrade_refuted / manual …"
+    )
+    note: str | None = Field(
+        description="审计快照 note（中文整句，如「洗版替换：1080p WEB-DL → 2160p Remux」）"
+    )
+    last_error: str | None = Field(description="上次批量清理失败的中文原因；成功或恢复后清掉")
+
+
+class TrashedLibraryRefView(BaseModel):
+    id: int
+    name: str
+
+
+class TrashedItemRefView(BaseModel):
+    """分组所属的媒体条目（片名、年份、海报）。"""
+
+    id: int
+    title: str
+    year: int | None
+    kind: MediaKind
+    poster_url: str | None
+
+
+class TrashedQualityView(BaseModel):
+    """组内品质汇总：``tiers`` 按「分辨率 片源」计数，其余字段去重列表。"""
+
+    tiers: dict[str, int] = Field(default_factory=dict)
+    hdr: list[str] = Field(default_factory=list)
+    video_codecs: list[str] = Field(default_factory=list)
+    audio_labels: list[str] = Field(default_factory=list)
+    release_groups: list[str] = Field(default_factory=list)
+
+
+class TrashedItemView(BaseModel):
+    """回收站列表的一行：一个条目（电影 / 剧）及其全部待回收文件。"""
+
+    key: str = Field(description="分组键：条目 id；未识别文件按行各自成组（前端 React key）")
+    library: TrashedLibraryRefView
+    media_item: TrashedItemRefView | None = Field(
+        description="未识别的待回收文件为 null，前端以文件名代标题"
+    )
+    seasons: list[int] = Field(default_factory=list, description="涉及的季号（电影为空）")
+    file_count: int
+    total_bytes: int
+    earliest_purge_after: datetime | None = Field(
+        description="组内最早到期；全组不自动清理时为 null"
+    )
+    latest_purge_after: datetime | None
+    reasons: dict[str, int] = Field(default_factory=dict, description="组内按 reason 计数")
+    note: str | None = Field(
+        description="组内 note 一致时的整句；混合时为 null，前端按 reasons 拼计数"
+    )
+    trigger_label: str | None = Field(description="触发方快照文案，如「《九门》订阅洗版」")
+    latest_trashed_at: datetime | None
+    quality: TrashedQualityView
+    files: list[TrashedFileView]
+
+
+class TrashedLibraryCountView(BaseModel):
+    library_id: int
+    name: str
+    count: int
+
+
+class TrashedReasonCountView(BaseModel):
+    reason: str
+    count: int
+
+
+class TrashedFilesData(BaseModel):
+    """回收站列表响应：聚合口径 + 本页条目。
+
+    ``total_*`` / ``due_within_24h`` / ``kept_in_place`` 按全部筛选（搜索 + 库 +
+    原因）计算，与摘要行、「立即清理全部」的作用域是同一份数字；``by_library``
+    不受库筛选影响、``by_reason`` 不受原因筛选影响（分面计数，切换胶囊时其他
+    胶囊的数字不归零）。
+    """
+
+    total_files: int
+    total_items: int
+    total_bytes: int
+    due_within_24h: int = Field(description="24 小时内将被自动清理的文件数")
+    kept_in_place: int = Field(description="原地待回收（移入回收站失败）的文件数")
+    by_library: list[TrashedLibraryCountView]
+    by_reason: list[TrashedReasonCountView]
+    items: list[TrashedItemView]
+
+
+class TrashedFilter(BaseModel):
+    """「立即清理全部」的作用域：与列表接口同一组筛选参数，服务端重新查一遍 id。"""
+
+    q: str | None = None
+    library_id: int | None = None
+    reason: str | None = None
+
+
+class TrashedPurgePayload(BaseModel):
+    """批量清理：``ids``（所选 / 条目行 / 单个文件）与 ``filter``（全部）二选一。"""
+
+    ids: list[int] | None = Field(default=None, description="待清理的文件 id 列表")
+    filter: TrashedFilter | None = Field(
+        default=None, description="按筛选清理全部（一次最多 500 个）"
+    )
+
+
+class TrashedRestorePayload(BaseModel):
+    ids: list[int] = Field(description="待恢复的文件 id 列表")
+
+
+class TrashedBatchFailureView(BaseModel):
+    id: int
+    file_name: str
+    error: str
+
+
+class TrashedBatchResultView(BaseModel):
+    """批量结果：逐文件执行、单独提交，失败不回滚已成功的。"""
+
+    done: int = Field(description="成功处理的文件数")
+    failed: list[TrashedBatchFailureView] = Field(default_factory=list)
+    remaining: int = Field(default=0, description="按筛选清理时超出单次上限、尚未处理的文件数")

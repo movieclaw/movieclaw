@@ -17,12 +17,14 @@ import {
   MANAGE_GRID_COLS,
 } from "@/components/library-manage-row";
 import { LibraryOrganizeDialog } from "@/components/library-organize-dialog";
+import { LibraryRecycleBin } from "@/components/library-recycle-bin";
 import { Modal } from "@/components/modal";
 import { PageNav } from "@/components/page-nav";
 import {
   type MediaLibrary,
   deleteLibrary,
   listLibraries,
+  listTrashedFiles,
   reorderLibraries,
   setDefaultLibrary,
   startLibraryMetadataRefresh,
@@ -44,6 +46,7 @@ import {
 import { LIBRARY_KIND_LABELS, type LibraryKind } from "@/lib/media-types";
 import { usePermissions } from "@/lib/permissions";
 import { useIsMobile } from "@/lib/use-media-query";
+import { useTabParam } from "@/lib/use-tab-param";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
 
 const KIND_ORDER: LibraryKind[] = ["movie", "tv", "video"];
@@ -69,6 +72,23 @@ export function LibraryManageView() {
   const confirm = useConfirm();
   const toast = useToast();
   const isMobile = useIsMobile();
+
+  // 标签栏：「媒体库」与「回收站」（docs/design/library-recycle-bin.md §2）；
+  // ?tab=recycle 深链直达，切换写回地址栏
+  const [tab, setTab] = useTabParam(["libraries", "recycle"] as const, "libraries");
+  // 回收站标签上的计数：一次 limit=1 的列表请求只为拿 total_files（一条索引计数查询），
+  // 不给库统计快照加列——进出回收站的写路径都不在统计重算之列，加列必陈旧
+  const [recycleCount, setRecycleCount] = useState<number | null>(null);
+  const reloadRecycleCount = useCallback(() => {
+    listTrashedFiles({}, { limit: 1, offset: 0 })
+      .then((d) => setRecycleCount(d.total_files))
+      .catch(() => {});
+  }, []);
+  useEffect(() => {
+    reloadRecycleCount();
+  }, [reloadRecycleCount]);
+  // 回收站标签激活时列表本身会回报计数，这里只在看库列表时低频轮询
+  useVisiblePolling(reloadRecycleCount, tab === "recycle" ? null : 30_000);
 
   const [libraries, setLibraries] = useState<MediaLibrary[] | null>(null);
   const [failed, setFailed] = useState(false);
@@ -313,43 +333,74 @@ export function LibraryManageView() {
 
   return (
     <div className="scroll-thin scroll-safe flex-1 overflow-y-auto pb-10">
-      <PageNav
-        title="媒体库管理"
-        fallback={{ label: "媒体库", href: "/library" as Route }}
-        actions={
-          <button
-            type="button"
-            onClick={() => setEditing("new")}
-            className="btn-accent flex h-9 items-center gap-1 rounded-full py-0 pl-3 pr-4 text-ui font-semibold max-md:h-11"
-          >
-            <PlusIcon className="size-4" />
-            添加媒体库
-          </button>
-        }
-      />
+      <PageNav title="媒体库管理" fallback={{ label: "媒体库", href: "/library" as Route }} />
 
-      <div className="px-6 pt-3 max-md:px-4">
-        <h2 className="text-on-image text-[26px] font-bold leading-tight tracking-[-0.02em] text-white max-md:text-[21px]">
-          媒体库管理
-        </h2>
-        <p className="text-on-image mt-1.5 text-ui text-[var(--text-muted)] max-md:text-sub">
-          库负责盘点与守护；这里改的是库本身，浏览内容请回媒体库首页。
-        </p>
+      {/* 页头：标题 + 说明，右侧是页面级动作「创建媒体库」（与首页「管理媒体库」
+          同一位置约定：页面动作放标题行右端，顶栏只留返回与吸顶标题） */}
+      <div className="flex items-start justify-between gap-4 px-6 pt-3 max-md:px-4">
+        <div className="min-w-0">
+          <h2 className="text-on-image text-[26px] font-bold leading-tight tracking-[-0.02em] text-white max-md:text-[21px]">
+            媒体库管理
+          </h2>
+          <p className="text-on-image mt-1.5 text-ui text-[var(--text-muted)] max-md:text-sub">
+            库负责盘点与守护；这里改的是库本身，浏览内容请回媒体库首页。
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setEditing("new")}
+          className="btn-accent mt-1 flex h-9 shrink-0 items-center gap-1 rounded-full py-0 pl-3 pr-4 text-ui font-semibold max-md:mt-0"
+        >
+          <PlusIcon className="size-4" />
+          创建媒体库
+        </button>
       </div>
 
-      {failed && libraries !== null && (
+      {/* 标签栏：媒体库 / 回收站。回收站计数为 0 时标签照常渲染（入口要被看见），只是不带数字 */}
+      <div className="mt-4 flex gap-1.5 px-6 max-md:px-4" role="tablist">
+        {(
+          [
+            { id: "libraries" as const, label: "媒体库", count: libraries?.length ?? null },
+            { id: "recycle" as const, label: "回收站", count: recycleCount },
+          ] as const
+        ).map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            role="tab"
+            aria-selected={t.id === tab}
+            onClick={() => setTab(t.id)}
+            className={`flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-sub font-medium transition-colors ${
+              t.id === tab
+                ? "bg-white/[0.14] text-white"
+                : "text-[var(--text-muted)] hover:bg-white/[0.07] hover:text-[var(--text)]"
+            }`}
+          >
+            {t.label}
+            {t.count !== null && t.count > 0 && (
+              <span className={`tabular-nums ${t.id === tab ? "text-white/70" : "text-[var(--text-faint)]"}`}>
+                {t.count}
+              </span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      {tab === "recycle" && <LibraryRecycleBin onCountChange={setRecycleCount} />}
+
+      {tab === "libraries" && failed && libraries !== null && (
         <div className="mx-6 mt-4 rounded-xl border border-amber-400/25 bg-amber-500/10 px-4 py-3 text-sub text-amber-200 max-md:mx-4">
           与后端通信失败，正在自动重试；下方显示的是最近一次成功加载的数据
         </div>
       )}
 
-      {libraries === null && !failed && (
+      {tab === "libraries" && libraries === null && !failed && (
         <div className="mt-16 flex items-center justify-center gap-2.5 text-ui text-[var(--text-muted)]">
           <span className="size-4 animate-spin rounded-full border-2 border-white/20 border-t-white/70" />
           正在加载媒体库…
         </div>
       )}
-      {failed && libraries === null && (
+      {tab === "libraries" && failed && libraries === null && (
         <div className="mt-16 flex flex-col items-center gap-3 text-center">
           <p className="text-ui text-[var(--text-muted)]">媒体库加载失败</p>
           <button type="button" onClick={reload} className="btn-glass px-4 py-2 text-ui font-medium text-[var(--text)]">
@@ -358,7 +409,7 @@ export function LibraryManageView() {
         </div>
       )}
 
-      {libraries !== null && libraries.length === 0 && (
+      {tab === "libraries" && libraries !== null && libraries.length === 0 && (
         <ContentEmptyState
           variant="library"
           title="为收藏准备一个家"
@@ -376,7 +427,7 @@ export function LibraryManageView() {
         />
       )}
 
-      {libraries !== null && libraries.length > 0 && (
+      {tab === "libraries" && libraries !== null && libraries.length > 0 && (
         <>
           {/* 工具栏：搜索 / 类型筛选 / 在跑任务 */}
           <div className="mt-5 flex flex-wrap items-center gap-2.5 px-6 max-md:px-4">
@@ -497,7 +548,6 @@ export function LibraryManageView() {
                     : ""}
             </span>
             <span className="flex items-center gap-3">
-              <Legend className="bg-white/30">空闲</Legend>
               <Legend className="bg-[var(--info)]">任务进行中</Legend>
               <Legend className="bg-[var(--warn)]">有待处理</Legend>
               <Legend className="bg-[var(--danger)]">有缺失</Legend>

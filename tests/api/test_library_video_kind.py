@@ -34,7 +34,7 @@ from movieclaw_api.services.library.config import LibraryConfigService, derive_s
 from movieclaw_api.services.library.organize import build_organize_plan
 from movieclaw_api.services.library.profile import profile_for, profile_of
 from movieclaw_api.services.library.scan import scan_library
-from movieclaw_api.services.library.thumbs import build_thumbnail, primary_aspect
+from movieclaw_api.services.library.thumbs import build_backdrop, build_thumbnail, primary_aspect
 from movieclaw_api.services.library.transfer import assert_transferable
 from movieclaw_api.services.media_probe import MediaSpec
 from movieclaw_db.engine import dispose_db, get_database, init_db
@@ -276,6 +276,33 @@ async def test_scan_video_library_absorbs_late_sidecar_nfo(db, tmp_path) -> None
         assert item.title == "宝宝第一次走路" and item.year == 2021
         row = (await session.execute(select(LibraryFile))).scalar_one()
         assert row.identity_source == IdentitySource.NFO.value
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="需要系统 ffmpeg")
+async def test_ensure_local_assets_absorbs_poster_and_fanart(db, tmp_path) -> None:
+    """sidecar 海报 + fanart 一起入账：主图按真实尺寸记比例，背景图给播放器的 Backdrop。"""
+    from PIL import Image
+
+    from movieclaw_api.services.library.thumbs import ensure_local_assets
+    from movieclaw_db.models import MediaMetadata
+
+    root = tmp_path / "media" / "scraped"
+    entry = root / "ABC-123"
+    entry.mkdir(parents=True)
+    (entry / "ABC-123.mp4").write_bytes(b"not a real video")
+    Image.new("RGB", (200, 300), "gray").save(entry / "ABC-123-poster.jpg")
+    Image.new("RGB", (640, 360), "gray").save(entry / "ABC-123-thumb.jpg")
+    Image.new("RGB", (640, 360), "gray").save(entry / "ABC-123-fanart.jpg")
+    library = await _make_video_library(db, root)
+    await scan_library(library.id)
+    async with db.session() as session:
+        item = (await session.execute(select(MediaItem))).scalar_one()
+    await ensure_local_assets(item.id)
+    async with db.session() as session:
+        meta = (await session.execute(select(MediaMetadata))).scalar_one()
+    assert meta.poster_file == f"{item.id}/poster.jpg"
+    assert (meta.poster_width, meta.poster_height) == (200, 300)  # 取的是 -poster 不是 -thumb
+    assert meta.backdrop_file == f"{item.id}/backdrop.jpg"
 
 
 # ---------------------------------------------------------------------------
@@ -546,3 +573,27 @@ def test_build_thumbnail_grabs_frame_and_reports_size(tmp_path) -> None:
     assert build_thumbnail(video, dest2, duration_seconds=3) == (320, 180)
     # 原盘目录没有单一文件可抓
     assert build_thumbnail(video, dest2, duration_seconds=3, is_disc=True) is None
+
+    # 竖版海报优先于横版 thumb：刮削器同时放 -poster 与 -thumb 时取 -poster
+    from PIL import Image
+
+    Image.new("RGB", (200, 300), "gray").save(tmp_path / "clip-poster.jpg")
+    dest3 = tmp_path / "assets" / "3" / "poster.jpg"
+    assert build_thumbnail(video, dest3, duration_seconds=3) == (200, 300)
+
+    # 目录级不带前缀的 poster.jpg：只在目录里只有这一个视频时才算它的
+    alone = tmp_path / "alone"
+    alone.mkdir()
+    shutil.copyfile(video, alone / "movie.mp4")
+    Image.new("RGB", (200, 300), "gray").save(alone / "poster.jpg")
+    dest4 = tmp_path / "assets" / "4" / "poster.jpg"
+    assert build_thumbnail(alone / "movie.mp4", dest4, duration_seconds=3) == (200, 300)
+    shutil.copyfile(video, alone / "other.mp4")  # 多了一个视频，poster.jpg 归属不明→抓帧
+    dest5 = tmp_path / "assets" / "5" / "poster.jpg"
+    assert build_thumbnail(alone / "movie.mp4", dest5, duration_seconds=3) == (320, 180)
+
+    # fanart sidecar → 背景图；没有就没有
+    assert build_backdrop(video, tmp_path / "assets" / "6" / "backdrop.jpg") is False
+    Image.new("RGB", (640, 360), "gray").save(tmp_path / "clip-fanart.jpg")
+    dest6 = tmp_path / "assets" / "6" / "backdrop.jpg"
+    assert build_backdrop(video, dest6) is True and dest6.is_file()

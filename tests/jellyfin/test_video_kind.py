@@ -4,7 +4,7 @@
 - 条目是可播叶子 ``Video``（不是 Movie，也不是 Series/Episode 层级），
   ProviderIds 里没有 Tmdb；
 - 有本地抓帧尺寸时输出真实 PrimaryImageAspectRatio（16:9），TMDB 海报 2:3；
-- Latest 把 Video 当叶子直接列出；Counts 只计入 ItemCount；
+- Latest 把 Video 当叶子直接列出；Counts 把 Video 并入 MovieCount（见 5.1 偏差）；
 - 勾了「从首页排除」的库不进首页级 Latest。
 """
 
@@ -60,6 +60,7 @@ def seeded_video(tmp_path: Path, monkeypatch) -> dict:
     assets = tmp_path / "metadata" / "images"
     (assets / "2").mkdir(parents=True)
     Image.new("RGB", (1280, 720), "#335577").save(assets / "2" / "poster.jpg", "JPEG")
+    Image.new("RGB", (1280, 720), "#223344").save(assets / "2" / "backdrop.jpg", "JPEG")
     (assets / "1").mkdir(parents=True)
     Image.new("RGB", (100, 150), "#4a6fa5").save(assets / "1" / "poster.jpg", "JPEG")
 
@@ -104,6 +105,7 @@ def seeded_video(tmp_path: Path, monkeypatch) -> dict:
                     MediaMetadata(
                         media_item_id=clip1.id,
                         poster_file="2/poster.jpg",
+                        backdrop_file="2/backdrop.jpg",
                         poster_width=1280,
                         poster_height=720,
                         runtime_minutes=12,
@@ -243,6 +245,12 @@ def test_video_items_are_playable_leaves(client: TestClient, seeded_video: dict)
     ).json()["Items"][0]
     assert movie["Type"] == "Movie"
     assert movie["PrimaryImageAspectRatio"] == pytest.approx(2 / 3, abs=1e-3)
+    # fanart 入账后本地条目也有 Backdrop：播放器详情页才有背景，图片接口能取到
+    clip1 = next(i for i in body["Items"] if i["Name"] == "春节团圆饭")
+    assert len(clip1["BackdropImageTags"]) == 1
+    tag = clip1["BackdropImageTags"][0]
+    backdrop = client.get(f"/Items/{clip1['Id']}/Images/Backdrop", params={**auth, "tag": tag})
+    assert backdrop.status_code == 200 and backdrop.headers["content-type"].startswith("image/")
 
 
 def test_video_items_in_latest_and_counts(client: TestClient, seeded_video: dict) -> None:
@@ -252,8 +260,10 @@ def test_video_items_in_latest_and_counts(client: TestClient, seeded_video: dict
     assert sum(1 for i in latest if i["Type"] == "Video") == 2
 
     counts = client.get("/Items/Counts", params=auth).json()
-    assert counts["MovieCount"] == 1 and counts["SeriesCount"] == 0
-    assert counts["ItemCount"] == 3  # 其他库只计入总数
+    # 其他库的 Video 条目并入 MovieCount：播放器服务器卡片只画电影/剧集两个数，
+    # 只被授权「其他」库的成员否则会看到 0 部电影
+    assert counts["MovieCount"] == 3 and counts["SeriesCount"] == 0
+    assert counts["ItemCount"] == 3
 
 
 def test_exclude_from_home_hides_library_from_latest(

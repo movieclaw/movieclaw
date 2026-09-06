@@ -8,8 +8,9 @@
    （ffprobe：分辨率/音轨/内封字幕）与外挂字幕。旧台账没探测过音轨的，
    **不在浏览时补探**（浏览不碰媒体文件本体，云盘挂载上读文件就是流量
    与延迟）——前端提示用户重新扫描，由扫描的补探阶段统一回填。
-2. **本地美术图定位** ``find_local_artwork``：条目目录下按 Kodi/Emby 惯例
-   命名的图片文件；找到即由 /libraries/.../artwork 接口直接回吐，
+2. **本地美术图定位** ``local_item_artwork``：条目目录下按 Kodi/Jellyfin 惯例
+   命名的图片文件（规则只在 ``artwork.py`` 维护一份，Jellyfin 图片接口与
+   本地条目的资产生成同源）；找到即由 /libraries/.../artwork 接口直接回吐，
    没有时前端退回 TMDB 图床。
 3. **真实删除** ``delete_item_files``：条目详情页「删除」的语义是**从磁盘
    彻底删除**（与其他一切"只删台账"的接口截然相反）——整个条目目录
@@ -44,6 +45,7 @@ from movieclaw_api.schemas.library import (
     LibraryRecentAdditionView,
     derive_air_status,
 )
+from movieclaw_api.services.library.artwork import ART_EXTS, find_artwork
 from movieclaw_api.services.library.bluray import (
     enrich_spec_with_clpi,
     read_clpi_languages,
@@ -103,10 +105,8 @@ def _get_display_cache():
 # 条目目录与本地美术图
 # ---------------------------------------------------------------------------
 
-# Kodi/Emby/TMM 生态的条目级美术图命名惯例（按优先级排列）
-_POSTER_NAMES = ("poster", "folder", "cover", "movie")
-_FANART_NAMES = ("fanart", "backdrop", "background")
-_ART_EXTS = (".jpg", ".jpeg", ".png", ".webp")
+# 美术图扩展名与命名规则见 artwork.py（这里只保留别名给字幕/附属文件判定用）
+_ART_EXTS = ART_EXTS
 
 # 外挂字幕扩展名（同名或"同名.语言"命名，整理器的 sidecar 同一口径）
 _SUBTITLE_EXTS = {".srt", ".ass", ".ssa", ".sub", ".sup", ".vtt"}
@@ -116,27 +116,13 @@ _SUBTITLE_EXTS = {".srt", ".ass", ".ssa", ".sub", ".sup", ".vtt"}
 _PROBE_COMMIT_EVERY = 32
 
 
-def find_local_artwork(entry_dir: Path, kind: str) -> Path | None:
-    """条目目录下的本地美术图；``kind``: poster / fanart。找不到返回 None。"""
-    names = _POSTER_NAMES if kind == "poster" else _FANART_NAMES
-    for name in names:
-        for ext in _ART_EXTS:
-            candidate = entry_dir / f"{name}{ext}"
-            if candidate.is_file():
-                return candidate
-    # 裸文件条目的 "<文件名>-poster.jpg" 惯例（TMM 对散装电影的写法）
-    suffix = f"-{kind}"
-    try:
-        for candidate in sorted(entry_dir.iterdir()):
-            if (
-                candidate.is_file()
-                and candidate.suffix.lower() in _ART_EXTS
-                and candidate.stem.lower().endswith(suffix)
-            ):
-                return candidate
-    except OSError:
-        return None
-    return None
+def find_local_artwork(entry_dir: Path, kind: str, own_files: list[Path]) -> Path | None:
+    """条目目录下的本地美术图；``kind``: poster / fanart / thumb。找不到返回 None。
+
+    规则见 artwork.find_artwork：文件自己的 ``<主干>-poster`` 精确匹配优先，
+    目录级 ``poster.jpg`` 只在目录归这个条目时才认（混放目录不串图）。
+    """
+    return find_artwork(entry_dir, kind, own_files)
 
 
 def _external_subtitles(video: Path) -> list[str]:
@@ -709,12 +695,16 @@ def local_item_artwork(roots: list[Path], files: list[LibraryFile], kind: str) -
     """条目目录里的本地美术图（逐个条目目录找，第一张命中即用）。
 
     Web 的 artwork 接口与 Jellyfin 图片接口共用；找不到时两端各自退回
-    刮削资产 / TMDB 图床。同步磁盘 IO——调用方自行决定是否进线程池。
+    刮削资产 / TMDB 图床。文件直接躺在库根下（没有条目目录）时按它所在
+    目录找，此时只可能命中文件自己的 sidecar。同步磁盘 IO——调用方自行
+    决定是否进线程池。
     """
-    for entry in resolve_entry_dirs(roots, files):
+    paths = [Path(row.file_path) for row in files]
+    entry_dirs = resolve_entry_dirs(roots, files) or list(dict.fromkeys(p.parent for p in paths))
+    for entry in entry_dirs:
         if not entry.is_dir():
             continue
-        art = find_local_artwork(entry, kind)
+        art = find_local_artwork(entry, kind, paths)
         if art is not None:
             return art
     return None
@@ -734,11 +724,8 @@ async def build_item_detail(
     entry_dirs = resolve_entry_dirs(roots, files)
     local_meta = await layered_item_meta(session, item, entry_dirs, files, kind)
 
-    primary_dir = next((d for d in entry_dirs if d.is_dir()), None)
-    poster_art = fanart_art = None
-    if primary_dir is not None:
-        poster_art = await asyncio.to_thread(find_local_artwork, primary_dir, "poster")
-        fanart_art = await asyncio.to_thread(find_local_artwork, primary_dir, "fanart")
+    poster_art = await asyncio.to_thread(local_item_artwork, roots, files, "poster")
+    fanart_art = await asyncio.to_thread(local_item_artwork, roots, files, "fanart")
 
     external: dict[int, list[str]] = {}
     for row in files:

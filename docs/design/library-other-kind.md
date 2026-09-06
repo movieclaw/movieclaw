@@ -158,9 +158,10 @@ Other Videos 都是同一心智。
 | Backdrop | `<主干>-fanart`（`:314-322`） |
 
 不带前缀的 `poster.jpg`/`folder.jpg` 只在**非混合目录**（一个视频独占一个
-目录）才认（`:304-312`）。**修正本文 4.2**：`<主干>-thumb.jpg` 在 Jellyfin
-语义里是 Thumb 而非 Primary，我们的 16:9 卡片取用顺序应为
-`-thumb`/`-landscape` → `<主干>.jpg`/`-poster` → 抓帧。
+目录）才认（`:304-312`）。`<主干>-thumb.jpg` 在 Jellyfin 语义里是 Thumb 而非
+Primary。我们只有一个卡片图位，取用顺序与 Jellyfin 的 Primary 一致，Thumb 只作
+没海报时的兜底（实现见 4.3 与 `artwork.py`；一期曾让 `-thumb` 优先，2026-09-06
+按本节改正）。
 
 **Screen Grabber**（`MediaBrowser.Providers/MediaInfo/VideoImageProvider.cs`）：
 
@@ -217,8 +218,10 @@ Other Videos 都是同一心智。
   按 `DateCreated` 倒序（`UserViewManager.cs:325-333, 367-380`）；`Video` 的
   `LatestItemsIndexContainer` 为 null（`BaseItem.cs:737`）→ **不聚合**，逐条
   输出。与本文 4.6 一致；
-- `/Items/Counts`：`Video` 只计入 `ItemCount`，没有 `VideoCount`
-  （`ItemCountService.cs:70-100`）；
+- `/Items/Counts`：真实现里 `Video` 只计入 `ItemCount`，没有 `VideoCount`
+  （`ItemCountService.cs:70-100`）。**本项目刻意偏离**：`Video` 并入
+  `MovieCount`——VidHub 等播放器的服务器卡片只画 `MovieCount`/`SeriesCount`，
+  只被授权「其他」库的成员按真口径会看到「0 部电影」（2026-09-06 现场）；
 - DTO：`Type: "Video"`、`MediaType: "Video"`、`IsFolder: false`、`VideoType`、
   多源时 `MediaSourceCount`（`DtoService.cs:1303-1345`）；有效 `Type` 全集见
   `BaseItemKind`（含 `Video` `Folder` `Photo` `PhotoAlbum` `MusicVideo`）。
@@ -234,7 +237,7 @@ Other Videos 都是同一心智。
 | 5 | 抓帧照抄：10% 位置、`thumbnail=n=24` 选帧、HDR tonemap（iPhone 录像大量 HLG/杜比视界，不 tonemap 会灰）、反交错、strm 不抓、限并发；`attached_pic` 封面流优先 | 4.3 |
 | 6 | 忽略规则改 Jellyfin 口径：无子串匹配，只精确 `sample` + 系统/隐藏目录 | 4.1 |
 | 7 | Jellyfin 层 `Video` 条目必须输出 **`PrimaryImageAspectRatio`**（按真实图片尺寸），否则客户端按海报比例裁 16:9 帧图。我们现有 catalog 从未输出该字段，影视条目靠客户端默认 2/3 蒙对了，Video 蒙不对 | 4.6 |
-| 8 | `Counts` 只加 `ItemCount`；`Latest` 逐条不聚合；`Resume` 含 Video；不传类型的库级 `/Items` 返回全部 Video | 4.6 |
+| 8 | `Counts` 把 `Video` 并入 `MovieCount`（偏离真实现，见 5.1）；`Latest` 逐条不聚合；`Resume` 含 Video；不传类型的库级 `/Items` 返回全部 Video | 4.6 |
 | 9 | 有意偏离登记：不建 `Folder` 层级、不收 `Photo`。实施时写进 jellyfin-compat.md 的偏离清单 | 4.6 / 第 7 节 |
 | 10 | 开口：容器 `title` 标签作标题（Jellyfin opt-in）、NFO 的 `watched/playcount` 导入、图片收录做成"相册" | 第 7 节 |
 
@@ -493,9 +496,20 @@ library.md 决策 4 相应修订为：「未识别文件落账并挂**临时本�
 - 条目详情页 `build_item_detail` 复用：按能力位隐藏演职员（无 cast 时）、
   季集（单本时）、订阅/洗版入口、TMDB 链接、刮削归属，保留播放键、事实
   芯片、`MediaTrackRows`、`FileSection`（回收、字幕）——**不需要新页面**；
-- 图片回落：sidecar 图（`-thumb`/`-landscape` → 同名 → `-poster`；`-fanart`
-  作背景；单视频目录接受不带前缀的 `poster/folder/fanart`，1.5.3）→ 容器
-  `attached_pic` → 抓帧 → 占位；
+- 图片回落：本地美术图规则**只在 `services/library/artwork.py` 维护一份**，
+  Web artwork 接口、Jellyfin 图片接口、本地条目资产生成三处同源，选出来的一定
+  是同一张，DTO 报的长宽比才与播放器实际取到的图一致。规则照抄 Jellyfin
+  `LocalImageProvider`（1.5.3）：主图 = `<主干>.jpg` 精确同名 → `<主干>-poster`
+  等前缀 sidecar → **目录归这个条目时**的 `poster/folder/...`；没有海报才拿
+  `-thumb`/`-landscape` 当主图；再没有才 `attached_pic` → 抓帧 → 占位。
+  背景图 = `<主干>-fanart` → 目录级 `fanart`，入账为 `backdrop_file`，播放器据此
+  拿到 Backdrop。「目录归这个条目」= 目录里直接躺着的视频全是它的（单片一目录、
+  多版本同目录、剧集季目录结构都算）；混放目录（演员文件夹下散放几部片）里的
+  `poster.jpg` 谁都不拿，否则会串图。2026-09-06 改：原先 `-thumb` 优先且目录级
+  图按排序取第一张，把刮削器整理过的库全压成横版截图、混放目录还串图；
+- 库详情页的墙按主图比例分两区：竖版海报一区（电影库列宽）、横版缩略图一区
+  （宽列），两区都有才显示分区标题，只有一种时就是普通的一面墙。分区在已加载
+  的分页结果上切，两区各自保持内容时间倒序；
 - 库封面 `cover.py` 按主图比例出拼贴变体；首页汇总补「K 个视频」；库内
   搜索按条目标题天然覆盖。
 
@@ -536,7 +550,7 @@ HLG/杜比视界）、mpegts `-skip_frame nokey`、宽度上限 1280、strm 跳�
   形状）；GUID 仍是条目 GUID；影视库临时条目按形态出 `Movie`/`Series`，
   无 `ProviderIds`；
 - `_entries_for_parent` 的 LIBRARY 分支对 `video` 库不论递归与否返回全部条目；
-  `Counts` 中 `Video` 只计 `ItemCount`；`Latest` 对 `video` 库逐条不聚合；
+  `Counts` 中 `Video` 并入 `MovieCount`；`Latest` 对 `video` 库逐条不聚合；
   `Resume` 天然包含；
 - PlaybackInfo / stream / 字幕 / playstate / images：**零改动**；
 - 偏离登记（jellyfin-compat.md）：不输出 `Folder` 层级、不输出 `Photo`。
