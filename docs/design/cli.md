@@ -89,7 +89,7 @@ help、参数、校验、示例全部从 spec 来，等价于「API 文档写好
 但 600KB 单行生成物入库意味着任何两个改了路由的 PR 都在同一行冲突，而所有
 生产路径（Dockerfile、发版脚本、goreleaser、CI）本来就不信任仓库副本、一律
 现场重导。现在：镜像与发版构建期导出；CI 的 Go 作业在 vet/test 前导出；
-本地编译 CLI 前 `go generate ./...`；服务端本地缺文件时从代码现算
+本地编译 CLI 前跑一次 `scripts/export-spec.sh`；服务端本地缺文件时从代码现算
 （`spec_catalog.load_spec`）。
 
 **辅通道（运行时刷新，服务偏斜时才用）**：远程安装的 CLI（pipx）可能与
