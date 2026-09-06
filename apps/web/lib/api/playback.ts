@@ -239,8 +239,9 @@ export interface PlaybackLogEntry {
 export interface PlaybackHistory {
   entries: PlaybackLogEntry[];
   hidden_count: number;
-  /** 按 offset 翻页：本页之后还有没有 */
+  /** 游标翻页：本页之后还有没有；有则 next_cursor 是下一页要带的 before */
   has_more: boolean;
+  next_cursor: number | null;
 }
 
 export interface PlaybackStatsMemberRow {
@@ -286,7 +287,8 @@ export interface PlaybackWatchStats {
 export async function fetchPlaybackHistory(
   options: {
     limit?: number;
-    offset?: number;
+    /** 游标：上一页的 next_cursor，取更早的记录 */
+    before?: number | null;
     days?: number;
     /** 按成员筛选；0 = 超管 */
     memberId?: number | null;
@@ -295,7 +297,7 @@ export async function fetchPlaybackHistory(
 ): Promise<PlaybackHistory> {
   const params = new URLSearchParams({ scope: options.scope ?? "visible" });
   if (options.limit != null) params.set("limit", String(options.limit));
-  if (options.offset) params.set("offset", String(options.offset));
+  if (options.before != null) params.set("before", String(options.before));
   if (options.days != null) params.set("days", String(options.days));
   if (options.memberId != null) params.set("member_id", String(options.memberId));
   const response = await request<ApiEnvelope<PlaybackHistory>>(`/playback/history?${params}`);

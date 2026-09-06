@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import Link from "next/link";
 import type { Route } from "next";
@@ -173,6 +173,11 @@ function HistoryRow({ entry }: { entry: PlaybackLogEntry }) {
   );
 }
 
+/**
+ * 播放记录列表：滚动到底自动续载（IntersectionObserver 盯着列表尾部的哨兵），
+ * 「加载更多」按钮留作兜底。翻页用服务端游标而不是 offset：记录会一直往前追加，
+ * 续载期间新开的一场会把 offset 整体后推，同一行就会在两页里各出现一次。
+ */
 export function PlaybackHistoryList({
   scope,
   memberId,
@@ -185,37 +190,69 @@ export function PlaybackHistoryList({
 }) {
   const [entries, setEntries] = useState<PlaybackLogEntry[]>([]);
   const [hiddenCount, setHiddenCount] = useState(0);
+  const [cursor, setCursor] = useState<number | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  // 一次只允许一个在途请求：哨兵在续载期间会反复进出视口
+  const pending = useRef(false);
+  // 切筛选后，仍在途的旧请求不能把旧口径的行拼进新列表
+  const generation = useRef(0);
 
   const load = useCallback(
-    async (offset: number) => {
-      const page = await fetchPlaybackHistory({ limit: HISTORY_PAGE, offset, scope, memberId });
-      setEntries((prev) => (offset === 0 ? page.entries : [...prev, ...page.entries]));
-      setHiddenCount((prev) => (offset === 0 ? page.hidden_count : prev + page.hidden_count));
-      setHasMore(page.has_more);
+    async (before: number | null) => {
+      if (pending.current) return;
+      pending.current = true;
+      const gen = generation.current;
+      setLoading(true);
+      try {
+        const page = await fetchPlaybackHistory({ limit: HISTORY_PAGE, before, scope, memberId });
+        if (gen !== generation.current) return;
+        setEntries((prev) => (before === null ? page.entries : [...prev, ...page.entries]));
+        setHiddenCount((prev) => (before === null ? page.hidden_count : prev + page.hidden_count));
+        setCursor(page.next_cursor);
+        setHasMore(page.has_more);
+        setError(null);
+      } catch (caught) {
+        if (gen === generation.current) {
+          setError((caught as Error).message || "播放记录加载失败");
+        }
+      } finally {
+        pending.current = false;
+        if (gen === generation.current) setLoading(false);
+      }
     },
     [scope, memberId],
   );
 
   useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    void load(0)
-      .then(() => {
-        if (!cancelled) setError(null);
-      })
-      .catch((caught) => {
-        if (!cancelled) setError((caught as Error).message || "播放记录加载失败");
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
+    generation.current += 1;
+    pending.current = false;
+    setEntries([]);
+    setHiddenCount(0);
+    setCursor(null);
+    setHasMore(false);
+    void load(null);
   }, [load]);
+
+  const loadMore = useCallback(() => {
+    if (hasMore && cursor !== null) void load(cursor);
+  }, [hasMore, cursor, load]);
+
+  useEffect(() => {
+    const sentinel = sentinelRef.current;
+    if (!sentinel || !hasMore || typeof IntersectionObserver === "undefined") return;
+    // 提前半屏触发，滚到底时下一页多半已经就位
+    const observer = new IntersectionObserver(
+      (records) => {
+        if (records.some((record) => record.isIntersecting)) loadMore();
+      },
+      { rootMargin: "0px 0px 50% 0px" },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [hasMore, loadMore]);
 
   const groups = useMemo(() => {
     const byDay = new Map<string, PlaybackLogEntry[]>();
@@ -262,17 +299,19 @@ export function PlaybackHistoryList({
         </div>
       )}
       {hasMore && (
-        <button
-          type="button"
-          disabled={loading}
-          onClick={() => {
-            setLoading(true);
-            void load(entries.length + hiddenCount).finally(() => setLoading(false));
-          }}
-          className="glass-row w-full rounded-xl py-2.5 text-center text-sub text-white/70 disabled:opacity-40"
-        >
-          {loading ? "正在加载…" : "加载更多"}
-        </button>
+        <div ref={sentinelRef}>
+          <button
+            type="button"
+            disabled={loading}
+            onClick={loadMore}
+            className="glass-row w-full rounded-xl py-2.5 text-center text-sub text-white/70 disabled:opacity-40"
+          >
+            {loading ? "正在加载更早的记录…" : "加载更多"}
+          </button>
+        </div>
+      )}
+      {!hasMore && entries.length >= HISTORY_PAGE && (
+        <p className="py-2 text-center text-caption text-white/30">已经到最早的记录了</p>
       )}
     </div>
   );

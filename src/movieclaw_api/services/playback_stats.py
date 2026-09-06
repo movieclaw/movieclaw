@@ -17,7 +17,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from movieclaw_api.schemas.playback import (
@@ -116,25 +116,40 @@ async def playback_history(
     session: AsyncSession,
     *,
     limit: int,
-    offset: int = 0,
+    before: int | None = None,
     days: int | None,
     member_id: int | None,
     browsable_library_ids: set[int] | None,
     fold_hidden: bool,
 ) -> PlaybackHistoryView:
-    """最近的播放记录（每场一行），按开始时间倒序、offset 翻页。
+    """最近的播放记录（每场一行），按开始时间倒序、游标翻页。
 
-    多取一行判断 ``has_more``；折叠掉的行仍占翻页位置（offset 按日志行数
-    而不是按展示行数走），换口径重拉即可。
+    ``before`` 是上一页最后一行的 id：下一页取 (started_at, id) 严格小于它的行。
+    用游标而不是 offset，是因为记录会一直往前追加——滚动续载期间新开的一场
+    会把 offset 整体后推，同一行就会在两页里各出现一次。多取一行判断
+    ``has_more``；折叠掉的行照常推进游标，换口径重拉即可。
     """
     statement = select(PlaybackLog).order_by(PlaybackLog.started_at.desc(), PlaybackLog.id.desc())  # type: ignore[union-attr]
     if days is not None:
         statement = statement.where(PlaybackLog.started_at >= utcnow() - timedelta(days=days))
     if member_id is not None:
         statement = statement.where(PlaybackLog.member_id == member_id)
-    rows = list((await session.execute(statement.offset(offset).limit(limit + 1))).scalars())
+    if before is not None:
+        anchor = await session.get(PlaybackLog, before)
+        if anchor is not None:
+            statement = statement.where(
+                or_(
+                    PlaybackLog.started_at < anchor.started_at,
+                    and_(
+                        PlaybackLog.started_at == anchor.started_at,
+                        PlaybackLog.id < anchor.id,  # type: ignore[operator]
+                    ),
+                )
+            )
+    rows = list((await session.execute(statement.limit(limit + 1))).scalars())
     has_more = len(rows) > limit
     rows = rows[:limit]
+    next_cursor = rows[-1].id if has_more and rows else None
     names = await _member_names(session, {r.member_id for r in rows})
     targets, durations = await _targets_for(
         session, rows, browsable_library_ids=browsable_library_ids, fold_hidden=fold_hidden
@@ -166,7 +181,9 @@ async def playback_history(
                 completed=row.completed,
             )
         )
-    return PlaybackHistoryView(entries=entries, hidden_count=hidden, has_more=has_more)
+    return PlaybackHistoryView(
+        entries=entries, hidden_count=hidden, has_more=has_more, next_cursor=next_cursor
+    )
 
 
 async def playback_stats(

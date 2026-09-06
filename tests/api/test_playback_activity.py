@@ -6,6 +6,8 @@ require_admin 且不在成员白名单），这里只测管理员视角的数据
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -668,6 +670,58 @@ async def test_playback_log_records_each_session_and_feeds_stats(client: TestCli
     assert len(stats["top_titles"]) == 1
     assert stats["top_titles"][0]["media"]["title"] == "盗梦空间"
     assert stats["top_titles"][0]["plays"] == 2
+
+
+async def test_playback_history_pages_by_cursor_without_duplicates(client: TestClient) -> None:
+    """游标翻页：按 (started_at, id) 往前走，翻页期间新追加的记录不会让旧行重复出现。"""
+    movie_id, _ = await _seed_movie_in_library(title="盗梦空间", tmdb_id=27205, library_name="电影")
+    now = utcnow()
+    async with get_database().session() as session:
+        for i in range(5):
+            session.add(
+                PlaybackLog(
+                    member_id=0,
+                    media_item_id=movie_id,
+                    kind="movie",
+                    title="盗梦空间",
+                    device_id="dev",
+                    client="Infuse",
+                    # 两行同一时刻，逼出 (started_at, id) 的复合游标
+                    started_at=now - timedelta(hours=i // 2),
+                    last_seen_at=now,
+                    ended_at=now,
+                    watched_ms=1_000 * (i + 1),
+                )
+            )
+        await session.commit()
+
+    first = client.get("/api/v1/playback/history", params={"limit": 2}).json()["data"]
+    assert [e["watched_ms"] for e in first["entries"]] == [2_000, 1_000]
+    assert first["has_more"] is True
+    cursor = first["next_cursor"]
+    assert cursor is not None
+
+    # 翻页途中又开了一场：offset 翻页会把它挤进第二页并让第 2 行重复，游标不会
+    async with get_database().session() as session:
+        session.add(
+            PlaybackLog(
+                member_id=0, media_item_id=movie_id, kind="movie", title="盗梦空间",
+                device_id="dev", client="Infuse", started_at=now + timedelta(minutes=1),
+                last_seen_at=now, ended_at=now, watched_ms=99_000,
+            )
+        )
+        await session.commit()
+
+    second = client.get(
+        "/api/v1/playback/history", params={"limit": 2, "before": cursor}
+    ).json()["data"]
+    assert [e["watched_ms"] for e in second["entries"]] == [4_000, 3_000]
+    third = client.get(
+        "/api/v1/playback/history", params={"limit": 2, "before": second["next_cursor"]}
+    ).json()["data"]
+    assert [e["watched_ms"] for e in third["entries"]] == [5_000]
+    assert third["has_more"] is False
+    assert third["next_cursor"] is None
 
 
 async def test_playback_log_respects_visibility_scope(client: TestClient) -> None:

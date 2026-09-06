@@ -415,7 +415,9 @@ async def end_device_playback(
 )
 async def list_playback_history(
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
-    offset: Annotated[int, Query(ge=0, le=100_000)] = 0,
+    before: Annotated[
+        int | None, Query(ge=1, description="游标：上一页最后一行的 id，取更早的记录")
+    ] = None,
     days: Annotated[int | None, Query(ge=1, le=365)] = None,
     member_id: Annotated[int | None, Query(ge=0)] = None,
     scope: Annotated[Literal["visible", "all"], Query()] = "visible",
@@ -423,12 +425,13 @@ async def list_playback_history(
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[PlaybackHistoryView]:
     """活动页「播放记录」：来自 playback_log，标得出哪台设备、什么时候、看了多久。
-    可见范围口径与 /playback/activity 同；``offset`` 翻页，``has_more`` 说还有没有。"""
+    可见范围口径与 /playback/activity 同；游标翻页（``before`` / ``next_cursor``），
+    滚动续载期间新开的一场不会让同一行在两页里各出现一次。"""
     return ok(
         await playback_history(
             session,
             limit=limit,
-            offset=offset,
+            before=before,
             days=days,
             member_id=member_id,
             browsable_library_ids=await visible_library_ids(session, principal),

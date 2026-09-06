@@ -185,8 +185,9 @@ class PlaybackLogEntryView(BaseModel):
 class PlaybackHistoryView(BaseModel):
     entries: list[PlaybackLogEntryView]
     hidden_count: int = Field(default=0, description="不在你可见范围内的记录数")
-    # 本页之后还有没有更多（按 offset 翻页的「加载更多」）
+    # 游标翻页：本页之后还有没有更多；有则带上下一页的游标（本页最后一行的 id）
     has_more: bool = False
+    next_cursor: int | None = None
 
 
 class PlaybackStatsMemberRow(BaseModel):
