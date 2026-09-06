@@ -9,6 +9,7 @@ import { ContentEmptyState } from "@/components/content-empty-state";
 import { useConfirm, useToast } from "@/components/feedback";
 import { ChevronDownIcon, SearchIcon, XIcon } from "@/components/icons";
 import { PosterImage } from "@/components/poster-image";
+import { Tooltip } from "@/components/tooltip";
 import {
   type TrashedFile,
   type TrashedFilesData,
@@ -685,9 +686,7 @@ function ItemCard(props: RowProps) {
         <ItemIdentity item={item} />
       </div>
       {single ? (
-        <div className="mt-2 break-all font-mono text-caption leading-5 text-[var(--text)] [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] overflow-hidden">
-          {single.file_name}
-        </div>
+        <FileName file={single} clamp className="mt-2" />
       ) : (
         <button type="button" onClick={onToggleExpanded} className="mt-2 flex items-center gap-1.5 text-ui">
           <ChevronDownIcon className={`size-3.5 text-[var(--text-faint)] transition-transform ${expanded ? "" : "-rotate-90"}`} />
@@ -725,9 +724,7 @@ function ItemCard(props: RowProps) {
                   label={`选择「${file.file_name}」`}
                   className="mt-0.5"
                 />
-                <div className="break-all font-mono leading-5 text-[var(--text-muted)] [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] overflow-hidden">
-                  {file.file_name}
-                </div>
+                <FileName file={file} muted clamp />
                 <DueText due={fileDue} className="row-span-2 self-start text-right" short />
                 <div className="col-start-2 text-[var(--text-faint)]">
                   {code && (
@@ -824,15 +821,60 @@ function ItemIdentity({ item }: { item: TrashedItem }) {
   );
 }
 
-/** 文件名：等宽、整格宽度，悬停显示原路径（恢复回哪里一看就知道）。 */
-function FileName({ file, muted = false }: { file: TrashedFile; muted?: boolean }) {
+/**
+ * 文件名：等宽、整格宽度。点它（桌面悬停也行）弹出完整存放路径——「原路径」是恢复
+ * 回去的位置，「现在的位置」是回收站内的当前路径；手机端没有悬停，所以用项目统一的
+ * Tooltip 走点击，而不是原生 title。
+ */
+function FileName({
+  file,
+  muted = false,
+  clamp = false,
+  className = "",
+}: {
+  file: TrashedFile;
+  muted?: boolean;
+  /** 手机端：允许折两行不截断 */
+  clamp?: boolean;
+  className?: string;
+}) {
   return (
-    <div
-      className={`truncate font-mono text-caption ${muted ? "text-[var(--text-muted)]" : "text-[var(--text)]"}`}
-      title={file.trash_original_path ? `原路径：${file.trash_original_path}` : file.file_path}
+    <Tooltip
+      openOnClick
+      maxWidth={560}
+      content={
+        <div className="space-y-2 text-caption leading-5">
+          <div>
+            <div className="text-[var(--text-faint)]">原路径（恢复回这里）</div>
+            <div className="break-all font-mono text-[var(--text)]">
+              {file.trash_original_path ?? file.file_path}
+            </div>
+          </div>
+          <div>
+            <div className="text-[var(--text-faint)]">现在的位置</div>
+            <div className="break-all font-mono text-[var(--text)]">
+              {file.kept_in_place
+                ? "仍在原路径（移入回收站失败，清理时按这个路径删除）"
+                : file.file_path}
+            </div>
+          </div>
+        </div>
+      }
     >
-      {file.file_name}
-    </div>
+      <button
+        type="button"
+        aria-label={`查看「${file.file_name}」的存放路径`}
+        className={`block max-w-full text-left font-mono text-caption decoration-white/30 hover:underline ${
+          muted ? "text-[var(--text-muted)]" : "text-[var(--text)]"
+        } ${
+          clamp
+            ? "overflow-hidden break-all leading-5 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2]"
+            : "w-full truncate"
+        } ${className}`}
+      >
+        {file.file_name}
+      </button>
+    </Tooltip>
   );
 }
 

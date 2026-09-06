@@ -281,6 +281,21 @@ def test_recycle_bin_tab(stack) -> None:  # noqa: PLR0915, F811
         expect(table.get_by_text(re.compile("AC3 5.1")).first).to_be_visible()
         page.screenshot(path=str(shots / "10-recycle-desktop.png"), full_page=True)
 
+        # ---- 点文件名看完整存放路径：原路径（恢复回去的位置）+ 现在的位置（回收站内） ----
+        page.get_by_role(
+            "button", name="查看「九门.2025.1080p.WEB-DL.H264.AAC-XXX.mkv」的存放路径"
+        ).click()
+        tip = page.get_by_role("tooltip")
+        expect(tip).to_contain_text("原路径")
+        expect(tip).to_contain_text(
+            str(roots["movies"] / "九门.2025.1080p.WEB-DL.H264.AAC-XXX.mkv")
+        )
+        expect(tip).to_contain_text(str(roots["movies"] / ".movieclaw-trash"))
+        page.wait_for_timeout(400)  # 等淡入结束，截图才不是半透明
+        page.screenshot(path=str(shots / "15-recycle-path.png"))
+        page.keyboard.press("Escape")
+        expect(tip).to_have_count(0)
+
         # ---- 手机端：一条目一卡，「3 集 · 1 季」那行就是展开开关 ----
         mobile = browser.new_context(viewport={"width": 390, "height": 844}, locale="zh-CN")
         mobile.add_cookies(context.cookies())
@@ -316,6 +331,7 @@ def test_recycle_bin_tab(stack) -> None:  # noqa: PLR0915, F811
         dialog.get_by_role("button", name="清理 1 个文件").click()
         expect(page.get_by_text("已清理 1 个文件")).to_be_visible()
         expect(page.get_by_role("heading", name="回收站是空的")).to_be_visible()
+        page.screenshot(path=str(shots / "14-recycle-empty.png"), full_page=True)
         assert not (
             roots["movies"] / ".movieclaw-trash" / "九门.2025.1080p.WEB-DL.H264.AAC-XXX.mkv"
         ).exists()
