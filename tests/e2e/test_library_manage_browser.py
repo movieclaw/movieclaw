@@ -360,7 +360,8 @@ def test_library_manage_full_flow(stack) -> None:  # noqa: PLR0915
         # ---- 待处理：菜单里常驻一项；状态胶囊本身也可点——跳单库页并自动打开抽屉，
         #      地址里的 ?pending=1 读完即抹掉 ----
         menu = _open_menu(page, "电影")
-        expect(menu.get_by_role("menuitem", name=re.compile(r"^待处理 · 1 个文件$"))).to_be_visible()
+        pending_item = menu.get_by_role("menuitem", name=re.compile(r"^待处理 · 1 个文件$"))
+        expect(pending_item).to_be_visible()
         page.keyboard.press("Escape")
         _row(page, "电影").get_by_role("link", name="1 个待识别").click()
         page.wait_for_url(re.compile(rf"/library/{lib_by_name(page, '电影')['id']}"))
