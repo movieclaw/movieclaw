@@ -159,6 +159,10 @@ library missing list
 library missing redownload
 library organize-files
 library reconcile-paths
+library recycle
+library recycle list
+library recycle purge
+library recycle restore
 library reorder
 library scan
 library scan start
