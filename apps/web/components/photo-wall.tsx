@@ -28,11 +28,24 @@ import { imageUrl } from "@/lib/image-proxy";
 
 export type PhotoWallDensity = "compact" | "standard" | "loose";
 
-/** 目标列宽（px）：列数 = floor((容器宽 + 间距) / (目标列宽 + 间距))，至少两列 */
-const TARGET_COLUMN_WIDTH: Record<PhotoWallDensity, number> = {
-  compact: 170,
-  standard: 230,
-  loose: 310,
+/**
+ * 三档密度各自的目标列宽、最少列数与间距。
+ *
+ * 只按目标列宽算列数在窄窗口上会失效：600px 以下三档都落到"至少两列"，点了
+ * 没有任何变化；桌面上也只差一列，看不出来。所以每档还各自定最少列数与间距：
+ * 紧凑在手机上也是三列、间距 6px，宽松在手机上是单列大图、间距 18px——
+ * 任何宽度下三档都是三种明显不同的画面。
+ */
+interface DensitySpec {
+  /** 目标列宽（px）：列数 = floor((容器宽 + 间距) / (目标列宽 + 间距)) */
+  column: number;
+  minColumns: number;
+  gap: number;
+}
+const DENSITY: Record<PhotoWallDensity, DensitySpec> = {
+  compact: { column: 150, minColumns: 3, gap: 6 },
+  standard: { column: 230, minColumns: 2, gap: 12 },
+  loose: { column: 340, minColumns: 1, gap: 18 },
 };
 const GAP = 12;
 const MIN_ASPECT = 0.5;
@@ -86,8 +99,12 @@ export function layoutMasonry(
   containerWidth: number,
   targetColumnWidth: number,
   gap = GAP,
+  minColumns = 2,
 ): { placements: Placement[]; height: number; columns: number } {
-  const columns = Math.max(2, Math.floor((containerWidth + gap) / (targetColumnWidth + gap)));
+  const columns = Math.max(
+    minColumns,
+    Math.floor((containerWidth + gap) / (targetColumnWidth + gap)),
+  );
   const columnWidth = (containerWidth - gap * (columns - 1)) / columns;
   const heights = new Array<number>(columns).fill(0);
   const placements = aspects.map((raw) => {
@@ -257,7 +274,7 @@ export function PhotoWall({
     return () => observer.disconnect();
   }, []);
 
-  const targetColumnWidth = TARGET_COLUMN_WIDTH[density];
+  const spec = DENSITY[density];
 
   return (
     <div ref={containerRef} className="min-w-0">
@@ -269,7 +286,7 @@ export function PhotoWall({
             total={monthCounts?.get(group.month)}
             entries={group.entries}
             width={width}
-            targetColumnWidth={targetColumnWidth}
+            spec={spec}
             onOpen={onOpen}
             workingLabelOf={workingLabelOf}
           />
@@ -283,7 +300,7 @@ const PhotoMonthSection = memo(function PhotoMonthSection({
   total,
   entries,
   width,
-  targetColumnWidth,
+  spec,
   onOpen,
   workingLabelOf,
 }: {
@@ -292,18 +309,18 @@ const PhotoMonthSection = memo(function PhotoMonthSection({
   /** 本月的条目及其在整份已加载列表里的下标（灯箱按下标翻页） */
   entries: { item: LibraryItem; index: number }[];
   width: number;
-  targetColumnWidth: number;
+  spec: DensitySpec;
   onOpen: (index: number) => void;
   workingLabelOf?: (item: LibraryItem) => string | undefined;
 }) {
   const layout = useMemo(() => {
     const aspects = entries.map(({ item }) => item.primary_aspect);
-    const masonry = layoutMasonry(aspects, width, targetColumnWidth);
+    const masonry = layoutMasonry(aspects, width, spec.column, spec.gap, spec.minColumns);
     // 照片数少于列数：瀑布流会退化成孤柱，改一行等高（见 layoutSparseRow）
     return aspects.length < masonry.columns
-      ? layoutSparseRow(aspects, width, targetColumnWidth)
+      ? layoutSparseRow(aspects, width, spec.column, spec.gap)
       : masonry;
-  }, [entries, width, targetColumnWidth]);
+  }, [entries, width, spec]);
   const count = total ?? entries.length;
   return (
     // data-wall-initial：月份段的首部锚点，海报墙的滚动联动据此点亮索引条上的月份
