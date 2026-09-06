@@ -556,6 +556,14 @@ function QuietMenu({
     setOpen((v) => !v);
   };
 
+  // 长清单（模型）打开时把当前项滚进视野，用户一眼看到自己选的是哪个
+  useEffect(() => {
+    if (!open) return;
+    menuRef.current
+      ?.querySelector<HTMLElement>('[aria-selected="true"]')
+      ?.scrollIntoView({ block: "nearest" });
+  }, [open]);
+
   const menu = open && menuPos && (
     <div
       ref={menuRef}
