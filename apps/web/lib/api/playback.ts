@@ -272,6 +272,8 @@ export interface PlaybackStatsTitleRow {
   media: MediaActivityTarget;
   plays: number;
   watched_ms: number;
+  /** 看过这部作品的成员数 */
+  members: number;
 }
 
 export interface PlaybackStatsTotals {
@@ -307,6 +309,10 @@ export interface PlaybackWatchStats {
   by_tier: PlaybackStatsTierRow[];
   top_titles: PlaybackStatsTitleRow[];
   hidden_title_count: number;
+  /** 本期最受欢迎：看过的成员最多，并列取时长长的；与作品榜（按时长）口径不同 */
+  favorite: PlaybackStatsTitleRow | null;
+  /** 上一周期的最受欢迎，用来说「蝉联」还是「上期是谁」 */
+  previous_favorite: PlaybackStatsTitleRow | null;
 }
 
 export async function fetchPlaybackHistory(

@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 from sqlalchemy import and_, func, or_, select
@@ -224,6 +225,54 @@ def _day_series(
     return out
 
 
+@dataclass
+class _TitleAgg:
+    """一部作品在一个周期内的聚合：场次、时长、看过的人。"""
+
+    unit: Unit
+    plays: int = 0
+    watched_ms: int = 0
+    members: set[int] = field(default_factory=set)
+
+    def row(self, target: MediaActivityTarget) -> PlaybackStatsTitleRow:
+        return PlaybackStatsTitleRow(
+            media=target, plays=self.plays, watched_ms=self.watched_ms, members=len(self.members)
+        )
+
+
+def _aggregate_titles(rows: list[PlaybackLog]) -> dict[int, _TitleAgg]:
+    """按条目聚合；剧集取该条目最近一场的那一集当展示锚（rows 按时间无序，取先遇到的）。"""
+    titles: dict[int, _TitleAgg] = {}
+    for row in rows:
+        agg = titles.get(row.media_item_id)
+        if agg is None:
+            agg = titles[row.media_item_id] = _TitleAgg(
+                unit=(row.media_item_id, row.season_number, row.episode_number)
+            )
+        agg.plays += 1
+        agg.watched_ms += row.watched_ms
+        agg.members.add(row.member_id)
+    return titles
+
+
+def _favorite(
+    titles: dict[int, _TitleAgg], targets: dict[Unit, MediaActivityTarget]
+) -> PlaybackStatsTitleRow | None:
+    """最受欢迎：看过的成员最多的那部，并列按时长、再按场次。
+
+    与作品榜「看得最多」（按时长）是两个问题：一个人刷完一整季会稳居时长榜首，
+    但三个成员各看一遍的电影才是「家里谁都在看的」。家庭服务器成员就三五个，
+    并列很常见，第二排序键不能省。范围外的作品跳过，退到下一部可见的。
+    """
+    for agg in sorted(
+        titles.values(), key=lambda t: (len(t.members), t.watched_ms, t.plays), reverse=True
+    ):
+        target = targets.get(agg.unit)
+        if target is not None:
+            return agg.row(target)
+    return None
+
+
 def _totals(rows: list[PlaybackLog]) -> PlaybackStatsTotals:
     return PlaybackStatsTotals(
         plays=len(rows),
@@ -267,8 +316,6 @@ async def playback_stats(
 
     by_member: dict[int, list[int]] = defaultdict(lambda: [0, 0, 0])  # plays, watched, completed
     by_client: dict[str, list[int]] = defaultdict(lambda: [0, 0])
-    by_title: dict[int, list[int]] = defaultdict(lambda: [0, 0])
-    title_unit: dict[int, Unit] = {}
     by_hour = [[0] * 24 for _ in range(7)]
     for row in rows:
         member = by_member[row.member_id]
@@ -278,28 +325,25 @@ async def playback_stats(
         client = by_client[row.client or "未知客户端"]
         client[0] += 1
         client[1] += row.watched_ms
-        title = by_title[row.media_item_id]
-        title[0] += 1
-        title[1] += row.watched_ms
-        # 作品榜按条目聚合，剧集取该条目最近一场的那一集当展示锚
-        title_unit.setdefault(
-            row.media_item_id, (row.media_item_id, row.season_number, row.episode_number)
-        )
         # 时段热力图按开始时刻分桶：一场归到它开始的那个小时，够回答「什么时候有人在看」
         local = row.started_at + offset
         by_hour[local.weekday()][local.hour] += row.watched_ms
 
+    titles = _aggregate_titles(rows)
     top_titles: list[PlaybackStatsTitleRow] = []
     hidden_titles = 0
-    for item_id, (plays, watched) in sorted(
-        by_title.items(), key=lambda kv: (kv[1][1], kv[1][0]), reverse=True
-    ):
-        target = targets.get(title_unit[item_id])
+    for agg in sorted(titles.values(), key=lambda t: (t.watched_ms, t.plays), reverse=True):
+        target = targets.get(agg.unit)
         if target is None:
             hidden_titles += 1
             continue
         if len(top_titles) < _TOP_TITLES:
-            top_titles.append(PlaybackStatsTitleRow(media=target, plays=plays, watched_ms=watched))
+            top_titles.append(agg.row(target))
+
+    # 上一周期的最受欢迎只用来对照（「蝉联」还是「上期是谁」），同样按可见范围折叠
+    previous_targets, _ = await _targets_for(
+        session, previous_rows, browsable_library_ids=browsable_library_ids, fold_hidden=fold_hidden
+    )
 
     # 网页播放的档位分解来自播放质量指标（一次播放一行）；Jellyfin 客户端恒为直连
     metric_statement = select(PlaybackMetric.tier, func.count()).where(
@@ -351,4 +395,6 @@ async def playback_stats(
         by_tier=by_tier,
         top_titles=top_titles,
         hidden_title_count=hidden_titles,
+        favorite=_favorite(titles, targets),
+        previous_favorite=_favorite(_aggregate_titles(previous_rows), previous_targets),
     )

@@ -216,6 +216,7 @@ class PlaybackStatsTitleRow(BaseModel):
     media: MediaActivityTarget
     plays: int
     watched_ms: int
+    members: int = Field(default=0, description="看过这部作品的成员数")
 
 
 class PlaybackStatsTotals(BaseModel):
@@ -260,6 +261,13 @@ class PlaybackWatchStatsView(BaseModel):
     )
     top_titles: list[PlaybackStatsTitleRow]
     hidden_title_count: int = Field(default=0, description="作品榜里不在你可见范围内的条数")
+    favorite: PlaybackStatsTitleRow | None = Field(
+        default=None,
+        description="本期最受欢迎：看过的成员最多，并列取时长长的；与作品榜（按时长）口径不同",
+    )
+    previous_favorite: PlaybackStatsTitleRow | None = Field(
+        default=None, description="上一周期的最受欢迎，用来说「蝉联」还是「上期是谁」"
+    )
 
 
 class PlaybackHistoryClearView(BaseModel):

@@ -53,14 +53,21 @@ function detailHref(media: MediaActivityTarget): Route | null {
   return `/library/${media.library_id}/item/${media.media_item_id}` as Route;
 }
 
-export function TitleText({ media }: { media: MediaActivityTarget }) {
-  const unit = unitLabel(media);
+export function TitleText({
+  media,
+  episode = true,
+}: {
+  media: MediaActivityTarget;
+  /** 剧集是否带上「S01E03 第 3 集」；按作品聚合的地方（最受欢迎）只要剧名 */
+  episode?: boolean;
+}) {
+  const unit = episode ? unitLabel(media) : null;
   const href = detailHref(media);
   const text = (
     <>
       {media.title || "（条目已删除）"}
       {unit && <span className="tnum ml-1.5 font-normal text-white/60">{unit}</span>}
-      {media.episode_title && (
+      {episode && media.episode_title && (
         <span className="ml-1.5 font-normal text-white/45">{media.episode_title}</span>
       )}
       {!media.browsable && media.library_id != null && (

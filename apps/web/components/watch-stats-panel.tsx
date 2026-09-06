@@ -8,6 +8,7 @@ import {
   fetchPlaybackWatchStats,
   type MediaActivityScope,
   type PlaybackStatsDayRow,
+  type PlaybackStatsTitleRow,
   type PlaybackWatchStats,
 } from "@/lib/api/playback";
 import { imageUrl } from "@/lib/image-proxy";
@@ -610,6 +611,70 @@ function HourHeatmap({ matrix }: { matrix: number[][] }) {
 }
 
 // ---------------------------------------------------------------------------
+// 最受欢迎：整页唯一的图像锚点
+// ---------------------------------------------------------------------------
+
+/**
+ * 本期最受欢迎的一部：看过的成员最多，并列取时长长的。与「看得最多」（按时长）是
+ * 两个问题，同一部片同时占两头也是信息——既有人看又看得久。钻取到单个成员时人数
+ * 没有意义，退成「TA 本期看得最多」。右侧对照上一周期：同一部就是「蝉联」。
+ */
+function FavoriteStrip({
+  favorite,
+  previous,
+  memberId,
+}: {
+  favorite: PlaybackStatsTitleRow | null;
+  previous: PlaybackStatsTitleRow | null;
+  memberId: number | null;
+}) {
+  if (!favorite) return null;
+  const drilled = memberId != null;
+  const eyebrow = drilled ? "本期看得最多" : "本期最受欢迎";
+  const same = previous?.media.media_item_id === favorite.media.media_item_id;
+  const meta = [
+    drilled ? null : `${favorite.members} 位成员看过`,
+    formatWatched(favorite.watched_ms),
+    `${favorite.plays} 场`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  return (
+    <section
+      aria-label={eyebrow}
+      className="flex items-center gap-4 rounded-2xl border border-white/[0.08] bg-white/[0.02] p-3 pr-4 max-md:gap-3"
+    >
+      <PosterImage
+        src={favorite.media.poster_url ? imageUrl(favorite.media.poster_url) : null}
+        alt={favorite.media.title}
+        className="h-[84px] w-[56px] shrink-0 rounded-xl object-cover ring-1 ring-white/10"
+      />
+      <div className="min-w-0 flex-1">
+        <p className="text-caption font-semibold text-white/55">{eyebrow}</p>
+        <div className="mt-1">
+          <TitleText media={favorite.media} episode={false} />
+        </div>
+        <p className="tnum mt-1 text-caption text-white/45">{meta}</p>
+      </div>
+      {previous && (
+        <p className="shrink-0 text-right text-caption text-white/40 max-md:hidden">
+          {same ? (
+            <span className="rounded-md bg-[var(--ok)]/15 px-1.5 py-0.5 font-semibold text-[var(--ok)]">
+              蝉联
+            </span>
+          ) : (
+            <>
+              上期
+              <span className="ml-1 text-white/60">《{previous.media.title}》</span>
+            </>
+          )}
+        </p>
+      )}
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // 面板
 // ---------------------------------------------------------------------------
 
@@ -690,6 +755,12 @@ export function WatchStatsPanel({
       <div className="rounded-2xl border border-white/[0.08] bg-white/[0.02] px-3 pb-3 pt-3">
         <TrendChart stats={stats} metric={metric} />
       </div>
+
+      <FavoriteStrip
+        favorite={stats.favorite}
+        previous={stats.previous_favorite}
+        memberId={memberId}
+      />
 
       <div className="grid grid-cols-2 gap-4 max-md:grid-cols-1">
         <BreakdownPanel

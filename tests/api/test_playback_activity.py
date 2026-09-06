@@ -678,6 +678,39 @@ async def test_playback_log_records_each_session_and_feeds_stats(client: TestCli
     assert len(stats["top_titles"]) == 1
     assert stats["top_titles"][0]["media"]["title"] == "盗梦空间"
     assert stats["top_titles"][0]["plays"] == 2
+    assert stats["top_titles"][0]["members"] == 1
+    assert stats["favorite"]["media"]["title"] == "盗梦空间"
+    assert stats["previous_favorite"] is None
+
+
+async def test_favorite_title_counts_members_not_hours(client: TestClient) -> None:
+    """最受欢迎按看过的人数排：三个人各看一遍的电影胜过一个人刷了很久的剧。"""
+    movie_id, _ = await _seed_movie_in_library(
+        title="疯狂动物城", tmdb_id=269149, library_name="电影"
+    )
+    show_id, _ = await _seed_movie_in_library(title="长剧", tmdb_id=1396, library_name="剧集")
+    now = utcnow()
+
+    def log(member: int, item: int, watched_ms: int, *, ago: timedelta) -> PlaybackLog:
+        return PlaybackLog(
+            member_id=member, media_item_id=item, kind="movie", title="x", device_id=f"d{member}",
+            client="Infuse", started_at=now - ago, last_seen_at=now - ago, ended_at=now - ago,
+            watched_ms=watched_ms,
+        )
+
+    async with get_database().session() as session:
+        for member in (1, 2, 3):
+            session.add(log(member, movie_id, 3_600_000, ago=timedelta(days=1)))
+        session.add(log(1, show_id, 36_000_000, ago=timedelta(days=2)))
+        # 上一周期只有那部剧一个人在看
+        session.add(log(1, show_id, 3_600_000, ago=timedelta(days=10)))
+        await session.commit()
+
+    stats = client.get("/api/v1/playback/stats/watch", params={"days": 7}).json()["data"]
+    assert stats["top_titles"][0]["media"]["title"] == "长剧"  # 时长榜
+    assert stats["favorite"]["media"]["title"] == "疯狂动物城"  # 人气
+    assert stats["favorite"]["members"] == 3
+    assert stats["previous_favorite"]["media"]["title"] == "长剧"
 
 
 async def test_playback_history_pages_by_cursor_without_duplicates(client: TestClient) -> None:
