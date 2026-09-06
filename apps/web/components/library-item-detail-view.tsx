@@ -976,21 +976,13 @@ export function LibraryItemDetailView({
  * 曾经直接复用顶栏 ⋯ 键的 36px 规格：与 48px 的播放键排在同一行，一大两小，
  * 看起来像播放键旁边挂了两个页面工具，而不是同一组动作。
  *
- * 颜色不在这里：静息态与选中态的底色 / 文字色各自一整套、互斥拼接（见
- * MARK_TONE_*），不让两套文字色工具类同时出现——谁赢由样式表顺序决定，
- * 不由 class 顺序决定。
+ * 外壳在所有状态下都是同一副深色玻璃：状态只落在**图标颜色**上（红心 / 绿勾），
+ * 不给按钮铺红底绿底——试过一版整块上色，两枚重色大键压在白色播放键旁边，
+ * 比播放键还抢眼，把这一行的主次弄反了。图标颜色写在 svg 自己身上，与按钮的
+ * 文字色不在同一个元素，不存在工具类互相覆盖的问题。
  */
-const MARK_BUTTON_BASE =
-  "inline-flex h-12 shrink-0 items-center justify-center gap-2 rounded-full border backdrop-blur-md transition duration-200 active:scale-[0.96] disabled:pointer-events-none disabled:opacity-60 md:size-12 max-md:h-11 max-md:flex-1 max-md:px-4";
-/** 静息态：与页面其他玻璃键同一副长相 */
-const MARK_TONE_IDLE =
-  "border-white/[0.12] bg-white/[0.08] text-white/85 hover:bg-white/[0.14] hover:text-white";
-/** 已收藏：红心 + 一层淡红底 */
-const MARK_TONE_FAVORITE =
-  "border-[var(--danger)]/40 bg-[var(--danger)]/15 text-[var(--danger)] hover:bg-[var(--danger)]/25";
-/** 已看完：实心绿底 + 深色勾，与分集卡 / 最近观看卡的角标同款 */
-const MARK_TONE_PLAYED =
-  "border-transparent bg-[var(--ok)] text-[#07120c] hover:bg-[var(--ok)]/90";
+const MARK_BUTTON_CLASS =
+  "inline-flex h-12 shrink-0 items-center justify-center gap-2 rounded-full border border-white/[0.12] bg-white/[0.08] text-white/85 backdrop-blur-md transition duration-200 hover:bg-white/[0.14] hover:text-white active:scale-[0.96] disabled:pointer-events-none disabled:opacity-60 md:size-12 max-md:h-11 max-md:px-4";
 
 /**
  * 播放入口（主行动按钮 + 续播进度）。
@@ -1011,7 +1003,7 @@ const MARK_TONE_PLAYED =
  * 播放键右侧是两枚等高的圆键：心（收藏整个条目）与对勾（标记当前单元已看 /
  * 未看）——Jellyfin 客户端条目页上那两个按钮的网页对应物，点的是同一份数据
  * （同一张 playback_state 表），在 Infuse 里点过的这里立刻能看到。已看态由
- * 对勾自己的实心绿底表达，不再另写一行「已看完」；只有看过不止一次时才在
+ * 对勾自己变绿表达，不再另写一行「已看完」；只有看过不止一次时才在
  * 旁边补一句次数。传了 onToggle* 才渲染；影片分享页的访客没有成员身份，
  * 不传就没有这两枚键。
  */
@@ -1077,7 +1069,7 @@ export function PlayAction({
       </button>
 
       {(onToggleFavorite || onTogglePlayed) && (
-        <div className="flex items-center gap-2.5 max-md:w-full">
+        <div className="flex items-center gap-2.5">
           {onToggleFavorite && (
             <Tooltip
               content={favorite ? `取消收藏${favoriteLabel}` : `收藏${favoriteLabel}`}
@@ -1089,9 +1081,12 @@ export function PlayAction({
                 disabled={marking}
                 aria-pressed={Boolean(favorite)}
                 aria-label={favorite ? "取消收藏" : "收藏"}
-                className={`${MARK_BUTTON_BASE} ${favorite ? MARK_TONE_FAVORITE : MARK_TONE_IDLE}`}
+                className={MARK_BUTTON_CLASS}
               >
-                <HeartIcon className="size-5" fill={favorite ? "currentColor" : "none"} />
+                <HeartIcon
+                  className={favorite ? "size-5 text-[var(--danger)]" : "size-5"}
+                  fill={favorite ? "currentColor" : "none"}
+                />
                 {/* 窄屏没有悬停提示，按钮自己带文字；文字随状态变，一眼知道现在是什么 */}
                 <span className="text-ui font-medium md:hidden">{favorite ? "已收藏" : "收藏"}</span>
               </button>
@@ -1105,9 +1100,13 @@ export function PlayAction({
                 disabled={marking}
                 aria-pressed={finished}
                 aria-label={finished ? "标记为未看" : "标记为已看"}
-                className={`${MARK_BUTTON_BASE} ${finished ? MARK_TONE_PLAYED : MARK_TONE_IDLE}`}
+                className={MARK_BUTTON_CLASS}
               >
-                <CheckIcon className="size-5 stroke-[2.4]" />
+                <CheckIcon
+                  className={
+                    finished ? "size-5 stroke-[2.4] text-[var(--ok)]" : "size-5 stroke-[2.4]"
+                  }
+                />
                 <span className="text-ui font-medium md:hidden">
                   {finished ? "已看完" : "标为已看"}
                 </span>
@@ -1133,7 +1132,7 @@ export function PlayAction({
         </div>
       )}
 
-      {/* 已看态已由对勾的实心绿底表达；只有看过不止一次才值得多说一句 */}
+      {/* 已看态已由对勾变绿表达；只有看过不止一次才值得多说一句 */}
       {finished && watched && watched.play_count > 1 && (
         <p className="tnum text-caption text-white/55">看过 {watched.play_count} 次</p>
       )}

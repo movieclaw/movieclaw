@@ -363,7 +363,7 @@ def test_favorites_and_played_end_to_end(stack) -> None:  # noqa: PLR0915
         expect(page.get_by_role("button", name="标记为未看")).to_have_attribute(
             "aria-pressed", "true"
         )
-        # 已看态由对勾自己的实心绿底表达（不再另写「已看完」）；播放键改为重播
+        # 已看态由对勾变绿表达（不再另写「已看完」）；播放键改为重播
         expect(page.get_by_role("button", name=re.compile("^重新播放"))).to_be_visible()
         _eventually(lambda: jf_user_data(movie_1)["Played"], True)
         resume = api(page, "get", f"/playback/resume?media_item_id={movie_1}")["data"]
