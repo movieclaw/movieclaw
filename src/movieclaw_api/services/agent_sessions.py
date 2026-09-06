@@ -87,9 +87,15 @@ class SessionHeader(BaseModel):
 class SessionMessageEntry(BaseModel):
     """JSONL 消息行：信封 + LLM API 原样消息。
 
-    ``model / usage / finish_reason`` 仅 assistant 消息携带（运行元数据，
+    ``usage / finish_reason`` 仅 assistant 消息携带（运行元数据，
     不属于 API message 本身，故放信封层）。``finish_reason`` 约定含
     ``"aborted"``：运行被取消时由收尾逻辑写入。
+
+    ``model`` 两种角色：assistant 行是供应商回报的实际模型 id；user 行是
+    本轮请求的模型引用（对话框选择器的值：裸 id 或「实例名/模型id」，
+    None = 默认模型）。会话的「当前模型」= 最近一条 user 行的引用，续聊
+    与手动压缩都沿用它——不能用 assistant 行反推：供应商回报的 id 可能
+    带日期后缀、也丢了实例归属，同 id 在多个实例时会路由错家。
     """
 
     type: Literal["message"] = "message"
@@ -219,6 +225,19 @@ def latest_user_thinking_level(
     for entry in reversed(entries):
         if isinstance(entry, SessionMessageEntry) and entry.message.role == "user":
             return entry.thinking_level
+    return None
+
+
+def latest_user_model(
+    entries: list[SessionMessageEntry | SessionCompactionEntry | SessionHandoffEntry],
+) -> str | None:
+    """会话当前生效的模型引用：最近一条 user 行的信封值（None = 默认模型）。
+
+    与 latest_user_thinking_level 同一口径：续聊未显式选模型时沿用它。
+    """
+    for entry in reversed(entries):
+        if isinstance(entry, SessionMessageEntry) and entry.message.role == "user":
+            return entry.model
     return None
 
 

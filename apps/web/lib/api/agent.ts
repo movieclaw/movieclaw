@@ -119,6 +119,8 @@ export interface SessionMessageEntry {
   finish_reason?: string | null;
   /** user 消息生效的思维链档位；null/缺省 = 模型默认 */
   thinking_level?: string | null;
+  /** 注：user 行的 model 是本轮请求的模型引用（null/缺省 = 默认模型），
+   *  assistant 行的 model 是供应商回报的实际模型 id */
 }
 
 /** 会话详情里的一条压缩行；replacement_history 是续聊所用的完整替代上下文。 */
@@ -210,16 +212,20 @@ export async function startSession(
   sessionId?: string,
   attachments?: string[],
   thinkingLevel?: string,
+  model?: string,
 ): Promise<{ sessionId: string; messageId: string }> {
   const body: {
     content: string;
     session_id?: string;
     attachments?: string[];
     thinking_level?: string;
+    model?: string;
   } = { content };
   if (sessionId) body.session_id = sessionId;
   if (attachments && attachments.length > 0) body.attachments = attachments;
   if (thinkingLevel) body.thinking_level = thinkingLevel;
+  // 模型引用与档位同款三态：不传沿用会话上一条；"default" 清回默认；其余为显式引用
+  if (model) body.model = model;
   const response = await request<ApiEnvelope<{ session_id: string; message_id: string }>>(
     "/sessions",
     {

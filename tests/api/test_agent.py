@@ -97,9 +97,14 @@ def parse_sse(body: str) -> list[tuple[int, str, dict]]:
 
 
 def configure_provider(c) -> None:
-    c.put(
-        "/api/v1/llm/provider",
-        json={"provider_type": "bailian", "api_key": "sk-t", "default_model": "qwen3.7-max"},
+    c.post(
+        "/api/v1/llm/providers",
+        json={
+            "name": "百炼",
+            "provider_type": "bailian",
+            "api_key": "sk-t",
+            "default_model": "qwen3.7-max",
+        },
     )
 
 
@@ -136,7 +141,7 @@ def test_start_streams_agent_events(client) -> None:
     ]
     assert [event_id for event_id, _, _ in events] == [1, 2, 3, 4, 5]
     start = events[0][2]
-    assert start["provider"] == "阿里云百炼"
+    assert start["provider"] == "百炼"  # agent_start 带回的是实例名（路由键），不再是预设显示名
     assert start["model"] == "qwen3.7-max"
     done = events[-1][2]["result"]
     assert done["text"] == "已找到资源"
@@ -173,9 +178,10 @@ def test_send_message_rebuilds_history_from_transcript(client, monkeypatch) -> N
     monkeypatch.setitem(PROTOCOLS, "openai_chat", _CaptureProtocol)
     # 进程级 _runtime_router 按配置指纹缓存协议客户端；换一个 Key 使指纹
     # 变化，强制用本测试替换后的协议类重建
-    client.put(
-        "/api/v1/llm/provider",
+    client.post(
+        "/api/v1/llm/providers",
         json={
+            "name": "百炼",
             "provider_type": "bailian",
             "api_key": "sk-capture-history",
             "default_model": "qwen3.7-max",
@@ -281,9 +287,10 @@ def test_manual_compact_endpoint(client, monkeypatch) -> None:
                 yield e
 
     monkeypatch.setitem(PROTOCOLS, "openai_chat", _CompactAwareProtocol)
-    client.put(
-        "/api/v1/llm/provider",
+    client.post(
+        "/api/v1/llm/providers",
         json={
+            "name": "百炼",
             "provider_type": "bailian",
             "api_key": "sk-manual-compact",
             "default_model": "qwen3.7-max",
@@ -337,9 +344,10 @@ def test_stop_session_ends_with_cancelled_event(client, monkeypatch) -> None:
             yield  # pragma: no cover - 只为保持 async generator 形态
 
     monkeypatch.setitem(PROTOCOLS, "openai_chat", _BlockingProtocol)
-    client.put(
-        "/api/v1/llm/provider",
+    client.post(
+        "/api/v1/llm/providers",
         json={
+            "name": "百炼",
             "provider_type": "bailian",
             "api_key": "sk-cancel-run",
             "default_model": "qwen3.7-max",

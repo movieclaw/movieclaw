@@ -124,11 +124,15 @@ library subtitles delete
 library subtitles generate
 library subtitles preview-generation
 library update
+llm models
 llm presets
-llm provider delete
-llm provider set
-llm provider show
-llm provider verify
+llm providers create
+llm providers default
+llm providers delete
+llm providers list
+llm providers show
+llm providers update
+llm providers verify
 logs days
 logs read
 members avatar download

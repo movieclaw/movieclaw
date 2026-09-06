@@ -48,8 +48,9 @@ async def _reset_stale_verifying() -> None:
         count = await CredentialRepository(session).reset_stale_verifying()
         if count:
             logger.info("已重置 %d 条卡在验证中的站点配置为待验证", count)
-        if await LlmProviderRepository(session).reset_stale_verifying():
-            logger.info("已重置卡在验证中的 LLM 供应商配置为待验证")
+        count = await LlmProviderRepository(session).reset_stale_verifying()
+        if count:
+            logger.info("已重置 %d 个卡在验证中的 LLM 供应商实例为待验证", count)
 
 
 async def _encrypt_plaintext_credentials() -> None:

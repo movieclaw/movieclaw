@@ -63,7 +63,13 @@ class SessionStartPayload(BaseModel):
         max_length=64,
         description="已有会话编号；留空时创建新会话",
     )
-    model: str = Field(default="", description="模型 ID；留空时使用默认供应商的默认模型")
+    model: str = Field(
+        default="",
+        description=(
+            "模型引用：裸模型 id，或同 id 在多个实例时的「实例名/模型id」（见 llm.models）；"
+            "传 default 显式用默认实例的默认模型；留空时沿用会话最近一条消息的模型（新会话即默认）"
+        ),
+    )
     thinking_level: str | None = Field(
         default=None,
         description=(
@@ -140,7 +146,10 @@ class SessionRetryPayload(BaseModel):
             "空数组显式去掉图片，非空数组替换为新附件"
         ),
     )
-    model: str = Field(default="", description="模型 ID；留空时使用默认供应商的默认模型")
+    model: str = Field(
+        default="",
+        description="模型引用（同 session.start）；传 default 清回默认模型，留空沿用原消息的模型",
+    )
     thinking_level: str | None = Field(
         default=None,
         description="思维链强度档位；传 default 清回模型默认，不传沿用原消息的档位",
@@ -246,7 +255,12 @@ class SessionMessageEntryView(BaseModel):
     parent_id: str | None = Field(default=None, description="上一条轨迹 entry 的编号")
     timestamp: str = Field(description="消息写入时间（ISO 8601 UTC）")
     message: SessionMessageView = Field(description="LLM 协议格式的完整消息")
-    model: str | None = Field(default=None, description="assistant 消息实际使用的模型")
+    model: str | None = Field(
+        default=None,
+        description=(
+            "assistant 行：实际使用的模型 id；user 行：本轮请求的模型引用（null = 默认模型）"
+        ),
+    )
     usage: TokenUsage | None = Field(default=None, description="assistant 消息的 token 用量")
     finish_reason: str | None = Field(
         default=None, description="assistant 消息的模型结束原因"

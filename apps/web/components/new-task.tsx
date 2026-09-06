@@ -9,7 +9,7 @@ import { Composer } from "@/components/composer";
 import { LlmSetupNotice, useLlmConfigured } from "@/components/llm-gate";
 import type { ComposerImage } from "@/lib/agent-attachments";
 import { useAgentConversations } from "@/lib/agent-conversations";
-import { useDefaultModelThinkingLevels } from "@/lib/llm-thinking";
+import { resolveModelOption, useLlmModelOptions } from "@/lib/llm-thinking";
 
 /* —— 新任务（路由 /）：仅一个居中输入框，大图氛围页直出。
      发起任务 = 创建会话并立即跳转到会话页（/sessions/[id]），流式过程在会话页渲染。 —— */
@@ -19,7 +19,10 @@ export function NewTask() {
   const [input, setInput] = useState("");
   // 新会话没有可沿用的历史，null 即「默认」；用户切换后显式随消息提交
   const [thinkingChoice, setThinkingChoice] = useState<string | null>(null);
-  const thinkingLevels = useDefaultModelThinkingLevels();
+  const [modelChoice, setModelChoice] = useState<string | null>(null);
+  const modelOptions = useLlmModelOptions();
+  // 档位菜单随所选模型变化（未选即全局默认模型的菜单）
+  const thinkingLevels = resolveModelOption(modelOptions, modelChoice)?.thinking_levels ?? [];
   // 创建会话需等服务端返回 session_id 才能跳转；等待期锁住输入框
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -38,6 +41,7 @@ export function NewTask() {
         previewUrl: image.previewUrl,
       })),
       thinkingChoice ?? undefined,
+      modelChoice ?? undefined,
     )
       .then((id) => {
         router.push(`/sessions/${id}` as Route);
@@ -59,6 +63,13 @@ export function NewTask() {
             onSubmit={submit}
             imageUpload
             skillPicker
+            modelOptions={modelOptions}
+            modelValue={modelChoice}
+            onModelChange={(ref) => {
+              setModelChoice(ref);
+              // 换模型后旧档位可能不在新菜单里，清回默认
+              setThinkingChoice(null);
+            }}
             thinkingLevels={thinkingLevels}
             thinkingValue={thinkingChoice}
             onThinkingChange={setThinkingChoice}

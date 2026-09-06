@@ -547,9 +547,10 @@ def test_followup_message_builds_history_from_transcript(client, monkeypatch) ->
     monkeypatch.setitem(PROTOCOLS, "openai_chat", _CaptureProtocol)
     # 进程级 _runtime_router 按配置指纹缓存协议客户端；换一个 Key 使指纹
     # 变化，强制用本测试替换后的协议类重建（同 test_agent 的既有做法）
-    client.put(
-        "/api/v1/llm/provider",
+    client.post(
+        "/api/v1/llm/providers",
         json={
+            "name": "百炼",
             "provider_type": "bailian",
             "api_key": "sk-session-resume",
             "default_model": "qwen3.7-max",
@@ -586,9 +587,10 @@ def test_fork_api_creates_independent_session_and_resumes_snapshot(client, monke
                 yield event
 
     monkeypatch.setitem(PROTOCOLS, "openai_chat", _CaptureProtocol)
-    client.put(
-        "/api/v1/llm/provider",
+    client.post(
+        "/api/v1/llm/providers",
         json={
+            "name": "百炼",
             "provider_type": "bailian",
             "api_key": "sk-session-fork",
             "default_model": "qwen3.7-max",
@@ -664,9 +666,10 @@ def test_fork_api_rejects_missing_running_and_empty_source(client, monkeypatch) 
 
     monkeypatch.setitem(PROTOCOLS, "openai_chat", _GatedProtocol)
     # 进程级 _runtime_router 按配置指纹缓存协议客户端；换一个 Key 强制重建
-    client.put(
-        "/api/v1/llm/provider",
+    client.post(
+        "/api/v1/llm/providers",
         json={
+            "name": "百炼",
             "provider_type": "bailian",
             "api_key": "sk-fork-running",
             "default_model": "qwen3.7-max",
@@ -744,9 +747,10 @@ def test_retry_replaces_user_message_and_later_context(client, monkeypatch) -> N
                 yield event
 
     monkeypatch.setitem(PROTOCOLS, "openai_chat", _CaptureProtocol)
-    client.put(
-        "/api/v1/llm/provider",
+    client.post(
+        "/api/v1/llm/providers",
         json={
+            "name": "百炼",
             "provider_type": "bailian",
             "api_key": "sk-retry",
             "default_model": "qwen3.7-max",

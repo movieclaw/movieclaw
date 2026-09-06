@@ -101,7 +101,7 @@ async def start_im_binding(
     前置:必须已配置 AI 模型(与微信绑定同口径)。
     """
     channel_id = _require_channel(channel)
-    if await LlmProviderRepository(session).get() is None:
+    if not await LlmProviderRepository(session).has_any():
         raise BadRequestException(
             "绑定需要先完成 AI 模型配置:请先在「设置 → AI 模型」接入模型供应商,再进行绑定"
         )

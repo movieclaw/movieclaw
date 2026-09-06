@@ -38,9 +38,10 @@ class _CapturingProtocol(_StreamProtocol):
 def configure_provider(client) -> None:
     """接入供应商。api_key 每次唯一：LlmRouter 是进程级单例、协议客户端按
     配置指纹缓存，复用其它测试文件的指纹会拿到用旧协议类构建的缓存客户端。"""
-    r = client.put(
-        "/api/v1/llm/provider",
+    r = client.post(
+        "/api/v1/llm/providers",
         json={
+            "name": "百炼",
             "provider_type": "bailian",
             "api_key": f"sk-skill-{uuid.uuid4().hex[:8]}",
             "default_model": "qwen3.7-max",

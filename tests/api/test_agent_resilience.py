@@ -290,9 +290,14 @@ def _make_client(monkeypatch, protocol_cls) -> TestClient:
 
 def _configure_provider(client: TestClient, api_key: str) -> None:
     # api_key 进路由器缓存指纹：每个测试用独立 Key，强制用本测试的协议类重建
-    client.put(
-        "/api/v1/llm/provider",
-        json={"provider_type": "bailian", "api_key": api_key, "default_model": "qwen3.7-max"},
+    client.post(
+        "/api/v1/llm/providers",
+        json={
+            "name": "百炼",
+            "provider_type": "bailian",
+            "api_key": api_key,
+            "default_model": "qwen3.7-max",
+        },
     )
 
 

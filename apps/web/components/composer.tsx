@@ -13,7 +13,8 @@ import {
 } from "@/lib/agent-attachments";
 import { ComposerEditor, type ComposerEditorHandle } from "@/components/composer-editor";
 import { listSkills, type AgentSkill } from "@/lib/api/agent";
-import { THINKING_LEVEL_LABELS } from "@/lib/llm-thinking";
+import type { LlmModelOption } from "@/lib/api/llm";
+import { THINKING_LEVEL_LABELS, resolveModelOption } from "@/lib/llm-thinking";
 import { useBackdrop } from "@/lib/backdrop";
 import { LiquidGlassIconButton } from "@/vendor/liquid-glass";
 
@@ -23,7 +24,7 @@ import { LiquidGlassIconButton } from "@/vendor/liquid-glass";
  *   ┌─ 附件托盘（有附件才出现）：小型 chip（缩略图 + 名字 + ×），不放大图 ─┐
  *   ├─ 输入区：无边框 textarea（Codex 风格，固定 2 行高框内滚动）        ─┤
  *   └─ 工具行（单行，永不换行/reflow）：                                  ─┘
- *        左簇：＋（图片/技能菜单） · 思考档位（ghost pill，向上弹出菜单）
+ *        左簇：＋（图片/技能菜单） · 模型（ghost pill） · 思考档位（ghost pill）
  *        右簇：回车提示 · 发送/停止
  *
  * 三条从 maka 学来的原则：
@@ -46,6 +47,12 @@ export interface ComposerProps {
   /** 开启技能选择：加号菜单里列出可显式调用的技能，选中在光标处插入
    * /skill:名字 占位符（服务端发送时展开，docs/design/agent-skills.md §9） */
   skillPicker?: boolean;
+  /** 可选模型清单（GET /llm/models 拍平结果）；空/缺省 = 隐藏模型选择器 */
+  modelOptions?: LlmModelOption[];
+  /** 当前选中的模型引用（选项的 ref）；null = 默认（默认实例的默认模型） */
+  modelValue?: string | null;
+  /** 模型切换回调；不传则不渲染选择器 */
+  onModelChange?: (ref: string | null) => void;
   /** 当前模型的思考档位菜单；空/缺省 = 隐藏档位选择器（模型强度不可控） */
   thinkingLevels?: string[];
   /** 当前选中的思考档位；null = 默认（模型自身行为） */
@@ -73,6 +80,9 @@ export function Composer({
   onSubmit,
   imageUpload = false,
   skillPicker = false,
+  modelOptions,
+  modelValue = null,
+  onModelChange,
   thinkingLevels,
   thinkingValue = null,
   onThinkingChange,
@@ -225,6 +235,14 @@ export function Composer({
               disabled={disabled}
               onPickImage={() => fileInputRef.current?.click()}
               onPickSkill={insertSkill}
+            />
+          )}
+          {onModelChange && (modelOptions?.length ?? 0) > 0 && (
+            <ModelMenu
+              options={modelOptions ?? []}
+              value={modelValue}
+              disabled={disabled}
+              onChange={onModelChange}
             />
           )}
           {onThinkingChange && (thinkingLevels?.length ?? 0) > 0 && (
@@ -478,22 +496,32 @@ function ComposerPlusMenu({
   );
 }
 
-/* —— 思考档位：ghost pill + 向上弹出的单选菜单（maka quiet-menu 的思路） ——
- * 不用原生 <select>：弹层要向上、选中项要打勾、pill 文案要与菜单项分离
- * （pill 只显示当前档，菜单里才是完整清单），原生控件三样都做不到。
- * 弹层 Portal 到 body + fixed 定位（同 user-menu 折叠态）：composer 包在
- * GlassPanel 里，面板 overflow:hidden 会把向上的弹层裁掉。 */
+/* —— 安静菜单：ghost pill + 向上弹出的单选列表（maka quiet-menu 的思路） ——
+ * 模型选择与思考档位共用。不用原生 <select>：弹层要向上、选中项要打勾、
+ * pill 文案要与菜单项分离（pill 只显示当前项，菜单里才是完整清单），原生
+ * 控件三样都做不到。弹层 Portal 到 body + fixed 定位（同 user-menu 折叠态）：
+ * composer 包在 GlassPanel 里，面板 overflow:hidden 会把向上的弹层裁掉。 */
 
-function ThinkingLevelMenu({
-  levels,
-  value,
+interface QuietMenuOption {
+  key: string;
+  label: string;
+  selected: boolean;
+  onSelect: () => void;
+}
+
+function QuietMenu({
+  ariaLabel,
+  pillLabel,
+  options,
   disabled,
-  onChange,
+  wide = false,
 }: {
-  levels: string[];
-  value: string | null;
+  ariaLabel: string;
+  pillLabel: string;
+  options: QuietMenuOption[];
   disabled?: boolean;
-  onChange: (level: string | null) => void;
+  /** 模型清单可能很长：弹层放宽并限高滚动 */
+  wide?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -528,62 +556,122 @@ function ThinkingLevelMenu({
     setOpen((v) => !v);
   };
 
+  const menu = open && menuPos && (
+    <div
+      ref={menuRef}
+      role="listbox"
+      aria-label={ariaLabel}
+      className={`menu-surface p-1.5 ${
+        wide ? "max-h-72 min-w-[12rem] max-w-[22rem] overflow-y-auto" : "min-w-[8rem]"
+      }`}
+      // .menu-surface 自带 position:relative，须整体覆盖为 fixed
+      style={{ position: "fixed", left: menuPos.left, bottom: menuPos.bottom, zIndex: 50 }}
+    >
+      {options.map((option) => (
+        <button
+          key={option.key}
+          type="button"
+          role="option"
+          aria-selected={option.selected}
+          title={option.label}
+          onClick={() => {
+            option.onSelect();
+            setOpen(false);
+          }}
+          className={`flex w-full items-center justify-between gap-3 rounded-[10px] px-2.5 py-1.5 text-left text-ui transition-colors hover:bg-white/[0.06] ${
+            option.selected ? "text-[var(--text)]" : "text-[var(--text-muted)]"
+          }`}
+        >
+          <span className="min-w-0 truncate">{option.label}</span>
+          {option.selected && <span aria-hidden>✓</span>}
+        </button>
+      ))}
+    </div>
+  );
+
+  return (
+    <div ref={rootRef} className="relative min-w-0 shrink">
+      {menu && createPortal(menu, document.body)}
+      <button
+        type="button"
+        aria-label={`${ariaLabel}：${pillLabel}`}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        disabled={disabled}
+        onClick={toggleOpen}
+        className="flex h-8 max-w-full items-center gap-1 rounded-xl px-2.5 text-caption text-[var(--text-muted)] transition-colors hover:bg-[var(--glass-fill-hover)] hover:text-[var(--text)] max-md:h-11"
+      >
+        <span className="min-w-0 truncate">{pillLabel}</span>
+        <ChevronRightIcon
+          className={`size-3 shrink-0 transition-transform ${open ? "rotate-[-90deg]" : "rotate-90"}`}
+        />
+      </button>
+    </div>
+  );
+}
+
+/* —— 模型选择：清单由服务端拍平，pill 只显示当前项的 label。
+ * 未显式选择（value=null）时显示全局默认项；同 id 跨实例冲突的项 label 已带
+ * 「（实例名）」，不冲突的就是裸模型 id——前端不做去重判断。 */
+
+function ModelMenu({
+  options,
+  value,
+  disabled,
+  onChange,
+}: {
+  options: LlmModelOption[];
+  value: string | null;
+  disabled?: boolean;
+  onChange: (ref: string | null) => void;
+}) {
+  const current = resolveModelOption(options, value);
+  return (
+    <QuietMenu
+      ariaLabel="模型"
+      pillLabel={current?.label ?? "模型"}
+      disabled={disabled}
+      wide
+      options={options.map((option) => ({
+        key: option.ref,
+        label: option.label,
+        selected: option.ref === current?.ref,
+        // 选回全局默认项即「默认」（null）：续聊沿用、设置页改默认后自动跟随
+        onSelect: () => onChange(option.is_default ? null : option.ref),
+      }))}
+    />
+  );
+}
+
+/* —— 思考档位：pill 只显示当前档，菜单里是「默认 + 该模型声明的档位」。 —— */
+
+function ThinkingLevelMenu({
+  levels,
+  value,
+  disabled,
+  onChange,
+}: {
+  levels: string[];
+  value: string | null;
+  disabled?: boolean;
+  onChange: (level: string | null) => void;
+}) {
   const currentLabel = value === null ? "默认" : (THINKING_LEVEL_LABELS[value] ?? value);
   const options: { value: string | null; label: string }[] = [
     { value: null, label: "默认" },
     ...levels.map((level) => ({ value: level, label: THINKING_LEVEL_LABELS[level] ?? level })),
   ];
-
-  const menu = open && menuPos && (
-    <div
-      ref={menuRef}
-      role="listbox"
-      aria-label="思维链强度"
-      className="menu-surface min-w-[8rem] p-1.5"
-      // .menu-surface 自带 position:relative，须整体覆盖为 fixed
-      style={{ position: "fixed", left: menuPos.left, bottom: menuPos.bottom, zIndex: 50 }}
-    >
-      {options.map((option) => {
-        const selected = option.value === value;
-        return (
-          <button
-            key={option.value ?? "default"}
-            type="button"
-            role="option"
-            aria-selected={selected}
-            onClick={() => {
-              onChange(option.value);
-              setOpen(false);
-            }}
-            className={`flex w-full items-center justify-between gap-3 rounded-[10px] px-2.5 py-1.5 text-left text-ui transition-colors hover:bg-white/[0.06] ${
-              selected ? "text-[var(--text)]" : "text-[var(--text-muted)]"
-            }`}
-          >
-            {option.label}
-            {selected && <span aria-hidden>✓</span>}
-          </button>
-        );
-      })}
-    </div>
-  );
-
   return (
-    <div ref={rootRef} className="relative shrink-0">
-      {menu && createPortal(menu, document.body)}
-      <button
-        type="button"
-        aria-label={`思维链强度：${currentLabel}`}
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        disabled={disabled}
-        onClick={toggleOpen}
-        className="flex h-8 items-center gap-1 rounded-xl px-2.5 text-caption text-[var(--text-muted)] transition-colors hover:bg-[var(--glass-fill-hover)] hover:text-[var(--text)] max-md:h-11"
-      >
-        思考 · {currentLabel}
-        <ChevronRightIcon
-          className={`size-3 transition-transform ${open ? "rotate-[-90deg]" : "rotate-90"}`}
-        />
-      </button>
-    </div>
+    <QuietMenu
+      ariaLabel="思维链强度"
+      pillLabel={`思考 · ${currentLabel}`}
+      disabled={disabled}
+      options={options.map((option) => ({
+        key: option.value ?? "default",
+        label: option.label,
+        selected: option.value === value,
+        onSelect: () => onChange(option.value),
+      }))}
+    />
   );
 }

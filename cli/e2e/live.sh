@@ -28,7 +28,7 @@ has() {
 echo "— 只读查询（生成层）"
 for c in "library list" "jobs list" "dl list" "site list" "subscriptions list" \
          "app show" "net show" "scrape show" "notices list" "rules list" \
-         "llm provider show" "transcode status" "ui prefs show" "auth me" \
+         "llm providers list" "transcode status" "ui prefs show" "auth me" \
          "logs days" "watch list" "webhook show" "appearance show" \
          "discover region show" "members list"; do
   ck 0 "mclaw $c" $M $c -o json

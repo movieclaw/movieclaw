@@ -29,7 +29,7 @@ import { isMediaCardsTool } from "@/lib/agent-media-cards";
 import { parseSkillTokens } from "@/lib/agent-skills";
 import { useSkillNames } from "@/lib/skill-names";
 import { sessionAttachmentUrl } from "@/lib/api/agent";
-import { useDefaultModelThinkingLevels } from "@/lib/llm-thinking";
+import { resolveModelOption, useLlmModelOptions } from "@/lib/llm-thinking";
 import { usePageChrome } from "@/lib/page-chrome";
 import { usePageTitle } from "@/lib/use-page-title";
 
@@ -64,7 +64,9 @@ export function AgentConversationView({ conversationId }: { conversationId: stri
   // 上一条）；null = 显式「默认」；string = 显式档位。展示值回落到会话最近
   // 一轮的档位（转录信封回放）。
   const [thinkingChoice, setThinkingChoice] = useState<string | null | undefined>(undefined);
-  const thinkingLevels = useDefaultModelThinkingLevels();
+  // 模型引用同款三态；展示值回落到会话最近一轮的引用（转录信封回放）
+  const [modelChoice, setModelChoice] = useState<string | null | undefined>(undefined);
+  const modelOptions = useLlmModelOptions();
   const [retryTarget, setRetryTarget] = useState<{
     conversationId: string;
     messageId: string;
@@ -146,6 +148,12 @@ export function AgentConversationView({ conversationId }: { conversationId: stri
     [...conversation.turns].reverse().find((t) => t.thinkingLevel !== undefined)
       ?.thinkingLevel ?? null;
   const displayedThinking = thinkingChoice === undefined ? sessionThinkingLevel : thinkingChoice;
+  const sessionModelRef =
+    [...conversation.turns].reverse().find((t) => t.modelRef !== undefined)?.modelRef ?? null;
+  const displayedModel = modelChoice === undefined ? sessionModelRef : modelChoice;
+  // 档位菜单随当前生效的模型变化（未选即全局默认模型的菜单）
+  const thinkingLevels =
+    resolveModelOption(modelOptions, displayedModel)?.thinking_levels ?? [];
 
   function submit(text: string, images: ComposerImage[]) {
     if (!activeRetryTarget) {
@@ -160,6 +168,7 @@ export function AgentConversationView({ conversationId }: { conversationId: stri
         })),
         // 没动过选择器就不传（服务端沿用）；动过则显式传档位或 "default"
         thinkingChoice === undefined ? undefined : (thinkingChoice ?? "default"),
+        modelChoice === undefined ? undefined : (modelChoice ?? "default"),
       );
       return;
     }
@@ -272,6 +281,13 @@ export function AgentConversationView({ conversationId }: { conversationId: stri
             // 无处安放，藏起入口比静默丢弃诚实
             imageUpload={!activeRetryTarget}
             skillPicker
+            modelOptions={modelOptions}
+            modelValue={displayedModel}
+            onModelChange={(ref) => {
+              setModelChoice(ref);
+              // 换模型后旧档位可能不在新菜单里，显式清回默认
+              setThinkingChoice(null);
+            }}
             thinkingLevels={thinkingLevels}
             thinkingValue={displayedThinking}
             onThinkingChange={setThinkingChoice}

@@ -70,8 +70,13 @@ export interface LlmPreset {
   models: LlmModelInfo[];
 }
 
-/** 当前配置的对外视图（见 schemas.llm.LlmProviderView，脱敏无 API Key）。 */
+/** 一个已接入的供应商实例（见 schemas.llm.LlmProviderView，脱敏无 API Key）。 */
 export interface LlmProviderConfig {
+  id: number;
+  /** 实例名（全局唯一，「实例名/模型id」路由引用的前半段） */
+  name: string;
+  /** 全局默认实例：IM 通道、字幕翻译等没有模型选择器的场景都走它 */
+  is_default: boolean;
   provider_type: LlmProviderType;
   base_url: string | null;
   /** 自定义 User-Agent；null 表示用 SDK 自带 UA */
@@ -90,8 +95,10 @@ export interface LlmProviderConfig {
   updated_at: string;
 }
 
-/** 保存配置的请求体（见 schemas.llm.LlmProviderPayload）。 */
+/** 新增 / 编辑实例的请求体（见 schemas.llm.LlmProviderPayload）。 */
 export interface LlmProviderPayload {
+  /** 实例名（全局唯一，不含斜杠） */
+  name: string;
   provider_type: LlmProviderType;
   base_url?: string | null;
   /** 自定义 User-Agent：留空（null）使用 SDK 自带 UA */
@@ -107,31 +114,71 @@ export function listLlmPresets(init?: RequestInit): Promise<LlmPreset[]> {
   return unwrap(request<ApiEnvelope<LlmPreset[]>>("/llm/presets", init));
 }
 
-/** 获取当前配置；尚未配置时返回 null（用于轮询连接测试进度）。 */
-export function getLlmProvider(init?: RequestInit): Promise<LlmProviderConfig | null> {
-  return unwrap(request<ApiEnvelope<LlmProviderConfig | null>>("/llm/provider", init));
+/** 对话框模型选择器的一个选项（见 schemas.llm.LlmModelOptionView）。
+ *  同一模型 id 只在一个实例里有：ref 与 label 都是裸 id；出现在多个实例里：
+ *  ref 为「实例名/模型id」精确路由，label 为「模型id（实例名）」。 */
+export interface LlmModelOption {
+  ref: string;
+  label: string;
+  model_id: string;
+  provider_id: number;
+  provider_name: string;
+  /** 全局默认（默认实例的默认模型），清单里恰有一个 */
+  is_default: boolean;
+  /** 该模型的思考档位菜单；空数组 = 隐藏档位选择器 */
+  thinking_levels: string[];
 }
 
-/** 保存配置（单例 upsert，保存后后端异步测试连接）。 */
-export function saveLlmProvider(payload: LlmProviderPayload): Promise<LlmProviderConfig> {
+/** 列出已接入的实例（默认实例在前）；一个都没有时为空数组。 */
+export function listLlmProviders(init?: RequestInit): Promise<LlmProviderConfig[]> {
+  return unwrap(request<ApiEnvelope<LlmProviderConfig[]>>("/llm/providers", init));
+}
+
+/** 对话框可选的全部模型（跨实例，默认实例在前）。 */
+export function listLlmModels(init?: RequestInit): Promise<LlmModelOption[]> {
+  return unwrap(request<ApiEnvelope<LlmModelOption[]>>("/llm/models", init));
+}
+
+/** 接入一个实例（保存后后端异步测试连接；第一个实例自动成为默认）。 */
+export function createLlmProvider(payload: LlmProviderPayload): Promise<LlmProviderConfig> {
   return unwrap(
-    request<ApiEnvelope<LlmProviderConfig>>("/llm/provider", {
+    request<ApiEnvelope<LlmProviderConfig>>("/llm/providers", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  );
+}
+
+/** 修改一个实例（整体覆盖，保存后后端异步测试连接）。 */
+export function updateLlmProvider(
+  id: number,
+  payload: LlmProviderPayload,
+): Promise<LlmProviderConfig> {
+  return unwrap(
+    request<ApiEnvelope<LlmProviderConfig>>(`/llm/providers/${id}`, {
       method: "PUT",
       body: JSON.stringify(payload),
     }),
   );
 }
 
-/** 手动重新测试一次连接。 */
-export function reverifyLlmProvider(): Promise<LlmProviderConfig> {
+/** 手动重新测试一个实例的连接。 */
+export function reverifyLlmProvider(id: number): Promise<LlmProviderConfig> {
   return unwrap(
-    request<ApiEnvelope<LlmProviderConfig>>("/llm/provider/verify", { method: "POST" }),
+    request<ApiEnvelope<LlmProviderConfig>>(`/llm/providers/${id}/verify`, { method: "POST" }),
   );
 }
 
-/** 删除配置。 */
-export function deleteLlmProvider(): Promise<Record<string, never>> {
+/** 把一个实例设为全局默认。 */
+export function setDefaultLlmProvider(id: number): Promise<LlmProviderConfig> {
   return unwrap(
-    request<ApiEnvelope<Record<string, never>>>("/llm/provider", { method: "DELETE" }),
+    request<ApiEnvelope<LlmProviderConfig>>(`/llm/providers/${id}/default`, { method: "POST" }),
+  );
+}
+
+/** 删除一个实例（删除的是默认时，默认自动让给剩下最早添加的）。 */
+export function deleteLlmProvider(id: number): Promise<Record<string, never>> {
+  return unwrap(
+    request<ApiEnvelope<Record<string, never>>>(`/llm/providers/${id}`, { method: "DELETE" }),
   );
 }

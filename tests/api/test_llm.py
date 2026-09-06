@@ -1,8 +1,8 @@
-"""LLM 供应商配置接口的端到端测试。
+"""LLM 供应商实例接口的端到端测试。
 
-覆盖：单例 upsert 语义、保存后异步验证的状态流转、API Key 脱敏与落库
-加密、预设列表、base_url 必填校验。真实协议实现被替换为假协议，
-不发真实请求，使状态流转可确定性断言。
+覆盖：多实例增删改查、默认实例不变量、保存后异步验证的状态流转、API Key
+脱敏与落库加密、预设列表、base_url 必填校验，以及对话框模型清单的重复 id
+策略。真实协议实现被替换为假协议，不发真实请求，使状态流转可确定性断言。
 """
 from __future__ import annotations
 
@@ -71,22 +71,34 @@ def client(tmp_path, monkeypatch):
 
 
 _PAYLOAD = {
+    "name": "百炼",
     "provider_type": "bailian",
     "api_key": "sk-live-123456",
     "default_model": "qwen3.7-max",
 }
 
 
-def test_get_before_configured_returns_null(client) -> None:
+def _list(c) -> list[dict]:
+    r = c.get("/api/v1/llm/providers")
+    assert r.status_code == 200, r.text
+    return r.json()["data"]
+
+
+def _first(c) -> dict | None:
+    """默认实例（列表首项）；一个都没有时 None。"""
+    rows = _list(c)
+    return rows[0] if rows else None
+
+
+def test_list_before_configured_returns_empty(client) -> None:
     c, _ = client
-    r = c.get("/api/v1/llm/provider")
-    assert r.status_code == 200
-    assert r.json()["data"] is None
+    assert _list(c) == []
+    assert c.get("/api/v1/llm/models").json()["data"] == []
 
 
 def test_save_then_async_verify_active_and_desensitized(client) -> None:
     c, _ = client
-    r = c.put("/api/v1/llm/provider", json=_PAYLOAD)
+    r = c.post("/api/v1/llm/providers", json=_PAYLOAD)
     assert r.status_code == 200
     data = r.json()["data"]
     # 接口立即返回 verifying（同步占位），绝不回传 API Key
@@ -94,7 +106,7 @@ def test_save_then_async_verify_active_and_desensitized(client) -> None:
     assert "api_key" not in data
 
     # TestClient 的 BackgroundTasks 在响应后同步执行完毕 → 再查已是终态
-    detail = c.get("/api/v1/llm/provider").json()["data"]
+    detail = _first(c)
     assert detail["status"] == "active"
     assert detail["usable"] is True
     assert detail["last_error"] is None
@@ -110,7 +122,7 @@ def test_save_then_async_verify_active_and_desensitized(client) -> None:
 
 def test_api_key_encrypted_at_rest(client) -> None:
     c, db_file = client
-    c.put("/api/v1/llm/provider", json=_PAYLOAD)
+    c.post("/api/v1/llm/providers", json=_PAYLOAD)
 
     # 直接读 SQLite 文件核实落库形态：密文带 enc:: 前缀，不含明文
     row = sqlite3.connect(db_file).execute("SELECT api_key FROM llm_provider").fetchone()
@@ -120,8 +132,8 @@ def test_api_key_encrypted_at_rest(client) -> None:
 
 def test_bad_key_marked_failed_with_chinese_error(client) -> None:
     c, _ = client
-    c.put("/api/v1/llm/provider", json={**_PAYLOAD, "api_key": "sk-bad-key"})
-    detail = c.get("/api/v1/llm/provider").json()["data"]
+    c.post("/api/v1/llm/providers", json={**_PAYLOAD, "api_key": "sk-bad-key"})
+    detail = _first(c)
     assert detail["status"] == "failed"
     assert detail["usable"] is False
     assert "连接模型服务失败" in detail["last_error"]
@@ -129,8 +141,8 @@ def test_bad_key_marked_failed_with_chinese_error(client) -> None:
 
 def test_model_list_failure_does_not_affect_verdict(client) -> None:
     c, _ = client
-    c.put("/api/v1/llm/provider", json={**_PAYLOAD, "api_key": "sk-nolist-key"})
-    detail = c.get("/api/v1/llm/provider").json()["data"]
+    c.post("/api/v1/llm/providers", json={**_PAYLOAD, "api_key": "sk-nolist-key"})
+    detail = _first(c)
     # 对话验证通过即 active；模型列表拉不到只是没有提示数据
     assert detail["status"] == "active"
     assert detail["available_models"] is None
@@ -138,6 +150,7 @@ def test_model_list_failure_does_not_affect_verdict(client) -> None:
 
 # 自定义端点的完整请求体：default_model 带齐参数配置
 _COMPAT_PAYLOAD = {
+    "name": "家里的 vLLM",
     "provider_type": "openai_compat",
     "base_url": "http://192.168.1.5:8000/v1",
     "api_key": "sk-vllm",
@@ -153,25 +166,120 @@ _COMPAT_PAYLOAD = {
 }
 
 
-def test_upsert_keeps_single_row(client) -> None:
+def test_multiple_instances_and_default_invariant(client) -> None:
+    """可接入多家；第一个自动成为默认，设为默认可切换，删除默认时让位给最早的。"""
     c, db_file = client
-    c.put("/api/v1/llm/provider", json=_PAYLOAD)
-    c.put("/api/v1/llm/provider", json=_COMPAT_PAYLOAD)
+    first = c.post("/api/v1/llm/providers", json=_PAYLOAD).json()["data"]
+    second = c.post("/api/v1/llm/providers", json=_COMPAT_PAYLOAD).json()["data"]
+    assert first["is_default"] is True
+    assert second["is_default"] is False
     rows = sqlite3.connect(db_file).execute("SELECT COUNT(*) FROM llm_provider").fetchone()
-    assert rows[0] == 1
-    detail = c.get("/api/v1/llm/provider").json()["data"]
+    assert rows[0] == 2
+    # 列表默认实例在前
+    assert [r["name"] for r in _list(c)] == ["百炼", "家里的 vLLM"]
+    detail = _list(c)[1]
     assert detail["provider_type"] == "openai_compat"
     assert detail["base_url"] == "http://192.168.1.5:8000/v1"
     # 自定义模型目录随配置持久化，参数完整回传（设置页下拉框的数据源）
     assert detail["extra_models"][0]["id"] == "my-local-model"
     assert detail["extra_models"][0]["context_window"] == 131072
 
+    # 切换默认
+    r = c.post(f"/api/v1/llm/providers/{second['id']}/default")
+    assert r.status_code == 200
+    assert [(x["name"], x["is_default"]) for x in _list(c)] == [
+        ("家里的 vLLM", True),
+        ("百炼", False),
+    ]
+    # 删除默认 → 让位给剩下最早添加的
+    assert c.delete(f"/api/v1/llm/providers/{second['id']}").status_code == 200
+    assert [(x["name"], x["is_default"]) for x in _list(c)] == [("百炼", True)]
+
+
+def test_duplicate_name_rejected(client) -> None:
+    c, _ = client
+    assert c.post("/api/v1/llm/providers", json=_PAYLOAD).status_code == 200
+    r = c.post("/api/v1/llm/providers", json={**_COMPAT_PAYLOAD, "name": "百炼"})
+    assert r.status_code == 409
+    assert "已被使用" in r.json()["message"]
+
+
+def test_name_with_slash_rejected(client) -> None:
+    """实例名是「实例名/模型id」路由引用的前半段，含斜杠会破坏解析。"""
+    c, _ = client
+    r = c.post("/api/v1/llm/providers", json={**_PAYLOAD, "name": "a/b"})
+    assert r.status_code == 422
+
+
+def test_update_instance_reverifies(client) -> None:
+    c, _ = client
+    created = c.post("/api/v1/llm/providers", json=_PAYLOAD).json()["data"]
+    r = c.put(
+        f"/api/v1/llm/providers/{created['id']}",
+        json={**_PAYLOAD, "name": "百炼-改名", "api_key": "sk-updated"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["data"]["status"] == "verifying"
+    detail = c.get(f"/api/v1/llm/providers/{created['id']}").json()["data"]
+    assert detail["name"] == "百炼-改名"
+    assert detail["status"] == "active"
+    assert _captured_configs[-1].api_key == "sk-updated"
+    assert _captured_configs[-1].name == "百炼-改名"
+    # 改名不影响默认标记
+    assert detail["is_default"] is True
+
+
+def test_model_options_bare_ids_when_unique(client) -> None:
+    """只有一家时清单里全是裸 id；默认实例的默认模型带 is_default。"""
+    c, _ = client
+    c.post("/api/v1/llm/providers", json=_PAYLOAD)
+    options = c.get("/api/v1/llm/models").json()["data"]
+    by_id = {o["model_id"]: o for o in options}
+    assert "qwen3.7-max" in by_id
+    assert by_id["qwen3.7-max"]["ref"] == "qwen3.7-max"
+    assert by_id["qwen3.7-max"]["label"] == "qwen3.7-max"
+    assert by_id["qwen3.7-max"]["is_default"] is True
+    assert by_id["qwen3.7-max"]["provider_name"] == "百炼"
+    assert sum(o["is_default"] for o in options) == 1
+    # 目录里的其它模型也都可选（接入一家即可用它全部模型）
+    assert len(options) > 1
+    assert all(o["ref"] == o["model_id"] for o in options)
+
+
+def test_model_options_qualify_conflicting_ids(client) -> None:
+    """同一模型 id 出现在两个实例：引用改为「实例名/模型id」、展示加括号；
+    其它不冲突的 id 保持裸 id。"""
+    c, _ = client
+    c.post("/api/v1/llm/providers", json=_PAYLOAD)
+    # 兼容端点借用百炼目录里的 qwen3.7-max（同 id）
+    r = c.post(
+        "/api/v1/llm/providers",
+        json={
+            **_COMPAT_PAYLOAD,
+            "name": "中转",
+            "default_model": "qwen3.7-max",
+            "extra_models": [{"id": "qwen3.7-max", "context_window": 131072}],
+        },
+    )
+    assert r.status_code == 200, r.text
+    options = c.get("/api/v1/llm/models").json()["data"]
+    conflicted = [o for o in options if o["model_id"] == "qwen3.7-max"]
+    assert [(o["ref"], o["label"]) for o in conflicted] == [
+        ("百炼/qwen3.7-max", "qwen3.7-max（百炼）"),
+        ("中转/qwen3.7-max", "qwen3.7-max（中转）"),
+    ]
+    # 默认实例排前；只有默认实例的默认模型标 is_default
+    assert conflicted[0]["is_default"] is True
+    assert conflicted[1]["is_default"] is False
+    others = [o for o in options if o["model_id"] != "qwen3.7-max"]
+    assert others and all(o["ref"] == o["model_id"] and "（" not in o["label"] for o in others)
+
 
 def test_cataloged_provider_rejects_model_outside_catalog(client) -> None:
     """严格规则：官方渠道只认预设目录，自定义模型即使带全参数也不行。"""
     c, _ = client
-    r = c.put(
-        "/api/v1/llm/provider",
+    r = c.post(
+        "/api/v1/llm/providers",
         json={
             **_PAYLOAD,
             "default_model": "my-private-qwen",
@@ -187,8 +295,8 @@ def test_cataloged_provider_rejects_model_outside_catalog(client) -> None:
 def test_borrowed_catalog_model_exempt_from_manual_param_rules(client) -> None:
     """兼容端点借用目录模型（如 kimi 共享窗口、无独立输出上限）→ 豁免手填规则，可保存。"""
     c, _ = client
-    r = c.put(
-        "/api/v1/llm/provider",
+    r = c.post(
+        "/api/v1/llm/providers",
         json={
             **_COMPAT_PAYLOAD,
             "default_model": "kimi-k2.5",
@@ -203,7 +311,7 @@ def test_borrowed_catalog_model_exempt_from_manual_param_rules(client) -> None:
         },
     )
     assert r.status_code == 200
-    detail = c.get("/api/v1/llm/provider").json()["data"]
+    detail = _first(c)
     assert detail["status"] == "active"
     assert detail["default_model"] == "kimi-k2.5"
 
@@ -211,8 +319,8 @@ def test_borrowed_catalog_model_exempt_from_manual_param_rules(client) -> None:
 def test_custom_model_without_metadata_rejected(client) -> None:
     """自定义端点只给裸模型 id、不带参数 → 400，提示先补全参数。"""
     c, _ = client
-    r = c.put(
-        "/api/v1/llm/provider",
+    r = c.post(
+        "/api/v1/llm/providers",
         json={**_COMPAT_PAYLOAD, "extra_models": []},
     )
     assert r.status_code == 400
@@ -222,8 +330,8 @@ def test_custom_model_without_metadata_rejected(client) -> None:
 def test_custom_model_missing_required_params_rejected(client) -> None:
     """自定义模型缺上下文/最大输出 → 400。"""
     c, _ = client
-    r = c.put(
-        "/api/v1/llm/provider",
+    r = c.post(
+        "/api/v1/llm/providers",
         json={
             **_COMPAT_PAYLOAD,
             "extra_models": [{"id": "my-local-model", "context_window": 131072}],
@@ -236,8 +344,8 @@ def test_custom_model_missing_required_params_rejected(client) -> None:
 def test_custom_thinking_model_requires_budget(client) -> None:
     """自定义模型开思考但没填思考预算 → 400。"""
     c, _ = client
-    r = c.put(
-        "/api/v1/llm/provider",
+    r = c.post(
+        "/api/v1/llm/providers",
         json={
             **_COMPAT_PAYLOAD,
             "extra_models": [
@@ -257,8 +365,8 @@ def test_custom_thinking_model_requires_budget(client) -> None:
 def test_user_agent_defaults_to_sdk(client) -> None:
     """不填 User-Agent → 落库与领域配置都是 None，协议层保持 SDK 默认 UA。"""
     c, _ = client
-    c.put("/api/v1/llm/provider", json=_COMPAT_PAYLOAD)
-    assert c.get("/api/v1/llm/provider").json()["data"]["user_agent"] is None
+    c.post("/api/v1/llm/providers", json=_COMPAT_PAYLOAD)
+    assert _first(c)["user_agent"] is None
     assert _captured_configs[-1].user_agent is None
 
 
@@ -266,24 +374,24 @@ def test_custom_user_agent_persisted_and_passed_down(client) -> None:
     """填了 User-Agent → 回显在配置视图里，并原样传到协议层。"""
     c, _ = client
     ua = "movieclaw/1.0 (gateway-allowlist)"
-    r = c.put("/api/v1/llm/provider", json={**_COMPAT_PAYLOAD, "user_agent": ua})
+    r = c.post("/api/v1/llm/providers", json={**_COMPAT_PAYLOAD, "user_agent": ua})
     assert r.status_code == 200
-    assert c.get("/api/v1/llm/provider").json()["data"]["user_agent"] == ua
+    assert _first(c)["user_agent"] == ua
     assert _captured_configs[-1].user_agent == ua
 
 
 def test_blank_user_agent_normalized_to_null(client) -> None:
     """空串（用户清空输入框）归一为 None，等同「用 SDK 默认」。"""
     c, _ = client
-    c.put("/api/v1/llm/provider", json={**_COMPAT_PAYLOAD, "user_agent": "   "})
-    assert c.get("/api/v1/llm/provider").json()["data"]["user_agent"] is None
+    c.post("/api/v1/llm/providers", json={**_COMPAT_PAYLOAD, "user_agent": "   "})
+    assert _first(c)["user_agent"] is None
 
 
 def test_user_agent_rejects_header_injection(client) -> None:
     """换行等控制字符会造成请求头注入，入口即拦。"""
     c, _ = client
-    r = c.put(
-        "/api/v1/llm/provider",
+    r = c.post(
+        "/api/v1/llm/providers",
         json={**_COMPAT_PAYLOAD, "user_agent": "ua\r\nX-Admin: 1"},
     )
     assert r.status_code == 422
@@ -292,9 +400,9 @@ def test_user_agent_rejects_header_injection(client) -> None:
 
 def test_openai_compat_requires_base_url(client) -> None:
     c, _ = client
-    r = c.put(
-        "/api/v1/llm/provider",
-        json={"provider_type": "openai_compat", "api_key": "k", "default_model": "m"},
+    r = c.post(
+        "/api/v1/llm/providers",
+        json={"name": "x", "provider_type": "openai_compat", "api_key": "k", "default_model": "m"},
     )
     assert r.status_code == 400
     assert "必须填写 API 端点地址" in r.json()["message"]
@@ -302,26 +410,27 @@ def test_openai_compat_requires_base_url(client) -> None:
 
 def test_unknown_provider_type_rejected(client) -> None:
     c, _ = client
-    r = c.put(
-        "/api/v1/llm/provider",
+    r = c.post(
+        "/api/v1/llm/providers",
         json={**_PAYLOAD, "provider_type": "gemini"},
     )
     assert r.status_code == 400
     assert "未知的供应商类型" in r.json()["message"]
 
 
-def test_reverify_without_config_404(client) -> None:
+def test_reverify_unknown_instance_404(client) -> None:
     c, _ = client
-    r = c.post("/api/v1/llm/provider/verify")
+    r = c.post("/api/v1/llm/providers/999/verify")
     assert r.status_code == 404
 
 
-def test_delete_then_get_null(client) -> None:
+def test_delete_then_list_empty(client) -> None:
     c, _ = client
-    c.put("/api/v1/llm/provider", json=_PAYLOAD)
-    r = c.delete("/api/v1/llm/provider")
+    created = c.post("/api/v1/llm/providers", json=_PAYLOAD).json()["data"]
+    r = c.delete(f"/api/v1/llm/providers/{created['id']}")
     assert r.status_code == 200
-    assert c.get("/api/v1/llm/provider").json()["data"] is None
+    assert _first(c) is None
+    assert c.delete(f"/api/v1/llm/providers/{created['id']}").status_code == 404
 
 
 def test_presets_endpoint(client) -> None:

@@ -10,14 +10,20 @@ from movieclaw_db.models.site_credential import ConfigStatus
 
 
 class LlmProvider(TimestampMixin, table=True):
-    """LLM 供应商配置表：**单例**，全表至多一行。
+    """LLM 供应商实例配置表：**多实例**，一行即一个接入的账号/端点。
 
-    与下载器（可配多台）不同，LLM 只需要接入一个供应商就够用——
-    多供应商路由能力保留在 movieclaw_llm 领域库里，应用层不暴露。
-    单例语义由 Repository 的 upsert 维护（有则覆盖、无则创建）。
+    与下载器一样可以配多个：官方 OpenAI、一家中转、一台自建 vLLM 可以同时
+    接入，接入后该实例目录里的全部模型都可在对话框里选用。路由由
+    movieclaw_llm.LlmRouter 负责，本表只负责持久化实例配置。
 
-    ``provider_type`` 关联 movieclaw_llm 的供应商预设（openai / bailian /
-    openai_compat），base_url 留空时用预设默认端点。
+    - ``name`` 是实例名，全局唯一、不能含斜杠：对话框选模型时若同一模型 id
+      出现在多个实例，前端用「实例名/模型id」精确路由，实例名就是路由键；
+    - ``is_default`` 标记全局默认实例：IM 通道、字幕翻译、CLI 这些没有
+      模型选择器的场景都走「默认实例 + 它的 default_model」。任何时刻至多
+      一行为真（由 Repository 的 set_default 维护）；
+    - ``default_model`` 是该实例的默认模型，也是连接测试发 ping 用的模型；
+    - ``provider_type`` 关联 movieclaw_llm 的供应商预设（openai / bailian /
+      openai_compat …），base_url 留空时用预设默认端点。
 
     验证状态机与站点/下载器一致（复用 ConfigStatus）：保存后置 PENDING，
     后台用 default_model 发一次最小对话验证，成功 ACTIVE / 失败 FAILED。
@@ -29,14 +35,19 @@ class LlmProvider(TimestampMixin, table=True):
     __tablename__ = "llm_provider"
 
     id: int | None = Field(default=None, primary_key=True)
+    # 实例名：用户给这个接入起的名字（如「官方 OpenAI」「家里的 vLLM」），路由键
+    name: str = Field(unique=True, index=True, description="实例名（全局唯一，不含斜杠）")
     provider_type: str = Field(description="供应商预设 id：openai / bailian / openai_compat")
     base_url: str | None = Field(default=None, description="API 端点（留空用预设默认）")
     api_key: str = Field(description="API Key（SecretBox 加密密文）")
     # 自定义 User-Agent：留空用 openai SDK 自带 UA。自建网关/反代常按 UA
     # 放行或限流，官方渠道用不到，故仅在可自填端点的供应商上开放配置。
     user_agent: str | None = Field(default=None, description="自定义 User-Agent（留空用 SDK 默认）")
-    # 用户指定的默认模型：未来 agent 不显式选模型时都用它
-    default_model: str = Field(description="默认使用的模型 id，如 qwen-plus")
+    # 该实例的默认模型：连接测试用它发 ping；本实例为全局默认时，未显式
+    # 选模型的调用（IM / 字幕 / CLI）也都用它
+    default_model: str = Field(description="该实例的默认模型 id，如 qwen-plus")
+    # 全局默认实例标记：至多一行为真
+    is_default: bool = Field(default=False, description="是否为全局默认实例")
 
     # 验证状态机（语义见 ConfigStatus）
     status: ConfigStatus = Field(default=ConfigStatus.PENDING, description="连接验证状态")

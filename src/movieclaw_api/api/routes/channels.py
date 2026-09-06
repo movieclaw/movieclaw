@@ -84,7 +84,7 @@ async def start_weixin_binding(
     也无法使用,不如在入口拦下并引导去设置(与 acquire_llm_router 同口径,
     只看是否已配置,连通性验证失败仍放行由运行时报错)。
     """
-    if await LlmProviderRepository(session).get() is None:
+    if not await LlmProviderRepository(session).has_any():
         raise BadRequestException(
             "微信绑定需要先完成 AI 模型配置:请先在「设置 → AI 模型」接入模型供应商,再进行绑定"
         )

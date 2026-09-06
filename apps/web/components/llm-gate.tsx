@@ -12,12 +12,12 @@ import {
 
 import Link from "next/link";
 
-import { getLlmProvider } from "@/lib/api/llm";
+import { listLlmProviders } from "@/lib/api/llm";
 
 /* —— 全局 LLM 能力门禁。
-     判定与后端 acquire_llm_router 对齐——只看「是否已配置」（GET /llm/provider
-     是否为 null），验证失败的配置后端仍会尝试使用，不在前端拦截。模型配置
-     是全局单例，因此由 Provider 统一探测，页面里的多个 AI 入口不重复发请求。 —— */
+     判定与后端 acquire_llm_router 对齐——只看「是否至少接入了一个实例」
+     （GET /llm/providers 非空），验证失败的实例后端仍会尝试使用，不在前端
+     拦截。由 Provider 统一探测，页面里的多个 AI 入口不重复发请求。 —— */
 
 export type LlmCapabilityState = "checking" | "configured" | "missing" | "unavailable";
 
@@ -38,9 +38,9 @@ export function LlmCapabilityProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let cancelled = false;
     setState("checking");
-    getLlmProvider()
-      .then((config) => {
-        if (!cancelled) setState(config == null ? "missing" : "configured");
+    listLlmProviders()
+      .then((providers) => {
+        if (!cancelled) setState(providers.length === 0 ? "missing" : "configured");
       })
       .catch(() => {
         // 探测接口异常不应误锁所有 AI 功能，保留服务端提交时的错误兜底。

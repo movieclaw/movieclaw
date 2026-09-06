@@ -57,6 +57,7 @@ from movieclaw_api.services.agent_sessions import (
     SessionHandoffEntry,
     SessionMessageEntry,
     get_agent_session_store,
+    latest_user_model,
     latest_user_thinking_level,
 )
 from movieclaw_api.services.auth import Principal
@@ -275,12 +276,14 @@ async def _accept_user_message(
         if payload.thinking_level is not None
         else latest_user_thinking_level(existing_entries)
     )
+    # 模型引用同款三态：显式引用 / "default" 清回默认 / 未传沿用会话最近一条
+    model = _resolve_model_choice(payload.model, latest_user_model(existing_entries))
 
     return await _launch_user_message(
         session_id=session_id,
         content=payload.content,
         attachment_ids=payload.attachments,
-        model=payload.model,
+        model=model,
         thinking_level=thinking_level,
         history=history,
         entry_count=entry_count,
@@ -288,11 +291,21 @@ async def _accept_user_message(
     )
 
 
+def _resolve_model_choice(requested: str, inherited: str | None) -> str | None:
+    """模型选择的三态：空串沿用会话最近一条 user 消息的引用；``default`` 显式
+    清回默认模型（None）；其余原样作为路由引用（裸 id 或「实例名/模型id」）。"""
+    if not requested:
+        return inherited
+    if requested == "default":
+        return None
+    return requested
+
+
 async def _launch_user_message(
     *,
     session_id: str,
     content: str,
-    model: str,
+    model: str | None,
     history: list[ChatMessage],
     entry_count: int,
     llm_router: LlmRouter,
@@ -329,7 +342,7 @@ async def _launch_user_message(
         get_agent_session_store(), session_id, entry_count=entry_count
     )
     message_id = await recorder.record_user_message(
-        user_content, thinking_level=thinking_level
+        user_content, thinking_level=thinking_level, model=model
     )
 
     # 请求水合：历史 + 本轮输入统一处理（视觉门控 / 读字节 / 预算，预算从
@@ -337,7 +350,7 @@ async def _launch_user_message(
     # runner 以 agent_error 事件呈现同一个错误，不在这里提前 500。
     history_for_run, input_for_run = history, user_content
     try:
-        model_info = llm_router.get_model_info(model)
+        model_info = llm_router.get_model_info(model or "")
     except LlmError:
         model_info = None
     if model_info is not None:
@@ -357,7 +370,7 @@ async def _launch_user_message(
     params = AgentStartParams(
         input=input_for_run,
         history=history_for_run,
-        model=model,
+        model=model or "",
         system_prompt=actual_system_prompt,
         # 思维链档位随每次模型调用生效；压缩等内部调用另建 ModelSettings，
         # 不带档位（不放大成本）
@@ -681,12 +694,9 @@ async def compact_session_context(
     if not history:
         raise BadRequestException("会话没有可压缩的内容")
 
-    # 沿用会话最近一次运行的模型（转录里 assistant 行带 model 元数据）
+    # 沿用会话当前的模型引用（最近一条 user 行的信封值；None = 默认模型）
     _, entries = store.read(session_id)
-    model = next(
-        (e.model for e in reversed(entries) if isinstance(e, SessionMessageEntry) and e.model),
-        "",
-    )
+    model = latest_user_model(entries) or ""
 
     messages = [ChatMessage(role="system", content=await _agent_system_prompt()), *history]
     # 手动压缩不经过 runner，历史里的图片引用必须在这里水合——否则视觉模型
@@ -774,6 +784,7 @@ async def retry_session_message(
         if payload.thinking_level is not None
         else target.thinking_level
     )
+    model = _resolve_model_choice(payload.model, target.model)
 
     # 供应商校验和运行所需上下文在删除轨迹前准备完成；下面才进入不可逆阶段。
     llm_router = await acquire_llm_router(session)
@@ -798,7 +809,7 @@ async def retry_session_message(
         session_id=session_id,
         content=content,
         attachment_ids=attachment_ids,
-        model=payload.model,
+        model=model,
         thinking_level=thinking_level,
         history=history,
         entry_count=len(remaining_entries),

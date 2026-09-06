@@ -93,9 +93,19 @@ class LlmRouter:
                     return provider, model_id
             raise LlmRoutingError(f"找不到名为「{name}」的供应商实例")
 
-        for provider in self._enabled_providers():
-            if any(m.id == ref for m in self._catalog(provider)):
-                return provider, ref
+        owners = [
+            p for p in self._enabled_providers() if any(m.id == ref for m in self._catalog(p))
+        ]
+        if owners:
+            if len(owners) > 1:
+                # 多实例目录里都有这个 id：按默认实例优先的顺序命中。对话框选模型
+                # 时前端会对冲突 id 改用「实例名/模型id」，走不到这里；API / CLI
+                # 直接传裸 id 才会，记日志让用户知道实际走了哪家
+                logger.info(
+                    "模型「%s」在 %d 个供应商实例目录中都存在，按默认优先路由到「%s」",
+                    ref, len(owners), owners[0].name,
+                )
+            return owners[0], ref
         raise LlmRoutingError(
             f"模型「{ref}」不在任何已启用供应商的目录中；"
             "如确认端点支持该模型，请用「实例名/模型id」显式指定"

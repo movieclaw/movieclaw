@@ -36,8 +36,11 @@ class LlmPresetView(BaseModel):
 
 
 class LlmProviderView(BaseModel):
-    """LLM 供应商配置的对外视图（**脱敏**：绝不回传 API Key）。"""
+    """LLM 供应商实例的对外视图（**脱敏**：绝不回传 API Key）。"""
 
+    id: int
+    name: str = Field(description="实例名（全局唯一，路由键）")
+    is_default: bool = Field(description="是否为全局默认实例（无模型选择器的场景都走它）")
     provider_type: str
     base_url: str | None = None
     user_agent: str | None = Field(
@@ -70,6 +73,9 @@ class LlmProviderView(BaseModel):
     def from_model(cls, row: LlmProvider) -> LlmProviderView:
         """从 ORM 记录构造脱敏视图。只挑选可公开字段，天然屏蔽密钥密文。"""
         return cls(
+            id=row.id or 0,
+            name=row.name,
+            is_default=row.is_default,
             provider_type=row.provider_type,
             base_url=row.base_url,
             user_agent=row.user_agent,
@@ -85,12 +91,33 @@ class LlmProviderView(BaseModel):
         )
 
 
+class LlmModelOptionView(BaseModel):
+    """对话框模型选择器的一个选项（口径见 services.llm_config 模块说明）。"""
+
+    ref: str = Field(
+        description=(
+            "提交给 session.start 的模型引用：裸模型 id，或同 id 在多个实例时的「实例名/模型id」"
+        )
+    )
+    label: str = Field(description="展示文案：裸模型 id，冲突时为「模型id（实例名）」")
+    model_id: str = Field(description="模型 id")
+    provider_id: int = Field(description="所属实例 id")
+    provider_name: str = Field(description="所属实例名")
+    is_default: bool = Field(description="是否为全局默认（默认实例的默认模型）")
+    thinking_levels: list[str] = Field(
+        default_factory=list, description="该模型的思考档位菜单；空 = 隐藏档位选择器"
+    )
+
+
 class LlmProviderPayload(BaseModel):
-    """保存 LLM 供应商配置的请求体（单例：PUT 即 upsert）。
+    """新增 / 编辑 LLM 供应商实例的请求体。
 
     API Key 出于安全不回显，编辑时需要重新填写。
     """
 
+    name: str = Field(
+        min_length=1, max_length=60, description="实例名（全局唯一，不含斜杠），如「官方 OpenAI」"
+    )
     provider_type: str = Field(description="供应商类型：openai / bailian / openai_compat")
     base_url: str | None = Field(default=None, description="API 端点（留空用预设默认）")
     user_agent: str | None = Field(
@@ -110,7 +137,7 @@ class LlmProviderPayload(BaseModel):
     )
 
     @field_validator(
-        "provider_type", "base_url", "user_agent", "api_key", "default_model", mode="before"
+        "name", "provider_type", "base_url", "user_agent", "api_key", "default_model", mode="before"
     )
     @classmethod
     def _strip(cls, value: str | None) -> str | None:
@@ -118,6 +145,14 @@ class LlmProviderPayload(BaseModel):
         if isinstance(value, str):
             value = value.strip()
             return value or None
+        return value
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, value: str) -> str:
+        """实例名是「实例名/模型id」路由引用的前半段，含斜杠会破坏解析。"""
+        if "/" in value:
+            raise ValueError("实例名不能包含斜杠 /")
         return value
 
     @field_validator("base_url")
