@@ -55,3 +55,9 @@ macos/**/.build/
 
 # goreleaser 打包前从仓库根复制进来的 LICENSE（构建产物，见 cli/.goreleaser.yaml）
 cli/LICENSE
+
+# OpenAPI 基线 spec 是构建产物（scripts/export-spec.sh 从代码导出），不入库：
+# 单行 600KB 的生成物入库会让所有改路由的 PR 互相冲突。镜像、发版脚本、
+# CI 都现场导出；本地缺失时服务端从代码现算，编译 Go CLI 前跑一次该脚本。
+src/movieclaw_api/data/spec.json
+cli/internal/spec/data/spec.json

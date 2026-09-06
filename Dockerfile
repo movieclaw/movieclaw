@@ -78,10 +78,9 @@ RUN python -c "import tomllib; deps = tomllib.load(open('pyproject.toml', 'rb'))
 # ---------------------------------------------------------------------------
 # 阶段 2.5：基线 spec 现场导出
 # ---------------------------------------------------------------------------
-# 现场导出而不是信任构建上下文里那份仓库产物：仓库产物可能过期（改了路由忘了
-# 重新导出）或干脆没进上下文，两种情况镜像都照样构建成功，故障要等用户发第一
-# 条对话才暴露。现场导出既堵死「缺失」，也保证 spec 与镜像内代码严格同版
-# （偏斜检测的前提）。
+# spec 是构建产物，不入 git，构建上下文里没有它，只能在这里现场导出。现场导出
+# 既堵死「缺失」（缺了镜像照样构建成功，故障要等用户发第一条对话才暴露），
+# 也保证 spec 与镜像内代码严格同版（偏斜检测的前提）。
 #
 # 它有两个消费方，都从这一份来：服务端运行期读它渲染 Agent 的工具描述，
 # Go CLI 在下一阶段把它嵌进二进制。spec 与架构无关，固定在构建机原生架构上跑。
@@ -106,7 +105,7 @@ WORKDIR /build
 COPY cli/go.mod cli/go.sum ./
 RUN go mod download
 COPY cli ./
-# 内嵌 spec 用现场导出的那份，覆盖仓库里可能过期的副本
+# 内嵌 spec 用现场导出的那份（仓库里没有这个文件，它是构建产物）
 COPY --from=spec-export /build/spec.json ./internal/spec/data/spec.json
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH \
         go build -trimpath -ldflags="-s -w" -o /out/mclaw ./cmd/mclaw \

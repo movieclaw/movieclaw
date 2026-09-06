@@ -1228,7 +1228,8 @@ async def download_item_assets(
     """下载条目的全部图片资产（缺失才下，force 覆盖重下）。
 
     分集剧照只给**在库条目**下（订阅了几百集但一集未入库的剧，几百张
-    剧照没有消费方，白占磁盘与请求量）。单张失败保持 NULL 不阻断，
+    剧照没有消费方，白占磁盘与请求量）；TMDB 没有剧照的在库分集从视频
+    抓一帧顶上（``_grab_missing_stills``）。单张失败保持 NULL 不阻断，
     任一后续刷新入口自愈。手动选定（locked）的海报/背景 force 也不重下
     ——那张图就是用户要的（docs/design/metadata.md 6.3）；``ignore_locks``
     是选图动作自己的通道：刚选的图必须落盘，此时锁就是它自己加的。
@@ -1311,9 +1312,82 @@ async def download_item_assets(
                         key,
                     )
                     session.add(episode)
+        if has_files and episodes:
+            # TMDB 没给剧照的在库分集：从视频抓一帧顶上（在图床闸外做，抓帧
+            # 走自己的 FRAME_GRAB_GATE，别占着下载并发位解码视频）
+            await _grab_missing_stills(session, item, episodes, item_dir, sources, force)
         if sources != saved_sources:
             await asyncio.to_thread(_save_asset_sources, item_dir, sources)
         await session.commit()
+
+
+async def _grab_missing_stills(
+    session: AsyncSession,
+    item: MediaItem,
+    episodes: list[MediaEpisode],
+    item_dir: Path,
+    sources: dict[str, str],
+    force: bool,
+) -> None:
+    """给 TMDB 没有剧照的在库分集抓帧补图（thumbs.build_episode_still）。
+
+    取舍：
+    - **TMDB 优先**：``still_path`` 非空的集一律不抓——即使这次下载失败也留给
+      图床自愈，否则抓帧会把 TMDB 的图顶掉一轮；TMDB 后来补了剧照，
+      ``_sync_asset`` 看到溯源不是它的就会重下覆盖，抓帧自然退位；
+    - 视频旁已有 ``<视频名>-thumb.jpg``（用户或其他刮削器放的）不抓：分集区
+      本就优先展示它，抓了也是白抓；
+    - 原盘目录没有单一视频可抓；库开关 ``generate_thumbnails`` 关掉不抓
+      （与本地条目主图同一开关：网络挂载库抓帧等于读遍每个文件）。
+    溯源记 ``frame:<视频路径>``，与 TMDB 剧照的「档位+路径」天然不相等。
+    """
+    from movieclaw_api.services.library.items import find_episode_thumb
+    from movieclaw_api.services.library.thumbs import FRAME_GRAB_GATE, build_episode_still
+
+    rows = (
+        await session.execute(
+            select(LibraryFile, Library)
+            .join(Library, Library.id == LibraryFile.library_id)  # type: ignore[arg-type]
+            .where(LibraryFile.media_item_id == item.id, LibraryFile.in_place())
+            .order_by(LibraryFile.file_path)
+        )
+    ).all()
+    # 每集取路径最靠前的在位文件（多版本同集时与分集区/镜像取同一个）
+    file_by_unit: dict[tuple[int, int], tuple[LibraryFile, Library]] = {}
+    for file, library in rows:
+        file_by_unit.setdefault((file.season_number, file.episode_number), (file, library))
+    for episode in episodes:
+        if episode.still_path:
+            continue
+        found = file_by_unit.get((episode.season_number, episode.episode_number))
+        if found is None:
+            continue
+        file, library = found
+        if not library.generate_thumbnails or file.container in ("bluray", "dvd"):
+            continue
+        key = f"s{episode.season_number:02d}e{episode.episode_number:02d}"
+        dest = item_dir / f"{key}.jpg"
+        rel = str(dest.relative_to(assets_root()))
+        if not force and episode.still_file == rel and await asyncio.to_thread(dest.is_file):
+            continue
+        video = Path(file.file_path)
+        if await asyncio.to_thread(find_episode_thumb, video) is not None:
+            continue
+        async with FRAME_GRAB_GATE:
+            size = await asyncio.to_thread(
+                build_episode_still,
+                video,
+                dest,
+                duration_seconds=file.duration_seconds,
+                hdr=file.hdr,
+            )
+        if size is None:
+            continue
+        episode.still_file = rel
+        # Jellyfin 的图片 tag 由 updated_at 派生：不更新客户端会拿缓存里的旧图/无图
+        episode.updated_at = utcnow()
+        sources[key] = f"frame:{video}"
+        session.add(episode)
 
 
 _SOURCES_FILE = "sources.json"

@@ -492,6 +492,11 @@ _MEMBER_ALLOWLIST = {
     ("PUT", "/api/v1/auth/password"),
     ("POST", "/api/v1/auth/avatar"),
     ("GET", "/api/v1/auth/avatar"),
+    # 多账号切换（docs/design/account-switching.md）：只操作本浏览器的 Cookie，
+    # 成员切换到的也只能是自己浏览器里登录过的账号，不涉及任何越权面
+    ("GET", "/api/v1/auth/accounts"),
+    ("POST", "/api/v1/auth/accounts/switch"),
+    ("DELETE", "/api/v1/auth/accounts/{username}"),
     # 外观：匿名读取管理员背景；登录成员的图库、当前背景与写操作均按账号隔离
     ("GET", "/api/v1/appearance"),
     ("POST", "/api/v1/appearance/backdrops"),
@@ -658,6 +663,9 @@ _PATH_DUMMIES = {
     "{job_id}": "job_test",
     "{slug}": "no-such-share",
     "{share_id}": "1",
+    "{username}": "family",
+    # 缓存管理：登记目录 key（services/storage/registry.py）
+    "{key}": "cache.images",
 }
 
 

@@ -364,6 +364,7 @@ def test_every_route_denies_anonymous_access(client: TestClient) -> None:
             .replace("{account_id}", "test-bot")
             .replace("{channel}", "weixin")
             .replace("{endpoint_id}", "test-endpoint")
+            .replace("{username}", "family")
             .replace("{member_id}", "1")
             .replace("{job_id}", "job_test")
             .replace("{device_id}", "test-device")
@@ -372,6 +373,7 @@ def test_every_route_denies_anonymous_access(client: TestClient) -> None:
             .replace("{index}", "0")
             .replace("{slug}", "no-such-share")
             .replace("{share_id}", "1")
+            .replace("{key}", "cache.images")  # 缓存管理的登记目录 key
         )
         assert "{" not in url, f"守护测试不认识路径参数，请补充哑值：{path}"
         for method in methods:

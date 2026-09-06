@@ -73,7 +73,7 @@ Folder、图片映射成 Photo，我们的库模型一文件一条目、只收�
 docs/design/video-chapters.md §4.7）。
 （原偏离⑩"图片原图直出"已于 2026-08-03 撤销：库封面拼贴引入 Pillow 后，
 `maxWidth/maxHeight/width/height/fillWidth/fillHeight` 已按 fit-within
-等比缩小实现，变体缓存于 data/cache/jellyfin-images。）
+等比缩小实现，变体经 ImageCache 落图片缓存目录，与远程图共用 LRU 上限与缓存管理面板。）
 
 ## 1. 协议总览与全局约定
 
@@ -550,7 +550,7 @@ Backdrop 数组下标即 index，本设计每条目至多 1 张背景，只需�
 | Movie/Video/Episode `Chapter/{index}` | 单元首文件第 index 个有效章节的场景图（`library_file.chapter_images`，路径 `{item}/chapters/{file}/{start_ms}.jpg`）；该章无图或 index 越界 → 404 text 文案 |
 | `Logo` / `Thumb` / `Banner` | 无资产，404（合法降级） |
 
-- 缩放参数：`maxWidth/maxHeight/quality` 按需缩放（产物落 `data/` 缓存目录）；
+- 缩放参数：`maxWidth/maxHeight/quality` 按需缩放（产物经 ImageCache 落图片缓存目录）；
   **`fillWidth/fillHeight` 也要接受**（Infuse 常带，按 max 语义处理即可）；
   `format` 参数接受但可忽略；
 - `tag` **纯缓存语义**——服务端不校验、不参与选图，仅：有 tag → 回显进

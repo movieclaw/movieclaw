@@ -67,7 +67,7 @@ cli/
 │   ├── output/                  ← core/output.py       table/json/yaml、TTY 判定
 │   ├── wait/                    ← tree_builder 的两个等待循环（生成层与精选层共用）
 │   ├── spec/                    ← gen/spec_loader.py   内置基线 + hash 偏斜刷新
-│   │   └── data/spec.json       go:embed 的内置基线（scripts/export-spec.sh 生成）
+│   │   └── data/spec.json       go:embed 的内置基线（构建产物不入 git，scripts/export-spec.sh 生成）
 │   ├── tree/                    ← gen/tree_builder.py  spec → cobra 命令树（最大一块）
 │   └── overlay/                 ← overlay/*.py         精选命令
 │       ├── auth.go  login/logout/status（设备配对）

@@ -5,7 +5,9 @@
 #   src/movieclaw_api/data/spec.json     服务端运行期读它渲染 Agent 工具描述
 #   cli/internal/spec/data/spec.json     Go CLI 构建期 //go:embed 进二进制
 #
-# 改了路由就跑一次；漂移了 pytest 与 go test 都会红。
+# 两份文件都是构建产物，不入 git（见 .gitignore）：镜像、发版脚本、CI 在
+# 构建期现场导出；本地编译 Go CLI 或跑 go test 前跑一次本脚本；服务端
+# 本地缺文件时会从代码现算，不需要跑。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

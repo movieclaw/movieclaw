@@ -74,7 +74,7 @@ export interface MediaLibrary {
   /** 身份来源（tmdb / local），与 kind 一起定位能力档案，创建后不可改 */
   source: ItemSource;
   capabilities: LibraryCapabilities;
-  /** 本地来源内容是否从文件抓帧生成缩略图 */
+  /** 缺图时是否从视频抓帧生成缩略图（本地内容封面、TMDB 无剧照的分集） */
   generate_thumbnails: boolean;
   /** 是否为视频章节抓取场景图（后台低优先级作业） */
   extract_chapter_images: boolean;
@@ -374,7 +374,7 @@ export interface LibraryPayload {
   /** 身份来源；不传按形态默认（movie/tv → tmdb，video → local） */
   source?: ItemSource;
   root_paths: string[];
-  /** 本地来源内容是否抓帧生成缩略图；不传=不改动（新建时默认开） */
+  /** 缺图时是否从视频抓帧生成缩略图；不传=不改动（新建时默认开） */
   generate_thumbnails?: boolean;
   /** 是否为视频章节抓取场景图；不传=不改动（新建时默认开） */
   extract_chapter_images?: boolean;

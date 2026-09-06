@@ -3,18 +3,20 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
+import { AccountSwitcherDialog } from "@/components/account-switcher-dialog";
 import { AvatarBadge } from "@/components/avatar-badge";
-import { GearIcon, LogoutIcon } from "@/components/icons";
+import { GearIcon, LogoutIcon, UserIcon } from "@/components/icons";
 import { logout } from "@/lib/api/auth";
 import { clearBackdropCache } from "@/lib/backdrop-cache";
 import { clearUiPrefsCache } from "@/lib/ui-prefs-cache";
-import { roleLabel } from "@/lib/permissions";
+import { accessiblePathFor, roleLabel } from "@/lib/permissions";
 import { useSession } from "@/lib/session";
 
 /**
  * 左下角的用户信息入口。
- * 点击后向上弹出菜单（CSS 玻璃，不占 WebGL 上下文）：设置 / 退出登录。
- * 「设置」切换到设置模式。
+ * 点击后向上弹出菜单（CSS 玻璃，不占 WebGL 上下文）：设置 / 切换账号 / 退出登录。
+ * 「设置」切换到设置模式；「切换账号」打开账号弹窗（account-switcher-dialog.tsx），
+ * 账号列表、添加账号、退出全部都在弹窗里，菜单本身保持简单。
  */
 export interface UserMenuProps {
   onOpenSettings: (sectionId?: string) => void;
@@ -31,6 +33,7 @@ export function UserMenu({ onOpenSettings, collapsed = false }: UserMenuProps) {
   // 之所以 Portal + fixed：菜单(240px)比折叠窄栏宽，留在面板内会被玻璃面板的
   // overflow:hidden 裁掉、且会压在主区面板的层叠上下文之下。
   const [menuPos, setMenuPos] = useState<{ left: number; bottom: number } | null>(null);
+  const [switcherOpen, setSwitcherOpen] = useState(false);
 
   // 点击外部或按 Esc 关闭菜单（Portal 出去的菜单不在 rootRef 内，需单独判断）
   useEffect(() => {
@@ -56,17 +59,21 @@ export function UserMenu({ onOpenSettings, collapsed = false }: UserMenuProps) {
     onOpenSettings(sectionId);
   };
 
-  /** 退出登录：请求后端清 Cookie，随后整页跳转登录页（重置全部前端状态）。 */
+  /**
+   * 退出登录：只退当前账号。本浏览器里还有别的账号时后端自动切过去，整页进
+   * 该身份能进的页面；没有了才去登录页。整页跳转是为了重置全部前端状态。
+   */
   const handleLogout = async () => {
     setOpen(false);
+    let next: Awaited<ReturnType<typeof logout>> = null;
     try {
-      await logout();
+      next = await logout();
     } catch {
       // 即使请求失败（如网络断开），也照常跳登录页；会话在后端仍会自然过期
     }
     clearBackdropCache();
     clearUiPrefsCache();
-    window.location.href = "/login";
+    window.location.href = next ? accessiblePathFor(next, "/") : "/login";
   };
 
   /** 打开菜单；折叠态下先按触发按钮的当前位置算好 fixed 坐标 */
@@ -108,6 +115,14 @@ export function UserMenu({ onOpenSettings, collapsed = false }: UserMenuProps) {
         label="设置"
         onClick={() => go()}
       />
+      <MenuItem
+        icon={<UserIcon className="size-[18px] max-md:size-[22px]" />}
+        label="切换账号"
+        onClick={() => {
+          setOpen(false);
+          setSwitcherOpen(true);
+        }}
+      />
       <div className="my-1" />
       <MenuItem
         icon={<LogoutIcon className="size-[18px] max-md:size-[22px]" />}
@@ -122,6 +137,7 @@ export function UserMenu({ onOpenSettings, collapsed = false }: UserMenuProps) {
     <div ref={rootRef} className="relative">
       {/* 向上弹出的菜单：展开态在面板内绝对定位；折叠态 Portal 到 body（见 menuPos 注释） */}
       {menu && (collapsed ? createPortal(menu, document.body) : menu)}
+      <AccountSwitcherDialog open={switcherOpen} onClose={() => setSwitcherOpen(false)} />
 
       {/* 用户信息触发按钮 */}
       <button

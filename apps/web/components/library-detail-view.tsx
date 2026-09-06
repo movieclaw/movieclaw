@@ -72,7 +72,6 @@ import {
   type ClaimSeed,
   searchSeedFromLabel,
 } from "@/components/claim-panels";
-import { clearPlaybackHistory } from "@/lib/api/playback";
 import { listSubscriptions, type Subscription } from "@/lib/api/subscriptions";
 import { HttpError } from "@/lib/http";
 import { formatBytes } from "@/lib/format";
@@ -707,31 +706,14 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   const meta = LIBRARY_KIND_META[library.kind];
   const { stats } = library;
 
-  // 清除自己在本库的观看记录（docs/design/library-access.md 2.6）：只删当前
-  // 登录身份自己的行，成员与超管都有这个入口
-  const clearHistory = () => {
-    void confirm({
-      title: `清空你在「${library.name}」的观看记录？`,
-      description:
-        "这个库里所有作品的续播进度、已看标记和播放次数都会清除，无法恢复。只影响你自己的记录。",
-      confirmLabel: "清空",
-      tone: "danger",
-    }).then((ok) => {
-      if (!ok) return;
-      clearPlaybackHistory("library", { libraryId })
-        .then(({ message }) => toast.success(message))
-        .catch((e) => toast.error((e as Error).message));
-    });
-  };
-
   // 库操作全部收进 ⋯ 菜单，顶栏只留这一个入口；运行状态看头部下方的胶囊。
-  // 成员没有管理项，菜单里只剩「清空我的观看记录」
-  const actionsMenu = (
+  // 清空观看记录不在这里——那是跨库的个人数据，入口在首页「最近观看」的 ⋯
+  // 里。成员没有管理项时菜单只剩相册墙密度（图片库），普通库连菜单都不给
+  const actionsMenu = (canManageLibraries || photoWall) && (
     <LibraryActionsMenu
       canManage={canManageLibraries}
       density={photoWall ? photoDensity : undefined}
       onDensityChange={photoWall ? setPhotoDensity : undefined}
-      onClearHistory={clearHistory}
       scanning={Boolean(library.scanning)}
       scanPhase={library.scan_progress?.phase ?? null}
       scanPercent={
@@ -1224,10 +1206,8 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
  *  三个长任务在菜单里就能看进度并原地停止，运行状态另由头部胶囊常驻呈现。 */
 
 interface LibraryActionsMenuProps {
-  /** 媒体库管理权限：没有时菜单只剩「清空我的观看记录」 */
+  /** 媒体库管理权限：没有时菜单只剩图片库的相册墙密度 */
   canManage: boolean;
-  /** 清除当前登录身份自己在本库的观看记录 */
-  onClearHistory: () => void;
   scanning: boolean;
   /** 扫描类任务的当前阶段；没在跑为 null——决定停止入口给不给 */
   scanPhase: ScanPhase | null;
@@ -1261,7 +1241,6 @@ interface LibraryActionsMenuProps {
 
 function LibraryActionsMenu({
   canManage,
-  onClearHistory,
   scanning,
   scanPhase,
   scanPercent,
@@ -1368,12 +1347,12 @@ function LibraryActionsMenu({
           <DropdownMenu.Item onSelect={onEdit} disabled={busy} className={itemClass}>
             编辑库
           </DropdownMenu.Item>
-          <DropdownMenu.Separator className="my-1 h-px bg-white/[0.07]" />
           </>
           )}
           {/* 图片库的墙密度：收在菜单里不占墙上的位置，三档单选，选完即生效并记住 */}
           {density && onDensityChange && (
             <>
+              {canManage && <DropdownMenu.Separator className="my-1 h-px bg-white/[0.07]" />}
               <DropdownMenu.Label className="px-3 pb-1 pt-1.5 text-caption text-[var(--text-faint)]">
                 相册墙密度
               </DropdownMenu.Label>
@@ -1396,13 +1375,8 @@ function LibraryActionsMenu({
                   </DropdownMenu.RadioItem>
                 ))}
               </DropdownMenu.RadioGroup>
-              <DropdownMenu.Separator className="my-1 h-px bg-white/[0.07]" />
             </>
           )}
-          {/* 观看记录是个人数据：成员与超管都能清自己的，与管理权无关 */}
-          <DropdownMenu.Item onSelect={onClearHistory} className={itemClass}>
-            清空我的观看记录…
-          </DropdownMenu.Item>
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>

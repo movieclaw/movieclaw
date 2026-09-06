@@ -103,11 +103,13 @@ class Library(TimestampMixin, table=True):
     realtime_watch: bool = Field(
         default=True, description="是否启用实时文件监控（关闭后靠定期对账与手动扫描）"
     )
-    # 本地来源条目的主图抓帧开关（docs/design/library-other-kind.md 4.4）。
+    # 抓帧开关（docs/design/library-other-kind.md 4.4）：本地来源条目的主图、
+    # 以及剧集库里 TMDB 没有剧照的分集（media_scrape._grab_missing_stills）。
     # 关掉后只用目录里已有的图或占位——敏感内容库的第一道闸，也是云盘挂载
-    # 上省 IO 的开关。影视库不消费（它们的主图来自刮削）
+    # 上省 IO 的开关
     generate_thumbnails: bool = Field(
-        default=True, description="本地来源条目缺主图时是否抓帧生成缩略图"
+        default=True,
+        description="缺图时是否从视频抓帧生成缩略图（本地条目主图、TMDB 无剧照的分集）",
     )
     # 章节场景图抓取开关（docs/design/video-chapters.md §4.5）。所有形态的库
     # 都消费：章节是文件级能力，TMDB 条目与本地条目同等享有。默认开——抓图
