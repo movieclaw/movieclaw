@@ -6,6 +6,8 @@ import { useRouter } from "next/navigation";
 
 import { VideoPlayer } from "@/components/player/video-player";
 import {
+  DEFAULT_PLAYBACK_SCOPE,
+  type PlaybackApiScope,
   type PlaybackItemInfo,
   getPlaybackItem,
   getPlaybackItemEpisodes,
@@ -35,6 +37,10 @@ export interface PlayerPageProps {
   episode?: number;
   /** 分享链接的 `?t=` 起播覆盖（毫秒）；不给 = 服务端接各自的续播点 */
   startMsOverride?: number;
+  /** 播放接口作用域（影片分享页传 sharePlaybackScope(slug)）；缺省 = 登录态 */
+  api?: PlaybackApiScope;
+  /** 退出播放的固定落点（影片分享页回 /s/{slug}）；缺省按登录态的优先级算 */
+  exitHref?: string;
 }
 
 /** SxxExx。季集号补零是媒体库的通用写法，别自创。 */
@@ -42,7 +48,14 @@ function episodeCode(season: number, episode: number): string {
   return `S${String(season).padStart(2, "0")}E${String(episode).padStart(2, "0")}`;
 }
 
-export function PlayerPage({ mediaItemId, season, episode, startMsOverride }: PlayerPageProps) {
+export function PlayerPage({
+  mediaItemId,
+  season,
+  episode,
+  startMsOverride,
+  api = DEFAULT_PLAYBACK_SCOPE,
+  exitHref,
+}: PlayerPageProps) {
   const router = useRouter();
   const [info, setInfo] = useState<PlaybackItemInfo | null>(null);
   const [episodes, setEpisodes] = useState<LibraryEpisode[]>([]);
@@ -53,7 +66,7 @@ export function PlayerPage({ mediaItemId, season, episode, startMsOverride }: Pl
 
   useEffect(() => {
     let cancelled = false;
-    getPlaybackItem(mediaItemId)
+    getPlaybackItem(mediaItemId, api)
       .then((loaded) => {
         if (!cancelled) setInfo(loaded);
       })
@@ -65,14 +78,14 @@ export function PlayerPage({ mediaItemId, season, episode, startMsOverride }: Pl
     return () => {
       cancelled = true;
     };
-  }, [mediaItemId]);
+  }, [mediaItemId, api]);
 
   // 剧集才拉分集清单：它只用来算「下一集」和标题里的集名，拿不到不影响播放
   const activeSeason = current?.season;
   useEffect(() => {
     if (activeSeason === undefined) return;
     let cancelled = false;
-    getPlaybackItemEpisodes(mediaItemId, activeSeason)
+    getPlaybackItemEpisodes(mediaItemId, activeSeason, api)
       .then((loaded) => {
         if (!cancelled) setEpisodes(loaded.episodes);
       })
@@ -80,7 +93,7 @@ export function PlayerPage({ mediaItemId, season, episode, startMsOverride }: Pl
     return () => {
       cancelled = true;
     };
-  }, [mediaItemId, activeSeason]);
+  }, [mediaItemId, activeSeason, api]);
 
   const unit = useMemo(
     () => ({
@@ -151,13 +164,18 @@ export function PlayerPage({ mediaItemId, season, episode, startMsOverride }: Pl
   }, [prev]);
 
   const exit = useCallback(() => {
+    // 影片分享页：固定回分享页，不看 sessionStorage（访客没有站内上下文）
+    if (exitHref) {
+      router.replace(exitHref as Route);
+      return;
+    }
     // 「回哪去」按优先级：进来前记的路径（sessionStorage，见 play-links.ts，
     // 分享链接的接收者没有）> 条目详情页（要 library_id，条目信息已回来）>
     // 媒体库首页兜底
     const remembered = playerReturnPath();
     const fallback = info ? `/library/${info.library_id}/item/${mediaItemId}` : "/library";
     router.replace((remembered ?? fallback) as Route);
-  }, [router, info, mediaItemId]);
+  }, [router, info, mediaItemId, exitHref]);
 
   if (failed) {
     return (
@@ -194,6 +212,7 @@ export function PlayerPage({ mediaItemId, season, episode, startMsOverride }: Pl
       onPlayNext={playNext}
       onPlayPrev={playPrev}
       onExit={exit}
+      api={api}
     />
   );
 }

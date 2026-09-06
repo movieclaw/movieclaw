@@ -91,6 +91,10 @@ async def member_visible_ids(session: AsyncSession, member_id: int) -> set[int]:
 
 async def visible_library_ids(session: AsyncSession, principal: Principal) -> set[int]:
     """请求主体可浏览的库 id 集合（见模块说明的矩阵）。"""
+    if principal.share is not None:
+        # 分享访客（docs/design/media-share.md §4.1）：只有分享出去的那一个库，
+        # 且刻意不看库的可见范围——超管把这部片放出去就是决定了它对外可见
+        return {principal.share.library_id}
     if principal.kind == "admin":
         return await admin_browsable_ids(session)
     if principal.member is None:
@@ -114,7 +118,11 @@ async def assert_item_visible(
 
     没有任何台账行的条目（只被订阅、还没入库）不属于任何库，不受库可见范围
     约束，放行——发现页/订阅页的海报走的正是这条。
+
+    分享访客只能看分享的那一个条目，其他条目一律 404。
     """
+    if principal.share is not None and media_item_id != principal.share.media_item_id:
+        raise NotFoundException("媒体条目不存在")
     library_ids = {
         int(lid)
         for lid in (

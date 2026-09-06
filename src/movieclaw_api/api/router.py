@@ -53,9 +53,12 @@ from movieclaw_api.api.routes.members import router as members_router
 from movieclaw_api.api.routes.network import router as network_router
 from movieclaw_api.api.routes.people import router as people_router
 from movieclaw_api.api.routes.playback import router as playback_router
+from movieclaw_api.api.routes.playback import stream_router as playback_stream_router
 from movieclaw_api.api.routes.rule_sets import router as rule_sets_router
 from movieclaw_api.api.routes.scrape_settings import router as scrape_settings_router
 from movieclaw_api.api.routes.search import router as search_router
+from movieclaw_api.api.routes.shares import admin_router as shares_admin_router
+from movieclaw_api.api.routes.shares import public_router as shares_public_router
 from movieclaw_api.api.routes.sites import router as sites_router
 from movieclaw_api.api.routes.spec import router as spec_router
 from movieclaw_api.api.routes.subscriptions import router as subscriptions_router
@@ -70,6 +73,10 @@ api_router = APIRouter()
 # ---- 公开区 ---------------------------------------------------------------
 api_router.include_router(health_router, tags=["health"])
 api_router.include_router(auth_router)
+# 影片分享的访客通道（docs/design/media-share.md §4.3）：每个端点自带
+# require_share_access（分享有效 + 密码已解锁），产出的分享主体进不了
+# require_login，所以既有业务接口对分享凭据一律 401
+api_router.include_router(shares_public_router)
 
 # ---- 插件区（鉴权在各路由上自行声明：插件侧 sync token / 管理侧 login）----
 api_router.include_router(extension_router)
@@ -101,6 +108,12 @@ _MEMBER_ROUTERS = [
 ]
 for _router in _MEMBER_ROUTERS:
     api_router.include_router(_router, dependencies=[Depends(require_login)])
+
+# 取流字节面（公开区）：只认查询参数里的签名 token（<video src> / hls.js /
+# iOS 原生 HLS 都带不了 header），影片分享的访客也走这里；无 token 或不符一律
+# 404。必须挂在成员区的 playback_router **之后**：它的 /sessions/{id}/{name}
+# 是分片兜底路由，先挂会把成员区的 /sessions/{id}/diagnostics 抢走
+api_router.include_router(playback_stream_router)
 
 # 一键下载：从下载器配置面单独拆出，按 allow_direct_download 放行成员；
 # 成员版在处理器内强制自动路由（拒绝手选目录/指定下载器，不回显路径）
@@ -140,6 +153,8 @@ _ADMIN_ROUTERS = [
     # G2 额度护栏一起评估（docs/design/subtitle-ai-translate.md §6）
     subtitle_gen_router,
     webhook_router,
+    # 影片分享是把内容放到登录边界之外的动作，仅超管（media-share.md §2.1）
+    shares_admin_router,
 ]
 for _router in _ADMIN_ROUTERS:
     api_router.include_router(_router, dependencies=[Depends(require_admin)])

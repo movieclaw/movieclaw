@@ -96,6 +96,14 @@ export interface EngineOptions {
    * （重开会签发新取流 token），由上层接线。不传则退回 `onFailed`。
    */
   onNetworkDead?: (reason: string) => void;
+  /** 客户端事件是否上报服务端日志；影片分享的访客不上报（默认 true） */
+  telemetry?: boolean;
+}
+
+/** 客户端事件上报的闸：作用域说不上报就当没这回事，播放本身不受影响。 */
+function clientLog(options: EngineOptions, event: string, detail: Record<string, unknown>): void {
+  if (options.telemetry === false) return;
+  reportPlaybackClientLog(event, detail);
 }
 
 /**
@@ -225,7 +233,7 @@ class DirectEngine implements PlaybackEngine {
   private readonly onErrorEvent = () => {
     // 报错瞬间的客户端现场进服务端日志：iPhone 上没有控制台可看，
     // MediaError 的 code/message 与播放器状态只有这里能拿到
-    reportPlaybackClientLog(`${this.label}-media-error`, videoSnapshot(this.options.video));
+    clientLog(this.options, `${this.label}-media-error`, videoSnapshot(this.options.video));
     this.options.onFailed(describeMediaError(this.options.video));
   };
   private onMetadataSeek: (() => void) | null = null;
@@ -254,7 +262,7 @@ class DirectEngine implements PlaybackEngine {
       video.addEventListener("loadedmetadata", this.onMetadataSeek, { once: true });
       // 挂流路径进服务端日志：与 media-error 对照，可确证客户端跑的是
       // 哪个版本的代码、走的哪条起播路径
-      reportPlaybackClientLog("native-attach-jsseek", { start_s: startPositionS });
+      clientLog(this.options, "native-attach-jsseek", { start_s: startPositionS });
     } else {
       video.src =
         startPositionS && startPositionS > 1 ? `${streamUrl}#t=${startPositionS}` : streamUrl;
@@ -264,7 +272,7 @@ class DirectEngine implements PlaybackEngine {
       video,
       (reason) => {
         // 停滞判死同样要留客户端现场：它与真 MediaError 的处置完全不同
-        reportPlaybackClientLog(`${this.label}-stall`, {
+        clientLog(this.options, `${this.label}-stall`, {
           reason,
           ...videoSnapshot(video),
         });
@@ -272,7 +280,7 @@ class DirectEngine implements PlaybackEngine {
       },
       (attempt) => {
         // 推动也留痕：日志里「nudge 后恢复」与「nudge 无效判死」是两种病
-        reportPlaybackClientLog(`${this.label}-nudge`, {
+        clientLog(this.options, `${this.label}-nudge`, {
           attempt,
           ...videoSnapshot(video),
         });

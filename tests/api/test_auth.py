@@ -276,6 +276,8 @@ _PUBLIC_ALLOWLIST = {
     # 改用查询参数里的短时效签名 token。无 token / token 不符一律 404——
     # 与「资源不存在」不可区分，不给探测者留判据。
     ("GET", "/api/v1/playback/sessions/{session_id}/index.m3u8"),
+    ("GET", "/api/v1/playback/sessions/{session_id}/master.m3u8"),
+    ("GET", "/api/v1/playback/sessions/{session_id}/sub{index}.m3u8"),
     ("GET", "/api/v1/playback/sessions/{session_id}/{name}"),
     ("GET", "/api/v1/playback/files/{file_id}/stream"),
     ("GET", "/api/v1/playback/files/{file_id}/subtitles"),
@@ -295,6 +297,24 @@ _PUBLIC_ALLOWLIST = {
     ("POST", "/api/v1/auth/device/token"),
     ("GET", "/api/v1/appearance"),  # 登录页需要背景图地址
     ("GET", "/api/v1/appearance/backdrops/{backdrop_id}"),  # 登录页背景图文件
+    # 影片分享的访客通道（docs/design/media-share.md §4.3）：访客没有账号，
+    # 每个端点自带 require_share_access（slug 有效 + 密码已解锁）。匿名请求
+    # 一个不存在的 slug 得到 404 而不是 401，与「分享不存在」不可区分。
+    ("GET", "/api/v1/share/{slug}"),
+    ("POST", "/api/v1/share/{slug}/unlock"),
+    ("GET", "/api/v1/share/{slug}/item"),
+    ("GET", "/api/v1/share/{slug}/episodes"),
+    ("GET", "/api/v1/share/{slug}/artwork"),
+    ("GET", "/api/v1/share/{slug}/images/assets/{path}"),
+    ("GET", "/api/v1/share/{slug}/images/proxy"),
+    ("GET", "/api/v1/share/{slug}/files/{file_id}/thumb"),
+    ("POST", "/api/v1/share/{slug}/playback/decide"),
+    ("POST", "/api/v1/share/{slug}/playback/sessions"),
+    ("POST", "/api/v1/share/{slug}/playback/sessions/{session_id}/ping"),
+    ("DELETE", "/api/v1/share/{slug}/playback/sessions/{session_id}"),
+    ("GET", "/api/v1/share/{slug}/playback/sessions/{session_id}/diagnostics"),
+    ("GET", "/api/v1/share/{slug}/playback/items/{media_item_id}"),
+    ("GET", "/api/v1/share/{slug}/playback/items/{media_item_id}/episodes"),
 }
 
 
@@ -349,6 +369,8 @@ def test_every_route_denies_anonymous_access(client: TestClient) -> None:
             .replace("{user_code}", "MCLW-TEST")
             .replace("{name}", "seg00000.m4s")
             .replace("{index}", "0")
+            .replace("{slug}", "no-such-share")
+            .replace("{share_id}", "1")
         )
         assert "{" not in url, f"守护测试不认识路径参数，请补充哑值：{path}"
         for method in methods:

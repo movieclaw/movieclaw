@@ -211,12 +211,16 @@ async def _load_unit_contexts(
 
 
 async def _member_names(session: AsyncSession, member_ids: set[int]) -> dict[int, str]:
-    """成员 ID → 展示名；0 = 超管（哨兵），已删除成员给可读兜底。"""
+    """成员 ID → 展示名；0 = 超管（哨兵），-1 = 分享访客（哨兵），
+    已删除成员给可读兜底。"""
     names: dict[int, str] = {}
     if 0 in member_ids:
         account = await auth_service.get_admin_account()
         names[0] = account.username
-    real_ids = {i for i in member_ids if i != 0}
+    if -1 in member_ids:
+        # docs/design/media-share.md §4.5：分享出去的影片被不登录的人播放
+        names[-1] = "分享访客"
+    real_ids = {i for i in member_ids if i > 0}
     if real_ids:
         for member in (
             await session.execute(select(Member).where(Member.id.in_(real_ids)))

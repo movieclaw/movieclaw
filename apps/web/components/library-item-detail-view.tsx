@@ -28,6 +28,7 @@ import { Modal } from "@/components/modal";
 import { PosterImage } from "@/components/poster-image";
 import { playHref, rememberPlayerReturnPath } from "@/lib/player/play-links";
 import { ReidentifyDialog } from "@/components/reidentify-dialog";
+import { ShareDialog } from "@/components/share-dialog";
 import { Tooltip } from "@/components/tooltip";
 import {
   type ItemDeleteResult,
@@ -60,6 +61,7 @@ import {
   fetchResumeState,
   clearPlaybackHistory,
 } from "@/lib/api/playback";
+import { type ShareView, getItemShare } from "@/lib/api/shares";
 import { useSubscribeEntry } from "@/components/subscribe-entry";
 import { LIBRARY_KIND_LABELS, type LibraryKind } from "@/lib/media-types";
 import { getDiscoveryReturnPath } from "@/lib/discovery-return-path";
@@ -78,11 +80,20 @@ import { formatDateTime, formatRelativeTime } from "@/lib/time";
 import { usePageTitle } from "@/lib/use-page-title";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
 
-/** 剧集详情页当前选中的分集上下文，供 Hero 与分集区共享同一份数据。 */
-interface SelectedEpisodeContext {
+/** 剧集详情页当前选中的分集上下文，供 Hero 与分集区共享同一份数据。
+    文件类型是泛型：影片分享页（components/share/）复用分集区时文件视图更窄。 */
+export interface SelectedEpisodeContext<F = LibraryItemFile> {
   seasonNumber: number;
   episode: LibraryEpisode;
-  files: LibraryItemFile[];
+  files: F[];
+}
+
+/** 分集区需要的条目最小形状（详情视图与分享页的访客视图都满足）。 */
+export interface EpisodeSectionItem<F extends { id: number; season_number: number }> {
+  media_item_id: number;
+  file_count: number;
+  seasons: number[];
+  files: F[];
 }
 
 /**
@@ -117,7 +128,7 @@ export function LibraryItemDetailView({
   initialSeason?: number;
   initialEpisode?: number;
 }) {
-  const { canManageLibraries } = usePermissions();
+  const { canManageLibraries, isAdmin } = usePermissions();
   // 洗版入口（quality-upgrade.md §13.3/§13.5）：有订阅并入既有订阅，无订阅走
   // 订阅弹层的洗版变体（库存季预填、建完自动接一轮洗版）
   const { canSubscribe, subscriptionOf, open: openSubscribe } = useSubscribeEntry();
@@ -151,6 +162,9 @@ export function LibraryItemDetailView({
   const [artworkOpen, setArtworkOpen] = useState(false);
   // 「刮削归属」弹层（决定这条目按哪个库的语言/选图设置刮）
   const [scrapeLibraryOpen, setScrapeLibraryOpen] = useState(false);
+  // 分享弹窗（docs/design/media-share.md）：打开前先查当前有效分享，按有无决定形态
+  const [shareOpen, setShareOpen] = useState(false);
+  const [shareInitial, setShareInitial] = useState<ShareView | null>(null);
   // 删除确认弹窗
   const [deleteOpen, setDeleteOpen] = useState(false);
   // 单文件删除确认弹窗（非 null 即打开；多版本洗版 / 删某集重下的入口）
@@ -487,6 +501,19 @@ export function LibraryItemDetailView({
               scraped={detail.source === "tmdb"}
               scraping={scrapingNow}
               searchHref={`/search?q=${encodeURIComponent(detail.title)}` as Route}
+              // 分享仅超管（media-share.md §2.1）；照片库条目不分享（分享页是影片页）
+              onShare={
+                isAdmin && detail.kind !== "photo"
+                  ? () => {
+                      getItemShare(libraryId, mediaItemId)
+                        .then((existing) => {
+                          setShareInitial(existing);
+                          setShareOpen(true);
+                        })
+                        .catch((e) => toast.error((e as Error).message));
+                    }
+                  : undefined
+              }
               onReidentify={() => setReidentifyOpen(true)}
               onRefreshMetadata={runMetadataRefresh}
               // 场景图与元数据刷新相互独立：库开了开关才给入口
@@ -837,6 +864,27 @@ export function LibraryItemDetailView({
         onChanged={reload}
       />}
 
+      {isAdmin && (
+        <ShareDialog
+          open={shareOpen}
+          onClose={() => setShareOpen(false)}
+          libraryId={libraryId}
+          mediaItemId={mediaItemId}
+          title={detail.title}
+          kind={detail.kind}
+          year={detail.year}
+          posterUrl={detail.poster_url}
+          seasonSummary={
+            isMovie
+              ? null
+              : `已入库 ${new Set(detail.files.map((f) => f.season_number)).size} 季 ${
+                  new Set(detail.files.map((f) => `${f.season_number}-${f.episode_number}`)).size
+                } 集`
+          }
+          initialShare={shareInitial}
+        />
+      )}
+
       {canManageLibraries && (
         <ScrapeLibraryDialog
           open={scrapeLibraryOpen}
@@ -868,7 +916,7 @@ export function LibraryItemDetailView({
  * 的小胶囊放在这样的版面里明显不像主行动按钮，因此抬到 h-12 + text-body，
  * 窄屏改为整行铺满（拇指区最容易命中的形状）。
  */
-function PlayAction({
+export function PlayAction({
   watched,
   onPlay,
 }: {
@@ -974,9 +1022,12 @@ function ItemActionsMenu({
   onDelete,
   onUpgrade,
   onClearHistory,
+  onShare,
 }: {
   /** 媒体库管理权限：识别/刮削/图片/转移/删除这些条目管理项按它显隐 */
   canManage: boolean;
+  /** 分享给不登录的人（docs/design/media-share.md）；仅超管时传 */
+  onShare?: () => void;
   /** 所在库有识别链（影视库）：给「修正识别结果」；其他库没有可认领的外部身份 */
   identifiable: boolean;
   /** 条目本身来自 TMDB：给刷新元数据/更换图片/刮削归属；本地条目只有封面 */
@@ -1036,6 +1087,11 @@ function ItemActionsMenu({
               className={itemClass}
             >
               搜索资源
+            </DropdownMenu.Item>
+          )}
+          {onShare && (
+            <DropdownMenu.Item onSelect={onShare} className={itemClass}>
+              分享…
             </DropdownMenu.Item>
           )}
           {onUpgrade && (
@@ -1103,7 +1159,7 @@ function ItemActionsMenu({
               </DropdownMenu.Item>
             </>
           )}
-          {(canManage || onUpgrade) && (
+          {(canManage || onUpgrade || onShare) && (
             <DropdownMenu.Separator className="my-1 h-px bg-white/[0.07]" />
           )}
           <DropdownMenu.Item onSelect={onClearHistory} className={itemClass}>
@@ -1154,7 +1210,7 @@ function frameRateLabel(frameRate: number | null): string | null {
  * 电影与分集简介共用的四行摘要。只有真实发生溢出时才出现展开入口；剧集
  * 切换分集会先恢复折叠，再按新文案重新测量，避免沿用上一集的展开状态。
  */
-function ExpandablePlot({ text }: { text: string }) {
+export function ExpandablePlot({ text }: { text: string }) {
   const paragraphRef = useRef<HTMLParagraphElement>(null);
   const [expanded, setExpanded] = useState(false);
   const [hasOverflow, setHasOverflow] = useState(false);
@@ -1239,18 +1295,21 @@ function seasonLabel(season: number, owned: boolean): string {
  * 缺集置灰）。本区只负责选择，当前集的简介与轨道回到 Hero，物理文件回到
  * 页面底部的统一折叠文件区。分集信息本地刮削优先，TMDB 分季兜底。
  */
-function SeasonEpisodesSection({
+export function SeasonEpisodesSection<F extends { id: number; season_number: number }>({
   libraryId,
   detail,
   initialSeason,
   initialEpisode,
   onEpisodeChange,
+  fetchEpisodes,
 }: {
   libraryId: number;
-  detail: LibraryItemDetail;
+  detail: EpisodeSectionItem<F>;
   initialSeason?: number;
   initialEpisode?: number;
-  onEpisodeChange?: (selection: SelectedEpisodeContext | null) => void;
+  onEpisodeChange?: (selection: SelectedEpisodeContext<F> | null) => void;
+  /** 分集数据源；缺省按库详情接口拉。影片分享页传访客通道的取数函数 */
+  fetchEpisodes?: (mediaItemId: number, season: number) => Promise<SeasonEpisodes>;
 }) {
   const seasons = detail.seasons;
   // 季选择器列的是「元数据的季 ∪ 库里实有的季」，本地没有的季也在里面（看得到
@@ -1277,7 +1336,10 @@ function SeasonEpisodesSection({
     let cancelled = false;
     setData(null);
     setFailed(false);
-    getItemEpisodes(libraryId, detail.media_item_id, season)
+    (fetchEpisodes
+      ? fetchEpisodes(detail.media_item_id, season)
+      : getItemEpisodes(libraryId, detail.media_item_id, season)
+    )
       .then((result) => {
         if (cancelled) return;
         setData(result);
@@ -1307,6 +1369,7 @@ function SeasonEpisodesSection({
     season,
     requestedSeason,
     initialEpisode,
+    fetchEpisodes,
   ]);
 
   // 分集数据异步到达后，把最近观看对应的集卡横向滚到中间；只执行一次，
@@ -1341,7 +1404,7 @@ function SeasonEpisodesSection({
     () =>
       (current?.file_ids ?? [])
         .map((id) => filesById.get(id))
-        .filter((f): f is LibraryItemFile => Boolean(f)),
+        .filter((f): f is F => Boolean(f)),
     [current, filesById],
   );
   const ownedCount = data ? data.episodes.filter((e) => e.owned).length : 0;

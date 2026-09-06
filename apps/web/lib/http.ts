@@ -60,7 +60,8 @@ function buildHeaders(initHeaders?: HeadersInit, body?: BodyInit | null): Header
 export function redirectToLoginOn401(status: number): void {
   if (status === 401 && typeof window !== "undefined") {
     const path = window.location.pathname;
-    if (path !== "/login" && path !== "/setup") {
+    // 影片分享页（/s/…）的访客没有账号：401 是「要密码」，由分享页自己接住
+    if (path !== "/login" && path !== "/setup" && !path.startsWith("/s/")) {
       const next = encodeURIComponent(path + window.location.search);
       clearBackdropCache();
       clearUiPrefsCache();

@@ -33,6 +33,7 @@ from movieclaw_db.models.llm_provider import LlmProvider
 from movieclaw_db.models.manual_download_intent import ManualDownloadIntent
 from movieclaw_db.models.media_item import MediaItem, MediaSeason, MediaSource
 from movieclaw_db.models.media_metadata import MediaEpisode, MediaMetadata
+from movieclaw_db.models.media_share import MediaShare
 from movieclaw_db.models.member import Member, MemberLibraryAccess, MemberSiteAccess
 from movieclaw_db.models.person import MediaItemPerson, Person
 from movieclaw_db.models.playback_log import PlaybackLog
@@ -112,6 +113,7 @@ __all__ = [
     "MediaItem",
     "MediaSource",
     "MediaMetadata",
+    "MediaShare",
     "Member",
     "MemberLibraryAccess",
     "MemberSiteAccess",

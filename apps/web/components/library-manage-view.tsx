@@ -17,6 +17,8 @@ import {
 } from "@/components/library-manage-row";
 import { LibraryOrganizeDialog } from "@/components/library-organize-dialog";
 import { LibraryRecycleBin } from "@/components/library-recycle-bin";
+import { LibraryShares } from "@/components/library-shares";
+import { listShares } from "@/lib/api/shares";
 import { Modal } from "@/components/modal";
 import { PageNav } from "@/components/page-nav";
 import {
@@ -85,7 +87,7 @@ export function LibraryManageView() {
 
   // 标签栏：「媒体库」与「回收站」（docs/design/library-recycle-bin.md §2）；
   // ?tab=recycle 深链直达，切换写回地址栏
-  const [tab, setTab] = useTabParam(["libraries", "recycle"] as const, "libraries");
+  const [tab, setTab] = useTabParam(["libraries", "recycle", "shares"] as const, "libraries");
   // 回收站标签上的计数：一次 limit=1 的列表请求只为拿 total_files（一条索引计数查询），
   // 不给库统计快照加列——进出回收站的写路径都不在统计重算之列，加列必陈旧
   const [recycleCount, setRecycleCount] = useState<number | null>(null);
@@ -99,6 +101,18 @@ export function LibraryManageView() {
   }, [reloadRecycleCount]);
   // 回收站标签激活时列表本身会回报计数，这里只在看库列表时低频轮询
   useVisiblePolling(reloadRecycleCount, tab === "recycle" ? null : 30_000);
+  // 「分享」标签计数（docs/design/media-share.md §5.4）：有效分享一共几条，
+  // 与回收站同款——列表激活时由列表回报，其余时候低频轮询
+  const [shareCount, setShareCount] = useState<number | null>(null);
+  const reloadShareCount = useCallback(() => {
+    listShares()
+      .then((rows) => setShareCount(rows.length))
+      .catch(() => {});
+  }, []);
+  useEffect(() => {
+    reloadShareCount();
+  }, [reloadShareCount]);
+  useVisiblePolling(reloadShareCount, tab === "shares" ? null : 30_000);
 
   const [libraries, setLibraries] = useState<MediaLibrary[] | null>(null);
   const [failed, setFailed] = useState(false);
@@ -434,6 +448,7 @@ export function LibraryManageView() {
           [
             { id: "libraries" as const, label: "媒体库", count: libraries?.length ?? null },
             { id: "recycle" as const, label: "回收站", count: recycleCount },
+            { id: "shares" as const, label: "分享", count: shareCount },
           ] as const
         ).map((t) => (
           <button
@@ -459,6 +474,7 @@ export function LibraryManageView() {
       </div>
 
       {tab === "recycle" && <LibraryRecycleBin onCountChange={setRecycleCount} />}
+      {tab === "shares" && <LibraryShares onCountChange={setShareCount} />}
 
       {tab === "libraries" && failed && libraries !== null && (
         <div className="mx-6 mt-4 rounded-xl border border-amber-400/25 bg-amber-500/10 px-4 py-3 text-sub text-amber-200 max-md:mx-4">

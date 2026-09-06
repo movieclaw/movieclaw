@@ -74,11 +74,25 @@ logger = logging.getLogger("movieclaw_api.auth")
 
 
 @dataclass(frozen=True)
+class ShareGrant:
+    """一条已验证有效的影片分享的授权范围（docs/design/media-share.md §4.1）：
+    访客能看的就只有 ``library_id`` 这个库里的 ``media_item_id`` 这一个条目。"""
+
+    share_id: int
+    slug: str
+    media_item_id: int
+    library_id: int
+    expires_at: datetime
+
+
+@dataclass(frozen=True)
 class Principal:
     """请求主体。``require_login`` 的返回值，全站授权判定的唯一依据。
 
     - ``kind``：``admin``（超管会话）/ ``member``（成员会话）/
-      ``pat``（CLI 长期令牌）/ ``agent``（Agent 工作区令牌）；
+      ``pat``（CLI 长期令牌）/ ``agent``（Agent 工作区令牌）/
+      ``share``（影片分享访客，只由分享路由自己的依赖产出，进不了
+      ``require_login``）；
     - ``is_admin``：admin / pat / agent 均为 True——PAT 与 Agent 令牌只能由
       超管创建，等价管理员（PAT 创建接口已收口为管理员专属，防止成员提权）；
     - ``member``：kind == "member" 时携带已加载的成员行（验签时顺路查库拿到），
@@ -102,6 +116,9 @@ class Principal:
     agent_session_id: str | None = None
     #: 仅设备/手工令牌携带：worker | cli | manual。会话 Cookie 主体恒为 None。
     client_type: str | None = None
+    #: 仅影片分享访客携带：可见面收窄到分享的那一个库、那一个条目
+    #: （services/library/access.py）。其他主体恒为 None。
+    share: ShareGrant | None = None
 
     def __str__(self) -> str:  # pragma: no cover - 纯格式化
         return self.name

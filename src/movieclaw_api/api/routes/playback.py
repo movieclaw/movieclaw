@@ -101,6 +101,7 @@ from movieclaw_api.services.playback.session import (
     get_session_manager,
 )
 from movieclaw_api.services.playback.signing import (
+    STREAM_TOKEN_TTL_S,
     StreamGrant,
     issue_stream_token,
     verify_stream_token,
@@ -117,6 +118,7 @@ from movieclaw_api.settings import PlaybackPolicySetting
 from movieclaw_api.settings.store import get_setting_store
 from movieclaw_db.engine import get_database, get_session
 from movieclaw_db.models import LibraryFile, MediaItem, PlaybackMetric
+from movieclaw_db.models.base import utcnow
 from movieclaw_db.repositories.media_repo import MediaItemRepository
 from movieclaw_playback import activity
 from movieclaw_playback import state as playback_state
@@ -148,6 +150,11 @@ from movieclaw_playback.subtitles import (
 logger = logging.getLogger("movieclaw_api.playback")
 
 router = APIRouter(prefix="/playback", tags=["playback"])
+#: 取流字节面（播放列表 / 分片 / 直出 / 字幕 / 字体 / trickplay）：``<video src>``、
+#: hls.js 与 iOS 原生 HLS 都带不了自定义 header，这些端点只认查询参数里的签名
+#: token，不挂登录依赖（挂在公开区）。无 token / token 不符一律 404。影片分享的
+#: 访客（docs/design/media-share.md）没有会话 Cookie，靠的正是这条通道。
+stream_router = APIRouter(prefix="/playback", tags=["playback"])
 
 
 class _SubtitleClientDisconnected(Exception):
@@ -655,6 +662,18 @@ def playlist_with_tokens(playlist: str, token: str) -> str:
 _METRIC_PURGE_TRIGGER = 3000
 
 
+def _share_stream_kwargs(principal: Principal) -> dict[str, int]:
+    """分享访客的取流 token 附加项：带分享 id（字节面据此回查分享是否仍有效），
+    有效期不超过分享到期剩余（docs/design/media-share.md §4.3）。成员为空。"""
+    if principal.share is None:
+        return {}
+    remaining = int((principal.share.expires_at - utcnow()).total_seconds())
+    return {
+        "share_id": principal.share.share_id,
+        "ttl_seconds": max(1, min(STREAM_TOKEN_TTL_S, remaining)),
+    }
+
+
 async def _decide(
     payload: PlaybackDecideRequest,
     principal: Principal,
@@ -711,6 +730,8 @@ async def start_playback_session(
     """
     started_at = time.perf_counter()
     member_id = principal.member_id if principal.member_id is not None else 0
+    # 分享访客的 token 多带分享 id、有效期不超过分享到期（media-share.md §4.3）
+    share_kwargs = _share_stream_kwargs(principal)
     # 取流 token 带上浏览器设备标识：取流字节据此记到活动页上这台浏览器的
     # 会话名下（与进度上报同一个标识）
     device_id = playback_watch.web_device_id(payload.device_id, member_id=member_id)
@@ -802,13 +823,13 @@ async def start_playback_session(
     subtitle_urls = [
         f"/api/v1/playback/files/{file.id}/subtitles"
         f"?track={quote(s.track_ref, safe='')}"
-        f"&token={await issue_stream_token(member_id=member_id, file_id=file.id)}"
+        f"&token={await issue_stream_token(member_id=member_id, file_id=file.id, **share_kwargs)}"
         for s in view.subtitles
     ]
 
     if view.tier == int(Tier.DIRECT_PLAY):
         token = await issue_stream_token(
-            member_id=member_id, file_id=file.id, device_id=device_id
+            member_id=member_id, file_id=file.id, device_id=device_id, **share_kwargs
         )
         # 分段计时（§6.10）：用户报「起播慢」时，这一行直接指认卡在哪一段。
         # 决策段偏慢多半是关键帧采样在现场读盘——详情页预热没盖住的路径。
@@ -893,7 +914,8 @@ async def start_playback_session(
         subtitle_urls = [
             f"/api/v1/playback/files/{file.id}/subtitles"
             f"?track={quote(s.track_ref, safe='')}"
-            f"&token={await issue_stream_token(member_id=member_id, file_id=file.id)}"
+            "&token="
+            f"{await issue_stream_token(member_id=member_id, file_id=file.id, **share_kwargs)}"
             for s in view.subtitles
         ]
         execution_backend = None
@@ -958,7 +980,11 @@ async def start_playback_session(
     spawn_ms = int((time.perf_counter() - spawn_started_at) * 1000)
 
     token = await issue_stream_token(
-        member_id=member_id, file_id=file.id, session_id=transcode.id, device_id=device_id
+        member_id=member_id,
+        file_id=file.id,
+        session_id=transcode.id,
+        device_id=device_id,
+        **share_kwargs,
     )
     total_ms = int((time.perf_counter() - started_at) * 1000)
     # 分段计时（§6.10）：决策段偏慢 = 关键帧采样在现场读盘（详情页预热没盖住
@@ -1037,7 +1063,7 @@ async def stop_playback_session(
     return ok({"stopped": True})
 
 
-@router.get(
+@stream_router.get(
     "/sessions/{session_id}/index.m3u8",
     summary="播放列表",
     operation_id="playback.session.playlist",
@@ -1133,7 +1159,7 @@ def _master_playlist_codecs(session: TranscodeSession) -> str | None:
     return ",".join(codecs)
 
 
-@router.get(
+@stream_router.get(
     "/sessions/{session_id}/master.m3u8",
     summary="master 播放列表（含字幕组）",
     operation_id="playback.session.master",
@@ -1175,7 +1201,7 @@ async def get_session_master_playlist(
     )
 
 
-@router.get(
+@stream_router.get(
     "/sessions/{session_id}/sub{index}.m3u8",
     summary="字幕媒体列表",
     operation_id="playback.session.subtitle-playlist",
@@ -1198,7 +1224,7 @@ async def get_session_subtitle_playlist(
         raise NotFoundException("字幕轨不存在")
     session.touch()
     file_token = await issue_stream_token(
-        member_id=session.member_id, file_id=session.file_id
+        member_id=session.member_id, file_id=session.file_id, share_id=grant.share_id
     )
     vtt_uri = (
         f"/api/v1/playback/files/{session.file_id}/subtitles"
@@ -1237,7 +1263,7 @@ async def get_session_diagnostics(
     return ok(_build_playback_diagnostics(session))
 
 
-@router.get(
+@stream_router.get(
     "/sessions/{session_id}/{name}",
     summary="播放分片",
     operation_id="playback.session.segment",
@@ -1345,7 +1371,7 @@ async def _grant_file(file_id: int) -> LibraryFile | None:
     return file
 
 
-@router.get(
+@stream_router.get(
     "/files/{file_id}/stream",
     summary="原文件直出",
     operation_id="playback.file.stream",
@@ -1443,7 +1469,7 @@ async def _extract_subtitle_until_disconnect(
         raise
 
 
-@router.get(
+@stream_router.get(
     "/files/{file_id}/subtitles",
     summary="旁挂字幕",
     operation_id="playback.file.subtitle",
@@ -1816,7 +1842,7 @@ async def save_playback_policy(
     return ok(await _policy_view())
 
 
-@router.get(
+@stream_router.get(
     "/files/{file_id}/fonts",
     response_model=ApiResponse[PlaybackFontsView],
     summary="内嵌字体清单",
@@ -1854,7 +1880,7 @@ async def list_playback_fonts(
     )
 
 
-@router.get(
+@stream_router.get(
     "/files/{file_id}/fonts/{name}",
     summary="内嵌字体文件",
     operation_id="playback.file.font",
@@ -1912,7 +1938,7 @@ async def probe_playback_hardware(
     )
 
 
-@router.get(
+@stream_router.get(
     "/files/{file_id}/trickplay",
     response_model=ApiResponse[TrickplayView],
     summary="进度条缩略图索引",
@@ -1956,7 +1982,7 @@ async def get_trickplay_index(
     )
 
 
-@router.get(
+@stream_router.get(
     "/files/{file_id}/trickplay/{name}",
     summary="进度条缩略图雪碧图",
     operation_id="playback.file.trickplay.sheet",

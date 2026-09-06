@@ -11,6 +11,10 @@
 token 负载只放**授权范围**，不放任何秘密：成员 id、文件 id、可选的会话 id、
 过期时间。拿到 token 也只能取这一个文件/会话的流。另带一个可选的浏览器设备
 标识——它不是授权范围，只用来把取流字节记到活动页上对应会话的名下。
+
+影片分享访客（docs/design/media-share.md §4.3）的 token 再多带分享 id：验签
+之后回查一次分享行是否仍有效，「取消分享」对直连档也在下一个 Range 请求就
+生效，不必等 token 自然到期。
 """
 
 from __future__ import annotations
@@ -39,6 +43,8 @@ class StreamGrant:
     expires_at: int
     #: 播放这条流的浏览器设备标识（活动页实时会话的锚点）；旧 token 没有
     device_id: str | None = None
+    #: 影片分享访客签出的 token 带分享 id；成员 token 为 None
+    share_id: int | None = None
 
 
 async def issue_stream_token(
@@ -48,6 +54,7 @@ async def issue_stream_token(
     session_id: str | None = None,
     device_id: str | None = None,
     ttl_seconds: int = STREAM_TOKEN_TTL_S,
+    share_id: int | None = None,
 ) -> str:
     serializer = URLSafeSerializer(await get_signing_secret(), salt=_STREAM_SALT)
     payload = {
@@ -58,6 +65,8 @@ async def issue_stream_token(
     }
     if device_id:
         payload["d"] = device_id
+    if share_id is not None:
+        payload["sh"] = share_id
     return serializer.dumps(payload)
 
 
@@ -81,12 +90,14 @@ async def verify_stream_token(
         return None
     try:
         device_id = payload.get("d")
+        share_id = payload.get("sh")
         grant = StreamGrant(
             member_id=int(payload["m"]),
             file_id=int(payload["f"]),
             session_id=payload.get("s"),
             expires_at=int(payload["exp"]),
             device_id=str(device_id) if device_id else None,
+            share_id=int(share_id) if share_id is not None else None,
         )
     except (KeyError, TypeError, ValueError):
         return None
@@ -96,4 +107,11 @@ async def verify_stream_token(
         return None
     if session_id is not None and grant.session_id != session_id:
         return None
+    if grant.share_id is not None:
+        # 分享被取消 / 到期后，已签出的 token 立即作废（主键一查，与取流本身
+        # 要查的文件行同量级）
+        from movieclaw_api.services.share import share_is_live
+
+        if not await share_is_live(grant.share_id):
+            return None
     return grant

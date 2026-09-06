@@ -498,6 +498,23 @@ _MEMBER_ALLOWLIST = {
     ("PUT", "/api/v1/appearance/active"),
     ("DELETE", "/api/v1/appearance/backdrops/{backdrop_id}"),
     ("GET", "/api/v1/appearance/backdrops/{backdrop_id}"),
+    # 影片分享的访客通道（docs/design/media-share.md §4.3）：公开区，鉴权是
+    # slug 有效 + 密码已解锁，不认账号；不存在的 slug 一律 404（成员自然可达）
+    ("GET", "/api/v1/share/{slug}"),
+    ("POST", "/api/v1/share/{slug}/unlock"),
+    ("GET", "/api/v1/share/{slug}/item"),
+    ("GET", "/api/v1/share/{slug}/episodes"),
+    ("GET", "/api/v1/share/{slug}/artwork"),
+    ("GET", "/api/v1/share/{slug}/images/assets/{path}"),
+    ("GET", "/api/v1/share/{slug}/images/proxy"),
+    ("GET", "/api/v1/share/{slug}/files/{file_id}/thumb"),
+    ("POST", "/api/v1/share/{slug}/playback/decide"),
+    ("POST", "/api/v1/share/{slug}/playback/sessions"),
+    ("POST", "/api/v1/share/{slug}/playback/sessions/{session_id}/ping"),
+    ("DELETE", "/api/v1/share/{slug}/playback/sessions/{session_id}"),
+    ("GET", "/api/v1/share/{slug}/playback/sessions/{session_id}/diagnostics"),
+    ("GET", "/api/v1/share/{slug}/playback/items/{media_item_id}"),
+    ("GET", "/api/v1/share/{slug}/playback/items/{media_item_id}/episodes"),
     # 界面偏好（同上，P2 per-member 化）
     ("GET", "/api/v1/ui/preferences"),
     ("PUT", "/api/v1/ui/preferences"),
@@ -638,6 +655,8 @@ _PATH_DUMMIES = {
     "{endpoint_id}": "test-endpoint",
     "{member_id}": "1",
     "{job_id}": "job_test",
+    "{slug}": "no-such-share",
+    "{share_id}": "1",
 }
 
 

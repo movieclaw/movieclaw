@@ -4,6 +4,41 @@ import type { TrickplayIndex } from "@/lib/player/trickplay";
 import { HttpError, request, resolveRequestUrl } from "@/lib/http";
 import type { LibraryEpisode } from "@/lib/api/libraries";
 import type { LibraryKind, MediaType } from "@/lib/media-types";
+import { readLocalProgress, writeLocalProgress } from "@/lib/player/local-progress";
+
+/**
+ * 播放接口的作用域（docs/design/media-share.md §5.3）。
+ *
+ * 播放器对后端地址原本写死 `/playback/…`；影片分享的访客走的是
+ * `/share/{slug}/playback/…` 这条按 slug 收窄的公开通道，且没有成员身份：
+ * 进度不能落成员表（记本浏览器）、遥测不上报。默认值等于今天登录态的行为，
+ * 既有调用点零改动。
+ */
+export interface PlaybackApiScope {
+  /** 接口前缀：`/playback` 或 `/share/{slug}/playback` */
+  base: string;
+  /** 进度落服务端成员表，还是只记本浏览器 */
+  progress: "server" | "local";
+  /** metrics / client-log 是否上报 */
+  telemetry: boolean;
+  /** progress=local 时本地记录的命名空间（= slug） */
+  localKey?: string;
+}
+
+export const DEFAULT_PLAYBACK_SCOPE: PlaybackApiScope = {
+  base: "/playback",
+  progress: "server",
+  telemetry: true,
+};
+
+export function sharePlaybackScope(slug: string): PlaybackApiScope {
+  return {
+    base: `/share/${encodeURIComponent(slug)}/playback`,
+    progress: "local",
+    telemetry: false,
+    localKey: slug,
+  };
+}
 
 /**
  * 取流/字幕地址的最终解析。
@@ -569,8 +604,11 @@ interface DecideBody extends PlaybackUnit {
 }
 
 /** 只问「该怎么放」，不起会话。用于播放前的档位预览与诊断。 */
-export async function decidePlayback(body: DecideBody): Promise<PlaybackDecision> {
-  const response = await request<ApiEnvelope<PlaybackDecision>>("/playback/decide", {
+export async function decidePlayback(
+  body: DecideBody,
+  scope: PlaybackApiScope = DEFAULT_PLAYBACK_SCOPE,
+): Promise<PlaybackDecision> {
+  const response = await request<ApiEnvelope<PlaybackDecision>>(`${scope.base}/decide`, {
     method: "POST",
     body: JSON.stringify(body),
   });
@@ -583,8 +621,11 @@ export async function decidePlayback(body: DecideBody): Promise<PlaybackDecision
  * 带上浏览器设备标识：服务端把它写进取流 token，取流字节才能记到活动页上
  * 这台浏览器的会话名下（与进度上报同一个标识）。
  */
-export async function startPlaybackSession(body: DecideBody): Promise<PlaybackSession> {
-  const response = await request<ApiEnvelope<PlaybackSession>>("/playback/sessions", {
+export async function startPlaybackSession(
+  body: DecideBody,
+  scope: PlaybackApiScope = DEFAULT_PLAYBACK_SCOPE,
+): Promise<PlaybackSession> {
+  const response = await request<ApiEnvelope<PlaybackSession>>(`${scope.base}/sessions`, {
     method: "POST",
     body: JSON.stringify({ ...body, device_id: getPlayerDeviceId() }),
   });
@@ -595,6 +636,7 @@ export async function startPlaybackSession(body: DecideBody): Promise<PlaybackSe
 export async function fetchPlaybackDiagnostics(
   sessionId: string,
   streamUrl: string,
+  scope: PlaybackApiScope = DEFAULT_PLAYBACK_SCOPE,
 ): Promise<PlaybackDiagnostics> {
   const resolvedUrl = new URL(
     resolveStreamUrl(streamUrl),
@@ -605,7 +647,7 @@ export async function fetchPlaybackDiagnostics(
     throw new Error("播放地址缺少诊断凭据");
   }
   const response = await request<ApiEnvelope<PlaybackDiagnostics>>(
-    `/playback/sessions/${encodeURIComponent(sessionId)}/diagnostics?token=${encodeURIComponent(token)}`,
+    `${scope.base}/sessions/${encodeURIComponent(sessionId)}/diagnostics?token=${encodeURIComponent(token)}`,
   );
   return response.data;
 }
@@ -623,10 +665,13 @@ export async function fetchPlaybackDiagnostics(
  * - `null`  —— 这次请求本身没成功（断网、超时、服务端 5xx）。**不能当成
  *   会话没了**：网络抖一下就把流掐掉重开，代价比多等一轮心跳大得多。
  */
-export async function pingPlaybackSession(sessionId: string): Promise<boolean | null> {
+export async function pingPlaybackSession(
+  sessionId: string,
+  scope: PlaybackApiScope = DEFAULT_PLAYBACK_SCOPE,
+): Promise<boolean | null> {
   try {
     await request<ApiEnvelope<unknown>>(
-      `/playback/sessions/${encodeURIComponent(sessionId)}/ping`,
+      `${scope.base}/sessions/${encodeURIComponent(sessionId)}/ping`,
       { method: "POST" },
     );
     return true;
@@ -640,17 +685,25 @@ export async function pingPlaybackSession(sessionId: string): Promise<boolean | 
  * 服务端日志。iPhone 上没有可看的控制台，这是拿到客户端真相的唯一通道。
  * fire-and-forget：上报失败绝不能影响播放本身。
  */
-export function reportPlaybackClientLog(event: string, detail: Record<string, unknown>): void {
-  void request<ApiEnvelope<unknown>>("/playback/client-log", {
+export function reportPlaybackClientLog(
+  event: string,
+  detail: Record<string, unknown>,
+  scope: PlaybackApiScope = DEFAULT_PLAYBACK_SCOPE,
+): void {
+  if (!scope.telemetry) return;
+  void request<ApiEnvelope<unknown>>(`${scope.base}/client-log`, {
     method: "POST",
     body: JSON.stringify({ event, detail }),
   }).catch(() => undefined);
 }
 
 /** 结束会话，掐断 ffmpeg 并清掉临时分片。 */
-export async function stopPlaybackSession(sessionId: string): Promise<void> {
+export async function stopPlaybackSession(
+  sessionId: string,
+  scope: PlaybackApiScope = DEFAULT_PLAYBACK_SCOPE,
+): Promise<void> {
   await request<ApiEnvelope<unknown>>(
-    `/playback/sessions/${encodeURIComponent(sessionId)}`,
+    `${scope.base}/sessions/${encodeURIComponent(sessionId)}`,
     { method: "DELETE" },
   );
 }
@@ -665,10 +718,13 @@ export async function stopPlaybackSession(sessionId: string): Promise<void> {
  * 这条链路失败也不是灾难：服务端有心跳超时回收兜底（§4.1），这里只是让
  * 转码进程早几十秒结束、少占一次并发额度。因此异常一律吞掉。
  */
-export function stopPlaybackSessionOnUnload(sessionId: string): void {
+export function stopPlaybackSessionOnUnload(
+  sessionId: string,
+  scope: PlaybackApiScope = DEFAULT_PLAYBACK_SCOPE,
+): void {
   try {
     void fetch(
-      resolveRequestUrl(`/playback/sessions/${encodeURIComponent(sessionId)}`),
+      resolveRequestUrl(`${scope.base}/sessions/${encodeURIComponent(sessionId)}`),
       { method: "DELETE", keepalive: true },
     );
   } catch {
@@ -699,9 +755,12 @@ export interface PlaybackItemInfo {
   poster_url: string | null;
 }
 
-export async function getPlaybackItem(mediaItemId: number): Promise<PlaybackItemInfo> {
+export async function getPlaybackItem(
+  mediaItemId: number,
+  scope: PlaybackApiScope = DEFAULT_PLAYBACK_SCOPE,
+): Promise<PlaybackItemInfo> {
   const response = await request<ApiEnvelope<PlaybackItemInfo>>(
-    `/playback/items/${mediaItemId}`,
+    `${scope.base}/items/${mediaItemId}`,
   );
   return response.data;
 }
@@ -710,15 +769,31 @@ export async function getPlaybackItem(mediaItemId: number): Promise<PlaybackItem
 export async function getPlaybackItemEpisodes(
   mediaItemId: number,
   seasonNumber: number,
+  scope: PlaybackApiScope = DEFAULT_PLAYBACK_SCOPE,
 ): Promise<{ season_number: number; episodes: LibraryEpisode[] }> {
   const response = await request<
     ApiEnvelope<{ season_number: number; episodes: LibraryEpisode[] }>
-  >(`/playback/items/${mediaItemId}/episodes?season_number=${seasonNumber}`);
+  >(`${scope.base}/items/${mediaItemId}/episodes?season_number=${seasonNumber}`);
   return response.data;
 }
 
 /** 起播前问「上次看到哪、用的哪条轨」。从未播过返回全零，不是错误。 */
-export async function fetchResumeState(unit: PlaybackUnit): Promise<PlaybackWatchState> {
+export async function fetchResumeState(
+  unit: PlaybackUnit,
+  scope: PlaybackApiScope = DEFAULT_PLAYBACK_SCOPE,
+): Promise<PlaybackWatchState> {
+  if (scope.progress === "local") {
+    // 分享访客：进度只在本浏览器（media-share.md §1.2），没有已看 / 次数
+    const local = readLocalProgress(scope.localKey ?? "", unit);
+    return {
+      position_ms: local?.position_ms ?? 0,
+      played: false,
+      play_count: 0,
+      duration_ms: null,
+      audio_track: local?.audio_track ?? null,
+      subtitle_track: local?.subtitle_track ?? null,
+    };
+  }
   const params = new URLSearchParams({
     media_item_id: String(unit.media_item_id),
     season_number: String(unit.season_number ?? 0),
@@ -748,7 +823,19 @@ function withDevice(body: PlaybackProgressBody): PlaybackProgressBody & { device
 /** 上报观看进度（开始 / 心跳 / 停止同一入口）。 */
 export async function reportPlaybackProgress(
   body: PlaybackProgressBody,
+  scope: PlaybackApiScope = DEFAULT_PLAYBACK_SCOPE,
 ): Promise<PlaybackWatchState> {
+  if (scope.progress === "local") {
+    const record = writeLocalProgress(scope.localKey ?? "", body, body);
+    return {
+      position_ms: record?.position_ms ?? 0,
+      played: false,
+      play_count: 0,
+      duration_ms: null,
+      audio_track: record?.audio_track ?? null,
+      subtitle_track: record?.subtitle_track ?? null,
+    };
+  }
   const response = await request<ApiEnvelope<PlaybackWatchState>>("/playback/progress", {
     method: "POST",
     body: JSON.stringify(withDevice(body)),
@@ -765,7 +852,14 @@ export async function reportPlaybackProgress(
  * Blob 必须带 `application/json` 类型，否则 FastAPI 会因 Content-Type
  * 不对而拒收。
  */
-export function reportPlaybackProgressOnUnload(body: PlaybackProgressBody): void {
+export function reportPlaybackProgressOnUnload(
+  body: PlaybackProgressBody,
+  scope: PlaybackApiScope = DEFAULT_PLAYBACK_SCOPE,
+): void {
+  if (scope.progress === "local") {
+    writeLocalProgress(scope.localKey ?? "", body, body);
+    return;
+  }
   if (typeof navigator === "undefined" || !navigator.sendBeacon) return;
   const blob = new Blob([JSON.stringify(withDevice(body))], { type: "application/json" });
   navigator.sendBeacon(resolveRequestUrl("/playback/progress"), blob);
@@ -853,7 +947,11 @@ export interface PlaybackMetricPayload {
  * 只落本地——写进自建实例自己的数据库，绝不外发。失败无所谓（指标是趋势
  * 数据），所以调用方一律吞掉；页面卸载路径用 sendBeacon 保证发得出去。
  */
-export async function reportPlaybackMetric(payload: PlaybackMetricPayload): Promise<void> {
+export async function reportPlaybackMetric(
+  payload: PlaybackMetricPayload,
+  scope: PlaybackApiScope = DEFAULT_PLAYBACK_SCOPE,
+): Promise<void> {
+  if (!scope.telemetry) return;
   await request<ApiEnvelope<unknown>>("/playback/metrics", {
     method: "POST",
     body: JSON.stringify(payload),
@@ -861,7 +959,11 @@ export async function reportPlaybackMetric(payload: PlaybackMetricPayload): Prom
 }
 
 /** 卸载路径上的上报：普通 fetch 会被浏览器直接取消。 */
-export function reportPlaybackMetricOnUnload(payload: PlaybackMetricPayload): void {
+export function reportPlaybackMetricOnUnload(
+  payload: PlaybackMetricPayload,
+  scope: PlaybackApiScope = DEFAULT_PLAYBACK_SCOPE,
+): void {
+  if (!scope.telemetry) return;
   try {
     navigator.sendBeacon?.(
       resolveRequestUrl("/playback/metrics"),

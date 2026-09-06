@@ -1,12 +1,14 @@
 # 影片分享：把一部影片（或整部剧集）用链接分享给不登录的人——设计（P1）
 
-> 状态：**设计稿，待评审**（2026-09-06）。代码基线 `48be312`。
+> 状态：**设计定稿，实施中**（2026-09-06）。代码基线 `48be312`。
+> §2 的五个选择已拍板（仅超管、无永久档、密码可逆回显、访客与成员同规则、
+> `/s/` 路径），分享列表落在媒体库管理页而非设置页。
 > 关联：[library-access.md](library-access.md)（可见范围，本文的分享是它的
 > 一个显式例外）、[web-player.md](web-player.md) §4.7（取流签名 token，
 > 本文直接复用）、[device-auth.md](device-auth.md)（凭据与限流的既有做法）、
 > [activity.md](activity.md)（分享访客在活动页的落点）、
 > [library-routing.md](library-routing.md)（详情页路由）。
-> §2 列出了需要拍板的选择，其余按本文默认值实施。
+> §2 记录拍板结论与理由。
 
 ## 0. 一句话定义
 
@@ -41,7 +43,7 @@
 │ [海报]  沙丘 2 · 2024 · 电影                              │
 │         任何拿到链接的人都能观看这部影片，不需要登录。      │
 │                                                          │
-│ 有效期    ( 1 天 ) ( 3 天 ) (•7 天 ) ( 30 天 ) ( 永久 )    │
+│ 有效期    ( 1 天 ) ( 3 天 ) (•7 天 ) ( 30 天 )             │
 │           7 天后自动失效（2026-09-13 14:20）               │
 │                                                          │
 │ 密码保护  [关]                                            │
@@ -53,7 +55,8 @@
 └──────────────────────────────────────────────────────────┘
 ```
 
-- 有效期默认 **7 天**；「永久」放最后并在说明里写明「直到你手动取消」。
+- 有效期默认 **7 天**；没有「永久」档——一条链接不该在聊天记录里躺一年，
+  到期自动失效，需要就再分享一次。
 - 密码默认关；打开时**自动生成一个 6 位小写字母数字**密码（去掉 0/o/1/l），
   可改、可再生成；4–32 位。密码不是账号凭据，明文只给创建者看。
 - 剧集的副标题写「剧集 · 已入库 3 季 24 集」，提醒范围是整部。
@@ -111,7 +114,7 @@
 - **密码之前不露任何信息**：不显示片名、不显示海报。密码就是为了不让拿到链接
   的人知道里面是什么，先露标题再要密码等于白设。
 - 影片页顶部只有一条细栏：左侧 movieclaw 字标（不可点），右侧「链接 3 天后
-  失效」/「永久有效」。没有登录入口、没有搜索、没有侧栏。
+  失效」。没有登录入口、没有搜索、没有侧栏。
 - **续播记在访客自己的浏览器里**（`localStorage`，键含 slug 与季集），换浏览器
   就从头看；没有「已看」标记、没有播放次数。
 - 已登录的成员打开分享链接看到的也是这张独立页，不做「已登录就跳详情页」——
@@ -121,43 +124,43 @@
 
 - **活动页**：访客的播放显示为「分享访客 · 《沙丘 2》 · Chrome / macOS」，
   「结束播放」照常可用（`device_ended` 一分钟拒绝窗口对访客同样生效）。
-- **设置 → 分享管理**（新增一个小节）：列出全部有效分享（海报、片名、有效期、
-  是否有密码、打开次数、最近打开），每行一个「取消」。没有它，分享出去十部
-  片之后就只能逐个进详情页找，管不住。
+- **媒体库管理页 → 「分享」标签**（与「媒体库」「回收站」并列）：列出全部
+  有效分享（海报、片名、有效期、是否有密码、打开次数、最近打开），每行
+  「复制」「取消」。没有它，分享出去十部片之后就只能逐个进详情页找，管不住。
+  放管理页而不放设置页：分享是对库内容的管理动作，和回收站同类。
 - **条目删除 / 转移到其他库 / 文件全部删除**：分享随条目走——条目删除时分享行
   级联删除；条目仍在但没有可播文件时分享页照常打开、播放按钮灰显并提示
   「暂时没有可播放的文件」。
 
-## 2. 需要拍板的选择（默认值按第一项）
+## 2. 拍板结论（2026-09-06）
 
-### 2.1 谁能分享：**超管** / 超管 + 开了能力开关的成员
+### 2.1 谁能分享：**仅超管**
 
-默认只给超管。理由：分享是把内容放到登录边界之外，和「可见范围」是反向操作，
+理由：分享是把内容放到登录边界之外，和「可见范围」是反向操作，
 第一版由超管一个人对结果负责最清楚。成员端后续只需加一个 `allow_share`
 能力开关（与 `allow_subscribe` 同一套机制），分享行记 `created_by_member_id`
 已为此预留，不必现在做。
 
-### 2.2 有效期档位：**1 / 3 / 7 / 30 天 / 永久，默认 7 天** / 去掉「永久」
+### 2.2 有效期档位：**1 / 3 / 7 / 30 天，默认 7 天，不设「永久」**
 
-「永久」意味着一条链接可能在聊天记录里躺一年。保留它是因为家庭内部分享（给
-父母一条固定链接）是真实场景；控制手段是分享管理页与活动页可见、随时取消。
-不想要就删掉这一档，其余不变。
+「永久」意味着一条链接可能在聊天记录里躺一年；家庭内固定链接的需求用
+30 天到期再分享一次覆盖。`expires_at` 因此 NOT NULL。
 
-### 2.3 密码明文对创建者可见：**Fernet 加密存储** / 只存哈希
+### 2.3 密码明文对创建者可见：**Fernet 加密存储，可回显**
 
 「再次点击时提醒可访问的分享链接」要连密码一起显示，否则创建者自己都找不回
 密码，只能取消重建。所以密码用 `movieclaw_db/crypto.py` 的 Fernet 加密落库
 （与站点凭据、渠道 token 同一套），验证时解密比对。它是一个 6 位访问码，
-不是账号密码，这个取舍成立；不接受的话改存哈希，对话框 (b) 形态不再显示密码。
+不是账号密码，这个取舍成立。
 
-### 2.4 访客能不能触发转码：**能（与成员同规则）** / 只允许直连
+### 2.4 访客能不能触发转码：**能，与成员同规则**
 
 分享页复用网页播放器整条决策链，访客与成员一样按浏览器能力落档、需要时起
 ffmpeg。理由见 web-player.md §0.1：PT 片源大多在浏览器里直连不了，「只直连」
 等于大部分分享点开就是「无法播放」。代价是访客能吃 NAS 的转码资源——并发上限、
 活动页结束播放、取消分享三道闸都在。P2 可以给单条分享加「仅直连」开关。
 
-### 2.5 分享链接短路径：**`/s/{slug}`** / `/share/{slug}`
+### 2.5 分享链接短路径：**`/s/{slug}`**
 
 短路径更适合复制到聊天里，语义靠页面本身说明。
 
@@ -173,7 +176,7 @@ library_id              INTEGER NOT NULL  FK library.id   ON DELETE CASCADE   --
 created_by_member_id    INTEGER NOT NULL DEFAULT 0       -- 0 = 超管哨兵，与 playback_state 同约定
 password_encrypted      VARCHAR NULL                     -- Fernet 密文；NULL = 无密码
 password_version        INTEGER NOT NULL DEFAULT 1       -- 改密码 +1，旧解锁 Cookie 即失效
-expires_at              DATETIME NULL                    -- naive UTC；NULL = 永久
+expires_at              DATETIME NOT NULL                -- naive UTC，1/3/7/30 天
 revoked_at              DATETIME NULL
 view_count              INTEGER NOT NULL DEFAULT 0       -- 影片页成功打开的次数
 last_accessed_at        DATETIME NULL
@@ -181,7 +184,7 @@ created_at / updated_at                                  -- TimestampMixin
 索引：(media_item_id)；UNIQUE(slug)
 ```
 
-- **有效**的定义：`revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now)`。
+- **有效**的定义：`revoked_at IS NULL AND expires_at > now`。
   「一部影片一条有效分享」在服务层保证（创建前查有效行，有则返回它而不是再建），
   不做数据库级部分唯一索引——SQLite 的部分索引带 `now()` 条件做不到。
 - 过期与取消的行**保留**，只是不再有效；不做清理任务（每行几十字节）。
@@ -195,7 +198,7 @@ created_at / updated_at                                  -- TimestampMixin
 ```python
 @dataclass(frozen=True)
 class ShareGrant:
-    share_id: int; slug: str; media_item_id: int; library_id: int; expires_at: datetime | None
+    share_id: int; slug: str; media_item_id: int; library_id: int; expires_at: datetime
 
 SHARE_VISITOR_MEMBER_ID = -1        # 访客哨兵：无成员行、无观看状态、活动页显示「分享访客」
 SHARE_COOKIE_NAME = "movieclaw_share"
@@ -222,10 +225,10 @@ _SHARE_SALT = "movieclaw.share.v1"  # itsdangerous 签名域，与会话 / 取�
 
 ```
 GET    /libraries/{lid}/items/{mid}/share          → ShareView | null（当前有效分享）
-POST   /libraries/{lid}/items/{mid}/share          {expires_in_days: 1|3|7|30|null, password: str|null}
+POST   /libraries/{lid}/items/{mid}/share          {expires_in_days: 1|3|7|30, password: str|null}
                                                     → ShareView（已有有效分享时直接返回它，code=SHARE_EXISTS，200）
 DELETE /libraries/{lid}/items/{mid}/share          → 取消（幂等）
-GET    /shares                                     → list[ShareView]（分享管理页）
+GET    /shares                                     → list[ShareView]（媒体库管理页「分享」标签）
 DELETE /shares/{share_id}                          → 取消
 ```
 
@@ -255,8 +258,11 @@ password (明文，仅此处返回), expires_at, created_at, view_count, last_ac
 空操作（§5.3）。
 
 取流字节面（`/playback/files/{id}/stream`、`m3u8`、分片、字幕、字体、trickplay）
-**只加一处**：它们本来就靠 `?token=` 而不是登录，分享主体拿到的 token 里
-`m=-1`、`f=file_id`，验签逻辑不认主体只认作用域。加的一处是 token 负载多带
+**两处改动**：一是把这十条路由从成员区挪到公开区的 `stream_router`——它们
+的设计本就是只认 `?token=`（守护测试的公开白名单也一直这么登记），但此前
+实际挂在成员区、要会话 Cookie 与 token 双重通过，浏览器同源自动带 Cookie 所以
+没人发现；访客没有 Cookie，这一挪是分享能播的前提。分享主体拿到的 token 里
+`m=-1`、`f=file_id`，验签逻辑不认主体只认作用域。二是 token 负载多带
 `sh=share_id`，`verify_stream_token` 之后若 `m == -1` 则再查一次分享行是否
 仍有效（主键查询，与取流本身要查的文件行同一个事务），失效即 404——这样
 「取消分享」对直连档也在下一个 Range 请求就生效，不必等 token 自然到期。
@@ -345,11 +351,13 @@ export const DEFAULT_PLAYBACK_SCOPE: PlaybackApiScope = { base: "/playback", pro
 - 退出目标：分享播放器的 `onExit` 固定回 `/s/{slug}`，不走
   `sessionStorage` 的 return-to。
 
-### 5.4 设置 → 分享管理（`components/share-section.tsx`）
+### 5.4 媒体库管理页「分享」标签（`components/library-shares.tsx`）
 
-一张列表：海报缩略、片名、类型、有效期（相对 + 绝对）、锁图标（有密码）、
-打开次数、最近打开、「复制」「取消」。空态一句话：「还没有分享任何影片。
-在影片详情页的 ⋯ 菜单里可以创建分享。」
+`/library/manage?tab=shares`，`useTabParam` 的枚举加一项，标签上带有效分享
+计数（与回收站同款：一次 `GET /shares` 拿总数）。一张列表：海报缩略、片名、
+类型、有效期（相对 + 绝对）、锁图标（有密码）、打开次数、最近打开、
+「复制」「取消」。空态一句话：「还没有分享任何影片。在影片详情页的 ⋯ 菜单里
+可以创建分享。」
 
 ## 6. 安全边界
 
@@ -376,7 +384,7 @@ export const DEFAULT_PLAYBACK_SCOPE: PlaybackApiScope = { base: "/playback", pro
 - 不做单季 / 单集 / 单文件分享；不做多条目打包分享。
 - 不做「仅直连」开关、访客并发上限单独配置、访客下载原文件。
 - 不做分享访客的 QoE / metrics 采集（遥测只记成员）。
-- 不做成员分享（§2.1）。
+- 不做成员分享（§2.1）；不做「永久」有效期（§2.2）。
 - 不做 Jellyfin 协议侧的分享投影。
 
 ## 8. 测试与验收
@@ -412,8 +420,40 @@ export const DEFAULT_PLAYBACK_SCOPE: PlaybackApiScope = { base: "/playback", pro
 4. 访客路由：探针 / 解锁 / item 投影 / episodes / 图片三条 / 播放六条；
    白名单登记与守护测试。
 5. 前端：`PlaybackApiScope`（先做，`/play` 行为不变即通过）→ 三个展示组件
-   搬家 → `ShareDialog` + 菜单项 → `/s/[slug]` 三张页 → 设置分享管理。
+   搬家 → `ShareDialog` + 菜单项 → `/s/[slug]` 三张页 → 管理页「分享」标签。
 6. 测试补齐，NAS 真机验收。
 
 一个 PR：后端约 10 个文件、一条迁移；前端约 12 个文件。无新依赖，
 `docker/runtime-version` **不需要 bump**。
+
+## 10. 实施记录与偏差（2026-09-06）
+
+迁移 `e2f3a4b5c6d7`、模型 `movieclaw_db/models/media_share.py`、服务
+`services/share.py`、路由 `api/routes/shares.py`（管理 / 访客两个路由器）、
+测试 `tests/api/test_share.py`；前端 `lib/share.ts`、`lib/api/shares.ts`、
+`lib/player/local-progress.ts`、`components/share-dialog.tsx`、
+`components/share/*`、`components/library-shares.tsx`、`app/s/[slug]/*`，
+`test/share.test.mjs`。与本文的偏差：
+
+1. **取流字节面实际挪到了公开区**（§4.3 已改写）。十条 `?token=` 路由此前
+   挂在成员区、要 Cookie 与 token 双重通过，与守护测试的公开白名单登记和
+   设计文档的说法都不符——只是浏览器同源自动带 Cookie 所以从没暴露。现在
+   它们在 `playback.stream_router` 上、挂在成员区之后（`/sessions/{id}/{name}`
+   是分片兜底路由，先挂会抢走成员区的 `/sessions/{id}/diagnostics`）。
+   `master.m3u8` 与 `sub{index}.m3u8` 随之进入公开白名单。
+2. **TMDB 绝对地址也改写**。前端所有远程图片都经站内代理（缓存 + 国内可达），
+   访客进不了成员区的 `/images/proxy`，所以详情投影把 `http(s)` 地址改成
+   `/share/{slug}/images/proxy?url=…`，分享路由多一条同实现的代理端点
+   （域名白名单在服务层）。这样前端的 `imageUrl()` 对分享页零改动。
+3. **探针解锁后带 `media_item_id`**：分享页的播放器要它起播；密码之前仍为
+   null。
+4. **展示组件没有搬家**：`PlayAction` / `SeasonEpisodesSection` /
+   `ExpandablePlot` 在 `library-item-detail-view.tsx` 里原地加 `export`，
+   分集区改成对文件类型泛型并加 `fetchEpisodes` 取数注入——比移动到新文件
+   改动更小。分享页不复用 `MediaTrackRows`（它依赖会话与权限上下文），
+   只列当前版本的容器 / 编码 / 大小。
+5. **`http.ts` 的 401 跳登录对 `/s/` 路径豁免**：访客的 401 是「要密码」。
+   `engine.ts` 加 `telemetry` 选项，分享作用域下客户端事件不上报。
+6. 对话框未做 strm 条目的提醒（§6 表中提到）；分享 strm 条目的语义与成员
+   播放一致（302 到云端直链），留待有需要时补。
+7. 照片库条目不给「分享…」菜单项（分享页是影片页）。

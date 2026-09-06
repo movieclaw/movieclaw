@@ -11,6 +11,8 @@ import { PlayerCenterControls, PlayerControls } from "@/components/player/player
 import { SubtitleLayer, useVideoContentBox } from "@/components/player/subtitle-layer";
 import {
   type ClientCapability,
+  DEFAULT_PLAYBACK_SCOPE,
+  type PlaybackApiScope,
   fetchPlaybackDiagnostics,
   type PlaybackUnit,
   type PlaybackDiagnostics,
@@ -115,6 +117,12 @@ export interface VideoPlayerProps {
   onPlayNext: () => void;
   onPlayPrev: () => void;
   onExit: () => void;
+  /**
+   * 播放接口作用域（docs/design/media-share.md §5.3）：影片分享的访客走
+   * `/share/{slug}/playback`、进度只记本浏览器、不上报遥测。缺省 = 登录态。
+   * 组件生命周期内视为常量（换作用域就换 key 重挂）。
+   */
+  api?: PlaybackApiScope;
 }
 
 /** 进度心跳间隔。服务端另有节流，这里给足密度即可。 */
@@ -200,8 +208,12 @@ export function VideoPlayer(props: VideoPlayerProps) {
     onPlayNext,
     onPlayPrev,
     onExit,
+    api = DEFAULT_PLAYBACK_SCOPE,
   } = props;
   const unitKey = unitKeyOf(unit);
+  // 接口作用域放 ref：各回调 / effect 的依赖数组一律不变，作用域在组件生命周期内是常量
+  const apiRef = useRef(api);
+  apiRef.current = api;
 
   const [state, dispatch] = useReducer(playerReducer, initialPlayerState);
   const [resume, setResume] = useState<PlaybackWatchState | null>(null);
@@ -468,7 +480,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
   const sessionReleaser = useMemo(
     () =>
       createSessionReleaser((id) => {
-        void stopPlaybackSession(id).catch(() => undefined);
+        void stopPlaybackSession(id, apiRef.current).catch(() => undefined);
       }),
     [],
   );
@@ -643,16 +655,19 @@ export function VideoPlayer(props: VideoPlayerProps) {
         // 首帧从"用户要求播放"这一刻算起，而不是从会话就位算起——
         // 决策与起会话的耗时正是首帧延迟的大头
         qoe({ type: "play-requested", at: performance.now() });
-        const session = await startPlaybackSession({
-          ...unit,
-          capability: capabilityRef.current,
-          failed_tiers: state.failedTiers,
-          // null = 服务端接续播点；显式值（seek 重开 / 换轨 / ?t=）原样发
-          start_ms: state.startMs ?? undefined,
-          max_height: quality ?? undefined,
-          audio_track: requestedAudio ?? undefined,
-          subtitle_track: requestedSubtitle ?? undefined,
-        });
+        const session = await startPlaybackSession(
+          {
+            ...unit,
+            capability: capabilityRef.current,
+            failed_tiers: state.failedTiers,
+            // null = 服务端接续播点；显式值（seek 重开 / 换轨 / ?t=）原样发
+            start_ms: state.startMs ?? undefined,
+            max_height: quality ?? undefined,
+            audio_track: requestedAudio ?? undefined,
+            subtitle_track: requestedSubtitle ?? undefined,
+          },
+          apiRef.current,
+        );
         if (cancelled) {
           // 请求已被超越（退出播放器/切集/换参数重发）：响应里可能带着一个
           // 刚拉起的转码会话，此后没有任何代码会认领它——心跳、释放器都只认
@@ -661,7 +676,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
           // 跑」的主要来路；同文件重开有 stop_for_file 兜底，这里补上退出与
           // 跨文件切换的口子）。
           if (session.session_id) {
-            void stopPlaybackSession(session.session_id).catch(() => undefined);
+            void stopPlaybackSession(session.session_id, apiRef.current).catch(() => undefined);
           }
           return;
         }
@@ -761,6 +776,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
       // 首帧就从续播点开始装载。会话相对制下换算结果≈0，与从前无异；VOD
       // 全片列表下这是防止 hls.js 先去拉第 0 段的关键（engine.ts 有注释）
       startPositionS: Math.max(0, toSessionSeconds(pendingFileMsRef.current, mode.originMs)),
+      telemetry: apiRef.current.telemetry,
       onFailed: (reason) => {
         if (!disposed) dispatch({ type: "failed", reason });
       },
@@ -845,6 +861,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
         const snapshot = await fetchPlaybackDiagnostics(
           diagnosticsSessionId,
           diagnosticsStreamUrl,
+          apiRef.current,
         );
         if (!cancelled) setServerDiagnostics(snapshot);
       } catch {
@@ -993,15 +1010,18 @@ export function VideoPlayer(props: VideoPlayerProps) {
   /** 一次进度心跳；响应里带着「已被管理员结束」就退出。 */
   const sendProgress = useCallback(
     (paused: boolean | undefined) => {
-      void reportPlaybackProgress({
-        ...unit,
-        event: "progress",
-        position_ms: positionRef.current,
-        // 暂停态给活动页「正在播放」的徽标用；读元素原生状态，与 Jellyfin
-        // 客户端上报的 IsPaused 同义
-        paused,
-        ...trackRefsRef.current(),
-      })
+      void reportPlaybackProgress(
+        {
+          ...unit,
+          event: "progress",
+          position_ms: positionRef.current,
+          // 暂停态给活动页「正在播放」的徽标用；读元素原生状态，与 Jellyfin
+          // 客户端上报的 IsPaused 同义
+          paused,
+          ...trackRefsRef.current(),
+        },
+        apiRef.current,
+      )
         .then((watch) => {
           if (watch.ended_by_admin) onEndedByAdmin();
         })
@@ -1018,7 +1038,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
     if (state.phase !== "playing") return;
     if (reportedStartRef.current !== unitKey) {
       reportedStartRef.current = unitKey;
-      void reportPlaybackProgress({ ...unit, event: "start", ...trackRefs() })
+      void reportPlaybackProgress({ ...unit, event: "start", ...trackRefs() }, apiRef.current)
         .then((watch) => {
           if (watch.ended_by_admin) onEndedByAdmin();
         })
@@ -1080,15 +1100,18 @@ export function VideoPlayer(props: VideoPlayerProps) {
       if (reportedStartRef.current === null) return;
       // 停止之后再到的暂停 / 心跳不能再上报：服务端会把刚结束的会话重建回来
       reportedStartRef.current = null;
-      void reportPlaybackProgress({
-        ...snapshot,
-        event: "stop",
-        position_ms: positionRef.current,
-        // 停止也要带轨记忆：切完字幕/音轨立刻退出的那次选择不能丢
-        ...trackRefsRef.current(),
-      }).catch(() => undefined);
+      void reportPlaybackProgress(
+        {
+          ...snapshot,
+          event: "stop",
+          position_ms: positionRef.current,
+          // 停止也要带轨记忆：切完字幕/音轨立刻退出的那次选择不能丢
+          ...trackRefsRef.current(),
+        },
+        apiRef.current,
+      ).catch(() => undefined);
       const metric = qoeSnapshotRef.current();
-      if (metric) void reportPlaybackMetric(metric).catch(() => undefined);
+      if (metric) void reportPlaybackMetric(metric, apiRef.current).catch(() => undefined);
       qoeRef.current = initialQoe();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1098,13 +1121,16 @@ export function VideoPlayer(props: VideoPlayerProps) {
   useEffect(() => {
     const onPageHide = () => {
       if (reportedStartRef.current !== null) {
-        reportPlaybackProgressOnUnload({
-          ...unit,
-          event: "stop",
-          position_ms: positionRef.current,
-          // 同 SPA 离开路径：停止上报带上轨记忆
-          ...trackRefsRef.current(),
-        });
+        reportPlaybackProgressOnUnload(
+          {
+            ...unit,
+            event: "stop",
+            position_ms: positionRef.current,
+            // 同 SPA 离开路径：停止上报带上轨记忆
+            ...trackRefsRef.current(),
+          },
+          apiRef.current,
+        );
       }
       // iOS 切后台也触发 pagehide——画中画还播着呢，这时杀掉转码会话，
       // 小窗播完缓冲就断流。PiP 中不杀，真关页面后由服务端超时回收兜底。
@@ -1113,9 +1139,9 @@ export function VideoPlayer(props: VideoPlayerProps) {
       const inPip =
         (video && document.pictureInPictureElement === video) ||
         webkitMode === "picture-in-picture";
-      if (sessionId && !inPip) stopPlaybackSessionOnUnload(sessionId);
+      if (sessionId && !inPip) stopPlaybackSessionOnUnload(sessionId, apiRef.current);
       const metric = qoeSnapshotRef.current();
-      if (metric) reportPlaybackMetricOnUnload(metric);
+      if (metric) reportPlaybackMetricOnUnload(metric, apiRef.current);
     };
     window.addEventListener("pagehide", onPageHide);
     return () => window.removeEventListener("pagehide", onPageHide);
@@ -1249,7 +1275,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
       if (probing) return;
       probing = true;
       try {
-        const alive = await pingPlaybackSession(sessionId);
+        const alive = await pingPlaybackSession(sessionId, apiRef.current);
         // null = 这次请求本身失败（断网/5xx），不能据此判定会话没了
         if (alive !== false) return;
         // 探活途中会话已经换了（换字幕烧录/换音轨/换画质重开）：这个 404
