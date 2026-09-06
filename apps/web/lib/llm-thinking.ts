@@ -15,6 +15,9 @@ import { useEffect, useState } from "react";
 
 import { listLlmModels, type LlmModelOption } from "@/lib/api/llm";
 
+/** 统一词汇表的强度顺序（越靠后越深）：滑杆按它排刻度，服务端下发的菜单也按它归一。 */
+export const THINKING_LEVEL_ORDER = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
 /** 档位文案（对齐 maka 的短单词标签）；「默认」由选择器的空值表达。 */
 export const THINKING_LEVEL_LABELS: Record<string, string> = {
   off: "关",

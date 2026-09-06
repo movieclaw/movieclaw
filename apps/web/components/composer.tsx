@@ -14,7 +14,11 @@ import {
 import { ComposerEditor, type ComposerEditorHandle } from "@/components/composer-editor";
 import { listSkills, type AgentSkill } from "@/lib/api/agent";
 import type { LlmModelOption } from "@/lib/api/llm";
-import { THINKING_LEVEL_LABELS, resolveModelOption } from "@/lib/llm-thinking";
+import {
+  THINKING_LEVEL_LABELS,
+  THINKING_LEVEL_ORDER,
+  resolveModelOption,
+} from "@/lib/llm-thinking";
 import { useBackdrop } from "@/lib/backdrop";
 import { LiquidGlassIconButton } from "@/vendor/liquid-glass";
 
@@ -496,11 +500,54 @@ function ComposerPlusMenu({
   );
 }
 
+/* —— 锚定弹层：ghost pill 上方的浮层，模型菜单与思维链滑杆共用 ——
+ * 弹层 Portal 到 body + fixed 定位（同 user-menu 折叠态）：composer 包在
+ * GlassPanel 里，面板 overflow:hidden 会把向上的弹层裁掉。打开瞬间按 pill
+ * 当前位置算一次坐标（浮层是瞬态的，不跟随滚动）；点弹层外任意处或 Escape 收起。 */
+
+function useAnchoredPopover() {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ left: number; bottom: number } | null>(null);
+
+  // Portal 出去的弹层不在 rootRef 内，需单独判断
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (rootRef.current?.contains(target) || popoverRef.current?.contains(target)) return;
+      setOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  const toggle = () => {
+    if (!open && rootRef.current) {
+      const rect = rootRef.current.getBoundingClientRect();
+      setPos({ left: rect.left, bottom: window.innerHeight - rect.top + 8 });
+    }
+    setOpen((v) => !v);
+  };
+
+  return { open, toggle, close: () => setOpen(false), rootRef, popoverRef, pos };
+}
+
+/** 工具行里的安静 pill：描边与底色到 hover 才出现 */
+const PILL_CLASS =
+  "flex h-8 max-w-full items-center gap-1 rounded-xl px-2.5 text-caption text-[var(--text-muted)] transition-colors hover:bg-[var(--glass-fill-hover)] hover:text-[var(--text)] max-md:h-11";
+
 /* —— 安静菜单：ghost pill + 向上弹出的单选列表（maka quiet-menu 的思路） ——
- * 模型选择与思考档位共用。不用原生 <select>：弹层要向上、选中项要打勾、
- * pill 文案要与菜单项分离（pill 只显示当前项，菜单里才是完整清单），原生
- * 控件三样都做不到。弹层 Portal 到 body + fixed 定位（同 user-menu 折叠态）：
- * composer 包在 GlassPanel 里，面板 overflow:hidden 会把向上的弹层裁掉。 */
+ * 不用原生 <select>：弹层要向上、选中项要打勾、pill 文案要与菜单项分离
+ * （pill 只显示当前项，菜单里才是完整清单），原生控件三样都做不到。 */
 
 interface QuietMenuOption {
   key: string;
@@ -523,57 +570,26 @@ function QuietMenu({
   /** 模型清单可能很长：弹层放宽并限高滚动 */
   wide?: boolean;
 }) {
-  const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-  // 打开瞬间按 pill 当前位置算一次 fixed 坐标（菜单是瞬态浮层，不跟随滚动）
-  const [menuPos, setMenuPos] = useState<{ left: number; bottom: number } | null>(null);
-
-  // 点击弹层外任意处收起（Escape 同理）；Portal 出去的菜单不在 rootRef 内，需单独判断
-  useEffect(() => {
-    if (!open) return;
-    const onPointerDown = (event: PointerEvent) => {
-      const target = event.target as Node;
-      if (rootRef.current?.contains(target) || menuRef.current?.contains(target)) return;
-      setOpen(false);
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("pointerdown", onPointerDown);
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("pointerdown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown);
-    };
-  }, [open]);
-
-  const toggleOpen = () => {
-    if (!open && rootRef.current) {
-      const rect = rootRef.current.getBoundingClientRect();
-      setMenuPos({ left: rect.left, bottom: window.innerHeight - rect.top + 8 });
-    }
-    setOpen((v) => !v);
-  };
+  const { open, toggle, close, rootRef, popoverRef, pos } = useAnchoredPopover();
 
   // 长清单（模型）打开时把当前项滚进视野，用户一眼看到自己选的是哪个
   useEffect(() => {
     if (!open) return;
-    menuRef.current
+    popoverRef.current
       ?.querySelector<HTMLElement>('[aria-selected="true"]')
       ?.scrollIntoView({ block: "nearest" });
-  }, [open]);
+  }, [open, popoverRef]);
 
-  const menu = open && menuPos && (
+  const menu = open && pos && (
     <div
-      ref={menuRef}
+      ref={popoverRef}
       role="listbox"
       aria-label={ariaLabel}
       className={`menu-surface p-1.5 ${
         wide ? "max-h-72 min-w-[12rem] max-w-[22rem] overflow-y-auto" : "min-w-[8rem]"
       }`}
       // .menu-surface 自带 position:relative，须整体覆盖为 fixed
-      style={{ position: "fixed", left: menuPos.left, bottom: menuPos.bottom, zIndex: 50 }}
+      style={{ position: "fixed", left: pos.left, bottom: pos.bottom, zIndex: 50 }}
     >
       {options.map((option) => (
         <button
@@ -584,7 +600,7 @@ function QuietMenu({
           title={option.label}
           onClick={() => {
             option.onSelect();
-            setOpen(false);
+            close();
           }}
           className={`flex w-full items-center justify-between gap-3 rounded-[10px] px-2.5 py-1.5 text-left text-ui transition-colors hover:bg-white/[0.06] ${
             option.selected ? "text-[var(--text)]" : "text-[var(--text-muted)]"
@@ -606,8 +622,8 @@ function QuietMenu({
         aria-haspopup="listbox"
         aria-expanded={open}
         disabled={disabled}
-        onClick={toggleOpen}
-        className="flex h-8 max-w-full items-center gap-1 rounded-xl px-2.5 text-caption text-[var(--text-muted)] transition-colors hover:bg-[var(--glass-fill-hover)] hover:text-[var(--text)] max-md:h-11"
+        onClick={toggle}
+        className={PILL_CLASS}
       >
         <span className="min-w-0 truncate">{pillLabel}</span>
         <ChevronRightIcon
@@ -651,7 +667,13 @@ function ModelMenu({
   );
 }
 
-/* —— 思考档位：pill 只显示当前档，菜单里是「默认 + 该模型声明的档位」。 —— */
+/* —— 思维链强度：pill 只显示当前档位本身；弹层是一根横向离散滑杆 ——
+ * 强度是有序量（越右想得越深、越慢），滑杆比列表更贴合它的语义：
+ *   标题行  「强度  高」            右侧「恢复默认」（选了档位才出现）
+ *   轴标签  「更快 ……… 更聪明」
+ *   滑杆     ●──●──◉──●──●   刻度 = 该模型声明的档位，按统一词汇表排序
+ * 「默认」= 不发任何参数、用模型自身行为，不是强度轴上的一点，所以不占
+ * 刻度：默认态滑杆无滑块，点任一刻度即选中；键盘左右键在刻度间移动。 */
 
 function ThinkingLevelMenu({
   levels,
@@ -664,22 +686,123 @@ function ThinkingLevelMenu({
   disabled?: boolean;
   onChange: (level: string | null) => void;
 }) {
+  const { open, toggle, rootRef, popoverRef, pos } = useAnchoredPopover();
+  // 服务端下发的菜单按统一词汇表归一排序（声明不是有序集合）
+  const stops = THINKING_LEVEL_ORDER.filter((level) => levels.includes(level));
+  const index = value === null ? -1 : stops.indexOf(value);
   const currentLabel = value === null ? "默认" : (THINKING_LEVEL_LABELS[value] ?? value);
-  const options: { value: string | null; label: string }[] = [
-    { value: null, label: "默认" },
-    ...levels.map((level) => ({ value: level, label: THINKING_LEVEL_LABELS[level] ?? level })),
-  ];
+  // 滑块位置：刻度均匀分布在轨道两端之间
+  const percent = (i: number) => (stops.length > 1 ? (i / (stops.length - 1)) * 100 : 50);
+
+  const onKeyDown = (event: React.KeyboardEvent) => {
+    if (stops.length === 0) return;
+    if (event.key === "ArrowRight" || event.key === "ArrowUp") {
+      event.preventDefault();
+      onChange(stops[Math.min(index + 1, stops.length - 1)]);
+    } else if (event.key === "ArrowLeft" || event.key === "ArrowDown") {
+      event.preventDefault();
+      onChange(stops[Math.max(index - 1, 0)]);
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      onChange(stops[0]);
+    } else if (event.key === "End") {
+      event.preventDefault();
+      onChange(stops[stops.length - 1]);
+    }
+  };
+
+  const panel = open && pos && (
+    <div
+      ref={popoverRef}
+      role="group"
+      aria-label="思维链强度"
+      className="menu-surface w-[18rem] p-4"
+      style={{ position: "fixed", left: pos.left, bottom: pos.bottom, zIndex: 50 }}
+    >
+      <div className="flex items-baseline justify-between gap-3">
+        <p className="text-ui text-[var(--text-muted)]">
+          强度
+          <span className="ml-2 text-body font-medium text-[var(--text)]">{currentLabel}</span>
+        </p>
+        {value !== null ? (
+          <button
+            type="button"
+            onClick={() => onChange(null)}
+            className="rounded-md px-1.5 py-0.5 text-caption text-[var(--text-faint)] transition-colors hover:bg-white/[0.06] hover:text-[var(--text)]"
+          >
+            恢复默认
+          </button>
+        ) : (
+          <span className="text-caption text-[var(--text-faint)]">由模型自行决定</span>
+        )}
+      </div>
+      <div className="mt-3 flex items-center justify-between text-caption text-[var(--text-faint)]">
+        <span>更快</span>
+        <span>更聪明</span>
+      </div>
+      {/* 轨道：横向，刻度点均布；滑块与已选左侧的亮段按索引定位 */}
+      <div
+        role="slider"
+        tabIndex={0}
+        aria-valuemin={0}
+        aria-valuemax={Math.max(stops.length - 1, 0)}
+        aria-valuenow={index < 0 ? undefined : index}
+        aria-valuetext={currentLabel}
+        onKeyDown={onKeyDown}
+        className="relative mt-2 h-8 rounded-full bg-white/[0.06] outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/60"
+      >
+        {index >= 0 && (
+          <div
+            aria-hidden
+            className="absolute inset-y-0 left-0 rounded-full bg-white/[0.08]"
+            style={{ width: `calc(${percent(index)}% )` }}
+          />
+        )}
+        {stops.map((level, i) => (
+          <button
+            key={level}
+            type="button"
+            tabIndex={-1}
+            aria-label={THINKING_LEVEL_LABELS[level] ?? level}
+            title={THINKING_LEVEL_LABELS[level] ?? level}
+            onClick={() => onChange(level)}
+            // 命中区域比可见的小圆点大得多，方便点选；点本身用伪装的小圆
+            className="absolute top-1/2 flex size-8 -translate-x-1/2 -translate-y-1/2 items-center justify-center"
+            style={{ left: `calc(1rem + (100% - 2rem) * ${percent(i) / 100})` }}
+          >
+            <span
+              className={`block size-1.5 rounded-full ${
+                i <= index ? "bg-white/50" : "bg-white/25"
+              }`}
+            />
+          </button>
+        ))}
+        {index >= 0 && (
+          <span
+            aria-hidden
+            className="pointer-events-none absolute top-1/2 h-7 w-7 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow-[0_1px_6px_rgba(0,0,0,0.4)]"
+            style={{ left: `calc(1rem + (100% - 2rem) * ${percent(index) / 100})` }}
+          />
+        )}
+      </div>
+    </div>
+  );
+
   return (
-    <QuietMenu
-      ariaLabel="思维链强度"
-      pillLabel={`思考 · ${currentLabel}`}
-      disabled={disabled}
-      options={options.map((option) => ({
-        key: option.value ?? "default",
-        label: option.label,
-        selected: option.value === value,
-        onSelect: () => onChange(option.value),
-      }))}
-    />
+    <div ref={rootRef} className="relative shrink-0">
+      {panel && createPortal(panel, document.body)}
+      <button
+        type="button"
+        aria-label={`思维链强度：${currentLabel}`}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        disabled={disabled}
+        onClick={toggle}
+        title="思维链强度"
+        className={`${PILL_CLASS} ${value !== null ? "bg-white/[0.06] text-[var(--text)]" : ""}`}
+      >
+        {currentLabel}
+      </button>
+    </div>
   );
 }
