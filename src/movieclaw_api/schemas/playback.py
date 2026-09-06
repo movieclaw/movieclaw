@@ -261,12 +261,12 @@ class PlaybackWatchStatsView(BaseModel):
     )
     top_titles: list[PlaybackStatsTitleRow]
     hidden_title_count: int = Field(default=0, description="作品榜里不在你可见范围内的条数")
-    favorite: PlaybackStatsTitleRow | None = Field(
-        default=None,
-        description="本期最受欢迎：看过的成员最多，并列取时长长的；与作品榜（按时长）口径不同",
+    favorites: list[PlaybackStatsTitleRow] = Field(
+        default_factory=list,
+        description="本期最受欢迎前三：看过的成员最多，并列取时长长的；与作品榜（按时长）口径不同",
     )
-    previous_favorite: PlaybackStatsTitleRow | None = Field(
-        default=None, description="上一周期的最受欢迎，用来说「蝉联」还是「上期是谁」"
+    previous_favorites: list[PlaybackStatsTitleRow] = Field(
+        default_factory=list, description="上一周期的前三，用来标「蝉联 / 上期第 n / 新上榜」"
     )
 
 

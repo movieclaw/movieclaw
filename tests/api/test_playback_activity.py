@@ -679,8 +679,8 @@ async def test_playback_log_records_each_session_and_feeds_stats(client: TestCli
     assert stats["top_titles"][0]["media"]["title"] == "盗梦空间"
     assert stats["top_titles"][0]["plays"] == 2
     assert stats["top_titles"][0]["members"] == 1
-    assert stats["favorite"]["media"]["title"] == "盗梦空间"
-    assert stats["previous_favorite"] is None
+    assert [r["media"]["title"] for r in stats["favorites"]] == ["盗梦空间"]
+    assert stats["previous_favorites"] == []
 
 
 async def test_favorite_title_counts_members_not_hours(client: TestClient) -> None:
@@ -708,9 +708,9 @@ async def test_favorite_title_counts_members_not_hours(client: TestClient) -> No
 
     stats = client.get("/api/v1/playback/stats/watch", params={"days": 7}).json()["data"]
     assert stats["top_titles"][0]["media"]["title"] == "长剧"  # 时长榜
-    assert stats["favorite"]["media"]["title"] == "疯狂动物城"  # 人气
-    assert stats["favorite"]["members"] == 3
-    assert stats["previous_favorite"]["media"]["title"] == "长剧"
+    assert [r["media"]["title"] for r in stats["favorites"]] == ["疯狂动物城", "长剧"]  # 人气
+    assert stats["favorites"][0]["members"] == 3
+    assert [r["media"]["title"] for r in stats["previous_favorites"]] == ["长剧"]
 
 
 async def test_playback_history_pages_by_cursor_without_duplicates(client: TestClient) -> None:

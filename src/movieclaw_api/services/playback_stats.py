@@ -255,22 +255,29 @@ def _aggregate_titles(rows: list[PlaybackLog]) -> dict[int, _TitleAgg]:
     return titles
 
 
-def _favorite(
+#: 最受欢迎榜的长度（领奖台：金银铜）
+_FAVORITES = 3
+
+
+def _favorites(
     titles: dict[int, _TitleAgg], targets: dict[Unit, MediaActivityTarget]
-) -> PlaybackStatsTitleRow | None:
-    """最受欢迎：看过的成员最多的那部，并列按时长、再按场次。
+) -> list[PlaybackStatsTitleRow]:
+    """最受欢迎前三：看过的成员最多，并列按时长、再按场次。
 
     与作品榜「看得最多」（按时长）是两个问题：一个人刷完一整季会稳居时长榜首，
     但三个成员各看一遍的电影才是「家里谁都在看的」。家庭服务器成员就三五个，
-    并列很常见，第二排序键不能省。范围外的作品跳过，退到下一部可见的。
+    并列很常见，第二排序键不能省。范围外的作品跳过，由后面可见的顶上。
     """
+    rows: list[PlaybackStatsTitleRow] = []
     for agg in sorted(
         titles.values(), key=lambda t: (len(t.members), t.watched_ms, t.plays), reverse=True
     ):
         target = targets.get(agg.unit)
         if target is not None:
-            return agg.row(target)
-    return None
+            rows.append(agg.row(target))
+            if len(rows) == _FAVORITES:
+                break
+    return rows
 
 
 def _totals(rows: list[PlaybackLog]) -> PlaybackStatsTotals:
@@ -395,6 +402,6 @@ async def playback_stats(
         by_tier=by_tier,
         top_titles=top_titles,
         hidden_title_count=hidden_titles,
-        favorite=_favorite(titles, targets),
-        previous_favorite=_favorite(_aggregate_titles(previous_rows), previous_targets),
+        favorites=_favorites(titles, targets),
+        previous_favorites=_favorites(_aggregate_titles(previous_rows), previous_targets),
     )

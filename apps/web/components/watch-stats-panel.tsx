@@ -611,65 +611,172 @@ function HourHeatmap({ matrix }: { matrix: number[][] }) {
 }
 
 // ---------------------------------------------------------------------------
-// 最受欢迎：整页唯一的图像锚点
+// 最受欢迎：领奖台，整页唯一允许「隆重」的地方
 // ---------------------------------------------------------------------------
 
 /**
- * 本期最受欢迎的一部：看过的成员最多，并列取时长长的。与「看得最多」（按时长）是
- * 两个问题，同一部片同时占两头也是信息——既有人看又看得久。钻取到单个成员时人数
- * 没有意义，退成「TA 本期看得最多」。右侧对照上一周期：同一部就是「蝉联」。
+ * 金银铜三枚徽标：底色是金属感的斜向渐变，外圈一点同色辉光，数字用深色压在上面
+ * 保证对比；卡片底色带同色的极淡渐变，三张卡不用看数字也分得出名次。
  */
-function FavoriteStrip({
-  favorite,
+const MEDALS = [
+  {
+    face: "linear-gradient(135deg, #ffe89a 0%, #f2b83d 48%, #b06f14 100%)",
+    glow: "rgba(242, 184, 61, 0.45)",
+    tint: "rgba(242, 184, 61, 0.11)",
+  },
+  {
+    face: "linear-gradient(135deg, #f7f9fc 0%, #c5ced9 48%, #74808f 100%)",
+    glow: "rgba(197, 206, 217, 0.35)",
+    tint: "rgba(197, 206, 217, 0.07)",
+  },
+  {
+    face: "linear-gradient(135deg, #f3c19a 0%, #c9824d 48%, #74421c 100%)",
+    glow: "rgba(201, 130, 77, 0.38)",
+    tint: "rgba(201, 130, 77, 0.08)",
+  },
+] as const;
+
+function RankBadge({ rank, large }: { rank: number; large: boolean }) {
+  const medal = MEDALS[rank];
+  return (
+    <span
+      aria-label={`第 ${rank + 1} 名`}
+      className={`tnum inline-flex items-center justify-center rounded-full font-black text-[#1b1509] ring-2 ring-[#0b0d13] ${
+        large ? "size-9 text-[15px]" : "size-7 text-[12px]"
+      }`}
+      style={{
+        background: medal.face,
+        boxShadow: `0 0 ${large ? 20 : 14}px ${medal.glow}, inset 0 1px 0 rgba(255,255,255,0.65)`,
+      }}
+    >
+      {rank + 1}
+    </span>
+  );
+}
+
+/** 与上一周期前三的对照：同名次「蝉联」，换了名次「上期第 n」，上期不在榜「新上榜」。 */
+function rankChange(
+  row: PlaybackStatsTitleRow,
+  rank: number,
+  previous: PlaybackStatsTitleRow[],
+): { text: string; tone: string } | null {
+  if (previous.length === 0) return null;
+  const was = previous.findIndex((p) => p.media.media_item_id === row.media.media_item_id);
+  if (was === rank) return { text: "蝉联", tone: "bg-[var(--ok)]/15 text-[var(--ok)]" };
+  if (was === -1) return { text: "新上榜", tone: "bg-[var(--info)]/15 text-[var(--info)]" };
+  return {
+    text: `${was > rank ? "▲" : "▼"} 上期第 ${was + 1}`,
+    tone: was > rank ? "bg-[var(--ok)]/15 text-[var(--ok)]" : "bg-white/[0.08] text-white/55",
+  };
+}
+
+function PodiumCard({
+  row,
+  rank,
+  large,
+  drilled,
+  previous,
+}: {
+  row: PlaybackStatsTitleRow;
+  rank: number;
+  large: boolean;
+  drilled: boolean;
+  previous: PlaybackStatsTitleRow[];
+}) {
+  const medal = MEDALS[rank];
+  const change = rankChange(row, rank, previous);
+  // 小卡片一行放不下三段，人数单独一行，别让「· 7 场」孤零零折到下一行
+  const usage = `${formatWatched(row.watched_ms)} · ${row.plays} 场`;
+  const audience = drilled ? null : `${row.members} 位成员看过`;
+  const meta = large && audience ? [`${audience} · ${usage}`] : [audience, usage].filter(Boolean);
+  return (
+    <div
+      className={`flex items-center rounded-xl border border-white/[0.08] ${
+        large ? "gap-4 p-3.5 pr-4" : "gap-3 p-3"
+      }`}
+      style={{ background: `linear-gradient(135deg, ${medal.tint}, rgba(255,255,255,0.02) 65%)` }}
+    >
+      <div className="relative shrink-0">
+        <PosterImage
+          src={row.media.poster_url ? imageUrl(row.media.poster_url) : null}
+          alt={row.media.title}
+          className={`object-cover ring-1 ring-white/10 ${
+            large ? "h-[132px] w-[88px] rounded-xl" : "h-[84px] w-[56px] rounded-lg"
+          }`}
+        />
+        <span className="absolute -left-2 -top-2">
+          <RankBadge rank={rank} large={large} />
+        </span>
+      </div>
+      <div className="min-w-0 flex-1">
+        <TitleText media={row.media} episode={false} large={large} />
+        {meta.map((line) => (
+          <p key={line} className="tnum mt-1 text-caption leading-5 text-white/45">
+            {line}
+          </p>
+        ))}
+        {change && (
+          <p className="mt-2">
+            <span
+              className={`tnum rounded-md px-1.5 py-0.5 text-[11px] font-semibold ${change.tone}`}
+            >
+              {change.text}
+            </span>
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 本期最受欢迎前三：看过的成员最多，并列取时长长的。与「看得最多」（按时长）是
+ * 两个问题，同一部片同时占两头也是信息——既有人看又看得久。第一名的卡片更大、
+ * 海报更高；钻取到单个成员时人数没有意义，退成「TA 本期看得最多」。
+ */
+function FavoritePodium({
+  favorites,
   previous,
   memberId,
 }: {
-  favorite: PlaybackStatsTitleRow | null;
-  previous: PlaybackStatsTitleRow | null;
+  favorites: PlaybackStatsTitleRow[];
+  previous: PlaybackStatsTitleRow[];
   memberId: number | null;
 }) {
-  if (!favorite) return null;
+  if (favorites.length === 0) return null;
   const drilled = memberId != null;
-  const eyebrow = drilled ? "本期看得最多" : "本期最受欢迎";
-  const same = previous?.media.media_item_id === favorite.media.media_item_id;
-  const meta = [
-    drilled ? null : `${favorite.members} 位成员看过`,
-    formatWatched(favorite.watched_ms),
-    `${favorite.plays} 场`,
-  ]
-    .filter(Boolean)
-    .join(" · ");
+  const [first, ...rest] = favorites;
+  // 不足三部时列数跟着少，别留空位
+  const columns = ["1.5fr", ...rest.map(() => "1fr")].join(" ");
   return (
     <section
-      aria-label={eyebrow}
-      className="flex items-center gap-4 rounded-2xl border border-white/[0.08] bg-white/[0.02] p-3 pr-4 max-md:gap-3"
+      aria-label={drilled ? "本期看得最多" : "本期最受欢迎"}
+      className="rounded-2xl border border-white/[0.08] bg-white/[0.02] p-3"
     >
-      <PosterImage
-        src={favorite.media.poster_url ? imageUrl(favorite.media.poster_url) : null}
-        alt={favorite.media.title}
-        className="h-[84px] w-[56px] shrink-0 rounded-xl object-cover ring-1 ring-white/10"
-      />
-      <div className="min-w-0 flex-1">
-        <p className="text-caption font-semibold text-white/55">{eyebrow}</p>
-        <div className="mt-1">
-          <TitleText media={favorite.media} episode={false} />
-        </div>
-        <p className="tnum mt-1 text-caption text-white/45">{meta}</p>
-      </div>
-      {previous && (
-        <p className="shrink-0 text-right text-caption text-white/40 max-md:hidden">
-          {same ? (
-            <span className="rounded-md bg-[var(--ok)]/15 px-1.5 py-0.5 font-semibold text-[var(--ok)]">
-              蝉联
-            </span>
-          ) : (
-            <>
-              上期
-              <span className="ml-1 text-white/60">《{previous.media.title}》</span>
-            </>
-          )}
+      <div className="mb-2.5 flex items-baseline gap-2 px-1">
+        <p className="text-caption font-semibold text-white/55">
+          {drilled ? "本期看得最多" : "本期最受欢迎"}
         </p>
-      )}
+        <p className="text-[11px] text-white/30">
+          {drilled ? "按观看时长" : "按看过的人数，并列看时长"}
+        </p>
+      </div>
+      <div
+        className="grid gap-2.5 md:[grid-template-columns:var(--podium-cols)]"
+        style={{ "--podium-cols": columns } as React.CSSProperties}
+      >
+        <PodiumCard row={first} rank={0} large drilled={drilled} previous={previous} />
+        {rest.map((row, i) => (
+          <PodiumCard
+            key={row.media.media_item_id}
+            row={row}
+            rank={i + 1}
+            large={false}
+            drilled={drilled}
+            previous={previous}
+          />
+        ))}
+      </div>
     </section>
   );
 }
@@ -756,9 +863,9 @@ export function WatchStatsPanel({
         <TrendChart stats={stats} metric={metric} />
       </div>
 
-      <FavoriteStrip
-        favorite={stats.favorite}
-        previous={stats.previous_favorite}
+      <FavoritePodium
+        favorites={stats.favorites}
+        previous={stats.previous_favorites}
         memberId={memberId}
       />
 

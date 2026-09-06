@@ -56,10 +56,13 @@ function detailHref(media: MediaActivityTarget): Route | null {
 export function TitleText({
   media,
   episode = true,
+  large = false,
 }: {
   media: MediaActivityTarget;
   /** 剧集是否带上「S01E03 第 3 集」；按作品聚合的地方（最受欢迎）只要剧名 */
   episode?: boolean;
+  /** 领奖台第一名用的大号标题 */
+  large?: boolean;
 }) {
   const unit = episode ? unitLabel(media) : null;
   const href = detailHref(media);
@@ -78,7 +81,10 @@ export function TitleText({
     </>
   );
   return (
-    <OverflowText lines={1} className="text-ui font-semibold text-white/90">
+    <OverflowText
+      lines={large ? 2 : 1}
+      className={`text-white/90 ${large ? "text-[17px] font-bold leading-6" : "text-ui font-semibold"}`}
+    >
       {href ? (
         <Link href={href} className="transition hover:text-white">
           {text}
