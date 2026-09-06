@@ -98,7 +98,6 @@ export function LibraryManageRow({
   const inventory = inventoryLabel(library);
   const meta = LIBRARY_KIND_META[library.kind];
   const notes = configNotes(library);
-  const extraRoots = library.root_paths.length - 1;
 
   return (
     <div
@@ -161,8 +160,8 @@ export function LibraryManageRow({
             {accessRestricted(library) && <AccessChip library={library} />}
           </div>
           {/* 第二行小字的顺序是「类型 · 备注 · 根目录」：根目录最长，放最后，窄屏下
-              整体换到下一行而不是把备注拆散；手机端它固定独占一行（basis-full），
-              只有一行都放不下时才截尾（悬停 title 里有全文） */}
+              整体换到下一行而不是把备注拆散，只有一行都放不下时才截尾（悬停 title
+              里有全文）。手机端根目录不在这里：库名块只留两行，与缩略图等高 */}
           <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-caption text-[var(--text-faint)]">
             <span>{LIBRARY_KIND_LABELS[library.kind]}</span>
             {/* 手机端没有库存列，主数字并进这行 */}
@@ -175,24 +174,20 @@ export function LibraryManageRow({
                 </span>
               </span>
             ))}
-            <span className="flex min-w-0 max-w-full items-center gap-x-1.5 max-md:basis-full">
-              <span aria-hidden className="shrink-0 max-md:hidden">
+            <span className="flex min-w-0 max-w-full items-center gap-x-1.5 max-md:hidden">
+              <span aria-hidden className="shrink-0">
                 ·
               </span>
-              <span
-                className="min-w-0 truncate font-mono text-[var(--text-muted)]"
-                title={library.root_paths.join("\n")}
-              >
-                {library.root_paths[0] ?? "—"}
-              </span>
-              {extraRoots > 0 && (
-                <span className="shrink-0" title={library.root_paths.slice(1).join("\n")}>
-                  +{extraRoots} 个根目录
-                </span>
-              )}
+              <RootPath library={library} />
             </span>
           </div>
         </div>
+      </div>
+
+      {/* 手机端根目录：独占卡片一整行，放在库名块下方——库名块只有两行时缩略图
+          与文字等高、不再上下露边，路径也拿到整个卡片宽度，不必早早截尾 */}
+      <div className="hidden min-w-0 items-center gap-x-1.5 text-caption text-[var(--text-faint)] max-md:col-span-2 max-md:-mt-0.5 max-md:flex">
+        <RootPath library={library} />
       </div>
 
       {/* 库存：定宽右对齐的两行数字，都是次要信息，不抢库名与状态的戏 */}
@@ -226,6 +221,26 @@ function AccessChip({ library }: { library: MediaLibrary }) {
       {!library.viewer_access && <LockIcon className="size-2.5" aria-label="你不在浏览范围内" />}
       {accessLabel(library)}
     </span>
+  );
+}
+
+/** 主根目录（等宽）+ 多根时的「+N 个根目录」；桌面端接在小字行末，手机端独占一行，两处共用。 */
+function RootPath({ library }: { library: MediaLibrary }) {
+  const extra = library.root_paths.length - 1;
+  return (
+    <>
+      <span
+        className="min-w-0 truncate font-mono text-[var(--text-muted)]"
+        title={library.root_paths.join("\n")}
+      >
+        {library.root_paths[0] ?? "—"}
+      </span>
+      {extra > 0 && (
+        <span className="shrink-0" title={library.root_paths.slice(1).join("\n")}>
+          +{extra} 个根目录
+        </span>
+      )}
+    </>
   );
 }
 
