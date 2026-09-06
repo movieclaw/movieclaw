@@ -535,21 +535,38 @@ async def _persistent_metadata_refresh_view(
 @router.get(
     "",
     response_model=ApiResponse[list[LibraryView]],
-    summary="列出全部媒体库（含库存统计，可按类型过滤）",
+    summary="列出媒体库（含库存统计，可按类型过滤；默认只列当前身份可浏览的库）",
     operation_id="library.list",
 )
 async def list_libraries(
     kind: str | None = Query(default=None, description="movie / tv，缺省全部"),
+    scope: Literal["visible", "all"] = Query(
+        default="visible",
+        description=(
+            "visible=只列当前身份可浏览的库，与网页首页看到的一致；"
+            "all=超管与令牌主体连同不在自己浏览范围内、只有管理权的库一起列出"
+            "（这些库 viewer_access=false）。成员两种口径结果相同"
+        ),
+    ),
     principal: Principal = Depends(require_login),
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[list[LibraryView]]:
+    """默认口径是「可浏览」——与网页首页、最近观看、全局搜索同一集合
+    （docs/design/library-access.md §2.5）。
+
+    超管把自己摘出浏览范围的库、以及令牌主体（CLI / Agent）看不到的「指定成员」
+    库，默认不出现：令牌主体拿到的列表要和它随后能访问的内容一致，否则
+    ``library list`` 列出一个库、``library items list`` 却 404，Agent 会把这当成
+    故障。只有网页管理页与明确要看「全部可管理的库」的调用方传 ``scope=all``，
+    此时范围外的库以 ``viewer_access=false`` 标出，供渲染带锁的管理卡片。
+    """
     service = LibraryConfigService(session)
     rows = await service.list_all(kind=kind)
-    # 成员：按可浏览集过滤，并抹掉落盘路径（成员不该知道服务器目录结构）。
-    # 超管：全量保留（管理权），不在浏览范围内的库以 viewer_access=false 标出，
-    # 前端据此渲染带锁的管理卡片而不是海报墙
+    # 可浏览集对所有身份都是具体集合（超管按 admin_visible，令牌主体只有 everyone
+    # 库，成员按白名单）；只有管理员类身份显式要 scope=all 时才连同范围外的库
+    # 一起给。成员没有管理权，scope=all 对他们等价于 visible。
     visible = await visible_library_ids(session, principal)
-    if not principal.is_admin:
+    if scope == "visible" or not principal.is_admin:
         rows = [r for r in rows if r.id in visible]
     members_by_library = await _member_ids_by_library(session) if principal.is_admin else {}
     # 逐库 await 一次 list_jobs 就是一次 N+1：79 个库 = 79 次 join 查询，
@@ -594,6 +611,7 @@ async def list_libraries(
         )
         for r in rows
     ]
+    # 成员：抹掉落盘路径（成员不该知道服务器目录结构）
     if not principal.is_admin:
         for view in views:
             view.root_paths = []

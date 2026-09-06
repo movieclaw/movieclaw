@@ -17,6 +17,7 @@ import movieclaw_api.services.media_discover as discover_mod
 from movieclaw_api.api.routes.people import get_person
 from movieclaw_api.core.config import get_settings
 from movieclaw_api.exceptions import NotFoundException
+from movieclaw_api.services.auth import Principal
 from movieclaw_api.services.library.scan import scan_library
 from movieclaw_db.engine import dispose_db, get_database, init_db
 from movieclaw_db.migrations import run_migrations
@@ -24,6 +25,8 @@ from movieclaw_db.models import MediaItem, MediaItemPerson, Person
 from movieclaw_db.repositories.library_repo import LibraryRepository
 
 _KEY = "0123456789abcdef0123456789abcdef"
+# 路由直调时的请求主体：超管会话，库默认对超管可见，作品不受可见范围过滤
+_ADMIN = Principal(kind="admin", name="admin", member_id=0, is_admin=True)
 
 
 def _movie(tmdb_id: int, title: str, *, cast: list[dict], directors: list[dict]) -> dict:
@@ -118,7 +121,7 @@ async def test_person_page_lists_library_credits(db, tmp_path) -> None:
     library_id = await _scan_two_movies(db, tmp_path)
 
     async with db.session() as session:
-        view = (await get_person(901, session)).data  # 张国立
+        view = (await get_person(901, session, _ADMIN)).data  # 张国立
 
     assert view.name == "张国立"
     assert view.avatar_url and view.avatar_url.endswith("/w300/z.jpg")
@@ -135,7 +138,7 @@ async def test_person_page_covers_director(db, tmp_path) -> None:
     await _scan_two_movies(db, tmp_path)
 
     async with db.session() as session:
-        view = (await get_person(902, session)).data  # 冯小刚
+        view = (await get_person(902, session, _ADMIN)).data  # 冯小刚
 
     assert view.name == "冯小刚"
     assert [(c.title, c.department, c.character) for c in view.credits] == [
@@ -174,7 +177,7 @@ async def test_person_not_in_library_returns_404(db, tmp_path) -> None:
 
     async with db.session() as session:
         with pytest.raises(NotFoundException):
-            await get_person(999999, session)
+            await get_person(999999, session, _ADMIN)
 
 
 async def test_stale_credit_is_removed_on_refresh(db, tmp_path) -> None:
@@ -200,7 +203,7 @@ async def test_stale_credit_is_removed_on_refresh(db, tmp_path) -> None:
     await scrape_media_item(item_id, force=True)
 
     async with db.session() as session:
-        view = (await get_person(901, session)).data
+        view = (await get_person(901, session, _ADMIN)).data
         links = (
             await session.execute(
                 select(MediaItemPerson).where(MediaItemPerson.media_item_id == item_id)
@@ -253,4 +256,4 @@ async def test_person_without_any_credit_returns_404(db, tmp_path) -> None:
         # 影人行仍在（只增不删），但已经没有任何作品
         assert (await session.execute(select(Person))).scalars().first() is not None
         with pytest.raises(NotFoundException):
-            await get_person(901, session)
+            await get_person(901, session, _ADMIN)

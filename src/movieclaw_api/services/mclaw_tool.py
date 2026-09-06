@@ -40,7 +40,9 @@ _DOMAIN_LINES = {
     "订阅的在途下载进度看 subscriptions list-active-downloads）",
     "library": "library  本地电影/剧集媒体库（建库与默认路由，扫描和规范命名入库；查看库存"
     "条目与物理文件，处理待识别/错识别/缺失内容，并管理元数据、图片、字幕和跨库转移；"
-    "organize-files 按 scrape 里配的命名模板把存量文件批量改名归位，可反复执行）",
+    "list 默认只列当前身份可浏览的库（与网页首页一致），用户明确要看全部可管理的库时"
+    "加 --scope all；organize-files 按 scrape 里配的命名模板把存量文件批量改名归位，"
+    "可反复执行）",
     "llm": "llm      AI 模型供应商（接入 OpenAI、阿里云百炼或任意 OpenAI 兼容服务，选择模型"
     "并验证连通性，供 AI 对话等智能能力使用）",
     "net": "net      网络与代理（配置全局/指定服务代理及镜像地址，立即生效；按 TMDB/豆瓣/"

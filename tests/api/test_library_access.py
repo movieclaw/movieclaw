@@ -1,13 +1,15 @@
 """媒体库可见范围（docs/design/library-access.md）的端到端测试。
 
 覆盖：
-1. 超管把自己摘出范围：库列表仍列出（viewer_access=false）、配置可读、
-   管理动作可用，但海报墙 / 封面 / 条目图片一律 404；勾回自己即恢复；
+1. 超管把自己摘出范围：库列表默认口径不列出、scope=all 才列出（viewer_access=false），
+   配置可读、管理动作可用，但海报墙 / 封面 / 条目图片一律 404；勾回自己即恢复；
 2. 「指定成员」的库对 all_libraries 成员默认不可见；库设置页勾选成员后可见，
    且与成员管理页的 library_ids 是同一份数据（互通）；
 3. 最近观看 / 活动页对范围外的库：首页不出现，活动页只报个数不出片名；
 4. 清除观看记录：三种范围只删自己的，其他成员不受影响，范围外的库 404；
-5. 令牌主体只看 everyone 库（不继承超管授权）。
+5. 令牌主体只看 everyone 库（不继承超管授权）：库列表默认只列可浏览的库，
+   scope=all 才连同只有管理权的库一起列出；
+6. 人物页的作品按可浏览集过滤，范围外的库不漏片名。
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
+from sqlmodel import select
 
 from movieclaw_api.core.config import get_settings
 from movieclaw_api.services.auth import Principal, reset_auth_state
@@ -25,7 +28,7 @@ from movieclaw_api.services.library.access import visible_library_ids
 from movieclaw_api.settings.store import reset_setting_store
 from movieclaw_db.crypto import reset_secret_box
 from movieclaw_db.engine import get_database
-from movieclaw_db.models import LibraryFile, MediaItem, PlaybackState
+from movieclaw_db.models import LibraryFile, MediaItem, MediaItemPerson, Person, PlaybackState
 from movieclaw_db.models.base import utcnow
 
 _AUTH = "/api/v1/auth"
@@ -168,8 +171,10 @@ async def test_admin_out_of_scope_manages_but_cannot_browse(client: TestClient) 
     item = await _seed_item(lib, "生日录像", 1001)
     _write_poster(item)
 
-    # 列表仍列出，但标记为只有管理权
-    rows = {r["id"]: r for r in client.get(_LIBS).json()["data"]}
+    # 默认口径（网页首页、CLI）不列出范围外的库；明确要看全部可管理的库
+    # （scope=all，网页管理台）才列出，并标记为只有管理权
+    assert lib not in {r["id"] for r in client.get(_LIBS).json()["data"]}
+    rows = {r["id"]: r for r in client.get(_LIBS, params={"scope": "all"}).json()["data"]}
     assert rows[lib]["access_mode"] == "selected"
     assert rows[lib]["admin_visible"] is False
     assert rows[lib]["viewer_access"] is False
@@ -189,6 +194,7 @@ async def test_admin_out_of_scope_manages_but_cannot_browse(client: TestClient) 
     # 勾回自己：全部恢复
     updated = _update_library(client, lib, admin_visible=True)
     assert updated["viewer_access"] is True
+    assert lib in {r["id"] for r in client.get(_LIBS).json()["data"]}
     assert client.get(f"{_LIBS}/{lib}/items").status_code == 200
     assert client.get(f"/api/v1/images/assets/{item}/poster.jpg").status_code == 200
 
@@ -356,9 +362,89 @@ async def test_clear_history_since_only_touches_recent_plays(client: TestClient)
 
 async def test_token_principals_only_see_everyone_libraries(client: TestClient) -> None:
     shared = _create_library(client, "电影", "/m/movies")
-    _create_library(client, "私藏", "/m/private", access_mode="selected", admin_visible=True)
+    selected = _create_library(
+        client, "私藏", "/m/private", access_mode="selected", admin_visible=True
+    )
     async with get_database().session() as session:
         pat = Principal(kind="pat", name="cli", is_admin=True, client_type="cli")
         assert await visible_library_ids(session, pat) == {shared}
         admin = Principal(kind="admin", name="admin", member_id=0, is_admin=True)
         assert len(await visible_library_ids(session, admin)) == 2
+
+    # 走 HTTP（模拟 CLI / Agent）：库列表默认与令牌随后能访问的内容一致——
+    # 列出来的库就是能浏览的库，不会出现「list 有、items 却 404」
+    token = client.post(f"{_AUTH}/tokens", json={"name": "cli"}).json()["data"]["token"]
+    cli = TestClient(client.app)
+    cli.headers["Authorization"] = f"Bearer {token}"
+    assert [r["id"] for r in cli.get(_LIBS).json()["data"]] == [shared]
+    assert cli.get(f"{_LIBS}/{selected}/items").status_code == 404
+    # 明确要看全部可管理的库：范围外的以 viewer_access=false 标出；库配置仍可读（管理权）
+    rows = {
+        r["id"]: r["viewer_access"] for r in cli.get(_LIBS, params={"scope": "all"}).json()["data"]
+    }
+    assert rows == {shared: True, selected: False}
+    assert cli.get(f"{_LIBS}/{selected}").status_code == 200
+    # 超管会话本人在浏览范围内：默认口径两个库都列出
+    assert {r["id"] for r in client.get(_LIBS).json()["data"]} == {shared, selected}
+
+
+# ---------------------------------------------------------------------------
+# 6. 人物页：作品按可浏览集过滤，范围外的库不漏片名
+# ---------------------------------------------------------------------------
+
+
+async def _seed_credit(media_item_id: int, tmdb_person_id: int, name: str) -> None:
+    """给条目挂一条演员关系（影人不存在则一并建）。"""
+    async with get_database().session() as session:
+        person = (
+            (await session.execute(select(Person).where(Person.tmdb_person_id == tmdb_person_id)))
+            .scalars()
+            .first()
+        )
+        if person is None:
+            person = Person(tmdb_person_id=tmdb_person_id, name=name)
+            session.add(person)
+            await session.commit()
+        assert person.id is not None
+        session.add(
+            MediaItemPerson(
+                media_item_id=media_item_id,
+                person_id=person.id,
+                department="cast",
+                character="主角",
+            )
+        )
+        await session.commit()
+
+
+async def test_person_page_only_lists_credits_in_visible_libraries(client: TestClient) -> None:
+    shared = _create_library(client, "电影", "/m/movies")
+    hidden = _create_library(
+        client, "私藏", "/m/private", access_mode="selected", admin_visible=False
+    )
+    public_item = await _seed_item(shared, "公开片", 4001)
+    hidden_item = await _seed_item(hidden, "私藏片", 4002)
+    await _seed_credit(public_item, 901, "张国立")
+    await _seed_credit(hidden_item, 901, "张国立")
+    await _seed_credit(hidden_item, 902, "只演过私藏片")
+
+    # 超管不在私藏库的浏览范围内：作品只剩公开库那部；作品全在范围外的人 404
+    credits = client.get("/api/v1/people/901").json()["data"]["credits"]
+    assert [(c["media_item_id"], c["library_id"]) for c in credits] == [(public_item, shared)]
+    assert client.get("/api/v1/people/902").status_code == 404
+
+    # 勾回自己：两部都在，且私藏片能跳到私藏库的详情页
+    _update_library(client, hidden, admin_visible=True)
+    credits = {
+        c["media_item_id"]: c["library_id"]
+        for c in client.get("/api/v1/people/901").json()["data"]["credits"]
+    }
+    assert credits == {public_item: shared, hidden_item: hidden}
+    assert client.get("/api/v1/people/902").status_code == 200
+
+    # 成员（all_libraries）看不到「指定成员」的库，人物页同样不含其中的作品
+    _member_id, member_cookie = _create_member(client)
+    _use(client, member_cookie)
+    credits = client.get("/api/v1/people/901").json()["data"]["credits"]
+    assert [c["media_item_id"] for c in credits] == [public_item]
+    assert client.get("/api/v1/people/902").status_code == 404

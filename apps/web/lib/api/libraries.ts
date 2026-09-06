@@ -421,10 +421,18 @@ export function listLibraryRoutingOptions(): Promise<RoutingOptions> {
   return _routingOptionsCache;
 }
 
-/** 列出全部媒体库（可按类型过滤）。 */
+/**
+ * 列出全部媒体库（可按类型过滤）。
+ *
+ * 网页是管理台，始终按 `scope=all` 取全量：超管不在浏览范围内的库带
+ * `viewer_access=false` 回来，首页据此过滤、管理页据此渲染带锁的管理卡片。
+ * 接口的默认口径（只列可浏览的库）留给 CLI / Agent，它们没有「带锁卡片」
+ * 这种形态，列出来的库必须是随后能访问的库。成员两种口径结果相同。
+ */
 export function listLibraries(kind?: LibraryKind, init?: RequestInit): Promise<MediaLibrary[]> {
-  const qs = kind ? `?kind=${kind}` : "";
-  return unwrap(request<ApiEnvelope<MediaLibrary[]>>(`/libraries${qs}`, init));
+  const params = new URLSearchParams({ scope: "all" });
+  if (kind) params.set("kind", kind);
+  return unwrap(request<ApiEnvelope<MediaLibrary[]>>(`/libraries?${params}`, init));
 }
 
 // 默认库的轻量缓存：搜索结果页大量下载按钮共享一次 /libraries 请求，

@@ -11,10 +11,13 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
+from movieclaw_api.api.deps import require_login
 from movieclaw_api.core.config import get_settings
 from movieclaw_api.exceptions import NotFoundException
 from movieclaw_api.schemas.person import PersonCreditView, PersonView
 from movieclaw_api.schemas.response import ApiResponse, ok
+from movieclaw_api.services.auth import Principal
+from movieclaw_api.services.library.access import visible_library_ids
 from movieclaw_db.engine import get_session
 from movieclaw_db.models import MediaMetadata
 from movieclaw_db.repositories import PersonRepository
@@ -30,23 +33,30 @@ router = APIRouter(prefix="/people", tags=["people"])
     operation_id="people.show",
 )
 async def get_person(
-    tmdb_person_id: int, session: AsyncSession = Depends(get_session)
+    tmdb_person_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_login),
 ) -> ApiResponse[PersonView]:
-    """影人档案 + 他在库内参演/执导的全部条目。
+    """影人档案 + 他在**当前身份可浏览的库**内参演/执导的全部条目。
 
     海报口径与库存海报墙一致：优先本地刮削资产（断网可用），回落 TMDB 图床。
+    作品按请求主体的可浏览库集合过滤（超管、成员、CLI/Agent 令牌同一条判定，
+    docs/design/library-access.md §2.5）：范围外的库不从这里漏出片名与海报。
     """
     repo = PersonRepository(session)
     person = await repo.get_by_tmdb_id(tmdb_person_id)
     if person is None or person.id is None:
         raise NotFoundException("库内没有这个影人的记录")
 
-    credits = await repo.list_credits(person.id)
+    credits = await repo.list_credits(
+        person.id, visible_library_ids=await visible_library_ids(session, principal)
+    )
     if not credits:
         # person 行只增不删（一个人参演多部，删一部不代表这个人该消失），因此
         # 会出现「有这个人、但他的片都已从库里删掉」的孤儿行。此时页面的前提
         # ——「他在我库里的作品」——不成立，给 404 让前端走空状态，
-        # 而不是渲染一个「库内 0 部」的空壳页
+        # 而不是渲染一个「库内 0 部」的空壳页。他的片全在范围外的库里也是
+        # 同一个 404：不泄露「有这个人、但你不能看」
         raise NotFoundException("库内没有这位影人的作品")
 
     base = get_settings().tmdb_image_base_url.rstrip("/")

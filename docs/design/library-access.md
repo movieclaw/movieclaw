@@ -122,7 +122,8 @@ Jellyfin member_id=0 = 同超管会话
 
 | 出口 | 现状 | 改动 |
 |---|---|---|
-| `GET /libraries` | 成员按可见集过滤，超管全量 | 超管全量保留，每库带 `access_mode` / `admin_visible` / `member_ids` / `viewer_access` |
+| `GET /libraries` | 成员按可见集过滤，超管全量 | 默认口径 `scope=visible` 对**所有身份**只列可浏览集（超管与令牌主体也不例外，与首页一致）；`scope=all` 超管 / 令牌主体连同范围外的库一起列出，每库带 `access_mode` / `admin_visible` / `member_ids` / `viewer_access`（网页管理台始终传 `all`，CLI / Agent 只在用户明确要看全部可管理的库时传） |
+| 人物页 `GET /people/{id}` | 跨库全量，不过滤 | 作品按可浏览集过滤：文件全在范围外的库里的条目整行不出，`library_id` 只取可浏览库；作品全在范围外 → 404 |
 | 首页最近添加、封面拼图 | 前端逐库拉 `/items` | 前端只拉 `viewer_access=true` 的库；后端浏览接口对范围外超管 404 |
 | 首页最近观看 `GET /playback/recent` | 成员按可见集，超管不限 | 超管也按可浏览集 |
 | 全局搜索 `GET /search/library-items` | 同上 | 同上 |
@@ -290,4 +291,15 @@ DELETE /playback/history?scope=all
 另外落地的两处收口：库配置读接口新增 `require_library_readable`（超管对任何
 库可读配置，成员仍按可浏览集），成员管理页保存「全部库」的成员时只回写
 「指定成员」模式库的显式授权行，不再把整份白名单清空。
+
+5. **库列表的默认口径改为可浏览集（2026-09-06）**。此前 `GET /libraries` 对
+   `is_admin` 主体一律全量、只靠 `viewer_access` 标记，而 PAT / Agent 令牌也是
+   `is_admin`：`mclaw library list` 因此把「指定成员」的库全列出来，紧接着
+   `library items list` 又 404，Agent 看到的与网页首页不一致。现在接口加
+   `scope=visible|all`（与活动页同名同义），默认 `visible` 对所有身份只列可浏览
+   集；网页 `listLibraries()` 固定传 `all`（首页仍按 `viewer_access` 过滤、管理页
+   渲染带锁卡片，行为零变化），CLI 生成命令自动得到 `--scope`，Agent 工具目录
+   里写明「用户明确要看全部可管理的库时加 --scope all」。同一轮把人物页
+   （`GET /people/{id}`）漏掉的可浏览集过滤补上——它此前对超管、成员、令牌
+   都跨库全量。
 

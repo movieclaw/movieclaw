@@ -44,12 +44,20 @@ class PersonRepository:
         )
         return result.scalars().first()
 
-    async def list_credits(self, person_id: int) -> list[PersonCredit]:
+    async def list_credits(
+        self, person_id: int, *, visible_library_ids: set[int] | None = None
+    ) -> list[PersonCredit]:
         """这个人在库内的全部作品，按「主演在前、同档按年份倒序」排。
 
         排序口径：先按 department（cast 在前，与详情页的呈现顺序一致），
         再按剧组给的主次顺序（credit_order），最后按年份倒序——一个人的
         作品列表里，「他是主角的新片」最该排在前面。
+
+        ``visible_library_ids``：请求主体的可浏览库集合（None=不受限，只给内部
+        流程用）。人物页是跨库聚合面，范围外的库不能从这里漏出片名与海报
+        （docs/design/library-access.md §2.5）：条目的文件全落在范围外的库里就
+        整行不出；``library_id`` 只取可浏览的库，保证前端跳过去的详情页能打开。
+        没有任何台账行的条目（文件已删只剩档案）不属于任何库，照旧保留为不可点。
         """
         rows = (
             await self._session.execute(
@@ -61,9 +69,9 @@ class PersonRepository:
         if not rows:
             return []
 
-        # 条目 → 任一所属库。一次查完再配对，避免逐条目查库（N+1）
+        # 条目 → 所属库集合。一次查完再配对，避免逐条目查库（N+1）
         item_ids = [item.id for _, item in rows if item.id is not None]
-        library_of: dict[int, int] = {}
+        libraries_of: dict[int, set[int]] = {}
         if item_ids:
             for media_item_id, library_id in (
                 await self._session.execute(
@@ -72,19 +80,25 @@ class PersonRepository:
                     )
                 )
             ).all():
-                if media_item_id is not None:
-                    library_of.setdefault(media_item_id, library_id)
+                if media_item_id is not None and library_id is not None:
+                    libraries_of.setdefault(media_item_id, set()).add(library_id)
 
-        credits = [
-            PersonCredit(
-                media_item=item,
-                library_id=library_of.get(item.id) if item.id is not None else None,
-                department=link.department,
-                character=link.character,
-                credit_order=link.credit_order,
+        credits: list[PersonCredit] = []
+        for link, item in rows:
+            libraries = libraries_of.get(item.id, set()) if item.id is not None else set()
+            if visible_library_ids is not None:
+                if libraries and libraries.isdisjoint(visible_library_ids):
+                    continue
+                libraries = libraries & visible_library_ids
+            credits.append(
+                PersonCredit(
+                    media_item=item,
+                    library_id=min(libraries) if libraries else None,
+                    department=link.department,
+                    character=link.character,
+                    credit_order=link.credit_order,
+                )
             )
-            for link, item in rows
-        ]
         credits.sort(
             key=lambda c: (
                 0 if c.department == "cast" else 1,
