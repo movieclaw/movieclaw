@@ -12,6 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from movieclaw_api.core.config import get_settings
+from movieclaw_api.settings import reset_setting_store
 from movieclaw_llm import ChatResponse, LlmConnectError, ProviderInfo
 from movieclaw_llm.base import BaseLlmProtocol
 from movieclaw_llm.models import LlmProviderConfig
@@ -55,6 +56,8 @@ def client(tmp_path, monkeypatch):
     get_settings.cache_clear()
 
     # 用假协议替换 openai_chat 协议实现
+    # 配置存储是进程级单例且带缓存，用例间必须重置，否则上一个用例的 AI 设定会串进来
+    reset_setting_store()
     _captured_configs.clear()
     monkeypatch.setitem(PROTOCOLS, "openai_chat", _FakeProtocol)
 
@@ -195,9 +198,10 @@ def test_test_model_defaults_to_first_catalog_entry(client) -> None:
     assert created["default_model"] == "my-local-model"
 
 
-def test_ai_defaults_fallback_then_configured(client) -> None:
-    """AI 设定：未设置时按第一个实例的连接测试模型兜底；设定后各用途独立生效；
-    引用失效（实例被删）时回到兜底。"""
+def test_ai_defaults_auto_set_on_first_provider_then_configured(client) -> None:
+    """AI 设定的不变量：一个实例都没有时为空；首次接入自动把两个默认设为该实例
+    目录第一个模型（显式写入设定，不是隐式兜底）；之后用户各用途独立改；
+    被引用的实例删除时自动改指最早剩下的实例；全部删除时清空。"""
     c, _ = client
     assert c.get("/api/v1/llm/defaults").json()["data"] == {
         "agent_model": None,
@@ -205,12 +209,21 @@ def test_ai_defaults_fallback_then_configured(client) -> None:
         "effective_agent_model": None,
         "effective_subtitle_model": None,
     }
-    c.post("/api/v1/llm/providers", json=_PAYLOAD)
-    compat = c.post("/api/v1/llm/providers", json=_COMPAT_PAYLOAD).json()["data"]
+    # 首次接入（不指定测试模型）：默认 = 预设目录第一个模型，且是显式存下来的值
+    first_payload = {k: v for k, v in _PAYLOAD.items() if k != "default_model"}
+    bailian = c.post("/api/v1/llm/providers", json=first_payload).json()["data"]
+    presets = {p["id"]: p for p in c.get("/api/v1/llm/presets").json()["data"]}
+    flagship = presets["bailian"]["models"][0]["id"]
     defaults = c.get("/api/v1/llm/defaults").json()["data"]
-    assert defaults["agent_model"] is None
-    assert defaults["effective_agent_model"] == "qwen3.7-max"
-    assert defaults["effective_subtitle_model"] == "qwen3.7-max"
+    assert defaults == {
+        "agent_model": flagship,
+        "subtitle_model": flagship,
+        "effective_agent_model": flagship,
+        "effective_subtitle_model": flagship,
+    }
+    # 再接一家不改动已有设定
+    compat = c.post("/api/v1/llm/providers", json=_COMPAT_PAYLOAD).json()["data"]
+    assert c.get("/api/v1/llm/defaults").json()["data"]["agent_model"] == flagship
 
     r = c.put(
         "/api/v1/llm/defaults",
@@ -230,12 +243,22 @@ def test_ai_defaults_fallback_then_configured(client) -> None:
     r = c.put("/api/v1/llm/defaults", json={"agent_model": "nope"})
     assert r.status_code == 400
     assert "不在已接入供应商的模型清单中" in r.json()["message"]
+    # 传 null = 回到自动推荐（最早实例的第一个模型），不会清空
+    r = c.put("/api/v1/llm/defaults", json={"agent_model": None, "subtitle_model": "qwen3.7-max"})
+    assert r.json()["data"]["agent_model"] == flagship
 
-    # 删除实例后设定失效 → 兜底到第一个实例的测试模型，设定值原样保留供页面提示
-    assert c.delete(f"/api/v1/llm/providers/{compat['id']}").status_code == 200
+    # 删除被引用的实例：改指最早剩下实例的第一个模型（显式改写，不是隐式兜底）
+    c.put(
+        "/api/v1/llm/defaults",
+        json={"agent_model": "my-local-model", "subtitle_model": "qwen3.7-max"},
+    )
+    assert c.delete(f"/api/v1/llm/providers/{bailian['id']}").status_code == 200
     data = c.get("/api/v1/llm/defaults").json()["data"]
-    assert data["agent_model"] == "my-local-model"
-    assert data["effective_agent_model"] == "qwen3.7-max"
+    assert data["agent_model"] == "my-local-model"  # 仍有效，不动
+    assert data["subtitle_model"] == "my-local-model"  # 原指百炼，改指剩下的兼容端点
+    # 全部删除 → 清空
+    assert c.delete(f"/api/v1/llm/providers/{compat['id']}").status_code == 200
+    assert c.get("/api/v1/llm/defaults").json()["data"]["agent_model"] is None
 
 
 def test_duplicate_name_rejected(client) -> None:

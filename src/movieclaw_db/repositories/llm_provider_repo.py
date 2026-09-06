@@ -160,8 +160,8 @@ class LlmProviderRepository:
     async def delete(self, provider_id: int) -> bool:
         """删除某实例。返回是否命中记录。
 
-        AI 设定里指向它的默认模型不在此处清理：设定层按「引用是否仍可解析」
-        动态兜底（见 services.llm_config.effective_defaults）。
+        AI 设定里指向它的默认模型由服务层在删除后改指其它实例
+        （见 services.llm_config.reconcile_defaults）。
         """
         row = await self.get(provider_id)
         if row is None:

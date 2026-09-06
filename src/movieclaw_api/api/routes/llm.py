@@ -56,8 +56,8 @@ async def list_llm_models(
 async def get_llm_defaults(
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[LlmDefaultsView]:
-    """agent_model / subtitle_model 是用户设定（null = 未设置）；effective_* 是
-    实际生效的引用——设定可解析就用设定，否则按第一个实例的连接测试模型兜底。"""
+    """agent_model / subtitle_model 首次接入供应商时自动设为其目录第一个模型，之后
+    由用户改；一个实例都没有时为 null。effective_* 为实际生效值，正常与之一致。"""
     return ok(await LlmConfigService(session).get_defaults())
 
 
@@ -71,7 +71,7 @@ async def update_llm_defaults(
     payload: LlmDefaultsPayload,
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[LlmDefaultsView]:
-    """引用取自 llm.models 的 ref；传 null 清除该用途的设定（回到兜底）。"""
+    """引用取自 llm.models 的 ref；传 null 则回到自动推荐（最早实例的第一个模型）。"""
     view = await LlmConfigService(session).update_defaults(
         agent_model=payload.agent_model, subtitle_model=payload.subtitle_model
     )
@@ -194,6 +194,6 @@ async def delete_llm_provider(
     provider_id: int,
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[dict]:
-    """AI 设定里指向它的默认模型会自动按第一个实例兜底，设置页可重新选择。"""
+    """AI 设定里指向它的默认模型会自动改指最早剩下的实例；全部删除时清空。"""
     await LlmConfigService(session).delete(provider_id)
     return ok({}, message="已删除")

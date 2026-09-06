@@ -19,6 +19,7 @@ from tests.api.test_agent import _StreamProtocol
 from movieclaw_api.core.config import get_settings
 from movieclaw_api.services.agent_attachments import reset_agent_attachment_store
 from movieclaw_api.services.agent_sessions import reset_agent_session_store
+from movieclaw_api.settings import reset_setting_store
 from movieclaw_llm.protocols import PROTOCOLS
 
 #: 每次模型调用实际路由到的 (实例名, 模型 id)
@@ -66,6 +67,8 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("SECRET_KEY_FILE", str(tmp_path / ".secret_key"))
     monkeypatch.setenv("AGENT_SESSIONS_DIR", str(tmp_path / "agent-sessions"))
     get_settings.cache_clear()
+    # 配置存储是进程级单例且带缓存，用例间必须重置，否则上一个用例的 AI 设定会串进来
+    reset_setting_store()
     reset_agent_session_store()
     reset_agent_attachment_store()
     captured_routes.clear()
@@ -130,7 +133,7 @@ def test_bare_id_prefers_default_instance(client) -> None:
 
 def test_new_session_without_model_uses_default(client) -> None:
     configure_two_providers(client)
-    # 未设定：兜底到第一个实例的连接测试模型
+    # 首次接入时自动设定为第一个实例目录里的第一个模型（这里显式指定了 qwen3.7-max）
     session_id = send_and_finish(client, {"content": "你好"})
     assert captured_routes[-1] == ("百炼", "qwen3.7-max")
     assert user_models(client, session_id) == [None]

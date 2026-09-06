@@ -110,9 +110,9 @@ class LlmModelOptionView(BaseModel):
 class LlmDefaultsView(BaseModel):
     """AI 设定（各用途默认模型）的对外视图。
 
-    ``*_model`` 是用户设定的引用（null = 未设置），``effective_*`` 是运行时
-    实际生效的引用：设定可解析就用设定，否则按第一个实例的连接测试模型兜底；
-    一个实例都没有时为 null。
+    ``*_model`` 是存下来的引用：首次接入供应商时自动设为其目录里第一个模型，
+    之后由用户改；一个实例都没有时为 null。``effective_*`` 是运行时实际生效的
+    引用，正常与前者一致，只在预设目录变动等漂移场景下按最早实例兜底。
     """
 
     agent_model: str | None = Field(default=None, description="智能体默认模型引用（null = 未设置）")
