@@ -33,6 +33,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+from movieclaw_api.core.config import get_settings
 from movieclaw_db.models import LibraryFile
 from movieclaw_playback.subtitles import SubtitleRef
 
@@ -77,8 +78,9 @@ _EXTRACTION_JOBS: dict[tuple[str, int, str], _ExtractionJob] = {}
 
 
 def cache_dir() -> Path:
-    """抽取产物目录。中间品不进媒体库目录，跟随既有 data/ 相对路径惯例。"""
-    return Path("data/cache/playback-subs")
+    """抽取产物目录。中间品不进媒体库目录，根目录来自配置（缓存管理面板按
+    登记表统计/清理它，见 services/storage/registry.py）。"""
+    return Path(get_settings().playback_subs_cache_dir)
 
 
 def embedded_subtitle_format(codec: str | None) -> str | None:

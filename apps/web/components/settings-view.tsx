@@ -7,6 +7,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { LiquidGlassButton } from "@/vendor/liquid-glass";
 
 import { AppMaintenanceSection } from "@/components/app-maintenance-section";
+import { AppStorageSection } from "@/components/app-storage-section";
 import { AppUpdateDot, usePendingUpdate } from "@/components/app-update-entry";
 import { AppUpdateSection } from "@/components/app-update-section";
 import { AvatarBadge } from "@/components/avatar-badge";
@@ -557,9 +558,10 @@ function ChangePasswordCard() {
 }
 
 /**
- * —— 更新与维护分区：两类设置，胶囊标签切换（与外观分区同一交互语言） ——
+ * —— 更新与维护分区：三类设置，胶囊标签切换（与外观分区同一交互语言） ——
  *
  *   - 版本与更新：当前版本、检查/执行更新、NER 模型、回退（AppUpdateSection）；
+ *   - 缓存管理：data/ 各目录的占用与清理（AppStorageSection，内容来自后端登记表）；
  *   - 维护：重启应用（AppMaintenanceSection）。
  *
  * 设置页按功能重组前这里叫「应用」，还塞着外部访问地址与远程转码——前者迁去
@@ -573,11 +575,12 @@ function ChangePasswordCard() {
 function AppSection() {
   // ?tab=maintain 深链直达维护标签，切换时写回地址栏（见 useTabParam）。
   // 旧的 ?tab=remote 深链在路由层重定向到 /settings/playback，到不了这里。
-  const [tab, setTab] = useTabParam(["update", "maintain"] as const, "update");
+  const [tab, setTab] = useTabParam(["update", "storage", "maintain"] as const, "update");
   // 本分区只对管理员渲染（成员的分区清单里没有 app），无需再按角色关轮询
   const pendingUpdate = usePendingUpdate();
   const tabs = [
     { id: "update" as const, label: "版本与更新" },
+    { id: "storage" as const, label: "缓存管理" },
     { id: "maintain" as const, label: "维护" },
   ] as const;
 
@@ -601,7 +604,9 @@ function AppSection() {
           </button>
         ))}
       </div>
-      {tab === "update" ? <AppUpdateSection /> : <AppMaintenanceSection />}
+      {tab === "update" && <AppUpdateSection />}
+      {tab === "storage" && <AppStorageSection />}
+      {tab === "maintain" && <AppMaintenanceSection />}
     </div>
   );
 }

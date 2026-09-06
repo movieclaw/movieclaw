@@ -644,6 +644,8 @@ _PATH_DUMMIES = {
     "{member_id}": "1",
     "{job_id}": "job_test",
     "{username}": "family",
+    # 缓存管理：登记目录 key（services/storage/registry.py）
+    "{key}": "cache.images",
 }
 
 

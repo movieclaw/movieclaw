@@ -10,6 +10,11 @@
    并在合并后发布新镜像（CI 守卫会拦截漏 bump 的 PR）。
 3. **数据库迁移只能向前兼容**：应用内更新支持一键回退，迁移是单向的，
    用户回退跨版本时靠更新前的自动备份恢复数据。
+4. **`data/` 下新增目录必须登记**：任何落在运行期数据目录下的新目录都要在
+   `src/movieclaw_api/services/storage/registry.py` 登记（用途、能否清理、后果），
+   路径在 `core/config.py` 声明成 Settings 字段而不是手写 `data/...` 字面量；
+   CI 守卫（`tests/api/test_storage.py`）会拦截漏登记的 PR，设计见
+   `docs/design/cache-management.md`。
 
 ## 注释和日志
 1. 每一个关键类的设计和实现，补充完善的中文注释，好的注释可以帮助项目其他成员看懂关键设计思路，有利于后续的扩展和迭代。
