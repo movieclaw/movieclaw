@@ -603,7 +603,6 @@ async def _run_item_metadata_refresh_job(
         # 整库刷新不这么做——那会把整库的图全部重抓一遍，走独立作业
         from movieclaw_api.services.library.chapters import refresh_chapter_images
 
-        _phase("生成章节场景图")
         await refresh_chapter_images(media_item_id, force=True)
         return {
             "message": f"《{title}》元数据刷新完成",

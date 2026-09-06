@@ -277,3 +277,32 @@ async def test_job_targets_skip_done_disc_and_strm(db, tmp_path):
         ).scalar_one()
     assert pending == [b_id]  # 已抓过的、原盘、strm、未识别的都不在
     assert set(everything) == {done_id, b_id}
+
+
+async def test_probe_failure_and_missing_ffmpeg_leave_row_untouched(db, tmp_path, monkeypatch):
+    """章节补探失败或系统没有 ffmpeg：什么都不写（保持 NULL），下次入口自动再来。"""
+    video = tmp_path / "media" / "x.mkv"
+    video.parent.mkdir()
+    video.write_bytes(b"x")
+    _lib_id, _item_id, file_id = await _seed(db, video, chapters=None)
+    monkeypatch.setattr(chapters_mod, "probe_chapters", lambda _p: None)
+    async with db.session() as session:
+        row = await session.get(LibraryFile, file_id)
+        assert not await chapters_mod.refresh_file_chapter_images(session, row)
+        assert row.chapters is None and row.chapter_images is None
+
+    # 章节已知但 ffmpeg 不在 PATH：抓图返回 None，chapter_images 仍为 NULL
+    async with db.session() as session:
+        row = await session.get(LibraryFile, file_id)
+        row.chapters = []
+        row.duration_seconds = 600
+        await session.commit()
+
+    def _no_ffmpeg(*_args, **_kwargs):
+        raise FileNotFoundError("ffmpeg")
+
+    monkeypatch.setattr(chapters_mod.subprocess, "run", _no_ffmpeg)
+    async with db.session() as session:
+        row = await session.get(LibraryFile, file_id)
+        assert not await chapters_mod.refresh_file_chapter_images(session, row)
+        assert row.chapter_images is None

@@ -206,8 +206,11 @@ def grab_chapter_still(
     """同步版：在 ``seek_seconds`` 附近只解关键帧抓一帧到 ``dest``，返回图上
     那一帧的真实时间（毫秒）；失败返回 None。
 
-    ``-copyts`` 必须带：输入侧 ``-ss`` 会把时间戳归零，showinfo 报的就成了
-    相对定位点的偏移。解析不出 pts_time 时退回定位点本身，图照样可用。
+    输入侧 ``-ss`` 会把输出时间戳归零，showinfo 报的 ``pts_time`` 是相对定位点
+    的偏移，真实时间 = 定位点 + 偏移。**不用 ``-copyts``**：那样报的是容器
+    绝对时间戳，MPEG-TS 这类 start_time 不为 0 的文件会整体偏掉，而播放器的
+    ``start_ms`` 与 ``-ss`` 一样是相对文件开头的。解析不出 pts_time 时退回
+    定位点本身，图照样可用。
     """
     dest.parent.mkdir(parents=True, exist_ok=True)
     for chain in _filter_chains(hdr):
@@ -220,7 +223,6 @@ def grab_chapter_still(
             "nokey",
             "-ss",
             f"{seek_seconds:.3f}",
-            "-copyts",
             "-i",
             str(video),
             "-an",
@@ -238,9 +240,8 @@ def grab_chapter_still(
             logger.debug("章节抓帧失败：%s", proc.stderr.decode(errors="replace")[-300:])
             continue
         match = _SHOWINFO_PTS.findall(proc.stderr.decode(errors="replace"))
-        if match:
-            return int(round(float(match[-1]) * 1000))
-        return int(round(seek_seconds * 1000))
+        offset = max(0.0, float(match[-1])) if match else 0.0
+        return int(round((seek_seconds + offset) * 1000))
     return None
 
 
@@ -255,13 +256,15 @@ def extract_file_stills(
     assets_root: Path,
     existing: dict[int, dict],
     force: bool = False,
-) -> list[dict]:
+) -> list[dict] | None:
     """同步版：给一个文件的有效章节逐章抓图，返回 ``chapter_images`` 的元素列表。
 
     - 已有且文件仍在的图直接复用（``force`` 重抓）；
     - 起点 ≥ 片长的章节停止；平均间隔 <1s 或章节数超上限整体跳过；
     - 单文件预算耗尽返回已抓到的（部分产物也落库，设计文档 §4.4）；
-    - 有效列表里对不上的旧图（策略调档、章节变了）当死图删掉。
+    - 有效列表里对不上的旧图（策略调档、章节变了）当死图删掉；
+    - 系统里没有 ffmpeg 返回 None：调用方保持 NULL，装好后下次自动补，
+      不用手动 force。
     """
     result: list[dict] = []
     image_dir = assets_root / str(media_item_id) / "chapters" / str(file_id)
@@ -293,7 +296,11 @@ def extract_file_stills(
                 break
             seek = chapter.start_ms / 1000
             if chapter.start_ms == 0:
-                seek = min(_FIRST_CHAPTER_OFFSET_S, float(duration_seconds or 0)) or 0.0
+                # 第 0 章避开片头黑场；时长未知时也按 15s，抓不到再退回起点由
+                # ffmpeg 自己兜（越界定位它会取最后一个关键帧）
+                seek = min(_FIRST_CHAPTER_OFFSET_S, float(duration_seconds or 0)) or (
+                    _FIRST_CHAPTER_OFFSET_S if duration_seconds is None else 0.0
+                )
             try:
                 frame_ms = grab_chapter_still(video, dest, seek_seconds=seek, hdr=hdr)
             except subprocess.TimeoutExpired:
@@ -304,7 +311,8 @@ def extract_file_stills(
             result.append({"start_ms": chapter.start_ms, "frame_ms": frame_ms, "image": rel})
             keep.add(dest.name)
     except FileNotFoundError:
-        logger.warning("系统中未找到 ffmpeg，章节场景图已跳过：%s", video)
+        logger.warning("系统中未找到 ffmpeg，章节场景图已跳过（装好后自动补）：%s", video)
+        return None
     except OSError as exc:
         logger.warning("生成章节场景图失败：%s（%s）", video, exc)
     _delete_dead_images(image_dir, keep)
@@ -344,7 +352,8 @@ async def refresh_file_chapter_images(
     """给一行台账补探章节（NULL 时）并抓图，写回 ``chapter_images``。
 
     返回是否有写入。库开关由调用方判断；这里只管资格（在位/非原盘/非 strm）。
-    失败不抛：写 ``[]`` 并记日志，force 可重试。
+    抓帧失败不抛：写 ``[]`` 并记日志，force 可重试；章节补探失败或 ffmpeg
+    缺失则什么都不写（保持 NULL），下次入口自动再来。
     """
     from movieclaw_api.services.media_scrape import assets_root
 
@@ -356,10 +365,13 @@ async def refresh_file_chapter_images(
     if not await asyncio.to_thread(video.is_file):
         return False
     if row.chapters is None:
-        # 存量行没探过章节：只读容器头，毫秒级
+        # 存量行没探过章节：只读容器头，毫秒级。探不出来就不抓图——否则会按
+        # 合成章节抓一套图落库，而这一行的章节事实永远停在 NULL
         probed = await asyncio.to_thread(probe_chapters, video)
-        if probed is not None:
-            row.chapters = probed
+        if probed is None:
+            logger.warning("章节探测失败，场景图暂缓（下次自动重试）：%s", video)
+            return False
+        row.chapters = probed
     chapters = effective_chapters(row.chapters, row.duration_seconds)
     async with FRAME_GRAB_GATE:
         images = await asyncio.to_thread(
@@ -374,6 +386,8 @@ async def refresh_file_chapter_images(
             existing=chapter_image_map(row.chapter_images),
             force=force,
         )
+    if images is None:
+        return False  # ffmpeg 缺失：保持 NULL，装好后自动补
     row.chapter_images = images
     row.updated_at = utcnow()
     session.add(row)

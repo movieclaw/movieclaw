@@ -784,9 +784,9 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
                 confirmLabel: "开始生成",
               }).then((ok) => {
                 if (ok) {
-                  startLibraryChapterImages(libraryId).catch((e) =>
-                    setNotice((e as Error).message),
-                  );
+                  startLibraryChapterImages(libraryId)
+                    .then(() => toast.success("已开始生成章节场景图，可在任务中心查看进度"))
+                    .catch((e) => toast.error((e as Error).message));
                 }
               });
             }

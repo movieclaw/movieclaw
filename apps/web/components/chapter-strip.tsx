@@ -144,46 +144,49 @@ function ChapterCard({
   const clock = formatClock(chapter.frame_ms ?? chapter.start_ms);
   const label = chapter.title ?? `第 ${chapter.index + 1} 段`;
   return (
-    <div className="group/chapter relative w-[240px] shrink-0 max-md:w-[200px]" data-chapter-index={chapter.index}>
-      <button
-        type="button"
-        onClick={onOpen}
-        aria-label={chapter.image_url ? `查看场景图：${label} ${clock}` : `从 ${clock} 播放`}
-        className="relative block aspect-video w-full overflow-hidden rounded-xl bg-[#141824] text-left outline-none ring-1 ring-white/[0.08] transition duration-200 hover:ring-white/35 focus-visible:ring-2 focus-visible:ring-white/70 group-hover/chapter:-translate-y-0.5"
-      >
-        <PosterImage
-          src={imageUrl(chapter.image_url, "landscape-card")}
-          alt={`${label} 场景图`}
-          className="size-full object-cover"
-          fallback={
-            <span className="tnum flex size-full items-center justify-center text-[20px] font-bold text-white/20">
-              {clock}
-            </span>
-          }
-        />
-        {/* 左下角时间戳：任何画面上都要能读，压一层暗底 */}
-        <span className="tnum text-on-image pointer-events-none absolute bottom-1.5 left-1.5 rounded bg-black/60 px-1.5 py-px text-micro font-semibold text-white/90">
-          {clock}
-        </span>
-        {resumeHere && (
-          <span className="pointer-events-none absolute right-1.5 top-1.5 rounded bg-[var(--accent-2)] px-1.5 py-px text-micro font-semibold text-white shadow-lg">
-            上次看到这里
-          </span>
-        )}
-      </button>
-
-      {/* 中央播放键：桌面 hover 才出现，触摸屏（没有 hover）不渲染——看图优先，
-          小卡片上不盖东西；触屏用户点卡片进灯箱，灯箱里有播放。 */}
-      {chapter.image_url && (
+    <div className="group/chapter w-[240px] shrink-0 max-md:w-[200px]" data-chapter-index={chapter.index}>
+      {/* 画面区单独一个相对定位盒：播放键按它居中，不受下面标题行高度影响 */}
+      <div className="relative aspect-video transition duration-200 group-hover/chapter:-translate-y-0.5">
         <button
           type="button"
-          aria-label={`从 ${clock} 播放`}
-          onClick={onPlay}
-          className="absolute left-1/2 top-[calc(50%-14px)] flex size-11 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border-[1.5px] border-white/80 bg-black/35 text-white opacity-0 shadow-[0_1px_10px_rgba(0,0,0,0.45)] transition duration-200 hover:scale-[1.06] hover:border-white hover:bg-black/50 focus-visible:opacity-100 focus-visible:outline-none group-hover/chapter:opacity-100 [@media(hover:none)]:hidden"
+          onClick={onOpen}
+          aria-label={chapter.image_url ? `查看场景图：${label} ${clock}` : `从 ${clock} 播放`}
+          className="relative block size-full overflow-hidden rounded-xl bg-[#141824] text-left outline-none ring-1 ring-white/[0.08] transition duration-200 hover:ring-white/35 focus-visible:ring-2 focus-visible:ring-white/70"
         >
-          <PlayIcon className="size-8 drop-shadow-[0_1px_2px_rgba(0,0,0,0.55)]" />
+          <PosterImage
+            src={imageUrl(chapter.image_url, "landscape-card")}
+            alt={`${label} 场景图`}
+            className="size-full object-cover"
+            fallback={
+              <span className="tnum flex size-full items-center justify-center text-[20px] font-bold text-white/20">
+                {clock}
+              </span>
+            }
+          />
+          {/* 左下角时间戳：任何画面上都要能读，压一层暗底 */}
+          <span className="tnum text-on-image pointer-events-none absolute bottom-1.5 left-1.5 rounded bg-black/60 px-1.5 py-px text-micro font-semibold text-white/90">
+            {clock}
+          </span>
+          {resumeHere && (
+            <span className="pointer-events-none absolute right-1.5 top-1.5 rounded bg-[var(--accent-2)] px-1.5 py-px text-micro font-semibold text-white shadow-lg">
+              上次看到这里
+            </span>
+          )}
         </button>
-      )}
+
+        {/* 中央播放键：桌面 hover 才出现，触摸屏（没有 hover）不渲染——看图优先，
+            小卡片上不盖东西；触屏用户点卡片进灯箱，灯箱里有播放。 */}
+        {chapter.image_url && (
+          <button
+            type="button"
+            aria-label={`从 ${clock} 播放`}
+            onClick={onPlay}
+            className="absolute left-1/2 top-1/2 flex size-11 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border-[1.5px] border-white/80 bg-black/35 text-white opacity-0 shadow-[0_1px_10px_rgba(0,0,0,0.45)] transition duration-200 hover:scale-[1.06] hover:border-white hover:bg-black/50 focus-visible:opacity-100 focus-visible:outline-none group-hover/chapter:opacity-100 [@media(hover:none)]:hidden"
+          >
+            <PlayIcon className="size-8 drop-shadow-[0_1px_2px_rgba(0,0,0,0.55)]" />
+          </button>
+        )}
+      </div>
 
       <p className="mt-2 truncate text-ui font-medium text-[var(--text)]" title={label}>
         {label}
