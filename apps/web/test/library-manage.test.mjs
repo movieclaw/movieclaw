@@ -3,12 +3,16 @@ import test from "node:test";
 
 import {
   accessLabel,
+  accessRestricted,
+  configNotes,
   filterIsActive,
   filterLibraries,
   inventoryLabel,
   libraryIsBusy,
+  libraryNeedsAttention,
   libraryStatus,
   moveInList,
+  summarizeLibraries,
 } from "../lib/library-manage.ts";
 
 const PHASES = {
@@ -32,7 +36,16 @@ function lib(overrides = {}) {
     member_ids: [],
     root_paths: ["/remote/media/电影"],
     realtime_watch: true,
-    stats: { item_count: 10, file_count: 12, unidentified_count: 0, missing_count: 0 },
+    exclude_from_home: false,
+    capabilities: { scraped: true, naming: true },
+    match_rules: [{ field: "genres", op: "any_of", values: [28] }],
+    stats: {
+      item_count: 10,
+      file_count: 12,
+      total_size_bytes: 1024 ** 3,
+      unidentified_count: 0,
+      missing_count: 0,
+    },
     scanning: false,
     scan_progress: null,
     organizing: false,
@@ -122,29 +135,75 @@ test("只有待识别：黄色", () => {
   assert.equal(s.title, "4 个待识别");
 });
 
-test("空闲：最近扫描 + 实时监控开关", () => {
+test("空闲：只留最近扫描这行事实，实时监控开关不写进状态", () => {
   const s = libraryStatus(lib({ realtime_watch: false }), ctx);
   assert.equal(s.tone, "idle");
   assert.equal(s.title, "空闲");
-  assert.equal(s.detail, "最近扫描 2 小时前 · 实时监控关");
-  assert.equal(libraryStatus(lib({ last_scan: null }), ctx).detail, "尚未扫描 · 实时监控开");
+  assert.equal(s.detail, "最近扫描 2 小时前");
+  assert.equal(libraryStatus(lib({ last_scan: null }), ctx).detail, "尚未扫描");
 });
 
-test("筛选：类型、搜索词（库名或根目录）、在跑任务", () => {
+test("待处理判定：有待识别或缺失，且没有任务在跑、没有文件在入库", () => {
+  const pending = { item_count: 1, file_count: 1, total_size_bytes: 0, unidentified_count: 2, missing_count: 0 };
+  assert.equal(libraryNeedsAttention(lib()), false);
+  assert.equal(libraryNeedsAttention(lib({ stats: pending })), true);
+  assert.equal(libraryNeedsAttention(lib({ stats: { ...pending, unidentified_count: 0, missing_count: 1 } })), true);
+  // 状态列此时归进度，摘要也不把它算作待处理，两边口径一致
+  assert.equal(libraryNeedsAttention(lib({ stats: pending, scanning: true })), false);
+  assert.equal(libraryNeedsAttention(lib({ stats: pending, last_scan: { finished_at: "x", deferred: 2 } })), false);
+});
+
+test("页头摘要：规模事实 + 在跑 / 待处理的库数，有缺失时标红", () => {
+  const libs = [
+    lib({ id: 1 }),
+    lib({ id: 2, scanning: true, stats: { item_count: 5, file_count: 5, total_size_bytes: 1024 ** 3, unidentified_count: 3, missing_count: 0 } }),
+    lib({ id: 3, stats: { item_count: 5, file_count: 5, total_size_bytes: 0, unidentified_count: 3, missing_count: 0 } }),
+  ];
+  const s = summarizeLibraries(libs);
+  assert.equal(s.facts, "3 个媒体库 · 20 个条目 · 2.00 GB");
+  assert.equal(s.busy, 1);
+  assert.equal(s.attention, 1);
+  assert.equal(s.missing, false);
+  libs[2].stats.missing_count = 1;
+  assert.equal(summarizeLibraries(libs).missing, true);
+  assert.deepEqual(summarizeLibraries([]), { facts: "0 个媒体库 · 0 个条目 · 0 B", busy: 0, attention: 0, missing: false });
+});
+
+test("配置备注：只说偏离默认或有待办的部分", () => {
+  assert.deepEqual(configNotes(lib()), []);
+  assert.deepEqual(configNotes(lib({ match_rules: [] })), [{ text: "未声明收藏范围", tone: "warn" }]);
+  // 无刮削能力的库谈不上收藏范围
+  assert.deepEqual(configNotes(lib({ match_rules: [], capabilities: { scraped: false, naming: false } })), []);
+  assert.deepEqual(
+    configNotes(lib({ exclude_from_home: true, realtime_watch: false })).map((n) => n.text),
+    ["从首页排除", "实时监控关"],
+  );
+});
+
+test("筛选：类型、搜索词（库名或根目录）、在跑任务 / 待处理", () => {
   const libs = [
     lib({ id: 1, name: "电影", kind: "movie" }),
     lib({ id: 2, name: "剧集", kind: "tv", scanning: true, root_paths: ["/mnt/nas2/剧集"] }),
-    lib({ id: 3, name: "演唱会", kind: "video", root_paths: ["/remote/media/演唱会"] }),
+    lib({
+      id: 3,
+      name: "演唱会",
+      kind: "video",
+      root_paths: ["/remote/media/演唱会"],
+      stats: { item_count: 1, file_count: 1, total_size_bytes: 0, unidentified_count: 0, missing_count: 2 },
+    }),
   ];
   const ids = (r) => r.map((l) => l.id);
-  assert.deepEqual(ids(filterLibraries(libs, { query: "", kind: null, busyOnly: false })), [1, 2, 3]);
-  assert.deepEqual(ids(filterLibraries(libs, { query: "", kind: "tv", busyOnly: false })), [2]);
-  assert.deepEqual(ids(filterLibraries(libs, { query: "NAS2", kind: null, busyOnly: false })), [2]);
-  assert.deepEqual(ids(filterLibraries(libs, { query: "演唱", kind: null, busyOnly: false })), [3]);
-  assert.deepEqual(ids(filterLibraries(libs, { query: "", kind: null, busyOnly: true })), [2]);
-  assert.deepEqual(ids(filterLibraries(libs, { query: "电影", kind: "tv", busyOnly: false })), []);
-  assert.equal(filterIsActive({ query: "  ", kind: null, busyOnly: false }), false);
-  assert.equal(filterIsActive({ query: "", kind: "movie", busyOnly: false }), true);
+  const f = (overrides) => ({ query: "", kind: null, focus: null, ...overrides });
+  assert.deepEqual(ids(filterLibraries(libs, f())), [1, 2, 3]);
+  assert.deepEqual(ids(filterLibraries(libs, f({ kind: "tv" }))), [2]);
+  assert.deepEqual(ids(filterLibraries(libs, f({ query: "NAS2" }))), [2]);
+  assert.deepEqual(ids(filterLibraries(libs, f({ query: "演唱" }))), [3]);
+  assert.deepEqual(ids(filterLibraries(libs, f({ focus: "busy" }))), [2]);
+  assert.deepEqual(ids(filterLibraries(libs, f({ focus: "attention" }))), [3]);
+  assert.deepEqual(ids(filterLibraries(libs, f({ query: "电影", kind: "tv" }))), []);
+  assert.equal(filterIsActive(f({ query: "  " })), false);
+  assert.equal(filterIsActive(f({ kind: "movie" })), true);
+  assert.equal(filterIsActive(f({ focus: "attention" })), true);
 });
 
 test("在跑任务判定覆盖三种长任务", () => {
@@ -175,6 +234,10 @@ test("可见范围与库存文案", () => {
   assert.equal(accessLabel(lib({ access_mode: "selected", member_ids: [], admin_visible: false })), "无人可见");
   // 你看不到的库照样说清它开放给谁，不再退化成「仅管理」
   assert.equal(accessLabel(lib({ viewer_access: false })), "全部成员");
+  // 胶囊只在偏离默认（全部成员且自己能看）时出现
+  assert.equal(accessRestricted(lib()), false);
+  assert.equal(accessRestricted(lib({ access_mode: "selected" })), true);
+  assert.equal(accessRestricted(lib({ viewer_access: false })), true);
   assert.deepEqual(inventoryLabel(lib()), { primary: "10 部", secondary: "12 个文件" });
   assert.deepEqual(inventoryLabel(lib({ kind: "video" })), { primary: "10 个条目", secondary: "12 个文件" });
 });
