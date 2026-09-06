@@ -47,8 +47,21 @@ function percentOf(processed: number, total: number): number | null {
   return Math.min(100, Math.round((processed / total) * 100));
 }
 
+/**
+ * 「最近扫描 X 前 · 结论」。扫描常常毫秒级完成（已入库的文件秒过），列表上
+ * 唯一能证明"点了有反应"的就是这一行——只写时间的话，一个本就最新的库扫完前后
+ * 长得一模一样，用户会以为没点上。结论只挑用户关心的：新增了几个文件、标记了
+ * 几个缺失；都没有就明说「无新文件」，手动停过的也如实标出。
+ */
 function lastScanDetail(library: MediaLibrary, ctx: LibraryStatusContext): string {
-  return library.last_scan ? `最近扫描 ${ctx.relativeTime(library.last_scan.finished_at)}` : "尚未扫描";
+  const scan = library.last_scan;
+  if (!scan) return "尚未扫描";
+  const parts = [`最近扫描 ${ctx.relativeTime(scan.finished_at)}`];
+  if (scan.cancelled) parts.push("手动停止");
+  if (scan.scanned > 0) parts.push(`新增 ${scan.scanned} 个文件`);
+  if (scan.marked_missing > 0) parts.push(`标记缺失 ${scan.marked_missing}`);
+  if (!scan.cancelled && scan.scanned === 0 && scan.marked_missing === 0) parts.push("无新文件");
+  return parts.join(" · ");
 }
 
 /**

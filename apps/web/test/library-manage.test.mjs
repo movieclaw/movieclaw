@@ -51,7 +51,13 @@ function lib(overrides = {}) {
     organizing: false,
     organize_progress: null,
     metadata_refresh: null,
-    last_scan: { finished_at: "2026-09-05T00:00:00+00:00", deferred: 0 },
+    last_scan: {
+      finished_at: "2026-09-05T00:00:00+00:00",
+      scanned: 0,
+      marked_missing: 0,
+      cancelled: false,
+      deferred: 0,
+    },
     ...overrides,
   };
 }
@@ -123,7 +129,7 @@ test("有缺失压过待识别，两者并列写出", () => {
   );
   assert.equal(s.tone, "missing");
   assert.equal(s.title, "12 个待识别 · 2 个缺失");
-  assert.equal(s.detail, "最近扫描 2 小时前");
+  assert.equal(s.detail, "最近扫描 2 小时前 · 无新文件");
 });
 
 test("只有待识别：黄色", () => {
@@ -139,8 +145,18 @@ test("空闲：只留最近扫描这行事实，实时监控开关不写进状�
   const s = libraryStatus(lib({ realtime_watch: false }), ctx);
   assert.equal(s.tone, "idle");
   assert.equal(s.title, "空闲");
-  assert.equal(s.detail, "最近扫描 2 小时前");
+  assert.equal(s.detail, "最近扫描 2 小时前 · 无新文件");
   assert.equal(libraryStatus(lib({ last_scan: null }), ctx).detail, "尚未扫描");
+});
+
+test("最近扫描的结论：新增 / 标记缺失 / 手动停止，都没有才写无新文件", () => {
+  const scan = (over) => ({ finished_at: "x", scanned: 0, marked_missing: 0, cancelled: false, deferred: 0, ...over });
+  const detail = (over) => libraryStatus(lib({ last_scan: scan(over) }), ctx).detail;
+  assert.equal(detail({ scanned: 3 }), "最近扫描 2 小时前 · 新增 3 个文件");
+  assert.equal(detail({ scanned: 3, marked_missing: 2 }), "最近扫描 2 小时前 · 新增 3 个文件 · 标记缺失 2");
+  assert.equal(detail({ marked_missing: 1 }), "最近扫描 2 小时前 · 标记缺失 1");
+  assert.equal(detail({ cancelled: true }), "最近扫描 2 小时前 · 手动停止");
+  assert.equal(detail({ cancelled: true, scanned: 5 }), "最近扫描 2 小时前 · 手动停止 · 新增 5 个文件");
 });
 
 test("待处理判定：有待识别或缺失，且没有任务在跑、没有文件在入库", () => {

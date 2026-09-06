@@ -234,9 +234,11 @@ export function LibraryManageView() {
           run(stopLibraryScan(library.id));
           return;
         }
-        // 重操作先确认；停止不确认——停止本身就是在纠正
+        // 重操作先确认；停止不确认——停止本身就是在纠正。
+        // 开始要给一句回执：已是最新的库扫描毫秒级就结束，行内只会从
+        // 「最近扫描 3 分钟前」变成「几秒前」，没有这句用户会以为没点上
         void confirm(scanLibraryConfirm(library.name)).then((ok) => {
-          if (ok) run(startLibraryScan(library.id));
+          if (ok) run(startLibraryScan(library.id), `已开始扫描「${library.name}」`);
         });
       },
       onOpenPending: (library) => {
