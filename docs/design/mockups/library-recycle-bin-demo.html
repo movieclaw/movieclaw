@@ -95,9 +95,6 @@
   .item .t{font-weight:600;display:flex;align-items:center;gap:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .item .t small{color:var(--faint);font-weight:400}
   .item .lib{font-size:11.5px;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .ep{display:flex;gap:8px;align-items:baseline;padding-left:56px;white-space:nowrap;overflow:hidden}
-  .ep code{font-family:var(--mono);font-size:12px;color:var(--text)}
-  .ep span{color:var(--muted);font-size:12px;overflow:hidden;text-overflow:ellipsis}
   .fname{font-family:var(--mono);font-size:12px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .fsum{font-size:13px;white-space:nowrap}
   .fsum b{font-weight:600}
@@ -110,6 +107,10 @@
   .ql b em{font-style:normal;color:var(--faint);font-weight:400;font-size:11px}
   .ql .sz{font-style:normal;color:var(--muted)}
   tr.sub .ql b{font-weight:500;color:var(--muted)}
+  /* 展开的每集：文件格跨「条目 + 文件」两列，左缩进到条目标题起点；品质行以 集号 集名 开头 */
+  td.epi{padding-left:70px}
+  .ql code{font-family:var(--mono);font-size:11.5px;color:var(--text);font-weight:600}
+  .ql .et{color:var(--muted);margin-left:5px}
   .fq .fsub,.fq .err{margin-top:4px}
   .why .n{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .why .n .arrow{color:var(--faint);margin:0 3px}
@@ -193,7 +194,7 @@
 
 <!-- ① 桌面 -->
 <section class="screen on" id="s1">
-  <p class="note"><b>新分区</b>：管理页标题下插入标签栏，「回收站」是第二个标签（<span style="font-family:var(--mono)">?tab=recycle</span>）。<b>一个条目一行</b>：一部电影一行，一部剧无论多少集都是一行；行首 › 展开看每一集（图中「权力的游戏」已展开，24 集只画了 4 集）。<b>「文件 · 品质」一格两行</b>：第一行文件名（等宽，拿整格宽度，悬停显示原路径），第二行是从它解析出来的品质：分辨率 + 片源加粗（HDR 另加徽标）· 大小 · 编码 · 音轨 · 制作组。文件名本身就是发布名，下面一行是它的结构化读法，两行挨着比拆两列顺。剧集条目行第一行写「24 集 · 3 季」，第二行是组内汇总（规格一致写一种，混合写计数）；展开后每集有自己的两行，与洗版前后对比的「原因」列并排看。「原地」标和批量清理失败的原因放在这一格最下面。条目行的「自动清理」取最早那个文件，行内动作作用于该条目全部待回收文件（按钮带数字）。勾选：条目复选框 = 整组，展开后可勾单集，组框显示「–」半选。摘要行数字按<b>文件</b>算，分页按<b>条目</b>算。</p>
+  <p class="note"><b>新分区</b>：管理页标题下插入标签栏，「回收站」是第二个标签（<span style="font-family:var(--mono)">?tab=recycle</span>）。<b>一个条目一行</b>：一部电影一行，一部剧无论多少集都是一行；行首 › 展开看每一集（图中「权力的游戏」已展开，24 集只画了 4 集）。<b>「文件 · 品质」一格两行</b>：第一行文件名（等宽，拿整格宽度，悬停显示原路径），第二行是从它解析出来的品质：分辨率 + 片源加粗（HDR 另加徽标）· 大小 · 编码 · 音轨 · 制作组。文件名本身就是发布名，下面一行是它的结构化读法，两行挨着比拆两列顺。剧集条目行第一行写「24 集 · 3 季」，第二行是组内汇总（规格一致写一种，混合写计数）；展开后每集同样两行且跨过「条目」列：第一行种子名，第二行以「集号 集名」开头再接该集品质——哪一集、什么规格、多大，都是从这个文件读出来的信息，放在一起。「原地」标和批量清理失败的原因放在这一格最下面。条目行的「自动清理」取最早那个文件，行内动作作用于该条目全部待回收文件（按钮带数字）。勾选：条目复选框 = 整组，展开后可勾单集，组框显示「–」半选。摘要行数字按<b>文件</b>算，分页按<b>条目</b>算。</p>
   <div class="frame">
     <aside class="side">
       <div class="brand">movieclaw</div>
@@ -259,37 +260,33 @@
             </tr>
             <tr class="sub sel">
               <td><span class="cb on">✓</span></td>
-              <td><div class="ep"><code>S01E03</code><span>雪诺大人</span></div></td>
-              <td class="fq"><div class="fname">Game.of.Thrones.S01E03.720p.HDTV.x264-CTU.mkv</div><div class="ql"><b>720p HDTV</b><span> · 1.1 GB · x264 · AC3 5.1</span></div></td>
+              <td colspan="2" class="fq epi"><div class="fname">Game.of.Thrones.S01E03.720p.HDTV.x264-CTU.mkv</div><div class="ql"><code>S01E03</code><span class="et">雪诺大人</span> · <b>720p HDTV</b><span> · 1.1 GB · x264 · AC3 5.1</span></div></td>
               <td class="why"></td>
               <td><div class="due soon"><div class="v">9 小时后</div></div></td>
               <td><div class="acts"><span class="btn">恢复</span><span class="btn danger">清理</span></div></td>
             </tr>
             <tr class="sub sel">
               <td><span class="cb on">✓</span></td>
-              <td><div class="ep"><code>S01E04</code><span>残缺者、庶子和破碎之物</span></div></td>
-              <td class="fq"><div class="fname">Game.of.Thrones.S01E04.720p.HDTV.x264-CTU.mkv</div><div class="ql"><b>720p HDTV</b><span> · 1.1 GB · x264 · AC3 5.1</span></div></td>
+              <td colspan="2" class="fq epi"><div class="fname">Game.of.Thrones.S01E04.720p.HDTV.x264-CTU.mkv</div><div class="ql"><code>S01E04</code><span class="et">残缺者、庶子和破碎之物</span> · <b>720p HDTV</b><span> · 1.1 GB · x264 · AC3 5.1</span></div></td>
               <td class="why"></td>
               <td><div class="due soon"><div class="v">9 小时后</div></div></td>
               <td><div class="acts"><span class="btn">恢复</span><span class="btn danger">清理</span></div></td>
             </tr>
             <tr class="sub">
               <td><span class="cb"></span></td>
-              <td><div class="ep"><code>S01E05</code><span>狼与狮</span></div></td>
-              <td class="fq"><div class="fname">Game.of.Thrones.S01E05.720p.HDTV.x264-CTU.mkv</div><div class="ql"><b>720p HDTV</b><span> · 1.1 GB · x264 · AC3 5.1</span></div></td>
+              <td colspan="2" class="fq epi"><div class="fname">Game.of.Thrones.S01E05.720p.HDTV.x264-CTU.mkv</div><div class="ql"><code>S01E05</code><span class="et">狼与狮</span> · <b>720p HDTV</b><span> · 1.1 GB · x264 · AC3 5.1</span></div></td>
               <td class="why"></td>
               <td><div class="due"><div class="v">2 天 3 小时后</div></div></td>
               <td><div class="acts"><span class="btn">恢复</span><span class="btn danger">清理</span></div></td>
             </tr>
             <tr class="sub">
               <td><span class="cb"></span></td>
-              <td><div class="ep"><code>S02E01</code><span>北境记住</span></div></td>
-              <td class="fq"><div class="fname">Game.of.Thrones.S02E01.720p.HDTV.x264-KILLERS.mkv</div><div class="ql"><b>720p HDTV</b><span> · 0.9 GB · x264 · AAC 2.0 · KILLERS</span></div></td>
+              <td colspan="2" class="fq epi"><div class="fname">Game.of.Thrones.S02E01.720p.HDTV.x264-KILLERS.mkv</div><div class="ql"><code>S02E01</code><span class="et">北境记住</span> · <b>720p HDTV</b><span> · 0.9 GB · x264 · AAC 2.0 · KILLERS</span></div></td>
               <td class="why"><div class="n">720p HDTV → 1080p WEB-DL</div></td>
               <td><div class="due"><div class="v">2 天 3 小时后</div></div></td>
               <td><div class="acts"><span class="btn">恢复</span><span class="btn danger">清理</span></div></td>
             </tr>
-            <tr class="more sub last"><td></td><td colspan="5" style="padding-left:68px">… 样稿省略其余 20 集（实际展开后全部列出，按季集排序；原因列只在与条目行不同时写出，如 S02E01）</td></tr>
+            <tr class="more sub last"><td></td><td colspan="5" style="padding-left:70px">… 样稿省略其余 20 集（实际展开后全部列出，按季集排序；原因列只在与条目行不同时写出，如 S02E01）</td></tr>
 
             <!-- 电影 · 批量清理失败，HDR -->
             <tr class="failed">
