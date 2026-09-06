@@ -195,7 +195,7 @@ export function accessLabel(library: MediaLibrary): string {
 
 /** 库存列的文案：影视库按「部」、其他库按「条目」。 */
 export function inventoryLabel(library: MediaLibrary): { primary: string; secondary: string } {
-  const unit = library.kind === "video" ? "个条目" : "部";
+  const unit = library.kind === "photo" ? "张" : library.kind === "video" ? "个条目" : "部";
   return {
     primary: `${library.stats.item_count} ${unit}`,
     secondary: `${library.stats.file_count} 个文件`,

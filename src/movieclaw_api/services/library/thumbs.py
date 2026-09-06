@@ -21,6 +21,12 @@
 真实比例排版，而不是把 16:9 的抓帧硬塞进 2:3 的海报框。
 按库开关 ``generate_thumbnails``：网络挂载的大库抓帧就是全量下载，用户可以关。
 失败只记日志、字段保持 NULL（前端出占位图），下次刷新自愈。
+
+**图片文件**（图片库，docs/design/library-photo-kind.md 2.5）走 Pillow 而不是
+ffmpeg：ffmpeg 不认 EXIF 方向标签，手机竖拍会横着躺；几万张图起几万个子进程
+也太慢。缩到长边 ≤720（墙上最宽列 310px 的 2× 视网膜足够），透明图合成到
+卡片底色，Pillow 存图默认不带 EXIF，缩略图天然不泄漏 GPS。图片没有海报
+sidecar 的概念（``<主干>.jpg`` 就是它自己）也没有背景图。
 """
 
 from __future__ import annotations
@@ -29,11 +35,13 @@ import asyncio
 import json
 import logging
 import subprocess
+from io import BytesIO
 from pathlib import Path
 
 from sqlmodel import select
 
 from movieclaw_api.services.library.artwork import find_artwork
+from movieclaw_api.services.library.layout import IMAGE_EXTS
 from movieclaw_db.engine import get_database
 from movieclaw_db.models import Library, LibraryFile, MediaItem, MediaMetadata, MediaSource, utcnow
 from movieclaw_db.repositories.media_repo import MediaItemRepository
@@ -41,9 +49,26 @@ from movieclaw_db.repositories.media_repo import MediaItemRepository
 logger = logging.getLogger("movieclaw_api.library.thumbs")
 
 _MAX_WIDTH = 1280  # 主图（海报/缩略图）
+_MAX_PHOTO_EDGE = 720  # 图片库缩略图的长边上限
+_PHOTO_JPEG_QUALITY = 85
+_CARD_BACKGROUND = (0x14, 0x18, 0x24)  # 透明图的合成底色 = 前端卡片底色 bg-[#141824]
 _MAX_BACKDROP_WIDTH = 1920  # 背景图：电视端全屏铺底，1280 会糊
 _JPEG_QUALITY = "3"  # ffmpeg -q:v，2~5 是"肉眼无损"区间
 _FFMPEG_TIMEOUT = 90  # 秒；网络挂载上抓帧要读几十 MB，给足余量
+
+# HDR 抓帧的色调映射链（HDR10/HLG/DV 基础层 → BT.709 SDR）。章节场景图
+# （library/chapters.py）复用同一条链，两处出的图观感一致
+TONEMAP_FILTERS: tuple[str, ...] = (
+    "zscale=t=linear:npl=100",
+    "format=gbrpf32le",
+    "zscale=p=bt709",
+    "tonemap=hable",
+    "zscale=t=bt709:m=bt709:r=tv",
+)
+
+# 抓帧闸：主图与章节场景图共用，扫描期间最多两路 ffmpeg 同时解码，
+# 不把 CPU 打满、也不让网络挂载被并发读打散
+FRAME_GRAB_GATE = asyncio.Semaphore(2)
 
 
 async def ensure_local_assets(media_item_id: int, *, force: bool = False) -> None:
@@ -82,17 +107,20 @@ async def ensure_local_assets(media_item_id: int, *, force: bool = False) -> Non
             poster_dest.is_file
         )
         if force or not poster_ready:
-            size = await asyncio.to_thread(
-                build_thumbnail,
-                video,
-                poster_dest,
-                duration_seconds=file.duration_seconds,
-                is_disc=file.container in ("bluray", "dvd"),
-                hdr=file.hdr,
-            )
+            async with FRAME_GRAB_GATE:
+                size = await asyncio.to_thread(
+                    build_thumbnail,
+                    video,
+                    poster_dest,
+                    duration_seconds=file.duration_seconds,
+                    is_disc=file.container in ("bluray", "dvd"),
+                    hdr=file.hdr,
+                )
             if size is not None:
                 meta.poster_file = poster_rel
                 meta.poster_width, meta.poster_height = size
+                # 微缩占位图随缩略图一起算：列表下发，缩略图到达前先铺模糊色块
+                meta.poster_blur = await asyncio.to_thread(blur_placeholder, poster_dest)
                 changed = True
 
         backdrop_ready = meta.backdrop_file == backdrop_rel and await asyncio.to_thread(
@@ -127,6 +155,9 @@ def build_thumbnail(
     """
     if is_disc:
         return None  # 原盘目录：没有单一视频文件可抓，留占位图
+    if video.suffix.lower() in IMAGE_EXTS:
+        # 图片就是内容本身：不找 sidecar（``<主干>.jpg`` 会找到它自己）、不抓帧
+        return _build_image_thumbnail(video, dest)
     try:
         for kind in ("poster", "thumb"):
             candidate = find_artwork(video.parent, kind, [video])
@@ -146,8 +177,66 @@ def build_thumbnail(
     return None
 
 
+_BLUR_WIDTH = 16  # 微缩占位图宽度：够铺出色块与明暗，base64 后约 300 字节
+
+
+def blur_placeholder(thumbnail: Path) -> str | None:
+    """把缩略图压成 16px 宽的 JPEG data URI（渐进式加载的第一级）。
+
+    前端把它当背景铺在瓦片底下并加 CSS 模糊，缩略图到达前用户看到的是照片的
+    大致颜色而不是空格子。失败返回 None，不影响缩略图本身。
+    """
+    import base64
+
+    from PIL import Image, UnidentifiedImageError
+
+    try:
+        with Image.open(thumbnail) as img:
+            ratio = _BLUR_WIDTH / max(img.width, 1)
+            tiny = img.convert("RGB").resize(
+                (_BLUR_WIDTH, max(1, round(img.height * ratio))), Image.Resampling.BOX
+            )
+            buffer = BytesIO()
+            tiny.save(buffer, "JPEG", quality=45, optimize=True)
+    except (UnidentifiedImageError, OSError, ValueError) as exc:
+        logger.debug("微缩占位图生成失败：%s（%s）", thumbnail, exc)
+        return None
+    return "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
+def _build_image_thumbnail(image: Path, dest: Path) -> tuple[int, int] | None:
+    """Pillow 缩略图：纠正 EXIF 方向 → 解码时降采样 → 长边 ≤720 → 合成底色 → JPEG。
+
+    ``draft`` 让 JPEG 解码器直接按 1/2、1/4、1/8 尺度解码，大图快 4–16 倍；
+    对 PNG/WebP 无效但无害。解压炸弹与损坏文件按失败处理，返回 None。
+    """
+    from PIL import Image, ImageOps, UnidentifiedImageError
+
+    try:
+        with Image.open(image) as src:
+            src.draft("RGB", (_MAX_PHOTO_EDGE, _MAX_PHOTO_EDGE))
+            img = ImageOps.exif_transpose(src) or src
+            img.thumbnail((_MAX_PHOTO_EDGE, _MAX_PHOTO_EDGE))
+            if img.mode in ("RGBA", "LA", "P"):
+                rgba = img.convert("RGBA")
+                flat = Image.new("RGB", rgba.size, _CARD_BACKGROUND)
+                flat.paste(rgba, mask=rgba.getchannel("A"))
+                img = flat
+            elif img.mode != "RGB":
+                img = img.convert("RGB")
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            img.save(dest, "JPEG", quality=_PHOTO_JPEG_QUALITY, optimize=True)
+            return img.size
+    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as exc:
+        logger.warning("生成图片缩略图失败：%s（%s）", image, exc)
+        return None
+
+
 def build_backdrop(video: Path, dest: Path) -> bool:
-    """同步版：把 fanart sidecar 转成 ``dest``（宽 ≤1920）；没有 fanart 或失败返回 False。"""
+    """同步版：把 fanart sidecar 转成 ``dest``（宽 ≤1920）；没有 fanart 或失败返回 False。
+    图片文件没有背景图的概念，直接返回 False。"""
+    if video.suffix.lower() in IMAGE_EXTS:
+        return False
     candidate = find_artwork(video.parent, "fanart", [video])
     if candidate is None:
         return False
@@ -249,14 +338,7 @@ def _grab_frame(video: Path, dest: Path, duration_seconds: int | None, hdr: str 
     base = ["bwdif=mode=send_frame:deint=interlaced", "thumbnail=n=24", _scale_filter()]
     chains = [base]
     if hdr:  # 台账探测出的 HDR 格式（HDR10/HLG/DV…），SDR 为 NULL
-        tonemap = [
-            "zscale=t=linear:npl=100",
-            "format=gbrpf32le",
-            "zscale=p=bt709",
-            "tonemap=hable",
-            "zscale=t=bt709:m=bt709:r=tv",
-        ]
-        chains.insert(0, base[:2] + tonemap + base[2:])
+        chains.insert(0, base[:2] + list(TONEMAP_FILTERS) + base[2:])
     attempts = [(position, True), (position, False), (0.0, False)]
     for start, keyframes_only in attempts:
         for chain in chains:
@@ -307,8 +389,17 @@ def _image_size(path: Path) -> tuple[int, int] | None:
 
 
 def primary_aspect(item: MediaItem, width: int | None, height: int | None) -> float:
-    """卡片主图宽高比：有真实像素尺寸按尺寸，否则按来源的惯例
-    （TMDB 海报 2:3，本地抓帧 16:9）。前端只读这个值，不猜。"""
+    """卡片主图宽高比：有真实像素尺寸按尺寸，否则按能力档案的兜底比例
+    （TMDB 海报 2:3，其他库抓帧 16:9，图片库 4:3）。前端只读这个值，不猜。
+
+    影视库里的临时本地条目（kind=movie/tv、source=local）没有对应档案行，
+    按本地抓帧的 16:9 兜底。
+    """
     if width and height:
         return round(width / height, 4)
+    from movieclaw_api.services.library.profile import PROFILES
+
+    profile = PROFILES.get((item.kind, item.source))
+    if profile is not None:
+        return round(profile.default_aspect, 4)
     return round(2 / 3, 4) if item.source == MediaSource.TMDB else round(16 / 9, 4)

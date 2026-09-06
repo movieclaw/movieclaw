@@ -14,7 +14,7 @@ provider 名一致）。
 一行；多出的列被忽略。
 
 Revision ID: d1a2b3c4e5f6
-Revises: c9e4f5a6b7d8
+Revises: d1e2f3a4b5c6
 Create Date: 2026-09-07 10:00:00.000000
 """
 
@@ -27,7 +27,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "d1a2b3c4e5f6"
-down_revision: str | None = "c9e4f5a6b7d8"
+down_revision: str | None = "d1e2f3a4b5c6"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

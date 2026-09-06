@@ -379,7 +379,7 @@ function libraryItemToMediaItem(item: LibraryItem): MediaItem {
     id: libraryItemKey(item),
     source: "tmdb",
     // 其他库条目没有发现页类型；卡片只当本地内容展示，不给订阅入口
-    type: item.kind === "video" ? "movie" : item.kind,
+    type: item.kind === "video" || item.kind === "photo" ? "movie" : item.kind,
     aspect: item.primary_aspect,
     title: item.title,
     originalTitle: "",

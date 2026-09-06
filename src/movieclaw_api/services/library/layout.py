@@ -49,6 +49,19 @@ STRM_EXT = ".strm"
 # （挡残缺文件）对 strm 必然失败，会陷入"探测失败自动重试"的死循环。
 SCAN_VIDEO_EXTS = VIDEO_EXTS | {STRM_EXT}
 
+# 图片库的入账对象（docs/design/library-photo-kind.md 2.1）。只收浏览器能直接
+# 渲染、Pillow 能直接解码的格式：HEIC/HEIF 两边都不原生支持，一期不收。
+# 影视库与其他库**不收图片**——它们目录里的 jpg 是海报/剧照 sidecar，不是内容
+IMAGE_EXTS = {
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".webp",
+    ".gif",
+    ".bmp",
+    ".avif",
+}
+
 # 外挂字幕扩展名（发现对象，docs/design/jellyfin-subtitle.md §2.1）。
 # 只收语义明确的文本字幕：.sub 有 MicroDVD/VobSub 歧义、.sup/.idx 是
 # 图形字幕（无法转换、播放器支持参差），均不收。
@@ -197,4 +210,3 @@ def entry_dir_of(roots: list[Path], file: Path) -> Path | None:
         dirs = entry_dirs(root, file)
         return dirs[0] if dirs else None
     return None
-

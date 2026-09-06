@@ -8,14 +8,25 @@ import type { Route } from "next";
 import Link from "next/link";
 
 import { useConfirm, useToast } from "@/components/feedback";
-import { refreshLibraryConfirm, scanLibraryConfirm } from "@/lib/library-confirm";
-import { LockIcon, MoreIcon, XIcon } from "@/components/icons";
+import {
+  chapterImagesConfirm,
+  refreshLibraryConfirm,
+  scanLibraryConfirm,
+} from "@/lib/library-confirm";
+import { CheckIcon, LockIcon, MoreIcon, XIcon } from "@/components/icons";
 import { PAGE_NAV_BUTTON_CLASS, PageNav } from "@/components/page-nav";
 import { usePageTitle } from "@/lib/use-page-title";
 import { LibraryFormDialog } from "@/components/library-form-dialog";
 import { LIBRARY_KIND_META } from "@/components/library-kind-meta";
 import { effectiveLibraryId, libraryCardAction } from "@/components/library-view";
 import { LibraryOrganizeDialog } from "@/components/library-organize-dialog";
+import { PhotoLightbox } from "@/components/photo-lightbox";
+import {
+  PhotoTimelineScrubber,
+  PhotoWall,
+  usePhotoWallDensity,
+  type PhotoWallDensity,
+} from "@/components/photo-wall";
 import { PosterCardVisual, type PosterVisualItem } from "@/components/poster-card";
 import {
   type LibraryCapabilities,
@@ -47,6 +58,7 @@ import {
   SCAN_PHASE_LABELS,
   type ScanPhase,
   type ScanProgress,
+  startLibraryChapterImages,
   startLibraryMetadataRefresh,
   startLibraryScan,
   stopLibraryMetadataRefresh,
@@ -283,7 +295,11 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
         limit: PROVISIONAL_LIMIT,
       }).catch(() => [] as LibraryItem[]),
       listLibraryItemIds(libraryId).catch(() => []),
-      listLibraryItemIndex(libraryId).catch(() => []),
+      // 跳转索引与当前排序同口径：按标题是 A-Z 首字母档，按内容时间是月份档
+      listLibraryItemIndex(
+        libraryId,
+        wallSort.current === "release_date" ? "release_date" : "title",
+      ).catch(() => []),
       canManageLibraries
         ? keepOnError(listUnidentifiedLibraryFiles(libraryId))
         : Promise.resolve([]),
@@ -393,7 +409,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
       // 位置又拽回去（表现为"点了字母，一秒后自己跳回墙首"）
       reloadSeq.current += 1;
       wallOffset.current = offset;
-      listLibraryItems(libraryId, { sort: "title", limit: WALL_PAGE_SIZE, offset })
+      listLibraryItems(libraryId, { sort: wallSort.current, limit: WALL_PAGE_SIZE, offset })
         .then((page) => {
           wallLoaded.current = Math.max(WALL_PAGE_SIZE, page.length);
           setWallStart(offset);
@@ -534,6 +550,18 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   // 其他库（本地内容、无结构）：墙按内容时间倒序（家庭录像按拍摄日期最自然），
   // 没有拼音字母档
   const timeline = Boolean(library && !library.capabilities.scraped);
+  // 图片库：条目只看不播，墙是按月分组的瀑布流，点击开灯箱而不是进详情页
+  // （docs/design/library-photo-kind.md 3.2）
+  const photoWall = Boolean(library && !library.capabilities.playable);
+  const [photoDensity, setPhotoDensity] = usePhotoWallDensity();
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  // 月份索引给出全库每月张数，墙上的月份标题据此显示总数而不是已加载数
+  const photoMonthCounts = useMemo(
+    () => (photoWall ? new Map(wallIndex.map((entry) => [entry.initial, entry.count])) : undefined),
+    [photoWall, wallIndex],
+  );
+  // 灯箱翻到最后一张时：已加载列表被跳转替换过也无妨，loadMore 按当前窗口追加
+  const closeLightbox = useCallback(() => setLightboxIndex(null), []);
   const wideCards = Boolean(library && library.capabilities.default_aspect > 1);
   // 其他库的主图两种形态并存：刮削器放好 -poster 的是 2:3 竖版海报，只有 -thumb /
   // 抓帧的是横版缩略图。竖横混在一个网格里对不齐，按主图比例切成两区，各自用
@@ -699,6 +727,8 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   const actionsMenu = (
     <LibraryActionsMenu
       canManage={canManageLibraries}
+      density={photoWall ? photoDensity : undefined}
+      onDensityChange={photoWall ? setPhotoDensity : undefined}
       onClearHistory={clearHistory}
       scanning={Boolean(library.scanning)}
       scanPhase={library.scan_progress?.phase ?? null}
@@ -772,6 +802,26 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
       }}
       pendingCount={pendingCount}
       onOpenPending={() => setIssueTab(pendingTab)}
+      onChapterImages={
+        library.extract_chapter_images
+          ? (force) => {
+              setNotice(null);
+              void confirm(chapterImagesConfirm(library.name, force)).then((ok) => {
+                if (ok) {
+                  startLibraryChapterImages(libraryId, { force })
+                    .then(() =>
+                      toast.success(
+                        force
+                          ? "已开始重新生成场景图，可在任务中心查看进度"
+                          : "已开始生成场景图，可在任务中心查看进度",
+                      ),
+                    )
+                    .catch((e) => toast.error((e as Error).message));
+                }
+              });
+            }
+          : undefined
+      }
       onEdit={() => setEditing(library)}
     />
   );
@@ -803,8 +853,8 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
           ) : null}
         </div>
         <p className="text-on-image mt-1.5 truncate text-ui text-[var(--text-muted)] max-md:text-sub">
-          {meta.label}库 · {stats.item_count} 部作品 · {stats.file_count} 个文件 ·{" "}
-          {formatBytes(stats.total_size_bytes)}
+          {meta.label}库 · {stats.item_count} {library.kind === "photo" ? "张" : "部作品"} ·{" "}
+          {stats.file_count} 个文件 · {formatBytes(stats.total_size_bytes)}
         </p>
         {/* 这一行是**那一次扫描的成绩单**，每个数都是历史（last_scan 只在扫描
             收尾时覆写，见 _last_scan_view）。所以说「未识别 N」——它是当轮
@@ -1007,7 +1057,17 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
                 这一行被索引条撑高，分区会被推到一大段空白之下 */}
             <div className="flex items-start gap-2 px-6 max-md:gap-1 max-md:px-4">
               <div className="min-w-0 flex-1">
-                {splitWall && wallGroups ? (
+                {photoWall ? (
+                  <div ref={wallGrid}>
+                    <PhotoWall
+                      items={items}
+                      density={photoDensity}
+                      monthCounts={photoMonthCounts}
+                      onOpen={setLightboxIndex}
+                      workingLabelOf={workingLabelOf}
+                    />
+                  </div>
+                ) : splitWall && wallGroups ? (
                   <>
                     {/* 标题不带数字：分区是在已加载的分页上切的，数字会随滚动加载变 */}
                     <h3 className="text-on-image mb-4 text-body-lg font-semibold text-white/85">
@@ -1109,8 +1169,27 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
               {!probing && !timeline && (
                 <WallIndexBar index={wallIndex} active={activeWallInitial} onJump={jumpTo} />
               )}
+              {photoWall && (
+                <PhotoTimelineScrubber
+                  index={wallIndex}
+                  active={activeWallInitial}
+                  scrollElement={scrollElement}
+                  onJump={jumpTo}
+                />
+              )}
             </div>
           </div>
+          {photoWall && lightboxIndex !== null && items[lightboxIndex] && (
+            <PhotoLightbox
+              libraryId={libraryId}
+              items={items}
+              index={lightboxIndex}
+              hasMore={wallHasMore}
+              onIndexChange={setLightboxIndex}
+              onReachEnd={loadMore}
+              onClose={closeLightbox}
+            />
+          )}
         </>
       )}
 
@@ -1167,7 +1246,12 @@ interface LibraryActionsMenuProps {
   onOpenPending: () => void;
   onOrganize: () => void;
   onToggleMetaRefresh: () => void;
+  /** 整库生成章节场景图（force=true 全部重抓，否则只补缺）；库关了开关时不传 */
+  onChapterImages?: (force: boolean) => void;
   onEdit: () => void;
+  /** 图片库：相册墙的密度（个人偏好，与管理权无关）；不传不渲染这一组 */
+  density?: PhotoWallDensity;
+  onDensityChange?: (next: PhotoWallDensity) => void;
 }
 
 function LibraryActionsMenu({
@@ -1187,7 +1271,10 @@ function LibraryActionsMenu({
   onOpenPending,
   onOrganize,
   onToggleMetaRefresh,
+  onChapterImages,
   onEdit,
+  density,
+  onDensityChange,
 }: LibraryActionsMenuProps) {
   // 与站点配置一致用 Radix DropdownMenu：Portal 到 body + 碰撞检测，
   // 不会被头部容器裁切；开合/外部点击/键盘导航全交给 Radix。
@@ -1261,13 +1348,59 @@ function LibraryActionsMenu({
               ? `停止刷新${metaProgress === null ? "" : ` ${metaProgress}`}`
               : capabilities.scraped
                 ? "刷新元数据"
-                : "重新生成缩略图"}
+                : "重新生成封面"}
           </DropdownMenu.Item>
+          {onChapterImages && (
+            <>
+              <DropdownMenu.Item
+                onSelect={() => onChapterImages(false)}
+                disabled={busy}
+                className={itemClass}
+              >
+                生成场景图
+              </DropdownMenu.Item>
+              <DropdownMenu.Item
+                onSelect={() => onChapterImages(true)}
+                disabled={busy}
+                className={itemClass}
+              >
+                重新生成场景图
+              </DropdownMenu.Item>
+            </>
+          )}
           <DropdownMenu.Item onSelect={onEdit} disabled={busy} className={itemClass}>
             编辑库
           </DropdownMenu.Item>
           <DropdownMenu.Separator className="my-1 h-px bg-white/[0.07]" />
           </>
+          )}
+          {/* 图片库的墙密度：收在菜单里不占墙上的位置，三档单选，选完即生效并记住 */}
+          {density && onDensityChange && (
+            <>
+              <DropdownMenu.Label className="px-3 pb-1 pt-1.5 text-caption text-[var(--text-faint)]">
+                相册墙密度
+              </DropdownMenu.Label>
+              <DropdownMenu.RadioGroup
+                value={density}
+                onValueChange={(next) => onDensityChange(next as PhotoWallDensity)}
+              >
+                {(
+                  [
+                    ["compact", "紧凑"],
+                    ["standard", "标准"],
+                    ["loose", "宽松"],
+                  ] as [PhotoWallDensity, string][]
+                ).map(([key, label]) => (
+                  <DropdownMenu.RadioItem key={key} value={key} className={`${itemClass} flex items-center justify-between`}>
+                    {label}
+                    <DropdownMenu.ItemIndicator>
+                      <CheckIcon className="size-3.5 text-[var(--accent)]" />
+                    </DropdownMenu.ItemIndicator>
+                  </DropdownMenu.RadioItem>
+                ))}
+              </DropdownMenu.RadioGroup>
+              <DropdownMenu.Separator className="my-1 h-px bg-white/[0.07]" />
+            </>
           )}
           {/* 观看记录是个人数据：成员与超管都能清自己的，与管理权无关 */}
           <DropdownMenu.Item onSelect={onClearHistory} className={itemClass}>
@@ -1367,7 +1500,7 @@ const InventoryCell = memo(function InventoryCell({
     // 本地条目没有 TMDB id：占位 id 只做 key，不会被当成外部 id 请求
     id: item.tmdb_id != null ? String(item.tmdb_id) : `local:${item.media_item_id}`,
     source: "tmdb",
-    type: item.kind === "video" ? undefined : item.kind,
+    type: item.kind === "video" || item.kind === "photo" ? undefined : item.kind,
     title: item.title,
     year: item.year ?? undefined,
     rating: 0,

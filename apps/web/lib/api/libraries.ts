@@ -1,4 +1,4 @@
-import { request } from "@/lib/http";
+import { request, resolveRequestUrl } from "@/lib/http";
 import type { ItemSource, LibraryKind, MediaType } from "@/lib/media-types";
 
 /** 后端统一响应信封（见 movieclaw_api.schemas.response.ApiResponse） */
@@ -57,6 +57,8 @@ export interface LibraryCapabilities {
   write_nfo: boolean;
   /** 卡片主图默认宽高比（无真实尺寸时） */
   default_aspect: number;
+  /** 条目可播放；假 = 只可查看（图片库：点击开灯箱而非播放器） */
+  playable: boolean;
   /** Jellyfin 视图类型：movies / tvshows / homevideos */
   jellyfin_collection: string;
 }
@@ -74,6 +76,8 @@ export interface MediaLibrary {
   capabilities: LibraryCapabilities;
   /** 本地来源内容是否从文件抓帧生成缩略图 */
   generate_thumbnails: boolean;
+  /** 是否为视频章节抓取场景图（后台低优先级作业） */
+  extract_chapter_images: boolean;
   /** 是否从首页「最近添加」等汇总里排除 */
   exclude_from_home: boolean;
   /** 可见范围（docs/design/library-access.md）：everyone / selected */
@@ -258,6 +262,12 @@ export interface LibraryItem {
   poster_url: string | null;
   /** 主图宽高比（真实像素尺寸或来源惯例：TMDB 海报 2:3、本地抓帧 16:9），卡片按它排版 */
   primary_aspect: number;
+  /** 内容日期（ISO 日期）：影视为上映/首播日，本地条目为拍摄/录制日 */
+  release_date: string | null;
+  /** 主图的微缩占位图 data URI（约 300 字节）：缩略图到达前铺一层模糊色块 */
+  poster_blur: string | null;
+  /** 条目的首个在位文件 id：图片库取原图/回收站用 */
+  primary_file_id: number | null;
   file_count: number;
   total_size_bytes: number;
   /** 在库的季号列表（电影为空） */
@@ -364,6 +374,8 @@ export interface LibraryPayload {
   root_paths: string[];
   /** 本地来源内容是否抓帧生成缩略图；不传=不改动（新建时默认开） */
   generate_thumbnails?: boolean;
+  /** 是否为视频章节抓取场景图；不传=不改动（新建时默认开） */
+  extract_chapter_images?: boolean;
   /** 是否从首页汇总里排除该库；不传=不改动（新建时默认关） */
   exclude_from_home?: boolean;
   /** 可见范围模式；不传=不改动（新建时默认 everyone） */
@@ -526,7 +538,7 @@ export interface LibrarySearchGroup {
 
 /** 海报墙 A-Z 索引条的一档（按标题排序下的首字母分组）。 */
 export interface LibraryIndexEntry {
-  /** 首字母档：A-Z；数字/符号/假名等落不进的归 # */
+  /** 档名：按标题排序是首字母 A-Z（落不进的归 #）；按内容时间排序是月份 2026-08（缺日期归「未知」） */
   initial: string;
   count: number;
   /** 该档第一格的位置——即 listLibraryItems 的 offset 取值 */
@@ -534,8 +546,30 @@ export interface LibraryIndexEntry {
 }
 
 /** 海报墙的首字母索引（只回非空档）。中文按拼音首字母分档，与按标题排序同源。 */
-export function listLibraryItemIndex(id: number): Promise<LibraryIndexEntry[]> {
-  return unwrap(request<ApiEnvelope<LibraryIndexEntry[]>>(`/libraries/${id}/item-index`));
+export function listLibraryItemIndex(
+  id: number,
+  sort: "title" | "release_date" = "title",
+): Promise<LibraryIndexEntry[]> {
+  const suffix = sort === "title" ? "" : `?sort=${sort}`;
+  return unwrap(
+    request<ApiEnvelope<LibraryIndexEntry[]>>(`/libraries/${id}/item-index${suffix}`),
+  );
+}
+
+/**
+ * 图片库原图地址（按台账文件 id，服务端按库可见性鉴权）。
+ * - `size: "screen"`：长边 ≤2048 的屏幕适配 WebP，灯箱先看它（几百 KB），放大才拉原图；
+ * - `download`：原图作为附件下载。
+ */
+export function libraryFileOriginalUrl(
+  fileId: number,
+  options: { download?: boolean; size?: "screen" } = {},
+): string {
+  const query = new URLSearchParams();
+  if (options.download) query.set("download", "1");
+  else if (options.size) query.set("size", options.size);
+  const suffix = query.size > 0 ? `?${query}` : "";
+  return resolveRequestUrl(`/libraries/files/${fileId}/original${suffix}`);
 }
 
 /** 触发一次可恢复的库扫描；重复点击复用同一条后台作业。 */
@@ -635,6 +669,35 @@ export function stopLibraryMetadataRefresh(id: number): Promise<Record<string, n
 export function getMetadataRefreshProgress(id: number): Promise<MetadataRefreshProgress> {
   return unwrap(
     request<ApiEnvelope<MetadataRefreshProgress>>(`/libraries/${id}/metadata/refresh/progress`),
+  );
+}
+
+/**
+ * 整库生成章节场景图（docs/design/video-chapters.md §4.5）：低优先级后台作业，
+ * 默认只补缺，force 全部重抓。扫描结束会自动排一份，这是手动入口。
+ */
+export function startLibraryChapterImages(
+  id: number,
+  { force = false }: { force?: boolean } = {},
+): Promise<PersistentJobStart> {
+  return unwrap(
+    request<ApiEnvelope<PersistentJobStart>>(
+      `/libraries/${id}/chapter-images${force ? "?force=true" : ""}`,
+      { method: "POST" },
+    ),
+  );
+}
+
+/** 重新生成单个条目的章节场景图（全部重抓，后台执行；详情接口 chapters_pending 期间为 true）。 */
+export function regenerateItemChapterImages(
+  libraryId: number,
+  mediaItemId: number,
+): Promise<{ started: boolean }> {
+  return unwrap(
+    request<ApiEnvelope<{ started: boolean }>>(
+      `/libraries/${libraryId}/items/${mediaItemId}/chapter-images`,
+      { method: "POST" },
+    ),
   );
 }
 
@@ -1030,7 +1093,26 @@ export interface LibraryItemFile {
   audio_streams: AudioStream[] | null;
   /** 字幕列表：内封轨 + 外挂文件 */
   subtitle_streams: SubtitleStream[];
+  /** 有效章节（内嵌或按时长合成）；null=尚未探测章节 */
+  chapters: LibraryChapter[] | null;
   added_at: string;
+}
+
+/** 一个章节（docs/design/video-chapters.md）：详情页「场景」横排的一张卡。 */
+export interface LibraryChapter {
+  /** 章节序号（0 起） */
+  index: number;
+  start_ms: number;
+  /** 章节终点；末章无终点时为 null */
+  end_ms: number | null;
+  /** 场景图上那一帧的真实时间；跳播用它，无图时为 null（退回 start_ms） */
+  frame_ms: number | null;
+  /** 章节标题；合成章节与无名章节为 null */
+  title: string | null;
+  /** 按时长合成（容器里没有内嵌章节） */
+  synthetic: boolean;
+  /** 场景图地址（/images/assets 相对路径）；未生成为 null */
+  image_url: string | null;
 }
 
 /** 本地刮削（NFO）的一位演员。 */
@@ -1103,6 +1185,8 @@ export interface LibraryItemDetail {
   scraping: boolean;
   /** 刮削当前阶段（与整库刷新同一套文案）；没在刮为 null */
   scraping_phase: string | null;
+  /** 章节场景图正在后台生成（打开详情页时懒触发）；前端据此轮询几轮 */
+  chapters_pending: boolean;
   /**
    * 刮削归属库（docs/design/scrape-customization.md §14）：元数据与图片的产物
    * 挂全局条目，一条目只能有一套语言/选图口味，由这个库说了算。文件散在两个

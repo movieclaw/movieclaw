@@ -27,13 +27,18 @@ import {
   listTrashedFiles,
   reorderLibraries,
   setDefaultLibrary,
+  startLibraryChapterImages,
   startLibraryMetadataRefresh,
   startLibraryScan,
   stopLibraryMetadataRefresh,
   stopLibraryScan,
   updateLibrary,
 } from "@/lib/api/libraries";
-import { refreshLibraryConfirm, scanLibraryConfirm } from "@/lib/library-confirm";
+import {
+  chapterImagesConfirm,
+  refreshLibraryConfirm,
+  scanLibraryConfirm,
+} from "@/lib/library-confirm";
 import { routingOverlapWarnings } from "@/lib/library-routing-warnings";
 import {
   EMPTY_FILTER,
@@ -49,7 +54,7 @@ import { useIsMobile } from "@/lib/use-media-query";
 import { useTabParam } from "@/lib/use-tab-param";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
 
-const KIND_ORDER: LibraryKind[] = ["movie", "tv", "video"];
+const KIND_ORDER: LibraryKind[] = ["movie", "tv", "video", "photo"];
 
 /** 指针落在目标行的上半还是下半：决定放到它之前还是之后。 */
 function dropPosition(e: React.DragEvent): "before" | "after" {
@@ -236,6 +241,11 @@ export function LibraryManageView() {
         }
         void confirm(refreshLibraryConfirm(library.name)).then((ok) => {
           if (ok) run(startLibraryMetadataRefresh(library.id));
+        });
+      },
+      onChapterImages: (library, force) => {
+        void confirm(chapterImagesConfirm(library.name, force)).then((ok) => {
+          if (ok) run(startLibraryChapterImages(library.id, { force }));
         });
       },
       onEdit: (library) => setEditing(library),

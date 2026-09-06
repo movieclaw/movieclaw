@@ -798,6 +798,51 @@ def test_admin_end_playback_blocks_stream_until_device_restarts(
     activity.reset()
 
 
+def test_stream_rebuilds_session_after_restart(client: TestClient, seeded: dict) -> None:
+    """服务重启（注册表清空）后 Infuse 不发心跳只拉字节：取流即重建实时会话，
+    位置与开始时间取自本场尚未收口的播放日志；HEAD 探测不算播放。"""
+    from movieclaw_playback import activity
+
+    activity.reset()
+    token = jf_login(client)
+    auth = {"ApiKey": token}
+    guid = item_guid(seeded["movie"])
+    info = client.post(f"/Items/{guid}/PlaybackInfo", params=auth).json()
+    local = next(s for s in info["MediaSources"] if s["Protocol"] == "File")
+    stream = {"ApiKey": token, "static": "true", "mediaSourceId": local["Id"]}
+
+    client.post("/Sessions/Playing", params=auth, json={"ItemId": guid})
+    client.post(
+        "/Sessions/Playing/Progress",
+        params=auth,
+        json={"ItemId": guid, "PositionTicks": 90_000 * TICKS_PER_MS, "IsPaused": False},
+    )
+    before, _ = activity.snapshot()
+    started_at = before[0].started_at
+
+    activity.reset()  # 模拟进程重启
+    assert activity.snapshot()[0] == []
+
+    assert client.head(f"/Videos/{guid}/stream", params=stream).status_code == 200
+    assert activity.snapshot()[0] == []
+
+    assert client.get(f"/Videos/{guid}/stream", params=stream).status_code == 200
+    sessions, _ = activity.snapshot()
+    assert len(sessions) == 1
+    restored = sessions[0]
+    assert restored.device_id == "test-device-1"
+    assert restored.unit == (seeded["movie"], 0, 0)
+    assert restored.position_ms == 90_000
+    # 开始时间来自播放日志行，与注册表里的开始时间是两次 utcnow()，只差毫秒
+    assert abs((restored.started_at - started_at).total_seconds()) < 1
+    assert restored.local_streamed is True
+
+    # 活动页据此能看到它
+    data = client.get("/api/v1/playback/activity").json()["data"]
+    assert [s["device_id"] for s in data["sessions"]] == ["test-device-1"]
+    activity.reset()
+
+
 def test_stopped_failed_skips_persistence(client: TestClient, seeded: dict) -> None:
     token = jf_login(client)
     auth = {"ApiKey": token}

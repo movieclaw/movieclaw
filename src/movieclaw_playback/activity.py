@@ -197,6 +197,45 @@ def report_progress(
     session.last_activity_mono = time.monotonic()
 
 
+def has_session(device_id: str) -> bool:
+    """设备当前是否有实时会话（取流路由据此决定要不要查库重建）。"""
+    return device_id in _sessions
+
+
+def restore_session(
+    device_id: str,
+    *,
+    member_id: int,
+    client: ClientInfo,
+    unit: Unit,
+    position_ms: int | None,
+    started_at: datetime | None,
+) -> None:
+    """按取流证据重建会话：设备没有会话时，把「正在拉字节」视同「正在播放」。
+
+    Infuse 一类直连播放器正常播放阶段几乎不发进度心跳，只在开始、暂停、
+    seek、停止时上报；服务重启后注册表清空，靠上报重建要等用户暂停再播。
+    但播放器一直在换 Range 连接拉字节，这本身就是播放仍在进行的证据，
+    据此把会话建回来，位置与开始时间由调用方从库里补（没有就留空）。
+
+    只在设备**没有**会话时重建：已有会话（哪怕单元不同）交给上报路径维护，
+    避免播放器对另一条目的探测请求把正在展示的会话顶掉。
+    """
+    if not device_id or device_id in _sessions or device_ended(device_id):
+        return
+    session = PlaySession(
+        device_id=device_id,
+        member_id=member_id,
+        client=client,
+        unit=unit,
+        position_ms=position_ms,
+        local_streamed=True,
+    )
+    if started_at is not None:
+        session.started_at = started_at
+    _sessions[device_id] = session
+
+
 def report_stop(device_id: str) -> None:
     """停止上报（含播放失败）：会话立即结束并从实时视图消失。"""
     _sessions.pop(device_id, None)

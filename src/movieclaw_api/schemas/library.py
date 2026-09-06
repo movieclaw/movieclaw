@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from enum import StrEnum
 from typing import Literal
 
@@ -29,6 +29,13 @@ class LibraryPayload(BaseModel):
         default=None,
         description=(
             "本地来源内容是否从文件抓帧生成缩略图（网络挂载库抓帧等于全量下载，可关）；"
+            "不传表示不改动，新建时默认开启"
+        ),
+    )
+    extract_chapter_images: bool | None = Field(
+        default=None,
+        description=(
+            "是否为视频章节抓取场景图（后台低优先级作业，每个文件按章节数 seek 若干次）；"
             "不传表示不改动，新建时默认开启"
         ),
     )
@@ -221,7 +228,12 @@ class LibraryCapabilitiesView(BaseModel):
     subscribable: bool = Field(description="可作为订阅入库目标")
     write_nfo: bool = Field(description="向媒体目录写 NFO/图片镜像")
     default_aspect: float = Field(description="卡片主图默认宽高比（无真实尺寸时）")
-    jellyfin_collection: str = Field(description="Jellyfin 视图类型：movies / tvshows / homevideos")
+    jellyfin_collection: str = Field(
+        description="Jellyfin 视图类型：movies / tvshows / homevideos / photos"
+    )
+    playable: bool = Field(
+        default=True, description="条目可播放；假 = 只可查看（图片库：点击开灯箱而非播放器）"
+    )
 
 
 class LibraryView(BaseModel):
@@ -231,6 +243,7 @@ class LibraryView(BaseModel):
     source: str = Field(default="tmdb", description="身份来源：tmdb / local")
     capabilities: LibraryCapabilitiesView
     generate_thumbnails: bool = Field(default=True, description="本地来源内容是否抓帧生成缩略图")
+    extract_chapter_images: bool = Field(default=True, description="是否为视频章节抓取场景图")
     exclude_from_home: bool = Field(default=False, description="是否从首页汇总里排除")
     access_mode: Literal["everyone", "selected"] = Field(
         default="everyone", description="可见范围：everyone=所有成员 / selected=指定成员"
@@ -304,6 +317,7 @@ class LibraryView(BaseModel):
             source=row.source,
             capabilities=LibraryCapabilitiesView(**capabilities_of(profile_of(row))),
             generate_thumbnails=row.generate_thumbnails,
+            extract_chapter_images=row.extract_chapter_images,
             exclude_from_home=row.exclude_from_home,
             access_mode=row.access_mode,  # type: ignore[arg-type]
             admin_visible=row.admin_visible,
@@ -400,6 +414,18 @@ class LibraryItemView(BaseModel):
     poster_url: str | None
     primary_aspect: float = Field(
         default=0.6667, description="主图宽高比（真实像素尺寸或来源惯例），卡片按它排版"
+    )
+    release_date: date | None = Field(
+        default=None,
+        description="内容日期：影视为上映/首播日，本地条目为拍摄/录制日（图片库按月分组与悬停日期用）",
+    )
+    poster_blur: str | None = Field(
+        default=None,
+        description="主图的微缩占位图 data URI（约 300 字节）：缩略图到达前铺一层模糊色块",
+    )
+    primary_file_id: int | None = Field(
+        default=None,
+        description="条目的首个在位文件 id（一文件一条目的库用它取原图；多文件条目取最早入账的）",
     )
     file_count: int
     total_size_bytes: int
@@ -506,6 +532,23 @@ class SubtitleDeleteResultView(BaseModel):
     freed_bytes: int = Field(ge=0, description="释放的磁盘空间")
 
 
+class ChapterView(BaseModel):
+    """一个章节（docs/design/video-chapters.md §4.6）：详情页「场景」横排的一张卡。"""
+
+    index: int = Field(description="章节序号（0 起），与 Jellyfin 章节图路由的 index 同义")
+    start_ms: int = Field(description="章节起点（毫秒）")
+    end_ms: int | None = Field(default=None, description="章节终点（毫秒）；末章无终点时为 null")
+    frame_ms: int | None = Field(
+        default=None,
+        description="场景图上那一帧的真实时间（毫秒）；跳播用它，无图时为 null（退回 start_ms）",
+    )
+    title: str | None = Field(default=None, description="章节标题；合成章节与无名章节为 null")
+    synthetic: bool = Field(description="是否按时长合成（容器里没有内嵌章节）")
+    image_url: str | None = Field(
+        default=None, description="场景图地址（本地资产相对路径）；未生成为 null"
+    )
+
+
 class LibraryFileView(BaseModel):
     """条目详情页的一个物理文件（一个版本 / 一集）。"""
 
@@ -549,6 +592,12 @@ class LibraryFileView(BaseModel):
     )
     subtitle_streams: list[SubtitleStreamView] = Field(
         default_factory=list, description="字幕列表：内封轨 + 外挂文件"
+    )
+    # 章节（docs/design/video-chapters.md）：内嵌章节优先，没有就按时长合成。
+    # null = 尚未探测章节（旧行未补探/ffprobe 缺失）；图未生成时 image_url 为 null，
+    # 章节本身仍可用（点击跳播）
+    chapters: list[ChapterView] | None = Field(
+        default=None, description="有效章节列表（内嵌或按时长合成）；null=尚未探测"
     )
     added_at: datetime
 
@@ -645,6 +694,9 @@ class LibraryItemDetailView(BaseModel):
     # 阶段文案与整库刷新同一套（拉取 TMDB 档案 / 写入元数据 / 下载图片 / …）
     scraping: bool = Field(default=False, description="该条目正在后台刮削元数据")
     scraping_phase: str | None = Field(default=None, description="刮削当前阶段；没在刮为 null")
+    # 章节场景图懒触发（docs/design/video-chapters.md §4.5）：打开详情页时发现
+    # 有文件没抓过图就后台抓，这里告诉前端"图还在生成"，前端据此轮询几轮
+    chapters_pending: bool = Field(default=False, description="章节场景图正在后台生成")
     # 刮削归属库（docs/design/scrape-customization.md §14）：元数据与图片的
     # 产物挂全局条目，一条目只能有一套语言/选图口味，由归属库决定。同一条目
     # 的文件散在两个库时，这里显示的就是"哪个库说了算"——不摆出来用户无法

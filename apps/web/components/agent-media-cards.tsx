@@ -7,7 +7,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 import { HScroller } from "@/components/h-scroller";
-import { FilmIcon, PlayIcon, TvIcon, VideoIcon } from "@/components/icons";
+import { FilmIcon, PhotoIcon, PlayIcon, TvIcon, VideoIcon } from "@/components/icons";
 import { PosterCardVisual, type PosterVisualItem } from "@/components/poster-card";
 import { PosterImage } from "@/components/poster-image";
 import { useSubscribeEntry } from "@/components/subscribe-entry";
@@ -52,6 +52,7 @@ const KIND_META: Record<LibraryKind, { label: string; Icon: typeof FilmIcon }> =
   movie: { label: "电影", Icon: FilmIcon },
   tv: { label: "剧集", Icon: TvIcon },
   video: { label: "其他", Icon: VideoIcon },
+  photo: { label: "图片", Icon: PhotoIcon },
 };
 
 type Loaded<T> = { status: "loading" } | { status: "ready"; data: T } | { status: "error" };

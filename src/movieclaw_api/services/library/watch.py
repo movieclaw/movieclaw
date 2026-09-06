@@ -52,8 +52,13 @@ _RESCAN_POLL_SECONDS = 2.0
 _RESCAN_MAX_POLLS = 900  # 约 30 分钟，超时放弃（对账任务兜底）
 
 
-def _is_relevant_event(event) -> bool:  # noqa: ANN001
+def _is_relevant_event(event, watched: frozenset[str] | set[str] | None = None) -> bool:  # noqa: ANN001
     """该文件事件是否值得触发扫描（观察者线程调用，只做纯判定）。
+
+    ``watched``：该库入账对象的扩展名集合（能力档案 ``media_exts``）+ 字幕。
+    **按库给、不取全库并集**：影视库目录里出现 jpg 是刮削器在写海报，取并集
+    就会把它当成图片库的新内容触发扫描，正是下面第 2 条防的自激。缺省
+    （旧调用方/测试）按视频口径。
 
     两层过滤，都是防「系统自己产生的事件又触发扫描」的自激：
 
@@ -84,7 +89,8 @@ def _is_relevant_event(event) -> bool:  # noqa: ANN001
     # moved 事件的语义看终点：改名成视频（下载完成）要触发，视频被改走
     # （旧路径消失）同样要触发——起点终点任一是视频扩展名即算数。
     # strm 与视频同权：网盘工具重新生成 strm 树时台账要跟着对齐
-    watched = SCAN_VIDEO_EXTS | SUBTITLE_EXTS
+    if watched is None:
+        watched = SCAN_VIDEO_EXTS | SUBTITLE_EXTS
     paths = (getattr(event, "dest_path", "") or "", event.src_path or "")
     return any(Path(os.fsdecode(p)).suffix.lower() in watched for p in paths if p)
 
@@ -167,6 +173,8 @@ class LibraryWatcher:
         # (library_id, 根路径) → (handler, ObservedWatch)：差量重建的台账。
         # 仅在持有 _refresh_lock 的工作线程里读写
         self._entries: dict[tuple[int, str], tuple[object, object]] = {}
+        # 库 id → 该库监听的扩展名集合（handler 创建时快照进闭包）
+        self._watched_exts: dict[int, frozenset[str]] = {}
         # 队列元素 (library_id, 条目范围|None=整库, 内容被修改的视频路径|None)
         self._queue: asyncio.Queue[tuple[int, str | None, str | None]] = asyncio.Queue()
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -253,6 +261,15 @@ class LibraryWatcher:
             if library.id is not None and library.realtime_watch
             for root in library.root_paths
         ]
+        # 每库的监听扩展名口径（图片库只认图片，影视/其他库只认视频+strm）
+        from movieclaw_api.services.library.layout import SUBTITLE_EXTS
+        from movieclaw_api.services.library.profile import profile_of
+
+        self._watched_exts = {
+            library.id: frozenset(profile_of(library).media_exts | SUBTITLE_EXTS)
+            for library in libraries
+            if library.id is not None
+        }
         async with self._refresh_lock:
             added, removed = await asyncio.to_thread(self._apply_watches, roots)
         if added or removed:
@@ -343,12 +360,13 @@ class LibraryWatcher:
         from watchdog.events import FileSystemEventHandler
 
         watcher = self
+        watched = self._watched_exts.get(library_id)
 
         class _Handler(FileSystemEventHandler):
             """事件回调（观察者 dispatch 线程）：判定 + 合并 + 投递，不做业务。"""
 
             def on_any_event(self, event) -> None:  # noqa: ANN001
-                if not _is_relevant_event(event):
+                if not _is_relevant_event(event, watched):
                     return
                 modified = _modified_video_path(event)
                 for scope in _event_scopes(root, event):

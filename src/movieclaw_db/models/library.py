@@ -109,6 +109,13 @@ class Library(TimestampMixin, table=True):
     generate_thumbnails: bool = Field(
         default=True, description="本地来源条目缺主图时是否抓帧生成缩略图"
     )
+    # 章节场景图抓取开关（docs/design/video-chapters.md §4.5）。所有形态的库
+    # 都消费：章节是文件级能力，TMDB 条目与本地条目同等享有。默认开——抓图
+    # 在低优先级后台作业里跑；网络挂载大库介意读取量可关。关掉后已生成的图
+    # 保留（与 Jellyfin 删图不同：开关一次不该丢产物）
+    extract_chapter_images: bool = Field(
+        default=True, description="是否为视频章节抓取场景图（后台作业）"
+    )
     # 首页排除（Plex "Include in dashboard" / Jellyfin LatestItemsExcludes 同款）：
     # 开启后本库的条目不进首页「最近添加」聚合区、不参与首页封面拼贴，
     # 首页只剩它自己的库卡片。敏感内容库的第二道闸

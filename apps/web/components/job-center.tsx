@@ -37,6 +37,7 @@ export const JOB_TYPE_LABELS: Record<string, string> = {
   "library.scan": "扫描媒体库",
   "library.metadata.refresh": "刷新媒体库元数据",
   "media.metadata.refresh": "刷新条目元数据",
+  "library.chapter_images": "生成章节场景图",
   "library.organize": "整理媒体库文件",
   "library.transfer": "转移媒体库条目",
   "library.ingest": "自动整理入库",

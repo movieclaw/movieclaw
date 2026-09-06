@@ -116,7 +116,7 @@ const KIND_CARDS: Record<
     chosen: "自动识别并补齐元数据与图片",
     defaultName: "电影库",
     defaults:
-      "实时监控目录变化、扫描后保留丢失记录、为未识别文件生成缩略图、在首页展示。" +
+      "实时监控目录变化、扫描后保留丢失记录、为未识别文件生成封面、在首页展示。" +
       "第一个电影库自动成为默认库；刮削偏好建好后在「编辑库」里设。",
   },
   tv: {
@@ -125,7 +125,7 @@ const KIND_CARDS: Record<
     chosen: "自动识别季集并补齐元数据与图片",
     defaultName: "剧集库",
     defaults:
-      "实时监控目录变化、扫描后保留丢失记录、为未识别文件生成缩略图、在首页展示。" +
+      "实时监控目录变化、扫描后保留丢失记录、为未识别文件生成封面、在首页展示。" +
       "第一个剧集库自动成为默认库；刮削偏好建好后在「编辑库」里设。",
   },
   video: {
@@ -135,14 +135,30 @@ const KIND_CARDS: Record<
     chosen: "不识别不刮削，按 NFO / 文件名展示",
     defaultName: "其他",
     defaults:
-      "实时监控目录变化、扫描后保留丢失记录、从视频抓帧生成缩略图、在首页展示。" +
+      "实时监控目录变化、扫描后保留丢失记录、从视频抓帧生成封面、在首页展示。" +
       "网络挂载的目录建议建好后到「编辑库 → 扫描与监控」关掉实时监控与抓帧。",
+  },
+  photo: {
+    blurb:
+      "不识别、不刮削，扫描目录里的所有图片，按拍摄时间排成相册墙；点开全屏查看。",
+    traits: "不识别 · 全屏查看 · 按拍摄时间",
+    chosen: "扫描全部图片，按拍摄时间排成相册墙",
+    defaultName: "相册",
+    defaults:
+      "实时监控目录变化、扫描后保留丢失记录、生成缩略图、不在首页展示（批量导入会刷满「最近添加」）。" +
+      "缩略图从原图缩放而来；网络挂载的目录建议建好后到「编辑库 → 扫描与监控」关掉实时监控。",
   },
 };
 
 /** 新建时的类型是否带识别链（决定有没有收藏范围这一步）；已有库读服务端能力位。 */
 function kindIsScraped(kind: LibraryKind): boolean {
-  return kind !== "video";
+  return kind !== "video" && kind !== "photo";
+}
+
+/** 新建时「在首页展示」的默认值：图片库默认不上首页——一次导入几百张会把
+ *  「最近添加」刷满（docs/design/library-photo-kind.md 2.9）；建好后可在编辑里打开。 */
+function kindExcludedFromHome(kind: LibraryKind): boolean {
+  return kind === "photo";
 }
 
 /** 根目录列表：第一项为主根；行内可原位更改、设为主根、移除。 */
@@ -481,7 +497,7 @@ function CreateLibraryDialog({
     const untouched = name.trim() === "" || (kind !== null && name === KIND_CARDS[kind].defaultName);
     setKind(next);
     if (untouched) setName(KIND_CARDS[next].defaultName);
-    if (next === "video") {
+    if (!kindIsScraped(next)) {
       setRegions([]);
       setGenres([]);
     }
@@ -497,11 +513,12 @@ function CreateLibraryDialog({
       kind,
       root_paths: roots,
       match_rules: hasScope ? buildMatchRules(validGenres(kind, genres, routingOptions), regions) : [],
-      // 四个开关全按推荐值：监控开、自动清理关、缩略图开、首页展示；建好后在编辑里调
+      // 开关全按推荐值：监控开、自动清理关、封面开、场景图开、首页展示；建好后在编辑里调
       auto_clear_missing: false,
       realtime_watch: true,
       generate_thumbnails: true,
-      exclude_from_home: false,
+      extract_chapter_images: true,
+      exclude_from_home: kindExcludedFromHome(kind),
       scrape_overrides: {},
       access_mode: accessMode,
       admin_visible: adminVisible,
@@ -563,7 +580,7 @@ function CreateLibraryDialog({
         <div className="scroll-thin min-h-0 flex-1 space-y-4 overflow-y-auto p-6 max-md:p-5">
           {step === 1 && (
             <>
-              <div className="grid grid-cols-3 gap-2.5 max-md:grid-cols-1">
+              <div className="grid grid-cols-2 gap-2.5 max-md:grid-cols-1">
                 {(Object.keys(LIBRARY_KIND_META) as LibraryKind[]).map((k) => {
                   const { label, Icon } = LIBRARY_KIND_META[k];
                   const card = KIND_CARDS[k];
@@ -1042,6 +1059,8 @@ function EditLibraryDialog({
   onSaved: (saved: MediaLibrary) => void;
 }) {
   const scraped = library.capabilities.scraped;
+  // 图片库：条目只看不播，缩略图从原图缩放而来（不是抓帧），开关文案随之换
+  const playable = library.capabilities.playable;
   const parsed = parseMatchRules(library.match_rules);
   const [name, setName] = useState(library.name);
   const [roots, setRoots] = useState<string[]>(library.root_paths);
@@ -1049,6 +1068,9 @@ function EditLibraryDialog({
   const [realtimeWatch, setRealtimeWatch] = useState(library.realtime_watch);
   const [autoClearMissing, setAutoClearMissing] = useState(library.auto_clear_missing);
   const [generateThumbnails, setGenerateThumbnails] = useState(library.generate_thumbnails);
+  const [extractChapterImages, setExtractChapterImages] = useState(
+    library.extract_chapter_images,
+  );
   const [excludeFromHome, setExcludeFromHome] = useState(library.exclude_from_home);
   const [accessMode, setAccessMode] = useState<LibraryAccessMode>(library.access_mode);
   const [adminVisible, setAdminVisible] = useState(library.admin_visible);
@@ -1084,6 +1106,7 @@ function EditLibraryDialog({
       auto_clear_missing: autoClearMissing,
       realtime_watch: realtimeWatch,
       generate_thumbnails: generateThumbnails,
+      extract_chapter_images: extractChapterImages,
       exclude_from_home: excludeFromHome,
       scrape_overrides: scraped ? scrapeOverrides : {},
       access_mode: accessMode,
@@ -1144,7 +1167,11 @@ function EditLibraryDialog({
         <>
           {dot(realtimeWatch, "实时监控")}
           {dot(autoClearMissing, "自动清理丢失")}
-          {dot(generateThumbnails, scraped ? "未识别文件缩略图" : "抓帧缩略图")}
+          {dot(
+            generateThumbnails,
+            scraped ? "未识别文件封面" : playable ? "抓帧封面" : "缩略图",
+          )}
+          {playable && dot(extractChapterImages, "章节场景图")}
           {dot(!excludeFromHome, "首页展示")}
         </>
       ),
@@ -1163,11 +1190,30 @@ function EditLibraryDialog({
             detail="自己在磁盘上删了片子后，扫描结束即把这些记录清出台账。只删记录、不动磁盘，但记录删了不可恢复——「缺失」清单里的「重新下载」也会随之消失。关闭时记录保留，文件回归自动恢复；目录读不动的那一轮不会清理。"
           />
           <SwitchRow
-            title={scraped ? "为未识别文件生成缩略图" : "从视频抓帧生成缩略图"}
+            title={
+              scraped
+                ? "为未识别文件生成封面"
+                : playable
+                  ? "从视频抓帧生成封面"
+                  : "生成缩略图"
+            }
             checked={generateThumbnails}
             onChange={setGenerateThumbnails}
-            detail="没有在线海报的内容从视频本身抓一帧当封面：优先用同名图片或内嵌封面，没有再抓帧。网络挂载库抓帧需要读取每个文件，介意流量可关闭，关闭后显示占位图。"
+            detail={
+              playable
+                ? "没有在线海报的内容从视频本身抓一帧当封面：优先用同名图片或内嵌封面，没有再抓帧。网络挂载库抓帧需要读取每个文件，介意流量可关闭，关闭后显示占位图。"
+                : "把原图缩到长边 720 像素当相册墙上的缩略图，网格只加载缩略图。关闭后墙会直接加载原图，大照片会很慢；只有网络挂载的大库介意流量时才建议关。"
+            }
           />
+          {/* 章节是视频的事：图片库（不可播）没有这一项 */}
+          {playable && (
+            <SwitchRow
+              title="抓取章节场景图"
+              checked={extractChapterImages}
+              onChange={setExtractChapterImages}
+              detail="每个视频按章节（有内嵌章节用内嵌，没有按时长切成 3～12 段）各抓一张画面：条目页出「场景」横排、点一张从那里开始播，Infuse 等播放器也能按章节跳转。扫描后在后台低优先级生成，每个文件要定位读取若干次，网络挂载的大库介意读取量可关闭；关闭后已生成的图保留。"
+            />
+          )}
           <SwitchRow
             title="在首页展示"
             checked={!excludeFromHome}

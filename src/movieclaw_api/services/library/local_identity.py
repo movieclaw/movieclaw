@@ -60,18 +60,29 @@ def _digest(text: str) -> str:
 
 
 def local_external_id(
-    library_id: int, kind: MediaKind, root: Path, file: Path, evidence: LocalEvidence | None
+    library_id: int,
+    kind: MediaKind,
+    root: Path,
+    file: Path,
+    evidence: LocalEvidence | None,
+    *,
+    scraped: bool,
 ) -> str:
     """本地条目的稳定锚（``media_item.external_id``）。
 
-    - ``video`` 形态：一文件一条目，键从库内相对路径派生。同路径再出现
-      即复用同一条目（删了再放回、孤儿清理之前），改名/移动由扫描的指纹
-      归并保住文件行，条目随之保留；
-    - 影视形态（临时身份）：按作品分组——有条目目录取条目目录的相对路径，
+    分叉看的是**来源**（``scraped``：库有没有外部识别链）而不是形态：
+
+    - 本地内容库（其他 / 图片）：一文件一条目，键从库内相对路径派生。同路径
+      再出现即复用同一条目（删了再放回、孤儿清理之前），改名/移动由扫描的
+      指纹归并保住文件行，条目随之保留；
+    - 影视库的临时身份：按作品分组——有条目目录取条目目录的相对路径，
       散文件取解析出的 (片名, 年份)。同一部 T0 剧的几十个分集因此共享一条
       临时条目，而不是几十张卡。
+
+    曾经写成 ``kind is MediaKind.VIDEO``：图片类型接入时若不改，同目录的所有
+    照片会被静默合成一张卡——这正是能力档案禁止字面比较的原因。
     """
-    if kind is MediaKind.VIDEO:
+    if not scraped:
         try:
             rel = str(file.relative_to(root))
         except ValueError:
@@ -99,13 +110,18 @@ def build_local_identity(
     spec: MediaSpec | None,
     evidence: LocalEvidence | None = None,
     is_disc: bool = False,
+    scraped: bool,
 ) -> LocalIdentity:
-    """（线程池内运行，含磁盘 IO）本地识别：sidecar NFO → 解析证据 → 文件名。"""
+    """（线程池内运行，含磁盘 IO）本地识别：sidecar NFO → 解析证据 → 文件名。
+
+    ``scraped``：所在库是否有外部识别链（能力档案 ``profile.scraped``）。
+    本地内容库一文件一条目、标题取文件名；影视库的临时身份按作品目录分组。
+    """
     nfo: LocalNfo | None = None
     if not is_disc:
         nfo = read_local_sidecar(file.with_suffix(".nfo"))
     title_from_nfo = bool(nfo and nfo.title)
-    dirs = [] if kind is MediaKind.VIDEO else entry_dirs(root, file)
+    dirs = entry_dirs(root, file) if scraped else []
     if title_from_nfo:
         title = nfo.title  # type: ignore[union-attr]
     elif dirs:
@@ -119,13 +135,14 @@ def build_local_identity(
 
     content_date = _content_date(nfo, spec, file)
     year = nfo.year if nfo and nfo.year else None
-    if year is None and kind is MediaKind.VIDEO and content_date is not None:
-        # 其他库：内容时间（容器日期 / mtime）就是这段录像的年份；影视库的
-        # 临时条目不写推断年份——mtime 推出的"2026"挂在认不出的片子上是误导
+    if year is None and not scraped and content_date is not None:
+        # 本地内容库：内容时间（容器日期 / EXIF 拍摄时间 / mtime）就是这段录像
+        # 或这张照片的年份；影视库的临时条目不写推断年份——mtime 推出的
+        # "2026"挂在认不出的片子上是误导
         year = content_date.year
 
     identity = LocalIdentity(
-        external_id=local_external_id(library_id, kind, root, file, evidence),
+        external_id=local_external_id(library_id, kind, root, file, evidence, scraped=scraped),
         title=title,
         year=year,
         release_date=content_date,
@@ -156,7 +173,8 @@ def build_local_identity(
 
 
 def _content_date(nfo: LocalNfo | None, spec: MediaSpec | None, file: Path) -> date | None:
-    """内容时间：NFO 日期 → 容器 ``date`` → ``creation_time`` → 文件 mtime。"""
+    """内容时间：NFO 日期 → 容器 ``date``（图片为 EXIF 拍摄时间）→ ``creation_time``
+    → 文件 mtime。"""
     for raw in (
         nfo.release_date if nfo else None,
         spec.tag_date if spec else None,

@@ -17,11 +17,14 @@ from __future__ import annotations
 import functools
 import json
 import logging
+import re
 import shutil
 import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from movieclaw_api.services.library.layout import IMAGE_EXTS
 
 logger = logging.getLogger("movieclaw_api.media_probe")
 
@@ -64,11 +67,22 @@ class MediaSpec:
     # 创建时间。原样保留字符串，解析成日期是消费方的事
     tag_date: str | None = None
     creation_time: str | None = None
+    # 内嵌章节（``-show_chapters``）：空列表 = 探测成功但容器里没有章节。
+    # 元素 {"start_ms", "end_ms", "title"}，结构见 ``_chapter_info``；有效章节
+    # （内嵌不足两个时按时长合成）由 library/chapters.py 决定，这里只记事实
+    chapters: list[dict] = field(default_factory=list)
 
 
 def probe_media(path: str | Path) -> MediaSpec | None:
-    """探测单个视频文件；ffprobe 缺失或探测失败返回 None（调用方规格置 NULL）。"""
+    """探测单个媒体文件；ffprobe 缺失或探测失败返回 None（调用方规格置 NULL）。
+
+    图片文件（扩展名在 ``IMAGE_EXTS``）分派给 ``probe_image``：不起 ffprobe
+    子进程，用 Pillow 只读文件头。两者返回**同一个** ``MediaSpec``，下游的
+    入账、内容时间回落、预取、失败记忆、退避补探全部不用区分。
+    """
     global _missing_warned
+    if Path(path).suffix.lower() in IMAGE_EXTS:
+        return probe_image(path)
     try:
         proc = subprocess.run(
             [
@@ -79,6 +93,9 @@ def probe_media(path: str | Path) -> MediaSpec | None:
                 "json",
                 "-show_format",
                 "-show_streams",
+                # 章节顺带一起读（docs/design/video-chapters.md §4.5）：章节在
+                # 容器头里，与流信息同一次读取，零额外 IO
+                "-show_chapters",
                 str(path),
             ],
             capture_output=True,
@@ -105,6 +122,91 @@ def probe_media(path: str | Path) -> MediaSpec | None:
     except json.JSONDecodeError:
         return None
     return _parse_probe(payload, include_mpegts_pids=Path(path).suffix.lower() == ".m2ts")
+
+
+# --- 图片探测（docs/design/library-photo-kind.md 2.3）------------------------
+
+# EXIF 标签号：拍摄时间在 Exif 子 IFD，方向在主 IFD
+_EXIF_DATETIME_ORIGINAL = 0x9003
+_EXIF_DATETIME = 0x0132
+_EXIF_ORIENTATION = 0x0112
+_EXIF_IFD = 0x8769
+# 方向 5–8 是带 90° 旋转的，显示时宽高对调
+_ROTATED_ORIENTATIONS = {5, 6, 7, 8}
+
+
+def probe_image(path: str | Path) -> MediaSpec | None:
+    """用 Pillow 读图片的尺寸与 EXIF 拍摄时间，装进 ``MediaSpec``。
+
+    - ``resolution`` 存原图像素尺寸 ``宽x高``（方向标签为旋转时已对调），
+      灯箱的信息面板从这里读，不为它加列；
+    - 拍摄时间 ``DateTimeOriginal``（形如 ``2024:05:01 10:20:30``）原样放进
+      ``tag_date``：本地身份的 ``_content_date`` 已经会解析这种冒号日期，
+      于是 ``release_date`` = 拍摄日 → 时间线排序、年份都不用另写；
+    - ``audio_streams`` / ``subtitle_streams`` **必须是空列表而不是 None**：
+      定期对账的补探条件是 ``audio_streams IS NULL``，写 None 会让每张照片
+      每轮都被重探；
+    - 只 ``Image.open`` 不 ``load``：Pillow 惰性解码，读尺寸与 EXIF 只碰文件头，
+      网络挂载上也是几十 KB 的事；
+    - 解压炸弹（``DecompressionBombError``）与损坏文件都按探测失败处理，
+      一张畸形图不能打断整轮扫描。
+    """
+    from PIL import Image, UnidentifiedImageError
+
+    try:
+        with Image.open(path) as img:
+            width, height = img.size
+            exif = img.getexif()
+            orientation = exif.get(_EXIF_ORIENTATION)
+            taken: str | None = None
+            try:
+                sub = exif.get_ifd(_EXIF_IFD)
+            except (KeyError, TypeError, ValueError):
+                sub = {}
+            raw = sub.get(_EXIF_DATETIME_ORIGINAL) or exif.get(_EXIF_DATETIME)
+            if isinstance(raw, bytes):
+                raw = raw.decode("ascii", errors="ignore")
+            if isinstance(raw, str) and raw.strip():
+                taken = raw.strip()
+    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as exc:
+        logger.warning("图片探测失败：%s（%s）", path, exc)
+        return None
+    if isinstance(orientation, int) and orientation in _ROTATED_ORIENTATIONS:
+        width, height = height, width
+    return MediaSpec(
+        resolution=f"{width}x{height}" if width and height else None,
+        video_codec=None,
+        hdr=None,
+        bit_depth=None,
+        duration_seconds=None,
+        bit_rate=None,
+        audio_streams=[],
+        subtitle_streams=[],
+        tag_date=taken,
+    )
+
+
+def probe_chapters(path: str | Path) -> list[dict] | None:
+    """只读容器头里的章节（存量行补探用，docs/design/video-chapters.md §4.5）。
+
+    比整套 ``probe_media`` 轻：不列流、不读时长。ffprobe 缺失或失败返回
+    None（调用方保持 NULL，下次再试）。
+    """
+    try:
+        proc = subprocess.run(
+            ["ffprobe", "-v", "error", "-print_format", "json", "-show_chapters", str(path)],
+            capture_output=True,
+            timeout=_PROBE_TIMEOUT,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        payload = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return None
+    return parse_chapters(payload.get("chapters"))
 
 
 # --- 探测失败记忆（媒体库入库/补探/点名重探共用）---------------------------
@@ -425,7 +527,72 @@ def _parse_probe(payload: dict, *, include_mpegts_pids: bool = False) -> MediaSp
         ],
         tag_date=_first_tag(fmt_tags, "date", "originaldate", "date_released"),
         creation_time=_first_tag(fmt_tags, "creation_time", "com.apple.quicktime.creationdate"),
+        chapters=parse_chapters(payload.get("chapters")),
     )
+
+
+# 形如时间戳的章节标题（某些压制工具把起点时间写进 title），视同没有标题
+# ——Jellyfin 的 NormalizeChapterNames 同款判断（TimeSpan.TryParse）
+_TIMESTAMP_TITLE = re.compile(r"^\s*\d{1,2}:\d{2}(:\d{2})?([.,]\d+)?\s*$")
+
+
+def normalize_chapter_title(title: object) -> str | None:
+    """章节标题规范化：空、纯空白、或本身就是个时间戳的一律记 None。
+
+    控制台对无标题章节只显示时间戳，Jellyfin DTO 补 ``第 N 章``——都比把
+    "00:12:30.000" 当标题展示强。
+    """
+    if not isinstance(title, str):
+        return None
+    stripped = title.strip()
+    if not stripped or _TIMESTAMP_TITLE.match(stripped):
+        return None
+    return stripped
+
+
+def _chapter_info(chapter: dict) -> dict | None:
+    """ffprobe 的一条 chapter → 台账元素；起点解析不出来的丢弃。"""
+    start = _to_float(chapter.get("start_time"))
+    if start is None or start < 0:
+        return None
+    end = _to_float(chapter.get("end_time"))
+    tags = chapter.get("tags") or {}
+    return {
+        "start_ms": int(round(start * 1000)),
+        "end_ms": int(round(end * 1000)) if end is not None and end >= start else None,
+        "title": normalize_chapter_title(tags.get("title")),
+    }
+
+
+def parse_chapters(raw: object) -> list[dict]:
+    """``-show_chapters`` 的 ``chapters[]`` → 按起点升序、去重的章节列表。
+
+    同一起点出现两次（个别压制工具的产物）只留第一条；乱序的按起点排好，
+    下游（有效章节、抓图、Jellyfin 序号）都依赖这个顺序。
+    """
+    if not isinstance(raw, list):
+        return []
+    parsed: list[dict] = []
+    seen: set[int] = set()
+    for chapter in raw:
+        if not isinstance(chapter, dict):
+            continue
+        info = _chapter_info(chapter)
+        if info is None or info["start_ms"] in seen:
+            continue
+        seen.add(info["start_ms"])
+        parsed.append(info)
+    parsed.sort(key=lambda c: c["start_ms"])
+    return parsed
+
+
+def _to_float(value: object) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _first_tag(tags: dict, *keys: str) -> str | None:

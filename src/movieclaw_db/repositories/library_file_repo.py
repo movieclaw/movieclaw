@@ -215,6 +215,10 @@ class LibraryFileRepository:
                 # id 由 INSERT 回填，没有库端默认值需要读回
                 await self._session.commit()
                 return row
+        # 章节场景图只在文件本体变了才作废（NULL 让抓图作业重来）；同一份
+        # 文件被重新写入台账（缺失回归、改挂条目）时已抓的图照旧可用
+        if (existing.size_bytes, existing.file_mtime_ns) != (row.size_bytes, row.file_mtime_ns):
+            existing.chapter_images = None
         existing.library_id = row.library_id
         existing.media_item_id = row.media_item_id
         existing.season_number = row.season_number
@@ -233,6 +237,7 @@ class LibraryFileRepository:
         existing.audio_streams = row.audio_streams
         existing.subtitle_streams = row.subtitle_streams
         existing.external_subtitles = row.external_subtitles
+        existing.chapters = row.chapters
         # 人工标注的片源不被自动解析覆盖（docs/design/media-source-annotation.md
         # §3.2）；扫描/入库构造的 row 永远非人工，标记位无需从 row 继承
         if not existing.media_source_manual:

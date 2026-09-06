@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import mimetypes
 from pathlib import Path, PurePath
 from typing import Annotated, Literal
+from urllib.parse import quote
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, Query, Request, Response
 from fastapi.responses import FileResponse
@@ -18,6 +20,7 @@ from movieclaw_api.schemas.library import (
     ArtworkCandidateView,
     ArtworkSelectPayload,
     AudioStreamView,
+    ChapterView,
     ClaimBatchPayload,
     ClaimPayload,
     DetachPayload,
@@ -80,6 +83,7 @@ from movieclaw_api.schemas.library import (
 from movieclaw_api.schemas.response import ApiResponse, ok
 from movieclaw_api.services import jobs, media_scrape
 from movieclaw_api.services.auth import Principal
+from movieclaw_api.services.library import chapters as chapters_mod
 from movieclaw_api.services.library import claim as library_claim
 from movieclaw_api.services.library import source_annotation
 from movieclaw_api.services.library.access import (
@@ -101,7 +105,7 @@ from movieclaw_api.services.library.items import (
 from movieclaw_api.services.library.items import (
     search_library_items as search_visible_library_items,
 )
-from movieclaw_api.services.library.layout import entry_dir_of
+from movieclaw_api.services.library.layout import IMAGE_EXTS, entry_dir_of
 from movieclaw_api.services.library.organize import (
     build_organize_plan,
     enqueue_organize_job,
@@ -937,6 +941,7 @@ async def create_library(
         realtime_watch=payload.realtime_watch,
         scrape_overrides=payload.scrape_overrides,
         generate_thumbnails=payload.generate_thumbnails,
+        extract_chapter_images=payload.extract_chapter_images,
         exclude_from_home=payload.exclude_from_home,
         access_mode=payload.access_mode,
         admin_visible=payload.admin_visible,
@@ -1096,6 +1101,7 @@ async def update_library(
         realtime_watch=payload.realtime_watch,
         scrape_overrides=payload.scrape_overrides,
         generate_thumbnails=payload.generate_thumbnails,
+        extract_chapter_images=payload.extract_chapter_images,
         exclude_from_home=payload.exclude_from_home,
         access_mode=payload.access_mode,
         admin_visible=payload.admin_visible,
@@ -1159,7 +1165,6 @@ async def set_default_library(
 )
 async def delete_library(
     library_id: int,
-    background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[dict]:
 
@@ -1185,8 +1190,11 @@ async def delete_library(
         if i is not None
     ]
     await service.delete(library_id)
-    # 孤儿清理放后台：删几百个资产目录是纯磁盘活，不该拖住删库这一次请求
-    background_tasks.add_task(media_scrape.cleanup_orphan_items, affected)
+    # 孤儿条目的**数据库清理**在这里等它做完再返回：SQLite 会复用被删的库 id，
+    # 用户删库后立刻用同一目录重建，新库的本地条目会与旧条目同键，后台清理
+    # 晚一步就把新库刚认领的条目删掉（见 cleanup_orphan_items 的说明）。
+    # 删几百个资产目录是纯磁盘活，仍放后台，不拖住这一次请求
+    await media_scrape.cleanup_orphan_items(affected, defer_assets=True)
     return ok({}, message="已删除（磁盘上的媒体文件未受影响）")
 
 
@@ -1372,6 +1380,80 @@ async def stop_scan(
             raise ConflictException(f"「{library.name}」{PHASE_LABELS[phase]}，该任务不能中途停止")
         raise ConflictException(f"「{library.name}」当前没有进行中的扫描")
     return ok({}, message=f"正在停止「{library.name}」的扫描（当前单位处理完即停下）")
+
+
+# ---------------------------------------------------------------------------
+# 章节场景图（docs/design/video-chapters.md §4.5）：整库后台作业
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/{library_id}/chapter-images",
+    response_model=ApiResponse[dict],
+    summary="生成整库的章节场景图（可恢复后台作业；force=true 全部重抓）",
+    operation_id="library.chapter-images.generate",
+    dependencies=[Depends(require_admin)],
+    openapi_extra={"x-cli-job": {"id_path": "job_id", "wait_op": "jobs.wait"}},
+    status_code=202,
+)
+async def start_chapter_images(
+    library_id: int,
+    force: bool = Query(default=False, description="true=已有的图也重抓；默认只补缺"),
+    client_name: str | None = Header(default=None, alias="X-MovieClaw-Client"),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[dict]:
+    """每个在位文件按章节（内嵌章节或按时长合成）抓若干张场景图，供详情页
+    「场景」横排与 Jellyfin 客户端的章节列表使用。扫描结束会自动排一份，这里是
+    手动入口；库关了「章节场景图」开关时直接拒绝。"""
+
+    service = LibraryConfigService(session)
+    library = await service.get(library_id)
+    if not library.extract_chapter_images:
+        raise ConflictException(f"「{library.name}」已关闭章节场景图，请先在编辑库里打开")
+    created = await chapters_mod.enqueue_library_chapter_images_job(
+        session, library_id, library.name, force=force, origin=_job_origin(client_name)
+    )
+    return ok(
+        {"started": True, "job_id": created.job.id, "created": created.created},
+        message=(
+            f"已开始生成「{library.name}」的章节场景图，可在任务中心继续观察"
+            if created.created
+            else f"「{library.name}」的章节场景图正在生成中"
+        ),
+    )
+
+
+@router.post(
+    "/{library_id}/items/{media_item_id}/chapter-images",
+    response_model=ApiResponse[dict],
+    summary="重新生成单个条目的章节场景图（全部重抓，后台执行）",
+    operation_id="library.items.regenerate-chapter-images",
+    dependencies=[Depends(require_admin)],
+    status_code=202,
+)
+async def regenerate_item_chapter_images(
+    library_id: int,
+    media_item_id: int,
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[dict]:
+    """条目菜单「重新生成场景图」：该条目所有在位文件的章节按当前策略重抓。
+    十来次定位读取，后台完成；详情接口的 chapters_pending 会在期间为 true，
+    前端据此轮询把图补上。与刷新元数据相互独立。"""
+
+    library = await LibraryConfigService(session).get(library_id)
+    item, _rows = await _item_rows(session, library_id, media_item_id)
+    if not library.extract_chapter_images:
+        raise ConflictException(f"「{library.name}」已关闭章节场景图，请先在编辑库里打开")
+    already = chapters_mod.item_pending(media_item_id)
+    chapters_mod.schedule_item_chapter_images(media_item_id, force=True)
+    return ok(
+        {"started": True},
+        message=(
+            f"《{item.title}》的场景图正在生成中"
+            if already
+            else f"已开始重新生成《{item.title}》的场景图"
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1793,23 +1875,27 @@ async def list_library_item_ids(
 @router.get(
     "/{library_id}/item-index",
     response_model=ApiResponse[list[LibraryIndexEntryView]],
-    summary="海报墙的 A-Z 首字母索引（按标题排序下的分档与起始位置）",
+    summary="海报墙的跳转索引（按标题：A-Z 首字母档；按内容时间：月份档）",
     operation_id="ui.library.items.index",
     openapi_extra={"x-cli-hidden": True},
     dependencies=[Depends(require_library_visible)],
 )
 async def list_library_item_index(
     library_id: int,
+    sort: Literal["title", "release_date"] = Query(
+        default="title", description="title=首字母档；release_date=月份档（图片库/其他库时间线）"
+    ),
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[list[LibraryIndexEntryView]]:
     """索引条数据：每档的条目数与起始 offset，只回非空档。
 
-    与 ``/items?sort=title`` 共用同一份拼音排序，因此 offset 直接可用——
-    前端点「S」就是拉 ``?sort=title&offset=<该档 offset>``。
+    与 ``/items?sort=<同一排序>`` 共用同一份排序，因此 offset 直接可用——
+    前端点「S」就是拉 ``?sort=title&offset=<该档 offset>``，点「2026-08」
+    就是拉 ``?sort=release_date&offset=<该档 offset>``。
     """
 
     await LibraryConfigService(session).get(library_id)  # 404 检查
-    buckets = await build_library_index(session, library_id)
+    buckets = await build_library_index(session, library_id, sort)
     return ok(
         [
             LibraryIndexEntryView(initial=initial, count=count, offset=offset)
@@ -1893,6 +1979,38 @@ async def _item_rows(
     return item, rows
 
 
+def _chapter_views(row: LibraryFile) -> list[ChapterView] | None:
+    """台账行的有效章节 + 已抓到的场景图（docs/design/video-chapters.md §4.6）。
+
+    章节未探测（旧行）返回 None；图地址带 ``?v=`` 版本戳，重抓后浏览器不会拿旧图。
+    """
+    if row.chapters is None:
+        return None
+    images = chapters_mod.chapter_image_map(row.chapter_images)
+    views: list[ChapterView] = []
+    for chapter in chapters_mod.effective_chapters(row.chapters, row.duration_seconds):
+        entry = images.get(chapter.start_ms)
+        image_url = None
+        frame_ms = None
+        if entry is not None:
+            rel = str(entry["image"])
+            image_url = f"/images/assets/{rel}?v={media_scrape.asset_version(rel)}"
+            frame_raw = entry.get("frame_ms")
+            frame_ms = int(frame_raw) if isinstance(frame_raw, int | float) else None
+        views.append(
+            ChapterView(
+                index=chapter.index,
+                start_ms=chapter.start_ms,
+                end_ms=chapter.end_ms,
+                frame_ms=frame_ms,
+                title=chapter.title,
+                synthetic=chapter.synthetic,
+                image_url=image_url,
+            )
+        )
+    return views
+
+
 def _file_view(row: LibraryFile, external_subs: list[str]) -> LibraryFileView:
     """台账行 → 详情页文件视图：内封字幕轨与外挂字幕文件合并成一份清单。"""
     subtitles = [
@@ -1961,6 +2079,7 @@ def _file_view(row: LibraryFile, external_subs: list[str]) -> LibraryFileView:
             ]
         ),
         subtitle_streams=subtitles,
+        chapters=_chapter_views(row),
         added_at=row.created_at,
     )
 
@@ -1993,6 +2112,15 @@ async def get_library_item(
     playback_warmup.schedule(
         media_item_id, [row for row in rows if row.state == FileState.IN_PLACE]
     )
+    # 章节场景图懒触发（docs/design/video-chapters.md §4.5）：有在位文件没抓过
+    # 图就后台抓这一个条目，前端按 chapters_pending 轮询几轮把图补上——升级后
+    # 第一次打开旧条目不用等整库作业排到它
+    chapters_pending = chapters_mod.item_pending(media_item_id)
+    needs_stills = any(
+        row.chapter_images is None and chapters_mod.stills_eligible(row) for row in rows
+    )
+    if library.extract_chapter_images and not chapters_pending and needs_stills:
+        chapters_pending = chapters_mod.schedule_item_chapter_images(media_item_id)
     bundle = await build_item_detail(session, library, item, rows)
 
     base = get_settings().tmdb_image_base_url.rstrip("/")
@@ -2113,6 +2241,7 @@ async def get_library_item(
             # 知道这部片还在刮、正在做什么，不依赖发起刷新的那个标签页还开着
             scraping=media_scrape.is_scraping(media_item_id),
             scraping_phase=media_scrape.scraping_phase(media_item_id),
+            chapters_pending=chapters_pending,
             scrape_library_id=scrape_library.id if scrape_library else None,
             scrape_library_name=scrape_library.name if scrape_library else None,
         )
@@ -2177,6 +2306,65 @@ async def get_file_thumb(
     if thumb is None:
         raise NotFoundException("该文件没有本地缩略图")
     return FileResponse(thumb, headers={"Cache-Control": "private, max-age=3600"})
+
+
+@router.get(
+    "/files/{file_id}/original",
+    response_class=FileResponse,
+    summary="图片库的原图（灯箱全屏查看与下载；按台账行推导路径、按库可见性鉴权）",
+    operation_id="ui.library.files.original",
+    openapi_extra={"x-cli-hidden": True},
+)
+async def get_file_original(
+    file_id: int,
+    download: bool = Query(default=False, description="true=作为附件下载（Content-Disposition）"),
+    size: Literal["original", "screen"] = Query(
+        default="original",
+        description="original=原图；screen=长边 ≤2048 的屏幕适配 WebP（灯箱先看它，放大才拉原图）",
+    ),
+    principal: Principal = Depends(require_login),
+    session: AsyncSession = Depends(get_session),
+) -> FileResponse:
+    """只服务图片文件（docs/design/library-photo-kind.md 2.7）：视频走播放器与直连，
+    不从这里出。路径由台账行推导（客户端只给 id），不存在路径注入面；
+    ``FileResponse`` 自带 Last-Modified / ETag / Range。原图含完整 EXIF，
+    库的可见范围就是它的访问边界。
+
+    ``size=screen``：按原图惰性生成长边 2048 的 WebP 派生图，走图片缓存
+    （磁盘 LRU + singleflight），同一张只编码一次；原图改动（mtime/大小变）
+    自动失效。灯箱的渐进式加载靠它：几百 KB 先上屏，放大到 1:1 才拉几 MB 的原图。
+    """
+    row = await session.get(LibraryFile, file_id)
+    if row is None or Path(row.file_path).suffix.lower() not in IMAGE_EXTS:
+        raise NotFoundException("台账文件不存在或不是图片")
+    if row.library_id is not None:
+        await assert_library_visible(session, principal, row.library_id)
+    path = Path(row.file_path)
+    if not await asyncio.to_thread(path.is_file):
+        raise NotFoundException("图片文件不在磁盘上（可能已被移动或删除）")
+    if size == "screen" and not download:
+        from movieclaw_api.services.image_variants import (
+            ImageVariant,
+            get_image_variant_service,
+            local_source_version,
+        )
+
+        cached = await get_image_variant_service().get_or_create(
+            path,
+            source_key=f"library-file:{file_id}",
+            source_version=await asyncio.to_thread(local_source_version, path),
+            variant=ImageVariant.PHOTO_SCREEN,
+        )
+        return FileResponse(
+            cached.path,
+            media_type=cached.content_type,
+            headers={"Cache-Control": "private, max-age=86400"},
+        )
+    media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    headers = {"Cache-Control": "private, max-age=3600"}
+    if download:
+        headers["Content-Disposition"] = f"attachment; filename*=UTF-8''{quote(path.name)}"
+    return FileResponse(path, media_type=media_type, headers=headers)
 
 
 @router.get(

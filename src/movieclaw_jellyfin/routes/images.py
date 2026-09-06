@@ -1,7 +1,9 @@
 """图片接口（设计文档 5.6）。
 
 资产映射：Movie/Series Primary→poster_file、Backdrop/0→backdrop_file、
-Season Primary→media_season.poster_file、Episode Primary→media_episode.still_file；
+Season Primary→media_season.poster_file、Episode Primary→media_episode.still_file、
+Movie/Episode Chapter/{index}→单元首文件第 index 个有效章节的场景图
+（docs/design/video-chapters.md §4.7）；
 库 Primary→服务端渲染的氛围光货架拼贴（library.cover 服务，双端共用）。
 `tag` 纯缓存语义：不校验、回显进 ETag（带引号）+ 一年 immutable。
 缩放：maxWidth/maxHeight/width/height/fillWidth/fillHeight 任一存在时按
@@ -20,8 +22,9 @@ from fastapi.responses import FileResponse, Response
 from sqlalchemy import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from movieclaw_api.services.library.chapters import chapter_image_map, effective_chapters
 from movieclaw_db.engine import get_database
-from movieclaw_db.models import MediaEpisode, MediaMetadata, MediaSeason
+from movieclaw_db.models import LibraryFile, MediaEpisode, MediaMetadata, MediaSeason
 from movieclaw_jellyfin.errors import JellyfinError, not_found
 from movieclaw_jellyfin.ids import EntityKind, decode_guid
 from movieclaw_jellyfin.routes.common import dto_context
@@ -61,8 +64,34 @@ async def _person_image(person_id: int, image_type: str) -> Response:
     )
 
 
+async def _chapter_asset(
+    session: AsyncSession, media_item_id: int, season: int, episode: int, index: int
+) -> str | None:
+    """章节图：单元首文件（与 DTO 的 files[0] 同一排序）第 index 个有效章节的图。"""
+    row = (
+        await session.execute(
+            select(LibraryFile)
+            .where(
+                LibraryFile.media_item_id == media_item_id,
+                LibraryFile.season_number == season,
+                LibraryFile.episode_number == episode,
+                LibraryFile.in_place(),
+            )
+            .order_by(LibraryFile.created_at, LibraryFile.id)
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        return None
+    chapters = effective_chapters(row.chapters, row.duration_seconds)
+    if index < 0 or index >= len(chapters):
+        return None
+    entry = chapter_image_map(row.chapter_images).get(chapters[index].start_ms)
+    return str(entry["image"]) if entry else None
+
+
 async def _resolve_asset(
-    session: AsyncSession, item_id: str, image_type: str
+    session: AsyncSession, item_id: str, image_type: str, image_index: int = 0
 ) -> str | None:
     """按条目 GUID + 图片类型解析资产相对路径；无资产返回 None。"""
     ref = decode_guid(item_id)
@@ -72,6 +101,15 @@ async def _resolve_asset(
 
     if ref.kind == EntityKind.LIBRARY:
         return None  # 库封面走拼贴专路（get_item_image 特判），不经资产目录
+
+    if itype == "chapter":
+        if ref.kind == EntityKind.ITEM:
+            return await _chapter_asset(session, ref.entity_id, 0, 0, image_index)
+        if ref.kind == EntityKind.EPISODE:
+            return await _chapter_asset(
+                session, ref.entity_id, ref.season, ref.episode, image_index
+            )
+        return None
 
     if ref.kind == EntityKind.ITEM:
         meta = (
@@ -190,9 +228,7 @@ async def get_item_image(
     ref = decode_guid(item_id)
     if ref is not None and ref.kind == EntityKind.LIBRARY:
         if image_type.lower() != "primary":
-            raise JellyfinError(
-                404, text=f"Item does not have an image of type {image_type}"
-            )
+            raise JellyfinError(404, text=f"Item does not have an image of type {image_type}")
         from movieclaw_api.services.library.cover import ensure_library_cover
 
         cover = await ensure_library_cover(ref.entity_id)
@@ -223,7 +259,7 @@ async def get_item_image(
         and image_type.lower() in ("primary", "backdrop")
     )
     async with get_database().session() as session:
-        rel_path = await _resolve_asset(session, item_id, image_type)
+        rel_path = await _resolve_asset(session, item_id, image_type, image_index)
         if is_item_image:
             assert ref is not None
             dir_art, tmdb_fallback = await _item_layer_fallbacks(
@@ -324,9 +360,7 @@ async def _maybe_scaled(target: Path, request: Request) -> Path:
     from movieclaw_api.core.config import get_settings
 
     cache_dir = Path(get_settings().image_cache_dir) / "jellyfin-scaled"
-    key = hashlib.md5(
-        f"{target}:{stat.st_mtime_ns}:{bounds[0]}x{bounds[1]}".encode()
-    ).hexdigest()
+    key = hashlib.md5(f"{target}:{stat.st_mtime_ns}:{bounds[0]}x{bounds[1]}".encode()).hexdigest()
     cached = cache_dir / f"{key}.jpg"
     if cached.is_file():
         return cached

@@ -1947,6 +1947,7 @@ async def _ingest_entry(
                 color_space=spec.color_space if spec else None,
                 audio_streams=list(spec.audio_streams) if spec else None,
                 subtitle_streams=list(spec.subtitle_streams) if spec else None,
+                chapters=list(spec.chapters) if spec else None,
                 # 完整原盘入库：片源按结构判顶档（T6），压过种子名里的
                 # "Blu-ray"——原盘高于从它剥出来的 Remux，否则一个 Remux
                 # 候选会把刚入库的原盘洗掉（issue #163）
@@ -2205,6 +2206,7 @@ async def _ingest_entry(
                 color_space=file_spec.color_space if file_spec else None,
                 audio_streams=list(file_spec.audio_streams) if file_spec else None,
                 subtitle_streams=list(file_spec.subtitle_streams) if file_spec else None,
+                chapters=list(file_spec.chapters) if file_spec else None,
                 media_source=release_attrs.media_source,
                 release_group=release_attrs.release_group,
                 source=FileSource.IMPORTED,
@@ -2482,6 +2484,7 @@ async def _ingest_raw_drop(
             root=Path(root),
             file=final,
             spec=file_spec,
+            scraped=False,  # 原样落库只发生在本地内容库（其他库）
         )
         local_item = await media_service.ensure_local_item(kind, identity, library_id=library.id)
         assert local_item.id is not None
@@ -2507,6 +2510,7 @@ async def _ingest_raw_drop(
                 color_space=file_spec.color_space if file_spec else None,
                 audio_streams=list(file_spec.audio_streams) if file_spec else None,
                 subtitle_streams=list(file_spec.subtitle_streams) if file_spec else None,
+                chapters=list(file_spec.chapters) if file_spec else None,
                 source=FileSource.IMPORTED,
                 identity_source=identity.identity_source.value,
                 added_batch_id=added_batch_id,
@@ -2525,7 +2529,7 @@ async def _ingest_raw_drop(
                 await job_context.update_progress(
                     mode="indeterminate",
                     phase="finalizing",
-                    message="正在生成缩略图",
+                    message="正在生成封面",
                     phase_index=4,
                     phase_count=4,
                     details={"entry_name": entry.name, "library_id": library.id},

@@ -1,4 +1,4 @@
-import { FilmIcon, TvIcon, VideoIcon } from "@/components/icons";
+import { FilmIcon, PhotoIcon, TvIcon, VideoIcon } from "@/components/icons";
 import { LIBRARY_KIND_LABELS, type LibraryKind } from "@/lib/media-types";
 
 /**
@@ -9,4 +9,5 @@ export const LIBRARY_KIND_META: Record<LibraryKind, { label: string; Icon: typeo
   movie: { label: LIBRARY_KIND_LABELS.movie, Icon: FilmIcon },
   tv: { label: LIBRARY_KIND_LABELS.tv, Icon: TvIcon },
   video: { label: LIBRARY_KIND_LABELS.video, Icon: VideoIcon },
+  photo: { label: LIBRARY_KIND_LABELS.photo, Icon: PhotoIcon },
 };
