@@ -1,6 +1,7 @@
 # 媒体库管理页：「回收站」分区
 
-> 状态：设计稿 + 样稿（2026-09-06 定稿），未实现。
+> 状态：已实现（2026-09-06）；接口测试 `tests/api/test_library_recycle_bin.py`，浏览器端到端
+> `tests/e2e/test_library_recycle_bin_browser.py`（标 integration）。
 >
 > 样稿：`docs/design/mockups/library-recycle-bin-demo.html`（四屏：桌面列表 / 「立即清理全部」确认 / 手机端 / 空状态）
 >
@@ -180,8 +181,9 @@ GET /libraries/trashed-files?q=&library_id=&reason=&limit=20&offset=0
   为 `null`、前端按 `reasons` 拼计数。`quality` 是组内汇总：`tiers` 按 `分辨率 片源` 计数，其余
   字段去重列表；`audio_label` 由服务端从 `audio_streams` 首条音轨拼 `编码 声道`（与条目详情页
   文件区的音轨展示同一函数），前端不再解析音轨数组。
-- 聚合字段（`total_*` / `due_within_24h` / `kept_in_place` / `by_*`）按**搜索 + 库 + 原因筛选后**
-  的口径计算，与摘要行、胶囊计数、「立即清理全部」的作用域三者同一份数字。
+- 聚合字段（`total_*` / `due_within_24h` / `kept_in_place`）按**搜索 + 库 + 原因筛选后**的口径
+  计算，与摘要行、「立即清理全部」的作用域是同一份数字；`by_library` 不受库筛选影响、
+  `by_reason` 不受原因筛选影响（分面计数：点了「剧集」胶囊，「电影 41」不会变成 0）。
 - 分页用现有 `Annotated[int, Query(ge=…)]` 的 `limit/offset` 写法，加 `total_items` 是为了画
   页码——回收站是管理表格，批量操作需要用户先知道总数，滚动加载不合适。
 - 两步查询：先按 `state='trashed'`（既有 `ix_library_file_state`）+ 筛选条件 `GROUP BY media_item_id`
@@ -210,24 +212,25 @@ POST /libraries/trashed-files/restore  body: {"ids": [..]}
 
 ### 3.3 标签计数
 
-管理页加载时已经拉 `listLibraries`，给 `LibraryStats` 加 `trashed_count`（`refresh_stats` 里照
-`stats_missing_count` 的写法加一列），标签「回收站 N」= 各库之和，**不为一个数字多打一个接口**。
-回收站标签激活后再打 3.1。
+标签「回收站 N」直接用 3.1 的 `total_files`：管理页挂载时多打一次 `limit=1` 的列表请求
+（一条走 `ix_library_file_state` 的计数查询），并随库列表同一节奏轮询。**不给 `LibraryStats`
+加 `trashed_count` 统计列**：统计快照只在扫描 / 入库 / 转移等写路径收尾重算，而进出回收站的
+三个写路径（洗版 recycle、定时 purge、手动恢复 / 清理）都不在其中，加列就得在每一处补
+刷新，漏一处计数就陈旧；一次计数查询的成本可以忽略。
 
 ## 4. 文件改动（实施时）
 
 | 文件 | 改动 |
 |---|---|
-| `src/movieclaw_api/routes/libraries.py` | 3.1 / 3.2 三个路由，放在现有 restore/purge 单文件接口旁 |
-| `src/movieclaw_api/schemas/library.py` | `TrashedFilesData` / `TrashedItemView` / `TrashedFileView` / 批量请求与结果 schema；`LibraryStats.trashed_count` |
-| `src/movieclaw_db/repositories/library_repo.py` | `refresh_stats` 加 `stats_trashed_count`（迁移加一列，默认 0，向前兼容） |
+| `src/movieclaw_api/api/routes/library_recycle.py`（新） | 3.1 / 3.2 三个路由；前缀 `/libraries/trashed-files` 与 `/libraries/{library_id}` 有路径歧义，在 `api/router.py` 里排在 `libraries_router` 之前 |
+| `src/movieclaw_api/schemas/library.py` | `TrashedFilesData` / `TrashedItemView` / `TrashedFileView` / 批量请求与结果 schema |
 | `apps/web/components/library-manage-view.tsx` | 标题下插入标签栏；`tab === "recycle"` 时渲染 `LibraryRecycleBin` 代替库表格 |
 | `apps/web/components/library-recycle-bin.tsx`（新） | 摘要行、筛选、条目行 + 展开文件行 / 手机卡片、整组与半选、底部批量条、分页、确认弹窗 |
 | `apps/web/lib/api/libraries.ts` | `listTrashedFiles` / `purgeTrashedFiles` / `restoreTrashedFiles` |
 | `apps/web/lib/library-recycle.ts`（新）+ `test/library-recycle.test.mjs` | 纯函数：倒计时分档、摘要文案、字节格式化、组内原因合并、品质行文案（单文件 / 组汇总）、半选态计算；`node --test` |
 | `src/movieclaw_api/data/spec.json` 等 | `scripts/export-spec.sh` 重新导出 |
 
-无运行时依赖变化，不 bump `docker/runtime-version`。
+无运行时依赖变化，无数据库迁移，不 bump `docker/runtime-version`。
 
 ## 5. 明确不做
 

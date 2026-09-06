@@ -1463,3 +1463,145 @@ export function redownloadMissing(
     ),
   );
 }
+
+// ---------------------------------------------------------------------------
+// 回收站分区（docs/design/library-recycle-bin.md §3）：跨库待回收文件按条目分组
+// ---------------------------------------------------------------------------
+
+/** 回收站里的一个待回收文件（一集 / 一个旧版本）。 */
+export interface TrashedFile {
+  id: number;
+  file_name: string;
+  /** 当前物理位置（已移入回收站时是回收站内路径） */
+  file_path: string;
+  /** 移入回收站前的原路径；null = 原地待回收（移动失败降级） */
+  trash_original_path: string | null;
+  kept_in_place: boolean;
+  size_bytes: number;
+  resolution: string | null;
+  media_source: string | null;
+  hdr: string | null;
+  video_codec: string | null;
+  bit_depth: number | null;
+  /** 首条音轨「编码 声道」，如 DTS-HD MA 5.1；未探测为 null */
+  audio_label: string | null;
+  release_group: string | null;
+  season_number: number;
+  episode_number: number;
+  episode_title: string | null;
+  trashed_at: string | null;
+  /** 预计自动清理时间；null = 不自动清理 */
+  purge_after: string | null;
+  reason: string | null;
+  note: string | null;
+  /** 上次批量清理失败的中文原因 */
+  last_error: string | null;
+}
+
+export interface TrashedQuality {
+  /** 「分辨率 片源」→ 文件数 */
+  tiers: Record<string, number>;
+  hdr: string[];
+  video_codecs: string[];
+  audio_labels: string[];
+  release_groups: string[];
+}
+
+/** 回收站列表的一行：一个条目（电影 / 剧）及其全部待回收文件。 */
+export interface TrashedItem {
+  key: string;
+  library: { id: number; name: string };
+  /** 未识别的待回收文件为 null，前端以文件名代标题 */
+  media_item: {
+    id: number;
+    title: string;
+    year: number | null;
+    kind: MediaType;
+    poster_url: string | null;
+  } | null;
+  seasons: number[];
+  file_count: number;
+  total_bytes: number;
+  earliest_purge_after: string | null;
+  latest_purge_after: string | null;
+  reasons: Record<string, number>;
+  /** 组内 note 一致时的整句；混合时为 null */
+  note: string | null;
+  trigger_label: string | null;
+  latest_trashed_at: string | null;
+  quality: TrashedQuality;
+  files: TrashedFile[];
+}
+
+export interface TrashedFilesData {
+  total_files: number;
+  total_items: number;
+  total_bytes: number;
+  due_within_24h: number;
+  kept_in_place: number;
+  by_library: { library_id: number; name: string; count: number }[];
+  by_reason: { reason: string; count: number }[];
+  items: TrashedItem[];
+}
+
+export interface TrashedFilter {
+  q?: string;
+  library_id?: number | null;
+  reason?: string | null;
+}
+
+export interface TrashedBatchResult {
+  done: number;
+  failed: { id: number; file_name: string; error: string }[];
+  /** 按筛选清理时超出单次上限、尚未处理的文件数 */
+  remaining: number;
+}
+
+/** 回收站列表：按条目分组分页，随带摘要与分面计数。 */
+export function listTrashedFiles(
+  filter: TrashedFilter,
+  page: { limit: number; offset: number },
+  init?: RequestInit,
+): Promise<TrashedFilesData> {
+  const params = new URLSearchParams();
+  if (filter.q) params.set("q", filter.q);
+  if (filter.library_id != null) params.set("library_id", String(filter.library_id));
+  if (filter.reason) params.set("reason", filter.reason);
+  params.set("limit", String(page.limit));
+  params.set("offset", String(page.offset));
+  return unwrap(
+    request<ApiEnvelope<TrashedFilesData>>(`/libraries/trashed-files?${params.toString()}`, init),
+  );
+}
+
+/** 批量立即清理（真删磁盘）：按 id 或按筛选二选一；调用前必须向用户确认。 */
+export function purgeTrashedFiles(
+  scope: { ids: number[] } | { filter: TrashedFilter },
+): Promise<TrashedBatchResult> {
+  const body =
+    "ids" in scope
+      ? { ids: scope.ids }
+      : {
+          filter: {
+            q: scope.filter.q || null,
+            library_id: scope.filter.library_id ?? null,
+            reason: scope.filter.reason ?? null,
+          },
+        };
+  return unwrap(
+    request<ApiEnvelope<TrashedBatchResult>>(`/libraries/trashed-files/purge`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  );
+}
+
+/** 批量恢复为在位版本（可逆，不需确认）。 */
+export function restoreTrashedFiles(ids: number[]): Promise<TrashedBatchResult> {
+  return unwrap(
+    request<ApiEnvelope<TrashedBatchResult>>(`/libraries/trashed-files/restore`, {
+      method: "POST",
+      body: JSON.stringify({ ids }),
+    }),
+  );
+}
