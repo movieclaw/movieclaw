@@ -11,6 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from jellyfin.helpers import jf_login
+from movieclaw_api.services.playback import watch
 from movieclaw_jellyfin.ids import episode_guid, item_guid, season_guid
 from movieclaw_jellyfin.routes import playstate
 
@@ -20,9 +21,14 @@ RUNTIME_MS = 47 * 60 * 1000  # 播种剧集单集时长
 
 @pytest.fixture
 def emitted(monkeypatch) -> list:
-    """捕获协议层投递的全部事件（替换 emit_events，不走真实投递链路）。"""
-    playstate._progress_last_emit.clear()  # progress 节流状态在用例间隔离
+    """捕获投递的全部事件（替换 emit_events，不走真实投递链路）。
+
+    播放类事件由网页端与 Jellyfin 端共用的 watch 服务发出，标记/收藏类事件
+    仍由协议路由自己发，两处都要截。
+    """
+    watch._progress_last_emit.clear()  # progress 节流状态在用例间隔离
     captured: list = []
+    monkeypatch.setattr(watch, "emit_events", captured.extend)
     monkeypatch.setattr(playstate, "emit_events", captured.extend)
     return captured
 

@@ -9,7 +9,8 @@
 会一并作废所有在途的取流 token，语义正确。
 
 token 负载只放**授权范围**，不放任何秘密：成员 id、文件 id、可选的会话 id、
-过期时间。拿到 token 也只能取这一个文件/会话的流。
+过期时间。拿到 token 也只能取这一个文件/会话的流。另带一个可选的浏览器设备
+标识——它不是授权范围，只用来把取流字节记到活动页上对应会话的名下。
 """
 
 from __future__ import annotations
@@ -36,6 +37,8 @@ class StreamGrant:
     file_id: int
     session_id: str | None
     expires_at: int
+    #: 播放这条流的浏览器设备标识（活动页实时会话的锚点）；旧 token 没有
+    device_id: str | None = None
 
 
 async def issue_stream_token(
@@ -43,17 +46,19 @@ async def issue_stream_token(
     member_id: int,
     file_id: int,
     session_id: str | None = None,
+    device_id: str | None = None,
     ttl_seconds: int = STREAM_TOKEN_TTL_S,
 ) -> str:
     serializer = URLSafeSerializer(await get_signing_secret(), salt=_STREAM_SALT)
-    return serializer.dumps(
-        {
-            "m": member_id,
-            "f": file_id,
-            "s": session_id,
-            "exp": int(time.time()) + ttl_seconds,
-        }
-    )
+    payload = {
+        "m": member_id,
+        "f": file_id,
+        "s": session_id,
+        "exp": int(time.time()) + ttl_seconds,
+    }
+    if device_id:
+        payload["d"] = device_id
+    return serializer.dumps(payload)
 
 
 async def verify_stream_token(
@@ -75,11 +80,13 @@ async def verify_stream_token(
     if not isinstance(payload, dict):
         return None
     try:
+        device_id = payload.get("d")
         grant = StreamGrant(
             member_id=int(payload["m"]),
             file_id=int(payload["f"]),
             session_id=payload.get("s"),
             expires_at=int(payload["exp"]),
+            device_id=str(device_id) if device_id else None,
         )
     except (KeyError, TypeError, ValueError):
         return None

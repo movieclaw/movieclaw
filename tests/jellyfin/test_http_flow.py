@@ -792,11 +792,11 @@ def test_stopped_cancels_device_streams_even_when_failed(
     client: TestClient, seeded: dict, monkeypatch
 ) -> None:
     """Stopped 是取流停止信号；Failed 只跳过播放状态写入，不能留下预读。"""
-    from movieclaw_jellyfin.routes import playstate
+    from movieclaw_api.services.playback import watch
 
     token = jf_login(client)
     calls: list[str] = []
-    monkeypatch.setattr(playstate, "stop_device_streams", calls.append)
+    monkeypatch.setattr(watch, "stop_device_streams", calls.append)
 
     response = client.post(
         "/Sessions/Playing/Stopped",

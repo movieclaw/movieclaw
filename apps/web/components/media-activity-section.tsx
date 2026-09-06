@@ -22,10 +22,16 @@ import {
   revokePlaybackDevice,
   type ActiveFileDownload,
   type ActivePlaybackSession,
+  type MediaActivityScope,
   type MediaActivitySnapshot,
   type MediaActivityTarget,
   type MediaRecentPlay,
 } from "@/lib/api/playback";
+import {
+  ACTIVITY_SCOPE_OPTIONS,
+  loadActivityScope,
+  saveActivityScope,
+} from "@/lib/activity-scope";
 import { formatBytes } from "@/lib/format";
 import { imageUrl } from "@/lib/image-proxy";
 import { formatRelativeTime } from "@/lib/time";
@@ -39,6 +45,8 @@ const EMPTY_SNAPSHOT: MediaActivitySnapshot = {
   downloads: [],
   devices: [],
   recent: [],
+  hidden_session_count: 0,
+  hidden_download_count: 0,
   hidden_recent_count: 0,
 };
 
@@ -48,6 +56,9 @@ export interface MediaActivityState {
   error: string | null;
   /** 立即重新拉取一次（注销设备等写操作后校准，不等下一个轮询周期）。 */
   refresh: () => void;
+  /** 可见范围口径（lib/activity-scope.ts）；切换后立即按新口径重拉。 */
+  scope: MediaActivityScope;
+  setScope: (scope: MediaActivityScope) => void;
 }
 
 /**
@@ -58,17 +69,24 @@ export function useMediaActivity(enabled: boolean): MediaActivityState {
   const [snapshot, setSnapshot] = useState<MediaActivitySnapshot>(EMPTY_SNAPSHOT);
   const [loading, setLoading] = useState(enabled);
   const [error, setError] = useState<string | null>(null);
+  // 惰性初始化读本地记忆：本 hook 只在登录后的客户端渲染，可直接读 localStorage
+  const [scope, setScopeState] = useState<MediaActivityScope>(loadActivityScope);
   const pending = useRef(false);
   const loaded = useRef(false);
+  // 切口径时，仍在途的旧口径响应不能盖掉新口径的数据
+  const requestScope = useRef(scope);
 
   const refresh = useCallback(() => {
     if (!enabled || pending.current) return;
     pending.current = true;
     // 首次装载（含从非轮询视图切回）显示读取态，而不是闪一下空态
     if (!loaded.current) setLoading(true);
+    const target = requestScope.current;
     void (async () => {
       try {
-        setSnapshot(await fetchMediaActivity());
+        const next = await fetchMediaActivity(target);
+        if (requestScope.current !== target) return;
+        setSnapshot(next);
         setError(null);
         loaded.current = true;
       } catch (caught) {
@@ -80,8 +98,21 @@ export function useMediaActivity(enabled: boolean): MediaActivityState {
     })();
   }, [enabled]);
 
+  const setScope = useCallback(
+    (next: MediaActivityScope) => {
+      if (next === requestScope.current) return;
+      requestScope.current = next;
+      setScopeState(next);
+      saveActivityScope(next);
+      // 上一口径的请求若还在途，pending 会挡住这一次；它回来时被 requestScope
+      // 判定过期而丢弃，下一轮轮询再按新口径拉——最多晚一个周期
+      refresh();
+    },
+    [refresh],
+  );
+
   useVisiblePolling(refresh, enabled ? POLL_INTERVAL_MS : null, { leading: true });
-  return { snapshot, loading, error, refresh };
+  return { snapshot, loading, error, refresh, scope, setScope };
 }
 
 function formatRate(bytesPerSecond: number): string {
@@ -133,7 +164,8 @@ function MetaLine({
 }
 
 function detailHref(media: MediaActivityTarget): Route | null {
-  if (media.library_id == null) return null;
+  // 落点库不在超管的可浏览范围内时，条目详情接口是 404，不给一个点了就报错的链接
+  if (media.library_id == null || !media.browsable) return null;
   return `/library/${media.library_id}/item/${media.media_item_id}` as Route;
 }
 
@@ -148,8 +180,9 @@ export function MediaActivitySummaryNav({
   snapshot: MediaActivitySnapshot;
   onOpen: () => void;
 }) {
-  const playing = snapshot.sessions.length;
-  const downloading = snapshot.downloads.length;
+  // 范围外折叠的会话同样计数：汇总行只报数，不出片名
+  const playing = snapshot.sessions.length + snapshot.hidden_session_count;
+  const downloading = snapshot.downloads.length + snapshot.hidden_download_count;
   if (playing === 0 && downloading === 0) return null;
   const allPaused = playing > 0 && snapshot.sessions.every((s) => s.paused);
   const totalRate =
@@ -218,6 +251,12 @@ function ActivityTitle({ media }: { media: MediaActivityTarget }) {
       {unit && <span className="tnum ml-1.5 font-normal text-white/60">{unit}</span>}
       {media.episode_title && (
         <span className="ml-1.5 font-normal text-white/45">{media.episode_title}</span>
+      )}
+      {/* 「全部」口径下范围外的记录：与库首页对超管不可浏览库的「仅管理」标签同一措辞 */}
+      {!media.browsable && (
+        <span className="ml-1.5 rounded-md border border-white/15 px-1.5 py-px text-[11px] font-medium text-white/50">
+          仅管理
+        </span>
       )}
     </>
   );
@@ -324,12 +363,15 @@ function SessionCard({
           <ActivityTitle media={media} />
           <div className="flex shrink-0 items-center gap-1.5">
             <StatusBadge paused={session.paused} />
-            <DeviceActionsMenu
-              deviceId={session.device_id}
-              deviceLabel={deviceLabel(session.client, session.device_name)}
-              onRevoke={onRevoke}
-              busy={busy}
-            />
+            {/* 网页播放器走登录会话，没有可注销的设备凭据，不给假菜单 */}
+            {session.revocable && (
+              <DeviceActionsMenu
+                deviceId={session.device_id}
+                deviceLabel={deviceLabel(session.client, session.device_name)}
+                onRevoke={onRevoke}
+                busy={busy}
+              />
+            )}
           </div>
         </div>
         <MetaLine
@@ -462,12 +504,14 @@ function DownloadCard({
             </OverflowText>
           )}
           {/* 分区标题已经写明「正在下载」，卡片不再重复一个同义徽标 */}
-          <DeviceActionsMenu
-            deviceId={download.device_id}
-            deviceLabel={deviceLabel(download.client, download.device_name)}
-            onRevoke={onRevoke}
-            busy={busy}
-          />
+          {download.revocable && (
+            <DeviceActionsMenu
+              deviceId={download.device_id}
+              deviceLabel={deviceLabel(download.client, download.device_name)}
+              onRevoke={onRevoke}
+              busy={busy}
+            />
+          )}
         </div>
         <MetaLine
           parts={[download.member_name, deviceLabel(download.client, download.device_name)]}
@@ -530,10 +574,13 @@ function SectionHeading({
   icon,
   title,
   count,
+  trailing,
 }: {
   icon: React.ReactNode;
   title: string;
   count: number;
+  /** 分隔线右侧的控件位（范围切换器挂在第一个分区上） */
+  trailing?: React.ReactNode;
 }) {
   return (
     <div className="mb-3 flex items-center gap-2.5">
@@ -541,7 +588,55 @@ function SectionHeading({
       <h2 className="text-ui font-semibold text-white/65">{title}</h2>
       <span className="tnum text-caption text-white/30">{count}</span>
       <span aria-hidden="true" className="h-px min-w-8 flex-1 bg-white/[0.09]" />
+      {trailing}
     </div>
+  );
+}
+
+/**
+ * 可见范围切换（docs/design/activity.md「范围切换」）。形态沿用页头的视角
+ * 切换器，尺寸收小一档挂在分区标题行里——它是本视角内部的口径开关，
+ * 不该与「观看 / 任务」的一级切换平起平坐。
+ */
+function ScopeSelect({
+  value,
+  onChange,
+}: {
+  value: MediaActivityScope;
+  onChange: (scope: MediaActivityScope) => void;
+}) {
+  return (
+    <div
+      role="group"
+      aria-label="可见范围"
+      className="flex shrink-0 rounded-full border border-white/10 bg-black/30 p-0.5"
+    >
+      {ACTIVITY_SCOPE_OPTIONS.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          aria-pressed={value === option.value}
+          onClick={() => onChange(option.value)}
+          className={`rounded-full px-2.5 py-0.5 text-caption font-semibold transition ${
+            value === option.value
+              ? "bg-white/15 text-white shadow-sm"
+              : "text-[var(--text-muted)] hover:text-white"
+          }`}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** 范围外记录的折叠行：只报个数，不出片名与海报（library-access.md 2.5）。 */
+function HiddenCountRow({ count, noun }: { count: number; noun: string }) {
+  if (count <= 0) return null;
+  return (
+    <p className="px-4 py-2.5 text-caption text-white/45 max-md:px-3.5">
+      另有 {count} {noun}不在你的可见范围内，切到「全部」可查看
+    </p>
   );
 }
 
@@ -554,13 +649,19 @@ export function MediaActivityPanel({
   loading,
   error,
   refresh,
+  scope,
+  setScope,
 }: MediaActivityState) {
   const toast = useToast();
   const [pendingRevoke, setPendingRevoke] = useState<RevokeTarget | null>(null);
   const [revoking, setRevoking] = useState<string | null>(null);
   const liveCount = snapshot.sessions.length + snapshot.downloads.length;
+  const hiddenLiveCount = snapshot.hidden_session_count + snapshot.hidden_download_count;
   const empty =
-    liveCount === 0 && snapshot.recent.length === 0 && snapshot.hidden_recent_count === 0;
+    liveCount === 0 &&
+    hiddenLiveCount === 0 &&
+    snapshot.recent.length === 0 &&
+    snapshot.hidden_recent_count === 0;
 
   const requestRevoke = useCallback((deviceId: string, label: string) => {
     setPendingRevoke({ deviceId, label });
@@ -603,9 +704,10 @@ export function MediaActivityPanel({
         <SectionHeading
           icon={<PlayIcon className="size-4 text-[var(--info)]" />}
           title="正在播放"
-          count={snapshot.sessions.length}
+          count={snapshot.sessions.length + snapshot.hidden_session_count}
+          trailing={<ScopeSelect value={scope} onChange={setScope} />}
         />
-        {snapshot.sessions.length === 0 ? (
+        {snapshot.sessions.length === 0 && snapshot.hidden_session_count === 0 ? (
           <p className="rounded-2xl border border-white/[0.07] bg-white/[0.02] px-4 py-6 text-center text-sub text-[var(--text-muted)]">
             当前没有设备在播放；设备开始播放后几秒内会出现在这里。
           </p>
@@ -619,16 +721,21 @@ export function MediaActivityPanel({
                 busy={revoking != null}
               />
             ))}
+            {snapshot.hidden_session_count > 0 && (
+              <div className="rounded-2xl border border-white/[0.07] bg-white/[0.02]">
+                <HiddenCountRow count={snapshot.hidden_session_count} noun="台设备正在播放的内容" />
+              </div>
+            )}
           </div>
         )}
       </section>
 
-      {snapshot.downloads.length > 0 && (
+      {(snapshot.downloads.length > 0 || snapshot.hidden_download_count > 0) && (
         <section className="mt-7" aria-label="正在下载">
           <SectionHeading
             icon={<DownloadIcon className="size-4 text-[var(--info)]" />}
             title="正在下载"
-            count={snapshot.downloads.length}
+            count={snapshot.downloads.length + snapshot.hidden_download_count}
           />
           <div className="space-y-2.5">
             {snapshot.downloads.map((download) => (
@@ -639,6 +746,11 @@ export function MediaActivityPanel({
                 busy={revoking != null}
               />
             ))}
+            {snapshot.hidden_download_count > 0 && (
+              <div className="rounded-2xl border border-white/[0.07] bg-white/[0.02]">
+                <HiddenCountRow count={snapshot.hidden_download_count} noun="条下载" />
+              </div>
+            )}
           </div>
         </section>
       )}
@@ -659,11 +771,7 @@ export function MediaActivityPanel({
             ))}
             {/* 落在超管不可浏览的库里的记录：只报个数，不出片名与海报
                 （docs/design/library-access.md 2.5） */}
-            {snapshot.hidden_recent_count > 0 && (
-              <p className="px-4 py-2.5 text-caption text-white/45 max-md:px-3.5">
-                另有 {snapshot.hidden_recent_count} 条记录不在你的可见范围内
-              </p>
-            )}
+            <HiddenCountRow count={snapshot.hidden_recent_count} noun="条记录" />
           </div>
         </section>
       )}

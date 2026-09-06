@@ -127,7 +127,7 @@ Jellyfin member_id=0 = 同超管会话
 | 首页最近观看 `GET /playback/recent` | 成员按可见集，超管不限 | 超管也按可浏览集 |
 | 全局搜索 `GET /search/library-items` | 同上 | 同上 |
 | 发现页「已入库」徽标、详情页入口 | 同上 | 同上 |
-| 活动页 `GET /playback/activity`（管理员） | 跨成员全量 | 超管不可浏览的库内记录折叠为一行「N 条记录（不在你的可见范围）」，不出片名与海报 |
+| 活动页 `GET /playback/activity`（管理员） | 跨成员全量 | 默认口径（`scope=visible`）下正在播放 / 正在下载 / 最近观看统一把超管不可浏览的库内记录折叠为计数，不出片名与海报；`scope=all` 是管控视角的全量口径，范围外记录带 `browsable=false`、不渲染详情链接（activity.md「范围切换」） |
 | Jellyfin `/UserViews`、`/Items`、Latest、Resume、NextUp、搜索、人物 | 成员按可见集，超管设备不限 | 超管设备也按 `admin_visible`；`user_policy()` 对超管改为 `EnableAllFolders=false` + `EnabledFolders` |
 | 图片资产 `GET /images/assets/{media_item_id}/…` | 仅登录 | 条目所属库不在主体可浏览集 → 404 |
 | 条目详情、播放决策、取流、字幕、缩略图 | 按可见集 | 超管也按可浏览集 |
@@ -275,7 +275,9 @@ DELETE /playback/history?scope=all
    `hidden_recent_count`，前端在最近观看列表尾部渲染一行「另有 N 条记录不在
    你的可见范围内」。条目跨库时只要有一个库可浏览就照常展示，详情落点取可
    浏览库里 id 最小的那个；没有任何台账行的条目（文件已删只剩记录）不受
-   范围约束。
+   范围约束。（2026-09 补记：折叠扩展到正在播放 / 正在下载两个实时区块
+   ——此前只折叠最近观看是一处遗漏；并新增 `scope=all` 全量口径，见
+   activity.md「范围切换」。）
 3. **监听导入规则表单未动**：可见性不影响入库路径，规则里的库下拉不需要标签。
 4. **没有做 Principal 级缓存，也没有 `manageable_library_ids`**：可浏览集合是
    两条只读小查询（库表整取 + 授权行），一次请求里最多算两三次，先不加缓存；

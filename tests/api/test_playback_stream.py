@@ -412,6 +412,78 @@ def test_session_lifecycle_playlist_segment_ping_stop(client, tmp_path):
     assert client.post(f"{_PB}/sessions/{session_id}/ping").status_code == 404
 
 
+def _item_id_of(client: TestClient, file_id: int) -> int:
+    async def _lookup():
+        async with get_database().session() as session:
+            return (await session.get(LibraryFile, file_id)).media_item_id
+
+    return client.portal.call(_lookup)
+
+
+def test_direct_play_bytes_are_metered_for_the_browser_session(client, tmp_path):
+    """档 0 直出：取流字节记到活动页上这台浏览器的会话名下（与 Jellyfin 同一套登记）。"""
+    from movieclaw_playback import activity
+
+    activity.reset()
+    file_id = seed(client, tmp_path, container="mp4")
+    item_id = _item_id_of(client, file_id)
+    client.post(
+        f"{_PB}/progress",
+        json={"media_item_id": item_id, "event": "start", "device_id": "browser-x"},
+    )
+    data = start_session(client, file_id, device_id="browser-x")
+    assert data["decision"]["tier"] == 0
+    resp = client.get(data["stream_url"])
+    assert resp.status_code == 200
+
+    live = client.get(f"{_PB}/activity").json()["data"]["sessions"]
+    assert len(live) == 1
+    assert live[0]["device_id"] == "web-browser-x"
+    assert live[0]["play_method"] == "local"
+    # 连接已结束，字节结转进会话累计
+    assert live[0]["bytes_sent"] == len(resp.content)
+    assert live[0]["connections"] == 0
+    activity.reset()
+
+
+def test_hls_segments_are_metered_per_session_and_released_on_stop(client, tmp_path):
+    """转码会话共用一条计量器：分片字节累加，会话停止后计量器回收。"""
+    from movieclaw_playback import activity
+
+    activity.reset()
+    file_id = seed(client, tmp_path, container="mkv")
+    data = start_session(client, file_id, device_id="browser-y")
+    session_id = data["session_id"]
+    token = data["stream_url"].split("token=")[1]
+    segment = client.get(f"{_PB}/sessions/{session_id}/seg00000.m4s?token={token}")
+    assert segment.status_code == 200
+    client.get(f"{_PB}/sessions/{session_id}/init.mp4?token={token}")
+
+    _, meters = activity.snapshot()
+    assert len(meters) == 1
+    assert meters[0].device_id == "web-browser-y"
+    assert meters[0].kind == activity.STREAM_KIND_PLAY
+    assert meters[0].bytes_sent == len(b"SEGMENT-DATA") + len(b"INIT")
+
+    assert client.delete(f"{_PB}/sessions/{session_id}").status_code == 200
+    _, meters = activity.snapshot()
+    assert meters == []
+
+
+def test_legacy_token_without_device_streams_without_metering(client, tmp_path):
+    """升级前签出的 token 没有设备标识：照常取流，不登记活动。"""
+    from movieclaw_playback import activity
+
+    activity.reset()
+    file_id = seed(client, tmp_path, container="mp4")
+    token = client.portal.call(
+        partial(issue_stream_token, member_id=0, file_id=file_id, session_id=None)
+    )
+    resp = client.get(f"{_PB}/files/{file_id}/stream?token={token}")
+    assert resp.status_code == 200
+    assert activity.snapshot() == ([], [])
+
+
 def test_remote_only_backend_is_never_sent_to_local_ffmpeg(client, tmp_path, monkeypatch):
     """远程能力短暂不可用时，未授权的软件转码不能被静默启动。"""
     from movieclaw_api.services.playback import hwprobe

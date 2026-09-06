@@ -78,8 +78,12 @@ export function ActivityView({
     setView(initialView);
   }, [initialScope, initialView]);
 
+  // 范围外折叠的会话也算「此刻有人在播」：圆点只表达有无，不出片名
   const liveCount =
-    mediaActivity.snapshot.sessions.length + mediaActivity.snapshot.downloads.length;
+    mediaActivity.snapshot.sessions.length +
+    mediaActivity.snapshot.downloads.length +
+    mediaActivity.snapshot.hidden_session_count +
+    mediaActivity.snapshot.hidden_download_count;
   // 「任务」上的角标与侧栏「活动」入口同源同口径：用户是被那个角标带进来的，
   // 一级切换器必须原样把它接住——否则从观看视角看过去，任务那边有什么事
   // 完全不可见（就是"点进来不知道为什么有提醒"的由来）。

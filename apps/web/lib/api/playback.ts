@@ -1,8 +1,9 @@
 import { publicEnv } from "@/lib/env";
+import { getPlayerDeviceId } from "@/lib/player/device";
 import type { TrickplayIndex } from "@/lib/player/trickplay";
 import { HttpError, request, resolveRequestUrl } from "@/lib/http";
 import type { LibraryEpisode } from "@/lib/api/libraries";
-import type { MediaType } from "@/lib/media-types";
+import type { LibraryKind, MediaType } from "@/lib/media-types";
 
 /**
  * 取流/字幕地址的最终解析。
@@ -66,7 +67,11 @@ export interface MediaActivityTarget {
   media_item_id: number;
   /** 详情页落点；作品没有在位文件时为 null（此时不渲染跳转）。 */
   library_id: number | null;
-  kind: MediaType;
+  /** 落点库是否在当前超管的可浏览范围内。「全部」口径下范围外记录照常出片名，
+   *  但浏览类接口对范围外超管是 404，前端不渲染详情链接。 */
+  browsable: boolean;
+  /** movie / tv / video（「其他」库的单本视频） */
+  kind: LibraryKind;
   title: string;
   year: number | null;
   poster_url: string | null;
@@ -86,6 +91,8 @@ export interface PlaybackFileSpec {
 
 export interface ActivePlaybackSession {
   device_id: string;
+  /** 能否「注销此设备」：只有持 Jellyfin 设备凭据的会话可以；网页播放器不行。 */
+  revocable: boolean;
   member_name: string;
   client: string;
   device_name: string;
@@ -107,6 +114,7 @@ export interface ActivePlaybackSession {
 
 export interface ActiveFileDownload {
   device_id: string;
+  revocable: boolean;
   member_name: string;
   client: string;
   device_name: string;
@@ -150,9 +158,18 @@ export interface MediaActivitySnapshot {
   downloads: ActiveFileDownload[];
   devices: PlaybackDevice[];
   recent: MediaRecentPlay[];
-  /** 落在当前超管不可浏览的库里的最近观看条数（只报个数，不出片名） */
+  /** 「我的浏览范围」口径下落在超管不可浏览的库里的记录数（只报个数，不出片名）；
+   *  「全部」口径恒为 0。 */
+  hidden_session_count: number;
+  hidden_download_count: number;
   hidden_recent_count: number;
 }
+
+/**
+ * 活动页的可见范围口径。`visible` = 按我的浏览范围折叠范围外记录（默认，尊重
+ * 超管给自己设的隐藏意图）；`all` = 管控视角的全量口径，跨成员跨库都看。
+ */
+export type MediaActivityScope = "visible" | "all";
 
 export interface PlaybackHistoryClearResult {
   deleted_states: number;
@@ -177,9 +194,13 @@ export async function clearPlaybackHistory(
   return { result: response.data, message: response.message };
 }
 
-/** 任务中心媒体库分类的完整快照：正在播放/下载、设备清单与全成员最近观看。 */
-export async function fetchMediaActivity(): Promise<MediaActivitySnapshot> {
-  const response = await request<ApiEnvelope<MediaActivitySnapshot>>("/playback/activity");
+/** 活动页「观看」视角的完整快照：正在播放/下载、设备清单与全成员最近观看。 */
+export async function fetchMediaActivity(
+  scope: MediaActivityScope = "visible",
+): Promise<MediaActivitySnapshot> {
+  const response = await request<ApiEnvelope<MediaActivitySnapshot>>(
+    `/playback/activity?scope=${scope}`,
+  );
   return response.data;
 }
 
@@ -405,11 +426,16 @@ export async function decidePlayback(body: DecideBody): Promise<PlaybackDecision
   return response.data;
 }
 
-/** 判定档位并（需要时）起转码会话，返回可直接播放的地址。 */
+/**
+ * 判定档位并（需要时）起转码会话，返回可直接播放的地址。
+ *
+ * 带上浏览器设备标识：服务端把它写进取流 token，取流字节才能记到活动页上
+ * 这台浏览器的会话名下（与进度上报同一个标识）。
+ */
 export async function startPlaybackSession(body: DecideBody): Promise<PlaybackSession> {
   const response = await request<ApiEnvelope<PlaybackSession>>("/playback/sessions", {
     method: "POST",
-    body: JSON.stringify(body),
+    body: JSON.stringify({ ...body, device_id: getPlayerDeviceId() }),
   });
   return response.data;
 }
@@ -557,6 +583,13 @@ export interface PlaybackProgressBody extends PlaybackUnit {
   position_ms?: number;
   audio_track?: string;
   subtitle_track?: string;
+  /** 暂停态；不报 = 实时会话保持原值 */
+  paused?: boolean;
+}
+
+/** 进度上报体统一带上浏览器设备标识（活动页「正在播放」按它区分会话）。 */
+function withDevice(body: PlaybackProgressBody): PlaybackProgressBody & { device_id: string } {
+  return { ...body, device_id: getPlayerDeviceId() };
 }
 
 /** 上报观看进度（开始 / 心跳 / 停止同一入口）。 */
@@ -565,7 +598,7 @@ export async function reportPlaybackProgress(
 ): Promise<PlaybackWatchState> {
   const response = await request<ApiEnvelope<PlaybackWatchState>>("/playback/progress", {
     method: "POST",
-    body: JSON.stringify(body),
+    body: JSON.stringify(withDevice(body)),
   });
   return response.data;
 }
@@ -581,7 +614,7 @@ export async function reportPlaybackProgress(
  */
 export function reportPlaybackProgressOnUnload(body: PlaybackProgressBody): void {
   if (typeof navigator === "undefined" || !navigator.sendBeacon) return;
-  const blob = new Blob([JSON.stringify(body)], { type: "application/json" });
+  const blob = new Blob([JSON.stringify(withDevice(body))], { type: "application/json" });
   navigator.sendBeacon(resolveRequestUrl("/playback/progress"), blob);
 }
 

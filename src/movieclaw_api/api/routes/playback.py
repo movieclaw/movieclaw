@@ -97,14 +97,19 @@ from movieclaw_api.services.playback.session import (
     TranscodeSession,
     get_session_manager,
 )
-from movieclaw_api.services.playback.signing import issue_stream_token, verify_stream_token
+from movieclaw_api.services.playback.signing import (
+    StreamGrant,
+    issue_stream_token,
+    verify_stream_token,
+)
 from movieclaw_api.services.playback_activity import media_activity_overview, revoke_device
 from movieclaw_api.services.playback_recent import recent_watch_items
 from movieclaw_api.settings import PlaybackPolicySetting
 from movieclaw_api.settings.store import get_setting_store
-from movieclaw_db.engine import get_session
+from movieclaw_db.engine import get_database, get_session
 from movieclaw_db.models import LibraryFile, MediaItem, PlaybackMetric
 from movieclaw_db.repositories.media_repo import MediaItemRepository
+from movieclaw_playback import activity
 from movieclaw_playback import state as playback_state
 from movieclaw_playback.decide import PlaybackPlan
 from movieclaw_playback.decide import PlaybackTier as Tier
@@ -120,7 +125,9 @@ from movieclaw_playback.streaming import (
     DisconnectAwareFileResponse,
     container_mime_type,
     is_strm,
+    register_device_stream,
     resolve_strm_url,
+    unregister_device_stream,
 )
 from movieclaw_playback.subtitles import (
     SubtitleServeError,
@@ -340,19 +347,26 @@ async def list_recent_watch(
 )
 async def get_media_activity(
     recent_limit: Annotated[int, Query(ge=1, le=100)] = 30,
+    scope: Annotated[
+        Literal["visible", "all"],
+        Query(description="visible=按我的浏览范围折叠范围外记录；all=跨库全量"),
+    ] = "visible",
     principal: Principal = Depends(require_login),
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[MediaActivityView]:
     """活动页「观看」视角：正在播放/下载、设备清单与全成员最近观看。
 
     管理员运维视角（跨成员可见），与首页按成员隔离的最近观看接口分离。
-    落在当前超管不可浏览的库里的记录只报个数，不出片名。
+    ``scope=visible``（默认）把落在当前超管不可浏览的库里的记录折叠成计数，
+    不出片名；``scope=all`` 是管控视角的全量口径——``admin_visible`` 是超管
+    给自己设的浏览过滤而非安全边界，管理员有权看到所有人的全部播放活动。
     """
     return ok(
         await media_activity_overview(
             session,
             recent_limit=recent_limit,
             browsable_library_ids=await visible_library_ids(session, principal),
+            fold_hidden=scope == "visible",
         )
     )
 
@@ -595,6 +609,9 @@ async def start_playback_session(
     """
     started_at = time.perf_counter()
     member_id = principal.member_id if principal.member_id is not None else 0
+    # 取流 token 带上浏览器设备标识：取流字节据此记到活动页上这台浏览器的
+    # 会话名下（与进度上报同一个标识）
+    device_id = playback_watch.web_device_id(payload.device_id, member_id=member_id)
     watch_row = None
     watch_view: PlaybackStateView | None = None
     if payload.media_item_id is not None:
@@ -684,7 +701,9 @@ async def start_playback_session(
     ]
 
     if view.tier == int(Tier.DIRECT_PLAY):
-        token = await issue_stream_token(member_id=member_id, file_id=file.id)
+        token = await issue_stream_token(
+            member_id=member_id, file_id=file.id, device_id=device_id
+        )
         # 分段计时（§6.10）：用户报「起播慢」时，这一行直接指认卡在哪一段。
         # 决策段偏慢多半是关键帧采样在现场读盘——详情页预热没盖住的路径。
         logger.info(
@@ -832,7 +851,7 @@ async def start_playback_session(
     spawn_ms = int((time.perf_counter() - spawn_started_at) * 1000)
 
     token = await issue_stream_token(
-        member_id=member_id, file_id=file.id, session_id=transcode.id
+        member_id=member_id, file_id=file.id, session_id=transcode.id, device_id=device_id
     )
     total_ms = int((time.perf_counter() - started_at) * 1000)
     # 分段计时（§6.10）：决策段偏慢 = 关键帧采样在现场读盘（详情页预热没盖住
@@ -1118,6 +1137,7 @@ async def get_session_diagnostics(
     openapi_extra={"x-cli-hidden": True},
 )
 async def get_session_segment(
+    request: Request,
     session_id: Annotated[str, Path()],
     name: Annotated[str, Path()],
     token: Annotated[str, Query()],
@@ -1137,6 +1157,7 @@ async def get_session_segment(
     if session is None:
         raise NotFoundException("会话不存在或已结束")
     session.touch()
+    meter = await _session_activity_meter(session, grant, request)
     target = session.directory / name
     if session.segment_plan is not None and name.startswith("seg"):
         ready = await manager.ensure_segment(session, int(name[3:8]))
@@ -1168,11 +1189,51 @@ async def get_session_segment(
     # 分片与 init 段在一个会话的生命期内不可变，URL 又含会话 id 与签名 token
     # （换会话必换 URL）——放给浏览器缓存，用户往回拖（back buffer 只留 30
     # 秒，回看必然重新走 HTTP）就变成本地命中，不再打服务端。
-    return FileResponse(
-        target,
-        media_type="video/mp4",
-        headers={"Cache-Control": "private, max-age=3600, immutable"},
+    headers = {"Cache-Control": "private, max-age=3600, immutable"}
+    if meter is None:
+        return FileResponse(target, media_type="video/mp4", headers=headers)
+    # 逐块计量发出的字节（活动页的速率来源）；计量器随会话存活，这里不回收
+    return DisconnectAwareFileResponse(
+        target, media_type="video/mp4", headers=headers, byte_sink=meter.add
     )
+
+
+async def _session_activity_meter(
+    session: TranscodeSession, grant: StreamGrant, request: Request
+) -> activity.StreamMeter | None:
+    """会话级的活动页字节计量器：首次取分片时按 token 里的浏览器设备标识建立。
+
+    旧 token（没有设备标识）不计量——那是升级前签出的地址，播完自然失效。
+    """
+    if session.activity_meter is not None:
+        return session.activity_meter
+    if not grant.device_id:
+        return None
+    file = await _grant_file(grant.file_id)
+    if file is None:
+        return None
+    session.activity_meter = activity.register_stream(
+        device_id=grant.device_id,
+        kind=activity.STREAM_KIND_PLAY,
+        member_id=grant.member_id,
+        unit=(file.media_item_id, file.season_number, file.episode_number),
+        file_id=file.id,
+        file_name=PathLib(file.file_path).name,
+        size_bytes=file.size_bytes or 0,
+        client=playback_watch.web_client_info(
+            device_id=grant.device_id, user_agent=request.headers.get("user-agent")
+        ),
+    )
+    return session.activity_meter
+
+
+async def _grant_file(file_id: int) -> LibraryFile | None:
+    """取流凭据指向的台账行（已识别到条目的才有播放单元可记）。"""
+    async with get_database().session() as session:
+        file = await session.get(LibraryFile, file_id)
+    if file is None or file.media_item_id is None:
+        return None
+    return file
 
 
 @router.get(
@@ -1182,6 +1243,7 @@ async def get_session_segment(
     openapi_extra={"x-cli-hidden": True},
 )
 async def stream_library_file(
+    request: Request,
     file_id: Annotated[int, Path()],
     token: Annotated[str, Query()],
     session: AsyncSession = Depends(get_session),
@@ -1204,8 +1266,38 @@ async def stream_library_file(
     path = PathLib(file.file_path)
     if not path.exists():
         raise NotFoundException("文件已不在磁盘上")
+    media_type = container_mime_type(file.container)
+    if not grant.device_id or file.media_item_id is None:
+        # 升级前签出的旧地址没有设备标识，不计量；未识别文件没有播放单元可记
+        return DisconnectAwareFileResponse(path, media_type=media_type)
+    # 与 Jellyfin 取流同一套登记：按浏览器设备登记这条流，让停止上报能主动
+    # 停止读盘（播放器不会因为退出就立刻关闭已建立的 Range 连接）；顺带登记
+    # 到活动注册表，活动页据此展示这台浏览器的实时传输速率
+    device_id = grant.device_id
+    session_stopped = register_device_stream(device_id)
+    meter = activity.register_stream(
+        device_id=device_id,
+        kind=activity.STREAM_KIND_PLAY,
+        member_id=grant.member_id,
+        unit=(file.media_item_id, file.season_number, file.episode_number),
+        file_id=file.id,
+        file_name=path.name,
+        size_bytes=file.size_bytes or 0,
+        client=playback_watch.web_client_info(
+            device_id=device_id, user_agent=request.headers.get("user-agent")
+        ),
+    )
+
+    def _close() -> None:
+        unregister_device_stream(device_id, session_stopped)
+        activity.unregister_stream(meter)
+
     return DisconnectAwareFileResponse(
-        path, media_type=container_mime_type(file.container)
+        path,
+        media_type=media_type,
+        session_stopped=session_stopped,
+        byte_sink=meter.add,
+        on_close=_close,
     )
 
 
@@ -1335,10 +1427,12 @@ async def _visible_unit(
 )
 async def report_playback_progress(
     payload: PlaybackProgressRequest,
+    request: Request,
     principal: Principal = Depends(require_login),
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[PlaybackStateView]:
-    """开始 / 心跳 / 停止三种事件同一入口，落 ``playback_state`` 并发 webhook。
+    """开始 / 心跳 / 停止三种事件同一入口，与 Jellyfin 的 /Sessions/Playing*
+    走同一个服务：落 ``playback_state``、发 webhook、刷新活动页的实时会话。
 
     已看判定的分母（片长）一律服务端算，不听客户端报——否则同一部片在
     网页端和 Jellyfin 客户端会给出不同的「已看」结论。
@@ -1351,11 +1445,16 @@ async def report_playback_progress(
         payload.episode_number,
     )
     member_id = principal.member_id if principal.member_id is not None else 0
+    client = playback_watch.web_client_info(
+        device_id=playback_watch.web_device_id(payload.device_id, member_id=member_id),
+        user_agent=request.headers.get("user-agent"),
+    )
     if payload.event == "start":
         row = await playback_watch.record_start(
             session,
             unit,
             member_id=member_id,
+            client=client,
             audio_track=payload.audio_track,
             subtitle_track=payload.subtitle_track,
         )
@@ -1364,8 +1463,10 @@ async def report_playback_progress(
             session,
             unit,
             member_id=member_id,
+            client=client,
             position_ms=payload.position_ms,
             stopped=payload.event == "stop",
+            paused=payload.paused,
             audio_track=payload.audio_track,
             subtitle_track=payload.subtitle_track,
         )

@@ -6,11 +6,15 @@
 - Failed=true 的 Stopped 完全跳过落库；
 - UserPlayedItems：datePlayed 才 +1，否则 max(count,1)；DELETE 全清零；
 - 作用于 Series/Season GUID 时级联全部有文件的子单元。
+
+播放上报（Playing / Progress / Stopped 及 legacy PlayingItems）本路由只做
+协议翻译——解 GUID、换算轨序号、读 PositionTicks——落库、webhook 与活动页
+实时会话统一交给 ``movieclaw_api.services.playback.watch``，与网页播放器
+同一份逻辑；已看/收藏标记没有网页端对应物，仍留在这里。
 """
 
 from __future__ import annotations
 
-import time
 from datetime import datetime
 from typing import Any
 
@@ -18,6 +22,7 @@ from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 
+from movieclaw_api.services.playback import watch as playback_watch
 from movieclaw_api.services.webhook import emit_events
 from movieclaw_db.engine import get_database
 from movieclaw_db.models import LibraryFile, MediaEpisode, MediaItem
@@ -33,15 +38,12 @@ from movieclaw_jellyfin.catalog import (
 from movieclaw_jellyfin.errors import bad_request_text, not_found
 from movieclaw_jellyfin.ids import EntityKind, EntityRef, decode_guid
 from movieclaw_jellyfin.security import RequestIdentity, require_device
-from movieclaw_playback import activity
 from movieclaw_playback import state as playback_state
 from movieclaw_playback.events import (
     ClientInfo,
     build_favorite_event,
     build_marked_events,
-    build_playback_event,
 )
-from movieclaw_playback.streaming import stop_device_streams
 from movieclaw_playback.subtitles import SUBTITLE_OFF
 
 router = APIRouter(dependencies=[Depends(require_device)])
@@ -117,14 +119,6 @@ async def _resolve_units(ref: EntityRef) -> list[playback_state.Unit]:
         # 电影 = (0,0) 单元；剧 = 全部集
         return units or [(ref.entity_id, 0, 0)]
     return []
-
-
-async def _unit_runtime_ms(unit: playback_state.Unit) -> int | None:
-    """片长解析下沉到领域层（``playback_state.unit_runtime_ms``），网页播放器
-    共用同一份——它是已看阈值的分母，两个入口算法不一致会让同一部片在
-    Jellyfin 客户端和网页端给出不同的「已看」结论。"""
-    async with get_database().session() as session:
-        return await playback_state.unit_runtime_ms(session, unit)
 
 
 def _leaf_unit(ref: EntityRef) -> playback_state.Unit:
@@ -213,25 +207,46 @@ async def _tracks_from_body(
 
 async def _record_start(
     ref: EntityRef,
-    client: ClientInfo,
+    identity: RequestIdentity,
     *,
-    member_id: int,
     audio_track: str | None = None,
     subtitle_track: str | None = None,
 ) -> None:
-    """开始播放落库 + commit 后装配/投递 ``playback.started`` 事件。"""
-    unit = _leaf_unit(ref)
+    """开始播放：实时会话、落库与 ``playback.started`` 事件统一交给 watch。"""
     async with get_database().session() as session:
-        row = await playback_state.record_playback_start(session, unit, member_id=member_id)
-        playback_state.apply_track_selection(
-            row, audio_track=audio_track, subtitle_track=subtitle_track
+        await playback_watch.record_start(
+            session,
+            _leaf_unit(ref),
+            member_id=identity.device.member_id,
+            client=_client_info(identity),
+            audio_track=audio_track,
+            subtitle_track=subtitle_track,
         )
-        await session.commit()
-        event = await build_playback_event(
-            session, "playback.started", unit, row, client=client
+
+
+async def _record_progress(
+    ref: EntityRef,
+    identity: RequestIdentity,
+    position_ms: int | None,
+    *,
+    stopped: bool = False,
+    paused: bool | None = None,
+    audio_track: str | None = None,
+    subtitle_track: str | None = None,
+) -> None:
+    """进度 / 停止：实时会话、落库与 stopped / completed / progress 事件统一交给 watch。"""
+    async with get_database().session() as session:
+        await playback_watch.record_progress(
+            session,
+            _leaf_unit(ref),
+            member_id=identity.device.member_id,
+            client=_client_info(identity),
+            position_ms=position_ms,
+            stopped=stopped,
+            paused=paused,
+            audio_track=audio_track,
+            subtitle_track=subtitle_track,
         )
-    if event is not None:
-        emit_events([event])
 
 
 @router.post("/Sessions/Playing", status_code=204)
@@ -241,85 +256,13 @@ async def playing_start(
     body = await _read_body(request)
     ref = _decode_item_ref(body.get("itemid"))
     if ref is not None:
-        member_id = identity.device.member_id
-        activity.report_start(
-            identity.device.device_id,
-            member_id=member_id,
-            client=_client_info(identity),
-            unit=_leaf_unit(ref),
+        audio_track, subtitle_track = await _tracks_from_body(
+            ref, body, identity.device.member_id
         )
-        audio_track, subtitle_track = await _tracks_from_body(ref, body, member_id)
         await _record_start(
-            ref,
-            _client_info(identity),
-            member_id=member_id,
-            audio_track=audio_track,
-            subtitle_track=subtitle_track,
+            ref, identity, audio_track=audio_track, subtitle_track=subtitle_track
         )
     return Response(status_code=204)
-
-
-#: playback.progress 事件的节流：每单元最多 30 秒一条（避免播放期间刷屏，
-#: 设计文档 §1.1）。键是 (item, season, episode)，量级 = 库内在播单元数
-_PROGRESS_EMIT_INTERVAL = 30.0
-_progress_last_emit: dict[playback_state.Unit, float] = {}
-
-
-def _progress_throttled(unit: playback_state.Unit) -> bool:
-    """True = 本次进度不发事件；未被节流时顺带记下本次时间。"""
-    now = time.monotonic()
-    last = _progress_last_emit.get(unit)
-    if last is not None and now - last < _PROGRESS_EMIT_INTERVAL:
-        return True
-    _progress_last_emit[unit] = now
-    return False
-
-
-async def _apply_progress(
-    ref: EntityRef,
-    position_ms: int | None,
-    *,
-    member_id: int,
-    stopped: bool = False,
-    client: ClientInfo | None = None,
-    audio_track: str | None = None,
-    subtitle_track: str | None = None,
-) -> None:
-    """进度落库；commit 后按语义装配 webhook 事件：
-    Stopped 上报发 ``playback.stopped``；played 本次翻转为 True 追加
-    ``playback.completed``（Progress 与 Stopped 都可能触发翻转）；
-    普通进度上报按单元节流发 ``playback.progress``。"""
-    unit = _leaf_unit(ref)
-    runtime_ms = await _unit_runtime_ms(unit)
-    async with get_database().session() as session:
-        row, newly_played = await playback_state.record_playback_progress(
-            session,
-            unit,
-            member_id=member_id,
-            position_ms=position_ms,
-            runtime_ms=runtime_ms,
-        )
-        playback_state.apply_track_selection(
-            row, audio_track=audio_track, subtitle_track=subtitle_track
-        )
-        await session.commit()
-        emit_progress = (
-            not stopped and not newly_played and not _progress_throttled(unit)
-        )
-        events = []
-        for name, hit in (
-            ("playback.stopped", stopped),
-            ("playback.completed", newly_played),
-            ("playback.progress", emit_progress),
-        ):
-            if not hit:
-                continue
-            event = await build_playback_event(
-                session, name, unit, row, duration_ms=runtime_ms, client=client
-            )
-            if event is not None:
-                events.append(event)
-    emit_events(events)
 
 
 @router.post("/Sessions/Playing/Progress", status_code=204)
@@ -330,24 +273,26 @@ async def playing_progress(
     ref = _decode_item_ref(body.get("itemid"))
     if ref is not None:
         position = _position_ms(body)
-        member_id = identity.device.member_id
-        # 实时会话不设位置门槛：暂停心跳（不带位置）也要刷新暂停态与保鲜时钟
-        activity.report_progress(
-            identity.device.device_id,
-            member_id=member_id,
-            client=_client_info(identity),
-            unit=_leaf_unit(ref),
-            position_ms=position,
-            paused=_paused_flag(body),
-        )
-        # Progress 不带位置的心跳（如暂停事件）不落库；报 0 = 拖回开头要落
-        if position is not None:
-            audio_track, subtitle_track = await _tracks_from_body(ref, body, member_id)
-            await _apply_progress(
-                ref,
-                position,
-                member_id=member_id,
+        paused = _paused_flag(body)
+        if position is None:
+            # 不带位置的心跳（如暂停事件）不落库，但实时会话要刷新暂停态与
+            # 保鲜时钟；报 0 = 拖回开头，要落库
+            playback_watch.report_heartbeat(
+                _leaf_unit(ref),
+                member_id=identity.device.member_id,
                 client=_client_info(identity),
+                position_ms=None,
+                paused=paused,
+            )
+        else:
+            audio_track, subtitle_track = await _tracks_from_body(
+                ref, body, identity.device.member_id
+            )
+            await _record_progress(
+                ref,
+                identity,
+                position,
+                paused=paused,
                 audio_track=audio_track,
                 subtitle_track=subtitle_track,
             )
@@ -359,28 +304,29 @@ async def playing_stopped(
     request: Request, identity: RequestIdentity = Depends(require_device)
 ) -> Response:
     body = await _read_body(request)
-    # VidHub 的 Stopped 不代表它已立即关闭此前发出的 Range 请求。先取消同设备
-    # 的活跃流，避免机械盘继续为已退出的播放器预读；失败停止同样必须收口。
-    stop_device_streams(identity.device.device_id)
-    activity.report_stop(identity.device.device_id)
     failed = body.get("failed")
     if failed is True or (isinstance(failed, str) and failed.lower() == "true"):
         # 播放失败的上报不落库（SessionManager.cs:1164-1167）；字符串 "true"
-        # 一并接住——真 Jellyfin 对它 400，我们静默落库会把失败记成正常观看
+        # 一并接住——真 Jellyfin 对它 400，我们静默落库会把失败记成正常观看。
+        # 但取流与实时会话仍要收口：VidHub 的 Stopped 不代表它已关闭此前的
+        # Range 请求，不停就会继续为已退出的播放器预读
+        playback_watch.end_session(identity.device.device_id)
         return Response(status_code=204)
     ref = _decode_item_ref(body.get("itemid"))
-    if ref is not None:
-        member_id = identity.device.member_id
-        audio_track, subtitle_track = await _tracks_from_body(ref, body, member_id)
-        await _apply_progress(
-            ref,
-            _position_ms(body),
-            member_id=member_id,
-            stopped=True,
-            client=_client_info(identity),
-            audio_track=audio_track,
-            subtitle_track=subtitle_track,
-        )
+    if ref is None:
+        playback_watch.end_session(identity.device.device_id)
+        return Response(status_code=204)
+    audio_track, subtitle_track = await _tracks_from_body(
+        ref, body, identity.device.member_id
+    )
+    await _record_progress(
+        ref,
+        identity,
+        _position_ms(body),
+        stopped=True,
+        audio_track=audio_track,
+        subtitle_track=subtitle_track,
+    )
     return Response(status_code=204)
 
 
@@ -405,15 +351,7 @@ async def playing_start_legacy(
 ) -> Response:
     ref = _decode_item_ref(item_id)
     if ref is not None:
-        activity.report_start(
-            identity.device.device_id,
-            member_id=identity.device.member_id,
-            client=_client_info(identity),
-            unit=_leaf_unit(ref),
-        )
-        await _record_start(
-            ref, _client_info(identity), member_id=identity.device.member_id
-        )
+        await _record_start(ref, identity)
     return Response(status_code=204)
 
 
@@ -428,21 +366,16 @@ async def playing_progress_legacy(
     ref = _decode_item_ref(item_id)
     if ref is not None:
         position = _position_ms({}, request.query_params.get("positionTicks"))
-        activity.report_progress(
-            identity.device.device_id,
-            member_id=identity.device.member_id,
-            client=_client_info(identity),
-            unit=_leaf_unit(ref),
-            position_ms=position,
-            paused=None,
-        )
-        if position is not None:
-            await _apply_progress(
-                ref,
-                position,
+        if position is None:
+            playback_watch.report_heartbeat(
+                _leaf_unit(ref),
                 member_id=identity.device.member_id,
                 client=_client_info(identity),
+                position_ms=None,
+                paused=None,
             )
+        else:
+            await _record_progress(ref, identity, position)
     return Response(status_code=204)
 
 
@@ -455,16 +388,15 @@ async def playing_stopped_legacy(
     identity: RequestIdentity = Depends(require_device),
 ) -> Response:
     ref = _decode_item_ref(item_id)
-    stop_device_streams(identity.device.device_id)
-    activity.report_stop(identity.device.device_id)
-    if ref is not None:
-        await _apply_progress(
-            ref,
-            _position_ms({}, request.query_params.get("positionTicks")),
-            member_id=identity.device.member_id,
-            stopped=True,
-            client=_client_info(identity),
-        )
+    if ref is None:
+        playback_watch.end_session(identity.device.device_id)
+        return Response(status_code=204)
+    await _record_progress(
+        ref,
+        identity,
+        _position_ms({}, request.query_params.get("positionTicks")),
+        stopped=True,
+    )
     return Response(status_code=204)
 
 

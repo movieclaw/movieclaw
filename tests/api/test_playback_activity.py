@@ -66,6 +66,8 @@ async def test_empty_snapshot(client: TestClient) -> None:
         "downloads": [],
         "devices": [],
         "recent": [],
+        "hidden_session_count": 0,
+        "hidden_download_count": 0,
         "hidden_recent_count": 0,
     }
 
@@ -151,7 +153,10 @@ async def test_assembles_sessions_devices_and_recent(client: TestClient) -> None
     live = data["sessions"][0]
     assert live["member_name"] == "admin"
     assert live["device_name"] == "客厅 Apple TV"
+    # 持 Jellyfin 设备凭据的会话可以注销
+    assert live["revocable"] is True
     assert live["media"]["title"] == "盗梦空间"
+    assert live["media"]["browsable"] is True
     # 详情页落点与文件规格来自在位台账行
     assert live["media"]["library_id"] == library_id
     assert live["file"]["resolution"] == "2160p"
@@ -402,6 +407,157 @@ async def test_revoke_device_drops_credential_and_live_session(client: TestClien
     assert remaining is None
 
     assert client.delete("/api/v1/playback/devices/dev-revoke").status_code == 404
+
+
+async def _seed_movie_in_library(
+    *, title: str, tmdb_id: int, library_name: str, admin_visible: bool = True
+) -> tuple[int, int]:
+    """播一部电影进一个库，返回 (media_item_id, library_id)。"""
+    async with get_database().session() as session:
+        movie = MediaItem(
+            kind="movie",
+            tmdb_id=tmdb_id,
+            title=title,
+            original_title=title,
+            year=2010,
+            aliases=[],
+        )
+        library = Library(
+            name=library_name,
+            kind="movie",
+            root_paths=[f"/media/{tmdb_id}"],
+            admin_visible=admin_visible,
+        )
+        session.add_all([movie, library])
+        await session.commit()
+        session.add(
+            LibraryFile(
+                library_id=library.id,
+                media_item_id=movie.id,
+                file_path=f"/media/{tmdb_id}/{tmdb_id}.mkv",
+                source="scanned",
+                size_bytes=1_000,
+                duration_seconds=6_000,
+            )
+        )
+        await session.commit()
+        return movie.id, library.id
+
+
+async def test_web_player_progress_feeds_live_session(client: TestClient) -> None:
+    """网页播放器的上报走与 Jellyfin 同一条服务：开始后立刻出现在「正在播放」，
+    带浏览器推导的设备名、不可注销；停止后从实时视图消失、留在最近观看。"""
+    movie_id, library_id = await _seed_movie_in_library(
+        title="盗梦空间", tmdb_id=27205, library_name="电影"
+    )
+    ua = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0) Safari/604.1"}
+
+    resp = client.post(
+        "/api/v1/playback/progress",
+        json={"media_item_id": movie_id, "event": "start", "device_id": "browser-a"},
+        headers=ua,
+    )
+    assert resp.status_code == 200, resp.text
+    client.post(
+        "/api/v1/playback/progress",
+        json={
+            "media_item_id": movie_id,
+            "event": "progress",
+            "position_ms": 600_000,
+            "paused": True,
+            "device_id": "browser-a",
+        },
+        headers=ua,
+    )
+
+    data = client.get("/api/v1/playback/activity").json()["data"]
+    assert len(data["sessions"]) == 1
+    live = data["sessions"][0]
+    assert live["device_id"] == "web-browser-a"
+    assert live["client"] == "MovieClaw Web"
+    assert live["device_name"] == "Safari · iPhone"
+    assert live["member_name"] == "admin"
+    assert live["position_ms"] == 600_000
+    assert live["paused"] is True
+    # 网页会话没有可撤销的设备凭据
+    assert live["revocable"] is False
+    assert live["media"]["library_id"] == library_id
+
+    client.post(
+        "/api/v1/playback/progress",
+        json={
+            "media_item_id": movie_id,
+            "event": "stop",
+            "position_ms": 700_000,
+            "device_id": "browser-a",
+        },
+        headers=ua,
+    )
+    data = client.get("/api/v1/playback/activity").json()["data"]
+    assert data["sessions"] == []
+    assert [r["media"]["title"] for r in data["recent"]] == ["盗梦空间"]
+    assert data["recent"][0]["position_ms"] == 700_000
+
+
+async def test_scope_folds_live_sessions_outside_browsable_range(client: TestClient) -> None:
+    """默认口径：落在超管不可浏览的库里的正在播放同样折叠成计数，与最近观看一致；
+    「全部」口径全量展示，但范围外记录标 browsable=false。"""
+    hidden_id, hidden_library = await _seed_movie_in_library(
+        title="隐藏之作", tmdb_id=1, library_name="私密库", admin_visible=False
+    )
+    shown_id, _ = await _seed_movie_in_library(
+        title="公开之作", tmdb_id=2, library_name="公开库"
+    )
+    info = ClientInfo(name="Infuse", device_name="Apple TV", device_id="dev-h", version="8.0")
+    activity.report_start("dev-h", member_id=0, client=info, unit=(hidden_id, 0, 0))
+    activity.report_start(
+        "dev-s",
+        member_id=0,
+        client=ClientInfo(name="Infuse", device_name="iPad", device_id="dev-s", version="8.0"),
+        unit=(shown_id, 0, 0),
+    )
+    activity.register_stream(
+        device_id="dev-h",
+        kind=activity.STREAM_KIND_DOWNLOAD,
+        member_id=0,
+        unit=(hidden_id, 0, 0),
+        file_id=None,
+        file_name="hidden.mkv",
+        size_bytes=1_000,
+        client=info,
+    )
+    async with get_database().session() as session:
+        session.add(
+            PlaybackState(
+                member_id=0,
+                media_item_id=hidden_id,
+                position_ms=1_000,
+                play_count=1,
+                last_played_at=utcnow(),
+            )
+        )
+        await session.commit()
+
+    data = client.get("/api/v1/playback/activity").json()["data"]
+    assert [s["media"]["title"] for s in data["sessions"]] == ["公开之作"]
+    assert data["downloads"] == []
+    assert data["recent"] == []
+    assert data["hidden_session_count"] == 1
+    assert data["hidden_download_count"] == 1
+    assert data["hidden_recent_count"] == 1
+
+    data = client.get("/api/v1/playback/activity", params={"scope": "all"}).json()["data"]
+    titles = {s["media"]["title"]: s["media"] for s in data["sessions"]}
+    assert set(titles) == {"隐藏之作", "公开之作"}
+    assert titles["隐藏之作"]["browsable"] is False
+    assert titles["隐藏之作"]["library_id"] == hidden_library
+    assert titles["公开之作"]["browsable"] is True
+    assert data["downloads"][0]["media"]["browsable"] is False
+    assert [r["media"]["title"] for r in data["recent"]] == ["隐藏之作"]
+    assert data["recent"][0]["media"]["browsable"] is False
+    assert data["hidden_session_count"] == 0
+    assert data["hidden_download_count"] == 0
+    assert data["hidden_recent_count"] == 0
 
 
 async def test_revoke_device_keeps_watch_history(client: TestClient) -> None:

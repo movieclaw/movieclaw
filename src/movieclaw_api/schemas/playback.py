@@ -52,6 +52,9 @@ class MediaActivityTarget(BaseModel):
     media_item_id: int
     # 详情页落点：同一作品跨库时取一个确定可达的库；无在位文件为 None
     library_id: int | None
+    # 落点库是否在当前超管的可浏览范围内。「全部」口径下范围外记录照常出片名，
+    # 但浏览类接口对范围外超管是 404，前端据此不渲染详情链接
+    browsable: bool = True
     kind: MediaKind
     title: str
     year: int | None
@@ -76,6 +79,9 @@ class ActivePlaybackSessionView(BaseModel):
     """一台设备正在进行的播放会话。"""
 
     device_id: str
+    # 能否「注销此设备」：只有持 Jellyfin 设备凭据的会话可以；网页播放器走
+    # 登录会话，没有可撤销的设备凭据
+    revocable: bool = True
     member_name: str
     client: str
     device_name: str
@@ -99,6 +105,7 @@ class ActiveFileDownloadView(BaseModel):
     """一条正在进行的整文件下载（播放器的离线缓存）。"""
 
     device_id: str
+    revocable: bool = True
     member_name: str
     client: str
     device_name: str
@@ -148,8 +155,10 @@ class MediaActivityView(BaseModel):
     downloads: list[ActiveFileDownloadView]
     devices: list[PlaybackDeviceView]
     recent: list[MediaRecentPlayView]
-    # 落在当前超管不可浏览的库里的最近观看条数：不出片名与海报，只报个数
-    # （docs/design/library-access.md 2.5）
+    # 「我的浏览范围」口径下落在当前超管不可浏览的库里的记录：不出片名与海报，
+    # 只报个数（docs/design/library-access.md 2.5）。「全部」口径恒为 0。
+    hidden_session_count: int = Field(default=0, description="不在你可见范围内的正在播放数")
+    hidden_download_count: int = Field(default=0, description="不在你可见范围内的正在下载数")
     hidden_recent_count: int = Field(default=0, description="不在你可见范围内的最近观看条数")
 
 
@@ -215,6 +224,9 @@ class PlaybackDecideRequest(BaseModel):
     #: 用户选的画质上限（如 720）。语义是上限而非目标：源不超就照常直通，
     #: 超了才转码降下去。None = 自动。弱网救急用（§10「手动选清晰度」）。
     max_height: int | None = Field(default=None, ge=240, le=2160)
+    #: 浏览器的稳定标识（与进度上报同一个值）。开会话时写进取流 token，
+    #: 取流字节才能记到活动页上这台浏览器的会话名下。
+    device_id: str | None = Field(default=None, max_length=128)
 
 
 class VideoPlanView(BaseModel):
@@ -459,6 +471,11 @@ class PlaybackProgressRequest(BaseModel):
     #: None = 本次不报该轨，服务端保持原值不动。
     audio_track: str | None = None
     subtitle_track: str | None = None
+    #: 浏览器的稳定标识（前端生成、存 localStorage），语义对齐 Jellyfin 客户端
+    #: 的 DeviceId：活动页「正在播放」按它区分同一成员的不同浏览器。
+    device_id: str | None = Field(default=None, max_length=128)
+    #: 暂停态；None = 本次没报（实时会话保持原值）
+    paused: bool | None = None
 
 
 # PlaybackStateView 定义在会话模型之前（PlaybackSessionView.watch 引用它）。

@@ -985,6 +985,9 @@ export function VideoPlayer(props: VideoPlayerProps) {
         ...unit,
         event: "progress",
         position_ms: positionRef.current,
+        // 暂停态给活动页「正在播放」的徽标用；读元素原生状态，与 Jellyfin
+        // 客户端上报的 IsPaused 同义
+        paused: video?.paused ?? undefined,
         ...trackRefs(),
       }).catch(() => undefined);
     }, PROGRESS_INTERVAL_MS);
