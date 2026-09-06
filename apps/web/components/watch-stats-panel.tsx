@@ -911,10 +911,6 @@ function StatsSkeleton() {
           </div>
         ))}
       </div>
-      <div className="rounded-2xl border border-white/[0.08] bg-white/[0.02] p-3">
-        <Skeleton className="h-3 w-20" />
-        <Skeleton className="mt-3 h-[220px] w-full" />
-      </div>
       <div className="rounded-2xl border border-white/[0.08] bg-white/[0.02] p-5">
         <Skeleton className="h-4 w-32" />
         <div className="mt-5 flex items-end gap-6 max-md:flex-col max-md:items-stretch">
@@ -922,6 +918,10 @@ function StatsSkeleton() {
           <Skeleton className="h-[120px] w-full md:w-[26%]" />
           <Skeleton className="h-[120px] w-full md:w-[26%]" />
         </div>
+      </div>
+      <div className="rounded-2xl border border-white/[0.08] bg-white/[0.02] p-3">
+        <Skeleton className="h-3 w-20" />
+        <Skeleton className="mt-3 h-[220px] w-full" />
       </div>
       <div className="grid grid-cols-2 gap-4 max-md:grid-cols-1">
         {Array.from({ length: 4 }, (_, i) => (
@@ -1047,8 +1047,8 @@ export function WatchStatsPanel({
   return (
     <div className="space-y-4">
       {cards}
-      {chart}
 
+      {/* TOP 3 紧跟指标卡：先给结论（谁在被看），走势与分解在后 */}
       <FavoritePodium
         favorites={stats.favorites}
         previous={stats.previous_favorites}
@@ -1056,6 +1056,8 @@ export function WatchStatsPanel({
         hiddenCount={stats.hidden_title_count}
         onShowAll={onShowAll}
       />
+
+      {chart}
 
       <div className="grid grid-cols-2 gap-4 max-md:grid-cols-1">
         <BreakdownPanel
