@@ -13,6 +13,7 @@ import {
   refreshLibraryConfirm,
   scanLibraryConfirm,
 } from "@/lib/library-confirm";
+import { chapterJobLabel } from "@/lib/library-manage";
 import { CheckIcon, LockIcon, MoreIcon, XIcon } from "@/components/icons";
 import { PAGE_NAV_BUTTON_CLASS, PageNav } from "@/components/page-nav";
 import { usePageTitle } from "@/lib/use-page-title";
@@ -29,6 +30,7 @@ import {
 } from "@/components/photo-wall";
 import { PosterCardVisual, type PosterVisualItem } from "@/components/poster-card";
 import {
+  type ChapterJobProgress,
   type LibraryCapabilities,
   type LibraryItem,
   type MediaLibrary,
@@ -802,6 +804,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
       }}
       pendingCount={pendingCount}
       onOpenPending={() => setIssueTab(pendingTab)}
+      chapterJob={library.chapter_job}
       onChapterImages={
         library.extract_chapter_images
           ? () => {
@@ -812,8 +815,8 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
                     .then(() =>
                       toast.success(
                         checked
-                          ? "已开始重新生成场景图，可在任务中心查看进度"
-                          : "已开始生成场景图，可在任务中心查看进度",
+                          ? "已开始重新生成章节，可在任务中心查看进度"
+                          : "已开始生成章节，可在任务中心查看进度",
                       ),
                     )
                     .catch((e) => toast.error((e as Error).message));
@@ -1246,8 +1249,10 @@ interface LibraryActionsMenuProps {
   onOpenPending: () => void;
   onOrganize: () => void;
   onToggleMetaRefresh: () => void;
-  /** 整库生成章节场景图（force=true 全部重抓，否则只补缺）；库关了开关时不传 */
+  /** 整库生成章节（是否重做已有的在确认弹窗里勾选）；库关了开关时不传 */
   onChapterImages?: () => void;
+  /** 章节作业排队/进行中：菜单项置灰并如实写状态 */
+  chapterJob?: ChapterJobProgress | null;
   onEdit: () => void;
   /** 图片库：相册墙的密度（个人偏好，与管理权无关）；不传不渲染这一组 */
   density?: PhotoWallDensity;
@@ -1272,6 +1277,7 @@ function LibraryActionsMenu({
   onOrganize,
   onToggleMetaRefresh,
   onChapterImages,
+  chapterJob,
   onEdit,
   density,
   onDensityChange,
@@ -1351,8 +1357,12 @@ function LibraryActionsMenu({
                 : "重新生成封面"}
           </DropdownMenu.Item>
           {onChapterImages && (
-            <DropdownMenu.Item onSelect={onChapterImages} disabled={busy} className={itemClass}>
-              生成场景图
+            <DropdownMenu.Item
+              onSelect={onChapterImages}
+              disabled={busy || Boolean(chapterJob)}
+              className={itemClass}
+            >
+              {chapterJobLabel(chapterJob)}
             </DropdownMenu.Item>
           )}
           <DropdownMenu.Item onSelect={onEdit} disabled={busy} className={itemClass}>

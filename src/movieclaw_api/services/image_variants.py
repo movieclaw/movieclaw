@@ -41,8 +41,6 @@ class VariantPreset:
     width: int
     height: int
     quality: int
-    # fit=True：等比缩到盒子以内、不裁切（照片）；False：按盒子比例居中裁切（卡片）
-    fit: bool = False
 
 
 _PRESETS = {
@@ -55,9 +53,9 @@ _PRESETS = {
     # 竖海报最大 164 CSS px，328px 覆盖 2x 屏；也供横卡缺背景时的海报兜底复用。
     ImageVariant.POSTER_CARD: VariantPreset(width=328, height=492, quality=80),
     # 相册墙瓦片：紧凑/标准密度列宽 ≤230 CSS px，480px 覆盖 2x 屏；宽松密度用 720 的原缩略图
-    ImageVariant.PHOTO_TILE: VariantPreset(width=480, height=480, quality=78, fit=True),
+    ImageVariant.PHOTO_TILE: VariantPreset(width=480, height=480, quality=78),
     # 灯箱屏幕适配图：长边 2048 覆盖 4K 以下全屏，几百 KB 而不是原图的几 MB；放大才拉原图
-    ImageVariant.PHOTO_SCREEN: VariantPreset(width=2048, height=2048, quality=82, fit=True),
+    ImageVariant.PHOTO_SCREEN: VariantPreset(width=2048, height=2048, quality=82),
 }
 
 
@@ -117,17 +115,8 @@ def _render_webp(source_path: Path, preset: VariantPreset) -> bytes:
         if image.mode not in ("RGB", "RGBA"):
             image = image.convert("RGB")
 
-        if preset.fit:
-            # 装进盒子、不裁切：小于盒子的原图不放大
-            ratio = min(1.0, preset.width / image.width, preset.height / image.height)
-            fit_size = (max(1, round(image.width * ratio)), max(1, round(image.height * ratio)))
-            rendered = image if ratio >= 1.0 else image.resize(fit_size, Image.Resampling.LANCZOS)
-            if rendered.mode == "RGBA":
-                rendered = rendered.convert("RGB")
-            output = BytesIO()
-            rendered.save(output, "WEBP", quality=preset.quality, method=4)
-            return output.getvalue()
-
+        # 所有预设同一口径：等比装进外接框、不裁切、不放大。照片与卡片曾各走一条
+        # 分支（卡片按框比例裁切），卡片改为不裁切后两条分支已无差别，合成一条
         scale = min(
             1.0,
             preset.width / image.width,

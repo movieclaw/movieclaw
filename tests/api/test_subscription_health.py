@@ -32,10 +32,12 @@ async def db(tmp_path, monkeypatch):
     get_settings.cache_clear()
 
 
-async def _make_library(db, *, name="电影库", kind="movie", root) -> int:
+async def _make_library(db, *, name="电影库", kind="movie", source="tmdb", root) -> int:
     root.mkdir(parents=True, exist_ok=True)
     async with db.session() as session:
-        row = await LibraryRepository(session).create(name=name, kind=kind, root_paths=[str(root)])
+        row = await LibraryRepository(session).create(
+            name=name, kind=kind, source=source, root_paths=[str(root)]
+        )
         return row.id
 
 
@@ -251,3 +253,37 @@ async def test_auto_rule_covers_routed_libraries(db, tmp_path) -> None:
         assert pipeline["mode"] == "watch" and pipeline["path"] == str(watch)
         # copy 策略无同盘检测段；监听未生效 warn
         assert [c["key"] for c in pipeline["checks"] if c["key"] == "transfer_disk"] == []
+
+
+@pytest.mark.asyncio
+async def test_non_subscribable_libraries_are_left_out(db, tmp_path) -> None:
+    """本地内容库（图片/其他）不是订阅目标，体检不拿它们演练投递链路。
+
+    用户新建一个相册库、根路径没配进下载器映射，概览页不该亮出「路径映射
+    没有覆盖媒体库目录」的红项——订阅根本投递不到那里（路由只在同 kind 的
+    影视库里选，订阅侧也拒绝把它设为目标）。映射建议的公共父目录锚点同理
+    只看影视库，不被相册根拉宽。
+    """
+    await _make_library(db, root=tmp_path / "media" / "movies")
+    await _make_library(db, name="剧集库", kind="tv", root=tmp_path / "media" / "tv")
+    await _make_library(db, name="相册", kind="photo", source="local", root=tmp_path / "photos")
+    await _make_site(db)
+    # 映射只覆盖影视库的公共父目录、不覆盖相册根：整链应全绿，相册不出现在链路里
+    await _make_downloader(db, mappings=[{"local": str(tmp_path / "media"), "remote": "/dl"}])
+    async with db.session() as session:
+        result = await pipeline_health(session)
+    assert [p["library_name"] for p in result["libraries"]] == ["电影库", "剧集库"]
+    assert result["status"] == "ok" and result["issues"] == []
+
+    # 映射谁都不覆盖时：受影响库不含相册，建议锚点是影视库的公共父目录而非全部库的
+    async with db.session() as session:
+        from sqlmodel import select
+
+        row = (await session.execute(select(DownloaderClient))).scalars().one()
+        row.path_mappings = [{"local": "/somewhere/else", "remote": "/dl"}]
+        await session.commit()
+        result = await pipeline_health(session)
+    issue = next(i for i in result["issues"] if i["key"] == "mapping")
+    assert set(issue["affected_libraries"]) == {"电影库", "剧集库"}
+    by_section = {o["fix_section"]: o for o in issue["options"]}
+    assert by_section["downloaders"]["fix_params"] == {"suggest_mapping": str(tmp_path / "media")}

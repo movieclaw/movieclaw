@@ -332,3 +332,55 @@ async def test_item_regenerate_route_schedules_force(db, tmp_path, monkeypatch):
         await session.commit()
         with pytest.raises(ConflictException):
             await regenerate_item_chapter_images(lib_id, item_id, session)
+
+
+async def test_library_views_carry_chapter_job_progress(db, tmp_path):
+    """管理页要看到章节作业的排队/进度：列表与单库接口随库带出 chapter_job，
+    跑完后不再带。曾经的问题：点了「生成章节」后管理页毫无反应，只有活动页看得到。"""
+    from movieclaw_api.api.routes.libraries import get_library, list_libraries
+    from movieclaw_db.models.job import Job, JobStatus
+
+    video = tmp_path / "media" / "p.mkv"
+    video.parent.mkdir()
+    video.write_bytes(b"x")
+    lib_id, _item_id, _file_id = await _seed(db, video, chapters=[], chapter_images=None)
+    async with db.session() as session:
+        created = await chapters_mod.enqueue_library_chapter_images_job(
+            session, lib_id, "家庭录像", force=False
+        )
+        await session.commit()
+    job_id = created.job.id
+
+    async with db.session() as session:
+        views = (await list_libraries(kind=None, principal=_ADMIN, session=session)).data
+        view = next(v for v in views if v.id == lib_id)
+        assert view.chapter_job is not None
+        assert (view.chapter_job.job_id, view.chapter_job.status) == (job_id, "queued")
+        assert view.chapter_job.percent is None and view.chapter_job.stopping is False
+
+    # 模拟跑到一半：进度字段沿用 JobContext.update_progress 的口径
+    async with db.session() as session:
+        job = await session.get(Job, job_id)
+        job.status = JobStatus.RUNNING
+        job.progress = {
+            **job.progress,
+            "current": 3,
+            "total": 8,
+            "percent": 37.5,
+            "details": {"failed": 1},
+        }
+        await session.commit()
+    async with db.session() as session:
+        detail = (await get_library(lib_id, principal=_ADMIN, session=session)).data
+        cj = detail.chapter_job
+        assert cj is not None and cj.status == "running"
+        assert (cj.processed, cj.total, cj.failed, cj.percent) == (3, 8, 1, 37.5)
+
+    # 跑完：不再随库带出
+    async with db.session() as session:
+        job = await session.get(Job, job_id)
+        job.status = JobStatus.SUCCEEDED
+        await session.commit()
+    async with db.session() as session:
+        detail = (await get_library(lib_id, principal=_ADMIN, session=session)).data
+        assert detail.chapter_job is None

@@ -123,6 +123,8 @@ export interface MediaLibrary {
    * 卡片因此不必额外请求就能显示刷新进度。
    */
   metadata_refresh: MetadataRefreshProgress | null;
+  /** 整库生成章节的作业状态（排队 / 进行中）；没在生成为 null。随库列表下发，管理页据此显示进度 */
+  chapter_job: ChapterJobProgress | null;
   created_at: string;
   updated_at: string;
 }
@@ -642,6 +644,21 @@ export interface MetadataRefreshProgress {
   stopping: boolean;
   /** 正在处理的条目及其阶段 */
   active: RefreshActive[];
+}
+
+/** 整库生成章节的作业状态（LibraryView.chapter_job）：只投影未完成态。 */
+export interface ChapterJobProgress {
+  job_id: string;
+  /** Job 未完成态原词：queued / running / cancelling … */
+  status: string;
+  /** 已处理文件数（含失败） */
+  processed: number;
+  total: number;
+  failed: number;
+  /** 0-100；排队中或分母未知为 null */
+  percent: number | null;
+  /** 已请求停止，正在收尾 */
+  stopping: boolean;
 }
 
 /**

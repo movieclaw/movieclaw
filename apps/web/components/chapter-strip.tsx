@@ -84,7 +84,7 @@ export function ChapterStrip({
         {pending && (
           <span className="ml-auto flex items-center gap-2 text-caption text-[var(--text-muted)]">
             <span className="size-3 shrink-0 animate-spin rounded-full border-[1.5px] border-white/20 border-t-white/70" />
-            正在生成场景图
+            正在生成章节
           </span>
         )}
       </div>

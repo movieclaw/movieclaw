@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import type { Route } from "next";
 import { useRouter } from "next/navigation";
@@ -9,6 +9,12 @@ import { Composer } from "@/components/composer";
 import { LlmSetupNotice, useLlmConfigured } from "@/components/llm-gate";
 import type { ComposerImage } from "@/lib/agent-attachments";
 import { useAgentConversations } from "@/lib/agent-conversations";
+import {
+  type ComposerPrefs,
+  loadComposerPrefs,
+  reconcileComposerPrefs,
+  saveComposerPrefs,
+} from "@/lib/composer-prefs";
 import { resolveModelOption, useLlmModelOptions } from "@/lib/llm-thinking";
 
 /* —— 新任务（路由 /）：仅一个居中输入框，大图氛围页直出。
@@ -17,12 +23,25 @@ export function NewTask() {
   const router = useRouter();
   const { start } = useAgentConversations();
   const [input, setInput] = useState("");
-  // 新会话没有可沿用的历史，null 即「默认」；用户切换后显式随消息提交
-  const [thinkingChoice, setThinkingChoice] = useState<string | null>(null);
-  const [modelChoice, setModelChoice] = useState<string | null>(null);
+  // 新会话没有可沿用的历史：以本浏览器记住的上次选择为起点（null 即「默认」），
+  // 用户一改就记下、并显式随消息提交。首帧按默认渲染、挂载后再读记忆，避免
+  // 服务端渲染与浏览器首帧不一致
+  const [choice, setChoice] = useState<ComposerPrefs>({ model: null, thinking: null });
+  useEffect(() => {
+    setChoice(loadComposerPrefs());
+  }, []);
   const modelOptions = useLlmModelOptions();
+  // 清单回来后校验记忆：模型被删了 / 档位不在菜单里的记忆直接丢弃，
+  // 不能把一个服务端不认的引用提交上去
+  useEffect(() => {
+    setChoice((current) => reconcileComposerPrefs(current, modelOptions));
+  }, [modelOptions]);
+  const update = (next: ComposerPrefs) => {
+    setChoice(next);
+    saveComposerPrefs(next);
+  };
   // 档位菜单随所选模型变化（未选即全局默认模型的菜单）
-  const thinkingLevels = resolveModelOption(modelOptions, modelChoice)?.thinking_levels ?? [];
+  const thinkingLevels = resolveModelOption(modelOptions, choice.model)?.thinking_levels ?? [];
   // 创建会话需等服务端返回 session_id 才能跳转；等待期锁住输入框
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -40,8 +59,8 @@ export function NewTask() {
         name: image.name,
         previewUrl: image.previewUrl,
       })),
-      thinkingChoice ?? undefined,
-      modelChoice ?? undefined,
+      choice.thinking ?? undefined,
+      choice.model ?? undefined,
     )
       .then((id) => {
         router.push(`/sessions/${id}` as Route);
@@ -64,15 +83,12 @@ export function NewTask() {
             imageUpload
             skillPicker
             modelOptions={modelOptions}
-            modelValue={modelChoice}
-            onModelChange={(ref) => {
-              setModelChoice(ref);
-              // 换模型后旧档位可能不在新菜单里，清回默认
-              setThinkingChoice(null);
-            }}
+            modelValue={choice.model}
+            // 换模型后旧档位可能不在新菜单里，清回默认
+            onModelChange={(ref) => update({ model: ref, thinking: null })}
             thinkingLevels={thinkingLevels}
-            thinkingValue={thinkingChoice}
-            onThinkingChange={setThinkingChoice}
+            thinkingValue={choice.thinking}
+            onThinkingChange={(level) => update({ model: choice.model, thinking: level })}
             busy={creating}
             disabled={locked}
             placeholder={locked ? "请先接入 AI 模型，再开始对话" : undefined}

@@ -54,20 +54,20 @@ export function refreshItemConfirm(title: string): ConfirmOptions {
   };
 }
 
-/** 整库生成章节场景图：默认只补缺，勾选项决定是否全部重抓（force）。
+/** 整库生成章节：默认只补缺，勾选项决定是否全部重做（force）。
  *  一个菜单入口 + 弹窗内开关，与「刷新元数据」的交互保持一致。 */
 export function chapterImagesConfirm(name: string): ConfirmOptions & { checkbox: ConfirmCheckbox } {
   return {
-    title: `为「${name}」生成场景图？`,
+    title: `为「${name}」生成章节？`,
     description: "后台低优先级执行，可在任务中心观察或取消：",
     bullets: [
-      "只补还没有场景图的文件，已有的不动",
+      "只处理还没有章节的文件，已有的不动",
       "每个文件按章节数定位读取若干次，网络挂载的库会有读取流量",
       "不会移动、修改或删除你的视频文件",
     ],
     checkbox: {
-      label: "已有的场景图也重新生成",
-      description: "按当前章节与合成策略全部重抓，你手动选定的图不会被覆盖",
+      label: "已有的章节也重新生成",
+      description: "按当前章节与合成策略全部重新生成，你手动选定的图不会被覆盖",
     },
     confirmLabel: "开始生成",
   };

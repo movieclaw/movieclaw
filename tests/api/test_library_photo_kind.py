@@ -434,9 +434,9 @@ def test_photo_variants_fit_without_cropping(tmp_path) -> None:
     assert tile.format == "WEBP" and tile.size == (300, 480)  # 长边 480、方向已纠正、不裁
     screen = Image.open(BytesIO(_render_webp(photo, _PRESETS[ImageVariant.PHOTO_SCREEN])))
     assert screen.size == (1000, 1600)  # 小于 2048 不放大
-    # 卡片预设仍是裁切语义（不受影响）
+    # 卡片预设同样是等比装框：竖版照片以 492 高为界、宽按原比例算，不裁成 2:3
     card = Image.open(BytesIO(_render_webp(photo, _PRESETS[ImageVariant.POSTER_CARD])))
-    assert card.size == (328, 492)
+    assert card.size == (308, 492)
 
 
 # ---------------------------------------------------------------------------

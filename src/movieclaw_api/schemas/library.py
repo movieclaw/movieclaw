@@ -218,6 +218,23 @@ class MetadataRefreshView(BaseModel):
     )
 
 
+class ChapterJobView(BaseModel):
+    """整库生成章节的作业状态（docs/design/video-chapters.md §4.5）。
+
+    章节作业是低优先级后台 Job，点了菜单后常要排在扫描/刷新后面才跑；随库
+    列表一并返回（见 LibraryView.chapter_job），管理页才能显示"排队中 /
+    生成到第几个"，用户不必去活动页找。只投影未完成态，跑完即 null。
+    """
+
+    job_id: str
+    status: str = Field(description="Job 未完成态原词：queued / running / cancelling …")
+    processed: int = Field(default=0, description="已处理文件数（含失败）")
+    total: int = 0
+    failed: int = Field(default=0, description="生成失败的文件数")
+    percent: float | None = Field(default=None, description="0-100；排队中或分母未知为 null")
+    stopping: bool = Field(default=False, description="已请求停止，正在收尾")
+
+
 class LibraryCapabilitiesView(BaseModel):
     """库的能力位（docs/design/library-other-kind.md 3.1）：前端按位显隐功能，
     不按 kind 字面分叉——新增类型/来源时前端零改动。"""
@@ -282,6 +299,9 @@ class LibraryView(BaseModel):
     metadata_refresh: MetadataRefreshView | None = Field(
         default=None, description="整库元数据刷新状态；没在刷为 null"
     )
+    chapter_job: ChapterJobView | None = Field(
+        default=None, description="整库生成章节的作业状态（排队/进行中）；没在生成为 null"
+    )
     created_at: datetime
     updated_at: datetime
 
@@ -305,6 +325,7 @@ class LibraryView(BaseModel):
         organize_progress: ScanProgressView | None = None,
         last_organize: LastOrganizeView | None = None,
         metadata_refresh: MetadataRefreshView | None = None,
+        chapter_job: ChapterJobView | None = None,
         member_ids: list[int] | None = None,
         viewer_access: bool = True,
     ) -> LibraryView:
@@ -345,6 +366,7 @@ class LibraryView(BaseModel):
             organize_progress=organize_progress,
             last_organize=last_organize,
             metadata_refresh=metadata_refresh,
+            chapter_job=chapter_job,
             created_at=row.created_at,
             updated_at=row.updated_at,
         )
