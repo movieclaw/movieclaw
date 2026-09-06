@@ -18,7 +18,9 @@
 - 端点上报的 available_models 不进清单——它们没有上下文窗口 / 思考能力
   等元数据，选了之后自动压缩与思维链菜单都会失效；
 - 同一模型 id 只在一个实例里有 → 引用就是裸 id、展示也是裸 id；出现在多个
-  实例 → 引用用「实例名/模型id」精确路由，展示加括号「模型id（实例名）」。
+  实例 → 引用用「实例名/模型id」精确路由，展示加括号「模型id（实例名）」；
+- 模型 id 本身含斜杠（SiliconFlow / OpenRouter 风格的 ``org/model``）时引用
+  也必须限定：路由层按第一个斜杠拆「实例名/模型id」，裸引用会把 org 当实例名。
 """
 
 from __future__ import annotations
@@ -97,7 +99,9 @@ def build_model_options(
     for row, catalog in catalogs:
         for model in catalog:
             ambiguous = owners[model.id] > 1
-            ref = f"{row.name}/{model.id}" if ambiguous else model.id
+            # 冲突或 id 含斜杠都要限定（见模块说明）；展示只在冲突时加括号
+            qualified = ambiguous or "/" in model.id
+            ref = f"{row.name}/{model.id}" if qualified else model.id
             options.append(
                 LlmModelOptionView(
                     ref=ref,
@@ -123,15 +127,15 @@ class ResolvedDefaults:
         return self.agent if purpose == "agent" else self.subtitle
 
 
-def recommended_default(rows: list[LlmProvider]) -> str | None:
+def recommended_default(rows: list[LlmProvider], options: list[LlmModelOptionView]) -> str | None:
     """自动设定的默认模型：最早接入实例目录里的第一个模型（即它的连接测试模型）。
 
     预设目录按 yaml 顺序排列、旗舰在前，所以「第一个」就是该供应商的推荐
     主力模型；自定义端点则是用户补录的第一个。一个实例都没有时为 None。
+    ``options`` 是 build_model_options(rows) 的结果，由调用方构建一次传入。
     """
     if not rows:
         return None
-    options = build_model_options(rows)
     first = rows[0]
     return next(
         (o.ref for o in options if o.provider_id == first.id and o.model_id == first.default_model),
@@ -139,14 +143,19 @@ def recommended_default(rows: list[LlmProvider]) -> str | None:
     )
 
 
-def resolve_defaults(rows: list[LlmProvider], setting: LlmDefaultsSetting) -> ResolvedDefaults:
+def resolve_defaults(
+    rows: list[LlmProvider],
+    setting: LlmDefaultsSetting,
+    options: list[LlmModelOptionView] | None = None,
+) -> ResolvedDefaults:
     """设定 → 实际生效：设定的引用仍能在清单里找到就用它，否则按推荐默认兜底。
 
     正常情况下 reconcile_defaults 已保证设定可解析，这里的兜底只是安全网
-    （如预设目录升级后删掉了某个模型 id）。
+    （如预设目录升级后删掉了某个模型 id）。热路径调用方把已构建的 options 传进来。
     """
-    refs = {o.ref for o in build_model_options(rows)}
-    fallback = recommended_default(rows)
+    options = build_model_options(rows) if options is None else options
+    refs = {o.ref for o in options}
+    fallback = recommended_default(rows, options)
 
     def pick(configured: str | None) -> str | None:
         return configured if configured in refs else fallback
@@ -154,19 +163,36 @@ def resolve_defaults(rows: list[LlmProvider], setting: LlmDefaultsSetting) -> Re
     return ResolvedDefaults(agent=pick(setting.agent_model), subtitle=pick(setting.subtitle_model))
 
 
-async def reconcile_defaults(rows: list[LlmProvider]) -> None:
+async def reconcile_defaults(
+    rows: list[LlmProvider], previous: list[LlmModelOptionView]
+) -> None:
     """实例增删改后维护不变量：有实例则两个默认都已设置且可解析，无实例则清空。
 
-    - 首次接入：两个默认都设为该实例目录里的第一个模型；
-    - 被引用的实例删除 / 目录改动导致引用失效：改指最早剩下实例的第一个模型；
-    - 全部删除：清空。用户手动设过且仍有效的值绝不改动。
+    ``previous`` 是改动前的模型清单。引用的拼写会随实例集合变化（同 id 出现
+    在第二家后裸 id 变成「实例名/模型id」、实例改名后前半段变了），所以不能
+    按字符串判断设定是否还有效——先用改动前的清单把设定还原成
+    (实例 id, 模型 id) 这个稳定身份，再到新清单里找同身份的新引用：
+    - 身份仍在：改写成新拼写（用户的选择原样保留）；
+    - 身份不在（实例被删、模型从目录移除）：改指最早剩下实例的第一个模型；
+    - 设定不在改动前清单里（漂移遗留）：字符串仍可解析就保留，否则同上兜底；
+    - 首次接入：两个默认都设为该实例目录里的第一个模型；全部删除：清空。
     """
     store = get_setting_store()
     setting = await store.get(LlmDefaultsSetting)
-    refs = {o.ref for o in build_model_options(rows)}
-    fallback = recommended_default(rows)
-    agent = setting.agent_model if setting.agent_model in refs else fallback
-    subtitle = setting.subtitle_model if setting.subtitle_model in refs else fallback
+    options = build_model_options(rows)
+    refs = {o.ref for o in options}
+    by_identity = {(o.provider_id, o.model_id): o.ref for o in options}
+    fallback = recommended_default(rows, options)
+
+    def carry(stored: str | None) -> str | None:
+        if stored is None:
+            return fallback
+        before = next((o for o in previous if o.ref == stored), None)
+        if before is not None:
+            return by_identity.get((before.provider_id, before.model_id), fallback)
+        return stored if stored in refs else fallback
+
+    agent, subtitle = carry(setting.agent_model), carry(setting.subtitle_model)
     if (agent, subtitle) != (setting.agent_model, setting.subtitle_model):
         await store.set(LlmDefaultsSetting(agent_model=agent, subtitle_model=subtitle))
         logger.info("AI 设定已自动调整：智能体默认模型=%s，字幕处理默认模型=%s", agent, subtitle)
@@ -179,11 +205,13 @@ async def default_model_ref(session: AsyncSession, purpose: Purpose) -> str:
     return resolve_defaults(rows, setting).ref(purpose) or ""
 
 
-def _owner_of(rows: list[LlmProvider], ref: str | None) -> tuple[LlmProvider, str] | None:
+def _owner_of(
+    rows: list[LlmProvider], ref: str | None, options: list[LlmModelOptionView]
+) -> tuple[LlmProvider, str] | None:
     """模型引用 → (所属实例, 模型 id)；引用为空或解析不到返回 None。"""
     if not ref:
         return None
-    for option in build_model_options(rows):
+    for option in options:
         if option.ref == ref:
             row = next((r for r in rows if r.id == option.provider_id), None)
             return (row, option.model_id) if row is not None else None
@@ -203,7 +231,8 @@ async def resolve_provider_endpoint(session: AsyncSession) -> tuple[str, str, st
     if not rows:
         raise BadRequestException("尚未配置 AI 模型供应商，无法测试")
     setting = await get_setting_store().get(LlmDefaultsSetting)
-    owner = _owner_of(rows, resolve_defaults(rows, setting).agent)
+    options = build_model_options(rows)
+    owner = _owner_of(rows, resolve_defaults(rows, setting, options).agent, options)
     row = owner[0] if owner else rows[0]
     base = row.base_url or (get_preset(row.provider_type).base_url or "")
     if not base:
@@ -241,7 +270,9 @@ class LlmConfigService:
         """对话框与 AI 设定的模型清单（口径见模块说明），智能体默认项标 is_default。"""
         rows = await self._repo.list_all()
         setting = await get_setting_store().get(LlmDefaultsSetting)
-        return build_model_options(rows, resolve_defaults(rows, setting).agent)
+        agent = resolve_defaults(rows, setting).agent
+        # 设置页 / 对话框入口，不在热路径；再构建一次只为标记 is_default
+        return build_model_options(rows, agent)
 
     # -- AI 设定 -----------------------------------------------------------
 
@@ -271,7 +302,7 @@ class LlmConfigService:
                 raise BadRequestException(
                     f"{label}默认模型「{ref}」不在已接入供应商的模型清单中，请重新选择"
                 )
-        recommended = recommended_default(rows)
+        recommended = recommended_default(rows, build_model_options(rows))
         await get_setting_store().set(
             LlmDefaultsSetting(
                 agent_model=agent_model or recommended,
@@ -382,6 +413,7 @@ class LlmConfigService:
             default_model=default_model,
             extra_models=extras,
         )
+        before = build_model_options(await self._repo.list_all())
         row = await self._repo.create(
             name=name,
             provider_type=provider_type,
@@ -391,7 +423,7 @@ class LlmConfigService:
             extra_models=[m.model_dump() for m in extras] or None,
             user_agent=user_agent,
         )
-        await reconcile_defaults(await self._repo.list_all())
+        await reconcile_defaults(await self._repo.list_all(), before)
         return row
 
     async def update(
@@ -418,6 +450,7 @@ class LlmConfigService:
             extra_models=extras,
             exclude_id=provider_id,
         )
+        before = build_model_options(await self._repo.list_all())
         updated = await self._repo.update(
             provider_id,
             name=name,
@@ -429,8 +462,8 @@ class LlmConfigService:
             user_agent=user_agent,
         )
         assert updated is not None  # 上面 get 已确认存在
-        # 实例改名或目录改动可能让设定里的引用失效（引用含实例名）
-        await reconcile_defaults(await self._repo.list_all())
+        # 实例改名或目录改动会改变引用的拼写，按稳定身份改写设定
+        await reconcile_defaults(await self._repo.list_all(), before)
         return updated
 
     async def start_verification(self, provider_id: int) -> LlmProvider:
@@ -447,8 +480,9 @@ class LlmConfigService:
         """删除实例；不存在抛 404，正在验证中抛 409。"""
         row = await self.get(provider_id)
         self._assert_not_verifying(row)
+        before = build_model_options(await self._repo.list_all())
         await self._repo.delete(provider_id)
-        await reconcile_defaults(await self._repo.list_all())
+        await reconcile_defaults(await self._repo.list_all(), before)
 
 
 # ---------------------------------------------------------------------------
@@ -474,7 +508,9 @@ async def acquire_llm_router(session: AsyncSession) -> LlmRouter:
     if not rows:
         raise NotFoundException("尚未配置模型供应商，请先在「设置 → 模型接入」中接入")
     setting = await get_setting_store().get(LlmDefaultsSetting)
-    owner = _owner_of(rows, resolve_defaults(rows, setting).agent)
+    # 每条消息都经过这里：清单只构建一次，解析默认与找归属都复用它
+    options = build_model_options(rows)
+    owner = _owner_of(rows, resolve_defaults(rows, setting, options).agent, options)
     configs = []
     for row in rows:
         config = to_domain_config(row, repo.decrypted_api_key(row))

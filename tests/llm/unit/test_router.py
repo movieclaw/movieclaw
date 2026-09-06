@@ -121,3 +121,10 @@ async def test_update_providers_drops_removed_instances(monkeypatch):
     assert "我的百炼" in router._clients
     await router.update_providers([])
     assert router._clients == {}
+
+
+def test_resolve_explicit_ref_with_slash_in_model_id():
+    """实例名不含斜杠，所以按第一个斜杠拆分：模型 id 自己带斜杠也能精确路由。"""
+    provider, model_id = make_router().resolve("我的百炼/deepseek-ai/DeepSeek-V3")
+    assert provider.name == "我的百炼"
+    assert model_id == "deepseek-ai/DeepSeek-V3"

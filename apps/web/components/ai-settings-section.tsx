@@ -69,9 +69,12 @@ export function AiSettingsSection() {
     setSaving(key);
     setError(null);
     try {
+      // 另一项若已失效（不在清单里）不能原样回传——服务端会整体拒绝；传 null 让它按推荐补齐
+      const sibling = (ref: string | null) =>
+        ref != null && options.some((o) => o.ref === ref) ? ref : null;
       const next = await updateLlmDefaults({
-        agent_model: key === "agent_model" ? value : defaults.agent_model,
-        subtitle_model: key === "subtitle_model" ? value : defaults.subtitle_model,
+        agent_model: key === "agent_model" ? value : sibling(defaults.agent_model),
+        subtitle_model: key === "subtitle_model" ? value : sibling(defaults.subtitle_model),
       });
       setDefaults(next);
       // 对话框的模型清单里 is_default 跟随智能体默认模型，作废缓存

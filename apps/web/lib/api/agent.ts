@@ -293,9 +293,16 @@ export async function retrySessionMessage(
   sessionId: string,
   messageId: string,
   content?: string,
+  thinkingLevel?: string,
+  model?: string,
 ): Promise<{ sessionId: string; messageId: string }> {
-  const body: { message_id: string; content?: string } = { message_id: messageId };
+  const body: { message_id: string; content?: string; thinking_level?: string; model?: string } = {
+    message_id: messageId,
+  };
   if (content) body.content = content;
+  // 与 session.start 同款三态：不传沿用被重试消息的值；"default" 清回默认；其余显式
+  if (thinkingLevel) body.thinking_level = thinkingLevel;
+  if (model) body.model = model;
   const response = await request<ApiEnvelope<{ session_id: string; message_id: string }>>(
     `/sessions/${sessionId}/retry`,
     { method: "POST", body: JSON.stringify(body) },

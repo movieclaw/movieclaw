@@ -183,7 +183,14 @@ export function AgentConversationView({ conversationId }: { conversationId: stri
       if (!agreed) return;
       setRetrying(true);
       try {
-        await retry(conversationId, activeRetryTarget.messageId, text);
+        await retry(
+          conversationId,
+          activeRetryTarget.messageId,
+          text,
+          // 改写模式下选择器照常可用：没动过就沿用被重试消息的值
+          thinkingChoice === undefined ? undefined : (thinkingChoice ?? "default"),
+          modelChoice === undefined ? undefined : (modelChoice ?? "default"),
+        );
         setInput("");
         setRetryTarget(null);
       } catch (error) {

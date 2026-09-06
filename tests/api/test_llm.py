@@ -518,3 +518,64 @@ def test_presets_endpoint(client) -> None:
     import openai
 
     assert presets["openai"]["default_user_agent"] == f"AsyncOpenAI/Python {openai.__version__}"
+
+
+def test_slash_model_id_is_always_qualified(client) -> None:
+    """模型 id 本身含斜杠（org/model 风格）：不冲突也要用「实例名/模型id」引用，
+    否则路由层会把 org 当实例名；展示仍是裸 id。"""
+    c, _ = client
+    r = c.post(
+        "/api/v1/llm/providers",
+        json={
+            **_COMPAT_PAYLOAD,
+            "name": "硅基",
+            "default_model": None,
+            "extra_models": [
+                {
+                    "id": "deepseek-ai/DeepSeek-V3",
+                    "context_window": 131072,
+                    "max_output_tokens": 8192,
+                }
+            ],
+        },
+    )
+    assert r.status_code == 200, r.text
+    options = {o["model_id"]: o for o in c.get("/api/v1/llm/models").json()["data"]}
+    assert options["deepseek-ai/DeepSeek-V3"]["ref"] == "硅基/deepseek-ai/DeepSeek-V3"
+    assert options["deepseek-ai/DeepSeek-V3"]["label"] == "deepseek-ai/DeepSeek-V3"
+    # 首次接入自动设定的默认就是这个限定引用，且能解析
+    defaults = c.get("/api/v1/llm/defaults").json()["data"]
+    assert defaults["agent_model"] == "硅基/deepseek-ai/DeepSeek-V3"
+    assert defaults["effective_agent_model"] == "硅基/deepseek-ai/DeepSeek-V3"
+
+
+def test_defaults_follow_ref_respelling(client) -> None:
+    """引用拼写随实例集合变化时，用户的设定按稳定身份改写而不是被重置：
+    第二家借用同 id → 裸 id 变限定形式；实例改名 → 前半段跟着改；
+    第二家删除 → 降回裸 id。"""
+    c, _ = client
+    bailian = c.post("/api/v1/llm/providers", json=_PAYLOAD).json()["data"]
+    r = c.put("/api/v1/llm/defaults", json={"agent_model": "qwen3.7-plus"})
+    assert r.status_code == 200, r.text
+    # 中转也借用 qwen3.7-plus：设定应改写成「百炼/qwen3.7-plus」，而不是回到推荐默认
+    relay = c.post(
+        "/api/v1/llm/providers",
+        json={
+            **_COMPAT_PAYLOAD,
+            "name": "中转",
+            "default_model": None,
+            "extra_models": [{"id": "qwen3.7-plus", "context_window": 131072}],
+        },
+    ).json()["data"]
+    defaults = c.get("/api/v1/llm/defaults").json()["data"]
+    assert defaults["agent_model"] == "百炼/qwen3.7-plus"
+    # 百炼改名 → 引用前半段跟着改
+    r = c.put(
+        f"/api/v1/llm/providers/{bailian['id']}",
+        json={**_PAYLOAD, "name": "百炼-主", "api_key": "sk-renamed"},
+    )
+    assert r.status_code == 200, r.text
+    assert c.get("/api/v1/llm/defaults").json()["data"]["agent_model"] == "百炼-主/qwen3.7-plus"
+    # 删除中转 → 不再冲突，降回裸 id
+    assert c.delete(f"/api/v1/llm/providers/{relay['id']}").status_code == 200
+    assert c.get("/api/v1/llm/defaults").json()["data"]["agent_model"] == "qwen3.7-plus"

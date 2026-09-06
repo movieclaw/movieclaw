@@ -177,8 +177,15 @@ interface AgentConversationsValue {
   stop: (conversationId: string) => void;
   /** 重命名会话（改索引元数据，成功后同步本地标题）。 */
   rename: (conversationId: string, title: string) => Promise<void>;
-  /** 重新提交指定用户消息；content 为空时原文重试，否则替换问题后重试。 */
-  retry: (conversationId: string, messageId: string, content?: string) => Promise<void>;
+  /** 重新提交指定用户消息；content 为空时原文重试，否则替换问题后重试。
+   *  thinkingLevel / model 同 send：undefined 沿用被重试消息的值 */
+  retry: (
+    conversationId: string,
+    messageId: string,
+    content?: string,
+    thinkingLevel?: string,
+    model?: string,
+  ) => Promise<void>;
   /** 彻底删除会话（服务端转录与索引一并删除；运行中的会话会被服务端拒绝）。 */
   remove: (conversationId: string) => Promise<void>;
 }
@@ -927,14 +934,27 @@ export function AgentConversationsProvider({ children }: { children: React.React
    * 替换时间线。请求失败时保留原对话，避免界面与服务端事实源失步。
    */
   const retry = useCallback(
-    async (conversationId: string, messageId: string, content?: string) => {
+    async (
+      conversationId: string,
+      messageId: string,
+      content?: string,
+      thinkingLevel?: string,
+      model?: string,
+    ) => {
       const conversation = conversationsRef.current.find((item) => item.id === conversationId);
       const index = conversation?.turns.findIndex((turn) => turn.messageId === messageId) ?? -1;
       if (!conversation || index < 0) throw new Error("这条提问已不在当前会话里");
-      const input = content ?? conversation.turns[index].input;
+      const original = conversation.turns[index];
+      const input = content ?? original.input;
       // 服务端 retry 不传 attachments 即沿用原消息的图；本地轮次同样保留
-      const images = conversation.turns[index].images;
-      const accepted = await retrySessionMessage(conversationId, messageId, content);
+      const images = original.images;
+      const accepted = await retrySessionMessage(
+        conversationId,
+        messageId,
+        content,
+        thinkingLevel,
+        model,
+      );
       const turnId = nanoid();
       setConversations((previous) =>
         previous.map((item) =>
@@ -951,8 +971,16 @@ export function AgentConversationsProvider({ children }: { children: React.React
                     messageId: accepted.messageId,
                     input,
                     ...(images && images.length > 0 ? { images } : {}),
-                    // 服务端 retry 不传档位即沿用原消息，本地轮次同样保留
-                    thinkingLevel: conversation.turns[index].thinkingLevel,
+                    // 服务端 retry 不传档位 / 模型即沿用原消息，本地轮次同样保留；
+                    // 显式传了就用线上值（"default" 即 null）
+                    thinkingLevel:
+                      thinkingLevel === undefined
+                        ? original.thinkingLevel
+                        : thinkingLevel === "default"
+                          ? null
+                          : thinkingLevel,
+                    modelRef:
+                      model === undefined ? original.modelRef : model === "default" ? null : model,
                     status: "running",
                     segments: [],
                     startedAt: Date.now(),

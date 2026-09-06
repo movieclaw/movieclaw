@@ -143,6 +143,10 @@ export function LlmConfigSection() {
           <LlmProviderForm
             config={editing === "new" ? null : editing}
             presets={presets}
+            // 其它实例已占用的名字：留空按供应商名保存时据此加序号，避免撞唯一名
+            takenNames={providers
+              .filter((p) => editing === "new" || p.id !== editing.id)
+              .map((p) => p.name)}
             onSubmit={async (payload) => {
               if (editing === "new") await createLlmProvider(payload);
               else await updateLlmProvider(editing.id, payload);
@@ -344,6 +348,8 @@ interface LlmProviderFormProps {
   /** 被编辑的实例；null 表示新增 */
   config: LlmProviderConfig | null;
   presets: LlmPreset[];
+  /** 其它实例已占用的实例名（实例名全局唯一） */
+  takenNames: string[];
   onSubmit: (payload: LlmProviderPayload) => Promise<void>;
   onCancel: () => void;
   onError: (message: string) => void;
@@ -416,7 +422,14 @@ const THINKING_LEVEL_LABEL: Record<string, string> = {
   max: "最高",
 };
 
-function LlmProviderForm({ config, presets, onSubmit, onCancel, onError }: LlmProviderFormProps) {
+function LlmProviderForm({
+  config,
+  presets,
+  takenNames,
+  onSubmit,
+  onCancel,
+  onError,
+}: LlmProviderFormProps) {
   const [busy, setBusy] = useState(false);
   // 实例名：留空时按所选供应商的显示名保存（多数人只接一家，不必额外起名）
   const [name, setName] = useState(config?.name ?? "");
@@ -533,10 +546,18 @@ function LlmProviderForm({ config, presets, onSubmit, onCancel, onError }: LlmPr
       setAddingCustom(false);
   }
 
+  /** 留空时按供应商显示名保存；同类型第二家会撞唯一实例名，自动加序号（「OpenAI 2」）。 */
+  function fallbackName(): string {
+    const base = preset?.display_name || providerType;
+    let candidate = base;
+    for (let i = 2; takenNames.includes(candidate); i += 1) candidate = `${base} ${i}`;
+    return candidate;
+  }
+
   function submit() {
     setBusy(true);
     void onSubmit({
-      name: name.trim() || preset?.display_name || providerType,
+      name: name.trim() || fallbackName(),
       provider_type: providerType,
       base_url: baseUrl.trim() || null,
       // 端点固定的官方渠道不开放 UA 配置，一律回传 null，避免切换供应商后
