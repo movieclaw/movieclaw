@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 
 import { AvatarBadge } from "@/components/avatar-badge";
+import { useConfirm } from "@/components/feedback";
 import { CheckIcon, PlusIcon, XIcon } from "@/components/icons";
 import { Modal } from "@/components/modal";
 import {
@@ -30,6 +31,7 @@ import { HttpError } from "@/lib/http";
  * 绝不串到上一个账号的数据。
  */
 export function AccountSwitcherDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const confirm = useConfirm();
   const [accounts, setAccounts] = useState<AccountView[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   // 切换 / 移除 / 退出进行中：禁用全部操作，避免连点发出两次
@@ -74,9 +76,19 @@ export function AccountSwitcherDialog({ open, onClose }: { open: boolean; onClos
     }
   };
 
-  /** 从本浏览器移除一个账号（不是停用账号，只是这台设备不再记住它的登录态）。 */
+  /** 从本浏览器移除一个账号（不是停用账号，只是这台设备不再记住它的登录态）。
+   *  移除后要重新输密码才能回来，所以先二次确认。 */
   const handleRemove = async (account: AccountView) => {
     if (busy) return;
+    const ok = await confirm({
+      title: `退出「${account.nickname}」？`,
+      description: account.active
+        ? "这是当前账号。退出后本浏览器不再保留它的登录状态，会自动切到其他账号；再回来需要重新输入密码。"
+        : "本浏览器将不再保留它的登录状态，再回来需要重新输入密码。账号本身不受影响。",
+      confirmLabel: "退出",
+      tone: "danger",
+    });
+    if (!ok) return;
     setBusy(true);
     setError(null);
     try {
@@ -97,6 +109,14 @@ export function AccountSwitcherDialog({ open, onClose }: { open: boolean; onClos
 
   const handleLogoutAll = async () => {
     if (busy) return;
+    const count = accounts?.length ?? 0;
+    const ok = await confirm({
+      title: "退出全部账号？",
+      description: `本浏览器里的 ${count} 个账号都会退出登录，再回来需要逐个重新输入密码。共用设备时建议这样做。`,
+      confirmLabel: "全部退出",
+      tone: "danger",
+    });
+    if (!ok) return;
     setBusy(true);
     try {
       await logout(true);
