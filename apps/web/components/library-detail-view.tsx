@@ -116,8 +116,9 @@ function busyText(progress: ScanProgress | null): string {
  * 2. 库存（library_file 台账聚合）：已在磁盘上的作品，格下标注集数/规格/大小；
  * 3. 待识别：扫描认不出身份的文件，按条目目录成组，点候选或填 TMDB ID 整组认领。
  */
-/** 墙的两种列宽：竖版海报（电影库）与横版缩略图（其他库 / 未识别区） */
-const WALL_GRID_POSTER =
+/** 墙的两种列宽：竖版海报（电影库）与横版缩略图（其他库 / 未识别区）。
+ *  竖版那档同时给「全部收藏」页复用，两面墙必须是同一套格子。 */
+export const WALL_GRID_POSTER =
   "grid gap-x-4 gap-y-7 [grid-template-columns:repeat(auto-fill,minmax(148px,1fr))] max-md:gap-x-3 max-md:gap-y-5 max-md:[grid-template-columns:repeat(auto-fill,minmax(140px,1fr))]";
 const WALL_GRID_WIDE =
   "grid gap-x-4 gap-y-7 [grid-template-columns:repeat(auto-fill,minmax(220px,1fr))] max-md:gap-x-3 max-md:gap-y-5 max-md:[grid-template-columns:repeat(auto-fill,minmax(160px,1fr))]";
@@ -1449,8 +1450,8 @@ function MetadataRefreshPanel({
  *
  *  memo 化 + reload 的逐条目引用复用（见 lib/poll-reconcile.ts）：轮询快照
  *  里没变化的条目沿用旧对象，这里比对通过就整格跳过——大库轮询时只有真正
- *  变化的格子会重渲染。 */
-const InventoryCell = memo(function InventoryCell({
+ *  变化的格子会重渲染。「全部收藏」页复用同一格（跨库的收藏各带自己的落点库）。 */
+export const InventoryCell = memo(function InventoryCell({
   item,
   libraryId,
   wallInitial,
@@ -1543,8 +1544,9 @@ const InventoryCell = memo(function InventoryCell({
  * 提前 600px 触发下一页，正常滚动速度下新一批在滚到底之前就已到位，看不出
  * 分页。已加载数变化后重新观察：一页塞不满视口时哨兵仍在屏内，重新观察会
  * 立刻再触发一次，直到填满或到底——否则墙会停在半屏、再也不加载。
+ * 「全部收藏」页的墙同样用它翻页。
  */
-function WallLoadMore({
+export function WallLoadMore({
   hasMore,
   loaded,
   start,

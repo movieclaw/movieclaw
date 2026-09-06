@@ -114,11 +114,11 @@ export interface FavoritesPage {
   total: number;
 }
 
-/** 当前账号在可见媒体库中收藏的作品（网页与 Jellyfin 客户端点的心同一份）。
- *  缺省取服务端上限：首页「展开全部」要把收藏铺开，而收藏本来就是个人精选的小集合。 */
-export async function listFavorites(limit = 200): Promise<FavoritesPage> {
+/** 当前账号在可见媒体库中收藏的作品（网页与 Jellyfin 客户端点的心同一份），
+ *  最近收藏在前。首页横滚行取前 20；「全部收藏」海报墙按 offset 滚动加载。 */
+export async function listFavorites(limit = 20, offset = 0): Promise<FavoritesPage> {
   const response = await request<ApiEnvelope<FavoritesPage>>(
-    `/playback/favorites?limit=${limit}`,
+    `/playback/favorites?limit=${limit}&offset=${offset}`,
   );
   return response.data;
 }

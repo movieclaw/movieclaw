@@ -1,16 +1,17 @@
 """收藏 / 已看标记与首页「我的收藏」的浏览器端到端。
 
 真后端（uvicorn 子进程）+ 真前端（``pnpm dev``）+ 无头 Chromium。库存直接往
-SQLite 播种：十部电影 + 一部三集剧，各有在位文件。覆盖整条链路、且每一步都
+SQLite 播种：二十五部电影 + 一部三集剧，各有在位文件。覆盖整条链路、且每一步都
 用 Jellyfin 协议交叉核对（网页与 Infuse 点的是同一份数据）：
 
 - 电影详情页：心 → 收藏（Jellyfin ``UserData.IsFavorite`` 同步为真）；对勾 →
   已看（``Played`` 为真、续播点清零）；再点回未看；
 - 剧集详情页：心收藏整部剧（Series 的 ``IsFavorite``）；对勾标记当前选中集，
   分集卡右上角出现对勾、Jellyfin 的 ``UnplayedItemCount`` 减一；
-- 首页「我的收藏」：三部时一行横滚、没有展开钮；Infuse 再收藏八部到十一部后
-  出现「展开全部 11 部」，展开后卡片换行铺开、收起复原；
-- Infuse 取消收藏电影 → 详情页的心翻回未收藏、首页那张卡消失。
+- 首页「我的收藏」跟在最近观看之下，横滚最近收藏的 20 部（26 个收藏时最早的
+  被挤出）；「查看全部」进 /library/favorites，与单库页同一套海报墙、全部换行
+  铺开，顶栏返回键回首页；
+- Infuse 取消收藏电影 → 详情页的心翻回未收藏、全部收藏页里也没有了。
 
 标 integration：要 pnpm（apps/web 已 install）与 Playwright Chromium，CI 不跑。
 本地：``pytest -m integration tests/e2e/test_favorites_browser.py``。
@@ -156,14 +157,15 @@ def _eventually(read, expected, *, timeout: float = 10.0):
     raise AssertionError(f"等了 {timeout} 秒仍不是 {expected!r}，最后读到 {last!r}")
 
 
-MOVIE_COUNT = 10
+#: 二十五部电影 + 一部剧 = 26 个收藏，超过首页横滚行的 20 部上限，才测得到「只放最近 20」
+MOVIE_COUNT = 25
 SHOW_TITLE = "追更的剧"
 
 
 def _seed_library(
     database_url: str, library_ids: dict[str, int], roots: dict[str, Path]
 ) -> dict[str, int]:
-    """播种十部电影 + 一部三集剧（都有在位文件），返回片名 → media_item_id。"""
+    """播种二十五部电影 + 一部三集剧（都有在位文件），返回片名 → media_item_id。"""
     from movieclaw_db.engine import Database
     from movieclaw_db.models import (
         FileSource,
@@ -271,7 +273,9 @@ def test_favorites_and_played_end_to_end(stack) -> None:  # noqa: PLR0915
         return resp.json()
 
     def favorite_titles(page) -> list[str]:
-        return [i["title"] for i in api(page, "get", "/playback/favorites")["data"]["items"]]
+        return [
+            i["title"] for i in api(page, "get", "/playback/favorites?limit=200")["data"]["items"]
+        ]
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, **_chromium_kwargs())
@@ -406,59 +410,66 @@ def test_favorites_and_played_end_to_end(stack) -> None:  # noqa: PLR0915
         _eventually(lambda: jf_user_data(show)["UnplayedItemCount"], 2)
         page.screenshot(path=str(shots / "03-show-detail-episode-played.png"), full_page=True)
 
-        # ---- Infuse 里再收藏一部电影；首页「我的收藏」三部，一行横滚、无展开钮 ----
+        # ---- Infuse 里再收藏一部电影；首页「我的收藏」横滚三部，跟在最近观看之下 ----
         jf_favorite(ids["电影 02"], True)
         page.goto(f"{base}/library")
-        section = page.locator("section[aria-labelledby=favorites-title]")
-        expect(section.get_by_role("heading", name=re.compile("我的收藏"))).to_be_visible()
-        expect(section.get_by_role("link")).to_have_count(3)
+        section = page.get_by_test_id("favorites-row")
+        expect(section.get_by_role("heading", name="我的收藏")).to_be_visible()
+        cards = section.get_by_role("link", name=re.compile("^查看《"))
+        expect(cards).to_have_count(3)
         # 最近收藏的在前：Infuse 收藏的电影 02 → 整部剧 → 电影 01
         assert favorite_titles(page) == ["电影 02", SHOW_TITLE, "电影 01"]
-        expect(section.get_by_role("button", name=re.compile("展开全部"))).to_have_count(0)
-        # 首页顺序：收藏区在最近观看之上、我的媒体库之上
+        expect(section.get_by_role("link", name="查看全部 3 部")).to_be_visible()
+        # 首页顺序：最近观看 → 我的收藏 → 我的媒体库
         heading_tops = [
             page.get_by_role("heading", name=name).bounding_box()["y"]
-            for name in (re.compile("我的收藏"), "我的媒体库")
+            for name in ("最近观看", "我的收藏", "我的媒体库")
         ]
-        assert heading_tops[0] < heading_tops[1]
+        assert heading_tops == sorted(heading_tops)
         page.screenshot(path=str(shots / "04-home-favorites-row.png"), full_page=True)
 
-        # ---- Infuse 再收藏八部 → 十一部：出现「展开全部」，展开换行、收起复原 ----
+        # ---- Infuse 再收藏其余电影（共 MOVIE_COUNT+1 部）：首页只横滚最近 20 部 ----
         for index in range(3, MOVIE_COUNT + 1):
             jf_favorite(ids[f"电影 {index:02d}"], True)
+        total = MOVIE_COUNT + 1
         page.goto(f"{base}/library")
-        expect(section.get_by_role("link")).to_have_count(MOVIE_COUNT + 1)
-        expect(section.get_by_role("heading", name=re.compile("我的收藏"))).to_contain_text(
-            str(MOVIE_COUNT + 1)
-        )
-        expand = section.get_by_role("button", name=f"展开全部 {MOVIE_COUNT + 1} 部")
-        expect(expand).to_have_attribute("aria-expanded", "false")
-        cards = section.get_by_role("link")
+        expect(cards).to_have_count(20)
         first_top = cards.first.bounding_box()["y"]
         assert cards.last.bounding_box()["y"] == first_top  # 横滚：全部同一行
-        page.screenshot(path=str(shots / "05-home-favorites-collapsed.png"), full_page=True)
+        # 首页那 20 张是最近收藏的：最后收藏的电影排最前，最早收藏的电影 01 已挤出
+        expect(cards.first).to_have_attribute(
+            "aria-label", re.compile(f"《电影 {MOVIE_COUNT:02d}》")
+        )
+        expect(section.get_by_role("link", name=re.compile("《电影 01》"))).to_have_count(0)
+        page.screenshot(path=str(shots / "05-home-favorites-20.png"), full_page=True)
 
-        expand.click()
-        collapse = section.get_by_role("button", name="收起")
-        expect(collapse).to_have_attribute("aria-expanded", "true")
-        expect(cards.last).to_be_in_viewport()
-        assert cards.last.bounding_box()["y"] > first_top  # 网格：换到了下一行
-        page.screenshot(path=str(shots / "06-home-favorites-expanded.png"), full_page=True)
-        collapse.click()
-        expect(section.get_by_role("button", name=f"展开全部 {MOVIE_COUNT + 1} 部")).to_be_visible()
-        assert cards.last.bounding_box()["y"] == first_top
+        # ---- 查看全部：/library/favorites 是与单库页同一套海报墙，全部铺开换行 ----
+        section.get_by_role("link", name=f"查看全部 {total} 部").click()
+        page.wait_for_url(re.compile(r"/library/favorites$"))
+        expect(page.get_by_role("heading", name="我的收藏")).to_be_visible()
+        expect(page.get_by_text(f"{total} 部作品")).to_be_visible()
+        wall = page.locator("[data-library-item-id]")
+        expect(wall).to_have_count(total)
+        assert wall.last.bounding_box()["y"] > wall.first.bounding_box()["y"]  # 网格换行
+        expect(wall.last.get_by_role("link", name=re.compile("《电影 01》"))).to_be_visible()
+        page.screenshot(path=str(shots / "06-favorites-page.png"), full_page=True)
+        # 顶栏返回键回到媒体库首页
+        page.get_by_role("button", name=re.compile("^返回上一页")).click()
+        page.wait_for_url(re.compile(r"/library$"))
 
-        # ---- Infuse 取消收藏电影 01：详情页的心翻回未收藏、首页那张卡消失 ----
+        # ---- Infuse 取消收藏电影 01：详情页的心翻回未收藏、全部收藏页里也没有了 ----
         jf_favorite(movie_1, False)
         page.goto(f"{base}/library/{library_ids['movies']}/item/{movie_1}")
         expect(page.get_by_role("button", name="收藏", exact=True)).to_have_attribute(
             "aria-pressed", "false"
         )
-        page.goto(f"{base}/library")
-        expect(section.get_by_role("link")).to_have_count(MOVIE_COUNT)
-        expect(section.get_by_role("link", name=re.compile("《电影 01》"))).to_have_count(0)
+        page.goto(f"{base}/library/favorites")
+        expect(page.locator("[data-library-item-id]")).to_have_count(total - 1)
+        expect(page.get_by_role("link", name=re.compile("《电影 01》"))).to_have_count(0)
         assert "电影 01" not in favorite_titles(page)
-        page.screenshot(path=str(shots / "07-home-after-jellyfin-unfavorite.png"), full_page=True)
+        page.screenshot(
+            path=str(shots / "07-favorites-after-jellyfin-unfavorite.png"), full_page=True
+        )
 
         assert not page_errors, f"页面脚本报错：{page_errors}"
         browser.close()

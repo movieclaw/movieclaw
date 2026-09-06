@@ -26,11 +26,13 @@ async def favorite_items(
     member_id: int,
     visible_library_ids: set[int] | None,
     limit: int,
+    offset: int = 0,
 ) -> tuple[list[FavoriteItemView], int]:
     """返回一个账号收藏的作品（最近收藏的在前）与去重后的总数。
 
-    同一作品跨库存在时按媒体库首页的展示顺序选择第一个可见库，保证卡片有
-    稳定、可访问的详情落点；没有任何可见在位文件的收藏不计入总数。
+    ``offset`` / ``limit`` 是「全部收藏」海报墙的滚动分页窗口；首页横滚行只取
+    最前面一页。同一作品跨库存在时按媒体库首页的展示顺序选择第一个可见库，
+    保证卡片有稳定、可访问的详情落点；没有任何可见在位文件的收藏不计入总数。
     """
     if visible_library_ids == set():
         return [], 0
@@ -79,7 +81,7 @@ async def favorite_items(
 
     ordered = [item_id for item_id in latest if item_id in library_of]
     total = len(ordered)
-    ordered = ordered[:limit]
+    ordered = ordered[offset : offset + limit]
 
     by_library: dict[int, list[int]] = {}
     for item_id in ordered:

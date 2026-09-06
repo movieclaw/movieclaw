@@ -6,7 +6,6 @@ import type { Route } from "next";
 import Link from "next/link";
 
 import { ContentEmptyState } from "@/components/content-empty-state";
-import { FavoritesRow } from "@/components/favorites-row";
 import { HScroller } from "@/components/h-scroller";
 import { LIBRARY_KIND_META } from "@/components/library-kind-meta";
 import {
@@ -46,6 +45,8 @@ import { useScrollRestoration } from "@/lib/use-scroll-restoration";
 
 /** 每个库「最近添加」行的格数（也是本页向服务端要的条目数上限）。 */
 const RECENT_COUNT = 20;
+/** 「我的收藏」横滚行只放最近收藏的这么多部，更多的到 /library/favorites 看。 */
+const FAVORITES_COUNT = 20;
 
 /**
  * 库存条目的悬浮操作与本卡 hover 的完整度文案同源：季或集有一项未齐就
@@ -127,7 +128,7 @@ export function LibraryView() {
       listLibraries(),
       // 最近观看 / 我的收藏失败不拖垮媒体库首页；保留旧数据，下一轮轮询自动重试。
       listRecentWatch(RECENT_COUNT).catch(() => null),
-      listFavorites().catch(() => null),
+      listFavorites(FAVORITES_COUNT).catch(() => null),
     ])
       .then(async ([libs, latestWatch, latestFavorites]) => {
         if (seq !== reloadSeq.current) return;
@@ -240,9 +241,9 @@ export function LibraryView() {
     [libraries, itemsByLibrary],
   );
 
-  // 收藏卡与「最近添加」同一张海报卡，只把 hover 层换成收藏的层级说明；
-  // 落点是服务端解析好的可见库里的条目详情
-  const favoriteCards = useMemo(() => {
+  // 「我的收藏」横滚行：与「最近添加」同一张海报卡、同一个行组件，只把 hover
+  // 层换成收藏的层级说明；落点是服务端解析好的可见库里的条目详情
+  const favoriteRow = useMemo(() => {
     const items = favorites?.items ?? [];
     const hrefs = new Map(
       items.map((it) => [
@@ -310,18 +311,26 @@ export function LibraryView() {
         </div>
       )}
 
-      {/* 顶部是当前账号的收藏（网页与 Jellyfin 客户端点的心同一份），其次是
-          跨可见库聚合的播放状态；两段都在空列表时整段隐藏。
-          清空观看记录的入口就在最近观看那一行的标题右侧，清完重新拉一次数据。 */}
+      {/* 当前账号跨可见库聚合的播放状态；空列表时组件整段隐藏。
+          清空观看记录的入口就在这一行的标题右侧，清完重新拉一次数据。 */}
       {(!failed || libraries !== null) && (
-        <>
-          <FavoritesRow
-            items={favorites === null ? null : favoriteCards.items}
-            total={favorites?.total ?? 0}
-            hrefOf={favoriteCards.hrefOf}
+        <RecentWatchRow items={recentWatch} libraries={visibleLibraries} onCleared={reload} />
+      )}
+
+      {/* 「我的收藏」跟在最近观看之下：先接着看、再挑想看的。只横滚最近收藏的
+          20 部（网页与 Jellyfin 客户端点的心同一份），「查看全部」进与单库页同一
+          套海报墙的 /library/favorites；没有收藏时整段隐藏 */}
+      {(!failed || libraries !== null) && favoriteRow.items.length > 0 && (
+        <div className="mt-8 max-md:mt-6" data-testid="favorites-row">
+          <MediaRow
+            row={{ id: "favorites", title: "我的收藏", items: favoriteRow.items }}
+            moreHref={"/library/favorites" as Route}
+            moreLabel={`查看全部 ${favorites?.total ?? 0} 部`}
+            cardAction="none"
+            cardHref={favoriteRow.hrefOf}
+            cardRevealInfoOnTouch
           />
-          <RecentWatchRow items={recentWatch} libraries={visibleLibraries} onCleared={reload} />
-        </>
+        </div>
       )}
 
       {libraries !== null && libraries.length === 0 && (

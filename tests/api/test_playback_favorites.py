@@ -172,6 +172,11 @@ def test_limit_truncates_items_but_total_is_full(client, tmp_path):
     body = favorites(client, limit=2)
     assert len(body["items"]) == 2 and body["total"] == 3
     assert [i["media_item_id"] for i in body["items"]] == [ids["show"], ids["movie_b"]]
+    # 全部收藏页的滚动加载：offset 接着上一页，total 不变
+    page2 = favorites(client, limit=2, offset=2)
+    assert [i["media_item_id"] for i in page2["items"]] == [ids["movie_a"]]
+    assert page2["total"] == 3
+    assert favorites(client, limit=2, offset=3)["items"] == []
 
 
 def test_favorites_are_per_member_and_hidden_library_excluded(client, tmp_path):
