@@ -13,6 +13,15 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO", alias="APP_LOG_LEVEL")
     access_log_enabled: bool = Field(default=True, alias="APP_ACCESS_LOG_ENABLED")
     # ------------------------------------------------------------------
+    # 运行期数据根目录（docs/design/cache-management.md）
+    # ------------------------------------------------------------------
+    # 所有运行期数据（SQLite、日志、缓存、上传、模型……）都落在这个目录下，部署
+    # 时挂载它即可整体持久化。与 docker/entrypoint.sh 的 DATA_DIR 同一变量名。
+    # 各子目录的清单、用途与清理策略登记在 services/storage/registry.py——
+    # **新增任何落在 data/ 下的目录都必须去那里登记**，否则 CI 守卫测试会拦截。
+    data_dir: str = Field(default="./data", alias="MOVIECLAW_DATA_DIR")
+
+    # ------------------------------------------------------------------
     # 运行日志落盘（设置页「系统日志」的数据来源）
     # ------------------------------------------------------------------
     # 后端全部运行日志按天写入 log_dir 下的 movieclaw-YYYY-MM-DD.log。
@@ -89,6 +98,22 @@ class Settings(BaseSettings):
     image_cache_dir: str = Field(default="./data/cache/images", alias="IMAGE_CACHE_DIR")
     # 缓存容量上限（MB）。超限后按「最久未访问」自动清理到上限的 90%。
     image_cache_max_mb: int = Field(default=2048, alias="IMAGE_CACHE_MAX_MB")
+
+    # ------------------------------------------------------------------
+    # 播放与字幕的派生物缓存（均为可随时删除、按需重建的中间品）
+    # ------------------------------------------------------------------
+    # 网页播放器进度条预览的雪碧图与索引，按 file_id 分目录（重建要通读整部片）。
+    trickplay_cache_dir: str = Field(
+        default="./data/cache/playback-trickplay", alias="MOVIECLAW_TRICKPLAY_CACHE_DIR"
+    )
+    # 播放器内封字幕/字体的抽取产物（重建只需一次 ffmpeg 抽轨）。
+    playback_subs_cache_dir: str = Field(
+        default="./data/cache/playback-subs", alias="MOVIECLAW_PLAYBACK_SUBS_CACHE_DIR"
+    )
+    # AI 字幕生成的中间品：内封轨抽取、PGS 图片与翻译断点（断点删了任务从头翻）。
+    subtitle_gen_cache_dir: str = Field(
+        default="./data/cache/subtitle_gen", alias="MOVIECLAW_SUBTITLE_GEN_CACHE_DIR"
+    )
 
     # ------------------------------------------------------------------
     # 配置加密主密钥（保护 app_setting / 站点凭据中的敏感字段）

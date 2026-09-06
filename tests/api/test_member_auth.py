@@ -638,6 +638,8 @@ _PATH_DUMMIES = {
     "{endpoint_id}": "test-endpoint",
     "{member_id}": "1",
     "{job_id}": "job_test",
+    # 缓存管理：登记目录 key（services/storage/registry.py）
+    "{key}": "cache.images",
 }
 
 

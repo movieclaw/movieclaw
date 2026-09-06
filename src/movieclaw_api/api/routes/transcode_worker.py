@@ -88,7 +88,7 @@ def _artifact_write_failure(
             received_bytes,
         )
         return InsufficientStorageException(
-            "远程转码缓存空间或磁盘配额不足，请清理 data/cache/playback 后重试。",
+            "远程转码缓存空间或磁盘配额不足，请在「设置 → 更新与维护 → 缓存管理」释放空间后重试。",
             details=details,
         )
     logger.error(

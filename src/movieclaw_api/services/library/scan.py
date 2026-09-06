@@ -95,6 +95,7 @@ from movieclaw_api.services.media_probe import (
     probe_media,
     probe_retry_paths,
 )
+from movieclaw_api.services.subtitle_gen.extract import cache_dir as subtitle_cache_dir
 from movieclaw_api.services.task_state import TaskState
 from movieclaw_db.engine import get_database
 from movieclaw_db.models import (
@@ -1657,7 +1658,7 @@ async def _merge_removed_root_duplicate(
 async def _cleanup_subtitle_checkpoints(file_ids: list[int]) -> None:
     """删除已被合并台账的旧字幕断点；持久作业引用已在事务中改写。"""
     for file_id in file_ids:
-        for path in Path("data/cache/subtitle_gen").glob(f"{file_id}.*.checkpoint.json"):
+        for path in subtitle_cache_dir().glob(f"{file_id}.*.checkpoint.json"):
             try:
                 path.unlink(missing_ok=True)
             except OSError as exc:
@@ -2232,7 +2233,7 @@ async def _relink_legacy_root_paths(
         # 旧版断点以 file_id 命名；持久作业已经在事务内改指向保留行，提交后
         # 才清理被删行的残留断点，避免事务回滚却提前丢失可恢复状态。
         for file_id in removed_subtitle_file_ids:
-            for path in Path("data/cache/subtitle_gen").glob(f"{file_id}.*.checkpoint.json"):
+            for path in subtitle_cache_dir().glob(f"{file_id}.*.checkpoint.json"):
                 try:
                     path.unlink(missing_ok=True)
                 except OSError as exc:

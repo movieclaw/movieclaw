@@ -7,7 +7,8 @@ Movie/Episode Chapter/{index}→单元首文件第 index 个有效章节的场�
 库 Primary→服务端渲染的氛围光货架拼贴（library.cover 服务，双端共用）。
 `tag` 纯缓存语义：不校验、回显进 ETag（带引号）+ 一年 immutable。
 缩放：maxWidth/maxHeight/width/height/fillWidth/fillHeight 任一存在时按
-fit-within 等比缩小（只缩不放），产物落 data/cache/jellyfin-images 复用。
+fit-within 等比缩小（只缩不放），产物经 ImageCache 落图片缓存目录——与远程图
+共用 LRU 容量上限与缓存管理面板，不再是一个无人清理的旁路目录。
 """
 
 from __future__ import annotations
@@ -202,9 +203,11 @@ async def _tmdb_image(tmdb_path: str, itype: str, request: Request) -> Response:
         raise JellyfinError(
             404, text=f"Item does not have an image of type {itype.capitalize()}"
         ) from None
-    target = await _maybe_scaled(cached.path, request)
+    # 缓存文件无扩展名，原图类型以缓存元数据为准
+    target, media_type = await _maybe_scaled(
+        cached.path, request, original_type=cached.content_type
+    )
     tag = hashlib.md5(f"tmdb:{tmdb_path}".encode()).hexdigest()
-    media_type = cached.content_type if target == cached.path else "image/jpeg"
     return FileResponse(
         target,
         media_type=media_type,
@@ -266,8 +269,7 @@ async def get_item_image(
                 session, ref.entity_id, image_type.lower()
             )
     if dir_art is not None:
-        target = await _maybe_scaled(dir_art, request)
-        media_type = mimetypes.guess_type(str(target))[0] or "image/jpeg"
+        target, media_type = await _maybe_scaled(dir_art, request)
         # 用户可随时替换目录里的图：短缓存，不做 immutable/ETag 协商（与 Web 一致）
         return FileResponse(
             target,
@@ -312,8 +314,7 @@ async def get_item_image(
             except (TypeError, ValueError, OSError):
                 pass
 
-    target = await _maybe_scaled(target, request)
-    media_type = mimetypes.guess_type(str(target))[0] or "image/jpeg"
+    target, media_type = await _maybe_scaled(target, request)
     return FileResponse(target, media_type=media_type, headers=headers)
 
 
@@ -340,33 +341,42 @@ def _scale_bounds(request: Request) -> tuple[int, int] | None:
     return (min(widths) if widths else 8192, min(heights) if heights else 8192)
 
 
-def _render_scaled(src: Path, out: Path, bounds: tuple[int, int]) -> None:
+def _render_scaled(src: Path, bounds: tuple[int, int]) -> bytes:
+    import io
+
     from PIL import Image
 
     img = Image.open(src)
     img.thumbnail(bounds)  # 等比缩小，不放大
-    img.convert("RGB").save(out, "JPEG", quality=90)
+    buf = io.BytesIO()
+    img.convert("RGB").save(buf, "JPEG", quality=90)
+    return buf.getvalue()
 
 
-async def _maybe_scaled(target: Path, request: Request) -> Path:
-    """按需生成缩放变体（缓存复用）；无缩放参数或缩放失败时原图直出。"""
+async def _maybe_scaled(
+    target: Path, request: Request, *, original_type: str | None = None
+) -> tuple[Path, str]:
+    """按需生成缩放变体（经 ImageCache 复用），返回 (文件, Content-Type)；
+    无缩放参数或缩放失败时原图直出。``original_type`` 供无扩展名的缓存文件指定类型。"""
+    original_type = original_type or mimetypes.guess_type(str(target))[0] or "image/jpeg"
     bounds = _scale_bounds(request)
     if bounds is None:
-        return target
+        return target, original_type
     try:
         stat = target.stat()
     except OSError:
-        return target
-    from movieclaw_api.core.config import get_settings
+        return target, original_type
+    from movieclaw_api.services.image_cache import get_image_cache
 
-    cache_dir = Path(get_settings().image_cache_dir) / "jellyfin-scaled"
-    key = hashlib.md5(f"{target}:{stat.st_mtime_ns}:{bounds[0]}x{bounds[1]}".encode()).hexdigest()
-    cached = cache_dir / f"{key}.jpg"
-    if cached.is_file():
-        return cached
+    # 键里带源文件路径与 mtime：原图被重新刮削后旧变体自然失效，由 LRU 回收
+    key = f"jellyfin-scaled:{target}:{stat.st_mtime_ns}:{bounds[0]}x{bounds[1]}"
+
+    async def produce() -> tuple[bytes, str]:
+        data = await asyncio.to_thread(_render_scaled, target, bounds)
+        return data, "image/jpeg"
+
     try:
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        await asyncio.to_thread(_render_scaled, target, cached, bounds)
+        cached = await get_image_cache().get_or_create(key, produce)
     except Exception:
-        return target
-    return cached
+        return target, original_type
+    return cached.path, cached.content_type

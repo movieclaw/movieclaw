@@ -58,6 +58,7 @@ from movieclaw_api.api.routes.scrape_settings import router as scrape_settings_r
 from movieclaw_api.api.routes.search import router as search_router
 from movieclaw_api.api.routes.sites import router as sites_router
 from movieclaw_api.api.routes.spec import router as spec_router
+from movieclaw_api.api.routes.storage import router as storage_router
 from movieclaw_api.api.routes.subscriptions import router as subscriptions_router
 from movieclaw_api.api.routes.subtitle_gen import router as subtitle_gen_router
 from movieclaw_api.api.routes.system_notices import router as system_notices_router
@@ -135,6 +136,8 @@ _ADMIN_ROUTERS = [
     scrape_settings_router,
     app_config_router,
     app_update_router,
+    # 缓存管理：能删 data/ 卷上的目录，与重启/更新同属服务器控制权
+    storage_router,
     spec_router,
     # AI 字幕生成消费 LLM 配额（真金白银），G1 管理员专属；成员开放随
     # G2 额度护栏一起评估（docs/design/subtitle-ai-translate.md §6）
