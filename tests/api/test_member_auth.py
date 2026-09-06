@@ -511,6 +511,7 @@ _MEMBER_ALLOWLIST = {
     ("POST", "/api/v1/share/{slug}/playback/decide"),
     ("POST", "/api/v1/share/{slug}/playback/sessions"),
     ("POST", "/api/v1/share/{slug}/playback/sessions/{session_id}/ping"),
+    ("POST", "/api/v1/share/{slug}/playback/progress"),
     ("DELETE", "/api/v1/share/{slug}/playback/sessions/{session_id}"),
     ("GET", "/api/v1/share/{slug}/playback/sessions/{session_id}/diagnostics"),
     ("GET", "/api/v1/share/{slug}/playback/items/{media_item_id}"),

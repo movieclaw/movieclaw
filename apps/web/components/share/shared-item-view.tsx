@@ -139,11 +139,12 @@ export function SharedItemView({ slug }: { slug: string }) {
   const trackFiles = isMovie ? item.files : (selected?.files ?? []);
   const availableFiles = trackFiles.filter((file) => file.state === "in_place");
   const currentFile = availableFiles[0] ?? null;
+  // 片长：NFO 优先，其次任意文件的实测时长；不足一分钟的短片不显示，免得出现「—」
   const runtimeMinutes =
-    meta?.runtime_minutes ??
+    meta?.runtime_minutes ||
     (() => {
       const probed = item.files.find((f) => f.duration_seconds)?.duration_seconds;
-      return probed ? Math.round(probed / 60) : null;
+      return probed && probed >= 60 ? Math.round(probed / 60) : null;
     })();
   const resolutions = [
     ...new Set(

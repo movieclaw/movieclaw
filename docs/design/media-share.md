@@ -316,7 +316,7 @@ audio_codec, hdr, size, duration_ms, chapters[]`；**不含**路径、库名、
 ### 5.2 分享页（`app/s/[slug]/…`，裸路由）
 
 ```
-app/s/[slug]/layout.tsx           无 AuthGate；自带 FeedbackProvider + BackdropProvider
+app/s/[slug]/layout.tsx           无 AuthGate、无 FeedbackProvider（分享页没有提示 / 确认动作）
 app/s/[slug]/page.tsx             状态机：探针 → 密码卡片 / 失效提示 / 影片页
 app/s/[slug]/play/[[...unit]]/page.tsx   全屏播放器，h-dvh bg-black，与 /play 同壳
 components/share/share-gate.tsx   密码卡片（复用 AuthScreen / AuthField / AuthError）
@@ -457,3 +457,7 @@ export const DEFAULT_PLAYBACK_SCOPE: PlaybackApiScope = { base: "/playback", pro
 6. 对话框未做 strm 条目的提醒（§6 表中提到）；分享 strm 条目的语义与成员
    播放一致（302 到云端直链），留待有需要时补。
 7. 照片库条目不给「分享…」菜单项（分享页是影片页）。
+8. 访客的播放器多一条 `POST /share/{slug}/playback/progress` 心跳：只刷新活动页的
+   实时会话（超管能看到「分享访客」并结束播放），不写 playback_state /
+   playback_log；位置仍只记访客浏览器。浏览器端到端见
+   `tests/e2e/test_media_share_browser.py`。

@@ -19,7 +19,7 @@ import logging
 from typing import Annotated, Literal
 from urllib.parse import quote
 
-from fastapi import APIRouter, Cookie, Depends, Path, Query, Response
+from fastapi import APIRouter, Cookie, Depends, Path, Query, Request, Response
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -39,8 +39,10 @@ from movieclaw_api.schemas.playback import (
     PlaybackDecisionView,
     PlaybackDiagnosticsView,
     PlaybackItemView,
+    PlaybackProgressRequest,
     PlaybackSessionRequest,
     PlaybackSessionView,
+    PlaybackStateView,
 )
 from movieclaw_api.schemas.response import ApiResponse, ok
 from movieclaw_api.schemas.share import (
@@ -56,11 +58,13 @@ from movieclaw_api.services import share as share_service
 from movieclaw_api.services.auth import Principal
 from movieclaw_api.services.image_variants import ImageVariant
 from movieclaw_api.services.library.access import assert_library_visible
+from movieclaw_api.services.playback import watch as playback_watch
 from movieclaw_db.engine import get_session
 from movieclaw_db.models import LibraryFile, MediaItem
 from movieclaw_db.models.media_share import MediaShare
 from movieclaw_db.repositories.media_repo import MediaItemRepository
 from movieclaw_media.models import MediaKind
+from movieclaw_playback import activity
 
 logger = logging.getLogger(__name__)
 
@@ -651,6 +655,57 @@ async def shared_session_diagnostics(
     _principal: Principal = Depends(require_share_access),
 ) -> ApiResponse[PlaybackDiagnosticsView]:
     return await playback_routes.get_session_diagnostics(session_id, token=token)
+
+
+@public_router.post(
+    "/{slug}/playback/progress",
+    response_model=ApiResponse[PlaybackStateView],
+    summary="分享页播放心跳（只刷新活动页的实时会话，不落任何观看状态）",
+    operation_id="share.playback.progress",
+    openapi_extra={"x-cli-hidden": True},
+)
+async def shared_progress(
+    payload: PlaybackProgressRequest,
+    request: Request,
+    principal: Principal = Depends(require_share_access),
+) -> ApiResponse[PlaybackStateView]:
+    """访客不是成员：进度只记在访客自己的浏览器里（前端 localStorage），这里
+    **不写** playback_state / playback_log。只维护活动页的实时会话——超管才能
+    看到「分享访客正在播放」并结束它；结束后的拒绝窗口靠响应里的
+    ``ended_by_admin`` 让播放器退出。"""
+    grant = _grant(principal)
+    if payload.media_item_id != grant.media_item_id:
+        raise NotFoundException("没有找到可播放的文件")
+    unit = (payload.media_item_id, payload.season_number, payload.episode_number)
+    member_id = share_service.SHARE_VISITOR_MEMBER_ID
+    client = playback_watch.web_client_info(
+        device_id=playback_watch.web_device_id(payload.device_id, member_id=member_id),
+        user_agent=request.headers.get("user-agent"),
+    )
+    if payload.event == "start":
+        activity.report_start(client.device_id, member_id=member_id, client=client, unit=unit)
+    elif payload.event == "stop":
+        playback_watch.end_session(client.device_id)
+    else:
+        playback_watch.report_heartbeat(
+            unit,
+            member_id=member_id,
+            client=client,
+            position_ms=payload.position_ms,
+            paused=payload.paused,
+        )
+    ended_by_admin = payload.event != "stop" and activity.device_ended(client.device_id)
+    return ok(
+        PlaybackStateView(
+            position_ms=payload.position_ms or 0,
+            played=False,
+            play_count=0,
+            duration_ms=None,
+            audio_track=payload.audio_track,
+            subtitle_track=payload.subtitle_track,
+            ended_by_admin=ended_by_admin,
+        )
+    )
 
 
 @public_router.get(

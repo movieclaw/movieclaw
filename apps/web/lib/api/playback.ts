@@ -826,8 +826,10 @@ export async function reportPlaybackProgress(
   scope: PlaybackApiScope = DEFAULT_PLAYBACK_SCOPE,
 ): Promise<PlaybackWatchState> {
   if (scope.progress === "local") {
+    // 分享访客：位置记本浏览器；服务端只收一份「谁在播」的心跳给活动页
+    //（不落成员表），超管在活动页结束播放时靠响应里的 ended_by_admin 退出
     const record = writeLocalProgress(scope.localKey ?? "", body, body);
-    return {
+    const local: PlaybackWatchState = {
       position_ms: record?.position_ms ?? 0,
       played: false,
       play_count: 0,
@@ -835,6 +837,15 @@ export async function reportPlaybackProgress(
       audio_track: record?.audio_track ?? null,
       subtitle_track: record?.subtitle_track ?? null,
     };
+    try {
+      const live = await request<ApiEnvelope<PlaybackWatchState>>(`${scope.base}/progress`, {
+        method: "POST",
+        body: JSON.stringify(withDevice(body)),
+      });
+      return { ...local, ended_by_admin: live.data.ended_by_admin };
+    } catch {
+      return local;
+    }
   }
   const response = await request<ApiEnvelope<PlaybackWatchState>>("/playback/progress", {
     method: "POST",
@@ -856,13 +867,10 @@ export function reportPlaybackProgressOnUnload(
   body: PlaybackProgressBody,
   scope: PlaybackApiScope = DEFAULT_PLAYBACK_SCOPE,
 ): void {
-  if (scope.progress === "local") {
-    writeLocalProgress(scope.localKey ?? "", body, body);
-    return;
-  }
+  if (scope.progress === "local") writeLocalProgress(scope.localKey ?? "", body, body);
   if (typeof navigator === "undefined" || !navigator.sendBeacon) return;
   const blob = new Blob([JSON.stringify(withDevice(body))], { type: "application/json" });
-  navigator.sendBeacon(resolveRequestUrl("/playback/progress"), blob);
+  navigator.sendBeacon(resolveRequestUrl(`${scope.base}/progress`), blob);
 }
 
 /** 播放策略。数字上限（并发/高度/缓存配额）由服务端按机器规格自动推导，

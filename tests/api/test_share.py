@@ -319,7 +319,9 @@ async def test_share_principal_scope(client: TestClient) -> None:
     assert client.get(f"{_SHARE}/{slug}/playback/items/{item}").status_code == 200
     assert client.get(f"{_SHARE}/{slug}/playback/items/{other_item}").status_code == 404
     assert (
-        client.get(f"{_SHARE}/{slug}/playback/items/{other_item}/episodes?season_number=1").status_code
+        client.get(
+            f"{_SHARE}/{slug}/playback/items/{other_item}/episodes?season_number=1"
+        ).status_code
         == 404
     )
     # 决策请求指向别的条目 / 别的文件 → 404
@@ -451,7 +453,73 @@ async def test_stream_token_bound_to_share(client: TestClient) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 7. 级联
+# 7. 访客心跳：只进活动页的实时会话，不落观看状态
+# ---------------------------------------------------------------------------
+
+
+async def test_visitor_progress_is_live_only(client: TestClient) -> None:
+    lib = _create_library(client, "电影", "/m/movies")
+    item = await _seed_item(lib, "沙丘 2", 693134)
+    slug = _create_share(client, lib, item)["data"]["slug"]
+    _anonymous(client)
+    body = {
+        "media_item_id": item,
+        "season_number": 0,
+        "episode_number": 0,
+        "event": "start",
+        "device_id": "browser-a",
+    }
+    assert client.post(f"{_SHARE}/{slug}/playback/progress", json=body).status_code == 200
+    beat = client.post(
+        f"{_SHARE}/{slug}/playback/progress",
+        json={**body, "event": "progress", "position_ms": 30_000},
+    )
+    assert beat.status_code == 200
+    assert beat.json()["data"]["ended_by_admin"] is False
+    # 别的条目 404
+    assert (
+        client.post(
+            f"{_SHARE}/{slug}/playback/progress", json={**body, "media_item_id": 999}
+        ).status_code
+        == 404
+    )
+
+    # 超管：活动页看到「分享访客」；成员表里没有访客的任何状态
+    client.post(f"{_AUTH}/login", json=_ADMIN)
+    overview = client.get("/api/v1/playback/activity").text
+    assert "分享访客" in overview
+    async with get_database().session() as session:
+        from movieclaw_db.models import PlaybackState
+
+        rows = (await session.execute(PlaybackState.__table__.select())).all()
+        assert rows == []
+    resume = client.get(
+        f"/api/v1/playback/resume?media_item_id={item}&season_number=0&episode_number=0"
+    ).json()["data"]
+    assert resume["position_ms"] == 0
+
+    # 超管结束这次播放 → 访客下一次心跳收到 ended_by_admin，会话从活动页消失
+    device = "web--1-browser-a"
+    ended = client.post(f"/api/v1/playback/activity/sessions/{device}/end")
+    assert ended.status_code == 200, ended.text
+    _anonymous(client)
+    beat = client.post(
+        f"{_SHARE}/{slug}/playback/progress",
+        json={**body, "event": "progress", "position_ms": 40_000},
+    )
+    assert beat.json()["data"]["ended_by_admin"] is True
+    assert (
+        client.post(
+            f"{_SHARE}/{slug}/playback/progress", json={**body, "event": "stop"}
+        ).status_code
+        == 200
+    )
+    client.post(f"{_AUTH}/login", json=_ADMIN)
+    assert "分享访客" not in client.get("/api/v1/playback/activity").text
+
+
+# ---------------------------------------------------------------------------
+# 8. 级联
 # ---------------------------------------------------------------------------
 
 
