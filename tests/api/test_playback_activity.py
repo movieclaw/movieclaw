@@ -21,6 +21,7 @@ from movieclaw_db.models import (
     LibraryFile,
     MediaItem,
     MediaMetadata,
+    PlaybackLog,
     PlaybackState,
 )
 from movieclaw_db.models.base import utcnow
@@ -558,6 +559,157 @@ async def test_scope_folds_live_sessions_outside_browsable_range(client: TestCli
     assert data["hidden_session_count"] == 0
     assert data["hidden_download_count"] == 0
     assert data["hidden_recent_count"] == 0
+
+
+async def test_end_playback_drops_live_session_and_signals_the_player(client: TestClient) -> None:
+    """「结束播放」：实时会话立即消失；拒绝窗口内心跳带回退出信号、不重建会话；
+    用户亲手重新开始即解除。凭据与观看进度都不动。"""
+    movie_id, _ = await _seed_movie_in_library(
+        title="盗梦空间", tmdb_id=27205, library_name="电影"
+    )
+    body = {"media_item_id": movie_id, "device_id": "browser-a"}
+    client.post("/api/v1/playback/progress", json={**body, "event": "start"})
+    client.post(
+        "/api/v1/playback/progress",
+        json={**body, "event": "progress", "position_ms": 300_000},
+    )
+    assert len(client.get("/api/v1/playback/activity").json()["data"]["sessions"]) == 1
+
+    # 没在播的设备：404
+    assert (
+        client.post("/api/v1/playback/activity/sessions/web-0-nobody/end").status_code == 404
+    )
+    resp = client.post("/api/v1/playback/activity/sessions/web-0-browser-a/end")
+    assert resp.status_code == 200, resp.text
+    assert "已结束" in resp.json()["message"]
+    assert client.get("/api/v1/playback/activity").json()["data"]["sessions"] == []
+
+    # 拒绝窗口内：心跳照常落进度，但带回退出信号，且实时会话不被重建
+    beat = client.post(
+        "/api/v1/playback/progress",
+        json={**body, "event": "progress", "position_ms": 320_000},
+    ).json()["data"]
+    assert beat["ended_by_admin"] is True
+    assert beat["position_ms"] == 320_000
+    assert client.get("/api/v1/playback/activity").json()["data"]["sessions"] == []
+    # 停止上报不算「还在播」，不带信号
+    stop = client.post(
+        "/api/v1/playback/progress",
+        json={**body, "event": "stop", "position_ms": 330_000},
+    ).json()["data"]
+    assert stop["ended_by_admin"] is False
+
+    # 用户亲手重新开始播放：窗口解除，会话回到活动页
+    start = client.post("/api/v1/playback/progress", json={**body, "event": "start"}).json()[
+        "data"
+    ]
+    assert start["ended_by_admin"] is False
+    assert len(client.get("/api/v1/playback/activity").json()["data"]["sessions"]) == 1
+
+
+async def test_playback_log_records_each_session_and_feeds_stats(client: TestClient) -> None:
+    """播放日志：一场一行，观看时长按进度增量累加、seek 跳过的不算；
+    统计与记录接口从它出。"""
+    movie_id, library_id = await _seed_movie_in_library(
+        title="盗梦空间", tmdb_id=27205, library_name="电影"
+    )
+    body = {"media_item_id": movie_id, "device_id": "browser-a"}
+    ua = {"User-Agent": "Mozilla/5.0 (Macintosh) Chrome/120.0"}
+    client.post("/api/v1/playback/progress", json={**body, "event": "start"}, headers=ua)
+    for position in (10_000, 20_000, 35_000):
+        client.post(
+            "/api/v1/playback/progress",
+            json={**body, "event": "progress", "position_ms": position},
+            headers=ua,
+        )
+    # 往前拖了一个小时：这段不是看过的，不计入观看时长
+    client.post(
+        "/api/v1/playback/progress",
+        json={**body, "event": "progress", "position_ms": 3_635_000},
+        headers=ua,
+    )
+    client.post(
+        "/api/v1/playback/progress",
+        json={**body, "event": "stop", "position_ms": 3_640_000},
+        headers=ua,
+    )
+    # 同一设备紧接着再开一次同一部片：仍在同一场的保鲜期内，不另开一行
+    client.post("/api/v1/playback/progress", json={**body, "event": "start"}, headers=ua)
+
+    history = client.get("/api/v1/playback/history").json()["data"]
+    assert history["hidden_count"] == 0
+    assert len(history["entries"]) == 2
+    latest, first = history["entries"]
+    assert first["media"]["title"] == "盗梦空间"
+    assert first["media"]["library_id"] == library_id
+    assert first["member_name"] == "admin"
+    assert first["client"] == "MovieClaw Web"
+    assert first["device_name"] == "Chrome · macOS"
+    assert first["ended_at"] is not None
+    assert first["watched_ms"] == 40_000  # 10+10+15+5 秒；那一小时的 seek 不算
+    assert first["end_position_ms"] == 3_640_000
+    assert first["completed"] is False
+    assert latest["ended_at"] is None  # 新一场进行中
+
+    stats = client.get(
+        "/api/v1/playback/stats/watch", params={"days": 7, "tz_offset": 480}
+    ).json()["data"]
+    assert stats["days"] == 7
+    assert stats["plays"] == 2
+    assert stats["watched_ms"] == 40_000
+    assert stats["completed"] == 0
+    assert stats["active_members"] == 1
+    assert stats["by_member"] == [
+        {"member_id": 0, "member_name": "admin", "plays": 2, "watched_ms": 40_000, "completed": 0}
+    ]
+    assert stats["by_client"] == [{"client": "MovieClaw Web", "plays": 2, "watched_ms": 40_000}]
+    assert len(stats["by_day"]) == 8  # 7 天窗口按日补齐，含今天
+    assert sum(day["plays"] for day in stats["by_day"]) == 2
+    assert len(stats["top_titles"]) == 1
+    assert stats["top_titles"][0]["media"]["title"] == "盗梦空间"
+    assert stats["top_titles"][0]["plays"] == 2
+
+
+async def test_playback_log_respects_visibility_scope(client: TestClient) -> None:
+    """记录与作品榜里落在超管不可浏览库的片名按口径折叠；聚合数不折叠。"""
+    hidden_id, _ = await _seed_movie_in_library(
+        title="隐藏之作", tmdb_id=1, library_name="私密库", admin_visible=False
+    )
+    # 超管自己浏览不到这个库，网页端也播不了；这条记录来自成员用 Jellyfin
+    # 客户端的播放，直接落一行日志
+    async with get_database().session() as session:
+        session.add(
+            PlaybackLog(
+                member_id=0,
+                media_item_id=hidden_id,
+                kind="movie",
+                title="隐藏之作",
+                device_id="dev-h",
+                client="Infuse",
+                device_name="Apple TV",
+                ended_at=utcnow(),
+                end_position_ms=60_000,
+                watched_ms=60_000,
+            )
+        )
+        await session.commit()
+
+    history = client.get("/api/v1/playback/history").json()["data"]
+    assert history["entries"] == []
+    assert history["hidden_count"] == 1
+    stats = client.get("/api/v1/playback/stats/watch", params={"days": 7}).json()["data"]
+    assert stats["plays"] == 1
+    assert stats["top_titles"] == []
+    assert stats["hidden_title_count"] == 1
+
+    history = client.get("/api/v1/playback/history", params={"scope": "all"}).json()["data"]
+    assert [e["media"]["title"] for e in history["entries"]] == ["隐藏之作"]
+    assert history["entries"][0]["media"]["browsable"] is False
+    stats = client.get(
+        "/api/v1/playback/stats/watch", params={"days": 7, "scope": "all"}
+    ).json()["data"]
+    assert stats["top_titles"][0]["media"]["title"] == "隐藏之作"
+    assert stats["hidden_title_count"] == 0
 
 
 async def test_revoke_device_keeps_watch_history(client: TestClient) -> None:

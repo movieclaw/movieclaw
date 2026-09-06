@@ -114,6 +114,32 @@ class PlaySession:
 _sessions: dict[str, PlaySession] = {}
 _meters: list[StreamMeter] = []
 
+#: 管理员「结束播放」后的拒绝窗口：这段时间内该设备的取流一律拒绝。
+#: 播放器不会因为一次流中断就放弃——Range 直出的客户端会立刻换一条连接续拉，
+#: 网页播放器会把会话 404 当成超时回收去重开——没有这个窗口，结束等于没结束。
+#: 窗口结束或设备重新上报「开始播放」（用户亲手再点了播放）即解除。
+END_GRACE_SECONDS = 60.0
+_ended_until: dict[str, float] = {}
+
+
+def end_device(device_id: str) -> None:
+    """管理员结束一台设备本次播放：实时会话立即消失，并进入拒绝窗口。"""
+    if not device_id:
+        return
+    _sessions.pop(device_id, None)
+    _ended_until[device_id] = time.monotonic() + END_GRACE_SECONDS
+
+
+def device_ended(device_id: str) -> bool:
+    """设备是否处于「已被管理员结束」的拒绝窗口内。过期项顺手清掉。"""
+    until = _ended_until.get(device_id)
+    if until is None:
+        return False
+    if time.monotonic() >= until:
+        _ended_until.pop(device_id, None)
+        return False
+    return True
+
 
 def report_start(
     device_id: str, *, member_id: int, client: ClientInfo, unit: Unit
@@ -123,9 +149,12 @@ def report_start(
     同一设备对同一单元重复上报开始（seek、暂停后恢复、部分客户端换源
     重协商都会再发 Playing），保留原会话身份——否则起始时间与已看位置
     会在实时视图里无意义地闪回。
+
+    「开始播放」是用户亲手的动作，解除管理员「结束播放」留下的拒绝窗口。
     """
     if not device_id:
         return
+    _ended_until.pop(device_id, None)
     existing = _sessions.get(device_id)
     if existing is not None and existing.unit == unit:
         existing.member_id = member_id
@@ -151,7 +180,8 @@ def report_progress(
 
     ``position_ms``/``paused`` 为 None 表示本次上报没带该字段，保持原值。
     """
-    if not device_id:
+    if not device_id or device_ended(device_id):
+        # 拒绝窗口内的进度心跳不能把刚被结束的会话重建回来
         return
     session = _sessions.get(device_id)
     if session is None or session.unit != unit:
@@ -265,3 +295,4 @@ def reset() -> None:
     """清空注册表（仅测试使用）。"""
     _sessions.clear()
     _meters.clear()
+    _ended_until.clear()

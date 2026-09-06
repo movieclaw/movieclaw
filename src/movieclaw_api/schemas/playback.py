@@ -162,6 +162,69 @@ class MediaActivityView(BaseModel):
     hidden_recent_count: int = Field(default=0, description="不在你可见范围内的最近观看条数")
 
 
+class PlaybackLogEntryView(BaseModel):
+    """一场播放（playback_log 的一行）。"""
+
+    id: int
+    member_name: str
+    media: MediaActivityTarget
+    client: str
+    device_name: str
+    started_at: datetime
+    # None = 仍在进行中（没收到停止且最后心跳还在保鲜期内）
+    ended_at: datetime | None
+    watched_ms: int = Field(description="实际观看时长（毫秒）")
+    start_position_ms: int
+    end_position_ms: int
+    completed: bool = Field(description="本场是否看完")
+
+
+class PlaybackHistoryView(BaseModel):
+    entries: list[PlaybackLogEntryView]
+    hidden_count: int = Field(default=0, description="不在你可见范围内的记录数")
+
+
+class PlaybackStatsMemberRow(BaseModel):
+    member_id: int
+    member_name: str
+    plays: int
+    watched_ms: int
+    completed: int
+
+
+class PlaybackStatsClientRow(BaseModel):
+    client: str
+    plays: int
+    watched_ms: int
+
+
+class PlaybackStatsDayRow(BaseModel):
+    date: str = Field(description="按浏览器时区的日期 YYYY-MM-DD")
+    plays: int
+    watched_ms: int
+
+
+class PlaybackStatsTitleRow(BaseModel):
+    media: MediaActivityTarget
+    plays: int
+    watched_ms: int
+
+
+class PlaybackWatchStatsView(BaseModel):
+    """一段时间内的观看统计（docs/design/activity.md「播放日志与统计」）。"""
+
+    days: int
+    plays: int = Field(description="播放场次")
+    watched_ms: int = Field(description="观看总时长（毫秒）")
+    completed: int = Field(description="看完的场次")
+    active_members: int = Field(description="有播放的成员数")
+    by_member: list[PlaybackStatsMemberRow]
+    by_client: list[PlaybackStatsClientRow]
+    by_day: list[PlaybackStatsDayRow]
+    top_titles: list[PlaybackStatsTitleRow]
+    hidden_title_count: int = Field(default=0, description="作品榜里不在你可见范围内的条数")
+
+
 class PlaybackHistoryClearView(BaseModel):
     """清除观看记录的结果：删掉了多少条状态与多少条播放质量指标。"""
 
@@ -329,6 +392,8 @@ class PlaybackStateView(BaseModel):
     duration_ms: int | None = None
     audio_track: str | None = None
     subtitle_track: str | None = None
+    #: 管理员已在活动页结束了这台浏览器的播放：播放器收到后退出，不再重开
+    ended_by_admin: bool = False
 
 
 class PlaybackArtifactUploadView(BaseModel):

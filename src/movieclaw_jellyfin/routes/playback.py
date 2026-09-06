@@ -270,6 +270,11 @@ async def video_stream(
         # 无 static=true 本应转码；我们不转码（偏离⑨）
         raise bad_request_text()
 
+    if activity.device_ended(identity.device.device_id):
+        # 管理员刚在活动页结束了这台设备的播放：拒绝窗口内不再供流，否则
+        # 播放器换条 Range 连接就续上了。设备重新上报开始播放即解除。
+        raise bad_request_text("播放已被管理员结束")
+
     files = await _files_for_ref(ref, identity.device.member_id)
     selected = _select_source(files, request.query_params.get("mediaSourceId"), item_id)
     if not selected:

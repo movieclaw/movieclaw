@@ -20,6 +20,7 @@ from movieclaw_api.api.deps import require_admin, require_login
 from movieclaw_api.core.config import get_settings
 from movieclaw_api.exceptions import (
     BadRequestException,
+    ConflictException,
     NotFoundException,
     ServiceUnavailableException,
 )
@@ -35,6 +36,7 @@ from movieclaw_api.schemas.playback import (
     PlaybackDiagnosticsView,
     PlaybackFontsView,
     PlaybackHistoryClearView,
+    PlaybackHistoryView,
     PlaybackItemView,
     PlaybackMetricPayload,
     PlaybackPolicyPayload,
@@ -45,6 +47,7 @@ from movieclaw_api.schemas.playback import (
     PlaybackSourceView,
     PlaybackStateView,
     PlaybackStatsView,
+    PlaybackWatchStatsView,
     RecentWatchView,
     TrickplayView,
 )
@@ -102,8 +105,14 @@ from movieclaw_api.services.playback.signing import (
     issue_stream_token,
     verify_stream_token,
 )
-from movieclaw_api.services.playback_activity import media_activity_overview, revoke_device
+from movieclaw_api.services.playback_activity import (
+    end_playback,
+    live_session_label,
+    media_activity_overview,
+    revoke_device,
+)
 from movieclaw_api.services.playback_recent import recent_watch_items
+from movieclaw_api.services.playback_stats import playback_history, playback_stats
 from movieclaw_api.settings import PlaybackPolicySetting
 from movieclaw_api.settings.store import get_setting_store
 from movieclaw_db.engine import get_database, get_session
@@ -371,6 +380,91 @@ async def get_media_activity(
     )
 
 
+@router.post(
+    "/activity/sessions/{device_id}/end",
+    response_model=ApiResponse[None],
+    summary="结束一台设备本次播放",
+    operation_id="playback.activity.end",
+    dependencies=[Depends(require_admin)],
+    # confirm 而非 destructive：只掐断本次播放，凭据与观看进度都不动，
+    # 设备下次亲手点播放即可继续
+    openapi_extra={"x-cli-hidden": True, "x-cli-dangerous": "confirm"},
+)
+async def end_device_playback(
+    device_id: Annotated[str, Path(min_length=1, max_length=256)],
+) -> ApiResponse[None]:
+    """结束一台设备**本次**播放（与「注销设备」的区别：不动凭据）。
+
+    实时会话立即消失并进入一分钟的拒绝窗口，直出取流与转码会话一并停止。
+    网页播放器收到信号后退出；Jellyfin 客户端会看到播放中断，重新点播放即可继续。
+    """
+    label = live_session_label(device_id)
+    if label is None:
+        raise NotFoundException("这台设备当前没有在播放")
+    await end_playback(device_id)
+    return ok(None, message=f"已结束「{label}」的播放")
+
+
+@router.get(
+    "/history",
+    response_model=ApiResponse[PlaybackHistoryView],
+    summary="播放记录（每场一行）",
+    operation_id="playback.history",
+    dependencies=[Depends(require_admin)],
+    openapi_extra={"x-cli-hidden": True},
+)
+async def list_playback_history(
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    days: Annotated[int | None, Query(ge=1, le=365)] = None,
+    member_id: Annotated[int | None, Query(ge=0)] = None,
+    scope: Annotated[Literal["visible", "all"], Query()] = "visible",
+    principal: Principal = Depends(require_login),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[PlaybackHistoryView]:
+    """活动页「播放记录」：来自 playback_log，标得出哪台设备、什么时候、看了多久。
+    可见范围口径与 /playback/activity 同。"""
+    return ok(
+        await playback_history(
+            session,
+            limit=limit,
+            days=days,
+            member_id=member_id,
+            browsable_library_ids=await visible_library_ids(session, principal),
+            fold_hidden=scope == "visible",
+        )
+    )
+
+
+@router.get(
+    "/stats/watch",
+    response_model=ApiResponse[PlaybackWatchStatsView],
+    summary="观看统计",
+    operation_id="playback.stats.watch",
+    dependencies=[Depends(require_admin)],
+    openapi_extra={"x-cli-hidden": True},
+)
+async def get_watch_stats(
+    days: Annotated[int, Query(ge=1, le=365)] = 30,
+    tz_offset: Annotated[
+        int, Query(ge=-840, le=840, description="浏览器时区相对 UTC 的分钟数（东八区 480）")
+    ] = 0,
+    scope: Annotated[Literal["visible", "all"], Query()] = "visible",
+    principal: Principal = Depends(require_login),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[PlaybackWatchStatsView]:
+    """最近 N 天的播放场次、观看时长、看完次数与活跃成员，按成员 / 客户端 / 天 /
+    作品分解。作品榜走可见范围折叠，其余是不出片名的聚合数。"""
+    return ok(
+        await playback_stats(
+            session,
+            days=days,
+            tz_offset_minutes=tz_offset,
+            browsable_library_ids=await visible_library_ids(session, principal),
+            fold_hidden=scope == "visible",
+        )
+    )
+
+
 @router.delete(
     "/history",
     response_model=ApiResponse[PlaybackHistoryClearView],
@@ -612,6 +706,10 @@ async def start_playback_session(
     # 取流 token 带上浏览器设备标识：取流字节据此记到活动页上这台浏览器的
     # 会话名下（与进度上报同一个标识）
     device_id = playback_watch.web_device_id(payload.device_id, member_id=member_id)
+    if activity.device_ended(device_id):
+        # 管理员刚在活动页结束了这台浏览器的播放：拒绝窗口内不再开会话，
+        # 否则播放器把会话 404 当成超时回收、原地重开，结束就等于没结束
+        raise ConflictException("管理员已结束本次播放，一分钟后可重新开始")
     watch_row = None
     watch_view: PlaybackStateView | None = None
     if payload.media_item_id is not None:
@@ -843,6 +941,7 @@ async def start_playback_session(
             # 远程 Worker 的菜单栏拿它显示「正在转什么」；本地会话用不上，
             # 但统一带上省得两条路径分叉
             display_name=PathLib(file.file_path).name,
+            device_id=device_id,
         )
     except (SessionLimitError, DiskQuotaError) as exc:
         raise ServiceUnavailableException(str(exc)) from exc
@@ -1156,6 +1255,8 @@ async def get_session_segment(
     session = manager.get(session_id, member_id=grant.member_id)
     if session is None:
         raise NotFoundException("会话不存在或已结束")
+    if grant.device_id and activity.device_ended(grant.device_id):
+        raise NotFoundException("播放已被管理员结束")
     session.touch()
     meter = await _session_activity_meter(session, grant, request)
     target = session.directory / name
@@ -1255,6 +1356,10 @@ async def stream_library_file(
     grant = await verify_stream_token(token, file_id=file_id)
     if grant is None:
         raise NotFoundException("播放地址无效或已过期")
+    if grant.device_id and activity.device_ended(grant.device_id):
+        # 拒绝窗口内不再供流：直出播放器每次缓冲续拉都是新的 Range 连接，
+        # 只掐当前连接挡不住它
+        raise NotFoundException("播放已被管理员结束")
     file = await session.get(LibraryFile, file_id)
     if file is None:
         raise NotFoundException("文件不存在")
@@ -1470,6 +1575,10 @@ async def report_playback_progress(
             audio_track=payload.audio_track,
             subtitle_track=payload.subtitle_track,
         )
+    # 管理员已结束本次播放：进度照常落库（位置不能丢），但响应里带上信号让
+    # 播放器退出。「开始」是用户亲手的动作，上面的落库已经解除了拒绝窗口；
+    # 停止上报本身不算「还在播」，也不带信号。
+    ended_by_admin = payload.event != "stop" and activity.device_ended(client.device_id)
     return ok(
         PlaybackStateView(
             position_ms=row.position_ms,
@@ -1478,6 +1587,7 @@ async def report_playback_progress(
             duration_ms=await playback_state.unit_runtime_ms(session, unit),
             audio_track=row.audio_track,
             subtitle_track=row.subtitle_track,
+            ended_by_admin=ended_by_admin,
         )
     )
 

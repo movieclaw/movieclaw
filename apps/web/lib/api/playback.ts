@@ -204,6 +204,106 @@ export async function fetchMediaActivity(
   return response.data;
 }
 
+/** 结束一台设备本次播放：不动凭据，设备下次亲手点播放即可继续。 */
+export async function endDevicePlayback(deviceId: string): Promise<string> {
+  const response = await request<ApiEnvelope<null>>(
+    `/playback/activity/sessions/${encodeURIComponent(deviceId)}/end`,
+    { method: "POST" },
+  );
+  return response.message;
+}
+
+// ---------------------------------------------------------------------------
+// 播放日志：播放记录与观看统计（docs/design/activity.md「播放日志与统计」）
+// ---------------------------------------------------------------------------
+
+export interface PlaybackLogEntry {
+  id: number;
+  member_name: string;
+  media: MediaActivityTarget;
+  client: string;
+  device_name: string;
+  started_at: string;
+  /** null = 仍在进行中 */
+  ended_at: string | null;
+  /** 实际观看时长（毫秒），暂停与 seek 跳过的区间不计 */
+  watched_ms: number;
+  start_position_ms: number;
+  end_position_ms: number;
+  completed: boolean;
+}
+
+export interface PlaybackHistory {
+  entries: PlaybackLogEntry[];
+  hidden_count: number;
+}
+
+export interface PlaybackStatsMemberRow {
+  member_id: number;
+  member_name: string;
+  plays: number;
+  watched_ms: number;
+  completed: number;
+}
+
+export interface PlaybackStatsClientRow {
+  client: string;
+  plays: number;
+  watched_ms: number;
+}
+
+export interface PlaybackStatsDayRow {
+  /** 按浏览器时区的日期 YYYY-MM-DD */
+  date: string;
+  plays: number;
+  watched_ms: number;
+}
+
+export interface PlaybackStatsTitleRow {
+  media: MediaActivityTarget;
+  plays: number;
+  watched_ms: number;
+}
+
+export interface PlaybackWatchStats {
+  days: number;
+  plays: number;
+  watched_ms: number;
+  completed: number;
+  active_members: number;
+  by_member: PlaybackStatsMemberRow[];
+  by_client: PlaybackStatsClientRow[];
+  by_day: PlaybackStatsDayRow[];
+  top_titles: PlaybackStatsTitleRow[];
+  hidden_title_count: number;
+}
+
+export async function fetchPlaybackHistory(
+  options: { limit?: number; days?: number; scope?: MediaActivityScope } = {},
+): Promise<PlaybackHistory> {
+  const params = new URLSearchParams({ scope: options.scope ?? "visible" });
+  if (options.limit != null) params.set("limit", String(options.limit));
+  if (options.days != null) params.set("days", String(options.days));
+  const response = await request<ApiEnvelope<PlaybackHistory>>(`/playback/history?${params}`);
+  return response.data;
+}
+
+/** 最近 N 天的观看统计；按天分组用浏览器时区，晚上的观看不会被算到第二天。 */
+export async function fetchPlaybackWatchStats(
+  days: number,
+  scope: MediaActivityScope = "visible",
+): Promise<PlaybackWatchStats> {
+  const params = new URLSearchParams({
+    days: String(days),
+    scope,
+    tz_offset: String(-new Date().getTimezoneOffset()),
+  });
+  const response = await request<ApiEnvelope<PlaybackWatchStats>>(
+    `/playback/stats/watch?${params}`,
+  );
+  return response.data;
+}
+
 /** 注销一台播放器设备：凭据即刻失效，其正在进行的播放与取流一并停止。 */
 export async function revokePlaybackDevice(deviceId: string): Promise<string> {
   const response = await request<ApiEnvelope<null>>(
@@ -533,6 +633,8 @@ export interface PlaybackWatchState {
   duration_ms: number | null;
   audio_track: string | null;
   subtitle_track: string | null;
+  /** 管理员已在活动页结束了这台浏览器的播放：播放器收到后退出，不再重开 */
+  ended_by_admin?: boolean;
 }
 
 /** 播放页要的条目信息（§6.10）：路由只带 media_item_id，库归属服务端解析。 */

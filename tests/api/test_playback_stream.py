@@ -470,6 +470,48 @@ def test_hls_segments_are_metered_per_session_and_released_on_stop(client, tmp_p
     assert meters == []
 
 
+def test_admin_end_playback_blocks_streams_and_new_sessions(client, tmp_path):
+    """管理员结束播放后：直出取流与分片都拒绝、转码会话被停、开新会话被拒——
+    否则播放器换条连接或把 404 当超时重开，结束就等于没结束。"""
+    from movieclaw_playback import activity
+
+    activity.reset()
+    direct = seed(client, tmp_path, container="mp4")
+    remux = seed(client, tmp_path, container="mkv")
+    direct_url = start_session(client, direct, device_id="browser-z")["stream_url"]
+    hls = start_session(client, remux, device_id="browser-z")
+    token = hls["stream_url"].split("token=")[1]
+    assert client.get(direct_url).status_code == 200
+    # 让活动页认得这台浏览器在播，管理员才有东西可结束
+    client.post(
+        f"{_PB}/progress",
+        json={
+            "media_item_id": _item_id_of(client, remux),
+            "event": "start",
+            "device_id": "browser-z",
+        },
+    )
+
+    resp = client.post(f"{_PB}/activity/sessions/web-0-browser-z/end")
+    assert resp.status_code == 200, resp.text
+
+    assert client.get(direct_url).status_code == 404
+    assert (
+        client.get(f"{_PB}/sessions/{hls['session_id']}/seg00000.m4s?token={token}").status_code
+        == 404
+    )
+    assert client.post(f"{_PB}/sessions/{hls['session_id']}/ping").status_code == 404
+    refused = client.post(
+        f"{_PB}/sessions",
+        json={"file_id": direct, "capability": CAPABILITY, "device_id": "browser-z"},
+    )
+    assert refused.status_code == 409
+    assert "管理员已结束" in refused.json()["message"]
+    # 别的浏览器不受影响
+    assert start_session(client, direct, device_id="browser-other")["stream_url"]
+    activity.reset()
+
+
 def test_legacy_token_without_device_streams_without_metering(client, tmp_path):
     """升级前签出的 token 没有设备标识：照常取流，不登记活动。"""
     from movieclaw_playback import activity

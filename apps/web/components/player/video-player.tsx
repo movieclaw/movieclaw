@@ -428,6 +428,8 @@ export function VideoPlayer(props: VideoPlayerProps) {
   const startMsRef = useRef(0);
   const positionRef = useRef(0);
   const reportedStartRef = useRef<string | null>(null);
+  /** 管理员结束本次播放的信号只处理一次：心跳与暂停上报可能同时带回来 */
+  const endedByAdminRef = useRef(false);
   /** 用户还想不想自动播放：他自己按过暂停之后就不再替他做主 */
   const wantsPlayRef = useRef(true);
   const autoplayAttemptsRef = useRef(0);
@@ -605,6 +607,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
     // 上一集的「会话已死」标记不能带进新的一集：带着的话，起播完成前用户点
     // 播放会被当成「重开死会话」，凭空多拉一次决策
     deadSessionRef.current = false;
+    endedByAdminRef.current = false;
     consentGrantedRef.current = false;
     setAutoplay(null);
     dispatch({ type: "reset" });
@@ -972,28 +975,83 @@ export function VideoPlayer(props: VideoPlayerProps) {
   const trackRefsRef = useRef(trackRefs);
   trackRefsRef.current = trackRefs;
 
-  useEffect(() => {
-    if (state.phase !== "playing") return;
-    if (reportedStartRef.current !== unitKey) {
-      reportedStartRef.current = unitKey;
-      void reportPlaybackProgress({ ...unit, event: "start", ...trackRefs() }).catch(
-        () => undefined,
-      );
-    }
-    const timer = window.setInterval(() => {
+  /**
+   * 管理员在活动页结束了本次播放：退出播放器并说明原因。服务端同时进入
+   * 拒绝窗口（取流与开会话都会被拒），所以这里绝不能走「会话没了就重开」
+   * 那条路，直接退出才是对的。
+   */
+  const onEndedByAdmin = useCallback(() => {
+    if (endedByAdminRef.current) return;
+    endedByAdminRef.current = true;
+    dispatch({
+      type: "fatal",
+      message: "管理员已结束本次播放",
+      suggestion: "稍后可以重新开始播放；观看进度已经保存。",
+    });
+  }, []);
+
+  /** 一次进度心跳；响应里带着「已被管理员结束」就退出。 */
+  const sendProgress = useCallback(
+    (paused: boolean | undefined) => {
       void reportPlaybackProgress({
         ...unit,
         event: "progress",
         position_ms: positionRef.current,
         // 暂停态给活动页「正在播放」的徽标用；读元素原生状态，与 Jellyfin
         // 客户端上报的 IsPaused 同义
-        paused: video?.paused ?? undefined,
-        ...trackRefs(),
-      }).catch(() => undefined);
-    }, PROGRESS_INTERVAL_MS);
+        paused,
+        ...trackRefsRef.current(),
+      })
+        .then((watch) => {
+          if (watch.ended_by_admin) onEndedByAdmin();
+        })
+        .catch(() => undefined);
+    },
+    // unit 是对象字面量，按内容比较
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [unitKey, onEndedByAdmin],
+  );
+  const sendProgressRef = useRef(sendProgress);
+  sendProgressRef.current = sendProgress;
+
+  useEffect(() => {
+    if (state.phase !== "playing") return;
+    if (reportedStartRef.current !== unitKey) {
+      reportedStartRef.current = unitKey;
+      void reportPlaybackProgress({ ...unit, event: "start", ...trackRefs() })
+        .then((watch) => {
+          if (watch.ended_by_admin) onEndedByAdmin();
+        })
+        .catch(() => undefined);
+    }
+    const timer = window.setInterval(
+      () => sendProgress(video?.paused ?? undefined),
+      PROGRESS_INTERVAL_MS,
+    );
     return () => window.clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.phase, unitKey, trackRefs]);
+  }, [state.phase, unitKey, trackRefs, sendProgress]);
+
+  /**
+   * 暂停 / 恢复即时上报，不等下一次心跳：活动页「正在播放」的暂停徽标滞后
+   * 十秒会让人以为没反应。只在本单元已经报过开始之后才报——否则一次早到的
+   * pause 事件会在服务端凭空建出一个没有开始的会话。
+   */
+  useEffect(() => {
+    if (!video) return;
+    const report = (paused: boolean) => {
+      if (reportedStartRef.current !== unitKey) return;
+      sendProgressRef.current(paused);
+    };
+    const onPlaying = () => report(false);
+    const onPause = () => report(true);
+    video.addEventListener("playing", onPlaying);
+    video.addEventListener("pause", onPause);
+    return () => {
+      video.removeEventListener("playing", onPlaying);
+      video.removeEventListener("pause", onPause);
+    };
+  }, [video, unitKey]);
 
   /** 这次播放的质量快照。离开与卸载两条路径共用。 */
   const qoeSnapshot = useCallback(() => {
@@ -1020,6 +1078,8 @@ export function VideoPlayer(props: VideoPlayerProps) {
     const snapshot = { ...unit };
     return () => {
       if (reportedStartRef.current === null) return;
+      // 停止之后再到的暂停 / 心跳不能再上报：服务端会把刚结束的会话重建回来
+      reportedStartRef.current = null;
       void reportPlaybackProgress({
         ...snapshot,
         event: "stop",

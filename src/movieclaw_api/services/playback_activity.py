@@ -29,6 +29,7 @@ from movieclaw_api.schemas.playback import (
 )
 from movieclaw_api.services import auth as auth_service
 from movieclaw_api.services.media_scrape import asset_version
+from movieclaw_api.services.playback.session import get_session_manager
 
 # 与首页"最近观看"共用同一套时长回退与进度换算口径，避免两处各算各的
 from movieclaw_api.services.playback_recent import _progress_percent, _runtime_ms
@@ -101,7 +102,7 @@ class _Placement:
     hidden: bool
 
 
-class _Scope:
+class VisibilityScope:
     """活动页的可见范围口径（docs/design/activity.md「范围切换」）。
 
     ``browsable_library_ids`` 是当前超管的可浏览库集合（None = 内部流程不受限）；
@@ -346,11 +347,11 @@ async def media_activity_overview(
     names = await _member_names(session, names_needed)
     # 条目可能同时存在于多个库：只要有一个库在可浏览范围内就展示，详情落点
     # 取范围内 id 最小的库；一个都不在的按口径折叠或标记为不可浏览
-    libraries_by_item = await _libraries_by_item(
+    item_libraries = await libraries_by_item(
         session,
         {u[0] for u in units} | {row[1].id for row in recent_rows if row[1].id is not None},
     )
-    scope = _Scope(libraries_by_item, browsable_library_ids, fold_hidden=fold_hidden)
+    scope = VisibilityScope(item_libraries, browsable_library_ids, fold_hidden=fold_hidden)
     hidden_session_count = 0
     hidden_download_count = 0
     hidden_recent_count = 0
@@ -542,7 +543,7 @@ async def media_activity_overview(
     )
 
 
-async def _libraries_by_item(session: AsyncSession, item_ids: set[int]) -> dict[int, set[int]]:
+async def libraries_by_item(session: AsyncSession, item_ids: set[int]) -> dict[int, set[int]]:
     """条目 id → 它有在位台账的库 id 集合（最近观看那几十条一次取回）。"""
     if not item_ids:
         return {}
@@ -558,6 +559,35 @@ async def _libraries_by_item(session: AsyncSession, item_ids: set[int]) -> dict[
     for item_id, library_id in rows.all():
         grouped.setdefault(item_id, set()).add(library_id)
     return grouped
+
+
+def live_session_label(device_id: str) -> str | None:
+    """当前正在播放的设备的展示名；不在播放返回 None。"""
+    sessions, _ = activity.snapshot()
+    for play in sessions:
+        if play.device_id == device_id:
+            client = play.client
+            return client.device_name or client.name or device_id
+    return None
+
+
+async def end_playback(device_id: str) -> int:
+    """管理员结束一台设备**本次**播放，不动凭据（与「注销设备」的区别）。
+
+    三件事：实时会话立即消失并进入拒绝窗口（``activity.end_device``，否则
+    播放器换条连接就续上了）、停掉仍在读盘的直出取流、停掉这台浏览器的转码
+    会话。设备下次亲手点播放即可继续，观看进度照常保存。返回停掉的取流连接数。
+    """
+    activity.end_device(device_id)
+    stopped = stop_device_streams(device_id)
+    sessions = await get_session_manager().stop_for_device(device_id)
+    logger.info(
+        "管理员已结束设备「%s」的播放：停止 %d 条取流、%d 个转码会话",
+        device_id,
+        stopped,
+        sessions,
+    )
+    return stopped
 
 
 async def revoke_device(session: AsyncSession, device_id: str) -> str | None:

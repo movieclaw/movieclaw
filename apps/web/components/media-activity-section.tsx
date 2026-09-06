@@ -16,8 +16,10 @@ import { useToast } from "@/components/feedback";
 import { TaskActionsMenu } from "@/components/job-center";
 import { Modal } from "@/components/modal";
 import { OverflowText } from "@/components/overflow-text";
+import { PlaybackStatsSection } from "@/components/playback-stats-section";
 import { PosterImage } from "@/components/poster-image";
 import {
+  endDevicePlayback,
   fetchMediaActivity,
   revokePlaybackDevice,
   type ActiveFileDownload,
@@ -52,6 +54,8 @@ const EMPTY_SNAPSHOT: MediaActivitySnapshot = {
 
 export interface MediaActivityState {
   snapshot: MediaActivitySnapshot;
+  /** 是否有权拉数据（管理员）；成员打开本页只看到空态，不会打出 403 */
+  enabled: boolean;
   loading: boolean;
   error: string | null;
   /** 立即重新拉取一次（注销设备等写操作后校准，不等下一个轮询周期）。 */
@@ -112,7 +116,7 @@ export function useMediaActivity(enabled: boolean): MediaActivityState {
   );
 
   useVisiblePolling(refresh, enabled ? POLL_INTERVAL_MS : null, { leading: true });
-  return { snapshot, loading, error, refresh, scope, setScope };
+  return { snapshot, enabled, loading, error, refresh, scope, setScope };
 }
 
 function formatRate(bytesPerSecond: number): string {
@@ -291,28 +295,35 @@ function ActivityTitle({ media }: { media: MediaActivityTarget }) {
 function DeviceActionsMenu({
   deviceId,
   deviceLabel: label,
+  onEnd,
   onRevoke,
   busy,
 }: {
   deviceId: string;
   deviceLabel: string;
-  onRevoke: (deviceId: string, label: string) => void;
+  /** 「结束播放」：只掐断本次播放，不动凭据。没传就不提供（下载卡） */
+  onEnd?: (deviceId: string, label: string) => void;
+  /** 「注销此设备」：网页会话没有可撤销的凭据，没传就不提供 */
+  onRevoke?: (deviceId: string, label: string) => void;
   busy: boolean;
 }) {
-  return (
-    <TaskActionsMenu
-      ariaLabel={`「${label}」的设备操作`}
-      disabled={busy}
-      items={[
-        {
-          id: "revoke",
-          label: "注销此设备",
-          tone: "danger",
-          onSelect: () => onRevoke(deviceId, label),
-        },
-      ]}
-    />
-  );
+  const items = [
+    ...(onEnd
+      ? [{ id: "end", label: "结束播放", onSelect: () => onEnd(deviceId, label) }]
+      : []),
+    ...(onRevoke
+      ? [
+          {
+            id: "revoke",
+            label: "注销此设备",
+            tone: "danger" as const,
+            onSelect: () => onRevoke(deviceId, label),
+          },
+        ]
+      : []),
+  ];
+  if (items.length === 0) return null;
+  return <TaskActionsMenu ariaLabel={`「${label}」的设备操作`} disabled={busy} items={items} />;
 }
 
 function StatusBadge({ paused }: { paused: boolean }) {
@@ -339,10 +350,12 @@ function StatusBadge({ paused }: { paused: boolean }) {
 
 function SessionCard({
   session,
+  onEnd,
   onRevoke,
   busy,
 }: {
   session: ActivePlaybackSession;
+  onEnd: (deviceId: string, label: string) => void;
   onRevoke: (deviceId: string, label: string) => void;
   busy: boolean;
 }) {
@@ -363,15 +376,15 @@ function SessionCard({
           <ActivityTitle media={media} />
           <div className="flex shrink-0 items-center gap-1.5">
             <StatusBadge paused={session.paused} />
-            {/* 网页播放器走登录会话，没有可注销的设备凭据，不给假菜单 */}
-            {session.revocable && (
-              <DeviceActionsMenu
-                deviceId={session.device_id}
-                deviceLabel={deviceLabel(session.client, session.device_name)}
-                onRevoke={onRevoke}
-                busy={busy}
-              />
-            )}
+            {/* 「结束播放」对两类会话都成立；「注销设备」只对持 Jellyfin 凭据的会话，
+                网页播放器走登录会话，没有可注销的凭据，不给假菜单项 */}
+            <DeviceActionsMenu
+              deviceId={session.device_id}
+              deviceLabel={deviceLabel(session.client, session.device_name)}
+              onEnd={onEnd}
+              onRevoke={session.revocable ? onRevoke : undefined}
+              busy={busy}
+            />
           </div>
         </div>
         <MetaLine
@@ -504,14 +517,12 @@ function DownloadCard({
             </OverflowText>
           )}
           {/* 分区标题已经写明「正在下载」，卡片不再重复一个同义徽标 */}
-          {download.revocable && (
-            <DeviceActionsMenu
-              deviceId={download.device_id}
-              deviceLabel={deviceLabel(download.client, download.device_name)}
-              onRevoke={onRevoke}
-              busy={busy}
-            />
-          )}
+          <DeviceActionsMenu
+            deviceId={download.device_id}
+            deviceLabel={deviceLabel(download.client, download.device_name)}
+            onRevoke={download.revocable ? onRevoke : undefined}
+            busy={busy}
+          />
         </div>
         <MetaLine
           parts={[download.member_name, deviceLabel(download.client, download.device_name)]}
@@ -646,6 +657,7 @@ function HiddenCountRow({ count, noun }: { count: number; noun: string }) {
  */
 export function MediaActivityPanel({
   snapshot,
+  enabled,
   loading,
   error,
   refresh,
@@ -654,6 +666,7 @@ export function MediaActivityPanel({
 }: MediaActivityState) {
   const toast = useToast();
   const [pendingRevoke, setPendingRevoke] = useState<RevokeTarget | null>(null);
+  const [pendingEnd, setPendingEnd] = useState<RevokeTarget | null>(null);
   const [revoking, setRevoking] = useState<string | null>(null);
   const liveCount = snapshot.sessions.length + snapshot.downloads.length;
   const hiddenLiveCount = snapshot.hidden_session_count + snapshot.hidden_download_count;
@@ -666,6 +679,23 @@ export function MediaActivityPanel({
   const requestRevoke = useCallback((deviceId: string, label: string) => {
     setPendingRevoke({ deviceId, label });
   }, []);
+  const requestEnd = useCallback((deviceId: string, label: string) => {
+    setPendingEnd({ deviceId, label });
+  }, []);
+
+  async function confirmEnd(target: RevokeTarget) {
+    if (revoking != null) return;
+    setRevoking(target.deviceId);
+    try {
+      toast.success(await endDevicePlayback(target.deviceId));
+      setPendingEnd(null);
+      refresh();
+    } catch (caught) {
+      toast.error((caught as Error).message || "结束播放失败");
+    } finally {
+      setRevoking(null);
+    }
+  }
 
   async function confirmRevoke(target: RevokeTarget) {
     if (revoking != null) return;
@@ -717,6 +747,7 @@ export function MediaActivityPanel({
               <SessionCard
                 key={`${session.device_id}-${session.media.media_item_id}-${session.media.season_number}-${session.media.episode_number}`}
                 session={session}
+                onEnd={requestEnd}
                 onRevoke={requestRevoke}
                 busy={revoking != null}
               />
@@ -776,6 +807,19 @@ export function MediaActivityPanel({
         </section>
       )}
 
+      {/* 观看统计与播放记录来自播放日志（每场一行），口径跟随上面的范围切换 */}
+      {enabled && <PlaybackStatsSection scope={scope} />}
+
+      {pendingEnd && (
+        <EndPlaybackDialog
+          target={pendingEnd}
+          busy={revoking === pendingEnd.deviceId}
+          onClose={() => {
+            if (revoking == null) setPendingEnd(null);
+          }}
+          onConfirm={() => void confirmEnd(pendingEnd)}
+        />
+      )}
       {pendingRevoke && (
         <RevokeDeviceDialog
           target={pendingRevoke}
@@ -787,6 +831,49 @@ export function MediaActivityPanel({
         />
       )}
     </div>
+  );
+}
+
+/** 结束播放确认：动作可逆（设备再点播放即可），但会打断别人正在看的东西，值得问一句。 */
+function EndPlaybackDialog({
+  target,
+  busy,
+  onClose,
+  onConfirm,
+}: {
+  target: RevokeTarget;
+  busy: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <Modal open onClose={busy ? () => {} : onClose} label="结束播放" topmost>
+      <div className="p-6 max-md:p-5">
+        <h2 className="text-title-sm font-bold text-white">结束「{target.label}」本次播放？</h2>
+        <p className="mt-2 text-sub leading-6 text-[var(--text-muted)]">
+          这台设备正在进行的播放会立刻中断，一分钟内不能续播；登录凭据与观看进度都不受影响，
+          之后重新点播放即可继续。
+        </p>
+        <div className="mt-5 flex justify-end gap-2.5">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={busy}
+            className="rounded-lg border border-white/10 bg-white/[0.06] px-4 py-2 text-ui text-white/80 transition hover:bg-white/[0.1] disabled:opacity-40"
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={busy}
+            className="rounded-lg bg-white/15 px-4 py-2 text-ui font-medium text-white transition hover:bg-white/25 disabled:opacity-40"
+          >
+            {busy ? "正在结束…" : "结束播放"}
+          </button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 

@@ -24,10 +24,12 @@ from __future__ import annotations
 import re
 import time
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from movieclaw_api.services.webhook import emit_events
-from movieclaw_db.models import PlaybackState
+from movieclaw_db.models import MediaItem, PlaybackLog, PlaybackState
+from movieclaw_db.models.base import utcnow
 from movieclaw_playback import activity
 from movieclaw_playback import state as playback_state
 from movieclaw_playback.events import ClientInfo, build_playback_event
@@ -115,6 +117,136 @@ def web_client_info(*, device_id: str, user_agent: str | None) -> ClientInfo:
 
 
 # ---------------------------------------------------------------------------
+# 播放日志（playback_log）：每场播放一行
+# ---------------------------------------------------------------------------
+
+#: 单次进度增量的上限：超过它视为 seek 跳过的区间，不计入观看时长。Jellyfin
+#: 客户端心跳最疏也在 30 秒级，网页端 10 秒，留足余量。
+_WATCH_DELTA_CAP_MS = 120_000
+
+#: 同一设备同一单元的重复「开始」（seek、暂停后恢复、换源重协商都会再发
+#: Playing）在这个窗口内视为同一场，不另开一行；与实时注册表的保鲜期同值。
+_LOG_REUSE_SECONDS = activity.SESSION_TTL_SECONDS
+
+
+async def _open_log(
+    session: AsyncSession, unit: Unit, *, member_id: int, device_id: str
+) -> PlaybackLog | None:
+    """该设备在该单元上尚未收口的最近一行。"""
+    return (
+        await session.execute(
+            select(PlaybackLog)
+            .where(
+                PlaybackLog.member_id == member_id,
+                PlaybackLog.device_id == device_id,
+                PlaybackLog.media_item_id == unit[0],
+                PlaybackLog.season_number == unit[1],
+                PlaybackLog.episode_number == unit[2],
+                PlaybackLog.ended_at.is_(None),  # type: ignore[union-attr]
+            )
+            .order_by(PlaybackLog.id.desc())  # type: ignore[union-attr]
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+
+async def _close_stale_logs(session: AsyncSession, *, member_id: int, device_id: str, now) -> None:
+    """同一设备换片时把此前没收到停止的行收口：结束时间取最后一次心跳。"""
+    rows = (
+        await session.execute(
+            select(PlaybackLog).where(
+                PlaybackLog.member_id == member_id,
+                PlaybackLog.device_id == device_id,
+                PlaybackLog.ended_at.is_(None),  # type: ignore[union-attr]
+            )
+        )
+    ).scalars()
+    for row in rows:
+        row.ended_at = row.last_seen_at
+        row.updated_at = now
+
+
+async def _start_log(
+    session: AsyncSession,
+    unit: Unit,
+    *,
+    member_id: int,
+    client: ClientInfo,
+    position_ms: int,
+    now,
+) -> PlaybackLog:
+    """开一行新日志；片名与形态快照进来，条目删了统计仍成立。"""
+    item = await session.get(MediaItem, unit[0])
+    row = PlaybackLog(
+        member_id=member_id,
+        media_item_id=unit[0],
+        kind=item.kind if item else "movie",
+        title=item.title if item else "",
+        season_number=unit[1],
+        episode_number=unit[2],
+        device_id=client.device_id,
+        client=client.name,
+        device_name=client.device_name,
+        started_at=now,
+        last_seen_at=now,
+        start_position_ms=position_ms,
+        end_position_ms=position_ms,
+    )
+    session.add(row)
+    return row
+
+
+async def _log_start(
+    session: AsyncSession, unit: Unit, *, member_id: int, client: ClientInfo, position_ms: int
+) -> None:
+    now = utcnow()
+    current = await _open_log(session, unit, member_id=member_id, device_id=client.device_id)
+    if current is not None and (now - current.last_seen_at).total_seconds() < _LOG_REUSE_SECONDS:
+        # 同一场里的重复开始：只续保鲜，不另开一行
+        current.last_seen_at = now
+        current.updated_at = now
+        return
+    await _close_stale_logs(session, member_id=member_id, device_id=client.device_id, now=now)
+    await _start_log(
+        session, unit, member_id=member_id, client=client, position_ms=position_ms, now=now
+    )
+
+
+async def _log_progress(
+    session: AsyncSession,
+    unit: Unit,
+    *,
+    member_id: int,
+    client: ClientInfo,
+    position_ms: int | None,
+    stopped: bool,
+    completed: bool,
+) -> None:
+    now = utcnow()
+    row = await _open_log(session, unit, member_id=member_id, device_id=client.device_id)
+    if row is None:
+        # 丢了开始包（Jellyfin 只发 Progress、或服务刚重启）：就地开行
+        row = await _start_log(
+            session,
+            unit,
+            member_id=member_id,
+            client=client,
+            position_ms=position_ms or 0,
+            now=now,
+        )
+    if position_ms is not None:
+        delta = position_ms - row.end_position_ms
+        if 0 < delta <= _WATCH_DELTA_CAP_MS:
+            row.watched_ms += delta
+        row.end_position_ms = position_ms
+    row.last_seen_at = now
+    row.updated_at = now
+    row.completed = row.completed or completed
+    if stopped:
+        row.ended_at = now
+
+
+# ---------------------------------------------------------------------------
 # 上报入口（两条协议共用）
 # ---------------------------------------------------------------------------
 
@@ -171,6 +303,8 @@ async def record_start(
     playback_state.apply_track_selection(
         row, audio_track=audio_track, subtitle_track=subtitle_track
     )
+    # 起点记续播位置：看完的从头播（position 已被清零），没看完的接着播
+    await _log_start(session, unit, member_id=member_id, client=client, position_ms=row.position_ms)
     await session.commit()
     event = await build_playback_event(session, "playback.started", unit, row, client=client)
     emit_events([event] if event is not None else [])
@@ -216,6 +350,15 @@ async def record_progress(
     )
     playback_state.apply_track_selection(
         row, audio_track=audio_track, subtitle_track=subtitle_track
+    )
+    await _log_progress(
+        session,
+        unit,
+        member_id=member_id,
+        client=client,
+        position_ms=position_ms,
+        stopped=stopped,
+        completed=newly_played,
     )
     await session.commit()
 
