@@ -263,6 +263,9 @@ export interface PlaybackStatsDayRow {
   date: string;
   plays: number;
   watched_ms: number;
+  completed: number;
+  /** 当天有播放的成员数 */
+  members: number;
 }
 
 export interface PlaybackStatsTitleRow {
@@ -271,15 +274,37 @@ export interface PlaybackStatsTitleRow {
   watched_ms: number;
 }
 
-export interface PlaybackWatchStats {
-  days: number;
+export interface PlaybackStatsTotals {
   plays: number;
   watched_ms: number;
   completed: number;
   active_members: number;
+}
+
+export interface PlaybackStatsTierRow {
+  tier: number;
+  label: string;
+  plays: number;
+}
+
+/**
+ * 观看统计：当前周期与上一周期成对返回（没有参照系的数字只是数据，不是洞察）。
+ * by_day 与 previous_by_day 按天对齐，主图把两条线画在同一坐标系里；by_hour 是
+ * 星期 × 小时的观看时长矩阵（0 行 = 周一），按浏览器时区分桶。
+ */
+export interface PlaybackWatchStats {
+  days: number;
+  current: PlaybackStatsTotals;
+  previous: PlaybackStatsTotals;
+  /** 上一周期有没有日志；日志刚开始记时没有，卡片上不该显示 0% */
+  previous_available: boolean;
+  by_day: PlaybackStatsDayRow[];
+  previous_by_day: PlaybackStatsDayRow[];
+  by_hour: number[][];
   by_member: PlaybackStatsMemberRow[];
   by_client: PlaybackStatsClientRow[];
-  by_day: PlaybackStatsDayRow[];
+  /** 网页播放按档位；Jellyfin 客户端恒为直连，不在内 */
+  by_tier: PlaybackStatsTierRow[];
   top_titles: PlaybackStatsTitleRow[];
   hidden_title_count: number;
 }
@@ -308,12 +333,14 @@ export async function fetchPlaybackHistory(
 export async function fetchPlaybackWatchStats(
   days: number,
   scope: MediaActivityScope = "visible",
+  memberId: number | null = null,
 ): Promise<PlaybackWatchStats> {
   const params = new URLSearchParams({
     days: String(days),
     scope,
     tz_offset: String(-new Date().getTimezoneOffset()),
   });
+  if (memberId != null) params.set("member_id", String(memberId));
   const response = await request<ApiEnvelope<PlaybackWatchStats>>(
     `/playback/stats/watch?${params}`,
   );

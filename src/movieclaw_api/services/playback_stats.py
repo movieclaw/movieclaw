@@ -17,7 +17,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime, timedelta
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from movieclaw_api.schemas.playback import (
@@ -27,7 +27,9 @@ from movieclaw_api.schemas.playback import (
     PlaybackStatsClientRow,
     PlaybackStatsDayRow,
     PlaybackStatsMemberRow,
+    PlaybackStatsTierRow,
     PlaybackStatsTitleRow,
+    PlaybackStatsTotals,
     PlaybackWatchStatsView,
 )
 from movieclaw_api.services.playback_activity import (
@@ -38,7 +40,7 @@ from movieclaw_api.services.playback_activity import (
     libraries_by_item,
 )
 from movieclaw_api.services.playback_recent import _progress_percent
-from movieclaw_db.models import PlaybackLog
+from movieclaw_db.models import PlaybackLog, PlaybackMetric
 from movieclaw_db.models.base import utcnow
 from movieclaw_media.models import MediaKind
 from movieclaw_playback import activity
@@ -186,39 +188,89 @@ async def playback_history(
     )
 
 
+#: 网页播放的档位名（movieclaw_playback.decide.PlaybackTier 的展示口径）
+_TIER_LABELS = {0: "直连", 1: "重封装", 2: "音频转码", 3: "硬件转码", 4: "软件转码"}
+
+
+def _day_series(
+    rows: list[PlaybackLog], *, since: datetime, until: datetime, offset: timedelta
+) -> list[PlaybackStatsDayRow]:
+    """按浏览器本地日期分桶，补齐没有播放的日子；行数 = 周期天数 + 1。"""
+    buckets: dict[str, dict] = defaultdict(
+        lambda: {"plays": 0, "watched": 0, "done": 0, "members": set()}
+    )
+    for row in rows:
+        day = buckets[(row.started_at + offset).strftime("%Y-%m-%d")]
+        day["plays"] += 1
+        day["watched"] += row.watched_ms
+        day["done"] += int(row.completed)
+        day["members"].add(row.member_id)
+    out: list[PlaybackStatsDayRow] = []
+    cursor = (since + offset).date()
+    last = (until + offset).date()
+    while cursor <= last:
+        key = cursor.strftime("%Y-%m-%d")
+        day = buckets.get(key)
+        out.append(
+            PlaybackStatsDayRow(
+                date=key,
+                plays=day["plays"] if day else 0,
+                watched_ms=day["watched"] if day else 0,
+                completed=day["done"] if day else 0,
+                members=len(day["members"]) if day else 0,
+            )
+        )
+        cursor += timedelta(days=1)
+    return out
+
+
+def _totals(rows: list[PlaybackLog]) -> PlaybackStatsTotals:
+    return PlaybackStatsTotals(
+        plays=len(rows),
+        watched_ms=sum(r.watched_ms for r in rows),
+        completed=sum(int(r.completed) for r in rows),
+        active_members=len({r.member_id for r in rows}),
+    )
+
+
 async def playback_stats(
     session: AsyncSession,
     *,
     days: int,
     tz_offset_minutes: int,
+    member_id: int | None = None,
     browsable_library_ids: set[int] | None,
     fold_hidden: bool,
 ) -> PlaybackWatchStatsView:
-    """一段时间内的观看统计。``tz_offset_minutes`` 是浏览器时区相对 UTC 的
-    分钟数（东八区 = 480），按天分组用它，否则晚上的观看会被算到第二天。"""
+    """一段时间内的观看统计，当前周期与上一周期成对。
+
+    ``tz_offset_minutes`` 是浏览器时区相对 UTC 的分钟数（东八区 = 480），按天与
+    按小时分桶都用它，否则晚上的观看会被算到第二天。一次把两个周期的日志取回来，
+    在 Python 里切分聚合——家庭服务器几十天的日志也就几千行。
+    """
     now = utcnow()
     since = now - timedelta(days=days)
-    rows = list(
-        (
-            await session.execute(select(PlaybackLog).where(PlaybackLog.started_at >= since))
-        ).scalars()
-    )
+    previous_since = since - timedelta(days=days)
+    offset = timedelta(minutes=tz_offset_minutes)
+
+    statement = select(PlaybackLog).where(PlaybackLog.started_at >= previous_since)
+    if member_id is not None:
+        statement = statement.where(PlaybackLog.member_id == member_id)
+    all_rows = list((await session.execute(statement)).scalars())
+    rows = [r for r in all_rows if r.started_at >= since]
+    previous_rows = [r for r in all_rows if r.started_at < since]
+
     names = await _member_names(session, {r.member_id for r in rows})
     targets, _ = await _targets_for(
         session, rows, browsable_library_ids=browsable_library_ids, fold_hidden=fold_hidden
     )
 
-    total_watched = 0
-    completed = 0
     by_member: dict[int, list[int]] = defaultdict(lambda: [0, 0, 0])  # plays, watched, completed
     by_client: dict[str, list[int]] = defaultdict(lambda: [0, 0])
-    by_day: dict[str, list[int]] = defaultdict(lambda: [0, 0])
     by_title: dict[int, list[int]] = defaultdict(lambda: [0, 0])
     title_unit: dict[int, Unit] = {}
-    offset = timedelta(minutes=tz_offset_minutes)
+    by_hour = [[0] * 24 for _ in range(7)]
     for row in rows:
-        total_watched += row.watched_ms
-        completed += int(row.completed)
         member = by_member[row.member_id]
         member[0] += 1
         member[1] += row.watched_ms
@@ -226,9 +278,6 @@ async def playback_stats(
         client = by_client[row.client or "未知客户端"]
         client[0] += 1
         client[1] += row.watched_ms
-        day = by_day[(row.started_at + offset).strftime("%Y-%m-%d")]
-        day[0] += 1
-        day[1] += row.watched_ms
         title = by_title[row.media_item_id]
         title[0] += 1
         title[1] += row.watched_ms
@@ -236,22 +285,14 @@ async def playback_stats(
         title_unit.setdefault(
             row.media_item_id, (row.media_item_id, row.season_number, row.episode_number)
         )
-
-    # 按天补齐没有播放的日子，前端画柱子不必再自己填空
-    days_out: list[PlaybackStatsDayRow] = []
-    first_day = (since + offset).date()
-    last_day = (now + offset).date()
-    cursor = first_day
-    while cursor <= last_day:
-        key = cursor.strftime("%Y-%m-%d")
-        plays, watched = by_day.get(key, [0, 0])
-        days_out.append(PlaybackStatsDayRow(date=key, plays=plays, watched_ms=watched))
-        cursor += timedelta(days=1)
+        # 时段热力图按开始时刻分桶：一场归到它开始的那个小时，够回答「什么时候有人在看」
+        local = row.started_at + offset
+        by_hour[local.weekday()][local.hour] += row.watched_ms
 
     top_titles: list[PlaybackStatsTitleRow] = []
     hidden_titles = 0
     for item_id, (plays, watched) in sorted(
-        by_title.items(), key=lambda kv: (kv[1][0], kv[1][1]), reverse=True
+        by_title.items(), key=lambda kv: (kv[1][1], kv[1][0]), reverse=True
     ):
         target = targets.get(title_unit[item_id])
         if target is None:
@@ -260,22 +301,41 @@ async def playback_stats(
         if len(top_titles) < _TOP_TITLES:
             top_titles.append(PlaybackStatsTitleRow(media=target, plays=plays, watched_ms=watched))
 
+    # 网页播放的档位分解来自播放质量指标（一次播放一行）；Jellyfin 客户端恒为直连
+    metric_statement = select(PlaybackMetric.tier, func.count()).where(
+        PlaybackMetric.created_at >= since
+    )
+    if member_id is not None:
+        metric_statement = metric_statement.where(PlaybackMetric.member_id == member_id)
+    tier_counts = dict(
+        (await session.execute(metric_statement.group_by(PlaybackMetric.tier))).all()
+    )
+    by_tier = [
+        PlaybackStatsTierRow(tier=tier, label=label, plays=int(tier_counts.get(tier, 0)))
+        for tier, label in _TIER_LABELS.items()
+        if tier_counts.get(tier)
+    ]
+
     return PlaybackWatchStatsView(
         days=days,
-        plays=len(rows),
-        watched_ms=total_watched,
-        completed=completed,
-        active_members=len(by_member),
+        current=_totals(rows),
+        previous=_totals(previous_rows),
+        previous_available=len(previous_rows) > 0,
+        by_day=_day_series(rows, since=since, until=now, offset=offset),
+        previous_by_day=_day_series(
+            previous_rows, since=previous_since, until=since, offset=offset
+        ),
+        by_hour=by_hour,
         by_member=sorted(
             (
                 PlaybackStatsMemberRow(
-                    member_id=member_id,
-                    member_name=names[member_id],
+                    member_id=mid,
+                    member_name=names[mid],
                     plays=plays,
                     watched_ms=watched,
                     completed=done,
                 )
-                for member_id, (plays, watched, done) in by_member.items()
+                for mid, (plays, watched, done) in by_member.items()
             ),
             key=lambda r: (r.watched_ms, r.plays),
             reverse=True,
@@ -288,7 +348,7 @@ async def playback_stats(
             key=lambda r: (r.watched_ms, r.plays),
             reverse=True,
         ),
-        by_day=days_out,
+        by_tier=by_tier,
         top_titles=top_titles,
         hidden_title_count=hidden_titles,
     )

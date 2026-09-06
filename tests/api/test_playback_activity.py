@@ -657,16 +657,24 @@ async def test_playback_log_records_each_session_and_feeds_stats(client: TestCli
         "/api/v1/playback/stats/watch", params={"days": 7, "tz_offset": 480}
     ).json()["data"]
     assert stats["days"] == 7
-    assert stats["plays"] == 2
-    assert stats["watched_ms"] == 40_000
-    assert stats["completed"] == 0
-    assert stats["active_members"] == 1
+    assert stats["current"] == {
+        "plays": 2, "watched_ms": 40_000, "completed": 0, "active_members": 1
+    }
+    # 日志刚开始记：上一周期没有数据，前端据此显示「暂无上一周期数据」而不是 0%
+    assert stats["previous_available"] is False
+    assert stats["previous"]["plays"] == 0
+    assert len(stats["previous_by_day"]) == 8
+    assert len(stats["by_hour"]) == 7 and all(len(r) == 24 for r in stats["by_hour"])
+    assert sum(sum(r) for r in stats["by_hour"]) == 40_000
     assert stats["by_member"] == [
         {"member_id": 0, "member_name": "admin", "plays": 2, "watched_ms": 40_000, "completed": 0}
     ]
     assert stats["by_client"] == [{"client": "MovieClaw Web", "plays": 2, "watched_ms": 40_000}]
     assert len(stats["by_day"]) == 8  # 7 天窗口按日补齐，含今天
     assert sum(day["plays"] for day in stats["by_day"]) == 2
+    assert max(day["members"] for day in stats["by_day"]) == 1
+    # 网页播放没上报过质量指标：档位分解为空，不伪造「直连 2 场」
+    assert stats["by_tier"] == []
     assert len(stats["top_titles"]) == 1
     assert stats["top_titles"][0]["media"]["title"] == "盗梦空间"
     assert stats["top_titles"][0]["plays"] == 2
@@ -752,7 +760,7 @@ async def test_playback_log_respects_visibility_scope(client: TestClient) -> Non
     assert history["entries"] == []
     assert history["hidden_count"] == 1
     stats = client.get("/api/v1/playback/stats/watch", params={"days": 7}).json()["data"]
-    assert stats["plays"] == 1
+    assert stats["current"]["plays"] == 1
     assert stats["top_titles"] == []
     assert stats["hidden_title_count"] == 1
 

@@ -14,10 +14,10 @@ import { OverflowText } from "@/components/overflow-text";
 import {
   HiddenCountRow,
   PlaybackHistoryList,
-  PlaybackStatsPanel,
   STATS_PERIODS,
 } from "@/components/playback-stats-section";
 import { PosterImage } from "@/components/poster-image";
+import { WatchStatsPanel } from "@/components/watch-stats-panel";
 import { listMembers, type MemberView } from "@/lib/api/members";
 import {
   endDevicePlayback,
@@ -655,9 +655,9 @@ export function MediaActivityPanel({
   const hiddenLiveCount = snapshot.hidden_session_count + snapshot.hidden_download_count;
   const showAll = useCallback(() => setScope("all"), [setScope]);
 
-  // 成员筛选的候选项只在「播放记录」切片用得上，进到那片再拉一次
+  // 成员筛选的候选项只在「播放记录 / 观看统计」两片用得上，进到那片再拉一次
   useEffect(() => {
-    if (!enabled || view !== "plays" || members.length > 0) return;
+    if (!enabled || view === "playing" || members.length > 0) return;
     void listMembers()
       .then(setMembers)
       .catch(() => undefined);
@@ -713,16 +713,16 @@ export function MediaActivityPanel({
   return (
     <div>
       <WatchToolbar view={view} onViewChange={onViewChange} liveCount={liveCount + hiddenLiveCount}>
-        {view === "plays" && (
+        {view === "stats" && (
+          <FilterMenu label="周期" value={days} options={STATS_PERIODS} onChange={setDays} />
+        )}
+        {view !== "playing" && (
           <FilterMenu
             label="成员"
             value={memberId ?? -1}
             options={memberOptions}
             onChange={(value) => setMemberId(value < 0 ? null : value)}
           />
-        )}
-        {view === "stats" && (
-          <FilterMenu label="周期" value={days} options={STATS_PERIODS} onChange={setDays} />
         )}
         {scopeFilter}
       </WatchToolbar>
@@ -809,7 +809,13 @@ export function MediaActivityPanel({
 
       {view === "stats" && enabled && (
         <div className="mt-4">
-          <PlaybackStatsPanel scope={scope} days={days} onShowAll={showAll} />
+          <WatchStatsPanel
+            scope={scope}
+            days={days}
+            memberId={memberId}
+            onMemberSelect={setMemberId}
+            onShowAll={showAll}
+          />
         </div>
       )}
 

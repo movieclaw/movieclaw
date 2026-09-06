@@ -453,17 +453,20 @@ async def get_watch_stats(
     tz_offset: Annotated[
         int, Query(ge=-840, le=840, description="浏览器时区相对 UTC 的分钟数（东八区 480）")
     ] = 0,
+    member_id: Annotated[int | None, Query(ge=0)] = None,
     scope: Annotated[Literal["visible", "all"], Query()] = "visible",
     principal: Principal = Depends(require_login),
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[PlaybackWatchStatsView]:
-    """最近 N 天的播放场次、观看时长、看完次数与活跃成员，按成员 / 客户端 / 天 /
-    作品分解。作品榜走可见范围折叠，其余是不出片名的聚合数。"""
+    """最近 N 天与上一周期成对的观看统计：汇总数、按天序列、星期×小时热力图，
+    按成员 / 客户端 / 播放档位 / 作品分解。作品榜走可见范围折叠，其余是不出片名的
+    聚合数。``member_id`` 把整份统计收窄到一个成员（分解面板里点成员即钻取）。"""
     return ok(
         await playback_stats(
             session,
             days=days,
             tz_offset_minutes=tz_offset,
+            member_id=member_id,
             browsable_library_ids=await visible_library_ids(session, principal),
             fold_hidden=scope == "visible",
         )

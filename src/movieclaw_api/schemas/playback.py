@@ -208,6 +208,8 @@ class PlaybackStatsDayRow(BaseModel):
     date: str = Field(description="按浏览器时区的日期 YYYY-MM-DD")
     plays: int
     watched_ms: int
+    completed: int = 0
+    members: int = Field(default=0, description="当天有播放的成员数")
 
 
 class PlaybackStatsTitleRow(BaseModel):
@@ -216,17 +218,46 @@ class PlaybackStatsTitleRow(BaseModel):
     watched_ms: int
 
 
-class PlaybackWatchStatsView(BaseModel):
-    """一段时间内的观看统计（docs/design/activity.md「播放日志与统计」）。"""
+class PlaybackStatsTotals(BaseModel):
+    """一个周期的四个汇总数。"""
 
-    days: int
     plays: int = Field(description="播放场次")
     watched_ms: int = Field(description="观看总时长（毫秒）")
     completed: int = Field(description="看完的场次")
     active_members: int = Field(description="有播放的成员数")
+
+
+class PlaybackStatsTierRow(BaseModel):
+    """网页播放按档位的分解（直连 / 重封装 / 音频转码 / 硬件转码 / 软件转码）。"""
+
+    tier: int
+    label: str
+    plays: int
+
+
+class PlaybackWatchStatsView(BaseModel):
+    """一段时间内的观看统计（docs/design/activity.md「观看统计」）。
+
+    当前周期与**上一周期**成对返回：没有参照系的数字只是数据，不是洞察。
+    ``by_day`` 与 ``previous_by_day`` 按天对齐（同为 days+1 行），主图把两条线画在
+    同一坐标系里。``by_hour`` 是星期 × 小时的观看时长矩阵（周一为 0 行），按浏览器
+    时区分桶，回答「家里什么时候有人在看」。
+    """
+
+    days: int
+    current: PlaybackStatsTotals
+    previous: PlaybackStatsTotals
+    previous_available: bool = Field(description="上一周期有没有日志（日志刚开始记时没有）")
+    by_day: list[PlaybackStatsDayRow]
+    previous_by_day: list[PlaybackStatsDayRow]
+    by_hour: list[list[int]] = Field(
+        description="7×24 观看时长（毫秒），行=星期（0=周一），列=小时"
+    )
     by_member: list[PlaybackStatsMemberRow]
     by_client: list[PlaybackStatsClientRow]
-    by_day: list[PlaybackStatsDayRow]
+    by_tier: list[PlaybackStatsTierRow] = Field(
+        description="网页播放按档位；Jellyfin 客户端恒为直连，不在内"
+    )
     top_titles: list[PlaybackStatsTitleRow]
     hidden_title_count: int = Field(default=0, description="作品榜里不在你可见范围内的条数")
 
