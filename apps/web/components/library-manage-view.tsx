@@ -38,6 +38,7 @@ import {
   refreshLibraryConfirm,
   scanLibraryConfirm,
 } from "@/lib/library-confirm";
+import { useJobs } from "@/lib/jobs";
 import { routingOverlapWarnings } from "@/lib/library-routing-warnings";
 import {
   EMPTY_FILTER,
@@ -128,6 +129,26 @@ export function LibraryManageView() {
   useEffect(() => {
     reload();
   }, [reload]);
+
+  // 不是从这页发起的任务（实时监控触发的自动扫描、CLI、另一台设备点的）只靠轮询要
+  // 等到下个周期才被发现，空闲时最长 30 秒。JobsProvider 的 SSE 一收到任务事件就会
+  // 更新 activeJobs，这里盯着「库相关活跃作业的 id + 状态」这份指纹：作业出现、状态
+  // 变化、结束都立即重拉一次库列表；进度更新仍交给轮询（否则每条进度都触发一次请求）
+  const { activeJobs } = useJobs();
+  const libraryJobsKey = useMemo(
+    () =>
+      activeJobs
+        .filter((job) => job.resources.some((r) => r.resource_type === "library"))
+        .map((job) => `${job.id}:${job.status}`)
+        .join("|"),
+    [activeJobs],
+  );
+  const seenJobsKey = useRef(libraryJobsKey);
+  useEffect(() => {
+    if (seenJobsKey.current === libraryJobsKey) return;
+    seenJobsKey.current = libraryJobsKey;
+    reload();
+  }, [libraryJobsKey, reload]);
 
   // 首页空状态的「创建第一个媒体库」落到 /library/manage?create=1：进页即开建库弹窗。
   // 读 location 而不是 useSearchParams（全站惯例，免去 Suspense 边界）；读完把参数抹掉，
