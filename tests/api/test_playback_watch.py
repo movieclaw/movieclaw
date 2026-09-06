@@ -127,6 +127,7 @@ def test_never_played_unit_resumes_from_zero(client, tmp_path):
         "duration_ms": _DURATION_S * 1000,
         "audio_track": None,
         "subtitle_track": None,
+        "ended_by_admin": False,
     }
 
 
