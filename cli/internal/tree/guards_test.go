@@ -30,6 +30,7 @@ var knownNonGenerated = []string{
 	"images.proxy",
 	"libraries.cover",
 	"ui.library.files.preview-subtitles",
+	"ui.library.files.original",
 	"ui.library.files.thumb",
 	"ui.library.items.ids",
 	"ui.library.items.index",
