@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -133,7 +134,9 @@ async def _seed_item(library_id: int, title: str, tmdb_id: int) -> int:
         return item.id
 
 
-async def _seed_state(member_id: int, media_item_id: int) -> None:
+async def _seed_state(
+    member_id: int, media_item_id: int, *, last_played_at: datetime | None = None
+) -> None:
     async with get_database().session() as session:
         session.add(
             PlaybackState(
@@ -141,7 +144,7 @@ async def _seed_state(member_id: int, media_item_id: int) -> None:
                 media_item_id=media_item_id,
                 position_ms=60_000,
                 play_count=1,
-                last_played_at=utcnow(),
+                last_played_at=last_played_at or utcnow(),
             )
         )
         await session.commit()
@@ -313,6 +316,37 @@ async def test_clear_history_scopes_only_touch_own_rows(client: TestClient) -> N
     assert resp.status_code == 404
     # 缺参数 400
     assert client.delete("/api/v1/playback/history", params={"scope": "item"}).status_code == 400
+
+
+async def test_clear_history_since_only_touches_recent_plays(client: TestClient) -> None:
+    """首页「清空今天 / 最近一周」：只删时间窗口内播放过的记录，更早的续播点保留。"""
+    lib = _create_library(client, "A", "/m/a")
+    fresh = await _seed_item(lib, "今天看的", 4101)
+    stale = await _seed_item(lib, "上个月看的", 4102)
+    now = utcnow()
+    await _seed_state(0, fresh, last_played_at=now - timedelta(hours=1))
+    await _seed_state(0, stale, last_played_at=now - timedelta(days=30))
+
+    def _recent_ids() -> list[int]:
+        return sorted(
+            i["media_item_id"]
+            for i in client.get("/api/v1/playback/recent").json()["data"]["items"]
+        )
+
+    # 带时区的 ISO 起点（浏览器 toISOString 的形态）也能正确归一到库里的 UTC 朴素时间
+    since = (now - timedelta(days=7)).replace(tzinfo=UTC).isoformat()
+    resp = client.delete("/api/v1/playback/history", params={"scope": "all", "since": since})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["deleted_states"] == 1
+    assert _recent_ids() == [stale]
+
+    # 时间窗口可叠在按库范围上
+    resp = client.delete(
+        "/api/v1/playback/history",
+        params={"scope": "library", "library_id": lib, "since": since},
+    )
+    assert resp.json()["data"]["deleted_states"] == 0
+    assert _recent_ids() == [stale]
 
 
 # ---------------------------------------------------------------------------

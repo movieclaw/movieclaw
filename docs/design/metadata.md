@@ -298,6 +298,17 @@ data/metadata/images/{media_item_id}/
 选图锁定的海报/背景不受溯源触发（锁的语义是"这张图就是要的"）；档位升级
 同理经溯源生效，锁保护的是"用哪张图"，不是"用什么分辨率"。
 
+**分集剧照抓帧兜底**（2026-09-06）：TMDB 不少分集没有剧照（新剧、冷门剧、
+特别篇），分集卡只剩一个集号数字。`download_item_assets` 同步完 TMDB 剧照后，
+对 `still_path` 为空的在库分集从视频抓一帧（`thumbs.build_episode_still`，
+10% 位置、`thumbnail=n=24` 选帧、HDR 色调映射，宽 ≤640）写进**同一个资产位**
+`s{ss}e{ee}.jpg`，溯源记 `frame:<视频路径>`——Web 分集区、Jellyfin 分集
+Primary、媒体目录镜像（`<视频名>-thumb.jpg`）零改动就能用。**TMDB 优先**：
+`still_path` 非空的集一律不抓（下载失败也留给图床自愈）；TMDB 后来补了图，
+刷新时溯源对不上即重下覆盖，抓帧自然退位。视频旁已有 `-thumb.jpg`、原盘
+目录、库开关 `generate_thumbnails` 关闭时不抓。元数据里还没有的集（TMDB
+滞后）没有 `media_episode` 行可挂，仍是占位。
+
 ### 6.2 媒体目录镜像（每库开关 `write_media_assets`，默认开）
 
 按 Kodi/Emby/Jellyfin 共同识别的命名规范，写入条目目录：

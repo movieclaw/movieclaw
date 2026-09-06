@@ -22,6 +22,14 @@
 按库开关 ``generate_thumbnails``：网络挂载的大库抓帧就是全量下载，用户可以关。
 失败只记日志、字段保持 NULL（前端出占位图），下次刷新自愈。
 
+**分集剧照兜底**（TMDB 条目，``build_episode_still``）：TMDB 不少剧集的分集
+没有剧照（新剧、冷门剧、动画特别篇），分集卡只剩一个集号数字。对这类集
+从视频本身抓一帧顶上，写进与 TMDB 剧照同一个资产位（``s{ss}e{ee}.jpg``），
+Web 分集区与 Jellyfin 分集 Primary 零改动就能用；TMDB 有剧照时始终用 TMDB
+的（下载失败也不抓——图床可达后自愈），后来补了图刷新时自然覆盖抓帧。
+只抓帧、不找海报 sidecar：分集所在的季目录几乎总是「归这个条目」的，
+按主图规则会把整季每一集都配成剧海报。
+
 **图片文件**（图片库，docs/design/library-photo-kind.md 2.5）走 Pillow 而不是
 ffmpeg：ffmpeg 不认 EXIF 方向标签，手机竖拍会横着躺；几万张图起几万个子进程
 也太慢。缩到长边 ≤720（墙上最宽列 310px 的 2× 视网膜足够），透明图合成到
@@ -49,6 +57,7 @@ from movieclaw_db.repositories.media_repo import MediaItemRepository
 logger = logging.getLogger("movieclaw_api.library.thumbs")
 
 _MAX_WIDTH = 1280  # 主图（海报/缩略图）
+_MAX_STILL_WIDTH = 640  # 分集剧照抓帧：分集卡 200px 宽，一部剧几百集，不必到 1280
 _MAX_PHOTO_EDGE = 720  # 图片库缩略图的长边上限
 _PHOTO_JPEG_QUALITY = 85
 _CARD_BACKGROUND = (0x14, 0x18, 0x24)  # 透明图的合成底色 = 前端卡片底色 bg-[#141824]
@@ -174,6 +183,32 @@ def build_thumbnail(
         logger.warning("生成缩略图超时（%s 秒）：%s", _FFMPEG_TIMEOUT, video)
     except OSError as exc:
         logger.warning("生成缩略图失败：%s（%s）", video, exc)
+    return None
+
+
+def build_episode_still(
+    video: Path,
+    dest: Path,
+    *,
+    duration_seconds: int | None,
+    hdr: str | None = None,
+) -> tuple[int, int] | None:
+    """同步版：给 TMDB 没有剧照的分集从视频抓一帧写到 ``dest``（宽 ≤640），
+    返回 (宽, 高)。
+
+    与 ``build_thumbnail`` 的区别是**只抓帧**：不找海报 sidecar、不取内嵌封面
+    （季目录整体归条目，主图规则会把每一集都配成剧海报）。失败返回 None
+    （ffmpeg 缺失/超时/文件损坏都算），不抛异常，字段保持 NULL 下次刷新重试。
+    """
+    try:
+        if _grab_frame(video, dest, duration_seconds, hdr, max_width=_MAX_STILL_WIDTH):
+            return _image_size(dest)
+    except FileNotFoundError:
+        logger.warning("系统中未找到 ffmpeg，分集剧照抓帧已跳过：%s", video)
+    except subprocess.TimeoutExpired:
+        logger.warning("分集剧照抓帧超时（%s 秒）：%s", _FFMPEG_TIMEOUT, video)
+    except OSError as exc:
+        logger.warning("分集剧照抓帧失败：%s（%s）", video, exc)
     return None
 
 
@@ -326,7 +361,14 @@ def _extract_stream(video: Path, index: int, dest: Path) -> bool:
     )
 
 
-def _grab_frame(video: Path, dest: Path, duration_seconds: int | None, hdr: str | None) -> bool:
+def _grab_frame(
+    video: Path,
+    dest: Path,
+    duration_seconds: int | None,
+    hdr: str | None,
+    *,
+    max_width: int = _MAX_WIDTH,
+) -> bool:
     """抓帧：跳到 10% 处，在 24 帧里选代表帧。
 
     三级回退：① 只解关键帧（大文件最快，Jellyfin 同款）；② 关键帧稀疏
@@ -335,7 +377,11 @@ def _grab_frame(video: Path, dest: Path, duration_seconds: int | None, hdr: str 
     滤镜不可用（ffmpeg 没编 zimg）时退回不映射。
     """
     position = max(1.0, duration_seconds * 0.1) if duration_seconds else 10.0
-    base = ["bwdif=mode=send_frame:deint=interlaced", "thumbnail=n=24", _scale_filter()]
+    base = [
+        "bwdif=mode=send_frame:deint=interlaced",
+        "thumbnail=n=24",
+        _scale_filter(max_width),
+    ]
     chains = [base]
     if hdr:  # 台账探测出的 HDR 格式（HDR10/HLG/DV…），SDR 为 NULL
         chains.insert(0, base[:2] + list(TONEMAP_FILTERS) + base[2:])

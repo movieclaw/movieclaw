@@ -7,6 +7,7 @@ import contextlib
 import logging
 import re
 import time
+from datetime import UTC, datetime
 from pathlib import Path as PathLib
 from typing import Annotated, Literal
 from urllib.parse import quote
@@ -24,6 +25,7 @@ from movieclaw_api.exceptions import (
     NotFoundException,
     ServiceUnavailableException,
 )
+from movieclaw_api.schemas.base import utc_isoformat
 from movieclaw_api.schemas.library import SeasonEpisodesView
 from movieclaw_api.schemas.playback import (
     HwBackendStatusView,
@@ -484,6 +486,10 @@ async def clear_playback_history(
     scope: Annotated[Literal["item", "library", "all"], Query(description="清除范围")],
     media_item_id: Annotated[int | None, Query(description="scope=item 时的条目 id")] = None,
     library_id: Annotated[int | None, Query(description="scope=library 时的库 id")] = None,
+    since: Annotated[
+        datetime | None,
+        Query(description="时间窗口起点（ISO 8601）：只清这个时刻之后播放过的记录"),
+    ] = None,
     principal: Principal = Depends(require_login),
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[PlaybackHistoryClearView]:
@@ -491,29 +497,43 @@ async def clear_playback_history(
     指标），超管删的是超管自己的；跨成员删除不提供（docs/design/library-access.md 2.6）。
 
     按条目/按库清除要求目标在主体的可浏览范围内——范围外无从得知条目，也不该能删。
+    ``since`` 可叠在任一范围上：首页「清空今天 / 最近一周的观看记录」由前端按
+    浏览器时区算出起点传来，服务端不猜用户在哪个时区。
     """
     from movieclaw_api.services import playback_history
 
     member_id = principal.member_id if principal.member_id is not None else 0
+    if since is not None and since.tzinfo is not None:
+        # 数据库里一律存 UTC 朴素时间（movieclaw_db.models.base.utcnow），
+        # 带时区的入参先归一，否则 SQLite 比较的是字符串会得出错误结果
+        since = since.astimezone(UTC).replace(tzinfo=None)
     if scope == "item":
         if media_item_id is None:
             raise BadRequestException("按条目清除需要 media_item_id")
         await assert_item_visible(session, principal, media_item_id)
-        result = await playback_history.clear(session, member_id, media_item_id=media_item_id)
+        result = await playback_history.clear(
+            session, member_id, media_item_id=media_item_id, since=since
+        )
         message = "已清除这部作品的观看记录"
     elif scope == "library":
         if library_id is None:
             raise BadRequestException("按库清除需要 library_id")
         await assert_library_visible(session, principal, library_id)
-        result = await playback_history.clear(session, member_id, library_id=library_id)
+        result = await playback_history.clear(
+            session, member_id, library_id=library_id, since=since
+        )
         message = "已清除你在这个库里的观看记录"
+    elif since is not None:
+        result = await playback_history.clear(session, member_id, since=since)
+        message = "已清除你这段时间的观看记录"
     else:
         result = await playback_history.clear(session, member_id)
         message = "已清除你的全部观看记录"
     logger.info(
-        "观看记录已清除：主体=%s 范围=%s 状态 %d 条 / 指标 %d 条",
+        "观看记录已清除：主体=%s 范围=%s 起点=%s 状态 %d 条 / 指标 %d 条",
         principal,
         scope,
+        utc_isoformat(since) if since is not None else "不限",
         result.deleted_states,
         result.deleted_metrics,
     )

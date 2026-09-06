@@ -1169,7 +1169,7 @@ function EditLibraryDialog({
           {dot(autoClearMissing, "自动清理丢失")}
           {dot(
             generateThumbnails,
-            scraped ? "未识别文件封面" : playable ? "抓帧封面" : "缩略图",
+            scraped ? "抓帧补图" : playable ? "抓帧封面" : "缩略图",
           )}
           {playable && dot(extractChapterImages, "章节")}
           {dot(!excludeFromHome, "首页展示")}
@@ -1192,7 +1192,7 @@ function EditLibraryDialog({
           <SwitchRow
             title={
               scraped
-                ? "为未识别文件生成封面"
+                ? "缺图时从视频抓帧补图"
                 : playable
                   ? "从视频抓帧生成封面"
                   : "生成缩略图"
@@ -1200,9 +1200,11 @@ function EditLibraryDialog({
             checked={generateThumbnails}
             onChange={setGenerateThumbnails}
             detail={
-              playable
-                ? "没有在线海报的内容从视频本身抓一帧当封面：优先用同名图片或内嵌封面，没有再抓帧。网络挂载库抓帧需要读取每个文件，介意流量可关闭，关闭后显示占位图。"
-                : "把原图缩到长边 720 像素当相册墙上的缩略图，网格只加载缩略图。关闭后墙会直接加载原图，大照片会很慢；只有网络挂载的大库介意流量时才建议关。"
+              scraped
+                ? "未识别文件的封面、以及 TMDB 没有剧照的分集，从视频本身抓一帧顶上；TMDB 有图时始终用 TMDB 的。网络挂载库抓帧需要读取每个文件，介意流量可关闭，关闭后显示占位图。"
+                : playable
+                  ? "没有在线海报的内容从视频本身抓一帧当封面：优先用同名图片或内嵌封面，没有再抓帧。网络挂载库抓帧需要读取每个文件，介意流量可关闭，关闭后显示占位图。"
+                  : "把原图缩到长边 720 像素当相册墙上的缩略图，网格只加载缩略图。关闭后墙会直接加载原图，大照片会很慢；只有网络挂载的大库介意流量时才建议关。"
             }
           />
           {/* 章节是视频的事：图片库（不可播）没有这一项 */}
