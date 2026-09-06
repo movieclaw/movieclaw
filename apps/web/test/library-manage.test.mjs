@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   accessLabel,
   accessRestricted,
+  chapterJobLabel,
   configNotes,
   filterIsActive,
   filterLibraries,
@@ -51,6 +52,7 @@ function lib(overrides = {}) {
     organizing: false,
     organize_progress: null,
     metadata_refresh: null,
+    chapter_job: null,
     last_scan: {
       finished_at: "2026-09-05T00:00:00+00:00",
       scanned: 0,
@@ -256,4 +258,60 @@ test("可见范围与库存文案", () => {
   assert.equal(accessRestricted(lib({ viewer_access: false })), true);
   assert.deepEqual(inventoryLabel(lib()), { primary: "10 部", secondary: "12 个文件" });
   assert.deepEqual(inventoryLabel(lib({ kind: "video" })), { primary: "10 个条目", secondary: "12 个文件" });
+});
+
+const chapterJob = (overrides = {}) => ({
+  job_id: "job_1",
+  status: "queued",
+  processed: 0,
+  total: 0,
+  failed: 0,
+  percent: null,
+  stopping: false,
+  ...overrides,
+});
+
+test("生成章节：排队、进行中带百分比与失败数、停止中", () => {
+  // 曾经的问题：点了「生成章节」后管理页毫无反应，只有活动页看得到作业
+  const queued = libraryStatus(lib({ chapter_job: chapterJob() }), ctx);
+  assert.equal(queued.kind, "chapters");
+  assert.equal(queued.tone, "busy");
+  assert.equal(queued.title, "生成章节排队中");
+  assert.equal(queued.detail, "等前面的任务跑完再开始");
+  assert.equal(queued.percent, null);
+
+  const running = chapterJob({ status: "running", processed: 35, total: 100, failed: 2 });
+  const s = libraryStatus(lib({ chapter_job: running }), ctx);
+  assert.equal(s.title, "正在生成章节 35%");
+  assert.equal(s.detail, "35 / 100 · 2 个失败");
+  assert.equal(s.percent, 35);
+
+  // 刚开始跑、还没统计出分母：不给百分比也不写 0 / 0
+  const starting = libraryStatus(lib({ chapter_job: chapterJob({ status: "running" }) }), ctx);
+  assert.equal(starting.title, "正在生成章节");
+  assert.equal(starting.detail, "正在统计待处理的文件数");
+
+  const stopping = libraryStatus(
+    lib({ chapter_job: chapterJob({ status: "cancelling", stopping: true, processed: 5, total: 9 }) }),
+    ctx,
+  );
+  assert.equal(stopping.title, "正在停止生成章节");
+
+  // 菜单项文案与状态列同一口径；没作业时就是动作名
+  assert.equal(chapterJobLabel(null), "生成章节");
+  assert.equal(chapterJobLabel(chapterJob()), "生成章节排队中");
+  assert.equal(chapterJobLabel(running), "正在生成章节 35%");
+  assert.ok(libraryIsBusy(lib({ chapter_job: chapterJob() })));
+});
+
+test("扫描中压过排队的章节作业（扫描先跑，章节排在它后面）", () => {
+  const s = libraryStatus(
+    lib({
+      scanning: true,
+      scan_progress: { phase: "ingesting", processed: 1, total: 4 },
+      chapter_job: chapterJob(),
+    }),
+    ctx,
+  );
+  assert.equal(s.kind, "scan");
 });

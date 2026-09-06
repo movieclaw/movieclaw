@@ -1171,7 +1171,7 @@ function EditLibraryDialog({
             generateThumbnails,
             scraped ? "未识别文件封面" : playable ? "抓帧封面" : "缩略图",
           )}
-          {playable && dot(extractChapterImages, "章节场景图")}
+          {playable && dot(extractChapterImages, "章节")}
           {dot(!excludeFromHome, "首页展示")}
         </>
       ),
@@ -1208,7 +1208,7 @@ function EditLibraryDialog({
           {/* 章节是视频的事：图片库（不可播）没有这一项 */}
           {playable && (
             <SwitchRow
-              title="抓取章节场景图"
+              title="生成章节"
               checked={extractChapterImages}
               onChange={setExtractChapterImages}
               detail="每个视频按章节（有内嵌章节用内嵌，没有按时长切成 3～12 段）各抓一张画面：条目页出「场景」横排、点一张从那里开始播，Infuse 等播放器也能按章节跳转。扫描后在后台低优先级生成，每个文件要定位读取若干次，网络挂载的大库介意读取量可关闭；关闭后已生成的图保留。"

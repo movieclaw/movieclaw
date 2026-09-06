@@ -18,6 +18,7 @@ import {
   accessRestricted,
   configNotes,
   inventoryLabel,
+  chapterJobLabel,
   libraryStatus,
 } from "@/lib/library-manage";
 import { LIBRARY_KIND_LABELS } from "@/lib/media-types";
@@ -51,7 +52,7 @@ export interface LibraryRowActions {
   onOpenPending: (library: MediaLibrary) => void;
   onOrganize: (library: MediaLibrary) => void;
   onToggleRefresh: (library: MediaLibrary) => void;
-  /** 整库生成章节场景图（库开了开关才给入口）；是否重抓已有的在确认弹窗里勾选 */
+  /** 整库生成章节（库开了开关才给入口）；是否重做已有的在确认弹窗里勾选 */
   onChapterImages: (library: MediaLibrary) => void;
   onEdit: (library: MediaLibrary) => void;
   onSetDefault: (library: MediaLibrary) => void;
@@ -415,10 +416,11 @@ function RowMenu({
           {library.extract_chapter_images && (
             <DropdownMenu.Item
               onSelect={() => actions.onChapterImages(library)}
-              disabled={busy}
+              // 作业排队/进行中时置灰并如实写状态（后端同库只跑一份，再点也是返回现有作业）
+              disabled={busy || library.chapter_job !== null}
               className={itemClass}
             >
-              生成场景图
+              {chapterJobLabel(library.chapter_job)}
             </DropdownMenu.Item>
           )}
           <DropdownMenu.Separator className="my-1 h-px bg-white/[0.07]" />

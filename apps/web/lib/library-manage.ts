@@ -7,7 +7,7 @@
  * 别名或浏览器依赖的模块。
  */
 
-import type { MediaLibrary, ScanPhase } from "./api/libraries";
+import type { ChapterJobProgress, MediaLibrary, ScanPhase } from "./api/libraries";
 import { formatBytes } from "./format.ts";
 import type { LibraryKind } from "./media-types";
 
@@ -19,6 +19,7 @@ export type LibraryStatusKind =
   | "scan"
   | "organize"
   | "refresh"
+  | "chapters"
   | "importing"
   | "missing"
   | "unidentified"
@@ -66,8 +67,9 @@ function lastScanDetail(library: MediaLibrary, ctx: LibraryStatusContext): strin
 
 /**
  * 一行库的状态归类。优先级自上而下取第一个命中（§2.2 状态表）：
- * 扫描 → 整理 → 刷新元数据 → 入库中 → 有缺失 → 有待识别 → 空闲。
- * 三种长任务互斥（共用一把库级锁），所以先后顺序只是兜底。
+ * 扫描 → 整理 → 刷新元数据 → 生成章节 → 入库中 → 有缺失 → 有待识别 → 空闲。
+ * 前三种长任务互斥（共用一把库级锁），所以先后顺序只是兜底；生成章节是
+ * 低优先级后台作业，常排在它们后面，排在第四位正好表达"等前面的跑完"。
  */
 export function libraryStatus(library: MediaLibrary, ctx: LibraryStatusContext): LibraryStatus {
   if (library.scanning) {
@@ -108,6 +110,22 @@ export function libraryStatus(library: MediaLibrary, ctx: LibraryStatusContext):
       detail: active
         ? `正在处理「${active.title}」· ${active.phase}`
         : `${refresh.processed} / ${refresh.total}`,
+      percent,
+    };
+  }
+  const chapters = library.chapter_job;
+  if (chapters) {
+    const running = chapterJobRunning(chapters);
+    const percent = running ? percentOf(chapters.processed, chapters.total) : null;
+    return {
+      tone: "busy",
+      kind: "chapters",
+      title: chapterJobLabel(chapters),
+      detail: !running
+        ? "等前面的任务跑完再开始"
+        : chapters.total > 0
+          ? `${chapters.processed} / ${chapters.total}${chapters.failed > 0 ? ` · ${chapters.failed} 个失败` : ""}`
+          : "正在统计待处理的文件数",
       percent,
     };
   }
@@ -152,10 +170,29 @@ export function libraryStatus(library: MediaLibrary, ctx: LibraryStatusContext):
   };
 }
 
+function chapterJobRunning(job: ChapterJobProgress): boolean {
+  return job.status === "running" || job.status === "cancelling";
+}
+
+/**
+ * 「生成章节」菜单项与状态列共用的一句话：没作业时是动作名，有作业时如实
+ * 说到哪了——点了菜单后作业常要排在扫描/刷新后面，只写"生成章节"用户会以为没反应。
+ */
+export function chapterJobLabel(job: ChapterJobProgress | null | undefined): string {
+  if (!job) return "生成章节";
+  if (job.stopping) return "正在停止生成章节";
+  if (!chapterJobRunning(job)) return "生成章节排队中";
+  const percent = percentOf(job.processed, job.total);
+  return percent === null ? "正在生成章节" : `正在生成章节 ${percent}%`;
+}
+
 /** 是否有长任务在跑（摘要行「N 个在跑任务」与筛选用）。 */
 export function libraryIsBusy(library: MediaLibrary): boolean {
   return (
-    library.scanning || library.organizing || Boolean(library.metadata_refresh?.refreshing)
+    library.scanning ||
+    library.organizing ||
+    Boolean(library.metadata_refresh?.refreshing) ||
+    library.chapter_job !== null
   );
 }
 
