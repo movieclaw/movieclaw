@@ -111,6 +111,34 @@ export function layoutMasonry(
 }
 
 /**
+ * 稀疏月份（照片数少于列数）的排版：一行等高、限高。
+ *
+ * 最短列算法对 1–2 张的月份会退化成"一根孤柱"：一张 1:2 的长截图在 238px 的列里
+ * 就是 475px 高，右边几列全空，首屏看起来像没内容。零星截图、单张转存在真实
+ * 相册里很常见（没有 EXIF 的图按修改时间归到当月，往往就是一两张）。这种月份
+ * 改成一行等高：高度取「填满整行所需」与「上限」的较小者，每张按比例给宽度，
+ * 既不撑高也不撑爆。上限 = 目标列宽 × 1.2，与相邻月份的瀑布流视觉体量接近。
+ */
+export function layoutSparseRow(
+  aspects: readonly number[],
+  containerWidth: number,
+  targetColumnWidth: number,
+  gap = GAP,
+): { placements: Placement[]; height: number } {
+  const ratios = aspects.map((raw) => Math.min(MAX_ASPECT, Math.max(MIN_ASPECT, raw || 1)));
+  const sum = ratios.reduce((a, b) => a + b, 0);
+  const fitHeight = (containerWidth - gap * (ratios.length - 1)) / Math.max(sum, 0.01);
+  const height = Math.min(targetColumnWidth * 1.2, fitHeight);
+  let x = 0;
+  const placements = ratios.map((ratio) => {
+    const placement = { x, y: 0, width: ratio * height, height };
+    x += ratio * height + gap;
+    return placement;
+  });
+  return { placements, height: ratios.length === 0 ? 0 : height };
+}
+
+/**
  * 月份跳转轨道：与海报墙的 A-Z 索引条同一位置、同一交互（点档名跳到该档
  * 第一格），档名换成月份、按年分组。月份数量不定，不像 26 个字母那样等分，
  * 所以是可滚动的列表而不是按比例换算的滑条。
@@ -138,7 +166,8 @@ export function PhotoMonthIndex({
   return (
     <nav
       aria-label="按月份跳转"
-      className="scroll-none sticky top-4 max-h-[calc(100dvh-32px)] w-14 shrink-0 select-none overflow-y-auto text-micro leading-none max-md:hidden"
+      // top-20：让开页头右上角悬浮的「⋯」操作按钮（滚动后它仍固定在那一角）
+      className="scroll-none sticky top-20 max-h-[calc(100dvh-96px)] w-14 shrink-0 select-none overflow-y-auto text-micro leading-none max-md:hidden"
     >
       {years.map((group) => (
         <div key={group.year} className="mb-2">
@@ -267,15 +296,14 @@ const PhotoMonthSection = memo(function PhotoMonthSection({
   onOpen: (index: number) => void;
   workingLabelOf?: (item: LibraryItem) => string | undefined;
 }) {
-  const layout = useMemo(
-    () =>
-      layoutMasonry(
-        entries.map(({ item }) => item.primary_aspect),
-        width,
-        targetColumnWidth,
-      ),
-    [entries, width, targetColumnWidth],
-  );
+  const layout = useMemo(() => {
+    const aspects = entries.map(({ item }) => item.primary_aspect);
+    const masonry = layoutMasonry(aspects, width, targetColumnWidth);
+    // 照片数少于列数：瀑布流会退化成孤柱，改一行等高（见 layoutSparseRow）
+    return aspects.length < masonry.columns
+      ? layoutSparseRow(aspects, width, targetColumnWidth)
+      : masonry;
+  }, [entries, width, targetColumnWidth]);
   const count = total ?? entries.length;
   return (
     // data-wall-initial：月份段的首部锚点，海报墙的滚动联动据此点亮索引条上的月份
