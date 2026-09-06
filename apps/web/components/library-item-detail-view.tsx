@@ -1066,10 +1066,13 @@ export function PlayAction({
                 disabled={marking}
                 aria-pressed={Boolean(favorite)}
                 aria-label={favorite ? "取消收藏" : "收藏"}
-                className={`${MARK_BUTTON_CLASS} ${favorite ? "text-[var(--danger)]" : ""}`}
+                className={MARK_BUTTON_CLASS}
               >
+                {/* 已收藏 / 已看的语义色走内联样式：按钮基类自带 text-white，
+                    再叠一个文字色工具类谁赢由样式表顺序决定，不由 class 顺序决定 */}
                 <HeartIcon
                   className="size-[18px] max-md:size-[22px]"
+                  style={favorite ? { color: "var(--danger)" } : undefined}
                   fill={favorite ? "currentColor" : "none"}
                 />
               </button>
@@ -1083,9 +1086,12 @@ export function PlayAction({
                 disabled={marking}
                 aria-pressed={finished}
                 aria-label={finished ? "标记为未看" : "标记为已看"}
-                className={`${MARK_BUTTON_CLASS} ${finished ? "text-[var(--ok)]" : ""}`}
+                className={MARK_BUTTON_CLASS}
               >
-                <CheckIcon className="size-[18px] stroke-[2.2] max-md:size-[22px]" />
+                <CheckIcon
+                  className="size-[18px] stroke-[2.2] max-md:size-[22px]"
+                  style={finished ? { color: "var(--ok)" } : undefined}
+                />
               </button>
             </Tooltip>
           )}
