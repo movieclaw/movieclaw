@@ -4,6 +4,8 @@
 >
 > 样稿：`docs/design/mockups/library-recycle-bin-demo.html`（四屏：桌面列表 / 「立即清理全部」确认 / 手机端 / 空状态）
 >
+> 2026-09-06 二稿：列表单位从「文件」改为「条目」——一部剧无论多少集一行，可展开（§2.2）。
+>
 > 相关：`library-file-recycle.md`（「待回收」第三态与公共延迟删除，本文是它 §7 末尾「留作扩展」
 > 的那个全局面板）、`library-manage.md`（管理页，本文往它 §5 预留的标签栏里放第一个新标签）、
 > `quality-upgrade.md`（洗版，当前唯一的触发方）
@@ -34,69 +36,98 @@
 媒体库管理                                                            [＋ 创建媒体库]
 库负责盘点与守护；自动入库负责把下载完成的内容搬进库。
 [媒体库 12]  [回收站 57]
-57 个文件 · 53.2 GB · 12 个将在 24 小时内自动清理                        [立即清理全部]
-[⌕ 按片名或文件名搜索] [全部库 57][电影 41][剧集 14][4K 电影 2]  [洗版替换 52][洗版证伪 5]
-┌──┬──────────────┬──────────────────┬──────────────────┬──────────┬────────┐
-│☐ │ 条目           │ 文件               │ 原因               │ 自动清理   │ 操作    │
-└──┴──────────────┴──────────────────┴──────────────────┴──────────┴────────┘
-第 1–20 / 57                                                   ‹ 1 2 3 ›
+57 个文件 · 53.2 GB · 12 个将在 24 小时内自动清理                        [立即清理全部 · 57]
+[⌕ 按片名、剧名或文件名搜索] [全部库 57][电影 41][剧集 14][4K 电影 2]  [洗版替换 52][洗版证伪 5]
+┌──┬──────────────────┬──────────────────┬──────────────────┬──────────┬────────────┐
+│☐ │ 条目               │ 文件               │ 原因               │ 自动清理   │ 操作        │
+│☐ │   九门 2025        │ 九门.2025.1080p…   │ 洗版替换：…        │ 6 小时后   │ 恢复 清理    │
+│– │ › 权力的游戏       │ 24 集 · 26.4 GB    │ 洗版替换：…        │ 最早 9 小时后│ 恢复 24 清理 24│
+│☑ │     S01E03 雪诺大人 │ Game.of.Thrones…   │ 1.1 GB             │ 9 小时后   │ 恢复 清理    │
+│☐ │     S01E04 …       │ …                  │ …                  │ …          │ …           │
+└──┴──────────────────┴──────────────────┴──────────────────┴──────────┴────────────┘
+第 1–20 个条目，共 31 个条目 · 57 个文件                                    ‹ 1 2 ›
 ```
 
-选中若干行后，表格上方的摘要行被**批量操作条**替代：`已选 3 个 · 4.1 GB   [恢复所选] [立即清理所选]`。
+选中若干行后，表格上方的摘要行被**批量操作条**替代：`已选 3 个文件 · 6.5 GB   [恢复所选] [立即清理所选]`。
 
-### 2.2 摘要行
+### 2.2 列表单位：一个条目一行，可展开
+
+洗版一次替换整季二三十集是常态，按文件平铺时一部剧就占满一页，别的条目全被推到后面。
+所以列表的**行是条目**（`media_item`）：
+
+- 一部电影一行、一部剧一行（不按季拆：用户认的是"这部剧"，季集信息进第二行 `S01–S03`）；
+- 条目下有多个待回收文件（剧集多集、电影多个旧版本）时行首画 `›`，展开列出每个文件，
+  剧集按季集排序、电影按大小降序；电影只有一个文件时行内直接写文件名，不画箭头；
+- 条目行的「自动清理」取组内**最早**的 `purge_after`（"最早 9 小时后"，第二行"最晚 3 天后"），
+  排序也按它；原因列组内一致时写整句，混合时写计数 `洗版证伪 4 · 洗版替换 2`；
+- 条目行的动作作用于组内全部文件，按钮带数字（`恢复 24` / `清理 24`）；展开后的每行有自己的
+  恢复 / 清理；
+- 勾选：条目复选框 = 整组；展开后可勾单个文件，组框显示半选 `–`。批量条计数按文件；
+- 默认全部折叠。展开状态只在客户端，翻页即重置。
+
+**摘要行按文件计数、分页按条目计数**：摘要回答"多大、多急"，只有文件数和字节数能回答；分页
+的单位必须与行一致，否则一页 20 个文件可能只显示半部剧。
+
+### 2.3 摘要行
 
 一句话回答"回收站里有多少、要紧不要紧"：`N 个文件 · 总大小 · M 个将在 24 小时内自动清理`。
 24 小时内到期的数为 0 时省去第三段；有「原地待回收」（移入回收站失败、文件仍在原位）的行时
-追加 `· K 个仍在原位`。右侧唯一的页级按钮「立即清理全部」，作用域是**当前筛选结果**（见 §2.5）。
+追加 `· K 个仍在原位`。右侧唯一的页级按钮「立即清理全部 · N」，作用域是**当前筛选结果**（见 §2.6）。
 
-### 2.3 筛选
+### 2.4 筛选
 
 | 控件 | 内容 | 实现 |
 |---|---|---|
-| 搜索 | 匹配片名 / 剧名 / 文件名 | 服务端 `q` 参数（列表已分页，不能客户端过滤） |
+| 搜索 | 匹配片名 / 剧名 / 文件名；命中文件名时整个条目出现，展开后只列命中的文件 | 服务端 `q` 参数（列表已分页，不能客户端过滤） |
 | 库胶囊 | 全部 + 有待回收文件的每个库，带计数；没有待回收的库不出现 | `library_id` |
 | 原因胶囊 | 洗版替换 / 洗版证伪 / 手动（词表来自 `trash_context.reason`，只渲染计数 > 0 的） | `reason` |
 
-默认排序：`purge_after` 升序（最先被自动清理的排最上，`NULL` 不自动清理的排最后），再按
-`trashed_at` 降序。不提供排序切换——回收站的主问题是"哪些快没了"，一个固定顺序够用。
+默认排序：条目按组内最早 `purge_after` 升序（最先被自动清理的排最上，全组 `NULL` 不自动清理的
+排最后），再按最近 `trashed_at` 降序。不提供排序切换——回收站的主问题是"哪些快没了"，一个固定
+顺序够用。
 
-### 2.4 列定义
+### 2.5 列定义
+
+条目行：
 
 | 列 | 内容 | 来源 |
 |---|---|---|
-| ☐ | 多选，表头全选当前页 | — |
-| 条目 | 海报缩略图、片名 + 年份（剧集：剧名 + `S01E03` + 集名），第二行库名；片名链接到条目详情页 `/library/{lib}/item/{item}` | `media_item` + `library` |
-| 文件 | 文件名（等宽）、第二行 `大小 · 分辨率 · 片源 · 制作组` 的胶囊；「原地待回收」形态加 `原地` 警示胶囊，悬停说明"移入回收站失败，文件仍在原路径" | `LibraryFile` 既有列 + `trash_original_path IS NULL` |
-| 原因 | `trash_context.note` 整句（如"洗版替换：1080p WEB-DL → 2160p Remux"），第二行触发方 `trigger.label`（"《九门》订阅洗版"）+ 进入时间 | `trash_context` `trashed_at` |
-| 自动清理 | 倒计时：`3 天 4 小时后`；24 小时内为警示色 `18 小时后`；`purge_after IS NULL` 显示 `不自动清理`。复用详情页 `purgeCountdown` 的算法 | `purge_after` |
-| 操作 | `恢复` / `立即清理` 两个行内按钮，与详情页 FileRow 一致；不用 ··· 菜单，回收站的行只有这两件事 | — |
+| ☐ | 整组多选，半选 `–`；表头全选当前页 | — |
+| 条目 | `›`（多文件时）、海报缩略图、片名 + 年份 / 剧名，第二行库名（剧集追加涉及的季 `S01–S03`）；片名链接到条目详情页 `/library/{lib}/item/{item}` | `media_item` + `library` |
+| 文件 | 单文件：文件名（等宽）+ `大小 · 分辨率 · 片源 · 制作组` 胶囊；多文件：`24 集 · 26.4 GB` / `2 个版本 · 22.7 GB` + 组内去重后的规格胶囊。「原地待回收」形态加 `原地` 警示胶囊，悬停说明"移入回收站失败，文件仍在原路径" | `LibraryFile` 既有列 + `trash_original_path IS NULL` |
+| 原因 | 组内一致：`trash_context.note` 整句（"洗版替换：1080p WEB-DL → 2160p Remux"）；混合：`洗版证伪 4 · 洗版替换 2`。第二行触发方 `trigger.label` + 最近进入时间 | `trash_context` `trashed_at` |
+| 自动清理 | 单文件：`3 天 4 小时后`；多文件：`最早 9 小时后`，第二行 `最晚 3 天后`。24 小时内为警示色；全组 `purge_after IS NULL` 显示 `不自动清理`。复用详情页 `purgeCountdown` 的算法 | `purge_after` |
+| 操作 | `恢复` / `立即清理`（多文件带数字 `恢复 24` / `清理 24`）；不用 ··· 菜单，回收站的行只有这两件事 | — |
 
-### 2.5 批量操作与确认
+展开后的文件行（缩进、略小一号）：☐ · `S01E03` + 集名（电影多版本时写版本规格）· 文件名 ·
+大小 · 自己的倒计时 · 恢复 / 清理。原因列不重复组内一致的整句，只在与组不同时写出。
 
-- **立即清理全部**：作用域 = 当前筛选（搜索 + 库 + 原因）命中的**全部**行，不只当前页。
-  确认弹窗写明数量、总大小、其中原地待回收的数量，以及"删除不可撤销、若文件仍在做种会中断
-  做种"两句后果；按钮文案带数字：「清理 57 个文件」。
-- **立即清理所选 / 恢复所选**：作用域 = 勾选的 id。清理走同一个确认弹窗；恢复不弹确认
-  （恢复可逆：恢复后可以再删）。
+### 2.6 批量操作与确认
+
+- **立即清理全部**：作用域 = 当前筛选（搜索 + 库 + 原因）命中的**全部文件**，不只当前页。
+  确认弹窗写明文件数与涉及条目数、总大小、其中原地待回收的数量，以及"删除不可撤销、若文件仍
+  在做种会中断做种"两句后果；按钮文案带文件数：「清理 57 个文件」。
+- **条目行的「清理 N」/ 批量条的「立即清理所选」/ 展开行的「清理」**：作用域 = 该组 / 勾选 /
+  单个文件的 id，复用同一个确认弹窗（数字不同）。恢复不弹确认（恢复可逆：恢复后可以再删）。
 - **不提供「恢复全部」**：洗版替换的旧版本恢复回去就是与新版本共存，整批恢复几乎不是用户想要
-  的；真要恢复一批，全选当前页再点「恢复所选」即可（20 个一页，够用）。
+  的；一部剧要整体恢复有条目行的「恢复 24」，跨条目恢复用全选当前页 + 「恢复所选」。
 - 批量结果 toast 一句回执：「已清理 55 个文件，2 个失败」，失败项留在列表里并在行上标红原因
   （后端逐个返回 `error` 文案）。
 
-### 2.6 空状态与手机端
+### 2.7 空状态与手机端
 
 - 空状态：「回收站是空的」+ 一句解释：洗版替换下来的旧版本会在这里停留 7 天再自动删除，期间
   可以恢复。不放按钮。
-- 手机端（`max-md`）：一行压成一卡：第一行海报 + 片名 + 年份 + 倒计时；第二行文件名；第三行
-  原因；底部 `恢复` `清理` 两个按钮。多选在手机端保留（复选框在卡片左上），批量操作条改为
-  底部悬浮。分页控件同桌面。
+- 手机端（`max-md`）：一个条目一卡：第一行海报 + 片名 + 最早到期倒计时；第二行文件摘要（单
+  文件写文件名，多文件写 `24 集 · 26.4 GB · 720p HDTV`）；第三行原因；底部左侧「展开 N 集」开关、
+  右侧 `恢复 N` `清理 N`。展开后卡片内列每集：集号、集名、大小、倒计时，各带复选框。多选保留
+  （复选框在卡片左侧），批量操作条改为底部悬浮。分页控件同桌面。
 
 ## 3. 接口
 
 全部 `dependencies=[Depends(require_admin)]`，响应走 `ApiResponse`。
 
-### 3.1 列表
+### 3.1 列表（按条目分组）
 
 ```text
 GET /libraries/trashed-files?q=&library_id=&reason=&limit=20&offset=0
@@ -104,35 +135,47 @@ GET /libraries/trashed-files?q=&library_id=&reason=&limit=20&offset=0
 
 ```json
 {
-  "total": 57,
+  "total_files": 57,
+  "total_items": 31,
   "total_bytes": 57120000000,
   "due_within_24h": 12,
   "kept_in_place": 1,
   "by_library": [{"library_id": 1, "name": "电影", "count": 41}, …],
   "by_reason":  [{"reason": "upgrade_replaced", "count": 52}, …],
-  "files": [
+  "items": [
     {
-      "id": 8801, "file_name": "…", "file_path": "…", "size_bytes": …,
-      "resolution": "1080p", "media_source": "WEB-DL", "release_group": "…",
-      "kept_in_place": false,
-      "trashed_at": "…", "purge_after": "…",
-      "reason": "upgrade_replaced", "note": "洗版替换：1080p WEB-DL → 2160p Remux",
-      "trigger_label": "《九门》订阅洗版",
-      "library": {"id": 1, "name": "电影"},
-      "media_item": {"id": 3021, "title": "九门", "year": 2025, "kind": "movie",
-                     "season_number": 0, "episode_number": 0, "episode_title": null,
-                     "poster_url": "…"}
+      "library": {"id": 2, "name": "剧集"},
+      "media_item": {"id": 3021, "title": "权力的游戏", "year": 2011, "kind": "series", "poster_url": "…"},
+      "seasons": [1, 2, 3],
+      "file_count": 24, "total_bytes": 28300000000,
+      "earliest_purge_after": "…", "latest_purge_after": "…",
+      "reasons": {"upgrade_replaced": 24},
+      "note": "洗版替换：720p HDTV → 1080p BluRay",
+      "trigger_label": "《权力的游戏》订阅洗版", "latest_trashed_at": "…",
+      "files": [
+        {
+          "id": 8801, "file_name": "…", "file_path": "…", "size_bytes": …,
+          "resolution": "720p", "media_source": "HDTV", "release_group": "CTU",
+          "season_number": 1, "episode_number": 3, "episode_title": "雪诺大人",
+          "kept_in_place": false, "trashed_at": "…", "purge_after": "…",
+          "reason": "upgrade_replaced", "note": "洗版替换：720p HDTV → 1080p BluRay"
+        }
+      ]
     }
   ]
 }
 ```
 
-- 聚合字段（`total*` / `due_within_24h` / `kept_in_place` / `by_*`）按**搜索 + 库 + 原因筛选后**
+- `limit/offset` 作用于**条目**；`items[].files` 随条目一次返回（一部剧最多几百集，一页 20 个
+  条目的载荷可控，展开不再打接口，翻页即重置展开态）。`note` 为组内一致时的整句，混合时
+  为 `null`、前端按 `reasons` 拼计数。
+- 聚合字段（`total_*` / `due_within_24h` / `kept_in_place` / `by_*`）按**搜索 + 库 + 原因筛选后**
   的口径计算，与摘要行、胶囊计数、「立即清理全部」的作用域三者同一份数字。
-- 分页用现有 `Annotated[int, Query(ge=…)]` 的 `limit/offset` 写法，加 `total` 是为了画页码——
-  回收站是管理表格，批量操作需要用户先知道总数，滚动加载不合适。
-- 一次查询：`library_file` 按 `state='trashed'` 走既有 `ix_library_file_state`，join `media_item` 与
-  `library`。剧集的集名从 `media_item` 的季集表取，与详情页文件区同源。
+- 分页用现有 `Annotated[int, Query(ge=…)]` 的 `limit/offset` 写法，加 `total_items` 是为了画
+  页码——回收站是管理表格，批量操作需要用户先知道总数，滚动加载不合适。
+- 两步查询：先按 `state='trashed'`（既有 `ix_library_file_state`）+ 筛选条件 `GROUP BY media_item_id`
+  取 `MIN(purge_after)` 排序分页出本页条目 id，再取这些条目的全部待回收文件；join `media_item`
+  与 `library`。剧集的集名从 `media_item` 的季集表取，与详情页文件区同源。
 
 ### 3.2 批量
 
@@ -141,8 +184,9 @@ POST /libraries/trashed-files/purge    body: {"ids": [..]} 或 {"filter": {"q", 
 POST /libraries/trashed-files/restore  body: {"ids": [..]}
 ```
 
-- 两者互斥：`ids` 用于「所选」，`filter` 用于「全部」。服务端按 filter 重新查一遍 id 再逐个执行，
-  不信任前端传来的 total。
+- 两者互斥：`ids` 用于「所选」「条目行的清理 N」「展开行的单个文件」（前端从 `items[].files`
+  取 id），`filter` 用于「全部」。服务端按 filter 重新查一遍 id 再逐个执行，不信任前端传来的
+  total。
 - 逐文件调用既有 `purge_file` / `restore_file`，每个文件单独 commit，失败不回滚已成功的；返回
   `{"done": 55, "failed": [{"id": …, "file_name": …, "error": "…中文原因"}]}`。
 - **同步执行，不做后台任务**：清理是 `unlink`（原盘目录才 `rmtree`），57 个文件毫秒级；上限用
@@ -164,9 +208,9 @@ POST /libraries/trashed-files/restore  body: {"ids": [..]}
 | `src/movieclaw_api/schemas/library.py` | `TrashedFilesData` / `TrashedFileView` / 批量请求与结果 schema；`LibraryStats.trashed_count` |
 | `src/movieclaw_db/repositories/library_repo.py` | `refresh_stats` 加 `stats_trashed_count`（迁移加一列，默认 0，向前兼容） |
 | `apps/web/components/library-manage-view.tsx` | 标题下插入标签栏；`tab === "recycle"` 时渲染 `LibraryRecycleBin` 代替库表格 |
-| `apps/web/components/library-recycle-bin.tsx`（新） | 摘要行、筛选、表格 / 手机卡片、多选、分页、确认弹窗 |
+| `apps/web/components/library-recycle-bin.tsx`（新） | 摘要行、筛选、条目行 + 展开文件行 / 手机卡片、整组与半选、分页、确认弹窗 |
 | `apps/web/lib/api/libraries.ts` | `listTrashedFiles` / `purgeTrashedFiles` / `restoreTrashedFiles` |
-| `apps/web/lib/library-recycle.ts`（新）+ `test/library-recycle.test.mjs` | 纯函数：倒计时分档、摘要文案、字节格式化；`node --test` |
+| `apps/web/lib/library-recycle.ts`（新）+ `test/library-recycle.test.mjs` | 纯函数：倒计时分档、摘要文案、字节格式化、组内原因合并、半选态计算；`node --test` |
 | `src/movieclaw_api/data/spec.json` 等 | `scripts/export-spec.sh` 重新导出 |
 
 无运行时依赖变化，不 bump `docker/runtime-version`。
@@ -176,5 +220,6 @@ POST /libraries/trashed-files/restore  body: {"ids": [..]}
 - 手动删除文件改走回收站（`library-file-recycle.md` §11 立场不变，另开）。
 - 保留期可配置、按库配置。
 - 排序切换、按日期范围筛选。
-- 「恢复全部」（见 §2.5）。
+- 「恢复全部」（见 §2.6）。
+- 按季再分一层折叠：剧名一层已经把几十行收成一行，季只作为第二行文字提示。
 - 回收站里的文件预览 / 播放。
