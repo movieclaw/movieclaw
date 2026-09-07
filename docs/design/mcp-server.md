@@ -626,6 +626,10 @@ class McpEndpoint(BaseModel):
 - **工具面构成守护**：上传/下载类、`x-cli-hidden`、会话递归类操作一律不出现在
   `tools/list`（样本从 spec 现取，新增同类操作自动纳入）；注解推导正确
   （`GET` → `readOnlyHint`，`x-cli-dangerous: destructive` → `destructiveHint`）。
+- **手动验证**（不进 CI，给人用）：`scripts/mcp_client_demo.py <url> <token>` 用**官方
+  客户端**连一个真实端点，跑通握手 → `tools/list` → `tools/call`。自动化测试走的是
+  进程内 ASGI，这个脚本走真实 HTTP，两者互补。P1 验收时用它在真服务上跑过：
+  `mode` 取 `2026-07-28` / `legacy` / `auto` 三种都能接（旧代协商到 `2025-11-25`）。
 - **依赖守护**：`mcp` 版本上限锁死；`docker/runtime-version` 已 bump 13 → 14
   （CI 既有守卫会拦漏 bump）。
 - **CLI 命令面**：新增 `mcp` 域会让 Go 侧三个守护变红（命令树快照 ×2、域帮助覆盖），
@@ -683,7 +687,8 @@ src/movieclaw_api/api/routes/mcp.py  # 管理面 REST
 src/movieclaw_api/schemas/mcp.py     # 管理面请求/响应模型
 apps/web/components/mcp-section.tsx  # 设置分区
 apps/web/lib/api/mcp.ts              # 前端接口封装
-tests/mcp/…                          # 冒烟 + 六组守护
+tests/mcp_server/…                   # 冒烟 + 六组守护（目录不叫 mcp：会盖住 SDK 的包）
+scripts/mcp_client_demo.py           # 用官方客户端连真实端点的连通性自检
 ```
 
 改动既有文件：`settings/__init__.py`（登记配置域）、`api/router.py`（挂管理面）、
