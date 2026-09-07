@@ -1,6 +1,6 @@
 # MCP Server 端点：把 movieclaw 的服务目录开放给外部 AI 客户端
 
-> 状态：**已评审定稿，待实现**（四条拍板见 §11；本文尚未落代码）。
+> 状态：**已评审定稿，待实现**（六条拍板见 §11；本文尚未落代码）。
 > 配套样稿：`docs/design/mockups/mcp-server-demo.html`（管理页每个功能一屏）。
 > 相关设计：`docs/design/agent-cli-integration.md`（产品内 Agent 的 mclaw 工具）、
 > `docs/design/device-auth.md`（令牌签发与吊销的既有立场）、`docs/design/cli.md`。
@@ -57,8 +57,11 @@ MCP 端点**：选哪些服务，这个端点就只有那些工具；端点各�
 ### 2.2 传输：单端点 POST，没有别的形态
 
 - 服务端**必须**提供一个支持 POST 的 MCP 端点（如 `https://host/mcp/media`）。
-- 客户端每条 JSON-RPC 消息一个 POST；服务端按需返回 `application/json`
-  或 `text/event-stream`（长任务边跑边推 `notifications/progress`）。
+- 客户端每条 JSON-RPC 消息一个 POST；服务端**可以**返回 `application/json`
+  （单个 JSON 体）**或** `text/event-stream`（边跑边推进度）——两种都合规，选哪种由服务端定。
+  我们恒选前者，见 §4.8。
+- 注意别把这个和 2024-11-05 那套 **HTTP+SSE 传输**混为一谈：那套是「GET 开一条常驻
+  SSE 通道 + 另一个 POST 端点回消息」，早已废弃，我们不实现、也不兼容。
 - 通知类消息 → `202 Accepted` 空响应体。
 - **必须校验 `Origin` 头**防 DNS 重绑定；不合法 → `403`。
 - 收到旧客户端的 GET / DELETE → `405`；收到 `Mcp-Session-Id` → 忽略。
@@ -139,7 +142,7 @@ RFC 9728 受保护资源元数据、客户端必须走 OAuth 2.1 + PKCE + RFC 87
 ├──────────────────────────────────────────────────────────┤
 │ 工具面 = 端点选中的服务 × 展开开关（§4.1），全部从 spec 现算     │
 │  展开：subscriptions_update(subscription_id, …)（默认）      │
-│  合并：subscriptions(command: enum, params: object)         │
+│  折叠：subscriptions(command: enum, params: object)         │
 └───────────────┬──────────────────────────────────────────┘
                 │ tools/call → operation_id → 方法 + 路径 + 参数分箱
                 ▼
@@ -169,7 +172,7 @@ Web 设置页「MCP 服务」 ──REST──> /api/v1/mcp/endpoints…（管�
 适配逻辑差别很大（有的擅长在大工具集里检索，有的会把工具全量塞进系统提示词），
 所以做成**端点级选项**，两种形态都实现，默认展开。
 
-| | 展开（`expand_tools: true`，默认） | 合并（`expand_tools: false`） |
+| | 展开（`expand_tools: true`，默认） | 折叠（`expand_tools: false`） |
 | --- | --- | --- |
 | 形态 | 一条命令一个工具 | 一个服务一个工具 |
 | 命名 | `<模块>_<命令>`，如 `subscriptions_update` | `<模块>`，如 `subscriptions` |
@@ -187,10 +190,10 @@ Web 设置页「MCP 服务」 ──REST──> /api/v1/mcp/endpoints…（管�
 
 两种形态**共用同一条执行路径**（§4.2）：都是「`operation_id` → 方法 + 路径 +
 参数分箱（path / query / body）→ 进程内调本机 API」。展开模式下工具名本身就是
-`operation_id`；合并模式下 `command` 枚举值就是命令名，再拼回 `operation_id`。
+`operation_id`；折叠模式下 `command` 枚举值就是命令名，再拼回 `operation_id`。
 于是同一条命令在两种模式下走同一段代码，用户切换开关不会得到不同结果。
 
-合并模式的工具形态：
+折叠模式的工具形态：
 
 ```json
 {
@@ -212,7 +215,7 @@ Web 设置页「MCP 服务」 ──REST──> /api/v1/mcp/endpoints…（管�
 > 好处是命令名有枚举兜底，模型编不出不存在的命令；代价是 `params` 弱类型，
 > 靠描述里的字段清单引导。真需要强类型就打开展开模式——这正是这个开关的意义。
 
-> 为什么默认展开而不是默认合并：默认值应该服务「第一次用的人」。展开模式下模型
+> 为什么默认展开而不是默认折叠：默认值应该服务「第一次用的人」。展开模式下模型
 > 不需要理解 movieclaw 的参数体系，照 schema 填就行，首次成功率更高。老练用户
 > 想要小而稳的工具面时，一个开关就切过去。
 
@@ -246,7 +249,7 @@ Web 设置页「MCP 服务」 ──REST──> /api/v1/mcp/endpoints…（管�
   "arguments": { "subscription_id": 42, "follow_future": false, "rule_set_id": 3 } }
 ```
 
-合并模式下的同一件事（工具定义见上一节）：
+折叠模式下的同一件事（工具定义见上一节）：
 
 ```json
 { "name": "subscriptions",
@@ -259,9 +262,14 @@ body `{"follow_future": false, "rule_set_id": 3}`。
 
 实测规模（本仓当前 spec）：CLI 可见操作 329 个，按域分布
 `library 57 / playback 35 / auth 20 / subscriptions 16 / app 16 / dl 15 / site 13 …`；
-合并模式下每域的工具描述体积为 `library ≈ 3.3 KB`、`subscriptions ≈ 0.9 KB`，
-全量 24 个服务 ≈ 12 KB。管理页在选服务时**按当前模式实时算出工具数与体积**——
-只如实报数字，不设上限也不给警告：给客户端多少工具合适，用户自己判断。
+折叠模式下每域的工具描述体积为 `library ≈ 3.3 KB`、`subscriptions ≈ 0.9 KB`，
+全量 24 个服务 ≈ 12 KB。管理页在选服务时**按当前模式实时算出工具数与体积**。
+
+**超过 30 个工具时给一条提示**（2026-09 定）：展开模式下工具数一旦超过 30，
+在汇总行给出「工具偏多，建议改用折叠模式」的黄色提示，并把折叠后的数字一并算给用户看
+（「折叠后是 4 个工具」）。这是**建议不是限制**——不拦创建、不禁用按钮，用户执意要就照建
+。阈值取 30 而不是 40：30 是业界观察到开始退化的下沿，提示要早于问题出现。
+折叠模式下不提示（它本来就只有几个工具）。
 
 ### 4.2 执行路径：直连本机 API（进程内 ASGI），不经 mclaw 子进程
 
@@ -294,7 +302,7 @@ async with httpx.AsyncClient(transport=transport, base_url="http://mcp.internal"
 | 长任务 `--wait` 轮询 | `x-cli-job` 的操作直接返回 `job_id`，模型改调 `jobs_wait`（`jobs.wait` 是真实接口，长轮询）；**工具描述里写清这条链路** |
 | 输出截断与默认 `--limit` | **必须自己实现**：列表类接口的响应可能极大（媒体库动辄上万条）。做法：注入默认 `limit`、结果字节上限（超了截断并在文末标注「已截断，用 limit/offset 取更多」） |
 | 搜索结果行号（`download 3`） | 直连没有客户端会话态，本来也不该有——统一用显式参数（`dl_submit` 传 `site_id` + `url`） |
-| `--help` | 展开模式不需要；合并模式靠描述里的命令与字段清单 |
+| `--help` | 展开模式不需要；折叠模式靠描述里的命令与字段清单 |
 
 **反而变好的两件事**：
 
@@ -327,6 +335,10 @@ def build_server(endpoint: McpEndpoint) -> Server:
 
     return Server(f"movieclaw/{endpoint.slug}",
                   on_list_tools=on_list_tools, on_call_tool=on_call_tool)
+
+# 挂载形态：恒 JSON 应答、无会话、Host 白名单（§4.8 / §8）
+app = server.streamable_http_app(json_response=True, stateless_http=True,
+                                 transport_security=TransportSecuritySettings(...))
 ```
 
 SDK 负责：两代协议兼容（`server/discover` 与旧代 `initialize` 同时应答）、
@@ -340,9 +352,10 @@ JSON-RPC 编解码、SSE、必填请求头校验、`transport_security` 的 Orig
 
 需要在实现时验证并可能返工的两点（文档没写死，属于已知风险）：
 
-1. **子应用 lifespan 不会自动跑**——宿主 lifespan 要显式进入 SDK 的会话管理器上下文。
-   端点是动态的，所以要用 `AsyncExitStack` 按需进入、配置变更时退出。
-   若 v2 无状态模式下不再需要会话管理器，这块直接省掉。
+1. **子应用 lifespan 不会自动跑**——被 `Mount` 的子应用自带的 lifespan 是死代码，
+   宿主 lifespan 必须显式进入 `session_manager.run()`；而 `session_manager` 又要在
+   `streamable_http_app()` 调用之后才存在。我们的端点是运行期增删的，所以得用
+   `AsyncExitStack` 按需进入、配置变更时退出。这是本方案最需要在实现时验证的一处。
 2. `ServerRequestContext` 能拿到的 HTTP 细节有限（文档只明确了 headers）。
    我们的设计**不依赖它**——端点身份与鉴权都在进 SDK 之前的调度层完成，
    这也符合仓内「默认拒绝、鉴权集中」的立场。
@@ -413,6 +426,33 @@ JSON-RPC 的错误形态不必迁就业务统一响应体。
 > 后路留着：`x-cli-dangerous` 的标注一直在 spec 里，将来真想加回档位，就是
 > 工具面渲染时多一个过滤条件的事，不影响其余任何设计。
 
+### 4.8 应答形态：恒为 `application/json`，不开 SSE
+
+**已定**：端点只用 Streamable HTTP 这一种传输，且**每个 POST 都用单个 JSON 体应答**，
+服务端永不开 `text/event-stream` 流。SDK 侧就是一个开关：
+
+```python
+server.streamable_http_app(
+    json_response=True,        # 每个 POST 单个 JSON 体，不开 SSE 流
+    stateless_http=True,       # 每请求一个传输，不做会话跟踪
+    transport_security=...,    # Host/Origin 白名单，见 §8
+)
+```
+
+为什么可以这么定：SSE 在这套协议里只服务三件事，我们一件都不用——
+
+| SSE 才能做的事 | 我们为什么不需要 |
+| --- | --- |
+| 调用中推 `notifications/progress` | 长任务本来就立即返回 `job_id`，进度靠模型调 `jobs_wait`（§4.2） |
+| 调用中回问客户端（elicitation / sampling） | 不实现，非目标（§1） |
+| `subscriptions/listen` 的变更通知长流 | 不实现——端点的工具面只在管理员改配置时才变，不需要推给客户端 |
+
+代价写明白：开了 `json_response=True` 之后，若将来真要推进度或回问客户端，
+SDK 会在那条腿上抛 `NoBackChannelError`——那时把这个开关关掉即可，属于一行的事。
+
+顺带的好处：JSON 应答对反代最友好。movieclaw 的 Web 层是 Next 反代到后端，
+SSE 要处理缓冲（`X-Accel-Buffering: no`）、空闲超时、连接数，恒 JSON 一个都不用管。
+
 ---
 
 ## 5. 数据模型
@@ -469,9 +509,10 @@ class McpEndpoint(BaseModel):
 
 ### 6.2 协议面（`/mcp/{slug}`，不进 OpenAPI）
 
-协议方法、两代兼容、必填头校验、`Origin` 白名单、错误码（`-32020` / `-32022` /
+协议方法、两代兼容、必填头校验、Host/Origin 白名单、错误码（`-32020` / `-32022` /
 `-32601`）与 `resultType`、`ttlMs`、`cacheScope` 这些字段，**全部由 SDK 负责**——
 我们不复述规范，只在契约冒烟测试里确认它确实这么答（§9）。
+应答形态恒为 `application/json`（§4.8），不会出现 `text/event-stream`。
 
 我们实现的只有两个回调与一层调度：
 
@@ -489,14 +530,14 @@ class McpEndpoint(BaseModel):
 
 - 展开模式：`operation_id` 的 `.` 与 `-` 换成 `_`，如 `subscriptions_update`、
   `search_history_get_results`。
-- 合并模式：就是服务名，如 `subscriptions`。
+- 折叠模式：就是服务名，如 `subscriptions`。
 
 `tools/list` 按工具名字典序输出（顺序确定，利于客户端与提示词缓存命中）。
 
 工具注解（只是给客户端的提示，不构成闸门）：展开模式逐工具推导——
 `GET` → `readOnlyHint: true`，`x-cli-dangerous: destructive` → `destructiveHint: true`，
 外网数据源（discover/search/site）→ `openWorldHint: true`；
-合并模式只能整域标注（含危险操作的域标 `destructiveHint: true`）。
+折叠模式只能整域标注（含危险操作的域标 `destructiveHint: true`）。
 支持这些注解的客户端会据此在执行前向人确认——这是「危险操作要不要拦」这件事
 目前唯一的落点，且落在客户端而不是我们这里。
 
@@ -513,9 +554,9 @@ class McpEndpoint(BaseModel):
 | ① | 空态 | 一句话讲清 MCP 是什么、能干什么，一个「新建端点」主按钮 |
 | ② | 端点列表 | 每端点：名称、URL、工具模式徽标、工具数、最近调用、启停开关、更多菜单 |
 | ③ | 新建 · 第 1 步 | 名称 + slug（实时拼出完整 URL，重名即时报错） |
-| ④ | 新建 · 第 2 步 | 服务多选 + **「展开工具」开关**（默认开）+ 超时；底部实时汇总随模式切换：展开算命令数、合并算服务数（只报数字，不评判） |
+| ④ | 新建 · 第 2 步 | 服务多选 + **「展开工具」开关**（默认开）+ 超时；底部实时汇总随模式切换：展开算命令数、折叠算服务数；**展开超过 30 个工具时给黄色建议**（含「折叠后是几个」的对照数字），只建议不拦截 |
 | ⑤ | 创建完成 · 令牌 | 明文只显示这一次；三个页签给 Claude Code / JSON 配置 / cURL 自检片段 |
-| ⑥ | 端点详情 | 工具目录预览（展开模式列工具名 + 参数，合并模式列服务与其命令清单）、连通性自检、令牌轮换、最近调用 |
+| ⑥ | 端点详情 | 工具目录预览（展开模式列工具名 + 参数，折叠模式列服务与其命令清单）、连通性自检、令牌轮换、最近调用 |
 | ⑦ | 危险操作确认 | 停用 / 删除 / 轮换令牌各自的后果文案 |
 | ⑧ | 总开关关闭态 | 全局关掉后列表置灰，说明「所有端点一律 404」 |
 
@@ -527,7 +568,7 @@ class McpEndpoint(BaseModel):
 | --- | --- |
 | 端点 URL 被扫到 | 未带合法令牌一律 401；令牌 32 字节随机；slug 猜到也没用 |
 | 令牌泄漏 | 只存哈希、一次性回显、可单端点轮换/吊销；端点粒度限制了爆炸半径 |
-| 浏览器里的网页偷打本机端点 | SDK 的 `transport_security` Host/Origin 白名单（规范硬性要求），非法 403 |
+| 浏览器里的网页偷打本机端点 | SDK 的 `transport_security` Host/Origin 白名单（规范硬性要求）；**不在白名单一律 `421 Misdirected Request`，且在我们的代码之前就拦下**。注意默认白名单只有 localhost：部署到真实域名后必须把「外部访问地址」的 host 配进去，否则全部 421 |
 | 模型被诱导执行破坏性操作 | **v1 不做服务端拦截**（见 §4.7）：控制手段是建端点时不勾会删东西的服务、随时停用、随时吊销令牌；工具上的 `destructiveHint` 交给客户端提示 |
 | 客户端跑飞 | 每端点并发信号量 + 单次调用超时 + 令牌只有几分钟有效期 |
 | 提权 | 端点令牌进不了业务接口；业务侧只认现签的 `aud=mcp` 短时令牌，走的还是既有 `require_login` / `require_admin` |
@@ -542,6 +583,8 @@ class McpEndpoint(BaseModel):
 - **协议冒烟（新增 `tests/mcp/`）**：用 **SDK 自带的客户端**连本仓挂载的端点，
   跑通 `server/discover` → `tools/list` → `tools/call`，新旧两代各一遍。
   规范细节由 SDK 保证，我们只验证「接进来确实能用」以及升级 SDK 后没退化。
+- **应答形态守护**：`tools/list` / `tools/call` 的响应 `Content-Type` 必须是
+  `application/json`，不得出现 `text/event-stream`（防止哪天改配置把 SSE 打开了没人发现）。
 - **工具面守护**：端点选中的服务集合 ⇔ `tools/list` 的工具集合严格一致（两种模式各一组）；
   服务域来源必须是 `spec_domains()`（防止手抄一份域清单造成漂移）。
 - **工具名守护**（展开模式）：全量 spec 生成的工具名两两不重复
@@ -550,7 +593,7 @@ class McpEndpoint(BaseModel):
 - **参数映射守护**：遍历全部生成工具，用 schema 的示例值构造请求，断言
   路径参数填满、query/body 分箱正确、且请求能被目标接口的签名接受（不产生 422）。
   这是直连模式最脆弱的一处，必须钉在 CI 上。
-- **两模式等价守护**：同一条命令 + 同一组参数，展开与合并模式构造出的请求
+- **两模式等价守护**：同一条命令 + 同一组参数，展开与折叠模式构造出的请求
   （方法、路径、query、body）完全一致。
 - **结果整形守护**：超大响应必须被截断且带提示；业务错误必须变成
   `is_error=True` 且保留中文 `message`；`data` 必须同时出现在
@@ -571,7 +614,7 @@ class McpEndpoint(BaseModel):
 | 期 | 内容 | 估量 |
 | --- | --- | --- |
 | **P1**（本次） | 依赖引入 + runtime-version bump · 设置域 · 管理面 REST · ASGI 调度器 + SDK 接线 · 工具面渲染（两种模式）· 调度执行（spec→请求、结果整形、截断）· 设置页分区 · 冒烟与守护测试 | 后端 ~1000 行、前端 ~480 行、测试 ~550 行 |
-| **P2** | 长任务进度（`notifications/progress`）、调用日志页、端点级速率限制 | 中 |
+| **P2** | 调用日志页、端点级速率限制、工具描述的按域润色 | 中 |
 | **P3** | OAuth 2.1 + RFC 9728（打通 claude.ai 网页版自定义连接器） | 大 |
 
 比手写协议少掉的：JSON-RPC 分发、两代兼容、SSE、错误码与头校验（约 350 行 + 长期跟规范）。
@@ -626,14 +669,16 @@ tests/mcp/…                          # 冒烟 + 六组守护
 
 ## 11. 拍板记录
 
-四条评审决定（2026-09），按拍板顺序：
+六条评审决定（2026-09），按拍板顺序：
 
 | # | 议题 | 结论 | 详见 |
 | --- | --- | --- | --- |
 | 1 | 工具粒度 | 做成端点级开关「展开工具」，**默认展开**；展开后工具名 `<模块>_<命令>`，不加前缀。不同客户端对工具面的适配逻辑不一致，选择权交给用户 | §4.1 |
 | 2 | 协议实现 | **用官方 `mcp` SDK**，不自己写协议层。代价是新增依赖并 bump runtime-version，换来协议演进由上游承担 | §4.3 |
-| 3 | 执行路径 | **直连本机 API**（进程内 ASGI），不经 mclaw 子进程。延迟低一个量级、与 CLI 解耦；代价是截断/长任务/错误映射要自己补。连带把合并模式的参数改成 `command` + `params` | §4.2 |
-| 4 | 执行策略与工具数 | **都不做**。不设只读/标准/完全三档，也不限制或提示工具数量。控制手段就是「选服务 / 启停 / 吊销」三件已有的事 | §4.7 |
+| 3 | 执行路径 | **直连本机 API**（进程内 ASGI），不经 mclaw 子进程。延迟低一个量级、与 CLI 解耦；代价是截断/长任务/错误映射要自己补。连带把折叠模式的参数改成 `command` + `params` | §4.2 |
+| 4 | 执行策略 | **不做**执行档位（只读/标准/完全三档已删）。控制手段就是「选服务 / 启停 / 吊销」三件已有的事 | §4.7 |
+| 5 | 应答形态 | **恒 `application/json`，不开 SSE**（`json_response=True` + `stateless_http=True`）。SSE 只服务进度推送 / 回问客户端 / 变更长流，三件我们都不用 | §4.8 |
+| 6 | 工具数提示 | **不设硬上限**，但展开模式超过 **30** 个工具时给黄色建议「改用折叠模式」，并显示折叠后的数字。只建议不拦截 | §4.1 |
 
 **待定：无。方案可进入实现（落地顺序见 §10.1）。**
 

@@ -148,7 +148,7 @@
 
 <!-- ② 端点列表 -->
 <section class="screen" id="s2">
-  <p class="note">列表是这一页的主界面：一端点一卡，卡上直接能启停；徽标标出工具模式（展开/合并）；「最近调用」是判断能不能删的依据。</p>
+  <p class="note">列表是这一页的主界面：一端点一卡，卡上直接能启停；徽标标出工具模式（展开/折叠）；「最近调用」是判断能不能删的依据。</p>
   <header class="h">
     <span class="icon-chip">🔌</span>
     <div><h1>MCP 服务</h1><p class="sub">3 个端点 · 服务地址 https://movie.example.com</p></div>
@@ -185,7 +185,7 @@
       <div style="min-width:0">
         <b style="font-size:15px">只读看板</b>
         <div class="mono meta">/mcp/dashboard</div>
-        <div class="meta">3 个工具 <span class="tag">合并</span> · 覆盖 30 条命令 · 媒体库、任务、系统提示</div>
+        <div class="meta">3 个工具 <span class="tag">折叠</span> · 覆盖 30 条命令 · 媒体库、任务、系统提示</div>
         <div class="meta faint">最近调用 3 天前 · 令牌 mcp_9f3c****</div>
       </div>
       <div style="display:flex;gap:7px;align-items:center">
@@ -202,7 +202,7 @@
         <b style="font-size:15px">运维调试</b>
         <span class="tag" style="margin-left:4px">已停用</span>
         <div class="mono meta">/mcp/ops</div>
-        <div class="meta">6 个工具 <span class="tag">合并</span> · 覆盖 68 条命令 · 含媒体库</div>
+        <div class="meta">6 个工具 <span class="tag">折叠</span> · 覆盖 68 条命令 · 含媒体库</div>
         <div class="meta faint">最近调用 从未 · 令牌 mcp_77de****</div>
       </div>
       <div style="display:flex;gap:7px;align-items:center">
@@ -256,7 +256,7 @@
 
 <!-- ④ 新建 · 选服务 -->
 <section class="screen" id="s4">
-  <p class="note">本方案的核心屏，可直接点选、也可切「展开工具」开关试试：底部实时算工具数与上下文体积。展开模式下工具数 = 选中服务的命令总数，合并模式下 = 选中的服务数——这就是「组合工具目录」的含义。</p>
+  <p class="note">本方案的核心屏，可直接点选、也可切「展开工具」开关试试：底部实时算工具数与上下文体积。展开模式下工具数 = 选中服务的命令总数，折叠模式下 = 选中的服务数——这就是「组合工具目录」的含义。</p>
   <header class="h">
     <span class="icon-chip">🔌</span>
     <div><h1>选择服务</h1><p class="sub">第 2 步，共 2 步 · 选中哪些服务，这个端点就只有那些工具</p></div>
@@ -268,8 +268,8 @@
     <div class="switch">
       <div>
         <b style="font-size:14px">展开工具</b>
-        <div class="meta">开：一条命令一个工具（<span class="mono">subscriptions_update</span>），参数带类型，模型照 schema 填</div>
-        <div class="meta">关：一个服务一个工具（<span class="mono">subscriptions</span>），参数是「命令名 + 参数对象」，工具少得多</div>
+        <div class="meta">开（展开，默认）：一条命令一个工具（<span class="mono">subscriptions_update</span>），参数带类型，模型照 schema 填</div>
+        <div class="meta">关（折叠）：一个服务一个工具（<span class="mono">subscriptions</span>），参数是「命令名 + 参数对象」，工具少得多</div>
       </div>
       <span class="t" id="expandToggle"></span>
     </div>
@@ -278,7 +278,8 @@
   <div class="alert info">
     两种形态都能用，看客户端脾气：有的客户端擅长在大工具集里检索，有的会把工具全量塞进系统提示词。
     展开模式下每个工具带类型化参数和 readOnly / destructive 注解，支持注解的客户端会在执行
-    破坏性工具前向人确认；合并模式工具少、占的上下文小。
+    破坏性工具前向人确认；折叠模式工具少、占的上下文小。工具超过 30 个时下面会给出建议，
+    但不拦你——要一个全能端点也随你。
   </div>
 
   <div class="kicker">内容发现与订阅</div>
@@ -311,6 +312,8 @@
         每次调用现签一枚几分钟即失效的内部令牌，外部令牌本身进不了业务接口
     </div>
   </details>
+
+  <div class="alert warn" id="hint" hidden></div>
 
   <div class="summary">
     <div>
@@ -406,7 +409,7 @@
   <div class="card">
     <div class="meta" style="margin-bottom:10px">
       工具名 = 模块名 + 命令名。选中服务的命令全部在列表里，含会改动数据的那些。
-      <button class="btn link" style="margin-left:4px">切换为合并模式</button>
+      <button class="btn link" style="margin-left:4px">切换为折叠模式</button>
     </div>
     <details open>
       <summary>subscriptions（16 个工具）</summary>
@@ -538,10 +541,10 @@
       <b style="font-size:15px">家庭影音助理</b> <span class="tag">展开</span>
       <div class="mono meta">/mcp/home-assistant</div></div><button class="btn sm">详情</button></div></div>
     <div class="card"><div class="row"><div>
-      <b style="font-size:15px">只读看板</b> <span class="tag">合并</span>
+      <b style="font-size:15px">只读看板</b> <span class="tag">折叠</span>
       <div class="mono meta">/mcp/dashboard</div></div><button class="btn sm">详情</button></div></div>
     <div class="card"><div class="row"><div>
-      <b style="font-size:15px">运维调试</b> <span class="tag">合并</span>
+      <b style="font-size:15px">运维调试</b> <span class="tag">折叠</span>
       <div class="mono meta">/mcp/ops</div></div><button class="btn sm">详情</button></div></div>
   </div>
 </section>
@@ -602,7 +605,7 @@ for (const [gid, list] of Object.entries(SERVICES)) {
 }
 
 // 展开模式（默认）：一条命令一个工具，每个工具约 0.35 KB 定义（含 JSON Schema）
-// 合并模式：一个服务一个工具，体积就是该域的命令清单描述
+// 折叠模式：一个服务一个工具，体积就是该域的命令清单描述
 let expand = true;
 document.getElementById("expandToggle").onclick = () => {
   expand = !expand;
@@ -624,11 +627,21 @@ function refresh(){
     s2.style.color = "";
     return;
   }
-  // 只如实报数字：不设上限，也不给「工具太多」的警告，由用户自己判断
+  // 不设硬上限；只在展开模式超过 30 个工具时给一条「建议改折叠」的提示，
+  // 并把折叠后的数字一并算出来，让用户看得到对照
   s1.textContent = `${tools} 个工具`;
   s2.textContent = expand
     ? `${svc} 个服务 · 工具定义约 ${size.toFixed(0)} KB`
     : `${svc} 个服务 · 覆盖 ${cmds} 条命令 · 工具描述约 ${size.toFixed(1)} KB`;
+  const hint = document.getElementById("hint");
+  if (expand && tools > 30) {
+    hint.hidden = false;
+    hint.innerHTML = `工具偏多（${tools} 个），模型选择准确率会下降。`
+      + `建议改用<b>折叠模式</b>——同样这 ${svc} 个服务会变成 <b>${svc} 个工具</b>，`
+      + `上下文从约 ${size.toFixed(0)} KB 降到约 ${kb.toFixed(1)} KB。`;
+  } else {
+    hint.hidden = true;
+  }
 }
 refresh();
 
