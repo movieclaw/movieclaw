@@ -3,13 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
-import {
-  ChevronLeftIcon,
-  ChevronRightIcon,
-  MinusIcon,
-  PlusIcon,
-  XIcon,
-} from "@/components/icons";
+import { MinusIcon, PlusIcon, XIcon } from "@/components/icons";
 
 /**
  * 可缩放的全屏灯箱内核（docs/design/library-photo-kind.md 3.3）。
@@ -28,8 +22,11 @@ import {
  *     手势一律走 Pointer Events 自己判定（双击、捏合都不靠浏览器事件）：
  *     iOS 不派发 dblclick，舞台又必须 touch-action:none 挡住系统的整页缩放，
  *     交给浏览器的话手机上放大缩小就全无反应；
- *   - 翻页：←→ 与两侧按钮（手机上靠滑动，按钮隐去），触屏左右滑；翻到已加载
- *     列表末尾且服务端还有下一页时向外要一页（onReachEnd），拿到后继续翻；
+ *   - 翻页：未放大时左右拖拽 / 滑动，画面跟手移动，松手超过阈值翻页、不够弹回，
+ *     鼠标与手指同一套；触控板横向两指滑同样翻页；键盘 ←→。舞台两侧不放
+ *     箭头按钮——常驻的控件叠在画面上打破沉浸感，翻页动作本身已经够直觉。
+ *     翻到已加载列表末尾且服务端还有下一页时向外要一页（onReachEnd），
+ *     拿到后继续翻；
  *   - 缩略条只渲染当前位置前后各 30 张：万张库不铺满 DOM。
  *
  * 舞台上的浮层（``overlay``，如信息面板）自己挡掉指针事件并标上
@@ -48,6 +45,11 @@ const DOUBLE_TAP_MS = 300;
 const DOUBLE_TAP_SLOP = 30;
 /** 按下到抬起位移超过它就不算点按（是拖拽或滑动） */
 const TAP_SLOP = 10;
+/** 横向滑动松手时位移超过它就翻页，不够则弹回 */
+const SWIPE_THRESHOLD = 70;
+/** 触控板横向滚动累计超过它翻一页；翻过之后冷却一段时间，惯性滚动不会连翻几页 */
+const WHEEL_SWIPE_THRESHOLD = 120;
+const WHEEL_SWIPE_COOLDOWN_MS = 500;
 
 interface Point {
   x: number;
@@ -161,7 +163,14 @@ export function ZoomLightbox({
   const tapStart = useRef<{ id: number; t: number; x: number; y: number } | null>(null);
   /** 上一次点按：与本次凑成双击 */
   const lastTap = useRef<{ t: number; x: number; y: number } | null>(null);
-  const swipe = useRef<number | null>(null);
+  /** 横向滑动翻页：起手的指针位置；null = 没在滑 */
+  const swipe = useRef<{ id: number; x: number; y: number } | null>(null);
+  /** 本次按下已经滑出了距离：松手后的 click 不当「点空白关闭」 */
+  const swiped = useRef(false);
+  /** 触控板横向滚动的累计量与上次翻页时刻 */
+  const wheelSwipe = useRef({ acc: 0, last: 0 });
+  /** 跟手的横向位移（px）：滑动中画面跟着指针走，松手归零 */
+  const [swipeOffset, setSwipeOffset] = useState(0);
   // 翻到末尾要下一页的闸门：一页没回来之前不重复要
   const waitingMore = useRef(false);
 
@@ -191,6 +200,7 @@ export function ZoomLightbox({
     setWantOriginal(false);
     setOriginalReady(false);
     setBroken(false);
+    setSwipeOffset(0);
   }, [index, resetZoom]);
 
   // 放大到超过屏幕适配图的分辨率时才拉原图（第三级）
@@ -218,6 +228,12 @@ export function ZoomLightbox({
     },
     [hasMore, index, slides.length, onIndexChange, onReachEnd],
   );
+
+  // 原生 wheel 监听只挂一次（依赖里没有 step / zoom），通过 ref 读最新值
+  const stepRef = useRef(step);
+  stepRef.current = step;
+  const zoomRef = useRef(zoom);
+  zoomRef.current = zoom;
 
   // 快翻到末尾前提前要下一页，翻到最后一张时通常已经到了
   useEffect(() => {
@@ -264,6 +280,19 @@ export function ZoomLightbox({
       // 浮层（信息面板）自己要滚动，不当缩放
       if ((e.target as Element).closest("[data-lightbox-panel]")) return;
       e.preventDefault();
+      // 横向为主的滚动（触控板两指左右滑）在未放大时是翻页，不是缩放
+      if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+        if (zoomRef.current > 1) return;
+        const state = wheelSwipe.current;
+        if (e.timeStamp - state.last < WHEEL_SWIPE_COOLDOWN_MS) return;
+        state.acc += e.deltaX;
+        if (Math.abs(state.acc) >= WHEEL_SWIPE_THRESHOLD) {
+          stepRef.current(state.acc > 0 ? 1 : -1);
+          state.acc = 0;
+          state.last = e.timeStamp;
+        }
+        return;
+      }
       const factor = Math.min(2, Math.max(0.5, Math.exp(-e.deltaY * 0.002)));
       const anchor = stageAnchor(e.clientX, e.clientY);
       setView((current) => zoomAt(anchor, current, current.zoom * factor));
@@ -295,15 +324,22 @@ export function ZoomLightbox({
       pinch.current = { dist: distance(a, b), zoom, mid: midpoint(a, b) };
       drag.current = null;
       tapStart.current = null;
+      // 第二根手指落下即取消滑动翻页：这是捏合
       swipe.current = null;
+      setSwipeOffset(0);
       return;
     }
     if (pointers.current.size > 2) return;
     tapStart.current = { id: e.pointerId, t: e.timeStamp, ...point };
+    swiped.current = false;
     if (zoom > 1) {
       drag.current = { x: e.clientX - pan.x, y: e.clientY - pan.y };
-      e.currentTarget.setPointerCapture(e.pointerId);
+    } else {
+      // 未放大：这一按可能是横向滑动翻页，起手位置先记下，移动超过阈值才算
+      swipe.current = { id: e.pointerId, ...point };
     }
+    // 捕获指针：鼠标拖出舞台（甚至窗口）仍能收到移动与抬起
+    e.currentTarget.setPointerCapture(e.pointerId);
   };
 
   const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -328,6 +364,16 @@ export function ZoomLightbox({
     if (drag.current) {
       const offset = drag.current;
       setView((current) => ({ ...current, pan: { x: e.clientX - offset.x, y: e.clientY - offset.y } }));
+      return;
+    }
+    const start = swipe.current;
+    if (start && start.id === e.pointerId && pointers.current.size === 1) {
+      const dx = e.clientX - start.x;
+      if (!swiped.current && Math.abs(dx) <= TAP_SLOP) return;
+      swiped.current = true;
+      // 到头了（前面没有 / 后面没有也不会再来）：阻尼跟手，提示这是边界
+      const blocked = dx > 0 ? index === 0 : index >= slides.length - 1 && !hasMore;
+      setSwipeOffset(blocked ? dx / 3 : dx);
     }
   };
 
@@ -335,6 +381,16 @@ export function ZoomLightbox({
     pointers.current.delete(e.pointerId);
     drag.current = null;
     if (pointers.current.size < 2) pinch.current = null;
+    const swipeStart = swipe.current;
+    if (swipeStart && swipeStart.id === e.pointerId) {
+      swipe.current = null;
+      if (swiped.current) {
+        const dx = e.clientX - swipeStart.x;
+        setSwipeOffset(0);
+        if (Math.abs(dx) >= SWIPE_THRESHOLD) step(dx < 0 ? 1 : -1);
+        return;
+      }
+    }
     // 双击判定：本次是原地点按，且与上一次点按足够近、足够快。
     // 鼠标也走这条（不用 dblclick）：Android Chrome 双击会同时派发 dblclick，
     // 两条路各放大一次就抵消了，统一只认这一条
@@ -364,6 +420,8 @@ export function ZoomLightbox({
     drag.current = null;
     pinch.current = null;
     tapStart.current = null;
+    swipe.current = null;
+    setSwipeOffset(0);
   };
 
   const stripRange = useMemo(() => {
@@ -378,7 +436,7 @@ export function ZoomLightbox({
 
   if (!slide) return null;
 
-  const gesturing = drag.current !== null || pinch.current !== null;
+  const gesturing = drag.current !== null || pinch.current !== null || swipe.current !== null;
   // 「正在加载原图」只在真有原图可等时显示：图廊这类只有一级图的，放大后
   // 没有第三级，不能挂着一条永远消不掉的提示
   const loadingNote =
@@ -422,25 +480,26 @@ export function ZoomLightbox({
       <div
         ref={stageRef}
         className={`group relative flex min-h-0 min-w-0 flex-1 touch-none items-center justify-center overflow-hidden px-14 max-md:px-2 ${
-          zoom > 1 ? (drag.current ? "cursor-grabbing" : "cursor-grab") : "cursor-zoom-in"
+          zoom > 1
+            ? drag.current
+              ? "cursor-grabbing"
+              : "cursor-grab"
+            : swipeOffset !== 0
+              ? "cursor-grabbing"
+              : "cursor-zoom-in"
         }`}
         onClick={(e) => {
+          // 刚滑过一段的松手也会派发 click，那不是「点空白关闭」
+          if (swiped.current) {
+            swiped.current = false;
+            return;
+          }
           if (e.target === e.currentTarget && zoom === 1) onClose();
         }}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerCancel}
-        onTouchStart={(e) => {
-          // 第二根手指落下即取消滑动翻页：这是捏合
-          swipe.current = zoom === 1 && e.touches.length === 1 ? e.touches[0].clientX : null;
-        }}
-        onTouchEnd={(e) => {
-          if (swipe.current === null) return;
-          const dx = e.changedTouches[0].clientX - swipe.current;
-          swipe.current = null;
-          if (Math.abs(dx) > 50) step(dx < 0 ? 1 : -1);
-        }}
       >
         {broken || !screenUrl ? (
           <div className="rounded-2xl border border-white/[0.12] bg-white/[0.04] px-8 py-10 text-center text-ui text-white/60">
@@ -453,8 +512,8 @@ export function ZoomLightbox({
           <div
             className="relative max-h-full max-w-full select-none"
             style={{
-              transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
-              transition: gesturing ? "none" : "transform 120ms ease-out",
+              transform: `translate(${pan.x + swipeOffset}px, ${pan.y}px) scale(${zoom})`,
+              transition: gesturing ? "none" : "transform 160ms ease-out",
             }}
           >
             {/* 三级渐进：缩略图垫底（模糊）→ 屏幕适配图盖上 → 放大后原图再盖上 */}
@@ -547,33 +606,6 @@ export function ZoomLightbox({
         )}
 
         {overlay}
-
-        {index > 0 && (
-          <button
-            type="button"
-            aria-label="上一张 (←)"
-            onClick={(e) => {
-              e.stopPropagation();
-              step(-1);
-            }}
-            className="absolute left-3 top-1/2 -translate-y-1/2 rounded-full bg-white/[0.08] p-2.5 text-white/80 backdrop-blur transition-colors hover:bg-white/[0.18] hover:text-white max-md:hidden"
-          >
-            <ChevronLeftIcon className="size-6" />
-          </button>
-        )}
-        {(index < slides.length - 1 || hasMore) && (
-          <button
-            type="button"
-            aria-label="下一张 (→)"
-            onClick={(e) => {
-              e.stopPropagation();
-              step(1);
-            }}
-            className="absolute right-3 top-1/2 -translate-y-1/2 rounded-full bg-white/[0.08] p-2.5 text-white/80 backdrop-blur transition-colors hover:bg-white/[0.18] hover:text-white max-md:hidden"
-          >
-            <ChevronRightIcon className="size-6" />
-          </button>
-        )}
       </div>
 
       {/* 底部缩略条：只渲染当前位置前后各 30 张 */}
