@@ -15,10 +15,14 @@ import { MinusIcon, PlusIcon, XIcon } from "@/components/icons";
  * 播放 / 详情）：
  *   - 渐进多级：先显示墙上的缩略图（模糊放大）→ 屏幕适配图 → 有 ``fullUrl``
  *     的只在放大到 1:1 时才拉原图。相邻两张预加载的也是屏幕适配图；
+ *   - **控件不常驻**（照播放器）：顶栏、缩放控件、缩略条合起来是一层浮在画面
+ *     上的「chrome」，闲置 3 秒自动淡出，鼠标一动 / 按任意键 / 点一下画面即
+ *     回来，再点一下收起。收起后画面独占整个视口，什么都不叠——这是这个
+ *     灯箱的常态，控件是临时召唤出来的；
  *   - 缩放：滚轮 / 触控板捏合以鼠标位置为锚，双击 / 双击屏幕在该点放大到 2.5×，
- *     两指捏合以两指中点为锚，最大 5×；放大后拖拽平移；舞台底部一组
- *     「− 比例 +」控件（桌面悬停显现、触屏常显，放大中常显），比例以「适应
- *     屏幕」为 100%，点比例复位；键盘 +/- 缩放、`0` 复位。
+ *     两指捏合以两指中点为锚，最大 5×；放大后拖拽平移；底栏一组
+ *     「− 比例 +」控件，比例以「适应屏幕」为 100%，点比例复位；
+ *     键盘 +/- 缩放、`0` 复位。
  *     手势一律走 Pointer Events 自己判定（双击、捏合都不靠浏览器事件）：
  *     iOS 不派发 dblclick，舞台又必须 touch-action:none 挡住系统的整页缩放，
  *     交给浏览器的话手机上放大缩小就全无反应；
@@ -30,7 +34,8 @@ import { MinusIcon, PlusIcon, XIcon } from "@/components/icons";
  *   - 缩略条只渲染当前位置前后各 30 张：万张库不铺满 DOM。
  *
  * 舞台上的浮层（``overlay``，如信息面板）自己挡掉指针事件并标上
- * ``data-lightbox-panel``：滚轮落在它上面是面板滚动，不当缩放。
+ * ``data-lightbox-panel``：滚轮落在它上面是面板滚动，不当缩放；它开着的时候
+ * 控件常显不自动收起——顶栏都没了、只剩一块信息面板浮在画面上很怪。
  * Portal 到 body，与 ImageLightbox 同一层叠约定。
  */
 const STRIP_WINDOW = 30;
@@ -50,6 +55,11 @@ const SWIPE_THRESHOLD = 70;
 /** 触控板横向滚动累计超过它翻一页；翻过之后冷却一段时间，惯性滚动不会连翻几页 */
 const WHEEL_SWIPE_THRESHOLD = 120;
 const WHEEL_SWIPE_COOLDOWN_MS = 500;
+/** 闲置多久自动收起控件（与主流播放器一致） */
+const CHROME_IDLE_MS = 3000;
+/** 手动收起后的静默期：这段时间内鼠标动了也不把控件叫回来。
+ *  点一下收起，手离开鼠标时的一点点抖动就会立刻把它唤回来——收起等于没生效 */
+const CHROME_HIDE_GRACE_MS = 900;
 
 interface Point {
   x: number;
@@ -159,8 +169,12 @@ export function ZoomLightbox({
   const drag = useRef<Point | null>(null);
   /** 捏合：起手时的两指距离与倍率、上一帧的两指中点（中点移动也跟着平移） */
   const pinch = useRef<{ dist: number; zoom: number; mid: Point } | null>(null);
-  /** 本次按下的起点：抬起时判断是不是「原地点按」 */
-  const tapStart = useRef<{ id: number; t: number; x: number; y: number } | null>(null);
+  /** 本次按下的起点：抬起时判断是不是「原地点按」。``blank`` 记按下时是不是
+   *  落在画面之外的空白上——指针一旦被舞台捕获，抬起事件的 target 会被重定向
+   *  到舞台，那时已分不出点的是画面还是空白 */
+  const tapStart = useRef<{ id: number; t: number; x: number; y: number; blank: boolean } | null>(
+    null,
+  );
   /** 上一次点按：与本次凑成双击 */
   const lastTap = useRef<{ t: number; x: number; y: number } | null>(null);
   /** 横向滑动翻页：起手的指针位置；null = 没在滑 */
@@ -173,6 +187,17 @@ export function ZoomLightbox({
   const [swipeOffset, setSwipeOffset] = useState(0);
   // 翻到末尾要下一页的闸门：一页没回来之前不重复要
   const waitingMore = useRef(false);
+  /** 单击的待执行动作：等 DOUBLE_TAP_MS 确认不是双击（双击是缩放）再落地 */
+  const singleTap = useRef(0);
+  // —— 控件显隐（chrome）——
+  const [chromeShown, setChromeShown] = useState(true);
+  const hideTimer = useRef(0);
+  /** 手动收起后的静默期截止时刻：这之前鼠标移动不唤回控件 */
+  const hideGraceUntil = useRef(0);
+  /** 信息面板开着时钉住控件，不自动收起 */
+  const pinned = Boolean(overlay);
+  const pinnedRef = useRef(pinned);
+  pinnedRef.current = pinned;
 
   const thumbUrl = slide?.thumbUrl ?? "";
   const screenUrl = slide?.screenUrl ?? "";
@@ -183,6 +208,46 @@ export function ZoomLightbox({
   /** 按钮与键盘的缩放：以舞台中心为锚 */
   const zoomBy = useCallback(
     (factor: number) => setView((current) => zoomAt({ x: 0, y: 0 }, current, current.zoom * factor)),
+    [],
+  );
+
+  /** 重新计时：到点自动收起（钉住时不计时） */
+  const restartHide = useCallback(() => {
+    window.clearTimeout(hideTimer.current);
+    if (pinnedRef.current) return;
+    hideTimer.current = window.setTimeout(() => setChromeShown(false), CHROME_IDLE_MS);
+  }, []);
+  /** 有动静（鼠标移动、按键）就把控件叫回来并重新计时 */
+  const revealChrome = useCallback(() => {
+    setChromeShown(true);
+    restartHide();
+  }, [restartHide]);
+  /** 点画面：收放控件。手动收起的那一下起算一段静默期（见常量注释） */
+  const toggleChrome = useCallback(() => {
+    setChromeShown((shown) => {
+      if (shown) hideGraceUntil.current = Date.now() + CHROME_HIDE_GRACE_MS;
+      return !shown;
+    });
+  }, []);
+
+  // 控件露出后开始倒计时；钉住时清掉计时并保持露出
+  useEffect(() => {
+    if (pinned) {
+      window.clearTimeout(hideTimer.current);
+      setChromeShown(true);
+      return;
+    }
+    if (!chromeShown) return;
+    restartHide();
+    return () => window.clearTimeout(hideTimer.current);
+  }, [chromeShown, pinned, restartHide]);
+
+  // 卸载时把两个计时器都收掉
+  useEffect(
+    () => () => {
+      window.clearTimeout(hideTimer.current);
+      window.clearTimeout(singleTap.current);
+    },
     [],
   );
 
@@ -246,6 +311,8 @@ export function ZoomLightbox({
   // 键盘：Esc 关闭，←/→ 翻页，+/- 缩放，0 复位缩放；其余交给调用方
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      // 键盘用户看不到「鼠标一动就回来」，任何按键都当作有动静
+      revealChrome();
       if (e.key === "Escape") onClose();
       else if (e.key === "ArrowLeft") step(-1);
       else if (e.key === "ArrowRight") step(1);
@@ -256,7 +323,7 @@ export function ZoomLightbox({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose, onKey, resetZoom, step, zoomBy]);
+  }, [onClose, onKey, resetZoom, revealChrome, step, zoomBy]);
 
   // 锁住身后页面的滚动
   useEffect(() => {
@@ -330,7 +397,12 @@ export function ZoomLightbox({
       return;
     }
     if (pointers.current.size > 2) return;
-    tapStart.current = { id: e.pointerId, t: e.timeStamp, ...point };
+    tapStart.current = {
+      id: e.pointerId,
+      t: e.timeStamp,
+      ...point,
+      blank: e.target === e.currentTarget,
+    };
     swiped.current = false;
     if (zoom > 1) {
       drag.current = { x: e.clientX - pan.x, y: e.clientY - pan.y };
@@ -406,6 +478,8 @@ export function ZoomLightbox({
       Math.hypot(tap.x - previous.x, tap.y - previous.y) < DOUBLE_TAP_SLOP
     ) {
       lastTap.current = null;
+      // 双击落定：取消上一次点按排队的单击动作，只做缩放
+      window.clearTimeout(singleTap.current);
       const anchor = stageAnchor(tap.x, tap.y);
       setView((current) =>
         current.zoom > 1 ? FIT_VIEW : zoomAt(anchor, current, DOUBLE_TAP_ZOOM),
@@ -413,6 +487,14 @@ export function ZoomLightbox({
       return;
     }
     lastTap.current = tap;
+    // 单击：点画面切换控件显隐，点画面外的空白（未放大时）关闭。等一个双击
+    // 判定窗口再落地——否则双击的第一下会先把控件闪一下
+    const { blank } = start;
+    window.clearTimeout(singleTap.current);
+    singleTap.current = window.setTimeout(() => {
+      if (blank && zoomRef.current === 1) onClose();
+      else toggleChrome();
+    }, DOUBLE_TAP_MS);
   };
 
   const onPointerCancel = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -446,40 +528,38 @@ export function ZoomLightbox({
         : "正在加载"
       : null;
   const stageNote = note ?? loadingNote;
+  // 控件浮在画面之上，舞台独占整个视口：图能用满屏幕（只留一圈 12px 呼吸），
+  // 收起控件之后就是一张纯粹的图
   const imageClass =
-    "max-h-[calc(100dvh-140px)] max-w-full rounded-lg object-contain shadow-[0_24px_80px_rgba(0,0,0,0.8)]";
+    "max-h-[calc(100dvh-1.5rem)] max-w-full rounded-lg object-contain shadow-[0_24px_80px_rgba(0,0,0,0.8)]";
+  // 一层控件的共同显隐。收起用 visibility 而不是只靠 pointer-events：外层要
+  // pointer-events-none 让渐变垫层不挡住画面上的点击，内层交互元素又各自开回
+  // auto，只有 visibility 能连着子元素一起关掉。transition 带上 visibility，
+  // 淡出走完 300ms 才真正消失，淡入则立刻可见
+  const chromeClass = `transition-[opacity,visibility] duration-300 motion-reduce:transition-none ${
+    chromeShown || pinned ? "visible opacity-100" : "invisible opacity-0"
+  }`;
 
   return createPortal(
     <div
       role="dialog"
       aria-modal="true"
       aria-label={label}
-      className="fixed inset-0 z-[70] flex flex-col bg-[rgba(4,5,9,0.94)] backdrop-blur-md [bottom:calc(-1*var(--vp-overshoot))]"
+      // 鼠标一动就把控件叫回来；手势进行中不算——拖着翻页时不该冒出一层控件
+      onPointerMove={() => {
+        if (drag.current || pinch.current || swipe.current) return;
+        if (Date.now() < hideGraceUntil.current) return;
+        revealChrome();
+      }}
+      className="fixed inset-0 z-[70] overflow-hidden bg-[rgba(4,5,9,0.94)] backdrop-blur-md [bottom:calc(-1*var(--vp-overshoot))]"
     >
-      {/* 顶栏：计数 + 标题 + 工具 */}
-      <div className="flex shrink-0 items-center gap-3 px-4 py-2.5 text-white/85 [padding-top:calc(0.625rem+var(--safe-top))] max-md:gap-2 max-md:px-3">
-        <span className="tnum shrink-0 rounded-full bg-white/[0.1] px-2.5 py-0.5 text-sub">
-          {index + 1} / {hasMore ? `${slides.length}+` : slides.length}
-        </span>
-        <p className="min-w-0 flex-1 truncate text-center text-ui text-white/70">{slide.title}</p>
-        <div className="flex shrink-0 items-center gap-1">
-          {actions}
-          <button
-            type="button"
-            aria-label="关闭 (Esc)"
-            onClick={onClose}
-            className="rounded-full p-2 text-white/70 transition-colors hover:bg-white/[0.12] hover:text-white"
-          >
-            <XIcon className="size-5" />
-          </button>
-        </div>
-      </div>
-
-      {/* 舞台：点空白关闭（未缩放时），滚轮 / 捏合 / 双击缩放，放大后拖拽。
+      {/* 舞台：铺满整个对话框（控件浮在它上面）。点画面收放控件、点画面外的
+          空白关闭（未缩放时），滚轮 / 捏合 / 双击缩放，放大后拖拽平移、
+          未放大时左右拖拽翻页。
           touch-none：系统的整页捏合与双击缩放交给自己判定的手势 */}
       <div
         ref={stageRef}
-        className={`group relative flex min-h-0 min-w-0 flex-1 touch-none items-center justify-center overflow-hidden px-14 max-md:px-2 ${
+        className={`absolute inset-0 flex touch-none items-center justify-center overflow-hidden p-3 ${
           zoom > 1
             ? drag.current
               ? "cursor-grabbing"
@@ -488,14 +568,6 @@ export function ZoomLightbox({
               ? "cursor-grabbing"
               : "cursor-zoom-in"
         }`}
-        onClick={(e) => {
-          // 刚滑过一段的松手也会派发 click，那不是「点空白关闭」
-          if (swiped.current) {
-            swiped.current = false;
-            return;
-          }
-          if (e.target === e.currentTarget && zoom === 1) onClose();
-        }}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
@@ -559,15 +631,46 @@ export function ZoomLightbox({
           </div>
         )}
 
-        {/* 缩放控件：桌面悬停显现、触屏常显，放大中常显。比例以适应屏幕为 100% */}
-        {!broken && screenUrl && (
-          <div
-            className={`absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-0.5 rounded-full bg-black/70 p-1 text-white/85 transition-opacity ${
-              zoom > 1
-                ? "opacity-100"
-                : "opacity-0 focus-within:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100"
-            }`}
+        {/* 加载 / 下载提示：放画面顶部而不是底部——底部整条归控件，
+            而这条提示在控件收起时也要能看见 */}
+        {stageNote && (
+          <span className="pointer-events-none absolute left-1/2 top-[calc(4.25rem+var(--safe-top))] -translate-x-1/2 whitespace-nowrap rounded-full bg-black/50 px-2.5 py-0.5 text-micro tracking-wide text-white/50">
+            {stageNote}
+          </span>
+        )}
+
+        {overlay}
+      </div>
+
+      {/* 顶栏：计数 + 标题 + 工具。渐变垫底让白字压在亮图上也读得清；
+          容器不吃指针事件，只有右侧那组按钮吃 */}
+      <div
+        className={`pointer-events-none absolute inset-x-0 top-0 z-20 flex items-center gap-3 bg-gradient-to-b from-[rgba(4,5,9,0.85)] via-[rgba(4,5,9,0.4)] to-transparent px-4 pb-8 text-white/85 [padding-top:calc(0.625rem+var(--safe-top))] max-md:gap-2 max-md:px-3 ${chromeClass}`}
+      >
+        <span className="tnum shrink-0 rounded-full bg-white/[0.1] px-2.5 py-0.5 text-sub">
+          {index + 1} / {hasMore ? `${slides.length}+` : slides.length}
+        </span>
+        <p className="min-w-0 flex-1 truncate text-center text-ui text-white/70">{slide.title}</p>
+        <div className="pointer-events-auto flex shrink-0 items-center gap-1">
+          {actions}
+          <button
+            type="button"
+            aria-label="关闭 (Esc)"
+            onClick={onClose}
+            className="rounded-full p-2 text-white/70 transition-colors hover:bg-white/[0.12] hover:text-white"
           >
+            <XIcon className="size-5" />
+          </button>
+        </div>
+      </div>
+
+      {/* 底栏：缩放控件 + 缩略条，与顶栏同进同退 */}
+      <div
+        className={`pointer-events-none absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-[rgba(4,5,9,0.9)] via-[rgba(4,5,9,0.5)] to-transparent pt-12 ${chromeClass}`}
+      >
+        {/* 缩放控件：比例以适应屏幕为 100%，点比例复位 */}
+        {!broken && screenUrl && (
+          <div className="pointer-events-auto mx-auto mb-3 flex w-max items-center gap-0.5 rounded-full bg-black/70 p-1 text-white/85">
             <button
               type="button"
               title="缩小 (-)"
@@ -599,43 +702,36 @@ export function ZoomLightbox({
             </button>
           </div>
         )}
-        {stageNote && (
-          <span className="pointer-events-none absolute bottom-14 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-black/50 px-2.5 py-0.5 text-micro tracking-wide text-white/50">
-            {stageNote}
-          </span>
-        )}
 
-        {overlay}
-      </div>
-
-      {/* 底部缩略条：只渲染当前位置前后各 30 张 */}
-      <div className="scroll-none shrink-0 overflow-x-auto px-4 py-2.5 [padding-bottom:calc(0.625rem+var(--safe-bottom)+var(--vp-overshoot))] max-md:px-3">
-        <div className="mx-auto flex w-max gap-1.5">
-          {slides.slice(stripRange.start, stripRange.end).map((entry, offset) => {
-            const i = stripRange.start + offset;
-            const active = i === index;
-            return (
-              <button
-                key={entry.key}
-                ref={active ? activeThumb : undefined}
-                type="button"
-                aria-label={`查看 ${entry.title}`}
-                aria-current={active}
-                onClick={() => onIndexChange(i)}
-                className={`h-12 shrink-0 overflow-hidden rounded-md transition ${
-                  active ? "ring-2 ring-[var(--accent)]" : "opacity-45 hover:opacity-90"
-                }`}
-                style={{ width: Math.round(48 * Math.min(2, Math.max(0.5, entry.aspect))) }}
-              >
-                <img
-                  src={entry.thumbUrl}
-                  alt=""
-                  loading="lazy"
-                  className="h-full w-full bg-white/[0.05] object-cover"
-                />
-              </button>
-            );
-          })}
+        {/* 缩略条：只渲染当前位置前后各 30 张 */}
+        <div className="scroll-none pointer-events-auto overflow-x-auto px-4 pb-2.5 [padding-bottom:calc(0.625rem+var(--safe-bottom)+var(--vp-overshoot))] max-md:px-3">
+          <div className="mx-auto flex w-max gap-1.5">
+            {slides.slice(stripRange.start, stripRange.end).map((entry, offset) => {
+              const i = stripRange.start + offset;
+              const active = i === index;
+              return (
+                <button
+                  key={entry.key}
+                  ref={active ? activeThumb : undefined}
+                  type="button"
+                  aria-label={`查看 ${entry.title}`}
+                  aria-current={active}
+                  onClick={() => onIndexChange(i)}
+                  className={`h-12 shrink-0 overflow-hidden rounded-md transition ${
+                    active ? "ring-2 ring-[var(--accent)]" : "opacity-45 hover:opacity-90"
+                  }`}
+                  style={{ width: Math.round(48 * Math.min(2, Math.max(0.5, entry.aspect))) }}
+                >
+                  <img
+                    src={entry.thumbUrl}
+                    alt=""
+                    loading="lazy"
+                    className="h-full w-full bg-white/[0.05] object-cover"
+                  />
+                </button>
+              );
+            })}
+          </div>
         </div>
       </div>
     </div>,

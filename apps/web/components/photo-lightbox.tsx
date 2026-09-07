@@ -209,7 +209,8 @@ export function PhotoLightbox({
       overlay={
         // 信息面板：照播放器诊断面板的做法压在画面左上角，一块半透明的黑。
         // 桌面固定 300px；手机上横向铺满、限高到舞台一半，超出滚动。
-        // top 不必叠 --safe-top：舞台在顶栏之下，顶栏已经让过状态栏
+        // 舞台现在铺满整个对话框（控件浮在它上面），所以要自己让开顶栏那一条，
+        // 否则面板会压住左上角的计数；限高也要留出底栏（面板开着时控件常显）
         infoOpen ? (
           <div
             data-lightbox-panel
@@ -219,7 +220,7 @@ export function PhotoLightbox({
             onTouchStart={stop}
             onTouchEnd={stop}
             onClick={stop}
-            className="absolute left-[max(0.75rem,var(--safe-left))] top-3 z-10 max-h-[calc(100%-4.5rem)] w-[300px] cursor-auto overflow-y-auto overscroll-contain rounded-[14px] bg-black/70 px-3.5 py-2.5 text-[11.5px] leading-relaxed max-md:right-[max(0.75rem,var(--safe-right))] max-md:w-auto max-md:max-h-[50%]"
+            className="absolute left-[max(0.75rem,var(--safe-left))] top-[calc(3.75rem+var(--safe-top))] z-10 max-h-[calc(100%-12rem)] w-[300px] cursor-auto overflow-y-auto overscroll-contain rounded-[14px] bg-black/70 px-3.5 py-2.5 text-[11.5px] leading-relaxed max-md:right-[max(0.75rem,var(--safe-right))] max-md:w-auto max-md:max-h-[50%]"
           >
             <div className="mb-1.5 flex items-center justify-between">
               <h3 className="text-[12px] font-semibold text-white/90">拍摄信息</h3>
