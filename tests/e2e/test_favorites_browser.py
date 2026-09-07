@@ -10,7 +10,8 @@ SQLite 播种：二十五部电影 + 一部三集剧，各有在位文件。覆�
   分集卡右上角出现对勾、Jellyfin 的 ``UnplayedItemCount`` 减一；
 - 首页「我的收藏」跟在最近观看之下，横滚最近收藏的 20 部（26 个收藏时最早的
   被挤出）；「查看全部」进 /library/favorites，与单库页同一套海报墙、全部换行
-  铺开，顶栏返回键回首页；
+  铺开，顶栏那颗键能切进图床浏览（跨库图廊，与海报墙同一份名单）再切回来，
+  顶栏返回键回首页；
 - Infuse 取消收藏电影 → 详情页的心翻回未收藏、全部收藏页里也没有了。
 
 标 integration：要 pnpm（apps/web 已 install）与 Playwright Chromium，CI 不跑。
@@ -462,6 +463,23 @@ def test_favorites_and_played_end_to_end(stack) -> None:  # noqa: PLR0915
         assert wall.last.bounding_box()["y"] > wall.first.bounding_box()["y"]  # 网格换行
         expect(wall.last.get_by_role("link", name=re.compile("《电影 01》"))).to_be_visible()
         page.screenshot(path=str(shots / "06-favorites-page.png"), full_page=True)
+
+        # ---- 图床浏览：与单库页同一颗切换键，数据是跨库的收藏图廊 ----
+        # 名单与顺序跟海报墙同一份，每组带自己的详情落点库（收藏跨库）
+        groups = api(page, "get", "/playback/favorites/gallery?limit=100&offset=0")["data"]
+        assert [g["title"] for g in groups] == favorite_titles(page)
+        assert {g["library_id"] for g in groups} <= set(library_ids.values())
+        page.get_by_role("button", name="图床浏览").click()
+        expect(page.get_by_role("button", name="回到海报墙")).to_be_visible()
+        expect(page.locator("[data-library-item-id]")).to_have_count(0)
+        # 看图的两个偏好收在这一页自己的 ⋯ 里（海报墙上没有可调的，键也不出现）
+        page.get_by_role("button", name="浏览设置").click()
+        expect(page.get_by_role("menuitemcheckbox", name="按作品分组")).to_be_visible()
+        page.keyboard.press("Escape")
+        page.screenshot(path=str(shots / "06b-favorites-gallery.png"), full_page=True)
+        page.get_by_role("button", name="回到海报墙").click()
+        expect(page.locator("[data-library-item-id]")).to_have_count(total)
+
         # 顶栏返回键回到媒体库首页
         page.get_by_role("button", name=re.compile("^返回上一页")).click()
         page.wait_for_url(re.compile(r"/library$"))

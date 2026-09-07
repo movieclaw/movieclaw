@@ -604,8 +604,10 @@ _MEMBER_ALLOWLIST = {
     # 同一张表），目标条目不可见一律 404
     ("GET", "/api/v1/playback/marks"),
     ("POST", "/api/v1/playback/marks"),
-    # 首页「我的收藏」：个人数据，且只列可见库里有在位文件的作品
+    # 首页「我的收藏」：个人数据，且只列可见库里有在位文件的作品。
+    # 图廊是同一份名单的另一种铺法（「全部收藏」页的图床浏览模式），同一口径
     ("GET", "/api/v1/playback/favorites"),
+    ("GET", "/api/v1/playback/favorites/gallery"),
     # 搜索历史：个人数据；统一结果端点再按记录类型检查对应能力。
     ("GET", "/api/v1/search/history"),
     ("GET", "/api/v1/search/history/{history_id}/results"),

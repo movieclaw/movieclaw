@@ -211,3 +211,65 @@ def test_favorites_are_per_member_and_hidden_library_excluded(client, tmp_path):
     client.post("/api/v1/auth/logout")
     assert client.post("/api/v1/auth/login", json=_ADMIN).status_code == 200
     assert [i["media_item_id"] for i in favorites(client)["items"]] == [ids["movie_a"]]
+
+
+# ---------------------------------------------------------------------------
+# 图床浏览模式（``/playback/favorites/gallery``）
+# ---------------------------------------------------------------------------
+
+
+async def _set_poster_paths(item_ids: list[int]) -> None:
+    """给条目挂上 TMDB 海报路径，让图廊有图可铺（扫描出来的假条目本来没有）。"""
+    async with get_database().session() as session:
+        for item_id in item_ids:
+            item = await session.get(MediaItem, item_id)
+            assert item is not None
+            item.poster_path = f"/p{item_id}.jpg"
+            session.add(item)
+        await session.commit()
+
+
+def set_posters(client: TestClient, item_ids: list[int]) -> None:
+    client.portal.call(partial(_set_poster_paths, item_ids))  # type: ignore[attr-defined]
+
+
+def gallery(client: TestClient, **params) -> list[dict]:
+    resp = client.get(f"{_PB}/favorites/gallery", params=params)
+    assert resp.status_code == 200, resp.text
+    return resp.json()["data"]
+
+
+def test_favorites_gallery_shares_the_wall_order_and_carries_landing_library(client, tmp_path):
+    """图廊与收藏海报墙是同一份名单、同一个顺序（最近收藏在前）；收藏跨库，
+    每组带自己的详情落点库——单库图廊整墙一个库，这里一组一个。"""
+    ids = seed(client, tmp_path)
+    set_posters(client, [ids["movie_a"], ids["show"]])
+    web_favorite(client, media_item_id=ids["movie_a"])
+    web_favorite(client, media_item_id=ids["show"])
+
+    groups = gallery(client)
+    assert [g["media_item_id"] for g in groups] == [ids["show"], ids["movie_a"]]
+    assert [i["media_item_id"] for i in favorites(client)["items"]] == [
+        g["media_item_id"] for g in groups
+    ]
+    assert [g["library_id"] for g in groups] == [ids["shows_library"], ids["movies_library"]]
+    assert all(g["is_favorite"] for g in groups)
+    assert [i["kind"] for i in groups[0]["images"]] == ["poster"]
+    assert groups[0]["images"][0]["url"].endswith(f"/w780/p{ids['show']}.jpg")
+
+
+def test_favorites_gallery_pages_by_work(client, tmp_path):
+    """分页口径与单库图廊一致：offset / limit 都按作品数，没图的作品也占一组
+    （前端靠"拿到的组数是否满一页"判断还有没有下一页）。"""
+    ids = seed(client, tmp_path)
+    set_posters(client, [ids["show"]])
+    for key in ("movie_a", "movie_b", "show"):
+        web_favorite(client, media_item_id=ids[key])
+
+    first = gallery(client, limit=1, offset=0)
+    assert [g["media_item_id"] for g in first] == [ids["show"]]
+    rest = gallery(client, limit=2, offset=1)
+    assert [g["media_item_id"] for g in rest] == [ids["movie_b"], ids["movie_a"]]
+    # 没有海报的两部电影仍各占一组，只是 images 为空
+    assert [g["images"] for g in rest] == [[], []]
+    assert gallery(client, limit=2, offset=3) == []

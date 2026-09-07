@@ -26,7 +26,7 @@ from movieclaw_api.exceptions import (
     ServiceUnavailableException,
 )
 from movieclaw_api.schemas.base import utc_isoformat
-from movieclaw_api.schemas.library import SeasonEpisodesView
+from movieclaw_api.schemas.library import LibraryGalleryGroupView, SeasonEpisodesView
 from movieclaw_api.schemas.playback import (
     FavoritesView,
     HwBackendStatusView,
@@ -118,7 +118,7 @@ from movieclaw_api.services.playback_activity import (
     media_activity_overview,
     revoke_device,
 )
-from movieclaw_api.services.playback_favorites import favorite_items
+from movieclaw_api.services.playback_favorites import favorite_gallery, favorite_items
 from movieclaw_api.services.playback_recent import recent_watch_items
 from movieclaw_api.services.playback_stats import playback_history, playback_stats
 from movieclaw_api.settings import PlaybackPolicySetting
@@ -385,6 +385,37 @@ async def list_favorites(
         offset=offset,
     )
     return ok(FavoritesView(items=items, total=total))
+
+
+@router.get(
+    "/favorites/gallery",
+    response_model=ApiResponse[list[LibraryGalleryGroupView]],
+    summary="我的收藏 · 图廊：收藏作品的海报 / 剧照 / 章节场景图按作品分组铺平",
+    operation_id="playback.favorites.gallery",
+    openapi_extra={"x-cli-hidden": True},
+)
+async def list_favorites_gallery(
+    limit: Annotated[
+        int, Query(ge=1, le=100, description="本页作品数（按作品分页，不按图）")
+    ] = 24,
+    offset: Annotated[int, Query(ge=0, description="跳过的作品数（滚动加载翻页用）")] = 0,
+    principal: Principal = Depends(require_login),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[list[LibraryGalleryGroupView]]:
+    """「全部收藏」页的图床浏览模式：与 ``/playback/favorites`` 同一份名单与顺序
+    （最近收藏在前），一组就是一部作品的全部图。收藏跨库，每组带自己的详情
+    落点库。没有任何图的作品也占一组，一页的组数恒等于作品数。"""
+    visible_ids = await visible_library_ids(session, principal)
+    member_id = principal.member_id if principal.member_id is not None else 0
+    return ok(
+        await favorite_gallery(
+            session,
+            member_id=member_id,
+            visible_library_ids=visible_ids,
+            limit=limit,
+            offset=offset,
+        )
+    )
 
 
 @router.get(

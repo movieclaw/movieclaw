@@ -29,7 +29,7 @@ import logging
 import os
 import re
 import shutil
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -729,9 +729,32 @@ async def build_library_gallery(
     """影视库 / 其他库的「图床浏览模式」数据源：条目的图铺平成组。
 
     与海报墙共用同一份按标题排好的正式条目名单与分页口径（``offset`` /
-    ``limit`` 都按**条目**数），一组就是一部作品的全部图，顺序固定为
-    海报 → 横幅剧照 → 逐集（分集剧照 → 该集章节图）。只取库里**在位**文件
-    名下的章节图与分集剧照：图廊看的是"我库里有的"，缺集的剧照不混进来。
+    ``limit`` 都按**条目**数），本页条目定下来之后交给
+    :func:`build_gallery_groups` 组图。
+    """
+    page_ids = await _wall_page_ids(session, library_id, "title", limit, offset)
+    return await build_gallery_groups(
+        session, [(item_id, library_id) for item_id in page_ids], member_id=member_id
+    )
+
+
+async def build_gallery_groups(
+    session: AsyncSession,
+    page: Sequence[tuple[int, int]],
+    *,
+    member_id: int,
+) -> list[LibraryGalleryGroupView]:
+    """把「本页条目」铺平成图廊分组，顺序与 ``page`` 一致。
+
+    ``page`` 的每一项是 ``(条目 id, 落点库 id)``：单库图廊里落点库恒等于本库，
+    「我的收藏」的图廊是跨库的一面墙，每部作品各带自己的落点库（同收藏海报墙
+    的口径，见 services/playback_favorites.py）。落点库决定两件事——组标题和
+    灯箱里「前往详情」的地址，以及**取哪些文件**的章节图与分集剧照：同一部
+    作品可能在多个库里各有一份文件，只认落点库那一份，图廊看的是"这一格点
+    进去的那个库里有的"。
+
+    一组就是一部作品的全部图，顺序固定为海报 → 横幅剧照 → 逐集（分集剧照 →
+    该集章节图）。只取**在位**文件名下的章节图与分集剧照，缺集的剧照不混进来。
     没有任何图的条目也占一组（``images`` 为空）——一页的组数恒等于条目数，
     前端据此判断还有没有下一页。每组还带上 ``member_id`` 这位观看者有没有
     收藏这部作品，供瓦片角标与灯箱里的心一次拿齐（详情页那样逐条目问
@@ -747,9 +770,10 @@ async def build_library_gallery(
     from movieclaw_api.services.library import chapters as chapters_mod
     from movieclaw_db.models import MediaEpisode
 
-    page_ids = await _wall_page_ids(session, library_id, "title", limit, offset)
-    if not page_ids:
+    if not page:
         return []
+    page_ids = [item_id for item_id, _ in page]
+    library_of = dict(page)
     items_by_id: dict[int, MediaItem] = {
         item.id: item
         for item in (
@@ -774,11 +798,13 @@ async def build_library_gallery(
             )
         ).all()
     }
-    # 在位文件：只取章节相关的几列，不整行取（音轨/字幕 JSON 用不上）
+    # 在位文件：只取章节相关的几列，不整行取（音轨/字幕 JSON 用不上）。
+    # 库集合先粗筛（跨库时是这一页涉及的几个库），再按 (条目, 落点库) 精确留下
     file_rows = (
         await session.execute(
             select(
                 LibraryFile.media_item_id,
+                LibraryFile.library_id,
                 LibraryFile.id,
                 LibraryFile.season_number,
                 LibraryFile.episode_number,
@@ -787,7 +813,7 @@ async def build_library_gallery(
                 LibraryFile.chapter_images,
             )
             .where(
-                LibraryFile.library_id == library_id,
+                LibraryFile.library_id.in_(sorted(set(library_of.values()))),  # type: ignore[attr-defined]
                 LibraryFile.media_item_id.in_(page_ids),  # type: ignore[union-attr]
                 LibraryFile.in_place(),
             )
@@ -795,7 +821,9 @@ async def build_library_gallery(
         )
     ).all()
     files_by_item: dict[int, list[tuple]] = {}
-    for media_item_id, *facts in file_rows:
+    for media_item_id, file_library_id, *facts in file_rows:
+        if library_of.get(media_item_id) != file_library_id:
+            continue
         files_by_item.setdefault(media_item_id, []).append(tuple(facts))
     tv_ids = [i for i in page_ids if (item := items_by_id.get(i)) and item.kind == "tv"]
     stills_by_unit: dict[tuple[int, int, int], tuple[str, str]] = {}
@@ -902,6 +930,7 @@ async def build_library_gallery(
         groups.append(
             LibraryGalleryGroupView(
                 media_item_id=item_id,
+                library_id=library_of[item_id],
                 kind=MediaKind(item.kind),
                 title=item.title,
                 year=item.year,

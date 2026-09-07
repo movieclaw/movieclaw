@@ -6,7 +6,9 @@ import type { Route } from "next";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
-import { HeartIcon, OpenIcon, PlayIcon } from "@/components/icons";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+
+import { CheckIcon, HeartIcon, OpenIcon, PlayIcon } from "@/components/icons";
 import {
   DENSITY,
   layoutMasonry,
@@ -33,7 +35,19 @@ import { playHref, rememberPlayerReturnPath } from "@/lib/player/play-links";
  *
  * 数据来自 /libraries/{id}/gallery，按作品分页（与海报墙同一份标题序）；
  * 灯箱翻的是铺平后的整份图列表（GalleryEntry），翻到末尾向外要下一页。
+ *
+ * 「全部收藏」页复用同一套墙与灯箱，数据换成 /playback/favorites/gallery
+ * （跨库、最近收藏在前）。因此详情落点库不是整墙一个，而是每组自带
+ * （LibraryGalleryGroup.library_id）。
  */
+
+/** 图床浏览模式一页的作品数：一部作品十来张图，24 部约一屏半 */
+export const GALLERY_PAGE_SIZE = 24;
+/**
+ * 图床浏览模式提前取下一页的距离：约一屏半，也就是当前这一页快滑完时就去要
+ * 下一页。图大、下载慢，等滑到底再发请求接上来的就是一屏空瓦片。
+ */
+export const GALLERY_LOAD_MARGIN = "1200px 0px";
 
 const MODE_STORAGE_KEY = "movieclaw.library.gallery-mode";
 const GROUPED_STORAGE_KEY = "movieclaw.library.gallery-grouped";
@@ -77,10 +91,95 @@ export function useVideoGalleryGrouped(): [boolean, (next: boolean) => void] {
   return useStoredFlag(GROUPED_STORAGE_KEY, true);
 }
 
+/**
+ * 看图的两个偏好（按作品分组 / 瀑布流密度），作为菜单项交给调用方的 ⋯ 菜单。
+ *
+ * 三处菜单要用到它：单库页的图床浏览（两项都有）、图片库的相册墙（只有密度，
+ * 它没有分组一说）、「全部收藏」页的图廊（两项都有，且整个菜单只有这一组）。
+ * 每一半都可以不给——不给就不渲染那一半。菜单外壳（触发键、Content）留在各自
+ * 的调用方：全站惯例是每个菜单自带外壳与行样式（itemClass 因此由调用方传入），
+ * 这里只共享真正相同的那部分——项目本身。
+ */
+export function WallPrefItems({
+  grouped,
+  onGroupedChange,
+  density,
+  onDensityChange,
+  itemClass,
+}: {
+  grouped?: boolean;
+  onGroupedChange?: (next: boolean) => void;
+  density?: PhotoWallDensity;
+  onDensityChange?: (next: PhotoWallDensity) => void;
+  /** 调用方菜单的行样式：同一个菜单里各项长相必须一致 */
+  itemClass: string;
+}) {
+  return (
+    <>
+      {/* 图床浏览：关掉分组，整墙的图就混成一条瀑布流 */}
+      {grouped !== undefined && onGroupedChange && (
+        <DropdownMenu.CheckboxItem
+          checked={grouped}
+          onCheckedChange={onGroupedChange}
+          className={`${itemClass} flex items-center justify-between`}
+        >
+          按作品分组
+          <DropdownMenu.ItemIndicator>
+            <CheckIcon className="size-3.5 text-[var(--accent)]" />
+          </DropdownMenu.ItemIndicator>
+        </DropdownMenu.CheckboxItem>
+      )}
+      {density && onDensityChange && (
+        <>
+          <DropdownMenu.Label className="px-3 pb-1 pt-1.5 text-caption text-[var(--text-faint)]">
+            瀑布流密度
+          </DropdownMenu.Label>
+          <DropdownMenu.RadioGroup
+            value={density}
+            onValueChange={(next) => onDensityChange(next as PhotoWallDensity)}
+          >
+            {(
+              [
+                ["compact", "紧凑"],
+                ["standard", "标准"],
+                ["loose", "宽松"],
+              ] as [PhotoWallDensity, string][]
+            ).map(([key, label]) => (
+              <DropdownMenu.RadioItem
+                key={key}
+                value={key}
+                className={`${itemClass} flex items-center justify-between`}
+              >
+                {label}
+                <DropdownMenu.ItemIndicator>
+                  <CheckIcon className="size-3.5 text-[var(--accent)]" />
+                </DropdownMenu.ItemIndicator>
+              </DropdownMenu.RadioItem>
+            ))}
+          </DropdownMenu.RadioGroup>
+        </>
+      )}
+    </>
+  );
+}
+
 /** 铺平后的一张图：知道自己属于哪部作品，播放 / 详情按钮据此拼地址 */
 export interface GalleryEntry {
   group: LibraryGalleryGroup;
   image: LibraryGalleryImage;
+}
+
+/**
+ * 图廊分组上墙前的统一口径：没图的作品不占位（服务端按作品分页，空组只用来
+ * 数页），同一部作品只留最前面那一组。追加下一页与整窗对账都过这一道。
+ */
+export function dedupeGalleryGroups(groups: LibraryGalleryGroup[]): LibraryGalleryGroup[] {
+  const seen = new Set<number>();
+  return groups.filter((group) => {
+    if (group.images.length === 0 || seen.has(group.media_item_id)) return false;
+    seen.add(group.media_item_id);
+    return true;
+  });
 }
 
 export function flattenGallery(groups: readonly LibraryGalleryGroup[]): GalleryEntry[] {
@@ -101,10 +200,13 @@ function tileKey(group: LibraryGalleryGroup, image: LibraryGalleryImage): string
   return `${group.media_item_id}:${image.kind}:${image.url}`;
 }
 
-/** 条目详情页地址：分集剧照 / 剧集章节图带季集号，详情页直接落到那一集 */
-function detailHref(libraryId: number, entry: GalleryEntry): Route {
+/**
+ * 条目详情页地址：分集剧照 / 剧集章节图带季集号，详情页直接落到那一集。
+ * 落点库取分组自己带的那个——收藏图廊是跨库的一面墙，同一面墙上各组不同库。
+ */
+function detailHref(entry: GalleryEntry): Route {
   const { group, image } = entry;
-  const base = `/library/${libraryId}/item/${group.media_item_id}`;
+  const base = `/library/${group.library_id}/item/${group.media_item_id}`;
   const unit =
     image.season !== null && image.episode !== null
       ? `?season=${image.season}&episode=${image.episode}`
@@ -189,16 +291,14 @@ export function VideoGalleryWall({
   density,
   grouped,
   onOpen,
-  libraryId,
 }: {
-  /** 已加载的作品分组（服务端标题序） */
+  /** 已加载的作品分组（服务端给的顺序：单库按标题，收藏按最近收藏） */
   groups: LibraryGalleryGroup[];
   density: PhotoWallDensity;
-  /** 按作品分段；false = 整库的图混成一条瀑布流，没有段标题 */
+  /** 按作品分段；false = 整墙的图混成一条瀑布流，没有段标题 */
   grouped: boolean;
   /** 点击某张：传的是它在铺平列表（flattenGallery）里的下标，灯箱按同一列表翻页 */
   onOpen: (index: number) => void;
-  libraryId: number;
 }) {
   // 铺平的整份列表：不分组时直接排它；分组时用来算每段的起始下标
   // （灯箱按整份列表翻页，瓦片点击要给全局下标）
@@ -241,7 +341,6 @@ export function VideoGalleryWall({
               width={width}
               spec={spec}
               onOpen={onOpen}
-              libraryId={libraryId}
             />
           ))
         ) : (
@@ -310,7 +409,6 @@ const GalleryGroupSection = memo(function GalleryGroupSection({
   width,
   spec,
   onOpen,
-  libraryId,
 }: {
   group: LibraryGalleryGroup;
   /** 本组第一张在铺平列表里的下标 */
@@ -318,7 +416,6 @@ const GalleryGroupSection = memo(function GalleryGroupSection({
   width: number;
   spec: DensitySpec;
   onOpen: (index: number) => void;
-  libraryId: number;
 }) {
   const entries = useMemo(
     () => group.images.map((image) => ({ group, image })),
@@ -328,7 +425,7 @@ const GalleryGroupSection = memo(function GalleryGroupSection({
     <section className="mb-8 last:mb-0">
       <div className="mb-3 flex items-baseline gap-2.5">
         <Link
-          href={`/library/${libraryId}/item/${group.media_item_id}` as Route}
+          href={`/library/${group.library_id}/item/${group.media_item_id}` as Route}
           className="text-on-image truncate text-body-lg font-semibold text-white/85 transition-colors hover:text-white"
         >
           {groupTitle(group)}
@@ -444,7 +541,6 @@ function formatSeconds(total: number): string {
 }
 
 export function VideoGalleryLightbox({
-  libraryId,
   entries,
   index,
   hasMore,
@@ -453,7 +549,6 @@ export function VideoGalleryLightbox({
   onToggleFavorite,
   onClose,
 }: {
-  libraryId: number;
   /** 铺平后的整份已加载图列表（与墙同一顺序） */
   entries: GalleryEntry[];
   index: number;
@@ -538,7 +633,7 @@ export function VideoGalleryLightbox({
             />
           </button>
           <Link
-            href={detailHref(libraryId, entry)}
+            href={detailHref(entry)}
             title="前往影片详情"
             aria-label="前往影片详情"
             className={buttonClass}

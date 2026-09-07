@@ -425,6 +425,12 @@ class LibraryGalleryGroupView(BaseModel):
     """图廊按条目分的一组（一部作品的全部图），墙上是一段标题 + 一面瀑布流。"""
 
     media_item_id: int
+    library_id: int = Field(
+        description=(
+            "这一组的详情落点库：段标题与灯箱「前往详情」的地址按它拼。"
+            "单库图廊恒等于本库；「我的收藏」的图廊跨库，每组各带自己的落点库"
+        )
+    )
     kind: MediaKind
     title: str
     year: int | None = None

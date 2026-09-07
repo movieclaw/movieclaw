@@ -585,6 +585,11 @@ export interface LibraryGalleryImage {
 /** 图廊按条目分的一组：一部作品的全部图，墙上是一段标题 + 一面瀑布流。 */
 export interface LibraryGalleryGroup {
   media_item_id: number;
+  /**
+   * 这一组的详情落点库：段标题与灯箱「前往详情」的地址按它拼。单库图廊恒等于
+   * 本库；「我的收藏」的图廊是跨库的一面墙，每组各带自己的落点库。
+   */
+  library_id: number;
   kind: LibraryKind;
   title: string;
   year: number | null;

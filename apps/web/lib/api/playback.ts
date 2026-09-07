@@ -2,7 +2,7 @@ import { publicEnv } from "@/lib/env";
 import { getPlayerDeviceId } from "@/lib/player/device";
 import type { TrickplayIndex } from "@/lib/player/trickplay";
 import { HttpError, request, resolveRequestUrl } from "@/lib/http";
-import type { LibraryEpisode, LibraryItem } from "@/lib/api/libraries";
+import type { LibraryEpisode, LibraryGalleryGroup, LibraryItem } from "@/lib/api/libraries";
 import type { LibraryKind, MediaType } from "@/lib/media-types";
 import { readLocalProgress, writeLocalProgress } from "@/lib/player/local-progress";
 
@@ -119,6 +119,22 @@ export interface FavoritesPage {
 export async function listFavorites(limit = 20, offset = 0): Promise<FavoritesPage> {
   const response = await request<ApiEnvelope<FavoritesPage>>(
     `/playback/favorites?limit=${limit}&offset=${offset}`,
+  );
+  return response.data;
+}
+
+/**
+ * 「全部收藏」页图床浏览模式的数据源：与 listFavorites 同一份名单与顺序，
+ * 一组是一部作品的全部图（海报 / 剧照 / 分集剧照 / 章节场景图）。分页口径同
+ * 单库图廊——offset / limit 都按作品数，没有图的作品也占一组，拿满一页就还有
+ * 下一页；收藏跨库，每组自带详情落点库。
+ */
+export async function listFavoritesGallery(params: {
+  limit: number;
+  offset: number;
+}): Promise<LibraryGalleryGroup[]> {
+  const response = await request<ApiEnvelope<LibraryGalleryGroup[]>>(
+    `/playback/favorites/gallery?limit=${params.limit}&offset=${params.offset}`,
   );
   return response.data;
 }
