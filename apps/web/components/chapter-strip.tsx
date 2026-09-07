@@ -4,8 +4,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { HScroller } from "@/components/h-scroller";
 import { PlayIcon } from "@/components/icons";
-import { ImageLightbox } from "@/components/image-lightbox";
 import { PosterImage } from "@/components/poster-image";
+import { ZoomLightbox, type ZoomLightboxSlide } from "@/components/zoom-lightbox";
 import type { LibraryChapter } from "@/lib/api/libraries";
 import { imageUrl } from "@/lib/image-proxy";
 import { formatClock } from "@/lib/player/timeline";
@@ -21,8 +21,12 @@ import { formatClock } from "@/lib/player/timeline";
  * 几个可以单独播的小视频）。合成章节与内嵌章节在文案上不区分。
  *
  * 看图优先，播放键不常驻（用户决策 2026-09-06）：桌面 hover 才浮出中央播放键；
- * 触摸屏没有 hover，直接点卡片进灯箱，灯箱顶栏有「从 xx:xx 播放」——大图与
+ * 触摸屏没有 hover，直接点卡片进灯箱，灯箱顶栏有「从此处播放」——大图与
  * 播放键都在灯箱里，小卡片上什么都不盖。
+ *
+ * 灯箱与媒体库墙上的那个是同一个内核（ZoomLightbox）：同一张章节图，从库页的
+ * 图床模式点开、还是从这里点开，缩放 / 捏合 / 滑动翻页 / 控件自动收起的习惯
+ * 完全一样，不该因为入口不同而变成两套操作。
  *
  * 章节可能还没有图（后台正在抓 / 库关了开关 / ffmpeg 缺失）：卡片是深色占位 +
  * 时间戳，仍可点击跳播——章节列表本身就有用，图是附属物。
@@ -69,8 +73,14 @@ export function ChapterStrip({
 
   // 灯箱只放有图的章节；下标映射回章节
   const withImages = chapters.filter((c) => c.image_url);
-  const lightboxImages = withImages.map((c) => imageUrl(c.image_url));
-  const captions = withImages.map((c) => chapterCaption(c));
+  // 章节图统一 16:9（抓帧本身就是画面比例），缩略条按它排宽度
+  const slides: ZoomLightboxSlide[] = withImages.map((c) => ({
+    key: c.index,
+    title: chapterCaption(c),
+    thumbUrl: imageUrl(c.image_url, "landscape-card"),
+    screenUrl: imageUrl(c.image_url),
+    aspect: 16 / 9,
+  }));
 
   const openLightbox = (chapter: LibraryChapter) => {
     const i = withImages.indexOf(chapter);
@@ -104,23 +114,30 @@ export function ChapterStrip({
         ))}
       </HScroller>
 
-      {lightbox != null && lightboxImages.length > 0 && (
-        <ImageLightbox
-          images={lightboxImages}
-          captions={captions}
-          initialIndex={lightbox}
-          thumbAspect="landscape"
-          action={{
-            label: "从此处播放",
-            busyLabel: "正在打开…",
-            doneLabel: "已打开",
-            icon: <PlayIcon className="size-3.5" />,
-            run: async (index) => {
-              const target = withImages[index];
-              if (target) onPlay(target);
-            },
-          }}
+      {lightbox != null && slides[lightbox] && (
+        <ZoomLightbox
+          label={`查看章节图：${slides[lightbox].title}`}
+          slides={slides}
+          index={lightbox}
+          hasMore={false}
+          onIndexChange={setLightbox}
+          // 章节是一次性拿全的，没有下一页可要
+          onReachEnd={() => {}}
           onClose={() => setLightbox(null)}
+          actions={
+            <button
+              type="button"
+              title="从此处播放"
+              aria-label="从此处播放"
+              onClick={() => {
+                const target = withImages[lightbox];
+                if (target) onPlay(target);
+              }}
+              className="rounded-full p-2 text-white/70 transition-colors hover:bg-white/[0.12] hover:text-white"
+            >
+              <PlayIcon className="size-[18px]" />
+            </button>
+          }
         />
       )}
     </section>
