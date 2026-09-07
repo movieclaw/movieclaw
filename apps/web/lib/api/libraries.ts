@@ -286,6 +286,8 @@ export interface LibraryItem {
   missing_episode_count: number;
   /** 最近一次文件入账时间（ISO 字符串），首页「最近添加」排序依据 */
   added_at: string | null;
+  /** 当前观看者是否收藏了这部作品（海报右上角那颗心）；不认人的接口恒 false */
+  is_favorite: boolean;
   /** 最近一次可追溯入库批次；旧台账和电影为 null */
   recent_addition: {
     season_count: number;
@@ -586,6 +588,8 @@ export interface LibraryGalleryGroup {
   kind: LibraryKind;
   title: string;
   year: number | null;
+  /** 当前观看者是否收藏了这部作品（瓦片角标与灯箱那颗心的初始态） */
+  is_favorite: boolean;
   images: LibraryGalleryImage[];
 }
 

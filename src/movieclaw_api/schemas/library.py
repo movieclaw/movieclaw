@@ -428,6 +428,10 @@ class LibraryGalleryGroupView(BaseModel):
     kind: MediaKind
     title: str
     year: int | None = None
+    is_favorite: bool = Field(
+        default=False,
+        description="当前观看者是否收藏了这部作品：瓦片右上角的心形角标与灯箱里那颗心的初始态",
+    )
     images: list[LibraryGalleryImageView]
 
 
@@ -502,6 +506,10 @@ class LibraryItemView(BaseModel):
     )
     added_at: datetime | None = Field(
         default=None, description="最近一次文件入账时间（首页「最近添加」排序依据）"
+    )
+    is_favorite: bool = Field(
+        default=False,
+        description="当前观看者是否收藏了这部作品（海报右上角那颗心）；不认人的调用恒 False",
     )
     recent_addition: LibraryRecentAdditionView | None = Field(
         default=None,

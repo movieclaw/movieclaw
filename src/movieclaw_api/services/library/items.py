@@ -419,6 +419,49 @@ async def _wall_page_ids(
     return ids if limit is None else ids[offset : offset + limit]
 
 
+async def favorite_item_ids(
+    session: AsyncSession, media_item_ids: list[int], *, member_id: int
+) -> set[int]:
+    """这批条目里当前观看者收藏了哪几部（条目级收藏，不含单季 / 单集）。
+
+    收藏落在条目级哨兵单元上（剧 ``(-1,-1)``、电影 ``(0,0)``，见
+    ``services/playback/marks.py``），这里只捞已收藏的行再按哨兵过滤——一页
+    几十部，命中的通常是个位数，比给每部作品单独问一次 ``/playback/marks``
+    便宜得多。海报墙与图廊共用这一份口径。
+    """
+    from movieclaw_api.services.playback.marks import item_favorite_unit
+    from movieclaw_db.models import PlaybackState
+
+    if not media_item_ids:
+        return set()
+    kinds = {
+        item_id: kind
+        for item_id, kind in (
+            await session.execute(
+                select(MediaItem.id, MediaItem.kind).where(MediaItem.id.in_(media_item_ids))  # type: ignore[attr-defined]
+            )
+        ).all()
+    }
+    return {
+        item_id
+        for item_id, season, episode in (
+            await session.execute(
+                select(
+                    PlaybackState.media_item_id,
+                    PlaybackState.season_number,
+                    PlaybackState.episode_number,
+                ).where(
+                    PlaybackState.member_id == member_id,
+                    PlaybackState.media_item_id.in_(media_item_ids),  # type: ignore[attr-defined]
+                    PlaybackState.is_favorite.is_(True),  # type: ignore[union-attr]
+                )
+            )
+        ).all()
+        if item_id in kinds
+        and (item_id, season, episode) == item_favorite_unit(item_id, kinds[item_id])
+    }
+
+
 async def build_library_wall(
     session: AsyncSession,
     library_id: int,
@@ -427,6 +470,7 @@ async def build_library_wall(
     limit: int | None = None,
     offset: int = 0,
     identity: WallIdentity = "confirmed",
+    member_id: int | None = None,
 ) -> list[LibraryItemView]:
     """库内媒体条目的库存聚合（单库海报墙数据源）。
 
@@ -436,6 +480,9 @@ async def build_library_wall(
     ``limit`` 给定时只聚合这一页的条目——首页「最近添加」只要 20 格，
     海报墙滚动加载一次要一屏，都不该为此把整库的台账行捞出来算一遍。
     不给 limit 则是全库（保留给一次性拿完整库存的调用方）。
+
+    给了 ``member_id`` 才带这位观看者的收藏态（海报右上角那颗心）；不给就一律
+    ``False``——内部调用与不认人的场景不必为此多查一次。
 
     调用方需自行完成库存在性检查（404）。
     """
@@ -452,7 +499,12 @@ async def build_library_wall(
         if limit is None
         else page_ids
     )
-    return await _aggregate_wall_views(session, library_id, in_page, page_ids)
+    views = await _aggregate_wall_views(session, library_id, in_page, page_ids)
+    if member_id is not None:
+        favorites = await favorite_item_ids(session, page_ids, member_id=member_id)
+        for view in views:
+            view.is_favorite = view.media_item_id in favorites
+    return views
 
 
 async def _aggregate_wall_views(
@@ -670,6 +722,7 @@ async def build_library_gallery(
     session: AsyncSession,
     library_id: int,
     *,
+    member_id: int,
     limit: int | None = None,
     offset: int = 0,
 ) -> list[LibraryGalleryGroupView]:
@@ -680,7 +733,9 @@ async def build_library_gallery(
     海报 → 横幅剧照 → 逐集（分集剧照 → 该集章节图）。只取库里**在位**文件
     名下的章节图与分集剧照：图廊看的是"我库里有的"，缺集的剧照不混进来。
     没有任何图的条目也占一组（``images`` 为空）——一页的组数恒等于条目数，
-    前端据此判断还有没有下一页。
+    前端据此判断还有没有下一页。每组还带上 ``member_id`` 这位观看者有没有
+    收藏这部作品，供瓦片角标与灯箱里的心一次拿齐（详情页那样逐条目问
+    ``/playback/marks``，一屏几十张图就是几十个请求）。
 
     图片来源与海报墙、详情页同一优先级：本地刮削资产（断网可用，带
     ``?v=`` 版本戳）优先，其次 TMDB 图床——但海报取 w780、剧照取 w1280
@@ -704,6 +759,7 @@ async def build_library_gallery(
         .all()
         if item.id is not None
     }
+    favorite_ids = await favorite_item_ids(session, page_ids, member_id=member_id)
     meta_by_id: dict[int, tuple[str | None, int | None, int | None, str | None]] = {
         item_id: (poster_file, width, height, backdrop_file)
         for item_id, poster_file, width, height, backdrop_file in (
@@ -849,6 +905,7 @@ async def build_library_gallery(
                 kind=MediaKind(item.kind),
                 title=item.title,
                 year=item.year,
+                is_favorite=item_id in favorite_ids,
                 images=images,
             )
         )

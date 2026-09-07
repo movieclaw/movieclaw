@@ -6,7 +6,7 @@ import type { Route } from "next";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
-import { OpenIcon, PlayIcon } from "@/components/icons";
+import { HeartIcon, OpenIcon, PlayIcon } from "@/components/icons";
 import {
   DENSITY,
   layoutMasonry,
@@ -27,9 +27,9 @@ import { playHref, rememberPlayerReturnPath } from "@/lib/player/play-links";
  *   - 分组按**作品**而不是按月：一部作品一段标题 + 一面墙，标题可点进详情。
  *     分组可以在 ⋯ 菜单里关掉——关掉之后整库的图混成一条瀑布流，谁也不分段，
  *     纯看图时最沉浸（用户决策 2026-09-07）；
- *   - 灯箱顶栏右侧不是「下载 / 拍摄信息」，而是「播放 / 详情」：章节场景图的
+ *   - 灯箱顶栏右侧不是「下载 / 拍摄信息」，而是「播放 / 收藏 / 详情」：章节场景图的
  *     播放就是从那一帧起播（服务端给了 t_seconds），分集剧照带季集号进详情页
- *     直接落到那一集。
+ *     直接落到那一集；心与详情页那颗是同一颗（收藏整部作品，见 playback marks）。
  *
  * 数据来自 /libraries/{id}/gallery，按作品分页（与海报墙同一份标题序）；
  * 灯箱翻的是铺平后的整份图列表（GalleryEntry），翻到末尾向外要下一页。
@@ -91,6 +91,16 @@ function groupTitle(group: LibraryGalleryGroup): string {
   return group.year ? `${group.title} (${group.year})` : group.title;
 }
 
+/**
+ * 一张瓦片的稳定标识：React key 与滚动恢复的锚点共用同一串。
+ *
+ * 不能只用条目 id——同一部作品在墙上有十几张图；也不能只用 url——不分组时
+ * 整库的图排在一面墙上，不同条目的图床地址理论上可能撞。
+ */
+function tileKey(group: LibraryGalleryGroup, image: LibraryGalleryImage): string {
+  return `${group.media_item_id}:${image.kind}:${image.url}`;
+}
+
 /** 条目详情页地址：分集剧照 / 剧集章节图带季集号，详情页直接落到那一集 */
 function detailHref(libraryId: number, entry: GalleryEntry): Route {
   const { group, image } = entry;
@@ -100,6 +110,78 @@ function detailHref(libraryId: number, entry: GalleryEntry): Route {
       ? `?season=${image.season}&episode=${image.episode}`
       : "";
   return `${base}${unit}` as Route;
+}
+
+/**
+ * 提前取图的距离：约一屏半。
+ *
+ * 瓦片带 ``content-visibility:auto``，子树被跳过时 ``<img loading="lazy">`` 不做
+ * 相交判定（根因见 poster-image.tsx 顶部的长注释），实际要等瓦片自己解除跳过
+ * ——大约只提前半屏——才发第一个请求。图廊的图又比海报大，滑快一点就是一路
+ * 黑格，图追在人后面。这里提前一屏半开始取，滑到时基本已经就位。
+ */
+const PREFETCH_MARGIN = "1200px 0px";
+
+/**
+ * 一面墙一个 IntersectionObserver，观察**瓦片本体**：瓦片有显式宽高、自己不被
+ * 跳过，相交判定照常工作（被跳过的是它的子树）。进入提前量的瓦片切成 eager。
+ *
+ * 标记只加不减——图取过就不必再管，命中即 ``unobserve``；一次滑动会连着命中
+ * 几十张，合并到下一帧统一提交，不一张一次 setState。分组模式下每段墙各持
+ * 一个观察器：段与段互不影响，某一段有图进场时不必惊动整墙重渲染。
+ */
+function useTilePrefetch() {
+  const [near, setNear] = useState<ReadonlySet<string>>(() => new Set());
+  const observerRef = useRef<IntersectionObserver | null>(null);
+  const pending = useRef<Set<string>>(new Set());
+  const flush = useRef(0);
+
+  const getObserver = useCallback(() => {
+    if (observerRef.current || typeof IntersectionObserver === "undefined") {
+      return observerRef.current;
+    }
+    observerRef.current = new IntersectionObserver(
+      (records) => {
+        for (const record of records) {
+          if (!record.isIntersecting) continue;
+          const key = (record.target as HTMLElement).dataset.galleryTileId;
+          if (key) pending.current.add(key);
+          observerRef.current?.unobserve(record.target);
+        }
+        if (pending.current.size > 0 && !flush.current) {
+          flush.current = requestAnimationFrame(() => {
+            flush.current = 0;
+            setNear((current) => new Set([...current, ...pending.current]));
+            pending.current.clear();
+          });
+        }
+      },
+      { rootMargin: PREFETCH_MARGIN },
+    );
+    return observerRef.current;
+  }, []);
+
+  useEffect(
+    () => () => {
+      observerRef.current?.disconnect();
+      observerRef.current = null;
+      if (flush.current) cancelAnimationFrame(flush.current);
+    },
+    [],
+  );
+
+  // 瓦片的 ref：挂上即观察，卸载时（React 19 的 ref 清理）取消观察
+  const observe = useCallback(
+    (node: HTMLElement | null) => {
+      if (!node) return;
+      const observer = getObserver();
+      observer?.observe(node);
+      return () => observer?.unobserve(node);
+    },
+    [getObserver],
+  );
+
+  return { near, observe };
 }
 
 export function VideoGalleryWall({
@@ -187,6 +269,7 @@ const GalleryTiles = memo(function GalleryTiles({
   spec: DensitySpec;
   onOpen: (index: number) => void;
 }) {
+  const { near, observe } = useTilePrefetch();
   const layout = useMemo(() => {
     const aspects = entries.map((entry) => entry.image.aspect);
     const masonry = layoutMasonry(aspects, width, spec.column, spec.gap, spec.minColumns);
@@ -197,17 +280,26 @@ const GalleryTiles = memo(function GalleryTiles({
   }, [entries, width, spec]);
   return (
     <div className="relative" style={{ height: layout.height }}>
-      {entries.map(({ group, image }, i) => (
-        // key 带上条目 id：不分组时整库的图排在一面墙上，光靠 url 不保证唯一
-        <GalleryTile
-          key={`${group.media_item_id}:${image.kind}:${image.url}`}
-          group={group}
-          image={image}
-          placement={layout.placements[i]}
-          spec={spec}
-          onOpen={() => onOpen(start + i)}
-        />
-      ))}
+      {entries.map(({ group, image }, i) => {
+        const placement = layout.placements[i];
+        const key = tileKey(group, image);
+        return (
+          <GalleryTile
+            key={key}
+            group={group}
+            image={image}
+            index={start + i}
+            preload={near.has(key)}
+            observe={observe}
+            x={placement.x}
+            y={placement.y}
+            width={placement.width}
+            height={placement.height}
+            spec={spec}
+            onOpen={onOpen}
+          />
+        );
+      })}
     </div>
   );
 });
@@ -250,39 +342,84 @@ const GalleryGroupSection = memo(function GalleryGroupSection({
   );
 });
 
+/**
+ * 一张瓦片。
+ *
+ * 位置拆成四个数字、点击给稳定的 ``onOpen`` + 自己的下标，都是为了让 ``memo``
+ * 真的生效：不分组时整墙共用一份铺平列表，追加一页或翻一次收藏都会重算
+ * layout，传对象（每次新引用）或内联箭头（每次新函数）会让几千个瓦片跟着
+ * 全量重渲染。分组模式下每组各算各的，本来就不受影响。
+ */
 const GalleryTile = memo(function GalleryTile({
   group,
   image,
-  placement,
+  index,
+  preload,
+  observe,
+  x,
+  y,
+  width,
+  height,
   spec,
   onOpen,
 }: {
   group: LibraryGalleryGroup;
   image: LibraryGalleryImage;
-  placement: { x: number; y: number; width: number; height: number };
+  /** 本瓦片在铺平列表里的全局下标：灯箱按同一列表翻页 */
+  index: number;
+  /** 已进入提前量，图直接取（见 useTilePrefetch） */
+  preload: boolean;
+  /** 把瓦片交给墙上那个共享观察器 */
+  observe: (node: HTMLElement | null) => (() => void) | void;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
   spec: DensitySpec;
-  onOpen: () => void;
+  onOpen: (index: number) => void;
 }) {
   return (
     // 与相册墙的瓦片同一套：绝对定位 + transform 重排走过渡，content-visibility
     // 让视口外的瓦片跳过绘制
     <button
       type="button"
-      aria-label={`查看 ${group.title} · ${image.label}`}
-      onClick={onOpen}
+      ref={observe}
+      // 滚动恢复的锚点（见 lib/use-scroll-restoration.ts）：离开这一屏时记下
+      // 首个可见瓦片，返回时按它回位。纯像素位在窗口宽度变过（转屏、缩窗口）
+      // 之后会错行——masonry 重排后同一个 y 已经不是同一批图了
+      data-gallery-tile-id={tileKey(group, image)}
+      aria-label={`查看 ${group.title} · ${image.label}${group.is_favorite ? "（已收藏）" : ""}`}
+      onClick={() => onOpen(index)}
       className="group/tile absolute left-0 top-0 block overflow-hidden rounded-xl bg-[#141824] text-left shadow-[0_8px_22px_rgba(0,0,0,0.35)] ring-1 ring-white/[0.07] transition-[transform,width,height,box-shadow] duration-300 ease-out [content-visibility:auto] hover:z-[2] hover:shadow-[0_18px_44px_rgba(0,0,0,0.6)] hover:ring-white/25 focus-visible:z-[2] focus-visible:ring-2 focus-visible:ring-[var(--accent)] motion-reduce:transition-none"
       style={{
-        transform: `translate(${Math.round(placement.x)}px, ${Math.round(placement.y)}px)`,
-        width: Math.round(placement.width),
-        height: Math.round(placement.height),
+        transform: `translate(${Math.round(x)}px, ${Math.round(y)}px)`,
+        width: Math.round(width),
+        height: Math.round(height),
       }}
     >
+      {/* 图廊的图比海报大得多（剧照 w1280、本地资产是原件），滑过去经常要等上
+          一会儿；开脉冲占位，等待期看着是"在加载"而不是一块黑。
+          取图一律走派生：相册墙的宽松密度（spec.variant 为 undefined）直接吃原图，
+          那是因为图片库的墙图本来就是 720 缩略图——图廊没这层，得自己要一张 */}
       <PosterImage
-        src={imageUrl(image.url, spec.variant)}
+        src={imageUrl(image.url, spec.variant ?? "gallery-tile")}
         alt={`${group.title} · ${image.label}`}
+        pulseWhileLoading
+        preload={preload}
         className="absolute inset-0 size-full object-cover transition-transform duration-500 ease-out group-hover/tile:scale-[1.04] motion-reduce:transition-none"
       />
-      {/* 不给常驻角标（用户决策 2026-09-07）：几百个「海报 / 剧照 / 第 3 集」浮在
+      {/* 收藏是唯一的常驻角标：它是**状态**不是分类文案，不认标签也认得这颗心，
+          而且只有被收藏的那几张才有，不会像「海报 / 剧照 / 第 3 集」那样满墙都是。
+          aria 走瓦片自己的 label（上面带了「已收藏」），这里纯装饰 */}
+      {group.is_favorite && (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute right-2 top-2 text-[var(--danger)] drop-shadow-[0_1px_3px_rgba(0,0,0,0.75)]"
+        >
+          <HeartIcon className="size-4" fill="currentColor" />
+        </span>
+      )}
+      {/* 除上面那颗心外不给分类角标（用户决策 2026-09-07）：几百个「海报 / 剧照 / 第 3 集」浮在
           墙上，视线全被标签牵走，瀑布流就不是一面图墙了。是哪一类图移到下面的
           悬停层里说——真要分辨时鼠标一停就有，平时画面干净。
           悬停信息层：作品名 + 图的说明。不用 backdrop-blur（几百张瓦片叠加会拖慢滚动） */}
@@ -313,6 +450,7 @@ export function VideoGalleryLightbox({
   hasMore,
   onIndexChange,
   onReachEnd,
+  onToggleFavorite,
   onClose,
 }: {
   libraryId: number;
@@ -322,6 +460,8 @@ export function VideoGalleryLightbox({
   hasMore: boolean;
   onIndexChange: (index: number) => void;
   onReachEnd: () => void;
+  /** 收藏 / 取消收藏这部作品：状态挂在分组上（墙上的角标读同一份），由外层落库与回滚 */
+  onToggleFavorite: (mediaItemId: number, favorite: boolean) => void;
   onClose: () => void;
 }) {
   const router = useRouter();
@@ -331,10 +471,11 @@ export function VideoGalleryLightbox({
       entries.map(({ group, image }, i) => ({
         key: i,
         title: `${groupTitle(group)} · ${image.label}`,
-        // 墙上的派生图先铺底，主图直接是服务端给的这张（海报 w780 / 剧照 w1280 /
-        // 本地资产原件），没有再高一级的原图
+        // 墙上的派生图先铺底，主图走屏幕适配派生（长边 2048，不放大）：源本身
+        // 就没有比 w1280 剧照 / 本地资产更高一级的原图，这一层不为缩小尺寸，
+        // 而是转成 WebP——同样的画质少三到五成字节，翻页跟手（图片库灯箱同款口径）
         thumbUrl: imageUrl(image.url, "photo-tile"),
-        screenUrl: imageUrl(image.url),
+        screenUrl: imageUrl(image.url, "photo-screen"),
         aspect: image.aspect,
       })),
     [entries],
@@ -357,6 +498,9 @@ export function VideoGalleryLightbox({
 
   if (!entry) return null;
   const playLabel = entry.image.t_seconds !== null ? "从此处播放" : "播放";
+  // 收藏的是整部作品（与详情页那颗心同一落点），不是当前这张图或这一集
+  const favorite = entry.group.is_favorite;
+  const favoriteLabel = favorite ? "取消收藏" : "收藏";
   const buttonClass =
     "rounded-full p-2 text-white/70 transition-colors hover:bg-white/[0.12] hover:text-white";
 
@@ -379,6 +523,19 @@ export function VideoGalleryLightbox({
             className={buttonClass}
           >
             <PlayIcon className="size-[18px]" />
+          </button>
+          <button
+            type="button"
+            title={`${favoriteLabel}《${entry.group.title}》`}
+            aria-label={favoriteLabel}
+            aria-pressed={favorite}
+            onClick={() => onToggleFavorite(entry.group.media_item_id, !favorite)}
+            className={buttonClass}
+          >
+            <HeartIcon
+              className={favorite ? "size-[18px] text-[var(--danger)]" : "size-[18px]"}
+              fill={favorite ? "currentColor" : "none"}
+            />
           </button>
           <Link
             href={detailHref(libraryId, entry)}

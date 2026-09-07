@@ -1,7 +1,12 @@
 import { resolveRequestUrl } from "@/lib/http";
 
 /** 后端允许的固定图片派生预设；固定枚举避免调用方制造任意尺寸缓存。 */
-export type ImageVariant = "landscape-card" | "poster-card" | "photo-tile";
+export type ImageVariant =
+  | "landscape-card"
+  | "poster-card"
+  | "photo-tile"
+  | "gallery-tile"
+  | "photo-screen";
 
 /**
  * 海报墙格子按主图比例挑派生预设：预设是等比缩放的外接框，横版封面（其他库

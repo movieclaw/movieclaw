@@ -112,6 +112,15 @@ async def resolve_played_units(session: AsyncSession, target: MarkTarget) -> lis
     return units or [(target.media_item_id, 0, 0)]
 
 
+def item_favorite_unit(media_item_id: int, kind: str | None) -> Unit:
+    """条目级收藏的落点单元（已知 kind 时的同步版）。
+
+    批量场景（图廊一页几十部作品要知道各自收藏没有）用它，免得为每部作品
+    回查一次 ``MediaItem``；哨兵的取值只在这里定义一次，读写两侧共用。
+    """
+    return (media_item_id, -1, -1) if kind == "tv" else (media_item_id, 0, 0)
+
+
 async def favorite_unit(session: AsyncSession, target: MarkTarget) -> Unit:
     """收藏的落点单元：叶子用真实单元；整季/整剧用哨兵 ``(s,-1)`` / ``(-1,-1)``
     ——与 Jellyfin 兼容层 ``catalog._folder_user_data`` 的读取侧约定一致。"""
@@ -122,9 +131,7 @@ async def favorite_unit(session: AsyncSession, target: MarkTarget) -> Unit:
         assert target.season is not None
         return (target.media_item_id, target.season, -1)
     item = await session.get(MediaItem, target.media_item_id)
-    if item is not None and item.kind == "tv":
-        return (target.media_item_id, -1, -1)
-    return (target.media_item_id, 0, 0)
+    return item_favorite_unit(target.media_item_id, item.kind if item is not None else None)
 
 
 # ---------------------------------------------------------------------------

@@ -1848,7 +1848,6 @@ async def start_organize(
     response_model=ApiResponse[list[LibraryItemView]],
     summary="库内媒体条目的库存聚合（单库海报墙数据源）",
     operation_id="library.items.list",
-    dependencies=[Depends(require_library_visible)],
 )
 async def list_library_items(
     library_id: int,
@@ -1877,12 +1876,21 @@ async def list_library_items(
         ),
     ] = "confirmed",
     session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_library_visible),
 ) -> ApiResponse[list[LibraryItemView]]:
 
     await LibraryConfigService(session).get(library_id)  # 404 检查
+    # 收藏态按人算（海报右上角那颗心），所以这条路由要认人
+    member_id = principal.member_id if principal.member_id is not None else 0
     return ok(
         await build_library_wall(
-            session, library_id, sort=sort, limit=limit, offset=offset, identity=identity
+            session,
+            library_id,
+            sort=sort,
+            limit=limit,
+            offset=offset,
+            identity=identity,
+            member_id=member_id,
         )
     )
 
@@ -1952,7 +1960,6 @@ async def list_library_item_index(
     summary="库内条目的图廊：海报 / 剧照 / 章节场景图按条目分组铺平（图床浏览模式数据源）",
     operation_id="ui.library.gallery",
     openapi_extra={"x-cli-hidden": True},
-    dependencies=[Depends(require_library_visible)],
 )
 async def list_library_gallery(
     library_id: int,
@@ -1961,13 +1968,20 @@ async def list_library_gallery(
     ] = None,
     offset: Annotated[int, Query(ge=0, description="跳过的条目数（滚动加载翻页用）")] = 0,
     session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_library_visible),
 ) -> ApiResponse[list[LibraryGalleryGroupView]]:
     """影视库 / 其他库的图床浏览模式：与 ``/items?sort=title`` 同一份排序与
     分页口径，一组就是一部作品的全部图（海报 → 剧照 → 逐集剧照与章节图）。
-    没有任何图的条目也占一组（images 为空），一页的组数恒等于条目数。"""
+    没有任何图的条目也占一组（images 为空），一页的组数恒等于条目数。
+    每组带当前观看者的收藏态（瓦片角标与灯箱的心）。"""
 
     await LibraryConfigService(session).get(library_id)  # 404 检查
-    return ok(await build_library_gallery(session, library_id, limit=limit, offset=offset))
+    member_id = principal.member_id if principal.member_id is not None else 0
+    return ok(
+        await build_library_gallery(
+            session, library_id, member_id=member_id, limit=limit, offset=offset
+        )
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -10,6 +10,7 @@ from sqlmodel import select
 from movieclaw_api.api.routes.libraries import list_library_items
 from movieclaw_api.core.config import get_settings
 from movieclaw_api.schemas.library import derive_air_status
+from movieclaw_api.services.auth import Principal
 from movieclaw_db.engine import dispose_db, get_database, init_db
 from movieclaw_db.migrations import run_migrations
 from movieclaw_db.models import (
@@ -22,6 +23,9 @@ from movieclaw_db.models import (
     utcnow,
 )
 from movieclaw_db.repositories.library_repo import LibraryRepository
+
+#: 直接调路由函数时的主体（海报墙的收藏态按人算，必须显式给）
+_ADMIN = Principal(kind="admin", name="tester")
 
 
 @pytest_asyncio.fixture
@@ -116,7 +120,7 @@ async def test_items_air_status_and_missing_episodes(db) -> None:
         )
         await session.flush()
 
-        resp = await list_library_items(library.id, session=session)
+        resp = await list_library_items(library.id, session=session, principal=_ADMIN)
         rows = {r.media_item_id: r for r in resp.data}
 
         assert rows[airing.id].air_status == "airing"
@@ -155,7 +159,7 @@ async def test_items_missing_episodes_counts_across_libraries(db) -> None:
         )
         await session.flush()
 
-        resp = await list_library_items(main.id, session=session)
+        resp = await list_library_items(main.id, session=session, principal=_ADMIN)
         row = {r.media_item_id: r for r in resp.data}[item.id]
 
         # 本库库存仍按本库口径展示（海报墙显示的是这个库里有什么）
@@ -196,12 +200,64 @@ async def test_items_movie_and_unknown_status(db) -> None:
         )
         await session.flush()
 
-        resp = await list_library_items(library.id, session=session)
+        resp = await list_library_items(library.id, session=session, principal=_ADMIN)
         rows = {r.media_item_id: r for r in resp.data}
 
         assert rows[movie.id].air_status is None
         assert rows[movie.id].missing_episode_count == 0
         assert rows[unknown.id].air_status is None
+
+
+async def test_items_carry_viewer_favorite(db) -> None:
+    """海报墙带当前观看者的收藏态（右上角那颗心），且各人看各人的。
+
+    收藏落在条目级哨兵单元上（电影 (0,0)、剧 (-1,-1)），与详情页 / 图廊 /
+    Jellyfin 点的是同一份数据，所以这里按哨兵写库、从墙上读回。
+    """
+    from movieclaw_api.services.playback import marks as playback_marks
+    from movieclaw_playback import state as playback_state
+
+    async with db.session() as session:
+        library = await LibraryRepository(session).create(
+            name="电影库", kind="movie", root_paths=["/movies"]
+        )
+        loved = MediaItem(kind="movie", tmdb_id=501, title="心头好", original_title="L")
+        plain = MediaItem(kind="movie", tmdb_id=502, title="路人甲", original_title="P")
+        session.add_all([loved, plain])
+        await session.flush()
+        assert library.id and loved.id and plain.id
+        session.add_all(
+            [
+                LibraryFile(
+                    library_id=library.id,
+                    media_item_id=item_id,
+                    season_number=0,
+                    episode_number=0,
+                    file_path=f"/movies/{item_id}/m.mkv",
+                    size_bytes=1,
+                    source=FileSource.SCANNED,
+                )
+                for item_id in (loved.id, plain.id)
+            ]
+        )
+        await session.flush()
+
+        # 超管（member_id 缺省视为 0）收藏其中一部
+        unit = await playback_marks.favorite_unit(session, playback_marks.MarkTarget(loved.id))
+        await playback_state.set_favorite(session, unit, member_id=0, favorite=True)
+        await session.flush()
+
+        rows = {
+            r.media_item_id: r
+            for r in (await list_library_items(library.id, session=session, principal=_ADMIN)).data
+        }
+        assert rows[loved.id].is_favorite is True
+        assert rows[plain.id].is_favorite is False
+
+        # 换个成员看同一面墙：收藏是各人各的，不该跟着亮
+        member = Principal(kind="member", name="别人", member_id=7, is_admin=False)
+        others = (await list_library_items(library.id, session=session, principal=member)).data
+        assert [r.is_favorite for r in others] == [False, False]
 
 
 async def test_items_sort_and_paging(db) -> None:
@@ -237,14 +293,18 @@ async def test_items_sort_and_paging(db) -> None:
             )
         await session.flush()
 
-        by_title = await list_library_items(library.id, session=session)
+        by_title = await list_library_items(library.id, session=session, principal=_ADMIN)
         assert [r.title for r in by_title.data] == titles
 
-        recent = await list_library_items(library.id, sort="added_at", limit=2, session=session)
+        recent = await list_library_items(
+            library.id, sort="added_at", limit=2, session=session, principal=_ADMIN
+        )
         assert [r.title for r in recent.data] == ["A片", "B片"]
 
-        page1 = await list_library_items(library.id, limit=2, session=session)
-        page2 = await list_library_items(library.id, limit=2, offset=2, session=session)
+        page1 = await list_library_items(library.id, limit=2, session=session, principal=_ADMIN)
+        page2 = await list_library_items(
+            library.id, limit=2, offset=2, session=session, principal=_ADMIN
+        )
         assert [r.title for r in page1.data] + [r.title for r in page2.data] == titles
 
         # 补探优先：给 A 片探出音轨后它就不再是"待处理"，让位给尚未探测的 B 片
@@ -254,10 +314,14 @@ async def test_items_sort_and_paging(db) -> None:
         a_file.audio_streams = []
         session.add(a_file)
         await session.flush()
-        probing = await list_library_items(library.id, sort="probing", limit=2, session=session)
+        probing = await list_library_items(
+            library.id, sort="probing", limit=2, session=session, principal=_ADMIN
+        )
         assert [r.title for r in probing.data] == ["B片", "C片"]
 
-        empty = await list_library_items(library.id, limit=2, offset=4, session=session)
+        empty = await list_library_items(
+            library.id, limit=2, offset=4, session=session, principal=_ADMIN
+        )
         assert empty.data == []
 
         id_resp = await list_library_item_ids(library.id, session=session)
@@ -315,7 +379,9 @@ async def test_items_recent_addition_uses_latest_ingest_batch(db) -> None:
         )
         await session.flush()
 
-        response = await list_library_items(library.id, sort="added_at", session=session)
+        response = await list_library_items(
+            library.id, sort="added_at", session=session, principal=_ADMIN
+        )
         rows = {row.media_item_id: row for row in response.data}
         recent = rows[current.id]
 
@@ -392,7 +458,7 @@ async def test_items_inventory_summary_uses_in_place_files_and_known_structure(d
         )
         await session.flush()
 
-        response = await list_library_items(library.id, session=session)
+        response = await list_library_items(library.id, session=session, principal=_ADMIN)
         rows = {row.media_item_id: row for row in response.data}
 
         full = rows[full_seasons.id].inventory_summary
@@ -441,7 +507,7 @@ async def test_items_pinyin_order_and_index(db) -> None:
             session.add(_file(library.id, item.id, 1, 1))
         await session.flush()
 
-        rows = await list_library_items(library.id, session=session)
+        rows = await list_library_items(library.id, session=session, principal=_ADMIN)
         assert [r.title for r in rows.data] == [
             "爱很美味",  # a
             "重庆森林",  # chongqing——多音字，码点序绝排不到这
@@ -459,7 +525,9 @@ async def test_items_pinyin_order_and_index(db) -> None:
             ("#", 1, 4),
         ]
         # 索引条给的 offset 直接可用：点「M」拿到的就是该档第一格
-        jumped = await list_library_items(library.id, limit=1, offset=2, session=session)
+        jumped = await list_library_items(
+            library.id, limit=1, offset=2, session=session, principal=_ADMIN
+        )
         assert [r.title for r in jumped.data] == ["漫长的季节"]
 
 

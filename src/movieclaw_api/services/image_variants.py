@@ -34,6 +34,10 @@ class ImageVariant(StrEnum):
     # 屏幕适配图。两者都是「装进盒子、不裁切」——照片的比例本身就是内容
     PHOTO_TILE = "photo-tile"
     PHOTO_SCREEN = "photo-screen"
+    # 影视库 / 其他库的图床浏览模式（瀑布流墙）在宽松密度下的瓦片。相册墙同一档
+    # 直接用原图是因为图片库的墙图本来就是 720 缩略图；图廊的源却是 TMDB w1280
+    # 剧照与本地刮削原件，一张几百 KB 到几 MB，滑过去就是一片黑等着下载
+    GALLERY_TILE = "gallery-tile"
 
 
 @dataclass(frozen=True)
@@ -56,6 +60,8 @@ _PRESETS = {
     ImageVariant.PHOTO_TILE: VariantPreset(width=480, height=480, quality=78),
     # 灯箱屏幕适配图：长边 2048 覆盖 4K 以下全屏，几百 KB 而不是原图的几 MB；放大才拉原图
     ImageVariant.PHOTO_SCREEN: VariantPreset(width=2048, height=2048, quality=82),
+    # 图廊宽松密度：列宽 340 CSS px，720px 覆盖 2x 屏
+    ImageVariant.GALLERY_TILE: VariantPreset(width=720, height=720, quality=78),
 }
 
 

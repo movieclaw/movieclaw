@@ -1786,8 +1786,11 @@ async def test_library_refresh_targets_include_fileless_tracked_items(db, tmp_pa
 
 async def test_library_gallery_flattens_posters_stills_and_chapters(db, tmp_path) -> None:
     """图廊按条目分组铺平：海报 → 剧照 → 逐集（分集剧照 → 该集章节图），
-    章节图带起播秒数与季集号；分页按条目数走，与海报墙同口径。"""
+    章节图带起播秒数与季集号；分页按条目数走，与海报墙同口径；每组还带
+    当前观看者的收藏态（瀑布流角标与灯箱的心）。"""
     from movieclaw_api.api.routes.libraries import list_library_gallery
+    from movieclaw_api.services.playback import marks as playback_marks
+    from movieclaw_playback import state as playback_state
 
     root = tmp_path / "media" / "tv"
     show = root / "测试剧集 (2024)" / "Season 01"
@@ -1823,7 +1826,7 @@ async def test_library_gallery_flattens_posters_stills_and_chapters(db, tmp_path
         await session.commit()
 
     async with db.session() as session:
-        groups = (await list_library_gallery(library.id, None, 0, session)).data
+        groups = (await list_library_gallery(library.id, None, 0, session, _ADMIN)).data
         assert [g.title for g in groups] == ["测试剧集"]
         images = groups[0].images
         # 剧集条目在假 TMDB 里没有海报/横幅，图只来自分集剧照与章节图：
@@ -1839,5 +1842,18 @@ async def test_library_gallery_flattens_posters_stills_and_chapters(db, tmp_path
         assert chapter.url.startswith("/images/assets/chapters/1/1/0.jpg?v=")
         assert abs(chapter.aspect - 16 / 9) < 1e-6
 
+        # 收藏态随图廊一起下发（瀑布流的心形角标与灯箱那颗心的初始态）：
+        # 读的是条目级哨兵单元，与详情页 / Jellyfin 点的心是同一份数据
+        assert groups[0].is_favorite is False
+
         # 分页按条目数：跳过唯一的条目就什么都没有
-        assert (await list_library_gallery(library.id, 1, 1, session)).data == []
+        assert (await list_library_gallery(library.id, 1, 1, session, _ADMIN)).data == []
+
+    async with db.session() as session:
+        item_id = groups[0].media_item_id
+        unit = await playback_marks.favorite_unit(session, playback_marks.MarkTarget(item_id))
+        await playback_state.set_favorite(session, unit, member_id=0, favorite=True)
+        await session.commit()
+    async with db.session() as session:
+        groups = (await list_library_gallery(library.id, None, 0, session, _ADMIN)).data
+        assert groups[0].is_favorite is True

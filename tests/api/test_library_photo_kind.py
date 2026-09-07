@@ -437,6 +437,11 @@ def test_photo_variants_fit_without_cropping(tmp_path) -> None:
     # 卡片预设同样是等比装框：竖版照片以 492 高为界、宽按原比例算，不裁成 2:3
     card = Image.open(BytesIO(_render_webp(photo, _PRESETS[ImageVariant.POSTER_CARD])))
     assert card.size == (308, 492)
+    # 图廊瓦片（图床浏览模式的宽松密度）走同一套规则，长边 720
+    gallery = Image.open(BytesIO(_render_webp(photo, _PRESETS[ImageVariant.GALLERY_TILE])))
+    assert gallery.size == (450, 720)
+    # 新增预设漏配尺寸会在请求时 KeyError 500，这里一次挡住
+    assert set(_PRESETS) == set(ImageVariant)
 
 
 # ---------------------------------------------------------------------------

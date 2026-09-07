@@ -1,4 +1,5 @@
 import type {
+  LibraryGalleryGroup,
   LibraryIndexEntry,
   LibraryItem,
   LibraryItemSort,
@@ -32,6 +33,15 @@ export interface LibraryDetailSnapshot {
   wallLoaded: number;
   wallSort: LibraryItemSort;
   wallOffset: number;
+  /**
+   * 图床浏览模式已加载的整份窗口。它必须跟着快照一起回来：图廊只按条目分页，
+   * 只补第一页的话容器会矮到装不下离开时的滚动位置，人就被甩回墙首。
+   * 空数组 = 这一次浏览没进过图廊。
+   */
+  galleryGroups: LibraryGalleryGroup[];
+  galleryHasMore: boolean;
+  /** 已向服务端请求到第几个条目（图廊按条目分页），返回后按同样的页数对账 */
+  galleryLoaded: number;
   /** 删除或转移等操作后标记为过期；保留旧窗口只为让滚动恢复有落脚点。 */
   stale: boolean;
 }

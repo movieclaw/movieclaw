@@ -88,6 +88,7 @@ import {
   type ClaimSeed,
   searchSeedFromLabel,
 } from "@/components/claim-panels";
+import { setPlaybackMarks } from "@/lib/api/playback";
 import { listSubscriptions, type Subscription } from "@/lib/api/subscriptions";
 import { HttpError } from "@/lib/http";
 import { formatBytes } from "@/lib/format";
@@ -147,6 +148,24 @@ const WALL_PAGE_SIZE = 60;
 const WALL_API_PAGE_SIZE = 200;
 /** 图床浏览模式一页的作品数：一部作品十来张图，24 部约一屏半 */
 const GALLERY_PAGE_SIZE = 24;
+/**
+ * 图床浏览模式提前取下一页的距离：约一屏半，也就是当前这一页快滑完时就去要
+ * 下一页。图大、下载慢，等滑到底再发请求接上来的就是一屏空瓦片。
+ */
+const GALLERY_LOAD_MARGIN = "1200px 0px";
+
+/**
+ * 图廊分组上墙前的统一口径：没图的条目不占位（服务端按条目分页，空组只用来
+ * 数页），同一条目只留最前面那一组。追加下一页与整窗对账都过这一道。
+ */
+function dedupeGalleryGroups(groups: LibraryGalleryGroup[]): LibraryGalleryGroup[] {
+  const seen = new Set<number>();
+  return groups.filter((group) => {
+    if (group.images.length === 0 || seen.has(group.media_item_id)) return false;
+    seen.add(group.media_item_id);
+    return true;
+  });
+}
 
 /**
  * 列表拉取失败折成 ``null``（而不是空数组）。
@@ -164,8 +183,14 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   const initialSnapshot = getLibraryDetailSnapshot(libraryId);
   const { canManageLibraries } = usePermissions();
   const { activeJobs } = useJobs();
+  // 影视库 / 其他库的图床浏览模式（video-gallery.tsx）：海报墙换成每部作品的
+  // 海报 / 剧照 / 章节图瀑布流，点开灯箱能直接播放或进详情。偏好记在浏览器里；
+  // 图片库本身就是相册墙，这个开关对它没有意义
+  const [galleryPreferred, setGalleryMode] = useVideoGalleryMode();
+  // 两种墙的锚点属性不同：海报墙一格一个条目（data-library-item-id），图廊一部
+  // 作品十几张图，得按瓦片认（data-gallery-tile-id）。两者不会同时在 DOM 里
   const restoreScrollRef = useScrollRestoration(`library:${libraryId}`, {
-    anchorAttribute: "data-library-item-id",
+    anchorAttribute: galleryPreferred ? "data-gallery-tile-id" : "data-library-item-id",
   });
   const [scrollElement, setScrollElement] = useState<HTMLDivElement | null>(null);
   // 滚动位置恢复与字母索引联动共用同一个真实滚动容器，合并 callback ref
@@ -229,6 +254,15 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
     window.history.replaceState(null, "", `${window.location.pathname}${rest ? `?${rest}` : ""}`);
   }, []);
 
+  // 图床浏览模式已加载的窗口（用法见下面「图床浏览模式」一段）。与海报墙的
+  // 窗口一样随快照恢复，声明放在这里是因为下面的快照组装要读它们
+  const [galleryGroups, setGalleryGroups] = useState<LibraryGalleryGroup[]>(
+    initialSnapshot?.galleryGroups ?? [],
+  );
+  const [galleryHasMore, setGalleryHasMore] = useState(initialSnapshot?.galleryHasMore ?? false);
+  // 已请求到的条目数（按页长推进，不按拿到的组数——没图的条目也占一组）
+  const galleryLoaded = useRef(initialSnapshot?.galleryLoaded ?? 0);
+
   // 轮询乱序守卫：扫描期间后端响应时间抖动大，上一轮的慢响应可能晚于
   // 下一轮到达，不作废就会用旧快照覆盖新状态（进度回跳、胶囊闪烁）
   const reloadSeq = useRef(0);
@@ -258,6 +292,9 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
         wallLoaded: wallLoaded.current,
         wallSort: wallSort.current,
         wallOffset: wallOffset.current,
+        galleryGroups,
+        galleryHasMore,
+        galleryLoaded: galleryLoaded.current,
         stale: snapshotStale,
       }
     : null;
@@ -267,6 +304,8 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   useLayoutEffect(() => {
     if (snapshotRef.current) setLibraryDetailSnapshot(libraryId, snapshotRef.current);
   }, [
+    galleryGroups,
+    galleryHasMore,
     ignored,
     items,
     libraries,
@@ -582,17 +621,10 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   );
   // 灯箱翻到最后一张时：已加载列表被跳转替换过也无妨，loadMore 按当前窗口追加
   const closeLightbox = useCallback(() => setLightboxIndex(null), []);
-  // 影视库 / 其他库的图床浏览模式（video-gallery.tsx）：海报墙换成每部作品的
-  // 海报 / 剧照 / 章节图瀑布流，点开灯箱能直接播放或进详情。偏好记在浏览器里；
-  // 图片库本身就是相册墙，这个开关对它没有意义
-  const [galleryPreferred, setGalleryMode] = useVideoGalleryMode();
+  // 图床浏览模式的开关在文件上方（滚动恢复要先知道用哪个锚点属性）
   // 按作品分段，还是整库的图混成一条瀑布流（⋯ 菜单里切换）
   const [galleryGrouped, setGalleryGrouped] = useVideoGalleryGrouped();
   const gallery = galleryPreferred && Boolean(library?.capabilities.playable);
-  const [galleryGroups, setGalleryGroups] = useState<LibraryGalleryGroup[]>([]);
-  const [galleryHasMore, setGalleryHasMore] = useState(false);
-  // 已请求到的条目数（按页长推进，不按拿到的组数——没图的条目也占一组）
-  const galleryLoaded = useRef(0);
   const galleryLoading = useRef(false);
   const galleryEntries = useMemo(() => flattenGallery(galleryGroups), [galleryGroups]);
   const loadMoreGallery = useCallback(() => {
@@ -602,13 +634,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
     listLibraryGallery(libraryId, { limit: GALLERY_PAGE_SIZE, offset })
       .then((page) => {
         galleryLoaded.current = offset + page.length;
-        setGalleryGroups((current) => {
-          const seen = new Set(current.map((g) => g.media_item_id));
-          return [
-            ...current,
-            ...page.filter((g) => g.images.length > 0 && !seen.has(g.media_item_id)),
-          ];
-        });
+        setGalleryGroups((current) => dedupeGalleryGroups([...current, ...page]));
         setGalleryHasMore(page.length >= GALLERY_PAGE_SIZE);
       })
       .catch(() => setGalleryHasMore(false))
@@ -616,13 +642,81 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
         galleryLoading.current = false;
       });
   }, [libraryId]);
-  // 切进图廊（或换库）从第一页拉起；切回海报墙清空，别让旧图占着内存
+  /**
+   * 按已加载的页数重拉整个图廊窗口：从快照恢复出来的窗口是离开这一屏时的旧
+   * 数据（比如在详情页点了心，返回时角标要跟着变），拿到结果整体替换。
+   * 不缩窗口、不动滚动位置；失败就留着旧窗口，下次返回再对账。
+   */
+  const refreshGallery = useCallback(() => {
+    const loaded = galleryLoaded.current;
+    if (loaded <= 0 || galleryLoading.current) return;
+    galleryLoading.current = true; // 对账期间别让滚动哨兵同时追加下一页
+    Promise.all(
+      Array.from({ length: Math.ceil(loaded / GALLERY_PAGE_SIZE) }, (_, page) =>
+        listLibraryGallery(libraryId, {
+          limit: GALLERY_PAGE_SIZE,
+          offset: page * GALLERY_PAGE_SIZE,
+        }),
+      ),
+    )
+      .then((pages) => {
+        galleryLoaded.current = pages.reduce((sum, page) => sum + page.length, 0);
+        setGalleryGroups(dedupeGalleryGroups(pages.flat()));
+        setGalleryHasMore((pages.at(-1)?.length ?? 0) >= GALLERY_PAGE_SIZE);
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        galleryLoading.current = false;
+      });
+  }, [libraryId]);
+  /**
+   * 图廊里点心：收藏 / 取消收藏整部作品（与详情页那颗心同一落点）。
+   *
+   * 收藏态随图廊一起下发、挂在分组上，所以这里改的是 galleryGroups——灯箱的
+   * 心与墙上那几张瓦片的角标读同一份，翻一次全都跟着变。先翻本地再落库，
+   * 失败翻回来并提示。
+   */
+  const toggleGalleryFavorite = useCallback(
+    async (mediaItemId: number, next: boolean) => {
+      const patch = (value: boolean) =>
+        setGalleryGroups((current) =>
+          current.map((g) => (g.media_item_id === mediaItemId ? { ...g, is_favorite: value } : g)),
+        );
+      patch(next);
+      try {
+        const marks = await setPlaybackMarks({ media_item_id: mediaItemId }, { favorite: next });
+        patch(marks.is_favorite);
+      } catch (e) {
+        patch(!next);
+        toast.error(e instanceof Error ? e.message : "收藏失败，请稍后重试");
+      }
+    },
+    [toast],
+  );
+  // 当前这份图廊窗口属于哪个库：快照带回来的窗口一进来就算数
+  const galleryWindowLibrary = useRef<number | null>(
+    initialSnapshot?.galleryGroups.length ? libraryId : null,
+  );
+  /**
+   * 切进图廊：第一次（或换库）从第一页拉起；从条目详情页返回时窗口已经由快照
+   * 恢复，**不能**清空重拉——只补第一页的话容器矮到装不下离开时的滚动位置，
+   * 滚动恢复会等到超时后放弃，人被甩回墙首（用户反馈 2026-09-07）。
+   *
+   * 也不再于切回海报墙时清空：这份窗口本来就随快照留在会话里，清了只是让下次
+   * 切回图廊白拉一遍。
+   */
   useEffect(() => {
+    if (!gallery) return;
+    if (galleryWindowLibrary.current === libraryId) {
+      refreshGallery();
+      return;
+    }
+    galleryWindowLibrary.current = libraryId;
     galleryLoaded.current = 0;
     setGalleryGroups([]);
     setGalleryHasMore(false);
-    if (gallery) loadMoreGallery();
-  }, [gallery, loadMoreGallery]);
+    loadMoreGallery();
+  }, [gallery, libraryId, loadMoreGallery, refreshGallery]);
   const wideCards = Boolean(library && library.capabilities.default_aspect > 1);
   // 其他库的主图两种形态并存：刮削器放好 -poster 的是 2:3 竖版海报，只有 -thumb /
   // 抓帧的是横版缩略图。竖横混在一个网格里对不齐，按主图比例切成两区，各自用
@@ -1204,6 +1298,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
                   start={gallery ? 0 : wallStart}
                   total={library.stats.item_count}
                   onReach={gallery ? loadMoreGallery : loadMore}
+                  rootMargin={gallery ? GALLERY_LOAD_MARGIN : undefined}
                 />
 
                 {/* —— 未识别分区（只有影视库会有）：认不出的文件按文件名/目录名
@@ -1275,6 +1370,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
               hasMore={galleryHasMore}
               onIndexChange={setLightboxIndex}
               onReachEnd={loadMoreGallery}
+              onToggleFavorite={toggleGalleryFavorite}
               onClose={closeLightbox}
             />
           )}
@@ -1616,6 +1712,7 @@ export const InventoryCell = memo(function InventoryCell({
     aspect: item.primary_aspect >= 1 ? 16 / 9 : 2 / 3,
     imageAspect: item.primary_aspect,
     overlayDetails: inventoryLabel ? { primary: inventoryLabel } : undefined,
+    favorite: item.is_favorite,
     // 海报可能是本地刮削资产的相对路径（断网可用），也可能是 TMDB 图床地址。
     // 与首页海报墙同样取派生图（竖版 poster-card / 横版 landscape-card）：海报墙
     // 是全站最大的一张图片网格，直出原图等于每屏多拉三倍字节（见 library-view.tsx
@@ -1686,6 +1783,7 @@ export function WallLoadMore({
   start,
   total,
   onReach,
+  rootMargin = "600px 0px",
 }: {
   hasMore: boolean;
   loaded: number;
@@ -1693,6 +1791,12 @@ export function WallLoadMore({
   start: number;
   total: number;
   onReach: () => void;
+  /**
+   * 提前多远开始取下一页。海报墙 600px（约半屏）够用：格子小、图也小，到底
+   * 那一下基本无感。图床浏览模式要给得更宽——一页只有二十几部作品但每张图
+   * 都大，等滑到底再发请求，接上来的一屏全是还在下载的空瓦片。
+   */
+  rootMargin?: string;
 }) {
   const sentinel = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -1702,11 +1806,11 @@ export function WallLoadMore({
       ([entry]) => {
         if (entry.isIntersecting) onReach();
       },
-      { rootMargin: "600px 0px" },
+      { rootMargin },
     );
     observer.observe(target);
     return () => observer.disconnect();
-  }, [hasMore, loaded, onReach]);
+  }, [hasMore, loaded, onReach, rootMargin]);
 
   return (
     <div
@@ -1714,9 +1818,16 @@ export function WallLoadMore({
       className="mt-8 flex h-10 items-center justify-center text-sub text-[var(--text-muted)]"
       aria-live="polite"
     >
-      {hasMore
-        ? `加载中…（第 ${start + 1}–${start + loaded} 部 / 共 ${Math.max(total, start + loaded)}）`
-        : null}
+      {hasMore ? (
+        <>
+          {/* 转圈：这一条原先只有一行字，静止不动时看着像卡住了 */}
+          <span
+            aria-hidden="true"
+            className="mr-2 size-3.5 animate-spin rounded-full border-2 border-white/15 border-t-white/60 motion-reduce:animate-none"
+          />
+          {`加载中…（第 ${start + 1}–${start + loaded} 部 / 共 ${Math.max(total, start + loaded)}）`}
+        </>
+      ) : null}
     </div>
   );
 }

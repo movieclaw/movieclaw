@@ -16,12 +16,15 @@ from sqlmodel import select
 import movieclaw_api.services.library.scan as scan_mod
 import movieclaw_api.services.media_discover as discover_mod
 from movieclaw_api.core.config import get_settings
+from movieclaw_api.services.auth import Principal
 from movieclaw_api.services.library.scan import scan_library
 from movieclaw_db.engine import dispose_db, get_database, init_db
 from movieclaw_db.migrations import run_migrations
 from movieclaw_db.models import LibraryFile, MediaItem, MediaItemPerson
 from movieclaw_db.repositories.library_repo import LibraryRepository
 from movieclaw_media.tmdb import TmdbClient
+
+_ADMIN = Principal(kind="admin", name="tester")
 
 _KEY = "0123456789abcdef0123456789abcdef"
 _MOVIES = 5
@@ -197,7 +200,7 @@ async def test_library_wall_query_count_is_flat(db, tmp_path) -> None:
             _sink.append(stmt)
 
         async with db.session() as session:
-            resp = await list_library_items(library_id, session=session)
+            resp = await list_library_items(library_id, session=session, principal=_ADMIN)
         event.remove(engine, "before_cursor_execute", _tally)
 
         assert len(resp.data) == count

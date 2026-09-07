@@ -5,7 +5,14 @@ import { useEffect, useRef, useState, type MouseEvent } from "react";
 import type { Route } from "next";
 import Link from "next/link";
 
-import { BellIcon, CheckIcon, DownloadIcon, PlusIcon, StarIcon } from "@/components/icons";
+import {
+  BellIcon,
+  CheckIcon,
+  DownloadIcon,
+  HeartIcon,
+  PlusIcon,
+  StarIcon,
+} from "@/components/icons";
 import { PosterImage } from "@/components/poster-image";
 import { useSubscribeEntry } from "@/components/subscribe-entry";
 import { useMediaDetail } from "@/lib/media-detail";
@@ -105,6 +112,8 @@ export interface PosterVisualItem {
     upgrading?: boolean;
     upgradingCount?: number;
   };
+  /** 已被当前观看者收藏：海报右上角点一颗实心红心（只是标识，点收藏在详情页 / 图廊灯箱） */
+  favorite?: boolean;
   /** 悬浮层的一行紧凑元信息；长内容截断，完整值保留在 title 中。 */
   overlayMeta?: string;
   /** 悬浮层的两行紧凑上下文；不占用海报下方的常显元信息。 */
@@ -385,14 +394,28 @@ function PosterCardContent({
             洗版 {item.posterFooter.upgradingCount}
           </span>
         )}
-        {/* 右上：评分徽章（暂无评分时不渲染，避免展示 0.0） */}
-        {item.rating > 0 && (
-          <span
-            className={`tnum absolute right-2 flex items-center gap-1 rounded-md bg-black/70 px-1.5 py-0.5 text-caption font-semibold text-white ${ribbon && !ribbon.compactLeft ? "top-12" : "top-2"}`}
+        {/* 右上角状态位：收藏的心 + 评分徽章（评分为 0 不渲染，避免展示 0.0）。
+            两者排一行，谁都没有就不占位——库存墙不给评分、只可能有心，发现页
+            只可能有评分，订阅墙两者都没有（右上角让给上面的洗版徽标） */}
+        {(item.favorite || item.rating > 0) && (
+          <div
+            className={`absolute right-2 flex items-center gap-1 ${ribbon && !ribbon.compactLeft ? "top-12" : "top-2"}`}
           >
-            <StarIcon className="size-3 text-[var(--warn)]" />
-            {item.rating.toFixed(1)}
-          </span>
+            {item.favorite && (
+              <span
+                aria-label="已收藏"
+                className="flex items-center rounded-md bg-black/70 px-1 py-0.5 text-[var(--danger)]"
+              >
+                <HeartIcon className="size-3.5" fill="currentColor" />
+              </span>
+            )}
+            {item.rating > 0 && (
+              <span className="tnum flex items-center gap-1 rounded-md bg-black/70 px-1.5 py-0.5 text-caption font-semibold text-white">
+                <StarIcon className="size-3 text-[var(--warn)]" />
+                {item.rating.toFixed(1)}
+              </span>
+            )}
+          </div>
         )}
 
         {/* 订阅墙的剧集收录摘要常驻海报内部，利用底部暗部承载一眼可扫的

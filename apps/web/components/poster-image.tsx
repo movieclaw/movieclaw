@@ -9,7 +9,9 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
  *   1. loading="lazy" —— 海报墙一页几十张图，懒加载是默认约定；
  *   2. referrerPolicy="no-referrer" —— 豆瓣等图床按 Referer 拒绝外链，不带即可正常加载；
  *   3. 加载失败回退 —— 防盗链 / 图床失效时渲染深色占位（或调用方自定义的 fallback），
- *      卡片不塌陷、不出裂图图标。
+ *      卡片不塌陷、不出裂图图标；
+ *   4. 等待态占位（``pulseWhileLoading``，按需开）—— 图没到之前盖一层脉冲，
+ *      大图墙上滑到哪儿黑一块的观感由它兜住。
  *
  * 定位、圆角、hover 缩放等布局差异全部通过 className 由调用方传入；
  * 占位符会套用同一份 className，保证与图片占据完全相同的盒子。
@@ -20,6 +22,8 @@ export function PosterImage({
   alt,
   className = "",
   fallback,
+  pulseWhileLoading = false,
+  preload = false,
 }: {
   /** 图片地址；为空时直接渲染占位 */
   src?: string | null;
@@ -28,8 +32,22 @@ export function PosterImage({
   className?: string;
   /** 自定义占位内容；不传则渲染深色渐变底 */
   fallback?: ReactNode;
+  /**
+   * 图片就位前盖一层脉冲占位（默认不开）。大图墙需要它：瀑布流的瓦片底色是
+   * 深色，滑到哪儿黑一块，看着像坏了而不是在加载。占位与图片是重叠的两层，
+   * 只有 className 本身是绝对定位（absolute inset-0 这类）时才对得上。
+   */
+  pulseWhileLoading?: boolean;
+  /**
+   * 外部已判定这张图快进视口了（大图墙用一个共享的 IntersectionObserver 提前
+   * 判，见 video-gallery.tsx），直接 eager 取图，不等原生懒加载——瓦片带
+   * content-visibility 时原生懒加载要等瓦片解除跳过（约半屏前）才发请求，
+   * 滑快一点图就一路追在人后面。详见下面「懒加载失灵兜底」的注释。
+   */
+  preload?: boolean;
 }) {
   const [broken, setBroken] = useState(false);
+  const [loaded, setLoaded] = useState(false);
   // 懒加载失灵兜底：海报常被包在 content-visibility:auto 的格子/行里（海报墙、
   // 横滚行），Chromium 对「被跳过渲染的子树」里的懒加载图片不做视口相交判定，
   // 而页面打开瞬间所有格子都处于跳过态，首屏图片可能永远不发请求——表现为
@@ -45,6 +63,11 @@ export function PosterImage({
   // 标签页天然挂起，也顺带保证了「后台打开、切回前台才开始取图」的正确时序。
   const imgRef = useRef<HTMLImageElement | null>(null);
   const [eager, setEager] = useState(false);
+  // 换图时复位「已就位」：缓存直出的图 load 事件可能早于本组件挂载，
+  // 那种情况下 img.complete 已经是 true，不补这一下占位就撤不掉
+  useEffect(() => {
+    setLoaded(imgRef.current?.complete ?? false);
+  }, [src]);
   useEffect(() => {
     let raf = 0;
     const kickOrRetry = () => {
@@ -90,19 +113,29 @@ export function PosterImage({
     );
   }
   return (
-    <img
-      ref={imgRef}
-      src={src}
-      alt={alt}
-      loading={eager ? "eager" : "lazy"}
-      // 必须同步解码：async 解码的「完成→重绘」通知在 content-visibility 格子里
-      // 会被 Chromium 丢弃，海报停在占位直到 hover 强制重排（实测定位的根因）。
-      // sync 让任何一次绘制都当场解码带图，不依赖那条会丢的通知；单张海报解码
-      // 只有几毫秒，且只有真正被绘制的格子才会解码，无首屏卡顿之虞。
-      decoding="sync"
-      referrerPolicy="no-referrer"
-      onError={() => setBroken(true)}
-      className={`bg-[#141824] object-cover ${className}`}
-    />
+    <>
+      <img
+        ref={imgRef}
+        src={src}
+        alt={alt}
+        loading={eager || preload ? "eager" : "lazy"}
+        // 必须同步解码：async 解码的「完成→重绘」通知在 content-visibility 格子里
+        // 会被 Chromium 丢弃，海报停在占位直到 hover 强制重排（实测定位的根因）。
+        // sync 让任何一次绘制都当场解码带图，不依赖那条会丢的通知；单张海报解码
+        // 只有几毫秒，且只有真正被绘制的格子才会解码，无首屏卡顿之虞。
+        decoding="sync"
+        referrerPolicy="no-referrer"
+        onError={() => setBroken(true)}
+        onLoad={() => setLoaded(true)}
+        className={`bg-[#141824] object-cover ${className}`}
+      />
+      {/* 脉冲占位盖在图片**之上**：<img> 自带不透明深色底，垫在下面看不见 */}
+      {pulseWhileLoading && !loaded && (
+        <span
+          aria-hidden="true"
+          className={`pointer-events-none animate-pulse bg-white/[0.07] motion-reduce:animate-none ${className}`}
+        />
+      )}
+    </>
   );
 }
