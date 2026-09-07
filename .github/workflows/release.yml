@@ -158,16 +158,36 @@ jobs:
       - name: 导出内嵌基线 spec
         run: scripts/export-spec.sh
 
+      # 手动触发通道里 tag 要等 draft 转正才真正创建，checkout 里没有它。
+      # goreleaser 不只是「校验」tag，它还要读 tag 的内容（annotation）来填
+      # 发布元数据：--skip=validate 关不掉这一步。2.18.0 读不到时只是警告
+      # 「couldn't find any tags before ...」后继续，2.18.1 起改成硬失败
+      # （couldn't get tag contents: unexpected git tag output for "vX.Y.Z": ""），
+      # v0.22.0 的发版就是这么红的——version: "~> v2" 是浮动的，同一份工作流
+      # 换个月跑就换了行为。这里补一个只存在于 runner 本地、绝不推送的
+      # annotated tag，让两条通道对 goreleaser 呈现同一个 git 状态：不再依赖
+      # goreleaser 对「tag 不存在」的容忍度。tag 推送通道里 tag 已存在，
+      # 这步自然跳过。
+      - name: 补一个本地 tag（手动触发通道里 tag 尚未创建）
+        run: |
+          if git rev-parse -q --verify "refs/tags/$RELEASE_TAG" > /dev/null; then
+            echo "tag $RELEASE_TAG 已存在（tag 推送通道），无需补"
+          else
+            echo "在 $GITHUB_SHA 上补本地 tag $RELEASE_TAG（不推送）"
+            git -c user.email=actions@github.com -c user.name=github-actions \
+              tag -a "$RELEASE_TAG" -m "$RELEASE_TAG" "$GITHUB_SHA"
+          fi
+
       - name: 构建六平台产物
         uses: goreleaser/goreleaser-action@v6
         with:
           version: "~> v2"
           workdir: cli
-          # --skip=validate：手动触发通道里 tag 要等 draft 转正才真正创建，
-          # goreleaser 的 tag/HEAD 校验必挂；脏区与版本一致性已由上一步和
-          # build-release-artifacts.sh 显式把关。上传不走 goreleaser
-          # （GitHub API 按 tag 查不到 draft，goreleaser 会另建一个 Release），
-          # 由下一步用 gh 上传——gh 能按 tag 名找到草稿。
+          # --skip=validate：手动触发通道里 HEAD 与 tag 的关系不满足 goreleaser
+          # 的期待，脏区与版本一致性已由上一步和 build-release-artifacts.sh
+          # 显式把关。上传不走 goreleaser（GitHub API 按 tag 查不到 draft，
+          # goreleaser 会另建一个 Release），由下一步用 gh 上传——gh 能按
+          # tag 名找到草稿。
           args: release --clean --skip=validate
         env:
           GORELEASER_CURRENT_TAG: ${{ inputs.tag || github.ref_name }}
