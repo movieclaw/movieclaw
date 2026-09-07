@@ -385,12 +385,13 @@ function EndpointCard({
               </p>
               <ul className="max-h-72 space-y-1.5 overflow-y-auto">
                 {preview.tools.map((tool) => (
-                  <li key={tool.name} className="text-caption">
-                    <span className="font-mono text-[var(--accent)]">{tool.name}</span>
-                    {tool.read_only && <span className="ml-1.5 text-[var(--text-faint)]">只读</span>}
-                    {tool.destructive && <span className="ml-1.5 text-[var(--danger)]">破坏性</span>}
-                    <span className="ml-1.5 text-[var(--text-muted)]">
-                      {tool.description.split("\n")[0].slice(0, 80)}
+                  <li key={tool.name} className="flex items-baseline gap-1.5 text-caption">
+                    <span className="shrink-0 font-mono text-[var(--accent)]">{tool.name}</span>
+                    {tool.read_only && <span className="shrink-0 text-[var(--text-faint)]">只读</span>}
+                    {tool.destructive && <span className="shrink-0 text-[var(--danger)]">破坏性</span>}
+                    {/* 描述一律单行截断：工具目录是"扫一眼有什么"，不是读文档的地方 */}
+                    <span className="truncate text-[var(--text-muted)]" title={tool.description}>
+                      {tool.description}
                     </span>
                   </li>
                 ))}

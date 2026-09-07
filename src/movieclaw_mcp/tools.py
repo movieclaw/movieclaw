@@ -21,6 +21,27 @@ from mcp.types import Tool, ToolAnnotations
 from movieclaw_api.services.mclaw_tool import domain_description
 from movieclaw_mcp.catalog import Operation, operations_by_domain
 
+#: Agent 服务目录里没有的域的一行说明。
+#: ``mclaw_tool._DOMAIN_LINES`` 只覆盖对 Agent 开放的域，logs 与 members 被它显式
+#: 排除（理由是 Agent 专属的：Agent 有 bash 不需要 logs，建号改密不该由对话代劳），
+#: 而 MCP 端点由管理员逐个勾选、勾了就是明示授权，两者都开放。守护测试禁止往
+#: ``_DOMAIN_LINES`` 里塞被排除的域，所以补充文案落在这里。
+_EXTRA_DOMAIN_LINES = {
+    "logs": "系统日志（按天查看后端运行日志，排查故障用）",
+    "members": "家庭成员账号（建号、改能力开关与可见范围、重置密码、启停）"
+                "——注意这是账号治理面，开放前想清楚",
+}
+
+
+def describe_domain(domain: str) -> str:
+    """服务域的一行说明；管理页的服务卡片与折叠模式的工具描述共用这一份。"""
+    return (
+        domain_description(domain)
+        or _EXTRA_DOMAIN_LINES.get(domain)
+        or f"movieclaw 的 {domain} 服务"
+    )
+
+
 #: 提交后台任务的操作，在描述里补一句怎么跟进——直连 API 不像 CLI 那样会替你
 #: 等待，模型必须知道下一步是 jobs_wait（设计文档 §4.2）。
 _JOB_HINT = "（提交后立即返回 job_id，用 jobs_wait 跟进进度）"
@@ -104,7 +125,7 @@ def _collapsed_tools(domains: list[str]) -> list[Tool]:
         ops = by_domain.get(domain, ())
         if not ops:
             continue
-        headline = domain_description(domain) or f"movieclaw 的 {domain} 服务"
+        headline = describe_domain(domain)
         lines = [headline, "", "可用命令（params 里填对应字段）："]
         lines.extend(_command_line(op) for op in ops)
         if any(op.dangerous for op in ops):

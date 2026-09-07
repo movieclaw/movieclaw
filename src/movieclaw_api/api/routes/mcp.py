@@ -29,11 +29,10 @@ from movieclaw_api.schemas.mcp import (
 )
 from movieclaw_api.schemas.response import ApiResponse, ok
 from movieclaw_api.services import mcp_endpoints
-from movieclaw_api.services.mclaw_tool import domain_description
 from movieclaw_api.settings import AppServerSetting, get_setting_store
 from movieclaw_api.settings.mcp import McpEndpoint
 from movieclaw_mcp.catalog import available_services, operations_by_domain
-from movieclaw_mcp.tools import build_tools
+from movieclaw_mcp.tools import build_tools, describe_domain
 
 router = APIRouter(prefix="/mcp", tags=["mcp"])
 
@@ -90,7 +89,7 @@ async def get_status() -> ApiResponse[StatusView]:
     services = [
         ServiceView(
             domain=domain,
-            description=domain_description(domain) or f"movieclaw 的 {domain} 服务",
+            description=describe_domain(domain),
             command_count=len(ops),
             expanded_bytes=_tool_bytes([domain], expand=True),
             collapsed_bytes=_tool_bytes([domain], expand=False),
