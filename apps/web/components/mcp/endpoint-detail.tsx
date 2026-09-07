@@ -13,7 +13,6 @@ import {
   MetaRow,
   ServiceChips,
   StatusDot,
-  Switch,
 } from "@/components/mcp/ui";
 import {
   type McpEndpoint,
@@ -24,7 +23,9 @@ import {
   checkMcpEndpoint,
   previewMcpTools,
 } from "@/lib/api/mcp";
+import { useBackdrop } from "@/lib/backdrop";
 import { relativeTime } from "@/lib/devices-display";
+import { LiquidGlassButton } from "@/vendor/liquid-glass";
 
 type Tab = "overview" | "tools" | "connect" | "settings";
 
@@ -67,6 +68,7 @@ export function EndpointDetail({
   onRotate: () => void;
   onDelete: () => void;
 }) {
+  const { backdrop } = useBackdrop();
   const [preview, setPreview] = useState<McpPreview | null>(null);
   const [confirmText, setConfirmText] = useState("");
   const [check, setCheck] = useState<McpSelfCheck | null>(null);
@@ -132,12 +134,18 @@ export function EndpointDetail({
             <span className="text-caption text-[var(--text-muted)]">
               {endpoint.enabled ? "已启用" : "已停用"}
             </span>
-            <Switch
+            <LiquidGlassButton
+              backgroundImage={backdrop}
+              variant="dark"
               checked={endpoint.enabled}
-              disabled={busy}
-              label={`启用 ${endpoint.name}`}
-              onChange={onToggleEnabled}
-            />
+              aria-label={`启用 ${endpoint.name}`}
+              onCheckedChange={(next: boolean) => {
+                if (!busy) onToggleEnabled(next);
+              }}
+              className="!min-h-0 !w-auto !gap-0 !bg-transparent !p-0"
+            >
+              <span className="sr-only">{endpoint.enabled ? "已开启" : "已关闭"}</span>
+            </LiquidGlassButton>
           </div>
         </div>
 
@@ -353,72 +361,21 @@ export function EndpointDetail({
  * 替换掉——用户回头再看这一页时，需要的是步骤而不是密钥。
  */
 function ConnectGuide({ url, hint }: { url: string; hint: string }) {
-  const [client, setClient] = useState<"claude" | "json" | "curl">("claude");
   const token = "<你的端点令牌>";
-  const snippets = {
-    claude: {
-      lang: "bash",
-      code:
-        `claude mcp add --transport http movieclaw \\\n` +
-        `  ${url} \\\n` +
-        `  --header "Authorization: Bearer ${token}"`,
-      note: "在你要用的机器上执行。加完用 /mcp 确认 movieclaw 已连接。",
-    },
-    json: {
-      lang: "json",
-      code: JSON.stringify(
-        {
-          mcpServers: {
-            movieclaw: { type: "http", url, headers: { Authorization: `Bearer ${token}` } },
-          },
-        },
-        null,
-        2,
-      ),
-      note: "Cursor、Cline 等把 MCP 服务器写在配置文件里的客户端用这段。",
-    },
-    curl: {
-      lang: "bash",
-      code:
-        `curl -sS ${url} \\\n` +
-        `  -H "Authorization: Bearer ${token}" \\\n` +
-        `  -H "Content-Type: application/json" \\\n` +
-        `  -H "MCP-Protocol-Version: 2026-07-28" \\\n` +
-        `  -H "Mcp-Method: tools/list" \\\n` +
-        `  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{\n` +
-        `       "io.modelcontextprotocol/protocolVersion":"2026-07-28",\n` +
-        `       "io.modelcontextprotocol/clientCapabilities":{}}}}'`,
-      note: "接不通时先跑这条：200 且返回工具清单说明端点没问题，问题在客户端配置。",
-    },
-  } as const;
-
   return (
     <div className="space-y-4">
-      <div className="flex gap-1.5">
-        {(
-          [
-            ["claude", "Claude Code"],
-            ["json", "配置文件"],
-            ["curl", "cURL 自检"],
-          ] as const
-        ).map(([id, label]) => (
-          <button
-            key={id}
-            type="button"
-            onClick={() => setClient(id)}
-            className={`rounded-full border px-3 py-1 text-caption transition-colors ${
-              client === id
-                ? "border-[var(--accent)] bg-white/[0.06] text-[var(--text)]"
-                : "border-white/[0.12] text-[var(--text-muted)] hover:text-[var(--text)]"
-            }`}
-          >
-            {label}
-          </button>
-        ))}
+      {/* 不再按客户端分别给示例：MCP 客户端的配置写法各不相同且一直在变，我们照抄
+          的那几份很快就会过期，反倒把「其实只要两样东西」这件事盖住了。
+          这里只给协议层的事实——地址、令牌、请求头，客户端怎么填由它自己的文档说。 */}
+      <div>
+        <p className="mb-1.5 text-caption text-[var(--text-muted)]">端点地址</p>
+        <CopyField value={url} label="复制地址" />
       </div>
 
-      <CodeBlock code={snippets[client].code} lang={snippets[client].lang} />
-      <p className="text-caption text-[var(--text-muted)]">{snippets[client].note}</p>
+      <div>
+        <p className="mb-1.5 text-caption text-[var(--text-muted)]">认证请求头</p>
+        <CodeBlock code={`Authorization: Bearer ${token}`} lang="http" />
+      </div>
 
       <div className="rounded-xl border border-white/[0.07] px-4 py-3 text-caption leading-relaxed text-[var(--text-muted)]">
         <p className="mb-1.5 text-sub font-medium text-[var(--text)]">把 {token} 换成什么</p>
@@ -428,6 +385,7 @@ function ConnectGuide({ url, hint }: { url: string; hint: string }) {
           忘了就在「概览」里轮换一枚新的（旧的立即失效）。
         </p>
         <p className="mt-2">
+          传输是 Streamable HTTP（MCP 2026-07-28），填地址时选「HTTP」而不是 SSE。
           claude.ai 网页版的自定义连接器只支持 OAuth，暂时接不进来；
           Claude Code、Cursor、Cline 等本地客户端都可以。
         </p>

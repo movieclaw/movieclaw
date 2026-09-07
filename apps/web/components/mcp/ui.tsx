@@ -11,6 +11,9 @@
  * 2. **信息密度优先于留白**：列表是表格不是卡片墙，一屏能扫完比好看重要；
  * 3. **破坏性操作与日常操作分层**：日常操作在行内，破坏性的沉到详情页底部的
  *    危险区，且要打字确认。
+ *
+ * 开关不在这里：分区总开关与端点启停都用全站统一的 LiquidGlassButton，
+ * 与「Webhook」「消息推送」等分区长得一样，不另造一个。
  */
 
 import { CopyButton } from "@/components/copy-button";
@@ -83,40 +86,6 @@ export function ServiceChips({ services, max = 4 }: { services: string[]; max?: 
   );
 }
 
-export function Switch({
-  checked,
-  onChange,
-  label,
-  disabled,
-}: {
-  checked: boolean;
-  onChange: (next: boolean) => void;
-  label: string;
-  disabled?: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      aria-label={label}
-      disabled={disabled}
-      onClick={() => onChange(!checked)}
-      className="relative h-[22px] w-[38px] shrink-0 rounded-full bg-white/20 transition-colors disabled:opacity-40 aria-checked:bg-[var(--ok,#5fd39b)]"
-    >
-      <span
-        className={`absolute left-[3px] top-[3px] size-4 rounded-full bg-white transition-transform ${
-          checked ? "translate-x-4" : ""
-        }`}
-      />
-    </button>
-  );
-}
-
-/**
- * 只读的标识符字段：等宽、可选中、右侧常驻复制按钮。
- * 端点地址、令牌、命令片段全用它——开发者对这类字段的唯一诉求就是「原样拿走」。
- */
 export function CopyField({
   value,
   label,

@@ -6,7 +6,7 @@ import { useConfirm } from "@/components/feedback";
 import { PlusIcon } from "@/components/icons";
 import { EndpointDetail } from "@/components/mcp/endpoint-detail";
 import { EndpointForm } from "@/components/mcp/endpoint-form";
-import { Badge, CodeBlock, CopyField, ServiceChips, StatusDot, Switch } from "@/components/mcp/ui";
+import { Badge, CodeBlock, CopyField, ServiceChips, StatusDot } from "@/components/mcp/ui";
 import {
   type McpEndpoint,
   type McpStatus,
@@ -17,7 +17,9 @@ import {
   setMcpEnabled,
   updateMcpEndpoint,
 } from "@/lib/api/mcp";
+import { useBackdrop } from "@/lib/backdrop";
 import { relativeTime } from "@/lib/devices-display";
+import { LiquidGlassButton } from "@/vendor/liquid-glass";
 
 type Tab = "overview" | "tools" | "connect" | "settings";
 const TABS: Tab[] = ["overview", "tools", "connect", "settings"];
@@ -38,6 +40,7 @@ const TABS: Tab[] = ["overview", "tools", "connect", "settings"];
  */
 export function McpSection() {
   const confirm = useConfirm();
+  const { backdrop } = useBackdrop();
   const [status, setStatus] = useState<McpStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -218,35 +221,44 @@ export function McpSection() {
     <div className="space-y-5">
       {banner}
 
-      {/* 状态条：一行讲清「服务开着吗、地址前缀是什么、从哪新建」 */}
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/[0.07] bg-white/[0.02] px-4 py-3">
-        <div className="flex min-w-0 items-center gap-3">
-          <StatusDot on={status.enabled} title={status.enabled ? "服务运行中" : "服务已关闭"} />
-          <div className="min-w-0">
-            <p className="text-sub font-medium">
-              MCP 服务{status.enabled ? "运行中" : "已关闭"}
-            </p>
-            <p className="truncate font-mono text-caption text-[var(--text-muted)]">
-              {status.base_url || "（未配置外部地址）"}/mcp/&lt;端点&gt;
-            </p>
-          </div>
+      {/* 总开关：与「Webhook」「消息推送」等分区同一个形态——玻璃卡里左边写清后果、
+          右边一个开关。此前是把状态、地址和「新建端点」全塞进一个自制状态条，
+          既不是全站的开关样式，主操作也没落在该在的位置。 */}
+      <div className="css-glass flex items-center gap-3.5 !rounded-xl p-4">
+        <div className="min-w-0 flex-1">
+          <p className="text-body font-medium text-[var(--text)]">启用 MCP 服务</p>
+          <p className="mt-0.5 truncate font-mono text-caption text-[var(--text-faint)]">
+            {status.base_url || "（未配置外部地址）"}/mcp/&lt;端点&gt;
+          </p>
         </div>
-        <div className="flex items-center gap-3">
-          <Switch
-            checked={status.enabled}
-            disabled={busy}
-            label="启用 MCP 服务"
-            onChange={(enabled) => void run(() => setMcpEnabled(enabled))}
-          />
-          <button
-            type="button"
-            onClick={() => navigate({ slug: null, creating: true })}
-            className="btn-glass px-3 py-1.5 text-sub font-medium"
-          >
-            <PlusIcon className="size-4" />
-            新建端点
-          </button>
-        </div>
+        <LiquidGlassButton
+          backgroundImage={backdrop}
+          variant="dark"
+          checked={status.enabled}
+          aria-label="启用 MCP 服务"
+          onCheckedChange={(enabled: boolean) => void run(() => setMcpEnabled(enabled))}
+          className="!min-h-0 !w-auto !gap-0 !bg-transparent !p-0"
+        >
+          <span className="sr-only">{status.enabled ? "已开启" : "已关闭"}</span>
+        </LiquidGlassButton>
+      </div>
+
+      {/* 主操作行：左边一句上下文，右边主按钮。全站分区都是这个位置 */}
+      <div className="flex items-center justify-between gap-4">
+        <p className="text-sub text-[var(--text-muted)]">
+          {status.endpoints.length === 0
+            ? "还没有 MCP 端点。"
+            : `已配置 ${status.endpoints.length} 个端点。`}
+        </p>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => navigate({ slug: null, creating: true })}
+          className="btn-accent flex shrink-0 items-center gap-1 rounded-full py-1.5 pl-2.5 pr-3.5 text-sub font-semibold disabled:opacity-60"
+        >
+          <PlusIcon className="size-4" />
+          新建端点
+        </button>
       </div>
 
       {!status.enabled && status.endpoints.length > 0 && (
@@ -262,14 +274,9 @@ export function McpSection() {
             端点是给 AI 客户端用的入口：建一个、勾选要开放的服务，Claude Code 或 Cursor
             填上地址和令牌，就能直接查库存、搜资源、管订阅。每个端点的工具目录相互独立。
           </p>
-          <button
-            type="button"
-            onClick={() => navigate({ slug: null, creating: true })}
-            className="btn-glass mt-4 px-4 py-1.5 text-sub font-medium"
-          >
-            <PlusIcon className="size-4" />
-            新建第一个端点
-          </button>
+          <p className="mt-4 text-caption text-[var(--text-faint)]">
+            点击右上角「新建端点」开始。
+          </p>
         </div>
       ) : (
         /* 宽屏用表格而不是卡片墙：端点是一组同构对象，纵向对齐才扫得快。
