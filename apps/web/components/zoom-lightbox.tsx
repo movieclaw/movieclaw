@@ -20,9 +20,9 @@ import { MinusIcon, PlusIcon, XIcon } from "@/components/icons";
  *     回来，再点一下收起。收起后画面独占整个视口，什么都不叠——这是这个
  *     灯箱的常态，控件是临时召唤出来的；
  *   - 缩放：滚轮 / 触控板捏合以鼠标位置为锚，双击 / 双击屏幕在该点放大到 2.5×，
- *     两指捏合以两指中点为锚，最大 5×；放大后拖拽平移；底栏一组
- *     「− 比例 +」控件，比例以「适应屏幕」为 100%，点比例复位；
- *     键盘 +/- 缩放、`0` 复位。
+ *     两指捏合以两指中点为锚，最大 5×；放大后拖拽平移；键盘 +/- 缩放、`0` 复位。
+ *     底栏那组「− 比例 +」控件**只给有鼠标的设备**：触屏上捏合与双击就是
+ *     全部手势（iOS 相册也没有缩放按钮），摆一排按钮既多余又占画面。
  *     手势一律走 Pointer Events 自己判定（双击、捏合都不靠浏览器事件）：
  *     iOS 不派发 dblclick，舞台又必须 touch-action:none 挡住系统的整页缩放，
  *     交给浏览器的话手机上放大缩小就全无反应；
@@ -668,9 +668,10 @@ export function ZoomLightbox({
       <div
         className={`pointer-events-none absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-[rgba(4,5,9,0.9)] via-[rgba(4,5,9,0.5)] to-transparent pt-12 ${chromeClass}`}
       >
-        {/* 缩放控件：比例以适应屏幕为 100%，点比例复位 */}
+        {/* 缩放控件：比例以适应屏幕为 100%，点比例复位。触屏上整组不出现——
+            捏合放大、双击放大 / 复位已经覆盖了它的全部功能 */}
         {!broken && screenUrl && (
-          <div className="pointer-events-auto mx-auto mb-3 flex w-max items-center gap-0.5 rounded-full bg-black/70 p-1 text-white/85">
+          <div className="pointer-events-auto mx-auto mb-3 flex w-max items-center gap-0.5 rounded-full bg-black/70 p-1 text-white/85 [@media(hover:none)]:hidden">
             <button
               type="button"
               title="缩小 (-)"
