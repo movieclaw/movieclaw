@@ -171,7 +171,7 @@
         <b style="font-size:15px">家庭影音助理</b>
         <span class="tag ok" style="margin-left:6px">标准</span>
         <div class="mono meta" style="color:var(--muted)">/mcp/home-assistant</div>
-        <div class="meta">4 个工具 · 覆盖 46 条命令 · 订阅、搜索、媒体库、下载器</div>
+        <div class="meta">97 个工具 <span class="tag">展开</span> · 订阅、搜索、媒体库、下载器</div>
         <div class="meta faint">最近调用 12 分钟前 · 令牌 mcp_a1b2****</div>
       </div>
       <div style="display:flex;gap:7px;align-items:center">
@@ -188,7 +188,7 @@
         <b style="font-size:15px">只读看板</b>
         <span class="tag info" style="margin-left:6px">只读</span>
         <div class="mono meta">/mcp/dashboard</div>
-        <div class="meta">3 个工具 · 覆盖 30 条命令 · 媒体库、任务、系统提示</div>
+        <div class="meta">3 个工具 <span class="tag">合并</span> · 覆盖 30 条命令 · 媒体库、任务、系统提示</div>
         <div class="meta faint">最近调用 3 天前 · 令牌 mcp_9f3c****</div>
       </div>
       <div style="display:flex;gap:7px;align-items:center">
@@ -206,7 +206,7 @@
         <span class="tag danger" style="margin-left:6px">完全 ⚠</span>
         <span class="tag" style="margin-left:4px">已停用</span>
         <div class="mono meta">/mcp/ops</div>
-        <div class="meta">6 个工具 · 覆盖 68 条命令 · 含删除类命令</div>
+        <div class="meta">6 个工具 <span class="tag">合并</span> · 覆盖 68 条命令 · 含删除类命令</div>
         <div class="meta faint">最近调用 从未 · 令牌 mcp_77de****</div>
       </div>
       <div style="display:flex;gap:7px;align-items:center">
@@ -268,9 +268,21 @@
   <div class="hr"></div>
   <div class="steps"><span>1 基本信息</span><span class="on">2 选择服务</span><span>3 执行策略</span></div>
 
+  <div class="card tight" style="margin-bottom:14px">
+    <div class="switch">
+      <div>
+        <b style="font-size:14px">展开工具</b>
+        <div class="meta">开：一条命令一个工具（<span class="mono">subscriptions_update</span>），参数带类型，模型照 schema 填</div>
+        <div class="meta">关：一个服务一个工具（<span class="mono">subscriptions</span>），参数是命令行字符串，工具少得多</div>
+      </div>
+      <span class="t" id="expandToggle"></span>
+    </div>
+  </div>
+
   <div class="alert info">
-    每个服务对应一个工具（如 <span class="mono">mclaw_subscriptions</span>），工具描述里带着该服务的完整命令清单。
-    <b>工具越少，模型选得越准</b>——业界公认 30~40 个工具是可靠上限，所以按用途分端点，比堆一个大端点更好用。
+    两种形态都能用，看客户端脾气：有的客户端擅长在大工具集里检索，有的会把工具全量塞进系统提示词。
+    <b>展开模式下，被执行策略挡掉的命令根本不会出现在工具列表里</b>；合并模式只能在执行时拒绝。
+    业界公认 30~40 个工具是模型可靠选择的上限，超了就该考虑拆成多个端点。
   </div>
 
   <div class="kicker">内容发现与订阅</div>
@@ -286,8 +298,8 @@
 
   <div class="summary">
     <div>
-      <b id="sum1" style="font-size:14px">4 个工具</b>
-      <div class="meta" id="sum2">覆盖 46 条命令 · 工具描述约 1.9 KB</div>
+      <b id="sum1" style="font-size:14px">97 个工具</b>
+      <div class="meta" id="sum2">4 个服务 · 工具定义约 34 KB</div>
     </div>
     <div style="display:flex;gap:8px"><button class="btn">上一步</button><button class="btn primary">下一步</button></div>
   </div>
@@ -417,37 +429,65 @@
     </div>
   </div>
 
-  <div class="kicker">工具目录（4）</div>
-  <div class="card toollist">
-    <div>
-      <span class="mono" style="color:var(--info)">mclaw_subscriptions</span>
-      <span class="tag" style="margin-left:6px">16 条命令</span>
-      <div class="meta">电影/剧集订阅与自动追更：持续追踪新资源，按规则自动搜索、下载并整理入库</div>
-      <details><summary>看模型实际收到的描述</summary>
-        <pre style="margin-top:8px">subscriptions — 电影/剧集订阅与自动追更…
-可用命令：
-  create              创建订阅（消费 discover 的 title_ref）
-  list                列出订阅
-  list-active-downloads  查看在途下载进度
-  search-missing      立即搜索缺失资源
-  set-tracking        设置追踪状态
-  …（共 16 条，参数用 --help 现查）</pre>
-      </details>
+  <div class="kicker">工具目录（97 · 展开模式）</div>
+  <div class="card">
+    <div class="meta" style="margin-bottom:10px">
+      工具名 = 模块名 + 命令名。<b>被「标准」策略挡掉的危险命令不在列表里</b>——
+      模型看不到，也就不会尝试。
+      <button class="btn link" style="margin-left:4px">切换为合并模式</button>
     </div>
-    <div>
-      <span class="mono" style="color:var(--info)">mclaw_search</span>
-      <span class="tag" style="margin-left:6px">9 条命令</span>
-      <div class="meta">统一搜索：TMDB/豆瓣影视条目、跨 PT 站点种子、已入库内容</div>
-    </div>
-    <div>
-      <span class="mono" style="color:var(--info)">mclaw_library</span>
-      <span class="tag" style="margin-left:6px">15 条命令 <span class="faint">/ 57 条，危险命令已按策略隐去</span></span>
-      <div class="meta">本地媒体库：库存盘点、扫描入库、元数据与图片管理</div>
-    </div>
-    <div>
-      <span class="mono" style="color:var(--info)">mclaw_dl</span>
-      <span class="tag" style="margin-left:6px">6 条命令</span>
-      <div class="meta">下载器与投递：预演落点并提交种子</div>
+    <details open>
+      <summary>subscriptions（16 个工具）</summary>
+      <div class="toollist" style="margin-top:6px">
+        <div><span class="mono" style="color:var(--info)">subscriptions_create</span>
+          <div class="meta">从 Discover 影视条目创建订阅并生成初始追踪工单</div>
+          <div class="meta faint mono">title_ref* · seasons[] · rule_set_id · library_id · follow_future</div></div>
+        <div><span class="mono" style="color:var(--info)">subscriptions_list</span>
+          <span class="tag ok" style="margin-left:6px">只读</span>
+          <div class="meta">列出当前账号可见的电影和剧集订阅</div>
+          <div class="meta faint mono">status · media_type · limit · offset</div></div>
+        <div><span class="mono" style="color:var(--info)">subscriptions_update</span>
+          <div class="meta">修改订阅的选季、自动续订、过滤规则或目标媒体库</div>
+          <div class="meta faint mono">subscription_id* · seasons[] · follow_future · rule_set_id · library_id</div></div>
+        <div><span class="mono" style="color:var(--info)">subscriptions_list_active_downloads</span>
+          <span class="tag ok" style="margin-left:6px">只读</span>
+          <div class="meta">列出一条订阅当前正在进行的下载及实时进度</div>
+          <div class="meta faint mono">subscription_id*</div></div>
+        <div class="faint">…… 还有 12 个</div>
+      </div>
+    </details>
+    <details>
+      <summary>search（9 个工具）</summary>
+      <div class="toollist" style="margin-top:6px">
+        <div><span class="mono" style="color:var(--info)">search_titles</span>
+          <div class="meta faint mono">keyword* · media_type · provider · limit</div></div>
+        <div><span class="mono" style="color:var(--info)">search_torrents</span>
+          <span class="tag info" style="margin-left:6px">流式命令 · 手工登记</span>
+          <div class="meta">跨 PT 站点搜种子（边搜边出，服务端聚合后一次性返回）</div>
+          <div class="meta faint mono">keyword* · resolution · site_ids[] · free_only</div></div>
+        <div class="faint">…… 还有 7 个</div>
+      </div>
+    </details>
+    <details>
+      <summary>library（57 个工具中放行 51 个 · 6 个被策略隐去）</summary>
+      <div class="toollist" style="margin-top:6px">
+        <div><span class="mono" style="color:var(--info)">library_items_list</span>
+          <span class="tag ok" style="margin-left:6px">只读</span></div>
+        <div><span class="mono" style="color:var(--info)">library_scan</span></div>
+        <div class="faint" style="text-decoration:line-through">library_items_delete · library_delete · …（危险命令，标准策略下不暴露）</div>
+      </div>
+    </details>
+    <details>
+      <summary>dl（15 个工具）</summary>
+      <div class="toollist" style="margin-top:6px">
+        <div><span class="mono" style="color:var(--info)">dl_submit</span>
+          <div class="meta faint mono">site_id* · url* · library_id · save_path · tmdb_id</div></div>
+        <div class="faint">…… 还有 14 个</div>
+      </div>
+    </details>
+    <div class="alert warn" style="margin-bottom:0">
+      97 个工具超过了模型可靠选择的经验上限（30~40）。要么关掉「展开工具」（变成 4 个工具），
+      要么把媒体库拆到单独的端点里。
     </div>
   </div>
 
@@ -455,9 +495,9 @@
   <div class="card">
     <table>
       <tr><th>时间</th><th>工具</th><th>参数</th><th>结果</th></tr>
-      <tr><td>12 分钟前</td><td class="mono">mclaw_subscriptions</td><td class="mono">list --limit 20</td><td><span class="tag ok">成功 · 0.4s</span></td></tr>
-      <tr><td>12 分钟前</td><td class="mono">mclaw_search</td><td class="mono">torrents "沙丘2" --resolution 2160p</td><td><span class="tag ok">成功 · 6.1s</span></td></tr>
-      <tr><td>1 小时前</td><td class="mono">mclaw_library</td><td class="mono">items delete 8821 --yes</td><td><span class="tag danger">拒绝 · 策略不允许</span></td></tr>
+      <tr><td>12 分钟前</td><td class="mono">subscriptions_list</td><td class="mono">{"status":"active","limit":20}</td><td><span class="tag ok">成功 · 0.4s</span></td></tr>
+      <tr><td>12 分钟前</td><td class="mono">search_torrents</td><td class="mono">{"keyword":"沙丘2","resolution":"2160p"}</td><td><span class="tag ok">成功 · 6.1s</span></td></tr>
+      <tr><td>1 小时前</td><td class="mono">library_items_delete</td><td class="mono">{"item_id":8821}</td><td><span class="tag danger">拒绝 · 工具不存在（策略已隐去）</span></td></tr>
     </table>
     <div class="meta faint" style="margin-top:9px">P1 先只落「最近调用时间」，这张明细表是 P2（调用日志）——样稿里先把位置留出来。</div>
   </div>
@@ -597,16 +637,35 @@ for (const [gid, list] of Object.entries(SERVICES)) {
   }
 }
 
+// 展开模式（默认）：一条命令一个工具，每个工具约 0.35 KB 定义（含 JSON Schema）
+// 合并模式：一个服务一个工具，体积就是该域的命令清单描述
+let expand = true;
+document.getElementById("expandToggle").onclick = () => {
+  expand = !expand;
+  document.getElementById("expandToggle").classList.toggle("off", !expand);
+  refresh();
+};
+
 function refresh(){
   let cmds = 0, kb = 0;
   for (const list of Object.values(SERVICES))
     for (const [id,,,c,k] of list) if (picked.has(id)) { cmds += c; kb += k; }
-  const n = picked.size;
-  document.getElementById("sum1").textContent = n ? `${n} 个工具` : "还没选服务";
-  const warn = n > 12 ? " ⚠ 工具偏多，模型选择准确率会下降，建议拆成多个端点" : "";
-  document.getElementById("sum2").textContent =
-    n ? `覆盖 ${cmds} 条命令 · 工具描述约 ${kb.toFixed(1)} KB${warn}` : "至少选择一个服务才能创建端点";
-  document.getElementById("sum2").style.color = warn ? "var(--warn)" : "";
+  const svc = picked.size;
+  const tools = expand ? cmds : svc;
+  const size  = expand ? cmds * 0.35 : kb;
+  const s1 = document.getElementById("sum1"), s2 = document.getElementById("sum2");
+  if (!svc) {
+    s1.textContent = "还没选服务";
+    s2.textContent = "至少选择一个服务才能创建端点";
+    s2.style.color = "";
+    return;
+  }
+  s1.textContent = `${tools} 个工具`;
+  const warn = tools > 40 ? " ⚠ 超过模型可靠选择的工具数上限，建议关掉「展开工具」或拆成多个端点" : "";
+  s2.textContent = expand
+    ? `${svc} 个服务 · 工具定义约 ${size.toFixed(0)} KB${warn}`
+    : `${svc} 个服务 · 覆盖 ${cmds} 条命令 · 工具描述约 ${size.toFixed(1)} KB${warn}`;
+  s2.style.color = warn ? "var(--warn)" : "";
 }
 refresh();
 
@@ -621,8 +680,9 @@ document.querySelectorAll("#tabs button").forEach(b=>b.onclick=()=>{
   document.querySelectorAll(".snip").forEach(p=>p.hidden = p.id !== b.dataset.t);
 });
 
-// —— 开关点一下能动（样稿里也让人有反馈）——
-document.querySelectorAll(".t").forEach(t=>t.onclick=()=>t.classList.toggle("off"));
+// —— 其余开关点一下能动（样稿里也让人有反馈）；展开开关有自己的处理器，跳过 ——
+document.querySelectorAll(".t:not(#expandToggle)")
+  .forEach(t=>t.onclick=()=>t.classList.toggle("off"));
 </script>
 </body>
 </html>

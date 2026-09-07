@@ -118,9 +118,11 @@ RFC 9728 受保护资源元数据、客户端必须走 OAuth 2.1 + PKCE + RFC 87
 │  ├ Origin 校验 → 403                                       │
 │  ├ JSON-RPC 分发：server/discover · tools/list · tools/call │
 │  │   （兼容旧代：initialize · notifications/initialized · ping）│
-│  └ 工具面 = 端点选中的服务 → 每服务一个工具                    │
+│  └ 工具面 = 端点选中的服务 × 工具展开开关（§4.1）              │
+│      展开：一命令一工具 subscriptions_update（默认）           │
+│      合并：一服务一工具 subscriptions(args)                   │
 └───────────────┬──────────────────────────────────────────┘
-                │ tools/call
+                │ tools/call → 统一渲染成 argv
                 ▼
         mclaw 子进程（与产品内 Agent 完全同一条执行路径）
         env: MOVIECLAW_SERVER=127.0.0.1  MOVIECLAW_TOKEN=<短时效签名令牌 aud=mcp>
@@ -142,27 +144,98 @@ Web 设置页「MCP 服务」 ──REST──> /api/v1/mcp/endpoints…（管�
 
 每条都给了**选项 / 权衡 / 结论**，需要你拍板的三条已在 §11 单列。
 
-### 4.1 工具粒度：一个服务 = 一个工具（推荐 A）
+### 4.1 工具粒度：端点级开关「展开工具」，默认展开
 
-| | A. 域网关工具（推荐） | B. 逐命令类型化工具 |
+**决定（2026-09 评审）**：不替用户在两种形态里二选一——不同 MCP 客户端对工具面的
+适配逻辑差别很大（有的擅长在大工具集里检索，有的会把工具全量塞进系统提示词），
+所以做成**端点级选项**，两种形态都实现，默认展开。
+
+| | 展开（`expand_tools: true`，默认） | 合并（`expand_tools: false`） |
 | --- | --- | --- |
-| 形态 | `mclaw_subscriptions(args: string)` | `subscriptions_create(title_ref, seasons, …)` |
-| 工具数 | = 所选服务数，典型 3–8，最多 25 | 单选「媒体库」就 **57** 个，两三个服务即破 100 |
-| 参数 | 字符串（就是 CLI 参数串） | 从 spec 生成 JSON Schema |
-| 与现状 | 与产品内 Agent **完全同构**，行为一致 | 另起一套语义，两条路会漂移 |
-| 风险 | 模型偶尔要 `--help` 探参数（一次往返） | 超过模型可靠选择的工具数上限（§2.4） |
+| 形态 | 一条命令一个工具 | 一个服务一个工具 |
+| 命名 | `<模块>_<命令>`，如 `subscriptions_update` | `<模块>`，如 `subscriptions` |
+| 参数 | 从 spec 生成 JSON Schema（类型化） | `args` 字符串（就是 CLI 参数串） |
+| 选「订阅」后的工具数 | 16 | 1 |
+| 选 4 个服务（订阅/搜索/媒体库/下载器） | 97 | 4 |
+| 上下文占用（估算） | 30–40 KB | 1.9 KB |
+| 危险命令注解 | **逐工具精确**（`readOnlyHint` 由 HTTP 方法推导） | 只能整域标注 |
+| 只读档的实现 | 非 GET 工具**根本不出现在 `tools/list`** | 只能在执行时拒绝 |
+| 精选层命令（`search torrents`） | 需手工登记（见下） | 天然可用 |
+| 模型出错的形态 | 工具太多时选错/幻觉工具名 | 猜参数 → 退出码 2 → `--help` → 重试 |
 
-实测数据（本仓当前 spec）：CLI 可见操作 329 个，按域分布
-`library 57 / playback 35 / auth 20 / subscriptions 16 / app 16 / dl 15 / site 13 …`。
-方案 B 在「媒体库」这一个服务上就直接越过了 30–40 的可靠区。
+命名规范：工具名 = `operation_id` 把 `.` 和 `-` 都换成 `_`
+（`subscriptions.list-active-downloads` → `subscriptions_list_active_downloads`，
+`members.status.set` → `members_status_set`）。**不加 `mclaw_` 前缀**——客户端侧
+本来就会按服务器名分组，再加一层前缀只是白占 token。唯一性由守护测试保证。
 
-**结论：v1 选 A。** 每个工具的 description 由 spec 现渲染：
-「域说明（复用 `_DOMAIN_LINES` 那份润色文案）+ 该域命令清单（命令 — 一行摘要）」。
-实测描述体积：`library ≈ 3.3 KB`、`subscriptions ≈ 0.9 KB`、全量 25 个服务 ≈ 12 KB。
-管理页在选服务时**实时显示预计工具数与描述体积**，把「上下文成本」变成用户看得见的东西。
+两种形态**共用同一条执行路径**（§4.2）：展开模式把 JSON 参数按 CLI 既定规则
+渲染回 argv——路径参数按声明顺序做位置参数，其余字段变 `--kebab-case value`
+（CLI 的标志名就是 spec 参数名把 `_` 换成 `-`，见 `cli/internal/tree/command.go`，
+所以这个映射是确定性的，不是猜的）。于是同一条命令在两种模式下行为完全一致，
+用户切换开关不会得到不同结果。
 
-> 方案 B 不是不能做，而是应该在 A 跑通、且确实有人抱怨「模型猜参数」之后，
-> 作为端点级选项（工具粒度：服务级 / 命令级）增量加上，而不是一上来就双轨。
+**展开模式的一个已知缺口**：`x-cli-stream` 的操作不进 spec 命令面，全仓当前只有
+一个——`search.torrents`（跨站搜种子，SSE 边搜边出）。它恰好又是核心链路，
+所以展开模式要为它**手工登记一条工具**（工具名、描述、inputSchema、argv 模板），
+执行仍是 `mclaw search torrents …`。这张手工表目前就这一条，新增流式操作时
+守护测试会提醒补登记。
+
+> 为什么默认展开而不是默认合并：默认值应该服务「第一次用的人」。展开模式下模型
+> 不需要理解 mclaw 的参数体系，照 schema 填就行，首次成功率更高；工具太多的问题
+> 有管理页的实时提示兜底（超过阈值就提示拆端点）。老练用户想要小而稳的工具面时，
+> 一个开关就切过去。
+
+### 4.1.1 举例：同一个「订阅」服务，两种模式下模型看到什么
+
+展开（默认）——`tools/list` 里是 16 个工具，其中一个：
+
+```json
+{
+  "name": "subscriptions_update",
+  "description": "修改订阅的选季、自动续订、过滤规则或目标媒体库",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "subscription_id": { "type": "integer", "description": "订阅 ID" },
+      "seasons":       { "type": "array", "items": { "type": "integer" } },
+      "follow_future": { "type": "boolean", "description": "是否自动续订新季" },
+      "rule_set_id":   { "type": "integer", "description": "过滤规则组 ID" },
+      "library_id":    { "type": "integer", "description": "目标媒体库 ID" }
+    },
+    "required": ["subscription_id"]
+  },
+  "annotations": { "readOnlyHint": false, "destructiveHint": false }
+}
+```
+
+调用 `{"name":"subscriptions_update","arguments":{"subscription_id":42,"follow_future":false,"rule_set_id":3}}`
+→ 服务端渲染成 `mclaw subscriptions update 42 --follow-future=false --rule-set-id 3`。
+
+合并——`tools/list` 里就一个工具：
+
+```json
+{
+  "name": "subscriptions",
+  "description": "订阅与自动追更：持续追踪新资源，按规则自动搜索、下载并整理入库。\n\n可用命令（参数用 --help 现查）：\n  create   从 Discover 影视条目创建订阅…\n  list     列出当前账号可见的电影和剧集订阅\n  update   修改订阅的选季、自动续订、过滤规则或目标媒体库\n  …（共 16 条）",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "args":    { "type": "string", "description": "mclaw subscriptions 之后的完整参数串" },
+      "timeout": { "type": "number" }
+    },
+    "required": ["args"]
+  }
+}
+```
+
+调用 `{"name":"subscriptions","arguments":{"args":"update 42 --follow-future=false --rule-set-id 3"}}`
+→ 落到同一条 `mclaw` 命令。
+
+实测规模（本仓当前 spec）：CLI 可见操作 329 个，按域分布
+`library 57 / playback 35 / auth 20 / subscriptions 16 / app 16 / dl 15 / site 13 …`；
+合并模式下每域的工具描述体积为 `library ≈ 3.3 KB`、`subscriptions ≈ 0.9 KB`，
+全量 24 个服务 ≈ 12 KB。管理页在选服务时**按当前模式实时算出工具数与体积**，
+把上下文成本变成用户看得见的东西（展开模式超过 40 个工具时给出黄色提示）。
 
 ### 4.2 执行路径：复用 mclaw 子进程（推荐），不另起进程内调用
 
@@ -173,9 +246,21 @@ Web 设置页「MCP 服务」 ──REST──> /api/v1/mcp/endpoints…（管�
 - **进程内 ASGI 直调**：省掉进程开销，但要重写参数映射、确认闸、任务等待、
   结果整形——等于把 CLI 那套契约再实现一遍，且两边会漂移。
 
-**结论：子进程。** 把 `movieclaw_agent/tools/mclaw.py` 里的执行内核
-（定位二进制、shlex、硬闸、进程组击杀、退出码标注）抽成一个共享函数，
+**结论：子进程，且两种工具模式共用它。** 把 `movieclaw_agent/tools/mclaw.py` 里的
+执行内核（定位二进制、shlex、硬闸、进程组击杀、退出码标注）抽成一个共享函数，
 Agent 工具与 MCP 层各自包一层薄壳；**不改 Agent 侧任何对外行为**。
+
+两种模式只是「怎么得到 argv」不同：
+
+| 模式 | argv 来源 |
+| --- | --- |
+| 合并 | `shlex.split(args)`，前面拼上服务名 |
+| 展开 | 工具名反查 `operation_id` → 命令路径；JSON 参数按 spec 顺序回填：路径参数做位置参数，其余 `--kebab-case value`（布尔用 `--flag=false` 形态） |
+
+这样长任务等待、`⚠ --yes` 确认、退出码语义、输出截断在两种模式下**完全一致**，
+不存在「换个开关行为就变了」。展开模式不暴露 CLI 的客户端专属标志
+（`--input` / `--file` / `--output-file` / 全局覆盖标志）；`--wait` 的默认值沿用
+CLI 既定契约（`x-cli-job` 的操作默认不等，返回 job_id 后让模型调 `jobs_wait`）。
 
 令牌：每次调用现签一枚短时效令牌（`aud="mcp"`，载荷带端点 id），
 与 `issue_agent_token` 同一套签名机制。**不复用端点的外部令牌**——
@@ -241,11 +326,17 @@ JSON-RPC 的错误形态不必迁就业务统一响应体。
 | 标准（`standard`，默认） | 读 + 常规写；**拒绝 `x-cli-dangerous` 的命令** | 日常自动化：订阅、搜索、投递下载 |
 | 完全（`full`） | 全部，`⚠` 命令由 MCP 层自动补 `--yes` | 明确知道自己在干什么的场景 |
 
-判定口径：argv 首段按 `operation_id`（点号即命令层级，`members.status.set`
-→ `members status set`）反查 spec 得到 HTTP 方法与 `x-cli-dangerous`；
+判定口径：反查 `operation_id` 得到 HTTP 方法与 `x-cli-dangerous`——展开模式下工具名
+本身就是 `operation_id`，直接查；合并模式下按 argv 首段还原命令路径
+（点号即命令层级，`members.status.set` → `members status set`）后再查。
 `cli/internal/overlay` 那批手写命令（`download`、`library organize-files`、
 `library reconcile-paths`、`search *`、`status`、`logs tail`）另有一张写死的小表。
 选「完全」档时管理页要二次确认，并在端点卡上常驻一枚红色徽标。
+
+**展开模式下策略是「工具面级」的**：被策略挡掉的命令**根本不出现在 `tools/list`
+里**，模型看不到也就不会尝试——比运行时拒绝干净得多。合并模式只能在执行时拒绝
+（一个工具覆盖整域），并把「这一档不允许」写进错误文案让模型改道。这是展开模式
+除类型化参数之外的第二个实际优势。
 
 另外三条与档位无关的硬闸（沿用 Agent 侧的现成逻辑）：
 `login`/`logout` 拒绝、`--server` 拒绝、`session start|retry|follow` 拒绝（防递归）。
@@ -270,6 +361,7 @@ class McpEndpoint(BaseModel):
     name: str                      # 展示名，如「家庭影音助理」
     description: str = ""          # 备注：这个端点给谁用的
     services: list[str]            # 选中的服务域，如 ["subscriptions", "search", "library"]
+    expand_tools: bool = True      # 展开：一命令一工具；关闭：一服务一工具（§4.1）
     policy: Literal["read_only", "standard", "full"] = "standard"
     enabled: bool = True
     token_hash: str                # sha256(明文)，明文不落库
@@ -316,11 +408,18 @@ class McpEndpoint(BaseModel):
 HTTP 层必答项：`Origin` 非法 → `403`；GET/DELETE → `405`；
 头与包体不符 → `400`/`-32020`；不支持的版本 → `400`/`-32022` 且列出 `supported`。
 
-工具命名：`mclaw_<service>`（如 `mclaw_subscriptions`）。带前缀是为了在客户端的
-扁平工具名空间里不与别家服务器撞名；`tools/list` 按服务名字典序输出（顺序确定，利于缓存）。
+工具命名（不加 `mclaw_` 前缀——客户端本就按服务器名分组，再加前缀只是白占 token）：
 
-工具注解：只读档 → `readOnlyHint: true`；标准/完全档 → `destructiveHint: true`、
-`openWorldHint: true`。
+- 展开模式：`operation_id` 的 `.` 与 `-` 换成 `_`，如 `subscriptions_update`、
+  `search_history_get_results`。
+- 合并模式：就是服务名，如 `subscriptions`。
+
+`tools/list` 按工具名字典序输出（顺序确定，利于客户端与提示词缓存命中）。
+
+工具注解：展开模式逐工具推导——`GET` → `readOnlyHint: true`，
+`x-cli-dangerous: destructive` → `destructiveHint: true`，
+外网数据源（discover/search/site）→ `openWorldHint: true`；
+合并模式只能整域标注（只读档 `readOnlyHint: true`，其余 `destructiveHint: true`）。
 
 ---
 
@@ -335,10 +434,10 @@ HTTP 层必答项：`Origin` 非法 → `403`；GET/DELETE → `405`；
 | ① | 空态 | 一句话讲清 MCP 是什么、能干什么，一个「新建端点」主按钮 |
 | ② | 端点列表 | 每端点：名称、URL、档位徽标、工具数、最近调用、启停开关、更多菜单 |
 | ③ | 新建 · 基本信息 | 名称 + slug（实时拼出完整 URL，重名即时报错） |
-| ④ | 新建 · 选服务 | 多选卡片，按既有服务目录分组；底部实时汇总「N 个工具 · 约 X KB 描述」 |
+| ④ | 新建 · 选服务 | 多选卡片 + **「展开工具」开关**（默认开）；底部实时汇总随模式切换：展开算命令数、合并算服务数，超过 40 个工具给黄色提示 |
 | ⑤ | 新建 · 执行策略 | 三档单选 + 超时；选「完全」弹二次确认 |
 | ⑥ | 创建完成 · 令牌 | 明文只显示这一次；三个页签给 Claude Code / JSON 配置 / cURL 自检片段 |
-| ⑦ | 端点详情 | 工具目录预览（每个工具的描述可展开）、连通性自检、令牌轮换、最近调用 |
+| ⑦ | 端点详情 | 工具目录预览（展开模式列工具名 + 参数，合并模式列服务与其命令清单）、连通性自检、令牌轮换、最近调用 |
 | ⑧ | 危险操作确认 | 停用 / 删除 / 轮换令牌各自的后果文案 |
 | ⑨ | 总开关关闭态 | 全局关掉后列表置灰，说明「所有端点一律 404」 |
 
@@ -363,10 +462,20 @@ HTTP 层必答项：`Origin` 非法 → `403`；GET/DELETE → `405`；
 - **协议契约（新增 `tests/mcp/`）**：新旧两代各一组黄金往返——
   `server/discover` / `initialize` / `tools/list` / `tools/call`，
   外加 `Origin` 拒绝、GET→405、头体不符→-32020、未知方法→-32601、版本不支持→-32022。
-- **工具面守护**：端点选中的服务集合 ⇔ `tools/list` 的工具集合严格一致；
+- **工具面守护**：端点选中的服务集合 ⇔ `tools/list` 的工具集合严格一致（两种模式各一组）；
   服务域来源必须是 `spec_domains()`（防止手抄一份域清单造成漂移）。
+- **工具名守护**（展开模式）：全量 spec 生成的工具名两两不重复
+  （`.`/`-` 归一成 `_` 后可能撞名，撞了就必须改名而不是静默覆盖），
+  且都符合 `^[a-zA-Z0-9_]{1,64}$`（兼容对函数名有限制的客户端）。
+- **参数回填守护**（展开模式）：遍历全部生成工具，用 schema 的示例值渲染 argv，
+  断言渲染结果能被 `mclaw <cmd> --help` 的标志集合接受——把「schema 与 CLI 标志名
+  漂移」钉死在 CI 上（这是展开模式唯一真正脆弱的地方）。
+- **两模式等价守护**：同一条命令 + 同一组参数，展开与合并模式渲染出的 argv 完全一致。
+- **流式缺口守护**：spec 里 `x-cli-stream` 的操作集合 ⇔ 手工登记表的键集合一致，
+  新增流式操作忘了登记就 CI 失败（当前只有 `search.torrents` 一条）。
 - **执行策略守护**：三档各跑一组命令样本，`read_only` 必须拒绝所有非 GET 命令；
   `standard` 必须拒绝全部 `x-cli-dangerous` 命令（样本从 spec 现取，新增危险命令自动纳入）。
+  展开模式下还要断言这些命令**不出现在 `tools/list`**。
 - **鉴权守护**：无令牌/错令牌/已吊销/端点停用/总开关关 → 401/401/401/404/404。
 - **既有守护的登记**：`tests/api/test_auth.py` 匿名白名单加 `/mcp/{slug}`；
   `tests/api/test_mclaw_tool_wiring.py` 因 `mcp` 进 `_EXCLUDED_DOMAINS` 自动通过。
@@ -377,23 +486,34 @@ HTTP 层必答项：`Origin` 非法 → `403`；GET/DELETE → `405`；
 
 | 期 | 内容 | 估量 |
 | --- | --- | --- |
-| **P1**（本次） | 设置域 + 管理面 REST + 协议层（两代兼容、非流式）+ 设置页分区 + 契约测试 | 后端 ~900 行、前端 ~500 行、测试 ~400 行 |
+| **P1**（本次） | 设置域 + 管理面 REST + 协议层（两代兼容、非流式）+ **两种工具模式**（spec→inputSchema 生成器、JSON→argv 回填、流式命令登记表）+ 设置页分区 + 契约测试 | 后端 ~1300 行、前端 ~550 行、测试 ~600 行 |
 | **P2** | `tools/call` 的 SSE 流式（长任务推 `notifications/progress`）、调用日志页、端点级速率限制 | 中 |
-| **P3** | OAuth 2.1 + RFC 9728（打通 claude.ai 网页版自定义连接器）；可选的「命令级工具粒度」 | 大 |
+| **P3** | OAuth 2.1 + RFC 9728（打通 claude.ai 网页版自定义连接器） | 大 |
+
+比只做一种形态多出来的量集中在展开模式的三件事上：inputSchema 生成器
+（`$ref` 解析、path/query/body 三类参数合并、客户端专属标志剔除）、
+JSON→argv 回填、以及 §9 里那两条守护测试。协议层与管理面不受影响。
 
 P1 不需要 bump `docker/runtime-version`（无新增运行时依赖、不动 Dockerfile 与 entrypoint），
 也不需要数据库迁移。
 
 ---
 
-## 11. 需要你拍板的三件事
+## 11. 拍板记录与剩余待定
 
-1. **工具粒度**：接受 §4.1 的「一服务一工具（args 字符串）」吗？
-   还是希望 v1 就做类型化的命令级工具（我会需要加分页与精选层，工作量约翻倍）？
-2. **协议实现**：手写（0 依赖、要自己跟规范）vs 官方 SDK（省事、但要 bump runtime-version
+- ✅ **工具粒度**（2026-09 定）：做成端点级开关「展开工具」，**默认展开**，
+  展开后工具名为 `<模块>_<命令>`、不加 `mclaw_` 前缀。理由：不同 MCP 客户端对
+  工具面的适配逻辑不一致，把选择权交给用户。详见 §4.1。
+
+待定：
+
+1. **协议实现**：手写（0 依赖、要自己跟规范）vs 官方 SDK（省事、但要 bump runtime-version
    并新增 8 个传递依赖）——我推荐手写，理由见 §4.3。
-3. **默认执行档位**：默认「标准」（禁 `⚠` 危险命令）合适吗？
+2. **默认执行档位**：默认「标准」（禁 `⚠` 危险命令）合适吗？
    还是新建端点时默认「只读」，让用户显式放开写权限更稳妥？
+3. **展开模式的工具数是否设硬上限**：现在只在管理页给黄色提示（>40）。
+   要不要干脆拒绝创建超过某个数量的端点，逼用户拆分？我倾向只提示不拦——
+   拦了会挡住「我就想要一个全能端点」这种明确诉求。
 
 ---
 
