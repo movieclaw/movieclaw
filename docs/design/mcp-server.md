@@ -1,6 +1,6 @@
-# MCP Server 端点：把 mclaw 的服务目录开放给外部 AI 客户端
+# MCP Server 端点：把 movieclaw 的服务目录开放给外部 AI 客户端
 
-> 状态：**已评审定稿，待实现**（三处拍板见 §11；本文尚未落代码）。
+> 状态：**已评审定稿，待实现**（四条拍板见 §11；本文尚未落代码）。
 > 配套样稿：`docs/design/mockups/mcp-server-demo.html`（管理页每个功能一屏）。
 > 相关设计：`docs/design/agent-cli-integration.md`（产品内 Agent 的 mclaw 工具）、
 > `docs/design/device-auth.md`（令牌签发与吊销的既有立场）、`docs/design/cli.md`。
@@ -91,9 +91,12 @@ RFC 9728 受保护资源元数据、客户端必须走 OAuth 2.1 + PKCE + RFC 87
 这条直接决定了我们的工具粒度选择（§4.1），也正好是用户提出的
 「自己组合端点」这个需求的价值所在——它本质上是**让人来做工具面精选**。
 
-其余可落地的实践：工具名要稳定且带命名空间前缀、`tools/list` 顺序要确定
-（利于客户端缓存与提示词缓存命中）、危险操作打 `destructiveHint` 注解、
-结果尽量结构化、列表结果给 `ttlMs` 让客户端别反复拉。
+其余可落地的实践：工具名要**稳定**（改名等于换了个工具，客户端缓存与用户配置都会失效）、
+`tools/list` 顺序要确定（利于客户端缓存与提示词缓存命中）、危险操作打 `destructiveHint`
+注解、结果尽量结构化、列表结果给 `ttlMs` 让客户端别反复拉。
+
+> 关于「命名空间前缀」：不少文章建议给工具名加服务器前缀防撞名。我们**不加**
+> （§4.1）——主流客户端都已按服务器分组展示与调用，前缀只是每个工具白占一截 token。
 
 ### 2.5 官方 Python SDK 的现状
 
@@ -158,11 +161,11 @@ Web 设置页「MCP 服务」 ──REST──> /api/v1/mcp/endpoints…（管�
 
 ## 4. 关键设计决策
 
-每条都给了**选项 / 权衡 / 结论**；拍板记录见 §11。
+四条决定已拍板（记录见 §11），下面每条给出结论与理由，以及被否掉的选项为什么否。
 
 ### 4.1 工具粒度：端点级开关「展开工具」，默认展开
 
-**决定（2026-09 评审）**：不替用户在两种形态里二选一——不同 MCP 客户端对工具面的
+**已定**：不替用户在两种形态里二选一——不同 MCP 客户端对工具面的
 适配逻辑差别很大（有的擅长在大工具集里检索，有的会把工具全量塞进系统提示词），
 所以做成**端点级选项**，两种形态都实现，默认展开。
 
@@ -258,11 +261,11 @@ body `{"follow_future": false, "rule_set_id": 3}`。
 `library 57 / playback 35 / auth 20 / subscriptions 16 / app 16 / dl 15 / site 13 …`；
 合并模式下每域的工具描述体积为 `library ≈ 3.3 KB`、`subscriptions ≈ 0.9 KB`，
 全量 24 个服务 ≈ 12 KB。管理页在选服务时**按当前模式实时算出工具数与体积**——
-只如实报数字，不设上限也不给警告（2026-09 定）：给客户端多少工具合适，用户自己判断。
+只如实报数字，不设上限也不给警告：给客户端多少工具合适，用户自己判断。
 
 ### 4.2 执行路径：直连本机 API（进程内 ASGI），不经 mclaw 子进程
 
-**决定（2026-09 评审）**：`tools/call` 直接调对应的业务接口，不再绕 CLI。
+**已定**：`tools/call` 直接调对应的业务接口，不再绕 CLI。
 
 ```python
 # 一次工具调用 = 一次进程内 HTTP
@@ -305,7 +308,7 @@ async with httpx.AsyncClient(transport=transport, base_url="http://mcp.internal"
 
 ### 4.3 协议实现：用官方 `mcp` SDK
 
-**决定（2026-09 评审）**：协议层不自己写，引官方 SDK。MCP 还在快速演进
+**已定**：协议层不自己写，引官方 SDK。MCP 还在快速演进
 （一年内经历了传输换代 + 无状态化两次大改），协议编解码与版本兼容是**别人会持续维护
 的部分**，我们只该维护「movieclaw 有什么工具」这件自己的事。
 
@@ -381,7 +384,7 @@ JSON-RPC 的错误形态不必迁就业务统一响应体。
 
 ### 4.7 权限边界：不做执行档位，控制手段就是「选服务 / 启停 / 吊销」
 
-**决定（2026-09 评审）**：**去掉**原方案里的只读/标准/完全三档。理由是它属于重复控制——
+**已定**：**不做**执行档位（原方案里的只读/标准/完全三档已删）。理由是它属于重复控制——
 端点本来就是管理员权限，而这套设计已经有三个更直接、用户也更容易理解的闸：
 
 1. **建端点时选哪些服务**——不想让它碰媒体库，就别勾媒体库；
@@ -401,7 +404,7 @@ JSON-RPC 的错误形态不必迁就业务统一响应体。
 仍然保留的、与危险程度无关的工具面构成规则：
 
 - 工具面**只取 `iter_command_operations` 认可的操作**（`x-cli-hidden` 的纯 Web
-  基础设施接口天然不在内），再减去上传/下载类（§4.2）与 `_EXCLUDED_DOMAINS`；
+  基础设施接口天然不在内），再减去上传/下载类（§4.2）与 `mcp` 自身这个域（§5）；
 - `session.*` 的会话创建/续跑不进工具面（防 Agent 递归拉起 Agent），
   与 mclaw 工具里的那条硬闸同义；
 - 单次调用超时（端点可配，默认 300 秒）+ 每端点并发信号量（默认 4），
@@ -436,9 +439,16 @@ class McpEndpoint(BaseModel):
     last_used_at: str | None = None   # 按分钟粒度节流落盘（复用 PAT 的做法）
 ```
 
-`services` 的合法取值 = `services/mclaw_tool.spec_domains()`；
+`services` 的合法取值 = `services/spec_catalog.command_domains()` 减去 `mcp` 自身
+（端点不该能增删 MCP 端点——与 `require_admin_session` 那条红线同义）。
 读取时对已消失的域静默丢弃（升级后某个域被移除也不至于让端点整个坏掉），
 并在管理页标一行「有 1 个服务已不存在，已忽略」。
+
+> 注意这里**不复用** `mclaw_tool.spec_domains()`：那个函数额外排除了 `logs` 与
+> `members`，理由是 Agent 专属的（Agent 有 bash 所以不需要 logs；对话式代劳建号
+> 不合适）。MCP 端点由管理员逐个勾选，勾了就是明示授权，所以两者都开放——
+> 其中 `members` 能建号与重置密码，服务卡片上要写明这一点。
+> 如果你不想开放 members，改成 `spec_domains()` 即可，一行的事。
 
 ---
 
@@ -577,27 +587,58 @@ class McpEndpoint(BaseModel):
 本仓的 `sqlmodel<0.1` / `fastapi` / `pydantic-settings` 都得在这个版本下跑通——
 装完先跑一遍 `pytest -m "not integration"`，这是 P1 的第一个检查点。
 
+### 10.1 P1 落地顺序
+
+每步都有可验证的完成标志，前一步不绿不进下一步：
+
+| # | 做什么 | 完成标志 |
+| --- | --- | --- |
+| 1 | `pyproject` 加 `mcp>=2.1,<3.0`；`docker/runtime-version` 13 → 14 | `pytest -m "not integration"` 全绿（重点看 `pydantic>=2.12` 与 sqlmodel/fastapi） |
+| 2 | 设置域 `settings/mcp.py` + 在 `settings/__init__.py` 登记 | 建/读/改端点的单测过；令牌只落哈希 |
+| 3 | 工具面渲染：spec → `Tool[]`（两种模式、注解推导、构成过滤） | 工具名唯一性 + 工具面构成守护过 |
+| 4 | 调度执行：`operation_id` → 请求 → `CallToolResult`（含截断） | 参数映射守护 + 两模式等价守护 + 结果整形守护过 |
+| 5 | SDK 接线与 ASGI 调度器（含 lifespan 处理，§4.3 风险点） | SDK 客户端冒烟（新旧两代）+ 鉴权守护过 |
+| 6 | 管理面 REST，挂管理区；`mcp` 加进 `_EXCLUDED_DOMAINS` | 匿名/成员守护测试过；`mclaw mcp …` 命令自动可用 |
+| 7 | 设置页「MCP 服务」分区 | 起服务建一个端点，用 Claude Code 实际接上并跑通一次工具调用 |
+
+新增文件（预计）：
+
+```
+src/movieclaw_mcp/__init__.py        # 包入口与 register(app)
+src/movieclaw_mcp/app.py             # ASGI 调度器 + SDK Server 构建与缓存
+src/movieclaw_mcp/tools.py           # spec → Tool[]（两种模式、注解、过滤）
+src/movieclaw_mcp/dispatch.py        # 工具调用 → 本机 API → CallToolResult
+src/movieclaw_api/settings/mcp.py    # mcp.endpoints 配置域
+src/movieclaw_api/api/routes/mcp.py  # 管理面 REST
+src/movieclaw_api/schemas/mcp.py     # 管理面请求/响应模型
+apps/web/components/mcp-section.tsx  # 设置分区
+apps/web/lib/api/mcp.ts              # 前端接口封装
+tests/mcp/…                          # 冒烟 + 六组守护
+```
+
+改动既有文件：`settings/__init__.py`（登记配置域）、`api/router.py`（挂管理面）、
+`app.py`（注册 `/mcp` 调度器，与 Jellyfin 同一位置）、`lifespan.py`（SDK 生命周期）、
+`services/mclaw_tool.py`（`_EXCLUDED_DOMAINS` 加 `mcp`）、
+`apps/web/lib/mock-data.ts` + `components/settings-view.tsx`（注册新分区）、
+`pyproject.toml`、`docker/runtime-version`。
+
 ---
 
-## 11. 拍板记录与剩余待定
+## 11. 拍板记录
 
-- ✅ **工具粒度**（2026-09 定）：做成端点级开关「展开工具」，**默认展开**，
-  展开后工具名为 `<模块>_<命令>`、不加 `mclaw_` 前缀。理由：不同 MCP 客户端对
-  工具面的适配逻辑不一致，把选择权交给用户。详见 §4.1。
-- ✅ **协议实现**（2026-09 定）：**用官方 `mcp` SDK**，不自己写协议层。
-  代价是新增依赖并 bump runtime-version，换来的是协议演进由上游承担。详见 §4.3。
-- ✅ **执行路径**（2026-09 定）：**直连本机 API**（进程内 ASGI），不经 mclaw 子进程。
-  延迟低一个量级、与 CLI 解耦；代价是截断、长任务、错误映射要自己补，
-  已逐条列在 §4.2。连带影响：合并模式的参数形态从「CLI 参数串」改为
-  `command` 枚举 + `params` 对象（§4.1）。
+四条评审决定（2026-09），按拍板顺序：
 
-- ✅ **执行策略**（2026-09 定）：**去掉**。不做只读/标准/完全三档，v1 不在服务端
-  按危险程度拦截。端点本来就是管理员权限，控制手段是「建端点时选哪些服务」+
-  「启停」+「吊销令牌」这三件已有的事，再加一层档位是重复控制。详见 §4.7。
-- ✅ **工具数量**（2026-09 定）：**不设上限，也不提示**。管理页只如实显示
-  「N 个工具」，不做黄色警告——用户自己判断给客户端多少工具合适。
+| # | 议题 | 结论 | 详见 |
+| --- | --- | --- | --- |
+| 1 | 工具粒度 | 做成端点级开关「展开工具」，**默认展开**；展开后工具名 `<模块>_<命令>`，不加前缀。不同客户端对工具面的适配逻辑不一致，选择权交给用户 | §4.1 |
+| 2 | 协议实现 | **用官方 `mcp` SDK**，不自己写协议层。代价是新增依赖并 bump runtime-version，换来协议演进由上游承担 | §4.3 |
+| 3 | 执行路径 | **直连本机 API**（进程内 ASGI），不经 mclaw 子进程。延迟低一个量级、与 CLI 解耦；代价是截断/长任务/错误映射要自己补。连带把合并模式的参数改成 `command` + `params` | §4.2 |
+| 4 | 执行策略与工具数 | **都不做**。不设只读/标准/完全三档，也不限制或提示工具数量。控制手段就是「选服务 / 启停 / 吊销」三件已有的事 | §4.7 |
 
-待定：无。方案已可进入实现。
+**待定：无。方案可进入实现（落地顺序见 §10.1）。**
+
+实现前请留意两处已知风险，都写在正文里：SDK 挂载子应用的 lifespan 处理（§4.3），
+以及 `mcp` 要求的 `pydantic>=2.12` 与本仓 sqlmodel/fastapi 的兼容性（§10.1 第 1 步）。
 
 ---
 

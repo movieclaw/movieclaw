@@ -103,10 +103,10 @@
   <button data-s="s2">② 端点列表</button>
   <button data-s="s3">③ 新建·基本信息</button>
   <button data-s="s4">④ 新建·选服务</button>
-  <button data-s="s6">⑤ 令牌与接入</button>
-  <button data-s="s7">⑥ 端点详情</button>
-  <button data-s="s8">⑦ 危险操作确认</button>
-  <button data-s="s9">⑧ 总开关关闭</button>
+  <button data-s="s5">⑤ 令牌与接入</button>
+  <button data-s="s6">⑥ 端点详情</button>
+  <button data-s="s7">⑦ 危险操作确认</button>
+  <button data-s="s8">⑧ 总开关关闭</button>
 </div>
 
 <!-- ① 空态 -->
@@ -148,7 +148,7 @@
 
 <!-- ② 端点列表 -->
 <section class="screen" id="s2">
-  <p class="note">列表是这一页的主界面：一端点一卡，卡上直接能启停；危险档位常驻红标；「最近调用」是判断能不能删的依据。</p>
+  <p class="note">列表是这一页的主界面：一端点一卡，卡上直接能启停；徽标标出工具模式（展开/合并）；「最近调用」是判断能不能删的依据。</p>
   <header class="h">
     <span class="icon-chip">🔌</span>
     <div><h1>MCP 服务</h1><p class="sub">3 个端点 · 服务地址 https://movie.example.com</p></div>
@@ -224,7 +224,7 @@
 
 <!-- ③ 新建 · 基本信息 -->
 <section class="screen" id="s3">
-  <p class="note">三步向导。第一步只问「叫什么、地址是什么」——地址实时拼出来，重名即时报错，不到提交才失败。</p>
+  <p class="note">两步向导。第一步只问「叫什么、地址是什么」——地址实时拼出来，重名即时报错，不到提交才失败。</p>
   <header class="h">
     <span class="icon-chip">🔌</span>
     <div><h1>新建 MCP 端点</h1><p class="sub">第 1 步，共 2 步</p></div>
@@ -256,7 +256,7 @@
 
 <!-- ④ 新建 · 选服务 -->
 <section class="screen" id="s4">
-  <p class="note">本方案的核心屏，可直接点选试试：底部实时算「几个工具 / 覆盖多少条命令 / 描述占多少上下文」。工具数 = 选中的服务数——这正是「组合工具目录」的含义。</p>
+  <p class="note">本方案的核心屏，可直接点选、也可切「展开工具」开关试试：底部实时算工具数与上下文体积。展开模式下工具数 = 选中服务的命令总数，合并模式下 = 选中的服务数——这就是「组合工具目录」的含义。</p>
   <header class="h">
     <span class="icon-chip">🔌</span>
     <div><h1>选择服务</h1><p class="sub">第 2 步，共 2 步 · 选中哪些服务，这个端点就只有那些工具</p></div>
@@ -322,7 +322,7 @@
 </section>
 
 <!-- ⑤ 令牌与接入 -->
-<section class="screen" id="s6">
+<section class="screen" id="s5">
   <p class="note">令牌明文只在这一屏出现一次（服务端只存哈希）。直接给出三种客户端的可复制片段，避免用户去查 MCP 文档。</p>
   <header class="h">
     <span class="icon-chip">✅</span>
@@ -378,7 +378,7 @@
 </section>
 
 <!-- ⑥ 端点详情 -->
-<section class="screen" id="s7">
+<section class="screen" id="s6">
   <p class="note">详情页回答三个问题：这个端点到底暴露了什么（工具目录可展开看到真实描述）、它还活着吗（自检 + 最近调用）、怎么收回（轮换/停用/删除）。</p>
   <header class="h">
     <span class="icon-chip">🔌</span>
@@ -397,7 +397,7 @@
   <div class="card">
     <div class="row">
       <div><b style="font-size:14px">服务端自检通过</b>
-        <div class="meta">协议 2026-07-28 · tools/list 返回 4 个工具 · 用时 38 ms</div></div>
+        <div class="meta">协议 2026-07-28 · tools/list 返回 97 个工具 · 用时 38 ms</div></div>
       <button class="btn sm">重新自检</button>
     </div>
   </div>
@@ -488,7 +488,7 @@
 </section>
 
 <!-- ⑦ 危险操作确认 -->
-<section class="screen" id="s8">
+<section class="screen" id="s7">
   <p class="note">三个确认弹窗的文案。共同原则：说清「会发生什么」而不是问「你确定吗」。</p>
   <header class="h"><span class="icon-chip">⚠️</span><div><h1>确认弹窗</h1><p class="sub">停用 / 轮换令牌 / 删除</p></div></header>
   <div class="hr"></div>
@@ -516,7 +516,7 @@
 </section>
 
 <!-- ⑧ 总开关关闭 -->
-<section class="screen" id="s9">
+<section class="screen" id="s8">
   <p class="note">总开关关闭态：不隐藏已有端点（否则用户会以为配置丢了），而是整体置灰并说清后果。</p>
   <header class="h">
     <span class="icon-chip">🔌</span>
