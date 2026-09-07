@@ -169,7 +169,7 @@
       <div style="min-width:0">
         <b style="font-size:15px">家庭影音助理</b>
         <div class="mono meta" style="color:var(--muted)">/mcp/home-assistant</div>
-        <div class="meta">97 个工具 <span class="tag">展开</span> · 订阅、搜索、媒体库、下载器</div>
+        <div class="meta">91 个工具 <span class="tag">展开</span> · 订阅、搜索、媒体库、下载器</div>
         <div class="meta faint">最近调用 12 分钟前 · 令牌 mcp_a1b2****</div>
       </div>
       <div style="display:flex;gap:7px;align-items:center">
@@ -317,8 +317,8 @@
 
   <div class="summary">
     <div>
-      <b id="sum1" style="font-size:14px">97 个工具</b>
-      <div class="meta" id="sum2">4 个服务 · 工具定义约 34 KB</div>
+      <b id="sum1" style="font-size:14px">91 个工具</b>
+      <div class="meta" id="sum2">4 个服务 · 工具定义约 105 KB</div>
     </div>
     <div style="display:flex;gap:8px"><button class="btn">上一步</button><button class="btn primary">创建端点</button></div>
   </div>
@@ -329,7 +329,7 @@
   <p class="note">令牌明文只在这一屏出现一次（服务端只存哈希）。直接给出三种客户端的可复制片段，避免用户去查 MCP 文档。</p>
   <header class="h">
     <span class="icon-chip">✅</span>
-    <div><h1>端点已创建</h1><p class="sub">家庭影音助理 · 97 个工具 · 展开模式</p></div>
+    <div><h1>端点已创建</h1><p class="sub">家庭影音助理 · 91 个工具 · 展开模式</p></div>
   </header>
   <div class="hr"></div>
 
@@ -400,12 +400,12 @@
   <div class="card">
     <div class="row">
       <div><b style="font-size:14px">服务端自检通过</b>
-        <div class="meta">协议 2026-07-28 · tools/list 返回 97 个工具 · 用时 38 ms</div></div>
+        <div class="meta">协议 2026-07-28 · tools/list 返回 91 个工具 · 用时 38 ms</div></div>
       <button class="btn sm">重新自检</button>
     </div>
   </div>
 
-  <div class="kicker">工具目录（97 · 展开模式）</div>
+  <div class="kicker">工具目录（91 · 展开模式）</div>
   <div class="card">
     <div class="meta" style="margin-bottom:10px">
       工具名 = 模块名 + 命令名。选中服务的命令全部在列表里，含会改动数据的那些。
@@ -444,7 +444,7 @@
       </div>
     </details>
     <details>
-      <summary>library（57 个工具）</summary>
+      <summary>library（54 个工具）</summary>
       <div class="toollist" style="margin-top:6px">
         <div><span class="mono" style="color:var(--info)">library_items_list</span>
           <span class="tag ok" style="margin-left:6px">只读</span></div>
@@ -455,11 +455,11 @@
       </div>
     </details>
     <details>
-      <summary>dl（15 个工具）</summary>
+      <summary>dl（12 个工具）</summary>
       <div class="toollist" style="margin-top:6px">
         <div><span class="mono" style="color:var(--info)">dl_submit</span>
           <div class="meta faint mono">site_id* · url* · library_id · save_path · tmdb_id</div></div>
-        <div class="faint">…… 还有 14 个</div>
+        <div class="faint">…… 还有 11 个</div>
       </div>
     </details>
   </div>
@@ -560,41 +560,41 @@ document.querySelectorAll(".nav button").forEach(b=>b.onclick=()=>{
 // —— 屏④：服务多选（数字取自当前 spec 的真实统计）——
 // cmds = 该服务会生成的命令条数；kb = 工具描述体积（域说明 + 命令清单）
 const SERVICES = {
-  g1:[["discover","发现电影/剧集","TMDB、豆瓣的热映、榜单、片单与资料",8,0.4],
-      ["search","统一搜索","搜影视条目、跨站搜种子、搜已入库内容",9,0.5],
-      ["subscriptions","订阅与追更","持续追踪新资源并自动下载入库",16,0.9],
-      ["rules","订阅过滤规则","分辨率、编码、字幕、体积等条件组",5,0.3]],
-  g2:[["site","PT 资源站点","站点接入、验证、启停与缓存统计",13,0.4],
-      ["dl","下载器与投递","qBittorrent / Transmission 接入与提交",15,0.5],
-      ["watch","监听导入","下载完成后自动识别、命名并转移入库",8,0.4],
-      ["extension","浏览器插件同步","站点 Cookie 同步令牌与支持站点",6,0.3]],
-  g3:[["library","本地媒体库","建库、扫描、入库、元数据与图片管理",57,3.3],
-      ["scrape","刮削与整理配置","命名模板、图片语言优先级、NFO 开关",4,0.2],
-      ["people","影人档案","按 TMDB 人物 ID 查资料与参演作品",1,0.1]],
-  g4:[["app","应用设置与维护","外部地址、重启、检查升级与回退",16,0.6],
-      ["jobs","后台作业","查询、等待、取消、重试与执行器健康",11,0.3],
-      ["notices","系统待处理事项","按严重程度排序的活跃问题",2,0.1],
-      ["net","网络与代理","代理、镜像与连通性测试",3,0.2],
-      ["transcode","远程转码 Worker","远程转码开关、地址与状态",5,0.2],
-      ["health","存活检查","API 存活探针",1,0.1]],
-  g5:[["auth","个人信息与令牌","身份、头像昵称、API 令牌管理",11,0.4],
-      ["session","智能体会话","发起/继续对话、读取轨迹、压缩上下文",13,0.5],
-      ["channels","消息推送","微信 / Telegram / Discord 配对与推送",12,0.5],
-      ["llm","AI 模型供应商","接入模型、选模型、验证连通性",10,0.4],
-      ["webhook","事件 Webhook","播放、收藏等事件推送到外部端点",5,0.3],
-      ["ui","界面偏好","各页面布局、显示与样式设置",10,0.5],
-      ["appearance","首页背景与图库","背景图上传、切换与删除",5,0.3]]
+  g1:[["discover","发现电影/剧集","TMDB、豆瓣的热映、榜单、片单与资料",7,6.2,1.5],
+      ["search","统一搜索","搜影视条目、跨站搜种子、搜已入库内容",9,9.9,1.6],
+      ["subscriptions","订阅与追更","持续追踪新资源并自动下载入库",16,16.5,3.0],
+      ["rules","订阅过滤规则","分辨率、编码、字幕、体积等条件组",5,9.9,1.1]],
+  g2:[["site","PT 资源站点","站点接入、验证、启停与缓存统计",13,12.3,1.8],
+      ["dl","下载器与投递","qBittorrent / Transmission 接入与提交",12,20.4,2.1],
+      ["watch","监听导入","下载完成后自动识别、命名并转移入库",8,8.7,1.5],
+      ["extension","浏览器插件同步","站点 Cookie 同步令牌与支持站点",6,3.0,1.0]],
+  g3:[["library","本地媒体库","建库、扫描、入库、元数据与图片管理",54,60.1,9.8],
+      ["scrape","刮削与整理配置","命名模板、图片语言优先级、NFO 开关",4,7.7,1.5],
+      ["people","影人档案","按 TMDB 人物 ID 查资料与参演作品",1,0.6,0.6]],
+  g4:[["app","应用设置与维护","外部地址、重启、检查升级与回退",16,5.5,2.0],
+      ["jobs","后台作业","查询、等待、取消、重试与执行器健康",10,5.0,1.4],
+      ["notices","系统待处理事项","按严重程度排序的活跃问题",2,0.5,0.7],
+      ["net","网络与代理","代理、镜像与连通性测试",3,3.7,0.9],
+      ["transcode","远程转码 Worker","远程转码开关、地址与状态",3,2.0,0.7],
+      ["health","存活检查","API 存活探针",1,0.1,0.5]],
+  g5:[["auth","个人信息与令牌","身份、头像昵称、API 令牌管理",6,4.2,1.0],
+      ["session","智能体会话","发起/继续对话、读取轨迹、压缩上下文",6,3.8,1.2],
+      ["channels","消息推送","微信 / Telegram / Discord 配对与推送",12,5.2,1.8],
+      ["llm","AI 模型供应商","接入模型、选模型、验证连通性",10,14.5,1.7],
+      ["webhook","事件 Webhook","播放、收藏等事件推送到外部端点",5,2.5,1.0],
+      ["ui","界面偏好","各页面布局、显示与样式设置",2,5.2,0.7],
+      ["appearance","首页背景与图库","背景图上传、切换与删除",4,1.9,0.9]]
 };
 const DEFAULT_ON = new Set(["subscriptions","search","library","dl"]);
 const picked = new Set(DEFAULT_ON);
 
 for (const [gid, list] of Object.entries(SERVICES)) {
   const box = document.getElementById(gid);
-  for (const [id,name,desc,cmds,kb] of list) {
+  for (const [id,name,desc,cmds,ek,ck] of list) {
     const el = document.createElement("button");
     el.className = "svc" + (picked.has(id) ? " sel" : "");
     el.innerHTML = `<span class="box"></span><span><b>${name} <span class="mono faint">${id}</span></b>
-      <span class="d">${desc}</span><span class="n">${cmds} 条命令 · 描述约 ${kb} KB</span></span>`;
+      <span class="d">${desc}</span><span class="n">${cmds} 条命令 · 展开 ${ek} KB / 折叠 ${ck} KB</span></span>`;
     el.onclick = () => {
       picked.has(id) ? picked.delete(id) : picked.add(id);
       el.classList.toggle("sel", picked.has(id));
@@ -614,12 +614,13 @@ document.getElementById("expandToggle").onclick = () => {
 };
 
 function refresh(){
-  let cmds = 0, kb = 0;
+  let cmds = 0, expandedKb = 0, collapsedKb = 0;
   for (const list of Object.values(SERVICES))
-    for (const [id,,,c,k] of list) if (picked.has(id)) { cmds += c; kb += k; }
+    for (const [id,,,c,ek,ck] of list)
+      if (picked.has(id)) { cmds += c; expandedKb += ek; collapsedKb += ck; }
   const svc = picked.size;
   const tools = expand ? cmds : svc;
-  const size  = expand ? cmds * 0.35 : kb;
+  const size  = expand ? expandedKb : collapsedKb;
   const s1 = document.getElementById("sum1"), s2 = document.getElementById("sum2");
   if (!svc) {
     s1.textContent = "还没选服务";
@@ -638,7 +639,7 @@ function refresh(){
     hint.hidden = false;
     hint.innerHTML = `工具偏多（${tools} 个），模型选择准确率会下降。`
       + `建议改用<b>折叠模式</b>——同样这 ${svc} 个服务会变成 <b>${svc} 个工具</b>，`
-      + `上下文从约 ${size.toFixed(0)} KB 降到约 ${kb.toFixed(1)} KB。`;
+      + `上下文从约 ${expandedKb.toFixed(0)} KB 降到约 ${collapsedKb.toFixed(1)} KB。`;
   } else {
     hint.hidden = true;
   }

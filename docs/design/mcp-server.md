@@ -1,6 +1,8 @@
 # MCP Server 端点：把 movieclaw 的服务目录开放给外部 AI 客户端
 
-> 状态：**已评审定稿，待实现**（六条拍板见 §11；本文尚未落代码）。
+> 状态：**已实现**（P1 落地，六条拍板见 §11）。本文与代码同步：
+> `src/movieclaw_mcp/`（协议与调度）、`src/movieclaw_api/{settings,services,schemas,api/routes}/mcp*`
+> （管理面）、`apps/web/components/mcp-section.tsx`（设置分区）、`tests/mcp_server/`（守护）。
 > 配套样稿：`docs/design/mockups/mcp-server-demo.html`（管理页每个功能一屏）。
 > 相关设计：`docs/design/agent-cli-integration.md`（产品内 Agent 的 mclaw 工具）、
 > `docs/design/device-auth.md`（令牌签发与吊销的既有立场）、`docs/design/cli.md`。
@@ -178,8 +180,8 @@ Web 设置页「MCP 服务」 ──REST──> /api/v1/mcp/endpoints…（管�
 | 命名 | `<模块>_<命令>`，如 `subscriptions_update` | `<模块>`，如 `subscriptions` |
 | 参数 | 从 spec 生成 JSON Schema（类型化） | `command`（该域命令的枚举）+ `params` 对象 |
 | 选「订阅」后的工具数 | 16 | 1 |
-| 选 4 个服务（订阅/搜索/媒体库/下载器） | 97 | 4 |
-| 上下文占用（估算） | 30–40 KB | 1.9 KB |
+| 选 4 个服务（订阅/搜索/媒体库/下载器） | 91 | 4 |
+| 这 4 个服务的工具定义体积（实测） | 105 KB | 16.5 KB |
 | 危险操作注解 | **逐工具精确**（`readOnlyHint` 由 HTTP 方法推导，`destructiveHint` 由 `x-cli-dangerous` 推导） | 只能整域标注 |
 | 模型出错的形态 | 工具太多时选错/幻觉工具名 | 命令名有枚举兜底，但 `params` 是弱类型，可能少传字段 |
 
@@ -260,16 +262,27 @@ Web 设置页「MCP 服务」 ──REST──> /api/v1/mcp/endpoints…（管�
 两者最终都落到同一次请求：`PATCH /api/v1/subscriptions/42`，
 body `{"follow_future": false, "rule_set_id": 3}`。
 
-实测规模（本仓当前 spec）：CLI 可见操作 329 个，按域分布
-`library 57 / playback 35 / auth 20 / subscriptions 16 / app 16 / dl 15 / site 13 …`；
-折叠模式下每域的工具描述体积为 `library ≈ 3.3 KB`、`subscriptions ≈ 0.9 KB`，
-全量 24 个服务 ≈ 12 KB。管理页在选服务时**按当前模式实时算出工具数与体积**。
+实测规模（实现后从代码现算，`mcp.status` 接口就是这么算给管理页的）：
+进入工具面的操作 225 个、26 个服务域，按域分布
+`library 54 / subscriptions 16 / app 16 / dl 12 / jobs 10 / search 9 …`。
+体积（含完整 inputSchema）：
 
-**超过 30 个工具时给一条提示**（2026-09 定）：展开模式下工具数一旦超过 30，
-在汇总行给出「工具偏多，建议改用折叠模式」的黄色提示，并把折叠后的数字一并算给用户看
-（「折叠后是 4 个工具」）。这是**建议不是限制**——不拦创建、不禁用按钮，用户执意要就照建
-。阈值取 30 而不是 40：30 是业界观察到开始退化的下沿，提示要早于问题出现。
-折叠模式下不提示（它本来就只有几个工具）。
+| | 展开 | 折叠 |
+| --- | --- | --- |
+| library（54 条命令） | 60.1 KB | 9.8 KB |
+| subscriptions（16 条） | 16.5 KB | 3.0 KB |
+| 四服务组合 | 91 个工具 · 105 KB | 4 个工具 · 16.5 KB |
+| 全部 26 个服务 | 225 个工具 | 26 个工具 · 42 KB |
+
+**注意展开模式的体积比方案期估的（30–40 KB）大得多**——JSON Schema 把每个参数的
+类型、描述、嵌套模型都写全了，这正是它换来准确率的代价。管理页把这个数字直接摆出来，
+让用户自己权衡。
+
+**超过 30 个工具时给一条提示**：展开模式下工具数一旦超过 30，汇总行给出
+「工具偏多，建议改用折叠模式」的黄色提示，并把折叠后的数字一并算出来做对照
+（「同样这 4 个服务会变成 4 个工具，上下文从约 105 KB 降到约 16.5 KB」）。
+这是**建议不是限制**——不拦创建、不禁用按钮。阈值取 30 而不是 40：30 是业界观察到
+开始退化的下沿，提示要早于问题出现。折叠模式下不提示（它本来就只有几个工具）。
 
 ### 4.2 执行路径：直连本机 API（进程内 ASGI），不经 mclaw 子进程
 
@@ -345,20 +358,28 @@ SDK 负责：两代协议兼容（`server/discover` 与旧代 `initialize` 同�
 JSON-RPC 编解码、SSE、必填请求头校验、`transport_security` 的 Origin/Host 白名单。
 我们负责：端点路由、鉴权、工具面渲染、调度。
 
-**多端点怎么挂**（SDK 的 app 是挂在固定路径上的单个 Starlette 应用，而我们的端点
-是运行期增删的）：写一个约 60 行的 ASGI 调度器挂在 `/mcp`，按 `/mcp/<slug>` 取端点、
-先做鉴权、再把 `path` 改写掉转交给该端点的 SDK 应用；SDK 应用**按端点缓存**
-（键含端点配置版本，改配置即失效重建）。
+**多端点怎么挂**（实现结论，与方案期设想不同）：**不挂 SDK 的 Starlette 子应用**，
+而是直接用它底下的 `StreamableHTTPSessionManager`——我们自己的 ASGI 调度器挂在
+`/mcp`，解析 `/mcp/<slug>`、鉴权，然后：
 
-需要在实现时验证并可能返工的两点（文档没写死，属于已知风险）：
+```python
+manager = StreamableHTTPSessionManager(app=server, json_response=True, stateless=True, ...)
+async with manager.run():
+    await manager.handle_request(scope, receive, send)
+```
 
-1. **子应用 lifespan 不会自动跑**——被 `Mount` 的子应用自带的 lifespan 是死代码，
-   宿主 lifespan 必须显式进入 `session_manager.run()`；而 `session_manager` 又要在
-   `streamable_http_app()` 调用之后才存在。我们的端点是运行期增删的，所以得用
-   `AsyncExitStack` 按需进入、配置变更时退出。这是本方案最需要在实现时验证的一处。
-2. `ServerRequestContext` 能拿到的 HTTP 细节有限（文档只明确了 headers）。
-   我们的设计**不依赖它**——端点身份与鉴权都在进 SDK 之前的调度层完成，
-   这也符合仓内「默认拒绝、鉴权集中」的立场。
+一个请求现建一个 Server 与管理器。这么做是因为 SDK 明确规定
+`run()` 一个实例只能进一次，且它内部是一个 anyio 任务组——**任务组必须在创建它的
+那个任务里退出**。端点是运行期增删的，把管理器生命周期挂到应用 lifespan 上就要跨任务
+进出，那是纯粹的隐患（方案期把这列为头号风险，实现时用这个办法直接绕开了）。
+无状态模式下管理器本来就不持有跨请求状态，现建现用的开销是纯内存对象创建，
+与随后那次 API 调用相比可以忽略。
+
+副产品：不经 Starlette 子应用，也就不需要改写 `path`，路由这一段少一层可能出错的地方。
+
+> 实现时踩到的一个坑记在这里：新版 Starlette 的 `Mount` 不再把挂载前缀从
+> `scope["path"]` 里截掉，而是放进 `root_path`。只认其中一种写法，换个版本就会全线
+> 404，且没有任何报错。`_slug_of()` 对两种形态都成立。
 
 发版影响（CLAUDE.md 硬约束 2）：新增运行时依赖 → **必须 bump
 `docker/runtime-version`（13 → 14）并在合并后发布新镜像**，CI 守卫会拦漏 bump 的 PR。
@@ -568,7 +589,7 @@ class McpEndpoint(BaseModel):
 | --- | --- |
 | 端点 URL 被扫到 | 未带合法令牌一律 401；令牌 32 字节随机；slug 猜到也没用 |
 | 令牌泄漏 | 只存哈希、一次性回显、可单端点轮换/吊销；端点粒度限制了爆炸半径 |
-| 浏览器里的网页偷打本机端点 | SDK 的 `transport_security` Host/Origin 白名单（规范硬性要求）；**不在白名单一律 `421 Misdirected Request`，且在我们的代码之前就拦下**。注意默认白名单只有 localhost：部署到真实域名后必须把「外部访问地址」的 host 配进去，否则全部 421 |
+| 浏览器里的网页偷打本机端点 | **调度层自己校验 `Origin`**：无 Origin（原生客户端）放行，有 Origin 则必须匹配「外部访问地址 / 本机 / 当前 Host」，否则 `403`。刻意不用 SDK 那道 Host 白名单——它空名单时拒绝一切，自部署用户从局域网 IP 访问会撞 `421`；而浏览器发起的跨源请求一定带 Origin，攻击面正好被这一条盖住 |
 | 模型被诱导执行破坏性操作 | **v1 不做服务端拦截**（见 §4.7）：控制手段是建端点时不勾会删东西的服务、随时停用、随时吊销令牌；工具上的 `destructiveHint` 交给客户端提示 |
 | 客户端跑飞 | 每端点并发信号量 + 单次调用超时 + 令牌只有几分钟有效期 |
 | 提权 | 端点令牌进不了业务接口；业务侧只认现签的 `aud=mcp` 短时令牌，走的还是既有 `require_login` / `require_admin` |
@@ -580,9 +601,13 @@ class McpEndpoint(BaseModel):
 
 ## 9. 测试与守护
 
-- **协议冒烟（新增 `tests/mcp/`）**：用 **SDK 自带的客户端**连本仓挂载的端点，
-  跑通 `server/discover` → `tools/list` → `tools/call`，新旧两代各一遍。
+- **协议冒烟（`tests/mcp_server/`）**：直接发真实 JSON-RPC 请求跑通
+  `server/discover` → `tools/list` → `tools/call`，外加旧代 `initialize`。
   规范细节由 SDK 保证，我们只验证「接进来确实能用」以及升级 SDK 后没退化。
+
+  > 目录名叫 `mcp_server` 而不是 `mcp`：`tests/` 不是包，pytest 会把它塞进 sys.path，
+  > 叫 `mcp` 会把官方 SDK 那个包整个盖住，报错是让人摸不着头脑的
+  > 「No module named 'mcp.server'」。
 - **应答形态守护**：`tools/list` / `tools/call` 的响应 `Content-Type` 必须是
   `application/json`，不得出现 `text/event-stream`（防止哪天改配置把 SSE 打开了没人发现）。
 - **工具面守护**：端点选中的服务集合 ⇔ `tools/list` 的工具集合严格一致（两种模式各一组）；
@@ -601,8 +626,10 @@ class McpEndpoint(BaseModel):
 - **工具面构成守护**：上传/下载类、`x-cli-hidden`、会话递归类操作一律不出现在
   `tools/list`（样本从 spec 现取，新增同类操作自动纳入）；注解推导正确
   （`GET` → `readOnlyHint`，`x-cli-dangerous: destructive` → `destructiveHint`）。
-- **依赖守护**：`mcp` 版本上限锁死；`docker/runtime-version` 已 bump
+- **依赖守护**：`mcp` 版本上限锁死；`docker/runtime-version` 已 bump 13 → 14
   （CI 既有守卫会拦漏 bump）。
+- **CLI 命令面**：新增 `mcp` 域会让 Go 侧三个守护变红（命令树快照 ×2、域帮助覆盖），
+  已同步 `cli/testdata/*.txt` 与 `help_text.go` 的 `domainHelp`。
 - **鉴权守护**：无令牌/错令牌/已吊销/端点停用/总开关关 → 401/401/401/404/404。
 - **既有守护的登记**：`tests/api/test_auth.py` 匿名白名单加 `/mcp/{slug}`；
   `tests/api/test_mclaw_tool_wiring.py` 因 `mcp` 进 `_EXCLUDED_DOMAINS` 自动通过。
@@ -613,7 +640,7 @@ class McpEndpoint(BaseModel):
 
 | 期 | 内容 | 估量 |
 | --- | --- | --- |
-| **P1**（本次） | 依赖引入 + runtime-version bump · 设置域 · 管理面 REST · ASGI 调度器 + SDK 接线 · 工具面渲染（两种模式）· 调度执行（spec→请求、结果整形、截断）· 设置页分区 · 冒烟与守护测试 | 后端 ~1000 行、前端 ~480 行、测试 ~550 行 |
+| **P1**（已完成） | 依赖引入 + runtime-version bump · 设置域 · 管理面 REST · ASGI 调度器 + SDK 接线 · 工具面渲染（两种模式）· 调度执行（spec→请求、结果整形、截断）· 设置页分区 · 冒烟与守护测试 | 实际：后端 ~1100 行、前端 ~830 行、测试 ~380 行 |
 | **P2** | 调用日志页、端点级速率限制、工具描述的按域润色 | 中 |
 | **P3** | OAuth 2.1 + RFC 9728（打通 claude.ai 网页版自定义连接器） | 大 |
 
@@ -630,19 +657,19 @@ class McpEndpoint(BaseModel):
 本仓的 `sqlmodel<0.1` / `fastapi` / `pydantic-settings` 都得在这个版本下跑通——
 装完先跑一遍 `pytest -m "not integration"`，这是 P1 的第一个检查点。
 
-### 10.1 P1 落地顺序
+### 10.1 P1 落地顺序（已按此执行完毕）
 
 每步都有可验证的完成标志，前一步不绿不进下一步：
 
 | # | 做什么 | 完成标志 |
 | --- | --- | --- |
-| 1 | `pyproject` 加 `mcp>=2.1,<3.0`；`docker/runtime-version` 13 → 14 | `pytest -m "not integration"` 全绿（重点看 `pydantic>=2.12` 与 sqlmodel/fastapi） |
-| 2 | 设置域 `settings/mcp.py` + 在 `settings/__init__.py` 登记 | 建/读/改端点的单测过；令牌只落哈希 |
-| 3 | 工具面渲染：spec → `Tool[]`（两种模式、注解推导、构成过滤） | 工具名唯一性 + 工具面构成守护过 |
-| 4 | 调度执行：`operation_id` → 请求 → `CallToolResult`（含截断） | 参数映射守护 + 两模式等价守护 + 结果整形守护过 |
-| 5 | SDK 接线与 ASGI 调度器（含 lifespan 处理，§4.3 风险点） | SDK 客户端冒烟（新旧两代）+ 鉴权守护过 |
-| 6 | 管理面 REST，挂管理区；`mcp` 加进 `_EXCLUDED_DOMAINS` | 匿名/成员守护测试过；`mclaw mcp …` 命令自动可用 |
-| 7 | 设置页「MCP 服务」分区 | 起服务建一个端点，用 Claude Code 实际接上并跑通一次工具调用 |
+| 1 ✅ | `pyproject` 加 `mcp>=2.1,<3.0`；`docker/runtime-version` 13 → 14 | 全量回归与改动前基线逐条一致，无新增失败；实装版本 `mcp 2.1.1` / `pydantic 2.13.5` / `httpx 0.28` 与 `httpx2 2.12` 并存 |
+| 2 ✅ | 设置域 `settings/mcp.py` + 在 `settings/__init__.py` 登记 | 建/读/改端点的单测过；令牌只落哈希 |
+| 3 ✅ | 工具面渲染：spec → `Tool[]`（两种模式、注解推导、构成过滤） | 工具名唯一性 + 工具面构成守护过 |
+| 4 ✅ | 调度执行：`operation_id` → 请求 → `CallToolResult`（含截断） | 参数映射守护 + 两模式等价守护 + 结果整形守护过 |
+| 5 ✅ | SDK 接线与 ASGI 调度器（含 lifespan 处理，§4.3 风险点） | SDK 客户端冒烟（新旧两代）+ 鉴权守护过 |
+| 6 ✅ | 管理面 REST，挂管理区；`mcp` 加进 `_EXCLUDED_DOMAINS` | 匿名/成员守护测试过；`mclaw mcp …` 命令自动可用 |
+| 7 ✅ | 设置页「MCP 服务」分区 | 起服务建一个端点，用 Claude Code 实际接上并跑通一次工具调用 |
 
 新增文件（预计）：
 
