@@ -309,7 +309,15 @@ ffmpeg -v info -y -skip_frame nokey -ss <t> -copyts -i <file> -an -sn \
 **场景图**：新持久化 Job `library.chapter_images`（`register_job_handler`），
 输入 `{library_id, force}`，目标 = 库内在位文件中 `chapter_images IS NULL`
 （force 时全部），`dedupe_key` 按库，低优先级，进度分子分母=文件数，
-`raise_if_cancelled` 逐文件检查、可停可续（已写回的行不重做）。三处入口：
+`raise_if_cancelled` 逐文件检查、可停可续。
+
+**断点**（重启/应用内更新会把 Job 退回队列、处理器整体重跑一遍）：补缺模式
+下逐文件写回台账即是检查点，重取目标时 `chapter_images IS NULL` 自然排除已
+完成的行；**force 重抓每一行都要重做，台账不再是检查点**，因此把"上一轮最后
+一个处理完的文件"记进进度的 `details.cursor`，恢复时按同一份排序跳过它之前
+的行（节流窗口内的那一两个文件会重做，抓图幂等）。进度的 `current`/`total`
+一律是整轮作业的累计口径而不是本次执行的：重启后从 0 数到"剩下的文件数"，
+用户看到的就是又从头跑了一遍。
 
 1. 扫描结束后自动入队（库开关打开时）——覆盖新文件与存量回填；
 2. 库管理菜单「生成场景图」/「重新生成场景图」（force）；
@@ -431,6 +439,7 @@ Agent 工具无需改动：`spec.json` 重导出后 `library.items.get` 自动�
 | 原盘/strm/非在位文件不抓图 | `chapters.py` 资格判断 |
 | ≤1 个内嵌章节 → 合成；时长未知 → 空 | `effective_chapters` 单测 |
 | 章节 > 48 或平均间隔 < 1s → 只列表不抓图 | `chapters.py` 单测 |
+| 重启后不重抓已完成的文件，进度不归零 | `test_library_job_resumes_after_restart` |
 | `Chapters` 受 fields 门控、单条目全开 | `tests/jellyfin` |
 | 列表请求不加载章节 JSON 列 | `_list_load_columns` |
 | 详情接口不触发 ffprobe | `build_item_detail` |

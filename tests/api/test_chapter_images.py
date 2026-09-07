@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 import subprocess
 from pathlib import Path
@@ -14,6 +15,7 @@ from sqlmodel import select
 
 from movieclaw_api.api.routes.libraries import get_library_item
 from movieclaw_api.core.config import get_settings
+from movieclaw_api.services import jobs
 from movieclaw_api.services.auth import Principal
 from movieclaw_api.services.library import chapters as chapters_mod
 from movieclaw_db.engine import dispose_db, get_database, init_db
@@ -384,3 +386,105 @@ async def test_library_views_carry_chapter_job_progress(db, tmp_path):
     async with db.session() as session:
         detail = (await get_library(lib_id, principal=_ADMIN, session=session)).data
         assert detail.chapter_job is None
+
+
+async def _seed_files(db, lib_id: int, item_id: int, folder: Path, count: int) -> list[int]:
+    """给同一个库再挂 count 个在位文件，返回 id。"""
+    ids: list[int] = []
+    async with db.session() as session:
+        for i in range(count):
+            row = LibraryFile(
+                library_id=lib_id,
+                media_item_id=item_id,
+                file_path=str(folder / f"ep{i}.mkv"),
+                container="mkv",
+                duration_seconds=600,
+                chapters=[],
+                source=FileSource.SCANNED,
+            )
+            session.add(row)
+            await session.flush()
+            ids.append(row.id)
+        await session.commit()
+    return ids
+
+
+async def _running_job_context(db, lib_id: int, *, force: bool) -> tuple[str, jobs.JobContext]:
+    """建一个已被领取（running + 租约）的章节作业，返回 job_id 与其 JobContext。"""
+    from datetime import timedelta
+
+    from movieclaw_db.models import utcnow
+    from movieclaw_db.models.job import Job, JobStatus
+
+    async with db.session() as session:
+        created = await chapters_mod.enqueue_library_chapter_images_job(
+            session, lib_id, "家庭录像", force=force
+        )
+        job = await session.get(Job, created.job.id)
+        job.status = JobStatus.RUNNING
+        job.lease_owner = "lease-test"
+        job.lease_expires_at = utcnow() + timedelta(minutes=5)
+        await session.commit()
+    return created.job.id, jobs.JobContext(
+        created.job.id, lease_token="lease-test", lease_lost=asyncio.Event()
+    )
+
+
+@pytest.mark.parametrize("force", [False, True])
+async def test_library_job_resumes_after_restart(db, tmp_path, monkeypatch, force):
+    """重启（应用内更新/重启把 Job 退回队列重跑处理器）后不重抓已完成的文件。
+
+    补缺靠台账、force 重抓靠进度里的游标；两种模式的进度都从断点接着数，
+    而不是回到 0 再数一遍"剩下的文件"——曾经的问题：force 重抓在重启后从头
+    再跑一遍整库，补缺虽然跳过了已完成的行，但进度归零看着像重跑。
+    """
+    from movieclaw_db.models.job import Job
+
+    monkeypatch.setattr(jobs.JobContext, "progress_due", lambda self, **_: True)
+    folder = tmp_path / "media"
+    folder.mkdir()
+    video = folder / "a.mkv"
+    video.write_bytes(b"x")
+    # 已有图的第一行：force 时它也要重抓，补缺时它不该出现在目标里
+    lib_id, item_id, first_id = await _seed(db, video, chapters=[], chapter_images=[])
+    rest = await _seed_files(db, lib_id, item_id, folder, 4)
+    everything = {first_id, *rest}
+
+    calls: list[int] = []
+    stop_after = 2  # 抓完第二个文件就"停机"
+
+    async def fake_refresh(session, row, *, force=False):
+        if not force and row.chapter_images is not None:
+            return False
+        calls.append(row.id)
+        if len(calls) > stop_after:
+            raise asyncio.CancelledError("模拟重启")  # 停机会直接取消执行协程
+        row.chapter_images = [{"start_ms": 0, "frame_ms": 0, "image": f"x/{row.id}.jpg"}]
+        session.add(row)
+        await session.commit()
+        return True
+
+    monkeypatch.setattr(chapters_mod, "refresh_file_chapter_images", fake_refresh)
+    job_id, context = await _running_job_context(db, lib_id, force=force)
+
+    with pytest.raises(asyncio.CancelledError):
+        await chapters_mod._run_chapter_images_job(context, {"library_id": lib_id, "force": force})
+    first_round = list(calls)
+    assert len(first_round) == stop_after + 1  # 最后一个是被打断的那个
+
+    # 重启：同一个 Job 被重新领取，处理器整体再跑一遍
+    interrupted = first_round.pop()  # 被打断的文件没写回台账，重启后要重来
+    calls.clear()
+    stop_after = 99
+    result = await chapters_mod._run_chapter_images_job(
+        context, {"library_id": lib_id, "force": force}
+    )
+
+    assert not set(first_round) & set(calls), "重启后不该重抓上一轮已完成的文件"
+    assert interrupted in calls  # 只有被打断的那个重来
+    assert set(first_round) | set(calls) == (everything if force else everything - {first_id})
+    async with db.session() as session:
+        job = await session.get(Job, job_id)
+    total = len(everything) if force else len(everything) - 1
+    assert (job.progress["current"], job.progress["total"]) == (total, total)
+    assert result["processed"] == total  # 累计口径：不是"重启后这一轮跑了几个"

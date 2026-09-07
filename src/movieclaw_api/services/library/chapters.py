@@ -553,7 +553,21 @@ async def _job_targets(session: AsyncSession, library_id: int, *, force: bool) -
 async def _run_chapter_images_job(
     context: jobs.JobContext, input_data: dict[str, Any]
 ) -> dict[str, Any]:
-    """整库抓图处理器：逐文件写回台账即是检查点，重启后自然跳过已完成的行。"""
+    """整库抓图处理器：可停可续，重启后不重抓已经抓好的文件。
+
+    应用内更新与重启会把 Job 退回队列、再把这个处理器整体重跑一遍，所以
+    两种断点都要有：
+
+    - **补缺**（``force=False``）：逐文件写回台账即是检查点，重新取目标时
+      ``chapter_images IS NULL`` 自然把已完成的行排除在外；
+    - **重抓**（``force=True``）：每一行都要重做，台账不再是检查点，因此把
+      "上一轮最后一个处理完的文件"记进进度的 ``details.cursor``，恢复时按
+      同一份排序跳过它之前的行。进度写入有节流（1 秒），所以最多重做节流
+      窗口里的那一两个文件——重抓一次是幂等的，代价只是几秒。
+
+    进度也从断点接着走（``current``/``total`` 都是整轮作业的累计口径）：
+    重启后要是从 0 重新数到"剩下的文件数"，用户看到的就是又从头跑了一遍。
+    """
     library_id = int(input_data["library_id"])
     force = bool(input_data.get("force", False))
     db = get_database()
@@ -564,20 +578,38 @@ async def _run_chapter_images_job(
         if not library.extract_chapter_images:
             return {"message": f"「{library.name}」已关闭章节生成，本次未生成", "processed": 0}
         targets = await _job_targets(session, library_id, force=force)
-    total = len(targets)
-    processed = failed = 0
+
+    persisted = await context.current_progress()
+    persisted_details = persisted.get("details")
+    persisted_details = persisted_details if isinstance(persisted_details, dict) else {}
+    processed = max(int(persisted.get("current") or 0), 0)
+    failed = max(int(persisted_details.get("failed") or 0), 0)
+    if force:
+        # 游标那一行已经不在目标里（被删除/移走）时只能从头重抓，累计数一并
+        # 归零，免得分母虚高
+        cursor = persisted_details.get("cursor")
+        position = targets.index(cursor) + 1 if cursor in targets else 0
+        if position == 0:
+            processed = failed = 0
+        targets = targets[position:]
+    if processed:
+        logger.info(
+            "媒体库 #%s 的章节生成从断点继续：已完成 %s 个文件，还剩 %s 个",
+            library_id,
+            processed,
+            len(targets),
+        )
+    total = processed + len(targets)
     for file_id in targets:
         await context.raise_if_cancelled()
         async with db.session() as session:
             row = await session.get(LibraryFile, file_id)
-            if row is None:
-                processed += 1
-                continue
-            try:
-                await refresh_file_chapter_images(session, row, force=force)
-            except Exception:  # noqa: BLE001 -- 单个文件失败不打断整库
-                failed += 1
-                logger.exception("文件 #%s 章节场景图生成失败", file_id)
+            if row is not None:
+                try:
+                    await refresh_file_chapter_images(session, row, force=force)
+                except Exception:  # noqa: BLE001 -- 单个文件失败不打断整库
+                    failed += 1
+                    logger.exception("文件 #%s 章节场景图生成失败", file_id)
         processed += 1
         if processed == total or context.progress_due():
             await context.update_progress(
@@ -587,7 +619,7 @@ async def _run_chapter_images_job(
                 current=processed,
                 total=total,
                 percent=round(processed * 100 / total, 1) if total else 100.0,
-                details={"failed": failed},
+                details={"failed": failed, "cursor": file_id},
             )
     message = f"章节生成完成：处理 {processed} 个文件"
     if failed:
