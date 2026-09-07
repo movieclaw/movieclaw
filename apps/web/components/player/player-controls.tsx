@@ -430,10 +430,23 @@ export function PlayerControls(props: PlayerControlsProps) {
               if (dragging !== null) onSeek(dragging);
               setDragging(null);
             }}
+            // 手势被系统收走时浏览器**只发 pointercancel、不再发 pointerup**：
+            // 进度条贴着屏幕最底边，正压在 iOS 的 Home 指示条上滑区里，拖到
+            // 边上一带就会被系统当成返回桌面的起手式；通知中心下拉、第二根
+            // 手指落下同理。不接这条的话 dragging 会永远停在最后一个拖动值
+            // 上——进度点和时间从此钉死在那儿不再跟画面走，而画面照常播，
+            // 中央的退进十秒/快捷键还能把画面跳走却带不动进度条，直到下一次
+            // 完整拖拽把它清掉才「自己好了」。
+            // 取消的手势**不提交** seek：用户没松手确认过这个位置，退回
+            // positionMs 才是真值。
+            onPointerCancel={() => setDragging(null)}
             onKeyUp={() => {
               if (dragging !== null) onSeek(dragging);
               setDragging(null);
             }}
+            // 键盘拖动（方向键改 range 的值走 onChange）对称的一条：焦点离开
+            // 时那次键盘调整已经结束，没等到 keyup 就不能让它继续遮着 positionMs
+            onBlur={() => setDragging(null)}
             // 触屏把命中带加高到 44px（Apple HIG 的最小触控目标）：视觉上还是
             // 那条细线，但手指按在线的上下 20px 内都算按中了——竖屏上「滑不准、
             // 按不中」的直接解法。桌面维持 20px，不跟鼠标抢悬停区。
