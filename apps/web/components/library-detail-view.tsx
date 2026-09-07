@@ -40,6 +40,7 @@ import {
   VideoGalleryLightbox,
   VideoGalleryWall,
   flattenGallery,
+  useVideoGalleryGrouped,
   useVideoGalleryMode,
 } from "@/components/video-gallery";
 import {
@@ -585,6 +586,8 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   // 海报 / 剧照 / 章节图瀑布流，点开灯箱能直接播放或进详情。偏好记在浏览器里；
   // 图片库本身就是相册墙，这个开关对它没有意义
   const [galleryPreferred, setGalleryMode] = useVideoGalleryMode();
+  // 按作品分段，还是整库的图混成一条瀑布流（⋯ 菜单里切换）
+  const [galleryGrouped, setGalleryGrouped] = useVideoGalleryGrouped();
   const gallery = galleryPreferred && Boolean(library?.capabilities.playable);
   const [galleryGroups, setGalleryGroups] = useState<LibraryGalleryGroup[]>([]);
   const [galleryHasMore, setGalleryHasMore] = useState(false);
@@ -796,6 +799,8 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
       canManage={canManageLibraries}
       density={photoWall || gallery ? photoDensity : undefined}
       onDensityChange={photoWall || gallery ? setPhotoDensity : undefined}
+      grouped={gallery ? galleryGrouped : undefined}
+      onGroupedChange={gallery ? setGalleryGrouped : undefined}
       scanning={Boolean(library.scanning)}
       scanPhase={library.scan_progress?.phase ?? null}
       scanPercent={
@@ -1135,6 +1140,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
                   <VideoGalleryWall
                     groups={galleryGroups}
                     density={photoDensity}
+                    grouped={galleryGrouped}
                     onOpen={setLightboxIndex}
                     libraryId={libraryId}
                   />
@@ -1345,6 +1351,9 @@ interface LibraryActionsMenuProps {
   /** 图片库：相册墙的密度（个人偏好，与管理权无关）；不传不渲染这一组 */
   density?: PhotoWallDensity;
   onDensityChange?: (next: PhotoWallDensity) => void;
+  /** 图床浏览模式：是否按作品分段；不传不渲染这一项（海报墙与图片库都没有分组一说） */
+  grouped?: boolean;
+  onGroupedChange?: (next: boolean) => void;
 }
 
 function LibraryActionsMenu({
@@ -1368,6 +1377,8 @@ function LibraryActionsMenu({
   onEdit,
   density,
   onDensityChange,
+  grouped,
+  onGroupedChange,
 }: LibraryActionsMenuProps) {
   // 与站点配置一致用 Radix DropdownMenu：Portal 到 body + 碰撞检测，
   // 不会被头部容器裁切；开合/外部点击/键盘导航全交给 Radix。
@@ -1457,12 +1468,28 @@ function LibraryActionsMenu({
           </DropdownMenu.Item>
           </>
           )}
-          {/* 图片库的墙密度：收在菜单里不占墙上的位置，三档单选，选完即生效并记住 */}
+          {/* 看图的两个偏好收在菜单里，不占墙上的位置，选完即生效并记住。
+              两项共用上面这一条分隔线，别各挂一条挤成两道 */}
+          {canManage && (grouped !== undefined || density) && (
+            <DropdownMenu.Separator className="my-1 h-px bg-white/[0.07]" />
+          )}
+          {/* 图床浏览：关掉分组，整库的图就混成一条瀑布流 */}
+          {grouped !== undefined && onGroupedChange && (
+            <DropdownMenu.CheckboxItem
+              checked={grouped}
+              onCheckedChange={onGroupedChange}
+              className={`${itemClass} flex items-center justify-between`}
+            >
+              按作品分组
+              <DropdownMenu.ItemIndicator>
+                <CheckIcon className="size-3.5 text-[var(--accent)]" />
+              </DropdownMenu.ItemIndicator>
+            </DropdownMenu.CheckboxItem>
+          )}
           {density && onDensityChange && (
             <>
-              {canManage && <DropdownMenu.Separator className="my-1 h-px bg-white/[0.07]" />}
               <DropdownMenu.Label className="px-3 pb-1 pt-1.5 text-caption text-[var(--text-faint)]">
-                相册墙密度
+                瀑布流密度
               </DropdownMenu.Label>
               <DropdownMenu.RadioGroup
                 value={density}

@@ -46,9 +46,12 @@ export interface DensitySpec {
   variant: ImageVariant | undefined;
 }
 export const DENSITY: Record<PhotoWallDensity, DensitySpec> = {
-  compact: { column: 150, minColumns: 3, gap: 6, variant: "photo-tile" },
-  standard: { column: 230, minColumns: 2, gap: 12, variant: "photo-tile" },
-  loose: { column: 340, minColumns: 1, gap: 18, variant: undefined },
+  // 间距是「一面墙」与「一堆卡片」的分界：留白一宽，视线就被格线切碎，
+  // 沉浸感没了。三档各自砍掉约一半（用户反馈 2026-09-07），仍保持
+  // 紧凑 < 标准 < 宽松的梯度
+  compact: { column: 150, minColumns: 3, gap: 3, variant: "photo-tile" },
+  standard: { column: 230, minColumns: 2, gap: 6, variant: "photo-tile" },
+  loose: { column: 340, minColumns: 1, gap: 10, variant: undefined },
 };
 const GAP = 12;
 const MIN_ASPECT = 0.5;

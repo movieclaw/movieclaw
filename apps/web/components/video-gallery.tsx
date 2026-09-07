@@ -6,7 +6,7 @@ import type { Route } from "next";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
-import { InfoIcon, PlayIcon } from "@/components/icons";
+import { OpenIcon, PlayIcon } from "@/components/icons";
 import {
   DENSITY,
   layoutMasonry,
@@ -24,7 +24,9 @@ import { playHref, rememberPlayerReturnPath } from "@/lib/player/play-links";
  * 影视库 / 其他库的「图床浏览模式」：把每部作品的海报、剧照、分集剧照与
  * 章节场景图铺成一面瀑布流墙，样式与交互照搬图片库的相册墙与灯箱
  * （photo-wall / zoom-lightbox），只有两处不同：
- *   - 分组按**作品**而不是按月：一部作品一段标题 + 一面墙，标题可点进详情；
+ *   - 分组按**作品**而不是按月：一部作品一段标题 + 一面墙，标题可点进详情。
+ *     分组可以在 ⋯ 菜单里关掉——关掉之后整库的图混成一条瀑布流，谁也不分段，
+ *     纯看图时最沉浸（用户决策 2026-09-07）；
  *   - 灯箱顶栏右侧不是「下载 / 拍摄信息」，而是「播放 / 详情」：章节场景图的
  *     播放就是从那一帧起播（服务端给了 t_seconds），分集剧照带季集号进详情页
  *     直接落到那一集。
@@ -34,26 +36,45 @@ import { playHref, rememberPlayerReturnPath } from "@/lib/player/play-links";
  */
 
 const MODE_STORAGE_KEY = "movieclaw.library.gallery-mode";
+const GROUPED_STORAGE_KEY = "movieclaw.library.gallery-grouped";
 
-/** 读写「图床浏览模式」偏好：浏览器内的便利设置，进详情再退回来还在图廊 */
-export function useVideoGalleryMode(): [boolean, (next: boolean) => void] {
-  const [enabled, setEnabled] = useState(false);
+/**
+ * 记在浏览器里的开关偏好：只是浏览便利设置（不是账号数据），读不到就用默认值。
+ * 首帧一律先给默认值、挂载后再读 storage——服务端渲染没有 localStorage，
+ * 直接在 useState 初始值里读会导致首屏与水合后不一致。
+ */
+function useStoredFlag(key: string, fallback: boolean): [boolean, (next: boolean) => void] {
+  const [value, setValue] = useState(fallback);
   useEffect(() => {
     try {
-      setEnabled(window.localStorage.getItem(MODE_STORAGE_KEY) === "1");
+      const stored = window.localStorage.getItem(key);
+      if (stored !== null) setValue(stored === "1");
     } catch {
-      /* 隐私模式等拿不到 storage：保持海报墙 */
+      /* 隐私模式等拿不到 storage：保持默认值 */
     }
-  }, []);
-  const update = useCallback((next: boolean) => {
-    setEnabled(next);
-    try {
-      window.localStorage.setItem(MODE_STORAGE_KEY, next ? "1" : "0");
-    } catch {
-      /* 同上 */
-    }
-  }, []);
-  return [enabled, update];
+  }, [key]);
+  const update = useCallback(
+    (next: boolean) => {
+      setValue(next);
+      try {
+        window.localStorage.setItem(key, next ? "1" : "0");
+      } catch {
+        /* 同上 */
+      }
+    },
+    [key],
+  );
+  return [value, update];
+}
+
+/** 读写「图床浏览模式」偏好：进详情再退回来还在图廊 */
+export function useVideoGalleryMode(): [boolean, (next: boolean) => void] {
+  return useStoredFlag(MODE_STORAGE_KEY, false);
+}
+
+/** 读写「按作品分组」偏好：默认分组，关掉就是整库一条瀑布流 */
+export function useVideoGalleryGrouped(): [boolean, (next: boolean) => void] {
+  return useStoredFlag(GROUPED_STORAGE_KEY, true);
 }
 
 /** 铺平后的一张图：知道自己属于哪部作品，播放 / 详情按钮据此拼地址 */
@@ -84,17 +105,22 @@ function detailHref(libraryId: number, entry: GalleryEntry): Route {
 export function VideoGalleryWall({
   groups,
   density,
+  grouped,
   onOpen,
   libraryId,
 }: {
   /** 已加载的作品分组（服务端标题序） */
   groups: LibraryGalleryGroup[];
   density: PhotoWallDensity;
+  /** 按作品分段；false = 整库的图混成一条瀑布流，没有段标题 */
+  grouped: boolean;
   /** 点击某张：传的是它在铺平列表（flattenGallery）里的下标，灯箱按同一列表翻页 */
   onOpen: (index: number) => void;
   libraryId: number;
 }) {
-  // 每组在铺平列表里的起始下标：灯箱按整份列表翻页，瓦片点击要给全局下标
+  // 铺平的整份列表：不分组时直接排它；分组时用来算每段的起始下标
+  // （灯箱按整份列表翻页，瓦片点击要给全局下标）
+  const entries = useMemo(() => flattenGallery(groups), [groups]);
   const starts = useMemo(() => {
     let acc = 0;
     return groups.map((group) => {
@@ -124,20 +150,67 @@ export function VideoGalleryWall({
   return (
     <div ref={containerRef} className="min-w-0">
       {width > 0 &&
-        groups.map((group, i) => (
-          <GalleryGroupSection
-            key={group.media_item_id}
-            group={group}
-            start={starts[i]}
-            width={width}
-            spec={spec}
-            onOpen={onOpen}
-            libraryId={libraryId}
-          />
+        (grouped ? (
+          groups.map((group, i) => (
+            <GalleryGroupSection
+              key={group.media_item_id}
+              group={group}
+              start={starts[i]}
+              width={width}
+              spec={spec}
+              onOpen={onOpen}
+              libraryId={libraryId}
+            />
+          ))
+        ) : (
+          <GalleryTiles entries={entries} start={0} width={width} spec={spec} onOpen={onOpen} />
         ))}
     </div>
   );
 }
+
+/**
+ * 一面瀑布流：分组模式下是一部作品的图，不分组时是整库的图。
+ *
+ * ``start`` 是本面墙第一张在铺平列表里的下标——瓦片点击要给灯箱全局下标。
+ */
+const GalleryTiles = memo(function GalleryTiles({
+  entries,
+  start,
+  width,
+  spec,
+  onOpen,
+}: {
+  entries: GalleryEntry[];
+  start: number;
+  width: number;
+  spec: DensitySpec;
+  onOpen: (index: number) => void;
+}) {
+  const layout = useMemo(() => {
+    const aspects = entries.map((entry) => entry.image.aspect);
+    const masonry = layoutMasonry(aspects, width, spec.column, spec.gap, spec.minColumns);
+    // 图少于列数：瀑布流会退化成孤柱，改一行等高（同相册墙的稀疏月份）
+    return aspects.length < masonry.columns
+      ? layoutSparseRow(aspects, width, spec.column, spec.gap)
+      : masonry;
+  }, [entries, width, spec]);
+  return (
+    <div className="relative" style={{ height: layout.height }}>
+      {entries.map(({ group, image }, i) => (
+        // key 带上条目 id：不分组时整库的图排在一面墙上，光靠 url 不保证唯一
+        <GalleryTile
+          key={`${group.media_item_id}:${image.kind}:${image.url}`}
+          group={group}
+          image={image}
+          placement={layout.placements[i]}
+          spec={spec}
+          onOpen={() => onOpen(start + i)}
+        />
+      ))}
+    </div>
+  );
+});
 
 const GalleryGroupSection = memo(function GalleryGroupSection({
   group,
@@ -155,14 +228,10 @@ const GalleryGroupSection = memo(function GalleryGroupSection({
   onOpen: (index: number) => void;
   libraryId: number;
 }) {
-  const layout = useMemo(() => {
-    const aspects = group.images.map((image) => image.aspect);
-    const masonry = layoutMasonry(aspects, width, spec.column, spec.gap, spec.minColumns);
-    // 图少于列数：瀑布流会退化成孤柱，改一行等高（同相册墙的稀疏月份）
-    return aspects.length < masonry.columns
-      ? layoutSparseRow(aspects, width, spec.column, spec.gap)
-      : masonry;
-  }, [group.images, width, spec]);
+  const entries = useMemo(
+    () => group.images.map((image) => ({ group, image })),
+    [group],
+  );
   return (
     <section className="mb-8 last:mb-0">
       <div className="mb-3 flex items-baseline gap-2.5">
@@ -176,18 +245,7 @@ const GalleryGroupSection = memo(function GalleryGroupSection({
           {group.images.length} 张
         </span>
       </div>
-      <div className="relative" style={{ height: layout.height }}>
-        {group.images.map((image, i) => (
-          <GalleryTile
-            key={`${image.kind}:${image.url}`}
-            group={group}
-            image={image}
-            placement={layout.placements[i]}
-            spec={spec}
-            onOpen={() => onOpen(start + i)}
-          />
-        ))}
-      </div>
+      <GalleryTiles entries={entries} start={start} width={width} spec={spec} onOpen={onOpen} />
     </section>
   );
 });
@@ -224,11 +282,10 @@ const GalleryTile = memo(function GalleryTile({
         alt={`${group.title} · ${image.label}`}
         className="absolute inset-0 size-full object-cover transition-transform duration-500 ease-out group-hover/tile:scale-[1.04] motion-reduce:transition-none"
       />
-      {/* 角标：这张是海报 / 剧照 / 第几集 / 哪个章节；章节图另点亮「播放」提示 */}
-      <span className="absolute left-2 top-2 max-w-[calc(100%-1rem)] truncate rounded-md bg-black/70 px-1.5 py-0.5 text-micro font-bold tracking-wide text-white/85">
-        {image.label}
-      </span>
-      {/* 悬停信息层：作品名 + 图的说明。不用 backdrop-blur（几百张瓦片叠加会拖慢滚动） */}
+      {/* 不给常驻角标（用户决策 2026-09-07）：几百个「海报 / 剧照 / 第 3 集」浮在
+          墙上，视线全被标签牵走，瀑布流就不是一面图墙了。是哪一类图移到下面的
+          悬停层里说——真要分辨时鼠标一停就有，平时画面干净。
+          悬停信息层：作品名 + 图的说明。不用 backdrop-blur（几百张瓦片叠加会拖慢滚动） */}
       <span className="pointer-events-none absolute inset-0 flex flex-col justify-end bg-gradient-to-t from-[rgba(6,8,14,0.85)] via-[rgba(6,8,14,0.25)] to-transparent p-2.5 opacity-0 transition-opacity duration-200 group-hover/tile:opacity-100 group-focus-visible/tile:opacity-100">
         <span className="truncate text-caption font-semibold text-white">{groupTitle(group)}</span>
         <span className="truncate text-micro text-white/70">
@@ -325,11 +382,11 @@ export function VideoGalleryLightbox({
           </button>
           <Link
             href={detailHref(libraryId, entry)}
-            title="查看详情"
-            aria-label="查看详情"
+            title="前往影片详情"
+            aria-label="前往影片详情"
             className={buttonClass}
           >
-            <InfoIcon className="size-[18px]" />
+            <OpenIcon className="size-[18px]" />
           </Link>
         </>
       }
