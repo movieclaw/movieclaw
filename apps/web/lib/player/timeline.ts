@@ -25,6 +25,29 @@ export function toSessionSeconds(fileMs: number, startMs: number): number {
   return (fileMs - startMs) / 1000;
 }
 
+/**
+ * 跳转落点离片尾至少留出的余量（毫秒）。
+ *
+ * 一秒足够：留着的这一秒会照常播完并发 `ended`，与「跳到结尾」在观感上没有
+ * 区别；留得更多反而是把片尾生生截掉一段。
+ */
+export const SEEK_TAIL_GUARD_MS = 1000;
+
+/**
+ * 把跳转目标夹进「真的落得下去」的区间。
+ *
+ * 片尾连按快进键、或者把进度条一路拖到最右端，都会给出一个正好落在文件末尾
+ * （甚至之外）的位置。`native` 那条浏览器自己会收住，**换会话那条不会**：它
+ * 会拿这个位置去开一个 `-ss` 落在末尾的会话，ffmpeg 一帧都转不出来，用户对着
+ * 转圈一直等到分片超时。片长未知（服务端算不出、也没有元数据）时不夹——那时
+ * 进度条本来就是禁用的，只剩快捷键，越界交给浏览器收住。
+ */
+export function clampSeekTarget(targetFileMs: number, durationMs: number | null): number {
+  const floored = Math.max(0, targetFileMs);
+  if (!durationMs || durationMs <= 0) return floored;
+  return Math.min(floored, Math.max(0, durationMs - SEEK_TAIL_GUARD_MS));
+}
+
 export type SeekPlan =
   | { kind: "native"; seconds: number }
   | { kind: "restart"; startMs: number };

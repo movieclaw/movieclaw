@@ -83,7 +83,13 @@ import {
   planSubtitleTracks,
   saveSubtitleStyle,
 } from "@/lib/player/subtitles";
-import { isInEndCredits, planSeek, toFileMs, toSessionSeconds } from "@/lib/player/timeline";
+import {
+  clampSeekTarget,
+  isInEndCredits,
+  planSeek,
+  toFileMs,
+  toSessionSeconds,
+} from "@/lib/player/timeline";
 
 /**
  * 网页播放器（docs/design/web-player.md §6）。
@@ -922,14 +928,18 @@ export function VideoPlayer(props: VideoPlayerProps) {
             : null,
         );
     };
+    // 只认**播放头所在**那段连续缓冲，不能取 buffered 的最后一段：往回拖
+    // 之后旧的前向缓冲还挂在时间轴后面（back buffer 只回收播放头之后 30
+    // 秒以前的部分，拖回去之后那一段落在播放头**前方**，不会被回收），
+    // 取最后一段会让浅色底一路铺到一小时开外，而那里根本没有连着的数据。
+    const onBuffered = () => {
+      if (!isCurrentSession()) return;
+      setBufferedEndMs(toFileMs(video.currentTime + bufferedAhead(video), startMsRef.current));
+    };
     const onTimeUpdate = () => {
       if (!isCurrentSession()) return;
       setPositionMs(toFileMs(video.currentTime, startMsRef.current));
-      // 只认**播放头所在**那段连续缓冲，不能取 buffered 的最后一段：往回拖
-      // 之后旧的前向缓冲还挂在时间轴后面（back buffer 只回收播放头之后 30
-      // 秒以前的部分，拖回去之后那一段落在播放头**前方**，不会被回收），
-      // 取最后一段会让浅色底一路铺到一小时开外，而那里根本没有连着的数据。
-      setBufferedEndMs(toFileMs(video.currentTime + bufferedAhead(video), startMsRef.current));
+      onBuffered();
     };
     // 「现在应该能播了」的两个时机：挂流那一次可能太早，这两次是补刀
     const onReady = () => {
@@ -944,6 +954,10 @@ export function VideoPlayer(props: VideoPlayerProps) {
     video.addEventListener("ended", onEnded);
     video.addEventListener("durationchange", onDurationChange);
     video.addEventListener("timeupdate", onTimeUpdate);
+    // 缓冲条不能只跟 timeupdate：暂停时它根本不发，而 hls.js 照样在往前缓，
+    // 浅色底就一直停在按下暂停的那一刻，看不出还要等多久才能接着放。
+    // progress 是「又收到数据了」的通知，暂停期间照发。
+    video.addEventListener("progress", onBuffered);
     video.addEventListener("loadedmetadata", onReady);
     video.addEventListener("canplay", onReady);
     return () => {
@@ -955,6 +969,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
       video.removeEventListener("ended", onEnded);
       video.removeEventListener("durationchange", onDurationChange);
       video.removeEventListener("timeupdate", onTimeUpdate);
+      video.removeEventListener("progress", onBuffered);
       video.removeEventListener("loadedmetadata", onReady);
       video.removeEventListener("canplay", onReady);
     };
@@ -1460,8 +1475,11 @@ export function VideoPlayer(props: VideoPlayerProps) {
    * 换会话，干等 ffmpeg 追上来只会让用户看着永远转不完的圈。
    */
   const seekToFileMs = useCallback(
-    (fileMs: number) => {
+    (rawFileMs: number) => {
       if (!video) return;
+      // 先夹进片长之内：越过片尾的落点会让换会话那条路开出一个转不出任何
+      // 东西的会话（理由见 timeline.ts 的 clampSeekTarget）。
+      const fileMs = clampSeekTarget(rawFileMs, durationMs);
       // 会话正在重开的空档（换音轨 / 换画质 / 心跳自愈 / 上一次 seek 换流）：
       // video 上已经没有流了，native seek 打在空元素上什么也不会发生，而在途
       // 的新会话仍会落回 pendingFileMs 那个**旧**位置——用户看到进度条跳过去
@@ -1506,11 +1524,12 @@ export function VideoPlayer(props: VideoPlayerProps) {
       setPositionMs(plan.startMs);
       dispatch({ type: "restart", startMs: plan.startMs });
     },
-    [video, sessionId, mode, state.session, state.phase, state.startMs],
+    [video, sessionId, mode, durationMs, state.session, state.phase, state.startMs],
   );
 
+  // 上下界都由 seekToFileMs 里的 clampSeekTarget 收住，这里不再各夹一次
   const seekBy = useCallback(
-    (seconds: number) => seekToFileMs(Math.max(0, positionRef.current + seconds * 1000)),
+    (seconds: number) => seekToFileMs(positionRef.current + seconds * 1000),
     [seekToFileMs],
   );
 
