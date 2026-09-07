@@ -379,8 +379,10 @@ export function ZoomLightbox({
   if (!slide) return null;
 
   const gesturing = drag.current !== null || pinch.current !== null;
+  // 「正在加载原图」只在真有原图可等时显示：图廊这类只有一级图的，放大后
+  // 没有第三级，不能挂着一条永远消不掉的提示
   const loadingNote =
-    !broken && screenUrl && (!fullReady || (wantOriginal && !originalReady))
+    !broken && screenUrl && (!fullReady || (fullUrl && wantOriginal && !originalReady))
       ? fullReady
         ? "正在加载原图"
         : "正在加载"
