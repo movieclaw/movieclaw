@@ -49,6 +49,40 @@ export function Badge({
   );
 }
 
+/**
+ * 服务标签组：把「这个端点开放了哪些服务」从一串空格分隔的裸文字变成可数的标签。
+ *
+ * 服务名是离散的枚举值，不是一句话——裸文字排在一起时读者得自己断词，还容易把
+ * 两个服务名连读成一个。给每个值一个边框，一眼就能数出「开了 3 个」。
+ *
+ * ``max`` 之外的收成一个 ``+N``：列表列宽有限，与其把标签挤成两行不如给出总数，
+ * 完整清单在 title 里，进详情页也能看到。
+ */
+export function ServiceChips({ services, max = 4 }: { services: string[]; max?: number }) {
+  if (services.length === 0) {
+    return <span className="text-caption text-[var(--text-faint)]">未选服务</span>;
+  }
+  const shown = services.slice(0, max);
+  const rest = services.length - shown.length;
+  return (
+    <span className="flex flex-wrap items-center gap-1" title={services.join("、")}>
+      {shown.map((service) => (
+        <span
+          key={service}
+          className="rounded-md border border-white/[0.1] bg-white/[0.04] px-1.5 py-px font-mono text-[11px] leading-[18px] text-[var(--text-muted)]"
+        >
+          {service}
+        </span>
+      ))}
+      {rest > 0 && (
+        <span className="font-mono text-[11px] leading-[18px] text-[var(--text-faint)]">
+          +{rest}
+        </span>
+      )}
+    </span>
+  );
+}
+
 export function Switch({
   checked,
   onChange,

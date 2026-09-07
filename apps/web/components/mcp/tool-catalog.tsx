@@ -166,17 +166,23 @@ export function ToolCatalog({ tools }: { tools: McpToolPreview[] }) {
                       <button
                         type="button"
                         onClick={() => setOpenTool(open ? null : tool.name)}
-                        className="flex w-full items-baseline gap-2 px-3 py-2 text-left hover:bg-white/[0.03]"
+                        className="flex w-full items-start gap-3 px-3 py-2 text-left hover:bg-white/[0.03]"
                       >
-                        <span className="shrink-0 font-mono text-sub text-[var(--accent)]">
-                          {tool.name}
-                        </span>
-                        {tool.read_only && <Badge>只读</Badge>}
-                        {tool.destructive && <Badge tone="danger">破坏性</Badge>}
-                        <span className="min-w-0 flex-1 truncate text-caption text-[var(--text-muted)]">
-                          {tool.summary || tool.description}
-                        </span>
-                        <span className="shrink-0 text-caption tabular-nums text-[var(--text-faint)]">
+                        {/* 两行：工具名与说明各占一行。挤成一行时说明必然被截断成
+                            半句话，而「这个工具是干嘛的」恰恰是这一屏最该看清的东西 */}
+                        <div className="min-w-0 flex-1 space-y-0.5">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-mono text-sub text-[var(--accent)]">
+                              {tool.name}
+                            </span>
+                            {tool.read_only && <Badge>只读</Badge>}
+                            {tool.destructive && <Badge tone="danger">破坏性</Badge>}
+                          </div>
+                          <p className="text-caption leading-relaxed text-[var(--text-muted)]">
+                            {tool.summary || tool.description}
+                          </p>
+                        </div>
+                        <span className="shrink-0 pt-0.5 text-caption tabular-nums text-[var(--text-faint)]">
                           {tool.commands.length > 0
                             ? `${tool.commands.length} 命令`
                             : `${tool.parameters.length} 参数`}

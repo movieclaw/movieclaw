@@ -6,7 +6,7 @@ import { useConfirm } from "@/components/feedback";
 import { PlusIcon } from "@/components/icons";
 import { EndpointDetail } from "@/components/mcp/endpoint-detail";
 import { EndpointForm } from "@/components/mcp/endpoint-form";
-import { Badge, CodeBlock, CopyField, StatusDot, Switch } from "@/components/mcp/ui";
+import { Badge, CodeBlock, CopyField, ServiceChips, StatusDot, Switch } from "@/components/mcp/ui";
 import {
   type McpEndpoint,
   type McpStatus,
@@ -309,17 +309,14 @@ export function McpSection() {
                     <div className="flex items-center gap-2">
                       <StatusDot on={endpoint.enabled} title={endpoint.enabled ? "运行中" : "已停用"} />
                       <span className="font-medium">{endpoint.name}</span>
-                      <Badge>{endpoint.expand_tools ? "展开" : "折叠"}</Badge>
+                      <Badge>{endpoint.expand_tools ? "一命令一工具" : "一服务一工具"}</Badge>
                     </div>
                     <p className="mt-0.5 pl-3.5 font-mono text-caption text-[var(--text-muted)]">
                       /mcp/{endpoint.slug}
                     </p>
                   </td>
-                  <td className="max-w-[280px] px-3 py-2.5 align-top">
-                    <p className="truncate font-mono text-caption text-[var(--text-muted)]"
-                       title={endpoint.services.join("、")}>
-                      {endpoint.services.join(" ")}
-                    </p>
+                  <td className="max-w-[300px] px-3 py-2.5 align-top">
+                    <ServiceChips services={endpoint.services} />
                   </td>
                   <td className="px-3 py-2.5 text-right align-top tabular-nums">
                     {endpoint.tool_count}

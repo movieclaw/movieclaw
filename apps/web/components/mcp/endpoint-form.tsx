@@ -18,7 +18,8 @@ const TOOL_HINT_THRESHOLD = 30;
  *
  * - **左栏配置，右栏实时后果**。右边始终显示这套配置真实产出的工具面（数量、
  *   上下文体积、前若干个工具名），改左边右边立刻变——不用等创建完才知道。
- * - **服务选择器可搜索、单行、已选置顶**。26 个服务里找 3 个，靠的是搜索不是滚动。
+ * - **服务选择器可搜索、已选置顶**。26 个服务里找 3 个，靠的是搜索不是滚动；
+ *   每条两行（域名 / 说明），说明是判断该不该勾的唯一依据，不能被截断。
  * - **工具模式从复选框升格成两张对比卡**，把差异（工具数、体积、参数形态）直接写
  *   在卡面上——这是决定端点形态的选择，不该长得像个附属开关。
  */
@@ -235,7 +236,7 @@ export function EndpointForm({
                 return (
                   <label
                     key={service.domain}
-                    className={`flex cursor-pointer items-baseline gap-2.5 px-3 py-2 transition-colors ${
+                    className={`flex cursor-pointer items-start gap-2.5 px-3 py-2 transition-colors ${
                       on ? "bg-[var(--accent-soft)]" : "hover:bg-white/[0.03]"
                     }`}
                   >
@@ -243,16 +244,21 @@ export function EndpointForm({
                       type="checkbox"
                       checked={on}
                       onChange={() => toggle(service.domain)}
-                      className="mt-0.5"
+                      className="mt-1"
                     />
-                    <span className="shrink-0 font-mono text-sub">{service.domain}</span>
-                    <span className="shrink-0 text-caption tabular-nums text-[var(--text-faint)]">
-                      {service.command_count}
-                    </span>
-                    <span className="min-w-0 flex-1 truncate text-caption text-[var(--text-muted)]"
-                          title={service.description}>
-                      {service.description}
-                    </span>
+                    {/* 两行：域名与说明各一行。勾一个服务等于把它的全部命令交给模型，
+                        而说明正是判断该不该勾的依据——截成半句话就等于没写 */}
+                    <div className="min-w-0 flex-1 space-y-0.5">
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono text-sub">{service.domain}</span>
+                        <span className="text-caption tabular-nums text-[var(--text-faint)]">
+                          {service.command_count} 条命令
+                        </span>
+                      </div>
+                      <p className="text-caption leading-relaxed text-[var(--text-muted)]">
+                        {service.description}
+                      </p>
+                    </div>
                   </label>
                 );
               })}

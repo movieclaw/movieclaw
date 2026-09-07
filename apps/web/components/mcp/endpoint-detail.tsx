@@ -5,7 +5,17 @@ import { useCallback, useEffect, useState } from "react";
 import { ArrowLeftIcon } from "@/components/icons";
 import { EndpointForm } from "@/components/mcp/endpoint-form";
 import { ToolCatalog } from "@/components/mcp/tool-catalog";
-import { Badge, CodeBlock, CopyField, INPUT_CLASS, MetaRow, StatusDot, Switch, formatBytes } from "@/components/mcp/ui";
+import {
+  Badge,
+  CodeBlock,
+  CopyField,
+  formatBytes,
+  INPUT_CLASS,
+  MetaRow,
+  ServiceChips,
+  StatusDot,
+  Switch,
+} from "@/components/mcp/ui";
 import {
   type McpEndpoint,
   type McpEndpointPayload,
@@ -116,7 +126,10 @@ export function EndpointDetail({
           <div className="flex flex-wrap items-center gap-2">
             <StatusDot on={endpoint.enabled} title={endpoint.enabled ? "运行中" : "已停用"} />
             <h2 className="text-xl font-medium tracking-tight">{endpoint.name}</h2>
-            <Badge tone="accent">{endpoint.expand_tools ? "展开" : "折叠"}</Badge>
+            {/* 标的是工具形态，不是一个可点的展开/折叠动作——只写「展开」会被当成按钮 */}
+            <Badge tone="accent">
+              {endpoint.expand_tools ? "一命令一工具" : "一服务一工具"}
+            </Badge>
             <span className="text-caption tabular-nums text-[var(--text-muted)]">
               {endpoint.tool_count} 个工具
             </span>
@@ -228,10 +241,11 @@ export function EndpointDetail({
 
           <div className="rounded-xl border border-white/[0.07] px-4 py-2">
             <MetaRow label="服务">
-              <span className="font-mono">{endpoint.services.join("、")}</span>
+              {/* 详情页不设上限：这一屏就是要看全「到底开放了什么」 */}
+              <ServiceChips services={endpoint.services} max={endpoint.services.length} />
             </MetaRow>
             <MetaRow label="工具">
-              {endpoint.tool_count} 个（{endpoint.expand_tools ? "展开：一命令一工具" : "折叠：一服务一工具"}）
+              {endpoint.tool_count} 个（工具形态：{endpoint.expand_tools ? "展开" : "折叠"}）
               {preview && ` · 定义约 ${formatBytes(preview.approx_bytes)}`}
             </MetaRow>
             <MetaRow label="令牌">
