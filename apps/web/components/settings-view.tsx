@@ -6,7 +6,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { LiquidGlassButton } from "@/vendor/liquid-glass";
 
-import { AppMaintenanceSection } from "@/components/app-maintenance-section";
 import { AppStorageSection } from "@/components/app-storage-section";
 import { AppUpdateDot, usePendingUpdate } from "@/components/app-update-entry";
 import { AppUpdateSection } from "@/components/app-update-section";
@@ -558,30 +557,32 @@ function ChangePasswordCard() {
 }
 
 /**
- * —— 更新与维护分区：三类设置，胶囊标签切换（与外观分区同一交互语言） ——
+ * —— 更新与维护分区：两类设置，胶囊标签切换（与外观分区同一交互语言） ——
  *
- *   - 版本与更新：当前版本、检查/执行更新、NER 模型、回退（AppUpdateSection）；
- *   - 缓存管理：data/ 各目录的占用与清理（AppStorageSection，内容来自后端登记表）；
- *   - 维护：重启应用（AppMaintenanceSection）。
+ *   - 版本与更新：当前版本、检查/执行更新、NER 模型、回退、重启应用
+ *     （AppUpdateSection）；
+ *   - 缓存管理：data/ 各目录的占用与清理（AppStorageSection，内容来自后端登记表）。
  *
  * 设置页按功能重组前这里叫「应用」，还塞着外部访问地址与远程转码——前者迁去
  * 「网络」分区（网络配置只留一个家），后者升级为「媒体库」组的「播放」分区。
+ * 曾经还有第三个「维护」标签，但它从头到尾只有一颗「重启应用」按钮：为一个
+ * 动作单开一个标签既难找又多一次点击，已并入「版本与更新」的末尾（重启与
+ * 更新/回退本就是同一类"让应用重来一次"的动作）。
  *
  * 为什么「版本与更新」是默认标签：这一页的高频入口是侧栏的更新徽标（有新版
- * 才出现），用户带着"来更新"的意图落地，第一屏就该是更新卡片；重启是出问题
- * 才碰的低频项，收进第二个标签。有可用更新时标签上点一颗小蓝点，与设置侧栏
- * 的「更新与维护」行同款。
+ * 才出现），用户带着"来更新"的意图落地，第一屏就该是更新卡片。有可用更新时
+ * 标签上点一颗小蓝点，与设置侧栏的「更新与维护」行同款。
  */
 function AppSection() {
-  // ?tab=maintain 深链直达维护标签，切换时写回地址栏（见 useTabParam）。
+  // ?tab=storage 深链直达缓存管理，切换时写回地址栏（见 useTabParam）。旧的
+  // ?tab=maintain 不再是合法值，会落到默认的「版本与更新」——重启入口正好在那；
   // 旧的 ?tab=remote 深链在路由层重定向到 /settings/playback，到不了这里。
-  const [tab, setTab] = useTabParam(["update", "storage", "maintain"] as const, "update");
+  const [tab, setTab] = useTabParam(["update", "storage"] as const, "update");
   // 本分区只对管理员渲染（成员的分区清单里没有 app），无需再按角色关轮询
   const pendingUpdate = usePendingUpdate();
   const tabs = [
     { id: "update" as const, label: "版本与更新" },
     { id: "storage" as const, label: "缓存管理" },
-    { id: "maintain" as const, label: "维护" },
   ] as const;
 
   return (
@@ -606,7 +607,6 @@ function AppSection() {
       </div>
       {tab === "update" && <AppUpdateSection />}
       {tab === "storage" && <AppStorageSection />}
-      {tab === "maintain" && <AppMaintenanceSection />}
     </div>
   );
 }

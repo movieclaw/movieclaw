@@ -2,9 +2,10 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { ChevronRightIcon, RefreshIcon } from "@/components/icons";
+import { ChevronRightIcon, InfoIcon, RefreshIcon } from "@/components/icons";
 import { Markdown } from "@/components/markdown";
 import { Modal } from "@/components/modal";
+import { Tooltip } from "@/components/tooltip";
 import {
   type ModelUpdateCheckView,
   type RollbackOptionsView,
@@ -20,6 +21,7 @@ import {
   getRollbackOptions,
   getUpdateProgress,
   getUpdateStatus,
+  restartApp,
   rollbackTo,
   saveUpdateRetention,
 } from "@/lib/api/app";
@@ -42,9 +44,32 @@ import { formatDateTime, formatUnixDateTime } from "@/lib/time";
  *   - 更新执行：后端后台下载校验，前端 1s 轮询进度；进入 restarting 后
  *     改为轮询 /health 等服务恢复（前后端全量重启），恢复即整页刷新。
  *   - 回退：切回上一版本（可再次回退撤销）；无上一版本时回落镜像内置版本。
+ *   - 维护：重启应用。原本是本分区第三个「维护」标签，但那一整个标签从头到尾
+ *     只有这一颗按钮；重启与更新/回退本就是同一类"让应用重来一次"的动作，也
+ *     共用同一套「等服务恢复再整页刷新」的等待流程，合到这一页的末尾更好找。
  */
 
 type RestartWait = "idle" | "waiting" | "timeout";
+/** 重启的起因，只影响等待页文案：换版本是前后端全量重启，手动重启只重启后端 */
+type RestartKind = "version" | "app";
+
+/** 等待页文案：两种重启的耗时量级与"迟迟不恢复"时的补救办法都不同，分开写清楚 */
+const RESTART_COPY: Record<RestartKind, Record<"waiting" | "timeout", [string, string]>> = {
+  version: {
+    waiting: ["正在重启并切换版本…", "前后端会一起重启，服务恢复后页面自动刷新，通常需要几十秒。"],
+    timeout: [
+      "等待超时，应用尚未恢复",
+      "请稍后手动刷新页面。若反复无法恢复，容器会自动回落到更新前的版本，数据不受影响。",
+    ],
+  },
+  app: {
+    waiting: ["正在重启应用…", "服务恢复后页面会自动刷新，通常需要几秒到几十秒。"],
+    timeout: [
+      "等待超时，应用尚未恢复",
+      "Docker 部署通常几秒内自动拉起，请稍后手动刷新页面；源码部署且无 systemd 等守护时，需要到服务器上手动启动。",
+    ],
+  },
+};
 
 /** 新版本卡片的数据：手动检查结果与服务端快照两个来源归一到同一形状 */
 interface AvailableUpdate {
@@ -72,6 +97,9 @@ export function AppUpdateSection() {
   const [pendingVersion, setPendingVersion] = useState<AvailableUpdate | null>(null);
   const [pendingModelTag, setPendingModelTag] = useState<string | null>(null);
   const [restartWait, setRestartWait] = useState<RestartWait>("idle");
+  const [restartKind, setRestartKind] = useState<RestartKind>("version");
+  // 手动重启的二次确认：重启会中断正在进行的任务，不能一点就走
+  const [restartConfirm, setRestartConfirm] = useState(false);
   // 回退选择器：候选列表（含保留策略现状）在分区挂载时就拉一次——回退卡的
   // 描述与「本地保留版本数」设置行都要用它，不是只有打开弹窗才需要
   const [rollback, setRollback] = useState<RollbackOptionsView | null>(null);
@@ -94,8 +122,9 @@ export function AppUpdateSection() {
   /** 全量重启的等待：先观察到服务不可达（sawDown）、再观察到恢复才算完成
    *  一次真实重启——否则可能命中「还没退出的旧进程」提前刷新，刷新后再无
    *  任何轮询跟踪，页面在真正重启时静默失联。 */
-  const waitForRestart = useCallback(async () => {
+  const waitForRestart = useCallback(async (kind: RestartKind = "version") => {
     if (unmounted.current) return;
+    setRestartKind(kind);
     setRestartWait("waiting");
     let sawDown = false;
     for (let i = 0; i < 90; i++) {
@@ -253,6 +282,21 @@ export function AppUpdateSection() {
     }
   };
 
+  /**
+   * 重启应用：请求后端优雅停机（以约定码 42 退出），随后走与更新同一套等待流程。
+   * Docker 镜像的 entrypoint 重启循环只重启后端（前端保持运行），前端观察到服务
+   * 先不可达、再恢复才整页刷新，不会命中"还没退出的旧进程"提前刷新。
+   */
+  const doRestart = async () => {
+    setRestartConfirm(false);
+    void waitForRestart("app");
+    try {
+      await restartApp();
+    } catch {
+      // 请求可能因进程退出而中断，属预期：等待流程已经在轮询 /health 了
+    }
+  };
+
   /** 调整本地保留版本数（立即生效并按新策略清理）。 */
   const doSetRetention = async (value: number) => {
     if (!rollback || retentionBusy) return;
@@ -283,32 +327,21 @@ export function AppUpdateSection() {
     return <p className="text-ui text-[var(--text-muted)]">正在加载版本信息…</p>;
   }
 
-  // 重启等待态：全区替换为状态页（与应用设置的重启流程同款体验）
+  // 重启等待态：全区替换为状态页，避免用户在服务不可用期间继续操作
   if (restartWait !== "idle") {
+    const [title, detail] = RESTART_COPY[restartKind][restartWait];
     return (
       <div className="css-glass !rounded-2xl px-6 py-10 text-center">
-        {restartWait === "waiting" ? (
-          <>
-            <p className="text-body font-medium text-[var(--text)]">正在重启并切换版本…</p>
-            <p className="mt-2 text-sub text-[var(--text-muted)]">
-              前后端会一起重启，服务恢复后页面自动刷新，通常需要几十秒。
-            </p>
-          </>
-        ) : (
-          <>
-            <p className="text-body font-medium text-[var(--text)]">等待超时，应用尚未恢复</p>
-            <p className="mt-2 text-sub text-[var(--text-muted)]">
-              请稍后手动刷新页面。若反复无法恢复，容器会自动回落到更新前的版本，
-              数据不受影响。
-            </p>
-            <button
-              type="button"
-              onClick={() => window.location.reload()}
-              className="btn-glass mt-4 px-3.5 py-1.5 text-sub font-medium"
-            >
-              刷新页面
-            </button>
-          </>
+        <p className="text-body font-medium text-[var(--text)]">{title}</p>
+        <p className="mt-2 text-sub text-[var(--text-muted)]">{detail}</p>
+        {restartWait === "timeout" && (
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            className="btn-glass mt-4 px-3.5 py-1.5 text-sub font-medium"
+          >
+            刷新页面
+          </button>
         )}
       </div>
     );
@@ -604,6 +637,73 @@ export function AppUpdateSection() {
           </div>
         </section>
       )}
+
+      {/* —— 维护 ——（重启应用：与更新/回退同属"让应用重来一次"，放在本页最后，
+             与上面的更新动作隔开，避免顺手误点） */}
+      <section>
+        <h3 className="group-label mb-2.5 px-1">维护</h3>
+        <div className="css-glass !rounded-2xl">
+          <div className="flex items-center justify-between gap-4 px-5 py-4">
+            <span className="flex min-w-0 items-center gap-1.5">
+              <span className="truncate text-ui font-medium text-[var(--text)]">重启应用</span>
+              <Tooltip
+                content={
+                  <>
+                    <p>优雅停机后重新启动后端服务，正在进行的任务会中断。</p>
+                    <p className="mt-1.5">
+                      Docker 部署由容器入口自动拉起新进程，通常几秒内恢复；源码部署需有
+                      systemd 等守护，否则退出后要到服务器上手动启动。
+                    </p>
+                  </>
+                }
+                placement="top"
+                maxWidth={340}
+                openOnClick
+              >
+                <button
+                  type="button"
+                  aria-label="重启应用的说明"
+                  className="flex shrink-0 text-[var(--text-faint)] transition-colors hover:text-[var(--text-muted)] focus-visible:text-[var(--text-muted)]"
+                >
+                  <InfoIcon className="size-[15px]" />
+                </button>
+              </Tooltip>
+            </span>
+            <button
+              type="button"
+              onClick={() => setRestartConfirm(true)}
+              disabled={updating}
+              className="btn-glass shrink-0 px-3.5 py-1.5 text-sub font-semibold text-red-300/90 hover:text-red-200 disabled:opacity-50"
+            >
+              重启应用
+            </button>
+          </div>
+          {/* 二次确认：接在按钮所在的卡片里，位置与缓存管理的清理确认条一致 */}
+          {restartConfirm && (
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-red-300/20 bg-red-400/[0.08] px-5 py-3.5">
+              <p className="text-sub text-red-200/90">
+                确认重启应用？重启期间服务短暂不可用，正在进行的下载投递/整理任务会中断。
+              </p>
+              <span className="ml-auto flex shrink-0 items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void doRestart()}
+                  className="btn-accent rounded-full px-3.5 py-1.5 text-sub font-semibold"
+                >
+                  确认重启
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setRestartConfirm(false)}
+                  className="btn-glass px-3 py-1.5 text-sub font-medium"
+                >
+                  取消
+                </button>
+              </span>
+            </div>
+          )}
+        </div>
+      </section>
 
       <RollbackDialog
         open={rollbackOpen}
