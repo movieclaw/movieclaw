@@ -258,6 +258,66 @@ def test_management_input_validation(client: TestClient) -> None:
     assert _create(slug="taken") == 409
 
 
+def test_self_check_walks_the_whole_chain(client: TestClient) -> None:
+    """自检要真的跑一遍协议 + 工具面 + 一次只读调用，而不是只看配置。"""
+    _make_endpoint(client)
+    endpoint_id = client.get(f"{_MCP}/status").json()["data"]["endpoints"][0]["id"]
+
+    result = client.post(f"{_MCP}/endpoints/{endpoint_id}/check").json()["data"]
+    assert result["ok"] is True
+    assert result["protocol_version"] == "2026-07-28"
+    assert result["tool_count"] > 0
+    # 试调的必须是只读且不需要必填参数的工具——自检不该改任何状态
+    assert result["probe_tool"] and result["probe_ok"] is True
+    assert result["elapsed_ms"] >= 0
+
+
+def test_self_check_reports_what_would_block_a_client(client: TestClient) -> None:
+    """自检本身通过、但外部客户端仍连不上的情况要如实说出来。"""
+    _make_endpoint(client)
+    endpoint_id = client.get(f"{_MCP}/status").json()["data"]["endpoints"][0]["id"]
+
+    # 没配外部访问地址：端点地址只有相对路径
+    warnings = client.post(f"{_MCP}/endpoints/{endpoint_id}/check").json()["data"]["warnings"]
+    assert any("外部访问地址" in w for w in warnings)
+
+    client.put(f"{_MCP}/endpoints/{endpoint_id}", json={"enabled": False})
+    client.put(f"{_MCP}/status", json={"enabled": False})
+    result = client.post(f"{_MCP}/endpoints/{endpoint_id}/check").json()["data"]
+    assert result["ok"] is True  # 配置本身没问题
+    assert any("总开关" in w for w in result["warnings"])
+    assert any("停用" in w for w in result["warnings"])
+
+
+def test_collapsed_preview_lists_commands_as_data(client: TestClient) -> None:
+    """折叠模式的试算要给出结构化命令清单，而不是把散文描述原样丢给页面。
+
+    协议面给模型的 description 是「一行说明 + 几十行命令清单」；管理页照搬那段文本
+    就是一堵散文墙。这里守住两件事：清单以 commands 数组给出，且 description 只剩
+    那一行说明。
+    """
+    services = ["library"]
+    expected = {op.command for op in operations_by_domain()["library"]}
+
+    body = client.post(
+        f"{_MCP}/endpoints/preview", json={"services": services, "expand_tools": False}
+    ).json()["data"]
+    tool = body["tools"][0]
+
+    assert tool["name"] == "library"
+    assert {c["name"] for c in tool["commands"]} == expected
+    assert "\n" not in tool["description"]
+    # 必填参数在命令行里带 * 后缀，页面据此不用再查一次 schema
+    assert any(p.endswith("*") for c in tool["commands"] for p in c["params"])
+    assert any(c["dangerous"] for c in tool["commands"])
+
+    # 展开模式没有这一层：一命令一工具，commands 必须为空
+    expanded = client.post(
+        f"{_MCP}/endpoints/preview", json={"services": services, "expand_tools": True}
+    ).json()["data"]
+    assert all(t["commands"] == [] for t in expanded["tools"])
+
+
 # ---------------------------------------------------------------------------
 # 工具面
 # ---------------------------------------------------------------------------

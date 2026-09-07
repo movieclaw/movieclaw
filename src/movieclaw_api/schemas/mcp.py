@@ -50,6 +50,20 @@ class StatusView(BaseModel):
     services: list[ServiceView] = Field(default_factory=list)
 
 
+class SelfCheckView(BaseModel):
+    """自检结果：这个端点现在能不能用，断在哪一环。"""
+
+    ok: bool
+    message: str = ""
+    protocol_version: str = ""
+    tool_count: int = 0
+    elapsed_ms: int = 0
+    probe_tool: str = Field(default="", description="被试调的只读工具；空=没有可安全试调的工具")
+    probe_ok: bool = False
+    probe_message: str = ""
+    warnings: list[str] = Field(default_factory=list)
+
+
 class EndpointCreateRequest(BaseModel):
     name: str = Field(description="展示名，如「家庭影音助理」")
     slug: str = Field(description="地址标识，URL 末段")
@@ -96,6 +110,27 @@ class ToolParameter(BaseModel):
     required: bool = False
     description: str = ""
     location: str = Field(default="", description="落点：path / query / body")
+    options: list[str] = Field(
+        default_factory=list,
+        description="枚举取值。折叠模式下 command 的取值就靠它列出该服务覆盖了哪些命令",
+    )
+
+
+class ToolCommand(BaseModel):
+    """折叠模式下一个服务工具覆盖的一条命令。
+
+    折叠模式把整个服务压成一个工具，命令清单本来只以自然语言写在 description
+    里给模型看。管理页要是照搬那段文本，用户面对的就是一堵几百行的散文墙——
+    所以这里把同一份元数据结构化再给一遍，页面按表格渲染。
+    """
+
+    name: str = Field(description="命令名，即 command 参数的取值")
+    summary: str = ""
+    params: list[str] = Field(
+        default_factory=list, description="params 里可填的字段名，必填的带 * 后缀"
+    )
+    dangerous: str = Field(default="", description="confirm | destructive | 空")
+    is_job: bool = Field(default=False, description="提交后台任务，返回 job_id")
 
 
 class ToolPreview(BaseModel):
@@ -107,6 +142,9 @@ class ToolPreview(BaseModel):
     read_only: bool = False
     destructive: bool = False
     parameters: list[ToolParameter] = Field(default_factory=list)
+    commands: list[ToolCommand] = Field(
+        default_factory=list, description="仅折叠模式：这个服务工具覆盖的命令清单"
+    )
 
 
 class PreviewView(BaseModel):

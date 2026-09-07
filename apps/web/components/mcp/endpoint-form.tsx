@@ -22,12 +22,16 @@ const TOOL_HINT_THRESHOLD = 30;
  * - **工具模式从复选框升格成两张对比卡**，把差异（工具数、体积、参数形态）直接写
  *   在卡面上——这是决定端点形态的选择，不该长得像个附属开关。
  */
+/** 与后端 settings/mcp.py 的 SLUG_PATTERN 同口径：小写字母数字与连字符，首尾不为连字符。 */
+const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/;
+
 export function EndpointForm({
   initial,
   services,
   baseUrl,
   busy,
   slugEditable,
+  takenSlugs = [],
   submitLabel,
   onSubmit,
   onCancel,
@@ -37,6 +41,8 @@ export function EndpointForm({
   baseUrl: string;
   busy: boolean;
   slugEditable: boolean;
+  /** 已被占用的地址标识：重名要在输入时就说，而不是等提交换回一个 409 */
+  takenSlugs?: string[];
   submitLabel: string;
   onSubmit: (payload: McpEndpointPayload) => void;
   onCancel: () => void;
@@ -46,6 +52,15 @@ export function EndpointForm({
   const [preview, setPreview] = useState<McpToolPreview[] | null>(null);
   const expand = draft.expand_tools ?? true;
   const picked = useMemo(() => new Set(draft.services), [draft.services]);
+
+  /** 地址标识的即时校验。空值不报错（还没开始填），有值才判。 */
+  const slugError = useMemo(() => {
+    const slug = draft.slug.trim();
+    if (!slug || !slugEditable) return "";
+    if (!SLUG_PATTERN.test(slug)) return "只能用小写字母、数字和连字符，且不能以连字符开头或结尾";
+    if (takenSlugs.includes(slug)) return "这个标识已被其他端点占用";
+    return "";
+  }, [draft.slug, slugEditable, takenSlugs]);
 
   /** 右栏预览：服务或模式一变就重算。请求很轻（纯内存渲染），不做防抖也不卡。 */
   useEffect(() => {
@@ -128,13 +143,20 @@ export function EndpointForm({
                 disabled={!slugEditable}
                 onChange={(e) => setDraft({ ...draft, slug: e.target.value })}
                 placeholder="home-assistant"
-                className={`${INPUT_CLASS} font-mono disabled:opacity-50`}
+                aria-invalid={Boolean(slugError)}
+                className={`${INPUT_CLASS} font-mono disabled:opacity-50 ${
+                  slugError ? "border-[var(--danger)]/60" : ""
+                }`}
               />
             </label>
           </div>
-          <p className="-mt-2 font-mono text-caption text-[var(--text-faint)]">
-            {baseUrl}/mcp/{draft.slug || "<地址标识>"}
-          </p>
+          {slugError ? (
+            <p className="-mt-2 text-caption text-[var(--danger)]">{slugError}</p>
+          ) : (
+            <p className="-mt-2 font-mono text-caption text-[var(--text-faint)]">
+              {baseUrl}/mcp/{draft.slug || "<地址标识>"}
+            </p>
+          )}
 
           {/* 工具模式：两张对比卡，差异写在卡面上 */}
           <div>
@@ -303,7 +325,9 @@ export function EndpointForm({
         <button
           type="button"
           onClick={() => onSubmit(draft)}
-          disabled={busy || !draft.name.trim() || !draft.slug.trim() || totals.services === 0}
+          disabled={
+            busy || !draft.name.trim() || !draft.slug.trim() || totals.services === 0 || Boolean(slugError)
+          }
           className="btn-glass px-3.5 py-1.5 text-sub font-medium disabled:opacity-40"
         >
           {submitLabel}

@@ -140,6 +140,7 @@ llm providers update
 llm providers verify
 logs days
 logs read
+mcp endpoints check
 mcp endpoints create
 mcp endpoints delete
 mcp endpoints preview

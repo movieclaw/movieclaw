@@ -90,7 +90,7 @@ async def _allowed_origins(host_header: str) -> set[str]:
     return origins
 
 
-def _build_server(app: FastAPI, endpoint: McpEndpoint) -> Server:
+def build_server(app: FastAPI, endpoint: McpEndpoint) -> Server:
     """为一个端点构造 SDK 的低阶 Server：工具面与调度都回调进我们自己的代码。"""
 
     async def on_list_tools(
@@ -210,7 +210,7 @@ class McpDispatcher:
             )
             return
 
-        server = _build_server(self._app, endpoint)
+        server = build_server(self._app, endpoint)
         manager = StreamableHTTPSessionManager(
             app=server,
             json_response=True,   # 恒用单个 JSON 体应答，不开 SSE 流（设计文档 §4.8）

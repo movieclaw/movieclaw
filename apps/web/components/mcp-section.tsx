@@ -109,7 +109,15 @@ export function McpSection() {
   );
 
   if (!status) {
-    return <p className="text-sub text-[var(--text-muted)]">{error ?? "加载中…"}</p>;
+    // 骨架而不是「加载中…」：布局先占位，数据到了不跳版
+    return error ? (
+      <p className="text-sub text-[var(--danger)]">{error}</p>
+    ) : (
+      <div className="space-y-3">
+        <div className="h-[68px] animate-pulse rounded-xl bg-white/[0.04]" />
+        <div className="h-[180px] animate-pulse rounded-xl bg-white/[0.03]" />
+      </div>
+    );
   }
 
   // ── 令牌专屏：签发后必须先看这一屏，其他内容一概让位 ──────────────
@@ -149,6 +157,7 @@ export function McpSection() {
           baseUrl={status.base_url}
           busy={busy}
           slugEditable
+          takenSlugs={status.endpoints.map((e) => e.slug)}
           submitLabel="创建端点"
           onCancel={() => navigate({ slug: null })}
           onSubmit={async (payload) => {
@@ -269,22 +278,34 @@ export function McpSection() {
             <thead className="bg-white/[0.03] text-caption text-[var(--text-faint)]">
               <tr>
                 <th className="px-4 py-2 font-normal">端点</th>
-                <th className="px-3 py-2 font-normal">工具</th>
-                <th className="px-3 py-2 font-normal">令牌</th>
+                <th className="px-3 py-2 font-normal">开放的服务</th>
+                {/* 数字列右对齐 + tabular-nums：一列数字上下对得齐才扫得快 */}
+                <th className="px-3 py-2 text-right font-normal">工具</th>
                 <th className="px-3 py-2 font-normal">最近调用</th>
-                <th className="px-3 py-2 font-normal"></th>
+                <th className="w-8 px-3 py-2 font-normal"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-white/[0.05]">
               {status.endpoints.map((endpoint) => (
                 <tr
                   key={endpoint.id}
+                  // 整行可点，且键盘能走到：表格行本身不可聚焦，不补这两样，
+                  // 只用鼠标的人能进详情、用键盘的人进不去
+                  tabIndex={0}
+                  role="link"
+                  aria-label={`打开端点 ${endpoint.name}`}
                   onClick={() => navigate({ slug: endpoint.slug, tab: "overview" })}
-                  className={`cursor-pointer transition-colors hover:bg-white/[0.04] ${
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      navigate({ slug: endpoint.slug, tab: "overview" });
+                    }
+                  }}
+                  className={`group cursor-pointer outline-none transition-colors hover:bg-white/[0.04] focus-visible:bg-white/[0.06] ${
                     endpoint.enabled ? "" : "opacity-55"
                   }`}
                 >
-                  <td className="px-4 py-2.5">
+                  <td className="px-4 py-2.5 align-top">
                     <div className="flex items-center gap-2">
                       <StatusDot on={endpoint.enabled} title={endpoint.enabled ? "运行中" : "已停用"} />
                       <span className="font-medium">{endpoint.name}</span>
@@ -294,20 +315,24 @@ export function McpSection() {
                       /mcp/{endpoint.slug}
                     </p>
                   </td>
-                  <td className="px-3 py-2.5 align-top">
-                    <span className="tabular-nums">{endpoint.tool_count}</span>
-                    <p className="mt-0.5 max-w-[220px] truncate font-mono text-caption text-[var(--text-faint)]">
+                  <td className="max-w-[280px] px-3 py-2.5 align-top">
+                    <p className="truncate font-mono text-caption text-[var(--text-muted)]"
+                       title={endpoint.services.join("、")}>
                       {endpoint.services.join(" ")}
                     </p>
                   </td>
-                  <td className="px-3 py-2.5 align-top font-mono text-caption text-[var(--text-muted)]">
-                    {endpoint.token_hint}
+                  <td className="px-3 py-2.5 text-right align-top tabular-nums">
+                    {endpoint.tool_count}
                   </td>
                   <td className="px-3 py-2.5 align-top text-caption text-[var(--text-muted)]">
                     {endpoint.last_used_at ? relativeTime(endpoint.last_used_at) : "从未"}
                   </td>
-                  <td className="px-3 py-2.5 text-right align-top">
-                    <span className="text-caption text-[var(--text-faint)]">详情 →</span>
+                  {/* 箭头静默待命，hover/聚焦时才亮起并右移——「这行可以点」的暗示，
+                      不用一个常驻的「详情」文字去抢注意力 */}
+                  <td className="px-3 py-2.5 text-right align-top text-[var(--text-faint)]">
+                    <span className="inline-block transition-transform group-hover:translate-x-0.5 group-hover:text-[var(--text)] group-focus-visible:text-[var(--text)]">
+                      ›
+                    </span>
                   </td>
                 </tr>
               ))}

@@ -526,7 +526,8 @@ class McpEndpoint(BaseModel):
 | `mcp.endpoints.update` | PUT `/mcp/endpoints/{id}` | 改名/改服务/改展开开关/启停 |
 | `mcp.endpoints.rotate-token` | POST `/mcp/endpoints/{id}/token` | 轮换令牌；`require_admin_session` |
 | `mcp.endpoints.delete` | DELETE `/mcp/endpoints/{id}` | 删除（`x-cli-dangerous: confirm`） |
-| `mcp.endpoints.preview` | POST `/mcp/endpoints/preview` | 试算：给定服务集合，返回将暴露的工具清单与描述体积 |
+| `mcp.endpoints.preview` | POST `/mcp/endpoints/preview` | 试算：给定服务集合，返回将暴露的工具清单与描述体积；折叠模式额外给出结构化的 `commands`（命令名/摘要/params 字段/风险），管理页据此渲染命令表 |
+| `mcp.endpoints.check` | POST `/mcp/endpoints/{id}/check` | 连通性自检：用 SDK 的内存客户端跑一遍真实协议握手 + `tools/list` + 一次只读试调 |
 
 ### 6.2 协议面（`/mcp/{slug}`，不进 OpenAPI）
 
@@ -685,7 +686,9 @@ src/movieclaw_mcp/dispatch.py        # 工具调用 → 本机 API → CallToolR
 src/movieclaw_api/settings/mcp.py    # mcp.endpoints 配置域
 src/movieclaw_api/api/routes/mcp.py  # 管理面 REST
 src/movieclaw_api/schemas/mcp.py     # 管理面请求/响应模型
-apps/web/components/mcp-section.tsx  # 设置分区
+src/movieclaw_mcp/selfcheck.py       # 连通性自检（SDK 内存客户端跑真实一轮）
+apps/web/components/mcp-section.tsx  # 设置分区外壳（列表 / 详情 / 创建三态）
+apps/web/components/mcp/…            # 工具目录、端点表单、端点详情与共用小部件
 apps/web/lib/api/mcp.ts              # 前端接口封装
 tests/mcp_server/…                   # 冒烟 + 六组守护（目录不叫 mcp：会盖住 SDK 的包）
 scripts/mcp_client_demo.py           # 用官方客户端连真实端点的连通性自检

@@ -201,6 +201,7 @@ logs read
 logs tail
 mcp
 mcp endpoints
+mcp endpoints check
 mcp endpoints create
 mcp endpoints delete
 mcp endpoints preview

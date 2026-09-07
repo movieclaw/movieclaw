@@ -10,7 +10,9 @@ import {
   type McpEndpoint,
   type McpEndpointPayload,
   type McpPreview,
+  type McpSelfCheck,
   type McpService,
+  checkMcpEndpoint,
   previewMcpTools,
 } from "@/lib/api/mcp";
 import { relativeTime } from "@/lib/devices-display";
@@ -58,6 +60,32 @@ export function EndpointDetail({
 }) {
   const [preview, setPreview] = useState<McpPreview | null>(null);
   const [confirmText, setConfirmText] = useState("");
+  const [check, setCheck] = useState<McpSelfCheck | null>(null);
+  const [checking, setChecking] = useState(false);
+
+  /** 自检：跑一次真实的协议往返 + 一次只读调用，回答「现在能不能用」。 */
+  const runCheck = async () => {
+    setChecking(true);
+    try {
+      setCheck(await checkMcpEndpoint(endpoint.id));
+    } catch (e) {
+      // 请求本身失败（网络断、接口不存在）也要显示成一次「未通过」，而不是把异常
+      // 抛给 React——自检的全部意义就是给出结论，静默失败是最坏的结果
+      setCheck({
+        ok: false,
+        message: `自检请求失败：${(e as Error).message}`,
+        protocol_version: "",
+        tool_count: 0,
+        elapsed_ms: 0,
+        probe_tool: "",
+        probe_ok: false,
+        probe_message: "",
+        warnings: [],
+      });
+    } finally {
+      setChecking(false);
+    }
+  };
 
   const loadPreview = useCallback(async () => {
     setPreview(await previewMcpTools(endpoint.services, endpoint.expand_tools));
@@ -133,6 +161,68 @@ export function EndpointDetail({
               <p className="mt-1.5 text-caption text-[var(--warn,#f5c451)]">
                 还没配置外部访问地址，这里只有相对路径。外部客户端要连上，先去「设置 → 网络」填对外地址。
               </p>
+            )}
+          </div>
+
+          {/* 自检：配完之后最想问的那句「它现在能用吗」，就地给答案 */}
+          <div className="rounded-xl border border-white/[0.07] p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-sub font-medium">连通性自检</p>
+                <p className="mt-0.5 text-caption text-[var(--text-muted)]">
+                  跑一次真实的协议握手、列一遍工具，再挑个只读工具实际调一次。
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => void runCheck()}
+                disabled={checking}
+                className="btn-glass shrink-0 px-3 py-1.5 text-sub font-medium disabled:opacity-50"
+              >
+                {checking ? "自检中…" : check ? "重新自检" : "运行自检"}
+              </button>
+            </div>
+
+            {check && (
+              <div className="mt-3 space-y-2 border-t border-white/[0.06] pt-3">
+                <p className="flex items-center gap-2 text-sub">
+                  <StatusDot on={check.ok} title={check.ok ? "通过" : "未通过"} />
+                  <span className={check.ok ? "" : "text-[var(--danger)]"}>{check.message}</span>
+                  <span className="text-caption tabular-nums text-[var(--text-faint)]">
+                    {check.elapsed_ms} ms
+                  </span>
+                </p>
+                <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-caption">
+                  <dt className="text-[var(--text-faint)]">协议</dt>
+                  <dd className="font-mono">{check.protocol_version || "—"}</dd>
+                  <dt className="text-[var(--text-faint)]">工具</dt>
+                  <dd className="tabular-nums">{check.tool_count} 个</dd>
+                  {check.probe_tool && (
+                    <>
+                      <dt className="text-[var(--text-faint)]">试调</dt>
+                      <dd className="min-w-0">
+                        <span className="font-mono text-[var(--accent)]">{check.probe_tool}</span>
+                        <span className={check.probe_ok ? "ml-2" : "ml-2 text-[var(--danger)]"}>
+                          {check.probe_ok ? "成功" : "失败"}
+                        </span>
+                        {check.probe_message && (
+                          <span className="ml-2 text-[var(--text-faint)]">
+                            {check.probe_message.slice(0, 60)}
+                          </span>
+                        )}
+                      </dd>
+                    </>
+                  )}
+                </dl>
+                {check.warnings.map((warning) => (
+                  <p
+                    key={warning}
+                    className="rounded-lg border border-[var(--warn,#f5c451)]/30 bg-[var(--warn,#f5c451)]/10 px-2.5 py-1.5 text-caption"
+                  >
+                    {warning}
+                  </p>
+                ))}
+              </div>
             )}
           </div>
 

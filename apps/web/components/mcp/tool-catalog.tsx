@@ -1,10 +1,10 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { CopyButton } from "@/components/copy-button";
 import { Badge } from "@/components/mcp/ui";
-import type { McpToolPreview } from "@/lib/api/mcp";
+import type { McpToolCommand, McpToolPreview } from "@/lib/api/mcp";
 
 /**
  * 工具目录：这个端点到底把什么交给了模型。
@@ -16,21 +16,50 @@ import type { McpToolPreview } from "@/lib/api/mcp";
  * 2. **这个工具属于哪个服务** → 按服务分组，组头带数量，能整组折叠；
  * 3. **它要什么参数** → 点开一行就是参数表（名称/类型/必填/落点/说明），
  *    参数名可直接复制。这是判断「模型能不能用对」的唯一依据。
+ *
+ * 折叠模式（一个服务一个工具）多一层：工具本身只有 command + params 两个参数，
+ * 真正的信息是「这个服务覆盖了哪些命令」。那份清单在协议面是写给模型看的一大段
+ * 自然语言，照搬到页面上就是几百行散文墙，所以后端把它结构化成 ``commands``，
+ * 这里按命令表渲染，并与顶部搜索联动。
  */
 export function ToolCatalog({ tools }: { tools: McpToolPreview[] }) {
   const [query, setQuery] = useState("");
+  const [only, setOnly] = useState<"all" | "read" | "write">("all");
   const [openTool, setOpenTool] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const searchRef = useRef<HTMLInputElement>(null);
+
+  /** `/` 聚焦搜索：开发者在文档站与控制台里的肌肉记忆。输入框内不劫持。 */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const typing = target && /^(INPUT|TEXTAREA)$/.test(target.tagName);
+      if (e.key === "/" && !typing) {
+        e.preventDefault();
+        searchRef.current?.focus();
+      }
+      if (e.key === "Escape" && document.activeElement === searchRef.current) {
+        setQuery("");
+        searchRef.current?.blur();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   const groups = useMemo(() => {
     const keyword = query.trim().toLowerCase();
-    const matched = keyword
-      ? tools.filter(
-          (t) =>
-            t.name.toLowerCase().includes(keyword) ||
-            t.description.toLowerCase().includes(keyword),
-        )
-      : tools;
+    const matched = tools.filter((t) => {
+      if (only === "read" && !t.read_only) return false;
+      if (only === "write" && t.read_only) return false;
+      if (!keyword) return true;
+      return (
+        t.name.toLowerCase().includes(keyword) ||
+        t.description.toLowerCase().includes(keyword) ||
+        // 折叠模式下用户搜的多半是命令名（服务名只有寥寥几个，搜它没意义）
+        t.commands.some((c) => `${c.name} ${c.summary}`.toLowerCase().includes(keyword))
+      );
+    });
     const byService = new Map<string, McpToolPreview[]>();
     for (const tool of matched) {
       const list = byService.get(tool.service) ?? [];
@@ -38,22 +67,66 @@ export function ToolCatalog({ tools }: { tools: McpToolPreview[] }) {
       byService.set(tool.service, list);
     }
     return [...byService.entries()].sort(([a], [b]) => a.localeCompare(b));
-  }, [tools, query]);
+  }, [tools, query, only]);
 
   const shown = groups.reduce((sum, [, list]) => sum + list.length, 0);
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center gap-3">
-        <input
-          type="search"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="搜索工具名或说明…"
-          className="field-shell w-full max-w-sm rounded-lg border border-white/[0.08] bg-black/25 px-3 py-1.5 text-sub outline-none placeholder:text-[var(--text-faint)]"
-        />
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="field-shell relative flex min-w-[220px] flex-1 items-center rounded-lg border border-white/[0.08] bg-black/25 pr-2">
+          <input
+            ref={searchRef}
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="搜索工具名或说明"
+            // 藏掉 WebKit 给 type=search 自带的清除叉：右侧已经有我们自己的清除按钮，
+            // 两个叉并排出现是明显的瑕疵
+            className="w-full bg-transparent px-3 py-1.5 text-sub outline-none placeholder:text-[var(--text-faint)] [&::-webkit-search-cancel-button]:appearance-none"
+          />
+          {query ? (
+            <button
+              type="button"
+              onClick={() => setQuery("")}
+              aria-label="清空搜索"
+              className="shrink-0 px-1 text-[var(--text-faint)] hover:text-[var(--text)]"
+            >
+              ×
+            </button>
+          ) : (
+            <kbd className="shrink-0 rounded border border-white/[0.12] px-1.5 text-[11px] text-[var(--text-faint)]">
+              /
+            </kbd>
+          )}
+        </div>
+
+        {/* 只读 / 会改动：判断「这个端点危不危险」最快的一刀 */}
+        <div className="flex shrink-0 items-center gap-1">
+          {(
+            [
+              ["all", "全部"],
+              ["read", "只读"],
+              ["write", "会改动"],
+            ] as const
+          ).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setOnly(id)}
+              className={`rounded-full border px-2.5 py-1 text-caption transition-colors ${
+                only === id
+                  ? "border-[var(--accent)] bg-white/[0.06] text-[var(--text)]"
+                  : "border-white/[0.12] text-[var(--text-muted)] hover:text-[var(--text)]"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
         <span className="shrink-0 text-caption tabular-nums text-[var(--text-faint)]">
-          {query ? `${shown} / ${tools.length}` : `${tools.length}`} 个工具
+          {shown === tools.length ? `${tools.length}` : `${shown} / ${tools.length}`} 个工具
         </span>
       </div>
 
@@ -104,7 +177,9 @@ export function ToolCatalog({ tools }: { tools: McpToolPreview[] }) {
                           {tool.summary || tool.description}
                         </span>
                         <span className="shrink-0 text-caption tabular-nums text-[var(--text-faint)]">
-                          {tool.parameters.length} 参数
+                          {tool.commands.length > 0
+                            ? `${tool.commands.length} 命令`
+                            : `${tool.parameters.length} 参数`}
                         </span>
                       </button>
 
@@ -113,7 +188,9 @@ export function ToolCatalog({ tools }: { tools: McpToolPreview[] }) {
                           <p className="text-caption leading-relaxed text-[var(--text-muted)]">
                             {tool.description}
                           </p>
-                          {tool.parameters.length === 0 ? (
+                          {tool.commands.length > 0 ? (
+                            <CommandTable commands={tool.commands} keyword={query.trim().toLowerCase()} />
+                          ) : tool.parameters.length === 0 ? (
                             <p className="text-caption text-[var(--text-faint)]">这个工具不需要参数。</p>
                           ) : (
                             <table className="w-full text-caption">
@@ -142,6 +219,11 @@ export function ToolCatalog({ tools }: { tools: McpToolPreview[] }) {
                                     </td>
                                     <td className="py-1.5 text-[var(--text-muted)]">
                                       {param.description || "—"}
+                                      {param.options.length > 0 && (
+                                        <span className="mt-0.5 block font-mono text-[11px] text-[var(--text-faint)]">
+                                          可选：{param.options.join(" / ")}
+                                        </span>
+                                      )}
                                     </td>
                                   </tr>
                                 ))}
@@ -158,11 +240,14 @@ export function ToolCatalog({ tools }: { tools: McpToolPreview[] }) {
                               text={JSON.stringify(
                                 {
                                   name: tool.name,
-                                  arguments: Object.fromEntries(
-                                    tool.parameters
-                                      .filter((p) => p.required)
-                                      .map((p) => [p.name, `<${p.type}>`]),
-                                  ),
+                                  arguments:
+                                    tool.commands.length > 0
+                                      ? { command: tool.commands[0].name, params: {} }
+                                      : Object.fromEntries(
+                                          tool.parameters
+                                            .filter((p) => p.required)
+                                            .map((p) => [p.name, `<${p.type}>`]),
+                                        ),
                                 },
                                 null,
                                 2,
@@ -181,6 +266,70 @@ export function ToolCatalog({ tools }: { tools: McpToolPreview[] }) {
           </section>
         );
       })}
+    </div>
+  );
+}
+
+/**
+ * 折叠模式的命令表：一行一条命令，带参数名与风险标记。
+ *
+ * 与顶部搜索联动——用户在折叠端点里搜的几乎一定是命令名，命中时只列命中的那几条，
+ * 否则一个服务动辄五十多条，翻起来和散文墙没区别。
+ */
+function CommandTable({ commands, keyword }: { commands: McpToolCommand[]; keyword: string }) {
+  const matched = keyword
+    ? commands.filter((c) => `${c.name} ${c.summary}`.toLowerCase().includes(keyword))
+    : commands;
+  const list = matched.length > 0 ? matched : commands;
+  return (
+    <div>
+      <p className="pb-1 text-caption text-[var(--text-faint)]">
+        {list.length === commands.length
+          ? `${commands.length} 条命令，填进 command 参数`
+          : `匹配「${keyword}」的 ${list.length} / ${commands.length} 条命令`}
+      </p>
+      {/* 固定列宽：命令名不换行、说明占大头，params 收在右侧。自动布局会被
+          某一条超长的 params 拽歪，整张表就没法一眼扫下来。 */}
+      <table className="w-full table-fixed text-caption">
+        <colgroup>
+          <col className="w-[26%]" />
+          <col className="w-[42%]" />
+          <col className="w-[32%]" />
+        </colgroup>
+        <thead>
+          <tr className="text-left text-[var(--text-faint)]">
+            <th className="pb-1 font-normal">命令</th>
+            <th className="pb-1 font-normal">说明</th>
+            <th className="pb-1 font-normal">params 字段</th>
+          </tr>
+        </thead>
+        <tbody className="align-top">
+          {list.map((command) => (
+            <tr key={command.name} className="border-t border-white/[0.05]">
+              <td className="py-1.5 pr-3">
+                <span className="font-mono break-all text-[var(--text)]">{command.name}</span>
+                {command.dangerous && (
+                  <span
+                    className="ml-1 text-[var(--danger)]"
+                    title={command.dangerous === "destructive" ? "破坏性：会删数据或磁盘文件" : "会清除配置或记录"}
+                  >
+                    ⚠
+                  </span>
+                )}
+              </td>
+              <td className="py-1.5 pr-3 text-[var(--text-muted)]">
+                {command.summary || "—"}
+                {command.is_job && (
+                  <span className="ml-1 text-[var(--text-faint)]">（后台任务，返回 job_id）</span>
+                )}
+              </td>
+              <td className="py-1.5 font-mono text-[11px] break-all text-[var(--text-faint)]">
+                {command.params.length > 0 ? command.params.join(", ") : "—"}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

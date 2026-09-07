@@ -12,10 +12,11 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from mcp.types import Tool
 
 from movieclaw_api.api.deps import require_admin_session
+from movieclaw_api.exceptions import NotFoundException
 from movieclaw_api.schemas.mcp import (
     EndpointCreatedView,
     EndpointCreateRequest,
@@ -23,9 +24,11 @@ from movieclaw_api.schemas.mcp import (
     EndpointView,
     PreviewRequest,
     PreviewView,
+    SelfCheckView,
     ServiceView,
     StatusView,
     ToggleRequest,
+    ToolCommand,
     ToolParameter,
     ToolPreview,
 )
@@ -34,6 +37,7 @@ from movieclaw_api.services import mcp_endpoints
 from movieclaw_api.settings import AppServerSetting, get_setting_store
 from movieclaw_api.settings.mcp import McpEndpoint
 from movieclaw_mcp.catalog import available_services, operations_by_domain, tools_by_name
+from movieclaw_mcp.selfcheck import self_check
 from movieclaw_mcp.tools import build_tools, describe_domain
 
 router = APIRouter(prefix="/mcp", tags=["mcp"])
@@ -175,6 +179,24 @@ async def rotate_token(endpoint_id: str) -> ApiResponse[EndpointCreatedView]:
     return ok(EndpointCreatedView(endpoint=_to_view(endpoint, base_url), token=token))
 
 
+@router.post(
+    "/endpoints/{endpoint_id}/check",
+    response_model=ApiResponse[SelfCheckView],
+    summary="自检端点：协议握手、工具面与一次只读调用",
+    operation_id="mcp.endpoints.check",
+)
+async def check_endpoint(request: Request, endpoint_id: str) -> ApiResponse[SelfCheckView]:
+    config = await mcp_endpoints.get_config()
+    endpoint = next((e for e in config.endpoints if e.id == endpoint_id), None)
+    if endpoint is None:
+        raise NotFoundException("端点不存在或已被删除")
+    base_url, _ = await _base_url()
+    result = await self_check(request.app, endpoint, external_url=base_url)
+    if not config.enabled:
+        result.warnings.insert(0, "MCP 总开关是关闭的，所有端点对外一律 404。")
+    return ok(SelfCheckView(**vars(result)))
+
+
 @router.delete(
     "/endpoints/{endpoint_id}",
     response_model=ApiResponse[dict],
@@ -201,6 +223,29 @@ def _schema_type(schema: dict) -> str:
     return str(kind)
 
 
+def _tool_commands(tool: Tool) -> list[ToolCommand]:
+    """折叠模式下这个服务工具覆盖的命令清单。
+
+    折叠工具的名字就是服务域名，且不会出现在 ``tools_by_name()`` 里（那是展开模式的
+    索引），据此区分两种形态。展开模式返回空列表。
+    """
+    ops = operations_by_domain().get(tool.name)
+    if not ops or tool.name in tools_by_name():
+        return []
+    return [
+        ToolCommand(
+            name=op.command,
+            summary=op.summary or op.operation_id,
+            params=[
+                f"{name}*" if name in op.required else name for name in op.arg_locations
+            ],
+            dangerous=op.dangerous or "",
+            is_job=op.is_job,
+        )
+        for op in ops
+    ]
+
+
 def _tool_preview(tool: Tool) -> ToolPreview:
     """SDK 的 Tool → 管理页要展示的形态（含参数明细）。"""
     schema = tool.input_schema or {}
@@ -213,10 +258,16 @@ def _tool_preview(tool: Tool) -> ToolPreview:
             required=name in required,
             description=(prop or {}).get("description", ""),
             location=(operation.arg_locations.get(name, "") if operation else ""),
+            options=[str(v) for v in ((prop or {}).get("enum") or [])][:40],
         )
         for name, prop in (schema.get("properties") or {}).items()
     ]
     description = tool.description or ""
+    commands = _tool_commands(tool)
+    # 折叠工具的 description 是「一行说明 + 整份命令清单」，那份清单已经结构化成
+    # commands 了；详情页再重复一遍就是几百行散文。这里只留说明本身。
+    if commands:
+        description = description.split("\n", 1)[0]
     return ToolPreview(
         name=tool.name,
         summary=description.split("。")[0][:60],
@@ -225,6 +276,7 @@ def _tool_preview(tool: Tool) -> ToolPreview:
         read_only=bool(tool.annotations and tool.annotations.read_only_hint),
         destructive=bool(tool.annotations and tool.annotations.destructive_hint),
         parameters=parameters,
+        commands=commands,
     )
 
 

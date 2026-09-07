@@ -65,6 +65,19 @@ export interface McpToolParameter {
   description: string;
   /** 落点：path / query / body。展示出来是为了让人能把工具对回 API 文档 */
   location: string;
+  /** 枚举取值；折叠模式下 command 的取值就是这个服务覆盖的命令清单 */
+  options: string[];
+}
+
+/** 折叠模式下一个服务工具覆盖的一条命令（见 schemas.mcp.ToolCommand）。 */
+export interface McpToolCommand {
+  name: string;
+  summary: string;
+  /** params 里可填的字段名，必填的带 * 后缀 */
+  params: string[];
+  /** confirm | destructive | 空 */
+  dangerous: string;
+  is_job: boolean;
 }
 
 export interface McpToolPreview {
@@ -77,6 +90,8 @@ export interface McpToolPreview {
   read_only: boolean;
   destructive: boolean;
   parameters: McpToolParameter[];
+  /** 仅折叠模式：这个服务工具覆盖的命令清单，页面按表格渲染 */
+  commands: McpToolCommand[];
 }
 
 export interface McpPreview {
@@ -93,6 +108,30 @@ export interface McpEndpointPayload {
   description?: string;
   expand_tools?: boolean;
   timeout_seconds?: number;
+}
+
+/** 自检结果（见 schemas.mcp.SelfCheckView）：断在哪一环，这里会说清楚。 */
+export interface McpSelfCheck {
+  ok: boolean;
+  message: string;
+  protocol_version: string;
+  tool_count: number;
+  elapsed_ms: number;
+  /** 被试调的只读工具；空串 = 这个端点没有可安全试调的工具 */
+  probe_tool: string;
+  probe_ok: boolean;
+  probe_message: string;
+  /** 自检通过、但仍会挡住外部客户端的情况（没配外部地址、端点停用等） */
+  warnings: string[];
+}
+
+export async function checkMcpEndpoint(endpointId: string): Promise<McpSelfCheck> {
+  return unwrap(
+    request<ApiEnvelope<McpSelfCheck>>(
+      `/mcp/endpoints/${encodeURIComponent(endpointId)}/check`,
+      { method: "POST" },
+    ),
+  );
 }
 
 export async function getMcpStatus(): Promise<McpStatus> {
