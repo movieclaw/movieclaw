@@ -1,0 +1,628 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>设置 · MCP 服务 样稿</title>
+<style>
+  :root{
+    --bg:#0a0b10;--raised:rgba(30,33,43,.74);--inset:rgba(255,255,255,.05);
+    --text:#f3f5f9;--muted:rgba(243,245,249,.62);--faint:rgba(243,245,249,.36);
+    --line:rgba(255,255,255,.08);--line-strong:rgba(255,255,255,.15);
+    --accent:#cdd6e6;--accent-soft:rgba(205,214,230,.14);
+    --ok:#4ade80;--info:#7fb0ff;--warn:#f5c451;--danger:#ff6b6b;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:#000;color:var(--text);font:15px/1.55 -apple-system,"PingFang SC","Noto Sans SC",sans-serif;-webkit-font-smoothing:antialiased}
+  .nav{position:sticky;top:0;z-index:9;display:flex;gap:6px;overflow-x:auto;padding:10px 12px;background:rgba(10,11,16,.92);backdrop-filter:blur(12px);border-bottom:1px solid var(--line)}
+  .nav button{flex:none;border:1px solid var(--line-strong);background:transparent;color:var(--muted);border-radius:999px;padding:6px 12px;font-size:13px;cursor:pointer}
+  .nav button.on{background:var(--accent);color:#0a0b10;border-color:var(--accent)}
+  .screen{display:none;max-width:720px;margin:0 auto;padding:22px 20px 80px;background:var(--bg);min-height:100vh}
+  .screen.on{display:block}
+  .note{font-size:12px;color:var(--faint);border-left:2px solid var(--warn);padding:5px 10px;margin:0 0 16px}
+  header.h{display:flex;gap:14px;align-items:center;margin-bottom:6px}
+  .icon-chip{width:44px;height:44px;border-radius:14px;background:var(--inset);border:1px solid var(--line);display:flex;align-items:center;justify-content:center;font-size:19px;flex:none}
+  h1{font-size:21px;margin:0;letter-spacing:-.01em}
+  .sub{color:var(--muted);font-size:13.5px;margin:2px 0 0}
+  .hr{height:1px;background:linear-gradient(90deg,rgba(255,255,255,.14),rgba(255,255,255,.05),transparent);margin:18px 0 20px}
+  .kicker{font-size:11.5px;color:var(--faint);letter-spacing:.06em;text-transform:uppercase;margin:22px 0 9px}
+  .card{background:var(--raised);border:1px solid var(--line);border-radius:14px;padding:14px 15px;margin-bottom:11px}
+  .card.tight{padding:12px 14px}
+  .row{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
+  .mono{font-family:ui-monospace,Menlo,monospace;font-size:13px}
+  .meta{color:var(--muted);font-size:12.5px;margin-top:3px}
+  .faint{color:var(--faint)}
+  .tag{display:inline-block;font-size:11px;padding:1.5px 8px;border-radius:999px;border:1px solid var(--line-strong);color:var(--muted);vertical-align:middle}
+  .tag.ok{color:var(--ok);border-color:rgba(74,222,128,.4)}
+  .tag.warn{color:var(--warn);border-color:rgba(245,196,81,.42)}
+  .tag.danger{color:var(--danger);border-color:rgba(255,107,107,.42)}
+  .tag.info{color:var(--info);border-color:rgba(127,176,255,.42)}
+  .btn{border:1px solid var(--line-strong);background:transparent;color:var(--text);border-radius:999px;padding:6px 14px;font-size:13.5px;cursor:pointer}
+  .btn.primary{background:var(--accent);color:#0a0b10;border-color:var(--accent);font-weight:600}
+  .btn.danger{color:var(--danger);border-color:rgba(255,107,107,.45)}
+  .btn.sm{font-size:12px;padding:4px 11px}
+  .btn.ghost{border-style:dashed;width:100%;padding:13px;color:var(--muted)}
+  .btn.link{border:none;padding:0;color:var(--info);font-size:12.5px;text-decoration:underline;background:none}
+  label.f{display:block;color:var(--muted);font-size:12.5px;margin:16px 0 6px}
+  .input{background:var(--inset);border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:14px;display:flex;justify-content:space-between;align-items:center;gap:8px}
+  .input .ph{color:var(--faint)}
+  .switch{display:flex;justify-content:space-between;align-items:center;gap:12px}
+  .t{width:42px;height:24px;border-radius:12px;background:var(--ok);position:relative;flex:none}
+  .t::after{content:"";position:absolute;right:2px;top:2px;width:20px;height:20px;border-radius:50%;background:#fff}
+  .t.off{background:rgba(255,255,255,.15)}.t.off::after{right:auto;left:2px}
+  .steps{display:flex;gap:18px;font-size:13.5px;color:var(--faint);margin:0 0 18px;border-bottom:1px solid var(--line)}
+  .steps span{padding-bottom:9px}
+  .steps span.on{color:var(--text);border-bottom:2px solid var(--text)}
+  .alert{border-radius:12px;padding:11px 13px;font-size:12.5px;margin:14px 0}
+  .alert.info{background:rgba(127,176,255,.1);border:1px solid rgba(127,176,255,.3)}
+  .alert.warn{background:rgba(245,196,81,.1);border:1px solid rgba(245,196,81,.35)}
+  .alert.danger{background:rgba(255,107,107,.1);border:1px solid rgba(255,107,107,.35)}
+  .alert.ok{background:rgba(74,222,128,.09);border:1px solid rgba(74,222,128,.32)}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .svc{border:1px solid var(--line);border-radius:12px;padding:10px 11px;cursor:pointer;background:transparent;text-align:left;color:var(--text);display:flex;gap:9px;align-items:flex-start}
+  .svc.sel{border-color:var(--accent);background:var(--accent-soft)}
+  .box{width:15px;height:15px;border-radius:4px;border:1.5px solid var(--line-strong);flex:none;margin-top:2px;position:relative}
+  .svc.sel .box{background:var(--accent);border-color:var(--accent)}
+  .svc.sel .box::after{content:"";position:absolute;left:4.5px;top:1px;width:4px;height:8px;border:solid #0a0b10;border-width:0 2px 2px 0;transform:rotate(45deg)}
+  .svc b{font-weight:600;font-size:13.5px;display:block}
+  .svc .d{color:var(--muted);font-size:11.5px;margin-top:2px;line-height:1.45}
+  .svc .n{color:var(--faint);font-size:11px;margin-top:3px}
+  .summary{position:sticky;bottom:0;background:rgba(10,11,16,.94);backdrop-filter:blur(10px);border-top:1px solid var(--line-strong);margin:16px -20px -80px;padding:13px 20px 20px;display:flex;justify-content:space-between;align-items:center;gap:10px}
+  .opt{border:1px solid var(--line);border-radius:12px;padding:11px 12px;margin-bottom:8px;display:flex;gap:10px;align-items:flex-start;cursor:pointer}
+  .opt.sel{border-color:var(--accent);background:var(--accent-soft)}
+  .radio{width:16px;height:16px;border-radius:50%;border:1.5px solid var(--line-strong);flex:none;margin-top:3px}
+  .opt.sel .radio{border:5px solid var(--accent)}
+  .opt b{font-weight:600;font-size:13.5px}
+  .opt .d{color:var(--muted);font-size:12px;margin-top:2px}
+  pre{background:#06070b;border:1px solid var(--line);border-radius:10px;padding:11px 12px;overflow-x:auto;font-family:ui-monospace,Menlo,monospace;font-size:12px;line-height:1.6;margin:0;color:#dfe5f0}
+  .tabs{display:flex;gap:6px;margin-bottom:9px}
+  .tabs button{border:1px solid var(--line-strong);background:transparent;color:var(--muted);border-radius:999px;padding:4px 11px;font-size:12px;cursor:pointer}
+  .tabs button.on{background:var(--inset);color:var(--text);border-color:var(--accent)}
+  details{border-top:1px solid var(--line);padding-top:9px;margin-top:9px}
+  details summary{color:var(--faint);font-size:12.5px;cursor:pointer;list-style:none}
+  details summary::-webkit-details-marker{display:none}
+  details summary::before{content:"▸ ";color:var(--faint)}
+  details[open] summary::before{content:"▾ "}
+  .toollist div{padding:7px 0;border-bottom:1px solid var(--line)}
+  .toollist div:last-child{border:none}
+  .dim{opacity:.45;pointer-events:none}
+  .modal{border:1px solid var(--line-strong);background:#12141c;border-radius:16px;padding:18px;max-width:420px;margin-bottom:14px}
+  .modal h3{margin:0 0 6px;font-size:16px}
+  .modal p{margin:0;color:var(--muted);font-size:13px}
+  .modal .acts{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th{text-align:left;color:var(--faint);font-weight:500;padding:6px 0;border-bottom:1px solid var(--line)}
+  td{padding:7px 0;border-bottom:1px solid var(--line);color:var(--muted)}
+  td:first-child{color:var(--text)}
+</style>
+</head>
+<body>
+
+<div class="nav">
+  <button class="on" data-s="s1">① 空态</button>
+  <button data-s="s2">② 端点列表</button>
+  <button data-s="s3">③ 新建·基本信息</button>
+  <button data-s="s4">④ 新建·选服务</button>
+  <button data-s="s5">⑤ 新建·执行策略</button>
+  <button data-s="s6">⑥ 令牌与接入</button>
+  <button data-s="s7">⑦ 端点详情</button>
+  <button data-s="s8">⑧ 危险操作确认</button>
+  <button data-s="s9">⑨ 总开关关闭</button>
+</div>
+
+<!-- ① 空态 -->
+<section class="screen on" id="s1">
+  <p class="note">入口：设置 →「通知与集成」组 →「MCP 服务」，紧挨「模型接入」。仅管理员可见（成员无此分区，后端一律 403）。</p>
+  <header class="h">
+    <span class="icon-chip">🔌</span>
+    <div><h1>MCP 服务</h1><p class="sub">把 movieclaw 的能力开放给外部 AI 客户端，按需组合工具目录</p></div>
+  </header>
+  <div class="hr"></div>
+
+  <div class="card">
+    <div class="switch">
+      <div>
+        <b style="font-size:14px">启用 MCP 服务</b>
+        <div class="meta">关闭时所有端点一律返回 404，等于对外完全隐身</div>
+      </div>
+      <span class="t off"></span>
+    </div>
+  </div>
+
+  <div class="card" style="text-align:center;padding:30px 22px">
+    <div style="font-size:30px">🧩</div>
+    <b style="display:block;margin:10px 0 6px;font-size:15px">还没有 MCP 端点</b>
+    <p class="meta" style="max-width:430px;margin:0 auto 4px">
+      MCP 是 AI 客户端连接外部工具的通用协议。建一个端点，勾选要开放的服务，
+      Claude Code、Cursor 等客户端填上地址和令牌就能直接查库存、下片、管订阅。
+    </p>
+    <p class="meta faint" style="margin:8px auto 18px">每个端点的工具目录相互独立——给不同用途建不同端点，互不干扰。</p>
+    <button class="btn primary">＋ 新建端点</button>
+  </div>
+
+  <div class="alert info">
+    <b>它和「设备」页的令牌有什么区别？</b><br>
+    设备令牌 = 一台机器的完全权限（给 mclaw 命令行用）；MCP 端点 = 一组精选工具 + 一档执行策略，
+    可以只读、可以只开放订阅与搜索。两者独立签发、独立吊销。
+  </div>
+</section>
+
+<!-- ② 端点列表 -->
+<section class="screen" id="s2">
+  <p class="note">列表是这一页的主界面：一端点一卡，卡上直接能启停；危险档位常驻红标；「最近调用」是判断能不能删的依据。</p>
+  <header class="h">
+    <span class="icon-chip">🔌</span>
+    <div><h1>MCP 服务</h1><p class="sub">3 个端点 · 服务地址 https://movie.example.com</p></div>
+  </header>
+  <div class="hr"></div>
+
+  <div class="card tight">
+    <div class="switch">
+      <div><b style="font-size:14px">启用 MCP 服务</b><div class="meta">总开关。关闭后下面所有端点立即失效</div></div>
+      <span class="t"></span>
+    </div>
+  </div>
+
+  <div class="kicker">端点</div>
+
+  <div class="card">
+    <div class="row">
+      <div style="min-width:0">
+        <b style="font-size:15px">家庭影音助理</b>
+        <span class="tag ok" style="margin-left:6px">标准</span>
+        <div class="mono meta" style="color:var(--muted)">/mcp/home-assistant</div>
+        <div class="meta">4 个工具 · 覆盖 46 条命令 · 订阅、搜索、媒体库、下载器</div>
+        <div class="meta faint">最近调用 12 分钟前 · 令牌 mcp_a1b2****</div>
+      </div>
+      <div style="display:flex;gap:7px;align-items:center">
+        <span class="t"></span>
+        <button class="btn sm">详情</button>
+        <button class="btn sm">⋯</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <div style="min-width:0">
+        <b style="font-size:15px">只读看板</b>
+        <span class="tag info" style="margin-left:6px">只读</span>
+        <div class="mono meta">/mcp/dashboard</div>
+        <div class="meta">3 个工具 · 覆盖 30 条命令 · 媒体库、任务、系统提示</div>
+        <div class="meta faint">最近调用 3 天前 · 令牌 mcp_9f3c****</div>
+      </div>
+      <div style="display:flex;gap:7px;align-items:center">
+        <span class="t"></span>
+        <button class="btn sm">详情</button>
+        <button class="btn sm">⋯</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="opacity:.72">
+    <div class="row">
+      <div style="min-width:0">
+        <b style="font-size:15px">运维调试</b>
+        <span class="tag danger" style="margin-left:6px">完全 ⚠</span>
+        <span class="tag" style="margin-left:4px">已停用</span>
+        <div class="mono meta">/mcp/ops</div>
+        <div class="meta">6 个工具 · 覆盖 68 条命令 · 含删除类命令</div>
+        <div class="meta faint">最近调用 从未 · 令牌 mcp_77de****</div>
+      </div>
+      <div style="display:flex;gap:7px;align-items:center">
+        <span class="t off"></span>
+        <button class="btn sm">详情</button>
+        <button class="btn sm">⋯</button>
+      </div>
+    </div>
+  </div>
+
+  <button class="btn ghost">＋ 新建端点</button>
+
+  <details>
+    <summary>「⋯」菜单里有什么</summary>
+    <div class="meta" style="margin-top:8px">复制端点地址 · 复制客户端配置 · 编辑 · 轮换令牌 · 停用 · 删除。
+      其中「轮换令牌」「删除」会二次确认（见屏⑧）。</div>
+  </details>
+</section>
+
+<!-- ③ 新建 · 基本信息 -->
+<section class="screen" id="s3">
+  <p class="note">三步向导。第一步只问「叫什么、地址是什么」——地址实时拼出来，重名即时报错，不到提交才失败。</p>
+  <header class="h">
+    <span class="icon-chip">🔌</span>
+    <div><h1>新建 MCP 端点</h1><p class="sub">第 1 步，共 3 步</p></div>
+  </header>
+  <div class="hr"></div>
+  <div class="steps"><span class="on">1 基本信息</span><span>2 选择服务</span><span>3 执行策略</span></div>
+
+  <label class="f">端点名称</label>
+  <div class="input"><span>家庭影音助理</span></div>
+  <div class="meta faint" style="margin-top:5px">只用于你自己识别，随时可改</div>
+
+  <label class="f">地址标识（slug）</label>
+  <div class="input"><span class="mono">home-assistant</span><span class="tag ok">可用</span></div>
+  <div class="meta" style="margin-top:7px">完整地址：<span class="mono" style="color:var(--info)">https://movie.example.com/mcp/home-assistant</span></div>
+
+  <div class="alert warn">
+    未配置「外部访问地址」时这里会显示局域网地址，并提示：外部客户端要能连上，
+    需要先去<span style="color:var(--info)">设置 → 网络</span>填写对外地址。
+  </div>
+
+  <label class="f">备注（可选）</label>
+  <div class="input"><span class="ph">给谁用的、什么时候可以删——写给三个月后的自己</span></div>
+
+  <div class="summary">
+    <span class="meta faint">端点建成后地址不可更改，删了重建即可</span>
+    <div style="display:flex;gap:8px"><button class="btn">取消</button><button class="btn primary">下一步</button></div>
+  </div>
+</section>
+
+<!-- ④ 新建 · 选服务 -->
+<section class="screen" id="s4">
+  <p class="note">本方案的核心屏，可直接点选试试：底部实时算「几个工具 / 覆盖多少条命令 / 描述占多少上下文」。工具数 = 选中的服务数——这正是「组合工具目录」的含义。</p>
+  <header class="h">
+    <span class="icon-chip">🔌</span>
+    <div><h1>选择服务</h1><p class="sub">第 2 步，共 3 步 · 选中哪些服务，这个端点就只有那些工具</p></div>
+  </header>
+  <div class="hr"></div>
+  <div class="steps"><span>1 基本信息</span><span class="on">2 选择服务</span><span>3 执行策略</span></div>
+
+  <div class="alert info">
+    每个服务对应一个工具（如 <span class="mono">mclaw_subscriptions</span>），工具描述里带着该服务的完整命令清单。
+    <b>工具越少，模型选得越准</b>——业界公认 30~40 个工具是可靠上限，所以按用途分端点，比堆一个大端点更好用。
+  </div>
+
+  <div class="kicker">内容发现与订阅</div>
+  <div class="grid" id="g1"></div>
+  <div class="kicker">资源与下载</div>
+  <div class="grid" id="g2"></div>
+  <div class="kicker">媒体库</div>
+  <div class="grid" id="g3"></div>
+  <div class="kicker">系统与运维</div>
+  <div class="grid" id="g4"></div>
+  <div class="kicker">账号 · 界面 · 集成</div>
+  <div class="grid" id="g5"></div>
+
+  <div class="summary">
+    <div>
+      <b id="sum1" style="font-size:14px">4 个工具</b>
+      <div class="meta" id="sum2">覆盖 46 条命令 · 工具描述约 1.9 KB</div>
+    </div>
+    <div style="display:flex;gap:8px"><button class="btn">上一步</button><button class="btn primary">下一步</button></div>
+  </div>
+</section>
+
+<!-- ⑤ 新建 · 执行策略 -->
+<section class="screen" id="s5">
+  <p class="note">外部端点比产品内 Agent 更远，闸门要更硬。三档策略直接复用 spec 里已有的 <span class="mono">x-cli-dangerous</span> 标注，新增危险命令自动纳入管辖，不用手工维护名单。</p>
+  <header class="h">
+    <span class="icon-chip">🔌</span>
+    <div><h1>执行策略</h1><p class="sub">第 3 步，共 3 步 · 这个端点被允许做到什么程度</p></div>
+  </header>
+  <div class="hr"></div>
+  <div class="steps"><span>1 基本信息</span><span>2 选择服务</span><span class="on">3 执行策略</span></div>
+
+  <div class="opt" data-policy>
+    <span class="radio"></span>
+    <div><b>只读</b><div class="d">只放行查询类命令。任何写入、下载、删除一律拒绝，适合分析型 Agent 和看板。</div></div>
+  </div>
+  <div class="opt sel" data-policy>
+    <span class="radio"></span>
+    <div><b>标准 <span class="tag ok">推荐</span></b><div class="d">读 + 常规写（订阅、搜索、投递下载、扫描入库），但拒绝所有带 ⚠ 的危险命令（删文件、删配置、清记录）。</div></div>
+  </div>
+  <div class="opt" data-policy>
+    <span class="radio"></span>
+    <div><b>完全 <span class="tag danger">危险</span></b><div class="d">放开全部命令，含 <span class="mono">library items delete</span>（会删除磁盘上的媒体文件）。选择后需二次确认，端点卡上常驻红标。</div></div>
+  </div>
+
+  <label class="f">单次调用超时</label>
+  <div class="input"><span>300 秒</span><span class="faint">长任务建议让客户端用 --no-wait 后轮询</span></div>
+
+  <details open>
+    <summary>无论哪一档都强制生效的闸门</summary>
+    <div class="meta" style="margin-top:8px">
+      · 拒绝 <span class="mono">login</span> / <span class="mono">logout</span>（凭证由服务端注入，客户端无从更改）<br>
+      · 拒绝 <span class="mono">--server</span>（不允许把令牌发往别的服务器）<br>
+      · 拒绝 <span class="mono">session start / retry / follow</span>（防止 Agent 递归拉起 Agent）<br>
+      · 每端点并发上限 4，超出排队<br>
+      · 每次调用现签一枚几分钟即失效的内部令牌，外部令牌本身进不了业务接口
+    </div>
+  </details>
+
+  <div class="summary">
+    <span class="meta faint">建成后这些设置都可以改</span>
+    <div style="display:flex;gap:8px"><button class="btn">上一步</button><button class="btn primary">创建端点</button></div>
+  </div>
+</section>
+
+<!-- ⑥ 令牌与接入 -->
+<section class="screen" id="s6">
+  <p class="note">令牌明文只在这一屏出现一次（服务端只存哈希）。直接给出三种客户端的可复制片段，避免用户去查 MCP 文档。</p>
+  <header class="h">
+    <span class="icon-chip">✅</span>
+    <div><h1>端点已创建</h1><p class="sub">家庭影音助理 · 4 个工具 · 标准策略</p></div>
+  </header>
+  <div class="hr"></div>
+
+  <div class="alert danger">
+    <b>令牌只显示这一次。</b>关掉这个页面就再也看不到明文了——服务端只保存哈希。
+    丢了不要紧：随时可以在端点详情里轮换出一枚新的（旧的立即失效）。
+  </div>
+
+  <label class="f">端点地址</label>
+  <div class="input"><span class="mono">https://movie.example.com/mcp/home-assistant</span><button class="btn sm">复制</button></div>
+
+  <label class="f">访问令牌</label>
+  <div class="input"><span class="mono">mcp_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0u1v</span><button class="btn sm">复制</button></div>
+
+  <label class="f">接入方式</label>
+  <div class="tabs" id="tabs">
+    <button class="on" data-t="t1">Claude Code</button>
+    <button data-t="t2">配置文件（Cursor 等）</button>
+    <button data-t="t3">cURL 自检</button>
+  </div>
+  <pre id="t1" class="snip">claude mcp add --transport http movieclaw \
+  https://movie.example.com/mcp/home-assistant \
+  --header "Authorization: Bearer mcp_a1b2c3d4…"</pre>
+  <pre id="t2" class="snip" hidden>{
+  "mcpServers": {
+    "movieclaw": {
+      "type": "http",
+      "url": "https://movie.example.com/mcp/home-assistant",
+      "headers": { "Authorization": "Bearer mcp_a1b2c3d4…" }
+    }
+  }
+}</pre>
+  <pre id="t3" class="snip" hidden>curl -sS https://movie.example.com/mcp/home-assistant \
+  -H "Authorization: Bearer mcp_a1b2c3d4…" \
+  -H "Content-Type: application/json" \
+  -H "MCP-Protocol-Version: 2026-07-28" \
+  -H "Mcp-Method: tools/list" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{
+       "_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}'</pre>
+
+  <div class="alert warn" style="margin-top:16px">
+    <b>claude.ai 网页版的「自定义连接器」暂时接不进来</b>：它只支持 OAuth，不支持填自定义请求头。
+    Claude Code、Cursor、Cline 等桌面/本地客户端都可以正常使用。
+  </div>
+
+  <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:18px">
+    <button class="btn primary">我已保存令牌，完成</button>
+  </div>
+</section>
+
+<!-- ⑦ 端点详情 -->
+<section class="screen" id="s7">
+  <p class="note">详情页回答三个问题：这个端点到底暴露了什么（工具目录可展开看到真实描述）、它还活着吗（自检 + 最近调用）、怎么收回（轮换/停用/删除）。</p>
+  <header class="h">
+    <span class="icon-chip">🔌</span>
+    <div><h1>家庭影音助理 <span class="tag ok">标准</span></h1><p class="sub mono">https://movie.example.com/mcp/home-assistant</p></div>
+  </header>
+  <div class="hr"></div>
+
+  <div class="card tight">
+    <div class="switch">
+      <div><b style="font-size:14px">启用此端点</b><div class="meta">停用后该地址返回 404，令牌保留</div></div>
+      <span class="t"></span>
+    </div>
+  </div>
+
+  <div class="kicker">连通性自检</div>
+  <div class="card">
+    <div class="row">
+      <div><b style="font-size:14px">服务端自检通过</b>
+        <div class="meta">协议 2026-07-28 · tools/list 返回 4 个工具 · 用时 38 ms</div></div>
+      <button class="btn sm">重新自检</button>
+    </div>
+  </div>
+
+  <div class="kicker">工具目录（4）</div>
+  <div class="card toollist">
+    <div>
+      <span class="mono" style="color:var(--info)">mclaw_subscriptions</span>
+      <span class="tag" style="margin-left:6px">16 条命令</span>
+      <div class="meta">电影/剧集订阅与自动追更：持续追踪新资源，按规则自动搜索、下载并整理入库</div>
+      <details><summary>看模型实际收到的描述</summary>
+        <pre style="margin-top:8px">subscriptions — 电影/剧集订阅与自动追更…
+可用命令：
+  create              创建订阅（消费 discover 的 title_ref）
+  list                列出订阅
+  list-active-downloads  查看在途下载进度
+  search-missing      立即搜索缺失资源
+  set-tracking        设置追踪状态
+  …（共 16 条，参数用 --help 现查）</pre>
+      </details>
+    </div>
+    <div>
+      <span class="mono" style="color:var(--info)">mclaw_search</span>
+      <span class="tag" style="margin-left:6px">9 条命令</span>
+      <div class="meta">统一搜索：TMDB/豆瓣影视条目、跨 PT 站点种子、已入库内容</div>
+    </div>
+    <div>
+      <span class="mono" style="color:var(--info)">mclaw_library</span>
+      <span class="tag" style="margin-left:6px">15 条命令 <span class="faint">/ 57 条，危险命令已按策略隐去</span></span>
+      <div class="meta">本地媒体库：库存盘点、扫描入库、元数据与图片管理</div>
+    </div>
+    <div>
+      <span class="mono" style="color:var(--info)">mclaw_dl</span>
+      <span class="tag" style="margin-left:6px">6 条命令</span>
+      <div class="meta">下载器与投递：预演落点并提交种子</div>
+    </div>
+  </div>
+
+  <div class="kicker">最近调用</div>
+  <div class="card">
+    <table>
+      <tr><th>时间</th><th>工具</th><th>参数</th><th>结果</th></tr>
+      <tr><td>12 分钟前</td><td class="mono">mclaw_subscriptions</td><td class="mono">list --limit 20</td><td><span class="tag ok">成功 · 0.4s</span></td></tr>
+      <tr><td>12 分钟前</td><td class="mono">mclaw_search</td><td class="mono">torrents "沙丘2" --resolution 2160p</td><td><span class="tag ok">成功 · 6.1s</span></td></tr>
+      <tr><td>1 小时前</td><td class="mono">mclaw_library</td><td class="mono">items delete 8821 --yes</td><td><span class="tag danger">拒绝 · 策略不允许</span></td></tr>
+    </table>
+    <div class="meta faint" style="margin-top:9px">P1 先只落「最近调用时间」，这张明细表是 P2（调用日志）——样稿里先把位置留出来。</div>
+  </div>
+
+  <div class="kicker">危险区</div>
+  <div class="card">
+    <div class="row" style="align-items:center">
+      <div><b style="font-size:14px">轮换令牌</b><div class="meta">旧令牌立即失效，所有已接入的客户端都要重新配置</div></div>
+      <button class="btn sm">轮换</button>
+    </div>
+  </div>
+  <div class="card">
+    <div class="row" style="align-items:center">
+      <div><b style="font-size:14px">删除端点</b><div class="meta">地址与令牌一并作废，不可恢复</div></div>
+      <button class="btn sm danger">删除</button>
+    </div>
+  </div>
+</section>
+
+<!-- ⑧ 危险操作确认 -->
+<section class="screen" id="s8">
+  <p class="note">三个确认弹窗的文案。共同原则：说清「会发生什么」而不是问「你确定吗」。</p>
+  <header class="h"><span class="icon-chip">⚠️</span><div><h1>确认弹窗</h1><p class="sub">停用 / 轮换 / 删除 / 选择完全档</p></div></header>
+  <div class="hr"></div>
+
+  <div class="modal">
+    <h3>停用「家庭影音助理」？</h3>
+    <p>停用后该地址立即返回 404，已接入的客户端会连不上，但配置和令牌都保留，随时可以再启用。</p>
+    <div class="acts"><button class="btn">取消</button><button class="btn primary">停用</button></div>
+  </div>
+
+  <div class="modal">
+    <h3>轮换令牌？</h3>
+    <p>会生成一枚新令牌，<b>旧令牌立即失效</b>。你需要在所有已接入的客户端里更新配置，
+      否则它们会开始报 401。新令牌同样只显示一次。</p>
+    <div class="acts"><button class="btn">取消</button><button class="btn primary">生成新令牌</button></div>
+  </div>
+
+  <div class="modal">
+    <h3>删除「运维调试」？</h3>
+    <p>端点地址与令牌一并作废，不可恢复。该端点最近一次调用是<b>从未</b>——如果还有客户端在用，
+      删除后它们会立刻失败。</p>
+    <div class="acts"><button class="btn">取消</button><button class="btn danger">删除端点</button></div>
+  </div>
+
+  <div class="modal" style="border-color:rgba(255,107,107,.45)">
+    <h3>确认使用「完全」策略？</h3>
+    <p>这个端点将能执行<b>全部命令</b>，包括 <span class="mono">library items delete</span>——
+      它会删除磁盘上的媒体文件，且不经过任何人工确认。只在你完全信任接入方时使用。</p>
+    <div class="acts"><button class="btn">改用标准</button><button class="btn danger">我明白，使用完全策略</button></div>
+  </div>
+</section>
+
+<!-- ⑨ 总开关关闭 -->
+<section class="screen" id="s9">
+  <p class="note">总开关关闭态：不隐藏已有端点（否则用户会以为配置丢了），而是整体置灰并说清后果。</p>
+  <header class="h">
+    <span class="icon-chip">🔌</span>
+    <div><h1>MCP 服务</h1><p class="sub">已关闭 · 3 个端点处于停用状态</p></div>
+  </header>
+  <div class="hr"></div>
+
+  <div class="card tight">
+    <div class="switch">
+      <div><b style="font-size:14px">启用 MCP 服务</b><div class="meta">总开关。关闭后下面所有端点立即失效</div></div>
+      <span class="t off"></span>
+    </div>
+  </div>
+
+  <div class="alert warn">MCP 服务已关闭，下列端点全部返回 404。配置和令牌都保留着，重新打开总开关即可恢复。</div>
+
+  <div class="dim">
+    <div class="card"><div class="row"><div>
+      <b style="font-size:15px">家庭影音助理</b> <span class="tag">标准</span>
+      <div class="mono meta">/mcp/home-assistant</div></div><button class="btn sm">详情</button></div></div>
+    <div class="card"><div class="row"><div>
+      <b style="font-size:15px">只读看板</b> <span class="tag">只读</span>
+      <div class="mono meta">/mcp/dashboard</div></div><button class="btn sm">详情</button></div></div>
+    <div class="card"><div class="row"><div>
+      <b style="font-size:15px">运维调试</b> <span class="tag">完全</span>
+      <div class="mono meta">/mcp/ops</div></div><button class="btn sm">详情</button></div></div>
+  </div>
+</section>
+
+<script>
+// —— 屏切换 ——
+document.querySelectorAll(".nav button").forEach(b=>b.onclick=()=>{
+  document.querySelectorAll(".nav button").forEach(x=>x.classList.toggle("on",x===b));
+  document.querySelectorAll(".screen").forEach(s=>s.classList.toggle("on",s.id===b.dataset.s));
+  window.scrollTo(0,0);
+});
+
+// —— 屏④：服务多选（数字取自当前 spec 的真实统计）——
+// cmds = 该服务会生成的命令条数；kb = 工具描述体积（域说明 + 命令清单）
+const SERVICES = {
+  g1:[["discover","发现电影/剧集","TMDB、豆瓣的热映、榜单、片单与资料",8,0.4],
+      ["search","统一搜索","搜影视条目、跨站搜种子、搜已入库内容",9,0.5],
+      ["subscriptions","订阅与追更","持续追踪新资源并自动下载入库",16,0.9],
+      ["rules","订阅过滤规则","分辨率、编码、字幕、体积等条件组",5,0.3]],
+  g2:[["site","PT 资源站点","站点接入、验证、启停与缓存统计",13,0.4],
+      ["dl","下载器与投递","qBittorrent / Transmission 接入与提交",15,0.5],
+      ["watch","监听导入","下载完成后自动识别、命名并转移入库",8,0.4],
+      ["extension","浏览器插件同步","站点 Cookie 同步令牌与支持站点",6,0.3]],
+  g3:[["library","本地媒体库","建库、扫描、入库、元数据与图片管理",57,3.3],
+      ["scrape","刮削与整理配置","命名模板、图片语言优先级、NFO 开关",4,0.2],
+      ["people","影人档案","按 TMDB 人物 ID 查资料与参演作品",1,0.1]],
+  g4:[["app","应用设置与维护","外部地址、重启、检查升级与回退",16,0.6],
+      ["jobs","后台作业","查询、等待、取消、重试与执行器健康",11,0.3],
+      ["notices","系统待处理事项","按严重程度排序的活跃问题",2,0.1],
+      ["net","网络与代理","代理、镜像与连通性测试",3,0.2],
+      ["transcode","远程转码 Worker","远程转码开关、地址与状态",5,0.2],
+      ["health","存活检查","API 存活探针",1,0.1]],
+  g5:[["auth","个人信息与令牌","身份、头像昵称、API 令牌管理",11,0.4],
+      ["session","智能体会话","发起/继续对话、读取轨迹、压缩上下文",13,0.5],
+      ["channels","消息推送","微信 / Telegram / Discord 配对与推送",12,0.5],
+      ["llm","AI 模型供应商","接入模型、选模型、验证连通性",10,0.4],
+      ["webhook","事件 Webhook","播放、收藏等事件推送到外部端点",5,0.3],
+      ["ui","界面偏好","各页面布局、显示与样式设置",10,0.5],
+      ["appearance","首页背景与图库","背景图上传、切换与删除",5,0.3]]
+};
+const DEFAULT_ON = new Set(["subscriptions","search","library","dl"]);
+const picked = new Set(DEFAULT_ON);
+
+for (const [gid, list] of Object.entries(SERVICES)) {
+  const box = document.getElementById(gid);
+  for (const [id,name,desc,cmds,kb] of list) {
+    const el = document.createElement("button");
+    el.className = "svc" + (picked.has(id) ? " sel" : "");
+    el.innerHTML = `<span class="box"></span><span><b>${name} <span class="mono faint">${id}</span></b>
+      <span class="d">${desc}</span><span class="n">${cmds} 条命令 · 描述约 ${kb} KB</span></span>`;
+    el.onclick = () => {
+      picked.has(id) ? picked.delete(id) : picked.add(id);
+      el.classList.toggle("sel", picked.has(id));
+      refresh();
+    };
+    box.appendChild(el);
+  }
+}
+
+function refresh(){
+  let cmds = 0, kb = 0;
+  for (const list of Object.values(SERVICES))
+    for (const [id,,,c,k] of list) if (picked.has(id)) { cmds += c; kb += k; }
+  const n = picked.size;
+  document.getElementById("sum1").textContent = n ? `${n} 个工具` : "还没选服务";
+  const warn = n > 12 ? " ⚠ 工具偏多，模型选择准确率会下降，建议拆成多个端点" : "";
+  document.getElementById("sum2").textContent =
+    n ? `覆盖 ${cmds} 条命令 · 工具描述约 ${kb.toFixed(1)} KB${warn}` : "至少选择一个服务才能创建端点";
+  document.getElementById("sum2").style.color = warn ? "var(--warn)" : "";
+}
+refresh();
+
+// —— 屏⑤：策略单选 ——
+document.querySelectorAll("[data-policy]").forEach(o=>o.onclick=()=>{
+  document.querySelectorAll("[data-policy]").forEach(x=>x.classList.toggle("sel",x===o));
+});
+
+// —— 屏⑥：接入片段页签 ——
+document.querySelectorAll("#tabs button").forEach(b=>b.onclick=()=>{
+  document.querySelectorAll("#tabs button").forEach(x=>x.classList.toggle("on",x===b));
+  document.querySelectorAll(".snip").forEach(p=>p.hidden = p.id !== b.dataset.t);
+});
+
+// —— 开关点一下能动（样稿里也让人有反馈）——
+document.querySelectorAll(".t").forEach(t=>t.onclick=()=>t.classList.toggle("off"));
+</script>
+</body>
+</html>
