@@ -38,8 +38,8 @@ from sqlmodel import select
 from movieclaw_api.schemas.library import ChapterJobView
 from movieclaw_api.services import jobs
 from movieclaw_api.services.library.layout import STRM_EXT
-from movieclaw_api.services.library.thumbs import FRAME_GRAB_GATE, TONEMAP_FILTERS
-from movieclaw_api.services.media_probe import probe_chapters
+from movieclaw_api.services.library.thumbs import FRAME_GRAB_GATE, build_filter_chains
+from movieclaw_api.services.media_probe import VideoColor, probe_chapters, video_color_for
 from movieclaw_db.engine import get_database
 from movieclaw_db.models import Library, LibraryFile, utcnow
 from movieclaw_db.models.job import Job
@@ -183,27 +183,23 @@ def stills_eligible(row: LibraryFile) -> bool:
     )
 
 
-def _filter_chains(hdr: str | None) -> list[list[str]]:
-    """滤镜链：隔行化 → [HDR 色调映射] → 5 个关键帧里选代表帧 → 缩放 → showinfo。
+def _filter_chains(color: VideoColor) -> list[list[str]]:
+    """滤镜链：隔行化 → 5 个关键帧里选代表帧 → 缩放 → [色调映射] → showinfo。
 
-    HDR 先试色调映射链，滤镜不可用（ffmpeg 没编 zimg）时退回不映射。
+    色彩决策与主图抓帧共用 ``thumbs.build_filter_chains``（那里有取舍说明）——
+    两处出的图必须观感一致，各写一遍迟早会漂。
     ``showinfo`` 放最后：thumbnail 选完帧它只打印被选中那一帧的 pts_time。
     """
-    tail = [
-        "thumbnail=n=5",
+    return build_filter_chains(
+        color,
         f"scale='min({_STILL_WIDTH},iw)':-2",
-        "format=yuv420p",
-        "showinfo",
-    ]
-    base = ["bwdif=mode=send_frame:deint=interlaced", *tail]
-    chains = [base]
-    if hdr:
-        chains.insert(0, [base[0], *TONEMAP_FILTERS, *tail])
-    return chains
+        thumbnail="thumbnail=n=5",
+        tail=("showinfo",),
+    )
 
 
 def grab_chapter_still(
-    video: Path, dest: Path, *, seek_seconds: float, hdr: str | None
+    video: Path, dest: Path, *, seek_seconds: float, color: VideoColor
 ) -> int | None:
     """同步版：在 ``seek_seconds`` 附近只解关键帧抓一帧到 ``dest``，返回图上
     那一帧的真实时间（毫秒）；失败返回 None。
@@ -215,7 +211,7 @@ def grab_chapter_still(
     定位点本身，图照样可用。
     """
     dest.parent.mkdir(parents=True, exist_ok=True)
-    for chain in _filter_chains(hdr):
+    for chain in _filter_chains(color):
         cmd = [
             "ffmpeg",
             "-v",
@@ -281,6 +277,9 @@ def extract_file_stills(
             _delete_dead_images(image_dir, keep)
             return result
     total_ms = duration_seconds * 1000 if duration_seconds else None
+    # 色彩特征整个文件探一次就够：DOVI 配置在流的 side data 里，与抓哪一帧无关。
+    # 放在预算计时之前——它是一次轻量 ffprobe，不该算进逐章抓图的预算。
+    color = video_color_for(video, fallback_hdr=hdr)
     deadline = time.monotonic() + _FILE_BUDGET_SECONDS
     try:
         for chapter in chapters:
@@ -304,7 +303,7 @@ def extract_file_stills(
                     _FIRST_CHAPTER_OFFSET_S if duration_seconds is None else 0.0
                 )
             try:
-                frame_ms = grab_chapter_still(video, dest, seek_seconds=seek, hdr=hdr)
+                frame_ms = grab_chapter_still(video, dest, seek_seconds=seek, color=color)
             except subprocess.TimeoutExpired:
                 logger.warning("章节抓帧超时（%s 秒）：%s @ %ss", _FFMPEG_TIMEOUT, video, seek)
                 frame_ms = None
