@@ -125,6 +125,31 @@ _SOFTWARE_TONEMAP = (
     "tonemapx=tonemap=bt2390:desat=0:p=bt709:t=bt709:m=bt709:format=yuv420p"
 )
 
+#: 台账色彩空间标签 → ``colorspace`` 滤镜的输入三件套。
+#:
+#: **为什么必须显式声明输入**：只写输出（``colorspace=all=bt709``）时，滤镜
+#: 遇到原色缺失的源会直接报「Unsupported input primaries 2 (unknown)」并让
+#: ffmpeg 退出——那不是偏色，是整部片放不了。而探测层的标签恰恰会在原色写成
+#: unknown 时靠矩阵兜底（media_probe._color_space_label），这个组合是真会撞上的。
+#:
+#: **为什么只列 BT.2020**：探测层把 BT.601 的 525/625 两制式合并成一个标签，
+#: 补不回来是哪一个；两者矩阵相同、只差原色，猜错的收益远小于风险，不如不动。
+#: Display P3 / DCI-P3 则不在 ``colorspace`` 滤镜的支持集里。用上游内置的
+#: ``colorspace`` 而不是 ``zscale``：少一个 libzimg 依赖，输入假设也能写死。
+_COLOR_CONVERT_INPUT: dict[str, str] = {
+    "BT.2020": "ispace=bt2020ncl:iprimaries=bt2020:itrc=bt2020-10",
+}
+
+#: 转码输出的色彩标签。**只要装配层确知画面已经落在 BT.709 就无条件写上**——
+#: 写标签零成本，却能兜住任何后端滤镜漏设的情况（VAAPI/QSV 就漏过），也能消掉
+#: 「无标签片缩放跨过 720 线、播放器改猜 BT.601」的偏色。
+_BT709_OUTPUT_TAGS = [
+    "-colorspace", "bt709",
+    "-color_primaries", "bt709",
+    "-color_trc", "bt709",
+    "-color_range", "tv",
+]
+
 #: 多声道降混系数：提升中置声道权重。不带它，对白会明显偏小——
 #: 「音效很响但听不清台词」是用户投诉第一名（§7-⑤）。
 #: 不用 ``-af volume=2`` 那种 hack，那会削顶失真。
@@ -164,7 +189,10 @@ HW_BACKENDS: dict[str, HwBackend] = {
         hwaccel="vaapi",
         hwaccel_output_format="vaapi",
         scale_filter="scale_vaapi",
-        tonemap_filter="tonemap_vaapi=format=nv12:t=bt709",
+        # 三项必须都写。只设 t=bt709 会把画面映射到 709 却仍标着 BT.2020 的
+        # 原色与矩阵，播放器照标签做色域扩展——实测渲染差平均 13.4/255、
+        # 最高 90，观感是整体偏红发品（issue #331）。
+        tonemap_filter="tonemap_vaapi=format=nv12:t=bt709:m=bt709:p=bt709",
         device="/dev/dri/renderD128",
         sw_frames_ok=False,
     ),
@@ -174,7 +202,11 @@ HW_BACKENDS: dict[str, HwBackend] = {
         hwaccel="qsv",
         hwaccel_output_format="qsv",
         scale_filter="scale_qsv",
-        tonemap_filter="vpp_qsv=tonemap=1:format=nv12",
+        # 同 VAAPI：vpp_qsv 不写 out_color_* 就只换曲线不换标签。
+        tonemap_filter=(
+            "vpp_qsv=tonemap=1:format=nv12:out_color_transfer=bt709"
+            ":out_color_matrix=bt709:out_color_primaries=bt709"
+        ),
     ),
     "nvenc": HwBackend(
         name="nvenc",
@@ -369,20 +401,20 @@ def _burn_subtitle_index(plan: PlaybackPlan) -> int | None:
 
 
 def _burn_filter_graph(plan: PlaybackPlan, subtitle_index: int) -> str:
-    """烧录的 filter_complex 图：tone-map →（源分辨率）overlay 烧字幕 → scale。
+    """烧录的 filter_complex 图：色彩归一 →（源分辨率）overlay 烧字幕 → scale。
 
     顺序有讲究：
     - overlay 必须在 **scale 之前**——PGS 位图的坐标按源分辨率定位，先缩放
       画面再叠原始坐标的字幕，位置和大小全错；
-    - tone-map 在 overlay 之前——PGS 是 SDR 图形，叠上 HDR 帧再整体映射会把
-      字幕颜色一起压暗；先把画面拉回 SDR 再叠，字幕保持设计时的观感。
+    - 色彩归一在 overlay 之前——PGS 是按 BT.709 SDR 设计的图形，叠上 HDR 或
+      BT.2020 的帧再整体转换，会把字幕颜色一起改掉；先把画面拉到 BT.709 再叠，
+      字幕保持设计时的观感。
     烧录一律软件滤镜链（overlay 没有通用的硬件版本），编码器侧的取舍见
     ``effective_hw_backend``。
     """
-    steps: list[tuple[str, str]] = []  # (滤镜串, 输出标签)
-    if plan.video.tone_map:
-        steps.append((_SOFTWARE_TONEMAP, "tm"))
-    base = f"[0:v:0]{steps[0][0]}[tm];[tm]" if steps else "[0:v:0]"
+    # HDR 走 tone-map，非 709 的 SDR 走色彩空间转换；两者互斥，都落到 BT.709。
+    color_pre = _SOFTWARE_TONEMAP if plan.video.tone_map else _color_convert_filter(plan)
+    base = f"[0:v:0]{color_pre}[tm];[tm]" if color_pre else "[0:v:0]"
     graph = f"{base}[0:s:{subtitle_index}]overlay"
     if plan.video.height:
         graph += f"[burned];[burned]scale=-2:{plan.video.height}"
@@ -392,6 +424,35 @@ def _burn_filter_graph(plan: PlaybackPlan, subtitle_index: int) -> str:
     graph += "[pre];[pre]format=yuv420p"
     graph += "[vout]"
     return graph
+
+
+def _color_convert_filter(plan: PlaybackPlan) -> str | None:
+    """非 HDR 但源色彩空间不是 BT.709 时要插的转换滤镜；不需要则 None。
+
+    ``scale`` 只改分辨率，**不做色彩空间转换**——BT.2020 的 SDR 源（10-bit
+    压制常见）不管它，就会带着 BT.2020 的原色与矩阵编成 H.264 交给播放器，
+    实测偏色平均 13.3/255、最高 102（issue #331）。HDR 源不走这里：tone-map
+    链本身就把画面落到 BT.709 了。
+    """
+    if plan.video.tone_map:
+        return None
+    spec = _COLOR_CONVERT_INPUT.get(plan.video.source_color or "")
+    return f"colorspace={spec}:all=bt709:format=yuv420p" if spec else None
+
+
+def _outputs_bt709(plan: PlaybackPlan) -> bool:
+    """装配出来的这条链，产物是不是确定落在 BT.709。
+
+    三种情况确定：tone-map 过、做了色彩空间转换、源本来就是 BT.709
+    （含决策层按源高度认定的那一档，见 decide._transcode_source_color）。
+    其余情况（BT.601 / P3 / 源是无标签的 SD）不确定，不写标签——
+    标一个没把握的值，比留空更容易把播放器带偏。
+    """
+    return (
+        plan.video.tone_map
+        or plan.video.source_color == "BT.709"
+        or plan.video.source_color in _COLOR_CONVERT_INPUT
+    )
 
 
 def _video_args(
@@ -459,6 +520,10 @@ def _video_args(
     # 把 HLS 切成 0.4 秒一段；force_key_frames 再把关键帧对齐到分片栅格。
     args += ["-g", str(MAX_GOP_FRAMES)]
     args += ["-force_key_frames", f"expr:gte(t,n_forced*{SEGMENT_SECONDS})"]
+    # 输出侧的色彩标签放在最后、且不依赖滤镜链的属性传递：滤镜漏设（VAAPI 与
+    # QSV 都漏过）或不同 ffmpeg 版本的协商差异，都会在这里被兜住。
+    if _outputs_bt709(plan):
+        args += _BT709_OUTPUT_TAGS
     return args
 
 
@@ -472,6 +537,11 @@ def _filter_chain(
             parts.append(backend.tonemap_filter)
         else:
             parts.append(_SOFTWARE_TONEMAP)
+    else:
+        # 非 HDR 的非 709 源同样要显式转换，scale 不会替我们做
+        convert = _color_convert_filter(plan)
+        if convert:
+            parts.append(convert)
     if height:
         if backend is not None and backend.scale_filter and not software_filters:
             parts.append(f"{backend.scale_filter}=w=-2:h={height}")

@@ -115,6 +115,10 @@ class MediaProfile:
     video_codec: str | None = None
     resolution: str | None = None
     hdr: str | None = None  # None=SDR / "HDR10" / "HLG" / "HDR10+" / "Dolby Vision"
+    #: 归一化色彩空间标签（"BT.2020" / "BT.709" / "BT.601" / …），来自 ffprobe
+    #: 落库的真值。SDR 片同样可能是 BT.2020（10-bit 压制常见），转码要据此决定
+    #: 插不插色彩空间转换——只看 hdr 是不够的。
+    color_space: str | None = None
     bit_depth: int | None = None
     duration_ms: int | None = None
     audio_tracks: tuple[AudioTrack, ...] = ()
@@ -155,7 +159,18 @@ class VideoPlan:
     #: 源视频位深（来自 ffprobe）。VideoToolbox 从硬件帧下载前要据此选择
     #: 8-bit 的 NV12 或 10-bit 的 P010；未知时由命令装配层安全回退软件解码。
     source_bit_depth: int | None = None
-    tone_map: bool = False  # HDR → SDR
+    #: HDR → SDR。**转码档的不变量，不是一个判断**：转码输出恒为 H.264 8-bit
+    #: BT.709，装不下 HDR，所以只要源是 HDR 就必须映射——与「为什么要转码」
+    #: 无关。曾经它由 _judge_video 顺带产出，而那串判定是提前 return 的：
+    #: 编码不支持 / 超解码上限 / 原生 HLS 上限 / 用户画质上限，任意一条先命中，
+    #: HDR 判定就根本不执行，PQ 曲线被当 SDR 直接编进 8-bit——画面灰暗、
+    #: 对比度只剩三成、红绿反转（issue #331）。现在改由 _build_video_plan
+    #: 统一按 media.hdr 计算，没有任何路径能绕过去。
+    tone_map: bool = False
+    #: 源画面的色彩空间（_transcode_source_color 解析）。scale 滤镜**不做**
+    #: 色彩空间转换，BT.2020 的 SDR 源不管它就会带着 BT.2020 标签编成 H.264，
+    #: 播放器按标签做色域扩展 → 偏色。None=无从判断，装配层保持原样不猜。
+    source_color: str | None = None
     #: 要烧录进画面的字幕轨（中性引用，只会是内封 PGS）。非空即 Emby 语义的
     #: 「字幕压制」：用户显式选中位图字幕，视频整路转码、字幕合成进帧——
     #: 这是**硬边界 1 唯一的例外**，且必须由用户的选择触发，决策器绝不主动。
@@ -300,7 +315,6 @@ def decide_playback(
         video_verdict = _VideoVerdict(
             can_copy=False,
             reason="已选中 PGS 图形字幕，按你的选择转码并把字幕压制进画面",
-            tone_map=video_verdict.tone_map,
         )
 
     # 6–7. 综合定档。
@@ -332,7 +346,6 @@ def decide_playback(
         container=container,
         video=_build_video_plan(
             media,
-            video_verdict,
             tier,
             policy,
             max_height,
@@ -353,9 +366,15 @@ def decide_playback(
 
 @dataclass(frozen=True)
 class _VideoVerdict:
+    """视频能不能直通的判定。
+
+    **不含 tone_map**：这串判定是提前 return 的，任何挂在末尾的字段都会被
+    先命中的分支跳过（issue #331 的成因）。色彩相关的结论一律由
+    ``_build_video_plan`` 按源规格统一算，那里是转码计划的唯一出口。
+    """
+
     can_copy: bool
     reason: str
-    tone_map: bool = False
     #: 无法直通且连转码也不该做（如 HDR 需 tone-map 但没有 GPU）
     blocked: str | None = None
 
@@ -442,9 +461,7 @@ def _judge_video(
                     "不予启用。"
                 ),
             )
-        return _VideoVerdict(
-            can_copy=False, reason="Dolby Vision 已转换为 SDR 显示", tone_map=True
-        )
+        return _VideoVerdict(can_copy=False, reason="Dolby Vision 已转换为 SDR 显示")
 
     if media.hdr and not capability.hdr_passthrough:
         if not policy.hardware_available:
@@ -456,9 +473,7 @@ def _judge_video(
                     "色调映射；但未检测到可用的硬件加速设备。"
                 ),
             )
-        return _VideoVerdict(
-            can_copy=False, reason=f"{media.hdr} 已转换为 SDR 显示", tone_map=True
-        )
+        return _VideoVerdict(can_copy=False, reason=f"{media.hdr} 已转换为 SDR 显示")
 
     hdr_note = f"（{media.hdr} 直通）" if media.hdr else ""
     return _VideoVerdict(can_copy=True, reason=f"视频编码 {codec_label} 可直通{hdr_note}")
@@ -713,7 +728,6 @@ def needs_keyframe_probe(
         video_verdict = _VideoVerdict(
             can_copy=False,
             reason="已选中 PGS 图形字幕，按你的选择转码并把字幕压制进画面",
-            tone_map=video_verdict.tone_map,
         )
 
     tier, _, _, _ = _resolve_tier(
@@ -734,7 +748,6 @@ def needs_keyframe_probe(
 
 def _build_video_plan(
     media: MediaProfile,
-    verdict: _VideoVerdict,
     tier: PlaybackTier,
     policy: PlaybackPolicy,
     max_height: int | None = None,
@@ -753,9 +766,29 @@ def _build_video_plan(
         codec="h264",
         height=min(candidates),
         source_bit_depth=media.bit_depth,
-        tone_map=verdict.tone_map,
+        # 色彩两项只看**源是什么**，不看这次为什么要转码——转码输出恒为
+        # H.264 8-bit BT.709，HDR 装不进去。verdict 不再参与（issue #331）。
+        tone_map=bool(media.hdr),
+        source_color=_transcode_source_color(media),
         burn_subtitle=burn_subtitle,
     )
+
+
+def _transcode_source_color(media: MediaProfile) -> str | None:
+    """转码时按什么色彩空间解读源画面。
+
+    台账的探测值优先。探测不到时，只在源本身是 HD 的情况下认定 BT.709：
+    无标签的片子播放器就是**按高度猜**的（<720 判 BT.601、≥720 判 BT.709），
+    而转码会改高度——一部无标签的 1080p 片降到 480p，播放器的猜法就从
+    BT.709 翻成 BT.601，画面平白偏色（实测平均差 10.4/255）。把源侧已经
+    成立的解读固化到输出标签上，缩放就不再改变解读。
+
+    源本身是 SD 时无从判断（既可能是真 BT.601，也可能是没打标签的 BT.709），
+    返回 None 让装配层保持原样——猜错了比不猜更糟。
+    """
+    if media.color_space:
+        return media.color_space
+    return "BT.709" if (media.height or 0) >= 720 else None
 
 
 def _burn_target(media: MediaProfile, preferred_subtitle: str | None) -> SubtitleTrack | None:

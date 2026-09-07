@@ -37,6 +37,7 @@ def media_profile_from_file(
         video_codec=file.video_codec,
         resolution=file.resolution,
         hdr=file.hdr,
+        color_space=file.color_space,
         bit_depth=file.bit_depth,
         duration_ms=(file.duration_seconds * 1000) if file.duration_seconds else None,
         audio_tracks=_audio_tracks(file),

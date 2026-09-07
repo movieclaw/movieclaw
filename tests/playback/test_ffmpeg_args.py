@@ -409,6 +409,136 @@ def test_tone_map_uses_bt2390_not_clip():
     assert "bt2390" in pair(argv, "-vf")
 
 
+def test_hardware_tonemap_pins_all_three_color_properties():
+    """VAAPI/QSV 的 tone-map 必须把矩阵与原色一起落到 BT.709。
+
+    只设 t=bt709 会把画面映射到 709、标签却仍写着 BT.2020，播放器照标签做
+    色域扩展——实测渲染差平均 13.4/255、最高 90，观感是整体偏红发品
+    （issue #331）。这条打的正是 Intel/AMD 核显那批 Docker 部署。
+    """
+    for backend, filter_name in (("vaapi", "tonemap_vaapi"), ("qsv", "vpp_qsv")):
+        argv = argv_of(
+            plan(
+                PlaybackTier.HARDWARE_TRANSCODE,
+                video=VideoPlan(
+                    action="transcode", codec="h264", height=1080, tone_map=True
+                ),
+            ),
+            hw_backend=backend,
+        )
+        vf = pair(argv, "-vf")
+        assert vf and filter_name in vf, backend
+        # 三项齐全，一项都不能少
+        assert vf.count("bt709") >= 3, f"{backend}: {vf}"
+
+
+@pytest.mark.parametrize(
+    "name, video_kw, expect_filter",
+    [
+        (
+            "BT.2020 的 SDR 源要显式转换——scale 不做色彩空间转换",
+            {"source_color": "BT.2020"},
+            "colorspace=ispace=bt2020ncl:iprimaries=bt2020:itrc=bt2020-10"
+            ":all=bt709:format=yuv420p",
+        ),
+        ("源本来就是 BT.709，不做无谓的转换", {"source_color": "BT.709"}, None),
+        ("源色彩未知，不猜", {"source_color": None}, None),
+        (
+            "BT.601 的 525/625 探测层已合并，补不回来就不动",
+            {"source_color": "BT.601"},
+            None,
+        ),
+    ],
+)
+def test_sdr_color_space_conversion(name, video_kw, expect_filter):
+    argv = argv_of(
+        plan(
+            PlaybackTier.SOFTWARE_TRANSCODE,
+            video=VideoPlan(action="transcode", codec="h264", height=1080, **video_kw),
+        )
+    )
+    vf = pair(argv, "-vf") or ""
+    if expect_filter is None:
+        assert "colorspace=" not in vf, name
+    else:
+        assert expect_filter in vf, name
+
+
+def test_hdr_source_is_not_converted_twice():
+    """HDR 源几乎都是 BT.2020：tone-map 已经把画面落到 709，不能再叠一次转换。
+
+    叠两次会把画面按 BT.2020 再解一遍，等于凭空引入一次反向偏色。
+    """
+    argv = argv_of(
+        plan(
+            PlaybackTier.SOFTWARE_TRANSCODE,
+            video=VideoPlan(
+                action="transcode", codec="h264", height=1080,
+                tone_map=True, source_color="BT.2020",
+            ),
+        )
+    )
+    vf = pair(argv, "-vf")
+    assert "tonemapx" in vf
+    assert "colorspace=" not in vf
+    assert pair(argv, "-colorspace") == "bt709"  # 标签照打
+
+
+def test_color_convert_is_declared_with_explicit_input():
+    """输入三件套必须显式写死。
+
+    只写输出时，``colorspace`` 滤镜遇到原色缺失的源会直接报
+    「Unsupported input primaries 2 (unknown)」让 ffmpeg 退出——那不是偏色，
+    是整部片放不了。而探测层的标签恰恰会在原色写成 unknown 时靠矩阵兜底
+    （media_probe._color_space_label），这个组合真会撞上。
+    """
+    argv = argv_of(
+        plan(
+            PlaybackTier.SOFTWARE_TRANSCODE,
+            video=VideoPlan(
+                action="transcode", codec="h264", height=1080, source_color="BT.2020"
+            ),
+        )
+    )
+    vf = pair(argv, "-vf")
+    assert "ispace=" in vf and "iprimaries=" in vf and "itrc=" in vf
+
+
+@pytest.mark.parametrize(
+    "name, video_kw, tagged",
+    [
+        ("tone-map 过，产物确定是 709", {"tone_map": True}, True),
+        ("做了色彩空间转换，产物确定是 709", {"source_color": "BT.2020"}, True),
+        ("源本来就是 709", {"source_color": "BT.709"}, True),
+        ("源色彩未知，不写标签", {"source_color": None}, False),
+        ("BT.601 没做转换，不能标成 709", {"source_color": "BT.601"}, False),
+    ],
+)
+def test_output_color_tags_only_when_certain(name, video_kw, tagged):
+    """确知落在 BT.709 就无条件写标签，没把握就留空。
+
+    写标签零成本，却能兜住后端滤镜漏设（VAAPI/QSV 就漏过），也能消掉
+    「无标签片缩放跨过 720 线、播放器改猜 BT.601」的偏色。反过来，标一个
+    没把握的值比留空更容易把播放器带偏。
+    """
+    argv = argv_of(
+        plan(
+            PlaybackTier.SOFTWARE_TRANSCODE,
+            video=VideoPlan(action="transcode", codec="h264", height=1080, **video_kw),
+        )
+    )
+    for flag in ("-colorspace", "-color_primaries", "-color_trc"):
+        assert (pair(argv, flag) == "bt709") is tagged, f"{name}: {flag}"
+    assert (pair(argv, "-color_range") == "tv") is tagged, name
+
+
+def test_copy_path_gets_no_color_tags():
+    """直通/重封装不解码画面，写色彩标签既没依据也可能覆盖源的正确标签。"""
+    argv = argv_of(plan(PlaybackTier.REMUX))
+    assert "-colorspace" not in argv
+    assert "-color_primaries" not in argv
+
+
 def test_direct_play_tier_is_rejected():
     """档 0 是原文件直出，走到命令装配就是调用方的 bug。"""
     with pytest.raises(ValueError):
@@ -605,6 +735,19 @@ def test_burn_uses_filter_complex_with_overlay_before_scale():
     assert argv[argv.index("-map") + 1] == "[vout]"
     assert "0:v:0" not in [argv[i + 1] for i, a in enumerate(argv) if a == "-map"]
     assert "-vf" not in argv  # 与 filter_complex 互斥
+
+
+def test_burn_converts_color_space_before_overlay():
+    """非 HDR 的非 709 源，烧录链同样要先把画面拉到 BT.709 再叠字幕。
+
+    PGS 是按 BT.709 SDR 设计的图形；先叠再整体转换会把字幕颜色一起改掉。
+    烧录走独立的 filter_complex 分支，色彩链必须与 -vf 那条保持一致，
+    否则「选了 PGS 字幕」会成为绕过色彩修复的第二条路径。
+    """
+    argv = argv_of(_burn_plan(source_color="BT.2020", height=None))
+    graph = argv[argv.index("-filter_complex") + 1]
+    assert graph.startswith("[0:v:0]colorspace=")
+    assert graph.index("colorspace=") < graph.index("overlay")
 
 
 def test_burn_with_tonemap_runs_tonemap_before_overlay():

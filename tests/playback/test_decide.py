@@ -270,6 +270,129 @@ def test_hdr10_tone_maps_when_display_cannot():
 
 
 # ---------------------------------------------------------------------------
+# 转码档的色彩不变量（issue #331）
+#
+# tone_map 曾经挂在 _judge_video 的判定链末尾，而那串判定是**提前 return**
+# 的：编码不支持 / 超设备解码上限 / 原生 HLS 上限 / 用户画质上限，任意一条
+# 先命中，HDR 判定就根本不执行，tone_map 保持 False——PQ 曲线被当 SDR 直接
+# 编进 8-bit H.264，实测对比度只剩三成、红绿反转。
+#
+# 这四条路径每一条都要单独钉死：它们的共同点恰恰是「与 HDR 无关」，最容易
+# 在后续迭代里再被加一条同类分支绕过去。
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "name, media_kwargs, capability, max_height",
+    [
+        (
+            "浏览器不支持该编码（Chrome 遇 HEVC，最常见）",
+            {"video_codec": "hevc", "hdr": "HDR10"},
+            CHROME_NO_HEVC,
+            None,
+        ),
+        (
+            "超出设备探测到的解码上限",
+            {"video_codec": "hevc", "hdr": "HDR10", "resolution": "2160p"},
+            ClientCapability(
+                video=(VideoSupport("hevc", max_height=1080),),
+                audio=(AudioSupport("aac"),),
+                containers=frozenset({"mp4", "hls-fmp4"}),
+                hdr_passthrough=True,
+            ),
+            None,
+        ),
+        (
+            "原生 HLS 的 1080p 上限",
+            {"video_codec": "hevc", "hdr": "HDR10", "resolution": "2160p"},
+            IOS_NATIVE_HLS,
+            None,
+        ),
+        (
+            "用户选的画质上限",
+            {"video_codec": "hevc", "hdr": "HDR10"},
+            SAFARI_MAC,
+            720,
+        ),
+    ],
+)
+def test_hdr_always_tone_maps_whatever_forced_the_transcode(
+    name, media_kwargs, capability, max_height
+):
+    """只要落到转码档，HDR 源就必须 tone-map——与「为什么转码」无关。
+
+    转码输出恒为 H.264 8-bit BT.709，HDR 根本装不进去；漏掉 tone-map 不是
+    「少做一步优化」，是把 PQ 数据当 SDR 电平送显，画面必然失真。
+    """
+    decision = decide_playback(
+        media(**media_kwargs), capability, WITH_GPU, max_height=max_height
+    )
+    assert isinstance(decision, PlaybackPlan), name
+    assert decision.video.action == "transcode", name
+    assert decision.video.tone_map is True, name
+
+
+def test_hdr_tone_maps_even_when_display_supports_hdr():
+    """HDR 屏也一样：一旦转码，输出就是 SDR，不存在「转码后还是 HDR」。
+
+    这条曾经是自相矛盾的——判定说「HDR10 直通」，档位却因关键帧索引未就绪
+    落到转码，产出一个没做 tone-map 的 8-bit 流。
+    """
+    decision = decide_playback(
+        media(video_codec="hevc", hdr="HDR10", keyframe_interval_s=None),
+        SAFARI_MAC,
+        WITH_GPU,
+    )
+    assert isinstance(decision, PlaybackPlan)
+    assert decision.video.action == "transcode"
+    assert decision.video.tone_map is True
+
+
+def test_sdr_never_tone_maps():
+    """反向守护：SDR 源不能被误加 tone-map（会把画面整体压暗）。"""
+    decision = decide_playback(media(video_codec="hevc"), CHROME_NO_HEVC, WITH_GPU)
+    assert isinstance(decision, PlaybackPlan)
+    assert decision.video.tone_map is False
+
+
+def test_copy_path_carries_no_color_work():
+    """直通/重封装档不碰画面，色彩字段必须是空的。"""
+    decision = decide_playback(media(hdr="HDR10"), SAFARI_MAC, WITH_GPU)
+    assert isinstance(decision, PlaybackPlan)
+    assert decision.video.action == "copy"
+    assert decision.video.tone_map is False
+    assert decision.video.source_color is None
+
+
+@pytest.mark.parametrize(
+    "name, color_space, resolution, expected",
+    [
+        ("台账探测到 BT.2020 就照实传下去", "BT.2020", "1080p", "BT.2020"),
+        ("台账探测到 BT.709 同理", "BT.709", "1080p", "BT.709"),
+        ("无标签的 HD 源按播放器的猜法认定 709", None, "1080p", "BT.709"),
+        ("无标签的 HD 源缩到 480p 也仍是 709（防解读翻转）", None, "720p", "BT.709"),
+        ("无标签的 SD 源无从判断，不猜", None, "480p", None),
+    ],
+)
+def test_source_color_resolution(name, color_space, resolution, expected):
+    """源色彩空间的解析口径。
+
+    无标签片播放器是**按高度猜**的（<720 判 BT.601、≥720 判 BT.709）。转码会
+    改高度，1080p 降到 480p 会让猜法翻转、画面偏色（实测平均差 10.4/255）；
+    把源侧已经成立的解读固化下来，缩放就不再改变解读。源本身是 SD 时两种
+    可能都有，返回 None 让装配层不写标签——猜错比不猜更糟。
+    """
+    decision = decide_playback(
+        media(video_codec="hevc", resolution=resolution, color_space=color_space),
+        CHROME_NO_HEVC,
+        WITH_GPU,
+    )
+    assert isinstance(decision, PlaybackPlan), name
+    assert decision.video.action == "transcode", name
+    assert decision.video.source_color == expected, name
+
+
+# ---------------------------------------------------------------------------
 # 关键帧密度（§7-②：remux 的分片只能切在 IDR 上）
 # ---------------------------------------------------------------------------
 

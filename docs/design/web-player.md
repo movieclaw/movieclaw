@@ -1086,6 +1086,9 @@ ref——`setChromeVisible(true)` 是异步的，click 回调读到的可能已�
 | ③b | **MP4 edit list / VFR** | 音画差几十~几百 ms；长片累积漂移 | 检测 elst 并补偿；VFR 显式 `-fps_mode` |
 | ④ | **Dolby Vision P5** | **绿紫画面**（最显眼的 bug） | 读 `dv_profile` 单独分支；P5 强制转码+tone-map，无 GPU 则拒绝 |
 | ④b | **tone-map 用简单 clip** | 雪景/天空/爆炸高光死白 | 必须 BT.2390 EETF |
+| ④c | **tone-map 决策挂在提前 return 的判定链上** | HDR 片因「编码不支持 / 超解码上限 / 原生 HLS 上限 / 用户画质上限」转码时漏做 tone-map：对比度只剩三成、红绿反转 | 色彩不再由 `_judge_video` 产出；`_build_video_plan` 按 `media.hdr` 统一算，没有路径能绕过（issue #331） |
+| ④d | **硬件 tone-map 只设 transfer** | 画面已到 709、标签仍是 BT.2020，播放器照标签做色域扩展 → 偏红发品（实测差 13.4/255） | `tonemap_vaapi` / `vpp_qsv` 的 matrix 与 primaries 必须一并写死 |
+| ④e | **`scale` 不做色彩空间转换** | BT.2020 的 SDR 源带着 BT.2020 标签编成 H.264 → 偏色（实测 13.3/255）；无标签片缩过 720 线还会让播放器改猜 BT.601（10.4/255） | 非 709 源插 `colorspace` 显式转换；转码输出确知落在 709 时无条件写 `-colorspace/-color_primaries/-color_trc/-color_range` |
 | ⑤ | **多声道降混** | 「音效很响但听不清台词」（投诉第一名） | 默认带 `pan` 提升中置权重；不用 `volume=2`（削顶失真） |
 | ⑥ | **pipe 输出不能 seek** | 用户一 seek 就重开进程从头转 | 档 1 也必须会话化 + 分片落盘，不做「curl 管道」 |
 | ⑦ | **连拖进度条起 N 个 ffmpeg** | NAS 躺平 | 前端防抖 + 已转区间复用 + 新会话先杀旧会话（§4.4） |
@@ -1512,6 +1515,8 @@ Mac mini 验证。做成发版前的人工清单，列进 `.claude/skills/releas
 | §4.5 | 并发超限「排队并明确告知」 | **立即拒绝**并报当前占用（如「2/2」） | HTTP 请求里排队 = 用户对着转圈等一个不知道多久的位置 |
 | §3.5 | 关键帧索引落 `library_file` | **不落库**，采样现算 + 内存缓存 | 存量库无论如何要懒加载补齐，落库的增量收益只是「重启后不用重算」，不值一次迁移 |
 | §7-④ | 按 `dv_profile` 区分 P5/P8 | **DV 一律转码** | 探测层只落 `hdr="Dolby Vision"` 不落 profile；判错的代价是绿紫画面，保守 |
+| §7-④ | P5 转码 + tone-map 即可 | **仍未真正解决 P5** | P5 是 IPT-PQ-c2，不是 YCbCr/BT.2020；`tonemapx` 按 BT.2020 处理它依然出绿紫。要治得走 jellyfin-ffmpeg 的 `-dolbyvision` 解码开关，缺真片验证，未动 |
+| §7-④e | BT.601 源也转到 709 | **不转，也不打标签** | 探测层把 601 的 525/625 两制式并成一个标签，补不回来是哪一个；两者矩阵相同只差原色，猜错的收益小于风险 |
 
 ### 12.5 尚未做
 
