@@ -52,6 +52,19 @@ export interface StorageUsage {
   computed_at: number;
 }
 
+/**
+ * 面板读到的状态。统计一次要遍历整个 data/（大库几十秒），所以接口从不阻塞：
+ * 永远立刻给上一次的结果与它的统计时刻，是否正在重算由 computing 表示。
+ */
+export interface StorageState {
+  /** 上一次统计的结果；后端进程内还没统计过时为 null */
+  usage: StorageUsage | null;
+  /** 后台是否正在统计：前端据此显示「统计中」并轮询，新数据到了再替换旧数据 */
+  computing: boolean;
+  /** 上一次统计失败的原因；失败时旧结果仍然可用 */
+  error: string | null;
+}
+
 export type CleanMode = "all" | "orphans";
 
 export interface CleanResult {
@@ -62,10 +75,13 @@ export interface CleanResult {
   freed_bytes: number;
 }
 
-/** 读取占用快照；refresh 忽略后端缓存立即重算（大目录可能要几秒）。 */
-export function getStorageUsage(refresh = false): Promise<StorageUsage> {
+/**
+ * 读取占用状态（立刻返回，不等统计）。refresh=true 只是让后端在后台重新统计，
+ * 之后按 computing 轮询这个接口，等新快照落地。
+ */
+export function getStorageState(refresh = false): Promise<StorageState> {
   return unwrap(
-    request<ApiEnvelope<StorageUsage>>(
+    request<ApiEnvelope<StorageState>>(
       `/app/storage${refresh ? "?refresh=1" : ""}`,
     ),
   );

@@ -2,10 +2,12 @@
 
 两件事：
 
-- ``usage()``：给面板的一次性快照——每个登记目录的体积与条目数、data/ 所在磁盘
-  的总量/剩余、未登记目录。递归统计大目录（几万张刮削图）可能要几秒到几十秒，
-  因此放线程池跑、结果在进程内缓存 ``_TTL`` 秒，并发请求 singleflight 只算一次；
-  面板显示「统计于 N 分钟前」并提供手动刷新。
+- ``usage()``：给面板的状态——上一次的快照（每个登记目录的体积与条目数、data/
+  所在磁盘的总量/剩余、未登记目录）+ 后台是否正在重算。递归统计大目录（几万张
+  刮削图）可能要几秒到几十秒，**因此这个入口从不阻塞**：打开页面永远立刻拿到
+  上次的结果与它的统计时刻，要不要重算由用户点「刷新」决定（清理动作会把快照
+  标脏，下次读取时自动在后台重算）。重算在线程池里跑，同时只跑一个，前端据
+  ``computing`` 轮询，新数据到了再替换页面上的旧数据。
 - ``clean()``：按 key + 模式清理。只删登记目录**里面的直接子项**，永远不删目录
   本身；先问登记项的 ``busy`` 探测把正在使用的条目摘出去，再按模式决定删哪些
   （``all`` 全部、``orphans`` 只删 ``orphans`` 探测认定的孤儿）。
@@ -28,9 +30,6 @@ from movieclaw_api.services.storage import registry
 from movieclaw_api.services.storage.registry import DataDir, Group
 
 logger = logging.getLogger("movieclaw_api.storage")
-
-#: 快照有效期。清理动作会主动作废快照，所以这只是「用户反复切标签」的防抖。
-_TTL = 120.0
 
 
 @dataclass(frozen=True)
@@ -68,6 +67,20 @@ class StorageUsage:
     dirs: list[DirUsage]
     unregistered: list[UnregisteredEntry]
     computed_at: int
+
+
+@dataclass(frozen=True)
+class UsageState:
+    """面板一次读取拿到的全部东西。
+
+    - ``usage``：上一次统计的结果，从未统计过时为空（前端显示骨架屏）；
+    - ``computing``：后台是否正在统计，前端据此显示进行中状态并轮询；
+    - ``error``：上一次统计失败的原因（失败时旧快照与旧时间原样保留）。
+    """
+
+    usage: StorageUsage | None
+    computing: bool
+    error: str | None
 
 
 @dataclass(frozen=True)
@@ -156,39 +169,63 @@ def compute_usage() -> StorageUsage:
     )
 
 
+#: 上一次统计的结果；没有 TTL，一直用到用户点刷新或清理动作把它标脏为止。
 _snapshot: StorageUsage | None = None
-_inflight: asyncio.Task[StorageUsage] | None = None
+#: 正在跑的后台统计任务（同时只跑一个）
+_task: asyncio.Task[None] | None = None
+#: 快照需要重算：初始为真（进程起来后第一次打开面板自动算一次），清理后置真。
+_stale: bool = True
+_error: str | None = None
 
 
-async def usage(*, refresh: bool = False) -> StorageUsage:
-    """带 TTL 缓存与 singleflight 的统计入口。"""
-    global _snapshot, _inflight
-    if _snapshot is not None and not refresh and time.time() - _snapshot.computed_at < _TTL:
-        return _snapshot
-    if _inflight is None:
+async def usage(*, refresh: bool = False) -> UsageState:
+    """读取当前状态——**从不阻塞**，永远立刻返回。
 
-        async def run() -> StorageUsage:
-            global _snapshot, _inflight
-            try:
-                snapshot = await asyncio.to_thread(compute_usage)
-                _snapshot = snapshot
-                return snapshot
-            finally:
-                _inflight = None
+    需要重算时（用户点了刷新、进程内还没算过、清理后标脏）在后台起一个任务，
+    本次调用带着旧快照与 ``computing=True`` 直接返回；前端继续显示旧数据并轮询，
+    新数据落地后再整体替换，不会让页面卡在加载态。
+    """
+    global _task, _stale, _error
+    if (refresh or _stale) and _task is None:
+        _stale = False
+        _error = None
+        _task = asyncio.create_task(_recompute())
+    return UsageState(usage=_snapshot, computing=_task is not None, error=_error)
 
-        _inflight = asyncio.create_task(run())
-    return await asyncio.shield(_inflight)
+
+async def _recompute() -> None:
+    """后台统计一次并替换快照；失败只记日志，旧快照保持可用。"""
+    global _snapshot, _task, _error
+    try:
+        _snapshot = await asyncio.to_thread(compute_usage)
+    except Exception as exc:  # noqa: BLE001 —— 统计失败不该让面板不可用
+        _error = f"统计数据目录占用失败：{exc}"
+        logger.warning("统计数据目录占用失败：%s", exc, exc_info=True)
+    finally:
+        _task = None
+
+
+async def wait_for_usage(*, refresh: bool = False) -> StorageUsage | None:
+    """触发（可选强制）统计并等到后台任务结束——需要同步拿结果的地方与测试用。"""
+    await usage(refresh=refresh)
+    task = _task
+    if task is not None:
+        await asyncio.wait([task])
+    return _snapshot
 
 
 def invalidate() -> None:
-    global _snapshot
-    _snapshot = None
+    """把快照标脏：不丢弃旧数据（页面不会闪成空白），下次读取时在后台重算。"""
+    global _stale
+    _stale = True
 
 
 def reset_for_tests() -> None:
-    global _snapshot, _inflight
+    global _snapshot, _task, _stale, _error
     _snapshot = None
-    _inflight = None
+    _task = None
+    _stale = True
+    _error = None
 
 
 # ---------------------------------------------------------------------------

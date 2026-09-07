@@ -28,7 +28,7 @@
 ```
 services/storage/registry.py   登记表：data/ 下每个目录的唯一事实源
         │
-        ├── services/storage/service.py   统计（TTL 快照 + singleflight）与清理
+        ├── services/storage/service.py   统计（快照 + 后台重算）与清理
         │        └── api/routes/storage.py  GET /app/storage、POST /app/storage/{key}/clean
         │                └── apps/web/components/app-storage-section.tsx  面板（纯视图）
         ├── lifespan.py                    启动时告警未登记条目（运行时兜底）
@@ -81,9 +81,14 @@ DataDir(
 ## 4. 统计与清理
 
 - **统计**：`compute_usage()` 递归 `os.walk` 每个登记目录（不跟随符号链接，
-  `models/ner/current` 指向的目录只算一次；SQLite 的 `-wal/-shm` 并入数据库条目），
-  在线程池执行，快照进程内缓存 120 秒、并发请求 singleflight；`?refresh=1` 强制重算。
-  面板显示「统计于 N 分钟前」与刷新按钮。
+  `models/ner/current` 指向的目录只算一次；SQLite 的 `-wal/-shm` 并入数据库条目）。
+  大库要几十秒，所以 **`GET /app/storage` 从不阻塞**：它返回「上一次的快照 +
+  `computing`」，需要重算时在线程池起一个后台任务（同时只跑一个）立即返回。
+  快照没有 TTL——打开页面只看上次的结果与「统计于 N 分钟前」，什么时候重算由
+  用户点刷新（`?refresh=1`）决定；进程内还没算过、以及清理动作把快照标脏之后，
+  下一次读取会自动拉起后台重算。前端据 `computing` 每 2 秒轮询一次，期间页面
+  继续显示旧数据，新快照落地后整体替换（清理失败/统计失败只回 `error`，
+  旧数据与旧时间原样保留）。
 - **清理**：`clean(key, mode)`，`mode ∈ {all, orphans}`；全局一把锁避免并发清理
   同一目录。流程：列直接子项 → `busy` 摘掉正在使用的 → 按模式选目标 → 逐项
   统计体积后删除 → 作废快照。返回删除数、跳过数与释放字节。

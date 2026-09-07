@@ -6,7 +6,7 @@ import { InfoIcon, RefreshIcon } from "@/components/icons";
 import { Tooltip } from "@/components/tooltip";
 import {
   cleanStorage,
-  getStorageUsage,
+  getStorageState,
   type CleanMode,
   type DirUsage,
   type StorageUsage,
@@ -21,6 +21,11 @@ import { formatRelativeTime } from "@/lib/time";
  * 由后端给出名称、一句话用途、完整说明、占用、能否清理，前端只负责分组渲染与
  * 确认交互——业务新增一种缓存不需要改这里。
  *
+ * 打开页面**不会**触发一次实时统计：遍历整个 data/ 在大库上要几十秒，所以后端
+ * 给的是「上一次的快照 + 是否正在重算」，页面秒开并标出「统计于 N 分钟前」。
+ * 要最新数字就点刷新：按钮转成「统计中」，旧数据继续留在页面上，后台算完
+ * （轮询到 computing 变假）再整体替换，不会中途闪成空白或加载态。
+ *
  * 版式：每一行固定三列「名称 + 一句话用途 | 占用 | 动作」，占用列定宽右对齐、
  * 动作列定宽，让数字与按钮在整组里竖向对齐；完整说明与真实路径收进标题旁的
  * 信息图标里，行内不堆长段落。三块内容：
@@ -34,29 +39,40 @@ import { formatRelativeTime } from "@/lib/time";
 type Pending = { key: string; mode: CleanMode } | null;
 type Notice = { key: string; text: string; ok: boolean } | null;
 
+/** 后台统计期间的轮询间隔 */
+const POLL_MS = 2000;
+
 export function AppStorageSection() {
   const [usage, setUsage] = useState<StorageUsage | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [computing, setComputing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState<Pending>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice>(null);
 
+  /** 读一次状态：拿到新快照才替换页面数据，没算完就只更新「统计中」标记。 */
   const load = useCallback(async (refresh: boolean) => {
-    setLoading(true);
-    setError(null);
     try {
-      setUsage(await getStorageUsage(refresh));
+      const state = await getStorageState(refresh);
+      if (state.usage) setUsage(state.usage);
+      setComputing(state.computing);
+      setError(state.error);
     } catch (e) {
+      setComputing(false);
       setError(e instanceof Error ? e.message : "读取占用信息失败");
-    } finally {
-      setLoading(false);
     }
   }, []);
 
   useEffect(() => {
     void load(false);
   }, [load]);
+
+  // 后台正在统计时轮询，等新数据落地后自动替换页面上的旧数据
+  useEffect(() => {
+    if (!computing) return;
+    const timer = setInterval(() => void load(false), POLL_MS);
+    return () => clearInterval(timer);
+  }, [computing, load]);
 
   const doClean = async (key: string, mode: CleanMode) => {
     setPending(null);
@@ -70,6 +86,7 @@ export function AppStorageSection() {
       if (result.skipped_busy > 0)
         parts.push(`跳过正在使用的 ${result.skipped_busy} 项`);
       setNotice({ key, text: parts.join("，"), ok: true });
+      // 清理让后端快照标脏：这一次读取会拉起后台重算，占用数字随后被轮询替换
       await load(false);
     } catch (e) {
       setNotice({
@@ -85,28 +102,32 @@ export function AppStorageSection() {
   const cacheDirs = usage?.dirs.filter((d) => d.group === "cache") ?? [];
   const dataDirs = usage?.dirs.filter((d) => d.group === "data") ?? [];
 
+  // 数据是「上一次统计的结果」，因此时间与进行中状态必须始终摆在标题栏上
+  const statusText = computing
+    ? usage
+      ? "正在重新统计，完成后自动更新…"
+      : "首次统计中，目录较大时要几十秒…"
+    : usage
+      ? `统计于 ${formatRelativeTime(new Date(usage.computed_at * 1000).toISOString())}`
+      : "尚未统计";
+
   return (
     <div className="space-y-6">
       <section>
         <SectionHeader label="磁盘概览">
-          {usage && (
-            <span className="text-caption text-[var(--text-faint)]">
-              统计于{" "}
-              {formatRelativeTime(
-                new Date(usage.computed_at * 1000).toISOString(),
-              )}
-            </span>
-          )}
+          <span className="text-caption text-[var(--text-faint)]">
+            {statusText}
+          </span>
           <button
             type="button"
             onClick={() => void load(true)}
-            disabled={loading}
+            disabled={computing}
             className="btn-glass gap-1 px-2.5 py-1 text-caption font-medium disabled:opacity-50"
           >
             <RefreshIcon
-              className={`size-3 ${loading ? "animate-spin" : ""}`}
+              className={`size-3 ${computing ? "animate-spin" : ""}`}
             />
-            {loading ? "统计中" : "刷新"}
+            {computing ? "统计中" : "刷新"}
           </button>
         </SectionHeader>
         <DiskOverview usage={usage} error={error} />
@@ -150,7 +171,7 @@ export function AppStorageSection() {
           )}
         </SectionHeader>
         <div className="css-glass divide-y divide-white/[0.055] !rounded-2xl">
-          {loading && !usage ? (
+          {!usage ? (
             <SkeletonRows count={4} />
           ) : (
             cacheDirs.map((d) => (
@@ -178,7 +199,7 @@ export function AppStorageSection() {
           )}
         </SectionHeader>
         <div className="css-glass divide-y divide-white/[0.055] !rounded-2xl">
-          {loading && !usage ? (
+          {!usage ? (
             <SkeletonRows count={6} />
           ) : (
             dataDirs.map((d) => (

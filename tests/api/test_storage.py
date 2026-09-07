@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
 
 import pytest
@@ -125,7 +126,8 @@ def test_usage_snapshot_sums_registered_dirs(data_root):
     _write(data_root / "movieclaw.db", 300)
     _write(data_root / "movieclaw.db-wal", 50)
     _write(data_root / "stray/file", 7)
-    snapshot = asyncio.run(service.usage())
+    snapshot = asyncio.run(service.wait_for_usage())
+    assert snapshot is not None
     by_key = {d.key: d for d in snapshot.dirs}
     assert by_key["cache.images"].bytes == 120
     assert by_key["cache.images"].entries == 1
@@ -137,11 +139,45 @@ def test_usage_snapshot_sums_registered_dirs(data_root):
     assert snapshot.disk_total > 0
 
 
-def test_usage_snapshot_is_cached_until_refresh(data_root):
-    first = asyncio.run(service.usage())
-    _write(data_root / "cache/images/ab/new", 99)
-    assert asyncio.run(service.usage()) is first
-    assert asyncio.run(service.usage(refresh=True)).cache_bytes == 99
+def test_usage_returns_immediately_and_fills_in_background(data_root):
+    """打开页面不能被统计卡住：第一次读取立刻返回「正在统计、暂无数据」。"""
+
+    async def scenario():
+        state = await service.usage()
+        assert (state.usage, state.computing) == (None, True)
+        return await service.wait_for_usage()
+
+    snapshot = asyncio.run(scenario())
+    assert snapshot is not None and snapshot.computed_at > 0
+
+
+def test_usage_keeps_old_snapshot_until_refresh_lands(data_root):
+    """快照没有 TTL：一直用到点刷新；重算期间旧数据仍然可读。"""
+
+    async def scenario():
+        first = await service.wait_for_usage()
+        _write(data_root / "cache/images/ab/new", 99)
+        assert (await service.usage()).usage is first  # 不会自己重算
+        during = await service.usage(refresh=True)
+        assert during.usage is first and during.computing is True
+        return await service.wait_for_usage()
+
+    assert asyncio.run(scenario()).cache_bytes == 99
+
+
+def test_clean_marks_snapshot_stale_and_recomputes_in_background(data_root):
+    """清理后不清空页面：旧快照继续返回，下一次读取拉起后台重算。"""
+
+    async def scenario():
+        _write(data_root / "cache/images/ab/abc", 100)
+        first = await service.wait_for_usage()
+        assert first is not None and first.cache_bytes == 100
+        await service.clean("cache.images", "all")
+        after = await service.usage()
+        assert after.usage is first and after.computing is True
+        return await service.wait_for_usage()
+
+    assert asyncio.run(scenario()).cache_bytes == 0
 
 
 # ---------------------------------------------------------------------------
@@ -240,13 +276,27 @@ def client(data_root, monkeypatch):
     reset_auth_state()
 
 
+def _poll_usage(client, timeout: float = 10.0) -> dict:
+    """接口从不阻塞：先拿到「正在统计」，轮询到后台算完再取快照。"""
+    deadline = time.monotonic() + timeout
+    while True:
+        resp = client.get("/api/v1/app/storage")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["success"] is True
+        state = body["data"]
+        if state["usage"] is not None and not state["computing"]:
+            return state["usage"]
+        assert time.monotonic() < deadline, "后台统计迟迟没有结果"
+        time.sleep(0.05)
+
+
 def test_storage_endpoints(client, data_root):
     _write(data_root / "cache/images/ab/abc", 64)
-    resp = client.get("/api/v1/app/storage?refresh=1")
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["success"] is True
-    images = next(d for d in body["data"]["dirs"] if d["key"] == "cache.images")
+    first = client.get("/api/v1/app/storage").json()["data"]
+    assert first["computing"] is True and first["usage"] is None
+    usage = _poll_usage(client)
+    images = next(d for d in usage["dirs"] if d["key"] == "cache.images")
     assert images["bytes"] == 64 and images["clearable"] is True
 
     resp = client.post("/api/v1/app/storage/cache.images/clean", json={"mode": "all"})

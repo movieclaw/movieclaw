@@ -39,6 +39,14 @@ class StorageUsageView(BaseModel):
     computed_at: int = Field(description="统计时刻（Unix 秒）")
 
 
+class StorageStateView(BaseModel):
+    """面板读取占用时拿到的状态：统计很慢，所以接口给的是「上次结果 + 是否在算」。"""
+
+    usage: StorageUsageView | None = Field(description="上一次统计的结果；进程内还没统计过时为空")
+    computing: bool = Field(description="后台是否正在统计，前端据此显示进行中并轮询")
+    error: str | None = Field(description="上一次统计失败的原因，旧结果仍然可用")
+
+
 class CleanPayload(BaseModel):
     mode: Literal["all", "orphans"] = Field(description="all=全部清空，orphans=只删孤儿条目")
 
