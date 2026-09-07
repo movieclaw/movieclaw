@@ -10,7 +10,7 @@ import {
   ChatIcon,
   ClockIcon,
   CopyIcon,
-  LayersIcon,
+  LibraryIcon,
   MoreIcon,
   PanelLeftIcon,
   PencilIcon,
@@ -69,7 +69,7 @@ export interface SidebarProps {
  *  两边的图标与文案不会各写一份。 */
 export const SIDEBAR_NAV_ITEMS = [
   { id: "new", label: "新会话", icon: PlusIcon },
-  { id: "library", label: "媒体库", icon: LayersIcon },
+  { id: "library", label: "媒体库", icon: LibraryIcon },
   ...exploreItems,
   { id: "subscriptions", label: "我的订阅", icon: BookmarkIcon },
   // 「活动」（管理员专属）在这里占一位，只为**参与排序**：它带角标、落点还随
