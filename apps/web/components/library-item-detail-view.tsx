@@ -585,10 +585,9 @@ export function LibraryItemDetailView({
                       regenerateItemChapterImages(libraryId, mediaItemId)
                         .then(() => {
                           toast.success("已开始重新生成章节");
-                          // 后台任务在响应发出后才起跑：立刻拉一次让 chapters_pending
-                          // 接管轮询，再兜一次防止抢在标志立起之前
+                          // 作业在响应发出前已经落库，立刻拉一次就能拿到
+                          // chapters_pending=true，由它接管后续轮询
                           reload();
-                          setTimeout(reload, 1500);
                         })
                         .catch((e) => toast.error((e as Error).message));
                     }

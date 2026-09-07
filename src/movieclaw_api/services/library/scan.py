@@ -108,6 +108,7 @@ from movieclaw_db.models import (
     Library,
     LibraryFile,
     MediaItem,
+    MediaMetadata,
     utcnow,
 )
 from movieclaw_db.models.library_file import (
@@ -440,6 +441,9 @@ class _ScanJobBridge:
     _last_update_at: float = 0.0
     _last_cancel_check_at: float = 0.0
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    #: 上一轮（重启前）识别了多少个条目。本轮第一次写进度就会把它覆盖掉，
+    #: 所以必须在写之前抢先读出来——资产阶段靠它判断"上一轮识别过、图还欠着"
+    _resumed_identified: int | None = None
 
     async def raise_if_cancelled(self, *, force: bool = False) -> None:
         now = time.monotonic()
@@ -447,6 +451,15 @@ class _ScanJobBridge:
             return
         self._last_cancel_check_at = now
         await self.context.raise_if_cancelled()
+
+    async def resumed_identified(self) -> int:
+        """上一轮执行识别出的条目数；本轮是首次执行则为 0。"""
+        if self._resumed_identified is None:
+            progress = await self.context.current_progress()
+            details = progress.get("details")
+            raw = details.get("identified") if isinstance(details, dict) else None
+            self._resumed_identified = max(int(raw or 0), 0)
+        return self._resumed_identified
 
     async def checkpoint(
         self,
@@ -459,6 +472,7 @@ class _ScanJobBridge:
     ) -> None:
         """阶段变化、约一秒或约 1% 时落一次进度，避免逐文件刷事件表。"""
         async with self._lock:
+            await self.resumed_identified()  # 抢在第一次覆盖之前读走上一轮的观察值
             if check_cancel:
                 await self.raise_if_cancelled()
             now = time.monotonic()
@@ -1394,10 +1408,27 @@ async def _scan(
     # 并发处理：这一阶段的时间几乎全花在等图床响应上，串行等于把几百次
     # 往返一个一个排队。与整库刷新同一套 queue + worker 写法；每个条目
     # 各自开会话、彼此无共享状态，真正的下载并发另有图床闸把着
-    if summary.identified_item_ids:
+    #
+    # 恢复：上一轮识别过条目、还没走完这一阶段就重启了的话，那批条目在本轮
+    # 已经是"已入账"的秒过行，不会再算进 identified_item_ids——名单只存在于
+    # 上一轮的进程内存里，随重启一起没了。所以重启后的这一轮要把"本库还没有
+    # 本地主图的已识别条目"一并纳入，否则它们的图要等到用户手动刷新元数据才
+    # 补上（详情页并不会自愈）。只在恢复时扫这一次：正常扫描不多花这一趟，
+    # 也不会把"图床本来就没有图"的条目每次扫描都重试一遍。
+    resumed = await bridge.resumed_identified() if bridge is not None else 0
+    item_ids = sorted(summary.identified_item_ids)
+    if resumed:
+        left_over = set(await _items_missing_poster(library_id)) - summary.identified_item_ids
+        if left_over:
+            logger.info(
+                "媒体库 #%s 上一轮扫描没走完补图，本轮顺带补齐 %d 个缺主图的条目",
+                library_id,
+                len(left_over),
+            )
+            item_ids = sorted(summary.identified_item_ids | left_over)
+    if item_ids:
         from movieclaw_api.services.media_scrape import ensure_assets
 
-        item_ids = sorted(summary.identified_item_ids)
         state.phase = ScanPhase.ASSETS
         state.processed, state.total = 0, len(item_ids)
         if bridge is not None:
@@ -1435,6 +1466,34 @@ async def _scan(
     if bridge is not None:
         await bridge.checkpoint(state, summary, force=True)
     return summary
+
+
+async def _items_missing_poster(library_id: int) -> list[int]:
+    """本库里已识别、但还没拿到过本地主图的条目 id（资产阶段的恢复目标）。
+
+    ``media_metadata.poster_file`` 是资产补齐写下的**本地**相对路径，TMDB
+    下载（``_sync_asset``）与本地抓帧（``thumbs.ensure_local_assets``）两条路
+    都写它，所以 NULL 就是"这条目还没拿到过图"。纯 SQL，不碰磁盘；档案行
+    还没建出来的条目（外连接为 NULL）同样算缺图。
+    """
+    db = get_database()
+    async with db.session() as session:
+        rows = await session.execute(
+            select(LibraryFile.media_item_id)
+            .join(
+                MediaMetadata,
+                MediaMetadata.media_item_id == LibraryFile.media_item_id,  # type: ignore[arg-type]
+                isouter=True,
+            )
+            .where(
+                LibraryFile.media_item_id.is_not(None),  # type: ignore[union-attr]
+                LibraryFile.library_id == library_id,
+                LibraryFile.in_place(),
+                MediaMetadata.poster_file.is_(None),  # type: ignore[union-attr]
+            )
+            .distinct()
+        )
+    return [int(item_id) for item_id in rows.scalars()]
 
 
 async def _auto_clear_missing(

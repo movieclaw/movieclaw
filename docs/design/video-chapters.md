@@ -322,13 +322,20 @@ ffmpeg -v info -y -skip_frame nokey -ss <t> -copyts -i <file> -an -sn \
 1. 扫描结束后自动入队（库开关打开时）——覆盖新文件与存量回填；
 2. 库管理菜单「生成场景图」/「重新生成场景图」（force）；
 3. 条目菜单「重新生成场景图」（`POST /libraries/{lib}/items/{id}/chapter-images`）：
-   该条目全部在位文件 force 重抓，后台完成、前端按 `chapters_pending` 轮询。
+   该条目全部在位文件 force 重抓，前端按 `chapters_pending` 轮询。**这一条也是
+   持久化 Job**（`media.chapter_images`，按条目去重、与整库那份共用同一套断点
+   与进度口径）：一部剧几十集重抓要跑很久，用户点了就该在任务中心看到它、能停
+   它，重启也不能白跑。`chapters_pending` 因此要同时看内存里的懒触发标记与该
+   条目未完成的作业——只看前者，重启后前端会以为没在跑而停止轮询。
    **与刷新元数据相互独立**（用户决策 2026-09-06：重新生成章节应独立，
    条目与库两级都要有）；库菜单同样分「生成场景图」（补缺）与「重新生成
    场景图」（force）两项。原「重新生成缩略图」菜单改名「重新生成封面」，
    后端进度短语同步（封面 = 主图，与场景图是两件事）。
 
-4. **详情页懒触发**：`GET /libraries/{lib}/items/{id}` 发现选中文件
+4. **详情页懒触发**（**不做成 Job**：用户没发起任何动作，一次次打开详情页
+   却在任务中心堆出一串条目作业既是噪音、也违背 persistent-jobs.md 的"Job 只
+   承载用户可感知、需要追踪的异步业务"；重启把它丢了也无妨，下次打开原地再
+   触发，已抓好的文件靠台账不会重做）：`GET /libraries/{lib}/items/{id}` 发现选中文件
    `chapter_images IS NULL` 且库开关打开时，`asyncio.create_task(
    refresh_chapter_images(item_id))`，用 `_in_flight` 集合去重（与
    `trickplay.py:58` 同款）；响应里 `chapters_pending: true`，前端每 3 秒
@@ -440,6 +447,7 @@ Agent 工具无需改动：`spec.json` 重导出后 `library.items.get` 自动�
 | ≤1 个内嵌章节 → 合成；时长未知 → 空 | `effective_chapters` 单测 |
 | 章节 > 48 或平均间隔 < 1s → 只列表不抓图 | `chapters.py` 单测 |
 | 重启后不重抓已完成的文件，进度不归零 | `test_library_job_resumes_after_restart` |
+| 条目重抓是可恢复 Job，排队期间详情页仍轮询 | `test_item_regenerate_route_enqueues_resumable_job` |
 | `Chapters` 受 fields 门控、单条目全开 | `tests/jellyfin` |
 | 列表请求不加载章节 JSON 列 | `_list_load_columns` |
 | 详情接口不触发 ffprobe | `build_item_detail` |

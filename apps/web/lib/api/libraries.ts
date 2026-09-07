@@ -752,13 +752,16 @@ export function startLibraryChapterImages(
   );
 }
 
-/** 重新生成单个条目的章节场景图（全部重抓，后台执行；详情接口 chapters_pending 期间为 true）。 */
+/**
+ * 重新生成单个条目的章节场景图（全部重抓）。落成可恢复作业：能在任务中心看到
+ * 与停止，重启也会续跑；详情接口的 chapters_pending 在作业跑完前一直为 true。
+ */
 export function regenerateItemChapterImages(
   libraryId: number,
   mediaItemId: number,
-): Promise<{ started: boolean }> {
+): Promise<{ started: boolean; job_id: string }> {
   return unwrap(
-    request<ApiEnvelope<{ started: boolean }>>(
+    request<ApiEnvelope<{ started: boolean; job_id: string }>>(
       `/libraries/${libraryId}/items/${mediaItemId}/chapter-images`,
       { method: "POST" },
     ),

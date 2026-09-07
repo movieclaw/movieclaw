@@ -1463,32 +1463,37 @@ async def start_chapter_images(
 @router.post(
     "/{library_id}/items/{media_item_id}/chapter-images",
     response_model=ApiResponse[dict],
-    summary="重新生成单个条目的章节（全部重抓，后台执行）",
+    summary="重新生成单个条目的章节（全部重抓，可恢复后台作业）",
     operation_id="library.items.regenerate-chapter-images",
     dependencies=[Depends(require_admin)],
+    openapi_extra={"x-cli-job": {"id_path": "job_id", "wait_op": "jobs.wait"}},
     status_code=202,
 )
 async def regenerate_item_chapter_images(
     library_id: int,
     media_item_id: int,
+    client_name: str | None = Header(default=None, alias="X-MovieClaw-Client"),
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[dict]:
-    """条目菜单「重新生成场景图」：该条目所有在位文件的章节按当前策略重抓。
-    十来次定位读取，后台完成；详情接口的 chapters_pending 会在期间为 true，
-    前端据此轮询把图补上。与刷新元数据相互独立。"""
+    """条目菜单「重新生成章节」：该条目所有在位文件的章节按当前策略重抓。
+
+    走持久化 Job 而不是裸后台协程：一部剧几十集要跑很久，用户要能在任务
+    中心看到进度、能停，重启也不能白跑。详情接口的 chapters_pending 在
+    作业未完成期间为 true，前端据此轮询把图补上。与刷新元数据相互独立。"""
 
     library = await LibraryConfigService(session).get(library_id)
     item, _rows = await _item_rows(session, library_id, media_item_id)
     if not library.extract_chapter_images:
         raise ConflictException(f"「{library.name}」已关闭章节生成，请先在编辑库里打开")
-    already = chapters_mod.item_pending(media_item_id)
-    chapters_mod.schedule_item_chapter_images(media_item_id, force=True)
+    created = await chapters_mod.enqueue_item_chapter_images_job(
+        session, media_item_id, item.title, origin=_job_origin(client_name)
+    )
     return ok(
-        {"started": True},
+        {"started": True, "job_id": created.job.id, "created": created.created},
         message=(
-            f"《{item.title}》的章节正在生成中"
-            if already
-            else f"已开始重新生成《{item.title}》的章节"
+            f"已开始重新生成《{item.title}》的章节"
+            if created.created
+            else f"《{item.title}》的章节正在生成中"
         ),
     )
 
@@ -2180,6 +2185,9 @@ async def get_library_item(
     needs_stills = any(
         row.chapter_images is None and chapters_mod.stills_eligible(row) for row in rows
     )
+    if library.extract_chapter_images and not chapters_pending:
+        # 条目菜单发起的重抓是持久化 Job（重启不丢），内存里的懒触发标记看不到它
+        chapters_pending = await chapters_mod.item_job_active(session, media_item_id)
     if library.extract_chapter_images and not chapters_pending and needs_stills:
         chapters_pending = chapters_mod.schedule_item_chapter_images(media_item_id)
     bundle = await build_item_detail(session, library, item, rows)

@@ -359,13 +359,14 @@ func TestDangerousAndLongTaskAnnotations(t *testing.T) {
 		}
 	}
 	for id, want := range map[string]string{
-		"library.scan.start":                    "job_id",
-		"library.metadata.refresh-library":      "job_id",
-		"workflow.library.organize-files.start": "job_id",
-		"library.items.refresh-metadata":        "job_id",
-		"library.chapter-images.generate":       "job_id",
-		"library.items.transfer":                "job_id",
-		"library.subtitles.generate":            "id",
+		"library.scan.start":                      "job_id",
+		"library.metadata.refresh-library":        "job_id",
+		"workflow.library.organize-files.start":   "job_id",
+		"library.items.refresh-metadata":          "job_id",
+		"library.chapter-images.generate":         "job_id",
+		"library.items.regenerate-chapter-images": "job_id",
+		"library.items.transfer":                  "job_id",
+		"library.subtitles.generate":              "id",
 	} {
 		job := ops[id].Job
 		if job == nil {

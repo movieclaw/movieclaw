@@ -1766,6 +1766,71 @@ async def test_asset_phase_reports_its_own_phase_and_denominator(db, tmp_path, m
     assert scan_mod.scan_progress(library_id) is None  # 收尾后状态清空
 
 
+async def test_asset_phase_picks_up_items_left_without_images_by_a_restart(
+    db, tmp_path, monkeypatch
+) -> None:
+    """重启前识别、图还没补上的条目，恢复后的这一轮扫描要顺带补齐。
+
+    回归：资产阶段的目标是"本轮新识别的条目"。重启后这批文件已经是秒过行、
+    不再算本轮识别，于是它们的图永远不会在扫描里补上（详情页也不自愈），
+    用户只能手动刷新元数据。恢复判据取上一轮留在 Job 进度里的 identified，
+    所以只有真的续跑才多扫这一趟。
+    """
+    import asyncio
+    from datetime import timedelta
+
+    import movieclaw_api.services.media_scrape as scrape_mod
+    from movieclaw_db.models import Job, utcnow
+
+    root = _make_tv_library(tmp_path)
+    async with db.session() as session:
+        library = await LibraryRepository(session).create(
+            name="剧集库", kind="tv", root_paths=[str(root)]
+        )
+    library_id = library.id
+
+    calls: list[int] = []
+
+    async def recording_ensure_assets(item_id: int) -> None:
+        calls.append(item_id)  # 不写 poster_file：等同于"图还没补上"
+
+    monkeypatch.setattr(scrape_mod, "ensure_assets", recording_ensure_assets)
+
+    # 第一轮：识别出条目，图没补完就"重启"
+    first = await scan_library(library_id)
+    identified = sorted(first.identified_item_ids)
+    assert identified, "样本要能识别出条目"
+    calls.clear()
+
+    async def _scan_with_job(persisted_identified: int):
+        async with db.session() as session:
+            created = await jobs.create_job(
+                session, job_type="library.scan", input_data={"library_id": library_id}
+            )
+            job = await session.get(Job, created.job.id)
+            job.status = JobStatus.RUNNING
+            job.lease_owner = f"lease-{created.job.id}"
+            job.lease_expires_at = utcnow() + timedelta(minutes=5)
+            # 上一轮执行留下的观察进度
+            job.progress = {**job.progress, "details": {"identified": persisted_identified}}
+            await session.commit()
+        context = jobs.JobContext(
+            created.job.id, lease_token=f"lease-{created.job.id}", lease_lost=asyncio.Event()
+        )
+        return await scan_library(library_id, job_context=context)
+
+    # 续跑：上一轮识别的那批已经是秒过行了，靠"缺主图"把它们捞回来补图
+    resumed = await _scan_with_job(len(identified))
+    assert set(identified) - resumed.identified_item_ids, "样本要能复现「本轮不再识别它」"
+    assert set(identified) <= set(calls)
+
+    # 全新一轮（上一轮没识别过任何东西）：目标仍旧只是本轮识别的，不做清扫
+    calls.clear()
+    fresh = await _scan_with_job(0)
+    assert sorted(calls) == sorted(fresh.identified_item_ids)
+    assert (set(identified) - fresh.identified_item_ids).isdisjoint(calls)
+
+
 async def test_asset_phase_honors_stop_request(db, tmp_path, monkeypatch) -> None:
     """资产补齐阶段同样响应「停止扫描」。
 

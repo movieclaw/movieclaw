@@ -439,11 +439,17 @@ def item_pending(media_item_id: int) -> bool:
 
 
 def schedule_item_chapter_images(media_item_id: int, *, force: bool = False) -> bool:
-    """单条目后台抓图（去重），返回是否在抓。
+    """详情页懒触发：单条目后台补图（去重），返回是否在抓。
 
-    两个入口共用：详情页懒触发（``force=False``，只补没抓过的——升级后第一次
-    打开旧条目不用等整库作业排到它）与条目菜单「重新生成场景图」
-    （``force=True``，全部重抓）。前端都靠 ``chapters_pending`` 轮询把图补上。
+    只补没抓过的（升级后第一次打开旧条目不用等整库作业排到它），前端靠
+    ``chapters_pending`` 轮询把图补上。**故意不做成 Job**：用户没有发起
+    任何动作，一次次打开详情页却在任务中心堆出一串条目作业，既是噪音也
+    违背"Job 只承载用户可感知、需要追踪的异步业务"（persistent-jobs.md）。
+    重启把它丢了也无妨——台账没写回，下次打开详情页原地再触发一次，已经
+    抓好的文件不会重做。
+
+    条目菜单「重新生成章节」是用户明确发起、要能看进度也要能续跑的动作，
+    走持久化 Job（``enqueue_item_chapter_images_job``），不走这里。
     """
     if media_item_id in _in_flight:
         return True
@@ -549,14 +555,14 @@ async def _job_targets(session: AsyncSession, library_id: int, *, force: bool) -
     ]
 
 
-@jobs.register_job_handler(JOB_TYPE)
-async def _run_chapter_images_job(
-    context: jobs.JobContext, input_data: dict[str, Any]
-) -> dict[str, Any]:
-    """整库抓图处理器：可停可续，重启后不重抓已经抓好的文件。
+async def _run_targets(
+    context: jobs.JobContext, targets: list[int], *, force: bool, subject: str
+) -> tuple[int, int]:
+    """逐文件抓图的公共循环（整库作业与条目作业共用），返回
+    ``(累计已处理, 累计失败)``——两个数都是整轮作业的口径，跨重启累加。
 
-    应用内更新与重启会把 Job 退回队列、再把这个处理器整体重跑一遍，所以
-    两种断点都要有：
+    应用内更新与重启会把 Job 退回队列、再把处理器整体重跑一遍，所以两种
+    断点都要有：
 
     - **补缺**（``force=False``）：逐文件写回台账即是检查点，重新取目标时
       ``chapter_images IS NULL`` 自然把已完成的行排除在外；
@@ -565,20 +571,10 @@ async def _run_chapter_images_job(
       同一份排序跳过它之前的行。进度写入有节流（1 秒），所以最多重做节流
       窗口里的那一两个文件——重抓一次是幂等的，代价只是几秒。
 
-    进度也从断点接着走（``current``/``total`` 都是整轮作业的累计口径）：
-    重启后要是从 0 重新数到"剩下的文件数"，用户看到的就是又从头跑了一遍。
+    进度也从断点接着走：重启后要是从 0 重新数到"剩下的文件数"，用户看到的
+    就是又从头跑了一遍。
     """
-    library_id = int(input_data["library_id"])
-    force = bool(input_data.get("force", False))
     db = get_database()
-    async with db.session() as session:
-        library = await session.get(Library, library_id)
-        if library is None:
-            raise jobs.JobFailed("媒体库已不存在，无法生成章节", code="LIBRARY_NOT_FOUND")
-        if not library.extract_chapter_images:
-            return {"message": f"「{library.name}」已关闭章节生成，本次未生成", "processed": 0}
-        targets = await _job_targets(session, library_id, force=force)
-
     persisted = await context.current_progress()
     persisted_details = persisted.get("details")
     persisted_details = persisted_details if isinstance(persisted_details, dict) else {}
@@ -594,8 +590,8 @@ async def _run_chapter_images_job(
         targets = targets[position:]
     if processed:
         logger.info(
-            "媒体库 #%s 的章节生成从断点继续：已完成 %s 个文件，还剩 %s 个",
-            library_id,
+            "%s的章节生成从断点继续：已完成 %s 个文件，还剩 %s 个",
+            subject,
             processed,
             len(targets),
         )
@@ -607,7 +603,7 @@ async def _run_chapter_images_job(
             if row is not None:
                 try:
                     await refresh_file_chapter_images(session, row, force=force)
-                except Exception:  # noqa: BLE001 -- 单个文件失败不打断整库
+                except Exception:  # noqa: BLE001 -- 单个文件失败不打断整批
                     failed += 1
                     logger.exception("文件 #%s 章节场景图生成失败", file_id)
         processed += 1
@@ -621,7 +617,112 @@ async def _run_chapter_images_job(
                 percent=round(processed * 100 / total, 1) if total else 100.0,
                 details={"failed": failed, "cursor": file_id},
             )
+    return processed, failed
+
+
+@jobs.register_job_handler(JOB_TYPE)
+async def _run_chapter_images_job(
+    context: jobs.JobContext, input_data: dict[str, Any]
+) -> dict[str, Any]:
+    """整库抓图处理器：目标是库内待处理的台账行，断点见 ``_run_targets``。"""
+    library_id = int(input_data["library_id"])
+    force = bool(input_data.get("force", False))
+    db = get_database()
+    async with db.session() as session:
+        library = await session.get(Library, library_id)
+        if library is None:
+            raise jobs.JobFailed("媒体库已不存在，无法生成章节", code="LIBRARY_NOT_FOUND")
+        if not library.extract_chapter_images:
+            return {"message": f"「{library.name}」已关闭章节生成，本次未生成", "processed": 0}
+        targets = await _job_targets(session, library_id, force=force)
+    processed, failed = await _run_targets(
+        context, targets, force=force, subject=f"媒体库 #{library_id}"
+    )
     message = f"章节生成完成：处理 {processed} 个文件"
     if failed:
         message += f"，{failed} 个失败（可在库菜单重新生成）"
+    return {"message": message, "processed": processed, "failed": failed}
+
+
+# ---------------------------------------------------------------------------
+# 条目作业（设计文档 §4.5 入口 3）：条目菜单「重新生成章节」
+# ---------------------------------------------------------------------------
+
+ITEM_JOB_TYPE = "media.chapter_images"
+
+
+async def enqueue_item_chapter_images_job(
+    session: AsyncSession,
+    media_item_id: int,
+    title: str,
+    *,
+    actor_kind: str | None = None,
+    actor_name: str | None = None,
+    actor_id: str | None = None,
+    origin: str = "system",
+) -> jobs.CreateJobResult:
+    """把单条目重抓固化成可恢复 Job；同条目同时只跑一份。
+
+    做成 Job 而不是裸协程（详情页懒触发那种）有三个理由：用户明确点了菜单，
+    要在任务中心看到它、能停它；一部剧几十集重抓要跑很久，重启不该白跑；
+    整库作业已经是 Job，两者共用同一套断点与进度口径。
+    """
+    return await jobs.create_job(
+        session,
+        job_type=ITEM_JOB_TYPE,
+        subject=title,
+        input_data={"media_item_id": media_item_id, "force": True},
+        resources=[jobs.ResourceRef("media_item", media_item_id)],
+        dedupe_key=f"{ITEM_JOB_TYPE}:{media_item_id}",
+        conflict_policy="return_existing",
+        handler_revision=f"{ITEM_JOB_TYPE}.v1",
+        max_attempts=2,
+        # 不压低优先级：用户正站在详情页等这一部的图，与整库那份（-10）不同
+        actor_kind=actor_kind,
+        actor_name=actor_name,
+        actor_id=actor_id,
+        origin=origin,
+        progress=jobs.default_progress(f"等待重新生成《{title}》的章节"),
+    )
+
+
+async def item_job_active(session: AsyncSession, media_item_id: int) -> bool:
+    """该条目是否有未完成的重抓作业（详情页 ``chapters_pending`` 的另一半）。
+
+    重启后裸协程没了、Job 还在队列里，只看内存里的 ``_in_flight`` 会让前端
+    以为没在跑、停止轮询，图补上了也不刷新。
+    """
+    job = await jobs.latest_job_for_resource(
+        session, "media_item", media_item_id, job_type=ITEM_JOB_TYPE
+    )
+    return job is not None and str(job.status) in _ACTIVE_JOB_STATUSES
+
+
+@jobs.register_job_handler(ITEM_JOB_TYPE)
+async def _run_item_chapter_images_job(
+    context: jobs.JobContext, input_data: dict[str, Any]
+) -> dict[str, Any]:
+    """单条目重抓处理器：该条目全部在位文件按当前策略重抓，断点见 ``_run_targets``。"""
+    from movieclaw_api.services.media_scrape import assets_root
+
+    media_item_id = int(input_data["media_item_id"])
+    force = bool(input_data.get("force", True))
+    db = get_database()
+    async with db.session() as session:
+        rows = await _item_rows(session, media_item_id)
+        if not rows:
+            raise jobs.JobFailed("条目已不存在，无法生成章节", code="MEDIA_ITEM_NOT_FOUND")
+        live_ids = {row.id for row, _ in rows if row.id is not None}
+        targets = [
+            row.id
+            for row, enabled in rows
+            if enabled and row.id is not None and stills_eligible(row)
+        ]
+    processed, failed = await _run_targets(
+        context, targets, force=force, subject=f"条目 #{media_item_id}"
+    )
+    await asyncio.to_thread(cleanup_orphan_dirs, media_item_id, live_ids, assets_root())
+    message = f"章节生成完成：处理 {processed} 个文件"
+    if failed:
+        message += f"，{failed} 个失败（可再次重新生成）"
     return {"message": message, "processed": processed, "failed": failed}
