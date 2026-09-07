@@ -32,6 +32,7 @@ var knownNonGenerated = []string{
 	"ui.library.files.preview-subtitles",
 	"ui.library.files.original",
 	"ui.library.files.thumb",
+	"ui.library.gallery",
 	"ui.library.items.ids",
 	"ui.library.items.index",
 	"playback.activity",
