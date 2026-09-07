@@ -3,7 +3,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
-import { MinusIcon, PlusIcon, XIcon } from "@/components/icons";
+import {
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  MinusIcon,
+  PlusIcon,
+  XIcon,
+} from "@/components/icons";
 
 /**
  * 可缩放的全屏灯箱内核（docs/design/library-photo-kind.md 3.3）。
@@ -28,8 +34,11 @@ import { MinusIcon, PlusIcon, XIcon } from "@/components/icons";
  *     iOS 不派发 dblclick，舞台又必须 touch-action:none 挡住系统的整页缩放，
  *     交给浏览器的话手机上放大缩小就全无反应；
  *   - 翻页：未放大时左右拖拽 / 滑动，画面跟手移动，松手超过阈值翻页、不够弹回，
- *     鼠标与手指同一套；触控板横向两指滑同样翻页；键盘 ←→。舞台两侧不放
- *     箭头按钮——常驻的控件叠在画面上打破沉浸感，翻页动作本身已经够直觉。
+ *     鼠标与手指同一套；触控板横向两指滑同样翻页；键盘 ←→。舞台两侧另有一对
+ *     箭头按钮，**只给有鼠标的设备**：手指滑动是连续、跟手的，鼠标拖拽翻页却
+ *     要按住横拖 70px，远不如点一下直接（用户反馈 2026-09-07）；触屏上照旧
+ *     不摆，滑动已经是全部手势。箭头跟顶栏底栏同进同退（点画面收起控件后
+ *     画面仍独占整个视口），到头的那一侧不渲染——按不动的按钮不如不摆。
  *     翻到已加载列表末尾且服务端还有下一页时向外要一页（onReachEnd），
  *     拿到后继续翻；
  *   - 缩略条只渲染当前位置前后各 30 张：万张库不铺满 DOM。
@@ -588,6 +597,43 @@ export function ZoomLightbox({
         {/* 浮层跟着控件一起收放：只剩一块信息面板浮在画面上很怪 */}
         {chromeShown && overlay}
       </div>
+
+      {/* 舞台两侧的翻页键：只给有鼠标的设备（触屏上左右滑动就是全部手势），
+          与顶栏底栏同进同退。放在舞台之外，点它不会被当成舞台上的点按；
+          到头的那一侧不渲染 */}
+      {[
+        {
+          delta: -1,
+          enabled: index > 0,
+          label: "上一张 (←)",
+          Icon: ChevronLeftIcon,
+          side: "left-[max(0.75rem,var(--safe-left))]",
+        },
+        {
+          delta: 1,
+          enabled: index < slides.length - 1 || hasMore,
+          label: "下一张 (→)",
+          Icon: ChevronRightIcon,
+          side: "right-[max(0.75rem,var(--safe-right))]",
+        },
+      ].map(({ delta, enabled, label, Icon, side }) =>
+        enabled ? (
+          <div
+            key={delta}
+            className={`absolute top-1/2 z-20 -translate-y-1/2 [@media(hover:none)]:hidden ${side} ${chromeClass}`}
+          >
+            <button
+              type="button"
+              title={label}
+              aria-label={label}
+              onClick={() => step(delta)}
+              className="grid place-items-center rounded-full bg-white/[0.08] p-2.5 text-white/80 backdrop-blur transition-colors hover:bg-white/[0.18] hover:text-white"
+            >
+              <Icon className="size-6" />
+            </button>
+          </div>
+        ) : null,
+      )}
 
       {/* 顶栏：计数 + 标题 + 工具。渐变垫底让白字压在亮图上也读得清；
           容器不吃指针事件，只有右侧那组按钮吃 */}
