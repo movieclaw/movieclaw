@@ -1559,6 +1559,9 @@ async def backfill_streams(
             row.bit_rate = row.bit_rate or spec.bit_rate
             row.frame_rate = row.frame_rate or spec.frame_rate
             row.color_space = row.color_space or spec.color_space
+            # 补探的终止条件：写上当前字段集版本，这一行下次就不再进补探队列。
+            # 少了它，缺色彩标签的文件会每次手动扫描都被白探一遍。
+            row.probe_version = spec.probe_version
             if row.file_mtime_ns is None:
                 # 播放 ETag 用的 mtime 顺手回填（文件刚探测过，stat 是热的）
                 with contextlib.suppress(OSError):

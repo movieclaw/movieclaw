@@ -42,6 +42,21 @@ def ffprobe_available() -> bool:
     return shutil.which("ffprobe") is not None
 
 
+#: 探测层**字段集**的版本。新增会落库的探测字段时 +1。
+#:
+#: 为什么需要它：台账行的新鲜度此前只有一个标记——``audio_streams IS NULL``
+#: 表示「从没探测成功过」。它认不出另一类行：**用旧版字段集探测成功过、缺后来
+#: 新增字段**的行。2026-09 新增 ``frame_rate`` / ``color_space`` 与 Dolby Vision
+#: 识别后，早于那一版入库的行永远拿不到这几项，也就永远识别不出 DV——播放链
+#: 读台账，于是 DV P5 一直不做色调映射（issue #331）。
+#:
+#: 版本落进 ``library_file.probe_version``，手动扫描的补探据此把落后的行捞回来
+#: 重探一次。以后再加探测字段，改这一个常量即可，不必为每个字段单独想办法。
+#:
+#: 1 = 首次引入（此前的行一律为 NULL，会被补探一次）
+PROBE_SCHEMA_VERSION = 1
+
+
 @dataclass(frozen=True)
 class MediaSpec:
     """一次探测的结论。字段 None = 该项未能取得（三态铁律）。
@@ -67,6 +82,8 @@ class MediaSpec:
     # 创建时间。原样保留字符串，解析成日期是消费方的事
     tag_date: str | None = None
     creation_time: str | None = None
+    #: 产出这份结果时探测层的字段集版本。写进台账，供补探识别陈旧行。
+    probe_version: int = PROBE_SCHEMA_VERSION
     # 内嵌章节（``-show_chapters``）：空列表 = 探测成功但容器里没有章节。
     # 元素 {"start_ms", "end_ms", "title"}，结构见 ``_chapter_info``；有效章节
     # （内嵌不足两个时按时长合成）由 library/chapters.py 决定，这里只记事实

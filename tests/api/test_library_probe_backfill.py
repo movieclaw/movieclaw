@@ -234,6 +234,132 @@ async def test_periodic_reconcile_skips_historical_spec_backfill(db, tmp_path, m
     assert calls[0]["reprobe_paths"] is None  # 失败记忆为空时不点名
 
 
+async def test_stale_probe_version_rows_are_reprobed(db, tmp_path, monkeypatch) -> None:
+    """用旧版字段集探测过的行必须被捞回来重探（issue #331）。
+
+    这类行 ``audio_streams`` 是有值的——它们**探测成功过**，只是那一版探测层
+    还没有 ``frame_rate`` / ``color_space`` / Dolby Vision 识别。原来的判据
+    （只认 ``audio_streams IS NULL``）永远找不到它们，于是 DV 片永远识别不出，
+    播放链读台账也就永远不做色调映射，画面发绿。
+    """
+    _with_ffprobe(monkeypatch)
+    library_id = await _build(db, tmp_path)
+    await scan_library(library_id)
+
+    # 把台账退回"旧版本探测过"的样子：规格在、色彩字段缺、版本为 NULL
+    async with db.session() as session:
+        for row in (await session.execute(select(LibraryFile))).scalars().all():
+            row.probe_version = None
+            row.color_space = None
+            row.frame_rate = None
+            row.hdr = None
+            session.add(row)
+        await session.commit()
+
+    calls: list[str] = []
+    _with_ffprobe(monkeypatch, calls)
+    summary = await scan_library(library_id)
+
+    assert summary.probed == 3, "陈旧行必须进补探队列"
+    assert len(calls) == 3
+    rows = await _rows(db)
+    assert all(r.color_space == "BT.709" for r in rows), "后来新增的字段要补上"
+    assert all(r.frame_rate == 23.976 for r in rows)
+    assert all(r.probe_version == probe_mod.PROBE_SCHEMA_VERSION for r in rows)
+
+
+async def test_reprobed_rows_do_not_come_back(db, tmp_path, monkeypatch) -> None:
+    """补探必须能终止：补过一轮的行，下一次扫描不能再被探一遍。
+
+    这是判据设计的关键——如果拿"``color_space`` 为空"当判据，真的没有色彩标签
+    的文件会每次手动扫描都被白探一遍，整库扫描永远慢一截。版本戳没有这个问题。
+    """
+    _with_ffprobe(monkeypatch)
+    library_id = await _build(db, tmp_path)
+    await scan_library(library_id)
+    async with db.session() as session:
+        for row in (await session.execute(select(LibraryFile))).scalars().all():
+            row.probe_version = None
+            session.add(row)
+        await session.commit()
+
+    await scan_library(library_id)  # 补探这一轮
+
+    calls: list[str] = []
+    _with_ffprobe(monkeypatch, calls)
+    summary = await scan_library(library_id)
+
+    assert summary.probed == 0, "版本已是最新，不该再进队列"
+    assert calls == []
+
+
+async def test_files_without_color_tags_are_not_reprobed_forever(
+    db, tmp_path, monkeypatch
+) -> None:
+    """探测成功但文件本身没有色彩标签的行，也必须只探一次。
+
+    ``color_space`` 保持 NULL 是**正确结论**（文件确实没标签），不是"没探过"。
+    版本戳区分得开这两者，判据用字段是否为空就区分不开。
+    """
+    spec_without_color = MediaSpec(
+        resolution="1080p",
+        video_codec="h264",
+        hdr=None,
+        bit_depth=8,
+        duration_seconds=1200,
+        bit_rate=3_000_000,
+        frame_rate=25.0,
+        color_space=None,  # 文件真的没有色彩标签
+        audio_streams=[{"codec": "aac", "channels": 2}],
+        subtitle_streams=[],
+    )
+    calls: list[str] = []
+
+    def _probe(path, *_a, **_k):
+        calls.append(str(path))
+        return spec_without_color
+
+    monkeypatch.setattr(probe_mod, "ffprobe_available", lambda: True)
+    monkeypatch.setattr(scan_mod, "probe_media", _probe)
+    monkeypatch.setattr(items_mod, "probe_media", _probe)
+
+    library_id = await _build(db, tmp_path)
+    await scan_library(library_id)
+    calls.clear()
+
+    summary = await scan_library(library_id)
+    assert summary.probed == 0
+    assert calls == [], "色彩标签为空是探测结论，不该被当成'没探过'反复重探"
+
+
+async def test_limited_self_heal_ignores_stale_version_rows(
+    db, tmp_path, monkeypatch
+) -> None:
+    """限量自愈只管"从没探测成功过"的行，不碰版本陈旧的。
+
+    自愈每轮每库只有十个名额，是给"瞬时失败在几个周期内收敛"用的。把整库的
+    陈旧行灌进去，真正需要重试的失败行会被永远挤在后面——历史规格补探按既有
+    政策（scan.py 的说明）必须由用户主动扫描触发。
+    """
+    _with_ffprobe(monkeypatch)
+    library_id = await _build(db, tmp_path)
+    await scan_library(library_id)
+    async with db.session() as session:
+        for row in (await session.execute(select(LibraryFile))).scalars().all():
+            row.probe_version = None
+            session.add(row)
+        await session.commit()
+
+    calls: list[str] = []
+    _with_ffprobe(monkeypatch, calls)
+    summary = await scan_library(
+        library_id, backfill_existing_specs=False, probe_retry_limit=10
+    )
+
+    assert summary.probed == 0
+    assert calls == []
+
+
 async def test_backfill_skipped_when_ffprobe_missing(db, tmp_path, monkeypatch) -> None:
     """没装 ffprobe 时整段跳过：每轮扫描白跑一遍必然失败的探测毫无意义。"""
     calls: list[str] = []
