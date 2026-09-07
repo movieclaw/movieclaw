@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 
+import { useConfirm } from "@/components/feedback";
 import { InfoIcon, MoreIcon, RefreshIcon } from "@/components/icons";
 import { Tooltip } from "@/components/tooltip";
 import {
@@ -28,19 +29,22 @@ import { formatRelativeTime } from "@/lib/time";
  * 要最新数字就点刷新：按钮转成「统计中」，旧数据继续留在页面上，后台算完
  * （轮询到 computing 变假）再整体替换，不会中途闪成空白或加载态。
  *
+ * 清理的二次确认走全站统一的 useConfirm 弹窗（feedback.tsx），不用行内确认条：
+ * 确认条会把下面的行整体推走，而且 ⋯ 菜单在列表靠下时它常常落在视口外——手机上
+ * 尤其明显；弹窗还自带焦点陷阱、Esc 与点击外部关闭。
+ *
  * 版式（手机优先）：一行三段「名称 + 一句话用途 | 占用 | ⋯」。清理动作全部收进
  * 行尾的 ⋯ 菜单——两个并排的文字按钮在 390px 宽的屏幕上会把名称挤成「图…」，
  * 而清理是低频动作，不值得常驻这么宽的位置；占用数字定宽右对齐，是每行的视觉
  * 锚点。「重建代价高」徽章挪到第二行与一句话用途同列，保证第一行永远是完整的
  * 目录名；完整说明与真实路径收进名称旁的信息图标（触屏点按也能展开）。三块内容：
  *   1. 磁盘概览：data/ 所在磁盘的分段条（应用数据 / 可回收缓存 / 其他 / 剩余）；
- *   2. 可清理的缓存：「清理孤儿」（媒体库里已不存在的条目，无损）与「全部清空」
- *      （重建代价高的目录标红并二次确认）；
+ *   2. 可清理的缓存：「清理孤儿条目」（媒体库里已不存在的条目，无损）与「全部清空」
+ *      （重建代价高的目录在确认弹窗里标红警示）；
  *   3. 应用数据：只展示占用（用户资产或回退恢复源）。
  *   「未登记目录」块只在后端发现登记表之外的条目时出现。
  */
 
-type Pending = { key: string; mode: CleanMode } | null;
 type Notice = { key: string; text: string; ok: boolean } | null;
 
 /** 后台统计期间的轮询间隔 */
@@ -50,9 +54,9 @@ export function AppStorageSection() {
   const [usage, setUsage] = useState<StorageUsage | null>(null);
   const [computing, setComputing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [pending, setPending] = useState<Pending>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice>(null);
+  const confirm = useConfirm();
 
   /** 读一次状态：拿到新快照才替换页面数据，没算完就只更新「统计中」标记。 */
   const load = useCallback(async (refresh: boolean) => {
@@ -78,8 +82,30 @@ export function AppStorageSection() {
     return () => clearInterval(timer);
   }, [computing, load]);
 
+  /** 先弹确认，用户点了确认才真的清理。文案按模式与重建代价分档。 */
+  const askClean = async (dir: DirUsage, mode: CleanMode) => {
+    const expensive = dir.rebuild_cost === "expensive";
+    const ok = await confirm(
+      mode === "orphans"
+        ? {
+            title: `清理「${dir.title}」的孤儿条目？`,
+            description: "只删除媒体库里已不存在的条目，正在使用的内容不受影响。",
+            confirmLabel: "清理孤儿条目",
+          }
+        : {
+            title: `清空「${dir.title}」？`,
+            // 登记表的完整说明本身就写清了用途与重建代价，直接当后果说明；
+            // 重建代价高的那几个另外靠红色确认键（tone: danger）加重提醒
+            description: dir.description,
+            confirmLabel:
+              dir.bytes > 0 ? `清空并释放 ${formatBytes(dir.bytes)}` : "全部清空",
+            tone: expensive ? "danger" : "default",
+          },
+    );
+    if (ok) await doClean(dir.key, mode);
+  };
+
   const doClean = async (key: string, mode: CleanMode) => {
-    setPending(null);
     setBusyKey(key);
     setNotice(null);
     try {
@@ -185,11 +211,8 @@ export function AppStorageSection() {
                 key={d.key}
                 dir={d}
                 busy={busyKey === d.key}
-                pending={pending?.key === d.key ? pending.mode : null}
                 notice={notice?.key === d.key ? notice : null}
-                onAsk={(mode) => setPending({ key: d.key, mode })}
-                onCancel={() => setPending(null)}
-                onConfirm={(mode) => void doClean(d.key, mode)}
+                onClean={(mode) => void askClean(d, mode)}
               />
             ))
           )}
@@ -213,7 +236,6 @@ export function AppStorageSection() {
                 key={d.key}
                 dir={d}
                 busy={false}
-                pending={null}
                 notice={null}
               />
             ))
@@ -318,27 +340,21 @@ function DiskOverview({
   );
 }
 
-/** 一行目录：名称 + 一句话用途 | 占用 | ⋯ 菜单；确认条与结果提示内联在行下。 */
+/** 一行目录：名称 + 一句话用途 | 占用 | ⋯ 菜单；清理结果提示内联在行下。 */
 function DirRow({
   dir,
   busy,
-  pending,
   notice,
-  onAsk,
-  onCancel,
-  onConfirm,
+  onClean,
 }: {
   dir: DirUsage;
   busy: boolean;
-  pending: CleanMode | null;
   notice: Notice;
-  onAsk?: (mode: CleanMode) => void;
-  onCancel?: () => void;
-  onConfirm?: (mode: CleanMode) => void;
+  /** 只有可清理的目录传；点菜单项即发起确认（弹窗在上层） */
+  onClean?: (mode: CleanMode) => void;
 }) {
   const expensive = dir.rebuild_cost === "expensive";
-  const actionable =
-    dir.group === "cache" && !!onAsk && !!onConfirm && !!onCancel;
+  const actionable = dir.group === "cache" && !!onClean;
   return (
     <div className="px-4 py-3 sm:px-5">
       <div className="flex items-center gap-3">
@@ -392,50 +408,11 @@ function DirRow({
             dir={dir}
             busy={busy}
             expensive={expensive}
-            onAsk={onAsk}
+            onClean={onClean}
           />
         )}
       </div>
 
-      {pending && actionable && (
-        <div
-          className={`mt-2.5 flex flex-wrap items-center justify-between gap-3 rounded-xl border px-3.5 py-2.5 ${
-            pending === "all" && expensive
-              ? "border-red-300/20 bg-red-400/[0.08]"
-              : "border-white/[0.08] bg-white/[0.04]"
-          }`}
-        >
-          <p
-            className={`text-sub ${
-              pending === "all" && expensive
-                ? "text-red-200/90"
-                : "text-[var(--text-muted)]"
-            }`}
-          >
-            {pending === "orphans"
-              ? `只删除媒体库里已不存在的条目，正在使用的内容不受影响。确认清理「${dir.title}」的孤儿条目？`
-              : expensive
-                ? `「${dir.title}」重建代价较高，清空后需要重新生成。确认全部清空？`
-                : `确认清空「${dir.title}」？${dir.description}`}
-          </p>
-          <span className="ml-auto flex shrink-0 items-center gap-1.5">
-            <button
-              type="button"
-              onClick={() => onConfirm(pending)}
-              className="btn-accent rounded-full px-3 py-1 text-caption font-semibold"
-            >
-              确认
-            </button>
-            <button
-              type="button"
-              onClick={onCancel}
-              className="btn-glass px-2.5 py-1 text-caption font-medium"
-            >
-              取消
-            </button>
-          </span>
-        </div>
-      )}
       {notice && (
         <p
           className={`mt-1.5 text-caption ${notice.ok ? "text-emerald-300/85" : "text-red-300/90"}`}
@@ -458,12 +435,12 @@ function RowActionsMenu({
   dir,
   busy,
   expensive,
-  onAsk,
+  onClean,
 }: {
   dir: DirUsage;
   busy: boolean;
   expensive: boolean;
-  onAsk: (mode: CleanMode) => void;
+  onClean: (mode: CleanMode) => void;
 }) {
   const itemClass =
     "glass-row nav-item cursor-pointer px-3 py-2 text-ui font-medium outline-none " +
@@ -495,7 +472,7 @@ function RowActionsMenu({
         >
           {dir.orphan_aware && (
             <DropdownMenu.Item
-              onSelect={() => onAsk("orphans")}
+              onSelect={() => onClean("orphans")}
               className={itemClass}
             >
               清理孤儿条目
@@ -503,7 +480,7 @@ function RowActionsMenu({
           )}
           {dir.clearable && (
             <DropdownMenu.Item
-              onSelect={() => onAsk("all")}
+              onSelect={() => onClean("all")}
               className={`${itemClass}${expensive ? " !text-red-300/90" : ""}`}
             >
               全部清空

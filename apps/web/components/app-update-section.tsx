@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { useConfirm } from "@/components/feedback";
 import { ChevronRightIcon, InfoIcon, RefreshIcon } from "@/components/icons";
 import { Markdown } from "@/components/markdown";
 import { Modal } from "@/components/modal";
@@ -44,7 +45,8 @@ import { formatDateTime, formatUnixDateTime } from "@/lib/time";
  *   - 更新执行：后端后台下载校验，前端 1s 轮询进度；进入 restarting 后
  *     改为轮询 /health 等服务恢复（前后端全量重启），恢复即整页刷新。
  *   - 回退：切回上一版本（可再次回退撤销）；无上一版本时回落镜像内置版本。
- *   - 维护：重启应用。原本是本分区第三个「维护」标签，但那一整个标签从头到尾
+ *   - 维护：重启应用（二次确认走全站统一的 useConfirm 弹窗）。原本是本分区第三个
+ *     「维护」标签，但那一整个标签从头到尾
  *     只有这一颗按钮；重启与更新/回退本就是同一类"让应用重来一次"的动作，也
  *     共用同一套「等服务恢复再整页刷新」的等待流程，合到这一页的末尾更好找。
  */
@@ -98,8 +100,7 @@ export function AppUpdateSection() {
   const [pendingModelTag, setPendingModelTag] = useState<string | null>(null);
   const [restartWait, setRestartWait] = useState<RestartWait>("idle");
   const [restartKind, setRestartKind] = useState<RestartKind>("version");
-  // 手动重启的二次确认：重启会中断正在进行的任务，不能一点就走
-  const [restartConfirm, setRestartConfirm] = useState(false);
+  const confirm = useConfirm();
   // 回退选择器：候选列表（含保留策略现状）在分区挂载时就拉一次——回退卡的
   // 描述与「本地保留版本数」设置行都要用它，不是只有打开弹窗才需要
   const [rollback, setRollback] = useState<RollbackOptionsView | null>(null);
@@ -288,7 +289,16 @@ export function AppUpdateSection() {
    * 先不可达、再恢复才整页刷新，不会命中"还没退出的旧进程"提前刷新。
    */
   const doRestart = async () => {
-    setRestartConfirm(false);
+    // 重启会中断正在进行的任务，走全站统一的确认弹窗（与回退等破坏性动作一致）
+    const ok = await confirm({
+      title: "重启应用？",
+      description:
+        "重启期间服务短暂不可用，正在进行的下载投递/整理任务会中断。" +
+        "Docker 部署通常几秒内自动拉起；源码部署需有 systemd 等守护。",
+      confirmLabel: "确认重启",
+      tone: "danger",
+    });
+    if (!ok) return;
     void waitForRestart("app");
     try {
       await restartApp();
@@ -671,37 +681,13 @@ export function AppUpdateSection() {
             </span>
             <button
               type="button"
-              onClick={() => setRestartConfirm(true)}
+              onClick={() => void doRestart()}
               disabled={updating}
               className="btn-glass shrink-0 px-3.5 py-1.5 text-sub font-semibold text-red-300/90 hover:text-red-200 disabled:opacity-50"
             >
               重启应用
             </button>
           </div>
-          {/* 二次确认：接在按钮所在的卡片里，位置与缓存管理的清理确认条一致 */}
-          {restartConfirm && (
-            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-red-300/20 bg-red-400/[0.08] px-5 py-3.5">
-              <p className="text-sub text-red-200/90">
-                确认重启应用？重启期间服务短暂不可用，正在进行的下载投递/整理任务会中断。
-              </p>
-              <span className="ml-auto flex shrink-0 items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => void doRestart()}
-                  className="btn-accent rounded-full px-3.5 py-1.5 text-sub font-semibold"
-                >
-                  确认重启
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setRestartConfirm(false)}
-                  className="btn-glass px-3 py-1.5 text-sub font-medium"
-                >
-                  取消
-                </button>
-              </span>
-            </div>
-          )}
         </div>
       </section>
 
