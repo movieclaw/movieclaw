@@ -21,8 +21,8 @@ import { useBackdrop } from "@/lib/backdrop";
 import { relativeTime } from "@/lib/devices-display";
 import { LiquidGlassButton } from "@/vendor/liquid-glass";
 
-type Tab = "overview" | "tools" | "connect" | "settings";
-const TABS: Tab[] = ["overview", "tools", "connect", "settings"];
+type Tab = "overview" | "tools" | "settings";
+const TABS: Tab[] = ["overview", "tools", "settings"];
 
 /**
  * 「MCP 服务」设置分区（docs/design/mcp-server.md §7）。
@@ -31,7 +31,7 @@ const TABS: Tab[] = ["overview", "tools", "connect", "settings"];
  * 控制台而不是偏好设置来组织，三层结构：
  *
  *   列表（高密度表格，一眼扫完谁在跑）
- *     → 详情（?endpoint=slug，四栏：概览 / 工具 / 接入 / 设置）
+ *     → 详情（?endpoint=slug，三栏：概览 / 工具 / 设置）
  *     → 新建（两栏：左配置右实时预览）
  *
  * 视图状态写进地址栏（?endpoint= / ?tab=）：刷新不丢、可收藏、可发给同事。
@@ -136,7 +136,7 @@ export function McpSection() {
         onDone={() => {
           const slug = issued.endpoint.slug;
           setIssued(null);
-          navigate({ slug, tab: "connect" });
+          navigate({ slug, tab: "overview" });
         }}
       />
     );
@@ -388,7 +388,7 @@ export function McpSection() {
  * 令牌专屏：签发后必须先过这一关。
  *
  * 旧版把它做成插在列表上方的卡片——一滚就走，用户很容易在没保存的情况下离开。
- * 现在它占满整个内容区，只有一个出口（「我已保存」），出去直接落到接入指引。
+ * 现在它占满整个内容区，只有一个出口（「我已保存」），出去直接落到端点概览。
  */
 function TokenIssued({
   name,
@@ -428,7 +428,7 @@ function TokenIssued({
 
       <div className="flex justify-end">
         <button type="button" onClick={onDone} className="btn-glass px-4 py-1.5 text-sub font-medium">
-          我已保存，去看接入方式
+          我已保存，去看端点
         </button>
       </div>
     </div>

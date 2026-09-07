@@ -27,20 +27,19 @@ import { useBackdrop } from "@/lib/backdrop";
 import { relativeTime } from "@/lib/devices-display";
 import { LiquidGlassButton } from "@/vendor/liquid-glass";
 
-type Tab = "overview" | "tools" | "connect" | "settings";
+type Tab = "overview" | "tools" | "settings";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "overview", label: "概览" },
   { id: "tools", label: "工具" },
-  { id: "connect", label: "接入" },
   { id: "settings", label: "设置" },
 ];
 
 /**
- * 端点详情：一个端点的全部真相都在这一屏，按「读 → 用 → 改 → 删」分四栏。
+ * 端点详情：一个端点的全部真相都在这一屏，按「读 → 用 → 改 → 删」分三栏。
  *
- * 为什么是详情页而不是列表里的展开区：接入一个端点要同时看地址、令牌提示、工具面
- * 和示例命令，这些东西挤在列表行里谁也看不清；而且详情有自己的地址（?endpoint=slug），
+ * 为什么是详情页而不是列表里的展开区：接一个端点要同时看地址、认证头、令牌提示
+ * 和工具面，这些东西挤在列表行里谁也看不清；而且详情有自己的地址（?endpoint=slug），
  * 刷新、收藏、发给同事都能落到同一处。
  */
 export function EndpointDetail({
@@ -185,6 +184,9 @@ export function EndpointDetail({
 
       {tab === "overview" && (
         <div className="space-y-5">
+          {/* 接进一个客户端要填的全部东西，就这两行。原先它们独占一个「接入」页签，
+              而那个页签在去掉各端示例后只剩这两样，还和概览重复了一遍端点地址——
+              一个页签换一次点击、看到的是别处已经有的内容，不如并进来。 */}
           <div>
             <p className="mb-1.5 text-caption text-[var(--text-muted)]">端点地址</p>
             <CopyField value={fullUrl} label="复制地址" />
@@ -195,13 +197,23 @@ export function EndpointDetail({
             )}
           </div>
 
+          <div>
+            <p className="mb-1.5 text-caption text-[var(--text-muted)]">认证请求头</p>
+            <CodeBlock code="Authorization: Bearer <你的端点令牌>" lang="http" />
+            <p className="mt-1.5 text-caption leading-relaxed text-[var(--text-muted)]">
+              令牌明文只在创建和轮换时显示一次（服务端只存哈希），忘了就在下面轮换一枚新的。
+              传输是 Streamable HTTP，客户端里选「HTTP」而不是 SSE；claude.ai 网页版的自定义
+              连接器只支持 OAuth，暂时接不进来，Claude Code、Cursor、Cline 等本地客户端都可以。
+            </p>
+          </div>
+
           {/* 自检：配完之后最想问的那句「它现在能用吗」，就地给答案 */}
           <div className="rounded-xl border border-white/[0.07] p-4">
             <div className="flex items-center justify-between gap-3">
               <div className="min-w-0">
                 <p className="text-sub font-medium">连通性自检</p>
                 <p className="mt-0.5 text-caption text-[var(--text-muted)]">
-                  跑一次真实的协议握手、列一遍工具，再挑个只读工具实际调一次。
+                  跑一遍真实协议，只试调只读工具，不改任何状态。
                 </p>
               </div>
               <button
@@ -262,9 +274,11 @@ export function EndpointDetail({
               {/* 详情页不设上限：这一屏就是要看全「到底开放了什么」 */}
               <ServiceChips services={endpoint.services} max={endpoint.services.length} />
             </MetaRow>
+            {/* 只留这几行：工具体积、令牌、最近调用。
+                工具数在页签上、工具形态在标题下的元信息行里、超时在「设置」页签里可改，
+                创建时间答不了任何问题——重复一遍只是把真正要看的三行冲淡。 */}
             <MetaRow label="工具">
-              {endpoint.tool_count} 个（工具形态：{endpoint.expand_tools ? "展开" : "折叠"}）
-              {preview && ` · 定义约 ${formatBytes(preview.approx_bytes)}`}
+              {preview ? `定义约 ${formatBytes(preview.approx_bytes)}` : "计算中…"}
             </MetaRow>
             <MetaRow label="令牌">
               <span className="font-mono">{endpoint.token_hint}</span>
@@ -277,11 +291,9 @@ export function EndpointDetail({
                 轮换
               </button>
             </MetaRow>
-            <MetaRow label="超时">{endpoint.timeout_seconds} 秒</MetaRow>
             <MetaRow label="最近调用">
               {endpoint.last_used_at ? relativeTime(endpoint.last_used_at) : "从未调用"}
             </MetaRow>
-            <MetaRow label="创建于">{endpoint.created_at.slice(0, 16).replace("T", " ")}</MetaRow>
           </div>
 
           {endpoint.missing_services.length > 0 && (
@@ -299,8 +311,6 @@ export function EndpointDetail({
         ) : (
           <p className="text-sub text-[var(--text-muted)]">正在计算工具目录…</p>
         ))}
-
-      {tab === "connect" && <ConnectGuide url={fullUrl} hint={endpoint.token_hint} />}
 
       {tab === "settings" && (
         <div className="space-y-8">
@@ -350,46 +360,6 @@ export function EndpointDetail({
           </section>
         </div>
       )}
-    </div>
-  );
-}
-
-/**
- * 接入指引：把「拿到地址和令牌之后要做什么」讲完整。
- *
- * 令牌明文只在创建/轮换那一刻存在，所以这里的片段用占位符，并明确写出该把哪个词
- * 替换掉——用户回头再看这一页时，需要的是步骤而不是密钥。
- */
-function ConnectGuide({ url, hint }: { url: string; hint: string }) {
-  const token = "<你的端点令牌>";
-  return (
-    <div className="space-y-4">
-      {/* 不再按客户端分别给示例：MCP 客户端的配置写法各不相同且一直在变，我们照抄
-          的那几份很快就会过期，反倒把「其实只要两样东西」这件事盖住了。
-          这里只给协议层的事实——地址、令牌、请求头，客户端怎么填由它自己的文档说。 */}
-      <div>
-        <p className="mb-1.5 text-caption text-[var(--text-muted)]">端点地址</p>
-        <CopyField value={url} label="复制地址" />
-      </div>
-
-      <div>
-        <p className="mb-1.5 text-caption text-[var(--text-muted)]">认证请求头</p>
-        <CodeBlock code={`Authorization: Bearer ${token}`} lang="http" />
-      </div>
-
-      <div className="rounded-xl border border-white/[0.07] px-4 py-3 text-caption leading-relaxed text-[var(--text-muted)]">
-        <p className="mb-1.5 text-sub font-medium text-[var(--text)]">把 {token} 换成什么</p>
-        <p>
-          令牌明文只在创建和轮换时显示一次，服务端只存哈希。当前这枚的指纹是
-          <span className="mx-1 font-mono text-[var(--text)]">{hint}</span>；
-          忘了就在「概览」里轮换一枚新的（旧的立即失效）。
-        </p>
-        <p className="mt-2">
-          传输是 Streamable HTTP（MCP 2026-07-28），填地址时选「HTTP」而不是 SSE。
-          claude.ai 网页版的自定义连接器只支持 OAuth，暂时接不进来；
-          Claude Code、Cursor、Cline 等本地客户端都可以。
-        </p>
-      </div>
     </div>
   );
 }
