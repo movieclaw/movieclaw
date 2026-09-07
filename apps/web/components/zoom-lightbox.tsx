@@ -15,10 +15,11 @@ import { MinusIcon, PlusIcon, XIcon } from "@/components/icons";
  * 播放 / 详情）：
  *   - 渐进多级：先显示墙上的缩略图（模糊放大）→ 屏幕适配图 → 有 ``fullUrl``
  *     的只在放大到 1:1 时才拉原图。相邻两张预加载的也是屏幕适配图；
- *   - **控件不常驻**（照播放器）：顶栏、缩放控件、缩略条合起来是一层浮在画面
- *     上的「chrome」，闲置 3 秒自动淡出，鼠标一动 / 按任意键 / 点一下画面即
- *     回来，再点一下收起。收起后画面独占整个视口，什么都不叠——这是这个
- *     灯箱的常态，控件是临时召唤出来的；
+ *   - **控件可收起**：顶栏、缩放控件、缩略条与浮层合起来是一层浮在画面上的
+ *     「chrome」，点一下画面收起、再点一下展开，收起后画面独占整个视口。
+ *     只认这一个动作——不做闲置自动淡出：那要一套计时器 + 鼠标唤回 + 收起后
+ *     的静默期（否则手一抖控件就自己回来了），机关比它解决的问题还多，
+ *     而收放本来就是用户自己说了算的事（用户决策 2026-09-07）；
  *   - 缩放：滚轮 / 触控板捏合以鼠标位置为锚，双击 / 双击屏幕在该点放大到 2.5×，
  *     两指捏合以两指中点为锚，最大 5×；放大后拖拽平移；键盘 +/- 缩放、`0` 复位。
  *     底栏那组「− 比例 +」控件**只给有鼠标的设备**：触屏上捏合与双击就是
@@ -34,8 +35,8 @@ import { MinusIcon, PlusIcon, XIcon } from "@/components/icons";
  *   - 缩略条只渲染当前位置前后各 30 张：万张库不铺满 DOM。
  *
  * 舞台上的浮层（``overlay``，如信息面板）自己挡掉指针事件并标上
- * ``data-lightbox-panel``：滚轮落在它上面是面板滚动，不当缩放；它开着的时候
- * 控件常显不自动收起——顶栏都没了、只剩一块信息面板浮在画面上很怪。
+ * ``data-lightbox-panel``：滚轮落在它上面是面板滚动，不当缩放。它跟着控件
+ * 一起收放——顶栏都没了、只剩一块面板浮在画面上很怪。
  * Portal 到 body，与 ImageLightbox 同一层叠约定。
  */
 const STRIP_WINDOW = 30;
@@ -55,11 +56,6 @@ const SWIPE_THRESHOLD = 70;
 /** 触控板横向滚动累计超过它翻一页；翻过之后冷却一段时间，惯性滚动不会连翻几页 */
 const WHEEL_SWIPE_THRESHOLD = 120;
 const WHEEL_SWIPE_COOLDOWN_MS = 500;
-/** 闲置多久自动收起控件（与主流播放器一致） */
-const CHROME_IDLE_MS = 3000;
-/** 手动收起后的静默期：这段时间内鼠标动了也不把控件叫回来。
- *  点一下收起，手离开鼠标时的一点点抖动就会立刻把它唤回来——收起等于没生效 */
-const CHROME_HIDE_GRACE_MS = 900;
 
 interface Point {
   x: number;
@@ -189,15 +185,8 @@ export function ZoomLightbox({
   const waitingMore = useRef(false);
   /** 单击的待执行动作：等 DOUBLE_TAP_MS 确认不是双击（双击是缩放）再落地 */
   const singleTap = useRef(0);
-  // —— 控件显隐（chrome）——
+  /** 控件（顶栏 / 底栏 / 浮层）是否展开；点画面切换，初始展开 */
   const [chromeShown, setChromeShown] = useState(true);
-  const hideTimer = useRef(0);
-  /** 手动收起后的静默期截止时刻：这之前鼠标移动不唤回控件 */
-  const hideGraceUntil = useRef(0);
-  /** 信息面板开着时钉住控件，不自动收起 */
-  const pinned = Boolean(overlay);
-  const pinnedRef = useRef(pinned);
-  pinnedRef.current = pinned;
 
   const thumbUrl = slide?.thumbUrl ?? "";
   const screenUrl = slide?.screenUrl ?? "";
@@ -211,45 +200,8 @@ export function ZoomLightbox({
     [],
   );
 
-  /** 重新计时：到点自动收起（钉住时不计时） */
-  const restartHide = useCallback(() => {
-    window.clearTimeout(hideTimer.current);
-    if (pinnedRef.current) return;
-    hideTimer.current = window.setTimeout(() => setChromeShown(false), CHROME_IDLE_MS);
-  }, []);
-  /** 有动静（鼠标移动、按键）就把控件叫回来并重新计时 */
-  const revealChrome = useCallback(() => {
-    setChromeShown(true);
-    restartHide();
-  }, [restartHide]);
-  /** 点画面：收放控件。手动收起的那一下起算一段静默期（见常量注释） */
-  const toggleChrome = useCallback(() => {
-    setChromeShown((shown) => {
-      if (shown) hideGraceUntil.current = Date.now() + CHROME_HIDE_GRACE_MS;
-      return !shown;
-    });
-  }, []);
-
-  // 控件露出后开始倒计时；钉住时清掉计时并保持露出
-  useEffect(() => {
-    if (pinned) {
-      window.clearTimeout(hideTimer.current);
-      setChromeShown(true);
-      return;
-    }
-    if (!chromeShown) return;
-    restartHide();
-    return () => window.clearTimeout(hideTimer.current);
-  }, [chromeShown, pinned, restartHide]);
-
-  // 卸载时把两个计时器都收掉
-  useEffect(
-    () => () => {
-      window.clearTimeout(hideTimer.current);
-      window.clearTimeout(singleTap.current);
-    },
-    [],
-  );
+  // 卸载时收掉待执行的单击动作
+  useEffect(() => () => window.clearTimeout(singleTap.current), []);
 
   /** 视口坐标 → 相对舞台中心的坐标（zoomAt 的锚点约定） */
   const stageAnchor = useCallback((clientX: number, clientY: number): Point => {
@@ -311,8 +263,6 @@ export function ZoomLightbox({
   // 键盘：Esc 关闭，←/→ 翻页，+/- 缩放，0 复位缩放；其余交给调用方
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      // 键盘用户看不到「鼠标一动就回来」，任何按键都当作有动静
-      revealChrome();
       if (e.key === "Escape") onClose();
       else if (e.key === "ArrowLeft") step(-1);
       else if (e.key === "ArrowRight") step(1);
@@ -323,7 +273,7 @@ export function ZoomLightbox({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose, onKey, resetZoom, revealChrome, step, zoomBy]);
+  }, [onClose, onKey, resetZoom, step, zoomBy]);
 
   // 锁住身后页面的滚动
   useEffect(() => {
@@ -493,7 +443,7 @@ export function ZoomLightbox({
     window.clearTimeout(singleTap.current);
     singleTap.current = window.setTimeout(() => {
       if (blank && zoomRef.current === 1) onClose();
-      else toggleChrome();
+      else setChromeShown((shown) => !shown);
     }, DOUBLE_TAP_MS);
   };
 
@@ -537,7 +487,7 @@ export function ZoomLightbox({
   // auto，只有 visibility 能连着子元素一起关掉。transition 带上 visibility，
   // 淡出走完 300ms 才真正消失，淡入则立刻可见
   const chromeClass = `transition-[opacity,visibility] duration-300 motion-reduce:transition-none ${
-    chromeShown || pinned ? "visible opacity-100" : "invisible opacity-0"
+    chromeShown ? "visible opacity-100" : "invisible opacity-0"
   }`;
 
   return createPortal(
@@ -545,12 +495,6 @@ export function ZoomLightbox({
       role="dialog"
       aria-modal="true"
       aria-label={label}
-      // 鼠标一动就把控件叫回来；手势进行中不算——拖着翻页时不该冒出一层控件
-      onPointerMove={() => {
-        if (drag.current || pinch.current || swipe.current) return;
-        if (Date.now() < hideGraceUntil.current) return;
-        revealChrome();
-      }}
       className="fixed inset-0 z-[70] overflow-hidden bg-[rgba(4,5,9,0.94)] backdrop-blur-md [bottom:calc(-1*var(--vp-overshoot))]"
     >
       {/* 舞台：铺满整个对话框（控件浮在它上面）。点画面收放控件、点画面外的
@@ -639,7 +583,8 @@ export function ZoomLightbox({
           </span>
         )}
 
-        {overlay}
+        {/* 浮层跟着控件一起收放：只剩一块信息面板浮在画面上很怪 */}
+        {chromeShown && overlay}
       </div>
 
       {/* 顶栏：计数 + 标题 + 工具。渐变垫底让白字压在亮图上也读得清；
