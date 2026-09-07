@@ -37,6 +37,13 @@ export const MinusIcon = (p: IconProps) => (
   </Base>
 );
 
+/** 插头：对外开放的接入点（MCP 服务端点），与 SparkIcon 的「AI 能力」区分开 */
+export const PlugIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="M9 3v5M15 3v5M7 8h10v3a5 5 0 0 1-5 5 5 5 0 0 1-5-5V8ZM12 16v5" />
+  </Base>
+);
+
 export const SparkIcon = (p: IconProps) => (
   <Base {...p}>
     <path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3Z" />

@@ -88,12 +88,25 @@ _TOP_LEVEL_LINES = [
 # - members：成员管理是高敏感操作（建号、重置密码、启停、改权限），属于
 #   部署者本人的账号治理，绝不该由对话式 Agent 代劳（Agent 令牌是超管级，
 #   放进目录等于把开号/改权限的能力交给模型）。CLI 命令保留给人类管理员。
-_EXCLUDED_DOMAINS = {"logs", "members"}
+# - mcp：MCP 端点的增删改与令牌轮换属于凭证签发面，和 members 同理不该由对话式
+#   Agent 代劳；真正的签发闸门在 require_admin_session（人 + 浏览器）上。
+_EXCLUDED_DOMAINS = {"logs", "members", "mcp"}
 
 
 def spec_domains() -> set[str]:
     """spec 里全部会生成命令、且对模型开放的域（守护测试与渲染共用）。"""
     return set(command_domains()) - _EXCLUDED_DOMAINS
+
+
+def domain_description(domain: str) -> str:
+    """某个域的一行说明（去掉行首的域名与对齐空格）。
+
+    给 MCP 折叠模式的工具描述复用（movieclaw_mcp/tools.py）：那边需要同样的
+    「这个服务是干什么的」，共用这一份就不会出现两套会各自漂移的文案。
+    未登记的域（logs / members 这类只对人类管理员开放的）返回空串，调用方回落。
+    """
+    _, _, rest = _DOMAIN_LINES.get(domain, "").partition(" ")
+    return rest.strip()
 
 
 @lru_cache(maxsize=1)

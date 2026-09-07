@@ -16,6 +16,7 @@ import { DownloaderConfigSection } from "@/components/downloader-config-section"
 import { useConfirm, useToast } from "@/components/feedback";
 import { ImportWatchSection } from "@/components/import-watch-section";
 import { SettingsOverviewSection } from "@/components/settings-overview-section";
+import { McpSection } from "@/components/mcp-section";
 import { MembersSection } from "@/components/members-section";
 import { AiSettingsSection } from "@/components/ai-settings-section";
 import { LlmConfigSection } from "@/components/llm-config-section";
@@ -226,6 +227,8 @@ export function SettingsPanel({ active }: SettingsPanelProps) {
           <DevicesSection />
         ) : section.id === "app" ? (
           <AppSection />
+        ) : section.id === "mcp" ? (
+          <McpSection />
         ) : section.id === "webhook" ? (
           <WebhookSection />
         ) : section.id === "network" ? (

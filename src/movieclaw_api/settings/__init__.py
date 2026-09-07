@@ -34,6 +34,7 @@ from movieclaw_api.settings.channel_push import (
     ChannelPushSetting,
 )
 from movieclaw_api.settings.llm import LlmDefaultsSetting
+from movieclaw_api.settings.mcp import McpEndpoint, McpEndpointsSetting
 from movieclaw_api.settings.metadata import (
     DiscoverPreferencesSetting,
     MetadataScrapeSetting,
@@ -116,6 +117,8 @@ __all__ = [
     "BUILTIN_EGRESS_SERVICES",
     # AI 设定（各用途默认模型）
     "LlmDefaultsSetting",
+    "McpEndpoint",
+    "McpEndpointsSetting",
     # 应用服务（外部访问地址）
     "AppServerSetting",
     # 事件 Webhook

@@ -49,6 +49,7 @@ from movieclaw_api.api.routes.libraries import search_router as library_search_r
 from movieclaw_api.api.routes.library_recycle import router as library_recycle_router
 from movieclaw_api.api.routes.llm import router as llm_router
 from movieclaw_api.api.routes.logs import router as logs_router
+from movieclaw_api.api.routes.mcp import router as mcp_router
 from movieclaw_api.api.routes.members import router as members_router
 from movieclaw_api.api.routes.network import router as network_router
 from movieclaw_api.api.routes.people import router as people_router
@@ -127,6 +128,8 @@ api_router.include_router(
 # fs 可浏览任意目录、app 可重启）、或"错一下全家受影响"的全局配置。
 _ADMIN_ROUTERS = [
     members_router,
+    # MCP 服务端点：配的是「谁能通过 AI 客户端操作这个实例」，与成员管理同级敏感
+    mcp_router,
     sites_router,
     # 系统通知是运维告警（站点认证过期等），dismiss 是全局操作——成员一点
     # 全家消失、管理员错过故障；且告警详情本就是管理员视角的信息

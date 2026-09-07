@@ -35,4 +35,10 @@ def create_app() -> FastAPI:
     from movieclaw_jellyfin.router import register as register_jellyfin
 
     register_jellyfin(app)
+
+    # MCP 服务端点（docs/design/mcp-server.md）：同样是根路径命名空间，
+    # 自带令牌体系与 JSON-RPC 错误形态，不进业务 OpenAPI（也就不会变成 CLI 命令）
+    from movieclaw_mcp import register as register_mcp
+
+    register_mcp(app)
     return app

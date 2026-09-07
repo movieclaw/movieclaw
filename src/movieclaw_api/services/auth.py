@@ -91,9 +91,10 @@ class Principal:
 
     - ``kind``：``admin``（超管会话）/ ``member``（成员会话）/
       ``pat``（CLI 长期令牌）/ ``agent``（Agent 工作区令牌）/
+      ``mcp``（MCP 端点为一次工具调用现签的短时令牌）/
       ``share``（影片分享访客，只由分享路由自己的依赖产出，进不了
       ``require_login``）；
-    - ``is_admin``：admin / pat / agent 均为 True——PAT 与 Agent 令牌只能由
+    - ``is_admin``：admin / pat / agent / mcp 均为 True——PAT 与 Agent 令牌只能由
       超管创建，等价管理员（PAT 创建接口已收口为管理员专属，防止成员提权）；
     - ``member``：kind == "member" 时携带已加载的成员行（验签时顺路查库拿到），
       供能力开关判定（allow_subscribe 等）免二次查库。
@@ -604,6 +605,11 @@ def merge_saved_account(
 
 _AGENT_TOKEN_SALT = "movieclaw.agent-token.v1"
 AGENT_TOKEN_TTL_SECONDS = 2 * 3600  # 一次 Agent 运行的令牌有效期上限
+# MCP 端点调用业务接口时现签的令牌（docs/design/mcp-server.md §4.2）。独立的盐
+# 做签名域隔离：即使某处签名被复用，也伪造不出另一种用途的令牌。有效期按「一次
+# 工具调用」给——它只在进程内活到这次调用结束，给一刻钟纯粹是容错。
+_MCP_TOKEN_SALT = "movieclaw.mcp-token.v1"
+MCP_TOKEN_TTL_SECONDS = 900
 _PAT_PREFIX = "mclaw_"  # 令牌明文前缀：肉眼可辨认来源，误提交扫描器也好识别
 
 #: 令牌「最近使用」的落盘节流间隔：精度够回答「这台机器还活着吗」，又不至于
@@ -718,6 +724,18 @@ async def issue_agent_token(session_id: str) -> str:
     )
 
 
+async def issue_mcp_token(endpoint_id: str) -> str:
+    """为一次 MCP 工具调用签发短时效令牌（docs/design/mcp-server.md §4.2）。
+
+    MCP 端点对外的那枚令牌**只用于认客户端**，进不了业务接口；真正打到本机 API
+    上的是这里现签的一枚，几分钟即失效，且带着端点 id 便于日志归因。
+    """
+    serializer = URLSafeSerializer(await _get_session_secret(), salt=_MCP_TOKEN_SALT)
+    return serializer.dumps(
+        {"aud": "mcp", "eid": endpoint_id, "exp": int(time.time()) + MCP_TOKEN_TTL_SECONDS}
+    )
+
+
 async def verify_bearer_token(token: str) -> Principal:
     """校验 Bearer 令牌（Agent 签名令牌或设备/手工令牌），装配 Principal。
 
@@ -742,6 +760,16 @@ async def verify_bearer_token(token: str) -> Principal:
             is_admin=True,
             agent_session_id=agent_session_id,
         )
+
+    serializer = URLSafeSerializer(await _get_session_secret(), salt=_MCP_TOKEN_SALT)
+    try:
+        payload = serializer.loads(token)
+    except BadSignature:
+        payload = None
+    if isinstance(payload, dict) and payload.get("aud") == "mcp":
+        if int(payload.get("exp", 0)) < time.time():
+            raise UnauthorizedException("MCP 调用令牌已过期")
+        return Principal(kind="mcp", name=f"mcp:{payload.get('eid', '')}", is_admin=True)
 
     provided_hash = _hash_token(token)
     for record in await list_api_tokens():

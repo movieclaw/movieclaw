@@ -24,6 +24,7 @@ import {
   TerminalIcon,
   TvIcon,
   UserIcon,
+  PlugIcon,
 } from "@/components/icons";
 
 type Icon = ComponentType<SVGProps<SVGSVGElement>>;
@@ -185,6 +186,7 @@ export const settingsSectionGroups: SettingsSectionGroup[] = [
       { id: "im-push", label: "消息推送", description: "微信 / Telegram / Discord 推送与 AI 对话", icon: ChatIcon },
       { id: "webhook", label: "Webhook", description: "向外部服务推送播放、收藏等事件", icon: SendIcon },
       { id: "llm", label: "模型接入", description: "接入 OpenAI、百炼等模型供应商，可同时接入多家", icon: SparkIcon },
+      { id: "mcp", label: "MCP 服务", description: "把 movieclaw 的能力开放给 Claude Code、Cursor 等 AI 客户端", icon: PlugIcon },
       { id: "ai", label: "AI 设定", description: "智能体与字幕处理使用的默认模型", icon: SparkIcon },
     ],
   },

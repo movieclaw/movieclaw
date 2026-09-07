@@ -75,6 +75,10 @@ dependencies = [
   # charset-normalizer 探测 GBK/BIG5 等中文编码后统一转 UTF-8 输出。
   "pysubs2>=1.7.0,<2.0.0",
   "charset-normalizer>=3.4.0,<4.0.0",
+  # MCP 服务端（docs/design/mcp-server.md）：官方 SDK 负责协议编解码与新旧两代
+  # 兼容，我们只提供工具面与调度。锁大版本上限——MCP 协议一年内改过两次
+  # （传输换代、无状态化），大版本升级必须是我们主动的决定而不是被动跟随。
+  "mcp>=2.1.0,<3.0.0",
 ]
 
 [project.optional-dependencies]
