@@ -103,11 +103,10 @@
   <button data-s="s2">② 端点列表</button>
   <button data-s="s3">③ 新建·基本信息</button>
   <button data-s="s4">④ 新建·选服务</button>
-  <button data-s="s5">⑤ 新建·执行策略</button>
-  <button data-s="s6">⑥ 令牌与接入</button>
-  <button data-s="s7">⑦ 端点详情</button>
-  <button data-s="s8">⑧ 危险操作确认</button>
-  <button data-s="s9">⑨ 总开关关闭</button>
+  <button data-s="s6">⑤ 令牌与接入</button>
+  <button data-s="s7">⑥ 端点详情</button>
+  <button data-s="s8">⑦ 危险操作确认</button>
+  <button data-s="s9">⑧ 总开关关闭</button>
 </div>
 
 <!-- ① 空态 -->
@@ -142,8 +141,8 @@
 
   <div class="alert info">
     <b>它和「设备」页的令牌有什么区别？</b><br>
-    设备令牌 = 一台机器的完全权限（给 mclaw 命令行用）；MCP 端点 = 一组精选工具 + 一档执行策略，
-    可以只读、可以只开放订阅与搜索。两者独立签发、独立吊销。
+    设备令牌 = 一台机器的完全权限（给 mclaw 命令行用）；MCP 端点 = 一组你自己挑的工具，
+    可以只开放订阅与搜索、不碰媒体库。两者独立签发、独立吊销。
   </div>
 </section>
 
@@ -169,7 +168,6 @@
     <div class="row">
       <div style="min-width:0">
         <b style="font-size:15px">家庭影音助理</b>
-        <span class="tag ok" style="margin-left:6px">标准</span>
         <div class="mono meta" style="color:var(--muted)">/mcp/home-assistant</div>
         <div class="meta">97 个工具 <span class="tag">展开</span> · 订阅、搜索、媒体库、下载器</div>
         <div class="meta faint">最近调用 12 分钟前 · 令牌 mcp_a1b2****</div>
@@ -186,7 +184,6 @@
     <div class="row">
       <div style="min-width:0">
         <b style="font-size:15px">只读看板</b>
-        <span class="tag info" style="margin-left:6px">只读</span>
         <div class="mono meta">/mcp/dashboard</div>
         <div class="meta">3 个工具 <span class="tag">合并</span> · 覆盖 30 条命令 · 媒体库、任务、系统提示</div>
         <div class="meta faint">最近调用 3 天前 · 令牌 mcp_9f3c****</div>
@@ -203,10 +200,9 @@
     <div class="row">
       <div style="min-width:0">
         <b style="font-size:15px">运维调试</b>
-        <span class="tag danger" style="margin-left:6px">完全 ⚠</span>
         <span class="tag" style="margin-left:4px">已停用</span>
         <div class="mono meta">/mcp/ops</div>
-        <div class="meta">6 个工具 <span class="tag">合并</span> · 覆盖 68 条命令 · 含删除类命令</div>
+        <div class="meta">6 个工具 <span class="tag">合并</span> · 覆盖 68 条命令 · 含媒体库</div>
         <div class="meta faint">最近调用 从未 · 令牌 mcp_77de****</div>
       </div>
       <div style="display:flex;gap:7px;align-items:center">
@@ -231,10 +227,10 @@
   <p class="note">三步向导。第一步只问「叫什么、地址是什么」——地址实时拼出来，重名即时报错，不到提交才失败。</p>
   <header class="h">
     <span class="icon-chip">🔌</span>
-    <div><h1>新建 MCP 端点</h1><p class="sub">第 1 步，共 3 步</p></div>
+    <div><h1>新建 MCP 端点</h1><p class="sub">第 1 步，共 2 步</p></div>
   </header>
   <div class="hr"></div>
-  <div class="steps"><span class="on">1 基本信息</span><span>2 选择服务</span><span>3 执行策略</span></div>
+  <div class="steps"><span class="on">1 基本信息</span><span>2 选择服务</span></div>
 
   <label class="f">端点名称</label>
   <div class="input"><span>家庭影音助理</span></div>
@@ -263,10 +259,10 @@
   <p class="note">本方案的核心屏，可直接点选试试：底部实时算「几个工具 / 覆盖多少条命令 / 描述占多少上下文」。工具数 = 选中的服务数——这正是「组合工具目录」的含义。</p>
   <header class="h">
     <span class="icon-chip">🔌</span>
-    <div><h1>选择服务</h1><p class="sub">第 2 步，共 3 步 · 选中哪些服务，这个端点就只有那些工具</p></div>
+    <div><h1>选择服务</h1><p class="sub">第 2 步，共 2 步 · 选中哪些服务，这个端点就只有那些工具</p></div>
   </header>
   <div class="hr"></div>
-  <div class="steps"><span>1 基本信息</span><span class="on">2 选择服务</span><span>3 执行策略</span></div>
+  <div class="steps"><span>1 基本信息</span><span class="on">2 选择服务</span></div>
 
   <div class="card tight" style="margin-bottom:14px">
     <div class="switch">
@@ -281,8 +277,8 @@
 
   <div class="alert info">
     两种形态都能用，看客户端脾气：有的客户端擅长在大工具集里检索，有的会把工具全量塞进系统提示词。
-    <b>展开模式下，被执行策略挡掉的命令根本不会出现在工具列表里</b>；合并模式只能在执行时拒绝。
-    业界公认 30~40 个工具是模型可靠选择的上限，超了就该考虑拆成多个端点。
+    展开模式下每个工具带类型化参数和 readOnly / destructive 注解，支持注解的客户端会在执行
+    破坏性工具前向人确认；合并模式工具少、占的上下文小。
   </div>
 
   <div class="kicker">内容发现与订阅</div>
@@ -296,65 +292,41 @@
   <div class="kicker">账号 · 界面 · 集成</div>
   <div class="grid" id="g5"></div>
 
+  <label class="f">单次调用超时</label>
+  <div class="input"><span>300 秒</span><span class="faint">扫描/整理等长任务立即返回任务号，让模型再调 jobs_wait 跟进</span></div>
+
+  <div class="alert warn">
+    <b>勾中的服务，接进来的模型就能全部执行——和你自己在命令行上能做的一样。</b>
+    比如勾了「本地媒体库」，它就可以删除磁盘上的媒体文件。不想让它碰的，这里别勾；
+    临时不用就把端点停用，出事就吊销令牌。
+  </div>
+
+  <details>
+    <summary>有几类接口无论如何都不会出现在工具里</summary>
+    <div class="meta" style="margin-top:8px">
+      · 会话类操作（发起/续跑对话）——防止 Agent 递归拉起 Agent<br>
+      · 上传 / 下载类接口——MCP 客户端没有服务端文件系统的概念<br>
+      · 纯网页基础设施接口<br>
+      · 另外：每端点并发上限 4；大响应自动截断并提示用 limit / offset 取更多；
+        每次调用现签一枚几分钟即失效的内部令牌，外部令牌本身进不了业务接口
+    </div>
+  </details>
+
   <div class="summary">
     <div>
       <b id="sum1" style="font-size:14px">97 个工具</b>
       <div class="meta" id="sum2">4 个服务 · 工具定义约 34 KB</div>
     </div>
-    <div style="display:flex;gap:8px"><button class="btn">上一步</button><button class="btn primary">下一步</button></div>
-  </div>
-</section>
-
-<!-- ⑤ 新建 · 执行策略 -->
-<section class="screen" id="s5">
-  <p class="note">外部端点比产品内 Agent 更远，闸门要更硬。三档策略直接复用 spec 里已有的 <span class="mono">x-cli-dangerous</span> 标注，新增危险命令自动纳入管辖，不用手工维护名单。</p>
-  <header class="h">
-    <span class="icon-chip">🔌</span>
-    <div><h1>执行策略</h1><p class="sub">第 3 步，共 3 步 · 这个端点被允许做到什么程度</p></div>
-  </header>
-  <div class="hr"></div>
-  <div class="steps"><span>1 基本信息</span><span>2 选择服务</span><span class="on">3 执行策略</span></div>
-
-  <div class="opt" data-policy>
-    <span class="radio"></span>
-    <div><b>只读</b><div class="d">只放行查询类命令。任何写入、下载、删除一律拒绝，适合分析型 Agent 和看板。</div></div>
-  </div>
-  <div class="opt sel" data-policy>
-    <span class="radio"></span>
-    <div><b>标准 <span class="tag ok">推荐</span></b><div class="d">读 + 常规写（订阅、搜索、投递下载、扫描入库），但拒绝所有带 ⚠ 的危险命令（删文件、删配置、清记录）。</div></div>
-  </div>
-  <div class="opt" data-policy>
-    <span class="radio"></span>
-    <div><b>完全 <span class="tag danger">危险</span></b><div class="d">放开全部命令，含 <span class="mono">library items delete</span>（会删除磁盘上的媒体文件）。选择后需二次确认，端点卡上常驻红标。</div></div>
-  </div>
-
-  <label class="f">单次调用超时</label>
-  <div class="input"><span>300 秒</span><span class="faint">扫描/整理等长任务立即返回任务号，让模型再调 jobs_wait 跟进</span></div>
-
-  <details open>
-    <summary>无论哪一档都强制生效的闸门</summary>
-    <div class="meta" style="margin-top:8px">
-      · 会话类操作（<span class="mono">session_*</span> 的发起/续跑）不进工具面，防止 Agent 递归拉起 Agent<br>
-      · 上传 / 下载类接口不进工具面（MCP 客户端没有服务端文件系统的概念）<br>
-      · 纯网页基础设施接口（标了 x-cli-hidden 的）本就不在工具面内<br>
-      · 每端点并发上限 4，超出排队；单次调用超时按上面的设置<br>
-      · 每次调用现签一枚几分钟即失效的内部令牌，外部令牌本身进不了业务接口<br>
-      · 大响应自动截断并提示用 limit / offset 取更多，不会一次撑爆客户端上下文
-    </div>
-  </details>
-
-  <div class="summary">
-    <span class="meta faint">建成后这些设置都可以改</span>
     <div style="display:flex;gap:8px"><button class="btn">上一步</button><button class="btn primary">创建端点</button></div>
   </div>
 </section>
 
-<!-- ⑥ 令牌与接入 -->
+<!-- ⑤ 令牌与接入 -->
 <section class="screen" id="s6">
   <p class="note">令牌明文只在这一屏出现一次（服务端只存哈希）。直接给出三种客户端的可复制片段，避免用户去查 MCP 文档。</p>
   <header class="h">
     <span class="icon-chip">✅</span>
-    <div><h1>端点已创建</h1><p class="sub">家庭影音助理 · 4 个工具 · 标准策略</p></div>
+    <div><h1>端点已创建</h1><p class="sub">家庭影音助理 · 97 个工具 · 展开模式</p></div>
   </header>
   <div class="hr"></div>
 
@@ -405,12 +377,12 @@
   </div>
 </section>
 
-<!-- ⑦ 端点详情 -->
+<!-- ⑥ 端点详情 -->
 <section class="screen" id="s7">
   <p class="note">详情页回答三个问题：这个端点到底暴露了什么（工具目录可展开看到真实描述）、它还活着吗（自检 + 最近调用）、怎么收回（轮换/停用/删除）。</p>
   <header class="h">
     <span class="icon-chip">🔌</span>
-    <div><h1>家庭影音助理 <span class="tag ok">标准</span></h1><p class="sub mono">https://movie.example.com/mcp/home-assistant</p></div>
+    <div><h1>家庭影音助理 <span class="tag">展开</span></h1><p class="sub mono">https://movie.example.com/mcp/home-assistant</p></div>
   </header>
   <div class="hr"></div>
 
@@ -433,8 +405,7 @@
   <div class="kicker">工具目录（97 · 展开模式）</div>
   <div class="card">
     <div class="meta" style="margin-bottom:10px">
-      工具名 = 模块名 + 命令名。<b>被「标准」策略挡掉的危险命令不在列表里</b>——
-      模型看不到，也就不会尝试。
+      工具名 = 模块名 + 命令名。选中服务的命令全部在列表里，含会改动数据的那些。
       <button class="btn link" style="margin-left:4px">切换为合并模式</button>
     </div>
     <details open>
@@ -470,12 +441,14 @@
       </div>
     </details>
     <details>
-      <summary>library（57 个工具中放行 51 个 · 6 个被策略隐去）</summary>
+      <summary>library（57 个工具）</summary>
       <div class="toollist" style="margin-top:6px">
         <div><span class="mono" style="color:var(--info)">library_items_list</span>
           <span class="tag ok" style="margin-left:6px">只读</span></div>
         <div><span class="mono" style="color:var(--info)">library_scan</span></div>
-        <div class="faint" style="text-decoration:line-through">library_items_delete · library_delete · …（危险命令，标准策略下不暴露）</div>
+        <div><span class="mono" style="color:var(--info)">library_items_delete</span>
+          <span class="tag danger" style="margin-left:6px">destructiveHint</span>
+          <div class="meta">删除条目及磁盘文件——注解会让支持的客户端执行前向人确认</div></div>
       </div>
     </details>
     <details>
@@ -486,10 +459,6 @@
         <div class="faint">…… 还有 14 个</div>
       </div>
     </details>
-    <div class="alert warn" style="margin-bottom:0">
-      97 个工具超过了模型可靠选择的经验上限（30~40）。要么关掉「展开工具」（变成 4 个工具），
-      要么把媒体库拆到单独的端点里。
-    </div>
   </div>
 
   <div class="kicker">最近调用</div>
@@ -498,7 +467,7 @@
       <tr><th>时间</th><th>工具</th><th>参数</th><th>结果</th></tr>
       <tr><td>12 分钟前</td><td class="mono">subscriptions_list</td><td class="mono">{"status":"active","limit":20}</td><td><span class="tag ok">成功 · 0.4s</span></td></tr>
       <tr><td>12 分钟前</td><td class="mono">search_torrents</td><td class="mono">{"keyword":"沙丘2","resolution":"2160p"}</td><td><span class="tag ok">成功 · 6.1s</span></td></tr>
-      <tr><td>1 小时前</td><td class="mono">library_items_delete</td><td class="mono">{"item_id":8821}</td><td><span class="tag danger">拒绝 · 工具不存在（策略已隐去）</span></td></tr>
+      <tr><td>1 小时前</td><td class="mono">library_scan</td><td class="mono">{"library_id":3}</td><td><span class="tag ok">已提交 · 任务 #4172</span></td></tr>
     </table>
     <div class="meta faint" style="margin-top:9px">P1 先只落「最近调用时间」，这张明细表是 P2（调用日志）——样稿里先把位置留出来。</div>
   </div>
@@ -518,10 +487,10 @@
   </div>
 </section>
 
-<!-- ⑧ 危险操作确认 -->
+<!-- ⑦ 危险操作确认 -->
 <section class="screen" id="s8">
   <p class="note">三个确认弹窗的文案。共同原则：说清「会发生什么」而不是问「你确定吗」。</p>
-  <header class="h"><span class="icon-chip">⚠️</span><div><h1>确认弹窗</h1><p class="sub">停用 / 轮换 / 删除 / 选择完全档</p></div></header>
+  <header class="h"><span class="icon-chip">⚠️</span><div><h1>确认弹窗</h1><p class="sub">停用 / 轮换令牌 / 删除</p></div></header>
   <div class="hr"></div>
 
   <div class="modal">
@@ -544,15 +513,9 @@
     <div class="acts"><button class="btn">取消</button><button class="btn danger">删除端点</button></div>
   </div>
 
-  <div class="modal" style="border-color:rgba(255,107,107,.45)">
-    <h3>确认使用「完全」策略？</h3>
-    <p>这个端点将能执行<b>全部命令</b>，包括 <span class="mono">library items delete</span>——
-      它会删除磁盘上的媒体文件，且不经过任何人工确认。只在你完全信任接入方时使用。</p>
-    <div class="acts"><button class="btn">改用标准</button><button class="btn danger">我明白，使用完全策略</button></div>
-  </div>
 </section>
 
-<!-- ⑨ 总开关关闭 -->
+<!-- ⑧ 总开关关闭 -->
 <section class="screen" id="s9">
   <p class="note">总开关关闭态：不隐藏已有端点（否则用户会以为配置丢了），而是整体置灰并说清后果。</p>
   <header class="h">
@@ -572,13 +535,13 @@
 
   <div class="dim">
     <div class="card"><div class="row"><div>
-      <b style="font-size:15px">家庭影音助理</b> <span class="tag">标准</span>
+      <b style="font-size:15px">家庭影音助理</b> <span class="tag">展开</span>
       <div class="mono meta">/mcp/home-assistant</div></div><button class="btn sm">详情</button></div></div>
     <div class="card"><div class="row"><div>
-      <b style="font-size:15px">只读看板</b> <span class="tag">只读</span>
+      <b style="font-size:15px">只读看板</b> <span class="tag">合并</span>
       <div class="mono meta">/mcp/dashboard</div></div><button class="btn sm">详情</button></div></div>
     <div class="card"><div class="row"><div>
-      <b style="font-size:15px">运维调试</b> <span class="tag">完全</span>
+      <b style="font-size:15px">运维调试</b> <span class="tag">合并</span>
       <div class="mono meta">/mcp/ops</div></div><button class="btn sm">详情</button></div></div>
   </div>
 </section>
@@ -661,19 +624,13 @@ function refresh(){
     s2.style.color = "";
     return;
   }
+  // 只如实报数字：不设上限，也不给「工具太多」的警告，由用户自己判断
   s1.textContent = `${tools} 个工具`;
-  const warn = tools > 40 ? " ⚠ 超过模型可靠选择的工具数上限，建议关掉「展开工具」或拆成多个端点" : "";
   s2.textContent = expand
-    ? `${svc} 个服务 · 工具定义约 ${size.toFixed(0)} KB${warn}`
-    : `${svc} 个服务 · 覆盖 ${cmds} 条命令 · 工具描述约 ${size.toFixed(1)} KB${warn}`;
-  s2.style.color = warn ? "var(--warn)" : "";
+    ? `${svc} 个服务 · 工具定义约 ${size.toFixed(0)} KB`
+    : `${svc} 个服务 · 覆盖 ${cmds} 条命令 · 工具描述约 ${size.toFixed(1)} KB`;
 }
 refresh();
-
-// —— 屏⑤：策略单选 ——
-document.querySelectorAll("[data-policy]").forEach(o=>o.onclick=()=>{
-  document.querySelectorAll("[data-policy]").forEach(x=>x.classList.toggle("sel",x===o));
-});
 
 // —— 屏⑥：接入片段页签 ——
 document.querySelectorAll("#tabs button").forEach(b=>b.onclick=()=>{
