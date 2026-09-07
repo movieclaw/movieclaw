@@ -88,11 +88,25 @@ class PreviewRequest(BaseModel):
     expand_tools: bool = True
 
 
+class ToolParameter(BaseModel):
+    """工具的一个参数。管理页要展示它，用户才能判断「这个工具好不好用」。"""
+
+    name: str
+    type: str = Field(default="", description="JSON Schema 类型，如 integer / string[]")
+    required: bool = False
+    description: str = ""
+    location: str = Field(default="", description="落点：path / query / body")
+
+
 class ToolPreview(BaseModel):
     name: str
+    #: 一行摘要（description 的第一句），列表里显示这个
+    summary: str = ""
     description: str
+    service: str = Field(default="", description="所属服务域，详情页按它分组")
     read_only: bool = False
     destructive: bool = False
+    parameters: list[ToolParameter] = Field(default_factory=list)
 
 
 class PreviewView(BaseModel):

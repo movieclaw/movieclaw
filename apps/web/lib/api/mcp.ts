@@ -57,11 +57,26 @@ export interface McpEndpointCreated {
   token: string;
 }
 
+/** 工具的一个参数（见 schemas.mcp.ToolParameter）：类型化参数面正是开发者要看的东西。 */
+export interface McpToolParameter {
+  name: string;
+  type: string;
+  required: boolean;
+  description: string;
+  /** 落点：path / query / body。展示出来是为了让人能把工具对回 API 文档 */
+  location: string;
+}
+
 export interface McpToolPreview {
   name: string;
+  /** 一行摘要，列表里显示这个；完整说明在 description */
+  summary: string;
   description: string;
+  /** 所属服务域，详情页按它分组 */
+  service: string;
   read_only: boolean;
   destructive: boolean;
+  parameters: McpToolParameter[];
 }
 
 export interface McpPreview {

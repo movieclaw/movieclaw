@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 
 from fastapi import APIRouter, Depends
+from mcp.types import Tool
 
 from movieclaw_api.api.deps import require_admin_session
 from movieclaw_api.schemas.mcp import (
@@ -25,13 +26,14 @@ from movieclaw_api.schemas.mcp import (
     ServiceView,
     StatusView,
     ToggleRequest,
+    ToolParameter,
     ToolPreview,
 )
 from movieclaw_api.schemas.response import ApiResponse, ok
 from movieclaw_api.services import mcp_endpoints
 from movieclaw_api.settings import AppServerSetting, get_setting_store
 from movieclaw_api.settings.mcp import McpEndpoint
-from movieclaw_mcp.catalog import available_services, operations_by_domain
+from movieclaw_mcp.catalog import available_services, operations_by_domain, tools_by_name
 from movieclaw_mcp.tools import build_tools, describe_domain
 
 router = APIRouter(prefix="/mcp", tags=["mcp"])
@@ -185,6 +187,47 @@ async def delete_endpoint(endpoint_id: str) -> ApiResponse[dict]:
     return ok({"deleted": True})
 
 
+def _schema_type(schema: dict) -> str:
+    """把 JSON Schema 压成一个人能一眼读懂的类型标签（如 ``integer[]``、``string``）。
+
+    Optional 字段在 spec 里是 ``anyOf: [T, null]``，取非 null 的那支即可。
+    """
+    if "anyOf" in schema:
+        options = [o for o in schema["anyOf"] if o.get("type") != "null"]
+        return _schema_type(options[0]) if options else "any"
+    kind = schema.get("type") or ("enum" if schema.get("enum") else "any")
+    if kind == "array":
+        return f"{_schema_type(schema.get('items') or {})}[]"
+    return str(kind)
+
+
+def _tool_preview(tool: Tool) -> ToolPreview:
+    """SDK 的 Tool → 管理页要展示的形态（含参数明细）。"""
+    schema = tool.input_schema or {}
+    required = set(schema.get("required") or [])
+    operation = tools_by_name().get(tool.name)
+    parameters = [
+        ToolParameter(
+            name=name,
+            type=_schema_type(prop or {}),
+            required=name in required,
+            description=(prop or {}).get("description", ""),
+            location=(operation.arg_locations.get(name, "") if operation else ""),
+        )
+        for name, prop in (schema.get("properties") or {}).items()
+    ]
+    description = tool.description or ""
+    return ToolPreview(
+        name=tool.name,
+        summary=description.split("。")[0][:60],
+        description=description,
+        service=operation.domain if operation else tool.name,
+        read_only=bool(tool.annotations and tool.annotations.read_only_hint),
+        destructive=bool(tool.annotations and tool.annotations.destructive_hint),
+        parameters=parameters,
+    )
+
+
 @router.post(
     "/endpoints/preview",
     response_model=ApiResponse[PreviewView],
@@ -202,12 +245,7 @@ async def preview(payload: PreviewRequest) -> ApiResponse[PreviewView]:
             command_count=commands,
             approx_bytes=_tool_bytes(payload.services, expand=payload.expand_tools),
             tools=[
-                ToolPreview(
-                    name=t.name,
-                    description=t.description,
-                    read_only=bool(t.annotations and t.annotations.read_only_hint),
-                    destructive=bool(t.annotations and t.annotations.destructive_hint),
-                )
+                _tool_preview(t)
                 for t in tools
             ],
         )

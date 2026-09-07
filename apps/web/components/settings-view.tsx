@@ -160,13 +160,14 @@ export function SettingsPanel({ active }: SettingsPanelProps) {
     // 背景透明，让蒙版透上来。沉浸式深色底，不再有圆角/描边/透出雪原的大卡片。
     // 头部与内容同列（同一 max-w 容器内），避免「标题贴左上、内容居中」的割裂感。
     <div className="scroll-thin scroll-safe h-full overflow-y-auto">
-      {/* 分区按信息密度给宽度：日志行最密（4xl）；资源站点一行要放
-          名称 + 状态 + 刷流读数 + 操作，展开后还有成排统计，2xl 太挤（3xl）；
-          下载器展开后是地址/目录长值 + 路径映射对照表，同给 3xl；
-          其余表单类分区维持 2xl 的舒适阅读宽度 */}
+      {/* 分区按信息密度给宽度：日志行最密（4xl）；MCP 服务是开发者控制台形态——
+          端点表格要并排放工具数/令牌/最近活跃，详情页是「配置 + 实时预览」两栏，
+          2xl 会把两栏压成竖排（4xl）；资源站点一行要放名称 + 状态 + 刷流读数 +
+          操作，展开后还有成排统计，2xl 太挤（3xl）；下载器展开后是地址/目录长值 +
+          路径映射对照表，同给 3xl；其余表单类分区维持 2xl 的舒适阅读宽度 */}
       <div
         className={`mx-auto w-full px-6 pb-20 pt-12 max-md:px-4 max-md:pb-12 max-md:pt-6 ${
-          section.id === "logs"
+          section.id === "logs" || section.id === "mcp"
             ? "max-w-4xl"
             : section.id === "sites" || section.id === "downloaders"
               ? "max-w-3xl"
