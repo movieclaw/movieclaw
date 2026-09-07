@@ -14,7 +14,14 @@ import {
   scanLibraryConfirm,
 } from "@/lib/library-confirm";
 import { chapterJobLabel } from "@/lib/library-manage";
-import { CheckIcon, LayersIcon, LockIcon, MoreIcon, PhotoIcon, XIcon } from "@/components/icons";
+import {
+  CheckIcon,
+  LockIcon,
+  MasonryIcon,
+  MoreIcon,
+  PosterGridIcon,
+  XIcon,
+} from "@/components/icons";
 import { PAGE_NAV_BUTTON_CLASS, PageNav } from "@/components/page-nav";
 import { usePageTitle } from "@/lib/use-page-title";
 import { LibraryFormDialog } from "@/components/library-form-dialog";
@@ -771,10 +778,12 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
       }}
       className={`${PAGE_NAV_BUTTON_CLASS} ${gallery ? "bg-black/55 text-white" : ""}`}
     >
+      {/* 图标画的是**点过去会变成的那面墙**：海报墙上显示瀑布流，图床模式里
+          显示海报格（见 icons.tsx 里这对图标的注释） */}
       {gallery ? (
-        <LayersIcon className="size-[18px] max-md:size-[22px]" />
+        <PosterGridIcon className="size-[18px] max-md:size-[22px]" />
       ) : (
-        <PhotoIcon className="size-[18px] max-md:size-[22px]" />
+        <MasonryIcon className="size-[18px] max-md:size-[22px]" />
       )}
     </button>
   );
