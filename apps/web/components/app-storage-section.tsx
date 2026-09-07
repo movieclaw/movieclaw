@@ -2,7 +2,9 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-import { InfoIcon, RefreshIcon } from "@/components/icons";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+
+import { InfoIcon, MoreIcon, RefreshIcon } from "@/components/icons";
 import { Tooltip } from "@/components/tooltip";
 import {
   cleanStorage,
@@ -26,9 +28,11 @@ import { formatRelativeTime } from "@/lib/time";
  * 要最新数字就点刷新：按钮转成「统计中」，旧数据继续留在页面上，后台算完
  * （轮询到 computing 变假）再整体替换，不会中途闪成空白或加载态。
  *
- * 版式：每一行固定三列「名称 + 一句话用途 | 占用 | 动作」，占用列定宽右对齐、
- * 动作列定宽，让数字与按钮在整组里竖向对齐；完整说明与真实路径收进标题旁的
- * 信息图标里，行内不堆长段落。三块内容：
+ * 版式（手机优先）：一行三段「名称 + 一句话用途 | 占用 | ⋯」。清理动作全部收进
+ * 行尾的 ⋯ 菜单——两个并排的文字按钮在 390px 宽的屏幕上会把名称挤成「图…」，
+ * 而清理是低频动作，不值得常驻这么宽的位置；占用数字定宽右对齐，是每行的视觉
+ * 锚点。「重建代价高」徽章挪到第二行与一句话用途同列，保证第一行永远是完整的
+ * 目录名；完整说明与真实路径收进名称旁的信息图标（触屏点按也能展开）。三块内容：
  *   1. 磁盘概览：data/ 所在磁盘的分段条（应用数据 / 可回收缓存 / 其他 / 剩余）；
  *   2. 可清理的缓存：「清理孤儿」（媒体库里已不存在的条目，无损）与「全部清空」
  *      （重建代价高的目录标红并二次确认）；
@@ -102,27 +106,29 @@ export function AppStorageSection() {
   const cacheDirs = usage?.dirs.filter((d) => d.group === "cache") ?? [];
   const dataDirs = usage?.dirs.filter((d) => d.group === "data") ?? [];
 
-  // 数据是「上一次统计的结果」，因此时间与进行中状态必须始终摆在标题栏上
-  const statusText = computing
-    ? usage
-      ? "正在重新统计，完成后自动更新…"
-      : "首次统计中，目录较大时要几十秒…"
-    : usage
-      ? `统计于 ${formatRelativeTime(new Date(usage.computed_at * 1000).toISOString())}`
+  // 数据是「上一次统计的结果」，因此时间与进行中状态必须始终摆在标题栏上；
+  // 手机上这一行还要和刷新按钮挤在一起，文案保持短，超长时截断而不是挤走按钮。
+  const computedAt = usage
+    ? formatRelativeTime(new Date(usage.computed_at * 1000).toISOString())
+    : null;
+  const statusText = computedAt
+    ? `统计于 ${computedAt}${computing ? " · 更新中" : ""}`
+    : computing
+      ? "首次统计中，可能要几十秒…"
       : "尚未统计";
 
   return (
     <div className="space-y-6">
       <section>
         <SectionHeader label="磁盘概览">
-          <span className="text-caption text-[var(--text-faint)]">
+          <span className="truncate text-caption text-[var(--text-faint)]">
             {statusText}
           </span>
           <button
             type="button"
             onClick={() => void load(true)}
             disabled={computing}
-            className="btn-glass gap-1 px-2.5 py-1 text-caption font-medium disabled:opacity-50"
+            className="btn-glass shrink-0 gap-1 px-2.5 py-1 text-caption font-medium disabled:opacity-50"
           >
             <RefreshIcon
               className={`size-3 ${computing ? "animate-spin" : ""}`}
@@ -136,7 +142,7 @@ export function AppStorageSection() {
       {usage && usage.unregistered.length > 0 && (
         <section>
           <SectionHeader label="未登记目录" />
-          <div className="rounded-2xl border border-amber-300/20 bg-amber-400/[0.07] px-5 py-4">
+          <div className="rounded-2xl border border-amber-300/20 bg-amber-400/[0.07] px-4 py-4 sm:px-5">
             <p className="text-sub text-amber-100/85">
               数据目录下出现了程序未登记的条目，不会被统计或清理。请把路径反馈给开发者。
             </p>
@@ -228,9 +234,9 @@ function SectionHeader({
 }) {
   return (
     <div className="mb-2.5 flex items-center justify-between gap-3 px-1">
-      <h3 className="group-label">{label}</h3>
+      <h3 className="group-label shrink-0">{label}</h3>
       {children && (
-        <span className="flex items-center gap-2.5">{children}</span>
+        <span className="flex min-w-0 items-center gap-2.5">{children}</span>
       )}
     </div>
   );
@@ -259,7 +265,7 @@ function DiskOverview({
   ];
 
   return (
-    <div className="css-glass !rounded-2xl px-5 py-4">
+    <div className="css-glass !rounded-2xl px-4 py-4 sm:px-5">
       <div className="flex items-end justify-between gap-4">
         <div className="min-w-0">
           <p className="text-ui font-medium text-[var(--text)]">
@@ -312,7 +318,7 @@ function DiskOverview({
   );
 }
 
-/** 一行目录：名称 + 一句话用途 | 占用 | 动作；确认条与结果提示内联在行下。 */
+/** 一行目录：名称 + 一句话用途 | 占用 | ⋯ 菜单；确认条与结果提示内联在行下。 */
 function DirRow({
   dir,
   busy,
@@ -334,18 +340,13 @@ function DirRow({
   const actionable =
     dir.group === "cache" && !!onAsk && !!onConfirm && !!onCancel;
   return (
-    <div className="px-5 py-3">
-      <div className="flex items-center gap-4">
+    <div className="px-4 py-3 sm:px-5">
+      <div className="flex items-center gap-3">
         <div className="min-w-0 flex-1">
           <span className="flex items-center gap-1.5">
             <span className="truncate text-ui font-medium text-[var(--text)]">
               {dir.title}
             </span>
-            {expensive && (
-              <span className="shrink-0 rounded-full bg-amber-400/10 px-1.5 py-px text-micro font-medium text-amber-300/90">
-                重建代价高
-              </span>
-            )}
             <Tooltip
               content={
                 <>
@@ -357,22 +358,28 @@ function DirRow({
               }
               placement="top"
               maxWidth={360}
+              openOnClick
             >
               <button
                 type="button"
-                aria-label="说明"
+                aria-label={`「${dir.title}」的说明`}
                 className="flex shrink-0 text-[var(--text-faint)] transition-colors hover:text-[var(--text-muted)] focus-visible:text-[var(--text-muted)]"
               >
                 <InfoIcon className="size-[14px]" />
               </button>
             </Tooltip>
           </span>
-          <p className="mt-0.5 truncate text-caption text-[var(--text-faint)]">
-            {dir.summary}
-          </p>
+          <span className="mt-0.5 flex items-center gap-1.5 text-caption text-[var(--text-faint)]">
+            {expensive && (
+              <span className="shrink-0 rounded-full bg-amber-400/10 px-1.5 py-px text-micro font-medium text-amber-300/90">
+                重建代价高
+              </span>
+            )}
+            <span className="truncate">{dir.summary}</span>
+          </span>
         </div>
         <span
-          className={`tnum w-20 shrink-0 text-right text-sub font-medium ${
+          className={`tnum shrink-0 text-right text-ui font-semibold ${
             dir.exists && dir.bytes > 0
               ? "text-[var(--text)]"
               : "text-[var(--text-faint)]"
@@ -381,30 +388,12 @@ function DirRow({
           {dir.exists ? formatBytes(dir.bytes) : "—"}
         </span>
         {actionable && (
-          <span className="flex w-[11.5rem] shrink-0 items-center justify-end gap-1.5">
-            {dir.orphan_aware && (
-              <button
-                type="button"
-                onClick={() => onAsk("orphans")}
-                disabled={busy || !dir.exists}
-                className="btn-glass px-2.5 py-1 text-caption font-medium"
-              >
-                清理孤儿
-              </button>
-            )}
-            {dir.clearable && (
-              <button
-                type="button"
-                onClick={() => onAsk("all")}
-                disabled={busy || !dir.exists}
-                className={`btn-glass px-2.5 py-1 text-caption font-medium ${
-                  expensive ? "text-red-300/90 hover:text-red-200" : ""
-                }`}
-              >
-                {busy ? "清理中…" : "全部清空"}
-              </button>
-            )}
-          </span>
+          <RowActionsMenu
+            dir={dir}
+            busy={busy}
+            expensive={expensive}
+            onAsk={onAsk}
+          />
         )}
       </div>
 
@@ -429,7 +418,7 @@ function DirRow({
                 ? `「${dir.title}」重建代价较高，清空后需要重新生成。确认全部清空？`
                 : `确认清空「${dir.title}」？${dir.description}`}
           </p>
-          <span className="flex shrink-0 items-center gap-1.5">
+          <span className="ml-auto flex shrink-0 items-center gap-1.5">
             <button
               type="button"
               onClick={() => onConfirm(pending)}
@@ -458,11 +447,79 @@ function DirRow({
   );
 }
 
+/**
+ * 行尾 ⋯ 菜单：两个清理动作收在这里。
+ *
+ * 与媒体库列表行（library-manage-row.tsx）用同一套 Radix DropdownMenu 与样式，
+ * Portal 渲染保证浮层不被卡片的 overflow/backdrop-filter 裁掉。清理进行中时
+ * 图标换成转圈并禁用入口，行内不再需要「清理中…」这样的长文案占位。
+ */
+function RowActionsMenu({
+  dir,
+  busy,
+  expensive,
+  onAsk,
+}: {
+  dir: DirUsage;
+  busy: boolean;
+  expensive: boolean;
+  onAsk: (mode: CleanMode) => void;
+}) {
+  const itemClass =
+    "glass-row nav-item cursor-pointer px-3 py-2 text-ui font-medium outline-none " +
+    "data-[highlighted]:!bg-[var(--glass-fill-hover)] data-[highlighted]:!text-[var(--text)] " +
+    "data-[disabled]:pointer-events-none data-[disabled]:opacity-40";
+
+  return (
+    <DropdownMenu.Root>
+      <DropdownMenu.Trigger asChild>
+        <button
+          type="button"
+          aria-label={`「${dir.title}」的清理操作`}
+          disabled={busy || !dir.exists}
+          className="grid size-8 shrink-0 place-items-center rounded-full border border-white/[0.09] bg-white/[0.04] text-white/80 transition hover:bg-white/[0.1] hover:text-white disabled:opacity-40 data-[state=open]:bg-white/[0.14] data-[state=open]:text-white"
+        >
+          {busy ? (
+            <RefreshIcon className="size-4 animate-spin" />
+          ) : (
+            <MoreIcon className="size-[18px]" />
+          )}
+        </button>
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content
+          align="end"
+          sideOffset={6}
+          collisionPadding={12}
+          className="menu-surface z-50 min-w-[10rem] p-1"
+        >
+          {dir.orphan_aware && (
+            <DropdownMenu.Item
+              onSelect={() => onAsk("orphans")}
+              className={itemClass}
+            >
+              清理孤儿条目
+            </DropdownMenu.Item>
+          )}
+          {dir.clearable && (
+            <DropdownMenu.Item
+              onSelect={() => onAsk("all")}
+              className={`${itemClass}${expensive ? " !text-red-300/90" : ""}`}
+            >
+              全部清空
+            </DropdownMenu.Item>
+          )}
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
+  );
+}
+
 function SkeletonRows({ count }: { count: number }) {
   return (
     <>
       {Array.from({ length: count }, (_, i) => (
-        <div key={i} className="flex items-center gap-4 px-5 py-3.5">
+        <div key={i} className="flex items-center gap-3 px-4 py-3.5 sm:px-5">
           <div className="flex-1 space-y-1.5">
             <div className="h-3 w-28 animate-pulse rounded bg-white/[0.08]" />
             <div className="h-2.5 w-48 animate-pulse rounded bg-white/[0.05]" />
