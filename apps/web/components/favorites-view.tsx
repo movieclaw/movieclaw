@@ -14,8 +14,23 @@ import { useScrollRestoration } from "@/lib/use-scroll-restoration";
 const PAGE_SIZE = 60;
 
 /**
+ * 整面墙钉死的框比例：2:3 竖版海报。
+ *
+ * 收藏是跨库的一面墙，横版封面（其他库的 16:9 抓帧）和竖版海报必然混在一起。
+ * 单库页遇到这种情况会把墙切成竖横两区各自对齐，但收藏页排的是「最近收藏的
+ * 在前」——按比例分区等于把收藏顺序打散，人再也找不到刚点的那部。
+ *
+ * 所以这里照搬最近观看那一行的做法：**框比例固定，主图按真实比例居中完整显示、
+ * 同图放大模糊铺底**（PosterCardVisual 的 letterbox 分支）。每格等高、片名落在
+ * 一条线上，横版封面也不会被裁掉两边。首页横滚的「我的收藏」本来就是这么排的，
+ * 点「查看全部」进来的这面墙从此与它同一形态。
+ */
+const FAVORITES_FRAME_ASPECT = 2 / 3;
+
+/**
  * 「全部收藏」页（/library/favorites）：当前账号收藏的全部作品，海报墙形态
- * 与单库页完全一致——同一套格子（InventoryCell）、同一种滚动加载。数据是
+ * 与单库页一致——同一套格子（InventoryCell）、同一种滚动加载，区别只在框比例
+ * 统一钉死（见 FAVORITES_FRAME_ASPECT）。数据是
  * playback_state 里的收藏列，与 Jellyfin 客户端点的心同一份；每格的详情落点
  * 是服务端解析好的可见库。首页只横滚最近 20 部，多的到这里看。
  */
@@ -89,6 +104,7 @@ export function FavoritesView() {
                   key={item.media_item_id}
                   item={item}
                   libraryId={item.library_id}
+                  frameAspect={FAVORITES_FRAME_ASPECT}
                 />
               ))}
             </div>

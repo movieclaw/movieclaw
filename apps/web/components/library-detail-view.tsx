@@ -1686,6 +1686,7 @@ export const InventoryCell = memo(function InventoryCell({
   libraryId,
   wallInitial,
   workingLabel,
+  frameAspect,
 }: {
   item: LibraryItem;
   libraryId: number;
@@ -1693,6 +1694,12 @@ export const InventoryCell = memo(function InventoryCell({
   wallInitial?: string;
   /** 这一格正被后台处理（整库刷新的阶段 / 扫描补探）时的文案；不在处理为 undefined */
   workingLabel?: string;
+  /**
+   * 强制锁定框比例。单库页的墙已按主图比例切成竖横两区，每区内比例天然一致，
+   * 不传即按本格主图自选（竖 2:3 / 横 16:9）；而「全部收藏」是跨库按时间排的
+   * 一面墙，不能为了对齐去打散收藏顺序，只能由调用方把整面墙钉死在一个比例上。
+   */
+  frameAspect?: number;
 }) {
   const inventoryLabel =
     item.kind === "tv" && item.inventory_summary
@@ -1708,8 +1715,9 @@ export const InventoryCell = memo(function InventoryCell({
     rating: 0,
     // 框比例按分区锁死（竖版 2:3 / 横版 16:9），同一分区里每格等高、片名一条线；
     // 主图真实比例另传，和框不一致的（4:3 封面、1.5 的横版海报）模糊铺底居中完整显示，
-    // 不按各自真实比例撑格——那样一行里 1.5 与 1.78 的封面高度不一，片名参差
-    aspect: item.primary_aspect >= 1 ? 16 / 9 : 2 / 3,
+    // 不按各自真实比例撑格——那样一行里 1.5 与 1.78 的封面高度不一，片名参差。
+    // 调用方给了 frameAspect 就一切照它来（竖横混排的墙，见上面参数注释）
+    aspect: frameAspect ?? (item.primary_aspect >= 1 ? 16 / 9 : 2 / 3),
     imageAspect: item.primary_aspect,
     overlayDetails: inventoryLabel ? { primary: inventoryLabel } : undefined,
     favorite: item.is_favorite,
