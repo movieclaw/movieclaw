@@ -273,7 +273,7 @@
       <div>
         <b style="font-size:14px">展开工具</b>
         <div class="meta">开：一条命令一个工具（<span class="mono">subscriptions_update</span>），参数带类型，模型照 schema 填</div>
-        <div class="meta">关：一个服务一个工具（<span class="mono">subscriptions</span>），参数是命令行字符串，工具少得多</div>
+        <div class="meta">关：一个服务一个工具（<span class="mono">subscriptions</span>），参数是「命令名 + 参数对象」，工具少得多</div>
       </div>
       <span class="t" id="expandToggle"></span>
     </div>
@@ -329,16 +329,17 @@
   </div>
 
   <label class="f">单次调用超时</label>
-  <div class="input"><span>300 秒</span><span class="faint">长任务建议让客户端用 --no-wait 后轮询</span></div>
+  <div class="input"><span>300 秒</span><span class="faint">扫描/整理等长任务立即返回任务号，让模型再调 jobs_wait 跟进</span></div>
 
   <details open>
     <summary>无论哪一档都强制生效的闸门</summary>
     <div class="meta" style="margin-top:8px">
-      · 拒绝 <span class="mono">login</span> / <span class="mono">logout</span>（凭证由服务端注入，客户端无从更改）<br>
-      · 拒绝 <span class="mono">--server</span>（不允许把令牌发往别的服务器）<br>
-      · 拒绝 <span class="mono">session start / retry / follow</span>（防止 Agent 递归拉起 Agent）<br>
-      · 每端点并发上限 4，超出排队<br>
-      · 每次调用现签一枚几分钟即失效的内部令牌，外部令牌本身进不了业务接口
+      · 会话类操作（<span class="mono">session_*</span> 的发起/续跑）不进工具面，防止 Agent 递归拉起 Agent<br>
+      · 上传 / 下载类接口不进工具面（MCP 客户端没有服务端文件系统的概念）<br>
+      · 纯网页基础设施接口（标了 x-cli-hidden 的）本就不在工具面内<br>
+      · 每端点并发上限 4，超出排队；单次调用超时按上面的设置<br>
+      · 每次调用现签一枚几分钟即失效的内部令牌，外部令牌本身进不了业务接口<br>
+      · 大响应自动截断并提示用 limit / offset 取更多，不会一次撑爆客户端上下文
     </div>
   </details>
 
@@ -462,7 +463,7 @@
         <div><span class="mono" style="color:var(--info)">search_titles</span>
           <div class="meta faint mono">keyword* · media_type · provider · limit</div></div>
         <div><span class="mono" style="color:var(--info)">search_torrents</span>
-          <span class="tag info" style="margin-left:6px">流式命令 · 手工登记</span>
+          <span class="tag info" style="margin-left:6px">流式接口 · 服务端聚合后返回</span>
           <div class="meta">跨 PT 站点搜种子（边搜边出，服务端聚合后一次性返回）</div>
           <div class="meta faint mono">keyword* · resolution · site_ids[] · free_only</div></div>
         <div class="faint">…… 还有 7 个</div>

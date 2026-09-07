@@ -9,9 +9,9 @@
 
 ## 0. 一句话
 
-把已经在产品内 Agent 上跑通的那套「一级服务目录 + mclaw 执行」原样搬到 MCP 协议上，
-让管理员能**自己组合出多个 MCP 端点**：选哪些服务，这个端点就只有那些工具；
-端点各自持有独立令牌、可单独启停、可随时吊销。
+把产品内 Agent 那份「一级服务目录」搬到 MCP 协议上，让管理员能**自己组合出多个
+MCP 端点**：选哪些服务，这个端点就只有那些工具；端点各自持有独立令牌、可单独启停、
+可随时吊销。协议层用官方 SDK，工具调用直连本机 API。
 
 ---
 
@@ -97,10 +97,23 @@ RFC 9728 受保护资源元数据、客户端必须走 OAuth 2.1 + PKCE + RFC 87
 
 ### 2.5 官方 Python SDK 的现状
 
-`mcp` 包已发到 `2.1.1`（v2 线支持 `2026-07-28`，`FastMCP` 更名 `MCPServer`，
-同一个 HTTP 应用同时应答新旧两代）。但它拖进来的运行时依赖不轻：
-`httpx2`、`mcp-types`、`opentelemetry-api`、`pyjwt[crypto]`、`sse-starlette`、
-`jsonschema`、`python-multipart`、`starlette`、`uvicorn`。见 §4.3 的取舍。
+`mcp` 包已发到 `2.1.1`。v2 线的关键事实（都已核对文档，实现时仍需在本仓验证一遍）：
+
+- **同一个 HTTP 应用同时应答新旧两代**（`mode="auto"`：先应 `server/discover`，
+  旧客户端来 `initialize` 也照答），协议兼容这件事我们一行都不用写；
+- **低阶 `Server` 正好适配「工具面是动态的」**：
+  `Server(name, on_list_tools=…, on_call_tool=…)`，`Tool(name, description,
+  input_schema=<裸 JSON Schema dict>)`，返回 `CallToolResult(content=[...],
+  structured_content=…, is_error=…)`——工具不需要是 Python 函数，正合我们
+  「按端点从 spec 现算工具面」的形态；
+- `server.streamable_http_app()` 返回一个 Starlette 应用，可挂进现有 FastAPI；
+  **挂载的子应用 lifespan 不会自动跑**，宿主 lifespan 要显式进入其会话管理器上下文；
+- DNS 重绑定防护由 SDK 的 `transport_security=`（允许的 Host/Origin 白名单）承担。
+
+依赖代价（见 §4.3 的结论）：新增 `mcp` + `mcp-types` + `httpx2`（httpx 2.x 的新发行名，
+与我们现用的 `httpx 0.28` 并存而非冲突）+ `pyjwt[crypto]` + `opentelemetry-api` +
+`sse-starlette` + `typing-inspection`；`jsonschema` / `starlette` / `uvicorn` /
+`python-multipart` / `anyio` 我们本来就有。
 
 ---
 
@@ -112,20 +125,23 @@ RFC 9728 受保护资源元数据、客户端必须走 OAuth 2.1 + PKCE + RFC 87
    │  Authorization: Bearer mcp_xxxxxxxx
    ▼
 ┌──────────────────────────────────────────────────────────┐
-│ MCP 协议层  src/movieclaw_mcp/            （不进业务 OpenAPI）│
-│  ├ 端点解析 slug → 端点配置（禁用/不存在 → 404）              │
-│  ├ 鉴权：令牌哈希常量时间比对 → 401                          │
-│  ├ Origin 校验 → 403                                       │
-│  ├ JSON-RPC 分发：server/discover · tools/list · tools/call │
-│  │   （兼容旧代：initialize · notifications/initialized · ping）│
-│  └ 工具面 = 端点选中的服务 × 工具展开开关（§4.1）              │
-│      展开：一命令一工具 subscriptions_update（默认）           │
-│      合并：一服务一工具 subscriptions(args)                   │
+│ 我们写的调度层 src/movieclaw_mcp/         （不进业务 OpenAPI）│
+│  ├ 解析 /mcp/<slug> → 端点配置（禁用/不存在 → 404）           │
+│  ├ 鉴权：令牌哈希常量时间比对 → 401（在进 SDK 之前挡住）        │
+│  └ 取该端点的 SDK Server 实例（按配置版本缓存），改写 path 后转交 │
+├──────────────────────────────────────────────────────────┤
+│ 官方 mcp SDK（低阶 Server + streamable_http_app）           │
+│  ├ 协议两代兼容、JSON-RPC 编解码、SSE、Origin 白名单           │
+│  └ 回调进我们的 on_list_tools / on_call_tool                 │
+├──────────────────────────────────────────────────────────┤
+│ 工具面 = 端点选中的服务 × 展开开关（§4.1），全部从 spec 现算     │
+│  展开：subscriptions_update(subscription_id, …)（默认）      │
+│  合并：subscriptions(command: enum, params: object)         │
 └───────────────┬──────────────────────────────────────────┘
-                │ tools/call → 统一渲染成 argv
+                │ tools/call → operation_id → 方法 + 路径 + 参数分箱
                 ▼
-        mclaw 子进程（与产品内 Agent 完全同一条执行路径）
-        env: MOVIECLAW_SERVER=127.0.0.1  MOVIECLAW_TOKEN=<短时效签名令牌 aud=mcp>
+        进程内 ASGI 直调（httpx ASGITransport，无网络跳）
+        Authorization: Bearer <短时效签名令牌 aud=mcp>
                 │
                 ▼
         本机 API（既有鉴权 / 校验 / 错误形态一字不改）
@@ -154,31 +170,45 @@ Web 设置页「MCP 服务」 ──REST──> /api/v1/mcp/endpoints…（管�
 | --- | --- | --- |
 | 形态 | 一条命令一个工具 | 一个服务一个工具 |
 | 命名 | `<模块>_<命令>`，如 `subscriptions_update` | `<模块>`，如 `subscriptions` |
-| 参数 | 从 spec 生成 JSON Schema（类型化） | `args` 字符串（就是 CLI 参数串） |
+| 参数 | 从 spec 生成 JSON Schema（类型化） | `command`（该域命令的枚举）+ `params` 对象 |
 | 选「订阅」后的工具数 | 16 | 1 |
 | 选 4 个服务（订阅/搜索/媒体库/下载器） | 97 | 4 |
 | 上下文占用（估算） | 30–40 KB | 1.9 KB |
 | 危险命令注解 | **逐工具精确**（`readOnlyHint` 由 HTTP 方法推导） | 只能整域标注 |
 | 只读档的实现 | 非 GET 工具**根本不出现在 `tools/list`** | 只能在执行时拒绝 |
-| 精选层命令（`search torrents`） | 需手工登记（见下） | 天然可用 |
-| 模型出错的形态 | 工具太多时选错/幻觉工具名 | 猜参数 → 退出码 2 → `--help` → 重试 |
+| 模型出错的形态 | 工具太多时选错/幻觉工具名 | 命令名有枚举兜底，但 `params` 是弱类型，可能少传字段 |
 
 命名规范：工具名 = `operation_id` 把 `.` 和 `-` 都换成 `_`
 （`subscriptions.list-active-downloads` → `subscriptions_list_active_downloads`，
 `members.status.set` → `members_status_set`）。**不加 `mclaw_` 前缀**——客户端侧
 本来就会按服务器名分组，再加一层前缀只是白占 token。唯一性由守护测试保证。
 
-两种形态**共用同一条执行路径**（§4.2）：展开模式把 JSON 参数按 CLI 既定规则
-渲染回 argv——路径参数按声明顺序做位置参数，其余字段变 `--kebab-case value`
-（CLI 的标志名就是 spec 参数名把 `_` 换成 `-`，见 `cli/internal/tree/command.go`，
-所以这个映射是确定性的，不是猜的）。于是同一条命令在两种模式下行为完全一致，
-用户切换开关不会得到不同结果。
+两种形态**共用同一条执行路径**（§4.2）：都是「`operation_id` → 方法 + 路径 +
+参数分箱（path / query / body）→ 进程内调本机 API」。展开模式下工具名本身就是
+`operation_id`；合并模式下 `command` 枚举值就是命令名，再拼回 `operation_id`。
+于是同一条命令在两种模式下走同一段代码，用户切换开关不会得到不同结果。
 
-**展开模式的一个已知缺口**：`x-cli-stream` 的操作不进 spec 命令面，全仓当前只有
-一个——`search.torrents`（跨站搜种子，SSE 边搜边出）。它恰好又是核心链路，
-所以展开模式要为它**手工登记一条工具**（工具名、描述、inputSchema、argv 模板），
-执行仍是 `mclaw search torrents …`。这张手工表目前就这一条，新增流式操作时
-守护测试会提醒补登记。
+合并模式的工具形态：
+
+```json
+{
+  "name": "subscriptions",
+  "description": "订阅与自动追更…\n\n可用命令：\n  list    列出订阅（status, media_type, limit）\n  update  修改选季/续订/规则/目标库（subscription_id*, seasons, follow_future, …）\n  …",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "command": { "type": "string", "enum": ["create", "list", "get", "update", "…"] },
+      "params":  { "type": "object", "description": "该命令的参数，字段见描述里的清单" }
+    },
+    "required": ["command"]
+  }
+}
+```
+
+> 参数形态从「CLI 参数串」改成「command + params」是**直连 API 的必然结果**
+> （§4.2）：不走 mclaw 就没有 CLI 解析器，我们不该在服务端再实现一个。
+> 好处是命令名有枚举兜底，模型编不出不存在的命令；代价是 `params` 弱类型，
+> 靠描述里的字段清单引导。真需要强类型就打开展开模式——这正是这个开关的意义。
 
 > 为什么默认展开而不是默认合并：默认值应该服务「第一次用的人」。展开模式下模型
 > 不需要理解 mclaw 的参数体系，照 schema 填就行，首次成功率更高；工具太多的问题
@@ -208,28 +238,23 @@ Web 设置页「MCP 服务」 ──REST──> /api/v1/mcp/endpoints…（管�
 }
 ```
 
-调用 `{"name":"subscriptions_update","arguments":{"subscription_id":42,"follow_future":false,"rule_set_id":3}}`
-→ 服务端渲染成 `mclaw subscriptions update 42 --follow-future=false --rule-set-id 3`。
-
-合并——`tools/list` 里就一个工具：
+调用：
 
 ```json
-{
-  "name": "subscriptions",
-  "description": "订阅与自动追更：持续追踪新资源，按规则自动搜索、下载并整理入库。\n\n可用命令（参数用 --help 现查）：\n  create   从 Discover 影视条目创建订阅…\n  list     列出当前账号可见的电影和剧集订阅\n  update   修改订阅的选季、自动续订、过滤规则或目标媒体库\n  …（共 16 条）",
-  "inputSchema": {
-    "type": "object",
-    "properties": {
-      "args":    { "type": "string", "description": "mclaw subscriptions 之后的完整参数串" },
-      "timeout": { "type": "number" }
-    },
-    "required": ["args"]
-  }
-}
+{ "name": "subscriptions_update",
+  "arguments": { "subscription_id": 42, "follow_future": false, "rule_set_id": 3 } }
 ```
 
-调用 `{"name":"subscriptions","arguments":{"args":"update 42 --follow-future=false --rule-set-id 3"}}`
-→ 落到同一条 `mclaw` 命令。
+合并模式下的同一件事（工具定义见上一节）：
+
+```json
+{ "name": "subscriptions",
+  "arguments": { "command": "update",
+                 "params": { "subscription_id": 42, "follow_future": false, "rule_set_id": 3 } } }
+```
+
+两者最终都落到同一次请求：`PATCH /api/v1/subscriptions/42`，
+body `{"follow_future": false, "rule_set_id": 3}`。
 
 实测规模（本仓当前 spec）：CLI 可见操作 329 个，按域分布
 `library 57 / playback 35 / auth 20 / subscriptions 16 / app 16 / dl 15 / site 13 …`；
@@ -237,54 +262,94 @@ Web 设置页「MCP 服务」 ──REST──> /api/v1/mcp/endpoints…（管�
 全量 24 个服务 ≈ 12 KB。管理页在选服务时**按当前模式实时算出工具数与体积**，
 把上下文成本变成用户看得见的东西（展开模式超过 40 个工具时给出黄色提示）。
 
-### 4.2 执行路径：复用 mclaw 子进程（推荐），不另起进程内调用
+### 4.2 执行路径：直连本机 API（进程内 ASGI），不经 mclaw 子进程
 
-- **子进程 mclaw（推荐）**：与 `movieclaw_agent/tools/mclaw.py` 同一条路。
-  白拿：参数体系、`--help`、退出码契约、`⚠ --yes` 确认闸、长任务 `--no-wait`、
-  输出截断、中文错误提示。新代码只有「JSON-RPC ↔ argv」这一层薄壳。
-  成本：每次调用一个进程（本机 ~30–80 ms），可接受。
-- **进程内 ASGI 直调**：省掉进程开销，但要重写参数映射、确认闸、任务等待、
-  结果整形——等于把 CLI 那套契约再实现一遍，且两边会漂移。
+**决定（2026-09 评审）**：`tools/call` 直接调对应的业务接口，不再绕 CLI。
 
-**结论：子进程，且两种工具模式共用它。** 把 `movieclaw_agent/tools/mclaw.py` 里的
-执行内核（定位二进制、shlex、硬闸、进程组击杀、退出码标注）抽成一个共享函数，
-Agent 工具与 MCP 层各自包一层薄壳；**不改 Agent 侧任何对外行为**。
+```python
+# 一次工具调用 = 一次进程内 HTTP
+transport = httpx.ASGITransport(app=fastapi_app)
+async with httpx.AsyncClient(transport=transport, base_url="http://mcp.internal") as c:
+    resp = await c.request(method, path, params=query, json=body,
+                           headers={"Authorization": f"Bearer {short_lived_token}"})
+```
 
-两种模式只是「怎么得到 argv」不同：
-
-| 模式 | argv 来源 |
-| --- | --- |
-| 合并 | `shlex.split(args)`，前面拼上服务名 |
-| 展开 | 工具名反查 `operation_id` → 命令路径；JSON 参数按 spec 顺序回填：路径参数做位置参数，其余 `--kebab-case value`（布尔用 `--flag=false` 形态） |
-
-这样长任务等待、`⚠ --yes` 确认、退出码语义、输出截断在两种模式下**完全一致**，
-不存在「换个开关行为就变了」。展开模式不暴露 CLI 的客户端专属标志
-（`--input` / `--file` / `--output-file` / 全局覆盖标志）；`--wait` 的默认值沿用
-CLI 既定契约（`x-cli-job` 的操作默认不等，返回 job_id 后让模型调 `jobs_wait`）。
+走 ASGITransport 而不是直接调处理器函数，是为了**保住既有的鉴权、参数校验、
+中间件与统一错误体**——授权判定只此一份，不给 MCP 开后门。开销是进程内函数调用级别
+（~1–3 ms），比子进程（~30–80 ms）低一个量级，也不再要求镜像里有 mclaw。
 
 令牌：每次调用现签一枚短时效令牌（`aud="mcp"`，载荷带端点 id），
 与 `issue_agent_token` 同一套签名机制。**不复用端点的外部令牌**——
 外部令牌只用于「认这个客户端」，进不了业务接口；
 业务侧看到的是一个可审计、几分钟即失效的 `Principal(kind="mcp", ...)`。
 
-### 4.3 协议实现：手写（推荐）还是官方 SDK
+**代价：CLI 白拿的那几件事得自己补。** 逐条交代，别到实现时才发现：
 
-| | 手写（推荐） | 官方 `mcp` SDK v2 |
-| --- | --- | --- |
-| 代码量 | ~350 行（JSON-RPC 分发 + 两代兼容 + SSE） | ~120 行胶水 |
-| 新增运行时依赖 | **0** | httpx2、mcp-types、opentelemetry-api、pyjwt[crypto]、sse-starlette… |
-| 发版影响 | 无 | **必须 bump `docker/runtime-version`** 并重新发镜像（CLAUDE.md 硬约束 2） |
-| 多端点动态工具面 | 天然（按 slug 路由，无状态） | 要么每端点一个 Server 实例，要么按请求上下文过滤 |
-| 鉴权 / 错误形态 | 完全自控，与 Jellyfin 兼容层同一立场 | SDK 想接管 ASGI 应用与授权模型 |
-| 规范跟进 | 我们自己盯 | SDK 跟 |
+| CLI 原本提供 | 直连后的做法 |
+| --- | --- |
+| 参数解析与校验 | spec 生成 inputSchema（前置）+ 接口自身 422（兜底） |
+| 退出码语义（0/1/2/3/5/6/7） | 映射成 MCP 的 `is_error` + 统一错误体的 `message`/`details`；业务错误照原样把中文 message 回给模型 |
+| `⚠ --yes` 确认闸 | 由端点的执行策略档位承担（§4.7），不需要 `--yes` 这一环 |
+| 长任务 `--wait` 轮询 | `x-cli-job` 的操作直接返回 `job_id`，模型改调 `jobs_wait`（`jobs.wait` 是真实接口，长轮询）；**工具描述里写清这条链路** |
+| 输出截断与默认 `--limit` | **必须自己实现**：列表类接口的响应可能极大（媒体库动辄上万条）。做法：注入默认 `limit`、结果字节上限（超了截断并在文末标注「已截断，用 limit/offset 取更多」） |
+| 搜索结果行号（`download 3`） | 直连没有客户端会话态，本来也不该有——统一用显式参数（`dl_submit` 传 `site_id` + `url`） |
+| `--help` | 展开模式不需要；合并模式靠描述里的命令与字段清单 |
 
-仓内先例很强：Jellyfin 兼容层就是手写协议模仿层（根命名空间、自带 token 体系与
-错误形态、不进业务 OpenAPI）。MCP 这次「无状态化」之后需要实现的面**比一年前小得多**：
-`server/discover` + `tools/list` + `tools/call`，加上旧代的 `initialize` /
-`notifications/initialized` / `ping` 三个方法。
+**反而变好的两件事**：
 
-**结论：手写。** 但必须配一套**协议契约测试**（黄金 JSON-RPC 往返，新旧两代各一组）
-把规范细节钉死，见 §9。
+1. `x-cli-stream` 的缺口没了——`search.torrents` 的 SSE 由 MCP 层自己消费并聚合，
+   不再需要「手工登记 CLI 命令」那张表；
+2. 上传/下载类接口（CLI 里的 `--file` / `--output-file`）**直接从工具面过滤掉**：
+   MCP 客户端没有服务端文件系统的概念，这类工具给出去只会让模型反复失败。
+
+顺带：MCP 层从此与 CLI 完全解耦（不 import `movieclaw_agent`，不依赖 mclaw 二进制），
+产品内 Agent 的 mclaw 工具**一行不改**，两条路各走各的。
+
+### 4.3 协议实现：用官方 `mcp` SDK
+
+**决定（2026-09 评审）**：协议层不自己写，引官方 SDK。MCP 还在快速演进
+（一年内经历了传输换代 + 无状态化两次大改），协议编解码与版本兼容是**别人会持续维护
+的部分**，我们只该维护「movieclaw 有什么工具」这件自己的事。
+
+用法（低阶 `Server`，正是为动态工具面准备的那层）：
+
+```python
+from mcp.server import Server, ServerRequestContext
+from mcp.types import CallToolRequestParams, CallToolResult, ListToolsResult, TextContent, Tool
+
+def build_server(endpoint: McpEndpoint) -> Server:
+    async def on_list_tools(ctx, params) -> ListToolsResult:
+        return ListToolsResult(tools=render_tools(endpoint))      # 从 spec 现算
+
+    async def on_call_tool(ctx, params: CallToolRequestParams) -> CallToolResult:
+        return await dispatch(endpoint, params.name, params.arguments or {})   # §4.2
+
+    return Server(f"movieclaw/{endpoint.slug}",
+                  on_list_tools=on_list_tools, on_call_tool=on_call_tool)
+```
+
+SDK 负责：两代协议兼容（`server/discover` 与旧代 `initialize` 同时应答）、
+JSON-RPC 编解码、SSE、必填请求头校验、`transport_security` 的 Origin/Host 白名单。
+我们负责：端点路由、鉴权、工具面渲染、调度。
+
+**多端点怎么挂**（SDK 的 app 是挂在固定路径上的单个 Starlette 应用，而我们的端点
+是运行期增删的）：写一个约 60 行的 ASGI 调度器挂在 `/mcp`，按 `/mcp/<slug>` 取端点、
+先做鉴权、再把 `path` 改写掉转交给该端点的 SDK 应用；SDK 应用**按端点缓存**
+（键含端点配置版本，改配置即失效重建）。
+
+需要在实现时验证并可能返工的两点（文档没写死，属于已知风险）：
+
+1. **子应用 lifespan 不会自动跑**——宿主 lifespan 要显式进入 SDK 的会话管理器上下文。
+   端点是动态的，所以要用 `AsyncExitStack` 按需进入、配置变更时退出。
+   若 v2 无状态模式下不再需要会话管理器，这块直接省掉。
+2. `ServerRequestContext` 能拿到的 HTTP 细节有限（文档只明确了 headers）。
+   我们的设计**不依赖它**——端点身份与鉴权都在进 SDK 之前的调度层完成，
+   这也符合仓内「默认拒绝、鉴权集中」的立场。
+
+发版影响（CLAUDE.md 硬约束 2）：新增运行时依赖 → **必须 bump
+`docker/runtime-version`（13 → 14）并在合并后发布新镜像**，CI 守卫会拦漏 bump 的 PR。
+依赖清单见 §2.5；`mcp` 版本在 pyproject 里**按小版本锁上限**
+（如 `mcp>=2.1,<3.0`），协议大改时由我们主动升级，而不是被动跟。
 
 ### 4.4 端点授权：每端点独立 Bearer 令牌
 
@@ -322,27 +387,28 @@ JSON-RPC 的错误形态不必迁就业务统一响应体。
 
 | 档位 | 放行 | 用途 |
 | --- | --- | --- |
-| 只读（`read_only`） | 仅 spec 里 `GET` 的命令 + `--help` | 给分析型 Agent 看数据，绝不改状态 |
-| 标准（`standard`，默认） | 读 + 常规写；**拒绝 `x-cli-dangerous` 的命令** | 日常自动化：订阅、搜索、投递下载 |
-| 完全（`full`） | 全部，`⚠` 命令由 MCP 层自动补 `--yes` | 明确知道自己在干什么的场景 |
+| 只读（`read_only`） | 仅 `GET` 操作 | 给分析型 Agent 看数据，绝不改状态 |
+| 标准（`standard`，默认） | 读 + 常规写；**拒绝 `x-cli-dangerous` 的操作** | 日常自动化：订阅、搜索、投递下载 |
+| 完全（`full`） | 全部 | 明确知道自己在干什么的场景 |
 
-判定口径：反查 `operation_id` 得到 HTTP 方法与 `x-cli-dangerous`——展开模式下工具名
-本身就是 `operation_id`，直接查；合并模式下按 argv 首段还原命令路径
-（点号即命令层级，`members.status.set` → `members status set`）后再查。
-`cli/internal/overlay` 那批手写命令（`download`、`library organize-files`、
-`library reconcile-paths`、`search *`、`status`、`logs tail`）另有一张写死的小表。
+判定口径全部来自 spec：`operation_id` → HTTP 方法 + `x-cli-dangerous` 标注。
+展开模式下工具名本身就是 `operation_id`；合并模式下 `command` 拼回 `operation_id`。
+直连 API 后不再有「CLI 精选层命令」这类例外，**判定只有这一条口径**。
 选「完全」档时管理页要二次确认，并在端点卡上常驻一枚红色徽标。
 
-**展开模式下策略是「工具面级」的**：被策略挡掉的命令**根本不出现在 `tools/list`
+**展开模式下策略是「工具面级」的**：被策略挡掉的操作**根本不出现在 `tools/list`
 里**，模型看不到也就不会尝试——比运行时拒绝干净得多。合并模式只能在执行时拒绝
 （一个工具覆盖整域），并把「这一档不允许」写进错误文案让模型改道。这是展开模式
 除类型化参数之外的第二个实际优势。
 
-另外三条与档位无关的硬闸（沿用 Agent 侧的现成逻辑）：
-`login`/`logout` 拒绝、`--server` 拒绝、`session start|retry|follow` 拒绝（防递归）。
+与档位无关的硬闸：
 
-并发上限：每端点一个 `asyncio.Semaphore`（默认 4），防止一个跑飞的客户端把
-NAS 上的进程数打满；超限时排队，超时按 MCP 错误返回。
+- 工具面**只取 `iter_command_operations` 认可的操作**（`x-cli-hidden` 的纯 Web
+  基础设施接口天然不在内），再减去上传/下载类（§4.2）与 `_EXCLUDED_DOMAINS`；
+- `session.*` 的会话创建/续跑不进工具面（防 Agent 递归拉起 Agent），
+  与 mclaw 工具里的那条硬闸同义；
+- 单次调用超时（端点可配，默认 300 秒）+ 每端点并发信号量（默认 4），
+  防止跑飞的客户端把连接池和 CPU 吃满；超限排队，超时按 MCP 错误返回。
 
 ---
 
@@ -394,19 +460,21 @@ class McpEndpoint(BaseModel):
 
 ### 6.2 协议面（`/mcp/{slug}`，不进 OpenAPI）
 
-| JSON-RPC 方法 | 现行 `2026-07-28` | 旧代 `2025-06-18` / `2025-11-25` |
-| --- | --- | --- |
-| `server/discover` | ✅ 必须实现 | — |
-| `initialize` | — | ✅ 兼容应答（capabilities 只声明 `tools`） |
-| `notifications/initialized` | — | ✅ → `202` |
-| `tools/list` | ✅ 带 `ttlMs`/`cacheScope`/`resultType` | ✅（无这些字段） |
-| `tools/call` | ✅ 长任务走 SSE 推 `notifications/progress` | ✅ |
-| `ping` | 已从规范移除 | ✅ 兼容应答 |
-| `subscriptions/listen` | ⛔ 不实现（工具面不会动态变） | — |
-| 其他 | `404` + `-32601` | 同 |
+协议方法、两代兼容、必填头校验、`Origin` 白名单、错误码（`-32020` / `-32022` /
+`-32601`）与 `resultType`、`ttlMs`、`cacheScope` 这些字段，**全部由 SDK 负责**——
+我们不复述规范，只在契约冒烟测试里确认它确实这么答（§9）。
 
-HTTP 层必答项：`Origin` 非法 → `403`；GET/DELETE → `405`；
-头与包体不符 → `400`/`-32020`；不支持的版本 → `400`/`-32022` 且列出 `supported`。
+我们实现的只有两个回调与一层调度：
+
+| 我们写的 | 内容 |
+| --- | --- |
+| ASGI 调度器 | `/mcp/<slug>` → 端点查找（不存在/停用/总开关关 → 404）→ 令牌校验（401）→ 转交该端点的 SDK 应用 |
+| `on_list_tools` | 按端点的服务集合 × 展开开关 × 执行策略，从 spec 现算工具清单 |
+| `on_call_tool` | 工具名 → `operation_id` → 进程内调本机 API（§4.2）→ 整形成 `CallToolResult` |
+
+结果整形：业务统一响应体的 `data` 放进 `structured_content`，同时给一份紧凑 JSON 文本
+放 `content`（老客户端只认 text）；业务错误 → `is_error=True` +
+把 `message`（本来就是给非开发者看的中文）原样回给模型。
 
 工具命名（不加 `mclaw_` 前缀——客户端本就按服务器名分组，再加前缀只是白占 token）：
 
@@ -449,33 +517,39 @@ HTTP 层必答项：`Origin` 非法 → `403`；GET/DELETE → `405`；
 | --- | --- |
 | 端点 URL 被扫到 | 未带合法令牌一律 401；令牌 32 字节随机；slug 猜到也没用 |
 | 令牌泄漏 | 只存哈希、一次性回显、可单端点轮换/吊销；端点粒度限制了爆炸半径 |
-| 浏览器里的网页偷打本机端点 | 强制 `Origin` 校验（规范硬性要求），非法 403 |
-| 模型被诱导执行破坏性命令 | 默认档位就禁 `⚠` 命令；`library items delete` 只可能出现在「完全」档 |
+| 浏览器里的网页偷打本机端点 | SDK 的 `transport_security` Host/Origin 白名单（规范硬性要求），非法 403 |
+| 模型被诱导执行破坏性操作 | 默认档位就禁 `⚠` 操作；`library.items.delete` 只可能出现在「完全」档，且展开模式下压根不出现在工具面 |
 | 客户端跑飞 | 每端点并发信号量 + 单次调用超时 + 令牌只有几分钟有效期 |
-| 提权 | 端点令牌进不了业务接口；业务侧只认现签的 `aud=mcp` 短时令牌 |
-| 审计缺失 | 每次 `tools/call` 记一条中文日志：端点名、工具、参数（截断）、耗时、退出码 |
+| 提权 | 端点令牌进不了业务接口；业务侧只认现签的 `aud=mcp` 短时令牌，走的还是既有 `require_login` / `require_admin` |
+| 直连绕过鉴权 | 走 ASGITransport 打完整应用栈，不直调处理器函数——授权判定只此一份 |
+| 大响应打爆客户端上下文 | 默认 `limit` 注入 + 结果字节上限 + 截断提示（§4.2） |
+| 审计缺失 | 每次 `tools/call` 记一条中文日志：端点名、工具、参数（截断）、耗时、HTTP 状态码 |
 
 ---
 
 ## 9. 测试与守护
 
-- **协议契约（新增 `tests/mcp/`）**：新旧两代各一组黄金往返——
-  `server/discover` / `initialize` / `tools/list` / `tools/call`，
-  外加 `Origin` 拒绝、GET→405、头体不符→-32020、未知方法→-32601、版本不支持→-32022。
+- **协议冒烟（新增 `tests/mcp/`）**：用 **SDK 自带的客户端**连本仓挂载的端点，
+  跑通 `server/discover` → `tools/list` → `tools/call`，新旧两代各一遍。
+  规范细节由 SDK 保证，我们只验证「接进来确实能用」以及升级 SDK 后没退化。
 - **工具面守护**：端点选中的服务集合 ⇔ `tools/list` 的工具集合严格一致（两种模式各一组）；
   服务域来源必须是 `spec_domains()`（防止手抄一份域清单造成漂移）。
 - **工具名守护**（展开模式）：全量 spec 生成的工具名两两不重复
   （`.`/`-` 归一成 `_` 后可能撞名，撞了就必须改名而不是静默覆盖），
   且都符合 `^[a-zA-Z0-9_]{1,64}$`（兼容对函数名有限制的客户端）。
-- **参数回填守护**（展开模式）：遍历全部生成工具，用 schema 的示例值渲染 argv，
-  断言渲染结果能被 `mclaw <cmd> --help` 的标志集合接受——把「schema 与 CLI 标志名
-  漂移」钉死在 CI 上（这是展开模式唯一真正脆弱的地方）。
-- **两模式等价守护**：同一条命令 + 同一组参数，展开与合并模式渲染出的 argv 完全一致。
-- **流式缺口守护**：spec 里 `x-cli-stream` 的操作集合 ⇔ 手工登记表的键集合一致，
-  新增流式操作忘了登记就 CI 失败（当前只有 `search.torrents` 一条）。
-- **执行策略守护**：三档各跑一组命令样本，`read_only` 必须拒绝所有非 GET 命令；
-  `standard` 必须拒绝全部 `x-cli-dangerous` 命令（样本从 spec 现取，新增危险命令自动纳入）。
-  展开模式下还要断言这些命令**不出现在 `tools/list`**。
+- **参数映射守护**：遍历全部生成工具，用 schema 的示例值构造请求，断言
+  路径参数填满、query/body 分箱正确、且请求能被目标接口的签名接受（不产生 422）。
+  这是直连模式最脆弱的一处，必须钉在 CI 上。
+- **两模式等价守护**：同一条命令 + 同一组参数，展开与合并模式构造出的请求
+  （方法、路径、query、body）完全一致。
+- **结果整形守护**：超大响应必须被截断且带提示；业务错误必须变成
+  `is_error=True` 且保留中文 `message`；`data` 必须同时出现在
+  `structured_content` 与文本 `content` 里。
+- **执行策略守护**：三档各跑一组操作样本，`read_only` 必须拒绝所有非 GET 操作；
+  `standard` 必须拒绝全部 `x-cli-dangerous` 操作（样本从 spec 现取，新增危险操作自动纳入）。
+  展开模式下还要断言这些操作**不出现在 `tools/list`**。
+- **依赖守护**：`mcp` 版本上限锁死；`docker/runtime-version` 已 bump
+  （CI 既有守卫会拦漏 bump）。
 - **鉴权守护**：无令牌/错令牌/已吊销/端点停用/总开关关 → 401/401/401/404/404。
 - **既有守护的登记**：`tests/api/test_auth.py` 匿名白名单加 `/mcp/{slug}`；
   `tests/api/test_mclaw_tool_wiring.py` 因 `mcp` 进 `_EXCLUDED_DOMAINS` 自动通过。
@@ -486,16 +560,22 @@ HTTP 层必答项：`Origin` 非法 → `403`；GET/DELETE → `405`；
 
 | 期 | 内容 | 估量 |
 | --- | --- | --- |
-| **P1**（本次） | 设置域 + 管理面 REST + 协议层（两代兼容、非流式）+ **两种工具模式**（spec→inputSchema 生成器、JSON→argv 回填、流式命令登记表）+ 设置页分区 + 契约测试 | 后端 ~1300 行、前端 ~550 行、测试 ~600 行 |
-| **P2** | `tools/call` 的 SSE 流式（长任务推 `notifications/progress`）、调用日志页、端点级速率限制 | 中 |
+| **P1**（本次） | 依赖引入 + runtime-version bump · 设置域 · 管理面 REST · ASGI 调度器 + SDK 接线 · 工具面渲染（两种模式）· 调度执行（spec→请求、结果整形、截断）· 设置页分区 · 冒烟与守护测试 | 后端 ~1100 行、前端 ~550 行、测试 ~600 行 |
+| **P2** | 长任务进度（`notifications/progress`）、调用日志页、端点级速率限制 | 中 |
 | **P3** | OAuth 2.1 + RFC 9728（打通 claude.ai 网页版自定义连接器） | 大 |
 
-比只做一种形态多出来的量集中在展开模式的三件事上：inputSchema 生成器
-（`$ref` 解析、path/query/body 三类参数合并、客户端专属标志剔除）、
-JSON→argv 回填、以及 §9 里那两条守护测试。协议层与管理面不受影响。
+比手写协议少掉的：JSON-RPC 分发、两代兼容、SSE、错误码与头校验（约 350 行 + 长期跟规范）。
+新增的：SDK 接线与 lifespan 处理（§4.3 的两点风险）、依赖升级流程。
+比走 CLI 少掉的：argv 渲染与流式命令登记表。
+新增的：结果截断与默认 limit 注入、长任务改由模型调 `jobs_wait`。
 
-P1 不需要 bump `docker/runtime-version`（无新增运行时依赖、不动 Dockerfile 与 entrypoint），
-也不需要数据库迁移。
+**P1 必须 bump `docker/runtime-version`（13 → 14）并在合并后发布新镜像**
+（CLAUDE.md 硬约束 2：动了 pyproject dependencies 就要 +1）。
+仍然不需要数据库迁移，也不新增 `data/` 目录。
+
+引入依赖时要顺带验证一次（否则可能返工）：`mcp` 要求 `pydantic>=2.12`，
+本仓的 `sqlmodel<0.1` / `fastapi` / `pydantic-settings` 都得在这个版本下跑通——
+装完先跑一遍 `pytest -m "not integration"`，这是 P1 的第一个检查点。
 
 ---
 
@@ -504,14 +584,18 @@ P1 不需要 bump `docker/runtime-version`（无新增运行时依赖、不动 D
 - ✅ **工具粒度**（2026-09 定）：做成端点级开关「展开工具」，**默认展开**，
   展开后工具名为 `<模块>_<命令>`、不加 `mclaw_` 前缀。理由：不同 MCP 客户端对
   工具面的适配逻辑不一致，把选择权交给用户。详见 §4.1。
+- ✅ **协议实现**（2026-09 定）：**用官方 `mcp` SDK**，不自己写协议层。
+  代价是新增依赖并 bump runtime-version，换来的是协议演进由上游承担。详见 §4.3。
+- ✅ **执行路径**（2026-09 定）：**直连本机 API**（进程内 ASGI），不经 mclaw 子进程。
+  延迟低一个量级、与 CLI 解耦；代价是截断、长任务、错误映射要自己补，
+  已逐条列在 §4.2。连带影响：合并模式的参数形态从「CLI 参数串」改为
+  `command` 枚举 + `params` 对象（§4.1）。
 
 待定：
 
-1. **协议实现**：手写（0 依赖、要自己跟规范）vs 官方 SDK（省事、但要 bump runtime-version
-   并新增 8 个传递依赖）——我推荐手写，理由见 §4.3。
-2. **默认执行档位**：默认「标准」（禁 `⚠` 危险命令）合适吗？
+1. **默认执行档位**：默认「标准」（禁 `⚠` 危险操作）合适吗？
    还是新建端点时默认「只读」，让用户显式放开写权限更稳妥？
-3. **展开模式的工具数是否设硬上限**：现在只在管理页给黄色提示（>40）。
+2. **展开模式的工具数是否设硬上限**：现在只在管理页给黄色提示（>40）。
    要不要干脆拒绝创建超过某个数量的端点，逼用户拆分？我倾向只提示不拦——
    拦了会挡住「我就想要一个全能端点」这种明确诉求。
 
@@ -525,6 +609,10 @@ P1 不需要 bump `docker/runtime-version`（无新增运行时依赖、不动 D
   [授权](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization)）
 - 版本策略：<https://modelcontextprotocol.io/specification/versioning>
 - Python SDK v2 beta 说明：<https://blog.modelcontextprotocol.io/posts/sdk-betas-2026-07-28/>
+- Python SDK v2 文档：<https://py.sdk.modelcontextprotocol.io/>
+  （[低阶 Server](https://py.sdk.modelcontextprotocol.io/advanced/low-level-server/)、
+  [挂进现有 ASGI 应用](https://py.sdk.modelcontextprotocol.io/run/asgi/)、
+  [协议版本支持](https://py.sdk.modelcontextprotocol.io/protocol-versions/)）
 - 工具面精选与「工具太多」的实证：
   <https://thenewstack.io/15-best-practices-for-building-mcp-servers-in-production/>、
   <https://www.speakeasy.com/docs/mcp/build/toolsets/advanced-tool-curation>
