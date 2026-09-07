@@ -6,7 +6,6 @@ import { ArrowLeftIcon } from "@/components/icons";
 import { EndpointForm } from "@/components/mcp/endpoint-form";
 import { ToolCatalog } from "@/components/mcp/tool-catalog";
 import {
-  Badge,
   CodeBlock,
   CopyField,
   formatBytes,
@@ -112,39 +111,45 @@ export function EndpointDetail({
 
   return (
     <div className="space-y-5">
-      {/* 头部：返回 + 名称 + 状态 + 启停。启停放在这里而不是设置栏——它是最高频的开关 */}
-      <div className="flex items-start justify-between gap-4">
-        <div className="min-w-0">
-          <button
-            type="button"
-            onClick={onBack}
-            className="btn-glass mb-2.5 px-2.5 py-1 text-caption font-medium text-[var(--text-muted)]"
-          >
-            <ArrowLeftIcon className="size-3.5" />
-            全部端点
-          </button>
-          <div className="flex flex-wrap items-center gap-2">
-            <StatusDot on={endpoint.enabled} title={endpoint.enabled ? "运行中" : "已停用"} />
-            <h2 className="text-xl font-medium tracking-tight">{endpoint.name}</h2>
-            {/* 标的是工具形态，不是一个可点的展开/折叠动作——只写「展开」会被当成按钮 */}
-            <Badge tone="accent">
-              {endpoint.expand_tools ? "一命令一工具" : "一服务一工具"}
-            </Badge>
-            <span className="text-caption tabular-nums text-[var(--text-muted)]">
-              {endpoint.tool_count} 个工具
+      {/* 头部：标题只放名字，其余降一级。
+          此前是「状态点 + 名字 + 形态徽章 + 工具数」全挤在标题行上——一个徽章
+          紧贴 20px 的标题，读起来既不像标题也不像标签。现在分三层：
+          返回 → 标题 + 启停 → 一行淡色元信息（状态 / 地址 / 形态）。
+          工具数挪到「工具」页签上，数字就长在它对应的入口旁边。 */}
+      <div>
+        <button
+          type="button"
+          onClick={onBack}
+          className="btn-glass mb-3 px-2.5 py-1 text-caption font-medium text-[var(--text-muted)]"
+        >
+          <ArrowLeftIcon className="size-3.5" />
+          全部端点
+        </button>
+
+        <div className="flex items-start justify-between gap-4">
+          <h2 className="min-w-0 truncate text-xl font-medium tracking-tight">{endpoint.name}</h2>
+          <div className="flex shrink-0 items-center gap-2.5">
+            <span className="text-caption text-[var(--text-muted)]">
+              {endpoint.enabled ? "已启用" : "已停用"}
             </span>
+            <Switch
+              checked={endpoint.enabled}
+              disabled={busy}
+              label={`启用 ${endpoint.name}`}
+              onChange={onToggleEnabled}
+            />
           </div>
         </div>
-        <div className="flex shrink-0 items-center gap-2.5">
-          <span className="text-caption text-[var(--text-muted)]">
-            {endpoint.enabled ? "已启用" : "已停用"}
+
+        <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-caption text-[var(--text-muted)]">
+          <span className="flex items-center gap-1.5">
+            <StatusDot on={endpoint.enabled} title={endpoint.enabled ? "运行中" : "已停用"} />
+            {endpoint.enabled ? "运行中" : "已停用"}
           </span>
-          <Switch
-            checked={endpoint.enabled}
-            disabled={busy}
-            label={`启用 ${endpoint.name}`}
-            onChange={onToggleEnabled}
-          />
+          <span className="text-[var(--text-faint)]">·</span>
+          <span className="font-mono">/mcp/{endpoint.slug}</span>
+          <span className="text-[var(--text-faint)]">·</span>
+          <span>{endpoint.expand_tools ? "一命令一工具" : "一服务一工具"}</span>
         </div>
       </div>
 
@@ -154,13 +159,18 @@ export function EndpointDetail({
             key={item.id}
             type="button"
             onClick={() => onTab(item.id)}
-            className={`-mb-px border-b-2 px-3 py-2 text-sub transition-colors ${
+            className={`-mb-px flex items-center gap-1.5 border-b-2 px-3 py-2 text-sub transition-colors ${
               tab === item.id
                 ? "border-[var(--accent)] text-[var(--text)]"
                 : "border-transparent text-[var(--text-muted)] hover:text-[var(--text)]"
             }`}
           >
             {item.label}
+            {item.id === "tools" && (
+              <span className="tabular-nums text-caption text-[var(--text-faint)]">
+                {endpoint.tool_count}
+              </span>
+            )}
           </button>
         ))}
       </nav>
