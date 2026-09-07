@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  FULL_SWEEP_SEEK_S,
   MIN_BRIGHTNESS,
   applySwipe,
+  classifyIntent,
   classifyTouchZone,
-  isVerticalIntent,
+  seekDeltaMs,
   toLayoutPoint,
 } from "../lib/player/touch-adjust.ts";
 
@@ -54,8 +56,36 @@ test("clamp：音量下限 0，亮度下限保留一点画面", () => {
   assert.equal(applySwipe("volume", 0.9, -10_000, 844), 1);
 });
 
-test("竖直意图判定：位移要够大且明显竖直，斜划和轻点都不算", () => {
-  assert.equal(isVerticalIntent(0, -20), true);
-  assert.equal(isVerticalIntent(0, 8), false); // 不到激活门槛
-  assert.equal(isVerticalIntent(30, -20), false); // 更像横划
+test("方向裁决：位移不够大先不算数——轻点是控制层开关，不该被当成手势", () => {
+  assert.equal(classifyIntent(0, 8), null);
+  assert.equal(classifyIntent(8, 0), null);
+  assert.equal(classifyIntent(8, 8), null);
+});
+
+test("方向裁决：竖滑调亮度/音量，横滑拖进度，按主轴分", () => {
+  assert.equal(classifyIntent(0, -20), "vertical");
+  assert.equal(classifyIntent(30, -20), "horizontal");
+  assert.equal(classifyIntent(-40, 5), "horizontal");
+  // 正好 45° 归横向，与从前「竖直要严格大于水平」的判据一致
+  assert.equal(classifyIntent(20, 20), "horizontal");
+});
+
+test("横滑换算：划过一整屏宽正好是约定的秒数，方向跟着位移符号", () => {
+  assert.equal(seekDeltaMs(390, 390), FULL_SWEEP_SEEK_S * 1000);
+  assert.equal(seekDeltaMs(-390, 390), -FULL_SWEEP_SEEK_S * 1000);
+  assert.equal(seekDeltaMs(195, 390), (FULL_SWEEP_SEEK_S / 2) * 1000);
+  assert.equal(seekDeltaMs(0, 390), 0);
+});
+
+test("横滑换算：宽度为 0 不产生 Infinity/NaN", () => {
+  // 真实落点最终由 clampSeekTarget 夹进片长，这里只保证不把 NaN 传下去
+  assert.equal(Number.isFinite(seekDeltaMs(100, 0)), true);
+});
+
+test("伪横屏下横滑的位移取自布局坐标——物理上是竖着划的", () => {
+  // 用户横过来拿手机、手指从左向右划，物理上是 y 从小到大。
+  const start = toLayoutPoint(200, 100, FAKE_LANDSCAPE);
+  const now = toLayoutPoint(200, 300, FAKE_LANDSCAPE);
+  assert.equal(classifyIntent(now.x - start.x, now.y - start.y), "horizontal");
+  assert.equal(seekDeltaMs(now.x - start.x, now.width) > 0, true);
 });

@@ -1,6 +1,11 @@
 /**
- * 触屏滑动调节：左半屏上下滑调亮度、右半屏上下滑调音量（移动端播放器的
- * 通行手势，iOS/Android 的本地播放器与 Jellyfin/Emby 手机端皆如此）。
+ * 触屏滑动手势：竖滑调亮度/音量（左半屏亮度、右半屏音量），横滑拖进度——
+ * 移动端播放器的通行三件套，iOS/Android 的本地播放器与 Jellyfin/Emby 手机端
+ * 皆如此。
+ *
+ * 三种手势共用同一根手指，所以**方向只在位移首次过门槛时裁决一次**
+ * （`classifyIntent`），之后到松手为止都不再改判：中途改判会让一次手势前半段
+ * 调音量、后半段拖进度，用户完全无法预期自己在动哪个量。
  *
  * 平台事实决定了两件事怎么做：
  * - **亮度没有系统 API**。网页能做的是「画面亮度」，且实现必须是黑色遮罩
@@ -88,7 +93,35 @@ export function applySwipe(
   return Math.min(1, Math.max(min, next));
 }
 
-/** 这次移动算不算「有意的竖直滑动」：位移够大且明显竖直（布局坐标）。 */
-export function isVerticalIntent(layoutDeltaX: number, layoutDeltaY: number): boolean {
-  return Math.abs(layoutDeltaY) >= ACTIVATE_PX && Math.abs(layoutDeltaY) > Math.abs(layoutDeltaX);
+export type SwipeIntent = "vertical" | "horizontal";
+
+/**
+ * 这次移动算不算「有意的滑动」，是的话是哪个方向（布局坐标）。
+ *
+ * 位移不够大就返回 null——那可能只是想点一下（轻点是控制层开关）。够大之后
+ * 按主轴分：竖 = 亮度/音量，横 = 拖进度。正好 45° 归横向，与从前
+ * 「竖直要严格大于水平」的判据一致。
+ */
+export function classifyIntent(
+  layoutDeltaX: number,
+  layoutDeltaY: number,
+): SwipeIntent | null {
+  const dx = Math.abs(layoutDeltaX);
+  const dy = Math.abs(layoutDeltaY);
+  if (Math.max(dx, dy) < ACTIVATE_PX) return null;
+  return dy > dx ? "vertical" : "horizontal";
+}
+
+/**
+ * 横滑跳转的灵敏度：划过**一整屏宽** = 这么多秒。
+ *
+ * 固定秒数而不是按片长取百分比：百分比在三小时的片子上一划就是十几分钟，
+ * 停不准；90 秒是各家手机播放器的常见量级，一屏之内既够跨过片头，又能靠
+ * 短距离微调。
+ */
+export const FULL_SWEEP_SEEK_S = 90;
+
+/** 横向位移（布局坐标）→ 相对手势起点的毫秒增量。 */
+export function seekDeltaMs(layoutDeltaX: number, layoutWidth: number): number {
+  return Math.round((layoutDeltaX / Math.max(1, layoutWidth)) * FULL_SWEEP_SEEK_S * 1000);
 }
