@@ -33,6 +33,7 @@ import { type AutoplayOutcome, attemptAutoplay, shouldAttemptAutoplay } from "@/
 import { getCapabilitySnapshot } from "@/lib/player/capability";
 import type { PlaybackEngine } from "@/lib/player/engine";
 import { createEngine, preloadHlsEngine } from "@/lib/player/engine";
+import { bufferedAhead } from "@/lib/player/stall";
 import {
   awaitsUserDecision,
   initialPlayerState,
@@ -924,10 +925,11 @@ export function VideoPlayer(props: VideoPlayerProps) {
     const onTimeUpdate = () => {
       if (!isCurrentSession()) return;
       setPositionMs(toFileMs(video.currentTime, startMsRef.current));
-      const ranges = video.buffered;
-      setBufferedEndMs(
-        ranges.length ? toFileMs(ranges.end(ranges.length - 1), startMsRef.current) : null,
-      );
+      // 只认**播放头所在**那段连续缓冲，不能取 buffered 的最后一段：往回拖
+      // 之后旧的前向缓冲还挂在时间轴后面（back buffer 只回收播放头之后 30
+      // 秒以前的部分，拖回去之后那一段落在播放头**前方**，不会被回收），
+      // 取最后一段会让浅色底一路铺到一小时开外，而那里根本没有连着的数据。
+      setBufferedEndMs(toFileMs(video.currentTime + bufferedAhead(video), startMsRef.current));
     };
     // 「现在应该能播了」的两个时机：挂流那一次可能太早，这两次是补刀
     const onReady = () => {
@@ -1460,6 +1462,22 @@ export function VideoPlayer(props: VideoPlayerProps) {
   const seekToFileMs = useCallback(
     (fileMs: number) => {
       if (!video) return;
+      // 会话正在重开的空档（换音轨 / 换画质 / 心跳自愈 / 上一次 seek 换流）：
+      // video 上已经没有流了，native seek 打在空元素上什么也不会发生，而在途
+      // 的新会话仍会落回 pendingFileMs 那个**旧**位置——用户看到进度条跳过去
+      // 又自己弹回来，这一拖白拖。改走换会话这条路：restart 递增 attempt 顶掉
+      // 在途的那次请求，新会话直接从目标位置起。
+      // 报错页与同意弹窗同样没有会话，但它们是等用户拍板的终态（见
+      // machine.ts 的 awaitsUserDecision），绝不能在背后替他换流。
+      if (!state.session) {
+        // startMs 为 null = 首次起播，起点还等着服务端按观看状态定（§6.10）。
+        // 那一刻按下的快进键不该把续播点顶掉，让它照旧落空。
+        if (!isBusy(state.phase) || state.startMs === null) return;
+        pendingFileMsRef.current = fileMs;
+        setPositionMs(fileMs);
+        dispatch({ type: "restart", startMs: fileMs });
+        return;
+      }
       const seekable = video.seekable;
       const plan = planSeek(fileMs, {
         startMs: startMsRef.current,
@@ -1488,7 +1506,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
       setPositionMs(plan.startMs);
       dispatch({ type: "restart", startMs: plan.startMs });
     },
-    [video, sessionId, mode],
+    [video, sessionId, mode, state.session, state.phase, state.startMs],
   );
 
   const seekBy = useCallback(

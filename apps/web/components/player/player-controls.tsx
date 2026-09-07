@@ -414,7 +414,11 @@ export function PlayerControls(props: PlayerControlsProps) {
             // （见下方圆点注释），手指永远按不中——表现为拖动时圆点不跟手、
             // 松手 seek 到的是按下点。setPointerCapture 让移出条外也不断跟。
             onPointerDown={(e) => {
-              if (!durationMs) return;
+              // 只认主指针的主键起手。不挡的话右键点进度条会**当场 seek**
+              // 再弹出上下文菜单（中键同理），而右键的意图从来不是跳转；
+              // 触屏上第二根手指落在条上也会顶掉第一根正在进行的拖动。
+              // 触摸/笔的主接触点 button 恒为 0，这条不会误伤它们。
+              if (!durationMs || e.button !== 0 || !e.isPrimary) return;
               e.currentTarget.setPointerCapture(e.pointerId);
               const rect = e.currentTarget.getBoundingClientRect();
               const ratio = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));

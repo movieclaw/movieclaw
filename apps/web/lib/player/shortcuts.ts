@@ -54,14 +54,18 @@ export function resolveShortcut(context: KeyContext): PlayerAction | null {
   return null;
 }
 
-/** 事件目标是不是输入控件。contentEditable 的富文本区同样算。 */
+/**
+ * 事件目标是不是**能录入文字**的控件。contentEditable 的富文本区同样算。
+ *
+ * 滑块（`input[type=range]`）明确排除：播放器里唯一的滑块就是进度条，而它
+ * 被点一下就拿走焦点。一律按「输入控件」放行的话，点过进度条之后空格不再
+ * 播放暂停、F 不全屏、M 不静音——用户只当播放器坏了，而且找不回来（焦点
+ * 一直留在那儿）。方向键更拧巴：全局的 ±5 秒被让掉，落到 range 原生的
+ * ±1 秒（step），同一个键在点条前后跳的秒数都不一样。
+ */
 export function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   const tag = target.tagName;
-  return (
-    tag === "INPUT" ||
-    tag === "TEXTAREA" ||
-    tag === "SELECT" ||
-    target.isContentEditable
-  );
+  if (tag === "INPUT") return (target as HTMLInputElement).type !== "range";
+  return tag === "TEXTAREA" || tag === "SELECT" || target.isContentEditable;
 }
