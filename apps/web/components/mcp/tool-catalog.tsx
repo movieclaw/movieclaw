@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { CopyButton } from "@/components/copy-button";
 import { Badge } from "@/components/mcp/ui";
-import type { McpToolCommand, McpToolPreview } from "@/lib/api/mcp";
+import type { McpToolCommand, McpToolParameter, McpToolPreview } from "@/lib/api/mcp";
 
 /**
  * 工具目录：这个端点到底把什么交给了模型。
@@ -199,42 +199,7 @@ export function ToolCatalog({ tools }: { tools: McpToolPreview[] }) {
                           ) : tool.parameters.length === 0 ? (
                             <p className="text-caption text-[var(--text-faint)]">这个工具不需要参数。</p>
                           ) : (
-                            <table className="w-full text-caption">
-                              <thead>
-                                <tr className="text-left text-[var(--text-faint)]">
-                                  <th className="pb-1 font-normal">参数</th>
-                                  <th className="pb-1 font-normal">类型</th>
-                                  <th className="pb-1 font-normal">位置</th>
-                                  <th className="pb-1 font-normal">说明</th>
-                                </tr>
-                              </thead>
-                              <tbody className="align-top">
-                                {tool.parameters.map((param) => (
-                                  <tr key={param.name} className="border-t border-white/[0.05]">
-                                    <td className="py-1.5 pr-3">
-                                      <span className="font-mono text-[var(--text)]">{param.name}</span>
-                                      {param.required && (
-                                        <span className="ml-1 text-[var(--danger)]" title="必填">*</span>
-                                      )}
-                                    </td>
-                                    <td className="py-1.5 pr-3 font-mono text-[var(--text-muted)]">
-                                      {param.type}
-                                    </td>
-                                    <td className="py-1.5 pr-3 text-[var(--text-faint)]">
-                                      {param.location}
-                                    </td>
-                                    <td className="py-1.5 text-[var(--text-muted)]">
-                                      {param.description || "—"}
-                                      {param.options.length > 0 && (
-                                        <span className="mt-0.5 block font-mono text-[11px] text-[var(--text-faint)]">
-                                          可选：{param.options.join(" / ")}
-                                        </span>
-                                      )}
-                                    </td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
+                            <ParameterTable parameters={tool.parameters} />
                           )}
                           <div className="flex items-center gap-2">
                             <CopyButton
@@ -281,12 +246,37 @@ export function ToolCatalog({ tools }: { tools: McpToolPreview[] }) {
  *
  * 与顶部搜索联动——用户在折叠端点里搜的几乎一定是命令名，命中时只列命中的那几条，
  * 否则一个服务动辄五十多条，翻起来和散文墙没区别。
+ *
+ * 窄屏改成堆叠块：390px 上三列表格会把 ``items.list-media-source-annotation-candidates``
+ * 这样的标识符按字符掰成五行，比没有排版更难读。标识符宁可占满一行也不能断词。
  */
 function CommandTable({ commands, keyword }: { commands: McpToolCommand[]; keyword: string }) {
   const matched = keyword
     ? commands.filter((c) => `${c.name} ${c.summary}`.toLowerCase().includes(keyword))
     : commands;
   const list = matched.length > 0 ? matched : commands;
+
+  const dangerMark = (command: McpToolCommand) =>
+    command.dangerous ? (
+      <span
+        className="ml-1 text-[var(--danger)]"
+        title={
+          command.dangerous === "destructive" ? "破坏性：会删数据或磁盘文件" : "会清除配置或记录"
+        }
+      >
+        ⚠
+      </span>
+    ) : null;
+
+  const summaryOf = (command: McpToolCommand) => (
+    <>
+      {command.summary || "—"}
+      {command.is_job && (
+        <span className="ml-1 text-[var(--text-faint)]">（后台任务，返回 job_id）</span>
+      )}
+    </>
+  );
+
   return (
     <div>
       <p className="pb-1 text-caption text-[var(--text-faint)]">
@@ -294,9 +284,27 @@ function CommandTable({ commands, keyword }: { commands: McpToolCommand[]; keywo
           ? `${commands.length} 条命令，填进 command 参数`
           : `匹配「${keyword}」的 ${list.length} / ${commands.length} 条命令`}
       </p>
-      {/* 固定列宽：命令名不换行、说明占大头，params 收在右侧。自动布局会被
-          某一条超长的 params 拽歪，整张表就没法一眼扫下来。 */}
-      <table className="w-full table-fixed text-caption">
+
+      {/* 窄屏：堆叠 */}
+      <ul className="divide-y divide-white/[0.05] sm:hidden">
+        {list.map((command) => (
+          <li key={command.name} className="space-y-0.5 py-2 text-caption">
+            <p className="font-mono text-[var(--text)]">
+              {command.name}
+              {dangerMark(command)}
+            </p>
+            <p className="text-[var(--text-muted)]">{summaryOf(command)}</p>
+            {command.params.length > 0 && (
+              <p className="font-mono text-[11px] text-[var(--text-faint)]">
+                {command.params.join(", ")}
+              </p>
+            )}
+          </li>
+        ))}
+      </ul>
+
+      {/* 宽屏：定宽三列。自动布局会被某一条超长的 params 拽歪，整张表就没法一眼扫下来 */}
+      <table className="hidden w-full table-fixed text-caption sm:table">
         <colgroup>
           <col className="w-[26%]" />
           <col className="w-[42%]" />
@@ -314,23 +322,83 @@ function CommandTable({ commands, keyword }: { commands: McpToolCommand[]; keywo
             <tr key={command.name} className="border-t border-white/[0.05]">
               <td className="py-1.5 pr-3">
                 <span className="font-mono break-all text-[var(--text)]">{command.name}</span>
-                {command.dangerous && (
-                  <span
-                    className="ml-1 text-[var(--danger)]"
-                    title={command.dangerous === "destructive" ? "破坏性：会删数据或磁盘文件" : "会清除配置或记录"}
-                  >
-                    ⚠
-                  </span>
-                )}
+                {dangerMark(command)}
               </td>
-              <td className="py-1.5 pr-3 text-[var(--text-muted)]">
-                {command.summary || "—"}
-                {command.is_job && (
-                  <span className="ml-1 text-[var(--text-faint)]">（后台任务，返回 job_id）</span>
-                )}
-              </td>
+              <td className="py-1.5 pr-3 text-[var(--text-muted)]">{summaryOf(command)}</td>
               <td className="py-1.5 font-mono text-[11px] break-all text-[var(--text-faint)]">
                 {command.params.length > 0 ? command.params.join(", ") : "—"}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/**
+ * 展开模式的参数表。窄屏同样改成堆叠块：四列（参数/类型/位置/说明）在 390px 上
+ * 每列都不够放下一个标识符。
+ */
+function ParameterTable({ parameters }: { parameters: McpToolParameter[] }) {
+  const required = (param: McpToolParameter) =>
+    param.required ? (
+      <span className="ml-0.5 text-[var(--danger)]" title="必填">
+        *
+      </span>
+    ) : null;
+
+  const options = (param: McpToolParameter) =>
+    param.options.length > 0 ? (
+      <span className="mt-0.5 block font-mono text-[11px] text-[var(--text-faint)]">
+        可选：{param.options.join(" / ")}
+      </span>
+    ) : null;
+
+  return (
+    <div>
+      <ul className="divide-y divide-white/[0.05] sm:hidden">
+        {parameters.map((param) => (
+          <li key={param.name} className="space-y-0.5 py-2 text-caption">
+            <p className="flex flex-wrap items-baseline gap-x-2">
+              <span className="font-mono text-[var(--text)]">
+                {param.name}
+                {required(param)}
+              </span>
+              <span className="font-mono text-[11px] text-[var(--text-muted)]">{param.type}</span>
+              {param.location && (
+                <span className="text-[11px] text-[var(--text-faint)]">{param.location}</span>
+              )}
+            </p>
+            <p className="text-[var(--text-muted)]">
+              {param.description || "—"}
+              {options(param)}
+            </p>
+          </li>
+        ))}
+      </ul>
+
+      <table className="hidden w-full text-caption sm:table">
+        <thead>
+          <tr className="text-left text-[var(--text-faint)]">
+            <th className="pb-1 font-normal">参数</th>
+            <th className="pb-1 font-normal">类型</th>
+            <th className="pb-1 font-normal">位置</th>
+            <th className="pb-1 font-normal">说明</th>
+          </tr>
+        </thead>
+        <tbody className="align-top">
+          {parameters.map((param) => (
+            <tr key={param.name} className="border-t border-white/[0.05]">
+              <td className="py-1.5 pr-3">
+                <span className="font-mono text-[var(--text)]">{param.name}</span>
+                {required(param)}
+              </td>
+              <td className="py-1.5 pr-3 font-mono text-[var(--text-muted)]">{param.type}</td>
+              <td className="py-1.5 pr-3 text-[var(--text-faint)]">{param.location}</td>
+              <td className="py-1.5 text-[var(--text-muted)]">
+                {param.description || "—"}
+                {options(param)}
               </td>
             </tr>
           ))}

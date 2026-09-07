@@ -272,9 +272,45 @@ export function McpSection() {
           </button>
         </div>
       ) : (
-        /* 表格而不是卡片墙：端点是一组同构对象，纵向对齐才扫得快 */
+        /* 宽屏用表格而不是卡片墙：端点是一组同构对象，纵向对齐才扫得快。
+           窄屏反过来——五列塞进 390px 会把端点名按字符竖着掰成一列，所以另render
+           一份卡片。数据同源，只是排版不同。 */
         <div className="overflow-hidden rounded-xl border border-white/[0.07]">
-          <table className="w-full text-left text-sub">
+          <ul className="divide-y divide-white/[0.05] md:hidden">
+            {status.endpoints.map((endpoint) => (
+              <li key={endpoint.id}>
+                <button
+                  type="button"
+                  onClick={() => navigate({ slug: endpoint.slug, tab: "overview" })}
+                  className={`flex w-full items-start gap-3 px-4 py-3 text-left transition-colors hover:bg-white/[0.04] ${
+                    endpoint.enabled ? "" : "opacity-55"
+                  }`}
+                >
+                  <div className="min-w-0 flex-1 space-y-1.5">
+                    <div className="flex items-center gap-2">
+                      <StatusDot
+                        on={endpoint.enabled}
+                        title={endpoint.enabled ? "运行中" : "已停用"}
+                      />
+                      <span className="min-w-0 truncate font-medium">{endpoint.name}</span>
+                    </div>
+                    <p className="font-mono text-caption text-[var(--text-muted)]">
+                      /mcp/{endpoint.slug}
+                    </p>
+                    <ServiceChips services={endpoint.services} max={3} />
+                    <p className="text-caption text-[var(--text-faint)]">
+                      {endpoint.tool_count} 个工具 ·{" "}
+                      {endpoint.expand_tools ? "一命令一工具" : "一服务一工具"} ·{" "}
+                      {endpoint.last_used_at ? relativeTime(endpoint.last_used_at) : "从未调用"}
+                    </p>
+                  </div>
+                  <span className="shrink-0 pt-0.5 text-[var(--text-faint)]">›</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+
+          <table className="hidden w-full text-left text-sub md:table">
             <thead className="bg-white/[0.03] text-caption text-[var(--text-faint)]">
               <tr>
                 <th className="px-4 py-2 font-normal">端点</th>
