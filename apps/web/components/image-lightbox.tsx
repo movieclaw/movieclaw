@@ -136,14 +136,16 @@ export function ImageLightbox({
 
   return createPortal(
     // 点击空白处关闭；内容区各元素自行 stopPropagation。
-    // bottom 越出视口 --vp-overshoot：黑底铺到屏幕物理底边（iOS 独立 App
-    // 的视口矮一截，见 globals.css）；底部缩略图条用加大的 pb 留在视口内
+    // 高度走 viewport-overlay-height 而不是 inset-0：fixed 贴的是布局视口，
+    // 在移动浏览器上等于「地址栏收起后」的大视口，贴底的缩略图条会被地址栏 /
+    // 工具栏盖住（见 globals.css 那条注释）。黑底仍向下多铺 --vp-overshoot
+    // 盖住 iOS 独立 App 的底部黑条，缩略条自己用加大的 pb 留在视口内
     <div
       role="dialog"
       aria-modal="true"
       aria-label={heading ? `图片浏览：${heading}` : "图片浏览"}
       onClick={onClose}
-      className="fixed inset-0 z-[70] flex flex-col bg-black/85 backdrop-blur-md [bottom:calc(-1*var(--vp-overshoot))]"
+      className="viewport-overlay-height fixed inset-x-0 top-0 z-[70] flex flex-col bg-black/85 backdrop-blur-md"
     >
       {/* 顶栏：计数 + 标题 + 关闭 */}
       <div className="flex shrink-0 flex-wrap items-center gap-3 px-4 py-3 text-white/85 [padding-top:calc(0.75rem+var(--safe-top))] max-md:gap-2 max-md:px-3">
@@ -268,7 +270,10 @@ export function ImageLightbox({
       {images.length > 1 && (
         <div
           onClick={(e) => e.stopPropagation()}
-          className="scroll-none shrink-0 overflow-x-auto px-4 py-3 [padding-bottom:calc(0.75rem+var(--safe-bottom)+var(--vp-overshoot))] max-md:px-3"
+          // 底边内距只由这一条任意值给：py-3 会一并设 padding-bottom，两条规则
+          // 撞车时谁生效取决于 Tailwind 生成的先后，实测 py-3 会赢、overshoot
+          // 的补偿失效。改成只写 pt-3，0.75rem 的底距已算在下面那条里
+          className="scroll-none shrink-0 overflow-x-auto px-4 pt-3 [padding-bottom:calc(0.75rem+var(--safe-bottom)+var(--vp-overshoot))] max-md:px-3"
         >
           <div className="mx-auto flex w-max gap-2">
             {images.map((url, i) => (

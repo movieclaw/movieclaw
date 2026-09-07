@@ -495,7 +495,9 @@ export function ZoomLightbox({
       role="dialog"
       aria-modal="true"
       aria-label={label}
-      className="fixed inset-0 z-[70] overflow-hidden bg-[rgba(4,5,9,0.94)] backdrop-blur-md [bottom:calc(-1*var(--vp-overshoot))]"
+      // 高度走 viewport-overlay-height 而不是 inset-0：fixed 贴的是布局视口，
+      // 手机上底部的缩略条会被浏览器工具栏盖住（见 globals.css 那条注释）
+      className="viewport-overlay-height fixed inset-x-0 top-0 z-[70] overflow-hidden bg-[rgba(4,5,9,0.94)] backdrop-blur-md"
     >
       {/* 舞台：铺满整个对话框（控件浮在它上面）。点画面收放控件、点画面外的
           空白关闭（未缩放时），滚轮 / 捏合 / 双击缩放，放大后拖拽平移、
@@ -650,7 +652,12 @@ export function ZoomLightbox({
         )}
 
         {/* 缩略条：只渲染当前位置前后各 30 张 */}
-        <div className="scroll-none pointer-events-auto overflow-x-auto px-4 pb-2.5 [padding-bottom:calc(0.625rem+var(--safe-bottom)+var(--vp-overshoot))] max-md:px-3">
+        {/* 底边内距只由这一条任意值给：再挂一个 pb-2.5 的话两条规则都设
+            padding-bottom，谁生效取决于 Tailwind 生成的先后而不是这里的书写
+            顺序——实测 pb-2.5 赢了，--vp-overshoot 的补偿整个失效，iOS 独立
+            App 里缩略条被推到可见区域之外（这正是「手机上看不到底部小图」的
+            成因之一）。0.625rem 就是 pb-2.5，已经算在里面 */}
+        <div className="scroll-none pointer-events-auto overflow-x-auto px-4 [padding-bottom:calc(0.625rem+var(--safe-bottom)+var(--vp-overshoot))] max-md:px-3">
           <div className="mx-auto flex w-max gap-1.5">
             {slides.slice(stripRange.start, stripRange.end).map((entry, offset) => {
               const i = stripRange.start + offset;

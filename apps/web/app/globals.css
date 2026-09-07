@@ -1278,6 +1278,24 @@ a {
   height: calc(100dvh - var(--keyboard-inset));
 }
 
+/*
+ * 全屏覆盖层（灯箱）的高度：与 .viewport-app-height 同一个理由，做法却必须
+ * 不同——覆盖层是 position: fixed，而 fixed 的包含块是**布局视口**，在移动
+ * 浏览器上等于「地址栏收起后」的大视口。于是 `inset: 0` 的覆盖层底边落在
+ * 屏幕之外，贴着 bottom:0 的那条缩略图整条被藏到地址栏 / 工具栏底下（手机上
+ * 实测：灯箱底部的小图预览一直看不见）。
+ *
+ * 改成 top:0 + 动态视口高度，底边就落在**可见**视口的底边上。再加
+ * --vp-overshoot：iOS 独立 App 形态下要向下多铺一截盖住底部黑条（见该变量
+ * 处的长注释），加进高度里与原来的负 bottom 等价。
+ *
+ * 不减 --keyboard-inset：灯箱上没有输入框，弹起软键盘时它该保持满屏。
+ */
+.viewport-overlay-height {
+  height: calc(100vh + var(--vp-overshoot));
+  height: calc(100dvh + var(--vp-overshoot));
+}
+
 body.cmdk-open .app-shell {
   transform: scale(0.978);
 }
