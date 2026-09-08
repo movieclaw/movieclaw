@@ -5,11 +5,11 @@ import Link from "next/link";
 import type { Route } from "next";
 
 import { useToast } from "@/components/feedback";
-import { ImageLightbox } from "@/components/image-lightbox";
 import { LayersIcon, ListIcon, PhotoIcon, XIcon } from "@/components/icons";
 import { Modal } from "@/components/modal";
 import { PosterImage } from "@/components/poster-image";
 import { Tooltip } from "@/components/tooltip";
+import { ZoomLightbox, type ZoomLightboxSlide } from "@/components/zoom-lightbox";
 import type { SearchScope } from "@/lib/categories";
 import { platformLabel } from "@/lib/platforms";
 import {
@@ -2179,6 +2179,8 @@ function PosterResults({ hits }: { hits: TorrentHit[] }) {
  * 仅通过 PosterImage 共用海报图片底座（懒加载 / no-referrer / 失败回退）。
  * 点击卡片弹出多图灯箱（海报 + image_urls 里的截图等），右上角
  * 显示张数徽标；hover 上的详情/下载链接 stopPropagation，不触发灯箱。
+ * 灯箱用的就是媒体库那一个（ZoomLightbox）：缩放、捏合、滑动翻页、点画面
+ * 收起控件，全站看图是同一套手感，这里不再另做一份简版。
  */
 /**
  * 海报卡片左上角的促销徽标（免费 / 折扣 / 双倍上传 / H&R）。
@@ -2238,17 +2240,34 @@ function seasonEpisodeChip(attrs: TorrentAttrs | null): { text: string; pack: bo
   return { text: [season, episode].filter(Boolean).join(" · "), pack };
 }
 
+/** 种子图集是一次给全的，没有下一页可要；引用稳定，免得灯箱里的 effect 白跑 */
+const noop = () => {};
+
 // memo：与 TorrentRow 同理，流式进结果时已有卡片的 hit 引用不变，整卡跳过
 const TorrentPosterCard = memo(function TorrentPosterCard({ hit }: { hit: TorrentHit }) {
-  const [viewerOpen, setViewerOpen] = useState(false);
+  // 灯箱当前看的是第几张；null = 没打开（灯箱受控翻页，与媒体库那套一致）
+  const [viewerIndex, setViewerIndex] = useState<number | null>(null);
   const [actionsOpen, setActionsOpen] = useState(false);
   const size = hit.size ?? formatBytes(hit.size_bytes);
   const name = parsedName(hit);
   const seChip = seasonEpisodeChip(hit.attrs);
-  // 灯箱图集：海报 + 全部图片（poster_url 通常是 image_urls 第一张，去重兜底）
-  const gallery = Array.from(
-    new Set([hit.poster_url, ...hit.image_urls].filter((u): u is string => !!u)),
-  ).map((url) => cachedImageUrl(url));
+  // 灯箱图集：海报 + 全部图片（poster_url 通常是 image_urls 第一张，去重兜底）。
+  // 三级地址与媒体库灯箱同一口径：缩略条取 photo-tile，舞台取 photo-screen
+  // （长边 2048 的 WebP，比图床原图少几倍字节、翻页跟手），只有放大到 1:1
+  // 时才拉图床原图。PT 图床本来就慢，这一层派生由后端缓存后人人受益。
+  const slides = useMemo<ZoomLightboxSlide[]>(
+    () =>
+      Array.from(
+        new Set([hit.poster_url, ...hit.image_urls].filter((u): u is string => !!u)),
+      ).map((url, i) => ({
+        key: `${i}:${url}`,
+        title: hit.title,
+        thumbUrl: cachedImageUrl(url, "photo-tile"),
+        screenUrl: cachedImageUrl(url, "photo-screen"),
+        fullUrl: cachedImageUrl(url),
+      })),
+    [hit.poster_url, hit.image_urls, hit.title],
+  );
   return (
     <li className="group relative overflow-hidden rounded-xl border border-white/[0.08] bg-[rgba(14,16,22,0.75)] transition-colors hover:border-white/[0.2]">
       {/* 手机/纯触摸设备把整张卡作为操作入口；窄屏桌面预览也走同一交互，
@@ -2266,12 +2285,12 @@ const TorrentPosterCard = memo(function TorrentPosterCard({ hit }: { hit: Torren
         tabIndex={0}
         // 标题展示解析片名后，原始种子名/副标题靠悬停提示查看（图外文字区同）
         title={rawTitleTooltip(hit)}
-        aria-label={`浏览「${hit.title}」的 ${gallery.length} 张图片`}
-        onClick={() => setViewerOpen(true)}
+        aria-label={`浏览「${hit.title}」的 ${slides.length} 张图片`}
+        onClick={() => setViewerIndex(0)}
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === " ") {
             e.preventDefault();
-            setViewerOpen(true);
+            setViewerIndex(0);
           }
         }}
         className="relative aspect-[2/3] cursor-zoom-in outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]"
@@ -2304,11 +2323,11 @@ const TorrentPosterCard = memo(function TorrentPosterCard({ hit }: { hit: Torren
           </span>
           {/* 张数常显（含 1 张）：点开前就知道里面有几张图，只有一张时不必特意点开 */}
           <span
-            title={`共 ${gallery.length} 张图片，点击卡片浏览`}
+            title={`共 ${slides.length} 张图片，点击卡片浏览`}
             className="tnum flex shrink-0 items-center gap-1 rounded-md bg-black/70 px-1.5 py-0.5 text-micro font-medium text-white/85"
           >
             <PhotoIcon className="size-3" />
-            {gallery.length}
+            {slides.length}
           </span>
         </div>
         {/* 左下：剧集季/集 chip。实底不受海报明暗影响；全集/整季包用渐变底
@@ -2383,11 +2402,18 @@ const TorrentPosterCard = memo(function TorrentPosterCard({ hit }: { hit: Torren
         </p>
       </div>
 
-      {viewerOpen && (
-        <ImageLightbox
-          images={gallery}
-          title={hit.title}
-          onClose={() => setViewerOpen(false)}
+      {viewerIndex !== null && slides.length > 0 && (
+        // 与图片库 / 图廊同一个灯箱内核：缩放、手势翻页、点画面收起控件全一致，
+        // 只是种子图集没有下载 / 收藏那类按钮，顶栏右侧只剩关闭
+        <ZoomLightbox
+          label={`浏览图片：${hit.title}`}
+          slides={slides}
+          index={viewerIndex}
+          hasMore={false}
+          onIndexChange={setViewerIndex}
+          onReachEnd={noop}
+          onClose={() => setViewerIndex(null)}
+          brokenHint="图床可能已失效或拒绝外链访问"
         />
       )}
       <TorrentActionsSheet
@@ -2395,10 +2421,10 @@ const TorrentPosterCard = memo(function TorrentPosterCard({ hit }: { hit: Torren
         open={actionsOpen}
         onClose={() => setActionsOpen(false)}
         onViewImages={
-          gallery.length > 0
+          slides.length > 0
             ? () => {
                 setActionsOpen(false);
-                setViewerOpen(true);
+                setViewerIndex(0);
               }
             : undefined
         }

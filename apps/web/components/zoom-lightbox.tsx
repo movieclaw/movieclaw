@@ -14,11 +14,11 @@ import {
 /**
  * 可缩放的全屏灯箱内核（docs/design/library-photo-kind.md 3.3）。
  *
- * 图片库的灯箱（PhotoLightbox）与影视库图廊的灯箱（VideoGalleryLightbox）
- * 看的是两种数据（台账条目的原图 / 作品的海报剧照章节图），但舞台上的交互
- * 必须一模一样：渐进加载、缩放、手势、翻页、缩略条。这些全在这里，两个
- * 灯箱只负责把各自的数据折成 ``slides``、往顶栏塞各自的按钮（下载 / 信息、
- * 播放 / 详情）：
+ * 图片库的灯箱（PhotoLightbox）、影视库图廊的灯箱（VideoGalleryLightbox）与
+ * 搜索页图片模式的种子图集看的是三种数据（台账条目的原图 / 作品的海报剧照
+ * 章节图 / PT 站图床的外链图），但舞台上的交互必须一模一样：渐进加载、缩放、
+ * 手势、翻页、缩略条。这些全在这里，调用方只负责把各自的数据折成 ``slides``、
+ * 往顶栏塞各自的按钮（下载 / 信息、播放 / 详情，种子图集没有按钮）：
  *   - 渐进多级：先显示墙上的缩略图（模糊放大）→ 屏幕适配图 → 有 ``fullUrl``
  *     的只在放大到 1:1 时才拉原图。相邻两张预加载的也是屏幕适配图；
  *   - **控件可收起**：顶栏、缩放控件、缩略条与浮层合起来是一层浮在画面上的
@@ -122,8 +122,12 @@ export interface ZoomLightboxSlide {
   screenUrl: string;
   /** 放大到超过屏幕适配图分辨率时才拉的原图；不给则只有一级 */
   fullUrl?: string;
-  /** 缩略条上这张的宽高比 */
-  aspect: number;
+  /**
+   * 缩略条上这张的宽高比。台账里有真实尺寸的（图片库 / 图廊）就给，
+   * 外链图集（PT 种子的图床图）拿不到尺寸，不给则按 1:1 排方块——
+   * 缩略图本来就是 object-cover，比例只影响缩略条上的格子宽度
+   */
+  aspect?: number;
 }
 
 export function ZoomLightbox({
@@ -138,6 +142,7 @@ export function ZoomLightbox({
   overlay,
   note,
   onKey,
+  brokenHint = "文件可能已被移动或删除，重新扫描后会更新",
 }: {
   /** 对话框的无障碍名 */
   label: string;
@@ -157,6 +162,8 @@ export function ZoomLightbox({
   note?: string | null;
   /** 额外的快捷键：返回 true 表示已处理 */
   onKey?: (key: string) => boolean;
+  /** 图加载失败时的第二行解释：本地库是文件没了，外链图集是图床失效 */
+  brokenHint?: string;
 }) {
   const slide = slides[index];
   const [view, setView] = useState<View>(FIT_VIEW);
@@ -531,9 +538,7 @@ export function ZoomLightbox({
         {broken || !screenUrl ? (
           <div className="rounded-2xl border border-white/[0.12] bg-white/[0.04] px-8 py-10 text-center text-ui text-white/60">
             图片加载失败
-            <span className="mt-1 block text-caption text-white/40">
-              文件可能已被移动或删除，重新扫描后会更新
-            </span>
+            <span className="mt-1 block text-caption text-white/40">{brokenHint}</span>
           </div>
         ) : (
           <div
@@ -719,7 +724,7 @@ export function ZoomLightbox({
                   className={`h-12 shrink-0 overflow-hidden rounded-md transition ${
                     active ? "ring-2 ring-[var(--accent)]" : "opacity-45 hover:opacity-90"
                   }`}
-                  style={{ width: Math.round(48 * Math.min(2, Math.max(0.5, entry.aspect))) }}
+                  style={{ width: Math.round(48 * Math.min(2, Math.max(0.5, entry.aspect ?? 1))) }}
                 >
                   <img
                     src={entry.thumbUrl}

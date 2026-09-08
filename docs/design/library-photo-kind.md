@@ -376,3 +376,21 @@ Infuse 不支持照片库，Jellyfin 官方客户端的 `photos` 视图留二期
 顺手收掉的旧债：`primary_aspect` 的兜底比例改读能力档案的 `default_aspect`
 （此前写死 TMDB 2:3 / 本地 16:9），`local_identity.py` 三处 `kind is VIDEO`
 改为按来源分叉，`_wall_page_ids` 的内容时间排序第二键改为标题。
+
+### 6.1 搜索页图片模式改用同一个灯箱（2026-09-08）
+
+上面第 1 条只说对了一半：两种**数据模型**确实不该硬塞进一个组件，但两处的
+**舞台交互**不该有两套。图廊落地时舞台已经抽成了 `zoom-lightbox.tsx`
+（缩放、手势、翻页、缩略条、控件收放），`photo-lightbox` 与
+`VideoGalleryLightbox` 只是各自的数据适配层。搜索页图片模式的种子图集就是
+第三种数据，照同样的方式接上去：`TorrentPosterCard` 把「海报 + image_urls」
+折成 `slides`，顶栏不塞按钮。用户在种子图集里同样可以捏合放大看截图上的
+码率、滑动翻页、点画面收起控件——全站看图是同一套手感。
+
+两处向后兼容的扩展：`ZoomLightboxSlide.aspect` 改为可选（外链图集拿不到图片
+尺寸，不给就按 1:1 排缩略条格子），新增 `brokenHint` 让失败文案分场景
+（本地库是文件没了，外链是图床失效）。三级地址走图片代理的既有派生预设：
+缩略条 `photo-tile`、舞台 `photo-screen`、放大到 1:1 才拉图床原图。
+
+`image-lightbox.tsx` 保留给影视详情页的海报/剧照浏览与 Agent 对话里的图片
+（前者还带「设为背景」的顶栏动作），它们不在本次范围内。
