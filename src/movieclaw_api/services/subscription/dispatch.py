@@ -59,6 +59,7 @@ async def dispatch(
     upgrade_labels: tuple[str, str] | None = None,
     manual: bool = False,
     match: IdentityMatch | None = None,
+    shadow_notes: dict | None = None,
 ) -> bool:
     """把候选投递给下载器，满足给定的一批工单。返回是否有实际投递发生。
 
@@ -74,6 +75,10 @@ async def dispatch(
     ``match``：身份匹配结果。只取其中的证据强度落台账（"当初凭什么认定这个
     种子就是这部片"），入库时 info_hash 认领据此分级；None=调用方没有身份
     上下文（旧调用点），台账留 NULL。
+
+    ``shadow_notes``：尚未生效的判定的观察记录，原样并进投递活动 payload 的
+    ``shadow`` 键（**不进 message，不打扰用户**）。用于给拍脑袋定的阈值攒真实
+    数据，看过触发率与误报率再决定是否开成生效（identity-confidence.md §10.2）。
     """
     from movieclaw_api.services.subscription.core import recompute_subscription_status
     from movieclaw_api.services.subscription.matching import (
@@ -403,6 +408,7 @@ async def dispatch(
                 "save_path": decision.entry_dir,
                 "staging_path": staging,
                 "dispatch_dir": dispatch_dir,
+                **({"shadow": shadow_notes} if shadow_notes else {}),
             },
         )
     )

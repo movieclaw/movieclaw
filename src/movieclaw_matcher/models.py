@@ -458,6 +458,10 @@ class MediaIdentity:
     # 已知季名（media_season.name，如"南洋拾光季"）：国综惯例把季名并进片名
     # （"中餐厅·南洋拾光季"），"别名+季名"的组合等式是零歧义的身份信号
     season_titles: tuple[str, ...] = ()
+    # 片长（media_metadata.runtime_minutes）：体积÷片长=隐含码率，是一条不用
+    # 发任何请求就能算出来的反证（docs/design/identity-confidence.md §6）。
+    # NULL=未知（冷门片 TMDB 常缺），反证整体跳过
+    runtime_minutes: int | None = None
 
 
 # ---------------------------------------------------------------------------

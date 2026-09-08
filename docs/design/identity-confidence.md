@@ -86,7 +86,7 @@
 |---|---|---|---|---|
 | **P0** | 修正后的反向对账 + 错种拉黑 ✅**已实现** | **bug 修复** | 小 | 无 |
 | **P1** | 反向 ID 否决 + 置信度贯穿 ✅**已实现** | 地基 | 小 | 无 |
-| **P2** | 隐含码率反证（下载前） | 增强 | 小 | P1 |
+| **P2** | 隐含码率反证（下载前） ✅**已实现（shadow）** | 增强 | 小 | P1 |
 | **P3** | 投递前详情页复核（含 file_list 预检） | 主力 | 中 | P1 |
 | **P4** | 入库时长体检 | 兜底 | 中 | P1 |
 | **P5** | 同名同年歧义（按需探测） | 增强 | 中 | P1/P2/P3 |
@@ -347,18 +347,44 @@ P3 是**提升**证据强度的手段，P5 是**要求更高**证据强度的策
 算出来的赢家不是本订阅的条目 → 直接否决，**连问用户都不用问**。
 
 单机形态（非歧义条目）只保留一个极粗的单边哨兵：隐含码率低于该分辨率典型下限
-的 **1/3** 才记一条 `MATCH_REJECTED`。这个倍数下没有任何正常发布会踩线，踩线的
-基本是预告片、sample 和错配。
+的 **1/3**（`identity.py::_BITRATE_FLOOR_MBPS`，⚠ 待校准）。这个倍数下没有任何
+正常发布会踩线，踩线的基本是预告片、sample 和假种。
 
-### 6.4 验收标准
+### 6.4 落地范围与两条边界
 
-```
-1. runtime=210min 的条目 + 4GB/1080p WEB-DL 候选 + 孪生 runtime=88min
-   → 断言判别器选中孪生、本条目否决，活动记录说明理由
-2. runtime=120min 的条目 + 4GB/1080p x265 候选（隐含 4.5Mbps）
-   → 断言不触发（正常发布不能被误伤）
-3. runtime 为 NULL → 断言整个反证跳过，不影响既有行为
-```
+已实现的是**单边哨兵**，且走 shadow 模式（§10.2）：算出来只记进投递活动
+payload 的 `shadow` 键 + 一条 INFO 日志，**不改变任何行为**、不进用户可见文案。
+判别器形态（相对比较）等 §9 的孪生探测提供第二个比较对象后再接，本次只落了它
+的算术基础 `implied_bitrate_mbps`。
+
+两条边界，都由用例钉死：
+
+1. **单边哨兵抓不住 §0 那个 case**。4 GB ÷ 210 分钟 ≈ 2.7 Mbps，低得可疑但仍在
+   1080p 的离谱下限之上，放行。这不是实现打了折扣——把阈值调到能抓住它，代价
+   是误伤大量正常的低码压制。用例
+   `test_single_sided_sentinel_does_not_catch_the_twin_movie_case` 存在的意义
+   就是让日后想调高阈值的人先看到这个代价。
+2. **只对电影生效**。`MediaMetadata.runtime_minutes` 对剧集是**单集**时长，而
+   整季包的体积覆盖 N 集，拿单集时长去除整季体积算出的"码率"虚高 N 倍，两者
+   根本不可比。剧集侧另有季集号做区分，不缺这条反证。
+
+### 6.5 验收标准（已落地）
+
+`tests/matcher/test_identity.py`：
+
+- `test_trailer_sized_release_is_implausible_for_a_feature_length_movie` ——
+  0.2 GB ÷ 120 分钟 ≈ 0.24 Mbps，判为离谱
+- `test_low_bitrate_x265_encode_is_not_flagged` —— 3.0 Mbps 的正常压制不误伤
+- `test_missing_evidence_never_judges` —— 片长/体积/分辨率任一未知都不判
+- `test_single_sided_sentinel_does_not_catch_the_twin_movie_case` —— 边界 1
+- `test_runtime_counter_evidence_is_movie_only` —— 边界 2
+
+`tests/api/test_subscription_pipeline.py`：
+
+- `test_bitrate_counter_evidence_is_recorded_but_does_not_block` —— 同时钉死
+  "记录发生了"与"行为没有变"，并断言判定不进用户可见文案
+- `test_normal_sized_release_records_no_shadow_note` —— 正常发布不留记录，
+  否则统计触发率时全是噪音
 
 ---
 

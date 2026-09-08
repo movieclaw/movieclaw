@@ -32,7 +32,11 @@ from movieclaw_matcher.decision import (
     source_tier,
     upgrade_target_label,
 )
-from movieclaw_matcher.identity import match_identity, normalize_title
+from movieclaw_matcher.identity import (
+    implausible_for_runtime,
+    match_identity,
+    normalize_title,
+)
 from movieclaw_matcher.models import (
     SNAPSHOT_VERSION,
     DvPolicy,
@@ -66,6 +70,7 @@ __all__ = [
     "TorrentCandidate",
     "UpgradeSource",
     "UpgradeVerdict",
+    "implausible_for_runtime",
     "match_identity",
     "normalize_title",
     "evaluate_rules",

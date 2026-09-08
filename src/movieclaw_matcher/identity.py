@@ -248,6 +248,63 @@ def match_identity(
     return match
 
 
+# 各分辨率的"离谱下限"码率（Mbps）——**不是**典型下限，是典型下限的约 1/3。
+# 正常发布不可能踩线（1080p 的 x265 低码压制也在 1.8 Mbps 上下），踩线的基本
+# 是预告片、sample、假种，以及"片长对不上"的错配。
+#
+# ⚠ 需真实数据校准（docs/design/identity-confidence.md §10）：这几个数字是凭
+# 经验拍的，上线先走 shadow 模式只记录不生效，看过真实触发率与误报率再说。
+_BITRATE_FLOOR_MBPS = {
+    "2160p": 4.0,
+    "1080p": 1.5,
+    "1080i": 1.5,
+    "720p": 0.8,
+    "576p": 0.5,
+    "480p": 0.4,
+}
+
+
+def implied_bitrate_mbps(candidate: TorrentCandidate, runtime_minutes: int) -> float | None:
+    """体积 ÷ 片长 = 隐含码率（Mbps）。体积未知或片长非正返回 None。"""
+    if not candidate.size_bytes or runtime_minutes <= 0:
+        return None
+    return candidate.size_bytes * 8 / (runtime_minutes * 60) / 1_000_000
+
+
+def implausible_for_runtime(candidate: TorrentCandidate, media: MediaIdentity) -> str | None:
+    """体积与片长严重对不上时给一句中文说明；对得上或证据不足返回 None。
+
+    这是一条**零请求**的反证：体积、片长、分辨率全都已经在手上
+    （docs/design/identity-confidence.md §6）。
+
+    刻意只做单边、极粗的判定——码率的合理区间跨度太大（编码、片源、年代都
+    影响它），做成双边或贴近典型值的门禁必然误伤正常发布。踩到这条线的基本
+    不是"码率偏低的正规资源"，而是预告片/sample/假种这类根本不是正片的东西。
+    证据不足（片长未知、体积未知、分辨率未知）一律返回 None：不判 > 判错。
+
+    **它抓不住同名同年错配**（§0 那个 case 隐含码率约 2.7 Mbps，远在下限之上）
+    ——那需要的是"两个孪生条目谁的片长更能解释这个体积"的**相对**比较，等
+    §9 的孪生探测落地后才有第二个比较对象。本函数是那件事的算术基础。
+
+    **只对电影生效**：``runtime_minutes`` 对剧集是**单集**时长，而一个整季包的
+    体积覆盖 N 集，两者根本不可比（拿单集时长去除整季体积，算出来的"码率"会
+    虚高 N 倍）。剧集侧另有季集号做区分，不缺这条反证。
+    """
+    if media.kind != "movie" or media.runtime_minutes is None:
+        return None
+    floor = _BITRATE_FLOOR_MBPS.get(candidate.attrs.resolution or "")
+    if floor is None:
+        return None  # 分辨率未知：没有可比的基准，不判
+    bitrate = implied_bitrate_mbps(candidate, media.runtime_minutes)
+    if bitrate is None or bitrate >= floor:
+        return None
+    return (
+        f"体积与片长对不上：{candidate.size_bytes / 1024**3:.1f} GB ÷ "
+        f"{media.runtime_minutes} 分钟 ≈ {bitrate:.1f} Mbps，"
+        f"远低于 {candidate.attrs.resolution} 的合理下限"
+    )
+
+
 def _id_conflict(candidate: TorrentCandidate, media: MediaIdentity) -> str | None:
     """两边都有外部 ID 且不相等时，给一句可直接进活动流水的中文说明。
 

@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -24,6 +24,7 @@ from sqlmodel import select
 from movieclaw_db.models import (
     ActivityType,
     MediaItem,
+    MediaMetadata,
     MediaSeason,
     RuleSet,
     SiteCredential,
@@ -46,6 +47,7 @@ from movieclaw_matcher import (
     TorrentCandidate,
     candidate_ladder_rank,
     evaluate_rules,
+    implausible_for_runtime,
     match_identity,
 )
 from movieclaw_tracker.datetime_utils import DEFAULT_SITE_TIMEZONE
@@ -215,6 +217,14 @@ async def _ensure_context(
     if item is None:  # 外键保证下理论不可达
         return None
     season_titles = await load_season_titles(session, media_item_id)
+    # 片长：体积÷片长 的反证要用（§6）。冷门片 TMDB 常缺，缺了反证自动跳过
+    runtime_minutes = (
+        await session.execute(
+            select(MediaMetadata.runtime_minutes).where(
+                MediaMetadata.media_item_id == media_item_id
+            )
+        )
+    ).scalar_one_or_none()
     ctx = MediaContext(
         item=item,
         identity=MediaIdentity(
@@ -225,6 +235,7 @@ async def _ensure_context(
             douban_id=item.douban_id,
             season_numbers=(),  # 先占位，收集完工单后统一回填
             season_titles=season_titles,
+            runtime_minutes=runtime_minutes,
         ),
         subscription=subscription,
         spec=spec,
@@ -421,15 +432,9 @@ async def load_match_context(session: AsyncSession) -> dict[int, MediaContext]:
         seasons = tuple(
             sorted({s for s, _ in ctx.open_wanted} | {s for s, _ in ctx.upgrade_wanted})
         )
-        ctx.identity = MediaIdentity(
-            kind=ctx.identity.kind,
-            year=ctx.identity.year,
-            aliases=ctx.identity.aliases,
-            imdb_id=ctx.identity.imdb_id,
-            douban_id=ctx.identity.douban_id,
-            season_numbers=seasons,
-            season_titles=ctx.identity.season_titles,
-        )
+        # 用 replace 而不是逐字段重建：逐字段重建会在 MediaIdentity 长出新字段
+        # 时**静默丢掉**它（判定口径的裂缝就是这么来的），这里只改季号一项
+        ctx.identity = replace(ctx.identity, season_numbers=seasons)
     return contexts
 
 
@@ -742,6 +747,20 @@ async def evaluate_and_dispatch(
             )
             if not targets and not upgrade_targets:
                 continue
+            # 体积÷片长 反证：**shadow 模式，只记录不改变行为**
+            # （docs/design/identity-confidence.md §10.2）。阈值是凭经验拍的，
+            # 直接开成否决会误伤正常发布；先让它在真实流量上跑一段，用投递
+            # 活动 payload 里的这条记录统计触发率与误报率，再决定是否生效。
+            # 只在真的投递出去的候选上记——那正是"这条规则本会拦下什么"的
+            # 待考察样本，被规则拒掉的候选不在此列
+            shadow = implausible_for_runtime(candidate, ctx.identity)
+            if shadow:
+                logger.info(
+                    "体积反证（shadow，未生效）：%s/%s %s",
+                    candidate.site_id,
+                    candidate.torrent_id,
+                    shadow,
+                )
             done = await dispatch(
                 session,
                 subscription=ctx.subscription,
@@ -753,6 +772,7 @@ async def evaluate_and_dispatch(
                 upgrade_rows=upgrade_targets,
                 upgrade_labels=upgrade_labels,
                 match=match,
+                shadow_notes={"bitrate_reject": shadow} if shadow else None,
             )
             if done:
                 summary.dispatched_units += len(targets) + len(upgrade_targets)

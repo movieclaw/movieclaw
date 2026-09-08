@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from movieclaw_enrich.models import TorrentAttrs
 from movieclaw_matcher import MediaIdentity, TorrentCandidate, match_identity
+from movieclaw_matcher.identity import implausible_for_runtime, implied_bitrate_mbps
 
 
 def _candidate(
@@ -548,3 +549,93 @@ def test_twin_movies_same_title_same_year_are_indistinguishable_by_title(  # noq
     )
     assert match_identity(with_id, walz).confidence == "exact_id"
     assert match_identity(with_id, nolan).id_conflict is not None
+
+
+# ---------------------------------------------------------------------------
+# 体积 ÷ 片长 反证（零请求）
+# ---------------------------------------------------------------------------
+
+
+def _sized(title: str, size_gb: float, **attrs) -> TorrentCandidate:
+    c = _candidate(title, "", **attrs)
+    return TorrentCandidate(
+        site_id=c.site_id,
+        torrent_id=c.torrent_id,
+        title=c.title,
+        subtitle=c.subtitle,
+        attrs=c.attrs,
+        size_bytes=int(size_gb * 1024**3),
+    )
+
+
+def test_trailer_sized_release_is_implausible_for_a_feature_length_movie() -> None:
+    """预告片体量的"电影"：0.2 GB ÷ 120 分钟 ≈ 0.24 Mbps，远在下限之下。"""
+    candidate = _sized(
+        "Some Movie 2024 1080p WEB-DL", 0.2, media_type="movie", year=2024, resolution="1080p"
+    )
+    media = _movie(["Some Movie"], 2024, runtime_minutes=120)
+    reason = implausible_for_runtime(candidate, media)
+    assert reason is not None and "1080p" in reason
+
+
+def test_low_bitrate_x265_encode_is_not_flagged() -> None:
+    """正常的 x265 低码压制不能被误伤：2.5 GB ÷ 120 分钟 ≈ 3.0 Mbps。"""
+    candidate = _sized(
+        "Some Movie 2024 1080p WEB-DL x265", 2.5, media_type="movie", year=2024,
+        resolution="1080p",
+    )
+    media = _movie(["Some Movie"], 2024, runtime_minutes=120)
+    assert implausible_for_runtime(candidate, media) is None
+
+
+def test_missing_evidence_never_judges() -> None:
+    """片长/体积/分辨率任一未知都不判——不判优于判错。"""
+    sized = _sized(
+        "Some Movie 2024 1080p WEB-DL", 0.2, media_type="movie", year=2024, resolution="1080p"
+    )
+    assert implausible_for_runtime(sized, _movie(["Some Movie"], 2024)) is None  # 片长未知
+
+    known = _movie(["Some Movie"], 2024, runtime_minutes=120)
+    no_res = _sized("Some Movie 2024 WEB-DL", 0.2, media_type="movie", year=2024)
+    assert implausible_for_runtime(no_res, known) is None
+
+    no_size = _candidate(
+        "Some Movie 2024 1080p WEB-DL", "", media_type="movie", year=2024, resolution="1080p"
+    )
+    assert implausible_for_runtime(no_size, known) is None
+
+
+def test_single_sided_sentinel_does_not_catch_the_twin_movie_case() -> None:
+    """诚实钉死这条反证的能力边界：它**抓不住**同名同年错配。
+
+    §0 的现场——4 GB 的种子若真是 210 分钟的诺兰版，隐含码率约 2.7 Mbps，
+    低得可疑但仍在 1080p 的离谱下限之上，单边哨兵放行。要分辨这个 case 需要
+    的是**相对比较**（两个同名同年条目谁的片长更能解释这个体积），那得等
+    §9 的孪生探测提供第二个比较对象。本用例存在的意义是：日后有人想靠调高
+    这个阈值来覆盖错配时，先看到调高的代价是误伤正常发布。
+    """
+    candidate = _sized(
+        "The.Odyssey.2026.1080p.AMZN.WEB-DL.DDP5.1.H.264-Group",
+        4.0,
+        media_type="movie",
+        year=2026,
+        resolution="1080p",
+    )
+    nolan = _movie(["The Odyssey"], 2026, runtime_minutes=210)
+    assert implausible_for_runtime(candidate, nolan) is None
+
+    # 但相对比较是成立的：同一个体积，88 分钟那版的隐含码率正常得多——
+    # 这正是 §9 落地后要用的判别方式
+    assert implied_bitrate_mbps(candidate, 210) < implied_bitrate_mbps(candidate, 88)
+
+
+def test_runtime_counter_evidence_is_movie_only() -> None:
+    """剧集不参与：runtime_minutes 是单集时长，拿它去除整季包体积没有意义。"""
+    pack = _sized(
+        "Test Show S01 1080p WEB-DL", 0.2, media_type="tv", year=2024, seasons=[1],
+        resolution="1080p",
+    )
+    tv = MediaIdentity(
+        kind="tv", year=2024, aliases=("Test Show",), season_numbers=(1,), runtime_minutes=45
+    )
+    assert implausible_for_runtime(pack, tv) is None

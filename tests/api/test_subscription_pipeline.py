@@ -1116,3 +1116,67 @@ async def test_dispatch_records_the_identity_evidence(db, monkeypatch) -> None:
         ).scalar_one()
         assert attempt.identity_confidence == "title_year"
         assert attempt.matched_alias == "Test Show"
+
+
+async def _set_runtime(session, sub, runtime_minutes: int) -> None:
+    """给夹具条目补片长（TMDB 假实现不带 runtime；建订阅时元数据行已建好）。"""
+    from movieclaw_db.models import MediaMetadata
+
+    row = (
+        await session.execute(
+            select(MediaMetadata).where(MediaMetadata.media_item_id == sub.media_item_id)
+        )
+    ).scalar_one()
+    row.runtime_minutes = runtime_minutes
+    await session.commit()
+
+
+async def test_bitrate_counter_evidence_is_recorded_but_does_not_block(db, monkeypatch) -> None:
+    """体积÷片长 反证走 shadow 模式：照常投递，只把判定记进投递活动 payload。
+
+    阈值是凭经验拍的，直接开成否决会误伤正常发布（identity-confidence.md §10.2）。
+    先在真实流量上攒触发率与误报率，再决定是否生效——所以这个用例同时钉死
+    两件事：**记录发生了**，且**行为没有变**。
+    """
+    async with db.session() as session:
+        service = _service(session)
+        sub = await service.create(MediaKind.MOVIE, 101)
+        await _set_runtime(session, sub, 120)
+
+        # 0.2 GB 的"1080p 电影"：隐含码率约 0.24 Mbps，预告片体量
+        row = await _insert_torrent(
+            session,
+            "tiny",
+            "Upcoming Movie 2026 1080p WEB-DL",
+            {"media_type": "movie", "year": 2026, "resolution": "1080p"},
+            size_bytes=int(0.2 * 1024**3),
+        )
+        await evaluate_and_dispatch(session, [row], source="被动匹配")
+
+        wanted = await _wanted_map(session, sub.id)
+        assert wanted[(0, 0)].status == WantedStatus.GRABBED  # 行为未变：照常投递
+        grabbed = [a for a in await _activities(session, sub.id) if a.type == "grabbed"]
+        assert len(grabbed) == 1
+        assert "bitrate_reject" in grabbed[0].payload["shadow"]
+        # shadow 判定绝不进用户可见的文案
+        assert "Mbps" not in grabbed[0].message
+
+
+async def test_normal_sized_release_records_no_shadow_note(db) -> None:
+    """正常体积的发布不留 shadow 记录——否则统计触发率时全是噪音。"""
+    async with db.session() as session:
+        service = _service(session)
+        sub = await service.create(MediaKind.MOVIE, 101)
+        await _set_runtime(session, sub, 120)
+
+        row = await _insert_torrent(
+            session,
+            "normal",
+            "Upcoming Movie 2026 1080p WEB-DL",
+            {"media_type": "movie", "year": 2026, "resolution": "1080p"},
+            size_bytes=int(6 * 1024**3),  # ≈ 7.2 Mbps，完全正常
+        )
+        await evaluate_and_dispatch(session, [row], source="被动匹配")
+
+        grabbed = [a for a in await _activities(session, sub.id) if a.type == "grabbed"]
+        assert len(grabbed) == 1 and "shadow" not in grabbed[0].payload
