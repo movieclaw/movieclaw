@@ -173,10 +173,15 @@ async def test_synthetic_chapters_get_stills_and_item_refresh_cleans_orphans(db,
     assert await chapters_mod.refresh_chapter_images(item_id) == 1
     async with db.session() as session:
         row = await session.get(LibraryFile, file_id)
-        # 合成起点 6s / 50s / 94s：94s 超出实际片长，ffmpeg 抓不到帧则没图，前两张必有
-        starts = [e["start_ms"] for e in row.chapter_images]
-        assert starts[:2] == [6000, 50000]
-        assert all(e["frame_ms"] >= e["start_ms"] for e in row.chapter_images)
+        # 合成起点 6s / 50s / 94s：94s 超出实际片长，抓不到帧就记一条墓碑
+        # （不是干脆没记录，否则补缺每一轮都会对着它重跑），前两张必有图
+        images = [e for e in row.chapter_images if "image" in e]
+        assert [e["start_ms"] for e in images][:2] == [6000, 50000]
+        assert all(e["frame_ms"] >= e["start_ms"] for e in images)
+        assert [e for e in row.chapter_images if e.get("failed")] in (
+            [],
+            [{"start_ms": 94000, "failed": True}],
+        )
     assert not orphan.exists()  # 孤儿目录（没有对应台账行）被清掉
 
 
@@ -188,7 +193,11 @@ async def test_detail_projects_chapters_without_touching_ffmpeg(db, tmp_path, mo
         {"start_ms": 0, "end_ms": 20000, "title": "Opening"},
         {"start_ms": 20000, "end_ms": None, "title": None},
     ]
-    images = [{"start_ms": 20000, "frame_ms": 22000, "image": "1/chapters/1/0000020000.jpg"}]
+    # 第 0 章抓不出来（墓碑）：详情页照旧当"这章没图"，补缺也认它已有结论
+    images = [
+        {"start_ms": 0, "failed": True},
+        {"start_ms": 20000, "frame_ms": 22000, "image": "1/chapters/1/0000020000.jpg"},
+    ]
     lib_id, item_id, file_id = await _seed(db, video, chapters=embedded, chapter_images=images)
     assets = Path(get_settings().metadata_dir) / "images" / "1" / "chapters" / "1"
     assets.mkdir(parents=True)
@@ -206,13 +215,22 @@ async def test_detail_projects_chapters_without_touching_ffmpeg(db, tmp_path, mo
     assert chapters[0].end_ms == 20000 and chapters[1].end_ms == 60000
     assert chapters[1].frame_ms == 22000 and not chapters[1].synthetic
     assert chapters[1].image_url.startswith("/images/assets/1/chapters/1/0000020000.jpg?v=")
-    # 已抓过图：不懒触发
+    # 已抓齐（有图的 + 墓碑）：不懒触发
     assert view.chapters_pending is False and scheduled == []
 
-    # 没抓过图（chapter_images=NULL）：详情页懒触发一次并告知前端轮询
+    # 没抓齐（这里是 chapter_images=NULL）：详情页懒触发一次并告知前端轮询
     async with db.session() as session:
         row = await session.get(LibraryFile, file_id)
         row.chapter_images = None
+        await session.commit()
+        view = (await get_library_item(lib_id, item_id, _ADMIN, session)).data
+    assert view.chapters_pending is True and scheduled == [item_id]
+
+    # 半成品（第 0 章既没图也没墓碑）同样懒触发——只看"抓过没有"会永远漏掉它
+    scheduled.clear()
+    async with db.session() as session:
+        row = await session.get(LibraryFile, file_id)
+        row.chapter_images = images[1:]
         await session.commit()
         view = (await get_library_item(lib_id, item_id, _ADMIN, session)).data
     assert view.chapters_pending is True and scheduled == [item_id]
@@ -268,6 +286,18 @@ async def test_job_targets_skip_done_disc_and_strm(db, tmp_path):
                 source=FileSource.SCANNED,
             ),
         ]
+        # 半成品：600s 该合成 6 张，台账里只有一张且图还不在磁盘上
+        partial = LibraryFile(
+            library_id=lib_id,
+            media_item_id=item_id,
+            file_path=str(video.parent / "e.mkv"),
+            container="mkv",
+            duration_seconds=600,
+            chapters=[],
+            chapter_images=[{"start_ms": 36000, "frame_ms": 36000, "image": "x.jpg"}],
+            source=FileSource.SCANNED,
+        )
+        extra.append(partial)
         session.add_all(extra)
         await session.commit()
         pending = await chapters_mod._job_targets(session, lib_id, force=False)
@@ -277,8 +307,151 @@ async def test_job_targets_skip_done_disc_and_strm(db, tmp_path):
                 select(LibraryFile.id).where(LibraryFile.file_path.endswith("b.mkv"))
             )
         ).scalar_one()
-    assert pending == [b_id]  # 已抓过的、原盘、strm、未识别的都不在
-    assert set(everything) == {done_id, b_id}
+    # 抓齐的、原盘、strm、未识别的都不在；没抓过的与半成品都要处理
+    assert set(pending) == {b_id, partial.id}
+    assert set(everything) == {done_id, b_id, partial.id}
+
+
+def _bare_row(tmp_path, *, chapters, chapter_images, duration=600) -> LibraryFile:
+    """只给 stills_complete 读属性用的台账行，不进数据库。"""
+    return LibraryFile(
+        id=1,
+        library_id=1,
+        media_item_id=1,
+        file_path=str(tmp_path / "a.mkv"),
+        container="mkv",
+        duration_seconds=duration,
+        chapters=chapters,
+        chapter_images=chapter_images,
+        source=FileSource.SCANNED,
+    )
+
+
+def test_stills_complete_only_counts_finished_files(tmp_path):
+    """补缺的判据是"抓齐没有"而不是"抓过没有"（设计文档 §4.5）：半成品、图丢了、
+    该有图却写成 [] 的行都要接着抓；墓碑与整体不抓图的才算齐。"""
+    assets = tmp_path / "assets"
+    embedded = [
+        {"start_ms": 0, "end_ms": 20000, "title": "Opening"},
+        {"start_ms": 20000, "end_ms": None, "title": None},
+    ]
+
+    def _image(start: int) -> dict:
+        rel = chapters_mod.image_rel_path(1, 1, start)
+        path = assets / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"jpg")
+        return {"start_ms": start, "frame_ms": start + 2000, "image": rel}
+
+    first, second = _image(0), _image(20000)
+    complete = _bare_row(tmp_path, chapters=embedded, chapter_images=[first, second])
+    assert chapters_mod.stills_complete(complete, assets)
+    # 上一轮预算耗尽写回的半成品：缺的那一章要接着抓
+    partial = _bare_row(tmp_path, chapters=embedded, chapter_images=[second])
+    assert not chapters_mod.stills_complete(partial, assets)
+    # 抓不出来的章节留了墓碑：算齐，别每轮对着它重跑
+    tombstone = _bare_row(
+        tmp_path, chapters=embedded, chapter_images=[{"start_ms": 0, "failed": True}, second]
+    )
+    assert chapters_mod.stills_complete(tombstone, assets)
+    # 章节或图没探过
+    assert not chapters_mod.stills_complete(
+        _bare_row(tmp_path, chapters=None, chapter_images=[first, second]), assets
+    )
+    assert not chapters_mod.stills_complete(
+        _bare_row(tmp_path, chapters=embedded, chapter_images=None), assets
+    )
+    # [] 的两面：该有图（600s 合成 6 张）却是空的要重来；60s 短片合成 0 张算齐
+    assert not chapters_mod.stills_complete(
+        _bare_row(tmp_path, chapters=[], chapter_images=[], duration=600), assets
+    )
+    assert chapters_mod.stills_complete(
+        _bare_row(tmp_path, chapters=[], chapter_images=[], duration=60), assets
+    )
+    # 台账有记录、图文件没了（清过资产目录、只恢复了数据库备份）：重抓
+    (assets / str(first["image"])).unlink()
+    assert not chapters_mod.stills_complete(complete, assets)
+
+
+async def test_partial_and_failed_stills_resume_next_round(db, tmp_path, monkeypatch):
+    """半成品下一轮接着抓（已有的图原样复用），图丢了会重抓，抓不出来的记墓碑
+    不再重试，force 时墓碑也重试。"""
+    video = tmp_path / "media" / "p.mkv"
+    video.parent.mkdir()
+    video.write_bytes(b"x")
+    embedded = [
+        {"start_ms": 0, "end_ms": 20000, "title": "Opening"},
+        {"start_ms": 20000, "end_ms": None, "title": None},
+    ]
+    _lib_id, item_id, file_id = await _seed(db, video, chapters=embedded)
+    assets = Path(get_settings().metadata_dir) / "images"
+    rel_first = chapters_mod.image_rel_path(item_id, file_id, 0)
+    seeded = {
+        "start_ms": 20000,
+        "frame_ms": 22000,
+        "image": chapters_mod.image_rel_path(item_id, file_id, 20000),
+    }
+    (assets / seeded["image"]).parent.mkdir(parents=True, exist_ok=True)
+    (assets / seeded["image"]).write_bytes(b"jpg")
+    async with db.session() as session:
+        row = await session.get(LibraryFile, file_id)
+        row.chapter_images = [seeded]  # 上一轮只抓到第 2 章
+        await session.commit()
+
+    seeks: list[float] = []
+    state = {"fail": False}
+
+    def _grab(_video, dest, *, seek_seconds, color):
+        seeks.append(seek_seconds)
+        if state["fail"]:
+            return None
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"jpg")
+        return int(seek_seconds * 1000) + 500
+
+    monkeypatch.setattr(chapters_mod, "video_color_for", lambda *_a, **_k: None)
+    monkeypatch.setattr(chapters_mod, "grab_chapter_still", _grab)
+
+    async with db.session() as session:
+        row = await session.get(LibraryFile, file_id)
+        assert await chapters_mod.refresh_file_chapter_images(session, row)
+        assert seeks == [15.0]  # 只补缺的那一章（第 0 章从 15s 抓）
+        assert [e["start_ms"] for e in row.chapter_images] == [0, 20000]
+        assert row.chapter_images[1] == seeded  # 已有的图原样复用
+
+        # 抓齐了：再来一次是 no-op
+        seeks.clear()
+        assert not await chapters_mod.refresh_file_chapter_images(session, row)
+        assert seeks == []
+
+        # 图文件没了：补缺重抓那一张
+        (assets / rel_first).unlink()
+        assert await chapters_mod.refresh_file_chapter_images(session, row)
+        assert seeks == [15.0]
+
+        # 这一章 ffmpeg 抓不出来：记墓碑，下一轮不再对着它重跑
+        (assets / rel_first).unlink()
+        state["fail"] = True
+        seeks.clear()
+        assert await chapters_mod.refresh_file_chapter_images(session, row)
+        assert row.chapter_images[0] == {"start_ms": 0, "failed": True}
+        seeks.clear()
+        assert not await chapters_mod.refresh_file_chapter_images(session, row)
+        assert seeks == []
+
+        # 同一个文件因为别的章节缺图再进来时，墓碑那一章也不重试
+        state["fail"] = False
+        (assets / seeded["image"]).unlink()
+        seeks.clear()
+        assert await chapters_mod.refresh_file_chapter_images(session, row)
+        assert seeks == [20.0]
+        assert row.chapter_images[0] == {"start_ms": 0, "failed": True}
+
+        # force 不认墓碑，也不认已有的图
+        seeks.clear()
+        assert await chapters_mod.refresh_file_chapter_images(session, row, force=True)
+        assert seeks == [15.0, 20.0]
+        assert all("image" in e for e in row.chapter_images)
 
 
 async def test_probe_failure_and_missing_ffmpeg_leave_row_untouched(db, tmp_path, monkeypatch):
@@ -458,13 +631,29 @@ async def test_library_job_resumes_after_restart(db, tmp_path, monkeypatch, forc
     calls: list[int] = []
     stop_after = 2  # 抓完第二个文件就"停机"
 
+    assets = Path(get_settings().metadata_dir) / "images"
+
     async def fake_refresh(session, row, *, force=False):
-        if not force and row.chapter_images is not None:
+        """抓图的替身：跳过条件与落库形态都照真的来——补缺的断点就是"抓齐没有"，
+        只写半套图（或者图不落盘）会被判成半成品、下一轮又重来。"""
+        if not force and chapters_mod.stills_complete(row, assets):
             return False
         calls.append(row.id)
         if len(calls) > stop_after:
             raise asyncio.CancelledError("模拟重启")  # 停机会直接取消执行协程
-        row.chapter_images = [{"start_ms": 0, "frame_ms": 0, "image": f"x/{row.id}.jpg"}]
+        planned, _ = chapters_mod.still_plan(
+            chapters_mod.effective_chapters(row.chapters, row.duration_seconds),
+            row.duration_seconds,
+        )
+        images = []
+        for chapter in planned:
+            rel = chapters_mod.image_rel_path(row.media_item_id, row.id, chapter.start_ms)
+            (assets / rel).parent.mkdir(parents=True, exist_ok=True)
+            (assets / rel).write_bytes(b"jpg")
+            images.append(
+                {"start_ms": chapter.start_ms, "frame_ms": chapter.start_ms, "image": rel}
+            )
+        row.chapter_images = images
         session.add(row)
         await session.commit()
         return True

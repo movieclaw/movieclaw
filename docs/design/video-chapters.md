@@ -162,7 +162,7 @@ HLS 转码不携带容器章节（Jellyfin 自己也是 `-map_chapters -1`，
 | 抽帧失败整文件作废 | 部分产物落库，超时预算内能抓几张是几张 |
 | 分辨率跟源 | 固定宽 960（§4.4） |
 | 图片路径含 mtime | 路径按 `start_ms` 命名，失效靠文件 `file_mtime_ns` 变化触发重抓 |
-| 每日计划任务 + 失败记忆文件 | 持久化 Job（§4.5），失败写 `[]` 由 force 重试 |
+| 每日计划任务 + 失败记忆文件 | 持久化 Job（§4.5），失败的章节记墓碑、由 force 重试 |
 | `ImagePath` 输出到客户端 | **省略**（服务器内部路径对客户端无意义），登记为偏离 |
 
 ## 3. 本项目现状
@@ -279,7 +279,7 @@ ffmpeg -v info -y -skip_frame nokey -ss <t> -copyts -i <file> -an -sn \
 - 单文件内串行；跨文件并发由 Job 并发数控制；与 `thumbs.py` 共享一把
   `asyncio.Semaphore(2)` 的 ffmpeg 闸，避免扫描期 CPU 被打满。
 - 失效：`chapter_images` 里记录时的 `file_mtime_ns` 不必单独存——Job 用
-  "`chapter_images IS NULL` 或 force"选目标，文件内容变更走扫描的
+  "**没抓齐**（`stills_complete` 为假）或 force"选目标，文件内容变更走扫描的
   重探测路径把 `chapters` 与 `chapter_images` 一并置 NULL。
 - **真实帧时间**：滤镜链末尾加 `showinfo`，从 stderr 解析被选中那一帧的
   `pts_time` 得到 `frame_ms`（`thumbnail` 选帧后 showinfo 只打印一行）。
@@ -294,7 +294,11 @@ ffmpeg -v info -y -skip_frame nokey -ss <t> -copyts -i <file> -an -sn \
   用户最可能去看的先有图；单条目懒触发（§4.5）再兜住点开的那一部。
 - **体积**：JPEG `-q:v 4`，960 宽一张约 60～90KB，一部片 10 张 ≈ 0.8MB，
   1000 部 ≈ 0.8GB（对照 metadata.md §289 的海报估算 2.3GB）。发版说明写明。
-- 失败（ffmpeg 缺失/超时/损坏）写 `[]` 并记中文日志，force 重试。
+- 失败（超时/损坏/编码不支持）给那一章记一条**墓碑** `{"start_ms",
+  "failed": true}` 并记中文日志：没有 `image`，消费方照旧当"这章没图"，
+  只有补缺判据认它。没有墓碑，"只跳过抓齐的"会让每一轮作业、每一次打开
+  详情页都对着同一个抓不出图的文件重跑一遍。force 时不复用墓碑，仍重试。
+  ffmpeg 整个缺失是另一回事：什么都不写（保持 NULL），装好后自动补。
 - **孤儿清理**：文件行被删除/洗版替换后，`{item}/chapters/{old_file_id}/`
   成为孤儿。Job 处理某条目时顺手删掉该条目下不再对应任何在位文件行的
   chapters 子目录；条目删除时随资产目录一起清。
@@ -307,12 +311,23 @@ ffmpeg -v info -y -skip_frame nokey -ss <t> -copyts -i <file> -an -sn \
 顺带补探（只跑 `ffprobe -show_chapters`，读容器头，毫秒级）。
 
 **场景图**：新持久化 Job `library.chapter_images`（`register_job_handler`），
-输入 `{library_id, force}`，目标 = 库内在位文件中 `chapter_images IS NULL`
+输入 `{library_id, force}`，目标 = 库内在位文件中**还没抓齐**的
 （force 时全部），`dedupe_key` 按库，低优先级，进度分子分母=文件数，
 `raise_if_cancelled` 逐文件检查、可停可续。
 
+**补缺的判据是"抓齐没有"而不是"抓过没有"**（`stills_complete`）：一个文件算
+齐，当且仅当计划抓图的每一章都有结论——图登记在台账里**且文件还在磁盘上**，
+或者留了抓不出来的墓碑；按规则整体不抓图的（没有章节、章节过密、章节过多）
+也算齐。只看 `chapter_images IS NULL` 会漏掉三种半成品，它们再也等不到补缺：
+单文件预算耗尽写回的部分产物（§4.4 明说部分产物落库，却没有"下次接着补"的
+另一半）、事后没了的图文件（清过资产目录、只恢复了数据库备份、迁移丢图）、
+以及当时该有图却写成 `[]` 的行（抓帧全失败、时长当时没探出来）。判据与抓图
+计划共用同一个 `still_plan`——两处各写一遍，迟早出现"判定没抓齐、真去抓又抓
+不出那一张"的死循环。代价是目标筛选从一条 SQL 变成取回候选行在 Python 里判
+（含一次列目录的磁盘 IO，放线程里做）。
+
 **断点**（重启/应用内更新会把 Job 退回队列、处理器整体重跑一遍）：补缺模式
-下逐文件写回台账即是检查点，重取目标时 `chapter_images IS NULL` 自然排除已
+下逐文件写回台账即是检查点，重取目标时 `stills_complete` 自然排除已
 完成的行；**force 重抓每一行都要重做，台账不再是检查点**，因此把"上一轮最后
 一个处理完的文件"记进进度的 `details.cursor`，恢复时按同一份排序跳过它之前
 的行（节流窗口内的那一两个文件会重做，抓图幂等）。进度的 `current`/`total`
@@ -335,8 +350,8 @@ ffmpeg -v info -y -skip_frame nokey -ss <t> -copyts -i <file> -an -sn \
 4. **详情页懒触发**（**不做成 Job**：用户没发起任何动作，一次次打开详情页
    却在任务中心堆出一串条目作业既是噪音、也违背 persistent-jobs.md 的"Job 只
    承载用户可感知、需要追踪的异步业务"；重启把它丢了也无妨，下次打开原地再
-   触发，已抓好的文件靠台账不会重做）：`GET /libraries/{lib}/items/{id}` 发现选中文件
-   `chapter_images IS NULL` 且库开关打开时，`asyncio.create_task(
+   触发，已抓齐的文件靠台账不会重做）：`GET /libraries/{lib}/items/{id}` 发现有在位
+   文件**没抓齐**（判据与整库作业同源）且库开关打开时，`asyncio.create_task(
    refresh_chapter_images(item_id))`，用 `_in_flight` 集合去重（与
    `trickplay.py:58` 同款）；响应里 `chapters_pending: true`，前端每 3 秒
    重拉详情、最多 20 次，图一张张补上。这是升级后第一次打开旧条目的体验

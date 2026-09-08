@@ -2150,12 +2150,16 @@ async def get_library_item(
     playback_warmup.schedule(
         media_item_id, [row for row in rows if row.state == FileState.IN_PLACE]
     )
-    # 章节场景图懒触发（docs/design/video-chapters.md §4.5）：有在位文件没抓过
-    # 图就后台抓这一个条目，前端按 chapters_pending 轮询几轮把图补上——升级后
-    # 第一次打开旧条目不用等整库作业排到它
+    # 章节场景图懒触发（docs/design/video-chapters.md §4.5）：有在位文件的图
+    # 还没抓齐就后台抓这一个条目，前端按 chapters_pending 轮询几轮把图补上——
+    # 升级后第一次打开旧条目不用等整库作业排到它。判据与整库作业同源
+    # （stills_complete）：半成品、图丢了的行在这里同样会被认出来
     chapters_pending = chapters_mod.item_pending(media_item_id)
+    chapter_assets_root = media_scrape.assets_root()
     needs_stills = any(
-        row.chapter_images is None and chapters_mod.stills_eligible(row) for row in rows
+        chapters_mod.stills_eligible(row)
+        and not chapters_mod.stills_complete(row, chapter_assets_root)
+        for row in rows
     )
     if library.extract_chapter_images and not chapters_pending:
         # 条目菜单发起的重抓是持久化 Job（重启不丢），内存里的懒触发标记看不到它

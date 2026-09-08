@@ -750,7 +750,8 @@ export function getMetadataRefreshProgress(id: number): Promise<MetadataRefreshP
 
 /**
  * 整库生成章节场景图（docs/design/video-chapters.md §4.5）：低优先级后台作业，
- * 默认只补缺，force 全部重抓。扫描结束会自动排一份，这是手动入口。
+ * 默认只补缺（跳过已经抓齐的文件），force 全部重抓。扫描结束会自动排一份，
+ * 这是手动入口。
  */
 export function startLibraryChapterImages(
   id: number,

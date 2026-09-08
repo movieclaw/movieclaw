@@ -138,12 +138,25 @@ def effective_chapters(embedded: list[dict] | None, duration_seconds: int | None
 
 
 def chapter_image_map(chapter_images: list | None) -> dict[int, dict]:
-    """``library_file.chapter_images`` → {start_ms: 元素}，供有效章节 join。"""
+    """``library_file.chapter_images`` → {start_ms: 元素}，供有效章节 join。
+
+    只给出真有图的元素：抓不出来的章节记的是墓碑（没有 ``image``），对详情页
+    与 Jellyfin 客户端来说它和"这章没图"是一回事。
+    """
     result: dict[int, dict] = {}
     for entry in chapter_images or []:
         if isinstance(entry, dict) and "start_ms" in entry and entry.get("image"):
             result[int(entry["start_ms"])] = entry
     return result
+
+
+def _previous_entries(chapter_images: list | None) -> dict[int, dict]:
+    """抓图复用用的上一轮结果：图与墓碑都要（消费方那张表只给图）。"""
+    return {
+        int(entry["start_ms"]): entry
+        for entry in chapter_images or []
+        if isinstance(entry, dict) and "start_ms" in entry
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +193,72 @@ def stills_eligible(row: LibraryFile) -> bool:
         row.state == "in_place"
         and (row.container or "") not in ("bluray", "dvd", "iso")
         and not row.file_path.lower().endswith(STRM_EXT)
+    )
+
+
+def still_plan(
+    chapters: list[Chapter], duration_seconds: int | None
+) -> tuple[list[Chapter], str | None]:
+    """真正要抓图的章节，以及整体跳过的中文原因（没跳过为 None）。
+
+    抓图流程与"补缺时判断一个文件抓齐了没"必须共用这一份判据：两处各写一遍，
+    迟早出现"判定没抓齐、真去抓又抓不出那一张"的死循环——每一轮作业都对着
+    同一批文件白跑。
+    """
+    if not chapters:
+        return [], None
+    if len(chapters) > _MAX_STILLS:
+        return [], f"有效章节 {len(chapters)} 个，超过 {_MAX_STILLS} 张上限"
+    if len(chapters) >= 2:
+        gaps = [b.start_ms - a.start_ms for a, b in zip(chapters, chapters[1:], strict=False)]
+        if sum(gaps) / len(gaps) < _MIN_AVG_GAP_MS:
+            return [], "章节平均间隔不足 1 秒"
+    if not duration_seconds:
+        return list(chapters), None
+    total_ms = duration_seconds * 1000
+    return [c for c in chapters if c.start_ms < total_ms], None
+
+
+def _image_names(image_dir: Path) -> set[str]:
+    """目录里现存的图片文件名；目录不在返回空集。一次列目录代替逐张 stat。"""
+    try:
+        return {path.name for path in image_dir.iterdir()}
+    except OSError:
+        return set()
+
+
+def stills_complete(row: LibraryFile, assets_root: Path) -> bool:
+    """这一行的章节图抓齐了没——补缺模式唯一的跳过判据（设计文档 §4.5）。
+
+    齐 = 计划抓图的每一章都有结论：图登记在台账里且文件还在磁盘上，或者留了
+    一条抓不出来的墓碑（``{"start_ms", "failed"}``）；按规则整体不抓图的
+    （没有章节、章节过密、章节过多）也算齐。章节或图任一没探过（NULL）不算齐。
+
+    只看"抓过没有"（``chapter_images IS NULL``）会漏掉三种半成品，它们再也
+    等不到补缺：单文件预算耗尽写回的部分产物、事后没了的图文件（清过资产
+    目录、只恢复了数据库备份）、以及当时该有图却写成 ``[]`` 的行。
+    """
+    if row.chapters is None or row.chapter_images is None:
+        return False
+    if row.id is None or row.media_item_id is None:
+        return True  # 没挂条目的行本来就不抓图，交给资格判断（stills_eligible）
+    planned, _ = still_plan(
+        effective_chapters(row.chapters, row.duration_seconds), row.duration_seconds
+    )
+    if not planned:
+        return True
+    images = chapter_image_map(row.chapter_images)
+    failed = {
+        int(entry["start_ms"])
+        for entry in row.chapter_images
+        if isinstance(entry, dict) and entry.get("failed") and "start_ms" in entry
+    }
+    if any(c.start_ms not in images and c.start_ms not in failed for c in planned):
+        return False
+    names = _image_names(assets_root / str(row.media_item_id) / "chapters" / str(row.id))
+    return all(
+        c.start_ms in failed or Path(str(images[c.start_ms]["image"])).name in names
+        for c in planned
     )
 
 
@@ -257,8 +336,8 @@ def extract_file_stills(
 ) -> list[dict] | None:
     """同步版：给一个文件的有效章节逐章抓图，返回 ``chapter_images`` 的元素列表。
 
-    - 已有且文件仍在的图直接复用（``force`` 重抓）；
-    - 起点 ≥ 片长的章节停止；平均间隔 <1s 或章节数超上限整体跳过；
+    - 已有且文件仍在的图、以及抓不出来的墓碑直接复用（``force`` 重抓）；
+    - 计划抓哪些章节见 ``still_plan``（越界截断、过密/过多整体跳过）；
     - 单文件预算耗尽返回已抓到的（部分产物也落库，设计文档 §4.4）；
     - 有效列表里对不上的旧图（策略调档、章节变了）当死图删掉；
     - 系统里没有 ffmpeg 返回 None：调用方保持 NULL，装好后下次自动补，
@@ -267,31 +346,29 @@ def extract_file_stills(
     result: list[dict] = []
     image_dir = assets_root / str(media_item_id) / "chapters" / str(file_id)
     keep: set[str] = set()
-    if len(chapters) == 0 or len(chapters) > _MAX_STILLS:
+    planned, skipped = still_plan(chapters, duration_seconds)
+    if skipped:
+        logger.info("%s，跳过章节场景图：%s", skipped, video)
+    if not planned:
         _delete_dead_images(image_dir, keep)
         return result
-    if len(chapters) >= 2:
-        gaps = [b.start_ms - a.start_ms for a, b in zip(chapters, chapters[1:], strict=False)]
-        if sum(gaps) / len(gaps) < _MIN_AVG_GAP_MS:
-            logger.info("章节平均间隔不足 1 秒，跳过场景图：%s", video)
-            _delete_dead_images(image_dir, keep)
-            return result
-    total_ms = duration_seconds * 1000 if duration_seconds else None
     # 色彩特征整个文件探一次就够：DOVI 配置在流的 side data 里，与抓哪一帧无关。
     # 放在预算计时之前——它是一次轻量 ffprobe，不该算进逐章抓图的预算。
     color = video_color_for(video, fallback_hdr=hdr)
     deadline = time.monotonic() + _FILE_BUDGET_SECONDS
     try:
-        for chapter in chapters:
-            if total_ms is not None and chapter.start_ms >= total_ms:
-                break
+        for chapter in planned:
             rel = image_rel_path(media_item_id, file_id, chapter.start_ms)
             dest = assets_root / rel
             previous = existing.get(chapter.start_ms)
-            if not force and previous and previous.get("image") == rel and dest.is_file():
-                result.append(previous)
-                keep.add(dest.name)
-                continue
+            if not force and previous:
+                if previous.get("failed"):
+                    result.append(previous)  # 上一轮认定抓不出来，补缺不再重试
+                    continue
+                if previous.get("image") == rel and dest.is_file():
+                    result.append(previous)
+                    keep.add(dest.name)
+                    continue
             if time.monotonic() > deadline:
                 logger.warning("章节场景图超出单文件预算，已抓到的先落库：%s", video)
                 break
@@ -308,6 +385,11 @@ def extract_file_stills(
                 logger.warning("章节抓帧超时（%s 秒）：%s @ %ss", _FFMPEG_TIMEOUT, video, seek)
                 frame_ms = None
             if frame_ms is None:
+                # 这一章抓不出来（坏帧、编码不支持、定位超时）：留一条墓碑，让
+                # 补缺判据认它"已有结论"。否则每一轮作业、每一次打开详情页都会
+                # 对着同一个文件重跑一遍同样抓不出来的命令；勾了「已有的章节也
+                # 重新生成」（force）时墓碑不复用，仍会重试。
+                result.append({"start_ms": chapter.start_ms, "failed": True})
                 continue
             result.append({"start_ms": chapter.start_ms, "frame_ms": frame_ms, "image": rel})
             keep.add(dest.name)
@@ -353,14 +435,16 @@ async def refresh_file_chapter_images(
     """给一行台账补探章节（NULL 时）并抓图，写回 ``chapter_images``。
 
     返回是否有写入。库开关由调用方判断；这里只管资格（在位/非原盘/非 strm）。
-    抓帧失败不抛：写 ``[]`` 并记日志，force 可重试；章节补探失败或 ffmpeg
-    缺失则什么都不写（保持 NULL），下次入口自动再来。
+    补缺模式只跳过**已经抓齐**的行（``stills_complete``）：半成品、图丢了的
+    行都会接着抓，已有的图原样复用。抓帧失败不抛：失败的章节记墓碑并记日志，
+    force 可重试；章节补探失败或 ffmpeg 缺失则什么都不写（保持 NULL），下次
+    入口自动再来。
     """
     from movieclaw_api.services.media_scrape import assets_root
 
     if row.id is None or row.media_item_id is None or not stills_eligible(row):
         return False
-    if not force and row.chapter_images is not None:
+    if not force and stills_complete(row, assets_root()):
         return False
     video = Path(row.file_path)
     if not await asyncio.to_thread(video.is_file):
@@ -384,7 +468,7 @@ async def refresh_file_chapter_images(
             duration_seconds=row.duration_seconds,
             hdr=row.hdr,
             assets_root=assets_root(),
-            existing=chapter_image_map(row.chapter_images),
+            existing=_previous_entries(row.chapter_images),
             force=force,
         )
     if images is None:
@@ -532,10 +616,18 @@ def chapter_job_view(job: Job | None) -> ChapterJobView | None:
 
 
 async def _job_targets(session: AsyncSession, library_id: int, *, force: bool) -> list[int]:
-    """待处理的台账行 id：在位、非原盘/strm、没抓过图（force 时全部）。
-    新入库的排前面——刚入库最可能被点开看。"""
+    """待处理的台账行 id：在位、非原盘/strm，补缺模式再去掉已经抓齐的
+    （force 时全部）。新入库的排前面——刚入库最可能被点开看。
+
+    "抓齐没有"要比对有效章节与磁盘上的图（``stills_complete``），SQL 表达不了，
+    所以把候选行取回来在 Python 里判。两处刻意的写法：整行流式分批读（几万个
+    文件的库一次性全取回来，光 chapters/chapter_images 两列 JSON 就能吃掉几百
+    MB），每批的判定放线程里做（含一次列目录的磁盘 IO，别占住事件循环）。
+    """
+    from movieclaw_api.services.media_scrape import assets_root
+
     query = (
-        select(LibraryFile.id, LibraryFile.file_path, LibraryFile.container)
+        select(LibraryFile)
         .where(
             LibraryFile.library_id == library_id,
             LibraryFile.media_item_id.is_not(None),  # type: ignore[union-attr]
@@ -543,15 +635,24 @@ async def _job_targets(session: AsyncSession, library_id: int, *, force: bool) -
         )
         .order_by(LibraryFile.created_at.desc(), LibraryFile.id.desc())
     )
-    if not force:
-        query = query.where(LibraryFile.chapter_images.is_(None))  # type: ignore[union-attr]
-    rows = (await session.execute(query)).all()
-    return [
-        int(file_id)
-        for file_id, path, container in rows
-        if (container or "") not in ("bluray", "dvd", "iso")
-        and not str(path).lower().endswith(STRM_EXT)
-    ]
+    root = assets_root()
+    targets: list[int] = []
+    result = await session.stream(query)
+    async for batch in result.scalars().partitions(500):
+        rows = [row for row in batch if row.id is not None and stills_eligible(row)]
+        if force:
+            targets.extend(int(row.id) for row in rows)  # type: ignore[arg-type]
+            continue
+        targets.extend(
+            await asyncio.to_thread(
+                lambda pending=rows: [
+                    int(row.id)  # type: ignore[arg-type]
+                    for row in pending
+                    if not stills_complete(row, root)
+                ]
+            )
+        )
+    return targets
 
 
 async def _run_targets(
@@ -564,7 +665,7 @@ async def _run_targets(
     断点都要有：
 
     - **补缺**（``force=False``）：逐文件写回台账即是检查点，重新取目标时
-      ``chapter_images IS NULL`` 自然把已完成的行排除在外；
+      ``stills_complete`` 自然把已经抓齐的行排除在外；
     - **重抓**（``force=True``）：每一行都要重做，台账不再是检查点，因此把
       "上一轮最后一个处理完的文件"记进进度的 ``details.cursor``，恢复时按
       同一份排序跳过它之前的行。进度写入有节流（1 秒），所以最多重做节流

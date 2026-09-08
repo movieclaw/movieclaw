@@ -234,10 +234,13 @@ class LibraryFile(TimestampMixin, table=True):
         sa_column=Column(_NullableJson, nullable=True),
         description="内嵌章节清单 JSON；NULL=未探测",
     )
-    # chapter_images 三态：NULL=没抓过图，[]=抓过无产物（无章节/跳过/失败）。
+    # chapter_images 三态：NULL=没抓过图，[]=抓过无产物（无章节/整体跳过）。
     #   元素 {"start_ms", "frame_ms", "image"}：start_ms 是与有效章节 join 的键，
     #   frame_ms 是图上那一帧的真实时间（只解关键帧会比章节起点晚几秒），
-    #   image 是相对资产根目录的路径 {item}/chapters/{file_id}/{start_ms}.jpg
+    #   image 是相对资产根目录的路径 {item}/chapters/{file_id}/{start_ms}.jpg。
+    #   抓不出来的章节记一条墓碑 {"start_ms", "failed": True}：没有 image，
+    #   消费方（chapter_image_map）照旧过滤掉，只有补缺判据（stills_complete）
+    #   认它——否则每一轮作业都会重跑同一个抓不出图的文件。
     chapter_images: list | None = Field(
         default=None,
         sa_column=Column(_NullableJson, nullable=True),
