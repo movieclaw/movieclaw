@@ -1,0 +1,101 @@
+2026-09-08 10:46:03 | INFO | movieclaw_db.engine | 数据库引擎已初始化：sqlite+aiosqlite:////tmp/claude-0/-home-user-movieclaw/e4fcf387-7ac0-5af1-9f57-b3315b751760/scratchpad/e2e.db
+2026-09-08 10:46:03 | INFO | movieclaw_db.migrations | 开始执行数据库迁移（upgrade head）……
+2026-09-08 10:46:03 | INFO | movieclaw_db.crypto | 从密钥文件加载加密密钥（方案 B）：/tmp/claude-0/-home-user-movieclaw/e4fcf387-7ac0-5af1-9f57-b3315b751760/scratchpad/.secret_key
+2026-09-08 10:46:03 | INFO | movieclaw_net.egress | 网络出口配置已生效：模式=env，走代理的服务=['github', 'image', 'tmdb']
+2026-09-08 10:46:03 | INFO | movieclaw_tracker.registry | Registered site: agsvpt (AGSVPT)
+2026-09-08 10:46:03 | INFO | movieclaw_tracker.registry | Registered site: audiences (观众)
+2026-09-08 10:46:03 | INFO | movieclaw_tracker.registry | Registered site: chdbits (彩虹岛)
+2026-09-08 10:46:03 | INFO | movieclaw_tracker.registry | Registered site: hdarea (高清视界 HDArea)
+2026-09-08 10:46:03 | INFO | movieclaw_tracker.registry | Registered site: hddolby (高清杜比 HDDolby)
+2026-09-08 10:46:03 | INFO | movieclaw_tracker.registry | Registered site: hdfans (HDFans)
+2026-09-08 10:46:03 | INFO | movieclaw_tracker.registry | Registered site: hdhome (高清家园)
+2026-09-08 10:46:03 | INFO | movieclaw_tracker.registry | Registered site: hdsky (HDSky)
+2026-09-08 10:46:03 | INFO | movieclaw_tracker.registry | Registered site: hdtime (HDTime)
+2026-09-08 10:46:03 | INFO | movieclaw_tracker.registry | Registered site: hdvideo (HDVIDEO)
+2026-09-08 10:46:03 | INFO | movieclaw_tracker.registry | Registered site: hhanclub (憨憨)
+2026-09-08 10:46:03 | INFO | movieclaw_tracker.registry | Registered site: keepfrds (朋友)
+2026-09-08 10:46:03 | INFO | movieclaw_tracker.registry | Registered site: agsvpt (AGSVPT)
+2026-09-08 10:46:03 | INFO | movieclaw_tracker.registry | Registered site: audiences (观众)
+2026-09-08 10:46:03 | INFO | movieclaw_tracker.registry | Registered site: chdbits (彩虹岛)
+2026-09-08 10:46:03 | INFO | movieclaw_tracker.registry | Registered site: hdarea (高清视界 HDArea)
+2026-09-08 10:46:03 | INFO | movieclaw_tracker.registry | Registered site: hddolby (高清杜比 HDDolby)
+2026-09-08 10:46:03 | INFO | movieclaw_tracker.registry | Registered site: hdfans (HDFans)
+2026-09-08 10:46:03 | INFO | movieclaw_tracker.registry | Registered site: hdhome (高清家园)
+2026-09-08 10:46:03 | INFO | movieclaw_tracker.registry | Registered site: hdsky (HDSky)
+2026-09-08 10:46:03 | INFO | movieclaw_tracker.registry | Registered site: hdtime (HDTime)
+2026-09-08 10:46:03 | INFO | movieclaw_tracker.registry | Registered site: hdvideo (HDVIDEO)
+2026-09-08 10:46:03 | INFO | movieclaw_tracker.registry | Registered site: hhanclub (憨憨)
+2026-09-08 10:46:03 | INFO | movieclaw_tracker.registry | Registered site: keepfrds (朋友)
+2026-09-08 10:46:03 | INFO | movieclaw_tracker.registry | Registered site: mteam (M-Team)
+2026-09-08 10:46:03 | INFO | movieclaw_tracker.registry | Registered site: nicept (NicePT)
+2026-09-08 10:46:03 | INFO | movieclaw_tracker.registry | Registered site: ourbits (OurBits)
+2026-09-08 10:46:03 | INFO | movieclaw_tracker.registry | Registered site: piggo (猪猪网 Piggo)
+2026-09-08 10:46:03 | INFO | movieclaw_tracker.registry | Registered site: pter (猫站)
+2026-09-08 10:46:03 | INFO | movieclaw_tracker.registry | Registered site: pthome (铂金家)
+2026-09-08 10:46:03 | INFO | movieclaw_tracker.registry | Registered site: pttime (PTTime)
+2026-09-08 10:46:03 | INFO | movieclaw_tracker.registry | Registered site: soulvoice (聆音)
+2026-09-08 10:46:03 | INFO | movieclaw_tracker.registry | Registered site: ssd (不可说)
+2026-09-08 10:46:03 | INFO | movieclaw_tracker.registry | Registered site: tjupt (北洋园)
+2026-09-08 10:46:03 | INFO | movieclaw_tracker.registry | Registered site: ttg (听听歌)
+2026-09-08 10:46:03 | INFO | movieclaw_tracker.registry | Registered site: mteam (M-Team)
+2026-09-08 10:46:03 | INFO | movieclaw_tracker.registry | Registered site: nicept (NicePT)
+2026-09-08 10:46:03 | INFO | movieclaw_tracker.registry | Registered site: ourbits (OurBits)
+2026-09-08 10:46:03 | INFO | movieclaw_tracker.registry | Registered site: piggo (猪猪网 Piggo)
+2026-09-08 10:46:03 | INFO | movieclaw_tracker.registry | Registered site: pter (猫站)
+2026-09-08 10:46:03 | INFO | movieclaw_tracker.registry | Registered site: pthome (铂金家)
+2026-09-08 10:46:03 | INFO | movieclaw_tracker.registry | Registered site: pttime (PTTime)
+2026-09-08 10:46:03 | INFO | movieclaw_tracker.registry | Registered site: soulvoice (聆音)
+2026-09-08 10:46:03 | INFO | movieclaw_tracker.registry | Registered site: ssd (不可说)
+2026-09-08 10:46:03 | INFO | movieclaw_tracker.registry | Registered site: tjupt (北洋园)
+2026-09-08 10:46:03 | INFO | movieclaw_tracker.registry | Registered site: ttg (听听歌)
+2026-09-08 10:46:03 | INFO | movieclaw_api.lifespan | 定时任务调度器已按配置关闭（SCHEDULER_ENABLED=false）
+2026-09-08 10:46:03 | INFO | movieclaw_jellyfin.udp | Jellyfin 自动发现已监听 UDP 7359
+2026-09-08 10:46:03 | INFO | movieclaw_api.jobs | 持久化任务执行器已启动：owner=worker_e3ce0be394ed464b969b44cb61e3c1b1 parallel=4
+2026-09-08 10:46:03 | INFO | movieclaw_api.library_watch | 媒体库实时监控已更新：新增 1 个、移除 0 个根路径，共监听 1 个
+2026-09-08 10:46:03 | INFO | movieclaw_api.lifespan | 应用启动完成，数据库就绪
+2026-09-08 10:46:03 | INFO | movieclaw_api.playback.hwprobe | 未检测到可用的硬件加速——需要转码的片子只能走软件转码（默认关闭，播放此类影片时会弹窗征求开启）。逐后端原因如下：Intel / AMD 显卡（VAAPI）：未检测到 /dev/dri。容器部署需要把显卡设备挂进容器——在 compose 的服务下加 `devices: ["/dev/dri:/dev/dri"]` 后重启。；Intel 核显（QSV）：未检测到 /dev/dri。容器部署需要把显卡设备挂进容器——在 compose 的服务下加 `devices: ["/dev/dri:/dev/dri"]` 后重启。；NVIDIA 显卡（NVENC）：未检测到 NVIDIA 设备节点。Docker 部署需要安装 NVIDIA Container Toolkit，并在 compose 里声明 `deploy.resources.reservations.devices` 或加 `--gpus all`。；Apple 芯片（VideoToolbox）：当前 ffmpeg 构建不含 h264_videotoolbox 编码器。这是 macOS 专有的加速方式，Linux 上不存在，属正常情况。
+2026-09-08 10:46:14 | WARNING | movieclaw_api.access | method=GET path=/api/v1/app/config status_code=401 duration_ms=2718.43 message=request completed
+2026-09-08 10:46:16 | INFO | movieclaw_api.access | method=GET path=/api/v1/appearance status_code=200 duration_ms=2.17 message=request completed
+2026-09-08 10:46:16 | INFO | movieclaw_api.access | method=GET path=/api/v1/auth/bootstrap status_code=200 duration_ms=3.23 message=request completed
+2026-09-08 10:46:16 | WARNING | movieclaw_api.access | method=GET path=/api/v1/auth/me status_code=401 duration_ms=1.16 message=request completed
+2026-09-08 10:46:17 | INFO | movieclaw_api.auth | 管理员 admin 登录成功
+2026-09-08 10:46:17 | INFO | movieclaw_api.access | method=POST path=/api/v1/auth/login status_code=200 duration_ms=83.32 message=request completed
+2026-09-08 10:46:18 | INFO | movieclaw_api.access | method=GET path=/api/v1/auth/bootstrap status_code=200 duration_ms=2.52 message=request completed
+2026-09-08 10:46:18 | INFO | movieclaw_api.access | method=GET path=/api/v1/auth/bootstrap status_code=200 duration_ms=3.49 message=request completed
+2026-09-08 10:46:18 | INFO | movieclaw_api.access | method=GET path=/api/v1/auth/me status_code=200 duration_ms=1.26 message=request completed
+2026-09-08 10:46:19 | INFO | movieclaw_api.access | method=GET path=/api/v1/playback/items/1 status_code=200 duration_ms=17.73 message=request completed
+2026-09-08 10:46:19 | INFO | movieclaw_api.access | method=GET path=/api/v1/playback/items/1 status_code=200 duration_ms=9.83 message=request completed
+2026-09-08 10:46:19 | INFO | movieclaw_api.playback | 播放会话就绪：档 0 直出 · 决策 12 毫秒（file_id=1）
+2026-09-08 10:46:19 | INFO | movieclaw_api.access | method=POST path=/api/v1/playback/sessions status_code=200 duration_ms=22.65 message=request completed
+2026-09-08 10:46:19 | INFO | movieclaw_api.access | method=GET path=/api/v1/playback/files/1/stream status_code=206 duration_ms=16.48 message=request completed
+2026-09-08 10:46:19 | INFO | movieclaw_playback.streaming | 客户端已断开视频流，停止继续读取（本响应已读取 7340032 字节）
+2026-09-08 10:46:19 | INFO | movieclaw_api.access | method=GET path=/api/v1/playback/files/1/stream status_code=206 duration_ms=4.56 message=request completed
+2026-09-08 10:46:19 | INFO | movieclaw_api.access | method=GET path=/api/v1/playback/files/1/stream status_code=206 duration_ms=5.09 message=request completed
+2026-09-08 10:46:19 | INFO | movieclaw_api.access | method=POST path=/api/v1/playback/progress status_code=200 duration_ms=21.81 message=request completed
+2026-09-08 10:46:19 | INFO | movieclaw_api.access | method=POST path=/api/v1/playback/progress status_code=200 duration_ms=13.47 message=request completed
+2026-09-08 10:46:20 | INFO | movieclaw_api.access | method=GET path=/api/v1/playback/files/1/trickplay status_code=200 duration_ms=4.95 message=request completed
+2026-09-08 10:46:22 | INFO | movieclaw_api.access | method=POST path=/api/v1/playback/progress status_code=200 duration_ms=17.67 message=request completed
+2026-09-08 10:46:24 | INFO | movieclaw_api.access | method=POST path=/api/v1/playback/progress status_code=200 duration_ms=15.86 message=request completed
+2026-09-08 10:46:24 | INFO | movieclaw_api.access | method=POST path=/api/v1/playback/progress status_code=200 duration_ms=15.24 message=request completed
+2026-09-08 10:46:24 | INFO | movieclaw_api.access | method=POST path=/api/v1/playback/progress status_code=200 duration_ms=11.40 message=request completed
+2026-09-08 10:46:24 | INFO | movieclaw_api.access | method=POST path=/api/v1/playback/progress status_code=200 duration_ms=11.29 message=request completed
+2026-09-08 10:46:25 | INFO | movieclaw_api.access | method=POST path=/api/v1/playback/progress status_code=200 duration_ms=12.75 message=request completed
+2026-09-08 10:46:25 | INFO | movieclaw_api.access | method=POST path=/api/v1/playback/progress status_code=200 duration_ms=11.02 message=request completed
+2026-09-08 10:46:25 | INFO | movieclaw_api.access | method=POST path=/api/v1/playback/progress status_code=200 duration_ms=13.84 message=request completed
+2026-09-08 10:46:27 | INFO | movieclaw_api.access | method=POST path=/api/v1/playback/progress status_code=200 duration_ms=15.46 message=request completed
+2026-09-08 10:46:52 | INFO | movieclaw_api.access | method=GET path=/api/v1/appearance status_code=200 duration_ms=1.55 message=request completed
+2026-09-08 10:46:52 | INFO | movieclaw_api.access | method=GET path=/api/v1/auth/bootstrap status_code=200 duration_ms=2.85 message=request completed
+2026-09-08 10:46:53 | WARNING | movieclaw_api.access | method=GET path=/api/v1/auth/me status_code=401 duration_ms=0.88 message=request completed
+2026-09-08 10:46:53 | INFO | movieclaw_api.auth | 管理员 admin 登录成功
+2026-09-08 10:46:53 | INFO | movieclaw_api.access | method=POST path=/api/v1/auth/login status_code=200 duration_ms=68.09 message=request completed
+2026-09-08 10:46:55 | INFO | movieclaw_api.access | method=GET path=/api/v1/auth/bootstrap status_code=200 duration_ms=3.11 message=request completed
+2026-09-08 10:46:55 | INFO | movieclaw_api.access | method=GET path=/api/v1/auth/bootstrap status_code=200 duration_ms=3.22 message=request completed
+2026-09-08 10:46:55 | INFO | movieclaw_api.access | method=GET path=/api/v1/auth/me status_code=200 duration_ms=1.03 message=request completed
+2026-09-08 10:46:55 | INFO | movieclaw_api.access | method=GET path=/api/v1/playback/items/1 status_code=200 duration_ms=8.79 message=request completed
+2026-09-08 10:46:55 | INFO | movieclaw_api.access | method=GET path=/api/v1/playback/items/1 status_code=200 duration_ms=5.50 message=request completed
+2026-09-08 10:46:55 | INFO | movieclaw_api.playback | 播放会话就绪：档 0 直出 · 决策 5 毫秒（file_id=1）
+2026-09-08 10:46:55 | INFO | movieclaw_api.access | method=POST path=/api/v1/playback/sessions status_code=200 duration_ms=9.72 message=request completed
+2026-09-08 10:46:55 | INFO | movieclaw_api.access | method=GET path=/api/v1/playback/files/1/stream status_code=206 duration_ms=4.49 message=request completed
+2026-09-08 10:46:56 | INFO | movieclaw_api.access | method=GET path=/api/v1/playback/files/1/stream status_code=206 duration_ms=4.81 message=request completed
+2026-09-08 10:46:56 | INFO | movieclaw_api.access | method=POST path=/api/v1/playback/progress status_code=200 duration_ms=12.37 message=request completed
+2026-09-08 10:46:56 | INFO | movieclaw_api.access | method=GET path=/api/v1/playback/files/1/trickplay status_code=200 duration_ms=4.38 message=request completed

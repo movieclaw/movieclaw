@@ -345,6 +345,11 @@ class HlsEngine implements PlaybackEngine {
       // 前向缓冲拉到 60 秒（hls.js 默认 30）：局域网抢先缓、弱网抗抖动都
       // 受益。服务端 readrate 1.5 倍限速决定了缓冲天然追不过这个数太多。
       maxBufferLength: 60,
+      // 上限跟着一起钉死（jellyfin-web 同样两个都设）。只设前一个的话
+      // hls.js 仍会在码率低时把目标一路涨到默认的 600 秒——而我们刚把
+      // 回退缓冲放宽到 180 秒，前后加起来就是十几分钟的解码数据挂在
+      // SourceBuffer 里，长片正好撞上那条「放到一半标签页没了」。
+      maxMaxBufferLength: 60,
       // 转码会话的 playlist 是 EVENT 类型、只增不改，边转边给。低延迟模式
       // 的那套 part 级请求在这里没有意义，只会多打服务端。
       lowLatencyMode: false,
