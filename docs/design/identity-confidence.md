@@ -87,7 +87,7 @@
 | **P0** | 修正后的反向对账 + 错种拉黑 ✅**已实现** | **bug 修复** | 小 | 无 |
 | **P1** | 反向 ID 否决 + 置信度贯穿 ✅**已实现** | 地基 | 小 | 无 |
 | **P2** | 隐含码率反证（下载前） ✅**已实现（shadow）** | 增强 | 小 | P1 |
-| **P3** | 投递前详情页复核（含 file_list 预检） | 主力 | 中 | P1 |
+| **P3** | 投递前详情页复核 ✅**已实现**（file_list 预检另计，见 §7.6） | 主力 | 中 | P1 |
 | **P4** | 入库时长体检 | 兜底 | 中 | P1 |
 | **P5** | 同名同年歧义（按需探测） | 增强 | 中 | P1/P2/P3 |
 
@@ -405,14 +405,17 @@ payload 的 `shadow` 键 + 一条 INFO 日志，**不改变任何行为**、不�
 - 成本可忽略：投递本身是稀有事件（不是每个种子都查），而且**下一步本来就要向
   同一个站点发请求取 .torrent**。
 
-### 7.3 顺带买到的：电影内容预检
+### 7.3 只对电影（落地时收紧的一条）
 
-`TorrentDetail.file_list`（`nexusphp.py:111`）是这次请求白送的。
+初稿没限定类型。实现时收紧为**只对电影**，理由是收益与成本的分布正好相反：
 
-`_verify_content`（`download_progress.py:1170`）现在对电影是第一行直接 `return`
-——**电影根本没有内容核验**，而电影恰恰是唯一会撞同名同年的类型（剧集还有季集
-号兜底）。有了 file_list，电影侧的核验能做，而且是在**下载前**：文件数量异常
-（一个"电影"里 20 个文件）、单文件体积占比异常、混着 sample/预告目录。
+- **收益集中在电影**：同名同年撞车是电影独有的问题，剧集另有季集号做区分；
+- **成本集中在剧集**：追新是一集一次投递，一季就是几十次多余的详情页请求。
+  "对 PT 站克制"是本项目的铁律（`matching.py` 的洗版调度注释里写着同一句），
+  不该为剧集侧几乎用不上的收益去换这个量级的请求。
+
+判据收口在 `identity_recheck.py::needs_external_id_recheck`：条目有外部 ID、
+候选还没有、且是电影，三条同时满足才花这次请求。
 
 ### 7.4 裁决表
 
@@ -425,14 +428,32 @@ payload 的 `shadow` 键 + 一条 INFO 日志，**不改变任何行为**、不�
 
 回填的 ID 落进 `site_torrent`，全局受益——被动匹配下次遇到同一行直接走信号一。
 
-### 7.5 验收标准
+### 7.5 验收标准（已落地）
 
-```
-1. 详情页返回 tt111、条目 tt222 → 断言否决、不投递、活动文案含双方 ID
-2. 详情页返回 tt222 == 条目 → 断言投递发生且 attempt.identity_confidence=="exact_id"
-3. 详情页请求抛异常 → 断言仍按原逻辑投递（不阻断）
-4. 复核后 site_torrent.imdb_id 已回填 → 断言下一轮匹配不再重复拉详情页
-```
+`tests/api/test_subscription_pipeline.py`，覆盖裁决表的每一行：
+
+- `test_pre_dispatch_recheck_blocks_a_torrent_the_site_says_is_another_film` ——
+  §0 错配的正面拦截：片名年份区分不了，站点详情页的 IMDb 可以
+- `test_pre_dispatch_recheck_confirms_and_upgrades_the_evidence` —— 一致时照常
+  投递、台账记 `exact_id`、ID 已回填进 `site_torrent`
+- `test_pre_dispatch_recheck_passes_when_the_site_has_no_id` —— 站点没标就当没
+  这条证据，不能因为查不到就不下
+- `test_pre_dispatch_recheck_never_blocks_on_a_site_failure` —— 请求失败一律放行
+- `test_pre_dispatch_recheck_spares_tv_and_id_less_items` —— 剧集与无 ID 条目
+  根本不花这次请求（断言详情页一次都没被调用）
+
+### 7.6 file_list 预检：本期不做
+
+初稿把它算作 P3 "顺带买到"的部分——`TorrentDetail.file_list` 确实是这次请求白
+送的，而 `_verify_content`（`download_progress.py:1170`）对电影是第一行直接
+`return`，电影侧至今没有任何内容核验。
+
+但它**不是顺带就能做完的**：文件数量异常、单文件体积占比、sample/预告目录，
+每一条都是需要阈值的启发式，都得像 P2 那样先跑一段 shadow 才敢生效。把它和 ID
+复核绑在一起，只会让真正能拦住错配的那部分一起等。
+
+拆出来单做，做的时候沿用 §10 的灰度纪律。ID 复核已经落地，届时再拉一次详情页
+的成本也只是"回填时顺手多存一个 file_list"，不构成阻碍。
 
 ---
 

@@ -1180,3 +1180,165 @@ async def test_normal_sized_release_records_no_shadow_note(db) -> None:
 
         grabbed = [a for a in await _activities(session, sub.id) if a.type == "grabbed"]
         assert len(grabbed) == 1 and "shadow" not in grabbed[0].payload
+
+
+# ---------------------------------------------------------------------------
+# 投递前的外部 ID 复核（identity-confidence.md §7）
+# ---------------------------------------------------------------------------
+
+
+def _fake_detail(monkeypatch, *, imdb_id=None, douban_id=None, calls=None, boom=False):
+    """替掉「按站点取已认证客户端 → 拉详情页」这一步，不连真实站点。"""
+    from movieclaw_api.services.subscription import identity_recheck as mod
+
+    class _Site:
+        async def get_torrent_detail(self, target):
+            if calls is not None:
+                calls.append(target)
+            if boom:
+                raise RuntimeError("站点超时")
+            return SimpleNamespace(imdb_id=imdb_id, douban_id=douban_id)
+
+    class _Access:
+        async def get(self, site_id):
+            return _Site()
+
+    monkeypatch.setattr(mod, "get_site_access", lambda: _Access(), raising=False)
+    import movieclaw_api.services.site_access as access_mod
+
+    monkeypatch.setattr(access_mod, "get_site_access", lambda: _Access())
+
+
+async def _movie_sub_with_imdb(session, imdb_id: str):
+    sub = await _service(session).create(MediaKind.MOVIE, 101)
+    await _set_item_imdb(session, sub, imdb_id)
+    return sub
+
+
+async def test_pre_dispatch_recheck_blocks_a_torrent_the_site_says_is_another_film(
+    db, monkeypatch
+) -> None:
+    """站点详情页标的 IMDb 和条目不符 → 不投递，理由写明双方编号。
+
+    这是 §0 那个错配的正面拦截：两部片同名同年，片名和年份都区分不了，但站点
+    详情页上的 IMDb 编号可以。
+    """
+    _fake_detail(monkeypatch, imdb_id="tt3559656")
+    async with db.session() as session:
+        sub = await _movie_sub_with_imdb(session, "tt32138219")
+        row = await _insert_torrent(
+            session,
+            "twin",
+            "Upcoming Movie 2026 1080p WEB-DL",
+            {"media_type": "movie", "year": 2026, "resolution": "1080p"},
+        )
+        await evaluate_and_dispatch(session, [row], source="被动匹配")
+
+        wanted = await _wanted_map(session, sub.id)
+        assert wanted[(0, 0)].status == WantedStatus.WANTED  # 没投出去
+        rejected = [a for a in await _activities(session, sub.id) if a.type == "match_rejected"]
+        assert len(rejected) == 1
+        assert "tt3559656" in rejected[0].message and "tt32138219" in rejected[0].message
+
+
+async def test_pre_dispatch_recheck_confirms_and_upgrades_the_evidence(db, monkeypatch) -> None:
+    """详情页 IMDb 与条目一致 → 照常投递，且台账记成 exact_id；ID 回填种子索引。"""
+    from importlib import import_module
+
+    dispatch_mod = import_module("movieclaw_api.services.subscription.dispatch")
+    monkeypatch.setenv("SUBSCRIPTION_DISPATCH_DRY_RUN", "false")
+    get_settings.cache_clear()
+
+    async def submit(*args, **kwargs):
+        return (
+            SubmitResult(info_hash="d" * 40, name="Upcoming Movie", already_exists=False),
+            SimpleNamespace(id=None),
+        )
+
+    monkeypatch.setattr(dispatch_mod, "_submit_real", submit)
+    _fake_detail(monkeypatch, imdb_id="tt32138219")
+    async with db.session() as session:
+        sub = await _movie_sub_with_imdb(session, "tt32138219")
+        row = await _insert_torrent(
+            session,
+            "confirmed",
+            "Upcoming Movie 2026 1080p WEB-DL",
+            {"media_type": "movie", "year": 2026, "resolution": "1080p"},
+        )
+        await evaluate_and_dispatch(session, [row], source="被动匹配")
+
+        wanted = await _wanted_map(session, sub.id)
+        assert wanted[(0, 0)].status == WantedStatus.GRABBED
+        attempt = (
+            await session.execute(
+                select(SubscriptionDownloadAttempt).where(
+                    SubscriptionDownloadAttempt.subscription_id == sub.id
+                )
+            )
+        ).scalar_one()
+        assert attempt.identity_confidence == "exact_id"
+        # 回填是关键：被动匹配下次遇到同一行直接走信号一，不必再拉详情页
+        refreshed = await session.get(SiteTorrent, row.id)
+        assert refreshed.imdb_id == "tt32138219"
+
+
+async def test_pre_dispatch_recheck_passes_when_the_site_has_no_id(db, monkeypatch) -> None:
+    """站点没标 IMDb：当作没有这条证据，照常投递（不能因为查不到就不下）。"""
+    _fake_detail(monkeypatch, imdb_id=None)
+    async with db.session() as session:
+        sub = await _movie_sub_with_imdb(session, "tt32138219")
+        row = await _insert_torrent(
+            session,
+            "noid",
+            "Upcoming Movie 2026 1080p WEB-DL",
+            {"media_type": "movie", "year": 2026, "resolution": "1080p"},
+        )
+        await evaluate_and_dispatch(session, [row], source="被动匹配")
+
+        assert (await _wanted_map(session, sub.id))[(0, 0)].status == WantedStatus.GRABBED
+
+
+async def test_pre_dispatch_recheck_never_blocks_on_a_site_failure(db, monkeypatch) -> None:
+    """详情页请求失败一律放行——绝不让一次网络抖动卡死投递。"""
+    _fake_detail(monkeypatch, boom=True)
+    async with db.session() as session:
+        sub = await _movie_sub_with_imdb(session, "tt32138219")
+        row = await _insert_torrent(
+            session,
+            "boom",
+            "Upcoming Movie 2026 1080p WEB-DL",
+            {"media_type": "movie", "year": 2026, "resolution": "1080p"},
+        )
+        await evaluate_and_dispatch(session, [row], source="被动匹配")
+
+        assert (await _wanted_map(session, sub.id))[(0, 0)].status == WantedStatus.GRABBED
+
+
+async def test_pre_dispatch_recheck_spares_tv_and_id_less_items(db, monkeypatch) -> None:
+    """两种情况不花这次请求：剧集（成本集中在这、收益几乎没有）、条目自己没 ID。"""
+    calls: list = []
+    _fake_detail(monkeypatch, imdb_id="tt999", calls=calls)
+    async with db.session() as session:
+        # 剧集：条目有 IMDb 也不复核
+        tv = await _service(session).create(MediaKind.TV, 200, selected_seasons=[1])
+        await _set_item_imdb(session, tv, "tt32138219")
+        pack = await _insert_torrent(
+            session,
+            "tvpack",
+            "Test Show S01 2160p WEB-DL",
+            {"media_type": "tv", "year": 2025, "seasons": [1], "resolution": "2160p"},
+        )
+        await evaluate_and_dispatch(session, [pack], source="被动匹配")
+        assert calls == []
+
+        # 电影但条目没有外部 ID：拿回来也没得比，同样不花
+        movie = await _service(session).create(MediaKind.MOVIE, 103)
+        row = await _insert_torrent(
+            session,
+            "noimdbitem",
+            "Undated Movie 1080p WEB-DL",
+            {"media_type": "movie", "resolution": "1080p"},
+        )
+        await evaluate_and_dispatch(session, [row], source="被动匹配")
+        assert calls == []
+        assert movie is not None

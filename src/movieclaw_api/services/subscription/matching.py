@@ -21,6 +21,10 @@ from zoneinfo import ZoneInfo
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
+from movieclaw_api.services.subscription.identity_recheck import (
+    fetch_external_ids,
+    needs_external_id_recheck,
+)
 from movieclaw_db.models import (
     ActivityType,
     MediaItem,
@@ -489,6 +493,18 @@ def _id_conflict_verdict(match: IdentityMatch) -> RuleVerdict:
     )
 
 
+def _recheck_mismatch_verdict(candidate: TorrentCandidate) -> RuleVerdict:
+    """复核取回 ID 后连身份都不成立了——理论上不可达（片名年份没变），但
+    真出现说明这个候选的证据自相矛盾，按拒绝处理并留痕。"""
+    return RuleVerdict(
+        accepted=False,
+        reason_code="identity_recheck_failed",
+        reason_text=(
+            f"投递前复核后无法确认「{candidate.title[:60]}」属于本条目，已跳过"
+        ),
+    )
+
+
 # 身份证据强度的选优次序：ID 佐证过的候选永远优先于只靠片名+年份蒙的。
 # 缺了这一档，一个"只靠片名蒙的、做种数多"的候选会赢过"IMDb 精确命中、
 # 做种数少"的候选——正是同名同年错配能走到投递的原因之一。
@@ -747,6 +763,30 @@ async def evaluate_and_dispatch(
             )
             if not targets and not upgrade_targets:
                 continue
+            # 投递前的外部 ID 复核（§7）：站点详情页几乎都标了 IMDb，而我们
+            # 从来没读过。位置放在这里是刻意的——只为**真的要投出去**的候选
+            # 花这一次请求（下一步本来就要向同站取种），被规则拒掉的、被更优
+            # 候选顶掉的都不花
+            if needs_external_id_recheck(candidate, ctx.identity):
+                enriched = await fetch_external_ids(session, candidate)
+                if enriched is not candidate:
+                    rechecked = match_identity(enriched, ctx.identity)
+                    if rechecked is None or rechecked.id_conflict:
+                        summary.rejected += 1
+                        await _log_rejection(
+                            repo,
+                            ctx,
+                            enriched,
+                            targets or upgrade_targets,
+                            _id_conflict_verdict(rechecked)
+                            if rechecked is not None
+                            else _recheck_mismatch_verdict(enriched),
+                            source,
+                        )
+                        continue
+                    # 证据变强了：候选与判定一起换成复核后的版本，投递台账
+                    # 记下的就是 exact_id
+                    candidate, match = enriched, rechecked
             # 体积÷片长 反证：**shadow 模式，只记录不改变行为**
             # （docs/design/identity-confidence.md §10.2）。阈值是凭经验拍的，
             # 直接开成否决会误伤正常发布；先让它在真实流量上跑一段，用投递
