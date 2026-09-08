@@ -253,6 +253,14 @@ export function PlayerControls(props: PlayerControlsProps) {
   // 拖动中的本地值：直接跟 positionMs 会被 timeupdate 反复拉回去，手感是
   // 滑块「粘手」——松手才提交是进度条唯一能用的做法
   const [dragging, setDragging] = useState<number | null>(null);
+  // 片长转为未知（换会话的空档里 durationMs 会短暂变 null）会让下面的 input
+  // 变成 disabled，而 disabled 的元素**不再收到 pointerup/pointercancel**——
+  // 正拖着的那次手势就此没了收尾，dragging 会永远钉在最后一个拖动值上：
+  // 进度条和时间读数从此不跟画面走，画面照常播，两处读数各说各话
+  // （2026-09-08 反馈）。片长一没就地清掉，退回 positionMs 这个真值。
+  useEffect(() => {
+    if (!durationMs) setDragging(null);
+  }, [durationMs]);
   const [menu, setMenu] = useState<"none" | "audio" | "subtitles" | "settings">("none");
   // 悬停预览的位置（文件毫秒 + 进度条内的像素横坐标）。null = 没在悬停
   const [hover, setHover] = useState<{ ms: number; x: number } | null>(null);

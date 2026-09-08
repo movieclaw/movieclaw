@@ -2026,6 +2026,11 @@ export function VideoPlayer(props: VideoPlayerProps) {
     if (!video) return;
     const onTouchStart = (event: TouchEvent) => {
       if (event.touches.length !== 1) {
+        // 第二根手指落下 = 这次手势作废。作废之后 `finishGesture` 拿到的
+        // gesture 是 null，**不会再走到 hideSeekPreview**，而落点胶囊没有
+        // 自动退场计时——留着它就是画面正中钉死一个旧落点，进度条却跟着
+        // 画面继续往前走，两个读数各说各话（2026-09-08 真机反馈）。
+        if (swipeGestureRef.current?.intent === "horizontal") hideSeekPreview();
         swipeGestureRef.current = null;
         return;
       }
@@ -2148,6 +2153,11 @@ export function VideoPlayer(props: VideoPlayerProps) {
       video.removeEventListener("touchmove", onTouchMove);
       video.removeEventListener("touchend", onTouchEnd);
       video.removeEventListener("touchcancel", onTouchCancel);
+      // 换 video 元素（或组件卸载）时手势就此断掉，touchend 再也不会来：
+      // 与上面第二根手指同一条理由，胶囊必须在这里一起收走，否则它会一直
+      // 挂着一个旧落点。手势本身也作废——不提交没抬手确认过的落点。
+      if (swipeGestureRef.current?.intent === "horizontal") hideSeekPreview();
+      swipeGestureRef.current = null;
     };
   }, [video, flashAdjust, showSeekPreview, hideSeekPreview]);
 
@@ -2220,6 +2230,21 @@ export function VideoPlayer(props: VideoPlayerProps) {
     state.phase !== "error" &&
     state.phase !== "consent" &&
     positionMs > 0;
+
+  /**
+   * 底部进度条与时间读数显示的位置。
+   *
+   * 横滑拖进度时跟着**落点**走，而不是跟着还在播的画面走：手势期间画面照常
+   * 播，进度条要是继续跟画面，屏幕上就同时挂着两个各说各话的读数——正中的
+   * 胶囊报 9:58、底下的进度条停在 19:00，用户根本不知道松手会落到哪儿
+   * （2026-09-08 真机反馈）。语义与进度条自身的拖拽一致：拖动中显示落点，
+   * 松手才是真值。
+   *
+   * 淡出阶段（leaving）交还给 positionMs：提交那条路 seek 已经把 positionMs
+   * 带到落点（读数不会跳），取消那条路本来就该弹回真实位置。
+   */
+  const shownPositionMs =
+    seekPreview && !seekPreview.leaving ? seekPreview.targetMs : positionMs;
 
   return (
     <div
@@ -2635,7 +2660,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
             </div>
           ) : null}
           <PlayerControls
-            positionMs={positionMs}
+            positionMs={shownPositionMs}
             durationMs={durationMs}
             bufferedEndMs={bufferedEndMs}
             chromeVisible={chromeVisible}
