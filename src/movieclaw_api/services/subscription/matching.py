@@ -763,6 +763,11 @@ async def evaluate_and_dispatch(
         )
         remaining = dict(ctx.open_wanted)
         remaining_upgrade = dict(ctx.upgrade_wanted)
+        # 同名同年歧义每轮**最多问一次**：一部热门片一批能有几十个候选，逐个
+        # 问等于给用户刷屏几十条"这个是不是你要的片"。候选已按证据强度与评分
+        # 排好序，问最靠前的那个就够；后续候选照常评估（其中若有带影片编号的，
+        # 它能自动裁决出结果，比问用户更好），只是不再重复发问
+        asked_once = False
         for candidate, match, verdict, _rank in entries:
             published = publish_calendar_date(candidate.publish_time)
             targets = drop_proven_missing(
@@ -811,7 +816,9 @@ async def evaluate_and_dispatch(
                         identity=ctx.identity,
                         candidate=candidate,
                         twins=twins,
+                        may_ask=not asked_once,
                     )
+                    asked_once = asked_once or outcome == "ask"
                     summary.rejected += 1
                     await _log_rejection(
                         repo,

@@ -150,6 +150,7 @@ async def ambiguous_verdict(
     identity,
     candidate,
     twins: list[dict],
+    may_ask: bool = True,
 ) -> tuple[str, str]:
     """歧义条目遇到"只靠片名年份认出来"的候选时怎么办。
 
@@ -157,6 +158,9 @@ async def ambiguous_verdict(
 
     - ``"reject"``：有证据表明这个种子属于孪生那一部，直接否决且**不打扰用户**；
     - ``"ask"``：证据不足，停下来问用户（告警在此点亮）。
+
+    ``may_ask=False``：本轮已经为这个订阅问过一次了，判定照做、活动照记，但
+    **不再点灯**。一部热门片一批能有几十个候选，逐个点灯等于刷屏。
 
     走到这里的候选一定**没有外部 ID**：有的话，相等已经在信号一升格成
     ``exact_id``（不进本函数），不等已经被 §5.2 的冲突反证拦下了。所以能用的
@@ -176,13 +180,14 @@ async def ambiguous_verdict(
             f"（{other['year']}，tmdb={loser}），不像本条目"
         )
 
-    await _ask_user(
-        session,
-        subscription_id=subscription_id,
-        item=item,
-        candidate=candidate,
-        twins=twins,
-    )
+    if may_ask:
+        await _ask_user(
+            session,
+            subscription_id=subscription_id,
+            item=item,
+            candidate=candidate,
+            twins=twins,
+        )
     return "ask", "存在同名同年的另一部影片，且没有任何可区分的证据，已暂停并请你确认"
 
 

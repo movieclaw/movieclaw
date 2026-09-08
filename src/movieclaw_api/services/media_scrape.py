@@ -640,6 +640,11 @@ def _merge_identity(
         item.backdrop_path = profile.backdrop_path or item.backdrop_path
     item.aliases = merged_aliases
     item.imdb_id = item.imdb_id or profile.imdb_id
+    # 同名同年孪生的探测缓存随元数据刷新一起作废（identity-confidence.md §9）：
+    # 那个答案会过期——用户常在影片上映前就订阅，而同名的另一部可能几个月后
+    # 才进 TMDB，缓存成 [] 就再也发现不了。挂在既有的刷新节奏上重新探，
+    # 不必为它单独维护时间戳或回填任务
+    item.identity_twins = None
 
 
 async def apply_people_credits(

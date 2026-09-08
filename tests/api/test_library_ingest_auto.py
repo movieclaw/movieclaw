@@ -425,3 +425,82 @@ async def test_subscription_claimed_movie_records_runtime_doubt(db, tmp_path, mo
     }
     # 身份来源同时分了档：只有片名+年份的投递记 guess，供体检定位目标
     assert files[0].identity_source == "subscription_guess"
+
+
+@pytest.mark.asyncio
+async def test_extras_in_a_movie_folder_are_not_flagged(db, tmp_path, monkeypatch):
+    """只体检主视频：电影目录里的花絮/预告时长天生对不上正片，逐个判就是噪音源。"""
+    from movieclaw_db.models import RuleSet, Subscription, WantedItem, WantedStatus
+    from movieclaw_downloader import TorrentBrief
+
+    movie_root, watch = tmp_path / "movie3", tmp_path / "watch3"
+    watch.mkdir()
+    lib_id = await _make_library(db, name="电影库", root=movie_root, kind="movie")
+    item = await _make_item(db, title="某电影", year=2026, genre_ids=[], kind="movie")
+    async with db.session() as session:
+        meta = (
+            await session.execute(
+                select(MediaMetadata).where(MediaMetadata.media_item_id == item.id)
+            )
+        ).scalar_one()
+        meta.runtime_minutes = 120
+        await session.commit()
+
+    # 正片 120 分钟（吻合），花絮 4 分钟（对不上，但不该被判）
+    def probe(path):
+        seconds = 120 * 60 if "main" in str(path) else 4 * 60
+        return SimpleNamespace(**{**vars(_FAKE_SPEC), "duration_seconds": seconds})
+
+    monkeypatch.setattr(ingest_mod, "probe_media", probe)
+
+    async def identify_none(session, kind, watch_root, main, spec):
+        return None
+
+    monkeypatch.setattr(ingest_mod, "_identify", identify_none)
+
+    async with db.session() as session:
+        rule_set = RuleSet(name="默认", spec={})
+        session.add(rule_set)
+        await session.commit()
+        await session.refresh(rule_set)
+        sub = Subscription(
+            media_item_id=item.id, kind="movie", rule_set_id=rule_set.id, library_id=lib_id
+        )
+        session.add(sub)
+        await session.commit()
+        await session.refresh(sub)
+        session.add(
+            WantedItem(
+                subscription_id=sub.id,
+                media_item_id=item.id,
+                season_number=0,
+                episode_number=0,
+                status=WantedStatus.GRABBED,
+                info_hash="hash-extras",
+            )
+        )
+        await session.commit()
+
+    brief = TorrentBrief(
+        name="Some.Movie.2026", content_name="Some.Movie.2026", completed=True,
+        info_hash="hash-extras",
+    )
+
+    async def briefs():
+        return [brief]
+
+    monkeypatch.setattr(ingest_mod, "_downloader_briefs", briefs)
+
+    entry = watch / "Some.Movie.2026"
+    entry.mkdir()
+    (entry / "main.mkv").write_bytes(b"video" * 100)  # 主视频（体积最大）
+    (entry / "featurette.mkv").write_bytes(b"v")
+
+    await ingest_mod._sweep_dir(_auto_rule(watch, "movie"), None, execute_inline=True)
+
+    async with db.session() as session:
+        files = list((await session.execute(select(LibraryFile))).scalars().all())
+    assert files, "应当有文件入库"
+    assert all(f.identity_doubt is None for f in files), (
+        f"花絮不该被判存疑：{[(f.file_path, f.identity_doubt) for f in files]}"
+    )

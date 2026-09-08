@@ -2217,10 +2217,17 @@ async def _ingest_entry(
         # 定的，直接弹告警会被导演剪辑版/加长版刷屏；先攒真实触发率与误报率。
         # 注意它**不阻断入库**——踩线更常见的原因就是版本差异，拦下来的代价
         # 大于收益，所以定位是"照常入库 + 留痕"，不是门禁
-        doubt = runtime_doubt(
-            kind=kind,
-            expected_minutes=expected_runtime,
-            duration_seconds=file_spec.duration_seconds if file_spec else None,
+        # **只体检主视频**：一个电影目录里常还躺着花絮、预告、导演访谈，它们
+        # 的时长天生就和正片对不上，逐个判等于给自己造噪音源（正是这条体检最
+        # 该避免的东西）
+        doubt = (
+            runtime_doubt(
+                kind=kind,
+                expected_minutes=expected_runtime,
+                duration_seconds=file_spec.duration_seconds if file_spec else None,
+            )
+            if file == main
+            else None
         )
         if doubt:
             logger.info(

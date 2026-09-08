@@ -1466,3 +1466,57 @@ async def test_twin_probe_is_skipped_for_tv(db, monkeypatch) -> None:
 
         assert calls == []
         assert (await _wanted_map(session, sub.id))[(1, 1)].status == WantedStatus.GRABBED
+
+
+async def test_ambiguous_movie_asks_at_most_once_per_round(db, monkeypatch) -> None:
+    """一批几十个候选时最多问一次——逐个点灯等于给用户刷屏。
+
+    候选已按证据强度与评分排序，问最靠前的那个就够；后续候选照常评估
+    （其中带影片编号的仍能自动裁决出结果），只是不再重复发问。
+    """
+    from movieclaw_db.models import SystemNotice
+
+    _fake_detail(monkeypatch, imdb_id=None)
+    _fake_twin_probe(monkeypatch, [_TWIN])
+    async with db.session() as session:
+        sub = await _movie_sub_with_imdb(session, "tt32138219")
+        await _set_runtime(session, sub, 210)
+        rows = [
+            await _insert_torrent(
+                session,
+                f"many{n}",
+                "Upcoming Movie 2026 1080p WEB-DL",
+                {"media_type": "movie", "year": 2026, "resolution": "1080p"},
+                size_bytes=int(4 * 1024**3),
+                seeders=100 - n,
+            )
+            for n in range(5)
+        ]
+        await evaluate_and_dispatch(session, rows, source="被动匹配")
+
+        notices = (await session.execute(select(SystemNotice))).scalars().all()
+        assert len(notices) == 1
+        # 每个候选仍各自留下了拒绝记录（可解释性不打折）
+        rejected = [a for a in await _activities(session, sub.id) if a.type == "match_rejected"]
+        assert len(rejected) == 5
+
+
+async def test_twin_cache_is_invalidated_by_metadata_refresh(db, monkeypatch) -> None:
+    """元数据刷新会作废孪生缓存：用户常在上映前订阅，同名的另一部可能几个月
+    后才进 TMDB，缓存成 [] 就再也发现不了。"""
+    from movieclaw_api.services.media_scrape import _merge_identity
+    from movieclaw_media.library import MediaProfile
+
+    async with db.session() as session:
+        sub = await _service(session).create(MediaKind.MOVIE, 101)
+        item = await session.get(MediaItem, sub.media_item_id)
+        item.identity_twins = []  # 上次探测：干净
+        await session.commit()
+
+        _merge_identity(
+            item,
+            MediaProfile(
+                kind="movie", tmdb_id=101, title="未上映电影", original_title="Upcoming Movie"
+            ),
+        )
+        assert item.identity_twins is None  # 回到"未探测"，下轮重新探
