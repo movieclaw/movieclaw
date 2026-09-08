@@ -77,6 +77,9 @@
   .path2 span{font-family:-apple-system,"PingFang SC",sans-serif}
   .bar-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 16px 13px;border-top:1px solid var(--line)}
   .lastused{font-size:11px;color:var(--faint)}
+  .forget{background:none;border:none;padding:0;margin:0;color:var(--accent-2);font-size:11px;cursor:pointer;text-decoration:underline;text-underline-offset:2px}
+  .forget.spot{color:var(--warn);text-decoration-color:var(--warn)}
+  .forget:focus-visible{outline:2px solid var(--info);outline-offset:2px;border-radius:3px}
   .acts{display:flex;gap:8px}
   .btn{border:1px solid var(--line-strong);background:rgba(255,255,255,.04);color:var(--text);border-radius:999px;padding:7px 15px;font-size:12.5px;cursor:pointer;white-space:nowrap}
   .btn.primary{background:var(--accent);color:#0a0b10;border-color:var(--accent);font-weight:600}
@@ -108,23 +111,6 @@
   .m-foot{display:flex;justify-content:flex-end;gap:10px;padding:12px 20px;border-top:1px solid var(--line)}
   .hint{font-size:11px;color:var(--faint);line-height:1.6;padding:2px 0 0}
   .hint a{color:var(--accent);text-decoration:none}
-
-  /* ====== 设置页表格 ====== */
-  .sec{border:1px solid var(--line);border-radius:14px;overflow:hidden;margin-top:16px}
-  .sec-h{padding:13px 15px;border-bottom:1px solid var(--line);background:rgba(255,255,255,.02)}
-  .sec-h h3{margin:0;font-size:14px}
-  .sec-h p{margin:3px 0 0;font-size:11.5px;color:var(--faint)}
-  table{width:100%;border-collapse:collapse;font-size:12.5px}
-  th{text-align:left;font-weight:500;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);padding:9px 15px;border-bottom:1px solid var(--line)}
-  td{padding:11px 15px;border-bottom:1px solid var(--line);vertical-align:top}
-  tr:last-child td{border-bottom:none}
-  td.p{font-family:var(--mono);font-size:11.5px;color:var(--muted);word-break:break-all}
-  td.n{font-variant-numeric:tabular-nums;color:var(--faint);white-space:nowrap}
-  .cat{display:inline-flex;align-items:center;gap:6px;font-weight:600}
-  .cat i{width:6px;height:6px;border-radius:50%;background:var(--accent-2);font-style:normal}
-  .lnk{background:none;border:none;color:var(--accent-2);font-size:12px;cursor:pointer;padding:0 6px 0 0}
-  .lnk.d{color:var(--danger)}
-  .tag{font-size:10.5px;border-radius:999px;padding:1px 7px;border:1px solid var(--line-strong);color:var(--muted)}
 
   /* ====== 手机框 ====== */
   .phone{flex:0 0 300px;background:var(--bg);border:1px solid var(--line-strong);border-radius:26px;padding:9px;box-shadow:0 18px 44px rgba(0,0,0,.45)}
@@ -160,7 +146,7 @@
   <button class="on" data-s="s1">确认条 · 核心</button>
   <button data-s="s2">两种边界</button>
   <button data-s="s3">完整弹窗</button>
-  <button data-s="s4">设置页</button>
+  <button data-s="s4">就地管理</button>
   <button data-s="s5">流程对照</button>
 </nav>
 
@@ -217,7 +203,7 @@
               </div>
             </div>
             <div class="bar-foot">
-              <span class="lastused">上次用过 · 2 天前</span>
+              <span class="lastused">上次用过 · 2 天前 · <button class="forget">不再记住</button></span>
               <div class="acts">
                 <button class="btn">更改</button>
                 <button class="btn primary">确认下载</button>
@@ -257,7 +243,7 @@
                 </div>
               </div>
               <div class="bar-foot">
-                <span class="lastused">上次用过 · 2 天前</span>
+                <span class="lastused">上次用过 · 2 天前 · <button class="forget">不再记住</button></span>
                 <div class="acts">
                   <button class="btn">更改</button>
                   <button class="btn primary">确认下载</button>
@@ -305,7 +291,7 @@
               </div>
             </div>
             <div class="bar-foot">
-              <span class="lastused">正在确认归宿…</span>
+              <span class="lastused">正在确认归宿… · <button class="forget">不再记住</button></span>
               <div class="acts">
                 <button class="btn">更改</button>
                 <button class="btn primary" disabled>确认下载</button>
@@ -431,7 +417,7 @@
                 <span class="radio"></span>
                 <span><span class="opt-t">下载器默认目录</span><span class="opt-n">不指定路径，由 qBittorrent 决定</span></span>
               </label>
-              <p class="hint">这次的选择会记为「电影」的默认位置，之后点下载先给你确认一次。可在 <a href="#">设置 → 下载器</a> 查看和修改。</p>
+              <p class="hint">这次的选择会记为「电影」的默认位置，之后点下载先给你确认一次——随时可以改，或在确认条上「不再记住」。</p>
             </div>
             <div class="m-foot">
               <button class="btn">取消</button>
@@ -444,72 +430,82 @@
   </div>
 </section>
 
-<!-- ══════════════ 4. 设置页 ══════════════ -->
+<!-- ══════════════ 4. 就地管理 ══════════════ -->
 <section class="screen" id="s4">
-  <p class="note"><b>记忆看得见、可编辑、可删除</b>——现在它藏在 localStorage 里，用户既看不到也删不掉，只能靠「再下一次并取消勾选」来清。
-  这里列出的是<b>当前登录者自己的</b>记忆：数据按成员隔离（<code>member_id</code> 哨兵，0=超管），成员之间互不可见、互不覆盖。</p>
+  <p class="note"><b>记忆不进设置页。</b>设置页每一项都是用户主动去配的东西，而这是使用中累积的状态；「下载器」分区更是明确定位在<b>接入</b>（连通性、路径映射），和「我习惯把动漫放哪」不是同一个问题。
+  用户想改或清的那一刻 100% 发生在下载时，所以三个操作全部就地：<b>建立</b>=提交即写入，<b>更新</b>=更改后提交覆盖，<b>清除</b>=确认条上的「不再记住」。全程没有任何勾选框。</p>
   <div class="stage">
-    <div class="frame">
-      <aside class="side">
-        <div class="brand">movieclaw</div>
-        <a href="#">首页</a><a href="#">媒体库</a><a href="#">搜索</a><a href="#">订阅</a><a href="#">任务中心</a>
-        <a href="#" class="on">设置</a>
-        <div class="subnav">
-          <a href="#">站点</a><a href="#" class="on">下载器</a><a href="#">媒体库</a><a href="#">成员</a><a href="#">更新与维护</a>
-        </div>
-      </aside>
-      <div class="main">
-        <h1>下载器</h1>
-        <p class="sub">qBittorrent · Transmission · 路径映射</p>
-
-        <div class="sec">
-          <div class="sec-h">
-            <h3>默认保存位置</h3>
-            <p>下载时自动记住，按种子分类分别记忆。删除后该分类下次下载会重新弹出完整选择。</p>
+    <div>
+      <div class="frame" style="grid-template-columns:1fr;min-height:440px;flex:none;width:100%">
+        <div class="main">
+          <h1>凡人修仙传</h1>
+          <p class="sub">动漫 · 记住的位置这次不想要了</p>
+          <div class="scrim mid" style="padding:14px">
+            <div class="bar">
+              <div class="bar-body">
+                <div class="fi"><svg viewBox="0 0 24 24"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2.5h7A1.5 1.5 0 0 1 19 10v7.5a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 3 17.5z"/></svg></div>
+                <div class="bar-info">
+                  <div class="eyebrow">保存到</div>
+                  <div class="bucket"><b>动漫</b><span class="dot"></span><em>qBittorrent</em></div>
+                  <div class="path">/media/anime/凡人修仙传 (2020)</div>
+                  <div class="path2"><span>下载器视角</span> /downloads/anime/凡人修仙传 (2020)</div>
+                </div>
+              </div>
+              <div class="bar-foot">
+                <span class="lastused">上次用过 · 2 天前 · <button class="forget spot">不再记住</button></span>
+                <div class="acts">
+                  <button class="btn">更改</button>
+                  <button class="btn primary">确认下载</button>
+                </div>
+              </div>
+            </div>
           </div>
-          <table>
-            <thead><tr><th>分类</th><th>保存位置</th><th>下载器</th><th>最近使用</th><th></th></tr></thead>
-            <tbody>
-              <tr>
-                <td><span class="cat"><i></i>动漫</span></td>
-                <td class="p">/media/anime</td>
-                <td>qBittorrent</td>
-                <td class="n">2 天前</td>
-                <td style="text-align:right;white-space:nowrap"><button class="lnk">编辑</button><button class="lnk d">删除</button></td>
-              </tr>
-              <tr>
-                <td><span class="cat"><i></i>电影</span></td>
-                <td><span class="tag">智能入库</span></td>
-                <td>默认下载器</td>
-                <td class="n">5 天前</td>
-                <td style="text-align:right;white-space:nowrap"><button class="lnk">编辑</button><button class="lnk d">删除</button></td>
-              </tr>
-              <tr>
-                <td><span class="cat"><i></i>剧集</span></td>
-                <td><span class="tag">智能入库</span></td>
-                <td>默认下载器</td>
-                <td class="n">昨天</td>
-                <td style="text-align:right;white-space:nowrap"><button class="lnk">编辑</button><button class="lnk d">删除</button></td>
-              </tr>
-              <tr>
-                <td><span class="cat"><i></i>纪录片</span></td>
-                <td class="p">/media/documentary</td>
-                <td>Transmission</td>
-                <td class="n">3 周前</td>
-                <td style="text-align:right;white-space:nowrap"><button class="lnk">编辑</button><button class="lnk d">删除</button></td>
-              </tr>
-              <tr>
-                <td><span class="cat"><i></i>音乐</span></td>
-                <td><span class="tag">下载器默认目录</span></td>
-                <td>qBittorrent</td>
-                <td class="n">3 周前</td>
-                <td style="text-align:right;white-space:nowrap"><button class="lnk">编辑</button><button class="lnk d">删除</button></td>
-              </tr>
-            </tbody>
-          </table>
         </div>
-        <p class="hint" style="margin-top:10px">还没有记录的分类：游戏、成人、其他 —— 首次下载时会弹出完整选择，不需要预先配置。</p>
       </div>
+      <p class="cap">① 安静的文字链，不与两个按钮争视觉权重</p>
+    </div>
+
+    <div>
+      <div class="frame" style="grid-template-columns:1fr;min-height:440px;flex:none;width:100%">
+        <div class="main">
+          <h1>凡人修仙传</h1>
+          <p class="sub">动漫 · 记忆已清除</p>
+          <div class="scrim mid" style="padding:14px">
+            <div class="modal" style="max-height:400px">
+              <div class="m-head">
+                <h2>选择保存位置</h2>
+                <p>动漫</p>
+              </div>
+              <div class="m-body">
+                <div class="reason">
+                  <svg viewBox="0 0 24 24"><path d="M12 8v5M12 16.5v.01M10.3 3.9 2.6 17.4A1.9 1.9 0 0 0 4.3 20.3h15.4a1.9 1.9 0 0 0 1.7-2.9L13.7 3.9a1.9 1.9 0 0 0-3.4 0z"/></svg>
+                  <div>已清除「动漫」的默认位置。这次的选择会成为新的默认。</div>
+                </div>
+                <label class="opt on">
+                  <span class="radio"></span>
+                  <span>
+                    <span class="opt-t">智能入库<span class="badge">推荐</span></span>
+                    <span class="opt-p">/media/anime/凡人修仙传 (2020)</span>
+                  </span>
+                </label>
+                <label class="opt">
+                  <span class="radio"></span>
+                  <span><span class="opt-t">/media/anime</span><span class="opt-p">下载器视角 /downloads/anime</span></span>
+                </label>
+                <label class="opt">
+                  <span class="radio"></span>
+                  <span><span class="opt-t">/vol1/downloads</span><span class="opt-p">下载器视角 /downloads</span></span>
+                </label>
+              </div>
+              <div class="m-foot">
+                <button class="btn">取消</button>
+                <button class="btn primary">确认下载</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="cap">② 清除即展开完整选择，不是清完就没了</p>
     </div>
   </div>
 </section>
@@ -534,7 +530,7 @@
       <div class="step good"><i>2</i><div><b>桶键 = <code style="font-family:var(--mono)">TorrentCategory</code></b><small>搜索标签栏本身的维度，站点 YAML 声明式映射，8 个桶，不参与推断</small></div></div>
       <div class="step good"><i>3</i><div><b>确认条</b><small>提交前看得见分类、路径、下载器；一次点击确认，一次点击改</small></div></div>
       <div class="step good"><i>4</i><div><b>失效必有原因</b><small>展开弹窗并说明是预检未收敛、目录没了还是下载器不可用</small></div></div>
-      <div class="step good"><i>5</i><div><b>成员级专表</b><small>跟人走、跨设备、设置页可管；不动 app_setting（那个改动回退不安全）</small></div></div>
+      <div class="step good"><i>5</i><div><b>成员级专表 + 就地清除</b><small>跟人走、跨设备；确认条上一键「不再记住」，不进设置页；不动 app_setting（那个改动回退不安全）</small></div></div>
     </div>
   </div>
 </section>
