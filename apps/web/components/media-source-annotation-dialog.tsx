@@ -81,14 +81,24 @@ export function MediaSourceAnnotationDialog({
   };
 
   return (
-    <Modal open onClose={onClose} label="标注片源" width="lg" raised={raised}>
-      <div className="scroll-thin max-h-[80dvh] overflow-y-auto p-6 max-md:p-5">
+    <Modal
+      open
+      onClose={onClose}
+      label="标注片源"
+      width="lg"
+      raised={raised}
+      panelClassName="max-h-[80dvh]"
+    >
+      {/* 头部常驻 */}
+      <div className="border-b border-white/[0.07] px-6 pb-4 pt-6 max-md:px-5">
         <h2 className="text-title font-bold text-white">标注{scopeLabel}的片源</h2>
         <p className="mt-1 text-sub leading-6 text-[var(--text-muted)]">
           这些文件的文件名里没有可识别的片源标记，系统无法确认它们是否低于洗版目标。
           看一眼文件名，把你知道的来源告诉系统——标注一次，之后整季自动参与洗版判定。
         </p>
+      </div>
 
+      <div className="scroll-thin min-h-0 flex-1 overflow-y-auto p-6 max-md:p-5">
         {error && (
           <p className="mt-3 rounded-lg border border-red-400/25 bg-red-500/10 px-3.5 py-2.5 text-sub leading-6 text-red-200">
             {error}
@@ -160,27 +170,24 @@ export function MediaSourceAnnotationDialog({
             );
           })}
         </div>
+      </div>
 
-        <div className="mt-6 flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={onClose}
-            className="btn-glass h-10 px-4 text-ui font-medium"
-          >
-            取消
-          </button>
-          <button
-            type="button"
-            disabled={busy || !option || !candidates?.length}
-            onClick={() => void apply()}
-            className="btn-accent inline-flex h-10 items-center gap-2 rounded-full px-5 text-ui font-semibold disabled:opacity-40"
-          >
-            {busy && (
-              <span className="size-3.5 animate-spin rounded-full border-2 border-white/30 border-t-white/90" />
-            )}
-            确认标注
-          </button>
-        </div>
+      {/* 底栏常驻：文件一多就要滚，确认按钮不能被滚出屏幕 */}
+      <div className="flex justify-end gap-2 border-t border-white/[0.07] px-6 py-4 max-md:px-5">
+        <button type="button" onClick={onClose} className="btn-glass h-10 px-4 text-ui font-medium">
+          取消
+        </button>
+        <button
+          type="button"
+          disabled={busy || !option || !candidates?.length}
+          onClick={() => void apply()}
+          className="btn-accent inline-flex h-10 items-center gap-2 rounded-full px-5 text-ui font-semibold disabled:opacity-40"
+        >
+          {busy && (
+            <span className="size-3.5 animate-spin rounded-full border-2 border-white/30 border-t-white/90" />
+          )}
+          确认标注
+        </button>
       </div>
     </Modal>
   );

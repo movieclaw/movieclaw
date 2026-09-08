@@ -12,8 +12,13 @@
  * 3. **玻璃面板视觉**（圆角/描边/阴影/毛玻璃）收敛为一份，改一处全局生效。
  *
  * 页面弹窗在外层包业务壳（如 download-target-dialog、subscribe-dialog），
- * 面板内部布局（滚动区/头部/底栏）由 children 自理；需要定制时用 width 换
- * 宽度档位、panelClassName 追加布局类（如 "flex max-h-[76vh] flex-col"）。
+ * 需要定制时用 width 换宽度档位、panelClassName 追加面板类（如换限高档位）。
+ *
+ * **面板高度与滚动由基座兜底**（见下方 SCROLL_CLS）：面板恒为「限高的 flex
+ * 列」，children 落在一个自动滚动区里。调用方什么都不做，内容再长也滚得到
+ * 底部按钮；想要「头部与底栏常驻、只有中间滚」，把 children 写成三个兄弟
+ * 节点、中间那个加 "min-h-0 flex-1 overflow-y-auto" 即可（本仓库既有的
+ * reidentify-dialog / notice-center 就是这个写法）。
  *
  * 嵌套弹窗（弹窗内再开弹窗，如表单里的目录选择器）：上层置 raised 抬高
  * z 层级；上层若需拦截 Esc（如输入态只退输入不关弹窗），自行在 capture
@@ -74,6 +79,23 @@ const WIDTH_CLS = {
   full: "max-w-none",
 } as const;
 
+/**
+ * children 的容器：一个「限高的 flex 列 + 自动滚动」的中间层。
+ *
+ * 它同时伺候两种 children，靠的是 flex 列里 min-height:auto 的默认行为：
+ * - **不分段的弹窗**（一个 `<div class="space-y-4 p-6">` 包住全部内容）：
+ *   该 div 是本容器唯一的 flex 项，自动最小尺寸 = 内容高，压不扁，于是
+ *   超长部分由本容器滚出滚动条——不会再被面板 overflow-hidden 裁掉、
+ *   底部按钮也不会消失在屏幕外（移动端 items-end 时溢出方向朝**上**，
+ *   裁掉的正是头部与底部按钮，用户既看不到也滚不动）。
+ * - **头/身/底三段的弹窗**：中间那段自己带 overflow-y-auto（自动最小尺寸
+ *   随之归零、可被压缩），头尾按内容高占位，本容器就永远不需要滚动——
+ *   等于结构透明，头部与底栏照旧常驻。
+ *
+ * overscroll-contain：滚到尽头不把滚动传给身后的页面（iOS 上尤其明显）。
+ */
+const SCROLL_CLS = "flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain scroll-thin";
+
 export function Modal({
   open,
   onClose,
@@ -111,6 +133,11 @@ export function Modal({
   // 软键盘遮挡高度：>0 时把容器 bottom 抬到键盘之上（iOS PWA 输入弹窗的救命绳）
   const keyboardInset = useKeyboardInset(open);
 
+  // 桌面端默认限高到容器（= 视口减去外层 p-6），超出部分交给滚动区。
+  // 调用方自带 max-h/h 档位时让位：同为 max-height 的两个类谁生效取决于
+  // 生成 CSS 的先后，不确定；干脆不叠加，调用方的意图优先。
+  const defaultMaxH = /(^|[\s!:])(max-)?h-/.test(panelClassName) ? "" : "max-h-full";
+
   if (!open || typeof document === "undefined") return null;
 
   return createPortal(
@@ -143,9 +170,9 @@ export function Modal({
         className="absolute inset-0 cursor-default bg-black/60 backdrop-blur-sm"
       />
       <div
-        className={`relative w-full ${WIDTH_CLS[width]} overflow-hidden rounded-2xl border border-white/10 bg-[rgba(16,18,26,0.92)] shadow-[0_32px_90px_rgba(0,0,0,0.7)] backdrop-blur-2xl max-md:!max-h-full max-md:!max-w-none max-md:rounded-b-none max-md:border-x-0 max-md:border-b-0 max-md:pb-[calc(var(--safe-bottom)+var(--vp-overshoot))] ${panelClassName}`}
+        className={`relative flex w-full flex-col ${WIDTH_CLS[width]} ${defaultMaxH} overflow-hidden rounded-2xl border border-white/10 bg-[rgba(16,18,26,0.92)] shadow-[0_32px_90px_rgba(0,0,0,0.7)] backdrop-blur-2xl max-md:!max-h-full max-md:!max-w-none max-md:rounded-b-none max-md:border-x-0 max-md:border-b-0 max-md:pb-[calc(var(--safe-bottom)+var(--vp-overshoot))] ${panelClassName}`}
       >
-        {children}
+        <div className={SCROLL_CLS}>{children}</div>
       </div>
     </div>,
     document.body,
