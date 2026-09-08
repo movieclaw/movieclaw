@@ -62,7 +62,10 @@ from movieclaw_api.services.subscription.upgrade import (
     upgrade_attempt_wanted_rows,
     upgrading_counts,
 )
-from movieclaw_api.services.subscription.wanted_fulfillment import close_fulfilled_wanted
+from movieclaw_api.services.subscription.wanted_fulfillment import (
+    close_fulfilled_wanted,
+    reopen_unfulfilled_wanted,
+)
 from movieclaw_api.services.subscription.wanted_search import kick_search_soon, search_wanted
 
 __all__ = [
@@ -75,6 +78,7 @@ __all__ = [
     "REFRESH_PER_TICK",
     "SubscriptionService",
     "close_fulfilled_wanted",
+    "reopen_unfulfilled_wanted",
     "dispatch",
     "effective_forecast_probe_at",
     "evaluate_and_dispatch",

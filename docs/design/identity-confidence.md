@@ -84,7 +84,7 @@
 
 | 优先级 | 工作项 | 性质 | 改动量 | 依赖 |
 |---|---|---|---|---|
-| **P0** | 修正后的反向对账 + 错种拉黑 | **bug 修复** | 小 | 无 |
+| **P0** | 修正后的反向对账 + 错种拉黑 ✅**已实现** | **bug 修复** | 小 | 无 |
 | **P1** | 反向 ID 否决 + 置信度贯穿 | 地基 | 小 | 无 |
 | **P2** | 隐含码率反证（下载前） | 增强 | 小 | P1 |
 | **P3** | 投递前详情页复核（含 file_list 预检） | 主力 | 中 | P1 |
@@ -128,13 +128,23 @@ P2/P4 含拍脑袋的阈值，**一律先以 shadow 模式上线**，见 §10。
 
 ### 4.3 改动点
 
-`subscription/wanted_fulfillment.py` 里把 `close_fulfilled_wanted` 扩成
-`reconcile_wanted(session, media_item_id, *, allow_reopen: bool)`，
-保留旧名做薄封装（`allow_reopen=False`）以免一次性改完所有调用点：
+> 已实现。落地时与本节初稿有两处偏离，均记在下方。
 
-- **关闭方向**（现状不变）：`owned_units` 覆盖到的开放工单 → `IMPORTED`
-- **退回方向**（新增，`allow_reopen=True` 才走）：`status == IMPORTED` 的工单
-  与 `owned_units(media_item_id)` 求差集
+`subscription/wanted_fulfillment.py` 新增 `reopen_unfulfilled_wanted(session,
+media_item_id, *, lost_sources)`，与既有的 `close_fulfilled_wanted` 并列成为
+对账的两个方向：
+
+> **偏离一：两个函数，不是一个带 `allow_reopen` 开关的 `reconcile_wanted`。**
+> 初稿设想的是单一原语。实现时发现调用点**永远只需要一个方向**（新条目只关、
+> 被腾空的旧条目只退，两者是不同的 `media_item_id`），而关闭方向自带
+> `verify_upgrades`、洗版快照、IM 推送、webhook、媒体服务器刷新一长串副作用
+> ——对一个"文件刚走光"的条目跑这半边纯属白费且有副作用风险。合并成一个函数
+> 只会逼每个调用点跑一段自己不需要的逻辑。
+
+- **关闭方向**（`close_fulfilled_wanted`，现状不变）：`owned_units` 覆盖到的
+  开放工单 → `IMPORTED`
+- **退回方向**（`reopen_unfulfilled_wanted`，新增）：`status == IMPORTED` 的
+  工单与 `owned_units(media_item_id)` 求差集
 - 差集内的工单退回：`status=WANTED`、`info_hash=None`、`grabbed_at/downloaded_at/
   imported_at=None`、`search_attempts=0`、`next_search_at=now`
   （字段清理口径直接复用 `core.py:814-830` 的「缺失重下」，语义完全一致）
@@ -152,42 +162,53 @@ P2/P4 含拍脑袋的阈值，**一律先以 shadow 模式上线**，见 §10。
 
 ### 4.4 退回方向的触发源白名单（关键约束）
 
-**"双向对账"绝不能理解成"哪里调 close 就哪里调 reconcile(allow_reopen=True)"。**
+**"双向对账"绝不能理解成"哪里调 close 就哪里调 reopen"。**
 
 反例：一个媒体库的盘临时掉线，扫描把整库文件标 missing，`owned_units` 随即
 返回空集——若退回方向挂在全量扫描上，会把整库工单一次性退回 `WANTED` 并
 立即排队，订阅开始疯狂重下整个媒体库。盘一恢复，这些下载全是白费的，还烧了
 一轮 PT 流量。
 
-所以 `allow_reopen=True` 只允许挂在**单条目粒度、由明确的身份/文件事件驱动**的
-调用点上：
+所以 `reopen_unfulfilled_wanted` 只允许挂在**单条目粒度、由明确的身份变更事件
+驱动**的调用点上：
 
 | 允许 | 触发源 |
 |---|---|
-| ✅ | `claim.py::claim_files` 的 `displaced` 集合（97-101 行已算好） |
+| ✅ | `claim.py::claim_files` 的 `displaced` 集合 |
 | ✅ | `claim.py::resolve_review` 的 `displaced` |
-| ✅ | `scan.py:4086` 重识别改挂路径 |
-| ✅ | 用户在库内**显式删除/回收**文件 |
+| ✅ | `scan.py` 单条目重新识别的改挂路径 |
+| ❌ | 用户在库内显式删除文件（**偏离二**，见下） |
 | ❌ | 全量扫描的 `marked_missing`（盘掉线、挂载点变更、外部临时移走） |
 | ❌ | 任何批量/定时任务 |
 
-判据是"这次 missing 是**用户意图**还是**环境状态**"。环境状态引起的缺失由
+判据是"这次不在库是**用户意图**还是**环境状态**"。环境状态引起的缺失由
 既有的 missing 标记表达即可，工单不动——文件回来了什么都不用做。
 
-### 4.5 验收标准
+> **偏离二：用户删除文件不进白名单**（初稿标的是 ✅）。实现时看清了两件事：
+> ① **删除的意图不可判**——"删掉腾空间"和"删掉重下"在这一层完全无法区分，
+> 而把前者当成后者，用户会发现自己刚删的东西又被下回来了；
+> ② **"删掉重下"已有明确出口**——`core.py` 的 requeue 流程（「媒体库文件缺失，
+> 重新下载」按钮）就是用户表达这个意图的地方，不需要在删除里再猜一次。
+> 另外 `recycle_file` 也不是用户删除的入口：它当前唯一的调用方是洗版清理
+> （`upgrade.py`），在那里退回工单会把刚洗好的版本再下一遍。
 
-```
-1. 造一个"文件挂在条目 A、A 的工单是 IMPORTED、订阅 completed"的夹具
-   → 调 claim_files 把文件改挂到条目 B
-   → 断言 A 的工单回到 WANTED 且 next_search_at <= now、订阅回到 active、
-     时间线有一条 REOPENED；B 的工单被关闭
-2. 同一夹具下，改挂后立刻跑一轮 evaluate_and_dispatch，喂进那个错种子
-   → 断言不再被选中（负面记忆生效）
-3. 改挂到 B 之后 A 仍有别的文件在库的单元 → 断言那些工单不受影响（只退差集）
-4. 用户显式删除该文件（不改挂）→ 断言工单同样退回
-5. **盘掉线回归**：把整库文件标 missing 后跑一轮全量扫描
-   → 断言没有任何工单被退回（白名单守卫生效）
-```
+### 4.5 验收标准（已落地）
+
+`tests/api/test_wanted_fulfillment.py`（对账另一半的单元测试）：
+
+- `test_reopen_requeues_wanted_when_file_reanchored` —— 文件改挂走 → 工单回
+  `WANTED`、`info_hash`/`imported_at` 清空、`next_search_at` 立即到期、洗版
+  基线清掉、订阅脱离 completed、时间线有 `REOPENED`；再退一次为 0（幂等）
+- `test_reopen_blacklists_wrong_source` —— 错种子写进 `content_missing` 负面记忆
+- `test_reopen_only_touches_units_no_longer_owned` —— 同条目仍在库的单元不受影响
+- `test_scan_path_never_reopens_on_missing_files` —— **盘掉线回归**：文件标
+  missing 后走扫描收尾那条路（`close_fulfilled_wanted`），工单必须纹丝不动
+
+`tests/api/test_library_item_detail.py`（端到端）：
+
+- `test_claim_revives_the_subscription_left_behind` —— 复刻 §0 现场：错挂条目
+  上挂一个"已收齐"的订阅，走真实的 `claim_files_batch` 路由改正身份，断言
+  订阅复活、工单重新排队
 
 ---
 

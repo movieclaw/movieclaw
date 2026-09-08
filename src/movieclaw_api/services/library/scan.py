@@ -4029,6 +4029,7 @@ async def _reidentify(
         state.total = len(rows)
         new_ids: set[int] = set()
         displaced: set[int] = set()
+        lost_sources: set[tuple[str, str]] = set()
         for done, row in enumerate(rows, start=1):
             state.processed = done
             if row.state != FileState.IN_PLACE:
@@ -4075,6 +4076,8 @@ async def _reidentify(
                     (item.id, season_number, episode_number),  # type: ignore[arg-type]
                 )
                 displaced.add(row.media_item_id)
+                if row.site_id and row.torrent_id:
+                    lost_sources.add((row.site_id, row.torrent_id))
             row.media_item_id = item.id if item is not None else None
             row.unidentified_reason = reason if keep_failure else None
             row.unidentified_code = identified.code if keep_failure else None
@@ -4107,6 +4110,13 @@ async def _reidentify(
         elif new_ids:
             # 分裂成多个条目（如剧集目录混入了别的剧）：不给单一跳转目标
             summary.changed = True
+        # 库存对账的另一半：被腾空的旧条目单元已不在库，工单退回继续找。
+        # 重新识别是用户主动翻案（白名单内的身份变更事件），与全量扫描把
+        # 文件标 missing 完全不同，见 reopen_unfulfilled_wanted 的文档
+        for displaced_id in displaced:
+            from movieclaw_api.services.subscription import reopen_unfulfilled_wanted
+
+            await reopen_unfulfilled_wanted(session, displaced_id, lost_sources=lost_sources)
         await LibraryRepository(session).refresh_stats([library_id])
     logger.info(
         "媒体库 #%s 条目 #%s 重新识别完成：%d 个文件（识别 %d / 待识别 %d），新身份 %s%s",

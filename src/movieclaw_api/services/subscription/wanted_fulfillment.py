@@ -8,6 +8,14 @@
 
 调用点：library_scan 识别入账后、library_ingest 搬运入库后、待识别
 人工认领后。函数幂等：没有可关闭的工单时是纯查询。
+
+**对账有两个方向**，本模块各给一个入口：
+
+- ``close_fulfilled_wanted``：在库的单元 → 关工单（上面说的那半）；
+- ``reopen_unfulfilled_wanted``：**不在库**的单元 → 退回工单。
+
+只有关闭方向是安全的、可以到处调；退回方向必须由**明确的身份变更事件**触发，
+调用点是白名单制，理由见该函数的文档。
 """
 
 from __future__ import annotations
@@ -138,3 +146,149 @@ async def close_fulfilled_wanted(session: AsyncSession, media_item_id: int) -> i
 
     await notify_media_server_refresh()
     return len(fulfilled)
+
+
+async def reopen_unfulfilled_wanted(
+    session: AsyncSession,
+    media_item_id: int,
+    *,
+    lost_sources: set[tuple[str, str]] | None = None,
+) -> int:
+    """把该条目**已不在库**的单元对应的工单退回 wanted。返回退回数。
+
+    这是库存对账缺失的另一半方向。没有它，"用户改正了认错的身份"之后原订阅
+    会静默死亡：文件改挂走了，工单却还停在 imported、订阅还是 completed，
+    于是它再也不会去找那部真正被订阅的片，用户要几个月后才会发现
+    （真实教训：同名同年的两部《The Odyssey》(2026) 错配，用户改正后
+    诺兰版订阅无声停摆）。
+
+    ``lost_sources``：这些单元原先是被哪些 ``(site_id, torrent_id)`` 满足的。
+    传了就写进负面记忆——**不写的话退回等于白做**：下一轮搜索会立刻再选中
+    同一个种子（它还躺在下载器里且已完成），秒"下载成功"→ 再入库 → 再认错，
+    与 ``_record_content_missing`` 记录的"秒完成 → 再核验 → 再退回"同一个坑。
+
+    **调用点白名单**：只允许由**单条目粒度的身份变更事件**触发（认领改挂、
+    复核拍板、重新识别）。绝不可挂在全量扫描的 missing 标记上——一个媒体库
+    的盘临时掉线会让整库文件标 missing，届时整库工单会被一次性退回并立即
+    排队，订阅开始疯狂重下整个媒体库，盘一恢复这些下载全是白费。判据是
+    "这次不在库是**用户意图**还是**环境状态**"：环境状态由 missing 标记表达
+    即可，工单不动，文件回来了什么都不用做。
+
+    用户删除文件同样**不在**白名单里：删除的意图不可判（省空间 vs 删掉重下），
+    而"删掉重下"已有「重新下载」按钮明确表达（services/subscription/core.py
+    的 requeue 流程）。
+    """
+    owned = await LibraryFileRepository(session).owned_units(media_item_id)
+    rows = list(
+        (
+            await session.execute(
+                select(WantedItem).where(
+                    WantedItem.media_item_id == media_item_id,
+                    WantedItem.status == WantedStatus.IMPORTED,  # type: ignore[arg-type]
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    lost = [w for w in rows if (w.season_number, w.episode_number) not in owned]
+    if not lost:
+        return 0
+
+    now = utcnow()
+    by_subscription: dict[int, list[WantedItem]] = {}
+    for wanted in lost:
+        # 字段清理口径与「媒体库文件缺失，重新下载」（core.py 的 requeue）完全
+        # 一致：这两件事对工单而言是同一个语义——曾经满足过，现在不满足了
+        wanted.status = WantedStatus.WANTED
+        wanted.info_hash = None
+        wanted.grabbed_at = None
+        wanted.downloaded_at = None
+        wanted.imported_at = None
+        wanted.search_attempts = 0
+        wanted.last_search_at = None
+        wanted.next_search_at = now  # 补旧语义：立即排队真实搜索
+        # 洗版基线随文件一起走了：留着会拿一个已不存在的版本当比较基准
+        wanted.quality = None
+        wanted.upgrade_verify_failures = 0
+        wanted.updated_at = now
+        session.add(wanted)
+        by_subscription.setdefault(wanted.subscription_id, []).append(wanted)
+
+    if lost_sources:
+        for subscription_id, wanted_rows in by_subscription.items():
+            await _remember_wrong_sources(session, subscription_id, wanted_rows, lost_sources)
+    await session.commit()
+
+    from movieclaw_api.services.subscription import recompute_subscription_status
+    from movieclaw_api.services.subscription.matching import units_text
+
+    item = await session.get(MediaItem, media_item_id)
+    repo = SubscriptionRepository(session)
+    for subscription_id, wanted_rows in by_subscription.items():
+        subscription = await session.get(Subscription, subscription_id)
+        if subscription is None or item is None:
+            continue
+        await repo.add_activity(
+            SubscriptionActivity(
+                subscription_id=subscription_id,
+                wanted_item_id=wanted_rows[0].id,
+                type=ActivityType.REOPENED,
+                message=(
+                    f"{units_text(wanted_rows)}的文件已不属于本条目（身份被改正），重新开始寻找资源"
+                ),
+                payload={"units": [[w.season_number, w.episode_number] for w in wanted_rows]},
+            )
+        )
+        await recompute_subscription_status(session, subscription, item)
+    logger.info("库存对账：条目 #%s 退回了 %d 个工单", media_item_id, len(lost))
+
+    # 立刻踢一脚搜索：用户刚做完纠正，不该再等最多 5 分钟的 tick
+    from movieclaw_api.services.subscription.wanted_search import kick_search_soon
+
+    kick_search_soon()
+    return len(lost)
+
+
+async def _remember_wrong_sources(
+    session: AsyncSession,
+    subscription_id: int,
+    rows: list[WantedItem],
+    sources: set[tuple[str, str]],
+) -> None:
+    """把"这些来源满足不了这些单元"写进投递记录的负面记忆。
+
+    复用 ``SubscriptionDownloadAttempt.content_missing``——它的语义正是
+    "这份发布被证明满足不了该单元"，认错片是它的一种成因（那份发布里确实
+    没有这部电影），选种阶段的消费者 ``drop_proven_missing`` 现成可用，
+    不必为此新增字段与迁移。
+    """
+    from movieclaw_db.models import SubscriptionDownloadAttempt
+
+    units = {(w.season_number, w.episode_number) for w in rows}
+    attempts = (
+        await session.execute(
+            select(SubscriptionDownloadAttempt).where(
+                SubscriptionDownloadAttempt.subscription_id == subscription_id,
+            )
+        )
+    ).scalars()
+    for attempt in attempts:
+        if (attempt.site_id, attempt.torrent_id) not in sources:
+            continue
+        memory = dict(attempt.content_missing or {})
+        known_units = {
+            (int(u[0]), int(u[1]))
+            for u in memory.get("units", [])
+            if isinstance(u, list) and len(u) == 2
+        } | units
+        known_sources = {
+            (str(s[0]), str(s[1]))
+            for s in memory.get("sources", [])
+            if isinstance(s, list) and len(s) == 2
+        } | {(attempt.site_id, attempt.torrent_id)}
+        attempt.content_missing = {
+            "units": [[season, episode] for season, episode in sorted(known_units)],
+            "sources": [[site, torrent] for site, torrent in sorted(known_sources)],
+        }
+        session.add(attempt)

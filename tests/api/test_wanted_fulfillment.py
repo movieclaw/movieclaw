@@ -460,9 +460,7 @@ async def test_completed_task_missing_before_import_reenters_rescue(db, monkeypa
     _library_id, _item_id, sub_id, _wanted_id = await _seed(db, grabbed_at=stale)
     async with db.session() as session:
         wanted = (
-            await session.execute(
-                select(WantedItem).where(WantedItem.subscription_id == sub_id)
-            )
+            await session.execute(select(WantedItem).where(WantedItem.subscription_id == sub_id))
         ).scalar_one()
         await progress_mod._ensure_attempts(session, {(sub_id, "abc123"): [wanted]})
         attempt = (
@@ -487,9 +485,7 @@ async def test_completed_task_missing_before_import_reenters_rescue(db, monkeypa
 
     async with db.session() as session:
         wanted = (
-            await session.execute(
-                select(WantedItem).where(WantedItem.subscription_id == sub_id)
-            )
+            await session.execute(select(WantedItem).where(WantedItem.subscription_id == sub_id))
         ).scalar_one()
         assert wanted.status == WantedStatus.GRABBED
         assert wanted.info_hash == "abc123"
@@ -522,9 +518,7 @@ async def test_rescue_warns_at_15_minutes_and_replaces_at_30(db, monkeypatch):
     fake_downloader = SimpleNamespace(id=None, name="测试下载器", path_mappings=None)
 
     async def lookup_status(*args, **kwargs):
-        return progress_mod._TorrentLookup(
-            match=(fake_downloader, status), reachable_count=1
-        )
+        return progress_mod._TorrentLookup(match=(fake_downloader, status), reachable_count=1)
 
     monkeypatch.setattr(progress_mod, "_lookup_torrent", lookup_status)
     # 首次采样只建立完成字节基线。
@@ -616,9 +610,7 @@ async def test_rescue_alerts_unreachable_landing(db, monkeypatch, tmp_path):
     )
 
     async def lookup_status(*args, **kwargs):
-        return progress_mod._TorrentLookup(
-            match=(fake_downloader, status), reachable_count=1
-        )
+        return progress_mod._TorrentLookup(match=(fake_downloader, status), reachable_count=1)
 
     monkeypatch.setattr(progress_mod, "_lookup_torrent", lookup_status)
     await progress_mod._rescue_group(sub_id, "abc123", downloaders=[])
@@ -680,9 +672,7 @@ async def test_completed_attempt_rechecks_landing_after_grace(db, monkeypatch, t
         {
             "id": None,
             "name": "qb",
-            "path_mappings": [
-                {"local": str(tmp_path / "downloads"), "remote": "/downloads"}
-            ],
+            "path_mappings": [{"local": str(tmp_path / "downloads"), "remote": "/downloads"}],
         },
     )()
     status = type(
@@ -801,3 +791,213 @@ async def _seed_second(db):
         await session.commit()
         await session.refresh(wanted)
         return library.id, item.id, sub.id, wanted.id
+
+
+# ---------------------------------------------------------------------------
+# 对账的另一半方向：文件不在库了，工单退回
+# ---------------------------------------------------------------------------
+
+
+async def _seed_imported_movie(db):
+    """电影订阅 + 已入库文件的最小闭包，返回 (库 id, 条目 id, 订阅 id, 工单 id, 文件 id)。
+
+    模拟 §0 的错配现场：一个种子被投递、入库、对账关单，事后才发现认错了片。
+    """
+    async with db.session() as session:
+        library = await LibraryRepository(session).create(
+            name="电影库", kind="movie", root_paths=["/media/movie"]
+        )
+        item = MediaItem(
+            kind="movie", tmdb_id=900, title="奥德赛", original_title="The Odyssey", year=2026
+        )
+        rule_set = RuleSet(name="默认", spec={})
+        session.add(item)
+        session.add(rule_set)
+        await session.commit()
+        await session.refresh(item)
+        await session.refresh(rule_set)
+        sub = Subscription(
+            media_item_id=item.id, kind="movie", rule_set_id=rule_set.id, library_id=library.id
+        )
+        session.add(sub)
+        await session.commit()
+        await session.refresh(sub)
+        wanted = WantedItem(
+            subscription_id=sub.id,
+            media_item_id=item.id,
+            season_number=0,
+            episode_number=0,
+            status=WantedStatus.GRABBED,
+            info_hash="odyssey01",
+            grabbed_at=utcnow(),
+        )
+        session.add(wanted)
+        # 投递台账：拉黑要写进它的负面记忆
+        session.add(
+            SubscriptionDownloadAttempt(
+                subscription_id=sub.id,
+                info_hash="odyssey01",
+                site_id="ssd",
+                torrent_id="7788",
+                status=DownloadAttemptStatus.IMPORTED,
+                units=[[0, 0]],
+                last_progress_at=utcnow(),
+            )
+        )
+        file = LibraryFile(
+            library_id=library.id,
+            media_item_id=item.id,
+            season_number=0,
+            episode_number=0,
+            file_path="/media/movie/奥德赛 (2026)/The.Odyssey.2026.1080p.mkv",
+            size_bytes=1,
+            source=FileSource.IMPORTED,
+            site_id="ssd",
+            torrent_id="7788",
+        )
+        session.add(file)
+        await session.commit()
+        await session.refresh(wanted)
+        await session.refresh(file)
+        # 先按正常链路关单，造出"订阅以为自己收齐了"的现场
+        await close_fulfilled_wanted(session, item.id)
+        return library.id, item.id, sub.id, wanted.id, file.id
+
+
+@pytest.mark.asyncio
+async def test_reopen_requeues_wanted_when_file_reanchored(db):
+    """文件改挂走 → 工单退回 wanted、立即排队、订阅状态回到追踪中、时间线有交代。
+
+    这是本次错配的收口：不退回的话，订阅会抱着一个错文件永远停在「已完成」。
+    """
+    from movieclaw_api.services.subscription import reopen_unfulfilled_wanted
+
+    _library_id, item_id, sub_id, wanted_id, file_id = await _seed_imported_movie(db)
+    async with db.session() as session:
+        assert (await session.get(WantedItem, wanted_id)).status == WantedStatus.IMPORTED
+
+        # 改挂：文件归到别的条目名下（认领链路做的就是这一步）
+        other = MediaItem(kind="movie", tmdb_id=901, title="另一部同名片", original_title="Odyssey")
+        session.add(other)
+        await session.flush()
+        (await session.get(LibraryFile, file_id)).media_item_id = other.id
+        await session.commit()
+
+        assert await reopen_unfulfilled_wanted(session, item_id) == 1
+
+        wanted = await session.get(WantedItem, wanted_id)
+        assert wanted.status == WantedStatus.WANTED
+        assert wanted.info_hash is None and wanted.imported_at is None
+        assert wanted.next_search_at is not None and wanted.next_search_at <= utcnow()
+        # 洗版基线随文件一起走了，留着会拿一个不存在的版本当比较基准
+        assert wanted.quality is None
+        sub = await session.get(Subscription, sub_id)
+        assert sub.status != "completed"
+        activities = (
+            (
+                await session.execute(
+                    select(SubscriptionActivity).where(
+                        SubscriptionActivity.subscription_id == sub_id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert any(a.type == ActivityType.REOPENED for a in activities)
+
+        # 幂等：文件仍不在库，再退一次无事发生
+        assert await reopen_unfulfilled_wanted(session, item_id) == 0
+
+
+@pytest.mark.asyncio
+async def test_reopen_blacklists_wrong_source(db):
+    """退回时把错种子写进负面记忆——不然下一轮搜索立刻把它再抓回来。"""
+    from movieclaw_api.services.subscription import reopen_unfulfilled_wanted
+
+    _library_id, item_id, sub_id, _wanted_id, file_id = await _seed_imported_movie(db)
+    async with db.session() as session:
+        other = MediaItem(kind="movie", tmdb_id=901, title="另一部同名片", original_title="Odyssey")
+        session.add(other)
+        await session.flush()
+        (await session.get(LibraryFile, file_id)).media_item_id = other.id
+        await session.commit()
+
+        await reopen_unfulfilled_wanted(session, item_id, lost_sources={("ssd", "7788")})
+
+        attempt = (
+            (
+                await session.execute(
+                    select(SubscriptionDownloadAttempt).where(
+                        SubscriptionDownloadAttempt.subscription_id == sub_id
+                    )
+                )
+            )
+            .scalars()
+            .one()
+        )
+        assert attempt.content_missing["units"] == [[0, 0]]
+        assert ["ssd", "7788"] in attempt.content_missing["sources"]
+
+
+@pytest.mark.asyncio
+async def test_reopen_only_touches_units_no_longer_owned(db):
+    """只退不在库的那部分：同条目其它仍在库的单元不受影响。"""
+    from movieclaw_api.services.subscription import reopen_unfulfilled_wanted
+
+    library_id, item_id, sub_id, wanted_id = await _seed(db)
+    async with db.session() as session:
+        # S01E01 在库，S01E02 也曾入库但文件已被改挂走
+        kept = WantedItem(
+            subscription_id=sub_id,
+            media_item_id=item_id,
+            season_number=1,
+            episode_number=2,
+            status=WantedStatus.GRABBED,
+        )
+        session.add(kept)
+        session.add(
+            LibraryFile(
+                library_id=library_id,
+                media_item_id=item_id,
+                season_number=1,
+                episode_number=1,
+                file_path="/media/tv/测试剧集 (2024)/Season 01/S01E01.mkv",
+                size_bytes=1,
+                source=FileSource.IMPORTED,
+            )
+        )
+        await session.commit()
+        await session.refresh(kept)
+        await close_fulfilled_wanted(session, item_id)
+        # E01 有文件、E02 没有：只有 E02 该被退回
+        assert (await session.get(WantedItem, wanted_id)).status == WantedStatus.IMPORTED
+
+        # E02 手工置成 imported，模拟"曾经有文件、现在文件走了"
+        e02 = await session.get(WantedItem, kept.id)
+        e02.status = WantedStatus.IMPORTED
+        await session.commit()
+
+        assert await reopen_unfulfilled_wanted(session, item_id) == 1
+        assert (await session.get(WantedItem, wanted_id)).status == WantedStatus.IMPORTED
+        assert (await session.get(WantedItem, kept.id)).status == WantedStatus.WANTED
+
+
+@pytest.mark.asyncio
+async def test_scan_path_never_reopens_on_missing_files(db):
+    """盘掉线回归：扫描调的是关闭方向，missing 文件绝不能让工单批量退回。
+
+    退回方向只允许由身份变更事件触发。挂在扫描的 missing 标记上，一次挂载点
+    掉线就会把整库工单退回并立即排队，订阅开始疯狂重下整个媒体库。
+    """
+    from movieclaw_db.models.library_file import FileState
+
+    _library_id, item_id, _sub_id, wanted_id, file_id = await _seed_imported_movie(db)
+    async with db.session() as session:
+        # 盘掉线：文件行标 missing（owned_units 因此不再认它）
+        (await session.get(LibraryFile, file_id)).state = FileState.MISSING
+        await session.commit()
+
+        # 扫描收尾走的就是这个函数，它必须对 missing 无动于衷
+        await close_fulfilled_wanted(session, item_id)
+        assert (await session.get(WantedItem, wanted_id)).status == WantedStatus.IMPORTED

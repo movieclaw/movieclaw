@@ -7,9 +7,11 @@
   两种拍板都把身份来源转为 manual——用户看过并决定过的身份，后续识别器
   升级不再提建议。
 
-两条路径都在身份变更后做库存对账（close_fulfilled_wanted）：新条目的
-单元"在库"成立，关闭对应的订阅工单。资产补齐（ensure_assets）是后台
-任务，由路由层用 BackgroundTasks 调度——本模块只返回需要补的条目 id。
+两条路径都在身份变更后做**双向**库存对账：新条目的单元"在库"成立，关闭
+对应的订阅工单（close_fulfilled_wanted）；被腾空的旧条目那边单元不再在库，
+工单退回继续找（reopen_unfulfilled_wanted）——认领的语义就是"这个文件不是
+那部片"，那部片的订阅不该抱着一个错文件当已完成。资产补齐（ensure_assets）
+是后台任务，由路由层用 BackgroundTasks 调度——本模块只返回需要补的条目 id。
 """
 
 from __future__ import annotations
@@ -29,7 +31,10 @@ from movieclaw_api.services.library.profile import profile_of
 from movieclaw_api.services.library.reanchor import migrate_watch_state
 from movieclaw_api.services.library.scan import RESOLVER_VERSION, entry_nfo_candidates
 from movieclaw_api.services.media_library import MediaLibraryService
-from movieclaw_api.services.subscription import close_fulfilled_wanted
+from movieclaw_api.services.subscription import (
+    close_fulfilled_wanted,
+    reopen_unfulfilled_wanted,
+)
 from movieclaw_db.models import Library, LibraryFile, MediaItem, utcnow
 from movieclaw_db.models.library_file import IdentitySource
 from movieclaw_db.repositories.library_file_repo import LibraryFileRepository
@@ -99,6 +104,13 @@ async def claim_files(
         for row in rows
         if row.media_item_id is not None and row.media_item_id != item.id
     }
+    # 改挂走的文件原先是被哪个种子满足的——退回工单时要连同这份来源一起
+    # 拉黑，否则下一轮搜索会立刻再抓回同一个错种子（见 reopen 的文档）
+    lost_sources = {
+        (row.site_id, row.torrent_id)
+        for row in rows
+        if row.media_item_id in displaced and row.site_id and row.torrent_id
+    }
     for row in rows:
         assert row.id is not None
         if explicit_unit is not None:
@@ -124,8 +136,12 @@ async def claim_files(
     # 全量重扫会把毒 NFO 的错误身份原样读回（NFO 优先的识别链是自我固化
     # 的），Emby/Jellyfin 也会继续按错误 id 入档——用户的拍板必须落到盘上
     await asyncio.to_thread(_correct_conflicting_nfos, rows, kind, library, item)
-    # 库存对账：认领让单元"在库"成立，关闭对应的订阅工单
+    # 库存对账（两个方向都要走）：认领让新条目的单元"在库"成立、关闭工单；
+    # 被腾空的旧条目那边单元不再在库，工单必须退回——认领的语义是"这个文件
+    # 不是那部片"，那部片的订阅就该继续去找，而不是抱着一个错文件当已完成
     await close_fulfilled_wanted(session, item.id)
+    for displaced_id in displaced:
+        await reopen_unfulfilled_wanted(session, displaced_id, lost_sources=lost_sources)
     await LibraryRepository(session).refresh_stats(library_ids)
     return item, len(rows), displaced
 
@@ -175,7 +191,7 @@ async def resolve_review(
     - ``accept=True``：改挂到建议条目；
     - ``accept=False``：维持现有身份。
     两种拍板都把身份来源转为 manual 并清掉建议（不再提醒）。
-    改挂后对每个新条目做库存对账，关闭订阅工单。
+    改挂后做双向库存对账：新条目关工单，被腾空的旧条目退回工单。
     """
     rows = [row for fid in file_ids if (row := await session.get(LibraryFile, fid))]
     pending = [row for row in rows if row.review_suggestion]
@@ -183,12 +199,15 @@ async def resolve_review(
         raise NotFoundException("这些文件没有待拍板的复核建议（可能已被处理）")
     accepted_items: set[int] = set()
     displaced: set[int] = set()
+    lost_sources: set[tuple[str, str]] = set()
     title: str | None = None
     for row in pending:
         suggestion = row.review_suggestion or {}
         if accept and suggestion.get("media_item_id"):
             if row.media_item_id is not None and row.media_item_id != suggestion["media_item_id"]:
                 displaced.add(row.media_item_id)
+                if row.site_id and row.torrent_id:
+                    lost_sources.add((row.site_id, row.torrent_id))
                 await migrate_watch_state(
                     session,
                     (row.media_item_id, row.season_number, row.episode_number),
@@ -202,8 +221,11 @@ async def resolve_review(
         row.review_suggestion = None
         row.updated_at = utcnow()
     await session.commit()
-    # 库存对账：改挂让新条目的单元"在库"成立，关闭对应的订阅工单
+    # 库存对账（两个方向）：改挂让新条目的单元"在库"成立、关闭工单；
+    # 被腾空的旧条目那边工单退回，原订阅继续去找（同 claim_files）
     for item_id in accepted_items:
         await close_fulfilled_wanted(session, item_id)
+    for displaced_id in displaced:
+        await reopen_unfulfilled_wanted(session, displaced_id, lost_sources=lost_sources)
     await LibraryRepository(session).refresh_stats({row.library_id for row in pending})
     return len(pending), title, displaced

@@ -38,7 +38,15 @@ from movieclaw_api.services.library.scan import scan_library
 from movieclaw_api.services.media_probe import MediaSpec, _parse_probe
 from movieclaw_db.engine import dispose_db, get_database, init_db
 from movieclaw_db.migrations import run_migrations
-from movieclaw_db.models import FileState, LibraryFile, MediaItem
+from movieclaw_db.models import (
+    FileState,
+    LibraryFile,
+    MediaItem,
+    RuleSet,
+    Subscription,
+    WantedItem,
+    WantedStatus,
+)
 from movieclaw_db.models.library_file import IdentitySource
 from movieclaw_db.repositories.library_repo import LibraryRepository
 
@@ -1496,6 +1504,60 @@ async def test_reidentify_preview_then_claim_applies_and_clears_orphan(db, tmp_p
             .all()
         )
         assert not remaining
+
+
+async def test_claim_revives_the_subscription_left_behind(db, tmp_path) -> None:
+    """错挂的片被改正后，原订阅必须复活继续找——它要的那部片其实还没下到。
+
+    真实教训：同名同年的两部《The Odyssey》(2026)，系统按片名+年份认错了片。
+    用户在详情页改正身份之后，原订阅的工单仍停在 imported、订阅仍是 completed，
+    于是它再也不搜了，用户要几个月后才发现"我订的那部一直没来"。
+    """
+    from movieclaw_api.api.routes.libraries import claim_files_batch
+    from movieclaw_api.schemas.library import ClaimBatchPayload
+
+    _library_id, wrong_id, _correct_id = await _wrongly_anchored_movie(db, tmp_path)
+
+    # 给错挂的那个条目挂一个"已收齐"的订阅：这正是错配后的真实状态
+    async with db.session() as session:
+        rule_set = RuleSet(name="默认", spec={})
+        session.add(rule_set)
+        await session.flush()
+        sub = Subscription(media_item_id=wrong_id, kind="movie", rule_set_id=rule_set.id)
+        session.add(sub)
+        await session.flush()
+        session.add(
+            WantedItem(
+                subscription_id=sub.id,
+                media_item_id=wrong_id,
+                season_number=0,
+                episode_number=0,
+                status=WantedStatus.IMPORTED,
+                info_hash="odyssey01",
+            )
+        )
+        await session.commit()
+        sub_id = sub.id
+
+    async with db.session() as session:
+        row = (await session.execute(select(LibraryFile))).scalars().one()
+        await claim_files_batch(
+            ClaimBatchPayload(file_ids=[row.id], title_ref="tmdb:movie:300"),
+            BackgroundTasks(),
+            session,
+        )
+
+    async with db.session() as session:
+        wanted = (
+            (await session.execute(select(WantedItem).where(WantedItem.subscription_id == sub_id)))
+            .scalars()
+            .one()
+        )
+        assert wanted.status == WantedStatus.WANTED
+        assert wanted.info_hash is None
+        assert wanted.next_search_at is not None
+        sub = await session.get(Subscription, sub_id)
+        assert sub.status != "completed"
 
 
 async def test_detach_marks_non_work_and_frees_the_slot(db, tmp_path) -> None:
