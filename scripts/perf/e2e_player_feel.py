@@ -11,6 +11,13 @@
 5. **章节刻度**：轨道上有刻度，气泡里有章节名。
 6. **iOS 伪横屏下坐标不串轴**：容器整体转 90° 之后，进度条与双击分区仍按
    用户眼里的左右走（2026-09-08 实测这里错过一次，见 player-feel.md §10）。
+7. **触屏拖动时控制条不淡出**：拖着不动超过自动隐藏的倒计时，进度条不能在
+   手指底下消失（同上，只在触屏踩得到，见 §12）。
+
+**形态矩阵**：同一组交互要在三种形态下各跑一遍——桌面鼠标、触屏竖屏、触屏
+伪横屏。**桌面会遮住触屏的 bug**（鼠标的 pointermove 顺带重排了控制条的自动
+隐藏倒计时，触屏没有这条），所以触屏那两档必须用 CDP 派**真触摸事件**，
+`page.mouse` 验不出来。
 
 外加逐帧步进（暂停时 `.` 走一帧）。用法::
 
@@ -251,6 +258,7 @@ async def run(args: argparse.Namespace) -> dict:
         """
         )
         report["fake_landscape"] = await run_fake_landscape(browser, args)
+        report["touch_portrait"] = await run_touch_portrait(browser, args)
         await browser.close()
     return report
 
@@ -356,6 +364,70 @@ async def run_fake_landscape(browser, args: argparse.Namespace) -> dict:
         await context.close()
 
 
+async def run_touch_portrait(browser, args: argparse.Namespace) -> dict:
+    """触屏竖屏：**只有真触摸事件才踩得到**的那几条。
+
+    `page.mouse` 在这里没有意义——它发出的是鼠标指针事件，而播放器对鼠标和
+    手指的处理本来就分岔（鼠标 move 会唤出控制层、顺带重排自动隐藏倒计时，
+    手指不会）。所以这一档全程走 CDP 的 `Input.dispatchTouchEvent`。
+    """
+    context = await browser.new_context(
+        viewport={"width": 390, "height": 844}, has_touch=True, is_mobile=True
+    )
+    page = await context.new_page()
+    try:
+        await page.goto(f"{args.web}/login", wait_until="networkidle")
+        await page.click('input[type="text"]')
+        await page.keyboard.type(args.user)
+        await page.click('input[type="password"]')
+        await page.keyboard.type(args.password)
+        await page.click('button[type="submit"]')
+        await page.wait_for_url(lambda url: "/login" not in url, timeout=60_000)
+        await page.goto(f"{args.web}/play/{args.item}", wait_until="domcontentloaded")
+        await page.wait_for_function(
+            "() => { const v = document.querySelector('video'); return v && v.readyState >= 2; }",
+            timeout=args.timeout * 1000,
+        )
+        # 手机上下文里自动播放被浏览器拦下：按一下播放键。暂停时控制层本来就
+        # 该常驻，那样验不出自动隐藏
+        video_box = await page.evaluate(
+            "() => { const b = document.querySelector('video').getBoundingClientRect();"
+            " return { x: b.left + b.width / 2, y: b.top + b.height / 2 }; }"
+        )
+        await page.touchscreen.tap(video_box["x"], video_box["y"])
+        await asyncio.sleep(0.8)
+        play = await page.query_selector('button[aria-label="播放"]')
+        if play:
+            await play.click()
+        await asyncio.sleep(1.5)
+        if await page.evaluate("() => document.querySelector('video').paused"):
+            return {"playing": False}
+
+        bar = await page.evaluate(
+            "() => { const b = document.querySelector('.player-scrub').getBoundingClientRect();"
+            " return { left: b.left, top: b.top, w: b.width, h: b.height }; }"
+        )
+        cdp = await context.new_cdp_session(page)
+        y = bar["top"] + bar["h"] / 2
+        x0 = bar["left"] + bar["w"] * 0.3
+        touch_at = lambda kind, x: cdp.send(  # noqa: E731 - 三行样板不值得起个名字
+            "Input.dispatchTouchEvent",
+            {"type": kind, "touchPoints": [] if kind == "touchEnd" else [{"x": x, "y": y}]},
+        )
+        await touch_at("touchStart", x0)
+        chrome_states = []
+        for step in range(12):  # 6 秒 > 控制条 4 秒的自动隐藏倒计时
+            await touch_at("touchMove", x0 + step * 1.5)
+            await asyncio.sleep(0.5)
+            chrome_states.append(
+                await page.evaluate("() => document.querySelector('.player-root').dataset.chrome")
+            )
+        await touch_at("touchEnd", x0)
+        return {"playing": True, "chrome_while_dragging": sorted(set(chrome_states))}
+    finally:
+        await context.close()
+
+
 def verdicts(r: dict) -> list[tuple[bool, str]]:
     """把读数翻译成 §0 那几条验收标准的通过与否。"""
     paint = r.get("progress_paint") or {}
@@ -365,6 +437,7 @@ def verdicts(r: dict) -> list[tuple[bool, str]]:
     hold = r.get("hold_speed") or {}
     step = r.get("frame_step") or {}
     rotated = r.get("fake_landscape") or {}
+    touch = r.get("touch_portrait") or {}
     return [
         # 跟 timeupdate 走时 1.2 秒内只有 4~6 个不同取值；每帧自绘接近采样数
         (
@@ -403,6 +476,12 @@ def verdicts(r: dict) -> list[tuple[bool, str]]:
         (
             step.get("paused") and step.get("drift") == 0 and 0 < step.get("step", 0) < 0.5,
             f"逐帧步进：暂停后走了 {step.get('step')} 秒",
+        ),
+        (
+            # 拖动不重排倒计时的话，进度条会在手指底下消失、拖动却还在继续
+            bool(touch.get("playing")) and touch.get("chrome_while_dragging") == ["visible"],
+            f"触屏拖动 6 秒控制条不淡出：{touch.get('chrome_while_dragging')}"
+            + ("" if touch.get("playing") else "（没能起播，本条无效）"),
         ),
     ]
 

@@ -6,6 +6,7 @@ import {
   clampSeekTarget,
   planSeek,
   progressRatio,
+  shownPositionMs,
   toFileMs,
   toSessionSeconds,
 } from "../lib/player/timeline.ts";
@@ -101,4 +102,48 @@ test("片长未知/非法时比例为 0，不画一条随机长度的已播段",
   assert.equal(progressRatio(30_000, null), 0);
   assert.equal(progressRatio(30_000, 0), 0);
   assert.equal(progressRatio(Number.NaN, 120_000), 0);
+});
+
+// ---------------------------------------------------------------------------
+// 位置读数的唯一取值规则（player-feel.md §13：写两遍就会各说各话）
+// ---------------------------------------------------------------------------
+
+test("拖动中一切听手指的：拖动值压过其余三个来源", () => {
+  assert.equal(
+    shownPositionMs({ draggingMs: 5_000, overrideMs: 9_000, livePositionMs: 1_000, positionMs: 2_000 }),
+    5_000,
+  );
+});
+
+test("落点（横滑/连按）压过真实播放位置：用户已经表达了意图，画面还没跳过去", () => {
+  assert.equal(
+    shownPositionMs({ draggingMs: null, overrideMs: 9_000, livePositionMs: 1_000, positionMs: 2_000 }),
+    9_000,
+  );
+});
+
+test("没有落点时用正在播的真实位置——它才是每帧都在变的那个", () => {
+  assert.equal(
+    shownPositionMs({ draggingMs: null, overrideMs: null, livePositionMs: 1_234, positionMs: 2_000 }),
+    1_234,
+  );
+});
+
+test("真实位置不可用（暂停 / seek 途中 / 换会话空档）时退回状态值", () => {
+  // 换会话时 video 还挂着旧流，读它会让进度条先弹回原处再跳过去
+  assert.equal(
+    shownPositionMs({ draggingMs: null, overrideMs: null, livePositionMs: null, positionMs: 2_000 }),
+    2_000,
+  );
+});
+
+test("0 是合法位置，不能被当成「没有值」", () => {
+  assert.equal(
+    shownPositionMs({ draggingMs: 0, overrideMs: 9_000, livePositionMs: 1_000, positionMs: 2_000 }),
+    0,
+  );
+  assert.equal(
+    shownPositionMs({ draggingMs: null, overrideMs: null, livePositionMs: 0, positionMs: 2_000 }),
+    0,
+  );
 });

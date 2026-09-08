@@ -96,6 +96,32 @@ export function planSeek(
 }
 
 /**
+ * 界面上「现在放到哪儿」的**唯一一份取值规则**。
+ *
+ * 播放器里有四个来源会声称自己是当前位置，优先级必须处处一致：
+ *
+ * 1. `draggingMs`——手指正按在进度条上，屏幕必须听他的；
+ * 2. `overrideMs`——横滑落点 / 连按累积落点：用户已经表达了意图、画面还没跳
+ *    过去的中间态；
+ * 3. `livePositionMs`——**正在播**的 video 的真实位置，每帧都在变（只有进度条
+ *    自绘需要它，文字读数用不上）；
+ * 4. `positionMs`——`timeupdate` 攒下的状态值（约 4Hz）。暂停、seek 途中、
+ *    换会话空档只有它可信：那时 video 还挂着旧流，读它会让进度条先弹回原处。
+ *
+ * **这个顺序只能写在这里一处。** 2026-09-08 的真机反馈就是它被写了两遍的
+ * 后果：画面正中的胶囊报 9:58、底下的进度条停在 19:00，两个读数各说各话
+ * （docs/design/player-feel.md §2.A0、§13）。
+ */
+export function shownPositionMs(input: {
+  draggingMs: number | null;
+  overrideMs: number | null;
+  livePositionMs: number | null;
+  positionMs: number;
+}): number {
+  return input.draggingMs ?? input.overrideMs ?? input.livePositionMs ?? input.positionMs;
+}
+
+/**
  * 位置 → 进度条比例（0~1）。
  *
  * 片长未知时返回 0：那时进度条本来就是禁用状态，画一条随机长度的已播段

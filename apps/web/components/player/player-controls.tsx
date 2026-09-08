@@ -8,7 +8,7 @@ import { SUBTITLE_OFFSET_STEP, clampSubtitleOffset } from "@/lib/player/subtitle
 import { QUALITY_OPTIONS } from "@/lib/player/quality";
 import type { SubtitleStyle, SubtitleTracks } from "@/lib/player/subtitles";
 import { pointerOffsetX } from "@/lib/player/touch-adjust";
-import { formatClock, progressRatio } from "@/lib/player/timeline";
+import { formatClock, progressRatio, shownPositionMs, toFileMs } from "@/lib/player/timeline";
 import { type TrickplayIndex, tileAt } from "@/lib/player/trickplay";
 
 /**
@@ -310,8 +310,14 @@ export function PlayerControls(props: PlayerControlsProps) {
   const [menu, setMenu] = useState<"none" | "audio" | "subtitles" | "settings">("none");
   // 悬停预览的位置（文件毫秒 + 进度条内的像素横坐标）。null = 没在悬停
   const [hover, setHover] = useState<{ ms: number; x: number } | null>(null);
-  /** 时间文字用的位置。三个来源的优先级与进度条自绘完全一致（见 paint） */
-  const shown = dragging ?? overrideMs ?? positionMs;
+  /** 时间文字用的位置。取值规则与进度条自绘**同一个函数**，见 shownPositionMs */
+  const shown = shownPositionMs({
+    draggingMs: dragging,
+    overrideMs,
+    // 文字是秒级读数，用不着每帧去读 video：4Hz 的状态值足够
+    livePositionMs: null,
+    positionMs,
+  });
   const previewTile = hover ? tileAt(trickplay, hover.ms) : null;
   /** 刻度位置。0 秒那条不画——片头永远在最左端，画出来只是一条噪音 */
   const chapterMarks = useMemo(
@@ -370,12 +376,18 @@ export function PlayerControls(props: PlayerControlsProps) {
   const playedRef = useRef<HTMLDivElement>(null);
   const thumbRef = useRef<HTMLDivElement>(null);
   /** 供 rAF 回调读最新值：跟着依赖重建循环会在播放中反复起停 */
-  const paintInputRef = useRef({ video, startMs, durationMs, positionMs, shown });
-  paintInputRef.current = { video, startMs, durationMs, positionMs, shown };
+  const paintInputRef = useRef({ video, startMs, durationMs, positionMs, dragging, overrideMs });
+  paintInputRef.current = { video, startMs, durationMs, positionMs, dragging, overrideMs };
 
   const paint = useCallback(() => {
-    const { video: el, startMs: origin, durationMs: total, positionMs: state, shown: override } =
-      paintInputRef.current;
+    const {
+      video: el,
+      startMs: origin,
+      durationMs: total,
+      positionMs: state,
+      dragging: draggingMs,
+      overrideMs: override,
+    } = paintInputRef.current;
     if (!total) {
       // 片长未知（换会话的空档）时进度条是禁用态：**必须清零**而不是直接
       // 返回——留着上一路会话画的宽度，用户看到的是一条与新内容无关的进度。
@@ -383,17 +395,17 @@ export function PlayerControls(props: PlayerControlsProps) {
       if (thumbRef.current) thumbRef.current.style.left = "0%";
       return;
     }
-    // 位置取值三选一，优先级与时间文字一致：
-    // 1. 拖动/横滑/连按的落点（override，此时 shown ≠ positionMs）；
-    // 2. **正在播**的 video——只有这一条是每帧变化的；
-    // 3. positionMs 状态值：暂停、seek 途中、换会话空档都归它。第 3 条不能
-    //    省：换会话时 video 还挂着旧流（currentTime 属于旧时间轴），拿它算
-    //    出来的位置会让进度条先弹回原处再跳过去。
-    let ms = override;
-    if (override === state && el && !el.paused && !el.seeking && el.readyState >= 2) {
-      ms = origin + el.currentTime * 1000;
-    }
-    const ratio = progressRatio(ms, total);
+    // 取值规则与时间文字**同一个函数**，这里只多喂一路「正在播的真实位置」
+    // ——它是唯一每帧都在变的来源。不可用（暂停 / seek 途中 / 换会话空档，
+    // 那时 video 还挂着旧流）就传 null，由函数退回状态值。
+    const live =
+      el && !el.paused && !el.seeking && el.readyState >= 2
+        ? toFileMs(el.currentTime, origin)
+        : null;
+    const ratio = progressRatio(
+      shownPositionMs({ draggingMs, overrideMs: override, livePositionMs: live, positionMs: state }),
+      total,
+    );
     const percent = `${ratio * 100}%`;
     if (playedRef.current) playedRef.current.style.width = percent;
     if (thumbRef.current) thumbRef.current.style.left = percent;
