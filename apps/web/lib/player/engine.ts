@@ -15,6 +15,7 @@ import type Hls from "hls.js";
 import type { MseKind } from "@/lib/api/playback";
 import { reportPlaybackClientLog } from "@/lib/api/playback";
 
+import { type MediaRecoverState, nextMediaRecovery } from "./media-recover";
 import { NUDGE_STEP_S, bufferedAhead, classifyStall, shouldNudge, stallReason } from "./stall";
 
 /** 把 `<video>` 的当下状态压成一行上报（排障用，字段都很小）。 */
@@ -107,12 +108,18 @@ function clientLog(options: EngineOptions, event: string, detail: Record<string,
 }
 
 /**
- * 回收多少秒的已播缓冲（hls.js `backBufferLength`）。
+ * 保留多少秒的已播缓冲（hls.js `backBufferLength`）。
  *
- * 不回收的话，一部三小时的片子会把已播分片一路堆在 SourceBuffer 里，吃掉
- * 几个 G 内存然后整个标签页崩掉——长片播放最典型的一种"放到一半就没了"。
+ * 不回收是不行的：一部三小时的片子会把已播分片一路堆在 SourceBuffer 里，
+ * 吃掉几个 G 内存然后整个标签页崩掉——长片播放最典型的一种「放到一半就
+ * 没了」。jellyfin-web 设 Infinity（配合服务端默认不删分片），我们不跟。
+ *
+ * 但 30 秒太紧：**回拖是最常见的操作**（没听清、走神），回拖 31 秒就要重新
+ * 请求分片，转码会话下还可能把服务端的 ffmpeg 拽回去重启，代价是几秒黑屏。
+ * 180 秒按 4Mbps 估算约 90MB，长片也在可接受范围，换来的是「往回拖三分钟
+ * 之内都是瞬间的」（docs/design/player-feel.md §2.C3）。
  */
-const BACK_BUFFER_S = 30;
+const BACK_BUFFER_S = 180;
 
 /** 掉帧与缓冲读数：三种引擎共用一份取法。 */
 function readCommonStats(video: HTMLVideoElement): Omit<EngineStats, "engine" | "bitrate"> {
@@ -316,6 +323,7 @@ class DirectEngine implements PlaybackEngine {
  */
 const MAX_NETWORK_RECOVERIES = 4;
 
+
 /** 档 1–4：hls.js 喂 fMP4 分片。 */
 class HlsEngine implements PlaybackEngine {
   private hls: Hls | null = null;
@@ -323,6 +331,8 @@ class HlsEngine implements PlaybackEngine {
   private currentBitrate: number | null = null;
   /** 连续网络恢复计数；任何一个分片成功落地就清零 */
   private networkRecoveries = 0;
+  /** 解码错误自救阶梯的进度（时刻），语义见 media-recover.ts */
+  private readonly mediaRecover: MediaRecoverState = { lastRecoverAt: null, lastSwapAt: null };
 
   constructor(private readonly options: EngineOptions) {}
 
@@ -380,6 +390,25 @@ class HlsEngine implements PlaybackEngine {
         return;
       }
       if (data.type === HlsCtor.ErrorTypes.MEDIA_ERROR) {
+        // 解码类致命错误先就地自救，救不回来才判失败（docs/design/player-feel.md
+        // §2.D1）。直接判失败的代价是走降档回路：画质掉一级 + 几秒黑屏重开
+        // 会话；而这类错误（buffer append error、解码器抽风）hls.js 自己
+        // 往往一秒内就能救回来——最贵的手段不该是第一反应。
+        // 阶梯与冷却的判定在 media-recover.ts（纯函数，带单测）。
+        const now = performance.now();
+        const step = nextMediaRecovery(this.mediaRecover, now);
+        if (step !== "give-up") {
+          clientLog(this.options, "hls-media-recover", { details: data.details, step });
+          if (step === "swap") {
+            this.mediaRecover.lastSwapAt = now;
+            this.hls?.swapAudioCodec();
+          } else {
+            this.mediaRecover.lastRecoverAt = now;
+          }
+          this.hls?.recoverMediaError();
+          return;
+        }
+        clientLog(this.options, "hls-media-recover-failed", { details: data.details });
         onFailed(`码流解码失败（${data.details}）`);
         return;
       }
