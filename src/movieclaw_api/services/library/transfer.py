@@ -18,6 +18,20 @@
 - **绝不覆盖、绝不合并**：目标已存在同名目录即判为冲突并中止该单元
   （多半是目标库里已经有这部片子），宁可让用户自己决断。
 
+搬运单元按**库的能力档案**分叉，不按类型字面（profile.scraped）：
+
+- 影视库（有识别链）：条目 = 条目目录，整目录搬，如上；
+- 本地内容库（「其他」/图片，一文件一条目，见 ``local_identity``）：
+  条目就是那个文件本身。这类库里 ``2024旅行/`` 只是用户自己的分组目录，
+  下面躺着几十条互不相干的条目，整目录搬会把别人一起卷走；目标库有同名
+  分组目录也不是冲突——那正是它该落进去的地方。因此搬的是文件（连同
+  字幕/NFO 等附属文件），并**保留它相对库根的那段目录结构**，搬过去仍在
+  ``2024旅行/`` 下面。
+
+本地来源条目（``media_item.source == local``）的身份锚由「库 id + 相对
+库根路径」派生，搬完必须一并改锚（``_relocate_item_identity``）——否则
+源库里后来出现在同一相对路径的另一段录像会被认成同一条目。
+
 跨设备（源根与目标根不在同一块盘）是本模块唯一的重活：``os.rename`` 会以
 EXDEV 失败，此时退化为"完整复制 → 复制成功才删源"。两个后果必须在预览
 里说清楚：耗时按体积走（几十 GB 以分钟计），且**与做种目录的硬链接关系
@@ -39,20 +53,24 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
 
 from movieclaw_api.exceptions import BadRequestException, ConflictException
 from movieclaw_api.services import jobs
 from movieclaw_api.services.library.fsops import rename_no_replace
-from movieclaw_api.services.library.layout import entry_dir_of
+from movieclaw_api.services.library.layout import entry_dir_of, entry_dirs
+from movieclaw_api.services.library.local_identity import local_external_id
 
 # 复用整理器的"只清理自己搬空的目录"实现（非空即停、绝不删文件）——同一
 # 语义两处各写一份迟早分叉，而这段克制正是搬运类操作的安全底线
 from movieclaw_api.services.library.organize import _prune_emptied_dirs
+from movieclaw_api.services.library.profile import profile_of
 from movieclaw_api.services.library.sidecar import find_sidecars
 from movieclaw_api.services.task_state import TaskState
 from movieclaw_db.engine import get_database
 from movieclaw_db.models import FileState, Library, LibraryFile, MediaItem, Subscription, utcnow
+from movieclaw_db.models.media_item import MediaSource
 from movieclaw_db.repositories.library_file_repo import LibraryFileRepository
 from movieclaw_db.repositories.library_repo import LibraryRepository
 
@@ -181,6 +199,8 @@ async def build_transfer_plan(
         target_root,
         files,
         [Path(p) for p in foreign],
+        # 一文件一条目的库（本地内容库）搬文件，有识别链的库搬条目目录
+        not profile_of(source).scraped,
     )
 
 
@@ -193,6 +213,7 @@ def _build_plan_sync(
     target_root: Path,
     files: list[LibraryFile],
     foreign_paths: list[Path],
+    file_entries: bool,
 ) -> TransferPlan:
     plan = TransferPlan(
         source_library_id=source_library_id,
@@ -207,6 +228,9 @@ def _build_plan_sync(
     # 条目目录 → 该目录下本条目的台账行；保序（第一个目录决定跨设备判定）
     by_entry: dict[Path, list[LibraryFile]] = {}
     loose: list[LibraryFile] = []  # 找不到条目目录、直接躺在库根下的裸文件
+    # 一文件一条目的库：(台账行, 源路径, 相对库根的路径)，逐个搬、结构保留
+    singles: list[tuple[LibraryFile, Path, Path]] = []
+    taken: set[str] = set()  # 本次计划已占用的目标路径（同名撞车检测）
 
     for row in files:
         path = Path(row.file_path)
@@ -222,6 +246,15 @@ def _build_plan_sync(
             assert row.id is not None
             plan.missing_file_ids.append(row.id)
             continue
+        if file_entries:
+            rel = _relative_to_roots(path, roots)
+            if rel is None:
+                plan.skips.append(
+                    TransferSkip(row.file_path, "不在源库的根路径之内（根路径可能已变更），已跳过")
+                )
+            else:
+                singles.append((row, path, rel))
+            continue
         entry = entry_dir_of(roots, path)
         if entry is None and row.container in ("bluray", "dvd"):
             entry = path  # 直接躺在根下的原盘目录：目录本身就是条目
@@ -234,7 +267,14 @@ def _build_plan_sync(
                 TransferSkip(row.file_path, "不在源库的根路径之内（根路径可能已变更），已跳过")
             )
 
-    taken: set[str] = set()  # 本次计划已占用的目标路径（同名条目目录撞车检测）
+    # 源库里别的条目占着的路径：它们永远不是本条目的附属文件（图片库里
+    # ``婚礼-cover.jpg`` 完全可能是**另一条**独立条目），逐文件搬时据此排除
+    others = set(foreign_paths)
+
+    # 一文件一条目：目标路径 = 目标主根 + 相对源库根的原路径。分组目录不存在
+    # 就在搬运时建（``_move`` 会 mkdir），已存在正好落进去——不是冲突
+    for row, src, rel in singles:
+        _add_file_move(plan, row, src, target_root / rel, taken, others)
 
     for entry, rows in by_entry.items():
         dst = target_root / entry.name
@@ -250,7 +290,7 @@ def _build_plan_sync(
             for row in rows:
                 src = Path(row.file_path)
                 rel = src.relative_to(entry)
-                _add_file_move(plan, row, src, dst / rel, taken)
+                _add_file_move(plan, row, src, dst / rel, taken, others)
             plan.skips.append(
                 TransferSkip(
                     str(entry),
@@ -273,7 +313,7 @@ def _build_plan_sync(
 
     for row in loose:
         src = Path(row.file_path)
-        _add_file_move(plan, row, src, target_root / src.name, taken)
+        _add_file_move(plan, row, src, target_root / src.name, taken, others)
 
     plan.total_bytes = sum(m.size_bytes for m in plan.moves)
     if plan.moves:
@@ -282,9 +322,14 @@ def _build_plan_sync(
 
 
 def _add_file_move(
-    plan: TransferPlan, row: LibraryFile, src: Path, dst: Path, taken: set[str]
+    plan: TransferPlan,
+    row: LibraryFile,
+    src: Path,
+    dst: Path,
+    taken: set[str],
+    others: set[Path],
 ) -> None:
-    """登记一个单文件搬运单元（含字幕/NFO 等附属文件）。"""
+    """登记一个单文件搬运单元（含字幕/NFO/海报等附属文件）。"""
     if str(dst) in taken or dst.exists():
         plan.skips.append(TransferSkip(str(src), f"目标路径已存在同名文件，跳过以免覆盖：{dst}"))
         return
@@ -297,19 +342,36 @@ def _add_file_move(
             is_dir=src.is_dir(),
             size_bytes=row.size_bytes,
             file_ids=[row.id],
-            sidecars=_find_sidecars(src, dst),
+            sidecars=_find_sidecars(src, dst, others),
         )
     )
 
 
-def _find_sidecars(src: Path, dst: Path) -> list[tuple[str, str]]:
-    """主文件的附属文件，判定口径见 ``library.sidecar``（整理/转移/回收共用）。"""
-    return [(str(entry), str(dst.parent / (dst.stem + tail))) for entry, tail in find_sidecars(src)]
+def _find_sidecars(src: Path, dst: Path, others: set[Path]) -> list[tuple[str, str]]:
+    """主文件的附属文件，判定口径见 ``library.sidecar``（整理/转移/回收共用）。
+
+    ``others`` 是源库里别的条目占着的路径，一律排除：名字形态像附属、台账里
+    却自成一条的文件（图片库里 ``婚礼-cover.jpg``）跟着搬走，会留下一条指向
+    旧位置的台账行，下次扫描一边标缺失、一边在新库把它当新文件重新入账。
+    """
+    return [
+        (str(entry), str(dst.parent / (dst.stem + tail)))
+        for entry, tail in find_sidecars(src)
+        if entry not in others
+    ]
 
 
 def _inside_roots(path: Path, roots: list[Path]) -> bool:
     """路径必须严格位于某个库根之内（不等于根本身）——搬运的硬边界。"""
     return any(root in path.parents for root in roots)
+
+
+def _relative_to_roots(path: Path, roots: list[Path]) -> Path | None:
+    """路径相对它所在库根的那一段；不在任何根之内时 None（与 ``_inside_roots`` 同口径）。"""
+    for root in roots:
+        if root in path.parents:
+            return path.relative_to(root)
+    return None
 
 
 def _cross_device(source: Path, target_root: Path) -> bool:
@@ -554,6 +616,9 @@ async def _transfer(
                 subscription.updated_at = utcnow()
                 await session.commit()
                 summary.subscription_moved = True
+
+            # 条目身份随迁：本地锚改到新库新路径 + 刮削归属改挂目标库
+            await _relocate_item_identity(session, plan, target, summary)
     from movieclaw_api.services.media_server_notify import notify_media_server_refresh
 
     try:
@@ -572,6 +637,92 @@ async def _transfer(
         summary.bytes_moved / 1024**3,
         summary.removed_dirs,
         len(summary.errors),
+    )
+
+
+async def _relocate_item_identity(
+    session, plan: TransferPlan, target: Library, summary: TransferSummary
+) -> None:
+    """条目自身随迁：身份锚（本地来源）与刮削归属库。
+
+    **为什么锚必须跟着改**：本地来源条目的 ``external_id`` 是「库 id + 相对
+    库根路径」的派生值（``local_identity.local_external_id``），扫描据此判断
+    "这个文件还是不是原来那条目"。搬走之后不改锚有两个后果，都在用户眼皮
+    底下发生：
+
+    - 源库里**后来**出现在同一相对路径的另一段录像（``2024旅行/婚礼.mp4``
+      被换成了别人的婚礼）算出来的锚与搬走的那条一模一样，扫描会把它挂到
+      已经搬到新库的条目上——一张卡片下面躺着两个库里两段不相干的视频；
+    - 目标库重扫时若那一行需要重新识别（文件改了、台账行被清过），算出的
+      是**新**锚，于是又建一条新条目，用户手工改过的标题、封面与观看记录
+      全留在旧条目上。
+
+    TMDB 来源的条目不碰：它的锚是 TMDB id，与库和路径无关。影视库里散在库
+    根下的临时本地身份也不碰——那种锚由解析证据（片名/年份）派生，这里重算
+    不出同一个值，宁可留旧锚等重新识别改锚，也不写一个扫描对不上的新值。
+
+    刮削归属（``scrape_library_id``）只在它还指着源库时改：用户显式指过别的
+    库是人工决策，转移不该顺手覆盖。
+    """
+    item = await session.get(MediaItem, plan.media_item_id)
+    if item is None or target.id is None:
+        return
+    changed = False
+    if item.scrape_library_id == plan.source_library_id:
+        item.scrape_library_id = target.id
+        changed = True
+    anchor = None
+    if item.source == MediaSource.LOCAL:
+        rows = list(
+            (
+                await session.execute(
+                    select(LibraryFile)
+                    .where(
+                        LibraryFile.library_id == target.id,
+                        LibraryFile.media_item_id == plan.media_item_id,
+                    )
+                    .order_by(LibraryFile.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        anchor = _relocated_anchor(rows, target)
+    if anchor is not None and anchor != item.external_id:
+        item.external_id = anchor
+        changed = True
+    if not changed:
+        return
+    item.updated_at = utcnow()
+    try:
+        await session.commit()
+    except IntegrityError:
+        # 目标库里已经有一条锚在同一位置的条目（多半是此前留下的孤儿）：
+        # 合并两条身份不是转移该做的决断，如实报出来让用户处理
+        await session.rollback()
+        logger.warning("条目 #%s 转移后改锚失败：目标库已存在同一位置的身份锚", plan.media_item_id)
+        summary.errors.append(
+            f"文件已搬到「{target.name}」，但条目身份未能改挂到新库"
+            "（目标库里已有同一位置的条目残留）——请在目标库重新扫描后确认"
+        )
+
+
+def _relocated_anchor(rows: list[LibraryFile], target: Library) -> str | None:
+    """本地来源条目搬到目标库后应有的身份锚；算不出同一口径的值时 None。"""
+    target_root = Path(target.primary_root or "")
+    anchor_path = next(
+        (Path(row.file_path) for row in rows if target_root in Path(row.file_path).parents),
+        None,
+    )
+    if anchor_path is None:
+        # 逻辑随迁的缺失行路径还指着旧库，拿它算锚只会写进一个假位置
+        return None
+    profile = profile_of(target)
+    if profile.scraped and not entry_dirs(target_root, anchor_path):
+        return None
+    assert target.id is not None
+    return local_external_id(
+        target.id, profile.kind, target_root, anchor_path, None, scraped=profile.scraped
     )
 
 

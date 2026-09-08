@@ -898,7 +898,7 @@ export function LibraryItemDetailView({
         open={transferOpen}
         detail={detail}
         libraryId={libraryId}
-        sourceLibraryName={library?.name ?? null}
+        sourceLibrary={library}
         onClose={() => setTransferOpen(false)}
         onFinished={handleTransferFinished}
         onTransferred={(targetLibraryId) => {
@@ -1976,7 +1976,7 @@ function TransferDialog({
   open,
   detail,
   libraryId,
-  sourceLibraryName,
+  sourceLibrary,
   onFinished,
   onClose,
   onTransferred,
@@ -1984,7 +1984,8 @@ function TransferDialog({
   open: boolean;
   detail: LibraryItemDetail;
   libraryId: number;
-  sourceLibraryName: string | null;
+  /** 当前所在库；候选目标库与文案都按它的形态 × 来源决定 */
+  sourceLibrary: MediaLibrary | null;
   onFinished: (targetLibraryId: number) => void;
   onClose: () => void;
   onTransferred: (targetLibraryId: number) => void;
@@ -1999,19 +2000,26 @@ function TransferDialog({
   const [status, setStatus] = useState<TransferStatus | null>(null);
   const [starting, setStarting] = useState(false);
 
+  // 一文件一条目的库（其他 / 图片）：搬的是文件本身，不是"条目目录"
+  const fileEntries = sourceLibrary != null && !sourceLibrary.capabilities.scraped;
+  // 候选目标库的口径必须与后端 assert_transferable 一致：比的是**库**的来源，
+  // 不是条目的来源——影视库里认不出的文件条目来源也是 local，拿它去筛会把
+  // 同类型的影视库全筛掉，弹窗只剩一句"没有其他库可选"
+  const sourceKind = sourceLibrary?.kind ?? detail.kind;
+  const librarySource = sourceLibrary?.source ?? detail.source;
   useEffect(() => {
     if (!open) return;
     setTargetId(null);
     setPreview(null);
     setStatus(null);
     setError(null);
-    listLibraries(detail.kind)
+    listLibraries(sourceKind)
       // 同形态且同来源才能收（其他库 ↔ 其他库）
       .then((libs) =>
-        setCandidates(libs.filter((l) => l.id !== libraryId && l.source === detail.source)),
+        setCandidates(libs.filter((l) => l.id !== libraryId && l.source === librarySource)),
       )
       .catch(() => setError("读取媒体库列表失败，请稍后重试"));
-  }, [open, detail.kind, detail.source, libraryId]);
+  }, [open, sourceKind, librarySource, libraryId]);
 
   // 选中目标库就立刻算预览：用户要先看清"搬到哪、搬多少"才谈得上确认
   useEffect(() => {
@@ -2087,12 +2095,23 @@ function TransferDialog({
               <FolderIcon className="size-4.5 text-[var(--accent-2)]" />
               把「{detail.title}」转移到其他媒体库
             </h3>
-            <p className="mt-2 text-sub leading-6 text-[var(--text-muted)]">
-              分错库时用它补救（例如韩剧被判进了「大陆华语剧」）。
-              <span className="text-white/80">磁盘上的整个条目目录</span>
-              （视频、NFO、海报、字幕）会连同库存记录一起搬到目标库；
-              目录名原样保留，需要规范化请到目标库运行「整理文件名」。
-            </p>
+            {/* 搬运单元按库的能力档案分叉，文案必须跟着分叉：本地内容库
+                （其他 / 图片）一文件一条目，搬的是文件本身而不是条目目录，
+                照抄影视库的说法只会让用户以为整个分组目录都要被搬走 */}
+            {fileEntries ? (
+              <p className="mt-2 text-sub leading-6 text-[var(--text-muted)]">
+                放错库时用它补救。<span className="text-white/80">这个条目的文件</span>
+                （连同同名的 NFO、字幕）会连同库存记录一起搬到目标库；
+                文件在库里的所在目录结构原样保留，同目录下别的条目留在原地不动。
+              </p>
+            ) : (
+              <p className="mt-2 text-sub leading-6 text-[var(--text-muted)]">
+                分错库时用它补救（例如韩剧被判进了「大陆华语剧」）。
+                <span className="text-white/80">磁盘上的整个条目目录</span>
+                （视频、NFO、海报、字幕）会连同库存记录一起搬到目标库；
+                目录名原样保留，需要规范化请到目标库运行「整理文件名」。
+              </p>
+            )}
 
             {/* —— 第一步：选目标库 —— */}
             <p className="mt-5 text-caption font-semibold uppercase tracking-[0.16em] text-[var(--text-faint)]">
@@ -2102,7 +2121,7 @@ function TransferDialog({
               <p className="mt-2 text-sub text-[var(--text-muted)]">正在读取媒体库…</p>
             ) : candidates.length === 0 ? (
               <p className="mt-2 text-sub leading-6 text-[#ffd08a]">
-                没有其他{LIBRARY_KIND_LABELS[detail.kind]}
+                没有其他{LIBRARY_KIND_LABELS[sourceKind]}
                 库可选——请先在「媒体库」页新建一个，再回来转移。
               </p>
             ) : (
@@ -2151,7 +2170,9 @@ function TransferDialog({
                 正在计算转移计划…
               </p>
             )}
-            {preview && <TransferPlanPreview preview={preview} sourceName={sourceLibraryName} />}
+            {preview && (
+              <TransferPlanPreview preview={preview} sourceName={sourceLibrary?.name ?? null} />
+            )}
             {error && <p className="mt-3 text-sub leading-6 text-[#ff9f9f]">{error}</p>}
           </>
         )}

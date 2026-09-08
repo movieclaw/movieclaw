@@ -4,6 +4,10 @@
 执行后目录真的搬走了、台账改挂了新库、订阅跟着改挂、目标已有同名目录时
 被拦住不覆盖。跨盘分支（复制而非改名）没法在单个 tmp_path 里造出来，
 用直接调用 ``_move`` 的方式不做覆盖——它的 EXDEV 分支靠代码审阅保证。
+
+「其他」库（本地内容库，一文件一条目）单列一节：那里没有"条目目录"这回事，
+搬的是文件本身，且必须把本地身份锚一并改到新库——两条都是与影视库不同的
+语义，各自有独立的回归。
 """
 
 from __future__ import annotations
@@ -172,9 +176,12 @@ async def test_transfer_moves_directory_and_reassigns_ledger(db, tmp_path) -> No
         from sqlmodel import select
 
         rows = list((await session.execute(select(LibraryFile))).scalars().all())
+        item = await session.get(MediaItem, item_id)
     assert {r.library_id for r in rows} == {target_id}
     assert all(r.file_path.startswith(str(moved)) for r in rows)
     assert all(r.media_item_id == item_id for r in rows), "身份锚不该被转移动过"
+    # TMDB 来源的锚与库、路径都无关，转移绝不能碰它
+    assert item is not None and item.external_id == "96162"
 
 
 async def test_transfer_reassigns_subscription(db, tmp_path) -> None:
@@ -272,6 +279,141 @@ async def test_mixed_directory_falls_back_to_per_file(db, tmp_path) -> None:
     assert (moved_season / "机智的医生生活 (2020) - S01E01.zh.srt").is_file(), "字幕应跟着走"
     assert intruder.is_file(), "别人的文件必须留在原地"
     assert (entry / "poster.jpg").is_file(), "混合目录不整搬，刮削产物留在原目录"
+
+
+# ---------------------------------------------------------------------------
+# 「其他」库（本地内容库）：条目就是文件本身，锚随库随路径改写
+# ---------------------------------------------------------------------------
+
+
+async def _setup_video(db, tmp_path):
+    """两个「其他」库（源=家庭录像A、目标=家庭录像B）+ 一段放错库的录像。
+
+    源库刻意造成真实形态：``2024旅行/`` 是用户自己的分组目录，下面还躺着
+    另一段互不相干的录像——本地内容库一文件一条目，这个目录不是谁的条目
+    目录。目标库也有一个同名的 ``2024旅行/``（换库不换分组习惯，很常见）。
+    """
+    from movieclaw_api.services.library.local_identity import local_external_id
+    from movieclaw_media.models import MediaKind
+
+    source_root = tmp_path / "media" / "家庭A"
+    target_root = tmp_path / "media" / "家庭B"
+    group = source_root / "2024旅行"
+    group.mkdir(parents=True)
+    (target_root / "2024旅行").mkdir(parents=True)
+
+    video = group / "婚礼.mp4"
+    video.write_bytes(b"v" * 100)
+    (group / "婚礼.nfo").write_text("<movie><title>婚礼</title></movie>", encoding="utf-8")
+    (group / "婚礼.zh.srt").write_text("sub", encoding="utf-8")
+    neighbour = group / "生日.mp4"
+    neighbour.write_bytes(b"o" * 50)
+
+    async with db.session() as session:
+        repo = LibraryRepository(session)
+        source = await repo.create(
+            name="家庭录像A", kind="video", source="local", root_paths=[str(source_root)]
+        )
+        target = await repo.create(
+            name="家庭录像B", kind="video", source="local", root_paths=[str(target_root)]
+        )
+        assert source.id and target.id
+        items = []
+        for path, title in ((video, "婚礼"), (neighbour, "生日")):
+            item = MediaItem(
+                kind="video",
+                source="local",
+                external_id=local_external_id(
+                    source.id, MediaKind.VIDEO, source_root, path, None, scraped=False
+                ),
+                title=title,
+                original_title=title,
+                scrape_library_id=source.id,
+            )
+            session.add(item)
+            await session.flush()
+            assert item.id
+            items.append(item)
+            session.add(
+                LibraryFile(
+                    library_id=source.id,
+                    media_item_id=item.id,
+                    season_number=0,
+                    episode_number=0,
+                    file_path=str(path),
+                    size_bytes=path.stat().st_size,
+                    source=FileSource.SCANNED,
+                )
+            )
+        await session.commit()
+        return source.id, target.id, items[0].id, source_root, target_root
+
+
+async def test_video_library_moves_the_file_not_the_group_dir(db, tmp_path) -> None:
+    """其他库：搬的是这一个文件（连同 NFO/字幕），分组目录结构原样保留；
+    目标库已有同名分组目录不是冲突——那正是它该落进去的地方。"""
+    source_id, target_id, item_id, source_root, target_root = await _setup_video(db, tmp_path)
+
+    async with get_database().session() as session:
+        resp = await preview_transfer(source_id, item_id, target_id, session=session)
+    assert resp.data.blocked == [], "同名分组目录不该被判成冲突"
+    assert len(resp.data.moves) == 1
+    move = resp.data.moves[0]
+    assert move.is_dir is False
+    assert move.source_path == str(source_root / "2024旅行" / "婚礼.mp4")
+    assert move.target_path == str(target_root / "2024旅行" / "婚礼.mp4")
+
+    async with get_database().session() as session:
+        await transfer_library_item(
+            source_id, item_id, TransferPayload(target_library_id=target_id), session=session
+        )
+    summary = await _drain_transfer(source_id, target_id)
+
+    assert summary.errors == []
+    assert summary.files_relocated == 1
+    moved_dir = target_root / "2024旅行"
+    assert (moved_dir / "婚礼.mp4").is_file()
+    assert (moved_dir / "婚礼.nfo").is_file(), "NFO 元数据要跟着走"
+    assert (moved_dir / "婚礼.zh.srt").is_file(), "字幕要跟着走"
+    assert (source_root / "2024旅行" / "生日.mp4").is_file(), "同目录里别人的条目必须留在原地"
+    assert not (source_root / "2024旅行" / "婚礼.mp4").exists()
+
+
+async def test_video_library_transfer_reanchors_local_identity(db, tmp_path) -> None:
+    """本地锚由「库 id + 相对库根路径」派生，转移必须一并改写。
+
+    不改的后果是源库里后来出现在同一相对路径的另一段录像会被扫描认成同一
+    条目（一张卡片下面躺着两个库里两段不相干的视频），刮削归属也还指着一个
+    已经不存放它的库。
+    """
+    from movieclaw_api.services.library.local_identity import local_external_id
+    from movieclaw_media.models import MediaKind
+
+    source_id, target_id, item_id, source_root, target_root = await _setup_video(db, tmp_path)
+    async with get_database().session() as session:
+        await transfer_library_item(
+            source_id, item_id, TransferPayload(target_library_id=target_id), session=session
+        )
+    summary = await _drain_transfer(source_id, target_id)
+    assert summary.errors == []
+
+    moved = target_root / "2024旅行" / "婚礼.mp4"
+    async with get_database().session() as session:
+        item = await session.get(MediaItem, item_id)
+    assert item is not None
+    assert item.external_id == local_external_id(
+        target_id, MediaKind.VIDEO, target_root, moved, None, scraped=False
+    ), "锚应指向目标库里的新位置"
+    assert item.scrape_library_id == target_id, "刮削归属跟着条目走"
+    # 源库里同一相对路径重新出现的文件，算出来的锚必须与搬走的这条不同
+    assert item.external_id != local_external_id(
+        source_id,
+        MediaKind.VIDEO,
+        source_root,
+        source_root / "2024旅行" / "婚礼.mp4",
+        None,
+        scraped=False,
+    )
 
 
 async def test_transfer_carries_in_place_trashed_file(db, tmp_path) -> None:
