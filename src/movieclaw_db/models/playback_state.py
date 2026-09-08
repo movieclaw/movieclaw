@@ -6,9 +6,11 @@ from sqlalchemy import Column, ForeignKey, Integer, UniqueConstraint
 from sqlmodel import Field
 
 from movieclaw_db.models.base import TimestampMixin
+from movieclaw_db.models.member_scoped import MemberScopedMixin, register_member_scoped
 
 
-class PlaybackState(TimestampMixin, table=True):
+@register_member_scoped
+class PlaybackState(MemberScopedMixin, TimestampMixin, table=True):
     """观看状态——"看到哪了/看没看过"的领域事实（docs/design/jellyfin-compat.md 5.4/8.5）。
 
     协议无关的领域层数据：Jellyfin 兼容层与未来的网页端播放器共用同一张表、
@@ -38,7 +40,7 @@ class PlaybackState(TimestampMixin, table=True):
     )
 
     id: int | None = Field(default=None, primary_key=True)
-    member_id: int = Field(default=0, index=True, description="归属成员；0=超管（哨兵）")
+    # member_id 由 MemberScopedMixin 提供（0=超管哨兵、非外键、删除成员时显式清理）
 
     media_item_id: int = Field(
         sa_column=Column(

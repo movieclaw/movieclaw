@@ -205,8 +205,23 @@ for model in member_scoped_models():
 `PlaybackState` / `SearchHistory` 一并接入（改动仅为加 mixin + 装饰器，列结构
 完全不变，无迁移）。此后新增成员级功能 = 一张小表 + 一行装饰器，清理自动覆盖。
 
-配套 CI 守卫（`tests/api/test_members.py`）：断言所有带 `member_id` 列的
-model 都在注册表里——漏登记直接挂测试。
+配套 CI 守卫（`tests/api/test_download_target_pref.py`）：断言所有带
+`member_id` 列的表都在注册表里——漏登记直接挂测试。
+
+**守卫第一次运行就抓到一个既有漏洞**：`playback_log`（活动页的「播放记录」与
+「观看统计」）的 docstring 一直写着「删成员时由服务层清理」，但 `delete_member`
+从来没清过它。后果正是这套机制要防的那种——SQLite 复用已删成员的行 id，新成员
+建号后会继承前一个人的观看记录。本期一并登记修复。
+
+有 `member_id` 却**不该**登记的表，在守卫里列成带理由的白名单而不是默默放过：
+
+| 表 | 谁负责清理 |
+|---|---|
+| `member_library_access` / `member_site_access` / `subscription_follower` | 外键 CASCADE |
+| `jellyfin_device` | `_drop_jellyfin_devices`（停用/改密/删除三个时机都要，不止删除） |
+| `playback_metric` | 播放质量遥测（档位、卡顿率），不含观看内容；删掉会改写历史直通率口径，故意保留 |
+
+`playback_metric` 这条是**待确认项**：若判定它也该随人清，登记一行即可。
 
 ## 5. 交互：确认条取代静默快速通道
 
@@ -283,20 +298,31 @@ model 都在注册表里——漏登记直接挂测试。
 因为改成了「提交即记住」，不再需要条件字段——前端把种子的分类原样带上即可：
 
 ```
-POST /downloaders/torrents        # 既有接口，新增一个可选字段
-     category: str | null         # 种子的 TorrentCategory；提交成功后 upsert 该桶
-                                  # null（站点未映射分类）时按 "other" 归桶
+POST   /downloaders/torrents/submit    # 既有接口，新增可选字段
+       category: str | null            # 种子的 TorrentCategory；提交成功后 upsert 该桶
+                                       # null（站点未映射分类）时前端归到 "other"
 
-DELETE /downloaders/target-prefs/{category}   # 确认条的「不再记住」
+GET    /downloaders/target-prefs             # 当前登录者的全部记忆（≤8 条）
+DELETE /downloaders/target-prefs/{category}  # 确认条的「不再记住」，幂等
 ```
 
 分类只有前端拿得到（提交接口的入参是 site_id / download_url / torrent_id，
 后端没有搜索结果的上下文），所以必须由前端传。
 
-确认条要显示「上次用过 · N 天前」，这份数据随搜索结果一起下发即可，不单开接口：
-搜索响应对每条命中附带该分类的现有记忆（同一分类共用一条，体积可忽略）。
+**与初版设计的一处偏离**：初版写的是「记忆随搜索结果一起下发，不单开接口」。
+实现时改成了独立的 `GET /target-prefs`，理由是前者要把下载偏好塞进搜索响应
+schema，为省一个请求污染一个不相干的契约不划算；后者是整页拉一次、最多 8 条。
 
-不提供列表与编辑接口——没有设置页，就没有消费方。
+`GET` 顺带把 `downloader_id` 解析成名称回显：确认条要在智能入库预检返回**之前**
+就显示「保存到哪台下载器」，前端为此再拉一次下载器列表不值得。指定的下载器
+已被删除时名称为 null，前端据此判定记忆失效、回落完整弹窗并说明原因。
+
+只对**管理员**记忆：成员的一键下载被服务端强制自动路由（`downloaders.py` 的
+成员分支），选不了目录也选不了下载器，给他们建记忆既无意义、又会把下载器
+信息透给本不该看到的人。
+
+**记忆写失败绝不能让下载失败**：走到写入这一步种子已经进下载器了，为一条偏好
+把整个请求变成 500，用户会以为没下上而重复提交。
 
 响应遵循项目约定的 `success/code/message/data` 信封。
 

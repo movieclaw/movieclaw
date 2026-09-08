@@ -158,24 +158,27 @@ async def reset_member_password(session: AsyncSession, member_id: int) -> tuple[
 async def delete_member(session: AsyncSession, member_id: int) -> None:
     """删除成员：清理个人数据，保留公共资源（§3.9.1 生命周期语义）。
 
-    - 头像文件、个人背景图库、Jellyfin 设备、播放进度/收藏：显式清理（播放状态的
-      member_id 是哨兵值非外键，不能依赖级联）；
+    - 头像文件、个人背景图库、Jellyfin 设备：显式清理；
+    - 全部**成员级表**（观看状态、搜索历史、下载保存位置记忆……）：遍历
+      ``member_scoped_models()`` 注册表清理。这些表的 member_id 是哨兵值而非
+      外键，级联指望不上；而漏清一张表的后果不是残留垃圾数据——SQLite 会复用
+      已删成员的行 id，新成员建号后将**继承前一个人的数据**，是跨人隐私泄漏。
+      过去靠逐行手写、靠"记得加一行"来防，现在靠登记：新增成员级表只要挂
+      ``@register_member_scoped``（CI 守卫会拦住漏登记的），清理自动覆盖。
     - 库/站点白名单、订阅关注行：外键级联自动清理；
     - 其发起的订阅：外键 SET NULL 自动转为超管发起——绝不静默删除
       订阅与下载任务，已下载内容不受影响。
     """
     from sqlalchemy import delete as sa_delete
 
-    from movieclaw_db.models import PlaybackState, SearchHistory
+    from movieclaw_db.models import member_scoped_models
 
     member = await get_member(session, member_id)
     avatar_media.delete_avatar(avatar_media.member_stem(member_id))
     appearance_media.remove_member_gallery(member_id)
     await _drop_jellyfin_devices(session, member_id)
-    await session.execute(sa_delete(PlaybackState).where(PlaybackState.member_id == member_id))
-    # 搜索历史必须跟人清：member_id 是哨兵值非外键，SQLite 复用行 id 时
-    # 新成员会"继承"已删成员的历史与快照——跨人隐私泄漏
-    await session.execute(sa_delete(SearchHistory).where(SearchHistory.member_id == member_id))
+    for model in member_scoped_models():
+        await session.execute(sa_delete(model).where(model.member_id == member_id))
     await MemberRepository(session).delete(member)
     logger.info(
         "已删除成员账号：%s（id=%d，个人数据已清理，订阅已转由管理员接管）",

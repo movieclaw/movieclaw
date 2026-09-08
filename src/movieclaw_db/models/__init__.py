@@ -14,6 +14,7 @@ from movieclaw_db.models.base import TimestampMixin, utcnow
 from movieclaw_db.models.cache_entry import CacheEntry
 from movieclaw_db.models.channel_account import ChannelAccount, ChannelAccountStatus
 from movieclaw_db.models.download_hint import DownloadHint
+from movieclaw_db.models.download_target_pref import DownloadTargetPref
 from movieclaw_db.models.downloader_client import ClientType, DownloaderClient
 from movieclaw_db.models.import_watch import ImportWatch
 from movieclaw_db.models.ingest_entry import IngestEntry, IngestStatus
@@ -34,6 +35,11 @@ from movieclaw_db.models.manual_download_intent import ManualDownloadIntent
 from movieclaw_db.models.media_item import MediaItem, MediaSeason, MediaSource
 from movieclaw_db.models.media_metadata import MediaEpisode, MediaMetadata
 from movieclaw_db.models.media_share import MediaShare
+from movieclaw_db.models.member_scoped import (
+    MemberScopedMixin,
+    member_scoped_models,
+    register_member_scoped,
+)
 from movieclaw_db.models.member import Member, MemberLibraryAccess, MemberSiteAccess
 from movieclaw_db.models.person import MediaItemPerson, Person
 from movieclaw_db.models.playback_log import PlaybackLog
@@ -90,6 +96,7 @@ __all__ = [
     "AppSetting",
     "ClientType",
     "DownloadHint",
+    "DownloadTargetPref",
     "DownloaderClient",
     "FileSource",
     "FileState",
@@ -114,6 +121,9 @@ __all__ = [
     "MediaSource",
     "MediaMetadata",
     "MediaShare",
+    "MemberScopedMixin",
+    "member_scoped_models",
+    "register_member_scoped",
     "Member",
     "MemberLibraryAccess",
     "MemberSiteAccess",

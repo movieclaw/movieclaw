@@ -369,6 +369,12 @@ export interface DownloadSubmitPayload {
   auto_route?: boolean;
   /** 智能入库的媒体类型，与 tmdb_id 一起构成后端路由输入 */
   media_kind?: "movie" | "tv";
+  /**
+   * 种子分类（TorrentHit.category）：提交成功后后端按它记住本次的保存位置选择。
+   * 分类只有前端拿得到——提交接口的入参是 site_id/download_url/torrent_id，
+   * 后端没有搜索结果上下文。不传就不记（订阅投递等非搜索入口不该产生记忆）。
+   */
+  category?: string | null;
   /** 智能入库已确认的 TMDB 条目 ID */
   tmdb_id?: number;
 }
@@ -443,6 +449,38 @@ export function submitTorrentDownload(
     request<ApiEnvelope<DownloadSubmitResult>>("/downloaders/submit", {
       method: "POST",
       body: JSON.stringify(payload),
+    }),
+  );
+}
+
+
+/** 一条保存位置记忆（见 movieclaw_api.schemas.downloader.DownloadTargetPrefView）。 */
+export interface DownloadTargetPref {
+  /** 种子分类（TorrentCategory 值） */
+  category: string;
+  kind: "smart" | "dir" | "default";
+  /** 固定目录；仅 kind=dir 有值 */
+  save_path: string | null;
+  downloader_id: number | null;
+  /** 下载器名称；null = 用默认下载器，或指定的下载器已被删除（记忆失效） */
+  downloader_name: string | null;
+  /** 这条记忆最后一次被改变的时间 */
+  updated_at: string;
+}
+
+/**
+ * 当前登录者的全部保存位置记忆（最多一分类一条，8 条封顶）。
+ * 搜索结果页挂载时拉一次：命中记忆的分类点「下载」走确认条，否则走完整弹窗。
+ */
+export function listDownloadTargetPrefs(): Promise<DownloadTargetPref[]> {
+  return unwrap(request<ApiEnvelope<DownloadTargetPref[]>>("/downloaders/target-prefs"));
+}
+
+/** 清除某分类的记忆（确认条上的「不再记住」）。幂等：本就没有也返回成功。 */
+export function forgetDownloadTargetPref(category: string): Promise<null> {
+  return unwrap(
+    request<ApiEnvelope<null>>(`/downloaders/target-prefs/${encodeURIComponent(category)}`, {
+      method: "DELETE",
     }),
   );
 }

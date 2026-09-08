@@ -12,18 +12,27 @@
  *      双视角展示（movieclaw 路径 → 下载器路径），跨容器部署一眼可核对；
  *   3. 下载器默认目录兜底：不指定路径，由下载器自行决定。
  * 底部小字引导去「设置 → 下载器」配置路径映射。
+ *
+ * 保存位置记忆（docs/design/download-target-memory.md）：提交成功即按种子分类
+ * （TorrentCategory）记住本次选择，**不需要用户勾选任何东西**。下次点该分类的
+ * 「下载」先弹确认条（本文件的 DownloadTargetConfirmBar），看得见落点再确认。
+ * 旧版那个「记住本次选择」复选框已删除且不应以任何形式回归——它默认不勾、
+ * 又要求用户预判「以后还会不会下同类的」，是这个功能长期形同虚设的根因。
  */
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { FolderIcon } from "@/components/icons";
+import { CATEGORY_LABEL, type TorrentCategory } from "@/lib/categories";
+import { formatRelativeTime } from "@/lib/time";
 import { Modal } from "@/components/modal";
 import {
   listDownloaders,
   submitTorrentDownload,
   type ConfiguredDownloader,
   type DownloadSubmitResult,
+  type DownloadTargetPref,
   type ManualDownloadTarget,
   type PathMapping,
   resolveManualDownloadTarget,
@@ -38,59 +47,27 @@ export interface DownloadTargetRequest {
   /** 解析出的条目身份；三件套不全时为 null（智能入库选项不出现） */
   identity: { kind: "movie" | "tv"; title: string; year: number } | null;
   subtitle: string | null;
+  /**
+   * 种子分类（TorrentHit.category ?? "other"）：记忆的桶键。
+   * 用站点声明的一级分类而非 enrich 推断的 media_type/content_type——推断值会
+   * null、同一部剧的两条种子可能判得不一致，还会随模型版本漂移，拿它当持久化
+   * 偏好的键会让用户的记忆桶在某次升级后悄悄换位置。
+   */
+  category: string;
 }
 
-/* —— 「记住选择」：高频批量下载不必每次都过弹窗 —— */
-
-/** 记住的目标按内容类型分桶：电影/剧集常进不同的库或目录，other = 身份未识别 */
-type RememberKind = "movie" | "tv" | "other";
-
-export interface RememberedTarget {
-  /** smart = 自动入库（需要唯一身份）；dir = 固定目录；default = 下载器默认目录 */
-  kind: "smart" | "dir" | "default";
-  savePath: string | null;
-  /** 指定的下载器；null = 默认下载器 */
-  downloaderId: number | null;
-}
-
-const REMEMBER_KEY = "movieclaw.download-target";
-
-function rememberKindOf(request: DownloadTargetRequest): RememberKind {
-  return request.identity?.kind ?? "other";
-}
-
-export function readRememberedTarget(request: DownloadTargetRequest): RememberedTarget | null {
-  try {
-    const store = JSON.parse(window.localStorage.getItem(REMEMBER_KEY) ?? "{}");
-    const target = store[rememberKindOf(request)] as RememberedTarget | undefined;
-    if (!target || typeof target !== "object" || !target.kind) return null;
-    // 记住的是"自动入库"但这条种子没解析出身份：套不上，回落弹窗
-    if (target.kind === "smart" && !request.identity) return null;
-    return target;
-  } catch {
-    return null;
-  }
-}
-
-function writeRememberedTarget(kind: RememberKind, target: RememberedTarget | null): void {
-  try {
-    const store = JSON.parse(window.localStorage.getItem(REMEMBER_KEY) ?? "{}");
-    if (target === null) delete store[kind];
-    else store[kind] = target;
-    window.localStorage.setItem(REMEMBER_KEY, JSON.stringify(store));
-  } catch {
-    // localStorage 不可用（隐私模式等）：静默降级为每次都弹窗
-  }
-}
+/* —— 记忆命中后的直接提交 —— */
 
 /**
- * 按记住的目标直接提交（下载按钮的快速通道），不经弹窗。
- * smart 目标需要重新确认 TMDB 身份和投递预检；未收敛/配置有警示时返回 null
- * 让调用方回落弹窗，不把不确定资源静默放进默认库。
+ * 按记住的目标提交（确认条的「确认下载」），不经完整弹窗。
+ *
+ * smart 目标存的是**策略不是路径**，每次都要重跑 TMDB 身份确认与投递预检；
+ * 未收敛或配置有警示时返回 null，调用方据此展开完整弹窗并说明原因——绝不把
+ * 不确定的资源静默放进默认库。
  */
 export async function submitRememberedTarget(
   request: DownloadTargetRequest,
-  target: RememberedTarget,
+  target: DownloadTargetPref,
 ): Promise<DownloadSubmitResult | null> {
   const identity = request.identity;
   let libraryPart = {};
@@ -101,7 +78,7 @@ export async function submitRememberedTarget(
       title: identity.title,
       year: identity.year,
       subtitle: request.subtitle,
-      downloader_id: target.downloaderId,
+      downloader_id: target.downloader_id,
     }).catch(() => null);
     if (!resolved?.ok || resolved.status !== "ready" || resolved.tmdb_id == null) return null;
     libraryPart = {
@@ -117,9 +94,10 @@ export async function submitRememberedTarget(
     site_id: request.site_id,
     download_url: request.download_url,
     torrent_id: request.torrent_id,
+    category: request.category,
     ...libraryPart,
-    ...(target.kind === "dir" ? { save_path: target.savePath } : {}),
-    ...(target.downloaderId != null ? { downloader_id: target.downloaderId } : {}),
+    ...(target.kind === "dir" ? { save_path: target.save_path } : {}),
+    ...(target.downloader_id != null ? { downloader_id: target.downloader_id } : {}),
   });
 }
 
@@ -155,12 +133,18 @@ interface TargetOption {
 
 export function DownloadTargetDialog({
   request,
+  remembered = null,
+  reason = null,
   onClose,
   onSubmitted,
   topmost = false,
 }: {
   /** null = 关闭 */
   request: DownloadTargetRequest | null;
+  /** 该分类已有的记忆：用于预选中对应项；null = 没有记忆，按默认规则挑 */
+  remembered?: DownloadTargetPref | null;
+  /** 记忆失效时的中文原因，显示在弹窗顶部；静默回落是原实现最让人困惑的地方 */
+  reason?: string | null;
   onClose: () => void;
   onSubmitted: (result: DownloadSubmitResult) => void;
   /** 触发按钮长在灯箱这类高层浮层里时置位，弹窗抬到最高层（见 Modal 的层级约定） */
@@ -173,6 +157,8 @@ export function DownloadTargetDialog({
     <DialogContent
       key={`${request.site_id}:${request.download_url}`}
       request={request}
+      remembered={remembered}
+      reason={reason}
       topmost={topmost}
       onClose={onClose}
       onSubmitted={onSubmitted}
@@ -182,25 +168,28 @@ export function DownloadTargetDialog({
 
 function DialogContent({
   request,
+  remembered,
+  reason,
   onClose,
   onSubmitted,
   topmost,
 }: {
   request: DownloadTargetRequest;
+  remembered: DownloadTargetPref | null;
+  reason: string | null;
   onClose: () => void;
   onSubmitted: (result: DownloadSubmitResult) => void;
   topmost: boolean;
 }) {
-  const [rememberedTarget] = useState<RememberedTarget | null>(() =>
-    readRememberedTarget(request),
-  );
+  // 记忆是「智能入库」时不必展开目录列表——预选的就是它
+  const rememberedTarget = remembered;
   const revealOtherInitially =
     request.identity === null ||
     (rememberedTarget !== null && rememberedTarget.kind !== "smart");
   // 可用（启用 + 验证通过）的全部下载器：≥2 台时出现下载器选择
   const [downloaders, setDownloaders] = useState<ConfiguredDownloader[]>([]);
   const [downloaderId, setDownloaderId] = useState<number | null>(
-    rememberedTarget?.kind === "smart" ? rememberedTarget.downloaderId : null,
+    rememberedTarget?.kind === "smart" ? rememberedTarget.downloader_id : null,
   );
   const [manualTarget, setManualTarget] = useState<ManualDownloadTarget | null>(null);
   const [selectedCandidateId, setSelectedCandidateId] = useState<number | null>(null);
@@ -209,8 +198,6 @@ function DialogContent({
   const [loadingDownloaders, setLoadingDownloaders] = useState(false);
   const [loadingTarget, setLoadingTarget] = useState(request.identity !== null);
   const [selected, setSelected] = useState<string | null>(null);
-  // 记住选择：默认勾选态跟随已有记忆（勾着提交=保存/刷新，取消勾选提交=清除）
-  const [remember, setRemember] = useState<boolean>(rememberedTarget !== null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // 下载器切换/候选确认都可能重发预检，只允许最后一次请求更新界面。
@@ -238,7 +225,7 @@ function DialogContent({
       title: identity.title,
       year: identity.year,
       subtitle: request.subtitle,
-      downloader_id: rememberedTarget?.kind === "smart" ? rememberedTarget.downloaderId : null,
+      downloader_id: rememberedTarget?.kind === "smart" ? rememberedTarget.downloader_id : null,
     })
       .then((target) => {
         if (cancelled || requestId !== targetRequestId.current) return;
@@ -301,8 +288,8 @@ function DialogContent({
         if (cancelled) return;
         const current = usable.find((d) => d.id === downloaderId);
         const remembered =
-          rememberedTarget?.downloaderId != null
-            ? usable.find((d) => d.id === rememberedTarget.downloaderId)
+          rememberedTarget?.downloader_id != null
+            ? usable.find((d) => d.id === rememberedTarget.downloader_id)
             : undefined;
         const selectedDownloader =
           current ?? remembered ?? usable.find((d) => d.is_default) ?? usable[0] ?? null;
@@ -408,12 +395,11 @@ function DialogContent({
   // 默认选中：已记住的目标 > 智能入库可用且预检通过 > 第一个目录 > 下载器默认
   useEffect(() => {
     if (options.length === 0 || selected !== null) return;
-    const remembered = readRememberedTarget(request);
-    if (remembered) {
+    if (rememberedTarget) {
       const match = options.find((o) =>
-        remembered.kind === "dir"
-          ? o.kind === "dir" && o.savePath === remembered.savePath
-          : o.kind === remembered.kind,
+        rememberedTarget.kind === "dir"
+          ? o.kind === "dir" && o.savePath === rememberedTarget.save_path
+          : o.kind === rememberedTarget.kind,
       );
       if (match) {
         setSelected(match.key);
@@ -427,7 +413,7 @@ function DialogContent({
     if (smart && !smart.warning) setSelected(smart.key);
     // 智能入库不可用或有警示时，回落到第一个非智能项（目录 > 下载器默认）
     else setSelected((options.find((o) => o.kind !== "smart") ?? options[0]).key);
-  }, [downloadersLoaded, loadingTarget, options, selected, request, showOtherTargets]);
+  }, [downloadersLoaded, loadingTarget, options, selected, rememberedTarget, showOtherTargets]);
 
   const submit = () => {
     const option = options.find((o) => o.key === selected);
@@ -445,6 +431,8 @@ function DialogContent({
       site_id: request.site_id,
       download_url: request.download_url,
       torrent_id: request.torrent_id,
+      // 带上分类 = 提交成功后由后端记住本次选择（不需要用户勾选任何东西）
+      category: request.category,
       ...(option.kind === "smart" && identity && manualTarget?.tmdb_id != null
         ? {
             auto_route: true,
@@ -459,13 +447,6 @@ function DialogContent({
       ...(pickedDownloaderId != null ? { downloader_id: pickedDownloaderId } : {}),
     })
       .then((result) => {
-        // 记住/清除选择（按内容类型分桶）：勾着=保存本次目标，取消勾选=清除
-        writeRememberedTarget(
-          rememberKindOf(request),
-          remember
-            ? { kind: option.kind, savePath: option.savePath, downloaderId: pickedDownloaderId }
-            : null,
-        );
         onSubmitted(result);
         onClose();
       })
@@ -481,6 +462,11 @@ function DialogContent({
       </div>
 
       <div className="scroll-thin min-h-0 flex-1 space-y-4 overflow-y-auto px-6 py-4">
+        {reason && (
+          <p className="rounded-xl border border-[var(--warn-line,rgba(245,196,81,.28))] bg-[rgba(245,196,81,.09)] px-3 py-2 text-sub leading-relaxed text-[#f6dfab]">
+            {reason}
+          </p>
+        )}
           {error && (
             <p className="rounded-lg border border-red-400/25 bg-red-500/10 px-3.5 py-2.5 text-ui leading-6 text-red-200">
               {error}
@@ -592,17 +578,13 @@ function DialogContent({
             </div>
           )}
 
-          {/* 记住选择：批量下载的快速通道——之后点「下载」直接提交，
-              toast 上有「更改」可随时回到本弹窗 */}
-          <label className="flex cursor-pointer items-center gap-2 text-sub text-[var(--text-muted)]">
-            <input
-              type="checkbox"
-              checked={remember}
-              onChange={(e) => setRemember(e.target.checked)}
-              className="size-3.5 accent-[var(--accent-2)]"
-            />
-            记住本次选择，下次点「下载」直接提交（按电影/剧集分别记忆）
-          </label>
+          {/* 记忆是自动的，这里只陈述事实、不要用户做决定——曾经的复选框
+              默认不勾又要人预判「以后还会不会下同类的」，等于永远不生效 */}
+          <p className="text-sub leading-relaxed text-[var(--text-muted)]">
+            这次的选择会记为「{CATEGORY_LABEL[request.category as TorrentCategory] ??
+              request.category}」的默认位置，之后点「下载」先给你确认一次——
+            随时可以改，或在确认条上「不再记住」。
+          </p>
 
           {showOtherTargets && (
             <p className="text-caption leading-relaxed text-[var(--text-faint)]">
@@ -631,6 +613,145 @@ function DialogContent({
         >
           {busy ? "提交中…" : "确认下载"}
         </button>
+      </div>
+    </Modal>
+  );
+}
+
+/* —— 确认条：命中记忆时代替静默提交 —— */
+
+/** 记忆里存的目标翻译成人话（确认条主行）。 */
+function targetHeadline(target: DownloadTargetPref, resolvedPath: string | null): string | null {
+  if (target.kind === "dir") return target.save_path;
+  if (target.kind === "default") return "下载器的默认目录";
+  return resolvedPath; // smart：要等预检算出来
+}
+
+/**
+ * 保存位置确认条。命中记忆时点「下载」弹它，而不是直接提交。
+ *
+ * 为什么不沿用原来的静默快速通道：那样点下去种子就已经进了下载器，记忆不对
+ * 只能事后补救。这里多一次点击，换来的是**提交前就看得见落点**——批量下载的
+ * 代价从「1 次点击 + 不知道去哪」变成「2 次点击 + 全程可见」。
+ *
+ * 也不做 split button（结果行内主按钮 + 下拉箭头）：移动端那一行已经很挤。
+ * 确认条是横向浮层，窄屏纵向堆成三行，不占结果行的横向空间。
+ */
+export function DownloadTargetConfirmBar({
+  request,
+  target,
+  onConfirm,
+  onChange,
+  onForget,
+  onClose,
+}: {
+  request: DownloadTargetRequest;
+  target: DownloadTargetPref;
+  onConfirm: () => void;
+  onChange: () => void;
+  /** 「不再记住」：清除该分类记忆后展开完整弹窗重选 */
+  onForget: () => void;
+  onClose: () => void;
+}) {
+  // smart 目标存的是策略不是路径，得重跑预检才知道这次落到哪
+  const [resolvedPath, setResolvedPath] = useState<string | null>(null);
+  const [preflighting, setPreflighting] = useState(target.kind === "smart");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    const identity = request.identity;
+    if (target.kind !== "smart" || !identity) return;
+    let cancelled = false;
+    setPreflighting(true);
+    void resolveManualDownloadTarget({
+      kind: identity.kind,
+      title: identity.title,
+      year: identity.year,
+      subtitle: request.subtitle,
+      downloader_id: target.downloader_id,
+    })
+      .then((t) => {
+        if (!cancelled) setResolvedPath(t.entry_dir ?? t.path ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setResolvedPath(null);
+      })
+      .finally(() => {
+        if (!cancelled) setPreflighting(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [request, target]);
+
+  const label = CATEGORY_LABEL[request.category as TorrentCategory] ?? request.category;
+  const headline = targetHeadline(target, resolvedPath);
+
+  return (
+    <Modal open onClose={onClose} label="确认保存位置">
+      <div className="flex items-start gap-3 px-5 pb-3 pt-5">
+        <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-[9px] bg-[var(--accent-soft)]">
+          <FolderIcon className="size-4 text-[var(--accent)]" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="text-caption uppercase tracking-[0.09em] text-[var(--text-faint)]">
+            保存到
+          </div>
+          <div className="mt-0.5 flex flex-wrap items-center gap-2">
+            <b className="text-body font-semibold text-white">{label}</b>
+            <span className="size-[3px] rounded-full bg-[var(--text-faint)]" />
+            <span className="text-sub text-[var(--text-muted)]">
+              {target.kind === "smart"
+                ? "智能入库"
+                : (target.downloader_name ?? "默认下载器")}
+            </span>
+          </div>
+          {/* 预检未回来时占位骨架：先让用户看到「在确认什么」，比整条延迟出现
+              少一次视觉跳变 */}
+          {preflighting ? (
+            <div className="mt-1.5 space-y-1.5" aria-label="正在确认归宿">
+              <div className="h-2.5 w-3/4 animate-pulse rounded bg-white/10" />
+              <div className="h-2.5 w-2/5 animate-pulse rounded bg-white/10" />
+            </div>
+          ) : (
+            <p className="mt-1 break-all font-mono text-caption leading-relaxed text-white">
+              {headline ?? "由下载器决定"}
+            </p>
+          )}
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-2.5 border-t border-white/[0.07] px-5 py-3 sm:flex-row sm:items-center sm:justify-between">
+        <span className="text-center text-caption text-[var(--text-faint)] sm:text-left">
+          上次用过 · {formatRelativeTime(target.updated_at)} ·{" "}
+          <button
+            type="button"
+            onClick={onForget}
+            className="text-[var(--accent-2)] underline underline-offset-2 hover:text-[var(--accent)]"
+          >
+            不再记住
+          </button>
+        </span>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={onChange}
+            className="btn-glass h-9 flex-1 px-4 text-ui font-medium sm:flex-none"
+          >
+            更改
+          </button>
+          <button
+            type="button"
+            disabled={busy || preflighting}
+            onClick={() => {
+              setBusy(true);
+              onConfirm();
+            }}
+            className="btn-accent h-9 flex-1 rounded-full px-5 text-ui font-semibold disabled:opacity-40 sm:flex-none"
+          >
+            {busy ? "提交中…" : "确认下载"}
+          </button>
+        </div>
       </div>
     </Modal>
   );

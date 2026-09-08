@@ -427,6 +427,10 @@ class DownloadSubmitPayload(BaseModel):
         default=None, description="智能入库的媒体类型"
     )
     tmdb_id: int | None = Field(default=None, description="智能入库已确认的 TMDB 条目 ID")
+    # 种子分类（TorrentHit.category）：提交成功后按它记住本次的保存位置选择。
+    # 分类只有前端拿得到——提交接口的入参是 site_id/download_url/torrent_id，
+    # 后端没有搜索结果的上下文。缺省/站点未映射分类时归到 other。
+    category: str | None = Field(default=None, description="种子分类，用于记住保存位置")
 
     @field_validator("save_path")
     @classmethod
@@ -513,3 +517,23 @@ class DownloadSubmitView(BaseModel):
     save_path: str | None = Field(
         description="实际使用的保存目录（下载器视角，已过路径映射；空 = 下载器自身默认目录）"
     )
+
+
+class DownloadTargetPrefView(BaseModel):
+    """一条保存位置记忆（确认条与「不再记住」的数据来源）。
+
+    ``downloader_name`` 由服务端解析后回显：确认条要在预检返回前就把「保存到
+    哪台下载器」显示出来，让前端再去拉一次下载器列表来翻译 ID 没有必要。
+    下载器已被删除时为 None，前端据此判定记忆失效、回落完整弹窗。
+    """
+
+    category: str = Field(description="种子分类（TorrentCategory 值）")
+    kind: Literal["smart", "dir", "default"] = Field(
+        description="smart=智能入库 / dir=固定目录 / default=下载器默认目录"
+    )
+    save_path: str | None = Field(default=None, description="固定目录；仅 kind=dir 有值")
+    downloader_id: int | None = Field(default=None, description="指定下载器；空=默认下载器")
+    downloader_name: str | None = Field(
+        default=None, description="下载器名称；空=用默认下载器，或指定的下载器已被删除"
+    )
+    updated_at: datetime = Field(description="这条记忆最后一次被改变的时间")

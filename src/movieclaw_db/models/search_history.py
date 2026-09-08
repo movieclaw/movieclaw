@@ -5,9 +5,11 @@ from datetime import datetime
 from sqlmodel import Field
 
 from movieclaw_db.models.base import TimestampMixin
+from movieclaw_db.models.member_scoped import MemberScopedMixin, register_member_scoped
 
 
-class SearchHistory(TimestampMixin, table=True):
+@register_member_scoped
+class SearchHistory(MemberScopedMixin, TimestampMixin, table=True):
     """搜索历史表：记录用户在搜索面板提交过的搜索，支撑「点历史记录快捷再搜」。
 
     设计取舍
@@ -27,10 +29,9 @@ class SearchHistory(TimestampMixin, table=True):
     __tablename__ = "search_history"
 
     id: int | None = Field(default=None, primary_key=True)
-    # 搜索者（docs/design/member-management.md P2）：0=超管哨兵，与
-    # playback_state.member_id 同约定（非外键，删除成员时服务层显式清理）。
-    # 搜索历史是隐私性最强的个人数据之一，各人只看/只删自己的。
-    member_id: int = Field(default=0, index=True, description="搜索者；0=超管")
+    # 搜索者：member_id 由 MemberScopedMixin 提供（0=超管哨兵、非外键）。
+    # 搜索历史是隐私性最强的个人数据之一，各人只看/只删自己的——清理由
+    # register_member_scoped 登记后的 delete_member 统一覆盖。
     # 搜索关键词（已去首尾空白）。加索引：record 时按 (keyword, 快照) 查重。
     keyword: str = Field(index=True, description="搜索关键词")
     # 搜索垂直："torrent"=站点资源（种子）/ "media"=影视条目（豆瓣）。

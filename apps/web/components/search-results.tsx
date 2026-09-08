@@ -1,6 +1,15 @@
 "use client";
 
-import { createContext, memo, useContext, useEffect, useMemo, useRef, useState } from "react";
+import {
+  createContext,
+  memo,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import Link from "next/link";
 import type { Route } from "next";
 
@@ -10,7 +19,14 @@ import { Modal } from "@/components/modal";
 import { PosterImage } from "@/components/poster-image";
 import { Tooltip } from "@/components/tooltip";
 import { ZoomLightbox, type ZoomLightboxSlide } from "@/components/zoom-lightbox";
-import type { SearchScope } from "@/lib/categories";
+import { CATEGORY_LABEL, type SearchScope, type TorrentCategory } from "@/lib/categories";
+import {
+  forgetDownloadTargetPref,
+  listDownloadTargetPrefs,
+  listDownloaders,
+  type DownloadSubmitResult,
+  type DownloadTargetPref,
+} from "@/lib/api/downloaders";
 import { platformLabel } from "@/lib/platforms";
 import {
   getTorrentSearchHistoryResults,
@@ -20,8 +36,8 @@ import {
   type TorrentHit,
 } from "@/lib/api/search";
 import {
+  DownloadTargetConfirmBar,
   DownloadTargetDialog,
-  readRememberedTarget,
   submitRememberedTarget,
   type DownloadTargetRequest,
 } from "@/components/download-target-dialog";
@@ -76,6 +92,88 @@ export interface SearchResultsProps {
 
 /** 手动选种上下文：SearchResults 顶层拉取订阅标题后灌入，行组件按需消费。 */
 const GrabContext = createContext<{ id: number; title: string } | null>(null);
+
+/**
+ * 保存位置记忆上下文（docs/design/download-target-memory.md）。
+ *
+ * 整页只拉一次（最多 8 条），下载按钮按种子分类查表决定弹确认条还是完整弹窗。
+ * 放 context 而不是每个按钮各拉一次：一页几十条结果，逐行请求毫无必要。
+ */
+const DownloadTargetPrefContext = createContext<{
+  byCategory: Map<string, DownloadTargetPref>;
+  /** 记忆指向的固定目录是否已不在候选里（库被删、路径映射改了）；非 dir 恒 false */
+  isStaleDir: (pref: DownloadTargetPref) => boolean;
+  forget: (category: string) => Promise<void>;
+  refresh: () => Promise<void>;
+}>({
+  byCategory: new Map(),
+  isStaleDir: () => false,
+  forget: async () => {},
+  refresh: async () => {},
+});
+
+/** 拉取并维护当前登录者的保存位置记忆。 */
+function useDownloadTargetPrefs(enabled: boolean) {
+  const [byCategory, setByCategory] = useState<Map<string, DownloadTargetPref>>(new Map());
+  // 目录候选来自下载器配置（默认保存目录 + 各映射的 movieclaw 侧目录）。整页拉
+  // 一次，确认条据此判断记住的目录还在不在——放到确认条里现拉会让它没法立刻出现
+  const [dirs, setDirs] = useState<Set<string> | null>(null);
+
+  const refresh = useCallback(async () => {
+    if (!enabled) return;
+    // 拉不到就当作没有记忆——退化成每次弹窗，是安全的一侧
+    const rows = await listDownloadTargetPrefs().catch(() => [] as DownloadTargetPref[]);
+    setByCategory(new Map(rows.map((r) => [r.category, r])));
+  }, [enabled]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  useEffect(() => {
+    if (!enabled) return;
+    let cancelled = false;
+    void listDownloaders()
+      .then((rows) => {
+        if (cancelled) return;
+        const usable = rows.filter((d) => d.usable);
+        const all = new Set<string>();
+        for (const d of usable) {
+          if (d.save_path) all.add(d.save_path.replace(/\/+$/, ""));
+          for (const m of d.path_mappings ?? []) all.add(m.local.replace(/\/+$/, ""));
+        }
+        setDirs(all);
+      })
+      // 拉不到就置空集合以外的 null：宁可不判失效，也不要误报把好记忆判死
+      .catch(() => setDirs(null));
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled]);
+
+  const isStaleDir = useCallback(
+    (pref: DownloadTargetPref) => {
+      if (pref.kind !== "dir" || !pref.save_path || dirs === null) return false;
+      return !dirs.has(pref.save_path.replace(/\/+$/, ""));
+    },
+    [dirs],
+  );
+
+  const forget = useCallback(async (category: string) => {
+    // 先本地摘掉再打请求：用户点了「不再记住」就不该再看到这条默认
+    setByCategory((prev) => {
+      const next = new Map(prev);
+      next.delete(category);
+      return next;
+    });
+    await forgetDownloadTargetPref(category).catch(() => undefined);
+  }, []);
+
+  return useMemo(
+    () => ({ byCategory, isStaleDir, forget, refresh }),
+    [byCategory, isStaleDir, forget, refresh],
+  );
+}
 
 /**
  * 整页搜索阶段：connecting=流尚未建立（start 事件未到），streaming=站点结果陆续
@@ -636,6 +734,8 @@ function collectEntities(items: TorrentHit[]): Map<string, EntityGroup> {
 }
 
 export function SearchResults({ query, onResearch, grabForSubscriptionId }: SearchResultsProps) {
+  // 保存位置记忆只对能一键下载的人有意义，没权限就不拉
+  const { canDirectDownload: pageCanDirectDownload } = usePermissions();
   const scrollRef = useScrollRestoration(
     `search:torrent:${query.keyword}:${query.scope.label ?? "all"}:${query.scope.categories.join(",")}:${query.scope.siteIds.join(",")}:${query.snapshotId ?? "live"}`,
   );
@@ -957,9 +1057,11 @@ export function SearchResults({ query, onResearch, grabForSubscriptionId }: Sear
   );
   const settledCount = settledStatuses.length;
   const streaming = phase === "connecting" || phase === "streaming";
+  const downloadTargetPrefs = useDownloadTargetPrefs(pageCanDirectDownload);
 
   return (
     <GrabContext.Provider value={grabTarget}>
+    <DownloadTargetPrefContext.Provider value={downloadTargetPrefs}>
     <div className="relative flex h-full flex-col">
       {/* 手动选种横幅：从订阅详情页跳来时说明当前模式与退出方式 */}
       {grabTarget && (
@@ -1144,6 +1246,7 @@ export function SearchResults({ query, onResearch, grabForSubscriptionId }: Sear
       </div>
 
     </div>
+    </DownloadTargetPrefContext.Provider>
     </GrabContext.Provider>
   );
 }
@@ -2500,14 +2603,55 @@ function DownloadButton({
   const [state, setState] = useState<DownloadState>("idle");
   const [error, setError] = useState<string | null>(null);
   const [request, setRequest] = useState<DownloadTargetRequest | null>(null);
+  // 命中记忆时先弹确认条；确认条里点「更改」/「不再记住」才升级成完整弹窗
+  const [confirming, setConfirming] = useState<{
+    request: DownloadTargetRequest;
+    target: DownloadTargetPref;
+  } | null>(null);
+  // 记忆失效时展开弹窗要说清为什么——静默回落是原实现最让人困惑的地方
+  const [fallbackReason, setFallbackReason] = useState<string | null>(null);
+  const prefs = useContext(DownloadTargetPrefContext);
   if (!canDirectDownload || !hit.download_url) return null;
 
   const settled = state === "done" || state === "exists";
+
+  /** 提交结果统一收口：toast 文案 + 终态。 */
+  function settle(result: DownloadSubmitResult) {
+    setState(result.already_exists ? "exists" : "done");
+    toast.success(
+      result.already_exists
+        ? "该种子已在下载器中，未重复添加"
+        : `已提交到「${result.downloader_name}」${result.save_path ? ` · ${result.save_path}` : ""}`,
+    );
+  }
+
+  /** 确认条里点「确认下载」：按记忆直接提交。 */
+  function confirmRemembered(req: DownloadTargetRequest, target: DownloadTargetPref) {
+    setState("submitting");
+    setConfirming(null);
+    submitRememberedTarget(req, target)
+      .then((result) => {
+        if (result === null) {
+          // 智能入库预检没收敛：绝不静默放进默认库，展开弹窗并说明原因
+          setState("idle");
+          setFallbackReason("这条种子没匹配到唯一条目，请手动选择保存位置。");
+          setRequest(req);
+          return;
+        }
+        settle(result);
+      })
+      .catch((err) => {
+        setState("error");
+        setError(err instanceof Error ? err.message : "提交失败");
+        toast.error(err instanceof Error ? err.message : "提交失败，请重试");
+      });
+  }
 
   function openDialog(e: React.MouseEvent) {
     e.stopPropagation();
     if (state === "submitting" || settled || !hit.download_url) return;
     setError(null);
+    setFallbackReason(null);
     // 实体身份三件套齐全才提供"智能入库"选项（年份是防错挂的硬门槛）
     const attrs = hit.attrs;
     const title = attrs?.titles_zh?.[0] ?? attrs?.titles_en?.[0];
@@ -2522,35 +2666,33 @@ function DownloadButton({
           ? { kind: mediaType, title, year: attrs.year }
           : null,
       subtitle: hit.subtitle || null,
+      // 记忆的桶键用站点声明的一级分类；站点没映射时归 other
+      category: hit.category ?? "other",
     };
-    // 快速通道：记住过保存位置就直接提交，不再弹窗（批量下载 20 次点击 → 10 次）。
-    // toast 带「更改」回到弹窗；目标失效（库被删等）自动回落弹窗
-    const remembered = readRememberedTarget(req);
-    if (remembered) {
-      setState("submitting");
-      submitRememberedTarget(req, remembered)
-        .then((result) => {
-          if (result === null) {
-            setState("idle");
-            setRequest(req);
-            return;
-          }
-          setState(result.already_exists ? "exists" : "done");
-          toast.success(
-            result.already_exists
-              ? "该种子已在下载器中，未重复添加"
-              : `已提交到「${result.downloader_name}」${result.save_path ? ` · ${result.save_path}` : ""}`,
-            { action: { label: "更改", onClick: () => setRequest(req) } },
-          );
-        })
-        .catch((err) => {
-          setState("error");
-          setError(err instanceof Error ? err.message : "提交失败");
-          toast.error(err instanceof Error ? err.message : "提交失败，请重试");
-        });
+    const remembered = prefs.byCategory.get(req.category) ?? null;
+    if (!remembered) {
+      setRequest(req);
       return;
     }
-    setRequest(req);
+    // 记忆存的是「智能入库」但这条种子没解析出身份：套不上，回落弹窗并说明
+    if (remembered.kind === "smart" && !req.identity) {
+      setFallbackReason("这条种子没解析出条目身份，用不了记住的「智能入库」，请手动选择。");
+      setRequest(req);
+      return;
+    }
+    // 记住的下载器已被删除（后端解析不出名称）：目标已经不成立
+    if (remembered.downloader_id != null && remembered.downloader_name === null) {
+      setFallbackReason("上次使用的下载器已不可用，请重新选择保存位置。");
+      setRequest(req);
+      return;
+    }
+    // 记住的目录已不在候选里（库被删、路径映射改了）
+    if (prefs.isStaleDir(remembered)) {
+      setFallbackReason(`上次的保存位置 ${remembered.save_path} 已不存在，请重新选择。`);
+      setRequest(req);
+      return;
+    }
+    setConfirming({ request: req, target: remembered });
   }
 
   return (
@@ -2566,11 +2708,42 @@ function DownloadButton({
       >
         {DOWNLOAD_LABEL[state]}
       </button>
+      {confirming && (
+        <DownloadTargetConfirmBar
+          request={confirming.request}
+          target={confirming.target}
+          onConfirm={() => confirmRemembered(confirming.request, confirming.target)}
+          onChange={() => {
+            setRequest(confirming.request);
+            setConfirming(null);
+          }}
+          onForget={() => {
+            const { request: req, target } = confirming;
+            setConfirming(null);
+            // 清除后不是"清完就没了"，而是展开完整弹窗让人重选——用户点它是因为
+            // 这个默认不对，不是因为不想下载
+            void prefs.forget(target.category);
+            setFallbackReason(
+              `已清除「${CATEGORY_LABEL[target.category as TorrentCategory] ?? target.category}」的默认位置，这次的选择会成为新的默认。`,
+            );
+            setRequest(req);
+          }}
+          onClose={() => setConfirming(null)}
+        />
+      )}
       <DownloadTargetDialog
         request={request}
+        remembered={request ? (prefs.byCategory.get(request.category) ?? null) : null}
+        reason={fallbackReason}
         topmost={dialogTopmost}
-        onClose={() => setRequest(null)}
-        onSubmitted={(result) => setState(result.already_exists ? "exists" : "done")}
+        onClose={() => {
+          setRequest(null);
+          setFallbackReason(null);
+        }}
+        onSubmitted={(result) => {
+          setState(result.already_exists ? "exists" : "done");
+          void prefs.refresh();
+        }}
       />
     </>
   );

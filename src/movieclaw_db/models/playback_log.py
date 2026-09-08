@@ -5,9 +5,11 @@ from datetime import datetime
 from sqlmodel import Field
 
 from movieclaw_db.models.base import TimestampMixin, utcnow
+from movieclaw_db.models.member_scoped import MemberScopedMixin, register_member_scoped
 
 
-class PlaybackLog(TimestampMixin, table=True):
+@register_member_scoped
+class PlaybackLog(MemberScopedMixin, TimestampMixin, table=True):
     """播放日志——每一场播放一行（docs/design/activity.md「播放日志与统计」）。
 
     与 ``playback_state`` 的分工：状态表回答「看到哪了 / 看没看过」，同一集重看
@@ -31,7 +33,9 @@ class PlaybackLog(TimestampMixin, table=True):
     __tablename__ = "playback_log"
 
     id: int | None = Field(default=None, primary_key=True)
-    member_id: int = Field(default=0, index=True, description="归属成员；0=超管（哨兵）")
+    # member_id 由 MemberScopedMixin 提供（0=超管哨兵、非外键）；本表登记进
+    # 成员级注册表后，删除成员时随 delete_member 一并清理——此前 docstring
+    # 写着"删成员时由服务层清理"，但 delete_member 实际漏了这张表
     media_item_id: int = Field(index=True, description="媒体条目身份锚（无外键，条目删后仍可统计）")
     kind: str = Field(default="movie", description="内容形态快照：movie / tv / video")
     title: str = Field(default="", description="片名快照")

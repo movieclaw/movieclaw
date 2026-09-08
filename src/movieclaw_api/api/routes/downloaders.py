@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, BackgroundTasks, Depends, Path, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from movieclaw_api.api.deps import require_login
 from movieclaw_api.exceptions import BadRequestException, ForbiddenException
 from movieclaw_api.schemas.downloader import (
+    DownloadTargetPrefView,
     DownloaderLimitsUpdate,
     DownloaderLimitsView,
     DownloaderPayload,
@@ -37,6 +40,9 @@ from movieclaw_api.services.torrent_submit import (
     translate_save_path,
 )
 from movieclaw_db.engine import get_session
+from movieclaw_db.repositories.download_target_pref_repo import DownloadTargetPrefRepository
+
+logger = logging.getLogger("movieclaw_api.downloaders")
 
 router = APIRouter(prefix="/downloaders", tags=["downloaders"])
 
@@ -250,6 +256,7 @@ async def submit_download(
             else translate_save_path(derived_path or row.save_path, row.path_mappings)
         ),
     )
+    await _remember_target(session, principal, payload)
     if result.already_exists:
         message = "该种子已在下载器中，未重复添加"
     elif library is not None:
@@ -259,6 +266,103 @@ async def submit_download(
     else:
         message = f"已提交到「{row.name}」"
     return ok(view, message=message)
+
+
+def _member_scope(principal: Principal) -> int:
+    """成员级数据的归属键：成员用自己的 id，超管用哨兵 0（超管不在 member 表）。"""
+    return principal.member_id if principal.member_id is not None else 0
+
+
+async def _remember_target(
+    session: AsyncSession, principal: Principal, payload: DownloadSubmitPayload
+) -> None:
+    """提交成功后记住本次的保存位置选择（``docs/design/download-target-memory.md``）。
+
+    只对**管理员**记：成员的一键下载被服务端强制自动路由，选不了目录也选不了
+    下载器，给他们建记忆既无意义，又会让确认条把下载器信息透给本不该看到的人。
+
+    不带 category 就不记（分类只有搜索页拿得到，其他调用方——订阅投递、CLI——
+    不该产生用户级记忆）。"选了库但没开智能入库"这种组合三种 kind 都表达不了，
+    也跳过：记不准不如不记。
+
+    **记忆写失败绝不能让下载失败**：走到这里种子已经进下载器了，为一条偏好把
+    整个请求变成 500，用户会以为没下上而重复提交。
+    """
+    if not principal.is_admin or not payload.category:
+        return
+    if payload.auto_route:
+        kind, save_path = "smart", None
+    elif payload.save_path is not None:
+        kind, save_path = "dir", payload.save_path
+    elif payload.library_id is not None:
+        return
+    else:
+        kind, save_path = "default", None
+    try:
+        await DownloadTargetPrefRepository(session).upsert(
+            _member_scope(principal),
+            payload.category,
+            kind=kind,
+            save_path=save_path,
+            downloader_id=payload.downloader_id,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("记住保存位置失败（不影响本次下载）：分类=%s", payload.category, exc_info=True)
+
+
+@submit_router.get(
+    "/target-prefs",
+    response_model=ApiResponse[list[DownloadTargetPrefView]],
+    summary="我的保存位置记忆（搜索结果页据此决定弹确认条还是完整弹窗）",
+    operation_id="dl.targetPrefs.list",
+)
+async def list_target_prefs(
+    principal: Principal = Depends(require_login),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[list[DownloadTargetPrefView]]:
+    """返回当前登录者的全部记忆（最多一个分类一条，共 8 条封顶）。
+
+    顺带把 downloader_id 解析成名称：确认条要在智能入库预检返回**之前**就显示
+    「保存到哪台下载器」，前端为此再拉一次下载器列表不值得。指定的下载器已被
+    删除时名称为 None，前端据此判定记忆失效、回落完整弹窗。
+    """
+    rows = await DownloadTargetPrefRepository(session).list_for_member(_member_scope(principal))
+    names = {d.id: d.name for d in await DownloaderConfigService(session).list_all()}
+    return ok(
+        [
+            DownloadTargetPrefView(
+                category=row.category,
+                kind=row.kind,  # type: ignore[arg-type]  # 落库前已约束为三种之一
+                save_path=row.save_path,
+                downloader_id=row.downloader_id,
+                downloader_name=(
+                    None if row.downloader_id is None else names.get(row.downloader_id)
+                ),
+                updated_at=row.updated_at,
+            )
+            for row in rows
+        ]
+    )
+
+
+@submit_router.delete(
+    "/target-prefs/{category}",
+    response_model=ApiResponse[None],
+    summary="不再记住某个分类的保存位置",
+    operation_id="dl.targetPrefs.forget",
+)
+async def forget_target_pref(
+    category: str = Path(description="种子分类（TorrentCategory 值）"),
+    principal: Principal = Depends(require_login),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[None]:
+    """清除某分类的记忆（确认条上的「不再记住」）。
+
+    幂等：本就没有记忆也返回成功——用户要的是"以后别再自动填这个了"，这个
+    诉求在两种情况下都已经满足。
+    """
+    await DownloadTargetPrefRepository(session).delete(_member_scope(principal), category)
+    return ok(None, message="已清除该分类的保存位置记忆")
 
 
 @router.get(
