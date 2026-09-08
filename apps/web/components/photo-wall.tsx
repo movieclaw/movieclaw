@@ -286,6 +286,7 @@ function formatDate(iso: string | null): string | null {
 export function PhotoWall({
   items,
   density,
+  grouped = true,
   monthCounts,
   onOpen,
   workingLabelOf,
@@ -293,6 +294,12 @@ export function PhotoWall({
   /** 已加载的条目，按内容时间倒序（服务端 sort=release_date 的顺序） */
   items: LibraryItem[];
   density: PhotoWallDensity;
+  /**
+   * 是否按月分段（默认分）。选了「最近添加」排序时整墙不再按拍摄时间有序，
+   * 同一个月的照片散落在各处，分段只会切出一堆重复的月份标题——那一档走
+   * 不分段的一条瀑布流。
+   */
+  grouped?: boolean;
   /** 月份索引给出的全库每月张数（未加载的月份也能显示总数）；缺省只按已加载数 */
   monthCounts?: ReadonlyMap<string, number>;
   /** 点击某张：传的是它在 items 里的下标（灯箱按同一列表翻页） */
@@ -303,15 +310,17 @@ export function PhotoWall({
   // 标题序拉一页再切到时间序，那一瞬间同月不连续——按月归并（而不是按连续段切）
   // 保证每个月只有一段、section 的 key 唯一，否则 React 会留下重复的瓦片
   const groups = useMemo(() => {
+    const entries = items.map((item, index) => ({ item, index }));
+    if (!grouped) return [{ month: "", entries }];
     const byMonth = new Map<string, { item: LibraryItem; index: number }[]>();
-    items.forEach((item, index) => {
-      const month = photoMonthOf(item);
+    for (const entry of entries) {
+      const month = photoMonthOf(entry.item);
       const bucket = byMonth.get(month);
-      if (bucket) bucket.push({ item, index });
-      else byMonth.set(month, [{ item, index }]);
-    });
-    return Array.from(byMonth, ([month, entries]) => ({ month, entries }));
-  }, [items]);
+      if (bucket) bucket.push(entry);
+      else byMonth.set(month, [entry]);
+    }
+    return Array.from(byMonth, ([month, rows]) => ({ month, entries: rows }));
+  }, [items, grouped]);
 
   // 容器宽度：ResizeObserver 驱动重排；首帧用 layout effect 量一次，避免闪一下空墙
   const containerRef = useRef<HTMLDivElement>(null);
@@ -377,14 +386,17 @@ const PhotoMonthSection = memo(function PhotoMonthSection({
   }, [entries, width, spec]);
   const count = total ?? entries.length;
   return (
-    // data-wall-initial：月份段的首部锚点，海报墙的滚动联动据此点亮索引条上的月份
-    <section data-wall-initial={month} className="mb-8 last:mb-0">
-      <div className="mb-3 flex items-baseline gap-2.5">
-        <h3 className="text-on-image text-body-lg font-semibold text-white/85">
-          {formatPhotoMonth(month)}
-        </h3>
-        <span className="tnum text-caption text-[var(--text-faint)]">{count} 张</span>
-      </div>
+    // data-wall-initial：月份段的首部锚点，海报墙的滚动联动据此点亮索引条上的月份。
+    // 不分段时（month 为空）既没有标题也没有锚点，就是一整面墙
+    <section data-wall-initial={month || undefined} className="mb-8 last:mb-0">
+      {month !== "" && (
+        <div className="mb-3 flex items-baseline gap-2.5">
+          <h3 className="text-on-image text-body-lg font-semibold text-white/85">
+            {formatPhotoMonth(month)}
+          </h3>
+          <span className="tnum text-caption text-[var(--text-faint)]">{count} 张</span>
+        </div>
+      )}
       <div className="relative" style={{ height: layout.height }}>
         {entries.map(({ item, index }, i) => (
           <PhotoTile

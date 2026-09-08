@@ -53,7 +53,6 @@ import {
   refreshItemMetadata,
   regenerateItemChapterImages,
   restoreLibraryFile,
-  setItemScrapeLibrary,
   transferLibraryItem,
 } from "@/lib/api/libraries";
 import {
@@ -66,7 +65,7 @@ import {
 } from "@/lib/api/playback";
 import { type ShareView, getItemShare } from "@/lib/api/shares";
 import { useSubscribeEntry } from "@/components/subscribe-entry";
-import { LIBRARY_KIND_LABELS, type LibraryKind } from "@/lib/media-types";
+import { LIBRARY_KIND_LABELS } from "@/lib/media-types";
 import { getDiscoveryReturnPath } from "@/lib/discovery-return-path";
 import { formatBytes, formatRuntimeMinutes, formatVideoResolution } from "@/lib/format";
 import { formatClock } from "@/lib/player/timeline";
@@ -163,8 +162,6 @@ export function LibraryItemDetailView({
   const [kicking, setKicking] = useState(false);
   // 「更换图片」弹层（手动选海报/背景，选后加锁）
   const [artworkOpen, setArtworkOpen] = useState(false);
-  // 「刮削归属」弹层（决定这条目按哪个库的语言/选图设置刮）
-  const [scrapeLibraryOpen, setScrapeLibraryOpen] = useState(false);
   // 分享弹窗（docs/design/media-share.md）：打开前先查当前有效分享，按有无决定形态
   const [shareOpen, setShareOpen] = useState(false);
   const [shareInitial, setShareInitial] = useState<ShareView | null>(null);
@@ -439,7 +436,7 @@ export function LibraryItemDetailView({
   const isMovie = detail.kind !== "tv";
   // 有 TMDB 锚点才有订阅/洗版/外链；本地条目（其他库、影视库里未识别的文件）没有
   const tmdbId = detail.tmdb_id ?? 0;
-  // 条目所在库有刮削链，且条目本身来自 TMDB 才有「刷新元数据/更换图片/刮削归属」；
+  // 条目所在库有刮削链，且条目本身来自 TMDB 才有「刷新元数据/更换图片」；
   // 影视库里尚未识别的本地条目只留「修正识别结果」这条转正通道
   const scrapedLibrary = library?.capabilities.scraped ?? detail.source === "tmdb";
   const meta = detail.local_meta;
@@ -595,8 +592,6 @@ export function LibraryItemDetailView({
               }
               chaptersPending={Boolean(detail.chapters_pending)}
               onChangeArtwork={() => setArtworkOpen(true)}
-              scrapeLibraryName={detail.scrape_library_name}
-              onChangeScrapeLibrary={() => setScrapeLibraryOpen(true)}
               onTransfer={() => setTransferOpen(true)}
               onDelete={() => setDeleteOpen(true)}
               // 未识别/本地条目没有订阅锚点，不给洗版入口
@@ -898,7 +893,7 @@ export function LibraryItemDetailView({
         open={transferOpen}
         detail={detail}
         libraryId={libraryId}
-        sourceLibraryName={library?.name ?? null}
+        sourceLibrary={library}
         onClose={() => setTransferOpen(false)}
         onFinished={handleTransferFinished}
         onTransferred={(targetLibraryId) => {
@@ -951,18 +946,6 @@ export function LibraryItemDetailView({
                 } 集`
           }
           initialShare={shareInitial}
-        />
-      )}
-
-      {canManageLibraries && (
-        <ScrapeLibraryDialog
-          open={scrapeLibraryOpen}
-          libraryId={libraryId}
-          mediaItemId={mediaItemId}
-          kind={detail.kind}
-          current={detail.scrape_library_id}
-          onClose={() => setScrapeLibraryOpen(false)}
-          onChanged={reload}
         />
       )}
     </div>
@@ -1166,8 +1149,6 @@ function ItemActionsMenu({
   onRegenerateChapterImages,
   chaptersPending,
   onChangeArtwork,
-  scrapeLibraryName,
-  onChangeScrapeLibrary,
   onTransfer,
   onDelete,
   onUpgrade,
@@ -1180,7 +1161,7 @@ function ItemActionsMenu({
   onShare?: () => void;
   /** 所在库有识别链（影视库）：给「修正识别结果」；其他库没有可认领的外部身份 */
   identifiable: boolean;
-  /** 条目本身来自 TMDB：给刷新元数据/更换图片/刮削归属；本地条目只有封面 */
+  /** 条目本身来自 TMDB：给刷新元数据/更换图片；本地条目只有封面 */
   scraped: boolean;
   scraping: boolean;
   /** 站点资源搜索直达（预填片名）：手动补版本/换版本的入口 */
@@ -1192,9 +1173,6 @@ function ItemActionsMenu({
   /** 场景图正在后台生成：菜单项置灰 */
   chaptersPending: boolean;
   onChangeArtwork: () => void;
-  /** 当前刮削归属库名；null=无归属（跟全局设置） */
-  scrapeLibraryName: string | null;
-  onChangeScrapeLibrary: () => void;
   onTransfer: () => void;
   onDelete: () => void;
   /** 洗版入口（quality-upgrade.md §13.5）；无订阅权限或条目未识别时不传 */
@@ -1288,14 +1266,6 @@ function ItemActionsMenu({
               <DropdownMenu.Item onSelect={onChangeArtwork} className={itemClass}>
                 更换图片…
               </DropdownMenu.Item>
-              )}
-              {/* 刮削归属：一条目只有一份档案与一张海报，按哪个库的语言/选图
-                  设置刮由它决定。菜单里带出当前值——不摆出来用户无从解释
-                  "为什么这部片没跟我的动漫库设置"（设计文档 §14.5） */}
-              {scraped && (
-                <DropdownMenu.Item onSelect={onChangeScrapeLibrary} className={itemClass}>
-                  刮削归属：{scrapeLibraryName ?? "跟随全局"}…
-                </DropdownMenu.Item>
               )}
               <DropdownMenu.Item onSelect={onTransfer} className={itemClass}>
                 转移到其他库…
@@ -1976,7 +1946,7 @@ function TransferDialog({
   open,
   detail,
   libraryId,
-  sourceLibraryName,
+  sourceLibrary,
   onFinished,
   onClose,
   onTransferred,
@@ -1984,7 +1954,8 @@ function TransferDialog({
   open: boolean;
   detail: LibraryItemDetail;
   libraryId: number;
-  sourceLibraryName: string | null;
+  /** 当前所在库；候选目标库与文案都按它的形态 × 来源决定 */
+  sourceLibrary: MediaLibrary | null;
   onFinished: (targetLibraryId: number) => void;
   onClose: () => void;
   onTransferred: (targetLibraryId: number) => void;
@@ -1999,19 +1970,26 @@ function TransferDialog({
   const [status, setStatus] = useState<TransferStatus | null>(null);
   const [starting, setStarting] = useState(false);
 
+  // 一文件一条目的库（其他 / 图片）：搬的是文件本身，不是"条目目录"
+  const fileEntries = sourceLibrary != null && !sourceLibrary.capabilities.scraped;
+  // 候选目标库的口径必须与后端 assert_transferable 一致：比的是**库**的来源，
+  // 不是条目的来源——影视库里认不出的文件条目来源也是 local，拿它去筛会把
+  // 同类型的影视库全筛掉，弹窗只剩一句"没有其他库可选"
+  const sourceKind = sourceLibrary?.kind ?? detail.kind;
+  const librarySource = sourceLibrary?.source ?? detail.source;
   useEffect(() => {
     if (!open) return;
     setTargetId(null);
     setPreview(null);
     setStatus(null);
     setError(null);
-    listLibraries(detail.kind)
+    listLibraries(sourceKind)
       // 同形态且同来源才能收（其他库 ↔ 其他库）
       .then((libs) =>
-        setCandidates(libs.filter((l) => l.id !== libraryId && l.source === detail.source)),
+        setCandidates(libs.filter((l) => l.id !== libraryId && l.source === librarySource)),
       )
       .catch(() => setError("读取媒体库列表失败，请稍后重试"));
-  }, [open, detail.kind, detail.source, libraryId]);
+  }, [open, sourceKind, librarySource, libraryId]);
 
   // 选中目标库就立刻算预览：用户要先看清"搬到哪、搬多少"才谈得上确认
   useEffect(() => {
@@ -2087,12 +2065,23 @@ function TransferDialog({
               <FolderIcon className="size-4.5 text-[var(--accent-2)]" />
               把「{detail.title}」转移到其他媒体库
             </h3>
-            <p className="mt-2 text-sub leading-6 text-[var(--text-muted)]">
-              分错库时用它补救（例如韩剧被判进了「大陆华语剧」）。
-              <span className="text-white/80">磁盘上的整个条目目录</span>
-              （视频、NFO、海报、字幕）会连同库存记录一起搬到目标库；
-              目录名原样保留，需要规范化请到目标库运行「整理文件名」。
-            </p>
+            {/* 搬运单元按库的能力档案分叉，文案必须跟着分叉：本地内容库
+                （其他 / 图片）一文件一条目，搬的是文件本身而不是条目目录，
+                照抄影视库的说法只会让用户以为整个分组目录都要被搬走 */}
+            {fileEntries ? (
+              <p className="mt-2 text-sub leading-6 text-[var(--text-muted)]">
+                放错库时用它补救。<span className="text-white/80">这个条目的文件</span>
+                （连同同名的 NFO、字幕）会连同库存记录一起搬到目标库；
+                文件在库里的所在目录结构原样保留，同目录下别的条目留在原地不动。
+              </p>
+            ) : (
+              <p className="mt-2 text-sub leading-6 text-[var(--text-muted)]">
+                分错库时用它补救（例如韩剧被判进了「大陆华语剧」）。
+                <span className="text-white/80">磁盘上的整个条目目录</span>
+                （视频、NFO、海报、字幕）会连同库存记录一起搬到目标库；
+                目录名原样保留，需要规范化请到目标库运行「整理文件名」。
+              </p>
+            )}
 
             {/* —— 第一步：选目标库 —— */}
             <p className="mt-5 text-caption font-semibold uppercase tracking-[0.16em] text-[var(--text-faint)]">
@@ -2102,7 +2091,7 @@ function TransferDialog({
               <p className="mt-2 text-sub text-[var(--text-muted)]">正在读取媒体库…</p>
             ) : candidates.length === 0 ? (
               <p className="mt-2 text-sub leading-6 text-[#ffd08a]">
-                没有其他{LIBRARY_KIND_LABELS[detail.kind]}
+                没有其他{LIBRARY_KIND_LABELS[sourceKind]}
                 库可选——请先在「媒体库」页新建一个，再回来转移。
               </p>
             ) : (
@@ -2151,7 +2140,9 @@ function TransferDialog({
                 正在计算转移计划…
               </p>
             )}
-            {preview && <TransferPlanPreview preview={preview} sourceName={sourceLibraryName} />}
+            {preview && (
+              <TransferPlanPreview preview={preview} sourceName={sourceLibrary?.name ?? null} />
+            )}
             {error && <p className="mt-3 text-sub leading-6 text-[#ff9f9f]">{error}</p>}
           </>
         )}
@@ -2627,116 +2618,6 @@ function DeleteFileDialog({
             </div>
           </>
         )}
-      </div>
-    </Modal>
-  );
-}
-
-
-/**
- * 刮削归属库弹层（docs/design/scrape-customization.md §14.5）。
- *
- * 元数据与图片的产物挂在**全局条目**上——一部片一份档案、一张海报——所以
- * 语言与选图这类设置没法像命名模板那样"每个库各来一套"。归属库就是"这条
- * 条目按谁的口味刮"的唯一答案；同一条目的文件散在两个库时，这里显示的就是
- * 谁赢了，也是用户唯一能翻案的地方。
- *
- * 「跟随自动判定」= 清空归属，由系统按"在位文件所属库 → 订阅目标库"重新推断。
- * 改完不自动重刮：重刮要重下全套图，是用户该自己按的按钮（菜单里的刷新元数据）。
- */
-function ScrapeLibraryDialog({
-  open,
-  libraryId,
-  mediaItemId,
-  kind,
-  current,
-  onClose,
-  onChanged,
-}: {
-  open: boolean;
-  libraryId: number;
-  mediaItemId: number;
-  kind: LibraryKind;
-  current: number | null;
-  onClose: () => void;
-  onChanged: () => void;
-}) {
-  const toast = useToast();
-  const [libraries, setLibraries] = useState<MediaLibrary[]>([]);
-  const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    if (!open) return;
-    // 只列同类型的库：电影库的刮削口味套到剧集上没有意义，后端也会拒
-    listLibraries(kind)
-      .then(setLibraries)
-      .catch(() => setLibraries([]));
-  }, [open, kind]);
-
-  const apply = async (target: number | null) => {
-    setBusy(true);
-    try {
-      const result = await setItemScrapeLibrary(libraryId, mediaItemId, target);
-      toast.success(
-        result.scrape_library_id === null
-          ? "已恢复自动判定；刷新元数据后按推断出的库重刮"
-          : "刮削归属已更新；刷新元数据后按该库的设置重刮",
-      );
-      onChanged();
-      onClose();
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "修改失败，请重试");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <Modal open={open} onClose={busy ? () => {} : onClose} label="刮削归属" width="lg">
-      <div className="p-6">
-        <h3 className="text-title-sm font-semibold text-[var(--text)]">刮削归属</h3>
-        <p className="mt-2 text-sub leading-relaxed text-[var(--text-muted)]">
-          这部影片的语言、分级与选图按下面这个媒体库的刮削设置来。一部片只有一份档案与
-          一张海报，所以文件即使散在多个库，也只能有一个库说了算。
-        </p>
-        <div className="mt-4 space-y-2">
-          {libraries.map((library) => (
-            <button
-              key={library.id}
-              type="button"
-              disabled={busy}
-              onClick={() => apply(library.id)}
-              className={`flex w-full items-center justify-between gap-3 rounded-xl border px-3.5 py-2.5 text-left transition-colors disabled:opacity-50 ${
-                current === library.id
-                  ? "border-[var(--accent-2)] bg-[var(--accent-soft)]"
-                  : "border-white/[0.08] bg-white/[0.04] hover:bg-white/[0.07]"
-              }`}
-            >
-              <span className="min-w-0">
-                <span className="block truncate text-ui font-medium">{library.name}</span>
-                <span className="mt-0.5 block truncate text-caption text-[var(--text-faint)]">
-                  {library.root_paths[0] ?? "未配置根路径"}
-                </span>
-              </span>
-              {current === library.id && (
-                <span className="shrink-0 text-caption text-[var(--accent)]">当前</span>
-              )}
-            </button>
-          ))}
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => apply(null)}
-            className="flex w-full items-center justify-between gap-3 rounded-xl border border-dashed border-white/[0.15] px-3.5 py-2.5 text-left text-[var(--text-muted)] transition-colors hover:text-[var(--text)] disabled:opacity-50"
-          >
-            <span className="min-w-0">
-              <span className="block text-ui font-medium">跟随自动判定</span>
-              <span className="mt-0.5 block text-caption text-[var(--text-faint)]">
-                按在位文件所属的库推断；都没有则跟随全局刮削设置
-              </span>
-            </span>
-          </button>
-        </div>
       </div>
     </Modal>
   );

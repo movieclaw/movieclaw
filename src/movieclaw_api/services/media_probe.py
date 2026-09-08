@@ -42,6 +42,25 @@ def ffprobe_available() -> bool:
     return shutil.which("ffprobe") is not None
 
 
+#: 探测层**字段集**的版本。新增会落库的探测字段时 +1。
+#:
+#: 为什么需要它：台账行的新鲜度此前只有一个标记——``audio_streams IS NULL``
+#: 表示「从没探测成功过」。它认不出另一类行：**用旧版字段集探测成功过、缺后来
+#: 新增字段**的行。2026-09 新增 ``frame_rate`` / ``color_space`` 与 Dolby Vision
+#: 识别后，早于那一版入库的行永远拿不到这几项，也就永远识别不出 DV——播放链
+#: 读台账，于是 DV P5 一直不做色调映射（issue #331）。
+#:
+#: 版本落进 ``library_file.probe_version``，手动扫描的补探据此把落后的行捞回来
+#: 重探一次。以后再加探测字段，改这一个常量即可，不必为每个字段单独想办法。
+#:
+#: 刻意**不**做成 MediaSpec 的字段：版本是「产出这份 spec 的代码」的属性，
+#: 运行时恒等于这个常量，从 spec 上读没有信息增量，却会让每个落库点都依赖
+#: spec 对象的形状（测试替身漏一个字段就炸，CI 上真踩过）。
+#:
+#: 1 = 首次引入（此前的行一律为 NULL，会被补探一次）
+PROBE_SCHEMA_VERSION = 1
+
+
 @dataclass(frozen=True)
 class MediaSpec:
     """一次探测的结论。字段 None = 该项未能取得（三态铁律）。
@@ -122,6 +141,94 @@ def probe_media(path: str | Path) -> MediaSpec | None:
     except json.JSONDecodeError:
         return None
     return _parse_probe(payload, include_mpegts_pids=Path(path).suffix.lower() == ".m2ts")
+
+
+
+@dataclass(frozen=True)
+class VideoColor:
+    """抓帧要用的色彩特征。比台账那一份细一层。
+
+    台账只落 ``hdr`` 标签，而 **Dolby Vision 的基础层能不能按常规 HDR 解读**
+    还取决于兼容性标志：``dv_bl_signal_compatibility_id`` 为 0（典型是 P5）时，
+    基础层是 DV 私有的 IPT-PQ-c2 色彩空间，真正的色彩变换藏在 RPU 元数据里。
+    任何把 I/P/T 三个分量当 Y/Cb/Cr 解读的滤镜链，出来就是「肤色发绿、头发
+    发紫」——issue #331 里那张章节图正是如此。
+    """
+
+    hdr: str | None = None
+    dv_profile: int | None = None
+    #: 基础层是否可直接解读（compatibility_id 非 0）。非 DV 片无意义。
+    dv_backward_compatible: bool = False
+
+    @property
+    def needs_tonemap(self) -> bool:
+        """抓帧要不要做色调映射。
+
+        **SDR 一律不做**：实测把 ``tonemapx`` 喂给 SDR 片会二次映射，画面整片
+        压成青绿、红通道掉掉三分之二（真机对照：正常 (21,28,31) → (7,25,26)）。
+        ``_hdr_label`` 见到 DOVI side data 就会返回 "Dolby Vision"，所以这里
+        只看 ``hdr`` 就够，不必再单独判 ``dv_profile``。
+        """
+        return bool(self.hdr)
+
+    @property
+    def needs_dv_metadata(self) -> bool:
+        """基础层必须靠 DV 元数据才能正确解读（P5 那一类）。
+
+        为真时**没有 tonemapx 就抓不出能看的图**——退回不映射的链子只会稳定
+        产出一张绿图。调用方据此选择宁可不出图。
+        """
+        return self.dv_profile is not None and not self.dv_backward_compatible
+
+
+def probe_video_color(path: str | Path) -> VideoColor | None:
+    """现场探一次视频的色彩特征；ffprobe 缺失/失败/无视频流返回 None。
+
+    **刻意不读台账**：色彩相关字段是后来才加进探测的，早于那一版入库的行
+    ``hdr`` 一律是 NULL，而且永远等不到补探——``scan._probe_backfill`` 的判据
+    是「从没探测成功过」（``audio_streams IS NULL``），那些行早就探测成功过。
+    抓帧时现场探一次，存量文件立刻就能拿到正确结论，不必等台账修好。
+
+    比 ``probe_media`` 轻：只取第一路视频流，不列音轨、不读章节、不读容器。
+    """
+    try:
+        proc = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-print_format",
+                "json",
+                "-select_streams",
+                "v:0",
+                # side_data_list 就在 -show_streams 的输出里（实测），
+                # DOVI 配置记录不需要额外的开关
+                "-show_streams",
+                str(path),
+            ],
+            capture_output=True,
+            timeout=_PROBE_TIMEOUT,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        streams = json.loads(proc.stdout).get("streams") or []
+    except json.JSONDecodeError:
+        return None
+    video = next((s for s in streams if isinstance(s, dict)), None)
+    if video is None:
+        return None
+    profile, compatible = _dv_info(video)
+    return VideoColor(
+        hdr=_hdr_label(video), dv_profile=profile, dv_backward_compatible=compatible
+    )
+
+
+def video_color_for(path: str | Path, *, fallback_hdr: str | None = None) -> VideoColor:
+    """现场探色彩特征；探不到时退回台账那一份 ``hdr``（聊胜于无）。"""
+    return probe_video_color(path) or VideoColor(hdr=fallback_hdr)
 
 
 # --- 图片探测（docs/design/library-photo-kind.md 2.3）------------------------
@@ -703,6 +810,23 @@ def _hdr_label(video: dict) -> str | None:
     if transfer == "arib-std-b67":
         return "HLG"
     return None
+
+
+def _dv_info(video: dict) -> tuple[int | None, bool]:
+    """DOVI 配置记录里的 profile 与基础层兼容性；非 DV 片返回 (None, False)。
+
+    ``dv_bl_signal_compatibility_id``：0 = 基础层是 DV 私有的 IPT-PQ-c2，必须
+    靠 RPU 元数据才能还原；非 0 = 基础层本身就是能直接解读的 HDR10/SDR。
+    """
+    for item in video.get("side_data_list") or []:
+        if not isinstance(item, dict):
+            continue
+        if "dovi" not in str(item.get("side_data_type") or "").lower():
+            continue
+        return _to_int(item.get("dv_profile")), bool(
+            _to_int(item.get("dv_bl_signal_compatibility_id"))
+        )
+    return None, False
 
 
 def _frame_rate(value) -> float | None:

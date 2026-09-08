@@ -741,17 +741,18 @@ function DownloaderLimitsModal({
 
   return (
     <Modal open={open} onClose={onClose} label="限速与队列" width="lg">
-      <div className="space-y-4 p-6">
-        <div>
-          <h2 className="text-title font-bold text-[var(--text)]">
-            限速与队列 · {downloader.name}
-          </h2>
-          <p className="mt-1 text-sub leading-5 text-[var(--text-muted)]">
-            实时读写下载器的全局设置。限速留空 = 不限；队列上限决定同时活动的任务数，
-            开着刷流大量做种时建议调大做种/活动上限，避免新任务排队。
-          </p>
-        </div>
+      {/* 头部常驻 */}
+      <div className="border-b border-white/[0.07] px-6 pb-4 pt-6">
+        <h2 className="text-title font-bold text-[var(--text)]">
+          限速与队列 · {downloader.name}
+        </h2>
+        <p className="mt-1 text-sub leading-5 text-[var(--text-muted)]">
+          实时读写下载器的全局设置。限速留空 = 不限；队列上限决定同时活动的任务数，
+          开着刷流大量做种时建议调大做种/活动上限，避免新任务排队。
+        </p>
+      </div>
 
+      <div className="scroll-thin min-h-0 flex-1 space-y-4 overflow-y-auto px-6 py-4">
         {error && (
           <div className="rounded-xl border border-[#ff6b6b]/30 bg-[#ff6b6b]/10 px-4 py-3 text-body text-[#ff6b6b]">
             {error}
@@ -844,25 +845,26 @@ function DownloaderLimitsModal({
             )}
           </div>
         )}
+      </div>
 
-        <div className="flex justify-end gap-2.5 pt-1">
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={busy}
-            className="btn-glass px-4 py-2 text-sub font-medium"
-          >
-            取消
-          </button>
-          <button
-            type="button"
-            onClick={() => void save()}
-            disabled={busy || loading}
-            className="btn-accent rounded-full px-4 py-2 text-sub font-semibold disabled:opacity-60"
-          >
-            {busy ? "保存中…" : "保存"}
-          </button>
-        </div>
+      {/* 底栏常驻 */}
+      <div className="flex justify-end gap-2.5 border-t border-white/[0.07] px-6 py-4">
+        <button
+          type="button"
+          onClick={onClose}
+          disabled={busy}
+          className="btn-glass px-4 py-2 text-sub font-medium"
+        >
+          取消
+        </button>
+        <button
+          type="button"
+          onClick={() => void save()}
+          disabled={busy || loading}
+          className="btn-accent rounded-full px-4 py-2 text-sub font-semibold disabled:opacity-60"
+        >
+          {busy ? "保存中…" : "保存"}
+        </button>
       </div>
     </Modal>
   );

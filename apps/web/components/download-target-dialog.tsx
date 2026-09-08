@@ -157,11 +157,14 @@ export function DownloadTargetDialog({
   request,
   onClose,
   onSubmitted,
+  topmost = false,
 }: {
   /** null = 关闭 */
   request: DownloadTargetRequest | null;
   onClose: () => void;
   onSubmitted: (result: DownloadSubmitResult) => void;
+  /** 触发按钮长在灯箱这类高层浮层里时置位，弹窗抬到最高层（见 Modal 的层级约定） */
+  topmost?: boolean;
 }) {
   if (!request) return null;
   // 以 request 为 key 强制内容组件重新挂载：每次打开都从全新状态开始，
@@ -170,6 +173,7 @@ export function DownloadTargetDialog({
     <DialogContent
       key={`${request.site_id}:${request.download_url}`}
       request={request}
+      topmost={topmost}
       onClose={onClose}
       onSubmitted={onSubmitted}
     />
@@ -180,10 +184,12 @@ function DialogContent({
   request,
   onClose,
   onSubmitted,
+  topmost,
 }: {
   request: DownloadTargetRequest;
   onClose: () => void;
   onSubmitted: (result: DownloadSubmitResult) => void;
+  topmost: boolean;
 }) {
   const [rememberedTarget] = useState<RememberedTarget | null>(() =>
     readRememberedTarget(request),
@@ -468,10 +474,13 @@ function DialogContent({
   };
 
   return (
-    <Modal open onClose={onClose} label="选择保存位置">
-      <div className="space-y-4 p-6">
-          <h2 className="text-title font-bold text-white">选择保存位置</h2>
+    <Modal open topmost={topmost} onClose={onClose} label="选择保存位置">
+      {/* 头部常驻：目录一多就得滚，标题不跟着滚走才知道自己在选什么 */}
+      <div className="border-b border-white/[0.07] px-6 pb-4 pt-6">
+        <h2 className="text-title font-bold text-white">选择保存位置</h2>
+      </div>
 
+      <div className="scroll-thin min-h-0 flex-1 space-y-4 overflow-y-auto px-6 py-4">
           {error && (
             <p className="rounded-lg border border-red-400/25 bg-red-500/10 px-3.5 py-2.5 text-ui leading-6 text-red-200">
               {error}
@@ -607,20 +616,21 @@ function DialogContent({
               配置路径映射，提交时会自动翻译成下载器视角。
             </p>
           )}
+      </div>
 
-          <div className="flex justify-end gap-3 pt-1">
-            <button type="button" onClick={onClose} className="btn-glass h-9 px-4 text-ui font-medium">
-              取消
-            </button>
-            <button
-              type="button"
-              onClick={submit}
-              disabled={busy || selected === null}
-              className="btn-accent h-9 rounded-full px-5 text-ui font-semibold disabled:opacity-40"
-            >
-              {busy ? "提交中…" : "确认下载"}
-            </button>
-          </div>
+      {/* 底栏常驻：确认按钮永远在屏幕上，不必先把长列表滚到底才找得到 */}
+      <div className="flex justify-end gap-3 border-t border-white/[0.07] px-6 py-4">
+        <button type="button" onClick={onClose} className="btn-glass h-9 px-4 text-ui font-medium">
+          取消
+        </button>
+        <button
+          type="button"
+          onClick={submit}
+          disabled={busy || selected === null}
+          className="btn-accent h-9 rounded-full px-5 text-ui font-semibold disabled:opacity-40"
+        >
+          {busy ? "提交中…" : "确认下载"}
+        </button>
       </div>
     </Modal>
   );

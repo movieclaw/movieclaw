@@ -766,16 +766,6 @@ class LibraryItemDetailView(BaseModel):
     # 章节场景图懒触发（docs/design/video-chapters.md §4.5）：打开详情页时发现
     # 有文件没抓过图就后台抓，这里告诉前端"图还在生成"，前端据此轮询几轮
     chapters_pending: bool = Field(default=False, description="章节场景图正在后台生成")
-    # 刮削归属库（docs/design/scrape-customization.md §14）：元数据与图片的
-    # 产物挂全局条目，一条目只能有一套语言/选图口味，由归属库决定。同一条目
-    # 的文件散在两个库时，这里显示的就是"哪个库说了算"——不摆出来用户无法
-    # 解释"为什么这部片没跟我的动漫库设置"
-    scrape_library_id: int | None = Field(
-        default=None, description="刮削归属库 id；null=无归属，跟全局设置"
-    )
-    scrape_library_name: str | None = Field(
-        default=None, description="刮削归属库名；null=无归属，跟全局设置"
-    )
 
 
 class EpisodeView(BaseModel):
@@ -843,18 +833,6 @@ class ArtworkSelectPayload(BaseModel):
     kind: Literal["poster", "backdrop"] = Field(description="poster=海报 / backdrop=背景图")
     file_path: str | None = Field(
         default=None, description="TMDB 图片路径；null=解锁并恢复自动选图"
-    )
-
-
-class ScrapeLibraryPayload(BaseModel):
-    """改条目的刮削归属库；``target_library_id=null`` 表示恢复自动（清空后重新推断）。
-
-    字段不叫 ``library_id``：路径上已经有一个同名参数（条目所在的库），重名会
-    让生成式 CLI 的两个参数互相覆盖（click 会直接告警）。
-    """
-
-    target_library_id: int | None = Field(
-        default=None, description="新的刮削归属库 id；null=清空，由系统按文件/订阅重新推断"
     )
 
 

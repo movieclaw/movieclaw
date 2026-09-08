@@ -599,17 +599,20 @@ export interface LibraryGalleryGroup {
 }
 
 /**
- * 影视库 / 其他库的图床浏览模式数据源：与 listLibraryItems 按标题排序同一份
- * 顺序与分页口径（offset / limit 都按条目数）。没有图的条目也占一组（images
- * 为空），一页的组数恒等于条目数——拿满一页就还有下一页，空组前端自己滤掉。
+ * 影视库 / 其他库的图床浏览模式数据源：与 listLibraryItems 同一份排序与分页
+ * 口径（offset / limit 都按条目数），默认标题序，`sort: "added_at"` 是用户在
+ * ⋯ 菜单里选的「最近添加」。没有图的条目也占一组（images 为空），一页的组数
+ * 恒等于条目数——拿满一页就还有下一页，空组前端自己滤掉。
  */
 export function listLibraryGallery(
   id: number,
-  params?: { limit?: number; offset?: number },
+  params?: { limit?: number; offset?: number; sort?: "added_at" },
 ): Promise<LibraryGalleryGroup[]> {
   const query = new URLSearchParams();
   if (params?.limit !== undefined) query.set("limit", String(params.limit));
   if (params?.offset) query.set("offset", String(params.offset));
+  // 不给 sort 就是服务端默认的标题序（与海报墙同一份名单）
+  if (params?.sort) query.set("sort", params.sort);
   const suffix = query.size > 0 ? `?${query}` : "";
   return unwrap(request<ApiEnvelope<LibraryGalleryGroup[]>>(`/libraries/${id}/gallery${suffix}`));
 }
@@ -842,23 +845,6 @@ export function selectArtwork(
     request<ApiEnvelope<{ locked: boolean }>>(
       `/libraries/${libraryId}/items/${mediaItemId}/artwork/select`,
       { method: "POST", body: JSON.stringify({ kind, file_path: filePath }) },
-    ),
-  );
-}
-
-/**
- * 改条目的刮削归属库（决定这条目按哪个库的语言/选图设置刮）。
- * `targetLibraryId` 传 null = 恢复自动，由系统按文件/订阅重新推断。
- */
-export function setItemScrapeLibrary(
-  libraryId: number,
-  mediaItemId: number,
-  targetLibraryId: number | null,
-): Promise<{ scrape_library_id: number | null }> {
-  return unwrap(
-    request<ApiEnvelope<{ scrape_library_id: number | null }>>(
-      `/libraries/${libraryId}/items/${mediaItemId}/scrape-library`,
-      { method: "POST", body: JSON.stringify({ target_library_id: targetLibraryId }) },
     ),
   );
 }
@@ -1263,13 +1249,6 @@ export interface LibraryItemDetail {
   scraping_phase: string | null;
   /** 章节场景图正在后台生成（打开详情页时懒触发）；前端据此轮询几轮 */
   chapters_pending: boolean;
-  /**
-   * 刮削归属库（docs/design/scrape-customization.md §14）：元数据与图片的产物
-   * 挂全局条目，一条目只能有一套语言/选图口味，由这个库说了算。文件散在两个
-   * 库时，这里显示的就是"哪个库赢了"。null = 无归属，跟全局设置。
-   */
-  scrape_library_id: number | null;
-  scrape_library_name: string | null;
 }
 
 /** 剧集分集区的一集（季集结构 + 本地分集刮削 + TMDB 兜底的合并结果）。 */

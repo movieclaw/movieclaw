@@ -328,6 +328,55 @@ async def test_items_sort_and_paging(db) -> None:
         assert sorted(id_resp.data) == sorted(ids)
 
 
+async def test_gallery_follows_the_same_sort_as_the_wall(db) -> None:
+    """图床浏览模式（瀑布流）与海报墙共用排序：默认标题序，可切「最近添加」。
+
+    两面墙的 offset 口径必须一致——「回到上次位置」在两种形态下跳的是同一份
+    排序里的同一个位置。
+    """
+    from movieclaw_api.api.routes.libraries import list_library_gallery
+
+    async with db.session() as session:
+        library = await LibraryRepository(session).create(
+            name="电影库", kind="movie", root_paths=["/movies"]
+        )
+        assert library.id
+        # 标题序 A→C 与入账序（C 最新）刻意相反，两种排序才分得出来
+        base = utcnow()
+        for index, title in enumerate(["A片", "B片", "C片"]):
+            item = MediaItem(kind="movie", tmdb_id=600 + index, title=title, original_title=title)
+            session.add(item)
+            await session.flush()
+            session.add(
+                LibraryFile(
+                    library_id=library.id,
+                    media_item_id=item.id,
+                    season_number=0,
+                    episode_number=0,
+                    file_path=f"/movies/{title}/{title}.mkv",
+                    size_bytes=1,
+                    source=FileSource.SCANNED,
+                    created_at=base + timedelta(minutes=index),
+                )
+            )
+        await session.flush()
+
+        by_title = await list_library_gallery(library.id, None, 0, "title", session, _ADMIN)
+        assert [g.title for g in by_title.data] == ["A片", "B片", "C片"]
+
+        recent = await list_library_gallery(library.id, None, 0, "added_at", session, _ADMIN)
+        assert [g.title for g in recent.data] == ["C片", "B片", "A片"]
+        # 与海报墙同一份名单：切了排序，两面墙的第 n 个仍是同一部作品
+        wall = await list_library_items(
+            library.id, sort="added_at", session=session, principal=_ADMIN
+        )
+        assert [g.title for g in recent.data] == [r.title for r in wall.data]
+
+        # 分页口径也跟着排序走：按作品数跳过第一部，两面墙跳过的是同一部
+        page = await list_library_gallery(library.id, 1, 1, "added_at", session, _ADMIN)
+        assert [g.title for g in page.data] == [wall.data[1].title] == ["B片"]
+
+
 async def test_items_recent_addition_uses_latest_ingest_batch(db) -> None:
     """最近摘要只返回让条目置顶的最后一批单元，累计库存仍保持独立口径。"""
     async with db.session() as session:

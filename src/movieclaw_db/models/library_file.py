@@ -191,6 +191,14 @@ class LibraryFile(TimestampMixin, table=True):
         default=None,
         description="用户可识别的色彩空间：BT.2020/BT.709/Display P3/…",
     )
+    probe_version: int | None = Field(
+        default=None,
+        description=(
+            "写这行规格时探测层的字段集版本（media_probe.PROBE_SCHEMA_VERSION）。"
+            "NULL 或落后于当前版本 = 用旧版字段集探测过、缺后来新增的字段，"
+            "手动扫描的补探会把它捞回来重探一次"
+        ),
+    )
     # 音轨/内封字幕轨（ffprobe 全量流信息，条目详情页展示）。
     # 三态：NULL=未探测（旧数据/探测失败，详情页按需补探），[]=探测过但没有该类流。
     # 元素结构见 media_probe 的 _audio_stream_info / _subtitle_stream_info

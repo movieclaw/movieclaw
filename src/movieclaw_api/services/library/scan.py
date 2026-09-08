@@ -89,6 +89,7 @@ from movieclaw_api.services.library.units import resolve_units
 from movieclaw_api.services.media_discover import get_tmdb_client
 from movieclaw_api.services.media_library import MediaLibraryService
 from movieclaw_api.services.media_probe import (
+    PROBE_SCHEMA_VERSION,
     MediaSpec,
     note_probe_failure,
     note_probe_success,
@@ -2508,6 +2509,7 @@ async def _refresh_known_row(
                 row.bit_rate = spec.bit_rate
                 row.frame_rate = spec.frame_rate
                 row.color_space = spec.color_space
+                row.probe_version = PROBE_SCHEMA_VERSION
                 row.audio_streams = list(spec.audio_streams)
                 row.subtitle_streams = list(spec.subtitle_streams)
                 # 文件内容变了：章节按新探测的记，旧场景图作废（NULL 让抓图作业
@@ -2744,6 +2746,7 @@ async def _ingest_file(
             bit_rate=spec.bit_rate if spec else None,
             frame_rate=spec.frame_rate if spec else None,
             color_space=spec.color_space if spec else None,
+            probe_version=PROBE_SCHEMA_VERSION if spec else None,
             audio_streams=list(spec.audio_streams) if spec else None,
             subtitle_streams=list(spec.subtitle_streams) if spec else None,
             chapters=list(spec.chapters) if spec else None,
@@ -2883,9 +2886,20 @@ async def _probe_backfill(
     后台周期演变成对整个媒体盘的长时间读取；BDMV 的 CLPI 历史回填仍只属
     手动扫描。None = 手动扫描的全量补探。
 
-    判据用 ``audio_streams IS NULL``：它是"这行从没探测成功过"的标记
-    （空列表 = 探过、文件确实没有音轨，两者必须分开）。BDMV 另以流 JSON
-    内的 CLPI 版本戳判断：已有数组但未读过 CLPI 的旧行也进入一次补探。
+    判据有三条，对应三种"规格不新鲜"：
+
+    - ``audio_streams IS NULL``——**从没探测成功过**（空列表 = 探过、文件确实
+      没有音轨，两者必须分开）；
+    - ``probe_version`` 落后于 ``PROBE_SCHEMA_VERSION``——**用旧版字段集探测过、
+      缺后来新增的字段**。这类行认不出来的代价很实在：2026-09 新增
+      ``frame_rate`` / ``color_space`` 与 Dolby Vision 识别后，早于那一版入库的行
+      永远拿不到这几项，播放链读台账，DV P5 也就永远不做色调映射（issue #331）；
+    - BDMV 另以流 JSON 内的 CLPI 版本戳判断：已有数组但未读过 CLPI 的旧行
+      也进入一次补探。
+
+    版本落后的行**只进手动扫描的全量补探**，不进下面的限量自愈：自愈每轮每库
+    只有十个名额，是给"瞬时失败几个周期内收敛"用的；把整库的陈旧行灌进去，
+    真正需要重试的失败行会被永远挤在后面。
 
     不限量、但有自己的分子分母与停止响应——整库补探在网络挂载上可能是
     小时级的活，用户要看得到进度、也要停得下来。ffprobe 不可用时整段跳过，
@@ -2904,6 +2918,9 @@ async def _probe_backfill(
                     or_(
                         LibraryFile.audio_streams.is_(None),  # type: ignore[union-attr]
                         LibraryFile.container == "bluray",
+                        # 限量自愈模式下这一条会在下面被过滤掉，见函数文档
+                        LibraryFile.probe_version.is_(None),  # type: ignore[union-attr]
+                        LibraryFile.probe_version < PROBE_SCHEMA_VERSION,  # type: ignore[operator]
                     ),
                     LibraryFile.in_place(),
                     LibraryFile.ignored_at.is_(None),  # type: ignore[union-attr]
@@ -2919,6 +2936,7 @@ async def _probe_backfill(
         row
         for row in rows
         if row.audio_streams is None
+        or (row.probe_version or 0) < PROBE_SCHEMA_VERSION
         or (
             row.container == "bluray"
             and not streams_have_clpi_metadata(row.audio_streams, row.subtitle_streams)

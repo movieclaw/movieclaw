@@ -5,11 +5,11 @@ import Link from "next/link";
 import type { Route } from "next";
 
 import { useToast } from "@/components/feedback";
-import { ImageLightbox } from "@/components/image-lightbox";
 import { LayersIcon, ListIcon, PhotoIcon, XIcon } from "@/components/icons";
 import { Modal } from "@/components/modal";
 import { PosterImage } from "@/components/poster-image";
 import { Tooltip } from "@/components/tooltip";
+import { ZoomLightbox, type ZoomLightboxSlide } from "@/components/zoom-lightbox";
 import type { SearchScope } from "@/lib/categories";
 import { platformLabel } from "@/lib/platforms";
 import {
@@ -2177,8 +2177,14 @@ function PosterResults({ hits }: { hits: TorrentHit[] }) {
  * 与媒体条目的 PosterCard（components/poster-card.tsx）是两套东西——这里的数据
  * 是 TorrentHit，徽章是促销信息，点击弹多图灯箱而非进详情页，故不共用卡片层，
  * 仅通过 PosterImage 共用海报图片底座（懒加载 / no-referrer / 失败回退）。
- * 点击卡片弹出多图灯箱（海报 + image_urls 里的截图等），右上角
- * 显示张数徽标；hover 上的详情/下载链接 stopPropagation，不触发灯箱。
+ * 点击分区（用户反馈 2026-09-08：看图不该多点一次）：**海报归看图**——不分
+ * 桌面触屏，点海报直接开灯箱（海报 + image_urls 里的截图等），右上角显示
+ * 张数徽标；**图外文字区归操作**——触屏点它弹底部抽屉，桌面仍是海报上的
+ * hover 操作层（详情/投订阅/下载，stopPropagation 不触发灯箱）。此前触屏是
+ * 整卡进抽屉、抽屉里再点「浏览图片」，图片模式最主要的动作反而最远。
+ * 灯箱用的就是媒体库那一个（ZoomLightbox）：缩放、捏合、滑动翻页、点画面
+ * 收起控件，全站看图是同一套手感，这里不再另做一份简版；顶栏右侧塞的是
+ * 详情/投订阅/下载——看完截图当场就能下，不用退出灯箱再找按钮。
  */
 /**
  * 海报卡片左上角的促销徽标（免费 / 折扣 / 双倍上传 / H&R）。
@@ -2238,40 +2244,47 @@ function seasonEpisodeChip(attrs: TorrentAttrs | null): { text: string; pack: bo
   return { text: [season, episode].filter(Boolean).join(" · "), pack };
 }
 
+/** 种子图集是一次给全的，没有下一页可要；引用稳定，免得灯箱里的 effect 白跑 */
+const noop = () => {};
+
 // memo：与 TorrentRow 同理，流式进结果时已有卡片的 hit 引用不变，整卡跳过
 const TorrentPosterCard = memo(function TorrentPosterCard({ hit }: { hit: TorrentHit }) {
-  const [viewerOpen, setViewerOpen] = useState(false);
+  // 灯箱当前看的是第几张；null = 没打开（灯箱受控翻页，与媒体库那套一致）
+  const [viewerIndex, setViewerIndex] = useState<number | null>(null);
   const [actionsOpen, setActionsOpen] = useState(false);
   const size = hit.size ?? formatBytes(hit.size_bytes);
   const name = parsedName(hit);
   const seChip = seasonEpisodeChip(hit.attrs);
-  // 灯箱图集：海报 + 全部图片（poster_url 通常是 image_urls 第一张，去重兜底）
-  const gallery = Array.from(
-    new Set([hit.poster_url, ...hit.image_urls].filter((u): u is string => !!u)),
-  ).map((url) => cachedImageUrl(url));
+  // 灯箱图集：海报 + 全部图片（poster_url 通常是 image_urls 第一张，去重兜底）。
+  // 三级地址与媒体库灯箱同一口径：缩略条取 photo-tile，舞台取 photo-screen
+  // （长边 2048 的 WebP，比图床原图少几倍字节、翻页跟手），只有放大到 1:1
+  // 时才拉图床原图。PT 图床本来就慢，这一层派生由后端缓存后人人受益。
+  const slides = useMemo<ZoomLightboxSlide[]>(
+    () =>
+      Array.from(
+        new Set([hit.poster_url, ...hit.image_urls].filter((u): u is string => !!u)),
+      ).map((url, i) => ({
+        key: `${i}:${url}`,
+        title: hit.title,
+        thumbUrl: cachedImageUrl(url, "photo-tile"),
+        screenUrl: cachedImageUrl(url, "photo-screen"),
+        fullUrl: cachedImageUrl(url),
+      })),
+    [hit.poster_url, hit.image_urls, hit.title],
+  );
   return (
     <li className="group relative overflow-hidden rounded-xl border border-white/[0.08] bg-[rgba(14,16,22,0.75)] transition-colors hover:border-white/[0.2]">
-      {/* 手机/纯触摸设备把整张卡作为操作入口；窄屏桌面预览也走同一交互，
-          方便响应式调试。桌面鼠标环境下按钮不参与布局与命中。 */}
-      {(hit.detail_url || hit.download_url) && (
-        <button
-          type="button"
-          aria-label={`打开「${hit.title}」的资源操作`}
-          onClick={() => setActionsOpen(true)}
-          className="absolute inset-0 z-10 hidden cursor-pointer rounded-xl max-md:block [@media(hover:none)]:block"
-        />
-      )}
       <div
         role="button"
         tabIndex={0}
         // 标题展示解析片名后，原始种子名/副标题靠悬停提示查看（图外文字区同）
         title={rawTitleTooltip(hit)}
-        aria-label={`浏览「${hit.title}」的 ${gallery.length} 张图片`}
-        onClick={() => setViewerOpen(true)}
+        aria-label={`浏览「${hit.title}」的 ${slides.length} 张图片`}
+        onClick={() => setViewerIndex(0)}
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === " ") {
             e.preventDefault();
-            setViewerOpen(true);
+            setViewerIndex(0);
           }
         }}
         className="relative aspect-[2/3] cursor-zoom-in outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]"
@@ -2304,11 +2317,11 @@ const TorrentPosterCard = memo(function TorrentPosterCard({ hit }: { hit: Torren
           </span>
           {/* 张数常显（含 1 张）：点开前就知道里面有几张图，只有一张时不必特意点开 */}
           <span
-            title={`共 ${gallery.length} 张图片，点击卡片浏览`}
+            title={`共 ${slides.length} 张图片，点击卡片浏览`}
             className="tnum flex shrink-0 items-center gap-1 rounded-md bg-black/70 px-1.5 py-0.5 text-micro font-medium text-white/85"
           >
             <PhotoIcon className="size-3" />
-            {gallery.length}
+            {slides.length}
           </span>
         </div>
         {/* 左下：剧集季/集 chip。实底不受海报明暗影响；全集/整季包用渐变底
@@ -2353,7 +2366,20 @@ const TorrentPosterCard = memo(function TorrentPosterCard({ hit }: { hit: Torren
 
       {/* 图外文字区（实底）：① 片名+年份 ② 清晰度·体积 ③ 站点·时间 + 右下角
           做种/下载数。任何海报明暗都不影响可读性；解析失败时回退原始种子名 */}
-      <div title={rawTitleTooltip(hit)} className="px-2.5 pb-2.5 pt-2">
+      <div title={rawTitleTooltip(hit)} className="relative px-2.5 pb-2.5 pt-2">
+        {/* 手机/纯触摸设备的操作入口只盖住文字区这一块，不再盖住整张卡：
+            海报归看图（点一下直接进灯箱，与桌面、与媒体库同一手感），文字区
+            归操作。此前整卡进抽屉、抽屉里再点「浏览图片」，看图白白多一次点击。
+            窄屏桌面预览走同一交互，方便响应式调试；桌面鼠标环境下按钮不参与
+            布局与命中（海报上的 hover 操作层仍在）。 */}
+        {(hit.detail_url || hit.download_url) && (
+          <button
+            type="button"
+            aria-label={`打开「${hit.title}」的资源操作`}
+            onClick={() => setActionsOpen(true)}
+            className="absolute inset-0 z-10 hidden cursor-pointer max-md:block [@media(hover:none)]:block"
+          />
+        )}
         <p
           className={`truncate text-sub font-medium ${
             name ? "text-[var(--text)]" : "text-[var(--text-muted)]"
@@ -2383,11 +2409,43 @@ const TorrentPosterCard = memo(function TorrentPosterCard({ hit }: { hit: Torren
         </p>
       </div>
 
-      {viewerOpen && (
-        <ImageLightbox
-          images={gallery}
-          title={hit.title}
-          onClose={() => setViewerOpen(false)}
+      {viewerIndex !== null && slides.length > 0 && (
+        // 与图片库 / 图廊同一个灯箱内核：缩放、手势翻页、点画面收起控件全一致。
+        // 顶栏右侧的按钮换成种子该有的那几个：截图是「值不值得下」的判据，
+        // 看完当场就能下，不必退出灯箱回卡片上再找一遍
+        <ZoomLightbox
+          label={`浏览图片：${hit.title}`}
+          slides={slides}
+          index={viewerIndex}
+          hasMore={false}
+          onIndexChange={setViewerIndex}
+          onReachEnd={noop}
+          onClose={() => setViewerIndex(null)}
+          brokenHint="图床可能已失效或拒绝外链访问"
+          actions={
+            <>
+              {hit.detail_url && (
+                <a
+                  href={hit.detail_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex h-8 items-center rounded-full bg-white/[0.12] px-3.5 text-sub font-medium text-white/85 transition-colors hover:bg-white/[0.2] hover:text-white"
+                >
+                  详情
+                </a>
+              )}
+              <GrabButton
+                hit={hit}
+                className="flex h-8 items-center rounded-full border border-[#6aa7ff]/50 bg-[#6aa7ff]/25 px-3.5 text-sub font-medium text-white transition-colors hover:bg-[#6aa7ff]/40"
+              />
+              {/* 保存位置弹窗要压在灯箱（z-70）之上，否则点了下载什么也看不见 */}
+              <DownloadButton
+                hit={hit}
+                dialogTopmost
+                className="btn-accent flex h-8 items-center rounded-full px-3.5 text-sub font-medium"
+              />
+            </>
+          }
         />
       )}
       <TorrentActionsSheet
@@ -2395,10 +2453,10 @@ const TorrentPosterCard = memo(function TorrentPosterCard({ hit }: { hit: Torren
         open={actionsOpen}
         onClose={() => setActionsOpen(false)}
         onViewImages={
-          gallery.length > 0
+          slides.length > 0
             ? () => {
                 setActionsOpen(false);
-                setViewerOpen(true);
+                setViewerIndex(0);
               }
             : undefined
         }
@@ -2427,7 +2485,16 @@ const DOWNLOAD_LABEL: Record<DownloadState, string> = {
  * （与订阅同源的三级兜底 + 预检警示）；同时列出下载器已配置目录双视角
  * 供手选。提交结果回填在按钮文字上；失败可悬停看原因、点击重试。
  */
-function DownloadButton({ hit, className }: { hit: TorrentHit; className: string }) {
+function DownloadButton({
+  hit,
+  className,
+  dialogTopmost = false,
+}: {
+  hit: TorrentHit;
+  className: string;
+  /** 按钮长在灯箱（z-70）里时置位：保存位置弹窗要抬到灯箱之上才看得见 */
+  dialogTopmost?: boolean;
+}) {
   const { canDirectDownload } = usePermissions();
   const toast = useToast();
   const [state, setState] = useState<DownloadState>("idle");
@@ -2501,6 +2568,7 @@ function DownloadButton({ hit, className }: { hit: TorrentHit; className: string
       </button>
       <DownloadTargetDialog
         request={request}
+        topmost={dialogTopmost}
         onClose={() => setRequest(null)}
         onSubmitted={(result) => setState(result.already_exists ? "exists" : "done")}
       />

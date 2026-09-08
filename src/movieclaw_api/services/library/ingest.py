@@ -144,7 +144,11 @@ from movieclaw_api.services.library.scan import disc_main_stream, guess_evidence
 from movieclaw_api.services.library.units import FileUnit, resolve_units
 from movieclaw_api.services.media_discover import get_tmdb_client
 from movieclaw_api.services.media_library import MediaLibraryService
-from movieclaw_api.services.media_probe import ffprobe_available, probe_media
+from movieclaw_api.services.media_probe import (
+    PROBE_SCHEMA_VERSION,
+    ffprobe_available,
+    probe_media,
+)
 from movieclaw_db.engine import get_database
 from movieclaw_db.models import (
     ACTIVE_JOB_STATUSES,
@@ -1945,6 +1949,7 @@ async def _ingest_entry(
                 bit_rate=spec.bit_rate if spec else None,
                 frame_rate=spec.frame_rate if spec else None,
                 color_space=spec.color_space if spec else None,
+                probe_version=PROBE_SCHEMA_VERSION if spec else None,
                 audio_streams=list(spec.audio_streams) if spec else None,
                 subtitle_streams=list(spec.subtitle_streams) if spec else None,
                 chapters=list(spec.chapters) if spec else None,
@@ -2204,6 +2209,7 @@ async def _ingest_entry(
                 bit_rate=file_spec.bit_rate if file_spec else None,
                 frame_rate=file_spec.frame_rate if file_spec else None,
                 color_space=file_spec.color_space if file_spec else None,
+                probe_version=PROBE_SCHEMA_VERSION if file_spec else None,
                 audio_streams=list(file_spec.audio_streams) if file_spec else None,
                 subtitle_streams=list(file_spec.subtitle_streams) if file_spec else None,
                 chapters=list(file_spec.chapters) if file_spec else None,
@@ -2508,6 +2514,7 @@ async def _ingest_raw_drop(
                 bit_rate=file_spec.bit_rate if file_spec else None,
                 frame_rate=file_spec.frame_rate if file_spec else None,
                 color_space=file_spec.color_space if file_spec else None,
+                probe_version=PROBE_SCHEMA_VERSION if file_spec else None,
                 audio_streams=list(file_spec.audio_streams) if file_spec else None,
                 subtitle_streams=list(file_spec.subtitle_streams) if file_spec else None,
                 chapters=list(file_spec.chapters) if file_spec else None,

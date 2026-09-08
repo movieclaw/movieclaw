@@ -241,7 +241,6 @@ func TestDomainCommandSets(t *testing.T) {
 			"library.items.refresh-metadata",
 			"library.items.regenerate-chapter-images",
 			"library.items.reidentify",
-			"library.items.set-scrape-library",
 			"library.items.transfer",
 			"library.list",
 			"library.list-routing-options",

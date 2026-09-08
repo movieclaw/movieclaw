@@ -118,9 +118,16 @@ export function UpgradeRunDialog({
   };
 
   return (
-    <Modal open onClose={report ? onFinished : onClose} label="洗一轮版" width="lg">
-      <div className="scroll-thin max-h-[80dvh] overflow-y-auto p-6 max-md:p-5">
-        {report ? (
+    <Modal
+      open
+      onClose={report ? onFinished : onClose}
+      label="洗一轮版"
+      width="lg"
+      panelClassName="max-h-[80dvh]"
+    >
+      {report ? (
+        // 报告态：自带标题与出口按钮，整体滚动即可
+        <div className="scroll-thin min-h-0 flex-1 overflow-y-auto p-6 max-md:p-5">
           <UpgradeRunReportView
             title={detail.media.title}
             isMovie={isMovie}
@@ -132,14 +139,19 @@ export function UpgradeRunDialog({
             }}
             onClose={onFinished}
           />
-        ) : (
-          <>
+        </div>
+      ) : (
+        // 触发态：规则组一多就得滚，标题与「开始体检」固定在两头
+        <>
+          <div className="border-b border-white/[0.07] px-6 pb-4 pt-6 max-md:px-5">
             <h2 className="text-title font-bold text-white">洗一轮版</h2>
             <p className="mt-1 text-sub leading-6 text-[var(--text-muted)]">
               逐集检查《{detail.media.title}
               》库里已有的版本，低于洗版目标的立即排入搜索；洗到新版本入库并验证通过后，旧文件自动替换。
             </p>
+          </div>
 
+          <div className="scroll-thin min-h-0 flex-1 overflow-y-auto p-6 max-md:p-5">
             {error && (
               <p className="mt-3 rounded-lg border border-red-400/25 bg-red-500/10 px-3.5 py-2.5 text-sub leading-6 text-red-200">
                 {error}
@@ -264,29 +276,30 @@ export function UpgradeRunDialog({
               </div>
             )}
 
-            <div className="mt-6 flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={onClose}
-                className="btn-glass h-10 px-4 text-ui font-medium"
-              >
-                返回
-              </button>
-              <button
-                type="button"
-                disabled={busy || !selectedRule}
-                onClick={() => void run()}
-                className="btn-accent inline-flex h-10 items-center gap-2 rounded-full px-5 text-ui font-semibold disabled:opacity-40"
-              >
-                {busy && (
-                  <span className="size-3.5 animate-spin rounded-full border-2 border-white/30 border-t-white/90" />
-                )}
-                {paused ? "恢复并触发洗版" : "开始体检并洗版"}
-              </button>
-            </div>
-          </>
-        )}
-      </div>
+          </div>
+
+          <div className="flex justify-end gap-2 border-t border-white/[0.07] px-6 py-4 max-md:px-5">
+            <button
+              type="button"
+              onClick={onClose}
+              className="btn-glass h-10 px-4 text-ui font-medium"
+            >
+              返回
+            </button>
+            <button
+              type="button"
+              disabled={busy || !selectedRule}
+              onClick={() => void run()}
+              className="btn-accent inline-flex h-10 items-center gap-2 rounded-full px-5 text-ui font-semibold disabled:opacity-40"
+            >
+              {busy && (
+                <span className="size-3.5 animate-spin rounded-full border-2 border-white/30 border-t-white/90" />
+              )}
+              {paused ? "恢复并触发洗版" : "开始体检并洗版"}
+            </button>
+          </div>
+        </>
+      )}
 
       {creatingRuleSet && (
         <RuleSetEditorDialog

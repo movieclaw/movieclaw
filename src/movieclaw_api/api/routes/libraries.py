@@ -64,7 +64,6 @@ from movieclaw_api.schemas.library import (
     ReviewResolvePayload,
     ScanProgressView,
     ScanResultView,
-    ScrapeLibraryPayload,
     SeasonEpisodesView,
     SubtitleCueView,
     SubtitleDeleteResultView,
@@ -1699,51 +1698,6 @@ async def select_artwork_route(
     return ok({"locked": payload.file_path is not None}, message=message)
 
 
-@router.post(
-    "/{library_id}/items/{media_item_id}/scrape-library",
-    response_model=ApiResponse[dict],
-    summary="改条目的刮削归属库（决定这条目按哪个库的语言/选图设置刮）",
-    operation_id="library.items.set-scrape-library",
-    dependencies=[Depends(require_admin)],
-)
-async def set_item_scrape_library(
-    library_id: int,
-    media_item_id: int,
-    payload: ScrapeLibraryPayload,
-    session: AsyncSession = Depends(get_session),
-) -> ApiResponse[dict]:
-    """元数据与图片的产物挂全局条目，一条目只有一套口味，由归属库决定
-    （docs/design/scrape-customization.md §14）。
-
-    ``target_library_id=null`` = 恢复自动：清空后由系统按"在位文件所属库 →
-    订阅目标库"重新推断。改完**不自动重刮**——重刮要重下全部图片，是用户该自己
-    按的按钮（详情页的「刷新元数据」），这里只返回提示。
-    """
-    await LibraryConfigService(session).get(library_id)  # 404 检查
-    item = await _metadata_item(session, library_id, media_item_id)  # 404 检查（不要求文件）
-
-    if payload.target_library_id is None:
-        item.scrape_library_id = None
-        session.add(item)
-        await session.commit()
-        return ok({"scrape_library_id": None}, message="已恢复自动判定，下次刮削时重新推断归属库")
-
-    target = await LibraryConfigService(session).get(payload.target_library_id)
-    if target.kind != item.kind:
-        # 类型不符的库，其刮削设置套到本条目上没有意义（电影库的模板/口味
-        # 不是给剧集用的），直接拒绝而不是静默忽略
-        raise BadRequestException(
-            f"媒体库「{target.name}」的类型与本条目不一致，不能作为刮削归属库"
-        )
-    item.scrape_library_id = target.id
-    session.add(item)
-    await session.commit()
-    return ok(
-        {"scrape_library_id": target.id},
-        message=f"刮削归属已改为「{target.name}」；刷新元数据后按该库的设置重刮",
-    )
-
-
 # ---------------------------------------------------------------------------
 # 整理（存量规范化）：预览 / 执行
 # ---------------------------------------------------------------------------
@@ -1967,10 +1921,14 @@ async def list_library_gallery(
         int | None, Query(ge=1, le=100, description="本页条目数（按作品分页，不按图）；不给则整库")
     ] = None,
     offset: Annotated[int, Query(ge=0, description="跳过的条目数（滚动加载翻页用）")] = 0,
+    sort: Annotated[
+        Literal["title", "added_at"],
+        Query(description="排序：title=按标题（默认）/ added_at=最近入账优先"),
+    ] = "title",
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(require_library_visible),
 ) -> ApiResponse[list[LibraryGalleryGroupView]]:
-    """影视库 / 其他库的图床浏览模式：与 ``/items?sort=title`` 同一份排序与
+    """影视库 / 其他库的图床浏览模式：与 ``/items?sort=<同一排序>`` 同一份排序与
     分页口径，一组就是一部作品的全部图（海报 → 剧照 → 逐集剧照与章节图）。
     没有任何图的条目也占一组（images 为空），一页的组数恒等于条目数。
     每组带当前观看者的收藏态（瓦片角标与灯箱的心）。"""
@@ -1979,7 +1937,7 @@ async def list_library_gallery(
     member_id = principal.member_id if principal.member_id is not None else 0
     return ok(
         await build_library_gallery(
-            session, library_id, member_id=member_id, limit=limit, offset=offset
+            session, library_id, member_id=member_id, limit=limit, offset=offset, sort=sort
         )
     )
 
@@ -2002,7 +1960,7 @@ def _trash_note(row: LibraryFile) -> str | None:
 
 
 async def _metadata_item(session: AsyncSession, library_id: int, media_item_id: int) -> MediaItem:
-    """纯元数据操作（重刮/选图/改刮削归属）的条目校验：**不要求库存文件**。
+    """纯元数据操作（重刮/选图）的条目校验：**不要求库存文件**。
 
     订阅追踪中的条目（已订阅、下载尚未入库）在库页「追踪中」区块展示的
     就是 ``media_item`` 的图片字段。这类操作的数据源是 TMDB、产物挂在
@@ -2285,10 +2243,6 @@ async def get_library_item(
         seasons = sorted({s for s in meta_seasons if s > 0} | owned_seasons)
 
     assert item.id is not None
-    # 归属库解析顺带固化推断结果（设计文档 §14）：详情页显示的必须是刮削
-    # 真正会用的那个库，而不是"列还空着所以显示跟全局"这种误导
-    scrape_library = await resolve_scrape_library(session, item)
-    await session.commit()
     file_views = [_file_view(row, bundle.external_subtitles.get(row.id or -1, [])) for row in rows]
     entry_dirs = bundle.entry_dirs
     if not principal.is_admin:
@@ -2325,8 +2279,6 @@ async def get_library_item(
             scraping=media_scrape.is_scraping(media_item_id),
             scraping_phase=media_scrape.scraping_phase(media_item_id),
             chapters_pending=chapters_pending,
-            scrape_library_id=scrape_library.id if scrape_library else None,
-            scrape_library_name=scrape_library.name if scrape_library else None,
         )
     )
 

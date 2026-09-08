@@ -50,6 +50,7 @@ from sqlmodel import select
 
 from movieclaw_api.services.library.artwork import find_artwork
 from movieclaw_api.services.library.layout import IMAGE_EXTS
+from movieclaw_api.services.media_probe import VideoColor, video_color_for
 from movieclaw_db.engine import get_database
 from movieclaw_db.models import Library, LibraryFile, MediaItem, MediaMetadata, MediaSource, utcnow
 from movieclaw_db.repositories.media_repo import MediaItemRepository
@@ -65,15 +66,21 @@ _MAX_BACKDROP_WIDTH = 1920  # 背景图：电视端全屏铺底，1280 会糊
 _JPEG_QUALITY = "3"  # ffmpeg -q:v，2~5 是"肉眼无损"区间
 _FFMPEG_TIMEOUT = 90  # 秒；网络挂载上抓帧要读几十 MB，给足余量
 
-# HDR 抓帧的色调映射链（HDR10/HLG/DV 基础层 → BT.709 SDR）。章节场景图
-# （library/chapters.py）复用同一条链，两处出的图观感一致
-TONEMAP_FILTERS: tuple[str, ...] = (
-    "zscale=t=linear:npl=100",
-    "format=gbrpf32le",
-    "zscale=p=bt709",
-    "tonemap=hable",
-    "zscale=t=bt709:m=bt709:r=tv",
-)
+# HDR 抓帧的色调映射（HDR10 / HLG / Dolby Vision → BT.709 SDR）。章节场景图
+# （library/chapters.py）复用同一条，两处出的图观感一致。
+#
+# **与播放链同一个滤镜、同一组参数**（playback/ffmpeg_args._SOFTWARE_TONEMAP）：
+# 此前这里是一条 `zscale=t=linear → tonemap=hable → zscale` 的上游链，有三个
+# 问题——① `hable` 不是设计文档 §7-④b 要求的 BT.2390，`desat` 还是默认的 2；
+# ② `zscale` 不声明输入，遇到色彩标签不全的源会报「no path between colorspaces」，
+# 而抓帧的 fallback 会**静默退回不映射**，HDR 截图变成一张没做映射的图且不报错；
+# ③ 它按 BT.2020 YCbCr 假定输入，救不了 Dolby Vision P5 的 IPT-PQ-c2 基础层。
+#
+# `tonemapx` 是 jellyfin-ffmpeg 的私有滤镜（镜像恒定内置，§5.3/§12.14），它的
+# `apply_dovi` 默认为 true，会吃进 RPU 元数据——真机对照实测：原链出图平均 RGB
+# (62,62,52) 发绿，换 tonemapx 后 (54,55,57) 肤色与衣物颜色全部恢复正常，而
+# 显式 `apply_dovi=0` 则绿得更狠 (48,76,44)，坐实 RPU 确实被用上了。
+TONEMAP_FILTER = "tonemapx=tonemap=bt2390:desat=0:p=bt709:t=bt709:m=bt709:format=yuv420p"
 
 # 抓帧闸：主图与章节场景图共用，扫描期间最多两路 ffmpeg 同时解码，
 # 不把 CPU 打满、也不让网络挂载被并发读打散
@@ -361,6 +368,52 @@ def _extract_stream(video: Path, index: int, dest: Path) -> bool:
     )
 
 
+def build_filter_chains(
+    color: VideoColor,
+    scale: str,
+    *,
+    thumbnail: str,
+    tail: tuple[str, ...] = (),
+) -> list[list[str]]:
+    """抓帧的滤镜链候选，按优先级排列；主图与章节场景图共用同一套色彩决策。
+
+    **tonemapx 放在 scale 之后**（真机实测）：DOVI side data 能穿过 ``thumbnail``
+    与 ``scale`` 存活，三种摆位出图逐像素一致，而放最后是在 640/1280 的小图上
+    做色彩变换而不是 4K 原图，反倒最快（960ms vs 放最前的 1143ms，甚至比不做
+    映射的基线 1048ms 还快——它自带 ``format=yuv420p``，省掉链尾一次转换）。
+
+    三种情形：
+
+    - **SDR**：不加任何色彩滤镜。喂 ``tonemapx`` 给 SDR 会二次映射，把画面整片
+      压成青绿（真机对照：(21,28,31) → (7,25,26)，红通道掉三分之二）；
+    - **需要 DV 元数据的 HDR（P5 那一类）**：**只给映射链，不给降级链**。
+      基础层是 IPT-PQ-c2，退回不映射不是「差一点」，是稳定产出一张肤色发绿、
+      头发发紫的图——那看起来像片源坏了。宁可不出图，让前端显示集号占位；
+    - **其余 HDR**（HDR10 / HLG / 向后兼容的 DV）：映射链优先，``tonemapx``
+      不可用时（源码/裸机部署可能不是 jellyfin-ffmpeg）退回不映射，画面偏灰
+      但内容可辨。
+    """
+    base = [
+        "bwdif=mode=send_frame:deint=interlaced",
+        thumbnail,
+        scale,
+        "format=yuv420p",
+        *tail,
+    ]
+    if not color.needs_tonemap:
+        return [base]
+    tonemapped = [
+        "bwdif=mode=send_frame:deint=interlaced",
+        thumbnail,
+        scale,
+        TONEMAP_FILTER,
+        *tail,
+    ]
+    if color.needs_dv_metadata:
+        return [tonemapped]
+    return [tonemapped, base]
+
+
 def _grab_frame(
     video: Path,
     dest: Path,
@@ -373,18 +426,14 @@ def _grab_frame(
 
     三级回退：① 只解关键帧（大文件最快，Jellyfin 同款）；② 关键帧稀疏
     （短片/单 GOP 编码，10% 处之后没有关键帧，ffmpeg 会零帧退出且不报错）
-    时全解码；③ 仍拿不到（时长未知的超短片）从头再来。HDR 先尝试色调映射，
-    滤镜不可用（ffmpeg 没编 zimg）时退回不映射。
+    时全解码；③ 仍拿不到（时长未知的超短片）从头再来。色彩链见 ``build_filter_chains``。
+
+    ``hdr`` 只作为现场探测失败时的兜底：台账那一份可能是旧版本写的（见
+    ``media_probe.probe_video_color`` 的说明），不能作为唯一依据。
     """
     position = max(1.0, duration_seconds * 0.1) if duration_seconds else 10.0
-    base = [
-        "bwdif=mode=send_frame:deint=interlaced",
-        "thumbnail=n=24",
-        _scale_filter(max_width),
-    ]
-    chains = [base]
-    if hdr:  # 台账探测出的 HDR 格式（HDR10/HLG/DV…），SDR 为 NULL
-        chains.insert(0, base[:2] + list(TONEMAP_FILTERS) + base[2:])
+    color = video_color_for(video, fallback_hdr=hdr)
+    chains = build_filter_chains(color, _scale_filter(max_width), thumbnail="thumbnail=n=24")
     attempts = [(position, True), (position, False), (0.0, False)]
     for start, keyframes_only in attempts:
         for chain in chains:
@@ -399,7 +448,7 @@ def _grab_frame(
                 "-an",
                 "-sn",
                 "-vf",
-                ",".join([*chain, "format=yuv420p"]),
+                ",".join(chain),
                 *_output_args(dest),
             ]
             if _run(cmd) and dest.is_file():
