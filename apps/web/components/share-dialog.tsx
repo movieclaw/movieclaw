@@ -151,7 +151,8 @@ export function ShareDialog({
 
   return (
     <Modal open={open} onClose={busy ? () => {} : onClose} label="分享影片" width="lg">
-      <div className="p-6">
+      {/* 头部常驻：标题与影片身份——滚到表单底部时仍知道在分享哪一部 */}
+      <div className="border-b border-white/[0.07] p-6">
         <h3 className="text-title-sm font-semibold text-[var(--text)]">
           {share ? `《${title}》已分享` : `分享《${title}》`}
         </h3>
@@ -168,7 +169,9 @@ export function ShareDialog({
             </p>
           </div>
         </div>
+      </div>
 
+      <div className="scroll-thin min-h-0 flex-1 overflow-y-auto px-6 pb-6 pt-1">
         {share ? (
           <ShareReady
             share={share}
@@ -260,28 +263,31 @@ export function ShareDialog({
             <p className="mt-5 text-caption text-[var(--text-faint)]">
               访客的播放会出现在「活动」页，你随时可以取消分享。
             </p>
-
-            <div className="mt-5 flex justify-end gap-2">
-              <button
-                type="button"
-                disabled={busy}
-                onClick={onClose}
-                className="btn-glass px-4 py-2 text-ui text-[var(--text-muted)] disabled:opacity-50"
-              >
-                取消
-              </button>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={create}
-                className="rounded-xl bg-white px-4 py-2 text-ui font-semibold text-black transition hover:bg-white/90 disabled:opacity-50"
-              >
-                {busy ? "正在生成…" : "生成链接"}
-              </button>
-            </div>
           </>
         )}
       </div>
+
+      {/* 底栏常驻（仅创建态；已分享态的出口按钮在 ShareReady 里） */}
+      {!share && (
+        <div className="flex justify-end gap-2 border-t border-white/[0.07] px-6 py-4">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={onClose}
+            className="btn-glass px-4 py-2 text-ui text-[var(--text-muted)] disabled:opacity-50"
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={create}
+            className="rounded-xl bg-white px-4 py-2 text-ui font-semibold text-black transition hover:bg-white/90 disabled:opacity-50"
+          >
+            {busy ? "正在生成…" : "生成链接"}
+          </button>
+        </div>
+      )}
     </Modal>
   );
 }
