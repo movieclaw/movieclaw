@@ -15,9 +15,16 @@ import type Hls from "hls.js";
 import type { MseKind } from "@/lib/api/playback";
 import { reportPlaybackClientLog } from "@/lib/api/playback";
 
+import {
+  type BandwidthWindow,
+  bandwidthBps,
+  createBandwidthWindow,
+  pushBandwidthSample,
+} from "./bandwidth";
 import { backBufferSeconds } from "./buffer-budget";
 import { type MediaRecoverState, nextMediaRecovery } from "./media-recover";
 import { NUDGE_STEP_S, bufferedAhead, classifyStall, shouldNudge, stallReason } from "./stall";
+import { isWithinRanges } from "./timeline";
 
 /** 把 `<video>` 的当下状态压成一行上报（排障用，字段都很小）。 */
 function videoSnapshot(video: HTMLVideoElement): Record<string, unknown> {
@@ -45,6 +52,13 @@ export interface EngineStats {
   bufferedSeconds: number;
   /** 实时码率（bps）；直出档拿不到，为 null */
   bitrate: number | null;
+  /**
+   * 实测取流速度（bps，传输期口径见 bandwidth.ts）；样本不够时为 null。
+   *
+   * 它和 `bitrate` 是**一对**才有意义：速度贴着码率跑 = 线路吃得下，卡的是
+   * 服务端；速度远低于码率 = 带宽不够，该降画质。单看任何一个都会误诊。
+   */
+  downlinkBps: number | null;
   /** 累计掉帧数：判断「能解但解不动」的唯一硬指标 */
   droppedFrames: number | null;
   totalFrames: number | null;
@@ -98,6 +112,14 @@ export interface EngineOptions {
    * （重开会签发新取流 token），由上层接线。不传则退回 `onFailed`。
    */
   onNetworkDead?: (reason: string) => void;
+  /**
+   * 源文件总码率（bps），来自会话的 source 台账；算不出时不传。
+   *
+   * 只有直出档要它：`<video src>` 这条路浏览器不暴露任何字节计数，取流速度
+   * 只能用「缓冲涨了几秒 × 码率」反推。hls.js 那条路有分片的真实字节数，
+   * 用不上这个估算。
+   */
+  sourceBitrateBps?: number | null;
   /** 客户端事件是否上报服务端日志；影片分享的访客不上报（默认 true） */
   telemetry?: boolean;
 }
@@ -109,7 +131,9 @@ function clientLog(options: EngineOptions, event: string, detail: Record<string,
 }
 
 /** 掉帧与缓冲读数：三种引擎共用一份取法。 */
-function readCommonStats(video: HTMLVideoElement): Omit<EngineStats, "engine" | "bitrate"> {
+function readCommonStats(
+  video: HTMLVideoElement,
+): Omit<EngineStats, "engine" | "bitrate" | "downlinkBps"> {
   const quality = video.getVideoPlaybackQuality?.();
   // Safari 老前缀回退：标准 getVideoPlaybackQuality 在部分 WebKit 上缺失或
   // 返回全零，但 webkitDroppedFrameCount / webkitDecodedFrameCount 一直在。
@@ -221,9 +245,45 @@ function describeMediaError(video: HTMLVideoElement): string {
   }
 }
 
+/**
+ * 直出档的取流速度估算：两次 `progress` 之间缓冲涨了多少秒 × 源码率。
+ *
+ * `<video src>` 这条路浏览器一个字节计数都不给（`webkitVideoDecodedByteCount`
+ * 是解码字节，不是网络字节），只能这么反推。误差来自码率是全片均值而这一段
+ * 可能是动作戏，但用途是「够不够」这个量级的判断，够用。
+ *
+ * 只在 `networkState === NETWORK_LOADING` 时采样，且两次 progress 间隔超过
+ * 2 秒就丢弃——浏览器缓冲喂饱后会 suspend，那段静默期不是在传输，算进分母
+ * 就把速度压成十分之一（口径见 bandwidth.ts）。
+ */
+const DIRECT_PROGRESS_MAX_GAP_MS = 2_000;
+
 /** 档 0 与原生 HLS 共用：直接把地址交给 `<video src>`。 */
 class DirectEngine implements PlaybackEngine {
   private stopStallWatch: (() => void) | null = null;
+  private bandwidth: BandwidthWindow = createBandwidthWindow();
+  /** 上一次 progress 的时刻与当时的缓冲末端，用来做差 */
+  private lastProgress: { at: number; bufferedEnd: number } | null = null;
+  private readonly onProgress = () => {
+    const { video, sourceBitrateBps } = this.options;
+    if (!sourceBitrateBps || sourceBitrateBps <= 0) return;
+    const now = performance.now();
+    const buffered = video.buffered;
+    const bufferedEnd = buffered.length ? buffered.end(buffered.length - 1) : 0;
+    const previous = this.lastProgress;
+    this.lastProgress = { at: now, bufferedEnd };
+    if (!previous) return;
+    const transferMs = now - previous.at;
+    // 跳转会让缓冲末端倒退或大跳，那次差值没有意义；静默过久的那段不算传输
+    if (transferMs > DIRECT_PROGRESS_MAX_GAP_MS) return;
+    const grownSeconds = bufferedEnd - previous.bufferedEnd;
+    if (grownSeconds <= 0) return;
+    this.bandwidth = pushBandwidthSample(this.bandwidth, {
+      at: now,
+      bytes: (grownSeconds * sourceBitrateBps) / 8,
+      transferMs,
+    });
+  };
   private readonly onErrorEvent = () => {
     // 报错瞬间的客户端现场进服务端日志：iPhone 上没有控制台可看，
     // MediaError 的 code/message 与播放器状态只有这里能拿到
@@ -240,6 +300,7 @@ class DirectEngine implements PlaybackEngine {
   async attach(): Promise<void> {
     const { video, streamUrl, onFailed, startPositionS } = this.options;
     video.addEventListener("error", this.onErrorEvent);
+    video.addEventListener("progress", this.onProgress);
     // 起播点的两条路（2026-08-25 真机结论，iPhone 逐场景实测）：
     // - 直出 mp4：媒体片段（#t=）可用且零副作用，保留；
     // - 原生 HLS：**#t= 在 iOS 上对 HLS 列表不生效**——AVPlayer 会拉对
@@ -286,6 +347,7 @@ class DirectEngine implements PlaybackEngine {
     this.stopStallWatch?.();
     this.stopStallWatch = null;
     this.options.video.removeEventListener("error", this.onErrorEvent);
+    this.options.video.removeEventListener("progress", this.onProgress);
     if (this.onMetadataSeek) {
       this.options.video.removeEventListener("loadedmetadata", this.onMetadataSeek);
       this.onMetadataSeek = null;
@@ -297,7 +359,12 @@ class DirectEngine implements PlaybackEngine {
   }
 
   stats(): EngineStats {
-    return { engine: this.label, bitrate: null, ...readCommonStats(this.options.video) };
+    return {
+      engine: this.label,
+      bitrate: null,
+      downlinkBps: bandwidthBps(this.bandwidth),
+      ...readCommonStats(this.options.video),
+    };
   }
 }
 
@@ -316,6 +383,8 @@ class HlsEngine implements PlaybackEngine {
   private hls: Hls | null = null;
   private stopStallWatch: (() => void) | null = null;
   private currentBitrate: number | null = null;
+  /** 实测取流速度的滑动窗口（口径见 bandwidth.ts） */
+  private bandwidth: BandwidthWindow = createBandwidthWindow();
   /** 连续网络恢复计数；任何一个分片成功落地就清零 */
   private networkRecoveries = 0;
   /** 解码错误自救阶梯的进度（时刻），语义见 media-recover.ts */
@@ -434,11 +503,24 @@ class HlsEngine implements PlaybackEngine {
       this.networkRecoveries = 0;
       // 顺手实测码率：字节 ÷ 时长。它同时是诊断面板那行「实时码率」的来源
       // ——媒体播放列表里没有 BANDWIDTH，只读 levels[].bitrate 那行永远是空的。
-      const bytes = data.frag?.stats?.total ?? 0;
+      const stats = data.frag?.stats;
+      const bytes = stats?.total ?? 0;
       const seconds = data.frag?.duration ?? 0;
       if (bytes > 0 && seconds > 0) {
         this.currentBitrate = Math.max(this.currentBitrate ?? 0, (bytes * 8) / seconds);
         syncBackBuffer();
+      }
+      // 取流速度：分母取**首字节到达之后**的那段，不含服务端等 ffmpeg 追上来
+      // 挂住请求的时间（按需供片最长挂 30 秒，算进去速度会被压到十分之一，
+      // 然后用户以为自己宽带坏了）。理由与口径见 bandwidth.ts。
+      const loading = stats?.loading;
+      if (bytes > 0 && loading) {
+        const startedAt = loading.first > 0 ? loading.first : loading.start;
+        this.bandwidth = pushBandwidthSample(this.bandwidth, {
+          at: performance.now(),
+          bytes,
+          transferMs: loading.end - startedAt,
+        });
       }
     });
 
@@ -449,9 +531,20 @@ class HlsEngine implements PlaybackEngine {
 
   seek(seconds: number): void {
     const target = Math.max(0, seconds);
+    const { video } = this.options;
+    // **落点已经在缓冲里就只写 currentTime**（docs/design/player-feel.md §2.G1）。
+    // stopLoad + startLoad 是给「跳到没缓冲的地方」准备的重手段：它把在途的
+    // 分片请求整个掐掉重来，外网上那是已经下了一大半的几百 KB 白扔，而且
+    // 重新装载会先清缓冲，画面跟着黑一下。
+    // 而数据本来就在手上时，hls.js 自己的 seeking 处理器会接着往下续，什么都
+    // 不用我们插手——松手提交、回拖、连按 ±10 秒落在缓冲内，走的全是这条路。
+    if (isWithinRanges(video.buffered, target)) {
+      video.currentTime = target;
+      return;
+    }
     // 先更新 media.currentTime，让 hls.js 的 seeking 处理器同步丢弃旧
     // fragment；再显式 stop/start，确保正在服务端等待的旧分片请求也被取消。
-    this.options.video.currentTime = target;
+    video.currentTime = target;
     this.hls?.stopLoad();
     this.hls?.startLoad(target, true);
   }
@@ -467,6 +560,7 @@ class HlsEngine implements PlaybackEngine {
     return {
       engine: "hls.js",
       bitrate: this.currentBitrate,
+      downlinkBps: bandwidthBps(this.bandwidth),
       ...readCommonStats(this.options.video),
     };
   }

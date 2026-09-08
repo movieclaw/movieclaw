@@ -30,6 +30,7 @@ import {
   stopPlaybackSessionOnUnload,
 } from "@/lib/api/playback";
 import { type AutoplayOutcome, attemptAutoplay, shouldAttemptAutoplay } from "@/lib/player/autoplay";
+import { formatBandwidth } from "@/lib/player/bandwidth";
 import { getCapabilitySnapshot } from "@/lib/player/capability";
 import type { PlaybackEngine } from "@/lib/player/engine";
 import { createEngine, preloadHlsEngine } from "@/lib/player/engine";
@@ -51,6 +52,11 @@ import {
 import { planAudioOptions } from "@/lib/player/audio-tracks";
 import { chromeMustStayVisible, shouldHideOnPointerLeave } from "@/lib/player/chrome";
 import { createFrameDropTracker } from "@/lib/player/framedrop";
+import {
+  FREEZE_FRAME_MAX_MS,
+  canReleaseFreeze,
+  captureFrame,
+} from "@/lib/player/freeze-frame";
 import {
   planSystemTrackModes,
   resolvePlaybackMode,
@@ -304,6 +310,71 @@ export function VideoPlayer(props: VideoPlayerProps) {
   const [videoDurationMs, setVideoDurationMs] = useState<number | null>(null);
   // video 元素挂载后要触发依赖它的 effect，所以用 state 而不是纯 ref 持有
   const [video, setVideo] = useState<HTMLVideoElement | null>(null);
+
+  /**
+   * 冻结帧：换流/远跳时盖住画面的那一张（lib/player/freeze-frame.ts）。
+   *
+   * canvas 元素常驻（ref 要稳定，抓帧发生在盖上去之前），只靠 `frozen`
+   * 切显隐。
+   */
+  const freezeCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [frozen, setFrozen] = useState(false);
+
+  /**
+   * 把当前这一帧冻在画面上，盖住接下来那段没有画面的空窗
+   * （docs/design/player-feel.md §2.G2，实现见 lib/player/freeze-frame.ts）。
+   *
+   * 该在哪些时刻调：**凡是会让 `<video>` 手里一帧都不剩的动作**——换会话
+   * （seek 出界 / 换画质 / 换音轨 / 取流断了原地重开）、以及 hls.js 会清缓冲
+   * 重新装载的远跳。跳转落在缓冲里的那种不调：数据在手上，本来就不会黑。
+   *
+   * 抓不到帧（还没出过画、跨源没带 CORS 头）就什么也不做，黑屏照旧——
+   * 盖一张空白 canvas 比黑屏更糟。
+   */
+  const freezeFrame = useCallback(() => {
+    const canvas = freezeCanvasRef.current;
+    if (!video || !canvas) return;
+    if (captureFrame(video, canvas)) setFrozen(true);
+  }, [video]);
+
+  /**
+   * 撤掉冻结帧：新位置真的出画了就撤。
+   *
+   * 四个事件轮流来问同一个判据（`canReleaseFreeze`）——`seeked` 管暂停态下的
+   * 跳转，`playing` 管换会话后重新起播，`canplay` 管自动播放被拦下、流已就绪
+   * 但没在放，`timeupdate` 是兜底的常规心跳。宁可多问几次也不能漏：撤不掉的
+   * 后果是画面永远冻着而声音在走，比黑屏糟得多。再加一道硬时限，四个事件
+   * 全都不来（流起不来、解码器彻底卡死）时到点强撤，让用户看到该看到的转圈
+   * 或错误页，而不是一张假死的画。
+   */
+  useEffect(() => {
+    if (!frozen || !video) return;
+    const release = () => {
+      if (canReleaseFreeze({ seeking: video.seeking, readyState: video.readyState })) {
+        setFrozen(false);
+      }
+    };
+    const events = ["seeked", "playing", "canplay", "timeupdate"] as const;
+    for (const event of events) video.addEventListener(event, release);
+    const timer = window.setTimeout(() => setFrozen(false), FREEZE_FRAME_MAX_MS);
+    return () => {
+      for (const event of events) video.removeEventListener(event, release);
+      window.clearTimeout(timer);
+    };
+  }, [frozen, video]);
+
+  /**
+   * 要用户拍板的两个态（报错页、同意弹窗）立刻撤冻结帧：它们本来就是终态，
+   * 上面那四个事件一个都不会来，留着冻结帧只会把弹窗垫在一张过期画面上。
+   * 切集同理——新一集不该先闪上一集的最后一帧。
+   */
+  useEffect(() => {
+    if (awaitsUserDecision(state.phase)) setFrozen(false);
+  }, [state.phase]);
+  useEffect(() => {
+    setFrozen(false);
+  }, [unitKey]);
+
   /** 本集自动播放的结果。只有 blocked 需要界面兜底（中央大播放键） */
   const [autoplay, setAutoplay] = useState<AutoplayOutcome | null>(null);
   /** 当前是否在横屏（全屏 + 锁横向，或 iOS 上的 CSS 伪横屏）里 */
@@ -379,6 +450,16 @@ export function VideoPlayer(props: VideoPlayerProps) {
   const lockHintTimerRef = useRef<number | null>(null);
   /** 长按倍速是否生效中（HUD 与还原都看它） */
   const [holdSpeed, setHoldSpeed] = useState(false);
+  /**
+   * 实测取流速度的**已格式化读数**（「3.2 MB/s」）；null = 样本还不够。
+   *
+   * 存字符串而不是数字，是为了让 React 在读数没变时自己 bail out：这一格
+   * 每秒刷一次，存 bps 的话每次都是新数字、每秒把整条控制条重渲染一遍，
+   * 而屏幕上那行字十有八九一模一样（进度条 60fps 自绘刻意绕开 state 就是
+   * 为了这个，见 player-feel.md §2.A1，别从这里把它加回来）。
+   */
+  const [speedLabel, setSpeedLabel] = useState<string | null>(null);
+
   /** 横滑拖进度时的落点读数。手势期间常显，松手/取消后淡出 */
   const [seekPreview, setSeekPreview] = useState<{
     targetMs: number;
@@ -854,6 +935,8 @@ export function VideoPlayer(props: VideoPlayerProps) {
       hasMse: capabilityRef.current?.mse !== "none",
       mse: capabilityRef.current?.mse ?? "none",
       preferNativeHls: mode.engine === "native-hls",
+      // 直出档没有分片字节数可数，取流速度只能用「缓冲涨了几秒 × 码率」反推
+      sourceBitrateBps: session.source?.bit_rate ?? null,
       // 首帧就从续播点开始装载。会话相对制下换算结果≈0，与从前无异；VOD
       // 全片列表下这是防止 hls.js 先去拉第 0 段的关键（engine.ts 有注释）
       startPositionS: Math.max(0, toSessionSeconds(pendingFileMsRef.current, mode.originMs)),
@@ -866,6 +949,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
       // 重开请求本身会失败，落到 fatal 错误页，比无限转圈至少让人知道出了事。
       onNetworkDead: () => {
         if (disposed) return;
+        freezeFrame();
         // 刻意不动 wantsPlayRef：断流也可能发生在用户暂停期间（暂停时
         // hls.js 还在预载），置 true 会替他续播。在播的话它本来就是 true。
         video.pause();
@@ -914,7 +998,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
       engine.destroy();
       engineRef.current = null;
     };
-  }, [state.session, mode, video, tryAutoplay]);
+  }, [state.session, mode, video, tryAutoplay, freezeFrame]);
 
   /**
    * 换了会话（降档 / seek 换流）就重新获得自动播放的机会。
@@ -962,6 +1046,34 @@ export function VideoPlayer(props: VideoPlayerProps) {
       if (timer !== null) window.clearTimeout(timer);
     };
   }, [diagnosticsOpen, diagnosticsSessionId, diagnosticsStreamUrl]);
+
+  /**
+   * 取流速度读数：每秒问一次引擎，格式化后进 state（docs/design/player-feel.md §2.G3）。
+   *
+   * 1Hz 的 setState 看着像是往热路径上加重渲染，但这个组件本来就吃着
+   * `timeupdate` 的 4Hz 位置更新，多这一下可以忽略；真正要守住的是**读数没变
+   * 时不要重渲染**，所以 state 存的是格式化后的字符串，一样的字符串 React
+   * 自己会 bail out（进度条那条 60fps 自绘绕开 state 的规矩仍然有效，别从
+   * 这里把它加回来）。
+   *
+   * **换会话的空档里保留上一个读数**，不清空：那几秒没有引擎可问，但「上次
+   * 量到的线路速度」并没有失效，而那恰恰是用户最想看它的时刻（转圈的时候）。
+   * 清成 null 的结果是转圈时这一格必然空着——正好把它最有用的一段掐掉。
+   * 只有切集才归零（换了一部片，上一部的读数不该跟过来）。
+   */
+  useEffect(() => {
+    setSpeedLabel(null);
+  }, [unitKey]);
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const engine = engineRef.current;
+      if (!engine) return;
+      const label = formatBandwidth(engine.stats().downlinkBps);
+      // 新引擎刚挂上、样本还没攒够时同样保留上一个读数（理由同上）
+      if (label !== null) setSpeedLabel(label);
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   /** 累计一条播放质量事件。归约是纯函数，这里只负责喂事件。 */
   const qoe = useCallback((event: QoeEvent) => {
@@ -1552,6 +1664,8 @@ export function VideoPlayer(props: VideoPlayerProps) {
     (ref: string) => {
       setRequestedAudio(ref);
       if (ref === (state.session?.decision.audio?.track_ref ?? null)) return;
+      // 换会话会让画面空一段，先把当前帧冻住盖上去
+      freezeFrame();
       // 换流期间先把旧流停住，否则进度条会在新会话起来前继续跳
       video?.pause();
       // 这次暂停是我们造成的，不是用户不想看——换完要接着播
@@ -1559,7 +1673,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
       pendingFileMsRef.current = positionRef.current;
       dispatch({ type: "request", startMs: positionRef.current });
     },
-    [state.session, video],
+    [state.session, video, freezeFrame],
   );
 
   /**
@@ -1579,12 +1693,13 @@ export function VideoPlayer(props: VideoPlayerProps) {
       if (!wantBurn && burnedSubtitle === null) return; // 纯文本切换，前端搞定
       if (wantBurn && burnedSubtitle === ref) return; // 已在烧这条，白重启
       setRequestedSubtitle(ref ?? "off");
+      freezeFrame();
       video?.pause();
       wantsPlayRef.current = true;
       pendingFileMsRef.current = positionRef.current;
       dispatch({ type: "request", startMs: positionRef.current });
     },
-    [subtitles, burnedSubtitle, video],
+    [subtitles, burnedSubtitle, video, freezeFrame],
   );
 
   /**
@@ -1625,6 +1740,8 @@ export function VideoPlayer(props: VideoPlayerProps) {
       if (maxHeight === quality) return;
       const copying = state.session?.decision.video?.action === "copy";
       if (copying && (maxHeight === null || (video?.videoHeight ?? 0) <= maxHeight)) return;
+      // 换会话会让画面空一段，先把当前帧冻住盖上去
+      freezeFrame();
       video?.pause();
       wantsPlayRef.current = true;
       pendingFileMsRef.current = positionRef.current;
@@ -1632,7 +1749,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
       // cleanup，避免上一个硬件档的迟到错误把本次请求推回软件档。
       dispatch({ type: "request", startMs: positionRef.current });
     },
-    [quality, state.session, video],
+    [quality, state.session, video, freezeFrame],
   );
 
   /**
@@ -1670,6 +1787,12 @@ export function VideoPlayer(props: VideoPlayerProps) {
       });
       if (plan.kind === "native") {
         const seconds = Math.max(0, plan.seconds);
+        // 落点在缓冲之外：hls.js 会清掉当前这段缓冲从新落点重新装载，中间
+        // 那几百毫秒到几秒（外网上就是几秒）`<video>` 一帧都没有，浏览器只
+        // 能画黑。先把当前帧冻住盖上去，等新位置出画再撤。缓冲之内的跳转
+        // 不冻——数据在手上，本来就不会黑，多盖一层反而会让本该瞬时的跳转
+        // 看着像卡了一下。
+        if (!isWithinRanges(video.buffered, seconds)) freezeFrame();
         if (engineRef.current?.seek) engineRef.current.seek(seconds);
         else video.currentTime = seconds;
         // 乐观更新进度条：seek 落到未缓冲区间（往回拖出 back buffer、往前
@@ -1680,6 +1803,8 @@ export function VideoPlayer(props: VideoPlayerProps) {
         setPositionMs(toFileMs(seconds, startMsRef.current));
         return;
       }
+      // 换会话必然让画面空一段（旧引擎销毁会把 src 摘干净），先冻住当前帧
+      freezeFrame();
       // 换会话期间先把旧流停住：不停的话旧会话还在往前走，进度条会在新会话
       // 起来之前继续跳动，看着像"拖了没反应"
       video.pause();
@@ -1689,7 +1814,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
       setPositionMs(plan.startMs);
       dispatch({ type: "restart", startMs: plan.startMs });
     },
-    [video, sessionId, mode, durationMs, state.session, state.phase, state.startMs],
+    [video, sessionId, mode, durationMs, state.session, state.phase, state.startMs, freezeFrame],
   );
 
   /**
@@ -2757,6 +2882,22 @@ export function VideoPlayer(props: VideoPlayerProps) {
           ) : null}
         </video>
 
+        {/* 冻结帧：换流 / 跳出缓冲时盖住那段没有画面的空窗（freeze-frame.ts）。
+            尺寸与 object-contain 跟 <video> 一模一样，盖上去时画面纹丝不动，
+            看起来就是「画面停住了」而不是「换了一张图」。
+
+            常驻不卸载：抓帧要在盖上去**之前**完成，ref 必须一直在手上；
+            noautohide 是因为 media-controller 会把无操作时的普通子元素统一
+            淡出——盖画面的这层被淡掉就等于黑屏照旧。 */}
+        <canvas
+          ref={freezeCanvasRef}
+          {...{ noautohide: "" }}
+          aria-hidden
+          className={`pointer-events-none absolute inset-0 size-full object-contain ${
+            frozen ? "" : "hidden"
+          }`}
+        />
+
         {/* 亮度遮罩。不用 video 上的 CSS filter：iOS 的视频走独立合成层，
             filter 在真机上时常被绕过（滤镜不生效，2026-08-25 真机反馈）；
             黑色遮罩按不透明度压暗是全平台都吃的等效实现（只往暗调，数学上
@@ -3041,7 +3182,16 @@ export function VideoPlayer(props: VideoPlayerProps) {
                 （Netflix 同款延迟）。busy 恢复时整块卸载，即时消失。 */}
             <div className="player-busy-appear flex flex-col items-center gap-4">
               <span className="size-12 animate-spin rounded-full border-[3px] border-white/15 border-t-[var(--player-accent)]" />
-              <span className="text-[14px] text-white/75">{busyLabel(state.phase)}</span>
+              <div className="flex flex-col items-center gap-1.5">
+                <span className="text-[14px] text-white/75">{busyLabel(state.phase)}</span>
+                {/* 转圈的时候正是用户最想知道「到底是谁慢」的时候：这里补一行
+                    实测取流速度，贴着码率跑说明线路没问题、卡的是服务端转码，
+                    远低于码率说明就是带宽不够，该去降一档画质。没有读数（样本
+                    还不够）时整行不出现，不占位也不显示占位符。 */}
+                {speedLabel ? (
+                  <span className="tnum text-[12px] text-white/45">↓ {speedLabel}</span>
+                ) : null}
+              </div>
             </div>
           </div>
         ) : null}
@@ -3163,6 +3313,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
             overrideMs={overrideMs}
             durationMs={durationMs}
             bufferedEndMs={bufferedEndMs}
+            networkSpeed={speedLabel}
             chromeVisible={chromeVisible}
             onSeek={commitSeek}
             onScrub={scrubTo}

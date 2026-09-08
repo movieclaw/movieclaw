@@ -197,6 +197,13 @@ export interface PlayerControlsProps {
   durationMs: number | null;
   /** 当前会话已缓冲到的文件位置，用于进度条的浅色底 */
   bufferedEndMs: number | null;
+  /**
+   * 实测取流速度的现成读数（「3.2 MB/s」）；null = 样本还不够，那一格不出现。
+   *
+   * 传格式化后的字符串而不是数字：这一格每秒刷一次，传数字的话每次都是新值、
+   * 每秒把整条控制条重渲染一遍，而屏幕上那行字十有八九一模一样。
+   */
+  networkSpeed: string | null;
   /** 控制条是否可见。进度条与其它控件一起淡入淡出（全出全收） */
   chromeVisible: boolean;
   onSeek: (fileMs: number) => void;
@@ -266,6 +273,7 @@ export function PlayerControls(props: PlayerControlsProps) {
     overrideMs,
     durationMs,
     bufferedEndMs,
+    networkSpeed,
     chromeVisible,
     onSeek,
     onScrub,
@@ -520,10 +528,26 @@ export function PlayerControls(props: PlayerControlsProps) {
       >
         {/* 两段各自成元素、靠 gap 分开：药丸是 flex，写在文字里的前导空格会
             被折掉，变成「41:00/ 2:32:00」 */}
-        <span className="player-glass inline-flex h-9 items-center gap-1 rounded-full px-3.5 text-[13px] tabular-nums text-white/90 max-md:h-11 max-md:text-[12px]">
-          <span>{formatClock(shown)}</span>
-          <span className="text-white/45">/ {durationMs ? formatClock(durationMs) : "--:--"}</span>
-        </span>
+        <div className="flex items-center gap-2">
+          <span className="player-glass inline-flex h-9 items-center gap-1 rounded-full px-3.5 text-[13px] tabular-nums text-white/90 max-md:h-11 max-md:text-[12px]">
+            <span>{formatClock(shown)}</span>
+            <span className="text-white/45">
+              / {durationMs ? formatClock(durationMs) : "--:--"}
+            </span>
+          </span>
+
+          {/* 实测取流速度。放在时间旁边而不是右上角：外网上「现在下得动吗」
+              和「放到哪了」是同一类持续关注的读数，凑一起扫一眼就够，右上角
+              那排是按钮区，塞读数进去会让人想去点它。
+              样本不够时整格不出现——空着比显示「-- MB/s」干净，而且这一格
+              本来就不是每个人都需要看的东西。 */}
+          {networkSpeed ? (
+            <span className="player-glass inline-flex h-9 items-center gap-1 rounded-full px-3 text-[13px] tabular-nums text-white/70 max-md:h-11 max-md:text-[12px]">
+              <span className="text-white/45">↓</span>
+              {networkSpeed}
+            </span>
+          ) : null}
+        </div>
 
         {/* 横屏管方向、全屏管铺满——真横屏会顺带进全屏，此时全屏键自然
             成为退出键。iPhone 没有元素级全屏，全屏键走系统原生播放器，

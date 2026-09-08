@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 
 import type { PlaybackDiagnostics, PlaybackSession } from "@/lib/api/playback";
+import { formatBandwidth } from "@/lib/player/bandwidth";
 import type { EngineStats, PlaybackEngine } from "@/lib/player/engine";
 import type { QoeLiveStats } from "@/lib/player/qoe";
 import { languageLabel } from "@/lib/language-labels";
@@ -423,6 +424,10 @@ export function DiagnosticsPanel({
             {[
               stats?.engine ?? "—",
               formatMbps(stats?.bitrate) && `实时 ${formatMbps(stats?.bitrate)}`,
+              // 取流速度与实时码率并排：速度贴着码率跑说明线路吃得下、卡的是
+              // 服务端转码；速度远低于码率说明就是带宽不够。单看任一个都会误诊。
+              formatBandwidth(stats?.downlinkBps ?? null) &&
+                `取流 ${formatBandwidth(stats?.downlinkBps ?? null)}`,
               stats ? `缓冲 ${stats.bufferedSeconds.toFixed(1)} 秒` : null,
               stats ? `播放头 ${stats.currentTimeSeconds.toFixed(1)} 秒` : null,
             ]
