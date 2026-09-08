@@ -362,3 +362,15 @@ test("null 起点只存在于首次请求在途期间：降档重来带的是解
   assert.equal(state.phase, "degrading");
   assert.equal(state.startMs, 120_000); // 不能又变回 null 从头放
 });
+
+test("重复的 seeking 返回同一个状态对象：拖动跟随一秒发十次，不能各造一份", () => {
+  // 造出新对象 = 每秒把整个播放器重渲染十遍，而相位根本没变
+  const playing = run([
+    { type: "request", startMs: 0 },
+    { type: "session", session: planSession(0) },
+    { type: "playing" },
+  ]);
+  const first = playerReducer(playing, { type: "seeking" });
+  assert.equal(first.phase, "seeking");
+  assert.equal(playerReducer(first, { type: "seeking" }), first);
+});

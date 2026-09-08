@@ -989,7 +989,11 @@ export function VideoPlayer(props: VideoPlayerProps) {
     };
     const onSeeking = () => {
       if (!isCurrentSession()) return;
-      qoe({ type: "seeking", at: performance.now() });
+      const scrub = scrubRef.current;
+      // 同一次拖动的第二次及以后：位置是我们自己每 100 毫秒写进去的，
+      // 不是用户又跳了一次（第一次照常计入——他确实跳了）
+      const fromScrub = scrub.count > 0 && performance.now() - scrub.at < 250;
+      if (!fromScrub) qoe({ type: "seeking", at: performance.now() });
       dispatch({ type: "seeking" });
     };
     const onSeeked = () => {
@@ -1777,7 +1781,14 @@ export function VideoPlayer(props: VideoPlayerProps) {
    * 100ms 节流：hls.js 在列表内跳转会取消在途的分片请求，一秒跳六十次反而
    * 让缓冲永远建立不起来。
    */
-  const lastScrubAtRef = useRef(0);
+  /**
+   * 拖动跟随自己写 currentTime 的节流与计数。
+   *
+   * `count` 是**这一次拖动里写到第几次**：第一次要照常算作用户跳转（他确实
+   * 跳了），第二次起是同一个动作的延续——一次拖动写十几次，全算进 QoE 的话
+   * 「拖动次数」就从「用户跳了几次」变成「写了几次 currentTime」，指标废掉。
+   */
+  const scrubRef = useRef({ at: 0, count: 0 });
 
   /**
    * 这一跳贵不贵：落点已在缓冲里、或档 0 直出（整个文件随便跳）就是零成本，
@@ -1800,15 +1811,21 @@ export function VideoPlayer(props: VideoPlayerProps) {
     (fileMs: number) => {
       if (!video) return;
       const now = performance.now();
-      if (now - lastScrubAtRef.current < 100) return;
+      if (now - scrubRef.current.at < 100) return;
       const seconds = toSessionSeconds(fileMs, startMsRef.current);
       if (seconds < 0 || !isCheapSeek(fileMs)) return;
-      lastScrubAtRef.current = now;
+      // 500 毫秒之内的连续写视为同一次拖动
+      const continuing = now - scrubRef.current.at < 500;
+      scrubRef.current = { at: now, count: continuing ? scrubRef.current.count + 1 : 0 };
       // **只动 currentTime，不走 engine.seek**：后者会 stopLoad + startLoad
       // 把在途的分片请求全掐掉重来——那是给「跳到没缓冲的地方」准备的重手段。
       // 拖动跟随只在数据已经在手上时才发生（isCheapSeek），一秒十次地掐断
       // 加载管线，恰恰会把这条路本来想改善的手感反过来毁掉。
-      video.currentTime = seconds;
+      // fastSeek 是浏览器为「拖动预览」准备的：就近落在关键帧上，省掉从
+      // 关键帧解到精确帧的那段解码。Safari / Firefox 有，Chrome 至今没有，
+      // 所以要探测。松手那次提交仍走精确 seek——落点差半秒用户是看得出来的。
+      if (typeof video.fastSeek === "function") video.fastSeek(seconds);
+      else video.currentTime = seconds;
     },
     [video, isCheapSeek],
   );
@@ -2549,20 +2566,41 @@ export function VideoPlayer(props: VideoPlayerProps) {
     }
   }, [positionMs, durationMs, video]);
 
-  /** 播放中申请防息屏。切到后台会被系统收走，回来时重新申请。 */
+  /**
+   * 播放中申请防息屏。
+   *
+   * **必须跟着可见性重新申请**：规范规定文档一转入后台，系统就把锁收走，而
+   * 且此时 `request()` 会直接拒绝。只在 effect 里申请一次的话，用户切出去接
+   * 个消息再回来，锁就永远没有了——电影放到一半屏幕自己暗下去，而这正是这
+   * 段代码要防的事（这条注释以前就写着「回来时重新申请」，但没人真的写）。
+   */
   useEffect(() => {
     if (paused || state.phase !== "playing") return;
     let sentinel: WakeLockSentinel | null = null;
     let released = false;
-    void navigator.wakeLock
-      ?.request("screen")
-      .then((lock) => {
-        if (released) void lock.release().catch(() => undefined);
-        else sentinel = lock;
-      })
-      .catch(() => undefined);
+    const acquire = () => {
+      // 后台申请必被拒；有锁在手也不重复申请
+      if (released || sentinel || document.visibilityState !== "visible") return;
+      void navigator.wakeLock
+        ?.request("screen")
+        .then((lock) => {
+          if (released) {
+            void lock.release().catch(() => undefined);
+            return;
+          }
+          sentinel = lock;
+          // 系统收走时把引用一起丢掉，否则回到前台会以为还锁着、不再申请
+          lock.addEventListener?.("release", () => {
+            if (sentinel === lock) sentinel = null;
+          });
+        })
+        .catch(() => undefined);
+    };
+    acquire();
+    document.addEventListener("visibilitychange", acquire);
     return () => {
       released = true;
+      document.removeEventListener("visibilitychange", acquire);
       void sentinel?.release().catch(() => undefined);
     };
   }, [paused, state.phase]);

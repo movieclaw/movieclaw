@@ -200,7 +200,10 @@ export function playerReducer(state: PlayerState, event: PlayerEvent): PlayerSta
       // 加载转圈提前消失、中央播放键在还放不动的时候就亮出来：用户点了
       // 没反应，以为播放器坏了（真机复现的起播假死感）。ended 之后往回
       // 拖是真 seek，照常进。
-      return state.phase === "playing" || state.phase === "seeking" || state.phase === "ended"
+      // 已经在 seeking 就原样返回**同一个对象**：拖动跟随一秒会发十次 seeking，
+      // 每次都造一个新状态就是每秒把整个播放器重渲染十遍，而相位根本没变。
+      if (state.phase === "seeking") return state;
+      return state.phase === "playing" || state.phase === "ended"
         ? { ...state, phase: "seeking" }
         : state;
 
