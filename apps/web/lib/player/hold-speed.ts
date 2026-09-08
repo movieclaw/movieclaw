@@ -36,7 +36,11 @@ export type HoldSpeedEvent =
 export function holdSpeedReducer(state: HoldSpeedState, event: HoldSpeedEvent): HoldSpeedState {
   if (event === "press") return state === "idle" ? "pending" : state;
   if (event === "elapsed") return state === "pending" ? "active" : state;
-  // move / release / starve 一律回到起点：手势改判、抬手、缓冲告急都该还原
+  // 缓冲告急只掐**已经在吃缓冲**的那一档。`waiting` 在正常播放里也会发
+  // （seek 之后、转码会话追编码器时），拿它一并否掉刚按下去的那 500 毫秒，
+  // 表现就是「按住了却没反应」——而此刻还没有任何倍速在消耗缓冲。
+  if (event === "starve") return state === "active" ? "idle" : state;
+  // 手势改判与抬手一律回到起点
   return "idle";
 }
 

@@ -75,6 +75,7 @@ import {
   applySwipe,
   classifyIntent,
   classifyTouchZone,
+  pointerOffsetX,
   seekDeltaMs,
   toLayoutPoint,
 } from "@/lib/player/touch-adjust";
@@ -1499,8 +1500,14 @@ export function VideoPlayer(props: VideoPlayerProps) {
         suppressClickRef.current = false;
         return;
       }
-      const rect = event.currentTarget.getBoundingClientRect();
-      const xRatio = rect.width > 0 ? (event.clientX - rect.left) / rect.width : 0.5;
+      // 伪横屏下画面整体转了 90°，用物理 clientX 分左右会把三等分转到
+      // 竖直方向上去——换算与进度条同源（touch-adjust.ts 的 pointerOffsetX）
+      const { offset, length } = pointerOffsetX(
+        event,
+        event.currentTarget.getBoundingClientRect(),
+        fakeLandscapeRef.current,
+      );
+      const xRatio = length > 0 ? offset / length : 0.5;
       const now = performance.now();
       const previous = tapRef.current;
       // 双击跳转只属于触屏：桌面的双击是全屏（onSurfaceDoubleClick），
@@ -2360,6 +2367,10 @@ export function VideoPlayer(props: VideoPlayerProps) {
     video.addEventListener("waiting", onWaiting);
 
     const onTouchStart = (event: TouchEvent) => {
+      // 新的一次触摸开始 = 上一次要吞的 click 要么已经来过、要么不会来了
+      // （长按松手后浏览器不一定补 click：Android 弹了长按菜单就没有）。
+      // 不清的话那个标记会一直挂着，把下一次正经的轻点吞掉。
+      suppressClickRef.current = false;
       // 锁屏：所有手势作废（轻点由 onSurfaceClick 处理成「露出解锁键」）
       if (lockedRef.current) {
         swipeGestureRef.current = null;
@@ -3134,6 +3145,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
             onMenuOpenChange={setMenuOpen}
             trickplay={trickplay}
             chapters={chapters}
+            fakeLandscape={fakeLandscape}
           />
         </div>
       </MediaController>

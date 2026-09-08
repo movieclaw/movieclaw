@@ -7,6 +7,7 @@ import {
   applySwipe,
   classifyIntent,
   classifyTouchZone,
+  pointerOffsetX,
   seekDeltaMs,
   toLayoutPoint,
 } from "../lib/player/touch-adjust.ts";
@@ -88,4 +89,26 @@ test("伪横屏下横滑的位移取自布局坐标——物理上是竖着划�
   const now = toLayoutPoint(200, 300, FAKE_LANDSCAPE);
   assert.equal(classifyIntent(now.x - start.x, now.y - start.y), "horizontal");
   assert.equal(seekDeltaMs(now.x - start.x, now.width) > 0, true);
+});
+
+// ---------------------------------------------------------------------------
+// 元素内的横向位置：伪横屏下不能直接用 clientX（2026-09-08 实测发现）
+// ---------------------------------------------------------------------------
+
+test("常规方向：沿元素的 clientX 量", () => {
+  const rect = { left: 28, top: 736, width: 334, height: 44 };
+  const r = pointerOffsetX({ clientX: 195, clientY: 750 }, rect, false);
+  assert.equal(r.offset, 167);
+  assert.equal(r.length, 334);
+});
+
+test("伪横屏：布局 x 沿物理 y，量的是 clientY 与外接矩形的高", () => {
+  // 真机 390×844 视口实测：进度条转 90° 后外接矩形是 44×788，
+  // 用 clientX/rect.width 等于把整部片映射到 44 个物理像素上
+  const rect = { left: 64, top: 28, width: 44, height: 788 };
+  const r = pointerOffsetX({ clientX: 80, clientY: 422 }, rect, true);
+  assert.equal(r.offset, 394);
+  assert.equal(r.length, 788);
+  // 半程就是半程：换算完的比例必须是 0.5
+  assert.equal(r.offset / r.length, 0.5);
 });

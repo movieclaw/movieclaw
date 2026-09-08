@@ -67,6 +67,29 @@ export function toLayoutPoint(
   return { x: y, y: viewport.width - x, width: viewport.height, height: viewport.width };
 }
 
+/**
+ * 指针落在某个元素上的**横向位置**，用元素自己的布局坐标表示。
+ *
+ * 直接写 `(clientX - rect.left) / rect.width` 在伪横屏下是错的，而且错得
+ * 很隐蔽：容器整体 `rotate(90deg)` 之后，元素的布局 x 轴沿物理 y 轴，
+ * `getBoundingClientRect()` 给的是**旋转后的外接矩形**——进度条量出来是
+ * 「44 × 788」，`rect.width` 成了它的**厚度**（真机 390×844 视口实测）。
+ * 于是整部片被映射到 44 个物理像素上：手指沿用户眼里的横向拖，clientX
+ * 几乎不变、进度条不动；而横跨条厚度的一点点抖动却是几分钟的跳变。
+ *
+ * 返回 px 偏移与该轴的总长，调用方既能算比例，也能拿它直接定位气泡
+ * （气泡的 `left` 也是布局坐标）。
+ */
+export function pointerOffsetX(
+  point: { clientX: number; clientY: number },
+  rect: { left: number; top: number; width: number; height: number },
+  fakeLandscape: boolean,
+): { offset: number; length: number } {
+  // 布局 +x 沿物理 +y（rotate(90deg) 顺时针，与 toLayoutPoint 同一套换算）
+  if (fakeLandscape) return { offset: point.clientY - rect.top, length: rect.height };
+  return { offset: point.clientX - rect.left, length: rect.width };
+}
+
 /** 起手点落在哪个手势区：左半 = 亮度，右半 = 音量，排除带 = null。 */
 export function classifyTouchZone(
   physicalX: number,

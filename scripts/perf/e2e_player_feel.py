@@ -9,6 +9,8 @@
 3. **长按倍速**：按住 0.7 秒 → 2×，松手还原，且保音高。
 4. **拖动跟手**：跳转不要钱时（档 0 直出 / 落点已缓冲）拖动中画面跟随。
 5. **章节刻度**：轨道上有刻度，气泡里有章节名。
+6. **iOS 伪横屏下坐标不串轴**：容器整体转 90° 之后，进度条与双击分区仍按
+   用户眼里的左右走（2026-09-08 实测这里错过一次，见 player-feel.md §10）。
 
 外加逐帧步进（暂停时 `.` 走一帧）。用法::
 
@@ -244,8 +246,110 @@ async def run(args: argparse.Namespace) -> dict:
           }
         """
         )
+        report["fake_landscape"] = await run_fake_landscape(browser, args)
         await browser.close()
     return report
+
+
+#: 模拟 iPhone Safari：它没有元素级全屏，播放器因此走 CSS 伪横屏
+#: （整个容器 rotate(90deg)）。桌面 Chromium 有全屏，必须把它按掉才走得到那条路。
+NO_ELEMENT_FULLSCREEN = """
+() => {
+  const reject = function () { return Promise.reject(new Error('no element fullscreen')); };
+  try {
+    const def = (name, value) =>
+      Object.defineProperty(Element.prototype, name, { value, configurable: true });
+    def('requestFullscreen', reject);
+    def('webkitRequestFullscreen', undefined);
+  } catch { /* 属性动不了就算了，下面会因为进不了伪横屏而跳过这一段 */ }
+}
+"""
+
+
+async def run_fake_landscape(browser, args: argparse.Namespace) -> dict:
+    """伪横屏下的坐标换算（手机尺寸视口 + 触屏）。
+
+    单独开一个上下文：这条路只在**手机竖屏拿着、播放器自己转 90°** 时出现，
+    与上面那套桌面尺寸的检查不是一回事。
+    """
+    context = await browser.new_context(
+        viewport={"width": 390, "height": 844}, has_touch=True, is_mobile=True
+    )
+    # 必须是 IIFE：只传一个函数字面量的话它永远不会被调用（这里踩过）
+    await context.add_init_script(f"({NO_ELEMENT_FULLSCREEN})()")
+    page = await context.new_page()
+    try:
+        await page.goto(f"{args.web}/login", wait_until="networkidle")
+        await page.click('input[type="text"]')
+        await page.keyboard.type(args.user)
+        await page.click('input[type="password"]')
+        await page.keyboard.type(args.password)
+        await page.click('button[type="submit"]')
+        await page.wait_for_url(lambda url: "/login" not in url, timeout=60_000)
+        await page.goto(f"{args.web}/play/{args.item}", wait_until="domcontentloaded")
+        await page.wait_for_function(
+            "() => { const v = document.querySelector('video');"
+            " return v && v.readyState >= 2 && v.currentTime > 0.5; }",
+            timeout=args.timeout * 1000,
+        )
+        # 轻点唤出控制层 → 点横屏键（走的正是 iPhone 那条伪横屏）
+        box = await page.evaluate(
+            "() => { const b = document.querySelector('video').getBoundingClientRect();"
+            " return { x: b.left + b.width / 2, y: b.top + b.height / 2 }; }"
+        )
+        await page.touchscreen.tap(box["x"], box["y"])
+        await asyncio.sleep(0.8)
+        button = await page.query_selector('button[aria-label="横屏"]')
+        if button:
+            await button.click(timeout=5000)
+        await asyncio.sleep(1.5)
+        rotated = await page.evaluate(
+            "() => document.querySelector('.player-root')"
+            ".classList.contains('player-fake-landscape')"
+        )
+        if not rotated:
+            return {"fake_landscape": False}
+
+        await page.evaluate("() => { document.querySelector('video').currentTime = 10; }")
+        await asyncio.sleep(1.2)
+        bar = await page.evaluate(
+            "() => { const b = document.querySelector('.player-scrub').getBoundingClientRect();"
+            " return { left: b.left, top: b.top, w: b.width, h: b.height }; }"
+        )
+        # 用户眼里「从左往右拖」= 物理竖直方向：进度条转过来之后外接矩形是
+        # 「厚 × 长」，拿 clientX/rect.width 算等于把整部片压进 44 个像素
+        x = bar["left"] + bar["w"] / 2
+        await page.mouse.move(x, bar["top"] + bar["h"] * 0.2)
+        await page.mouse.down()
+        for ratio in (0.4, 0.7):
+            await page.mouse.move(x, bar["top"] + bar["h"] * ratio)
+            await asyncio.sleep(0.25)
+        await page.mouse.up()
+        await asyncio.sleep(1.2)
+        result = {
+            "fake_landscape": True,
+            "bar_aabb": {k: round(v) for k, v in bar.items()},
+            "drag_to_70pct_s": round(
+                await page.evaluate("() => document.querySelector('video').currentTime"), 1
+            ),
+        }
+        video = await page.evaluate(
+            "() => { const b = document.querySelector('video').getBoundingClientRect();"
+            " return { left: b.left, top: b.top, w: b.width, h: b.height }; }"
+        )
+        tap_x = video["left"] + video["w"] / 2
+        for key, fraction in (("double_tap_right_s", 0.85), ("double_tap_left_s", 0.15)):
+            before = await page.evaluate("() => document.querySelector('video').currentTime")
+            tap_y = video["top"] + video["h"] * fraction
+            await page.touchscreen.tap(tap_x, tap_y)
+            await asyncio.sleep(0.12)
+            await page.touchscreen.tap(tap_x, tap_y)
+            await asyncio.sleep(1.3)
+            after = await page.evaluate("() => document.querySelector('video').currentTime")
+            result[key] = round(after - before, 1)
+        return result
+    finally:
+        await context.close()
 
 
 def verdicts(r: dict) -> list[tuple[bool, str]]:
@@ -256,6 +360,7 @@ def verdicts(r: dict) -> list[tuple[bool, str]]:
     follow = r.get("scrub_follow") or []
     hold = r.get("hold_speed") or {}
     step = r.get("frame_step") or {}
+    rotated = r.get("fake_landscape") or {}
     return [
         # 跟 timeupdate 走时 1.2 秒内只有 4~6 个不同取值；每帧自绘接近采样数
         (distinct > samples * 0.5, f"进度条匀速：1.2 秒内 {distinct}/{samples} 帧取值不同"),
@@ -275,6 +380,17 @@ def verdicts(r: dict) -> list[tuple[bool, str]]:
         (
             len(r.get("chapter_marks") or []) > 0,
             f"章节刻度：{r.get('chapter_marks')}，气泡 {r.get('bubble')}",
+        ),
+        (
+            # 转过来之后进度条的外接矩形是「厚 × 长」，拿 clientX 算会把整部片
+            # 压进 44 个物理像素；双击分区同理会被转到竖直方向上去
+            bool(rotated.get("fake_landscape"))
+            and 80 <= rotated.get("drag_to_70pct_s", 0) <= 88
+            and rotated.get("double_tap_right_s") == 10
+            and rotated.get("double_tap_left_s") == -10,
+            f"伪横屏坐标：拖到七成 = {rotated.get('drag_to_70pct_s')} 秒，"
+            f"双击右/左 = {rotated.get('double_tap_right_s')}/{rotated.get('double_tap_left_s')} 秒"
+            + ("" if rotated.get("fake_landscape") else "（没能进入伪横屏，本条无效）"),
         ),
         (
             step.get("paused") and step.get("drift") == 0 and 0 < step.get("step", 0) < 0.5,

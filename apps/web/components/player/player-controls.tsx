@@ -7,6 +7,7 @@ import type { AudioOption } from "@/lib/player/audio-tracks";
 import { SUBTITLE_OFFSET_STEP, clampSubtitleOffset } from "@/lib/player/subtitles";
 import { QUALITY_OPTIONS } from "@/lib/player/quality";
 import type { SubtitleStyle, SubtitleTracks } from "@/lib/player/subtitles";
+import { pointerOffsetX } from "@/lib/player/touch-adjust";
 import { formatClock, progressRatio } from "@/lib/player/timeline";
 import { type TrickplayIndex, tileAt } from "@/lib/player/trickplay";
 
@@ -247,6 +248,14 @@ export interface PlayerControlsProps {
   trickplay: TrickplayIndex | null;
   /** 章节刻度（文件毫秒）。空表 = 这个文件没有内嵌章节，轨道保持干净 */
   chapters: PlaybackChapterMark[];
+  /**
+   * iOS 伪横屏（整个容器 rotate(90deg)）。
+   *
+   * 进度条上所有「指针位置 → 时间」的换算都要知道它：转过来之后元素的
+   * 布局 x 轴沿物理 y 轴，`rect.width` 量到的是条的厚度而不是长度
+   * （换算见 touch-adjust.ts 的 pointerOffsetX）。
+   */
+  fakeLandscape: boolean;
 }
 
 export function PlayerControls(props: PlayerControlsProps) {
@@ -284,6 +293,7 @@ export function PlayerControls(props: PlayerControlsProps) {
     onMenuOpenChange,
     trickplay,
     chapters,
+    fakeLandscape,
   } = props;
 
   // 拖动中的本地值：直接跟 positionMs 会被 timeupdate 反复拉回去，手感是
@@ -541,9 +551,13 @@ export function PlayerControls(props: PlayerControlsProps) {
           className="player-scrub-shade relative h-5"
           onPointerMove={(e) => {
             if (!durationMs) return;
-            const rect = e.currentTarget.getBoundingClientRect();
-            const x = Math.min(Math.max(e.clientX - rect.left, 0), rect.width);
-            setHover({ ms: (x / rect.width) * durationMs, x });
+            const { offset, length } = pointerOffsetX(
+              e,
+              e.currentTarget.getBoundingClientRect(),
+              fakeLandscape,
+            );
+            const x = Math.min(Math.max(offset, 0), length);
+            setHover({ ms: (x / length) * durationMs, x });
           }}
           onPointerLeave={() => setHover(null)}
         >
@@ -626,14 +640,22 @@ export function PlayerControls(props: PlayerControlsProps) {
               // 触摸/笔的主接触点 button 恒为 0，这条不会误伤它们。
               if (!durationMs || e.button !== 0 || !e.isPrimary) return;
               e.currentTarget.setPointerCapture(e.pointerId);
-              const rect = e.currentTarget.getBoundingClientRect();
-              const ratio = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+              const { offset, length } = pointerOffsetX(
+                e,
+                e.currentTarget.getBoundingClientRect(),
+                fakeLandscape,
+              );
+              const ratio = Math.min(1, Math.max(0, offset / length));
               setDragging(Math.round(ratio * durationMs));
             }}
             onPointerMove={(e) => {
               if (dragging === null || !durationMs) return;
-              const rect = e.currentTarget.getBoundingClientRect();
-              const ratio = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+              const { offset, length } = pointerOffsetX(
+                e,
+                e.currentTarget.getBoundingClientRect(),
+                fakeLandscape,
+              );
+              const ratio = Math.min(1, Math.max(0, offset / length));
               const next = Math.round(ratio * durationMs);
               setDragging(next);
               // 画面跟着手指走——能免费跳的时候不跟随是白白浪费手感
