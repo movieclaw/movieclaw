@@ -402,11 +402,15 @@ const PositionedCell = memo(function PositionedCell({
 }) {
   return (
     <div
-      className="absolute left-0 top-0"
+      className="absolute"
+      // 用 left/top 而不是 transform 定位：transform 会给格子造一个合成层，
+      // 里面的文字改走灰度抗锯齿，字形像素与改前不一样（几何完全相同，肉眼
+      // 看是"字重变了一点点"）。相册瀑布流用 transform 是因为它的重排要走
+      // CSS 过渡，这面墙没有那回事。
+      //
       // 位置与宽度都不取整：CSS grid 的列宽是小数（834px 视口下是 184.5），
-      // 取整会让海报高多出零点几像素、标题整体下移一行像素——只在某些宽度上
-      // 出现，很难看出来却实实在在改了画面
-      style={{ transform: `translate(${x}px, ${y}px)`, width }}
+      // 取整会让海报高多出 0.75px、标题整体下移一行像素
+      style={{ left: x, top: y, width }}
     >
       <InventoryCell
         item={item}
