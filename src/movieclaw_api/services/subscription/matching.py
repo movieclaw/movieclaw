@@ -25,6 +25,7 @@ from movieclaw_api.services.subscription.identity_recheck import (
     fetch_external_ids,
     needs_external_id_recheck,
 )
+from movieclaw_api.services.subscription.twins import ambiguous_verdict, ensure_twins
 from movieclaw_db.models import (
     ActivityType,
     MediaItem,
@@ -493,6 +494,15 @@ def _id_conflict_verdict(match: IdentityMatch) -> RuleVerdict:
     )
 
 
+def _ambiguous_verdict(outcome: str, reason: str) -> RuleVerdict:
+    """同名同年歧义的拒绝理由（``reject`` 自动否决 / ``ask`` 已转待确认）。"""
+    return RuleVerdict(
+        accepted=False,
+        reason_code=f"identity_ambiguous_{outcome}",
+        reason_text=reason,
+    )
+
+
 def _recheck_mismatch_verdict(candidate: TorrentCandidate) -> RuleVerdict:
     """复核取回 ID 后连身份都不成立了——理论上不可达（片名年份没变），但
     真出现说明这个候选的证据自相矛盾，按拒绝处理并留痕。"""
@@ -787,6 +797,31 @@ async def evaluate_and_dispatch(
                     # 证据变强了：候选与判定一起换成复核后的版本，投递台账
                     # 记下的就是 exact_id
                     candidate, match = enriched, rechecked
+            # 同名同年歧义（§9）：走到这里还只有"片名+年份"这一条证据的电影，
+            # 先问一句"这部片有没有同名同年的兄弟"。有兄弟就不能再凭片名年份
+            # 自动投——那正是本次错配的成因。ID 佐证过的（exact_id）不受影响
+            if match.confidence != "exact_id" and ctx.item.kind == "movie":
+                twins = await ensure_twins(session, ctx.item)
+                if twins:
+                    assert ctx.subscription.id is not None
+                    outcome, reason = await ambiguous_verdict(
+                        session,
+                        subscription_id=ctx.subscription.id,
+                        item=ctx.item,
+                        identity=ctx.identity,
+                        candidate=candidate,
+                        twins=twins,
+                    )
+                    summary.rejected += 1
+                    await _log_rejection(
+                        repo,
+                        ctx,
+                        candidate,
+                        targets or upgrade_targets,
+                        _ambiguous_verdict(outcome, reason),
+                        source,
+                    )
+                    continue
             # 体积÷片长 反证：**shadow 模式，只记录不改变行为**
             # （docs/design/identity-confidence.md §10.2）。阈值是凭经验拍的，
             # 直接开成否决会误伤正常发布；先让它在真实流量上跑一段，用投递

@@ -111,6 +111,16 @@ class MediaItem(TimestampMixin, table=True):
         sa_column=Column(JSON, nullable=False),
         description="匹配用别名集合（原样文本，精确去重）",
     )
+    # 同名同年的孪生条目（docs/design/identity-confidence.md §9）：
+    # [{tmdb_id, title, year, imdb_id, runtime_minutes}]。存清单而不是布尔——
+    # 孪生的 imdb_id 与 runtime 都是判别器的证据（"站点标的编号是不是那一部"、
+    # "这个体积更像谁的片长"）。三态：NULL=未探测（含探测失败——网络抖动不能
+    # 把订阅卡成待确认）、[]=探测过且干净、非空=有孪生，投递门槛升一档。
+    identity_twins: list | None = Field(
+        default=None,
+        sa_column=Column(JSON, nullable=True),
+        description="同名同年孪生条目清单；NULL=未探测，[]=无孪生",
+    )
 
     # -- 生命周期 ------------------------------------------------------------
     # 存 TMDB status 原值（Released / Returning Series / Ended / Canceled…），

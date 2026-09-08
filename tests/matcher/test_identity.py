@@ -8,7 +8,11 @@ from __future__ import annotations
 
 from movieclaw_enrich.models import TorrentAttrs
 from movieclaw_matcher import MediaIdentity, TorrentCandidate, match_identity
-from movieclaw_matcher.identity import implausible_for_runtime, implied_bitrate_mbps
+from movieclaw_matcher.identity import (
+    better_explained_by_twin,
+    implausible_for_runtime,
+    implied_bitrate_mbps,
+)
 
 
 def _candidate(
@@ -639,3 +643,39 @@ def test_runtime_counter_evidence_is_movie_only() -> None:
         kind="tv", year=2024, aliases=("Test Show",), season_numbers=(1,), runtime_minutes=45
     )
     assert implausible_for_runtime(pack, tv) is None
+
+
+# ---------------------------------------------------------------------------
+# 孪生判别器：谁的片长更能解释这个体积
+# ---------------------------------------------------------------------------
+
+
+def test_twin_discriminator_speaks_only_when_one_side_is_implausible() -> None:
+    """一边的体积对那个片长明显说不通时才判：1 GB 配 210 分钟 = 0.68 Mbps。"""
+    candidate = _sized("Movie 2026 1080p WEB-DL", 1.0, media_type="movie", resolution="1080p")
+    assert better_explained_by_twin(candidate, 210, {999: 45}) == 999
+
+
+def test_twin_discriminator_stays_silent_on_the_real_odyssey_numbers() -> None:
+    """诚实边界：§0 的现场它**判不出来**，应当交给用户确认。
+
+    4 GB 按 210 分钟算是 2.7 Mbps、按 88 分钟算是 6.5 Mbps——两个都落在 1080p
+    的合理区间内。设计初稿写的"答案毫无悬念"是错的：把门槛降到能判这一档，
+    等于对几乎每一对孪生都强行表态，会错一半。分不出就问用户，那是正确的
+    归宿，不是这条反证的失败。
+    """
+    candidate = _sized(
+        "The.Odyssey.2026.1080p.AMZN.WEB-DL", 4.0, media_type="movie", resolution="1080p"
+    )
+    assert better_explained_by_twin(candidate, 210, {999: 88}) is None
+
+
+def test_twin_discriminator_never_speaks_without_evidence() -> None:
+    """本条目片长未知、孪生片长未知、分辨率未知——任一缺失都不判。"""
+    candidate = _sized("Movie 2026 1080p WEB-DL", 1.0, media_type="movie", resolution="1080p")
+    assert better_explained_by_twin(candidate, None, {999: 45}) is None
+    assert better_explained_by_twin(candidate, 210, {}) is None
+    assert better_explained_by_twin(candidate, 210, {999: None}) is None
+
+    no_res = _sized("Movie 2026 WEB-DL", 1.0, media_type="movie")
+    assert better_explained_by_twin(no_res, 210, {999: 45}) is None

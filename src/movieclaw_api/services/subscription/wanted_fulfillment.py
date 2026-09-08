@@ -134,6 +134,9 @@ async def close_fulfilled_wanted(session: AsyncSession, media_item_id: int) -> i
         from movieclaw_api.services.system_notice import resolve_notices
 
         await resolve_notices(session, prefix=f"subscription.landing:{subscription_id}:")
+        # 同理熄灭"这个候选是不是你要的片"的待确认告警：内容已经进库，
+        # 那个问题连同它的候选一起失去意义了（§9）
+        await resolve_notices(session, prefix=f"subscription.ambiguous:{subscription_id}:")
     # 入库规格核验：此刻实测值（快照）与种子声称值（attempt.quality）都在手上，
     # "声称 1080p / 实测 540p"这类货不对板不该静默（services/subscription/spec_audit.py）
     from movieclaw_api.services.subscription.spec_audit import audit_ingest_specs

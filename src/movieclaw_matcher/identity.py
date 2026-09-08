@@ -305,6 +305,67 @@ def implausible_for_runtime(candidate: TorrentCandidate, media: MediaIdentity) -
     )
 
 
+def better_explained_by_twin(
+    candidate: TorrentCandidate, own_runtime: int | None, twin_runtimes: dict[int, int]
+) -> int | None:
+    """同名同年的几个条目里，谁的片长最能解释这个体积？返回胜出孪生的 tmdb_id。
+
+    本条目胜出（或分不出）时返回 None——**只在能证伪时说话**。
+
+    比单机看"隐含码率是否离谱"更有力：同一个文件、同一个编码、同一个片源，
+    "该用多少码率"这个未知量在孪生之间被抵消掉一部分。
+
+    **但它远没有强到能包打一切**——真实的分辨力比设计初稿预期的低得多。以
+    §0 的现场实测：4 GB 的种子，按 210 分钟算是 2.7 Mbps、按 88 分钟算是
+    6.5 Mbps，两个都落在 1080p 的合理区间内，对数距离只差 0.13（噪音级），
+    本函数**返回 None**。把门槛降到能判这一档，等于对几乎每一对孪生都强行
+    表态，错一半。所以它只在**一边的体积对那个片长明显说不通**时才开口
+    （例如 1 GB 配 210 分钟 = 0.68 Mbps，对 1080p 根本不成立）。
+
+    分不出就交给用户确认——那是正确的归宿，不是这条反证的失败。
+
+    判据：取隐含码率最接近该分辨率**典型区间**的那个片长。典型值用离谱下限
+    的 3 倍近似（``_BITRATE_FLOOR_MBPS`` 本身就是典型值的约 1/3），比的是
+    对数距离——码率是乘性量，2 Mbps 与 8 Mbps 的差距和 8 与 32 是同一量级，
+    用差值比会让高分辨率一边倒。
+
+    要求胜者比本条目**明显更好**（对数距离差 ≥ ``_TWIN_MARGIN``）才判，
+    否则宁可分不出：这条反证只用来拦，不用来选，误判的代价是漏配。
+    """
+    import math
+
+    if own_runtime is None or not twin_runtimes:
+        return None
+    floor = _BITRATE_FLOOR_MBPS.get(candidate.attrs.resolution or "")
+    if floor is None:
+        return None
+    typical = floor * 3
+
+    def distance(runtime: int) -> float | None:
+        bitrate = implied_bitrate_mbps(candidate, runtime)
+        if bitrate is None or bitrate <= 0:
+            return None
+        return abs(math.log(bitrate / typical))
+
+    own = distance(own_runtime)
+    if own is None:
+        return None
+    scored = [
+        (dist, tmdb_id)
+        for tmdb_id, runtime in sorted(twin_runtimes.items())
+        if runtime and (dist := distance(runtime)) is not None
+    ]
+    if not scored:
+        return None
+    best_distance, best_id = min(scored)
+    return best_id if own - best_distance >= _TWIN_MARGIN else None
+
+
+# 孪生判别的最小说服力：两者的对数距离差要到这个量级才敢判。ln(2)≈0.69 相当于
+# "一边的隐含码率离典型值差了两倍、另一边没有"。⚠ 待校准（§10）。
+_TWIN_MARGIN = 0.69
+
+
 def _id_conflict(candidate: TorrentCandidate, media: MediaIdentity) -> str | None:
     """两边都有外部 ID 且不相等时，给一句可直接进活动流水的中文说明。
 
