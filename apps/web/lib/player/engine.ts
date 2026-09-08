@@ -15,6 +15,7 @@ import type Hls from "hls.js";
 import type { MseKind } from "@/lib/api/playback";
 import { reportPlaybackClientLog } from "@/lib/api/playback";
 
+import { backBufferSeconds } from "./buffer-budget";
 import { type MediaRecoverState, nextMediaRecovery } from "./media-recover";
 import { NUDGE_STEP_S, bufferedAhead, classifyStall, shouldNudge, stallReason } from "./stall";
 
@@ -106,20 +107,6 @@ function clientLog(options: EngineOptions, event: string, detail: Record<string,
   if (options.telemetry === false) return;
   reportPlaybackClientLog(event, detail);
 }
-
-/**
- * 保留多少秒的已播缓冲（hls.js `backBufferLength`）。
- *
- * 不回收是不行的：一部三小时的片子会把已播分片一路堆在 SourceBuffer 里，
- * 吃掉几个 G 内存然后整个标签页崩掉——长片播放最典型的一种「放到一半就
- * 没了」。jellyfin-web 设 Infinity（配合服务端默认不删分片），我们不跟。
- *
- * 但 30 秒太紧：**回拖是最常见的操作**（没听清、走神），回拖 31 秒就要重新
- * 请求分片，转码会话下还可能把服务端的 ffmpeg 拽回去重启，代价是几秒黑屏。
- * 180 秒按 4Mbps 估算约 90MB，长片也在可接受范围，换来的是「往回拖三分钟
- * 之内都是瞬间的」（docs/design/player-feel.md §2.C3）。
- */
-const BACK_BUFFER_S = 180;
 
 /** 掉帧与缓冲读数：三种引擎共用一份取法。 */
 function readCommonStats(video: HTMLVideoElement): Omit<EngineStats, "engine" | "bitrate"> {
@@ -340,8 +327,9 @@ class HlsEngine implements PlaybackEngine {
     const { video, streamUrl, onFailed } = this.options;
     const { default: HlsCtor } = await import("hls.js");
     this.hls = new HlsCtor({
-      // 已播缓冲回收，见 BACK_BUFFER_S
-      backBufferLength: BACK_BUFFER_S,
+      // 已播缓冲回收：先按「码率未知」的上限给，拿到真实码率后立刻收紧
+      // （见 backBufferSeconds 与下面的 LEVEL_LOADED）
+      backBufferLength: backBufferSeconds(null),
       // 前向缓冲拉到 60 秒（hls.js 默认 30）：局域网抢先缓、弱网抗抖动都
       // 受益。服务端 readrate 1.5 倍限速决定了缓冲天然追不过这个数太多。
       maxBufferLength: 60,
@@ -423,9 +411,19 @@ class HlsEngine implements PlaybackEngine {
     this.hls.on(HlsCtor.Events.FRAG_LOADED, () => {
       this.networkRecoveries = 0;
     });
-    this.hls.on(HlsCtor.Events.LEVEL_SWITCHED, () => {
-      this.currentBitrate = this.hls?.levels[this.hls.currentLevel]?.bitrate ?? null;
-    });
+    const syncBackBuffer = () => {
+      const bitrate = this.hls?.levels[this.hls.currentLevel]?.bitrate ?? null;
+      this.currentBitrate = bitrate;
+      if (!this.hls) return;
+      const seconds = backBufferSeconds(bitrate);
+      if (this.hls.config.backBufferLength === seconds) return;
+      this.hls.config.backBufferLength = seconds;
+      clientLog(this.options, "hls-back-buffer", { seconds, bitrate });
+    };
+    this.hls.on(HlsCtor.Events.LEVEL_SWITCHED, syncBackBuffer);
+    // 单档播放列表不会有 LEVEL_SWITCHED 之后的第二次事件，而码率在列表加载
+    // 完就知道了——高码率片子必须在播够 30 秒之前把保留时长收下来
+    this.hls.on(HlsCtor.Events.LEVEL_LOADED, syncBackBuffer);
 
     this.hls.loadSource(streamUrl);
     this.hls.attachMedia(video);
