@@ -140,6 +140,60 @@ def test_probe_timeout_is_reported_not_swallowed(monkeypatch, tmp_path):
     assert "超时" in status_of(hwprobe.probe_backends(), "vaapi").detail
 
 
+def _nvenc_ready(monkeypatch, tmp_path):
+    """一台「NVENC 编码器在、设备节点也在」的机器。"""
+    monkeypatch.setattr(hwprobe.shutil, "which", lambda _n: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(hwprobe, "_list_encoders", lambda: frozenset({"h264_nvenc"}))
+    monkeypatch.setattr(hwprobe, "Path", lambda _p: tmp_path)
+
+
+def test_native_tonemap_is_enabled_only_after_a_real_run(monkeypatch, tmp_path):
+    """``tonemap_cuda`` 是 jellyfin-ffmpeg 的补丁，上游没有——所以不能按构建
+    假定它存在，跑通了才回写给命令装配层。而探测链必须与真实转码链同源，
+    否则会出现「探得通、真用炸」。"""
+    from movieclaw_api.services.playback.ffmpeg_args import (
+        HW_BACKENDS,
+        NVENC_TONEMAP,
+        native_tonemap_filter,
+    )
+
+    _nvenc_ready(monkeypatch, tmp_path)
+    seen: list[list[str]] = []
+
+    def fake_probe(_encoder, filters):
+        seen.append(filters)
+        return subprocess.CompletedProcess([], 0, b"", b"")
+
+    monkeypatch.setattr(hwprobe, "_run_probe", fake_probe)
+    assert status_of(hwprobe.probe_backends(), "nvenc").available is True
+    assert native_tonemap_filter(HW_BACKENDS["nvenc"]) == NVENC_TONEMAP
+
+    chain = " ".join(seen[-1])
+    assert NVENC_TONEMAP in chain, "探测用的滤镜串必须就是真实转码用的那一串"
+    assert "hwupload_cuda" in chain and "scale_cuda" in chain  # 与真实链同构
+    assert "smpte2084" in chain, "tone-map 滤镜拒绝非 HDR 输入，得先合成 PQ 源"
+
+
+def test_native_tonemap_failure_keeps_hardware_transcoding(monkeypatch, tmp_path):
+    """探不到色调映射不是「硬件不可用」：HDR 片改用软件 tone-map 照样能放，
+    其余的解码与编码仍在显卡上。"""
+    from movieclaw_api.services.playback.ffmpeg_args import (
+        HW_BACKENDS,
+        native_tonemap_filter,
+    )
+
+    _nvenc_ready(monkeypatch, tmp_path)
+
+    def fake_probe(_encoder, filters):
+        if any("tonemap_cuda" in f for f in filters):
+            return subprocess.CompletedProcess([], 1, b"", b"No such filter: 'tonemap_cuda'")
+        return subprocess.CompletedProcess([], 0, b"", b"")
+
+    monkeypatch.setattr(hwprobe, "_run_probe", fake_probe)
+    assert status_of(hwprobe.probe_backends(), "nvenc").available is True
+    assert native_tonemap_filter(HW_BACKENDS["nvenc"]) is None
+
+
 def test_result_is_cached_until_forced(monkeypatch):
     calls = {"n": 0}
 

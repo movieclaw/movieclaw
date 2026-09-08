@@ -219,14 +219,22 @@ services:
       # - /volume2/movies:/movies
     environment:
       - TZ=Asia/Shanghai              # ← change to your timezone
-    # Want hardware transcoding with an iGPU / dGPU? First run `ls /dev/dri` on the host
-    # to confirm it exists (ARM boxes and CPU-only hosts usually don't have it). Enable
-    # the two lines below without it, and the container gets recreated and then fails to
-    # start, leaving nothing but "no such file or directory". When in doubt, leave them
-    # alone: the first-start log will tell you outright whether hardware decoding is
-    # available and what's missing.
+      # For NVIDIA hardware transcoding, enable these two together with
+      # `runtime: nvidia` below:
+      # - NVIDIA_VISIBLE_DEVICES=all
+      # - NVIDIA_DRIVER_CAPABILITIES=all
+    # Want hardware transcoding with an Intel / AMD iGPU? First run `ls /dev/dri` on the
+    # host to confirm it exists (ARM boxes and CPU-only hosts usually don't have it).
+    # Enable the two lines below without it, and the container gets recreated and then
+    # fails to start, leaving nothing but "no such file or directory".
     # devices:
     #   - /dev/dri:/dev/dri
+    # Using an NVIDIA dGPU? It does **not** go through /dev/dri — don't mount that when
+    # you have no iGPU (the container won't start). Install the NVIDIA Container Toolkit
+    # on the host first, then enable this line:
+    # runtime: nvidia
+    # When in doubt, leave them alone: the first-start log will tell you outright whether
+    # hardware decoding is available and what's missing.
     restart: unless-stopped
 ```
 

@@ -28,7 +28,11 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from movieclaw_api.services.playback.ffmpeg_args import HW_BACKENDS
+from movieclaw_api.services.playback.ffmpeg_args import (
+    HW_BACKENDS,
+    NVENC_TONEMAP,
+    register_native_tonemap,
+)
 from movieclaw_api.services.playback.remote_worker import remote_worker_available
 
 logger = logging.getLogger("movieclaw_api.playback.hwprobe")
@@ -46,6 +50,21 @@ _PROBE_FILTERS: dict[str, list[str]] = {
     "qsv": ["-vf", "format=nv12,hwupload=extra_hw_frames=64"],
     "nvenc": ["-vf", "format=yuv420p"],
     "videotoolbox": ["-vf", "format=nv12"],
+}
+
+#: 需要真跑一遍才敢启用的原生 tone-map 链：``tonemap_cuda`` 是 jellyfin-ffmpeg
+#: 的补丁，上游 ffmpeg 没有；即便滤镜在，老驱动也可能初始化不起来。值是一对：
+#: 给命令装配层用的滤镜串，以及探测用的完整滤镜链模板（``{filter}`` 处填前者）。
+#:
+#: 探测链与真实转码链**同构**——上传到显存 → tone-map → 硬件缩放 → 硬件编码，
+#: 否则会出现「探得通、真用炸」。输入要合成成 HDR10（PQ 曲线 + BT.2020 三件套）：
+#: tone-map 滤镜拒绝非 HDR 输入，拿 testsrc2 直接喂它必然失败。
+_NATIVE_TONEMAP_PROBES: dict[str, tuple[str, str]] = {
+    "nvenc": (
+        NVENC_TONEMAP,
+        "format=p010le,setparams=color_primaries=bt2020:color_trc=smpte2084"
+        ":colorspace=bt2020ncl,hwupload_cuda,{filter},scale_cuda=format=yuv420p:w=-2:h=240",
+    ),
 }
 
 #: 后端 → 面向用户的名字。设置页里「vaapi」不如「Intel/AMD 核显」好懂。
@@ -95,6 +114,8 @@ def probe_backends(*, force: bool = False) -> list[HwBackendStatus]:
 
     encoders = _list_encoders()
     _cache = [_probe_one(name, encoders) for name in HW_BACKENDS]
+    for status in _cache:
+        _probe_native_tonemap(status.name, available=status.available)
     usable = [s.name for s in _cache if s.available]
     if usable:
         logger.info("硬件加速自检通过：%s", "、".join(usable))
@@ -131,9 +152,11 @@ def hardware_available() -> bool:
 
 
 def reset_probe_cache() -> None:
-    """测试用：丢掉缓存。"""
+    """测试用：丢掉缓存。回写给装配层的 tone-map 结论也要一并撤销。"""
     global _cache
     _cache = None
+    for name in _NATIVE_TONEMAP_PROBES:
+        register_native_tonemap(name, None)
 
 
 async def probe_backends_async(*, force: bool = False) -> list[HwBackendStatus]:
@@ -185,7 +208,7 @@ def _probe_one(name: str, encoders: frozenset[str]) -> HwBackendStatus:
     if device_problem is not None:
         return status(False, device_problem)
 
-    proc = _run_probe(backend.encoder, name)
+    proc = _run_probe(backend.encoder, _PROBE_FILTERS.get(name, []))
     if proc is None:
         return status(False, "硬件编码探测超时——设备可能被占用或驱动无响应。")
     if proc.returncode == 0:
@@ -193,17 +216,56 @@ def _probe_one(name: str, encoders: frozenset[str]) -> HwBackendStatus:
     return status(False, _explain_failure(proc.stderr.decode(errors="replace")))
 
 
-def _run_probe(encoder: str, name: str) -> subprocess.CompletedProcess[bytes] | None:
+def _run_probe(
+    encoder: str, filters: list[str]
+) -> subprocess.CompletedProcess[bytes] | None:
     argv = [
         "ffmpeg", "-hide_banner", "-v", "error",
         "-f", "lavfi", "-i", _PROBE_SOURCE,
-        *_PROBE_FILTERS.get(name, []),
+        *filters,
         "-c:v", encoder, "-f", "null", "-",
     ]
     try:
         return subprocess.run(argv, capture_output=True, timeout=_PROBE_TIMEOUT)
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return None
+
+
+def _probe_native_tonemap(name: str, *, available: bool) -> None:
+    """确认该后端的原生 tone-map 链能不能真跑起来，结论回写给命令装配层。
+
+    探不到不是错误，只是回到「软件 tone-map + 硬件编解码」：多花 CPU，但
+    HDR 片照样能放。探到了则整条链留在 GPU 上——NVIDIA 用户的 4K HDR 从
+    「CPU 扛 tone-map」变成全程显卡，这是这个探测存在的唯一理由。
+    """
+    entry = _NATIVE_TONEMAP_PROBES.get(name)
+    if entry is None:
+        return
+    filter_expr, chain = entry
+    if not available:
+        register_native_tonemap(name, None)
+        return
+    proc = _run_probe(
+        HW_BACKENDS[name].encoder, ["-vf", chain.format(filter=filter_expr)]
+    )
+    if proc is not None and proc.returncode == 0:
+        register_native_tonemap(name, filter_expr)
+        logger.info(
+            "%s 的原生色调映射可用，HDR 转码全程留在显卡上。",
+            BACKEND_LABELS.get(name, name),
+        )
+        return
+    register_native_tonemap(name, None)
+    reason = (
+        "探测超时"
+        if proc is None
+        else " ".join(proc.stderr.decode(errors="replace").split())[:200]
+    )
+    logger.info(
+        "%s 没有可用的原生色调映射，HDR 片改用软件色调映射（画质一致，多占些 CPU）。原因：%s",
+        BACKEND_LABELS.get(name, name),
+        reason or "（ffmpeg 未给出原因）",
+    )
 
 
 def _device_problem(name: str) -> str | None:
@@ -217,9 +279,11 @@ def _device_problem(name: str) -> str | None:
     if name == "nvenc":
         if not Path("/dev/nvidia0").exists() and not Path("/dev/nvidiactl").exists():
             return (
-                "未检测到 NVIDIA 设备节点。Docker 部署需要安装 NVIDIA Container "
-                "Toolkit，并在 compose 里声明 `deploy.resources.reservations.devices` "
-                "或加 `--gpus all`。"
+                "未检测到 NVIDIA 设备节点。Docker 部署需要先在宿主机装 NVIDIA "
+                "Container Toolkit，再在 compose 里加 `runtime: nvidia` 与 "
+                "`NVIDIA_VISIBLE_DEVICES=all`（或声明 "
+                "`deploy.resources.reservations.devices`、`docker run --gpus all`）。"
+                "注意 NVIDIA 独显不走 /dev/dri，宿主机没有核显时别去挂它。"
             )
         return None
     # vaapi / qsv 都走 /dev/dri

@@ -15,8 +15,11 @@ import pytest
 
 from movieclaw_api.services.playback.ffmpeg_args import (
     MAX_GOP_FRAMES,
+    NVENC_TONEMAP,
     SEGMENT_SECONDS,
     build_hls_command,
+    effective_hw_backend,
+    register_native_tonemap,
 )
 from movieclaw_playback.decide import (
     AudioPlan,
@@ -58,6 +61,14 @@ def argv_of(p: PlaybackPlan, **kwargs) -> list[str]:
 def pair(argv: list[str], flag: str) -> str | None:
     """取某个标志的值；标志不存在返回 None。"""
     return argv[argv.index(flag) + 1] if flag in argv else None
+
+
+@pytest.fixture
+def probed_nvenc_tonemap():
+    """模拟硬件自检真跑通了 tonemap_cuda（CI 里没有 NVIDIA，只能注入结论）。"""
+    register_native_tonemap("nvenc", NVENC_TONEMAP)
+    yield
+    register_native_tonemap("nvenc", None)
 
 
 # ---------------------------------------------------------------------------
@@ -330,8 +341,12 @@ def test_videotoolbox_uses_p010le_bridge_for_10bit_source():
     assert pair(argv, "-vf") == "hwdownload,format=p010le,scale=-2:1080,format=yuv420p"
 
 
-def test_videotoolbox_unknown_bit_depth_uses_software_decode():
-    """未知位深不能猜下载格式，宁可软件解码也不能让 Worker 起空转进程。"""
+def test_videotoolbox_unknown_bit_depth_keeps_hardware_decode():
+    """未知位深不能猜 hwdownload 的格式——但也不必把解码一起丢回 CPU。
+
+    不发 ``-hwaccel_output_format`` 时 ffmpeg 自己把解码帧下载回系统内存，
+    软件 scale 照样接得上，解码仍在 VideoToolbox 上。
+    """
     argv = argv_of(
         plan(
             PlaybackTier.HARDWARE_TRANSCODE,
@@ -340,7 +355,8 @@ def test_videotoolbox_unknown_bit_depth_uses_software_decode():
         hw_backend="videotoolbox",
     )
 
-    assert "-hwaccel" not in argv
+    assert pair(argv, "-hwaccel") == "videotoolbox"
+    assert "-hwaccel_output_format" not in argv  # 要软件帧，不能要硬件帧
     assert pair(argv, "-vf") == "scale=-2:1080"
     assert pair(argv, "-c:v") == "h264_videotoolbox"
 
@@ -382,9 +398,13 @@ def test_vaapi_uses_native_tonemap_filter():
     assert "scale_vaapi" in vf
 
 
-def test_nvenc_without_native_tonemap_falls_back_to_software_chain():
-    """实测：上游 ffmpeg 没有 tonemap_cuda（那是 jellyfin-ffmpeg 的补丁）。
-    此时走软件解码 + 软件 tone-map + 硬件编码，而不是硬凑 hwdownload 链。"""
+def test_nvenc_without_probed_tonemap_uses_software_tonemap_but_keeps_nvdec():
+    """自检没确认 tonemap_cuda 时走软件 tone-map——但解码必须留在 NVDEC。
+
+    ``tonemap_cuda`` 是 jellyfin-ffmpeg 的补丁，上游没有，所以默认不假定它
+    存在。可即便滤镜链落在软件侧，也没有理由把 4K HEVC 10-bit 的解码一起
+    压回 CPU：那是整条链里最贵的一步，NAS 上就是幻灯片。
+    """
     argv = argv_of(
         plan(
             PlaybackTier.HARDWARE_TRANSCODE,
@@ -394,8 +414,96 @@ def test_nvenc_without_native_tonemap_falls_back_to_software_chain():
     )
     vf = pair(argv, "-vf")
     assert vf and "tonemapx=tonemap=bt2390" in vf  # BT.2390 EETF，不是简单 clip
-    assert "-hwaccel" not in argv  # 解码退回软件，滤镜链才接得上
+    assert pair(argv, "-hwaccel") == "cuda"  # 解码仍在显卡上
+    assert "-hwaccel_output_format" not in argv  # 但要软件帧，软件滤镜才接得上
     assert pair(argv, "-c:v") == "h264_nvenc"  # 编码仍然用硬件
+
+
+def test_nvenc_with_probed_tonemap_stays_on_gpu(probed_nvenc_tonemap):
+    """自检真跑通 tonemap_cuda 后，HDR 转码整条链留在显卡上。"""
+    argv = argv_of(
+        plan(
+            PlaybackTier.HARDWARE_TRANSCODE,
+            video=VideoPlan(action="transcode", codec="h264", height=1080, tone_map=True),
+        ),
+        hw_backend="nvenc",
+    )
+    vf = pair(argv, "-vf")
+    assert vf and vf.startswith("tonemap_cuda=")
+    assert "tonemapx" not in vf
+    assert vf.count("bt709") >= 3  # 三件套一项都不能少（issue #331）
+    assert pair(argv, "-hwaccel") == "cuda"
+    assert pair(argv, "-hwaccel_output_format") == "cuda"  # 全程硬件帧
+    assert "scale_cuda=format=yuv420p:w=-2:h=1080" in vf
+
+
+@pytest.mark.parametrize(
+    "backend, expected",
+    [
+        ("vaapi", "scale_vaapi=format=nv12:w=-2:h=1080"),
+        ("qsv", "scale_qsv=format=nv12:w=-2:h=1080"),
+        ("nvenc", "scale_cuda=format=yuv420p:w=-2:h=1080"),
+    ],
+)
+def test_hardware_scale_pins_eight_bit_output(backend, expected):
+    """10-bit 的 SDR 源必须在硬件 scale 上钉死 8-bit，否则整片编不出来。
+
+    动漫的 HEVC 10-bit SDR 压制极常见：它不是 HDR，不进 tone-map 分支，
+    硬件帧的 sw_format 会一路保持 p010 送进 H.264 编码器——而 NVENC /
+    VAAPI / QSV 的 H.264 都只吃 8-bit，滤镜协商又不会在硬件帧之间插格式
+    转换，结果是硬件档直接失败、用户被弹窗问「要不要开软件转码」。
+    软件档的 ``-pix_fmt yuv420p``（2026-08-25 真机事故）是同一个坑。
+    """
+    argv = argv_of(
+        plan(
+            PlaybackTier.HARDWARE_TRANSCODE,
+            video=VideoPlan(
+                action="transcode", codec="h264", height=1080, source_bit_depth=10
+            ),
+        ),
+        hw_backend=backend,
+    )
+    assert expected in (pair(argv, "-vf") or "")
+
+
+@pytest.mark.parametrize("backend", ["vaapi", "qsv", "nvenc", "videotoolbox"])
+def test_color_convert_never_feeds_software_filter_hardware_frames(backend):
+    """``colorspace`` 是软件滤镜，绝不能排在硬件帧前面。
+
+    BT.2020 的 SDR 源不进 tone-map 分支，却照样要插 ``colorspace``。把它排在
+    ``scale_cuda`` / ``scale_vaapi`` 之前，就是让软件滤镜去吃硬件帧——ffmpeg
+    不会自动插 hwdownload，整条命令起不来。要么整条链落到软件侧（解码仍在
+    硬件上），要么这个后端根本不该被选中。
+    """
+    p = plan(
+        PlaybackTier.HARDWARE_TRANSCODE,
+        video=VideoPlan(
+            action="transcode", codec="h264", height=1080, source_color="BT.2020"
+        ),
+    )
+    if effective_hw_backend(p, backend) is None:
+        return  # 吃不了软件帧的后端（VAAPI/QSV）诚实退出，交给统一降档
+    argv = argv_of(p, hw_backend=backend)
+    vf = pair(argv, "-vf") or ""
+    assert vf.startswith("colorspace=")
+    assert "-hwaccel_output_format" not in argv  # 拿的是软件帧
+    assert "scale_cuda" not in vf and "scale_vaapi" not in vf and "scale_qsv" not in vf
+
+
+@pytest.mark.parametrize("backend", ["vaapi", "qsv"])
+def test_color_convert_drops_backends_that_cannot_take_software_frames(backend):
+    """VAAPI/QSV 的编码器吃不了软件帧，滤镜链落软件侧时必须整体退出。
+
+    与烧录同一条规则。报一个实际用不上的后端名，只会让路由层把一条装不
+    起来的命令交给 ffmpeg，用户看到的是分片 404 而不是明确的降档。
+    """
+    p = plan(
+        PlaybackTier.HARDWARE_TRANSCODE,
+        video=VideoPlan(
+            action="transcode", codec="h264", height=1080, source_color="BT.2020"
+        ),
+    )
+    assert effective_hw_backend(p, backend) is None
 
 
 def test_tone_map_uses_bt2390_not_clip():
@@ -771,9 +879,10 @@ def test_burn_forces_software_pipeline_for_vaapi():
 
 
 def test_burn_keeps_nvenc_encoder_on_software_frames():
-    """NVENC 编码器接系统内存帧没问题：软件解码+overlay，硬件编码。"""
+    """NVENC 编码器接系统内存帧没问题：硬件解码 → overlay → 硬件编码。"""
     argv = argv_of(_burn_plan(), hw_backend="nvenc")
-    assert "-hwaccel" not in argv  # 解码侧仍是软件（滤镜链在软件侧）
+    assert pair(argv, "-hwaccel") == "cuda"  # 解码留在显卡上
+    assert "-hwaccel_output_format" not in argv  # overlay 要软件帧
     assert "h264_nvenc" in argv
 
 
@@ -788,7 +897,7 @@ def test_no_burn_keeps_plain_vf_path():
     )
     assert "-filter_complex" not in argv
     assert "0:v:0" in [argv[i + 1] for i, a in enumerate(argv) if a == "-map"]
-    assert "scale_vaapi=w=-2:h=720" in " ".join(argv)
+    assert "scale_vaapi=format=nv12:w=-2:h=720" in " ".join(argv)
 
 
 # ---------------------------------------------------------------------------

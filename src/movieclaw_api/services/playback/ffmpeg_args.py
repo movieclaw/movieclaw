@@ -158,14 +158,28 @@ _DOWNMIX_PAN = (
 )
 
 
+#: NVIDIA 的原生 HDR→SDR 色调映射滤镜。**不写死进 HW_BACKENDS**：
+#: ``tonemap_cuda`` 是 jellyfin-ffmpeg 的补丁，上游 ffmpeg 没有，而本项目
+#: 除官方镜像外还有源码部署（用发行版 ffmpeg）。由硬件自检真跑一遍这条链
+#: 确认可用后回写（``register_native_tonemap``），探不到就维持
+#: 「软件 tone-map + 硬件编解码」的老路——多花些 CPU，但不会整片放不了。
+#:
+#: 参数与软件档 ``_SOFTWARE_TONEMAP`` 对齐：BT.2390 EETF + 落到 BT.709 的
+#: 三件套 + 8-bit 输出。三件套一项都不能少，理由见 VAAPI 那条注释。
+NVENC_TONEMAP = (
+    "tonemap_cuda=tonemap=bt2390:desat=0:p=bt709:t=bt709:m=bt709:format=yuv420p"
+)
+
+
 @dataclass(frozen=True)
 class HwBackend:
     """一个硬件加速后端的参数三件套。
 
-    ``tonemap_filter`` 为 None 表示该后端在**上游 ffmpeg** 里没有原生色调映射
-    滤镜（实测：``tonemap_cuda`` 不在上游，是 jellyfin-ffmpeg 的补丁）。这种
-    情况下退回「软件解码 + 软件 tone-map + 硬件编码」，而不是硬凑一条
-    hwdownload/hwupload 的链子——后者在不同驱动上碎得厉害。
+    ``tonemap_filter`` 为 None 表示该后端没有**恒定可用**的原生色调映射滤镜
+    （NVIDIA 的 ``tonemap_cuda`` 要靠自检确认，见 ``NVENC_TONEMAP``）。这种
+    情况下滤镜链退回软件侧，而不是硬凑一条 hwdownload/hwupload 的链子——
+    后者在不同驱动上碎得厉害。注意**解码依然留在硬件上**（只是不再要求
+    输出硬件帧），见 ``build_hls_command`` 里 ``-hwaccel`` 的发法。
     """
 
     name: str
@@ -174,6 +188,12 @@ class HwBackend:
     hwaccel_output_format: str | None = None
     scale_filter: str | None = None  # 形如 "scale_vaapi"；None=用软件 scale
     tonemap_filter: str | None = None
+    #: 硬件 scale 滤镜的输出像素格式。**必须显式钉死 8-bit**：10-bit 的 SDR
+    #: 源（动漫 HEVC 压制极常见）不触发 tone-map，硬件帧的 sw_format 会一路
+    #: 保持 p010 送进 H.264 编码器，而 NVENC / VAAPI / QSV 的 H.264 都只吃
+    #: 8-bit，实测直接报错退出（滤镜自动协商不会在硬件帧之间插格式转换）。
+    #: 软件档的 ``-pix_fmt yuv420p`` 就是同一个坑的对应兜底。
+    scale_format: str | None = None
     device: str | None = None
     #: 编码器能否直接吃系统内存帧。烧录（overlay 是软件滤镜）会把整条滤镜链
     #: 拉回软件侧：NVENC / VideoToolbox 的编码器接软件帧没问题；VAAPI / QSV
@@ -193,6 +213,7 @@ HW_BACKENDS: dict[str, HwBackend] = {
         # 原色与矩阵，播放器照标签做色域扩展——实测渲染差平均 13.4/255、
         # 最高 90，观感是整体偏红发品（issue #331）。
         tonemap_filter="tonemap_vaapi=format=nv12:t=bt709:m=bt709:p=bt709",
+        scale_format="nv12",
         device="/dev/dri/renderD128",
         sw_frames_ok=False,
     ),
@@ -207,6 +228,7 @@ HW_BACKENDS: dict[str, HwBackend] = {
             "vpp_qsv=tonemap=1:format=nv12:out_color_transfer=bt709"
             ":out_color_matrix=bt709:out_color_primaries=bt709"
         ),
+        scale_format="nv12",
     ),
     "nvenc": HwBackend(
         name="nvenc",
@@ -214,7 +236,8 @@ HW_BACKENDS: dict[str, HwBackend] = {
         hwaccel="cuda",
         hwaccel_output_format="cuda",
         scale_filter="scale_cuda",
-        tonemap_filter=None,  # 上游没有 tonemap_cuda，见类文档
+        tonemap_filter=None,  # tonemap_cuda 由自检确认后回写，见 NVENC_TONEMAP
+        scale_format="yuv420p",
         sw_frames_ok=True,
     ),
     "videotoolbox": HwBackend(
@@ -230,19 +253,80 @@ HW_BACKENDS: dict[str, HwBackend] = {
 }
 
 
+#: 后端名 → 经硬件自检确认可用的原生 tone-map 滤镜。见 ``NVENC_TONEMAP``。
+_PROBED_TONEMAP: dict[str, str] = {}
+
+
+def register_native_tonemap(backend: str, filter_expr: str | None) -> None:
+    """自检确认某后端的原生 tone-map 滤镜可用（或不再可用）。
+
+    由 ``hwprobe`` 在真跑过一遍滤镜链后调用，是**能力探测唯一的写入口**。
+    装配层自己不跑 ffmpeg：命令装配必须是纯函数，才能被表驱动单测钉住。
+    """
+    if filter_expr:
+        _PROBED_TONEMAP[backend] = filter_expr
+    else:
+        _PROBED_TONEMAP.pop(backend, None)
+
+
+def native_tonemap_filter(backend: HwBackend) -> str | None:
+    """该后端这次能用的原生 tone-map 滤镜；None=只能走软件 tone-map。"""
+    return _PROBED_TONEMAP.get(backend.name, backend.tonemap_filter)
+
+
+def _needs_software_filters(
+    plan: PlaybackPlan, backend: HwBackend | None, *, burn: bool
+) -> bool:
+    """这条计划的滤镜链是不是必须落到软件侧（帧在系统内存里）。
+
+    三种来源，都是「这一步只有软件滤镜做得了」：
+
+    1. 烧录字幕——``overlay`` 是软件滤镜；
+    2. 要 tone-map 但该后端没有可用的原生滤镜（见 ``native_tonemap_filter``）；
+    3. 要色彩空间转换——``colorspace`` 同样是软件滤镜。**这条最容易漏**：
+       BT.2020 的 SDR 源（10-bit 压制常见）不进 tone-map 分支，却照样要插
+       ``colorspace``，把它排在 ``scale_cuda`` / ``scale_vaapi`` 前面就是让
+       软件滤镜去吃硬件帧——ffmpeg 不会自动插 hwdownload，整条命令直接失败。
+
+    VideoToolbox 还多一条：位深未知时无法安全选择 ``hwdownload`` 的格式
+    （见 ``_filter_chain``），同样按软件滤镜处理。
+
+    ``burn`` 由调用方给：装配层用的是解析后的轨道序号（解析不出来就不烧），
+    决策层只有计划字段，两者不能互相假定。
+    """
+    if burn:
+        return True
+    if plan.video.tone_map and (
+        backend is None or native_tonemap_filter(backend) is None
+    ):
+        return True
+    if _color_convert_filter(plan) is not None:
+        return True
+    return (
+        backend is not None
+        and backend.name == "videotoolbox"
+        and bool(plan.video.height)
+        and plan.video.source_bit_depth not in (8, 10)
+    )
+
+
 def effective_hw_backend(plan: PlaybackPlan, hw_backend: str | None) -> str | None:
     """这次会话**实际**用哪个硬件后端。
 
-    烧录（``video.burn_subtitle``）把滤镜链拉回软件侧，编码器吃不了软件帧的
-    后端（VAAPI/QSV）退回软件编码。诊断面板的 ``hw_backend`` 必须走这里——
-    报一个实际没用上的后端名，用户查「为什么转码这么卡」时会被带偏。
+    滤镜链被拉回软件侧时（烧录、软件 tone-map、色彩空间转换），编码器吃不了
+    软件帧的后端（VAAPI/QSV）退回软件编码。诊断面板的 ``hw_backend`` 必须走
+    这里——报一个实际没用上的后端名，用户查「为什么转码这么卡」时会被带偏；
+    路由层也据此判断硬件档还能不能执行（不能就走统一降档，而不是让 ffmpeg
+    带着一条装不起来的滤镜链去失败）。
     """
     if plan.video.action != "transcode" or hw_backend is None:
         return None if plan.video.action != "transcode" else hw_backend
     backend = HW_BACKENDS.get(hw_backend)
     if backend is None:
         return None
-    if plan.video.burn_subtitle is not None and not backend.sw_frames_ok:
+    if not backend.sw_frames_ok and _needs_software_filters(
+        plan, backend, burn=plan.video.burn_subtitle is not None
+    ):
         return None
     return hw_backend
 
@@ -284,20 +368,9 @@ def build_hls_command(
         HW_BACKENDS.get(effective_hw_backend(plan, hw_backend) or "") if transcoding_video else None
     )
     burn_index = _burn_subtitle_index(plan) if transcoding_video else None
-    videotoolbox_unknown_bit_depth = (
-        backend is not None
-        and backend.name == "videotoolbox"
-        and bool(plan.video.height)
-        and plan.video.source_bit_depth not in (8, 10)
+    software_filters = transcoding_video and _needs_software_filters(
+        plan, backend, burn=burn_index is not None
     )
-    # 需要 tone-map 但该后端没有原生滤镜，或要烧录字幕（overlay 是软件滤镜）
-    # → 走软件解码，让软件滤镜链能接上。VideoToolbox 只有软件 scale 时不在
-    # 这里回退：_filter_chain 会按源位深显式下载 videotoolbox_vld 帧后再缩放，
-    # 保留硬解；位深未知或不是 8/10 时无法安全选择下载格式，回退软件解码。
-    software_filters = burn_index is not None or (
-        bool(plan.video.tone_map)
-        and (backend is None or backend.tonemap_filter is None)
-    ) or videotoolbox_unknown_bit_depth
 
     # -ss 必须在 -i 之前：input seek 快得多（不用解码到该点）
     if start_ms > 0:
@@ -320,9 +393,14 @@ def build_hls_command(
         "-readrate", str(READRATE_COPY if not transcoding_video else READRATE),
         "-readrate_initial_burst", str(READRATE_BURST_SECONDS),
     ]
-    if backend and backend.hwaccel and not software_filters:
+    if backend and backend.hwaccel:
+        # 解码**恒定留在硬件上**，哪怕滤镜链是软件的：不发
+        # ``-hwaccel_output_format`` 时 ffmpeg 自己把解码帧下载回系统内存，
+        # 软件滤镜照样接得上，而最贵的那步（4K HEVC 10-bit 解码）不再压回
+        # CPU——NAS 上 CPU 软解 4K 就是幻灯片，用户体感是「插了显卡还是卡」。
+        # 硬解初始化不了时 ffmpeg 会自行退回软解，不需要我们再兜一层。
         argv += ["-hwaccel", backend.hwaccel]
-        if backend.hwaccel_output_format:
+        if backend.hwaccel_output_format and not software_filters:
             argv += ["-hwaccel_output_format", backend.hwaccel_output_format]
         if backend.device:
             argv += ["-hwaccel_device", backend.device]
@@ -533,10 +611,12 @@ def _filter_chain(
     parts: list[str] = []
     height = plan.video.height
     if plan.video.tone_map:
-        if backend is not None and backend.tonemap_filter and not software_filters:
-            parts.append(backend.tonemap_filter)
-        else:
-            parts.append(_SOFTWARE_TONEMAP)
+        native = (
+            native_tonemap_filter(backend)
+            if backend is not None and not software_filters
+            else None
+        )
+        parts.append(native or _SOFTWARE_TONEMAP)
     else:
         # 非 HDR 的非 709 源同样要显式转换，scale 不会替我们做
         convert = _color_convert_filter(plan)
@@ -544,7 +624,12 @@ def _filter_chain(
             parts.append(convert)
     if height:
         if backend is not None and backend.scale_filter and not software_filters:
-            parts.append(f"{backend.scale_filter}=w=-2:h={height}")
+            # format 必须写在硬件 scale 上：10-bit 源的硬件帧不会自己变成
+            # 8-bit，而 H.264 的硬件编码器只吃 8-bit（见 scale_format）。
+            opts = f"w=-2:h={height}"
+            if backend.scale_format:
+                opts = f"format={backend.scale_format}:{opts}"
+            parts.append(f"{backend.scale_filter}={opts}")
         else:
             # -2 保持宽高比并对齐到偶数（编码器要求）
             if backend is not None and backend.name == "videotoolbox" and not software_filters:

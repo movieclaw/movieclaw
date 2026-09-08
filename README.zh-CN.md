@@ -205,12 +205,18 @@ services:
       # - /volume2/movies:/movies
     environment:
       - TZ=Asia/Shanghai
-    # 想用核显 / 独显做硬件转码？先在宿主上 `ls /dev/dri` 确认它存在（ARM 机型、
-    # 纯 CPU 主机通常没有）。不存在却打开下面两行，容器会被重建然后起不来，
-    # 只留一句英文 no such file or directory。不确定就先别动：装好后首启日志
-    # 会直接告诉你能不能硬解、缺什么。
+      # NVIDIA 独显做硬件转码时，与下面的 runtime: nvidia 配套打开这两行：
+      # - NVIDIA_VISIBLE_DEVICES=all
+      # - NVIDIA_DRIVER_CAPABILITIES=all
+    # 想用 Intel / AMD 核显做硬件转码？先在宿主上 `ls /dev/dri` 确认它存在
+    # （ARM 机型、纯 CPU 主机通常没有）。不存在却打开下面两行，容器会被重建
+    # 然后起不来，只留一句英文 no such file or directory。
     # devices:
     #   - /dev/dri:/dev/dri
+    # 用 NVIDIA 独显？它**不走 /dev/dri**，没有核显就别去挂那个（挂了必起不来）。
+    # 宿主先装好 NVIDIA Container Toolkit，再打开下面这行：
+    # runtime: nvidia
+    # 不确定就先别动：装好后首启日志会直接告诉你能不能硬解、缺什么。
     restart: unless-stopped
 ```
 

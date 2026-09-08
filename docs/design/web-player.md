@@ -1516,8 +1516,27 @@ Mac mini 验证。做成发版前的人工清单，列进 `.claude/skills/releas
   发现决策引擎的 `VideoPlan(action="copy")` 原先不带 codec，导致这个标签
   **永远打不上**——根因已修（copy 也记录流经的编码）。
 - **上游 ffmpeg 没有 `tonemap_cuda`**（`tonemap_vaapi` / `tonemap_opencl` /
-  `libplacebo` 都有），印证了 §5.3 关于 jellyfin-ffmpeg 补丁的说法。命令装配
-  据此在无原生滤镜的后端上退回「软件解码 + 软件 tone-map + 硬件编码」。
+  `libplacebo` 都有），印证了 §5.3 关于 jellyfin-ffmpeg 补丁的说法。但官方镜像
+  装的就是 jellyfin-ffmpeg（§12.14），补丁在容器里是有的——所以**不按构建假定，
+  由硬件自检真跑一遍这条链**（`hwprobe._probe_native_tonemap`，探测链与真实
+  转码链同构）：跑通就整条链留在 GPU 上，跑不通就退回软件 tone-map。这是全项目
+  唯一一处运行期 ffmpeg 能力探测，理由是它有真实的双形态（官方镜像有补丁、
+  源码部署多半没有），而 §12.14 那条「不做能力探测降级」针对的是恒定内置的
+  `tonemapx`。
+- **软件滤镜链不等于软件解码**。以前只要滤镜链落到软件侧（软件 tone-map、
+  烧录字幕、色彩空间转换），`-hwaccel` 整个不发，4K HEVC 10-bit 的解码被压回
+  CPU——NAS 上就是幻灯片，而用户以为自己的显卡在干活。现在恒发 `-hwaccel`，
+  只在需要软件帧时不发 `-hwaccel_output_format`，由 ffmpeg 自己把解码帧下载
+  回系统内存。
+- **硬件 scale 必须钉死输出像素格式**（`scale_cuda=format=yuv420p` /
+  `scale_vaapi=format=nv12` / `scale_qsv=format=nv12`）。10-bit 的 SDR 源不进
+  tone-map 分支，硬件帧的 sw_format 一路保持 p010，而三家的 H.264 编码器都只吃
+  8-bit，滤镜协商又不会在硬件帧之间插格式转换——软件档的 `-pix_fmt yuv420p`
+  是同一个坑的对应兜底。
+- **`colorspace` 是软件滤镜，不能排在硬件帧前面**。BT.2020 的 SDR 源要插它
+  （§7-④e / issue #331），此时整条滤镜链落软件侧；吃不了软件帧的 VAAPI/QSV
+  按与烧录同一条规则整体退出硬件档，交给统一降档，而不是让 ffmpeg 带着一条
+  装不起来的链子去失败。
 
 ### 12.4 与本文的偏离
 
