@@ -13,6 +13,7 @@ import {
   DENSITY,
   layoutMasonry,
   layoutSparseRow,
+  useTileWindow,
   type DensitySpec,
   type PhotoWallDensity,
 } from "@/components/photo-wall";
@@ -219,78 +220,6 @@ function detailHref(entry: GalleryEntry): Route {
   return `${base}${unit}` as Route;
 }
 
-/**
- * 提前取图的距离：约一屏半。
- *
- * 瓦片带 ``content-visibility:auto``，子树被跳过时 ``<img loading="lazy">`` 不做
- * 相交判定（根因见 poster-image.tsx 顶部的长注释），实际要等瓦片自己解除跳过
- * ——大约只提前半屏——才发第一个请求。图廊的图又比海报大，滑快一点就是一路
- * 黑格，图追在人后面。这里提前一屏半开始取，滑到时基本已经就位。
- */
-const PREFETCH_MARGIN = "1200px 0px";
-
-/**
- * 一面墙一个 IntersectionObserver，观察**瓦片本体**：瓦片有显式宽高、自己不被
- * 跳过，相交判定照常工作（被跳过的是它的子树）。进入提前量的瓦片切成 eager。
- *
- * 标记只加不减——图取过就不必再管，命中即 ``unobserve``；一次滑动会连着命中
- * 几十张，合并到下一帧统一提交，不一张一次 setState。分组模式下每段墙各持
- * 一个观察器：段与段互不影响，某一段有图进场时不必惊动整墙重渲染。
- */
-function useTilePrefetch() {
-  const [near, setNear] = useState<ReadonlySet<string>>(() => new Set());
-  const observerRef = useRef<IntersectionObserver | null>(null);
-  const pending = useRef<Set<string>>(new Set());
-  const flush = useRef(0);
-
-  const getObserver = useCallback(() => {
-    if (observerRef.current || typeof IntersectionObserver === "undefined") {
-      return observerRef.current;
-    }
-    observerRef.current = new IntersectionObserver(
-      (records) => {
-        for (const record of records) {
-          if (!record.isIntersecting) continue;
-          const key = (record.target as HTMLElement).dataset.galleryTileId;
-          if (key) pending.current.add(key);
-          observerRef.current?.unobserve(record.target);
-        }
-        if (pending.current.size > 0 && !flush.current) {
-          flush.current = requestAnimationFrame(() => {
-            flush.current = 0;
-            setNear((current) => new Set([...current, ...pending.current]));
-            pending.current.clear();
-          });
-        }
-      },
-      { rootMargin: PREFETCH_MARGIN },
-    );
-    return observerRef.current;
-  }, []);
-
-  useEffect(
-    () => () => {
-      observerRef.current?.disconnect();
-      observerRef.current = null;
-      if (flush.current) cancelAnimationFrame(flush.current);
-    },
-    [],
-  );
-
-  // 瓦片的 ref：挂上即观察，卸载时（React 19 的 ref 清理）取消观察
-  const observe = useCallback(
-    (node: HTMLElement | null) => {
-      if (!node) return;
-      const observer = getObserver();
-      observer?.observe(node);
-      return () => observer?.unobserve(node);
-    },
-    [getObserver],
-  );
-
-  return { near, observe };
-}
-
 export function VideoGalleryWall({
   groups,
   density,
@@ -359,6 +288,11 @@ export function VideoGalleryWall({
  * 一面瀑布流：分组模式下是一部作品的图，不分组时是整库的图。
  *
  * ``start`` 是本面墙第一张在铺平列表里的下标——瓦片点击要给灯箱全局下标。
+ *
+ * 与相册墙同一套虚拟化（``useTileWindow``）：只挂视口上下各一屏半以内的瓦片。
+ * 不分组时整库的图排在一面墙上，几千张全挂就是几千个 DOM 节点、几百 MB 解码
+ * 位图；挂上来的瓦片本来就在视口附近，图直接 eager 取，原先那个提前量观察器
+ * （useTilePrefetch）也就不需要了。
  */
 const GalleryTiles = memo(function GalleryTiles({
   entries,
@@ -373,7 +307,6 @@ const GalleryTiles = memo(function GalleryTiles({
   spec: DensitySpec;
   onOpen: (index: number) => void;
 }) {
-  const { near, observe } = useTilePrefetch();
   const layout = useMemo(() => {
     const aspects = entries.map((entry) => entry.image.aspect);
     const masonry = layoutMasonry(aspects, width, spec.column, spec.gap, spec.minColumns);
@@ -382,19 +315,19 @@ const GalleryTiles = memo(function GalleryTiles({
       ? layoutSparseRow(aspects, width, spec.column, spec.gap)
       : masonry;
   }, [entries, width, spec]);
+  const tilesRef = useRef<HTMLDivElement>(null);
+  const [from, to] = useTileWindow(tilesRef, layout.placements);
+  const visible = useMemo(() => entries.slice(from, to), [entries, from, to]);
   return (
-    <div className="relative" style={{ height: layout.height }}>
-      {entries.map(({ group, image }, i) => {
-        const placement = layout.placements[i];
-        const key = tileKey(group, image);
+    <div ref={tilesRef} className="relative" style={{ height: layout.height }}>
+      {visible.map(({ group, image }, i) => {
+        const placement = layout.placements[from + i];
         return (
           <GalleryTile
-            key={key}
+            key={tileKey(group, image)}
             group={group}
             image={image}
-            index={start + i}
-            preload={near.has(key)}
-            observe={observe}
+            index={start + from + i}
             x={placement.x}
             y={placement.y}
             width={placement.width}
@@ -456,8 +389,6 @@ const GalleryTile = memo(function GalleryTile({
   group,
   image,
   index,
-  preload,
-  observe,
   x,
   y,
   width,
@@ -469,10 +400,6 @@ const GalleryTile = memo(function GalleryTile({
   image: LibraryGalleryImage;
   /** 本瓦片在铺平列表里的全局下标：灯箱按同一列表翻页 */
   index: number;
-  /** 已进入提前量，图直接取（见 useTilePrefetch） */
-  preload: boolean;
-  /** 把瓦片交给墙上那个共享观察器 */
-  observe: (node: HTMLElement | null) => (() => void) | void;
   x: number;
   y: number;
   width: number;
@@ -481,11 +408,10 @@ const GalleryTile = memo(function GalleryTile({
   onOpen: (index: number) => void;
 }) {
   return (
-    // 与相册墙的瓦片同一套：绝对定位 + transform 重排走过渡，content-visibility
-    // 让视口外的瓦片跳过绘制
+    // 与相册墙的瓦片同一套：绝对定位 + transform 重排走过渡；视口外的瓦片
+    // 根本不挂（虚拟化），不再需要 content-visibility 去跳过绘制
     <button
       type="button"
-      ref={observe}
       // 滚动恢复的锚点（见 lib/use-scroll-restoration.ts）：离开这一屏时记下
       // 首个可见瓦片，返回时按它回位。纯像素位在窗口宽度变过（转屏、缩窗口）
       // 之后会错行——masonry 重排后同一个 y 已经不是同一批图了
@@ -495,7 +421,7 @@ const GalleryTile = memo(function GalleryTile({
       data-gallery-item-id={group.media_item_id}
       aria-label={`查看 ${group.title} · ${image.label}${group.is_favorite ? "（已收藏）" : ""}`}
       onClick={() => onOpen(index)}
-      className="group/tile absolute left-0 top-0 block overflow-hidden rounded-xl bg-[#141824] text-left shadow-[0_8px_22px_rgba(0,0,0,0.35)] ring-1 ring-white/[0.07] transition-[transform,width,height,box-shadow] duration-300 ease-out [content-visibility:auto] hover:z-[2] hover:shadow-[0_18px_44px_rgba(0,0,0,0.6)] hover:ring-white/25 focus-visible:z-[2] focus-visible:ring-2 focus-visible:ring-[var(--accent)] motion-reduce:transition-none"
+      className="group/tile absolute left-0 top-0 block overflow-hidden rounded-xl bg-[#141824] text-left shadow-[0_8px_22px_rgba(0,0,0,0.35)] ring-1 ring-white/[0.07] transition-[transform,width,height,box-shadow] duration-300 ease-out hover:z-[2] hover:shadow-[0_18px_44px_rgba(0,0,0,0.6)] hover:ring-white/25 focus-visible:z-[2] focus-visible:ring-2 focus-visible:ring-[var(--accent)] motion-reduce:transition-none"
       style={{
         transform: `translate(${Math.round(x)}px, ${Math.round(y)}px)`,
         width: Math.round(width),
@@ -510,7 +436,7 @@ const GalleryTile = memo(function GalleryTile({
         src={imageUrl(image.url, spec.variant ?? "gallery-tile")}
         alt={`${group.title} · ${image.label}`}
         pulseWhileLoading
-        preload={preload}
+        preload
         className="absolute inset-0 size-full object-cover transition-transform duration-500 ease-out group-hover/tile:scale-[1.04] motion-reduce:transition-none"
       />
       {/* 收藏是唯一的常驻角标：它是**状态**不是分类文案，不认标签也认得这颗心，

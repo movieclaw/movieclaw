@@ -23,7 +23,7 @@ export function PosterImage({
   className = "",
   fallback,
   pulseWhileLoading = false,
-  preload = false,
+  preload,
 }: {
   /** 图片地址；为空时直接渲染占位 */
   src?: string | null;
@@ -39,10 +39,17 @@ export function PosterImage({
    */
   pulseWhileLoading?: boolean;
   /**
-   * 外部已判定这张图快进视口了（大图墙用一个共享的 IntersectionObserver 提前
-   * 判，见 video-gallery.tsx），直接 eager 取图，不等原生懒加载——瓦片带
-   * content-visibility 时原生懒加载要等瓦片解除跳过（约半屏前）才发请求，
-   * 滑快一点图就一路追在人后面。详见下面「懒加载失灵兜底」的注释。
+   * 取图时机由调用方接管：``true`` 立刻取，``false`` 先不取。
+   *
+   * **传了它（不论真假），本组件就不再自己探测视口**——瀑布流的墙自己就知道
+   * 哪几块该挂（photo-wall.tsx 的 useTileWindow 按算好的坐标切窗口），不需要
+   * 再逐张问一遍。这一条很要紧：下面那段兜底探测每张图要读一次
+   * ``getBoundingClientRect()``，而在 ``content-visibility:auto`` 的格子里每读
+   * 一次就逼浏览器做一次全量布局——实测 3000 张图触发 2981 次布局、挂载时间
+   * 是不读的 3 倍（0.6s → 1.9s）。
+   *
+   * 不传（海报墙、横滚行等还带 content-visibility 的调用方）保持原样：自己探测，
+   * 该 eager 时翻 eager。
    */
   preload?: boolean;
 }) {
@@ -69,6 +76,8 @@ export function PosterImage({
     setLoaded(imgRef.current?.complete ?? false);
   }, [src]);
   useEffect(() => {
+    // 调用方接管了取图时机：不探测，也就不会有那次强制布局（见 preload 的说明）
+    if (preload !== undefined) return;
     let raf = 0;
     const kickOrRetry = () => {
       const img = imgRef.current;
@@ -101,7 +110,7 @@ export function PosterImage({
     };
     schedule();
     return () => cancelAnimationFrame(raf);
-  }, [src]);
+  }, [src, preload]);
   if (!src || broken) {
     return (
       fallback ?? (

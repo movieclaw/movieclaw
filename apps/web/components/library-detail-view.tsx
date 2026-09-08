@@ -881,11 +881,16 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   );
   // 单区时列宽跟着实际形态走：其他库里全是海报就用电影库的窄列
   const wideWall = wallGroups ? wallGroups.posters.length === 0 : wideCards;
-  // 这一格正被后台处理时的文案（整库刷新阶段 / 单条目任务 / 扫描补探）
-  const workingLabelOf = (item: LibraryItem) =>
-    refreshPhaseById.get(item.media_item_id) ??
-    jobPhaseById.get(item.media_item_id) ??
-    (probing && item.probe_pending_count > 0 ? "正在读取规格" : undefined);
+  // 这一格正被后台处理时的文案（整库刷新阶段 / 单条目任务 / 扫描补探）。
+  // 必须是稳定引用：相册墙把它一路传到每个月份段，每次渲染换一个新函数就会
+  // 击穿下游所有 memo——库页光是滚动联动与后台轮询就会重渲几十次
+  const workingLabelOf = useCallback(
+    (item: LibraryItem) =>
+      refreshPhaseById.get(item.media_item_id) ??
+      jobPhaseById.get(item.media_item_id) ??
+      (probing && item.probe_pending_count > 0 ? "正在读取规格" : undefined),
+    [refreshPhaseById, jobPhaseById, probing],
+  );
   const initialByOffset = useMemo(
     () => new Map(wallIndex.map((entry) => [entry.offset, entry.initial])),
     [wallIndex],

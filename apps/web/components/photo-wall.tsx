@@ -1,10 +1,20 @@
 "use client";
 
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type RefObject,
+} from "react";
 
 import { PosterImage } from "@/components/poster-image";
 import type { LibraryItem } from "@/lib/api/libraries";
 import { imageUrl, type ImageVariant } from "@/lib/image-proxy";
+import { tileWindowRange } from "@/lib/wall-window";
 
 /**
  * 图片库的瀑布流墙（docs/design/library-photo-kind.md 3.2）。
@@ -20,7 +30,10 @@ import { imageUrl, type ImageVariant } from "@/lib/image-proxy";
  *   - **按月分组**：照片库的第一心智是"什么时候拍的"，整库一条瀑布流会把顺序
  *     打散；每个月一段标题 + 一面墙，段内再走最短列。月份来自条目的
  *     `release_date`（EXIF 拍摄日），与服务端的月份索引同一口径；
- *   - 瓦片绝对定位 + transform，密度切换 / 窗口变宽时重排走 CSS 过渡。
+ *   - 瓦片绝对定位 + transform，密度切换 / 窗口变宽时重排走 CSS 过渡；
+ *   - **只挂视口附近的瓦片**（虚拟化，见 useTileWindow）：几千张照片的库里，
+ *     整墙上墙意味着几千个 DOM 节点、几千张解码位图，滑到后面手机就撑不住了。
+ *     位置在渲染前已经算好，段的高度是显式的，虚拟化不需要任何测量。
  *
  * 数据仍是分页追加的（与海报墙同一套 loadMore），布局对已加载部分是最终的：
  * 后追加的条目只会落在同月末尾或新的月份段里，前面的瓦片不动。
@@ -159,6 +172,97 @@ export function layoutSparseRow(
     return placement;
   });
   return { placements, height: ratios.length === 0 ? 0 : height };
+}
+
+/* —— 瀑布流的虚拟化 ——
+ *
+ * 几千张照片的库里，「整墙都上墙」在手机上是撑不住的：一张瓦片是一个 <button>
+ * ＋ 一个 <img> ＋两层浮层，5000 张就是三万多个 DOM 节点；滑过的图还全留着
+ * 解码位图（实测滑 40 屏后 366MB 的解码内存）。而人只看当前这一屏。
+ *
+ * 这面墙做虚拟化几乎不用付代价：位置在渲染前就由 layoutMasonry 算好了，段的
+ * 高度是显式写在 style 上的，挂不挂瓦片都不影响滚动条与滚动位置。区间算术
+ * 在 lib/wall-window.ts（可单测），这里只负责「什么时候重算」。
+ */
+
+/** 视口上下各多挂这么多屏：快速滑动时不至于露出空档，图也有提前量去取 */
+const OVERSCAN_SCREENS = 1.5;
+
+/**
+ * 一面墙上所有段共用的滚动广播。
+ *
+ * 每段各自监听 scroll 的话，几十段就是几十个监听器与几十次 rAF。这里合成一个：
+ * 用**捕获阶段**监听 window 的 scroll——库页真正滚动的是内部容器，scroll 事件
+ * 不冒泡，只有捕获收得到；这样也不必把滚动容器一路传进每一段。
+ */
+const wallWatchers = new Set<() => void>();
+let wallFrame = 0;
+function notifyWallWatchers() {
+  if (wallFrame) return;
+  wallFrame = requestAnimationFrame(() => {
+    wallFrame = 0;
+    for (const watcher of wallWatchers) watcher();
+  });
+}
+function subscribeWall(watcher: () => void): () => void {
+  if (wallWatchers.size === 0) {
+    window.addEventListener("scroll", notifyWallWatchers, { capture: true, passive: true });
+    window.addEventListener("resize", notifyWallWatchers, { passive: true });
+  }
+  wallWatchers.add(watcher);
+  return () => {
+    wallWatchers.delete(watcher);
+    if (wallWatchers.size > 0) return;
+    window.removeEventListener("scroll", notifyWallWatchers, { capture: true });
+    window.removeEventListener("resize", notifyWallWatchers);
+    if (wallFrame) cancelAnimationFrame(wallFrame);
+    wallFrame = 0;
+  };
+}
+
+/**
+ * 本段当前该挂哪一段瓦片：返回 [起, 止) 的下标区间。
+ *
+ * 每帧只做一次 getBoundingClientRect（读段容器本身，不读瓦片里的 <img>——那个
+ * 读法在 content-visibility 的格子里每读一次就逼一次全量布局）＋两次二分，
+ * 区间没变就不 setState，因此绝大多数帧里整棵树一次重渲染都没有。
+ */
+export function useTileWindow(
+  containerRef: RefObject<HTMLElement | null>,
+  placements: readonly Placement[],
+): readonly [number, number] {
+  const [range, setRange] = useState<readonly [number, number]>([0, 0]);
+  // 二分只能定位「y 不小于某值的第一块」，而跨在带子上沿的那块 y 更小。
+  // 往回退一整块最高瓦片的高度，保证它也在区间里
+  const tallest = useMemo(
+    () => placements.reduce((max, p) => (p.height > max ? p.height : max), 0),
+    [placements],
+  );
+
+  // layout effect：首帧就把窗口量出来，否则会先画一帧空段再补上瓦片，
+  // 看起来像闪了一下（段容器只在容器宽度量到之后才渲染，不会跑在服务端）
+  useLayoutEffect(() => {
+    const measure = () => {
+      const el = containerRef.current;
+      if (!el || placements.length === 0) {
+        setRange((current) => (current[0] === 0 && current[1] === 0 ? current : [0, 0]));
+        return;
+      }
+      // 段顶相对视口的位置：负值表示段顶已经滑到视口上方
+      const [from, to] = tileWindowRange(
+        placements,
+        el.getBoundingClientRect().top,
+        window.innerHeight,
+        window.innerHeight * OVERSCAN_SCREENS,
+        tallest,
+      );
+      setRange((current) => (current[0] === from && current[1] === to ? current : [from, to]));
+    };
+    measure();
+    return subscribeWall(measure);
+  }, [containerRef, placements, tallest]);
+
+  return range;
 }
 
 /**
@@ -385,6 +489,10 @@ const PhotoMonthSection = memo(function PhotoMonthSection({
       : masonry;
   }, [entries, width, spec]);
   const count = total ?? entries.length;
+  const tilesRef = useRef<HTMLDivElement>(null);
+  const [from, to] = useTileWindow(tilesRef, layout.placements);
+  // 挂在窗口里的那几块。整段的高度写在容器上，没挂的部分照样占着位置
+  const visible = useMemo(() => entries.slice(from, to), [entries, from, to]);
   return (
     // data-wall-initial：月份段的首部锚点，海报墙的滚动联动据此点亮索引条上的月份。
     // 不分段时（month 为空）既没有标题也没有锚点，就是一整面墙
@@ -397,33 +505,57 @@ const PhotoMonthSection = memo(function PhotoMonthSection({
           <span className="tnum text-caption text-[var(--text-faint)]">{count} 张</span>
         </div>
       )}
-      <div className="relative" style={{ height: layout.height }}>
-        {entries.map(({ item, index }, i) => (
-          <PhotoTile
-            key={item.media_item_id}
-            item={item}
-            placement={layout.placements[i]}
-            variant={spec.variant}
-            onOpen={() => onOpen(index)}
-            workingLabel={workingLabelOf?.(item)}
-          />
-        ))}
+      <div ref={tilesRef} className="relative" style={{ height: layout.height }}>
+        {visible.map(({ item, index }, i) => {
+          const placement = layout.placements[from + i];
+          return (
+            <PhotoTile
+              key={item.media_item_id}
+              item={item}
+              index={index}
+              x={placement.x}
+              y={placement.y}
+              width={placement.width}
+              height={placement.height}
+              variant={spec.variant}
+              onOpen={onOpen}
+              workingLabel={workingLabelOf?.(item)}
+            />
+          );
+        })}
       </div>
     </section>
   );
 });
 
+/**
+ * 一张瓦片。
+ *
+ * 位置拆成四个数字、点击给稳定的 ``onOpen`` ＋ 自己的下标，都是为了让 ``memo``
+ * 真的生效（与图廊的瓦片同一套口径）：传 placement 对象（每次重排都是新引用）
+ * 或内联箭头（每次渲染都是新函数）会让父组件的任何一次重渲都穿透到每一块瓦片
+ * ——库页光是滚动联动与后台轮询就会重渲好几十次。
+ */
 const PhotoTile = memo(function PhotoTile({
   item,
-  placement,
+  index,
+  x,
+  y,
+  width,
+  height,
   variant,
   onOpen,
   workingLabel,
 }: {
   item: LibraryItem;
-  placement: Placement;
+  /** 本瓦片在整份已加载列表里的下标：灯箱按同一列表翻页 */
+  index: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
   variant: ImageVariant | undefined;
-  onOpen: () => void;
+  onOpen: (index: number) => void;
   workingLabel?: string;
 }) {
   const badge = extremeLabel(item.primary_aspect);
@@ -431,20 +563,23 @@ const PhotoTile = memo(function PhotoTile({
   const size = item.resolutions[0] ?? null;
   const dead = item.file_count > 0 && item.missing_count >= item.file_count;
   return (
-    // 绝对定位 + transform：重排走 CSS 过渡；content-visibility:auto 让视口外的
-    // 瓦片跳过绘制——尺寸是显式的，不需要 intrinsic-size 占位
+    // 绝对定位 + transform：重排走 CSS 过渡。
+    // 这里不再用 content-visibility:auto——墙已经只挂视口附近的瓦片（useTileWindow），
+    // 挂上来的本来就要画；而它带来的两个副作用是实打实的：被跳过的子树里
+    // <img> 的懒加载与解码完成通知都会失灵（详见 poster-image.tsx 的长注释），
+    // 只能靠同步解码兜底，滑动时每张图都在主线程上解码
     <button
       type="button"
       // 位置锚点：会话内的滚动恢复（lib/use-scroll-restoration.ts）与跨会话的
       // 「回到上次位置」（lib/library-wall-recall.ts）都按它认这一屏是哪几张
       data-library-item-id={item.media_item_id}
       aria-label={`查看 ${item.title}`}
-      onClick={onOpen}
-      className="group/tile absolute left-0 top-0 block overflow-hidden rounded-xl bg-[#141824] text-left shadow-[0_8px_22px_rgba(0,0,0,0.35)] ring-1 ring-white/[0.07] transition-[transform,width,height,box-shadow] duration-300 ease-out [content-visibility:auto] hover:z-[2] hover:shadow-[0_18px_44px_rgba(0,0,0,0.6)] hover:ring-white/25 focus-visible:z-[2] focus-visible:ring-2 focus-visible:ring-[var(--accent)] motion-reduce:transition-none"
+      onClick={() => onOpen(index)}
+      className="group/tile absolute left-0 top-0 block overflow-hidden rounded-xl bg-[#141824] text-left shadow-[0_8px_22px_rgba(0,0,0,0.35)] ring-1 ring-white/[0.07] transition-[transform,width,height,box-shadow] duration-300 ease-out hover:z-[2] hover:shadow-[0_18px_44px_rgba(0,0,0,0.6)] hover:ring-white/25 focus-visible:z-[2] focus-visible:ring-2 focus-visible:ring-[var(--accent)] motion-reduce:transition-none"
       style={{
-        transform: `translate(${Math.round(placement.x)}px, ${Math.round(placement.y)}px)`,
-        width: Math.round(placement.width),
-        height: Math.round(placement.height),
+        transform: `translate(${Math.round(x)}px, ${Math.round(y)}px)`,
+        width: Math.round(width),
+        height: Math.round(height),
       }}
     >
       {/* 渐进式加载第一级：列表自带的 16px 微缩图铺底并模糊，缩略图到达前先看到
@@ -456,9 +591,13 @@ const PhotoTile = memo(function PhotoTile({
           style={{ backgroundImage: `url(${item.poster_blur})` }}
         />
       )}
+      {/* 挂上来的瓦片必然在视口附近（虚拟化的窗口就是按这个切的），直接取图，
+          不必再让 PosterImage 自己逐张探测 —— 那次探测每张要读一次
+          getBoundingClientRect，几千张就是几千次强制布局 */}
       <PosterImage
         src={imageUrl(item.poster_url, variant)}
         alt={item.title}
+        preload
         className={`absolute inset-0 size-full object-cover transition-transform duration-500 ease-out group-hover/tile:scale-[1.04] motion-reduce:transition-none ${
           dead ? "opacity-50 grayscale" : ""
         }`}
