@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  isReentry,
   RECALL_MAX_AGE_MS,
   RECALL_MIN_OFFSET,
   readWallRecall,
@@ -95,4 +96,23 @@ test("读不到 storage（隐私模式）时静默降级", () => {
   };
   assert.equal(readWallRecall(SCOPE, "wall:title", failing, NOW), null);
   assert.doesNotThrow(() => writeWallRecall(SCOPE, "wall:title", 320, failing, NOW));
+});
+
+/* —— 久别回归（iOS PWA 恢复应用不重新加载页面）—— */
+
+test("回到前台的时刻晚于上次在这面墙滚动的时刻 = 重新进入", () => {
+  assert.equal(isReentry(NOW, NOW - 1000), true);
+});
+
+test("这面墙的滚动比回归更晚（人回来后已经在这面墙上滑过）= 不再当重新进入", () => {
+  assert.equal(isReentry(NOW, NOW + 1000), false);
+});
+
+test("从没挂过久后台就不是重新进入", () => {
+  assert.equal(isReentry(0, undefined), false);
+  assert.equal(isReentry(0, NOW - 1000), false);
+});
+
+test("挂过久后台、这面墙却没有记录：也算重新进入（没有记录=没在这面墙滑过）", () => {
+  assert.equal(isReentry(NOW, undefined), true);
 });

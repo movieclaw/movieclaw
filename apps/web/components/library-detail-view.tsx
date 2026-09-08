@@ -98,7 +98,11 @@ import { HttpError } from "@/lib/http";
 import { formatBytes } from "@/lib/format";
 import { formatLibraryInventorySummary } from "@/lib/library-inventory-summary";
 import { activeWallInitialAtViewport, wallInitialAtOffset } from "@/lib/library-wall-index";
-import { firstVisibleAnchorId, wallRecallScope } from "@/lib/library-wall-recall";
+import {
+  firstVisibleAnchorId,
+  isReentryAfterAbsence,
+  wallRecallScope,
+} from "@/lib/library-wall-recall";
 import { useWallRecall } from "@/lib/use-wall-recall";
 import { formatRelativeTime } from "@/lib/time";
 import { cachedImageUrl, cardVariantFor, imageUrl } from "@/lib/image-proxy";
@@ -167,10 +171,14 @@ function keepOnError<T>(rows: Promise<T[]>): Promise<T[] | null> {
 
 export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   const initialSnapshot = getLibraryDetailSnapshot(libraryId);
-  // 本次是不是「重新进入」：首帧没有会话快照 = 冷启动 / 刷新 / 换了库进来的。
-  // 必须在首帧定格——本组件挂载后自己就会写快照，之后每次 render 都读得到它。
-  // 「回到上次位置」的胶囊只在重新进入时弹（会话内返回由滚动恢复自动回位）
-  const freshEntry = useRef(initialSnapshot === undefined);
+  // 本次是不是「重新进入」：首帧没有会话快照 = 冷启动 / 刷新 / 换了库进来的；
+  // 或者本次页面加载期间挂过很久后台（iOS PWA 恢复应用不重新加载页面，只能
+  // 靠这条认），且那段后台发生在离开这面墙之后。必须在首帧定格——本组件挂载
+  // 后自己就会写快照，之后每次 render 都读得到它。重新进入时不自动回位，
+  // 改由底部胶囊来问（两者同时来会变成「指着脚下那一格」的废话）
+  const freshEntry = useRef(
+    initialSnapshot === undefined || isReentryAfterAbsence(wallRecallScope(libraryId)),
+  );
   const { canManageLibraries } = usePermissions();
   const { activeJobs } = useJobs();
   // 影视库 / 其他库的图床浏览模式（video-gallery.tsx）：海报墙换成每部作品的
@@ -181,6 +189,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   // 作品十几张图，得按瓦片认（data-gallery-tile-id）。两者不会同时在 DOM 里
   const restoreScrollRef = useScrollRestoration(`library:${libraryId}`, {
     anchorAttribute: galleryPreferred ? "data-gallery-tile-id" : "data-library-item-id",
+    restore: !freshEntry.current,
   });
   const [scrollElement, setScrollElement] = useState<HTMLDivElement | null>(null);
   // 滚动位置恢复与字母索引联动共用同一个真实滚动容器，合并 callback ref
@@ -773,6 +782,12 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
     // 拿它的位置去跳会跳到一部毫不相干的作品上
     return id === null ? null : ((gallery ? galleryOffsetById : offsetById).get(id) ?? null);
   }, [gallery, galleryOffsetById, offsetById, scrollElement]);
+  // 久别回归时把这一屏复位：页面没重新加载，人还停在离开时的位置上，不回到
+  // 顶部的话胶囊指着的就是脚下这一格。瞬时归零而不是平滑滚动——这是「重新
+  // 进入」，不是一次导航，几万像素的平滑动画只会让人以为页面失控了
+  const resetWallToTop = useCallback(() => {
+    scrollElement?.scrollTo({ top: 0, behavior: "instant" });
+  }, [scrollElement]);
   const { recallOffset, dismissRecall } = useWallRecall({
     scope: wallRecallScope(libraryId),
     view: wallView,
@@ -781,6 +796,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
     enabled: !probing && (gallery ? galleryGroups.length > 0 : items.length > 0),
     offer: freshEntry.current,
     offsetAt: wallOffsetAt,
+    onReenter: resetWallToTop,
   });
   // 记录可能指向已经不存在的位置（库被清空、大批删除），跳过去只会是一面空墙
   const recallable =

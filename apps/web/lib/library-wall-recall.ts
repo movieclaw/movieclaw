@@ -131,6 +131,68 @@ export function writeWallRecall(
   writeAll(store, rows);
 }
 
+/* —— 长时间挂后台 —— */
+
+/**
+ * 挂后台超过这么久再回到前台，就把这一屏当成「重新进入」。
+ *
+ * 为什么需要这条规则：iOS 的 PWA 恢复应用时**不会重新加载页面**——把 App
+ * 划掉再打开，多半是把原来那张页面原样恢复出来，JS 上下文没死、组件没重挂，
+ * 于是"重新进入"这件事在代码里从来没发生过，胶囊也就永远等不到（用户反馈
+ * 2026-09-08，iOS PWA 实测）。改成按「离开了多久」判断：隔夜回来算重新进入，
+ * 几分钟内的来回切换仍然无感。
+ */
+export const LONG_ABSENCE_MS = 30 * 60 * 1000;
+
+/** 切到后台的时刻；0 = 当前在前台 */
+let hiddenAt = 0;
+/** 最近一次「久别回归」的时刻；0 = 本次页面加载还没发生过 */
+let returnedAt = 0;
+const returnListeners = new Set<() => void>();
+
+function handleVisibilityChange() {
+  if (document.visibilityState === "hidden") {
+    hiddenAt = Date.now();
+    return;
+  }
+  if (hiddenAt === 0) return;
+  const away = Date.now() - hiddenAt;
+  hiddenAt = 0;
+  if (away < LONG_ABSENCE_MS) return;
+  returnedAt = Date.now();
+  // 复制一份再遍历：回调里可能顺手退订
+  for (const listener of [...returnListeners]) listener();
+}
+
+if (typeof document !== "undefined") {
+  document.addEventListener("visibilitychange", handleVisibilityChange);
+}
+
+/** 订阅「挂后台很久之后回到前台」。返回退订函数。 */
+export function onReturnFromLongAbsence(listener: () => void): () => void {
+  returnListeners.add(listener);
+  return () => {
+    returnListeners.delete(listener);
+  };
+}
+
+/**
+ * 久别回归是否发生在「离开这面墙之后」——是的话这次进入算重新进入。
+ *
+ * 判据是两个时刻的先后：回到前台的时刻 vs 上次在这面墙上滚动的时刻。用户
+ * 只要在这面墙上滚一下，记录时间就会超过它，胶囊不会反复弹。
+ */
+export function isReentry(returnMoment: number, savedUpdatedAt: number | undefined): boolean {
+  return returnMoment > 0 && returnMoment > (savedUpdatedAt ?? 0);
+}
+
+/** 上面那条判据的实际调用口（读模块状态与本地记录）。 */
+export function isReentryAfterAbsence(scope: string, storage?: KeyValueStorage): boolean {
+  if (returnedAt === 0) return false;
+  const store = storageOrNull(storage);
+  return isReentry(returnedAt, store ? readAll(store)[scope]?.updatedAt : undefined);
+}
+
 /**
  * 找出滚动容器里第一个还露在视口内的锚点。
  *

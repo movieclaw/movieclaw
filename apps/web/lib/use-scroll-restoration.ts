@@ -47,6 +47,14 @@ interface ScrollRestorationOptions {
    * 海报图片与分页窗口会让同一像素位置对应到不同条目，条目锚点才能保持视觉位置。
    */
   anchorAttribute?: string;
+  /**
+   * 这次挂载要不要自动回位，默认要。
+   *
+   * 给「回到上次浏览的位置」的胶囊让路：久别回归时那一屏改由胶囊来问
+   *（lib/library-wall-recall.ts），此时若还自动回位，人已经在原处了，
+   * 胶囊就成了指着脚下的废话。关掉的只是这一次回位，位置照记不误。
+   */
+  restore?: boolean;
 }
 
 /**
@@ -60,6 +68,7 @@ export function useScrollRestoration(key: string, options: ScrollRestorationOpti
   const [element, setElement] = useState<HTMLDivElement | null>(null);
   const ref = useCallback((node: HTMLDivElement | null) => setElement(node), []);
   const anchorAttribute = options.anchorAttribute;
+  const shouldRestore = options.restore ?? true;
 
   useLayoutEffect(() => {
     if (!element) return;
@@ -67,7 +76,7 @@ export function useScrollRestoration(key: string, options: ScrollRestorationOpti
     let frame = 0;
     // 新容器挂载时，Next 可能先触发一次归零滚动。恢复目标必须在此刻
     // 固定下来，不能再从 positions 读取，否则这次初始化事件会把目标覆盖成 0。
-    let pendingPosition = positions.get(key);
+    let pendingPosition = shouldRestore ? positions.get(key) : undefined;
     let anchorSettleDeadline = 0;
     const deadline = performance.now() + MAX_RESTORE_MS;
     const capturePosition = (): ScrollPosition => {
@@ -193,7 +202,7 @@ export function useScrollRestoration(key: string, options: ScrollRestorationOpti
       // 路由跳转期间框架可能先把当前容器复位到顶部，再卸载本页；这里若再
       // 读取 scrollTop 会把已由 scroll 事件保存的真实位置覆盖成 0。
     };
-  }, [anchorAttribute, element, key]);
+  }, [anchorAttribute, element, key, shouldRestore]);
 
   return ref;
 }
