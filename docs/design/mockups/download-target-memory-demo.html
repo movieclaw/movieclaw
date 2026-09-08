@@ -1,0 +1,553 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>保存位置记忆</title>
+<style>
+  :root{
+    --bg:#0a0b10;--panel:#10121a;--raised:rgba(30,33,43,.74);--inset:rgba(255,255,255,.05);
+    --text:#f3f5f9;--muted:rgba(243,245,249,.62);--faint:rgba(243,245,249,.36);
+    --line:rgba(255,255,255,.08);--line-strong:rgba(255,255,255,.15);
+    --accent:#cdd6e6;--accent-2:#9fb0c9;--accent-soft:rgba(205,214,230,.14);
+    --ok:#4ade80;--info:#7fb0ff;--warn:#f5c451;--danger:#ff6b6b;
+    --mono:ui-monospace,Menlo,"SF Mono",monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:#000;color:var(--text);font:14px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans SC",sans-serif;-webkit-font-smoothing:antialiased}
+  button{font:inherit}
+
+  /* ====== 样稿导航 ====== */
+  .nav{position:sticky;top:0;z-index:20;display:flex;gap:6px;overflow-x:auto;padding:10px 12px;background:rgba(10,11,16,.92);backdrop-filter:blur(12px);border-bottom:1px solid var(--line)}
+  .nav button{flex:none;border:1px solid var(--line-strong);background:transparent;color:var(--muted);border-radius:999px;padding:6px 12px;font-size:13px;cursor:pointer}
+  .nav button.on{background:var(--accent);color:#0a0b10;border-color:var(--accent)}
+  .nav button:focus-visible{outline:2px solid var(--info);outline-offset:2px}
+  .screen{display:none;padding:18px 16px 70px}
+  .screen.on{display:block}
+  .note{max-width:1180px;margin:0 auto 14px;font-size:12px;color:var(--faint);border-left:2px solid var(--warn);padding:4px 10px;line-height:1.65}
+  .note b{color:var(--muted);font-weight:600}
+  .note code{font-family:var(--mono);font-size:11px;color:var(--accent-2)}
+
+  /* ====== 机框 ====== */
+  .stage{max-width:1180px;margin:0 auto;display:flex;gap:18px;align-items:flex-start;flex-wrap:wrap}
+  .frame{position:relative;flex:1 1 660px;min-width:0;display:grid;grid-template-columns:184px 1fr;background:var(--bg);border:1px solid var(--line-strong);border-radius:18px;overflow:hidden;min-height:600px}
+  .side{border-right:1px solid var(--line);padding:16px 10px;background:linear-gradient(180deg,rgba(255,255,255,.04),rgba(255,255,255,.01))}
+  .brand{font-weight:700;letter-spacing:.02em;padding:4px 10px 16px}
+  .side a{display:block;padding:7px 10px;border-radius:9px;color:var(--muted);font-size:13px;text-decoration:none}
+  .side a.on{background:rgba(255,255,255,.1);color:var(--text)}
+  .side .subnav{margin:2px 0 0 10px;border-left:1px solid var(--line);padding-left:6px}
+  .side .subnav a{padding:4px 8px;font-size:12px}
+  .side .subnav a.on{background:none;color:var(--text)}
+  .main{padding:22px 22px 26px;min-width:0;position:relative;overflow:hidden}
+  h1{font-size:22px;letter-spacing:-.02em;margin:0 0 4px;text-wrap:balance}
+  .sub{color:var(--muted);font-size:13px;margin:0}
+
+  /* ====== 搜索结果 ====== */
+  .cats{display:flex;gap:16px;border-bottom:1px solid var(--line);margin:16px 0 12px;overflow-x:auto}
+  .cats span{padding:8px 0;color:var(--faint);font-size:13px;white-space:nowrap}
+  .cats span.on{color:var(--text);border-bottom:2px solid var(--text)}
+  .row{display:grid;grid-template-columns:1fr auto;gap:14px;padding:11px 12px;border:1px solid var(--line);border-radius:12px;margin-bottom:8px;background:rgba(255,255,255,.02);align-items:center}
+  .row.dim{opacity:.45}
+  .t1{font-size:13px;line-height:1.45;word-break:break-all}
+  .t2{font-size:11.5px;color:var(--muted);margin-top:3px}
+  .meta{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;font-size:11px;color:var(--faint)}
+  .chip{border:1px solid var(--line);border-radius:999px;padding:1px 7px}
+  .chip.free{color:var(--ok);border-color:rgba(74,222,128,.34)}
+  .chip.site{color:var(--accent-2)}
+  .dl{border:1px solid var(--line-strong);background:rgba(255,255,255,.04);color:var(--text);border-radius:999px;padding:6px 14px;font-size:12.5px;white-space:nowrap;cursor:pointer}
+  .dl.pressed{background:var(--accent);color:#0a0b10;border-color:var(--accent)}
+
+  /* ====== 遮罩 + 浮层 ====== */
+  .scrim{position:absolute;inset:0;background:rgba(6,7,11,.62);backdrop-filter:blur(2px);display:flex;align-items:flex-end;justify-content:center;padding:16px}
+  .scrim.mid{align-items:center}
+
+  /* ====== 确认条（本方案核心） ====== */
+  .bar{width:100%;max-width:560px;background:var(--raised);border:1px solid var(--line-strong);border-radius:16px;box-shadow:0 18px 48px rgba(0,0,0,.55);backdrop-filter:blur(18px);overflow:hidden}
+  .bar-body{padding:14px 16px 12px;display:flex;gap:12px;align-items:flex-start}
+  .fi{flex:none;width:30px;height:30px;border-radius:9px;background:var(--accent-soft);display:grid;place-items:center;margin-top:1px}
+  .fi svg{width:15px;height:15px;stroke:var(--accent);fill:none;stroke-width:1.6}
+  .bar-info{min-width:0;flex:1}
+  .eyebrow{font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--faint)}
+  .bucket{display:flex;align-items:center;gap:7px;margin:3px 0 5px;flex-wrap:wrap}
+  .bucket b{font-size:14.5px;font-weight:650;letter-spacing:-.01em}
+  .bucket .dot{width:3px;height:3px;border-radius:50%;background:var(--faint)}
+  .bucket em{font-style:normal;font-size:12px;color:var(--muted)}
+  .path{font-family:var(--mono);font-size:11.5px;color:var(--text);word-break:break-all;line-height:1.5}
+  .path2{font-family:var(--mono);font-size:10.5px;color:var(--faint);word-break:break-all;margin-top:2px}
+  .path2 span{font-family:-apple-system,"PingFang SC",sans-serif}
+  .bar-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 16px 13px;border-top:1px solid var(--line)}
+  .lastused{font-size:11px;color:var(--faint)}
+  .acts{display:flex;gap:8px}
+  .btn{border:1px solid var(--line-strong);background:rgba(255,255,255,.04);color:var(--text);border-radius:999px;padding:7px 15px;font-size:12.5px;cursor:pointer;white-space:nowrap}
+  .btn.primary{background:var(--accent);color:#0a0b10;border-color:var(--accent);font-weight:600}
+  .btn:disabled{opacity:.45;cursor:default}
+
+  /* 骨架 */
+  .sk{height:11px;border-radius:4px;background:linear-gradient(90deg,rgba(255,255,255,.07),rgba(255,255,255,.14),rgba(255,255,255,.07));background-size:200% 100%;animation:sh 1.3s linear infinite}
+  .sk.w1{width:74%}.sk.w2{width:46%;margin-top:6px}
+  @keyframes sh{to{background-position:-200% 0}}
+  @media (prefers-reduced-motion:reduce){.sk{animation:none}}
+
+  /* ====== 完整弹窗 ====== */
+  .modal{width:100%;max-width:520px;background:var(--raised);border:1px solid var(--line-strong);border-radius:18px;box-shadow:0 24px 60px rgba(0,0,0,.6);backdrop-filter:blur(18px);overflow:hidden;display:flex;flex-direction:column;max-height:520px}
+  .m-head{padding:18px 20px 14px;border-bottom:1px solid var(--line)}
+  .m-head h2{margin:0;font-size:17px;font-weight:700}
+  .m-head p{margin:4px 0 0;font-size:12px;color:var(--muted)}
+  .m-body{padding:14px 20px;overflow:auto;display:flex;flex-direction:column;gap:8px}
+  .reason{display:flex;gap:9px;align-items:flex-start;background:rgba(245,196,81,.09);border:1px solid rgba(245,196,81,.28);border-radius:11px;padding:9px 11px;font-size:12px;line-height:1.55;color:#f6dfab}
+  .reason svg{flex:none;width:14px;height:14px;stroke:var(--warn);fill:none;stroke-width:1.7;margin-top:1px}
+  .opt{display:flex;gap:11px;align-items:flex-start;border:1px solid var(--line);border-radius:12px;padding:11px 12px;cursor:pointer;background:rgba(255,255,255,.015)}
+  .opt.on{border-color:var(--accent);background:var(--accent-soft)}
+  .radio{flex:none;width:15px;height:15px;border-radius:50%;border:1px solid var(--line-strong);margin-top:2px;display:grid;place-items:center}
+  .opt.on .radio{border-color:var(--accent)}
+  .opt.on .radio::after{content:"";width:7px;height:7px;border-radius:50%;background:var(--accent)}
+  .opt-t{font-size:13px;font-weight:600}
+  .opt-p{font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:3px;word-break:break-all}
+  .opt-n{font-size:11px;color:var(--faint);margin-top:3px}
+  .badge{font-size:10px;border:1px solid var(--line-strong);border-radius:999px;padding:1px 6px;color:var(--accent-2);margin-left:6px;vertical-align:1px}
+  .m-foot{display:flex;justify-content:flex-end;gap:10px;padding:12px 20px;border-top:1px solid var(--line)}
+  .hint{font-size:11px;color:var(--faint);line-height:1.6;padding:2px 0 0}
+  .hint a{color:var(--accent);text-decoration:none}
+
+  /* ====== 设置页表格 ====== */
+  .sec{border:1px solid var(--line);border-radius:14px;overflow:hidden;margin-top:16px}
+  .sec-h{padding:13px 15px;border-bottom:1px solid var(--line);background:rgba(255,255,255,.02)}
+  .sec-h h3{margin:0;font-size:14px}
+  .sec-h p{margin:3px 0 0;font-size:11.5px;color:var(--faint)}
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th{text-align:left;font-weight:500;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);padding:9px 15px;border-bottom:1px solid var(--line)}
+  td{padding:11px 15px;border-bottom:1px solid var(--line);vertical-align:top}
+  tr:last-child td{border-bottom:none}
+  td.p{font-family:var(--mono);font-size:11.5px;color:var(--muted);word-break:break-all}
+  td.n{font-variant-numeric:tabular-nums;color:var(--faint);white-space:nowrap}
+  .cat{display:inline-flex;align-items:center;gap:6px;font-weight:600}
+  .cat i{width:6px;height:6px;border-radius:50%;background:var(--accent-2);font-style:normal}
+  .lnk{background:none;border:none;color:var(--accent-2);font-size:12px;cursor:pointer;padding:0 6px 0 0}
+  .lnk.d{color:var(--danger)}
+  .tag{font-size:10.5px;border-radius:999px;padding:1px 7px;border:1px solid var(--line-strong);color:var(--muted)}
+
+  /* ====== 手机框 ====== */
+  .phone{flex:0 0 300px;background:var(--bg);border:1px solid var(--line-strong);border-radius:26px;padding:9px;box-shadow:0 18px 44px rgba(0,0,0,.45)}
+  .phone-in{position:relative;border-radius:19px;overflow:hidden;height:560px;background:var(--bg);display:flex;flex-direction:column}
+  .ph-top{padding:11px 14px 8px;border-bottom:1px solid var(--line);font-size:12px;color:var(--muted);display:flex;justify-content:space-between}
+  .ph-body{padding:11px;flex:1;overflow:hidden}
+  .phone .bar{max-width:none;border-radius:14px}
+  .phone .bar-foot{flex-direction:column;align-items:stretch;gap:9px}
+  .phone .acts{width:100%}
+  .phone .acts .btn{flex:1;text-align:center}
+  .phone .lastused{text-align:center}
+  .cap{text-align:center;font-size:11px;color:var(--faint);margin-top:9px}
+
+  /* ====== 流程对照 ====== */
+  .cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;max-width:1180px;margin:0 auto}
+  .col{border:1px solid var(--line);border-radius:14px;padding:15px 16px 17px}
+  .col.now{border-color:rgba(255,107,107,.3)}
+  .col.next{border-color:rgba(74,222,128,.3)}
+  .col h4{margin:0 0 3px;font-size:13.5px}
+  .col .lead{margin:0 0 13px;font-size:11.5px;color:var(--faint)}
+  .step{display:flex;gap:10px;padding:8px 0;border-top:1px solid var(--line);font-size:12.5px;line-height:1.55}
+  .step:first-of-type{border-top:none}
+  .step i{flex:none;width:18px;height:18px;border-radius:50%;border:1px solid var(--line-strong);display:grid;place-items:center;font-style:normal;font-size:10px;color:var(--faint);margin-top:1px}
+  .step.bad i{border-color:rgba(255,107,107,.45);color:var(--danger)}
+  .step.good i{border-color:rgba(74,222,128,.45);color:var(--ok)}
+  .step b{font-weight:600}
+  .step small{display:block;color:var(--faint);font-size:11px;margin-top:2px}
+</style>
+</head>
+<body>
+
+<nav class="nav" id="nav">
+  <button class="on" data-s="s1">确认条 · 核心</button>
+  <button data-s="s2">两种边界</button>
+  <button data-s="s3">完整弹窗</button>
+  <button data-s="s4">设置页</button>
+  <button data-s="s5">流程对照</button>
+</nav>
+
+<!-- ══════════════ 1. 确认条 ══════════════ -->
+<section class="screen on" id="s1">
+  <p class="note"><b>命中记忆时不再静默提交。</b>点「下载」弹出确认条：分类桶、最终路径、下载器全部可见，一次点击确认。
+  右侧是窄屏形态——信息行与按钮行纵向堆叠，按钮占满宽度，不占用搜索结果行的横向空间（这是选确认条而非 split button 的直接原因）。</p>
+  <div class="stage">
+    <div class="frame">
+      <aside class="side">
+        <div class="brand">movieclaw</div>
+        <a href="#">首页</a><a href="#">媒体库</a>
+        <a href="#" class="on">搜索</a><a href="#">订阅</a><a href="#">任务中心</a><a href="#">设置</a>
+      </aside>
+      <div class="main">
+        <h1>凡人修仙传</h1>
+        <p class="sub">4 个站点 · 38 条结果 · 用时 2.4s</p>
+        <div class="cats"><span>全部</span><span>电影</span><span>剧集</span><span class="on">动漫</span><span>纪录片</span><span>音乐</span></div>
+
+        <div class="row">
+          <div>
+            <div class="t1">凡人修仙传 Fanren.Xiu.Xian.Zhuan.2020.S01E58.2160p.WEB-DL.H265.DDP2.0-OurTV</div>
+            <div class="t2">全58集 | 国语中字 | 官方 4K</div>
+            <div class="meta"><span class="chip site">HDSky</span><span class="chip free">Free</span><span class="chip">4.21 GB</span><span>↑ 312 · ↓ 18</span></div>
+          </div>
+          <button class="dl pressed">下载中…</button>
+        </div>
+        <div class="row dim">
+          <div>
+            <div class="t1">凡人修仙传 Fanren.Xiu.Xian.Zhuan.S01.1080p.WEB-DL.AAC.H264-ANiME</div>
+            <div class="t2">全58集 | 内封简繁</div>
+            <div class="meta"><span class="chip site">CHDBits</span><span class="chip">18.7 GB</span><span>↑ 96 · ↓ 4</span></div>
+          </div>
+          <button class="dl">下载</button>
+        </div>
+        <div class="row dim">
+          <div>
+            <div class="t1">凡人修仙传 第二季 Fanren.Xiu.Xian.Zhuan.S02.2160p.WEB-DL.DV.HEVC-OurTV</div>
+            <div class="t2">更新至 12 集 | 杜比视界</div>
+            <div class="meta"><span class="chip site">馒头</span><span class="chip free">Free</span><span class="chip">9.02 GB</span><span>↑ 540 · ↓ 61</span></div>
+          </div>
+          <button class="dl">下载</button>
+        </div>
+
+        <div class="scrim">
+          <div class="bar">
+            <div class="bar-body">
+              <div class="fi"><svg viewBox="0 0 24 24"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2.5h7A1.5 1.5 0 0 1 19 10v7.5a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 3 17.5z"/></svg></div>
+              <div class="bar-info">
+                <div class="eyebrow">保存到</div>
+                <div class="bucket"><b>动漫</b><span class="dot"></span><em>qBittorrent</em></div>
+                <div class="path">/media/anime/凡人修仙传 (2020)</div>
+                <div class="path2"><span>下载器视角</span> /downloads/anime/凡人修仙传 (2020)</div>
+              </div>
+            </div>
+            <div class="bar-foot">
+              <span class="lastused">上次用过 · 2 天前</span>
+              <div class="acts">
+                <button class="btn">更改</button>
+                <button class="btn primary">确认下载</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="phone">
+        <div class="phone-in">
+          <div class="ph-top"><span>搜索 · 动漫</span><span>38 条</span></div>
+          <div class="ph-body">
+            <div class="row" style="grid-template-columns:1fr;gap:8px">
+              <div>
+                <div class="t1" style="font-size:12px">凡人修仙传 S01E58.2160p.WEB-DL.H265-OurTV</div>
+                <div class="meta"><span class="chip site">HDSky</span><span class="chip free">Free</span><span class="chip">4.21 GB</span></div>
+              </div>
+            </div>
+            <div class="row dim" style="grid-template-columns:1fr">
+              <div>
+                <div class="t1" style="font-size:12px">凡人修仙传 S01.1080p.WEB-DL.H264-ANiME</div>
+                <div class="meta"><span class="chip site">CHDBits</span><span class="chip">18.7 GB</span></div>
+              </div>
+            </div>
+          </div>
+          <div class="scrim" style="position:absolute">
+            <div class="bar">
+              <div class="bar-body">
+                <div class="fi"><svg viewBox="0 0 24 24"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2.5h7A1.5 1.5 0 0 1 19 10v7.5a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 3 17.5z"/></svg></div>
+                <div class="bar-info">
+                  <div class="eyebrow">保存到</div>
+                  <div class="bucket"><b>动漫</b><span class="dot"></span><em>qBittorrent</em></div>
+                  <div class="path">/media/anime/凡人修仙传 (2020)</div>
+                </div>
+              </div>
+              <div class="bar-foot">
+                <span class="lastused">上次用过 · 2 天前</span>
+                <div class="acts">
+                  <button class="btn">更改</button>
+                  <button class="btn primary">确认下载</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="cap">窄屏：按钮行独占一行、等宽铺满</p>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════ 2. 两种边界 ══════════════ -->
+<section class="screen" id="s2">
+  <p class="note"><b>左：智能入库预检中。</b>记忆存的是策略不是路径，每次要重跑预检才知道落点。确认条立即出现、路径位置先占骨架，「确认下载」在此期间禁用——先让用户看到在确认什么，比整条延迟出现少一次视觉跳变。<br>
+  <b>右：记忆失效。</b>不再静默回落。直接展开完整弹窗，顶部一行中文说清原因。</p>
+  <div class="stage">
+    <div class="frame" style="min-height:520px">
+      <aside class="side">
+        <div class="brand">movieclaw</div>
+        <a href="#">首页</a><a href="#">媒体库</a><a href="#" class="on">搜索</a><a href="#">订阅</a><a href="#">任务中心</a><a href="#">设置</a>
+      </aside>
+      <div class="main">
+        <h1>地球脉动</h1>
+        <p class="sub">3 个站点 · 12 条结果</p>
+        <div class="cats"><span>全部</span><span>电影</span><span>剧集</span><span>动漫</span><span class="on">纪录片</span></div>
+        <div class="row">
+          <div>
+            <div class="t1">地球脉动 第三季 Planet.Earth.III.2023.S01.2160p.iP.WEB-DL.HDR.HEVC.DDP5.1-CMCTV</div>
+            <div class="t2">全8集 | 官方中字 | BBC</div>
+            <div class="meta"><span class="chip site">馒头</span><span class="chip free">Free</span><span class="chip">62.4 GB</span><span>↑ 88 · ↓ 12</span></div>
+          </div>
+          <button class="dl pressed">下载中…</button>
+        </div>
+        <div class="scrim">
+          <div class="bar">
+            <div class="bar-body">
+              <div class="fi"><svg viewBox="0 0 24 24"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2.5h7A1.5 1.5 0 0 1 19 10v7.5a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 3 17.5z"/></svg></div>
+              <div class="bar-info">
+                <div class="eyebrow">保存到</div>
+                <div class="bucket"><b>纪录片</b><span class="dot"></span><em>智能入库</em></div>
+                <div class="sk w1"></div><div class="sk w2"></div>
+              </div>
+            </div>
+            <div class="bar-foot">
+              <span class="lastused">正在确认归宿…</span>
+              <div class="acts">
+                <button class="btn">更改</button>
+                <button class="btn primary" disabled>确认下载</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="frame" style="flex:1 1 420px;grid-template-columns:1fr;min-height:520px">
+      <div class="main">
+        <h1>选择保存位置</h1>
+        <p class="sub">Qiang.Qiang.Shi.Yi.2024.1080p.WEB-DL</p>
+        <div class="scrim mid" style="padding:14px">
+          <div class="modal" style="max-height:440px">
+            <div class="m-head">
+              <h2>选择保存位置</h2>
+              <p>动漫 · 记住的位置这次用不上</p>
+            </div>
+            <div class="m-body">
+              <div class="reason">
+                <svg viewBox="0 0 24 24"><path d="M12 8v5M12 16.5v.01M10.3 3.9 2.6 17.4A1.9 1.9 0 0 0 4.3 20.3h15.4a1.9 1.9 0 0 0 1.7-2.9L13.7 3.9a1.9 1.9 0 0 0-3.4 0z"/></svg>
+                <div>上次的保存位置 <code style="font-family:var(--mono)">/media/anime</code> 已不存在（对应的库可能已删除），请重新选择。</div>
+              </div>
+              <label class="opt on">
+                <span class="radio"></span>
+                <span>
+                  <span class="opt-t">智能入库<span class="badge">推荐</span></span>
+                  <span class="opt-p">/media/anime-new/锵锵拾遗 (2024)</span>
+                  <span class="opt-n">按订阅同源规则自动归位</span>
+                </span>
+              </label>
+              <label class="opt">
+                <span class="radio"></span>
+                <span>
+                  <span class="opt-t">/media/anime-new</span>
+                  <span class="opt-p">下载器视角 /downloads/anime-new</span>
+                </span>
+              </label>
+              <label class="opt">
+                <span class="radio"></span>
+                <span>
+                  <span class="opt-t">/vol1/downloads</span>
+                  <span class="opt-p">下载器视角 /downloads</span>
+                </span>
+              </label>
+              <label class="opt">
+                <span class="radio"></span>
+                <span><span class="opt-t">下载器默认目录</span><span class="opt-n">不指定路径，由 qBittorrent 决定</span></span>
+              </label>
+            </div>
+            <div class="m-foot">
+              <button class="btn">取消</button>
+              <button class="btn primary">确认下载</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════ 3. 完整弹窗 ══════════════ -->
+<section class="screen" id="s3">
+  <p class="note"><b>该分类还没有记忆时走完整弹窗，和现在一样——但复选框「记住本次选择」删掉了。</b>
+  提交后自动写入记忆（仅当目标与已存的不同才写），下次这个分类就走确认条。底部一行说明记忆是自动建立的、去哪里管理，替代原来那个要用户预判的勾选框。</p>
+  <div class="stage">
+    <div class="frame" style="min-height:600px">
+      <aside class="side">
+        <div class="brand">movieclaw</div>
+        <a href="#">首页</a><a href="#">媒体库</a><a href="#" class="on">搜索</a><a href="#">订阅</a><a href="#">任务中心</a><a href="#">设置</a>
+      </aside>
+      <div class="main">
+        <h1>奥本海默</h1>
+        <p class="sub">5 个站点 · 24 条结果</p>
+        <div class="cats"><span>全部</span><span class="on">电影</span><span>剧集</span><span>动漫</span><span>纪录片</span></div>
+        <div class="row">
+          <div>
+            <div class="t1">奥本海默 Oppenheimer.2023.2160p.UHD.BluRay.REMUX.DV.HDR.HEVC.TrueHD.7.1.Atmos-FraMeSToR</div>
+            <div class="t2">官方中字 | 原盘 REMUX</div>
+            <div class="meta"><span class="chip site">CHDBits</span><span class="chip">88.6 GB</span><span>↑ 42 · ↓ 9</span></div>
+          </div>
+          <button class="dl pressed">下载中…</button>
+        </div>
+        <div class="scrim mid">
+          <div class="modal">
+            <div class="m-head">
+              <h2>选择保存位置</h2>
+              <p>电影 · 首次下载该分类</p>
+            </div>
+            <div class="m-body">
+              <label class="opt on">
+                <span class="radio"></span>
+                <span>
+                  <span class="opt-t">智能入库<span class="badge">推荐</span></span>
+                  <span class="opt-p">/media/movies/奥本海默 (2023)</span>
+                  <span class="opt-n">与订阅同源的三级兜底规则，自动归位到库条目目录</span>
+                </span>
+              </label>
+              <label class="opt">
+                <span class="radio"></span>
+                <span>
+                  <span class="opt-t">/media/movies</span>
+                  <span class="opt-p">下载器视角 /downloads/movies</span>
+                </span>
+              </label>
+              <label class="opt">
+                <span class="radio"></span>
+                <span>
+                  <span class="opt-t">/media/movies-4k</span>
+                  <span class="opt-p">下载器视角 /downloads/movies-4k</span>
+                </span>
+              </label>
+              <label class="opt">
+                <span class="radio"></span>
+                <span>
+                  <span class="opt-t">/vol1/downloads</span>
+                  <span class="opt-p">下载器视角 /downloads</span>
+                </span>
+              </label>
+              <label class="opt">
+                <span class="radio"></span>
+                <span><span class="opt-t">下载器默认目录</span><span class="opt-n">不指定路径，由 qBittorrent 决定</span></span>
+              </label>
+              <p class="hint">这次的选择会记为「电影」的默认位置，之后点下载先给你确认一次。可在 <a href="#">设置 → 下载器</a> 查看和修改。</p>
+            </div>
+            <div class="m-foot">
+              <button class="btn">取消</button>
+              <button class="btn primary">确认下载</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════ 4. 设置页 ══════════════ -->
+<section class="screen" id="s4">
+  <p class="note"><b>记忆看得见、可编辑、可删除</b>——现在它藏在 localStorage 里，用户既看不到也删不掉，只能靠「再下一次并取消勾选」来清。
+  这里列出的是<b>当前登录者自己的</b>记忆：数据按成员隔离（<code>member_id</code> 哨兵，0=超管），成员之间互不可见、互不覆盖。</p>
+  <div class="stage">
+    <div class="frame">
+      <aside class="side">
+        <div class="brand">movieclaw</div>
+        <a href="#">首页</a><a href="#">媒体库</a><a href="#">搜索</a><a href="#">订阅</a><a href="#">任务中心</a>
+        <a href="#" class="on">设置</a>
+        <div class="subnav">
+          <a href="#">站点</a><a href="#" class="on">下载器</a><a href="#">媒体库</a><a href="#">成员</a><a href="#">更新与维护</a>
+        </div>
+      </aside>
+      <div class="main">
+        <h1>下载器</h1>
+        <p class="sub">qBittorrent · Transmission · 路径映射</p>
+
+        <div class="sec">
+          <div class="sec-h">
+            <h3>默认保存位置</h3>
+            <p>下载时自动记住，按种子分类分别记忆。删除后该分类下次下载会重新弹出完整选择。</p>
+          </div>
+          <table>
+            <thead><tr><th>分类</th><th>保存位置</th><th>下载器</th><th>最近使用</th><th></th></tr></thead>
+            <tbody>
+              <tr>
+                <td><span class="cat"><i></i>动漫</span></td>
+                <td class="p">/media/anime</td>
+                <td>qBittorrent</td>
+                <td class="n">2 天前</td>
+                <td style="text-align:right;white-space:nowrap"><button class="lnk">编辑</button><button class="lnk d">删除</button></td>
+              </tr>
+              <tr>
+                <td><span class="cat"><i></i>电影</span></td>
+                <td><span class="tag">智能入库</span></td>
+                <td>默认下载器</td>
+                <td class="n">5 天前</td>
+                <td style="text-align:right;white-space:nowrap"><button class="lnk">编辑</button><button class="lnk d">删除</button></td>
+              </tr>
+              <tr>
+                <td><span class="cat"><i></i>剧集</span></td>
+                <td><span class="tag">智能入库</span></td>
+                <td>默认下载器</td>
+                <td class="n">昨天</td>
+                <td style="text-align:right;white-space:nowrap"><button class="lnk">编辑</button><button class="lnk d">删除</button></td>
+              </tr>
+              <tr>
+                <td><span class="cat"><i></i>纪录片</span></td>
+                <td class="p">/media/documentary</td>
+                <td>Transmission</td>
+                <td class="n">3 周前</td>
+                <td style="text-align:right;white-space:nowrap"><button class="lnk">编辑</button><button class="lnk d">删除</button></td>
+              </tr>
+              <tr>
+                <td><span class="cat"><i></i>音乐</span></td>
+                <td><span class="tag">下载器默认目录</span></td>
+                <td>qBittorrent</td>
+                <td class="n">3 周前</td>
+                <td style="text-align:right;white-space:nowrap"><button class="lnk">编辑</button><button class="lnk d">删除</button></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="hint" style="margin-top:10px">还没有记录的分类：游戏、成人、其他 —— 首次下载时会弹出完整选择，不需要预先配置。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════ 5. 流程对照 ══════════════ -->
+<section class="screen" id="s5">
+  <p class="note"><b>四个毛病与它们各自的修法。</b>左列是现在的实现，右列是本方案。</p>
+  <div class="cols">
+    <div class="col now">
+      <h4>现在</h4>
+      <p class="lead">apps/web/components/download-target-dialog.tsx</p>
+      <div class="step bad"><i>1</i><div><b>复选框默认不勾</b><small>初值 = 「已有记忆」，第一次必然不勾 → 绝大多数人永远建立不了记忆</small></div></div>
+      <div class="step bad"><i>2</i><div><b>桶键 = <code style="font-family:var(--mono)">media_type ?? "other"</code></b><small>模型推断值，会 null、会随模型版本漂移；动漫/纪录片/综艺全压进三个桶</small></div></div>
+      <div class="step bad"><i>3</i><div><b>命中即静默提交</b><small>点下载种子已进下载器，只能靠 toast 的「更改」事后补救</small></div></div>
+      <div class="step bad"><i>4</i><div><b>预检失败静默回落</b><small>返回 null 直接弹窗，用户不知道为什么点了下载又弹窗</small></div></div>
+      <div class="step bad"><i>5</i><div><b>存 localStorage</b><small>换浏览器/无痕/清缓存即丢；用户看不见也删不掉</small></div></div>
+    </div>
+    <div class="col next">
+      <h4>本方案</h4>
+      <p class="lead">docs/design/download-target-memory.md</p>
+      <div class="step good"><i>1</i><div><b>删掉复选框，自动记忆</b><small>每次提交后写入（目标未变则不写）；系统观察，不要用户预判</small></div></div>
+      <div class="step good"><i>2</i><div><b>桶键 = <code style="font-family:var(--mono)">TorrentCategory</code></b><small>搜索标签栏本身的维度，站点 YAML 声明式映射，8 个桶，不参与推断</small></div></div>
+      <div class="step good"><i>3</i><div><b>确认条</b><small>提交前看得见分类、路径、下载器；一次点击确认，一次点击改</small></div></div>
+      <div class="step good"><i>4</i><div><b>失效必有原因</b><small>展开弹窗并说明是预检未收敛、目录没了还是下载器不可用</small></div></div>
+      <div class="step good"><i>5</i><div><b>成员级专表</b><small>跟人走、跨设备、设置页可管；不动 app_setting（那个改动回退不安全）</small></div></div>
+    </div>
+  </div>
+</section>
+
+<script>
+  const nav = document.getElementById('nav');
+  nav.addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-s]');
+    if (!btn) return;
+    nav.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b === btn));
+    document.querySelectorAll('.screen').forEach((s) => s.classList.toggle('on', s.id === btn.dataset.s));
+    window.scrollTo({ top: 0, behavior: 'instant' });
+  });
+</script>
+</body>
+</html>
