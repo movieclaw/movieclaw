@@ -1799,10 +1799,20 @@ async def _ingest_entry(
     # 文件被记成 CHDWEB 投递，qb 里的 CHDWEB 任务白下、清理证据链也锚错）
     prov_site: str | None = None
     prov_torrent: str | None = None
+    prov_confidence: str | None = None
     if manual_intent is not None:
         prov_site, prov_torrent = manual_intent.site_id, manual_intent.torrent_id
     elif matched_hashes:
-        prov_site, prov_torrent = await _delivery_provenance(session, matched_hashes)
+        prov_site, prov_torrent, prov_confidence = await _delivery_provenance(
+            session, matched_hashes
+        )
+    # 身份来源分档：这条入库记录的身份是怎么来的、有多可信。这一列此前在
+    # 监听导入路径上恒为 NULL——连"用户亲手认领的"和"机器蒙的"都分不出来
+    ledger_identity = _ledger_identity_source(
+        forced=forced_item is not None,
+        identity_source=identity_source,
+        confidence=prov_confidence,
+    )
 
     # auto 规则：识别后决定目标库（docs/design/library-routing.md 2.3）。
     # 订阅/手动下载的已确认身份均沿用提交时定格的库——粘性 + 不让规则
@@ -1959,6 +1969,7 @@ async def _ingest_entry(
                 media_source=DISC_SOURCE,
                 release_group=release_attrs.release_group,
                 source=FileSource.IMPORTED,
+                identity_source=ledger_identity,
                 site_id=prov_site,
                 torrent_id=prov_torrent,
                 added_batch_id=added_batch_id,
@@ -2216,6 +2227,7 @@ async def _ingest_entry(
                 media_source=release_attrs.media_source,
                 release_group=release_attrs.release_group,
                 source=FileSource.IMPORTED,
+                identity_source=ledger_identity,
                 site_id=prov_site,
                 torrent_id=prov_torrent,
                 added_batch_id=added_batch_id,
@@ -2591,11 +2603,41 @@ async def _wanted_identity(session, info_hashes: list[str]) -> tuple[MediaItem |
     return item, library_id
 
 
-async def _delivery_provenance(session, info_hashes: list[str]) -> tuple[str | None, str | None]:
-    """按 info_hash 反查订阅投递记录的 (site_id, torrent_id) 来源戳。
+def _ledger_identity_source(
+    *, forced: bool, identity_source: str | None, confidence: str | None
+) -> str | None:
+    """入库台账的 ``identity_source`` 取值（docs/design/identity-confidence.md §5.3）。
 
-    条目匹配到的 hash 就是这个种子本身，任何同 hash 的投递记录都是它的
-    来源——与身份认领走哪条链无关。查不到（外部种子）返回 (None, None)。
+    - 用户拍板的认领（``forced``）与手动下载确认的身份 → ``MANUAL``：都是人
+      看过并决定过的，对账机制不该自动翻案；
+    - 订阅投递 → 按投递时的证据强度分 ``SUBSCRIPTION_EXACT`` /
+      ``SUBSCRIPTION_GUESS``。旧数据的证据强度未知（台账那两列是本次才加的），
+      按 guess 记——保守：宁可日后多做一次反证体检，不可漏掉真错配；
+    - 名称识别链 → None，由识别链自己的结论覆盖（它有更细的 nfo/path_tag/
+      resolved 分档）。
+    """
+    from movieclaw_db.models.library_file import IdentitySource
+
+    if forced or identity_source == "manual":
+        return IdentitySource.MANUAL.value
+    if identity_source == "subscription":
+        return (
+            IdentitySource.SUBSCRIPTION_EXACT.value
+            if confidence == "exact_id"
+            else IdentitySource.SUBSCRIPTION_GUESS.value
+        )
+    return None
+
+
+async def _delivery_provenance(
+    session, info_hashes: list[str]
+) -> tuple[str | None, str | None, str | None]:
+    """按 info_hash 反查订阅投递记录的来源戳与身份证据强度。
+
+    返回 ``(site_id, torrent_id, identity_confidence)``。条目匹配到的 hash 就是
+    这个种子本身，任何同 hash 的投递记录都是它的来源——与身份认领走哪条链无关。
+    证据强度用于给入库台账的 ``identity_source`` 分档（exact / guess）。
+    查不到（外部种子）返回 (None, None, None)。
     """
     from movieclaw_db.models import SubscriptionDownloadAttempt
 
@@ -2608,8 +2650,8 @@ async def _delivery_provenance(session, info_hashes: list[str]) -> tuple[str | N
     ).scalars()
     for attempt in rows:
         if attempt.site_id:
-            return attempt.site_id, attempt.torrent_id
-    return None, None
+            return attempt.site_id, attempt.torrent_id, attempt.identity_confidence
+    return None, None, None
 
 
 async def _manual_download_identity(

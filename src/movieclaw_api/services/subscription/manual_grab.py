@@ -228,6 +228,7 @@ async def grab_manual(
         upgrade_rows=upgrade_covered,
         upgrade_labels=upgrade_labels,
         manual=True,
+        match=match,
     )
     if not done:
         raise ConflictException(

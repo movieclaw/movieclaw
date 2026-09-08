@@ -991,3 +991,128 @@ async def test_refresh_keeps_user_forced_search_pending(db, monkeypatch) -> None
     async with db.session() as session:
         w = list((await _wanted_map(session, sub.id)).values())[0]
         assert w.next_search_at == forced_at  # 强制仍在排队，未被改回未来档期
+
+
+# ---------------------------------------------------------------------------
+# 身份证据：ID 反证、证据强度选优、证据落台账
+# （docs/design/identity-confidence.md §5）
+# ---------------------------------------------------------------------------
+
+
+async def _set_item_imdb(session, sub, imdb_id: str) -> None:
+    """给夹具条目补一个 IMDb 身份（TMDB 假实现不带这个字段）。"""
+    from movieclaw_db.models import MediaItem
+
+    row = await session.get(MediaItem, sub.media_item_id)
+    row.imdb_id = imdb_id
+    await session.commit()
+
+
+async def test_conflicting_site_imdb_is_rejected_with_an_explanation(db) -> None:
+    """站点标注的 IMDb 与条目不符 → 不投递，且必须留下能读懂的拒绝理由。
+
+    静默拒绝会把漏配变成查不出原因的哑巴故障：站点的 IMDb 是上传者手填的，
+    填错真实存在，用户看到理由才可能判断"这是站点标错了"并手动选种。
+    """
+    async with db.session() as session:
+        sub = await _service(session).create(MediaKind.TV, 200, selected_seasons=[1])
+        await _set_item_imdb(session, sub, "tt32138219")
+        row = await _insert_torrent(
+            session,
+            "wrongimdb",
+            "Test Show S01 2160p WEB-DL",
+            {"media_type": "tv", "year": 2025, "seasons": [1], "resolution": "2160p"},
+            imdb_id="tt3559656",
+            seeders=999,
+        )
+        await evaluate_and_dispatch(session, [row], source="被动匹配")
+
+        wanted = await _wanted_map(session, sub.id)
+        assert all(w.status == WantedStatus.WANTED for w in wanted.values())
+        rejected = [a for a in await _activities(session, sub.id) if a.type == "match_rejected"]
+        assert len(rejected) == 1
+        assert rejected[0].payload["reason_code"] == "identity_id_conflict"
+        assert "tt3559656" in rejected[0].message and "tt32138219" in rejected[0].message
+
+
+async def test_id_backed_candidate_beats_a_higher_seeded_guess(db, monkeypatch) -> None:
+    """选优先看身份证据：IMDb 命中的候选赢过做种数高得多、只靠片名蒙的候选。
+
+    旧排序里做种数能压过身份证据，这正是同名同年错配能走到投递的原因之一。
+    """
+    from importlib import import_module
+
+    dispatch_mod = import_module("movieclaw_api.services.subscription.dispatch")
+    monkeypatch.setenv("SUBSCRIPTION_DISPATCH_DRY_RUN", "false")
+    get_settings.cache_clear()
+
+    async def submit(*args, **kwargs):
+        return (
+            SubmitResult(info_hash="b" * 40, name="Test Show S01", already_exists=False),
+            SimpleNamespace(id=None),
+        )
+
+    monkeypatch.setattr(dispatch_mod, "_submit_real", submit)
+    async with db.session() as session:
+        sub = await _service(session).create(MediaKind.TV, 200, selected_seasons=[1])
+        await _set_item_imdb(session, sub, "tt32138219")
+        attrs = {"media_type": "tv", "year": 2025, "seasons": [1], "resolution": "2160p"}
+        popular_guess = await _insert_torrent(
+            session, "guess", "Test Show S01 2160p WEB-DL", attrs, seeders=999
+        )
+        id_backed = await _insert_torrent(
+            session,
+            "idbacked",
+            "Test Show S01 2160p WEB-DL",
+            attrs,
+            imdb_id="tt32138219",
+            seeders=1,
+        )
+        await evaluate_and_dispatch(session, [popular_guess, id_backed], source="被动匹配")
+
+        attempt = (
+            await session.execute(
+                select(SubscriptionDownloadAttempt).where(
+                    SubscriptionDownloadAttempt.subscription_id == sub.id
+                )
+            )
+        ).scalar_one()
+        assert attempt.torrent_id == "idbacked"
+        # 证据强度同时落进台账，入库时 info_hash 认领据此分级
+        assert attempt.identity_confidence == "exact_id"
+
+
+async def test_dispatch_records_the_identity_evidence(db, monkeypatch) -> None:
+    """只靠片名+年份认下来的投递，台账要如实记成 title_year 并留下命中的别名。"""
+    from importlib import import_module
+
+    dispatch_mod = import_module("movieclaw_api.services.subscription.dispatch")
+    monkeypatch.setenv("SUBSCRIPTION_DISPATCH_DRY_RUN", "false")
+    get_settings.cache_clear()
+
+    async def submit(*args, **kwargs):
+        return (
+            SubmitResult(info_hash="c" * 40, name="Test Show S01", already_exists=False),
+            SimpleNamespace(id=None),
+        )
+
+    monkeypatch.setattr(dispatch_mod, "_submit_real", submit)
+    async with db.session() as session:
+        sub = await _service(session).create(MediaKind.TV, 200, selected_seasons=[1])
+        row = await _insert_torrent(
+            session,
+            "guessonly",
+            "Test Show S01 2160p WEB-DL",
+            {"media_type": "tv", "year": 2025, "seasons": [1], "resolution": "2160p"},
+        )
+        await evaluate_and_dispatch(session, [row], source="被动匹配")
+
+        attempt = (
+            await session.execute(
+                select(SubscriptionDownloadAttempt).where(
+                    SubscriptionDownloadAttempt.subscription_id == sub.id
+                )
+            )
+        ).scalar_one()
+        assert attempt.identity_confidence == "title_year"
+        assert attempt.matched_alias == "Test Show"

@@ -482,8 +482,20 @@ class IdentityMatch:
     pack_seasons: frozenset[int] = frozenset()
     is_complete_series: bool = False
     is_pack: bool = False
-    confidence: str = "title_year"  # exact_id / title_year / title_only（观察用）
+    # exact_id / title_year / title_only。**不是观察量**：消费方按它排选优
+    # 次序（ID 佐证过的候选优先于只靠片名蒙的）、落进投递与入库台账，
+    # 让"这次凭什么认的"一路可追溯（docs/design/identity-confidence.md §5.3）
+    confidence: str = "title_year"
     matched_alias: str | None = None
+    # 外部 ID 冲突的如实报告：两边都有 imdb/douban 且不相等时，这里是一句
+    # 可直接进活动流水的中文说明；None = 无冲突。
+    #
+    # 内核**只报告不裁决**——冲突未必是"我们认错了"，站点的 IMDb 是上传者
+    # 手填的，填错真实存在。而误否决的代价是漏配（订阅永远不满足，用户只
+    # 看得到活动流水里一行字），比错配更难被发现。裁决要结合时长、体积、
+    # 是否存在同名同年孪生条目等上下文，那些内核拿不到，交给消费侧
+    # （docs/design/identity-confidence.md §5.2）
+    id_conflict: str | None = None
 
 
 @dataclass(frozen=True)

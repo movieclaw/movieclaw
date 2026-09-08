@@ -85,7 +85,7 @@
 | 优先级 | 工作项 | 性质 | 改动量 | 依赖 |
 |---|---|---|---|---|
 | **P0** | 修正后的反向对账 + 错种拉黑 ✅**已实现** | **bug 修复** | 小 | 无 |
-| **P1** | 反向 ID 否决 + 置信度贯穿 | 地基 | 小 | 无 |
+| **P1** | 反向 ID 否决 + 置信度贯穿 ✅**已实现** | 地基 | 小 | 无 |
 | **P2** | 隐含码率反证（下载前） | 增强 | 小 | P1 |
 | **P3** | 投递前详情页复核（含 file_list 预检） | 主力 | 中 | P1 |
 | **P4** | 入库时长体检 | 兜底 | 中 | P1 |
@@ -231,15 +231,24 @@ media_item_id, *, lost_sources)`，与既有的 `close_fulfilled_wanted` 并列�
 
 | 冲突形态 | 判断 | 处置 |
 |---|---|---|
-| 冲突 ID 恰好是已知孪生（§9）的 ID | 铁证认错 | 直接否决 + 拉黑 |
-| ID 冲突，且时长/体积反证（§6）也不支持本条目 | 两项独立证据同向 | 直接否决 |
-| ID 冲突，但片名、年份、隐含码率**全都吻合** | 更像站点标错，而不是我们认错 | **转待确认**，不静默否决 |
-| ID 冲突，其余证据不足以判断 | 存疑 | 否决，但活动文案写明"站点标注的 IMDb 与条目不符，若确认是站点标错请手动选种" |
+| 冲突形态 | 判断 | 处置 | 状态 |
+|---|---|---|---|
+| 冲突 ID 恰好是已知孪生（§9）的 ID | 铁证认错 | 直接否决 + 拉黑 | 待 P5 |
+| ID 冲突，且时长/体积反证（§6）也不支持本条目 | 两项独立证据同向 | 直接否决 | 待 P2 |
+| ID 冲突，但片名、年份、隐含码率**全都吻合** | 更像站点标错，而不是我们认错 | **转待确认**，不静默否决 | 待 P2 |
+| ID 冲突，其余证据不足以判断 | 存疑 | 否决，但活动文案写明理由，指路手动选种 | ✅ 已实现 |
 
 `match_identity` 内核只做最保守的一件事：把冲突**如实报告**给消费方（在
 `IdentityMatch` 上加 `id_conflict: str | None`），由 `matching.py` 的消费侧按
 上表裁决。理由是内核拿不到时长/体积/孪生这些上下文，让它单方面 `return None`
 就把可挽回的情况变成了不可见的漏配。
+
+> **P1 落地范围**：内核的如实报告已完整落地；消费侧目前只实现最后一行（其余
+> 上下文尚不存在）。也就是说当下的行为等价于"ID 冲突即否决"，但**留下了完整
+> 的解释**（`reason_code=identity_id_conflict`，文案含双方 ID 与手动选种指路），
+> 且手动选种通道刻意不经过这道否决——`manual_grab` 直接调 `match_identity` +
+> `dispatch`，用户的显式选择永远高于这条自动反证。P2/P5 落地后把上面三行接上
+> 即可，内核不需要再动。
 
 > 这是对本文档初稿的修正：初稿写的是"两边 ID 不等直接 `return None`，守卫方向
 > 与'宁可漏，绝不静默错配'一致，零风险"。方向一致是对的，"零风险"是**过度断言**
@@ -247,17 +256,13 @@ media_item_id, *, lost_sources)`，与既有的 `close_fulfilled_wanted` 并列�
 
 ### 5.3 置信度贯穿三处
 
-**① 选优排序（`matching.py:682`，改一行）**
+**① 选优排序（`matching.py`，改排序键）**
 
-```python
-entries.sort(key=lambda e: (e[1].is_pack, e[3], e[2].score, e[0].seeders or 0), ...)
-#                           ↑ e[1] 是 IdentityMatch，confidence 在手上却没用
-```
-
-现状语义是："只靠片名蒙的、做种数多"的候选会**赢过**"IMDb 精确命中、做种数少"
-的候选。把证据强度（`exact_id` > `title_year` > `title_only`）插到 `is_pack`
-之后、`score` 之前。零成本，严格改善，对缺口侧选优的唯一影响是把更可信的候选
-往前排。
+改前的语义是："只靠片名蒙的、做种数多"的候选会**赢过**"IMDb 精确命中、做种数
+少"的候选。证据强度（`exact_id` > `title_year` > `title_only`）插到 `is_pack`
+之后、洗版档位与 `score` 之前——先要**对的片**，再谈档位和评分。位置在
+`is_pack` 之后是刻意的：「整季包优先」是既有的已确认决策，本次只补身份维度，
+不顺手改包优先的语义。
 
 **② 投递台账（`subscription_download_attempt` 加两列）**
 
@@ -272,8 +277,13 @@ entries.sort(key=lambda e: (e[1].is_pack, e[3], e[2].score, e[0].seeders or 0), 
 - `SUBSCRIPTION_GUESS` —— 投递时只有片名+年份
 
 只有后者需要触发 P4 的时长体检、需要在库里可被审计；前者安静通过。顺带把
-`forced_item`（用户拍板）落成 `MANUAL`、手动下载落成对应档——现在这些信息在
-入库路径上全部丢失，`identity_source` 一律是 NULL。
+`forced_item`（用户拍板）与手动下载确认的身份落成 `MANUAL`——改前这些信息在
+入库路径上全部丢失，`identity_source` 一律是 NULL（那个局部变量
+`identity_source = "subscription"` 只用于选落库目录的文案，从没进过台账）。
+
+取值由 `ingest.py::_ledger_identity_source` 收口。旧数据的证据强度未知（台账那
+两列是本次才加的），按 `SUBSCRIPTION_GUESS` 记——保守：宁可日后多做一次反证
+体检，不可漏掉真错配。
 
 > 枚举扩容对既有对账机制是安全的：`MANUAL` 永不被自动翻案的规则不变，两个新
 > 值与 `RESOLVED`/`NFO` 同属"机器结论"，参与识别器升级后的复核。
@@ -284,15 +294,26 @@ entries.sort(key=lambda e: (e[1].is_pack, e[3], e[2].score, e[0].seeders or 0), 
 P3 是**提升**证据强度的手段，P5 是**要求更高**证据强度的策略，P2/P4 是证据
 强度不足时的反证与事后复核。
 
-### 5.5 验收标准
+### 5.5 验收标准（已落地）
 
-```
-1. 候选 imdb=tt111、条目 imdb=tt222、片名年份全都对得上 → match_identity 返回 None
-2. 同一批候选里 exact_id 的做种数 10、title_year 的做种数 500
-   → 断言选优选中 exact_id 那个
-3. 投递一个 title_year 候选 → 断言 attempt.identity_confidence == "title_year"
-4. 该 attempt 走完入库 → 断言 library_file.identity_source == "subscription_guess"
-```
+`tests/matcher/test_identity.py`（判例文件，按 §10.3 并入而非另起）：
+
+- `test_conflicting_imdb_is_reported_not_silently_dropped` —— 冲突被如实报告，
+  身份仍成立（裁决权在消费侧）
+- `test_missing_id_on_either_side_is_not_a_conflict` —— 只有一边有 ID 不算反证
+- `test_matching_imdb_never_carries_a_conflict` —— ID 命中即 exact_id，另一个 ID
+  对不上只是数据噪音
+- `test_twin_movies_same_title_same_year_are_indistinguishable_by_title` ——
+  §10.3 要求补的**孪生对抗**形态：同一候选喂给同名同年的两个条目都成立，钉死
+  "这不是调阈值能解决的问题"；站点一旦标了 IMDb 两者立刻可分
+
+`tests/api/test_subscription_pipeline.py`（管线）：
+
+- `test_conflicting_site_imdb_is_rejected_with_an_explanation` —— 不投递，且
+  拒绝理由含双方 ID
+- `test_id_backed_candidate_beats_a_higher_seeded_guess` —— ID 命中的候选赢过
+  做种数 999 的 title_year 候选
+- `test_dispatch_records_the_identity_evidence` —— 台账落 `title_year` + 命中别名
 
 ---
 
@@ -613,8 +634,8 @@ confidence，用于统计"title_year-only 投递占比"——这个比例就是�
 
 | 工作项 | 表 | 变更 |
 |---|---|---|
-| P1 | `subscription_download_attempt` | + `identity_confidence` TEXT NULL<br>+ `matched_alias` TEXT NULL |
-| P1 | `library_file.identity_source` | 枚举新增 `subscription_exact` / `subscription_guess`（列本身是 TEXT，无需 DDL） |
+| P1 ✅ | `subscription_download_attempt` | + `identity_confidence` TEXT NULL<br>+ `matched_alias` TEXT NULL（revision `b7e3a9c1d240`） |
+| P1 ✅ | `library_file.identity_source` | 枚举新增 `subscription_exact` / `subscription_guess`（列本身是 TEXT，无需 DDL） |
 | P4 | `library_file` | + `identity_doubt` JSON NULL |
 | P5 | `media_item` | + `identity_twins` JSON NULL |
 

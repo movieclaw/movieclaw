@@ -33,7 +33,7 @@ from movieclaw_db.models import (
     utcnow,
 )
 from movieclaw_db.repositories import SubscriptionRepository
-from movieclaw_matcher import RuleVerdict, TorrentCandidate
+from movieclaw_matcher import IdentityMatch, RuleVerdict, TorrentCandidate
 
 logger = logging.getLogger("movieclaw_api.download_dispatch")
 
@@ -58,6 +58,7 @@ async def dispatch(
     upgrade_rows: list[WantedItem] | None = None,
     upgrade_labels: tuple[str, str] | None = None,
     manual: bool = False,
+    match: IdentityMatch | None = None,
 ) -> bool:
     """把候选投递给下载器，满足给定的一批工单。返回是否有实际投递发生。
 
@@ -69,6 +70,10 @@ async def dispatch(
 
     ``manual``：手动选种投递（用户显式选择）。落在 attempt.manual 上，
     洗版验证据此在"未能证明更优"时保留共存而不是证伪（§13.8）。
+
+    ``match``：身份匹配结果。只取其中的证据强度落台账（"当初凭什么认定这个
+    种子就是这部片"），入库时 info_hash 认领据此分级；None=调用方没有身份
+    上下文（旧调用点），台账留 NULL。
     """
     from movieclaw_api.services.subscription.core import recompute_subscription_status
     from movieclaw_api.services.subscription.matching import (
@@ -219,6 +224,8 @@ async def dispatch(
                 "site_id": candidate.site_id,
                 "torrent_id": candidate.torrent_id,
                 "torrent_title": candidate.title,
+                "identity_confidence": match.confidence if match is not None else None,
+                "matched_alias": match.matched_alias if match is not None else None,
                 "download_name": submit_result.name or None,
                 "save_path": dispatch_dir,
                 "units": [[w.season_number, w.episode_number] for w in all_targets],
@@ -282,6 +289,12 @@ async def dispatch(
                     values["site_id"] = existing_attempt.site_id
                     values["torrent_id"] = existing_attempt.torrent_id
                     values["torrent_title"] = existing_attempt.torrent_title
+                if match is None:
+                    # 本次没有身份上下文（旧调用点）：保住首次投递记下的证据，
+                    # 不用一个空值把它抹掉。有上下文时用新的——同一 hash 再次
+                    # 投递时证据可能已经变强（例如详情页复核补回了 IMDb）
+                    values["identity_confidence"] = existing_attempt.identity_confidence
+                    values["matched_alias"] = existing_attempt.matched_alias
                 if existing_attempt.download_name:
                     values["download_name"] = existing_attempt.download_name
                 if existing_attempt.save_path:

@@ -4,6 +4,12 @@
 1. 外部 ID 精确相等（imdb/douban，详情富化带回）——免费且最可靠；
 2. 别名 × 标题段**覆盖率**匹配 + 年份约束。
 
+外部 ID **不等**同样是信号，但方向相反：走完 2 仍命中时，``IdentityMatch``
+上会带一条 ``id_conflict`` 说明。内核只报告不裁决——站点的 IMDb 是上传者
+手填的，填错真实存在，而误否决的代价（漏配，用户只看得到活动流水里一行字）
+比错配更难被发现。裁决需要时长/体积/孪生条目等内核拿不到的上下文，交给
+消费侧（docs/design/identity-confidence.md §5.2）。
+
 覆盖率而非子串包含，源自真实误配教训：《金特务：本色回归》(김부장) 的 TMDB
 泛化别名 "Mr Kim" 曾以子串命中另一部剧《The Dream Life of Mr Kim》。因此别名
 必须覆盖候选"标题段"（去掉年份/季集/画质等标记后的片名部分）的大多数字符——
@@ -30,6 +36,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from dataclasses import replace
 
 from movieclaw_matcher.models import IdentityMatch, MediaIdentity, TorrentCandidate
 
@@ -232,7 +239,26 @@ def match_identity(
         return None
 
     confidence = "title_year" if attrs.year is not None else "title_only"
-    return _derive_units(candidate, media, confidence=confidence, alias=matched_alias)
+    match = _derive_units(candidate, media, confidence=confidence, alias=matched_alias)
+    # 走到这里说明两边的 ID 没能相等（信号一没命中）。若两边**都有** ID 而它们
+    # 不同，这是一条必须带出去的反证：站点已经明确说了"这是另一部片"，而旧逻辑
+    # 掉到别名匹配就当没看见。内核只报告，裁决在消费侧（见字段注释）
+    if match is not None and (conflict := _id_conflict(candidate, media)):
+        return replace(match, id_conflict=conflict)
+    return match
+
+
+def _id_conflict(candidate: TorrentCandidate, media: MediaIdentity) -> str | None:
+    """两边都有外部 ID 且不相等时，给一句可直接进活动流水的中文说明。
+
+    只在信号一未命中后调用：任一 ID 相等即已按 exact_id 返回，那种情况下
+    另一个 ID 对不上是数据噪音（站点两个链接贴串行），不构成反证。
+    """
+    if candidate.imdb_id and media.imdb_id and candidate.imdb_id != media.imdb_id:
+        return f"站点标注 IMDb {candidate.imdb_id}，本条目是 {media.imdb_id}"
+    if candidate.douban_id and media.douban_id and candidate.douban_id != media.douban_id:
+        return f"站点标注豆瓣 {candidate.douban_id}，本条目是 {media.douban_id}"
+    return None
 
 
 def _year_compatible(media: MediaIdentity, torrent_year: int | None) -> bool:

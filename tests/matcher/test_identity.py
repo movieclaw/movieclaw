@@ -10,13 +10,23 @@ from movieclaw_enrich.models import TorrentAttrs
 from movieclaw_matcher import MediaIdentity, TorrentCandidate, match_identity
 
 
-def _candidate(title: str, subtitle: str = "", **attrs) -> TorrentCandidate:
+def _candidate(
+    title: str,
+    subtitle: str = "",
+    *,
+    imdb_id: str | None = None,
+    douban_id: str | None = None,
+    **attrs,
+) -> TorrentCandidate:
+    """外部 ID 挂在候选本身、其余关键字进 attrs——两者分属不同的层。"""
     return TorrentCandidate(
         site_id="test",
         torrent_id="1",
         title=title,
         subtitle=subtitle,
         attrs=TorrentAttrs(**attrs),
+        imdb_id=imdb_id,
+        douban_id=douban_id,
     )
 
 
@@ -450,3 +460,91 @@ def test_tv_without_any_unit_info_is_unusable() -> None:
         media_type="tv", year=2024,
     )
     assert match_identity(candidate, _tv(["House of the Dragon", "龙之家族"], 2022)) is None
+
+
+# ---------------------------------------------------------------------------
+# 外部 ID 反证：内核如实报告冲突，不自己裁决
+# ---------------------------------------------------------------------------
+
+
+def test_conflicting_imdb_is_reported_not_silently_dropped() -> None:
+    """两边都有 IMDb 且不等：身份照常成立，但带出 id_conflict 让消费侧裁决。
+
+    内核不自己 return None——站点的 IMDb 是上传者手填的，填错真实存在，而误
+    否决的代价是漏配（用户只看得到活动流水里一行字），比错配更难被发现。
+    """
+    candidate = _candidate(
+        "The Odyssey 2026 1080p AMZN WEB-DL DDP5.1 H.264-Group",
+        "",
+        media_type="movie",
+        year=2026,
+        imdb_id="tt3559656",
+    )
+    match = match_identity(candidate, _movie(["The Odyssey"], 2026, imdb_id="tt32138219"))
+    assert match is not None
+    assert match.id_conflict is not None
+    assert "tt3559656" in match.id_conflict and "tt32138219" in match.id_conflict
+
+
+def test_missing_id_on_either_side_is_not_a_conflict() -> None:
+    """只有一边有 ID 不构成冲突——绝大多数站点行根本没标，不能一律当反证。"""
+    candidate = _candidate(
+        "The Odyssey 2026 1080p WEB-DL", "", media_type="movie", year=2026
+    )
+    match = match_identity(candidate, _movie(["The Odyssey"], 2026, imdb_id="tt32138219"))
+    assert match is not None and match.id_conflict is None
+
+    candidate_with_id = _candidate(
+        "The Odyssey 2026 1080p WEB-DL", "", media_type="movie", year=2026, imdb_id="tt3559656"
+    )
+    match = match_identity(candidate_with_id, _movie(["The Odyssey"], 2026))
+    assert match is not None and match.id_conflict is None
+
+
+def test_matching_imdb_never_carries_a_conflict() -> None:
+    """ID 命中即 exact_id，另一个 ID 对不上只是数据噪音（站点链接贴串行）。"""
+    candidate = _candidate(
+        "The Odyssey 2026 1080p WEB-DL",
+        "",
+        media_type="movie",
+        year=2026,
+        imdb_id="tt32138219",
+        douban_id="99999",
+    )
+    match = match_identity(
+        candidate, _movie(["The Odyssey"], 2026, imdb_id="tt32138219", douban_id="11111")
+    )
+    assert match is not None
+    assert match.confidence == "exact_id" and match.id_conflict is None
+
+
+def test_twin_movies_same_title_same_year_are_indistinguishable_by_title(  # noqa: E501
+) -> None:
+    """孪生对抗：同一个候选喂给同名同年的两个条目，只靠片名+年份两边都成立。
+
+    这正是错配的成因（真实案例：2026 年两部《The Odyssey》，诺兰版与
+    Marcel Walz 版）。本用例钉死这个事实——它不是可以靠调覆盖率阈值解决的
+    问题，两边的片名段完全相同；解法只能是引入片名之外的证据（ID / 时长 /
+    体积），见 docs/design/identity-confidence.md。
+    """
+    candidate = _candidate(
+        "The.Odyssey.2026.1080p.AMZN.WEB-DL.DDP5.1.H.264-Group",
+        "",
+        media_type="movie",
+        year=2026,
+    )
+    nolan = _movie(["The Odyssey", "奥德赛"], 2026, imdb_id="tt32138219")
+    walz = _movie(["The Odyssey"], 2026, imdb_id="tt3559656")
+    assert match_identity(candidate, nolan) is not None
+    assert match_identity(candidate, walz) is not None
+
+    # 而站点一旦标了 IMDb，两者立刻可分：正主 exact_id，另一部带冲突反证
+    with_id = _candidate(
+        "The.Odyssey.2026.1080p.AMZN.WEB-DL.DDP5.1.H.264-Group",
+        "",
+        media_type="movie",
+        year=2026,
+        imdb_id="tt3559656",
+    )
+    assert match_identity(with_id, walz).confidence == "exact_id"
+    assert match_identity(with_id, nolan).id_conflict is not None

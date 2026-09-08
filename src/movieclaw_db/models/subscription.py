@@ -378,6 +378,16 @@ class SubscriptionDownloadAttempt(TimestampMixin, table=True):
     site_id: str | None = Field(default=None, description="候选来源站点")
     torrent_id: str | None = Field(default=None, description="站点内种子 ID")
     torrent_title: str = Field(default="", description="投递时的种子标题快照")
+    # 投递时的身份证据强度——"当初凭什么认定这个种子就是这部片"。入库时
+    # info_hash 认领会继承它，据此决定要不要再做一次反证体检；没有它，
+    # "靠 ID 认的"和"只靠片名+年份蒙的"在下游完全无从区分
+    # （docs/design/identity-confidence.md §5.3）
+    identity_confidence: str | None = Field(
+        default=None, description="exact_id / title_year / title_only；NULL=特性上线前的旧数据"
+    )
+    matched_alias: str | None = Field(
+        default=None, description="投递时命中的条目别名；NULL=按外部 ID 命中或旧数据"
+    )
     download_name: str | None = Field(
         default=None,
         sa_column=Column(Text, nullable=True, index=True),

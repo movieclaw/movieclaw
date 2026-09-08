@@ -468,6 +468,28 @@ def to_candidate(row: SiteTorrent) -> TorrentCandidate | None:
     )
 
 
+def _id_conflict_verdict(match: IdentityMatch) -> RuleVerdict:
+    """把内核报告的 ID 冲突包装成一条可进活动流水的拒绝理由。
+
+    借用 RuleVerdict 只是为了复用 ``_log_rejection`` 的去重与单集履历注解，
+    它并非规则过滤的结论——身份阶段就被否掉的候选压根走不到规则那一步。
+    """
+    return RuleVerdict(
+        accepted=False,
+        reason_code="identity_id_conflict",
+        reason_text=(
+            f"站点标注的影片编号与本条目不符（{match.id_conflict}）；"
+            "若确认是站点标错，可在搜索页手动选种投递"
+        ),
+    )
+
+
+# 身份证据强度的选优次序：ID 佐证过的候选永远优先于只靠片名+年份蒙的。
+# 缺了这一档，一个"只靠片名蒙的、做种数多"的候选会赢过"IMDb 精确命中、
+# 做种数少"的候选——正是同名同年错配能走到投递的原因之一。
+_CONFIDENCE_RANK = {"exact_id": 2, "title_year": 1, "title_only": 0}
+
+
 def covered_units(
     match: IdentityMatch,
     open_units: dict[tuple[int, int], WantedItem],
@@ -649,6 +671,22 @@ async def evaluate_and_dispatch(
             if not covered and not upgrade_covered:
                 continue  # 身份命中但既无缺口也无可洗单元，无需任何动作
             summary.identity_hits += 1
+            if match.id_conflict:
+                # 外部 ID 反证：站点明确说了这是另一部片。当下没有别的上下文
+                # 可以推翻它（时长/体积反证与孪生条目探测尚未落地），按保守
+                # 口径否决——但**必须留下解释**：站点的 IMDb 是上传者手填的，
+                # 填错真实存在，用户看到活动流水才可能发现"这是站点标错了"
+                # 并手动选种。静默拒绝会让漏配变成一个查不出原因的哑巴故障
+                summary.rejected += 1
+                await _log_rejection(
+                    repo,
+                    ctx,
+                    candidate,
+                    covered or upgrade_covered,
+                    _id_conflict_verdict(match),
+                    source,
+                )
+                continue
             pack_units = len(match.episodes) or (len(covered) + len(upgrade_covered))
             verdict = evaluate_rules(candidate, ctx.spec, pack_episode_count=pack_units)
             if not verdict.accepted:
@@ -679,8 +717,18 @@ async def evaluate_and_dispatch(
     # 而纯洗版候选按定义不碰缺口单元，两侧的选优互不干扰。
     for media_id, entries in accepted.items():
         ctx = contexts[media_id]
+        # 身份证据强度排在洗版档位与评分之前：先要**对的片**，再谈档位和评分。
+        # 位置在 is_pack 之后是刻意的——"整季包优先"是既有的已确认决策，本次
+        # 只补身份维度，不顺手改包优先的语义
         entries.sort(
-            key=lambda e: (e[1].is_pack, e[3], e[2].score, e[0].seeders or 0), reverse=True
+            key=lambda e: (
+                e[1].is_pack,
+                _CONFIDENCE_RANK.get(e[1].confidence, 0),
+                e[3],
+                e[2].score,
+                e[0].seeders or 0,
+            ),
+            reverse=True,
         )
         remaining = dict(ctx.open_wanted)
         remaining_upgrade = dict(ctx.upgrade_wanted)
@@ -704,6 +752,7 @@ async def evaluate_and_dispatch(
                 source=source,
                 upgrade_rows=upgrade_targets,
                 upgrade_labels=upgrade_labels,
+                match=match,
             )
             if done:
                 summary.dispatched_units += len(targets) + len(upgrade_targets)

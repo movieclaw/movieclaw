@@ -72,7 +72,7 @@ class IdentitySource(StrEnum):
     """library_file.identity_source 的取值——身份是怎么来的。
 
     对账机制据此分级：``MANUAL``（人工认领/复核确认）永不被自动翻案；
-    其余三种是机器结论，识别器升级后允许复核。NULL = 特性上线前的旧数据，
+    其余几种是机器结论，识别器升级后允许复核。NULL = 特性上线前的旧数据，
     视同机器结论参与复核。
     """
 
@@ -80,6 +80,13 @@ class IdentitySource(StrEnum):
     PATH_TAG = "path_tag"  # 目录名 [tmdbid=N] 显式标记
     NFO = "nfo"  # NFO 里的条目级 tmdb id
     RESOLVED = "resolved"  # 名称解析 + TMDB 证据收敛
+    # 订阅投递的 info_hash 认领（docs/design/identity-confidence.md §5.3）：
+    # 身份继承自投递时的匹配结论，**按当初的证据强度分成两档**。
+    # 这个区分是必要的——一个"靠 IMDb 编号认的"和一个"只靠片名+年份蒙的"
+    # 在库里长得一模一样，而后者正是同名同年错配的载体，日后的反证体检
+    # （时长/体积）只该找它，不必打扰前者。
+    SUBSCRIPTION_EXACT = "subscription_exact"  # 投递时有外部 ID 佐证
+    SUBSCRIPTION_GUESS = "subscription_guess"  # 投递时只有片名+年份
     # 本地推断：没有外部身份，标题来自文件名/目录名解析（sidecar NFO 给了
     # 标题时记 NFO）。「其他」库的文件与影视库里认不出的文件都用它
     LOCAL = "local"
