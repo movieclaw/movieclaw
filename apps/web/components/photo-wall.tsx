@@ -253,6 +253,19 @@ function subscribeWall(watcher: (movedPx: number) => void): () => void {
 }
 
 /**
+ * 立刻让墙上所有段重新量一次虚拟化窗口（同步，不等下一帧）。
+ *
+ * 给「代码自己改了 scrollTop」的场合用：scroll 事件要到下一帧才来，中间那一帧
+ * 挂着的还是旧位置附近的瓦片，看起来就是闪一下空墙。库页向上补页时会把墙已
+ * 加载的部分整体往下推、再把 scrollTop 加回去（见 library-detail-view 的前置
+ * 加载补偿），补完调一次这里，这一帧就已经是新位置该挂的那几块。
+ */
+export function remeasureWalls(): void {
+  // 复制一份再遍历：量测里会 setState，React 可能顺手让某个段卸载退订
+  for (const watcher of [...wallWatchers]) watcher(Number.POSITIVE_INFINITY);
+}
+
+/**
  * 本段当前该挂哪一段瓦片：返回 [起, 止) 的下标区间。
  *
  * 一次量测 ＝ 一次 getBoundingClientRect（读段容器本身，不读瓦片里的 <img>

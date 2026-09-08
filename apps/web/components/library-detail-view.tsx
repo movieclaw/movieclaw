@@ -33,6 +33,7 @@ import { PhotoLightbox } from "@/components/photo-lightbox";
 import {
   PhotoTimelineScrubber,
   PhotoWall,
+  remeasureWalls,
   usePhotoWallDensity,
   type PhotoWallDensity,
 } from "@/components/photo-wall";
@@ -495,17 +496,79 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
       });
   }, [libraryId]);
 
+  /* —— 向上补页 ——
+     跳字母 / 回到上次位置会把整个分页窗口换成从该处开始的一页，窗口起点
+     （wallStart）因此不为 0：上方明明还有作品，往上滑却是一堵墙，用户以为
+     "跳过去就只能往下看了"（用户反馈 2026-09-08）。这里补上反方向的分页——
+     墙顶的哨兵提前 600px 触发，把上一页接到已加载内容前面。
+
+     接上去之后墙会整体长高、已加载的内容被往下推，所以补完要按长高的量把
+     scrollTop 加回去，眼下这一屏才纹丝不动。 */
+  const loadingPrev = useRef(false);
+  // 前置加载前滚动容器的高度；null = 本次 items 变化不是前置加载，不必补偿
+  const prependFrom = useRef<number | null>(null);
+  const loadPrev = useCallback(() => {
+    if (loadingPrev.current) return;
+    const until = wallOffset.current;
+    if (until <= 0) return; // 已经到墙首，上方没有东西可补
+    loadingPrev.current = true;
+    // 同 loadMore：作废在途的轮询，否则它拿的是旧窗口的那一页，晚一步回来
+    // 会把刚补上的上文整段抹掉
+    const requestSeq = ++reloadSeq.current;
+    const from = Math.max(0, until - WALL_PAGE_SIZE);
+    listLibraryItems(libraryId, { sort: wallSort.current, limit: until - from, offset: from })
+      .then((prev) => {
+        if (requestSeq !== reloadSeq.current) return;
+        // 一部都没拿到（这一段刚好被删空）：窗口起点保持不动就此打住，
+        // 否则起点一路往前挪、哨兵每次都重新观察，会把这一段空区间反复请求
+        if (prev.length === 0) return;
+        // 起点按**实拿到的条数**回推，而不是按请求的条数：拿少了（并发删除）
+        // 时窗口起点仍与已加载内容对得上，索引条与「上次位置」才不会整体错位
+        const start = until - prev.length;
+        wallOffset.current = start;
+        wallLoaded.current += prev.length;
+        prependFrom.current = scrollElement?.scrollHeight ?? null;
+        setWallStart(start);
+        // 与轮询/追加交叠时同一条目可能拿到两次，按 id 去重再接
+        setItems((current) => {
+          const seen = new Set(current.map((i) => i.media_item_id));
+          return [...prev.filter((i) => !seen.has(i.media_item_id)), ...current];
+        });
+      })
+      // 失败就先不补：哨兵还在墙顶，用户下次滑离再滑回来会重新触发
+      .catch(() => {})
+      .finally(() => {
+        loadingPrev.current = false;
+      });
+  }, [libraryId, scrollElement]);
+
+  // 前置加载的滚动补偿：墙长高了多少就把 scrollTop 加回多少。放 layout effect
+  // 里在绘制前完成；补完立刻让虚拟化窗口重量一次——滚动事件要到下一帧才来，
+  // 不补这一下会闪一帧空墙
+  useLayoutEffect(() => {
+    const before = prependFrom.current;
+    prependFrom.current = null;
+    if (before === null || !scrollElement) return;
+    const grown = scrollElement.scrollHeight - before;
+    if (grown <= 0) return;
+    scrollElement.scrollTop += grown;
+    remeasureWalls();
+  }, [items, scrollElement]);
+
   // 海报墙顶部的锚：跳字母后滚回墙首，否则用户停在原来的滚动位置上，
   // 看到的是新一批的中间，像是"点了没反应"
   const wallTop = useRef<HTMLDivElement>(null);
   const wallGrid = useRef<HTMLDivElement>(null);
   /**
-   * 跳到某个首字母档：换掉整个窗口（而不是继续往后追加），此后照常向下滚动加载。
+   * 跳到某个首字母档：换掉整个窗口（而不是继续往后追加），此后向下照常滚动
+   * 加载，向上由墙顶哨兵把上文补回来（loadPrev）。
    * offset=0 即回到墙首，索引条的「全部」走的也是这条路。
    */
   const jumpTo = useCallback(
     (offset: number) => {
-      loadingMore.current = true; // 跳转期间挡住哨兵，别让旧窗口的追加插进来
+      // 跳转期间两头的哨兵都挡住，别让旧窗口的追加/补页插进来
+      loadingMore.current = true;
+      loadingPrev.current = true;
       // 作废在途的轮询：它拿的是旧窗口的那一页，晚一步回来就把用户刚跳到的
       // 位置又拽回去（表现为"点了字母，一秒后自己跳回墙首"）
       reloadSeq.current += 1;
@@ -516,11 +579,15 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
           setWallStart(offset);
           setItems(page);
           setWallHasMore(page.length >= WALL_PAGE_SIZE);
-          wallTop.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+          // 瞬时而不是平滑：墙上的内容已经整段换掉，平滑滚过去的是一堆不存在
+          // 的旧内容；更要紧的是落地后墙顶哨兵会立刻补上一页，那一下的滚动
+          // 补偿会打断还在跑的平滑动画，把人停在半路上
+          wallTop.current?.scrollIntoView({ block: "start", behavior: "instant" });
         })
         .catch(() => {})
         .finally(() => {
           loadingMore.current = false;
+          loadingPrev.current = false;
         });
     },
     [libraryId],
@@ -1425,7 +1492,12 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
                 有固定高度，加载哨兵与未识别分区必须放进同一列里——否则卡片少时
                 这一行被索引条撑高，分区会被推到一大段空白之下 */}
             <div className="flex items-start gap-2 px-6 max-md:gap-1 max-md:px-4">
-              <div className="min-w-0 flex-1">
+              {/* overflow-anchor:none：向上补页后墙会长高，浏览器自带的滚动锚定
+                  会跟着自己补一次 scrollTop，与我们按长高量做的补偿叠加就是跳两下
+                  （何况 Safari 根本没有滚动锚定）。这一段的位置全部自己算 */}
+              <div className="min-w-0 flex-1 [overflow-anchor:none]">
+                {/* 墙顶还有上文时向上补页：跳字母/回到上次位置之后仍然能往上滑 */}
+                {!gallery && <WallLoadPrev start={wallStart} onReach={loadPrev} />}
                 {gallery ? (
                   <VideoGalleryWall
                     groups={galleryGroups}
@@ -1886,8 +1958,8 @@ function MetadataRefreshPanel({
 /**
  * 「回到上次浏览的位置」胶囊：贴在视口底部中央，与 Toast 同一套浮入语言。
  *
- * 为什么是胶囊而不是直接跳回去：跳转会换掉整个分页窗口（上方的内容不再加载），
- * 这一步得由用户决定——有人回来就是想从头看看新入库了什么。所以只问一句，
+ * 为什么是胶囊而不是直接跳回去：跳转会换掉整个分页窗口（上方的内容要往上滑
+ * 才补回来），这一步得由用户决定——有人回来就是想从头看看新入库了什么。所以只问一句，
  * 不理它往下滑一屏它就让位（见 lib/use-wall-recall.ts），× 是给想立刻清屏的人。
  *
  * z-[45]：压过墙与索引条，但低于弹层（50/60）、灯箱（70）与 Toast（95）——
@@ -1984,6 +2056,43 @@ export function WallLoadMore({
   );
 }
 
+/**
+ * 海报墙顶部的向上加载哨兵（与底部的 WallLoadMore 对称）。
+ *
+ * 窗口起点不为 0 时才挂（跳字母 / 回到上次位置之后）。提前 600px 触发，正常
+ * 上滑速度下上一页在滑到墙顶之前就已到位；跳转刚落地时墙顶正贴着视口顶边，
+ * 它会立刻补一页，于是"跳过去马上往上滑"也是有内容的。
+ *
+ * 零高度、不显示加载态：它加在墙**上方**，一旦露出加载文案就要把整墙往下推，
+ * 与前置加载自己的滚动补偿打架。补页要么已经提前到位，要么慢一点到——不会
+ * 出现"卡住不动"的画面。
+ */
+function WallLoadPrev({ start, onReach }: { start: number; onReach: () => void }) {
+  const sentinel = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const target = sentinel.current;
+    if (!target || start <= 0) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) onReach();
+      },
+      { rootMargin: "600px 0px" },
+    );
+    observer.observe(target);
+    return () => observer.disconnect();
+    // start 每补一页就变一次：重新观察，够到墙顶就接着往上补
+  }, [onReach, start]);
+
+  return (
+    // 外层零高度：哨兵在墙**上方**，占哪怕一像素都要把整面墙推下去。里面那块
+    // 绝对定位、给足 1px——IntersectionObserver 对零面积目标的判定各家浏览器
+    // 并不一致，有一点真实面积才稳
+    <div aria-hidden="true" className="relative h-0">
+      <div ref={sentinel} className="absolute inset-x-0 top-0 h-px" />
+    </div>
+  );
+}
+
 /** A-Z 索引条的完整档位（与后端 sort_key.INITIALS 同序）：# 收尾。 */
 const WALL_INITIALS = [...Array.from({ length: 26 }, (_, i) => String.fromCharCode(65 + i)), "#"];
 
@@ -1996,7 +2105,8 @@ const WALL_INDEX_HEIGHT = `min(${WALL_INDEX_MAX_HEIGHT}px, 72dvh)`;
  * 海报墙右侧的 A-Z 快速定位条。
  *
  * 中文按拼音首字母分档（后端算好，见 sort_key 模块）。选中一档把窗口整体换到
- * 该档起点——墙是分页的，"跳到 S"意味着重新取一页，而不是在已加载的几屏里找。
+ * 该档起点——墙是分页的，"跳到 S"意味着重新取一页，而不是在已加载的几屏里找；
+ * 跳过去之后往上滑，S 上面的内容由墙顶哨兵按需补回来（见 WallLoadPrev）。
  * 空档（该字母下没有作品）保留位置但不可选：字母位置固定，肌肉记忆才成立。
  *
  * 两个关键设计（都为触屏体验）：
