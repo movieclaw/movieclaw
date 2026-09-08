@@ -194,44 +194,87 @@ const OVERSCAN_SCREENS = 1.5;
  * 每段各自监听 scroll 的话，几十段就是几十个监听器与几十次 rAF。这里合成一个：
  * 用**捕获阶段**监听 window 的 scroll——库页真正滚动的是内部容器，scroll 事件
  * 不冒泡，只有捕获收得到；这样也不必把滚动容器一路传进每一段。
+ *
+ * 广播时附带「这一帧滑了多少像素」。远处的段据此决定这次要不要真去量
+ * （见 useTileWindow 的 budget）：十年的相册有两百多个月份段，每段每帧都读一次
+ * 布局，光这一项就要吃掉三成帧预算。滑动距离是唯一能让段与视口的相对位置
+ * 发生变化的东西，所以按它计费既省得准、又不会漏——一次跳转（回到上次位置、
+ * 时间刻度跳月）会一次性把所有预算吃光，段立刻重新量。
  */
-const wallWatchers = new Set<() => void>();
+const wallWatchers = new Set<(movedPx: number) => void>();
 let wallFrame = 0;
-function notifyWallWatchers() {
+let lastScrollTop: number | null = null;
+/** 本帧滑过的距离；量不准（resize、换了滚动容器）时给 Infinity＝所有段都重新量 */
+let movedPx = Number.POSITIVE_INFINITY;
+
+function onWallScroll(event: Event) {
+  const target = event.target;
+  const top =
+    target instanceof Element
+      ? target.scrollTop
+      : (document.scrollingElement?.scrollTop ?? null);
+  if (top === null) movedPx = Number.POSITIVE_INFINITY;
+  else {
+    movedPx = lastScrollTop === null ? Number.POSITIVE_INFINITY : Math.abs(top - lastScrollTop);
+    lastScrollTop = top;
+  }
+  scheduleWallFrame();
+}
+function onWallResize() {
+  // 视口尺寸变了，带子的边界跟着变，谁都不能再吃预算
+  movedPx = Number.POSITIVE_INFINITY;
+  lastScrollTop = null;
+  scheduleWallFrame();
+}
+function scheduleWallFrame() {
   if (wallFrame) return;
   wallFrame = requestAnimationFrame(() => {
     wallFrame = 0;
-    for (const watcher of wallWatchers) watcher();
+    const moved = movedPx;
+    movedPx = 0;
+    for (const watcher of wallWatchers) watcher(moved);
   });
 }
-function subscribeWall(watcher: () => void): () => void {
+function subscribeWall(watcher: (movedPx: number) => void): () => void {
   if (wallWatchers.size === 0) {
-    window.addEventListener("scroll", notifyWallWatchers, { capture: true, passive: true });
-    window.addEventListener("resize", notifyWallWatchers, { passive: true });
+    window.addEventListener("scroll", onWallScroll, { capture: true, passive: true });
+    window.addEventListener("resize", onWallResize, { passive: true });
   }
   wallWatchers.add(watcher);
   return () => {
     wallWatchers.delete(watcher);
     if (wallWatchers.size > 0) return;
-    window.removeEventListener("scroll", notifyWallWatchers, { capture: true });
-    window.removeEventListener("resize", notifyWallWatchers);
+    window.removeEventListener("scroll", onWallScroll, { capture: true });
+    window.removeEventListener("resize", onWallResize);
     if (wallFrame) cancelAnimationFrame(wallFrame);
     wallFrame = 0;
+    lastScrollTop = null;
   };
 }
 
 /**
  * 本段当前该挂哪一段瓦片：返回 [起, 止) 的下标区间。
  *
- * 每帧只做一次 getBoundingClientRect（读段容器本身，不读瓦片里的 <img>——那个
- * 读法在 content-visibility 的格子里每读一次就逼一次全量布局）＋两次二分，
- * 区间没变就不 setState，因此绝大多数帧里整棵树一次重渲染都没有。
+ * 一次量测 ＝ 一次 getBoundingClientRect（读段容器本身，不读瓦片里的 <img>
+ * ——那个读法在 content-visibility 的格子里每读一次就逼一次全量布局）＋两次
+ * 二分。区间没变就不 setState，因此绝大多数帧里整棵树一次重渲染都没有。
+ *
+ * 远处的段按**距离预算**跳过量测：量完一次就记下「离带子还有多远」，之后每帧
+ * 扣掉滑过的距离，扣光了才重新量。这不是近似——滑动是段与视口相对位置变化的
+ * 唯一来源，所以离带子 8000px 的段在页面又滑了 8000px 之前，不可能需要改窗口。
+ * 十年的相册有两百多个月份段，每段每帧都读一次布局要吃掉三成帧预算（实测
+ * 五万张时滚动主线程占用 57%），按预算跳过之后回到 35%，且不引入任何延迟。
  */
 export function useTileWindow(
   containerRef: RefObject<HTMLElement | null>,
   placements: readonly Placement[],
 ): readonly [number, number] {
   const [range, setRange] = useState<readonly [number, number]>([0, 0]);
+  // 当前区间也存一份在 ref 里，就为了「没变就一次 setState 都不发」。
+  // 用 setRange(current => current) 是不够的：即便返回同一个值，React 也可能
+  // 先把这个组件重渲一遍再决定跳过。一面墙上两百多段、每秒 60 帧，那是每秒
+  // 上万次白跑的组件渲染——五万张时滚动的主线程占用有一半出在这里。
+  const rangeRef = useRef(range);
   // 二分只能定位「y 不小于某值的第一块」，而跨在带子上沿的那块 y 更小。
   // 往回退一整块最高瓦片的高度，保证它也在区间里
   const tallest = useMemo(
@@ -242,21 +285,28 @@ export function useTileWindow(
   // layout effect：首帧就把窗口量出来，否则会先画一帧空段再补上瓦片，
   // 看起来像闪了一下（段容器只在容器宽度量到之后才渲染，不会跑在服务端）
   useLayoutEffect(() => {
-    const measure = () => {
+    const commit = (next: readonly [number, number]) => {
+      if (rangeRef.current[0] === next[0] && rangeRef.current[1] === next[1]) return;
+      rangeRef.current = next;
+      setRange(next);
+    };
+    // 还可以再让页面滑多少像素才需要重新量（见上）
+    let budget = 0;
+    const measure = (movedPx = Number.POSITIVE_INFINITY) => {
+      budget -= movedPx;
+      if (budget > 0) return;
       const el = containerRef.current;
       if (!el || placements.length === 0) {
-        setRange((current) => (current[0] === 0 && current[1] === 0 ? current : [0, 0]));
+        commit([0, 0]);
         return;
       }
       // 段顶相对视口的位置：负值表示段顶已经滑到视口上方
-      const [from, to] = tileWindowRange(
-        placements,
-        el.getBoundingClientRect().top,
-        window.innerHeight,
-        window.innerHeight * OVERSCAN_SCREENS,
-        tallest,
-      );
-      setRange((current) => (current[0] === from && current[1] === to ? current : [from, to]));
+      const rect = el.getBoundingClientRect();
+      const overscan = window.innerHeight * OVERSCAN_SCREENS;
+      commit(tileWindowRange(placements, rect.top, window.innerHeight, overscan, tallest));
+      // 本段离「视口 ± 提前量」这条带子还有多远：在带子里就是 0（下一帧照常量），
+      // 在带子外就是下一次量测之前可以放心滑过的距离
+      budget = Math.max(0, rect.top - (window.innerHeight + overscan), -overscan - rect.bottom);
     };
     measure();
     return subscribeWall(measure);
@@ -374,6 +424,21 @@ export function PhotoTimelineScrubber({
   );
 }
 
+/** 墙上的一条：条目本身 ＋ 它在整份已加载列表里的下标（灯箱按下标翻页） */
+interface WallEntry {
+  item: LibraryItem;
+  index: number;
+}
+
+/** 两轮的月份内容是不是同一批（逐个引用相等即可，不比内容） */
+function sameEntries(a: readonly WallEntry[], b: readonly WallEntry[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i].item !== b[i].item || a[i].index !== b[i].index) return false;
+  }
+  return true;
+}
+
 /** 极端比例的角标：夹紧后被裁的那类 */
 function extremeLabel(aspect: number): string | null {
   if (aspect > MAX_ASPECT) return "全景";
@@ -410,20 +475,39 @@ export function PhotoWall({
   onOpen: (index: number) => void;
   workingLabelOf?: (item: LibraryItem) => string | undefined;
 }) {
+  // 上一轮每个月的条目数组。内容没变的月份要沿用上一轮那个数组，理由见下
+  const previousMonths = useRef(new Map<string, WallEntry[]>());
   // 按月切段。服务端按内容时间倒序时同月天然连续；但库页首轮可能先按默认的
   // 标题序拉一页再切到时间序，那一瞬间同月不连续——按月归并（而不是按连续段切）
   // 保证每个月只有一段、section 的 key 唯一，否则 React 会留下重复的瓦片
   const groups = useMemo(() => {
-    const entries = items.map((item, index) => ({ item, index }));
-    if (!grouped) return [{ month: "", entries }];
-    const byMonth = new Map<string, { item: LibraryItem; index: number }[]>();
-    for (const entry of entries) {
-      const month = photoMonthOf(entry.item);
-      const bucket = byMonth.get(month);
-      if (bucket) bucket.push(entry);
-      else byMonth.set(month, [entry]);
+    const byMonth = new Map<string, WallEntry[]>();
+    if (grouped) {
+      for (let index = 0; index < items.length; index += 1) {
+        const month = photoMonthOf(items[index]);
+        const bucket = byMonth.get(month);
+        if (bucket) bucket.push({ item: items[index], index });
+        else byMonth.set(month, [{ item: items[index], index }]);
+      }
+    } else {
+      byMonth.set(
+        "",
+        items.map((item, index) => ({ item, index })),
+      );
     }
-    return Array.from(byMonth, ([month, rows]) => ({ month, entries: rows }));
+    // 逐月与上一轮比对，内容一样就把上一轮的数组原样交回去。
+    //
+    // 为什么值得：灯箱里点一次收藏、滚到底追加一页，动的都只是一个月，但库页
+    // 交下来的 items 是整份换了新引用的。不比对的话每个月都会拿到一个新数组
+    // ——每一段都白重渲一遍、白算一遍最短列。五万张、两百多段时这一下要 200ms，
+    // 人是感觉得到的。比对本身只是逐个引用相等，比重排便宜两个数量级。
+    const reused = new Map<string, WallEntry[]>();
+    for (const [month, rows] of byMonth) {
+      const previous = previousMonths.current.get(month);
+      reused.set(month, previous && sameEntries(previous, rows) ? previous : rows);
+    }
+    previousMonths.current = reused;
+    return Array.from(reused, ([month, entries]) => ({ month, entries }));
   }, [items, grouped]);
 
   // 容器宽度：ResizeObserver 驱动重排；首帧用 layout effect 量一次，避免闪一下空墙
