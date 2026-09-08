@@ -17,7 +17,12 @@ import {
   type PhotoWallDensity,
 } from "@/components/photo-wall";
 import { PosterImage } from "@/components/poster-image";
-import { ZoomLightbox, type ZoomLightboxSlide } from "@/components/zoom-lightbox";
+import {
+  LIGHTBOX_ACTION_CLASS,
+  LIGHTBOX_ACTION_ICON_CLASS,
+  ZoomLightbox,
+  type ZoomLightboxSlide,
+} from "@/components/zoom-lightbox";
 import type { LibraryGalleryGroup, LibraryGalleryImage } from "@/lib/api/libraries";
 import { imageUrl } from "@/lib/image-proxy";
 import { playHref, rememberPlayerReturnPath } from "@/lib/player/play-links";
@@ -599,8 +604,6 @@ export function VideoGalleryLightbox({
   // 收藏的是整部作品（与详情页那颗心同一落点），不是当前这张图或这一集
   const favorite = entry.group.is_favorite;
   const favoriteLabel = favorite ? "取消收藏" : "收藏";
-  const buttonClass =
-    "rounded-full p-2 text-white/70 transition-colors hover:bg-white/[0.12] hover:text-white";
 
   return (
     <ZoomLightbox
@@ -618,9 +621,9 @@ export function VideoGalleryLightbox({
             title={playLabel}
             aria-label={playLabel}
             onClick={play}
-            className={buttonClass}
+            className={LIGHTBOX_ACTION_CLASS}
           >
-            <PlayIcon className="size-[18px]" />
+            <PlayIcon className={LIGHTBOX_ACTION_ICON_CLASS} />
           </button>
           <button
             type="button"
@@ -628,10 +631,10 @@ export function VideoGalleryLightbox({
             aria-label={favoriteLabel}
             aria-pressed={favorite}
             onClick={() => onToggleFavorite(entry.group.media_item_id, !favorite)}
-            className={buttonClass}
+            className={LIGHTBOX_ACTION_CLASS}
           >
             <HeartIcon
-              className={favorite ? "size-[18px] text-[var(--danger)]" : "size-[18px]"}
+              className={`${LIGHTBOX_ACTION_ICON_CLASS} ${favorite ? "text-[var(--danger)]" : ""}`}
               fill={favorite ? "currentColor" : "none"}
             />
           </button>
@@ -639,9 +642,9 @@ export function VideoGalleryLightbox({
             href={detailHref(entry)}
             title="前往影片详情"
             aria-label="前往影片详情"
-            className={buttonClass}
+            className={LIGHTBOX_ACTION_CLASS}
           >
-            <OpenIcon className="size-[18px]" />
+            <OpenIcon className={LIGHTBOX_ACTION_ICON_CLASS} />
           </Link>
         </>
       }

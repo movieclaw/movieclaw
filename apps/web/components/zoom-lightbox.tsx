@@ -48,6 +48,19 @@ import {
  * 一起收放——顶栏都没了、只剩一块面板浮在画面上很怪。
  * Portal 到 body，与 ImageLightbox 同一层叠约定。
  */
+/**
+ * 顶栏图标键的统一形状（关闭键与调用方塞进 ``actions`` 的按钮共用一套）。
+ *
+ * 尺寸与全站顶栏（PAGE_NAV_BUTTON_CLASS）对齐、分两档：移动端 44px——iOS HIG
+ * 的最小可点目标，之前是 `p-2` 撑出的 34px，手指在几颗紧挨的小键之间很容易点错
+ * （用户反馈 2026-09-08）；桌面端 36px（鼠标精度高，44px 反而笨重）。
+ * 图标同比例缩放（约为键径的一半），改动时两档要一起看。
+ */
+export const LIGHTBOX_ACTION_CLASS =
+  "grid size-9 shrink-0 place-items-center rounded-full text-white/70 transition-colors hover:bg-white/[0.12] hover:text-white max-md:size-11";
+/** 顶栏图标键里的图标尺寸，与 LIGHTBOX_ACTION_CLASS 成对使用 */
+export const LIGHTBOX_ACTION_ICON_CLASS = "size-[18px] max-md:size-[22px]";
+
 const STRIP_WINDOW = 30;
 const MIN_ZOOM = 1;
 const MAX_ZOOM = 5;
@@ -655,9 +668,9 @@ export function ZoomLightbox({
             type="button"
             aria-label="关闭 (Esc)"
             onClick={onClose}
-            className="rounded-full p-2 text-white/70 transition-colors hover:bg-white/[0.12] hover:text-white"
+            className={LIGHTBOX_ACTION_CLASS}
           >
-            <XIcon className="size-5" />
+            <XIcon className={LIGHTBOX_ACTION_ICON_CLASS} />
           </button>
         </div>
       </div>

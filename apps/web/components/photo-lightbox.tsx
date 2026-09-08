@@ -3,7 +3,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { DownloadIcon, InfoIcon, XIcon } from "@/components/icons";
-import { ZoomLightbox, type ZoomLightboxSlide } from "@/components/zoom-lightbox";
+import {
+  LIGHTBOX_ACTION_CLASS,
+  LIGHTBOX_ACTION_ICON_CLASS,
+  ZoomLightbox,
+  type ZoomLightboxSlide,
+} from "@/components/zoom-lightbox";
 import {
   type LibraryItem,
   type LibraryItemDetail,
@@ -187,9 +192,9 @@ export function PhotoLightbox({
               title="下载原图"
               aria-label="下载原图"
               onClick={(e) => void downloadOriginal(e)}
-              className="rounded-full p-2 text-white/70 transition-colors hover:bg-white/[0.12] hover:text-white"
+              className={LIGHTBOX_ACTION_CLASS}
             >
-              <DownloadIcon className="size-[18px]" />
+              <DownloadIcon className={LIGHTBOX_ACTION_ICON_CLASS} />
             </a>
           )}
           <button
@@ -198,11 +203,11 @@ export function PhotoLightbox({
             aria-label="拍摄信息"
             aria-pressed={infoOpen}
             onClick={() => setInfoOpen((open) => !open)}
-            className={`rounded-full p-2 transition-colors hover:bg-white/[0.12] hover:text-white ${
-              infoOpen ? "bg-white/[0.12] text-white" : "text-white/70"
-            }`}
+            // 按下态（面板开着）走 aria-pressed 变体：属性选择器压得住共用类里的
+            // text-white/70，不必跟它比类名先后
+            className={`${LIGHTBOX_ACTION_CLASS} aria-pressed:bg-white/[0.12] aria-pressed:text-white`}
           >
-            <InfoIcon className="size-[18px]" />
+            <InfoIcon className={LIGHTBOX_ACTION_ICON_CLASS} />
           </button>
         </>
       }
