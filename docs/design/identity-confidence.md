@@ -88,7 +88,7 @@
 | **P1** | 反向 ID 否决 + 置信度贯穿 ✅**已实现** | 地基 | 小 | 无 |
 | **P2** | 隐含码率反证（下载前） ✅**已实现（shadow）** | 增强 | 小 | P1 |
 | **P3** | 投递前详情页复核 ✅**已实现**（file_list 预检另计，见 §7.6） | 主力 | 中 | P1 |
-| **P4** | 入库时长体检 | 兜底 | 中 | P1 |
+| **P4** | 入库时长体检 ✅**已实现（shadow）** | 兜底 | 中 | P1 |
 | **P5** | 同名同年歧义（按需探测） | 增强 | 中 | P1/P2/P3 |
 
 P0 单独成立，**必须先做**：没有它，P1–P5 的发现能力越强，用户被推进死胡同的
@@ -534,16 +534,29 @@ gap = |probe_duration − tmdb_runtime|
 `claim.py::claim_files`（改挂 + 迁移观看状态 + 改写盘上矛盾的 NFO + 对账 +
 孤儿清理，再加上 P0 的反向对账）。
 
-### 8.6 验收标准
+### 8.6 落地范围：只做了第 1 件
 
-```
-1. 条目 runtime=210、入库文件 probe=88min → 断言文件仍入库、工单仍关闭、
-   identity_doubt 已落、SystemNotice 已点亮
-2. 条目 runtime=120、文件 138min（导演剪辑版）→ 断言不触发
-3. runtime 为 NULL / probe 失败 / 原盘 → 断言不触发
-4. identity_source == SUBSCRIPTION_EXACT → 断言不触发
-5. 触发后走 claim_files 改挂 → 断言告警自动熄灭
-```
+shadow 阶段（§10.2）只落**台账**：`identity_doubt` 写进 `library_file`，外加
+一条 INFO 日志。第 2、3 件（告警点灯、订阅时间线）都是用户可见的，属于"生效"
+而不是"观察"，等校准完再接——现在接上去就是让导演剪辑版和加长版去刷用户的
+待处理事项。
+
+**存疑记录在 shadow 期刻意不做任何清理**（改挂时也不清）。看起来像遗漏，其实
+是校准需要：一条被标了存疑、随后又被用户手动改挂走的记录，正是这条体检**命中
+真错配**的证据——那是整个校准里最有价值的一类样本，清掉就没了。等升格时再补
+"改挂后重算或清空"，那时 `resolve_notices` 也一并接管用户可见的熄灯。
+
+### 8.7 验收标准（已落地）
+
+`tests/api/test_library_ingest_auto.py`：
+
+- `test_runtime_doubt_thresholds` —— 四组边界：§0 现场（210 vs 88，58%/122 分钟）
+  触发；导演剪辑版 +18 分钟（15%）不触发（**本方案最怕的误报**）；30 分钟短片
+  差 8 分钟被绝对值兜住；预告片体量触发
+- `test_runtime_doubt_needs_evidence_and_is_movie_only` —— 证据不足不判、剧集不判
+- `test_subscription_claimed_movie_records_runtime_doubt` —— 端到端：订阅按
+  info_hash 认领的电影时长对不上时，**文件照常入库**、存疑落账、身份来源同时
+  分档为 `subscription_guess`
 
 ---
 
@@ -683,7 +696,7 @@ confidence，用于统计"title_year-only 投递占比"——这个比例就是�
 |---|---|---|
 | P1 ✅ | `subscription_download_attempt` | + `identity_confidence` TEXT NULL<br>+ `matched_alias` TEXT NULL（revision `b7e3a9c1d240`） |
 | P1 ✅ | `library_file.identity_source` | 枚举新增 `subscription_exact` / `subscription_guess`（列本身是 TEXT，无需 DDL） |
-| P4 | `library_file` | + `identity_doubt` JSON NULL |
+| P4 ✅ | `library_file` | + `identity_doubt` JSON NULL（revision `c9f4b1e7a352`） |
 | P5 | `media_item` | + `identity_twins` JSON NULL |
 
 迁移文件命名沿用 `YYYYMMDD_HHMM_<rev>_<slug>.py`。

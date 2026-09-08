@@ -368,3 +368,15 @@ class LibraryFile(TimestampMixin, table=True):
         sa_column=Column(_NullableJson, nullable=True),
         description="身份复核建议；NULL=无待复核建议",
     )
+    # 身份存疑（docs/design/identity-confidence.md §8）：机器发现"这个文件可能
+    # 不是它挂着的那部片"，但**给不出替代条目**——与 review_suggestion 的区别
+    # 就在这里（那个字段的语义是"我觉得应该改成那个"，结构里必须有
+    # media_item_id）。当前唯一的产生者是入库时的时长体检：实测片长与影片
+    # 信息严重不符。存疑**不阻断入库**：踩线更常见的原因是导演剪辑版/加长版，
+    # 拦下来的代价大于收益。形如
+    # {"reason": "runtime_mismatch", "expected_minutes": 210, "actual_minutes": 88}
+    identity_doubt: dict | None = Field(
+        default=None,
+        sa_column=Column(_NullableJson, nullable=True),
+        description="身份存疑记录（无替代条目建议）；NULL=无存疑",
+    )

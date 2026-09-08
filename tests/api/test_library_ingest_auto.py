@@ -303,3 +303,125 @@ async def test_resolve_dispatch_rule_prefers_library_rule_then_auto(db, tmp_path
         assert rule is not None and rule.source_path == str(auto_watch)
         # 没有任何规则可用
         assert await resolve_dispatch_rule(session, None, kind="movie") is None
+
+
+# ---------------------------------------------------------------------------
+# 入库时长体检（docs/design/identity-confidence.md §8）
+# ---------------------------------------------------------------------------
+
+
+def test_runtime_doubt_thresholds() -> None:
+    """两个条件都要满足才算存疑——只用一个都分不开"版本差异"与"认错片"。"""
+    from movieclaw_media.models import MediaKind
+
+    doubt = ingest_mod.runtime_doubt
+
+    # §0 的现场：210 分钟的诺兰版 vs 实测 88 分钟 → 58%、122 分钟，远远踩爆
+    assert doubt(kind=MediaKind.MOVIE, expected_minutes=210, duration_seconds=88 * 60) == {
+        "reason": "runtime_mismatch",
+        "expected_minutes": 210,
+        "actual_minutes": 88,
+    }
+    # 导演剪辑版 +18 分钟：15% < 25%，不报（这是本方案最怕的误报）
+    assert doubt(kind=MediaKind.MOVIE, expected_minutes=120, duration_seconds=138 * 60) is None
+    # 30 分钟短片差 8 分钟：27% 过线但只差 8 分钟，绝对值兜住
+    assert doubt(kind=MediaKind.MOVIE, expected_minutes=30, duration_seconds=38 * 60) is None
+    # 预告片体量：120 分钟的片实测 3 分钟
+    assert doubt(kind=MediaKind.MOVIE, expected_minutes=120, duration_seconds=180) is not None
+
+
+def test_runtime_doubt_needs_evidence_and_is_movie_only() -> None:
+    """证据不足不判；剧集不判（单集时长噪音太大，开了就是噪音源）。"""
+    from movieclaw_media.models import MediaKind
+
+    doubt = ingest_mod.runtime_doubt
+
+    assert doubt(kind=MediaKind.MOVIE, expected_minutes=None, duration_seconds=180) is None
+    assert doubt(kind=MediaKind.MOVIE, expected_minutes=120, duration_seconds=None) is None
+    assert doubt(kind=MediaKind.TV, expected_minutes=45, duration_seconds=180) is None
+
+
+@pytest.mark.asyncio
+async def test_subscription_claimed_movie_records_runtime_doubt(db, tmp_path, monkeypatch):
+    """订阅按 info_hash 认领的电影：时长对不上时留下存疑台账，但**照常入库**。
+
+    订阅认领会短路整条名称识别链，连带跳过 resolve.py 上的佐证/反证机器——
+    这条体检补的就是被跳过的那一次。shadow 阶段只留台账不点灯。
+    """
+    from movieclaw_db.models import RuleSet, Subscription, WantedItem, WantedStatus
+    from movieclaw_downloader import TorrentBrief
+
+    movie_root, watch = tmp_path / "movie", tmp_path / "watch2"
+    watch.mkdir()
+    lib_id = await _make_library(db, name="电影库", root=movie_root, kind="movie")
+    item = await _make_item(db, title="奥德赛", year=2026, genre_ids=[], kind="movie")
+
+    # 影片信息说 210 分钟，实测只有 88 分钟
+    async with db.session() as session:
+        meta = (
+            await session.execute(
+                select(MediaMetadata).where(MediaMetadata.media_item_id == item.id)
+            )
+        ).scalar_one()
+        meta.runtime_minutes = 210
+        await session.commit()
+    short_spec = SimpleNamespace(**{**vars(_FAKE_SPEC), "duration_seconds": 88 * 60})
+    monkeypatch.setattr(ingest_mod, "probe_media", lambda p: short_spec)
+
+    async def identify_none(session, kind, watch_root, main, spec):
+        return None
+
+    monkeypatch.setattr(ingest_mod, "_identify", identify_none)
+
+    async with db.session() as session:
+        rule_set = RuleSet(name="默认", spec={})
+        session.add(rule_set)
+        await session.commit()
+        await session.refresh(rule_set)
+        sub = Subscription(
+            media_item_id=item.id, kind="movie", rule_set_id=rule_set.id, library_id=lib_id
+        )
+        session.add(sub)
+        await session.commit()
+        await session.refresh(sub)
+        session.add(
+            WantedItem(
+                subscription_id=sub.id,
+                media_item_id=item.id,
+                season_number=0,
+                episode_number=0,
+                status=WantedStatus.GRABBED,
+                info_hash="hash-odyssey",
+            )
+        )
+        await session.commit()
+
+    brief = TorrentBrief(
+        name="The.Odyssey.2026",
+        content_name="The.Odyssey.2026",
+        completed=True,
+        info_hash="hash-odyssey",
+    )
+
+    async def briefs():
+        return [brief]
+
+    monkeypatch.setattr(ingest_mod, "_downloader_briefs", briefs)
+
+    entry = watch / "The.Odyssey.2026"
+    entry.mkdir()
+    (entry / "movie.mkv").write_bytes(b"video")
+
+    await ingest_mod._sweep_dir(_auto_rule(watch, "movie"), None, execute_inline=True)
+
+    async with db.session() as session:
+        files = list((await session.execute(select(LibraryFile))).scalars().all())
+    # 照常入库——体检是留痕，不是门禁（踩线更常见的原因是剪辑版/加长版）
+    assert len(files) == 1
+    assert files[0].identity_doubt == {
+        "reason": "runtime_mismatch",
+        "expected_minutes": 210,
+        "actual_minutes": 88,
+    }
+    # 身份来源同时分了档：只有片名+年份的投递记 guess，供体检定位目标
+    assert files[0].identity_source == "subscription_guess"

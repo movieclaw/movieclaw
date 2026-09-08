@@ -1813,6 +1813,17 @@ async def _ingest_entry(
         identity_source=identity_source,
         confidence=prov_confidence,
     )
+    # 时长体检（§8）：订阅按 info_hash 认领身份时会短路整条名称识别链，连带
+    # 跳过 resolve.py 上那套佐证/反证机器；这里补上被跳过的那一次反证。
+    # 已有外部 ID 佐证的（SUBSCRIPTION_EXACT）不必再疑，人工拍板的更不该疑。
+    from movieclaw_db.models.library_file import IdentitySource
+
+    expected_runtime = (
+        await _expected_runtime_minutes(session, item.id)
+        if ledger_identity
+        not in (IdentitySource.MANUAL.value, IdentitySource.SUBSCRIPTION_EXACT.value)
+        else None
+    )
 
     # auto 规则：识别后决定目标库（docs/design/library-routing.md 2.3）。
     # 订阅/手动下载的已确认身份均沿用提交时定格的库——粘性 + 不让规则
@@ -2202,6 +2213,24 @@ async def _ingest_entry(
         assert dest_library is not None and dest_library.id is not None
         # stat 落位后的目标文件（跨盘复制时 mtime 与源不同），size/mtime 一次拿全
         final_stat = final.stat()
+        # 时长体检：**shadow 模式，只留台账不点灯**（§10.2）。触发线是凭经验
+        # 定的，直接弹告警会被导演剪辑版/加长版刷屏；先攒真实触发率与误报率。
+        # 注意它**不阻断入库**——踩线更常见的原因就是版本差异，拦下来的代价
+        # 大于收益，所以定位是"照常入库 + 留痕"，不是门禁
+        doubt = runtime_doubt(
+            kind=kind,
+            expected_minutes=expected_runtime,
+            duration_seconds=file_spec.duration_seconds if file_spec else None,
+        )
+        if doubt:
+            logger.info(
+                "入库时长存疑（shadow，未告警）：《%s》实测 %d 分钟，"
+                "影片信息标注 %d 分钟——可能是认错了片，也可能是剪辑版/加长版：%s",
+                item.title,
+                doubt["actual_minutes"],
+                doubt["expected_minutes"],
+                final.name,
+            )
         await repo.upsert_by_path(
             LibraryFile(
                 library_id=dest_library.id,
@@ -2228,6 +2257,7 @@ async def _ingest_entry(
                 release_group=release_attrs.release_group,
                 source=FileSource.IMPORTED,
                 identity_source=ledger_identity,
+                identity_doubt=doubt,
                 site_id=prov_site,
                 torrent_id=prov_torrent,
                 added_batch_id=added_batch_id,
@@ -2627,6 +2657,58 @@ def _ledger_identity_source(
             else IdentitySource.SUBSCRIPTION_GUESS.value
         )
     return None
+
+
+# 时长体检的触发线（docs/design/identity-confidence.md §8.3）：两个条件**都要**
+# 满足才算存疑。只看比例，30 分钟的纪录短片差 7.5 分钟就报警、噪音爆表；只看
+# 绝对值，210 分钟的片差 15 分钟完全正常、也会报。两条一起才分得开"版本差异"
+# 与"认错片"：210 vs 88 是 58%、122 分钟，远远踩爆；120 分钟正片的导演剪辑版
+# +18 分钟是 15%，不报。
+# ⚠ 需真实数据校准（§10）：先走 shadow 只留台账，看过触发率与误报率再点灯。
+_RUNTIME_DOUBT_RATIO = 0.25
+_RUNTIME_DOUBT_MINUTES = 15
+
+
+def runtime_doubt(
+    *, kind: MediaKind, expected_minutes: int | None, duration_seconds: int | None
+) -> dict | None:
+    """实测片长与影片信息严重不符时给一条存疑记录；证据不足返回 None。
+
+    只对电影：剧集单集时长噪音太大（OP/ED、导视、双集合并、番外），
+    ``MediaEpisode.runtime_minutes`` 本身也常不准，开了就是噪音源——与
+    ``resolve.py::_strong_corroborations`` 里 ``kind is MediaKind.MOVIE``
+    的既有取舍一致。
+
+    这是订阅认领**被跳过的那次反证**：``_wanted_identity`` 命中后直接短路了
+    名称识别链（那条链上挂着 resolve.py 的全套佐证/反证机器），短路本身没错
+    ——前提是投递没错；投递错了，它就是错误的高速通道。
+    """
+    if kind is not MediaKind.MOVIE:
+        return None
+    if not expected_minutes or not duration_seconds:
+        return None
+    actual_minutes = round(duration_seconds / 60)
+    gap = abs(actual_minutes - expected_minutes)
+    if gap <= expected_minutes * _RUNTIME_DOUBT_RATIO or gap <= _RUNTIME_DOUBT_MINUTES:
+        return None
+    return {
+        "reason": "runtime_mismatch",
+        "expected_minutes": expected_minutes,
+        "actual_minutes": actual_minutes,
+    }
+
+
+async def _expected_runtime_minutes(session, media_item_id: int) -> int | None:
+    """条目的片长（media_metadata）；冷门片 TMDB 常缺，缺了体检自动跳过。"""
+    from movieclaw_db.models import MediaMetadata
+
+    return (
+        await session.execute(
+            select(MediaMetadata.runtime_minutes).where(
+                MediaMetadata.media_item_id == media_item_id
+            )
+        )
+    ).scalar_one_or_none()
 
 
 async def _delivery_provenance(
