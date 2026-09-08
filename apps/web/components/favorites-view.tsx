@@ -7,7 +7,8 @@ import type { Route } from "next";
 
 import { useToast } from "@/components/feedback";
 import { MasonryIcon, MoreIcon, PosterGridIcon } from "@/components/icons";
-import { InventoryCell, WALL_GRID_POSTER, WallLoadMore } from "@/components/library-detail-view";
+import { WallLoadMore } from "@/components/library-detail-view";
+import { PosterWall } from "@/components/poster-wall";
 import { PAGE_NAV_BUTTON_CLASS, PageNav } from "@/components/page-nav";
 import { usePhotoWallDensity } from "@/components/photo-wall";
 import {
@@ -105,6 +106,8 @@ export function FavoritesView() {
 
   const loaded = items?.length ?? 0;
   const hasMore = items !== null && loaded < total;
+  /** 收藏是跨库的一面墙，每一格落回它自己所属的库 */
+  const ownerLibraryOf = useCallback((item: FavoriteItem) => item.library_id, []);
   const loadMore = useCallback(() => {
     void load(loaded);
   }, [load, loaded]);
@@ -265,15 +268,13 @@ export function FavoritesView() {
                 />
               </div>
             ) : (
-              <div className={`mt-6 ${WALL_GRID_POSTER}`}>
-                {items.map((item) => (
-                  <InventoryCell
-                    key={item.media_item_id}
-                    item={item}
-                    libraryId={item.library_id}
-                    frameAspect={FAVORITES_FRAME_ASPECT}
-                  />
-                ))}
+              <div className="mt-6">
+                <PosterWall
+                  items={items}
+                  libraryIdOf={ownerLibraryOf}
+                  wide={false}
+                  frameAspect={FAVORITES_FRAME_ASPECT}
+                />
               </div>
             )}
             {/* 两种形态各自分页，哨兵按当前模式接线（图廊按作品数计） */}

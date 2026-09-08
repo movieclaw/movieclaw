@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
@@ -27,7 +27,7 @@ import { PAGE_NAV_BUTTON_CLASS, PageNav } from "@/components/page-nav";
 import { usePageTitle } from "@/lib/use-page-title";
 import { LibraryFormDialog } from "@/components/library-form-dialog";
 import { LIBRARY_KIND_META } from "@/components/library-kind-meta";
-import { effectiveLibraryId, libraryCardAction } from "@/components/library-view";
+import { effectiveLibraryId } from "@/components/library-view";
 import { LibraryOrganizeDialog } from "@/components/library-organize-dialog";
 import { PhotoLightbox } from "@/components/photo-lightbox";
 import {
@@ -37,6 +37,7 @@ import {
   type PhotoWallDensity,
 } from "@/components/photo-wall";
 import { PosterCardVisual, type PosterVisualItem } from "@/components/poster-card";
+import { InventoryCell, PosterWall, WALL_GRID_WIDE } from "@/components/poster-wall";
 import {
   GALLERY_LOAD_MARGIN,
   GALLERY_PAGE_SIZE,
@@ -97,8 +98,8 @@ import { setPlaybackMarks } from "@/lib/api/playback";
 import { listSubscriptions, type Subscription } from "@/lib/api/subscriptions";
 import { HttpError } from "@/lib/http";
 import { formatBytes } from "@/lib/format";
-import { formatLibraryInventorySummary } from "@/lib/library-inventory-summary";
 import { activeWallInitialAtViewport, wallInitialAtOffset } from "@/lib/library-wall-index";
+import { activeInitialAt } from "@/lib/wall-window";
 import {
   firstVisibleAnchorId,
   isReentryAfterAbsence,
@@ -106,7 +107,7 @@ import {
 } from "@/lib/library-wall-recall";
 import { useWallRecall } from "@/lib/use-wall-recall";
 import { formatRelativeTime } from "@/lib/time";
-import { cachedImageUrl, cardVariantFor, imageUrl } from "@/lib/image-proxy";
+import { cachedImageUrl } from "@/lib/image-proxy";
 import { keepIfEqual, reconcileList } from "@/lib/poll-reconcile";
 import { usePermissions } from "@/lib/permissions";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
@@ -144,12 +145,6 @@ function busyText(progress: ScanProgress | null): string {
  * 2. 库存（library_file 台账聚合）：已在磁盘上的作品，格下标注集数/规格/大小；
  * 3. 待识别：扫描认不出身份的文件，按条目目录成组，点候选或填 TMDB ID 整组认领。
  */
-/** 墙的两种列宽：竖版海报（电影库）与横版缩略图（其他库 / 未识别区）。
- *  竖版那档同时给「全部收藏」页复用，两面墙必须是同一套格子。 */
-export const WALL_GRID_POSTER =
-  "grid gap-x-4 gap-y-7 [grid-template-columns:repeat(auto-fill,minmax(148px,1fr))] max-md:gap-x-3 max-md:gap-y-5 max-md:[grid-template-columns:repeat(auto-fill,minmax(140px,1fr))]";
-const WALL_GRID_WIDE =
-  "grid gap-x-4 gap-y-7 [grid-template-columns:repeat(auto-fill,minmax(220px,1fr))] max-md:gap-x-3 max-md:gap-y-5 max-md:[grid-template-columns:repeat(auto-fill,minmax(160px,1fr))]";
 
 /** 海报墙每次向服务端要的格数（首屏一批，滚到底再追加一批）。 */
 /** 未识别分区一次拉取的上限：它不分页，超出的去待处理清单看 */
@@ -891,13 +886,29 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
       (probing && item.probe_pending_count > 0 ? "正在读取规格" : undefined),
     [refreshPhaseById, jobPhaseById, probing],
   );
-  const initialByOffset = useMemo(
-    () => new Map(wallIndex.map((entry) => [entry.offset, entry.initial])),
-    [wallIndex],
-  );
+  /** 单库页的墙：每一格都落回本库 */
+  const ownLibraryId = useCallback(() => libraryId, [libraryId]);
 
-  // 用户滚动时，用每个字母首部影片的 DOM 锚点更新活动字母。滚动事件用
-  // requestAnimationFrame 合帧；每帧最多读取 27 个锚点，与已加载影片数无关。
+  /* —— 拼音索引条的当前字母 ——
+     两面墙两条路：图片库的相册墙按月分段，段是 <section>、永远挂着，仍按
+     DOM 锚点求；海报墙虚拟化之后视口外的格子根本不在 DOM 里，锚点无从谈起，
+     改成按算好的行位置求（PosterWall 把行位置交出来）。后者反而更省——每帧
+     不必再查 DOM。 */
+  const wallGeometry = useRef<{ rowTops: readonly number[]; columns: number } | null>(null);
+  const onWallGeometry = useCallback(
+    (geometry: { rowTops: readonly number[]; columns: number } | null) => {
+      wallGeometry.current = geometry;
+    },
+    [],
+  );
+  // 各字母首部条目在**本窗口内**的下标（整份排序的 offset 减去窗口起点）
+  const wallAnchors = useMemo(
+    () =>
+      wallIndex
+        .map((entry) => ({ initial: entry.initial, index: entry.offset - wallStart }))
+        .filter((anchor) => anchor.index >= 0),
+    [wallIndex, wallStart],
+  );
   useEffect(() => {
     const fallback = wallInitialAtOffset(wallIndex, wallStart);
     setActiveWallInitial(fallback);
@@ -908,15 +919,29 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
       frame = 0;
       const grid = wallGrid.current;
       if (!grid) return;
-      const markers = Array.from(
-        grid.querySelectorAll<HTMLElement>("[data-wall-initial]"),
-        (marker) => ({
-          initial: marker.dataset.wallInitial ?? "",
-          top: marker.getBoundingClientRect().top,
-        }),
-      ).filter((marker) => marker.initial !== "");
       const viewportTop = scrollElement.getBoundingClientRect().top + 1;
-      const next = activeWallInitialAtViewport(markers, viewportTop, fallback);
+      const geometry = wallGeometry.current;
+      const next = photoWall
+        ? activeWallInitialAtViewport(
+            Array.from(
+              grid.querySelectorAll<HTMLElement>("[data-wall-initial]"),
+              (marker) => ({
+                initial: marker.dataset.wallInitial ?? "",
+                top: marker.getBoundingClientRect().top,
+              }),
+            ).filter((marker) => marker.initial !== ""),
+            viewportTop,
+            fallback,
+          )
+        : geometry
+          ? activeInitialAt(
+              wallAnchors,
+              geometry.rowTops,
+              geometry.columns,
+              viewportTop - grid.getBoundingClientRect().top,
+              fallback,
+            )
+          : fallback;
       setActiveWallInitial((current) => (current === next ? current : next));
     };
     const schedule = () => {
@@ -929,7 +954,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
       scrollElement.removeEventListener("scroll", schedule);
       if (frame) cancelAnimationFrame(frame);
     };
-  }, [items.length, probing, scrollElement, wallIndex, wallStart]);
+  }, [items.length, photoWall, probing, scrollElement, wallAnchors, wallIndex, wallStart]);
 
   // 排序切换是**服务端**的事（墙是分页的，本地排只能排到已加载的那几屏）：
   // 阶段一变、或用户在 ⋯ 菜单里换了排序，就换排序键重拉第一页
@@ -1427,41 +1452,33 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
                     <h3 className="text-on-image mb-4 text-body-lg font-semibold text-white/85">
                       海报
                     </h3>
-                    <div ref={wallGrid} className={WALL_GRID_POSTER}>
-                      {wallGroups.posters.map((item) => (
-                        <InventoryCell
-                          key={item.media_item_id}
-                          item={item}
-                          libraryId={libraryId}
-                          workingLabel={workingLabelOf(item)}
-                        />
-                      ))}
+                    <div ref={wallGrid}>
+                      <PosterWall
+                        items={wallGroups.posters}
+                        libraryIdOf={ownLibraryId}
+                        wide={false}
+                        workingLabelOf={workingLabelOf}
+                      />
                     </div>
                     <h3 className="text-on-image mb-4 mt-8 text-body-lg font-semibold text-white/85">
                       缩略图
                     </h3>
-                    <div className={WALL_GRID_WIDE}>
-                      {wallGroups.thumbs.map((item) => (
-                        <InventoryCell
-                          key={item.media_item_id}
-                          item={item}
-                          libraryId={libraryId}
-                          workingLabel={workingLabelOf(item)}
-                        />
-                      ))}
-                    </div>
+                    <PosterWall
+                      items={wallGroups.thumbs}
+                      libraryIdOf={ownLibraryId}
+                      wide
+                      workingLabelOf={workingLabelOf}
+                    />
                   </>
                 ) : (
-                  <div ref={wallGrid} className={wideWall ? WALL_GRID_WIDE : WALL_GRID_POSTER}>
-                    {items.map((item, index) => (
-                      <InventoryCell
-                        key={item.media_item_id}
-                        item={item}
-                        libraryId={libraryId}
-                        wallInitial={initialByOffset.get(wallStart + index)}
-                        workingLabel={workingLabelOf(item)}
-                      />
-                    ))}
+                  <div ref={wallGrid}>
+                    <PosterWall
+                      items={items}
+                      libraryIdOf={ownLibraryId}
+                      wide={wideWall}
+                      workingLabelOf={workingLabelOf}
+                      onGeometry={onWallGeometry}
+                    />
                   </div>
                 )}
                 {/* 图廊与海报墙各自分页，哨兵按当前模式接线（图廊按作品数计） */}
@@ -1865,108 +1882,6 @@ function MetadataRefreshPanel({
     </div>
   );
 }
-
-/** 库存格：真实拥有的作品。点击进**媒体库条目详情**（本地刮削信息 +
- *  片源规格 + 条目操作），不再复用发现页的 TMDB 详情；格下标注库存概况。
- *
- *  memo 化 + reload 的逐条目引用复用（见 lib/poll-reconcile.ts）：轮询快照
- *  里没变化的条目沿用旧对象，这里比对通过就整格跳过——大库轮询时只有真正
- *  变化的格子会重渲染。「全部收藏」页复用同一格（跨库的收藏各带自己的落点库）。 */
-export const InventoryCell = memo(function InventoryCell({
-  item,
-  libraryId,
-  wallInitial,
-  workingLabel,
-  frameAspect,
-}: {
-  item: LibraryItem;
-  libraryId: number;
-  /** 该格是否为某个拼音首字母档的第一部影片；滚动联动只标记这些锚点。 */
-  wallInitial?: string;
-  /** 这一格正被后台处理（整库刷新的阶段 / 扫描补探）时的文案；不在处理为 undefined */
-  workingLabel?: string;
-  /**
-   * 强制锁定框比例。单库页的墙已按主图比例切成竖横两区，每区内比例天然一致，
-   * 不传即按本格主图自选（竖 2:3 / 横 16:9）；而「全部收藏」是跨库按时间排的
-   * 一面墙，不能为了对齐去打散收藏顺序，只能由调用方把整面墙钉死在一个比例上。
-   */
-  frameAspect?: number;
-}) {
-  const inventoryLabel =
-    item.kind === "tv" && item.inventory_summary
-      ? formatLibraryInventorySummary(item.inventory_summary)
-      : null;
-  const visual: PosterVisualItem = {
-    // 本地条目没有 TMDB id：占位 id 只做 key，不会被当成外部 id 请求
-    id: item.tmdb_id != null ? String(item.tmdb_id) : `local:${item.media_item_id}`,
-    source: "tmdb",
-    type: item.kind === "video" || item.kind === "photo" ? undefined : item.kind,
-    title: item.title,
-    year: item.year ?? undefined,
-    rating: 0,
-    // 框比例按分区锁死（竖版 2:3 / 横版 16:9），同一分区里每格等高、片名一条线；
-    // 主图真实比例另传，和框不一致的（4:3 封面、1.5 的横版海报）模糊铺底居中完整显示，
-    // 不按各自真实比例撑格——那样一行里 1.5 与 1.78 的封面高度不一，片名参差。
-    // 调用方给了 frameAspect 就一切照它来（竖横混排的墙，见上面参数注释）
-    aspect: frameAspect ?? (item.primary_aspect >= 1 ? 16 / 9 : 2 / 3),
-    imageAspect: item.primary_aspect,
-    overlayDetails: inventoryLabel ? { primary: inventoryLabel } : undefined,
-    favorite: item.is_favorite,
-    // 海报可能是本地刮削资产的相对路径（断网可用），也可能是 TMDB 图床地址。
-    // 与首页海报墙同样取派生图（竖版 poster-card / 横版 landscape-card）：海报墙
-    // 是全站最大的一张图片网格，直出原图等于每屏多拉三倍字节（见 library-view.tsx
-    // 同名字段的注释）
-    posterUrl: imageUrl(item.poster_url, cardVariantFor(item.primary_aspect)),
-  };
-  // 文件全部缺失的"死条目"：海报置灰，一眼与在位内容区分
-  const dead = item.file_count > 0 && item.missing_count >= item.file_count;
-  // 卡片下方只保留片名与年份；缺失是需要常显的异常，作为唯一例外单独点灯。
-  const abnormalLabel = dead
-    ? "文件已全部缺失"
-    : item.missing_count > 0
-      ? `${item.missing_count} 个文件缺失`
-      : null;
-  return (
-    // content-visibility：视口外的格子跳过布局与绘制，大库海报墙的滚动/更新
-    // 成本只与可见格数相关；intrinsic-size 占住尺寸，滚动条不跳
-    <div
-      data-library-item-id={item.media_item_id}
-      data-wall-initial={wallInitial}
-      className="[contain-intrinsic-size:auto_270px] [content-visibility:auto]"
-    >
-      {/* 后台正在处理的那一格自己点亮：进度面板/胶囊列的是总数或片名，
-          海报墙上也要能一眼看到"正在弄这部"，否则用户得在两处之间对片名 */}
-      <div className="relative">
-        <div className={dead ? "opacity-50 grayscale" : undefined}>
-          <PosterCardVisual
-            item={visual}
-            href={`/library/${libraryId}/item/${item.media_item_id}` as Route}
-            action={libraryCardAction(item)}
-            revealInfoOnTouch
-          />
-        </div>
-        {workingLabel && (
-          <>
-            <span className="pointer-events-none absolute inset-0 rounded-xl ring-2 ring-[var(--info)] ring-offset-0" />
-            {/* 不用 backdrop-blur：海报墙每格一个模糊合成层会放大滚动时的 GPU 压力，底色加实即可 */}
-            <span className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center gap-1.5 rounded-b-xl bg-[rgba(7,12,20,0.92)] px-2 py-1.5 text-micro font-medium text-[var(--info)]">
-              <span className="size-2.5 shrink-0 animate-spin rounded-full border-[1.5px] border-[var(--info)]/30 border-t-[var(--info)]" />
-              <span className="truncate">{workingLabel}</span>
-            </span>
-          </>
-        )}
-      </div>
-      {abnormalLabel && (
-        <p className="text-on-image mt-1.5 flex items-center gap-1.5 truncate text-caption text-[var(--text-muted)]">
-          <span
-            className={`size-1.5 shrink-0 rounded-full ${dead ? "bg-white/30" : "bg-[var(--warn)]"}`}
-          />
-          <span className="truncate">{abnormalLabel}</span>
-        </p>
-      )}
-    </div>
-  );
-});
 
 /**
  * 「回到上次浏览的位置」胶囊：贴在视口底部中央，与 Toast 同一套浮入语言。
