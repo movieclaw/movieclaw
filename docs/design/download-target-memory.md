@@ -114,7 +114,8 @@ class DownloadTargetPref(MemberScopedMixin, TimestampMixin, table=True):
     downloader_id: int | None  # None = 默认下载器
 ```
 
-`updated_at`（来自 `TimestampMixin`）在设置页展示为「最近使用」。
+`updated_at`（来自 `TimestampMixin`）在确认条上展示为「上次用过 · N 天前」——
+它是用户判断这条默认还作不作数的唯一依据，不是装饰。
 
 ### 4.2 为什么不塞进 `app_setting`
 
@@ -164,8 +165,9 @@ class DownloadTargetPref(MemberScopedMixin, TimestampMixin, table=True):
 `playback_state` / `search_history` / `playback_log` 已经在用的写法。
 
 **不做继承**：成员没有自己那份时返回「无记忆」走完整弹窗，而不是回退到超管的。
-继承会让设置页出现成员自己没建过、又不该删的行，语义变浑；且与 `SettingStore`
-「缺记录返默认」的既有红线一致。
+除了与 `SettingStore`「缺记录返默认」的既有红线一致，更直接的原因是确认条会
+显示「上次用过 · N 天前」——把超管的习惯套给一个从没选过的人，这句话就是假的，
+而确认条的全部价值就在于它说的是实话。
 
 权限上无需额外把关：能走到这条路径的只有 `allow_direct_download` 的成员
 （默认 False，`api/deps.py:185` 服务端独立校验）与超管。
