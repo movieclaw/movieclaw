@@ -13,11 +13,18 @@
  *   3. 下载器默认目录兜底：不指定路径，由下载器自行决定。
  * 底部小字引导去「设置 → 下载器」配置路径映射。
  *
- * 保存位置记忆（docs/design/download-target-memory.md）：提交成功即按种子分类
- * （TorrentCategory）记住本次选择，**不需要用户勾选任何东西**。下次点该分类的
- * 「下载」先弹确认条（本文件的 DownloadTargetConfirmBar），看得见落点再确认。
- * 旧版那个「记住本次选择」复选框已删除且不应以任何形式回归——它默认不勾、
- * 又要求用户预判「以后还会不会下同类的」，是这个功能长期形同虚设的根因。
+ * 保存位置记忆（docs/design/download-target-memory.md）：按种子分类
+ * （TorrentCategory）记住选择，下次点该分类的「下载」先弹确认条
+ * （本文件的 DownloadTargetConfirmBar），看得见落点再确认。
+ *
+ * 记忆的建立由弹窗底部的「记住本次选择」复选框把关（用户反馈 2026-09-08：
+ * 第一次选完路径就被悄悄记住，不可接受）。初值 = 该分类是否已有记忆：
+ *   - 首次下载该分类：**不勾**——临时下一次不该留下一条以后一直生效的默认，
+ *     用户没表达过这个意思；
+ *   - 已有记忆（多半是从确认条点「更改」进来的）：**默认勾上**——进来就是为了
+ *     改这条默认，不勾等于改了个寂寞，旧的错默认还留在那儿。
+ * 不勾选时提交请求里不带 category，后端据此跳过 upsert（见
+ * api/routes/downloaders.py 的 _remember_target）。
  */
 
 import Link from "next/link";
@@ -94,6 +101,8 @@ export async function submitRememberedTarget(
     site_id: request.site_id,
     download_url: request.download_url,
     torrent_id: request.torrent_id,
+    // 这条路径必然已有记忆、且用户刚在确认条上确认过它，照常带分类续记——
+    // 确认条上「上次用过 · N 天前」靠这次刷新才说得准
     category: request.category,
     ...libraryPart,
     ...(target.kind === "dir" ? { save_path: target.save_path } : {}),
@@ -198,6 +207,9 @@ function DialogContent({
   const [loadingDownloaders, setLoadingDownloaders] = useState(false);
   const [loadingTarget, setLoadingTarget] = useState(request.identity !== null);
   const [selected, setSelected] = useState<string | null>(null);
+  // 「记住本次选择」：已有记忆时默认勾上（从确认条「更改」进来就是要改它），
+  // 首次下载该分类默认不勾（见文件头注释）
+  const [remember, setRemember] = useState(rememberedTarget !== null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // 下载器切换/候选确认都可能重发预检，只允许最后一次请求更新界面。
@@ -431,8 +443,8 @@ function DialogContent({
       site_id: request.site_id,
       download_url: request.download_url,
       torrent_id: request.torrent_id,
-      // 带上分类 = 提交成功后由后端记住本次选择（不需要用户勾选任何东西）
-      category: request.category,
+      // 只有勾了「记住本次选择」才带分类：后端拿不到分类就不写记忆
+      ...(remember ? { category: request.category } : {}),
       ...(option.kind === "smart" && identity && manualTarget?.tmdb_id != null
         ? {
             auto_route: true,
@@ -578,13 +590,29 @@ function DialogContent({
             </div>
           )}
 
-          {/* 记忆是自动的，这里只陈述事实、不要用户做决定——曾经的复选框
-              默认不勾又要人预判「以后还会不会下同类的」，等于永远不生效 */}
-          <p className="text-sub leading-relaxed text-[var(--text-muted)]">
-            这次的选择会记为「{CATEGORY_LABEL[request.category as TorrentCategory] ??
-              request.category}」的默认位置，之后点「下载」先给你确认一次——
-            随时可以改，或在确认条上「不再记住」。
-          </p>
+          {/* 记住与否由用户自己定：勾了才写记忆，不勾就只作用于这一次下载。
+              勾选态下的副行说明「记住之后会发生什么」，免得用户以为一勾上
+              以后就自动提交了——实际是先弹确认条给他看落点 */}
+          <label className="flex cursor-pointer items-start gap-2.5 rounded-xl border border-white/[0.08] bg-white/[0.03] px-3.5 py-2.5">
+            <input
+              type="checkbox"
+              checked={remember}
+              onChange={(e) => setRemember(e.target.checked)}
+              className="mt-0.5 size-4 shrink-0 cursor-pointer accent-[var(--accent)]"
+            />
+            <span className="min-w-0 flex-1">
+              <span className="block text-ui text-[var(--text)]">
+                记住本次选择，作为「
+                {CATEGORY_LABEL[request.category as TorrentCategory] ?? request.category}
+                」的默认位置
+              </span>
+              <span className="mt-0.5 block text-caption leading-relaxed text-[var(--text-faint)]">
+                {remember
+                  ? "之后点「下载」先给你确认一次落点，随时可以改，或在确认条上「不再记住」。"
+                  : "不勾选就只对这一次下载生效，不会留下默认位置。"}
+              </span>
+            </span>
+          </label>
 
           {showOtherTargets && (
             <p className="text-caption leading-relaxed text-[var(--text-faint)]">
@@ -640,6 +668,7 @@ function targetHeadline(target: DownloadTargetPref, resolvedPath: string | null)
 export function DownloadTargetConfirmBar({
   request,
   target,
+  topmost = false,
   onConfirm,
   onChange,
   onForget,
@@ -647,6 +676,12 @@ export function DownloadTargetConfirmBar({
 }: {
   request: DownloadTargetRequest;
   target: DownloadTargetPref;
+  /**
+   * 触发按钮长在灯箱（z-70）这类高层浮层里时必须置位，与完整弹窗同一口径。
+   * 漏传的后果不是"样式不好看"而是**看起来点了没反应**：确认条按普通弹窗
+   * 的 z-50 渲染，整条被灯箱那层不透明底盖住，用户什么也看不见。
+   */
+  topmost?: boolean;
   onConfirm: () => void;
   onChange: () => void;
   /** 「不再记住」：清除该分类记忆后展开完整弹窗重选 */
@@ -688,7 +723,7 @@ export function DownloadTargetConfirmBar({
   const headline = targetHeadline(target, resolvedPath);
 
   return (
-    <Modal open onClose={onClose} label="确认保存位置">
+    <Modal open topmost={topmost} onClose={onClose} label="确认保存位置">
       <div className="flex items-start gap-3 px-5 pb-3 pt-5">
         <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-[9px] bg-[var(--accent-soft)]">
           <FolderIcon className="size-4 text-[var(--accent)]" />

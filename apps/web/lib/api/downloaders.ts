@@ -372,7 +372,8 @@ export interface DownloadSubmitPayload {
   /**
    * 种子分类（TorrentHit.category）：提交成功后后端按它记住本次的保存位置选择。
    * 分类只有前端拿得到——提交接口的入参是 site_id/download_url/torrent_id，
-   * 后端没有搜索结果上下文。不传就不记（订阅投递等非搜索入口不该产生记忆）。
+   * 后端没有搜索结果上下文。**不传就不记**——这既是订阅投递等非搜索入口不产生
+   * 记忆的方式，也是保存位置弹窗里「记住本次选择」没勾时的表达方式。
    */
   category?: string | null;
   /** 智能入库已确认的 TMDB 条目 ID */

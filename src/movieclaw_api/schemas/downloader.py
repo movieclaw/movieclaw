@@ -429,8 +429,11 @@ class DownloadSubmitPayload(BaseModel):
     tmdb_id: int | None = Field(default=None, description="智能入库已确认的 TMDB 条目 ID")
     # 种子分类（TorrentHit.category）：提交成功后按它记住本次的保存位置选择。
     # 分类只有前端拿得到——提交接口的入参是 site_id/download_url/torrent_id，
-    # 后端没有搜索结果的上下文。缺省/站点未映射分类时归到 other。
-    category: str | None = Field(default=None, description="种子分类，用于记住保存位置")
+    # 后端没有搜索结果的上下文。站点未映射分类时前端归到 other。
+    # **缺省即"不要记"**：搜索页只在用户勾了「记住本次选择」时才带上它。
+    category: str | None = Field(
+        default=None, description="种子分类；带上即表示记住本次保存位置，缺省不记"
+    )
 
     @field_validator("save_path")
     @classmethod

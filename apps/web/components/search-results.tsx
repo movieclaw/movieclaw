@@ -2541,7 +2541,8 @@ const TorrentPosterCard = memo(function TorrentPosterCard({ hit }: { hit: Torren
                 hit={hit}
                 className="flex h-8 items-center rounded-full border border-[#6aa7ff]/50 bg-[#6aa7ff]/25 px-3.5 text-sub font-medium text-white transition-colors hover:bg-[#6aa7ff]/40"
               />
-              {/* 保存位置弹窗要压在灯箱（z-70）之上，否则点了下载什么也看不见 */}
+              {/* 保存位置弹窗与命中记忆时的确认条都要压在灯箱（z-70）之上，
+                  否则点了下载什么也看不见 */}
               <DownloadButton
                 hit={hit}
                 dialogTopmost
@@ -2595,7 +2596,7 @@ function DownloadButton({
 }: {
   hit: TorrentHit;
   className: string;
-  /** 按钮长在灯箱（z-70）里时置位：保存位置弹窗要抬到灯箱之上才看得见 */
+  /** 按钮长在灯箱（z-70）里时置位：保存位置弹窗**与确认条**都要抬到灯箱之上才看得见 */
   dialogTopmost?: boolean;
 }) {
   const { canDirectDownload } = usePermissions();
@@ -2712,6 +2713,9 @@ function DownloadButton({
         <DownloadTargetConfirmBar
           request={confirming.request}
           target={confirming.target}
+          // 灯箱里的下载按钮同样要把确认条抬到灯箱之上：漏了就是"点了没反应"
+          // ——确认条按 z-50 渲染，被灯箱（z-70）的不透明底整条盖住
+          topmost={dialogTopmost}
           onConfirm={() => confirmRemembered(confirming.request, confirming.target)}
           onChange={() => {
             setRequest(confirming.request);
@@ -2724,7 +2728,7 @@ function DownloadButton({
             // 这个默认不对，不是因为不想下载
             void prefs.forget(target.category);
             setFallbackReason(
-              `已清除「${CATEGORY_LABEL[target.category as TorrentCategory] ?? target.category}」的默认位置，这次的选择会成为新的默认。`,
+              `已清除「${CATEGORY_LABEL[target.category as TorrentCategory] ?? target.category}」的默认位置。想重新设一个，在下面勾上「记住本次选择」。`,
             );
             setRequest(req);
           }}
