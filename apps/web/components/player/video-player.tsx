@@ -607,6 +607,9 @@ export function VideoPlayer(props: VideoPlayerProps) {
   const durationMsRef = useRef<number | null>(null);
   durationMsRef.current = durationMs;
 
+  /** 进度条上的章节刻度。会话没换就保持同一个数组身份，免得下游白算一遍 */
+  const chapters = useMemo(() => state.session?.chapters ?? [], [state.session]);
+
   const subtitles = useMemo(() => {
     const session = state.session;
     if (!session) return { options: [], unavailable: [] };
@@ -1501,7 +1504,10 @@ export function VideoPlayer(props: VideoPlayerProps) {
       if (action.type === "seek") {
         // 第二下：撤掉第一下对控制层的开关，净效果只剩跳转
         if (previous) setChromeVisible(previous.chromeBefore);
-        tapRef.current = null;
+        // **链不能断在这里**：连点第三下、第四下要继续累加（YouTube 同款，
+        // 点三下就是 30 秒）。清成 null 的话第三下会退回「开关控制层」，
+        // 而胶囊上的累加读数还在往上走——手上的动作与屏幕说的对不上。
+        tapRef.current = { at: now, chromeBefore: previous?.chromeBefore ?? chromeVisible };
         seekByRef.current(action.seconds);
         // 双击是「盲操作」：没有按钮的按下反馈，必须给方向提示，
         // 且连点累加（点三下显示 30 秒，与键盘同一套胶囊）
@@ -1511,7 +1517,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
       tapRef.current = { at: now, chromeBefore: chromeWasVisibleRef.current };
       setChromeVisible(!chromeWasVisibleRef.current);
     },
-    [flashSeek, revealLock],
+    [flashSeek, revealLock, chromeVisible],
   );
 
   /**
@@ -1689,6 +1695,10 @@ export function VideoPlayer(props: VideoPlayerProps) {
     setPendingSeekMs(null);
   }, []);
 
+  /** 供延时提交的合并计时器读最新值：它跨过一段时间才执行 */
+  const seekToFileMsRef = useRef(seekToFileMs);
+  seekToFileMsRef.current = seekToFileMs;
+
   // 上下界都由 nextSeekTarget / seekToFileMs 里的 clampSeekTarget 收住
   const seekBy = useCallback(
     (seconds: number) => {
@@ -1718,7 +1728,9 @@ export function VideoPlayer(props: VideoPlayerProps) {
         const committed = pending.targetMs;
         pending.targetMs = null;
         setPendingSeekMs(null);
-        if (committed !== null) seekToFileMs(committed);
+        // 走 ref 而不是闭包里的那个：这 400 毫秒里会话可能已经换过一轮
+        // （降档、换轨、心跳自愈），旧闭包会拿着过期的 session/startMs 去跳
+        if (committed !== null) seekToFileMsRef.current(committed);
       }, windowMs);
     },
     [seekToFileMs, cancelPendingSeek],
@@ -2060,6 +2072,20 @@ export function VideoPlayer(props: VideoPlayerProps) {
     mediaSession.setActionHandler("seekbackward", () => seekBy(-10));
     mediaSession.setActionHandler("seekforward", () => seekBy(10));
     mediaSession.setActionHandler("nexttrack", next ? () => onPlayNext() : null);
+    mediaSession.setActionHandler("previoustrack", prev ? () => onPlayPrev() : null);
+    // 锁屏/通知栏那条进度条**能拖**，靠的就是这个动作。不注册的话它要么
+    // 不出现、要么拖了没反应——而 `seekbackward/forward` 顶不了它的位：
+    // 那两个是「±10 秒」按钮，跳到某一点是另一回事（jellyfin-web 同样注册）。
+    try {
+      mediaSession.setActionHandler("seekto", (details) => {
+        if (typeof details.seekTime !== "number") return;
+        // 走 commitSeek：锁屏上拖一下与拖进度条是同一件事，
+        // 在途的连按累积要先撤掉，否则 400ms 后它会把画面拽回去
+        commitSeekRef.current(details.seekTime * 1000);
+      });
+    } catch {
+      // 老浏览器不认这个动作，锁屏上就只剩按钮，不影响播放
+    }
     /**
      * 「切走标签页就自动进画中画」。
      *
@@ -2084,8 +2110,20 @@ export function VideoPlayer(props: VideoPlayerProps) {
     }
     return () => {
       mediaSession.metadata = null;
-      for (const action of ["play", "pause", "seekbackward", "seekforward", "nexttrack"] as const) {
+      for (const action of [
+        "play",
+        "pause",
+        "seekbackward",
+        "seekforward",
+        "nexttrack",
+        "previoustrack",
+      ] as const) {
         mediaSession.setActionHandler(action, null);
+      }
+      try {
+        mediaSession.setActionHandler("seekto", null);
+      } catch {
+        // 同上，没注册上自然也不用清
       }
       try {
         mediaSession.setActionHandler("enterpictureinpicture" as MediaSessionAction, null);
@@ -2093,7 +2131,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
         // 同上，没注册上自然也不用清
       }
     };
-  }, [title, episodeLabel, posterUrl, togglePlay, seekBy, next, onPlayNext, video]);
+  }, [title, episodeLabel, posterUrl, togglePlay, seekBy, next, onPlayNext, prev, onPlayPrev, video]);
 
   /**
    * 原生 HLS 模式：选中的系统字幕轨**常开**（showing），所有表面（内联/
@@ -2454,6 +2492,31 @@ export function VideoPlayer(props: VideoPlayerProps) {
       swipeGestureRef.current = null;
     };
   }, [video, flashAdjust, flashNotice, showSeekPreview, hideSeekPreview]);
+
+  /**
+   * 锁屏/通知栏卡片上的位置与时长。
+   *
+   * 不喂这个，系统那条进度条要么空着、要么停在 0——注册了 `seekto` 却没有
+   * 位置可拖，比不注册更奇怪。跟 `positionMs` 走（约 4Hz）就够：那是给人
+   * 眼看的读数，不需要每帧。
+   *
+   * 两条守卫都是规范要求，违反会抛：`position` 不能超过 `duration`（换会话
+   * 的空档里位置可能短暂越界），`playbackRate` 不能为 0（长按倍速结束的
+   * 那一瞬间读到 0 会把整块卡片清掉）。
+   */
+  useEffect(() => {
+    const mediaSession = navigator.mediaSession;
+    if (!mediaSession?.setPositionState || !durationMs || !video) return;
+    try {
+      mediaSession.setPositionState({
+        duration: durationMs / 1000,
+        position: Math.min(positionMs, durationMs) / 1000,
+        playbackRate: video.playbackRate || 1,
+      });
+    } catch {
+      // 读数暂时自相矛盾（换会话空档）时跳过这一次，下一拍就正常
+    }
+  }, [positionMs, durationMs, video]);
 
   /** 播放中申请防息屏。切到后台会被系统收走，回来时重新申请。 */
   useEffect(() => {
@@ -3050,7 +3113,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
             onToggleFullscreen={toggleFullscreen}
             onMenuOpenChange={setMenuOpen}
             trickplay={trickplay}
-            chapters={state.session?.chapters ?? []}
+            chapters={chapters}
           />
         </div>
       </MediaController>

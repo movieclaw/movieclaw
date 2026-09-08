@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ActivityIcon, CheckIcon, ExpandIcon, GearIcon, ShrinkIcon } from "@/components/icons";
 import type { PlaybackChapterMark } from "@/lib/api/playback";
 import type { AudioOption } from "@/lib/player/audio-tracks";
@@ -323,6 +323,26 @@ export function PlayerControls(props: PlayerControlsProps) {
     }
     return title;
   }, [chapters, hover]);
+  /**
+   * 气泡贴边时夹回轨道内。
+   *
+   * 气泡是「按触点居中」的，拖到两端时有一半会探出播放器——缩略图被裁一半、
+   * 章节名直接跑到画面外（加了章节名之后更宽，更明显）。ArtPlayer 与
+   * jellyfin-web 都在这里夹一次，我们此前漏了。
+   *
+   * 夹的是渲染后的实际宽度，所以只能在布局阶段直接改 style，不走 state——
+   * 用 state 会「渲染 → 量 → 再渲染」抖一帧。
+   */
+  const bubbleRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const bubble = bubbleRef.current;
+    if (!bubble || !hover) return;
+    const trackWidth = bubble.parentElement?.clientWidth ?? 0;
+    const half = bubble.offsetWidth / 2;
+    const max = Math.max(half, trackWidth - half);
+    bubble.style.left = `${Math.min(Math.max(hover.x, half), max)}px`;
+  }, [hover, previewTile, hoverChapter]);
+
   const buffered =
     durationMs && bufferedEndMs ? Math.min(100, (bufferedEndMs / durationMs) * 100) : 0;
 
@@ -346,7 +366,13 @@ export function PlayerControls(props: PlayerControlsProps) {
   const paint = useCallback(() => {
     const { video: el, startMs: origin, durationMs: total, positionMs: state, shown: override } =
       paintInputRef.current;
-    if (!total) return;
+    if (!total) {
+      // 片长未知（换会话的空档）时进度条是禁用态：**必须清零**而不是直接
+      // 返回——留着上一路会话画的宽度，用户看到的是一条与新内容无关的进度。
+      if (playedRef.current) playedRef.current.style.width = "0%";
+      if (thumbRef.current) thumbRef.current.style.left = "0%";
+      return;
+    }
     // 位置取值三选一，优先级与时间文字一致：
     // 1. 拖动/横滑/连按的落点（override，此时 shown ≠ positionMs）；
     // 2. **正在播**的 video——只有这一条是每帧变化的；
@@ -371,14 +397,16 @@ export function PlayerControls(props: PlayerControlsProps) {
     // 合帧：排下一帧前先撤掉上一帧，保证一帧最多写一次 DOM（emby-slider
     // 同款做法）。事件与 rAF 会在同一帧里同时要求重绘，不合帧就是重复布局。
     let frame = 0;
+    let loop = 0;
     const schedule = () => {
+      // 循环在跑时它这一帧本来就会画，再排一帧就是同一帧写两次
+      if (loop) return;
       if (frame) cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => {
         frame = 0;
         paint();
       });
     };
-    let loop = 0;
     const tick = () => {
       paint();
       loop = requestAnimationFrame(tick);
@@ -525,6 +553,7 @@ export function PlayerControls(props: PlayerControlsProps) {
               压着下缘，64px 让预览完整露在指尖上方。 */}
           {hover ? (
             <div
+              ref={bubbleRef}
               className="pointer-events-none absolute bottom-8 -translate-x-1/2 pointer-coarse:bottom-16"
               style={{ left: hover.x }}
             >
