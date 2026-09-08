@@ -682,6 +682,13 @@ compression、参数集只在 CodecPrivate、开放 GOP……穷举不完。因�
    → 兜底档仍失败 → 中文错误 + 诊断面板 + 建议用第三方播放器
 ```
 
+**降档不是解码错误的第一反应**（2026-09-08 补）：hls.js 的 fatal
+`MEDIA_ERROR` 先走两级就地自救（`recoverMediaError` → `swapAudioCodec` +
+`recoverMediaError`，冷却 3 秒，判定在 `lib/player/media-recover.ts`），两级
+都救不回来才进上面这条回路。理由是代价不对称：自救约一秒且画质不变，降档
+是画质掉一级 + 几秒黑屏重开会话，而这类错误里相当一部分 hls.js 自己就能
+处理（docs/design/player-feel.md §2.D1）。
+
 降档事件要落进指标（§8），它是「决策引擎判错了多少」的直接度量。
 
 ### 6.4 iOS：P0 就要定的决策
@@ -754,8 +761,11 @@ iOS Safari 是整件事最难的一块：MSE 只有 `ManagedMediaSource` 子集�
 
 - 画中画：自动路径 + 顶栏手动键均已实现（§6.8）；Document PiP 待评估。
 - **AirPlay**（Safari 加 `x-webkit-airplay`，近乎免费）。
-- 移动端手势（双击快进、上下滑音量/亮度、长按倍速）。
-- 播放速率 + `preservesPitch`；逐帧步进。
+- ~~移动端手势（双击快进、上下滑音量/亮度、长按倍速）~~ 已实施
+  （2026-09-08：竖滑亮度/音量与横滑拖进度更早；本轮补上触屏双击左右
+  ±10 秒、长按 2× 倍速、横屏锁屏，见 player-feel.md §2.B）。
+- 播放速率：长按倍速已实施（带 `preservesPitch`）；**倍速菜单**仍待做。
+  ~~逐帧步进~~ 已实施（暂停时 `.` / `,`，帧率取台账真值）。
 - **响度归一化**：入库时 `ffmpeg -af loudnorm=print_format=json` 算 EBU R128
   参数存库，播放时 WebAudio `GainNode` 补偿。不同片源音量差异能到 15dB，
   用户切着看要反复调音量——很少有人做，但感知极强。
@@ -763,7 +773,8 @@ iOS Safari 是整件事最难的一块：MSE 只有 `ManagedMediaSource` 子集�
 **P2**
 
 - 跳过片头/片尾（同季各集音频指纹匹配；可复用现有 ML/ONNX 基建，是差异化点）。
-- 章节标记。
+- ~~章节标记~~ 已实施（2026-09-08：进度条竖条 + 拖动气泡里的章节名；
+  合成章节不下发，见 player-feel.md §2.C1）。
 - Google Cast（要注册接收端应用，成本高，最后做）。
 
 ### 6.6 自动播放：手势撑不过起播链路

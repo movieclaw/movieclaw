@@ -87,8 +87,11 @@ COLLECTOR = """
   };
   const existing = document.querySelector('video');
   if (existing) attach(existing);
+  // 挂在 document 而不是 documentElement：初始化脚本跑在 documentElement
+  // 存在之前，observe(null) 会抛异常把采集器从这一行起整段掐掉——表现是
+  // 页面明明在播、读数却全是空的（2026-09-08 排查 e2e_player_feel 时发现）
   new MutationObserver(() => attach(document.querySelector('video'))).observe(
-    document.documentElement, { childList: true, subtree: true },
+    document, { childList: true, subtree: true },
   );
 }
 """
@@ -120,9 +123,13 @@ async def run(args: argparse.Namespace) -> dict:
         context = await browser.new_context(viewport={"width": 1440, "height": 900})
         page = await context.new_page()
 
-        await page.goto(f"{args.web}/login", wait_until="domcontentloaded")
-        await page.fill('input[name="username"]', args.user)
-        await page.fill('input[type="password"]', args.password)
+        await page.goto(f"{args.web}/login", wait_until="networkidle")
+        # 登录表单是受控组件且输入框没有 name：只能按类型定位，且必须真实
+        # 键入——fill() 设的值不触发 React 的 onChange，提交键会一直是禁用的
+        await page.click('input[type="text"]')
+        await page.keyboard.type(args.user)
+        await page.click('input[type="password"]')
+        await page.keyboard.type(args.password)
         await page.click('button[type="submit"]')
         await page.wait_for_url(lambda url: "/login" not in url, timeout=30_000)
 

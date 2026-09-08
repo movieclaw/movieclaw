@@ -1913,7 +1913,8 @@ export function VideoPlayer(props: VideoPlayerProps) {
   }, [video]);
 
   /** 桌面惯例：双击画面进/出全屏（YouTube/Netflix 网页端同款）。只认鼠标——
-   * 触屏的双击就是两次控制层开关，净效果回到原状，不搭全屏的车。 */
+   * 触屏的双击另有含义（左右三分之一 = 退/进十秒，见 onSurfaceClick），
+   * 一个手势不能在同一种指针上有两种结果。 */
   const onSurfaceDoubleClick = useCallback(() => {
     if (lastPointerTypeRef.current !== "mouse") return;
     toggleFullscreen();
