@@ -1698,10 +1698,12 @@ export function VideoPlayer(props: VideoPlayerProps) {
         deltaMs: seconds * 1000,
         durationMs: durationMsRef.current,
       });
-      const windowMs = seekBatchWindowMs(mode?.seekBeyondBufferedRestarts ?? false);
+      const windowMs = seekBatchWindowMs({
+        hasSession: Boolean(sessionIdRef.current),
+        buffered: isCheapSeekRef.current(target),
+      });
       if (windowMs <= 0) {
-        // VOD 全片列表 / 档 0 直出：seek 就是播放器内跳转，成本近乎零，
-        // 立刻执行手感最好——这里合并只是凭空加延迟。
+        // 便宜的跳转立刻执行，手感最好——这里合并只是凭空加延迟
         cancelPendingSeek();
         seekToFileMs(target);
         return;
@@ -1719,7 +1721,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
         if (committed !== null) seekToFileMs(committed);
       }, windowMs);
     },
-    [seekToFileMs, cancelPendingSeek, mode],
+    [seekToFileMs, cancelPendingSeek],
   );
 
   /** 供点击/触摸回调读最新值：它们定义在 seekBy 之前，且不该跟着它重绑 */
@@ -1749,21 +1751,36 @@ export function VideoPlayer(props: VideoPlayerProps) {
    * 让缓冲永远建立不起来。
    */
   const lastScrubAtRef = useRef(0);
+
+  /**
+   * 这一跳贵不贵：落点已在缓冲里、或档 0 直出（整个文件随便跳）就是零成本，
+   * 否则转码会话要按分片请求把 ffmpeg 杀掉重启直奔目标。
+   *
+   * 拖动实时跟随（只在便宜时跟）与连按合并（只在贵时等）共用同一条判据。
+   */
+  const isCheapSeek = useCallback(
+    (fileMs: number) => {
+      if (!video) return false;
+      if (mode?.engine === "direct") return true;
+      return isWithinRanges(video.buffered, toSessionSeconds(fileMs, startMsRef.current));
+    },
+    [video, mode],
+  );
+  const isCheapSeekRef = useRef(isCheapSeek);
+  isCheapSeekRef.current = isCheapSeek;
+
   const scrubTo = useCallback(
     (fileMs: number) => {
       if (!video) return;
       const now = performance.now();
       if (now - lastScrubAtRef.current < 100) return;
       const seconds = toSessionSeconds(fileMs, startMsRef.current);
-      if (seconds < 0) return;
-      const free =
-        mode?.engine === "direct" || isWithinRanges(video.buffered, seconds);
-      if (!free) return;
+      if (seconds < 0 || !isCheapSeek(fileMs)) return;
       lastScrubAtRef.current = now;
       if (engineRef.current?.seek) engineRef.current.seek(seconds);
       else video.currentTime = seconds;
     },
-    [video, mode],
+    [video, isCheapSeek],
   );
 
   /**

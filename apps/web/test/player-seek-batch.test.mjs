@@ -7,10 +7,15 @@ import {
   seekBatchWindowMs,
 } from "../lib/player/seek-batch.ts";
 
-test("只有「一次 seek = 一次会话重启」的转码会话才合并", () => {
-  assert.equal(seekBatchWindowMs(true), SEEK_BATCH_WINDOW_MS);
-  // VOD 全片列表 / 档 0 直出：跳转在播放器内完成，合并只是凭空加延迟
-  assert.equal(seekBatchWindowMs(false), 0);
+test("贵的跳转才合并：转码会话 + 落点在缓冲之外", () => {
+  assert.equal(seekBatchWindowMs({ hasSession: true, buffered: false }), SEEK_BATCH_WINDOW_MS);
+});
+
+test("便宜的跳转立刻执行：档 0 直出没有会话，落点已缓冲则零成本", () => {
+  // 判据是「这一跳贵不贵」而不是「会不会换会话」——VOD 预生成列表同样会让
+  // 服务端把 ffmpeg 杀掉重启直奔目标分片，只是不换会话而已
+  assert.equal(seekBatchWindowMs({ hasSession: false, buffered: false }), 0);
+  assert.equal(seekBatchWindowMs({ hasSession: true, buffered: true }), 0);
 });
 
 test("连按在累积落点上继续加，而不是每次都从当前位置起算", () => {

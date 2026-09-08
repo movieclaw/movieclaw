@@ -25,12 +25,21 @@ export const SEEK_BATCH_WINDOW_MS = 400;
 /**
  * 这次跳转要不要合并。
  *
- * 只有「一次 seek = 一次会话重启」的转码会话值得等：VOD 全片列表与档 0
- * 直出的 seek 就是播放器内跳转，成本近乎零，立刻执行手感最好——那里合并
- * 反而是凭空加 400ms 延迟。
+ * 判据是**这一跳贵不贵**，而不是「会不会换会话」：
+ *
+ * - 落点已经在缓冲里（或档 0 直出，整个文件随便跳）→ 零成本，立刻执行。
+ *   那里合并只是凭空加 400ms 延迟。
+ * - 落点在缓冲之外、且这是一路转码会话 → 服务端要按分片请求把 ffmpeg 杀掉
+ *   重启直奔目标（VOD 预生成列表同样如此，它只是把这件事从换会话变成了
+ *   换分片）。连按三次就是连着捅三刀，值得等 400 毫秒并成一次。
  */
-export function seekBatchWindowMs(restartsOnSeek: boolean): number {
-  return restartsOnSeek ? SEEK_BATCH_WINDOW_MS : 0;
+export function seekBatchWindowMs(input: {
+  /** 有没有一路转码会话（档 0 直出没有） */
+  hasSession: boolean;
+  /** 落点是否落在已缓冲区间内 */
+  buffered: boolean;
+}): number {
+  return input.hasSession && !input.buffered ? SEEK_BATCH_WINDOW_MS : 0;
 }
 
 /**
