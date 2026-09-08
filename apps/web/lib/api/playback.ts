@@ -579,6 +579,12 @@ export interface PlaybackDiagnostics {
   total_segments: number | null;
 }
 
+/** 进度条上的章节刻度（docs/design/player-feel.md §2.C1）。合成章节不下发 */
+export interface PlaybackChapterMark {
+  start_ms: number;
+  title: string | null;
+}
+
 export interface PlaybackSession {
   decision: PlaybackDecision;
   /** 档 0 没有会话（原文件直出），此处为 null */
@@ -597,6 +603,8 @@ export interface PlaybackSession {
   subtitle_urls: string[];
   /** 实际使用的硬件加速后端；null = 纯软件（直通档不经编码器，同样为 null） */
   hw_backend: string | null;
+  /** 进度条上的章节刻度；没有内嵌章节的文件是空表（合成章节服务端不下发） */
+  chapters?: PlaybackChapterMark[];
   /** 本单元的观看状态快照（§6.10）。续播点已由服务端并入 start_ms，这里
    * 整份带回给前端预填时间轴、恢复字幕记忆——起播不再单独问 /resume */
   watch: PlaybackWatchState | null;

@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIcon, CheckIcon, ExpandIcon, GearIcon, ShrinkIcon } from "@/components/icons";
+import type { PlaybackChapterMark } from "@/lib/api/playback";
 import type { AudioOption } from "@/lib/player/audio-tracks";
 import { SUBTITLE_OFFSET_STEP, clampSubtitleOffset } from "@/lib/player/subtitles";
 import { QUALITY_OPTIONS } from "@/lib/player/quality";
@@ -198,6 +199,12 @@ export interface PlayerControlsProps {
   /** 控制条是否可见。进度条与其它控件一起淡入淡出（全出全收） */
   chromeVisible: boolean;
   onSeek: (fileMs: number) => void;
+  /**
+   * 拖动过程中的实时跟随。父组件自己判断这次跳转值不值得做（跳转不要钱的
+   * 直通/已缓冲区间才跟随，转码会话拖出缓冲要换会话，一路拖过去就是连着
+   * 捅十几刀），这里只管把落点递过去。
+   */
+  onScrub: (fileMs: number) => void;
   subtitles: SubtitleTracks;
   selectedSubtitle: string | null;
   onSelectSubtitle: (ref: string | null) => void;
@@ -238,6 +245,8 @@ export interface PlayerControlsProps {
   onMenuOpenChange: (open: boolean) => void;
   /** 进度条缩略图索引。null = 还没生成好，表现为没有预览 */
   trickplay: TrickplayIndex | null;
+  /** 章节刻度（文件毫秒）。空表 = 这个文件没有内嵌章节，轨道保持干净 */
+  chapters: PlaybackChapterMark[];
 }
 
 export function PlayerControls(props: PlayerControlsProps) {
@@ -250,6 +259,7 @@ export function PlayerControls(props: PlayerControlsProps) {
     bufferedEndMs,
     chromeVisible,
     onSeek,
+    onScrub,
     subtitles,
     selectedSubtitle,
     onSelectSubtitle,
@@ -273,6 +283,7 @@ export function PlayerControls(props: PlayerControlsProps) {
     onSelectQuality,
     onMenuOpenChange,
     trickplay,
+    chapters,
   } = props;
 
   // 拖动中的本地值：直接跟 positionMs 会被 timeupdate 反复拉回去，手感是
@@ -292,6 +303,26 @@ export function PlayerControls(props: PlayerControlsProps) {
   /** 时间文字用的位置。三个来源的优先级与进度条自绘完全一致（见 paint） */
   const shown = dragging ?? overrideMs ?? positionMs;
   const previewTile = hover ? tileAt(trickplay, hover.ms) : null;
+  /** 刻度位置。0 秒那条不画——片头永远在最左端，画出来只是一条噪音 */
+  const chapterMarks = useMemo(
+    () =>
+      durationMs
+        ? chapters
+            .filter((mark) => mark.start_ms > 0 && mark.start_ms < durationMs)
+            .map((mark) => ({ start_ms: mark.start_ms, ratio: progressRatio(mark.start_ms, durationMs) }))
+        : [],
+    [chapters, durationMs],
+  );
+  /** 悬停/拖动位置落在哪一章：取最后一个起点不晚于它的章节 */
+  const hoverChapter = useMemo(() => {
+    if (!hover) return null;
+    let title: string | null = null;
+    for (const mark of chapters) {
+      if (mark.start_ms > hover.ms) break;
+      title = mark.title;
+    }
+    return title;
+  }, [chapters, hover]);
   const buffered =
     durationMs && bufferedEndMs ? Math.min(100, (bufferedEndMs / durationMs) * 100) : 0;
 
@@ -508,7 +539,15 @@ export function PlayerControls(props: PlayerControlsProps) {
                   className="rounded-[10px] shadow-[0_10px_28px_rgba(0,0,0,0.55)] ring-1 ring-white/30"
                 />
               ) : null}
-              <p className="mt-1.5 text-center text-[13px] font-medium tabular-nums text-white drop-shadow">
+              {/* 章节名 + 时间：拖动时知道自己拖到了哪一段，比只有一个
+                  时间戳有用得多（jellyfin-web 的气泡同样是三合一）。
+                  章节名在上、时间在下——时间是刚需，永远在固定位置。 */}
+              {hoverChapter ? (
+                <p className="mt-1.5 max-w-[220px] truncate text-center text-[12px] text-white/75 drop-shadow">
+                  {hoverChapter}
+                </p>
+              ) : null}
+              <p className="mt-0.5 text-center text-[13px] font-medium tabular-nums text-white drop-shadow">
                 {formatClock(hover.ms)}
               </p>
             </div>
@@ -525,6 +564,15 @@ export function PlayerControls(props: PlayerControlsProps) {
               ref={playedRef}
               className="absolute inset-y-0 left-0 w-0 bg-[var(--player-accent)]"
             />
+            {/* 章节刻度：压在已播段之上，两侧留白靠 2px 宽的暗色竖条本身。
+                画在轨道内部（overflow-hidden）所以不用再夹一次边界。 */}
+            {chapterMarks.map((mark) => (
+              <span
+                key={mark.start_ms}
+                className="absolute inset-y-0 w-[2px] -translate-x-1/2 bg-black/55"
+                style={{ left: `${mark.ratio * 100}%` }}
+              />
+            ))}
           </div>
           <input
             type="range"
@@ -554,7 +602,10 @@ export function PlayerControls(props: PlayerControlsProps) {
               if (dragging === null || !durationMs) return;
               const rect = e.currentTarget.getBoundingClientRect();
               const ratio = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
-              setDragging(Math.round(ratio * durationMs));
+              const next = Math.round(ratio * durationMs);
+              setDragging(next);
+              // 画面跟着手指走——能免费跳的时候不跟随是白白浪费手感
+              onScrub(next);
             }}
             onPointerUp={() => {
               if (dragging !== null) onSeek(dragging);

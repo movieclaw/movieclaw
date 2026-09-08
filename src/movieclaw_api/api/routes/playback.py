@@ -33,6 +33,7 @@ from movieclaw_api.schemas.playback import (
     HwProbeView,
     MediaActivityView,
     PlaybackArtifactUploadView,
+    PlaybackChapterMarkView,
     PlaybackClientLogPayload,
     PlaybackDecideRequest,
     PlaybackDecisionView,
@@ -59,6 +60,7 @@ from movieclaw_api.schemas.playback import (
 from movieclaw_api.schemas.response import ApiResponse, ok
 from movieclaw_api.services import media_scrape
 from movieclaw_api.services.auth import Principal
+from movieclaw_api.services.library import chapters as chapters_mod
 from movieclaw_api.services.library.access import (
     assert_item_visible,
     assert_library_visible,
@@ -170,6 +172,22 @@ class _SubtitleClientDisconnected(Exception):
 _DIAGNOSTIC_SECRET_RE = re.compile(
     r"((?:[?&]|\b)(?:token|access_token|signature|sig)=)[^&\s]+", re.IGNORECASE
 )
+
+
+def _chapter_marks(file: LibraryFile) -> list[PlaybackChapterMarkView]:
+    """进度条上的章节刻度（docs/design/player-feel.md §2.C1）。
+
+    **只下发真章节**：``effective_chapters`` 在没有内嵌章节时会按时长合成
+    等距章节，那是给详情页凑场景图用的；等距刻度画到进度条上没有任何信息量，
+    只会让轨道变成一排竖条。章节未探测（旧台账行）同样返回空表。
+    """
+    if file.chapters is None:
+        return []
+    return [
+        PlaybackChapterMarkView(start_ms=chapter.start_ms, title=chapter.title)
+        for chapter in chapters_mod.effective_chapters(file.chapters, file.duration_seconds)
+        if not chapter.synthetic
+    ]
 
 
 def _diagnostic_error(error: str | None) -> str | None:
@@ -892,6 +910,7 @@ async def start_playback_session(
         frame_rate=file.frame_rate,
         size_bytes=file.size_bytes,
     )
+    chapter_marks = _chapter_marks(file)
 
     # 详情页可能正在为同一条目预热字幕；正式播放已经接管 IO，取消那条
     # 后台任务，避免留下与播放无关的 ffmpeg（尤其是 PGS 的 .part.sup）。
@@ -926,6 +945,7 @@ async def start_playback_session(
                 subtitle_urls=subtitle_urls,
                 watch=watch_view,
                 source=source_view,
+                chapters=chapter_marks,
             )
         )
 
@@ -1101,6 +1121,7 @@ async def start_playback_session(
             hw_backend=hw_used,
             watch=watch_view,
             source=source_view,
+            chapters=chapter_marks,
         )
     )
 

@@ -48,6 +48,24 @@ export function clampSeekTarget(targetFileMs: number, durationMs: number | null)
   return Math.min(floored, Math.max(0, durationMs - SEEK_TAIL_GUARD_MS));
 }
 
+/**
+ * 某个时间点是否落在已缓冲/可跳转区间里。
+ *
+ * 拖动进度条时的「实时跟随」只能在这个区间内做：区间外的跳转要么等浏览器
+ * 拉数据、要么（转码会话）把服务端的 ffmpeg 拽回去重启，一路拖过去就是
+ * 连着捅十几刀。`ranges` 直接传 `video.buffered` / `video.seekable`。
+ */
+export function isWithinRanges(
+  ranges: { length: number; start: (i: number) => number; end: (i: number) => number } | null,
+  seconds: number,
+): boolean {
+  if (!ranges) return false;
+  for (let i = 0; i < ranges.length; i += 1) {
+    if (seconds >= ranges.start(i) && seconds <= ranges.end(i)) return true;
+  }
+  return false;
+}
+
 export type SeekPlan =
   | { kind: "native"; seconds: number }
   | { kind: "restart"; startMs: number };

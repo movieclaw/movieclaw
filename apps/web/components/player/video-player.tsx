@@ -67,7 +67,7 @@ import {
   summarize,
 } from "@/lib/player/qoe";
 import type { TrickplayIndex } from "@/lib/player/trickplay";
-import { isEditableTarget, resolveShortcut } from "@/lib/player/shortcuts";
+import { FALLBACK_FRAME_RATE, isEditableTarget, resolveShortcut } from "@/lib/player/shortcuts";
 import {
   type AdjustKind,
   type SwipeIntent,
@@ -99,6 +99,7 @@ import {
   clampSeekTarget,
   formatClock,
   isInEndCredits,
+  isWithinRanges,
   planSeek,
   toFileMs,
   toSessionSeconds,
@@ -878,6 +879,10 @@ export function VideoPlayer(props: VideoPlayerProps) {
       // 首个 init/segment，触发 MEDIA_ERR_DECODE。
       if (shouldApplyPostAttachSeek(mode.engine, target)) {
         const seek = () => {
+          // 已经在目标附近就不跳（jellyfin-web 的 setCurrentTimeIfNeeded 同款）：
+          // VOD 列表里流本来就从目标分片起，再赋一次 currentTime 是白白触发一次
+          // seek——起播那一刻的 seek 会打断刚建立的缓冲，首帧要多等一拍。
+          if (Math.abs((video.currentTime || 0) - target) < 1) return;
           video.currentTime = target;
         };
         if (video.readyState >= 1) seek();
@@ -1731,6 +1736,37 @@ export function VideoPlayer(props: VideoPlayerProps) {
   );
 
   /**
+   * 拖动进度条时的实时跟随（docs/design/player-feel.md §2.C2）。
+   *
+   * 松手才提交是转码会话逼出来的规矩：拖动中每次 move 都跳会让服务端一路杀
+   * ffmpeg 重启，画面永远追不上手指。但**跳转不要钱的时候没有理由不跟随**：
+   *
+   * - 档 0 直出：整个文件都能跳，浏览器自己按 range 取数据；
+   * - 任何模式落在已缓冲区间内：数据就在手上，跳过去是零成本。
+   *
+   * 其余情况（拖到没缓冲的地方、旧会话相对制）原样按下不表，等松手那一次。
+   * 100ms 节流：hls.js 在列表内跳转会取消在途的分片请求，一秒跳六十次反而
+   * 让缓冲永远建立不起来。
+   */
+  const lastScrubAtRef = useRef(0);
+  const scrubTo = useCallback(
+    (fileMs: number) => {
+      if (!video) return;
+      const now = performance.now();
+      if (now - lastScrubAtRef.current < 100) return;
+      const seconds = toSessionSeconds(fileMs, startMsRef.current);
+      if (seconds < 0) return;
+      const free =
+        mode?.engine === "direct" || isWithinRanges(video.buffered, seconds);
+      if (!free) return;
+      lastScrubAtRef.current = now;
+      if (engineRef.current?.seek) engineRef.current.seek(seconds);
+      else video.currentTime = seconds;
+    },
+    [video, mode],
+  );
+
+  /**
    * 进度条拖动与横滑落点的提交入口：先撤掉在途的连按累积，再跳。
    *
    * 不撤的话，用户「连按两下快进又改主意去拖进度条」时，那个 400ms 的
@@ -1967,6 +2003,14 @@ export function VideoPlayer(props: VideoPlayerProps) {
         case "toggle-fullscreen":
           toggleFullscreen();
           break;
+        case "step-frame":
+          // 逐帧只在暂停时有意义（播着的画面根本看不出走了一帧），
+          // 与 jellyfin 的 seekFrames 同一条规矩。帧率取台账真值。
+          if (video?.paused) {
+            const fps = state.session?.source?.frame_rate || FALLBACK_FRAME_RATE;
+            video.currentTime = Math.max(0, video.currentTime + action.direction / fps);
+          }
+          break;
         case "toggle-subtitles":
           setSelectedSubtitle((current) =>
             current ? null : (subtitles.options[0]?.ref ?? null),
@@ -1976,7 +2020,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [togglePlay, seekBy, seekToFileMs, toggleFullscreen, durationMs, video, subtitles.options, flashAdjust, flashSeek, bumpChromeActivity]);
+  }, [togglePlay, seekBy, seekToFileMs, toggleFullscreen, durationMs, video, state.session, subtitles.options, flashAdjust, flashSeek, bumpChromeActivity]);
 
   // ---------------------------------------------------------------------
   // 系统集成：媒体键 / 锁屏信息 / 防息屏
@@ -2960,6 +3004,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
             bufferedEndMs={bufferedEndMs}
             chromeVisible={chromeVisible}
             onSeek={commitSeek}
+            onScrub={scrubTo}
             subtitles={subtitles}
             selectedSubtitle={selectedSubtitle}
             onSelectSubtitle={selectSubtitle}
@@ -2987,6 +3032,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
             onToggleFullscreen={toggleFullscreen}
             onMenuOpenChange={setMenuOpen}
             trickplay={trickplay}
+            chapters={state.session?.chapters ?? []}
           />
         </div>
       </MediaController>

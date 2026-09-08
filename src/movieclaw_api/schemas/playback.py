@@ -495,6 +495,17 @@ class PlaybackDiagnosticsView(BaseModel):
     total_segments: int | None = None
 
 
+class PlaybackChapterMarkView(BaseModel):
+    """进度条上的章节刻度（docs/design/player-feel.md §2.C1）。
+
+    只有起点与标题：预览图由 trickplay 雪碧图负责，章节图片再塞一份会把
+    起播响应撑大好几倍，而进度条上根本画不下。
+    """
+
+    start_ms: int
+    title: str | None = None
+
+
 class PlaybackSessionView(BaseModel):
     """开会话的结果。
 
@@ -533,6 +544,10 @@ class PlaybackSessionView(BaseModel):
     #: 选中文件的源规格（台账真值）。诊断面板按 Emby 的「源 → 处理」层次
     #: 展示：MKV 24 Mbps → HLS、1080p H264 → 直通……（§6.5）
     source: PlaybackSourceView | None = None
+    #: 进度条上的章节刻度。**合成章节（等距切分）不下发**——那是详情页凑
+    #: 场景图用的，画到进度条上就是一排没有信息量的竖条。没有内嵌章节的
+    #: 文件这里是空表，进度条照旧干净。
+    chapters: list[PlaybackChapterMarkView] = Field(default_factory=list)
 
 
 class PlaybackSessionRequest(PlaybackDecideRequest):

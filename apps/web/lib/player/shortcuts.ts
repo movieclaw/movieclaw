@@ -9,6 +9,10 @@
  * 直接测。
  */
 
+/** 帧率未知时逐帧步进按这个帧率算（一帧 ≈ 41.7 毫秒）。24 是电影的下限，
+ * 宁可一次走得偏少：多按一下总比跳过想看的那一帧强。 */
+export const FALLBACK_FRAME_RATE = 24;
+
 export type PlayerAction =
   | { type: "toggle-play" }
   | { type: "seek-by"; seconds: number }
@@ -16,7 +20,9 @@ export type PlayerAction =
   | { type: "volume-by"; delta: number }
   | { type: "toggle-mute" }
   | { type: "toggle-fullscreen" }
-  | { type: "toggle-subtitles" };
+  | { type: "toggle-subtitles" }
+  /** 逐帧步进（暂停时才有意义）：direction 为 ±1 帧 */
+  | { type: "step-frame"; direction: 1 | -1 };
 
 export interface KeyContext {
   key: string;
@@ -51,6 +57,9 @@ export function resolveShortcut(context: KeyContext): PlayerAction | null {
   if (key.toLowerCase() === "f") return { type: "toggle-fullscreen" };
   if (key.toLowerCase() === "c") return { type: "toggle-subtitles" };
   if (/^[0-9]$/.test(key)) return { type: "seek-percent", percent: Number(key) * 10 };
+  // 逐帧：, / . 是 YouTube 的取值（与 < > 同键位，不必按 Shift）
+  if (key === ",") return { type: "step-frame", direction: -1 };
+  if (key === ".") return { type: "step-frame", direction: 1 };
   return null;
 }
 

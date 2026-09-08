@@ -48,3 +48,14 @@ test("带 Ctrl/Cmd/Alt 的组合放行给浏览器", () => {
   assert.equal(resolveShortcut({ key: "f", inEditable: false, metaKey: true }), null);
   assert.equal(resolveShortcut({ key: "ArrowLeft", inEditable: false, ctrlKey: true }), null);
 });
+
+test("暂停时逐帧：, / . 各走一帧（与 YouTube 同键位）", () => {
+  assert.deepEqual(resolveShortcut({ key: ",", inEditable: false }), {
+    type: "step-frame",
+    direction: -1,
+  });
+  assert.deepEqual(resolveShortcut({ key: ".", inEditable: false }), {
+    type: "step-frame",
+    direction: 1,
+  });
+});
