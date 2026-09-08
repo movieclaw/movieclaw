@@ -15,6 +15,7 @@ import {
 } from "@/lib/library-confirm";
 import { chapterJobLabel } from "@/lib/library-manage";
 import {
+  HistoryIcon,
   LockIcon,
   MasonryIcon,
   MoreIcon,
@@ -97,6 +98,8 @@ import { HttpError } from "@/lib/http";
 import { formatBytes } from "@/lib/format";
 import { formatLibraryInventorySummary } from "@/lib/library-inventory-summary";
 import { activeWallInitialAtViewport, wallInitialAtOffset } from "@/lib/library-wall-index";
+import { firstVisibleAnchorId, wallRecallScope } from "@/lib/library-wall-recall";
+import { useWallRecall } from "@/lib/use-wall-recall";
 import { formatRelativeTime } from "@/lib/time";
 import { cachedImageUrl, cardVariantFor, imageUrl } from "@/lib/image-proxy";
 import { keepIfEqual, reconcileList } from "@/lib/poll-reconcile";
@@ -164,6 +167,10 @@ function keepOnError<T>(rows: Promise<T[]>): Promise<T[] | null> {
 
 export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   const initialSnapshot = getLibraryDetailSnapshot(libraryId);
+  // 本次是不是「重新进入」：首帧没有会话快照 = 冷启动 / 刷新 / 换了库进来的。
+  // 必须在首帧定格——本组件挂载后自己就会写快照，之后每次 render 都读得到它。
+  // 「回到上次位置」的胶囊只在重新进入时弹（会话内返回由滚动恢复自动回位）
+  const freshEntry = useRef(initialSnapshot === undefined);
   const { canManageLibraries } = usePermissions();
   const { activeJobs } = useJobs();
   // 影视库 / 其他库的图床浏览模式（video-gallery.tsx）：海报墙换成每部作品的
@@ -243,7 +250,10 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
     initialSnapshot?.galleryGroups ?? [],
   );
   const [galleryHasMore, setGalleryHasMore] = useState(initialSnapshot?.galleryHasMore ?? false);
-  // 已请求到的条目数（按页长推进，不按拿到的组数——没图的条目也占一组）
+  // 当前图廊窗口在整份排序里的起点（0 = 墙首；「回到上次位置」跳过来后不为 0）。
+  // 与海报墙的 wallOffset 同一个意思，图廊的分页口径也是条目数
+  const galleryStart = useRef(initialSnapshot?.galleryStart ?? 0);
+  // 已请求到第几个条目（绝对位置，按页长推进，不按拿到的组数——没图的条目也占一组）
   const galleryLoaded = useRef(initialSnapshot?.galleryLoaded ?? 0);
 
   // 轮询乱序守卫：扫描期间后端响应时间抖动大，上一轮的慢响应可能晚于
@@ -277,6 +287,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
         wallOffset: wallOffset.current,
         galleryGroups,
         galleryHasMore,
+        galleryStart: galleryStart.current,
         galleryLoaded: galleryLoaded.current,
         stale: snapshotStale,
       }
@@ -631,19 +642,20 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
    * 不缩窗口、不动滚动位置；失败就留着旧窗口，下次返回再对账。
    */
   const refreshGallery = useCallback(() => {
-    const loaded = galleryLoaded.current;
+    const start = galleryStart.current;
+    const loaded = galleryLoaded.current - start;
     if (loaded <= 0 || galleryLoading.current) return;
     galleryLoading.current = true; // 对账期间别让滚动哨兵同时追加下一页
     Promise.all(
       Array.from({ length: Math.ceil(loaded / GALLERY_PAGE_SIZE) }, (_, page) =>
         listLibraryGallery(libraryId, {
           limit: GALLERY_PAGE_SIZE,
-          offset: page * GALLERY_PAGE_SIZE,
+          offset: start + page * GALLERY_PAGE_SIZE,
         }),
       ),
     )
       .then((pages) => {
-        galleryLoaded.current = pages.reduce((sum, page) => sum + page.length, 0);
+        galleryLoaded.current = start + pages.reduce((sum, page) => sum + page.length, 0);
         setGalleryGroups(dedupeGalleryGroups(pages.flat()));
         setGalleryHasMore((pages.at(-1)?.length ?? 0) >= GALLERY_PAGE_SIZE);
       })
@@ -652,6 +664,29 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
         galleryLoading.current = false;
       });
   }, [libraryId]);
+  /**
+   * 图廊跳到整份排序里的某个位置：与海报墙的 jumpTo 是同一件事——换掉整个
+   * 窗口（而不是从头追加到那里），此后照常向下滚动加载。图廊的分页口径也是
+   * 条目数，两面墙的 offset 通用，「回到上次位置」因此两种形态都能跳。
+   */
+  const jumpGalleryTo = useCallback(
+    (offset: number) => {
+      galleryLoading.current = true; // 跳转期间挡住滚动哨兵与对账，别让旧窗口的页插进来
+      galleryStart.current = offset;
+      listLibraryGallery(libraryId, { limit: GALLERY_PAGE_SIZE, offset })
+        .then((page) => {
+          galleryLoaded.current = offset + page.length;
+          setGalleryGroups(dedupeGalleryGroups(page));
+          setGalleryHasMore(page.length >= GALLERY_PAGE_SIZE);
+          wallTop.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+        })
+        .catch(() => {})
+        .finally(() => {
+          galleryLoading.current = false;
+        });
+    },
+    [libraryId],
+  );
   /**
    * 图廊里点心：收藏 / 取消收藏整部作品（与详情页那颗心同一落点）。
    *
@@ -695,11 +730,61 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
       return;
     }
     galleryWindowLibrary.current = libraryId;
+    galleryStart.current = 0;
     galleryLoaded.current = 0;
     setGalleryGroups([]);
     setGalleryHasMore(false);
     loadMoreGallery();
   }, [gallery, libraryId, loadMoreGallery, refreshGallery]);
+
+  /* —— 「回到上次浏览的位置」（lib/library-wall-recall.ts）——
+     大库滑到第几十屏是常态，关掉页面第二天再进来又从墙首开始。这里在底部弹
+     一枚胶囊问一句：要跳回去点它，不要就继续滑——滑够一屏胶囊自己让位，
+     从那一刻起记的是新位置。会话内从详情页返回不弹（滚动恢复已经自动回位）。 */
+  // 墙的形态决定 offset 的口径：图廊按标题序分页，其他库的海报墙按内容时间序，
+  // 两者的「第 300 个」不是同一部作品，形态对不上就不提示（见 WallRecall.view）
+  const wallView = gallery ? "gallery" : timeline ? "wall:time" : "wall:title";
+  // 条目 id → 它在整份排序里的绝对位置。滚动时按首个可见格反查（图廊按瓦片
+  // 所属的作品），DOM 上只挂 id，不必给每一格再算一遍下标
+  const offsetById = useMemo(
+    () => new Map(items.map((item, index) => [String(item.media_item_id), wallStart + index])),
+    [items, wallStart],
+  );
+  // galleryStart 只在窗口被整体换掉时变，与 galleryGroups 同一时刻，不必进依赖
+  const galleryOffsetById = useMemo(
+    () =>
+      new Map(
+        galleryGroups.map((group, index) => [
+          String(group.media_item_id),
+          galleryStart.current + index,
+        ]),
+      ),
+    [galleryGroups],
+  );
+  const wallOffsetAt = useCallback(() => {
+    const wall = wallTop.current;
+    if (!wall || !scrollElement) return null;
+    const id = firstVisibleAnchorId(
+      wall,
+      gallery ? "data-gallery-item-id" : "data-library-item-id",
+      scrollElement.getBoundingClientRect().top,
+    );
+    // 反查不到就不记：未识别分区的格子也挂着条目 id，但它不在主排序里，
+    // 拿它的位置去跳会跳到一部毫不相干的作品上
+    return id === null ? null : ((gallery ? galleryOffsetById : offsetById).get(id) ?? null);
+  }, [gallery, galleryOffsetById, offsetById, scrollElement]);
+  const { recallOffset, dismissRecall } = useWallRecall({
+    scope: wallRecallScope(libraryId),
+    view: wallView,
+    scroller: scrollElement,
+    // 补探阶段的排序是临时的（几分钟后自动落回拼音序），那期间不记也不提示
+    enabled: !probing && (gallery ? galleryGroups.length > 0 : items.length > 0),
+    offer: freshEntry.current,
+    offsetAt: wallOffsetAt,
+  });
+  // 记录可能指向已经不存在的位置（库被清空、大批删除），跳过去只会是一面空墙
+  const recallable =
+    recallOffset !== null && recallOffset < (library?.stats.item_count ?? 0) ? recallOffset : null;
   const wideCards = Boolean(library && library.capabilities.default_aspect > 1);
   // 其他库的主图两种形态并存：刮削器放好 -poster 的是 2:3 竖版海报，只有 -thumb /
   // 抓帧的是横版缩略图。竖横混在一个网格里对不齐，按主图比例切成两区，各自用
@@ -1276,8 +1361,8 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
                 {/* 图廊与海报墙各自分页，哨兵按当前模式接线（图廊按作品数计） */}
                 <WallLoadMore
                   hasMore={gallery ? galleryHasMore : wallHasMore}
-                  loaded={gallery ? galleryLoaded.current : items.length}
-                  start={gallery ? 0 : wallStart}
+                  loaded={gallery ? galleryLoaded.current - galleryStart.current : items.length}
+                  start={gallery ? galleryStart.current : wallStart}
                   total={library.stats.item_count}
                   onReach={gallery ? loadMoreGallery : loadMore}
                   rootMargin={gallery ? GALLERY_LOAD_MARGIN : undefined}
@@ -1370,6 +1455,18 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
       )}
 
       </>
+      )}
+
+      {/* 上次滑到哪：进来时问一句要不要跳回去，不理它、往下滑一屏就自己消失 */}
+      {recallable !== null && (
+        <WallRecallPill
+          onJump={() => {
+            dismissRecall();
+            if (gallery) jumpGalleryTo(recallable);
+            else jumpTo(recallable);
+          }}
+          onDismiss={dismissRecall}
+        />
       )}
 
       {canManageLibraries && (
@@ -1727,6 +1824,44 @@ export const InventoryCell = memo(function InventoryCell({
     </div>
   );
 });
+
+/**
+ * 「回到上次浏览的位置」胶囊：贴在视口底部中央，与 Toast 同一套浮入语言。
+ *
+ * 为什么是胶囊而不是直接跳回去：跳转会换掉整个分页窗口（上方的内容不再加载），
+ * 这一步得由用户决定——有人回来就是想从头看看新入库了什么。所以只问一句，
+ * 不理它往下滑一屏它就让位（见 lib/use-wall-recall.ts），× 是给想立刻清屏的人。
+ *
+ * z-[45]：压过墙与索引条，但低于弹层（50/60）、灯箱（70）与 Toast（95）——
+ * 它只是个建议，任何真正的操作都该盖住它。
+ */
+function WallRecallPill({ onJump, onDismiss }: { onJump: () => void; onDismiss: () => void }) {
+  return (
+    <div
+      aria-live="polite"
+      className="pointer-events-none fixed inset-x-0 bottom-[calc(var(--safe-bottom)+18px)] z-[45] flex justify-center px-4"
+    >
+      <div className="toast-item pointer-events-auto flex items-center gap-1 rounded-full border border-white/[0.12] bg-[rgba(16,18,26,0.92)] py-1 pl-1 pr-1.5 shadow-[0_18px_50px_rgba(0,0,0,0.55)] backdrop-blur-2xl">
+        <button
+          type="button"
+          onClick={onJump}
+          className="flex items-center gap-2 rounded-full px-3 py-1.5 text-sub font-medium text-white/90 transition hover:bg-white/[0.1] active:scale-[0.98]"
+        >
+          <HistoryIcon className="size-4 shrink-0 text-[var(--accent)]" />
+          回到上次浏览的位置
+        </button>
+        <button
+          type="button"
+          onClick={onDismiss}
+          aria-label="不用了"
+          className="flex size-7 shrink-0 items-center justify-center rounded-full text-white/45 transition hover:bg-white/[0.1] hover:text-white/80"
+        >
+          <XIcon className="size-3.5" />
+        </button>
+      </div>
+    </div>
+  );
+}
 
 /**
  * 海报墙底部的滚动加载哨兵。
