@@ -846,23 +846,6 @@ export function selectArtwork(
   );
 }
 
-/**
- * 改条目的刮削归属库（决定这条目按哪个库的语言/选图设置刮）。
- * `targetLibraryId` 传 null = 恢复自动，由系统按文件/订阅重新推断。
- */
-export function setItemScrapeLibrary(
-  libraryId: number,
-  mediaItemId: number,
-  targetLibraryId: number | null,
-): Promise<{ scrape_library_id: number | null }> {
-  return unwrap(
-    request<ApiEnvelope<{ scrape_library_id: number | null }>>(
-      `/libraries/${libraryId}/items/${mediaItemId}/scrape-library`,
-      { method: "POST", body: JSON.stringify({ target_library_id: targetLibraryId }) },
-    ),
-  );
-}
-
 /** 待识别清单，按条目目录分组（不含已忽略，可按库过滤）。 */
 export function listUnidentifiedLibraryFiles(libraryId?: number): Promise<UnidentifiedGroup[]> {
   const qs = libraryId != null ? `?library_id=${libraryId}` : "";
@@ -1263,13 +1246,6 @@ export interface LibraryItemDetail {
   scraping_phase: string | null;
   /** 章节场景图正在后台生成（打开详情页时懒触发）；前端据此轮询几轮 */
   chapters_pending: boolean;
-  /**
-   * 刮削归属库（docs/design/scrape-customization.md §14）：元数据与图片的产物
-   * 挂全局条目，一条目只能有一套语言/选图口味，由这个库说了算。文件散在两个
-   * 库时，这里显示的就是"哪个库赢了"。null = 无归属，跟全局设置。
-   */
-  scrape_library_id: number | null;
-  scrape_library_name: string | null;
 }
 
 /** 剧集分集区的一集（季集结构 + 本地分集刮削 + TMDB 兜底的合并结果）。 */

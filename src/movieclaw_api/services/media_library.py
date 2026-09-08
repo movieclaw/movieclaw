@@ -304,7 +304,7 @@ class MediaLibraryService:
         if douban_id and not item.douban_id:
             item.douban_id = douban_id
             changed = True
-        # 刮削归属库只**补空不改判**：条目已有归属（推断固化或用户手动指定）
+        # 刮削归属库只**补空不改判**：条目已有归属（首次解析时推断并固化）
         # 时不动它——同一条目进第二个库，不该悄悄换掉它的刮削口味
         if library is not None and item.scrape_library_id is None:
             item.scrape_library_id = library.id
