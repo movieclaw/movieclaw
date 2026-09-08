@@ -308,6 +308,14 @@ export function VideoPlayer(props: VideoPlayerProps) {
   /** 当前是否在横屏（全屏 + 锁横向，或 iOS 上的 CSS 伪横屏）里 */
   const [landscape, setLandscape] = useState(false);
   /**
+   * 设备当前是不是横着（与我们自己的横屏按钮无关）。
+   *
+   * 锁屏要跟着**画面真的横过来**出现：多数人是直接把手机转过来（系统自动
+   * 旋转），根本不会去按播放器的横屏键——只认 `landscape` 的话，最需要防
+   * 误触的那批人反而看不到这颗按钮。
+   */
+  const [deviceLandscape, setDeviceLandscape] = useState(false);
+  /**
    * 走的是 CSS 伪横屏（把播放器容器旋转 90° 铺满视口）。
    *
    * iPhone Safari 既没有元素级全屏也没有 `screen.orientation.lock`，真横屏
@@ -1789,8 +1797,11 @@ export function VideoPlayer(props: VideoPlayerProps) {
       const seconds = toSessionSeconds(fileMs, startMsRef.current);
       if (seconds < 0 || !isCheapSeek(fileMs)) return;
       lastScrubAtRef.current = now;
-      if (engineRef.current?.seek) engineRef.current.seek(seconds);
-      else video.currentTime = seconds;
+      // **只动 currentTime，不走 engine.seek**：后者会 stopLoad + startLoad
+      // 把在途的分片请求全掐掉重来——那是给「跳到没缓冲的地方」准备的重手段。
+      // 拖动跟随只在数据已经在手上时才发生（isCheapSeek），一秒十次地掐断
+      // 加载管线，恰恰会把这条路本来想改善的手感反过来毁掉。
+      video.currentTime = seconds;
     },
     [video, isCheapSeek],
   );
@@ -1816,6 +1827,11 @@ export function VideoPlayer(props: VideoPlayerProps) {
     // 粗指针（手指）就是能转的设备。不再要求 orientation.lock 存在：
     // iPhone Safari 没有它，但可以走 CSS 伪横屏，按钮照样要给
     setCanRotate(window.matchMedia("(pointer: coarse)").matches);
+    const landscapeQuery = window.matchMedia("(orientation: landscape)");
+    const sync = () => setDeviceLandscape(landscapeQuery.matches);
+    sync();
+    landscapeQuery.addEventListener("change", sync);
+    return () => landscapeQuery.removeEventListener("change", sync);
   }, []);
 
   /**
@@ -2016,7 +2032,9 @@ export function VideoPlayer(props: VideoPlayerProps) {
           flashSeek(action.seconds);
           break;
         case "seek-percent":
-          if (durationMs) seekToFileMs((durationMs * action.percent) / 100);
+          // 走 commitSeek：数字键是「跳到片子的某个比例」这种绝对跳转，
+          // 必须先撤掉在途的连按累积，否则 400 毫秒后它会把画面拽回去
+          if (durationMs) commitSeek((durationMs * action.percent) / 100);
           break;
         case "volume-by":
           if (video) {
@@ -2037,6 +2055,8 @@ export function VideoPlayer(props: VideoPlayerProps) {
           // 逐帧只在暂停时有意义（播着的画面根本看不出走了一帧），
           // 与 jellyfin 的 seekFrames 同一条规矩。帧率取台账真值。
           if (video?.paused) {
+            // 同上：逐帧是精确到一帧的绝对定位，在途的连按累积必须先作废
+            cancelPendingSeek();
             const fps = state.session?.source?.frame_rate || FALLBACK_FRAME_RATE;
             video.currentTime = Math.max(0, video.currentTime + action.direction / fps);
           }
@@ -2050,7 +2070,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [togglePlay, seekBy, seekToFileMs, toggleFullscreen, durationMs, video, state.session, subtitles.options, flashAdjust, flashSeek, bumpChromeActivity]);
+  }, [togglePlay, seekBy, commitSeek, cancelPendingSeek, toggleFullscreen, durationMs, video, state.session, subtitles.options, flashAdjust, flashSeek, bumpChromeActivity]);
 
   // ---------------------------------------------------------------------
   // 系统集成：媒体键 / 锁屏信息 / 防息屏
@@ -2759,7 +2779,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
               的界面里，留着就是个死按钮）。 */}
           {/* 锁屏只在触屏的横屏里出现：横躺着看片时手掌压在屏幕上是常态，
               而竖屏握持时误触少得多，多一颗按钮反而是噪音。 */}
-          {canRotate && (landscape || fakeLandscape) ? (
+          {canRotate && (landscape || fakeLandscape || deviceLandscape) ? (
             <button
               type="button"
               onClick={() => {
@@ -2780,7 +2800,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
               type="button"
               onClick={togglePip}
               className={`grid size-9 shrink-0 place-items-center rounded-full border border-white/[0.09] bg-black/30 text-white/85 backdrop-blur-md transition hover:bg-black/50 hover:text-white active:scale-[0.94] max-md:size-11 ${
-                canRotate && (landscape || fakeLandscape) ? "" : "ml-auto"
+                canRotate && (landscape || fakeLandscape || deviceLandscape) ? "" : "ml-auto"
               } ${chromeVisible ? "pointer-events-auto" : "pointer-events-none"}`}
               aria-label={pipActive ? "退出画中画" : "画中画"}
               title={pipActive ? "退出画中画" : "画中画"}

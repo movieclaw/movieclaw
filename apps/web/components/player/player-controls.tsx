@@ -588,9 +588,12 @@ export function PlayerControls(props: PlayerControlsProps) {
               静止 3px、悬停 5px，Netflix 的细红线就是这个手感 */}
           <div className="player-scrub-track pointer-events-none absolute inset-x-0 top-1/2 h-[3px] -translate-y-1/2 overflow-hidden rounded-full bg-[var(--player-track)] transition-[height] duration-150 [.player-scrub-row:hover_&]:h-[5px]">
             <div className="h-full bg-[var(--player-buffered)]" style={{ width: `${buffered}%` }} />
-            {/* 宽度由上面的 paint 每帧写，不在这里跟 React 的渲染节奏 */}
+            {/* 宽度由上面的 paint 每帧写，不在这里跟 React 的渲染节奏。
+                data-player-played 是给端到端验收脚本认的锚点（按第几个子元素
+                找会在轨道里多一层时悄悄量错东西，见 scripts/perf/e2e_player_feel.py）*/}
             <div
               ref={playedRef}
+              data-player-played=""
               className="absolute inset-y-0 left-0 w-0 bg-[var(--player-accent)]"
             />
             {/* 章节刻度：压在已播段之上，两侧留白靠 2px 宽的暗色竖条本身。
@@ -676,6 +679,7 @@ export function PlayerControls(props: PlayerControlsProps) {
               放大一号，指下有反馈。桌面维持悬停才现，不挡画面。 */}
           <div
             ref={thumbRef}
+            data-player-thumb=""
             className={`pointer-events-none absolute left-0 top-1/2 size-[14px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-[var(--player-thumb)] shadow-[0_0_0_4px_var(--accent-soft)] transition-transform duration-150 pointer-coarse:size-[18px] ${
               durationMs
                 ? dragging !== null

@@ -132,7 +132,7 @@ async def run(args: argparse.Namespace) -> dict:
         report["progress_paint"] = await page.evaluate(
             """
           async () => {
-            const el = document.querySelector('.player-scrub-track > div:nth-child(2)');
+            const el = document.querySelector('[data-player-played]');
             if (!el) return null;
             const seen = [];
             const t0 = performance.now();
