@@ -53,6 +53,10 @@ def ffprobe_available() -> bool:
 #: 版本落进 ``library_file.probe_version``，手动扫描的补探据此把落后的行捞回来
 #: 重探一次。以后再加探测字段，改这一个常量即可，不必为每个字段单独想办法。
 #:
+#: 刻意**不**做成 MediaSpec 的字段：版本是「产出这份 spec 的代码」的属性，
+#: 运行时恒等于这个常量，从 spec 上读没有信息增量，却会让每个落库点都依赖
+#: spec 对象的形状（测试替身漏一个字段就炸，CI 上真踩过）。
+#:
 #: 1 = 首次引入（此前的行一律为 NULL，会被补探一次）
 PROBE_SCHEMA_VERSION = 1
 
@@ -82,8 +86,6 @@ class MediaSpec:
     # 创建时间。原样保留字符串，解析成日期是消费方的事
     tag_date: str | None = None
     creation_time: str | None = None
-    #: 产出这份结果时探测层的字段集版本。写进台账，供补探识别陈旧行。
-    probe_version: int = PROBE_SCHEMA_VERSION
     # 内嵌章节（``-show_chapters``）：空列表 = 探测成功但容器里没有章节。
     # 元素 {"start_ms", "end_ms", "title"}，结构见 ``_chapter_info``；有效章节
     # （内嵌不足两个时按时长合成）由 library/chapters.py 决定，这里只记事实

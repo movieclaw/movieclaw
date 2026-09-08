@@ -89,6 +89,7 @@ from movieclaw_api.services.library.units import resolve_units
 from movieclaw_api.services.media_discover import get_tmdb_client
 from movieclaw_api.services.media_library import MediaLibraryService
 from movieclaw_api.services.media_probe import (
+    PROBE_SCHEMA_VERSION,
     MediaSpec,
     note_probe_failure,
     note_probe_success,
@@ -2508,7 +2509,7 @@ async def _refresh_known_row(
                 row.bit_rate = spec.bit_rate
                 row.frame_rate = spec.frame_rate
                 row.color_space = spec.color_space
-                row.probe_version = spec.probe_version
+                row.probe_version = PROBE_SCHEMA_VERSION
                 row.audio_streams = list(spec.audio_streams)
                 row.subtitle_streams = list(spec.subtitle_streams)
                 # 文件内容变了：章节按新探测的记，旧场景图作废（NULL 让抓图作业
@@ -2745,7 +2746,7 @@ async def _ingest_file(
             bit_rate=spec.bit_rate if spec else None,
             frame_rate=spec.frame_rate if spec else None,
             color_space=spec.color_space if spec else None,
-            probe_version=spec.probe_version if spec else None,
+            probe_version=PROBE_SCHEMA_VERSION if spec else None,
             audio_streams=list(spec.audio_streams) if spec else None,
             subtitle_streams=list(spec.subtitle_streams) if spec else None,
             chapters=list(spec.chapters) if spec else None,
@@ -2905,11 +2906,7 @@ async def _probe_backfill(
     否则每轮扫描都会白跑一遍必然失败的探测。
     """
     from movieclaw_api.services.library.items import backfill_streams
-    from movieclaw_api.services.media_probe import (
-        PROBE_SCHEMA_VERSION,
-        ffprobe_available,
-        probe_retry_due,
-    )
+    from movieclaw_api.services.media_probe import ffprobe_available, probe_retry_due
 
     if not ffprobe_available():
         return
