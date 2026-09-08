@@ -40,7 +40,9 @@ export interface LibraryDetailSnapshot {
    */
   galleryGroups: LibraryGalleryGroup[];
   galleryHasMore: boolean;
-  /** 已向服务端请求到第几个条目（图廊按条目分页），返回后按同样的页数对账 */
+  /** 这份窗口在整份排序里的起点（「回到上次位置」跳过来后不为 0） */
+  galleryStart: number;
+  /** 已向服务端请求到第几个条目（绝对位置，图廊按条目分页），返回后按同样的页数对账 */
   galleryLoaded: number;
   /** 删除或转移等操作后标记为过期；保留旧窗口只为让滚动恢复有落脚点。 */
   stale: boolean;

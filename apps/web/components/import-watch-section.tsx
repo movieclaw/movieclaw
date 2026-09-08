@@ -546,11 +546,14 @@ function RuleFormDialog({
   return (
     <>
       <Modal open onClose={onClose} label={rule ? "编辑自动入库规则" : "添加自动入库规则"}>
-        <div className="space-y-4 p-6">
+        {/* 头部常驻 */}
+        <div className="border-b border-white/[0.07] px-6 pb-4 pt-6">
           <h2 className="text-title font-bold text-white">
             {rule ? "编辑自动入库规则" : "添加自动入库规则"}
           </h2>
+        </div>
 
+        <div className="scroll-thin min-h-0 flex-1 space-y-4 overflow-y-auto px-6 py-4">
           {error && (
             <p className="rounded-lg border border-red-400/25 bg-red-500/10 px-3.5 py-2.5 text-ui leading-6 text-red-200">
               {error}
@@ -763,20 +766,21 @@ function RuleFormDialog({
                 : "规则生效时目录里已有的条目会被标记为「已忽略」（不整理、不报错），之后只处理新增的下载；忽略的条目随时可在清单中恢复处理。适合目录里有其他工具管理的存量内容的场景。"}
             </p>
           </div>
+        </div>
 
-          <div className="flex items-center justify-end gap-3 pt-1">
-            <button type="button" onClick={onClose} className="btn-glass h-9 px-4 text-ui font-medium">
-              取消
-            </button>
-            <button
-              type="button"
-              onClick={submit}
-              disabled={!canSubmit}
-              className="btn-accent h-9 rounded-full px-5 text-ui font-semibold disabled:opacity-40"
-            >
-              {busy ? "保存中…" : "保存"}
-            </button>
-          </div>
+        {/* 底栏常驻：表单比屏幕长，保存按钮不能跟着内容滚出视野 */}
+        <div className="flex items-center justify-end gap-3 border-t border-white/[0.07] px-6 py-4">
+          <button type="button" onClick={onClose} className="btn-glass h-9 px-4 text-ui font-medium">
+            取消
+          </button>
+          <button
+            type="button"
+            onClick={submit}
+            disabled={!canSubmit}
+            className="btn-accent h-9 rounded-full px-5 text-ui font-semibold disabled:opacity-40"
+          >
+            {busy ? "保存中…" : "保存"}
+          </button>
         </div>
       </Modal>
 

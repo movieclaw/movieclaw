@@ -145,14 +145,17 @@ export function SubscriptionAdjustDialog({
   };
 
   return (
-    <Modal open onClose={onClose} label="调整订阅" width="lg">
-      <div className="scroll-thin max-h-[76dvh] overflow-y-auto p-6 max-md:p-5">
+    <Modal open onClose={onClose} label="调整订阅" width="lg" panelClassName="max-h-[76dvh]">
+      {/* 头部常驻 */}
+      <div className="border-b border-white/[0.07] px-6 pb-4 pt-6 max-md:px-5">
         <h2 className="text-title font-bold text-white">调整订阅</h2>
         <p className="mt-1 text-sub leading-6 text-[var(--text-muted)]">
           《{detail.media.title}》——加季会恢复或补建追踪；减季会让整季退出追踪范围，
           但不会删除下载器任务、已下载文件或入库内容。
         </p>
+      </div>
 
+      <div className="scroll-thin min-h-0 flex-1 overflow-y-auto p-6 max-md:p-5">
         {error && (
           <p className="mt-3 rounded-lg border border-red-400/25 bg-red-500/10 px-3.5 py-2.5 text-sub leading-6 text-red-200">
             {error}
@@ -229,20 +232,21 @@ export function SubscriptionAdjustDialog({
             </section>
           )}
         </div>
+      </div>
 
-        <div className="mt-6 flex justify-end gap-3">
-          <button type="button" onClick={onClose} className="btn-glass h-9 px-4 text-ui font-medium">
-            取消
-          </button>
-          <button
-            type="button"
-            disabled={busy || !dirty || (!isMovie && selectedSeasons.size === 0)}
-            onClick={() => void save()}
-            className="btn-accent h-9 rounded-full px-5 text-ui font-semibold disabled:opacity-40"
-          >
-            {busy ? "保存中…" : "保存调整"}
-          </button>
-        </div>
+      {/* 底栏常驻：季数一多就要滚，保存按钮不能被滚出屏幕 */}
+      <div className="flex justify-end gap-3 border-t border-white/[0.07] px-6 py-4 max-md:px-5">
+        <button type="button" onClick={onClose} className="btn-glass h-9 px-4 text-ui font-medium">
+          取消
+        </button>
+        <button
+          type="button"
+          disabled={busy || !dirty || (!isMovie && selectedSeasons.size === 0)}
+          onClick={() => void save()}
+          className="btn-accent h-9 rounded-full px-5 text-ui font-semibold disabled:opacity-40"
+        >
+          {busy ? "保存中…" : "保存调整"}
+        </button>
       </div>
     </Modal>
   );

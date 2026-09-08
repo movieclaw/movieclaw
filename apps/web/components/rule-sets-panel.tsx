@@ -746,8 +746,10 @@ export function RuleSetEditorDialog({
       label={ruleSet ? `编辑规则组「${ruleSet.name}」` : "新建规则组"}
       width="lg"
       raised={raised}
+      panelClassName="max-h-[76dvh]"
     >
-      <div className="scroll-thin max-h-[76dvh] overflow-y-auto p-6 max-md:p-5">
+      {/* 头部常驻：规则组表单比一屏长得多，标题要一直在 */}
+      <div className="border-b border-white/[0.07] px-6 pb-4 pt-6 max-md:px-5">
         <h2 className="text-title font-bold text-white">
           {ruleSet ? "编辑规则组" : "新建规则组"}
         </h2>
@@ -760,8 +762,10 @@ export function RuleSetEditorDialog({
             （已下载的内容不受影响）。
           </p>
         )}
+      </div>
 
-        <div className="mt-4 space-y-5">
+      <div className="scroll-thin min-h-0 flex-1 overflow-y-auto p-6 max-md:p-5">
+        <div className="space-y-5">
           <Field label="名称">
             <input
               type="text"
@@ -1153,21 +1157,22 @@ export function RuleSetEditorDialog({
               {error}
             </p>
           )}
-
-          <div className="flex justify-end gap-3 pt-1">
-            <button type="button" onClick={onClose} className="btn-glass h-9 px-4 text-ui font-medium">
-              取消
-            </button>
-            <button
-              type="button"
-              disabled={busy || !name.trim()}
-              onClick={() => void submit()}
-              className="btn-accent h-9 rounded-full px-5 text-ui font-semibold disabled:opacity-50"
-            >
-              {busy ? "正在保存…" : "保存"}
-            </button>
-          </div>
         </div>
+      </div>
+
+      {/* 底栏常驻 */}
+      <div className="flex justify-end gap-3 border-t border-white/[0.07] px-6 py-4 max-md:px-5">
+        <button type="button" onClick={onClose} className="btn-glass h-9 px-4 text-ui font-medium">
+          取消
+        </button>
+        <button
+          type="button"
+          disabled={busy || !name.trim()}
+          onClick={() => void submit()}
+          className="btn-accent h-9 rounded-full px-5 text-ui font-semibold disabled:opacity-50"
+        >
+          {busy ? "正在保存…" : "保存"}
+        </button>
       </div>
     </Modal>
   );

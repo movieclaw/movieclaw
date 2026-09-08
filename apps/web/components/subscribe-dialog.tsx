@@ -297,8 +297,15 @@ export function SubscribeDialog({
 
   if (upgradeReport) {
     return (
-      <Modal open onClose={onClose} label={`订阅《${target.title}》`} width="lg">
-        <div className="scroll-thin max-h-[76dvh] overflow-y-auto p-6 max-md:p-5">
+      <Modal
+        open
+        onClose={onClose}
+        label={`订阅《${target.title}》`}
+        width="lg"
+        panelClassName="max-h-[76dvh]"
+      >
+        {/* 报告态：自带标题与出口按钮，整体滚动即可 */}
+        <div className="scroll-thin min-h-0 flex-1 overflow-y-auto p-6 max-md:p-5">
           <UpgradeRunReportView
             title={target.title}
             isMovie={(prepared?.media?.kind ?? target.kind) === "movie"}
@@ -311,21 +318,30 @@ export function SubscribeDialog({
   }
 
   return (
-    <Modal open onClose={onClose} label={`订阅《${target.title}》`} width="lg">
-      <div className="scroll-thin max-h-[76dvh] overflow-y-auto p-6 max-md:p-5">
-          <h2 className="text-title font-bold text-white">
-            {upgradeMode ? "订阅并洗版" : "订阅追踪"}
-            <span className="ml-2 text-ui font-normal text-[var(--text-muted)]">
-              {target.title}
-              {target.year ? ` (${target.year})` : ""}
-            </span>
-          </h2>
-          {upgradeMode && (
-            <p className="mt-1 text-sub leading-6 text-[var(--text-muted)]">
-              洗版通过订阅持续追踪更好的版本：确认后建立订阅并立即体检库里已有的每一集。
-            </p>
-          )}
+    <Modal
+      open
+      onClose={onClose}
+      label={`订阅《${target.title}》`}
+      width="lg"
+      panelClassName="max-h-[76dvh]"
+    >
+      {/* 头部常驻：剧集选季 + 规则摘要能滚很长，标题不该跟着走 */}
+      <div className="border-b border-white/[0.07] px-6 pb-4 pt-6 max-md:px-5">
+        <h2 className="text-title font-bold text-white">
+          {upgradeMode ? "订阅并洗版" : "订阅追踪"}
+          <span className="ml-2 text-ui font-normal text-[var(--text-muted)]">
+            {target.title}
+            {target.year ? ` (${target.year})` : ""}
+          </span>
+        </h2>
+        {upgradeMode && (
+          <p className="mt-1 text-sub leading-6 text-[var(--text-muted)]">
+            洗版通过订阅持续追踪更好的版本：确认后建立订阅并立即体检库里已有的每一集。
+          </p>
+        )}
+      </div>
 
+      <div className="scroll-thin min-h-0 flex-1 overflow-y-auto p-6 max-md:p-5">
           {/* —— 加载 / 错误 —— */}
           {!prepared && !error && (
             <div className="mt-8 flex items-center justify-center gap-2.5 pb-4 text-ui text-[var(--text-muted)]">
@@ -605,32 +621,33 @@ export function SubscribeDialog({
                 </section>
               )}
 
-              <div className="flex justify-end gap-3 pt-1">
-                <button
-                  type="button"
-                  onClick={onClose}
-                  className="btn-glass h-9 px-4 text-ui font-medium"
-                >
-                  取消
-                </button>
-                <button
-                  type="button"
-                  disabled={!canSubmit}
-                  onClick={submit}
-                  className="btn-accent h-9 rounded-full px-5 text-ui font-semibold disabled:opacity-50"
-                >
-                  {busy
-                    ? upgradeMode
-                      ? "正在订阅并体检…"
-                      : "正在订阅…"
-                    : upgradeMode
-                      ? "订阅并开始洗版"
-                      : "确认订阅"}
-                </button>
-              </div>
             </div>
           )}
       </div>
+
+      {/* 底栏常驻（仅订阅表单态；管理态的按钮短，留在正文里） */}
+      {prepared?.status === "ready" && !prepared.existing_subscription_id && (
+        <div className="flex justify-end gap-3 border-t border-white/[0.07] px-6 py-4 max-md:px-5">
+          <button type="button" onClick={onClose} className="btn-glass h-9 px-4 text-ui font-medium">
+            取消
+          </button>
+          <button
+            type="button"
+            disabled={!canSubmit}
+            onClick={submit}
+            className="btn-accent h-9 rounded-full px-5 text-ui font-semibold disabled:opacity-50"
+          >
+            {busy
+              ? upgradeMode
+                ? "正在订阅并体检…"
+                : "正在订阅…"
+              : upgradeMode
+                ? "订阅并开始洗版"
+                : "确认订阅"}
+          </button>
+        </div>
+      )}
+
       {canManageSubscriptions && creatingRuleSet && (
         <RuleSetEditorDialog
           ruleSet={null}

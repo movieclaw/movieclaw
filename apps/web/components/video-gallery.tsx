@@ -485,6 +485,9 @@ const GalleryTile = memo(function GalleryTile({
       // 首个可见瓦片，返回时按它回位。纯像素位在窗口宽度变过（转屏、缩窗口）
       // 之后会错行——masonry 重排后同一个 y 已经不是同一批图了
       data-gallery-tile-id={tileKey(group, image)}
+      // 所属作品：图廊按作品分页，「回到上次位置」记的是作品在整份排序里的
+      // 位置（lib/library-wall-recall.ts），单张图的下标没法用来跳转
+      data-gallery-item-id={group.media_item_id}
       aria-label={`查看 ${group.title} · ${image.label}${group.is_favorite ? "（已收藏）" : ""}`}
       onClick={() => onOpen(index)}
       className="group/tile absolute left-0 top-0 block overflow-hidden rounded-xl bg-[#141824] text-left shadow-[0_8px_22px_rgba(0,0,0,0.35)] ring-1 ring-white/[0.07] transition-[transform,width,height,box-shadow] duration-300 ease-out [content-visibility:auto] hover:z-[2] hover:shadow-[0_18px_44px_rgba(0,0,0,0.6)] hover:ring-white/25 focus-visible:z-[2] focus-visible:ring-2 focus-visible:ring-[var(--accent)] motion-reduce:transition-none"
