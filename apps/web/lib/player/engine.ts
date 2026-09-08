@@ -407,23 +407,40 @@ class HlsEngine implements PlaybackEngine {
       }
       onFailed(`播放失败（${data.details}）`);
     });
-    // 任何一个分片成功到手都说明链路是通的，连续失败计数从头数
-    this.hls.on(HlsCtor.Events.FRAG_LOADED, () => {
-      this.networkRecoveries = 0;
-    });
+    /**
+     * 按实测码率收紧已播缓冲的保留时长（理由见 buffer-budget.ts）。
+     *
+     * **码率只能靠分片实测**：MSE 这条路喂给 hls.js 的是**媒体**播放列表，
+     * 里面没有 BANDWIDTH（那是 master 列表的属性，只有 iOS 原生 HLS 才吃
+     * master），所以 `levels[].bitrate` 恒为 0。分片的字节数除以时长才是这
+     * 部片真实的码率，而且转码档也一样准——服务端的目标码率前端本来就不知道。
+     *
+     * 取历史最大值而不是最新值：预算要按最坏的一段留，动作戏那几段翻倍时
+     * 不能等到内存已经涨上去才收。
+     */
     const syncBackBuffer = () => {
-      const bitrate = this.hls?.levels[this.hls.currentLevel]?.bitrate ?? null;
-      this.currentBitrate = bitrate;
       if (!this.hls) return;
-      const seconds = backBufferSeconds(bitrate);
+      const seconds = backBufferSeconds(this.currentBitrate);
       if (this.hls.config.backBufferLength === seconds) return;
       this.hls.config.backBufferLength = seconds;
-      clientLog(this.options, "hls-back-buffer", { seconds, bitrate });
+      clientLog(this.options, "hls-back-buffer", {
+        seconds,
+        bitrate: Math.round(this.currentBitrate ?? 0),
+      });
     };
-    this.hls.on(HlsCtor.Events.LEVEL_SWITCHED, syncBackBuffer);
-    // 单档播放列表不会有 LEVEL_SWITCHED 之后的第二次事件，而码率在列表加载
-    // 完就知道了——高码率片子必须在播够 30 秒之前把保留时长收下来
-    this.hls.on(HlsCtor.Events.LEVEL_LOADED, syncBackBuffer);
+
+    // 任何一个分片成功到手都说明链路是通的，连续失败计数从头数
+    this.hls.on(HlsCtor.Events.FRAG_LOADED, (_event, data) => {
+      this.networkRecoveries = 0;
+      // 顺手实测码率：字节 ÷ 时长。它同时是诊断面板那行「实时码率」的来源
+      // ——媒体播放列表里没有 BANDWIDTH，只读 levels[].bitrate 那行永远是空的。
+      const bytes = data.frag?.stats?.total ?? 0;
+      const seconds = data.frag?.duration ?? 0;
+      if (bytes > 0 && seconds > 0) {
+        this.currentBitrate = Math.max(this.currentBitrate ?? 0, (bytes * 8) / seconds);
+        syncBackBuffer();
+      }
+    });
 
     this.hls.loadSource(streamUrl);
     this.hls.attachMedia(video);

@@ -135,14 +135,18 @@ async def run(args: argparse.Namespace) -> dict:
             """
           async () => {
             const el = document.querySelector('[data-player-played]');
+            const thumb = document.querySelector('[data-player-thumb]');
             if (!el) return null;
             const seen = [];
+            let thumbInSync = true;
             const t0 = performance.now();
             while (performance.now() - t0 < 1200) {
               seen.push(el.style.width);
+              // 已播段与圆点由同一次 paint 写，任何一帧对不上都是接线漏了一处
+              if (thumb && thumb.style.left !== el.style.width) thumbInSync = false;
               await new Promise(r => requestAnimationFrame(r));
             }
-            return { samples: seen.length, distinct: new Set(seen).size };
+            return { samples: seen.length, distinct: new Set(seen).size, thumbInSync };
           }
         """
         )
@@ -363,7 +367,11 @@ def verdicts(r: dict) -> list[tuple[bool, str]]:
     rotated = r.get("fake_landscape") or {}
     return [
         # 跟 timeupdate 走时 1.2 秒内只有 4~6 个不同取值；每帧自绘接近采样数
-        (distinct > samples * 0.5, f"进度条匀速：1.2 秒内 {distinct}/{samples} 帧取值不同"),
+        (
+            distinct > samples * 0.5 and paint.get("thumbInSync") is not False,
+            f"进度条匀速：1.2 秒内 {distinct}/{samples} 帧取值不同"
+            f"，圆点与已播段同步 {paint.get('thumbInSync')}",
+        ),
         (
             9 <= r.get("double_tap_forward_s", 0) <= 13,
             f"双击前进十秒：+{r.get('double_tap_forward_s')} 秒",
