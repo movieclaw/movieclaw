@@ -46,6 +46,9 @@ apps/web/tmp/
 
 # 运行期数据：SQLite 数据库文件及其 WAL/SHM 附属文件（部署时挂载为 volume）
 /data/
+# 运行期数据目录只认仓库根下那一份。从子目录（apps/web）起过服务端的人会在
+# 那里再生出一份 data/：日志、缓存、雪碧图——它们全是运行期产物，不进仓库。
+apps/*/data/
 
 # uv 生成的锁文件（项目用 pip/venv，见 scripts/dev.sh）
 uv.lock
