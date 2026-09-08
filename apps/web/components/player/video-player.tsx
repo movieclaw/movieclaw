@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { MediaController } from "media-chrome/react";
 
-import { ChevronLeftIcon } from "@/components/icons";
+import { ChevronLeftIcon, LockIcon } from "@/components/icons";
 
 import { ConsentDialog } from "@/components/player/consent-dialog";
 import { DiagnosticsPanel } from "@/components/player/diagnostics-panel";
@@ -85,7 +85,16 @@ import {
   planSubtitleTracks,
   saveSubtitleStyle,
 } from "@/lib/player/subtitles";
+import {
+  HOLD_SPEED_DELAY_MS,
+  HOLD_SPEED_RATE,
+  type HoldSpeedEvent,
+  type HoldSpeedState,
+  canHoldSpeed,
+  holdSpeedReducer,
+} from "@/lib/player/hold-speed";
 import { nextSeekTarget, seekBatchWindowMs } from "@/lib/player/seek-batch";
+import { resolveTap } from "@/lib/player/tap";
 import {
   clampSeekTarget,
   formatClock,
@@ -347,6 +356,19 @@ export function VideoPlayer(props: VideoPlayerProps) {
     hide: null,
     gone: null,
   });
+  /**
+   * 横屏锁屏（docs/design/player-feel.md §2.B3）。
+   *
+   * 横躺着看片时手掌、拇指常常压在屏幕上，一次误触就是暂停或跳走。锁上之后
+   * 所有触摸手势与轻点全部作废，控制层也不再被唤出——只留一颗解锁键，点一下
+   * 画面它露 3 秒。
+   */
+  const [locked, setLocked] = useState(false);
+  /** 锁屏态下解锁键的露出（点画面唤出、3 秒后自己收） */
+  const [lockHint, setLockHint] = useState(false);
+  const lockHintTimerRef = useRef<number | null>(null);
+  /** 长按倍速是否生效中（HUD 与还原都看它） */
+  const [holdSpeed, setHoldSpeed] = useState(false);
   /** 横滑拖进度时的落点读数。手势期间常显，松手/取消后淡出 */
   const [seekPreview, setSeekPreview] = useState<{
     targetMs: number;
@@ -1398,6 +1420,41 @@ export function VideoPlayer(props: VideoPlayerProps) {
     }
   }, [video]);
 
+  /** 供触摸/点击回调读最新的锁屏态：它们绑在 video 元素上，不重绑 */
+  const lockedRef = useRef(false);
+  lockedRef.current = locked;
+  /** 长按倍速松手后要吞掉的那一次 click */
+  const suppressClickRef = useRef(false);
+  /** 上一次轻点：时刻 + 那一下之前控制层的显隐（双击时要恢复回去） */
+  const tapRef = useRef<{ at: number; chromeBefore: boolean } | null>(null);
+
+  /**
+   * 锁屏态下把解锁键唤出来，3 秒后自己收。
+   *
+   * 常显是不行的：锁屏本来就是「别让我碰到任何东西」，画面上却挂着一颗
+   * 亮着的按钮，等于把误触目标从整块屏幕缩成一个点而不是消掉。
+   */
+  const revealLock = useCallback(() => {
+    setLockHint(true);
+    if (lockHintTimerRef.current !== null) window.clearTimeout(lockHintTimerRef.current);
+    lockHintTimerRef.current = window.setTimeout(() => {
+      lockHintTimerRef.current = null;
+      setLockHint(false);
+    }, 3000);
+  }, []);
+
+  /** 锁上的那一刻把控制层收掉：锁屏还挂着一排能点的按钮说不过去 */
+  useEffect(() => {
+    if (locked) setChromeVisible(false);
+  }, [locked]);
+
+  useEffect(
+    () => () => {
+      if (lockHintTimerRef.current !== null) window.clearTimeout(lockHintTimerRef.current);
+    },
+    [],
+  );
+
   /**
    * 点画面只负责控制层的显隐：藏着就唤出，露着就收起。
    *
@@ -1408,10 +1465,49 @@ export function VideoPlayer(props: VideoPlayerProps) {
    * click，不会走到这里——控制层的显隐只回应真正的轻点。暂停中收不掉是
    * 有意的——chromeMustStayVisible 会立刻把它拉回来，暂停画面本来就该
    * 带着控制条。
+   *
+   * **触屏的双击另有含义**（左右三分之一 = 退/进十秒，§2.B1）：这推翻了
+   * 从前「触屏双击就是两次控制层开关、净效果回到原状」的取舍——双击左右
+   * 快退快进已经是手机上的肌肉记忆，白白空着不值。判定在 tap.ts。
    */
-  const onSurfaceClick = useCallback(() => {
-    setChromeVisible(!chromeWasVisibleRef.current);
-  }, []);
+  const onSurfaceClick = useCallback(
+    (event: React.MouseEvent<HTMLVideoElement>) => {
+      // 锁屏中：轻点只把解锁键唤出来 3 秒，不碰控制层也不跳转
+      if (lockedRef.current) {
+        revealLock();
+        return;
+      }
+      // 长按倍速松手时浏览器仍会补一次 click，吞掉它——否则每次长按结束
+      // 都顺带把控制层切一下
+      if (suppressClickRef.current) {
+        suppressClickRef.current = false;
+        return;
+      }
+      const rect = event.currentTarget.getBoundingClientRect();
+      const xRatio = rect.width > 0 ? (event.clientX - rect.left) / rect.width : 0.5;
+      const now = performance.now();
+      const previous = tapRef.current;
+      // 双击跳转只属于触屏：桌面的双击是全屏（onSurfaceDoubleClick），
+      // 一个手势不能在同一种指针上有两种含义
+      const action =
+        lastPointerTypeRef.current === "mouse"
+          ? ({ type: "chrome" } as const)
+          : resolveTap({ nowMs: now, lastTapMs: previous?.at ?? null, xRatio });
+      if (action.type === "seek") {
+        // 第二下：撤掉第一下对控制层的开关，净效果只剩跳转
+        if (previous) setChromeVisible(previous.chromeBefore);
+        tapRef.current = null;
+        seekByRef.current(action.seconds);
+        // 双击是「盲操作」：没有按钮的按下反馈，必须给方向提示，
+        // 且连点累加（点三下显示 30 秒，与键盘同一套胶囊）
+        flashSeek(action.seconds);
+        return;
+      }
+      tapRef.current = { at: now, chromeBefore: chromeWasVisibleRef.current };
+      setChromeVisible(!chromeWasVisibleRef.current);
+    },
+    [flashSeek, revealLock],
+  );
 
   /**
    * 换音轨。
@@ -1620,6 +1716,10 @@ export function VideoPlayer(props: VideoPlayerProps) {
     },
     [seekToFileMs, cancelPendingSeek, mode],
   );
+
+  /** 供点击/触摸回调读最新值：它们定义在 seekBy 之前，且不该跟着它重绑 */
+  const seekByRef = useRef(seekBy);
+  seekByRef.current = seekBy;
 
   /** 组件卸载时别让在途的合并计时器对着已卸载的组件提交 seek */
   useEffect(
@@ -2066,6 +2166,12 @@ export function VideoPlayer(props: VideoPlayerProps) {
     /** 横滑当前算出的落点；松手才提交，中途只喂胶囊 */
     targetMs: number;
   } | null>(null);
+  /** 长按倍速的状态机进度 + 计时器 + 长按前的速率（迁移规则见 hold-speed.ts） */
+  const holdRef = useRef<{ state: HoldSpeedState; timer: number | null; rate: number }>({
+    state: "idle",
+    timer: null,
+    rate: 1,
+  });
   /** 音量能不能调：null=还没探完；不可调 = iOS（WebKit 只认硬件侧键）。 */
   const volumeAdjustableRef = useRef<boolean | null>(null);
   const fakeLandscapeRef = useRef(false);
@@ -2096,7 +2202,49 @@ export function VideoPlayer(props: VideoPlayerProps) {
 
   useEffect(() => {
     if (!video) return;
+
+    // ---- 长按倍速（docs/design/player-feel.md §2.B2）----
+    const hold = holdRef.current;
+    const setRate = (rate: number) => {
+      // 变速必须保音高，不然 2× 是鸭子叫。Safari 到现在仍只认带前缀的那个。
+      video.preservesPitch = true;
+      (video as HTMLVideoElement & { webkitPreservesPitch?: boolean }).webkitPreservesPitch = true;
+      video.playbackRate = rate;
+    };
+    const dispatchHold = (event: HoldSpeedEvent) => {
+      const next = holdSpeedReducer(hold.state, event);
+      if (next === hold.state) return;
+      if (hold.timer !== null) {
+        window.clearTimeout(hold.timer);
+        hold.timer = null;
+      }
+      if (next === "pending") {
+        hold.timer = window.setTimeout(() => dispatchHold("elapsed"), HOLD_SPEED_DELAY_MS);
+      } else if (next === "active") {
+        // 记住长按前的速率再改：用户可能自己调过（将来有倍速菜单时更要）
+        hold.rate = video.playbackRate || 1;
+        setRate(HOLD_SPEED_RATE);
+        setHoldSpeed(true);
+      } else if (hold.state === "active") {
+        setRate(hold.rate);
+        setHoldSpeed(false);
+        // 松手后浏览器还会补一次 click，吞掉它，否则每次长按都顺带切控制层
+        if (event === "release") suppressClickRef.current = true;
+        if (event === "starve") flashNotice("缓冲跟不上，已退出 2 倍速");
+      }
+      hold.state = next;
+    };
+    // 倍速把前向缓冲吃得比转码器产出更快时，video 会发 waiting——那就是
+    // 「追上编码器了」的信号，立刻还原，别让用户按着不放对着转圈
+    const onWaiting = () => dispatchHold("starve");
+    video.addEventListener("waiting", onWaiting);
+
     const onTouchStart = (event: TouchEvent) => {
+      // 锁屏：所有手势作废（轻点由 onSurfaceClick 处理成「露出解锁键」）
+      if (lockedRef.current) {
+        swipeGestureRef.current = null;
+        return;
+      }
       if (event.touches.length !== 1) {
         // 第二根手指落下 = 这次手势作废。作废之后 `finishGesture` 拿到的
         // gesture 是 null，**不会再走到 hideSeekPreview**，而落点胶囊没有
@@ -2104,6 +2252,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
         // 画面继续往前走，两个读数各说各话（2026-09-08 真机反馈）。
         if (swipeGestureRef.current?.intent === "horizontal") hideSeekPreview();
         swipeGestureRef.current = null;
+        dispatchHold("release");
         return;
       }
       const touch = event.touches[0];
@@ -2124,6 +2273,11 @@ export function VideoPlayer(props: VideoPlayerProps) {
         intent: null,
         targetMs: positionRef.current,
       };
+      // 长按与滑动共用这一根手指：先起计时，位移过门槛（下面裁决方向那一步）
+      // 就撤掉——「按住不动」与「按住划走」必须是两件事
+      if (canHoldSpeed({ paused: video.paused, locked: lockedRef.current, touchCount: 1 })) {
+        dispatchHold("press");
+      }
     };
     const onTouchMove = (event: TouchEvent) => {
       const gesture = swipeGestureRef.current;
@@ -2143,6 +2297,8 @@ export function VideoPlayer(props: VideoPlayerProps) {
       if (!gesture.intent) {
         const intent = classifyIntent(deltaX, deltaY);
         if (!intent) return;
+        // 手指开始滑了：这一定不是长按
+        dispatchHold("move");
         if (intent === "horizontal" && !durationMsRef.current) {
           // 片长未知就没有落点可算（那时进度条本身也是禁用的）。整根手指
           // 作废而不是回落到调音量：用户明明在横划，半路改判成调音量比
@@ -2198,6 +2354,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
      * 提示由侧键控制。
      */
     const finishGesture = (commit: boolean) => {
+      dispatchHold("release");
       const gesture = swipeGestureRef.current;
       swipeGestureRef.current = null;
       if (gesture?.intent === "horizontal") {
@@ -2225,13 +2382,16 @@ export function VideoPlayer(props: VideoPlayerProps) {
       video.removeEventListener("touchmove", onTouchMove);
       video.removeEventListener("touchend", onTouchEnd);
       video.removeEventListener("touchcancel", onTouchCancel);
+      video.removeEventListener("waiting", onWaiting);
+      // 换 video 元素/卸载时把倍速还原，否则新流会带着 2× 起播
+      dispatchHold("release");
       // 换 video 元素（或组件卸载）时手势就此断掉，touchend 再也不会来：
       // 与上面第二根手指同一条理由，胶囊必须在这里一起收走，否则它会一直
       // 挂着一个旧落点。手势本身也作废——不提交没抬手确认过的落点。
       if (swipeGestureRef.current?.intent === "horizontal") hideSeekPreview();
       swipeGestureRef.current = null;
     };
-  }, [video, flashAdjust, showSeekPreview, hideSeekPreview]);
+  }, [video, flashAdjust, flashNotice, showSeekPreview, hideSeekPreview]);
 
   /** 播放中申请防息屏。切到后台会被系统收走，回来时重新申请。 */
   useEffect(() => {
@@ -2258,6 +2418,8 @@ export function VideoPlayer(props: VideoPlayerProps) {
   const awaitingUser = awaitsUserDecision(state.phase);
 
   useEffect(() => {
+    // 锁屏优先级最高：锁上之后暂停、开菜单都不该把一排能点的按钮放回来
+    if (locked) return;
     if (chromeMustStayVisible({ paused, menuOpen, awaitingUser })) {
       setChromeVisible(true);
       return;
@@ -2265,7 +2427,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
     const timer = window.setTimeout(() => setChromeVisible(false), IDLE_HIDE_MS);
     return () => window.clearTimeout(timer);
     // chromeActivity：用户的每次操作都重排这个倒计时（声明见 state 注释）
-  }, [paused, menuOpen, awaitingUser, chromeVisible, chromeActivity]);
+  }, [locked, paused, menuOpen, awaitingUser, chromeVisible, chromeActivity]);
 
   /**
    * 片尾「下一集」卡片该不该显示。
@@ -2470,13 +2632,31 @@ export function VideoPlayer(props: VideoPlayerProps) {
 
               浏览器不支持由网页发起时整颗不渲染（Firefox 的画中画只在它自己
               的界面里，留着就是个死按钮）。 */}
+          {/* 锁屏只在触屏的横屏里出现：横躺着看片时手掌压在屏幕上是常态，
+              而竖屏握持时误触少得多，多一颗按钮反而是噪音。 */}
+          {canRotate && (landscape || fakeLandscape) ? (
+            <button
+              type="button"
+              onClick={() => {
+                setLocked(true);
+                revealLock();
+              }}
+              className={`ml-auto grid size-9 shrink-0 place-items-center rounded-full border border-white/[0.09] bg-black/30 text-white/85 backdrop-blur-md transition hover:bg-black/50 hover:text-white active:scale-[0.94] max-md:size-11 ${
+                chromeVisible ? "pointer-events-auto" : "pointer-events-none"
+              }`}
+              aria-label="锁屏"
+              title="锁屏（防误触）"
+            >
+              <LockIcon className="size-[18px] max-md:size-[22px]" />
+            </button>
+          ) : null}
           {canPip ? (
             <button
               type="button"
               onClick={togglePip}
-              className={`ml-auto grid size-9 shrink-0 place-items-center rounded-full border border-white/[0.09] bg-black/30 text-white/85 backdrop-blur-md transition hover:bg-black/50 hover:text-white active:scale-[0.94] max-md:size-11 ${
-                chromeVisible ? "pointer-events-auto" : "pointer-events-none"
-              }`}
+              className={`grid size-9 shrink-0 place-items-center rounded-full border border-white/[0.09] bg-black/30 text-white/85 backdrop-blur-md transition hover:bg-black/50 hover:text-white active:scale-[0.94] max-md:size-11 ${
+                canRotate && (landscape || fakeLandscape) ? "" : "ml-auto"
+              } ${chromeVisible ? "pointer-events-auto" : "pointer-events-none"}`}
               aria-label={pipActive ? "退出画中画" : "画中画"}
               title={pipActive ? "退出画中画" : "画中画"}
             >
@@ -2484,6 +2664,45 @@ export function VideoPlayer(props: VideoPlayerProps) {
             </button>
           ) : null}
         </div>
+
+        {/* 锁屏中的解锁键：画面左侧居中（拇指够得到，又不压在中央播放键上）。
+            点画面唤出、3 秒后自己收——常显等于把误触目标从整块屏幕缩成一个点，
+            而锁屏要的是「碰哪儿都不响应」。noautohide：它不属于控制层。 */}
+        {locked ? (
+          <div
+            {...{ noautohide: "" }}
+            className={`absolute left-[6%] top-1/2 z-30 -translate-y-1/2 transition-opacity duration-300 ${
+              lockHint ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
+            }`}
+          >
+            <button
+              type="button"
+              onClick={() => {
+                setLocked(false);
+                setChromeVisible(true);
+              }}
+              className="grid size-11 place-items-center rounded-full border border-white/[0.09] bg-black/45 text-white backdrop-blur-md transition active:scale-[0.94]"
+              aria-label="解锁"
+              title="解锁"
+            >
+              <LockIcon className="size-[22px]" />
+            </button>
+          </div>
+        ) : null}
+
+        {/* 长按倍速的 HUD：顶部居中，与调节胶囊同一套视觉。生效期间常驻
+            （手指还按着就还在倍速），松手即消失，所以不做两段式退场。 */}
+        {holdSpeed ? (
+          <div
+            {...{ noautohide: "" }}
+            className="pointer-events-none absolute left-1/2 top-[calc(1rem_+_var(--safe-top))] z-30 -translate-x-1/2"
+          >
+            <div className="player-flash-in flex items-center gap-2 rounded-full bg-black/70 px-4 py-2 text-[13px] font-medium text-white shadow-[0_10px_28px_rgba(0,0,0,0.45)]">
+              <span className="tnum">{HOLD_SPEED_RATE}× 快进中</span>
+              <SeekChevrons back={false} />
+            </div>
+          </div>
+        ) : null}
 
         {/* 调节反馈胶囊：顶部居中，触摸滑动与键盘 ↑↓/M 共用；调节中常驻、
             停手 0.9 秒后淡出（两段式，动画类见 globals 的 .player-flash-*）。
