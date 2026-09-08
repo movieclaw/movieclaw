@@ -155,11 +155,17 @@ export const InventoryCell = memo(function InventoryCell({
       : null;
   return (
     // 视口外的格子根本不挂（PosterWall 的虚拟化窗口），因此不再需要
-    // content-visibility 去跳过绘制——它只能省绘制，省不掉节点与解码位图
+    // content-visibility 去跳过绘制——它只能省绘制，省不掉节点与解码位图。
+    //
+    // 但 contain:paint 要单独留下：content-visibility:auto 一直隐含着它，卡片
+    // 那层 shadow-[0_10px_28px] 因此被裁在格子边界上。去掉之后投影会漫到相邻
+    // 格子上——实测整墙 6~9% 的像素跟着变。那是既有观感的一部分，这次只做性能，
+    // 不顺手改画面（要放开投影是另一件事，得单独看效果）
     <div
       // 位置锚点：会话内的滚动恢复（lib/use-scroll-restoration.ts）与跨会话的
       // 「回到上次位置」（lib/library-wall-recall.ts）都按它认这一屏是哪几部
       data-library-item-id={measuring ? undefined : item.media_item_id}
+      style={{ contain: "paint" }}
     >
       {/* 后台正在处理的那一格自己点亮：进度面板/胶囊列的是总数或片名，
           海报墙上也要能一眼看到"正在弄这部"，否则用户得在两处之间对片名 */}
@@ -397,7 +403,10 @@ const PositionedCell = memo(function PositionedCell({
   return (
     <div
       className="absolute left-0 top-0"
-      style={{ transform: `translate(${Math.round(x)}px, ${Math.round(y)}px)`, width: Math.round(width) }}
+      // 位置与宽度都不取整：CSS grid 的列宽是小数（834px 视口下是 184.5），
+      // 取整会让海报高多出零点几像素、标题整体下移一行像素——只在某些宽度上
+      // 出现，很难看出来却实实在在改了画面
+      style={{ transform: `translate(${x}px, ${y}px)`, width }}
     >
       <InventoryCell
         item={item}
