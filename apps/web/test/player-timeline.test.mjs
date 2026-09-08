@@ -5,6 +5,7 @@ import {
   SEEK_TAIL_GUARD_MS,
   clampSeekTarget,
   planSeek,
+  progressRatio,
   toFileMs,
   toSessionSeconds,
 } from "../lib/player/timeline.ts";
@@ -83,4 +84,21 @@ test("夹紧之后的片尾落点仍落在已转区间内，不会白换一次�
   const whole = { startMs: 0, seekableEndSeconds: 7200, hasSession: true };
   const target = clampSeekTarget(7_200_000, 7_200_000);
   assert.deepEqual(planSeek(target, whole), { kind: "native", seconds: 7199 });
+});
+
+// ---------------------------------------------------------------------------
+// 进度条比例（player-feel.md §2.A1：进度条自绘用的唯一换算）
+// ---------------------------------------------------------------------------
+
+test("进度比例：正常值按比例，两端夹住", () => {
+  assert.equal(progressRatio(30_000, 120_000), 0.25);
+  assert.equal(progressRatio(-5_000, 120_000), 0);
+  // 换会话的空档里位置可能短暂越过片长，不夹住就是把圆点画到轨道外面
+  assert.equal(progressRatio(130_000, 120_000), 1);
+});
+
+test("片长未知/非法时比例为 0，不画一条随机长度的已播段", () => {
+  assert.equal(progressRatio(30_000, null), 0);
+  assert.equal(progressRatio(30_000, 0), 0);
+  assert.equal(progressRatio(Number.NaN, 120_000), 0);
 });

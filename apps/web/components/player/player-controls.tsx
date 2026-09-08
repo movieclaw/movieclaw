@@ -1,12 +1,12 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ActivityIcon, CheckIcon, ExpandIcon, GearIcon, ShrinkIcon } from "@/components/icons";
 import type { AudioOption } from "@/lib/player/audio-tracks";
 import { SUBTITLE_OFFSET_STEP, clampSubtitleOffset } from "@/lib/player/subtitles";
 import { QUALITY_OPTIONS } from "@/lib/player/quality";
 import type { SubtitleStyle, SubtitleTracks } from "@/lib/player/subtitles";
-import { formatClock } from "@/lib/player/timeline";
+import { formatClock, progressRatio } from "@/lib/player/timeline";
 import { type TrickplayIndex, tileAt } from "@/lib/player/trickplay";
 
 /**
@@ -168,7 +168,29 @@ function RotateGlyph({ active }: { active: boolean }) {
 }
 
 export interface PlayerControlsProps {
+  /**
+   * 播放位置（文件毫秒）的**状态**值，跟着 `timeupdate` 走（约 4Hz）。
+   *
+   * 它只负责时间文字与静止态的进度条；**播放中进度条的位置不看它**——
+   * 4Hz 会让圆点每 250 毫秒跳一格。见下面 `video` 的说明。
+   */
   positionMs: number;
+  /**
+   * 正在播的 video 元素。进度条据此每帧自绘位置（见 paint effect）。
+   *
+   * 传元素而不是位置数字，是因为 60fps 的位置更新不能走 React state：
+   * 这个组件重，每帧 setState 会把整条控制条重渲染 60 次。
+   */
+  video: HTMLVideoElement | null;
+  /** 时间轴参照点（会话相对制的 start_ms；VOD/直通恒为 0）。文件时间 =
+   * startMs + video.currentTime × 1000，与 timeline.ts 的 toFileMs 同式 */
+  startMs: number;
+  /**
+   * 覆盖位置：横滑拖进度的落点、连按快进的累积落点。非 null 时进度条与
+   * 时间文字都显示它而不是真实播放位置——**屏幕上任何时刻只能有一个读数**
+   * （2026-09-08 真机反馈：胶囊报 9:58、进度条停在 19:00）。
+   */
+  overrideMs: number | null;
   /** 片长（文件时间）。服务端算不出时为 null，此时进度条只显示已播时间 */
   durationMs: number | null;
   /** 当前会话已缓冲到的文件位置，用于进度条的浅色底 */
@@ -221,6 +243,9 @@ export interface PlayerControlsProps {
 export function PlayerControls(props: PlayerControlsProps) {
   const {
     positionMs,
+    video,
+    startMs,
+    overrideMs,
     durationMs,
     bufferedEndMs,
     chromeVisible,
@@ -264,11 +289,103 @@ export function PlayerControls(props: PlayerControlsProps) {
   const [menu, setMenu] = useState<"none" | "audio" | "subtitles" | "settings">("none");
   // 悬停预览的位置（文件毫秒 + 进度条内的像素横坐标）。null = 没在悬停
   const [hover, setHover] = useState<{ ms: number; x: number } | null>(null);
-  const shown = dragging ?? positionMs;
+  /** 时间文字用的位置。三个来源的优先级与进度条自绘完全一致（见 paint） */
+  const shown = dragging ?? overrideMs ?? positionMs;
   const previewTile = hover ? tileAt(trickplay, hover.ms) : null;
-  const progress = durationMs ? Math.min(100, (shown / durationMs) * 100) : 0;
   const buffered =
     durationMs && bufferedEndMs ? Math.min(100, (bufferedEndMs / durationMs) * 100) : 0;
+
+  // ---------------------------------------------------------------------
+  // 进度条自绘（docs/design/player-feel.md §2.A1）
+  //
+  // 已播段的宽度与圆点的位置**不走 React**：位置的唯一状态来源 `timeupdate`
+  // 只有约 4Hz 且间隔不均，跟着它渲染就是「圆点每 250 毫秒跳一格」——这是
+  // 「播放器不够丝滑」最主要的来源。改成 rAF 每帧直接读 video.currentTime
+  // 写这两个元素的 style，React 那侧只留 4Hz 的时间文字。
+  //
+  // 每帧 setState 是不行的：这个组件带着菜单、缩略图、按钮簇，一秒重渲染
+  // 60 次会把省下来的流畅又赔回去。
+  // ---------------------------------------------------------------------
+  const playedRef = useRef<HTMLDivElement>(null);
+  const thumbRef = useRef<HTMLDivElement>(null);
+  /** 供 rAF 回调读最新值：跟着依赖重建循环会在播放中反复起停 */
+  const paintInputRef = useRef({ video, startMs, durationMs, positionMs, shown });
+  paintInputRef.current = { video, startMs, durationMs, positionMs, shown };
+
+  const paint = useCallback(() => {
+    const { video: el, startMs: origin, durationMs: total, positionMs: state, shown: override } =
+      paintInputRef.current;
+    if (!total) return;
+    // 位置取值三选一，优先级与时间文字一致：
+    // 1. 拖动/横滑/连按的落点（override，此时 shown ≠ positionMs）；
+    // 2. **正在播**的 video——只有这一条是每帧变化的；
+    // 3. positionMs 状态值：暂停、seek 途中、换会话空档都归它。第 3 条不能
+    //    省：换会话时 video 还挂着旧流（currentTime 属于旧时间轴），拿它算
+    //    出来的位置会让进度条先弹回原处再跳过去。
+    let ms = override;
+    if (override === state && el && !el.paused && !el.seeking && el.readyState >= 2) {
+      ms = origin + el.currentTime * 1000;
+    }
+    const ratio = progressRatio(ms, total);
+    const percent = `${ratio * 100}%`;
+    if (playedRef.current) playedRef.current.style.width = percent;
+    if (thumbRef.current) thumbRef.current.style.left = percent;
+  }, []);
+
+  useEffect(() => {
+    if (!video) {
+      paint();
+      return;
+    }
+    // 合帧：排下一帧前先撤掉上一帧，保证一帧最多写一次 DOM（emby-slider
+    // 同款做法）。事件与 rAF 会在同一帧里同时要求重绘，不合帧就是重复布局。
+    let frame = 0;
+    const schedule = () => {
+      if (frame) cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        paint();
+      });
+    };
+    let loop = 0;
+    const tick = () => {
+      paint();
+      loop = requestAnimationFrame(tick);
+    };
+    const start = () => {
+      if (!loop) loop = requestAnimationFrame(tick);
+    };
+    const stop = () => {
+      if (loop) cancelAnimationFrame(loop);
+      loop = 0;
+      schedule();
+    };
+    // 只在真的在播时跑循环：暂停/缓冲/看不见的时候位置不动，空转 60 次/秒
+    // 没有意义（页面切到后台时浏览器自己会停 rAF，这里管的是前台暂停）。
+    video.addEventListener("playing", start);
+    video.addEventListener("play", start);
+    video.addEventListener("pause", stop);
+    video.addEventListener("ended", stop);
+    // 暂停态的位置变化（seek、换会话后的落点）靠这两个事件补画
+    video.addEventListener("seeked", schedule);
+    video.addEventListener("timeupdate", schedule);
+    if (!video.paused) start();
+    else schedule();
+    return () => {
+      video.removeEventListener("playing", start);
+      video.removeEventListener("play", start);
+      video.removeEventListener("pause", stop);
+      video.removeEventListener("ended", stop);
+      video.removeEventListener("seeked", schedule);
+      video.removeEventListener("timeupdate", schedule);
+      if (loop) cancelAnimationFrame(loop);
+      if (frame) cancelAnimationFrame(frame);
+    };
+  }, [video, paint]);
+
+  // 拖动值、落点、片长、状态位置的每一次变化都要立刻见效：rAF 循环在暂停
+  // 时是停的，只靠它这些变化会等到下一次播放才画出来。
+  useEffect(paint, [paint, shown, positionMs, durationMs, startMs]);
 
   const openMenu = (next: "none" | "audio" | "subtitles" | "settings") => {
     setMenu(next);
@@ -403,9 +520,10 @@ export function PlayerControls(props: PlayerControlsProps) {
               静止 3px、悬停 5px，Netflix 的细红线就是这个手感 */}
           <div className="player-scrub-track pointer-events-none absolute inset-x-0 top-1/2 h-[3px] -translate-y-1/2 overflow-hidden rounded-full bg-[var(--player-track)] transition-[height] duration-150 [.player-scrub-row:hover_&]:h-[5px]">
             <div className="h-full bg-[var(--player-buffered)]" style={{ width: `${buffered}%` }} />
+            {/* 宽度由上面的 paint 每帧写，不在这里跟 React 的渲染节奏 */}
             <div
-              className="absolute inset-y-0 left-0 bg-[var(--player-accent)]"
-              style={{ width: `${progress}%` }}
+              ref={playedRef}
+              className="absolute inset-y-0 left-0 w-0 bg-[var(--player-accent)]"
             />
           </div>
           <input
@@ -477,15 +595,16 @@ export function PlayerControls(props: PlayerControlsProps) {
               不然「拖拽那个点」根本无从下手——用户不知道该按哪里；拖动中再
               放大一号，指下有反馈。桌面维持悬停才现，不挡画面。 */}
           <div
-            className={`pointer-events-none absolute top-1/2 size-[14px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-[var(--player-thumb)] shadow-[0_0_0_4px_var(--accent-soft)] transition-transform duration-150 pointer-coarse:size-[18px] ${
+            ref={thumbRef}
+            className={`pointer-events-none absolute left-0 top-1/2 size-[14px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-[var(--player-thumb)] shadow-[0_0_0_4px_var(--accent-soft)] transition-transform duration-150 pointer-coarse:size-[18px] ${
               durationMs
                 ? dragging !== null
-                  ? "scale-100 pointer-coarse:scale-110"
+                  ? // 按下的一刻回弹到原尺寸：指下有「按住了」的反馈
+                    "scale-100 pointer-coarse:scale-110"
                   : // 收起态整行 opacity-0，触屏常显不用再按 chromeVisible 分岔
-                    "scale-0 [.player-scrub-row:hover_&]:scale-100 pointer-coarse:scale-100"
+                    "scale-0 [.player-scrub-row:hover_&]:scale-110 pointer-coarse:scale-100"
                 : "scale-0"
             }`}
-            style={{ left: `${progress}%` }}
           />
         </div>
       </div>

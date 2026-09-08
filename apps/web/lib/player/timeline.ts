@@ -78,6 +78,17 @@ export function planSeek(
 }
 
 /**
+ * 位置 → 进度条比例（0~1）。
+ *
+ * 片长未知时返回 0：那时进度条本来就是禁用状态，画一条随机长度的已播段
+ * 比画空更糟。上下都夹住——换会话的空档里位置可能短暂越过片长。
+ */
+export function progressRatio(positionMs: number, durationMs: number | null): number {
+  if (!durationMs || durationMs <= 0 || !Number.isFinite(positionMs)) return 0;
+  return Math.min(1, Math.max(0, positionMs / durationMs));
+}
+
+/**
  * 毫秒 → 钟表格式（H:MM:SS / M:SS）。
  *
  * 播放器里的时间必须是钟表格式，不能复用站内那套「1.2 小时」——进度条旁边

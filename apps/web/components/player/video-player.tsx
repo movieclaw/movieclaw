@@ -85,6 +85,7 @@ import {
   planSubtitleTracks,
   saveSubtitleStyle,
 } from "@/lib/player/subtitles";
+import { nextSeekTarget, seekBatchWindowMs } from "@/lib/player/seek-batch";
 import {
   clampSeekTarget,
   formatClock,
@@ -1565,15 +1566,86 @@ export function VideoPlayer(props: VideoPlayerProps) {
     [video, sessionId, mode, durationMs, state.session, state.phase, state.startMs],
   );
 
-  /** 供触摸手势回调读最新值：跟着依赖重绑 touch 监听会在手势中途换掉监听器 */
-  const seekToFileMsRef = useRef(seekToFileMs);
-  seekToFileMsRef.current = seekToFileMs;
+  /**
+   * 连按快进/快退的累积落点（docs/design/player-feel.md §2.B4）。
+   *
+   * 转码会话里一次 seek 可能就是一次「杀 ffmpeg 换会话」，连按三次 ⟳10
+   * 发三次 seek 就是黑三下才走到 +30 秒。所以按键只累积落点、立刻更新读数，
+   * 静默 400ms 后提交唯一一次跳转。null = 没有在途的累积。
+   */
+  const [pendingSeekMs, setPendingSeekMs] = useState<number | null>(null);
+  const pendingSeekRef = useRef<{ targetMs: number | null; timer: number | null }>({
+    targetMs: null,
+    timer: null,
+  });
 
-  // 上下界都由 seekToFileMs 里的 clampSeekTarget 收住，这里不再各夹一次
+  /** 撤销在途的累积（进度条拖动、横滑等其它跳转入口接管时必须先清） */
+  const cancelPendingSeek = useCallback(() => {
+    const pending = pendingSeekRef.current;
+    if (pending.timer !== null) window.clearTimeout(pending.timer);
+    pending.timer = null;
+    pending.targetMs = null;
+    setPendingSeekMs(null);
+  }, []);
+
+  // 上下界都由 nextSeekTarget / seekToFileMs 里的 clampSeekTarget 收住
   const seekBy = useCallback(
-    (seconds: number) => seekToFileMs(positionRef.current + seconds * 1000),
-    [seekToFileMs],
+    (seconds: number) => {
+      const target = nextSeekTarget({
+        pendingMs: pendingSeekRef.current.targetMs,
+        positionMs: positionRef.current,
+        deltaMs: seconds * 1000,
+        durationMs: durationMsRef.current,
+      });
+      const windowMs = seekBatchWindowMs(mode?.seekBeyondBufferedRestarts ?? false);
+      if (windowMs <= 0) {
+        // VOD 全片列表 / 档 0 直出：seek 就是播放器内跳转，成本近乎零，
+        // 立刻执行手感最好——这里合并只是凭空加延迟。
+        cancelPendingSeek();
+        seekToFileMs(target);
+        return;
+      }
+      const pending = pendingSeekRef.current;
+      pending.targetMs = target;
+      // 读数立刻跟上：进度条与时间文字都走 overrideMs，用户按下就看到落点
+      setPendingSeekMs(target);
+      if (pending.timer !== null) window.clearTimeout(pending.timer);
+      pending.timer = window.setTimeout(() => {
+        pending.timer = null;
+        const committed = pending.targetMs;
+        pending.targetMs = null;
+        setPendingSeekMs(null);
+        if (committed !== null) seekToFileMs(committed);
+      }, windowMs);
+    },
+    [seekToFileMs, cancelPendingSeek, mode],
   );
+
+  /** 组件卸载时别让在途的合并计时器对着已卸载的组件提交 seek */
+  useEffect(
+    () => () => {
+      const pending = pendingSeekRef.current;
+      if (pending.timer !== null) window.clearTimeout(pending.timer);
+    },
+    [],
+  );
+
+  /**
+   * 进度条拖动与横滑落点的提交入口：先撤掉在途的连按累积，再跳。
+   *
+   * 不撤的话，用户「连按两下快进又改主意去拖进度条」时，那个 400ms 的
+   * 计时器会在拖动落地之后再把画面拽回连按的落点。
+   */
+  const commitSeek = useCallback(
+    (fileMs: number) => {
+      cancelPendingSeek();
+      seekToFileMs(fileMs);
+    },
+    [cancelPendingSeek, seekToFileMs],
+  );
+  /** 供触摸手势回调读最新值：跟着依赖重绑 touch 监听会在手势中途换掉监听器 */
+  const commitSeekRef = useRef(commitSeek);
+  commitSeekRef.current = commitSeek;
 
   useEffect(() => {
     // 粗指针（手指）就是能转的设备。不再要求 orientation.lock 存在：
@@ -2129,7 +2201,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
       const gesture = swipeGestureRef.current;
       swipeGestureRef.current = null;
       if (gesture?.intent === "horizontal") {
-        if (commit) seekToFileMsRef.current(gesture.targetMs);
+        if (commit) commitSeekRef.current(gesture.targetMs);
         hideSeekPreview();
         return;
       }
@@ -2232,19 +2304,20 @@ export function VideoPlayer(props: VideoPlayerProps) {
     positionMs > 0;
 
   /**
-   * 底部进度条与时间读数显示的位置。
+   * 进度条与时间读数的**覆盖位置**：有它就显示它，没有才显示真实播放位置。
    *
-   * 横滑拖进度时跟着**落点**走，而不是跟着还在播的画面走：手势期间画面照常
-   * 播，进度条要是继续跟画面，屏幕上就同时挂着两个各说各话的读数——正中的
-   * 胶囊报 9:58、底下的进度条停在 19:00，用户根本不知道松手会落到哪儿
-   * （2026-09-08 真机反馈）。语义与进度条自身的拖拽一致：拖动中显示落点，
-   * 松手才是真值。
+   * 两个来源，都是「用户已经表达了意图、但画面还没跳过去」的中间态：
    *
-   * 淡出阶段（leaving）交还给 positionMs：提交那条路 seek 已经把 positionMs
-   * 带到落点（读数不会跳），取消那条路本来就该弹回真实位置。
+   * - **横滑拖进度**：手势期间画面照常播，进度条要是继续跟画面，屏幕上就
+   *   同时挂着两个各说各话的读数——正中的胶囊报 9:58、底下的进度条停在
+   *   19:00，用户根本不知道松手会落到哪儿（2026-09-08 真机反馈）。淡出阶段
+   *   （leaving）交还给真实位置：提交那条路 seek 已经把位置带到落点、读数
+   *   不会跳，取消那条路本来就该弹回真值。
+   * - **连按快进的累积落点**：合并窗口内画面还没动，读数必须先走到累积落点，
+   *   否则连按三下屏幕上什么都不变，用户只会以为按键没生效。
    */
-  const shownPositionMs =
-    seekPreview && !seekPreview.leaving ? seekPreview.targetMs : positionMs;
+  const overrideMs =
+    seekPreview && !seekPreview.leaving ? seekPreview.targetMs : pendingSeekMs;
 
   return (
     <div
@@ -2660,11 +2733,14 @@ export function VideoPlayer(props: VideoPlayerProps) {
             </div>
           ) : null}
           <PlayerControls
-            positionMs={shownPositionMs}
+            positionMs={positionMs}
+            video={video}
+            startMs={mode?.originMs ?? 0}
+            overrideMs={overrideMs}
             durationMs={durationMs}
             bufferedEndMs={bufferedEndMs}
             chromeVisible={chromeVisible}
-            onSeek={seekToFileMs}
+            onSeek={commitSeek}
             subtitles={subtitles}
             selectedSubtitle={selectedSubtitle}
             onSelectSubtitle={selectSubtitle}
