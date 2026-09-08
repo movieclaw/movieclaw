@@ -56,6 +56,7 @@ import {
   FREEZE_FRAME_MAX_MS,
   canReleaseFreeze,
   captureFrame,
+  drawTile,
 } from "@/lib/player/freeze-frame";
 import {
   planSystemTrackModes,
@@ -72,7 +73,7 @@ import {
   reduceQoe,
   summarize,
 } from "@/lib/player/qoe";
-import type { TrickplayIndex } from "@/lib/player/trickplay";
+import { type TrickplayIndex, tileAt } from "@/lib/player/trickplay";
 import { FALLBACK_FRAME_RATE, isEditableTarget, resolveShortcut } from "@/lib/player/shortcuts";
 import {
   type AdjustKind,
@@ -275,6 +276,9 @@ export function VideoPlayer(props: VideoPlayerProps) {
   /** 画质上限（max_height）。null = 自动。持久化，弱网用户不必每部片重选 */
   const [quality, setQuality] = useState<number | null>(loadQualityPreference);
   const [trickplay, setTrickplay] = useState<TrickplayIndex | null>(null);
+  /** 供冻结帧读最新索引：写进依赖会让 freezeFrame 换身份，牵连挂引擎的 effect */
+  const trickplayRef = useRef<TrickplayIndex | null>(null);
+  trickplayRef.current = trickplay;
   // 播放质量累计。放 ref 而不是 state：每秒都在变，进渲染只会白重绘。
   const qoeRef = useRef(initialQoe());
   // 快照函数放 ref：卸载与切集的 effect 都不依赖 state.session，
@@ -319,23 +323,68 @@ export function VideoPlayer(props: VideoPlayerProps) {
    */
   const freezeCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const [frozen, setFrozen] = useState(false);
+  /**
+   * 这是第几次冻结。缩略图是异步加载的，回来时这一冻可能早就撤了、或者用户
+   * 又跳了一次——拿它对一下，过期的那张绝不能画上去。
+   */
+  const freezeTokenRef = useRef(0);
+  /** 雪碧图的解码缓存：连按快进会连着要同一张，每次新建 Image 等于重解一遍 */
+  const sheetCacheRef = useRef(new Map<string, HTMLImageElement>());
 
   /**
-   * 把当前这一帧冻在画面上，盖住接下来那段没有画面的空窗
+   * 把画面冻住，盖住接下来那段没有画面的空窗
    * （docs/design/player-feel.md §2.G2，实现见 lib/player/freeze-frame.ts）。
    *
    * 该在哪些时刻调：**凡是会让 `<video>` 手里一帧都不剩的动作**——换会话
    * （seek 出界 / 换画质 / 换音轨 / 取流断了原地重开）、以及 hls.js 会清缓冲
    * 重新装载的远跳。跳转落在缓冲里的那种不调：数据在手上，本来就不会黑。
    *
-   * 抓不到帧（还没出过画、跨源没带 CORS 头）就什么也不做，黑屏照旧——
-   * 盖一张空白 canvas 比黑屏更糟。
+   * 传了 `targetFileMs`（远跳）就**盖落点的缩略图**而不是上一帧（§2.G4）：
+   * 远跳与近跳的体感差别有一大半是「等的时候画面还停在原地，看着像没拖动」，
+   * 换成落点的画面，这一跳视觉上当场就落地了。两步走：
+   *
+   * 1. 先同步抓当前帧盖上——雪碧图要现加载，这一步保证任何时候都不黑；
+   * 2. 缩略图到手再原地换成落点那一格（还没生成 trickplay 就停在第 1 步）。
+   *
+   * 抓不到帧、也没有缩略图时什么都不做，黑屏照旧——盖一张空白 canvas 更糟。
    */
-  const freezeFrame = useCallback(() => {
-    const canvas = freezeCanvasRef.current;
-    if (!video || !canvas) return;
-    if (captureFrame(video, canvas)) setFrozen(true);
-  }, [video]);
+  const freezeFrame = useCallback(
+    (targetFileMs?: number) => {
+      const canvas = freezeCanvasRef.current;
+      if (!video || !canvas) return;
+      const token = freezeTokenRef.current + 1;
+      freezeTokenRef.current = token;
+      if (captureFrame(video, canvas)) setFrozen(true);
+
+      // 走 ref 读 trickplay：把它写进依赖会让 freezeFrame 在索引加载完成时
+      // 换掉身份，而挂引擎那个 effect 依赖它——那就是一次无谓的销毁重挂流。
+      const tile = targetFileMs === undefined ? null : tileAt(trickplayRef.current, targetFileMs);
+      if (!tile) return;
+      const cache = sheetCacheRef.current;
+      let image = cache.get(tile.url);
+      if (!image) {
+        // 一张雪碧图解码后就是几 MB，连着远跳十几次能攒出几十 MB。留最近
+        // 四张：连按快进反复要的是同一张，四张足够接住，再多是纯占内存。
+        // Map 按插入序，超了就丢最早那张。
+        while (cache.size >= 4) {
+          const oldest = cache.keys().next().value;
+          if (oldest === undefined) break;
+          cache.delete(oldest);
+        }
+        image = new Image();
+        image.src = tile.url;
+        cache.set(tile.url, image);
+      }
+      const paint = () => {
+        // 过期的那张不能画：这几十毫秒里可能已经撤了冻结、或者又跳了一次
+        if (freezeTokenRef.current !== token) return;
+        if (drawTile(canvas, image, tile)) setFrozen(true);
+      };
+      if (image.complete) paint();
+      else image.addEventListener("load", paint, { once: true });
+    },
+    [video],
+  );
 
   /**
    * 撤掉冻结帧：新位置真的出画了就撤。
@@ -351,6 +400,9 @@ export function VideoPlayer(props: VideoPlayerProps) {
     if (!frozen || !video) return;
     const release = () => {
       if (canReleaseFreeze({ seeking: video.seeking, readyState: video.readyState })) {
+        // 递增 token 让在途的缩略图作废：晚到的那张不能把已经出画的画面
+        // 重新盖回去（远跳时雪碧图与首帧常常是前后脚到）
+        freezeTokenRef.current += 1;
         setFrozen(false);
       }
     };
@@ -373,6 +425,8 @@ export function VideoPlayer(props: VideoPlayerProps) {
   }, [state.phase]);
   useEffect(() => {
     setFrozen(false);
+    freezeTokenRef.current += 1;
+    sheetCacheRef.current.clear();
   }, [unitKey]);
 
   /** 本集自动播放的结果。只有 blocked 需要界面兜底（中央大播放键） */
@@ -1792,7 +1846,9 @@ export function VideoPlayer(props: VideoPlayerProps) {
         // 能画黑。先把当前帧冻住盖上去，等新位置出画再撤。缓冲之内的跳转
         // 不冻——数据在手上，本来就不会黑，多盖一层反而会让本该瞬时的跳转
         // 看着像卡了一下。
-        if (!isWithinRanges(video.buffered, seconds)) freezeFrame();
+        // 带上落点：远跳盖的是**落点的缩略图**而不是上一帧，这一跳视觉上
+        // 当场就落地（§2.G4）。
+        if (!isWithinRanges(video.buffered, seconds)) freezeFrame(fileMs);
         if (engineRef.current?.seek) engineRef.current.seek(seconds);
         else video.currentTime = seconds;
         // 乐观更新进度条：seek 落到未缓冲区间（往回拖出 back buffer、往前
@@ -1803,8 +1859,9 @@ export function VideoPlayer(props: VideoPlayerProps) {
         setPositionMs(toFileMs(seconds, startMsRef.current));
         return;
       }
-      // 换会话必然让画面空一段（旧引擎销毁会把 src 摘干净），先冻住当前帧
-      freezeFrame();
+      // 换会话必然让画面空一段（旧引擎销毁会把 src 摘干净），先把画面冻住；
+      // 这条路恒是远跳，盖落点的缩略图
+      freezeFrame(plan.startMs);
       // 换会话期间先把旧流停住：不停的话旧会话还在往前走，进度条会在新会话
       // 起来之前继续跳动，看着像"拖了没反应"
       video.pause();

@@ -51,6 +51,50 @@ export function captureFrame(video: HTMLVideoElement, canvas: HTMLCanvasElement)
 }
 
 /**
+ * 把一格 trickplay 缩略图画进 canvas，**用落点的画面替掉上一帧**。
+ *
+ * 远跳（拖出缓冲、换会话）与近跳的体感差别，很大一块其实不是「等得久」而是
+ * 「等的时候屏幕还停在原地」：用户已经把进度条拖到 1:20:00，画面却还是
+ * 0:40:00 那一帧，于是这一拖看着像没生效，直到几秒后画面才忽然换过去。
+ * 换成落点的缩略图，视觉上这一跳**当场就落地了**，之后等的只是「动起来」
+ * ——各家（YouTube 的 storyboard、Netflix）都是这么处理远跳的。
+ *
+ * 图源就是进度条气泡在用的那张雪碧图，多半已经在浏览器缓存里；没有 trickplay
+ * 索引（还没生成）时调用方退回抓当前帧，画面照旧不黑，只是不「落地」。
+ *
+ * `offsetX/offsetY` 沿用 `trickplay.tileAt` 的 CSS background-position 口径
+ * （负值），所以取源矩形时要取反。
+ */
+export function drawTile(
+  canvas: HTMLCanvasElement,
+  image: HTMLImageElement,
+  tile: { width: number; height: number; offsetX: number; offsetY: number },
+): boolean {
+  if (tile.width <= 0 || tile.height <= 0) return false;
+  if (!image.naturalWidth || !image.naturalHeight) return false;
+  canvas.width = tile.width;
+  canvas.height = tile.height;
+  const context = canvas.getContext("2d");
+  if (!context) return false;
+  try {
+    context.drawImage(
+      image,
+      -tile.offsetX,
+      -tile.offsetY,
+      tile.width,
+      tile.height,
+      0,
+      0,
+      tile.width,
+      tile.height,
+    );
+  } catch {
+    return false;
+  }
+  return true;
+}
+
+/**
  * 冻结帧能不能撤了：新位置的那一帧已经解出来，且不在跳转途中。
  *
  * `readyState >= HAVE_CURRENT_DATA(2)` 是「当前播放位置有一帧可画」的规范
