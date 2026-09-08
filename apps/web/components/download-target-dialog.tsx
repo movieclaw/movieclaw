@@ -157,11 +157,14 @@ export function DownloadTargetDialog({
   request,
   onClose,
   onSubmitted,
+  topmost = false,
 }: {
   /** null = 关闭 */
   request: DownloadTargetRequest | null;
   onClose: () => void;
   onSubmitted: (result: DownloadSubmitResult) => void;
+  /** 触发按钮长在灯箱这类高层浮层里时置位，弹窗抬到最高层（见 Modal 的层级约定） */
+  topmost?: boolean;
 }) {
   if (!request) return null;
   // 以 request 为 key 强制内容组件重新挂载：每次打开都从全新状态开始，
@@ -170,6 +173,7 @@ export function DownloadTargetDialog({
     <DialogContent
       key={`${request.site_id}:${request.download_url}`}
       request={request}
+      topmost={topmost}
       onClose={onClose}
       onSubmitted={onSubmitted}
     />
@@ -180,10 +184,12 @@ function DialogContent({
   request,
   onClose,
   onSubmitted,
+  topmost,
 }: {
   request: DownloadTargetRequest;
   onClose: () => void;
   onSubmitted: (result: DownloadSubmitResult) => void;
+  topmost: boolean;
 }) {
   const [rememberedTarget] = useState<RememberedTarget | null>(() =>
     readRememberedTarget(request),
@@ -468,7 +474,7 @@ function DialogContent({
   };
 
   return (
-    <Modal open onClose={onClose} label="选择保存位置">
+    <Modal open topmost={topmost} onClose={onClose} label="选择保存位置">
       <div className="space-y-4 p-6">
           <h2 className="text-title font-bold text-white">选择保存位置</h2>
 

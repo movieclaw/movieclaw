@@ -18,6 +18,8 @@
  * 嵌套弹窗（弹窗内再开弹窗，如表单里的目录选择器）：上层置 raised 抬高
  * z 层级；上层若需拦截 Esc（如输入态只退输入不关弹窗），自行在 capture
  * 阶段监听并 stopPropagation，本组件的冒泡阶段监听即不会触发。
+ * 置 topmost 的弹窗（压在别的弹窗或灯箱之上）本组件自己就在 capture 阶段
+ * 监听并掐断传播——一次 Esc 只关最上面那层，身下那层留在原地。
  */
 
 import { useEffect, useState, type ReactNode } from "react";
@@ -100,13 +102,20 @@ export function Modal({
   panelClassName?: string;
   children: ReactNode;
 }) {
-  // Esc 关闭（冒泡阶段，可被上层弹窗的 capture 监听拦截，见文件头注释）
+  // Esc 关闭（冒泡阶段，可被上层弹窗的 capture 监听拦截，见文件头注释）。
+  // topmost 弹窗压在别的浮层之上（弹窗里的二次确认、灯箱里点开的保存位置弹窗），
+  // 它就该独占这一下 Esc：改在 capture 阶段监听并掐断传播，否则身下那层
+  // （同样在 window 上听 Esc 的弹窗或灯箱）会被同一次按键一并关掉。
   useEffect(() => {
     if (!open) return;
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (topmost) e.stopPropagation();
+      onClose();
+    };
+    window.addEventListener("keydown", onKey, topmost);
+    return () => window.removeEventListener("keydown", onKey, topmost);
+  }, [open, onClose, topmost]);
 
   // 软键盘遮挡高度：>0 时把容器 bottom 抬到键盘之上（iOS PWA 输入弹窗的救命绳）
   const keyboardInset = useKeyboardInset(open);
