@@ -726,14 +726,17 @@ async def build_library_gallery(
     member_id: int,
     limit: int | None = None,
     offset: int = 0,
+    sort: WallSort = "title",
 ) -> list[LibraryGalleryGroupView]:
     """影视库 / 其他库的「图床浏览模式」数据源：条目的图铺平成组。
 
-    与海报墙共用同一份按标题排好的正式条目名单与分页口径（``offset`` /
-    ``limit`` 都按**条目**数），本页条目定下来之后交给
-    :func:`build_gallery_groups` 组图。
+    与海报墙共用同一份条目名单、同一套排序与分页口径（``offset`` / ``limit``
+    都按**条目**数），本页条目定下来之后交给 :func:`build_gallery_groups` 组图。
+    默认按标题排（图廊的常驻序），``sort=added_at`` 是用户在 ⋯ 菜单里选的
+    「最近添加」——两面墙同一个 ``offset`` 口径，切了排序「回到上次位置」
+    仍然跳得准（前端把排序写进位置记录的形态里，见 lib/library-wall-recall.ts）。
     """
-    page_ids = await _wall_page_ids(session, library_id, "title", limit, offset)
+    page_ids = await _wall_page_ids(session, library_id, sort, limit, offset)
     return await build_gallery_groups(
         session, [(item_id, library_id) for item_id in page_ids], member_id=member_id
     )

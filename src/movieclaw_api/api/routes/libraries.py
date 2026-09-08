@@ -1967,10 +1967,14 @@ async def list_library_gallery(
         int | None, Query(ge=1, le=100, description="本页条目数（按作品分页，不按图）；不给则整库")
     ] = None,
     offset: Annotated[int, Query(ge=0, description="跳过的条目数（滚动加载翻页用）")] = 0,
+    sort: Annotated[
+        Literal["title", "added_at"],
+        Query(description="排序：title=按标题（默认）/ added_at=最近入账优先"),
+    ] = "title",
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(require_library_visible),
 ) -> ApiResponse[list[LibraryGalleryGroupView]]:
-    """影视库 / 其他库的图床浏览模式：与 ``/items?sort=title`` 同一份排序与
+    """影视库 / 其他库的图床浏览模式：与 ``/items?sort=<同一排序>`` 同一份排序与
     分页口径，一组就是一部作品的全部图（海报 → 剧照 → 逐集剧照与章节图）。
     没有任何图的条目也占一组（images 为空），一页的组数恒等于条目数。
     每组带当前观看者的收藏态（瓦片角标与灯箱的心）。"""
@@ -1979,7 +1983,7 @@ async def list_library_gallery(
     member_id = principal.member_id if principal.member_id is not None else 0
     return ok(
         await build_library_gallery(
-            session, library_id, member_id=member_id, limit=limit, offset=offset
+            session, library_id, member_id=member_id, limit=limit, offset=offset, sort=sort
         )
     )
 

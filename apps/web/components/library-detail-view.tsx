@@ -15,6 +15,7 @@ import {
 } from "@/lib/library-confirm";
 import { chapterJobLabel } from "@/lib/library-manage";
 import {
+  CheckIcon,
   HistoryIcon,
   LockIcon,
   MasonryIcon,
@@ -163,6 +164,45 @@ const WALL_API_PAGE_SIZE = 200;
  */
 function keepOnError<T>(rows: Promise<T[]>): Promise<T[] | null> {
   return rows.catch(() => null);
+}
+
+/**
+ * 墙的排序偏好：`default` = 按库的形态给的常驻序（影视库拼音序、其他库与图片库
+ * 按内容时间倒序），`added_at` = 最近添加优先。
+ *
+ * 为什么常驻序不是「最近添加」：首次建库/批量导入时全库的入账时间挤在同一
+ * 分钟里，倒序出来其实是目录遍历顺序，等于没排；而按标题能分出 A-Z 档、按
+ * 内容时间能分出月份档，右侧的跳转轨道靠的就是这个。所以「最近添加」是持续
+ * 往库里添内容的人**自己选**的一档，不做默认。
+ */
+type WallSortPref = "default" | "added_at";
+const WALL_SORT_STORAGE_KEY = "movieclaw.library.wall-sort";
+
+/**
+ * 读写排序偏好。第三个返回值是「读完 storage 了没有」：首帧一律先给默认值
+ * （服务端渲染没有 localStorage），排序相关的副作用必须等它为真再动手——
+ * 否则从详情页返回的那一帧会先按默认序把窗口重拉一遍，把人甩回墙首。
+ */
+function useWallSortPref(): [WallSortPref, (next: WallSortPref) => void, boolean] {
+  const [sort, setSort] = useState<WallSortPref>("default");
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    try {
+      if (window.localStorage.getItem(WALL_SORT_STORAGE_KEY) === "added_at") setSort("added_at");
+    } catch {
+      /* 隐私模式等拿不到 storage：保持默认序 */
+    }
+    setReady(true);
+  }, []);
+  const update = useCallback((next: WallSortPref) => {
+    setSort(next);
+    try {
+      window.localStorage.setItem(WALL_SORT_STORAGE_KEY, next);
+    } catch {
+      /* 同上 */
+    }
+  }, []);
+  return [sort, update, ready];
 }
 
 export function LibraryDetailView({ libraryId }: { libraryId: number }) {
@@ -348,11 +388,15 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
         limit: PROVISIONAL_LIMIT,
       }).catch(() => [] as LibraryItem[]),
       listLibraryItemIds(libraryId).catch(() => []),
-      // 跳转索引与当前排序同口径：按标题是 A-Z 首字母档，按内容时间是月份档
-      listLibraryItemIndex(
-        libraryId,
-        wallSort.current === "release_date" ? "release_date" : "title",
-      ).catch(() => []),
+      // 跳转索引与当前排序同口径：按标题是 A-Z 首字母档，按内容时间是月份档。
+      // 「最近添加」序分不出有意义的档（一批导入的都在同一天），轨道本来就
+      // 不显示，索引这一趟请求也省了
+      wallSort.current === "added_at"
+        ? Promise.resolve([] as LibraryIndexEntry[])
+        : listLibraryItemIndex(
+            libraryId,
+            wallSort.current === "release_date" ? "release_date" : "title",
+          ).catch(() => []),
       canManageLibraries
         ? keepOnError(listUnidentifiedLibraryFiles(libraryId))
         : Promise.resolve([]),
@@ -607,6 +651,12 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   // （docs/design/library-photo-kind.md 3.2）
   const photoWall = Boolean(library && !library.capabilities.playable);
   const [photoDensity, setPhotoDensity] = usePhotoWallDensity();
+  // 「最近添加」是用户在 ⋯ 菜单里选的一档，三面墙（海报墙 / 相册墙 / 图廊）
+  // 共用。补探阶段的临时排序压过它：那几分钟墙上要回答的是"在处理哪几部"
+  const [wallSortPref, setWallSortPref, wallSortReady] = useWallSortPref();
+  const recentFirst = wallSortPref === "added_at" && !probing;
+  // 图廊按同一个键取页（后端默认标题序，只有选了最近添加才带参数）
+  const gallerySort = recentFirst ? ("added_at" as const) : undefined;
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   // 月份索引给出全库每月张数，墙上的月份标题据此显示总数而不是已加载数
   const photoMonthCounts = useMemo(
@@ -625,7 +675,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
     if (galleryLoading.current) return;
     galleryLoading.current = true;
     const offset = galleryLoaded.current;
-    listLibraryGallery(libraryId, { limit: GALLERY_PAGE_SIZE, offset })
+    listLibraryGallery(libraryId, { limit: GALLERY_PAGE_SIZE, offset, sort: gallerySort })
       .then((page) => {
         galleryLoaded.current = offset + page.length;
         setGalleryGroups((current) => dedupeGalleryGroups([...current, ...page]));
@@ -635,7 +685,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
       .finally(() => {
         galleryLoading.current = false;
       });
-  }, [libraryId]);
+  }, [libraryId, gallerySort]);
   /**
    * 按已加载的页数重拉整个图廊窗口：从快照恢复出来的窗口是离开这一屏时的旧
    * 数据（比如在详情页点了心，返回时角标要跟着变），拿到结果整体替换。
@@ -651,6 +701,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
         listLibraryGallery(libraryId, {
           limit: GALLERY_PAGE_SIZE,
           offset: start + page * GALLERY_PAGE_SIZE,
+          sort: gallerySort,
         }),
       ),
     )
@@ -663,7 +714,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
       .finally(() => {
         galleryLoading.current = false;
       });
-  }, [libraryId]);
+  }, [libraryId, gallerySort]);
   /**
    * 图廊跳到整份排序里的某个位置：与海报墙的 jumpTo 是同一件事——换掉整个
    * 窗口（而不是从头追加到那里），此后照常向下滚动加载。图廊的分页口径也是
@@ -673,7 +724,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
     (offset: number) => {
       galleryLoading.current = true; // 跳转期间挡住滚动哨兵与对账，别让旧窗口的页插进来
       galleryStart.current = offset;
-      listLibraryGallery(libraryId, { limit: GALLERY_PAGE_SIZE, offset })
+      listLibraryGallery(libraryId, { limit: GALLERY_PAGE_SIZE, offset, sort: gallerySort })
         .then((page) => {
           galleryLoaded.current = offset + page.length;
           setGalleryGroups(dedupeGalleryGroups(page));
@@ -685,7 +736,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
           galleryLoading.current = false;
         });
     },
-    [libraryId],
+    [libraryId, gallerySort],
   );
   /**
    * 图廊里点心：收藏 / 取消收藏整部作品（与详情页那颗心同一落点）。
@@ -715,17 +766,25 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   const galleryWindowLibrary = useRef<number | null>(
     initialSnapshot?.galleryGroups.length ? libraryId : null,
   );
+  // 当前这份窗口是按哪个排序取的。null = 快照带回来的窗口（与偏好同一份
+  // localStorage，排序不会中途变），按现在的排序对账即可，不必重拉
+  const galleryWindowSort = useRef<typeof gallerySort | null>(null);
   /**
-   * 切进图廊：第一次（或换库）从第一页拉起；从条目详情页返回时窗口已经由快照
-   * 恢复，**不能**清空重拉——只补第一页的话容器矮到装不下离开时的滚动位置，
-   * 滚动恢复会等到超时后放弃，人被甩回墙首（用户反馈 2026-09-07）。
+   * 切进图廊：第一次（或换库、换排序）从第一页拉起；从条目详情页返回时窗口已经
+   * 由快照恢复，**不能**清空重拉——只补第一页的话容器矮到装不下离开时的滚动
+   * 位置，滚动恢复会等到超时后放弃，人被甩回墙首（用户反馈 2026-09-07）。
    *
    * 也不再于切回海报墙时清空：这份窗口本来就随快照留在会话里，清了只是让下次
    * 切回图廊白拉一遍。
    */
   useEffect(() => {
-    if (!gallery) return;
-    if (galleryWindowLibrary.current === libraryId) {
+    // 偏好还没从 storage 读出来时先按兵不动：这一帧的排序是默认值，
+    // 照它对账会把窗口按错的顺序重排一遍（见 useWallSortPref）
+    if (!gallery || !wallSortReady) return;
+    const sortChanged =
+      galleryWindowSort.current !== null && galleryWindowSort.current !== gallerySort;
+    galleryWindowSort.current = gallerySort;
+    if (!sortChanged && galleryWindowLibrary.current === libraryId) {
       refreshGallery();
       return;
     }
@@ -735,7 +794,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
     setGalleryGroups([]);
     setGalleryHasMore(false);
     loadMoreGallery();
-  }, [gallery, libraryId, loadMoreGallery, refreshGallery]);
+  }, [gallery, libraryId, gallerySort, wallSortReady, loadMoreGallery, refreshGallery]);
 
   /* —— 「回到上次浏览的位置」（lib/library-wall-recall.ts）——
      大库滑到第几十屏是常态，关掉页面第二天再进来又从墙首开始。这里在底部弹
@@ -743,7 +802,10 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
      从那一刻起记的是新位置。会话内从详情页返回不弹（滚动恢复已经自动回位）。 */
   // 墙的形态决定 offset 的口径：图廊按标题序分页，其他库的海报墙按内容时间序，
   // 两者的「第 300 个」不是同一部作品，形态对不上就不提示（见 WallRecall.view）
-  const wallView = gallery ? "gallery" : timeline ? "wall:time" : "wall:title";
+  // 排序也是形态的一部分：同一个 offset 在标题序与最近添加序里指向的不是
+  // 同一部作品，换了排序就当作没有记录（后缀只加在非默认序上，免得让老记录失效）
+  const wallView =
+    (gallery ? "gallery" : timeline ? "wall:time" : "wall:title") + (recentFirst ? ":added" : "");
   // 条目 id → 它在整份排序里的绝对位置。滚动时按首个可见格反查（图廊按瓦片
   // 所属的作品），DOM 上只挂 id，不必给每一格再算一遍下标
   const offsetById = useMemo(
@@ -777,8 +839,10 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
     scope: wallRecallScope(libraryId),
     view: wallView,
     scroller: scrollElement,
-    // 补探阶段的排序是临时的（几分钟后自动落回拼音序），那期间不记也不提示
-    enabled: !probing && (gallery ? galleryGroups.length > 0 : items.length > 0),
+    // 补探阶段的排序是临时的（几分钟后自动落回拼音序），那期间不记也不提示；
+    // 偏好没读出来之前也不记，那一帧的 wallView 还是默认序的
+    enabled:
+      !probing && wallSortReady && (gallery ? galleryGroups.length > 0 : items.length > 0),
     offer: freshEntry.current,
     offsetAt: wallOffsetAt,
   });
@@ -847,9 +911,18 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   }, [items.length, probing, scrollElement, wallIndex, wallStart]);
 
   // 排序切换是**服务端**的事（墙是分页的，本地排只能排到已加载的那几屏）：
-  // 阶段一变就换排序键重拉第一页，回到首屏看的就是正在处理的那几部
+  // 阶段一变、或用户在 ⋯ 菜单里换了排序，就换排序键重拉第一页
   useEffect(() => {
-    const next: LibraryItemSort = probing ? "probing" : timeline ? "release_date" : "title";
+    // 同图廊：偏好没读出来之前不动排序，否则从详情页返回的那一帧会先按
+    // 默认序把窗口重拉一遍，人被甩回墙首
+    if (!wallSortReady) return;
+    const next: LibraryItemSort = probing
+      ? "probing"
+      : recentFirst
+        ? "added_at"
+        : timeline
+          ? "release_date"
+          : "title";
     if (wallSort.current === next) return;
     wallSort.current = next;
     wallLoaded.current = WALL_PAGE_SIZE;
@@ -857,7 +930,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
     wallOffset.current = 0;
     setWallStart(0);
     reload();
-  }, [probing, timeline, reload]);
+  }, [probing, timeline, recentFirst, wallSortReady, reload]);
 
   // 追踪中：目标是本库、且尚未在库存中出现的订阅
   const pending = useMemo(() => {
@@ -955,14 +1028,23 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
 
   // 库操作全部收进 ⋯ 菜单，顶栏只留这一个入口；运行状态看头部下方的胶囊。
   // 清空观看记录不在这里——那是跨库的个人数据，入口在首页「最近观看」的 ⋯
-  // 里。成员没有管理项时菜单只剩相册墙密度（图片库），普通库连菜单都不给
-  const actionsMenu = (canManageLibraries || photoWall || gallery) && (
+  // 里。成员没有管理项时菜单只剩浏览偏好（排序，图片库/图廊再加密度与分组），
+  // 排序每面墙都有，所以菜单恒在
+  const actionsMenu = (
     <LibraryActionsMenu
       canManage={canManageLibraries}
       density={photoWall || gallery ? photoDensity : undefined}
       onDensityChange={photoWall || gallery ? setPhotoDensity : undefined}
       grouped={gallery ? galleryGrouped : undefined}
       onGroupedChange={gallery ? setGalleryGrouped : undefined}
+      // 排序是三面墙共用的偏好，普通成员也能选；补探那几分钟排序被临时接管，
+      // 菜单如实置灰而不是假装可选
+      sort={wallSortPref}
+      onSortChange={setWallSortPref}
+      sortDisabled={probing}
+      // 默认那一档在各面墙上叫法不同：图廊恒按标题序（与海报墙共用名单，
+      // 见 build_library_gallery），其他库与图片库的海报墙按内容时间倒序
+      defaultSortLabel={!gallery && timeline ? "按时间" : "按标题"}
       scanning={Boolean(library.scanning)}
       scanPhase={library.scan_progress?.phase ?? null}
       scanPercent={
@@ -1310,6 +1392,9 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
                     <PhotoWall
                       items={items}
                       density={photoDensity}
+                      // 「最近添加」序里同一个月的照片不再连续，按月分段会把顺序
+                      // 打散成一堆重复的月份标题——那一档就是一条不分段的瀑布流
+                      grouped={!recentFirst}
                       monthCounts={photoMonthCounts}
                       onOpen={setLightboxIndex}
                       workingLabelOf={workingLabelOf}
@@ -1415,11 +1500,11 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
                 )}
               </div>
               {/* 补探阶段排序不是拼音序，字母跳转会跳错位置——那几分钟里收起来；
-                  其他库按内容时间排，同理没有字母档 */}
-              {!probing && !timeline && !gallery && (
+                  其他库按内容时间排，同理没有字母档；「最近添加」序两种档都没有 */}
+              {!probing && !recentFirst && !timeline && !gallery && (
                 <WallIndexBar index={wallIndex} active={activeWallInitial} onJump={jumpTo} />
               )}
-              {photoWall && (
+              {photoWall && !recentFirst && (
                 <PhotoTimelineScrubber
                   index={wallIndex}
                   active={activeWallInitial}
@@ -1528,6 +1613,13 @@ interface LibraryActionsMenuProps {
   /** 图床浏览模式：是否按作品分段；不传不渲染这一项（海报墙与图片库都没有分组一说） */
   grouped?: boolean;
   onGroupedChange?: (next: boolean) => void;
+  /** 墙的排序（个人偏好，三面墙共用） */
+  sort: WallSortPref;
+  onSortChange: (next: WallSortPref) => void;
+  /** 补探阶段排序被临时接管，这一组置灰 */
+  sortDisabled: boolean;
+  /** 默认那一档叫什么：影视库是「按标题」，其他库与图片库是「按时间」 */
+  defaultSortLabel: string;
 }
 
 function LibraryActionsMenu({
@@ -1553,6 +1645,10 @@ function LibraryActionsMenu({
   onDensityChange,
   grouped,
   onGroupedChange,
+  sort,
+  onSortChange,
+  sortDisabled,
+  defaultSortLabel,
 }: LibraryActionsMenuProps) {
   // 与站点配置一致用 Radix DropdownMenu：Portal 到 body + 碰撞检测，
   // 不会被头部容器裁切；开合/外部点击/键盘导航全交给 Radix。
@@ -1642,13 +1738,11 @@ function LibraryActionsMenu({
           </DropdownMenu.Item>
           </>
           )}
-          {/* 看图的两个偏好收在菜单里，不占墙上的位置，选完即生效并记住。
-              两项共用上面这一条分隔线，别各挂一条挤成两道 */}
-          {canManage && (grouped !== undefined || density) && (
-            <DropdownMenu.Separator className="my-1 h-px bg-white/[0.07]" />
-          )}
+          {/* 浏览偏好收在菜单里，不占墙上的位置，选完即生效并记住。
+              整组共用上面这一条分隔线，别各挂一条挤成几道 */}
+          {canManage && <DropdownMenu.Separator className="my-1 h-px bg-white/[0.07]" />}
           {/* 与「全部收藏」页的图廊菜单是同一组（见 video-gallery.tsx）：
-              图片库只传密度，图床浏览模式两项都传 */}
+              图片库只传密度，图床浏览模式两项都传；排序是本页独有的 */}
           <WallPrefItems
             grouped={grouped}
             onGroupedChange={onGroupedChange}
@@ -1656,6 +1750,34 @@ function LibraryActionsMenu({
             onDensityChange={onDensityChange}
             itemClass={itemClass}
           />
+          <DropdownMenu.Label className="px-3 pb-1 pt-1.5 text-caption text-[var(--text-faint)]">
+            排序
+          </DropdownMenu.Label>
+          <DropdownMenu.RadioGroup
+            value={sort}
+            onValueChange={(next) => onSortChange(next as WallSortPref)}
+          >
+            {(
+              [
+                ["default", defaultSortLabel],
+                // 一次导入的内容入账时间都挤在一起，所以这一档对"陆续往库里
+                // 添东西"才有意义；默认序仍是标题 / 内容时间（见 useWallSortPref）
+                ["added_at", "最近添加"],
+              ] as [WallSortPref, string][]
+            ).map(([key, label]) => (
+              <DropdownMenu.RadioItem
+                key={key}
+                value={key}
+                disabled={sortDisabled}
+                className={`${itemClass} flex items-center justify-between`}
+              >
+                {label}
+                <DropdownMenu.ItemIndicator>
+                  <CheckIcon className="size-3.5 text-[var(--accent)]" />
+                </DropdownMenu.ItemIndicator>
+              </DropdownMenu.RadioItem>
+            ))}
+          </DropdownMenu.RadioGroup>
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>
