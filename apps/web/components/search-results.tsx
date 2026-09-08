@@ -6,6 +6,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -16,6 +17,7 @@ import type { Route } from "next";
 import { useToast } from "@/components/feedback";
 import { LayersIcon, ListIcon, PhotoIcon, XIcon } from "@/components/icons";
 import { Modal } from "@/components/modal";
+import { useTileWindow } from "@/components/photo-wall";
 import { PosterImage } from "@/components/poster-image";
 import { Tooltip } from "@/components/tooltip";
 import { ZoomLightbox, type ZoomLightboxSlide } from "@/components/zoom-lightbox";
@@ -46,6 +48,7 @@ import {
   getSubscription,
 } from "@/lib/api/subscriptions";
 import { cachedImageUrl } from "@/lib/image-proxy";
+import { layoutPosterGrid } from "@/lib/wall-window";
 import { usePermissions } from "@/lib/permissions";
 import { formatDateTime, formatRelativeTime } from "@/lib/time";
 import { useScrollRestoration } from "@/lib/use-scroll-restoration";
@@ -2247,13 +2250,7 @@ function PosterResults({ hits }: { hits: TorrentHit[] }) {
   }, [hits]);
   return (
     <div className="space-y-5">
-      {withPoster.length > 0 && (
-        <ul className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-3">
-          {withPoster.map((hit) => (
-            <TorrentPosterCard key={`${hit.site_id}:${hit.torrent_id}`} hit={hit} />
-          ))}
-        </ul>
-      )}
+      {withPoster.length > 0 && <PosterGrid hits={withPoster} />}
       {withoutPoster.length > 0 && (
         <div>
           {withPoster.length > 0 && (
@@ -2270,6 +2267,161 @@ function PosterResults({ hits }: { hits: TorrentHit[] }) {
       )}
     </div>
   );
+}
+
+/* —— 海报网格：只挂视口附近的卡片 ——
+ *
+ * PT 搜索一次动辄上千条结果，全部上墙就是上万个 DOM 节点、几百 MB 解码位图。
+ * 实测（600 条、模拟 4× 降速的手机）：节点 13293、挂载阻塞 1141ms、INP 168ms、
+ * 每来一批新结果重渲 51ms。`content-visibility` 试过，只省绘制，节点与 INP
+ * 一点没动。
+ *
+ * 做法与媒体库那三面墙同一套（`lib/wall-window.ts` + `useTileWindow`）：列数与
+ * 列宽照搬 CSS `auto-fill minmax()` 的口径，坐标自己算，只渲染窗口内的卡片。
+ * 一格的高 = 海报框（列宽 × 1.5）+ 文字区；文字区有 2 行和 3 行两种（清晰度·
+ * 体积那行是条件渲染），所以行高按「这一行里最高的那张」算，与 CSS `auto`
+ * 行高同语义，观感不变。
+ */
+const POSTER_GRID_SPEC = { minColumn: 150, gapX: 12, gapY: 12 } as const;
+
+function PosterGrid({ hits }: { hits: TorrentHit[] }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const gridRef = useRef<HTMLUListElement>(null);
+  const [width, setWidth] = useState(0);
+  useLayoutEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    setWidth(el.clientWidth);
+    const observer = new ResizeObserver((entries) => {
+      const next = Math.floor(entries[0]?.contentRect.width ?? el.clientWidth);
+      setWidth((current) => (current === next ? current : next));
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  // 文字区高度只能实测：它是文字，随字号档位走，写死 px 既是魔法数字也扛不住
+  // 断点切换。两枚隐藏探针（3 行 / 2 行各一），ResizeObserver 兜住后续变化
+  const { metrics, probes } = usePosterCardMetrics(hits[0]);
+
+  const layout = useMemo(() => {
+    if (width === 0 || !metrics) return null;
+    const columns = Math.max(
+      1,
+      Math.floor((width + POSTER_GRID_SPEC.gapX) / (POSTER_GRID_SPEC.minColumn + POSTER_GRID_SPEC.gapX)),
+    );
+    const cellWidth = (width - POSTER_GRID_SPEC.gapX * (columns - 1)) / columns;
+    // 海报框是 aspect-[2/3]，高 = 宽 × 1.5
+    const base = cellWidth * 1.5 + metrics.short;
+    return layoutPosterGrid(hits.length, width, { ...POSTER_GRID_SPEC, cellHeight: base }, (i) =>
+      hasSpecLine(hits[i]) ? metrics.tall - metrics.short : 0,
+    );
+  }, [hits, width, metrics]);
+
+  const placements = useMemo(() => layout?.placements ?? [], [layout]);
+  const [from, to] = useTileWindow(gridRef, placements);
+  // 灯箱开着的那张必须留在墙上：它就渲染在卡片里，卡片一卸载灯箱跟着消失
+  // （窗口只在滚动与改窗口大小时动，转屏正好会踩到）
+  const [openIndex, setOpenIndex] = useState<number | null>(null);
+  const onViewerChange = useCallback(
+    (index: number, open: boolean) => setOpenIndex(open ? index : null),
+    [],
+  );
+  const visible = useMemo(() => {
+    const range: number[] = [];
+    for (let i = from; i < to; i += 1) range.push(i);
+    if (openIndex !== null && (openIndex < from || openIndex >= to)) range.push(openIndex);
+    return range;
+  }, [from, to, openIndex]);
+
+  return (
+    <div ref={containerRef} className="relative">
+      {probes}
+      <ul ref={gridRef} className="relative" style={{ height: layout?.height ?? 0 }}>
+        {layout &&
+          visible.map((i) => {
+            const hit = hits[i];
+            const placement = placements[i];
+            return (
+              <TorrentPosterCard
+                key={`${hit.site_id}:${hit.torrent_id}`}
+                hit={hit}
+                index={i}
+                onViewerChange={onViewerChange}
+                x={placement.x}
+                y={placement.y}
+                width={placement.width}
+              />
+            );
+          })}
+      </ul>
+    </div>
+  );
+}
+
+/** 这张卡的文字区有没有「清晰度 · 体积」那一行（决定它是 3 行还是 2 行） */
+function hasSpecLine(hit: TorrentHit): boolean {
+  return Boolean(hit.attrs?.resolution || hit.size || formatBytes(hit.size_bytes));
+}
+
+/**
+ * 量一张卡有多高：两枚隐藏探针，一枚带「清晰度 · 体积」那行、一枚不带，
+ * 差额就是那一行的高度。用 `visibility:hidden` 而不是 `display:none`——后者
+ * 不参与布局，量不出高度。探针不给海报地址，渲染的是占位底，不多发请求。
+ */
+const PROBE_WIDTH = 150;
+function usePosterCardMetrics(sample: TorrentHit | undefined) {
+  const [metrics, setMetrics] = useState<{ short: number; tall: number } | null>(null);
+  const tallRef = useRef<HTMLUListElement>(null);
+  const shortRef = useRef<HTMLUListElement>(null);
+
+  useLayoutEffect(() => {
+    const tall = tallRef.current;
+    const short = shortRef.current;
+    if (!tall || !short) return;
+    const measure = () => {
+      // 海报框高是算得出来的（探针宽固定、比例 2:3），差额就是文字区
+      const poster = PROBE_WIDTH * 1.5;
+      const next = {
+        short: short.getBoundingClientRect().height - poster,
+        tall: tall.getBoundingClientRect().height - poster,
+      };
+      if (next.short <= 0) return; // 还没排上版
+      setMetrics((current) =>
+        current &&
+        Math.abs(current.short - next.short) < 0.5 &&
+        Math.abs(current.tall - next.tall) < 0.5
+          ? current
+          : next,
+      );
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(tall);
+    observer.observe(short);
+    return () => observer.disconnect();
+  }, [sample]);
+
+  const probes = sample ? (
+    <div
+      aria-hidden="true"
+      className="pointer-events-none invisible absolute left-0 top-0"
+      style={{ width: PROBE_WIDTH }}
+    >
+      <ul ref={tallRef}>
+        <TorrentPosterCard hit={{ ...sample, poster_url: null }} measuring />
+      </ul>
+      <ul ref={shortRef}>
+        <TorrentPosterCard
+          hit={{ ...sample, poster_url: null, size: "", size_bytes: 0, attrs: null }}
+          measuring
+        />
+      </ul>
+    </div>
+  ) : null;
+
+  return { metrics, probes };
 }
 
 /**
@@ -2351,9 +2503,34 @@ function seasonEpisodeChip(attrs: TorrentAttrs | null): { text: string; pack: bo
 const noop = () => {};
 
 // memo：与 TorrentRow 同理，流式进结果时已有卡片的 hit 引用不变，整卡跳过
-const TorrentPosterCard = memo(function TorrentPosterCard({ hit }: { hit: TorrentHit }) {
+const TorrentPosterCard = memo(function TorrentPosterCard({
+  hit,
+  index,
+  onViewerChange,
+  x,
+  y,
+  width,
+  measuring = false,
+}: {
+  hit: TorrentHit;
+  /** 本卡在有海报的那一份列表里的下标；量高度的探针不传 */
+  index?: number;
+  /** 灯箱开合回报给墙：开着的卡不能被窗口卸载掉（见 PosterGrid） */
+  onViewerChange?: (index: number, open: boolean) => void;
+  /** 由墙算好的位置与宽度（虚拟化）；探针不传，走正常流 */
+  x?: number;
+  y?: number;
+  width?: number;
+  /** 只为量高度而渲染的探针 */
+  measuring?: boolean;
+}) {
   // 灯箱当前看的是第几张；null = 没打开（灯箱受控翻页，与媒体库那套一致）
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
+  const open = viewerIndex !== null;
+  useEffect(() => {
+    if (index === undefined || !onViewerChange) return;
+    onViewerChange(index, open);
+  }, [index, onViewerChange, open]);
   const [actionsOpen, setActionsOpen] = useState(false);
   const size = hit.size ?? formatBytes(hit.size_bytes);
   const name = parsedName(hit);
@@ -2376,7 +2553,14 @@ const TorrentPosterCard = memo(function TorrentPosterCard({ hit }: { hit: Torren
     [hit.poster_url, hit.image_urls, hit.title],
   );
   return (
-    <li className="group relative overflow-hidden rounded-xl border border-white/[0.08] bg-[rgba(14,16,22,0.75)] transition-colors hover:border-white/[0.2]">
+    // 位置由墙算好（虚拟化）：用 left/top 而不是 transform——transform 会给卡片
+    // 造一个合成层，里面的文字改走灰度抗锯齿，字形与改前不一样
+    <li
+      className={`group overflow-hidden rounded-xl border border-white/[0.08] bg-[rgba(14,16,22,0.75)] transition-colors hover:border-white/[0.2] ${
+        measuring ? "relative" : "absolute"
+      }`}
+      style={measuring ? undefined : { left: x, top: y, width }}
+    >
       <div
         role="button"
         tabIndex={0}
@@ -2393,7 +2577,15 @@ const TorrentPosterCard = memo(function TorrentPosterCard({ hit }: { hit: Torren
         className="relative aspect-[2/3] cursor-zoom-in outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]"
       >
         <PosterImage
-          src={hit.poster_url ? cachedImageUrl(hit.poster_url) : undefined}
+          // 走后端派生（328×492 的 WebP）而不是站点图床的原图：卡片只有 150 CSS px
+          // 宽，原图动辄几百 KB 到几 MB，几百张结果一屏就是几百 MB 解码位图。
+          // 派生图还顺带解决动图——后端只取首帧（见 image_variants._render_webp），
+          // 一墙缩略图不必各自播各自的动画（媒体库的海报墙一直是这个口径）
+          src={hit.poster_url ? cachedImageUrl(hit.poster_url, "poster-card") : undefined}
+          // 挂上来的卡必然在窗口内（虚拟化就是按这个切的），直接取图，不必再让
+          // PosterImage 自己等那个 400px 的观察器——那点提前量比窗口窄，滑快了
+          // 会露出一小截占位。探针没有海报地址，这里对它无影响
+          preload
           alt={hit.title}
           className="absolute inset-0 size-full transition-transform duration-500 ease-out group-hover:scale-[1.04]"
           fallback={
