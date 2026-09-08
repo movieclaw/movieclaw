@@ -298,13 +298,24 @@ for model in member_scoped_models():
 因为改成了「提交即记住」，不再需要条件字段——前端把种子的分类原样带上即可：
 
 ```
-POST   /downloaders/torrents/submit    # 既有接口，新增可选字段
+POST   /downloaders/submit             # 既有接口，新增可选字段
        category: str | null            # 种子的 TorrentCategory；提交成功后 upsert 该桶
                                        # null（站点未映射分类）时前端归到 "other"
 
-GET    /downloaders/target-prefs             # 当前登录者的全部记忆（≤8 条）
-DELETE /downloaders/target-prefs/{category}  # 确认条的「不再记住」，幂等
+GET    /downloaders/target-prefs             # dl.target-prefs.list
+DELETE /downloaders/target-prefs/{category}  # dl.target-prefs.forget，幂等
+                                             # x-cli-dangerous: confirm
 ```
+
+`operation_id` 每一段都必须是 `[a-z0-9-]+`（契约守卫
+`tests/api/test_openapi_contract.py`），驼峰会被拦下；DELETE 必须声明
+`x-cli-dangerous`——清的是一条偏好、不碰任何下载内容，所以是 `confirm`
+而不是 `destructive`。
+
+**顺带多出两条 CLI 命令**：命令树由 spec 的 operation_id 自动生成，于是有了
+`mclaw dl target-prefs list` / `forget`（快照 `cli/testdata/*.txt` 已同步）。
+这是有意保留而不是用 `x-cli-hidden` 藏掉——它恰好补上了「不做设置页」留下的
+「看看我都记了什么 / 批量清掉」缺口，而且是在终端里，不必为它加一个界面。
 
 分类只有前端拿得到（提交接口的入参是 site_id / download_url / torrent_id，
 后端没有搜索结果的上下文），所以必须由前端传。

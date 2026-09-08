@@ -159,7 +159,12 @@ async def test_delete_member_clears_all_member_scoped_tables(db):
         )
         # playback_state 对 media_item 有真外键，得先有条目
         item = MediaItem(
-            kind="movie", external_id="tmdb:1", tmdb_id=1, title="测试电影", original_title="Test", aliases=[]
+            kind="movie",
+            external_id="tmdb:1",
+            tmdb_id=1,
+            title="测试电影",
+            original_title="Test",
+            aliases=[],
         )
         session.add(item)
         await session.commit()

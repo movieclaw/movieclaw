@@ -336,6 +336,7 @@ def test_every_route_denies_anonymous_access(client: TestClient) -> None:
             .replace("{backdrop_id}", "f" * 32)
             .replace("{attachment_id}", "f" * 32)
             .replace("{downloader_id}", "1")
+            .replace("{category}", "anime")
             .replace("{provider_id}", "1")
             .replace("{info_hash}", "f" * 40)
             .replace("{kind}", "movie")

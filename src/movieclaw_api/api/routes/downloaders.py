@@ -8,7 +8,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from movieclaw_api.api.deps import require_login
 from movieclaw_api.exceptions import BadRequestException, ForbiddenException
 from movieclaw_api.schemas.downloader import (
-    DownloadTargetPrefView,
     DownloaderLimitsUpdate,
     DownloaderLimitsView,
     DownloaderPayload,
@@ -16,6 +15,7 @@ from movieclaw_api.schemas.downloader import (
     DownloaderView,
     DownloadSubmitPayload,
     DownloadSubmitView,
+    DownloadTargetPrefView,
     DownloadTaskDeleteView,
     DownloadTaskListView,
     DownloadTaskReplaceView,
@@ -307,14 +307,16 @@ async def _remember_target(
             downloader_id=payload.downloader_id,
         )
     except Exception:  # noqa: BLE001
-        logger.warning("记住保存位置失败（不影响本次下载）：分类=%s", payload.category, exc_info=True)
+        logger.warning(
+            "记住保存位置失败（不影响本次下载）：分类=%s", payload.category, exc_info=True
+        )
 
 
 @submit_router.get(
     "/target-prefs",
     response_model=ApiResponse[list[DownloadTargetPrefView]],
     summary="我的保存位置记忆（搜索结果页据此决定弹确认条还是完整弹窗）",
-    operation_id="dl.targetPrefs.list",
+    operation_id="dl.target-prefs.list",
 )
 async def list_target_prefs(
     principal: Principal = Depends(require_login),
@@ -349,7 +351,9 @@ async def list_target_prefs(
     "/target-prefs/{category}",
     response_model=ApiResponse[None],
     summary="不再记住某个分类的保存位置",
-    operation_id="dl.targetPrefs.forget",
+    operation_id="dl.target-prefs.forget",
+    # 清掉的是一条偏好、不碰任何下载内容，confirm 即可（destructive 留给删数据）
+    openapi_extra={"x-cli-dangerous": "confirm"},
 )
 async def forget_target_pref(
     category: str = Path(description="种子分类（TorrentCategory 值）"),

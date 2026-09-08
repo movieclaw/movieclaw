@@ -35,12 +35,12 @@ from movieclaw_db.models.manual_download_intent import ManualDownloadIntent
 from movieclaw_db.models.media_item import MediaItem, MediaSeason, MediaSource
 from movieclaw_db.models.media_metadata import MediaEpisode, MediaMetadata
 from movieclaw_db.models.media_share import MediaShare
+from movieclaw_db.models.member import Member, MemberLibraryAccess, MemberSiteAccess
 from movieclaw_db.models.member_scoped import (
     MemberScopedMixin,
     member_scoped_models,
     register_member_scoped,
 )
-from movieclaw_db.models.member import Member, MemberLibraryAccess, MemberSiteAccess
 from movieclaw_db.models.person import MediaItemPerson, Person
 from movieclaw_db.models.playback_log import PlaybackLog
 from movieclaw_db.models.playback_metric import PlaybackMetric

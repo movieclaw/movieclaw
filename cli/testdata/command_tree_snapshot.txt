@@ -55,6 +55,8 @@ dl resolve-target
 dl show
 dl status set
 dl submit
+dl target-prefs forget
+dl target-prefs list
 dl update
 dl verify
 extension cookies push
