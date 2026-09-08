@@ -17,6 +17,53 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
  * 占位符会套用同一份 className，保证与图片占据完全相同的盒子。
  * 组件只负责「一张海报图」本身，卡片语义（徽章、渐变信息层、点击行为）留给上层。
  */
+
+/**
+ * 懒加载失灵兜底：全站共用的一台「快进视口了」观察器。
+ *
+ * 海报常被包在 ``content-visibility:auto`` 的格子 / 行里（单库海报墙、首页横滚行、
+ * 搜索结果行）。Chromium 对「被跳过渲染的子树」里的 ``<img loading="lazy">`` 不做
+ * 视口相交判定，而页面打开瞬间所有格子都是跳过态，首屏海报可能永远不发请求
+ * ——表现为海报空着、鼠标划过强制重算样式才加载。所以要有人替它判一次。
+ *
+ * 判的方式很要紧。原先是每张图各自双 rAF 之后读一次 ``getBoundingClientRect()``，
+ * 但在跳过态的子树里读几何量会逼浏览器把那棵子树重新布局一遍——**每张图一次
+ * 全量布局**。实测 3000 张图触发 2993 次布局、挂载 3.4 秒；换成这里的
+ * IntersectionObserver 是 2 次布局、1.5 秒。IO 的相交判定跟着渲染流水线走，
+ * 不在脚本里同步求值，因此不逼布局；而且它是持续的，滑到哪儿补到哪儿，
+ * 不像 rAF 探测只在挂载时问一次。
+ *
+ * 提前量 400px 与原先一致。命中即 unobserve——图取过就不必再管。
+ */
+const NEAR_MARGIN = "400px";
+const nearCallbacks = new WeakMap<Element, () => void>();
+let nearObserver: IntersectionObserver | null = null;
+
+function observeNearViewport(el: Element, onNear: () => void): (() => void) | undefined {
+  if (typeof IntersectionObserver === "undefined") {
+    // 没有 IO 的老浏览器：直接取图。它们也没有 content-visibility，不存在这条缺陷路径
+    onNear();
+    return;
+  }
+  nearObserver ??= new IntersectionObserver(
+    (records) => {
+      for (const record of records) {
+        if (!record.isIntersecting) continue;
+        nearObserver?.unobserve(record.target);
+        const callback = nearCallbacks.get(record.target);
+        nearCallbacks.delete(record.target);
+        callback?.();
+      }
+    },
+    { rootMargin: NEAR_MARGIN },
+  );
+  nearCallbacks.set(el, onNear);
+  nearObserver.observe(el);
+  return () => {
+    nearObserver?.unobserve(el);
+    nearCallbacks.delete(el);
+  };
+}
 export function PosterImage({
   src,
   alt,
@@ -41,33 +88,17 @@ export function PosterImage({
   /**
    * 取图时机由调用方接管：``true`` 立刻取，``false`` 先不取。
    *
-   * **传了它（不论真假），本组件就不再自己探测视口**——瀑布流的墙自己就知道
+   * **传了它（不论真假），本组件就不再自己判视口**——瀑布流的墙自己就知道
    * 哪几块该挂（photo-wall.tsx 的 useTileWindow 按算好的坐标切窗口），不需要
-   * 再逐张问一遍。这一条很要紧：下面那段兜底探测每张图要读一次
-   * ``getBoundingClientRect()``，而在 ``content-visibility:auto`` 的格子里每读
-   * 一次就逼浏览器做一次全量布局——实测 3000 张图触发 2981 次布局、挂载时间
-   * 是不读的 3 倍（0.6s → 1.9s）。
+   * 再逐张观察一遍，连那台共享观察器都省了。
    *
-   * 不传（海报墙、横滚行等还带 content-visibility 的调用方）保持原样：自己探测，
-   * 该 eager 时翻 eager。
+   * 不传（海报墙、横滚行等还带 content-visibility 的调用方）就交给上面那台共享
+   * 的 IntersectionObserver：快进视口就翻 eager。
    */
   preload?: boolean;
 }) {
   const [broken, setBroken] = useState(false);
   const [loaded, setLoaded] = useState(false);
-  // 懒加载失灵兜底：海报常被包在 content-visibility:auto 的格子/行里（海报墙、
-  // 横滚行），Chromium 对「被跳过渲染的子树」里的懒加载图片不做视口相交判定，
-  // 而页面打开瞬间所有格子都处于跳过态，首屏图片可能永远不发请求——表现为
-  // 海报空着、鼠标划过强制重算样式才加载。对策：确实在视口附近的图片把
-  // loading 翻成 eager 强制加载；屏外图片不受影响，仍走原生懒加载。
-  //
-  // 翻 eager 必须等格子先解除跳过态（双 rAF 延后到第 2 帧，仍在跳过态就再等）：
-  // 实测图片若在所在子树被跳过渲染期间加载完成，加载触发的重绘失效会被
-  // Chromium 丢弃，格子恢复渲染后画的仍是占位，事后无法从脚本补救（重设 src、
-  // 临时关 content-visibility 都救不回，只有 hover 这类逐格强制重算才行）；
-  // 局域网/缓存取图往往快过首帧，挂载时就发请求必然有一批撞上这个窗口。
-  // 先等格子渲染出来再取图，加载完成就走普通的失效→绘制路径。rAF 在后台
-  // 标签页天然挂起，也顺带保证了「后台打开、切回前台才开始取图」的正确时序。
   const imgRef = useRef<HTMLImageElement | null>(null);
   const [eager, setEager] = useState(false);
   // 换图时复位「已就位」：缓存直出的图 load 事件可能早于本组件挂载，
@@ -76,40 +107,11 @@ export function PosterImage({
     setLoaded(imgRef.current?.complete ?? false);
   }, [src]);
   useEffect(() => {
-    // 调用方接管了取图时机：不探测，也就不会有那次强制布局（见 preload 的说明）
+    // 调用方接管了取图时机：不必再探测（见 preload 的说明）
     if (preload !== undefined) return;
-    let raf = 0;
-    const kickOrRetry = () => {
-      const img = imgRef.current;
-      if (!img || img.complete) return;
-      const rect = img.getBoundingClientRect();
-      const margin = 400;
-      if (
-        rect.width <= 0 ||
-        rect.top >= window.innerHeight + margin ||
-        rect.bottom <= -margin ||
-        rect.left >= window.innerWidth + margin ||
-        rect.right <= -margin
-      ) {
-        return;
-      }
-      try {
-        if (!img.checkVisibility({ contentVisibilityAuto: true })) {
-          schedule(); // 格子还在跳过态，等下一个双帧再看
-          return;
-        }
-      } catch {
-        // 老浏览器没有 checkVisibility：直接翻 eager，它们也没有这条缺陷路径
-      }
-      setEager(true);
-    };
-    const schedule = () => {
-      raf = requestAnimationFrame(() => {
-        raf = requestAnimationFrame(kickOrRetry);
-      });
-    };
-    schedule();
-    return () => cancelAnimationFrame(raf);
+    const img = imgRef.current;
+    if (!img || img.complete) return;
+    return observeNearViewport(img, () => setEager(true));
   }, [src, preload]);
   if (!src || broken) {
     return (
