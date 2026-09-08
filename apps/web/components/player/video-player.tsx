@@ -1759,14 +1759,21 @@ export function VideoPlayer(props: VideoPlayerProps) {
   const seekByRef = useRef(seekBy);
   seekByRef.current = seekBy;
 
-  /** 组件卸载时别让在途的合并计时器对着已卸载的组件提交 seek */
-  useEffect(
-    () => () => {
-      const pending = pendingSeekRef.current;
+  /**
+   * 换集与卸载都要撤掉在途的合并计时器。
+   *
+   * **播放器在切集时不重挂**（player-page 没给它 key，只换 unit），所以那个
+   * 400 毫秒的计时器会活过切集：用户在片尾按一下快进、随手点了「下一集」，
+   * 400 毫秒后它就把**新一集**跳到上一集的落点上去。
+   */
+  useEffect(() => {
+    // 这个 ref 装的对象身份恒定（只改字段不换对象），可以放心带进 cleanup
+    const pending = pendingSeekRef.current;
+    cancelPendingSeek();
+    return () => {
       if (pending.timer !== null) window.clearTimeout(pending.timer);
-    },
-    [],
-  );
+    };
+  }, [unitKey, cancelPendingSeek]);
 
   /**
    * 拖动进度条时的实时跟随（docs/design/player-feel.md §2.C2）。
@@ -1809,6 +1816,10 @@ export function VideoPlayer(props: VideoPlayerProps) {
 
   const scrubTo = useCallback(
     (fileMs: number) => {
+      // 拖动就是活动：不重排自动隐藏的倒计时的话，手指按着不动四秒钟，
+      // 控制条会**在拖动过程中**淡出——指针捕获让拖动照旧生效，用户却是
+      // 对着一条看不见的进度条在拖，松手才知道跳到了哪儿。
+      bumpChromeActivity();
       if (!video) return;
       const now = performance.now();
       if (now - scrubRef.current.at < 100) return;
@@ -1827,7 +1838,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
       if (typeof video.fastSeek === "function") video.fastSeek(seconds);
       else video.currentTime = seconds;
     },
-    [video, isCheapSeek],
+    [video, isCheapSeek, bumpChromeActivity],
   );
 
   /**
