@@ -31,36 +31,65 @@ SQL 散落各处"）在合集上的延续。
 ```
 collection
   id            int PK
-  name          str                     -- 展示名
+  name          str
   library_id    int FK → library.id nullable   -- NULL = 跨库合集（F4 才开入口）
-  kind          str                     -- movie / tv / video，跟随 library.kind
-  mode          str                     -- smart | manual | system
-  rules         JSON                    -- 与 library.match_rules 同构；manual 恒为 []
-  sort          str                     -- 合集内默认排序（沿用 WallSort 取值）
-  visibility    str                     -- household | private
+  rules         JSON  default []               -- 与 library.match_rules 同构
+  sort          str                            -- 合集内默认排序（沿用 WallSort 取值）
+  visibility    str                            -- household | private
   member_id     int FK → member.id nullable    -- private 时的归属成员
-  pinned        bool                    -- 顶栏 chip 行是否优先露出
-  position      int                     -- 货架/网格顺序，与 library 排序同款
-  cover_item_id int FK → media_item.id nullable  -- 不指定则取首个成员的海报
+  builtin       str  nullable                  -- 内置合集标识；NULL = 用户创建（见 1.2）
+  position      int                            -- 顶栏与网格的顺序
+  cover_item_id int FK → media_item.id nullable
   created_at / updated_at
 
-collection_item                          -- 仅 manual（含「固定当前命中」快照）
+collection_item                                -- 手动名单；smart 合集没有行
   collection_id int FK ON DELETE CASCADE
   media_item_id int FK ON DELETE CASCADE
   position      int
   UNIQUE(collection_id, media_item_id)
 ```
 
-**索引**：`collection(library_id)`、`collection(member_id)`、
+**没有 `mode` 列**（初稿有，砍掉）。原因：`smart | manual | system` 这个三分法是假的
+——前两者说的是"成员怎么来"，`system` 说的是"能不能改"，两个正交的东西挤进一列，
+后面必然长出 `if mode == "system" and rules` 这种检查。改成两个各自独立的事实：
+
+| 问题 | 答案来自 |
+|---|---|
+| 成员怎么来 | `rules` 非空 → 规则驱动；`collection_item` 有行 → 名单驱动 |
+| 能不能改 | `builtin IS NULL` → 用户创建，可改；否则内置，只能改名/隐藏 |
+
+形态是**推导出来的**，不是存出来的。副作用是"规则 + 手工增删"这种组合天然可表达
+（Plex 的智能播放列表就是这个形态），但 v1 **不做**这个功能——只是模型没有把路堵死。
+
+**顺带砍掉的两列**：`kind`（可从 `library.kind` 推，跨库合集本来就没有单一 kind，
+存了就是一份要维护的冗余）、`pinned`（和 `position` 是同一件事的两种说法，
+留 `position` 就够）。
+
+**索引**：`collection(library_id)`、`collection(member_id)`、`collection(builtin)`、
 `collection_item(collection_id, position)`。
 
-**外键与级联**：`library` 删除时 `collection.library_id` 置 NULL 还是级联删？
-**级联删除**——库没了，"这个库里的一批片"这个定义也就没了意义，留一个指向空气的
-合集只会变成幽灵数据。跨库合集（`library_id IS NULL`）本来就不受影响。
-（与 `media_item.scrape_library_id` 的 `SET NULL` 处理不同：那一列是"归属推断"，
-可以重新推断；合集是"用户定义的东西"，宿主没了就该没了。）
+**外键与级联**：`library` 删除时 `collection` **级联删除**——库没了，"这个库里的
+一批片"这个定义也就没意义了，留一个指向空气的合集只会变成幽灵数据。跨库合集
+（`library_id IS NULL`）不受影响。（与 `media_item.scrape_library_id` 的 `SET NULL`
+处理不同：那一列是"归属推断"，可以重新推断；合集是用户定义的东西，宿主没了就该没了。）
 
-### 1.2 智能合集**不物化**（沿用 6.2 的同一条闸门）
+### 1.2 内置合集：这个抽象要**吃掉**既有特例，而不是摆在它们旁边
+
+只做加法的抽象是可疑的。合集这个抽象立得住，前提是它能收编已经存在的那些
+"其实就是合集"的东西：
+
+| 既有的东西 | 现状 | 登记为内置合集后 |
+|---|---|---|
+| 「我的收藏」 | `/library/favorites` 独立页 + `listFavorites` / `listFavoritesGallery` 一套并行的墙实现（`favorites-view.tsx` 632 行） | `builtin="favorites"`，规则 = 收藏条件（按成员求值） |
+| TMDB 系列（漫威宇宙…） | 只在详情页「系列作品」露一行 | `builtin="tmdb_series:{id}"`，F4 落地 |
+| 「最近添加」 | 首页的一个分区 | 可登记，但**不登记**——它是排序不是筛选，登记了反而要解释"这个合集为什么没有规则" |
+
+**分寸**：v1 只把「我的收藏」**登记**为内置合集，让它出现在合集列表与 Jellyfin
+BoxSet 里；`/library/favorites` 这个页面**本期不动**。那 632 行里有位置记忆、
+图廊形态、会话快照等一堆已经调稳的东西，和新功能同期重写是拿存量稳定性换整洁，
+不划算。等合集详情页跑稳了再合并（F4），届时是**净删代码**。
+
+### 1.3 智能合集**不物化**（沿用 filtering 6.2 的同一条闸门）
 
 规则求值有两条路：查询时实时算，或物化进 `collection_item`。**v1 选实时算。**
 
@@ -78,10 +107,9 @@ collection_item                          -- 仅 manual（含「固定当前命�
 或合集成员解析 p95 > 300ms 时再引入物化，届时 `collection_item` 表已经在，
 只需给 smart 模式也写行 + 一个重算任务。
 
-**例外**：`mode=manual` 的「固定当前命中」本来就是名单，直接写 `collection_item`，
-不涉及求值。
+**例外**：「固定当前命中」本来就是名单，直接写 `collection_item`，不涉及求值。
 
-### 1.3 迁移（对照 CLAUDE.md 硬约束 3）
+### 1.4 迁移（对照 CLAUDE.md 硬约束 3）
 
 一次 alembic 迁移，**纯新增两张表**，不动任何既有表。旧版本读不到即忽略，
 应用内更新回退安全。不落 `data/` 新目录，不触发 `storage/registry.py` 登记。
@@ -103,46 +131,65 @@ def rules_to_filter(rules: list[dict]) -> LibraryFilter:
 `LibraryFilter` 是 library-filtering.md F1 引入的值对象。**F3 依赖 F1 先落地**
 ——这是分期上唯一的硬顺序。
 
-### 2.2 唯一的成员解析入口
+### 2.2 成员解析不是一个"新查询"，是给筛选传参
 
 ```python
 async def resolve_members(
     session, collection, *,
-    member_id: int | None,                 # 观看者，决定「我收藏的」这类成员相关条件
+    member_id: int | None,                 # 观看者：决定「我收藏的」这类成员相关条件
     visible_library_ids: set[int] | None,  # 成员可见库；None = 不受限
     sort: WallSort | None = None,
     limit: int | None = None, offset: int = 0,
 ) -> list[int]:
     """合集成员的 media_item_id，按 sort 排好。
 
-    smart  → rules_to_filter() → 复用 _wall_page_ids() 的候选集收窄
-    manual → collection_item 按 position；再过一遍可见性与在位文件
+    规则驱动 → rules_to_filter() 后原样交给 _wall_page_ids()
+    名单驱动 → collection_item 按 position，再过一遍可见性与在位文件
     """
 ```
 
-- **web 与 Jellyfin 都只调它**，这是第 0 节那条约束的落点；
-- 排序复用 `WallSort`：`sort=None` 时 manual 用 `position`、smart 用
-  `collection.sort`；
-- 分页参数留着，是因为 Jellyfin 的 `/Items?ParentId=…&Limit=&StartIndex=`
-  会真的分页。
+第 0 节那条约束——"规则求值只能有一个实现"——**初稿是把它当纪律写的**
+（"两边都要记得调同一个函数"）。纪律是会松的。真正让它成立的是这件事：
+
+> **合集根本没有自己的查询。** `resolve_members()` 是 `_wall_page_ids()` 的一层
+> 薄适配：把 `rules` 翻成 `LibraryFilter`，连同 `library_id` / `sort` / 分页一起传进去。
+> 海报墙翻页跑的是它，合集列表跑的也是它，Jellyfin 要成员时跑的还是它。
+
+于是"两端不一致"不再靠人记得，而是**没有第二条路可走**。协议层想自己写一条查询，
+得先把 `_wall_page_ids` 抄一遍——那种代码在 review 里是藏不住的。
+
+排序：`sort=None` 时，名单驱动用 `position`，规则驱动用 `collection.sort`。
+分页参数留着，因为 Jellyfin 的 `/Items?ParentId=…&Limit=&StartIndex=` 会真的分页。
 
 ### 2.3 可见性收口（三层，缺一不可）
 
-1. **合集本身可见吗**：`visibility=private` 且 `member_id` 不匹配 → 整个合集不下发；
-   `library_id` 指向的库对该成员不可见 → 同样不下发。
-2. **成员条目可见吗**：解析结果必须过 `visible_library_ids`——smart 走
-   `_wall_page_ids` 时带上，manual 走 `item_ids_with_files(visible_library_ids=…)` 过滤。
-3. **过滤后空了怎么办**：**不下发这个合集**。一个点进去空无一物的合集，
-   在电视端是纯粹的死路。代价是 `/UserViews` 要为每个合集算一次成员数（见 2.4）。
+1. **合集本身可见吗**：`visibility=private` 且 `member_id` 不匹配 → 不下发；
+   `library_id` 指向的库对该成员不可见 → 不下发。**这一层只读 `collection` 表，
+   不解析成员**——是一条便宜的 SQL。
+2. **成员条目可见吗**：解析结果必须过 `visible_library_ids`——规则驱动走
+   `_wall_page_ids` 时带上，名单驱动走 `item_ids_with_files(visible_library_ids=…)` 过滤。
+3. **过滤后空了**：**不下发这个合集**。点进去空无一物的合集在电视端是纯粹的死路。
 
-### 2.4 计数与缓存
+### 2.4 成员数：不缓存，改把工作挪到该做它的那个请求
 
-`ChildCount` 是 Jellyfin 客户端在视图列表里就要的字段，意味着**每次 `/UserViews`
-都要为每个合集算一次数**。N 个合集 = N 次查询。
+初稿在这里写了个进程内缓存，跟着 `library.stats_refreshed_at` 失效。**那是错的**：
+「我的收藏」这类成员相关的合集，用户点一下心成员数就变，而点心**不会**碰
+`stats_refreshed_at`——缓存会一直脏到下次扫描。为一个高频接口引入一条会脏的缓存，
+比不缓存糟得多。
 
-对策（够用即可，不上缓存中间件）：进程内缓存 `(collection_id, member_id) → count`，
-失效条件跟着 `library.stats_refreshed_at` 走——库内容没变，成员数就不会变。
-与库统计快照同一个 tick，不新增失效通道。
+正确的做法是**别在 `/UserViews` 里算**：
+
+| 请求 | 要不要成员数 | 做什么 |
+|---|---|---|
+| `GET /UserViews` | **不要** | 只判断"有没有至少一个元数据可见的合集"——2.3 第 1 层那条便宜 SQL，与合集数量无关 |
+| `GET /Items?ParentId=<合集视图>` | 要 | 这本来就是"把合集列出来"的请求，N 次解析发生在用户真的打开合集列表时，天经地义 |
+
+`ChildCount` 只在后者输出。协议允许缺省该字段，客户端不会因此出错。
+
+**代价说清楚**：`/UserViews` 只判存在、不判成员是否为空，所以极端情况下
+（合集的成员全部落在该成员不可见的库里）视图会出现、但点进去是空列表。
+这比"为了这个边角情况给高频接口背 N 次解析"划算得多——而且真出现时，
+用户看到的是一个空列表，不是一个错误。
 
 ## 3. movieclaw 业务接口
 
@@ -184,7 +231,7 @@ async def resolve_members(
 | 一个合集 | `BaseItemDto.Type = "BoxSet"` | 协议原生概念，客户端普遍支持 |
 | 「合集」聚合视图 | `CollectionFolder`，`CollectionType = "boxsets"` | 与库视图同型，只是 CollectionType 不同 |
 | 合集成员 | BoxSet 的子级（`ParentId = <boxset guid>`） | **只能是条目**（Movie / Series），不能是季/集 |
-| 合集内排序 | `SortBy` / 默认序 | manual 的默认序 = `position`（见 4.7） |
+| 合集内排序 | `SortBy` / 默认序 | 无需特殊处理：没传 `SortBy` 时现有代码本就保持容器给的顺序（见 4.7） |
 
 ### 4.2 GUID 扩展（`movieclaw_jellyfin/ids.py`）
 
@@ -238,8 +285,9 @@ def collections_view_guid() -> str:
 |---|---|---|
 | `ids.py` | `EntityKind` | 加 `COLLECTION = 0x08`、`FIXED_COLLECTIONS`、两个构造函数 |
 | `catalog.py` | `library_view_dto` 近旁 | 新增 `collections_view_dto()`（CollectionFolder + `CollectionType="boxsets"`）与 `boxset_dto()` |
-| `routes/library.py` | `user_views`（约 201） | 有可见合集时追加「合集」视图 |
-| 同上 | `_entries_for_parent`（约 786） | 加两个分支：parent = 合集视图 → 列 BoxSet；parent = BoxSet → `resolve_members()` 后 `load_bundles` + `_build_entries` |
+| `routes/library.py` | `_entries_for_parent`（约 786） | **先抽 `_container_entries()`**：LIBRARY 分支现有的"取 id → `load_bundles` → `_build_entries`"就是容器语义，抽出来后 COLLECTION 分支只剩"换一个 id 来源"，约五行 |
+| 同上 | `user_views`（约 201） | 有元数据可见的合集时追加「合集」视图（不解析成员，见 2.4） |
+| 同上 | 同上 | 两个新分支：parent = 合集视图 → 列 BoxSet（带 `ChildCount`）；parent = BoxSet → `resolve_members()` 走容器分支 |
 | 同上 | `get_item`（约 1285） | 加 `EntityKind.COLLECTION` 分支，返回 `boxset_dto` |
 | 同上 | `_query_items` 的 `includeItemTypes`（约 506） | 认识 `"BoxSet"`；根级 `IncludeItemTypes=BoxSet` 返回全部可见合集 |
 | 同上 | `items_counts`（约 1108） | 补 `BoxSetCount` |
@@ -274,13 +322,21 @@ BoxSet 的 Primary 图**直接复用首个成员条目的海报**（`cover_item_
 要多一套资产、多一个失效通道，换来的只是电视端封面好看一点点。
 `ImageTags.Primary` 取成员条目的既有 tag 派生，内容变则 tag 变，缓存自然失效。
 
-### 4.7 排序与手动序
+### 4.7 排序：不需要任何特殊处理
 
-- 客户端传了 `SortBy` → 交给现有的 `_sort_entries()`（约 457），与库浏览同一套；
-- **没传 SortBy** → smart 用 `collection.sort`，manual 用 `position`。
-  这里要注意：`resolve_members()` 返回的已经是有序 id 列表，
-  `_build_entries` 之后**不能再无条件过一遍 `_sort_entries`**，否则手动拖出来的
-  顺序会被 SortName 洗掉。这是本次唯一一处要小心的既有代码交互。
+初稿在这里记了一条风险："手动合集的 `position` 序会被 `_sort_entries()` 洗掉，
+这是唯一要小心的既有代码交互"。**核对源码后确认这条风险不存在**——
+`_sort_entries()` 开头就是 `if not sort_by: return entries`，客户端没传 `SortBy`
+时它原样返回。
+
+所以正确的描述是：现有代码已经遵循**"没给排序就保持容器给的顺序"**，
+而这恰好就是手动合集需要的语义。合集分支什么都不用做：
+
+- 客户端传了 `SortBy` → `_sort_entries()` 照常生效，与库浏览完全一致；
+- 没传 → `resolve_members()` 给的顺序原样保留（名单序或 `collection.sort`）。
+
+**一处编造出来的"要小心"，换来的是一段本不必写的特殊处理。** 记在这里，
+是因为"技术方案里凭印象写风险"本身就是要防的事——每条风险都该有源码或实测支撑。
 
 ### 4.8 UserData：不做已看聚合
 
@@ -311,13 +367,17 @@ BoxSet 的 Primary 图**直接复用首个成员条目的海报**（`cover_item_
 
 ## 5. 性能
 
-| 路径 | 成本 | 对策 |
+| 路径 | 成本 | 说明 |
 |---|---|---|
-| `/UserViews` | N 个合集 × 1 次计数 | 2.4 的进程内缓存，跟 `stats_refreshed_at` 失效 |
-| `/Items?ParentId=<boxset>` | 1 次筛选查询 + 1 次 `load_bundles` | 与海报墙翻页同量级，已知成本 |
-| 手动合集 | 1 次 `collection_item` 主键查 + 可见性过滤 | 忽略不计 |
+| `GET /UserViews` | 1 次 EXISTS | 与合集数量无关（2.4） |
+| `GET /Items?ParentId=<合集视图>` | N 次成员解析 | N = 可见合集数，量级个位数到几十；发生在用户打开合集列表时 |
+| `GET /Items?ParentId=<boxset>` | 1 次筛选查询 + 1 次 `load_bundles` | 与海报墙翻页同量级，成本已知 |
+| 名单驱动的合集 | 1 次主键查 + 可见性过滤 | 忽略不计 |
 
-超过 1.2 节那条闸门时再上物化，届时本节的对策全部作废、换成一次主键 IN。
+**没有缓存层**。初稿有一个，因为失效逻辑是错的（2.4）而删掉——
+删掉之后这张表反而更简单，这通常是个好兆头。
+
+超过 1.3 节那条闸门时再上物化，届时前两行都退化成主键 IN。
 
 ## 6. 测试
 
@@ -338,29 +398,46 @@ BoxSet 的 Primary 图**直接复用首个成员条目的海报**（`cover_item_
 
 | 步 | 内容 | 验收 |
 |---|---|---|
-| **F3.1** | 两张表 + 迁移 + `collections.py` 领域层 + 业务接口 | `/libraries/{id}/items` 与 `/collections/{id}/items` 在同一组条件下返回同一批 id |
+| **F3.1** | 两张表 + 迁移 + `collections.py` 领域层 + 业务接口 | 同一组条件下 `/libraries/{id}/items` 与 `/collections/{id}/items` 返回同一批 id |
 | **F3.2** | web：合集 chip 行、2:3 网格视图、详情页、存为合集 | 筛选 → 存 → 新入库一部命中的片 → 数量自动 +1 |
-| **F3.3** | **Jellyfin BoxSet**（本文第 4 节全部） | 4.10 清单逐条通过；Infuse / Jellyfin 官方客户端各验一遍 |
-| **F4** | 手动合集拖拽、加入合集入口、跨库合集、TMDB 系列、合集分享 | 拖拽顺序在海报墙、Jellyfin、分享页三处一致 |
+| **F3.3** | **Jellyfin BoxSet**（第 4 节全部，含 `_container_entries` 抽取） | 4.10 清单逐条通过；Infuse 与 Jellyfin 官方客户端各验一遍 |
+| **F3.4** | 「我的收藏」登记为 `builtin="favorites"` | 它出现在合集列表与 Jellyfin BoxSet 里；`/library/favorites` 页面**行为零变化** |
+| **F4** | 手动合集拖拽、加入合集入口、跨库合集、TMDB 系列、合集分享；`/library/favorites` 并入合集详情页 | 拖拽顺序在海报墙、Jellyfin、分享页三处一致；并入后**净删代码** |
 
-**F3.3 可以与 F3.2 并行**：两者都只依赖 F3.1 的领域层。
+**F3.3 可以与 F3.2 并行**——两者都只依赖 F3.1 的领域层。
+**F3.4 必须在 F3.3 之后**：它的验收要看 Jellyfin 侧，前面没做完验不了。
 
 ## 8. 决策记录
 
-1. **规则求值只有一个实现**，协议层不写查询（第 0 节）——本方案的地基。
-2. **智能合集不物化**，沿用 filtering 6.2 的同一条量化闸门（1.2）。
-3. **协议侧顶层「合集」视图，产品侧仍挂库下**——两个受众的正确答案不同（4.3）。
-4. **空合集不下发**，代价是客户端可能要刷新一次才看到新视图（4.3）。
-5. **BoxSet 封面复用成员海报**，不做第二套资产（4.6）。
-6. **BoxSet 不做已看聚合**，与库视图保持一致（4.8）。
-7. **库删除时合集级联删除**，不 SET NULL（1.1）。
+1. **合集没有自己的查询**：`resolve_members()` 是 `_wall_page_ids()` 的薄适配，
+   两端一致是结构性的而不是纪律性的（2.2）。
+2. **不存 `mode` 列**：形态由 `rules` / `collection_item` / `builtin` 推导；
+   `smart|manual|system` 是把"成员怎么来"和"能不能改"两件正交的事挤进一列（1.1）。
+3. **内置合集要吃掉既有特例**：先登记「我的收藏」，`/library/favorites` 页面
+   等合集详情页跑稳后再并（1.2）——分两步，是因为那 632 行里有已经调稳的东西。
+4. **智能合集不物化**，沿用 filtering 6.2 的量化闸门（1.3）。
+5. **协议侧顶层「合集」视图，产品侧仍挂库下**——两个受众的正确答案不同（4.3）。
+6. **成员数不缓存**，把 N 次解析挪到"列出合集"那个请求（2.4）。
+7. **BoxSet 封面复用成员海报**，不做第二套资产（4.6）。
+8. **BoxSet 不做已看聚合**，与库视图保持一致（4.8）。
+9. **库删除时合集级联删除**，不 SET NULL（1.1）。
+
+### 8.1 初稿改了什么（留痕）
+
+| 初稿 | 现在 | 为什么 |
+|---|---|---|
+| `mode: smart\|manual\|system` | 无此列，推导 | 三分法把正交的两件事挤进一列 |
+| `kind` / `pinned` 列 | 砍掉 | 可推导 / 与 `position` 重复 |
+| 成员数进程内缓存，跟 `stats_refreshed_at` 失效 | 不缓存 | **失效逻辑是错的**：点心不碰 `stats_refreshed_at` |
+| "手动序会被 `_sort_entries` 洗掉"（风险） | 删除 | 核对源码：`if not sort_by: return entries`，风险不存在 |
+| "两边都要记得调同一个函数" | "合集没有自己的查询" | 纪律会松，结构不会 |
 
 ## 9. 风险
 
 | 风险 | 应对 |
 |---|---|
-| 客户端缓存 `/UserViews`，新建第一个合集后电视端看不到入口 | 已知代价（4.3），文档写明；不常驻空视图 |
-| 手动合集顺序被 `_sort_entries` 洗掉 | 4.7 点名了这处交互，测试里单独一条 |
-| 智能合集在两端结果不一致 | 结构上堵死（唯一 `resolve_members`）+ 一条回归测试（第 6 节） |
-| 成员数计算拖慢 `/UserViews` | 2.4 缓存；真扛不住就退成不下发 `ChildCount`（协议允许缺省） |
+| 客户端缓存 `/UserViews`，新建第一个合集后电视端看不到入口 | 已知代价（4.3），不常驻空视图 |
+| 视图出现但点进去是空列表（成员全在不可见库里） | 接受（2.4）：换来 `/UserViews` 与合集数量解耦；用户看到的是空列表不是错误 |
+| 智能合集在两端结果不一致 | 结构上堵死（2.2）+ 一条回归测试（第 6 节） |
 | 各家客户端对 BoxSet 的支持深浅不一 | 4.10 清单在 Infuse 与官方客户端各验一遍；只用协议原生字段，不发明扩展 |
+| F4 合并 `/library/favorites` 时打破已调稳的行为 | 分两步（F3.4 只登记、F4 才并页）；并页时以"行为零变化"为验收 |
