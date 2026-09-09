@@ -34,6 +34,7 @@ import { formatBandwidth } from "@/lib/player/bandwidth";
 import { getCapabilitySnapshot } from "@/lib/player/capability";
 import type { PlaybackEngine } from "@/lib/player/engine";
 import { createEngine, preloadHlsEngine } from "@/lib/player/engine";
+import { pipSupported } from "@/lib/player/pip";
 import { bufferedAhead } from "@/lib/player/stall";
 import {
   awaitsUserDecision,
@@ -164,8 +165,11 @@ const PING_INTERVAL_MS = 15_000;
 const IDLE_HIDE_MS = 4000;
 
 /**
- * iOS Safari 的画中画：没有 W3C 那套 API，只有带前缀的 presentationMode。
- * TS 的 DOM 类型至今没收录，本文件里多处要用，收成一个类型别名。
+ * Apple 平台带前缀的画中画 API（presentationMode）。TS 的 DOM 类型至今没收录，
+ * 本文件里多处要用，收成一个类型别名。
+ *
+ * 现在的 iOS/macOS 两套 API 都在（W3C 那套后来也补上了），但**在 Apple 平台上
+ * 这套前缀 API 才是可信的那个**，理由见下面 canPip 的探测。
  */
 interface WebkitPresentationVideo {
   webkitSupportsPresentationMode?: (mode: string) => boolean;
@@ -2052,10 +2056,8 @@ export function VideoPlayer(props: VideoPlayerProps) {
   }, []);
 
   /**
-   * 画中画的能力探测与状态跟随。
-   *
-   * `disablePictureInPicture` 也要看：视频自己声明了不许进小窗时，
-   * 标准 API 存在但调用必然被拒。
+   * 画中画的能力探测与状态跟随。判定规则与「为什么不能把两个信号取或」
+   * 见 lib/player/pip.ts（iOS 主屏 Web App 里标准标志会谎报）。
    */
   useEffect(() => {
     if (!video) {
@@ -2064,9 +2066,17 @@ export function VideoPlayer(props: VideoPlayerProps) {
       return;
     }
     const webkit = video as WebkitPresentationVideo;
+    const webkitProbe = webkit.webkitSupportsPresentationMode;
     setCanPip(
-      (document.pictureInPictureEnabled === true && !video.disablePictureInPicture) ||
-        webkit.webkitSupportsPresentationMode?.("picture-in-picture") === true,
+      pipSupported({
+        disabled: video.disablePictureInPicture === true,
+        // null = 压根没有前缀 API（非 Apple 浏览器），与「探测为假」是两回事
+        webkitSupports:
+          typeof webkitProbe === "function"
+            ? webkitProbe.call(video, "picture-in-picture") === true
+            : null,
+        standardEnabled: document.pictureInPictureEnabled === true,
+      }),
     );
     // 小窗可以被用户从系统 UI 直接关掉，按钮状态只能跟着事件走，不能自己记
     const sync = () =>
@@ -2096,16 +2106,21 @@ export function VideoPlayer(props: VideoPlayerProps) {
   const togglePip = useCallback(() => {
     if (!video) return;
     const webkit = video as WebkitPresentationVideo;
-    if (webkit.webkitSetPresentationMode && document.pictureInPictureEnabled !== true) {
+    // 与上面的探测同一条口径：Apple 平台走前缀 API。原来这里附加了
+    // `pictureInPictureEnabled !== true`，而现在的 iOS/macOS 两个标志都为真，
+    // 于是 Safari 上反而绕去了标准 API——判据要和探测的那一条对上。
+    if (typeof webkit.webkitSetPresentationMode === "function") {
       const target =
         webkit.webkitPresentationMode === "picture-in-picture" ? "inline" : "picture-in-picture";
       webkit.webkitSetPresentationMode(target);
       // 这个调用是同步 void：被系统拒绝时**什么都不发生**（模式不变、无异常、
       // 无事件），按钮看起来就是「点了没反应」——真机上没法排查。稍等半秒查
       // 模式有没有真的切过去，没切就把拒绝这件事说出来。
-      // 最常见的拒绝就是 iOS 的桌面网页应用（PWA）形态：WebKit 的独立容器
-      // 不给网页画中画的通路，webkitSupportsPresentationMode 却照样报 true，
-      // 网页侧无解——能做的只有把去处说清楚（Safari 里打开就能用）。
+      //
+      // 正常情况下 iOS 主屏 Web App 已经被上面的探测挡在门外（那里
+      // webkitSupportsPresentationMode 报 false，按钮根本不渲染），这条 standalone
+      // 分支是留给「某个 iOS 版本连前缀 API 也谎报 true」的兜底。剩下的常见
+      // 拒绝是低电量模式。
       if (target === "picture-in-picture") {
         window.setTimeout(() => {
           if (webkit.webkitPresentationMode !== "picture-in-picture") {
