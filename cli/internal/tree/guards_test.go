@@ -35,10 +35,6 @@ var knownNonGenerated = []string{
 	"ui.library.gallery",
 	"ui.library.items.ids",
 	"ui.library.items.index",
-	"playback.activity",
-	"playback.activity.end",
-	"playback.history",
-	"playback.stats.watch",
 	"playback.decide",
 	"playback.item.info",
 	"playback.item.episodes",
@@ -63,8 +59,9 @@ var knownNonGenerated = []string{
 	// 待处理事项 → Agent 诊断工单：Web 活动页专用，命令行用户直接开会话即可
 	"session.handoff.prompt",
 	"playback.client-log",
+	// 播放质量汇总（直出率）：转码适配诊断，归设置页；与已生成的
+	// playback.stats.watch（观看统计）不是一回事，别看名字近就一起放出来
 	"playback.stats",
-	"playback.device.revoke",
 	"transcode.source",
 	"transcode.artifact.put",
 	"playback.progress",
@@ -94,9 +91,6 @@ var knownNonGenerated = []string{
 	"fs.browse",
 	"jobs.stream",
 	"playback.recent",
-	"dl.tasks",
-	"dl.torrent.replace",
-	"dl.torrent.delete",
 	"ui.discovery.get",
 	"discover.get-person-details",
 	"ui.subscriptions.preview-title",

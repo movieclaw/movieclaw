@@ -57,6 +57,9 @@ dl status set
 dl submit
 dl target-prefs forget
 dl target-prefs list
+dl tasks
+dl torrent delete
+dl torrent replace
 dl update
 dl verify
 extension cookies push
@@ -163,6 +166,11 @@ net test
 notices dismiss
 notices list
 people show
+playback activity
+playback activity end
+playback device revoke
+playback history
+playback stats watch
 rules create
 rules default
 rules delete

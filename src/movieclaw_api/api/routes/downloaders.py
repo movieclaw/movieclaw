@@ -387,14 +387,24 @@ async def list_downloaders(
 @router.get(
     "/tasks",
     response_model=ApiResponse[DownloadTaskListView],
-    summary="汇总所有下载器的活跃任务及订阅关联",
+    summary="列出所有下载器里正在跑的任务，以及它们对应哪部片、哪一集",
     operation_id="dl.tasks",
-    openapi_extra={"x-cli-hidden": True},
 )
 async def list_download_tasks(
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[DownloadTaskListView]:
-    """任务中心实时快照；单台下载器故障会降级为来源状态，不拖垮整页。"""
+    """把接入的每台 qBittorrent / Transmission 里的任务汇总成一张表。
+
+    每条给出种子名、来自哪个站点、下载进度与速度、剩余时间，以及最关键的
+    一层——这个种子是为哪部电影 / 哪几集剧集下的、属于哪条订阅、下完之后有没有
+    成功入库。回答「我的剧到底下到哪了」「为什么订阅了却一直没出现在库里」。
+
+    与 dl.list 的区别：那条列的是**下载器本身**（接了几台、地址是什么），
+    这条列的是**下载器里的任务**。
+
+    某台下载器连不上时只把那台在 ``sources`` 里标成不可用，其余照常返回，
+    不会让整次查询失败。
+    """
     from movieclaw_api.services.download_tasks import download_task_snapshot
 
     snapshot = await download_task_snapshot(session)
@@ -454,9 +464,8 @@ async def update_downloader_limits(
 @router.post(
     "/{downloader_id}/torrents/{info_hash}/replace",
     response_model=ApiResponse[DownloadTaskReplaceView],
-    summary="立即为无进度的订阅任务寻找同品质替代源",
+    summary="给卡住不动的下载立刻换一个同品质的种子源",
     operation_id="dl.torrent.replace",
-    openapi_extra={"x-cli-hidden": True},
 )
 async def replace_stalled_subscription_download(
     background_tasks: BackgroundTasks,
@@ -469,7 +478,14 @@ async def replace_stalled_subscription_download(
     ),
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[DownloadTaskReplaceView]:
-    """任务中心手动抢跑；请求立即返回，真实跨站搜索在后台执行。"""
+    """某个下载长时间没有任何进度（通常是没人做种）时，立刻换一份资源顶上。
+
+    MovieClaw 会到各个站点重新找一份画质规格相同的资源。命令马上返回，真正的
+    搜索在后台进行；旧任务会一直保留到新的源真的产生进度，所以不会出现
+    「换了个更差的、旧的还删了」的情况。
+
+    只对 MovieClaw 自己投递的订阅任务有意义——外部种子没有工单可以救援。
+    """
     from movieclaw_api.services.subscription import request_replacement, run_replacement_search
 
     normalized_hash = info_hash.lower()
@@ -492,9 +508,9 @@ async def replace_stalled_subscription_download(
 @router.delete(
     "/{downloader_id}/torrents/{info_hash}",
     response_model=ApiResponse[DownloadTaskDeleteView],
-    summary="从指定下载器删除种子任务（可选删除数据文件）",
+    summary="从下载器里删掉一个种子任务，可选连同已下好的文件一起删",
     operation_id="dl.torrent.delete",
-    openapi_extra={"x-cli-hidden": True, "x-cli-dangerous": "destructive"},
+    openapi_extra={"x-cli-dangerous": "destructive"},
 )
 async def delete_download_task_from_downloader(
     downloader_id: int,
@@ -510,7 +526,14 @@ async def delete_download_task_from_downloader(
     ),
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[DownloadTaskDeleteView]:
-    """删除下载器实时任务；只有显式选择时才同时删除数据文件。"""
+    """把这个任务从下载器移除。
+
+    默认**只删任务、保留已经下载的文件**；确实要连文件一起删才加
+    ``delete_files``（删除后不可恢复）。
+
+    如果这个种子是某条订阅投递的，删掉之后那几集会退回「缺资源」状态，
+    订阅会重新去找新的资源。
+    """
     from movieclaw_api.services.download_tasks import delete_download_task
 
     normalized_hash = info_hash.lower()

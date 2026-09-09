@@ -9,6 +9,7 @@ func Register(root *cobra.Command) {
 	root.AddCommand(NewLoginCommand())
 	root.AddCommand(NewLogoutCommand())
 	root.AddCommand(NewStatusCommand())
+	root.AddCommand(NewActivityCommand())
 	root.AddCommand(NewDownloadCommand())
 	root.AddCommand(NewSearchGroup())
 	root.AddCommand(NewLibraryGroup())

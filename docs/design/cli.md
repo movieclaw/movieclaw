@@ -324,6 +324,7 @@ CLI 的第一消费者是产品自带的 AI 助手（movieclaw_agent，隔离工
 | `mclaw session retry <session_id> --message-id <id>` | 删除指定 user message 及其后的轨迹，默认按原文重试；传 `--prompt` 时用新问题替换，再接入 SSE |
 | `mclaw login` | bootstrap 探测 → 密码登录 → （P1 起）自动换取长期 Token |
 | `mclaw status` | health + auth/me + spec 版本，一眼看部署状态 |
+| `mclaw activity` | `dl tasks` + `jobs` + `playback activity` 三份快照按业务口径合并：一个下载任务和它触发的入库作业算一件事、刷流做种不计数（与 Web 活动页 `lib/task-activity.ts` 同一口径），输出「要处理 / 进行中 / 有人在看」三个数与下一步命令 |
 | `mclaw logs -f` | 轮询模拟 follow |
 
 Session 命令面采用两层模型：`session` 是完整对话，`message` 是一条持久化的

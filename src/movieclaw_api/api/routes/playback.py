@@ -439,10 +439,9 @@ async def list_favorites_gallery(
 @router.get(
     "/activity",
     response_model=ApiResponse[MediaActivityView],
-    summary="媒体库活动快照",
+    summary="看此刻家里谁在看什么、用哪台设备、速度多快",
     operation_id="playback.activity",
     dependencies=[Depends(require_admin)],
-    openapi_extra={"x-cli-hidden": True},
 )
 async def get_media_activity(
     scope: Annotated[
@@ -452,9 +451,12 @@ async def get_media_activity(
     principal: Principal = Depends(require_login),
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[MediaActivityView]:
-    """活动页「观看」视角的实时快照：正在播放与正在下载（每 8 秒轮询）。
+    """列出所有正在播放和正在下载的实时会话。
 
-    管理员运维视角（跨成员可见）；历史看 /playback/history。
+    每条包含成员、设备与客户端、正在看的片名和集号、播放进度与实时传输速率。
+    「电视卡了 / 网怎么这么慢」时第一个该看的地方：一眼知道是不是有人在同时
+    看片或拉文件。只显示此刻正在发生的事，看历史用 playback.history。
+
     ``scope=visible``（默认）把落在当前超管不可浏览的库里的记录折叠成计数，
     不出片名；``scope=all`` 是管控视角的全量口径——``admin_visible`` 是超管
     给自己设的浏览过滤而非安全边界，管理员有权看到所有人的全部播放活动。
@@ -471,17 +473,21 @@ async def get_media_activity(
 @router.post(
     "/activity/sessions/{device_id}/end",
     response_model=ApiResponse[None],
-    summary="结束一台设备本次播放",
+    summary="掐断某台设备正在进行的播放（不影响登录）",
     operation_id="playback.activity.end",
     dependencies=[Depends(require_admin)],
     # confirm 而非 destructive：只掐断本次播放，凭据与观看进度都不动，
     # 设备下次亲手点播放即可继续
-    openapi_extra={"x-cli-hidden": True, "x-cli-dangerous": "confirm"},
+    openapi_extra={"x-cli-dangerous": "confirm"},
 )
 async def end_device_playback(
     device_id: Annotated[str, Path(min_length=1, max_length=256)],
 ) -> ApiResponse[None]:
-    """结束一台设备**本次**播放（与「注销设备」的区别：不动凭据）。
+    """让指定设备立刻停止播放，一分钟内不能续播。
+
+    用在「孩子该睡觉了」「某台设备把带宽吃光了」这类场景。设备的登录状态、
+    看到第几分钟、收藏都不动，人重新点一下播放就能接着看；要让设备彻底登出
+    请用 playback.device.revoke。
 
     实时会话立即消失并进入一分钟的拒绝窗口，直出取流与转码会话一并停止。
     网页播放器收到信号后退出；Jellyfin 客户端会看到播放中断，重新点播放即可继续。
@@ -496,10 +502,9 @@ async def end_device_playback(
 @router.get(
     "/history",
     response_model=ApiResponse[PlaybackHistoryView],
-    summary="播放记录（每场一行）",
+    summary="翻看每一场播放的流水：谁、什么时候、看了什么、看了多久",
     operation_id="playback.history",
     dependencies=[Depends(require_admin)],
-    openapi_extra={"x-cli-hidden": True},
 )
 async def list_playback_history(
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
@@ -512,9 +517,14 @@ async def list_playback_history(
     principal: Principal = Depends(require_login),
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[PlaybackHistoryView]:
-    """活动页「播放记录」：来自 playback_log，标得出哪台设备、什么时候、看了多久。
-    可见范围口径与 /playback/activity 同；游标翻页（``before`` / ``next_cursor``），
-    滚动续载期间新开的一场不会让同一行在两页里各出现一次。"""
+    """按时间倒序列出播放记录，一场播放一行。
+
+    每行带成员、设备、片名集号、看到的百分比、是否看完与实际观看时长，
+    用来回答「上周谁看过这部」「这台电视最近都在放什么」。
+
+    翻页用 ``before`` 接上一页最后一行的 id（响应里的 ``next_cursor``），
+    而不是页码：这样翻页期间新产生的记录不会把同一行挤到两页里各出现一次。
+    可见范围口径（``scope``）与 playback.activity 相同。"""
     return ok(
         await playback_history(
             session,
@@ -531,10 +541,9 @@ async def list_playback_history(
 @router.get(
     "/stats/watch",
     response_model=ApiResponse[PlaybackWatchStatsView],
-    summary="观看统计",
+    summary="一段时间的观看总览：看了多久、多少场、看完率、活跃了几个人",
     operation_id="playback.stats.watch",
     dependencies=[Depends(require_admin)],
-    openapi_extra={"x-cli-hidden": True},
 )
 async def get_watch_stats(
     days: Annotated[int, Query(ge=1, le=365)] = 30,
@@ -546,9 +555,15 @@ async def get_watch_stats(
     principal: Principal = Depends(require_login),
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[PlaybackWatchStatsView]:
-    """最近 N 天与上一周期成对的观看统计：汇总数、按天序列、星期×小时热力图，
-    按成员 / 客户端 / 播放档位 / 作品分解。作品榜走可见范围折叠，其余是不出片名的
-    聚合数。``member_id`` 把整份统计收窄到一个成员（分解面板里点成员即钻取）。"""
+    """统计最近 N 天的观看情况，并和上一个同长度周期成对给出，看得出是变多还是变少。
+
+    除了汇总数（观看时长、播放场次、看完率、活跃成员）还给出按天的序列、
+    星期×小时的分布（家里通常什么时候有人看，可以据此安排扫描、刮削这类重活），
+    以及按成员 / 客户端 / 播放档位 / 作品的分解。``member_id`` 把整份统计收窄到
+    一个成员。``tz_offset`` 是本地时区相对 UTC 的分钟数（东八区 480），不给就按
+    UTC 分天——服务端不猜调用方在哪个时区。
+
+    作品榜走可见范围折叠，其余是不出片名的聚合数。"""
     return ok(
         await playback_stats(
             session,
@@ -629,20 +644,24 @@ async def clear_playback_history(
 @router.delete(
     "/devices/{device_id}",
     response_model=ApiResponse[None],
-    summary="注销播放器设备",
+    summary="注销一台播放设备，让它下次必须重新登录",
     operation_id="playback.device.revoke",
     dependencies=[Depends(require_admin)],
     # confirm 而非 destructive：注销会中断该设备正在进行的播放/下载并要求重新
     # 登录，但不销毁任何数据——观看进度、收藏按成员保存，与设备无关。
-    openapi_extra={"x-cli-hidden": True, "x-cli-dangerous": "confirm"},
+    openapi_extra={"x-cli-dangerous": "confirm"},
 )
 async def revoke_playback_device(
     device_id: Annotated[str, Path(min_length=1, max_length=256)],
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[None]:
-    """注销一台播放器设备：凭据即刻失效，正在进行的播放与取流一并停止。
+    """立刻吊销这台设备的登录凭据，它正在进行的播放与下载一并中断。
 
-    该设备下次访问需重新登录；已看进度、收藏等观看状态按成员保存，不受影响。
+    下次使用要重新输入账号密码（电视上会比较麻烦，所以需要确认）。用在设备
+    丢了、借出去的账号要收回，或者不认识的设备出现在活动列表里的时候。
+
+    观看进度和收藏是按人保存的，不会因为注销设备而丢失。只想停掉这一次播放
+    用 playback.activity.end。
     """
     label = await revoke_device(session, device_id)
     if label is None:

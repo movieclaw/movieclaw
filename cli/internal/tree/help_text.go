@@ -11,7 +11,7 @@ var domainHelp = map[string]string{
 	"auth":          "个人信息、会话与 API 令牌",
 	"channels":      "微信、Telegram、Discord 消息推送与 AI 对话入口",
 	"discover":      "浏览 TMDB/豆瓣电影与剧集片单，并读取影视条目完整资料",
-	"dl":            "qBittorrent/Transmission 下载器、路径映射与种子投递",
+	"dl":            "qBittorrent/Transmission 下载器接入与路径映射、种子投递，以及查看和处理下载器里正在跑的任务",
 	"extension":     "浏览器插件 Cookie 同步",
 	"health":        "API 存活检查",
 	"jobs":          "后台作业查询、事件、等待、取消与重试",
@@ -23,6 +23,7 @@ var domainHelp = map[string]string{
 	"net":           "全局/指定服务代理、镜像地址与连通性测试",
 	"notices":       "系统待处理事项",
 	"people":        "本地媒体库影人档案与作品",
+	"playback":      "谁在看什么的实时活动、每场播放的流水与观看统计，以及结束播放、注销播放设备",
 	"rules":         "订阅资源质量与过滤规则组",
 	"scrape":        "刮削与整理配置：元数据语言优先级、选图口味与图片档位、目录与文件名模板、媒体目录写入开关",
 	"search":        "统一搜索影视条目、PT 种子和本地媒体库，并管理搜索预设与历史",
@@ -38,6 +39,7 @@ var domainHelp = map[string]string{
 // 二级分组同样是模型的探索入口，必须说明「这里解决什么问题」。只给一级域描述
 // 会让 items / identification / metadata 等孤立名词失去选择依据。
 var commandGroupHelp = map[string]string{
+	"dl.torrent":             "处理下载器里某一个具体的种子任务：换源、删除",
 	"library.artwork":        "查看、下载和选定媒体条目的海报或背景图",
 	"library.identification": "处理待识别、错识别和已忽略文件，明确指定文件所属影视条目",
 	"library.items":          "查看和管理已经入库的电影、剧集条目及其物理文件",
@@ -45,6 +47,8 @@ var commandGroupHelp = map[string]string{
 	"library.missing":        "查看磁盘上已经缺失的库存记录、重新下载或清理台账",
 	"library.scan":           "扫描媒体库根路径，把存量文件识别并登记到库存台账",
 	"library.subtitles":      "预检和生成 AI 字幕，或校准外挂字幕时间轴",
+	"playback.device":        "管理看片设备的登录凭据：注销后该设备要重新登录",
+	"playback.stats":         "把一段时间的播放汇总成数字：看了多久、多少场、看完率、什么时段有人看",
 	"search.history":         "列出、回放、删除或清空影视条目与 PT 种子搜索历史",
 	"search.presets":         "列出或更新 PT 种子搜索的分类与站点组合预设",
 }
