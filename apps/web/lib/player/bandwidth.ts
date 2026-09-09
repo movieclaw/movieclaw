@@ -22,9 +22,14 @@
  *
  * 转码会话是边转边给的，一个分片请求可能先在服务端挂几秒等 ffmpeg 追上来
  * （`ensure_segment` 最长挂 30 秒）。那几秒里一个字节都没在传，算进分母会
- * 把速度压到十分之一，然后用户以为自己宽带坏了。调用方取 hls.js 的
- * `stats.loading.first`（首字节到达时刻）而不是 `start` 作为传输起点，这条
- * 语义由本模块的文档钉住。
+ * 把速度压到十分之一，然后用户以为自己宽带坏了。所以传输起点取**首字节
+ * 到达**而不是请求发出。
+ *
+ * ## 时刻只认网络栈，不认 JS 回调
+ *
+ * 这两个时刻必须由浏览器的 Resource Timing 提供（见 `sampleFromResourceTiming`），
+ * **不能用 hls.js 的 `stats.loading`**——那是 XHR 事件在主线程上被处理到的时刻，
+ * 主线程一卡两个回调就挤在一起，几 MB 的分片会被算成传了十几毫秒。
  */
 
 /** 统计窗口。短了随分片到货剧烈跳动，长了跟不上外网的抖动。 */
@@ -103,4 +108,52 @@ export function formatBandwidth(bps: number | null): string | null {
   // 不足 1 KB/s 就别装精确了，那已经是「基本没在动」
   if (kbPerSecond < 1) return "0 KB/s";
   return `${Math.round(kbPerSecond)} KB/s`;
+}
+
+/**
+ * 一条 Resource Timing 条目里我们要的四个字段（便于单测构造假条目）。
+ */
+export interface ResourceTimingLike {
+  /** 首字节到达时刻；跨源且没有 `Timing-Allow-Origin` 时为 0 */
+  responseStart: number;
+  /** 末字节到达时刻 */
+  responseEnd: number;
+  /** 含响应头的**上网**字节数；命中浏览器缓存时为 0 */
+  transferSize: number;
+  /** 响应体压缩后的字节数（缓存命中时照样是完整大小） */
+  encodedBodySize: number;
+}
+
+/**
+ * 把一条 Resource Timing 折成取流样本；读不出可信数据时返回 null。
+ *
+ * ## 为什么不用 hls.js 的 `stats.loading`
+ *
+ * `stats.loading.first/end` 是 **XHR 事件在主线程上被处理到的时刻**，不是字节
+ * 真正到达的时刻。主线程一忙（解码、`appendBuffer`、界面重绘），`headers` 与
+ * `done` 两个回调就会挤在同一帧里连着跑——几 MB 的分片被算成传了十几毫秒，
+ * 读数飙到几百 MB/s，比用户的实际带宽高两个数量级。这不是偶发抖动：越是卡顿
+ * 的时候主线程越忙，读数反而越离谱，正好把这行读数该回答的问题答反。
+ *
+ * Resource Timing 的 `responseStart`/`responseEnd` 由浏览器网络栈记录，与主线程
+ * 忙闲无关，且语义与我们要的口径完全一致：`responseStart` 就是首字节到达
+ * （服务端等 ffmpeg 的那几秒落在它之前，天然不算进分母）。
+ *
+ * ## 两种要丢掉的条目
+ *
+ * - `transferSize === 0`：整份响应来自浏览器缓存，一个字节都没走网络。回跳到
+ *   已下过的分片时就是这样，算进去等于拿内存速度冒充带宽。
+ * - `responseStart === 0`：跨源且服务端没给 `Timing-Allow-Origin`，浏览器把
+ *   这些字段一律抹成 0，什么都算不出来——宁可不显示也不显示错的。
+ */
+export function sampleFromResourceTiming(
+  entry: ResourceTimingLike | null | undefined,
+  at: number,
+): BandwidthSample | null {
+  if (!entry) return null;
+  if (!(entry.responseStart > 0) || !(entry.transferSize > 0)) return null;
+  const bytes = entry.encodedBodySize;
+  const transferMs = entry.responseEnd - entry.responseStart;
+  if (!(bytes > 0) || !(transferMs > 0)) return null;
+  return { at, bytes, transferMs };
 }
