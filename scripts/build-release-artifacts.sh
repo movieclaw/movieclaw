@@ -6,7 +6,9 @@
 #   app-web.tar.gz      前端 standalone 产物（纯 JS，跨架构通用），解包即
 #                       overlay 的 web/ 目录，布局与镜像内 /app/web 完全一致
 #   app-backend.tar.gz  后端源码（src/ + alembic/ + alembic.ini），内含
-#                       现场导出的 spec.json（运行期硬依赖，与代码严格同版）
+#                       现场导出的 spec.json（运行期硬依赖，与代码严格同版），
+#                       以及 bin/mclaw-linux-{amd64,arm64}：CLI 跟着应用走，
+#                       改一条命令不必重发镜像（entrypoint 解析时改软链指向）
 #   manifest.json       版本、runtime 兼容要求、各文件 sha256
 #
 # 用法：
@@ -16,6 +18,7 @@
 # 前置条件（CI 与本地相同）：
 #   - pnpm install 已完成
 #   - PYTHON_BIN（缺省 python3）环境已安装 pyproject 的 dependencies
+#   - go（构建 CLI；版本需 >= cli/go.mod 的 go 指令）
 # =============================================================================
 set -euo pipefail
 
@@ -96,7 +99,28 @@ find "$STAGE/backend" -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null 
 PYTHONPATH="$ROOT/src" "$PYTHON_BIN" -m movieclaw_api.export_openapi \
     -o "$STAGE/backend/src/movieclaw_api/data/spec.json"
 
-for f in src/movieclaw_api/main.py src/movieclaw_api/data/spec.json alembic.ini alembic/env.py; do
+# mclaw CLI：两个 linux 架构都放进产物，容器按 uname 各取所需。
+# 刻意不按架构拆包：拆了就要在更新器里引入平台判定、产物也变成分架构的，
+# 为省一个二进制的体积（gzip 后约 3MB）不值。内嵌 spec 用本次现场导出的
+# 那份——二进制与后端因此天然同版，不再依赖运行期的 spec 偏斜刷新。
+echo "==> 构建 mclaw CLI（linux/amd64 + linux/arm64）"
+mkdir -p "$STAGE/backend/bin"
+mkdir -p cli/internal/spec/data
+cp "$STAGE/backend/src/movieclaw_api/data/spec.json" cli/internal/spec/data/spec.json
+for arch in amd64 arm64; do
+    ( cd cli && CGO_ENABLED=0 GOOS=linux GOARCH="$arch" \
+        go build -trimpath -ldflags="-s -w" \
+        -o "$STAGE/backend/bin/mclaw-linux-$arch" ./cmd/mclaw )
+done
+# 同架构时冒烟一次：spec 坏了、命令树建不起来，在这里就断，而不是等用户更新完
+host_arch="$(uname -m)"
+case "$host_arch" in
+    x86_64 | amd64) "$STAGE/backend/bin/mclaw-linux-amd64" --help > /dev/null ;;
+    aarch64 | arm64) "$STAGE/backend/bin/mclaw-linux-arm64" --help > /dev/null ;;
+esac
+
+for f in src/movieclaw_api/main.py src/movieclaw_api/data/spec.json alembic.ini alembic/env.py \
+         bin/mclaw-linux-amd64 bin/mclaw-linux-arm64; do
     if [[ ! -s "$STAGE/backend/$f" ]]; then
         echo "错误：backend 产物布局异常，缺少 $f" >&2
         exit 1

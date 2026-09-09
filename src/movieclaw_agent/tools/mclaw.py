@@ -26,7 +26,9 @@ from movieclaw_llm import ToolDefinition
 
 _DEFAULT_TIMEOUT = 300.0
 
-#: mclaw 二进制的位置。镜像里固定装在 /usr/local/bin/mclaw；
+#: mclaw 二进制的位置。容器里由 entrypoint 解析后用 MOVIECLAW_CLI_BIN 显式给出
+#: （应用内更新装了新版就指向 overlay 里的那份，否则指向镜像基线）；
+#: /usr/local/bin/mclaw 是同一份解析结果的软链，兜底用。
 #: 开发机上用 MOVIECLAW_CLI_BIN 指向 `go build` 的产物即可。
 _CLI_BIN_ENV = "MOVIECLAW_CLI_BIN"
 _DEFAULT_CLI_BIN = "/usr/local/bin/mclaw"

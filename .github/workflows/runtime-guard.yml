@@ -63,15 +63,13 @@ jobs:
           docker_changed=$(git diff "$BASE"...HEAD -- Dockerfile \
             | grep -cE '^[+-].*apt-get install|^[+-]FROM ' || true)
           # 只存在于镜像里的文件是否变化：它们不随应用包发布，老镜像做应用内
-          # 更新时拿不到新版本，任何改动都必须跟一次镜像发布
-          # cli/ 里排除纯测试与验收脚本：它们不进镜像，改了不影响运行时。
-          # 也排除内嵌的基线 spec：镜像里那份由 spec-export 阶段现场导出后
-          # COPY 覆盖（Dockerfile 的 go-builder 阶段），仓库里这份的内容根本
-          # 进不了镜像——发版 bump 版本号后重导 spec 只改这一个文件时，
-          # 不构成运行时契约变化，不该要求 bump runtime-version
+          # 更新时拿不到新版本，任何改动都必须跟一次镜像发布。
+          # cli/ 不在此列：mclaw 二进制随 app-backend.tar.gz 一起发布，
+          # entrypoint 解析启动指向时把 /usr/local/bin/mclaw 软链改指过去
+          # （docs/design/in-app-update.md「CLI 也走 overlay」），因此改 CLI
+          # 只发 Release 即可，不必重发镜像
           image_only_changed=$(git diff --name-only "$BASE"...HEAD -- \
-            docker/nginx.conf.template docker/entrypoint.sh cli \
-            | grep -vE '(_test\.go$|^cli/e2e/|^cli/testdata/|^cli/\.goreleaser\.yaml$|^cli/internal/spec/data/spec\.json$)' \
+            docker/nginx.conf.template docker/entrypoint.sh \
             | wc -l)
           rv_changed=$(git diff "$BASE"...HEAD -- docker/runtime-version \
             | grep -cE '^[+-][0-9]' || true)
@@ -79,7 +77,7 @@ jobs:
           if { [ "$(cat deps_changed)" = "1" ] || [ "$docker_changed" -gt 0 ] \
                 || [ "$image_only_changed" -gt 0 ]; } \
               && [ "$rv_changed" -eq 0 ]; then
-            echo "::error::检测到运行时契约变化（pyproject dependencies、Dockerfile 的系统包/基础镜像，或 nginx.conf.template / entrypoint.sh / cli 这类只存在于镜像里的文件），但 docker/runtime-version 未 bump。旧镜像的应用内更新拿不到这些改动，会表现为启动失败或功能静默失效——请把 docker/runtime-version +1，并在合并后发布新镜像。若确认本次变化向后兼容（如仅放宽版本上限、仅改注释），可由维护者说明后跳过本检查。"
+            echo "::error::检测到运行时契约变化（pyproject dependencies、Dockerfile 的系统包/基础镜像，或 nginx.conf.template / entrypoint.sh 这类只存在于镜像里的文件），但 docker/runtime-version 未 bump。旧镜像的应用内更新拿不到这些改动，会表现为启动失败或功能静默失效——请把 docker/runtime-version +1，并在合并后发布新镜像。若确认本次变化向后兼容（如仅放宽版本上限、仅改注释），可由维护者说明后跳过本检查。"
             exit 1
           fi
           echo "runtime-version 契约检查通过"

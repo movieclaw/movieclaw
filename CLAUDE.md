@@ -7,7 +7,9 @@
    的 `__version__`、Release tag（去 `v`）必须完全一致，构建脚本会强制校验。
 2. **动了运行时依赖必须 bump `docker/runtime-version`**：pyproject dependencies、
    Node 大版本、Dockerfile 系统包/基础镜像、entrypoint 契约，任何一项变更都要 +1
-   并在合并后发布新镜像（CI 守卫会拦截漏 bump 的 PR）。
+   并在合并后发布新镜像（CI 守卫会拦截漏 bump 的 PR）。改 `cli/` 不在此列——
+   mclaw 随 app-backend 产物一起发布、由 entrypoint 改软链指向
+   （见 `docs/design/in-app-update.md`「CLI 也走 overlay」）。
 3. **数据库迁移只能向前兼容**：应用内更新支持一键回退，迁移是单向的，
    用户回退跨版本时靠更新前的自动备份恢复数据。
 4. **`data/` 下新增目录必须登记**：任何落在运行期数据目录下的新目录都要在

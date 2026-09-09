@@ -9,6 +9,7 @@ entrypoint.sh 提供 `resolve` 测试钩子：只解析启动指向并打印 key
 from __future__ import annotations
 
 import json
+import platform
 import socket
 import subprocess
 import sys
@@ -222,3 +223,91 @@ def test_unbindable_env_port_is_kept(env_root: Path) -> None:
         out = _resolve(env_root, MOVIECLAW_WEB_PORT=str(port))
 
     assert (out["web_port"], out["web_port_source"]) == (str(port), "env")
+
+
+# ---------------------------------------------------------------------------
+# mclaw CLI 的指向解析（docs/design/in-app-update.md「CLI 也走 overlay」）
+#
+# CLI 与前后端一起随 overlay 发布，但它多一层现实约束：二进制可能根本执行不了
+# （data 卷挂 noexec）、老版本 overlay 里压根没有它、软链可能改不动。任何一条
+# 踩空都必须安静地退回镜像基线——mclaw 不可以因为一次更新而消失。
+# ---------------------------------------------------------------------------
+
+_ARCH = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}[
+    platform.machine()
+]
+
+
+def _fake_cli(path: Path, *, executable: bool = True) -> Path:
+    """摆一个假的 mclaw。
+
+    刻意**只认 `--help`**，其余参数一律非零退出：entrypoint 的探测参数必须与
+    真二进制支持的一致。上一版探测写的是 `--version`（mclaw 根本没有这个
+    标志），宽松的假二进制照样通过，直到拿真二进制跑才发现「永远回落基线」。
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        '#!/bin/sh\n[ "$1" = "--help" ] || exit 64\nexit 0\n', encoding="utf-8"
+    )
+    path.chmod(0o755 if executable else 0o644)
+    return path
+
+
+def _cli_env(root: Path, *, link: Path | None = None) -> dict[str, str]:
+    baseline = _fake_cli(root / "app" / "baseline-bin" / "mclaw")
+    return {
+        "MOVIECLAW_CLI_BASELINE_BIN": str(baseline),
+        "MOVIECLAW_CLI_LINK": str(link if link is not None else root / "bin" / "mclaw"),
+    }
+
+
+def test_cli_falls_back_to_baseline_without_overlay(env_root: Path) -> None:
+    env = _cli_env(env_root)
+    out = _resolve(env_root, **env)
+    assert out["cli_bin"] == env["MOVIECLAW_CLI_BASELINE_BIN"]
+
+
+def test_overlay_cli_wins_and_link_follows(env_root: Path) -> None:
+    """overlay 带了能跑的同版二进制：用它，并把对外软链一起改指过去。"""
+    vdir = _make_overlay(env_root, "0.2.0")
+    overlay_bin = _fake_cli(vdir / "backend" / "bin" / f"mclaw-linux-{_ARCH}")
+    _link(env_root, "current", vdir)
+    (env_root / "bin").mkdir()
+    env = _cli_env(env_root)
+    out = _resolve(env_root, **env)
+    assert out["cli_bin"] == str(overlay_bin)
+    assert Path(env["MOVIECLAW_CLI_LINK"]).resolve() == overlay_bin.resolve()
+
+
+def test_overlay_without_cli_keeps_baseline(env_root: Path) -> None:
+    """本次改动之前发布的 overlay 没有 bin/：不能因此让 mclaw 消失，
+    也不能把这个 overlay 整体判为无效（前后端仍应从它启动）。"""
+    vdir = _make_overlay(env_root, "0.2.0")
+    _link(env_root, "current", vdir)
+    env = _cli_env(env_root)
+    out = _resolve(env_root, **env)
+    assert out["source"] == "overlay"
+    assert out["cli_bin"] == env["MOVIECLAW_CLI_BASELINE_BIN"]
+
+
+def test_unexecutable_overlay_cli_falls_back(env_root: Path) -> None:
+    """data 卷挂了 noexec 这类情况：文件在、位不对，跑不起来就退回基线。"""
+    vdir = _make_overlay(env_root, "0.2.0")
+    _fake_cli(vdir / "backend" / "bin" / f"mclaw-linux-{_ARCH}", executable=False)
+    _link(env_root, "current", vdir)
+    env = _cli_env(env_root)
+    out = _resolve(env_root, **env)
+    assert out["source"] == "overlay"
+    assert out["cli_bin"] == env["MOVIECLAW_CLI_BASELINE_BIN"]
+
+
+def test_unwritable_link_does_not_break_resolution(env_root: Path) -> None:
+    """软链改不动（只读 rootfs）不影响解析：Agent 走 MOVIECLAW_CLI_BIN，
+    照样用得上新二进制，只有 docker exec 里的 mclaw 停在基线。"""
+    vdir = _make_overlay(env_root, "0.2.0")
+    overlay_bin = _fake_cli(vdir / "backend" / "bin" / f"mclaw-linux-{_ARCH}")
+    _link(env_root, "current", vdir)
+    missing_dir = env_root / "nonexistent" / "bin" / "mclaw"
+    out = _resolve(env_root, **_cli_env(env_root, link=missing_dir))
+    assert out["cli_bin"] == str(overlay_bin)
+    assert not missing_dir.exists()

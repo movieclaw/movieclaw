@@ -27,7 +27,8 @@ Docker 镜像的构建和分发都很重，而实际频繁变动的只有前端�
 /app/src          ← 后端基线            /app/data/updates/
 /app/web          ← 前端基线              versions/
 /app/models/…     ← 模型基线                v0.2.0/
-/entrypoint.sh                               backend/   (src/ alembic/ alembic.ini)
+/usr/local/lib/movieclaw/mclaw               backend/   (src/ alembic/ alembic.ini
+/entrypoint.sh                                          + bin/mclaw-linux-{amd64,arm64})
                                              web/       (standalone 产物)
                                              manifest.json
                                            current -> versions/v0.2.0   （原子切换）
@@ -38,6 +39,7 @@ Docker 镜像的构建和分发都很重，而实际频繁变动的只有前端�
 
 - 后端：`PYTHONPATH=<current>/backend/src python -m movieclaw_api.main`
 - 前端：`node <current>/web/apps/web/server.js`
+- CLI：`/usr/local/bin/mclaw` 是软链，指向 `<current>/backend/bin/mclaw-linux-<arch>`
 - 无 overlay 或 overlay 不兼容/损坏时，指向回镜像内基线路径。
 
 为什么不覆盖 `/app/src`：
@@ -46,6 +48,33 @@ Docker 镜像的构建和分发都很重，而实际频繁变动的只有前端�
    而 data 卷上的 overlay 在容器重建后依然生效，这正是"不换镜像跑新代码"的关键。
 2. 基线不动才有兜底可退；覆盖了就退无可退。
 3. 改一个符号链接是原子的，覆盖几百个文件中途断电会留下半新半旧的残局。
+
+### CLI 也走 overlay
+
+`mclaw` 是编译好的二进制，本来只能随镜像走——改一条命令就要用户重拉镜像，
+这与「常改的东西不该绑在镜像上」的初衷冲突。因此它和前后端同等对待：
+
+- 产物：`app-backend.tar.gz` 里带 `bin/mclaw-linux-amd64` 与 `bin/mclaw-linux-arm64`，
+  容器按 `uname -m` 各取所需。**刻意不按架构拆包**——拆了就要在更新器里引入
+  平台判定、产物也变成分架构的，为省一个二进制（gzip 后约 3MB）不值。
+- 指向：镜像基线在 `/usr/local/lib/movieclaw/mclaw`，`/usr/local/bin/mclaw`
+  只是软链；entrypoint 解析启动指向时一并改指，`docker exec … mclaw` 与
+  Agent（读 `MOVIECLAW_CLI_BIN`）因此永远拿到同一份。
+- 同版保证：产物里的二进制内嵌的是**本次发布现场导出**的 spec，与后端严格同版，
+  不再依赖运行期的 spec 偏斜刷新去追平命令面。
+
+三条兜底缺一不可，任一条踩空都退回镜像基线，而不是让 `mclaw` 消失：
+
+1. **老 overlay 没有 `bin/`**——本改动之前发布的版本，以及回退到那些版本时；
+   因此 `bin/` **不进** overlay 的必需文件清单，否则已装的 overlay 会集体失效。
+2. **二进制执行不了**——data 卷被挂 `noexec` 时文件在、位也对，只有真跑一次
+   才知道，所以 entrypoint 探测 `--version` 而不是只看 `-x`。
+3. **软链改不动**——rootfs 只读时记一行日志继续走。Agent 侧读环境变量不受影响，
+   只有 `docker exec` 里的 `mclaw` 停在基线。
+
+代价是 `app-backend.tar.gz` 从约 2MB 涨到约 8MB（两个架构各约 3MB gzip）。
+换来的是 CLI 改动不再要求 bump `docker/runtime-version`——`runtime-guard`
+的「只存在于镜像里的文件」清单因此不再包含 `cli/`。
 
 ## 版本与兼容契约
 

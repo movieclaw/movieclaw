@@ -251,9 +251,13 @@ COPY alembic.ini ./
 # 缺了就是每次对话都 500，属运行期硬依赖。
 COPY --from=spec-export /build/spec.json ./src/movieclaw_api/data/spec.json
 
-# mclaw CLI：Agent 的 mclaw 工具执行它（tools/mclaw.py 默认找这个路径）。
-# 用户也可以 docker cp 出来当本机 CLI 用，或直接从 Release 下载同一份。
-COPY --from=go-builder /out/mclaw /usr/local/bin/mclaw
+# mclaw CLI：镜像基线放在 lib 下，/usr/local/bin/mclaw 只是指向它的软链。
+# 应用内更新的产物里带着同版二进制（app-backend.tar.gz 的 bin/），entrypoint
+# 解析启动指向时会把这条软链改指过去——CLI 因此和前后端一样能被应用内更新，
+# 不必为一条命令重发镜像（docs/design/in-app-update.md）。软链改不动或
+# overlay 里没有可执行的二进制时，落回这份基线，mclaw 永远可用。
+COPY --from=go-builder /out/mclaw /usr/local/lib/movieclaw/mclaw
+RUN ln -sfn /usr/local/lib/movieclaw/mclaw /usr/local/bin/mclaw
 
 # 前端：standalone 产物 + 静态资源 + public（standalone 不自动包含后两者）
 COPY --from=web-builder /build/apps/web/.next/standalone ./web

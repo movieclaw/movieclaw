@@ -85,6 +85,12 @@ NGINX_RUN_DIR="${MOVIECLAW_NGINX_RUN_DIR:-/run/movieclaw}"
 # 重启约定混用。
 HEALTH_WATCHDOG_EXIT_CODE=75
 
+# mclaw CLI 的两个位置：镜像基线（烧在镜像里，永远可运行）与对外的软链。
+# overlay 里带了同版二进制时把软链改指过去——这就是「更新不覆盖镜像内文件，
+# 只改变进程的启动指向」用在 CLI 上（docs/design/in-app-update.md）。
+CLI_BASELINE_BIN="${MOVIECLAW_CLI_BASELINE_BIN:-/usr/local/lib/movieclaw/mclaw}"
+CLI_LINK="${MOVIECLAW_CLI_LINK:-/usr/local/bin/mclaw}"
+
 PYTHON_BIN="${MOVIECLAW_PYTHON_BIN:-/venv/bin/python}"
 if [ ! -x "$PYTHON_BIN" ]; then
     PYTHON_BIN="$(command -v python3)"
@@ -211,6 +217,48 @@ overlay_version_if_valid() {
     echo "$version"
 }
 
+# 容器架构 → Go 的 GOARCH 命名（产物里两个 linux 架构并存，各取所需）
+cli_arch() {
+    case "$(uname -m)" in
+        x86_64 | amd64) echo amd64 ;;
+        aarch64 | arm64) echo arm64 ;;
+        *) echo "" ;;
+    esac
+}
+
+# 解析 mclaw 指向：overlay 里带了能跑的同版二进制就用它，否则用镜像基线。
+#
+# 三条兜底缺一不可，任一条踩空都必须退回基线而不是让 mclaw 消失：
+#   1. 改动之前发布的 overlay 根本没有 bin/（回退到旧版本时也走这条）；
+#   2. data 卷被挂成 noexec —— 文件在、位也对，就是执行不了，只有真跑一次
+#      才知道，所以这里探测而不是只看 -x。探测用 --help（mclaw 没有 --version）：
+#      它会完整建一次命令树，顺带证明内嵌 spec 没坏，与 Dockerfile 的冒烟同款；
+#   3. rootfs 只读时软链改不动 —— 记一行日志继续走，Agent 侧靠
+#      MOVIECLAW_CLI_BIN 不受影响（tools/mclaw.py 优先读它）。
+resolve_cli() {
+    local candidate="" arch
+    arch="$(cli_arch)"
+    if [ "$ACTIVE_SOURCE" = "overlay" ] && [ -n "$arch" ]; then
+        local overlay_bin="$BACKEND_ROOT/bin/mclaw-linux-$arch"
+        if [ -x "$overlay_bin" ] && "$overlay_bin" --help >/dev/null 2>&1; then
+            candidate="$overlay_bin"
+        elif [ -e "$overlay_bin" ]; then
+            echo "[entrypoint] overlay 的 mclaw 无法执行（data 卷是否挂了 noexec？），改用镜像内置版本" >&2
+        fi
+    fi
+    [ -n "$candidate" ] || candidate="$CLI_BASELINE_BIN"
+
+    ACTIVE_CLI_BIN="$candidate"
+    export MOVIECLAW_CLI_BIN="$candidate"
+    # 软链让 `docker exec <容器> mclaw` 也走同一份解析结果；改不动就保持原样
+    if [ -e "$CLI_LINK" ] || [ -L "$CLI_LINK" ] || [ -d "$(dirname "$CLI_LINK")" ]; then
+        if [ "$(readlink -f "$CLI_LINK" 2>/dev/null || true)" != "$(readlink -f "$candidate")" ]; then
+            ln -sfn "$candidate" "$CLI_LINK" 2>/dev/null \
+                || echo "[entrypoint] 无法更新 $CLI_LINK（rootfs 只读？），docker exec 里的 mclaw 仍是镜像内置版本" >&2
+        fi
+    fi
+}
+
 # 解析启动指向，结果写入全局变量并导出给子进程（后端与 Agent 都靠这些感知）：
 #   ACTIVE_SOURCE=overlay|baseline  ACTIVE_VERSION（overlay 时非空）
 #   BACKEND_ROOT（含 src/ alembic/ alembic.ini 的项目根） WEB_ROOT（含 apps/web/server.js）
@@ -249,6 +297,8 @@ resolve_code() {
         unset MOVIECLAW_OVERLAY_VERSION || true
     fi
 
+    resolve_cli
+
     # NER 模型指针：data 卷上有完整的模型目录则用它（应用内模型更新），
     # 否则回落镜像内置模型（Dockerfile 的 ENV MOVIECLAW_NER_DIR）
     local model_dir="$DATA_DIR/models/ner/current"
@@ -269,6 +319,7 @@ if [ "${1:-}" = "resolve" ]; then
     echo "web_root=$WEB_ROOT"
     echo "runtime=$RUNTIME_VERSION"
     echo "ner_dir=${MOVIECLAW_NER_DIR:-}"
+    echo "cli_bin=$ACTIVE_CLI_BIN"
     echo "web_port=$WEB_PORT"
     echo "web_port_source=$WEB_PORT_SOURCE"
     exit 0
