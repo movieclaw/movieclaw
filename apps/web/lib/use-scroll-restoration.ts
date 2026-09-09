@@ -2,6 +2,8 @@
 
 import { useCallback, useLayoutEffect, useState } from "react";
 
+import { createSessionSnapshots } from "@/lib/session-snapshot";
+
 /**
  * 列表页的滚动位置只在当前浏览会话内保留，不写入 localStorage：
  * 位置属于一次导航上下文，刷新页面后重新从列表顶部开始更符合预期。
@@ -17,21 +19,10 @@ interface ScrollPosition {
   anchor?: ScrollAnchor;
 }
 
-const positions = new Map<string, ScrollPosition>();
-const MAX_SCROLL_POSITIONS = 100;
+// 位置只服务于当前浏览会话，超限按最久未写入淘汰（见 lib/session-snapshot.ts）
+const positions = createSessionSnapshots<string, ScrollPosition>(100);
 const MAX_RESTORE_MS = 5000;
 const MAX_ANCHOR_SETTLE_MS = 800;
-
-function rememberScrollPosition(key: string, position: ScrollPosition) {
-  // 位置只服务于当前浏览会话，限制条目数避免用户在大量列表间导航时无限增长。
-  positions.delete(key);
-  positions.set(key, position);
-  while (positions.size > MAX_SCROLL_POSITIONS) {
-    const oldest = positions.keys().next().value;
-    if (oldest === undefined) break;
-    positions.delete(oldest);
-  }
-}
 
 function isEditableTarget(target: EventTarget | null) {
   if (!(target instanceof Element)) return false;
@@ -133,7 +124,7 @@ export function useScrollRestoration(key: string, options: ScrollRestorationOpti
         } else {
           // 数据最终不足以撑到旧位置时，放弃旧值，让之后的真实滚动继续记忆。
           pendingPosition = undefined;
-          rememberScrollPosition(key, capturePosition());
+          positions.set(key, capturePosition());
         }
         return;
       }
@@ -153,7 +144,7 @@ export function useScrollRestoration(key: string, options: ScrollRestorationOpti
     const remember = () => {
       // 等待异步列表数据期间，忽略框架初始化的归零滚动，保住本次返回目标。
       if (pendingPosition != null) return;
-      rememberScrollPosition(key, capturePosition());
+      positions.set(key, capturePosition());
     };
     const resizes =
       typeof ResizeObserver === "undefined" ? null : new ResizeObserver(scheduleRestore);

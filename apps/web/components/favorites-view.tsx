@@ -7,7 +7,7 @@ import type { Route } from "next";
 
 import { useToast } from "@/components/feedback";
 import { MasonryIcon, MoreIcon, PosterGridIcon } from "@/components/icons";
-import { WallLoadMore, WallLoadPrev, WallRecallPill } from "@/components/library-detail-view";
+import { WallLoadMore, WallLoadPrev, WallRecallPill } from "@/components/wall-chrome";
 import { PosterWall } from "@/components/poster-wall";
 import { PAGE_NAV_BUTTON_CLASS, PageNav } from "@/components/page-nav";
 import { remeasureWalls, usePhotoWallDensity } from "@/components/photo-wall";

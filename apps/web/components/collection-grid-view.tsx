@@ -16,11 +16,11 @@ import { SearchIcon } from "@/components/icons";
 import { PosterCard } from "@/components/poster-card";
 import { browseDiscoveryCollection } from "@/lib/api/discover";
 import type { MediaItem } from "@/lib/media-types";
+import { createSessionSnapshots } from "@/lib/session-snapshot";
 import { useScrollRestoration } from "@/lib/use-scroll-restoration";
 
 const TMDB_PAGE_SIZE = 20;
 const DOUBAN_FULL_LIMIT = 500;
-const MAX_COLLECTION_SNAPSHOTS = 32;
 
 interface CollectionGridSnapshot {
   items: MediaItem[];
@@ -30,7 +30,8 @@ interface CollectionGridSnapshot {
   hasMore: boolean;
 }
 
-const collectionGridSnapshots = new Map<string, CollectionGridSnapshot>();
+// 一个片单一条，超限时优先淘汰最久未更新的片单（见 lib/session-snapshot.ts）
+const collectionGridSnapshots = createSessionSnapshots<string, CollectionGridSnapshot>(32);
 
 function getCollectionGridSnapshot(collectionRef: string) {
   return collectionGridSnapshots.get(collectionRef);
@@ -40,13 +41,7 @@ function rememberCollectionGridSnapshot(
   collectionRef: string,
   snapshot: CollectionGridSnapshot,
 ) {
-  collectionGridSnapshots.delete(collectionRef);
   collectionGridSnapshots.set(collectionRef, snapshot);
-  while (collectionGridSnapshots.size > MAX_COLLECTION_SNAPSHOTS) {
-    const oldest = collectionGridSnapshots.keys().next().value;
-    if (oldest === undefined) break;
-    collectionGridSnapshots.delete(oldest);
-  }
 }
 
 /**

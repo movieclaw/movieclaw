@@ -10,6 +10,7 @@ import type {
   UnidentifiedGroup,
 } from "@/lib/api/libraries";
 import type { Subscription } from "@/lib/api/subscriptions";
+import { createSessionSnapshots } from "@/lib/session-snapshot";
 
 /**
  * 单库页离开再返回时的会话快照。
@@ -48,8 +49,8 @@ export interface LibraryDetailSnapshot {
   stale: boolean;
 }
 
-const MAX_LIBRARY_DETAIL_SNAPSHOTS = 20;
-const snapshots = new Map<number, LibraryDetailSnapshot>();
+// 一库一条，超限时优先淘汰最久未更新的库（见 lib/session-snapshot.ts）
+const snapshots = createSessionSnapshots<number, LibraryDetailSnapshot>(20);
 
 export function getLibraryDetailSnapshot(libraryId: number) {
   return snapshots.get(libraryId);
@@ -59,14 +60,7 @@ export function setLibraryDetailSnapshot(
   libraryId: number,
   snapshot: LibraryDetailSnapshot,
 ) {
-  // 重新写入时移到 Map 尾部，超限时优先淘汰最久未更新的库。
-  snapshots.delete(libraryId);
   snapshots.set(libraryId, snapshot);
-  while (snapshots.size > MAX_LIBRARY_DETAIL_SNAPSHOTS) {
-    const oldest = snapshots.keys().next().value;
-    if (oldest === undefined) break;
-    snapshots.delete(oldest);
-  }
 }
 
 /**
