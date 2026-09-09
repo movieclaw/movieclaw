@@ -112,7 +112,15 @@ body{margin:0;background:var(--ink);color:var(--text);font-family:var(--f-sans);
 .ui .clink .n{font-family:var(--f-mono);font-size:10px;color:var(--faint);margin-left:4px}
 .ui .clink.on .n{color:rgba(238,242,251,.7)}
 .ui .sep{color:rgba(238,242,251,.16);font-size:11px}
-.ui .ctrl{display:flex;align-items:center;gap:8px;flex:none}
+.ui .ctrl{display:flex;align-items:center;gap:8px;flex:none;margin-left:auto}
+/* 形态键无文字：海报墙和瀑布流长得完全不同，看一眼墙就知道自己在哪个形态。
+   排序看墙看不出来，所以它必须把当前值显示出来。 */
+.ui .ikon{appearance:none;background:none;border:0;padding:5px;border-radius:8px;color:var(--muted);cursor:pointer;
+  display:inline-flex;line-height:0}
+.ui .ikon:hover{background:rgba(255,255,255,.08);color:var(--text)}
+.ui .ikon.on{background:rgba(255,255,255,.12);color:var(--text)}
+.ui .ikon svg{width:17px;height:17px;display:block}
+.ui .vrule{width:1px;height:16px;background:var(--line-2);flex:none}
 .ui .frame{display:grid;grid-template-columns:154px 1fr;background:#0a0b10;border:1px solid var(--line-2);border-radius:16px;overflow:hidden;min-height:600px}
 .ui .side{border-right:1px solid var(--line);padding:15px 9px;background:linear-gradient(180deg,rgba(255,255,255,.04),rgba(255,255,255,.01))}
 .ui .brand{font-weight:700;letter-spacing:.02em;padding:3px 9px 15px;font-size:13px}
@@ -697,7 +705,9 @@ p1:{h:"静止态只留信息，不留控件",li:[
  "合集在静止态是<b>安静的文字行</b>而不是一排带框的 chip：它是「有什么」（信息），不是「能做什么」（控件）。选中一个才变成实心。行业里分类清单也是这么呈现的——Netflix 的 Genres 是文字菜单，不是封面卡。",
  "海报上的<b>画质角标收到了悬停</b>：4K / HDR 是「评估这一部」时才要的信息，不是「挑哪一部」时要的。收藏心和在看进度条留着——那是<b>状态</b>，状态不能藏。",
  "扫描 / 管理 进了「⋯」：那是<b>管库</b>的动作，不该和<b>看片</b>的动作抢同一行。",
- "点开筛选后的机制没变：每行底下与数量成正比的<b>细量条</b>（年代档按序排下来就是一张分布图）、排除自身维度的计数、0 值置灰、已选条件用「或 / 且」画出结构。"],
+ "<b>「合集」「排序」这类标签也去掉了。</b>合集行的首项改成<b>「全部 1,284」</b>——它自己就说明了这一行是一组可选的视图；排序不写「排序」，因为默认档不叫「默认」而叫<b>「按标题」</b>，值自己会说话（产品里本来就有「按标题 / 按时间」这套叫法）。<b>标签能去掉的前提是让值自述，不是硬删。</b>",
+ "右边三个控件按<b>影响力递增</b>排：<b>形态</b>（海报墙 ⇄ 瀑布流，无字图标）→ <b>排序</b>（显值、无框）→ <b>筛选</b>（唯一带框）。判断依据是——<b>能从内容本身看出来的状态，控件可以无字；看不出来的，必须显值。</b>两种墙长得完全不同，看一眼就知道在哪个形态；按什么排却看不出来，所以排序必须把当前值挂在外面（它现在被埋在 ⋯ 菜单里，是要修的）。",
+ "点开筛选后的机制没变：细量条、排除自身维度的计数、0 值置灰、已选条件用「或 / 且」画出结构。"],
  try:"先看静止态有多干净，再点右上「筛选」展开。或者点「日韩动画」——它把条件直接灌进筛选条，但面板并不弹出：条件可见，控件仍然收着。"},
 p2:{h:"找片和查库是两种人格",li:[
  "左栏是「周五晚上想看点什么」，右栏是「我那些 4K 都在哪、哪些片缺集」。混在一行 chips 里会让两边都难用。",
@@ -803,7 +813,7 @@ const DIMS=[
   name:v=>({unwatched:"未看",watching:"在看",played:"已看完",fav:"我收藏的"})[v],
   match:(it,v)=>v==="fav"?!!it.fav:it.w===v},
 ];
-const SORTS=[{k:"title",n:"默认"},{k:"added",n:"最近添加"},{k:"year",n:"上映时间"},{k:"rating",n:"评分"}];
+const SORTS=[{k:"title",n:"按标题"},{k:"added",n:"最近添加"},{k:"year",n:"上映时间"},{k:"rating",n:"按评分"}];
 const sel={g:[],dec:[],reg:[],w:[]};
 let sort="title", expandReg=false, manual=null, view="items";
 const dname=(d,v)=>d.name?d.name(v):v;
@@ -842,16 +852,26 @@ let panelOpen=false;   /* 筛选面板：静止态不展开。用户没提出筛
 
 /* 顶栏：左边合集（安静的文字行），右边排序（安静）+ 筛选（静止态唯一带框的按钮） */
 function renderTop(){
-  const shown=COLS.slice(0,4),crow=document.getElementById("crow");
-  crow.innerHTML='<span class="lb">合集</span>'+
+  const shown=COLS.slice(0,3),crow=document.getElementById("crow");
+  const none=!nsel()&&!manual;   /* 静止态：「全部」自己就是当前项 */
+  crow.innerHTML='<button class="clink '+(none?"on":"")+'" data-all>全部<span class="n">1,284</span></button>'+
+    '<span class="sep">·</span>'+
     shown.map((c,i)=>'<button class="clink '+(isOn(c)?"on":"")+'" data-c="'+i+'">'+c.n+
       '<span class="n">'+colItems(c).length+'</span></button>').join('<span class="sep">·</span>')+
-    '<span class="sep">·</span><button class="clink" data-view="cols">全部 '+COLS.length+' 个 <span style="color:var(--faint)">›</span></button>';
+    '<span class="sep">·</span><button class="clink" data-view="cols">更多 '+(COLS.length-shown.length)+
+    ' 个 <span style="color:var(--faint)">›</span></button>';
+  crow.querySelectorAll("[data-all]").forEach(b=>b.onclick=()=>{
+    manual=null;DIMS.forEach(d=>sel[d.k]=[]);render();});
   bindCols(crow);
 
   const sn=SORTS.find(x=>x.k===sort).n,ctrl=document.getElementById("ctrl");
+  const masonry='<svg viewBox="0 0 16 16" fill="currentColor"><rect x="1" y="1" width="6" height="9" rx="1"/>'+
+    '<rect x="9" y="1" width="6" height="5" rx="1"/><rect x="1" y="12" width="6" height="3" rx="1"/>'+
+    '<rect x="9" y="8" width="6" height="7" rx="1"/></svg>';
   ctrl.innerHTML=
-    '<span class="dd"><button class="clink" data-dd="__sort" aria-expanded="false">排序 '+
+    '<button class="ikon" id="mode" title="切到瀑布流" aria-label="切到瀑布流">'+masonry+'</button>'+
+    '<span class="vrule"></span>'+
+    '<span class="dd"><button class="clink" data-dd="__sort" aria-expanded="false">'+
       '<b style="color:var(--text);font-weight:600">'+sn+'</b> ▾</button>'+
       '<div class="menu" style="left:auto;right:0;min-width:196px"><p class="sec"><span>索引条跟着换口径</span></p>'+
       SORTS.map(x=>'<button class="opt '+(x.k===sort?"sel":"")+'" data-s="'+x.k+'">'+
