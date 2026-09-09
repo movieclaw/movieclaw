@@ -5,7 +5,8 @@
 > [library-routing.md](library-routing.md)（`match_rules` 条件 DSL——本文直接复用它，
 > 并兑现该文第 0 节留下的"v2 库内二级目录 / v3 播放器合集"开口）、
 > [metadata.md](metadata.md)（刮削档案——筛选维度的事实来源）、
-> [library-photo-kind.md](library-photo-kind.md)（图片库的时间线形态）。
+> [library-photo-kind.md](library-photo-kind.md)（图片库的时间线形态）、
+> [library-collections.md](library-collections.md)（**合集的技术方案**——本文 F3/F4 的落地，含 Jellyfin BoxSet 映射）。
 > 样稿：[mockups/library-filtering-demo.html](mockups/library-filtering-demo.html)（可点击，
 > 筛选与计数是真实逻辑）。
 
@@ -233,9 +234,16 @@
 ### 4.4 下游：Jellyfin BoxSet
 
 `movieclaw_jellyfin` 已有 `CollectionType` 与 `CollectionFolder` 的映射
-（`catalog.py:157`）。合集天然映射成 Jellyfin 的 **BoxSet**，让 Emby/Jellyfin 客户端
+（`catalog.py`）。合集映射成 Jellyfin 的 **BoxSet**，让 Emby / Jellyfin 客户端
 也能看见同一批合集——这是"movieclaw 作为上游生产者、把整理好的结构交给下游播放器"
-这条价值主张（library.md 1.5 第 5 条）在浏览层的延续。F4 落地，不阻塞前面。
+（library.md 1.5 第 5 条）在浏览层的延续。
+
+**协议侧的层级与产品侧不同**：网页端合集挂在库下面，协议侧走 Jellyfin 惯例的
+**一个顶层「合集」视图**（`CollectionType="boxsets"`）——两个受众的正确答案不同，
+理由与全部技术细节见 [library-collections.md](library-collections.md) 第 4 节。
+
+贯穿两端的硬约束一条：**规则求值只能有一个实现**，协议层不许自己写查询，
+否则同一个智能合集会在网页里 42 部、在电视上 39 部。
 
 ## 5. 交互设计
 
@@ -506,6 +514,9 @@ v1 **只做"从本库现有取值里选"**（候选来自库内实际出现过�
 **验收**：任意条件组合都不出现空墙；图片库不出现「评分」这类永远 0 的死控件。
 
 ### F3 智能合集
+
+> 技术方案（表结构、领域层、接口、Jellyfin 映射）见
+> [library-collections.md](library-collections.md)；下表只列改动面。
 
 | 层 | 改动 |
 |---|---|
