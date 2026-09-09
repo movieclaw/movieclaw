@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import type { Route } from "next";
@@ -34,6 +34,31 @@ import { useScrollRestoration } from "@/lib/use-scroll-restoration";
 
 /** 每次向服务端要的格数，与单库海报墙同一页长。 */
 const PAGE_SIZE = 60;
+
+/**
+ * 「全部收藏」页离开再返回时的会话快照。
+ *
+ * 与单库页的 lib/library-detail-snapshot.ts 是同一件事：这面墙与作品详情页是
+ * 两个路由，Next 切走时组件会被卸载。返回时若只补第一页，容器就矮到装不下
+ * 离开时的滚动位置，lib/use-scroll-restoration.ts 既找不到锚点、又等不到足够
+ * 的高度，超时后只能放弃——人被甩回墙首。这正是「收藏页没有滚动记忆、和别的
+ * 媒体库不一样」的由来（单库页早已有快照，收藏页一直没有）。
+ *
+ * 一个账号只有一面收藏墙，一份模块级快照就够，不必像单库页那样按 id 存 Map。
+ * 它只活在当前浏览会话里（刷新页面即失效），与滚动位置同一口径。
+ */
+interface FavoritesSnapshot {
+  /** 海报墙已加载的整个窗口（收藏墙不支持跳转，起点恒为 0） */
+  items: FavoriteItem[];
+  total: number;
+  /** 图床浏览模式已加载的整个窗口；空数组 = 这一次浏览没进过图廊 */
+  galleryGroups: LibraryGalleryGroup[];
+  galleryHasMore: boolean;
+  /** 已向服务端请求到第几个作品（图廊按作品分页，没图的作品也占一组） */
+  galleryLoaded: number;
+}
+
+let snapshot: FavoritesSnapshot | null = null;
 
 /** 本页 ⋯ 菜单的行样式（与全站各处菜单同一副长相）。 */
 const ITEM_CLASS =
@@ -79,11 +104,14 @@ export function FavoritesView() {
   const scrollRef = useScrollRestoration("library:favorites", {
     anchorAttribute: galleryPreferred ? "data-gallery-tile-id" : "data-library-item-id",
   });
-  const [items, setItems] = useState<FavoriteItem[] | null>(null);
-  const [total, setTotal] = useState(0);
+  // 首帧就把上次的窗口接回来，滚动恢复才有落脚的高度
+  const [items, setItems] = useState<FavoriteItem[] | null>(snapshot?.items ?? null);
+  const [total, setTotal] = useState(snapshot?.total ?? 0);
   const [failed, setFailed] = useState(false);
   // 翻页请求进行中：哨兵重新观察时不重复发同一页
   const loading = useRef(false);
+  // 进这一屏时快照里有多少格（挂载后本组件自己就会改写 snapshot，得先定格）
+  const restoredCount = useRef(snapshot?.items.length ?? 0);
 
   const load = useCallback(async (offset: number) => {
     if (loading.current) return;
@@ -100,9 +128,34 @@ export function FavoritesView() {
     }
   }, []);
 
+  /**
+   * 按已加载的页数重拉整个窗口并整体替换：快照恢复出来的是离开这一屏时的旧
+   * 数据，在详情页取消了收藏的那部要跟着消失。不缩窗口、不动滚动位置；请求
+   * 失败就留着旧窗口，下次返回再对账。
+   */
+  const reload = useCallback(async (loadedCount: number) => {
+    if (loading.current) return;
+    loading.current = true;
+    try {
+      const pages = await Promise.all(
+        Array.from({ length: Math.ceil(loadedCount / PAGE_SIZE) }, (_, page) =>
+          listFavorites(PAGE_SIZE, page * PAGE_SIZE),
+        ),
+      );
+      setTotal(pages[0].total);
+      setItems(pages.flatMap((page) => page.items));
+      setFailed(false);
+    } catch {
+      setFailed(true);
+    } finally {
+      loading.current = false;
+    }
+  }, []);
+
   useEffect(() => {
-    void load(0);
-  }, [load]);
+    if (restoredCount.current > 0) void reload(restoredCount.current);
+    else void load(0);
+  }, [load, reload]);
 
   const loaded = items?.length ?? 0;
   const hasMore = items !== null && loaded < total;
@@ -113,11 +166,13 @@ export function FavoritesView() {
   }, [load, loaded]);
 
   // —— 图床浏览模式 —— //
-  const [galleryGroups, setGalleryGroups] = useState<LibraryGalleryGroup[]>([]);
-  const [galleryHasMore, setGalleryHasMore] = useState(false);
+  const [galleryGroups, setGalleryGroups] = useState<LibraryGalleryGroup[]>(
+    snapshot?.galleryGroups ?? [],
+  );
+  const [galleryHasMore, setGalleryHasMore] = useState(snapshot?.galleryHasMore ?? false);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   // 已请求到的作品数（按页长推进，不按拿到的组数——没图的作品也占一组）
-  const galleryLoaded = useRef(0);
+  const galleryLoaded = useRef(snapshot?.galleryLoaded ?? 0);
   const galleryLoading = useRef(false);
   const galleryEntries = useMemo(() => flattenGallery(galleryGroups), [galleryGroups]);
 
@@ -137,12 +192,36 @@ export function FavoritesView() {
       });
   }, []);
 
-  // 切进图廊（或进页面时偏好就在图廊）：拉第一页。海报墙那一份照常自己拉，
-  // 切回去时首屏已经在手上
+  /** 图廊窗口的对账，与海报墙的 reload 同一个意思（整窗重拉、整体替换）。 */
+  const refreshGallery = useCallback(() => {
+    const loaded = galleryLoaded.current;
+    if (loaded <= 0 || galleryLoading.current) return;
+    galleryLoading.current = true; // 对账期间别让滚动哨兵同时追加下一页
+    Promise.all(
+      Array.from({ length: Math.ceil(loaded / GALLERY_PAGE_SIZE) }, (_, page) =>
+        listFavoritesGallery({ limit: GALLERY_PAGE_SIZE, offset: page * GALLERY_PAGE_SIZE }),
+      ),
+    )
+      .then((pages) => {
+        galleryLoaded.current = pages.reduce((sum, page) => sum + page.length, 0);
+        setGalleryGroups(dedupeGalleryGroups(pages.flat()));
+        setGalleryHasMore((pages.at(-1)?.length ?? 0) >= GALLERY_PAGE_SIZE);
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        galleryLoading.current = false;
+      });
+  }, []);
+
+  // 切进图廊（或进页面时偏好就在图廊）：第一次从头拉一页；快照带回窗口时
+  // **不能**清空重拉——只补第一页的话容器矮到装不下离开时的滚动位置，人被
+  // 甩回墙首（与单库页同一处理），改成按已加载的页数整窗对账。
+  // 海报墙那一份照常自己拉，切回去时首屏已经在手上
   useEffect(() => {
-    if (!galleryPreferred || galleryLoaded.current > 0) return;
-    loadMoreGallery();
-  }, [galleryPreferred, loadMoreGallery]);
+    if (!galleryPreferred) return;
+    if (galleryLoaded.current > 0) refreshGallery();
+    else loadMoreGallery();
+  }, [galleryPreferred, loadMoreGallery, refreshGallery]);
 
   /**
    * 灯箱里点心：取消收藏后**不把瓦片抽走**——正在看的这张图连同它所在的那一段
@@ -165,6 +244,19 @@ export function FavoritesView() {
     },
     [toast],
   );
+
+  // 布局提交后就更新快照，路由切换的下一棵树可以在首帧直接读到它；只在卸载
+  // 时写是来不及的——新路由的首次 render 可能早于被动 effect 的 cleanup
+  useLayoutEffect(() => {
+    if (items === null) return;
+    snapshot = {
+      items,
+      total,
+      galleryGroups,
+      galleryHasMore,
+      galleryLoaded: galleryLoaded.current,
+    };
+  }, [galleryGroups, galleryHasMore, items, total]);
 
   // 收藏一部都没有时不给切换键：两种形态都是空页，多一颗键只会让人以为点了没反应
   const empty = items !== null && items.length === 0;
