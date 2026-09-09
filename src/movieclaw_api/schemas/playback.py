@@ -654,6 +654,9 @@ class PlaybackPolicyView(BaseModel):
     """
 
     software_transcode_enabled: bool
+    #: 进度条预览缩略图的生成开关（设置页「播放」分区）。已生成的预览不受它
+    #: 影响——关掉只是不再生成新的。
+    trickplay_enabled: bool = True
     #: 实测结果而非配置项——用户改不了自己有没有显卡。前端据此说明
     #: 「无可用硬件加速，HDR 片源需要软件转码」这类结论。
     hardware_available: bool = False
@@ -666,6 +669,7 @@ class PlaybackPolicyPayload(BaseModel):
     software_transcode_enabled 一个开关。"""
 
     software_transcode_enabled: bool | None = None
+    trickplay_enabled: bool | None = None
 
 
 class PlaybackFontsView(BaseModel):

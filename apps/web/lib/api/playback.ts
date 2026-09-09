@@ -953,12 +953,20 @@ export function reportPlaybackProgressOnUnload(
 }
 
 /** 播放策略。数字上限（并发/高度/缓存配额）由服务端按机器规格自动推导，
-    不再是配置项；这里只剩软件转码开关（由播放页同意弹窗翻开）。 */
+    不再是配置项；这里只剩两个意愿开关：软件转码（由播放页同意弹窗翻开）和
+    进度条预览生成（设置页「播放」分区）。 */
 export interface PlaybackPolicy {
   software_transcode_enabled: boolean;
+  trickplay_enabled: boolean;
   /** 实测结果而非配置项——用户改不了自己有没有显卡 */
   hardware_available: boolean;
   hw_backends: string[];
+}
+
+/** 读取播放策略当前取值（设置页「播放」分区展示用）。 */
+export async function fetchPlaybackPolicy(): Promise<PlaybackPolicy> {
+  const response = await request<ApiEnvelope<PlaybackPolicy>>("/playback/policy");
+  return response.data;
 }
 
 /** 按字段增量保存：没给的项保持原值，不会覆盖别处刚改的设置。 */
