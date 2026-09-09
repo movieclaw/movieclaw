@@ -7,6 +7,7 @@ import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { MultiFilterMenu } from "@/components/filter-menu";
 import { CheckIcon, ChevronDownIcon } from "@/components/icons";
 import {
+  type FacetValue,
   type LibraryFacets,
   type LibraryFilter,
   type LibraryItemSort,
@@ -14,6 +15,7 @@ import {
   type WatchFilter,
   getLibraryFacets,
   getLibraryRelax,
+  filterCount,
   isFilterEmpty,
 } from "@/lib/api/libraries";
 
@@ -47,13 +49,12 @@ export function LibraryFilterBar({
   className?: string;
 }) {
   const [open, setOpen] = useState(false);
+  // 「更多筛选」是第二层展开：一级四维已经能答大多数问题，二级是它答不了
+  // 的时候才要的。它一打开就要多算十几条 COUNT（tier=all），所以按需请求
+  const [more, setMore] = useState(false);
   const [facets, setFacets] = useState<LibraryFacets | null>(null);
   const empty = isFilterEmpty(filter);
-  const selectedCount =
-    (filter.genres?.length ?? 0) +
-    (filter.countries?.length ?? 0) +
-    (filter.decades?.length ?? 0) +
-    (filter.watch ? 1 : 0);
+  const selectedCount = filterCount(filter);
 
   // 计数跟着当前条件走：每次条件变化都重取，因为"还剩几部"本来就是相对
   // 当前条件而言的。面板没打开且一个条件都没有时不请求——静止态不该
@@ -61,7 +62,7 @@ export function LibraryFilterBar({
   useEffect(() => {
     if (!open && empty) return;
     let alive = true;
-    getLibraryFacets(libraryId, filter)
+    getLibraryFacets(libraryId, filter, more ? "all" : "primary")
       .then((data) => {
         if (alive) setFacets(data);
       })
@@ -72,7 +73,7 @@ export function LibraryFilterBar({
     return () => {
       alive = false;
     };
-  }, [libraryId, filter, open, empty]);
+  }, [libraryId, filter, open, empty, more]);
 
   const toggle = useCallback(
     (dim: "genres" | "countries" | "decades", value: string) => {
@@ -154,7 +155,21 @@ export function LibraryFilterBar({
             options={facets?.watch ?? []}
             onToggle={toggleWatch}
           />
+          <button
+            type="button"
+            aria-expanded={more}
+            onClick={() => setMore((v) => !v)}
+            className={`glass-row flex h-8 !w-auto shrink-0 items-center gap-1.5 rounded-full !px-3 text-caption ${
+              more ? "!bg-[var(--glass-fill-active)] !text-[var(--text)]" : "text-white/70"
+            }`}
+          >
+            更多筛选
+          </button>
         </div>
+      )}
+
+      {open && more && (
+        <MoreFiltersPanel facets={facets} filter={filter} onFilterChange={onFilterChange} />
       )}
 
       {/* —— 条件行：与面板开合无关，只要有条件就在 —— */}
@@ -434,6 +449,153 @@ export function FilterEmptyState({
       >
         清空全部条件
       </button>
+    </div>
+  );
+}
+
+/** 一组固定档位的胶囊。0 的置灰不可点——「永不空货架」的第一道闸。 */
+function PillGroup({
+  label,
+  hint,
+  options,
+  selected,
+  onToggle,
+  tone,
+}: {
+  label: string;
+  hint?: string;
+  options: readonly FacetValue[];
+  selected: readonly string[];
+  onToggle: (value: string) => void;
+  /** 语义色：库存状态里「要处理的事」和「不用处理的事」得一眼分得开 */
+  tone?: Record<string, string>;
+}) {
+  if (options.length === 0) return null;
+  return (
+    <div className="mb-3.5">
+      <p className="mb-1.5 flex items-baseline gap-1.5 text-caption text-[var(--text-faint)]">
+        {label}
+        {hint && <span className="text-white/25">{hint}</span>}
+      </p>
+      <div className="flex flex-wrap gap-1.5">
+        {options.map((option) => {
+          const on = selected.includes(option.value);
+          const dead = option.count === 0 && !on;
+          return (
+            <button
+              key={option.value}
+              type="button"
+              disabled={dead}
+              onClick={() => onToggle(option.value)}
+              className={`rounded-full border px-2.5 py-0.5 text-caption transition-colors disabled:pointer-events-none disabled:opacity-30 ${
+                on
+                  ? "border-white/40 bg-white/[0.14] font-semibold text-white"
+                  : `border-white/[0.14] hover:bg-white/[0.08] ${tone?.[option.value] ?? "text-white/65"}`
+              }`}
+            >
+              {option.label}
+              <span className="ml-1.5 font-mono text-[10px] tabular-nums text-white/35">
+                {option.count}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 「更多筛选」双栏面板：左「找片」、右「查库」。
+ *
+ * 分栏依据是**作用对象不同**：左栏问「作品是什么样的」（来自刮削档案），
+ * 右栏问「文件是什么规格」（来自库存台账）。这是两种人格——"周五晚上想看
+ * 点什么"和"我那些 4K 都在哪、哪些片缺集"——混在一行 chips 里会让两边都
+ * 难用（docs/design/library-filtering.md 铁律 4）。
+ *
+ * 库存状态给语义色：要处理的事和不用处理的事，扫一眼就分得开。
+ */
+function MoreFiltersPanel({
+  facets,
+  filter,
+  onFilterChange,
+}: {
+  facets: LibraryFacets | null;
+  filter: LibraryFilter;
+  onFilterChange: (next: LibraryFilter) => void;
+}) {
+  const toggleList = (key: "runtimes" | "languages" | "resolutions" | "stock", value: string) => {
+    const current = filter[key] ?? [];
+    onFilterChange({
+      ...filter,
+      [key]: current.includes(value) ? current.filter((v) => v !== value) : [...current, value],
+    });
+  };
+  return (
+    <div className="mt-2.5 grid grid-cols-2 gap-x-6 rounded-2xl border border-white/[0.1] bg-black/20 p-4 max-md:grid-cols-1 max-md:gap-y-2">
+      <div>
+        <p className="mb-3 border-b border-white/[0.08] pb-2 text-sub font-semibold text-white">
+          找片
+          <span className="ml-2 text-caption font-normal text-[var(--text-faint)]">
+            作品是什么样的 · 来自刮削档案
+          </span>
+        </p>
+        <PillGroup
+          label="评分"
+          options={facets?.ratings ?? []}
+          selected={filter.ratingGte != null ? [String(filter.ratingGte)] : []}
+          onToggle={(v) =>
+            onFilterChange({
+              ...filter,
+              // 评分是阈值不是集合：再点一次同一档就是取消
+              ratingGte: filter.ratingGte === Number(v) ? null : Number(v),
+            })
+          }
+        />
+        <PillGroup
+          label="片长"
+          options={facets?.runtimes ?? []}
+          selected={filter.runtimes ?? []}
+          onToggle={(v) => toggleList("runtimes", v)}
+        />
+        <PillGroup
+          label="原始语言"
+          options={facets?.languages ?? []}
+          selected={filter.languages ?? []}
+          onToggle={(v) => toggleList("languages", v)}
+        />
+      </div>
+      <div className="border-l border-white/[0.08] pl-6 max-md:border-l-0 max-md:border-t max-md:pl-0 max-md:pt-3">
+        <p className="mb-3 border-b border-white/[0.08] pb-2 text-sub font-semibold text-white">
+          查库
+          <span className="ml-2 text-caption font-normal text-[var(--text-faint)]">
+            文件是什么规格 · 来自库存台账
+          </span>
+        </p>
+        <PillGroup
+          label="分辨率"
+          options={facets?.resolutions ?? []}
+          selected={filter.resolutions ?? []}
+          onToggle={(v) => toggleList("resolutions", v)}
+        />
+        <PillGroup
+          label="动态范围"
+          options={facets?.hdr ?? []}
+          selected={filter.hdr == null ? [] : [filter.hdr ? "1" : "0"]}
+          onToggle={(v) => {
+            const next = v === "1";
+            onFilterChange({ ...filter, hdr: filter.hdr === next ? null : next });
+          }}
+        />
+        <PillGroup
+          label="库存状态"
+          hint="要处理的事"
+          options={facets?.stock ?? []}
+          selected={filter.stock ?? []}
+          onToggle={(v) => toggleList("stock", v)}
+          tone={{ missing: "text-[var(--danger)]", unscraped: "text-[var(--warn)]" }}
+        />
+      </div>
     </div>
   );
 }

@@ -234,6 +234,8 @@ function readFilterFromUrl(): LibraryFilter {
   const params = new URLSearchParams(window.location.search);
   const list = (key: string) => (params.get(key) ?? "").split(",").filter(Boolean);
   const watch = params.get("w");
+  const rating = params.get("rating_gte");
+  const hdr = params.get("hdr");
   return {
     genres: list("g")
       .map(Number)
@@ -241,6 +243,12 @@ function readFilterFromUrl(): LibraryFilter {
     countries: list("c"),
     decades: list("d"),
     watch: watch ? (watch as WatchFilter) : null,
+    ratingGte: rating !== null && Number.isFinite(Number(rating)) ? Number(rating) : null,
+    runtimes: list("rt"),
+    languages: list("lang"),
+    resolutions: list("res"),
+    hdr: hdr === null ? null : hdr === "true",
+    stock: list("stock"),
   };
 }
 
@@ -248,7 +256,8 @@ function readFilterFromUrl(): LibraryFilter {
 function writeFilterToUrl(filter: LibraryFilter): void {
   if (typeof window === "undefined") return;
   const params = new URLSearchParams(window.location.search);
-  for (const key of ["g", "c", "d", "w"]) params.delete(key);
+  for (const key of ["g", "c", "d", "w", "rating_gte", "rt", "lang", "res", "hdr", "stock"])
+    params.delete(key);
   filterQuery(filter, params);
   const rest = params.toString();
   window.history.replaceState(null, "", `${window.location.pathname}${rest ? `?${rest}` : ""}`);
@@ -1064,6 +1073,12 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
         c: filter.countries ?? [],
         d: filter.decades ?? [],
         w: filter.watch ?? null,
+        r: filter.ratingGte != null ? String(filter.ratingGte) : null,
+        rt: filter.runtimes ?? [],
+        lang: filter.languages ?? [],
+        res: filter.resolutions ?? [],
+        hdr: filter.hdr == null ? null : String(filter.hdr),
+        st: filter.stock ?? [],
       }),
     ),
     view: wallView,

@@ -1819,6 +1819,26 @@ def _filter_params(
         Literal["unwatched", "watching", "played", "favorite"] | None,
         Query(description="观看状态（单选）：未看/在看/已看完是一个划分，favorite 与之正交"),
     ] = None,
+    rating_gte: Annotated[
+        float | None, Query(ge=0, le=10, description="评分下限（找片）")
+    ] = None,
+    rt: Annotated[
+        str | None,
+        Query(description="片长档：lte60/60to90/90to120/gt120，逗号分隔（找片）"),
+    ] = None,
+    lang: Annotated[
+        str | None, Query(description="原始语言码，逗号分隔（找片）")
+    ] = None,
+    res: Annotated[
+        str | None, Query(description="分辨率：2160p/1080p/…，逗号分隔（查库）")
+    ] = None,
+    hdr: Annotated[
+        bool | None, Query(description="true=只看 HDR / false=只看 SDR（查库）")
+    ] = None,
+    stock: Annotated[
+        str | None,
+        Query(description="库存状态：missing=有文件失联 / unscraped=没刮到档案，逗号分隔（查库）"),
+    ] = None,
 ) -> LibraryFilter:
     """筛选参数 → LibraryFilter。
 
@@ -1838,6 +1858,12 @@ def _filter_params(
         countries=tuple(x.upper() for x in _split(c)),
         decades=tuple(_split(d)),
         watch=w,
+        rating_gte=rating_gte,
+        runtimes=tuple(_split(rt)),
+        languages=tuple(x.lower() for x in _split(lang)),
+        resolutions=tuple(_split(res)),
+        hdr=hdr,
+        stock=tuple(_split(stock)),
     )
 
 
@@ -1851,6 +1877,15 @@ def _filter_params(
 async def get_library_facets(
     library_id: int,
     filters: Annotated[LibraryFilter, Depends(_filter_params)],
+    tier: Annotated[
+        Literal["primary", "all"],
+        Query(
+            description=(
+                "primary=只算一级四维（默认）/ all=连「更多筛选」面板的维度一起算。"
+                "二级维度是十几条 COUNT，常用路径不该为没打开的面板买单"
+            )
+        ),
+    ] = "primary",
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(require_library_visible),
 ) -> ApiResponse[LibraryFacetsView]:
@@ -1868,6 +1903,7 @@ async def get_library_facets(
             library.kind,
             filters=filters,
             member_id=member_id,
+            tier=tier,
         )
     )
 

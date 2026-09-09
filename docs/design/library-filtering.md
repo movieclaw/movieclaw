@@ -468,9 +468,10 @@ v1 **只做"从本库现有取值里选"**（候选来自库内实际出现过�
 |---|---|
 | `apps/web/components/library-detail-view.tsx` | 把 `wallSortPref` 从 `LibraryActionsMenu` 提到墙控件组；沿用已有的 `defaultSortLabel`（按标题 / 按时间）作显示值；`probing` 期间仍如实置灰（`sortDisabled` 语义不变） |
 | 同上 | 拆 `LibraryActionsMenu`：墙偏好（`density` / `grouped`）跟随形态键、仅瀑布流下出现；库管理留在标题行 `⋯` |
-| `apps/web/components/favorites-view.tsx` | 同步同一套控件组——两页共用 `useVideoGalleryMode` 的形态偏好，只改一边会立刻打架 |
-| `apps/web/components/poster-wall.tsx` | 画质角标改 hover 显示；收藏心与在看进度条保持常驻（状态不能藏） |
+| ~~`poster-wall.tsx` 画质角标改 hover~~ | **实施时核对后取消**：真实产品的海报墙本来就没有画质角标（`poster-card` 的 `badges` 只在搜索/发现页用，库墙传的是空数组）。那一条是照着样稿写进计划的——不能为了"改成 hover"先造一个出来 |
+| ~~`favorites-view.tsx` 同步控件组~~ | **同上取消**：收藏页只有一种固定顺序（最近收藏在前），没有排序控件可同步 |
 | `apps/web/components/library-view.tsx` | 首页库卡片沿用新叫法，避免"默认 / 按标题"两套话术并存 |
+| `library-detail-view.tsx` | **连带**：菜单里没有排序之后，非管理员在海报墙形态下菜单会是空的（原注释「排序每面墙都有，所以菜单恒在」的前提没了）——为空时不渲染那颗键 |
 
 **验收**：静止态单库页顶栏可点元素 ≤ 4；切到瀑布流才出现墙偏好 `⋯`；
 `probing` 期间排序置灰的行为不回退；收藏页与单库页控件组长相一致。

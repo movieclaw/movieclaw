@@ -274,6 +274,15 @@ WatchFilter = Literal["unwatched", "watching", "played", "favorite"]
 #: 年代档 → 年份闭区间；None 表示不设下界。缺年份的条目（release_date 与
 #: media_item.year 都为空）不属于任何一档——「未知年份」不是年代，硬塞进
 #: 「更早」是编数据。它们只在不筛年代时出现。
+#: 片长档 → 分钟闭区间；None 表示不设该侧界。缺片长的条目不属于任何档
+#: （同「未知年份」，见 _DECADE_RANGES）。
+_RUNTIME_RANGES: dict[str, tuple[int | None, int | None]] = {
+    "lte60": (None, 60),
+    "60to90": (60, 90),
+    "90to120": (90, 120),
+    "gt120": (120, None),
+}
+
 _DECADE_RANGES: dict[str, tuple[int | None, int]] = {
     "2020s": (2020, 2029),
     "2010s": (2010, 2019),
@@ -292,14 +301,35 @@ class LibraryFilter:
     勾「动画」再勾「科幻」是两者都要看到，再勾「日本」才是收窄。
     """
 
+    # —— 一级（常驻 chips，找片）——
     genres: tuple[int, ...] = ()  # TMDB genre id（语言无关，见 metadata.genre_ids）
     countries: tuple[str, ...] = ()  # ISO 3166-1 二字码
     decades: tuple[str, ...] = ()  # _DECADE_RANGES 的键
     watch: WatchFilter | None = None  # 按观看者算，需要 member_id
+    # —— 二级·找片（作品是什么样的，来自刮削档案）——
+    rating_gte: float | None = None  # 评分下限
+    runtimes: tuple[str, ...] = ()  # _RUNTIME_RANGES 的键
+    languages: tuple[str, ...] = ()  # 原始语言码
+    # —— 二级·查库（文件是什么规格，来自库存台账）——
+    resolutions: tuple[str, ...] = ()  # 2160p / 1080p / …
+    hdr: bool | None = None  # True=只看 HDR；False=只看 SDR
+    #: 库存状态：missing=有文件失联 / unscraped=没刮到档案
+    stock: tuple[str, ...] = ()
 
     @property
     def is_empty(self) -> bool:
-        return not (self.genres or self.countries or self.decades or self.watch)
+        return not (
+            self.genres
+            or self.countries
+            or self.decades
+            or self.watch
+            or self.rating_gte is not None
+            or self.runtimes
+            or self.languages
+            or self.resolutions
+            or self.hdr is not None
+            or self.stock
+        )
 
 
 def _last_played_at(member_id: int):
@@ -373,7 +403,12 @@ def _watch_clause(watch: WatchFilter, member_id: int):
     )
 
 
-def _filter_subquery(filters: LibraryFilter | None, member_id: int | None, skip: str | None = None):
+def _filter_subquery(
+    filters: LibraryFilter | None,
+    member_id: int | None,
+    skip: str | None = None,
+    library_id: int | None = None,
+):
     """命中筛选条件的 ``media_item_id`` 子查询；不收窄时返回 None。
 
     **这是整个筛选功能在服务端唯一的收窄点。** 做成子查询而不是往各个排序
@@ -403,6 +438,41 @@ def _filter_subquery(filters: LibraryFilter | None, member_id: int | None, skip:
     if filters.watch and skip != "watch":
         # 观看状态是按人算的；不认人的调用（内部任务、CLI）落到超管哨兵 0
         conds.append(_watch_clause(filters.watch, member_id or 0))
+    if filters.rating_gte is not None and skip != "rating_gte":
+        conds.append(MediaMetadata.vote_average >= filters.rating_gte)
+    if filters.runtimes and skip != "runtimes":
+        spans = []
+        for key in filters.runtimes:
+            if key not in _RUNTIME_RANGES:
+                continue
+            lo, hi = _RUNTIME_RANGES[key]
+            parts = [MediaMetadata.runtime_minutes.is_not(None)]  # type: ignore[union-attr]
+            if lo is not None:
+                parts.append(MediaMetadata.runtime_minutes > lo)
+            if hi is not None:
+                parts.append(MediaMetadata.runtime_minutes <= hi)
+            spans.append(and_(*parts))
+        if spans:
+            conds.append(or_(*spans))
+    if filters.languages and skip != "languages":
+        conds.append(MediaMetadata.original_language.in_(filters.languages))
+    if filters.resolutions and skip != "resolutions":
+        conds.append(_file_exists(library_id, LibraryFile.resolution.in_(filters.resolutions)))
+    if filters.hdr is not None and skip != "hdr":
+        clause = _file_exists(library_id, LibraryFile.hdr.is_not(None))  # type: ignore[union-attr]
+        conds.append(clause if filters.hdr else not_(clause))
+    if filters.stock and skip != "stock":
+        spans = []
+        if "missing" in filters.stock:
+            # 有文件失联：台账还在、盘上没了（missing_since 非空）
+            spans.append(
+                _file_exists(library_id, LibraryFile.missing_since.is_not(None))  # type: ignore[union-attr]
+            )
+        if "unscraped" in filters.stock:
+            # 没刮到档案：详情页只能降级展示，也是「元数据刷新」该处理的那批
+            spans.append(MediaMetadata.scraped_at.is_(None))
+        if spans:
+            conds.append(or_(*spans))
     if not conds:
         return None
     return (
@@ -412,13 +482,30 @@ def _filter_subquery(filters: LibraryFilter | None, member_id: int | None, skip:
     )
 
 
-def _narrow(filters: LibraryFilter | None, member_id: int | None, skip: str | None = None) -> tuple:
+def _file_exists(library_id: int | None, *conds):
+    """本库内存在满足条件的文件——画质/HDR/失联这类**文件级**条件的判定。
+
+    必须限定 ``library_id``：同一部片散在两个库时，「本库有没有 4K」问的是
+    这个库，不是全世界。不给 library_id（内部调用）则跨库判定。
+    """
+    where = [LibraryFile.media_item_id == MediaItem.id, *conds]
+    if library_id is not None:
+        where.append(LibraryFile.library_id == library_id)
+    return select(1).select_from(LibraryFile).where(*where).exists()
+
+
+def _narrow(
+    filters: LibraryFilter | None,
+    member_id: int | None,
+    skip: str | None = None,
+    library_id: int | None = None,
+) -> tuple:
     """筛选收窄的 WHERE 片段。
 
     不收窄时是空元组，调用处 ``*_narrow(...)`` 展开后等于什么都没加——
     未筛选的路径与改造前逐字相同，不多一次 join、不多一个子查询。
     """
-    subq = _filter_subquery(filters, member_id, skip)
+    subq = _filter_subquery(filters, member_id, skip, library_id)
     return () if subq is None else (LibraryFile.media_item_id.in_(subq),)  # type: ignore[union-attr]
 
 
@@ -456,7 +543,7 @@ async def _titles_sorted(
                 LibraryFile.library_id == library_id,
                 LibraryFile.media_item_id.is_not(None),  # type: ignore[union-attr]
                 _identity_clause(identity),
-                *_narrow(filters, member_id),
+                *_narrow(filters, member_id, library_id=library_id),
             )
             .distinct()
         )
@@ -568,7 +655,7 @@ def _facet_scope(library_id: int, filters: LibraryFilter | None, member_id: int 
         LibraryFile.library_id == library_id,
         LibraryFile.media_item_id.is_not(None),  # type: ignore[union-attr]
         _identity_clause("confirmed"),
-        *_narrow(filters, member_id, skip=skip),
+        *_narrow(filters, member_id, skip=skip, library_id=library_id),
     )
 
 
@@ -595,6 +682,128 @@ async def _json_facet(
     return [(str(value), count) for value, count in rows if value is not None]
 
 
+async def _bucket_facet(
+    session: AsyncSession,
+    library_id: int,
+    filters: LibraryFilter | None,
+    member_id: int | None,
+    skip: str,
+    options: list[tuple[str, str, LibraryFilter]],
+) -> list[FacetValueView]:
+    """一组固定档位的计数：逐档带着「本档条件」重数一次。
+
+    档位不是从数据里长出来的（评分/片长/库存状态都是人定的分界），所以不能
+    像类型/地区那样 group by，只能逐档数。每档一条带索引的 COUNT，档位个位数。
+    """
+    out: list[FacetValueView] = []
+    for value, label, probe in options:
+        count = (
+            await session.execute(
+                select(func.count(func.distinct(LibraryFile.media_item_id)))
+                .select_from(LibraryFile)
+                .join(MediaItem, MediaItem.id == LibraryFile.media_item_id)  # type: ignore[arg-type]
+                .outerjoin(MediaMetadata, MediaMetadata.media_item_id == MediaItem.id)  # type: ignore[arg-type]
+                .where(
+                    *_facet_scope(library_id, filters, member_id, skip),
+                    *_narrow(probe, member_id, library_id=library_id),
+                )
+            )
+        ).scalar_one()
+        out.append(FacetValueView(value=value, label=label, count=int(count)))
+    return out
+
+
+async def _second_tier_facets(
+    session: AsyncSession,
+    library_id: int,
+    filters: LibraryFilter | None,
+    member_id: int | None,
+) -> dict:
+    """「更多筛选」面板的候选值与计数（找片二级 + 查库）。"""
+    ratings = await _bucket_facet(
+        session,
+        library_id,
+        filters,
+        member_id,
+        "rating_gte",
+        [(str(v), f"≥ {v:g}", LibraryFilter(rating_gte=v)) for v in (9, 8, 7)],
+    )
+    runtimes = await _bucket_facet(
+        session,
+        library_id,
+        filters,
+        member_id,
+        "runtimes",
+        [
+            ("lte60", "≤ 60′", LibraryFilter(runtimes=("lte60",))),
+            ("60to90", "60–90′", LibraryFilter(runtimes=("60to90",))),
+            ("90to120", "90–120′", LibraryFilter(runtimes=("90to120",))),
+            ("gt120", "> 120′", LibraryFilter(runtimes=("gt120",))),
+        ],
+    )
+    hdr = await _bucket_facet(
+        session,
+        library_id,
+        filters,
+        member_id,
+        "hdr",
+        [("1", "HDR", LibraryFilter(hdr=True)), ("0", "SDR", LibraryFilter(hdr=False))],
+    )
+    stock = await _bucket_facet(
+        session,
+        library_id,
+        filters,
+        member_id,
+        "stock",
+        [
+            ("missing", "文件失联", LibraryFilter(stock=("missing",))),
+            ("unscraped", "没刮到档案", LibraryFilter(stock=("unscraped",))),
+        ],
+    )
+
+    # 语言与分辨率是**从数据里长出来的**取值，可以直接分组数
+    lang_rows = (
+        await session.execute(
+            select(
+                MediaMetadata.original_language,
+                func.count(func.distinct(LibraryFile.media_item_id)),
+            )
+            .select_from(LibraryFile)
+            .join(MediaMetadata, MediaMetadata.media_item_id == LibraryFile.media_item_id)  # type: ignore[arg-type]
+            .where(
+                *_facet_scope(library_id, filters, member_id, "languages"),
+                MediaMetadata.original_language.is_not(None),  # type: ignore[union-attr]
+            )
+            .group_by(MediaMetadata.original_language)
+        )
+    ).all()
+    res_rows = (
+        await session.execute(
+            select(LibraryFile.resolution, func.count(func.distinct(LibraryFile.media_item_id)))
+            .select_from(LibraryFile)
+            .where(
+                *_facet_scope(library_id, filters, member_id, "resolutions"),
+                LibraryFile.resolution.is_not(None),  # type: ignore[union-attr]
+            )
+            .group_by(LibraryFile.resolution)
+        )
+    ).all()
+    return {
+        "ratings": ratings,
+        "runtimes": runtimes,
+        "hdr": hdr,
+        "stock": stock,
+        "languages": [
+            FacetValueView(value=str(v), label=str(v), count=int(c))
+            for v, c in sorted(lang_rows, key=lambda r: (-r[1], str(r[0])))
+        ],
+        "resolutions": [
+            FacetValueView(value=str(v), label=str(v), count=int(c))
+            for v, c in sorted(res_rows, key=lambda r: (-r[1], str(r[0])))
+        ],
+    }
+
+
 async def build_library_facets(
     session: AsyncSession,
     library_id: int,
@@ -602,6 +811,7 @@ async def build_library_facets(
     *,
     filters: LibraryFilter | None = None,
     member_id: int | None = None,
+    tier: str = "primary",
 ) -> LibraryFacetsView:
     """筛选面板的候选值与计数（docs/design/library-filtering.md 3.3）。
 
@@ -663,6 +873,12 @@ async def build_library_facets(
         ).scalar_one()
         watch_counts.append((value, label, count))
 
+    # 二级维度只在「更多筛选」面板打开时才算：它们是十几条 COUNT，
+    # 常用路径（四个一级 chips）不该为一个用户还没打开的面板买单
+    second: dict = {}
+    if tier == "all":
+        second = await _second_tier_facets(session, library_id, filters, member_id)
+
     return LibraryFacetsView(
         total=int(total),
         # 类型与地区按数量倒序：用户扫的是「这个库里主要有什么」，不是字典序
@@ -680,6 +896,7 @@ async def build_library_facets(
             for key, count in decade_counts.items()
         ],
         watch=[FacetValueView(value=v, label=lb, count=c) for v, lb, c in watch_counts],
+        **second,
     )
 
 
@@ -774,7 +991,7 @@ async def _wall_page_ids(
     每个排序都以 media_item_id 收尾——排序键相等时顺序必须稳定，
     否则翻页会出现某条目重复出现、另一条目永远刷不到的漏项。
     """
-    narrow = _narrow(filters, member_id)
+    narrow = _narrow(filters, member_id, library_id=library_id)
 
     if sort == "title":
         ids = [
@@ -970,7 +1187,7 @@ async def build_library_wall(
         select(LibraryFile.media_item_id).where(
             LibraryFile.library_id == library_id,
             LibraryFile.media_item_id.is_not(None),  # type: ignore[union-attr]
-            *_narrow(filters, member_id),
+            *_narrow(filters, member_id, library_id=library_id),
         )
         if limit is None
         else page_ids

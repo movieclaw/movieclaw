@@ -418,6 +418,13 @@ class LibraryFacetsView(BaseModel):
     watch: list[FacetValueView] = Field(
         default_factory=list, description="观看状态：未看/在看/已看完是一个划分，另加我收藏的"
     )
+    # —— 以下只在 tier=all 时返回（「更多筛选」面板打开才要）——
+    ratings: list[FacetValueView] = Field(default_factory=list, description="评分档（找片）")
+    runtimes: list[FacetValueView] = Field(default_factory=list, description="片长档（找片）")
+    languages: list[FacetValueView] = Field(default_factory=list, description="原始语言（找片）")
+    resolutions: list[FacetValueView] = Field(default_factory=list, description="分辨率（查库）")
+    hdr: list[FacetValueView] = Field(default_factory=list, description="动态范围（查库）")
+    stock: list[FacetValueView] = Field(default_factory=list, description="库存状态（查库）")
 
 
 class RelaxSuggestionView(BaseModel):

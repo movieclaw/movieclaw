@@ -522,11 +522,12 @@ export type LibraryItemSort =
 import {
   type LibraryFilter,
   type WatchFilter,
+  filterCount,
   filterQuery,
   isFilterEmpty,
 } from "@/lib/library-filter";
 
-export { type LibraryFilter, type WatchFilter, filterQuery, isFilterEmpty };
+export { type LibraryFilter, type WatchFilter, filterCount, filterQuery, isFilterEmpty };
 
 
 /**
@@ -635,6 +636,13 @@ export interface LibraryFacets {
   countries: FacetValue[];
   decades: FacetValue[];
   watch: FacetValue[];
+  // 以下只在 tier="all" 时非空（「更多筛选」面板打开才算）
+  ratings: FacetValue[];
+  runtimes: FacetValue[];
+  languages: FacetValue[];
+  resolutions: FacetValue[];
+  hdr: FacetValue[];
+  stock: FacetValue[];
 }
 
 /**
@@ -643,8 +651,13 @@ export interface LibraryFacets {
  * 因此"面板上显示多少部、点下去墙上就是多少部"是结构保证的：两处传的是
  * 同一个 filter 对象，走的是同一个 filterQuery。
  */
-export function getLibraryFacets(id: number, filter?: LibraryFilter): Promise<LibraryFacets> {
+export function getLibraryFacets(
+  id: number,
+  filter?: LibraryFilter,
+  tier: "primary" | "all" = "primary",
+): Promise<LibraryFacets> {
   const query = new URLSearchParams();
+  if (tier === "all") query.set("tier", "all");
   filterQuery(filter, query);
   const suffix = query.size > 0 ? `?${query}` : "";
   return unwrap(request<ApiEnvelope<LibraryFacets>>(`/libraries/${id}/facets${suffix}`));

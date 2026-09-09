@@ -29,6 +29,7 @@ from movieclaw_db.models import (
     MediaItem,
     MediaMetadata,
     PlaybackState,
+    utcnow,
 )
 from movieclaw_db.repositories.library_repo import LibraryRepository
 
@@ -95,6 +96,9 @@ async def _seed(session):
                 genre_ids=genres,
                 origin_countries=countries,
                 release_date=date.fromisoformat(released),
+                # 真实刮削过的条目一定有 scraped_at；不设的话「没刮到档案」
+                # 这一档会把整库都算进去
+                scraped_at=utcnow(),
             )
         )
         session.add(_file(library.id, item.id))
@@ -671,3 +675,116 @@ async def test_relax_labels_are_human(db) -> None:
         first = got.suggestions[0]
         assert first.dim_label in {"类型", "地区", "年代", "观看"}
         assert first.label and not first.label.isdigit()
+
+
+# ---------------------------------------------------------------------------
+# 二级筛选：找片（刮削档案）与查库（库存台账）
+# ---------------------------------------------------------------------------
+
+
+async def test_rating_and_runtime_are_second_tier_find_filters(db) -> None:
+    async with db.session() as session:
+        library_id, _ = await _seed_metrics(session)
+        assert await _titles(session, library_id, filters=LibraryFilter(rating_gte=9)) == {
+            "盗梦空间",
+            "霸王别姬",
+        }
+        # 片长档是左开右闭：106 分钟落在 90to120，125 与 132 落在 gt120
+        assert await _titles(session, library_id, filters=LibraryFilter(runtimes=("90to120",))) == {
+            "你的名字",
+        }
+        assert await _titles(session, library_id, filters=LibraryFilter(runtimes=("gt120",))) == {
+            "千与千寻",
+            "寄生虫",
+            "盗梦空间",
+            "霸王别姬",
+        }
+
+
+async def test_quality_filters_are_scoped_to_this_library(db) -> None:
+    """画质是**文件级**条件，必须限定本库。
+
+    同一部片散在两个库时，「本库有没有 4K」问的是这个库，不是全世界——
+    否则海报墙会显示一部在本库其实只有 1080p 的片。
+    """
+    async with db.session() as session:
+        library_id, ids = await _seed(session)
+        other = await LibraryRepository(session).create(
+            name="备份库", kind="movie", root_paths=["/backup"]
+        )
+        assert other.id is not None
+        here = _file(library_id, ids["寄生虫"])
+        here.file_path = "/movies/here-4k.mkv"
+        here.resolution = "2160p"
+        elsewhere = _file(other.id, ids["盗梦空间"])
+        elsewhere.file_path = "/backup/there-4k.mkv"
+        elsewhere.resolution = "2160p"
+        session.add_all([here, elsewhere])
+        await session.flush()
+
+        got = await _titles(session, library_id, filters=LibraryFilter(resolutions=("2160p",)))
+        assert got == {"寄生虫"}, "另一个库里的 4K 不该让这面墙认为本库有 4K"
+
+
+async def test_hdr_filter_has_both_directions(db) -> None:
+    """HDR 是三态里的两问：只看 HDR / 只看 SDR。不给条件才是「都看」。"""
+    async with db.session() as session:
+        library_id, ids = await _seed(session)
+        row = _file(library_id, ids["千与千寻"])
+        row.file_path = "/movies/hdr.mkv"
+        row.hdr = "HDR10"
+        session.add(row)
+        await session.flush()
+
+        assert await _titles(session, library_id, filters=LibraryFilter(hdr=True)) == {"千与千寻"}
+        sdr = await _titles(session, library_id, filters=LibraryFilter(hdr=False))
+        assert "千与千寻" not in sdr and len(sdr) == 4
+
+
+async def test_stock_state_finds_what_needs_attention(db) -> None:
+    """查库维度回答的是「哪些要处理」：文件失联、没刮到档案。"""
+    async with db.session() as session:
+        library_id, ids = await _seed(session)
+        lost = _file(library_id, ids["霸王别姬"])
+        lost.file_path = "/movies/lost.mkv"
+        lost.missing_since = utcnow()
+        blank = MediaItem(kind="movie", tmdb_id=497, title="没刮到", original_title="Z")
+        session.add_all([lost, blank])
+        await session.flush()
+        assert blank.id is not None
+        session.add(_file(library_id, blank.id))
+        await session.flush()
+
+        assert await _titles(session, library_id, filters=LibraryFilter(stock=("missing",))) == {
+            "霸王别姬"
+        }
+        assert await _titles(session, library_id, filters=LibraryFilter(stock=("unscraped",))) == {
+            "没刮到"
+        }
+
+
+async def test_second_tier_combines_with_first_tier(db) -> None:
+    """二级维度与一级维度同样是维间 AND——它们只是摆在不同的面板上。"""
+    async with db.session() as session:
+        library_id, _ = await _seed_metrics(session)
+        got = await _titles(
+            session,
+            library_id,
+            filters=LibraryFilter(countries=("JP",), rating_gte=8.5),
+        )
+        assert got == {"千与千寻"}
+
+
+async def test_second_tier_facets_only_when_asked(db) -> None:
+    """二级维度是十几条 COUNT，默认不算——常用路径不该为没打开的面板买单。"""
+    async with db.session() as session:
+        library_id, _ = await _seed_metrics(session)
+
+        primary = await _facets(session, library_id)
+        assert primary.genres and primary.ratings == [] and primary.resolutions == []
+
+        full = await _facets(session, library_id, tier="all")
+        assert {r.value: r.count for r in full.ratings}["9"] == 2
+        assert {r.value: r.count for r in full.runtimes}["gt120"] == 4
+        assert {r.value: r.count for r in full.stock}["unscraped"] == 0
+        assert {r.value: r.count for r in full.hdr}["0"] == 5
