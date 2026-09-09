@@ -655,6 +655,28 @@ async def test_relax_only_lists_conditions_that_actually_help(db) -> None:
         assert got.suggestions == []
 
 
+async def test_relax_covers_secondary_dimensions_too(db) -> None:
+    """二级维度也要给建议——不给的话界面会说一句假话。
+
+    只看一级四维时，「4K + 评分≥9」这种全靠二级维度筛空的组合一条建议都
+    给不出，空态却会写「去掉任意一条也救不回来」——而去掉评分明明就救得回来。
+    """
+    async with db.session() as session:
+        library_id, ids = await _seed(session)
+        # 唯一的 4K 是《寄生虫》（8.6 分），所以「4K + 评分≥9」是 0 部，
+        # 而去掉评分就能救回它
+        row = _file(library_id, ids["寄生虫"])
+        row.file_path = "/movies/parasite-4k.mkv"
+        row.resolution = "2160p"
+        session.add(row)
+        await session.flush()
+
+        got = await _relax(session, library_id, LibraryFilter(resolutions=("2160p",), rating_gte=9))
+
+        assert got.total == 0
+        assert [(s.dim, s.label, s.count) for s in got.suggestions] == [("rating_gte", "≥ 9", 1)]
+
+
 async def test_relax_caps_at_three(db) -> None:
     """最多三条：再多就不是建议，是又一份要读的清单。"""
     async with db.session() as session:

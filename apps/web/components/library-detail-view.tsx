@@ -1676,7 +1676,11 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
       {/* —— 作品 / 合集：库内的两个视图（Plex 的 tab 模型）。
           一个合集都没有时这一行不出现——没有事实就不摆控件 —— */}
       {!photoWall && collections.length > 0 && (
-        <div className="mt-5 flex items-center gap-1 px-6 max-md:mt-4 max-md:px-4">
+        <div
+          role="tablist"
+          aria-label="库内视图"
+          className="mt-5 flex items-center gap-1 px-6 max-md:mt-4 max-md:px-4"
+        >
           {(
             [
               ["items", "作品"],
@@ -1686,7 +1690,8 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
             <button
               key={value}
               type="button"
-              aria-pressed={libraryView === value}
+              role="tab"
+              aria-selected={libraryView === value}
               onClick={() => switchView(value)}
               className={`h-8 rounded-full px-3 text-ui transition ${
                 libraryView === value

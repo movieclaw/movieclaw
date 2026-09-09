@@ -449,6 +449,9 @@ export function WallSortControl<T extends string>({
  * 所以这里不需要再过滤：拿到空表就说明这几条两两之间就没有交集，
  * 那时只留「清空全部条件」。
  */
+/** 放宽建议里可能出现的多值维度（与服务端 _RELAX_LIST_DIMS 一一对应）。 */
+type ListDim = "genres" | "countries" | "decades" | "runtimes" | "languages" | "resolutions" | "stock";
+
 export function FilterEmptyState({
   libraryId,
   filter,
@@ -470,18 +473,17 @@ export function FilterEmptyState({
     };
   }, [libraryId, filter]);
 
-  const count =
-    (filter.genres?.length ?? 0) +
-    (filter.countries?.length ?? 0) +
-    (filter.decades?.length ?? 0) +
-    (filter.watch ? 1 : 0);
+  // 数的是**全部**条件，不只是一级四维：只数一级的话，用「4K + 评分≥9」筛空
+  // 时标题会写「没有同时满足这 0 个条件的作品」
+  const count = filterCount(filter);
 
+  /** 单值维度清成 null，多值维度只摘掉这一个取值。dim 名与筛选字段同名。 */
   const drop = (dim: string, value: string) => {
-    if (dim === "watch") {
-      onFilterChange({ ...filter, watch: null });
+    if (dim === "watch" || dim === "rating_gte" || dim === "hdr") {
+      onFilterChange({ ...filter, [dim === "rating_gte" ? "ratingGte" : dim]: null });
       return;
     }
-    const key = dim as "genres" | "countries" | "decades";
+    const key = dim as ListDim;
     const current = (filter[key] ?? []) as (string | number)[];
     const typed = dim === "genres" ? Number(value) : value;
     onFilterChange({ ...filter, [key]: current.filter((v) => v !== typed) });

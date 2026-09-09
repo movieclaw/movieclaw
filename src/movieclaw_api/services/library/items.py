@@ -901,7 +901,39 @@ async def build_library_facets(
 
 
 #: 维度名 → 展示名（放宽建议的文案用）
-_DIM_LABELS = {"genres": "类型", "countries": "地区", "decades": "年代", "watch": "观看"}
+_DIM_LABELS = {
+    "genres": "类型",
+    "countries": "地区",
+    "decades": "年代",
+    "watch": "观看",
+    "rating_gte": "评分",
+    "runtimes": "片长",
+    "languages": "语言",
+    "resolutions": "画质",
+    "hdr": "动态范围",
+    "stock": "库存",
+}
+
+#: 放宽建议要逐个取值评估的「多值」维度（单值的 watch / rating_gte / hdr 另处理）
+_RELAX_LIST_DIMS = (
+    "genres",
+    "countries",
+    "decades",
+    "runtimes",
+    "languages",
+    "resolutions",
+    "stock",
+)
+
+#: 二级维度里那些取值本身不可读的档位，展示名与「更多筛选」面板保持一致
+_RELAX_VALUE_LABELS = {
+    "lte60": "≤ 60′",
+    "60to90": "60–90′",
+    "90to120": "90–120′",
+    "gt120": "> 120′",
+    "missing": "文件失联",
+    "unscraped": "没刮到档案",
+}
 
 
 async def _count_matching(
@@ -936,17 +968,25 @@ async def build_library_relax(
     """
     total = await _count_matching(session, library_id, filters, member_id)
     rows: list[tuple[str, str, int]] = []
-    for dim in ("genres", "countries", "decades"):
+    # 每一个**已选**的取值都要评估——包括二级维度。只看一级四维的话，用户
+    # 用「4K + 评分≥9」筛空时一条建议都给不出，界面却会说"去掉任意一条也
+    # 救不回来"——那是句假话：去掉评分就救回来了
+    for dim in _RELAX_LIST_DIMS:
         for value in getattr(filters, dim):
             kept = tuple(v for v in getattr(filters, dim) if v != value)
             trimmed = replace(filters, **{dim: kept})
             left = await _count_matching(session, library_id, trimmed, member_id)
             rows.append((dim, str(value), left))
-    if filters.watch:
-        trimmed = replace(filters, watch=None)
-        rows.append(
-            ("watch", filters.watch, await _count_matching(session, library_id, trimmed, member_id))
-        )
+    for dim, current in (
+        ("watch", filters.watch),
+        ("rating_gte", filters.rating_gte),
+        ("hdr", filters.hdr),
+    ):
+        if current is None:
+            continue
+        trimmed = replace(filters, **{dim: None})
+        left = await _count_matching(session, library_id, trimmed, member_id)
+        rows.append((dim, str(current), left))
 
     watch_labels = dict(_WATCH_LABELS)
 
@@ -957,7 +997,13 @@ async def build_library_relax(
             return country_label(value)
         if dim == "decades":
             return "更早" if value == "earlier" else value
-        return watch_labels.get(value, value)  # type: ignore[arg-type]
+        if dim == "watch":
+            return watch_labels.get(value, value)  # type: ignore[arg-type]
+        if dim == "rating_gte":
+            return f"≥ {float(value):g}"
+        if dim == "hdr":
+            return "HDR" if value == "True" else "SDR"
+        return _RELAX_VALUE_LABELS.get(value, value)
 
     best = sorted((r for r in rows if r[2] > 0), key=lambda r: -r[2])[:3]
     return LibraryRelaxView(
