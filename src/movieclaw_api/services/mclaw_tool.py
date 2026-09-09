@@ -44,7 +44,8 @@ _DOMAIN_LINES = {
     "条目与物理文件，处理待识别/错识别/缺失内容，并管理元数据、图片、字幕和跨库转移；"
     "list 默认只列当前身份可浏览的库（与网页首页一致），用户明确要看全部可管理的库时"
     "加 --scope all；organize-files 按 scrape 里配的命名模板把存量文件批量改名归位，"
-    "可反复执行）",
+    "可反复执行；items share 把一部影片生成公开链接发给没有账号的人看，有效期最长 30 天、"
+    "可加密码、随时撤回）",
     "llm": "llm      AI 模型供应商（接入 OpenAI、阿里云百炼或任意 OpenAI 兼容服务，选择模型"
     "并验证连通性，供 AI 对话等智能能力使用）",
     "net": "net      网络与代理（配置全局/指定服务代理及镜像地址，立即生效；按 TMDB/豆瓣/"
@@ -65,6 +66,8 @@ _DOMAIN_LINES = {
     "session": "session  用户与智能体的会话管理（发起新对话或继续已有对话，按指定用户消息"
     "重新提问，读取并分析完整 message/compaction 轨迹；也可重命名、压缩上下文、跟随或"
     "停止处理，以及删除会话）",
+    "shares": "shares   影片分享链接（列出目前分享出去的影片：链接、有没有密码、什么时候到期、"
+    "被打开过多少次；也可按 id 撤回。给单部影片生成链接在 library items share）",
     "site": "site     PT 资源站点（查看支持目录/鉴权要求，配置、验证、启停站点，查看本地种子"
     "缓存统计；Cookie 可由 extension 同步）",
     "subscriptions": "subscriptions  电影/剧集订阅与自动追更（持续追踪新资源，按规则自动搜索、"
@@ -89,6 +92,10 @@ _TOP_LEVEL_LINES = [
 ]
 
 # 不进目录的域：
+# - fs：与 logs 同理，对 Agent 是 bash 的弱化重复——Agent 与服务端同容器，
+#   ls 能看到的正是接口要列的那些目录，多一个只列目录的工具只会干扰选型。
+#   命令行保留：mclaw 是独立二进制，远程管理时本机 ls 看到的是**客户端**的
+#   文件系统，与服务端容器里的路径根本不是一回事（这正是根路径填错的由来）。
 # - logs：对 Agent 是 bash 的弱化重复——日志就是同容器内的本地文件（路径已写进
 #   系统提示词环境段），grep/tail 能力更强；且 logs tail -f 永不退出，模型误用
 #   会干等到工具超时。CLI 命令保留，服务远程管理的人类用户。
@@ -97,7 +104,7 @@ _TOP_LEVEL_LINES = [
 #   放进目录等于把开号/改权限的能力交给模型）。CLI 命令保留给人类管理员。
 # - mcp：MCP 端点的增删改与令牌轮换属于凭证签发面，和 members 同理不该由对话式
 #   Agent 代劳；真正的签发闸门在 require_admin_session（人 + 浏览器）上。
-_EXCLUDED_DOMAINS = {"logs", "members", "mcp"}
+_EXCLUDED_DOMAINS = {"fs", "logs", "members", "mcp"}
 
 
 def spec_domains() -> set[str]:

@@ -109,6 +109,8 @@ extension token
 extension token create
 extension token revoke
 extension token show
+fs
+fs browse
 health
 health check
 jobs
@@ -159,6 +161,10 @@ library items refresh-metadata
 library items regenerate-chapter-images
 library items reidentify
 library items restore-file
+library items share
+library items share create
+library items share get
+library items share revoke
 library items transfer
 library list
 library list-routing-options
@@ -278,6 +284,9 @@ session rename
 session retry
 session start
 session stop
+shares
+shares list
+shares revoke
 site
 site add
 site boost-stats

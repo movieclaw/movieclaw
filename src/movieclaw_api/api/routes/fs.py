@@ -26,15 +26,19 @@ router = APIRouter(prefix="/fs", tags=["fs"])
 @router.get(
     "/browse",
     response_model=ApiResponse[FsBrowseView],
-    summary="列出服务器上某目录的子目录（目录选择器数据源）",
+    summary="列出服务器上某个目录下有哪些子目录",
     operation_id="fs.browse",
-    # 不进 CLI：Agent 已有 bash/read 等通用文件工具，再暴露一个只列目录的
-    # fs 命令只会干扰模型选工具；本接口仅服务 Web 端目录选择器
-    openapi_extra={"x-cli-hidden": True},
 )
 def browse_directory(
     path: str | None = Query(default=None, description="要浏览的绝对路径，缺省为根目录 /"),
 ) -> ApiResponse[FsBrowseView]:
+    """建库或修改根路径前，用它确认路径在服务器上到底长什么样。
+
+    Docker 部署时尤其必要：你在宿主机 ``ls`` 看到的 ``/mnt/media``，容器里
+    可能是 ``/data/media``，填错了扫描一个文件也找不到。
+
+    只读、只列子目录：不返回文件，不显示点开头的隐藏目录，不改动任何东西。
+    """
     # 磁盘 IO 是阻塞调用，路由声明为同步函数让 FastAPI 丢进线程池执行
     target = Path(path or "/").expanduser()
     if not target.is_absolute():

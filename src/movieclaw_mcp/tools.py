@@ -22,11 +22,12 @@ from movieclaw_api.services.mclaw_tool import domain_description
 from movieclaw_mcp.catalog import Operation, operations_by_domain
 
 #: Agent 服务目录里没有的域的一行说明。
-#: ``mclaw_tool._DOMAIN_LINES`` 只覆盖对 Agent 开放的域，logs 与 members 被它显式
-#: 排除（理由是 Agent 专属的：Agent 有 bash 不需要 logs，建号改密不该由对话代劳），
+#: ``mclaw_tool._DOMAIN_LINES`` 只覆盖对 Agent 开放的域，fs / logs / members 被它显式
+#: 排除（理由是 Agent 专属的：Agent 有 bash，不需要 logs 与 fs；建号改密不该由对话代劳），
 #: 而 MCP 端点由管理员逐个勾选、勾了就是明示授权，两者都开放。守护测试禁止往
 #: ``_DOMAIN_LINES`` 里塞被排除的域，所以补充文案落在这里。
 _EXTRA_DOMAIN_LINES = {
+    "fs": "服务器目录浏览（列出某个目录下有哪些子目录，配媒体库根路径时确认路径）",
     "logs": "系统日志（按天查看后端运行日志，排查故障用）",
     "members": "家庭成员账号（建号、改能力开关与可见范围、重置密码、启停）"
                 "——注意这是账号治理面，开放前想清楚",

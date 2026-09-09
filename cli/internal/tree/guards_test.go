@@ -88,19 +88,14 @@ var knownNonGenerated = []string{
 	"workflow.search.torrents.stream",
 	"session.fork",
 	"session.follow",
-	"fs.browse",
 	"jobs.stream",
 	"playback.recent",
 	"ui.discovery.get",
 	"discover.get-person-details",
 	"ui.subscriptions.preview-title",
-	// 影片分享（docs/design/media-share.md）：管理侧是详情页 ⋯ 菜单与管理页
-	// 「分享」标签的 Web 动作；访客侧靠 slug 与解锁 Cookie 而不是账号，CLI 无消费方
-	"library.items.share.get",
-	"library.items.share.create",
-	"library.items.share.revoke",
-	"shares.list",
-	"shares.revoke",
+	// 影片分享的**访客侧**（docs/design/media-share.md）：靠 slug 与解锁 Cookie
+	// 而不是账号，是给浏览器访客的通道，CLI 无消费方。管理侧（生成分享、看
+	// 分享、撤分享）已进命令树——「把一部片发给没有账号的朋友」在命令行同样成立
 	"share.probe",
 	"share.unlock",
 	"share.item",
@@ -235,6 +230,9 @@ func TestDomainCommandSets(t *testing.T) {
 			"library.items.refresh-metadata",
 			"library.items.regenerate-chapter-images",
 			"library.items.reidentify",
+			"library.items.share.create",
+			"library.items.share.get",
+			"library.items.share.revoke",
 			"library.items.transfer",
 			"library.list",
 			"library.list-routing-options",

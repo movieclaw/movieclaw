@@ -124,9 +124,8 @@ async def _assert_item_in_library(
 @admin_router.get(
     "/libraries/{library_id}/items/{media_item_id}/share",
     response_model=ApiResponse[ShareView | None],
-    summary="条目当前的有效分享（没有为 null）",
+    summary="看这部影片当前的分享链接、密码和有效期",
     operation_id="library.items.share.get",
-    openapi_extra={"x-cli-hidden": True},
 )
 async def get_item_share(
     library_id: int,
@@ -134,6 +133,11 @@ async def get_item_share(
     principal: Principal = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[ShareView | None]:
+    """这部影片有没有正在生效的分享，有的话链接是什么。
+
+    返回链接地址、访问密码（原文）、到期时间、被打开过多少次、最后一次是
+    什么时候。没有有效分享时返回 null。
+    """
     await _assert_item_in_library(session, principal, library_id, media_item_id)
     row = await share_service.get_active_for_item(session, media_item_id)
     return ok(await _share_view(session, row) if row else None)
@@ -142,9 +146,8 @@ async def get_item_share(
 @admin_router.post(
     "/libraries/{library_id}/items/{media_item_id}/share",
     response_model=ApiResponse[ShareView],
-    summary="分享这部影片（已有有效分享时原样返回它）",
+    summary="生成一条观看链接，发给没有账号的人也能看",
     operation_id="library.items.share.create",
-    openapi_extra={"x-cli-hidden": True},
 )
 async def create_item_share(
     library_id: int,
@@ -153,6 +156,15 @@ async def create_item_share(
     principal: Principal = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[ShareView]:
+    """为这部影片生成一个公开链接，拿到链接的人不用注册、不用登录就能看。
+
+    ``expires_in_days`` 是有效期，只有 1 / 3 / 7 / 30 四档（默认 7），没有
+    「永久」——分享是临时授权，过期自动失效；``password`` 给链接再加一道密码，
+    不填就是任何人拿到链接都能看。
+
+    这部片已经有一条有效分享时原样返回它，不会重复生成（响应 code 为
+    ``SHARE_EXISTS``）。想换一条新链接，先 ``library.items.share.revoke``。
+    """
     await _assert_item_in_library(session, principal, library_id, media_item_id)
     row, created = await share_service.create_share(
         session,
@@ -174,9 +186,9 @@ async def create_item_share(
 @admin_router.delete(
     "/libraries/{library_id}/items/{media_item_id}/share",
     response_model=ApiResponse[dict],
-    summary="取消这部影片的分享（幂等）",
+    summary="取消这部影片的分享，链接立刻失效",
     operation_id="library.items.share.revoke",
-    openapi_extra={"x-cli-hidden": True, "x-cli-dangerous": "confirm"},
+    openapi_extra={"x-cli-dangerous": "confirm"},
 )
 async def revoke_item_share(
     library_id: int,
@@ -184,6 +196,10 @@ async def revoke_item_share(
     principal: Principal = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[dict]:
+    """撤掉这部影片的分享：已经发出去的链接立刻打不开，正在看的人也会中断。
+
+    影片本身与观看记录都不受影响，需要时可以再生成一条新的。重复取消不报错。
+    """
     await _assert_item_in_library(session, principal, library_id, media_item_id)
     row = await share_service.get_active_for_item(session, media_item_id)
     if row is not None:
@@ -195,13 +211,17 @@ async def revoke_item_share(
 @admin_router.get(
     "/shares",
     response_model=ApiResponse[list[ShareView]],
-    summary="全部有效分享（媒体库管理页「分享」标签）",
+    summary="列出当前所有还有效的分享链接",
     operation_id="shares.list",
-    openapi_extra={"x-cli-hidden": True},
 )
 async def list_shares(
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[list[ShareView]]:
+    """一次看清「我到底把哪些片分享出去了」。
+
+    每条给出片名、链接、有没有密码、什么时候到期、被打开过多少次。已过期的
+    分享自动失效并从这里消失，不需要手动清理。
+    """
     views: list[ShareView] = []
     for row in await share_service.list_active(session):
         try:
@@ -214,14 +234,19 @@ async def list_shares(
 @admin_router.delete(
     "/shares/{share_id}",
     response_model=ApiResponse[dict],
-    summary="取消一条分享（幂等）",
+    summary="按 id 取消一条分享，链接立刻失效",
     operation_id="shares.revoke",
-    openapi_extra={"x-cli-hidden": True, "x-cli-dangerous": "confirm"},
+    openapi_extra={"x-cli-dangerous": "confirm"},
 )
 async def revoke_share(
     share_id: int,
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[dict]:
+    """按分享 id 撤掉一条分享，链接立刻失效。
+
+    与 ``library.items.share.revoke`` 等价，用在从 ``shares.list`` 里挑一条
+    直接撤掉的场景。
+    """
     row = await session.get(MediaShare, share_id)
     if row is None:
         raise NotFoundException("分享不存在")

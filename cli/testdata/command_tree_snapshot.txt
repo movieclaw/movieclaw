@@ -68,6 +68,7 @@ extension sites list
 extension token create
 extension token revoke
 extension token show
+fs browse
 health check
 jobs cancel
 jobs dismiss
@@ -111,6 +112,9 @@ library items refresh-metadata
 library items regenerate-chapter-images
 library items reidentify
 library items restore-file
+library items share create
+library items share get
+library items share revoke
 library items transfer
 library list
 library list-routing-options
@@ -197,6 +201,8 @@ session rename
 session retry
 session start
 session stop
+shares list
+shares revoke
 site add
 site boost-stats
 site catalog
