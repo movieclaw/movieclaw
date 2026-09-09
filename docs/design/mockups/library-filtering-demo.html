@@ -117,40 +117,62 @@ body{margin:0;background:var(--ink);color:var(--text);font-family:var(--f-sans);
 .ui .btn.ghost{border-color:transparent;color:var(--muted)}
 .ui .spacer{flex:1}
 
-/* ────────── 合集货架 ──────────
-   封面是「一叠海报」而不是一张图：三张 2:3 错位扇开，前后有阴影。
-   一格里放四张缩略图看起来像另一部作品的拼贴；扇形一眼就是「一组」。 */
-.ui .shelf-h{display:flex;align-items:baseline;justify-content:space-between;margin:0 0 9px}
-.ui .shelf-h h3{margin:0;font-size:13px;font-weight:600;color:var(--muted);font-family:var(--f-ui)}
-.ui .shelf-h .n{font-family:var(--f-mono);font-size:11px;color:var(--faint);margin-left:7px}
-.ui .shelf{display:flex;gap:12px;overflow-x:auto;padding-bottom:8px;scrollbar-width:thin}
-.ui .shelf::-webkit-scrollbar{height:5px}
-.ui .shelf::-webkit-scrollbar-thumb{background:rgba(255,255,255,.14);border-radius:3px}
-.ui .col{flex:none;width:176px;cursor:pointer}
-.ui .col .tile{position:relative;height:112px;border-radius:12px;border:1px solid var(--line);overflow:hidden;
-  background:radial-gradient(130% 100% at 50% 0%,rgba(255,255,255,.055),rgba(255,255,255,.012))}
-.ui .col:hover .tile{border-color:var(--line-2)}
-.ui .fan i{position:absolute;top:50%;left:50%;height:74%;width:auto;aspect-ratio:2/3;border-radius:5px;
-  border:1px solid rgba(255,255,255,.15);box-shadow:0 7px 18px rgba(0,0,0,.6);transition:transform .22s ease}
-.ui .fan i:nth-child(1){transform:translate(-50%,-50%) translateX(-48%) rotate(-8deg) scale(.9);z-index:1}
-.ui .fan i:nth-child(2){transform:translate(-50%,-50%) translateX(48%) rotate(8deg) scale(.9);z-index:1}
-.ui .fan i:nth-child(3){transform:translate(-50%,-50%);z-index:2}
-.ui .col:hover .fan i:nth-child(1){transform:translate(-50%,-50%) translateX(-62%) rotate(-11deg) scale(.9)}
-.ui .col:hover .fan i:nth-child(2){transform:translate(-50%,-50%) translateX(62%) rotate(11deg) scale(.9)}
-.ui .delta{position:absolute;top:7px;right:7px;z-index:3;display:inline-flex;align-items:center;gap:3px;
-  font-family:var(--f-mono);font-size:9.5px;font-weight:600;color:var(--ok);background:rgba(10,14,11,.72);
-  border:1px solid rgba(74,222,128,.35);border-radius:999px;padding:1px 6px}
-.ui .col .cap{padding:8px 2px 0;font-size:12.5px;font-weight:600;line-height:1.35}
-.ui .col .meta{padding:1px 2px 0;font-size:10.5px;color:var(--faint);font-variant-numeric:tabular-nums;
-  display:flex;align-items:center;gap:5px}
-/* 三类合集不靠同一个「自动」角标区分，靠说明里的类型词 + 智能合集独有的活性点 */
-.ui .dot{width:5px;height:5px;border-radius:50%;background:var(--info);flex:none;box-shadow:0 0 0 3px rgba(127,176,255,.14)}
-.ui .col .newcol .tile,.ui .col .fromfilter .tile{display:grid;place-items:center;text-align:center}
-.ui .newcol .tile{border-style:dashed}
-.ui .newcol .z{color:var(--faint);font-size:12px}
-.ui .fromfilter .tile{border:1px dashed rgba(127,176,255,.42);background:rgba(127,176,255,.05)}
-.ui .fromfilter .z{color:var(--info);font-size:12px;font-weight:600;padding:0 12px;line-height:1.5}
-.ui .fromfilter .z small{display:block;font-weight:400;font-size:10.5px;color:var(--faint);margin-top:3px}
+/* ────────── 合集的两个露出面 ──────────
+   横滚一行封面卡是两头不讨好：占掉 160px 高，却只露 4–6 个，每张还只是
+   一扇要点开才知道里面是什么的门。行业里横滚行装的是「内容」不是「容器」
+   （Netflix 的每一行就是一个分类，滚的是作品；Plex 把合集发布到首页，
+   得到的也是该合集里作品的一行）。所以改成两个面：
+   ① 作品视图顶部一行 chip——合集本来就是「存好的筛选」，那它就该长得像
+      筛选 chip，点一下是把这面墙筛成它，不是跳走。一行 30px，装不下就
+      <b>换行</b>——换行会暴露数量，横滚只会掩盖数量；再多收进「全部合集」。
+   ② 「合集」视图的纵向网格——要找某一个时一次看全。封面用与作品相同的
+      2:3 竖版（Plex 的做法），于是能直接落进同一套网格，不必单开布局。 */
+.ui .vsw{display:inline-flex;border:1px solid var(--line-2);border-radius:999px;overflow:hidden;flex:none}
+.ui .vsw button{appearance:none;background:none;border:0;color:var(--muted);font:inherit;font-size:12.5px;padding:5px 15px;cursor:pointer}
+.ui .vsw button:hover{background:rgba(255,255,255,.06)}
+.ui .vsw button.on{background:var(--chrome);color:#0a0b10;font-weight:600}
+
+.ui .crow{display:flex;flex-wrap:wrap;align-items:center;gap:7px;padding:0 0 12px;border-bottom:1px solid var(--line)}
+.ui .crow .lb{font-size:11px;color:var(--faint);margin-right:1px}
+.ui .cchip{appearance:none;display:inline-flex;align-items:center;gap:7px;height:29px;padding:0 12px;border-radius:999px;
+  border:1px solid var(--line-2);background:rgba(255,255,255,.04);color:var(--muted);font:inherit;font-size:12.5px;cursor:pointer;white-space:nowrap}
+.ui .cchip:hover{background:rgba(255,255,255,.09);color:var(--text)}
+.ui .cchip.on{background:rgba(127,176,255,.15);border-color:rgba(127,176,255,.5);color:var(--text);font-weight:600}
+/* 迷你叠卡记号：一眼分清「这是一组」和「这是一个筛选值」 */
+.ui .stk{position:relative;width:10px;height:12px;flex:none}
+.ui .stk i{position:absolute;inset:0;border-radius:2px;border:1px solid currentColor}
+.ui .stk i:nth-child(1){transform:translateX(3px) scaleY(.84);opacity:.3}
+.ui .stk i:nth-child(2){opacity:.7}
+.ui .cchip .n{font-family:var(--f-mono);font-size:10.5px;color:var(--faint)}
+.ui .cchip.on .n{color:rgba(238,242,251,.72)}
+.ui .cmore{background:none;border:0;color:var(--info);font:inherit;font-size:12px;cursor:pointer;padding:0 4px}
+.ui .cmore:hover{text-decoration:underline}
+.ui .mbanner{display:flex;align-items:center;gap:9px;margin-top:12px;padding:9px 12px;border-radius:10px;
+  background:rgba(255,255,255,.03);border:1px solid var(--line);font-size:12px;color:var(--muted);flex-wrap:wrap}
+
+.ui .gridbar{display:flex;align-items:center;gap:9px;padding:0 0 12px;border-bottom:1px solid var(--line)}
+.ui .cgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(112px,1fr));gap:20px 13px;margin-top:16px}
+.ui .ccard{cursor:pointer}
+.ui .cwrap{position:relative;aspect-ratio:2/3}
+/* 背后露两片边：2:3 不变形，但「这是一叠」的信号还在 */
+.ui .pk{position:absolute;inset:0;border-radius:9px;border:1px solid rgba(238,242,251,.2);background:#262b3e}
+.ui .pk1{transform:translate(11px,-6px) scale(.962);opacity:.5}
+.ui .pk2{transform:translate(5.5px,-3px) scale(.981);opacity:.8}
+.ui .face{position:absolute;inset:0;border-radius:9px;overflow:hidden;border:1px solid var(--line);box-shadow:0 4px 14px rgba(0,0,0,.55)}
+.ui .face::after{content:"";position:absolute;inset:0;background:linear-gradient(to top,rgba(6,7,11,.93) 6%,rgba(6,7,11,.22) 46%,transparent 72%)}
+.ui .cname{position:absolute;left:8px;right:8px;bottom:20px;z-index:2;font-size:12px;font-weight:700;line-height:1.28;text-shadow:0 1px 6px rgba(0,0,0,.85)}
+.ui .ccnt{position:absolute;left:8px;bottom:6px;z-index:2;font-family:var(--f-mono);font-size:10px;color:rgba(238,242,251,.66)}
+.ui .ckind{position:absolute;top:7px;left:7px;z-index:2;display:inline-flex;align-items:center;gap:4px;font-size:9.5px;
+  padding:1px 6px;border-radius:999px;background:rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.18);color:rgba(238,242,251,.82)}
+.ui .delta{position:absolute;top:7px;right:7px;z-index:3;font-family:var(--f-mono);font-size:9.5px;font-weight:600;color:var(--ok);
+  background:rgba(10,14,11,.78);border:1px solid rgba(74,222,128,.35);border-radius:999px;padding:1px 6px}
+.ui .dot{width:5px;height:5px;border-radius:50%;background:var(--info);flex:none}
+.ui .cmeta{margin-top:7px;font-size:11px;color:var(--faint);display:flex;align-items:center;gap:5px}
+.ui .newcard .cwrap,.ui .fromfilter .cwrap{border:1px dashed var(--line-2);border-radius:9px;display:grid;place-items:center;text-align:center;padding:12px}
+.ui .newcard .z{color:var(--faint);font-size:12px}
+.ui .fromfilter .cwrap{border-color:rgba(127,176,255,.45);background:rgba(127,176,255,.05)}
+.ui .fromfilter .z{color:var(--info);font-size:12px;font-weight:600;line-height:1.5}
+.ui .fromfilter .z small{display:block;font-weight:400;font-size:10.5px;color:var(--faint);margin-top:4px}
 
 /* ────────── 筛选条 ────────── */
 .ui .bar{position:relative;z-index:5;display:flex;flex-wrap:wrap;align-items:center;gap:7px;padding:12px 0 0;margin-top:16px;border-top:1px solid var(--line)}
@@ -385,7 +407,7 @@ body{margin:0;background:var(--ink);color:var(--text);font-family:var(--f-sans);
   </section>
 
   <div class="tabs" role="tablist" aria-label="样稿屏幕">
-    <button class="tab" role="tab" aria-selected="true" data-p="p1"><span class="no">01</span>筛选条与合集货架</button>
+    <button class="tab" role="tab" aria-selected="true" data-p="p1"><span class="no">01</span>作品视图：筛选 + 合集</button>
     <button class="tab" role="tab" aria-selected="false" data-p="p2"><span class="no">02</span>更多筛选：找片 / 查库</button>
     <button class="tab" role="tab" aria-selected="false" data-p="p3"><span class="no">03</span>存为合集</button>
     <button class="tab" role="tab" aria-selected="false" data-p="p4"><span class="no">04</span>合集详情</button>
@@ -407,13 +429,23 @@ body{margin:0;background:var(--ink);color:var(--text);font-family:var(--f-sans);
           <div class="main">
             <div class="head">
               <div><h2>电影库</h2><p class="sub">1,284 部 · 8.2 TB · 2 个根路径</p></div>
-              <div style="display:flex;gap:7px"><button class="btn sm">扫描</button><button class="btn sm">管理</button></div>
+              <div style="display:flex;gap:8px;align-items:center">
+                <span class="vsw"><button class="on" data-view="items">作品</button><button data-view="cols">合集</button></span>
+                <button class="btn sm">扫描</button><button class="btn sm">管理</button></div>
             </div>
-            <div class="shelf-h"><h3>合集<span class="n" id="shelfn"></span></h3><span class="sub">全部 ›</span></div>
-            <div class="shelf" id="shelf"></div>
-            <div class="bar" id="bar"></div>
-            <div class="picked" id="picked"></div>
-            <div id="result"></div>
+            <div id="viewItems">
+              <div class="crow" id="crow"></div>
+              <div class="bar" id="bar"></div>
+              <div class="picked" id="picked"></div>
+              <div id="result"></div>
+            </div>
+            <div id="viewCols" hidden>
+              <div class="gridbar"><b style="font-size:13px">全部合集</b><span class="sub" id="cgn"></span>
+                <span class="spacer"></span>
+                <button class="btn sm">排序 最近更新 ▾</button>
+                <button class="btn sm primary">＋ 新建合集</button></div>
+              <div class="cgrid" id="cgrid"></div>
+            </div>
           </div>
         </div>
       </div>
@@ -640,12 +672,13 @@ body{margin:0;background:var(--ink);color:var(--text);font-family:var(--f-sans);
 <script>
 /* ══════ 批注（随页签切换）══════ */
 const RAIL={
-p1:{h:"这一屏是真能点的",li:[
- "四个下拉都是<b>多选</b>。每行底下那条与数量成正比的<b>底条</b>是同一个机制用在所有维度上——年代档按序排下来，它自然就是一张库存分布图：你是从形状里挑，不是从一列文字里挑。",
- "数字是「在其他维度已选条件下，勾上我还剩几部」——算某一维时<b>排除该维自身</b>，否则勾了「动画」其他类型全变 0，多选就废了。0 值置灰不可点。",
- "已选条件行把<b>「或」和「且」画出来</b>：同一维度的多个值用「或」连在一个容器里，维度之间用「且」隔开。多选语义不该靠脚注解释。",
- "换排序时右侧索引条跟着换口径：默认是拼音首字母，按上映是年份，按评分是分档——它们读的是同一份有序名单。"],
- try:"叠到筛空试试：类型＝纪录片 ＋ 地区＝日韩 ＋ 观看＝已看完。不给空墙，给放宽建议；只列救得回内容的那几条。"},
+p1:{h:"合集不该横滚，筛选不该只有一列文字",li:[
+ "<b>合集在这里不是封面卡横滚，是一行 chip。</b>横滚一行占掉 160px 却只露 4–6 个，每张还只是一扇要点开才知道里面是什么的门。行业里横滚行装的是<b>内容</b>不是容器：Netflix 每一行就是一个分类、滚的是作品，分类清单本身是文字菜单；Plex 把合集发布到首页，得到的也是该合集里作品的一行。",
+ "更重要的是——合集本来就是<b>「存好的筛选」</b>。那它就该长得像筛选 chip，点一下是<b>把这面墙筛成它</b>，不是跳到另一个页面。点「日韩动画」看已选条件行：它直接把条件灌进了筛选条，并标出「＝ 合集「日韩动画」」。改动任意一条，这个标记就消失——你就从「在看一个合集」变成了「在自己筛」。",
+ "右上角切到<b>「合集」视图</b>：纵向网格，一次看全，装不下的问题从根上没有了。封面用与作品相同的 <b>2:3 竖版</b>（Plex 的做法），于是能直接落进同一套网格，不必为它单开一种布局——背后露两片边就够说明「这是一叠」。",
+ "手动合集点进去，筛选条会明说<b>「名单固定，没有规则——筛选条对它不适用」</b>，而不是让控件假装还能用。",
+ "筛选下拉里每行底下那条<b>细量条</b>与数量成正比：同一个机制用在所有维度上，年代档按序排下来自然就是一张库存分布图。数字是「在其他维度已选条件下，勾上我还剩几部」——算某一维时排除该维自身，0 值置灰。"],
+ try:"点「日韩动画」→ 看条件被灌进筛选条 → 再手动去掉「日韩」，看合集标记消失。或者叠到筛空：类型＝纪录片 ＋ 地区＝日韩 ＋ 观看＝已看完。"},
 p2:{h:"找片和查库是两种人格",li:[
  "左栏是「周五晚上想看点什么」，右栏是「我那些 4K 都在哪、哪些片缺集」。混在一行 chips 里会让两边都难用。",
  "评分和片长是<b>有序档位</b>，所以用连成一条的分段控件而不是散落的胶囊，段上的小横条还带着分布——形态要说出字段的性质。",
@@ -752,13 +785,13 @@ const DIMS=[
 ];
 const SORTS=[{k:"title",n:"默认"},{k:"added",n:"最近添加"},{k:"year",n:"上映时间"},{k:"rating",n:"评分"}];
 const sel={g:[],dec:[],reg:[],w:[]};
-let sort="title", expandReg=false;
+let sort="title", expandReg=false, manual=null, view="items";
 const dname=(d,v)=>d.name?d.name(v):v;
 const hit=(it,d,v)=>d.match?d.match(it,v):d.get(it).includes(v);
 const pass=(it,skip)=>DIMS.every(d=>d.k===skip||!sel[d.k].length||sel[d.k].some(v=>hit(it,d,v)));
 const nsel=()=>DIMS.reduce((n,d)=>n+sel[d.k].length,0);
 function matched(){
-  const list=ITEMS.filter(it=>pass(it));
+  const list=manual?manual.ids.map(i=>ITEMS[i]):ITEMS.filter(it=>pass(it));
   const by={title:(a,b)=>a.py.localeCompare(b.py)||a.i-b.i,
             added:(a,b)=>a.d-b.d, year:(a,b)=>b.y-a.y, rating:(a,b)=>b.r-a.r};
   return list.sort(by[sort]);
@@ -854,13 +887,23 @@ document.addEventListener("keydown",e=>{if(e.key==="Escape")closeMenus();});
 /* 已选条件：维内「或」连成一组，维间「且」隔开——语义画出来，不写脚注 */
 function renderPicked(){
   const box=document.getElementById("picked");
+  if(manual){
+    box.innerHTML='<span class="cgrp"><span class="k">手动合集</span><span class="cval">'+manual.n+
+      '<button data-mx aria-label="退出合集">✕</button></span></span>'+
+      '<span class="and" style="letter-spacing:0">名单固定，没有规则——筛选条对它不适用</span>'+
+      '<span class="spacer"></span><span class="count"><b>'+manual.ids.length+'</b> 部</span>';
+    box.querySelectorAll("[data-mx]").forEach(b=>b.onclick=()=>{manual=null;render();});
+    return;
+  }
   if(!nsel()){box.innerHTML="";return;}
   const groups=DIMS.filter(d=>sel[d.k].length).map(d=>
     '<span class="cgrp"><span class="k">'+d.label+'</span>'+
     sel[d.k].map(v=>'<span class="cval">'+dname(d,v)+
       '<button data-d="'+d.k+'" data-v="'+esc(v)+'" aria-label="取消 '+d.label+' '+dname(d,v)+'">✕</button></span>')
       .join('<span class="or">或</span>')+'</span>');
+  const from=COLS.find(c=>!c.ids&&sameSel(c.rules));
   box.innerHTML=groups.join('<span class="and">且</span>')+
+    (from?'<span class="and" style="letter-spacing:0">＝ 合集「'+from.n+'」</span>':"")+
     '<button class="btn sm ghost" data-clr>清空</button><span class="spacer"></span>'+
     '<span class="count">筛出 <b>'+matched().length+'</b> 部 · 共 1,284 部</span>'+
     '<button class="btn sm">⊕ 存为合集</button>';
@@ -892,38 +935,84 @@ function wire(box){
   box.querySelectorAll("[data-d]").forEach(b=>b.onclick=()=>{
     sel[b.dataset.d]=sel[b.dataset.d].filter(v=>v!==b.dataset.v);render();});
   box.querySelectorAll("[data-clr]").forEach(b=>b.onclick=()=>{
-    DIMS.forEach(d=>sel[d.k]=[]);render();});
+    manual=null;DIMS.forEach(d=>sel[d.k]=[]);render();});
 }
 
-/* ══════ 合集货架 ══════
-   封面 = 三张海报错位扇开。四格拼贴看起来像另一部作品的海报；
-   一叠东西一眼就是「一组」。类型不靠同一个角标区分，靠说明里的类型词。 */
+/* ══════ 合集 ══════
+   规则用的就是筛选条的那套 sel 结构——点一个合集 chip 等于把它的条件
+   灌进筛选条，墙立刻变成它。手动合集没有规则，只有名单。
+   数量全部按样本库实算，不是编的。 */
 const COLS=[
-  {n:"日漫 · 8 分以上",kind:"智能合集",cnt:42,delta:2,p:[0,4,1]},
-  {n:"90 年代港片",kind:"智能合集",cnt:18,delta:0,p:[11,14,13]},
-  {n:"我的 4K 收藏",kind:"智能合集",cnt:31,delta:1,p:[20,16,22]},
-  {n:"诺兰",kind:"系统 · 人物",cnt:9,delta:0,p:[23,21,22]},
-  {n:"周末陪娃看",kind:"手动合集",cnt:12,delta:0,p:[4,2,25]},
-  {n:"漫威宇宙",kind:"系统 · TMDB 系列",cnt:34,delta:0,p:[24,19,26]},
+  {n:"日韩动画",     kind:"智能",      rules:{g:["动画"],reg:["日韩"]},              delta:2},
+  {n:"90 年代港片",  kind:"智能",      rules:{reg:["港台"],dec:["1990s"]},           delta:0},
+  {n:"2020 年代新片",kind:"智能",      rules:{dec:["2020s"]},                        delta:1},
+  {n:"华语经典",     kind:"智能",      rules:{reg:["大陆","港台"],dec:["1990s","2000s"]},delta:0},
+  {n:"我的收藏",     kind:"系统",      rules:{w:["fav"]},                            delta:0},
+  {n:"纪录片",       kind:"智能",      rules:{g:["纪录片"]},                         delta:0},
+  {n:"诺兰",         kind:"系统 · 人物",ids:[20,22,23],                              delta:0},
+  {n:"周末陪娃看",   kind:"手动",      ids:[4,25,2,5,1],                             delta:0},
 ];
-function fan(idx){return '<span class="fan">'+idx.map(i=>'<i style="background:'+art(ITEMS[i])+'"></i>').join("")+'</span>';}
-function renderShelf(){
-  const auto=nsel()>0;
-  const names=DIMS.filter(d=>sel[d.k].length).map(d=>sel[d.k].map(v=>dname(d,v)).join("/")).join(" · ");
-  const ghost=auto?'<div class="col"><div class="fromfilter"><div class="tile">'+
-    '<span class="z">⊕ 把当前筛选存为合集<small>'+esc(names)+'</small></span></div></div>'+
-    '<div class="cap">从筛选新建</div><div class="meta">命中 '+matched().length+' 部</div></div>':"";
-  const cards=COLS.map(c=>'<div class="col"><div class="tile">'+fan(c.p)+
-    (c.delta?'<span class="delta">＋'+c.delta+' 本周</span>':"")+'</div>'+
-    '<div class="cap">'+c.n+'</div><div class="meta">'+
-    (c.kind==="智能合集"?'<span class="dot"></span>':"")+c.kind+' · '+c.cnt+' 部</div></div>').join("");
-  document.getElementById("shelf").innerHTML=ghost+cards+
-    '<div class="col"><div class="newcol"><div class="tile"><span class="z">＋ 新建合集</span></div></div>'+
-    '<div class="cap" style="color:var(--faint);font-weight:400">手动挑选或写规则</div></div>';
-  document.getElementById("shelfn").textContent=COLS.length+" 个";
+const SHELF_MAX=6;   /* chip 行放得下的个数，多出来的收进「全部合集」 */
+function colItems(c){
+  if(c.ids)return c.ids.map(i=>ITEMS[i]);
+  return ITEMS.filter(it=>DIMS.every(d=>!(c.rules[d.k]||[]).length||c.rules[d.k].some(v=>hit(it,d,v))));
 }
+const sameSel=r=>!manual&&DIMS.every(d=>(sel[d.k].slice().sort().join()===((r||{})[d.k]||[]).slice().sort().join()));
+function isOn(c){return c.ids?manual===c:sameSel(c.rules);}
+function applyCol(c){
+  if(isOn(c)){manual=null;DIMS.forEach(d=>sel[d.k]=[]);render();return;}
+  if(c.ids){manual=c;DIMS.forEach(d=>sel[d.k]=[]);}
+  else{manual=null;DIMS.forEach(d=>sel[d.k]=(c.rules[d.k]||[]).slice());}
+  render();
+}
+function bindCols(root){
+  root.querySelectorAll("[data-c]").forEach(b=>b.onclick=()=>applyCol(COLS[+b.dataset.c]));
+  root.querySelectorAll("[data-view]").forEach(b=>b.onclick=()=>setView(b.dataset.view));
+}
+/* ① chip 行 */
+function renderCrow(){
+  const box=document.getElementById("crow"),shown=COLS.slice(0,SHELF_MAX),rest=COLS.length-shown.length;
+  box.innerHTML='<span class="lb">合集</span>'+shown.map((c,i)=>
+    '<button class="cchip '+(isOn(c)?"on":"")+'" data-c="'+i+'">'+
+    '<span class="stk"><i></i><i></i></span>'+c.n+'<span class="n">'+colItems(c).length+'</span></button>').join("")+
+    (rest>0?'<button class="cmore" data-view="cols">还有 '+rest+' 个 ›</button>':"")+
+    '<span class="spacer"></span><button class="cmore" data-view="cols">全部合集 ›</button>';
+  bindCols(box);
+}
+/* ② 纵向网格：封面 2:3，与作品同一套网格 */
+function renderGrid(){
+  const box=document.getElementById("cgrid");
+  const cards=COLS.map((c,i)=>{
+    const its=colItems(c),cover=its[0]||ITEMS[0];
+    return '<div class="ccard" data-c="'+i+'"><div class="cwrap">'+
+      '<span class="pk pk1"></span><span class="pk pk2"></span>'+
+      '<span class="face" style="background:'+art(cover)+'">'+
+      '<span class="ckind">'+(c.kind==="智能"?'<span class="dot"></span>':"")+c.kind+'</span>'+
+      (c.delta?'<span class="delta">＋'+c.delta+' 本周</span>':"")+
+      '<span class="cname">'+c.n+'</span><span class="ccnt">'+its.length+' 部</span></span></div>'+
+      '<div class="cmeta">'+(c.ids?"名单固定":"规则收录")+'</div></div>';
+  }).join("");
+  const names=DIMS.filter(d=>sel[d.k].length).map(d=>sel[d.k].map(v=>dname(d,v)).join("/")).join(" · ");
+  const ghost=nsel()?'<div class="ccard fromfilter"><div class="cwrap"><span class="z">⊕ 把当前筛选存为合集'+
+    '<small>'+esc(names)+' · 命中 '+matched().length+' 部</small></span></div>'+
+    '<div class="cmeta">从筛选新建</div></div>':"";
+  box.innerHTML=ghost+cards+
+    '<div class="ccard newcard"><div class="cwrap"><span class="z">＋ 新建合集</span></div>'+
+    '<div class="cmeta">写规则或手动挑选</div></div>';
+  document.getElementById("cgn").textContent=COLS.length+" 个 · 6 个按规则自动收录";
+  bindCols(box);
+}
+function setView(v){
+  view=v;
+  document.getElementById("viewItems").hidden=v!=="items";
+  document.getElementById("viewCols").hidden=v!=="cols";
+  document.querySelectorAll("[data-view]").forEach(b=>{
+    if(b.parentElement.classList.contains("vsw"))b.classList.toggle("on",b.dataset.view===v);});
+  render();
+}
+document.querySelectorAll(".vsw [data-view]").forEach(b=>b.onclick=()=>setView(b.dataset.view));
 
-function render(){renderBar();renderPicked();renderResult();renderShelf();}
+function render(){renderCrow();renderBar();renderPicked();renderResult();renderGrid();}
 render();renderRail("p1");
 
 /* 其余屏 */
