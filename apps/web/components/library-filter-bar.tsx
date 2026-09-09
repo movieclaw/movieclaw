@@ -72,10 +72,15 @@ export function LibraryFilterBar({
   // 计数跟着当前条件走：每次条件变化都重取，因为"还剩几部"本来就是相对
   // 当前条件而言的。面板没打开且一个条件都没有时不请求——静止态不该
   // 为一个用户还没表达的意图付网络开销
+  // 二级维度的展示名只在 tier=all 里才有（"gt120" → "> 120′"）。所以只要**条件里
+  // 已经有二级维度**就得取全份，不能只在面板展开时取：分享进来的链接、点开的
+  // 合集都可能带着二级条件，那时面板是关的，条件行只好把裸值印出来
+  const needsAllFacets = more || hasSecondary(filter);
+
   useEffect(() => {
     if (!open && empty) return;
     let alive = true;
-    getLibraryFacets(libraryId, filter, more ? "all" : "primary")
+    getLibraryFacets(libraryId, filter, needsAllFacets ? "all" : "primary")
       .then((data) => {
         if (alive) setFacets(data);
       })
@@ -86,7 +91,7 @@ export function LibraryFilterBar({
     return () => {
       alive = false;
     };
-  }, [libraryId, filter, open, empty, more]);
+  }, [libraryId, filter, open, empty, needsAllFacets]);
 
   const toggle = useCallback(
     (dim: "genres" | "countries" | "decades", value: string) => {
@@ -240,12 +245,68 @@ export function LibraryFilterBar({
 }
 
 /** 维度名 → 该维度在条件行里的显示顺序与标签。 */
+/**
+ * 条件行里的维度顺序与叫法。
+ *
+ * **十个维度一个都不能少。** 条件行的职责是「收起面板之后，用户仍然看得见
+ * 自己筛了什么」；只画一级四维的话，用 4K 筛完再收起面板，界面上只剩一个
+ * 「筛选 1」的角标和「筛出 8 部」——筛的是什么、怎么取消，都无从得知。
+ */
 const DIMS = [
   { key: "genres", label: "类型" },
   { key: "decades", label: "年代" },
   { key: "countries", label: "地区" },
   { key: "watch", label: "观看" },
+  { key: "ratingGte", label: "评分" },
+  { key: "runtimes", label: "片长" },
+  { key: "languages", label: "语言" },
+  { key: "resolutions", label: "画质" },
+  { key: "hdr", label: "动态范围" },
+  { key: "stock", label: "库存" },
 ] as const;
+
+/** 条件里有没有二级维度（决定要不要取全份 facet：二级的展示名只在全份里）。 */
+function hasSecondary(filter: LibraryFilter): boolean {
+  return Boolean(
+    filter.ratingGte != null ||
+      filter.runtimes?.length ||
+      filter.languages?.length ||
+      filter.resolutions?.length ||
+      filter.hdr != null ||
+      filter.stock?.length,
+  );
+}
+
+/** 多值维度（单值的 watch / ratingGte / hdr 走清成 null 那条路）。 */
+type MultiDim = "genres" | "countries" | "decades" | "runtimes" | "languages" | "resolutions" | "stock";
+
+/** 维度 → 服务端 facet 里对应的候选表（取展示名用）。 */
+function poolOf(key: string, facets: LibraryFacets | null): FacetValue[] | undefined {
+  switch (key) {
+    case "genres":
+      return facets?.genres;
+    case "countries":
+      return facets?.countries;
+    case "decades":
+      return facets?.decades;
+    case "watch":
+      return facets?.watch;
+    case "ratingGte":
+      return facets?.ratings;
+    case "runtimes":
+      return facets?.runtimes;
+    case "languages":
+      return facets?.languages;
+    case "resolutions":
+      return facets?.resolutions;
+    case "hdr":
+      return facets?.hdr;
+    case "stock":
+      return facets?.stock;
+    default:
+      return undefined;
+  }
+}
 
 function ConditionRow({
   filter,
@@ -264,36 +325,33 @@ function ConditionRow({
   onSaveAsCollection?: () => void;
 }) {
   /** 取值 → 展示名：优先用 facet 带回来的 label（类型/地区靠它翻中文名）。 */
-  const labelOf = (dim: string, value: string): string => {
-    const pool =
-      dim === "genres"
-        ? facets?.genres
-        : dim === "countries"
-          ? facets?.countries
-          : dim === "decades"
-            ? facets?.decades
-            : facets?.watch;
-    return pool?.find((row) => row.value === value)?.label ?? value;
-  };
+  const labelOf = (dim: string, value: string): string =>
+    poolOf(dim, facets)?.find((row) => row.value === value)?.label ?? value;
 
+  /** 摘掉一个取值。单值维度清成 null，多值维度只去掉这一个。 */
   const drop = (dim: string, value: string) => {
-    if (dim === "watch") {
-      onFilterChange({ ...filter, watch: null });
+    if (dim === "watch" || dim === "ratingGte" || dim === "hdr") {
+      onFilterChange({ ...filter, [dim]: null });
       return;
     }
-    const key = dim as "genres" | "countries" | "decades";
+    const key = dim as MultiDim;
     const current = (filter[key] ?? []) as (string | number)[];
     const typed = dim === "genres" ? Number(value) : value;
     onFilterChange({ ...filter, [key]: current.filter((v) => v !== typed) });
   };
 
   const groups = DIMS.map(({ key, label }) => {
-    const values =
-      key === "watch"
-        ? filter.watch
-          ? [filter.watch]
-          : []
-        : ((filter[key] ?? []) as (string | number)[]).map(String);
+    let values: string[] = [];
+    if (key === "watch") {
+      values = filter.watch ? [filter.watch] : [];
+    } else if (key === "ratingGte") {
+      values = filter.ratingGte == null ? [] : [String(filter.ratingGte)];
+    } else if (key === "hdr") {
+      // facet 里 HDR/SDR 的取值是 "1"/"0"，与筛选条件的布尔值对上
+      values = filter.hdr == null ? [] : [filter.hdr ? "1" : "0"];
+    } else {
+      values = ((filter[key] ?? []) as (string | number)[]).map(String);
+    }
     return { key, label, values };
   }).filter((group) => group.values.length > 0);
 
@@ -449,9 +507,6 @@ export function WallSortControl<T extends string>({
  * 所以这里不需要再过滤：拿到空表就说明这几条两两之间就没有交集，
  * 那时只留「清空全部条件」。
  */
-/** 放宽建议里可能出现的多值维度（与服务端 _RELAX_LIST_DIMS 一一对应）。 */
-type ListDim = "genres" | "countries" | "decades" | "runtimes" | "languages" | "resolutions" | "stock";
-
 export function FilterEmptyState({
   libraryId,
   filter,
@@ -483,7 +538,7 @@ export function FilterEmptyState({
       onFilterChange({ ...filter, [dim === "rating_gte" ? "ratingGte" : dim]: null });
       return;
     }
-    const key = dim as ListDim;
+    const key = dim as MultiDim;
     const current = (filter[key] ?? []) as (string | number)[];
     const typed = dim === "genres" ? Number(value) : value;
     onFilterChange({ ...filter, [key]: current.filter((v) => v !== typed) });

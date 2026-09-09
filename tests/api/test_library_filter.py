@@ -655,6 +655,24 @@ async def test_relax_only_lists_conditions_that_actually_help(db) -> None:
         assert got.suggestions == []
 
 
+async def test_selected_values_never_vanish_from_their_own_dimension(db) -> None:
+    """选中的取值一定还在本维的候选里，哪怕被别的维度收窄到 0 部。
+
+    不这样的话：勾了「动画 + 科幻」再勾「日本」，本库的日本片里没有科幻，
+    科幻就从类型下拉里整个消失——用户既取消不掉它，条件行也查不到它的中文名，
+    只能把裸的 TMDB id「878」印在界面上。
+    """
+    async with db.session() as session:
+        library_id, _ = await _seed(session)
+        got = await _facets(
+            session, library_id, filters=LibraryFilter(genres=(16, 878), countries=("JP",))
+        )
+        by_value = {row.value: row for row in got.genres}
+        assert "878" in by_value, [r.value for r in got.genres]
+        assert by_value["878"].count == 0
+        assert by_value["878"].label != "878", "补出来的那条也要有展示名"
+
+
 async def test_relax_covers_secondary_dimensions_too(db) -> None:
     """二级维度也要给建议——不给的话界面会说一句假话。
 

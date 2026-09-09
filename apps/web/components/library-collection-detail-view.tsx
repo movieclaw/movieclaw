@@ -1,9 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import type { Route } from "next";
 
 import { useConfirm, usePrompt, useToast } from "@/components/feedback";
+import { MoreIcon } from "@/components/icons";
 import { PAGE_NAV_BUTTON_CLASS, PageNav } from "@/components/page-nav";
 import { PosterWall } from "@/components/poster-wall";
 import { WallLoadMore } from "@/components/wall-chrome";
@@ -21,6 +23,12 @@ import { usePageTitle } from "@/lib/use-page-title";
 import { usePermissions } from "@/lib/permissions";
 
 const PAGE_SIZE = 60;
+
+/** ⋯ 菜单项：与单库页那份逐字相同，两处菜单不该长得不一样。 */
+const MENU_ITEM_CLASS =
+  "glass-row nav-item cursor-pointer px-3 py-2 text-ui font-medium outline-none " +
+  "data-[highlighted]:!bg-[var(--glass-fill-hover)] data-[highlighted]:!text-[var(--text)] " +
+  "data-[disabled]:pointer-events-none data-[disabled]:opacity-40";
 
 /**
  * 合集详情页（docs/design/library-filtering.md 4.4）。
@@ -156,20 +164,41 @@ export function LibraryCollectionDetailView({
         title={collection?.name ?? "合集"}
         fallback={{ label: "媒体库", href: `/library/${libraryId}` as Route }}
         actions={
+          // 收进 ⋯，与单库页一致：顶栏那几个位子是 36px 的圆钮，塞中文标签会
+          // 挤成竖排。内置合集不可改，那颗键干脆不出现
           collection?.editable ? (
-            <>
-              <button type="button" onClick={rename} className={PAGE_NAV_BUTTON_CLASS}>
-                改名
-              </button>
-              {canManageLibraries && collection.rule_driven && (
-                <button type="button" onClick={applyToLibrary} className={PAGE_NAV_BUTTON_CLASS}>
-                  设为收藏范围
+            <DropdownMenu.Root>
+              <DropdownMenu.Trigger asChild>
+                <button
+                  type="button"
+                  aria-label="更多操作"
+                  className={`${PAGE_NAV_BUTTON_CLASS} data-[state=open]:bg-black/55 data-[state=open]:text-white`}
+                >
+                  <MoreIcon className="size-[18px] max-md:size-[22px]" />
                 </button>
-              )}
-              <button type="button" onClick={remove} className={PAGE_NAV_BUTTON_CLASS}>
-                删除
-              </button>
-            </>
+              </DropdownMenu.Trigger>
+              <DropdownMenu.Portal>
+                <DropdownMenu.Content
+                  align="end"
+                  sideOffset={6}
+                  collisionPadding={12}
+                  className="menu-surface z-50 min-w-[11rem] p-1"
+                >
+                  <DropdownMenu.Item onSelect={rename} className={MENU_ITEM_CLASS}>
+                    改名
+                  </DropdownMenu.Item>
+                  {canManageLibraries && collection.rule_driven && (
+                    <DropdownMenu.Item onSelect={applyToLibrary} className={MENU_ITEM_CLASS}>
+                      设为本库的收藏范围
+                    </DropdownMenu.Item>
+                  )}
+                  <DropdownMenu.Separator className="my-1 h-px bg-white/[0.07]" />
+                  <DropdownMenu.Item onSelect={remove} className={MENU_ITEM_CLASS}>
+                    删除合集
+                  </DropdownMenu.Item>
+                </DropdownMenu.Content>
+              </DropdownMenu.Portal>
+            </DropdownMenu.Root>
           ) : undefined
         }
       />

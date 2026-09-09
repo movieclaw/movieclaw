@@ -659,6 +659,21 @@ def _facet_scope(library_id: int, filters: LibraryFilter | None, member_id: int 
     )
 
 
+def _with_selected(rows, selected: tuple) -> list[FacetValueView]:
+    """分组结果 → 候选列表，并补齐当前选中但一条都没数到的取值（计数 0）。
+
+    这些维度的取值是**从数据里长出来的**（语言码、分辨率），所以别的维度一
+    收窄，用户勾着的那个值可能整个消失——下拉里看不见也就取消不掉。
+    """
+    counts = [(str(v), int(c)) for v, c in rows if v is not None]
+    present = {value for value, _ in counts}
+    counts.extend((str(v), 0) for v in selected if str(v) not in present)
+    return [
+        FacetValueView(value=value, label=value, count=count)
+        for value, count in sorted(counts, key=lambda r: (-r[1], r[0]))
+    ]
+
+
 async def _json_facet(
     session: AsyncSession,
     column,
@@ -666,8 +681,15 @@ async def _json_facet(
     filters: LibraryFilter | None,
     member_id: int | None,
     skip: str,
+    selected: tuple = (),
 ) -> list[tuple[str, int]]:
-    """JSON 数组列的取值分布：展开后按值分组数条目（类型、地区共用）。"""
+    """JSON 数组列的取值分布：展开后按值分组数条目（类型、地区共用）。
+
+    ``selected`` 里的取值**一定出现在结果里**（数不到就补一条 0）。不补的话，
+    别的维度一收窄，用户自己勾着的那个值会从本维的候选里消失：下拉里看不见它，
+    也就取消不掉；条件行找不到它的展示名，只能把裸值印出来（「科幻」变成
+    「878」）。为 0 的候选照常返回本来就是这里的约定，选中的更不能少。
+    """
     each = func.json_each(column).table_valued("value")
     rows = (
         await session.execute(
@@ -679,7 +701,10 @@ async def _json_facet(
             .group_by(each.c.value)
         )
     ).all()
-    return [(str(value), count) for value, count in rows if value is not None]
+    counts = [(str(value), count) for value, count in rows if value is not None]
+    present = {value for value, _ in counts}
+    counts.extend((str(value), 0) for value in selected if str(value) not in present)
+    return counts
 
 
 async def _bucket_facet(
@@ -793,14 +818,9 @@ async def _second_tier_facets(
         "runtimes": runtimes,
         "hdr": hdr,
         "stock": stock,
-        "languages": [
-            FacetValueView(value=str(v), label=str(v), count=int(c))
-            for v, c in sorted(lang_rows, key=lambda r: (-r[1], str(r[0])))
-        ],
-        "resolutions": [
-            FacetValueView(value=str(v), label=str(v), count=int(c))
-            for v, c in sorted(res_rows, key=lambda r: (-r[1], str(r[0])))
-        ],
+        # 语言与画质同理：选中的取值补一条 0，别让它从自己那一维里消失
+        "languages": _with_selected(lang_rows, filters.languages if filters else ()),
+        "resolutions": _with_selected(res_rows, filters.resolutions if filters else ()),
     }
 
 
@@ -831,10 +851,22 @@ async def build_library_facets(
     ).scalar_one()
 
     genres = await _json_facet(
-        session, MediaMetadata.genre_ids, library_id, filters, member_id, "genres"
+        session,
+        MediaMetadata.genre_ids,
+        library_id,
+        filters,
+        member_id,
+        "genres",
+        selected=filters.genres if filters else (),
     )
     countries = await _json_facet(
-        session, MediaMetadata.origin_countries, library_id, filters, member_id, "countries"
+        session,
+        MediaMetadata.origin_countries,
+        library_id,
+        filters,
+        member_id,
+        "countries",
+        selected=filters.countries if filters else (),
     )
 
     # 年代：取（条目, 年份）后在 Python 里分档——档位是闭区间常量，用 SQL 的

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -216,6 +217,10 @@ def _seed(
 
     ids: dict[str, int] = {}
 
+    #: 每部片一张不同颜色的海报：合集封面是"一叠"，几张同色图叠起来与单张
+    #: 无异，肉眼与截图都分辨不出堆叠有没有生效
+    _HUES = ("#4a6fa5", "#a5564a", "#4aa572", "#8a4aa5", "#a59a4a", "#4a9aa5")
+
     def _poster(item_id: int) -> str:
         """给条目落一张真能解码的海报资产，返回它的相对路径。
 
@@ -224,7 +229,8 @@ def _seed(
         """
         folder = metadata_dir / "images" / str(item_id)
         folder.mkdir(parents=True, exist_ok=True)
-        Image.new("RGB", (100, 150), "#4a6fa5").save(folder / "poster.jpg", "JPEG")
+        color = _HUES[item_id % len(_HUES)]
+        Image.new("RGB", (100, 150), color).save(folder / "poster.jpg", "JPEG")
         return f"{item_id}/poster.jpg"
 
     async def _run() -> None:
@@ -385,6 +391,14 @@ UHD_TITLES = _titles(lambda r: r[7] == "2160p")
 #: 电影库的全部条目 = 谱里的 + 那部未刮削的
 MOVIE_TOTAL = len(CATALOG) + 1
 
+#: 「筛选」那颗键：有条件时名字会变成「筛选 3」（角标进了可及名），所以按前缀认。
+#: 前缀也避开了「更多筛选」与「存为合集」——子串匹配会同时命中它们。
+FILTER_BTN = re.compile("^筛选")
+
+#: 「更多筛选」里那颗 2160p 药丸。条件行里的 ✕ 叫「取消 画质 2160p」，
+#: 前缀正则把两者分开。
+UHD_PILL = re.compile("^2160p")
+
 
 def test_filtering_and_collections_end_to_end(stack) -> None:  # noqa: PLR0915
     from playwright.sync_api import expect, sync_playwright
@@ -464,7 +478,7 @@ def test_filtering_and_collections_end_to_end(stack) -> None:  # noqa: PLR0915
         # ================= 1. 静止态：一行两个控件 =================
         page.goto(f"{base}/library/{movie_lib}")
         page.wait_for_load_state("networkidle")
-        expect(page.get_by_role("button", name="筛选", exact=True)).to_be_visible()
+        expect(page.get_by_role("button", name=FILTER_BTN)).to_be_visible()
         # 静止态不摆四个写着「全部」的下拉——它们只是把"什么都没选"说了四遍
         for dim in ("类型", "年代", "地区", "观看"):
             expect(page.get_by_role("button", name=dim, exact=True)).to_have_count(0)
@@ -475,7 +489,7 @@ def test_filtering_and_collections_end_to_end(stack) -> None:  # noqa: PLR0915
         shot("01-resting")
 
         # ================= 2. 一级四维：计数与多选 =================
-        page.get_by_role("button", name="筛选", exact=True).click()
+        page.get_by_role("button", name=FILTER_BTN).click()
         for dim in ("类型", "年代", "地区", "观看"):
             expect(page.get_by_role("button", name=dim, exact=True)).to_be_visible()
 
@@ -512,6 +526,11 @@ def test_filtering_and_collections_end_to_end(stack) -> None:  # noqa: PLR0915
         page.keyboard.press("Escape")
         expect(page.get_by_text("且").first).to_be_visible()
         expect(wall_cells).to_have_count(len((ANIME_TITLES | SCIFI_TITLES) & JP_TITLES))
+        # 条件行里印的必须是中文名。本库的日本片里没有科幻，所以「科幻」这一档
+        # 在类型 facet 里被收窄成了 0 部——它仍然要留在候选里，否则用户既取消
+        # 不掉它，界面上还会冒出一个裸的 TMDB id「878」
+        expect(page.get_by_text("科幻").first).to_be_visible()
+        assert "878" not in page.locator("main").inner_text(), "条件行不该印裸 id"
         shot("03-or-and")
 
         # ================= 5. URL 是筛选态唯一事实源 =================
@@ -532,27 +551,37 @@ def test_filtering_and_collections_end_to_end(stack) -> None:  # noqa: PLR0915
         assert "g=" not in page.url and "c=" not in page.url, page.url
 
         # ================= 7. 更多筛选：文件级条件只认本库 =================
-        page.get_by_role("button", name="筛选", exact=True).click()
+        page.get_by_role("button", name=FILTER_BTN).click()
         page.get_by_role("button", name="更多筛选").click()
         expect(page.get_by_text("找片")).to_be_visible()
         expect(page.get_by_text("查库")).to_be_visible()
-        page.get_by_role("button", name="2160p").click()
+        page.get_by_role("button", name=UHD_PILL).click()
         expect(wall_cells).to_have_count(len(UHD_TITLES))
+        # 二级维度也要在条件行里画出来：只画一级四维的话，用 4K 筛完再收起
+        # 面板，界面上只剩一个「筛选 1」的角标，筛的是什么、怎么取消都看不见
+        condition_row = page.get_by_text("画质").first
+        expect(condition_row).to_be_visible()
+        page.get_by_role("button", name=FILTER_BTN).click()  # 收起面板
+        expect(page.get_by_role("button", name="更多筛选")).to_have_count(0)
+        expect(page.get_by_text("画质").first).to_be_visible()
+        page.get_by_role("button", name=FILTER_BTN).click()  # 再打开
         # 剧集库里那部 2160p 的动画剧不该混进电影库的墙
         assert "某部日本动画剧" not in page.content()
         shot("04-more-filters")
 
         # ================= 7b. 查库：库存状态与观看状态 =================
-        # 面板此刻还开着（「筛选」是开关，再点一次会把它收起来），直接换条件
-        page.get_by_role("button", name="2160p").click()
+        # 「更多筛选」那一层刚才随面板一起收过，重新点开再换条件
+        if page.get_by_role("button", name=UHD_PILL).count() == 0:
+            page.get_by_role("button", name="更多筛选").click()
+        page.get_by_role("button", name=UHD_PILL).click()
         # 不在这里数总数：面板展开后墙被推下去，虚拟化只渲染窗口内的格子
         # 「文件失联」与「没刮到档案」问的是库的健康，不是作品长什么样，
         # 所以它们在右栏（查库），并且各有语义色
-        page.get_by_role("button", name="文件失联").click()
+        page.get_by_role("button", name=re.compile("^文件失联")).click()
         expect(wall_cells).to_have_count(1)
         assert MISSING_TITLE in page.content()
-        page.get_by_role("button", name="文件失联").click()
-        page.get_by_role("button", name="没刮到档案").click()
+        page.get_by_role("button", name=re.compile("^文件失联")).click()
+        page.get_by_role("button", name=re.compile("^没刮到档案")).click()
         expect(wall_cells).to_have_count(1)
         assert UNSCRAPED_TITLE in page.content()
         page.get_by_role("button", name="清空").click()
@@ -567,6 +596,14 @@ def test_filtering_and_collections_end_to_end(stack) -> None:  # noqa: PLR0915
         page.wait_for_load_state("networkidle")
         expect(wall_cells).to_have_count(1)
         assert "寄生虫" in page.content()
+
+        # 分享进来的链接可能带二级条件，而那时面板是关的：条件行仍然要印出
+        # 可读的档名（"gt120" → "> 120′"），不能把裸值摆在界面上
+        page.goto(f"{base}/library/{movie_lib}?rt=gt120")
+        page.wait_for_load_state("networkidle")
+        expect(page.get_by_text("片长").first).to_be_visible()
+        assert "gt120" not in page.locator("main").inner_text(), "条件行不该印裸档名"
+        expect(page.get_by_text("> 120′").first).to_be_visible()
 
         # ================= 8. 筛空不给空墙，放宽建议能救回来 =================
         # 注意：**点不出**空墙——计数为 0 的选项在下拉与药丸里都是禁用的
@@ -600,7 +637,7 @@ def test_filtering_and_collections_end_to_end(stack) -> None:  # noqa: PLR0915
         expect(wall_cells).to_have_count(MOVIE_TOTAL)
 
         # ================= 9. 存为合集：用后果的语言问，不写 smart/manual =====
-        page.get_by_role("button", name="筛选", exact=True).click()
+        page.get_by_role("button", name=FILTER_BTN).click()
         page.get_by_role("button", name="类型", exact=True).click()
         page.get_by_role("menuitem").filter(has_text="动画").click()
         page.keyboard.press("Escape")
@@ -660,6 +697,16 @@ def test_filtering_and_collections_end_to_end(stack) -> None:  # noqa: PLR0915
         expect(card).to_be_visible()
         expect(card).to_contain_text("日本动画")
         expect(card).to_contain_text("自动收录")
+        # 封面**真的解码出来了**，不只是 <img> 在 DOM 里。第一版这里是通过的，
+        # 但截图上卡片是空的——自己写的 <img loading="lazy"> 在
+        # content-visibility 跳过态的子树里永远不发请求（见 poster-image.tsx）
+        cover_img = card.locator("img").first
+        expect(cover_img).to_be_visible()
+        page.wait_for_function(
+            "el => el.complete && el.naturalWidth > 0",
+            arg=cover_img.element_handle(),
+            timeout=10_000,
+        )
         shot("07-collections-grid")
         card.click()
         page.wait_for_url(lambda u: "/c/" in u)
@@ -669,6 +716,11 @@ def test_filtering_and_collections_end_to_end(stack) -> None:  # noqa: PLR0915
         expect(page.get_by_text("类型").first).to_be_visible()
         expect(page.get_by_text("动画").first).to_be_visible()
         expect(page.locator("[data-library-item-id]")).to_have_count(len(ANIME_TITLES & JP_TITLES))
+        # 管理动作收在 ⋯ 里：顶栏那几个位子是 36px 圆钮，塞中文标签会挤成竖排
+        page.get_by_role("button", name="更多操作").click()
+        expect(page.get_by_role("menuitem", name="改名")).to_be_visible()
+        expect(page.get_by_role("menuitem", name="删除合集")).to_be_visible()
+        page.keyboard.press("Escape")
         shot("08-collection-detail")
 
         # ================= 13. 合集与海报墙返回同一批 id =================
@@ -810,7 +862,7 @@ def test_more_filters_is_a_bottom_sheet_on_mobile(stack) -> None:
 
         page.goto(f"{base}/library/{movie_lib}")
         page.wait_for_load_state("networkidle")
-        page.get_by_role("button", name="筛选", exact=True).click()
+        page.get_by_role("button", name=FILTER_BTN).click()
         # 一级四维在窄屏横滚，不换行——四个下拉换行会把墙推下去半屏
         dims = page.get_by_role("button", name="类型", exact=True).locator("xpath=..")
         assert "overflow-x-auto" in (dims.get_attribute("class") or "")
@@ -827,7 +879,7 @@ def test_more_filters_is_a_bottom_sheet_on_mobile(stack) -> None:
         # 每次勾选立即生效，主按钮上的数字实时跳——不做「确定」式提交
         view_all = page.locator("button").filter(has_text="查看")
         expect(view_all).to_contain_text(str(MOVIE_TOTAL))
-        page.get_by_role("button", name="2160p").click()
+        page.get_by_role("button", name=UHD_PILL).click()
         expect(view_all).to_contain_text(str(len(UHD_TITLES)))
         # 墙也已经跟着变了（抽屉还开着）
         expect(page.locator("[data-library-item-id]")).to_have_count(len(UHD_TITLES))
@@ -842,7 +894,7 @@ def test_more_filters_is_a_bottom_sheet_on_mobile(stack) -> None:
         #（数到的是渲染窗口），只确认它比刚才那 8 部多，且条件真的清掉了
         expect(page.locator("[data-library-item-id]").nth(len(UHD_TITLES))).to_be_attached()
         assert "res=" not in page.url, page.url
-        expect(page.get_by_role("button", name="筛选", exact=True)).not_to_contain_text("1")
+        expect(page.get_by_role("button", name=FILTER_BTN)).not_to_contain_text("1")
 
         context.close()
         browser.close()

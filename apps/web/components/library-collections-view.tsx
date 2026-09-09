@@ -3,6 +3,7 @@
 import type { Route } from "next";
 import Link from "next/link";
 
+import { PosterImage } from "@/components/poster-image";
 import type { Collection } from "@/lib/api/collections";
 import { imageUrl } from "@/lib/image-proxy";
 
@@ -87,22 +88,41 @@ function CollectionCover({ collection }: { collection: Collection }) {
           暂无封面
         </div>
       ) : (
+        // 用全站统一的 PosterImage，不要自己写 <img>：卡片这类格子常处在
+        // content-visibility 跳过态，Chromium 不给里面的 loading="lazy" 做
+        // 相交判定，图会一直不发请求（见 poster-image.tsx 的模块注释）
+        //
+        // 几何：每张都比框窄一截（FRONT_WIDTH），后面的依次右移、上下内缩、
+        // 压暗，于是右边露出两片窄边——「这是一叠」的信号就靠它，不靠改宽高比。
+        // 最前那张必须**窄于框**，否则它会把身后两张整片盖住，看着与单张无异。
         shown.map((cover, index) => (
-          <img
+          <div
             key={cover.url}
-            src={imageUrl(cover.url)}
-            alt=""
-            loading="lazy"
-            // 第一张完整铺在最前，后面的向右挪出去一截、压暗，只从右边露一条
-            className="absolute inset-y-0 h-full w-full object-cover"
+            className="absolute overflow-hidden rounded-xl"
             style={{
-              left: `${index * 7}%`,
+              left: `${index * STACK_STEP}%`,
+              width: `${FRONT_WIDTH}%`,
+              top: `${index * STACK_INSET}%`,
+              bottom: `${index * STACK_INSET}%`,
               zIndex: shown.length - index,
-              filter: index === 0 ? undefined : "brightness(0.5)",
+              filter: index === 0 ? undefined : "brightness(0.55)",
             }}
-          />
+          >
+            <PosterImage
+              src={imageUrl(cover.url)}
+              alt=""
+              className="absolute inset-0 size-full object-cover"
+            />
+          </div>
         ))
       )}
     </div>
   );
 }
+
+/** 最前那张占框宽的比例：留出右边那两片窄边。 */
+const FRONT_WIDTH = 86;
+/** 每往后一张右移多少（框宽的百分比）。 */
+const STACK_STEP = 7;
+/** 每往后一张上下各内缩多少（框高的百分比）：越靠后越"矮"，才有纵深。 */
+const STACK_INSET = 2.5;
