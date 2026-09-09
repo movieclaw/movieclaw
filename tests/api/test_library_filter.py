@@ -607,3 +607,67 @@ async def test_new_sorts_respect_filters(db) -> None:
         library_id, _ = await _seed_metrics(session)
         got = await _order(session, library_id, "rating", filters=LibraryFilter(countries=("JP",)))
         assert got == ["千与千寻", "你的名字"]
+
+
+# ---------------------------------------------------------------------------
+# 放宽建议（铁律 2：永不空货架）
+# ---------------------------------------------------------------------------
+
+
+async def _relax(session, library_id, filters):
+    from movieclaw_api.services.library.items import build_library_relax
+
+    return await build_library_relax(
+        session, library_id, "movie", filters=filters, member_id=_ME
+    )
+
+
+async def test_relax_suggests_the_condition_that_saves_the_most(db) -> None:
+    """筛空时给出路：去掉哪一条能救回多少部，按能救回的数量倒序。"""
+    async with db.session() as session:
+        library_id, _ = await _seed(session)
+        # 动画 + 韩国 = 0 部；去掉韩国还剩 2 部动画，去掉动画还剩 1 部韩国片
+        got = await _relax(session, library_id, LibraryFilter(genres=(16,), countries=("KR",)))
+
+        assert got.total == 0
+        assert [(s.dim, s.label, s.count) for s in got.suggestions] == [
+            ("countries", "韩国", 2),
+            ("genres", "动画", 1),
+        ]
+
+
+async def test_relax_only_lists_conditions_that_actually_help(db) -> None:
+    """「去掉它还是 0 部」是噪音不是建议，一条都不列。
+
+    纪录片 + 日韩 + 已看完：三条里去掉任意一条仍然是 0（本库没有纪录片，
+    也没有日韩的已看完影片），所以建议为空，前端只留「清空全部条件」。
+    """
+    async with db.session() as session:
+        library_id, _ = await _seed(session)
+        dead = LibraryFilter(genres=(99,), countries=("JP", "KR"), watch="played")
+        got = await _relax(session, library_id, dead)
+
+        assert got.total == 0
+        assert got.suggestions == []
+
+
+async def test_relax_caps_at_three(db) -> None:
+    """最多三条：再多就不是建议，是又一份要读的清单。"""
+    async with db.session() as session:
+        library_id, _ = await _seed(session)
+        many = LibraryFilter(
+            genres=(16, 18, 878), countries=("JP",), decades=("1990s",), watch="unwatched"
+        )
+        got = await _relax(session, library_id, many)
+        assert len(got.suggestions) <= 3
+        assert all(s.count > 0 for s in got.suggestions)
+
+
+async def test_relax_labels_are_human(db) -> None:
+    """建议文案直接可读：维度名 + 取值展示名，不给前端留翻译活。"""
+    async with db.session() as session:
+        library_id, _ = await _seed(session)
+        got = await _relax(session, library_id, LibraryFilter(genres=(16,), countries=("KR",)))
+        first = got.suggestions[0]
+        assert first.dim_label in {"类型", "地区", "年代", "观看"}
+        assert first.label and not first.label.isdigit()

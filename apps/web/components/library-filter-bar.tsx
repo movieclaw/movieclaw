@@ -10,8 +10,10 @@ import {
   type LibraryFacets,
   type LibraryFilter,
   type LibraryItemSort,
+  type LibraryRelax,
   type WatchFilter,
   getLibraryFacets,
+  getLibraryRelax,
   isFilterEmpty,
 } from "@/lib/api/libraries";
 
@@ -344,5 +346,94 @@ export function WallSortControl<T extends string>({
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>
+  );
+}
+
+/**
+ * 筛空之后的出路（铁律 2：永不空货架）。
+ *
+ * 不渲染空墙——空墙什么也没说，用户只能自己一条条试。这里直接告诉他
+ * 「放宽哪一条能救回多少部」，一点就生效。服务端**只返回救得回内容的条件**，
+ * 所以这里不需要再过滤：拿到空表就说明这几条两两之间就没有交集，
+ * 那时只留「清空全部条件」。
+ */
+export function FilterEmptyState({
+  libraryId,
+  filter,
+  onFilterChange,
+}: {
+  libraryId: number;
+  filter: LibraryFilter;
+  onFilterChange: (next: LibraryFilter) => void;
+}) {
+  const [relax, setRelax] = useState<LibraryRelax | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    getLibraryRelax(libraryId, filter)
+      .then((data) => alive && setRelax(data))
+      .catch(() => alive && setRelax(null));
+    return () => {
+      alive = false;
+    };
+  }, [libraryId, filter]);
+
+  const count =
+    (filter.genres?.length ?? 0) +
+    (filter.countries?.length ?? 0) +
+    (filter.decades?.length ?? 0) +
+    (filter.watch ? 1 : 0);
+
+  const drop = (dim: string, value: string) => {
+    if (dim === "watch") {
+      onFilterChange({ ...filter, watch: null });
+      return;
+    }
+    const key = dim as "genres" | "countries" | "decades";
+    const current = (filter[key] ?? []) as (string | number)[];
+    const typed = dim === "genres" ? Number(value) : value;
+    onFilterChange({ ...filter, [key]: current.filter((v) => v !== typed) });
+  };
+
+  const suggestions = relax?.suggestions ?? [];
+  return (
+    <div className="mx-6 mt-8 max-w-[34rem] rounded-2xl border border-dashed border-white/[0.14] p-6 max-md:mx-4 max-md:mt-6 max-md:p-4">
+      <h3 className="text-body-lg font-semibold text-white">
+        没有同时满足这 {count} 个条件的作品
+      </h3>
+      <p className="mt-1 text-sub text-[var(--text-muted)]">
+        {suggestions.length > 0
+          ? "放宽一条就能找回内容。"
+          : "这几个条件两两之间就没有交集，去掉任意一条也救不回来。"}
+      </p>
+      <div className="mt-4 flex flex-col gap-1.5">
+        {suggestions.map((row) => (
+          <button
+            key={`${row.dim}:${row.value}`}
+            type="button"
+            onClick={() => drop(row.dim, row.value)}
+            className="glass-row flex items-center gap-3 rounded-xl px-3 py-2 text-left text-sub text-white/80 hover:!bg-[var(--glass-fill-hover)] hover:text-white"
+          >
+            <span className="min-w-0 flex-1">
+              去掉「
+              <span className="font-semibold text-white">
+                {row.dim_label} = {row.label}
+              </span>
+              」
+            </span>
+            <span className="shrink-0 font-mono text-caption tabular-nums text-[var(--info)]">
+              → {row.count} 部
+            </span>
+          </button>
+        ))}
+      </div>
+      <button
+        type="button"
+        onClick={() => onFilterChange({})}
+        className="mt-3 rounded-full px-3 py-1.5 text-caption text-white/50 hover:bg-white/10 hover:text-white"
+      >
+        清空全部条件
+      </button>
+    </div>
   );
 }

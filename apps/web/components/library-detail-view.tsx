@@ -21,7 +21,11 @@ import {
   PosterGridIcon,
   XIcon,
 } from "@/components/icons";
-import { LibraryFilterBar, WallSortControl } from "@/components/library-filter-bar";
+import {
+  FilterEmptyState,
+  LibraryFilterBar,
+  WallSortControl,
+} from "@/components/library-filter-bar";
 import { PAGE_NAV_BUTTON_CLASS, PageNav } from "@/components/page-nav";
 import { usePageTitle } from "@/lib/use-page-title";
 import { LibraryFormDialog } from "@/components/library-form-dialog";
@@ -1619,7 +1623,15 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
       )}
 
       {/* —— 库存海报墙（追踪中置顶时补「已入库」标题，两片海报墙不致连读）—— */}
-      {items.length === 0 && provisional.length === 0 ? (
+      {items.length === 0 && provisional.length === 0 && filtering ? (
+        // 筛空了不给空墙——给一条真能救回内容的出路（铁律 2）。库本身就是空的
+        // 是另一回事，走下面那个分支
+        <FilterEmptyState
+          libraryId={libraryId}
+          filter={filter}
+          onFilterChange={applyFilter}
+        />
+      ) : items.length === 0 && provisional.length === 0 ? (
         <p className="mt-16 text-center text-ui leading-7 text-[var(--text-muted)]">
           这个库还没有内容。
           <br />

@@ -36,6 +36,7 @@ from movieclaw_api.schemas.library import (
     LibraryItemDetailView,
     LibraryItemView,
     LibraryPayload,
+    LibraryRelaxView,
     LibraryReorderPayload,
     LibrarySearchGroupView,
     LibraryView,
@@ -98,6 +99,7 @@ from movieclaw_api.services.library.items import (
     build_library_facets,
     build_library_gallery,
     build_library_index,
+    build_library_relax,
     build_library_wall,
     build_season_episodes,
     delete_item_files,
@@ -1866,6 +1868,34 @@ async def get_library_facets(
             library.kind,
             filters=filters,
             member_id=member_id,
+        )
+    )
+
+
+@router.get(
+    "/{library_id}/relax",
+    response_model=ApiResponse[LibraryRelaxView],
+    summary="筛空时的放宽建议（只列救得回内容的条件）",
+    operation_id="library.items.relax",
+    dependencies=[Depends(require_library_visible)],
+)
+async def get_library_relax(
+    library_id: int,
+    filters: Annotated[LibraryFilter, Depends(_filter_params)],
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_library_visible),
+) -> ApiResponse[LibraryRelaxView]:
+    """与 ``/items`` 同参。前端在墙筛空时调它，拿到「放宽哪一条能救回多少部」。
+
+    不渲染空墙是产品铁律（docs/design/library-filtering.md 铁律 2）：
+    Netflix 的货架永远不空，这不是美学，是留存。
+    """
+
+    library = await LibraryConfigService(session).get(library_id)  # 404 检查
+    member_id = principal.member_id if principal.member_id is not None else 0
+    return ok(
+        await build_library_relax(
+            session, library_id, library.kind, filters=filters, member_id=member_id
         )
     )
 

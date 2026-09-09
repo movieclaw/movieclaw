@@ -596,6 +596,30 @@ export function listLibraryItemIndex(
   );
 }
 
+/** 筛空时的一条放宽建议。 */
+export interface RelaxSuggestion {
+  dim: string;
+  dim_label: string;
+  value: string;
+  label: string;
+  /** 去掉它之后能找回多少部（恒 > 0——救不回的条件根本不会出现在这里） */
+  count: number;
+}
+
+/** 筛空之后的出路。 */
+export interface LibraryRelax {
+  total: number;
+  suggestions: RelaxSuggestion[];
+}
+
+/** 筛空时问服务端「放宽哪一条能救回多少部」——与 listLibraryItems 同参。 */
+export function getLibraryRelax(id: number, filter?: LibraryFilter): Promise<LibraryRelax> {
+  const query = new URLSearchParams();
+  filterQuery(filter, query);
+  const suffix = query.size > 0 ? `?${query}` : "";
+  return unwrap(request<ApiEnvelope<LibraryRelax>>(`/libraries/${id}/relax${suffix}`));
+}
+
 /** 筛选面板里的一个候选值（计数已排除本维自身的条件）。 */
 export interface FacetValue {
   value: string;

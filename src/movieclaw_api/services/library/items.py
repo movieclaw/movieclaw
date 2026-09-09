@@ -30,7 +30,7 @@ import os
 import re
 import shutil
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Literal, NamedTuple
@@ -48,6 +48,8 @@ from movieclaw_api.schemas.library import (
     LibraryInventorySummaryView,
     LibraryItemView,
     LibraryRecentAdditionView,
+    LibraryRelaxView,
+    RelaxSuggestionView,
     derive_air_status,
 )
 from movieclaw_api.services.library.artwork import ART_EXTS, find_artwork
@@ -678,6 +680,81 @@ async def build_library_facets(
             for key, count in decade_counts.items()
         ],
         watch=[FacetValueView(value=v, label=lb, count=c) for v, lb, c in watch_counts],
+    )
+
+
+#: 维度名 → 展示名（放宽建议的文案用）
+_DIM_LABELS = {"genres": "类型", "countries": "地区", "decades": "年代", "watch": "观看"}
+
+
+async def _count_matching(
+    session: AsyncSession, library_id: int, filters: LibraryFilter | None, member_id: int | None
+) -> int:
+    """当前条件下的命中数（与墙同口径：本库、已识别、有在位文件）。"""
+    return int(
+        (
+            await session.execute(
+                select(func.count(func.distinct(LibraryFile.media_item_id))).where(
+                    *_facet_scope(library_id, filters, member_id, skip="")
+                )
+            )
+        ).scalar_one()
+    )
+
+
+async def build_library_relax(
+    session: AsyncSession,
+    library_id: int,
+    kind: str,
+    *,
+    filters: LibraryFilter,
+    member_id: int | None = None,
+) -> LibraryRelaxView:
+    """筛空时的放宽建议：逐条剔除已选条件后重算命中数，取最大的前三条。
+
+    **只列命中数 > 0 的条件。** 多维交叉时经常出现"去掉它还是 0 部"的剔除项
+    （比如同时选了纪录片、日韩、已看完，去掉任意一条仍然是 0），把它们摆出来
+    是噪音不是建议——用户要的是一条真能救回内容的出路，不是一份无效操作清单。
+    一条都救不回时返回空表，前端只留「清空全部条件」。
+    """
+    total = await _count_matching(session, library_id, filters, member_id)
+    rows: list[tuple[str, str, int]] = []
+    for dim in ("genres", "countries", "decades"):
+        for value in getattr(filters, dim):
+            kept = tuple(v for v in getattr(filters, dim) if v != value)
+            trimmed = replace(filters, **{dim: kept})
+            left = await _count_matching(session, library_id, trimmed, member_id)
+            rows.append((dim, str(value), left))
+    if filters.watch:
+        trimmed = replace(filters, watch=None)
+        rows.append(
+            ("watch", filters.watch, await _count_matching(session, library_id, trimmed, member_id))
+        )
+
+    watch_labels = dict(_WATCH_LABELS)
+
+    def _label(dim: str, value: str) -> str:
+        if dim == "genres":
+            return genre_label(kind, int(value)) if value.lstrip("-").isdigit() else value
+        if dim == "countries":
+            return country_label(value)
+        if dim == "decades":
+            return "更早" if value == "earlier" else value
+        return watch_labels.get(value, value)  # type: ignore[arg-type]
+
+    best = sorted((r for r in rows if r[2] > 0), key=lambda r: -r[2])[:3]
+    return LibraryRelaxView(
+        total=total,
+        suggestions=[
+            RelaxSuggestionView(
+                dim=dim,
+                dim_label=_DIM_LABELS.get(dim, dim),
+                value=value,
+                label=_label(dim, value),
+                count=count,
+            )
+            for dim, value, count in best
+        ],
     )
 
 
