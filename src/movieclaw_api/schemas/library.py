@@ -427,6 +427,42 @@ class LibraryFacetsView(BaseModel):
     stock: list[FacetValueView] = Field(default_factory=list, description="库存状态（查库）")
 
 
+class CollectionView(BaseModel):
+    """一个合集。形态（规则驱动 / 名单驱动、可不可改）是**推导**出来的，不是存的。"""
+
+    id: int
+    name: str
+    library_id: int | None = Field(description="所属库；null=跨库合集")
+    rules: list = Field(default_factory=list, description="收录规则，与 library.match_rules 同构")
+    sort: str = Field(description="合集内默认排序")
+    visibility: str = Field(description="household=全家可见 / private=只有我")
+    builtin: str | None = Field(default=None, description="内置合集标识；null=用户创建")
+    editable: bool = Field(description="能不能改规则（builtin 为 null 才能）")
+    rule_driven: bool = Field(description="规则驱动（会自己长）还是名单驱动（固定）")
+    item_count: int = Field(description="当前可见成员数")
+    cover_item_id: int | None = Field(default=None, description="封面取哪部作品；null=取首个成员")
+    position: int
+
+
+class CollectionPayload(BaseModel):
+    """创建 / 更新合集的请求体。不传的字段一律「不改动」。"""
+
+    name: str | None = Field(default=None, description="展示名")
+    library_id: int | None = Field(default=None, description="所属库（创建时必给）")
+    rules: list | None = Field(
+        default=None, description="收录规则；给空表 = 改成名单驱动（配合 item_ids 快照）"
+    )
+    sort: str | None = Field(default=None, description="合集内默认排序")
+    visibility: Literal["household", "private"] | None = Field(default=None)
+    item_ids: list[int] | None = Field(
+        default=None,
+        description=(
+            "固定名单（「固定当前这 N 部」就是把此刻的命中集快照过来）；"
+            "给了它就是名单驱动的合集"
+        ),
+    )
+
+
 class RelaxSuggestionView(BaseModel):
     """筛空时的一条放宽建议（docs/design/library-filtering.md 3.3）。"""
 

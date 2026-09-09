@@ -33,6 +33,7 @@ from movieclaw_api.api.routes.appearance import router as appearance_router
 from movieclaw_api.api.routes.auth import router as auth_router
 from movieclaw_api.api.routes.channels import router as channels_router
 from movieclaw_api.api.routes.channels_im import router as channels_im_router
+from movieclaw_api.api.routes.collections import router as collections_router
 from movieclaw_api.api.routes.discover import router as discover_router
 from movieclaw_api.api.routes.discover import search_router as title_search_router
 from movieclaw_api.api.routes.discover import ui_router as discovery_ui_router
@@ -105,6 +106,7 @@ _MEMBER_ROUTERS = [
     # 否则 "trashed-files" 会被当成 library_id 校验失败（422）
     library_recycle_router,
     libraries_router,
+    collections_router,
     people_router,
     playback_router,
 ]
