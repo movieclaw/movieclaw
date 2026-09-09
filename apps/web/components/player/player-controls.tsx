@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ActivityIcon, CheckIcon, ExpandIcon, GearIcon, ShrinkIcon } from "@/components/icons";
+import { ActivityIcon, CheckIcon, ExpandIcon, MoreIcon, ShrinkIcon } from "@/components/icons";
 import type { PlaybackChapterMark } from "@/lib/api/playback";
 import type { AudioOption } from "@/lib/player/audio-tracks";
 import { SUBTITLE_OFFSET_STEP, clampSubtitleOffset } from "@/lib/player/subtitles";
@@ -45,6 +45,9 @@ import { type TrickplayIndex, tileAt } from "@/lib/player/trickplay";
 
 /** 功能键图标尺寸：与 page-nav 的顶栏控件一致。 */
 const ICON = "size-[18px] max-md:size-[22px]";
+
+/** 时间行那两颗（横屏/全屏）用的小一号图标，理由见 IconButton 的 `compact`。 */
+const ICON_SM = "size-4 max-md:size-[18px]";
 
 /**
  * 切集胶囊（上一集 / 下一集 / 已完结）的共用形制。
@@ -164,9 +167,9 @@ function SubtitleGlyph() {
  * 之后**的样子——图标表示结果而不是现状，否则用户要在脑子里做一次取反。
  * 弧和箭头必须占到图标的一半以上：小弧挤在角落里 36px 下根本读不出旋转。
  */
-function RotateGlyph({ active }: { active: boolean }) {
+function RotateGlyph({ active, className }: { active: boolean; className?: string }) {
   return (
-    <StrokeIcon>
+    <StrokeIcon className={className}>
       {active ? (
         <>
           <path d="M20.5 11.5A8 8 0 0 0 12.5 3.5" />
@@ -535,12 +538,13 @@ export function PlayerControls(props: PlayerControlsProps) {
       >
         {/* 两段各自成元素、靠 gap 分开：药丸是 flex，写在文字里的前导空格会
             被折掉，变成「41:00/ 2:32:00」 */}
-        {/* 时间是**读数**，比按钮矮一档（28 vs 36/44）。原来它取的是按钮那档
-            高度，于是一行里最不需要被点的东西看着最像能点的；移动端更离谱——
-            那 44px 是 Apple HIG 的最小触控目标，给一个不可点的读数套触控尺寸
-            纯属白占地方，所以这里不跟着断点放大，两端统一 28。
-            主次靠颜色分：已播时间实白 + medium，总时长压到 40%。 */}
-        <span className="player-glass inline-flex h-7 items-center gap-1 rounded-full px-2.5 text-[12px] font-medium tabular-nums text-white">
+        {/* 时间是**读数**，比进度条下方那排操作键矮一档（28/36 vs 44/52）：
+            一行里最不需要被点的东西不该看着最像能点的。
+            主次靠颜色分：已播时间实白 + medium，总时长压到 40%。
+
+            高度必须与同一行右端的按钮卡片一致——两端对齐的一行，两头不等高
+            就是歪的。所以这里跟着断点走 28/36，右边那张卡片同样两档。 */}
+        <span className="player-glass inline-flex h-7 items-center gap-1 rounded-full px-2.5 text-[12px] font-medium tabular-nums text-white max-md:h-9 max-md:px-3">
           <span>{formatClock(shown)}</span>
           <span className="font-normal text-white/40">
             / {durationMs ? formatClock(durationMs) : "--:--"}
@@ -554,19 +558,28 @@ export function PlayerControls(props: PlayerControlsProps) {
             两颗共一张磨砂卡片，而不是各自套一层玻璃：进度条下方那排
             音轨/字幕/设置用的就是这个形制，同类东西（次级控制）在一个播放器里
             只该有一种长相。顺带把两块 backdrop-filter 并成一块——每块磨砂都
-            要逐帧重采样视频（globals.css 的 .player-glass 注释）。 */}
+            要逐帧重采样视频（globals.css 的 .player-glass 注释）。
+
+            卡片高度与左边的时间读数钉成同一档（28/36），键因此收成 compact
+            的 24/32（取舍见 IconButton 的 compact）。这一行整体就比进度条下方
+            那排操作区轻一档——上面是「读数 + 看的形态」，下面才是「对这次播放
+            做什么」。 */}
         <div
-          className={`player-glass flex items-center gap-1 rounded-full px-1.5 py-1 ${
+          className={`player-glass flex h-7 items-center gap-0.5 rounded-full px-1 max-md:h-9 max-md:gap-1 max-md:px-1.5 ${
             chromeVisible ? "pointer-events-auto" : ""
           }`}
         >
           {canRotate ? (
-            <IconButton tip={landscape ? "退出横屏" : "横屏"} onClick={onToggleLandscape}>
-              <RotateGlyph active={landscape} />
+            <IconButton compact tip={landscape ? "退出横屏" : "横屏"} onClick={onToggleLandscape}>
+              <RotateGlyph active={landscape} className={ICON_SM} />
             </IconButton>
           ) : null}
-          <IconButton tip={fullscreen ? "退出全屏" : "全屏"} onClick={onToggleFullscreen}>
-            {fullscreen ? <ShrinkIcon className={ICON} /> : <ExpandIcon className={ICON} />}
+          <IconButton compact tip={fullscreen ? "退出全屏" : "全屏"} onClick={onToggleFullscreen}>
+            {fullscreen ? (
+              <ShrinkIcon className={ICON_SM} />
+            ) : (
+              <ExpandIcon className={ICON_SM} />
+            )}
           </IconButton>
         </div>
       </div>
@@ -836,7 +849,11 @@ export function PlayerControls(props: PlayerControlsProps) {
                   open={menu === "settings"}
                   onClick={() => openMenu(menu === "settings" ? "none" : "settings")}
                 >
-                  <GearIcon className={ICON} />
+                  {/* 三点而不是齿轮：齿轮在播放器里指向「偏好设置」，而这颗后面
+                      是画质与播放诊断——一组针对**这次播放**的杂项，三点的
+                      「还有别的」正是这个语义。说明气泡与面板标题仍是「设置」，
+                      点开看到的东西没变。 */}
+                  <MoreIcon className={ICON} />
                 </IconButton>
                 {menu === "settings" ? (
                   <MenuPanel title="设置" onClose={() => openMenu("none")}>
@@ -994,6 +1011,7 @@ function IconButton({
   tip,
   active,
   open,
+  compact,
   onClick,
   children,
 }: {
@@ -1007,6 +1025,17 @@ function IconButton({
   active?: boolean;
   /** 这个按钮的菜单正展开着 */
   open?: boolean;
+  /**
+   * 小一号（24 / 窄屏 32），给**时间那一行**的横屏与全屏用。
+   *
+   * 那一行的主角是时间读数（28 高），旁边杵着 44/52 的键就不成对了。缩到和
+   * 读数同高是这条要解决的问题。代价是窄屏命中区从 44 掉到 32，低于 HIG 的
+   * 最小触控目标——这里认下来，因为：这两颗是全场按得最少的键（进播放器时
+   * 定一次形态就不再动），四周全是空白（上方那截 pt-24 的透明带、右侧到屏幕
+   * 边缘），点偏了只会落到画面上，而点画面就是开合控制层，代价接近零。真正
+   * 高频的音轨/字幕/更多/切集全在进度条下方，仍是 36/44。
+   */
+  compact?: boolean;
   onClick: () => void;
   children: React.ReactNode;
 }) {
@@ -1019,7 +1048,9 @@ function IconButton({
       data-tip={tip}
       data-active={active ? "true" : undefined}
       data-open={open ? "true" : undefined}
-      className="player-btn player-tip size-9 shrink-0 max-md:size-11"
+      className={`player-btn player-tip shrink-0 ${
+        compact ? "size-6 max-md:size-8" : "size-9 max-md:size-11"
+      }`}
     >
       {children}
     </button>
