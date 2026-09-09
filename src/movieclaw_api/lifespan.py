@@ -53,6 +53,28 @@ async def _reset_stale_verifying() -> None:
             logger.info("已重置 %d 个卡在验证中的 LLM 供应商实例为待验证", count)
 
 
+async def _ensure_builtin_collections() -> None:
+    """给每个库补齐内置合集（现在只有「我的收藏」），幂等。
+
+    做成启动自愈而不是一次性迁移：迁移只补得到"迁移那一刻已经存在"的库，
+    此后任何绕过建库接口写进来的库（导入、测试夹具、手工 SQL）都会缺这一行，
+    表现为该库的合集列表里凭空少一个。这里每次启动核一遍，缺了就补。
+
+    代价是每个库一次 SELECT——库的数量是个位数，可以忽略。
+    """
+    from sqlmodel import select
+
+    from movieclaw_api.services.library.collections import ensure_builtin_collections
+    from movieclaw_db.models import Library
+
+    async with get_database().session() as session:
+        library_ids = (await session.execute(select(Library.id))).scalars().all()
+        for library_id in library_ids:
+            if library_id is not None:
+                await ensure_builtin_collections(session, library_id)
+        await session.commit()
+
+
 async def _encrypt_plaintext_credentials() -> None:
     """把加密内核上线前落库的明文站点凭据一次性转为密文（幂等）。
 
@@ -127,6 +149,8 @@ def build_lifespan(settings: Settings):
         await _reset_stale_verifying()
         # 存量明文凭据一次性加密（幂等，须在 init_secret_box 之后）
         await _encrypt_plaintext_credentials()
+        # 内置合集自愈：给每个库补齐「我的收藏」（幂等）
+        await _ensure_builtin_collections()
         # Agent 运行注册表必须与当前事件循环同生共死：它持有后台 task 和
         # asyncio.Condition，不能跨 FastAPI 生命周期复用。
         init_agent_run_registry()

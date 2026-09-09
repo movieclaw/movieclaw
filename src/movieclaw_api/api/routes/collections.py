@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
-from movieclaw_api.api.deps import require_login
+from movieclaw_api.api.deps import require_admin, require_login
 from movieclaw_api.exceptions import BadRequestException, NotFoundException
 from movieclaw_api.schemas.library import (
     CollectionCover,
@@ -167,7 +167,8 @@ async def create_collection(
         rules=list(payload.rules or []),
         sort=payload.sort or "title",
         visibility=payload.visibility or "household",
-        member_id=member_id if (payload.visibility == "private") else None,
+        # household 归 0（哨兵）：私有与否看 visibility，member_id 只回答"归谁"
+        member_id=member_id if (payload.visibility == "private") else 0,
     )
     session.add(row)
     await session.flush()
@@ -230,7 +231,7 @@ async def update_collection(
         row.name = payload.name
     if payload.visibility:
         row.visibility = payload.visibility
-        row.member_id = member_id if payload.visibility == "private" else None
+        row.member_id = member_id if payload.visibility == "private" else 0
     if payload.sort:
         row.sort = payload.sort
     if payload.rules is not None:
@@ -261,6 +262,8 @@ async def update_collection(
     response_model=ApiResponse[None],
     summary="删除合集（不动作品本身）",
     operation_id="collection.delete",
+    # confirm 而不是 destructive：删的是那层视图，作品一部都不会少
+    openapi_extra={"x-cli-dangerous": "confirm"},
 )
 async def delete_collection(
     collection_id: int,
@@ -323,6 +326,9 @@ async def list_collection_items(
     response_model=ApiResponse[None],
     summary="把合集的规则设为某个库的收藏范围",
     operation_id="collection.apply-to-library",
+    # 这一条改的是**库配置**（match_rules 决定订阅入哪个库），不是合集本身，
+    # 所以它与合集其余接口不同，只对管理员开放
+    dependencies=[Depends(require_admin)],
 )
 async def apply_to_library(
     collection_id: int,

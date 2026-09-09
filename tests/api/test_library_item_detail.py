@@ -1832,7 +1832,11 @@ async def test_library_gallery_flattens_posters_stills_and_chapters(db, tmp_path
         await session.commit()
 
     async with db.session() as session:
-        groups = (await list_library_gallery(library.id, None, 0, "title", session, _ADMIN)).data
+        groups = (
+            await list_library_gallery(
+                library.id, None, 0, "title", session=session, principal=_ADMIN
+            )
+        ).data
         assert [g.title for g in groups] == ["测试剧集"]
         images = groups[0].images
         # 剧集条目在假 TMDB 里没有海报/横幅，图只来自分集剧照与章节图：
@@ -1853,7 +1857,11 @@ async def test_library_gallery_flattens_posters_stills_and_chapters(db, tmp_path
         assert groups[0].is_favorite is False
 
         # 分页按条目数：跳过唯一的条目就什么都没有
-        assert (await list_library_gallery(library.id, 1, 1, "title", session, _ADMIN)).data == []
+        assert (
+            await list_library_gallery(
+                library.id, 1, 1, "title", session=session, principal=_ADMIN
+            )
+        ).data == []
 
     async with db.session() as session:
         item_id = groups[0].media_item_id
@@ -1861,5 +1869,9 @@ async def test_library_gallery_flattens_posters_stills_and_chapters(db, tmp_path
         await playback_state.set_favorite(session, unit, member_id=0, favorite=True)
         await session.commit()
     async with db.session() as session:
-        groups = (await list_library_gallery(library.id, None, 0, "title", session, _ADMIN)).data
+        groups = (
+            await list_library_gallery(
+                library.id, None, 0, "title", session=session, principal=_ADMIN
+            )
+        ).data
         assert groups[0].is_favorite is True

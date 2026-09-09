@@ -319,6 +319,7 @@ class LibraryConfigService:
         ``source`` 不传按形态默认；(kind, source) 组合必须是已定义的能力档案
         （profile_for 会拒绝 movie+local 这类没有识别策略的组合）。
         """
+        from movieclaw_api.services.library.collections import ensure_builtin_collections
         from movieclaw_api.services.library.profile import profile_for
         from movieclaw_api.services.library.routing import validate_match_rules
 
@@ -353,6 +354,12 @@ class LibraryConfigService:
             assert row.id is not None
             await MemberRepository(self._session).set_library_member_ids(row.id, members)
             await self._session.commit()
+        # 内置合集（现在只有「我的收藏」）跟着库一起建：它本来就是一个合集，
+        # 登记之后走的是和用户合集完全一样的那条路——合集列表、Jellyfin BoxSet
+        # 都不必为它写特例（docs/design/library-collections.md 1.2）
+        assert row.id is not None
+        await ensure_builtin_collections(self._session, row.id)
+        await self._session.commit()
         self._refresh_watcher()
         return row
 

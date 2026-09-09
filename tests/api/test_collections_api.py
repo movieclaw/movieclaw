@@ -85,8 +85,14 @@ def client(tmp_path: Path, monkeypatch):
     asyncio.run(_seed())
 
     from movieclaw_api.api.deps import require_login
+    from movieclaw_api.api.routes import libraries as library_routes
     from movieclaw_api.app import create_app
     from movieclaw_api.services.auth import Principal
+
+    async def skip_initial_scan(*_args, **_kwargs) -> None:  # noqa: ANN002, ANN003
+        """本文件只测合集，建库顺带的扫描跳过（扫描另有专项测试）。"""
+
+    monkeypatch.setattr(library_routes, "enqueue_scan_job", skip_initial_scan)
 
     app = create_app()
     app.dependency_overrides[require_login] = lambda: Principal(kind="admin", name="tester")
@@ -137,9 +143,10 @@ def test_covers_come_from_the_wall_aggregate(client: TestClient) -> None:
 def test_empty_collection_is_hidden_unless_asked_for(client: TestClient) -> None:
     """成员为 0 的合集默认不列：点进去空无一物的合集是纯粹的死路。"""
     _create(client, name="一个都不命中", rules=[{"field": "genres", "op": "any_of", "values": [9]}])
+    # 浏览口径一条都不给（内置的「我的收藏」此刻也是空的，同样不列）
     assert client.get("/api/v1/collections").json()["data"] == []
     managed = client.get("/api/v1/collections?include_empty=true").json()["data"]
-    assert [row["name"] for row in managed] == ["一个都不命中"]
+    assert "一个都不命中" in {row["name"] for row in managed}
 
 
 def test_delete_removes_the_view_not_the_items(client: TestClient) -> None:
@@ -164,3 +171,37 @@ def test_snapshot_fixes_the_current_hits(client: TestClient) -> None:
     assert created["rule_driven"] is False
     assert created["rules"] == []
     assert created["item_count"] == 1
+
+
+def test_new_library_gets_the_builtin_favorites_collection(client: TestClient) -> None:
+    """「我的收藏」是内置合集，跟着库一起建——这个抽象要吃掉既有特例。
+
+    它成员为 0 时同样不列（默认不列空合集），所以这里问的是管理口径。
+    """
+    resp = client.post(
+        "/api/v1/libraries",
+        json={"name": "新库", "kind": "movie", "root_paths": ["/new"]},
+    )
+    assert resp.status_code == 200, resp.text
+    library_id = resp.json()["data"]["id"]
+    rows = client.get(
+        f"/api/v1/collections?library_id={library_id}&include_empty=true"
+    ).json()["data"]
+    fav = next(row for row in rows if row["builtin"] == f"favorites:{library_id}")
+    assert fav["name"] == "我的收藏"
+    # 内置合集不可改规则、也不能删——改了它就不是那个合集了
+    assert fav["editable"] is False
+    assert fav["rule_driven"] is True
+    assert client.delete(f"/api/v1/collections/{fav['id']}").status_code == 400
+
+
+def test_libraries_created_outside_the_service_are_healed_at_startup(
+    client: TestClient,
+) -> None:
+    """绕过建库接口写进来的库，启动时补齐内置合集。
+
+    这个夹具里的库就是直接插进去的——正是"迁移只补得到迁移那一刻已有的库"
+    补不到的那一类。
+    """
+    rows = client.get("/api/v1/collections?library_id=1&include_empty=true").json()["data"]
+    assert [row["builtin"] for row in rows] == ["favorites:1"]

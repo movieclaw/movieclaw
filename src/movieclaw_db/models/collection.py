@@ -4,9 +4,11 @@ from sqlalchemy import JSON, Column, ForeignKey, Integer, String, UniqueConstrai
 from sqlmodel import Field
 
 from movieclaw_db.models.base import TimestampMixin
+from movieclaw_db.models.member_scoped import MemberScopedMixin, register_member_scoped
 
 
-class Collection(TimestampMixin, table=True):
+@register_member_scoped
+class Collection(MemberScopedMixin, TimestampMixin, table=True):
     """合集——「一组 media_item」的持久化定义（docs/design/library-collections.md）。
 
     定位
@@ -69,9 +71,10 @@ class Collection(TimestampMixin, table=True):
     visibility: str = Field(
         default="household", index=True, description="household=全家可见 / private=只有我"
     )
-    member_id: int | None = Field(
-        default=None, index=True, description="private 时的归属成员；household 为 NULL"
-    )
+    # member_id 来自 MemberScopedMixin：private 时是归属成员，household 时为 0。
+    # 登记为成员级数据（@register_member_scoped）是必须的——删成员时要把他的私有
+    # 合集一并清掉，否则 SQLite 复用行 id，下一个新成员会继承前一个人的私有合集。
+    # "是不是私有"看 visibility，不看 member_id 是否为空
 
     # -- 来源与顺序 ----------------------------------------------------------
     # 内置合集标识：favorites / tmdb_series:{id} / …；NULL=用户创建。

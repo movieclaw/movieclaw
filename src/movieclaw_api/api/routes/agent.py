@@ -150,6 +150,10 @@ _PAGE_ROUTES: list[tuple[str, str]] = [
     ("/library/manage", "媒体库管理（建库、扫描、整理、排序、可见范围；仅管理员）"),
     ("/library/{库ID}", "某个媒体库的内容（库 ID 来自 library list）"),
     (
+        "/library/{库ID}/c/{合集ID}",
+        "库内合集详情：收录规则与成员作品（合集 ID 来自 collection list）",
+    ),
+    (
         "/library/{库ID}/item/{条目ID}",
         "库内条目详情（条目 ID 来自 library items list）",
     ),

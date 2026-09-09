@@ -186,6 +186,30 @@ async def count_members(
     return len(ids)
 
 
+async def has_any_member(
+    session: AsyncSession,
+    collection: Collection,
+    *,
+    member_id: int | None = None,
+    visible_library_ids: set[int] | None = None,
+) -> bool:
+    """这个合集对该成员**至少有一个**成员吗（LIMIT 1，不数总数）。
+
+    给「要不要下发合集入口」这类判断用。数总数要把整批解析出来，而这里只关心
+    有没有——把「我的收藏」这类内置合集登记进来之后，每个库都常驻一行空合集，
+    只判元数据存在会让电视端天天挂着一个点进去空无一物的视图。
+    """
+    return bool(
+        await resolve_members(
+            session,
+            collection,
+            member_id=member_id,
+            visible_library_ids=visible_library_ids,
+            limit=1,
+        )
+    )
+
+
 async def visible_collections(
     session: AsyncSession,
     *,

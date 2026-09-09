@@ -553,12 +553,26 @@ _MEMBER_ALLOWLIST = {
     ("GET", "/api/v1/libraries/{library_id}/cover"),
     # 图床浏览模式的数据源：与 /items 同一浏览面，同样按库可见性鉴权
     ("GET", "/api/v1/libraries/{library_id}/gallery"),
+    # 筛选面板的候选值与计数、筛空时的放宽建议：与 /items 同参、同一份收窄，
+    # 数出来的就是该成员在这个库里筛得到的部数
+    ("GET", "/api/v1/libraries/{library_id}/facets"),
+    ("GET", "/api/v1/libraries/{library_id}/relax"),
     ("GET", "/api/v1/libraries/{library_id}/item-ids"),
     ("GET", "/api/v1/libraries/{library_id}/item-index"),
     ("GET", "/api/v1/libraries/{library_id}/items"),
     ("GET", "/api/v1/libraries/{library_id}/items/{media_item_id}"),
     ("GET", "/api/v1/libraries/{library_id}/items/{media_item_id}/artwork"),
     ("GET", "/api/v1/libraries/{library_id}/items/{media_item_id}/episodes"),
+    # 合集是成员的浏览面：列表按三层可见性收口（私有只对本人、库不可见就不下发、
+    # 成员条目再过一遍），私有合集与不可见库里的合集一律按 404 拒绝而不是空列表。
+    # 写操作（建/改/删）同样开放给成员——那是他自己的合集，household 的合集
+    # 本来就是全家共用的东西；apply-to-library 改的是库配置，另挂管理员闸
+    ("GET", "/api/v1/collections"),
+    ("POST", "/api/v1/collections"),
+    ("GET", "/api/v1/collections/{collection_id}"),
+    ("PUT", "/api/v1/collections/{collection_id}"),
+    ("DELETE", "/api/v1/collections/{collection_id}"),
+    ("GET", "/api/v1/collections/{collection_id}/items"),
     # 最近观看是按成员隔离的个人播放数据，并继续受媒体库白名单过滤。
     ("GET", "/api/v1/playback/recent"),
     # 清除观看记录只作用于当前成员自己的行（超管删超管的），跨成员不提供；

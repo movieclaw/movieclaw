@@ -17,6 +17,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from movieclaw_api.services.library.access import member_visible_ids
 from movieclaw_api.services.library.collections import (
+    has_any_member,
     resolve_members,
     visible_collections,
 )
@@ -215,19 +216,26 @@ async def user_views(
     async with get_database().session() as session:
         libraries = await list_libraries(session, visible_ids=scope.visible)
     dtos = [library_view_dto(ctx, lib, await _cover_tag(lib.id)) for lib in libraries]
-    # 「合集」视图只在**有**可见合集时下发：一个空视图在电视端是纯粹的死路。
-    # 这里只判存在、不解析成员——那是 /Items?ParentId=<合集视图> 该做的事
-    # （docs/design/library-collections.md 2.4）。
+    # 「合集」视图只在**真有东西可看**时下发：一个空视图在电视端是纯粹的死路。
+    #
+    # 设计文档 2.4 原本写的是"只判元数据存在、不解析成员"，理由是别让高频接口
+    # 背 N 次解析。把「我的收藏」登记为内置合集之后那个前提没了：每个库都常驻
+    # 一行空合集，只判元数据存在等于**永远**下发这个视图，新用户点进去一片空白。
+    # 改成逐个探一下"有没有第一个成员"（LIMIT 1，命中即停），通常第一个就命中。
     #
     # 已知代价：不少客户端会缓存 /UserViews，用户建了第一个合集后可能要手动
     # 刷新一次才看得到入口。这是"不给空视图"的代价，不做额外补偿——补偿手段
     # 只有常驻一个空视图，那更糟。
     async with get_database().session() as session:
-        has_collections = bool(
-            await visible_collections(
-                session, member_id=scope.member_id, visible_library_ids=scope.visible
-            )
-        )
+        has_collections = False
+        for row in await visible_collections(
+            session, member_id=scope.member_id, visible_library_ids=scope.visible
+        ):
+            if await has_any_member(
+                session, row, member_id=scope.member_id, visible_library_ids=scope.visible
+            ):
+                has_collections = True
+                break
     if has_collections:
         dtos.append(collections_view_dto(ctx))
     return JSONResponse(query_result(dtos, len(dtos)))

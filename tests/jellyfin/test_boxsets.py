@@ -150,3 +150,25 @@ def test_display_collections_view_is_declared(client: TestClient, token: str) ->
     me = client.get("/Users/Me", headers=_headers(token))
     assert me.status_code == 200
     assert me.json()["Configuration"]["DisplayCollectionsView"] is True
+
+
+def test_builtin_favorites_reaches_the_tv(client: TestClient, token: str, seeded: dict) -> None:
+    """「我的收藏」是内置合集，所以它自己就会以 BoxSet 出现——不必写特例。
+
+    这条同时压住"空的内置合集不该把视图撑出来"：收藏之前一个 BoxSet 都没有，
+    「合集」视图也就不下发。
+    """
+    assert collections_view_guid() not in {
+        v["Id"] for v in client.get("/UserViews", headers=_headers(token)).json()["Items"]
+    }
+
+    resp = client.post(
+        "/api/v1/playback/marks",
+        json={"media_item_id": seeded["movie"], "favorite": True},
+    )
+    assert resp.status_code == 200, resp.text
+
+    listed = client.get(
+        f"/Items?ParentId={collections_view_guid()}", headers=_headers(token)
+    ).json()
+    assert "我的收藏" in {row["Name"] for row in listed["Items"]}

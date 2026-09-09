@@ -42,7 +42,9 @@ def upgrade() -> None:
         sa.Column("rules", sa.JSON(), nullable=False),
         sa.Column("sort", sa.String(), nullable=False, server_default="title"),
         sa.Column("visibility", sa.String(), nullable=False, server_default="household"),
-        sa.Column("member_id", sa.Integer(), nullable=True),
+        # 成员级数据（MemberScopedMixin）：private 时是归属成员，household 时为 0。
+        # 登记在 member_scoped 注册表里，删成员时随之清理
+        sa.Column("member_id", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("builtin", sa.String(), nullable=True),
         sa.Column("position", sa.Integer(), nullable=False, server_default="0"),
         sa.Column(
