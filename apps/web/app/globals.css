@@ -1814,12 +1814,6 @@ html:has(.player-root) {
 .player-btn:active {
   transform: scale(0.94);
 }
-/* 自带磨砂底的那种（横屏键）：悬停只把底提亮一档，不能被上面那条通用规则
-   换成半透白——那会把玻璃底整个盖掉，看着像换了一个按钮。 */
-.player-btn--glass:hover,
-.player-btn--glass:focus-visible {
-  background: rgb(42 46 55 / 0.72);
-}
 /*
  * 「这个功能开着」的标记：图标下方一条短横杠（YouTube 用的就是这个），
  * 外加提亮。
@@ -1849,9 +1843,6 @@ html:has(.player-root) {
 .player-btn[data-open="true"] {
   background: rgba(255, 255, 255, 0.12);
   color: #fff;
-}
-.player-btn--glass[data-open="true"] {
-  background: rgb(42 46 55 / 0.72);
 }
 
 /* 按钮说明气泡：Netflix 每个图标上方都有一块黑底白字的说明，

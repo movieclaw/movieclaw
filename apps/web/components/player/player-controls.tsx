@@ -47,6 +47,21 @@ import { type TrickplayIndex, tileAt } from "@/lib/player/trickplay";
 const ICON = "size-[18px] max-md:size-[22px]";
 
 /**
+ * 切集胶囊（上一集 / 下一集 / 已完结）的共用形制。
+ *
+ * **高度写死，且必须等于同一行左边那张按钮卡片**：卡片是 `py-1` 裹一颗
+ * `size-9 / max-md:size-11` 的键，算下来 44 / 52。这边原来是按内边距 + 行高
+ * 长出来的（约 41 / 36），桌面差 3px、窄屏差 16px——一左一右两块同级的东西
+ * 不等高，是这排控件看着散的主要原因。行高会随字号和字体变，只有钉死高度才
+ * 长期对得齐。
+ *
+ * 悬停态不写在这里：「已完结」是个 span，套上 hover 换底色会让一个点不动的
+ * 东西看起来能点。
+ */
+const EPISODE_PILL =
+  "player-glass flex h-11 items-center rounded-full px-4 text-[14px] font-medium transition-colors max-md:h-[3.25rem] max-md:px-3 max-md:text-[13px]";
+
+/**
  * 描边图标底座：镜像 components/icons.tsx 里的 `Base`（那边没导出）。
  * 播放器里只有字幕与横屏两个图标站内没有，其余一律直接用站内图标。
  */
@@ -520,31 +535,37 @@ export function PlayerControls(props: PlayerControlsProps) {
       >
         {/* 两段各自成元素、靠 gap 分开：药丸是 flex，写在文字里的前导空格会
             被折掉，变成「41:00/ 2:32:00」 */}
-        <span className="player-glass inline-flex h-9 items-center gap-1 rounded-full px-3.5 text-[13px] tabular-nums text-white/90 max-md:h-11 max-md:text-[12px]">
+        {/* 时间是**读数**，比按钮矮一档（28 vs 36/44）。原来它取的是按钮那档
+            高度，于是一行里最不需要被点的东西看着最像能点的；移动端更离谱——
+            那 44px 是 Apple HIG 的最小触控目标，给一个不可点的读数套触控尺寸
+            纯属白占地方，所以这里不跟着断点放大，两端统一 28。
+            主次靠颜色分：已播时间实白 + medium，总时长压到 40%。 */}
+        <span className="player-glass inline-flex h-7 items-center gap-1 rounded-full px-2.5 text-[12px] font-medium tabular-nums text-white">
           <span>{formatClock(shown)}</span>
-          <span className="text-white/45">
+          <span className="font-normal text-white/40">
             / {durationMs ? formatClock(durationMs) : "--:--"}
           </span>
         </span>
 
         {/* 横屏管方向、全屏管铺满——真横屏会顺带进全屏，此时全屏键自然
             成为退出键。iPhone 没有元素级全屏，全屏键走系统原生播放器，
-            字幕靠 video 上的原生 VTT 轨跟进去（见 video-player 的 pip 轨） */}
-        <div className={`flex items-center gap-2 ${chromeVisible ? "pointer-events-auto" : ""}`}>
+            字幕靠 video 上的原生 VTT 轨跟进去（见 video-player 的 pip 轨）
+
+            两颗共一张磨砂卡片，而不是各自套一层玻璃：进度条下方那排
+            音轨/字幕/设置用的就是这个形制，同类东西（次级控制）在一个播放器里
+            只该有一种长相。顺带把两块 backdrop-filter 并成一块——每块磨砂都
+            要逐帧重采样视频（globals.css 的 .player-glass 注释）。 */}
+        <div
+          className={`player-glass flex items-center gap-1 rounded-full px-1.5 py-1 ${
+            chromeVisible ? "pointer-events-auto" : ""
+          }`}
+        >
           {canRotate ? (
-            <IconButton
-              glass
-              tip={landscape ? "退出横屏" : "横屏"}
-              onClick={onToggleLandscape}
-            >
+            <IconButton tip={landscape ? "退出横屏" : "横屏"} onClick={onToggleLandscape}>
               <RotateGlyph active={landscape} />
             </IconButton>
           ) : null}
-          <IconButton
-            glass
-            tip={fullscreen ? "退出全屏" : "全屏"}
-            onClick={onToggleFullscreen}
-          >
+          <IconButton tip={fullscreen ? "退出全屏" : "全屏"} onClick={onToggleFullscreen}>
             {fullscreen ? <ShrinkIcon className={ICON} /> : <ExpandIcon className={ICON} />}
           </IconButton>
         </div>
@@ -869,7 +890,7 @@ export function PlayerControls(props: PlayerControlsProps) {
                   <button
                     type="button"
                     onClick={onPrev}
-                    className="player-glass flex items-center rounded-full px-4 py-2.5 text-[14px] font-medium text-white transition-colors hover:bg-white/20 max-md:px-3 max-md:py-2 max-md:text-[13px]"
+                    className={`${EPISODE_PILL} text-white hover:bg-white/20`}
                   >
                     上一集
                   </button>
@@ -878,14 +899,12 @@ export function PlayerControls(props: PlayerControlsProps) {
                   <button
                     type="button"
                     onClick={onNext}
-                    className="player-glass flex items-center rounded-full px-4 py-2.5 text-[14px] font-medium text-white transition-colors hover:bg-white/20 max-md:px-3 max-md:py-2 max-md:text-[13px]"
+                    className={`${EPISODE_PILL} text-white hover:bg-white/20`}
                   >
                     下一集
                   </button>
                 ) : (
-                  <span className="player-glass rounded-full px-4 py-2.5 text-[14px] text-white/40 max-md:px-3 max-md:py-2 max-md:text-[13px]">
-                    已完结
-                  </span>
+                  <span className={`${EPISODE_PILL} font-normal text-white/40`}>已完结</span>
                 )}
               </div>
             ) : null}
@@ -968,15 +987,13 @@ function CenterButton({
  * 控制条上的图标按钮：换底色 + 上方说明气泡，尺寸与全站顶栏控件一致
  * （样式在 globals.css 的 .player-btn）。
  *
- * `glass` 是给**单独浮在画面上**的键用的（横屏键）：它不在那张磨砂卡片里，
- * 得自己带一层玻璃底，否则会直接糊进画面。卡片里的键不能开这个开关——
- * 那会变成「玻璃里的玻璃」。
+ * 自己不带玻璃底：控制条上的键一律装在磨砂卡片里，每个再包一层会变成
+ * 「玻璃里的玻璃」。单独浮在画面上的键（顶栏的返回/画中画）不走这个组件。
  */
 function IconButton({
   tip,
   active,
   open,
-  glass,
   onClick,
   children,
 }: {
@@ -990,7 +1007,6 @@ function IconButton({
   active?: boolean;
   /** 这个按钮的菜单正展开着 */
   open?: boolean;
-  glass?: boolean;
   onClick: () => void;
   children: React.ReactNode;
 }) {
@@ -1003,9 +1019,7 @@ function IconButton({
       data-tip={tip}
       data-active={active ? "true" : undefined}
       data-open={open ? "true" : undefined}
-      className={`player-btn player-tip size-9 shrink-0 max-md:size-11 ${
-        glass ? "player-glass player-btn--glass" : ""
-      }`}
+      className="player-btn player-tip size-9 shrink-0 max-md:size-11"
     >
       {children}
     </button>
