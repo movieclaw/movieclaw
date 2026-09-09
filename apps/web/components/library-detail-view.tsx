@@ -15,14 +15,13 @@ import {
 } from "@/lib/library-confirm";
 import { chapterJobLabel } from "@/lib/library-manage";
 import {
-  CheckIcon,
   LockIcon,
   MasonryIcon,
   MoreIcon,
   PosterGridIcon,
   XIcon,
 } from "@/components/icons";
-import { LibraryFilterBar } from "@/components/library-filter-bar";
+import { LibraryFilterBar, WallSortControl } from "@/components/library-filter-bar";
 import { PAGE_NAV_BUTTON_CLASS, PageNav } from "@/components/page-nav";
 import { usePageTitle } from "@/lib/use-page-title";
 import { LibraryFormDialog } from "@/components/library-form-dialog";
@@ -181,7 +180,42 @@ function keepOnError<T>(rows: Promise<T[]>): Promise<T[] | null> {
  * 内容时间能分出月份档，右侧的跳转轨道靠的就是这个。所以「最近添加」是持续
  * 往库里添内容的人**自己选**的一档，不做默认。
  */
-type WallSortPref = "default" | "added_at";
+type WallSortPref = "default" | "added_at" | "rating" | "runtime" | "size" | "last_played";
+
+/** 偏好 → 服务端排序键。`default` 由库的形态决定（影视库拼音序、其他库按时间）。 */
+const PREF_TO_SORT: Record<Exclude<WallSortPref, "default">, LibraryItemSort> = {
+  added_at: "added_at",
+  rating: "rating",
+  runtime: "runtime",
+  size: "size",
+  last_played: "last_played",
+};
+
+/**
+ * 排序档位与展示值。
+ *
+ * 去掉了「排序」这个前缀标签——前提是让值自述：默认档不叫「默认」，而是
+ * 按库的形态叫「按标题」/「按时间」（本来就有 defaultSortLabel 这套叫法）。
+ * 标签能删的前提是值自己会说话，不是硬删。
+ *
+ * 图廊（图床浏览）只吃服务端的 title / added_at 两档，所以那个形态下只给两档
+ * ——把点了不生效的档摆出来，比少几档更伤。
+ */
+function sortOptions(defaultLabel: string, gallery: boolean): readonly (readonly [WallSortPref, string])[] {
+  const base = [
+    ["default", defaultLabel],
+    // 一次导入的内容入账时间都挤在一起，所以这一档对"陆续往库里添东西"才有意义
+    ["added_at", "最近添加"],
+  ] as [WallSortPref, string][];
+  if (gallery) return base;
+  return [
+    ...base,
+    ["rating", "按评分"],
+    ["runtime", "按片长"],
+    ["size", "按体积"],
+    ["last_played", "最近观看"],
+  ];
+}
 
 /**
  * 从地址栏读筛选条件。
@@ -1145,8 +1179,8 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
     if (!wallSortReady) return;
     const next: LibraryItemSort = probing
       ? "probing"
-      : recentFirst
-        ? "added_at"
+      : wallSortPref !== "default"
+        ? PREF_TO_SORT[wallSortPref]
         : timeline
           ? "release_date"
           : "title";
@@ -1157,7 +1191,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
     wallOffset.current = 0;
     setWallStart(0);
     reload();
-  }, [probing, timeline, recentFirst, wallSortReady, reload]);
+  }, [probing, timeline, wallSortPref, wallSortReady, reload]);
 
   // 追踪中：目标是本库、且尚未在库存中出现的订阅
   const pending = useMemo(() => {
@@ -1254,10 +1288,12 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   );
 
   // 库操作全部收进 ⋯ 菜单，顶栏只留这一个入口；运行状态看头部下方的胶囊。
-  // 清空观看记录不在这里——那是跨库的个人数据，入口在首页「最近观看」的 ⋯
-  // 里。成员没有管理项时菜单只剩浏览偏好（排序，图片库/图廊再加密度与分组），
-  // 排序每面墙都有，所以菜单恒在
-  const actionsMenu = (
+  // 清空观看记录不在这里——那是跨库的个人数据，入口在首页「最近观看」的 ⋯ 里。
+  //
+  // 排序提到墙控件行之后，这个菜单不再"恒在"：非管理员在海报墙形态下已经
+  // 一项可调的都没有，那就别渲染——点开一片空白比没有这颗键更糟。
+  const hasMenuItems = canManageLibraries || photoWall || gallery;
+  const actionsMenu = hasMenuItems && (
     <LibraryActionsMenu
       canManage={canManageLibraries}
       density={photoWall || gallery ? photoDensity : undefined}
@@ -1266,12 +1302,9 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
       onGroupedChange={gallery ? setGalleryGrouped : undefined}
       // 排序是三面墙共用的偏好，普通成员也能选；补探那几分钟排序被临时接管，
       // 菜单如实置灰而不是假装可选
-      sort={wallSortPref}
-      onSortChange={setWallSortPref}
-      sortDisabled={probing}
+
       // 默认那一档在各面墙上叫法不同：图廊恒按标题序（与海报墙共用名单，
       // 见 build_library_gallery），其他库与图片库的海报墙按内容时间倒序
-      defaultSortLabel={!gallery && timeline ? "按时间" : "按标题"}
       scanning={Boolean(library.scanning)}
       scanPhase={library.scan_progress?.phase ?? null}
       scanPercent={
@@ -1610,6 +1643,14 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
               libraryId={libraryId}
               filter={filter}
               onFilterChange={applyFilter}
+              sortControl={
+                <WallSortControl
+                  value={wallSortPref}
+                  options={sortOptions(!gallery && timeline ? "按时间" : "按标题", gallery)}
+                  onChange={setWallSortPref}
+                  disabled={probing}
+                />
+              }
               className="mt-5 px-6 max-md:mt-4 max-md:px-4"
             />
           )}
@@ -1850,12 +1891,8 @@ interface LibraryActionsMenuProps {
   grouped?: boolean;
   onGroupedChange?: (next: boolean) => void;
   /** 墙的排序（个人偏好，三面墙共用） */
-  sort: WallSortPref;
-  onSortChange: (next: WallSortPref) => void;
   /** 补探阶段排序被临时接管，这一组置灰 */
-  sortDisabled: boolean;
   /** 默认那一档叫什么：影视库是「按标题」，其他库与图片库是「按时间」 */
-  defaultSortLabel: string;
 }
 
 function LibraryActionsMenu({
@@ -1881,10 +1918,6 @@ function LibraryActionsMenu({
   onDensityChange,
   grouped,
   onGroupedChange,
-  sort,
-  onSortChange,
-  sortDisabled,
-  defaultSortLabel,
 }: LibraryActionsMenuProps) {
   // 与站点配置一致用 Radix DropdownMenu：Portal 到 body + 碰撞检测，
   // 不会被头部容器裁切；开合/外部点击/键盘导航全交给 Radix。
@@ -1978,7 +2011,9 @@ function LibraryActionsMenu({
               整组共用上面这一条分隔线，别各挂一条挤成几道 */}
           {canManage && <DropdownMenu.Separator className="my-1 h-px bg-white/[0.07]" />}
           {/* 与「全部收藏」页的图廊菜单是同一组（见 video-gallery.tsx）：
-              图片库只传密度，图床浏览模式两项都传；排序是本页独有的 */}
+              图片库只传密度，图床浏览模式两项都传。排序不在这儿了——它总有
+              一个当前值可显示，埋进菜单用户就看不到自己正按什么排，已经提到
+              墙控件行上（docs/design/library-filtering.md 5.1.1） */}
           <WallPrefItems
             grouped={grouped}
             onGroupedChange={onGroupedChange}
@@ -1986,34 +2021,6 @@ function LibraryActionsMenu({
             onDensityChange={onDensityChange}
             itemClass={itemClass}
           />
-          <DropdownMenu.Label className="px-3 pb-1 pt-1.5 text-caption text-[var(--text-faint)]">
-            排序
-          </DropdownMenu.Label>
-          <DropdownMenu.RadioGroup
-            value={sort}
-            onValueChange={(next) => onSortChange(next as WallSortPref)}
-          >
-            {(
-              [
-                ["default", defaultSortLabel],
-                // 一次导入的内容入账时间都挤在一起，所以这一档对"陆续往库里
-                // 添东西"才有意义；默认序仍是标题 / 内容时间（见 useWallSortPref）
-                ["added_at", "最近添加"],
-              ] as [WallSortPref, string][]
-            ).map(([key, label]) => (
-              <DropdownMenu.RadioItem
-                key={key}
-                value={key}
-                disabled={sortDisabled}
-                className={`${itemClass} flex items-center justify-between`}
-              >
-                {label}
-                <DropdownMenu.ItemIndicator>
-                  <CheckIcon className="size-3.5 text-[var(--accent)]" />
-                </DropdownMenu.ItemIndicator>
-              </DropdownMenu.RadioItem>
-            ))}
-          </DropdownMenu.RadioGroup>
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>

@@ -2,7 +2,10 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+
 import { MultiFilterMenu } from "@/components/filter-menu";
+import { CheckIcon, ChevronDownIcon } from "@/components/icons";
 import {
   type LibraryFacets,
   type LibraryFilter,
@@ -275,3 +278,71 @@ export const SORT_LABELS: Record<LibraryItemSort, string> = {
   size: "按体积",
   last_played: "最近观看",
 };
+
+/**
+ * 墙的排序控件——**显值、无边框**的文字下拉。
+ *
+ * 为什么它长这样，而「筛选」是唯一一个带框的按钮：
+ * **能从内容本身看出来的状态，控件可以无字；看不出来的，控件必须把当前值
+ * 显示出来。** 海报墙和瀑布流长得完全不同，看一眼墙就知道自己在哪个形态，
+ * 所以形态键只要一个图标；但「按什么排」看墙是看不出来的（「按标题」和
+ * 「最近添加」在一屏之内都只是"某种顺序"），所以排序必须把当前值挂在外面。
+ *
+ * 这也是它从 ⋯ 菜单里被提出来的理由：埋在菜单里，用户根本不知道自己
+ * 正按什么排（docs/design/library-filtering.md 5.1.1）。
+ */
+export function WallSortControl<T extends string>({
+  value,
+  options,
+  onChange,
+  disabled,
+}: {
+  value: T;
+  options: readonly (readonly [T, string])[];
+  onChange: (next: T) => void;
+  /** 扫描补探那几分钟排序被临时接管：如实置灰，不给按了没反应的控件 */
+  disabled?: boolean;
+}) {
+  const current = options.find(([key]) => key === value)?.[1] ?? value;
+  return (
+    <DropdownMenu.Root>
+      <DropdownMenu.Trigger asChild>
+        <button
+          type="button"
+          disabled={disabled}
+          aria-label="排序"
+          className="flex h-8 shrink-0 items-center gap-1 rounded-full px-2.5 text-caption text-white/55 hover:bg-white/[0.08] hover:text-white disabled:pointer-events-none disabled:opacity-40 data-[state=open]:bg-white/[0.12] data-[state=open]:text-white"
+        >
+          <span className="font-semibold text-white/85">{current}</span>
+          <ChevronDownIcon className="size-3 text-white/40" />
+        </button>
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content
+          align="end"
+          sideOffset={6}
+          collisionPadding={12}
+          className="menu-surface z-50 min-w-[11rem] p-1"
+        >
+          <DropdownMenu.Label className="px-3 pb-1 pt-1.5 text-caption text-[var(--text-faint)]">
+            索引条跟着换口径
+          </DropdownMenu.Label>
+          <DropdownMenu.RadioGroup value={value} onValueChange={(next) => onChange(next as T)}>
+            {options.map(([key, label]) => (
+              <DropdownMenu.RadioItem
+                key={key}
+                value={key}
+                className="glass-row nav-item flex cursor-pointer items-center justify-between px-3 py-2 text-sub outline-none data-[highlighted]:!bg-[var(--glass-fill-hover)]"
+              >
+                {label}
+                <DropdownMenu.ItemIndicator>
+                  <CheckIcon className="size-3.5 text-[var(--info)]" />
+                </DropdownMenu.ItemIndicator>
+              </DropdownMenu.RadioItem>
+            ))}
+          </DropdownMenu.RadioGroup>
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
+  );
+}
