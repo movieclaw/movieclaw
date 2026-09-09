@@ -98,6 +98,21 @@ body{margin:0;background:var(--ink);color:var(--text);font-family:var(--f-sans);
    web 现有皮肤，与本页外壳的排版体系互不干扰。
    ══════════════════════════════════════════════════════════ */
 .ui{font-family:var(--f-ui);font-size:14px;line-height:1.5}
+[hidden]{display:none!important}
+/* 静止态的顶栏：左边是「有什么」（信息），右边是「能做什么」（控件）。
+   控件只留一个带框的——四个都写着「全部」的下拉不承载任何信息，
+   它们只是把「什么都没选」这件事说了四遍。 */
+.ui .toprow{display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:0 0 13px;border-bottom:1px solid var(--line)}
+.ui .clinks{display:flex;flex-wrap:wrap;align-items:center;min-width:0;gap:1px}
+.ui .clinks .lb{color:var(--faint);font-size:11px;margin-right:7px}
+.ui .clink{appearance:none;background:none;border:0;font:inherit;font-size:12.5px;color:var(--muted);
+  cursor:pointer;padding:3px 8px;border-radius:7px;white-space:nowrap}
+.ui .clink:hover{color:var(--text);background:rgba(255,255,255,.06)}
+.ui .clink.on{color:var(--text);font-weight:600;background:rgba(127,176,255,.16)}
+.ui .clink .n{font-family:var(--f-mono);font-size:10px;color:var(--faint);margin-left:4px}
+.ui .clink.on .n{color:rgba(238,242,251,.7)}
+.ui .sep{color:rgba(238,242,251,.16);font-size:11px}
+.ui .ctrl{display:flex;align-items:center;gap:8px;flex:none}
 .ui .frame{display:grid;grid-template-columns:154px 1fr;background:#0a0b10;border:1px solid var(--line-2);border-radius:16px;overflow:hidden;min-height:600px}
 .ui .side{border-right:1px solid var(--line);padding:15px 9px;background:linear-gradient(180deg,rgba(255,255,255,.04),rgba(255,255,255,.01))}
 .ui .brand{font-weight:700;letter-spacing:.02em;padding:3px 9px 15px;font-size:13px}
@@ -175,7 +190,7 @@ body{margin:0;background:var(--ink);color:var(--text);font-family:var(--f-sans);
 .ui .fromfilter .z small{display:block;font-weight:400;font-size:10.5px;color:var(--faint);margin-top:4px}
 
 /* ────────── 筛选条 ────────── */
-.ui .bar{position:relative;z-index:5;display:flex;flex-wrap:wrap;align-items:center;gap:7px;padding:12px 0 0;margin-top:16px;border-top:1px solid var(--line)}
+.ui .bar{position:relative;z-index:5;display:flex;flex-wrap:wrap;align-items:center;gap:7px;padding:12px 0 0}
 .ui .dd{position:relative}
 .ui .chip{appearance:none;display:inline-flex;align-items:center;gap:6px;height:29px;padding:0 12px;border-radius:999px;
   border:1px solid var(--line-2);background:rgba(255,255,255,.04);color:var(--muted);font:inherit;font-size:12.5px;cursor:pointer;white-space:nowrap}
@@ -228,7 +243,8 @@ body{margin:0;background:var(--ink);color:var(--text);font-family:var(--f-sans);
 .ui .card .p{position:relative;aspect-ratio:2/3;border-radius:9px;overflow:hidden;border:1px solid var(--line);display:block}
 .ui .card .p::after{content:"";position:absolute;inset:0;background:linear-gradient(to top,rgba(6,7,11,.9) 4%,rgba(6,7,11,.18) 44%,transparent 70%)}
 .ui .card .pt{position:absolute;left:8px;right:8px;bottom:7px;z-index:2;font-size:11.5px;font-weight:700;line-height:1.25;text-shadow:0 1px 6px rgba(0,0,0,.8)}
-.ui .card .badge{position:absolute;top:6px;left:6px;z-index:2;font-size:9px;font-weight:700;padding:1px 5px;border-radius:4px;background:rgba(0,0,0,.5);border:1px solid rgba(255,255,255,.2);font-family:var(--f-mono)}
+.ui .card .badge{position:absolute;top:6px;left:6px;z-index:2;font-size:9px;font-weight:700;padding:1px 5px;border-radius:4px;background:rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.2);font-family:var(--f-mono);opacity:0;transition:opacity .15s ease}
+.ui .card:hover .badge{opacity:1}
 .ui .card .heart{position:absolute;top:5px;right:6px;z-index:2;font-size:10px;color:#ff7d99;text-shadow:0 1px 4px rgba(0,0,0,.9)}
 .ui .card .prog{position:absolute;left:0;right:0;bottom:0;z-index:3;height:3px;background:rgba(255,255,255,.22)}
 .ui .card .prog i{display:block;height:100%;background:var(--danger)}
@@ -428,14 +444,18 @@ body{margin:0;background:var(--ink);color:var(--text);font-family:var(--f-sans);
           </div>
           <div class="main">
             <div class="head">
-              <div><h2>电影库</h2><p class="sub">1,284 部 · 8.2 TB · 2 个根路径</p></div>
+              <div><h2>电影库</h2><p class="sub">1,284 部 · 8.2 TB</p></div>
               <div style="display:flex;gap:8px;align-items:center">
                 <span class="vsw"><button class="on" data-view="items">作品</button><button data-view="cols">合集</button></span>
-                <button class="btn sm">扫描</button><button class="btn sm">管理</button></div>
+                <button class="btn sm" title="扫描 · 管理 · 刮削">⋯</button></div>
             </div>
             <div id="viewItems">
-              <div class="crow" id="crow"></div>
-              <div class="bar" id="bar"></div>
+              <div class="toprow">
+                <div class="clinks" id="crow"></div>
+                <span class="spacer"></span>
+                <div class="ctrl" id="ctrl"></div>
+              </div>
+              <div class="bar" id="bar" hidden></div>
               <div class="picked" id="picked"></div>
               <div id="result"></div>
             </div>
@@ -672,13 +692,13 @@ body{margin:0;background:var(--ink);color:var(--text);font-family:var(--f-sans);
 <script>
 /* ══════ 批注（随页签切换）══════ */
 const RAIL={
-p1:{h:"合集不该横滚，筛选不该只有一列文字",li:[
- "<b>合集在这里不是封面卡横滚，是一行 chip。</b>横滚一行占掉 160px 却只露 4–6 个，每张还只是一扇要点开才知道里面是什么的门。行业里横滚行装的是<b>内容</b>不是容器：Netflix 每一行就是一个分类、滚的是作品，分类清单本身是文字菜单；Plex 把合集发布到首页，得到的也是该合集里作品的一行。",
- "更重要的是——合集本来就是<b>「存好的筛选」</b>。那它就该长得像筛选 chip，点一下是<b>把这面墙筛成它</b>，不是跳到另一个页面。点「日韩动画」看已选条件行：它直接把条件灌进了筛选条，并标出「＝ 合集「日韩动画」」。改动任意一条，这个标记就消失——你就从「在看一个合集」变成了「在自己筛」。",
- "右上角切到<b>「合集」视图</b>：纵向网格，一次看全，装不下的问题从根上没有了。封面用与作品相同的 <b>2:3 竖版</b>（Plex 的做法），于是能直接落进同一套网格，不必为它单开一种布局——背后露两片边就够说明「这是一叠」。",
- "手动合集点进去，筛选条会明说<b>「名单固定，没有规则——筛选条对它不适用」</b>，而不是让控件假装还能用。",
- "筛选下拉里每行底下那条<b>细量条</b>与数量成正比：同一个机制用在所有维度上，年代档按序排下来自然就是一张库存分布图。数字是「在其他维度已选条件下，勾上我还剩几部」——算某一维时排除该维自身，0 值置灰。"],
- try:"点「日韩动画」→ 看条件被灌进筛选条 → 再手动去掉「日韩」，看合集标记消失。或者叠到筛空：类型＝纪录片 ＋ 地区＝日韩 ＋ 观看＝已看完。"},
+p1:{h:"静止态只留信息，不留控件",li:[
+ "四个都写着「全部」的下拉<b>不承载任何信息</b>——它们只是把「什么都没选」这件事说了四遍。所以静止态把它们收进一个<b>「筛选」</b>按钮：整个顶栏只剩一行，一个带框的控件。点开才有那四个下拉，条件一生效，条件本身就顶替控件出现在下面那行。<b>同一块地方，三种状态，永远只占一行的量。</b>",
+ "合集在静止态是<b>安静的文字行</b>而不是一排带框的 chip：它是「有什么」（信息），不是「能做什么」（控件）。选中一个才变成实心。行业里分类清单也是这么呈现的——Netflix 的 Genres 是文字菜单，不是封面卡。",
+ "海报上的<b>画质角标收到了悬停</b>：4K / HDR 是「评估这一部」时才要的信息，不是「挑哪一部」时要的。收藏心和在看进度条留着——那是<b>状态</b>，状态不能藏。",
+ "扫描 / 管理 进了「⋯」：那是<b>管库</b>的动作，不该和<b>看片</b>的动作抢同一行。",
+ "点开筛选后的机制没变：每行底下与数量成正比的<b>细量条</b>（年代档按序排下来就是一张分布图）、排除自身维度的计数、0 值置灰、已选条件用「或 / 且」画出结构。"],
+ try:"先看静止态有多干净，再点右上「筛选」展开。或者点「日韩动画」——它把条件直接灌进筛选条，但面板并不弹出：条件可见，控件仍然收着。"},
 p2:{h:"找片和查库是两种人格",li:[
  "左栏是「周五晚上想看点什么」，右栏是「我那些 4K 都在哪、哪些片缺集」。混在一行 chips 里会让两边都难用。",
  "评分和片长是<b>有序档位</b>，所以用连成一条的分段控件而不是散落的胶囊，段上的小横条还带着分布——形态要说出字段的性质。",
@@ -817,20 +837,47 @@ function poster(it,o){
 }
 
 const bar=document.getElementById("bar");
+let panelOpen=false;   /* 筛选面板：静止态不展开。用户没提出筛选的意图之前，
+                          把四个写着「全部」的下拉摆在墙前面是纯粹的税。 */
+
+/* 顶栏：左边合集（安静的文字行），右边排序（安静）+ 筛选（静止态唯一带框的按钮） */
+function renderTop(){
+  const shown=COLS.slice(0,4),crow=document.getElementById("crow");
+  crow.innerHTML='<span class="lb">合集</span>'+
+    shown.map((c,i)=>'<button class="clink '+(isOn(c)?"on":"")+'" data-c="'+i+'">'+c.n+
+      '<span class="n">'+colItems(c).length+'</span></button>').join('<span class="sep">·</span>')+
+    '<span class="sep">·</span><button class="clink" data-view="cols">全部 '+COLS.length+' 个 <span style="color:var(--faint)">›</span></button>';
+  bindCols(crow);
+
+  const sn=SORTS.find(x=>x.k===sort).n,ctrl=document.getElementById("ctrl");
+  ctrl.innerHTML=
+    '<span class="dd"><button class="clink" data-dd="__sort" aria-expanded="false">排序 '+
+      '<b style="color:var(--text);font-weight:600">'+sn+'</b> ▾</button>'+
+      '<div class="menu" style="left:auto;right:0;min-width:196px"><p class="sec"><span>索引条跟着换口径</span></p>'+
+      SORTS.map(x=>'<button class="opt '+(x.k===sort?"sel":"")+'" data-s="'+x.k+'">'+
+        '<span class="box">'+(x.k===sort?"✓":"")+'</span><span>'+x.n+'</span></button>').join("")+
+      '</div></span>'+
+    '<button class="chip '+(nsel()||panelOpen?"active":"")+'" id="fbtn" aria-expanded="'+panelOpen+'">'+
+      '筛选'+(nsel()?'<span class="v">'+nsel()+'</span>':"")+'</button>';
+  bindDims(ctrl);
+  document.getElementById("fbtn").onclick=e=>{e.stopPropagation();panelOpen=!panelOpen;render();};
+}
+
+/* 筛选面板：展开时才存在。展开与否不影响已生效的条件——条件永远在下面那行可见 */
 function renderBar(){
-  let html=DIMS.map(d=>{
-    const s=sel[d.k];
-    const cur=s.length?(s.length>1?dname(d,s[0])+" +"+(s.length-1):dname(d,s[0])):"全部";
-    const rows=[];
-    const counts={},vals=d.vals();
+  bar.hidden=!panelOpen;
+  if(!panelOpen){bar.innerHTML="";return;}
+  bar.innerHTML=DIMS.map(d=>{
+    const sl=sel[d.k];
+    const cur=sl.length?(sl.length>1?dname(d,sl[0])+" +"+(sl.length-1):dname(d,sl[0])):"全部";
+    const rows=[],counts={},vals=d.vals();
     vals.forEach(v=>counts[v]=ITEMS.filter(it=>pass(it,d.k)&&hit(it,d,v)).length);
     const max=Math.max(1,...Object.values(counts));
     vals.forEach(v=>{
-      const n=counts[v],on=s.includes(v);
+      const n=counts[v],on=sl.includes(v);
       rows.push('<button class="opt '+(on?"sel":"")+' '+(n===0&&!on?"zero":"")+'" data-d="'+d.k+'" data-v="'+esc(v)+'"'+
         (n===0&&!on?' tabindex="-1"':"")+'><span class="fill" style="width:'+Math.round(n/max*100)+'%"></span>'+
         '<span class="box">'+(on?"✓":"")+'</span><span>'+dname(d,v)+'</span><span class="n">'+n+'</span></button>');
-      /* 地区展开到具体国家：预设是捷径不是分区，新加坡这类国家归不进任何组 */
       if(d.sub&&expandReg&&(REGG[v]||[]).length>1){
         REGG[v].forEach(cc=>{if(!CN[cc])return;
           const cn=ITEMS.filter(it=>pass(it,d.k)&&it.c===cc).length;
@@ -840,28 +887,23 @@ function renderBar(){
       }
     });
     const note=d.note?'<span>'+d.note+'</span>':(d.multi?'<span>可多选 · 维度内是「或」</span>':'<span>单选</span>');
-    return '<span class="dd"><button class="chip '+(s.length?"active":"")+'" data-dd="'+d.k+'" aria-expanded="false">'+
+    return '<span class="dd"><button class="chip '+(sl.length?"active":"")+'" data-dd="'+d.k+'" aria-expanded="false">'+
       '<span>'+d.label+'</span><span class="v">'+cur+'</span><span class="car">▾</span></button>'+
-      '<div class="menu"><p class="sec">'+note+(s.length?' · <b>已选 '+s.length+'</b>':"")+'</p>'+rows.join("")+
+      '<div class="menu"><p class="sec">'+note+(sl.length?' · <b>已选 '+sl.length+'</b>':"")+'</p>'+rows.join("")+
       (d.sub?'<div class="grpline"></div><button class="opt" data-x="reg">'+
         '<span class="box"></span><span>'+(expandReg?"收起国家":"展开到具体国家")+'</span></button>':"")+
       '</div></span>';
-  }).join("");
-  const sn=SORTS.find(x=>x.k===sort).n;
-  html+='<button class="chip">⚙ 更多筛选</button><span class="spacer"></span>'+
-    '<span class="dd"><button class="chip" data-dd="__sort" aria-expanded="false"><span>排序</span>'+
-    '<span class="v">'+sn+'</span><span class="car">▾</span></button><div class="menu" style="left:auto;right:0;min-width:190px">'+
-    '<p class="sec"><span>索引条跟着换口径</span></p>'+
-    SORTS.map(s=>'<button class="opt '+(s.k===sort?"sel":"")+'" data-s="'+s.k+'">'+
-      '<span class="box">'+(s.k===sort?"✓":"")+'</span><span>'+s.n+'</span></button>').join("")+'</div></span>';
-  bar.innerHTML=html;
+  }).join("")+'<button class="chip">⚙ 更多筛选</button>';
+  bindDims(bar);
+}
 
-  bar.querySelectorAll("[data-dd]").forEach(c=>c.onclick=e=>{
+function bindDims(root){
+  root.querySelectorAll("[data-dd]").forEach(c=>c.onclick=e=>{
     e.stopPropagation();
     const dd=c.parentElement,was=dd.classList.contains("open");
     closeMenus(); if(!was){dd.classList.add("open");c.setAttribute("aria-expanded","true");}
   });
-  bar.querySelectorAll(".opt").forEach(o=>o.onclick=e=>{
+  root.querySelectorAll(".opt").forEach(o=>o.onclick=e=>{
     e.stopPropagation();
     if(o.dataset.x==="reg"){expandReg=!expandReg;render();reopen("reg");return;}
     if(o.dataset.s){sort=o.dataset.s;render();reopen("__sort");return;}
@@ -873,7 +915,7 @@ function renderBar(){
   });
 }
 function reopen(k){
-  const t=bar.querySelector('[data-dd="'+k+'"]');
+  const t=document.querySelector('[data-dd="'+k+'"]');
   if(!t)return;t.parentElement.classList.add("open");t.setAttribute("aria-expanded","true");t.focus();
 }
 function closeMenus(){
@@ -969,17 +1011,7 @@ function bindCols(root){
   root.querySelectorAll("[data-c]").forEach(b=>b.onclick=()=>applyCol(COLS[+b.dataset.c]));
   root.querySelectorAll("[data-view]").forEach(b=>b.onclick=()=>setView(b.dataset.view));
 }
-/* ① chip 行 */
-function renderCrow(){
-  const box=document.getElementById("crow"),shown=COLS.slice(0,SHELF_MAX),rest=COLS.length-shown.length;
-  box.innerHTML='<span class="lb">合集</span>'+shown.map((c,i)=>
-    '<button class="cchip '+(isOn(c)?"on":"")+'" data-c="'+i+'">'+
-    '<span class="stk"><i></i><i></i></span>'+c.n+'<span class="n">'+colItems(c).length+'</span></button>').join("")+
-    (rest>0?'<button class="cmore" data-view="cols">还有 '+rest+' 个 ›</button>':"")+
-    '<span class="spacer"></span><button class="cmore" data-view="cols">全部合集 ›</button>';
-  bindCols(box);
-}
-/* ② 纵向网格：封面 2:3，与作品同一套网格 */
+/* 「合集」视图的纵向网格：封面 2:3，与作品同一套网格 */
 function renderGrid(){
   const box=document.getElementById("cgrid");
   const cards=COLS.map((c,i)=>{
@@ -1012,7 +1044,7 @@ function setView(v){
 }
 document.querySelectorAll(".vsw [data-view]").forEach(b=>b.onclick=()=>setView(b.dataset.view));
 
-function render(){renderCrow();renderBar();renderPicked();renderResult();renderGrid();}
+function render(){renderTop();renderBar();renderPicked();renderResult();renderGrid();}
 render();renderRail("p1");
 
 /* 其余屏 */
