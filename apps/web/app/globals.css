@@ -1714,6 +1714,29 @@ html:has(.player-root) {
    为什么不是「把轨道本身染黑」（上一版的做法）：那等于拿暗画面的可见性换
    亮画面的可见性——刚起播已播段宽度为 0，黑轨道压在黑画面上，用户会以为
    播放器没有进度条。 */
+/* 轨道自己往里让出半个把手。
+   把手是**居中**在轨道端点上的圆点，所以 0% / 100% 时它有半个身位探到轨道
+   之外；而上下的时间胶囊、功能键簇左缘都正好落在 .player-inset-x 上——那半
+   个身位就成了控制条左缘唯一一处不齐（真机截图反馈）。让轨道两端各缩进半个
+   把手，两端的把手边缘于是与胶囊边缘齐平。
+   收窄的是 .player-scrub-shade 这个盒子本身（margin 而非 padding）：轨道、
+   章节刻度、圆点、命中用的 <input> 全是它的绝对定位子元素，指针取值量的也是
+   它的 rect，一起收窄才不会让「圆点跟手」和「圆点对准已播段」这两条已经修过
+   的性质回退。
+   顺带把 .player-inset-x 那 28px 的本意补齐：那段注释要的是「0 进度的把手整个
+   落在 iOS 返回手势区外」，但此前落在 28px 上的是把手**中心**，左缘只到 19px、
+   仍压在手势带里；让出半个身位之后左缘正好是 28px。 */
+.player-scrub-shade {
+  /* 与 player-controls.tsx 里圆点的 size-[14px] / pointer-coarse:size-[18px] 同源 */
+  --player-thumb-r: 7px;
+  margin-inline: var(--player-thumb-r);
+}
+@media (pointer: coarse) {
+  .player-scrub-shade {
+    --player-thumb-r: 9px;
+  }
+}
+
 .player-scrub-shade::before {
   content: "";
   position: absolute;
