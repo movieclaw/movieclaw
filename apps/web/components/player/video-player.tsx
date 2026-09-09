@@ -176,7 +176,7 @@ interface WebkitPresentationVideo {
 /** 画中画图标：一个大屏 + 右下角的小窗；退出态把小窗画到左上，表示「收回大屏」。 */
 function PipGlyph({ exit }: { exit: boolean }) {
   return (
-    <svg viewBox="0 0 24 24" className="size-[18px] max-md:size-[22px]" fill="currentColor" aria-hidden>
+    <svg viewBox="0 0 24 24" className="size-[18px] pointer-coarse:size-[22px]" fill="currentColor" aria-hidden>
       <path d="M3 5.5A1.5 1.5 0 0 1 4.5 4h15A1.5 1.5 0 0 1 21 5.5v13a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5v-13Zm2 .5v12h14V6H5Z" />
       <path d={exit ? "M7 8h7v5H7V8Z" : "M12 12h6v5h-6v-5Z"} />
     </svg>
@@ -3015,12 +3015,12 @@ export function VideoPlayer(props: VideoPlayerProps) {
             type="button"
             onClick={goBack}
             // 淡出后必须同时断掉命中：隐形却仍能点的按钮会在用户想点画面时误触
-            className={`grid size-9 shrink-0 place-items-center rounded-full border border-white/[0.09] bg-black/30 text-white/85 backdrop-blur-md transition hover:bg-black/50 hover:text-white active:scale-[0.94] max-md:size-11 ${
+            className={`grid size-9 shrink-0 place-items-center rounded-full border border-white/[0.09] bg-black/30 text-white/85 backdrop-blur-md transition hover:bg-black/50 hover:text-white active:scale-[0.94] pointer-coarse:size-11 ${
               chromeVisible ? "pointer-events-auto" : "pointer-events-none"
             }`}
             aria-label={landscape ? "退出横屏" : "退出播放"}
           >
-            <ChevronLeftIcon className="size-[18px] max-md:size-[22px]" />
+            <ChevronLeftIcon className="size-[18px] pointer-coarse:size-[22px]" />
           </button>
           <div className="min-w-0">
             <h1 className="truncate text-[17px] font-semibold text-white drop-shadow">{title}</h1>
@@ -3061,13 +3061,13 @@ export function VideoPlayer(props: VideoPlayerProps) {
                   setLocked(true);
                   revealLock();
                 }}
-                className={`grid size-9 shrink-0 place-items-center rounded-full border border-white/[0.09] bg-black/30 text-white/85 backdrop-blur-md transition hover:bg-black/50 hover:text-white active:scale-[0.94] max-md:size-11 ${
+                className={`grid size-9 shrink-0 place-items-center rounded-full border border-white/[0.09] bg-black/30 text-white/85 backdrop-blur-md transition hover:bg-black/50 hover:text-white active:scale-[0.94] pointer-coarse:size-11 ${
                   chromeVisible ? "pointer-events-auto" : "pointer-events-none"
                 }`}
                 aria-label="锁屏"
                 title="锁屏（防误触）"
               >
-                <LockIcon className="size-[18px] max-md:size-[22px]" />
+                <LockIcon className="size-[18px] pointer-coarse:size-[22px]" />
               </button>
             ) : null}
 
@@ -3081,7 +3081,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
               <button
                 type="button"
                 onClick={togglePip}
-                className={`grid size-9 shrink-0 place-items-center rounded-full border border-white/[0.09] bg-black/30 text-white/85 backdrop-blur-md transition hover:bg-black/50 hover:text-white active:scale-[0.94] max-md:size-11 ${
+                className={`grid size-9 shrink-0 place-items-center rounded-full border border-white/[0.09] bg-black/30 text-white/85 backdrop-blur-md transition hover:bg-black/50 hover:text-white active:scale-[0.94] pointer-coarse:size-11 ${
                   chromeVisible ? "pointer-events-auto" : "pointer-events-none"
                 }`}
                 aria-label={pipActive ? "退出画中画" : "画中画"}

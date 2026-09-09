@@ -43,8 +43,21 @@ import { type TrickplayIndex, tileAt } from "@/lib/player/trickplay";
  * 本身也是 `fill=currentColor` 的，所以这不算破例。
  */
 
-/** 功能键图标尺寸：与 page-nav 的顶栏控件一致。 */
-const ICON = "size-[18px] max-md:size-[22px]";
+/**
+ * 功能键图标尺寸：与 page-nav 的顶栏控件一致。
+ *
+ * **放大的判据是 `pointer-coarse`（手指），不是 `max-md`（窄视口）**——播放器里
+ * 所有控件的尺寸分档都照这条。两者在竖屏手机上恰好同时成立，看不出区别，但在
+ * **横屏手机**上会分家：iPhone 横屏是 844/852/932 宽，越过了 md 断点，按视口
+ * 分档就把命中区从 44 降到 36，低于 HIG 的 44pt 最小值（Material 是 48dp）——
+ * 而横屏正是看片的主要姿势，iPad 更是全程落在这一档。手指的大小跟屏幕转没转
+ * 没有关系。
+ *
+ * 进度条的命中带（.player-scrub 的 `pointer-coarse:h-11`）本来就是这么判的，
+ * 按钮这边曾用 `max-md`，于是同一条控制条里两套判据：横屏下进度条给足 44、
+ * 旁边的按钮只有 36。2026-09-09 统一到手指这一条。
+ */
+const ICON = "size-[18px] pointer-coarse:size-[22px]";
 
 
 /**
@@ -70,7 +83,7 @@ function StrokeIcon({ children, className }: { children: React.ReactNode; classN
 
 /** 播放 / 暂停。只出现在中央簇，所以尺寸按中央簇给。 */
 function PlayGlyph({ paused }: { paused: boolean }) {
-  const cls = "size-[52px] fill-current max-md:size-11";
+  const cls = "size-[52px] fill-current pointer-coarse:size-11";
   return paused ? (
     <svg viewBox="0 0 24 24" className={cls} aria-hidden>
       <path d="M6 4.3v15.4a.7.7 0 0 0 1.07.6l12.3-7.7a.7.7 0 0 0 0-1.2L7.07 3.7A.7.7 0 0 0 6 4.3Z" />
@@ -94,7 +107,7 @@ function SkipGlyph({ forward }: { forward: boolean }) {
   // 弧心 (12,12.5)、半径 8。一端在正顶部 (12,4.5)，另一端留 60° 缺口——
   // 箭头要盖掉顶端一段，缺口小了箭头尖会怼上弧尾，圆环看起来是闭合的。
   return (
-    <svg viewBox="0 0 24 24" className="size-9 fill-current max-md:size-8" aria-hidden>
+    <svg viewBox="0 0 24 24" className="size-9 fill-current pointer-coarse:size-8" aria-hidden>
       <path
         d={forward ? "M12 4.5A8 8 0 1 0 18.93 8.5" : "M12 4.5A8 8 0 1 1 5.07 8.5"}
         fill="none"
@@ -916,7 +929,7 @@ function CenterButton({
       aria-label={label}
       // 淡出后必须同时断掉命中，否则隐形的按钮会在用户想点画面时误触
       className={`player-btn drop-shadow-[0_2px_8px_rgba(0,0,0,0.65)] ${
-        primary ? "size-[68px] max-md:size-14" : "size-12 max-md:size-11"
+        primary ? "size-[68px] pointer-coarse:size-14" : "size-12 pointer-coarse:size-11"
       } ${visible ? "pointer-events-auto" : "pointer-events-none"}`}
     >
       {children}
@@ -960,7 +973,7 @@ function IconButton({
       data-tip={tip}
       data-active={active ? "true" : undefined}
       data-open={open ? "true" : undefined}
-      className="player-btn player-tip size-9 shrink-0 max-md:size-11"
+      className="player-btn player-tip size-9 shrink-0 pointer-coarse:size-11"
     >
       {children}
     </button>
