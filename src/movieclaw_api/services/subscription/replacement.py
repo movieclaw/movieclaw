@@ -1036,14 +1036,34 @@ async def reconcile_pending_cleanup(attempt_id: int) -> bool:
                 .where(
                     SubscriptionDownloadAttempt.replaces_attempt_id == old.id,
                     SubscriptionDownloadAttempt.status.in_(  # type: ignore[attr-defined]
-                        (DownloadAttemptStatus.ACTIVE, DownloadAttemptStatus.COMPLETED)
+                        (
+                            DownloadAttemptStatus.ACTIVE,
+                            DownloadAttemptStatus.COMPLETED,
+                            # 洗版链路的新源在挂起旧任务时就已经入库了（见下）
+                            DownloadAttemptStatus.IMPORTED,
+                        )
                     ),
                 )
                 .order_by(SubscriptionDownloadAttempt.id.desc())  # type: ignore[attr-defined]
             )
         ).scalars().first()
-        if new is None or new.downloader_id is None:
+        if new is None:
             logger.warning("旧下载尝试 #%s 等待清理，但找不到仍有效的替代源台账", attempt_id)
+            return False
+        if new.status == DownloadAttemptStatus.IMPORTED:
+            # 洗版（upgrade.py）是在新版本入库的同一时刻才把旧任务挂进
+            # CLEANUP_PENDING，此时新 attempt 已是 IMPORTED。旧口径只认
+            # ACTIVE/COMPLETED，于是洗版留下的旧任务永远等不到清理，就地卡死
+            # （NAS 实测一条从 2026-09-07 挂到 09-09，每轮巡检刷一条上面那句
+            # 警告）。这条分支只收敛状态、不删任何东西，因此也不需要像删除路径
+            # 那样先读到新源来比较文件重叠——新源是否还在下载器里都不影响结论。
+            await _converge_upgraded_old_attempt(session, old)
+            return old.status in (
+                DownloadAttemptStatus.SUPERSEDED,
+                DownloadAttemptStatus.RETAINED,
+            )
+        if new.downloader_id is None:
+            logger.warning("旧下载尝试 #%s 等待清理，但替代源台账没有下载器归属", attempt_id)
             return False
         downloader = await session.get(DownloaderClient, new.downloader_id)
         if downloader is None:
@@ -1366,11 +1386,89 @@ async def _cleanup_replaced_attempt(
     )
 
 
+async def _converge_upgraded_old_attempt(
+    session: AsyncSession,
+    old: SubscriptionDownloadAttempt,
+) -> None:
+    """洗版留下的旧任务：只收敛状态，不碰下载器。
+
+    删旧种是换源链路一直在做的事，洗版链路因为口径不一致从来没有真正执行过。
+    这里先把状态收敛掉止血——下载器里已经没有的直接判 SUPERSEDED，还在的保留
+    做种并如实写明原因；要不要连带删除是一次真实的做种行为变更，交给用户显式
+    决定，不借这次修复顺手打开。
+    """
+    downloader = (
+        await session.get(DownloaderClient, old.downloader_id)
+        if old.downloader_id is not None
+        else None
+    )
+    if downloader is None:
+        await _retain_old(
+            session,
+            old,
+            "无法确认旧任务所在下载器，保留做种",
+            message="洗版已完成，但无法确认旧任务所在下载器，旧任务保留做种",
+        )
+        return
+    repo = DownloaderRepository(session)
+    adapter = create_downloader(
+        DownloaderConfig(
+            type=downloader.client_type.value,
+            url=downloader.url,
+            username=downloader.username,
+            password=repo.decrypted_password(downloader),
+        )
+    )
+    try:
+        present = await adapter.get_torrent(old.info_hash) is not None
+    except Exception as exc:  # noqa: BLE001 -- 读不到不能反过来把状态判死
+        await _retain_old(
+            session,
+            old,
+            f"旧任务状态查询失败：{exc}",
+            message=f"洗版已完成，但旧任务状态查询失败：{exc}；旧任务保留做种",
+        )
+        return
+    finally:
+        try:
+            await adapter.close()
+        except Exception:  # noqa: BLE001 -- 关闭失败不改变状态证据
+            logger.warning("关闭旧任务下载器连接失败", exc_info=True)
+    if present:
+        await _retain_old(
+            session,
+            old,
+            "洗版已完成，旧任务保留做种，可在活动页手动清理",
+            message="洗版已完成，旧任务保留做种，可在活动页手动清理",
+        )
+        return
+    old.status = DownloadAttemptStatus.SUPERSEDED
+    old.cleanup_note = "旧任务已不在下载器中"
+    old.updated_at = utcnow()
+    session.add(old)
+    await session.commit()
+    await SubscriptionRepository(session).add_activity(
+        SubscriptionActivity(
+            subscription_id=old.subscription_id,
+            type=ActivityType.REPLACEMENT_CLEANUP,
+            message=old.cleanup_note,
+            payload={"info_hash": old.info_hash},
+        )
+    )
+
+
 async def _retain_old(
     session: AsyncSession,
     old: SubscriptionDownloadAttempt,
     reason: str,
+    *,
+    message: str | None = None,
 ) -> None:
+    """旧任务保留不删，并把原因如实写进台账与活动流水。
+
+    ``message`` 只给非换种场景（如洗版收尾）覆盖开头那句话用——默认的
+    "已完成换种" 放在洗版流水里会读成"已完成换种，但洗版已完成……"。
+    """
     old.status = DownloadAttemptStatus.RETAINED
     old.cleanup_note = reason
     old.updated_at = utcnow()
@@ -1380,7 +1478,7 @@ async def _retain_old(
         SubscriptionActivity(
             subscription_id=old.subscription_id,
             type=ActivityType.REPLACEMENT_CLEANUP,
-            message=f"已完成换种，但{reason}",
+            message=message or f"已完成换种，但{reason}",
             payload={"info_hash": old.info_hash, "retained": True},
         )
     )

@@ -597,3 +597,98 @@ def test_build_thumbnail_grabs_frame_and_reports_size(tmp_path) -> None:
     Image.new("RGB", (640, 360), "gray").save(tmp_path / "clip-fanart.jpg")
     dest6 = tmp_path / "assets" / "6" / "backdrop.jpg"
     assert build_backdrop(video, dest6) is True and dest6.is_file()
+
+
+# ---------------------------------------------------------------------------
+# 边下边入库：白名单批次的搬运范围
+# ---------------------------------------------------------------------------
+
+
+async def _raw_drop_ready_scoped(
+    db, rule: ImportWatch, library: Library | None, entry: Path, watch: Path, videos: list[Path]
+) -> IngestEntry:
+    """按"下载器只放行了 videos 这几个文件"的口径跑一次原样落盘。
+
+    file-scoped 的判据是快照指纹的 ``ready:`` 前缀（与 ingest 内部同一口径），
+    这里直接构造该形态的快照，免去搭整套下载器桩件。
+    """
+    snap = ingest_mod._EntrySnapshot(
+        fingerprint="ready:" + "0" * 8,
+        has_marker=False,
+        has_disc=False,
+        videos=sorted(videos),
+    )
+    async with db.session() as session:
+        fresh_rule = await session.get(ImportWatch, rule.id) if rule.id else rule
+        fresh_library = await session.get(Library, library.id) if library is not None else None
+        record = await ingest_mod._ingest_entry(
+            session, fresh_rule, fresh_library, watch, entry, snap, None
+        )
+        await session.commit()
+        return record
+
+
+async def test_raw_drop_file_scoped_skips_files_still_downloading(
+    db, tmp_path, monkeypatch
+) -> None:
+    """白名单批次只搬白名单视频与它的同名附属，不碰仍在写入的其他文件。
+
+    2026-09-09 生产事故：原样落盘无视文件白名单、直接遍历整个条目目录，于是
+    每一轮都会去复制下载器仍在写的文件，``_copy_ingest_chunk`` 的 size/mtime
+    校验必然失败 → JobRetry → 30 秒一轮，直到把 24 次重试额度烧光（同目录的
+    另一个条目已因此 JOB_RETRY_EXHAUSTED 失败）。
+    """
+    root = tmp_path / "home"
+    root.mkdir()
+    library = await _make_video_library(db, root)
+    watch = tmp_path / "watch"
+    watch.mkdir()
+    monkeypatch.setattr(ingest_mod, "probe_media", lambda _p: _FAKE_SPEC)
+    async with db.session() as session:
+        session.add(ImportWatch(source_path=str(watch), strategy="copy", library_id=library.id))
+        await session.commit()
+        rule = (await session.execute(select(ImportWatch))).scalar_one()
+
+    entry = watch / "整合合集"
+    entry.mkdir()
+    ready = entry / "已完成.mp4"
+    ready.write_bytes(b"a" * 10)
+    (entry / "已完成.nfo").write_text("<movie><title>已完成</title></movie>", encoding="utf-8")
+    (entry / "已完成.chs.srt").write_text("1", encoding="utf-8")
+    # 下载器还没放行的两个文件：一个视频、一个属于它的附属
+    writing = entry / "还在下.mp4"
+    writing.write_bytes(b"b" * 10)
+    (entry / "还在下.nfo").write_text("<movie><title>还在下</title></movie>", encoding="utf-8")
+
+    await _raw_drop_ready_scoped(db, rule, library, entry, watch, [ready])
+
+    dest = root / "整合合集"
+    assert sorted(p.name for p in dest.iterdir()) == ["已完成.chs.srt", "已完成.mp4", "已完成.nfo"]
+    async with db.session() as session:
+        rows = list((await session.execute(select(LibraryFile))).scalars().all())
+        assert len(rows) == 1, "白名单外的视频不应建台账"
+
+
+async def test_raw_drop_whole_tree_still_moves_everything(db, tmp_path, monkeypatch) -> None:
+    """整种完成后的整树批次照旧搬走全部常规文件——收窄只针对白名单批次。"""
+    root = tmp_path / "home"
+    root.mkdir()
+    library = await _make_video_library(db, root, name="整树库")
+    watch = tmp_path / "watch"
+    watch.mkdir()
+    monkeypatch.setattr(ingest_mod, "probe_media", lambda _p: _FAKE_SPEC)
+    async with db.session() as session:
+        session.add(ImportWatch(source_path=str(watch), strategy="copy", library_id=library.id))
+        await session.commit()
+        rule = (await session.execute(select(ImportWatch))).scalar_one()
+
+    entry = watch / "整树合集"
+    entry.mkdir()
+    (entry / "甲.mp4").write_bytes(b"a" * 10)
+    (entry / "乙.mp4").write_bytes(b"b" * 10)
+    (entry / "说明.txt").write_text("readme", encoding="utf-8")
+
+    await _sweep_twice(db, rule, library)
+
+    dest = root / "整树合集"
+    assert sorted(p.name for p in dest.iterdir()) == ["乙.mp4", "甲.mp4", "说明.txt"]

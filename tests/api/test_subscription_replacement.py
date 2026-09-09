@@ -732,3 +732,145 @@ async def test_pending_cleanup_is_idempotently_reconciled_after_restart(db, monk
     async with db.session() as session:
         old = await session.get(SubscriptionDownloadAttempt, old_id)
         assert old.status == DownloadAttemptStatus.SUPERSEDED
+
+
+@pytest.mark.asyncio
+async def test_upgraded_old_attempt_converges_when_torrent_gone(db, monkeypatch) -> None:
+    """洗版留下的 cleanup_pending 能收敛：下载器里已经没有的旧任务判 SUPERSEDED。
+
+    2026-09-07 生产事故：洗版链路是在新版本入库的同一时刻才把旧任务挂进
+    CLEANUP_PENDING，此时新 attempt 已是 IMPORTED；而巡检只按 ACTIVE/COMPLETED
+    找替代源台账，找不到就直接返回，旧任务原地卡死两天（NAS 上《早春晴朗》
+    S01E19 的 1080p 死种，从头到尾一个字节没下）。
+    """
+    async with db.session() as session:
+        downloader = DownloaderClient(
+            name="洗版下载器", client_type="qbittorrent", url="http://downloader:8080"
+        )
+        media = MediaItem(kind="tv", tmdb_id=46, title="洗版收敛", original_title="Converge")
+        rule = RuleSet(name="洗版规则")
+        session.add_all([downloader, media, rule])
+        await session.flush()
+        subscription = Subscription(media_item_id=media.id, kind="tv", rule_set_id=rule.id)
+        session.add(subscription)
+        await session.flush()
+        old = SubscriptionDownloadAttempt(
+            subscription_id=subscription.id,
+            downloader_id=downloader.id,
+            info_hash="3" * 40,
+            units=[[1, 19]],
+            quality={"resolution": "1080p"},
+            owned_by_movieclaw=True,
+            # 生产现场就是"考核状态未知"，不能靠 hit_and_run=False 才走通
+            hit_and_run=None,
+            status="cleanup_pending",
+            last_progress_at=utcnow(),
+        )
+        session.add(old)
+        await session.flush()
+        new = SubscriptionDownloadAttempt(
+            subscription_id=subscription.id,
+            downloader_id=downloader.id,
+            replaces_attempt_id=old.id,
+            info_hash="4" * 40,
+            units=[[1, 19]],
+            quality={"resolution": "2160p"},
+            owned_by_movieclaw=True,
+            hit_and_run=False,
+            status=DownloadAttemptStatus.IMPORTED,
+            last_progress_at=utcnow(),
+        )
+        session.add(new)
+        await session.commit()
+        old_id = old.id
+
+    deleted: list[tuple[str, bool]] = []
+
+    class FakeAdapter:
+        async def get_torrent(self, info_hash, *, include_files=True):
+            return None  # 新旧两个种子都已不在下载器里（生产现场如此）
+
+        async def delete_torrent(self, info_hash, *, delete_files=False):
+            deleted.append((info_hash, delete_files))
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(replacement_mod, "create_downloader", lambda config: FakeAdapter())
+    assert await replacement_mod.reconcile_pending_cleanup(old_id)
+    assert deleted == [], "状态收敛不得连带删除下载器任务"
+    async with db.session() as session:
+        old = await session.get(SubscriptionDownloadAttempt, old_id)
+        assert old.status == DownloadAttemptStatus.SUPERSEDED
+        assert old.cleanup_note == "旧任务已不在下载器中"
+
+
+@pytest.mark.asyncio
+async def test_upgraded_old_attempt_kept_seeding_when_still_present(db, monkeypatch) -> None:
+    """旧种还在下载器里：保留做种并如实说明，不在洗版链路上新开删除行为。"""
+    async with db.session() as session:
+        downloader = DownloaderClient(
+            name="洗版下载器2", client_type="qbittorrent", url="http://downloader:8080"
+        )
+        media = MediaItem(kind="tv", tmdb_id=47, title="洗版保留", original_title="Retain")
+        rule = RuleSet(name="洗版规则2")
+        session.add_all([downloader, media, rule])
+        await session.flush()
+        subscription = Subscription(media_item_id=media.id, kind="tv", rule_set_id=rule.id)
+        session.add(subscription)
+        await session.flush()
+        old = SubscriptionDownloadAttempt(
+            subscription_id=subscription.id,
+            downloader_id=downloader.id,
+            info_hash="5" * 40,
+            units=[[1, 20]],
+            quality={"resolution": "1080p"},
+            owned_by_movieclaw=True,
+            hit_and_run=False,
+            status="cleanup_pending",
+            last_progress_at=utcnow(),
+        )
+        session.add(old)
+        await session.flush()
+        new = SubscriptionDownloadAttempt(
+            subscription_id=subscription.id,
+            downloader_id=downloader.id,
+            replaces_attempt_id=old.id,
+            info_hash="6" * 40,
+            units=[[1, 20]],
+            quality={"resolution": "2160p"},
+            owned_by_movieclaw=True,
+            hit_and_run=False,
+            status=DownloadAttemptStatus.IMPORTED,
+            last_progress_at=utcnow(),
+        )
+        session.add(new)
+        await session.commit()
+        old_id = old.id
+
+    deleted: list[tuple[str, bool]] = []
+
+    class FakeAdapter:
+        async def get_torrent(self, info_hash, *, include_files=True):
+            return TorrentStatus(
+                info_hash=info_hash,
+                name="Seeding",
+                progress=1.0,
+                completed=True,
+                save_path="/downloads",
+                files=[],
+            )
+
+        async def delete_torrent(self, info_hash, *, delete_files=False):
+            deleted.append((info_hash, delete_files))
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(replacement_mod, "create_downloader", lambda config: FakeAdapter())
+    assert await replacement_mod.reconcile_pending_cleanup(old_id)
+    assert deleted == [], "洗版链路此前从未删过旧种，不能借这次修复顺手打开"
+    async with db.session() as session:
+        old = await session.get(SubscriptionDownloadAttempt, old_id)
+        assert old.status == DownloadAttemptStatus.RETAINED
+        assert "保留做种" in (old.cleanup_note or "")

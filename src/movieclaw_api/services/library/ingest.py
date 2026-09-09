@@ -502,6 +502,34 @@ def _snapshot_ready_files(entry: Path, ready_files: list[_ReadyDownloadFile]) ->
     )
 
 
+def _ready_batch_sources(videos: list[Path]) -> list[Path]:
+    """白名单批次的搬运范围：白名单视频 + 各自的同名附属。
+
+    同名判据沿用整理器的 sidecar 口径（``同名`` / ``同名.语言`` / ``同名-标记``）。
+    这里不按扩展名白名单收附属，而是"同名的非视频文件"全收：原样落盘本就不
+    改名、不挑剔 sidecar 形态，漏搬一个附属比多搬一个代价大得多。视频扩展名
+    反过来必须排除——另一个视频只能凭下载器证据自己进白名单，不能被同名规则
+    顺带捎进来（它可能还在下载）。
+    """
+    picked: dict[Path, None] = {}
+    for video in videos:
+        picked[video] = None
+        stem = video.stem.lower()
+        try:
+            siblings = sorted(video.parent.iterdir())
+        except OSError:
+            continue
+        for sibling in siblings:
+            if not sibling.is_file() or sibling.name.startswith("."):
+                continue
+            if sibling.suffix.lower() in VIDEO_EXTS:
+                continue
+            name = sibling.stem.lower()
+            if name == stem or name.startswith(f"{stem}.") or name.startswith(f"{stem}-"):
+                picked[sibling] = None
+    return list(picked)
+
+
 def _ingest_path_id(entry_path: str) -> str:
     """把绝对路径收敛成稳定、无敏感目录信息的资源 id。"""
     return hashlib.sha256(entry_path.encode("utf-8")).hexdigest()
@@ -2442,11 +2470,21 @@ async def _ingest_raw_drop(
             f"主视频「{main.name}」探测失败——可能尚未下载完成或已损坏，文件变化后自动重试",
         )
     dest_base = Path(root) / entry.name if entry.is_dir() else Path(root)
-    # 全部常规文件原样搬（视频 + NFO/字幕/图片），隐藏文件与下载器标记不带
-    if entry.is_dir():
-        sources = sorted(p for p in entry.rglob("*") if p.is_file() and not p.name.startswith("."))
-    else:
+    # 全部常规文件原样搬（视频 + NFO/字幕/图片），隐藏文件与下载器标记不带。
+    # 例外是边下边入库的白名单批次（``ready:`` 指纹）：条目里还有下载器没放行
+    # 的文件正在被写入，把它们一并搬只会让 _copy_ingest_chunk 的 size/mtime
+    # 校验必然失败——每轮重试烧掉一次额度、进度在不同文件间反复重来，最终
+    # JOB_RETRY_EXHAUSTED（2026-09-09 生产事故，同源另一条目已因此失败）。
+    # 白名单批次因此只搬白名单视频与其同名附属，其余文件留给整种完成后的
+    # 整树批次收尾（那一轮 ready_files=None，见 _sweep_dir）。
+    # 自定义目录（library is None）不收窄：中转文件是"过客"，外部工具消费后
+    # 会删掉落点文件，拆成两轮搬运可能让整树批次重搬、造成重复上传。
+    if not entry.is_dir():
         sources = [entry]
+    elif snap.fingerprint.startswith("ready:") and library is not None:
+        sources = sorted(_ready_batch_sources(snap.videos))
+    else:
+        sources = sorted(p for p in entry.rglob("*") if p.is_file() and not p.name.startswith("."))
     notes: list[str] = []
     env_error = conflict = False
     transferred: list[tuple[Path, Path]] = []
