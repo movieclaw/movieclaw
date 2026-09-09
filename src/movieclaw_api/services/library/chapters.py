@@ -38,6 +38,7 @@ from sqlmodel import select
 from movieclaw_api.schemas.library import ChapterJobView
 from movieclaw_api.services import jobs
 from movieclaw_api.services.library.layout import STRM_EXT
+from movieclaw_api.services.library.profile import profile_of
 from movieclaw_api.services.library.thumbs import FRAME_GRAB_GATE, build_filter_chains
 from movieclaw_api.services.media_probe import VideoColor, probe_chapters, video_color_for
 from movieclaw_db.engine import get_database
@@ -756,22 +757,27 @@ async def enqueue_item_chapter_images_job(
     media_item_id: int,
     title: str,
     *,
+    force: bool = True,
     actor_kind: str | None = None,
     actor_name: str | None = None,
     actor_id: str | None = None,
     origin: str = "system",
 ) -> jobs.CreateJobResult:
-    """把单条目重抓固化成可恢复 Job；同条目同时只跑一份。
+    """把单条目抓图固化成可恢复 Job；同条目同时只跑一份。
 
     做成 Job 而不是裸协程（详情页懒触发那种）有三个理由：用户明确点了菜单，
     要在任务中心看到它、能停它；一部剧几十集重抓要跑很久，重启不该白跑；
     整库作业已经是 Job，两者共用同一套断点与进度口径。
+
+    ``force`` 默认真（条目菜单「重新生成章节」的口径：已有的图也重做）；
+    入库落账后的补图传假，只补没抓齐的——追剧每来一集都把整部剧重抓一遍，
+    代价是几十次白跑的抽帧。
     """
     return await jobs.create_job(
         session,
         job_type=ITEM_JOB_TYPE,
         subject=title,
-        input_data={"media_item_id": media_item_id, "force": True},
+        input_data={"media_item_id": media_item_id, "force": bool(force)},
         resources=[jobs.ResourceRef("media_item", media_item_id)],
         dedupe_key=f"{ITEM_JOB_TYPE}:{media_item_id}",
         conflict_policy="return_existing",
@@ -782,8 +788,37 @@ async def enqueue_item_chapter_images_job(
         actor_name=actor_name,
         actor_id=actor_id,
         origin=origin,
-        progress=jobs.default_progress(f"等待重新生成《{title}》的章节"),
+        progress=jobs.default_progress(
+            f"等待重新生成《{title}》的章节" if force else f"等待生成《{title}》的章节"
+        ),
     )
+
+
+async def enqueue_ingested_item_chapter_images(
+    session: AsyncSession,
+    library: Library,
+    media_item_id: int,
+    title: str,
+) -> bool:
+    """入库落账后给新条目补章节图（补缺模式），返回是否入队。
+
+    监听入库不经过扫描，扫描收尾那次整库入队（``scan.py`` 的
+    ``_run_scan_job``）覆盖不到它：自动下载入库的新片只能等用户点开详情页
+    才由懒触发抓图，只用 Infuse / Jellyfin 客户端的用户则一直没有图。
+
+    走**条目级**作业而不是整库那份，是因为整库作业挂在 ``library`` 资源上，
+    而扫描开场看到本库有未完成作业就会顺延（``scan_library`` 给后台作业
+    让路）——一次几小时的整库回填会把监听触发的增量扫描一并挡住。条目作业
+    挂 ``media_item``，与扫描互不相干，处理的也正好是刚入库的这一部。
+
+    库关了章节开关、或不是可播库（图片库没有章节）就什么都不做。同条目已有
+    作业在跑时按去重复用它——那一份可能已经取完目标、赶不上刚落账的这一集，
+    由下一次入库或详情页懒触发兜底，不为这点概率再排一份重复作业。
+    """
+    if not library.extract_chapter_images or not profile_of(library).playable:
+        return False
+    await enqueue_item_chapter_images_job(session, media_item_id, title, force=False)
+    return True
 
 
 async def item_job_active(session: AsyncSession, media_item_id: int) -> bool:

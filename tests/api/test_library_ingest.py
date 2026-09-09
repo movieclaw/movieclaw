@@ -117,6 +117,12 @@ async def _get_library(db, library_id: int) -> Library:
         return row
 
 
+def _ingest_jobs():
+    """只筛入库作业：一次入库还会给新条目排一份章节图作业
+    （``media.chapter_images``），"任务中心里有几份"的断言说的是前者。"""
+    return select(Job).where(Job.job_type == "library.ingest")
+
+
 async def _add_ingest_job(session, *, job_id: str, entry_id: int, status: JobStatus) -> Job:
     row = Job(id=job_id, job_type="library.ingest", status=status, input_data={})
     session.add(row)
@@ -671,6 +677,83 @@ async def test_movie_hardlink_import_and_ledger(db, tmp_path, monkeypatch):
     async with db.session() as session:
         files = list((await session.execute(select(LibraryFile))).scalars().all())
     assert len(files) == 1
+
+
+@pytest.mark.asyncio
+async def test_import_enqueues_chapter_images_job(db, tmp_path, monkeypatch):
+    """入库落账后给新条目排一份章节图作业（docs/design/video-chapters.md §4.5）。
+
+    监听入库不经过扫描，扫描收尾那次整库入队覆盖不到它——少了这一份，自动
+    下载入库的新片要等用户点开详情页才由懒触发抓图，只用 Infuse / Jellyfin
+    客户端的用户则一直没有图。
+    """
+    root, watch = tmp_path / "movies", tmp_path / "watch"
+    watch.mkdir()
+    library_id = await _make_library(db, kind=MediaKind.MOVIE, root=root)
+    item = await _make_item(db, kind=MediaKind.MOVIE, title="某电影", year=2020)
+    _stub_identify(monkeypatch, item)
+    monkeypatch.setattr(ingest_mod, "probe_media", lambda p: _FAKE_SPEC)
+
+    entry = watch / "Some.Movie.2020.1080p"
+    entry.mkdir()
+    (entry / "some.movie.mkv").write_bytes(b"video")
+    await _sweep_twice(db, library_id, watch)
+
+    async with db.session() as session:
+        job = (
+            await session.execute(select(Job).where(Job.job_type == "media.chapter_images"))
+        ).scalar_one()
+        resources = list(
+            (
+                await session.execute(select(JobResource).where(JobResource.job_id == job.id))
+            ).scalars()
+        )
+    assert job.input_data["media_item_id"] == item.id
+    # 补缺而不是重抓：追剧每来一集都把整部剧重抓一遍，代价是几十次白跑的抽帧
+    assert job.input_data["force"] is False
+    # 挂 media_item 而不是 library：整库那份会让扫描开场看到"本库有作业在跑"
+    # 而顺延，一次几小时的回填能把监听触发的增量扫描一并挡住
+    assert [(r.resource_type, r.resource_id) for r in resources] == [("media_item", str(item.id))]
+
+    # 幂等：同条目再入库不重复排队（dedupe_key 按条目）
+    (entry / "some.movie.mkv").write_bytes(b"video-2")
+    await _sweep_twice(db, library_id, watch)
+    async with db.session() as session:
+        jobs_after = list(
+            (
+                await session.execute(select(Job).where(Job.job_type == "media.chapter_images"))
+            ).scalars()
+        )
+    assert len(jobs_after) == 1
+
+
+@pytest.mark.asyncio
+async def test_import_skips_chapter_images_job_when_library_disabled(db, tmp_path, monkeypatch):
+    """库关了「生成章节」开关：入库不排章节图作业（作业本身也会空转返回）。"""
+    root, watch = tmp_path / "movies", tmp_path / "watch"
+    watch.mkdir()
+    library_id = await _make_library(db, kind=MediaKind.MOVIE, root=root)
+    async with db.session() as session:
+        library = await session.get(Library, library_id)
+        assert library is not None
+        library.extract_chapter_images = False
+        await session.commit()
+    item = await _make_item(db, kind=MediaKind.MOVIE, title="某电影", year=2020)
+    _stub_identify(monkeypatch, item)
+    monkeypatch.setattr(ingest_mod, "probe_media", lambda p: _FAKE_SPEC)
+
+    entry = watch / "Some.Movie.2020.1080p"
+    entry.mkdir()
+    (entry / "some.movie.mkv").write_bytes(b"video")
+    await _sweep_twice(db, library_id, watch)
+
+    async with db.session() as session:
+        chapter_jobs = list(
+            (
+                await session.execute(select(Job).where(Job.job_type == "media.chapter_images"))
+            ).scalars()
+        )
+    assert chapter_jobs == []
 
 
 @pytest.mark.asyncio
@@ -1961,7 +2044,7 @@ async def test_blocked_batch_does_not_stall_remaining_episodes(db, tmp_path, mon
     completed_later[ep3.name] = True
     await ingest_mod._sweep_dir(rule, library)
     async with db.session() as session:
-        all_jobs = list((await session.execute(select(Job))).scalars())
+        all_jobs = list((await session.execute(_ingest_jobs())).scalars())
     assert len(all_jobs) == 3
     third = max(all_jobs, key=lambda job: job.created_at)
     assert [ready["path"] for ready in third.input_data["ready_files"]] == [ep3.name]
@@ -2510,7 +2593,7 @@ async def test_upgrade_retries_legacy_partial_import_through_job(db, tmp_path, m
     await ingest_mod._sweep_dir(rule, library)
 
     async with db.session() as session:
-        job = (await session.execute(select(Job))).scalar_one()
+        job = (await session.execute(_ingest_jobs())).scalar_one()
     assert job.handler_revision == ingest_mod._ingest_handler_revision()
     await jobs.init_job_dispatcher(max_parallel=1)
     await _wait_job_status(job.id, JobStatus.SUCCEEDED)
@@ -3017,7 +3100,7 @@ async def test_upgrade_unblocks_old_revision_parser_gap_job(db, tmp_path, monkey
     assert completed.id == job.id
 
     async with db.session() as session:
-        all_jobs = list((await session.execute(select(Job))).scalars())
+        all_jobs = list((await session.execute(_ingest_jobs())).scalars())
         record = (await session.execute(select(IngestEntry))).scalar_one()
     assert len(all_jobs) == 1
     assert record.status == IngestStatus.IMPORTED
@@ -3085,7 +3168,7 @@ async def test_blocked_parser_gap_job_wakes_on_content_change(db, tmp_path, monk
     assert completed.id == job.id
 
     async with db.session() as session:
-        all_jobs = list((await session.execute(select(Job))).scalars())
+        all_jobs = list((await session.execute(_ingest_jobs())).scalars())
         record = (await session.execute(select(IngestEntry))).scalar_one()
     assert len(all_jobs) == 1
     assert record.status == IngestStatus.IMPORTED
@@ -3113,7 +3196,7 @@ async def test_model_upgrade_wakes_blocked_parser_gap_job(db, tmp_path, monkeypa
     assert completed.handler_revision == f"{ingest_mod._INGEST_HANDLER_REVISION}+torrent-ner-v9"
 
     async with db.session() as session:
-        all_jobs = list((await session.execute(select(Job))).scalars())
+        all_jobs = list((await session.execute(_ingest_jobs())).scalars())
         record = (await session.execute(select(IngestEntry))).scalar_one()
     assert len(all_jobs) == 1
     assert record.status == IngestStatus.IMPORTED
@@ -3152,7 +3235,7 @@ async def test_compensation_zero_new_import_keeps_imported_summary(db, tmp_path,
     await ingest_mod._sweep_dir(rule, library)
     await ingest_mod._sweep_dir(rule, library)
     async with db.session() as session:
-        job = (await session.execute(select(Job))).scalar_one()
+        job = (await session.execute(_ingest_jobs())).scalar_one()
     await jobs.init_job_dispatcher(max_parallel=1)
     await _wait_job_status(job.id, JobStatus.BLOCKED)
 

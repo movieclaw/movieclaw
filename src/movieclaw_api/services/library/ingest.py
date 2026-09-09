@@ -2308,6 +2308,12 @@ async def _ingest_entry(
                 },
             )
             await ensure_assets(item.id)
+        # 章节图（docs/design/video-chapters.md §4.5）：入库不走扫描，扫描收尾
+        # 那次整库入队覆盖不到新入库的文件——给这一部单独排一份条目作业，
+        # 用户点开详情页时图已经在了，只用 Infuse/Jellyfin 的用户也有图
+        from movieclaw_api.services.library.chapters import enqueue_ingested_item_chapter_images
+
+        await enqueue_ingested_item_chapter_images(session, dest_library, item.id, item.title)
 
     verb = "硬链接" if strategy == "hardlink" else "复制"
     if imported:
@@ -2527,7 +2533,7 @@ async def _ingest_raw_drop(
     kind = MediaKind(library.kind)
     first_item: MediaItem | None = None
     imported = 0
-    new_item_ids: list[int] = []
+    new_items: list[tuple[int, str]] = []
     for src_file, final in transferred:
         if src_file not in video_set:
             continue
@@ -2573,11 +2579,13 @@ async def _ingest_raw_drop(
             )
         )
         imported += 1
-        new_item_ids.append(local_item.id)
+        new_items.append((local_item.id, local_item.title))
     if imported:
         await LibraryRepository(session).refresh_stats([library.id])
         await session.commit()
-        for item_id in new_item_ids:
+        from movieclaw_api.services.library.chapters import enqueue_ingested_item_chapter_images
+
+        for item_id, item_title in new_items:
             # 缩略图属于锦上添花：作业内顺手做完，后台 tick 则丢给事件循环
             if job_context is None:
                 asyncio.get_running_loop().create_task(ensure_assets(item_id))
@@ -2591,6 +2599,8 @@ async def _ingest_raw_drop(
                     details={"entry_name": entry.name, "library_id": library.id},
                 )
                 await ensure_assets(item_id)
+            # 章节图与上面的封面同理，只是慢得多，交给条目作业在后台跑
+            await enqueue_ingested_item_chapter_images(session, library, item_id, item_title)
     if imported:
         return first_item, imported, (
             IngestStatus.IMPORTED,

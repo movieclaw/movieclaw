@@ -347,7 +347,17 @@ ffmpeg -v info -y -skip_frame nokey -ss <t> -copyts -i <file> -an -sn \
    场景图」（force）两项。原「重新生成缩略图」菜单改名「重新生成封面」，
    后端进度短语同步（封面 = 主图，与场景图是两件事）。
 
-4. **详情页懒触发**（**不做成 Job**：用户没发起任何动作，一次次打开详情页
+4. **入库落账后**（`ingest.py` 的两处收尾，与封面资产补齐同一位置）：监听
+   入库不经过扫描，入口 1 覆盖不到自动下载入库的新片——不补这一步，新片要等
+   用户点开详情页才由懒触发抓图，只用 Infuse / Jellyfin 客户端的用户则一直
+   没有图。排的是**条目级**补缺作业（`media.chapter_images`，`force=False`：
+   追剧每来一集都把整部剧重抓一遍等于几十次白跑的抽帧），不是整库那份——
+   整库作业挂 `library` 资源，而 `scan_library` 开场看到本库有未完成作业就
+   顺延，一次几小时的整库回填会把监听触发的增量扫描一并挡住；条目作业挂
+   `media_item`，与扫描互不相干。同条目已有作业在跑时按 `dedupe_key` 复用，
+   那一份可能已取完目标、赶不上刚落账的这一集，由下一次入库或详情页懒触发
+   兜底。
+5. **详情页懒触发**（**不做成 Job**：用户没发起任何动作，一次次打开详情页
    却在任务中心堆出一串条目作业既是噪音、也违背 persistent-jobs.md 的"Job 只
    承载用户可感知、需要追踪的异步业务"；重启把它丢了也无妨，下次打开原地再
    触发，已抓齐的文件靠台账不会重做）：`GET /libraries/{lib}/items/{id}` 发现有在位
@@ -463,6 +473,7 @@ Agent 工具无需改动：`spec.json` 重导出后 `library.items.get` 自动�
 | 章节 > 48 或平均间隔 < 1s → 只列表不抓图 | `chapters.py` 单测 |
 | 重启后不重抓已完成的文件，进度不归零 | `test_library_job_resumes_after_restart` |
 | 条目重抓是可恢复 Job，排队期间详情页仍轮询 | `test_item_regenerate_route_enqueues_resumable_job` |
+| 入库落账后新条目有条目级补缺作业（库开关关掉则没有） | `tests/api/test_library_ingest.py` |
 | `Chapters` 受 fields 门控、单条目全开 | `tests/jellyfin` |
 | 列表请求不加载章节 JSON 列 | `_list_load_columns` |
 | 详情接口不触发 ffprobe | `build_item_detail` |
