@@ -88,3 +88,117 @@ export function filterCount(filter: LibraryFilter | undefined): number {
     (filter.stock?.length ?? 0)
   );
 }
+
+/**
+ * 合集规则的一条（与后端 ``services/library/collections.py`` 的 ``rules_to_filter``
+ * 同一套字段名，也与 ``library.match_rules`` 同构）。
+ */
+export interface FilterRule {
+  field: string;
+  op: "any_of";
+  values: (string | number | boolean)[];
+}
+
+/**
+ * 筛选条件 → 合集规则。「筛完存为合集」是一次纯粹的形状转换，不是另一套语义。
+ *
+ * 字段名必须与后端那份一一对上：对不上的字段后端会**保守忽略**（宁可少收窄也
+ * 不误收窄），表现就是"存下来的合集比刚才筛出来的多"——这类偏差没有报错，
+ * 只能靠两边共用同一份字段名来杜绝。
+ */
+export function filterToRules(filter: LibraryFilter | undefined): FilterRule[] {
+  if (!filter) return [];
+  const rules: FilterRule[] = [];
+  const push = (field: string, values: (string | number | boolean)[]) => {
+    if (values.length) rules.push({ field, op: "any_of", values });
+  };
+  push("genres", filter.genres ?? []);
+  push("origin_countries", filter.countries ?? []);
+  push("decades", filter.decades ?? []);
+  push("watch", filter.watch ? [filter.watch] : []);
+  push(
+    "rating_gte",
+    filter.ratingGte !== undefined && filter.ratingGte !== null ? [filter.ratingGte] : [],
+  );
+  push("runtimes", filter.runtimes ?? []);
+  push("languages", filter.languages ?? []);
+  push("resolutions", filter.resolutions ?? []);
+  push("hdr", filter.hdr !== undefined && filter.hdr !== null ? [filter.hdr] : []);
+  push("stock", filter.stock ?? []);
+  return rules;
+}
+
+/** 合集规则 → 筛选条件（合集详情页要把规则画成可改的条件 chip）。 */
+export function rulesToFilter(rules: FilterRule[] | undefined): LibraryFilter {
+  const filter: LibraryFilter = {};
+  for (const rule of rules ?? []) {
+    const values = rule?.values ?? [];
+    switch (rule?.field) {
+      case "genres":
+        filter.genres = values.map((v) => Number(v)).filter((v) => Number.isFinite(v));
+        break;
+      case "origin_countries":
+      case "countries":
+        filter.countries = values.map((v) => String(v).toUpperCase());
+        break;
+      case "decades":
+        filter.decades = values.map((v) => String(v));
+        break;
+      case "watch":
+        filter.watch = values.length ? (String(values[0]) as WatchFilter) : null;
+        break;
+      case "rating_gte":
+        filter.ratingGte = values.length ? Number(values[0]) : null;
+        break;
+      case "runtimes":
+        filter.runtimes = values.map((v) => String(v));
+        break;
+      case "languages":
+        filter.languages = values.map((v) => String(v).toLowerCase());
+        break;
+      case "resolutions":
+        filter.resolutions = values.map((v) => String(v));
+        break;
+      case "hdr":
+        filter.hdr = values.length ? Boolean(values[0]) : null;
+        break;
+      case "stock":
+        filter.stock = values.map((v) => String(v));
+        break;
+      // 未知字段保守忽略：与后端同一条降级策略
+    }
+  }
+  return filter;
+}
+
+/**
+ * 条件的规范化键：同一组条件无论勾选顺序都得到同一个串，空条件为空串。
+ *
+ * 两处在用，而且必须是同一份：
+ *   - 墙位置记忆的指纹（每种筛选各记各的位置）；
+ *   - 判断「当前这面墙是不是正好等于某个合集」——合集 chip 的选中态就是这么
+ *     **推导**出来的，不存状态。用户改动任意一条，键不再相等，标记自然消失，
+ *     不需要谁去记得清掉它。
+ */
+export function filterKey(filter: LibraryFilter | undefined): string {
+  if (isFilterEmpty(filter)) return "";
+  const parts: Record<string, string[] | string | null> = {
+    g: (filter?.genres ?? []).map(String),
+    c: filter?.countries ?? [],
+    d: filter?.decades ?? [],
+    w: filter?.watch ?? null,
+    r: filter?.ratingGte != null ? String(filter.ratingGte) : null,
+    rt: filter?.runtimes ?? [],
+    lang: filter?.languages ?? [],
+    res: filter?.resolutions ?? [],
+    hdr: filter?.hdr == null ? null : String(filter.hdr),
+    st: filter?.stock ?? [],
+  };
+  const pieces: string[] = [];
+  for (const key of Object.keys(parts).sort()) {
+    const value = parts[key];
+    if (!value || (Array.isArray(value) && value.length === 0)) continue;
+    pieces.push(`${key}${Array.isArray(value) ? [...value].sort().join("_") : value}`);
+  }
+  return pieces.join(".");
+}

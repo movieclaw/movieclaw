@@ -427,6 +427,17 @@ class LibraryFacetsView(BaseModel):
     stock: list[FacetValueView] = Field(default_factory=list, description="库存状态（查库）")
 
 
+class CollectionCover(BaseModel):
+    """合集卡片的一张封面图。
+
+    合集自己没有图，封面就是成员的海报。由服务端在列合集时一并给出——否则
+    客户端要为每个合集再请求一次成员才画得出卡片，一屏合集就是一屏请求。
+    """
+
+    url: str
+    blur: str | None = None
+
+
 class CollectionView(BaseModel):
     """一个合集。形态（规则驱动 / 名单驱动、可不可改）是**推导**出来的，不是存的。"""
 
@@ -441,6 +452,10 @@ class CollectionView(BaseModel):
     rule_driven: bool = Field(description="规则驱动（会自己长）还是名单驱动（固定）")
     item_count: int = Field(description="当前可见成员数")
     cover_item_id: int | None = Field(default=None, description="封面取哪部作品；null=取首个成员")
+    covers: list[CollectionCover] = Field(
+        default_factory=list,
+        description="封面素材（前若干个成员的海报）；由服务端取，客户端不必为每个合集再请求一次成员",
+    )
     position: int
 
 
@@ -459,6 +474,14 @@ class CollectionPayload(BaseModel):
         description=(
             "固定名单（「固定当前这 N 部」就是把此刻的命中集快照过来）；"
             "给了它就是名单驱动的合集"
+        ),
+    )
+    snapshot: bool = Field(
+        default=False,
+        description=(
+            "创建时把 rules 此刻的命中集固化成名单（此后不再自动收录）。"
+            "客户端因此不必把上千个 id 回传一遍——它要表达的本来就是"
+            "「就这一批」，而不是「这一批具体是哪些」"
         ),
     )
 

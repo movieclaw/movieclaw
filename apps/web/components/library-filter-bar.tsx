@@ -3,8 +3,11 @@
 import { useCallback, useEffect, useState } from "react";
 
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+import type { Route } from "next";
+import Link from "next/link";
 
 import { MultiFilterMenu } from "@/components/filter-menu";
+import type { Collection } from "@/lib/api/collections";
 import { CheckIcon, ChevronDownIcon } from "@/components/icons";
 import {
   type FacetValue,
@@ -18,6 +21,7 @@ import {
   filterCount,
   isFilterEmpty,
 } from "@/lib/api/libraries";
+import { filterKey, rulesToFilter } from "@/lib/library-filter";
 
 /**
  * 单库墙的筛选条（docs/design/library-filtering.md 5.1）。
@@ -38,12 +42,18 @@ export function LibraryFilterBar({
   libraryId,
   filter,
   onFilterChange,
+  collections,
+  onSaveAsCollection,
   sortControl,
   className,
 }: {
   libraryId: number;
   filter: LibraryFilter;
   onFilterChange: (next: LibraryFilter) => void;
+  /** 本库的合集：以 chip 形式排在同一行左侧（合集本来就是存好的筛选） */
+  collections?: Collection[];
+  /** 「存为合集」——有条件时才给；不给则不显示该入口 */
+  onSaveAsCollection?: () => void;
   /** 排序控件本身由调用方渲染（它是墙的偏好，不属于筛选） */
   sortControl?: React.ReactNode;
   className?: string;
@@ -100,10 +110,41 @@ export function LibraryFilterBar({
 
   const clearAll = useCallback(() => onFilterChange({}), [onFilterChange]);
 
+  /**
+   * 当前这面墙正好等于哪个合集——**推导**出来的，不存状态。
+   *
+   * 用户改动任意一条，键不再相等，标记自然消失；他就从"在看一个合集"变成了
+   * "在自己筛"，两种状态之间没有断层，也不需要谁记得去清掉一个 activeCollection。
+   */
+  const currentKey = filterKey(filter);
+  const activeCollectionId =
+    currentKey === ""
+      ? null
+      : ((collections ?? []).find(
+          (row) => row.rule_driven && filterKey(rulesToFilter(row.rules)) === currentKey,
+        )?.id ?? null);
+  const activeCollection = (collections ?? []).find((row) => row.id === activeCollectionId);
+
+  /** 点合集 chip 不是跳页，是**把当前这面墙筛成它**。再点一次就退回全库。 */
+  const applyCollection = useCallback(
+    (collection: Collection) => {
+      onFilterChange(
+        collection.id === activeCollectionId ? {} : rulesToFilter(collection.rules),
+      );
+    },
+    [activeCollectionId, onFilterChange],
+  );
+
   return (
     <div className={className}>
-      {/* —— 静止态那一行 —— */}
+      {/* —— 静止态那一行：左侧合集 chip，右侧排序与筛选 —— */}
       <div className="flex flex-wrap items-center gap-2">
+        <CollectionChips
+          collections={collections ?? []}
+          libraryId={libraryId}
+          activeId={activeCollectionId}
+          onApply={applyCollection}
+        />
         <div className="ml-auto flex shrink-0 items-center gap-2">
           {sortControl}
           <button
@@ -179,6 +220,8 @@ export function LibraryFilterBar({
           facets={facets}
           onFilterChange={onFilterChange}
           onClear={clearAll}
+          collectionName={activeCollection?.name}
+          onSaveAsCollection={onSaveAsCollection}
         />
       )}
     </div>
@@ -198,11 +241,16 @@ function ConditionRow({
   facets,
   onFilterChange,
   onClear,
+  collectionName,
+  onSaveAsCollection,
 }: {
   filter: LibraryFilter;
   facets: LibraryFacets | null;
   onFilterChange: (next: LibraryFilter) => void;
   onClear: () => void;
+  /** 当前条件正好等于这个合集时的合集名；改动任意一条即为 undefined */
+  collectionName?: string;
+  onSaveAsCollection?: () => void;
 }) {
   /** 取值 → 展示名：优先用 facet 带回来的 label（类型/地区靠它翻中文名）。 */
   const labelOf = (dim: string, value: string): string => {
@@ -240,6 +288,14 @@ function ConditionRow({
 
   return (
     <div className="mt-2.5 flex flex-wrap items-center gap-2">
+      {/* 「＝ 合集「X」」：告诉用户这面墙此刻就是那个合集。它是推导出来的，
+          用户一改条件就没了——那正是他从"在看合集"切换到"在自己筛"的时刻 */}
+      {collectionName && (
+        <span className="flex h-7 items-center gap-1 rounded-lg bg-white/[0.10] px-2 text-caption text-white/70">
+          ＝ 合集
+          <span className="font-semibold text-white">「{collectionName}」</span>
+        </span>
+      )}
       {groups.map((group, index) => (
         <div key={group.key} className="flex items-center gap-2">
           {/* 维度之间是「且」——语义画出来，不写在脚注里 */}
@@ -275,6 +331,16 @@ function ConditionRow({
       >
         清空
       </button>
+      {/* 已经等于某个合集时不再提「存为合集」——那只会存出一个重名的孪生体 */}
+      {onSaveAsCollection && !collectionName && (
+        <button
+          type="button"
+          onClick={onSaveAsCollection}
+          className="rounded-full px-2.5 py-1 text-caption text-white/50 hover:bg-white/10 hover:text-white"
+        >
+          存为合集
+        </button>
+      )}
       {facets && (
         <span className="ml-auto text-caption tabular-nums text-white/60">
           筛出 <span className="font-mono font-semibold text-white">{facets.total}</span> 部
@@ -599,3 +665,73 @@ function MoreFiltersPanel({
     </div>
   );
 }
+
+
+/**
+ * 合集 chip 行（docs/design/library-filtering.md 4.3 第 1 条）。
+ *
+ * **不是封面卡横滚**：横滚行装的是内容（一排作品），不是容器。合集本来就是
+ * "存好的筛选"，那它就该长得像筛选 chip、和筛选条同属一套系统——点一下不是
+ * 跳页，是把当前这面墙筛成它。
+ *
+ * 装不下就**换行**：换行会暴露数量，横滚只会掩盖数量。
+ *
+ * 名单驱动的合集是例外：它没有规则，表达不成一组筛选条件，所以那几个 chip
+ * 只能跳到详情页。让它假装能筛比诚实地跳页更糟。
+ */
+function CollectionChips({
+  collections,
+  libraryId,
+  activeId,
+  onApply,
+}: {
+  collections: Collection[];
+  libraryId: number;
+  activeId: number | null;
+  onApply: (collection: Collection) => void;
+}) {
+  if (collections.length === 0) return null;
+  const shown = collections.slice(0, CHIP_LIMIT);
+  return (
+    <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+      {shown.map((collection) =>
+        collection.rule_driven ? (
+          <button
+            key={collection.id}
+            type="button"
+            aria-pressed={collection.id === activeId}
+            onClick={() => onApply(collection)}
+            className={`flex h-7 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-caption transition ${
+              collection.id === activeId
+                ? "bg-white/[0.16] text-white"
+                : "bg-white/[0.05] text-white/70 hover:bg-white/[0.10] hover:text-white"
+            }`}
+          >
+            {collection.name}
+            <span className="font-mono tabular-nums text-white/40">{collection.item_count}</span>
+          </button>
+        ) : (
+          <Link
+            key={collection.id}
+            href={`/library/${libraryId}/c/${collection.id}` as Route}
+            className="flex h-7 shrink-0 items-center gap-1.5 rounded-full bg-white/[0.05] px-2.5 text-caption text-white/70 transition hover:bg-white/[0.10] hover:text-white"
+          >
+            {collection.name}
+            <span className="font-mono tabular-nums text-white/40">{collection.item_count}</span>
+          </Link>
+        ),
+      )}
+      {collections.length > shown.length && (
+        <Link
+          href={`/library/${libraryId}?view=collections` as Route}
+          className="flex h-7 shrink-0 items-center rounded-full px-2 text-caption text-white/50 hover:text-white"
+        >
+          全部合集 ›
+        </Link>
+      )}
+    </div>
+  );
+}
+
+/** chip 行最多摆几个：再多就该去「合集」视图一次看全，而不是让一行占掉半屏。 */
+const CHIP_LIMIT = 8;

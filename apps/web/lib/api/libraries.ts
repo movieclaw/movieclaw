@@ -523,11 +523,19 @@ import {
   type LibraryFilter,
   type WatchFilter,
   filterCount,
+  filterKey,
   filterQuery,
   isFilterEmpty,
 } from "@/lib/library-filter";
 
-export { type LibraryFilter, type WatchFilter, filterCount, filterQuery, isFilterEmpty };
+export {
+  type LibraryFilter,
+  type WatchFilter,
+  filterCount,
+  filterKey,
+  filterQuery,
+  isFilterEmpty,
+};
 
 
 /**

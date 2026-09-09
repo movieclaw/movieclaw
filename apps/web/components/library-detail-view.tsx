@@ -26,6 +26,9 @@ import {
   LibraryFilterBar,
   WallSortControl,
 } from "@/components/library-filter-bar";
+import { LibraryCollectionsView } from "@/components/library-collections-view";
+import { SaveAsCollectionDialog } from "@/components/save-as-collection-dialog";
+import { listCollections, type Collection } from "@/lib/api/collections";
 import { PAGE_NAV_BUTTON_CLASS, PageNav } from "@/components/page-nav";
 import { usePageTitle } from "@/lib/use-page-title";
 import { LibraryFormDialog } from "@/components/library-form-dialog";
@@ -77,6 +80,7 @@ import {
   listLibraryItemIndex,
   type LibraryFilter,
   type WatchFilter,
+  filterKey,
   filterQuery,
   isFilterEmpty,
   listLibraryItems,
@@ -112,7 +116,6 @@ import { activeInitialAt } from "@/lib/wall-window";
 import {
   firstVisibleAnchorId,
   isReentryAfterAbsence,
-  filterFingerprint,
   wallRecallScope,
 } from "@/lib/library-wall-recall";
 import { useWallRecall } from "@/lib/use-wall-recall";
@@ -263,6 +266,26 @@ function writeFilterToUrl(filter: LibraryFilter): void {
   window.history.replaceState(null, "", `${window.location.pathname}${rest ? `?${rest}` : ""}`);
 }
 
+/** 库内的两个视图：作品（海报墙）/ 合集（纵向网格）。视图态同样只认地址栏。 */
+type LibraryView = "items" | "collections";
+
+function readViewFromUrl(): LibraryView {
+  if (typeof window === "undefined") return "items";
+  return new URLSearchParams(window.location.search).get("view") === "collections"
+    ? "collections"
+    : "items";
+}
+
+/** 视图切换写回地址栏（同筛选：replaceState，不在历史里堆条目）。 */
+function writeViewToUrl(view: LibraryView): void {
+  if (typeof window === "undefined") return;
+  const params = new URLSearchParams(window.location.search);
+  if (view === "collections") params.set("view", "collections");
+  else params.delete("view");
+  const rest = params.toString();
+  window.history.replaceState(null, "", `${window.location.pathname}${rest ? `?${rest}` : ""}`);
+}
+
 /** 哪些排序分得出有意义的索引档：其余排序轨道不显示，也就不必请求。 */
 const INDEXED_SORTS: Partial<Record<LibraryItemSort, "title" | "release_date" | "rating">> = {
   title: "title",
@@ -339,6 +362,10 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   const wallFilter = useRef<LibraryFilter>(filter);
   wallFilter.current = filter;
   const filtering = !isFilterEmpty(filter);
+  // 本库的合集：chip 行与「合集」视图共用这一份，不各拉各的
+  const [collections, setCollections] = useState<Collection[]>([]);
+  const [libraryView, setLibraryView] = useState<LibraryView>(() => readViewFromUrl());
+  const [savingCollection, setSavingCollection] = useState(false);
   // 带筛选进来时不吃会话快照：快照是未筛选那面墙的窗口，拿它铺首帧会先闪
   // 一屏不该出现的内容，随即被 reload 的结果整片替换
   const snapshot = filtering ? undefined : initialSnapshot;
@@ -686,6 +713,19 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
    * 索引条与计数也都在 reload 里，跟着一起换。ref 先于 state 更新，
    * 好让这一轮 reload 立刻读到新条件（state 要到下一帧才生效）。
    */
+  /** 拉本库的合集。空合集后端已经滤掉了——点进去空无一物的合集是纯粹的死路。 */
+  const reloadCollections = useCallback(() => {
+    listCollections({ libraryId })
+      .then(setCollections)
+      // 拿不到就当没有合集：chip 行与视图切换一起不出现，墙照常能用
+      .catch(() => setCollections([]));
+  }, [libraryId]);
+
+  const switchView = useCallback((next: LibraryView) => {
+    setLibraryView(next);
+    writeViewToUrl(next);
+  }, []);
+
   const applyFilter = useCallback(
     (next: LibraryFilter) => {
       wallFilter.current = next;
@@ -863,6 +903,11 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   // 图片库：条目只看不播，墙是按月分组的瀑布流，点击开灯箱而不是进详情页
   // （docs/design/library-photo-kind.md 3.2）
   const photoWall = Boolean(library && !library.capabilities.playable);
+  // 图片库不拉合集：照片没有类型/评分/地区这些事实，合集也就无从谈起
+  useEffect(() => {
+    if (photoWall) return;
+    reloadCollections();
+  }, [photoWall, reloadCollections]);
   const [photoDensity, setPhotoDensity] = usePhotoWallDensity();
   // 「最近添加」是用户在 ⋯ 菜单里选的一档，三面墙（海报墙 / 相册墙 / 图廊）
   // 共用。补探阶段的临时排序压过它：那几分钟墙上要回答的是"在处理哪几部"
@@ -1068,18 +1113,9 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   const { recallOffset, dismissRecall } = useWallRecall({
     scope: wallRecallScope(
       libraryId,
-      filterFingerprint({
-        g: (filter.genres ?? []).map(String),
-        c: filter.countries ?? [],
-        d: filter.decades ?? [],
-        w: filter.watch ?? null,
-        r: filter.ratingGte != null ? String(filter.ratingGte) : null,
-        rt: filter.runtimes ?? [],
-        lang: filter.languages ?? [],
-        res: filter.resolutions ?? [],
-        hdr: filter.hdr == null ? null : String(filter.hdr),
-        st: filter.stock ?? [],
-      }),
+      // 指纹与「当前墙是不是等于某个合集」用的是同一份规范化键（filterKey），
+      // 两处口径分叉的话，合集 chip 会亮在一面并不属于它的墙上
+      filterKey(filter),
     ),
     view: wallView,
     scroller: scrollElement,
@@ -1637,6 +1673,45 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
         </div>
       )}
 
+      {/* —— 作品 / 合集：库内的两个视图（Plex 的 tab 模型）。
+          一个合集都没有时这一行不出现——没有事实就不摆控件 —— */}
+      {!photoWall && collections.length > 0 && (
+        <div className="mt-5 flex items-center gap-1 px-6 max-md:mt-4 max-md:px-4">
+          {(
+            [
+              ["items", "作品"],
+              ["collections", "合集"],
+            ] as const
+          ).map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              aria-pressed={libraryView === value}
+              onClick={() => switchView(value)}
+              className={`h-8 rounded-full px-3 text-ui transition ${
+                libraryView === value
+                  ? "bg-white/[0.14] font-medium text-white"
+                  : "text-white/55 hover:bg-white/[0.08] hover:text-white"
+              }`}
+            >
+              {label}
+              {value === "collections" && (
+                <span className="ml-1.5 font-mono text-caption tabular-nums text-white/40">
+                  {collections.length}
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* —— 合集视图：纵向网格，一次看全（横滚只会掩盖数量）—— */}
+      {libraryView === "collections" ? (
+        <div className="mt-4">
+          <LibraryCollectionsView collections={collections} libraryId={libraryId} />
+        </div>
+      ) : (
+      <>
       {/* —— 库存海报墙（追踪中置顶时补「已入库」标题，两片海报墙不致连读）—— */}
       {items.length === 0 && provisional.length === 0 && filtering ? (
         // 筛空了不给空墙——给一条真能救回内容的出路（铁律 2）。库本身就是空的
@@ -1670,6 +1745,8 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
               libraryId={libraryId}
               filter={filter}
               onFilterChange={applyFilter}
+              collections={collections}
+              onSaveAsCollection={() => setSavingCollection(true)}
               sortControl={
                 <WallSortControl
                   value={wallSortPref}
@@ -1846,6 +1923,9 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
       </>
       )}
 
+      </>
+      )}
+
       {/* 上次滑到哪：进来时问一句要不要跳回去，不理它、往下滑一屏就自己消失 */}
       {recallable !== null && (
         <WallRecallPill
@@ -1857,6 +1937,16 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
           onDismiss={dismissRecall}
         />
       )}
+
+      {/* 筛完存为合集：同一份条件的第二个时态（第三个是库的收藏范围）。
+          新建之后立刻刷 chip 行——用户刚存的合集要马上看得见 */}
+      <SaveAsCollectionDialog
+        open={savingCollection}
+        libraryId={libraryId}
+        filter={filter}
+        onClose={() => setSavingCollection(false)}
+        onCreated={reloadCollections}
+      />
 
       {canManageLibraries && (
         <>

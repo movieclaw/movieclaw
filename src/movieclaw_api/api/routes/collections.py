@@ -17,6 +17,7 @@ from sqlmodel import select
 from movieclaw_api.api.deps import require_login
 from movieclaw_api.exceptions import BadRequestException, NotFoundException
 from movieclaw_api.schemas.library import (
+    CollectionCover,
     CollectionPayload,
     CollectionView,
     LibraryItemView,
@@ -25,7 +26,6 @@ from movieclaw_api.schemas.response import ApiResponse, ok
 from movieclaw_api.services.auth import Principal
 from movieclaw_api.services.library.access import visible_library_ids
 from movieclaw_api.services.library.collections import (
-    count_members,
     effective_rules,
     is_rule_driven,
     resolve_members,
@@ -44,6 +44,10 @@ async def _scope(session: AsyncSession, principal: Principal) -> tuple[int, set[
     return member_id, await visible_library_ids(session, principal)
 
 
+#: 卡片上铺几张封面。三张够看出"这里面装的是哪一类片"，再多就成了缩略图墙。
+_COVER_COUNT = 3
+
+
 async def _view(
     session: AsyncSession,
     row: Collection,
@@ -51,6 +55,27 @@ async def _view(
     member_id: int,
     visible: set[int] | None,
 ) -> CollectionView:
+    """一个合集的完整视图。
+
+    成员**只解析一次**：数量与封面都从这一份名单里取。分开取的话，一次列表
+    请求里同一个合集要把成员算两遍——而成员解析就是一次完整的海报墙查询。
+    """
+
+    ids = await resolve_members(session, row, member_id=member_id, visible_library_ids=visible)
+    covers: list[CollectionCover] = []
+    if ids:
+        # 指定了封面就把它挪到最前，其余按合集自己的顺序补齐
+        head = list(ids)
+        if row.cover_item_id in head:
+            head.remove(row.cover_item_id)
+            head.insert(0, row.cover_item_id)
+        head = head[:_COVER_COUNT]
+        # 复用海报墙那份聚合：合集卡片上的图与墙上的图永远是同一张
+        covers = [
+            CollectionCover(url=view.poster_url, blur=view.poster_blur)
+            for view in await _aggregate_wall_views(session, row.library_id, head, head)
+            if view.poster_url
+        ]
     return CollectionView(
         id=row.id or 0,
         name=row.name,
@@ -62,10 +87,9 @@ async def _view(
         # 形态是推导的：能不能改看 builtin，会不会自己长看有没有规则
         editable=row.builtin is None,
         rule_driven=is_rule_driven(row),
-        item_count=await count_members(
-            session, row, member_id=member_id, visible_library_ids=visible
-        ),
+        item_count=len(ids),
         cover_item_id=row.cover_item_id,
+        covers=covers,
         position=row.position,
     )
 
@@ -147,10 +171,19 @@ async def create_collection(
     )
     session.add(row)
     await session.flush()
-    if payload.item_ids:
+
+    item_ids = list(payload.item_ids or [])
+    if payload.snapshot and row.rules:
+        # 「固定这 N 部」：在服务端把此刻的命中集固化成名单，然后清空规则。
+        # 客户端只表达意图，不用把上千个 id 传过来再传回去
+        item_ids = await resolve_members(
+            session, row, member_id=member_id, visible_library_ids=visible
+        )
+        row.rules = []
+    if item_ids:
         session.add_all(
             CollectionItem(collection_id=row.id or 0, media_item_id=item_id, position=index)
-            for index, item_id in enumerate(payload.item_ids)
+            for index, item_id in enumerate(item_ids)
         )
         await session.flush()
     view = await _view(session, row, member_id=member_id, visible=visible)

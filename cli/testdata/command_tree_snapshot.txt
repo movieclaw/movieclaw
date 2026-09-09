@@ -38,6 +38,13 @@ channels weixin accounts unbind
 channels weixin bindings start
 channels weixin bindings status
 channels weixin bindings verify
+collection apply-to-library
+collection create
+collection delete
+collection get
+collection items list
+collection list
+collection update
 discover browse-collection
 discover filter-options
 discover filter-titles
@@ -100,6 +107,7 @@ library identification restore-files
 library items annotate-media-source
 library items delete
 library items delete-file
+library items facets
 library items get
 library items get-transfer-status
 library items list
@@ -111,6 +119,7 @@ library items purge-file
 library items refresh-metadata
 library items regenerate-chapter-images
 library items reidentify
+library items relax
 library items restore-file
 library items share create
 library items share get

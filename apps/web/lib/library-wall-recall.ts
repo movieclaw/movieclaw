@@ -100,31 +100,14 @@ function writeAll(store: KeyValueStorage, rows: Record<string, WallRecall>) {
  */
 export function wallRecallScope(
   libraryId: number | "favorites",
-  filterFingerprint?: string,
+  /** 筛选态的规范化键（lib/library-filter.ts 的 filterKey）：每种筛选各记各的
+   *  位置。不加的话，从「动画 + 日本」那面 42 格的墙返回时，会拿着一个针对
+   *  1,284 格全库的 offset 去跳，落点毫无意义。空串=未筛选，退回不带后缀的
+   *  原键，老记录因此不会失效 */
+  filterKey?: string,
 ): string {
   const base = `library:${libraryId}`;
-  return filterFingerprint ? `${base}:${filterFingerprint}` : base;
-}
-
-/**
- * 筛选态的指纹——追加到记录键上，让每种筛选各记各的位置。
- *
- * 不加指纹的话，从「动画 + 日本」那面 42 格的墙返回时，会拿着一个针对
- * 1,284 格全库的 offset 去跳，落点毫无意义。指纹只要**稳定且互不碰撞**，
- * 不需要可读：条件按维度名排序后拼接，同一组条件无论勾选顺序都得到同一个键。
- *
- * 空筛选返回空串（调用方据此退回不带后缀的原键），这样未筛选状态的记录
- * 与改造前完全兼容，老记录不会失效。
- */
-export function filterFingerprint(parts: Record<string, string[] | string | null | undefined>): string {
-  const pieces: string[] = [];
-  for (const key of Object.keys(parts).sort()) {
-    const value = parts[key];
-    if (!value || (Array.isArray(value) && value.length === 0)) continue;
-    const flat = Array.isArray(value) ? [...value].sort().join("_") : value;
-    pieces.push(`${key}${flat}`);
-  }
-  return pieces.join(".");
+  return filterKey ? `${base}:${filterKey}` : base;
 }
 
 /**
