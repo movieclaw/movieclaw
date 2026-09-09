@@ -46,23 +46,6 @@ import { type TrickplayIndex, tileAt } from "@/lib/player/trickplay";
 /** 功能键图标尺寸：与 page-nav 的顶栏控件一致。 */
 const ICON = "size-[18px] max-md:size-[22px]";
 
-/** 时间行那两颗（横屏/全屏）用的小一号图标，理由见 IconButton 的 `compact`。 */
-const ICON_SM = "size-4 max-md:size-[18px]";
-
-/**
- * 切集胶囊（上一集 / 下一集 / 已完结）的共用形制。
- *
- * **高度写死，且必须等于同一行左边那张按钮卡片**：卡片是 `py-1` 裹一颗
- * `size-9 / max-md:size-11` 的键，算下来 44 / 52。这边原来是按内边距 + 行高
- * 长出来的（约 41 / 36），桌面差 3px、窄屏差 16px——一左一右两块同级的东西
- * 不等高，是这排控件看着散的主要原因。行高会随字号和字体变，只有钉死高度才
- * 长期对得齐。
- *
- * 悬停态不写在这里：「已完结」是个 span，套上 hover 换底色会让一个点不动的
- * 东西看起来能点。
- */
-const EPISODE_PILL =
-  "player-glass flex h-11 items-center rounded-full px-4 text-[14px] font-medium transition-colors max-md:h-[3.25rem] max-md:px-3 max-md:text-[13px]";
 
 /**
  * 描边图标底座：镜像 components/icons.tsx 里的 `Base`（那边没导出）。
@@ -167,9 +150,9 @@ function SubtitleGlyph() {
  * 之后**的样子——图标表示结果而不是现状，否则用户要在脑子里做一次取反。
  * 弧和箭头必须占到图标的一半以上：小弧挤在角落里 36px 下根本读不出旋转。
  */
-function RotateGlyph({ active, className }: { active: boolean; className?: string }) {
+function RotateGlyph({ active }: { active: boolean }) {
   return (
-    <StrokeIcon className={className}>
+    <StrokeIcon>
       {active ? (
         <>
           <path d="M20.5 11.5A8 8 0 0 0 12.5 3.5" />
@@ -236,17 +219,6 @@ export interface PlayerControlsProps {
   onSubtitleStyleChange: (style: SubtitleStyle) => void;
   diagnosticsOpen: boolean;
   onToggleDiagnostics: () => void;
-  /** 剧集才有右下角那个位；电影不显示（「已完结」对电影是错的说法） */
-  isSeries: boolean;
-  /** 有下一集时的回调；剧集但为 null = 本季到头了，那个位显示「已完结」 */
-  onNext: (() => void) | null;
-  /**
-   * 有上一集时的回调；null = 已经是本季第一集（或往前没有在位文件）。
-   *
-   * 与 `onNext` 不同，没有上一集时**整颗按钮不出现**而不是留一个灰字：
-   * 「已完结」是对剧集状态的陈述、用户需要知道，「没有上一集」则不是信息。
-   */
-  onPrev: (() => void) | null;
   /** 横屏（全屏 + 锁横向）；已经在里面时点它就是退出 */
   landscape: boolean;
   /** 触屏设备（手机/平板）：显示横屏按钮。桌面只有全屏按钮 */
@@ -297,9 +269,6 @@ export function PlayerControls(props: PlayerControlsProps) {
     onSubtitleStyleChange,
     diagnosticsOpen,
     onToggleDiagnostics,
-    isSeries,
-    onNext,
-    onPrev,
     landscape,
     canRotate,
     onToggleLandscape,
@@ -522,66 +491,32 @@ export function PlayerControls(props: PlayerControlsProps) {
         }`}
       />
 
-      {/* ---- 进度条上方这一行：左边时间，右边横屏键，两端对齐 ----
-          横屏不跟字幕/设置放一起：那两个是「调这一路播放怎么放」，横屏是
-          「把画面铺满整块屏幕」，属于跟时间同级的观看形态。放在这一行还有
-          个实际好处——它和右下角的切集胶囊隔着进度条，不会误按。
-          两边高度取同一档，左右才真的对称。 */}
+      {/* ---- 进度条上方这一行：只有时间读数 ----
+          横屏/全屏原本占着这行右端，2026-09-09 随切集位一起挪到了进度条下方
+          （那里现在是左右两张同形制的按钮卡片）。这一行因此只剩一个读数，
+          整行不吃指针事件。 */}
       <div
-        // 行容器**永远 pointer-events-none**，命中权在右侧按钮组那个子元素上：
-        // pt-24 那截透明内边距只是撑视觉间距，但挂上 auto 它就会吃掉底下的
-        // 点击——横屏只有 320~390pt 高，这截正好罩在中央簇的退十秒按钮上，
-        // 按钮看得见按不动（层级在下、命中被这行截胡）。
-        className={`player-inset-x pointer-events-none relative flex items-center justify-between pt-24 pb-2 transition-opacity duration-300 max-md:pt-16 ${
+        // 行容器**永远 pointer-events-none**：pt-24 那截透明内边距只是撑视觉
+        // 间距，挂上 auto 它就会吃掉底下的点击——横屏只有 320~390pt 高，这截
+        // 正好罩在中央簇的退十秒按钮上，按钮看得见按不动（层级在下、命中被
+        // 这行截胡）。现在这行只有读数，没有任何需要命中的东西。
+        className={`player-inset-x pointer-events-none relative flex items-center pt-24 pb-2 transition-opacity duration-300 max-md:pt-16 ${
           chromeVisible ? "opacity-100" : "opacity-0"
         }`}
       >
-        {/* 两段各自成元素、靠 gap 分开：药丸是 flex，写在文字里的前导空格会
-            被折掉，变成「41:00/ 2:32:00」 */}
-        {/* 时间是**读数**，比进度条下方那排操作键矮一档（28/36 vs 44/52）：
-            一行里最不需要被点的东西不该看着最像能点的。
+        {/* 时间是**读数**，比进度条下方那排操作键明显矮一档（28 vs 44/52）：
+            最不需要被点的东西不该看着最像能点的。也不跟着断点放大——那 44px
+            是最小触控目标，给一个点不了的读数套触控尺寸纯属白占地方。
             主次靠颜色分：已播时间实白 + medium，总时长压到 40%。
 
-            高度必须与同一行右端的按钮卡片一致——两端对齐的一行，两头不等高
-            就是歪的。所以这里跟着断点走 28/36，右边那张卡片同样两档。 */}
-        <span className="player-glass inline-flex h-7 items-center gap-1 rounded-full px-2.5 text-[12px] font-medium tabular-nums text-white max-md:h-9 max-md:px-3">
+            两段各自成元素、靠 gap 分开：药丸是 flex，写在文字里的前导空格会
+            被折掉，变成「41:00/ 2:32:00」。 */}
+        <span className="player-glass inline-flex h-7 items-center gap-1 rounded-full px-2.5 text-[12px] font-medium tabular-nums text-white">
           <span>{formatClock(shown)}</span>
           <span className="font-normal text-white/40">
             / {durationMs ? formatClock(durationMs) : "--:--"}
           </span>
         </span>
-
-        {/* 横屏管方向、全屏管铺满——真横屏会顺带进全屏，此时全屏键自然
-            成为退出键。iPhone 没有元素级全屏，全屏键走系统原生播放器，
-            字幕靠 video 上的原生 VTT 轨跟进去（见 video-player 的 pip 轨）
-
-            两颗共一张磨砂卡片，而不是各自套一层玻璃：进度条下方那排
-            音轨/字幕/设置用的就是这个形制，同类东西（次级控制）在一个播放器里
-            只该有一种长相。顺带把两块 backdrop-filter 并成一块——每块磨砂都
-            要逐帧重采样视频（globals.css 的 .player-glass 注释）。
-
-            卡片高度与左边的时间读数钉成同一档（28/36），键因此收成 compact
-            的 24/32（取舍见 IconButton 的 compact）。这一行整体就比进度条下方
-            那排操作区轻一档——上面是「读数 + 看的形态」，下面才是「对这次播放
-            做什么」。 */}
-        <div
-          className={`player-glass flex h-7 items-center gap-0.5 rounded-full px-1 max-md:h-9 max-md:gap-1 max-md:px-1.5 ${
-            chromeVisible ? "pointer-events-auto" : ""
-          }`}
-        >
-          {canRotate ? (
-            <IconButton compact tip={landscape ? "退出横屏" : "横屏"} onClick={onToggleLandscape}>
-              <RotateGlyph active={landscape} className={ICON_SM} />
-            </IconButton>
-          ) : null}
-          <IconButton compact tip={fullscreen ? "退出全屏" : "全屏"} onClick={onToggleFullscreen}>
-            {fullscreen ? (
-              <ShrinkIcon className={ICON_SM} />
-            ) : (
-              <ExpandIcon className={ICON_SM} />
-            )}
-          </IconButton>
-        </div>
       </div>
 
       {/* ---- 进度条 ----
@@ -893,38 +828,27 @@ export function PlayerControls(props: PlayerControlsProps) {
 
             <div className="flex-1" />
 
-            {/* 右下角切集位。剧集才有：「已完结」这句话对电影是错的，
-                而电影本来也没有别的东西会因为这个位空着而移位。
+            {/* 右下角：横屏 + 全屏。两颗共一张卡片，与左边那张**完全同形制**
+                （同高、同圆角、同内边距），一行两端因此是对称的两块，而不是
+                一块卡片对一组文字胶囊。
 
-                上一集恒在下一集左边（包括本季放到头、右边是「已完结」的
-                时候）——切集是双向的，只给单向会逼用户退回详情页点集。
+                横屏管方向、全屏管铺满——真横屏会顺带进全屏，此时全屏键自然
+                成为退出键。iPhone 没有元素级全屏，全屏键走系统原生播放器，
+                字幕靠 video 上的原生 VTT 轨跟进去（见 video-player 的 pip 轨）。
 
-                纯文字胶囊：中文标签已把方向说全，箭头小图标是冗余装饰，
-                去掉后与「已完结」（本就无图标）风格统一。 */}
-            {isSeries ? (
-              <div className="flex items-center gap-2 max-md:gap-1.5">
-                {onPrev ? (
-                  <button
-                    type="button"
-                    onClick={onPrev}
-                    className={`${EPISODE_PILL} text-white hover:bg-white/20`}
-                  >
-                    上一集
-                  </button>
-                ) : null}
-                {onNext ? (
-                  <button
-                    type="button"
-                    onClick={onNext}
-                    className={`${EPISODE_PILL} text-white hover:bg-white/20`}
-                  >
-                    下一集
-                  </button>
-                ) : (
-                  <span className={`${EPISODE_PILL} font-normal text-white/40`}>已完结</span>
-                )}
-              </div>
-            ) : null}
+                原来这里是上一集/下一集，2026-09-09 按产品决定移除；片尾窗口内
+                的「下一集」卡片仍在（video-player 的 nextCard），片尾之外与
+                「上一集」改由详情页承担。 */}
+            <div className="player-glass flex items-center gap-1 rounded-full px-1.5 py-1">
+              {canRotate ? (
+                <IconButton tip={landscape ? "退出横屏" : "横屏"} onClick={onToggleLandscape}>
+                  <RotateGlyph active={landscape} />
+                </IconButton>
+              ) : null}
+              <IconButton tip={fullscreen ? "退出全屏" : "全屏"} onClick={onToggleFullscreen}>
+                {fullscreen ? <ShrinkIcon className={ICON} /> : <ExpandIcon className={ICON} />}
+              </IconButton>
+            </div>
           </div>
         </div>
       </div>
@@ -1011,7 +935,6 @@ function IconButton({
   tip,
   active,
   open,
-  compact,
   onClick,
   children,
 }: {
@@ -1025,17 +948,6 @@ function IconButton({
   active?: boolean;
   /** 这个按钮的菜单正展开着 */
   open?: boolean;
-  /**
-   * 小一号（24 / 窄屏 32），给**时间那一行**的横屏与全屏用。
-   *
-   * 那一行的主角是时间读数（28 高），旁边杵着 44/52 的键就不成对了。缩到和
-   * 读数同高是这条要解决的问题。代价是窄屏命中区从 44 掉到 32，低于 HIG 的
-   * 最小触控目标——这里认下来，因为：这两颗是全场按得最少的键（进播放器时
-   * 定一次形态就不再动），四周全是空白（上方那截 pt-24 的透明带、右侧到屏幕
-   * 边缘），点偏了只会落到画面上，而点画面就是开合控制层，代价接近零。真正
-   * 高频的音轨/字幕/更多/切集全在进度条下方，仍是 36/44。
-   */
-  compact?: boolean;
   onClick: () => void;
   children: React.ReactNode;
 }) {
@@ -1048,9 +960,7 @@ function IconButton({
       data-tip={tip}
       data-active={active ? "true" : undefined}
       data-open={open ? "true" : undefined}
-      className={`player-btn player-tip shrink-0 ${
-        compact ? "size-6 max-md:size-8" : "size-9 max-md:size-11"
-      }`}
+      className="player-btn player-tip size-9 shrink-0 max-md:size-11"
     >
       {children}
     </button>
