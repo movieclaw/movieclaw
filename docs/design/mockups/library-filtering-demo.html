@@ -3,557 +3,939 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>媒体库筛选与合集 样稿</title>
+<title>媒体库筛选与合集</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@600;700&family=Noto+Sans+SC:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
 <style>
-  :root{
-    --bg:#0a0b10;--panel:#10121a;--raised:rgba(30,33,43,.74);--inset:rgba(255,255,255,.05);
-    --text:#f3f5f9;--muted:rgba(243,245,249,.62);--faint:rgba(243,245,249,.36);
-    --line:rgba(255,255,255,.08);--line-strong:rgba(255,255,255,.15);
-    --accent:#cdd6e6;--accent-soft:rgba(205,214,230,.14);
-    --ok:#4ade80;--info:#7fb0ff;--warn:#f5c451;--danger:#ff6b6b;
-  }
-  *{box-sizing:border-box}
-  body{margin:0;background:#000;color:var(--text);font:14px/1.5 -apple-system,"PingFang SC","Noto Sans SC",sans-serif;-webkit-font-smoothing:antialiased}
-  .nav{position:sticky;top:0;z-index:30;display:flex;gap:6px;overflow-x:auto;padding:10px 12px;background:rgba(10,11,16,.92);backdrop-filter:blur(12px);border-bottom:1px solid var(--line)}
-  .nav button{flex:none;border:1px solid var(--line-strong);background:transparent;color:var(--muted);border-radius:999px;padding:6px 12px;font-size:13px;cursor:pointer}
-  .nav button.on{background:var(--accent);color:#0a0b10;border-color:var(--accent);font-weight:600}
-  .screen{display:none;padding:18px 16px 70px}
-  .screen.on{display:block}
-  .note{max-width:1180px;margin:0 auto 14px;font-size:12px;color:var(--faint);border-left:2px solid var(--warn);padding:5px 10px;line-height:1.65}
-  .note b{color:var(--muted);font-weight:600}
-  .note code{color:var(--info);font-family:ui-monospace,Menlo,monospace;font-size:11px}
+/* ──────────────────────────────────────────────────────────────
+   单主题（暗）——这是一份暗色产品的界面样稿，跟随浏览者主题会让
+   被评审的界面本身变形。所有颜色显式取自 token，body 自绘底色。
+   两个强调色分工明确，互不越界：
+     --quill  评审者在说话（批注轨、当前页签、章节记号）
+     --chrome 产品自己的银灰（框内界面，取自 movieclaw web 现有皮肤）
+   ────────────────────────────────────────────────────────────── */
+:root{
+  --ink:#0b0c11;
+  --surface:#111320;
+  --line:rgba(238,242,251,.09);
+  --line-2:rgba(238,242,251,.16);
+  --text:#eef2fb;
+  --muted:rgba(238,242,251,.60);
+  --faint:rgba(238,242,251,.34);
+  --quill:#d9a441;
+  --chrome:#cdd6e6;
+  --chrome-soft:rgba(205,214,230,.13);
+  --ok:#4ade80; --info:#7fb0ff; --warn:#f5c451; --danger:#ff6b6b;
 
-  .frame{max-width:1180px;margin:0 auto;display:grid;grid-template-columns:172px 1fr;background:var(--bg);border:1px solid var(--line-strong);border-radius:18px;overflow:hidden;min-height:660px}
-  .side{border-right:1px solid var(--line);padding:16px 10px;background:linear-gradient(180deg,rgba(255,255,255,.04),rgba(255,255,255,.01))}
-  .brand{font-weight:700;letter-spacing:.02em;padding:4px 10px 16px}
-  .side a{display:block;padding:7px 10px;border-radius:9px;color:var(--muted);font-size:13px;text-decoration:none}
-  .side a.on{background:rgba(255,255,255,.1);color:var(--text)}
-  .side .subnav{margin:2px 0 0 10px;border-left:1px solid var(--line);padding-left:6px}
-  .side .subnav a{padding:4px 8px;font-size:12px}
-  .main{padding:22px 22px 30px;min-width:0}
+  --f-display:"Noto Serif SC",Songti SC,serif;
+  --f-sans:"Noto Sans SC",-apple-system,"PingFang SC",sans-serif;
+  --f-mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
+  /* 框内界面用产品真实的字体栈，不用本页的排版字体——样稿要像产品 */
+  --f-ui:-apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans SC",sans-serif;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--ink);color:var(--text);font-family:var(--f-sans);font-size:15px;line-height:1.65;-webkit-font-smoothing:antialiased}
+:focus-visible{outline:2px solid var(--quill);outline-offset:2px;border-radius:4px}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+.page{max-width:1200px;margin:0 auto;padding:0 24px 80px}
 
-  h1{font-size:23px;letter-spacing:-.02em;margin:0 0 3px}
-  .sub{color:var(--muted);font-size:12.5px;margin:0}
-  .head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:16px}
-  .btn{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line-strong);background:rgba(255,255,255,.04);color:var(--text);border-radius:999px;padding:6px 13px;font-size:13px;white-space:nowrap;cursor:pointer}
-  .btn.primary{background:var(--accent);color:#0a0b10;border-color:var(--accent);font-weight:600}
-  .btn.sm{font-size:12px;padding:4px 10px}
-  .btn.ghost{border-color:transparent;color:var(--muted)}
-  .kicker{font-size:11.5px;color:var(--faint);letter-spacing:.05em;text-transform:uppercase}
+/* ── 报头 ─────────────────────────────────────────────── */
+.mast{padding:56px 0 30px;border-bottom:1px solid var(--line)}
+.eyebrow{font-family:var(--f-mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--quill);margin:0 0 14px}
+.mast h1{font-family:var(--f-display);font-weight:700;font-size:clamp(30px,4.6vw,50px);line-height:1.14;letter-spacing:-.01em;margin:0 0 16px;text-wrap:balance}
+.lede{max-width:62ch;margin:0;color:var(--muted);font-size:16px}
+.lede b{color:var(--text);font-weight:600}
+.facts{display:flex;flex-wrap:wrap;gap:8px;margin-top:22px}
+.fact{display:inline-flex;align-items:baseline;gap:7px;border:1px solid var(--line-2);border-radius:999px;padding:4px 13px;font-size:12.5px;color:var(--muted)}
+.fact b{font-family:var(--f-mono);font-weight:600;color:var(--text);font-size:12px;font-variant-numeric:tabular-nums}
 
-  /* —— 合集货架 —— */
-  .shelf-h{display:flex;align-items:baseline;justify-content:space-between;margin:0 0 8px}
-  .shelf-h h3{margin:0;font-size:14px;font-weight:600;color:var(--muted)}
-  .shelf{display:flex;gap:12px;overflow-x:auto;padding-bottom:8px;scrollbar-width:thin}
-  .shelf::-webkit-scrollbar{height:5px}.shelf::-webkit-scrollbar-thumb{background:rgba(255,255,255,.14);border-radius:3px}
-  .col{flex:none;width:184px;cursor:pointer}
-  .col .tile{position:relative;aspect-ratio:16/9;border-radius:12px;overflow:hidden;border:1px solid var(--line);display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr}
-  .col .tile i{display:block}
-  .col .cap{padding:6px 2px 0;font-size:12.5px;font-weight:600;display:flex;align-items:center;gap:5px}
-  .col .cap .auto{font-size:10px;color:var(--info);border:1px solid rgba(127,176,255,.35);border-radius:4px;padding:0 4px;font-weight:500}
-  .col .meta{padding:1px 2px;font-size:11px;color:var(--faint)}
+/* ── 论点 ─────────────────────────────────────────────── */
+.thesis{padding:40px 0 44px;border-bottom:1px solid var(--line)}
+.sec-h{display:flex;align-items:baseline;gap:14px;margin:0 0 6px}
+.sec-h h2{font-family:var(--f-display);font-weight:600;font-size:21px;margin:0;letter-spacing:-.01em}
+.sec-h .mark{font-family:var(--f-mono);font-size:11px;color:var(--quill);letter-spacing:.1em;padding-top:4px}
+.sec-p{max-width:64ch;color:var(--muted);font-size:14px;margin:0 0 26px}
+.sec-p b{color:var(--text);font-weight:600}
+.tenses{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+.tense{border-top:2px solid var(--line-2);padding:14px 2px 0}
+.tense.now{border-top-color:var(--chrome)}
+.tense h3{font-size:15px;margin:0 0 3px;font-weight:600}
+.tense .when{font-family:var(--f-mono);font-size:11px;color:var(--faint);letter-spacing:.05em;margin:0 0 8px}
+.tense p{margin:0;font-size:13px;color:var(--muted);line-height:1.6}
+.funnel{display:grid;place-items:center;margin-top:22px}
+.funnel .arrows{display:grid;grid-template-columns:repeat(3,1fr);width:100%;color:var(--faint);font-size:15px;text-align:center;line-height:1}
+.dsl{margin-top:14px;width:100%;border:1px solid var(--line-2);border-radius:12px;background:var(--surface);padding:16px 18px;text-align:center}
+.dsl code{font-family:var(--f-mono);font-size:14px;color:var(--chrome);display:block;margin-bottom:6px;overflow-x:auto;white-space:nowrap}
+.dsl span{font-size:12.5px;color:var(--faint)}
+.dsl span b{color:var(--muted);font-weight:600}
+.dsl-i{font-family:var(--f-mono);font-size:11.5px;color:var(--info);background:rgba(127,176,255,.08);border-radius:4px;padding:1px 5px}
 
-  /* —— 筛选条 —— */
-  .bar{position:relative;z-index:5;display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:10px 0 0;margin-top:16px;border-top:1px solid var(--line)}
-  .dd{position:relative}
-  .chip{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 12px;border-radius:999px;border:1px solid var(--line-strong);background:rgba(255,255,255,.04);color:var(--muted);font-size:12.5px;cursor:pointer;white-space:nowrap}
-  .chip .v{color:var(--text);font-weight:600}
-  .chip .car{color:var(--faint);font-size:9px}
-  .chip:hover{background:rgba(255,255,255,.08)}
-  .chip.active{background:var(--accent-soft);border-color:rgba(205,214,230,.45);color:var(--text)}
-  .chip.open{background:rgba(255,255,255,.11);color:var(--text)}
-  .spacer{flex:1}
-  .menu{position:absolute;top:36px;left:0;min-width:210px;max-height:290px;overflow:auto;background:#171a24;border:1px solid var(--line-strong);border-radius:12px;padding:5px;box-shadow:0 18px 44px rgba(0,0,0,.6);display:none;z-index:20}
-  .dd.open .menu{display:block}
-  .menu .opt{display:flex;align-items:center;gap:9px;padding:7px 9px;border-radius:8px;font-size:13px;color:var(--muted);cursor:pointer}
-  .menu .opt:hover{background:rgba(255,255,255,.07);color:var(--text)}
-  .menu .opt .box{width:14px;height:14px;border-radius:4px;border:1px solid var(--line-strong);flex:none;display:grid;place-items:center;font-size:10px;color:#0a0b10}
-  .menu .opt.sel .box{background:var(--info);border-color:var(--info)}
-  .menu .opt.sel{color:var(--text)}
-  .menu .opt .n{margin-left:auto;font-size:11.5px;color:var(--faint);font-variant-numeric:tabular-nums}
-  .menu .opt.zero{opacity:.32;pointer-events:none}
-  .menu .sec{font-size:11px;color:var(--faint);padding:7px 9px 3px;letter-spacing:.04em}
+/* ── 页签 ─────────────────────────────────────────────── */
+.tabs{display:flex;gap:2px;overflow-x:auto;margin:38px 0 0;border-bottom:1px solid var(--line);scrollbar-width:none}
+.tabs::-webkit-scrollbar{display:none}
+.tab{flex:none;appearance:none;background:none;border:0;border-bottom:2px solid transparent;color:var(--faint);font-family:var(--f-sans);font-size:13.5px;padding:11px 15px;cursor:pointer;white-space:nowrap;margin-bottom:-1px}
+.tab:hover{color:var(--muted)}
+.tab .no{font-family:var(--f-mono);font-size:11px;margin-right:7px;color:var(--faint)}
+.tab[aria-selected="true"]{color:var(--text);border-bottom-color:var(--quill);font-weight:600}
+.tab[aria-selected="true"] .no{color:var(--quill)}
 
-  /* —— 已选行 —— */
-  .picked{display:flex;flex-wrap:wrap;align-items:center;gap:7px;padding:9px 0 0;min-height:0}
-  .picked:empty{display:none}
-  .tok{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 6px 0 10px;border-radius:999px;background:var(--accent-soft);border:1px solid rgba(205,214,230,.35);font-size:12px}
-  .tok b{font-weight:600}
-  .tok button{border:0;background:transparent;color:var(--faint);cursor:pointer;font-size:13px;line-height:1;padding:2px 3px}
-  .tok button:hover{color:var(--text)}
-  .count{font-size:12.5px;color:var(--muted);font-variant-numeric:tabular-nums}
-  .count b{color:var(--text)}
+/* ── 舞台 + 批注轨 ─────────────────────────────────────── */
+.stage-wrap{display:grid;grid-template-columns:minmax(0,1fr) 268px;gap:26px;align-items:start;padding-top:22px}
+.panel[hidden]{display:none}
+.rail{position:sticky;top:22px;border-left:2px solid var(--quill);padding:2px 0 2px 16px}
+.rail h4{font-family:var(--f-display);font-size:15px;margin:0 0 12px;font-weight:600;text-wrap:balance}
+.rail ul{margin:0;padding:0}
+.rail li{list-style:none;margin:0 0 13px;font-size:13px;color:var(--muted);line-height:1.62}
+.rail b{color:var(--text);font-weight:600}
+.rail code{font-family:var(--f-mono);font-size:11.5px;color:var(--info);background:rgba(127,176,255,.08);border-radius:4px;padding:1px 5px}
+.rail .try{margin-top:16px;border:1px dashed var(--line-2);border-radius:9px;padding:10px 12px;font-size:12.5px;color:var(--faint);line-height:1.6}
+.rail .try b{color:var(--quill);font-weight:600;display:block;margin-bottom:3px;font-size:11px;letter-spacing:.08em;text-transform:uppercase;font-family:var(--f-mono)}
 
-  /* —— 海报墙 —— */
-  .wallwrap{display:grid;grid-template-columns:1fr 26px;gap:8px;margin-top:16px}
-  .wall{display:grid;grid-template-columns:repeat(auto-fill,minmax(122px,1fr));gap:16px 14px}
-  .card{cursor:pointer}
-  .card .p{position:relative;aspect-ratio:2/3;border-radius:10px;overflow:hidden;border:1px solid var(--line);display:flex;align-items:flex-end;padding:8px;font-size:12px;font-weight:700;line-height:1.25;text-shadow:0 1px 8px rgba(0,0,0,.7)}
-  .card .p .badge{position:absolute;top:6px;left:6px;font-size:9.5px;font-weight:700;padding:1px 5px;border-radius:4px;background:rgba(0,0,0,.55);backdrop-filter:blur(4px);border:1px solid rgba(255,255,255,.18)}
-  .card .p .heart{position:absolute;top:6px;right:6px;font-size:11px;color:#ff6b8a;text-shadow:0 1px 4px rgba(0,0,0,.8)}
-  .card .p .prog{position:absolute;left:0;right:0;bottom:0;height:3px;background:rgba(255,255,255,.2)}
-  .card .p .prog i{display:block;height:100%;background:var(--danger)}
-  .card .t{margin-top:6px;font-size:12px;line-height:1.35;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .card .m{font-size:11px;color:var(--faint)}
-  .az{display:flex;flex-direction:column;gap:1px;align-items:center;font-size:10px;color:var(--faint);padding-top:2px}
-  .az span{cursor:pointer}.az span.on{color:var(--text);font-weight:700}
+/* ══════════════════════════════════════════════════════════
+   .ui 作用域 = 产品界面本身。字体、圆角、玻璃质感对齐 movieclaw
+   web 现有皮肤，与本页外壳的排版体系互不干扰。
+   ══════════════════════════════════════════════════════════ */
+.ui{font-family:var(--f-ui);font-size:14px;line-height:1.5}
+.ui .frame{display:grid;grid-template-columns:154px 1fr;background:#0a0b10;border:1px solid var(--line-2);border-radius:16px;overflow:hidden;min-height:600px}
+.ui .side{border-right:1px solid var(--line);padding:15px 9px;background:linear-gradient(180deg,rgba(255,255,255,.04),rgba(255,255,255,.01))}
+.ui .brand{font-weight:700;letter-spacing:.02em;padding:3px 9px 15px;font-size:13px}
+.ui .side a{display:block;padding:6px 9px;border-radius:8px;color:var(--muted);font-size:12.5px;text-decoration:none}
+.ui .side a.on{background:rgba(255,255,255,.1);color:var(--text)}
+.ui .subnav{margin:2px 0 0 9px;border-left:1px solid var(--line);padding-left:6px}
+.ui .subnav a{padding:4px 8px;font-size:11.5px}
+.ui .main{padding:20px 20px 26px;min-width:0}
+.ui .head{display:flex;justify-content:space-between;align-items:flex-start;gap:14px;margin-bottom:16px}
+.ui h2{font-size:21px;letter-spacing:-.02em;margin:0 0 2px;font-weight:600;font-family:var(--f-ui)}
+.ui .sub{color:var(--muted);font-size:12px;margin:0}
+.ui .kicker{font-size:11px;color:var(--faint);letter-spacing:.06em;text-transform:uppercase;margin:0 0 3px}
+.ui .btn{appearance:none;display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line-2);background:rgba(255,255,255,.04);color:var(--text);border-radius:999px;padding:5px 12px;font:inherit;font-size:12.5px;white-space:nowrap;cursor:pointer}
+.ui .btn:hover{background:rgba(255,255,255,.09)}
+.ui .btn.primary{background:var(--chrome);color:#0a0b10;border-color:var(--chrome);font-weight:600}
+.ui .btn.sm{font-size:11.5px;padding:3px 10px}
+.ui .btn.ghost{border-color:transparent;color:var(--muted)}
+.ui .spacer{flex:1}
 
-  /* —— 空结果 —— */
-  .empty{border:1px dashed var(--line-strong);border-radius:14px;padding:22px;margin-top:16px;text-align:left;max-width:560px}
-  .empty h4{margin:0 0 4px;font-size:15px}
-  .empty p{margin:0 0 14px;color:var(--muted);font-size:13px}
-  .empty .sug{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:9px;background:rgba(255,255,255,.04);margin-bottom:6px;font-size:13px}
-  .empty .sug .n{color:var(--faint);font-size:12px}
-  .empty .sug .btn{margin-left:auto}
+/* ────────── 合集货架 ──────────
+   封面是「一叠海报」而不是一张图：三张 2:3 错位扇开，前后有阴影。
+   一格里放四张缩略图看起来像另一部作品的拼贴；扇形一眼就是「一组」。 */
+.ui .shelf-h{display:flex;align-items:baseline;justify-content:space-between;margin:0 0 9px}
+.ui .shelf-h h3{margin:0;font-size:13px;font-weight:600;color:var(--muted);font-family:var(--f-ui)}
+.ui .shelf-h .n{font-family:var(--f-mono);font-size:11px;color:var(--faint);margin-left:7px}
+.ui .shelf{display:flex;gap:12px;overflow-x:auto;padding-bottom:8px;scrollbar-width:thin}
+.ui .shelf::-webkit-scrollbar{height:5px}
+.ui .shelf::-webkit-scrollbar-thumb{background:rgba(255,255,255,.14);border-radius:3px}
+.ui .col{flex:none;width:176px;cursor:pointer}
+.ui .col .tile{position:relative;height:112px;border-radius:12px;border:1px solid var(--line);overflow:hidden;
+  background:radial-gradient(130% 100% at 50% 0%,rgba(255,255,255,.055),rgba(255,255,255,.012))}
+.ui .col:hover .tile{border-color:var(--line-2)}
+.ui .fan i{position:absolute;top:50%;left:50%;height:74%;width:auto;aspect-ratio:2/3;border-radius:5px;
+  border:1px solid rgba(255,255,255,.15);box-shadow:0 7px 18px rgba(0,0,0,.6);transition:transform .22s ease}
+.ui .fan i:nth-child(1){transform:translate(-50%,-50%) translateX(-48%) rotate(-8deg) scale(.9);z-index:1}
+.ui .fan i:nth-child(2){transform:translate(-50%,-50%) translateX(48%) rotate(8deg) scale(.9);z-index:1}
+.ui .fan i:nth-child(3){transform:translate(-50%,-50%);z-index:2}
+.ui .col:hover .fan i:nth-child(1){transform:translate(-50%,-50%) translateX(-62%) rotate(-11deg) scale(.9)}
+.ui .col:hover .fan i:nth-child(2){transform:translate(-50%,-50%) translateX(62%) rotate(11deg) scale(.9)}
+.ui .delta{position:absolute;top:7px;right:7px;z-index:3;display:inline-flex;align-items:center;gap:3px;
+  font-family:var(--f-mono);font-size:9.5px;font-weight:600;color:var(--ok);background:rgba(10,14,11,.72);
+  border:1px solid rgba(74,222,128,.35);border-radius:999px;padding:1px 6px}
+.ui .col .cap{padding:8px 2px 0;font-size:12.5px;font-weight:600;line-height:1.35}
+.ui .col .meta{padding:1px 2px 0;font-size:10.5px;color:var(--faint);font-variant-numeric:tabular-nums;
+  display:flex;align-items:center;gap:5px}
+/* 三类合集不靠同一个「自动」角标区分，靠说明里的类型词 + 智能合集独有的活性点 */
+.ui .dot{width:5px;height:5px;border-radius:50%;background:var(--info);flex:none;box-shadow:0 0 0 3px rgba(127,176,255,.14)}
+.ui .col .newcol .tile,.ui .col .fromfilter .tile{display:grid;place-items:center;text-align:center}
+.ui .newcol .tile{border-style:dashed}
+.ui .newcol .z{color:var(--faint);font-size:12px}
+.ui .fromfilter .tile{border:1px dashed rgba(127,176,255,.42);background:rgba(127,176,255,.05)}
+.ui .fromfilter .z{color:var(--info);font-size:12px;font-weight:600;padding:0 12px;line-height:1.5}
+.ui .fromfilter .z small{display:block;font-weight:400;font-size:10.5px;color:var(--faint);margin-top:3px}
 
-  /* —— 更多筛选面板 —— */
-  .sheet{border:1px solid var(--line-strong);border-radius:14px;background:#12141c;padding:0;overflow:hidden;margin-top:12px}
-  .sheet .sh{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid var(--line)}
-  .sheet .cols{display:grid;grid-template-columns:1fr 1fr}
-  .sheet .cols>div{padding:14px 16px}
-  .sheet .cols>div+div{border-left:1px solid var(--line);background:rgba(255,255,255,.015)}
-  .colhead{display:flex;align-items:center;gap:8px;margin-bottom:12px}
-  .colhead b{font-size:13px}
-  .colhead span{font-size:11.5px;color:var(--faint)}
-  .grp{margin-bottom:14px}
-  .grp .gl{font-size:11.5px;color:var(--faint);margin-bottom:6px}
-  .pills{display:flex;flex-wrap:wrap;gap:6px}
-  .pill{border:1px solid var(--line-strong);border-radius:999px;padding:3px 10px;font-size:12px;color:var(--muted);cursor:pointer;white-space:nowrap}
-  .pill.on{background:var(--accent-soft);border-color:rgba(205,214,230,.45);color:var(--text)}
-  .pill .n{color:var(--faint);font-size:11px;margin-left:4px}
-  .pill.zero{opacity:.3}
-  .sheet .sf{display:flex;align-items:center;gap:10px;padding:11px 16px;border-top:1px solid var(--line);background:rgba(0,0,0,.25)}
+/* ────────── 筛选条 ────────── */
+.ui .bar{position:relative;z-index:5;display:flex;flex-wrap:wrap;align-items:center;gap:7px;padding:12px 0 0;margin-top:16px;border-top:1px solid var(--line)}
+.ui .dd{position:relative}
+.ui .chip{appearance:none;display:inline-flex;align-items:center;gap:6px;height:29px;padding:0 12px;border-radius:999px;
+  border:1px solid var(--line-2);background:rgba(255,255,255,.04);color:var(--muted);font:inherit;font-size:12.5px;cursor:pointer;white-space:nowrap}
+.ui .chip .v{color:var(--text);font-weight:600}
+.ui .chip .car{color:var(--faint);font-size:9px}
+.ui .chip:hover{background:rgba(255,255,255,.09)}
+.ui .chip.active{background:var(--chrome-soft);border-color:rgba(205,214,230,.45);color:var(--text)}
+.ui .dd.open .chip{background:rgba(255,255,255,.12);color:var(--text)}
+.ui .menu{position:absolute;top:35px;left:0;min-width:240px;max-height:324px;overflow:auto;background:#161a24;
+  border:1px solid var(--line-2);border-radius:12px;padding:5px;box-shadow:0 20px 48px rgba(0,0,0,.7);display:none;z-index:20}
+.ui .dd.open .menu{display:block}
+.ui .menu .sec{display:flex;align-items:baseline;gap:6px;font-size:10.5px;color:var(--faint);padding:6px 9px 5px;letter-spacing:.03em}
+.ui .menu .sec b{color:var(--muted);font-weight:600;font-family:var(--f-mono);font-size:10.5px}
+/* 每个候选值行铺一条与数量成正比的底条：数字要读，形状可以扫。
+   一个机制用在全部维度上，年代档按序排下来自然就是一张分布图。 */
+.ui .opt{position:relative;appearance:none;width:100%;display:flex;align-items:center;gap:9px;padding:7px 9px;
+  border:0;border-radius:8px;background:none;font:inherit;font-size:12.5px;color:var(--muted);cursor:pointer;text-align:left;overflow:hidden}
+.ui .opt .fill{position:absolute;left:9px;bottom:3px;height:2px;border-radius:2px;background:rgba(205,214,230,.28);z-index:0}
+.ui .opt.sel{background:rgba(127,176,255,.1)}
+.ui .opt.sel .fill{background:var(--info)}
+.ui .opt>*:not(.fill){position:relative;z-index:1}
+.ui .opt:hover{color:var(--text)}
+.ui .opt:hover{background:rgba(255,255,255,.05)}
+.ui .opt .box{width:14px;height:14px;border-radius:4px;border:1px solid var(--line-2);flex:none;display:grid;place-items:center;font-size:9px;color:#0a0b10;background:rgba(10,12,18,.5)}
+.ui .opt.sel{color:var(--text)}
+.ui .opt.sel .box{background:var(--info);border-color:var(--info)}
+.ui .opt .n{margin-left:auto;font-family:var(--f-mono);font-size:11px;color:var(--faint);font-variant-numeric:tabular-nums}
+.ui .opt.sel .n{color:var(--muted)}
+.ui .opt.zero{opacity:.28;pointer-events:none}
+.ui .opt.sub{padding-left:26px;font-size:12px}
+.ui .grpline{height:1px;background:var(--line);margin:5px 9px}
 
-  /* —— 弹层 —— */
-  .dlgwrap{max-width:1180px;margin:0 auto;display:grid;place-items:center;min-height:420px;background:var(--bg);border:1px solid var(--line-strong);border-radius:18px;padding:30px;background-image:radial-gradient(1200px 400px at 50% -10%,rgba(127,176,255,.07),transparent)}
-  .dlg{width:440px;background:#161923;border:1px solid var(--line-strong);border-radius:16px;box-shadow:0 30px 80px rgba(0,0,0,.7);overflow:hidden}
-  .dlg .dh{padding:16px 18px 4px}
-  .dlg .dh h3{margin:0 0 3px;font-size:16px}
-  .dlg .db{padding:12px 18px 6px}
-  .dlg .df{display:flex;gap:8px;justify-content:flex-end;padding:14px 18px;border-top:1px solid var(--line);margin-top:12px}
-  .fld{margin-bottom:14px}
-  .fld .fl{font-size:11.5px;color:var(--faint);margin-bottom:5px}
-  .inp{width:100%;background:rgba(255,255,255,.05);border:1px solid var(--line-strong);border-radius:9px;padding:8px 11px;color:var(--text);font:inherit;font-size:13px}
-  .rulebox{background:rgba(127,176,255,.07);border:1px solid rgba(127,176,255,.22);border-radius:9px;padding:9px 11px;font-size:12.5px;line-height:1.7}
-  .rulebox .hit{color:var(--info);font-weight:600}
-  .radio{display:flex;align-items:flex-start;gap:9px;padding:8px 10px;border-radius:9px;cursor:pointer;font-size:13px}
-  .radio:hover{background:rgba(255,255,255,.04)}
-  .radio .r{width:14px;height:14px;border-radius:50%;border:1px solid var(--line-strong);flex:none;margin-top:2px;display:grid;place-items:center}
-  .radio.on .r{border-color:var(--info)}
-  .radio.on .r::after{content:"";width:7px;height:7px;border-radius:50%;background:var(--info)}
-  .radio .d{font-size:11.5px;color:var(--faint);display:block;margin-top:1px}
+/* 已选条件：把「维内或、维间且」画出来，而不是写在脚注里 */
+.ui .picked{display:flex;flex-wrap:wrap;align-items:center;gap:7px;padding:11px 0 0}
+.ui .picked:empty{display:none}
+.ui .cgrp{display:inline-flex;align-items:center;gap:6px;padding:3px 8px 3px 4px;border-radius:9px;
+  background:var(--chrome-soft);border:1px solid rgba(205,214,230,.3)}
+.ui .cgrp .k{font-size:10.5px;color:var(--faint);background:rgba(0,0,0,.28);border-radius:6px;padding:2px 6px}
+.ui .cval{display:inline-flex;align-items:center;gap:3px;font-size:12px;font-weight:600}
+.ui .cval button{border:0;background:none;color:var(--faint);cursor:pointer;font-size:11px;line-height:1;padding:2px 3px;border-radius:50%}
+.ui .cval button:hover{color:var(--text);background:rgba(255,255,255,.14)}
+.ui .or{font-size:10.5px;color:var(--faint);padding:0 1px}
+.ui .and{font-size:11px;color:var(--faint);letter-spacing:.08em;padding:0 2px}
+.ui .count{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+.ui .count b{color:var(--text);font-family:var(--f-mono);font-weight:600}
 
-  /* —— 合集详情规则带 —— */
-  .rulebar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 14px;border-radius:12px;background:rgba(127,176,255,.07);border:1px solid rgba(127,176,255,.2);font-size:12.5px;margin-bottom:6px}
-  .rulebar .lb{color:var(--info);font-weight:600}
-  .rulebar .cond{border:1px solid rgba(255,255,255,.14);border-radius:6px;padding:1px 8px;color:var(--text)}
-  .rulebar .grow{margin-left:auto;color:var(--faint);font-size:12px}
-  .hint{font-size:12px;color:var(--faint);margin:8px 0 0}
-  .hint.warn{color:var(--warn)}
+/* ────────── 海报墙 ────────── */
+.ui .wallwrap{display:grid;grid-template-columns:minmax(0,1fr) 24px;gap:8px;margin-top:16px}
+.ui .wall{display:grid;grid-template-columns:repeat(auto-fill,minmax(108px,1fr));gap:16px 12px}
+.ui .card .p{position:relative;aspect-ratio:2/3;border-radius:9px;overflow:hidden;border:1px solid var(--line);display:block}
+.ui .card .p::after{content:"";position:absolute;inset:0;background:linear-gradient(to top,rgba(6,7,11,.9) 4%,rgba(6,7,11,.18) 44%,transparent 70%)}
+.ui .card .pt{position:absolute;left:8px;right:8px;bottom:7px;z-index:2;font-size:11.5px;font-weight:700;line-height:1.25;text-shadow:0 1px 6px rgba(0,0,0,.8)}
+.ui .card .badge{position:absolute;top:6px;left:6px;z-index:2;font-size:9px;font-weight:700;padding:1px 5px;border-radius:4px;background:rgba(0,0,0,.5);border:1px solid rgba(255,255,255,.2);font-family:var(--f-mono)}
+.ui .card .heart{position:absolute;top:5px;right:6px;z-index:2;font-size:10px;color:#ff7d99;text-shadow:0 1px 4px rgba(0,0,0,.9)}
+.ui .card .prog{position:absolute;left:0;right:0;bottom:0;z-index:3;height:3px;background:rgba(255,255,255,.22)}
+.ui .card .prog i{display:block;height:100%;background:var(--danger)}
+/* 合集里悬停一张海报，告诉你它是靠哪几条命中的——「全程可解释」落到指尖 */
+.ui .card .why{position:absolute;left:0;right:0;bottom:0;z-index:4;background:rgba(9,11,17,.93);
+  padding:5px 7px;font-size:9.5px;font-weight:500;color:var(--info);transform:translateY(101%);transition:transform .17s ease;font-family:var(--f-mono)}
+.ui .card:hover .why{transform:none}
+.ui .card .m{font-size:10.5px;color:var(--faint);font-variant-numeric:tabular-nums}
+.ui .az{display:flex;flex-direction:column;gap:2px;align-items:center;font-size:9.5px;color:var(--faint);padding-top:2px;font-family:var(--f-mono)}
+.ui .az span.on{color:var(--text);font-weight:600}
 
-  /* —— 移动端 —— */
-  .phones{display:flex;gap:26px;justify-content:center;flex-wrap:wrap;max-width:1180px;margin:0 auto}
-  .phone{width:352px;height:700px;border:1px solid var(--line-strong);border-radius:32px;background:var(--bg);overflow:hidden;position:relative;display:flex;flex-direction:column}
-  .phone .tb{padding:14px 16px 8px;border-bottom:1px solid var(--line)}
-  .phone .tb h2{margin:0;font-size:19px}
-  .phone .chips{display:flex;gap:7px;overflow-x:auto;padding:10px 16px;scrollbar-width:none}
-  .phone .chips::-webkit-scrollbar{display:none}
-  .phone .body{flex:1;overflow:hidden;padding:0 16px;position:relative}
-  .phone .wall{grid-template-columns:repeat(3,1fr);gap:12px 10px}
-  .sheetm{position:absolute;left:0;right:0;bottom:0;background:#161923;border-top:1px solid var(--line-strong);border-radius:18px 18px 0 0;box-shadow:0 -20px 50px rgba(0,0,0,.65);padding:8px 16px 14px;max-height:74%;overflow:auto}
-  .sheetm .grab{width:36px;height:4px;border-radius:2px;background:rgba(255,255,255,.2);margin:2px auto 12px}
-  .sheetm .mf{position:sticky;bottom:-14px;display:flex;gap:8px;padding:12px 0 0;background:linear-gradient(180deg,transparent,#161923 30%)}
-  .scrim{position:absolute;inset:0;background:rgba(0,0,0,.45);backdrop-filter:blur(1px)}
-  .cap2{text-align:center;font-size:12px;color:var(--faint);margin-top:8px}
+/* 空结果 */
+.ui .empty{border:1px dashed var(--line-2);border-radius:13px;padding:20px;margin-top:16px;max-width:520px}
+.ui .empty h4{margin:0 0 4px;font-size:14.5px;font-weight:600}
+.ui .empty p{margin:0 0 13px;color:var(--muted);font-size:12.5px}
+.ui .sug{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:9px;background:rgba(255,255,255,.045);margin-bottom:6px;font-size:12.5px}
+.ui .sug .n{color:var(--faint);font-size:11.5px;font-family:var(--f-mono);margin-left:auto}
+
+/* ────────── 更多筛选面板 ────────── */
+.ui .sheet{border:1px solid var(--line-2);border-radius:13px;background:#12141c;overflow:hidden;margin-top:12px}
+.ui .sheet .sh{display:flex;justify-content:space-between;align-items:center;padding:11px 15px;border-bottom:1px solid var(--line);font-size:12.5px}
+.ui .cols{display:grid;grid-template-columns:1fr 1fr}
+.ui .cols>div{padding:14px 15px}
+.ui .cols>div+div{border-left:1px solid var(--line);background:rgba(255,255,255,.016)}
+.ui .colhead{display:flex;align-items:baseline;gap:9px;margin-bottom:13px;flex-wrap:wrap;
+  border-bottom:1px solid var(--line);padding-bottom:8px}
+.ui .colhead b{font-size:12.5px}
+.ui .colhead .tagline{font-size:11px;color:var(--faint)}
+.ui .grp{margin-bottom:13px}
+.ui .gl{display:flex;align-items:baseline;gap:6px;font-size:11px;color:var(--faint);margin-bottom:6px}
+.ui .gl em{font-style:normal;font-family:var(--f-mono);font-size:10px;color:rgba(238,242,251,.25)}
+.ui .pills{display:flex;flex-wrap:wrap;gap:5px}
+.ui .pill{appearance:none;border:1px solid var(--line-2);background:none;border-radius:999px;padding:3px 10px;font:inherit;font-size:11.5px;color:var(--muted);cursor:pointer;white-space:nowrap}
+.ui .pill:hover{background:rgba(255,255,255,.07)}
+.ui .pill.on{background:var(--chrome-soft);border-color:rgba(205,214,230,.45);color:var(--text)}
+.ui .pill .n{color:var(--faint);font-size:10.5px;margin-left:5px;font-family:var(--f-mono)}
+.ui .pill.zero{opacity:.28;pointer-events:none}
+/* 库存状态用语义色：要处理的事和不用处理的事，扫一眼就分得开 */
+.ui .pill.warn{border-color:rgba(245,196,81,.4);color:var(--warn)}
+.ui .pill.danger{border-color:rgba(255,107,107,.4);color:var(--danger)}
+.ui .pill.info{border-color:rgba(127,176,255,.4);color:var(--info)}
+.ui .sf{display:flex;align-items:center;gap:9px;padding:10px 15px;border-top:1px solid var(--line);background:rgba(0,0,0,.28)}
+.ui .inp{width:100%;background:rgba(255,255,255,.05);border:1px solid var(--line-2);border-radius:8px;padding:6px 10px;color:var(--text);font:inherit;font-size:12px}
+.ui .hint{font-size:11px;color:var(--faint);margin:7px 0 0;line-height:1.55}
+/* 二级面板里的评分/片长是有序档位，用连成一条的分段控件而不是散落的胶囊 */
+.ui .seg{display:flex;border:1px solid var(--line-2);border-radius:9px;overflow:hidden;width:fit-content;max-width:100%}
+.ui .seg button{appearance:none;background:none;border:0;border-right:1px solid var(--line);color:var(--muted);
+  font:inherit;font-size:11.5px;padding:5px 11px;cursor:pointer;display:flex;flex-direction:column;gap:2px;align-items:center}
+.ui .seg button:last-child{border-right:0}
+.ui .seg button:hover{background:rgba(255,255,255,.06)}
+.ui .seg button.on{background:var(--chrome-soft);color:var(--text);font-weight:600}
+.ui .seg .b{display:block;width:26px;height:3px;border-radius:2px;background:rgba(205,214,230,.22)}
+.ui .seg button.on .b{background:var(--chrome)}
+
+/* ────────── 弹层 ────────── */
+.ui .dlgwrap{display:grid;place-items:center;min-height:600px;border:1px solid var(--line-2);border-radius:16px;background:#0a0b10 radial-gradient(900px 320px at 50% 0%,rgba(127,176,255,.08),transparent);padding:26px}
+.ui .dlg{width:min(100%,428px);background:#161923;border:1px solid var(--line-2);border-radius:15px;box-shadow:0 30px 80px rgba(0,0,0,.72);overflow:hidden}
+.ui .dh{padding:15px 17px 2px}
+.ui .dh h3{margin:0 0 3px;font-size:15.5px;font-weight:600;font-family:var(--f-ui)}
+.ui .db{padding:11px 17px 4px}
+.ui .df{display:flex;gap:8px;justify-content:flex-end;padding:13px 17px;border-top:1px solid var(--line);margin-top:11px}
+.ui .fld{margin-bottom:13px}
+.ui .fl{font-size:11px;color:var(--faint);margin-bottom:6px}
+.ui .rulebox{background:rgba(127,176,255,.06);border:1px solid rgba(127,176,255,.2);border-radius:9px;padding:10px 11px}
+.ui .radio{display:flex;align-items:flex-start;gap:9px;padding:7px 9px;border-radius:9px;cursor:pointer;font-size:12.5px}
+.ui .radio:hover{background:rgba(255,255,255,.045)}
+.ui .radio .r{width:14px;height:14px;border-radius:50%;border:1px solid var(--line-2);flex:none;margin-top:3px;display:grid;place-items:center}
+.ui .radio.on .r{border-color:var(--info)}
+.ui .radio.on .r::after{content:"";width:7px;height:7px;border-radius:50%;background:var(--info)}
+.ui .radio .d{font-size:11px;color:var(--faint);display:block;margin-top:1px;line-height:1.5}
+
+/* ────────── 合集详情 ──────────
+   规则不是一段说明文字，是一排长得跟筛选条一样的条件 chip——
+   「筛选条就是规则编辑器」这句话必须在界面上看得见。 */
+.ui .rulehead{display:flex;flex-wrap:wrap;align-items:center;gap:7px;padding:11px 13px;border-radius:12px;
+  background:rgba(127,176,255,.055);border:1px solid rgba(127,176,255,.18)}
+.ui .rulehead .lb{font-size:11px;color:var(--info);font-weight:600;letter-spacing:.03em;margin-right:2px}
+.ui .rcond{display:inline-flex;align-items:center;gap:6px;height:27px;padding:0 10px;border-radius:999px;
+  background:rgba(255,255,255,.05);border:1px solid var(--line-2);font-size:12px}
+.ui .rcond .k{color:var(--faint);font-size:10.5px}
+.ui .rcond b{font-weight:600}
+.ui .radd{height:27px;padding:0 11px;border-radius:999px;border:1px dashed rgba(127,176,255,.4);
+  background:none;color:var(--info);font:inherit;font-size:12px;cursor:pointer}
+.ui .radd:hover{background:rgba(127,176,255,.1)}
+.ui .rulehead .grow{margin-left:auto;font-size:11.5px;color:var(--faint);font-variant-numeric:tabular-nums}
+.ui .recent{display:flex;align-items:center;gap:9px;margin-top:11px;padding:8px 11px;border-radius:10px;
+  background:rgba(255,255,255,.028);border:1px solid var(--line);font-size:11.5px;color:var(--muted);flex-wrap:wrap}
+.ui .recent .lb{font-size:10.5px;color:var(--faint);letter-spacing:.03em}
+.ui .rin{display:inline-flex;align-items:center;gap:6px;background:rgba(255,255,255,.05);border:1px solid var(--line);
+  border-radius:999px;padding:2px 10px 2px 3px;font-size:11.5px}
+.ui .rin i{width:16px;height:22px;border-radius:3px;display:block;border:1px solid rgba(255,255,255,.14)}
+.ui .rin em{font-style:normal;color:var(--faint);font-size:10.5px;font-family:var(--f-mono)}
+
+/* ────────── 移动端 ────────── */
+.ui .phones{display:flex;gap:22px;justify-content:center;flex-wrap:wrap;padding:8px 0}
+.ui .phone{width:320px;height:648px;border:1px solid var(--line-2);border-radius:30px;background:#0a0b10;overflow:hidden;position:relative;display:flex;flex-direction:column}
+.ui .phone .tb{padding:13px 15px 7px;border-bottom:1px solid var(--line)}
+.ui .phone .tb h2{font-size:18px}
+.ui .phone .chips{display:flex;gap:6px;overflow-x:auto;padding:9px 15px;scrollbar-width:none}
+.ui .phone .chips::-webkit-scrollbar{display:none}
+.ui .phone .body{flex:1;overflow:hidden;padding:0 15px;position:relative}
+.ui .phone .wall{grid-template-columns:repeat(3,1fr);gap:11px 9px}
+.ui .msum{display:flex;align-items:center;gap:5px;padding:0 15px 8px;font-size:11px;color:var(--faint);flex-wrap:wrap}
+.ui .sheetm{position:absolute;left:0;right:0;bottom:0;background:#161923;border-top:1px solid var(--line-2);border-radius:17px 17px 0 0;box-shadow:0 -20px 50px rgba(0,0,0,.7);padding:7px 15px 13px;max-height:70%;overflow:auto}
+.ui .grab{width:34px;height:4px;border-radius:2px;background:rgba(255,255,255,.2);margin:2px auto 11px}
+.ui .mf{position:sticky;bottom:-13px;display:flex;gap:8px;padding:11px 0 0;background:linear-gradient(180deg,transparent,#161923 32%)}
+.ui .scrim{position:absolute;inset:0;background:rgba(0,0,0,.46)}
+.cap2{text-align:center;font-size:11.5px;color:var(--faint);margin:8px 0 0;font-family:var(--f-sans)}
+
+/* ── 分期 ─────────────────────────────────────────────── */
+.phases{padding:48px 0 0;border-top:1px solid var(--line);margin-top:46px}
+.ptable{display:grid;margin-top:22px}
+.prow{display:grid;grid-template-columns:56px minmax(0,1.1fr) minmax(0,1.5fr);gap:20px;padding:15px 0;border-top:1px solid var(--line);align-items:baseline}
+.prow:last-child{border-bottom:1px solid var(--line)}
+.prow .code{font-family:var(--f-mono);font-size:13px;font-weight:600;color:var(--quill);letter-spacing:.04em}
+.prow h3{margin:0;font-size:14.5px;font-weight:600}
+.prow .what{margin:4px 0 0;font-size:12.5px;color:var(--faint);line-height:1.6}
+.prow .ac{margin:0;font-size:13px;color:var(--muted);line-height:1.65}
+.prow .ac .k{font-family:var(--f-mono);font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--faint);display:block;margin-bottom:2px}
+.foot{margin-top:52px;padding-top:22px;border-top:1px solid var(--line);display:flex;flex-wrap:wrap;gap:8px 22px;font-size:12px;color:var(--faint)}
+.foot code{font-family:var(--f-mono);font-size:11.5px;color:var(--muted)}
+
+@media (max-width:1080px){
+  .stage-wrap{grid-template-columns:1fr}
+  .rail{position:static;order:-1}
+}
+@media (max-width:760px){
+  .page{padding:0 16px 60px}
+  .tenses{grid-template-columns:1fr;gap:0}
+  .tense{border-top-width:1px;padding-bottom:14px}
+  .tense.now{border-top-width:2px}
+  .funnel .arrows{grid-template-columns:1fr}
+  .funnel .arrows i:not(:first-child){display:none}
+  .prow{grid-template-columns:1fr;gap:6px}
+  .ui .cols{grid-template-columns:1fr}
+  .ui .cols>div+div{border-left:0;border-top:1px solid var(--line)}
+  .ui .frame{grid-template-columns:1fr}
+  .ui .side{display:none}
+}
 </style>
 </head>
 <body>
 
-<div class="nav">
-  <button class="on" data-s="s1">① 筛选条 + 合集货架（可点）</button>
-  <button data-s="s2">② 更多筛选：找片 / 查库</button>
-  <button data-s="s3">③ 存为合集</button>
-  <button data-s="s4">④ 合集详情</button>
-  <button data-s="s5">⑤ 移动端</button>
+<div class="page">
+
+  <header class="mast">
+    <p class="eyebrow">movieclaw · 产品设计 · 2026-09</p>
+    <h1>媒体库筛选与合集</h1>
+    <p class="lede">库过千部之后，海报墙是<b>一条只能从头翻的走廊</b>。可筛的事实其实早就齐了——类型 ID、地区码、评分、片长、分级、画质、观看状态、人物，一个维度都不用重新刮。缺的只是<b>收窄、计数，和把收窄固化下来的能力</b>。</p>
+    <div class="facts">
+      <span class="fact">样本库 <b>34</b> 部 · 筛选与计数是真跑的逻辑</span>
+      <span class="fact">新增筛选维度 <b>0</b> 次刮削</span>
+      <span class="fact">服务端改动点 <b>1</b> 处候选集</span>
+      <span class="fact">分期 <b>F1–F5</b></span>
+    </div>
+  </header>
+
+  <section class="thesis">
+    <div class="sec-h"><span class="mark">论点</span><h2>一份条件，三个时态</h2></div>
+    <p class="sec-p">筛选、合集、库的收藏范围看起来是三件事，其实是同一件事在三个时间点上的样子。它们必须共用一套条件结构——而这套结构<b>项目里已经有了</b>：媒体库路由的 <code class="dsl-i">library.match_rules</code> 就是它。</p>
+    <div class="tenses">
+      <div class="tense now"><h3>筛选</h3><p class="when">此刻</p>
+        <p>我现在想看的那一片。低承诺、即时、随时撤销，条件写在 URL 里而不是记忆里。</p></div>
+      <div class="tense"><h3>合集</h3><p class="when">固化</p>
+        <p>我决定留下来的那一片。规则不变，命中集随新入库自己生长。</p></div>
+      <div class="tense"><h3>库的收藏范围</h3><p class="when">入库前</p>
+        <p>以后这一片该落在哪个库。同一份条件，交给路由去决定新内容的去向。</p></div>
+    </div>
+    <div class="funnel">
+      <div class="arrows"><i>↓</i><i>↓</i><i>↓</i></div>
+      <div class="dsl">
+        <code>[{ field: "genres", op: "any_of", values: [16] }, …]</code>
+        <span>条件间 <b>AND</b> · 条件内 <b>OR</b> — 与路由引擎完全同构，三处传递零翻译，<b>不新造第二套 DSL</b></span>
+      </div>
+    </div>
+  </section>
+
+  <div class="tabs" role="tablist" aria-label="样稿屏幕">
+    <button class="tab" role="tab" aria-selected="true" data-p="p1"><span class="no">01</span>筛选条与合集货架</button>
+    <button class="tab" role="tab" aria-selected="false" data-p="p2"><span class="no">02</span>更多筛选：找片 / 查库</button>
+    <button class="tab" role="tab" aria-selected="false" data-p="p3"><span class="no">03</span>存为合集</button>
+    <button class="tab" role="tab" aria-selected="false" data-p="p4"><span class="no">04</span>合集详情</button>
+    <button class="tab" role="tab" aria-selected="false" data-p="p5"><span class="no">05</span>移动端</button>
+  </div>
+
+  <div class="stage-wrap">
+    <div class="ui">
+
+      <!-- ① -->
+      <div class="panel" id="p1">
+        <div class="frame">
+          <div class="side">
+            <div class="brand">movieclaw</div>
+            <a href="#p1">新会话</a><a href="#p1" class="on">媒体库</a>
+            <div class="subnav"><a href="#p1" class="on">电影库</a><a href="#p1">剧集库</a><a href="#p1">动漫库</a><a href="#p1">家庭录像</a><a href="#p1">全部收藏</a></div>
+            <a href="#p1">我的订阅</a><a href="#p1">活动</a><a href="#p1">设置</a>
+          </div>
+          <div class="main">
+            <div class="head">
+              <div><h2>电影库</h2><p class="sub">1,284 部 · 8.2 TB · 2 个根路径</p></div>
+              <div style="display:flex;gap:7px"><button class="btn sm">扫描</button><button class="btn sm">管理</button></div>
+            </div>
+            <div class="shelf-h"><h3>合集<span class="n" id="shelfn"></span></h3><span class="sub">全部 ›</span></div>
+            <div class="shelf" id="shelf"></div>
+            <div class="bar" id="bar"></div>
+            <div class="picked" id="picked"></div>
+            <div id="result"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ② -->
+      <div class="panel" id="p2" hidden>
+        <div class="frame">
+          <div class="side">
+            <div class="brand">movieclaw</div>
+            <a href="#p2">新会话</a><a href="#p2" class="on">媒体库</a>
+            <div class="subnav"><a href="#p2" class="on">电影库</a><a href="#p2">剧集库</a><a href="#p2">动漫库</a><a href="#p2">全部收藏</a></div>
+            <a href="#p2">我的订阅</a><a href="#p2">活动</a><a href="#p2">设置</a>
+          </div>
+          <div class="main">
+            <div class="head"><div><h2>电影库</h2><p class="sub">1,284 部 · 8.2 TB</p></div></div>
+            <div class="bar" style="margin-top:0;border-top:0;padding-top:0">
+              <span class="chip active">类型<span class="v">动画</span><span class="car">▾</span></span>
+              <span class="chip">年代<span class="v">全部</span><span class="car">▾</span></span>
+              <span class="chip active">地区<span class="v">日韩</span><span class="car">▾</span></span>
+              <span class="chip">观看<span class="v">全部</span><span class="car">▾</span></span>
+              <span class="chip active">⚙ 更多筛选<span class="v">3</span></span>
+              <span class="spacer"></span>
+              <span class="chip">排序<span class="v">评分</span><span class="car">▾</span></span>
+            </div>
+            <div class="sheet">
+              <div class="sh"><b>更多筛选</b><span class="sub">已选 3 项 · 全部清空</span></div>
+              <div class="cols">
+                <div>
+                  <div class="colhead"><b>找片</b><span class="tagline">作品是什么样的 · 来自刮削档案</span></div>
+                  <div class="grp"><p class="gl">评分 <em>vote_average</em></p>
+                    <div class="seg">
+                      <button><span class="b" style="opacity:.35"></span>≥ 9<span class="n" style="font-family:var(--f-mono);font-size:10px;color:var(--faint)">3</span></button>
+                      <button class="on"><span class="b"></span>≥ 8<span class="n" style="font-family:var(--f-mono);font-size:10px;color:var(--muted)">18</span></button>
+                      <button><span class="b" style="opacity:.55"></span>≥ 7<span class="n" style="font-family:var(--f-mono);font-size:10px;color:var(--faint)">31</span></button>
+                      <button><span class="b" style="opacity:.2"></span>未评分<span class="n" style="font-family:var(--f-mono);font-size:10px;color:var(--faint)">2</span></button>
+                    </div></div>
+                  <div class="grp"><p class="gl">片长 <em>runtime_minutes</em></p>
+                    <div class="seg">
+                      <button><span class="b" style="opacity:.25"></span>≤ 60′<span style="font-family:var(--f-mono);font-size:10px;color:var(--faint)">4</span></button>
+                      <button><span class="b" style="opacity:.45"></span>60–90′<span style="font-family:var(--f-mono);font-size:10px;color:var(--faint)">9</span></button>
+                      <button><span class="b"></span>90–120′<span style="font-family:var(--f-mono);font-size:10px;color:var(--faint)">21</span></button>
+                      <button><span class="b" style="opacity:.4"></span>&gt;120′<span style="font-family:var(--f-mono);font-size:10px;color:var(--faint)">8</span></button>
+                    </div></div>
+                  <div class="grp"><p class="gl">分级 <em>content_rating</em></p><div class="pills">
+                    <button class="pill">全年龄<span class="n">14</span></button><button class="pill">PG-13<span class="n">17</span></button><button class="pill">R<span class="n">6</span></button></div>
+                    <p class="hint" style="color:var(--info)">分级做成筛选器只是装饰。家里有孩子，去「成员」里设儿童档案——超分级内容在墙、搜索、合集、Jellyfin 四处都看不见（F5）。</p></div>
+                  <div class="grp"><p class="gl">原始语言 <em>original_language</em></p><div class="pills">
+                    <button class="pill on">日语<span class="n">16</span></button><button class="pill">韩语<span class="n">6</span></button><button class="pill zero">英语<span class="n">0</span></button></div></div>
+                  <div class="grp"><p class="gl">出品方 <em>只列本库出现过的取值</em></p><div class="pills">
+                    <button class="pill">吉卜力工作室<span class="n">7</span></button><button class="pill">东宝<span class="n">5</span></button><button class="pill">CJ 娱乐<span class="n">3</span></button></div></div>
+                  <div class="grp"><p class="gl">导演 / 演员 <em>person 表</em></p>
+                    <input class="inp" placeholder="搜索人物，例如「宫崎骏」…" aria-label="搜索导演或演员"></div>
+                </div>
+                <div>
+                  <div class="colhead"><b>查库</b><span class="tagline">文件是什么规格 · 来自库存台账</span></div>
+                  <div class="grp"><p class="gl">分辨率 <em>library_file.resolution</em></p><div class="pills">
+                    <button class="pill on">2160p<span class="n">11</span></button><button class="pill">1080p<span class="n">19</span></button><button class="pill">720p<span class="n">4</span></button><button class="pill zero">SD<span class="n">0</span></button></div></div>
+                  <div class="grp"><p class="gl">动态范围 / 编码</p><div class="pills">
+                    <button class="pill">HDR10<span class="n">7</span></button><button class="pill">Dolby Vision<span class="n">3</span></button><button class="pill">HEVC<span class="n">14</span></button><button class="pill">AV1<span class="n">2</span></button></div></div>
+                  <div class="grp"><p class="gl">体积 <em>size_bytes</em></p><div class="pills">
+                    <button class="pill">&lt; 5 GB<span class="n">12</span></button><button class="pill">5–20 GB<span class="n">15</span></button><button class="pill">&gt; 20 GB<span class="n">7</span></button></div></div>
+                  <div class="grp"><p class="gl">来源 <em>source · site_id · release_group</em></p><div class="pills">
+                    <button class="pill">订阅入库<span class="n">22</span></button><button class="pill">扫描发现<span class="n">12</span></button><button class="pill">制作组…</button></div></div>
+                  <div class="grp"><p class="gl">库存状态 <em>要处理的事，用语义色分出来</em></p><div class="pills">
+                    <button class="pill zero">有缺集<span class="n">0</span></button>
+                    <button class="pill danger">文件失联<span class="n">1</span></button>
+                    <button class="pill warn">未刮削<span class="n">3</span></button>
+                    <button class="pill warn">待探测规格<span class="n">2</span></button>
+                    <button class="pill info">订阅中<span class="n">5</span></button></div>
+                    <p class="hint">查库维度直接读 library_file，不进任何缓存——它随每次扫描变化。</p></div>
+                </div>
+              </div>
+              <div class="sf">
+                <span class="count">筛出 <b>16</b> 部 · 共 1,284 部</span>
+                <span class="spacer"></span>
+                <button class="btn sm ghost">清空</button>
+                <button class="btn sm">⊕ 存为合集</button>
+                <button class="btn sm primary">收起面板</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ③ -->
+      <div class="panel" id="p3" hidden>
+        <div class="dlgwrap">
+          <div class="dlg">
+            <div class="dh"><h3>存为合集</h3><p class="sub">合集只是一层视图，不会改变作品的存放位置。</p></div>
+            <div class="db">
+              <div class="fld"><p class="fl">名称 · 由条件自动拟名，可改</p>
+                <input class="inp" value="日漫 · 8 分以上" aria-label="合集名称"></div>
+              <div class="fld"><p class="fl">收录规则 · 与筛选条同一套结构</p>
+                <div class="rulebox">
+                  <div style="display:flex;flex-wrap:wrap;gap:6px">
+                    <span class="rcond"><span class="k">类型</span><b>动画</b></span>
+                    <span class="rcond"><span class="k">地区</span><b>日本</b><span class="or">或</span><b>韩国</b></span>
+                    <span class="rcond"><span class="k">评分</span><b>≥ 8</b></span>
+                  </div>
+                  <p style="margin:9px 0 0;font-size:11.5px;color:var(--faint)">当前命中 <b style="color:var(--info);font-family:var(--f-mono)">42</b> 部 · 之后可随时改</p>
+                </div></div>
+              <div class="fld"><p class="fl">形态</p>
+                <div class="radio on"><span class="r"></span><span>智能合集<span class="d">新入库的作品只要命中规则就自动加入，合集会自己长</span></span></div>
+                <div class="radio"><span class="r"></span><span>固定当前这 42 部<span class="d">把此刻的命中集快照成一份名单，之后手工增删</span></span></div></div>
+              <div class="fld"><p class="fl">可见性</p>
+                <div class="pills"><button class="pill on">全家可见</button><button class="pill">只有我</button></div></div>
+            </div>
+            <div class="df"><button class="btn">取消</button><button class="btn primary">创建合集</button></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ④ -->
+      <div class="panel" id="p4" hidden>
+        <div class="frame">
+          <div class="side">
+            <div class="brand">movieclaw</div>
+            <a href="#p4">新会话</a><a href="#p4" class="on">媒体库</a>
+            <div class="subnav"><a href="#p4">电影库</a><a href="#p4" class="on" style="margin-left:8px;font-size:11px">└ 日漫 · 8 分以上</a><a href="#p4">剧集库</a><a href="#p4">全部收藏</a></div>
+            <a href="#p4">我的订阅</a><a href="#p4">活动</a><a href="#p4">设置</a>
+          </div>
+          <div class="main">
+            <div class="head">
+              <div><p class="kicker">电影库 · 智能合集</p><h2>日漫 · 8 分以上</h2></div>
+              <div style="display:flex;gap:7px"><button class="btn sm">分享</button><button class="btn sm">⋯</button></div>
+            </div>
+            <div class="rulehead">
+              <span class="lb">自动收录</span>
+              <span class="rcond"><span class="k">类型</span><b>动画</b></span>
+              <span class="rcond"><span class="k">地区</span><b>日本</b><span class="or">或</span><b>韩国</b></span>
+              <span class="rcond"><span class="k">评分</span><b>≥ 8</b></span>
+              <button class="radd">＋ 条件</button>
+              <span class="grow">12 部 · 规则改动立即重算</span>
+            </div>
+            <div class="recent">
+              <span class="lb">最近收录</span>
+              <span class="rin"><i id="r1"></i>铃芽之旅 <em>6 天前</em></span>
+              <span class="rin"><i id="r2"></i>辉夜姬物语 <em>12 天前</em></span>
+              <span style="color:var(--faint)">入库即命中规则，没人动过手</span>
+            </div>
+            <p class="hint" style="margin:9px 0 0">「⋯」菜单：设为「动漫库」的收藏范围 · 在 Jellyfin 中显示为合集 · 转成手动合集 · 隐藏</p>
+            <div class="wallwrap" style="margin-top:13px"><div class="wall" id="wall4"></div><div class="az"></div></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ⑤ -->
+      <div class="panel" id="p5" hidden>
+        <div class="phones">
+          <div>
+            <div class="phone">
+              <div class="tb"><h2>电影库</h2><p class="sub">1,284 部 · 8.2 TB</p></div>
+              <div class="chips">
+                <span class="chip">类型<span class="car">▾</span></span><span class="chip">年代<span class="car">▾</span></span>
+                <span class="chip">地区<span class="car">▾</span></span><span class="chip">观看<span class="car">▾</span></span><span class="chip">⚙ 更多</span>
+              </div>
+              <div class="body"><div class="wall" id="wallm1"></div></div>
+            </div>
+            <p class="cap2">默认态：条件收在 chips 里，墙是主角</p>
+          </div>
+          <div>
+            <div class="phone">
+              <div class="tb"><h2>电影库</h2><p class="sub">1,284 部 · 8.2 TB</p></div>
+              <div class="chips">
+                <span class="chip active">类型<span class="v">动画</span></span><span class="chip">年代<span class="car">▾</span></span>
+                <span class="chip active">地区<span class="v">日韩</span></span><span class="chip">观看<span class="car">▾</span></span>
+              </div>
+              <div class="msum">动画 <span class="and">且</span> 日本 <span class="or">或</span> 韩国 <span class="and">且</span> 评分 ≥ 8</div>
+              <div class="body">
+                <div class="wall" id="wallm2"></div>
+                <div class="scrim"></div>
+                <div class="sheetm">
+                  <div class="grab"></div>
+                  <div class="grp"><p class="gl">评分</p><div class="seg">
+                    <button><span class="b" style="opacity:.35"></span>≥ 9</button><button class="on"><span class="b"></span>≥ 8</button><button><span class="b" style="opacity:.55"></span>≥ 7</button></div></div>
+                  <div class="grp"><p class="gl">片长</p><div class="seg">
+                    <button><span class="b" style="opacity:.25"></span>≤ 60′</button><button><span class="b" style="opacity:.45"></span>60–90′</button><button><span class="b"></span>90–120′</button></div></div>
+                  <div class="grp"><p class="gl">画质 <em>查库</em></p><div class="pills">
+                    <button class="pill on">2160p<span class="n">11</span></button><button class="pill">1080p<span class="n">19</span></button><button class="pill">HDR<span class="n">7</span></button></div></div>
+                  <div class="grp"><p class="gl">库存状态 <em>查库</em></p><div class="pills">
+                    <button class="pill zero">有缺集<span class="n">0</span></button><button class="pill warn">未刮削<span class="n">3</span></button><button class="pill info">订阅中<span class="n">5</span></button></div></div>
+                  <div class="mf"><button class="btn sm ghost">清空</button><button class="btn primary" style="flex:1;justify-content:center">查看 16 部</button></div>
+                </div>
+              </div>
+            </div>
+            <p class="cap2">抽屉不占满屏：上方留一截墙与条件摘要，看得见条件在实时影响什么</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <aside class="rail" id="rail"></aside>
+  </div>
+
+  <section class="phases">
+    <div class="sec-h"><span class="mark">分期</span><h2>先做什么，凭什么这么排</h2></div>
+    <p class="sec-p">智能合集排在手动合集前面：它是筛选的直接固化，边际成本近乎零；手动合集要新增关系表、拖拽排序、多处「加入合集」入口，是独立一期的量。但它<b>一半的价值在 F3 就能拿到</b>——「固定当前这 42 部」一行记录就是快照名单，不必等拖拽。</p>
+    <div class="ptable">
+      <div class="prow"><span class="code">F1</span>
+        <div><h3>筛选骨架</h3><p class="what">条件值对象 + 候选集收窄 + facet 接口；一级四个 chips、计数、URL 同步、四种新排序</p></div>
+        <p class="ac"><span class="k">验收</span>在 1,000 部的库里勾「动画 + 日本」，墙、索引条、计数三者一致；刷新页面条件还在；清空后回到原墙。</p></div>
+      <div class="prow"><span class="code">F2</span>
+        <div><h3>完整筛选</h3><p class="what">找片 / 查库双栏面板、放宽建议、移动端抽屉、按库类型降级、位置记忆分作用域</p></div>
+        <p class="ac"><span class="k">验收</span>任意条件组合都不出现空墙；图片库不出现「评分」这种没有事实支撑的控件。</p></div>
+      <div class="prow"><span class="code">F3</span>
+        <div><h3>智能合集</h3><p class="what">合集实体 + 存为合集 + 货架 + 规则条 + 编辑规则倒回筛选条 + 设为库收藏范围</p></div>
+        <p class="ac"><span class="k">验收</span>筛选 → 存 → 新入库一部命中的片 → 合集数量自动 +1，且规则条的文案与筛选条一致。</p></div>
+      <div class="prow"><span class="code">F4</span>
+        <div><h3>手动合集与外延</h3><p class="what">拖拽排序、详情页与海报悬浮的「加入合集」、跨库合集、TMDB 系列自动合集、Jellyfin 合集映射、分享</p></div>
+        <p class="ac"><span class="k">验收</span>拖拽出的顺序在海报墙、Jellyfin 客户端、分享页三处完全一致。</p></div>
+      <div class="prow"><span class="code">F5</span>
+        <div><h3>个性化与儿童档案</h3><p class="what">成员级推荐行；把分级从筛选器升级为成员级内容约束——不是筛掉，是根本看不见</p></div>
+        <p class="ac"><span class="k">验收</span>儿童成员登录后，超分级作品在墙、搜索、合集、Jellyfin 四处均不可见。</p></div>
+    </div>
+  </section>
+
+  <footer class="foot">
+    <span>设计：<code>docs/design/library-filtering.md</code></span>
+    <span>样稿源码：<code>docs/design/mockups/library-filtering-demo.html</code></span>
+    <span>分支：<code>claude/media-library-filtering-design-ho39ug</code></span>
+  </footer>
 </div>
 
-<!-- ══════════ ① ══════════ -->
-<section class="screen on" id="s1">
-  <div class="note">
-    <b>这一屏是真的可以点的</b>：类型/年代/地区/观看四个下拉是多选，选项右侧的数字是
-    <b>「在其他维度已选条件下，勾上我还剩几部」</b>（算某一维的计数时排除该维自身条件，
-    否则多选就废了）；数量为 0 的选项置灰不可点。<b>把条件叠到筛空</b>（例如 类型=纪录片 + 地区=日韩 + 观看=已看完）
-    可以看到「放宽建议」——铁律：永不给空货架。<br>
-    实现上筛选<b>只改一处</b>：<code>_wall_page_ids()</code> 里的候选集。排序、分页、A-Z 索引条、位置记忆全部不动。
-  </div>
-  <div class="frame">
-    <div class="side">
-      <div class="brand">movieclaw</div>
-      <a>新会话</a><a class="on">媒体库</a>
-      <div class="subnav"><a class="on">电影库</a><a>剧集库</a><a>动漫库</a><a>家庭录像</a><a>全部收藏</a></div>
-      <a>我的订阅</a><a>活动</a><a>设置</a>
-    </div>
-    <div class="main">
-      <div class="head">
-        <div><h1>电影库</h1><p class="sub" id="libsub">1,284 部 · 8.2 TB · 2 个根路径</p></div>
-        <div style="display:flex;gap:8px"><button class="btn sm">扫描</button><button class="btn sm">管理</button></div>
-      </div>
-
-      <div class="shelf-h"><h3>合集</h3><span class="sub" style="font-size:12px;cursor:pointer">全部 6 个 ›</span></div>
-      <div class="shelf" id="shelf"></div>
-
-      <div class="bar" id="bar"></div>
-      <div class="picked" id="picked"></div>
-
-      <div id="result"></div>
-    </div>
-  </div>
-</section>
-
-<!-- ══════════ ② ══════════ -->
-<section class="screen" id="s2">
-  <div class="note">
-    <b>「找片」和「查库」是两种人格，必须分栏。</b>左栏是"周五晚上想看点什么"（内容事实，来自刮削档案），
-    右栏是"我那些 4K 都在哪 / 哪些片缺集"（库存事实，来自 <code>library_file</code> 台账）。
-    混在一行 chips 里会让两边都难用。<br>
-    右下角<b>数字实时跳</b>，没有「确定」按钮——面板本身就是结果的一部分，关掉面板只是收起控件，不是提交。
-  </div>
-  <div class="frame">
-    <div class="side">
-      <div class="brand">movieclaw</div>
-      <a>新会话</a><a class="on">媒体库</a>
-      <div class="subnav"><a class="on">电影库</a><a>剧集库</a><a>动漫库</a><a>家庭录像</a><a>全部收藏</a></div>
-      <a>我的订阅</a><a>活动</a><a>设置</a>
-    </div>
-    <div class="main">
-      <div class="head"><div><h1>电影库</h1><p class="sub">1,284 部 · 8.2 TB</p></div></div>
-      <div class="bar" style="margin-top:0;border-top:0">
-        <span class="chip active"><span>类型</span><span class="v">动画</span><span class="car">▾</span></span>
-        <span class="chip"><span>年代</span><span class="v">全部</span><span class="car">▾</span></span>
-        <span class="chip active"><span>地区</span><span class="v">日韩</span><span class="car">▾</span></span>
-        <span class="chip"><span>观看</span><span class="v">全部</span><span class="car">▾</span></span>
-        <span class="chip open">⚙ 更多筛选 <span class="v">3</span></span>
-        <span class="spacer"></span>
-        <span class="chip"><span>排序</span><span class="v">评分</span><span class="car">▾</span></span>
-      </div>
-
-      <div class="sheet">
-        <div class="sh"><b style="font-size:13px">更多筛选</b><span class="sub" style="font-size:12px">已选 3 项 · <span style="cursor:pointer;text-decoration:underline">全部清空</span></span></div>
-        <div class="cols">
-          <div>
-            <div class="colhead"><b>🎬 找片</b><span>作品是什么样的（来自刮削档案）</span></div>
-            <div class="grp"><div class="gl">评分</div><div class="pills">
-              <span class="pill">≥ 9<span class="n">3</span></span><span class="pill on">≥ 8<span class="n">18</span></span><span class="pill">≥ 7<span class="n">31</span></span><span class="pill">未评分<span class="n">2</span></span></div></div>
-            <div class="grp"><div class="gl">片长</div><div class="pills">
-              <span class="pill">≤ 60′<span class="n">4</span></span><span class="pill">60–90′<span class="n">9</span></span><span class="pill">90–120′<span class="n">21</span></span><span class="pill">&gt; 120′<span class="n">8</span></span></div></div>
-            <div class="grp"><div class="gl">分级 <span style="color:var(--info)">· 家里有孩子？在「成员」里设儿童档案更彻底</span></div><div class="pills">
-              <span class="pill">全年龄<span class="n">14</span></span><span class="pill">PG-13<span class="n">17</span></span><span class="pill">R<span class="n">6</span></span></div></div>
-            <div class="grp"><div class="gl">原始语言</div><div class="pills">
-              <span class="pill on">日语<span class="n">16</span></span><span class="pill">韩语<span class="n">6</span></span><span class="pill">英语<span class="n">0</span></span></div></div>
-            <div class="grp"><div class="gl">出品方 <span style="color:var(--faint)">（只列本库出现过的）</span></div><div class="pills">
-              <span class="pill">吉卜力工作室<span class="n">7</span></span><span class="pill">东宝<span class="n">5</span></span><span class="pill">CJ娱乐<span class="n">3</span></span></div></div>
-            <div class="grp"><div class="gl">导演 / 演员</div>
-              <input class="inp" placeholder="搜索人物，例如「宫崎骏」…" style="font-size:12.5px;padding:6px 10px"></div>
-          </div>
-          <div>
-            <div class="colhead"><b>🗄 查库</b><span>文件是什么规格（来自库存台账）</span></div>
-            <div class="grp"><div class="gl">分辨率</div><div class="pills">
-              <span class="pill on">2160p<span class="n">11</span></span><span class="pill">1080p<span class="n">19</span></span><span class="pill">720p<span class="n">4</span></span><span class="pill zero">SD<span class="n">0</span></span></div></div>
-            <div class="grp"><div class="gl">动态范围 / 编码</div><div class="pills">
-              <span class="pill">HDR10<span class="n">7</span></span><span class="pill">Dolby Vision<span class="n">3</span></span><span class="pill">HEVC<span class="n">14</span></span><span class="pill">AV1<span class="n">2</span></span></div></div>
-            <div class="grp"><div class="gl">体积</div><div class="pills">
-              <span class="pill">&lt; 5 GB<span class="n">12</span></span><span class="pill">5–20 GB<span class="n">15</span></span><span class="pill">&gt; 20 GB<span class="n">7</span></span></div></div>
-            <div class="grp"><div class="gl">来源</div><div class="pills">
-              <span class="pill">订阅入库<span class="n">22</span></span><span class="pill">扫描发现<span class="n">12</span></span><span class="pill">制作组…<span class="n"></span></span></div></div>
-            <div class="grp"><div class="gl">库存状态</div><div class="pills">
-              <span class="pill">有缺集<span class="n">0</span></span><span class="pill">文件失联<span class="n">1</span></span><span class="pill">未刮削<span class="n">3</span></span><span class="pill">待探测规格<span class="n">2</span></span><span class="pill">订阅中<span class="n">5</span></span></div></div>
-            <p class="hint">查库维度直接读 <code style="font-family:ui-monospace">library_file</code>，不进任何缓存——它随每次扫描变化。</p>
-          </div>
-        </div>
-        <div class="sf">
-          <span class="count">筛出 <b>16</b> 部 · 共 1,284 部</span>
-          <span class="spacer" style="flex:1"></span>
-          <button class="btn sm ghost">清空</button>
-          <button class="btn sm">⊕ 存为合集</button>
-          <button class="btn sm primary">收起面板</button>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- ══════════ ③ ══════════ -->
-<section class="screen" id="s3">
-  <div class="note">
-    <b>这是整个设计的枢纽。</b>筛选是"此刻的切片"，合集是"固化的切片"——两者共用
-    <code>library.match_rules</code> 那一套 <code>[{field, op, values}]</code> 条件结构（路由已经在用），
-    所以「存为合集」只是把当前筛选态<b>原样抄一份</b>，零翻译。<br>
-    反向也成立：合集详情页的「编辑规则」把规则倒回筛选条——<b>筛选条就是规则编辑器</b>，不另做一个。
-    再反向一步：合集菜单里的「设为库的收藏范围」把同一份规则交给路由，用户不用理解"路由"这个词就配好了分库。
-  </div>
-  <div class="dlgwrap">
-    <div class="dlg">
-      <div class="dh"><h3>存为合集</h3><p class="sub" style="font-size:12px">合集只是一层视图，<b style="color:var(--muted)">不会改变作品的存放位置</b>。</p></div>
-      <div class="db">
-        <div class="fld"><div class="fl">名称 <span style="color:var(--faint)">（由条件自动拟名，可改）</span></div>
-          <input class="inp" value="日漫 · 8 分以上"></div>
-        <div class="fld"><div class="fl">收录规则</div>
-          <div class="rulebox">类型 = <b>动画</b> · 地区 = <b>日本 / 韩国</b> · 评分 <b>≥ 8</b><br>
-            <span class="hit">当前命中 42 部</span> <span style="color:var(--faint)">· 与筛选条完全同构，之后可随时改</span></div></div>
-        <div class="fld"><div class="fl">形态</div>
-          <div class="radio on"><span class="r"></span><span>智能合集<span class="d">新入库的作品只要命中规则就自动加入，合集会自己长</span></span></div>
-          <div class="radio"><span class="r"></span><span>固定当前这 42 部<span class="d">把此刻的命中集快照成一份名单，之后手工增删（手动合集）</span></span></div></div>
-        <div class="fld"><div class="fl">可见性</div>
-          <div class="pills"><span class="pill on">全家可见</span><span class="pill">只有我</span></div></div>
-      </div>
-      <div class="df"><button class="btn">取消</button><button class="btn primary">创建合集</button></div>
-    </div>
-  </div>
-  <p class="cap2">「固定当前这 42 部」= 在 F3 期就用一行 <code>collection_item</code> 兑现手动合集一半的价值，不必等拖拽 UI。</p>
-</section>
-
-<!-- ══════════ ④ ══════════ -->
-<section class="screen" id="s4">
-  <div class="note">
-    合集详情顶部固定一条<b>规则说明带</b>：让"这部片为什么在这儿"永远可解释（与路由的"全程可解释"同源）。
-    带上<b>「本周新增 2 部」</b>是智能合集区别于死名单的全部意义——它在替用户持续工作。<br>
-    合集<b>挂在库下面</b>（<code>/library/[id]/c/[cid]</code>），不做侧栏一级入口：用户的心智是"我的电影库里有一批诺兰"，
-    不是"我有一个诺兰库"。跨库合集模型上从第一天就允许（<code>library_id = NULL</code>），入口等合集多了再开。
-  </div>
-  <div class="frame">
-    <div class="side">
-      <div class="brand">movieclaw</div>
-      <a>新会话</a><a class="on">媒体库</a>
-      <div class="subnav"><a class="on">电影库</a><a class="on" style="margin-left:8px;font-size:11.5px">└ 日漫 · 8 分以上</a><a>剧集库</a><a>动漫库</a><a>全部收藏</a></div>
-      <a>我的订阅</a><a>活动</a><a>设置</a>
-    </div>
-    <div class="main">
-      <div class="head">
-        <div><p class="kicker">电影库 · 智能合集</p><h1>日漫 · 8 分以上</h1></div>
-        <div style="display:flex;gap:8px">
-          <button class="btn sm">编辑规则</button>
-          <button class="btn sm">分享</button>
-          <button class="btn sm">⋯</button>
-        </div>
-      </div>
-      <div class="rulebar">
-        <span class="lb">自动收录</span>
-        <span class="cond">类型 = 动画</span><span class="cond">地区 = 日本 / 韩国</span><span class="cond">评分 ≥ 8</span>
-        <span class="grow">42 部 · 6 天前新增 2 部</span>
-      </div>
-      <p class="hint">「⋯」菜单里：设为「动漫库」的收藏范围 · 在 Jellyfin 中显示为合集 · 转成手动合集 · 隐藏</p>
-      <div class="wallwrap" style="margin-top:14px"><div class="wall" id="wall4"></div><div class="az"></div></div>
-    </div>
-  </div>
-</section>
-
-<!-- ══════════ ⑤ ══════════ -->
-<section class="screen" id="s5">
-  <div class="note">
-    移动端：一级 chips 横滚，「更多筛选」唤起<b>底部抽屉而不是全屏页</b>——上方留一截墙，
-    让用户<b>看得见条件在实时影响什么</b>。抽屉里每次勾选立即生效，底部主按钮上的数字实时跳；
-    <b>没有「确定」</b>，因为筛选是改货架不是提交表单。
-  </div>
-  <div class="phones">
-    <div class="phone">
-      <div class="tb"><h2>电影库</h2><p class="sub" style="font-size:12px">1,284 部 · 8.2 TB</p></div>
-      <div class="chips">
-        <span class="chip">类型 <span class="car">▾</span></span><span class="chip">年代 <span class="car">▾</span></span>
-        <span class="chip">地区 <span class="car">▾</span></span><span class="chip">观看 <span class="car">▾</span></span>
-        <span class="chip">⚙ 更多</span>
-      </div>
-      <div class="body"><div class="wall" id="wallm1"></div></div>
-      <p class="cap2" style="padding-bottom:8px">默认态：条件收在 chips 里，墙是主角</p>
-    </div>
-
-    <div class="phone">
-      <div class="tb"><h2>电影库</h2><p class="sub" style="font-size:12px">1,284 部 · 8.2 TB</p></div>
-      <div class="chips">
-        <span class="chip active">类型 <span class="v">动画</span></span><span class="chip">年代 <span class="car">▾</span></span>
-        <span class="chip active">地区 <span class="v">日韩</span></span><span class="chip">观看 <span class="car">▾</span></span>
-      </div>
-      <div class="body">
-        <div class="wall" id="wallm2"></div>
-        <div class="scrim"></div>
-        <div class="sheetm">
-          <div class="grab"></div>
-          <div class="grp"><div class="gl">评分</div><div class="pills">
-            <span class="pill">≥ 9<span class="n">3</span></span><span class="pill on">≥ 8<span class="n">18</span></span><span class="pill">≥ 7<span class="n">31</span></span></div></div>
-          <div class="grp"><div class="gl">片长</div><div class="pills">
-            <span class="pill">≤ 60′<span class="n">4</span></span><span class="pill">60–90′<span class="n">9</span></span><span class="pill">90–120′<span class="n">21</span></span><span class="pill">&gt;120′<span class="n">8</span></span></div></div>
-          <div class="grp"><div class="gl">画质 <span style="color:var(--faint)">· 查库</span></div><div class="pills">
-            <span class="pill on">2160p<span class="n">11</span></span><span class="pill">1080p<span class="n">19</span></span><span class="pill">HDR<span class="n">7</span></span></div></div>
-          <div class="grp"><div class="gl">库存状态 <span style="color:var(--faint)">· 查库</span></div><div class="pills">
-            <span class="pill">有缺集<span class="n">0</span></span><span class="pill">未刮削<span class="n">3</span></span><span class="pill">订阅中<span class="n">5</span></span></div></div>
-          <div class="mf"><button class="btn sm ghost">清空</button><button class="btn primary" style="flex:1;justify-content:center">查看 16 部</button></div>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
-
 <script>
-/* ── 屏切换 ─────────────────────────────────────────── */
-document.querySelectorAll(".nav button").forEach(b=>b.onclick=()=>{
-  document.querySelectorAll(".nav button").forEach(x=>x.classList.toggle("on",x===b));
-  document.querySelectorAll(".screen").forEach(s=>s.classList.toggle("on",s.id===b.dataset.s));
-});
+/* ══════ 批注（随页签切换）══════ */
+const RAIL={
+p1:{h:"这一屏是真能点的",li:[
+ "四个下拉都是<b>多选</b>。每行底下那条与数量成正比的<b>底条</b>是同一个机制用在所有维度上——年代档按序排下来，它自然就是一张库存分布图：你是从形状里挑，不是从一列文字里挑。",
+ "数字是「在其他维度已选条件下，勾上我还剩几部」——算某一维时<b>排除该维自身</b>，否则勾了「动画」其他类型全变 0，多选就废了。0 值置灰不可点。",
+ "已选条件行把<b>「或」和「且」画出来</b>：同一维度的多个值用「或」连在一个容器里，维度之间用「且」隔开。多选语义不该靠脚注解释。",
+ "换排序时右侧索引条跟着换口径：默认是拼音首字母，按上映是年份，按评分是分档——它们读的是同一份有序名单。"],
+ try:"叠到筛空试试：类型＝纪录片 ＋ 地区＝日韩 ＋ 观看＝已看完。不给空墙，给放宽建议；只列救得回内容的那几条。"},
+p2:{h:"找片和查库是两种人格",li:[
+ "左栏是「周五晚上想看点什么」，右栏是「我那些 4K 都在哪、哪些片缺集」。混在一行 chips 里会让两边都难用。",
+ "评分和片长是<b>有序档位</b>，所以用连成一条的分段控件而不是散落的胶囊，段上的小横条还带着分布——形态要说出字段的性质。",
+ "库存状态给了语义色：失联是红、未刮削与待探测是黄、订阅中是蓝。<b>要处理的事和不用处理的事，扫一眼就分得开。</b>",
+ "出品方 v1 <b>不进合集规则</b>：它存的是刮削语言下的本地化名，写进规则后用户切语言会静默失效。"],
+ try:null},
+p3:{h:"整个设计的枢纽",li:[
+ "「存为合集」把当前筛选态<b>原样抄一份</b>——弹层里的规则长得跟筛选条一模一样，因为它们就是同一套结构。",
+ "反向也成立：合集的规则条可以直接改、直接加条件，<b>筛选条就是规则编辑器</b>，不另做一个。",
+ "「固定当前这 42 部」是手动合集一半的价值提前兑现：一行记录存下此刻的命中集，不必等拖拽 UI。"],
+ try:null},
+p4:{h:"它为什么在这儿，永远说得清",li:[
+ "规则不是一段说明文字，是<b>一排可改的条件 chip</b> + 一个「＋ 条件」。用户不需要先理解「规则」这个概念，他只是在改筛选条。",
+ "<b>把鼠标放到任意一张海报上</b>：底部滑出它命中的那几条。「全程可解释」不是文档里的一句话，是指尖上的一个动作。",
+ "「最近收录」那条是智能合集区别于死名单的全部意义——它在替用户持续工作，而且明说「没人动过手」。",
+ "合集<b>挂在库下面</b>，不做侧栏一级入口：心智是「我的电影库里有一批诺兰」，不是「我有一个诺兰库」。作品也不从主墙消失。"],
+ try:"海报悬停看命中理由。"},
+p5:{h:"抽屉不是全屏页",li:[
+ "上方留一截墙<b>和一行条件摘要</b>（同样用「或 / 且」），让用户看得见条件在实时影响什么。",
+ "每次勾选立即生效，底部主按钮上的数字实时跳。<b>没有「确定」</b>——筛选是改货架，不是提交表单。",
+ "分栏原则在窄屏上靠分组延续：查库维度仍单独成组并标注「查库」。"],
+ try:null}};
 
-/* ── 演示数据（一个 34 部的小库；真实实现里这是服务端的候选集）─── */
-const G=["#3b4a6b","#6b3b52","#2f5d52","#5c4a2f","#4a2f5c","#2f3f5c","#5c2f36","#35553b","#514a2f","#40305c"];
+const tabs=[...document.querySelectorAll(".tab")];
+function renderRail(id){
+  const r=RAIL[id];
+  document.getElementById("rail").innerHTML=
+    '<h4>'+r.h+'</h4><ul>'+r.li.map(t=>'<li>'+t+'</li>').join("")+'</ul>'+
+    (r.try?'<p class="try"><b>试试看</b>'+r.try+'</p>':"");
+}
+tabs.forEach(t=>t.addEventListener("click",()=>{
+  tabs.forEach(x=>x.setAttribute("aria-selected",String(x===t)));
+  document.querySelectorAll(".panel").forEach(p=>p.hidden=p.id!==t.dataset.p);
+  renderRail(t.dataset.p);
+}));
+
+/* ══════ 演示数据 ══════
+   34 部的小库。真实实现里这是服务端按条件收窄后的候选集。
+   py 是拼音首字母：真实产品在 services/library/sort_key.py 里做同一件事。 */
 const ITEMS=[
- {t:"千与千寻",y:2001,g:["动画","奇幻"],c:"JP",r:8.7,res:"2160p",w:"played",fav:1,m:125},
- {t:"你的名字。",y:2016,g:["动画","爱情"],c:"JP",r:8.4,res:"2160p",w:"played",fav:1,m:106},
- {t:"铃芽之旅",y:2022,g:["动画","冒险"],c:"JP",r:7.8,res:"1080p",w:"unwatched",fav:0,m:122},
- {t:"哈尔的移动城堡",y:2004,g:["动画","奇幻"],c:"JP",r:8.9,res:"1080p",w:"watching",fav:0,m:119},
- {t:"龙猫",y:1988,g:["动画","家庭"],c:"JP",r:9.2,res:"1080p",w:"played",fav:1,m:86},
- {t:"辉夜姬物语",y:2013,g:["动画","剧情"],c:"JP",r:8.3,res:"1080p",w:"unwatched",fav:0,m:137},
- {t:"钢琴之森",y:2007,g:["动画","音乐"],c:"JP",r:7.4,res:"720p",w:"unwatched",fav:0,m:101},
- {t:"寄生虫",y:2019,g:["剧情","惊悚"],c:"KR",r:8.6,res:"2160p",w:"played",fav:1,m:132},
- {t:"燃烧",y:2018,g:["剧情","悬疑"],c:"KR",r:7.6,res:"1080p",w:"unwatched",fav:0,m:148},
- {t:"新世界",y:2013,g:["犯罪","剧情"],c:"KR",r:8.1,res:"1080p",w:"watching",fav:0,m:134},
- {t:"花样年华",y:2000,g:["爱情","剧情"],c:"HK",r:8.7,res:"2160p",w:"played",fav:1,m:98},
- {t:"重庆森林",y:1994,g:["爱情","剧情"],c:"HK",r:8.7,res:"1080p",w:"played",fav:0,m:102},
- {t:"无间道",y:2002,g:["犯罪","惊悚"],c:"HK",r:9.3,res:"2160p",w:"played",fav:1,m:101},
- {t:"喜剧之王",y:1999,g:["喜剧","爱情"],c:"HK",r:8.8,res:"1080p",w:"played",fav:0,m:85},
- {t:"东邪西毒",y:1994,g:["武侠","剧情"],c:"HK",r:8.7,res:"1080p",w:"unwatched",fav:0,m:100},
- {t:"卧虎藏龙",y:2000,g:["武侠","剧情"],c:"CN",r:8.2,res:"2160p",w:"unwatched",fav:0,m:120},
- {t:"霸王别姬",y:1993,g:["剧情","爱情"],c:"CN",r:9.6,res:"2160p",w:"played",fav:1,m:171},
- {t:"活着",y:1994,g:["剧情","历史"],c:"CN",r:9.3,res:"1080p",w:"unwatched",fav:0,m:132},
- {t:"让子弹飞",y:2010,g:["喜剧","动作"],c:"CN",r:9.1,res:"1080p",w:"played",fav:0,m:132},
- {t:"流浪地球2",y:2023,g:["科幻","冒险"],c:"CN",r:8.3,res:"2160p",w:"watching",fav:1,m:173},
- {t:"奥本海默",y:2023,g:["剧情","历史"],c:"US",r:8.6,res:"2160p",w:"played",fav:1,m:181},
- {t:"沙丘2",y:2024,g:["科幻","冒险"],c:"US",r:8.5,res:"2160p",w:"watching",fav:0,m:166},
- {t:"星际穿越",y:2014,g:["科幻","剧情"],c:"US",r:9.4,res:"2160p",w:"played",fav:1,m:169},
- {t:"盗梦空间",y:2010,g:["科幻","动作"],c:"US",r:9.4,res:"1080p",w:"played",fav:0,m:148},
- {t:"蜘蛛侠：纵横宇宙",y:2023,g:["动画","动作"],c:"US",r:8.6,res:"2160p",w:"unwatched",fav:0,m:140},
- {t:"疯狂动物城",y:2016,g:["动画","喜剧"],c:"US",r:9.2,res:"1080p",w:"played",fav:1,m:108},
- {t:"黑客帝国",y:1999,g:["科幻","动作"],c:"US",r:9.1,res:"1080p",w:"played",fav:0,m:136},
- {t:"教父",y:1972,g:["犯罪","剧情"],c:"US",r:9.3,res:"1080p",w:"unwatched",fav:0,m:175},
- {t:"海上钢琴师",y:1998,g:["剧情","音乐"],c:"IT",r:9.3,res:"1080p",w:"played",fav:1,m:165},
- {t:"天堂电影院",y:1988,g:["剧情","爱情"],c:"IT",r:9.2,res:"1080p",w:"unwatched",fav:0,m:155},
- {t:"两杆大烟枪",y:1998,g:["犯罪","喜剧"],c:"GB",r:9.1,res:"1080p",w:"unwatched",fav:0,m:107},
- {t:"这个杀手不太冷",y:1994,g:["犯罪","剧情"],c:"FR",r:9.4,res:"2160p",w:"played",fav:1,m:110},
- {t:"地球脉动 Ⅱ",y:2016,g:["纪录片"],c:"GB",r:9.8,res:"2160p",w:"watching",fav:1,m:60},
- {t:"寿司之神",y:2011,g:["纪录片"],c:"US",r:8.8,res:"720p",w:"unwatched",fav:0,m:81},
+ {t:"千与千寻",py:"Q",y:2001,g:["动画","奇幻"],c:"JP",r:8.7,res:"2160p",w:"played",fav:1,d:9},
+ {t:"你的名字。",py:"N",y:2016,g:["动画","爱情"],c:"JP",r:8.4,res:"2160p",w:"played",fav:1,d:34},
+ {t:"铃芽之旅",py:"L",y:2022,g:["动画","冒险"],c:"JP",r:7.8,res:"1080p",w:"unwatched",fav:0,d:6},
+ {t:"哈尔的移动城堡",py:"H",y:2004,g:["动画","奇幻"],c:"JP",r:8.9,res:"1080p",w:"watching",fav:0,d:41},
+ {t:"龙猫",py:"L",y:1988,g:["动画","家庭"],c:"JP",r:9.2,res:"1080p",w:"played",fav:1,d:58},
+ {t:"辉夜姬物语",py:"H",y:2013,g:["动画","剧情"],c:"JP",r:8.3,res:"1080p",w:"unwatched",fav:0,d:12},
+ {t:"钢琴之森",py:"G",y:2007,g:["动画","音乐"],c:"JP",r:7.4,res:"720p",w:"unwatched",fav:0,d:73},
+ {t:"寄生虫",py:"J",y:2019,g:["剧情","惊悚"],c:"KR",r:8.6,res:"2160p",w:"played",fav:1,d:21},
+ {t:"燃烧",py:"R",y:2018,g:["剧情","悬疑"],c:"KR",r:7.6,res:"1080p",w:"unwatched",fav:0,d:66},
+ {t:"新世界",py:"X",y:2013,g:["犯罪","剧情"],c:"KR",r:8.1,res:"1080p",w:"watching",fav:0,d:47},
+ {t:"花样年华",py:"H",y:2000,g:["爱情","剧情"],c:"HK",r:8.7,res:"2160p",w:"played",fav:1,d:15},
+ {t:"重庆森林",py:"C",y:1994,g:["爱情","剧情"],c:"HK",r:8.7,res:"1080p",w:"played",fav:0,d:52},
+ {t:"无间道",py:"W",y:2002,g:["犯罪","惊悚"],c:"HK",r:9.3,res:"2160p",w:"played",fav:1,d:3},
+ {t:"喜剧之王",py:"X",y:1999,g:["喜剧","爱情"],c:"HK",r:8.8,res:"1080p",w:"played",fav:0,d:88},
+ {t:"东邪西毒",py:"D",y:1994,g:["武侠","剧情"],c:"HK",r:8.7,res:"1080p",w:"unwatched",fav:0,d:29},
+ {t:"卧虎藏龙",py:"W",y:2000,g:["武侠","剧情"],c:"CN",r:8.2,res:"2160p",w:"unwatched",fav:0,d:61},
+ {t:"霸王别姬",py:"B",y:1993,g:["剧情","爱情"],c:"CN",r:9.6,res:"2160p",w:"played",fav:1,d:18},
+ {t:"活着",py:"H",y:1994,g:["剧情","历史"],c:"CN",r:9.3,res:"1080p",w:"unwatched",fav:0,d:79},
+ {t:"让子弹飞",py:"R",y:2010,g:["喜剧","动作"],c:"CN",r:9.1,res:"1080p",w:"played",fav:0,d:37},
+ {t:"流浪地球 2",py:"L",y:2023,g:["科幻","冒险"],c:"CN",r:8.3,res:"2160p",w:"watching",fav:1,d:2},
+ {t:"奥本海默",py:"A",y:2023,g:["剧情","历史"],c:"US",r:8.6,res:"2160p",w:"played",fav:1,d:8},
+ {t:"沙丘 2",py:"S",y:2024,g:["科幻","冒险"],c:"US",r:8.5,res:"2160p",w:"watching",fav:0,d:1},
+ {t:"星际穿越",py:"X",y:2014,g:["科幻","剧情"],c:"US",r:9.4,res:"2160p",w:"played",fav:1,d:25},
+ {t:"盗梦空间",py:"D",y:2010,g:["科幻","动作"],c:"US",r:9.4,res:"1080p",w:"played",fav:0,d:44},
+ {t:"蜘蛛侠：纵横宇宙",py:"Z",y:2023,g:["动画","动作"],c:"US",r:8.6,res:"2160p",w:"unwatched",fav:0,d:11},
+ {t:"疯狂动物城",py:"F",y:2016,g:["动画","喜剧"],c:"US",r:9.2,res:"1080p",w:"played",fav:1,d:55},
+ {t:"黑客帝国",py:"H",y:1999,g:["科幻","动作"],c:"US",r:9.1,res:"1080p",w:"played",fav:0,d:70},
+ {t:"教父",py:"J",y:1972,g:["犯罪","剧情"],c:"US",r:9.3,res:"1080p",w:"unwatched",fav:0,d:95},
+ {t:"海上钢琴师",py:"H",y:1998,g:["剧情","音乐"],c:"IT",r:9.3,res:"1080p",w:"played",fav:1,d:33},
+ {t:"天堂电影院",py:"T",y:1988,g:["剧情","爱情"],c:"IT",r:9.2,res:"1080p",w:"unwatched",fav:0,d:83},
+ {t:"两杆大烟枪",py:"L",y:1998,g:["犯罪","喜剧"],c:"GB",r:9.1,res:"1080p",w:"unwatched",fav:0,d:49},
+ {t:"这个杀手不太冷",py:"Z",y:1994,g:["犯罪","剧情"],c:"FR",r:9.4,res:"2160p",w:"played",fav:1,d:27},
+ {t:"地球脉动 Ⅱ",py:"D",y:2016,g:["纪录片"],c:"GB",r:9.8,res:"2160p",w:"watching",fav:1,d:5},
+ {t:"寿司之神",py:"S",y:2011,g:["纪录片"],c:"US",r:8.8,res:"720p",w:"unwatched",fav:0,d:91},
 ];
-ITEMS.forEach((it,i)=>{it.i=i;it.dec=it.y>=2020?"2020s":it.y>=2010?"2010s":it.y>=2000?"2000s":it.y>=1990?"1990s":"earlier";
-  it.reg={CN:"大陆",HK:"港台",TW:"港台",JP:"日韩",KR:"日韩",US:"美国",GB:"欧洲",FR:"欧洲",IT:"欧洲",DE:"欧洲"}[it.c];});
+const CN={CN:"中国大陆",HK:"中国香港",TW:"中国台湾",JP:"日本",KR:"韩国",US:"美国",GB:"英国",FR:"法国",IT:"意大利"};
+/* 区域预设组：与 library-routing.md 1.1 的预设完全一致 */
+const REGG={大陆:["CN"],港台:["HK","TW"],日韩:["JP","KR"],美国:["US"],欧洲:["GB","FR","IT","DE","ES","IE"]};
+const REG={};Object.entries(REGG).forEach(([g,cs])=>cs.forEach(c=>REG[c]=g));
+ITEMS.forEach((it,i)=>{it.i=i;
+  it.dec=it.y>=2020?"2020s":it.y>=2010?"2010s":it.y>=2000?"2000s":it.y>=1990?"1990s":"earlier";
+  it.reg=REG[it.c];});
 
-/* ── 维度定义 ───────────────────────────────────────── */
+/* 海报底色按首要类型取色相：墙上的色相分布就是类型分布，
+   筛到单一类型时整面墙自然收敛成一个调子。占位图也可以携带信息。 */
+const HUE={剧情:215,科幻:196,动画:276,爱情:340,犯罪:20,喜剧:44,武侠:14,纪录片:162,惊悚:250,奇幻:292,冒险:178,家庭:58,历史:30,悬疑:236,动作:6,音乐:306};
+function art(it){const h=HUE[it.g[0]]!==undefined?HUE[it.g[0]]:215;
+  return "radial-gradient(120% 78% at 24% 10%,hsl("+h+" 36% 31% / .95),transparent 60%),"+
+         "linear-gradient(168deg,hsl("+h+" 27% 20%),#0a0c12 78%)";}
+
+/* ══════ 维度：维内 OR，维间 AND ══════ */
 const DIMS=[
- {k:"g",  label:"类型", multi:1, get:it=>it.g,      vals:()=>{const m={};ITEMS.forEach(i=>i.g.forEach(v=>m[v]=(m[v]||0)+1));return Object.keys(m).sort((a,b)=>m[b]-m[a]);}},
- {k:"dec",label:"年代", multi:1, get:it=>[it.dec],  vals:()=>["2020s","2010s","2000s","1990s","earlier"], name:v=>v==="earlier"?"更早":v},
- {k:"reg",label:"地区", multi:1, get:it=>[it.reg],  vals:()=>["大陆","港台","日韩","美国","欧洲"]},
- {k:"w",  label:"观看", multi:0, get:it=>[it.w],    vals:()=>["unwatched","watching","played","fav"],
-    name:v=>({unwatched:"未看",watching:"在看",played:"已看完",fav:"我收藏的"})[v],
-    match:(it,v)=>v==="fav"?!!it.fav:it.w===v},
+ {k:"g",label:"类型",multi:1,get:it=>it.g,
+  vals:()=>{const m={};ITEMS.forEach(i=>i.g.forEach(v=>m[v]=(m[v]||0)+1));return Object.keys(m).sort((a,b)=>m[b]-m[a]);}},
+ {k:"dec",label:"年代",multi:1,get:it=>[it.dec],
+  vals:()=>["2020s","2010s","2000s","1990s","earlier"],name:v=>v==="earlier"?"更早":v,
+  note:"按时间排下来，底条就是分布"},
+ {k:"reg",label:"地区",multi:1,get:it=>[it.reg],
+  vals:()=>["大陆","港台","日韩","美国","欧洲"],note:"预设组，可展开到具体国家",sub:1},
+ {k:"w",label:"观看",multi:0,get:it=>[it.w],
+  vals:()=>["unwatched","watching","played","fav"],
+  name:v=>({unwatched:"未看",watching:"在看",played:"已看完",fav:"我收藏的"})[v],
+  match:(it,v)=>v==="fav"?!!it.fav:it.w===v},
 ];
+const SORTS=[{k:"title",n:"默认"},{k:"added",n:"最近添加"},{k:"year",n:"上映时间"},{k:"rating",n:"评分"}];
 const sel={g:[],dec:[],reg:[],w:[]};
+let sort="title", expandReg=false;
 const dname=(d,v)=>d.name?d.name(v):v;
 const hit=(it,d,v)=>d.match?d.match(it,v):d.get(it).includes(v);
-/* 维内 OR，维间 AND；skip 用于算某一维的 facet 时排除该维自身 */
 const pass=(it,skip)=>DIMS.every(d=>d.k===skip||!sel[d.k].length||sel[d.k].some(v=>hit(it,d,v)));
-const matched=()=>ITEMS.filter(it=>pass(it));
 const nsel=()=>DIMS.reduce((n,d)=>n+sel[d.k].length,0);
-
-/* ── 渲染 ───────────────────────────────────────────── */
-function poster(it,small){
-  const bg=`linear-gradient(155deg,${G[it.i%G.length]},#0d0f16)`;
-  const prog=it.w==="watching"?`<span class="prog"><i style="width:${34+(it.i*7)%45}%"></i></span>`:"";
-  return `<div class="card"><div class="p" style="background:${bg}">
-    <span class="badge">${it.res==="2160p"?"4K":it.res}</span>${it.fav?'<span class="heart">♥</span>':""}
-    <span>${it.t}</span>${prog}</div>
-    ${small?"":`<div class="t">${it.t}</div><div class="m">${it.y} · ★ ${it.r}</div>`}</div>`;
+function matched(){
+  const list=ITEMS.filter(it=>pass(it));
+  const by={title:(a,b)=>a.py.localeCompare(b.py)||a.i-b.i,
+            added:(a,b)=>a.d-b.d, year:(a,b)=>b.y-a.y, rating:(a,b)=>b.r-a.r};
+  return list.sort(by[sort]);
 }
+/* 索引条与排序同口径——它们读的是同一份有序名单 */
+function bucket(it){
+  if(sort==="title")return it.py;
+  if(sort==="year")return String(Math.floor(it.y/10)*10).slice(2)+"s";
+  if(sort==="rating")return it.r>=9?"9+":it.r>=8?"8+":"7+";
+  return it.d<=7?"本周":it.d<=30?"本月":"更早";
+}
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+/* ══════ 渲染 ══════ */
+function poster(it,o){
+  o=o||{};
+  const prog=it.w==="watching"?'<span class="prog"><i style="width:'+(34+(it.i*7)%45)+'%"></i></span>':"";
+  const why=o.why?'<span class="why">'+o.why(it)+'</span>':"";
+  return '<div class="card"><div class="p" style="background:'+art(it)+'">'+
+    '<span class="badge">'+(it.res==="2160p"?"4K":it.res)+'</span>'+(it.fav?'<span class="heart">♥</span>':"")+
+    '<span class="pt">'+esc(it.t)+'</span>'+prog+why+'</div>'+
+    (o.small?"":'<div class="m">'+it.y+' · ★ '+it.r+'</div>')+'</div>';
+}
+
+const bar=document.getElementById("bar");
 function renderBar(){
-  const bar=document.getElementById("bar");
-  bar.innerHTML=DIMS.map(d=>{
-    const cur=sel[d.k].length?(sel[d.k].length>1?`${dname(d,sel[d.k][0])} +${sel[d.k].length-1}`:dname(d,sel[d.k][0])):"全部";
-    const opts=d.vals().map(v=>{
-      const n=ITEMS.filter(it=>pass(it,d.k)&&hit(it,d,v)).length;
-      const on=sel[d.k].includes(v);
-      return `<div class="opt ${on?"sel":""} ${n===0&&!on?"zero":""}" data-d="${d.k}" data-v="${v}">
-        <span class="box">${on?"✓":""}</span><span>${dname(d,v)}</span><span class="n">${n}</span></div>`;
-    }).join("");
-    return `<span class="dd"><span class="chip ${sel[d.k].length?"active":""}" data-dd="${d.k}">
-      <span>${d.label}</span><span class="v">${cur}</span><span class="car">▾</span></span>
-      <div class="menu">${d.multi?'<div class="sec">可多选 · 维度内是「或」</div>':'<div class="sec">单选</div>'}${opts}</div></span>`;
-  }).join("")+`<span class="chip">⚙ 更多筛选</span><span class="spacer"></span>
-    <span class="chip"><span>排序</span><span class="v">默认</span><span class="car">▾</span></span>`;
+  let html=DIMS.map(d=>{
+    const s=sel[d.k];
+    const cur=s.length?(s.length>1?dname(d,s[0])+" +"+(s.length-1):dname(d,s[0])):"全部";
+    const rows=[];
+    const counts={},vals=d.vals();
+    vals.forEach(v=>counts[v]=ITEMS.filter(it=>pass(it,d.k)&&hit(it,d,v)).length);
+    const max=Math.max(1,...Object.values(counts));
+    vals.forEach(v=>{
+      const n=counts[v],on=s.includes(v);
+      rows.push('<button class="opt '+(on?"sel":"")+' '+(n===0&&!on?"zero":"")+'" data-d="'+d.k+'" data-v="'+esc(v)+'"'+
+        (n===0&&!on?' tabindex="-1"':"")+'><span class="fill" style="width:'+Math.round(n/max*100)+'%"></span>'+
+        '<span class="box">'+(on?"✓":"")+'</span><span>'+dname(d,v)+'</span><span class="n">'+n+'</span></button>');
+      /* 地区展开到具体国家：预设是捷径不是分区，新加坡这类国家归不进任何组 */
+      if(d.sub&&expandReg&&(REGG[v]||[]).length>1){
+        REGG[v].forEach(cc=>{if(!CN[cc])return;
+          const cn=ITEMS.filter(it=>pass(it,d.k)&&it.c===cc).length;
+          rows.push('<button class="opt sub '+(cn===0?"zero":"")+'" tabindex="-1">'+
+            '<span class="fill" style="width:'+Math.round(cn/max*100)+'%"></span>'+
+            '<span class="box"></span><span>'+CN[cc]+'</span><span class="n">'+cn+'</span></button>');});
+      }
+    });
+    const note=d.note?'<span>'+d.note+'</span>':(d.multi?'<span>可多选 · 维度内是「或」</span>':'<span>单选</span>');
+    return '<span class="dd"><button class="chip '+(s.length?"active":"")+'" data-dd="'+d.k+'" aria-expanded="false">'+
+      '<span>'+d.label+'</span><span class="v">'+cur+'</span><span class="car">▾</span></button>'+
+      '<div class="menu"><p class="sec">'+note+(s.length?' · <b>已选 '+s.length+'</b>':"")+'</p>'+rows.join("")+
+      (d.sub?'<div class="grpline"></div><button class="opt" data-x="reg">'+
+        '<span class="box"></span><span>'+(expandReg?"收起国家":"展开到具体国家")+'</span></button>':"")+
+      '</div></span>';
+  }).join("");
+  const sn=SORTS.find(x=>x.k===sort).n;
+  html+='<button class="chip">⚙ 更多筛选</button><span class="spacer"></span>'+
+    '<span class="dd"><button class="chip" data-dd="__sort" aria-expanded="false"><span>排序</span>'+
+    '<span class="v">'+sn+'</span><span class="car">▾</span></button><div class="menu" style="left:auto;right:0;min-width:190px">'+
+    '<p class="sec"><span>索引条跟着换口径</span></p>'+
+    SORTS.map(s=>'<button class="opt '+(s.k===sort?"sel":"")+'" data-s="'+s.k+'">'+
+      '<span class="box">'+(s.k===sort?"✓":"")+'</span><span>'+s.n+'</span></button>').join("")+'</div></span>';
+  bar.innerHTML=html;
 
   bar.querySelectorAll("[data-dd]").forEach(c=>c.onclick=e=>{
-    e.stopPropagation();const dd=c.parentElement,was=dd.classList.contains("open");
-    bar.querySelectorAll(".dd").forEach(x=>x.classList.remove("open"));
-    if(!was)dd.classList.add("open");
+    e.stopPropagation();
+    const dd=c.parentElement,was=dd.classList.contains("open");
+    closeMenus(); if(!was){dd.classList.add("open");c.setAttribute("aria-expanded","true");}
   });
   bar.querySelectorAll(".opt").forEach(o=>o.onclick=e=>{
-    e.stopPropagation();const{d,v}=o.dataset,dim=DIMS.find(x=>x.k===d);
+    e.stopPropagation();
+    if(o.dataset.x==="reg"){expandReg=!expandReg;render();reopen("reg");return;}
+    if(o.dataset.s){sort=o.dataset.s;render();reopen("__sort");return;}
+    if(!o.dataset.d)return;
+    const d=o.dataset.d,v=o.dataset.v,dim=DIMS.find(x=>x.k===d);
     if(!dim.multi)sel[d]=sel[d][0]===v?[]:[v];
-    else sel[d]=sel[d].includes(v)?sel[d].filter(x=>x!==v):[...sel[d],v];
-    render();bar.querySelector(`[data-dd="${d}"]`).parentElement.classList.add("open");
+    else sel[d]=sel[d].includes(v)?sel[d].filter(x=>x!==v):sel[d].concat([v]);
+    render();reopen(d);
   });
 }
-document.addEventListener("click",()=>document.querySelectorAll(".dd").forEach(x=>x.classList.remove("open")));
+function reopen(k){
+  const t=bar.querySelector('[data-dd="'+k+'"]');
+  if(!t)return;t.parentElement.classList.add("open");t.setAttribute("aria-expanded","true");t.focus();
+}
+function closeMenus(){
+  document.querySelectorAll(".dd.open").forEach(x=>{
+    x.classList.remove("open");
+    const t=x.querySelector("[data-dd]");if(t)t.setAttribute("aria-expanded","false");});
+}
+document.addEventListener("click",closeMenus);
+document.addEventListener("keydown",e=>{if(e.key==="Escape")closeMenus();});
 
+/* 已选条件：维内「或」连成一组，维间「且」隔开——语义画出来，不写脚注 */
 function renderPicked(){
-  const box=document.getElementById("picked"),list=matched();
+  const box=document.getElementById("picked");
   if(!nsel()){box.innerHTML="";return;}
-  const toks=DIMS.flatMap(d=>sel[d.k].map(v=>
-    `<span class="tok"><span style="color:var(--faint)">${d.label}</span><b>${dname(d,v)}</b><button data-d="${d.k}" data-v="${v}">✕</button></span>`)).join("");
-  box.innerHTML=toks+
-    `<button class="btn sm ghost" id="clr">清空</button>
-     <span class="spacer" style="flex:1"></span>
-     <span class="count">筛出 <b>${list.length}</b> 部 · 共 1,284 部</span>
-     <button class="btn sm">⊕ 存为合集</button>`;
-  box.querySelectorAll(".tok button").forEach(b=>b.onclick=()=>{
-    sel[b.dataset.d]=sel[b.dataset.d].filter(v=>v!==b.dataset.v);render();});
-  document.getElementById("clr").onclick=()=>{DIMS.forEach(d=>sel[d.k]=[]);render();};
+  const groups=DIMS.filter(d=>sel[d.k].length).map(d=>
+    '<span class="cgrp"><span class="k">'+d.label+'</span>'+
+    sel[d.k].map(v=>'<span class="cval">'+dname(d,v)+
+      '<button data-d="'+d.k+'" data-v="'+esc(v)+'" aria-label="取消 '+d.label+' '+dname(d,v)+'">✕</button></span>')
+      .join('<span class="or">或</span>')+'</span>');
+  box.innerHTML=groups.join('<span class="and">且</span>')+
+    '<button class="btn sm ghost" data-clr>清空</button><span class="spacer"></span>'+
+    '<span class="count">筛出 <b>'+matched().length+'</b> 部 · 共 1,284 部</span>'+
+    '<button class="btn sm">⊕ 存为合集</button>';
+  wire(box);
 }
 function renderResult(){
   const list=matched(),box=document.getElementById("result");
   if(list.length){
-    const az=[...new Set(list.map(i=>i.t[0]))].slice(0,14);
-    box.innerHTML=`<div class="wallwrap"><div class="wall">${list.map(i=>poster(i)).join("")}</div>
-      <div class="az">${az.map((c,n)=>`<span class="${n===0?"on":""}">${c}</span>`).join("")}</div></div>`;
+    const seen=[],az=[];
+    list.forEach(it=>{const b=bucket(it);if(seen.indexOf(b)<0){seen.push(b);az.push(b);}});
+    box.innerHTML='<div class="wallwrap"><div class="wall">'+list.map(i=>poster(i)).join("")+'</div>'+
+      '<div class="az">'+az.slice(0,16).map((c,n)=>'<span class="'+(n===0?"on":"")+'">'+esc(c)+'</span>').join("")+'</div></div>';
     return;
   }
-  /* 放宽建议：逐条剔除已选条件后重算命中，取救回最多的前三条 */
+  /* 放宽建议：逐条剔除后重算。只列 n>0 的——「去掉它还是 0 部」是噪音不是建议 */
   const sugs=[];
   DIMS.forEach(d=>sel[d.k].forEach(v=>{
     const bak=sel[d.k];sel[d.k]=bak.filter(x=>x!==v);
-    sugs.push({d,v,n:matched().length});sel[d.k]=bak;}));
-  /* 只列真的救得回内容的（n>0）：「去掉它 → 还是 0 部」是噪音不是建议 */
+    sugs.push({d:d,v:v,n:ITEMS.filter(it=>pass(it)).length});sel[d.k]=bak;}));
   const good=sugs.filter(s=>s.n>0).sort((a,b)=>b.n-a.n).slice(0,3);
-  box.innerHTML=`<div class="empty"><h4>没有同时满足这 ${nsel()} 个条件的作品</h4>
-    <p>${good.length?"放宽一条就能找回内容——不给你一面空墙。":"这几个条件两两之间就没有交集，去掉任意一条也救不回来。"}</p>
-    ${good.map(s=>`<div class="sug"><span>去掉「<b>${s.d.label} = ${dname(s.d,s.v)}</b>」</span>
-      <span class="n">→ ${s.n} 部</span><button class="btn sm" data-d="${s.d.k}" data-v="${s.v}">去掉</button></div>`).join("")}
-    <button class="btn sm ghost" id="clr2" style="margin-top:8px">清空全部条件</button></div>`;
+  box.innerHTML='<div class="empty"><h4>没有同时满足这 '+nsel()+' 个条件的作品</h4><p>'+
+    (good.length?"放宽一条就能找回内容——不给你一面空墙。":"这几个条件两两之间就没有交集，去掉任意一条也救不回来。")+'</p>'+
+    good.map(s=>'<div class="sug"><span>去掉「<b>'+s.d.label+' = '+dname(s.d,s.v)+'</b>」</span>'+
+      '<span class="n">→ '+s.n+' 部</span><button class="btn sm" data-d="'+s.d.k+'" data-v="'+esc(s.v)+'">去掉</button></div>').join("")+
+    '<button class="btn sm ghost" data-clr style="margin-top:8px">清空全部条件</button></div>';
+  wire(box);
+}
+function wire(box){
   box.querySelectorAll("[data-d]").forEach(b=>b.onclick=()=>{
     sel[b.dataset.d]=sel[b.dataset.d].filter(v=>v!==b.dataset.v);render();});
-  document.getElementById("clr2").onclick=()=>{DIMS.forEach(d=>sel[d.k]=[]);render();};
+  box.querySelectorAll("[data-clr]").forEach(b=>b.onclick=()=>{
+    DIMS.forEach(d=>sel[d.k]=[]);render();});
 }
-function renderShelf(){
-  const cols=[
-    {n:"日漫 · 8 分以上",auto:1,m:"42 部 · 本周 +2",p:[0,1,3,4]},
-    {n:"90 年代港片",auto:1,m:"18 部",p:[11,13,14,12]},
-    {n:"我的 4K 收藏",auto:1,m:"31 部 · 本周 +1",p:[20,22,16,12]},
-    {n:"诺兰",auto:1,m:"9 部 · 系统",p:[20,22,23,26]},
-    {n:"周末陪娃看",auto:0,m:"12 部 · 手动",p:[4,25,2,24]},
-    {n:"漫威宇宙",auto:1,m:"34 部 · TMDB 系列",p:[24,21,19,26]},
-  ];
-  document.getElementById("shelf").innerHTML=cols.map(c=>`<div class="col">
-    <div class="tile">${c.p.map(i=>`<i style="background:linear-gradient(150deg,${G[i%G.length]},#0d0f16)"></i>`).join("")}</div>
-    <div class="cap">${c.n}${c.auto?'<span class="auto">自动</span>':""}</div><div class="meta">${c.m}</div></div>`).join("");
-}
-function render(){renderBar();renderPicked();renderResult();}
-renderShelf();render();
 
-/* 其余屏的静态墙 */
-document.getElementById("wall4").innerHTML=ITEMS.filter(i=>i.reg==="日韩"&&i.r>=8).concat(ITEMS.filter(i=>i.g.includes("动画")).slice(0,4)).slice(0,12).map(i=>poster(i)).join("");
-document.getElementById("wallm1").innerHTML=ITEMS.slice(0,12).map(i=>poster(i,1)).join("");
-document.getElementById("wallm2").innerHTML=ITEMS.filter(i=>i.reg==="日韩").slice(0,6).map(i=>poster(i,1)).join("");
+/* ══════ 合集货架 ══════
+   封面 = 三张海报错位扇开。四格拼贴看起来像另一部作品的海报；
+   一叠东西一眼就是「一组」。类型不靠同一个角标区分，靠说明里的类型词。 */
+const COLS=[
+  {n:"日漫 · 8 分以上",kind:"智能合集",cnt:42,delta:2,p:[0,4,1]},
+  {n:"90 年代港片",kind:"智能合集",cnt:18,delta:0,p:[11,14,13]},
+  {n:"我的 4K 收藏",kind:"智能合集",cnt:31,delta:1,p:[20,16,22]},
+  {n:"诺兰",kind:"系统 · 人物",cnt:9,delta:0,p:[23,21,22]},
+  {n:"周末陪娃看",kind:"手动合集",cnt:12,delta:0,p:[4,2,25]},
+  {n:"漫威宇宙",kind:"系统 · TMDB 系列",cnt:34,delta:0,p:[24,19,26]},
+];
+function fan(idx){return '<span class="fan">'+idx.map(i=>'<i style="background:'+art(ITEMS[i])+'"></i>').join("")+'</span>';}
+function renderShelf(){
+  const auto=nsel()>0;
+  const names=DIMS.filter(d=>sel[d.k].length).map(d=>sel[d.k].map(v=>dname(d,v)).join("/")).join(" · ");
+  const ghost=auto?'<div class="col"><div class="fromfilter"><div class="tile">'+
+    '<span class="z">⊕ 把当前筛选存为合集<small>'+esc(names)+'</small></span></div></div>'+
+    '<div class="cap">从筛选新建</div><div class="meta">命中 '+matched().length+' 部</div></div>':"";
+  const cards=COLS.map(c=>'<div class="col"><div class="tile">'+fan(c.p)+
+    (c.delta?'<span class="delta">＋'+c.delta+' 本周</span>':"")+'</div>'+
+    '<div class="cap">'+c.n+'</div><div class="meta">'+
+    (c.kind==="智能合集"?'<span class="dot"></span>':"")+c.kind+' · '+c.cnt+' 部</div></div>').join("");
+  document.getElementById("shelf").innerHTML=ghost+cards+
+    '<div class="col"><div class="newcol"><div class="tile"><span class="z">＋ 新建合集</span></div></div>'+
+    '<div class="cap" style="color:var(--faint);font-weight:400">手动挑选或写规则</div></div>';
+  document.getElementById("shelfn").textContent=COLS.length+" 个";
+}
+
+function render(){renderBar();renderPicked();renderResult();renderShelf();}
+render();renderRail("p1");
+
+/* 其余屏 */
+const C4=ITEMS.filter(i=>i.reg==="日韩"&&i.r>=8&&i.g.indexOf("动画")>=0)
+  .concat(ITEMS.filter(i=>i.reg==="日韩"&&i.r>=8&&i.g.indexOf("动画")<0));
+document.getElementById("wall4").innerHTML=C4.map(i=>poster(i,{
+  why:it=>"命中 "+it.g[0]+" · "+CN[it.c]+" · ★"+it.r})).join("");
+document.getElementById("r1").style.background=art(ITEMS[2]);
+document.getElementById("r2").style.background=art(ITEMS[5]);
+document.getElementById("wallm1").innerHTML=ITEMS.slice(0,12).map(i=>poster(i,{small:1})).join("");
+document.getElementById("wallm2").innerHTML=ITEMS.filter(i=>i.reg==="日韩").slice(0,6).map(i=>poster(i,{small:1})).join("");
 </script>
+
 </body>
 </html>
