@@ -35,7 +35,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Literal, NamedTuple
 
-from sqlalchemy import Integer, and_, func, not_, or_, true
+from sqlalchemy import Integer, and_, func, not_, nullslast, or_, true
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
@@ -247,7 +247,19 @@ def _build_inventory_summary(
     )
 
 
-WallSort = Literal["title", "added_at", "release_date", "probing"]
+WallSort = Literal[
+    "title",
+    "added_at",
+    "release_date",
+    "probing",
+    # 以下四档随筛选一起加（docs/design/library-filtering.md 3.1「排序」）。
+    # 方向的取舍：评分/体积/最近观看都是「大的在前」，唯独片长是**升序**
+    # ——「今晚只有 90 分钟」是真实诉求，「最长的在前」几乎没人要。
+    "rating",
+    "runtime",
+    "size",
+    "last_played",
+]
 
 # ── 筛选（docs/design/library-filtering.md 3.1/3.2）──────────────────────
 # 维内 OR、维间 AND。取值与合集规则同构（library-routing.md 1.1 的
@@ -286,6 +298,22 @@ class LibraryFilter:
     @property
     def is_empty(self) -> bool:
         return not (self.genres or self.countries or self.decades or self.watch)
+
+
+def _last_played_at(member_id: int):
+    """本人在该条目上的最近一次播放活动（标量子查询）。
+
+    不 join playback_state：那张表按 (成员, 条目, 季, 集) 一行，join 会把
+    一部 200 集的剧炸成 200 行，再靠 group_by 收回来——子查询直接给一个值。
+    """
+    return (
+        select(func.max(PlaybackState.last_played_at))
+        .where(
+            PlaybackState.media_item_id == MediaItem.id,
+            PlaybackState.member_id == member_id,
+        )
+        .scalar_subquery()
+    )
 
 
 def _year_expr():
@@ -448,6 +476,7 @@ async def build_library_index(
     """海报墙跳转索引：[(档, 条目数, 起始 offset)]，只回非空档。
 
     - ``sort=title``：按标题排序下的首字母分档（A-Z / #）；
+    - ``sort=rating``：评分档（9+ / 8+ / 7+ / 更低 / 未评分）；
     - ``sort=release_date``：按内容时间倒序下的月份分档（``2026-08``），缺日期的
       归到 ``未知`` 档并排在最后——图片库/其他库的时间线靠它按月分组与跳转
       （docs/design/library-photo-kind.md 2.6）。
@@ -456,6 +485,39 @@ async def build_library_index(
     档名即可跳到该档第一格；两种排序与分页共用同一份排序，口径天然一致。
     """
     buckets: list[tuple[str, int, int]] = []
+    if sort == "rating":
+        # 与墙读同一份有序名单：档位是在已排好的序列上就地分段，
+        # 因此点档名拿到的 offset 一定指向该档第一格
+        ids = await _wall_page_ids(
+            session, library_id, "rating", None, 0, filters=filters, member_id=member_id
+        )
+        scored = dict(
+            (
+                await session.execute(
+                    select(MediaMetadata.media_item_id, MediaMetadata.vote_average).where(
+                        MediaMetadata.media_item_id.in_(ids)  # type: ignore[attr-defined]
+                    )
+                )
+            ).all()
+        )
+        for index, item_id in enumerate(ids):
+            score = scored.get(item_id)
+            if score is None:
+                label = "未评分"
+            elif score >= 9:
+                label = "9+"
+            elif score >= 8:
+                label = "8+"
+            elif score >= 7:
+                label = "7+"
+            else:
+                label = "更低"
+            if buckets and buckets[-1][0] == label:
+                head, count, start = buckets[-1]
+                buckets[-1] = (head, count + 1, start)
+            else:
+                buckets.append((label, 1, index))
+        return buckets
     if sort == "release_date":
         ids = await _wall_page_ids(
             session, library_id, "release_date", None, 0, filters=filters, member_id=member_id
@@ -686,6 +748,40 @@ async def _wall_page_ids(
                 func.max(MediaItem.title).desc(),
                 LibraryFile.media_item_id.desc(),  # type: ignore[union-attr]
             )
+        )
+        if limit is not None:
+            query = query.limit(limit).offset(offset)
+        return [i for i in (await session.execute(query)).scalars().all() if i is not None]
+
+    # —— 以下四档共用同一个形状：按某个度量聚合后倒/正序，末尾一律以
+    #    media_item_id 收尾保证稳定分页；度量为空的条目靠 NULLS LAST 沉底，
+    #    而不是随排序方向在头尾之间跳
+    if sort in ("rating", "runtime", "size", "last_played"):
+        query = (
+            select(LibraryFile.media_item_id)
+            .join(MediaItem, MediaItem.id == LibraryFile.media_item_id)  # type: ignore[arg-type]
+            .outerjoin(MediaMetadata, MediaMetadata.media_item_id == MediaItem.id)  # type: ignore[arg-type]
+            .where(
+                LibraryFile.library_id == library_id,
+                LibraryFile.media_item_id.is_not(None),  # type: ignore[union-attr]
+                _identity_clause(identity),
+                *narrow,
+            )
+            .group_by(LibraryFile.media_item_id)  # type: ignore[arg-type]
+        )
+        if sort == "rating":
+            metric = func.max(MediaMetadata.vote_average).desc()
+        elif sort == "runtime":
+            metric = func.max(MediaMetadata.runtime_minutes).asc()
+        elif sort == "size":
+            # 体积按本库内的在位文件求和：同一部片散在两个库时，
+            # 这面墙上显示的应该是它在**这个库**占多少地方
+            metric = func.sum(LibraryFile.size_bytes).desc()
+        else:
+            metric = func.max(_last_played_at(member_id or 0)).desc()
+        query = query.order_by(
+            nullslast(metric),
+            LibraryFile.media_item_id.desc(),  # type: ignore[union-attr]
         )
         if limit is not None:
             query = query.limit(limit).offset(offset)

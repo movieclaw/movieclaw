@@ -1881,11 +1881,22 @@ async def list_library_items(
     # 这三个参数用 Annotated 写法（而非 `= Query(...)`）：函数被直接调用时
     # 拿到的是真实默认值而不是 Query 对象——测试与内部调用都走这条路
     sort: Annotated[
-        Literal["title", "added_at", "release_date", "probing"],
+        Literal[
+            "title",
+            "added_at",
+            "release_date",
+            "probing",
+            "rating",
+            "runtime",
+            "size",
+            "last_played",
+        ],
         Query(
             description=(
                 "排序：title=按标题 / added_at=最近入账优先 / "
-                "release_date=按内容时间倒序 / probing=待补探优先"
+                "release_date=按内容时间倒序 / probing=待补探优先 / "
+                "rating=评分高的在前 / runtime=片长短的在前 / "
+                "size=占地大的在前 / last_played=最近看过的在前"
             )
         ),
     ] = "title",
@@ -1961,8 +1972,12 @@ async def list_library_item_ids(
 )
 async def list_library_item_index(
     library_id: int,
-    sort: Literal["title", "release_date"] = Query(
-        default="title", description="title=首字母档；release_date=月份档（图片库/其他库时间线）"
+    sort: Literal["title", "release_date", "rating"] = Query(
+        default="title",
+        description=(
+            "title=首字母档；release_date=月份档（图片库/其他库时间线）；rating=评分档。"
+            "其余排序没有有意义的分档，索引条不显示"
+        ),
     ),
     filters: Annotated[LibraryFilter, Depends(_filter_params)] = None,  # type: ignore[assignment]
     session: AsyncSession = Depends(get_session),

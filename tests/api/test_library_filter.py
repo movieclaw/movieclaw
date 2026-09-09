@@ -12,6 +12,7 @@ from __future__ import annotations
 from datetime import date
 
 import pytest_asyncio
+from sqlmodel import select
 
 from movieclaw_api.core.config import get_settings
 from movieclaw_api.services.library.items import (
@@ -478,3 +479,131 @@ def test_facets_endpoint_is_wired(tmp_path, monkeypatch) -> None:
         assert client.get(f"/api/v1/libraries/{library_id}/item-index?g=16&c=JP").status_code == 200
 
     get_settings.cache_clear()
+
+
+# ---------------------------------------------------------------------------
+# 新增排序（docs/design/library-filtering.md 3.1「排序」）
+# ---------------------------------------------------------------------------
+
+
+async def _order(session, library_id, sort, **kw) -> list[str]:
+    rows = await build_library_wall(session, library_id, member_id=_ME, sort=sort, **kw)
+    return [r.title for r in rows]
+
+
+async def _seed_metrics(session):
+    """在基础库上补齐评分/片长/体积/观看时间，供四档排序验证。"""
+    library_id, ids = await _seed(session)
+    metrics = {
+        "千与千寻": (8.7, 125),
+        "你的名字": (8.4, 106),
+        "寄生虫": (8.6, 132),
+        "盗梦空间": (9.4, 148),
+        "霸王别姬": (9.6, 171),
+    }
+    for title, (score, runtime) in metrics.items():
+        row = (
+            await session.execute(
+                select(MediaMetadata).where(MediaMetadata.media_item_id == ids[title])
+            )
+        ).scalar_one()
+        row.vote_average = score
+        row.runtime_minutes = runtime
+    await session.flush()
+    return library_id, ids
+
+
+async def test_sort_by_rating_puts_the_best_first(db) -> None:
+    async with db.session() as session:
+        library_id, _ = await _seed_metrics(session)
+        assert (await _order(session, library_id, "rating"))[:2] == ["霸王别姬", "盗梦空间"]
+
+
+async def test_sort_by_runtime_is_ascending(db) -> None:
+    """片长升序：「今晚只有 90 分钟」是真实诉求，「最长的在前」几乎没人要。"""
+    async with db.session() as session:
+        library_id, _ = await _seed_metrics(session)
+        assert (await _order(session, library_id, "runtime"))[:2] == ["你的名字", "千与千寻"]
+
+
+async def test_missing_metric_sinks_to_the_bottom(db) -> None:
+    """度量为空的条目一律沉底，不随排序方向在头尾之间跳。"""
+    async with db.session() as session:
+        library_id, _ = await _seed_metrics(session)
+        blank = MediaItem(kind="movie", tmdb_id=498, title="没有档案", original_title="Y")
+        session.add(blank)
+        await session.flush()
+        assert blank.id is not None
+        session.add(_file(library_id, blank.id))
+        await session.flush()
+
+        assert (await _order(session, library_id, "rating"))[-1] == "没有档案"
+        assert (await _order(session, library_id, "runtime"))[-1] == "没有档案"
+
+
+async def test_sort_by_size_uses_this_library_only(db) -> None:
+    """体积按本库在位文件求和：同一部片散在两个库时，这面墙显示的是它在**本库**占多少。"""
+    async with db.session() as session:
+        library_id, ids = await _seed_metrics(session)
+        other = await LibraryRepository(session).create(
+            name="备份库", kind="movie", root_paths=["/backup"]
+        )
+        assert other.id is not None
+        # 「你的名字」在本库补一个大文件；「寄生虫」的大文件落在另一个库，不该算进来
+        big = _file(library_id, ids["你的名字"])
+        big.file_path = "/movies/big.mkv"
+        big.size_bytes = 50_000
+        elsewhere = _file(other.id, ids["寄生虫"])
+        elsewhere.file_path = "/backup/huge.mkv"
+        elsewhere.size_bytes = 999_999
+        session.add_all([big, elsewhere])
+        await session.flush()
+
+        assert (await _order(session, library_id, "size"))[0] == "你的名字"
+
+
+async def test_sort_by_last_played_is_per_viewer(db) -> None:
+    """最近观看按人算：别人的观看记录不该影响我的墙。"""
+    from datetime import datetime
+
+    async with db.session() as session:
+        library_id, ids = await _seed_metrics(session)
+        session.add_all(
+            [
+                PlaybackState(
+                    member_id=_ME,
+                    media_item_id=ids["寄生虫"],
+                    last_played_at=datetime(2026, 9, 1, 12, 0),
+                ),
+                PlaybackState(
+                    member_id=99,
+                    media_item_id=ids["霸王别姬"],
+                    last_played_at=datetime(2026, 9, 8, 12, 0),
+                ),
+            ]
+        )
+        await session.flush()
+
+        assert (await _order(session, library_id, "last_played"))[0] == "寄生虫"
+        theirs = await build_library_wall(session, library_id, member_id=99, sort="last_played")
+        assert theirs[0].title == "霸王别姬"
+
+
+async def test_rating_index_buckets_match_the_wall(db) -> None:
+    """评分档与墙读同一份有序名单：各档条目数之和等于墙长，起点从 0 开始。"""
+    async with db.session() as session:
+        library_id, _ = await _seed_metrics(session)
+        wall = await _order(session, library_id, "rating")
+        buckets = await build_library_index(session, library_id, "rating", member_id=_ME)
+
+        assert [label for label, _, _ in buckets][:2] == ["9+", "8+"]
+        assert sum(count for _, count, _ in buckets) == len(wall)
+        assert buckets[0][2] == 0
+
+
+async def test_new_sorts_respect_filters(db) -> None:
+    """筛选与排序正交：先收窄候选集，再按新排序排——两件事互不知道对方存在。"""
+    async with db.session() as session:
+        library_id, _ = await _seed_metrics(session)
+        got = await _order(session, library_id, "rating", filters=LibraryFilter(countries=("JP",)))
+        assert got == ["千与千寻", "你的名字"]
