@@ -504,8 +504,30 @@ export function deleteLibrary(id: number): Promise<Record<string, never>> {
   return unwrap(request<ApiEnvelope<Record<string, never>>>(`/libraries/${id}`, { method: "DELETE" }));
 }
 
-/** 海报墙排序：按标题 / 最近入账 / 按内容时间倒序（其他库默认）/ 待补探优先（扫描补探阶段）。 */
-export type LibraryItemSort = "title" | "added_at" | "release_date" | "probing";
+/** 海报墙排序：按标题 / 最近入账 / 按内容时间倒序（其他库默认）/ 待补探优先（扫描补探阶段）
+ *  / 评分高的在前 / 片长短的在前 / 占地大的在前 / 最近看过的在前。 */
+export type LibraryItemSort =
+  | "title"
+  | "added_at"
+  | "release_date"
+  | "probing"
+  | "rating"
+  | "runtime"
+  | "size"
+  | "last_played";
+
+// 筛选的纯逻辑放独立模块（与 lib/discovery-filters.ts 同一惯例）：那边不带
+// `@/` 别名，node --test 能直接 import，逻辑才测得到。这里原样再导出，
+// 调用方仍然只认 "@/lib/api/libraries" 一个入口。
+import {
+  type LibraryFilter,
+  type WatchFilter,
+  filterQuery,
+  isFilterEmpty,
+} from "@/lib/library-filter";
+
+export { type LibraryFilter, type WatchFilter, filterQuery, isFilterEmpty };
+
 
 /**
  * 库内媒体条目的库存聚合（单库海报墙数据源）。
@@ -524,6 +546,7 @@ export function listLibraryItems(
     limit?: number;
     offset?: number;
     identity?: LibraryItemIdentity;
+    filter?: LibraryFilter;
   },
 ): Promise<LibraryItem[]> {
   const query = new URLSearchParams();
@@ -531,6 +554,7 @@ export function listLibraryItems(
   if (params?.identity) query.set("identity", params.identity);
   if (params?.limit !== undefined) query.set("limit", String(params.limit));
   if (params?.offset) query.set("offset", String(params.offset));
+  filterQuery(params?.filter, query);
   const suffix = query.size > 0 ? `?${query}` : "";
   return unwrap(request<ApiEnvelope<LibraryItem[]>>(`/libraries/${id}/items${suffix}`));
 }
@@ -560,12 +584,46 @@ export interface LibraryIndexEntry {
 /** 海报墙的首字母索引（只回非空档）。中文按拼音首字母分档，与按标题排序同源。 */
 export function listLibraryItemIndex(
   id: number,
-  sort: "title" | "release_date" = "title",
+  sort: "title" | "release_date" | "rating" = "title",
+  filter?: LibraryFilter,
 ): Promise<LibraryIndexEntry[]> {
-  const suffix = sort === "title" ? "" : `?sort=${sort}`;
+  const query = new URLSearchParams();
+  if (sort !== "title") query.set("sort", sort);
+  filterQuery(filter, query);
+  const suffix = query.size > 0 ? `?${query}` : "";
   return unwrap(
     request<ApiEnvelope<LibraryIndexEntry[]>>(`/libraries/${id}/item-index${suffix}`),
   );
+}
+
+/** 筛选面板里的一个候选值（计数已排除本维自身的条件）。 */
+export interface FacetValue {
+  value: string;
+  label: string;
+  /** 在**其他维度**已选条件下勾上本值还剩几部；0 的照常返回，前端置灰不可点 */
+  count: number;
+}
+
+/** 一次筛选下的全部候选值与计数。 */
+export interface LibraryFacets {
+  total: number;
+  genres: FacetValue[];
+  countries: FacetValue[];
+  decades: FacetValue[];
+  watch: FacetValue[];
+}
+
+/**
+ * 筛选面板的候选值与计数——与 listLibraryItems 同参。
+ *
+ * 因此"面板上显示多少部、点下去墙上就是多少部"是结构保证的：两处传的是
+ * 同一个 filter 对象，走的是同一个 filterQuery。
+ */
+export function getLibraryFacets(id: number, filter?: LibraryFilter): Promise<LibraryFacets> {
+  const query = new URLSearchParams();
+  filterQuery(filter, query);
+  const suffix = query.size > 0 ? `?${query}` : "";
+  return unwrap(request<ApiEnvelope<LibraryFacets>>(`/libraries/${id}/facets${suffix}`));
 }
 
 /** 图廊里的一张图：海报 / 横幅剧照 / 分集剧照 / 章节场景图之一。 */
@@ -606,13 +664,15 @@ export interface LibraryGalleryGroup {
  */
 export function listLibraryGallery(
   id: number,
-  params?: { limit?: number; offset?: number; sort?: "added_at" },
+  params?: { limit?: number; offset?: number; sort?: "added_at"; filter?: LibraryFilter },
 ): Promise<LibraryGalleryGroup[]> {
   const query = new URLSearchParams();
   if (params?.limit !== undefined) query.set("limit", String(params.limit));
   if (params?.offset) query.set("offset", String(params.offset));
   // 不给 sort 就是服务端默认的标题序（与海报墙同一份名单）
   if (params?.sort) query.set("sort", params.sort);
+  // 图廊与海报墙是同一份名单的两种画法，筛选自然也是同一份
+  filterQuery(params?.filter, query);
   const suffix = query.size > 0 ? `?${query}` : "";
   return unwrap(request<ApiEnvelope<LibraryGalleryGroup[]>>(`/libraries/${id}/gallery${suffix}`));
 }

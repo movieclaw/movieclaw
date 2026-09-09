@@ -2020,6 +2020,7 @@ async def list_library_gallery(
         Literal["title", "added_at"],
         Query(description="排序：title=按标题（默认）/ added_at=最近入账优先"),
     ] = "title",
+    filters: Annotated[LibraryFilter, Depends(_filter_params)] = None,  # type: ignore[assignment]
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(require_library_visible),
 ) -> ApiResponse[list[LibraryGalleryGroupView]]:
@@ -2032,7 +2033,13 @@ async def list_library_gallery(
     member_id = principal.member_id if principal.member_id is not None else 0
     return ok(
         await build_library_gallery(
-            session, library_id, member_id=member_id, limit=limit, offset=offset, sort=sort
+            session,
+            library_id,
+            member_id=member_id,
+            limit=limit,
+            offset=offset,
+            sort=sort,
+            filters=filters,
         )
     )
 

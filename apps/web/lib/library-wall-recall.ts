@@ -98,8 +98,33 @@ function writeAll(store: KeyValueStorage, rows: Record<string, WallRecall>) {
  * 与会话内滚动恢复用的键同一副长相（lib/use-scroll-restoration.ts），两处一眼
  * 对得上；收藏墙不是某个库，所以这里收一个 "favorites" 字面量而不是库 id。
  */
-export function wallRecallScope(libraryId: number | "favorites"): string {
-  return `library:${libraryId}`;
+export function wallRecallScope(
+  libraryId: number | "favorites",
+  filterFingerprint?: string,
+): string {
+  const base = `library:${libraryId}`;
+  return filterFingerprint ? `${base}:${filterFingerprint}` : base;
+}
+
+/**
+ * 筛选态的指纹——追加到记录键上，让每种筛选各记各的位置。
+ *
+ * 不加指纹的话，从「动画 + 日本」那面 42 格的墙返回时，会拿着一个针对
+ * 1,284 格全库的 offset 去跳，落点毫无意义。指纹只要**稳定且互不碰撞**，
+ * 不需要可读：条件按维度名排序后拼接，同一组条件无论勾选顺序都得到同一个键。
+ *
+ * 空筛选返回空串（调用方据此退回不带后缀的原键），这样未筛选状态的记录
+ * 与改造前完全兼容，老记录不会失效。
+ */
+export function filterFingerprint(parts: Record<string, string[] | string | null | undefined>): string {
+  const pieces: string[] = [];
+  for (const key of Object.keys(parts).sort()) {
+    const value = parts[key];
+    if (!value || (Array.isArray(value) && value.length === 0)) continue;
+    const flat = Array.isArray(value) ? [...value].sort().join("_") : value;
+    pieces.push(`${key}${flat}`);
+  }
+  return pieces.join(".");
 }
 
 /**

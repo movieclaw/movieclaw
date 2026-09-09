@@ -361,10 +361,14 @@ async def test_gallery_follows_the_same_sort_as_the_wall(db) -> None:
             )
         await session.flush()
 
-        by_title = await list_library_gallery(library.id, None, 0, "title", session, _ADMIN)
+        by_title = await list_library_gallery(
+            library.id, limit=None, offset=0, sort="title", session=session, principal=_ADMIN
+        )
         assert [g.title for g in by_title.data] == ["A片", "B片", "C片"]
 
-        recent = await list_library_gallery(library.id, None, 0, "added_at", session, _ADMIN)
+        recent = await list_library_gallery(
+            library.id, limit=None, offset=0, sort="added_at", session=session, principal=_ADMIN
+        )
         assert [g.title for g in recent.data] == ["C片", "B片", "A片"]
         # 与海报墙同一份名单：切了排序，两面墙的第 n 个仍是同一部作品
         wall = await list_library_items(
@@ -373,7 +377,9 @@ async def test_gallery_follows_the_same_sort_as_the_wall(db) -> None:
         assert [g.title for g in recent.data] == [r.title for r in wall.data]
 
         # 分页口径也跟着排序走：按作品数跳过第一部，两面墙跳过的是同一部
-        page = await list_library_gallery(library.id, 1, 1, "added_at", session, _ADMIN)
+        page = await list_library_gallery(
+            library.id, limit=1, offset=1, sort="added_at", session=session, principal=_ADMIN
+        )
         assert [g.title for g in page.data] == [wall.data[1].title] == ["B片"]
 
 

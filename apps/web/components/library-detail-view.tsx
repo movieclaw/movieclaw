@@ -22,6 +22,7 @@ import {
   PosterGridIcon,
   XIcon,
 } from "@/components/icons";
+import { LibraryFilterBar } from "@/components/library-filter-bar";
 import { PAGE_NAV_BUTTON_CLASS, PageNav } from "@/components/page-nav";
 import { usePageTitle } from "@/lib/use-page-title";
 import { LibraryFormDialog } from "@/components/library-form-dialog";
@@ -71,6 +72,10 @@ import {
   listLibraryGallery,
   listLibraryItemIds,
   listLibraryItemIndex,
+  type LibraryFilter,
+  type WatchFilter,
+  filterQuery,
+  isFilterEmpty,
   listLibraryItems,
   type LibraryIndexEntry,
   type LibraryItemSort,
@@ -104,6 +109,7 @@ import { activeInitialAt } from "@/lib/wall-window";
 import {
   firstVisibleAnchorId,
   isReentryAfterAbsence,
+  filterFingerprint,
   wallRecallScope,
 } from "@/lib/library-wall-recall";
 import { useWallRecall } from "@/lib/use-wall-recall";
@@ -176,6 +182,47 @@ function keepOnError<T>(rows: Promise<T[]>): Promise<T[] | null> {
  * 往库里添内容的人**自己选**的一档，不做默认。
  */
 type WallSortPref = "default" | "added_at";
+
+/**
+ * 从地址栏读筛选条件。
+ *
+ * **URL 是筛选态的唯一事实源**，筛选不进 localStorage——上次筛的条件在下次
+ * 打开时还在，是本类产品最经典的困惑来源（"我的片怎么少了一半"）。
+ * 排序是偏好该记，筛选是意图不该记（docs/design/library-filtering.md 3.4）。
+ * 读 window.location 而不是 useSearchParams，与本文件既有惯例一致。
+ */
+function readFilterFromUrl(): LibraryFilter {
+  if (typeof window === "undefined") return {};
+  const params = new URLSearchParams(window.location.search);
+  const list = (key: string) => (params.get(key) ?? "").split(",").filter(Boolean);
+  const watch = params.get("w");
+  return {
+    genres: list("g")
+      .map(Number)
+      .filter((n) => Number.isFinite(n)),
+    countries: list("c"),
+    decades: list("d"),
+    watch: watch ? (watch as WatchFilter) : null,
+  };
+}
+
+/** 把筛选条件写回地址栏（replaceState：筛选不该在浏览器历史里堆一串条目）。 */
+function writeFilterToUrl(filter: LibraryFilter): void {
+  if (typeof window === "undefined") return;
+  const params = new URLSearchParams(window.location.search);
+  for (const key of ["g", "c", "d", "w"]) params.delete(key);
+  filterQuery(filter, params);
+  const rest = params.toString();
+  window.history.replaceState(null, "", `${window.location.pathname}${rest ? `?${rest}` : ""}`);
+}
+
+/** 哪些排序分得出有意义的索引档：其余排序轨道不显示，也就不必请求。 */
+const INDEXED_SORTS: Partial<Record<LibraryItemSort, "title" | "release_date" | "rating">> = {
+  title: "title",
+  probing: "title",
+  release_date: "release_date",
+  rating: "rating",
+};
 const WALL_SORT_STORAGE_KEY = "movieclaw.library.wall-sort";
 
 /**
@@ -239,30 +286,39 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   );
   const confirm = useConfirm();
   const toast = useToast();
-  const [libraries, setLibraries] = useState<MediaLibrary[] | null>(initialSnapshot?.libraries ?? null);
-  const [items, setItems] = useState<LibraryItem[]>(initialSnapshot?.items ?? []);
+  // 筛选态：首帧就从 URL 读，这样分享出去的链接一进来就是筛好的
+  const [filter, setFilter] = useState<LibraryFilter>(() => readFilterFromUrl());
+  // 同 wallSort：放 ref 供 reload/翻页每轮读最新值，不必为改条件重建回调链
+  const wallFilter = useRef<LibraryFilter>(filter);
+  wallFilter.current = filter;
+  const filtering = !isFilterEmpty(filter);
+  // 带筛选进来时不吃会话快照：快照是未筛选那面墙的窗口，拿它铺首帧会先闪
+  // 一屏不该出现的内容，随即被 reload 的结果整片替换
+  const snapshot = filtering ? undefined : initialSnapshot;
+  const [libraries, setLibraries] = useState<MediaLibrary[] | null>(snapshot?.libraries ?? null);
+  const [items, setItems] = useState<LibraryItem[]>(snapshot?.items ?? []);
   // 影视库里认不出、按文件名临时挂着的条目：不进主墙，单独一段展示（其他库恒空）
   const [provisional, setProvisional] = useState<LibraryItem[]>([]);
   // 服务端还有没有下一页；滚动加载的哨兵据此决定是否继续观察
-  const [wallHasMore, setWallHasMore] = useState(initialSnapshot?.wallHasMore ?? false);
+  const [wallHasMore, setWallHasMore] = useState(snapshot?.wallHasMore ?? false);
   // 本库全部条目 id：海报墙分页后这份名单仍要完整——「追踪中」要靠它把
   // 已入库的订阅剔掉，而已入库的那部可能在第 5 页上，光看当前页会误判
   const [ownedIds, setOwnedIds] = useState<Set<number>>(
-    () => initialSnapshot?.ownedIds ?? new Set(),
+    () => snapshot?.ownedIds ?? new Set(),
   );
   // A-Z 索引条的分档（按标题排序时才有意义）
-  const [wallIndex, setWallIndex] = useState<LibraryIndexEntry[]>(initialSnapshot?.wallIndex ?? []);
+  const [wallIndex, setWallIndex] = useState<LibraryIndexEntry[]>(snapshot?.wallIndex ?? []);
   // 当前窗口在整份排序里的起点：0 = 从头开始；点字母跳转后是该档的 offset。
   // 轮询要按这个起点重拉，否则每 3 秒把用户拽回墙首
-  const [wallStart, setWallStart] = useState(initialSnapshot?.wallStart ?? 0);
+  const [wallStart, setWallStart] = useState(snapshot?.wallStart ?? 0);
   // 与分页窗口起点分离：wallStart 只决定服务端从哪里取；活动字母要跟随
   // 用户在已加载窗口里的真实滚动位置。
   const [activeWallInitial, setActiveWallInitial] = useState<string | null>(null);
-  const [unidentified, setUnidentified] = useState<UnidentifiedGroup[]>(initialSnapshot?.unidentified ?? []);
-  const [review, setReview] = useState<ReviewGroup[]>(initialSnapshot?.review ?? []);
-  const [ignored, setIgnored] = useState<UnidentifiedGroup[]>(initialSnapshot?.ignored ?? []);
-  const [missing, setMissing] = useState<MissingItem[]>(initialSnapshot?.missing ?? []);
-  const [subscriptions, setSubscriptions] = useState<Subscription[]>(initialSnapshot?.subscriptions ?? []);
+  const [unidentified, setUnidentified] = useState<UnidentifiedGroup[]>(snapshot?.unidentified ?? []);
+  const [review, setReview] = useState<ReviewGroup[]>(snapshot?.review ?? []);
+  const [ignored, setIgnored] = useState<UnidentifiedGroup[]>(snapshot?.ignored ?? []);
+  const [missing, setMissing] = useState<MissingItem[]>(snapshot?.missing ?? []);
+  const [subscriptions, setSubscriptions] = useState<Subscription[]>(snapshot?.subscriptions ?? []);
   const [failed, setFailed] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [editing, setEditing] = useState<MediaLibrary | null>(null);
@@ -270,11 +326,11 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   const [organizeTarget, setOrganizeTarget] = useState<MediaLibrary | null>(null);
   // 整库元数据刷新进度（进行中每 3 秒轮询，结束自动刷新库存）
   const [metaRefresh, setMetaRefresh] = useState<MetadataRefreshProgress | null>(
-    initialSnapshot?.metaRefresh ?? null,
+    snapshot?.metaRefresh ?? null,
   );
   // 删除/转移等详情页操作会把旧窗口标记为过期。先保留它供滚动锚点落脚，
   // 后台对账成功后再清除标记；请求失败时下次返回仍会重试。
-  const [snapshotStale, setSnapshotStale] = useState(initialSnapshot?.stale ?? false);
+  const [snapshotStale, setSnapshotStale] = useState(snapshot?.stale ?? false);
   // 待处理抽屉：从哪个入口点进来就落在哪个 tab；null = 关闭
   const [issueTab, setIssueTab] = useState<IssueTab | null>(null);
   // 管理页「待处理」跳过来带 ?pending=1：首轮数据到齐后自动打开抽屉。
@@ -292,26 +348,26 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   // 图床浏览模式已加载的窗口（用法见下面「图床浏览模式」一段）。与海报墙的
   // 窗口一样随快照恢复，声明放在这里是因为下面的快照组装要读它们
   const [galleryGroups, setGalleryGroups] = useState<LibraryGalleryGroup[]>(
-    initialSnapshot?.galleryGroups ?? [],
+    snapshot?.galleryGroups ?? [],
   );
-  const [galleryHasMore, setGalleryHasMore] = useState(initialSnapshot?.galleryHasMore ?? false);
+  const [galleryHasMore, setGalleryHasMore] = useState(snapshot?.galleryHasMore ?? false);
   // 当前图廊窗口在整份排序里的起点（0 = 墙首；「回到上次位置」跳过来后不为 0）。
   // 与海报墙的 wallOffset 同一个意思，图廊的分页口径也是条目数
-  const galleryStart = useRef(initialSnapshot?.galleryStart ?? 0);
+  const galleryStart = useRef(snapshot?.galleryStart ?? 0);
   // 已请求到第几个条目（绝对位置，按页长推进，不按拿到的组数——没图的条目也占一组）
-  const galleryLoaded = useRef(initialSnapshot?.galleryLoaded ?? 0);
+  const galleryLoaded = useRef(snapshot?.galleryLoaded ?? 0);
 
   // 轮询乱序守卫：扫描期间后端响应时间抖动大，上一轮的慢响应可能晚于
   // 下一轮到达，不作废就会用旧快照覆盖新状态（进度回跳、胶囊闪烁）
   const reloadSeq = useRef(0);
   // 海报墙已加载的格数：轮询按这个数重拉第一页，用户滚到第几屏就刷新到第几屏
   // ——否则每轮轮询都把墙缩回首屏，正在看的位置被抽走
-  const wallLoaded = useRef(initialSnapshot?.wallLoaded ?? WALL_PAGE_SIZE);
+  const wallLoaded = useRef(snapshot?.wallLoaded ?? WALL_PAGE_SIZE);
   // 当前排序（扫描补探阶段切到「待补探优先」）。放 ref 而不进依赖：reload
   // 每轮都读最新值，不必为切排序重建回调链
-  const wallSort = useRef<LibraryItemSort>(initialSnapshot?.wallSort ?? "title");
+  const wallSort = useRef<LibraryItemSort>(snapshot?.wallSort ?? "title");
   // 当前窗口起点的 ref 版：reload 每轮读它，不进依赖（同 wallSort）
-  const wallOffset = useRef(initialSnapshot?.wallOffset ?? 0);
+  const wallOffset = useRef(snapshot?.wallOffset ?? 0);
   const snapshotRef = useRef<LibraryDetailSnapshot | null>(null);
   snapshotRef.current = libraries
     ? {
@@ -371,6 +427,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
         const offset = from + page * WALL_API_PAGE_SIZE;
         return listLibraryItems(libraryId, {
           sort: wallSort.current,
+          filter: wallFilter.current,
           limit: Math.min(WALL_API_PAGE_SIZE, wanted - page * WALL_API_PAGE_SIZE),
           offset,
         });
@@ -393,14 +450,15 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
         limit: PROVISIONAL_LIMIT,
       }).catch(() => [] as LibraryItem[]),
       listLibraryItemIds(libraryId).catch(() => []),
-      // 跳转索引与当前排序同口径：按标题是 A-Z 首字母档，按内容时间是月份档。
-      // 「最近添加」序分不出有意义的档（一批导入的都在同一天），轨道本来就
-      // 不显示，索引这一趟请求也省了
-      wallSort.current === "added_at"
+      // 跳转索引与当前排序、当前筛选同口径——三者读的是同一份有序名单。
+      // 只有三种排序分得出有意义的档：首字母 / 月份 / 评分档。其余（最近添加、
+      // 片长、体积、最近观看）轨道本来就不显示，索引这一趟请求也省了
+      INDEXED_SORTS[wallSort.current] === undefined
         ? Promise.resolve([] as LibraryIndexEntry[])
         : listLibraryItemIndex(
             libraryId,
-            wallSort.current === "release_date" ? "release_date" : "title",
+            INDEXED_SORTS[wallSort.current]!,
+            wallFilter.current,
           ).catch(() => []),
       canManageLibraries
         ? keepOnError(listUnidentifiedLibraryFiles(libraryId))
@@ -477,7 +535,12 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
     // 用较短的窗口覆盖刚追加的页面，把用户滚动到的内容又截回首批。
     const requestSeq = ++reloadSeq.current;
     const offset = wallOffset.current + wallLoaded.current;
-    listLibraryItems(libraryId, { sort: wallSort.current, limit: WALL_PAGE_SIZE, offset })
+    listLibraryItems(libraryId, {
+      sort: wallSort.current,
+      filter: wallFilter.current,
+      limit: WALL_PAGE_SIZE,
+      offset,
+    })
       .then((next) => {
         if (requestSeq !== reloadSeq.current) return;
         wallLoaded.current += next.length;
@@ -516,7 +579,12 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
     // 会把刚补上的上文整段抹掉
     const requestSeq = ++reloadSeq.current;
     const from = Math.max(0, until - WALL_PAGE_SIZE);
-    listLibraryItems(libraryId, { sort: wallSort.current, limit: until - from, offset: from })
+    listLibraryItems(libraryId, {
+      sort: wallSort.current,
+      filter: wallFilter.current,
+      limit: until - from,
+      offset: from,
+    })
       .then((prev) => {
         if (requestSeq !== reloadSeq.current) return;
         // 一部都没拿到（这一段刚好被删空）：窗口起点保持不动就此打住，
@@ -564,6 +632,28 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
    * 加载，向上由墙顶哨兵把上文补回来（loadPrev）。
    * offset=0 即回到墙首，索引条的「全部」走的也是这条路。
    */
+  /**
+   * 改筛选条件。
+   *
+   * 条件变了，旧窗口的 offset 指向的是另一份名单，一律回到墙首重取；
+   * 索引条与计数也都在 reload 里，跟着一起换。ref 先于 state 更新，
+   * 好让这一轮 reload 立刻读到新条件（state 要到下一帧才生效）。
+   */
+  const applyFilter = useCallback(
+    (next: LibraryFilter) => {
+      wallFilter.current = next;
+      setFilter(next);
+      writeFilterToUrl(next);
+      wallOffset.current = 0;
+      wallLoaded.current = WALL_PAGE_SIZE;
+      setWallStart(0);
+      setActiveWallInitial(null);
+      void reload();
+      wallTop.current?.scrollIntoView({ block: "start", behavior: "instant" });
+    },
+    [reload],
+  );
+
   const jumpTo = useCallback(
     (offset: number) => {
       // 跳转期间两头的哨兵都挡住，别让旧窗口的追加/补页插进来
@@ -573,7 +663,12 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
       // 位置又拽回去（表现为"点了字母，一秒后自己跳回墙首"）
       reloadSeq.current += 1;
       wallOffset.current = offset;
-      listLibraryItems(libraryId, { sort: wallSort.current, limit: WALL_PAGE_SIZE, offset })
+      listLibraryItems(libraryId, {
+      sort: wallSort.current,
+      filter: wallFilter.current,
+      limit: WALL_PAGE_SIZE,
+      offset,
+    })
         .then((page) => {
           wallLoaded.current = Math.max(WALL_PAGE_SIZE, page.length);
           setWallStart(offset);
@@ -746,7 +841,12 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
     if (galleryLoading.current) return;
     galleryLoading.current = true;
     const offset = galleryLoaded.current;
-    listLibraryGallery(libraryId, { limit: GALLERY_PAGE_SIZE, offset, sort: gallerySort })
+    listLibraryGallery(libraryId, {
+      limit: GALLERY_PAGE_SIZE,
+      offset,
+      sort: gallerySort,
+      filter: wallFilter.current,
+    })
       .then((page) => {
         galleryLoaded.current = offset + page.length;
         setGalleryGroups((current) => dedupeGalleryGroups([...current, ...page]));
@@ -770,6 +870,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
     Promise.all(
       Array.from({ length: Math.ceil(loaded / GALLERY_PAGE_SIZE) }, (_, page) =>
         listLibraryGallery(libraryId, {
+          filter: wallFilter.current,
           limit: GALLERY_PAGE_SIZE,
           offset: start + page * GALLERY_PAGE_SIZE,
           sort: gallerySort,
@@ -795,7 +896,12 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
     (offset: number) => {
       galleryLoading.current = true; // 跳转期间挡住滚动哨兵与对账，别让旧窗口的页插进来
       galleryStart.current = offset;
-      listLibraryGallery(libraryId, { limit: GALLERY_PAGE_SIZE, offset, sort: gallerySort })
+      listLibraryGallery(libraryId, {
+      limit: GALLERY_PAGE_SIZE,
+      offset,
+      sort: gallerySort,
+      filter: wallFilter.current,
+    })
         .then((page) => {
           galleryLoaded.current = offset + page.length;
           setGalleryGroups(dedupeGalleryGroups(page));
@@ -835,7 +941,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   );
   // 当前这份图廊窗口属于哪个库：快照带回来的窗口一进来就算数
   const galleryWindowLibrary = useRef<number | null>(
-    initialSnapshot?.galleryGroups.length ? libraryId : null,
+    snapshot?.galleryGroups.length ? libraryId : null,
   );
   // 当前这份窗口是按哪个排序取的。null = 快照带回来的窗口（与偏好同一份
   // localStorage，排序不会中途变），按现在的排序对账即可，不必重拉
@@ -913,7 +1019,15 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
     scrollElement?.scrollTo({ top: 0, behavior: "instant" });
   }, [scrollElement]);
   const { recallOffset, dismissRecall } = useWallRecall({
-    scope: wallRecallScope(libraryId),
+    scope: wallRecallScope(
+      libraryId,
+      filterFingerprint({
+        g: (filter.genres ?? []).map(String),
+        c: filter.countries ?? [],
+        d: filter.decades ?? [],
+        w: filter.watch ?? null,
+      }),
+    ),
     view: wallView,
     scroller: scrollElement,
     // 补探阶段的排序是临时的（几分钟后自动落回拼音序），那期间不记也不提示；
@@ -1486,6 +1600,18 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
             <h3 className="text-on-image mt-10 px-6 text-body-lg font-semibold text-white/85 max-md:mt-7 max-md:px-4">
               已入库
             </h3>
+          )}
+          {/* 筛选条：静止态只有一个「筛选」按钮，点开才有四个维度；
+              条件一生效，条件本身就顶替控件出现在下面那行（且与面板开合无关）。
+              图片库不给筛选——照片没有类型/评分/地区这些事实，摆上去就是
+              永远返回 0 的死控件（docs/design/library-filtering.md 3.5） */}
+          {!photoWall && (
+            <LibraryFilterBar
+              libraryId={libraryId}
+              filter={filter}
+              onFilterChange={applyFilter}
+              className="mt-5 px-6 max-md:mt-4 max-md:px-4"
+            />
           )}
           <div ref={wallTop} className={pending.length > 0 ? "mt-4" : "mt-6 max-md:mt-4"}>
             {/* 索引条与内容列并排：条固定在视口右侧（sticky），列照常滚。索引条
