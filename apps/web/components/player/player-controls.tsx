@@ -526,7 +526,7 @@ export function PlayerControls(props: PlayerControlsProps) {
           pointer-events-none 必须跟着：透明但可拖的进度条会把「点屏幕下缘
           唤出控制层」截胡成一次误 seek。 */}
       <div
-        className={`player-scrub-row player-scrub-inset relative transition-opacity duration-300 ${
+        className={`player-scrub-row player-inset-x relative transition-opacity duration-300 ${
           chromeVisible ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
         }`}
       >

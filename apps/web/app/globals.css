@@ -1564,28 +1564,24 @@ body.cmdk-open .app-shell {
 
    横向用 max()：安全区平时为 0，直接用会把桌面的内边距压没；竖屏无刘海时
    取回原值，横屏刘海侧自动让开。 */
+/* 播放器所有浮层内容的横向内边距：顶栏、时间读数、进度条、操作区、暂停大字
+   全走这一条，左右边缘因此在任何断点上都对齐成一条线。
+
+   **窄屏这 28px 是被 iOS 的返回手势逼出来的下限，不是随手给的留白**：系统
+   手势从屏幕左缘 ~20-25px 的带内起手，而刚起播时进度为 0、把手正落在进度条
+   最左端——内边距只有 12px 时，去拖那个点就是在手势区里横划，片子没拖动、
+   页面先退出去了（真机反馈）。28px 让 0 进度的把手整个落在手势区外；有安全区
+   （刘海/圆角）时在安全区上再加一档。
+
+   这条曾经只加在进度条上（.player-scrub-inset），控件另走 12px，于是窄屏下
+   进度条比上下的卡片各缩进 16px，看着像没对齐。既然 28 是进度条的硬下限，
+   就把所有人拉到这一档——对齐是白拿的，顺带把顶栏返回键也挪出了手势区。 */
 .player-inset-x {
   padding-left: max(1.5rem, var(--safe-left));
   padding-right: max(1.5rem, var(--safe-right));
 }
 @media (max-width: 767.98px) {
   .player-inset-x {
-    padding-left: max(0.75rem, var(--safe-left));
-    padding-right: max(0.75rem, var(--safe-right));
-  }
-}
-
-/* 进度条专用的横向内边距：桌面与 .player-inset-x 相同；窄屏刻意**更宽**。
-   iOS 的系统返回手势从屏幕左缘 ~20-25px 的带内起手，而刚起播时进度为 0，
-   把手正落在进度条最左端——内边距只有 12px 时，去拖那个点就是在返回手势
-   区里横划，片子没拖动、页面先退出去了（真机反馈）。28px 起步让 0 进度的
-   把手整个落在手势区外；有安全区（刘海/圆角）时在安全区上再加一档。 */
-.player-scrub-inset {
-  padding-left: max(1.5rem, var(--safe-left));
-  padding-right: max(1.5rem, var(--safe-right));
-}
-@media (max-width: 767.98px) {
-  .player-scrub-inset {
     padding-left: max(1.75rem, calc(var(--safe-left) + 0.75rem));
     padding-right: max(1.75rem, calc(var(--safe-right) + 0.75rem));
   }

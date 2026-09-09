@@ -2453,8 +2453,8 @@ export function VideoPlayer(props: VideoPlayerProps) {
    * 能拦与拦不了要分清：**PWA（添加到主屏）里**，iOS 把历史滑动交给页面
    * 先裁决，边缘触摸的 touchstart 上 preventDefault 就能拦下——这是标准
    * 手段（也是各视频类 PWA 的通行做法）；**Safari 标签页里**该手势属于
-   * 浏览器 chrome，网页无权禁用，只能靠进度条让位（.player-scrub-inset）
-   * 把可拖元素挪出手势区。桌面触控板的双指历史滑动由下面的
+   * 浏览器 chrome，网页无权禁用，只能靠进度条让位（.player-inset-x 的窄屏
+   * 那档）把可拖元素挪出手势区。桌面触控板的双指历史滑动由下面的
    * overscroll-behavior 规则（globals.css）负责。
    *
    * 两个刻意的细节：
