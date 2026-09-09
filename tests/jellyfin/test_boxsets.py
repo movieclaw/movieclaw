@@ -1,0 +1,152 @@
+"""合集 → Jellyfin BoxSet（docs/design/library-collections.md 第 4 节）。
+
+走 4.10 那张客户端核对清单：UserViews 里有没有「合集」视图、打开它拿到什么、
+点进一个 BoxSet 拿到什么、单条 BoxSet 长什么样，以及不可见的合集是不是真的
+一条都不下发。
+"""
+
+from __future__ import annotations
+
+import pytest
+from fastapi.testclient import TestClient
+from tests.jellyfin.helpers import AUTH_HEADER, jf_login
+
+from movieclaw_jellyfin.ids import collection_guid, collections_view_guid
+
+
+def _headers(token: str) -> dict[str, str]:
+    return {"Authorization": f'{AUTH_HEADER}, Token="{token}"'}
+
+
+def _add_collection(client: TestClient, *, name: str, library_id: int, **kw) -> int:
+    """通过真实接口建合集。
+
+    刻意不直接写库：这样这组用例同时验证了"两个面看的是同一份数据"——
+    网页端建的合集，电视端立刻就该看得见。
+    """
+    payload = {"name": name, "library_id": library_id, **kw}
+    resp = client.post("/api/v1/collections", json=payload)
+    assert resp.status_code == 200, resp.text
+    return int(resp.json()["data"]["id"])
+
+
+#: 「收全部」的规则：空 values 的 any_of 不收窄，等于把整库收进来。
+#: 用它是为了让用例不依赖播种数据的具体类型 id。
+ALL_ITEMS = [{"field": "genres", "op": "any_of", "values": []}]
+
+
+@pytest.fixture
+def token(client: TestClient) -> str:
+    return jf_login(client)
+
+
+def test_collections_view_absent_without_collections(client: TestClient, token: str) -> None:
+    """一个合集都没有时不下发「合集」视图——空视图在电视端是纯粹的死路。"""
+    resp = client.get("/UserViews", headers=_headers(token))
+    assert resp.status_code == 200
+    assert collections_view_guid() not in {v["Id"] for v in resp.json()["Items"]}
+
+
+def test_collections_view_appears_and_lists_boxsets(
+    client: TestClient, token: str, seeded: dict
+) -> None:
+    """有可见合集时多出一个 CollectionType=boxsets 的视图，点开是 BoxSet 列表。"""
+    cid = _add_collection(client, name="诺兰", library_id=seeded["movie_lib"], rules=ALL_ITEMS)
+
+    views = client.get("/UserViews", headers=_headers(token)).json()["Items"]
+    view = next((v for v in views if v["Id"] == collections_view_guid()), None)
+    assert view is not None, "有合集就该有「合集」视图"
+    assert view["CollectionType"] == "boxsets"
+    assert view["Type"] == "CollectionFolder"
+
+    listed = client.get(
+        f"/Items?ParentId={collections_view_guid()}", headers=_headers(token)
+    ).json()
+    boxsets = {row["Id"]: row for row in listed["Items"]}
+    assert collection_guid(cid) in boxsets
+    row = boxsets[collection_guid(cid)]
+    assert row["Type"] == "BoxSet"
+    assert row["IsFolder"] is True
+    # ChildCount 只在「把合集列出来」的请求里给
+    assert row["ChildCount"] >= 1
+    # CollectionType 是 CollectionFolder 的字段，BoxSet 不该有
+    assert "CollectionType" not in row
+
+
+def test_boxset_children_are_items(client: TestClient, token: str, seeded: dict) -> None:
+    """点进 BoxSet 拿到的是成员条目——协议语义里 BoxSet 的子级只能是作品。"""
+    cid = _add_collection(client, name="全部电影", library_id=seeded["movie_lib"], rules=ALL_ITEMS)
+    resp = client.get(f"/Items?ParentId={collection_guid(cid)}", headers=_headers(token))
+    assert resp.status_code == 200
+    types = {row["Type"] for row in resp.json()["Items"]}
+    assert types and types <= {"Movie", "Series", "Video"}
+
+
+def test_single_boxset_detail(client: TestClient, token: str, seeded: dict) -> None:
+    cid = _add_collection(client, name="单条", library_id=seeded["movie_lib"], rules=ALL_ITEMS)
+    resp = client.get(f"/Items/{collection_guid(cid)}", headers=_headers(token))
+    assert resp.status_code == 200
+    dto = resp.json()
+    assert dto["Type"] == "BoxSet" and dto["Name"] == "单条"
+    assert dto["ParentId"] == collections_view_guid()
+
+
+def test_include_item_types_boxset_at_root(client: TestClient, token: str, seeded: dict) -> None:
+    """根级 IncludeItemTypes=BoxSet——不少客户端的首页是这么拼的。"""
+    _add_collection(client, name="根级问法", library_id=seeded["movie_lib"], rules=ALL_ITEMS)
+    resp = client.get("/Items?IncludeItemTypes=BoxSet&Recursive=true", headers=_headers(token))
+    assert resp.status_code == 200
+    assert {row["Type"] for row in resp.json()["Items"]} == {"BoxSet"}
+
+
+def test_empty_collection_is_not_listed(client: TestClient, token: str, seeded: dict) -> None:
+    """成员为空的合集不列：点进去空无一物是纯粹的死路。"""
+    _add_collection(
+        client,
+        name="一个都不命中",
+        library_id=seeded["movie_lib"],
+        rules=[{"field": "genres", "op": "any_of", "values": [999999]}],
+    )
+    listed = client.get(
+        f"/Items?ParentId={collections_view_guid()}", headers=_headers(token)
+    ).json()
+    assert "一个都不命中" not in {row["Name"] for row in listed["Items"]}
+
+
+def test_private_collection_reaches_its_owner(
+    client: TestClient, token: str, seeded: dict
+) -> None:
+    """私有合集对**本人**照常下发——私有路径端到端是通的。
+
+    「对别人不可见」这一半在 tests/api/test_collections.py 的领域层用例里覆盖：
+    这里只有一个登录身份（超管），表达不出"另一个成员"，硬凑一个只会让这条
+    用例名不副实。
+    """
+    cid = _add_collection(
+        client,
+        name="只有我",
+        library_id=seeded["movie_lib"],
+        rules=ALL_ITEMS,
+        visibility="private",
+    )
+    detail = client.get(f"/Items/{collection_guid(cid)}", headers=_headers(token))
+    assert detail.status_code == 200
+    assert detail.json()["Name"] == "只有我"
+
+    listed = client.get(
+        f"/Items?ParentId={collections_view_guid()}", headers=_headers(token)
+    ).json()
+    assert "只有我" in {row["Name"] for row in listed["Items"]}
+
+
+def test_unknown_collection_guid_is_404(client: TestClient, token: str) -> None:
+    """不存在的合集 GUID 按 404——GUID 可枚举，不能回一个空对象确认它存在。"""
+    resp = client.get(f"/Items/{collection_guid(999999)}", headers=_headers(token))
+    assert resp.status_code == 404
+
+
+def test_display_collections_view_is_declared(client: TestClient, token: str) -> None:
+    """UserConfiguration 如实声明支持合集视图——有些客户端只在它为真时才渲染入口。"""
+    me = client.get("/Users/Me", headers=_headers(token))
+    assert me.status_code == 200
+    assert me.json()["Configuration"]["DisplayCollectionsView"] is True

@@ -28,6 +28,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from movieclaw_api.services.library.chapters import chapter_image_map, effective_chapters
 from movieclaw_api.services.library.thumbs import primary_aspect
 from movieclaw_db.models import (
+    Collection,
     Library,
     LibraryFile,
     MediaEpisode,
@@ -40,6 +41,8 @@ from movieclaw_db.models import (
 )
 from movieclaw_jellyfin.identity import format_datetime
 from movieclaw_jellyfin.ids import (
+    collection_guid,
+    collections_view_guid,
     episode_guid,
     item_guid,
     library_guid,
@@ -1542,6 +1545,77 @@ def library_view_dto(
     )
     # 库视图不做已看聚合（CollectionFolder.SupportsPlayedStatus=false）
     guid = library_guid(library.id)
+    dto["UserData"] = {
+        "PlaybackPositionTicks": 0,
+        "PlayCount": 0,
+        "IsFavorite": False,
+        "Played": False,
+        "Key": guid,
+        "ItemId": guid,
+    }
+    return dto
+
+
+def collections_view_dto(ctx: DtoContext) -> dict[str, Any]:
+    """「合集」聚合视图（docs/design/library-collections.md 4.3）。
+
+    **协议侧不照搬产品侧的「合集挂在库下面」**，而是走 Jellyfin 惯例的一个顶层
+    视图。理由：客户端对库视图的子级有固定预期（Movie / Series / Season /
+    Episode），把 BoxSet 塞进某个库的子级，各家客户端表现不可预期——有的不
+    渲染，有的渲染成空文件夹。协议兼容的价值恰恰在于"表现可预期"。
+
+    这不是不一致，是两个受众的正确答案不同：网页端用户在管自己的库，心智是
+    "我的电影库里有一批诺兰"；电视端用户在找片看，心智是"有哪些片单"。
+    库归属信息并不丢失——它决定合集对谁可见，只是不体现为协议层级。
+    """
+    guid = collections_view_guid()
+    dto = _common(ctx, guid, "合集", "CollectionFolder", "Unknown")
+    dto["IsFolder"] = True
+    dto["CollectionType"] = "boxsets"
+    dto["ImageTags"] = {}
+    dto["BackdropImageTags"] = []
+    dto["ParentId"] = root_guid()
+    dto["UserData"] = {
+        "PlaybackPositionTicks": 0,
+        "PlayCount": 0,
+        "IsFavorite": False,
+        "Played": False,
+        "Key": guid,
+        "ItemId": guid,
+    }
+    return dto
+
+
+def boxset_dto(
+    ctx: DtoContext,
+    collection: Collection,
+    *,
+    child_count: int | None = None,
+    cover_item_id: int | None = None,
+) -> dict[str, Any]:
+    """一个合集 → Jellyfin 的 BoxSet。
+
+    ``ChildCount`` 只在"把合集列出来"的请求里给（``/Items?ParentId=<合集视图>``）；
+    ``/UserViews`` 那种高频接口不算它——协议允许缺省该字段，客户端不会出错，
+    而为它在视图列表里逐个解析成员是纯粹的浪费（设计文档 2.4）。
+
+    封面直接复用**首个成员的海报**：网页端合集封面本来就是"首个成员海报 +
+    背后露两片边"，那两片边是 CSS 不是图片资产。为协议侧单独生成拼贴图要多一
+    套资产、多一个失效通道，换来的只是电视端封面好看一点点（设计文档 4.6）。
+
+    不做已看聚合，与库视图保持一致——那是 ``/UserViews`` 最不该背的成本。
+    """
+    guid = collection_guid(collection.id or 0)
+    dto = _common(ctx, guid, collection.name, "BoxSet", "Unknown")
+    dto["IsFolder"] = True
+    # CollectionType 是 CollectionFolder 的字段，BoxSet 不该有——多给一个
+    # 客户端不认识的字段，比少给一个更容易触发各家的兼容分支
+    dto["ParentId"] = collections_view_guid()
+    dto["ImageTags"] = {"Primary": item_guid(cover_item_id)} if cover_item_id else {}
+    dto["BackdropImageTags"] = []
+    if child_count is not None:
+        dto["ChildCount"] = child_count
+        dto["RecursiveItemCount"] = child_count
     dto["UserData"] = {
         "PlaybackPositionTicks": 0,
         "PlayCount": 0,

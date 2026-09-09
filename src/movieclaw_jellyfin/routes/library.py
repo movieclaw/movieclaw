@@ -16,6 +16,10 @@ from fastapi.responses import JSONResponse
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from movieclaw_api.services.library.access import member_visible_ids
+from movieclaw_api.services.library.collections import (
+    resolve_members,
+    visible_collections,
+)
 from movieclaw_db.engine import get_database
 from movieclaw_db.models import Library
 from movieclaw_jellyfin.catalog import (
@@ -25,7 +29,9 @@ from movieclaw_jellyfin.catalog import (
     ItemBundle,
     LatestUnitCandidate,
     ResumeUnitCandidate,
+    boxset_dto,
     collection_type_of,
+    collections_view_dto,
     episode_dto,
     hydrate_leaves,
     is_leaf_kind,
@@ -47,6 +53,7 @@ from movieclaw_jellyfin.catalog import (
 )
 from movieclaw_jellyfin.errors import not_found, not_found_message
 from movieclaw_jellyfin.ids import (
+    FIXED_COLLECTIONS,
     FIXED_ROOT,
     EntityKind,
     decode_guid,
@@ -208,6 +215,21 @@ async def user_views(
     async with get_database().session() as session:
         libraries = await list_libraries(session, visible_ids=scope.visible)
     dtos = [library_view_dto(ctx, lib, await _cover_tag(lib.id)) for lib in libraries]
+    # 「合集」视图只在**有**可见合集时下发：一个空视图在电视端是纯粹的死路。
+    # 这里只判存在、不解析成员——那是 /Items?ParentId=<合集视图> 该做的事
+    # （docs/design/library-collections.md 2.4）。
+    #
+    # 已知代价：不少客户端会缓存 /UserViews，用户建了第一个合集后可能要手动
+    # 刷新一次才看得到入口。这是"不给空视图"的代价，不做额外补偿——补偿手段
+    # 只有常驻一个空视图，那更糟。
+    async with get_database().session() as session:
+        has_collections = bool(
+            await visible_collections(
+                session, member_id=scope.member_id, visible_library_ids=scope.visible
+            )
+        )
+    if has_collections:
+        dtos.append(collections_view_dto(ctx))
     return JSONResponse(query_result(dtos, len(dtos)))
 
 
@@ -582,6 +604,14 @@ async def _query_items(request: Request, scope: ViewerScope) -> JSONResponse:
             simple_movie_page = True
         elif ids_raw:
             entries = await _entries_for_ids(session, ids_raw, scope, options=options)
+        elif _wants_boxsets(parent_raw, include_types):
+            # 「把合集列出来」的请求——BoxSet 不是作品（Entry），单独渲染。
+            # N 次成员解析发生在用户真的打开合集列表时，天经地义；
+            # /UserViews 那种高频接口只判存在，不算成员（设计文档 2.4）
+            dtos = await _boxset_dtos(session, scope, ctx)
+            total = len(dtos)
+            page = dtos[start_index:] if limit < 0 else dtos[start_index : start_index + limit]
+            return JSONResponse(query_result(page, total, start_index))
         else:
             lazy = _LazyLeaves(
                 allowed=not (set(sort_by) & _FULL_LEAF_SORTS),
@@ -783,6 +813,80 @@ async def _narrow_by_search(
     return [i for i in ids if i in matched]
 
 
+def _wants_boxsets(parent_raw: str | None, include_types: set[str]) -> bool:
+    """这次请求要的是合集本身吗。
+
+    两种问法：`ParentId=<合集视图>`（打开那个视图）与 `IncludeItemTypes=BoxSet`
+    （根级直接问"有哪些合集"）。后者是不少客户端的首页拼装方式。
+    """
+    if include_types and include_types == {"BoxSet"}:
+        return True
+    if not parent_raw or is_empty_guid(parent_raw):
+        return False
+    ref = decode_guid(parent_raw)
+    return bool(ref and ref.kind == EntityKind.FIXED and ref.entity_id == FIXED_COLLECTIONS)
+
+
+async def _boxset_dtos(
+    session: AsyncSession, scope: ViewerScope, ctx: DtoContext
+) -> list[dict[str, Any]]:
+    """全部可见合集的 BoxSet DTO，成员为空的丢掉。
+
+    点进去空无一物的合集在电视端是纯粹的死路——列合集时该滤掉，这也是
+    /UserViews 只判存在的那条便宜路径付不起的代价（所以只在这里做）。
+    """
+    rows = await visible_collections(
+        session, member_id=scope.member_id, visible_library_ids=scope.visible
+    )
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        members = await resolve_members(
+            session, row, member_id=scope.member_id, visible_library_ids=scope.visible
+        )
+        if not members:
+            continue
+        out.append(
+            boxset_dto(
+                ctx,
+                row,
+                child_count=len(members),
+                cover_item_id=row.cover_item_id or members[0],
+            )
+        )
+    return out
+
+
+async def _boxset_or_404(
+    session: AsyncSession,
+    collection_id: int,
+    scope: ViewerScope,
+    ctx: DtoContext,
+) -> dict[str, Any]:
+    """一个可见的合集 → BoxSet DTO；不可见按 404（id 可枚举，空对象等于确认存在）。"""
+    from movieclaw_db.models import Collection
+
+    collection = await session.get(Collection, collection_id)
+    if collection is None:
+        raise not_found()
+    if collection.visibility == "private" and collection.member_id != scope.member_id:
+        raise not_found()
+    if (
+        scope.visible is not None
+        and collection.library_id is not None
+        and collection.library_id not in scope.visible
+    ):
+        raise not_found()
+    members = await resolve_members(
+        session, collection, member_id=scope.member_id, visible_library_ids=scope.visible
+    )
+    return boxset_dto(
+        ctx,
+        collection,
+        child_count=len(members),
+        cover_item_id=collection.cover_item_id or (members[0] if members else None),
+    )
+
+
 async def _entries_for_parent(
     session: AsyncSession,
     parent_raw: str | None,
@@ -852,6 +956,37 @@ async def _entries_for_parent(
             lazy.used = True
             lazy.library_id = ref.entity_id
         return _build_entries(bundles, types)
+
+    if ref.kind == EntityKind.FIXED and ref.entity_id == FIXED_COLLECTIONS:
+        # 「合集」视图的子级就是各个 BoxSet；它们不是 Entry（Entry 是作品），
+        # 由 _query_items 单独渲染，这里返回空表示"这一层没有作品"
+        return []
+
+    if ref.kind == EntityKind.COLLECTION:
+        from movieclaw_db.models import Collection
+
+        collection = await session.get(Collection, ref.entity_id)
+        if collection is None:
+            raise not_found()
+        if collection.visibility == "private" and collection.member_id != scope.member_id:
+            raise not_found()
+        # 成员一律走领域层那个唯一实现——协议层不写查询（设计文档第 0 节）
+        ids = await resolve_members(
+            session,
+            collection,
+            member_id=scope.member_id,
+            visible_library_ids=scope.visible,
+        )
+        ids = await _narrow_by_search(session, ids, search)
+        bundles = await load_bundles(
+            session,
+            ids,
+            member_id=scope.member_id,
+            visible_library_ids=scope.visible,
+            dto_options=options,
+        )
+        # BoxSet 的成员只能是条目（Movie / Series），不能是季/集——协议语义如此
+        return _build_entries(bundles, include_types or {"Movie", "Series", "Video"})
 
     if ref.kind == EntityKind.ITEM:
         if not await _item_visible(session, ref.entity_id, scope):
@@ -1311,6 +1446,10 @@ async def get_item(
             if library is None:
                 raise not_found()
             return JSONResponse(library_view_dto(ctx, library, await _cover_tag(library.id)))
+        if ref.kind == EntityKind.FIXED and ref.entity_id == FIXED_COLLECTIONS:
+            return JSONResponse(collections_view_dto(ctx))
+        if ref.kind == EntityKind.COLLECTION:
+            return JSONResponse(await _boxset_or_404(session, ref.entity_id, scope, ctx))
         # 单条目是全字段语义，People 恒输出；可见性先行（GUID 可枚举）
         if not await _item_visible(session, ref.entity_id, scope):
             raise not_found()

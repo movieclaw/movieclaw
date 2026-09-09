@@ -34,11 +34,17 @@ class EntityKind(IntEnum):
     # 成员用户（多用户，docs/design/member-management.md §3.7）。超管保持
     # FIXED_USER 的原 GUID——已配对的客户端升级后不掉线。
     MEMBER_USER = 0x07
+    # 合集（docs/design/library-collections.md 4.2）：载荷 = collection.id。
+    # 自增主键不回收，GUID 天然稳定，与 library/item 同源，不需要映射表
+    COLLECTION = 0x08
 
 
 # 固定实体的载荷常量（FIXED 类型下细分）
 FIXED_USER = 1
 FIXED_ROOT = 2
+#: 「合集」聚合视图（CollectionType=boxsets）。它是一个固定实体，
+#: 走 FIXED 类型即可，不必为一个单例再开一个类型字节。
+FIXED_COLLECTIONS = 3
 
 
 @dataclass(frozen=True)
@@ -78,6 +84,15 @@ def episode_guid(media_item_id: int, season: int, episode: int) -> str:
 
 def media_source_guid(library_file_id: int) -> str:
     return _pack(EntityKind.MEDIA_SOURCE, library_file_id)
+
+
+def collection_guid(collection_id: int) -> str:
+    return _pack(EntityKind.COLLECTION, collection_id)
+
+
+def collections_view_guid() -> str:
+    """「合集」聚合视图的 GUID（顶层 CollectionFolder，全局唯一）。"""
+    return _pack(EntityKind.FIXED, FIXED_COLLECTIONS)
 
 
 def person_guid(person_id: int) -> str:

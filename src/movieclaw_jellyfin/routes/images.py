@@ -27,7 +27,7 @@ from movieclaw_api.services.library.chapters import chapter_image_map, effective
 from movieclaw_db.engine import get_database
 from movieclaw_db.models import LibraryFile, MediaEpisode, MediaMetadata, MediaSeason
 from movieclaw_jellyfin.errors import JellyfinError, not_found
-from movieclaw_jellyfin.ids import EntityKind, decode_guid
+from movieclaw_jellyfin.ids import EntityKind, decode_guid, item_guid
 from movieclaw_jellyfin.routes.common import dto_context
 
 router = APIRouter()
@@ -102,6 +102,25 @@ async def _resolve_asset(
 
     if ref.kind == EntityKind.LIBRARY:
         return None  # 库封面走拼贴专路（get_item_image 特判），不经资产目录
+
+    if ref.kind == EntityKind.COLLECTION:
+        # 合集封面**直接复用首个成员的海报**，不做第二套资产
+        # （docs/design/library-collections.md 4.6）。网页端的封面是"首个成员
+        # 海报 + 背后露两片边"，那两片边是 CSS 不是图片——为协议侧单独生成
+        # 拼贴要多一套资产、多一个失效通道，换来的只是电视端好看一点点。
+        from movieclaw_api.services.library.collections import resolve_members
+        from movieclaw_db.models import Collection
+
+        collection = await session.get(Collection, ref.entity_id)
+        if collection is None:
+            return None
+        cover = collection.cover_item_id
+        if cover is None:
+            members = await resolve_members(session, collection)
+            cover = members[0] if members else None
+        if cover is None:
+            return None
+        return await _resolve_asset(session, item_guid(cover), image_type, image_index)
 
     if itype == "chapter":
         if ref.kind == EntityKind.ITEM:

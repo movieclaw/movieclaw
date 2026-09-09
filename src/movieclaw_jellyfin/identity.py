@@ -40,7 +40,10 @@ def user_configuration() -> dict[str, Any]:
         "DisplayMissingEpisodes": False,
         "GroupedFolders": [],
         "SubtitleMode": "Default",
-        "DisplayCollectionsView": False,
+        # 合集视图（docs/design/library-collections.md 4.3）：服务端在有可见合集时
+        # 才把它放进 /UserViews，这里如实声明"这个服务器支持合集视图"——有些
+        # 客户端只在配置为真时才渲染那个入口
+        "DisplayCollectionsView": True,
         "EnableLocalPassword": False,
         "OrderedViews": [],
         "LatestItemsExcludes": [],

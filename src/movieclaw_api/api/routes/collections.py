@@ -153,7 +153,9 @@ async def create_collection(
             for index, item_id in enumerate(payload.item_ids)
         )
         await session.flush()
-    return ok(await _view(session, row, member_id=member_id, visible=visible))
+    view = await _view(session, row, member_id=member_id, visible=visible)
+    await session.commit()  # 事务边界由路由显式控制（见 engine.get_session 的说明）
+    return ok(view)
 
 
 @router.get(
@@ -216,7 +218,9 @@ async def update_collection(
             for index, item_id in enumerate(payload.item_ids)
         )
     await session.flush()
-    return ok(await _view(session, row, member_id=member_id, visible=visible))
+    view = await _view(session, row, member_id=member_id, visible=visible)
+    await session.commit()
+    return ok(view)
 
 
 @router.delete(
@@ -238,6 +242,7 @@ async def delete_collection(
     if row.builtin:
         raise BadRequestException("内置合集不能删除（可以隐藏）")
     await session.delete(row)
+    await session.commit()
     return ok(None)
 
 
@@ -315,4 +320,5 @@ async def apply_to_library(
         raise BadRequestException("这个合集的条件里没有类型或地区，路由用不上")
     library.match_rules = routable
     await session.flush()
+    await session.commit()
     return ok(None)
