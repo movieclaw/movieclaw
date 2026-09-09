@@ -1964,8 +1964,9 @@ function MetadataRefreshPanel({
  *
  * z-[45]：压过墙与索引条，但低于弹层（50/60）、灯箱（70）与 Toast（95）——
  * 它只是个建议，任何真正的操作都该盖住它。
+ * 「全部收藏」页弹的是同一枚胶囊。
  */
-function WallRecallPill({ onJump, onDismiss }: { onJump: () => void; onDismiss: () => void }) {
+export function WallRecallPill({ onJump, onDismiss }: { onJump: () => void; onDismiss: () => void }) {
   return (
     <div
       aria-live="polite"
@@ -2066,8 +2067,9 @@ export function WallLoadMore({
  * 零高度、不显示加载态：它加在墙**上方**，一旦露出加载文案就要把整墙往下推，
  * 与前置加载自己的滚动补偿打架。补页要么已经提前到位，要么慢一点到——不会
  * 出现"卡住不动"的画面。
+ * 「全部收藏」页的墙同样用它向上补页。
  */
-function WallLoadPrev({ start, onReach }: { start: number; onReach: () => void }) {
+export function WallLoadPrev({ start, onReach }: { start: number; onReach: () => void }) {
   const sentinel = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const target = sentinel.current;

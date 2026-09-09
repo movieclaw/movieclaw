@@ -92,8 +92,13 @@ function writeAll(store: KeyValueStorage, rows: Record<string, WallRecall>) {
   }
 }
 
-/** 一面墙的记录键：单库页是 `library:12`。 */
-export function wallRecallScope(libraryId: number): string {
+/**
+ * 一面墙的记录键：单库页是 `library:12`，「全部收藏」页是 `library:favorites`。
+ *
+ * 与会话内滚动恢复用的键同一副长相（lib/use-scroll-restoration.ts），两处一眼
+ * 对得上；收藏墙不是某个库，所以这里收一个 "favorites" 字面量而不是库 id。
+ */
+export function wallRecallScope(libraryId: number | "favorites"): string {
   return `library:${libraryId}`;
 }
 

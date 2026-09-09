@@ -45,6 +45,16 @@ test("换了墙的形态就当作没记过（同一个位置指向的不是同�
   assert.equal(readWallRecall(wallRecallScope(8), "wall:title", storage, NOW), null);
 });
 
+test("收藏墙是独立的一面墙，与任何库的记录互不串门", () => {
+  const storage = memoryStorage();
+  const favorites = wallRecallScope("favorites");
+  assert.equal(favorites, "library:favorites");
+  writeWallRecall(favorites, "favorites", 300, storage, NOW);
+  writeWallRecall(SCOPE, "wall:title", 320, storage, NOW);
+  assert.equal(readWallRecall(favorites, "favorites", storage, NOW)?.offset, 300);
+  assert.equal(readWallRecall(SCOPE, "wall:title", storage, NOW)?.offset, 320);
+});
+
 test("太浅的位置不提示：一两屏用户自己滑更快", () => {
   const storage = memoryStorage();
   writeWallRecall(SCOPE, "wall:title", RECALL_MIN_OFFSET - 1, storage, NOW);
