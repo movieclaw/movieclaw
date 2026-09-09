@@ -361,9 +361,17 @@ async def list_jobs(
     job_type: str | None = None,
     resource_type: str | None = None,
     resource_id: str | int | None = None,
+    relation: str | None = None,
     active_only: bool = False,
     limit: int = 50,
 ) -> list[Job]:
+    """按资源/类型/状态筛任务。
+
+    ``relation`` 只在按资源筛时有意义：``"target"`` 是会占用该资源租约的
+    作业（同一资源同时只跑一份），其余关系（``"context"``）只用于聚合与
+    导航。要回答"这个资源上有没有作业正在动它"的调用方必须点名 target——
+    不点名会把只是"提到"该资源的作业也算进去，让本可以并行的两件事互相等。
+    """
     statement = select(Job)
     if resource_type is not None or resource_id is not None:
         statement = statement.join(JobResource, JobResource.job_id == Job.id)
@@ -371,6 +379,8 @@ async def list_jobs(
             statement = statement.where(JobResource.resource_type == resource_type)
         if resource_id is not None:
             statement = statement.where(JobResource.resource_id == str(resource_id))
+        if relation is not None:
+            statement = statement.where(JobResource.relation == relation)
     if active_only:
         statement = statement.where(Job.status.in_(ACTIVE_STATUS_VALUES))
     elif statuses:

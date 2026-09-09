@@ -263,6 +263,16 @@ def stills_complete(row: LibraryFile, assets_root: Path) -> bool:
     )
 
 
+def item_needs_stills(rows: list[LibraryFile], assets_root: Path) -> bool:
+    """该条目还有没抓齐图的在位文件（详情页懒触发的判据）。
+
+    每一行都要列一次资产目录（``stills_complete`` 里的磁盘 IO），所以调用方
+    必须放进线程——详情接口在抓图期间会被前端每 3 秒重拉一次，同步跑等于把
+    这些 listdir 乘上轮询次数压在事件循环上。
+    """
+    return any(stills_eligible(row) and not stills_complete(row, assets_root) for row in rows)
+
+
 def _filter_chains(color: VideoColor) -> list[list[str]]:
     """滤镜链：隔行化 → 5 个关键帧里选代表帧 → 缩放 → [色调映射] → showinfo。
 
@@ -386,6 +396,13 @@ def extract_file_stills(
                 logger.warning("章节抓帧超时（%s 秒）：%s @ %ss", _FFMPEG_TIMEOUT, video, seek)
                 frame_ms = None
             if frame_ms is None:
+                if not video.is_file():
+                    # 文件在抓图过程中被搬走/删掉（整理改名、条目转移、洗版）：
+                    # 这不是"这一章抓不出来"，绝不能记墓碑——墓碑在补缺模式下
+                    # 不再重试，那这一行的图就永远缺着了。已抓到的先落库，剩下
+                    # 的等下一轮（台账那时也已指向新路径）
+                    logger.info("文件已不在原位，本轮章节抓图提前收尾：%s", video)
+                    break
                 # 这一章抓不出来（坏帧、编码不支持、定位超时）：留一条墓碑，让
                 # 补缺判据认它"已有结论"。否则每一轮作业、每一次打开详情页都会
                 # 对着同一个文件重跑一遍同样抓不出来的命令；勾了「已有的章节也
@@ -423,6 +440,51 @@ def cleanup_orphan_dirs(media_item_id: int, live_file_ids: set[int], assets_root
     for sub in base.iterdir():
         if sub.is_dir() and sub.name.isdigit() and int(sub.name) not in live_file_ids:
             shutil.rmtree(sub, ignore_errors=True)
+
+
+async def cleanup_library_orphan_dirs(session: AsyncSession, library_id: int) -> int:
+    """清掉本库各条目下不再对应任何台账行的 chapters 子目录，返回删掉的目录数。
+
+    孤儿有两个来源：台账行被清出（扫描的自动清理丢失记录、面板手动清理）、
+    洗版换了文件行 id。单条目入口（详情页懒触发、条目作业）跑完会顺手清自己
+    那一份，但"条目已经抓齐、只是少了一集"的孤儿等不到任何单条目入口——整库
+    作业每轮收尾扫一遍是唯一能自愈的地方，否则那些图永远躺在盘上。
+
+    一个条目一次 listdir，且资产目录在 ``data/`` 下（本地盘），上千个条目也是
+    毫秒级；磁盘遍历整体放线程里做。
+    """
+    from movieclaw_api.services.media_scrape import assets_root
+
+    rows = (
+        await session.execute(
+            select(LibraryFile.media_item_id, LibraryFile.id).where(
+                LibraryFile.library_id == library_id,
+                LibraryFile.media_item_id.is_not(None),  # type: ignore[union-attr]
+            )
+        )
+    ).all()
+    live: dict[int, set[int]] = {}
+    for media_item_id, file_id in rows:
+        if media_item_id is not None and file_id is not None:
+            live.setdefault(int(media_item_id), set()).add(int(file_id))
+    root = assets_root()
+
+    def _sweep() -> int:
+        removed = 0
+        for media_item_id, file_ids in live.items():
+            base = root / str(media_item_id) / "chapters"
+            if not base.is_dir():
+                continue
+            before = {sub.name for sub in base.iterdir() if sub.is_dir()}
+            cleanup_orphan_dirs(media_item_id, file_ids, root)
+            removed += len(before - {sub.name for sub in base.iterdir() if sub.is_dir()})
+        return removed
+
+    try:
+        return await asyncio.to_thread(_sweep)
+    except OSError as exc:  # 清理失败（权限/挂载抖动）不该让整轮抓图算作失败
+        logger.warning("媒体库 #%s 章节图孤儿目录清理失败：%s", library_id, exc)
+        return 0
 
 
 # ---------------------------------------------------------------------------
@@ -569,13 +631,22 @@ async def enqueue_library_chapter_images_job(
     actor_id: str | None = None,
     origin: str = "system",
 ) -> jobs.CreateJobResult:
-    """把整库抓图固化成可恢复 Job；同库同时只跑一份。"""
+    """把整库抓图固化成可恢复 Job；同库同时只跑一份。
+
+    库资源挂 ``context`` 而不是默认的 ``target``：``target`` 会占用
+    ``library:{id}`` 租约，而这个作业首轮回填可能跑几个小时——占着租约意味着
+    这几小时里用户点「扫描」的作业只能干等，监听触发的增量扫描与定时对账
+    看到"本库有作业在跑"更是整轮放弃（``scan_library`` 的让路检查），新下载
+    的文件迟迟不入账。它只读媒体文件、只写自己那两列 JSON，与扫描没有真冲突；
+    真正会互相踩的是整理/转移（它们在改文件路径），那两个由处理器开头的
+    ``is_organizing / is_transferring`` 单独挡下。同库去重仍由 ``dedupe_key`` 保证。
+    """
     return await jobs.create_job(
         session,
         job_type=JOB_TYPE,
         subject=library_name,
         input_data={"library_id": library_id, "force": bool(force)},
-        resources=[jobs.ResourceRef("library", library_id)],
+        resources=[jobs.ResourceRef("library", library_id, "context")],
         dedupe_key=f"{JOB_TYPE}:{library_id}",
         conflict_policy="return_existing",
         handler_revision=f"{JOB_TYPE}.v1",
@@ -726,8 +797,16 @@ async def _run_chapter_images_job(
     context: jobs.JobContext, input_data: dict[str, Any]
 ) -> dict[str, Any]:
     """整库抓图处理器：目标是库内待处理的台账行，断点见 ``_run_targets``。"""
+    from movieclaw_api.services.library.organize import is_organizing
+    from movieclaw_api.services.library.transfer import is_transferring
+
     library_id = int(input_data["library_id"])
     force = bool(input_data.get("force", False))
+    # 与整理/转移互斥：它们正在批量改文件路径，此刻抓图抓的是随时会消失的
+    # 路径。作业不占库租约（见 enqueue_library_chapter_images_job），所以这道
+    # 检查要自己做——与 scan_library 同一处理：退回队列，稍后自动继续
+    if is_organizing(library_id) or is_transferring(library_id):
+        raise jobs.JobRetry("媒体库正在变更文件路径，章节生成稍后自动继续", delay_seconds=30)
     db = get_database()
     async with db.session() as session:
         library = await session.get(Library, library_id)
@@ -739,6 +818,8 @@ async def _run_chapter_images_job(
     processed, failed = await _run_targets(
         context, targets, force=force, subject=f"媒体库 #{library_id}"
     )
+    async with db.session() as session:
+        await cleanup_library_orphan_dirs(session, library_id)
     message = f"章节生成完成：处理 {processed} 个文件"
     if failed:
         message += f"，{failed} 个失败（可在库菜单重新生成）"
@@ -758,6 +839,7 @@ async def enqueue_item_chapter_images_job(
     title: str,
     *,
     force: bool = True,
+    priority: int = 0,
     actor_kind: str | None = None,
     actor_name: str | None = None,
     actor_id: str | None = None,
@@ -772,6 +854,11 @@ async def enqueue_item_chapter_images_job(
     ``force`` 默认真（条目菜单「重新生成章节」的口径：已有的图也重做）；
     入库落账后的补图传假，只补没抓齐的——追剧每来一集都把整部剧重抓一遍，
     代价是几十次白跑的抽帧。
+
+    ``priority`` 默认 0：条目菜单是用户站在详情页等这一部的图，不该排在
+    别人后面。入库那一路要传 -10（与整库那份同档）——用户没在等这批图，而
+    执行器只有 4 个并发槽，一次批量入库能排出几十份章节作业，默认优先级会
+    让后面的入库作业跟着一起等。
     """
     return await jobs.create_job(
         session,
@@ -783,7 +870,7 @@ async def enqueue_item_chapter_images_job(
         conflict_policy="return_existing",
         handler_revision=f"{ITEM_JOB_TYPE}.v1",
         max_attempts=2,
-        # 不压低优先级：用户正站在详情页等这一部的图，与整库那份（-10）不同
+        priority=priority,
         actor_kind=actor_kind,
         actor_name=actor_name,
         actor_id=actor_id,
@@ -817,7 +904,7 @@ async def enqueue_ingested_item_chapter_images(
     """
     if not library.extract_chapter_images or not profile_of(library).playable:
         return False
-    await enqueue_item_chapter_images_job(session, media_item_id, title, force=False)
+    await enqueue_item_chapter_images_job(session, media_item_id, title, force=False, priority=-10)
     return True
 
 

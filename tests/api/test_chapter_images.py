@@ -454,6 +454,108 @@ async def test_partial_and_failed_stills_resume_next_round(db, tmp_path, monkeyp
         assert all("image" in e for e in row.chapter_images)
 
 
+async def test_file_vanishing_midway_leaves_no_tombstone(db, tmp_path, monkeypatch):
+    """文件在抓图过程中被搬走/删掉（整理改名、条目转移、洗版）：不记墓碑。
+
+    墓碑在补缺模式下不再重试，为一次路径变更误记一条，等于这一行的图永远
+    缺着。正确的收场是把已抓到的落库、这一行仍然算"没抓齐"，下一轮再来。
+    """
+    video = tmp_path / "media" / "v.mkv"
+    video.parent.mkdir()
+    video.write_bytes(b"x")
+    embedded = [
+        {"start_ms": 0, "end_ms": 20000, "title": None},
+        {"start_ms": 20000, "end_ms": None, "title": None},
+    ]
+    _lib_id, _item_id, file_id = await _seed(db, video, chapters=embedded)
+    assets = Path(get_settings().metadata_dir) / "images"
+
+    seeks: list[float] = []
+
+    def _grab(_video, dest, *, seek_seconds, color):
+        seeks.append(seek_seconds)
+        video.unlink(missing_ok=True)  # 抓第一张时文件被整理搬走
+        return None
+
+    monkeypatch.setattr(chapters_mod, "video_color_for", lambda *_a, **_k: None)
+    monkeypatch.setattr(chapters_mod, "grab_chapter_still", _grab)
+
+    async with db.session() as session:
+        row = await session.get(LibraryFile, file_id)
+        assert await chapters_mod.refresh_file_chapter_images(session, row)
+        assert seeks == [15.0]  # 第一章失败即收尾，不再对着已经不在的文件跑第二章
+        assert row.chapter_images == []
+        assert not chapters_mod.stills_complete(row, assets)  # 下一轮还会重来
+
+        # 文件回到原位（整理结束）：照常抓，墓碑没留下过
+        video.write_bytes(b"x")
+        monkeypatch.setattr(
+            chapters_mod,
+            "grab_chapter_still",
+            lambda _v, dest, *, seek_seconds, color: (
+                dest.parent.mkdir(parents=True, exist_ok=True),
+                dest.write_bytes(b"jpg"),
+                int(seek_seconds * 1000),
+            )[2],
+        )
+        assert await chapters_mod.refresh_file_chapter_images(session, row)
+        assert [e["start_ms"] for e in row.chapter_images] == [0, 20000]
+        assert all("image" in e for e in row.chapter_images)
+
+
+async def test_library_orphan_chapter_dirs_are_swept(db, tmp_path):
+    """整库作业收尾清孤儿目录：台账行被清出（自动清理丢失记录、手动清理、
+    洗版换行）后留下的 ``{item}/chapters/{file_id}/`` 没有任何单条目入口会
+    去清它——条目已经抓齐时它连作业目标都不是。"""
+    video = tmp_path / "media" / "o.mkv"
+    video.parent.mkdir()
+    video.write_bytes(b"x")
+    library_id, item_id, file_id = await _seed(db, video, chapters=[], chapter_images=[])
+    assets = Path(get_settings().metadata_dir) / "images"
+    live_dir = assets / str(item_id) / "chapters" / str(file_id)
+    stale_dir = assets / str(item_id) / "chapters" / str(file_id + 9)
+    for directory in (live_dir, stale_dir):
+        directory.mkdir(parents=True)
+        (directory / "0000000000.jpg").write_bytes(b"jpg")
+
+    async with db.session() as session:
+        assert await chapters_mod.cleanup_library_orphan_dirs(session, library_id) == 1
+    assert live_dir.is_dir()
+    assert not stale_dir.exists()
+
+
+async def test_chapter_job_does_not_hold_the_library_lease(db, tmp_path):
+    """章节作业挂 context 关系、不占库租约：它排队/运行期间，监听与定时对账
+    触发的扫描照常跑。
+
+    首轮回填可能跑几个小时，让路就等于这几个小时里新落盘的文件都不入账。
+    对照组：真正会动文件与台账的作业（target 关系）仍然让扫描顺延。
+    """
+    from movieclaw_api.services.library.scan import scan_library
+
+    root = tmp_path / "empty-root"
+    root.mkdir()
+    async with db.session() as session:
+        lib = Library(name="空库", kind="video", source="local", root_paths=[str(root)])
+        session.add(lib)
+        await session.commit()
+        library_id = lib.id
+        await chapters_mod.enqueue_library_chapter_images_job(session, library_id, lib.name)
+
+    summary = await scan_library(library_id, backfill_existing_specs=False)
+    assert summary.errors == []
+
+    async with db.session() as session:
+        await jobs.create_job(
+            session,
+            job_type="library.organize",
+            input_data={"library_id": library_id},
+            resources=[jobs.ResourceRef("library", library_id)],
+        )
+    summary = await scan_library(library_id, backfill_existing_specs=False)
+    assert any("后台作业" in message for message in summary.errors)
+
+
 async def test_probe_failure_and_missing_ffmpeg_leave_row_untouched(db, tmp_path, monkeypatch):
     """章节补探失败或系统没有 ffmpeg：什么都不写（保持 NULL），下次入口自动再来。"""
     video = tmp_path / "media" / "x.mkv"

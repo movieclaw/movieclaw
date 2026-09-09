@@ -266,10 +266,12 @@ DATA_DIRS: tuple[DataDir, ...] = (
     DataDir(
         key="metadata.images",
         title="刮削图片资产",
-        summary="刮削下载的海报、背景与剧照",
+        summary="刮削下载的海报、背景，以及本地抽帧的章节图",
         description=(
-            "刮削下载的海报、背景与剧照，是媒体库展示的事实源。整体重建等于整库"
-            "刷新元数据（大量外网流量并受 TMDB 限速），因此只提供清理孤儿条目。"
+            "刮削下载的海报、背景与剧照，是媒体库展示的事实源；每个条目目录下的 "
+            "chapters/ 是本地抽帧生成的视频章节图（一部片 8～12 张，约 1MB，可在"
+            "媒体库设置里关掉「生成章节」）。整体重建等于整库刷新元数据（大量外网"
+            "流量并受 TMDB 限速），因此只提供清理孤儿条目。"
         ),
         default="data/metadata/images",
         resolve=lambda s: Path(s.metadata_dir) / "images",

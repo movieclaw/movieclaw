@@ -690,6 +690,11 @@ async def scan_library(
     summary = ScanSummary(library_id=library_id)
     # watchdog 与定时对账仍是轻量直接触发，但必须服从 Job 的库级租约。
     # Job 处理器传入自己的 id 后可穿过这道检查；其他直接扫描看到锁就让路。
+    # **只给 target 关系的作业让路**：那些才是会占用库租约、真的在动文件与
+    # 台账的作业（扫描/整理/转移/元数据刷新）。章节图这类只读文件、只写自己
+    # 那两列的作业挂的是 context 关系——不点名 target 的话，一次几小时的章节
+    # 回填会把监听触发的增量扫描与定时对账整段挡在门外（issue：新下载的文件
+    # 迟迟不入账）。
     db = get_database()
     async with db.session() as lock_session:
         queued_jobs = (
@@ -700,6 +705,7 @@ async def scan_library(
                     active_only=True,
                     resource_type="library",
                     resource_id=library_id,
+                    relation="target",
                     limit=20,
                 )
                 if row.status is not JobStatus.BLOCKED

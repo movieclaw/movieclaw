@@ -2155,16 +2155,19 @@ async def get_library_item(
     # 升级后第一次打开旧条目不用等整库作业排到它。判据与整库作业同源
     # （stills_complete）：半成品、图丢了的行在这里同样会被认出来
     chapters_pending = chapters_mod.item_pending(media_item_id)
-    chapter_assets_root = media_scrape.assets_root()
-    needs_stills = any(
-        chapters_mod.stills_eligible(row)
-        and not chapters_mod.stills_complete(row, chapter_assets_root)
-        for row in rows
-    )
     if library.extract_chapter_images and not chapters_pending:
         # 条目菜单发起的重抓是持久化 Job（重启不丢），内存里的懒触发标记看不到它
         chapters_pending = await chapters_mod.item_job_active(session, media_item_id)
-    if library.extract_chapter_images and not chapters_pending and needs_stills:
+    # "抓齐没有"要逐个文件列一次资产目录，因此**放线程里、而且只在结论真会被
+    # 用到时才算**：库关了开关、或已经在抓的条目算了也白算，而前端在抓图期间
+    # 每 3 秒就回来一次，白算的代价要乘上轮询次数
+    if (
+        library.extract_chapter_images
+        and not chapters_pending
+        and await asyncio.to_thread(
+            chapters_mod.item_needs_stills, rows, media_scrape.assets_root()
+        )
+    ):
         chapters_pending = chapters_mod.schedule_item_chapter_images(media_item_id)
     bundle = await build_item_detail(session, library, item, rows)
 

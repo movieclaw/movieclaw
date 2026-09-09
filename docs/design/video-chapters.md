@@ -299,9 +299,16 @@ ffmpeg -v info -y -skip_frame nokey -ss <t> -copyts -i <file> -an -sn \
   只有补缺判据认它。没有墓碑，"只跳过抓齐的"会让每一轮作业、每一次打开
   详情页都对着同一个抓不出图的文件重跑一遍。force 时不复用墓碑，仍重试。
   ffmpeg 整个缺失是另一回事：什么都不写（保持 NULL），装好后自动补。
+  **文件在抓图过程中不见了**（整理改名、条目转移、洗版换文件）同样不是
+  「抓不出来」：不记墓碑、当场收尾，已抓到的落库，这一行仍算没抓齐，下一轮
+  台账指向新路径后再来。误记一条墓碑等于这一行的图永远缺着。
 - **孤儿清理**：文件行被删除/洗版替换后，`{item}/chapters/{old_file_id}/`
   成为孤儿。Job 处理某条目时顺手删掉该条目下不再对应任何在位文件行的
-  chapters 子目录；条目删除时随资产目录一起清。
+  chapters 子目录；条目删除时随资产目录一起清。**整库作业收尾再按台账扫一遍
+  全库**（`cleanup_library_orphan_dirs`）：单条目入口只清自己处理的那个条目，
+  而「条目已经抓齐、只是少了一集」留下的孤儿连作业目标都不是，等不到任何
+  单条目入口——不扫这一遍它就永远躺在盘上。一个条目一次 listdir，资产目录在
+  本地盘，上千个条目是毫秒级。
 
 ### 4.5 触发时机
 
@@ -370,6 +377,21 @@ ffmpeg -v info -y -skip_frame nokey -ss <t> -copyts -i <file> -an -sn \
 不放进 `ScanPhase.ASSETS`：那一阶段只覆盖本轮新挂锚条目，且一部电影
 8～12 次 seek 乘以整库会把"扫描"拖长数倍；独立 Job 让扫描进度语义不变，
 用户也能单独停掉它。
+
+**与扫描并行**：整库作业把 `library` 资源挂成 `context` 关系而不是默认的
+`target`——`target` 会占用 `library:{id}` 租约，而首轮回填可能跑几个小时：
+占着租约意味着这几小时里用户点「扫描」的作业只能干等，监听触发的增量扫描与
+定时对账看到「本库有作业在跑」更是整轮放弃（`scan_library` 的让路检查），
+新落盘的文件迟迟不入账。章节作业只读媒体文件、只写自己那两列 JSON，与扫描
+没有真冲突，因此 `scan_library` 的让路检查点名只看 `target`
+（`jobs.list_jobs(relation="target")`）。真正会互相踩的是**整理/转移**（它们在
+改文件路径），由处理器开头的 `is_organizing / is_transferring` 单独挡下并退回
+队列，与 `scan_library` 同一套处理。同库去重仍由 `dedupe_key` 保证。
+
+**优先级**：整库作业与**入库落账后**那份条目作业都压到 -10（用户没在等这批
+图，执行器只有 4 个并发槽，一次批量入库能排出几十份，默认优先级会让后面的
+入库作业跟着一起等）；条目菜单「重新生成章节」保持 0——用户正站在详情页等
+这一部的图。
 
 **库开关** `extract_chapter_images` 默认开：抓图在后台低优先级 Job 里，
 网络挂载大库的用户可以关；关掉后已生成的图保留（与 Jellyfin 删图的做法
@@ -473,7 +495,10 @@ Agent 工具无需改动：`spec.json` 重导出后 `library.items.get` 自动�
 | 章节 > 48 或平均间隔 < 1s → 只列表不抓图 | `chapters.py` 单测 |
 | 重启后不重抓已完成的文件，进度不归零 | `test_library_job_resumes_after_restart` |
 | 条目重抓是可恢复 Job，排队期间详情页仍轮询 | `test_item_regenerate_route_enqueues_resumable_job` |
-| 入库落账后新条目有条目级补缺作业（库开关关掉则没有） | `tests/api/test_library_ingest.py` |
+| 入库落账后新条目有条目级补缺作业（库开关关掉则没有），优先级 -10 | `tests/api/test_library_ingest.py` |
+| 章节作业不占库租约，扫描照常跑；target 关系的作业仍让路 | `test_chapter_job_does_not_hold_the_library_lease` |
+| 文件抓图中途消失不记墓碑 | `test_file_vanishing_midway_leaves_no_tombstone` |
+| 整库作业收尾清掉孤儿 chapters 目录 | `test_library_orphan_chapter_dirs_are_swept` |
 | `Chapters` 受 fields 门控、单条目全开 | `tests/jellyfin` |
 | 列表请求不加载章节 JSON 列 | `_list_load_columns` |
 | 详情接口不触发 ffprobe | `build_item_detail` |

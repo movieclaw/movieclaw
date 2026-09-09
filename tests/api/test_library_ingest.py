@@ -711,6 +711,9 @@ async def test_import_enqueues_chapter_images_job(db, tmp_path, monkeypatch):
     assert job.input_data["media_item_id"] == item.id
     # 补缺而不是重抓：追剧每来一集都把整部剧重抓一遍，代价是几十次白跑的抽帧
     assert job.input_data["force"] is False
+    # 压低优先级：执行器只有 4 个并发槽，一次批量入库能排出几十份章节作业，
+    # 默认优先级会让后面的入库作业跟着一起等（条目菜单那一路仍是 0）
+    assert job.priority == -10
     # 挂 media_item 而不是 library：整库那份会让扫描开场看到"本库有作业在跑"
     # 而顺延，一次几小时的回填能把监听触发的增量扫描一并挡住
     assert [(r.resource_type, r.resource_id) for r in resources] == [("media_item", str(item.id))]
