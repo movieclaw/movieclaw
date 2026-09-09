@@ -3029,43 +3029,68 @@ export function VideoPlayer(props: VideoPlayerProps) {
             ) : null}
           </div>
 
-          {/* 画中画放顶栏右上角，不回控制条：它不是「控制这次播放」的动作，
-              而是「把这次播放带走」——和左上角的退出键成对，一个离开播放、
-              一个带着继续。控制条右簇留给字幕/设置/全屏那批真正的播放控制。
+          {/* 顶栏右簇。整簇一起 ml-auto 顶到右边，而不是让成员各自挂——
+              成员是按条件出现的（锁屏只在横屏、画中画看浏览器支持），谁排头
+              不固定，挂在成员上就得每加一个东西给所有人的三元再添一个分支。 */}
+          <div className="ml-auto flex shrink-0 items-center gap-4">
+            {/* 实测取流速度（docs/design/player-feel.md §2.G3）。放顶栏右上角
+                而不是控制条的时间旁边：它是**读数**不是控制项，和左上角的片名
+                同属「这次播放是什么」那一层，与下方那排「你能做什么」分开。
 
-              浏览器不支持由网页发起时整颗不渲染（Firefox 的画中画只在它自己
-              的界面里，留着就是个死按钮）。 */}
-          {/* 锁屏只在触屏的横屏里出现：横躺着看片时手掌压在屏幕上是常态，
-              而竖屏握持时误触少得多，多一颗按钮反而是噪音。 */}
-          {canRotate && (landscape || fakeLandscape || deviceLandscape) ? (
-            <button
-              type="button"
-              onClick={() => {
-                setLocked(true);
-                revealLock();
-              }}
-              className={`ml-auto grid size-9 shrink-0 place-items-center rounded-full border border-white/[0.09] bg-black/30 text-white/85 backdrop-blur-md transition hover:bg-black/50 hover:text-white active:scale-[0.94] max-md:size-11 ${
-                chromeVisible ? "pointer-events-auto" : "pointer-events-none"
-              }`}
-              aria-label="锁屏"
-              title="锁屏（防误触）"
-            >
-              <LockIcon className="size-[18px] max-md:size-[22px]" />
-            </button>
-          ) : null}
-          {canPip ? (
-            <button
-              type="button"
-              onClick={togglePip}
-              className={`grid size-9 shrink-0 place-items-center rounded-full border border-white/[0.09] bg-black/30 text-white/85 backdrop-blur-md transition hover:bg-black/50 hover:text-white active:scale-[0.94] max-md:size-11 ${
-                canRotate && (landscape || fakeLandscape || deviceLandscape) ? "" : "ml-auto"
-              } ${chromeVisible ? "pointer-events-auto" : "pointer-events-none"}`}
-              aria-label={pipActive ? "退出画中画" : "画中画"}
-              title={pipActive ? "退出画中画" : "画中画"}
-            >
-              <PipGlyph exit={pipActive} />
-            </button>
-          ) : null}
+                裸文字，不套控制条那种玻璃药丸，两个理由：
+                - 圆角实底是「可点」的暗示，而右侧这一排全是按钮，做成药丸会
+                  让人伸手去点一个点不动的东西。
+                - 顶栏本来就压着一条 from-black/80 的渐变，这个位置自带底色，
+                  不需要再糊一块 backdrop-filter 才读得清。而每一块磨砂都要
+                  逐帧对视频重采样（见 globals.css 的 .player-glass 注释，
+                  实测掉帧的头号大户）——一个用来量卡顿的读数不该自己制造卡顿。
+
+                样本不够时整格不出现：空着比「-- MB/s」干净，这一格本来也不是
+                每个人都需要盯的东西。字号/弱色与转圈下方那行取同一档，同一个
+                读数在两处长得一样。 */}
+            {speedLabel ? (
+              <span className="tnum text-[12px] text-white/45">↓ {speedLabel}</span>
+            ) : null}
+
+            {/* 锁屏只在触屏的横屏里出现：横躺着看片时手掌压在屏幕上是常态，
+                而竖屏握持时误触少得多，多一颗按钮反而是噪音。 */}
+            {canRotate && (landscape || fakeLandscape || deviceLandscape) ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setLocked(true);
+                  revealLock();
+                }}
+                className={`grid size-9 shrink-0 place-items-center rounded-full border border-white/[0.09] bg-black/30 text-white/85 backdrop-blur-md transition hover:bg-black/50 hover:text-white active:scale-[0.94] max-md:size-11 ${
+                  chromeVisible ? "pointer-events-auto" : "pointer-events-none"
+                }`}
+                aria-label="锁屏"
+                title="锁屏（防误触）"
+              >
+                <LockIcon className="size-[18px] max-md:size-[22px]" />
+              </button>
+            ) : null}
+
+            {/* 画中画放顶栏右上角，不回控制条：它不是「控制这次播放」的动作，
+                而是「把这次播放带走」——和左上角的退出键成对，一个离开播放、
+                一个带着继续。控制条右簇留给字幕/设置/全屏那批真正的播放控制。
+
+                浏览器不支持由网页发起时整颗不渲染（Firefox 的画中画只在它自己
+                的界面里，留着就是个死按钮）。 */}
+            {canPip ? (
+              <button
+                type="button"
+                onClick={togglePip}
+                className={`grid size-9 shrink-0 place-items-center rounded-full border border-white/[0.09] bg-black/30 text-white/85 backdrop-blur-md transition hover:bg-black/50 hover:text-white active:scale-[0.94] max-md:size-11 ${
+                  chromeVisible ? "pointer-events-auto" : "pointer-events-none"
+                }`}
+                aria-label={pipActive ? "退出画中画" : "画中画"}
+                title={pipActive ? "退出画中画" : "画中画"}
+              >
+                <PipGlyph exit={pipActive} />
+              </button>
+            ) : null}
+          </div>
         </div>
 
         {/* 锁屏中的解锁键：画面左侧居中（拇指够得到，又不压在中央播放键上）。
@@ -3370,7 +3395,6 @@ export function VideoPlayer(props: VideoPlayerProps) {
             overrideMs={overrideMs}
             durationMs={durationMs}
             bufferedEndMs={bufferedEndMs}
-            networkSpeed={speedLabel}
             chromeVisible={chromeVisible}
             onSeek={commitSeek}
             onScrub={scrubTo}
