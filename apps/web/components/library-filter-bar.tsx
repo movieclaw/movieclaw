@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import type { Route } from "next";
@@ -22,6 +23,7 @@ import {
   isFilterEmpty,
 } from "@/lib/api/libraries";
 import { filterKey, rulesToFilter } from "@/lib/library-filter";
+import { useIsMobile } from "@/lib/use-media-query";
 
 /**
  * 单库墙的筛选条（docs/design/library-filtering.md 5.1）。
@@ -63,6 +65,7 @@ export function LibraryFilterBar({
   // 的时候才要的。它一打开就要多算十几条 COUNT（tier=all），所以按需请求
   const [more, setMore] = useState(false);
   const [facets, setFacets] = useState<LibraryFacets | null>(null);
+  const mobile = useIsMobile();
   const empty = isFilterEmpty(filter);
   const selectedCount = filterCount(filter);
 
@@ -167,7 +170,7 @@ export function LibraryFilterBar({
 
       {/* —— 点开才有的四个维度 —— */}
       {open && (
-        <div className="mt-2.5 flex flex-wrap items-center gap-2">
+        <div className="scroll-thin mt-2.5 flex flex-wrap items-center gap-2 max-md:flex-nowrap max-md:overflow-x-auto max-md:pb-1">
           <MultiFilterMenu
             label="类型"
             hint="可多选 · 维度内是「或」"
@@ -209,8 +212,16 @@ export function LibraryFilterBar({
         </div>
       )}
 
-      {open && more && (
+      {open && more && !mobile && (
         <MoreFiltersPanel facets={facets} filter={filter} onFilterChange={onFilterChange} />
+      )}
+      {open && more && mobile && (
+        <MoreFiltersSheet
+          facets={facets}
+          filter={filter}
+          onFilterChange={onFilterChange}
+          onClose={() => setMore(false)}
+        />
       )}
 
       {/* —— 条件行：与面板开合无关，只要有条件就在 —— */}
@@ -735,3 +746,79 @@ function CollectionChips({
 
 /** chip 行最多摆几个：再多就该去「合集」视图一次看全，而不是让一行占掉半屏。 */
 const CHIP_LIMIT = 8;
+
+
+/**
+ * 「更多筛选」的移动端形态：底部抽屉（docs/design/library-filtering.md 5.2）。
+ *
+ * **非全屏**是要点：上方留出一截墙，用户看得见条件在实时影响什么。每次勾选
+ * 立即生效，底部主按钮上的数字实时跳——不做"确定"式提交。做成"确定"式的话，
+ * 用户得先盲选一遍条件再看结果，选错了还要重来；而这里筛选本来就是个来回
+ * 试探的过程。
+ *
+ * 底部那颗 `查看 N 部` 因此不是"提交"，只是"我看完了，把抽屉收起来"。
+ */
+function MoreFiltersSheet({
+  facets,
+  filter,
+  onFilterChange,
+  onClose,
+}: {
+  facets: LibraryFacets | null;
+  filter: LibraryFilter;
+  onFilterChange: (next: LibraryFilter) => void;
+  onClose: () => void;
+}) {
+  // Esc / 点上方留白都收起（与全站弹层一致）
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  if (typeof document === "undefined") return null;
+  // 不走 Modal：它的遮罩是 bg-black/60 + 模糊，墙会被盖住——那恰好废掉本抽屉
+  // 存在的理由。视口的两处硬伤照抄它的解法（globals.css 里的两个变量）：
+  // --vp-overshoot 让面板贴住**物理**底边（iOS 独立 App 的视口比屏幕矮一截），
+  // --safe-bottom 让最后一颗按钮不压在 Home 指示条上。这里没有输入框，
+  // Modal 那套键盘避让用不上
+  return createPortal(
+    <div className="fixed inset-x-0 top-0 z-50 flex flex-col justify-end [bottom:calc(-1*var(--vp-overshoot))]">
+      {/* 上半截只压一层很淡的幕：压黑了就等于全屏，看不见墙在变 */}
+      <button
+        type="button"
+        aria-label="收起更多筛选"
+        onClick={onClose}
+        className="flex-1 cursor-default bg-black/25"
+      />
+      <div className="flex max-h-[62dvh] flex-col rounded-t-2xl border-t border-white/10 bg-[rgba(16,18,26,0.92)] shadow-[0_-12px_40px_rgba(0,0,0,0.5)] backdrop-blur-2xl">
+        <div className="flex shrink-0 items-center justify-center py-2">
+          <span className="h-1 w-9 rounded-full bg-white/25" />
+        </div>
+        <div className="scroll-thin min-h-0 flex-1 overflow-y-auto px-4">
+          <MoreFiltersPanel facets={facets} filter={filter} onFilterChange={onFilterChange} />
+        </div>
+        <div className="flex shrink-0 items-center gap-2 px-4 pb-[calc(var(--safe-bottom)+var(--vp-overshoot)+12px)] pt-3">
+          <button
+            type="button"
+            onClick={() => onFilterChange({})}
+            className="h-10 shrink-0 rounded-full px-4 text-ui text-white/60 hover:bg-white/10"
+          >
+            清空
+          </button>
+          {/* 不是「确定」：条件早就生效了，这颗只是把抽屉收起来看结果 */}
+          <button
+            type="button"
+            onClick={onClose}
+            className="btn-glass h-10 flex-1 text-ui font-medium"
+          >
+            {facets ? `查看 ${facets.total} 部` : "查看结果"}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
