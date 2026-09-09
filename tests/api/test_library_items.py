@@ -565,7 +565,9 @@ async def test_items_pinyin_order_and_index(db) -> None:
             "9号秘事",  # 数字归 #，排在最后
         ]
 
-        index_rows = await list_library_item_index(library.id, session=session)
+        index_rows = await list_library_item_index(
+            library.id, session=session, principal=_ADMIN
+        )
         assert [(e.initial, e.count, e.offset) for e in index_rows.data] == [
             ("A", 1, 0),
             ("C", 1, 1),

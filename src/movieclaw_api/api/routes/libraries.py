@@ -29,6 +29,7 @@ from movieclaw_api.schemas.library import (
     ItemDeleteResultView,
     LastOrganizeView,
     LastScanView,
+    LibraryFacetsView,
     LibraryFileView,
     LibraryGalleryGroupView,
     LibraryIndexEntryView,
@@ -92,7 +93,9 @@ from movieclaw_api.services.library.access import (
 )
 from movieclaw_api.services.library.config import LibraryConfigService
 from movieclaw_api.services.library.items import (
+    LibraryFilter,
     build_item_detail,
+    build_library_facets,
     build_library_gallery,
     build_library_index,
     build_library_wall,
@@ -1797,6 +1800,76 @@ async def start_organize(
     )
 
 
+def _filter_params(
+    g: Annotated[
+        str | None,
+        Query(description="类型：TMDB genre id，逗号分隔（维内 OR）。例：16,878"),
+    ] = None,
+    c: Annotated[
+        str | None,
+        Query(description="地区：ISO 3166-1 国家码，逗号分隔（维内 OR）。例：JP,KR"),
+    ] = None,
+    d: Annotated[
+        str | None,
+        Query(description="年代档：2020s/2010s/2000s/1990s/earlier，逗号分隔（维内 OR）"),
+    ] = None,
+    w: Annotated[
+        Literal["unwatched", "watching", "played", "favorite"] | None,
+        Query(description="观看状态（单选）：未看/在看/已看完是一个划分，favorite 与之正交"),
+    ] = None,
+) -> LibraryFilter:
+    """筛选参数 → LibraryFilter。
+
+    ``/items``、``/facets``、``/item-index`` **共用这一个依赖**：口径分叉是
+    这类功能最常见的 bug 源（面板说 42 部、墙上只有 39 部），共用之后
+    分叉在结构上就不可能发生。
+
+    维内 OR、维间 AND；解析不出的取值静默丢弃（宽容语义，老链接不至于 422）。
+    """
+
+    def _split(raw: str | None) -> list[str]:
+        return [part.strip() for part in (raw or "").split(",") if part.strip()]
+
+    genres = tuple(int(x) for x in _split(g) if x.lstrip("-").isdigit())
+    return LibraryFilter(
+        genres=genres,
+        countries=tuple(x.upper() for x in _split(c)),
+        decades=tuple(_split(d)),
+        watch=w,
+    )
+
+
+@router.get(
+    "/{library_id}/facets",
+    response_model=ApiResponse[LibraryFacetsView],
+    summary="筛选面板的候选值与计数（每一维排除自身条件后算）",
+    operation_id="library.items.facets",
+    dependencies=[Depends(require_library_visible)],
+)
+async def get_library_facets(
+    library_id: int,
+    filters: Annotated[LibraryFilter, Depends(_filter_params)],
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_library_visible),
+) -> ApiResponse[LibraryFacetsView]:
+    """与 ``/items`` 同参：面板上显示多少部，点下去墙上就是多少部。
+
+    为 0 的候选值照常返回（前端置灰不可点）——「永不空货架」的第一道闸。
+    """
+
+    library = await LibraryConfigService(session).get(library_id)  # 404 检查
+    member_id = principal.member_id if principal.member_id is not None else 0
+    return ok(
+        await build_library_facets(
+            session,
+            library_id,
+            library.kind,
+            filters=filters,
+            member_id=member_id,
+        )
+    )
+
+
 @router.get(
     "/{library_id}/items",
     response_model=ApiResponse[list[LibraryItemView]],
@@ -1829,6 +1902,7 @@ async def list_library_items(
             )
         ),
     ] = "confirmed",
+    filters: Annotated[LibraryFilter, Depends(_filter_params)] = None,  # type: ignore[assignment]
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(require_library_visible),
 ) -> ApiResponse[list[LibraryItemView]]:
@@ -1845,6 +1919,7 @@ async def list_library_items(
             offset=offset,
             identity=identity,
             member_id=member_id,
+            filters=filters,
         )
     )
 
@@ -1889,7 +1964,9 @@ async def list_library_item_index(
     sort: Literal["title", "release_date"] = Query(
         default="title", description="title=首字母档；release_date=月份档（图片库/其他库时间线）"
     ),
+    filters: Annotated[LibraryFilter, Depends(_filter_params)] = None,  # type: ignore[assignment]
     session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_library_visible),
 ) -> ApiResponse[list[LibraryIndexEntryView]]:
     """索引条数据：每档的条目数与起始 offset，只回非空档。
 
@@ -1899,7 +1976,10 @@ async def list_library_item_index(
     """
 
     await LibraryConfigService(session).get(library_id)  # 404 检查
-    buckets = await build_library_index(session, library_id, sort)
+    member_id = principal.member_id if principal.member_id is not None else 0
+    buckets = await build_library_index(
+        session, library_id, sort, filters=filters, member_id=member_id
+    )
     return ok(
         [
             LibraryIndexEntryView(initial=initial, count=count, offset=offset)

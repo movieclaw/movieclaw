@@ -300,3 +300,181 @@ async def test_pagination_holds_under_filter(db) -> None:
         )
         seen = [r.media_item_id for r in (*first, *second, *rest)]
         assert len(seen) == len(set(seen)) == 5
+
+
+# ---------------------------------------------------------------------------
+# facet 计数（docs/design/library-filtering.md 3.3）
+# ---------------------------------------------------------------------------
+
+
+async def _facets(session, library_id, **kw):
+    from movieclaw_api.services.library.items import build_library_facets
+
+    return await build_library_facets(session, library_id, "movie", member_id=_ME, **kw)
+
+
+def _by_value(view_list) -> dict[str, int]:
+    return {row.value: row.count for row in view_list}
+
+
+async def test_facets_count_the_whole_library_when_unfiltered(db) -> None:
+    """无条件时：每个候选值的计数就是它自己的条目数，总数是全库。"""
+    async with db.session() as session:
+        library_id, ids = await _seed(session)
+        facets = await _facets(session, library_id)
+
+        assert facets.total == len(ids)
+        assert _by_value(facets.genres)["16"] == 2  # 动画两部
+        assert _by_value(facets.genres)["18"] == 2  # 剧情两部
+        assert _by_value(facets.countries)["JP"] == 2
+        assert _by_value(facets.decades)["2010s"] == 3
+
+
+async def test_facet_labels_use_the_builtin_mapping(db) -> None:
+    """类型/地区的展示名走内置映射表，不是把 id 原样丢给前端。"""
+    async with db.session() as session:
+        library_id, _ = await _seed(session)
+        facets = await _facets(session, library_id)
+
+        assert {row.value: row.label for row in facets.genres}["16"] == "动画"
+        assert {row.value: row.label for row in facets.countries}["JP"] == "日本"
+        assert {row.value: row.label for row in facets.decades}["earlier"] == "更早"
+
+
+async def test_facet_excludes_its_own_dimension(db) -> None:
+    """这是整个 facet 的关键：算某一维时**排除该维自身**的条件。
+
+    勾了「动画」之后，「剧情」的计数不能变成 0——否则多选就废了，
+    用户永远只能一次选一个类型。
+    """
+    async with db.session() as session:
+        library_id, _ = await _seed(session)
+        facets = await _facets(session, library_id, filters=LibraryFilter(genres=(16,)))
+
+        genres = _by_value(facets.genres)
+        assert genres["16"] == 2, "已选值自身的计数照常"
+        assert genres["18"] == 2, "同维其他值不受本维条件影响——勾上它就能看到这两部"
+        # 但**其他维度**要受影响：只剩两部日本动画，所以韩国/美国都归零
+        countries = _by_value(facets.countries)
+        assert countries["JP"] == 2
+        assert countries.get("KR", 0) == 0 and countries.get("US", 0) == 0
+        assert facets.total == 2
+
+
+async def test_zero_values_are_still_returned(db) -> None:
+    """为 0 的候选值照常返回——前端置灰不可点，是"永不空货架"的第一道闸。
+
+    直接不返回的话，用户会看到选项凭空消失，比置灰更让人困惑。
+    """
+    async with db.session() as session:
+        library_id, _ = await _seed(session)
+        facets = await _facets(session, library_id, filters=LibraryFilter(countries=("JP",)))
+
+        decades = _by_value(facets.decades)
+        assert set(decades) == {"2020s", "2010s", "2000s", "1990s", "earlier"}
+        assert decades["1990s"] == 0  # 日本片里没有 90 年代的，但这一档仍然在
+
+
+async def test_facets_and_wall_agree(db) -> None:
+    """面板上显示多少部，点下去墙上就是多少部——两者共用同一个 filters。"""
+    async with db.session() as session:
+        library_id, _ = await _seed(session)
+        base = LibraryFilter(countries=("JP", "KR"))
+        facets = await _facets(session, library_id, filters=base)
+
+        for row in facets.genres:
+            picked = LibraryFilter(countries=base.countries, genres=(int(row.value),))
+            wall = await build_library_wall(session, library_id, member_id=_ME, filters=picked)
+            assert len(wall) == row.count, f"类型 {row.label} 的计数与墙对不上"
+
+
+async def test_watch_facet_sums_to_total(db) -> None:
+    """未看/在看/已看完三档相加等于总数（favorite 与它们正交，不参与求和）。"""
+    async with db.session() as session:
+        library_id, ids = await _seed(session)
+        session.add(
+            PlaybackState(member_id=_ME, media_item_id=ids["寄生虫"], played=True, position_ms=0)
+        )
+        await session.flush()
+
+        facets = await _facets(session, library_id)
+        watch = _by_value(facets.watch)
+        assert watch["unwatched"] + watch["watching"] + watch["played"] == facets.total
+
+
+# ---------------------------------------------------------------------------
+# 接口装配：查询参数解析与三个接口的同参约定
+# ---------------------------------------------------------------------------
+
+
+def test_filter_params_parsing() -> None:
+    """逗号分隔、大小写、脏取值的解析口径。
+
+    解析不出的取值静默丢弃而不是 422——筛选条件常出现在分享出去的链接里，
+    老链接里的一个废值不该让整页打不开。
+    """
+    from movieclaw_api.api.routes.libraries import _filter_params
+
+    got = _filter_params(g="16, 878 ,x", c="jp,kr", d="2010s,2020s", w="unwatched")
+    assert got.genres == (16, 878)
+    assert got.countries == ("JP", "KR")
+    assert got.decades == ("2010s", "2020s")
+    assert got.watch == "unwatched"
+
+    empty = _filter_params()
+    assert empty.is_empty and empty.genres == () and empty.watch is None
+
+
+def test_facets_endpoint_is_wired(tmp_path, monkeypatch) -> None:
+    """走一遍真实 HTTP：路由注册、依赖装配、响应形状。"""
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path / 'http.db'}")
+    monkeypatch.setenv("SECRET_KEY_FILE", str(tmp_path / ".secret_key"))
+    monkeypatch.setenv("SCHEDULER_ENABLED", "false")
+    get_settings.cache_clear()
+
+    from movieclaw_api.api.deps import require_login
+    from movieclaw_api.api.routes import libraries as library_routes
+    from movieclaw_api.app import create_app
+    from movieclaw_api.services.auth import Principal
+
+    async def _skip_scan(*_a, **_kw) -> None:
+        """建库后的初次扫描与本用例无关。"""
+
+    monkeypatch.setattr(library_routes, "enqueue_scan_job", _skip_scan)
+    app = create_app()
+    app.dependency_overrides[require_login] = lambda: Principal(kind="admin", name="tester")
+
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/v1/libraries",
+            json={"name": "电影库", "kind": "movie", "root_paths": [str(tmp_path / "movies")]},
+        )
+        assert created.status_code == 200, created.text
+        library_id = created.json()["data"]["id"]
+
+        resp = client.get(f"/api/v1/libraries/{library_id}/facets?g=16&c=JP&w=unwatched")
+        assert resp.status_code == 200, resp.text
+        data = resp.json()["data"]
+        assert data["total"] == 0
+        # 空库也回全部年代档与全部观看档（置灰用），只有类型/地区是数据里长出来的
+        assert [row["value"] for row in data["decades"]] == [
+            "2020s",
+            "2010s",
+            "2000s",
+            "1990s",
+            "earlier",
+        ]
+        assert [row["value"] for row in data["watch"]] == [
+            "unwatched",
+            "watching",
+            "played",
+            "favorite",
+        ]
+
+        # /items 与 /item-index 吃同一组参数，不能因为多带筛选就 422
+        assert client.get(f"/api/v1/libraries/{library_id}/items?g=16&c=JP").status_code == 200
+        assert client.get(f"/api/v1/libraries/{library_id}/item-index?g=16&c=JP").status_code == 200
+
+    get_settings.cache_clear()

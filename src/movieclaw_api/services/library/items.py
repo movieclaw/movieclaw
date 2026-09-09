@@ -35,12 +35,14 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Literal, NamedTuple
 
-from sqlalchemy import Integer, and_, func, not_, or_
+from sqlalchemy import Integer, and_, func, not_, or_, true
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from movieclaw_api.schemas.library import (
     EpisodeView,
+    FacetValueView,
+    LibraryFacetsView,
     LibraryGalleryGroupView,
     LibraryGalleryImageView,
     LibraryInventorySummaryView,
@@ -83,6 +85,7 @@ from movieclaw_db.models import (
     utcnow,
 )
 from movieclaw_db.repositories.library_repo import LibraryRepository
+from movieclaw_media.genres import country_label, genre_label
 from movieclaw_media.models import MediaKind
 
 logger = logging.getLogger("movieclaw_api.library_items")
@@ -340,7 +343,7 @@ def _watch_clause(watch: WatchFilter, member_id: int):
     )
 
 
-def _filter_subquery(filters: LibraryFilter | None, member_id: int | None):
+def _filter_subquery(filters: LibraryFilter | None, member_id: int | None, skip: str | None = None):
     """命中筛选条件的 ``media_item_id`` 子查询；不收窄时返回 None。
 
     **这是整个筛选功能在服务端唯一的收窄点。** 做成子查询而不是往各个排序
@@ -348,15 +351,18 @@ def _filter_subquery(filters: LibraryFilter | None, member_id: int | None):
     media_item、按内容时间还要 outerjoin media_metadata、最近添加谁都不 join）；
     收敛成一句 ``media_item_id IN (…)`` 之后，排序、分页、索引条、图廊全都
     不必知道筛选的存在。
+
+    ``skip`` 排除某一个维度自身的条件——算某维的 facet 计数时必须这么做，
+    否则勾了「动画」之后其他类型全变 0，多选就废了（library-filtering.md 3.3）。
     """
     if filters is None or filters.is_empty:
         return None
     conds = []
-    if filters.genres:
+    if filters.genres and skip != "genres":
         conds.append(_json_any_of(MediaMetadata.genre_ids, filters.genres))
-    if filters.countries:
+    if filters.countries and skip != "countries":
         conds.append(_json_any_of(MediaMetadata.origin_countries, filters.countries))
-    if filters.decades:
+    if filters.decades and skip != "decades":
         year = _year_expr()
         spans = [
             (year <= hi) if lo is None else and_(year >= lo, year <= hi)
@@ -364,7 +370,7 @@ def _filter_subquery(filters: LibraryFilter | None, member_id: int | None):
         ]
         if spans:
             conds.append(or_(*spans))
-    if filters.watch:
+    if filters.watch and skip != "watch":
         # 观看状态是按人算的；不认人的调用（内部任务、CLI）落到超管哨兵 0
         conds.append(_watch_clause(filters.watch, member_id or 0))
     if not conds:
@@ -376,13 +382,13 @@ def _filter_subquery(filters: LibraryFilter | None, member_id: int | None):
     )
 
 
-def _narrow(filters: LibraryFilter | None, member_id: int | None) -> tuple:
+def _narrow(filters: LibraryFilter | None, member_id: int | None, skip: str | None = None) -> tuple:
     """筛选收窄的 WHERE 片段。
 
     不收窄时是空元组，调用处 ``*_narrow(...)`` 展开后等于什么都没加——
     未筛选的路径与改造前逐字相同，不多一次 join、不多一个子查询。
     """
-    subq = _filter_subquery(filters, member_id)
+    subq = _filter_subquery(filters, member_id, skip)
     return () if subq is None else (LibraryFile.media_item_id.in_(subq),)  # type: ignore[union-attr]
 
 
@@ -481,6 +487,136 @@ async def build_library_index(
         else:
             buckets.append((initial, 1, index))
     return buckets
+
+
+#: 观看维度的四个候选值与展示名（前三者是一个划分，见 WatchFilter）
+_WATCH_LABELS: list[tuple[WatchFilter, str]] = [
+    ("unwatched", "未看"),
+    ("watching", "在看"),
+    ("played", "已看完"),
+    ("favorite", "我收藏的"),
+]
+
+
+def _facet_scope(library_id: int, filters: LibraryFilter | None, member_id: int | None, skip: str):
+    """算某一维 facet 时的库内范围：本库、已识别、其他维度的条件都算上。"""
+    return (
+        LibraryFile.library_id == library_id,
+        LibraryFile.media_item_id.is_not(None),  # type: ignore[union-attr]
+        _identity_clause("confirmed"),
+        *_narrow(filters, member_id, skip=skip),
+    )
+
+
+async def _json_facet(
+    session: AsyncSession,
+    column,
+    library_id: int,
+    filters: LibraryFilter | None,
+    member_id: int | None,
+    skip: str,
+) -> list[tuple[str, int]]:
+    """JSON 数组列的取值分布：展开后按值分组数条目（类型、地区共用）。"""
+    each = func.json_each(column).table_valued("value")
+    rows = (
+        await session.execute(
+            select(each.c.value, func.count(func.distinct(LibraryFile.media_item_id)))
+            .select_from(LibraryFile)
+            .join(MediaMetadata, MediaMetadata.media_item_id == LibraryFile.media_item_id)  # type: ignore[arg-type]
+            .join(each, true())
+            .where(*_facet_scope(library_id, filters, member_id, skip))
+            .group_by(each.c.value)
+        )
+    ).all()
+    return [(str(value), count) for value, count in rows if value is not None]
+
+
+async def build_library_facets(
+    session: AsyncSession,
+    library_id: int,
+    kind: str,
+    *,
+    filters: LibraryFilter | None = None,
+    member_id: int | None = None,
+) -> LibraryFacetsView:
+    """筛选面板的候选值与计数（docs/design/library-filtering.md 3.3）。
+
+    每一维的计数都在**排除该维自身条件**的前提下算（``skip``）——否则勾了
+    「动画」之后其他类型全变 0，多选就废了。与 ``build_library_wall`` 共用
+    同一个 ``filters``，所以「面板上显示多少部、点下去墙上就是多少部」是
+    结构保证的，不靠两处各写一遍。
+
+    为 0 的候选值照常返回（前端置灰不可点），这是「永不空货架」的第一道闸。
+    """
+    total = (
+        await session.execute(
+            select(func.count(func.distinct(LibraryFile.media_item_id))).where(
+                *_facet_scope(library_id, filters, member_id, skip="")
+            )
+        )
+    ).scalar_one()
+
+    genres = await _json_facet(
+        session, MediaMetadata.genre_ids, library_id, filters, member_id, "genres"
+    )
+    countries = await _json_facet(
+        session, MediaMetadata.origin_countries, library_id, filters, member_id, "countries"
+    )
+
+    # 年代：取（条目, 年份）后在 Python 里分档——档位是闭区间常量，用 SQL 的
+    # CASE 表达只会让这段更难读，而行数与库内条目数同量级
+    year_rows = (
+        await session.execute(
+            select(LibraryFile.media_item_id, _year_expr())
+            .select_from(LibraryFile)
+            .join(MediaItem, MediaItem.id == LibraryFile.media_item_id)  # type: ignore[arg-type]
+            .outerjoin(MediaMetadata, MediaMetadata.media_item_id == LibraryFile.media_item_id)  # type: ignore[arg-type]
+            .where(*_facet_scope(library_id, filters, member_id, "decades"))
+            .distinct()
+        )
+    ).all()
+    decade_counts: dict[str, int] = {key: 0 for key in _DECADE_RANGES}
+    for _, year in year_rows:
+        if year is None:
+            continue  # 未知年份不属于任何档（见 _DECADE_RANGES）
+        for key, (lo, hi) in _DECADE_RANGES.items():
+            if (lo is None or year >= lo) and year <= hi:
+                decade_counts[key] += 1
+                break
+
+    watch_counts: list[tuple[str, str, int]] = []
+    for value, label in _WATCH_LABELS:
+        count = (
+            await session.execute(
+                select(func.count(func.distinct(LibraryFile.media_item_id)))
+                .select_from(LibraryFile)
+                .join(MediaItem, MediaItem.id == LibraryFile.media_item_id)  # type: ignore[arg-type]
+                .where(
+                    *_facet_scope(library_id, filters, member_id, "watch"),
+                    _watch_clause(value, member_id or 0),
+                )
+            )
+        ).scalar_one()
+        watch_counts.append((value, label, count))
+
+    return LibraryFacetsView(
+        total=int(total),
+        # 类型与地区按数量倒序：用户扫的是「这个库里主要有什么」，不是字典序
+        genres=[
+            FacetValueView(value=v, label=genre_label(kind, int(v)) if v.isdigit() else v, count=c)
+            for v, c in sorted(genres, key=lambda r: (-r[1], r[0]))
+        ],
+        countries=[
+            FacetValueView(value=v, label=country_label(v), count=c)
+            for v, c in sorted(countries, key=lambda r: (-r[1], r[0]))
+        ],
+        # 年代按时间倒序（_DECADE_RANGES 本就是这个顺序），空档也回
+        decades=[
+            FacetValueView(value=key, label="更早" if key == "earlier" else key, count=count)
+            for key, count in decade_counts.items()
+        ],
+        watch=[FacetValueView(value=v, label=lb, count=c) for v, lb, c in watch_counts],
+    )
 
 
 async def _wall_page_ids(

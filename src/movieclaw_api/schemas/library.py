@@ -390,6 +390,36 @@ def derive_air_status(status: str | None) -> Literal["airing", "ended"] | None:
     return None
 
 
+class FacetValueView(BaseModel):
+    """筛选面板里的一个候选值（docs/design/library-filtering.md 3.3）。"""
+
+    value: str = Field(description="取值（类型是 TMDB genre id、地区是国家码、年代是档名）")
+    label: str = Field(description="展示名（类型/地区走内置映射表，未知取值原样显示）")
+    count: int = Field(
+        description=(
+            "在**其他维度**已选条件下勾上本值还剩几部——算本维时排除本维自身"
+            "的条件，否则勾了「动画」之后其他类型全变 0，多选就废了"
+        )
+    )
+
+
+class LibraryFacetsView(BaseModel):
+    """一次筛选下的全部候选值与计数。
+
+    与 /items 共用同一组筛选参数，因此两者口径天然一致：面板上显示多少部，
+    点下去墙上就是多少部。为 0 的候选值仍然返回（前端置灰不可点），
+    这是"永不空货架"的第一道闸。
+    """
+
+    total: int = Field(description="当前条件下的命中总数")
+    genres: list[FacetValueView] = Field(default_factory=list, description="类型，按数量倒序")
+    countries: list[FacetValueView] = Field(default_factory=list, description="地区，按数量倒序")
+    decades: list[FacetValueView] = Field(default_factory=list, description="年代，按时间倒序")
+    watch: list[FacetValueView] = Field(
+        default_factory=list, description="观看状态：未看/在看/已看完是一个划分，另加我收藏的"
+    )
+
+
 class LibraryIndexEntryView(BaseModel):
     """海报墙 A-Z 索引条的一档（按标题排序下的首字母分组）。"""
 
