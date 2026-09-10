@@ -279,6 +279,7 @@ def _seed(
         MediaMetadata,
         utcnow,
     )
+    from movieclaw_db.repositories.library_repo import LibraryRepository
 
     ids: dict[str, int] = {}
 
@@ -435,6 +436,11 @@ def _seed(
                             name=f"第 {episode} 集",
                         )
                     )
+                await session.commit()
+                # 刷一次库存快照：stats 是写路径维护的预计算值（扫描/入库时刷新），
+                # 列表页与库头部直接读它。直接往表里写行不会碰它，不刷的话
+                # /library 上会写着「0 部电影」——那是夹具的账，不是产品的
+                await LibraryRepository(session).refresh_stats(list(library_ids.values()))
                 await session.commit()
         finally:
             await db.dispose()
@@ -1126,3 +1132,4 @@ def test_mobile_layout_end_to_end(stack) -> None:  # noqa: PLR0915
         assert not page_errors, f"页面报错：{page_errors[:3]}"
         context.close()
         browser.close()
+
