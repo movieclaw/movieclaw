@@ -797,8 +797,23 @@ async def _decide(
     principal: Principal,
     session: AsyncSession,
 ):
-    """decide 与开会话共用的取数与判定。"""
+    """decide 与开会话共用的取数与判定。
+
+    **可见性在这里收口两次**：库范围（``visible_library_ids``）之外，还要过
+    ``assert_item_visible``——它带着成员的内容分级约束。少了这一道，儿童档案
+    只是看不到超分级的片，直链一个 ``media_item_id`` 过来照样起播；收窄只做在
+    列表上，等于挡住了浏览、没挡住播放。
+
+    ``_decide`` 是 decide、开会话与两处降级重试共用的唯一入口，所以这一道
+    只需要写在这里。
+    """
     visible = await visible_library_ids(session, principal)
+    guard_item_id = payload.media_item_id
+    if guard_item_id is None and payload.file_id is not None:
+        file_row = await session.get(LibraryFile, payload.file_id)
+        guard_item_id = file_row.media_item_id if file_row is not None else None
+    if guard_item_id is not None:
+        await assert_item_visible(session, principal, guard_item_id)
     capability = playback_plan.capability_from_request(payload.capability)
     failed = frozenset(Tier(t) for t in payload.failed_tiers if t in Tier._value2member_map_)
     if payload.file_id is not None:

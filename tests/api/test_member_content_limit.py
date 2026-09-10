@@ -259,6 +259,28 @@ def test_detail_and_episodes_are_404(stack) -> None:
     assert client.get("/api/v1/libraries/1/items/1").status_code == 200
 
 
+def test_playback_is_blocked_too(stack) -> None:
+    """列表藏起来、播放器照放，那道约束就只是障眼法。
+
+    ``/playback/decide`` 此前只按**库范围**收窄，不看内容分级——儿童档案直链
+    一个 ``media_item_id`` 过来就能拿到播放计划。收窄只做在浏览面上，挡住的
+    是浏览，不是播放。
+    """
+    client, become_child, become_admin = stack
+    body = {"media_item_id": 4, "capability": {}}
+    become_admin()
+    assert client.post("/api/v1/playback/decide", json=body).status_code != 404
+
+    become_child(13)
+    assert client.post("/api/v1/playback/decide", json=body).status_code == 404
+    # 分级之内的那部照放（这里没有真文件，能走到"找不到可播放的文件"就说明
+    # 它过了可见性这一关，而不是被约束挡在门外）
+    allowed = client.post(
+        "/api/v1/playback/decide", json={"media_item_id": 1, "capability": {}}
+    )
+    assert allowed.status_code != 403
+
+
 def test_limit_can_be_cleared(stack) -> None:
     """取消上限传 -1；传 null 是"不改动"，两者不能混为一谈。"""
     client, become_child, _ = stack
