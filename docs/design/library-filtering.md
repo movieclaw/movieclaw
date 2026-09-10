@@ -582,7 +582,7 @@ v1 **只做"从本库现有取值里选"**（候选来自库内实际出现过�
 |---|---|
 | F4.1 成员增删 | `collection.items.add` / `collection.items.remove`，只对手动合集开放（`_guard_manual`：规则驱动的合集拒绝手工增删，否则下一次求值就会把手工结果冲掉） |
 | F4.2 排序与入口 | `collection.items.reorder` 存 `collection_item.position`；`components/collection-order-panel.tsx` 拖拽面板；作品详情页「加入合集」→ `components/add-to-collection-dialog.tsx` |
-| F4.3 跨库合集 | `collection.library_id` 允许为空；`_aggregate_wall_views` 接受 `library_ids` 列表；**新增** `/library/collections` 总览页与 `components/all-collections-view.tsx` |
+| F4.3 跨库合集 | `collection.library_id` 允许为空（**只能是固定名单**，见下）；`_aggregate_wall_views` 接受 `library_ids` 列表；**新增** `/library/collections` 总览页与 `components/all-collections-view.tsx` |
 | F4.4 合集分享 | `media_share` 加 `collection_id`，与 `media_item_id` **二选一**；`collection.share.get/create/revoke` + 公开 `share.collection`；分享页 `components/share/shared-collection-view.tsx` |
 | F4.6 规则条可编辑 | 合集详情页的规则条从只读升级为可改（F3 收窄的两处之一），`collection.update` 收规则；改完立即重算成员数 |
 
@@ -593,6 +593,10 @@ v1 **只做"从本库现有取值里选"**（候选来自库内实际出现过�
   页多一次墙查询，与开一次库页同量级。
 - **`library_id` 为空的合集不进单库页的 chip 行**，只在 `/library/collections` 露出。
   跨库合集出现在单库的筛选条上，用户点进去会看到本库没有的片，那比"找不到入口"更难解释。
+- **跨库合集只能是固定名单，不能规则驱动**：`resolve_members()` 求值需要单一
+  `library_id`。接口对"跨库 + 规则"直接返回 400，而不是建出一个永远解析不出成员的
+  空合集——建得成、看着像回事、就是一部片都没有，那种失败最难查。
+  这条约束也正是 F4.5 卡住的地方（跨库的收藏页对不上按库的收藏合集）。
 
 **验收**：拖拽顺序在海报墙、Jellyfin 客户端、分享页三处一致 —— 三处都走
 `resolve_members()`，顺序由 `collection_item.position` 唯一决定。

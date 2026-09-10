@@ -1043,6 +1043,134 @@ def test_filtering_and_collections_end_to_end(stack) -> None:  # noqa: PLR0915
         expect(page.get_by_text("作品系列 ·").first).to_be_visible()
         shot("23-item-to-series")
 
+        # ================= 23. 加入合集：从影片页把一部片塞进手动合集 =======
+        # 「就这批科幻」是第 14 步固定下来的名单合集（rule_driven=False）；
+        # 手工增删只对这类合集开放
+        fixed_id = next(
+            row["id"]
+            for row in api("get", f"/collections?library_id={movie_lib}")["data"]
+            if row["name"] == "就这批科幻"
+        )
+        before = [row["title"] for row in api("get", f"/collections/{fixed_id}/items")["data"]]
+
+        page.goto(f"{base}/library/{movie_lib}/item/{ids['霸王别姬']}")
+        page.wait_for_load_state("networkidle")
+        page.get_by_role("button", name="更多操作").click()
+        page.get_by_role("menuitem", name="加入合集…").click()
+        add_dialog = page.locator(".menu-surface").filter(has_text="加入合集")
+        expect(add_dialog).to_be_visible()
+        # 自动收录的合集不在可选项里：往规则驱动的合集手工塞片，下次求值就没了
+        # ——那是一种"改了、看着生效了、过一会儿又变回去"的失败
+        assert SERIES_NAME not in add_dialog.inner_text(), "自动收录的合集不该出现在这里"
+        assert "我的收藏" not in add_dialog.inner_text(), "内置合集也不能手工改"
+        shot("24-add-to-collection")
+        add_dialog.get_by_role("button").filter(has_text="就这批科幻").click()
+        expect(add_dialog).to_have_count(0)
+
+        after_add = [row["title"] for row in api("get", f"/collections/{fixed_id}/items")["data"]]
+        assert after_add == [*before, "霸王别姬"], f"新加的排在末尾：{after_add}"
+
+        # ================= 24. 整理顺序：改完之后三处一致 =================
+        page.goto(f"{base}/library/{movie_lib}/c/{fixed_id}")
+        page.wait_for_load_state("networkidle")
+        page.get_by_role("button", name="更多操作").click()
+        page.get_by_role("menuitem", name="整理顺序…").click()
+        panel = page.locator(".menu-surface").filter(has_text="整理顺序")
+        expect(panel).to_be_visible()
+        rows_in_panel = panel.locator(".glass-row")
+        expect(rows_in_panel).to_have_count(len(after_add))
+
+        # 把刚加的那部顶到最前。用上下键而不是模拟拖拽：两种操作走的是同一份
+        # 状态与同一条保存路径，而拖拽在无头浏览器里验的多半是 dnd 事件本身
+        moving = rows_in_panel.filter(has_text="霸王别姬")
+        for _ in range(len(after_add) - 1):
+            moving.locator('button[aria-label="上移"]').click()
+        # 顺手移出一部，验「移出的只是名单里的一行，作品一部不少」
+        dropped = after_add[-2]
+        panel.locator(f'button[aria-label="移出 {dropped}"]').click()
+        expect(rows_in_panel).to_have_count(len(after_add) - 1)
+        shot("25-collection-order")
+        panel.get_by_role("button", name="保存顺序").click()
+        expect(panel).to_have_count(0)
+
+        expected = ["霸王别姬", *[t for t in before if t != dropped]]
+
+        # (a) 站内
+        web_order = [row["title"] for row in api("get", f"/collections/{fixed_id}/items")["data"]]
+        assert web_order == expected, f"站内顺序：{web_order}"
+        wall_titles = {
+            row["title"] for row in api("get", f"/libraries/{movie_lib}/items?limit=200")["data"]
+        }
+        assert dropped in wall_titles, "移出合集不该动到作品本身"
+
+        # (b) 电视端：BoxSet 的孩子
+        fixed_boxset = next(
+            row
+            for row in jf_get("/Items", ParentId=collections_view_guid())["Items"]
+            if row["Name"] == "就这批科幻"
+        )
+        tv_order = [row["Name"] for row in jf_get("/Items", ParentId=fixed_boxset["Id"])["Items"]]
+        assert tv_order == expected, f"电视端顺序：{tv_order}"
+
+        # (c) 分享页
+        page.get_by_role("button", name="更多操作").click()
+        page.get_by_role("menuitem", name="分享…").click()
+        expect(page.get_by_text("已有一条有效分享")).to_have_count(0)
+        page.get_by_role("button", name="生成链接").click()
+        # 「生成链接」成功后原地切到「已分享」形态，不关窗不二跳
+        expect(page.get_by_role("button", name=re.compile("复制链接"))).to_be_visible()
+        page.keyboard.press("Escape")
+        slug = api("get", f"/collections/{fixed_id}/share")["data"]["slug"]
+        shared = api("get", f"/share/{slug}/collection")["data"]
+        assert [row["title"] for row in shared["items"]] == expected, shared["items"]
+
+        # 访客真打得开：分享页是没有登录态的另一套渲染，接口通不等于页面通
+        guest = browser.new_context(viewport={"width": 1280, "height": 900}, locale="zh-CN")
+        guest_page = guest.new_page()
+        guest_page.set_default_timeout(20_000)
+        guest_page.goto(f"{base}/s/{slug}")
+        guest_page.wait_for_load_state("networkidle")
+        expect(guest_page.get_by_text("就这批科幻")).to_be_visible()
+        expect(guest_page.get_by_text(f"{len(expected)} 部")).to_be_visible()
+        guest_page.screenshot(path=str(shots / "26-shared-collection.png"))
+        guest.close()
+
+        # ================= 25. 跨库合集：只在「全部合集」里露出 =============
+        # 跨库合集只能是固定名单——规则求值目前需要单一 library_id，这条约束
+        # 也正是 /library/favorites 没能并进合集详情页的原因（F4.5）
+        rejected = page.request.post(
+            f"{base}/api/v1/collections",
+            data={"name": "跨库规则", "rules": [{"field": "rating_gte", "values": ["8.5"]}]},
+        )
+        assert rejected.status == 400, "跨库 + 规则驱动应当被拒，而不是建出一个永远空的合集"
+
+        cross = api(
+            "post",
+            "/collections",
+            data={"name": "两个库都挑几部", "item_ids": [ids["霸王别姬"], ids["寄生虫"]]},
+        )["data"]
+        assert cross["library_id"] is None and cross["item_count"] == 2
+
+        page.goto(f"{base}/library/{movie_lib}")
+        page.wait_for_load_state("networkidle")
+        page.get_by_role("tab", name="合集").click()
+        # 跨库合集不进单库页：点进去会看到本库没有的片，那比"找不到入口"更难解释
+        assert "两个库都挑几部" not in page.locator("body").inner_text()
+
+        page.goto(f"{base}/library/collections")
+        page.wait_for_load_state("networkidle")
+        expect(page.get_by_text("全部合集").first).to_be_visible()
+        expect(page.get_by_text("跨库").first).to_be_visible()
+        cross_card = page.locator(f'a[href="/library/c/{cross["id"]}"]')
+        expect(cross_card).to_have_count(1)
+        shot("27-all-collections")
+        cross_card.click()
+        page.wait_for_url(lambda u: f"/library/c/{cross['id']}" in u)
+        page.wait_for_load_state("networkidle")
+        # 两部片来自两个库，同一面墙上都在——这正是跨库合集存在的理由
+        expect(page.locator("[data-library-item-id]")).to_have_count(2)
+
+
         assert not page_errors, f"页面报错：{page_errors[:3]}"
         context.close()
         browser.close()
