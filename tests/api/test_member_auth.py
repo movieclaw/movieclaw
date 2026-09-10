@@ -576,6 +576,8 @@ _MEMBER_ALLOWLIST = {
     ("GET", "/api/v1/collections/{collection_id}/items"),
     # 系列合集的「已有 N / 共 M」与缺片名单：成员浏览合集时就要看见它
     ("GET", "/api/v1/collections/{collection_id}/series"),
+    # 推荐行是按人算的，成员看的是自己那份
+    ("GET", "/api/v1/libraries/{library_id}/recommendations"),
     # 手动合集的成员增删与排序：成员管自己的合集（可见性另有三层收口）
     ("POST", "/api/v1/collections/{collection_id}/items"),
     ("DELETE", "/api/v1/collections/{collection_id}/items/{media_item_id}"),

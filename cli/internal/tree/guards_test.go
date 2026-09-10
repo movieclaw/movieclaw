@@ -220,6 +220,7 @@ func TestDomainCommandSets(t *testing.T) {
 			"library.items.delete",
 			"library.items.delete-file",
 			"library.items.facets",
+			"library.recommendations",
 			"library.items.purge-file",
 			"library.items.restore-file",
 			"library.items.get",

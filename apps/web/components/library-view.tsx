@@ -18,8 +18,10 @@ import type { PosterCardAction } from "@/components/poster-card";
 import { RecentWatchRow } from "@/components/recent-watch-row";
 import {
   type LibraryItem,
+  type LibraryRecommendRow,
   type MediaLibrary,
   listLibraries,
+  listLibraryRecommendations,
   listLibraryItems,
   SCAN_PHASE_LABELS,
 } from "@/lib/api/libraries";
@@ -117,6 +119,11 @@ export function LibraryView() {
   // 只用来决定「全部合集」这个入口露不露；空合集后端已经滤掉了，所以
   // 数字大于零就意味着"点进去真有东西"
   const [collectionCount, setCollectionCount] = useState(0);
+  // 推荐行按**库**取：每个库的观看记录各算各的（在电影库常看动画，不代表
+  // 剧集库也要推动画）。记录不足的库返回空表，那一行就不出现
+  const [recommendRows, setRecommendRows] = useState<
+    { libraryId: number; libraryName: string; rows: LibraryRecommendRow[] }[]
+  >([]);
   const [failed, setFailed] = useState(false);
 
   // 轮询乱序守卫：扫描期间后端响应时间抖动大，上一轮的慢响应可能晚于
@@ -169,6 +176,18 @@ export function LibraryView() {
         if (seq !== reloadSeq.current) return;
         lastLibsSnapshot.current = snapshot;
         setItemsByLibrary(new Map(entries));
+
+        // 推荐行：每个可浏览的库各取一次。拿不到就当没有——首页不为它等
+        const browsable = libs.filter((lib) => !lib.exclude_from_home && lib.viewer_access);
+        const recommended = await Promise.all(
+          browsable.map(async (lib) => ({
+            libraryId: lib.id,
+            libraryName: lib.name,
+            rows: await listLibraryRecommendations(lib.id).catch(() => []),
+          })),
+        );
+        if (seq !== reloadSeq.current) return;
+        setRecommendRows(recommended.filter((entry) => entry.rows.length > 0));
       })
       // 瞬时失败不清已有数据：failed 只决定提示条，卡片继续用上一份快照，
       // 下一轮轮询成功即自动恢复（整页错误屏只留给一次都没加载成功的情况）
@@ -397,6 +416,33 @@ export function LibraryView() {
             ))}
           </HScroller>
         </section>
+      )}
+
+      {/* —— 为你推荐：每一行的标题就是它的理由（F5）。排在「最近添加」之前——
+          "接着看"和"你还没看的那几部"比"最近入库了什么"更接近此刻的意图。
+          记录不足的库根本不出行，所以这一段常常整块不存在 —— */}
+      {recommendRows.length > 0 && (
+        <div className="mt-10 space-y-8">
+          {recommendRows.flatMap(({ libraryId, libraryName, rows }) =>
+            rows.map((row) => (
+              <MediaRow
+                key={`${libraryId}-${row.key}`}
+                row={{
+                  id: `recommend-${libraryId}-${row.key}`,
+                  title: row.title,
+                  items: row.items.map(libraryItemToMediaItem),
+                }}
+                // 理由写在「更多」那一格里：MediaRow 只有标题一行，
+                // 为一句解释给它加个副标题参数不值当
+                moreHref={`/library/${libraryId}` as Route}
+                moreLabel={row.reason ?? libraryName}
+                cardAction="none"
+                cardHref={(m) => `/library/${libraryId}/item/${m.id}` as Route}
+                cardRevealInfoOnTouch
+              />
+            )),
+          )}
+        </div>
       )}
 
       {/* —— 最近添加：Emby 首页式分区，每个非空库一行横滚海报 —— */}

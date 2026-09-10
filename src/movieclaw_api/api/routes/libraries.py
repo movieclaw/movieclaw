@@ -36,6 +36,7 @@ from movieclaw_api.schemas.library import (
     LibraryItemDetailView,
     LibraryItemView,
     LibraryPayload,
+    LibraryRecommendRowView,
     LibraryRelaxView,
     LibraryReorderPayload,
     LibrarySearchGroupView,
@@ -121,6 +122,7 @@ from movieclaw_api.services.library.organize import (
     last_organize,
     organize_progress,
 )
+from movieclaw_api.services.library.recommend import build_recommendations
 from movieclaw_api.services.library.scan import (
     PHASE_LABELS,
     ScanPhase,
@@ -1893,6 +1895,41 @@ def _filter_params(
         hdr=hdr,
         stock=tuple(_split(stock)),
         series_keys=tuple(_split(series_keys)),
+    )
+
+
+@router.get(
+    "/{library_id}/recommendations",
+    response_model=ApiResponse[list[LibraryRecommendRowView]],
+    summary="按这个人自己的观看记录给的推荐行（记录太少时为空）",
+    operation_id="library.recommendations",
+    dependencies=[Depends(require_library_visible)],
+)
+async def get_library_recommendations(
+    library_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_login),
+) -> ApiResponse[list[LibraryRecommendRowView]]:
+    """每一行的标题就是它的理由——说不清楚为什么推的，不如不推。
+
+    记录不足时返回空表，而不是拿全库热门凑数："给你推荐"却推的是所有人都
+    一样的东西，比没有更让人失望。
+    """
+    library = await LibraryConfigService(session).get(library_id)
+    rows = await build_recommendations(
+        session,
+        library_id,
+        library.kind,
+        member_id=principal.member_id if principal.member_id is not None else 0,
+        content_limit=await content_limit_for(session, principal),
+    )
+    return ok(
+        [
+            LibraryRecommendRowView(
+                key=row.key, title=row.title, reason=row.reason, items=row.items
+            )
+            for row in rows
+        ]
     )
 
 

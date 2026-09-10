@@ -266,3 +266,48 @@ def test_limit_can_be_cleared(stack) -> None:
     assert len(client.get("/api/v1/libraries/1/items").json()["data"]) == 3
     become_child(None)
     assert len(client.get("/api/v1/libraries/1/items").json()["data"]) == len(CATALOG)
+
+
+# ---------------------------------------------------------------------------
+# 推荐行（F5.2）：说不清楚为什么推的，不如不推
+# ---------------------------------------------------------------------------
+
+
+def test_recommendations_stay_quiet_without_history(stack) -> None:
+    """没看过几部就不出这一行——样本太少时推出来的是噪音。"""
+    client, _, become_admin = stack
+    become_admin()
+    assert client.get("/api/v1/libraries/1/recommendations").json()["data"] == []
+
+
+def test_recommendations_come_from_your_own_history(stack) -> None:
+    """常看的类型是从**这个人自己的**记录里数出来的，不是全库热门。"""
+    client, become_child, become_admin = stack
+    become_admin()
+    # 看够三部（MIN_HISTORY）。标「已看完」也算看过——用户明说了他看过，
+    # 不能因为没经过我们的播放器就当没发生
+    for item_id in (1, 2, 3):
+        resp = client.post(
+            "/api/v1/playback/marks", json={"media_item_id": item_id, "played": True}
+        )
+        assert resp.status_code == 200, resp.text
+
+    rows = client.get("/api/v1/libraries/1/recommendations").json()["data"]
+    assert rows, "看够三部之后该有推荐了"
+    genre_row = next((r for r in rows if r["key"].startswith("genre:")), None)
+    assert genre_row is not None
+    # 已经看完的不再出现在推荐里
+    assert {i["media_item_id"] for i in genre_row["items"]}.isdisjoint({1, 2, 3})
+
+
+def test_recommendations_respect_the_content_limit(stack) -> None:
+    """推荐是"给你看的"，更不能把超限的片端到孩子面前。"""
+    client, become_child, become_admin = stack
+    become_admin()
+    for item_id in (1, 2, 3):
+        client.post("/api/v1/playback/marks", json={"media_item_id": item_id, "played": True})
+
+    become_child(13)
+    rows = client.get("/api/v1/libraries/1/recommendations").json()["data"]
+    for row in rows:
+        assert all(item["title"] not in {"成人片", "没分级的"} for item in row["items"]), row
