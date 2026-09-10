@@ -89,6 +89,27 @@ BoxSet 里；`/library/favorites` 这个页面**本期不动**。那 632 行里�
 图廊形态、会话快照等一堆已经调稳的东西，和新功能同期重写是拿存量稳定性换整洁，
 不划算。等合集详情页跑稳了再合并（F4），届时是**净删代码**。
 
+### 1.2.1 「合集」这个词在本仓库已经有四个意思
+
+做 F4 之前先认清楚，否则很容易把不相干的东西接到一起：
+
+| 叫法 | 是什么 | 落库吗 | 在哪 |
+|---|---|---|---|
+| `Collection` / `CollectionItem` | **本次新增**：媒体库合集 = 存好的筛选 | 是 | `movieclaw_db/models/collection.py` |
+| `MediaCollection` | TMDB 电影**系列**（`belongs_to_collection`，如指环王三部曲） | **否** | `movieclaw_media/models.py`，发现页详情实时取 |
+| discover 片单 | TMDB / 豆瓣的**榜单**（Top250、热门…） | 只进缓存 | `discover.list-collections` |
+| `CollectionFolder` / `BoxSet` | Jellyfin **协议**里的容器类型 | 不适用 | `movieclaw_jellyfin/catalog.py` |
+
+**入库刮削链完全不碰系列**（2026-09 核实）：`MediaMetadata` 没有任何系列字段，
+NFO 写出也没有 `<set>`——而 Emby/Jellyfin 正是靠这个标签认合集的；读第三方 NFO
+时同样不解析它。系列信息只在发现页详情那一条实时链路上出现，用完即弃。
+
+所以 1.2 表里那行「TMDB 系列 → `builtin="tmdb_series:{id}"`」到了 F4 是**从零开始**：
+没有既有数据可以吃掉，得先让刮削那一侧把 `belongs_to_collection` 存下来
+（一个字段就够：系列 id + 名字），合集这一层才有东西可接。顺带值得考虑的是
+NFO 补写 `<set>`——那是"movieclaw 作为上游生产者"（library.md 1.5 第 5 条）
+在合集这一层的自然延伸，能让不走我们协议层的播放器也认得这些系列。
+
 ### 1.3 智能合集**不物化**（沿用 filtering 6.2 的同一条闸门）
 
 规则求值有两条路：查询时实时算，或物化进 `collection_item`。**v1 选实时算。**
