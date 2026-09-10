@@ -152,6 +152,43 @@ export function listCollectionItems(
   return unwrap(request<ApiEnvelope<LibraryItem[]>>(`/collections/${id}/items${suffix}`));
 }
 
+/**
+ * 把作品加进手动合集。**幂等**：已经在里面的直接忽略，不报错。
+ *
+ * 只有名单驱动的合集能加——规则驱动的成员是条件求值出来的，手工塞进去会
+ * 静默消失，所以服务端直接拒绝并说明出路。
+ */
+export function addCollectionItems(id: number, mediaItemIds: number[]): Promise<Collection> {
+  return unwrap(
+    request<ApiEnvelope<Collection>>(`/collections/${id}/items`, {
+      method: "POST",
+      body: JSON.stringify({ media_item_ids: mediaItemIds }),
+    }),
+  );
+}
+
+/** 把一部作品移出手动合集（不动作品本身）。 */
+export function removeCollectionItem(id: number, mediaItemId: number): Promise<Collection> {
+  return unwrap(
+    request<ApiEnvelope<Collection>>(`/collections/${id}/items/${mediaItemId}`, {
+      method: "DELETE",
+    }),
+  );
+}
+
+/** 拖拽出来的顺序整体覆盖；没传的成员按原序留在末尾。 */
+export function reorderCollectionItems(
+  id: number,
+  mediaItemIds: number[],
+): Promise<Collection> {
+  return unwrap(
+    request<ApiEnvelope<Collection>>(`/collections/${id}/order`, {
+      method: "PUT",
+      body: JSON.stringify({ media_item_ids: mediaItemIds }),
+    }),
+  );
+}
+
 /** 系列合集的缺片名单（懒加载：打开详情页才拉一次上游档案）。 */
 export function getCollectionSeries(id: number): Promise<CollectionSeries> {
   return unwrap(request<ApiEnvelope<CollectionSeries>>(`/collections/${id}/series`));

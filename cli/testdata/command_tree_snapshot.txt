@@ -42,7 +42,10 @@ collection apply-to-library
 collection create
 collection delete
 collection get
+collection items add
 collection items list
+collection items remove
+collection items reorder
 collection list
 collection series get
 collection update

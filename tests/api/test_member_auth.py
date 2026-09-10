@@ -575,6 +575,10 @@ _MEMBER_ALLOWLIST = {
     ("GET", "/api/v1/collections/{collection_id}/items"),
     # 系列合集的「已有 N / 共 M」与缺片名单：成员浏览合集时就要看见它
     ("GET", "/api/v1/collections/{collection_id}/series"),
+    # 手动合集的成员增删与排序：成员管自己的合集（可见性另有三层收口）
+    ("POST", "/api/v1/collections/{collection_id}/items"),
+    ("DELETE", "/api/v1/collections/{collection_id}/items/{media_item_id}"),
+    ("PUT", "/api/v1/collections/{collection_id}/order"),
     # 最近观看是按成员隔离的个人播放数据，并继续受媒体库白名单过滤。
     ("GET", "/api/v1/playback/recent"),
     # 清除观看记录只作用于当前成员自己的行（超管删超管的），跨成员不提供；

@@ -8,6 +8,7 @@ import type { Route } from "next";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
+import { AddToCollectionDialog } from "@/components/add-to-collection-dialog";
 import { ArtworkPickerDialog } from "@/components/artwork-picker-dialog";
 import { CastRow } from "@/components/cast-row";
 import { ChapterStrip } from "@/components/chapter-strip";
@@ -164,6 +165,7 @@ export function LibraryItemDetailView({
   const [artworkOpen, setArtworkOpen] = useState(false);
   // 分享弹窗（docs/design/media-share.md）：打开前先查当前有效分享，按有无决定形态
   const [shareOpen, setShareOpen] = useState(false);
+  const [addToCollectionOpen, setAddToCollectionOpen] = useState(false);
   const [shareInitial, setShareInitial] = useState<ShareView | null>(null);
   // 删除确认弹窗
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -560,6 +562,8 @@ export function LibraryItemDetailView({
               scraped={detail.source === "tmdb"}
               scraping={scrapingNow}
               searchHref={`/search?q=${encodeURIComponent(detail.title)}` as Route}
+              // 加入合集：任何能看到这部片的人都能把它扔进自己的单子
+              onAddToCollection={() => setAddToCollectionOpen(true)}
               // 分享仅超管（media-share.md §2.1）；照片库条目不分享（分享页是影片页）
               onShare={
                 isAdmin && detail.kind !== "photo"
@@ -965,6 +969,15 @@ export function LibraryItemDetailView({
           initialShare={shareInitial}
         />
       )}
+
+      {addToCollectionOpen && (
+        <AddToCollectionDialog
+          libraryId={libraryId}
+          mediaItemId={mediaItemId}
+          title={detail.title}
+          onClose={() => setAddToCollectionOpen(false)}
+        />
+      )}
     </div>
   );
 }
@@ -1171,6 +1184,7 @@ function ItemActionsMenu({
   onUpgrade,
   onClearHistory,
   onShare,
+  onAddToCollection,
 }: {
   /** 媒体库管理权限：识别/刮削/图片/转移/删除这些条目管理项按它显隐 */
   canManage: boolean;
@@ -1196,6 +1210,8 @@ function ItemActionsMenu({
   onUpgrade?: () => void;
   /** 清除当前登录身份自己对这部作品的观看记录：个人数据，与管理权无关 */
   onClearHistory: () => void;
+  /** 加进手动合集（F4）：这是"我要把这部片扔进那个单子"最自然的落点 */
+  onAddToCollection?: () => void;
 }) {
   const router = useRouter();
   const itemClass =
@@ -1232,6 +1248,11 @@ function ItemActionsMenu({
               className={itemClass}
             >
               搜索资源
+            </DropdownMenu.Item>
+          )}
+          {onAddToCollection && (
+            <DropdownMenu.Item onSelect={onAddToCollection} className={itemClass}>
+              加入合集…
             </DropdownMenu.Item>
           )}
           {onShare && (

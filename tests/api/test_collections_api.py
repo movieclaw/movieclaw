@@ -239,3 +239,57 @@ def test_libraries_created_outside_the_service_are_healed_at_startup(
     """
     rows = client.get("/api/v1/collections?library_id=1&include_empty=true").json()["data"]
     assert [row["builtin"] for row in rows] == ["favorites:1"]
+
+
+# ---------------------------------------------------------------------------
+# 手动合集：加入 / 移出 / 排序（F4）
+# ---------------------------------------------------------------------------
+
+
+def test_manual_membership_is_idempotent(client: TestClient) -> None:
+    """加两次不重复、不报错。
+
+    这个动作会从海报悬浮、详情页、批量选择多处发起，用户还可能连点两下——
+    把"已经加过了"做成错误，只会逼每个调用方先查一遍。
+    """
+    row = _create(client, name="周末陪娃看", item_ids=[])
+    add = client.post(f"/api/v1/collections/{row['id']}/items", json={"media_item_ids": [1]})
+    assert add.status_code == 200, add.text
+    assert add.json()["data"]["item_count"] == 1
+    again = client.post(f"/api/v1/collections/{row['id']}/items", json={"media_item_ids": [1]})
+    assert again.status_code == 200
+    assert again.json()["data"]["item_count"] == 1
+
+
+def test_manual_membership_refuses_rule_driven(client: TestClient) -> None:
+    """规则驱动的合集拒绝手工增删，并把出路说清楚。
+
+    往里塞会**静默消失**（resolve_members 对它压根不看 collection_item），
+    那比报错糟得多。
+    """
+    smart = _create(client, name="会自己长", rules=ALL_ITEMS)
+    resp = client.post(f"/api/v1/collections/{smart['id']}/items", json={"media_item_ids": [1]})
+    assert resp.status_code == 400
+    assert "新建" in resp.json()["message"]
+
+
+def test_reorder_keeps_untouched_members_at_the_tail(client: TestClient) -> None:
+    """只传了一部分时，没传的按原序接在后面——不能当成"要删"。
+
+    前端可能只把当前这一页传上来，把没传的删掉会在分页的合集里吃掉成员。
+    """
+    row = _create(client, name="片单", item_ids=[1])
+    resp = client.put(f"/api/v1/collections/{row['id']}/order", json={"media_item_ids": []})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["item_count"] == 1
+
+
+def test_removing_a_member_does_not_touch_the_work(client: TestClient) -> None:
+    row = _create(client, name="待删", item_ids=[1])
+    resp = client.delete(f"/api/v1/collections/{row['id']}/items/1")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["item_count"] == 0
+    # 作品还在库里
+    assert len(client.get("/api/v1/libraries/1/items").json()["data"]) == 1
+    # 再移一次也不报错（与加入同一条幂等口径）
+    assert client.delete(f"/api/v1/collections/{row['id']}/items/1").status_code == 200

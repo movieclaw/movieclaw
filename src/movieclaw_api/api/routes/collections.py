@@ -21,6 +21,7 @@ from movieclaw_api.core.config import get_settings
 from movieclaw_api.exceptions import BadRequestException, NotFoundException
 from movieclaw_api.schemas.library import (
     CollectionCover,
+    CollectionItemsPayload,
     CollectionPayload,
     CollectionSeriesView,
     CollectionView,
@@ -391,6 +392,165 @@ async def update_collection(
     )
     await session.commit()
     return ok(view)
+
+
+def _guard_manual(row: Collection) -> None:
+    """手工改成员的前置：只有**名单驱动**的合集能改。
+
+    规则驱动的合集成员是 ``series_key = X`` 这类条件求值出来的
+    （``resolve_members`` 对它压根不看 ``collection_item``），往里手工塞一部片
+    只会**静默消失**——那比报错糟得多。所以这里拒绝，并把出路说清楚。
+    """
+    if row.builtin:
+        raise BadRequestException("自动生成的合集成员由规则决定，不能手工增删")
+    if row.rules:
+        raise BadRequestException(
+            "这是个会自动收录的合集，成员由条件决定。想手工挑片请新建一个合集，"
+            "或者在创建时勾「固定现在这些」把它定格成名单"
+        )
+
+
+async def _member_rows(session: AsyncSession, collection_id: int) -> list[CollectionItem]:
+    return list(
+        (
+            await session.execute(
+                select(CollectionItem)
+                .where(CollectionItem.collection_id == collection_id)
+                .order_by(CollectionItem.position, CollectionItem.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
+@router.post(
+    "/{collection_id}/items",
+    response_model=ApiResponse[CollectionView],
+    summary="把作品加进手动合集（已在里面的忽略，不报错）",
+    operation_id="collection.items.add",
+)
+async def add_collection_items(
+    collection_id: int,
+    payload: CollectionItemsPayload,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_login),
+) -> ApiResponse[CollectionView]:
+    """「加入合集」的落点。
+
+    **幂等**：已经在里面的 id 直接跳过，不报错也不重复插。这个动作用户会从
+    海报悬浮、详情页、批量选择三处发起，还可能连点两下——把"已经加过了"做成
+    错误，只会逼每个调用方先查一遍。
+    """
+
+    member_id, visible, content_limit = await _scope(session, principal)
+    row = await _get_or_404(session, collection_id)
+    _guard_visible(row, member_id, visible)
+    _guard_manual(row)
+
+    existing = await _member_rows(session, collection_id)
+    known = {r.media_item_id for r in existing}
+    tail = max((r.position for r in existing), default=-1)
+    added = 0
+    for item_id in payload.media_item_ids:
+        if item_id in known:
+            continue
+        tail += 1
+        session.add(
+            CollectionItem(collection_id=collection_id, media_item_id=item_id, position=tail)
+        )
+        known.add(item_id)
+        added += 1
+    await session.flush()
+    view = await _view(
+        session, row, member_id=member_id, visible=visible, content_limit=content_limit
+    )
+    await session.commit()
+    message = f"已加入「{row.name}」" if added else f"这些作品已经在「{row.name}」里了"
+    return ok(view, message=message)
+
+
+@router.delete(
+    "/{collection_id}/items/{media_item_id}",
+    response_model=ApiResponse[CollectionView],
+    summary="把一部作品移出手动合集（不动作品本身）",
+    operation_id="collection.items.remove",
+)
+async def remove_collection_item(
+    collection_id: int,
+    media_item_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_login),
+) -> ApiResponse[CollectionView]:
+    """移出去的只是名单里的一行，作品一部都不会少。
+
+    不在名单里也返回成功：与加入同一条幂等口径（用户点两下「移出」不该看到
+    一个红色错误）。
+    """
+
+    member_id, visible, content_limit = await _scope(session, principal)
+    row = await _get_or_404(session, collection_id)
+    _guard_visible(row, member_id, visible)
+    _guard_manual(row)
+
+    for old in await _member_rows(session, collection_id):
+        if old.media_item_id == media_item_id:
+            await session.delete(old)
+    await session.flush()
+    view = await _view(
+        session, row, member_id=member_id, visible=visible, content_limit=content_limit
+    )
+    await session.commit()
+    return ok(view, message=f"已移出「{row.name}」")
+
+
+@router.put(
+    "/{collection_id}/order",
+    response_model=ApiResponse[CollectionView],
+    summary="手动合集的排序（拖拽结果整体覆盖）",
+    operation_id="collection.items.reorder",
+)
+async def reorder_collection_items(
+    collection_id: int,
+    payload: CollectionItemsPayload,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_login),
+) -> ApiResponse[CollectionView]:
+    """拖拽出来的顺序整体覆盖 ``position``。
+
+    **没给到的成员留在末尾**（按原有顺序），而不是被删掉：前端可能只把可见的
+    那一页传上来，把没传的当成"要删"会在分页的合集里吃掉成员。名单里没有的
+    id 忽略——加成员走 ``/items``，这一条只管顺序。
+
+    顺序在海报墙、Jellyfin、分享页三处一致：三处都走 ``resolve_members()``，
+    名单驱动那一支就是按 ``position`` 取的。
+    """
+
+    member_id, visible, content_limit = await _scope(session, principal)
+    row = await _get_or_404(session, collection_id)
+    _guard_visible(row, member_id, visible)
+    _guard_manual(row)
+
+    rows = await _member_rows(session, collection_id)
+    by_item = {r.media_item_id: r for r in rows}
+    position = 0
+    for item_id in payload.media_item_ids:
+        target = by_item.pop(item_id, None)
+        if target is None:
+            continue
+        target.position = position
+        session.add(target)
+        position += 1
+    for leftover in by_item.values():  # 没传上来的按原序接在后面
+        leftover.position = position
+        session.add(leftover)
+        position += 1
+    await session.flush()
+    view = await _view(
+        session, row, member_id=member_id, visible=visible, content_limit=content_limit
+    )
+    await session.commit()
+    return ok(view, message="顺序已保存")
 
 
 @router.delete(

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import type { Route } from "next";
 
+import { CollectionOrderPanel } from "@/components/collection-order-panel";
 import { useConfirm, usePrompt, useToast } from "@/components/feedback";
 import { MoreIcon } from "@/components/icons";
 import { PAGE_NAV_BUTTON_CLASS, PageNav } from "@/components/page-nav";
@@ -62,6 +63,7 @@ export function LibraryCollectionDetailView({
   const [hasMore, setHasMore] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [series, setSeries] = useState<CollectionSeries | null>(null);
+  const [ordering, setOrdering] = useState(false);
 
   usePageTitle(collection?.name);
 
@@ -225,6 +227,16 @@ export function LibraryCollectionDetailView({
                   <DropdownMenu.Item onSelect={rename} className={MENU_ITEM_CLASS}>
                     改名
                   </DropdownMenu.Item>
+                  {/* 手动合集才谈得上"顺序"：规则驱动的成员是求值出来的，
+                      它的先后由 sort 决定，拖不动也不该拖 */}
+                  {collection.editable && !collection.rule_driven && (
+                    <DropdownMenu.Item
+                      onSelect={() => setOrdering(true)}
+                      className={MENU_ITEM_CLASS}
+                    >
+                      整理顺序…
+                    </DropdownMenu.Item>
+                  )}
                   {canManageLibraries && collection.editable && collection.rule_driven && (
                     <DropdownMenu.Item onSelect={applyToLibrary} className={MENU_ITEM_CLASS}>
                       设为本库的收藏范围
@@ -264,6 +276,26 @@ export function LibraryCollectionDetailView({
         </p>
         {collection && <RuleRow collection={collection} facets={facets} />}
       </div>
+
+      {ordering && collection && (
+        <CollectionOrderPanel
+          collectionId={collection.id}
+          items={items}
+          onClose={() => setOrdering(false)}
+          onSaved={() => {
+            // 顺序/成员变了就把这一页重取：详情页的名单与服务端必须是同一份
+            listCollectionItems(collectionId, { limit: PAGE_SIZE })
+              .then((rows) => {
+                setItems(rows);
+                setHasMore(rows.length === PAGE_SIZE);
+              })
+              .catch(() => undefined);
+            getCollection(collectionId)
+              .then(setCollection)
+              .catch(() => undefined);
+          }}
+        />
+      )}
 
       {series && series.available && series.total > series.owned_count && (
         <MissingParts

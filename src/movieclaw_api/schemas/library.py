@@ -477,6 +477,15 @@ class CollectionView(BaseModel):
     position: int
 
 
+class CollectionItemsPayload(BaseModel):
+    """手动合集的成员操作：加入与排序共用这一个形状。"""
+
+    media_item_ids: list[int] = Field(
+        default_factory=list,
+        description="作品 id 列表。加入时是「要加的这些」，排序时是「新的先后顺序」",
+    )
+
+
 class SeriesPartView(BaseModel):
     """系列里的一部作品：库里有没有、在追没在追。"""
 
