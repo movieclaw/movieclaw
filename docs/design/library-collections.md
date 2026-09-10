@@ -104,6 +104,10 @@ BoxSet 里；`/library/favorites` 这个页面**本期不动**。那 632 行里�
 NFO 写出也没有 `<set>`——而 Emby/Jellyfin 正是靠这个标签认合集的；读第三方 NFO
 时同样不解析它。系列信息只在发现页详情那一条实时链路上出现，用完即弃。
 
+**这一条已经单独成篇**：完整改造方案见
+[library-series-collections.md](library-series-collections.md)（刮削取值、写读
+NFO 的 `<set>`、自动建合集、协议侧要核什么、以及"别把用户淹没"那一整节）。
+
 所以 1.2 表里那行「TMDB 系列 → `builtin="tmdb_series:{id}"`」到了 F4 是**从零开始**：
 没有既有数据可以吃掉，得先让刮削那一侧把 `belongs_to_collection` 存下来
 （一个字段就够：系列 id + 名字），合集这一层才有东西可接。顺带值得考虑的是
