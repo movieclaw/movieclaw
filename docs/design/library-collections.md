@@ -409,6 +409,18 @@ BoxSet 的 Primary 图**直接复用首个成员条目的海报**（`cover_item_
 与 Random，未知键同样静默忽略、回落 position 序）。**教训与上一段其实是同一条的
 反面**：核对源码时只核对了自己想到的那条路径，另一条同名的事就漏掉了。
 
+**v1.3 更正（F4 端到端跑出来的）**：连"打开一个 BoxSet 之后里面那些片怎么排"
+也不是什么都不用做。`_sort_entries` 确实原样返回，但它拿到的 entries 已经**不是**
+`resolve_members()` 给的顺序了——中间隔着 `load_bundles()`，它按查询顺序回一个
+dict，人手拖出来的 `position` 序在那里就没了。表现是：网页与分享页顺序对，
+电视端仍是入库序。合集分支现在按 `resolve_members()` 的返回重排 bundles 再建
+entries。
+
+这一处**只有 F4 那条验收标准抓得到**：三处各自的用例都是绿的——网页对、分享页对、
+电视端"有这几部片"也对，只有把三处摆在一起比顺序时才露馅
+（`tests/e2e/test_library_filtering_browser.py` 第 24 段）。这也是把"三处一致"
+写成验收标准、而不是写成三条各自的断言的原因。
+
 ### 4.8 UserData：不做已看聚合
 
 库视图现在是 `SupportsPlayedStatus = false`（`catalog.py` 里有注释说明）。

@@ -760,7 +760,7 @@ async def collect_search_entries(
             session,
             library_id=library_id,
             visible_library_ids=scope.visible,
-                content_limit=scope.content_limit,
+            content_limit=scope.content_limit,
         )
         ids = await _narrow_by_search(session, ids, search)
         bundles = await load_bundles(
@@ -769,7 +769,7 @@ async def collect_search_entries(
             member_id=scope.member_id,
             library_id=library_id,
             visible_library_ids=scope.visible,
-                content_limit=scope.content_limit,
+            content_limit=scope.content_limit,
             dto_options=DtoOptions(),
         )
         entries = [
@@ -818,7 +818,7 @@ async def _entries_for_ids(
         list(scoped),
         member_id=scope.member_id,
         visible_library_ids=scope.visible,
-                content_limit=scope.content_limit,
+        content_limit=scope.content_limit,
         dto_options=options,
     )
     entries: list[Entry] = []
@@ -1071,7 +1071,7 @@ async def _entries_for_parent(
             member_id=scope.member_id,
             library_id=ref.entity_id,
             visible_library_ids=scope.visible,
-                content_limit=scope.content_limit,
+            content_limit=scope.content_limit,
             dto_options=options,
             leaf_scope=leaf_scope,
             # 只出 Series 行的库浏览（剧集库的默认视图）不读任何季元数据
@@ -1101,7 +1101,7 @@ async def _entries_for_parent(
             collection,
             member_id=scope.member_id,
             visible_library_ids=scope.visible,
-                content_limit=scope.content_limit,
+            content_limit=scope.content_limit,
         )
         ids = await _narrow_by_search(session, ids, search)
         bundles = await load_bundles(
@@ -1109,11 +1109,16 @@ async def _entries_for_parent(
             ids,
             member_id=scope.member_id,
             visible_library_ids=scope.visible,
-                content_limit=scope.content_limit,
+            content_limit=scope.content_limit,
             dto_options=options,
         )
+        # **按 resolve_members 给的次序重排**：名单驱动的合集有一份人手拖出来的
+        # 顺序，而 load_bundles 是按查询顺序回的，会把它洗掉。拖拽的结果要在
+        # 网页、播放器、分享页三处一致（library-collections.md 4.7），三处里
+        # 只有这一处会丢顺序——另两处直接用 resolve_members 的返回。
+        ordered = {item_id: bundles[item_id] for item_id in ids if item_id in bundles}
         # BoxSet 的成员只能是条目（Movie / Series），不能是季/集——协议语义如此
-        return _build_entries(bundles, include_types or {"Movie", "Series", "Video"})
+        return _build_entries(ordered, include_types or {"Movie", "Series", "Video"})
 
     if ref.kind == EntityKind.ITEM:
         if not await _item_visible(session, ref.entity_id, scope):
@@ -1125,7 +1130,7 @@ async def _entries_for_parent(
             [ref.entity_id],
             member_id=scope.member_id,
             visible_library_ids=scope.visible,
-                content_limit=scope.content_limit,
+            content_limit=scope.content_limit,
             dto_options=options,
             leaf_scope=leaf_scope,
         )
@@ -1142,7 +1147,7 @@ async def _entries_for_parent(
             [ref.entity_id],
             member_id=scope.member_id,
             visible_library_ids=scope.visible,
-                content_limit=scope.content_limit,
+            content_limit=scope.content_limit,
             dto_options=options,
             leaf_scope=leaf_scope,
         )
@@ -1243,7 +1248,7 @@ async def items_latest(
             member_id=scope.member_id,
             library_id=library_id,
             visible_library_ids=scope.visible,
-                content_limit=scope.content_limit,
+            content_limit=scope.content_limit,
             dto_options=options,
             # 只渲染选中的这些单元：同剧聚合成 Series 的那几条也只吃单元键集合
             leaf_scope={
@@ -1601,7 +1606,7 @@ async def get_item(
             [ref.entity_id],
             member_id=scope.member_id,
             visible_library_ids=scope.visible,
-                content_limit=scope.content_limit,
+            content_limit=scope.content_limit,
             dto_options=options,
             leaf_scope=detail_scope,
         )
@@ -1678,7 +1683,7 @@ async def shows_next_up(
             ids,
             member_id=scope.member_id,
             visible_library_ids=scope.visible,
-                content_limit=scope.content_limit,
+            content_limit=scope.content_limit,
             dto_options=options,
         )
 
@@ -1748,7 +1753,7 @@ async def shows_seasons(
             [ref.entity_id],
             member_id=scope.member_id,
             visible_library_ids=scope.visible,
-                content_limit=scope.content_limit,
+            content_limit=scope.content_limit,
             dto_options=options,
             # Season DTO 只吃季元数据 + "哪些单元有文件"的键集合 + 播放状态，
             # 一个叶子条目都不渲染——整剧的文件行与分集元数据全部不必装载
@@ -1808,7 +1813,7 @@ async def shows_episodes(
             [target_item_id],
             member_id=scope.member_id,
             visible_library_ids=scope.visible,
-                content_limit=scope.content_limit,
+            content_limit=scope.content_limit,
             dto_options=options,
             leaf_scope=None if whole_series else set(),
         )

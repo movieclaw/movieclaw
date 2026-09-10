@@ -1044,27 +1044,31 @@ def test_filtering_and_collections_end_to_end(stack) -> None:  # noqa: PLR0915
         shot("23-item-to-series")
 
         # ================= 23. 加入合集：从影片页把一部片塞进手动合集 =======
-        # 「就这批科幻」是第 14 步固定下来的名单合集（rule_driven=False）；
-        # 手工增删只对这类合集开放
-        fixed_id = next(
-            row["id"]
-            for row in api("get", f"/collections?library_id={movie_lib}")["data"]
-            if row["name"] == "就这批科幻"
-        )
-        before = [row["title"] for row in api("get", f"/collections/{fixed_id}/items")["data"]]
+        # 手工增删只对**名单驱动**的合集开放，所以先建一个（第 14 步那个
+        # 「就这批科幻」已经在第 17 步删掉了）
+        before = ["盗梦空间", "星际穿越", "黑客帝国"]
+        fixed_id = api(
+            "post",
+            "/collections",
+            data={
+                "name": "周末清单",
+                "library_id": movie_lib,
+                "item_ids": [ids[t] for t in before],
+            },
+        )["data"]["id"]
 
         page.goto(f"{base}/library/{movie_lib}/item/{ids['霸王别姬']}")
         page.wait_for_load_state("networkidle")
         page.get_by_role("button", name="更多操作").click()
         page.get_by_role("menuitem", name="加入合集…").click()
-        add_dialog = page.locator(".menu-surface").filter(has_text="加入合集")
+        add_dialog = page.locator("div.menu-surface:not([role=menu])").filter(has_text="加入合集")
         expect(add_dialog).to_be_visible()
         # 自动收录的合集不在可选项里：往规则驱动的合集手工塞片，下次求值就没了
         # ——那是一种"改了、看着生效了、过一会儿又变回去"的失败
         assert SERIES_NAME not in add_dialog.inner_text(), "自动收录的合集不该出现在这里"
         assert "我的收藏" not in add_dialog.inner_text(), "内置合集也不能手工改"
         shot("24-add-to-collection")
-        add_dialog.get_by_role("button").filter(has_text="就这批科幻").click()
+        add_dialog.get_by_role("button").filter(has_text="周末清单").click()
         expect(add_dialog).to_have_count(0)
 
         after_add = [row["title"] for row in api("get", f"/collections/{fixed_id}/items")["data"]]
@@ -1075,7 +1079,8 @@ def test_filtering_and_collections_end_to_end(stack) -> None:  # noqa: PLR0915
         page.wait_for_load_state("networkidle")
         page.get_by_role("button", name="更多操作").click()
         page.get_by_role("menuitem", name="整理顺序…").click()
-        panel = page.locator(".menu-surface").filter(has_text="整理顺序")
+        # 刚收起的 Radix 菜单仍留在 DOM 里、也带 .menu-surface，得把它排掉
+        panel = page.locator("div.menu-surface:not([role=menu])").filter(has_text="整理顺序")
         expect(panel).to_be_visible()
         rows_in_panel = panel.locator(".glass-row")
         expect(rows_in_panel).to_have_count(len(after_add))
@@ -1107,7 +1112,7 @@ def test_filtering_and_collections_end_to_end(stack) -> None:  # noqa: PLR0915
         fixed_boxset = next(
             row
             for row in jf_get("/Items", ParentId=collections_view_guid())["Items"]
-            if row["Name"] == "就这批科幻"
+            if row["Name"] == "周末清单"
         )
         tv_order = [row["Name"] for row in jf_get("/Items", ParentId=fixed_boxset["Id"])["Items"]]
         assert tv_order == expected, f"电视端顺序：{tv_order}"
@@ -1130,7 +1135,7 @@ def test_filtering_and_collections_end_to_end(stack) -> None:  # noqa: PLR0915
         guest_page.set_default_timeout(20_000)
         guest_page.goto(f"{base}/s/{slug}")
         guest_page.wait_for_load_state("networkidle")
-        expect(guest_page.get_by_text("就这批科幻")).to_be_visible()
+        expect(guest_page.get_by_role("heading", name="周末清单")).to_be_visible()
         expect(guest_page.get_by_text(f"{len(expected)} 部")).to_be_visible()
         guest_page.screenshot(path=str(shots / "26-shared-collection.png"))
         guest.close()
@@ -1159,8 +1164,10 @@ def test_filtering_and_collections_end_to_end(stack) -> None:  # noqa: PLR0915
 
         page.goto(f"{base}/library/collections")
         page.wait_for_load_state("networkidle")
-        expect(page.get_by_text("全部合集").first).to_be_visible()
-        expect(page.get_by_text("跨库").first).to_be_visible()
+        # 顶栏标题是滚动才浮出来的（PageNav 的 --nav-reveal），静止态量不到；
+        # 这一页的身份由「跨库」这一组来认——它本来就是这页存在的理由
+        expect(page.get_by_role("heading", name="跨库")).to_be_visible()
+        expect(page.get_by_text("不属于任何一个库的手动名单")).to_be_visible()
         cross_card = page.locator(f'a[href="/library/c/{cross["id"]}"]')
         expect(cross_card).to_have_count(1)
         shot("27-all-collections")
@@ -1169,6 +1176,11 @@ def test_filtering_and_collections_end_to_end(stack) -> None:  # noqa: PLR0915
         page.wait_for_load_state("networkidle")
         # 两部片来自两个库，同一面墙上都在——这正是跨库合集存在的理由
         expect(page.locator("[data-library-item-id]")).to_have_count(2)
+
+        # 收尾：把这三段建的合集删掉。stack 是 module 级的，移动端那个用例接着
+        # 用同一份库存，chip 行上多出来的合集会改变它量的那些位置
+        api("delete", f"/collections/{fixed_id}")
+        api("delete", f"/collections/{cross['id']}")
 
 
         assert not page_errors, f"页面报错：{page_errors[:3]}"
