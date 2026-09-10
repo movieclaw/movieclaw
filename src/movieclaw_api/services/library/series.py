@@ -138,9 +138,9 @@ async def ensure_series_collection(
         library_id=library_id,
         rules=series_rules(key),
         builtin=builtin,
-        # 系列要按上映顺序看，不是按标题——《死亡圣器(上)》排在《混血王子》
-        # 前面这种事，用户会当成 bug
-        sort="release_date",
+        # 系列要按上映**正序**看，不是按标题、也不是墙上默认的倒序——
+        # 《死亡圣器(上)》排在《混血王子》前面这种事，用户会当成 bug
+        sort="release_date_asc",
         position=1,  # 内置的「我的收藏」是 -1，用户自建的是 0，系列排最后
     )
     session.add(row)

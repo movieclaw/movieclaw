@@ -958,8 +958,20 @@ def test_filtering_and_collections_end_to_end(stack) -> None:  # noqa: PLR0915
         # 卡片副行写「系列」，**不写「缺 1 部」**——一屏几十个红角标是压迫感
         expect(series_card).to_contain_text("· 系列")
         assert "缺" not in series_card.inner_text(), "缺片信息不该上卡片"
+        # 等封面真的解码出来再截图：截一张还没加载完的图，等于给自己看假证据
+        series_cover = series_card.locator("img").first
+        page.wait_for_function(
+            "el => el.complete && el.naturalWidth > 0",
+            arg=series_cover.element_handle(),
+            timeout=10_000,
+        )
         shot("20-series-group")
 
+        series_id = next(
+            row["id"]
+            for row in api("get", f"/collections?library_id={movie_lib}")["data"]
+            if row["kind"] == "series"
+        )
         series_card.click()
         page.wait_for_url(lambda u: "/c/" in u)
         page.wait_for_load_state("networkidle")
@@ -971,6 +983,14 @@ def test_filtering_and_collections_end_to_end(stack) -> None:  # noqa: PLR0915
         expect(page.get_by_text("还缺 1 部")).to_be_visible()
         expect(page.get_by_text(MISSING_PART_TITLE)).to_be_visible()
         expect(page.get_by_role("button", name="订阅").first).to_be_visible()
+        # 系列按**上映正序**排：先看《你的名字》(2016) 再看《天气之子》(2019)。
+        # 墙上默认的 release_date 是倒序（新的在前，浏览的语义），系列不能跟着
+        # ——规则条上写着"按上映顺序排列"，那句话必须是真的
+        series_titles = [
+            row["title"]
+            for row in api("get", f"/collections/{series_id}/items")["data"]
+        ]
+        assert series_titles == ["你的名字", "天气之子"], series_titles
         shot("21-series-missing-parts")
 
         # 隐藏：自动生成的合集删不掉（下次扫描又长回来），那颗按钮落成墓碑
@@ -1014,7 +1034,7 @@ def test_filtering_and_collections_end_to_end(stack) -> None:  # noqa: PLR0915
         assert SERIES_NAME in {row["Name"] for row in movie_only}
 
         # ================= 22. 影片页能一步跳进它所属的系列 =================
-        page.goto(f"{base}/library/{movie_lib}/items/{ids['你的名字']}")
+        page.goto(f"{base}/library/{movie_lib}/item/{ids['你的名字']}")
         page.wait_for_load_state("networkidle")
         series_link = page.get_by_role("link", name=SERIES_NAME)
         expect(series_link).to_be_visible()

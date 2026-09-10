@@ -229,8 +229,15 @@ def test_series_becomes_a_rule_driven_collection(client: TestClient) -> None:
     assert potter["rule_driven"] is True
     assert potter["editable"] is False  # 自动生成的规则不可改
     assert potter["item_count"] == 3
-    # 系列要按上映顺序看，不是按标题
-    assert potter["sort"] == "release_date"
+    # 系列要按上映**正序**看：墙上默认的 release_date 是倒序（新的在前），
+    # 系列跟着倒序的话《阿兹卡班》会排在《魔法石》前面，用户会当成 bug
+    assert potter["sort"] == "release_date_asc"
+    members = client.get(f"/api/v1/collections/{potter['id']}/items").json()["data"]
+    assert [row["title"] for row in members] == [
+        "哈利·波特与魔法石",
+        "哈利·波特与密室",
+        "哈利·波特与阿兹卡班的囚徒",
+    ]
 
 
 def test_a_single_film_is_not_a_series(client: TestClient) -> None:
@@ -253,7 +260,7 @@ def test_members_match_the_wall_exactly(client: TestClient) -> None:
     potter = next(row for row in rows if row["kind"] == "series")
     members = client.get(f"/api/v1/collections/{potter['id']}/items").json()["data"]
     wall = client.get(
-        f"/api/v1/libraries/1/items?series_keys=tmdb:{POTTER}&sort=release_date"
+        f"/api/v1/libraries/1/items?series_keys=tmdb:{POTTER}&sort=release_date_asc"
     ).json()["data"]
     assert [row["media_item_id"] for row in members] == [row["media_item_id"] for row in wall]
 

@@ -804,8 +804,12 @@ function CollectionChips({
   activeId: number | null;
   onApply: (collection: Collection) => void;
 }) {
-  if (collections.length === 0) return null;
-  const shown = collections.slice(0, CHIP_LIMIT);
+  // **chip 行只放自建的**：一个 300 部的库可能有 40+ 个自动生成的系列，
+  // 混进来的话用户自己存的那三五个就被挤没了——而 chip 行的全部价值就是
+  // "把我常用的那几组条件放在手边"。系列在合集视图里有自己的分组
+  const mine = collections.filter((row) => row.kind !== "series");
+  if (mine.length === 0) return null;
+  const shown = mine.slice(0, CHIP_LIMIT);
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-1.5">
       {shown.map((collection) =>
@@ -835,7 +839,7 @@ function CollectionChips({
           </Link>
         ),
       )}
-      {collections.length > shown.length && (
+      {mine.length > shown.length && (
         <Link
           href={`/library/${libraryId}?view=collections` as Route}
           className="flex h-7 shrink-0 items-center rounded-full px-2 text-caption text-white/50 hover:text-white"

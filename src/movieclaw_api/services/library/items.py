@@ -253,6 +253,10 @@ WallSort = Literal[
     "title",
     "added_at",
     "release_date",
+    # 上映**正序**。墙上的默认方向是倒序（新的在前，那是浏览的语义），
+    # 但**系列要按上映顺序看**——《死亡圣器(上)》排在《混血王子》前面这种事，
+    # 用户会当成 bug。它不进筛选栏的排序下拉，只作为系列合集的 sort 存在
+    "release_date_asc",
     "probing",
     # 以下四档随筛选一起加（docs/design/library-filtering.md 3.1「排序」）。
     # 方向的取舍：评分/体积/最近观看都是「大的在前」，唯独片长是**升序**
@@ -1118,7 +1122,7 @@ async def _wall_page_ids(
             query = query.limit(limit).offset(offset)
         return [i for i in (await session.execute(query)).scalars().all() if i is not None]
 
-    if sort == "release_date":
+    if sort in ("release_date", "release_date_asc"):
         # 「按内容时间」：其他库的家庭录像按拍摄日期倒序最自然（release_date 由
         # 扫描从 sidecar NFO / 容器日期标签 / 文件 mtime 回落而来，见
         # local_identity）；影视库则是上映/首播日期。缺日期的退到年份、再到 id
@@ -1131,7 +1135,18 @@ async def _wall_page_ids(
                 *narrow,
             )
             .group_by(LibraryFile.media_item_id)  # type: ignore[arg-type]
-            .order_by(
+        )
+        if sort == "release_date_asc":
+            # 正序档：系列合集用它（第一部排第一）。三个键一起翻向，
+            # 只翻主键会让同年的片仍按倒序，读起来更乱
+            query = query.order_by(
+                func.max(MediaMetadata.release_date).asc(),
+                func.max(MediaItem.year).asc(),
+                func.max(MediaItem.title).asc(),
+                LibraryFile.media_item_id.asc(),  # type: ignore[union-attr]
+            )
+        else:
+            query = query.order_by(
                 func.max(MediaMetadata.release_date).desc(),
                 func.max(MediaItem.year).desc(),
                 # release_date 只有日期没有时分：同一天的照片/录像按标题（文件名
@@ -1139,7 +1154,6 @@ async def _wall_page_ids(
                 func.max(MediaItem.title).desc(),
                 LibraryFile.media_item_id.desc(),  # type: ignore[union-attr]
             )
-        )
         if limit is not None:
             query = query.limit(limit).offset(offset)
         return [i for i in (await session.execute(query)).scalars().all() if i is not None]
