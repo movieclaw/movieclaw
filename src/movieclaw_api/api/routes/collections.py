@@ -475,6 +475,8 @@ async def add_collection_items(
     response_model=ApiResponse[CollectionView],
     summary="把一部作品移出手动合集（不动作品本身）",
     operation_id="collection.items.remove",
+    # 删的是名单里的一行，作品一部不少，所以是 confirm 而不是 destructive
+    openapi_extra={"x-cli-dangerous": "confirm"},
 )
 async def remove_collection_item(
     collection_id: int,

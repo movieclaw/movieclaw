@@ -478,6 +478,15 @@ BoxSet 的 Primary 图**直接复用首个成员条目的海报**（`cover_item_
   `/libraries/{id}/items` 与 `/collections/{id}/items` 必须返回同一批 id**
   ——这是第 0 节那条约束的回归测试）。
 
+F4 落地后补的两处：
+
+- `tests/api/test_share.py` → 合集分享的范围就是它此刻的成员：名单外的条目
+  猜到 id 也打不开，被移出去的立刻打不开（不需要再来撤销一次）。
+- `tests/e2e/test_library_filtering_browser.py` 23–25 段 → **F4 的验收只能在
+  这里证**：把一部片顶到最前、移出另一部，然后在站内合集详情、Jellyfin 的
+  BoxSet 孩子、公开分享页三处核同一份顺序。三处走的是不是同一份名单，
+  单元测试各自绿着也说明不了。
+
 ## 7. 分期与验收
 
 对应 library-filtering.md 第 7 节的 F3 / F4：

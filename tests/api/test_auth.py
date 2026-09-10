@@ -302,6 +302,7 @@ _PUBLIC_ALLOWLIST = {
     # 一个不存在的 slug 得到 404 而不是 401，与「分享不存在」不可区分。
     ("GET", "/api/v1/share/{slug}"),
     ("POST", "/api/v1/share/{slug}/unlock"),
+    ("GET", "/api/v1/share/{slug}/collection"),
     ("GET", "/api/v1/share/{slug}/item"),
     ("GET", "/api/v1/share/{slug}/episodes"),
     ("GET", "/api/v1/share/{slug}/artwork"),

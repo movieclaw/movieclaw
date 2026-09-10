@@ -125,7 +125,10 @@ async def favorite_items(
             views[view.media_item_id] = view
 
     result: list[FavoriteItemView] = []
-    for item_id, landing_library_id in page:
+    # 落点库不用再传一次：``by_library`` 就是按它分的组，``_aggregate_wall_views``
+    # 拿到的 library_id 与它同一个值，视图里已经带着了（跨库合集落地后
+    # LibraryItemView 才有这一列，此前这里是唯一给得出落点的地方）
+    for item_id, _landing_library_id in page:
         view = views.get(item_id)
         if view is None:
             continue
@@ -136,7 +139,6 @@ async def favorite_items(
         result.append(
             FavoriteItemView(
                 **view.model_dump(),
-                library_id=landing_library_id,
                 favorite_season_number=(
                     state.season_number if is_tv and state.season_number >= 0 else None
                 ),
