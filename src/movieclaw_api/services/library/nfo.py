@@ -180,6 +180,14 @@ def write_full_nfo(entry_dir: Path, item: MediaItem, meta: MediaMetadata | None)
                 "    </rating>\n"
                 "  </ratings>"
             )
+        if meta.series_name:
+            # 作品系列：Emby / Jellyfin / Kodi 认合集正是靠这个标签。
+            # 用 Kodi v18+ 的嵌套写法（<set><name>…</name></set>），不往里塞
+            # tmdbid——那不是通行写法，重装后重刮一次就能把 id 拿回来，
+            # 不值得为它污染别人的库
+            lines.append("  <set>")
+            lines.append(f"    <name>{escape(meta.series_name)}</name>")
+            lines.append("  </set>")
         lines.extend(f"  <genre>{escape(g)}</genre>" for g in meta.genres)
         lines.extend(f"  <studio>{escape(s)}</studio>" for s in meta.studios)
         lines.extend(f"  <country>{escape(c)}</country>" for c in meta.origin_countries)
@@ -297,6 +305,9 @@ class EntryMetadata:
     genres: list[str] = field(default_factory=list)
     directors: list[str] = field(default_factory=list)
     actors: list[NfoActor] = field(default_factory=list)
+    #: 作品系列名（``<set>``）。第三方软件（TMM / Kodi）整理过的库直接挂进来时，
+    #: 系列信息只存在于 NFO 里——不读它，那批用户的合集就是空的
+    series_name: str | None = None
     nfo_name: str = ""  # 来源文件名（前端标注"信息来自 xxx.nfo"）
     source: str = "nfo"  # nfo / tmdb
 
@@ -312,6 +323,24 @@ _MAX_ACTORS = 40
 # 兜底时把根元素片段切出来重试。非贪婪：多集合一的 NFO 并列多个
 # <episodedetails> 根时取第一段（展示第一集），贪婪会吞到最后一个闭合标签
 _ROOT_SLICE = re.compile(r"<(movie|tvshow|episodedetails)[\s>].*?</\1>", re.DOTALL | re.IGNORECASE)
+
+
+def _parse_set_name(root) -> str | None:
+    """``<set>`` → 系列名，**两种写法都认**。
+
+    - Kodi v17-：``<set>哈利·波特系列</set>``（裸文本）；
+    - Kodi v18+ / TMM：``<set><name>哈利·波特系列</name></set>``（嵌套）。
+
+    只认这两种是有意的：不去猜 ``<setid>``、``<tmdbid>`` 这类各家自造的写法，
+    猜错了会把两个不同的系列并成一个，而并错了比分开更难发现。
+    """
+    node = root.find("set")
+    if node is None:
+        return None
+    nested = (node.findtext("name") or "").strip()
+    if nested:
+        return nested
+    return (node.text or "").strip() or None
 
 
 def read_entry_metadata(nfo_path: Path) -> EntryMetadata | None:
@@ -334,6 +363,7 @@ def read_entry_metadata(nfo_path: Path) -> EntryMetadata | None:
     meta.runtime_minutes = _to_positive_int(_first_text(root, "runtime"))
     meta.genres = _all_texts(root, "genre")
     meta.directors = _all_texts(root, "director")
+    meta.series_name = _parse_set_name(root)
     for actor in root.findall("actor")[:_MAX_ACTORS]:
         name = (actor.findtext("name") or "").strip()
         if not name:
@@ -469,6 +499,8 @@ class LocalNfo:
     studios: list[str] = field(default_factory=list)
     directors: list[str] = field(default_factory=list)
     actors: list[NfoActor] = field(default_factory=list)
+    #: 作品系列名（``<set>``）——本地条目没有 TMDB 身份，NFO 是它唯一的系列来源
+    series_name: str | None = None
     nfo_name: str = ""
 
 
@@ -506,6 +538,7 @@ def read_local_sidecar(nfo_path: Path) -> LocalNfo | None:
     ]
     nfo.studios = _all_texts(root, "studio")
     nfo.directors = _all_texts(root, "director")
+    nfo.series_name = _parse_set_name(root)
     for actor in root.findall("actor")[:_MAX_ACTORS]:
         name = (actor.findtext("name") or "").strip()
         if not name:

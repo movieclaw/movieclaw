@@ -1072,6 +1072,9 @@ function EditLibraryDialog({
     library.extract_chapter_images,
   );
   const [excludeFromHome, setExcludeFromHome] = useState(library.exclude_from_home);
+  const [autoSeriesCollections, setAutoSeriesCollections] = useState(
+    library.auto_series_collections,
+  );
   const [accessMode, setAccessMode] = useState<LibraryAccessMode>(library.access_mode);
   const [adminVisible, setAdminVisible] = useState(library.admin_visible);
   const [memberIds, setMemberIds] = useState<number[]>(library.member_ids);
@@ -1108,6 +1111,7 @@ function EditLibraryDialog({
       generate_thumbnails: generateThumbnails,
       extract_chapter_images: extractChapterImages,
       exclude_from_home: excludeFromHome,
+      auto_series_collections: autoSeriesCollections,
       scrape_overrides: scraped ? scrapeOverrides : {},
       access_mode: accessMode,
       admin_visible: adminVisible,
@@ -1173,6 +1177,7 @@ function EditLibraryDialog({
           )}
           {playable && dot(extractChapterImages, "章节")}
           {dot(!excludeFromHome, "首页展示")}
+          {scraped && dot(autoSeriesCollections, "系列合集")}
         </>
       ),
       body: (
@@ -1222,6 +1227,15 @@ function EditLibraryDialog({
             onChange={(next) => setExcludeFromHome(!next)}
             detail="关闭后首页「最近添加」与 Jellyfin 客户端的「最新媒体」都跳过这个库；库卡片仍在，进库内看照常。"
           />
+          {/* 系列是"作品的属性"，只有能刮削的库才有这回事 */}
+          {scraped && (
+            <SwitchRow
+              title="按作品系列自动生成合集"
+              checked={autoSeriesCollections}
+              onChange={setAutoSeriesCollections}
+              detail="《哈利·波特》《碟中谍》这类系列会在合集页自动成集，按上映顺序排列，还能看出你缺哪几部、一键去补。这只是**展示**偏好：关掉之后系列信息照常入库、NFO 里照常写，Kodi/Emby 那边不受影响，只是我们的合集页不再自动多出几十个系列；重新打开会把已有的补齐，不会重新刮削。"
+            />
+          )}
         </div>
       ),
     },

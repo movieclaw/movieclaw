@@ -56,7 +56,7 @@ class MediaMetadata(TimestampMixin, table=True):
     genres: list = Field(
         default_factory=list,
         sa_column=Column(JSON, nullable=False),
-        description="类型（如 [\"剧情\", \"科幻\"]）",
+        description='类型（如 ["剧情", "科幻"]）',
     )
     # 类型的 TMDB genre ID（与 genres 同一次刮削写入）。genres 存的是刮削
     # 语言的本地化名，媒体库路由的收藏范围匹配必须用语言无关的 ID
@@ -83,6 +83,23 @@ class MediaMetadata(TimestampMixin, table=True):
         sa_column=Column(JSON, nullable=False),
         description="电影=制作公司，剧集=播出网络",
     )
+
+    # -- 系列（作品系列，不是「合集」那个容器）--------------------------------
+    # 命名分寸：代码里一律用 ``series`` 指「作品系列」，``collection`` 只留给
+    # 「合集」那个容器（collections.md 1.2.1 里「合集」这个词已经有四个意思了，
+    # 再加一个只会让下一个人读错）。系列是内容的属性，合集是装东西的盒子。
+    #
+    # 单值而不是多对多：TMDB 的 ``belongs_to_collection`` 就是单值——一部电影
+    # 至多属于一个系列。上游没有多对多，就不要为它建关联表。
+    #
+    # 一个规范化的 key 而不是「tmdb_id + 名字」两列：两列意味着两个规则字段，
+    # 而一部片可能两者都有（TMDB 给了 id、NFO 还写着名字），于是它同时落进两个
+    # 合集，用户看到两个几乎一样的系列。写入时定死优先级：**有 TMDB id 就是
+    # ``tmdb:{id}``，否则才是 ``name:{规范化名}``**，从构造上杜绝重影。
+    series_key: str | None = Field(
+        default=None, index=True, description="系列判定键：tmdb:1241 / name:哈利波特系列"
+    )
+    series_name: str | None = Field(default=None, description="系列展示名（建合集用，不参与判定）")
 
     # -- 评分 ---------------------------------------------------------------
     vote_average: float | None = Field(

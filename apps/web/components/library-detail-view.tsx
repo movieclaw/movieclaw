@@ -363,6 +363,9 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   const filtering = !isFilterEmpty(filter);
   // 本库的合集：chip 行与「合集」视图共用这一份，不各拉各的
   const [collections, setCollections] = useState<Collection[]>([]);
+  // 「显示已隐藏的合集」：自动生成的合集删不掉、只能藏，藏了必须找得回来。
+  // 不进 URL、不落盘——它是一次性的"我来找找刚才藏的那个"，不是长期偏好
+  const [showHiddenCollections, setShowHiddenCollections] = useState(false);
   const [libraryView, setLibraryView] = useState<LibraryView>(() => readViewFromUrl());
   const [savingCollection, setSavingCollection] = useState(false);
   const isMobile = useIsMobile();
@@ -717,11 +720,11 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
    */
   /** 拉本库的合集。空合集后端已经滤掉了——点进去空无一物的合集是纯粹的死路。 */
   const reloadCollections = useCallback(() => {
-    listCollections({ libraryId })
+    listCollections({ libraryId, includeHidden: showHiddenCollections })
       .then(setCollections)
       // 拿不到就当没有合集：chip 行与视图切换一起不出现，墙照常能用
       .catch(() => setCollections([]));
-  }, [libraryId]);
+  }, [libraryId, showHiddenCollections]);
 
   const switchView = useCallback((next: LibraryView) => {
     setLibraryView(next);
@@ -1403,6 +1406,11 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
             }
           : undefined
       }
+      // 「显示已隐藏的合集」只在合集视图里给：在海报墙上它没有任何意义
+      showHiddenCollections={libraryView === "collections" ? showHiddenCollections : undefined}
+      onShowHiddenCollectionsChange={
+        libraryView === "collections" ? setShowHiddenCollections : undefined
+      }
       // 排序是三面墙共用的偏好，普通成员也能选；补探那几分钟排序被临时接管，
       // 菜单如实置灰而不是假装可选
 
@@ -2068,6 +2076,10 @@ interface LibraryActionsMenuProps {
   /** 图床浏览模式：是否按作品分段；不传不渲染这一项（海报墙与图片库都没有分组一说） */
   grouped?: boolean;
   onGroupedChange?: (next: boolean) => void;
+  /** 合集视图：要不要把藏起来的合集翻出来。不传不渲染这一项（只有合集视图有）。
+   *  这是「隐藏」的回头路——没有它，那颗按钮就是单向黑洞 */
+  showHiddenCollections?: boolean;
+  onShowHiddenCollectionsChange?: (next: boolean) => void;
   /** 墙的排序（个人偏好，三面墙共用） */
   /** 补探阶段排序被临时接管，这一组置灰 */
   /** 默认那一档叫什么：影视库是「按标题」，其他库与图片库是「按时间」 */
@@ -2098,6 +2110,8 @@ function LibraryActionsMenu({
   onGalleryModeChange,
   grouped,
   onGroupedChange,
+  showHiddenCollections,
+  onShowHiddenCollectionsChange,
 }: LibraryActionsMenuProps) {
   // 与站点配置一致用 Radix DropdownMenu：Portal 到 body + 碰撞检测，
   // 不会被头部容器裁切；开合/外部点击/键盘导航全交给 Radix。
@@ -2202,6 +2216,15 @@ function LibraryActionsMenu({
               className={itemClass}
             >
               {galleryMode ? "回到海报墙" : "图床浏览"}
+            </DropdownMenu.Item>
+          )}
+          {/* 隐藏的回头路。自动生成的合集删不掉、只能藏，藏了必须找得回来 */}
+          {onShowHiddenCollectionsChange && (
+            <DropdownMenu.Item
+              onSelect={() => onShowHiddenCollectionsChange(!showHiddenCollections)}
+              className={itemClass}
+            >
+              {showHiddenCollections ? "不显示已隐藏的合集" : "显示已隐藏的合集"}
             </DropdownMenu.Item>
           )}
           <WallPrefItems

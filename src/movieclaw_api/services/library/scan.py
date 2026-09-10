@@ -583,11 +583,21 @@ def scan_progress(library_id: int) -> ScanState | None:
 
 
 async def _refresh_stats_snapshot(library_id: int, summary: ScanSummary) -> None:
-    """用独立事务刷新库存快照；失败只记结论，不回滚已经提交的扫描成果。"""
+    """用独立事务刷新库存快照；失败只记结论，不回滚已经提交的扫描成果。
+
+    顺带把系列合集补齐：扫描收尾按 distinct ``series_key`` 做一次（一条
+    ``GROUP BY``），比每条目一次点查省，也把"NFO 里读出的系列"那一支一并
+    覆盖到——扫描是它唯一的入口。
+    """
+    from movieclaw_api.services.library.series import ensure_series_collections_for_library
+
     try:
         db = get_database()
         async with db.session() as session:
             await LibraryRepository(session).refresh_stats([library_id])
+            # refresh_stats 自己 commit，ensure 之后要再收一次事务边界
+            await ensure_series_collections_for_library(session, library_id)
+            await session.commit()
     except Exception:  # noqa: BLE001 -- 统计失败不应把已完成的入库事务回滚
         logger.exception("媒体库 #%s 库存统计刷新失败", library_id)
         message = "库存统计刷新失败，将在下次扫描时重试"

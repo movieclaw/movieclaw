@@ -85,6 +85,12 @@ class Collection(MemberScopedMixin, TimestampMixin, table=True):
         sa_column=Column("builtin", String, nullable=True),
         description="内置合集标识；NULL=用户创建（可改）",
     )
+    # 墓碑：自动生成的合集（内置 / 系列）那颗「删除」按钮落在这里。真删了下次
+    # ensure 又会长回来，用户会觉得"删不掉"；留行当墓碑语义上也更诚实——你删掉
+    # 的是"我不想看见它"，不是"这个系列不存在"。用户自建的合集照旧真删，
+    # 同一颗按钮两种归宿，由 builtin is None 推导（与"形态是推导的"同源）。
+    # 必须可逆：接口侧 include_hidden 与 include_empty 同形，否则就是单向黑洞
+    hidden: bool = Field(default=False, index=True, description="已隐藏（自动合集的「删除」）")
     position: int = Field(default=0, description="顶栏与网格的顺序（越小越靠前）")
     cover_item_id: int | None = Field(
         default=None,
@@ -94,6 +100,25 @@ class Collection(MemberScopedMixin, TimestampMixin, table=True):
             nullable=True,
         ),
         description="封面取哪部作品的海报；NULL=取首个成员",
+    )
+
+    # -- 系列档案快照（只有系列合集有）----------------------------------------
+    # TMDB `GET /collection/{id}` 回的 parts[]：整个系列共几部、每部的 tmdb id /
+    # 标题 / 上映日 / 海报。用来算「缺哪几部」并一键去补——这一条才是把系列合集
+    # 从「整理」变成「补齐」的地方（只做归类的话，用户装个 Emby 也有）。
+    #
+    # **懒加载**：用户第一次打开这个系列的详情页时才去拉，之后走这份快照。
+    # 初稿写的是刮削时每个系列拉一次——那是白白给扫描加负担，而用户从没点开的
+    # 系列一个请求都不该花。
+    #
+    # 它是**外部档案的快照，不是我们的事实源**：脏了重拉即可，没有一致性负担。
+    series_parts: list | None = Field(
+        default=None,
+        sa_column=Column(JSON, nullable=True),
+        description="系列全片名单快照（缺片补齐用）；NULL=还没拉过",
+    )
+    series_image: str | None = Field(
+        default=None, description="系列官方海报路径（与 parts 同一次响应里白拿的）"
     )
 
 

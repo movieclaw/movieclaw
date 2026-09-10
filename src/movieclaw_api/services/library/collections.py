@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from movieclaw_api.services.library.items import (
     LibraryFilter,
     WallSort,
+    _wall_count,
     _wall_page_ids,
 )
 from movieclaw_db.models import Collection, CollectionItem, LibraryFile
@@ -50,6 +51,7 @@ def rules_to_filter(rules: list) -> LibraryFilter:
     languages: list[str] = []
     resolutions: list[str] = []
     stock: list[str] = []
+    series_keys: list[str] = []
     hdr = None
     for rule in rules or []:
         if not isinstance(rule, dict):
@@ -76,6 +78,10 @@ def rules_to_filter(rules: list) -> LibraryFilter:
             hdr = bool(values[0]) if values else None
         elif field == "stock":
             stock.extend(str(v) for v in values)
+        elif field == "series_key":
+            # 系列合集的规则就是这一条。字段名用单数 series_key（与列同名），
+            # 与"值是个列表"并不矛盾：维内 OR 是全局约定
+            series_keys.extend(str(v) for v in values)
     return LibraryFilter(
         genres=tuple(genres),
         countries=tuple(countries),
@@ -87,15 +93,27 @@ def rules_to_filter(rules: list) -> LibraryFilter:
         resolutions=tuple(resolutions),
         hdr=hdr,
         stock=tuple(stock),
+        series_keys=tuple(series_keys),
     )
 
 
 def effective_rules(collection: Collection) -> list:
-    """合集的实际规则：内置合集用内置的那份，用户创建的用自己存的。"""
+    """合集的实际规则。
+
+    **行上存了规则就用它**——系列合集正是这么建的（``series_key = X`` 那一条），
+    它是自动生成的（``builtin`` 非空、不可改），但规则是活的、存在行里。
+    只有规则**长在代码里**的那种内置合集（「我的收藏」的"看的人收藏了它"）
+    才去规则表里查：那种条件没法写成 ``[{field, op, values}]``。
+
+    初版这里是先看 ``builtin`` 再查表，于是任何 builtin 合集都会被当成
+    "规则在表里"，系列合集的规则被整条丢掉、成员恒为空。
+    """
+    if collection.rules:
+        return list(collection.rules)
     if collection.builtin:
         # builtin 存的是「类型:库id」（favorites:12），规则表按类型查
         return _BUILTIN_RULES.get(builtin_key(collection) or "", [])
-    return list(collection.rules or [])
+    return []
 
 
 def is_rule_driven(collection: Collection) -> bool:
@@ -138,12 +156,16 @@ async def resolve_members(
 
     # 名单驱动：position 序就是用户拖出来的顺序，不给 sort 时原样保留
     rows = (
-        await session.execute(
-            select(CollectionItem.media_item_id)
-            .where(CollectionItem.collection_id == collection.id)
-            .order_by(CollectionItem.position, CollectionItem.id)
+        (
+            await session.execute(
+                select(CollectionItem.media_item_id)
+                .where(CollectionItem.collection_id == collection.id)
+                .order_by(CollectionItem.position, CollectionItem.id)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     ids = [i for i in rows if i is not None]
     if not ids:
         return []
@@ -174,12 +196,32 @@ async def count_members(
     member_id: int | None = None,
     visible_library_ids: set[int] | None = None,
 ) -> int:
-    """成员数。
+    """成员数——规则驱动的合集走一条 ``COUNT(DISTINCT)``，**不把 id 取出来**。
 
-    没有缓存，也不该有：像「我的收藏」这类成员相关的合集，用户点一下心成员数
-    就变，而点心不会碰任何库级的时间戳——跟着库统计失效的缓存会一直脏到下次
-    扫描。为高频接口引入一条会脏的缓存，比不缓存糟得多（设计文档 2.4）。
+    数量与顺序无关，所以数数不必经过排序那一段。这条分寸在合集只有一两个的
+    时候无所谓，自动生成几十个系列合集之后就是那道悬崖：按标题排序的合集每
+    数一次就要把全库标题取出来在 Python 里做一次拼音排序（``_titles_sorted``），
+    几十个合集叠起来是肉眼可见的卡（设计文档 5.5）。
+
+    收窄条件仍然只有一处（``_wall_count`` 与 ``_wall_page_ids`` 共用 ``_narrow``），
+    换的只是投影。口径一致由回归用例压着：``count_members == len(resolve_members)``。
+
+    **没有缓存，也不该有**：像「我的收藏」这类跟着看的人变的合集，用户点一下心
+    成员数就变，而点心不会碰任何库级的时间戳——跟着库统计失效的缓存会一直脏到
+    下次扫描（设计文档 2.4）。内容定义型的合集（系列/类型/年代）另当别论，
+    但那要连着 ``refresh_stats`` 一起做，不在这一期（5.5.2）。
     """
+    if is_rule_driven(collection) and collection.library_id is not None:
+        if visible_library_ids is not None and collection.library_id not in visible_library_ids:
+            return 0
+        return await _wall_count(
+            session,
+            collection.library_id,
+            "confirmed",
+            rules_to_filter(effective_rules(collection)),
+            member_id,
+        )
+    # 名单驱动：成员本来就要逐个过一遍存活判定，没有更便宜的问法
     ids = await resolve_members(
         session, collection, member_id=member_id, visible_library_ids=visible_library_ids
     )
@@ -216,17 +258,23 @@ async def visible_collections(
     library_id: int | None = None,
     member_id: int | None = None,
     visible_library_ids: set[int] | None = None,
+    include_hidden: bool = False,
 ) -> list[Collection]:
     """按元数据可见的合集（**不解析成员**——那是一条便宜的 SQL）。
 
-    可见性第一层：private 且不是本人的不下发；所属库对该成员不可见的不下发。
-    第二层（成员条目是否可见）在 ``resolve_members`` 里；第三层（过滤后为空
-    是否还下发）由调用方按场景决定——列合集时该丢掉空的，判断"有没有合集"
-    时不必为此解析每一个。
+    可见性第一层：private 且不是本人的不下发；所属库对该成员不可见的不下发；
+    落了墓碑（``hidden``）的不下发。第二层（成员条目是否可见）在
+    ``resolve_members`` 里；第三层（过滤后为空是否还下发）由调用方按场景决定
+    ——列合集时该丢掉空的，判断"有没有合集"时不必为此解析每一个。
+
+    ``include_hidden`` 是隐藏的**回头路**：界面上的"显示已隐藏的合集"用它把
+    墓碑翻出来，用户才能取消隐藏。不给回头路的隐藏是单向黑洞。
     """
     query = select(Collection).order_by(Collection.position, Collection.id)
     if library_id is not None:
         query = query.where(Collection.library_id == library_id)
+    if not include_hidden:
+        query = query.where(Collection.hidden.is_(False))  # type: ignore[union-attr]
     rows = list((await session.execute(query)).scalars().all())
     out: list[Collection] = []
     for row in rows:

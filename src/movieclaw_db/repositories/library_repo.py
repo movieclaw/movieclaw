@@ -72,12 +72,19 @@ class LibraryRepository:
             return
 
         present = LibraryFile.in_place()  # type: ignore[union-attr]
+        # **只有作品数**用在架口径（在位 + 失联，只排除回收站里的），与海报墙的
+        # _wall_scope 是同一条：卡片上的作品数必须和墙上摆着的数量对得上。
+        # 其余全部仍按在位算，而且各有各的理由：文件数与容量说的是"占多少盘"，
+        # 失联的文件不占；分集数说的是"已有几集"，失联的集不能算已有；
+        # 待识别/已忽略是文件级清单的规模，失联的行另有 stats_missing_count
+        # 单独表达，算进来是同一件事数两遍
+        on_shelf = LibraryFile.on_shelf()  # type: ignore[union-attr]
         # "已识别"排除挂着临时本地身份的行（unidentified_code 非空）：它们
         # 在海报墙上可见可播，但库卡片上归入"待识别"而不是"作品数"
         identified_item = case(
             (
                 and_(
-                    present,
+                    on_shelf,
                     LibraryFile.media_item_id.is_not(None),  # type: ignore[union-attr]
                     LibraryFile.unidentified_code.is_(None),  # type: ignore[union-attr]
                 ),
@@ -202,6 +209,7 @@ class LibraryRepository:
         generate_thumbnails: bool = True,
         extract_chapter_images: bool = True,
         exclude_from_home: bool = False,
+        auto_series_collections: bool = True,
         access_mode: str = "everyone",
         admin_visible: bool = True,
     ) -> Library:
@@ -220,6 +228,7 @@ class LibraryRepository:
             generate_thumbnails=generate_thumbnails,
             extract_chapter_images=extract_chapter_images,
             exclude_from_home=exclude_from_home,
+            auto_series_collections=auto_series_collections,
             access_mode=access_mode,
             admin_visible=admin_visible,
             is_default=await self.get_default(kind) is None,
@@ -255,6 +264,7 @@ class LibraryRepository:
         generate_thumbnails: bool | None = None,
         extract_chapter_images: bool | None = None,
         exclude_from_home: bool | None = None,
+        auto_series_collections: bool | None = None,
         access_mode: str | None = None,
         admin_visible: bool | None = None,
     ) -> Library | None:
@@ -281,6 +291,8 @@ class LibraryRepository:
             row.extract_chapter_images = extract_chapter_images
         if exclude_from_home is not None:
             row.exclude_from_home = exclude_from_home
+        if auto_series_collections is not None:
+            row.auto_series_collections = auto_series_collections
         if access_mode is not None:
             row.access_mode = access_mode
         if admin_visible is not None:

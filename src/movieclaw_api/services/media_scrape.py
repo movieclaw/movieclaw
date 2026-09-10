@@ -40,6 +40,10 @@ from sqlmodel import select
 
 from movieclaw_api.core.config import get_settings
 from movieclaw_api.services import jobs
+from movieclaw_api.services.library.series import (
+    build_series_key,
+    ensure_series_collections_for_item,
+)
 from movieclaw_api.services.scrape_config import (
     effective_asset_sizes,
     effective_image_prefs,
@@ -185,6 +189,8 @@ async def _scrape(media_item_id: int, *, force: bool, on_phase: PhaseHook = None
         _phase("写入元数据")
         _merge_identity(item, profile, await repo.get_metadata(media_item_id))
         await apply_display_profile(session, media_item_id, profile, language)
+        # 系列合集：刮完就把它所在的每个库补齐一行（幂等，只写合集行不写成员行）
+        await ensure_series_collections_for_item(session, media_item_id)
 
         subscription = (
             await session.execute(
@@ -777,6 +783,11 @@ async def apply_display_profile(
     meta.vote_count = profile.vote_count
     meta.directors = list(profile.directors)
     meta.cast = [c.model_dump() for c in profile.cast]
+    # 作品系列：TMDB 的 belongs_to_collection 就在详情响应里，零额外请求。
+    # 只落列，**不在这里建合集**——刮削只管落数据，建合集是 library/series.py
+    # 的事（调用方在事务收尾时调 ensure_series_collections_for_item）
+    meta.series_key = build_series_key(profile.series_tmdb_id, profile.series_name)
+    meta.series_name = profile.series_name
     meta.scraped_at = now
     meta.scrape_language = language
     meta.updated_at = now
@@ -875,6 +886,8 @@ def build_display_rows(
         vote_count=profile.vote_count,
         directors=list(profile.directors),
         cast=[c.model_dump() for c in profile.cast],
+        series_key=build_series_key(profile.series_tmdb_id, profile.series_name),
+        series_name=profile.series_name,
         scraped_at=now,
         scrape_language=language,
     )
@@ -898,6 +911,9 @@ def local_metadata_row(identity) -> MediaMetadata:
         vote_average=identity.rating,
         directors=list(identity.directors),
         cast=list(identity.cast),
+        # 本地条目没有 TMDB 身份，系列键因此走 name: 那一支（与 tmdb: 天然不相交）
+        series_key=build_series_key(None, identity.series_name),
+        series_name=identity.series_name,
         scraped_at=utcnow(),
         scrape_language="",
     )
@@ -925,6 +941,11 @@ async def apply_local_identity(session: AsyncSession, item: MediaItem, identity)
     row.vote_average = identity.rating if identity.rating is not None else row.vote_average
     row.directors = list(identity.directors) or row.directors
     row.cast = list(identity.cast) or row.cast
+    if identity.series_name:
+        # NFO 里读出了系列就以它为准；没读出来不清空——本地条目的档案是
+        # "只覆盖 NFO 提供了的字段"，系列不该是例外
+        row.series_key = build_series_key(None, identity.series_name)
+        row.series_name = identity.series_name
     row.scraped_at = utcnow()
     row.updated_at = utcnow()
     session.add(row)

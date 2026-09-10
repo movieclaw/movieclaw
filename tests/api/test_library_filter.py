@@ -17,6 +17,8 @@ from sqlmodel import select
 from movieclaw_api.core.config import get_settings
 from movieclaw_api.services.library.items import (
     LibraryFilter,
+    _wall_count,
+    _wall_page_ids,
     build_library_index,
     build_library_wall,
 )
@@ -828,3 +830,64 @@ async def test_second_tier_facets_only_when_asked(db) -> None:
         assert {r.value: r.count for r in full.runtimes}["gt120"] == 4
         assert {r.value: r.count for r in full.stock}["unscraped"] == 0
         assert {r.value: r.count for r in full.hdr}["0"] == 5
+
+
+async def test_wall_count_never_disagrees_with_the_page(db) -> None:
+    """``_wall_count`` 与 ``_wall_page_ids`` 必须逐档一致。
+
+    合集列表为了不把成员整批取出来（几十个系列合集时那是道悬崖），数数走的是
+    一条 ``COUNT(DISTINCT)``。两处收窄条件共用 ``_narrow`` + ``_wall_scope``，
+    但"共用"是纪律、这条用例才是保证：口径一旦分叉，合集卡片会说 8 部、
+    点进去只有 7 部。
+    """
+    async with db.session() as session:
+        library_id, ids = await _seed_metrics(session)
+        cases = [
+            LibraryFilter(),
+            LibraryFilter(genres=(16,)),
+            LibraryFilter(countries=("JP",), rating_gte=8.5),
+            LibraryFilter(decades=("2010s",)),
+            LibraryFilter(genres=(16, 878), languages=("ja",)),
+        ]
+        for filters in cases:
+            for sort in ("title", "added_at", "release_date", "rating"):
+                page = await _wall_page_ids(
+                    session, library_id, sort, None, 0, "confirmed", filters, _ME
+                )
+                assert await _wall_count(session, library_id, "confirmed", filters, _ME) == len(
+                    page
+                ), f"{sort} / {filters}"
+        assert len(ids) > 0
+
+
+async def test_trashed_items_leave_the_wall(db) -> None:
+    """文件进回收站后条目就不在墙上了——与库卡片的作品数同一口径。
+
+    在此之前墙的成员查询完全不看文件状态：用户把最后一个文件移进回收站，
+    库卡片的作品数减一、墙上那部片还摆着，同一个库两个数字。
+    """
+    from movieclaw_db.models import FileState, LibraryFile
+
+    async with db.session() as session:
+        library_id, ids = await _seed(session)
+        before = await _titles(session, library_id)
+        target = sorted(before)[0]
+        row = (
+            await session.execute(
+                select(LibraryFile)
+                .join(MediaItem, MediaItem.id == LibraryFile.media_item_id)
+                .where(LibraryFile.library_id == library_id, MediaItem.title == target)
+            )
+        ).scalars().first()
+        row.state = FileState.TRASHED
+        session.add(row)
+        await session.flush()
+        assert target not in await _titles(session, library_id)
+
+        # 失联的片**仍在架**：用户要看得见它才知道该去插硬盘，而「有文件失联」
+        # 那一档筛选找的正是这些片
+        row.state = FileState.MISSING
+        session.add(row)
+        await session.flush()
+        assert target in await _titles(session, library_id)
+        assert len(ids) > 1

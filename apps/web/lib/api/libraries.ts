@@ -80,6 +80,8 @@ export interface MediaLibrary {
   extract_chapter_images: boolean;
   /** 是否从首页「最近添加」等汇总里排除 */
   exclude_from_home: boolean;
+  /** 是否按作品系列自动生成合集（展示偏好，不影响落库与写 NFO） */
+  auto_series_collections: boolean;
   /** 可见范围（docs/design/library-access.md）：everyone / selected */
   access_mode: LibraryAccessMode;
   /** 超管本人是否在浏览范围内（管理权不受影响） */
@@ -382,6 +384,7 @@ export interface LibraryPayload {
   extract_chapter_images?: boolean;
   /** 是否从首页汇总里排除该库；不传=不改动（新建时默认关） */
   exclude_from_home?: boolean;
+  auto_series_collections?: boolean;
   /** 可见范围模式；不传=不改动（新建时默认 everyone） */
   access_mode?: LibraryAccessMode;
   /** 超管本人是否可浏览；不传=不改动（新建时默认可浏览） */
@@ -1355,6 +1358,10 @@ export interface LibraryItemDetail {
   scraping_phase: string | null;
   /** 章节场景图正在后台生成（打开详情页时懒触发）；前端据此轮询几轮 */
   chapters_pending: boolean;
+  /** 所属作品系列名；不属于任何系列为 null */
+  series_name: string | null;
+  /** 所属系列合集的 id；本库没生成该合集（或用户藏了它）时为 null */
+  series_collection_id: number | null;
 }
 
 /** 剧集分集区的一集（季集结构 + 本地分集刮削 + TMDB 兜底的合并结果）。 */

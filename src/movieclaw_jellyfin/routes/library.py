@@ -17,12 +17,13 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from movieclaw_api.services.library.access import member_visible_ids
 from movieclaw_api.services.library.collections import (
+    count_members,
     has_any_member,
     resolve_members,
     visible_collections,
 )
 from movieclaw_db.engine import get_database
-from movieclaw_db.models import Library
+from movieclaw_db.models import Collection, Library
 from movieclaw_jellyfin.catalog import (
     PLAYABLE_TYPES,
     DtoContext,
@@ -544,6 +545,8 @@ async def _query_items(request: Request, scope: ViewerScope) -> JSONResponse:
     limit = _parse_int(q.get("limit"), default=-1)
     sort_by = parse_comma(q.get("sortBy"))
     sort_order = parse_comma(q.get("sortOrder"))
+    # 要的是合集本身还是作品，以及限定在哪个库（ParentId=<某个库> 时）
+    boxset_scope = _boxset_query_scope(parent_raw, include_types)
 
     # 电影库的默认列表只需条目 id 和文件存在性；在没有筛选、排序和
     # personIds 时，数据库即可完成 count/offset/limit，最终页才水合 bundle。
@@ -612,14 +615,21 @@ async def _query_items(request: Request, scope: ViewerScope) -> JSONResponse:
             simple_movie_page = True
         elif ids_raw:
             entries = await _entries_for_ids(session, ids_raw, scope, options=options)
-        elif _wants_boxsets(parent_raw, include_types):
+        elif boxset_scope[0]:
             # 「把合集列出来」的请求——BoxSet 不是作品（Entry），单独渲染。
-            # N 次成员解析发生在用户真的打开合集列表时，天经地义；
-            # /UserViews 那种高频接口只判存在，不算成员（设计文档 2.4）
-            dtos = await _boxset_dtos(session, scope, ctx)
-            total = len(dtos)
-            page = dtos[start_index:] if limit < 0 else dtos[start_index : start_index + limit]
-            return JSONResponse(query_result(page, total, start_index))
+            # 排序/分页在 _boxset_page 里做完（作品列表走 _sort_entries，
+            # 合集走 _sort_boxsets），这条路径不再落到下面的通用排序段
+            dtos, total = await _boxset_page(
+                session,
+                scope,
+                ctx,
+                library_id=boxset_scope[1],
+                sort_by=sort_by,
+                sort_orders=sort_order,
+                start_index=start_index,
+                limit=limit,
+            )
+            return JSONResponse(query_result(dtos, total, start_index))
         else:
             lazy = _LazyLeaves(
                 allowed=not (set(sort_by) & _FULL_LEAF_SORTS),
@@ -821,47 +831,129 @@ async def _narrow_by_search(
     return [i for i in ids if i in matched]
 
 
-def _wants_boxsets(parent_raw: str | None, include_types: set[str]) -> bool:
-    """这次请求要的是合集本身吗。
+def _boxset_query_scope(parent_raw: str | None, include_types: set[str]) -> tuple[bool, int | None]:
+    """这次请求要的是合集本身吗，以及**限定在哪个库**。
 
-    两种问法：`ParentId=<合集视图>`（打开那个视图）与 `IncludeItemTypes=BoxSet`
-    （根级直接问"有哪些合集"）。后者是不少客户端的首页拼装方式。
+    三种问法：
+
+    - `ParentId=<合集视图>` —— 打开那个视图，要全部可见合集；
+    - `IncludeItemTypes=BoxSet`（无 ParentId）—— 根级直接问"有哪些合集"，
+      不少客户端的首页就是这么拼的；
+    - `ParentId=<某个库>&IncludeItemTypes=BoxSet` —— 问"**这个库**里有哪些合集"。
+
+    第三种以前被 `IncludeItemTypes` 那条短路吃掉了（直接返回全部合集），
+    于是在电影库里问会连剧集库的合集一起返回。合集数只有一两个时看不出来，
+    自动生成系列合集之后就是明显的串库。
     """
-    if include_types and include_types == {"BoxSet"}:
-        return True
-    if not parent_raw or is_empty_guid(parent_raw):
-        return False
-    ref = decode_guid(parent_raw)
-    return bool(ref and ref.kind == EntityKind.FIXED and ref.entity_id == FIXED_COLLECTIONS)
+    ref = None if (not parent_raw or is_empty_guid(parent_raw)) else decode_guid(parent_raw)
+    if ref and ref.kind == EntityKind.FIXED and ref.entity_id == FIXED_COLLECTIONS:
+        return True, None
+    if include_types != {"BoxSet"}:
+        return False, None
+    if ref is None:
+        return True, None
+    # 指定了父级又点名要 BoxSet：只有"某个库下面的合集"这一种讲得通
+    return (True, ref.entity_id) if ref.kind == EntityKind.LIBRARY else (False, None)
 
 
-async def _boxset_dtos(
-    session: AsyncSession, scope: ViewerScope, ctx: DtoContext
-) -> list[dict[str, Any]]:
-    """全部可见合集的 BoxSet DTO，成员为空的丢掉。
+#: BoxSet 列表能认的排序键。合集没有年份/评分/时长这些度量，能排的就这三样；
+#: 与作品列表一样对未知键保持宽容（静默忽略，回落到 position 序）
+_BOXSET_SORTABLE = {"SortName", "Name", "DateCreated"}
+
+
+def _sort_boxsets(
+    rows: list[tuple[Collection, int]], sort_by: list[str], sort_orders: list[str]
+) -> list[tuple[Collection, int]]:
+    """按客户端给的 `SortBy` 排合集。
+
+    以前这条路径直接把 `visible_collections()` 的 position 序发出去，客户端
+    的排序选择对合集列表**完全无效**——一两个合集时没人察觉，几十个时用户
+    会觉得"排序坏了"。作品列表走 `_sort_entries`，这里是它的合集版。
+    """
+    if not sort_by:
+        return rows
+    if sort_by[0] == "Random":
+        import random
+
+        shuffled = rows[:]
+        random.shuffle(shuffled)
+        return shuffled
+    result = rows
+    # 与作品列表同样的语义：从次要键到主键逐轮稳定排序，未知键静默忽略
+    for pos in range(len(sort_by) - 1, -1, -1):
+        name = sort_by[pos]
+        if name not in _BOXSET_SORTABLE:
+            continue
+        order = (
+            sort_orders[pos]
+            if pos < len(sort_orders)
+            else (sort_orders[-1] if sort_orders else "Ascending")
+        )
+        result = sorted(
+            result,
+            key=lambda pair: (
+                pair[0].created_at.isoformat() if name == "DateCreated" else pair[0].name.lower()
+            ),
+            reverse=order.lower().startswith("desc"),
+        )
+    return result
+
+
+async def _boxset_page(
+    session: AsyncSession,
+    scope: ViewerScope,
+    ctx: DtoContext,
+    *,
+    library_id: int | None,
+    sort_by: list[str],
+    sort_orders: list[str],
+    start_index: int,
+    limit: int,
+) -> tuple[list[dict[str, Any]], int]:
+    """一页 BoxSet DTO 与总数，成员为空的丢掉。
 
     点进去空无一物的合集在电视端是纯粹的死路——列合集时该滤掉，这也是
     /UserViews 只判存在的那条便宜路径付不起的代价（所以只在这里做）。
+
+    代价上的两条分寸（初版都没做，合集只有一两个时掩盖着）：
+
+    1. **数数用 `count_members()`**，它是一条 `COUNT(DISTINCT)`，不把成员 id
+       取出来。空合集要在分页之前滤掉，否则 `TotalRecordCount` 是错的，所以
+       每个合集都得数一次——初版为此把每个合集的成员整批解析出来，40 个系列
+       合集就是 40 次完整的墙查询，而电视端会反复拉这个视图；
+    2. **先分页再取封面**：只有这一页上、且没指定封面的合集才多问一次
+       "首个成员是谁"（LIMIT 1）。
     """
     rows = await visible_collections(
-        session, member_id=scope.member_id, visible_library_ids=scope.visible
+        session,
+        library_id=library_id,
+        member_id=scope.member_id,
+        visible_library_ids=scope.visible,
     )
-    out: list[dict[str, Any]] = []
+    counted: list[tuple[Collection, int]] = []
     for row in rows:
-        members = await resolve_members(
+        total_members = await count_members(
             session, row, member_id=scope.member_id, visible_library_ids=scope.visible
         )
-        if not members:
-            continue
-        out.append(
-            boxset_dto(
-                ctx,
+        if total_members:
+            counted.append((row, total_members))
+    counted = _sort_boxsets(counted, sort_by, sort_orders)
+    total = len(counted)
+    page = counted[start_index:] if limit < 0 else counted[start_index : start_index + limit]
+    out: list[dict[str, Any]] = []
+    for row, child_count in page:
+        cover_item_id = row.cover_item_id
+        if cover_item_id is None:
+            first = await resolve_members(
+                session,
                 row,
-                child_count=len(members),
-                cover_item_id=row.cover_item_id or members[0],
+                member_id=scope.member_id,
+                visible_library_ids=scope.visible,
+                limit=1,
             )
-        )
-    return out
+            cover_item_id = first[0] if first else None
+        out.append(boxset_dto(ctx, row, child_count=child_count, cover_item_id=cover_item_id))
+    return out, total
 
 
 async def _boxset_or_404(

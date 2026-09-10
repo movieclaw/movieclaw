@@ -151,6 +151,25 @@ class LibraryFile(TimestampMixin, table=True):
         """
         return cls.state == FileState.IN_PLACE
 
+    @classmethod
+    def on_shelf(cls):
+        """**在架**口径：没进回收站的行都算（在位 + 失联）。
+
+        与 ``in_place()`` 的分别，是"这部片还在不在这个库里"与"这个文件此刻
+        能不能播"两个问题的分别：
+
+        - **失联**的片还在库里。用户要看得见它，才知道该去插硬盘或重新扫描——
+          「有文件失联」那一档筛选找的正是这些片，把它们从墙上摘掉等于让那档
+          筛选永远为空；
+        - **进回收站**的片是用户主动移走的，等着到期清理（期间可恢复），
+          不该继续占着墙上的位置。
+
+        海报墙、筛选 facet、合集、Jellyfin 与库卡片上的作品数全部用这一条：
+        口径只有一处，"库卡片说 119 部、墙上摆着 120 部"那种自相矛盾才不会
+        再长出来。
+        """
+        return cls.state != FileState.TRASHED
+
     library_id: int = Field(
         sa_column=Column(
             Integer,
@@ -259,9 +278,7 @@ class LibraryFile(TimestampMixin, table=True):
     # 人工标注保护位（docs/design/media-source-annotation.md §3）：True 表示
     # media_source 是用户手工判定的（含「按最低档」哨兵 user-lowest），自动
     # 名称解析不得覆盖——upsert 保留人工值、重复行合并时人工值优先。
-    media_source_manual: bool = Field(
-        default=False, description="片源为人工标注；自动解析不得覆盖"
-    )
+    media_source_manual: bool = Field(default=False, description="片源为人工标注；自动解析不得覆盖")
     release_group: str | None = Field(default=None, description="发布组")
 
     # -- 来源与追溯 ----------------------------------------------------------

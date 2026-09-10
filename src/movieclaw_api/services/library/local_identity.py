@@ -47,6 +47,9 @@ class LocalIdentity:
     studios: list[str] = field(default_factory=list)
     directors: list[str] = field(default_factory=list)
     cast: list[dict] = field(default_factory=list)
+    #: 作品系列名（NFO 的 ``<set>``）。本地条目没有 TMDB 身份，
+    #: series_key 因此走 ``name:`` 那一支（services/library/series.build_series_key）
+    series_name: str | None = None
     # 身份来源：NFO 给了标题记 NFO，否则记 LOCAL（标题来自文件名/目录名推断）
     identity_source: IdentitySource = IdentitySource.LOCAL
 
@@ -156,6 +159,7 @@ def build_local_identity(
         identity.genres = list(nfo.genres)
         identity.studios = list(nfo.studios)
         identity.directors = list(nfo.directors)
+        identity.series_name = nfo.series_name
         identity.cast = [
             {
                 "name": actor.name,

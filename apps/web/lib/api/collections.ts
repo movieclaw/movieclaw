@@ -33,6 +33,11 @@ export interface Collection {
   visibility: "household" | "private";
   /** 内置合集标识（如 favorites:12）；null=用户创建 */
   builtin: string | null;
+  /** 合集从哪来：user=用户自建 / builtin=内置 / series=按作品系列自动生成。
+   *  后端推导好给我们，前端不要去解 builtin 那个字符串——那等于把规则抄第二遍 */
+  kind: "user" | "builtin" | "series";
+  /** 已隐藏。自动生成的合集删不掉（下次 ensure 又长回来），那颗按钮落成墓碑 */
+  hidden: boolean;
   /** 能不能改规则 */
   editable: boolean;
   /** 规则驱动（会自己长）还是名单驱动（固定的一份名单） */
@@ -65,6 +70,31 @@ export interface CollectionPayload {
   /** 创建时把 rules 此刻的命中集固化成名单（此后不再自动收录）。
    *  由服务端定格，客户端因此不必把上千个 id 拉下来再传回去 */
   snapshot?: boolean;
+  /** 隐藏 / 取消隐藏 */
+  hidden?: boolean;
+}
+
+/** 系列里的一部作品：库里有没有、在追没在追。 */
+export interface SeriesPart {
+  tmdb_id: number;
+  title: string;
+  release_date: string | null;
+  poster_url: string | null;
+  /** 库里已有的那条；null=缺这一部 */
+  media_item_id: number | null;
+  /** 已经在追（有订阅） */
+  subscribed: boolean;
+}
+
+/** 系列合集的「已有 N / 共 M」与缺片名单。 */
+export interface CollectionSeries {
+  series_name: string | null;
+  owned_count: number;
+  total: number;
+  image_url: string | null;
+  parts: SeriesPart[];
+  /** 拉到上游档案了吗；false=没配 TMDB / 网络不通 / 本地系列没有上游档案 */
+  available: boolean;
 }
 
 /**
@@ -74,10 +104,12 @@ export interface CollectionPayload {
 export function listCollections(params?: {
   libraryId?: number;
   includeEmpty?: boolean;
+  includeHidden?: boolean;
 }): Promise<Collection[]> {
   const query = new URLSearchParams();
   if (params?.libraryId !== undefined) query.set("library_id", String(params.libraryId));
   if (params?.includeEmpty) query.set("include_empty", "true");
+  if (params?.includeHidden) query.set("include_hidden", "true");
   const suffix = query.size > 0 ? `?${query}` : "";
   return unwrap(request<ApiEnvelope<Collection[]>>(`/collections${suffix}`));
 }
@@ -118,6 +150,11 @@ export function listCollectionItems(
   if (params?.offset) query.set("offset", String(params.offset));
   const suffix = query.size > 0 ? `?${query}` : "";
   return unwrap(request<ApiEnvelope<LibraryItem[]>>(`/collections/${id}/items${suffix}`));
+}
+
+/** 系列合集的缺片名单（懒加载：打开详情页才拉一次上游档案）。 */
+export function getCollectionSeries(id: number): Promise<CollectionSeries> {
+  return unwrap(request<ApiEnvelope<CollectionSeries>>(`/collections/${id}/series`));
 }
 
 /** 把合集的规则设为某个库的收藏范围（同一份条件的第三个时态）。 */

@@ -8,6 +8,8 @@ web 与 Jellyfin 兼容层共用它（见该模块的模块级注释）。
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from datetime import date
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
@@ -15,12 +17,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from movieclaw_api.api.deps import require_admin, require_login
+from movieclaw_api.core.config import get_settings
 from movieclaw_api.exceptions import BadRequestException, NotFoundException
 from movieclaw_api.schemas.library import (
     CollectionCover,
     CollectionPayload,
+    CollectionSeriesView,
     CollectionView,
     LibraryItemView,
+    SeriesPartView,
 )
 from movieclaw_api.schemas.response import ApiResponse, ok
 from movieclaw_api.services.auth import Principal
@@ -31,9 +36,25 @@ from movieclaw_api.services.library.collections import (
     resolve_members,
     visible_collections,
 )
-from movieclaw_api.services.library.items import _aggregate_wall_views, favorite_item_ids
+from movieclaw_api.services.library.items import (
+    _aggregate_wall_views,
+    favorite_item_ids,
+    poster_facts_many,
+)
+from movieclaw_api.services.library.series import (
+    is_series_collection,
+    load_series_parts,
+    min_members_of,
+)
 from movieclaw_db.engine import get_session
-from movieclaw_db.models import Collection, CollectionItem
+from movieclaw_db.models import (
+    Collection,
+    CollectionItem,
+    LibraryFile,
+    MediaItem,
+    Subscription,
+)
+from movieclaw_media.models import MediaKind
 
 router = APIRouter(prefix="/collections", tags=["collections"])
 
@@ -48,6 +69,101 @@ async def _scope(session: AsyncSession, principal: Principal) -> tuple[int, set[
 _COVER_COUNT = 3
 
 
+def _iso_date(raw: str | None) -> date | None:
+    """TMDB 的日期串 → date；畸形值当没有（上游档案脏了不该让整页 500）。"""
+    if not raw:
+        return None
+    try:
+        return date.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
+def _kind_of(row: Collection) -> str:
+    """合集从哪来：用户自建 / 内置 / 自动生成的系列。
+
+    推导而不是存列（与"没有 mode 列"同源）。前端要它来分组展示——让前端自己
+    去 ``startswith("series:")`` 解字符串，等于把推导规则抄第二遍。
+    """
+    if is_series_collection(row):
+        return "series"
+    return "builtin" if row.builtin else "user"
+
+
+def _cover_head(row: Collection, ids: list[int]) -> list[int]:
+    """卡片上要铺的那几张封面对应的条目——指定了封面就把它挪到最前。"""
+    if not ids:
+        return []
+    head = list(ids)
+    if row.cover_item_id in head:
+        head.remove(row.cover_item_id)
+        head.insert(0, row.cover_item_id)
+    return head[:_COVER_COUNT]
+
+
+async def _views(
+    session: AsyncSession,
+    rows: Sequence[Collection],
+    *,
+    member_id: int,
+    visible: set[int] | None,
+) -> list[CollectionView]:
+    """一批合集的视图。
+
+    两条代价上的分寸，都是为「一个库自动生成几十个系列合集」准备的：
+
+    1. 每个合集的成员**只解析一次**——数量与封面都从这一份名单里取。分开取
+       的话，一次列表请求里同一个合集要把成员算两遍，而成员解析就是一次
+       完整的海报墙查询；
+    2. **封面整页只取一次**（``poster_facts_many``）。初版是每个合集调一次
+       完整的墙聚合（十条查询），40 个合集就是四百多条——在 NAS 的 SQLite
+       上是肉眼可见的卡。现在封面的代价与合集数无关。
+
+    仍然一个合集一次 ``resolve_members()``：批量化的只是取图，成员判定还是
+    那条唯一的墙查询——"合集没有自己的查询"这条不能为性能让步。计数以后要
+    换成缓存的话，换的也只是这里这一处（设计文档 5.5.2「计数可替换的形状」）。
+    """
+
+    resolved: list[tuple[Collection, list[int]]] = []
+    for row in rows:
+        ids = await resolve_members(session, row, member_id=member_id, visible_library_ids=visible)
+        resolved.append((row, ids))
+    # 合集卡片上的图与海报墙上的图永远是同一张：共用 poster_facts_many 这一处实现
+    facts = await poster_facts_many(
+        session, sorted({i for row, ids in resolved for i in _cover_head(row, ids)})
+    )
+    views: list[CollectionView] = []
+    for row, ids in resolved:
+        covers = [
+            CollectionCover(url=fact.url, blur=fact.blur)
+            for fact in (facts.get(i) for i in _cover_head(row, ids))
+            if fact is not None and fact.url
+        ]
+        views.append(
+            CollectionView(
+                id=row.id or 0,
+                name=row.name,
+                library_id=row.library_id,
+                rules=effective_rules(row),
+                sort=row.sort,
+                visibility=row.visibility,
+                builtin=row.builtin,
+                # 形态是推导的：能不能改看 builtin，会不会自己长看有没有规则
+                editable=row.builtin is None,
+                rule_driven=is_rule_driven(row),
+                item_count=len(ids),
+                cover_item_id=row.cover_item_id,
+                covers=covers,
+                # 合集从哪来：用户自建 / 内置 / 自动生成的系列。分组展示要它，
+                # 让前端去 startswith("series:") 解字符串等于把推导规则抄第二遍
+                kind=_kind_of(row),
+                hidden=row.hidden,
+                position=row.position,
+            )
+        )
+    return views
+
+
 async def _view(
     session: AsyncSession,
     row: Collection,
@@ -55,43 +171,8 @@ async def _view(
     member_id: int,
     visible: set[int] | None,
 ) -> CollectionView:
-    """一个合集的完整视图。
-
-    成员**只解析一次**：数量与封面都从这一份名单里取。分开取的话，一次列表
-    请求里同一个合集要把成员算两遍——而成员解析就是一次完整的海报墙查询。
-    """
-
-    ids = await resolve_members(session, row, member_id=member_id, visible_library_ids=visible)
-    covers: list[CollectionCover] = []
-    if ids:
-        # 指定了封面就把它挪到最前，其余按合集自己的顺序补齐
-        head = list(ids)
-        if row.cover_item_id in head:
-            head.remove(row.cover_item_id)
-            head.insert(0, row.cover_item_id)
-        head = head[:_COVER_COUNT]
-        # 复用海报墙那份聚合：合集卡片上的图与墙上的图永远是同一张
-        covers = [
-            CollectionCover(url=view.poster_url, blur=view.poster_blur)
-            for view in await _aggregate_wall_views(session, row.library_id, head, head)
-            if view.poster_url
-        ]
-    return CollectionView(
-        id=row.id or 0,
-        name=row.name,
-        library_id=row.library_id,
-        rules=effective_rules(row),
-        sort=row.sort,
-        visibility=row.visibility,
-        builtin=row.builtin,
-        # 形态是推导的：能不能改看 builtin，会不会自己长看有没有规则
-        editable=row.builtin is None,
-        rule_driven=is_rule_driven(row),
-        item_count=len(ids),
-        cover_item_id=row.cover_item_id,
-        covers=covers,
-        position=row.position,
-    )
+    """单个合集的视图（增删改这三条路径用，列表走 ``_views``）。"""
+    return (await _views(session, [row], member_id=member_id, visible=visible))[0]
 
 
 async def _get_or_404(session: AsyncSession, collection_id: int) -> Collection:
@@ -123,17 +204,31 @@ async def list_collections(
     include_empty: Annotated[
         bool, Query(description="是否保留成员为 0 的合集（管理界面要，浏览界面不要）")
     ] = False,
+    include_hidden: Annotated[
+        bool, Query(description="是否带上已隐藏的合集（「显示已隐藏的合集」用它翻墓碑）")
+    ] = False,
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(require_login),
 ) -> ApiResponse[list[CollectionView]]:
-    """成员为 0 的合集默认**不列**：点进去空无一物的合集是纯粹的死路。"""
+    """成员为 0 的合集默认**不列**：点进去空无一物的合集是纯粹的死路。
+
+    已隐藏的同样默认不列，但 ``include_hidden=true`` 一定要能把它们翻出来——
+    藏得回来才叫隐藏，藏不回来那是删除（设计文档 4.6.4）。
+    """
 
     member_id, visible = await _scope(session, principal)
     rows = await visible_collections(
-        session, library_id=library_id, member_id=member_id, visible_library_ids=visible
+        session,
+        library_id=library_id,
+        member_id=member_id,
+        visible_library_ids=visible,
+        include_hidden=include_hidden,
     )
-    views = [await _view(session, row, member_id=member_id, visible=visible) for row in rows]
-    return ok(views if include_empty else [v for v in views if v.item_count > 0])
+    views = await _views(session, rows, member_id=member_id, visible=visible)
+    if include_empty:
+        return ok(views)
+    floors = {row.id: min_members_of(row) for row in rows}
+    return ok([v for v in views if v.item_count >= floors.get(v.id, 1)])
 
 
 @router.post(
@@ -234,9 +329,12 @@ async def update_collection(
         row.member_id = member_id if payload.visibility == "private" else 0
     if payload.sort:
         row.sort = payload.sort
+    if payload.hidden is not None:
+        # 取消隐藏走的也是这一条（前端的"显示已隐藏的合集"里点「恢复」）
+        row.hidden = payload.hidden
     if payload.rules is not None:
         if row.builtin:
-            raise BadRequestException("内置合集的规则不可修改（可以改名或隐藏）")
+            raise BadRequestException("自动生成的合集规则不可修改（可以改名，或者隐藏它）")
         row.rules = list(payload.rules)
     if payload.item_ids is not None:
         if row.builtin:
@@ -270,13 +368,27 @@ async def delete_collection(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(require_login),
 ) -> ApiResponse[None]:
-    """删的是那层视图，作品一部都不会少——合集从来不拥有作品。"""
+    """删的是那层视图，作品一部都不会少——合集从来不拥有作品。
+
+    **同一颗按钮，两种归宿**，由 ``builtin is None`` 推导（与"形态是推导的、
+    不存 mode 列"同一条思路）：
+
+    - 用户自建的合集 → 真删行，``collection_item`` 随之级联清掉；
+    - 自动生成的合集（内置的「我的收藏」、系列合集）→ 落 ``hidden`` 墓碑。
+      真删了下次 ensure 又会把它建回来，用户会觉得"删不掉"；而且行上还挂着
+      推导不出来的东西（稳定 id、改过的名字、封面、顺序）。
+
+    藏起来的合集在「显示已隐藏的合集」里能找回来——不可逆的隐藏是单向黑洞。
+    """
 
     member_id, visible = await _scope(session, principal)
     row = await _get_or_404(session, collection_id)
     _guard_visible(row, member_id, visible)
     if row.builtin:
-        raise BadRequestException("内置合集不能删除（可以隐藏）")
+        row.hidden = True
+        await session.flush()
+        await session.commit()
+        return ok(None, message=f"已隐藏「{row.name}」（在「显示已隐藏的合集」里可以放回来）")
     await session.delete(row)
     await session.commit()
     return ok(None)
@@ -319,6 +431,96 @@ async def list_collection_items(
     for view in views:
         view.is_favorite = view.media_item_id in favorites
     return ok(views)
+
+
+@router.get(
+    "/{collection_id}/series",
+    response_model=ApiResponse[CollectionSeriesView],
+    summary="系列合集的「已有 N / 共 M」与缺片名单",
+    operation_id="collection.series.get",
+)
+async def get_collection_series(
+    collection_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_login),
+) -> ApiResponse[CollectionSeriesView]:
+    """把系列合集从「整理」变成「补齐」的那一块。
+
+    只做归类的话，用户装个 Emby 也有；能说出"缺哪两部、点一下去补"的只有
+    这个产品。缺的那几部走**现成的订阅入口**（``title_ref="tmdb:movie:{id}"``），
+    不需要新的下游链路——只是把两个已有的东西接起来。
+
+    懒加载：第一次打开这个系列时才去拉一次上游档案，之后读快照。
+    """
+
+    member_id, visible = await _scope(session, principal)
+    row = await _get_or_404(session, collection_id)
+    _guard_visible(row, member_id, visible)
+    if not is_series_collection(row):
+        return ok(CollectionSeriesView(available=False))
+
+    parts = await load_series_parts(session, row)
+    await session.commit()  # 快照落盘（懒加载只发生一次）
+    if not parts:
+        return ok(CollectionSeriesView(series_name=row.name, available=False))
+
+    tmdb_ids = [part["tmdb_id"] for part in parts]
+    # 「库里有没有」按本合集所在库的在架文件判定，与海报墙同一口径——
+    # 详情页说"已有 6 部"、墙上摆着 5 部，那种矛盾比不显示更糟
+    owned: dict[int, int] = {}
+    query = select(MediaItem.tmdb_id, MediaItem.id).where(
+        MediaItem.tmdb_id.in_(tmdb_ids),  # type: ignore[attr-defined]
+        MediaItem.kind == MediaKind.MOVIE.value,
+    )
+    if row.library_id is not None:
+        query = query.where(
+            select(LibraryFile.id)
+            .where(
+                LibraryFile.media_item_id == MediaItem.id,
+                LibraryFile.library_id == row.library_id,
+                LibraryFile.on_shelf(),
+            )
+            .exists()
+        )
+    for tmdb_id, item_id in (await session.execute(query)).all():
+        owned[int(tmdb_id)] = int(item_id)
+
+    # 已经在追的显示「追踪中」而不是「订阅」——按现成的订阅行判定，不另建状态
+    tracked = {
+        int(t)
+        for t in (
+            await session.execute(
+                select(MediaItem.tmdb_id)
+                .join(Subscription, Subscription.media_item_id == MediaItem.id)
+                .where(MediaItem.tmdb_id.in_(tmdb_ids))  # type: ignore[attr-defined]
+            )
+        )
+        .scalars()
+        .all()
+        if t is not None
+    }
+
+    base = get_settings().tmdb_image_base_url.rstrip("/")
+    views = [
+        SeriesPartView(
+            tmdb_id=part["tmdb_id"],
+            title=part["title"],
+            release_date=_iso_date(part.get("release_date")),
+            poster_url=(f"{base}/w200{part['poster_path']}" if part.get("poster_path") else None),
+            media_item_id=owned.get(part["tmdb_id"]),
+            subscribed=part["tmdb_id"] in tracked,
+        )
+        for part in parts
+    ]
+    return ok(
+        CollectionSeriesView(
+            series_name=row.name,
+            owned_count=sum(1 for v in views if v.media_item_id is not None),
+            total=len(views),
+            image_url=(f"{base}/w500{row.series_image}" if row.series_image else None),
+            parts=views,
+        )
+    )
 
 
 @router.post(

@@ -681,6 +681,23 @@ export function LibraryItemDetailView({
               {meta.genres.join(" · ")}
             </p>
           )}
+          {/* 所属系列：从这部片一步跳进整个系列（《死亡圣器》→ 八部一起）。
+              只有本库真的生成了那个合集才给链接——一个点了 404 的入口比不给
+              更糟；没有合集时仍然把系列名说出来，那是这部片的事实 */}
+          {detail?.series_name && (
+            <p className="text-on-image mt-2 text-ui leading-6 text-white/72 max-md:text-sub">
+              {detail.series_collection_id ? (
+                <Link
+                  href={`/library/${libraryId}/c/${detail.series_collection_id}` as Route}
+                  className="underline-offset-4 hover:underline"
+                >
+                  {detail.series_name}
+                </Link>
+              ) : (
+                detail.series_name
+              )}
+            </p>
+          )}
           <MediaTrackRows
             files={trackFiles}
             selectedFileId={selectedTrackFile?.id ?? null}

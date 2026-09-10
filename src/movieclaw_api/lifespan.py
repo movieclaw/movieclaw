@@ -204,6 +204,9 @@ def build_lifespan(settings: Settings):
                 recycle as library_recycle,
             )
             from movieclaw_api.services.library import scan as library_scan  # noqa: F401
+            from movieclaw_api.services.library import (  # noqa: F401  作品系列存量回填任务注册
+                series_backfill as library_series_backfill,
+            )
             from movieclaw_api.services.subscription import (  # noqa: F401  洗版基线回填任务注册
                 upgrade as subscription_upgrade,
             )

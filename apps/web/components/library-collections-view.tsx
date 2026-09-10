@@ -36,12 +36,52 @@ export function LibraryCollectionsView({
       </div>
     );
   }
+  // 分组：用户自己存的在前，自动生成的系列在后。一个 300 部的库可能有 40+ 个
+  // 系列，平铺在一起的话**用户存的那三五个就没了**——那才是他花心思配出来的
+  const mine = collections.filter((row) => row.kind !== "series");
+  const series = collections.filter((row) => row.kind === "series");
+  // 只有一类时不出标题：一个标题盖着全部内容是纯噪音
+  const grouped = mine.length > 0 && series.length > 0;
   return (
-    <div className="grid gap-x-4 gap-y-7 px-6 [grid-template-columns:repeat(auto-fill,minmax(168px,1fr))] max-md:gap-x-3 max-md:gap-y-5 max-md:px-4 max-md:[grid-template-columns:repeat(auto-fill,minmax(140px,1fr))]">
-      {collections.map((collection) => (
-        <CollectionCell key={collection.id} collection={collection} libraryId={libraryId} />
-      ))}
+    <div className="flex flex-col gap-7">
+      <CollectionGrid
+        title={grouped ? "我的合集" : undefined}
+        collections={mine}
+        libraryId={libraryId}
+      />
+      <CollectionGrid
+        title={grouped ? "系列" : undefined}
+        collections={series}
+        libraryId={libraryId}
+      />
     </div>
+  );
+}
+
+/** 一组合集（带可选的组标题）。空组不占位。 */
+function CollectionGrid({
+  title,
+  collections,
+  libraryId,
+}: {
+  title?: string;
+  collections: Collection[];
+  libraryId: number;
+}) {
+  if (collections.length === 0) return null;
+  return (
+    <section>
+      {title && (
+        <h2 className="px-6 pb-3 text-sub font-medium tracking-wide text-[var(--text-faint)] max-md:px-4">
+          {title}
+        </h2>
+      )}
+      <div className="grid gap-x-4 gap-y-7 px-6 [grid-template-columns:repeat(auto-fill,minmax(168px,1fr))] max-md:gap-x-3 max-md:gap-y-5 max-md:px-4 max-md:[grid-template-columns:repeat(auto-fill,minmax(140px,1fr))]">
+        {collections.map((collection) => (
+          <CollectionCell key={collection.id} collection={collection} libraryId={libraryId} />
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -56,17 +96,27 @@ function CollectionCell({
   return (
     <Link
       href={`/library/${libraryId}/c/${collection.id}` as Route}
-      className="group block focus-visible:outline-none"
+      className={`group block focus-visible:outline-none ${collection.hidden ? "opacity-45" : ""}`}
     >
       <CollectionCover collection={collection} />
       <div className="mt-2 min-w-0">
         <p className="truncate text-ui font-medium text-[var(--text-strong)]">{collection.name}</p>
         <p className="mt-0.5 text-sub text-[var(--text-faint)]">
           {collection.item_count} 部
-          {/* 规则驱动的合集会自己长——这件事要在卡片上说清楚，否则用户
-              会以为数字是当初存下来的那个快照 */}
-          {collection.rule_driven && <span className="ml-1.5">· 自动收录</span>}
+          {/* 分得清合集从哪来：系列是自动长出来的一整套，自建的是用户存的一组
+              条件。**这里不显示「缺 2 部」**——一屏几十个红角标是压迫感不是
+              帮助，缺片信息留在详情页（设计文档 6.5.2） */}
+          {collection.kind === "series" ? (
+            <span className="ml-1.5">· 系列</span>
+          ) : (
+            /* 规则驱动的合集会自己长——这件事要在卡片上说清楚，否则用户
+               会以为数字是当初存下来的那个快照 */
+            collection.rule_driven && <span className="ml-1.5">· 自动收录</span>
+          )}
           {collection.visibility === "private" && <span className="ml-1.5">· 只有我</span>}
+          {/* 只有开着「显示已隐藏的合集」时才会出现在这里；标出来用户才知道
+              点进去要做什么（把它恢复回来） */}
+          {collection.hidden && <span className="ml-1.5">· 已隐藏</span>}
         </p>
       </div>
     </Link>

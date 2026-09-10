@@ -141,6 +141,7 @@ from movieclaw_api.services.library.naming import (
 from movieclaw_api.services.library.profile import kind_label, profile_for
 from movieclaw_api.services.library.resolve import verify_resolve
 from movieclaw_api.services.library.scan import disc_main_stream, guess_evidence
+from movieclaw_api.services.library.series import ensure_series_collections_for_item
 from movieclaw_api.services.library.units import FileUnit, resolve_units
 from movieclaw_api.services.media_discover import get_tmdb_client
 from movieclaw_api.services.media_library import MediaLibraryService
@@ -2015,6 +2016,8 @@ async def _ingest_entry(
             )
         )
         await LibraryRepository(session).refresh_stats([dest_library.id])
+        # 系列合集：这部片如果属于某个系列，补齐它在本库的那一行（幂等）
+        await ensure_series_collections_for_item(session, item.id)
         from movieclaw_api.services.library.nfo import write_entry_nfo
         from movieclaw_api.services.subscription import close_fulfilled_wanted
 
@@ -2305,6 +2308,7 @@ async def _ingest_entry(
         # 监听入库不经过存量扫描；条目文件全部落账后在同一写路径刷新一次
         # 快照，避免首页要等下一轮定时扫描才看到新库存。
         await LibraryRepository(session).refresh_stats([dest_library.id])
+        await ensure_series_collections_for_item(session, item.id)
         # NFO 身份档案：Emby 零歧义、自家重扫免收敛（已存在不覆盖，失败不阻断）
         from movieclaw_api.services.library.nfo import write_entry_nfo
 
@@ -2620,6 +2624,8 @@ async def _ingest_raw_drop(
         new_items.append((local_item.id, local_item.title))
     if imported:
         await LibraryRepository(session).refresh_stats([library.id])
+        for item_id, _ in new_items:
+            await ensure_series_collections_for_item(session, item_id)
         await session.commit()
         from movieclaw_api.services.library.chapters import enqueue_ingested_item_chapter_images
 

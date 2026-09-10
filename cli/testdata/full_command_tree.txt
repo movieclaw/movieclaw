@@ -75,6 +75,8 @@ collection get
 collection items
 collection items list
 collection list
+collection series
+collection series get
 collection update
 discover
 discover browse-collection

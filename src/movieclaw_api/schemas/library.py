@@ -43,6 +43,15 @@ class LibraryPayload(BaseModel):
         default=None,
         description="是否从首页「最近添加」等汇总里排除该库；不传表示不改动，新建时默认关闭",
     )
+    auto_series_collections: bool | None = Field(
+        default=None,
+        description=(
+            "是否按作品系列自动生成合集（《哈利·波特》这种）。这是**展示**偏好："
+            "关掉之后系列信息照常落库、NFO 的 <set> 照常写，只是合集页不自动多出"
+            "几十个系列；重新打开会把已有的系列补齐，不重新联网刮削。"
+            "不传表示不改动，新建时默认开启"
+        ),
+    )
     # —— 可见范围（docs/design/library-access.md）：三个字段都是"不传 = 不改动"
     access_mode: Literal["everyone", "selected"] | None = Field(
         default=None,
@@ -264,6 +273,9 @@ class LibraryView(BaseModel):
     )
     extract_chapter_images: bool = Field(default=True, description="是否为视频章节抓取场景图")
     exclude_from_home: bool = Field(default=False, description="是否从首页汇总里排除")
+    auto_series_collections: bool = Field(
+        default=True, description="是否按作品系列自动生成合集（展示偏好）"
+    )
     access_mode: Literal["everyone", "selected"] = Field(
         default="everyone", description="可见范围：everyone=所有成员 / selected=指定成员"
     )
@@ -342,6 +354,7 @@ class LibraryView(BaseModel):
             generate_thumbnails=row.generate_thumbnails,
             extract_chapter_images=row.extract_chapter_images,
             exclude_from_home=row.exclude_from_home,
+            auto_series_collections=row.auto_series_collections,
             access_mode=row.access_mode,  # type: ignore[arg-type]
             admin_visible=row.admin_visible,
             member_ids=list(member_ids or []),
@@ -456,7 +469,42 @@ class CollectionView(BaseModel):
         default_factory=list,
         description="封面素材（前若干个成员的海报）；由服务端取，客户端不必为每个合集再请求一次成员",
     )
+    kind: Literal["user", "builtin", "series"] = Field(
+        default="user",
+        description="合集从哪来：user=用户自建 / builtin=内置 / series=按作品系列自动生成",
+    )
+    hidden: bool = Field(default=False, description="已隐藏（自动合集的「删除」落成墓碑）")
     position: int
+
+
+class SeriesPartView(BaseModel):
+    """系列里的一部作品：库里有没有、在追没在追。"""
+
+    tmdb_id: int
+    title: str
+    release_date: date | None = None
+    poster_url: str | None = None
+    media_item_id: int | None = Field(
+        default=None, description="库里已有的那条；null=缺这一部"
+    )
+    subscribed: bool = Field(default=False, description="已经在追（有订阅工单）")
+
+
+class CollectionSeriesView(BaseModel):
+    """系列合集的「已有 N / 共 M」与缺片名单（docs/design/library-series-collections.md 6.5）。
+
+    只在合集详情页展示，**不上卡片**——一屏几十个红色角标是压迫感不是帮助。
+    """
+
+    series_name: str | None = None
+    owned_count: int = Field(default=0, description="库里已有几部")
+    total: int = Field(default=0, description="这个系列一共几部（TMDB 档案）")
+    image_url: str | None = Field(default=None, description="系列官方海报")
+    parts: list[SeriesPartView] = Field(default_factory=list)
+    available: bool = Field(
+        default=True,
+        description="拉到上游档案了吗；false=没配 TMDB / 网络不通 / 本地系列没有上游档案",
+    )
 
 
 class CollectionPayload(BaseModel):
@@ -469,6 +517,9 @@ class CollectionPayload(BaseModel):
     )
     sort: str | None = Field(default=None, description="合集内默认排序")
     visibility: Literal["household", "private"] | None = Field(default=None)
+    hidden: bool | None = Field(
+        default=None, description="隐藏 / 取消隐藏（自动合集删不掉，只能藏；藏了要能放回来）"
+    )
     item_ids: list[int] | None = Field(
         default=None,
         description=(
@@ -886,6 +937,15 @@ class LibraryItemDetailView(BaseModel):
     # 章节场景图懒触发（docs/design/video-chapters.md §4.5）：打开详情页时发现
     # 有文件没抓过图就后台抓，这里告诉前端"图还在生成"，前端据此轮询几轮
     chapters_pending: bool = Field(default=False, description="章节场景图正在后台生成")
+    # 所属系列：从影片页直接跳进那个系列合集（《哈利·波特》→ 整个系列）。
+    # 只在这个库真的生成了那个合集时给 collection_id——给一个点了 404 的入口
+    # 比不给更糟
+    series_name: str | None = Field(
+        default=None, description="所属作品系列名；不属于任何系列为 null"
+    )
+    series_collection_id: int | None = Field(
+        default=None, description="所属系列合集的 id；本库没生成该合集时为 null"
+    )
 
 
 class EpisodeView(BaseModel):

@@ -131,6 +131,10 @@ from movieclaw_api.services.library.scan import (
     request_stop_scan,
     scan_progress,
 )
+from movieclaw_api.services.library.series import (
+    ensure_series_collections_for_library,
+    series_collection_id_for,
+)
 from movieclaw_api.services.library.subtitle_preview import (
     SubtitlePreviewError,
     SubtitleTrackNotFound,
@@ -984,6 +988,7 @@ async def create_library(
         generate_thumbnails=payload.generate_thumbnails,
         extract_chapter_images=payload.extract_chapter_images,
         exclude_from_home=payload.exclude_from_home,
+        auto_series_collections=payload.auto_series_collections,
         access_mode=payload.access_mode,
         admin_visible=payload.admin_visible,
         member_ids=payload.member_ids,
@@ -1144,10 +1149,16 @@ async def update_library(
         generate_thumbnails=payload.generate_thumbnails,
         extract_chapter_images=payload.extract_chapter_images,
         exclude_from_home=payload.exclude_from_home,
+        auto_series_collections=payload.auto_series_collections,
         access_mode=payload.access_mode,
         admin_visible=payload.admin_visible,
         member_ids=payload.member_ids,
     )
+    if payload.auto_series_collections:
+        # 开关打开：把这个库里已有的系列一次补齐（一条 GROUP BY series_key），
+        # **不重新联网、不重新刮削**——数据早就在 media_metadata 的列里了
+        await ensure_series_collections_for_library(session, library_id)
+        await session.commit()
     member_ids = await MemberRepository(session).get_library_member_ids(library_id)
     # 根路径变了就自动补扫：新目录的存量立刻入账，移除目录下的文件标记 missing
     if roots_changed:
@@ -1839,6 +1850,16 @@ def _filter_params(
         str | None,
         Query(description="库存状态：missing=有文件失联 / unscraped=没刮到档案，逗号分隔（查库）"),
     ] = None,
+    series_keys: Annotated[
+        str | None,
+        Query(
+            description=(
+                "作品系列键（tmdb:1241 / name:xxx），逗号分隔。"
+                "**界面上没有这一维的下拉**——一个库几百个系列，下拉根本没法用，"
+                "合集才是它正确的呈现形态；这个参数服务的是系列合集与可分享的链接"
+            )
+        ),
+    ] = None,
 ) -> LibraryFilter:
     """筛选参数 → LibraryFilter。
 
@@ -1864,6 +1885,7 @@ def _filter_params(
         resolutions=tuple(_split(res)),
         hdr=hdr,
         stock=tuple(_split(stock)),
+        series_keys=tuple(_split(series_keys)),
     )
 
 
@@ -2338,6 +2360,10 @@ async def get_library_item(
     ):
         chapters_pending = chapters_mod.schedule_item_chapter_images(media_item_id)
     bundle = await build_item_detail(session, library, item, rows)
+    # 所属系列：影片页给一个跳进整个系列的入口。只有本库真的生成了那个合集
+    # 才给 id——给一个点了 404 的入口比不给更糟（合集可能被用户隐藏了，
+    # 或者这个库把自动生成关掉了）
+    series_collection_id = await series_collection_id_for(session, library_id, media_item_id)
 
     base = get_settings().tmdb_image_base_url.rstrip("/")
     art_base = f"/libraries/{library_id}/items/{media_item_id}/artwork"
@@ -2454,6 +2480,8 @@ async def get_library_item(
             scraping=media_scrape.is_scraping(media_item_id),
             scraping_phase=media_scrape.scraping_phase(media_item_id),
             chapters_pending=chapters_pending,
+            series_name=meta_row.series_name if meta_row else None,
+            series_collection_id=series_collection_id,
         )
     )
 

@@ -307,6 +307,7 @@ class LibraryConfigService:
         generate_thumbnails: bool | None = None,
         extract_chapter_images: bool | None = None,
         exclude_from_home: bool | None = None,
+        auto_series_collections: bool | None = None,
         access_mode: str | None = None,
         admin_visible: bool | None = None,
         member_ids: list[int] | None = None,
@@ -347,6 +348,9 @@ class LibraryConfigService:
                 True if extract_chapter_images is None else bool(extract_chapter_images)
             ),
             exclude_from_home=bool(exclude_from_home),
+            auto_series_collections=(
+                True if auto_series_collections is None else bool(auto_series_collections)
+            ),
             access_mode=mode or "everyone",
             admin_visible=True if admin_visible is None else bool(admin_visible),
         )
@@ -376,6 +380,7 @@ class LibraryConfigService:
         generate_thumbnails: bool | None = None,
         extract_chapter_images: bool | None = None,
         exclude_from_home: bool | None = None,
+        auto_series_collections: bool | None = None,
         access_mode: str | None = None,
         admin_visible: bool | None = None,
         member_ids: list[int] | None = None,
@@ -412,6 +417,7 @@ class LibraryConfigService:
             generate_thumbnails=generate_thumbnails,
             extract_chapter_images=extract_chapter_images,
             exclude_from_home=exclude_from_home,
+            auto_series_collections=auto_series_collections,
             access_mode=mode,
             admin_visible=admin_visible,
         )

@@ -124,6 +124,15 @@ class Library(TimestampMixin, table=True):
     exclude_from_home: bool = Field(
         default=False, description="是否从首页聚合区（最近添加/封面拼贴）排除本库"
     )
+    # 自动生成系列合集（docs/design/library-series-collections.md 6.6）。
+    # 这是**展示**开关，不是刮削开关——关掉之后 series_key 照常落库、NFO 的
+    # <set> 照常写（下游 Kodi/Emby 的合集不该因为我们界面上的一个偏好而消失），
+    # 只是不自动建 collection 行。四件独立的事里只有这一件直接改变用户看到
+    # 什么（升级之后合集页凭空多出几十个东西），所以只有它需要开关。
+    # 重新打开时跑一次 ensure 补齐（一条 GROUP BY series_key），不重新联网。
+    auto_series_collections: bool = Field(
+        default=True, description="是否按作品系列自动生成合集（展示偏好，不影响落库与写 NFO）"
+    )
     # —— 可见范围（docs/design/library-access.md）——
     # 「谁能浏览这个库」由两侧共同决定：库侧 access_mode 说它是否对全部成员
     # 自动开放，成员侧 all_libraries + member_library_access 白名单说成员能看
@@ -142,9 +151,11 @@ class Library(TimestampMixin, table=True):
     # 媒体库首页是高频读路径，不能每次打开都扫描 library_file 全表再聚合。
     # 这些派生值随扫描、监听入库、转移、删除和人工认领等台账变更在事务收尾
     # 时统一重算；列表接口因此只读 library 的少量行，查询成本与文件数无关。
-    # item/file/size 只统计在位文件（missing_since IS NULL）：“占用空间”必须
-    # 反映当前磁盘内容；历史缺失记录另由 stats_missing_count 单独表达。
-    stats_item_count: int = Field(default=0, description="在位且已识别的媒体条目数")
+    # **作品数**按「在架」口径（在位 + 失联，只排除回收站里的），与海报墙的
+    # _wall_scope 是同一条——卡片上的作品数必须和墙上摆着的数量对得上。
+    # 其余仍只算在位文件："占用空间"要反映当前磁盘内容、"已有几集"不能把
+    # 失联的集算进来；历史缺失记录另由 stats_missing_count 单独表达。
+    stats_item_count: int = Field(default=0, description="在架且已识别的媒体条目数")
     # Jellyfin 库卡片与 /Items/Counts 还需要剧集的分集总数；与
     # 作品数一同预计算，避免兼容接口另外扫描整张 library_file。
     stats_episode_count: int = Field(default=0, description="在位且已识别的剧集分集数")

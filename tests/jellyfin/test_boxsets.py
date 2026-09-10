@@ -11,7 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 from tests.jellyfin.helpers import AUTH_HEADER, jf_login
 
-from movieclaw_jellyfin.ids import collection_guid, collections_view_guid
+from movieclaw_jellyfin.ids import collection_guid, collections_view_guid, library_guid
 
 
 def _headers(token: str) -> dict[str, str]:
@@ -172,3 +172,75 @@ def test_builtin_favorites_reaches_the_tv(client: TestClient, token: str, seeded
         f"/Items?ParentId={collections_view_guid()}", headers=_headers(token)
     ).json()
     assert "我的收藏" in {row["Name"] for row in listed["Items"]}
+
+
+def test_boxsets_under_a_library_stay_in_that_library(
+    client: TestClient, token: str, seeded: dict
+) -> None:
+    """``?ParentId=<电影库>&IncludeItemTypes=BoxSet`` 只回这个库的合集。
+
+    以前 ``IncludeItemTypes=BoxSet`` 那条短路完全不看 ParentId，于是在电影库里
+    问会把剧集库的合集一起返回。合集只有一两个时看不出来，自动生成系列合集
+    之后就是明显的串库。
+    """
+    movie_cid = _add_collection(
+        client, name="电影侧", library_id=seeded["movie_lib"], rules=ALL_ITEMS
+    )
+    tv_cid = _add_collection(client, name="剧集侧", library_id=seeded["tv_lib"], rules=ALL_ITEMS)
+
+    resp = client.get(
+        f"/Items?ParentId={library_guid(seeded['movie_lib'])}&IncludeItemTypes=BoxSet",
+        headers=_headers(token),
+    )
+    assert resp.status_code == 200, resp.text
+    ids = {row["Id"] for row in resp.json()["Items"]}
+    assert collection_guid(movie_cid) in ids
+    assert collection_guid(tv_cid) not in ids
+
+    # 合集视图本身（不带 ParentId 的库）照旧两个都给
+    everything = client.get(
+        f"/Items?ParentId={collections_view_guid()}", headers=_headers(token)
+    ).json()["Items"]
+    assert {collection_guid(movie_cid), collection_guid(tv_cid)} <= {r["Id"] for r in everything}
+
+
+def test_boxset_list_honours_sort_by(client: TestClient, token: str, seeded: dict) -> None:
+    """客户端给的 ``SortBy`` 对合集列表要真的生效。
+
+    这条路径以前绕过排序直接按 position 下发，一两个合集时没人察觉，
+    几十个时用户会觉得"排序坏了"。
+    """
+    lib = seeded["movie_lib"]
+    _add_collection(client, name="乙", library_id=lib, rules=ALL_ITEMS)
+    _add_collection(client, name="甲", library_id=lib, rules=ALL_ITEMS)
+
+    def names(query: str) -> list[str]:
+        resp = client.get(
+            f"/Items?ParentId={collections_view_guid()}&{query}", headers=_headers(token)
+        )
+        assert resp.status_code == 200, resp.text
+        return [row["Name"] for row in resp.json()["Items"]]
+
+    ascending = names("SortBy=SortName&SortOrder=Ascending")
+    assert ascending == sorted(ascending, key=str.lower)
+    assert names("SortBy=SortName&SortOrder=Descending") == list(reversed(ascending))
+
+
+def test_paging_reports_the_true_total(client: TestClient, token: str, seeded: dict) -> None:
+    """空合集在分页**之前**滤掉，``TotalRecordCount`` 才是对的。"""
+    lib = seeded["movie_lib"]
+    for name in ("一", "二", "三"):
+        _add_collection(client, name=name, library_id=lib, rules=ALL_ITEMS)
+    # 一个永远命中不了的条件：它不该占掉 total 的一格
+    _add_collection(
+        client,
+        name="空的",
+        library_id=lib,
+        rules=[{"field": "genres", "op": "any_of", "values": [-1]}],
+    )
+    resp = client.get(
+        f"/Items?ParentId={collections_view_guid()}&Limit=2", headers=_headers(token)
+    )
+    body = resp.json()
+    assert len(body["Items"]) == 2
+    assert body["TotalRecordCount"] == 3

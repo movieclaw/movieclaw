@@ -136,6 +136,11 @@ class MediaProfile(BaseModel):
     # 人物页的数据来源。与上面两个字段同源但独立呈现：那两个是展示用的
     # 姓名/演员表（进 media_metadata），这个是带 TMDB person id 的关系集合
     people: list[PersonCredit] = Field(default_factory=list)
+    # 作品系列（《哈利·波特》这种）。TMDB 的 belongs_to_collection 就在
+    # /movie/{id} 的基础响应里，**零额外请求**——只是以前没读它。
+    # 剧集没有这个字段，恒为 None（TMDB 不给剧集系列，我们也不猜）
+    series_tmdb_id: int | None = None
+    series_name: str | None = None
 
 
 def extract_genre_ids(data: dict) -> list[int]:
@@ -297,6 +302,8 @@ async def fetch_media_profile(
         directors=_parse_directors(kind, data),
         cast=_parse_cast(data),
         people=_parse_people(kind, data),
+        series_tmdb_id=(data.get("belongs_to_collection") or {}).get("id"),
+        series_name=(data.get("belongs_to_collection") or {}).get("name") or None,
     )
 
 

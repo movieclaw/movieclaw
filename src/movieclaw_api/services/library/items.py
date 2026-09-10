@@ -315,6 +315,10 @@ class LibraryFilter:
     hdr: bool | None = None  # True=只看 HDR；False=只看 SDR
     #: 库存状态：missing=有文件失联 / unscraped=没刮到档案
     stock: tuple[str, ...] = ()
+    #: 作品系列（``media_metadata.series_key``）。**界面上没有这一维的下拉**——
+    #: 一个库几百个系列，下拉根本没法用，合集才是它正确的呈现形态。它存在是
+    #: 因为系列合集就是一条规则驱动的合集，规则正是「series_key = X」
+    series_keys: tuple[str, ...] = ()
 
     @property
     def is_empty(self) -> bool:
@@ -329,6 +333,7 @@ class LibraryFilter:
             or self.resolutions
             or self.hdr is not None
             or self.stock
+            or self.series_keys
         )
 
 
@@ -461,6 +466,8 @@ def _filter_subquery(
     if filters.hdr is not None and skip != "hdr":
         clause = _file_exists(library_id, LibraryFile.hdr.is_not(None))  # type: ignore[union-attr]
         conds.append(clause if filters.hdr else not_(clause))
+    if filters.series_keys and skip != "series_keys":
+        conds.append(MediaMetadata.series_key.in_(filters.series_keys))
     if filters.stock and skip != "stock":
         spans = []
         if "missing" in filters.stock:
@@ -521,6 +528,26 @@ def _identity_clause(identity: WallIdentity):
     return column.is_(None) if identity == "confirmed" else column.is_not(None)  # type: ignore[union-attr]
 
 
+def _wall_scope(library_id: int, identity: WallIdentity = "confirmed"):
+    """海报墙的成员口径：本库、挂了条目、**在架**（没进回收站）、指定身份档。
+
+    ``on_shelf()`` 这一条是补上去的。在此之前墙的成员查询完全不看文件状态，
+    于是用户把最后一个文件移进回收站之后，库卡片上的作品数已经减一
+    （``refresh_stats`` 只算在位文件），墙上那部片却还摆着——同一个库两个数字。
+
+    口径只能有一处：墙、筛选 facet、合集、Jellyfin 兼容层现在全部经过这里，
+    「墙上有什么，合集里就有什么」这条结构性保证因此仍然成立。失联的片仍然
+    在架（见 ``LibraryFile.on_shelf`` 的说明），回收站里的片恢复之后自己回到
+    墙上——成员永远是现算的，没有补偿逻辑要写。
+    """
+    return (
+        LibraryFile.library_id == library_id,
+        LibraryFile.media_item_id.is_not(None),  # type: ignore[union-attr]
+        LibraryFile.on_shelf(),
+        _identity_clause(identity),
+    )
+
+
 async def _titles_sorted(
     session: AsyncSession,
     library_id: int,
@@ -540,9 +567,7 @@ async def _titles_sorted(
             select(LibraryFile.media_item_id, MediaItem.title)
             .join(MediaItem, MediaItem.id == LibraryFile.media_item_id)  # type: ignore[arg-type]
             .where(
-                LibraryFile.library_id == library_id,
-                LibraryFile.media_item_id.is_not(None),  # type: ignore[union-attr]
-                _identity_clause(identity),
+                *_wall_scope(library_id, identity),
                 *_narrow(filters, member_id, library_id=library_id),
             )
             .distinct()
@@ -652,9 +677,7 @@ _WATCH_LABELS: list[tuple[WatchFilter, str]] = [
 def _facet_scope(library_id: int, filters: LibraryFilter | None, member_id: int | None, skip: str):
     """算某一维 facet 时的库内范围：本库、已识别、其他维度的条件都算上。"""
     return (
-        LibraryFile.library_id == library_id,
-        LibraryFile.media_item_id.is_not(None),  # type: ignore[union-attr]
-        _identity_clause("confirmed"),
+        *_wall_scope(library_id),
         *_narrow(filters, member_id, skip=skip, library_id=library_id),
     )
 
@@ -1082,9 +1105,7 @@ async def _wall_page_ids(
         query = (
             select(LibraryFile.media_item_id)
             .where(
-                LibraryFile.library_id == library_id,
-                LibraryFile.media_item_id.is_not(None),  # type: ignore[union-attr]
-                _identity_clause(identity),
+                *_wall_scope(library_id, identity),
                 *narrow,
             )
             .group_by(LibraryFile.media_item_id)  # type: ignore[arg-type]
@@ -1106,9 +1127,7 @@ async def _wall_page_ids(
             .join(MediaItem, MediaItem.id == LibraryFile.media_item_id)  # type: ignore[arg-type]
             .outerjoin(MediaMetadata, MediaMetadata.media_item_id == MediaItem.id)  # type: ignore[arg-type]
             .where(
-                LibraryFile.library_id == library_id,
-                LibraryFile.media_item_id.is_not(None),  # type: ignore[union-attr]
-                _identity_clause(identity),
+                *_wall_scope(library_id, identity),
                 *narrow,
             )
             .group_by(LibraryFile.media_item_id)  # type: ignore[arg-type]
@@ -1134,9 +1153,7 @@ async def _wall_page_ids(
             .join(MediaItem, MediaItem.id == LibraryFile.media_item_id)  # type: ignore[arg-type]
             .outerjoin(MediaMetadata, MediaMetadata.media_item_id == MediaItem.id)  # type: ignore[arg-type]
             .where(
-                LibraryFile.library_id == library_id,
-                LibraryFile.media_item_id.is_not(None),  # type: ignore[union-attr]
-                _identity_clause(identity),
+                *_wall_scope(library_id, identity),
                 *narrow,
             )
             .group_by(LibraryFile.media_item_id)  # type: ignore[arg-type]
@@ -1184,6 +1201,37 @@ async def _wall_page_ids(
     }
     ids = [i for i, _ in sorted(ordered, key=lambda row: row[0] not in unprobed)]
     return ids if limit is None else ids[offset : offset + limit]
+
+
+async def _wall_count(
+    session: AsyncSession,
+    library_id: int,
+    identity: WallIdentity = "confirmed",
+    filters: LibraryFilter | None = None,
+    member_id: int | None = None,
+) -> int:
+    """符合条件的条目**数量**——与 ``_wall_page_ids`` 同一套收窄，只是不取 id。
+
+    排序不影响数量，所以这里没有 sort 参数：一条 ``COUNT(DISTINCT)`` 覆盖全部
+    档位。存在的理由是合集列表——那里只要"这个合集有几部"，走 ``_wall_page_ids``
+    则要把整批 id 取出来（按标题排序时还要在 Python 里做一次全库拼音排序），
+    一个库几十个自动生成的系列合集时这就是那道性能悬崖。
+
+    **收窄条件仍然只有一处**（``_narrow`` + 这几行 WHERE），换的只是投影，
+    所以它不构成"合集自己的查询"。口径一致由回归用例压着：
+    ``_wall_count == len(_wall_page_ids)``。
+    """
+    return int(
+        (
+            await session.execute(
+                select(func.count(func.distinct(LibraryFile.media_item_id))).where(
+                    *_wall_scope(library_id, identity),
+                    *_narrow(filters, member_id, library_id=library_id),
+                )
+            )
+        ).scalar_one()
+        or 0
+    )
 
 
 async def favorite_item_ids(
@@ -1278,6 +1326,62 @@ async def build_library_wall(
     return views
 
 
+@dataclass(frozen=True, slots=True)
+class PosterFacts:
+    """一个条目的海报事实：最终 URL、模糊占位图、本地资产像素尺寸、上映日。"""
+
+    url: str | None = None
+    blur: str | None = None
+    #: 本地刮削资产的像素尺寸；没有本地资产时为 None（比例只能回落到文件探测值）
+    asset_size: tuple[int | None, int | None] | None = None
+    release_date: date | None = None
+
+
+async def poster_facts_many(
+    session: AsyncSession, item_ids: Sequence[int]
+) -> dict[int, PosterFacts]:
+    """一批条目的海报事实——**海报墙与合集封面共用的唯一实现**。
+
+    「本地刮削资产优先（断网可用），没有资产才回落 TMDB 图床」这条规则只在
+    这里写一次。合集卡片上的封面与海报墙上的那张图必须是同一张：共用一个
+    函数是结构性保证，两处各写一遍再靠人记得同步则是纪律，纪律会松。
+
+    一条查询覆盖整批（``MediaItem`` 左连 ``MediaMetadata``）。合集列表正是
+    靠它把封面代价从「每个合集一次完整墙聚合」压成**整页一条查询**——
+    否则一个库自动生成几十个系列合集之后，打开合集页就是几百条查询。
+    """
+    from movieclaw_api.core.config import get_settings
+
+    ids = [i for i in item_ids if i is not None]
+    if not ids:
+        return {}
+    base = get_settings().tmdb_image_base_url.rstrip("/")
+    out: dict[int, PosterFacts] = {}
+    for item_id, poster_path, poster_file, width, height, released, blur in (
+        await session.execute(
+            select(
+                MediaItem.id,
+                MediaItem.poster_path,
+                MediaMetadata.poster_file,
+                MediaMetadata.poster_width,
+                MediaMetadata.poster_height,
+                MediaMetadata.release_date,
+                MediaMetadata.poster_blur,
+            )
+            .outerjoin(MediaMetadata, MediaMetadata.media_item_id == MediaItem.id)  # type: ignore[arg-type]
+            .where(MediaItem.id.in_(ids))  # type: ignore[attr-defined]
+        )
+    ).all():
+        if poster_file:
+            # ?v=<mtime>：换图原地覆盖同一路径，不带版本海报墙会一直显示旧图
+            url = f"/images/assets/{poster_file}?v={asset_version(poster_file)}"
+            out[item_id] = PosterFacts(url, blur or None, (width, height), released)
+        else:
+            url = f"{base}/w500{poster_path}" if poster_path else None
+            out[item_id] = PosterFacts(url, None, None, released)
+    return out
+
+
 async def _aggregate_wall_views(
     session: AsyncSession,
     library_id: int,
@@ -1289,8 +1393,6 @@ async def _aggregate_wall_views(
     海报墙分页与媒体库搜索共用这份聚合（口径必须一致：库存概况、缺集数、
     海报的本地资产优先级）。``in_page`` 是条目 id 列表或等价子查询。
     """
-    from movieclaw_api.core.config import get_settings
-    from movieclaw_db.models import MediaMetadata
     from movieclaw_db.repositories.library_file_repo import LibraryFileRepository
     from movieclaw_db.repositories.media_repo import MediaItemRepository
 
@@ -1358,32 +1460,9 @@ async def _aggregate_wall_views(
     for item_id, season_number, episode_count in season_rows:
         season_episode_counts_by_item.setdefault(item_id, {})[season_number] = episode_count
 
-    base = get_settings().tmdb_image_base_url.rstrip("/")
-    # 海报优先本地刮削资产（断网可用），没有资产的回落 TMDB 图床
-    poster_assets: dict[int, str] = {}
-    poster_sizes: dict[int, tuple[int | None, int | None]] = {}
-    poster_blurs: dict[int, str] = {}
-    release_dates: dict[int, date | None] = {}
-    for item_id, poster_file, width, height, released, blur in (
-        await session.execute(
-            select(
-                MediaMetadata.media_item_id,
-                MediaMetadata.poster_file,
-                MediaMetadata.poster_width,
-                MediaMetadata.poster_height,
-                MediaMetadata.release_date,
-                MediaMetadata.poster_blur,
-            ).where(
-                MediaMetadata.media_item_id.in_(grouped.keys()),  # type: ignore[attr-defined]
-            )
-        )
-    ).all():
-        release_dates[item_id] = released
-        if poster_file:
-            poster_assets[item_id] = poster_file
-            poster_sizes[item_id] = (width, height)
-            if blur:
-                poster_blurs[item_id] = blur
+    # 海报优先本地刮削资产（断网可用），没有资产的回落 TMDB 图床——
+    # 这条规则的唯一实现在 poster_facts_many，合集封面走的是同一处
+    posters = await poster_facts_many(session, list(grouped.keys()))
     by_id: dict[int, LibraryItemView] = {}
     for item, files in grouped.values():
         season_episode_counts = season_episode_counts_by_item.get(item.id, {})  # type: ignore[arg-type]
@@ -1436,12 +1515,7 @@ async def _aggregate_wall_views(
             )
         else:
             missing_episodes = 0
-        if item.id in poster_assets:
-            # ?v=<mtime>：换图原地覆盖同一路径，不带版本海报墙会一直显示旧图
-            rel = poster_assets[item.id]
-            poster_url = f"/images/assets/{rel}?v={asset_version(rel)}"
-        else:
-            poster_url = f"{base}/w500{item.poster_path}" if item.poster_path else None
+        poster = posters.get(item.id) or PosterFacts()
         by_id[item.id] = LibraryItemView(  # type: ignore[index]
             media_item_id=item.id,  # type: ignore[arg-type]
             kind=MediaKind(item.kind),
@@ -1449,14 +1523,12 @@ async def _aggregate_wall_views(
             tmdb_id=item.tmdb_id,
             title=item.title,
             year=item.year,
-            poster_url=poster_url,
+            poster_url=poster.url,
             # 缩略图还没生成时用扫描入账记下的原图尺寸定比例：墙一开始就是最终
             # 布局，缩略图到达不会引起重排（渐进式加载的第 0 级）
-            primary_aspect=primary_aspect(
-                item, *(poster_sizes.get(item.id) or _pixel_size_of(files))
-            ),
-            poster_blur=poster_blurs.get(item.id),
-            release_date=release_dates.get(item.id),
+            primary_aspect=primary_aspect(item, *(poster.asset_size or _pixel_size_of(files))),
+            poster_blur=poster.blur,
+            release_date=poster.release_date,
             # 首个在位文件：一文件一条目的库就是那一个；多文件条目取最早入账的
             primary_file_id=min(
                 (f.id for f in files if f.state == FileState.IN_PLACE), default=None

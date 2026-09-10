@@ -189,10 +189,44 @@ def test_new_library_gets_the_builtin_favorites_collection(client: TestClient) -
     ).json()["data"]
     fav = next(row for row in rows if row["builtin"] == f"favorites:{library_id}")
     assert fav["name"] == "我的收藏"
-    # 内置合集不可改规则、也不能删——改了它就不是那个合集了
+    # 内置合集不可改规则——改了它就不是那个合集了
     assert fav["editable"] is False
     assert fav["rule_driven"] is True
-    assert client.delete(f"/api/v1/collections/{fav['id']}").status_code == 400
+    assert fav["kind"] == "builtin"
+    assert client.put(f"/api/v1/collections/{fav['id']}", json={"rules": []}).status_code == 400
+
+
+def test_deleting_an_automatic_collection_leaves_a_tombstone(client: TestClient) -> None:
+    """自动生成的合集「删除」= 隐藏，而且必须能放回来。
+
+    真删了下次 ensure 又会长回来，用户会觉得"删不掉"；藏了却找不回来，
+    那颗按钮就是单向黑洞。两头都得堵上（设计文档 4.6.4）。
+    """
+    library_id = client.post(
+        "/api/v1/libraries",
+        json={"name": "墓碑库", "kind": "movie", "root_paths": ["/tomb"]},
+    ).json()["data"]["id"]
+
+    def listed(**params: object) -> list[dict]:
+        query = "&".join(f"{k}={str(v).lower()}" for k, v in params.items())
+        url = f"/api/v1/collections?library_id={library_id}&include_empty=true&{query}"
+        return client.get(url).json()["data"]
+
+    fav = next(row for row in listed() if row["builtin"] == f"favorites:{library_id}")
+    assert fav["hidden"] is False
+
+    # 删 → 200（不是 400），行还在，只是不列
+    assert client.delete(f"/api/v1/collections/{fav['id']}").status_code == 200
+    assert [row["id"] for row in listed()] == []
+    tomb = next(row for row in listed(include_hidden=True) if row["id"] == fav["id"])
+    assert tomb["hidden"] is True
+    assert tomb["name"] == "我的收藏"  # 名字/封面/顺序都留着
+
+    # 回头路：取消隐藏
+    assert (
+        client.put(f"/api/v1/collections/{fav['id']}", json={"hidden": False}).status_code == 200
+    )
+    assert [row["id"] for row in listed()] == [fav["id"]]
 
 
 def test_libraries_created_outside_the_service_are_healed_at_startup(

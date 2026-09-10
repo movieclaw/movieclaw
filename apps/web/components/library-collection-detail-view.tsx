@@ -13,10 +13,14 @@ import {
   applyCollectionToLibrary,
   deleteCollection,
   getCollection,
+  getCollectionSeries,
   listCollectionItems,
   updateCollection,
   type Collection,
+  type CollectionSeries,
+  type SeriesPart,
 } from "@/lib/api/collections";
+import { createSubscription } from "@/lib/api/subscriptions";
 import { getLibraryFacets, type LibraryFacets, type LibraryItem } from "@/lib/api/libraries";
 import { rulesToFilter } from "@/lib/library-filter";
 import { usePageTitle } from "@/lib/use-page-title";
@@ -57,6 +61,7 @@ export function LibraryCollectionDetailView({
   const [facets, setFacets] = useState<LibraryFacets | null>(null);
   const [hasMore, setHasMore] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [series, setSeries] = useState<CollectionSeries | null>(null);
 
   usePageTitle(collection?.name);
 
@@ -76,6 +81,19 @@ export function LibraryCollectionDetailView({
       alive = false;
     };
   }, [collectionId]);
+
+  // 缺片补齐：**只在打开系列合集的详情页时**才发这一次请求（懒加载）。
+  // 刮削期不拉——那是白白给扫描加负担，用户从没点开的系列一个请求都不该花
+  useEffect(() => {
+    if (collection?.kind !== "series") return;
+    let alive = true;
+    getCollectionSeries(collectionId)
+      .then((data) => alive && setSeries(data))
+      .catch(() => alive && setSeries(null));
+    return () => {
+      alive = false;
+    };
+  }, [collectionId, collection?.kind]);
 
   // 规则里的取值要翻成中文名（类型 id → 「动画」），标签来自库的 facet：
   // 与库页筛选条上显示的是同一份，不另起一套翻译
@@ -114,24 +132,41 @@ export function LibraryCollectionDetailView({
     }
   }, [collection, prompt, toast]);
 
+  // 同一颗按钮两种归宿：自建的真删，自动生成的落墓碑（真删了下次扫描
+  // 又会长回来，用户会觉得"删不掉"）。归宿由后端按 builtin 推导，前端只是
+  // 把话说对——文案说"删除"而实际藏起来，比藏起来本身更让人迷惑
+  const auto = collection ? collection.kind !== "user" : false;
   const remove = useCallback(async () => {
     if (!collection) return;
+    const automatic = collection.kind !== "user";
     const ok = await confirm({
-      title: `删除合集「${collection.name}」？`,
+      title: automatic ? `隐藏「${collection.name}」？` : `删除合集「${collection.name}」？`,
       // 这句一定要说：合集从来不拥有作品，删它不会少一部片。不说的话，
       // 用户会因为怕删掉影片而不敢清理合集
-      description: "只删掉这层视图，里面的影片一部都不会少。",
-      tone: "danger",
+      description: automatic
+        ? "自动生成的合集会一直重新出现，所以这里是把它藏起来：影片一部都不会少，想找回来在媒体库设置里打开「显示已隐藏的合集」。"
+        : "只删掉这层视图，里面的影片一部都不会少。",
+      tone: automatic ? undefined : "danger",
     });
     if (!ok) return;
     try {
       await deleteCollection(collection.id);
-      toast.success("已删除");
+      toast.success(automatic ? "已隐藏" : "已删除");
       window.history.back();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "删除失败");
+      toast.error(err instanceof Error ? err.message : automatic ? "隐藏失败" : "删除失败");
     }
   }, [collection, confirm, toast]);
+
+  const unhide = useCallback(async () => {
+    if (!collection) return;
+    try {
+      setCollection(await updateCollection(collection.id, { hidden: false }));
+      toast.success("已恢复显示");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "恢复失败");
+    }
+  }, [collection, toast]);
 
   const applyToLibrary = useCallback(async () => {
     if (!collection) return;
@@ -166,7 +201,7 @@ export function LibraryCollectionDetailView({
         actions={
           // 收进 ⋯，与单库页一致：顶栏那几个位子是 36px 的圆钮，塞中文标签会
           // 挤成竖排。内置合集不可改，那颗键干脆不出现
-          collection?.editable ? (
+          collection ? (
             <DropdownMenu.Root>
               <DropdownMenu.Trigger asChild>
                 <button
@@ -187,15 +222,21 @@ export function LibraryCollectionDetailView({
                   <DropdownMenu.Item onSelect={rename} className={MENU_ITEM_CLASS}>
                     改名
                   </DropdownMenu.Item>
-                  {canManageLibraries && collection.rule_driven && (
+                  {canManageLibraries && collection.editable && collection.rule_driven && (
                     <DropdownMenu.Item onSelect={applyToLibrary} className={MENU_ITEM_CLASS}>
                       设为本库的收藏范围
                     </DropdownMenu.Item>
                   )}
                   <DropdownMenu.Separator className="my-1 h-px bg-white/[0.07]" />
-                  <DropdownMenu.Item onSelect={remove} className={MENU_ITEM_CLASS}>
-                    删除合集
-                  </DropdownMenu.Item>
+                  {collection.hidden ? (
+                    <DropdownMenu.Item onSelect={unhide} className={MENU_ITEM_CLASS}>
+                      恢复显示
+                    </DropdownMenu.Item>
+                  ) : (
+                    <DropdownMenu.Item onSelect={remove} className={MENU_ITEM_CLASS}>
+                      {auto ? "隐藏这个合集" : "删除合集"}
+                    </DropdownMenu.Item>
+                  )}
                 </DropdownMenu.Content>
               </DropdownMenu.Portal>
             </DropdownMenu.Root>
@@ -208,11 +249,37 @@ export function LibraryCollectionDetailView({
           {collection?.name ?? " "}
         </h1>
         <p className="mt-1 text-ui text-[var(--text-muted)]">
-          {collection ? `${collection.item_count} 部` : ""}
+          {/* 系列合集说「已有 6 / 共 8」：这个产品能回答"你缺哪几部"，
+              而这句话就是入口。上游档案没拉到时退回普通计数，不编数字 */}
+          {collection
+            ? series?.available && series.total > 0
+              ? `已有 ${series.owned_count} / 共 ${series.total} 部`
+              : `${collection.item_count} 部`
+            : ""}
           {collection?.visibility === "private" && <span className="ml-2">· 只有我可见</span>}
+          {collection?.hidden && <span className="ml-2">· 已隐藏</span>}
         </p>
         {collection && <RuleRow collection={collection} facets={facets} />}
       </div>
+
+      {series && series.available && series.total > series.owned_count && (
+        <MissingParts
+          series={series}
+          libraryId={libraryId}
+          onSubscribed={(tmdbId) =>
+            setSeries((prev) =>
+              prev
+                ? {
+                    ...prev,
+                    parts: prev.parts.map((part) =>
+                      part.tmdb_id === tmdbId ? { ...part, subscribed: true } : part,
+                    ),
+                  }
+                : prev,
+            )
+          }
+        />
+      )}
 
       <div className="mt-6 max-md:mt-4">
         {items.length === 0 ? (
@@ -237,6 +304,85 @@ export function LibraryCollectionDetailView({
   );
 }
 
+/**
+ * 缺片补齐（docs/design/library-series-collections.md 6.5）。
+ *
+ * **这一块才是系列合集真正的价值。** 只做归类的话，用户装个 Emby 也有；
+ * 能告诉他"缺哪两部、点一下就去补"的，只有这个产品。
+ *
+ * 订阅是现成能力：``title_ref = "tmdb:movie:{id}"``，而 parts 正好给这个 id。
+ * 所以这里不需要新的下游链路，只是把两个已有的东西接起来——与剧集的
+ * 「补齐缺集」是同一个心智，用户不用学新东西。
+ *
+ * 分寸：只在详情页出现，**不上卡片**（6.5.2）。已经在追的显示「追踪中」而不是
+ * 一颗还能再点一次的按钮。
+ */
+function MissingParts({
+  series,
+  libraryId,
+  onSubscribed,
+}: {
+  series: CollectionSeries;
+  libraryId: number;
+  onSubscribed: (tmdbId: number) => void;
+}) {
+  const toast = useToast();
+  const [pending, setPending] = useState<number | null>(null);
+  const missing = series.parts.filter((part) => part.media_item_id === null);
+  if (missing.length === 0) return null;
+
+  const subscribe = async (part: SeriesPart) => {
+    setPending(part.tmdb_id);
+    try {
+      await createSubscription({
+        title_ref: `tmdb:movie:${part.tmdb_id}`,
+        library_id: libraryId,
+      });
+      onSubscribed(part.tmdb_id);
+      toast.success(`已订阅《${part.title}》`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "订阅失败");
+    } finally {
+      setPending(null);
+    }
+  };
+
+  return (
+    <section className="mt-6 px-6 max-md:mt-4 max-md:px-4">
+      <h2 className="text-ui font-medium text-[var(--text-strong)]">
+        还缺 {missing.length} 部
+      </h2>
+      <div className="mt-3 flex flex-wrap gap-3">
+        {missing.map((part) => (
+          <div
+            key={part.tmdb_id}
+            className="glass-row flex !w-auto items-center gap-3 rounded-xl !px-3 py-2"
+          >
+            <div className="min-w-0">
+              <p className="truncate text-ui text-[var(--text-strong)]">{part.title}</p>
+              <p className="text-caption text-[var(--text-faint)]">
+                {part.release_date?.slice(0, 4) ?? "待定"}
+              </p>
+            </div>
+            {part.subscribed ? (
+              <span className="shrink-0 text-caption text-[var(--text-faint)]">追踪中</span>
+            ) : (
+              <button
+                type="button"
+                onClick={() => void subscribe(part)}
+                disabled={pending === part.tmdb_id}
+                className="shrink-0 rounded-lg bg-white/10 px-2.5 py-1 text-caption font-medium text-white transition hover:bg-white/20 disabled:opacity-40"
+              >
+                {pending === part.tmdb_id ? "订阅中…" : "订阅"}
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 /** 维度名 → 标签，与库页筛选条同一份顺序与叫法。 */
 const DIMS = [
   { key: "genres", label: "类型" },
@@ -258,6 +404,15 @@ function RuleRow({
   collection: Collection;
   facets: LibraryFacets | null;
 }) {
+  if (collection.kind === "series") {
+    // 系列合集的规则是 series_key，翻不成"类型/年代/地区"那套话。硬套的话
+    // 这里会显示"收录本库全部作品"——一句彻头彻尾的假话
+    return (
+      <p className="mt-3 text-sub text-[var(--text-faint)]">
+        作品系列 · 自动收录这个系列的全部作品，按上映顺序排列
+      </p>
+    );
+  }
   if (!collection.rule_driven) {
     return (
       <p className="mt-3 text-sub text-[var(--text-faint)]">
