@@ -293,3 +293,28 @@ def test_removing_a_member_does_not_touch_the_work(client: TestClient) -> None:
     assert len(client.get("/api/v1/libraries/1/items").json()["data"]) == 1
     # 再移一次也不报错（与加入同一条幂等口径）
     assert client.delete(f"/api/v1/collections/{row['id']}/items/1").status_code == 200
+
+
+def test_cross_library_collection_has_no_owner(client: TestClient) -> None:
+    """跨库合集：library_id 为 null，只能是名单驱动的。
+
+    模型第一天就留了这个口子（``library_id`` 可空），F4 才把入口打开。
+    规则驱动的仍然必须指定库——跨库的规则求值排在更后面。
+    """
+    created = client.post(
+        "/api/v1/collections", json={"name": "跨库片单", "item_ids": [1]}
+    )
+    assert created.status_code == 200, created.text
+    row = created.json()["data"]
+    assert row["library_id"] is None
+    assert row["rule_driven"] is False
+    assert row["item_count"] == 1
+
+    # 成员照常取得到，而且每一格带着自己那个库——跨库墙上要落回各自的库
+    items = client.get(f"/api/v1/collections/{row['id']}/items").json()["data"]
+    assert [i["media_item_id"] for i in items] == [1]
+    assert items[0]["library_id"] == 1
+
+    # 规则驱动的跨库合集仍然不给建
+    refused = client.post("/api/v1/collections", json={"name": "跨库规则", "rules": ALL_ITEMS})
+    assert refused.status_code == 400

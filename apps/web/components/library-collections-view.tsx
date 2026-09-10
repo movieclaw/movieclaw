@@ -25,7 +25,8 @@ export function LibraryCollectionsView({
   emptyHint,
 }: {
   collections: Collection[];
-  libraryId: number;
+  /** 当前所在的库；跨库总览页传 null，每格按自己的 library_id 落地 */
+  libraryId: number | null;
   /** 一个合集都没有时说什么——不同入口的出路不一样，由调用方给 */
   emptyHint?: React.ReactNode;
 }) {
@@ -66,7 +67,7 @@ function CollectionGrid({
 }: {
   title?: string;
   collections: Collection[];
-  libraryId: number;
+  libraryId: number | null;
 }) {
   if (collections.length === 0) return null;
   return (
@@ -91,11 +92,18 @@ function CollectionCell({
   libraryId,
 }: {
   collection: Collection;
-  libraryId: number;
+  libraryId: number | null;
 }) {
+  // 跨库合集没有"所属库"，落到 /library/c/{id}；单库的照旧带着库号走，
+  // 这样从库页点进去再返回还落回那个库
+  const owner = libraryId ?? collection.library_id;
   return (
     <Link
-      href={`/library/${libraryId}/c/${collection.id}` as Route}
+      href={
+        (owner === null
+          ? `/library/c/${collection.id}`
+          : `/library/${owner}/c/${collection.id}`) as Route
+      }
       className={`group block focus-visible:outline-none ${collection.hidden ? "opacity-45" : ""}`}
     >
       <CollectionCover collection={collection} />

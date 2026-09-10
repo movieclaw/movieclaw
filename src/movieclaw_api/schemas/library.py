@@ -650,6 +650,9 @@ class LibraryItemView(BaseModel):
 
     media_item_id: int
     kind: MediaKind
+    #: 这一格属于哪个库。单库墙上恒等于那个库（前端本来就知道），**跨库合集
+    #: 里才真正用得上**：每一格要落回它自己那个库的详情页
+    library_id: int | None = Field(default=None, description="所属库；单库墙上恒为该库")
     source: str = Field(
         default="tmdb", description="身份来源：tmdb / local（local=未识别或其他库）"
     )

@@ -164,10 +164,11 @@ def _external_subtitles(video: Path) -> list[str]:
 
 
 class _FileFacts(NamedTuple):
-    """海报墙聚合用到的九个台账字段（顺序与查询列一致）。
+    """海报墙聚合用到的十个台账字段（顺序与查询列一致）。
 
     代码读起来与整行取时一模一样，只是不再拖着四十列（含三列 JSON）走。"""
 
+    library_id: int
     id: int
     season_number: int
     episode_number: int
@@ -1513,14 +1514,20 @@ async def poster_facts_many(
 
 async def _aggregate_wall_views(
     session: AsyncSession,
-    library_id: int,
+    library_id: int | None,
     in_page,
     ordered_ids: list[int],
+    *,
+    library_ids: set[int] | None = None,
 ) -> list[LibraryItemView]:
     """把一批条目在某个库内的台账行聚合成海报墙视图，按 ``ordered_ids`` 排列。
 
     海报墙分页与媒体库搜索共用这份聚合（口径必须一致：库存概况、缺集数、
     海报的本地资产优先级）。``in_page`` 是条目 id 列表或等价子查询。
+
+    ``library_id=None`` 是**跨库合集**那一支：同一部片可能散在两个库，这时
+    "几个文件、占多大"问的是它总共，而不是某一个库里。``library_ids`` 把范围
+    收在观看者可见的库上——不给的话跨库聚合会把不可见库里的文件也算进来。
     """
     from movieclaw_db.repositories.library_file_repo import LibraryFileRepository
     from movieclaw_db.repositories.media_repo import MediaItemRepository
@@ -1532,6 +1539,7 @@ async def _aggregate_wall_views(
         await session.execute(
             select(
                 LibraryFile.media_item_id,
+                LibraryFile.library_id,
                 LibraryFile.id,
                 LibraryFile.season_number,
                 LibraryFile.episode_number,
@@ -1546,7 +1554,15 @@ async def _aggregate_wall_views(
                     LibraryFile.file_path.not_like(f"%{STRM_EXT}"),  # type: ignore[union-attr]
                 ),
             ).where(
-                LibraryFile.library_id == library_id,
+                (
+                    LibraryFile.library_id == library_id
+                    if library_id is not None
+                    else (
+                        LibraryFile.library_id.in_(library_ids)  # type: ignore[union-attr]
+                        if library_ids is not None
+                        else true()
+                    )
+                ),
                 LibraryFile.media_item_id.in_(in_page),  # type: ignore[union-attr]
             )
         )
@@ -1648,6 +1664,9 @@ async def _aggregate_wall_views(
         by_id[item.id] = LibraryItemView(  # type: ignore[index]
             media_item_id=item.id,  # type: ignore[arg-type]
             kind=MediaKind(item.kind),
+            # 跨库合集里每一格要落回它自己那个库；单库墙上就是那个库。
+            # 多库都有这部片时取台账行里的第一个，与文件聚合同一份来源
+            library_id=library_id if library_id is not None else files[0].library_id,
             source=item.source,
             tmdb_id=item.tmdb_id,
             title=item.title,

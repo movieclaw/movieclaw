@@ -50,7 +50,8 @@ export function LibraryCollectionDetailView({
   libraryId,
   collectionId,
 }: {
-  libraryId: number;
+  /** 所属库；跨库合集为 null——它的每一格各归各的库 */
+  libraryId: number | null;
   collectionId: number;
 }) {
   const toast = useToast();
@@ -100,7 +101,7 @@ export function LibraryCollectionDetailView({
   // 规则里的取值要翻成中文名（类型 id → 「动画」），标签来自库的 facet：
   // 与库页筛选条上显示的是同一份，不另起一套翻译
   useEffect(() => {
-    if (!collection?.rules?.length) return;
+    if (!collection?.rules?.length || libraryId === null) return;
     let alive = true;
     getLibraryFacets(libraryId, rulesToFilter(collection.rules), "all")
       .then((data) => alive && setFacets(data))
@@ -110,8 +111,11 @@ export function LibraryCollectionDetailView({
     };
   }, [libraryId, collection?.rules]);
 
-  /** 合集挂在库下面：每一格都落回本库 */
-  const ownLibraryId = useCallback(() => libraryId, [libraryId]);
+  /** 合集挂在库下面时每一格都落回本库；跨库合集按每一格自己的库落地 */
+  const ownLibraryId = useCallback(
+    (item: LibraryItem) => libraryId ?? item.library_id ?? 0,
+    [libraryId],
+  );
 
   const loadMore = useCallback(async () => {
     const rows = await listCollectionItems(collectionId, {
@@ -182,6 +186,7 @@ export function LibraryCollectionDetailView({
     });
     if (!ok) return;
     try {
+      if (libraryId === null) return;
       await applyCollectionToLibrary(collection.id, libraryId);
       toast.success("已设为该库的收藏范围");
     } catch (err) {
@@ -192,7 +197,10 @@ export function LibraryCollectionDetailView({
   if (error) {
     return (
       <>
-        <PageNav title="合集" fallback={{ label: "媒体库", href: `/library/${libraryId}` as Route }} />
+        <PageNav title="合集" fallback={{
+          label: "媒体库",
+          href: (libraryId === null ? "/library/collections" : `/library/${libraryId}`) as Route,
+        }} />
         <p className="mt-16 text-center text-ui leading-7 text-[var(--text-muted)]">{error}</p>
       </>
     );
@@ -202,7 +210,10 @@ export function LibraryCollectionDetailView({
     <>
       <PageNav
         title={collection?.name ?? "合集"}
-        fallback={{ label: "媒体库", href: `/library/${libraryId}` as Route }}
+        fallback={{
+          label: "媒体库",
+          href: (libraryId === null ? "/library/collections" : `/library/${libraryId}`) as Route,
+        }}
         actions={
           // 收进 ⋯，与单库页一致：顶栏那几个位子是 36px 的圆钮，塞中文标签会
           // 挤成竖排。内置合集不可改，那颗键干脆不出现
@@ -237,11 +248,14 @@ export function LibraryCollectionDetailView({
                       整理顺序…
                     </DropdownMenu.Item>
                   )}
-                  {canManageLibraries && collection.editable && collection.rule_driven && (
-                    <DropdownMenu.Item onSelect={applyToLibrary} className={MENU_ITEM_CLASS}>
-                      设为本库的收藏范围
-                    </DropdownMenu.Item>
-                  )}
+                  {libraryId !== null &&
+                    canManageLibraries &&
+                    collection.editable &&
+                    collection.rule_driven && (
+                      <DropdownMenu.Item onSelect={applyToLibrary} className={MENU_ITEM_CLASS}>
+                        设为本库的收藏范围
+                      </DropdownMenu.Item>
+                    )}
                   <DropdownMenu.Separator className="my-1 h-px bg-white/[0.07]" />
                   {collection.hidden ? (
                     <DropdownMenu.Item onSelect={unhide} className={MENU_ITEM_CLASS}>
@@ -297,7 +311,9 @@ export function LibraryCollectionDetailView({
         />
       )}
 
-      {series && series.available && series.total > series.owned_count && (
+      {/* 系列合集永远挂在库下面（规则驱动必须指定库），所以这里 libraryId 一定
+          不是 null；跨库合集是名单驱动的，根本走不到这一段 */}
+      {series && series.available && libraryId !== null && series.total > series.owned_count && (
         <MissingParts
           series={series}
           libraryId={libraryId}

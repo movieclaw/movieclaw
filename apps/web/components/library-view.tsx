@@ -23,6 +23,7 @@ import {
   listLibraryItems,
   SCAN_PHASE_LABELS,
 } from "@/lib/api/libraries";
+import { listCollections } from "@/lib/api/collections";
 import {
   type FavoriteItem,
   type FavoritesPage,
@@ -113,6 +114,9 @@ export function LibraryView() {
   const [recentWatch, setRecentWatch] = useState<RecentWatchItem[] | null>(null);
   // 我的收藏：与最近观看同一轮拉取、同一套失败策略（拉不到保留旧数据）
   const [favorites, setFavorites] = useState<FavoritesPage | null>(null);
+  // 只用来决定「全部合集」这个入口露不露；空合集后端已经滤掉了，所以
+  // 数字大于零就意味着"点进去真有东西"
+  const [collectionCount, setCollectionCount] = useState(0);
   const [failed, setFailed] = useState(false);
 
   // 轮询乱序守卫：扫描期间后端响应时间抖动大，上一轮的慢响应可能晚于
@@ -129,9 +133,12 @@ export function LibraryView() {
       // 最近观看 / 我的收藏失败不拖垮媒体库首页；保留旧数据，下一轮轮询自动重试。
       listRecentWatch(RECENT_COUNT).catch(() => null),
       listFavorites(FAVORITES_COUNT).catch(() => null),
+      // 合集数只决定一个入口露不露，拿不到就当没有——不拖垮首页
+      listCollections().catch(() => null),
     ])
-      .then(async ([libs, latestWatch, latestFavorites]) => {
+      .then(async ([libs, latestWatch, latestFavorites, allCollections]) => {
         if (seq !== reloadSeq.current) return;
+        setCollectionCount(allCollections?.length ?? 0);
         setFailed(false);
         if (latestWatch !== null) setRecentWatch(latestWatch);
         else setRecentWatch((previous) => previous ?? []);
@@ -367,6 +374,16 @@ export function LibraryView() {
             >
               我的媒体库
             </h3>
+            {/* 「全部合集」的入口等到真有合集了才露出：一开始就摆在这儿，
+                用户点进去只有一片空白，那个位置就白占了（IA 那条决策） */}
+            {collectionCount > 0 && (
+              <Link
+                href={"/library/collections" as Route}
+                className="shrink-0 text-ui text-[var(--text-faint)] transition hover:text-[var(--text)]"
+              >
+                全部合集 ›
+              </Link>
+            )}
           </div>
           <HScroller className="mt-3 gap-5 px-6 pb-1 pt-1 max-md:gap-3.5 max-md:px-4">
             {visibleLibraries.map((library) => (

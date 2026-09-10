@@ -257,6 +257,8 @@ export interface OrganizePreview {
 export interface LibraryItem {
   media_item_id: number;
   kind: LibraryKind;
+  /** 这一格属于哪个库。单库墙上恒等于那个库；跨库合集里每一格各归各的 */
+  library_id: number | null;
   /** 身份来源：local=其他库条目，或影视库里尚未识别、按文件名展示的临时条目 */
   source: ItemSource;
   /** TMDB 条目 ID；本地来源条目为 null */
