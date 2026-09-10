@@ -9,7 +9,9 @@ import { PosterImage } from "@/components/poster-image";
 import { copyText } from "@/components/copy-button";
 import {
   type ShareView,
+  createCollectionShare,
   createItemShare,
+  revokeCollectionShare,
   revokeItemShare,
 } from "@/lib/api/shares";
 import { imageUrl } from "@/lib/image-proxy";
@@ -40,6 +42,7 @@ export function ShareDialog({
   onClose,
   libraryId,
   mediaItemId,
+  collectionId,
   title,
   kind,
   year,
@@ -49,10 +52,13 @@ export function ShareDialog({
 }: {
   open: boolean;
   onClose: () => void;
-  libraryId: number;
-  mediaItemId: number;
+  /** 分享一个条目时给；分享合集时不给 */
+  libraryId?: number;
+  mediaItemId?: number;
+  /** 分享一个合集时给。两者恰好给一个——这条链接的范围就是二选一 */
+  collectionId?: number;
   title: string;
-  kind: LibraryKind;
+  kind?: LibraryKind;
   year: number | null;
   posterUrl: string | null;
   /** 剧集的范围提醒（如「已入库 3 季 24 集」）；电影不传 */
@@ -79,9 +85,12 @@ export function ShareDialog({
     setError(null);
   }, [open, initialShare]);
 
+  // 合集分享没有"形态"与年份，副标题由调用方用 seasonSummary 那一格给
+  // （「12 部 · 会自动收录新片」这类）
+  const kindLabel = kind ? LIBRARY_KIND_LABELS[kind] : null;
   const subtitle = [
     year ? String(year) : null,
-    seasonSummary ? `${LIBRARY_KIND_LABELS[kind]} · ${seasonSummary}` : LIBRARY_KIND_LABELS[kind],
+    seasonSummary ? [kindLabel, seasonSummary].filter(Boolean).join(" · ") : kindLabel,
   ]
     .filter(Boolean)
     .join(" · ");
@@ -106,12 +115,24 @@ export function ShareDialog({
     setBusy(true);
     setError(null);
     try {
-      const result = await createItemShare(libraryId, mediaItemId, {
+      // 范围二选一：合集分享与条目分享共用这个弹层，因为要填的东西
+      // （有效期、密码）逐字相同，只有落到哪个接口不一样
+      const body = {
         expires_in_days: days,
         password: passwordOn && pw.trim() ? pw.trim() : null,
-      });
+      };
+      const result =
+        collectionId !== undefined
+          ? await createCollectionShare(collectionId, body)
+          : await createItemShare(libraryId ?? 0, mediaItemId ?? 0, body);
       setShare(result.share);
-      toast.success(result.existed ? "这部影片已有一条有效分享" : "分享链接已生成");
+      toast.success(
+        result.existed
+          ? collectionId !== undefined
+            ? "这个合集已有一条有效分享"
+            : "这部影片已有一条有效分享"
+          : "分享链接已生成",
+      );
     } catch (e) {
       setError(e instanceof Error ? e.message : "生成分享链接失败，请稍后重试");
     } finally {
@@ -130,7 +151,8 @@ export function ShareDialog({
     if (!ok) return;
     setBusy(true);
     try {
-      await revokeItemShare(libraryId, mediaItemId);
+      if (collectionId !== undefined) await revokeCollectionShare(collectionId);
+      else await revokeItemShare(libraryId ?? 0, mediaItemId ?? 0);
       setShare(null);
       toast.success("分享已取消");
     } catch (e) {

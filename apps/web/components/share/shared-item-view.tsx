@@ -37,7 +37,17 @@ import { usePageTitle } from "@/lib/use-page-title";
  * 与 LibraryItemDetailView 共用 PlayAction / SeasonEpisodesSection / ExpandablePlot
  * 三个纯展示组件；其余（音轨编辑、文件区、⋯ 菜单）访客用不上，不复用。
  */
-export function SharedItemView({ slug }: { slug: string }) {
+export function SharedItemView({
+  slug,
+  mediaItemId,
+  onBack,
+}: {
+  slug: string;
+  /** 合集分享时看哪一部；条目分享不传（范围就那一个） */
+  mediaItemId?: number;
+  /** 合集分享里给一条回名单的路；条目分享没有"上一层" */
+  onBack?: () => void;
+}) {
   const router = useRouter();
   const [item, setItem] = useState<SharedItem | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
@@ -47,7 +57,7 @@ export function SharedItemView({ slug }: { slug: string }) {
 
   useEffect(() => {
     let cancelled = false;
-    getSharedItem(slug)
+    getSharedItem(slug, mediaItemId)
       .then((data) => {
         if (!cancelled) setItem(data);
       })
@@ -62,7 +72,7 @@ export function SharedItemView({ slug }: { slug: string }) {
     return () => {
       cancelled = true;
     };
-  }, [slug]);
+  }, [slug, mediaItemId]);
 
   usePageTitle(item?.title);
 
@@ -103,8 +113,8 @@ export function SharedItemView({ slug }: { slug: string }) {
   }, [playUnitKey, scope]);
 
   const fetchEpisodes = useCallback(
-    (_mediaItemId: number, season: number) => getSharedEpisodes(slug, season),
-    [slug],
+    (_mediaItemId: number, season: number) => getSharedEpisodes(slug, season, mediaItemId),
+    [slug, mediaItemId],
   );
 
   const play = useCallback(
@@ -202,9 +212,21 @@ export function SharedItemView({ slug }: { slug: string }) {
       <div className="relative z-10">
         {/* 顶栏只有字标与到期提示：没有登录入口、没有搜索、没有侧栏 */}
         <header className="flex items-center justify-between px-12 pt-5 max-md:px-4 max-md:pt-4">
-          <span className="text-sub font-semibold uppercase tracking-[0.18em] text-white/70">
-            {publicEnv.appName}
-          </span>
+          <div className="flex min-w-0 items-center gap-3">
+            {/* 合集分享才有"上一层"：条目分享的范围就那一部，回不到别处去 */}
+            {onBack && (
+              <button
+                type="button"
+                onClick={onBack}
+                className="shrink-0 rounded-lg px-2 py-1 text-sub text-white/60 transition hover:bg-white/10 hover:text-white"
+              >
+                ‹ 返回合集
+              </button>
+            )}
+            <span className="text-sub font-semibold uppercase tracking-[0.18em] text-white/70">
+              {publicEnv.appName}
+            </span>
+          </div>
           <span className="tnum text-caption text-white/55">链接 {expiryHint(item.expires_at)}</span>
         </header>
 

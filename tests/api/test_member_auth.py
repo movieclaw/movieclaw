@@ -508,6 +508,7 @@ _MEMBER_ALLOWLIST = {
     ("GET", "/api/v1/share/{slug}"),
     ("POST", "/api/v1/share/{slug}/unlock"),
     ("GET", "/api/v1/share/{slug}/item"),
+    ("GET", "/api/v1/share/{slug}/collection"),
     ("GET", "/api/v1/share/{slug}/episodes"),
     ("GET", "/api/v1/share/{slug}/artwork"),
     ("GET", "/api/v1/share/{slug}/images/assets/{path}"),

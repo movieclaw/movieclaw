@@ -97,7 +97,11 @@ async def visible_library_ids(session: AsyncSession, principal: Principal) -> se
     """请求主体可浏览的库 id 集合（见模块说明的矩阵）。"""
     if principal.share is not None:
         # 分享访客（docs/design/media-share.md §4.1）：只有分享出去的那一个库，
-        # 且刻意不看库的可见范围——超管把这部片放出去就是决定了它对外可见
+        # 且刻意不看库的可见范围——超管把这部片放出去就是决定了它对外可见。
+        # 跨库合集的分享没有"那一个库"，范围由合集成员本身界定（_share_covers），
+        # 库集合放开是安全的：条目一级的判定才是这条分享真正的闸门
+        if principal.share.library_id is None:
+            return await admin_browsable_ids(session)
         return {principal.share.library_id}
     if principal.kind == "admin":
         return await admin_browsable_ids(session)
@@ -190,7 +194,7 @@ async def assert_item_visible(
 
     分享访客只能看分享的那一个条目，其他条目一律 404。
     """
-    if principal.share is not None and media_item_id != principal.share.media_item_id:
+    if principal.share is not None and not await _share_covers(session, principal, media_item_id):
         raise NotFoundException("媒体条目不存在")
     library_ids = {
         int(lid)
@@ -215,6 +219,31 @@ async def assert_item_visible(
     if library_ids.isdisjoint(await visible_library_ids(session, principal)):
         raise NotFoundException("媒体条目不存在")
     await _assert_within_content_limit(session, principal, media_item_id)
+
+
+async def _share_covers(
+    session: AsyncSession, principal: Principal, media_item_id: int
+) -> bool:
+    """这条分享的范围盖不盖得住这个条目。
+
+    条目分享：就那一个。合集分享：**此刻的成员**——规则驱动的合集会自己长，
+    所以每次访问现算，分享出去之后新入库的片也在里面。反过来，被移出合集
+    （或不再命中规则）的片立刻失去访问权，不需要任何撤销动作。
+    """
+    grant = principal.share
+    assert grant is not None
+    if grant.collection_id is None:
+        return media_item_id == grant.media_item_id
+    from movieclaw_api.services.library.collections import resolve_members
+    from movieclaw_db.models import Collection
+
+    collection = await session.get(Collection, grant.collection_id)
+    if collection is None:
+        return False
+    # 访客不是任何一个成员：可见库不受限（分享出去就是决定了它对外可见），
+    # 分级也不受限（与 content_limit_for 里那条同源）
+    members = await resolve_members(session, collection)
+    return media_item_id in set(members)
 
 
 async def _assert_within_content_limit(

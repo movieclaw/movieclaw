@@ -22,6 +22,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Cookie, Depends, Path, Query, Request, Response
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import select
 
 from movieclaw_api.api.deps import require_admin
 from movieclaw_api.api.routes import images as images_routes
@@ -47,6 +48,8 @@ from movieclaw_api.schemas.playback import (
 from movieclaw_api.schemas.response import ApiResponse, ok
 from movieclaw_api.schemas.share import (
     ShareCreateRequest,
+    SharedCollectionItemView,
+    SharedCollectionView,
     SharedFileView,
     SharedItemView,
     SharePublicView,
@@ -57,10 +60,14 @@ from movieclaw_api.services import media_scrape
 from movieclaw_api.services import share as share_service
 from movieclaw_api.services.auth import Principal
 from movieclaw_api.services.image_variants import ImageVariant
-from movieclaw_api.services.library.access import assert_library_visible
+from movieclaw_api.services.library.access import (
+    assert_item_visible,
+    assert_library_visible,
+)
+from movieclaw_api.services.library.collections import count_members, resolve_members
 from movieclaw_api.services.playback import watch as playback_watch
 from movieclaw_db.engine import get_session
-from movieclaw_db.models import LibraryFile, MediaItem
+from movieclaw_db.models import Collection, LibraryFile, MediaItem
 from movieclaw_db.models.media_share import MediaShare
 from movieclaw_db.repositories.media_repo import MediaItemRepository
 from movieclaw_media.models import MediaKind
@@ -91,25 +98,40 @@ async def _poster_url(session: AsyncSession, item: MediaItem) -> str | None:
 
 
 async def _share_view(session: AsyncSession, row: MediaShare) -> ShareView:
+    assert row.id is not None
+    common = {
+        "id": row.id,
+        "slug": row.slug,
+        "url": await share_service.share_url(row.slug),
+        "library_id": row.library_id,
+        "password": share_service.password_of(row),
+        "expires_at": row.expires_at,
+        "created_at": row.created_at,
+        "view_count": row.view_count,
+        "last_accessed_at": row.last_accessed_at,
+    }
+    if row.collection_id is not None:
+        collection = await session.get(Collection, row.collection_id)
+        if collection is None:
+            raise NotFoundException("合集不存在（可能已被删除）")
+        return ShareView(
+            collection_id=row.collection_id,
+            title=collection.name,
+            # 数量是现算的：规则驱动的合集会自己长，管理列表上写死一个数字
+            # 只会与访客看到的对不上
+            item_count=await count_members(session, collection),
+            **common,  # type: ignore[arg-type]
+        )
     item = await session.get(MediaItem, row.media_item_id)
     if item is None:
         raise NotFoundException("媒体条目不存在（可能已被删除）")
-    assert row.id is not None
     return ShareView(
-        id=row.id,
-        slug=row.slug,
-        url=await share_service.share_url(row.slug),
         media_item_id=row.media_item_id,
-        library_id=row.library_id,
         title=item.title,
         kind=MediaKind(item.kind),
         year=item.year,
         poster_url=await _poster_url(session, item),
-        password=share_service.password_of(row),
-        expires_at=row.expires_at,
-        created_at=row.created_at,
-        view_count=row.view_count,
-        last_accessed_at=row.last_accessed_at,
+        **common,  # type: ignore[arg-type]
     )
 
 
@@ -205,6 +227,93 @@ async def revoke_item_share(
     if row is not None:
         await share_service.revoke(session, row)
         logger.info("取消影片分享：%s（条目 %d）", row.slug, media_item_id)
+    return ok({"revoked": row is not None}, message="分享已取消")
+
+
+async def _collection_for_share(
+    session: AsyncSession, principal: Principal, collection_id: int
+) -> Collection:
+    """分享一个合集的前置：合集要存在、对操作者可见。
+
+    **不要求它是手动合集**：规则驱动的合集分享出去之后会自己长，那正是这条
+    链接比"一串条目"有意思的地方（新入库的片自动出现在朋友那边）。
+    """
+    row = await session.get(Collection, collection_id)
+    if row is None:
+        raise NotFoundException("合集不存在（可能已被删除）")
+    if row.library_id is not None:
+        await assert_library_visible(session, principal, row.library_id)
+    return row
+
+
+@admin_router.get(
+    "/collections/{collection_id}/share",
+    response_model=ApiResponse[ShareView | None],
+    summary="看这个合集当前的分享链接、密码和有效期",
+    operation_id="collection.share.get",
+)
+async def get_collection_share(
+    collection_id: int,
+    principal: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[ShareView | None]:
+    await _collection_for_share(session, principal, collection_id)
+    row = await share_service.get_active_for_collection(session, collection_id)
+    return ok(await _share_view(session, row) if row else None)
+
+
+@admin_router.post(
+    "/collections/{collection_id}/share",
+    response_model=ApiResponse[ShareView],
+    summary="把整个合集分享出去，拿到链接的人不用登录就能看",
+    operation_id="collection.share.create",
+)
+async def create_collection_share(
+    collection_id: int,
+    payload: ShareCreateRequest,
+    principal: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[ShareView]:
+    """分享的是**这个合集此刻的成员**，而且会跟着合集一起变。
+
+    规则驱动的合集分享出去之后新入库的片自动出现在对方那边；从合集里移出去
+    的片立刻打不开，不需要再来取消一次。有效期与密码两项与影片分享同一套。
+    """
+    collection = await _collection_for_share(session, principal, collection_id)
+    row, created = await share_service.create_share(
+        session,
+        collection_id=collection_id,
+        library_id=collection.library_id,
+        expires_in_days=payload.expires_in_days,
+        password=payload.password,
+        created_by_member_id=principal.member_id if principal.member_id is not None else 0,
+    )
+    view = await _share_view(session, row)
+    if not created:
+        return ok(view, code="SHARE_EXISTS", message="这个合集已有一条有效分享")
+    logger.info(
+        "创建合集分享：%s（合集 %d，%d 天）", row.slug, collection_id, payload.expires_in_days
+    )
+    return ok(view, message="分享链接已生成")
+
+
+@admin_router.delete(
+    "/collections/{collection_id}/share",
+    response_model=ApiResponse[dict],
+    summary="取消这个合集的分享，链接立刻失效",
+    operation_id="collection.share.revoke",
+    openapi_extra={"x-cli-dangerous": "confirm"},
+)
+async def revoke_collection_share(
+    collection_id: int,
+    principal: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[dict]:
+    await _collection_for_share(session, principal, collection_id)
+    row = await share_service.get_active_for_collection(session, collection_id)
+    if row is not None:
+        await share_service.revoke(session, row)
+        logger.info("取消合集分享：%s（合集 %d）", row.slug, collection_id)
     return ok({"revoked": row is not None}, message="分享已取消")
 
 
@@ -318,6 +427,7 @@ async def probe_share(
             unlocked=unlocked,
             expires_at=row.expires_at,
             media_item_id=row.media_item_id if unlocked else None,
+            collection_id=row.collection_id if unlocked else None,
         )
     )
 
@@ -355,6 +465,7 @@ async def unlock_share(
             unlocked=True,
             expires_at=row.expires_at,
             media_item_id=row.media_item_id,
+            collection_id=row.collection_id,
         ),
         message="已解锁",
     )
@@ -391,7 +502,9 @@ def project_item(detail: LibraryItemDetailView, principal: Principal) -> SharedI
     grant = _grant(principal)
 
     def rw(url: str | None) -> str | None:
-        return _rewrite_url(url, grant.slug, grant.library_id, grant.media_item_id)
+        # 条目 id 取**这一次在看的**那部，而不是 grant 上那个：合集分享的
+        # grant 根本没有条目 id
+        return _rewrite_url(url, grant.slug, grant.library_id or 0, detail.media_item_id)
 
     local_meta: LocalMetaView | None = None
     if detail.local_meta is not None:
@@ -452,11 +565,99 @@ def project_item(detail: LibraryItemDetailView, principal: Principal) -> SharedI
     )
 
 
-def _rewrite_episodes(view: SeasonEpisodesView, principal: Principal) -> SeasonEpisodesView:
+def _rewrite_episodes(
+    view: SeasonEpisodesView, principal: Principal, media_item_id: int
+) -> SeasonEpisodesView:
     grant = _grant(principal)
     for ep in view.episodes:
-        ep.still_url = _rewrite_url(ep.still_url, grant.slug, grant.library_id, grant.media_item_id)
+        ep.still_url = _rewrite_url(
+            ep.still_url, grant.slug, grant.library_id or 0, media_item_id
+        )
     return view
+
+
+async def _shared_item(session: AsyncSession, principal: Principal, item: int | None) -> int:
+    """这次要看合集里的哪一部。
+
+    条目分享忽略 ``item``（范围就那一个）；合集分享必须给，而且**必须是此刻的
+    成员**——判定走 access 的收口（``assert_item_visible``），不在这里另写一套。
+    """
+    grant = _grant(principal)
+    if grant.collection_id is None:
+        return grant.media_item_id or 0
+    if item is None:
+        raise NotFoundException("请指定要看合集里的哪一部")
+    await assert_item_visible(session, principal, item)
+    return item
+
+
+async def _shared_library(session: AsyncSession, principal: Principal, media_item_id: int) -> int:
+    """这一部片走哪个库的详情。
+
+    条目分享就是分享出去的那个库。合集分享（尤其跨库的）按条目**自己的**台账
+    行取——同一部片散在两个库时随便挑一个都能放，取第一个即可。
+    """
+    grant = _grant(principal)
+    if grant.library_id is not None:
+        return grant.library_id
+    library_id = (
+        await session.execute(
+            select(LibraryFile.library_id)
+            .where(LibraryFile.media_item_id == media_item_id, LibraryFile.on_shelf())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if library_id is None:
+        raise NotFoundException("媒体条目不存在")
+    return int(library_id)
+
+
+@public_router.get(
+    "/{slug}/collection",
+    response_model=ApiResponse[SharedCollectionView],
+    summary="分享页的合集信息（名字 + 此刻的成员）",
+    operation_id="share.collection",
+    openapi_extra={"x-cli-hidden": True},
+)
+async def get_shared_collection(
+    principal: Principal = Depends(require_share_access),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[SharedCollectionView]:
+    """成员**每次访问现算**：规则驱动的合集会自己长，分享出去之后新入库的片
+    也会出现在对方那边。"""
+    grant = _grant(principal)
+    if grant.collection_id is None:
+        raise NotFoundException("这条分享不是一个合集")
+    collection = await session.get(Collection, grant.collection_id)
+    if collection is None:
+        raise NotFoundException("合集不存在（可能已被删除）")
+    ids = await resolve_members(session, collection)
+    rows = (
+        (await session.execute(select(MediaItem).where(MediaItem.id.in_(ids)))).scalars().all()
+        if ids
+        else []
+    )
+    by_id = {row.id: row for row in rows}
+    items = []
+    for item_id in ids:
+        item = by_id.get(item_id)
+        if item is None:
+            continue
+        poster = await _poster_url(session, item)
+        items.append(
+            SharedCollectionItemView(
+                media_item_id=item_id,
+                title=item.title,
+                year=item.year,
+                kind=MediaKind(item.kind),
+                # 访客拿不到 /images/... 那条内部路径，统一改写成分享域下的地址
+                poster_url=_rewrite_url(poster, grant.slug, 0, item_id),
+            )
+        )
+    row = await session.get(MediaShare, grant.share_id)
+    if row is not None:
+        await share_service.touch_view(session, row)
+    return ok(SharedCollectionView(name=collection.name, item_count=len(items), items=items))
 
 
 @public_router.get(
@@ -467,12 +668,17 @@ def _rewrite_episodes(view: SeasonEpisodesView, principal: Principal) -> SeasonE
     openapi_extra={"x-cli-hidden": True},
 )
 async def get_shared_item(
+    item: Annotated[int | None, Query(description="合集分享时指定看哪一部")] = None,
     principal: Principal = Depends(require_share_access),
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[SharedItemView]:
     grant = _grant(principal)
+    media_item_id = await _shared_item(session, principal, item)
     detail = await libraries_routes.get_library_item(
-        grant.library_id, grant.media_item_id, principal=principal, session=session
+        await _shared_library(session, principal, media_item_id),
+        media_item_id,
+        principal=principal,
+        session=session,
     )
     row = await session.get(MediaShare, grant.share_id)
     if row is not None:
@@ -489,18 +695,19 @@ async def get_shared_item(
 )
 async def get_shared_episodes(
     season_number: Annotated[int, Query(ge=0)],
+    item: Annotated[int | None, Query(description="合集分享时指定看哪一部")] = None,
     principal: Principal = Depends(require_share_access),
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[SeasonEpisodesView]:
-    grant = _grant(principal)
+    media_item_id = await _shared_item(session, principal, item)
     resp = await libraries_routes.list_item_episodes(
-        grant.library_id,
-        grant.media_item_id,
+        await _shared_library(session, principal, media_item_id),
+        media_item_id,
         season_number=season_number,
         principal=principal,
         session=session,
     )
-    return ok(_rewrite_episodes(resp.data, principal))
+    return ok(_rewrite_episodes(resp.data, principal, media_item_id))
 
 
 # -- 图片 ---------------------------------------------------------------------
@@ -515,12 +722,16 @@ async def get_shared_episodes(
 )
 async def get_shared_artwork(
     kind: Literal["poster", "fanart"] = Query(default="poster"),
+    item: Annotated[int | None, Query(description="合集分享时指定看哪一部")] = None,
     principal: Principal = Depends(require_share_access),
     session: AsyncSession = Depends(get_session),
 ) -> FileResponse:
-    grant = _grant(principal)
+    media_item_id = await _shared_item(session, principal, item)
     return await libraries_routes.get_item_artwork(
-        grant.library_id, grant.media_item_id, kind=kind, session=session
+        await _shared_library(session, principal, media_item_id),
+        media_item_id,
+        kind=kind,
+        session=session,
     )
 
 
@@ -540,10 +751,12 @@ async def get_shared_asset(
 ) -> FileResponse:
     """只放行首段 = 分享条目 id 的路径；人物头像等不按条目分目录的资产不给
     （详情投影里认不出的地址已经置空，访客不会请求到这里）。"""
-    grant = _grant(principal)
     head = path.split("/", 1)[0]
-    if not head.isdigit() or int(head) != grant.media_item_id:
+    if not head.isdigit():
         raise NotFoundException("图片资产不存在")
+    # 合集分享盖得住多个条目，所以判定不能是"等于那一个"，而是"在范围里"——
+    # 走 access 的收口，不在这里另写一套
+    await assert_item_visible(session, principal, int(head))
     return await images_routes.get_metadata_asset(
         path, variant=variant, v=v, principal=principal, session=session
     )
@@ -585,25 +798,30 @@ async def get_shared_thumb(
 
 
 async def _assert_file_in_share(session: AsyncSession, principal: Principal, file_id: int) -> None:
+    """这个文件属不属于这条分享盖得住的条目。
+
+    条目分享还要求文件就在分享出去的那个库里；合集分享（尤其跨库的）没有
+    "那一个库"，条目在范围里就够——范围本身已经是这条链接的闸门。
+    """
     grant = _grant(principal)
     row = await session.get(LibraryFile, file_id)
-    if (
-        row is None
-        or row.media_item_id != grant.media_item_id
-        or row.library_id != grant.library_id
-    ):
+    if row is None or row.media_item_id is None:
         raise NotFoundException("文件不存在")
+    if grant.library_id is not None and row.library_id != grant.library_id:
+        raise NotFoundException("文件不存在")
+    await assert_item_visible(session, principal, row.media_item_id)
 
 
 async def _assert_decide_payload(
     session: AsyncSession, principal: Principal, payload: PlaybackDecideRequest
 ) -> None:
     """决策 / 起播请求只能指向分享的那个条目（按文件 id 或按单元二选一）。"""
-    grant = _grant(principal)
     if payload.file_id is not None:
         await _assert_file_in_share(session, principal, payload.file_id)
-    elif payload.media_item_id != grant.media_item_id:
+    elif payload.media_item_id is None:
         raise NotFoundException("没有找到可播放的文件")
+    else:
+        await assert_item_visible(session, principal, payload.media_item_id)
 
 
 @public_router.post(
@@ -696,14 +914,14 @@ async def shared_progress(
     payload: PlaybackProgressRequest,
     request: Request,
     principal: Principal = Depends(require_share_access),
+    session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[PlaybackStateView]:
     """访客不是成员：进度只记在访客自己的浏览器里（前端 localStorage），这里
     **不写** playback_state / playback_log。只维护活动页的实时会话——超管才能
     看到「分享访客正在播放」并结束它；结束后的拒绝窗口靠响应里的
     ``ended_by_admin`` 让播放器退出。"""
-    grant = _grant(principal)
-    if payload.media_item_id != grant.media_item_id:
-        raise NotFoundException("没有找到可播放的文件")
+    # 只认这条分享盖得住的条目（合集分享盖得住多个，所以判定不是"等于那一个"）
+    await assert_item_visible(session, principal, payload.media_item_id)
     unit = (payload.media_item_id, payload.season_number, payload.episode_number)
     member_id = share_service.SHARE_VISITOR_MEMBER_ID
     client = playback_watch.web_client_info(
@@ -749,13 +967,12 @@ async def shared_playback_item(
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[PlaybackItemView]:
     grant = _grant(principal)
-    if media_item_id != grant.media_item_id:
-        raise NotFoundException("媒体条目不存在")
+    await assert_item_visible(session, principal, media_item_id)
     resp = await playback_routes.get_playback_item(
         media_item_id, principal=principal, session=session
     )
     resp.data.poster_url = _rewrite_url(
-        resp.data.poster_url, grant.slug, grant.library_id, grant.media_item_id
+        resp.data.poster_url, grant.slug, grant.library_id or 0, media_item_id
     )
     return resp
 
@@ -773,10 +990,8 @@ async def shared_playback_episodes(
     principal: Principal = Depends(require_share_access),
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[SeasonEpisodesView]:
-    grant = _grant(principal)
-    if media_item_id != grant.media_item_id:
-        raise NotFoundException("媒体条目不存在")
+    await assert_item_visible(session, principal, media_item_id)
     resp = await playback_routes.get_playback_item_episodes(
         media_item_id, season_number=season_number, principal=principal, session=session
     )
-    return ok(_rewrite_episodes(resp.data, principal))
+    return ok(_rewrite_episodes(resp.data, principal, media_item_id))

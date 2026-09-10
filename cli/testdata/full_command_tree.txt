@@ -80,6 +80,10 @@ collection items reorder
 collection list
 collection series
 collection series get
+collection share
+collection share create
+collection share get
+collection share revoke
 collection update
 discover
 discover browse-collection

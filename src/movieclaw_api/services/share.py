@@ -71,6 +71,7 @@ def grant_of(row: MediaShare) -> ShareGrant:
         media_item_id=row.media_item_id,
         library_id=row.library_id,
         expires_at=row.expires_at,
+        collection_id=row.collection_id,
     )
 
 
@@ -153,27 +154,62 @@ async def list_active(session: AsyncSession) -> list[MediaShare]:
     return list(rows)
 
 
+async def get_active_for_collection(
+    session: AsyncSession, collection_id: int
+) -> MediaShare | None:
+    """合集当前的有效分享（至多一条，与条目那一支同一条规矩）。"""
+    rows = (
+        (
+            await session.execute(
+                select(MediaShare)
+                .where(MediaShare.collection_id == collection_id, MediaShare.revoked_at.is_(None))  # type: ignore[union-attr]
+                .order_by(MediaShare.id.desc())  # type: ignore[union-attr]
+            )
+        )
+        .scalars()
+        .all()
+    )
+    now = utcnow()
+    for row in rows:
+        if is_active(row, now):
+            return row
+    return None
+
+
 async def create_share(
     session: AsyncSession,
     *,
-    media_item_id: int,
-    library_id: int,
+    media_item_id: int | None = None,
+    collection_id: int | None = None,
+    library_id: int | None,
     expires_in_days: int,
     password: str | None,
     created_by_member_id: int = 0,
 ) -> tuple[MediaShare, bool]:
-    """创建分享；条目已有有效分享时原样返回它。返回 (行, 是否新建)。"""
+    """创建分享；同一目标已有有效分享时原样返回它。返回 (行, 是否新建)。
+
+    ``media_item_id`` 与 ``collection_id`` 恰好给一个——范围二选一是这条
+    链接的定义，两个都给或都不给都没有意义，与其在下游各处防御，不如在
+    入口断言。
+    """
+    if (media_item_id is None) == (collection_id is None):
+        raise BadRequestException("分享的范围只能是一个条目或一个合集")
     if expires_in_days not in SHARE_EXPIRY_DAYS:
         raise BadRequestException(
             "有效期只能是 " + " / ".join(f"{d} 天" for d in SHARE_EXPIRY_DAYS)
         )
     cleaned = _normalize_password(password)
-    existing = await get_active_for_item(session, media_item_id)
+    existing = (
+        await get_active_for_item(session, media_item_id)
+        if media_item_id is not None
+        else await get_active_for_collection(session, collection_id or 0)
+    )
     if existing is not None:
         return existing, False
     row = MediaShare(
         slug=new_slug(),
         media_item_id=media_item_id,
+        collection_id=collection_id,
         library_id=library_id,
         created_by_member_id=created_by_member_id,
         password_encrypted=get_secret_box().encrypt(cleaned) if cleaned else None,

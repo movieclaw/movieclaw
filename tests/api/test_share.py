@@ -218,6 +218,7 @@ async def test_probe_states(client: TestClient) -> None:
         "unlocked": True,
         "expires_at": probe.json()["data"]["expires_at"],
         "media_item_id": item,
+        "collection_id": None,
     }
     assert probe.json()["data"]["expires_at"].endswith("+00:00")
 
@@ -540,3 +541,78 @@ async def test_item_delete_cascades_share(client: TestClient) -> None:
         assert (await session.get(MediaShare, 1)) is None
     _anonymous(client)
     assert client.get(f"{_SHARE}/{slug}").status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# 合集分享（F4.4）
+# ---------------------------------------------------------------------------
+
+
+async def test_collection_share_covers_its_members(client: TestClient) -> None:
+    """一条链接 = 一个合集此刻的成员。
+
+    成员是**每次访问现算**的：规则驱动的合集会自己长，分享出去之后新入库的
+    片也会出现在对方那边；被移出去的片立刻打不开，不需要再来取消一次。
+    """
+    lib = _create_library(client, "电影", "/m/movies")
+    a = await _seed_item(lib, "第一部", 111)
+    b = await _seed_item(lib, "第二部", 222)
+    outsider = await _seed_item(lib, "圈外的", 333)
+
+    created = client.post(
+        "/api/v1/collections", json={"name": "给朋友的", "library_id": lib, "item_ids": [a, b]}
+    )
+    assert created.status_code == 200, created.text
+    collection_id = created.json()["data"]["id"]
+
+    share = client.post(f"/api/v1/collections/{collection_id}/share", json={})
+    assert share.status_code == 200, share.text
+    body = share.json()["data"]
+    assert body["collection_id"] == collection_id
+    assert body["media_item_id"] is None
+    assert body["item_count"] == 2
+    slug = body["slug"]
+
+    _anonymous(client)
+    listing = client.get(f"{_SHARE}/{slug}/collection")
+    assert listing.status_code == 200, listing.text
+    assert [row["title"] for row in listing.json()["data"]["items"]] == ["第一部", "第二部"]
+
+    # 名单里的片打得开
+    assert client.get(f"{_SHARE}/{slug}/item?item={a}").status_code == 200
+    assert client.get(f"{_SHARE}/{slug}/item?item={b}").status_code == 200
+    # 圈外的打不开——GUID/id 都是能猜的，只挡列表等于没挡
+    assert client.get(f"{_SHARE}/{slug}/item?item={outsider}").status_code == 404
+    # 不指定看哪一部也不行（合集分享没有"默认那一部"）
+    assert client.get(f"{_SHARE}/{slug}/item").status_code == 404
+
+
+async def test_removing_a_member_closes_the_door(client: TestClient) -> None:
+    """从合集里移出去 = 立刻打不开，不需要任何撤销动作。"""
+    lib = _create_library(client, "电影", "/m/movies")
+    item = await _seed_item(lib, "会被移走的", 444)
+    collection_id = client.post(
+        "/api/v1/collections", json={"name": "临时", "library_id": lib, "item_ids": [item]}
+    ).json()["data"]["id"]
+    slug = client.post(f"/api/v1/collections/{collection_id}/share", json={}).json()["data"]["slug"]
+
+    _anonymous(client)
+    assert client.get(f"{_SHARE}/{slug}/item?item={item}").status_code == 200
+
+    client.post(f"{_AUTH}/login", json=_ADMIN)
+    assert client.delete(f"/api/v1/collections/{collection_id}/items/{item}").status_code == 200
+
+    _anonymous(client)
+    assert client.get(f"{_SHARE}/{slug}/item?item={item}").status_code == 404
+
+
+async def test_item_share_ignores_the_item_parameter(client: TestClient) -> None:
+    """条目分享的范围就那一个：``item`` 参数不能变成一把越权的钥匙。"""
+    lib = _create_library(client, "电影", "/m/movies")
+    a = await _seed_item(lib, "分享的", 555)
+    slug = _create_share(client, lib, a)["data"]["slug"]
+    _anonymous(client)
+    # 换个 id 传进来仍然只给分享的那一部（服务端根本不看这个参数）
+    resp = client.get(f"{_SHARE}/{slug}/item?item=999999")
+    assert resp.status_code == 200
+    assert resp.json()["data"]["media_item_id"] == a

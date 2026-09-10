@@ -75,14 +75,25 @@ logger = logging.getLogger("movieclaw_api.auth")
 
 @dataclass(frozen=True)
 class ShareGrant:
-    """一条已验证有效的影片分享的授权范围（docs/design/media-share.md §4.1）：
-    访客能看的就只有 ``library_id`` 这个库里的 ``media_item_id`` 这一个条目。"""
+    """一条已验证有效的分享的授权范围（docs/design/media-share.md §4.1）。
+
+    范围二选一：
+
+    - **条目分享**：``media_item_id`` 那一个条目（在 ``library_id`` 那个库里）；
+    - **合集分享**：``collection_id`` 此刻的成员。规则驱动的合集会自己长，
+      所以"此刻"是每次访问现算的——分享出去之后新入库的片也会出现在里面，
+      这正是分享一个合集而不是一串条目的意义。
+
+    两者恒有且只有一个非空。判定不在这里做（这是个纯值对象），在
+    ``services/library/access.assert_item_visible``——那是全站唯一的条目
+    可见性收口。"""
 
     share_id: int
     slug: str
-    media_item_id: int
-    library_id: int
+    media_item_id: int | None
+    library_id: int | None
     expires_at: datetime
+    collection_id: int | None = None
 
 
 @dataclass(frozen=True)

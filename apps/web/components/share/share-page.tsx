@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { AuthError, AuthField, AuthScreen } from "@/components/auth-screen";
+import { SharedCollectionView } from "@/components/share/shared-collection-view";
 import { SharedItemView } from "@/components/share/shared-item-view";
 import { probeShare, unlockShare } from "@/lib/api/shares";
 import { HttpError } from "@/lib/http";
@@ -12,7 +13,10 @@ type Phase =
   | { kind: "loading" }
   | { kind: "locked" }
   | { kind: "unavailable"; message: string }
-  | { kind: "ready" };
+  /** 条目分享；合集分享点开某一部之后也是它（带着 mediaItemId） */
+  | { kind: "ready"; mediaItemId?: number }
+  /** 合集分享的名单 */
+  | { kind: "collection" };
 
 /** 探针失败 → 访客看得懂的一句话（后端 message 已是中文，直接用）。 */
 export function unavailableMessage(error: unknown): string {
@@ -33,11 +37,22 @@ export function unavailableMessage(error: unknown): string {
 export function SharePage({ slug }: { slug: string }) {
   const [phase, setPhase] = useState<Phase>({ kind: "loading" });
 
+  // 解锁之后要知道这条链接是"一部片"还是"一个合集"——两者的落地页不一样
+  const [isCollection, setIsCollection] = useState(false);
+
   const probe = useCallback(() => {
     probeShare(slug)
-      .then((info) =>
-        setPhase(info.requires_password && !info.unlocked ? { kind: "locked" } : { kind: "ready" }),
-      )
+      .then((info) => {
+        const collection = info.collection_id !== null;
+        setIsCollection(collection);
+        setPhase(
+          info.requires_password && !info.unlocked
+            ? { kind: "locked" }
+            : collection
+              ? { kind: "collection" }
+              : { kind: "ready" },
+        );
+      })
       .catch((error: unknown) =>
         setPhase({ kind: "unavailable", message: unavailableMessage(error) }),
       );
@@ -48,9 +63,31 @@ export function SharePage({ slug }: { slug: string }) {
     probe();
   }, [probe]);
 
-  if (phase.kind === "ready") return <SharedItemView slug={slug} />;
+  if (phase.kind === "collection") {
+    return (
+      <SharedCollectionView
+        slug={slug}
+        onOpen={(mediaItemId) => setPhase({ kind: "ready", mediaItemId })}
+      />
+    );
+  }
+  if (phase.kind === "ready") {
+    return (
+      <SharedItemView
+        slug={slug}
+        mediaItemId={phase.mediaItemId}
+        // 合集分享里给一条回名单的路；条目分享没有"上一层"
+        onBack={isCollection ? () => setPhase({ kind: "collection" }) : undefined}
+      />
+    );
+  }
   if (phase.kind === "locked") {
-    return <ShareGate slug={slug} onUnlocked={() => setPhase({ kind: "ready" })} />;
+    return (
+      <ShareGate
+        slug={slug}
+        onUnlocked={() => setPhase(isCollection ? { kind: "collection" } : { kind: "ready" })}
+      />
+    );
   }
   if (phase.kind === "unavailable") return <ShareUnavailable message={phase.message} />;
   return (

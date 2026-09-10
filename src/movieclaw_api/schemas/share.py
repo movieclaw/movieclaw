@@ -36,12 +36,19 @@ class ShareView(BaseModel):
     id: int
     slug: str
     url: str = Field(description="分享链接；未配置外部访问地址时为相对路径 /s/{slug}")
-    media_item_id: int
-    library_id: int
+    #: 范围二选一：条目分享给 media_item_id，合集分享给 collection_id
+    media_item_id: int | None = None
+    collection_id: int | None = None
+    library_id: int | None = None
     title: str
-    kind: MediaKind
-    year: int | None
-    poster_url: str | None
+    kind: MediaKind | None = Field(
+        default=None, description="被分享条目的形态；合集分享为 null"
+    )
+    year: int | None = None
+    poster_url: str | None = None
+    item_count: int | None = Field(
+        default=None, description="合集分享此刻有几部；条目分享为 null"
+    )
     password: str | None = Field(default=None, description="访问密码原文；无密码为 null")
     expires_at: datetime
     created_at: datetime
@@ -56,7 +63,10 @@ class SharePublicView(BaseModel):
     unlocked: bool = Field(description="无密码恒为 true；有密码时表示本浏览器已解锁")
     expires_at: datetime
     media_item_id: int | None = Field(
-        default=None, description="被分享的条目 id；解锁之前为 null（播放页据此起播）"
+        default=None, description="被分享的条目 id；解锁之前、或分享的是合集时为 null"
+    )
+    collection_id: int | None = Field(
+        default=None, description="被分享的合集 id；解锁之前、或分享的是条目时为 null"
     )
 
 
@@ -104,3 +114,28 @@ class SharedItemView(BaseModel):
     files: list[SharedFileView]
     seasons: list[int]
     expires_at: datetime
+
+
+class SharedCollectionItemView(BaseModel):
+    """合集分享页上的一格：只有认得出这部片所需的最少信息。"""
+
+    media_item_id: int
+    title: str
+    year: int | None = None
+    kind: MediaKind
+    poster_url: str | None = None
+
+
+class SharedCollectionView(BaseModel):
+    """分享页的合集信息：名字 + 此刻的成员卡片。
+
+    成员是**每次访问现算**的（走 resolve_members）：规则驱动的合集会自己长，
+    分享出去之后新入库的片也会出现在里面——这正是分享一个合集而不是一串
+    条目的意义。反过来，被移出去的片立刻打不开，不需要任何撤销动作。
+    """
+
+    name: str
+    item_count: int
+    items: list[SharedCollectionItemView] = Field(default_factory=list)
+
+

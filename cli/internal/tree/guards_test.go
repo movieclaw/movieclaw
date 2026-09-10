@@ -99,6 +99,7 @@ var knownNonGenerated = []string{
 	"share.probe",
 	"share.unlock",
 	"share.item",
+	"share.collection",
 	"share.episodes",
 	"share.artwork",
 	"share.asset",

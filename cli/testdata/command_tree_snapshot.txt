@@ -48,6 +48,9 @@ collection items remove
 collection items reorder
 collection list
 collection series get
+collection share create
+collection share get
+collection share revoke
 collection update
 discover browse-collection
 discover filter-options

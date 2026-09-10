@@ -31,12 +31,16 @@ export interface ShareView {
   slug: string;
   /** 分享链接；未配置外部访问地址时为相对路径 /s/{slug}，前端用当前 origin 补全 */
   url: string;
-  media_item_id: number;
-  library_id: number;
+  /** 范围二选一：条目分享给 media_item_id，合集分享给 collection_id */
+  media_item_id: number | null;
+  collection_id: number | null;
+  library_id: number | null;
   title: string;
-  kind: LibraryKind;
+  kind: LibraryKind | null;
   year: number | null;
   poster_url: string | null;
+  /** 合集分享此刻有几部；条目分享为 null */
+  item_count: number | null;
   /** 访问密码原文；无密码为 null */
   password: string | null;
   expires_at: string;
@@ -97,8 +101,26 @@ export interface SharePublic {
   /** 无密码恒为 true；有密码时表示本浏览器已解锁 */
   unlocked: boolean;
   expires_at: string;
-  /** 被分享的条目 id；解锁之前为 null（播放页据此起播） */
+  /** 被分享的条目 id；解锁之前、或分享的是合集时为 null（播放页据此起播） */
   media_item_id: number | null;
+  /** 被分享的合集 id；解锁之前、或分享的是条目时为 null */
+  collection_id: number | null;
+}
+
+/** 合集分享页上的一格。 */
+export interface SharedCollectionItem {
+  media_item_id: number;
+  title: string;
+  year: number | null;
+  kind: LibraryKind;
+  poster_url: string | null;
+}
+
+/** 合集分享页：名字 + 此刻的成员（规则驱动的合集会自己长，所以是现算的）。 */
+export interface SharedCollection {
+  name: string;
+  item_count: number;
+  items: SharedCollectionItem[];
 }
 
 /** 访客能看到的一个文件：只有规格与章节，没有路径与文件名。 */
@@ -157,17 +179,53 @@ export async function unlockShare(slug: string, password: string): Promise<Share
   return response.data;
 }
 
-export async function getSharedItem(slug: string): Promise<SharedItem> {
-  const response = await request<ApiEnvelope<SharedItem>>(`${base(slug)}/item`);
+/** 合集分享的成员名单（每次访问现算）。 */
+export async function getSharedCollection(slug: string): Promise<SharedCollection> {
+  const response = await request<ApiEnvelope<SharedCollection>>(`${base(slug)}/collection`);
+  return response.data;
+}
+
+/** ``item`` 只有合集分享才要给：条目分享的范围就那一个，服务端忽略它。 */
+export async function getSharedItem(slug: string, item?: number): Promise<SharedItem> {
+  const suffix = item === undefined ? "" : `?item=${item}`;
+  const response = await request<ApiEnvelope<SharedItem>>(`${base(slug)}/item${suffix}`);
   return response.data;
 }
 
 export async function getSharedEpisodes(
   slug: string,
   seasonNumber: number,
+  item?: number,
 ): Promise<SeasonEpisodes> {
+  const suffix = item === undefined ? "" : `&item=${item}`;
   const response = await request<ApiEnvelope<SeasonEpisodes>>(
-    `${base(slug)}/episodes?season_number=${seasonNumber}`,
+    `${base(slug)}/episodes?season_number=${seasonNumber}${suffix}`,
   );
   return response.data;
+}
+
+// ---------------------------------------------------------------------------
+// 合集分享的管理侧
+// ---------------------------------------------------------------------------
+
+export async function getCollectionShare(collectionId: number): Promise<ShareView | null> {
+  const response = await request<ApiEnvelope<ShareView | null>>(
+    `/collections/${collectionId}/share`,
+  );
+  return response.data;
+}
+
+export async function createCollectionShare(
+  collectionId: number,
+  body: { expires_in_days: number; password: string | null },
+): Promise<ShareCreateResult> {
+  const response = await request<ApiEnvelope<ShareView>>(`/collections/${collectionId}/share`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+  return { share: response.data, existed: response.code === "SHARE_EXISTS" };
+}
+
+export async function revokeCollectionShare(collectionId: number): Promise<void> {
+  await request<ApiEnvelope<unknown>>(`/collections/${collectionId}/share`, { method: "DELETE" });
 }

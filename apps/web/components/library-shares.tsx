@@ -130,7 +130,12 @@ export function LibraryShares({ onCountChange }: { onCountChange?: (total: numbe
               </div>
               <p className="mt-0.5 truncate text-caption text-[var(--text-muted)]">
                 {[
-                  LIBRARY_KIND_LABELS[share.kind],
+                  // 合集分享没有"形态"，写它此刻有几部——那才是这条链接的内容
+                  share.collection_id !== null
+                    ? `合集 · ${share.item_count ?? 0} 部`
+                    : share.kind
+                      ? LIBRARY_KIND_LABELS[share.kind]
+                      : null,
                   share.year ? String(share.year) : null,
                   `${expiryHint(share.expires_at)}（${formatDateTime(share.expires_at)}）`,
                 ]

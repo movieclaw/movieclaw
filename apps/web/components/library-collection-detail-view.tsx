@@ -5,6 +5,7 @@ import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import type { Route } from "next";
 
 import { CollectionOrderPanel } from "@/components/collection-order-panel";
+import { ShareDialog } from "@/components/share-dialog";
 import { useConfirm, usePrompt, useToast } from "@/components/feedback";
 import { MoreIcon } from "@/components/icons";
 import { PAGE_NAV_BUTTON_CLASS, PageNav } from "@/components/page-nav";
@@ -21,9 +22,11 @@ import {
   type CollectionSeries,
   type SeriesPart,
 } from "@/lib/api/collections";
+import { getCollectionShare, type ShareView } from "@/lib/api/shares";
 import { createSubscription } from "@/lib/api/subscriptions";
 import { getLibraryFacets, type LibraryFacets, type LibraryItem } from "@/lib/api/libraries";
-import { rulesToFilter } from "@/lib/library-filter";
+import { LibraryFilterBar } from "@/components/library-filter-bar";
+import { filterToRules, isFilterEmpty, rulesToFilter, type LibraryFilter } from "@/lib/library-filter";
 import { usePageTitle } from "@/lib/use-page-title";
 import { usePermissions } from "@/lib/permissions";
 
@@ -65,6 +68,11 @@ export function LibraryCollectionDetailView({
   const [error, setError] = useState<string | null>(null);
   const [series, setSeries] = useState<CollectionSeries | null>(null);
   const [ordering, setOrdering] = useState(false);
+  // 「改条件」模式：条件本身就是这个合集的定义，改它要能看见现在筛出多少部，
+  // 所以直接复用库页那条筛选条——用户不用学第二套控件
+  const [editing, setEditing] = useState<LibraryFilter | null>(null);
+  const [shareOpen, setShareOpen] = useState(false);
+  const [shareInitial, setShareInitial] = useState<ShareView | null>(null);
 
   usePageTitle(collection?.name);
 
@@ -167,6 +175,21 @@ export function LibraryCollectionDetailView({
     }
   }, [collection, confirm, toast]);
 
+  const saveRules = useCallback(async () => {
+    if (!collection || editing === null) return;
+    try {
+      setCollection(await updateCollection(collection.id, { rules: filterToRules(editing) }));
+      setEditing(null);
+      // 条件变了成员就变了：把这一页重取，别让用户对着旧名单猜
+      const rows = await listCollectionItems(collectionId, { limit: PAGE_SIZE });
+      setItems(rows);
+      setHasMore(rows.length === PAGE_SIZE);
+      toast.success("条件已保存");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "保存失败");
+    }
+  }, [collection, collectionId, editing, toast]);
+
   const unhide = useCallback(async () => {
     if (!collection) return;
     try {
@@ -238,6 +261,35 @@ export function LibraryCollectionDetailView({
                   <DropdownMenu.Item onSelect={rename} className={MENU_ITEM_CLASS}>
                     改名
                   </DropdownMenu.Item>
+                  {/* 分享整个合集：链接对外可看，成员每次访问现算——
+                      规则驱动的合集会自己长，朋友明天打开就多了几部 */}
+                  {canManageLibraries && (
+                    <DropdownMenu.Item
+                      onSelect={() => {
+                        getCollectionShare(collectionId)
+                          .then((existing) => {
+                            setShareInitial(existing);
+                            setShareOpen(true);
+                          })
+                          .catch((err) =>
+                            toast.error(err instanceof Error ? err.message : "打不开分享"),
+                          );
+                      }}
+                      className={MENU_ITEM_CLASS}
+                    >
+                      分享…
+                    </DropdownMenu.Item>
+                  )}
+                  {/* 规则就是这个合集的定义，改它是最要紧的一件事——此前只读，
+                      看得见改不了（F4 把它补上）*/}
+                  {libraryId !== null && collection.editable && collection.rule_driven && (
+                    <DropdownMenu.Item
+                      onSelect={() => setEditing(rulesToFilter(collection.rules))}
+                      className={MENU_ITEM_CLASS}
+                    >
+                      改条件…
+                    </DropdownMenu.Item>
+                  )}
                   {/* 手动合集才谈得上"顺序"：规则驱动的成员是求值出来的，
                       它的先后由 sort 决定，拖不动也不该拖 */}
                   {collection.editable && !collection.rule_driven && (
@@ -288,8 +340,56 @@ export function LibraryCollectionDetailView({
           {collection?.visibility === "private" && <span className="ml-2">· 只有我可见</span>}
           {collection?.hidden && <span className="ml-2">· 已隐藏</span>}
         </p>
-        {collection && <RuleRow collection={collection} facets={facets} />}
+        {collection && editing === null && <RuleRow collection={collection} facets={facets} />}
+        {collection && editing !== null && libraryId !== null && (
+          <div className="mt-3">
+            <LibraryFilterBar
+              libraryId={libraryId}
+              filter={editing}
+              onFilterChange={setEditing}
+            />
+            <div className="mt-3 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void saveRules()}
+                disabled={isFilterEmpty(editing)}
+                className="h-8 rounded-lg bg-white/10 px-3 text-ui font-medium text-white transition hover:bg-white/20 disabled:opacity-40"
+              >
+                保存条件
+              </button>
+              <button
+                type="button"
+                onClick={() => setEditing(null)}
+                className="h-8 rounded-lg px-3 text-ui text-white/70 transition hover:bg-white/10 hover:text-white"
+              >
+                取消
+              </button>
+              {/* 一个条件都不剩 = 收录整库，那不是用户想要的合集，也不该
+                  让他一不小心存成那样 */}
+              {isFilterEmpty(editing) && (
+                <span className="text-sub text-[var(--text-faint)]">
+                  至少留一个条件，否则这个合集会收录整库
+                </span>
+              )}
+            </div>
+          </div>
+        )}
       </div>
+
+      {collection && canManageLibraries && (
+        <ShareDialog
+          open={shareOpen}
+          onClose={() => setShareOpen(false)}
+          collectionId={collection.id}
+          title={collection.name}
+          year={null}
+          posterUrl={collection.covers[0]?.url ?? null}
+          seasonSummary={`${collection.item_count} 部${
+            collection.rule_driven ? " · 会自动收录新片" : ""
+          }`}
+          initialShare={shareInitial}
+        />
+      )}
 
       {ordering && collection && (
         <CollectionOrderPanel
