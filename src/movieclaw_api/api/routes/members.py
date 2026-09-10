@@ -53,6 +53,8 @@ async def _member_view(session: AsyncSession, member: Member) -> MemberView:
         library_ids=await repo.get_library_ids(member.id),
         all_sites=member.all_sites,
         site_ids=await repo.get_site_ids(member.id),
+        content_age_limit=member.content_age_limit,
+        allow_unrated=member.allow_unrated,
         created_at=member.created_at,
     )
 
@@ -123,6 +125,8 @@ async def update_member(
         library_ids=payload.library_ids,
         all_sites=payload.all_sites,
         site_ids=payload.site_ids,
+        content_age_limit=payload.content_age_limit,
+        allow_unrated=payload.allow_unrated,
     )
     return ok(await _member_view(session, member), message="成员设置已保存")
 

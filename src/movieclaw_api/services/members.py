@@ -81,8 +81,15 @@ async def update_member(
     library_ids: list[int] | None = None,
     all_sites: bool | None = None,
     site_ids: list[str] | None = None,
+    content_age_limit: int | None = None,
+    allow_unrated: bool | None = None,
 ) -> Member:
-    """编辑成员（None 字段不改动）。白名单为整体覆盖式保存。"""
+    """编辑成员（None 字段不改动）。白名单为整体覆盖式保存。
+
+    ``content_age_limit`` 例外：``None`` 是"不改动"，**取消上限传 -1**。
+    不这么分的话，"取消上限"与"不改这一项"在协议上是同一个值，老客户端
+    每存一次设置都会把家长设好的上限悄悄抹掉。
+    """
     repo = MemberRepository(session)
     member = await get_member(session, member_id)
 
@@ -107,6 +114,10 @@ async def update_member(
         member.all_libraries = all_libraries
     if all_sites is not None:
         member.all_sites = all_sites
+    if content_age_limit is not None:
+        member.content_age_limit = None if content_age_limit < 0 else content_age_limit
+    if allow_unrated is not None:
+        member.allow_unrated = allow_unrated
     member = await repo.save(member)
 
     if library_ids is not None:

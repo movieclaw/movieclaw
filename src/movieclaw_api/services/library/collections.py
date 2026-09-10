@@ -16,9 +16,11 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from movieclaw_api.services.library.access import ContentLimit
 from movieclaw_api.services.library.items import (
     LibraryFilter,
     WallSort,
+    _narrow,
     _wall_count,
     _wall_page_ids,
 )
@@ -127,6 +129,7 @@ async def resolve_members(
     *,
     member_id: int | None = None,
     visible_library_ids: set[int] | None = None,
+    content_limit: ContentLimit | None = None,
     sort: WallSort | None = None,
     limit: int | None = None,
     offset: int = 0,
@@ -152,6 +155,7 @@ async def resolve_members(
             "confirmed",
             rules_to_filter(effective_rules(collection)),
             member_id,
+            content_limit,
         )
 
     # 名单驱动：position 序就是用户拖出来的顺序，不给 sort 时原样保留
@@ -174,7 +178,10 @@ async def resolve_members(
     where = [
         LibraryFile.media_item_id.in_(ids),  # type: ignore[attr-defined]
         LibraryFile.media_item_id.is_not(None),  # type: ignore[union-attr]
-        LibraryFile.in_place(),
+        LibraryFile.on_shelf(),
+        # 名单驱动的合集同样受观看者的分级约束：手工挑进去的片不因为"是手挑的"
+        # 就绕过儿童档案——那正是最需要挡住的一种（"我给自己存的片单"）
+        *_narrow(None, member_id, content_limit=content_limit),
     ]
     if collection.library_id is not None:
         where.append(LibraryFile.library_id == collection.library_id)
@@ -195,6 +202,7 @@ async def count_members(
     *,
     member_id: int | None = None,
     visible_library_ids: set[int] | None = None,
+    content_limit: ContentLimit | None = None,
 ) -> int:
     """成员数——规则驱动的合集走一条 ``COUNT(DISTINCT)``，**不把 id 取出来**。
 
@@ -220,10 +228,15 @@ async def count_members(
             "confirmed",
             rules_to_filter(effective_rules(collection)),
             member_id,
+            content_limit,
         )
     # 名单驱动：成员本来就要逐个过一遍存活判定，没有更便宜的问法
     ids = await resolve_members(
-        session, collection, member_id=member_id, visible_library_ids=visible_library_ids
+        session,
+        collection,
+        member_id=member_id,
+        visible_library_ids=visible_library_ids,
+        content_limit=content_limit,
     )
     return len(ids)
 
@@ -234,6 +247,7 @@ async def has_any_member(
     *,
     member_id: int | None = None,
     visible_library_ids: set[int] | None = None,
+    content_limit: ContentLimit | None = None,
 ) -> bool:
     """这个合集对该成员**至少有一个**成员吗（LIMIT 1，不数总数）。
 
@@ -247,6 +261,7 @@ async def has_any_member(
             collection,
             member_id=member_id,
             visible_library_ids=visible_library_ids,
+            content_limit=content_limit,
             limit=1,
         )
     )

@@ -29,7 +29,11 @@ from movieclaw_api.schemas.library import (
 )
 from movieclaw_api.schemas.response import ApiResponse, ok
 from movieclaw_api.services.auth import Principal
-from movieclaw_api.services.library.access import visible_library_ids
+from movieclaw_api.services.library.access import (
+    ContentLimit,
+    content_limit_for,
+    visible_library_ids,
+)
 from movieclaw_api.services.library.collections import (
     effective_rules,
     is_rule_driven,
@@ -59,10 +63,20 @@ from movieclaw_media.models import MediaKind
 router = APIRouter(prefix="/collections", tags=["collections"])
 
 
-async def _scope(session: AsyncSession, principal: Principal) -> tuple[int, set[int] | None]:
-    """观看者身份与可见库范围——三层可见性收口里的第一层用它。"""
+async def _scope(
+    session: AsyncSession, principal: Principal
+) -> tuple[int, set[int] | None, ContentLimit]:
+    """观看者身份、可见库范围与内容分级约束。
+
+    两个收窄都在这里一次取齐、原样往下传：合集是"存好的筛选"，如果它能绕过
+    儿童档案，那道约束就等于没有——手工挑进合集的片更是最需要挡住的一种。
+    """
     member_id = principal.member_id if principal.member_id is not None else 0
-    return member_id, await visible_library_ids(session, principal)
+    return (
+        member_id,
+        await visible_library_ids(session, principal),
+        await content_limit_for(session, principal),
+    )
 
 
 #: 卡片上铺几张封面。三张够看出"这里面装的是哪一类片"，再多就成了缩略图墙。
@@ -107,6 +121,7 @@ async def _views(
     *,
     member_id: int,
     visible: set[int] | None,
+    content_limit: ContentLimit,
 ) -> list[CollectionView]:
     """一批合集的视图。
 
@@ -126,7 +141,13 @@ async def _views(
 
     resolved: list[tuple[Collection, list[int]]] = []
     for row in rows:
-        ids = await resolve_members(session, row, member_id=member_id, visible_library_ids=visible)
+        ids = await resolve_members(
+            session,
+            row,
+            member_id=member_id,
+            visible_library_ids=visible,
+            content_limit=content_limit,
+        )
         resolved.append((row, ids))
     # 合集卡片上的图与海报墙上的图永远是同一张：共用 poster_facts_many 这一处实现
     facts = await poster_facts_many(
@@ -170,9 +191,13 @@ async def _view(
     *,
     member_id: int,
     visible: set[int] | None,
+    content_limit: ContentLimit,
 ) -> CollectionView:
     """单个合集的视图（增删改这三条路径用，列表走 ``_views``）。"""
-    return (await _views(session, [row], member_id=member_id, visible=visible))[0]
+    views = await _views(
+        session, [row], member_id=member_id, visible=visible, content_limit=content_limit
+    )
+    return views[0]
 
 
 async def _get_or_404(session: AsyncSession, collection_id: int) -> Collection:
@@ -216,7 +241,7 @@ async def list_collections(
     藏得回来才叫隐藏，藏不回来那是删除（设计文档 4.6.4）。
     """
 
-    member_id, visible = await _scope(session, principal)
+    member_id, visible, content_limit = await _scope(session, principal)
     rows = await visible_collections(
         session,
         library_id=library_id,
@@ -224,7 +249,9 @@ async def list_collections(
         visible_library_ids=visible,
         include_hidden=include_hidden,
     )
-    views = await _views(session, rows, member_id=member_id, visible=visible)
+    views = await _views(
+        session, rows, member_id=member_id, visible=visible, content_limit=content_limit
+    )
     if include_empty:
         return ok(views)
     floors = {row.id: min_members_of(row) for row in rows}
@@ -248,7 +275,7 @@ async def create_collection(
     不需要挑选 UI，一次写入即可。
     """
 
-    member_id, visible = await _scope(session, principal)
+    member_id, visible, content_limit = await _scope(session, principal)
     if not payload.name:
         raise BadRequestException("合集需要一个名字")
     if payload.library_id is None and not payload.item_ids:
@@ -273,7 +300,11 @@ async def create_collection(
         # 「固定这 N 部」：在服务端把此刻的命中集固化成名单，然后清空规则。
         # 客户端只表达意图，不用把上千个 id 传过来再传回去
         item_ids = await resolve_members(
-            session, row, member_id=member_id, visible_library_ids=visible
+            session,
+            row,
+            member_id=member_id,
+            visible_library_ids=visible,
+            content_limit=content_limit,
         )
         row.rules = []
     if item_ids:
@@ -282,7 +313,9 @@ async def create_collection(
             for index, item_id in enumerate(item_ids)
         )
         await session.flush()
-    view = await _view(session, row, member_id=member_id, visible=visible)
+    view = await _view(
+        session, row, member_id=member_id, visible=visible, content_limit=content_limit
+    )
     await session.commit()  # 事务边界由路由显式控制（见 engine.get_session 的说明）
     return ok(view)
 
@@ -298,10 +331,13 @@ async def get_collection(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(require_login),
 ) -> ApiResponse[CollectionView]:
-    member_id, visible = await _scope(session, principal)
+    member_id, visible, content_limit = await _scope(session, principal)
     row = await _get_or_404(session, collection_id)
     _guard_visible(row, member_id, visible)
-    return ok(await _view(session, row, member_id=member_id, visible=visible))
+    view = await _view(
+        session, row, member_id=member_id, visible=visible, content_limit=content_limit
+    )
+    return ok(view)
 
 
 @router.put(
@@ -318,7 +354,7 @@ async def update_collection(
 ) -> ApiResponse[CollectionView]:
     """内置合集只能改名与可见性——规则是内置的，改了它就不是那个合集了。"""
 
-    member_id, visible = await _scope(session, principal)
+    member_id, visible, content_limit = await _scope(session, principal)
     row = await _get_or_404(session, collection_id)
     _guard_visible(row, member_id, visible)
 
@@ -350,7 +386,9 @@ async def update_collection(
             for index, item_id in enumerate(payload.item_ids)
         )
     await session.flush()
-    view = await _view(session, row, member_id=member_id, visible=visible)
+    view = await _view(
+        session, row, member_id=member_id, visible=visible, content_limit=content_limit
+    )
     await session.commit()
     return ok(view)
 
@@ -381,7 +419,7 @@ async def delete_collection(
     藏起来的合集在「显示已隐藏的合集」里能找回来——不可逆的隐藏是单向黑洞。
     """
 
-    member_id, visible = await _scope(session, principal)
+    member_id, visible, content_limit = await _scope(session, principal)
     row = await _get_or_404(session, collection_id)
     _guard_visible(row, member_id, visible)
     if row.builtin:
@@ -412,7 +450,7 @@ async def list_collection_items(
     不共用的话，同一部片在合集页和库页会显示不同的库存概况/缺集数。
     """
 
-    member_id, visible = await _scope(session, principal)
+    member_id, visible, content_limit = await _scope(session, principal)
     row = await _get_or_404(session, collection_id)
     _guard_visible(row, member_id, visible)
 
@@ -421,6 +459,7 @@ async def list_collection_items(
         row,
         member_id=member_id,
         visible_library_ids=visible,
+        content_limit=content_limit,
         limit=limit,
         offset=offset,
     )
@@ -453,7 +492,7 @@ async def get_collection_series(
     懒加载：第一次打开这个系列时才去拉一次上游档案，之后读快照。
     """
 
-    member_id, visible = await _scope(session, principal)
+    member_id, visible, content_limit = await _scope(session, principal)
     row = await _get_or_404(session, collection_id)
     _guard_visible(row, member_id, visible)
     if not is_series_collection(row):
@@ -545,7 +584,7 @@ async def apply_to_library(
 
     from movieclaw_db.models import Library
 
-    member_id, visible = await _scope(session, principal)
+    member_id, visible, content_limit = await _scope(session, principal)
     row = await _get_or_404(session, collection_id)
     _guard_visible(row, member_id, visible)
     rules = effective_rules(row)

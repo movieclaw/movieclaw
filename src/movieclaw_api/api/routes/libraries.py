@@ -89,7 +89,9 @@ from movieclaw_api.services.library import chapters as chapters_mod
 from movieclaw_api.services.library import claim as library_claim
 from movieclaw_api.services.library import source_annotation
 from movieclaw_api.services.library.access import (
+    assert_item_visible,
     assert_library_visible,
+    content_limit_for,
     visible_library_ids,
 )
 from movieclaw_api.services.library.config import LibraryConfigService
@@ -894,7 +896,12 @@ async def search_library_items(
     不是一次对外搜索，历史里混进它只会淹没真正要回放的记录。
     成员的结果按库可见性白名单过滤。
     """
-    matched = await search_visible_library_items(session, keyword)
+    matched = await search_visible_library_items(
+        session,
+        keyword,
+        member_id=principal.member_id if principal.member_id is not None else 0,
+        content_limit=await content_limit_for(session, principal),
+    )
     libraries = await LibraryConfigService(session).list_all()
     visible = await visible_library_ids(session, principal)
     libraries = [lib for lib in libraries if lib.id in visible]
@@ -1926,6 +1933,7 @@ async def get_library_facets(
             filters=filters,
             member_id=member_id,
             tier=tier,
+            content_limit=await content_limit_for(session, principal),
         )
     )
 
@@ -1953,7 +1961,12 @@ async def get_library_relax(
     member_id = principal.member_id if principal.member_id is not None else 0
     return ok(
         await build_library_relax(
-            session, library_id, library.kind, filters=filters, member_id=member_id
+            session,
+            library_id,
+            library.kind,
+            filters=filters,
+            member_id=member_id,
+            content_limit=await content_limit_for(session, principal),
         )
     )
 
@@ -2021,6 +2034,7 @@ async def list_library_items(
             identity=identity,
             member_id=member_id,
             filters=filters,
+            content_limit=await content_limit_for(session, principal),
         )
     )
 
@@ -2083,7 +2097,12 @@ async def list_library_item_index(
     await LibraryConfigService(session).get(library_id)  # 404 检查
     member_id = principal.member_id if principal.member_id is not None else 0
     buckets = await build_library_index(
-        session, library_id, sort, filters=filters, member_id=member_id
+        session,
+        library_id,
+        sort,
+        filters=filters,
+        member_id=member_id,
+        content_limit=await content_limit_for(session, principal),
     )
     return ok(
         [
@@ -2130,6 +2149,7 @@ async def list_library_gallery(
             offset=offset,
             sort=sort,
             filters=filters,
+            content_limit=await content_limit_for(session, principal),
         )
     )
 
@@ -2335,6 +2355,9 @@ async def get_library_item(
 
     service = LibraryConfigService(session)
     library = await service.get(library_id)
+    # 分级约束（儿童档案）：墙上藏起来但详情页点得进去，那道约束就是障眼法。
+    # 判定走 access 的收口，超出上限与"条目不存在"不可区分
+    await assert_item_visible(session, principal, media_item_id)
     item, rows = await _item_rows(session, library_id, media_item_id)
     # 起播预热：用户在详情页看简介的这几秒，正好把关键帧采样与默认字幕
     # 抽掉——点播放时缓存直接命中，首播不再现场探测（§6.10）。后台任务，
@@ -2507,6 +2530,7 @@ async def list_item_episodes(
     随集带回当前观看者的进度（进度条/已看对勾的数据源）。"""
     service = LibraryConfigService(session)
     await service.get(library_id)  # 404 检查
+    await assert_item_visible(session, principal, media_item_id)
     item, rows = await _item_rows(session, library_id, media_item_id)
     episodes = await build_season_episodes(
         session,

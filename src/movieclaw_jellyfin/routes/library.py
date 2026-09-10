@@ -15,7 +15,12 @@ from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from movieclaw_api.services.library.access import member_visible_ids
+from movieclaw_api.services.library.access import (
+    NO_CONTENT_LIMIT,
+    ContentLimit,
+    member_content_limit,
+    member_visible_ids,
+)
 from movieclaw_api.services.library.collections import (
     count_members,
     has_any_member,
@@ -115,6 +120,10 @@ class ViewerScope:
 
     member_id: int
     visible: set[int] | None
+    #: 内容分级约束（儿童档案）。与 visible 同源同用法：都是观看者自带的强制
+    #: 收窄，都在 services/library/access.py 产出、在这里原样往下传。
+    #: 电视端是儿童档案最要紧的一面——孩子真正会去用的就是它
+    content_limit: ContentLimit = NO_CONTENT_LIMIT
 
     def library_hidden(self, library_id: int) -> bool:
         return self.visible is not None and library_id not in self.visible
@@ -129,7 +138,8 @@ async def viewer_scope(
     # 同样看不到它（docs/design/library-access.md 2.5）
     async with get_database().session() as session:
         visible = await member_visible_ids(session, member_id)
-    return ViewerScope(member_id, visible)
+        limit = await member_content_limit(session, member_id)
+    return ViewerScope(member_id, visible, limit)
 
 
 # 这些排序键要读**每一个候选条目**的文件行（入库时间 / 时长），骨架不够用
@@ -233,7 +243,11 @@ async def user_views(
             session, member_id=scope.member_id, visible_library_ids=scope.visible
         ):
             if await has_any_member(
-                session, row, member_id=scope.member_id, visible_library_ids=scope.visible
+                session,
+                row,
+                member_id=scope.member_id,
+                visible_library_ids=scope.visible,
+                content_limit=scope.content_limit,
             ):
                 has_collections = True
                 break
@@ -604,6 +618,7 @@ async def _query_items(request: Request, scope: ViewerScope) -> JSONResponse:
                 member_id=scope.member_id,
                 library_id=parent_ref.entity_id,
                 visible_library_ids=scope.visible,
+                content_limit=scope.content_limit,
                 dto_options=options,
                 leaf_scope={(item_id, 0, 0) for item_id in page_ids},
             )
@@ -745,6 +760,7 @@ async def collect_search_entries(
             session,
             library_id=library_id,
             visible_library_ids=scope.visible,
+                content_limit=scope.content_limit,
         )
         ids = await _narrow_by_search(session, ids, search)
         bundles = await load_bundles(
@@ -753,6 +769,7 @@ async def collect_search_entries(
             member_id=scope.member_id,
             library_id=library_id,
             visible_library_ids=scope.visible,
+                content_limit=scope.content_limit,
             dto_options=DtoOptions(),
         )
         entries = [
@@ -801,6 +818,7 @@ async def _entries_for_ids(
         list(scoped),
         member_id=scope.member_id,
         visible_library_ids=scope.visible,
+                content_limit=scope.content_limit,
         dto_options=options,
     )
     entries: list[Entry] = []
@@ -933,7 +951,11 @@ async def _boxset_page(
     counted: list[tuple[Collection, int]] = []
     for row in rows:
         total_members = await count_members(
-            session, row, member_id=scope.member_id, visible_library_ids=scope.visible
+            session,
+            row,
+            member_id=scope.member_id,
+            visible_library_ids=scope.visible,
+            content_limit=scope.content_limit,
         )
         if total_members:
             counted.append((row, total_members))
@@ -949,6 +971,7 @@ async def _boxset_page(
                 row,
                 member_id=scope.member_id,
                 visible_library_ids=scope.visible,
+                content_limit=scope.content_limit,
                 limit=1,
             )
             cover_item_id = first[0] if first else None
@@ -1010,6 +1033,7 @@ async def _entries_for_parent(
                 ids,
                 member_id=scope.member_id,
                 visible_library_ids=scope.visible,
+                content_limit=scope.content_limit,
                 dto_options=options,
             )
             return _build_entries(bundles, types)
@@ -1047,6 +1071,7 @@ async def _entries_for_parent(
             member_id=scope.member_id,
             library_id=ref.entity_id,
             visible_library_ids=scope.visible,
+                content_limit=scope.content_limit,
             dto_options=options,
             leaf_scope=leaf_scope,
             # 只出 Series 行的库浏览（剧集库的默认视图）不读任何季元数据
@@ -1076,6 +1101,7 @@ async def _entries_for_parent(
             collection,
             member_id=scope.member_id,
             visible_library_ids=scope.visible,
+                content_limit=scope.content_limit,
         )
         ids = await _narrow_by_search(session, ids, search)
         bundles = await load_bundles(
@@ -1083,6 +1109,7 @@ async def _entries_for_parent(
             ids,
             member_id=scope.member_id,
             visible_library_ids=scope.visible,
+                content_limit=scope.content_limit,
             dto_options=options,
         )
         # BoxSet 的成员只能是条目（Movie / Series），不能是季/集——协议语义如此
@@ -1098,6 +1125,7 @@ async def _entries_for_parent(
             [ref.entity_id],
             member_id=scope.member_id,
             visible_library_ids=scope.visible,
+                content_limit=scope.content_limit,
             dto_options=options,
             leaf_scope=leaf_scope,
         )
@@ -1114,6 +1142,7 @@ async def _entries_for_parent(
             [ref.entity_id],
             member_id=scope.member_id,
             visible_library_ids=scope.visible,
+                content_limit=scope.content_limit,
             dto_options=options,
             leaf_scope=leaf_scope,
         )
@@ -1182,6 +1211,7 @@ async def items_latest(
                 member_id=scope.member_id,
                 library_id=library_id,
                 visible_library_ids=scope.visible,
+                content_limit=scope.content_limit,
                 is_played=is_played,
                 row_limit=row_limit,
             )
@@ -1213,6 +1243,7 @@ async def items_latest(
             member_id=scope.member_id,
             library_id=library_id,
             visible_library_ids=scope.visible,
+                content_limit=scope.content_limit,
             dto_options=options,
             # 只渲染选中的这些单元：同剧聚合成 Series 的那几条也只吃单元键集合
             leaf_scope={
@@ -1283,6 +1314,7 @@ async def items_resume(
                 selected_ids,
                 member_id=scope.member_id,
                 visible_library_ids=scope.visible,
+                content_limit=scope.content_limit,
                 dto_options=options,
                 # 本页的续播单元就是全部会渲染的叶子（电影用 (0,0) 哨兵）
                 leaf_scope={
@@ -1569,6 +1601,7 @@ async def get_item(
             [ref.entity_id],
             member_id=scope.member_id,
             visible_library_ids=scope.visible,
+                content_limit=scope.content_limit,
             dto_options=options,
             leaf_scope=detail_scope,
         )
@@ -1645,6 +1678,7 @@ async def shows_next_up(
             ids,
             member_id=scope.member_id,
             visible_library_ids=scope.visible,
+                content_limit=scope.content_limit,
             dto_options=options,
         )
 
@@ -1714,6 +1748,7 @@ async def shows_seasons(
             [ref.entity_id],
             member_id=scope.member_id,
             visible_library_ids=scope.visible,
+                content_limit=scope.content_limit,
             dto_options=options,
             # Season DTO 只吃季元数据 + "哪些单元有文件"的键集合 + 播放状态，
             # 一个叶子条目都不渲染——整剧的文件行与分集元数据全部不必装载
@@ -1773,6 +1808,7 @@ async def shows_episodes(
             [target_item_id],
             member_id=scope.member_id,
             visible_library_ids=scope.visible,
+                content_limit=scope.content_limit,
             dto_options=options,
             leaf_scope=None if whole_series else set(),
         )

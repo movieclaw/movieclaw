@@ -35,14 +35,18 @@ docs/design/member-management.md §3.6）。
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from movieclaw_api.exceptions import NotFoundException
 from movieclaw_api.services.auth import Principal
+from movieclaw_api.services.library.content_rating import rating_age
 from movieclaw_db.models.library import Library
 from movieclaw_db.models.library_file import LibraryFile
 from movieclaw_db.models.media_item import MediaItem
+from movieclaw_db.models.media_metadata import MediaMetadata
 from movieclaw_db.models.member import Member
 from movieclaw_db.repositories.member_repo import MemberRepository
 
@@ -103,6 +107,71 @@ async def visible_library_ids(session: AsyncSession, principal: Principal) -> se
     return await _member_browsable_ids(session, principal.member)
 
 
+@dataclass(frozen=True, slots=True)
+class ContentLimit:
+    """一个观看者的内容分级约束（``None`` 的那份等于不限）。
+
+    与"可浏览库集合"是同一类东西：**强制的、观看者自带的收窄**，不是用户
+    自己选的筛选条件。两者都在本模块产出、由消费面原样往下传，消费面不自己
+    拼条件——这条纪律在库可见性上已经证明有效，分级只是第二个实例。
+
+    为什么必须是"六处"而不是"给墙加个条件就完了"：一个孩子能从搜索里搜到、
+    从合集里点进去、从电视端播到，那么墙上藏起来只是障眼法。列表少一处、
+    起播少一处，这个功能就是假的。
+    """
+
+    #: 年龄上限（岁）；None = 不限
+    max_age: int | None = None
+    #: 未分级的作品给不给看（只在 max_age 非空时有意义）
+    allow_unrated: bool = False
+
+    @property
+    def unrestricted(self) -> bool:
+        """不限——消费面据此走与改造前逐字相同的老路径，零额外查询。"""
+        return self.max_age is None
+
+    def allows(self, rating: str | None) -> bool:
+        """这条分级串给不给看。
+
+        认不出来的分级串按"未分级"处理：**不猜比猜错安全**——把某国的 ``T``
+        猜成 0 就可能把成人片放给小孩（见 content_rating.py 的分寸 1）。
+        """
+        if self.unrestricted:
+            return True
+        age = rating_age(rating)
+        return self.allow_unrated if age is None else age <= (self.max_age or 0)
+
+
+#: 不受限的那一份（超管、令牌主体、没设上限的成员共用一个实例）
+NO_CONTENT_LIMIT = ContentLimit()
+
+
+def _limit_of(member: Member | None) -> ContentLimit:
+    if member is None or member.content_age_limit is None:
+        return NO_CONTENT_LIMIT
+    return ContentLimit(
+        max_age=int(member.content_age_limit), allow_unrated=bool(member.allow_unrated)
+    )
+
+
+async def content_limit_for(session: AsyncSession, principal: Principal) -> ContentLimit:
+    """请求主体的内容分级约束（**全系统唯一的产出点**）。
+
+    分享访客不受这条约束：超管把某部片分享出去，就是已经决定了它对外可见，
+    再拿分享者的分级去卡访客既讲不通、也无从取值（访客不是任何一个成员）。
+    """
+    if principal.share is not None or principal.kind == "admin":
+        return NO_CONTENT_LIMIT
+    return _limit_of(principal.member)
+
+
+async def member_content_limit(session: AsyncSession, member_id: int) -> ContentLimit:
+    """按成员 id（0=超管）取分级约束——Jellyfin 侧没有 Principal，用这一支。"""
+    if member_id == 0:
+        return NO_CONTENT_LIMIT
+    return _limit_of(await MemberRepository(session).get(member_id))
+
+
 async def assert_library_visible(
     session: AsyncSession, principal: Principal, library_id: int
 ) -> None:
@@ -144,4 +213,29 @@ async def assert_item_visible(
             return
         library_ids = {item.scrape_library_id}
     if library_ids.isdisjoint(await visible_library_ids(session, principal)):
+        raise NotFoundException("媒体条目不存在")
+    await _assert_within_content_limit(session, principal, media_item_id)
+
+
+async def _assert_within_content_limit(
+    session: AsyncSession, principal: Principal, media_item_id: int
+) -> None:
+    """断言这个条目在观看者的分级约束之内；超出按 404。
+
+    列表少一处、起播少一处，儿童档案这个功能就是假的：孩子从别处拿到 id
+    （分享链接、历史记录、直接改地址栏）照样点得进详情、按得下播放。所以判定
+    落在 ``assert_item_visible`` 这个已有的收口里——凡是要"这个条目给不给看"
+    的地方都已经在调它，不必再记得多调一处。
+    """
+    limit = await content_limit_for(session, principal)
+    if limit.unrestricted:
+        return
+    rating = (
+        await session.execute(
+            select(MediaMetadata.content_rating).where(
+                MediaMetadata.media_item_id == media_item_id
+            )
+        )
+    ).scalar_one_or_none()
+    if not limit.allows(rating):
         raise NotFoundException("媒体条目不存在")

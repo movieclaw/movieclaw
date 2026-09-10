@@ -36,6 +36,23 @@ class MemberUpdateRequest(BaseModel):
     site_ids: list[str] | None = Field(
         default=None, description="可用站点白名单（整体覆盖）；仅 all_sites=False 时生效"
     )
+    content_age_limit: int | None = Field(
+        default=None,
+        ge=-1,
+        le=21,
+        description=(
+            "内容年龄上限（岁）。设了之后，超过这个年龄分级的作品在海报墙、搜索、"
+            "合集、Jellyfin、条目详情与起播六处一律不可见。"
+            "**传 -1 表示取消上限**（传 null 是「不改动」，两者不是一回事）"
+        ),
+    )
+    allow_unrated: bool | None = Field(
+        default=None,
+        description=(
+            "设了年龄上限时，未分级的作品是否仍可见。默认关闭——大量中文影片在 TMDB 上"
+            "没有分级信息，「我不确定的一律不给看」才是家长要的默认值"
+        ),
+    )
 
 
 class MemberStatusRequest(BaseModel):
@@ -62,6 +79,10 @@ class MemberView(BaseModel):
     library_ids: list[int] = Field(default_factory=list)
     all_sites: bool
     site_ids: list[str] = Field(default_factory=list)
+    content_age_limit: int | None = Field(
+        default=None, description="内容年龄上限（岁）；null=不限"
+    )
+    allow_unrated: bool = Field(default=False, description="设了上限时未分级的作品是否可见")
     created_at: datetime
 
 

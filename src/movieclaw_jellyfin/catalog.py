@@ -25,6 +25,7 @@ from sqlalchemy import and_, func, or_, select, tuple_
 from sqlalchemy.orm import Load, load_only
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from movieclaw_api.services.library.access import ContentLimit
 from movieclaw_api.services.library.chapters import chapter_image_map, effective_chapters
 from movieclaw_api.services.library.thumbs import primary_aspect
 from movieclaw_db.models import (
@@ -428,6 +429,7 @@ async def load_bundles(
     member_id: int = 0,
     library_id: int | None = None,
     visible_library_ids: set[int] | None = None,
+    content_limit: ContentLimit | None = None,
     include_people: bool = False,
     include_fileless: bool = False,
     dto_options: DtoOptions | None = None,
@@ -485,6 +487,14 @@ async def load_bundles(
     items: list[MediaItem] = []
     bundles: dict[int, ItemBundle] = {}
     for item, meta in (await session.execute(item_q)).all():
+        # 内容分级约束（儿童档案）：超出上限的条目在这里就不进 bundles，
+        # 于是它在电视端的**每一条**路径上都不存在——列表、单条详情、
+        # 继续观看、最近添加、BoxSet 成员全都要经过这里拿素材。
+        # 档案行本来就在同一条 LEFT JOIN 里，判定不额外花一次查询
+        if content_limit is not None and not content_limit.allows(
+            meta.content_rating if meta is not None else None
+        ):
+            continue
         items.append(item)
         bundles[item.id] = ItemBundle(item=item, metadata=meta)
 
@@ -635,6 +645,7 @@ async def latest_unit_candidates(
     member_id: int = 0,
     library_id: int | None = None,
     visible_library_ids: set[int] | None = None,
+    content_limit: ContentLimit | None = None,
     is_played: bool | None = None,
     row_limit: int | None = None,
 ) -> list[LatestUnitCandidate]:
@@ -679,6 +690,9 @@ async def latest_unit_candidates(
         )
     if visible_library_ids is not None:
         q = q.where(LibraryFile.library_id.in_(visible_library_ids))
+    if content_limit is not None and not content_limit.unrestricted:
+        # 「最近添加」在选页之前就要滤掉超限的，否则这一行会凭空少几格
+        q = q.where(LibraryFile.media_item_id.in_(_allowed_item_ids(content_limit)))
     if is_played is not None:
         q = q.outerjoin(
             PlaybackState,
@@ -842,15 +856,39 @@ async def movie_library_page(
     return total, list((await session.execute(q)).scalars())
 
 
+def _allowed_item_ids(content_limit: ContentLimit):
+    """分级约束允许的条目 id 子查询。
+
+    折算放在 Python 里做一次（``ratings_at_or_below``），SQL 只做一次 IN——
+    把折算写进 SQL 的 CASE 既难读又走不了索引，而分级取值就那么几十个。
+    """
+    from movieclaw_api.services.library.content_rating import ratings_at_or_below
+
+    allowed = MediaMetadata.content_rating.in_(ratings_at_or_below(content_limit.max_age or 0))
+    if content_limit.allow_unrated:
+        allowed = or_(allowed, MediaMetadata.content_rating.is_(None))
+    return (
+        select(MediaItem.id)
+        .outerjoin(MediaMetadata, MediaMetadata.media_item_id == MediaItem.id)
+        .where(allowed)
+    )
+
+
 async def item_ids_with_files(
     session: AsyncSession,
     *,
     kind: str | None = None,
     library_id: int | None = None,
     visible_library_ids: set[int] | None = None,
+    content_limit: ContentLimit | None = None,
 ) -> list[int]:
     """有在位文件的条目 id 集合（粗筛）。``visible_library_ids`` 限定成员
-    可见库（None=不受限）——跨库递归查询的可见性收口点。"""
+    可见库（None=不受限）——跨库递归查询的可见性收口点。
+
+    ``content_limit`` 是观看者的分级约束：这里滤掉之后，后面的分页与总数
+    才是对的（只靠 load_bundles 兜底的话，页是先切好的，超限的片会让这一页
+    凭空少几行）。
+    """
     q = (
         select(LibraryFile.media_item_id)
         .where(LibraryFile.media_item_id.is_not(None), LibraryFile.in_place())
@@ -860,6 +898,8 @@ async def item_ids_with_files(
         q = q.where(LibraryFile.library_id == library_id)
     if visible_library_ids is not None:
         q = q.where(LibraryFile.library_id.in_(visible_library_ids))
+    if content_limit is not None and not content_limit.unrestricted:
+        q = q.where(LibraryFile.media_item_id.in_(_allowed_item_ids(content_limit)))
     ids = [row for row in (await session.execute(q)).scalars()]
     if kind is None or not ids:
         return ids

@@ -26,6 +26,10 @@ export interface MemberView {
   allow_direct_download: boolean;
   /** true=全部库可见（含未来新建）；false=按 library_ids 白名单 */
   all_libraries: boolean;
+  /** 内容年龄上限（岁）；null=不限。超出的作品在墙/搜索/合集/Jellyfin/详情/起播六处都看不到 */
+  content_age_limit: number | null;
+  /** 设了上限时，未分级的作品是否仍可见 */
+  allow_unrated: boolean;
   library_ids: number[];
   /** true=全部站点可用；false=按 site_ids 白名单 */
   all_sites: boolean;
@@ -40,6 +44,9 @@ export interface MemberUpdatePayload {
   allow_search?: boolean;
   allow_direct_download?: boolean;
   all_libraries?: boolean;
+  /** 内容年龄上限；**取消上限传 -1**（不传是「不改动」，两者不是一回事） */
+  content_age_limit?: number;
+  allow_unrated?: boolean;
   library_ids?: number[];
   all_sites?: boolean;
   site_ids?: string[];

@@ -228,6 +228,8 @@ function MemberTableRow({
     member.allow_subscribe ? "订阅" : null,
     member.allow_search ? "搜索" : null,
     member.allow_direct_download ? "下载" : null,
+    // 分级上限直接摆在摘要里：这是"这个号是给谁用的"最要紧的一条信息
+    member.content_age_limit !== null ? `${member.content_age_limit}+ 以下` : null,
   ].filter(Boolean);
   const visibleNames = libraries
     .filter((library) => member.library_ids.includes(library.id))
@@ -472,6 +474,8 @@ function EditMemberDialog({
   const [allLibraries, setAllLibraries] = useState(member.all_libraries);
   const [libraryIds, setLibraryIds] = useState(member.library_ids);
   const [allSites, setAllSites] = useState(member.all_sites);
+  const [ageLimit, setAgeLimit] = useState<number | null>(member.content_age_limit);
+  const [allowUnrated, setAllowUnrated] = useState(member.allow_unrated);
   const [siteIds, setSiteIds] = useState(member.site_ids);
   const [busy, setBusy] = useState(false);
 
@@ -491,6 +495,10 @@ function EditMemberDialog({
       library_ids: allLibraries ? libraryIds.filter((id) => selectedModeIds.includes(id)) : libraryIds,
       all_sites: allSites,
       site_ids: allSites ? [] : siteIds,
+      // -1 = 取消上限。不传是「不改动」——两者在协议上必须分得开，否则
+      // 老客户端每存一次设置都会把家长设好的上限悄悄抹掉
+      content_age_limit: ageLimit ?? -1,
+      allow_unrated: allowUnrated,
     };
     try {
       onSaved(await updateMember(member.id, payload));
@@ -551,6 +559,39 @@ function EditMemberDialog({
               onChange={setAllowDirectDownload}
             />
           </div>
+        </div>
+
+        <div className="mt-6 border-t border-white/[0.07] pt-5">
+          <SectionTitle
+            title="内容分级"
+            description="给孩子用的档案设一个年龄上限：超过这个分级的作品在海报墙、搜索、合集、播放器和详情页都看不到，直接改地址栏也进不去。"
+          />
+          <div className="flex flex-wrap gap-1.5">
+            {AGE_LIMITS.map((option) => (
+              <button
+                key={option.value ?? "none"}
+                type="button"
+                onClick={() => setAgeLimit(option.value)}
+                className={`h-8 rounded-lg px-3 text-ui transition ${
+                  ageLimit === option.value
+                    ? "bg-white/[0.16] text-white"
+                    : "bg-white/[0.05] text-white/70 hover:bg-white/[0.10] hover:text-white"
+                }`}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          {ageLimit !== null && (
+            <div className="mt-3 divide-y divide-white/[0.055]">
+              <PermissionToggle
+                label="未分级的作品也给看"
+                description="大量中文影片在 TMDB 上没有分级信息。默认一并隐藏——「我不确定的一律不给看」更稳妥；打开之后这些片会出现在这个成员面前。"
+                checked={allowUnrated}
+                onChange={setAllowUnrated}
+              />
+            </div>
+          )}
         </div>
 
         <div className="mt-6 border-t border-white/[0.07] pt-5">
@@ -706,6 +747,21 @@ function SectionTitle({ title, description }: { title: string; description?: str
     </div>
   );
 }
+
+/**
+ * 年龄上限的档位。
+ *
+ * 不给用户填数字：分级体系是各国自己的一套符号（PG-13 / FSK 16 / R15+），
+ * 折算成年龄已经是我们替他做的一次翻译，再让他猜"填几"只会更糊涂。
+ * 这几档对着的是家里真实的年龄段。
+ */
+const AGE_LIMITS: { value: number | null; label: string }[] = [
+  { value: null, label: "不限" },
+  { value: 6, label: "6 岁以下" },
+  { value: 12, label: "12 岁以下" },
+  { value: 16, label: "16 岁以下" },
+  { value: 18, label: "18 岁以下" },
+];
 
 function PermissionToggle({
   label,

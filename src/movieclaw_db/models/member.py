@@ -47,6 +47,25 @@ class Member(TimestampMixin, table=True):
     all_libraries: bool = Field(default=True, description="库可见性：是否不受白名单限制")
     all_sites: bool = Field(default=True, description="站点可用性：是否不受白名单限制")
 
+    # ---- 内容分级约束（儿童档案，docs/design/library-filtering.md F5）----
+    # 与「能力开关」和「库白名单」的分别：那两者管的是**能不能进这个门**，
+    # 这一条管的是**进门之后能看见哪些片**——一个混着 R 级片的电影库，
+    # 光靠库白名单是保护不了小孩的（除非专门给他建一个库，那是另一件事）。
+    #
+    # 它是**强制收窄**，不是筛选：用户自己选的筛选条件可以清空、可以存成合集，
+    # 这一条不行——它在海报墙、搜索、合集、Jellyfin、条目详情与起播六处一律
+    # 生效，判定收口在 services/library/access.content_limit_for()。
+    content_age_limit: int | None = Field(
+        default=None,
+        description="内容年龄上限（岁）；NULL=不限。分级串→年龄的映射见 library/content_rating.py",
+    )
+    # 大量中文影片在 TMDB 上**没有分级信息**。设了年龄上限之后，未分级的片
+    # 默认**一并隐藏**——这是一条安全开关，"我不确定的一律不给看"才是家长要的
+    # 默认值。觉得太狠的可以把它打开，界面上会如实说明代价
+    allow_unrated: bool = Field(
+        default=False, description="设了年龄上限时，未分级的作品是否仍可见"
+    )
+
     # ---- 个人界面偏好（P2）----
     # 整体覆盖式 JSON（结构同 ui.preferences 配置域）；None = 尚未设置，
     # 读取时回退默认值。超管继续用全局配置域，成员各存各的。

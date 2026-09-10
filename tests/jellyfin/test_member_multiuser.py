@@ -237,3 +237,69 @@ def test_member_playstate_isolated_from_admin(client: TestClient, seeded: dict) 
     assert admin_item["UserData"]["Played"] is False
     member_item = client.get(f"/Items/{ep}", headers={"X-Emby-Token": member_token}).json()
     assert member_item["UserData"]["Played"] is True
+
+
+# ---------------------------------------------------------------------------
+# 内容分级约束（儿童档案，docs/design/library-filtering.md F5）
+# ---------------------------------------------------------------------------
+
+
+def _member_headers(token: str) -> dict[str, str]:
+    return {"Authorization": f'{MEMBER_AUTH_HEADER}, Token="{token}"'}
+
+
+def test_content_limit_reaches_the_tv(client: TestClient, seeded: dict) -> None:
+    """电视端是儿童档案最要紧的一面——孩子真正会去用的就是它。
+
+    列表、单条直达、最近添加三条路径各验一次：GUID 是可枚举的结构化编码，
+    只挡枚举不挡直达等于没挡（与库可见性那一组同一条道理）。
+    """
+    created = client.post("/api/v1/members", json={"username": "kid", "password": "kid-pass-11"})
+    assert created.status_code == 200, created.text
+    member_id = created.json()["data"]["id"]
+
+    movie_id = seeded["movie"]
+    # 给那部电影一个成人分级
+    with sqlite3.connect(get_settings().database_url.split("///")[-1]) as db:
+        db.execute(
+            "UPDATE media_metadata SET content_rating='R' WHERE media_item_id=?", (movie_id,)
+        )
+        db.commit()
+
+    resp = client.post(
+        "/Users/AuthenticateByName",
+        json={"Username": "kid", "Pw": "kid-pass-11"},
+        headers={"Authorization": MEMBER_AUTH_HEADER},
+    )
+    assert resp.status_code == 200, resp.text
+    token = resp.json()["AccessToken"]
+
+    listed = client.get(
+        f"/Items?ParentId={library_guid(seeded['movie_lib'])}&Recursive=true",
+        headers=_member_headers(token),
+    ).json()["Items"]
+    assert item_guid(movie_id) in {row["Id"] for row in listed}, "还没设上限时看得到"
+
+    assert (
+        client.put(
+            f"/api/v1/members/{member_id}",
+            json={"content_age_limit": 13, "allow_unrated": True},
+        ).status_code
+        == 200
+    )
+
+    listed = client.get(
+        f"/Items?ParentId={library_guid(seeded['movie_lib'])}&Recursive=true",
+        headers=_member_headers(token),
+    ).json()["Items"]
+    assert item_guid(movie_id) not in {row["Id"] for row in listed}, "列表里不该还有它"
+
+    # 直达同样 404：GUID 猜得出来，只挡列表等于没挡
+    detail = client.get(f"/Items/{item_guid(movie_id)}", headers=_member_headers(token))
+    assert detail.status_code == 404, detail.text
+
+    latest = client.get(
+        f"/Users/{member_id}/Items/Latest?Limit=50", headers=_member_headers(token)
+    )
+    assert latest.status_code == 200, latest.text
+    assert item_guid(movie_id) not in {row["Id"] for row in latest.json()}
