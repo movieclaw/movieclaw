@@ -1029,6 +1029,43 @@ def test_mobile_layout_end_to_end(stack) -> None:  # noqa: PLR0915
         page.keyboard.press("Escape")
 
         # ================= 7. 合集网格与详情页 =================
+        # 窄屏的视图切换挪到了库名那一行的右端：正文里不再单占一行，也没有去
+        # 挤顶栏——顶栏那一行在 390px 上只剩 90px 给吸顶标题，塞个文字切换就是
+        # 负数。这里两头都验：切换在库名同一行，且吸顶标题没被挤没
+        page.goto(f"{base}/library/{movie_lib}")
+        page.wait_for_load_state("networkidle")
+        tabs = page.get_by_role("tab", name="合集")
+        expect(tabs).to_be_visible()
+        title_row = page.get_by_role("heading", name="电影库").bounding_box()
+        tabs_box = tabs.bounding_box()
+        assert abs(tabs_box["y"] - title_row["y"]) < 24, "视图切换没和库名同一行"
+        assert tabs_box["x"] + tabs_box["width"] <= 390, "切换超出屏幕右边"
+        # 滚的是内层容器（全站是「外壳固定 + 内层 overflow-y-auto」），不是窗口：
+        # 对着窗口滚，吸顶标题的 --nav-reveal 一直是 0，截图上永远看不到标题，
+        # 很容易被误读成"标题被挤没了"
+        page.evaluate(
+            "() => { const el = document.querySelector('[data-scroll-root]')"
+            " ?? [...document.querySelectorAll('div')].find("
+            "   d => d.scrollHeight > d.clientHeight + 200"
+            "     && getComputedStyle(d).overflowY === 'auto');"
+            "  if (el) el.scrollTop = 600; }"
+        )
+        page.wait_for_timeout(400)
+        shot("12-view-switch-on-title-row")
+        # 顶栏那一行必须给吸顶标题留出地方。实测：现在标题有 50.5px（放得下
+        # 「电影库」），而往操作区再塞一个「作品|合集」那么宽的控件，标题会被
+        # 挤成 0——这正是视图切换没有挂进顶栏、而是挂在库名那一行右端的原因。
+        # 这条断言守的是"以后别再往这一行加东西"
+        sticky = page.locator('[class*="sticky"] span[aria-hidden="true"]').first
+        assert sticky.evaluate("el => el.getBoundingClientRect().width") > 40, (
+            "顶栏塞太满，吸顶标题没地方了"
+        )
+
+        # 合集视图里不该有图床键：那面墙根本不在，点了什么也不会发生
+        page.goto(f"{base}/library/{movie_lib}?view=collections")
+        page.wait_for_load_state("networkidle")
+        expect(page.get_by_role("button", name="图床浏览")).to_have_count(0)
+
         page.goto(f"{base}/library/{movie_lib}?view=collections")
         page.wait_for_load_state("networkidle")
         # 明确点「日本动画」那张，不要用 .first：内置的「我的收藏」position 是 -1，

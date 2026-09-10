@@ -31,6 +31,7 @@ import { SaveAsCollectionDialog } from "@/components/save-as-collection-dialog";
 import { listCollections, type Collection } from "@/lib/api/collections";
 import { PAGE_NAV_BUTTON_CLASS, PageNav } from "@/components/page-nav";
 import { usePageTitle } from "@/lib/use-page-title";
+import { useIsMobile } from "@/lib/use-media-query";
 import { LibraryFormDialog } from "@/components/library-form-dialog";
 import { LIBRARY_KIND_META } from "@/components/library-kind-meta";
 import { effectiveLibraryId } from "@/components/library-view";
@@ -366,6 +367,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   const [collections, setCollections] = useState<Collection[]>([]);
   const [libraryView, setLibraryView] = useState<LibraryView>(() => readViewFromUrl());
   const [savingCollection, setSavingCollection] = useState(false);
+  const isMobile = useIsMobile();
   // 带筛选进来时不吃会话快照：快照是未筛选那面墙的窗口，拿它铺首帧会先闪
   // 一屏不该出现的内容，随即被 reload 的结果整片替换
   const snapshot = filtering ? undefined : initialSnapshot;
@@ -1328,7 +1330,9 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   // 图床浏览模式的开关：长在顶栏、与 ⋯ 菜单并排。只有能播的库（影视库 /
   // 其他库）才有——图片库本身就是相册墙。切换时顺手关掉灯箱：两种模式的
   // 灯箱翻的不是同一份列表，下标不能沿用
-  const galleryToggle = library.capabilities.playable && (
+  // 合集视图里不给图床键：那面墙根本不在，点了什么也不会发生——没有事实
+  // 就不摆控件（也是这次把视图切换挪位时才暴露出来的一颗死控件）
+  const galleryToggle = library.capabilities.playable && libraryView === "items" && (
     <button
       type="button"
       title={gallery ? "回到海报墙" : "图床浏览"}
@@ -1348,6 +1352,49 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
         <MasonryIcon className="size-[18px] max-md:size-[22px]" />
       )}
     </button>
+  );
+
+  /**
+   * 作品 / 合集 切换。窄屏上挂进顶栏右上角（与发现页把数据源切换挂进顶栏
+   * 同一手法）：它在正文里要独占一整行，而 390px 的屏幕上那一行很贵。
+   * 桌面端仍留在正文，那儿不缺这一行，tab 紧挨着内容也更符合 Plex 的心智。
+   *
+   * 一个合集都没有时整个控件不出现——没有事实就不摆控件。
+   */
+  const viewSwitch = collections.length > 0 && (
+    <div
+      role="tablist"
+      aria-label="库内视图"
+      className="flex shrink-0 items-center rounded-full border border-white/[0.09] bg-black/30 p-0.5 backdrop-blur-md"
+    >
+      {(
+        [
+          ["items", "作品"],
+          ["collections", "合集"],
+        ] as const
+      ).map(([value, label]) => (
+        <button
+          key={value}
+          type="button"
+          role="tab"
+          aria-selected={libraryView === value}
+          onClick={() => switchView(value)}
+          className={`flex h-8 items-center gap-1 rounded-full px-2.5 text-caption transition max-md:h-9 ${
+            libraryView === value
+              ? "bg-white/[0.16] font-medium text-white"
+              : "text-white/60"
+          }`}
+        >
+          {label}
+          {/* 合集数留着：不切过去也能知道那边有没有东西 */}
+          {value === "collections" && (
+            <span className="font-mono text-caption tabular-nums text-white/40">
+              {collections.length}
+            </span>
+          )}
+        </button>
+      ))}
+    </div>
   );
 
   // 库操作全部收进 ⋯ 菜单，顶栏只留这一个入口；运行状态看头部下方的胶囊。
@@ -1497,6 +1544,10 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
               仅管理
             </span>
           ) : null}
+          {/* 窄屏把视图切换挪到库名这一行的右端：那儿本来就空着大半，既省下
+              正文里那一整行，又不必去挤顶栏——顶栏那一行在 390px 上只剩 90px
+              给吸顶标题，再塞一个文字切换就是负数，标题直接没了 */}
+          {isMobile && !photoWall && <div className="ml-auto">{viewSwitch}</div>}
         </div>
         <p className="text-on-image mt-1.5 truncate text-ui text-[var(--text-muted)] max-md:text-sub">
           {meta.label}库 · {stats.item_count} {library.kind === "photo" ? "张" : "部作品"} ·{" "}
@@ -1683,11 +1734,11 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
 
       {/* —— 作品 / 合集：库内的两个视图（Plex 的 tab 模型）。
           一个合集都没有时这一行不出现——没有事实就不摆控件 —— */}
-      {!photoWall && collections.length > 0 && (
+      {!photoWall && !isMobile && collections.length > 0 && (
         <div
           role="tablist"
           aria-label="库内视图"
-          className="mt-5 flex items-center gap-1 px-6 max-md:mt-4 max-md:px-4"
+          className="mt-5 flex items-center gap-1 px-6"
         >
           {(
             [
