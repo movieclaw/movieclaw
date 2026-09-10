@@ -700,6 +700,8 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   // 海报墙顶部的锚：跳字母后滚回墙首，否则用户停在原来的滚动位置上，
   // 看到的是新一批的中间，像是"点了没反应"
   const wallTop = useRef<HTMLDivElement>(null);
+  /** 筛选条的锚点：改条件之后滚到它，条件行才不会被推出视口 */
+  const filterBarTop = useRef<HTMLDivElement>(null);
   const wallGrid = useRef<HTMLDivElement>(null);
   /**
    * 跳到某个首字母档：换掉整个窗口（而不是继续往后追加），此后向下照常滚动
@@ -736,7 +738,13 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
       setWallStart(0);
       setActiveWallInitial(null);
       void reload();
-      wallTop.current?.scrollIntoView({ block: "start", behavior: "instant" });
+      // 滚到**筛选条**而不是墙顶：滚到墙顶会把筛选条连同已选条件一起推到视口
+      // 上方，在窄屏上正好钻到浮在顶部的那排导航键底下，看着像坏了。而条件行
+      // 的职责恰恰是"改完之后仍然看得见自己筛了什么"
+      (filterBarTop.current ?? wallTop.current)?.scrollIntoView({
+        block: "start",
+        behavior: "instant",
+      });
     },
     [reload],
   );
@@ -1745,7 +1753,14 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
               条件一生效，条件本身就顶替控件出现在下面那行（且与面板开合无关）。
               图片库不给筛选——照片没有类型/评分/地区这些事实，摆上去就是
               永远返回 0 的死控件（docs/design/library-filtering.md 3.5） */}
+          {/* 外面这层 div 只做滚动锚点：scroll-mt 让开顶栏那 52px（PageNav 是
+              sticky 的无底浮层），不留这一截，scrollIntoView 会把筛选条正好
+              塞到导航键底下，控件与文字糊成一团 */}
           {!photoWall && (
+            <div
+              ref={filterBarTop}
+              className="scroll-mt-[52px] max-md:scroll-mt-[calc(52px+var(--safe-top))]"
+            >
             <LibraryFilterBar
               libraryId={libraryId}
               filter={filter}
@@ -1762,6 +1777,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
               }
               className="mt-5 px-6 max-md:mt-4 max-md:px-4"
             />
+            </div>
           )}
           <div ref={wallTop} className={pending.length > 0 ? "mt-4" : "mt-6 max-md:mt-4"}>
             {/* 索引条与内容列并排：条固定在视口右侧（sticky），列照常滚。索引条

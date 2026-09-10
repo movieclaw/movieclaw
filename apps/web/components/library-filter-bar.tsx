@@ -76,6 +76,11 @@ export function LibraryFilterBar({
   // 已经有二级维度**就得取全份，不能只在面板展开时取：分享进来的链接、点开的
   // 合集都可能带着二级条件，那时面板是关的，条件行只好把裸值印出来
   const needsAllFacets = more || hasSecondary(filter);
+  // 全份 facet 到了没有。没到就别把「找片 / 查库」两个小标题孤零零地摆出来——
+  // 面板会先是个空壳、随后内容弹进来把它撑高，在移动端就是拇指底下抖一下
+  const secondaryReady = Boolean(
+    facets && (facets.ratings.length > 0 || facets.runtimes.length > 0),
+  );
 
   useEffect(() => {
     if (!open && empty) return;
@@ -173,9 +178,15 @@ export function LibraryFilterBar({
         </div>
       </div>
 
-      {/* —— 点开才有的四个维度 —— */}
+      {/* —— 点开才有的四个维度 ——
+          窄屏是「四维横滚 + 更多筛选钉在右侧」：四个下拉换行会把墙推下去半屏，
+          所以横滚；但「更多筛选」不是第四个维度，它是通往二级的那扇门，跟着
+          一起滚出屏幕就等于不存在了（实机截图确认：一进来最后可见的是「地区」，
+          右边什么都不露，看着就是一行到此为止）。所以把它钉在滚动区外面，
+          并给滚动区右缘一道渐隐，明示"右边还有"。 */}
       {open && (
-        <div className="scroll-thin mt-2.5 flex flex-wrap items-center gap-2 max-md:flex-nowrap max-md:overflow-x-auto max-md:pb-1">
+        <div className="mt-2.5 flex items-center gap-2 max-md:gap-1.5">
+        <div className="scroll-thin flex flex-1 flex-wrap items-center gap-2 max-md:flex-nowrap max-md:overflow-x-auto max-md:pb-1 max-md:[mask-image:linear-gradient(to_right,black_calc(100%-24px),transparent)]">
           <MultiFilterMenu
             label="类型"
             hint="可多选 · 维度内是「或」"
@@ -204,6 +215,7 @@ export function LibraryFilterBar({
             options={facets?.watch ?? []}
             onToggle={toggleWatch}
           />
+        </div>
           <button
             type="button"
             aria-expanded={more}
@@ -218,11 +230,17 @@ export function LibraryFilterBar({
       )}
 
       {open && more && !mobile && (
-        <MoreFiltersPanel facets={facets} filter={filter} onFilterChange={onFilterChange} />
+        <MoreFiltersPanel
+          facets={facets}
+          loading={!secondaryReady}
+          filter={filter}
+          onFilterChange={onFilterChange}
+        />
       )}
       {open && more && mobile && (
         <MoreFiltersSheet
           facets={facets}
+          loading={!secondaryReady}
           filter={filter}
           onFilterChange={onFilterChange}
           onClose={() => setMore(false)}
@@ -264,6 +282,24 @@ const DIMS = [
   { key: "hdr", label: "动态范围" },
   { key: "stock", label: "库存" },
 ] as const;
+
+/**
+ * 取值本身就是人话的维度：facet 里它们的 label 等于 value（"2160p"、"ja"）。
+ * 这类维度在展示名还没到的时候直接印取值就行，不必等。
+ */
+const SELF_LABELLING = new Set(["resolutions", "languages"]);
+
+/**
+ * 展示名查不到时印什么。
+ *
+ * **不能印裸值。** 类型存的是 TMDB id、地区存的是国家码、片长存的是档位键，
+ * 界面上冒出「878」「JP」「gt120」比空着更糟——用户不知道那是什么，也就无法
+ * 判断自己筛的对不对。查不到只有一种情况：展示名还在路上（服务端保证选中的
+ * 取值一定在 facet 里），所以给个省略号占位，到了自然就补上。
+ */
+function labelFallback(dim: string, value: string): string {
+  return SELF_LABELLING.has(dim) ? value : "…";
+}
 
 /** 条件里有没有二级维度（决定要不要取全份 facet：二级的展示名只在全份里）。 */
 function hasSecondary(filter: LibraryFilter): boolean {
@@ -324,9 +360,9 @@ function ConditionRow({
   collectionName?: string;
   onSaveAsCollection?: () => void;
 }) {
-  /** 取值 → 展示名：优先用 facet 带回来的 label（类型/地区靠它翻中文名）。 */
+  /** 取值 → 展示名。查不到就给省略号，**绝不把裸值印出来**（见 labelFallback）。 */
   const labelOf = (dim: string, value: string): string =>
-    poolOf(dim, facets)?.find((row) => row.value === value)?.label ?? value;
+    poolOf(dim, facets)?.find((row) => row.value === value)?.label ?? labelFallback(dim, value);
 
   /** 摘掉一个取值。单值维度清成 null，多值维度只去掉这一个。 */
   const drop = (dim: string, value: string) => {
@@ -651,10 +687,13 @@ function PillGroup({
  */
 function MoreFiltersPanel({
   facets,
+  loading,
   filter,
   onFilterChange,
 }: {
   facets: LibraryFacets | null;
+  /** 全份 facet 还没到：先给一句话，别摆两个空标题等着内容弹进来 */
+  loading?: boolean;
   filter: LibraryFilter;
   onFilterChange: (next: LibraryFilter) => void;
 }) {
@@ -665,6 +704,13 @@ function MoreFiltersPanel({
       [key]: current.includes(value) ? current.filter((v) => v !== value) : [...current, value],
     });
   };
+  if (loading) {
+    return (
+      <div className="mt-2.5 rounded-2xl border border-white/[0.1] bg-black/20 px-4 py-6 text-center text-sub text-[var(--text-faint)]">
+        正在数各档位还剩多少部…
+      </div>
+    );
+  }
   return (
     <div className="mt-2.5 grid grid-cols-2 gap-x-6 rounded-2xl border border-white/[0.1] bg-black/20 p-4 max-md:grid-cols-1 max-md:gap-y-2">
       <div>
@@ -817,11 +863,13 @@ const CHIP_LIMIT = 8;
  */
 function MoreFiltersSheet({
   facets,
+  loading,
   filter,
   onFilterChange,
   onClose,
 }: {
   facets: LibraryFacets | null;
+  loading?: boolean;
   filter: LibraryFilter;
   onFilterChange: (next: LibraryFilter) => void;
   onClose: () => void;
@@ -855,7 +903,12 @@ function MoreFiltersSheet({
           <span className="h-1 w-9 rounded-full bg-white/25" />
         </div>
         <div className="scroll-thin min-h-0 flex-1 overflow-y-auto px-4">
-          <MoreFiltersPanel facets={facets} filter={filter} onFilterChange={onFilterChange} />
+          <MoreFiltersPanel
+            facets={facets}
+            loading={loading}
+            filter={filter}
+            onFilterChange={onFilterChange}
+          />
         </div>
         <div className="flex shrink-0 items-center gap-2 px-4 pb-[calc(var(--safe-bottom)+var(--vp-overshoot)+12px)] pt-3">
           <button

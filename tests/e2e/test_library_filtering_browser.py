@@ -28,6 +28,7 @@ import asyncio
 import os
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -146,12 +147,16 @@ def stack(tmp_path_factory):
         "E2E_TMDB_LOG": str(tmdb_log),
     }
     api_log = (root / "api.log").open("w")
+    # start_new_session：让每个子进程自成进程组，收尾时按**组**杀。pnpm 会再拉起
+    # 一个 next dev，terminate 掉 pnpm 本身收不掉那个孙子——跑几轮就攒下一堆
+    # 抢端口和 CPU 的孤儿进程，前端最后起不来（这是真踩过的坑，不是预防性代码）
     api = subprocess.Popen(  # noqa: S603
         [sys.executable, str(Path(__file__).with_name("_api_launcher.py"))],
         env=env,
         stdout=api_log,
         stderr=subprocess.STDOUT,
         cwd=str(REPO),
+        start_new_session=True,
     )
     web_log = (root / "web.log").open("w")
     web = subprocess.Popen(  # noqa: S603
@@ -164,6 +169,7 @@ def stack(tmp_path_factory):
         stdout=web_log,
         stderr=subprocess.STDOUT,
         cwd=str(WEB),
+        start_new_session=True,
     )
     try:
         _wait_http(f"http://127.0.0.1:{api_port}/api/v1/auth/bootstrap", 90)
@@ -178,14 +184,73 @@ def stack(tmp_path_factory):
         }
     finally:
         for proc in (web, api):
-            proc.terminate()
-        for proc in (web, api):
-            try:
-                proc.wait(timeout=15)
-            except subprocess.TimeoutExpired:
-                proc.kill()
+            _kill_tree(proc)
         api_log.close()
         web_log.close()
+
+
+def _bootstrap_and_login(page, base: str) -> None:
+    """首启引导（如果还没建超管）+ 登录。两条用例都要走一遍。"""
+    page.goto(f"{base}/")
+    page.wait_for_url(lambda u: "/setup" in u or "/login" in u)
+    if "/setup" in page.url:
+        page.locator("input[type=text]").fill(ADMIN["username"])
+        page.locator("input[type=password]").nth(0).fill(ADMIN["password"])
+        page.locator("input[type=password]").nth(1).fill(ADMIN["password"])
+        page.locator("button[type=submit]").click()
+        page.wait_for_url(lambda u: "/setup" not in u)
+    page.goto(f"{base}/login")
+    page.wait_for_load_state("networkidle")
+    if "/login" in page.url:
+        page.locator("input[type=text]").fill(ADMIN["username"])
+        page.locator("input[type=password]").first.fill(ADMIN["password"])
+        page.locator("button[type=submit]").click()
+        page.wait_for_url(lambda u: "/login" not in u)
+
+
+def _ensure_libraries(page, stack) -> tuple[int, dict[str, int]]:
+    """确保两个库与库存都在，返回 (电影库 id, 片名 → media_item_id)。
+
+    单独跑任一条用例都得能跑通——用例之间靠"上一条建好了"隐式串起来，
+    是 e2e 最常见的假绿：单跑就崩，而单跑正是排查时要做的第一件事。
+    """
+    base = stack["base"]
+    listed = page.request.get(f"{base}/api/v1/libraries").json().get("data") or []
+    by_name = {row["name"]: row["id"] for row in listed}
+    if "电影库" in by_name and "剧集库" in by_name:
+        # 已经播过种：把片名映射查回来
+        items = page.request.get(
+            f"{base}/api/v1/libraries/{by_name['电影库']}/items"
+        ).json()["data"]
+        ids = {row["title"]: row["media_item_id"] for row in items}
+        return by_name["电影库"], ids
+
+    library_ids = {}
+    for key, name, kind in (("movies", "电影库", "movie"), ("shows", "剧集库", "tv")):
+        resp = page.request.post(
+            f"{base}/api/v1/libraries",
+            data={"name": name, "kind": kind, "root_paths": [str(stack["roots"][key])]},
+        )
+        assert resp.ok, resp.text()
+        library_ids[key] = resp.json()["data"]["id"]
+    ids = _seed(stack["database_url"], library_ids, stack["roots"], stack["metadata_dir"])
+    return library_ids["movies"], ids
+
+
+def _kill_tree(proc: subprocess.Popen) -> None:
+    """连同子孙一起收掉（进程组）；组没了就退回单进程。"""
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        if proc.poll() is not None:
+            return
+        try:
+            os.killpg(os.getpgid(proc.pid), sig)
+        except (ProcessLookupError, PermissionError):
+            proc.kill()
+        try:
+            proc.wait(timeout=15)
+            return
+        except subprocess.TimeoutExpired:
+            continue
 
 
 def _chromium_kwargs() -> dict:
@@ -406,7 +471,6 @@ def test_filtering_and_collections_end_to_end(stack) -> None:  # noqa: PLR0915
     from movieclaw_jellyfin.ids import collections_view_guid, item_guid
 
     base = stack["base"]
-    roots: dict[str, Path] = stack["roots"]
     shots: Path = stack["shots"]
     shots.mkdir(exist_ok=True)
 
@@ -429,34 +493,9 @@ def test_filtering_and_collections_end_to_end(stack) -> None:  # noqa: PLR0915
         def shot(name: str) -> None:
             page.screenshot(path=str(shots / f"{name}.png"), full_page=False)
 
-        # ---- 首次引导 + 登录 ----
-        page.goto(f"{base}/")
-        page.wait_for_url(lambda u: "/setup" in u or "/login" in u)
-        if "/setup" in page.url:
-            page.locator("input[type=text]").fill(ADMIN["username"])
-            page.locator("input[type=password]").nth(0).fill(ADMIN["password"])
-            page.locator("input[type=password]").nth(1).fill(ADMIN["password"])
-            page.locator("button[type=submit]").click()
-            page.wait_for_url(lambda u: "/setup" not in u)
-        page.goto(f"{base}/login")
-        page.wait_for_load_state("networkidle")
-        if "/login" in page.url:
-            page.locator("input[type=text]").fill(ADMIN["username"])
-            page.locator("input[type=password]").first.fill(ADMIN["password"])
-            page.locator("button[type=submit]").click()
-            page.wait_for_url(lambda u: "/login" not in u)
-
-        # ---- 两个库走接口建；库存直接播种 ----
-        library_ids = {
-            key: api(
-                "post",
-                "/libraries",
-                data={"name": name, "kind": kind, "root_paths": [str(roots[key])]},
-            )["data"]["id"]
-            for key, name, kind in (("movies", "电影库", "movie"), ("shows", "剧集库", "tv"))
-        }
-        movie_lib = library_ids["movies"]
-        ids = _seed(stack["database_url"], library_ids, roots, stack["metadata_dir"])
+        # ---- 首次引导 + 登录；两个库走接口建，库存直接播种 ----
+        _bootstrap_and_login(page, base)
+        movie_lib, ids = _ensure_libraries(page, stack)
 
         # ---- Jellyfin 客户端（Infuse）登录：与网页同一个超管 ----
         jf = page.request.post(
@@ -711,10 +750,12 @@ def test_filtering_and_collections_end_to_end(stack) -> None:  # noqa: PLR0915
         card.click()
         page.wait_for_url(lambda u: "/c/" in u)
         page.wait_for_load_state("networkidle")
-        # 规则条：把"它为什么收了这些片"直接画出来
+        # 规则条：把"它为什么收了这些片"直接画出来。存的是 TMDB id 与国家码，
+        # 界面上要看到的是中文名，而且一刻都不该冒出裸值
         expect(page.get_by_text("自动收录").first).to_be_visible()
         expect(page.get_by_text("类型").first).to_be_visible()
         expect(page.get_by_text("动画").first).to_be_visible()
+        assert "类型 16" not in page.locator("main").inner_text()
         expect(page.locator("[data-library-item-id]")).to_have_count(len(ANIME_TITLES & JP_TITLES))
         # 管理动作收在 ⋯ 里：顶栏那几个位子是 36px 圆钮，塞中文标签会挤成竖排
         page.get_by_role("button", name="更多操作").click()
@@ -825,15 +866,18 @@ def test_filtering_and_collections_end_to_end(stack) -> None:  # noqa: PLR0915
         browser.close()
 
 
-def test_more_filters_is_a_bottom_sheet_on_mobile(stack) -> None:
-    """窄屏的「更多筛选」是底部抽屉，不是把墙整个盖住的全屏弹层。
+def test_mobile_layout_end_to_end(stack) -> None:  # noqa: PLR0915
+    """窄屏（390px）上把同一条路再走一遍，并逐屏留证。
 
-    这条要验的正是它存在的理由：**上方留着一截墙**，用户看得见条件在实时
-    影响什么；每次勾选立即生效，底部主按钮上的数字跟着跳，不做"确定"式提交。
+    移动端不是"桌面端缩小"：一行放不下四个下拉、弹窗要贴着拇指、墙是虚拟化的。
+    这条用例覆盖静止栏、一级四维横滚、条件行、底部抽屉、合集 chip、合集网格与
+    详情页、存为合集弹窗——每一步都截图，光靠断言看不出"画出来是歪的"。
     """
     from playwright.sync_api import expect, sync_playwright
 
     base = stack["base"]
+    shots: Path = stack["shots"]
+    shots.mkdir(exist_ok=True)
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, **_chromium_kwargs())
@@ -847,42 +891,104 @@ def test_more_filters_is_a_bottom_sheet_on_mobile(stack) -> None:
         page = context.new_page()
         page.set_default_timeout(20_000)
         page.set_default_navigation_timeout(120_000)
+        page_errors: list[str] = []
+        page.on("pageerror", lambda e: page_errors.append(str(e)))
 
-        page.goto(f"{base}/login")
-        page.wait_for_load_state("networkidle")
-        if "/login" in page.url:
-            page.locator("input[type=text]").fill(ADMIN["username"])
-            page.locator("input[type=password]").first.fill(ADMIN["password"])
-            page.locator("button[type=submit]").click()
-            page.wait_for_url(lambda u: "/login" not in u)
+        def shot(name: str) -> None:
+            page.screenshot(path=str(shots / f"m{name}.png"))
 
-        # 上一条用例建的库还在（同一个 stack）
-        libraries = page.request.get(f"{base}/api/v1/libraries").json()["data"]
-        movie_lib = next(row["id"] for row in libraries if row["name"] == "电影库")
+        _bootstrap_and_login(page, base)
+        movie_lib, _ids = _ensure_libraries(page, stack)
+        # 单独跑这条用例时上一条的合集不在，自己补一个——用例不该依赖执行顺序
+        existing = page.request.get(
+            f"{base}/api/v1/collections?library_id={movie_lib}"
+        ).json()["data"]
+        if not any(row["name"] == "日本动画" for row in existing):
+            page.request.post(
+                f"{base}/api/v1/collections",
+                data={
+                    "name": "日本动画",
+                    "library_id": movie_lib,
+                    "rules": [
+                        {"field": "genres", "op": "any_of", "values": [ANIME]},
+                        {"field": "origin_countries", "op": "any_of", "values": ["JP"]},
+                    ],
+                },
+            )
 
+        # ================= 1. 静止态：窄屏一行也只有两个控件 =================
         page.goto(f"{base}/library/{movie_lib}")
         page.wait_for_load_state("networkidle")
+        expect(page.get_by_role("button", name=FILTER_BTN)).to_be_visible()
+        expect(page.get_by_role("button", name="排序")).to_be_visible()
+        shot("01-resting")
+        # 横向不出滚动条：任何一处溢出都会让整页能左右拖，观感立刻塌
+        assert page.evaluate(
+            "() => document.documentElement.scrollWidth <= window.innerWidth + 1"
+        ), "页面出现了横向溢出"
+
+        # ================= 2. 一级四维横滚，不换行 =================
         page.get_by_role("button", name=FILTER_BTN).click()
-        # 一级四维在窄屏横滚，不换行——四个下拉换行会把墙推下去半屏
         dims = page.get_by_role("button", name="类型", exact=True).locator("xpath=..")
         assert "overflow-x-auto" in (dims.get_attribute("class") or "")
+        # 真的在横滚（换行的话 scrollWidth 不会超出 clientWidth）
+        assert dims.evaluate("el => el.scrollWidth > el.clientWidth"), "四维没有横滚，说明换行了"
+        # 「更多筛选」不跟着滚出屏幕：它是通往二级的门，滚没了就等于不存在
+        more_btn = page.get_by_role("button", name="更多筛选")
+        expect(more_btn).to_be_in_viewport()
+        assert more_btn.evaluate(
+            "el => !el.closest('[class*=overflow-x-auto]')"
+        ), "「更多筛选」还在横滚区里，会跟着滚走"
+        shot("02-dims-scroller")
 
+        # ================= 3. 下拉菜单在窄屏不出界 =================
+        page.get_by_role("button", name="类型", exact=True).click()
+        menu = page.get_by_role("menu")
+        expect(menu).to_be_visible()
+        menu_box = menu.bounding_box()
+        assert menu_box and menu_box["x"] >= 0 and menu_box["x"] + menu_box["width"] <= 390, (
+            f"下拉菜单超出屏幕：{menu_box}"
+        )
+        shot("03-menu")
+        page.get_by_role("menuitem").filter(has_text="动画").click()
+        page.keyboard.press("Escape")
+
+        # ================= 4. 条件行在窄屏 =================
+        expect(page.get_by_text("筛出")).to_contain_text(str(len(ANIME_TITLES)))
+        shot("04-condition-row")
+        # 改完条件之后，条件行必须还在视口里、且没钻到浮在顶部的导航键底下——
+        # 那排键是无背景的浮层，控件滚到它下面就成了一团糊字
+        # 整条筛选条（合集 chip、四维、条件行）都要在导航键下沿之外
+        for label in ("日本动画", "类型", "清空"):
+            target = page.get_by_text(label).first
+            expect(target).to_be_in_viewport()
+            assert target.bounding_box()["y"] > 52, f"「{label}」钻到顶部导航键底下了"
+        assert page.evaluate(
+            "() => document.documentElement.scrollWidth <= window.innerWidth + 1"
+        ), "有条件之后出现了横向溢出"
+
+        # ================= 5. 底部抽屉：留得住墙、勾选立即生效 =================
+        page.get_by_role("button", name="清空").click()
         page.get_by_role("button", name="更多筛选").click()
         sheet = page.get_by_role("button", name="收起更多筛选")
         expect(sheet).to_be_visible()
+        shot("05-sheet")
+        # 打开那一刻不能是「找片 / 查库」两个孤零零的空标题：档位还没数完就先
+        # 说一句，否则内容随后弹进来会把抽屉在拇指底下撑高一截
+        opened = page.locator("body").inner_text()
+        assert ("正在数各档位" in opened) or ("≥ 8" in opened), opened[-300:]
         # 抽屉不占满屏：上方那截墙还看得见（幕只压了很淡的一层）
         box = sheet.bounding_box()
         assert box and box["height"] > 100, f"上方留白太少，抽屉几乎全屏了：{box}"
-        first_cell = page.locator("[data-library-item-id]").first
-        expect(first_cell).to_be_in_viewport()
+        expect(page.locator("[data-library-item-id]").first).to_be_in_viewport()
 
         # 每次勾选立即生效，主按钮上的数字实时跳——不做「确定」式提交
         view_all = page.locator("button").filter(has_text="查看")
         expect(view_all).to_contain_text(str(MOVIE_TOTAL))
         page.get_by_role("button", name=UHD_PILL).click()
         expect(view_all).to_contain_text(str(len(UHD_TITLES)))
-        # 墙也已经跟着变了（抽屉还开着）
         expect(page.locator("[data-library-item-id]")).to_have_count(len(UHD_TITLES))
+        shot("06-sheet-applied")
 
         # 那颗键不是「提交」，只是把抽屉收起来
         view_all.click()
@@ -896,5 +1002,68 @@ def test_more_filters_is_a_bottom_sheet_on_mobile(stack) -> None:
         assert "res=" not in page.url, page.url
         expect(page.get_by_role("button", name=FILTER_BTN)).not_to_contain_text("1")
 
+        # ================= 6. 合集 chip 行与「存为合集」弹窗 =================
+        chip = page.locator("button").filter(has_text="日本动画").first
+        expect(chip).to_be_visible()
+        shot("07-collection-chip")
+        chip.click()
+        expect(page.locator("[data-library-item-id]")).to_have_count(len(ANIME_TITLES & JP_TITLES))
+        expect(page.get_by_text("＝ 合集")).to_be_visible()
+        chip.click()
+
+        page.goto(f"{base}/library/{movie_lib}?g={SCIFI}")
+        page.wait_for_load_state("networkidle")
+        page.get_by_role("button", name="存为合集").click()
+        dialog = page.get_by_role("dialog", name="存为合集")
+        expect(dialog).to_be_visible()
+        shot("08-save-dialog")
+        # 建议名绝不能是裸的 TMDB id：手一快就存下一个叫「878」的合集
+        name_input = dialog.locator("input[type=text], input:not([type])").first
+        assert name_input.input_value() != str(SCIFI), "建议名把裸 id 填进了输入框"
+        expect(name_input).to_have_value("科幻")
+        # 移动端弹窗贴住屏幕下沿（Modal 的 bottom sheet 形态），按钮在拇指够得着的地方
+        dialog_box = dialog.bounding_box()
+        assert dialog_box and dialog_box["y"] + dialog_box["height"] >= 800, (
+            f"弹窗没有贴住屏幕下沿：{dialog_box}"
+        )
+        page.keyboard.press("Escape")
+
+        # ================= 7. 合集网格与详情页 =================
+        page.goto(f"{base}/library/{movie_lib}?view=collections")
+        page.wait_for_load_state("networkidle")
+        # 明确点「日本动画」那张，不要用 .first：内置的「我的收藏」position 是 -1，
+        # 排在用户合集前面，跑在桌面用例之后时 .first 会是它——用例之间靠顺序
+        # 隐式串起来，正是 e2e 最常见的假绿
+        card = page.locator(f'a[href^="/library/{movie_lib}/c/"]').filter(has_text="日本动画")
+        expect(card).to_be_visible()
+        cover = card.locator("img").first
+        page.wait_for_function(
+            "el => el.complete && el.naturalWidth > 0",
+            arg=cover.element_handle(),
+            timeout=10_000,
+        )
+        shot("09-collections-grid")
+        card.click()
+        page.wait_for_url(lambda u: "/c/" in u)
+        page.wait_for_load_state("networkidle")
+        expect(page.get_by_text("自动收录").first).to_be_visible()
+        shot("10-collection-detail")
+        # 规则条里存的是 TMDB id 与国家码，界面上一刻都不该冒出「16」「JP」——
+        # 展示名还在路上时给省略号占位，到了再补
+        detail_text = page.locator("main").inner_text()
+        assert "类型 16" not in detail_text and "地区 JP" not in detail_text, detail_text[:200]
+        # 而且省略号只是过渡态：展示名到了要真的补上，否则"不印裸值"退化成
+        # "永远印省略号"，这条断言照样是绿的
+        expect(page.get_by_text("动画").first).to_be_visible()
+        expect(page.get_by_text("日本").first).to_be_visible()
+        assert page.evaluate(
+            "() => document.documentElement.scrollWidth <= window.innerWidth + 1"
+        ), "合集详情页出现了横向溢出"
+        # 管理动作在窄屏同样收在 ⋯ 里
+        page.get_by_role("button", name="更多操作").click()
+        expect(page.get_by_role("menuitem", name="改名")).to_be_visible()
+        shot("11-detail-menu")
+
+        assert not page_errors, f"页面报错：{page_errors[:3]}"
         context.close()
         browser.close()

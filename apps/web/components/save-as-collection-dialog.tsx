@@ -205,11 +205,17 @@ function ModeOption({
   );
 }
 
-/** 条件 → 一句人话（建议名）。取值的中文名来自 facet，与筛选条上是同一份。 */
+/**
+ * 条件 → 一句人话（建议名）。取值的中文名来自 facet，与筛选条上是同一份。
+ *
+ * **认不出的取值直接跳过**，绝不把裸值填进输入框：facet 还没到时它是
+ * 「878」「JP」这种东西，而用户手一快就会存下一个叫「878」的合集。跳过的
+ * 结果是建议名先空着（输入框显示占位），facet 一到就自己补上。
+ */
 function summarize(filter: LibraryFilter, facets: LibraryFacets | null): string {
   const labelOf = (pool: { value: string; label: string }[] | undefined, value: string) =>
-    pool?.find((row) => row.value === value)?.label ?? value;
-  const parts: string[] = [];
+    pool?.find((row) => row.value === value)?.label;
+  const parts: (string | undefined)[] = [];
   for (const id of filter.genres ?? []) parts.push(labelOf(facets?.genres, String(id)));
   for (const code of filter.countries ?? []) parts.push(labelOf(facets?.countries, code));
   for (const decade of filter.decades ?? []) parts.push(labelOf(facets?.decades, decade));
@@ -217,6 +223,7 @@ function summarize(filter: LibraryFilter, facets: LibraryFacets | null): string 
   if (filter.ratingGte !== undefined && filter.ratingGte !== null) {
     parts.push(`${filter.ratingGte} 分以上`);
   }
+  // 画质的取值本身就是人话（"2160p"），不必等 facet
   for (const value of filter.resolutions ?? []) parts.push(value);
-  return parts.slice(0, 3).join(" · ");
+  return parts.filter(Boolean).slice(0, 3).join(" · ");
 }

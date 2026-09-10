@@ -266,8 +266,10 @@ function RuleRow({
     );
   }
   const filter = rulesToFilter(collection.rules);
+  // 查不到展示名就给省略号：规则里存的是 TMDB id 与国家码，界面上冒出「16」
+  // 「JP」比空着更糟。查不到只意味着 facet 还在路上，到了自然补上
   const labelOf = (pool: { value: string; label: string }[] | undefined, value: string) =>
-    pool?.find((row) => row.value === value)?.label ?? value;
+    pool?.find((row) => row.value === value)?.label ?? "…";
   const groups = DIMS.map(({ key, label }) => {
     const values =
       key === "watch"
