@@ -96,6 +96,17 @@ CATALOG: list[tuple[str, list[int], list[str], str, float, int, str, str, str | 
 ]
 
 #: 这两部走特殊库存态：一部文件失联，一部从来没刮到过档案
+#: 系列合集的播种谱：两部同系列的片（成员 < 2 不下发，所以必须是两部）。
+#: 键是片名，值是 (series_key, series_name)
+SERIES_KEY = "tmdb:9999"
+SERIES_NAME = "新海诚系列"
+SERIES = {
+    "你的名字": (SERIES_KEY, SERIES_NAME),
+    "天气之子": (SERIES_KEY, SERIES_NAME),
+}
+#: 系列里库存没有的那一部：详情页该说「还缺 1 部」并给订阅入口
+MISSING_PART_TITLE = "铃芽之旅"
+
 MISSING_TITLE = "回到未来"
 UNSCRAPED_TITLE = "无名录像"
 
@@ -327,6 +338,10 @@ def _seed(
                             runtime_minutes=runtime,
                             original_language=lang,
                             poster_file=_poster(item.id),
+                            # 作品系列：只给谱里点了名的那几部挂 key，其余写空串
+                            # （"查过了，没有系列"，与 NULL 的"还没查过"分开）
+                            series_key=SERIES.get(title, ("", None))[0],
+                            series_name=SERIES.get(title, ("", None))[1],
                             # 真实刮削过的条目一定有这个时间戳；「未刮削」那部
                             # 单独播种（见下），不能靠这里留空来假装
                             scraped_at=utcnow() - timedelta(days=index),
@@ -442,6 +457,54 @@ def _seed(
                 # /library 上会写着「0 部电影」——那是夹具的账，不是产品的
                 await LibraryRepository(session).refresh_stats(list(library_ids.values()))
                 await session.commit()
+
+                # 系列合集：真实链路里这一步发生在扫描收尾，夹具直接播种台账
+                # 所以要自己调一次。之后合集页上就该多出一个「系列」分组
+                from movieclaw_api.services.library.series import (
+                    ensure_series_collections_for_library,
+                    series_builtin,
+                )
+
+                await ensure_series_collections_for_library(session, library_ids["movies"])
+                await session.commit()
+                # 缺片补齐的上游档案（真实链路是打开详情页时懒加载 TMDB）：
+                # e2e 不联网，直接把快照写进去，验的是"有了 parts 之后界面怎么显示"
+                from sqlmodel import select as _select
+
+                from movieclaw_db.models import Collection
+
+                row = (
+                    await session.execute(
+                        _select(Collection).where(
+                            Collection.builtin == series_builtin(SERIES_KEY, library_ids["movies"])
+                        )
+                    )
+                ).scalar_one()
+                # 两部库里有（tmdb_id 必须与播种的对得上，否则"已有"认不出来），
+                # 第三部库里没有——那正是要显示的「还缺 1 部」
+                tmdb_of = {row[0]: 70_000 + i for i, row in enumerate(CATALOG)}
+                row.series_parts = [
+                    {
+                        "tmdb_id": tmdb_of["你的名字"],
+                        "title": "你的名字",
+                        "release_date": "2016-08-26",
+                        "poster_path": None,
+                    },
+                    {
+                        "tmdb_id": tmdb_of["天气之子"],
+                        "title": "天气之子",
+                        "release_date": "2019-07-19",
+                        "poster_path": None,
+                    },
+                    {
+                        "tmdb_id": 9_999_101,
+                        "title": MISSING_PART_TITLE,
+                        "release_date": "2022-11-11",
+                        "poster_path": None,
+                    },
+                ]
+                session.add(row)
+                await session.commit()
         finally:
             await db.dispose()
 
@@ -474,7 +537,7 @@ UHD_PILL = re.compile("^2160p")
 def test_filtering_and_collections_end_to_end(stack) -> None:  # noqa: PLR0915
     from playwright.sync_api import expect, sync_playwright
 
-    from movieclaw_jellyfin.ids import collections_view_guid, item_guid
+    from movieclaw_jellyfin.ids import collections_view_guid, item_guid, library_guid
 
     base = stack["base"]
     shots: Path = stack["shots"]
@@ -879,6 +942,86 @@ def test_filtering_and_collections_end_to_end(stack) -> None:  # noqa: PLR0915
         expect(back_item).to_be_visible()
         back_item.click()
         expect(page.locator("[data-library-item-id]").first).to_be_visible()
+
+        # ================= 20. 系列合集：分组、缺片、隐藏与回头路 ===========
+        page.goto(f"{base}/library/{movie_lib}")
+        page.wait_for_load_state("networkidle")
+        page.get_by_role("tab", name="合集").click()
+        # 分组：用户自己存的在前，自动生成的系列在后。一个 300 部的库可能有
+        # 40+ 个系列，平铺的话用户存的那几个就没了
+        expect(page.get_by_text("我的合集", exact=True)).to_be_visible()
+        expect(page.get_by_text("系列", exact=True).first).to_be_visible()
+        series_card = page.locator(f'a[href^="/library/{movie_lib}/c/"]').filter(
+            has_text=SERIES_NAME
+        )
+        expect(series_card).to_have_count(1)
+        # 卡片副行写「系列」，**不写「缺 1 部」**——一屏几十个红角标是压迫感
+        expect(series_card).to_contain_text("· 系列")
+        assert "缺" not in series_card.inner_text(), "缺片信息不该上卡片"
+        shot("20-series-group")
+
+        series_card.click()
+        page.wait_for_url(lambda u: "/c/" in u)
+        page.wait_for_load_state("networkidle")
+        # 规则条：系列的规则是 series_key，翻不成"类型/年代"那套话，
+        # 硬套会显示"收录本库全部作品"——一句彻头彻尾的假话
+        expect(page.get_by_text("作品系列 ·").first).to_be_visible()
+        # 缺片补齐：这一块才是系列合集真正的价值（只归类的话装个 Emby 也有）
+        expect(page.get_by_text("已有 2 / 共 3 部")).to_be_visible()
+        expect(page.get_by_text("还缺 1 部")).to_be_visible()
+        expect(page.get_by_text(MISSING_PART_TITLE)).to_be_visible()
+        expect(page.get_by_role("button", name="订阅").first).to_be_visible()
+        shot("21-series-missing-parts")
+
+        # 隐藏：自动生成的合集删不掉（下次扫描又长回来），那颗按钮落成墓碑
+        page.get_by_role("button", name="更多操作").click()
+        expect(page.get_by_role("menuitem", name="删除合集")).to_have_count(0)
+        page.get_by_role("menuitem", name="隐藏这个合集").click()
+        page.get_by_role("button", name="隐藏").click()
+        page.wait_for_url(lambda u: "/c/" not in u)
+        page.wait_for_load_state("networkidle")
+        page.get_by_role("tab", name="合集").click()
+        expect(
+            page.locator(f'a[href^="/library/{movie_lib}/c/"]').filter(has_text=SERIES_NAME)
+        ).to_have_count(0)
+
+        # 回头路：藏得回来才叫隐藏，藏不回来那是删除
+        page.get_by_role("button", name="更多操作").click()
+        page.get_by_role("menuitem", name="显示已隐藏的合集").click()
+        hidden_card = page.locator(f'a[href^="/library/{movie_lib}/c/"]').filter(
+            has_text=SERIES_NAME
+        )
+        expect(hidden_card).to_have_count(1)
+        expect(hidden_card).to_contain_text("已隐藏")
+        shot("22-hidden-collection-found")
+        hidden_card.click()
+        page.wait_for_url(lambda u: "/c/" in u)
+        page.get_by_role("button", name="更多操作").click()
+        page.get_by_role("menuitem", name="恢复显示").click()
+        expect(page.get_by_text("已隐藏")).to_have_count(0)
+
+        # ================= 21. 系列在电视端也是一条 BoxSet =================
+        tv_boxsets = {
+            row["Name"]: row
+            for row in jf_get("/Items", ParentId=collections_view_guid())["Items"]
+        }
+        assert SERIES_NAME in tv_boxsets, tv_boxsets.keys()
+        assert tv_boxsets[SERIES_NAME]["ChildCount"] == 2
+        # ParentId 指向某个库时只回这个库的合集（此前会把别的库的一起返回）
+        movie_only = jf_get(
+            "/Items", ParentId=library_guid(movie_lib), IncludeItemTypes="BoxSet"
+        )["Items"]
+        assert SERIES_NAME in {row["Name"] for row in movie_only}
+
+        # ================= 22. 影片页能一步跳进它所属的系列 =================
+        page.goto(f"{base}/library/{movie_lib}/items/{ids['你的名字']}")
+        page.wait_for_load_state("networkidle")
+        series_link = page.get_by_role("link", name=SERIES_NAME)
+        expect(series_link).to_be_visible()
+        series_link.click()
+        page.wait_for_url(lambda u: "/c/" in u)
+        expect(page.get_by_text("作品系列 ·").first).to_be_visible()
+        shot("23-item-to-series")
 
         assert not page_errors, f"页面报错：{page_errors[:3]}"
         context.close()

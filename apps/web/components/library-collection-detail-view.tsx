@@ -147,6 +147,9 @@ export function LibraryCollectionDetailView({
         ? "自动生成的合集会一直重新出现，所以这里是把它藏起来：影片一部都不会少，想找回来在媒体库设置里打开「显示已隐藏的合集」。"
         : "只删掉这层视图，里面的影片一部都不会少。",
       tone: automatic ? undefined : "danger",
+      // 按钮上写它真的会做什么。默认那个「确定」在这种两种归宿的对话框里
+      // 最容易让人按错——用户以为自己在删，实际是藏（反过来更糟）
+      confirmLabel: automatic ? "隐藏" : "删除",
     });
     if (!ok) return;
     try {
