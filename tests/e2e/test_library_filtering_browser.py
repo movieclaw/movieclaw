@@ -861,6 +861,19 @@ def test_filtering_and_collections_end_to_end(stack) -> None:  # noqa: PLR0915
         by_played = api("get", f"/libraries/{movie_lib}/items?sort=last_played")["data"]
         assert by_played[0]["title"] == "寄生虫"
 
+        # ================= 19. 图床入口收进 ⋯：进得去也回得来 =================
+        page.goto(f"{base}/library/{movie_lib}")
+        page.wait_for_load_state("networkidle")
+        assert page.get_by_role("button", name="图床浏览").count() == 0, "图床键还在顶栏"
+        page.get_by_role("button", name="更多操作").click()
+        page.get_by_role("menuitem", name="图床浏览").click()
+        # 进了图床模式：菜单项翻成「回到海报墙」，点它能回去
+        page.get_by_role("button", name="更多操作").click()
+        back_item = page.get_by_role("menuitem", name="回到海报墙")
+        expect(back_item).to_be_visible()
+        back_item.click()
+        expect(page.locator("[data-library-item-id]").first).to_be_visible()
+
         assert not page_errors, f"页面报错：{page_errors[:3]}"
         context.close()
         browser.close()
@@ -1061,10 +1074,19 @@ def test_mobile_layout_end_to_end(stack) -> None:  # noqa: PLR0915
             "顶栏塞太满，吸顶标题没地方了"
         )
 
-        # 合集视图里不该有图床键：那面墙根本不在，点了什么也不会发生
+        # 右上角只留搜索与 ⋯ 两颗：图床入口收进了菜单
+        assert page.get_by_role("button", name="图床浏览").count() == 0, "图床键还在顶栏"
+        page.get_by_role("button", name="更多操作").click()
+        expect(page.get_by_role("menuitem", name="图床浏览")).to_be_visible()
+        page.keyboard.press("Escape")
+
+        # 合集视图里连菜单项都不该有：那面墙根本不在，点了什么也不会发生
         page.goto(f"{base}/library/{movie_lib}?view=collections")
         page.wait_for_load_state("networkidle")
-        expect(page.get_by_role("button", name="图床浏览")).to_have_count(0)
+        if page.get_by_role("button", name="更多操作").count() > 0:
+            page.get_by_role("button", name="更多操作").click()
+            expect(page.get_by_role("menuitem", name="图床浏览")).to_have_count(0)
+            page.keyboard.press("Escape")
 
         page.goto(f"{base}/library/{movie_lib}?view=collections")
         page.wait_for_load_state("networkidle")

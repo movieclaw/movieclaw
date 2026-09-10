@@ -16,9 +16,7 @@ import {
 import { chapterJobLabel } from "@/lib/library-manage";
 import {
   LockIcon,
-  MasonryIcon,
   MoreIcon,
-  PosterGridIcon,
   XIcon,
 } from "@/components/icons";
 import {
@@ -1330,29 +1328,15 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   // 图床浏览模式的开关：长在顶栏、与 ⋯ 菜单并排。只有能播的库（影视库 /
   // 其他库）才有——图片库本身就是相册墙。切换时顺手关掉灯箱：两种模式的
   // 灯箱翻的不是同一份列表，下标不能沿用
-  // 合集视图里不给图床键：那面墙根本不在，点了什么也不会发生——没有事实
-  // 就不摆控件（也是这次把视图切换挪位时才暴露出来的一颗死控件）
-  const galleryToggle = library.capabilities.playable && libraryView === "items" && (
-    <button
-      type="button"
-      title={gallery ? "回到海报墙" : "图床浏览"}
-      aria-label={gallery ? "回到海报墙" : "图床浏览"}
-      aria-pressed={gallery}
-      onClick={() => {
-        setLightboxIndex(null);
-        setGalleryMode(!gallery);
-      }}
-      className={`${PAGE_NAV_BUTTON_CLASS} ${gallery ? "bg-black/55 text-white" : ""}`}
-    >
-      {/* 图标画的是**点过去会变成的那面墙**：海报墙上显示瀑布流，图床模式里
-          显示海报格（见 icons.tsx 里这对图标的注释） */}
-      {gallery ? (
-        <PosterGridIcon className="size-[18px] max-md:size-[22px]" />
-      ) : (
-        <MasonryIcon className="size-[18px] max-md:size-[22px]" />
-      )}
-    </button>
-  );
+  /**
+   * 图床浏览能不能用。合集视图里不能——那面墙根本不在，点了什么也不会发生
+   *（没有事实就不摆控件）。
+   *
+   * 入口在 ⋯ 菜单里，不在顶栏：顶栏右上角只留搜索与 ⋯ 两颗。图床是"偶尔换个
+   * 看法"，不是常用动作，为它常驻一颗键，代价是吸顶标题少一半地方
+   *（实测 50.5px → 102px 的差别）。
+   */
+  const galleryAvailable = library.capabilities.playable && libraryView === "items";
 
   /**
    * 作品 / 合集 切换。窄屏上挂进顶栏右上角（与发现页把数据源切换挂进顶栏
@@ -1402,7 +1386,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   //
   // 排序提到墙控件行之后，这个菜单不再"恒在"：非管理员在海报墙形态下已经
   // 一项可调的都没有，那就别渲染——点开一片空白比没有这颗键更糟。
-  const hasMenuItems = canManageLibraries || photoWall || gallery;
+  const hasMenuItems = canManageLibraries || photoWall || gallery || galleryAvailable;
   const actionsMenu = hasMenuItems && (
     <LibraryActionsMenu
       canManage={canManageLibraries}
@@ -1410,6 +1394,15 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
       onDensityChange={photoWall || gallery ? setPhotoDensity : undefined}
       grouped={gallery ? galleryGrouped : undefined}
       onGroupedChange={gallery ? setGalleryGrouped : undefined}
+      galleryMode={galleryAvailable || gallery ? gallery : undefined}
+      onGalleryModeChange={
+        galleryAvailable || gallery
+          ? (next: boolean) => {
+              setLightboxIndex(null);
+              setGalleryMode(next);
+            }
+          : undefined
+      }
       // 排序是三面墙共用的偏好，普通成员也能选；补探那几分钟排序被临时接管，
       // 菜单如实置灰而不是假装可选
 
@@ -1518,14 +1511,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
       <PageNav
         title={library.name}
         fallback={navFallback}
-        actions={
-          galleryToggle || actionsMenu ? (
-            <>
-              {galleryToggle}
-              {actionsMenu}
-            </>
-          ) : undefined
-        }
+        actions={actionsMenu || undefined}
       />
       {/* —— 库头部 —— */}
       <div className="px-6 max-md:px-4">
@@ -2076,6 +2062,9 @@ interface LibraryActionsMenuProps {
   /** 图片库：相册墙的密度（个人偏好，与管理权无关）；不传不渲染这一组 */
   density?: PhotoWallDensity;
   onDensityChange?: (next: PhotoWallDensity) => void;
+  /** 图床浏览的开关：当前在不在图床模式；不传不渲染这一项（图片库、合集视图都没有） */
+  galleryMode?: boolean;
+  onGalleryModeChange?: (next: boolean) => void;
   /** 图床浏览模式：是否按作品分段；不传不渲染这一项（海报墙与图片库都没有分组一说） */
   grouped?: boolean;
   onGroupedChange?: (next: boolean) => void;
@@ -2105,6 +2094,8 @@ function LibraryActionsMenu({
   onEdit,
   density,
   onDensityChange,
+  galleryMode,
+  onGalleryModeChange,
   grouped,
   onGroupedChange,
 }: LibraryActionsMenuProps) {
@@ -2203,6 +2194,16 @@ function LibraryActionsMenu({
               图片库只传密度，图床浏览模式两项都传。排序不在这儿了——它总有
               一个当前值可显示，埋进菜单用户就看不到自己正按什么排，已经提到
               墙控件行上（docs/design/library-filtering.md 5.1.1） */}
+          {/* 图床浏览：从顶栏收到这儿来，右上角只留搜索与 ⋯ 两颗。
+              文案写的是**点下去会变成的那面墙**，与原来那颗图标键同一口径 */}
+          {onGalleryModeChange && (
+            <DropdownMenu.Item
+              onSelect={() => onGalleryModeChange(!galleryMode)}
+              className={itemClass}
+            >
+              {galleryMode ? "回到海报墙" : "图床浏览"}
+            </DropdownMenu.Item>
+          )}
           <WallPrefItems
             grouped={grouped}
             onGroupedChange={onGroupedChange}
