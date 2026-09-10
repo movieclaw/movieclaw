@@ -573,19 +573,56 @@ v1 **只做"从本库现有取值里选"**（候选来自库内实际出现过�
 **验收**：筛选 → 存为合集 → 新入库一部命中的片 → 合集数量自动 +1，且规则条文案与筛选条一致；
 点合集 chip 后已选条件行标出 `＝ 合集「X」`，改动任意一条标记即消失。
 
-### F4 手动合集与外延
+### F4 手动合集与外延 ✅ 已实施（F4.5 除外）
 
-`collection_item` 拖拽排序；详情页与海报悬浮的「加入合集」；跨库合集入口；
-TMDB 系列自动合集；`movieclaw_jellyfin/catalog.py` 映射 BoxSet；合集分享复用 `media_share`。
+> TMDB 系列自动合集单独成篇，见
+> [library-series-collections.md](library-series-collections.md)；下表只列 F4 本身。
 
-**验收**：拖拽顺序在海报墙、Jellyfin 客户端、分享页三处一致。
+| 子项 | 改动 |
+|---|---|
+| F4.1 成员增删 | `collection.items.add` / `collection.items.remove`，只对手动合集开放（`_guard_manual`：规则驱动的合集拒绝手工增删，否则下一次求值就会把手工结果冲掉） |
+| F4.2 排序与入口 | `collection.items.reorder` 存 `collection_item.position`；`components/collection-order-panel.tsx` 拖拽面板；作品详情页「加入合集」→ `components/add-to-collection-dialog.tsx` |
+| F4.3 跨库合集 | `collection.library_id` 允许为空；`_aggregate_wall_views` 接受 `library_ids` 列表；**新增** `/library/collections` 总览页与 `components/all-collections-view.tsx` |
+| F4.4 合集分享 | `media_share` 加 `collection_id`，与 `media_item_id` **二选一**；`collection.share.get/create/revoke` + 公开 `share.collection`；分享页 `components/share/shared-collection-view.tsx` |
+| F4.6 规则条可编辑 | 合集详情页的规则条从只读升级为可改（F3 收窄的两处之一），`collection.update` 收规则；改完立即重算成员数 |
 
-### F5 个性化与儿童档案
+**两处实现上的取舍**：
 
-成员级推荐行；把 `content_rating` 从筛选器升级为**成员级内容约束**——
-墙、搜索、合集、Jellyfin 四处都要收窄（`MemberScopedMixin` 已有，成本在四处的严谨性）。
+- **合集分享的成员是每次访问重算的**，不是创建分享时固化一份名单。规则驱动的合集
+  本来就会随入库变化，固化名单等于分享出去的是一张过期快照；重算的代价是每次开分享
+  页多一次墙查询，与开一次库页同量级。
+- **`library_id` 为空的合集不进单库页的 chip 行**，只在 `/library/collections` 露出。
+  跨库合集出现在单库的筛选条上，用户点进去会看到本库没有的片，那比"找不到入口"更难解释。
 
-**验收**：儿童成员登录后，超分级作品在四处均不可见。
+**验收**：拖拽顺序在海报墙、Jellyfin 客户端、分享页三处一致 —— 三处都走
+`resolve_members()`，顺序由 `collection_item.position` 唯一决定。
+
+**F4.5「`/library/favorites` 并入合集详情页」未做**——它要求「净删代码」与
+「行为零变化」同时成立，而跨库规则求值与合集画廊模式两处前置都不在 F4 范围内。
+详见 [library-collections.md](library-collections.md) 8.10。
+
+### F5 个性化与儿童档案 ✅ 已实施
+
+| 子项 | 改动 |
+|---|---|
+| F5.1 内容分级 | **新增** `services/library/content_rating.py`（分级 → 年龄的映射，认不出的分级返回 `None` 而不是猜）；`member.max_age` / `member.allow_unrated` 两列；`access.py` 产出 `ContentLimit`，与 `visible_library_ids` 同样的方式穿到下游 |
+| F5.2 推荐行 | **新增** `services/library/recommend.py` + `GET /libraries/{id}/recommendations`；库首页在「最近添加」上方按成员渲染 |
+
+**内容约束落在六处，不是设计初稿说的四处**：墙、搜索、合集、Jellyfin，
+外加**作品详情**与**播放决策**。少了后两处，超分级作品的详情页仍可直链打开、
+仍能起播——收窄只做在列表上，等于只挡住了浏览，没挡住播放。
+
+`ContentLimit` 只在 `access.py` 一处产生。这不是风格偏好：一个"当前观看者能看什么"的
+判断如果能在多处被构造，迟早会有一处漏掉 `allow_unrated`，而这类漏洞不会报错，
+只会安静地放行。
+
+**推荐行没有模型，也不该有**。三行分别是「接着看」「同系列里你还没看的」
+「你常看的 X」——标题本身就是理由。个人媒体库的库存是几百到几千部，
+在这个量级上，能解释的规则比不能解释的相似度更可信；用户看到一部不认识的片
+出现在推荐位，第一反应是"软件坏了"，除非那行标题告诉他为什么。
+无观看历史时（`MIN_HISTORY = 3`）整块不出现，不用"热门"充数。
+
+**验收**：儿童成员登录后，超分级作品在六处均不可见；无历史的成员看不到推荐块。
 
 ### 7.9 发版注意（对照 CLAUDE.md 硬约束）
 
@@ -607,6 +644,12 @@ TMDB 系列自动合集；`movieclaw_jellyfin/catalog.py` 映射 BoxSet；合集
 5. **v1 不建 facet 物化表**，设 50,000 条目 / p95 300ms 的量化闸门（6.2）。
 6. **出品方筛选 v1 不入合集规则**，等 `studio_ids` 落地（6.4）。
 7. **没有事实的 kind 不摆控件**（3.5）。
+8. **内容约束落六处不是四处**：初稿写墙/搜索/合集/Jellyfin，实施时补上作品详情
+   与播放决策——只收窄列表等于挡住了浏览、没挡住播放（F5.1）。
+9. **`ContentLimit` 只在 `access.py` 一处产生**：能在多处构造的「当前观看者能看什么」，
+   迟早有一处漏掉 `allow_unrated`，而这类漏洞不报错，只安静放行（F5.1）。
+10. **推荐不做相似度模型**：三行标题本身就是理由；无历史时整块不出现，
+   不用「热门」充数（F5.2）。
 
 **明确不做**：全文高级搜索语法（`genre:动画 AND year:>2010`）——那是给工程师的界面，
 本产品的筛选面向"周五晚上想找片看"的人；筛选结果的批量操作（批量删除/批量刮削）

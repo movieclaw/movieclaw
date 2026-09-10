@@ -259,9 +259,16 @@ N 次解析。**F3.4 把「我的收藏」登记为内置合集之后，这个�
 | PUT | `/collections/{id}` | `collection.update` |
 | DELETE | `/collections/{id}` | `collection.delete` |
 | GET | `/collections/{id}/items?sort=&limit=&offset=` | `collection.items.list` |
-| POST | `/collections/{id}/items` | `collection.items.add`（manual，F4） |
-| PUT | `/collections/{id}/order` | `collection.items.reorder`（manual，F4） |
+| POST | `/collections/{id}/items` | `collection.items.add`（仅手动合集） |
+| DELETE | `/collections/{id}/items/{item_id}` | `collection.items.remove`（仅手动合集） |
+| PUT | `/collections/{id}/order` | `collection.items.reorder`（仅手动合集） |
+| GET | `/collections/{id}/series` | `collection.series.get`（系列合集的缺片补齐） |
+| GET/POST/DELETE | `/collections/{id}/share` | `collection.share.get/create/revoke` |
 | POST | `/collections/{id}/apply-to-library` | `collection.apply-to-library` |
+
+「仅手动合集」由 `_guard_manual` 统一拦截：规则驱动的合集拒绝手工增删，
+否则下一次规则求值就会把手工结果冲掉——那是一种用户改了、看着生效了、
+过一会儿又变回去的失败，比直接报错难查得多。
 
 新文件 `src/movieclaw_api/api/routes/collections.py`。
 
@@ -482,7 +489,9 @@ BoxSet 的 Primary 图**直接复用首个成员条目的海报**（`cover_item_
 | **F3.3** ✅ | **Jellyfin BoxSet**（第 4 节全部，含 `_container_entries` 抽取） | 4.10 清单逐条通过；Infuse 与 Jellyfin 官方客户端各验一遍 |
 | **F3.4** ✅ | 「我的收藏」登记为 `builtin="favorites"` | 它出现在合集列表与 Jellyfin BoxSet 里；`/library/favorites` 页面**行为零变化** |
 | **F3.5** ✅ | **系列合集**（另见 [library-series-collections.md](library-series-collections.md)）+ 合集隐藏机制 + 列表/BoxSet 的代价整治 | 40 个合集时列表接口的查询数不随合集数线性涨；自动合集点「删除」后不再长回来，且找得回来 |
-| **F4** | 手动合集拖拽、加入合集入口、跨库合集、合集分享；`/library/favorites` 并入合集详情页 | 拖拽顺序在海报墙、Jellyfin、分享页三处一致；并入后**净删代码** |
+| **F4.1–F4.4** ✅ | 手动合集成员增删与拖拽、「加入合集」入口、跨库合集与 `/library/collections` 总览页、合集分享 | 拖拽顺序在海报墙、Jellyfin、分享页三处一致 |
+| **F4.6** ✅ | 合集详情页的规则条从只读升级为可编辑 | 改完规则立即重算成员数 |
+| **F4.5** ⛔ | `/library/favorites` 并入合集详情页 | **未做**，两处前置未建，见 8.10 |
 
 **F3.3 可以与 F3.2 并行**——两者都只依赖 F3.1 的领域层。
 **F3.4 必须在 F3.3 之后**：它的验收要看 Jellyfin 侧，前面没做完验不了。
@@ -509,6 +518,28 @@ F3.5（系列合集）把"合集会自动生成"这件事变成现实，随之�
 7. **BoxSet 封面复用成员海报**，不做第二套资产（4.6）。
 8. **BoxSet 不做已看聚合**，与库视图保持一致（4.8）。
 9. **库删除时合集级联删除**，不 SET NULL（1.1）。
+10. **合集分享的成员每次访问重算**，不在创建分享时固化名单——规则驱动的合集
+   本来就随入库变化，固化等于分享出去一张会过期的快照（F4.4）。
+11. **跨库合集不进单库页的 chip 行**，只在 `/library/collections` 露出：
+   跨库合集出现在单库筛选条上，点进去会看到本库没有的片，比"找不到入口"更难解释（F4.3）。
+
+### 8.10 F4.5 为什么没做
+
+原计划「`/library/favorites` 下线，跳内置「我的收藏」合集」，验收是
+**净删代码** 且 **行为零变化**。实现时发现这两条当前无法同时成立，两处前置未建：
+
+1. **口径对不上**：`/library/favorites` 是**跨库**的（当前账号收藏的全部作品），
+   而内置收藏合集是**按库**的（`favorites:{library_id}`）。规则驱动的合集目前
+   只在单库内求值——`resolve_members()` 需要一个 `library_id`。要并页，得先让
+   规则求值支持跨库，那不是并页的一部分，是 F4.3 之上的又一层。
+2. **能力对不上**：`components/favorites-view.tsx` 有 632 行，带着墙位置召回、
+   滚动恢复、画廊模式与密度偏好；合集详情页没有这些。照当前的合集详情页并过去，
+   删掉的是代码，同时删掉的还有行为——"净删代码"成立了，"行为零变化"不成立。
+
+结论：**不半做**。半做的代价落在一个每天都在用的页面上。要做，前置是
+（a）跨库规则求值 +（b）合集的画廊模式接口；两项都不在 F4 的范围内，
+留待后续单独立项。在那之前 `/library/favorites` 原样保留，
+它已在 F3.4 登记为 `builtin="favorites"`，合集列表与 Jellyfin BoxSet 两处都能看到它。
 
 ### 8.1 初稿改了什么（留痕）
 
@@ -530,4 +561,5 @@ F3.5（系列合集）把"合集会自动生成"这件事变成现实，随之�
 | 视图出现但点进去是空列表 | 已堵（2.4 修订）：`/UserViews` 探到第一个有成员的合集才下发 |
 | 智能合集在两端结果不一致 | 结构上堵死（2.2）+ 一条回归测试（第 6 节） |
 | 各家客户端对 BoxSet 的支持深浅不一 | 4.10 清单在 Infuse 与官方客户端各验一遍；只用协议原生字段，不发明扩展 |
-| F4 合并 `/library/favorites` 时打破已调稳的行为 | 分两步（F3.4 只登记、F4 才并页）；并页时以"行为零变化"为验收 |
+| F4 合并 `/library/favorites` 时打破已调稳的行为 | **已按此风险停手**：F4.5 未做，理由与前置见 8.10 |
+| 手工排好的顺序被规则求值冲掉 | `_guard_manual` 从接口层堵死：规则驱动的合集不接受手工增删（3.1） |

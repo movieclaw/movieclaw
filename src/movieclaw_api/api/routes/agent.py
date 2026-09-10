@@ -148,6 +148,11 @@ _PAGE_ROUTES: list[tuple[str, str]] = [
     ("/library", "媒体库总览（浏览入口：最近观看、我的收藏、各库最近添加）"),
     ("/library/favorites", "我的收藏（当前账号收藏的全部作品，与 Jellyfin 客户端里点的心同一份）"),
     ("/library/manage", "媒体库管理（建库、扫描、整理、排序、可见范围；仅管理员）"),
+    ("/library/collections", "全部合集总览（含跨库合集；合集 ID 来自 collection list）"),
+    (
+        "/library/c/{合集ID}",
+        "合集详情（不限某个库；库内合集也可从这里打开）",
+    ),
     ("/library/{库ID}", "某个媒体库的内容（库 ID 来自 library list）"),
     (
         "/library/{库ID}/c/{合集ID}",
