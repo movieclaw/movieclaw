@@ -2070,6 +2070,161 @@ async def test_file_scoped_job_never_falls_back_to_whole_directory():
         )
 
 
+async def _seed_redelivered_movie(db, tmp_path, monkeypatch, *, attempt_created_after_ledger):
+    """两天前已入库的电影监听条目 + 同一颗种子的订阅投递（在途）。
+
+    模拟 NAS《恶人传》：入库后用户删了文件、作品被清掉，之后重新订阅，仍在下载器
+    里做种的同一颗种子被原样再投递；条目指纹没变，旧台账仍是 imported。
+    """
+    from movieclaw_db.models import (
+        DownloadAttemptStatus,
+        RuleSet,
+        Subscription,
+        SubscriptionDownloadAttempt,
+        WantedItem,
+        WantedStatus,
+    )
+    from movieclaw_downloader import TorrentBrief
+
+    root, watch = tmp_path / "movies", tmp_path / "watch"
+    watch.mkdir()
+    library_id = await _make_library(db, kind=MediaKind.MOVIE, root=root)
+    item = await _make_item(db, kind=MediaKind.MOVIE, title="重订电影", year=2019)
+    monkeypatch.setattr(ingest_mod, "probe_media", lambda _path: _FAKE_SPEC)
+
+    async def identify_none(session, kind, watch_root, main, spec):
+        return None
+
+    monkeypatch.setattr(ingest_mod, "_identify", identify_none)
+    entry = watch / "Redelivered.Movie.2019.1080p.mkv"
+    entry.write_bytes(b"redelivered-movie")
+    ledger_at = utcnow() - timedelta(days=2)
+    offset = timedelta(days=1) if attempt_created_after_ledger else -timedelta(days=1)
+    attempt_at = ledger_at + offset
+    async with db.session() as session:
+        rule_set = RuleSet(name="默认", spec={})
+        session.add(rule_set)
+        await session.commit()
+        await session.refresh(rule_set)
+        sub = Subscription(
+            media_item_id=item.id, kind="movie", rule_set_id=rule_set.id, library_id=library_id
+        )
+        session.add(sub)
+        await session.commit()
+        await session.refresh(sub)
+        session.add_all(
+            [
+                IngestEntry(
+                    library_id=library_id,
+                    entry_path=str(entry),
+                    fingerprint=ingest_mod._snapshot(entry).fingerprint,
+                    status=IngestStatus.IMPORTED,
+                    message="旧结论：已入库",
+                    imported_count=1,
+                    attempted_at=ledger_at,
+                ),
+                WantedItem(
+                    subscription_id=sub.id,
+                    media_item_id=item.id,
+                    season_number=0,
+                    episode_number=0,
+                    status=WantedStatus.GRABBED,
+                    info_hash="hash-redelivered",
+                ),
+                SubscriptionDownloadAttempt(
+                    subscription_id=sub.id,
+                    info_hash="hash-redelivered",
+                    site_id="mteam",
+                    torrent_id="1196414",
+                    units=[[0, 0]],
+                    status=DownloadAttemptStatus.COMPLETED,
+                    last_progress_at=attempt_at,
+                    created_at=attempt_at,
+                ),
+            ]
+        )
+        await session.commit()
+
+    async def briefs():
+        return [
+            TorrentBrief(
+                name=entry.name,
+                content_name=entry.name,
+                completed=True,
+                info_hash="hash-redelivered",
+            )
+        ]
+
+    monkeypatch.setattr(ingest_mod, "_downloader_briefs", briefs)
+    return watch, library_id
+
+
+@pytest.mark.asyncio
+async def test_redelivered_torrent_reingests_despite_unchanged_fingerprint(
+    db, tmp_path, monkeypatch
+):
+    """台账已入库、指纹没变，但结论之后订阅又投递了同一颗种子：旧结论已过时，
+    必须重新入库——否则新工单永远停在「已投递」（NAS 实测《恶人传》）。重跑后
+    同一次投递不再触发第二遍，不会每轮巡检反复入库。"""
+    watch, library_id = await _seed_redelivered_movie(
+        db, tmp_path, monkeypatch, attempt_created_after_ledger=True
+    )
+    rule = _fixed_rule(watch, library_id=library_id)
+    await ingest_mod._sweep_dir(rule, await _get_library(db, library_id), execute_inline=True)
+
+    async with db.session() as session:
+        files = list((await session.execute(select(LibraryFile))).scalars())
+        record = (await session.execute(select(IngestEntry))).scalar_one()
+    assert len(files) == 1
+    assert record.message != "旧结论：已入库"
+
+    rerun: list[object] = []
+
+    async def spy(*args, **kwargs):
+        rerun.append(args)
+
+    monkeypatch.setattr(ingest_mod, "_ingest_entry", spy)
+    await ingest_mod._sweep_dir(rule, await _get_library(db, library_id), execute_inline=True)
+    assert rerun == []
+
+
+@pytest.mark.asyncio
+async def test_delivery_older_than_ledger_keeps_short_circuit(db, tmp_path, monkeypatch):
+    """投递早于台账结论（正常流程：先投递、后入库）：已入库且指纹没变照旧短路。"""
+    watch, library_id = await _seed_redelivered_movie(
+        db, tmp_path, monkeypatch, attempt_created_after_ledger=False
+    )
+    await ingest_mod._sweep_dir(
+        _fixed_rule(watch, library_id=library_id),
+        await _get_library(db, library_id),
+        execute_inline=True,
+    )
+    async with db.session() as session:
+        assert list((await session.execute(select(LibraryFile))).scalars()) == []
+        record = (await session.execute(select(IngestEntry))).scalar_one()
+    assert record.message == "旧结论：已入库"
+
+
+@pytest.mark.asyncio
+async def test_redelivered_torrent_reingests_through_job_executor(db, tmp_path, monkeypatch):
+    """生产路径走后台作业：作业执行器里的台账短路同样要认「结论之后的新投递」，
+    否则巡检放行建了作业，作业又原样返回旧结论，照样入不了库。"""
+    watch, library_id = await _seed_redelivered_movie(
+        db, tmp_path, monkeypatch, attempt_created_after_ledger=True
+    )
+    await _make_rule(db, library_id=library_id, source=watch)
+    async with db.session() as session:
+        rule = (await session.execute(select(ImportWatch))).scalar_one()
+    await jobs.init_job_dispatcher(max_parallel=1)
+    await ingest_mod._sweep_dir(rule, await _get_library(db, library_id))
+
+    async with db.session() as session:
+        job = (await session.execute(_ingest_jobs())).scalars().one()
+    await _wait_job_status(job.id, JobStatus.SUCCEEDED)
+    async with db.session() as session:
+        assert len(list((await session.execute(select(LibraryFile))).scalars())) == 1
+
+
 @pytest.mark.asyncio
 async def test_manual_download_identity_claim_via_info_hash(db, tmp_path, monkeypatch):
     """手动下载投到共享监听目录后，按提交时锚定的身份和库入库。"""
@@ -3630,12 +3785,17 @@ async def test_entry_stats_dedupes_works_across_seasons_and_versions(db, tmp_pat
     async with db.session() as session:
         rule = ImportWatch(source_path=str(watch), strategy="hardlink", kind="tv")
         session.add(rule)
+        # 台账的 media_item_id 有外键约束，必须指向真实作品
+        work_a = MediaItem(kind="tv", tmdb_id=301, title="剧A", original_title="剧A", year=2024)
+        work_b = MediaItem(kind="tv", tmdb_id=302, title="剧B", original_title="剧B", year=2024)
+        session.add_all([work_a, work_b])
+        await session.flush()
         for name, item_id, files in (
-            ("剧A.S01.CHDWEB", 1, 8),  # 同一部剧：两季 + S02 三个版本
-            ("剧A.S02.MWeb.DV", 1, 6),
-            ("剧A.S02.MWeb.HDR", 1, 6),
-            ("剧A.S02.CMCTV.DV", 1, 6),
-            ("剧B.S01", 2, 10),
+            ("剧A.S01.CHDWEB", work_a.id, 8),  # 同一部剧：两季 + S02 三个版本
+            ("剧A.S02.MWeb.DV", work_a.id, 6),
+            ("剧A.S02.MWeb.HDR", work_a.id, 6),
+            ("剧A.S02.CMCTV.DV", work_a.id, 6),
+            ("剧B.S01", work_b.id, 10),
             ("剧C.S01", None, 3),  # 老条目：未回填，单独计一部
             ("认不出的", None, 0),  # pending 不计入作品数
         ):

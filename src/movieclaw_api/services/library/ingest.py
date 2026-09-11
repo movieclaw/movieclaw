@@ -1060,6 +1060,50 @@ async def _has_managed_download_claim(session, entry: Path) -> bool:
     )
 
 
+async def _redelivered_since(session, record: IngestEntry, info_hashes: list[str]) -> bool:
+    """台账下结论之后，订阅又把同一颗种子重新投递、且投递仍在途：旧结论已过时。
+
+    台账按「条目路径 + 指纹」幂等：已入库/已跳过且指纹没变就不再处理。但结论所
+    依据的现实会变——用户把入库的文件删了、作品随之被清掉，之后重新订阅，仍在
+    下载器里做种的同一颗种子被原样再投递一次。指纹没变，旧台账于是永远短路，新
+    工单停在「已投递」、投递停在「已完成」，谁也不报警（NAS 实测《恶人传》）。
+
+    判据刻意只认「晚于台账结论的在途投递」：重跑会刷新 ``attempted_at``，同一次
+    投递不会反复触发；正常流程里投递总是先于入库结论，也不会误触发。
+    """
+    from movieclaw_db.models import DownloadAttemptStatus, SubscriptionDownloadAttempt
+
+    if record.status not in (IngestStatus.IMPORTED, IngestStatus.SKIPPED) or not info_hashes:
+        return False
+    hashes = sorted({h for value in info_hashes if value for h in (value, value.lower())})
+    attempt_id = (
+        await session.execute(
+            select(SubscriptionDownloadAttempt.id)
+            .where(
+                SubscriptionDownloadAttempt.info_hash.in_(hashes),  # type: ignore[union-attr]
+                SubscriptionDownloadAttempt.status.in_(  # type: ignore[attr-defined]
+                    (
+                        DownloadAttemptStatus.ACTIVE,
+                        DownloadAttemptStatus.REPLACEMENT_PENDING,
+                        DownloadAttemptStatus.TRIAL,
+                        DownloadAttemptStatus.COMPLETED,
+                    )
+                ),
+                SubscriptionDownloadAttempt.created_at > record.attempted_at,  # type: ignore[operator]
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if attempt_id is None:
+        return False
+    logger.info(
+        "「%s」在上次入库结论之后又被订阅投递（投递 #%s），旧结论已过时，重新入库",
+        Path(record.entry_path).name,
+        attempt_id,
+    )
+    return True
+
+
 def _match_briefs(entry_name: str, briefs: list | None) -> list:
     """按名称把条目匹配到下载器种子。
 
@@ -1497,7 +1541,14 @@ async def _process_entry(
             return
 
         if record is not None and record.fingerprint == snap.fingerprint:
-            if record.status != IngestStatus.FAILED and not parser_retry and not disc_retry:
+            if (
+                record.status != IngestStatus.FAILED
+                and not parser_retry
+                and not disc_retry
+                and not await _redelivered_since(
+                    session, record, [b.info_hash for b in matches if b.info_hash]
+                )
+            ):
                 return  # 已处理且没变化（pending 等的是人工拍板，不是时间）
             if record.status == IngestStatus.FAILED:
                 elapsed = (utcnow() - record.attempted_at).total_seconds()
@@ -3780,6 +3831,7 @@ async def _execute_ingest_job(
                 record.status in {IngestStatus.IMPORTED, IngestStatus.SKIPPED}
                 and not parser_retry
                 and not disc_retry
+                and not await _redelivered_since(session, record, matched_hashes)
             ):
                 return {
                     "message": record.message or "监听条目已处理",
