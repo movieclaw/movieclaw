@@ -1138,19 +1138,24 @@ async def test_bitrate_counter_evidence_is_recorded_but_does_not_block(db, monke
     阈值是凭经验拍的，直接开成否决会误伤正常发布（identity-confidence.md §10.2）。
     先在真实流量上攒触发率与误报率，再决定是否生效——所以这个用例同时钉死
     两件事：**记录发生了**，且**行为没有变**。
+
+    夹具刻意取在**可疑档**（离谱下限之下、极端档之上）：更小的体积现在会被
+    ``absurdly_small_for_runtime`` 直接拒掉，那条线不需要校准也就不该走 shadow
+    （见 ``test_absurdly_small_release_never_reaches_dispatch``）。
     """
     async with db.session() as session:
         service = _service(session)
         sub = await service.create(MediaKind.MOVIE, 101)
         await _set_runtime(session, sub, 120)
 
-        # 0.2 GB 的"1080p 电影"：隐含码率约 0.24 Mbps，预告片体量
+        # 0.9 GB 的"1080p 电影"：隐含码率约 1.07 Mbps——低于 1080p 的离谱下限
+        # (1.5)、但在极端档 (0.3) 之上，正是"要校准才敢拦"的那一档
         row = await _insert_torrent(
             session,
             "tiny",
             "Upcoming Movie 2026 1080p WEB-DL",
             {"media_type": "movie", "year": 2026, "resolution": "1080p"},
-            size_bytes=int(0.2 * 1024**3),
+            size_bytes=int(0.9 * 1024**3),
         )
         await evaluate_and_dispatch(session, [row], source="被动匹配")
 
@@ -1161,6 +1166,39 @@ async def test_bitrate_counter_evidence_is_recorded_but_does_not_block(db, monke
         assert "bitrate_reject" in grabbed[0].payload["shadow"]
         # shadow 判定绝不进用户可见的文案
         assert "Mbps" not in grabbed[0].message
+
+
+async def test_absurdly_small_release_never_reaches_dispatch(db) -> None:
+    """体积离谱到不可能是正片的候选**直接拒**，不进候选池。
+
+    真实教训：一部 110 分钟的电影收到 113 MB 的「1080p WEB-DL」（隐含码率
+    0.14 Mbps，1080p 离谱下限的十五分之一），实测只有 5 分钟——是预告片。它
+    能中选不是因为排序把好片比下去了，而是那一轮**只有它一个候选通过了规则**：
+    选优只在多个合格候选里挑好的，唯一候选无论多小都会中，体积根本不参与打分。
+    所以这条线必须在候选池之前生效，而不是投递前记一笔。
+    """
+    async with db.session() as session:
+        service = _service(session)
+        sub = await service.create(MediaKind.MOVIE, 101)
+        await _set_runtime(session, sub, 110)
+
+        row = await _insert_torrent(
+            session,
+            "trailer",
+            "Upcoming Movie 2026 1080p WEB-DL",
+            {"media_type": "movie", "year": 2026, "resolution": "1080p"},
+            size_bytes=113 * 1024**2,
+        )
+        await evaluate_and_dispatch(session, [row], source="被动匹配")
+
+        wanted = await _wanted_map(session, sub.id)
+        assert wanted[(0, 0)].status == WantedStatus.WANTED  # 没投出去，缺口还在
+        assert not [a for a in await _activities(session, sub.id) if a.type == "grabbed"]
+        # 静默拒绝会让漏配变成查不出原因的哑巴故障：拒绝原因必须留痕且可读
+        rejected = [a for a in await _activities(session, sub.id) if a.type == "match_rejected"]
+        assert len(rejected) == 1
+        assert rejected[0].payload["reason_code"] == "size_absurd_for_runtime"
+        assert "预告片" in rejected[0].message
 
 
 async def test_normal_sized_release_records_no_shadow_note(db) -> None:

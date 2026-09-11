@@ -305,6 +305,53 @@ def implausible_for_runtime(candidate: TorrentCandidate, media: MediaIdentity) -
     )
 
 
+# 极端档的两个阈值——**与 ``_BITRATE_FLOOR_MBPS`` 的性质完全不同**，不需要校准。
+#
+# 离谱下限本身要校准，是因为贴着它的那一档里确实有正常发布（x265 低码压制能
+# 压到 1.8 Mbps 上下），拉高一点就误伤。而再除 5 之后（1080p ≈ 0.3 Mbps）已经
+# 不是"码率偏低"的问题了：0.3 Mbps 的 1080p 跑 110 分钟只有 247 MB，这样的
+# 正片不存在。踩到这一档的只能是预告片、sample、假种。
+_ABSURD_DIVISOR = 5
+# 分辨率未知时的绝对地板。没有它，分辨率没解析出来的种子连 shadow 台账都不会
+# 留（``floor is None`` 直接返回），而那正是这条反证最脆的入口——真实教训里的
+# 113 MB「正片」恰好解析出了 1080p 才留下记录，同样的东西换个命名就查无此案。
+# 任何分辨率的正片都不可能低于这条线（480p 也要 0.4 Mbps 上下）。
+_ABSURD_FLOOR_MBPS = 0.25
+
+
+def absurdly_small_for_runtime(candidate: TorrentCandidate, media: MediaIdentity) -> str | None:
+    """体积离谱到不可能是正片时给一句中文说明；否则返回 None。
+
+    与 ``implausible_for_runtime`` 的区别**只在档位**，不在判据：那条线上还站着
+    正常的低码压制，所以它要先 shadow 观察再点灯（§10.2）；这条线上只有预告片、
+    sample 和假种，所以它直接生效——为一个不可能存在的正片保留"宁可不判"的
+    余地，换来的是 113 MB 的预告片当正片投出去（真实教训：一部 110 分钟的电影
+    收到 113 MB 的「1080p WEB-DL」，隐含码率 0.14 Mbps，是 1080p 离谱下限的
+    十五分之一，而当时全链路只记录不拦截）。
+
+    分辨率未知时退到绝对地板 ``_ABSURD_FLOOR_MBPS``——``implausible_for_runtime``
+    在这种情况下直接放弃判断，那是它作为"可校准阈值"的正确保守取向，但对本函数
+    不适用：一个分辨率没解析出来、码率 0.14 Mbps 的电影，缺的不是基准。
+
+    与那条线共享的边界一样不变：**只对电影**（剧集的 ``runtime_minutes`` 是单集
+    时长，与整季包的体积不可比），证据不足（片长/体积未知）一律不判。
+    """
+    if media.kind != "movie" or media.runtime_minutes is None:
+        return None
+    floor = _BITRATE_FLOOR_MBPS.get(candidate.attrs.resolution or "")
+    threshold = floor / _ABSURD_DIVISOR if floor is not None else _ABSURD_FLOOR_MBPS
+    bitrate = implied_bitrate_mbps(candidate, media.runtime_minutes)
+    if bitrate is None or bitrate >= threshold:
+        return None
+    resolution = candidate.attrs.resolution or "未知分辨率"
+    return (
+        f"体积离谱到不可能是正片：{candidate.size_bytes / 1024**3:.2f} GB ÷ "
+        f"{media.runtime_minutes} 分钟 ≈ {bitrate:.2f} Mbps，"
+        f"不到 {resolution} 合理下限的五分之一——这种体量只可能是预告片、"
+        f"sample 或假种"
+    )
+
+
 def better_explained_by_twin(
     candidate: TorrentCandidate, own_runtime: int | None, twin_runtimes: dict[int, int]
 ) -> int | None:

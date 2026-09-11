@@ -50,6 +50,7 @@ from movieclaw_matcher import (
     RuleSetSpec,
     RuleVerdict,
     TorrentCandidate,
+    absurdly_small_for_runtime,
     candidate_ladder_rank,
     evaluate_rules,
     implausible_for_runtime,
@@ -503,6 +504,19 @@ def _ambiguous_verdict(outcome: str, reason: str) -> RuleVerdict:
     )
 
 
+def _absurd_size_verdict(reason: str) -> RuleVerdict:
+    """体积极端档的拒绝理由。
+
+    与 ``_id_conflict_verdict`` 同理，借 RuleVerdict 复用 ``_log_rejection``
+    的去重与单集履历注解——它不是规则过滤的结论，而是身份层的反证。
+    """
+    return RuleVerdict(
+        accepted=False,
+        reason_code="size_absurd_for_runtime",
+        reason_text=f"{reason}；若确认这就是你要的资源，可在搜索页手动选种投递",
+    )
+
+
 def _recheck_mismatch_verdict(candidate: TorrentCandidate) -> RuleVerdict:
     """复核取回 ID 后连身份都不成立了——理论上不可达（片名年份没变），但
     真出现说明这个候选的证据自相矛盾，按拒绝处理并留痕。"""
@@ -724,6 +738,24 @@ async def evaluate_and_dispatch(
                 summary.rejected += 1
                 await _log_rejection(
                     repo, ctx, candidate, covered or upgrade_covered, verdict, source
+                )
+                continue
+            # 体积÷片长 的**极端档**：离谱到不可能是正片的直接否决
+            # （identity-confidence.md §6；贴近阈值的可疑档仍走下面的 shadow）。
+            # 位置在这里而不是投递前，是因为选优只在"多个合格候选"里挑好的——
+            # 一个预告片只要通过了规则，在只剩它一个的那一轮就必然中选，体积
+            # 根本不参与打分。放在这里它压根进不了候选池，拒绝原因也走现成的
+            # 去重记账，用户在活动流水里看得见（真实教训：113 MB 的「1080p
+            # 正片」是那一轮唯一的合格候选，被原样投了出去）
+            if absurd := absurdly_small_for_runtime(candidate, ctx.identity):
+                summary.rejected += 1
+                await _log_rejection(
+                    repo,
+                    ctx,
+                    candidate,
+                    covered or upgrade_covered,
+                    _absurd_size_verdict(absurd),
+                    source,
                 )
                 continue
             # 洗版选优的排序位次（§15.4）：只有**纯洗版**候选才带真实档位。
