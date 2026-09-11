@@ -26,6 +26,7 @@ import { ScrapeSettingsSection } from "@/components/scrape-settings-section";
 import { SiteConfigSection, SitesSectionSubtitle } from "@/components/site-config-section";
 import { SubscriptionSettingsSection } from "@/components/subscription-settings-section";
 import { SystemLogsSection } from "@/components/system-logs-section";
+import { TrickplayToggleSection } from "@/components/trickplay-toggle-section";
 import { WebhookSection } from "@/components/webhook-section";
 import { GlassPanel } from "@/components/glass-panel";
 import {
@@ -618,17 +619,20 @@ function AppSection() {
 /**
  * —— 播放分区（媒体库组）——
  *
- * 目前唯一的住户是远程转码（原「应用 → 远程转码」标签迁来）。按功能命名为
- * 「播放」而不是按实现叫「远程转码」：将来的转码策略、字幕偏好等播放域设置
- * 都落在这里，分区不用再改名。Worker 的审批与吊销仍在「设备」分区，
- * 靠 onOpenDevices 一键直达。
+ * 住户：进度条预览的生成开关、远程转码（原「应用 → 远程转码」标签迁来）。
+ * 按功能命名为「播放」而不是按实现叫「远程转码」：转码策略、字幕偏好等
+ * 播放域设置都落在这里，分区不用再改名。Worker 的审批与吊销仍在
+ * 「设备」分区，靠 onOpenDevices 一键直达。
  */
 function PlaybackSection() {
   const router = useRouter();
   return (
-    <RemoteTranscodeSection
-      onOpenDevices={() => router.push("/settings/devices" as Route)}
-    />
+    <div className="space-y-7">
+      <TrickplayToggleSection />
+      <RemoteTranscodeSection
+        onOpenDevices={() => router.push("/settings/devices" as Route)}
+      />
+    </div>
   );
 }
 

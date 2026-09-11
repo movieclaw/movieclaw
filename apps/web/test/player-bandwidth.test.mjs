@@ -7,6 +7,7 @@ import {
   createBandwidthWindow,
   formatBandwidth,
   pushBandwidthSample,
+  sampleFromResourceTiming,
 } from "../lib/player/bandwidth.ts";
 
 /** 1MB，够跨过最小样本量的门槛 */
@@ -63,4 +64,41 @@ test("格式化：MB/s 与 KB/s 分档，没有读数就没有那一格", () => 
   assert.equal(formatBandwidth(MB * 8 * 3.25), "3.3 MB/s");
   assert.equal(formatBandwidth(512 * 1024 * 8), "512 KB/s");
   assert.equal(formatBandwidth(8), "0 KB/s");
+});
+
+/** 一条正常的 Resource Timing 条目：5MB 走了 4 秒 */
+const entry = (overrides = {}) => ({
+  responseStart: 1_000,
+  responseEnd: 5_000,
+  transferSize: 5 * MB + 400,
+  encodedBodySize: 5 * MB,
+  ...overrides,
+});
+
+test("Resource Timing：字节 ÷（末字节 − 首字节），服务端等待落在首字节之前不算", () => {
+  // 请求 t=0 发出、服务端挂到 t=1000 才给首字节：分母只有 4 秒，不是 5 秒
+  const sample = sampleFromResourceTiming(entry(), 9_000);
+  assert.deepEqual(sample, { at: 9_000, bytes: 5 * MB, transferMs: 4_000 });
+});
+
+test("缓存命中的条目丢掉：一个字节都没走网络，算进去就是拿内存速度冒充带宽", () => {
+  // 回跳到已下过的分片：encodedBodySize 照旧是完整大小，transferSize 却是 0
+  assert.equal(
+    sampleFromResourceTiming(
+      entry({ transferSize: 0, responseStart: 1_000, responseEnd: 1_002 }),
+      0,
+    ),
+    null,
+  );
+});
+
+test("跨源没有 Timing-Allow-Origin 时字段被抹成 0，宁可不给读数", () => {
+  assert.equal(sampleFromResourceTiming(entry({ responseStart: 0, transferSize: 0 }), 0), null);
+});
+
+test("条目缺失或首末字节同刻都不作数，不能让速度变成无穷大", () => {
+  assert.equal(sampleFromResourceTiming(null, 0), null);
+  assert.equal(sampleFromResourceTiming(undefined, 0), null);
+  assert.equal(sampleFromResourceTiming(entry({ responseEnd: 1_000 }), 0), null);
+  assert.equal(sampleFromResourceTiming(entry({ encodedBodySize: 0 }), 0), null);
 });

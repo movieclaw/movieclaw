@@ -378,9 +378,13 @@ async def _observe_attempt(
             # 洗版 attempt 的目标单元本来就是 imported（工单不重开），下方
             # 缺口语义的"工单已闭合→退出观察"判据对它恒真，会在首个巡检
             # tick 把刚投递的洗版任务错误完结。洗版的完成/证伪由入库验证
-            # 裁决（verify_upgrades 置 IMPORTED/FAILED）；这里只做两件事：
-            # 单元全部退出范围时止损取消，否则继续心跳观察与死种换源
+            # 裁决（verify_upgrades 置 IMPORTED/FAILED）；这里只做三件事：
+            # 单元全部退出范围时止损取消；已完成却再也等不到验证裁决的收尾；
+            # 否则继续心跳观察与死种换源
             from movieclaw_api.services.subscription import upgrade_attempt_wanted_rows
+            from movieclaw_api.services.subscription.upgrade import (
+                settle_outdated_upgrade_attempt,
+            )
 
             tracked = await upgrade_attempt_wanted_rows(session, attempt, in_scope_only=False)
             if tracked and not any(row.in_scope for row in tracked):
@@ -392,6 +396,8 @@ async def _observe_attempt(
                 attempt.updated_at = utcnow()
                 session.add(attempt)
                 await session.commit()
+                return False
+            if await settle_outdated_upgrade_attempt(session, attempt):
                 return False
         elif not await _attempt_wanted_rows(session, attempt):
             if await _cancel_attempt_if_out_of_scope(session, attempt):

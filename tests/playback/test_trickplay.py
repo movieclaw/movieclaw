@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 import subprocess
 from pathlib import Path
@@ -217,3 +218,45 @@ def test_generate_command_is_readrate_limited(tmp_path, monkeypatch):
     argv = captured[0]
     assert "-readrate" in argv
     assert argv.index("-readrate") < argv.index("-i")
+
+
+# ---------------------------------------------------------------------------
+# 生成开关（设置 playback.policy.trickplay_enabled）
+# ---------------------------------------------------------------------------
+
+
+class _PolicyStub:
+    """SettingStore 读回的策略替身，只带本模块关心的字段。"""
+
+    def __init__(self, trickplay_enabled: bool):
+        self.trickplay_enabled = trickplay_enabled
+
+
+class _StoreStub:
+    def __init__(self, policy: _PolicyStub):
+        self._policy = policy
+
+    async def get(self, _model):
+        return self._policy
+
+
+def test_schedule_is_noop_when_disabled(tmp_path, monkeypatch):
+    """总开关关闭就不再生成新预览——已生成的照常可读，这是开关而不是删除。"""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(trickplay, "_in_flight", set())
+    monkeypatch.setattr(
+        trickplay, "get_setting_store", lambda: _StoreStub(_PolicyStub(False))
+    )
+    video = tmp_path / "a.mp4"
+    video.write_bytes(b"x")
+    file = make_file(video)
+    calls = []
+    monkeypatch.setattr(trickplay, "generate", lambda f: calls.append(f))
+
+    async def drive():
+        trickplay.schedule(file)
+        await asyncio.sleep(0.05)  # 让后台任务跑完
+
+    asyncio.run(drive())
+    assert calls == []
+    assert file.id not in trickplay._in_flight

@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from movieclaw_api.core.config import get_settings
+from movieclaw_api.settings import PlaybackPolicySetting, get_setting_store
 from movieclaw_db.models import LibraryFile
 
 logger = logging.getLogger("movieclaw_api.playback.trickplay")
@@ -199,6 +200,9 @@ def schedule(file: LibraryFile, *, delay_s: float = 0) -> None:
     ``delay_s``：开会话时传 90 秒——即便有 -readrate 限速，起播头一分钟正是
     转码抢首片、播放器攒缓冲的关键窗口，缩略图这种最不急的活让开它。延迟
     期间用户退出播放也照样生成（低速后台任务，下次进来直接有预览）。
+
+    设置里的 ``trickplay_enabled`` 是总开关：关闭后不再生成新预览（已生成的
+    照常可读，重新打开即恢复），全部触发点都经过这里，一处拦截全覆盖。
     """
     file_id = file.id or 0
     if file_id in _in_flight or load_index(file_id) is not None:
@@ -207,6 +211,9 @@ def schedule(file: LibraryFile, *, delay_s: float = 0) -> None:
 
     async def run() -> None:
         try:
+            stored = await get_setting_store().get(PlaybackPolicySetting)
+            if not stored.trickplay_enabled:
+                return
             if delay_s > 0:
                 await asyncio.sleep(delay_s)
             await asyncio.to_thread(generate, file)

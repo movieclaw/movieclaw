@@ -541,6 +541,74 @@ def _file_from_attempt(file: LibraryFile, attempt: SubscriptionDownloadAttempt) 
     )
 
 
+# 洗版任务下载完成后留给入库的宽限期：监听巡检从发现完成到建好入库作业通常
+# 只要几十秒，留足余量，避免抢在入库验证之前把任务收尾
+_SETTLE_GRACE = timedelta(minutes=30)
+
+
+async def settle_outdated_upgrade_attempt(
+    session: AsyncSession, attempt: SubscriptionDownloadAttempt
+) -> bool:
+    """已下载完成、结果却不再需要的洗版任务就地收尾；返回是否已收尾。
+
+    洗版任务原本只由入库验证 ``verify_upgrades`` 裁决完结，而验证靠文件来源戳
+    精确匹配任务。来源戳缺失或记错（历史数据、下载器证据缺失），或者单元被
+    其他来源抢先升级时，验证不会再为它跑第二次，任务就永远停在「已完成」、
+    一直挂在活动页（NAS 实测《交锋》E12）。这里是**不依赖来源戳**的活性兜底：
+
+    - 判据：它照看的所有在范围单元，当前基线都已**不低于**它的标称档位——
+      此后它的文件入库也不可能再构成升级（验证只认严格更优），继续等没有意义；
+    - 前置：下载完成已超过宽限期，且没有该种子的入库作业在排队或执行，
+      不抢在入库验证之前收尾；标称或基线档位未知时不判；
+    - 结论：CANCELLED 并保留下载器任务，与验证里「被抢先」的收口口径一致，
+      不碰库文件、不改工单关联。
+    """
+    from movieclaw_api.services import jobs
+    from movieclaw_db.models import DownloadAttemptStatus
+
+    if attempt.purpose != "upgrade" or attempt.status != DownloadAttemptStatus.COMPLETED:
+        return False
+    if not attempt.quality:
+        return False
+    now = utcnow()
+    completed_at = attempt.completed_at or attempt.updated_at
+    if completed_at is not None and now - completed_at < _SETTLE_GRACE:
+        return False
+    rows = await upgrade_attempt_wanted_rows(session, attempt)
+    if not rows or any(not row.quality for row in rows):
+        return False
+    spec = (await _specs_for_subscriptions(session, {attempt.subscription_id})).get(
+        attempt.subscription_id
+    )
+    if spec is None:
+        return False
+    claimed = QualitySnapshot.model_validate(attempt.quality)
+    if any(_better(claimed, QualitySnapshot.model_validate(row.quality), spec) for row in rows):
+        return False  # 至少一个单元仍能被它升级：继续等入库验证
+    info_hash = attempt.info_hash.lower()
+    ingest_jobs = await jobs.list_jobs_by_resource(
+        session,
+        resource_type="download",
+        resource_ids=[info_hash],
+        job_type="library.ingest",
+    )
+    if any(job.status in jobs.ACTIVE_JOB_STATUSES for job in ingest_jobs.get(info_hash, [])):
+        return False
+    attempt.status = DownloadAttemptStatus.CANCELLED
+    attempt.next_search_at = None
+    attempt.cleanup_note = (
+        "该洗版单元的在库版本已不低于本任务的标称档位，无需再等待入库；保留下载器任务"
+    )
+    attempt.updated_at = now
+    session.add(attempt)
+    await session.commit()
+    logger.info(
+        "洗版任务收尾：#%s 照看的单元在库版本已不低于其标称档位，不再等待入库（保留下载器任务）",
+        attempt.id,
+    )
+    return True
+
+
 async def verify_upgrades(session: AsyncSession, media_item_id: int) -> None:
     """洗版入库验证：对该条目在途洗版单元，用实测新快照裁决确认/证伪。
 

@@ -20,6 +20,7 @@ import {
   bandwidthBps,
   createBandwidthWindow,
   pushBandwidthSample,
+  sampleFromResourceTiming,
 } from "./bandwidth";
 import { backBufferSeconds } from "./buffer-budget";
 import { type MediaRecoverState, nextMediaRecovery } from "./media-recover";
@@ -377,6 +378,33 @@ class DirectEngine implements PlaybackEngine {
  */
 const MAX_NETWORK_RECOVERIES = 4;
 
+/**
+ * 取出某个地址最近一次请求的 Resource Timing 条目（取流速度的时刻来源）。
+ *
+ * 同一个地址可能被请求多次（重试、回跳重下），取最后一条。条目在响应体收完
+ * 时入库，而 `FRAG_LOADED` 由同一次收尾流程派发，所以这里一定读得到。
+ */
+function readResourceTiming(url: string | undefined): PerformanceResourceTiming | null {
+  if (!url || typeof performance === "undefined") return null;
+  if (typeof performance.getEntriesByName !== "function") return null;
+  const entries = performance.getEntriesByName(url, "resource");
+  return entries.length ? (entries[entries.length - 1] as PerformanceResourceTiming) : null;
+}
+
+/**
+ * 装满就清空 Resource Timing 缓冲。
+ *
+ * 默认缓冲只有 250 条，**装满之后浏览器一律不再记录新条目**——一部长片放几
+ * 分钟就撞上限，取流速度那一格从此永远空着。这些条目除了上面那个读数没人在
+ * 用（`back-navigation.ts` 读的是 navigation 类型，不受影响），装满即倒掉。
+ */
+function guardResourceTimingBuffer(): () => void {
+  if (typeof performance === "undefined") return () => {};
+  if (typeof performance.clearResourceTimings !== "function") return () => {};
+  const onFull = () => performance.clearResourceTimings();
+  performance.addEventListener("resourcetimingbufferfull", onFull);
+  return () => performance.removeEventListener("resourcetimingbufferfull", onFull);
+}
 
 /** 档 1–4：hls.js 喂 fMP4 分片。 */
 class HlsEngine implements PlaybackEngine {
@@ -387,6 +415,8 @@ class HlsEngine implements PlaybackEngine {
   private bandwidth: BandwidthWindow = createBandwidthWindow();
   /** 连续网络恢复计数；任何一个分片成功落地就清零 */
   private networkRecoveries = 0;
+  /** 摘掉 Resource Timing 缓冲守卫（见 guardResourceTimingBuffer） */
+  private stopTimingBufferGuard: (() => void) | null = null;
   /** 解码错误自救阶梯的进度（时刻），语义见 media-recover.ts */
   private readonly mediaRecover: MediaRecoverState = { lastRecoverAt: null, lastSwapAt: null };
 
@@ -394,6 +424,7 @@ class HlsEngine implements PlaybackEngine {
 
   async attach(): Promise<void> {
     const { video, streamUrl, onFailed } = this.options;
+    this.stopTimingBufferGuard = guardResourceTimingBuffer();
     const { default: HlsCtor } = await import("hls.js");
     this.hls = new HlsCtor({
       // 已播缓冲回收：先按「码率未知」的上限给，拿到真实码率后立刻收紧
@@ -510,18 +541,14 @@ class HlsEngine implements PlaybackEngine {
         this.currentBitrate = Math.max(this.currentBitrate ?? 0, (bytes * 8) / seconds);
         syncBackBuffer();
       }
-      // 取流速度：分母取**首字节到达之后**的那段，不含服务端等 ffmpeg 追上来
-      // 挂住请求的时间（按需供片最长挂 30 秒，算进去速度会被压到十分之一，
-      // 然后用户以为自己宽带坏了）。理由与口径见 bandwidth.ts。
-      const loading = stats?.loading;
-      if (bytes > 0 && loading) {
-        const startedAt = loading.first > 0 ? loading.first : loading.start;
-        this.bandwidth = pushBandwidthSample(this.bandwidth, {
-          at: performance.now(),
-          bytes,
-          transferMs: loading.end - startedAt,
-        });
-      }
+      // 取流速度：口径与「为什么不能用 data.frag.stats.loading 的时刻」见
+      // bandwidth.ts —— 一句话，那是 XHR 回调排到主线程的时间，卡顿时会把
+      // 几 MB 的分片算成传了十几毫秒，读数飙到带宽的上百倍。
+      const sample = sampleFromResourceTiming(
+        readResourceTiming(data.frag?.url),
+        performance.now(),
+      );
+      if (sample) this.bandwidth = pushBandwidthSample(this.bandwidth, sample);
     });
 
     this.hls.loadSource(streamUrl);
@@ -552,6 +579,8 @@ class HlsEngine implements PlaybackEngine {
   destroy(): void {
     this.stopStallWatch?.();
     this.stopStallWatch = null;
+    this.stopTimingBufferGuard?.();
+    this.stopTimingBufferGuard = null;
     this.hls?.destroy();
     this.hls = null;
   }

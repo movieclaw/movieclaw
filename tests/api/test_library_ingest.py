@@ -2391,6 +2391,148 @@ async def test_subscription_extra_same_tier_file_not_imported_as_new_version(
     assert (imported_row.site_id, imported_row.torrent_id) == ("mteam", "12345")
 
 
+async def _seed_episode_deliveries(db, item, library_id, deliveries):
+    """订阅 + 逐集 grabbed 工单 + 投递记录；deliveries: {集号: (info_hash, torrent_id)}。"""
+    from movieclaw_db.models import (
+        RuleSet,
+        Subscription,
+        SubscriptionDownloadAttempt,
+        WantedItem,
+        WantedStatus,
+    )
+
+    async with db.session() as session:
+        rule_set = RuleSet(name="默认", spec={})
+        session.add(rule_set)
+        await session.commit()
+        await session.refresh(rule_set)
+        sub = Subscription(
+            media_item_id=item.id, kind="tv", rule_set_id=rule_set.id, library_id=library_id
+        )
+        session.add(sub)
+        await session.commit()
+        await session.refresh(sub)
+        for episode, (info_hash, torrent_id) in deliveries.items():
+            session.add_all(
+                [
+                    WantedItem(
+                        subscription_id=sub.id,
+                        media_item_id=item.id,
+                        season_number=1,
+                        episode_number=episode,
+                        status=WantedStatus.GRABBED,
+                        info_hash=info_hash,
+                    ),
+                    SubscriptionDownloadAttempt(
+                        subscription_id=sub.id,
+                        info_hash=info_hash,
+                        site_id="ssd",
+                        torrent_id=torrent_id,
+                        units=[[1, episode]],
+                        last_progress_at=utcnow(),
+                    ),
+                ]
+            )
+        await session.commit()
+
+
+async def _ingest_shared_folder(db, tmp_path, monkeypatch, *, deliveries, torrents, statuses=None):
+    """同一内容目录被多颗种子共用的监听条目：跑一轮入库，返回 {集号: 来源戳}。
+
+    torrents: {info_hash: 该种子写入的文件名}；statuses 为 True 时向入库提供
+    下载器文件清单证据，否则模拟清单不可用。
+    """
+    from movieclaw_downloader import TorrentBrief
+
+    root, watch = tmp_path / "tv", tmp_path / "watch"
+    watch.mkdir()
+    library_id = await _make_library(db, kind=MediaKind.TV, root=root)
+    item = await _make_item(db, kind=MediaKind.TV, title="测试剧集", year=2024)
+    monkeypatch.setattr(ingest_mod, "probe_media", lambda _path: _FAKE_SPEC)
+    _stub_unit(monkeypatch, lambda file: (1, int(file.stem.removeprefix("ep"))))
+
+    async def identify_none(session, kind, watch_root, main, spec):
+        return None
+
+    monkeypatch.setattr(ingest_mod, "_identify", identify_none)
+    await _seed_episode_deliveries(db, item, library_id, deliveries)
+
+    name = "测试剧集.S01.2160p.WEB-DL-CMCTV"
+    entry = watch / name
+    entry.mkdir()
+    for filename in torrents.values():
+        (entry / filename).write_bytes(f"content-{filename}".encode())
+
+    async def briefs():
+        return [
+            TorrentBrief(name=name, content_name=name, completed=True, info_hash=info_hash)
+            for info_hash in torrents
+        ]
+
+    monkeypatch.setattr(ingest_mod, "_downloader_briefs", briefs)
+    if statuses:
+
+        async def file_statuses(matches):
+            return [
+                (
+                    SimpleNamespace(path_mappings=None),
+                    SimpleNamespace(
+                        info_hash=info_hash,
+                        save_path=str(watch),
+                        completed=True,
+                        files=[SimpleNamespace(path=f"{name}/{filename}", selected=True)],
+                    ),
+                )
+                for info_hash, filename in torrents.items()
+            ]
+
+        monkeypatch.setattr(ingest_mod, "_matched_torrent_statuses", file_statuses)
+
+    library = await _get_library(db, library_id)
+    await ingest_mod._sweep_dir(
+        _fixed_rule(watch, library_id=library_id), library, execute_inline=True
+    )
+    async with db.session() as session:
+        rows = (await session.execute(select(LibraryFile))).scalars().all()
+    return {row.episode_number: (row.site_id, row.torrent_id) for row in rows}
+
+
+@pytest.mark.asyncio
+async def test_shared_folder_torrents_stamp_each_file_by_delivered_unit(
+    db, tmp_path, monkeypatch
+):
+    """逐集发布的单集种子共用同一个内容目录名（CMCTV 这类）：一个监听条目同时
+    匹配多颗种子，来源戳必须逐文件记到声明该集的那次投递上。旧实现按条目对
+    ``info_hash IN (...)`` 取第一条，整批文件记到同一颗种子（NAS 实测《交锋》
+    E12 被记成 E10 的种子），洗版验证精确匹配失败、任务永远挂在「已完成」。
+    这里模拟下载器文件清单不可用，只能靠投递单元区分。"""
+    deliveries = {9: ("hash-e09", "t09"), 10: ("hash-a10", "t10"), 11: ("hash-e11", "t11")}
+    stamps = await _ingest_shared_folder(
+        db,
+        tmp_path,
+        monkeypatch,
+        deliveries=deliveries,
+        torrents={info_hash: f"ep{ep}.mkv" for ep, (info_hash, _t) in deliveries.items()},
+    )
+    assert stamps == {ep: ("ssd", torrent_id) for ep, (_h, torrent_id) in deliveries.items()}
+
+
+@pytest.mark.asyncio
+async def test_shared_folder_file_from_foreign_torrent_gets_no_stamp(db, tmp_path, monkeypatch):
+    """同目录里还有非订阅投递的种子（外部/手工添加）写入的文件：下载器文件清单
+    证明它不是任何投递写的，就不能沿用"只有一个投递来源"的推断记到别人名下
+    （NAS 实测《重器》E17~E33 全记在只投递了 E11~E12 的种子上）。宁可不记。"""
+    stamps = await _ingest_shared_folder(
+        db,
+        tmp_path,
+        monkeypatch,
+        deliveries={11: ("hash-e11", "t11")},
+        torrents={"hash-e11": "ep11.mkv", "hash-foreign": "ep12.mkv"},
+        statuses=True,
+    )
+    assert stamps == {11: ("ssd", "t11"), 12: (None, None)}
+
+
 @pytest.mark.asyncio
 async def test_explicit_e00_pilot_skipped_without_blocking(db, tmp_path, monkeypatch):
     """显式 E00（先导/特辑占位）不入库但也不阻塞：正片照常入库、结论 imported、
