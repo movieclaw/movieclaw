@@ -74,6 +74,7 @@ import { formatClock } from "@/lib/player/timeline";
 import { USER_LOWEST_SOURCE, mediaSourceDisplayLabel } from "@/lib/media-source-annotation";
 import { useDoubanAppHref } from "@/lib/douban-app-link";
 import { useBackdrop } from "@/lib/backdrop";
+import { useIsMobile } from "@/lib/use-media-query";
 import { resolveRequestUrl } from "@/lib/http";
 import { cachedImageUrl } from "@/lib/image-proxy";
 import { languageLabel } from "@/lib/language-labels";
@@ -319,12 +320,26 @@ export function LibraryItemDetailView({
   // 不再只铺详情卡片的局部），离开即恢复用户配置的背景——见 lib/backdrop.tsx
   // 的 setOverrideBackdrop。没有横幅剧照时退回海报，覆盖层自己会铺满作氛围色。
   const { setOverrideBackdrop } = useBackdrop();
+  const isMobile = useIsMobile();
   const immersiveUrl = detail ? imageUrl(detail.backdrop_url ?? detail.poster_url) : "";
+  // 手机也换全站背景，但页面本身不靠它显示：横版剧照铺满又高又窄的整屏只能按高度放大、
+  // 从正中裁一条竖条，所以手机上看到的剧照是页内 Hero（mobileHeroSrc），滚动容器铺黑把
+  // 全站背景整个挡住。仍然要换，是因为侧栏的液态玻璃折射的就是全站背景
+  // （useBackdrop().backdrop）：不换的话展开侧栏透出的是用户自己的壁纸，与页面上的剧照
+  // 断成两截。两处是同一个 URL，浏览器只下载一次
   useEffect(() => {
     if (!immersiveUrl) return;
     setOverrideBackdrop(immersiveUrl);
     return () => setOverrideBackdrop(null);
   }, [immersiveUrl, setOverrideBackdrop]);
+  // 手机 Hero 用剧照，与桌面同一张：海报在外面的海报墙上已经看过了，进详情页要的是另一张
+  // 画面。没有剧照时才退回主图（其他库的抓帧、极少数没刮到剧照的条目）
+  const mobileHeroSrc = immersiveUrl;
+  // Hero 的框比剧照高：宽度撑满、高约 1.15 倍宽（封顶 62svh，390px 宽的屏上约 448px）。
+  // 横版剧照按高度铺满、上下不裁，左右裁掉两边、居中留下人物主体——比按宽度塞下整张
+  // （只有 219px 高）多一倍画面，又不像铺满整屏那样只剩中间一条
+  const mobileHeroHeight = "min(115vw, 62svh)";
+  const showMobileHero = isMobile && mobileHeroSrc !== "";
 
   // 待回收行的恢复 / 立即清理（library-file-recycle.md §7）。
   // 恢复是可逆动作直接执行；清理真删磁盘，做种保护形态额外讲清断种风险
@@ -536,7 +551,11 @@ export function LibraryItemDetailView({
     // 满屏布局，没有留白，圆角直接压在屏幕边上：顶栏的吸顶雾层被这层
     // overflow 一裁，就成了贴在屏幕顶上的一块圆角色块（手机上肉眼可见的
     // 两个缺角），底边同理被 Home 指示条切掉。手机上一律方角、真通栏。
-    <div className="detail-ambient scroll-thin scroll-safe relative isolate h-full overflow-y-auto rounded-2xl max-md:rounded-none">
+    <div
+      className={`detail-ambient scroll-thin scroll-safe relative isolate h-full overflow-y-auto rounded-2xl max-md:rounded-none ${
+        showMobileHero ? "detail-ambient--hero" : ""
+      }`}
+    >
       {/* 没有任何 Hero 图层：全站背景此刻就是本片剧照（沉浸覆盖 + 本页豁免
           全局蒙版，见 app-shell 的 isHome），大图直出、零边界；.detail-ambient
           在滚动容器上铺「透明 → 纯黑」的渐变板托住下方内容（见 globals.css）。
@@ -634,8 +653,32 @@ export function LibraryItemDetailView({
         }
       />
 
-      {/* 氛围留白：这一段什么都不放，让剧照完整呼吸 */}
-      <div className="h-[30vh] min-h-[180px] max-md:h-[22vh] max-md:min-h-[120px]" />
+      {/* 手机 Hero（剧照）：宽度撑满，从状态栏底下起铺（绝对定位在滚动内容顶端，PageNav
+          的返回键与吸顶雾层浮在它上面），随内容一起滚走，不固定在背景上。顶部一抹暗让状态栏
+          与返回键落在亮图上也读得清；底部从中段开始压暗，到底边落成纯黑，与下方黑底无缝接上 */}
+      {showMobileHero && (
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-x-0 top-0 z-0 overflow-hidden"
+          style={{ height: mobileHeroHeight }}
+        >
+          <img src={mobileHeroSrc} alt="" decoding="async" className="size-full object-cover object-center" />
+          <div className="absolute inset-x-0 top-0 h-28 bg-gradient-to-b from-black/45 to-transparent" />
+          <div className="absolute inset-x-0 bottom-0 h-[55%] bg-gradient-to-b from-transparent via-black/55 to-black" />
+        </div>
+      )}
+
+      {/* 氛围留白：这一段什么都不放，让剧照完整呼吸。手机有 Hero 时 = Hero 高度减去吸顶
+          顶栏的占位（52px + 安全区）与片名压进图里的那一截（150px），片名与信息落在剧照
+          底部的渐变上；视口很矮时减到负数就不留白 */}
+      <div
+        className={showMobileHero ? undefined : "h-[30vh] min-h-[180px] max-md:h-[22vh] max-md:min-h-[120px]"}
+        style={
+          showMobileHero
+            ? { height: `max(0px, calc(${mobileHeroHeight} - 52px - var(--safe-top) - 150px))` }
+            : undefined
+        }
+      />
 
       {/* 内容层：-mt-28/pt-28 与 .detail-ambient 的渐变起点对齐——渐变从标题
           上方开始压暗，音轨附近已接近纯黑，下面保持全黑。 */}

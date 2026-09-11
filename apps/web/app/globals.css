@@ -457,6 +457,12 @@ body::before {
   .detail-ambient {
     --detail-ambient-top: calc(max(22vh, 120px) - 112px);
   }
+  /* 手机有页内剧照 Hero 时（library-item-detail-view 的 mobileHeroSrc）：页面上的剧照由
+     Hero 来画，滚动容器直接铺黑。全站背景仍换成同一张剧照（侧栏玻璃要折射它），但它在
+     竖屏上是按高度放大、只剩中间一条的裁切，由这层黑底整个挡住，不在页面上露出来 */
+  .detail-ambient.detail-ambient--hero {
+    background: #000;
+  }
 }
 
 /*
