@@ -8,6 +8,8 @@ status 在途``，对洗版 attempt 恒为空（工单不重开、info_hash 指�
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 import pytest_asyncio
 
@@ -222,3 +224,78 @@ async def test_task_center_relations_skip_completed_download_attempt(db):
     async with db.session() as session:
         subscriptions, _manual = await _relations(session)
         assert "newhash" not in subscriptions
+
+
+async def _complete_upgrade(db, attempt_id, wanted_id, *, baseline, completed_ago):
+    """洗版 attempt 下载完成，工单基线改为指定档位（模拟入库验证已跑过或尚未跑）。"""
+    async with db.session() as session:
+        attempt = await session.get(SubscriptionDownloadAttempt, attempt_id)
+        attempt.status = DownloadAttemptStatus.COMPLETED
+        attempt.completed_at = utcnow() - completed_ago
+        wanted = await session.get(WantedItem, wanted_id)
+        wanted.quality = baseline
+        await session.commit()
+
+
+async def _observe_offline(db, monkeypatch, attempt_id):
+    async def lookup_unknown(*args, **kwargs):
+        return progress_mod._TorrentLookup(match=None, reachable_count=0)
+
+    monkeypatch.setattr(progress_mod, "_lookup_torrent", lookup_unknown)
+    await progress_mod._observe_attempt(attempt_id, downloaders=[])
+    async with db.session() as session:
+        return await session.get(SubscriptionDownloadAttempt, attempt_id)
+
+
+@pytest.mark.asyncio
+async def test_observe_settles_completed_upgrade_whose_units_reached_claim(db, monkeypatch):
+    """洗版任务已下完、单元基线也已达到它的标称档位，入库验证却没把它记为已入库
+    （文件来源戳对不上，或被其他来源抢先）：验证不会再为它跑第二次，巡检必须
+    收尾，不能永远挂在「已完成」（NAS 实测《交锋》E12）。下载器任务保留。"""
+    _sub, attempt_id, wanted_id = await _seed(db)
+    await _complete_upgrade(
+        db, attempt_id, wanted_id, baseline=_REMUX, completed_ago=timedelta(hours=2)
+    )
+    attempt = await _observe_offline(db, monkeypatch, attempt_id)
+    assert attempt.status == DownloadAttemptStatus.CANCELLED
+    assert "不低于本任务的标称档位" in (attempt.cleanup_note or "")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("baseline", "completed_ago"),
+    [(_WEBDL, timedelta(hours=2)), (_REMUX, timedelta(minutes=5))],
+    ids=["claim-still-better", "within-grace"],
+)
+async def test_observe_keeps_completed_upgrade_awaiting_verification(
+    db, monkeypatch, baseline, completed_ago
+):
+    """仍能构成升级（文件还没入库）或刚下完仍在宽限期内：保持「已完成」等入库验证裁决。"""
+    _sub, attempt_id, wanted_id = await _seed(db)
+    await _complete_upgrade(
+        db, attempt_id, wanted_id, baseline=baseline, completed_ago=completed_ago
+    )
+    attempt = await _observe_offline(db, monkeypatch, attempt_id)
+    assert attempt.status == DownloadAttemptStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_observe_keeps_completed_upgrade_while_ingest_job_pending(db, monkeypatch):
+    """该种子的入库作业还在排队/执行：不抢在入库验证之前收尾。"""
+    from movieclaw_api.services import jobs
+
+    _sub, attempt_id, wanted_id = await _seed(db)
+    await _complete_upgrade(
+        db, attempt_id, wanted_id, baseline=_REMUX, completed_ago=timedelta(hours=2)
+    )
+    async with db.session() as session:
+        await jobs.create_job(
+            session,
+            job_type="library.ingest",
+            subject="T.S01E01.REMUX",
+            input_data={},
+            resources=[jobs.ResourceRef("download", "newhash", relation="source")],
+        )
+        await session.commit()
+    attempt = await _observe_offline(db, monkeypatch, attempt_id)
+    assert attempt.status == DownloadAttemptStatus.COMPLETED

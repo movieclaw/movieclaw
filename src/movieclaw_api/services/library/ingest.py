@@ -166,6 +166,7 @@ from movieclaw_db.models import (
     MediaItem,
     MediaSeason,
     NoticeSeverity,
+    SubscriptionDownloadAttempt,
     utcnow,
 )
 from movieclaw_db.models.manual_download_intent import MANUAL_DOWNLOAD_INTENT_TTL
@@ -1824,22 +1825,28 @@ async def _ingest_entry(
     # 来源戳：入库文件行必须带上 (site, torrent)，洗版验证的 _file_from_attempt
     # 才能精确匹配「文件 ↔ 投递」。缺了它只能退化到时间兜底——两个包在同一
     # 时间窗交错完成时，会把别家包的文件记到自己账上（NAS 实测 HDKWeb 包的
-    # 文件被记成 CHDWEB 投递，qb 里的 CHDWEB 任务白下、清理证据链也锚错）
-    prov_site: str | None = None
-    prov_torrent: str | None = None
-    prov_confidence: str | None = None
+    # 文件被记成 CHDWEB 投递，qb 里的 CHDWEB 任务白下、清理证据链也锚错）。
+    # 订阅投递按**文件**解析（同名目录可能挂着多颗种子，见 _DeliveryProvenance）；
+    # 手动下载的身份锚本就钉在单颗种子上，沿用条目级
+    manual_stamp: tuple[str | None, str | None] = (None, None)
+    delivery: _DeliveryProvenance | None = None
     if manual_intent is not None:
-        prov_site, prov_torrent = manual_intent.site_id, manual_intent.torrent_id
+        manual_stamp = (manual_intent.site_id, manual_intent.torrent_id)
     elif matched_hashes:
-        prov_site, prov_torrent, prov_confidence = await _delivery_provenance(
-            session, matched_hashes
-        )
+        delivery = await _load_delivery_provenance(session, entry, matched_hashes)
+
+    def provenance(
+        file: Path | None, unit: tuple[int, int] | None
+    ) -> tuple[str | None, str | None]:
+        """某个入库文件的来源戳 (site, torrent)。"""
+        return delivery.stamp(entry, file, unit) if delivery is not None else manual_stamp
+
     # 身份来源分档：这条入库记录的身份是怎么来的、有多可信。这一列此前在
     # 监听导入路径上恒为 NULL——连"用户亲手认领的"和"机器蒙的"都分不出来
     ledger_identity = _ledger_identity_source(
         forced=forced_item is not None,
         identity_source=identity_source,
-        confidence=prov_confidence,
+        confidence=delivery.confidence if delivery is not None else None,
     )
     # 时长体检（§8）：订阅按 info_hash 认领身份时会短路整条名称识别链，连带
     # 跳过 resolve.py 上那套佐证/反证机器；这里补上被跳过的那一次反证。
@@ -1980,6 +1987,7 @@ async def _ingest_entry(
             )
         assert dest_library is not None and dest_library.id is not None
         stat = final.stat()
+        disc_site, disc_torrent = provenance(None, None)
         await repo.upsert_by_path(
             LibraryFile(
                 library_id=dest_library.id,
@@ -2009,8 +2017,8 @@ async def _ingest_entry(
                 release_group=release_attrs.release_group,
                 source=FileSource.IMPORTED,
                 identity_source=ledger_identity,
-                site_id=prov_site,
-                torrent_id=prov_torrent,
+                site_id=disc_site,
+                torrent_id=disc_torrent,
                 added_batch_id=added_batch_id,
             )
         )
@@ -2266,6 +2274,9 @@ async def _ingest_entry(
                 doubt["expected_minutes"],
                 final.name,
             )
+        stamp_site, stamp_torrent = provenance(
+            file, None if kind is MediaKind.MOVIE else (season, episode)
+        )
         await repo.upsert_by_path(
             LibraryFile(
                 library_id=dest_library.id,
@@ -2293,8 +2304,8 @@ async def _ingest_entry(
                 source=FileSource.IMPORTED,
                 identity_source=ledger_identity,
                 identity_doubt=doubt,
-                site_id=prov_site,
-                torrent_id=prov_torrent,
+                site_id=stamp_site,
+                torrent_id=stamp_torrent,
                 added_batch_id=added_batch_id,
             )
         )
@@ -2766,29 +2777,99 @@ async def _expected_runtime_minutes(session, media_item_id: int) -> int | None:
     ).scalar_one_or_none()
 
 
-async def _delivery_provenance(
-    session, info_hashes: list[str]
-) -> tuple[str | None, str | None, str | None]:
-    """按 info_hash 反查订阅投递记录的来源戳与身份证据强度。
+@dataclass(frozen=True)
+class _DeliveryProvenance:
+    """监听条目内**逐文件**解析订阅投递的来源戳 (site, torrent)。
 
-    返回 ``(site_id, torrent_id, identity_confidence)``。条目匹配到的 hash 就是
-    这个种子本身，任何同 hash 的投递记录都是它的来源——与身份认领走哪条链无关。
-    证据强度用于给入库台账的 ``identity_source`` 分档（exact / guess）。
-    查不到（外部种子）返回 (None, None, None)。
+    不能按条目只取一个来源：逐集发布的单集种子（CMCTV 这类）在下载器里共用
+    同一个内容目录名，一个监听条目于是同时匹配多颗种子。旧实现对
+    ``info_hash IN (...)`` 不排序取第一条，把整批文件记到同一次投递名下（NAS
+    实测 5 部剧 31 个文件记错，《交锋》E12 被记成 E10 的种子），洗版验证
+    ``_file_from_attempt`` 精确比对失败，洗版任务永远停在「已完成」。
+
+    判定顺序。原则是宁可不记、不可记错：缺戳时洗版验证还能退化到时间关联
+    兜底，记错了连兜底都用不上。
+
+    1. 有下载器文件清单时，候选只留**真正写入该文件**的种子；清单在手却没有
+       任何种子写它 → 不是投递来的（外部种子或手工放入），不记；
+    2. 候选中投递单元声明了该集的优先，同一集投递过多次取最新一次；
+    3. 下载器确认写入、但没有投递声明该集（季包里的附带集）→ 取最新候选；
+    4. 没有文件证据时，候选只剩一个来源才记，多个来源无从区分 → 不记。
     """
-    from movieclaw_db.models import SubscriptionDownloadAttempt
 
+    attempts: tuple[SubscriptionDownloadAttempt, ...]  # 条目匹配到的、带站点来源的投递
+    file_hashes: dict[str, frozenset[str]]  # 条目内相对路径 → 下载器确认写入它的 hash
+
+    @property
+    def confidence(self) -> str | None:
+        """条目级身份证据强度：全部投递都是外部 ID 精确命中才算 exact，否则按猜测记。"""
+        if self.attempts and all(a.identity_confidence == "exact_id" for a in self.attempts):
+            return "exact_id"
+        return None
+
+    def stamp(
+        self, entry: Path, file: Path | None, unit: tuple[int, int] | None
+    ) -> tuple[str | None, str | None]:
+        """单个入库文件的来源戳；file 为 None（原盘目录）时不看文件证据。"""
+        candidates = list(self.attempts)
+        writers: frozenset[str] | None = None
+        if file is not None and self.file_hashes:
+            writers = self.file_hashes.get(_relative_entry_file(entry, file) or "", frozenset())
+            candidates = [a for a in candidates if a.info_hash.lower() in writers]
+        if unit is not None:
+            claiming = [
+                a
+                for a in candidates
+                if unit
+                in {(int(u[0]), int(u[1])) for u in a.units if isinstance(u, list) and len(u) == 2}
+            ]
+            if claiming:
+                newest = max(claiming, key=lambda a: a.id or 0)
+                return newest.site_id, newest.torrent_id
+        if writers and candidates:
+            newest = max(candidates, key=lambda a: a.id or 0)
+            return newest.site_id, newest.torrent_id
+        sources = {(a.site_id, a.torrent_id) for a in candidates}
+        return sources.pop() if len(sources) == 1 else (None, None)
+
+
+async def _load_delivery_provenance(
+    session, entry: Path, info_hashes: list[str]
+) -> _DeliveryProvenance:
+    """按条目匹配到的 hash 载入投递记录；确有投递时再向下载器取文件清单作逐文件证据。"""
+    hashes = sorted({h for value in info_hashes if value for h in (value, value.lower())})
     rows = (
         await session.execute(
             select(SubscriptionDownloadAttempt).where(
-                SubscriptionDownloadAttempt.info_hash.in_(info_hashes)  # type: ignore[union-attr]
+                SubscriptionDownloadAttempt.info_hash.in_(hashes)  # type: ignore[union-attr]
             )
         )
     ).scalars()
-    for attempt in rows:
-        if attempt.site_id:
-            return attempt.site_id, attempt.torrent_id, attempt.identity_confidence
-    return None, None, None
+    attempts = tuple(attempt for attempt in rows if attempt.site_id)
+    file_hashes = await _entry_file_hashes(entry) if attempts else {}
+    return _DeliveryProvenance(attempts=attempts, file_hashes=file_hashes)
+
+
+async def _entry_file_hashes(entry: Path) -> dict[str, frozenset[str]]:
+    """按下载器文件清单反推条目内每个文件由哪些种子写入；拿不到证据返回空表。"""
+    try:
+        matches = _match_briefs(entry.name, await _downloader_briefs())
+        details = await _matched_torrent_statuses(matches) if matches else None
+    except Exception as exc:  # noqa: BLE001 -- 来源戳是附加信息，下载器故障不能拖垮入库
+        logger.warning(
+            "读取下载器文件清单失败，「%s」的来源戳改按投递的集号推断：%s", entry.name, exc
+        )
+        return {}
+    writers: dict[str, set[str]] = {}
+    for downloader, status in details or []:
+        for torrent_file in status.files or ():
+            if not torrent_file.selected:
+                continue
+            source = _torrent_file_source(downloader, status, torrent_file)
+            relative = _relative_entry_file(entry, source) if source is not None else None
+            if relative is not None:
+                writers.setdefault(relative, set()).add(str(status.info_hash).lower())
+    return {path: frozenset(hashes) for path, hashes in writers.items()}
 
 
 async def _manual_download_identity(
