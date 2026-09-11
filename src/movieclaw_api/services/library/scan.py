@@ -427,6 +427,10 @@ def scan_summary_payload(summary: ScanSummary) -> dict[str, object]:
     return payload
 
 
+#: 两次进度落库之间的最短间隔（秒）。见 ``_ScanJobBridge.checkpoint``。
+_MIN_PROGRESS_INTERVAL = 0.25
+
+
 @dataclass
 class _ScanJobBridge:
     """把高频进程内扫描状态节流写入 Job，并轮询持久化取消请求。
@@ -471,20 +475,27 @@ class _ScanJobBridge:
         check_cancel: bool = True,
         before_write: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
-        """阶段变化、约一秒或约 1% 时落一次进度，避免逐文件刷事件表。"""
+        """阶段变化、约一秒或约 1% 时落一次进度，避免逐文件刷事件表。
+
+        再压一道**硬下限**（``_MIN_PROGRESS_INTERVAL``）：只有「1%」这一条时，
+        快存储上它会疯狂触发——一个 1600 文件的库在 SSD 上几秒扫完，1% 就是
+        每秒三十来次进度落库，而每次都是一条 ``job`` 更新加一条 ``job_event``
+        插入（实测一次空跑对账为此写掉 16MB WAL），SSE 那头也在按同一频率往
+        浏览器推。没有任何人或界面消费得了每秒三十次刷新（前端的兜底轮询是
+        15 秒一次）。慢盘上每次间隔本来就超过一秒，这道下限不改变任何行为。
+        """
         async with self._lock:
             await self.resumed_identified()  # 抢在第一次覆盖之前读走上一轮的观察值
             if check_cancel:
                 await self.raise_if_cancelled()
             now = time.monotonic()
             step = max(1, state.total // 100) if state.total else 128
-            if (
-                not force
-                and state.phase == self._last_phase
-                and state.processed - self._last_processed < step
-                and now - self._last_update_at < 1.0
-            ):
-                return
+            elapsed = now - self._last_update_at
+            if not force and state.phase == self._last_phase:
+                if elapsed < _MIN_PROGRESS_INTERVAL:
+                    return
+                if state.processed - self._last_processed < step and elapsed < 1.0:
+                    return
             if before_write is not None:
                 # 扫描主会话可能正持有 SQLite 读/写事务。先把领域数据提交成
                 # 安全检查点，再用 JobContext 的独立会话写观察进度，避免
