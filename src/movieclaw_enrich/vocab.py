@@ -197,6 +197,12 @@ MEDIA_SOURCE: dict[str, str] = {
     "WEBRIP": "WEBRip", "WEB-RIP": "WEBRip",
     "BDRIP": "BDRip",
     "HDTVRIP": "HDTVRip", "HDTV": "HDTV", "TVRIP": "TVRip",
+    # FHDRip（Full HD Rip）是 HDRip 的常见写法，国内站尤其多。不能指望
+    # "HDRIP" 顺带命中它——_boundary_pattern 的字母守卫要求词条左边不是字母，
+    # 而 FHDRip 的 'F' 正好挡在那里。漏收的后果不是判错档，是**片源识别不出来**，
+    # 于是拒绝原因变成"无法识别片源"（听起来像系统没本事），而不是"片源 HDRip
+    # 不在允许范围"（用户一看就知道是自己规则的取舍）
+    "FHDRIP": "HDRip",
     "HDRIP": "HDRip",
     "DVDRIP": "DVDRip", "DVD9": "DVD", "DVD5": "DVD", "DVD": "DVD",
     "HD-DVD": "HD-DVD", "HDDVD": "HD-DVD",

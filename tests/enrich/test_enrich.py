@@ -273,6 +273,17 @@ class TestAudioAndHDR:
         assert a.hdr == []
         assert a.media_source == "HDRip"
 
+    def test_fhdrip_is_recognised_as_hdrip(self):
+        """FHDRip（Full HD Rip）不会被 'HDRIP' 顺带命中——字母守卫挡着 'F'。
+
+        漏收它的后果不是判错档，是片源**识别不出来**：规则要求明确片源时，
+        拒绝原因会变成"无法识别片源"而不是"片源 HDRip 不在允许范围"，
+        用户没法从活动流水里看出这是自己规则的取舍。
+        """
+        a = enrich("Some.Movie.2019.FHDRip.x264-TEAM")
+        assert a.media_source == "HDRip"
+        assert a.hdr == []
+
     def test_web_not_matched_inside_webrip(self):
         a = enrich("Show.S01.720p.WEBRip.AAC.x264-GRP")
         assert a.media_source == "WEBRip"
