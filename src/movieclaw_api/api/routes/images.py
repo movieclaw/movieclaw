@@ -1,5 +1,7 @@
 """通用图片代理接口（带本地磁盘缓存）与刮削图片资产直出。"""
 
+from stat import S_ISREG
+
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,7 +13,7 @@ from movieclaw_api.services.image_cache import get_image_cache
 from movieclaw_api.services.image_variants import (
     ImageVariant,
     get_image_variant_service,
-    local_source_version,
+    source_version_of,
 )
 from movieclaw_db.engine import get_session
 
@@ -79,11 +81,17 @@ async def get_metadata_asset(
     海报位一直空着（实测踩过）。
     """
     from movieclaw_api.services.library.access import assert_item_visible
-    from movieclaw_api.services.media_scrape import assets_root
+    from movieclaw_api.services.media_scrape import assets_root_resolved
 
-    root = assets_root().resolve()
+    root = assets_root_resolved()
     target = (root / path).resolve()
-    if not target.is_relative_to(root) or not target.is_file():
+    # 一次 stat 走完「存在吗 + 是文件吗 + 版本戳 + 能不能永久缓存」四问：
+    # 这四问原本各 stat 一次，而海报墙一屏就是上百个这样的请求
+    try:
+        stat = target.stat()
+    except OSError:
+        raise NotFoundException("图片资产不存在") from None
+    if not target.is_relative_to(root) or not S_ISREG(stat.st_mode):
         raise NotFoundException("图片资产不存在")
     head = path.split("/", 1)[0]
     if head.isdigit() and principal.kind != "admin":
@@ -92,12 +100,12 @@ async def get_metadata_asset(
         cached = await get_image_variant_service().get_or_create(
             target,
             source_key=f"asset:{path}",
-            source_version=local_source_version(target),
+            source_version=source_version_of(stat),
             variant=variant,
         )
         # 业务 URL 携带的 v 与当前文件版本一致时才可永久缓存；手写的错误 v
         # 仍给一天缓存，避免同一 URL 在换图后长期停留旧派生图。
-        immutable = v == str(int(target.stat().st_mtime))
+        immutable = v == str(int(stat.st_mtime))
         cache_control = (
             "public, max-age=31536000, immutable"
             if immutable

@@ -32,6 +32,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -80,13 +81,13 @@ def find_sidecars(main: Path) -> list[tuple[Path, str]]:
     if main.is_dir() or not main.suffix:
         return []
     try:
-        entries = sorted(main.parent.iterdir())
+        # scandir 用 getdents 已带回的类型位判断，省掉逐条目一次 stat
+        with os.scandir(main.parent) as entries:
+            files = sorted(Path(entry.path) for entry in entries if entry.is_file())
     except OSError:
         return []
     found: list[tuple[Path, str]] = []
-    for entry in entries:
-        if not entry.is_file():
-            continue
+    for entry in files:
         tail = sidecar_tail(main, entry)
         if tail is not None:
             found.append((entry, tail))

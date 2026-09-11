@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -154,7 +155,9 @@ def discover_external_subtitles(
     """
     if dir_names is None:
         try:
-            dir_names = [p.name for p in video_path.parent.iterdir() if p.is_file()]
+            # scandir 用 getdents 已带回的类型位判断，省掉逐条目一次 stat
+            with os.scandir(video_path.parent) as entries:
+                dir_names = [entry.name for entry in entries if entry.is_file()]
         except OSError:
             logger.warning("外挂字幕发现失败（目录不可读）：%s", video_path.parent)
             return []

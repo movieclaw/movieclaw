@@ -26,6 +26,8 @@ Web 的 artwork 接口、Jellyfin 图片接口、本地条目的资产生成（t
 
 from __future__ import annotations
 
+import os
+import time
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -44,21 +46,94 @@ _KINDS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
 }
 
 
-def _listing(directory: Path, cache: dict[Path, dict[str, Path] | None]) -> dict[str, Path] | None:
+#: 目录列举的复用缓存：``{目录: {小写文件名: 路径}}``，``None`` 表示列不出来。
+#: 一次调用内共享（见 ``find_artwork`` 的 ``cache`` 参数）。
+DirListing = dict[Path, "dict[str, Path] | None"]
+
+#: 进程级目录列举缓存：目录 -> (目录 inode 指纹, 列举结果)。见 ``dir_listing``。
+_DIR_CACHE: dict[Path, tuple[tuple[int, int, int], dict[str, Path]]] = {}
+#: 缓存目录数上限。满了整体清空——纯加速缓存，重建只是多列几次目录。
+_DIR_CACHE_MAX = 4096
+#: 目录刚被改过的这段时间内不信任缓存：部分文件系统的 mtime 只有秒级精度，
+#: "同一秒内先读后改"会让指纹看起来没变。留出这个窗口，代价只是刚落盘的
+#: 目录多列几次。
+_DIR_QUIET_SECONDS = 2.0
+
+
+def _dir_fingerprint(stat: os.stat_result) -> tuple[int, int, int]:
+    """目录的「内容有没有变过」指纹。
+
+    目录的 mtime/ctime 在其中新增、删除、改名任一条目时都会变；本函数的
+    使用者只关心目录里**有哪些名字**，因此这三项一致即可复用上次的列举。
+    单个文件内容被改写不动目录 mtime——也确实与列举结果无关。
+    """
+    return (stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
+
+
+def dir_listing(directory: Path, cache: DirListing | None = None) -> dict[str, Path] | None:
     """目录里的文件：小写文件名 → 真实路径。列不出来（挂载断了）为 None。
 
     一次 listdir 代替几十次 stat：图片接口每张图都要走这里，网络挂载上
     stat 一次就是一次往返。文件名按小写匹配（与 Jellyfin 一致，海报叫
     ``Poster.JPG`` 也认）。
+
+    两层缓存，都只为省磁盘 IO，都不会让用户看到过期的目录内容：
+
+    1. ``cache``：调用方传进来的一次性字典，同一次请求内共享；
+    2. 进程级缓存：先 stat 一次目录，指纹（mtime/ctime/size）与上次一致就
+       直接复用上次的列举结果。**这不是按时间过期的缓存**——目录里增删改名
+       任何一个文件都会改掉目录自己的 mtime，指纹随之失效，所以用户刚拷进去
+       的海报下一次请求就能看到。省下的是「一次 getdents + 逐条目判类型」，
+       换成「一次 stat」。家用 NAS 的电视端滚一屏海报，原本每张图都要把
+       影片目录重列一遍，现在只剩每张图一次 stat。
+
+    用 ``os.scandir`` 而不是 ``Path.iterdir()`` + ``is_file()``：后者对目录里
+    每个条目都要多一次 stat（一个 30 集的季目录 ≈ 90 个文件 = 90 次），而
+    scandir 能直接用 ``getdents`` 已经带回来的类型位判断，绝大多数文件系统上
+    一次目录读取就够。类型位缺失（部分网络挂载）时它自己回落到 stat，
+    因此永远不会比原来更慢。
     """
-    if directory in cache:
+    if cache is not None and directory in cache:
         return cache[directory]
-    try:
-        names = {entry.name.lower(): entry for entry in directory.iterdir() if entry.is_file()}
-    except OSError:
-        names = None
-    cache[directory] = names
+    names = _listing_uncached(directory)
+    if cache is not None:
+        cache[directory] = names
     return names
+
+
+def _listing_uncached(directory: Path) -> dict[str, Path] | None:
+    try:
+        dir_stat = os.stat(directory)
+    except OSError:
+        _DIR_CACHE.pop(directory, None)
+        return None
+    fingerprint = _dir_fingerprint(dir_stat)
+    hit = _DIR_CACHE.get(directory)
+    if hit is not None and hit[0] == fingerprint:
+        return hit[1]
+    try:
+        with os.scandir(directory) as entries:
+            names = {
+                entry.name.lower(): Path(entry.path) for entry in entries if entry.is_file()
+            }
+    except OSError:
+        _DIR_CACHE.pop(directory, None)
+        return None
+    # 目录刚变过就先不落缓存（见 _DIR_QUIET_SECONDS）
+    if time.time() - dir_stat.st_mtime >= _DIR_QUIET_SECONDS:
+        if len(_DIR_CACHE) >= _DIR_CACHE_MAX:
+            _DIR_CACHE.clear()
+        _DIR_CACHE[directory] = (fingerprint, names)
+    return names
+
+
+def forget_dir_listings() -> None:
+    """丢弃进程级目录缓存（测试用；生产靠目录指纹自动失效）。"""
+    _DIR_CACHE.clear()
+
+
+def _listing(directory: Path, cache: DirListing) -> dict[str, Path] | None:
+    return dir_listing(directory, cache)
 
 
 def dir_art_owned(entry_dir: Path, own_files: Iterable[Path]) -> bool:
@@ -77,16 +152,26 @@ def _owned(entry_dir: Path, own_files: list[Path], cache: dict) -> bool:
     return all(name in own or Path(name).suffix not in SCAN_VIDEO_EXTS for name in listing)
 
 
-def find_artwork(entry_dir: Path, kind: str, own_files: Iterable[Path]) -> Path | None:
+def find_artwork(
+    entry_dir: Path,
+    kind: str,
+    own_files: Iterable[Path],
+    *,
+    cache: DirListing | None = None,
+) -> Path | None:
     """按规则找一张 ``kind`` 图（poster / fanart / thumb）；没有返回 None。
 
     ``own_files`` 是条目自己的视频文件（可在 ``entry_dir`` 的子目录里，如剧集
     的季目录）；sidecar 按各文件主干匹配，目录级图按归属判定。同步磁盘 IO
     （每个涉及的目录列一次），调用方自行决定是否进线程池。
+
+    ``cache``：调用方跨多次调用共享的目录列举缓存。详情页要连着找 poster 与
+    fanart，不共享的话同一批目录要列两遍——剧集的季目录一列就是几十个文件。
     """
     suffixes, dir_names = _KINDS[kind]
     own_files = list(own_files)
-    cache: dict[Path, dict[str, Path] | None] = {}
+    if cache is None:
+        cache = {}
     for video in own_files:
         listing = _listing(video.parent, cache)
         if not listing:

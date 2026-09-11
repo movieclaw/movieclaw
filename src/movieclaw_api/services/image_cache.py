@@ -16,11 +16,15 @@ URL 的访问直接读本地文件，不再消耗外网流量，也不受图床�
 - 同一 URL 的并发请求 singleflight 去重，只有一个真正回源，其余等它落盘。
 - 容量控制：写入量累计到一档阈值后同步触发一次清理，按 mtime 从最旧的
   条目开始删除，降到上限的 90% 为止；命中时刷新内容文件 mtime，等效 LRU。
+- 命中路径按「家用 NAS 的磁盘最怕随机小 IO」调过（见 ``_read_hit``）：
+  元数据在进程内记一份、mtime 刷新按小时节流，一次海报墙滚动因此不再
+  产生上百次元数据读与上百次 inode 写。
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
@@ -48,6 +52,15 @@ class CachedImage:
 
 CacheProducer = Callable[[], Awaitable[tuple[bytes, str]]]
 
+#: 命中时 mtime 至少这么旧才值得刷新（秒）。mtime 只服务于 LRU 淘汰排序，
+#: 「一小时内被用过」和「一分钟前被用过」对淘汰决策没有区别，却是一次实打实
+#: 的 inode 写——海报墙滚一屏上百张图，每张都刷一次就是上百次随机写。
+_MTIME_REFRESH_SECONDS = 3600.0
+
+#: 进程内记住的条目元数据条数上限（每条不到 200 字节）。满了整体清空：
+#: 这是纯加速缓存，丢了只是回到读 .json 的老路，不值得为它引入 LRU。
+_HOT_META_MAX = 4096
+
 
 class ImageCache:
     """按 URL 哈希落盘的图片缓存，回源由 ImageProxy 完成。"""
@@ -60,6 +73,8 @@ class ImageCache:
         self._purge_interval = max(1, min(64 * 1024 * 1024, max_bytes // 10))
         self._bytes_since_purge = 0
         self._inflight: dict[str, asyncio.Task[CachedImage]] = {}
+        # 内容文件的 (mtime_ns, 大小) -> (content_type, version)：见 _read_hit
+        self._hot: dict[str, tuple[int, int, str, str]] = {}
 
     def _entry_paths(self, cache_key: str) -> tuple[Path, Path]:
         """缓存键 -> (内容文件, 元数据文件)；原图的键仍是完整 URL。"""
@@ -69,18 +84,44 @@ class ImageCache:
 
     # ---- 磁盘操作（均为同步函数，调用方用 asyncio.to_thread 包装） ----------
 
-    @staticmethod
-    def _read_hit(content_path: Path, meta_path: Path) -> tuple[str, str] | None:
-        """命中则返回类型/版本并刷新 mtime（供 LRU 排序），未命中返回 None。"""
+    def _read_hit(
+        self, cache_key: str, content_path: Path, meta_path: Path
+    ) -> tuple[str, str] | None:
+        """命中则返回类型/版本，未命中返回 None。
+
+        一次命中原本要三次磁盘操作：读 ``.json``、stat 内容文件、``utime``
+        刷新 mtime。海报墙一屏上百张图，这就是上百次随机读加上百次 inode 写
+        ——后者尤其贵，读还能被页缓存挡下来，写迟早要落盘，NAS 上还会顺带
+        把硬盘唤醒。这里收敛成：
+
+        1. 内容文件 stat 一次（既是存在性校验，也拿到 mtime 判断要不要刷新）；
+        2. ``(mtime_ns, 大小)`` 与进程内记录一致就直接复用元数据，不读
+           ``.json``——内容被重新写过时这对值必变，缓存自然失效；
+        3. mtime 足够新就不写 ``utime``（阈值见 ``_MTIME_REFRESH_SECONDS``）。
+
+        元数据文件仍然是条目有效性的提交标志：只有在需要读它的那一次
+        （首次命中、或内容被换过）才校验它存在且可解析。
+        """
         try:
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            content_type = str(meta["content_type"])
-            version = str(meta.get("version") or meta.get("fetched_at") or "0")
-            if not content_path.is_file():
-                return None
-            os.utime(content_path)
-        except (OSError, ValueError, KeyError):
+            stat = content_path.stat()
+        except OSError:
             return None
+        hot = self._hot.get(cache_key)
+        if hot is not None and hot[0] == stat.st_mtime_ns and hot[1] == stat.st_size:
+            content_type, version = hot[2], hot[3]
+        else:
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                content_type = str(meta["content_type"])
+                version = str(meta.get("version") or meta.get("fetched_at") or "0")
+            except (OSError, ValueError, KeyError):
+                return None
+            if len(self._hot) >= _HOT_META_MAX:
+                self._hot.clear()
+            self._hot[cache_key] = (stat.st_mtime_ns, stat.st_size, content_type, version)
+        if time.time() - stat.st_mtime >= _MTIME_REFRESH_SECONDS:
+            with contextlib.suppress(OSError):
+                os.utime(content_path)
         return content_type, version
 
     @staticmethod
@@ -139,6 +180,9 @@ class ImageCache:
             content_path.unlink(missing_ok=True)
             total -= size
             removed += 1
+        # 被淘汰的条目在进程内记的元数据一并作废（键与路径不是一一可逆的，
+        # 整体清空最省事；清理本身就罕见，重建元数据只是多读几次 .json）
+        self._hot.clear()
         logger.info("图片缓存超过容量上限，已清理最久未访问的 %d 个条目", removed)
 
     # ---- 对外接口 -----------------------------------------------------------
@@ -164,7 +208,7 @@ class ImageCache:
         这让图片变体服务无需再造一套落盘、并发去重和容量清理机制。
         """
         content_path, meta_path = self._entry_paths(cache_key)
-        hit = await asyncio.to_thread(self._read_hit, content_path, meta_path)
+        hit = await asyncio.to_thread(self._read_hit, cache_key, content_path, meta_path)
         if hit is not None:
             content_type, version = hit
             return CachedImage(content_path, content_type, version)

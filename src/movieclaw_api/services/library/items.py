@@ -53,7 +53,12 @@ from movieclaw_api.schemas.library import (
     derive_air_status,
 )
 from movieclaw_api.services.library.access import ContentLimit
-from movieclaw_api.services.library.artwork import ART_EXTS, find_artwork
+from movieclaw_api.services.library.artwork import (
+    ART_EXTS,
+    DirListing,
+    dir_listing,
+    find_artwork,
+)
 from movieclaw_api.services.library.bluray import (
     enrich_spec_with_clpi,
     read_clpi_languages,
@@ -63,6 +68,7 @@ from movieclaw_api.services.library.content_rating import ratings_at_or_below
 from movieclaw_api.services.library.layout import STRM_EXT, entry_dir_of
 from movieclaw_api.services.library.nfo import (
     EntryMetadata,
+    EpisodeNfo,
     NfoActor,
     read_entry_metadata,
     read_episode_metadata,
@@ -128,28 +134,48 @@ _SUBTITLE_EXTS = {".srt", ".ass", ".ssa", ".sub", ".sup", ".vtt"}
 _PROBE_COMMIT_EVERY = 32
 
 
-def find_local_artwork(entry_dir: Path, kind: str, own_files: list[Path]) -> Path | None:
+def find_local_artwork(
+    entry_dir: Path, kind: str, own_files: list[Path], *, cache: DirListing | None = None
+) -> Path | None:
     """条目目录下的本地美术图；``kind``: poster / fanart / thumb。找不到返回 None。
 
     规则见 artwork.find_artwork：文件自己的 ``<主干>-poster`` 精确匹配优先，
     目录级 ``poster.jpg`` 只在目录归这个条目时才认（混放目录不串图）。
     """
-    return find_artwork(entry_dir, kind, own_files)
+    return find_artwork(entry_dir, kind, own_files, cache=cache)
 
 
-def _external_subtitles(video: Path) -> list[str]:
-    """视频旁的外挂字幕文件名（同名前缀匹配："片名.chs.srt" 算"片名.mkv"的）。"""
-    stem = video.stem.lower()
-    found: list[str] = []
-    try:
-        entries = sorted(video.parent.iterdir())
-    except OSError:
-        return found
-    for entry in entries:
-        if not entry.is_file() or entry.suffix.lower() not in _SUBTITLE_EXTS:
+def _external_subtitles_many(
+    videos: list[Path], cache: DirListing | None = None
+) -> dict[Path, list[str]]:
+    """一批视频各自旁边的外挂字幕文件名（同名前缀匹配：
+    "片名.chs.srt" 算 "片名.mkv" 的）。
+
+    **按目录批处理**而不是逐文件列目录：一部 30 集的剧，同一个季目录原本要
+    被列 30 遍（每遍还要对目录里的每个文件 stat 一次判断是不是文件），
+    实测一次剧集详情页因此打出近千次 stat。同一目录列一次、再把这一季的
+    所有分集拿去匹配，结果完全一致。
+    """
+    by_dir: dict[Path, list[Path]] = {}
+    for video in videos:
+        by_dir.setdefault(video.parent, []).append(video)
+    found: dict[Path, list[str]] = {video: [] for video in videos}
+    for directory, members in by_dir.items():
+        listing = dir_listing(directory, cache)
+        if not listing:
             continue
-        if entry.stem.lower() == stem or entry.stem.lower().startswith(stem + "."):
-            found.append(entry.name)
+        subtitles = [
+            name for name in sorted(listing) if Path(name).suffix.lower() in _SUBTITLE_EXTS
+        ]
+        if not subtitles:
+            continue
+        for video in members:
+            stem = video.stem.lower()
+            found[video] = sorted(
+                listing[name].name
+                for name in subtitles
+                if (sub_stem := Path(name).stem) == stem or sub_stem.startswith(stem + ".")
+            )
     return found
 
 
@@ -2107,7 +2133,9 @@ async def layered_item_meta(
     return local_meta
 
 
-def local_item_artwork(roots: list[Path], files: list[LibraryFile], kind: str) -> Path | None:
+def local_item_artwork(
+    roots: list[Path], files: list[LibraryFile], kind: str, *, cache: DirListing | None = None
+) -> Path | None:
     """条目目录里的本地美术图（逐个条目目录找，第一张命中即用）。
 
     Web 的 artwork 接口与 Jellyfin 图片接口共用；找不到时两端各自退回
@@ -2120,10 +2148,30 @@ def local_item_artwork(roots: list[Path], files: list[LibraryFile], kind: str) -
     for entry in entry_dirs:
         if not entry.is_dir():
             continue
-        art = find_local_artwork(entry, kind, paths)
+        art = find_local_artwork(entry, kind, paths, cache=cache)
         if art is not None:
             return art
     return None
+
+
+def _detail_local_files(
+    roots: list[Path], files: list[LibraryFile]
+) -> tuple[Path | None, Path | None, dict[Path, list[str]]]:
+    """详情页要的全部本地磁盘信息，**一次线程跳转、一批目录只列一次**。
+
+    海报、背景图、逐文件外挂字幕原本是三段独立的磁盘遍历，把同一个条目
+    目录（剧集则是每个季目录）翻来覆去列好几遍。合成一次之后，一次详情页
+    的目录列举数 = 条目涉及的目录数，与文件数无关。
+    """
+    cache: DirListing = {}
+    poster = local_item_artwork(roots, files, "poster", cache=cache)
+    fanart = local_item_artwork(roots, files, "fanart", cache=cache)
+    videos = [
+        Path(row.file_path)
+        for row in files
+        if row.state == FileState.IN_PLACE and row.container not in ("bluray", "dvd")
+    ]
+    return poster, fanart, _external_subtitles_many(videos, cache)
 
 
 async def build_item_detail(
@@ -2140,15 +2188,16 @@ async def build_item_detail(
     entry_dirs = resolve_entry_dirs(roots, files)
     local_meta = await layered_item_meta(session, item, entry_dirs, files, kind)
 
-    poster_art = await asyncio.to_thread(local_item_artwork, roots, files, "poster")
-    fanart_art = await asyncio.to_thread(local_item_artwork, roots, files, "fanart")
+    poster_art, fanart_art, subtitles_by_path = await asyncio.to_thread(
+        _detail_local_files, roots, files
+    )
 
     external: dict[int, list[str]] = {}
     for row in files:
         if row.state != FileState.IN_PLACE or row.container in ("bluray", "dvd"):
             continue
         assert row.id is not None
-        external[row.id] = await asyncio.to_thread(_external_subtitles, Path(row.file_path))
+        external[row.id] = subtitles_by_path.get(Path(row.file_path), [])
 
     return ItemDetailBundle(
         item=item,
@@ -2232,13 +2281,42 @@ def episode_view(info: EpisodeInfo) -> EpisodeView:
     )
 
 
-def find_episode_thumb(video: Path) -> Path | None:
-    """分集本地缩略图：Kodi 惯例 "<视频文件名>-thumb.jpg"。"""
+def find_episode_thumb(video: Path, cache: DirListing | None = None) -> Path | None:
+    """分集本地缩略图：Kodi 惯例 "<视频文件名>-thumb.jpg"。
+
+    走目录列举而不是逐个扩展名 stat：整季分集区一次要问十几集，逐集 4 次
+    stat 就是几十次，而同一个季目录列一次就够（``cache`` 让整季共享）。
+    """
+    listing = dir_listing(video.parent, cache)
+    if not listing:
+        return None
+    stem = video.stem.lower()
     for ext in _ART_EXTS:
-        candidate = video.with_name(f"{video.stem}-thumb{ext}")
-        if candidate.is_file():
-            return candidate
+        found = listing.get(f"{stem}-thumb{ext}")
+        if found is not None:
+            return found
     return None
+
+
+def _season_local_facts(
+    videos: list[Path],
+) -> dict[Path, tuple[EpisodeNfo | None, bool]]:
+    """一季分集的本地读盘结果：``{视频: (分集 NFO, 是否有本地缩略图)}``。
+
+    原本每集两次 ``asyncio.to_thread``（读 NFO、找缩略图），一季十几集就是
+    三十来次线程跳转 + 每集 4 次缩略图 stat。合成一次线程跳转、目录只列一遍。
+    """
+    cache: DirListing = {}
+    facts: dict[Path, tuple[EpisodeNfo | None, bool]] = {}
+    for video in videos:
+        listing = dir_listing(video.parent, cache) or {}
+        # 目录列举已经知道有没有同名 NFO，没有就不必再去 open 一次讨个 ENOENT
+        nfo_path = listing.get(f"{video.stem.lower()}.nfo")
+        facts[video] = (
+            read_episode_metadata(nfo_path) if nfo_path is not None else None,
+            find_episode_thumb(video, cache) is not None,
+        )
+    return facts
 
 
 async def build_season_episodes(
@@ -2286,6 +2364,22 @@ async def build_season_episodes(
         .all()
     }
 
+    # 本季每集「首个在位文件」的本地读盘（分集 NFO + 本地缩略图）一次做完，
+    # 逐集在循环里各跳一次线程池的代价远高于读盘本身
+    season_videos: dict[int, tuple[LibraryFile, Path]] = {}
+    for number, rows in by_episode.items():
+        for row in rows:
+            if row.state == FileState.IN_PLACE:
+                season_videos[number] = (row, Path(row.file_path))
+                break
+    local_facts = (
+        await asyncio.to_thread(
+            _season_local_facts, [video for _row, video in season_videos.values()]
+        )
+        if season_videos
+        else {}
+    )
+
     image_base = None
     infos: list[EpisodeInfo] = []
     for number in sorted(set(meta_by_number) | set(by_episode)):
@@ -2312,18 +2406,16 @@ async def build_season_episodes(
                     image_base = get_settings().tmdb_image_base_url.rstrip("/")
                 info.still_url = f"{image_base}/w300{meta.still_path}"
         # 本地优先：分集 NFO 的标题/简介、同名 -thumb 缩略图（取首个在位文件）
-        for row in rows:
-            if row.state != FileState.IN_PLACE:
-                continue
-            video = Path(row.file_path)
-            nfo = await asyncio.to_thread(read_episode_metadata, video.with_suffix(".nfo"))
+        owned_file = season_videos.get(number)
+        if owned_file is not None:
+            row, video = owned_file
+            nfo, has_thumb = local_facts.get(video, (None, False))
             if nfo is not None:
                 info.name = nfo.title or info.name
                 info.overview = nfo.plot or info.overview
                 info.air_date = info.air_date or nfo.aired
-            if await asyncio.to_thread(find_episode_thumb, video) is not None:
+            if has_thumb:
                 info.still_url = f"/libraries/files/{row.id}/thumb"
-            break
         infos.append(info)
 
     # 条目还没刮削过（该季在库里毫无集数据）才实时兜底，顺带触发后台刮削自愈

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import logging
 import shutil
 from collections.abc import Callable, Iterable
@@ -1217,6 +1218,22 @@ def _asset_sizes(setting: MetadataScrapeSetting | None = None) -> tuple[str, str
 def assets_root() -> Path:
     """图片资产根目录（/images/assets 路由与刮削管线共用）。"""
     return Path(get_settings().metadata_dir) / "images"
+
+
+@functools.lru_cache(maxsize=8)
+def _resolved_assets_root(raw: str) -> Path:
+    return Path(raw).resolve()
+
+
+def assets_root_resolved() -> Path:
+    """解析过软链的资产根目录，**结果缓存**。
+
+    ``Path.resolve()`` 要对路径上每一级目录各发一次系统调用。这个根目录是
+    配置项、整个进程生命周期不变，而 ``/images/assets`` 每张图都要拿它做
+    越权判定的基准——海报墙一屏上百张图，就是上百遍地把同一串父目录重走。
+    按配置字符串做键，配置变了（测试里换 METADATA_DIR）自然得到新值。
+    """
+    return _resolved_assets_root(str(assets_root()))
 
 
 async def cleanup_orphan_items(media_item_ids: Iterable[int], *, defer_assets: bool = False) -> int:

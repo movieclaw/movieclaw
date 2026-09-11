@@ -440,6 +440,10 @@ _KEYFRAME_CACHE_MAX = 1024
 
 
 def _probe_keyframe_interval(path: str, duration_seconds: int | None) -> float | None:
+    if not ffprobe_available():
+        # 没装 ffprobe 就别 fork 了：失败结果不缓存（见 probe_keyframe_interval
+        # 的说明），每打开一次详情页就白起一个必然 ENOENT 的子进程
+        return None
     windows = _keyframe_windows(duration_seconds)
     cmd = [
         "ffprobe",

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from dataclasses import dataclass
 from enum import StrEnum
 from io import BytesIO
@@ -67,7 +68,11 @@ _PRESETS = {
 
 def local_source_version(path: Path) -> str:
     """本地事实源的轻量版本指纹；不读整文件即可让原地换图自动失效。"""
-    stat = path.stat()
+    return source_version_of(path.stat())
+
+
+def source_version_of(stat: os.stat_result) -> str:
+    """已经 stat 过的调用方直接用它，不必为了版本指纹再 stat 一次。"""
     return f"{stat.st_mtime_ns}:{stat.st_size}"
 
 
