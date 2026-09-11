@@ -124,6 +124,18 @@ async def check_download_progress() -> None:
                 len(attempts) + len(orphaned),
             )
             return
+        # 换源的搜索预算（本轮共用）。此前完全没有 per-tick 配额：巡检遍历所有
+        # 在途投递，到期该换源的逐个打站点，唯一的闸门是每个 attempt 自己的退避。
+        # 平时没问题——死种是少数；但下载器被限速、磁盘满、站点集体掉线这类
+        # **共因**故障会让一大批任务同时进入"30 分钟无进度"，于是同一轮里几十次
+        # 跨站搜索一起打出去，恰好是在站点/网络本来就不正常的时候。
+        # 用完的部分下一轮继续——换源的退避以小时计，晚一轮没有代价
+        from movieclaw_api.services.subscription.replacement import (
+            REPLACEMENT_REQUESTS_PER_TICK,
+        )
+        from movieclaw_api.services.subscription.wanted_search import SearchBudget
+
+        budget = SearchBudget(REPLACEMENT_REQUESTS_PER_TICK)
         for attempt in attempts:
             if attempt.id is None:
                 continue
@@ -136,10 +148,12 @@ async def check_download_progress() -> None:
                     await reconcile_pending_cleanup(attempt.id)
                     continue
                 should_search = await _observe_attempt(attempt.id, downloaders)
-                if should_search:
+                # 心跳观测（进度/停滞提醒/落点核验）不受配额限制，只有真正要打
+                # 站点的换源搜索才计数
+                if should_search and not budget.exhausted:
                     from movieclaw_api.services.subscription import run_replacement_search
 
-                    await run_replacement_search(attempt.id)
+                    await run_replacement_search(attempt.id, budget=budget)
             except Exception:  # noqa: BLE001 -- 单组失败不拖垮整轮
                 logger.exception("订阅下载尝试 #%s 的换源巡检失败", attempt.id)
         for sub_id, info_hash in orphaned:

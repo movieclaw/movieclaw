@@ -26,6 +26,7 @@ from movieclaw_api.services.subscription.matching import (
     to_candidate,
     units_text,
 )
+from movieclaw_api.services.subscription.wanted_search import SearchBudget
 from movieclaw_db.engine import get_database
 from movieclaw_db.models import (
     ActivityType,
@@ -63,6 +64,18 @@ REPLACEMENT_RETRY = (
     timedelta(hours=24),
 )
 SEARCH_FAILURE_RETRY = timedelta(minutes=15)
+# ⚠ 换源巡检每轮的**搜索次数**预算（站点压力主阀门）。
+#
+# 换源此前完全没有 per-tick 配额：巡检遍历所有在途投递，凡是到期该换源的就逐个
+# 打站点，唯一的闸门是每个 attempt 自己的 1h→3h→12h→24h 退避。平时没问题——死种
+# 是少数；但下载器被限速、磁盘满、站点集体掉线这类**共因**故障会让一大批任务同时
+# 进入"30 分钟无进度"，于是同一轮里几十次跨站搜索一起打出去，恰好是在站点/网络
+# 本来就不正常的时候。
+#
+# 计量单位与缺口搜索一致，按次不按 attempt：一次换源要下发几个召回词取决于条目的
+# 标题（见 wanted_search.recall_keywords）。组不中途截断，每轮每站硬上限 6 次。
+# 用户在界面上点「立即换种」不受配额限制——显式动作不该排队。
+REPLACEMENT_REQUESTS_PER_TICK = 4
 TRIAL_PROGRESS_BYTES = 1024 * 1024
 
 _IN_FLIGHT = (WantedStatus.GRABBED, WantedStatus.DOWNLOADED)
@@ -265,7 +278,9 @@ async def _torrent_exists_on_downloader(
             logger.warning("关闭换源归属验证连接失败", exc_info=True)
 
 
-async def run_replacement_search(attempt_id: int, *, force: bool = False) -> bool:
+async def run_replacement_search(
+    attempt_id: int, *, force: bool = False, budget: SearchBudget | None = None
+) -> bool:
     """为一个无进度主源执行真实跨站搜索；找到并投递试用源时返回 True。"""
     async with _replacement_lock:
         db = get_database()
@@ -360,6 +375,8 @@ async def run_replacement_search(attempt_id: int, *, force: bool = False) -> boo
         sites_ok = 0
         errors: list[str] = []
         for keyword in keywords:
+            if budget is not None:
+                budget.charge()  # 请求发出前先记账：中途抛异常也不让预算回血
             try:
                 response = await search_all_sites(
                     keyword,

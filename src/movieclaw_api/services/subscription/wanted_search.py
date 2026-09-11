@@ -178,7 +178,7 @@ async def search_wanted() -> None:
             len(media_ids),
             SEARCH_REQUESTS_PER_TICK,
         )
-        budget = _SearchBudget(SEARCH_REQUESTS_PER_TICK)
+        budget = SearchBudget(SEARCH_REQUESTS_PER_TICK)
         for media_id in media_ids:
             if budget.exhausted:
                 logger.info("本轮搜索预算已用满，其余条目组下轮再来")
@@ -190,8 +190,8 @@ async def search_wanted() -> None:
 
 
 @dataclass
-class _SearchBudget:
-    """一轮 tick 的搜索次数预算。
+class SearchBudget:
+    """一轮 tick 的搜索次数预算（缺口搜索与死种换源共用）。
 
     **逐次立即记账**，不是等一组跑完再结算：一个条目组在搜完之后的评估/落库/
     记账环节抛异常时，已经打出去的请求必须照样计数。按返回值结算的话，那一组
@@ -251,11 +251,11 @@ async def _due_media_groups(session: AsyncSession) -> list[int]:
     return ordered
 
 
-async def _search_one_media(media_id: int, budget: _SearchBudget) -> None:
+async def _search_one_media(media_id: int, budget: SearchBudget) -> None:
     """一个条目组的完整搜索回合：搜索 → 落库 → 评估投递 → 退避记账 → 活动。
 
     ``budget`` 在每次下发关键词前扣减：请求已经发出去了就得认账，哪怕后面的
-    环节抛异常（见 ``_SearchBudget``）。组内**不检查**预算——合并去重要求一轮
+    环节抛异常（见 ``SearchBudget``）。组内**不检查**预算——合并去重要求一轮
     把该组的词全部下发完，是否开工由调用方在进组前判定。
     """
     from movieclaw_api.services.site_search import search_all_sites

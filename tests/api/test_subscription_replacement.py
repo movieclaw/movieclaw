@@ -18,6 +18,8 @@ from movieclaw_api.services.subscription import (
     replacement_backoff,
     run_replacement_search,
 )
+from movieclaw_api.services.subscription.replacement import REPLACEMENT_REQUESTS_PER_TICK
+from movieclaw_api.services.subscription.wanted_search import SearchBudget
 from movieclaw_db.engine import dispose_db, get_database, init_db
 from movieclaw_db.migrations import run_migrations
 from movieclaw_db.models import (
@@ -162,7 +164,11 @@ async def test_real_search_distinguishes_no_candidate_from_site_failure(db, monk
     import movieclaw_api.services.site_search as site_search
 
     monkeypatch.setattr(site_search, "search_all_sites", empty_search)
-    assert await run_replacement_search(attempt_id) is False
+    # 换源巡检的 per-tick 预算：请求发出前逐次记账，本轮用完就轮到下一轮
+    # （此前换源完全没有配额，共因故障会让几十次跨站搜索同时打出去）
+    budget = SearchBudget(REPLACEMENT_REQUESTS_PER_TICK)
+    assert await run_replacement_search(attempt_id, budget=budget) is False
+    assert budget.remaining == REPLACEMENT_REQUESTS_PER_TICK - 3  # 三个召回词各记一次
     # 换源与主动搜索共用召回词集合（wanted_search.recall_keywords）：
     # 英文名 → 中文名 → 原名。此前只用 (原名, 主标题) 两个，在非英语片上
     # 跟主动搜索犯的是同一个错——原名是「原始语言标题」，不是英文名
