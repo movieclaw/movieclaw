@@ -312,10 +312,17 @@ def implausible_for_runtime(candidate: TorrentCandidate, media: MediaIdentity) -
 # 不是"码率偏低"的问题了：0.3 Mbps 的 1080p 跑 110 分钟只有 247 MB，这样的
 # 正片不存在。踩到这一档的只能是预告片、sample、假种。
 _ABSURD_DIVISOR = 5
-# 分辨率未知时的绝对地板。没有它，分辨率没解析出来的种子连 shadow 台账都不会
-# 留（``floor is None`` 直接返回），而那正是这条反证最脆的入口——真实教训里的
-# 113 MB「正片」恰好解析出了 1080p 才留下记录，同样的东西换个命名就查无此案。
-# 任何分辨率的正片都不可能低于这条线（480p 也要 0.4 Mbps 上下）。
+# 绝对地板：**所有分辨率共用的下界**，不只是"分辨率未知时的兜底"。
+#
+# 只当兜底会留一个反常的洞：480p 的离谱下限 0.4 再除 5 是 0.08，比分辨率未知时
+# 的 0.25 还松——同一条 0.14 Mbps 的假种，标着 1080p 会被拦，标成 720p/480p 反而
+# 放行，而"标低分辨率"恰恰是假种最省事的伪装。取两者的较大值，这条线才真的是
+# 它宣称的"任何分辨率的正片都不可能低于它"：0.25 Mbps 跑 110 分钟只有 206 MB，
+# 而真实的 480p 正片压制在 0.5 Mbps 上下（一部片 400-700 MB）。
+#
+# 它同时补上这条反证最脆的入口：``implausible_for_runtime`` 在分辨率未知时
+# （``floor is None``）直接放弃判断，于是真实教训里那条 113 MB 的「正片」只因为
+# 恰好解析出了 1080p 才留下记录，同样的东西换个命名就查无此案。
 _ABSURD_FLOOR_MBPS = 0.25
 
 
@@ -329,9 +336,10 @@ def absurdly_small_for_runtime(candidate: TorrentCandidate, media: MediaIdentity
     收到 113 MB 的「1080p WEB-DL」，隐含码率 0.14 Mbps，是 1080p 离谱下限的
     十五分之一，而当时全链路只记录不拦截）。
 
-    分辨率未知时退到绝对地板 ``_ABSURD_FLOOR_MBPS``——``implausible_for_runtime``
-    在这种情况下直接放弃判断，那是它作为"可校准阈值"的正确保守取向，但对本函数
-    不适用：一个分辨率没解析出来、码率 0.14 Mbps 的电影，缺的不是基准。
+    门槛取「该分辨率的离谱下限 ÷ 5」与绝对地板 ``_ABSURD_FLOOR_MBPS`` 的**较大
+    值**，分辨率未知时直接用绝对地板——``implausible_for_runtime`` 在分辨率未知
+    时放弃判断，那是它作为"可校准阈值"的正确保守取向，但对本函数不适用：一个
+    分辨率没解析出来、码率 0.14 Mbps 的电影，缺的不是基准。
 
     与那条线共享的边界一样不变：**只对电影**（剧集的 ``runtime_minutes`` 是单集
     时长，与整季包的体积不可比），证据不足（片长/体积未知）一律不判。
@@ -339,7 +347,11 @@ def absurdly_small_for_runtime(candidate: TorrentCandidate, media: MediaIdentity
     if media.kind != "movie" or media.runtime_minutes is None:
         return None
     floor = _BITRATE_FLOOR_MBPS.get(candidate.attrs.resolution or "")
-    threshold = floor / _ABSURD_DIVISOR if floor is not None else _ABSURD_FLOOR_MBPS
+    threshold = (
+        max(floor / _ABSURD_DIVISOR, _ABSURD_FLOOR_MBPS)
+        if floor is not None
+        else _ABSURD_FLOOR_MBPS
+    )
     bitrate = implied_bitrate_mbps(candidate, media.runtime_minutes)
     if bitrate is None or bitrate >= threshold:
         return None
@@ -347,8 +359,8 @@ def absurdly_small_for_runtime(candidate: TorrentCandidate, media: MediaIdentity
     return (
         f"体积离谱到不可能是正片：{candidate.size_bytes / 1024**3:.2f} GB ÷ "
         f"{media.runtime_minutes} 分钟 ≈ {bitrate:.2f} Mbps，"
-        f"不到 {resolution} 合理下限的五分之一——这种体量只可能是预告片、"
-        f"sample 或假种"
+        f"低于 {resolution} 的正片体量下限（{threshold:.2f} Mbps）"
+        f"——这种体量只可能是预告片、sample 或假种"
     )
 
 

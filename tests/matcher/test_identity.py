@@ -652,6 +652,29 @@ def test_absurd_tier_catches_the_trailer_that_shipped_as_a_feature() -> None:
     assert reason is not None and "预告片" in reason
 
 
+def test_absurd_tier_floor_applies_to_low_resolutions_too() -> None:
+    """绝对地板对**所有**分辨率生效，不只是分辨率未知时的兜底。
+
+    只当兜底会留一个反常的洞：480p 的离谱下限再除 5 是 0.08 Mbps，比未知分辨率
+    的 0.25 还松——同一条 0.14 Mbps 的假种标 1080p 会被拦、标成 480p 反而放行，
+    而"标低分辨率"恰恰是假种最省事的伪装。
+    """
+    media = _movie(["The Gangster, the Cop, the Devil"], 2019, runtime_minutes=110)
+    for resolution in ("1080p", "720p", "576p", "480p"):
+        candidate = _sized(
+            f"The.Gangster.the.Cop.the.Devil.2019.{resolution}", 113 / 1024,
+            media_type="movie", year=2019, resolution=resolution,
+        )
+        assert absurdly_small_for_runtime(candidate, media) is not None, resolution
+
+    # 但真实的 480p 压制（一部片 400-700 MB ≈ 0.5-0.9 Mbps）不能被误伤
+    real_480p = _sized(
+        "Some Movie 2024 480p DVDRip", 0.55, media_type="movie", year=2024, resolution="480p"
+    )
+    long_movie = _movie(["Some Movie"], 2024, runtime_minutes=110)
+    assert absurdly_small_for_runtime(real_480p, long_movie) is None
+
+
 def test_absurd_tier_falls_back_to_an_absolute_floor_without_resolution() -> None:
     """分辨率未知时退到绝对地板——``implausible_for_runtime`` 在这里直接放弃
     判断（那是可校准阈值的正确保守取向），但"0.14 Mbps 的电影"缺的不是基准。
