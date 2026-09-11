@@ -32,9 +32,11 @@ from movieclaw_db.models import (
     IngestEntry,
     IngestStatus,
     LibraryFile,
+    MediaDisprovenSource,
     MediaItem,
     MediaMetadata,
 )
+from movieclaw_db.models.base import utcnow
 from movieclaw_db.repositories.library_repo import LibraryRepository
 
 _FAKE_SPEC = SimpleNamespace(
@@ -348,7 +350,13 @@ async def test_subscription_claimed_movie_records_runtime_doubt(db, tmp_path, mo
     订阅认领会短路整条名称识别链，连带跳过 resolve.py 上的佐证/反证机器——
     这条体检补的就是被跳过的那一次。shadow 阶段只留台账不点灯。
     """
-    from movieclaw_db.models import RuleSet, Subscription, WantedItem, WantedStatus
+    from movieclaw_db.models import (
+        RuleSet,
+        Subscription,
+        SubscriptionDownloadAttempt,
+        WantedItem,
+        WantedStatus,
+    )
     from movieclaw_downloader import TorrentBrief
 
     movie_root, watch = tmp_path / "movie", tmp_path / "watch2"
@@ -394,6 +402,19 @@ async def test_subscription_claimed_movie_records_runtime_doubt(db, tmp_path, mo
                 info_hash="hash-odyssey",
             )
         )
+        # 真实的订阅投递必然留下这条台账，来源戳（站点/种子）就从它解析
+        session.add(
+            SubscriptionDownloadAttempt(
+                subscription_id=sub.id,
+                info_hash="hash-odyssey",
+                site_id="ssd",
+                torrent_id="9527",
+                torrent_title="The.Odyssey.2026.1080p.WEB-DL",
+                units=[[0, 0]],
+                identity_confidence="title_year",
+                last_progress_at=utcnow(),
+            )
+        )
         await session.commit()
 
     brief = TorrentBrief(
@@ -425,6 +446,45 @@ async def test_subscription_claimed_movie_records_runtime_doubt(db, tmp_path, mo
     }
     # 身份来源同时分了档：只有片名+年份的投递记 guess，供体检定位目标
     assert files[0].identity_source == "subscription_guess"
+
+    # 实测 88 分钟 < 标注 210 的一半：这是**单边**结论——不是版本差异，是根本
+    # 不是这部片。来源写进条目级负面记忆，下一轮选种跳过它。入库行为不变
+    async with db.session() as session:
+        durable = (
+            (
+                await session.execute(
+                    select(MediaDisprovenSource).where(
+                        MediaDisprovenSource.media_item_id == item.id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert [(d.site_id, d.torrent_id, d.reason) for d in durable] == [
+        ("ssd", "9527", "runtime_mismatch")
+    ]
+
+
+def test_runtime_only_disproves_a_source_when_measured_much_shorter() -> None:
+    """单边判据：只有"实测远短于标注"才拉黑来源。
+
+    导演剪辑版/加长版正是时长体检误报的主力，而它们比标注**长**；预告片、
+    sample 永远短得多。只判"短"就把这两类彻底分开，所以这一条不必像告警那样
+    先走 shadow 观察期。
+    """
+    from movieclaw_api.services.library.ingest import _runtime_disproves_source
+
+    # 5 分钟的"110 分钟正片" = 预告片
+    assert _runtime_disproves_source({"expected_minutes": 110, "actual_minutes": 5})
+    # 88 分钟 vs 210 分钟 = 认错了片（§0 的孪生错配）
+    assert _runtime_disproves_source({"expected_minutes": 210, "actual_minutes": 88})
+    # 加长版比标注长 —— 体检会存疑，但绝不能拉黑
+    assert not _runtime_disproves_source({"expected_minutes": 120, "actual_minutes": 185})
+    # 院线版比加长版短，但没短到一半
+    assert not _runtime_disproves_source({"expected_minutes": 180, "actual_minutes": 120})
+    # 证据不足不判
+    assert not _runtime_disproves_source({"expected_minutes": 0, "actual_minutes": 5})
 
 
 @pytest.mark.asyncio

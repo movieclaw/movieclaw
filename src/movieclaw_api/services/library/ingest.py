@@ -2331,6 +2331,30 @@ async def _ingest_entry(
         stamp_site, stamp_torrent = provenance(
             file, None if kind is MediaKind.MOVIE else (season, episode)
         )
+        # 时长体检的**单边**结论：实测远短于标注 → 这根本不是正片。把来源写进
+        # 条目级负面记忆，下一轮选种直接跳过它（disproven 模块）。
+        # 这一条**不在 shadow 范围内**，理由是判据不同：告警之所以要先观察，是
+        # 因为踩线的多半是导演剪辑版/加长版——而它们比标注**长**；预告片、sample
+        # 永远比正片短得多。只判"短"就把这两类彻底分开了，不需要校准。
+        # 它同样**不阻断入库**：文件照常入库、照常不告警，改变的只是"下次还要不
+        # 要再抓这个来源"
+        if doubt and stamp_site and stamp_torrent and _runtime_disproves_source(doubt):
+            from movieclaw_api.services.subscription.disproven import (
+                REASON_RUNTIME_MISMATCH,
+                remember_disproven_sources,
+            )
+
+            await remember_disproven_sources(
+                session,
+                media_item_id=item.id,
+                sources=[(stamp_site, stamp_torrent)],
+                units=[(season, episode)],
+                reason=REASON_RUNTIME_MISMATCH,
+                note=(
+                    f"入库实测 {doubt['actual_minutes']} 分钟，影片信息标注 "
+                    f"{doubt['expected_minutes']} 分钟——这个体量不是正片"
+                ),
+            )
         await repo.upsert_by_path(
             LibraryFile(
                 library_id=dest_library.id,
@@ -2790,6 +2814,21 @@ def _ledger_identity_source(
 # ⚠ 需真实数据校准（§10）：先走 shadow 只留台账，看过触发率与误报率再点灯。
 _RUNTIME_DOUBT_RATIO = 0.25
 _RUNTIME_DOUBT_MINUTES = 15
+
+
+# 单边证伪线：实测片长不到标注的这个比例，就不是"版本差异"而是"根本不是正片"。
+# **不需要校准**，与 _RUNTIME_DOUBT_RATIO 那条是两回事：那条要观察，是因为踩线
+# 的主力是导演剪辑版/加长版，而它们比标注**长**；这条只看"短"，剪辑版天然不在
+# 射程内。一半，是留给"院线版 vs 加长版"这类合法短版的宽裕余量——真实的预告片
+# 与 sample 差着一个数量级（5 分钟 vs 110 分钟 = 0.045）。
+_RUNTIME_DISPROVES_RATIO = 0.5
+
+
+def _runtime_disproves_source(doubt: dict) -> bool:
+    """这条时长存疑是否强到足以把来源拉黑（只判"实测远短于标注"）。"""
+    expected = doubt.get("expected_minutes") or 0
+    actual = doubt.get("actual_minutes") or 0
+    return expected > 0 and actual < expected * _RUNTIME_DISPROVES_RATIO
 
 
 def runtime_doubt(
