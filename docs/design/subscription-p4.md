@@ -122,9 +122,11 @@ async def evaluate_and_dispatch(session, torrents: list[SiteTorrent],
   **即时触发**：订阅创建/调整/恢复的路由在响应返回后经 BackgroundTasks 踢一次
   同一 tick 函数（进程内互斥锁串行化；已搜组被退避排期，重入不会重复打站点）。
 - **取单**：`wanted.status='wanted' AND next_search_at<=now AND 订阅 active`，
-  `ORDER BY priority DESC, next_search_at ASC`，**按 media_item 分组后取前
-  2 个条目组**（一部 20 季老剧 = 1 组 = 1 次搜索）。
-- **搜索**：关键词首选 `original_title`，零结果再用 `title` 补一次；**按订阅类型带
+  `ORDER BY priority DESC, next_search_at ASC`，**按 media_item 分组**后逐组
+  处理到本轮搜索预算用满为止（一部 20 季老剧 = 1 组）。
+- **搜索**：召回词集合 = 英文名 + 中文名 + 原名（`wanted_search.recall_keywords`，
+  按匹配内核的归一化形式去重、下发原样文本），**全部下发后按 (站点, 种子ID)
+  合并去重**；**按订阅类型带
   分类过滤**（movie→[电影,纪录片,动漫]、tv→[剧集,纪录片,动漫]——只排除明确不可能的
   music/game/av；纪录片电影、动画剧场版在多数站归前两类，与被动粗筛同哲学），站点
   适配层把应用级分类映射为站点分类 ID 下发；调用现有 `search_all_sites`
@@ -204,14 +206,14 @@ async def dispatch(session, wanted_ids: list[int], candidate: TorrentCandidate,
 | 常量 | 值 | 说明 |
 |---|---|---|
 | `SEARCH_TICK_SECONDS` | 300 | F4 tick |
-| `SEARCH_GROUPS_PER_TICK` | 2 | 每 tick 搜索的条目组数（站点压力主阀门）|
+| `SEARCH_REQUESTS_PER_TICK` | 4 | 每 tick 的**搜索次数**预算（站点压力主阀门）。原为 `SEARCH_GROUPS_PER_TICK=2`（按条目组计），改按次计是因为一个条目组的召回词从 1 个变成最多 3 个（见下），按组计会让站点压力悄悄放大 3 倍。组不中途截断，故每 tick 每站硬上限 6 次 |
 | `SEARCH_BACKOFF` | 15min→1h→6h→24h→7d | 退避曲线（按 attempts 取档）|
 | `DISPATCH_RETRY_DELAY` | 30min | 投递失败重试 |
 | `MATCH_BATCH_SIZE` | 500 | 被动匹配每批行数 |
 | `REFRESH_PER_TICK` | 5 | F3 每 tick 条目数 |
 | `FUTURE_GRACE` | 48h | （P2 已有）追新宽限 |
 
-需在真实站点小流量试跑后校准的：`SEARCH_GROUPS_PER_TICK`、退避曲线首档。
+需在真实站点小流量试跑后校准的：`SEARCH_REQUESTS_PER_TICK`、退避曲线首档。
 
 ## 9. 实现顺序与验证
 

@@ -65,7 +65,14 @@ logger = logging.getLogger("movieclaw_api.subscription_matching")
 # ---------------------------------------------------------------------------
 
 SEARCH_TICK_SECONDS = 300  # ⚠ F4 tick 间隔
-SEARCH_GROUPS_PER_TICK = 2  # ⚠ 每 tick 搜索的条目组数（站点压力主阀门）
+# ⚠ 站点压力主阀门。计量单位是**搜索次数**而不是条目组数：一个条目组要下发
+# 几个召回词（英文名/中文名/原名，见 wanted_search.recall_keywords）取决于它
+# 的标题，按组计数会让"多一个召回词"把对站点的压力悄悄放大数倍。按次计数后，
+# 加召回词只会让每 tick 覆盖的条目组变少——补旧走 15min→7d 的退避曲线，本来
+# 就不急，这才是对 PT 站诚实的克制。
+# 一个条目组**不中途截断**（合并去重的语义要求一轮完整下发），所以末组可能
+# 超出预算，每 tick 每站的硬上限是 SEARCH_REQUESTS_PER_TICK - 1 + 3 = 6 次。
+SEARCH_REQUESTS_PER_TICK = 4
 SEARCH_BACKOFF = (  # ⚠ 退避曲线：按 search_attempts 取档，超出取末档
     timedelta(minutes=15),
     timedelta(hours=1),

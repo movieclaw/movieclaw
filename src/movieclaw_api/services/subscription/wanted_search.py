@@ -21,7 +21,7 @@ from sqlmodel import select
 from movieclaw_api.schemas.search import TorrentHit
 from movieclaw_api.services.subscription.matching import (
     SEARCH_FAILURE_RETRY,
-    SEARCH_GROUPS_PER_TICK,
+    SEARCH_REQUESTS_PER_TICK,
     SEARCH_TICK_SECONDS,
     backoff_delay,
     evaluate_and_dispatch,
@@ -48,6 +48,7 @@ from movieclaw_db.repositories import (
     TorrentRepository,
 )
 from movieclaw_enrich import ENRICH_VERSION
+from movieclaw_matcher import normalize_title
 from movieclaw_media.models import MediaKind
 from movieclaw_scheduler.registry import register_task
 from movieclaw_tracker.models import TorrentCategory
@@ -61,6 +62,54 @@ _SEARCH_CATEGORIES: dict[str, list[TorrentCategory]] = {
     "movie": [TorrentCategory.MOVIE, TorrentCategory.DOCUMENTARY, TorrentCategory.ANIME],
     "tv": [TorrentCategory.TV, TorrentCategory.DOCUMENTARY, TorrentCategory.ANIME],
 }
+
+def recall_keywords(item: MediaItem) -> list[str]:
+    """条目 → 召回词集合（保序去重，至多三个）。
+
+    顺序即"站点拿它命名的可能性"，三个词**全部下发、结果合并**，不再
+    "第一个词有结果就不搜第二个"：
+
+    ① **英文名**——scene/P2P 命名规范里片名段就是它，国内压制组也照办
+       （``The.Gangster.the.Cop.the.Devil.2019.1080p.BluRay.x264-WiKi``）；
+    ② **中文名**——国内站主标题/副标题的事实标准，国内压制组直接用它命名；
+    ③ **原名**——拉丁语系（法/西/意/德）是真通道（``El.laberinto.del.fauno``
+       与英文名 ``Pan's Labyrinth`` 是两批不同的发布），日文是弱通道（动画/
+       日剧副标题常写原文），韩文/泰文/西里尔几乎为零。排末位但不剪掉——
+       按语种剪是拿脆弱的启发式换一次请求，前两个词落地后它只是兜底。
+
+    **原名为什么不再是第一顺位**：设计初稿写的是"种子多为英文命名"，想要的
+    一直是英文名，拿到的却是 TMDB 的「原始语言标题」——两者只在影片原语言
+    就是英语时才重合。韩语片给的是「악인전」，恰恰是中文 PT 站最不可能用的
+    那个写法（真实教训：原名召回 4 条且全被规则拒，中文名召回 70 条正片，
+    而那 70 条从未进入过候选池）。
+
+    去重按匹配内核的归一化形式比对（大小写/分隔符的差异不值得多打一次站点），
+    但**下发原样文本**：归一化是匹配的职责，站点搜索吃的是原文。
+    """
+    picked: list[str] = []
+    seen: set[str] = set()
+    for raw in (item.english_title, item.title, item.original_title):
+        text = (raw or "").strip()
+        if not text:
+            continue
+        key = normalize_title(text)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        picked.append(text)
+    # 三个字段全空/全是符号是脏数据，退回主标题让本轮走正常的"零结果"退避，
+    # 而不是空手返回把工单永远卡在到期状态
+    return picked or [item.title]
+
+
+def _keyword_text(per_keyword: list[tuple[str, int]]) -> str:
+    """逐词结果数的活动文案："关键词「A」12 条 /「B」70 条"。
+
+    合并去重之后单看总数看不出是哪个词召回的。"为什么没搜到正片"这个问题
+    只有逐词结果数能回答，它是本模块最该留给用户的一条线索。
+    """
+    return "关键词" + " / ".join(f"「{word}」{count} 条" for word, count in per_keyword)
+
 
 # tick 互斥：除定时任务外，订阅域写操作产生"立刻可搜"的工单后也会立即踢一次
 # tick（首班车不用等最多 5 分钟）。并发进入时串行执行即可——前一轮已把搜过的
@@ -108,10 +157,14 @@ def kick_search_soon() -> None:
     ),
 )
 async def search_wanted() -> None:
-    """tick 任务体：取前 N 个到期条目组，逐组搜索→评估→记账。
+    """tick 任务体：取到期条目组，逐组搜索→评估→记账，用满本轮搜索预算为止。
 
     触发有两处：定时任务（兜底节奏）与订阅创建/调整后的即时一脚
     （BackgroundTasks，不阻塞接口）。两处共用本函数，节流闸门一致。
+
+    预算按**搜索次数**算（``SEARCH_REQUESTS_PER_TICK``）：一个条目组下发几个
+    召回词由它的标题决定，按组计数会让召回词的增加悄悄放大站点压力。组不中途
+    截断——合并去重要求一轮把该组的词全部下发完。
     """
     async with _tick_lock:
         db = get_database()
@@ -120,15 +173,22 @@ async def search_wanted() -> None:
         if not media_ids:
             return
         logger.info("本轮缺口搜索：%d 个条目组到期", len(media_ids))
+        spent = 0
         for media_id in media_ids:
+            if spent >= SEARCH_REQUESTS_PER_TICK:
+                logger.info("本轮搜索预算已用满（%d 次），其余条目组下轮再来", spent)
+                break
             try:
-                await _search_one_media(media_id)
+                spent += await _search_one_media(media_id)
             except Exception:  # noqa: BLE001 -- 单组失败不拖垮整轮
                 logger.exception("条目 #%s 的缺口搜索执行失败", media_id)
 
 
 async def _due_media_groups(session: AsyncSession) -> list[int]:
     """到期工单按 (priority, next_search_at) 排序后取前 N 个不同条目。
+
+    N 取搜索预算：每组至少下发一个召回词，所以一轮最多只可能开这么多组，
+    多取的行在本轮一定用不上（真正的停止判据在 ``search_wanted`` 的预算记账）。
 
     洗版单元（imported 且已排期）与缺口同队列：priority=-10 保证永远排在
     补旧(0)/追新(10)后面，洗版搜索绝不挤占缺口配额（quality-upgrade.md §6.4）。
@@ -160,13 +220,17 @@ async def _due_media_groups(session: AsyncSession) -> list[int]:
     for (media_id,) in result.all():
         if media_id not in ordered:
             ordered.append(media_id)
-        if len(ordered) >= SEARCH_GROUPS_PER_TICK:
+        if len(ordered) >= SEARCH_REQUESTS_PER_TICK:
             break
     return ordered
 
 
-async def _search_one_media(media_id: int) -> None:
-    """一个条目组的完整搜索回合：搜索 → 落库 → 评估投递 → 退避记账 → 活动。"""
+async def _search_one_media(media_id: int) -> int:
+    """一个条目组的完整搜索回合：搜索 → 落库 → 评估投递 → 退避记账 → 活动。
+
+    返回**实际下发的搜索次数**（即召回词个数），供 tick 的预算记账使用；
+    条目/订阅已不在时一次都没打，返回 0。
+    """
     from movieclaw_api.services.site_search import search_all_sites
 
     db = get_database()
@@ -193,29 +257,30 @@ async def _search_one_media(media_id: int) -> None:
             ).scalar_one_or_none()
             movie_plan = movie_schedule(release_date, item.status)
     if item is None or subscription is None:
-        return
+        return 0
 
-    # 搜索词首选原名（种子多为英文命名），零结果补一次主标题
-    keywords = [item.original_title]
-    if item.title and item.title != item.original_title:
-        keywords.append(item.title)
+    keywords = recall_keywords(item)
 
-    hits: list[TorrentHit] = []
+    hits_by_key: dict[tuple[str, str], TorrentHit] = {}
+    per_keyword: list[tuple[str, int]] = []
     site_errors: list[str] = []
     sites_ok = 0
-    searched_keyword = keywords[0]
     categories = _SEARCH_CATEGORIES.get(item.kind)
     for keyword in keywords:
-        searched_keyword = keyword
         # exclude_protected：受保护站点不参与订阅链路的自动拉种（保护开关语义）
         response = await search_all_sites(
             keyword, categories=categories, exclude_protected=True
         )
-        sites_ok = sum(1 for s in response.sites if s.error is None)
-        site_errors = [f"{s.site_name}：{s.error}" for s in response.sites if s.error]
-        hits = response.items
-        if hits:
-            break
+        # sites_ok 取各词的**最大值**而非末词的值：末词恰好全站超时，不该把
+        # 前面几个词的有效结果一起判成"搜索本身失败"（与换源搜索同口径，
+        # 见 replacement.py 的跨站搜索）
+        sites_ok = max(sites_ok, sum(1 for s in response.sites if s.error is None))
+        site_errors.extend(f"{s.site_name}：{s.error}" for s in response.sites if s.error)
+        # 按 (站点, 种子ID) 合并去重：同一个种子被多个召回词搜到只评估一次
+        for hit in response.items:
+            hits_by_key[(hit.site_id, hit.torrent_id)] = hit
+        per_keyword.append((keyword, len(response.items)))
+    hits = list(hits_by_key.values())
 
     async with db.session() as session:
         repo = SubscriptionRepository(session)
@@ -225,7 +290,9 @@ async def _search_one_media(media_id: int) -> None:
 
         if sites_ok == 0:
             # 搜索本身失败（无可用站点/全站报错）：短冷却重试，不计入退避档
-            reason = "；".join(site_errors) if site_errors else "当前没有可用的已验证站点"
+            # site_errors 跨关键词会重复（同一个站点每个词都报一次），保序去重
+            deduped = list(dict.fromkeys(site_errors))
+            reason = "；".join(deduped) if deduped else "当前没有可用的已验证站点"
             await _postpone_open_wanted(
                 session, media_id, delay=SEARCH_FAILURE_RETRY, count_attempt=False
             )
@@ -240,10 +307,10 @@ async def _search_one_media(media_id: int) -> None:
                         f"搜索《{item.title}》未能执行：{reason}；"
                         f"约 {int(SEARCH_FAILURE_RETRY.total_seconds() // 60)} 分钟后重试"
                     ),
-                    payload={"keyword": searched_keyword, "failed": True},
+                    payload={"keywords": keywords, "failed": True},
                 )
             )
-            return
+            return len(per_keyword)
 
         # 结果沉淀进公共缓存（source=SEARCH），再回读 ORM 行进共享管道
         persisted = await _persist_hits(session, hits)
@@ -264,7 +331,7 @@ async def _search_one_media(media_id: int) -> None:
                 subscription_id=subscription.id,
                 type=ActivityType.SEARCHED,
                 message=(
-                    f"搜索《{item.title}》（关键词「{searched_keyword}」）："
+                    f"搜索《{item.title}》（{_keyword_text(per_keyword)}）："
                     f"{sites_ok} 个站点返回 {len(hits)} 个结果，"
                     f"身份命中 {summary.identity_hits}，规则拒绝 {summary.rejected}，"
                     f"投递覆盖 {summary.dispatched_units} 个单元"
@@ -275,7 +342,9 @@ async def _search_one_media(media_id: int) -> None:
                     )
                 ),
                 payload={
-                    "keyword": searched_keyword,
+                    "keywords": [
+                        {"keyword": word, "results": count} for word, count in per_keyword
+                    ],
                     "sites_ok": sites_ok,
                     "results": len(hits),
                     "identity_hits": summary.identity_hits,
@@ -284,6 +353,7 @@ async def _search_one_media(media_id: int) -> None:
                 },
             )
         )
+    return len(per_keyword)
 
 
 async def _persist_hits(session: AsyncSession, hits: list[TorrentHit]) -> list[SiteTorrent]:
