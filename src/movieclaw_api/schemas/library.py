@@ -9,6 +9,9 @@ from typing import Literal
 from pydantic import Field, field_serializer
 
 from movieclaw_api.schemas.base import BaseModel
+from movieclaw_api.services.library.preflight import (
+    MAX_SELECTION as BATCH_TRANSFER_MAX_SELECTION,
+)
 from movieclaw_db.models.library import Library
 from movieclaw_media.models import MediaKind
 
@@ -493,9 +496,7 @@ class SeriesPartView(BaseModel):
     title: str
     release_date: date | None = None
     poster_url: str | None = None
-    media_item_id: int | None = Field(
-        default=None, description="库里已有的那条；null=缺这一部"
-    )
+    media_item_id: int | None = Field(default=None, description="库里已有的那条；null=缺这一部")
     subscribed: bool = Field(default=False, description="已经在追（有订阅工单）")
 
 
@@ -532,8 +533,7 @@ class CollectionPayload(BaseModel):
     item_ids: list[int] | None = Field(
         default=None,
         description=(
-            "固定名单（「固定当前这 N 部」就是把此刻的命中集快照过来）；"
-            "给了它就是名单驱动的合集"
+            "固定名单（「固定当前这 N 部」就是把此刻的命中集快照过来）；给了它就是名单驱动的合集"
         ),
     )
     snapshot: bool = Field(
@@ -1110,6 +1110,94 @@ class TransferPreviewView(BaseModel):
     )
     blocked: list[str] = Field(
         default_factory=list, description="阻断性问题（如目标已有同名目录）；非空则不给执行"
+    )
+
+
+class BatchTransferPayload(BaseModel):
+    """批量转移的请求体：目标库 + 选择集 + 冲突策略。
+
+    选择集**只有两种形态**：显式 id 列表，或整库（``all_items``）。刻意不收
+    筛选表达式——筛选面已经在 ``library.items.list`` 上，在这里复制一份必然
+    分叉（面板说 593 部、实际搬了 586 部，而且没人说得清差在哪）。
+    """
+
+    target_library_id: int = Field(description="转移目标库 id（必须与当前库同类型）")
+    media_item_ids: list[int] = Field(
+        default_factory=list,
+        description=f"要转移的条目 id 列表（最多 {BATCH_TRANSFER_MAX_SELECTION} 个）",
+    )
+    all_items: bool = Field(default=False, description="true=转移该库的全部条目，忽略 id 列表")
+    on_conflict: Literal["skip", "fail"] = Field(
+        default="skip",
+        description=(
+            "目标已有同名目录时：skip=跳过这一条、其余照搬（缺省）；"
+            "fail=整批中止（脚本场景要求要么全成要么不动）"
+        ),
+    )
+
+
+class PreflightMemberView(BaseModel):
+    """预检里的一个成员：它会落到哪、多大、是否冲突。"""
+
+    media_item_id: int
+    title: str
+    target_paths: list[str]
+    size_bytes: int
+    cross_device: bool = Field(description="true=需要完整复制（耗时且断开硬链接）")
+    conflict: str | None = Field(
+        default=None,
+        description=(
+            "same_anchor=目标已有这部作品的其他版本 / "
+            "different_anchor=目录撞名但不是同一部片 / "
+            "unknown=目标位置有内容但媒体库没有记录；null=不冲突"
+        ),
+    )
+    conflict_path: str = ""
+    hardlinked_bytes: int = Field(
+        default=0, description="跨盘后会断开硬链接、且源盘不会释放的字节数"
+    )
+    seeding_in_place: bool = Field(
+        default=False, description="下载器里有同名落盘根——搬走可能让做种任务失效"
+    )
+    reason: str = Field(default="", description="没有可搬内容时的中文说明")
+
+
+class BatchTransferPreviewView(BaseModel):
+    """批量转移预检：执行前把「将要发生什么」一次摆清。"""
+
+    target_library_id: int
+    target_library_name: str
+    target_root: str
+    on_conflict: str
+    selected: int = Field(description="选中的条目数")
+    movable: int = Field(description="其中真正会搬的条目数")
+    total_bytes: int
+    members: list[PreflightMemberView]
+
+    cross_device_items: int = 0
+    cross_device_bytes: int = Field(
+        default=0, description="需要完整复制的字节数（同盘搬运是 rename，不占新空间）"
+    )
+    target_free_bytes: int = 0
+    target_required_bytes: int = Field(
+        default=0, description="目标盘需要的空间（只算跨盘部分，含余量）"
+    )
+    source_reclaimable_bytes: int = Field(
+        default=0,
+        description=(
+            "源盘预计释放的字节数——已扣掉硬链接文件。"
+            "全硬链接库跨盘搬时这个数是 0：下载目录还引用着，删源不释放空间"
+        ),
+    )
+    hardlinked_items: int = 0
+    hardlinked_bytes: int = 0
+    seeding_in_place_items: int | None = Field(
+        default=0, description="null 表示下载器不可达、无法确认（不阻断执行）"
+    )
+    conflicts: dict[str, int] = Field(default_factory=dict, description="同名冲突按锚分类的计数")
+    blocked: list[str] = Field(
+        default_factory=list,
+        description="整批阻断（目标根不可访问、空间不足、库正忙）；非空则不给执行",
     )
 
 

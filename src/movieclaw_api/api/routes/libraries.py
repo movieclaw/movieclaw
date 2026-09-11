@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import mimetypes
+from dataclasses import asdict
 from pathlib import Path, PurePath
 from typing import Annotated, Literal
 from urllib.parse import quote
@@ -20,6 +21,8 @@ from movieclaw_api.schemas.library import (
     ArtworkCandidateView,
     ArtworkSelectPayload,
     AudioStreamView,
+    BatchTransferPayload,
+    BatchTransferPreviewView,
     ChapterView,
     ClaimBatchPayload,
     ClaimPayload,
@@ -55,6 +58,7 @@ from movieclaw_api.schemas.library import (
     OrganizeStartView,
     PathReconcilePayload,
     PathReconcilePreviewView,
+    PreflightMemberView,
     RedownloadPayload,
     RefreshActiveView,
     ReidentifyGroupView,
@@ -95,8 +99,14 @@ from movieclaw_api.services.library.access import (
     content_limit_for,
     visible_library_ids,
 )
+from movieclaw_api.services.library.batch_transfer import (
+    BatchMember,
+    enqueue_batch_transfer_job,
+    resolve_members,
+)
 from movieclaw_api.services.library.collections import collections_containing
 from movieclaw_api.services.library.config import LibraryConfigService
+from movieclaw_api.services.library.ingest import _downloader_briefs
 from movieclaw_api.services.library.items import (
     LibraryFilter,
     build_item_detail,
@@ -123,6 +133,7 @@ from movieclaw_api.services.library.organize import (
     last_organize,
     organize_progress,
 )
+from movieclaw_api.services.library.preflight import MAX_SELECTION, build_preflight
 from movieclaw_api.services.library.scan import (
     PHASE_LABELS,
     ScanPhase,
@@ -171,6 +182,7 @@ from movieclaw_db.models import (
     FileState,
     Job,
     JobStatus,
+    Library,
     LibraryFile,
     MediaItem,
     MediaItemPerson,
@@ -3134,6 +3146,168 @@ async def _transfer_context(
     assert_transferable(source, target)
     item, rows = await _item_rows(session, library_id, media_item_id)
     return source, target, item, rows
+
+
+async def _batch_transfer_context(
+    session: AsyncSession,
+    library_id: int,
+    payload: BatchTransferPayload,
+) -> tuple[Library, Library, list[BatchMember]]:
+    """批量转移两接口共用的前置：取源库/目标库 + 把选择集解析成冻结的成员清单。"""
+    service = LibraryConfigService(session)
+    source = await service.get(library_id)
+    target = await service.get(payload.target_library_id)
+    assert_transferable(source, target)
+    if not payload.all_items and len(payload.media_item_ids) > MAX_SELECTION:
+        raise BadRequestException(
+            f"一次最多提交 {MAX_SELECTION} 个条目（收到 {len(payload.media_item_ids)} 个）；"
+            "要搬整个库请改用 all_items"
+        )
+    members = await resolve_members(
+        session,
+        library_id,
+        media_item_ids=payload.media_item_ids,
+        all_items=payload.all_items,
+    )
+    if not members:
+        raise BadRequestException(
+            "没有选中任何条目：请传 media_item_ids，或用 all_items 转移整个库"
+        )
+    return source, target, members
+
+
+async def _seeding_root_names() -> set[str] | None:
+    """下载器当前的落盘根名集合；下载器不可达时返回 None（如实报"无法确认"）。
+
+    用途是识别「下载器直接做种库内路径」这种非常规部署：那种部署下库里的
+    条目目录名就是下载器的落盘根名，搬走（哪怕是同盘 rename）都会让做种任务
+    找不到文件。按正常方式入库的库（复制或硬链接）目录名是规范化过的
+    ``标题 (年份)``，与种子原名不同，不会命中。
+    """
+    briefs = await _downloader_briefs()
+    if briefs is None:
+        return None
+    return {b.content_name for b in briefs if getattr(b, "content_name", "")}
+
+
+@router.post(
+    "/{library_id}/item-transfer-preview",
+    response_model=ApiResponse[BatchTransferPreviewView],
+    summary="预检批量转移：空间、冲突、硬链接与做种影响一次算清（只读，不动磁盘）",
+    operation_id="workflow.library.transfer-items.preview",
+    dependencies=[Depends(require_admin)],
+    # CLI 必须走精选层的「预检 → --yes」工作流，不给生成命令绕过确认的旁路
+    openapi_extra={"x-cli-hidden": True},
+)
+async def preview_batch_transfer(
+    library_id: int,
+    payload: BatchTransferPayload,
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[BatchTransferPreviewView]:
+    """纯只读。搬 593 部要跑几个小时、用户不在现场，**搬到一半才发现盘不够是
+    灾难**——所以这里一次把四件事摆清：目标盘空间够不够（只算跨盘部分，同盘
+    搬运是 rename 不占新空间）、哪些同名以及同名的三种不同性质、跨盘会断掉
+    哪些硬链接（源盘因此不会释放空间）、有没有条目正被下载器原地做种。
+
+    成本是 O(成员数) 而不是 O(文件数)：逐文件的精确计划留到执行时逐成员现算。
+    """
+    source, target, members = await _batch_transfer_context(session, library_id, payload)
+    result = await build_preflight(
+        session,
+        source,
+        Path(target.primary_root or ""),
+        [(m.media_item_id, m.title) for m in members],
+        seeding_names=await _seeding_root_names(),
+    )
+    return ok(
+        BatchTransferPreviewView(
+            target_library_id=target.id or 0,
+            target_library_name=target.name,
+            target_root=result.target_root,
+            on_conflict=payload.on_conflict,
+            selected=result.selected,
+            movable=result.movable,
+            total_bytes=result.total_bytes,
+            members=[PreflightMemberView(**asdict(m)) for m in result.members],
+            cross_device_items=result.cross_device_items,
+            cross_device_bytes=result.cross_device_bytes,
+            target_free_bytes=result.target_free_bytes,
+            target_required_bytes=result.target_required_bytes,
+            source_reclaimable_bytes=result.source_reclaimable_bytes,
+            hardlinked_items=result.hardlinked_items,
+            hardlinked_bytes=result.hardlinked_bytes,
+            seeding_in_place_items=result.seeding_in_place_items,
+            conflicts=result.conflicts,
+            blocked=result.blocked,
+        )
+    )
+
+
+@router.post(
+    "/{library_id}/item-transfers",
+    response_model=ApiResponse[TransferStartView],
+    summary="批量转移条目到另一个媒体库：一次提交，后台逐条搬运并随迁台账",
+    operation_id="workflow.library.transfer-items.start",
+    dependencies=[Depends(require_admin)],
+    openapi_extra={
+        "x-cli-hidden": True,
+        "x-cli-dangerous": "confirm",
+        "x-cli-job": {"id_path": "job_id", "wait_op": "jobs.wait"},
+    },
+    status_code=202,
+)
+async def start_batch_transfer(
+    library_id: int,
+    payload: BatchTransferPayload,
+    client_name: str | None = Header(default=None, alias="X-MovieClaw-Client"),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[TransferStartView]:
+    """合并媒体库、批量纠正分错库的作品，都走这一条。
+
+    **成员集合在这里冻结**并写进作业输入：用户确认的是"这 593 部"，而筛选
+    结果会随扫描与刮削漂移。每个成员的路径计划则在轮到它时按磁盘现场重算。
+
+    搬运直接发生在磁盘上、无法一键撤销，调用方必须先用预检接口把影响面摆给
+    用户确认；这里只重新核对整批级的阻断问题（盘没挂、空间不够）。
+    """
+    source, target, members = await _batch_transfer_context(session, library_id, payload)
+    result = await build_preflight(
+        session,
+        source,
+        Path(target.primary_root or ""),
+        [(m.media_item_id, m.title) for m in members],
+    )
+    if result.blocked:
+        raise ConflictException("；".join(result.blocked))
+    if not result.movable:
+        raise BadRequestException(
+            "选中的条目没有一个可以搬运：" + (result.members[0].reason if result.members else "")
+            or "选中的条目没有可搬运的内容"
+        )
+    created = await enqueue_batch_transfer_job(
+        session,
+        source=source,
+        target=target,
+        members=members,
+        on_conflict=payload.on_conflict,
+        origin=_job_origin(client_name),
+    )
+    message = (
+        f"已开始把 {len(members)} 个条目转移到「{target.name}」，可在任务中心继续观察"
+        if created.created
+        else f"「{source.name}」的批量转移作业已在进行中"
+    )
+    if result.cross_device_items:
+        message += f"（其中 {result.cross_device_items} 个需要跨盘复制，耗时取决于体积）"
+    return ok(
+        TransferStartView(
+            started=True,
+            message=message,
+            job_id=created.job.id,
+            created=created.created,
+        ),
+        message=message,
+    )
 
 
 @router.get(

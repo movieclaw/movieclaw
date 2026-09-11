@@ -50,6 +50,11 @@ logger = logging.getLogger("movieclaw_api.library_preflight")
 _HEADROOM_RATIO = 0.05
 _HEADROOM_FLOOR_BYTES = 10 * 1024**3
 
+# 一次显式提交的成员上限：再多就该用「整库」，否则请求体与预检时间都失控。
+# 放在这里（而不是批量服务里）是为了让请求体校验与执行侧共用同一个数——
+# 两处各写一个 2000，迟早只改一处。
+MAX_SELECTION = 2000
+
 # 冲突分类（§7.1）：判据是目标目录里的台账行挂在哪个条目上，不是目录名。
 CONFLICT_SAME_ANCHOR = "same_anchor"  # 同一部作品的其他版本 → 允许合并
 CONFLICT_DIFFERENT_ANCHOR = "different_anchor"  # 目录撞名，不是同一部片 → 只能跳过
