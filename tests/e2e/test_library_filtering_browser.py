@@ -1043,7 +1043,23 @@ def test_filtering_and_collections_end_to_end(stack) -> None:  # noqa: PLR0915
         )["Items"]
         assert SERIES_NAME in {row["Name"] for row in movie_only}
 
-        # ================= 22. 影片页能一步跳进它所属的系列 =================
+        # ================= 22. 影片页：系列与合集分两行，都点得进去 =========
+        page.goto(f"{base}/library/{movie_lib}/item/{ids['你的名字']}")
+        page.wait_for_load_state("networkidle")
+        # 两行各带标签词：不加的话「新海诚系列」和「日本动画」长得一模一样，
+        # 而它们一个是作品的事实、一个是用户的归类
+        expect(page.get_by_text("系列", exact=True)).to_be_visible()
+        expect(page.get_by_text("合集", exact=True)).to_be_visible()
+        # 合集那一行认出了这部片所属的自建合集，且**不重复**系列
+        collection_link = page.get_by_role("link", name="日本动画")
+        expect(collection_link).to_be_visible()
+        shot("28-item-series-and-collections")
+        collection_link.click()
+        page.wait_for_url(lambda u: "/c/" in u)
+        expect(page.locator("[data-library-item-id]")).to_have_count(
+            len(ANIME_TITLES & JP_TITLES)
+        )
+
         page.goto(f"{base}/library/{movie_lib}/item/{ids['你的名字']}")
         page.wait_for_load_state("networkidle")
         series_link = page.get_by_role("link", name=SERIES_NAME)

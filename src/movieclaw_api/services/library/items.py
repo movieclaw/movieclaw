@@ -581,8 +581,15 @@ def _identity_clause(identity: WallIdentity):
     return column.is_(None) if identity == "confirmed" else column.is_not(None)  # type: ignore[union-attr]
 
 
-def _wall_scope(library_id: int, identity: WallIdentity = "confirmed"):
+def _wall_scope(
+    library_id: int, identity: WallIdentity = "confirmed", only_item_id: int | None = None
+):
     """海报墙的成员口径：本库、挂了条目、**在架**（没进回收站）、指定身份档。
+
+    ``only_item_id`` 把候选集收窄成**一个条目**——"这部片在不在这个合集里"
+    走的就是这条路。它收窄的是"谁是候选"，不是"要满足什么条件"，所以
+    放在这里而不是 ``LibraryFilter``：后者是用户能表达的维度，这个不是。
+    反查合集因此与正查成员**逐字同一条查询**，不存在两处答案不一致。
 
     ``on_shelf()`` 这一条是补上去的。在此之前墙的成员查询完全不看文件状态，
     于是用户把最后一个文件移进回收站之后，库卡片上的作品数已经减一
@@ -593,12 +600,13 @@ def _wall_scope(library_id: int, identity: WallIdentity = "confirmed"):
     在架（见 ``LibraryFile.on_shelf`` 的说明），回收站里的片恢复之后自己回到
     墙上——成员永远是现算的，没有补偿逻辑要写。
     """
-    return (
+    scope = (
         LibraryFile.library_id == library_id,
         LibraryFile.media_item_id.is_not(None),  # type: ignore[union-attr]
         LibraryFile.on_shelf(),
         _identity_clause(identity),
     )
+    return scope if only_item_id is None else (*scope, LibraryFile.media_item_id == only_item_id)
 
 
 async def _titles_sorted(
@@ -608,6 +616,7 @@ async def _titles_sorted(
     filters: LibraryFilter | None = None,
     member_id: int | None = None,
     content_limit: ContentLimit | None = None,
+    only_item_id: int | None = None,
 ) -> list[tuple[int, str]]:
     """本库全部条目的 (id, 标题)，按拼音序排好。
 
@@ -621,7 +630,7 @@ async def _titles_sorted(
             select(LibraryFile.media_item_id, MediaItem.title)
             .join(MediaItem, MediaItem.id == LibraryFile.media_item_id)  # type: ignore[arg-type]
             .where(
-                *_wall_scope(library_id, identity),
+                *_wall_scope(library_id, identity, only_item_id),
                 *_narrow(filters, member_id, library_id=library_id, content_limit=content_limit),
             )
             .distinct()
@@ -1229,8 +1238,13 @@ async def _wall_page_ids(
     member_id: int | None = None,
     content_limit: ContentLimit | None = None,
     order: WallOrder | None = None,
+    only_item_id: int | None = None,
 ) -> list[int]:
     """按 sort 排好序的本页条目 id（无 limit 时是全库）。
+
+    ``only_item_id`` 把候选集收窄成一个条目（见 ``_wall_scope``）：反查
+    "这部片属于哪些合集"时，每个合集走的是与列成员**同一条**查询，
+    只是候选集只有一个。
 
     先把「这一页是哪些条目」定下来，后面的聚合才能只算这几十个条目。
     每个排序都以 media_item_id 收尾——排序键相等时顺序必须稳定，
@@ -1246,7 +1260,7 @@ async def _wall_page_ids(
         ids = [
             i
             for i, _ in await _titles_sorted(
-                session, library_id, identity, filters, member_id, content_limit
+                session, library_id, identity, filters, member_id, content_limit, only_item_id
             )
         ]
         if not _ascending(sort, order):
@@ -1260,7 +1274,7 @@ async def _wall_page_ids(
         query = (
             select(LibraryFile.media_item_id)
             .where(
-                *_wall_scope(library_id, identity),
+                *_wall_scope(library_id, identity, only_item_id),
                 *narrow,
             )
             .group_by(LibraryFile.media_item_id)  # type: ignore[arg-type]
@@ -1282,7 +1296,7 @@ async def _wall_page_ids(
             .join(MediaItem, MediaItem.id == LibraryFile.media_item_id)  # type: ignore[arg-type]
             .outerjoin(MediaMetadata, MediaMetadata.media_item_id == MediaItem.id)  # type: ignore[arg-type]
             .where(
-                *_wall_scope(library_id, identity),
+                *_wall_scope(library_id, identity, only_item_id),
                 *narrow,
             )
             .group_by(LibraryFile.media_item_id)  # type: ignore[arg-type]
@@ -1320,7 +1334,7 @@ async def _wall_page_ids(
             .join(MediaItem, MediaItem.id == LibraryFile.media_item_id)  # type: ignore[arg-type]
             .outerjoin(MediaMetadata, MediaMetadata.media_item_id == MediaItem.id)  # type: ignore[arg-type]
             .where(
-                *_wall_scope(library_id, identity),
+                *_wall_scope(library_id, identity, only_item_id),
                 *narrow,
             )
             .group_by(LibraryFile.media_item_id)  # type: ignore[arg-type]

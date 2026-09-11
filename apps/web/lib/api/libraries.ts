@@ -1371,6 +1371,12 @@ export interface LibraryItemDetail {
   series_name: string | null;
   /** 所属系列合集的 id；本库没生成该合集（或用户藏了它）时为 null */
   series_collection_id: number | null;
+  /**
+   * 这部片所属的合集。**不含系列与「我的收藏」**：前者单独一行（它是作品的
+   * 事实，不是你的归类），后者那颗心就在几十像素之外。
+   * 只给名字和落点——封面是从成员海报里借的，在这部片的页面上摆它自己的海报没有意义。
+   */
+  collections: { id: number; name: string }[];
 }
 
 /** 剧集分集区的一集（季集结构 + 本地分集刮削 + TMDB 兜底的合并结果）。 */

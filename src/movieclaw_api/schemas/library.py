@@ -962,6 +962,24 @@ class LibraryItemDetailView(BaseModel):
     series_collection_id: int | None = Field(
         default=None, description="所属系列合集的 id；本库没生成该合集时为 null"
     )
+    # 所属合集：与系列**分两行**说。系列是这部片的事实（片方就这么拍的），
+    # 合集是用户自己的归类；两者长得一样但意思完全不同，混在一行读者分不清。
+    # 不含系列合集与「我的收藏」——前者已单独一行，后者那颗心就在几十像素外
+    collections: list[ItemCollectionRef] = Field(
+        default_factory=list, description="这部片所属的合集（不含系列与「我的收藏」）"
+    )
+
+
+class ItemCollectionRef(BaseModel):
+    """作品详情页那一行「合集」的一项：只要名字和落点。
+
+    **刻意不带封面与成员数**。合集封面是从成员海报里借的——在《千与千寻》
+    的页面上摆「日本动画」的封面卡，那张图很可能就是《千与千寻》自己；
+    而成员数属于合集卡片，这一行回答的是"它在哪儿"，不是"那儿有多大"。
+    """
+
+    id: int
+    name: str
 
 
 class EpisodeView(BaseModel):

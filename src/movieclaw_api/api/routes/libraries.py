@@ -26,6 +26,7 @@ from movieclaw_api.schemas.library import (
     DetachPayload,
     DirectorView,
     IdentityReviewDecision,
+    ItemCollectionRef,
     ItemDeleteResultView,
     LastOrganizeView,
     LastScanView,
@@ -94,6 +95,7 @@ from movieclaw_api.services.library.access import (
     content_limit_for,
     visible_library_ids,
 )
+from movieclaw_api.services.library.collections import collections_containing
 from movieclaw_api.services.library.config import LibraryConfigService
 from movieclaw_api.services.library.items import (
     LibraryFilter,
@@ -2406,6 +2408,22 @@ async def get_library_item(
     # 才给 id——给一个点了 404 的入口比不给更糟（合集可能被用户隐藏了，
     # 或者这个库把自动生成关掉了）
     series_collection_id = await series_collection_id_for(session, library_id, media_item_id)
+    # 所属合集：与系列分两行说——系列是这部片的事实，合集是用户自己的归类。
+    # 反查走 resolve_members 同一条路径（见 collections_containing 的说明），
+    # 不另写一套判定；系列合集与「我的收藏」不重复出现在这一行
+    member_id, visible, content_limit = (
+        principal.member_id if principal.member_id is not None else 0,
+        await visible_library_ids(session, principal),
+        await content_limit_for(session, principal),
+    )
+    in_collections = await collections_containing(
+        session,
+        media_item_id,
+        library_id=library_id,
+        member_id=member_id,
+        visible_library_ids=visible,
+        content_limit=content_limit,
+    )
 
     base = get_settings().tmdb_image_base_url.rstrip("/")
     art_base = f"/libraries/{library_id}/items/{media_item_id}/artwork"
@@ -2524,6 +2542,9 @@ async def get_library_item(
             chapters_pending=chapters_pending,
             series_name=meta_row.series_name if meta_row else None,
             series_collection_id=series_collection_id,
+            collections=[
+                ItemCollectionRef(id=row.id or 0, name=row.name) for row in in_collections
+            ],
         )
     )
 

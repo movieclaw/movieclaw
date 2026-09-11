@@ -318,3 +318,73 @@ def test_cross_library_collection_has_no_owner(client: TestClient) -> None:
     # 规则驱动的跨库合集仍然不给建
     refused = client.post("/api/v1/collections", json={"name": "跨库规则", "rules": ALL_ITEMS})
     assert refused.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# 作品详情页那一行「合集」（反查）
+# ---------------------------------------------------------------------------
+
+
+def _detail(client: TestClient, item_id: int = 1) -> dict:
+    resp = client.get(f"/api/v1/libraries/1/items/{item_id}")
+    assert resp.status_code == 200, resp.text
+    return resp.json()["data"]
+
+
+def test_item_detail_lists_the_collections_it_belongs_to(client: TestClient) -> None:
+    """规则驱动与名单驱动都要认出来——两种合集在这一行上没有区别。"""
+    assert _detail(client)["collections"] == []
+
+    smart = _create(client, name="科幻", rules=[{"field": "genres", "values": [878]}])
+    manual = _create(client, name="周末清单", item_ids=[1])
+    # 收不到这部片的合集不该出现
+    _create(client, name="动画", rules=[{"field": "genres", "values": [16]}])
+
+    names = {c["name"] for c in _detail(client)["collections"]}
+    assert names == {"科幻", "周末清单"}
+    ids = {c["id"] for c in _detail(client)["collections"]}
+    assert ids == {smart["id"], manual["id"]}
+
+
+def test_the_row_never_repeats_what_is_already_on_screen(client: TestClient) -> None:
+    """「我的收藏」不出现：那颗心就在几十像素之外，同一件事说两遍是噪音。"""
+    resp = client.post("/api/v1/playback/marks", json={"media_item_id": 1, "favorite": True})
+    assert resp.status_code == 200, resp.text
+    listed = {row["name"] for row in client.get("/api/v1/collections?library_id=1").json()["data"]}
+    assert "我的收藏" in listed, "内置收藏合集本身仍然存在"
+    assert _detail(client)["collections"] == [], "但它不该再在详情页上说一遍"
+
+
+def test_hidden_collections_drop_out_of_the_row(client: TestClient) -> None:
+    """隐藏是给自动合集的回头路，藏起来的就不该继续在详情页上露脸。"""
+    created = _create(client, name="科幻", rules=[{"field": "genres", "values": [878]}])
+    assert [c["name"] for c in _detail(client)["collections"]] == ["科幻"]
+
+    resp = client.put(f"/api/v1/collections/{created['id']}", json={"hidden": True})
+    assert resp.status_code == 200, resp.text
+    assert _detail(client)["collections"] == []
+
+
+def test_the_row_and_the_collection_page_never_disagree(client: TestClient) -> None:
+    """反查与正查必须是同一个答案。
+
+    这一条是整块的意义所在：详情页说"它在「科幻」里"、点进去却找不到它，
+    是最难查的一类不一致。反查走的是 resolve_members 同一条路径，候选集
+    收窄成一个条目而已，所以这条保证是结构性的。
+    """
+    created = _create(client, name="科幻", rules=[{"field": "genres", "values": [878]}])
+    said_it_belongs = {c["id"] for c in _detail(client)["collections"]}
+    members = client.get(f"/api/v1/collections/{created['id']}/items").json()["data"]
+    listed_there = {row["media_item_id"] for row in members}
+
+    assert created["id"] in said_it_belongs
+    assert 1 in listed_there
+
+    # 把它移出规则的射程：两处必须同时变
+    resp = client.put(
+        f"/api/v1/collections/{created['id']}",
+        json={"rules": [{"field": "genres", "values": [16]}]},
+    )
+    assert resp.status_code == 200, resp.text
+    assert _detail(client)["collections"] == []
+    assert client.get(f"/api/v1/collections/{created['id']}/items").json()["data"] == []

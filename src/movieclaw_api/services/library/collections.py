@@ -133,8 +133,14 @@ async def resolve_members(
     sort: WallSort | None = None,
     limit: int | None = None,
     offset: int = 0,
+    only_item_id: int | None = None,
 ) -> list[int]:
     """合集成员的 ``media_item_id``，按 sort 排好。
+
+    ``only_item_id`` 把候选集收窄成一个条目，用来反查"这部片属于哪些合集"：
+    返回 ``[id]`` 就是在、``[]`` 就是不在。**刻意不另写一套判定**——详情页
+    说它在、点进合集却找不到它，是最难查的一类不一致，而这个产品的合集
+    从来没有自己的查询（第 0 节）。
 
     规则驱动 → ``rules_to_filter()`` 后原样交给 ``_wall_page_ids()``；
     名单驱动 → ``collection_item`` 按 position，再过一遍可见性与在位文件。
@@ -156,17 +162,18 @@ async def resolve_members(
             rules_to_filter(effective_rules(collection)),
             member_id,
             content_limit,
+            only_item_id,
         )
 
-    # 名单驱动：position 序就是用户拖出来的顺序，不给 sort 时原样保留
+    # 名单驱动：position 序就是用户拖出来的顺序，不给 sort 时原样保留。
+    # 反查时只取那一行——打 (collection_id, media_item_id)，不拉整份名单
+    member_rows = select(CollectionItem.media_item_id).where(
+        CollectionItem.collection_id == collection.id
+    )
+    if only_item_id is not None:
+        member_rows = member_rows.where(CollectionItem.media_item_id == only_item_id)
     rows = (
-        (
-            await session.execute(
-                select(CollectionItem.media_item_id)
-                .where(CollectionItem.collection_id == collection.id)
-                .order_by(CollectionItem.position, CollectionItem.id)
-            )
-        )
+        (await session.execute(member_rows.order_by(CollectionItem.position, CollectionItem.id)))
         .scalars()
         .all()
     )
@@ -335,3 +342,54 @@ def builtin_key(collection: Collection) -> str | None:
     if not collection.builtin:
         return None
     return collection.builtin.split(":", 1)[0]
+
+
+async def collections_containing(
+    session: AsyncSession,
+    media_item_id: int,
+    *,
+    library_id: int,
+    member_id: int | None = None,
+    visible_library_ids: set[int] | None = None,
+    content_limit: ContentLimit | None = None,
+) -> list[Collection]:
+    """这部片属于哪些合集——作品详情页那一行「合集」的数据源。
+
+    成员是**算出来的**，没有反查表，所以这里逐个合集问一遍"它在不在里面"。
+    看着像 N+1，实际不是：每一问都把候选集收窄成这一个条目
+    （``resolve_members(only_item_id=...)``），规则驱动的那几个各是一条打得到
+    索引的小查询，名单驱动的只取 ``(collection_id, media_item_id)`` 那一行。
+
+    N 也比看上去小——**系列合集整类跳过**。它们是自动生成的，一个三百部的库
+    可能有四十个；而这部片属于哪个系列，``media_metadata.series_key`` 已经
+    直接给出答案（详情页把它单独摆一行，那是关于作品的事实，不是用户的归类）。
+    真正要逐个问的只有用户自己存的那几个，个人库里是个位数。
+
+    **「我的收藏」也不出现**：详情页上那颗心就在几十像素之外，同一件事说两遍
+    是噪音。隐藏的合集、别人的私有合集同样不出现（``visible_collections``
+    已经挡掉）。
+    """
+    from movieclaw_api.services.library.series import is_series_collection
+
+    rows = await visible_collections(
+        session,
+        library_id=library_id,
+        member_id=member_id,
+        visible_library_ids=visible_library_ids,
+    )
+    found: list[Collection] = []
+    for row in rows:
+        if is_series_collection(row) or builtin_key(row) == BUILTIN_FAVORITES:
+            continue
+        hit = await resolve_members(
+            session,
+            row,
+            member_id=member_id,
+            visible_library_ids=visible_library_ids,
+            content_limit=content_limit,
+            limit=1,
+            only_item_id=media_item_id,
+        )
+        if hit:
+            found.append(row)
+    return found

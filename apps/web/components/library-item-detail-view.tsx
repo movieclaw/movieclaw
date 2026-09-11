@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
+import { Children, Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 
@@ -687,11 +688,19 @@ export function LibraryItemDetailView({
               {meta.genres.join(" · ")}
             </p>
           )}
-          {/* 所属系列：从这部片一步跳进整个系列（《死亡圣器》→ 八部一起）。
-              只有本库真的生成了那个合集才给链接——一个点了 404 的入口比不给
-              更糟；没有合集时仍然把系列名说出来，那是这部片的事实 */}
+          {/* 系列与合集**分两行、各带一个标签词**。两者长得一模一样、意思
+              完全不同：系列是这部片的事实（片方就这么拍的，你改不了），合集
+              是用户自己的归类。不加标签的话「新海诚系列」和「周末清单」在
+              视觉上没有任何区别，读者分不清哪个是哪个。
+
+              都用文字而不是海报卡：合集的身份是它的名字，不是封面——而封面
+              恰恰是从成员海报里借的，在这部片的页面上很可能借到它自己。
+              Netflix 的「关于本片」、Plex 的 COLLECTIONS 行都是同一个判断：
+              归属用文字，推荐才用卡片。 */}
           {detail?.series_name && (
-            <p className="text-on-image mt-2 text-ui leading-6 text-white/72 max-md:text-sub">
+            <MetaLinkRow label="系列">
+              {/* 只有本库真的生成了那个合集才给链接——一个点了 404 的入口比
+                  不给更糟；没有合集时仍然把系列名说出来，那是这部片的事实 */}
               {detail.series_collection_id ? (
                 <Link
                   href={`/library/${libraryId}/c/${detail.series_collection_id}` as Route}
@@ -700,9 +709,31 @@ export function LibraryItemDetailView({
                   {detail.series_name}
                 </Link>
               ) : (
-                detail.series_name
+                <span>{detail.series_name}</span>
               )}
-            </p>
+            </MetaLinkRow>
+          )}
+          {detail && detail.collections.length > 0 && (
+            <MetaLinkRow label="合集">
+              {detail.collections.slice(0, COLLECTION_ROW_LIMIT).map((row) => (
+                <Link
+                  key={row.id}
+                  href={`/library/${libraryId}/c/${row.id}` as Route}
+                  className="underline-offset-4 hover:underline"
+                >
+                  {row.name}
+                </Link>
+              ))}
+              {/* 一部片进了八个合集也不该把这一行撑爆；余下的交给合集视图 */}
+              {detail.collections.length > COLLECTION_ROW_LIMIT && (
+                <Link
+                  href={`/library/${libraryId}?view=collections` as Route}
+                  className="text-white/50 underline-offset-4 hover:underline"
+                >
+                  还有 {detail.collections.length - COLLECTION_ROW_LIMIT} 个
+                </Link>
+              )}
+            </MetaLinkRow>
           )}
           <MediaTrackRows
             files={trackFiles}
@@ -2660,5 +2691,34 @@ function DeleteFileDialog({
         )}
       </div>
     </Modal>
+  );
+}
+
+/** 「合集」那一行最多摆几个，再多的收进「还有 N 个」。 */
+const COLLECTION_ROW_LIMIT = 3;
+
+/**
+ * 元数据区的一行「标签 + 若干链接」：系列、合集共用。
+ *
+ * 标签列宽与紧随其后的音轨 / 字幕行**逐字同款**（`w-10` + `gap-4` +
+ * `text-sub text-[var(--text-faint)]`）——这四行是连着排的，标签列差几个像素
+ * 就会看出来。第一版自作主张用了另一套间距，截图上四行分成两段，一眼就歪。
+ *
+ * 值之间用 `·` 分隔，与上方的类型行同一套读法。
+ */
+function MetaLinkRow({ label, children }: { label: string; children: ReactNode }) {
+  const items = Children.toArray(children);
+  return (
+    <div className="text-on-image mt-2 flex items-baseline gap-4 text-ui leading-6 text-white/72 max-md:text-sub">
+      <span className="w-10 shrink-0 text-sub text-[var(--text-faint)]">{label}</span>
+      <span className="min-w-0">
+        {items.map((child, index) => (
+          <Fragment key={index}>
+            {index > 0 && <span className="text-white/30"> · </span>}
+            {child}
+          </Fragment>
+        ))}
+      </span>
+    </div>
   );
 }
