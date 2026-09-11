@@ -474,6 +474,11 @@ async def _run(plan: TransferPlan, state: TransferState) -> None:
     )
     try:
         await _transfer(plan, state, summary)
+    except _MoveHalt as exc:
+        # 环境性故障：停下就是正确处理，原因要原样留给用户（这条路径没有
+        # 作业可退避重试，用户处理完环境问题后重新发起即可从断点继续）
+        logger.warning("条目 #%s 的转移因环境问题中止：%s", plan.media_item_id, exc)
+        summary.errors.append(str(exc))
     except Exception:  # noqa: BLE001 -- 后台任务无人 await，异常必须就地落日志
         logger.exception(
             "条目 #%s 从库 #%s 转移到库 #%s 时发生未知错误",
@@ -852,13 +857,29 @@ async def _run_transfer_job(
                 "total_bytes": plan.total_bytes,
             },
         )
-        await _transfer(
-            plan,
-            state,
-            summary,
-            context=context,
-            checkpoint_id=checkpoint_id,
-        )
+        try:
+            await _transfer(
+                plan,
+                state,
+                summary,
+                context=context,
+                checkpoint_id=checkpoint_id,
+            )
+        except _MoveHalt as exc:
+            # 环境性故障（盘满 / 只读挂载 / 盘掉线）：已搬完的保持已搬完，
+            # 整轮退避后重试——用户腾出空间或把盘挂回来即可自愈，不必重新
+            # 预览。继续试下一条只会把同一个错误重复几百遍，并在目标盘留下
+            # 一地半截续传文件。
+            logger.warning(
+                "条目 #%s 的转移因环境问题中止（已搬 %d 个路径）：%s",
+                plan.media_item_id,
+                len(summary.moved_paths),
+                exc,
+            )
+            raise jobs.JobRetry(
+                f"{exc}——已搬完的部分保持不变，稍后自动重试；请确认目标盘的剩余空间与挂载状态",
+                delay_seconds=60,
+            ) from exc
         message = f"已把「{plan.title}」转移到「{summary.target_library_name}」"
         if summary.errors:
             message += f"，{len(summary.errors)} 个问题已跳过"
@@ -871,7 +892,52 @@ async def _run_transfer_job(
 
 
 class _MoveError(Exception):
-    """单个单元搬运失败。message 是完整中文句子，直接进 errors。"""
+    """单个单元搬运失败。message 是完整中文句子，直接进 errors。
+
+    语义是**跳过这一条、继续下一条**——错因只影响这个文件/目录（源被别的
+    进程改名了、目标被占用、单个文件权限不足）。与 ``_MoveHalt`` 的判据是
+    「这个错对下一条还会不会发生」：不会 → 本类；会 → ``_MoveHalt``。
+    """
+
+
+# 环境性错因：错在「环境」不在「这一条」，对后面每一条都会原样重演。
+# 盘满是其中最要命的一个——不识别出来的话，一次整库转移会挨个尝试剩下的
+# 几百个条目、挨个失败，跑几个小时、刷出几百条一模一样的错误，还在目标盘
+# 留下几百个半截续传文件。
+_HALT_ERRNOS = frozenset(
+    code
+    for code in (
+        getattr(errno, name, None)
+        for name in (
+            "ENOSPC",  # 目标盘写满
+            "EDQUOT",  # 超出磁盘配额
+            "EROFS",  # 只读挂载
+            "EIO",  # 底层 IO 错误（盘要坏了 / 网络盘断了）
+            "ENODEV",  # 设备不存在
+            "ENXIO",  # 设备未就绪
+            "ESTALE",  # NFS 句柄失效（多半是挂载被重建）
+            "ENOTCONN",  # 网络挂载已断开
+            "EHOSTDOWN",
+            "EHOSTUNREACH",
+        )
+    )
+    if code is not None
+)
+
+
+class _MoveHalt(Exception):
+    """环境性故障：必须停下整轮搬运，不能继续试下一条。
+
+    调用方（作业处理器）把它转成 ``jobs.JobRetry``——退避之后重试，用户
+    腾出空间或把盘挂回来，作业就能从断点继续；重试用尽才算失败。
+    """
+
+
+def _classify_os_error(exc: OSError, message: str) -> Exception:
+    """按 errno 把一次失败判成「跳过这一条」还是「停下整轮」。"""
+    if exc.errno in _HALT_ERRNOS:
+        return _MoveHalt(message)
+    return _MoveError(message)
 
 
 def _checkpoint_paths(dst: Path, checkpoint_id: str) -> tuple[Path, Path]:
@@ -919,7 +985,7 @@ async def _move_resumable(
         if exc.errno != errno.EXDEV:
             if isinstance(exc, FileExistsError):
                 raise _MoveError(f"目标路径已被占用，跳过以免覆盖：{dst}") from exc
-            raise _MoveError(f"搬运失败（{exc.strerror}）：{src} → {dst}") from exc
+            raise _classify_os_error(exc, f"搬运失败（{exc.strerror}）：{src} → {dst}") from exc
 
     try:
         await _copy_path_resumable(context, src, partial)
@@ -939,7 +1005,11 @@ async def _move_resumable(
         raise
     except (OSError, shutil.Error) as exc:
         # 临时副本刻意保留：网络盘瞬断或应用更新后，下次从已有字节继续。
-        raise _MoveError(f"跨盘复制暂未完成（{exc}）：{src} → {dst}") from exc
+        message = f"跨盘复制暂未完成（{exc}）：{src} → {dst}"
+        # shutil.Error 不带 errno，只有 OSError 能分级；前者按单条处理
+        if isinstance(exc, OSError):
+            raise _classify_os_error(exc, message) from exc
+        raise _MoveError(message) from exc
 
 
 def _rename_no_replace_with_parent(src: Path, dst: Path) -> None:
@@ -1040,7 +1110,7 @@ def _move(src: Path, dst: Path, cross_device: bool) -> None:
     try:
         dst.parent.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
-        raise _MoveError(f"创建目标目录失败（{exc.strerror}）：{dst.parent}") from exc
+        raise _classify_os_error(exc, f"创建目标目录失败（{exc.strerror}）：{dst.parent}") from exc
     if dst.exists():
         raise _MoveError(f"目标路径已被占用，跳过以免覆盖：{dst}")
     try:
@@ -1048,7 +1118,7 @@ def _move(src: Path, dst: Path, cross_device: bool) -> None:
         return
     except OSError as exc:
         if exc.errno != errno.EXDEV:
-            raise _MoveError(f"搬运失败（{exc.strerror}）：{src} → {dst}") from exc
+            raise _classify_os_error(exc, f"搬运失败（{exc.strerror}）：{src} → {dst}") from exc
     # 跨设备：复制成功才删源
     try:
         if src.is_dir():
@@ -1057,7 +1127,10 @@ def _move(src: Path, dst: Path, cross_device: bool) -> None:
             shutil.copy2(src, dst)
     except (OSError, shutil.Error) as exc:
         shutil.rmtree(dst, ignore_errors=True) if dst.is_dir() else dst.unlink(missing_ok=True)
-        raise _MoveError(f"跨盘复制失败（{exc}）：{src} → {dst}") from exc
+        message = f"跨盘复制失败（{exc}）：{src} → {dst}"
+        if isinstance(exc, OSError):
+            raise _classify_os_error(exc, message) from exc
+        raise _MoveError(message) from exc
     try:
         shutil.rmtree(src) if src.is_dir() else src.unlink()
     except OSError as exc:

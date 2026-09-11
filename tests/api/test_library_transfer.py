@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 
 import pytest
 import pytest_asyncio
@@ -459,3 +460,65 @@ async def test_transfer_carries_in_place_trashed_file(db, tmp_path) -> None:
         ).scalar_one()
         assert row.state == FileState.TRASHED  # 路径改写但状态不被搬运复活
         assert row.library_id == target_id
+
+
+# ---------------------------------------------------------------------------
+# 失败分级：错因是「这一条」还是「环境」，处理方式必须不同
+# ---------------------------------------------------------------------------
+
+
+def test_classify_os_error_splits_per_path_from_environment() -> None:
+    """errno 决定跳过还是停下：盘满/只读/掉线是环境性的，权限是这一条的。"""
+    halt = transfer_svc._classify_os_error(
+        OSError(errno.ENOSPC, "No space left on device"), "盘满了"
+    )
+    assert isinstance(halt, transfer_svc._MoveHalt)
+    for code in (errno.EROFS, errno.EIO, errno.ESTALE):
+        assert isinstance(
+            transfer_svc._classify_os_error(OSError(code, "x"), "y"), transfer_svc._MoveHalt
+        )
+    for code in (errno.EACCES, errno.ENOENT, errno.EEXIST):
+        assert isinstance(
+            transfer_svc._classify_os_error(OSError(code, "x"), "y"), transfer_svc._MoveError
+        )
+
+
+async def test_disk_full_halts_the_whole_run_instead_of_skipping(db, tmp_path, monkeypatch) -> None:
+    """盘满时整轮停下并退避重试，而不是把同一个错误在每个路径上重复一遍。
+
+    没有分级的话，一次整库转移会挨个尝试剩下的几百个条目、挨个失败，跑
+    几个小时、刷出几百条一样的错误，还在目标盘留下几百个半截续传文件。
+    """
+    source_id, target_id, item_id, entry, target_root = await _setup(db, tmp_path)
+
+    attempts = 0
+
+    def _no_space(src, dst):
+        nonlocal attempts
+        attempts += 1
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(transfer_svc, "_rename_no_replace_with_parent", _no_space)
+
+    async with get_database().session() as session:
+        await transfer_library_item(
+            source_id, item_id, TransferPayload(target_library_id=target_id), session=session
+        )
+
+    for _ in range(500):
+        async with get_database().session() as session:
+            latest = await jobs.latest_job_for_resource(
+                session, "library", source_id, job_type="library.transfer"
+            )
+        if latest is not None and latest.status is JobStatus.RETRY_WAIT:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        raise AssertionError("盘满没有让作业进入自动重试，而是被当成了普通跳过")
+
+    # 作业退避重试（不是"成功但有问题"），错误里保留可操作的中文原因
+    assert latest.status is JobStatus.RETRY_WAIT
+    assert "空间" in (latest.error or {}).get("message", "")
+    # 目录仍在原位：停下的语义是"什么都没搬走"，不是"搬了一半"
+    assert entry.exists()
+    assert not (target_root / entry.name).exists()
