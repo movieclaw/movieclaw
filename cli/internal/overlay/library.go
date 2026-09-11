@@ -25,7 +25,8 @@ func NewLibraryGroup() *cobra.Command {
 	group := &cobra.Command{
 		Use: "library",
 		Short: "管理本地电影/剧集媒体库、库存文件、识别结果、元数据、图片与字幕；" +
-			"organize-files 按 scrape 配的命名模板批量整理存量文件名",
+			"organize-files 按命名模板整理存量文件名（改名字、留在原根），" +
+			"consolidate-roots 把多个根下的内容并到一个根（换位置、不碰名字）",
 		RunE:         func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
 		SilenceUsage: true,
 	}
@@ -33,6 +34,7 @@ func NewLibraryGroup() *cobra.Command {
 	group.AddCommand(newLibraryOrganizeFilesCommand())
 	group.AddCommand(newLibraryReconcilePathsCommand())
 	group.AddCommand(newLibraryItemsGroup())
+	group.AddCommand(newLibraryConsolidateRootsCommand())
 	return group
 }
 
@@ -518,4 +520,116 @@ func humanBytes(value int) string {
 		index++
 	}
 	return fmt.Sprintf("%.1f %s", size, units[index])
+}
+
+// newLibraryConsolidateRootsCommand 把「换位置」做成库的原生操作。
+//
+// 与 organize-files 的分工要说死：整理**改名字**、永远留在当前根下；归并
+// **换位置**、不碰名字。一次操作只做一件事，用户才说得清刚才那一下改了什么。
+func newLibraryConsolidateRootsCommand() *cobra.Command {
+	var (
+		into        string
+		fromRoots   []string
+		dryRun      bool
+		waitDone    bool
+		waitTimeout time.Duration
+	)
+	cmd := &cobra.Command{
+		Use:   "consolidate-roots <library_id>",
+		Short: "把若干个根路径下的条目并到一个根（预检影响面 → --yes 确认 → 执行）",
+		Long: `把媒体库里散在多个根路径下的条目，连同磁盘目录一起并到指定的那个根。
+
+用于换盘、换挂载点，以及把历史遗留的多级分类目录拍平成一层：
+
+    mclaw library consolidate-roots 3 --into /media/电影 --dry-run
+    mclaw library consolidate-roots 3 --into /media/电影 --yes
+
+--from 留空表示「除 --into 之外的全部根」（拍平目录最常见的意图）；
+--into 允许是一个还不在媒体库配置里的新路径（换盘场景），归并会先把它加进
+配置再开始搬——顺序反了文件会先落到库根之外，下次扫描会把它们全标缺失。
+
+同一块盘上的归并是瞬间完成的改名，不占用额外空间，硬链接（做种）也完整保留。
+全部搬完并且没有任何跳过或失败时，才会把源根从配置里摘掉。
+
+与「整理文件名」的分工：整理改名字、留在原根；归并换位置、不碰名字。`,
+		Args: cobra.ExactArgs(1),
+	}
+	flags := cmd.Flags()
+	flags.StringVar(&into, "into", "", "要并到的目标根路径（可以是尚未配置的新路径）")
+	flags.StringSliceVar(&fromRoots, "from", nil,
+		"要并过来的源根路径，可重复；留空表示除 --into 外的全部根")
+	flags.BoolVar(&dryRun, "dry-run", false, "只输出预检，不动磁盘")
+	flags.BoolVar(&waitDone, "wait", false, "等待归并完成（跨盘搬大库可能要几小时，缺省不等）")
+	flagx.Var(flags, &waitTimeout, "wait-timeout", 6*time.Hour, "--wait 的最长等待秒数")
+	_ = cmd.MarkFlagRequired("into")
+
+	taken := []string{"into", "from", "dry-run", "wait", "wait-timeout"}
+	return withOverrides(cmd, taken, func(s *Settings, _ *cobra.Command, args []string) error {
+		libraryID, err := parseLibraryID(args[0])
+		if err != nil {
+			return err
+		}
+		client, err := s.NewAPI()
+		if err != nil {
+			return err
+		}
+		body := map[string]any{"into": into, "from_roots": fromRoots}
+		base := "/libraries/" + libraryID
+		raw, err := client.Request("POST", base+"/root-consolidation-preview", nil, body)
+		if err != nil {
+			return err
+		}
+		preview := jsonval.Object(raw)
+		sources := make([]string, 0, len(jsonval.Array(preview.Get("from_roots"))))
+		for _, root := range jsonval.Array(preview.Get("from_roots")) {
+			sources = append(sources, jsonval.Plain(root))
+		}
+		output.Info("归并计划：把 %s 下的内容并入 %s",
+			strings.Join(sources, "、"), jsonval.Plain(preview.Get("into")))
+		if jsonval.Truthy(preview.Get("into_is_new_root")) {
+			output.Info("  目标根当前不在媒体库配置里，归并会先把它加进去")
+		}
+		reportTransferPreflight(preview)
+		if blocked := jsonval.Array(preview.Get("blocked")); len(blocked) > 0 {
+			reasons := make([]string, 0, len(blocked))
+			for _, item := range blocked {
+				reasons = append(reasons, jsonval.Plain(item))
+			}
+			return clierr.New("%s", strings.Join(reasons, "；")).
+				WithHint("处理上面的问题后重试；只看预检用 --dry-run")
+		}
+		if dryRun {
+			return output.Emit(preview, s.Output, s.Quiet)
+		}
+		movable := jsonval.Int(preview.Get("movable"))
+		if movable == 0 {
+			output.Info("这些根下没有需要搬运的条目")
+			return nil
+		}
+		if !s.Yes {
+			if err := output.Emit(preview, s.Output, s.Quiet); err != nil {
+				return err
+			}
+			return clierr.Newf(clierr.NeedConfirm, "即将归并 %d 个条目，需要确认", movable).
+				WithHint("核对上面的预检后重跑并加 --yes；只看预检用 --dry-run")
+		}
+		started, err := client.Request("POST", base+"/root-consolidations", nil, body)
+		if err != nil {
+			return err
+		}
+		if client.LastMessage != "" && !s.Quiet {
+			output.Info("%s", client.LastMessage)
+		}
+		if err := output.Emit(started, s.Output, s.Quiet); err != nil {
+			return err
+		}
+		jobID := jsonval.Str(jsonval.Object(started).Get("job_id"))
+		if !waitDone {
+			if jobID != "" && !s.Quiet {
+				output.Info("归并在后台进行；用 mclaw jobs wait %s 等它跑完", jobID)
+			}
+			return nil
+		}
+		return wait.Job(client, jobID, waitTimeout)
+	})
 }

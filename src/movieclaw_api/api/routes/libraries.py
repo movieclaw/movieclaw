@@ -26,6 +26,8 @@ from movieclaw_api.schemas.library import (
     ChapterView,
     ClaimBatchPayload,
     ClaimPayload,
+    ConsolidateRootsPayload,
+    ConsolidateRootsPreviewView,
     DetachPayload,
     DirectorView,
     IdentityReviewDecision,
@@ -102,7 +104,9 @@ from movieclaw_api.services.library.access import (
 from movieclaw_api.services.library.batch_transfer import (
     BatchMember,
     enqueue_batch_transfer_job,
+    enqueue_consolidate_job,
     resolve_members,
+    resolve_members_under_roots,
 )
 from movieclaw_api.services.library.collections import collections_containing
 from movieclaw_api.services.library.config import LibraryConfigService
@@ -3296,6 +3300,152 @@ async def start_batch_transfer(
         f"已开始把 {len(members)} 个条目转移到「{target.name}」，可在任务中心继续观察"
         if created.created
         else f"「{source.name}」的批量转移作业已在进行中"
+    )
+    if result.cross_device_items:
+        message += f"（其中 {result.cross_device_items} 个需要跨盘复制，耗时取决于体积）"
+    return ok(
+        TransferStartView(
+            started=True,
+            message=message,
+            job_id=created.job.id,
+            created=created.created,
+        ),
+        message=message,
+    )
+
+
+def _validated_consolidate_roots(
+    library: Library, payload: ConsolidateRootsPayload
+) -> tuple[str, list[str]]:
+    """校验归并的目标根与源根，返回规范化后的（into, from_roots）。"""
+    into = payload.into.strip().rstrip("/")
+    if not into:
+        raise BadRequestException("必须给出要并到的目标根路径")
+    if not Path(into).is_dir():
+        raise BadRequestException(f"目标根路径不存在或不可访问：{into}（盘未挂载？）")
+    current = [r.rstrip("/") for r in library.root_paths]
+    sources = [r.strip().rstrip("/") for r in payload.from_roots if r.strip()]
+    if not sources:
+        # 留空 = 除目标根外的全部根，这正是「拍平多级目录」最常见的意图
+        sources = [r for r in current if r != into]
+    unknown = [r for r in sources if r not in current]
+    if unknown:
+        raise BadRequestException(
+            "这些源根不在媒体库的配置里：" + "、".join(unknown) + "；请用 mclaw library get 核对"
+        )
+    if into in sources:
+        raise BadRequestException("目标根不能同时出现在源根里")
+    if not sources:
+        raise BadRequestException("没有要并过来的源根——这个库只有目标根一个根路径")
+    return into, sources
+
+
+@router.post(
+    "/{library_id}/root-consolidation-preview",
+    response_model=ApiResponse[ConsolidateRootsPreviewView],
+    summary="预检根路径归并：条目会搬到哪、空间够不够、根配置怎么变（只读）",
+    operation_id="workflow.library.consolidate-roots.preview",
+    dependencies=[Depends(require_admin)],
+    openapi_extra={"x-cli-hidden": True},
+)
+async def preview_consolidate_roots(
+    library_id: int,
+    payload: ConsolidateRootsPayload,
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[ConsolidateRootsPreviewView]:
+    """纯只读。换盘、换挂载点、把历史的多级分类目录拍平成一层都走这条。
+
+    与批量转移是同一套预检（空间只算跨盘部分、硬链接只在跨盘统计、同名按锚
+    分类），差别只在这里的选择集是「这些根下的全部条目」，以及会告诉你目标根
+    是不是一个将被加进配置的新路径。
+    """
+    library = await LibraryConfigService(session).get(library_id)
+    into, sources = _validated_consolidate_roots(library, payload)
+    members = await resolve_members_under_roots(session, library_id, sources)
+    result = await build_preflight(
+        session,
+        library,
+        Path(into),
+        [(m.media_item_id, m.title) for m in members],
+        seeding_names=await _seeding_root_names(),
+    )
+    return ok(
+        ConsolidateRootsPreviewView(
+            library_id=library_id,
+            into=into,
+            from_roots=sources,
+            into_is_new_root=into not in [r.rstrip("/") for r in library.root_paths],
+            selected=result.selected,
+            movable=result.movable,
+            total_bytes=result.total_bytes,
+            members=[PreflightMemberView(**asdict(m)) for m in result.members],
+            cross_device_items=result.cross_device_items,
+            cross_device_bytes=result.cross_device_bytes,
+            target_free_bytes=result.target_free_bytes,
+            target_required_bytes=result.target_required_bytes,
+            source_reclaimable_bytes=result.source_reclaimable_bytes,
+            hardlinked_items=result.hardlinked_items,
+            hardlinked_bytes=result.hardlinked_bytes,
+            seeding_in_place_items=result.seeding_in_place_items,
+            conflicts=result.conflicts,
+            blocked=result.blocked,
+        )
+    )
+
+
+@router.post(
+    "/{library_id}/root-consolidations",
+    response_model=ApiResponse[TransferStartView],
+    summary="归并根路径：把若干个根下的条目搬到一个根，台账随迁、根配置收口",
+    operation_id="workflow.library.consolidate-roots.start",
+    dependencies=[Depends(require_admin)],
+    openapi_extra={
+        "x-cli-hidden": True,
+        "x-cli-dangerous": "confirm",
+        "x-cli-job": {"id_path": "job_id", "wait_op": "jobs.wait"},
+    },
+    status_code=202,
+)
+async def start_consolidate_roots(
+    library_id: int,
+    payload: ConsolidateRootsPayload,
+    client_name: str | None = Header(default=None, alias="X-MovieClaw-Client"),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[TransferStartView]:
+    """换盘、换挂载点、拍平历史多级目录，都是这一条。
+
+    与「整理文件名」的分工要说死：整理**改名字**、永远留在当前根下；归并
+    **换位置**、不碰名字。一次操作只做一件事，用户才说得清刚才那一下改了什么。
+
+    目标根若还不在库配置里会**先加进去再开始搬**：顺序反了文件会先落到库根
+    之外，下一次扫描把它们全标 missing。搬完并且没有任何跳过或失败时，才把
+    源根从配置里摘掉——还剩内容就摘根，那些台账会瞬间指到库根之外。
+    """
+    library = await LibraryConfigService(session).get(library_id)
+    into, sources = _validated_consolidate_roots(library, payload)
+    await _assert_not_busy(session, library.name, library_id)
+    members = await resolve_members_under_roots(session, library_id, sources)
+    if not members:
+        raise BadRequestException(
+            "这些源根下没有任何已入库的条目——如果只是想改配置，直接编辑媒体库的根路径即可"
+        )
+    result = await build_preflight(
+        session, library, Path(into), [(m.media_item_id, m.title) for m in members]
+    )
+    if result.blocked:
+        raise ConflictException("；".join(result.blocked))
+    created = await enqueue_consolidate_job(
+        session,
+        library=library,
+        into=into,
+        drop_roots=sources,
+        members=members,
+        origin=_job_origin(client_name),
+    )
+    message = (
+        f"已开始把 {len(members)} 个条目并入「{into}」，可在任务中心继续观察"
+        if created.created
+        else f"「{library.name}」的根路径归并作业已在进行中"
     )
     if result.cross_device_items:
         message += f"（其中 {result.cross_device_items} 个需要跨盘复制，耗时取决于体积）"

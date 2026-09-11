@@ -149,6 +149,10 @@ class TransferPlan:
     target_library_id: int
     media_item_id: int
     title: str
+    # 落点的根目录。跨库转移是目标库主根；库内归并（把若干个根下的条目并到
+    # 一个根）是指定的那个根——两处都要用它，所以由计划统一持有，而不是各自
+    # 再从库配置里推一遍（推法一分叉，落点与身份锚就会指向两个地方）
+    target_root: str = ""
     moves: list[TransferMove] = field(default_factory=list)
     skips: list[TransferSkip] = field(default_factory=list)
     # 逻辑随迁的缺失台账行（磁盘上没有实体，只改 library_id 与路径投影）
@@ -166,11 +170,17 @@ async def build_transfer_plan(
     target: Library,
     item: MediaItem,
     files: list[LibraryFile],
+    *,
+    target_root: Path | None = None,
 ) -> TransferPlan:
     """计算转移计划。只读磁盘与台账，不做任何写入。
 
     调用前的合法性校验（同类型、非同库、目标有主根）由 ``assert_transferable``
     统一负责——预览与执行都要走那一道，不在这里重复。
+
+    ``target_root`` 缺省是目标库主根（跨库转移）。库内根路径归并传入要并到的
+    那个根，此时 ``source`` 与 ``target`` 是同一个库：台账只改路径不改归属，
+    引擎其余部分一字不用变。
     """
     assert source.id is not None and target.id is not None and item.id is not None
     # 源库里**其他条目**占用的路径：条目目录里混着别人时不能整目录搬
@@ -187,7 +197,7 @@ async def build_transfer_plan(
         .all()
     )
     roots = [Path(p) for p in source.root_paths]
-    target_root = Path(target.primary_root or "")
+    landing = target_root if target_root is not None else Path(target.primary_root or "")
     # 磁盘检查（exists/stat/附属文件枚举）放线程池：网络挂载上一次 stat 也要毫秒级
     return await asyncio.to_thread(
         _build_plan_sync,
@@ -196,7 +206,7 @@ async def build_transfer_plan(
         item.id,
         item.title,
         roots,
-        target_root,
+        landing,
         files,
         [Path(p) for p in foreign],
         # 一文件一条目的库（本地内容库）搬文件，有识别链的库搬条目目录
@@ -220,6 +230,7 @@ def _build_plan_sync(
         target_library_id=target_library_id,
         media_item_id=media_item_id,
         title=title,
+        target_root=str(target_root),
     )
     if not target_root.is_dir():
         plan.blocked.append(f"目标库的主根路径不可访问：{target_root}（盘未挂载？）")
@@ -695,7 +706,7 @@ async def _relocate_item_identity(
             .scalars()
             .all()
         )
-        anchor = _relocated_anchor(rows, target)
+        anchor = _relocated_anchor(rows, target, Path(plan.target_root))
     if anchor is not None and anchor != item.external_id:
         item.external_id = anchor
         changed = True
@@ -715,9 +726,10 @@ async def _relocate_item_identity(
         )
 
 
-def _relocated_anchor(rows: list[LibraryFile], target: Library) -> str | None:
-    """本地来源条目搬到目标库后应有的身份锚；算不出同一口径的值时 None。"""
-    target_root = Path(target.primary_root or "")
+def _relocated_anchor(
+    rows: list[LibraryFile], target: Library, target_root: Path
+) -> str | None:
+    """本地来源条目搬到新位置后应有的身份锚；算不出同一口径的值时 None。"""
     anchor_path = next(
         (Path(row.file_path) for row in rows if target_root in Path(row.file_path).parents),
         None,
@@ -808,6 +820,7 @@ def _plan_from_job(value: object) -> TransferPlan:
         target_library_id=int(value["target_library_id"]),
         media_item_id=int(value["media_item_id"]),
         title=str(value.get("title") or "未知条目"),
+        target_root=str(value.get("target_root") or ""),
         moves=[TransferMove(**item) for item in value.get("moves", [])],
         skips=[TransferSkip(**item) for item in value.get("skips", [])],
         missing_file_ids=[int(item) for item in value.get("missing_file_ids", [])],

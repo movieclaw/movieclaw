@@ -82,6 +82,9 @@ var knownNonGenerated = []string{
 	// 必须先预检并回显影响面，不给生成命令绕过确认的旁路
 	"workflow.library.transfer-items.preview",
 	"workflow.library.transfer-items.start",
+	// 根路径归并：同样由精选命令 mclaw library consolidate-roots 承担
+	"workflow.library.consolidate-roots.preview",
+	"workflow.library.consolidate-roots.start",
 	"system.spec",
 	"auth.login",
 	"auth.logout",
@@ -349,26 +352,28 @@ func TestDangerousAndLongTaskAnnotations(t *testing.T) {
 		ops[op.OperationID] = op
 	}
 	for id, want := range map[string]string{
-		"library.items.delete":                  "destructive",
-		"subscriptions.delete":                  "confirm",
-		"subscriptions.unsubscribe":             "confirm",
-		"library.items.transfer":                "confirm",
-		"workflow.library.transfer-items.start": "confirm",
+		"library.items.delete":                     "destructive",
+		"subscriptions.delete":                     "confirm",
+		"subscriptions.unsubscribe":                "confirm",
+		"library.items.transfer":                   "confirm",
+		"workflow.library.transfer-items.start":    "confirm",
+		"workflow.library.consolidate-roots.start": "confirm",
 	} {
 		if got := ops[id].Dangerous; got != want {
 			t.Errorf("%s 的 x-cli-dangerous 是 %q，期望 %q", id, got, want)
 		}
 	}
 	for id, want := range map[string]string{
-		"library.scan.start":                      "job_id",
-		"library.metadata.refresh-library":        "job_id",
-		"workflow.library.organize-files.start":   "job_id",
-		"workflow.library.transfer-items.start":   "job_id",
-		"library.items.refresh-metadata":          "job_id",
-		"library.chapter-images.generate":         "job_id",
-		"library.items.regenerate-chapter-images": "job_id",
-		"library.items.transfer":                  "job_id",
-		"library.subtitles.generate":              "id",
+		"library.scan.start":                       "job_id",
+		"library.metadata.refresh-library":         "job_id",
+		"workflow.library.organize-files.start":    "job_id",
+		"workflow.library.transfer-items.start":    "job_id",
+		"workflow.library.consolidate-roots.start": "job_id",
+		"library.items.refresh-metadata":           "job_id",
+		"library.chapter-images.generate":          "job_id",
+		"library.items.regenerate-chapter-images":  "job_id",
+		"library.items.transfer":                   "job_id",
+		"library.subtitles.generate":               "id",
 	} {
 		job := ops[id].Job
 		if job == nil {

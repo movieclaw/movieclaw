@@ -1201,6 +1201,44 @@ class BatchTransferPreviewView(BaseModel):
     )
 
 
+class ConsolidateRootsPayload(BaseModel):
+    """根路径归并的请求体：并到哪个根、从哪些根并过来。"""
+
+    into: str = Field(
+        description=(
+            "要并到的目标根路径。**允许是当前还不在媒体库配置里的新路径**"
+            "（换盘、换挂载点场景）：归并会先把它加进配置再开始搬"
+        )
+    )
+    from_roots: list[str] = Field(
+        default_factory=list,
+        description="要并过来的源根路径；留空表示「除 into 之外的全部根」",
+    )
+
+
+class ConsolidateRootsPreviewView(BaseModel):
+    """根路径归并预检：与批量转移同一套影响面，外加根配置的变化。"""
+
+    library_id: int
+    into: str
+    from_roots: list[str]
+    into_is_new_root: bool = Field(description="true=归并前会先把 into 加进媒体库配置")
+    selected: int
+    movable: int
+    total_bytes: int
+    members: list[PreflightMemberView]
+    cross_device_items: int = 0
+    cross_device_bytes: int = 0
+    target_free_bytes: int = 0
+    target_required_bytes: int = 0
+    source_reclaimable_bytes: int = 0
+    hardlinked_items: int = 0
+    hardlinked_bytes: int = 0
+    seeding_in_place_items: int | None = 0
+    conflicts: dict[str, int] = Field(default_factory=dict)
+    blocked: list[str] = Field(default_factory=list)
+
+
 class TransferStartView(BaseModel):
     """转移启动响应。"""
 

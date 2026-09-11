@@ -29,6 +29,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 
 from sqlmodel import select
 
@@ -46,12 +47,17 @@ from movieclaw_api.services.library.transfer import (
     notify_media_server,
 )
 from movieclaw_db.engine import get_database
-from movieclaw_db.models import Library, LibraryFile, MediaItem
+from movieclaw_db.models import Library, LibraryFile, MediaItem, utcnow
 from movieclaw_db.repositories.library_repo import LibraryRepository
 
 logger = logging.getLogger("movieclaw_api.library_batch_transfer")
 
 JOB_TYPE = "library.transfer-batch"
+# 库内根路径归并：把若干个根下的条目并到一个根。它与批量转移是**同一个引擎的
+# 两种投影**——跨库转移的目标根是目标库主根、台账改归属；库内归并的目标根是
+# 指定的那个根、台账只改路径、收尾还要更新 root_paths。所以共用同一个处理器，
+# 只用两个作业类型把它们在任务中心区分开。
+CONSOLIDATE_JOB_TYPE = "library.consolidate-roots"
 
 # 连续失败到这个数就熔断。用「连续」而不是「累计失败率」：593 部里零星几部
 # 搬不动（个别文件权限）不该停，连着 5 部失败则一定是系统性的；累计率要等
@@ -129,6 +135,94 @@ async def resolve_members(
     ]
 
 
+async def resolve_members_under_roots(
+    session,
+    library_id: int,
+    roots: list[str],
+) -> list[BatchMember]:
+    """选出「文件落在这些根下」的全部条目——库内归并的选择集。
+
+    归并选的是**根**不是条目：用户说的是"把这两个旧目录并到新目录去"，
+    而不是逐个挑片子。
+    """
+    prefixes = [r.rstrip("/") + "/" for r in roots if r.strip()]
+    if not prefixes:
+        return []
+    stmt = (
+        select(MediaItem.id, MediaItem.title)
+        .join(LibraryFile, LibraryFile.media_item_id == MediaItem.id)  # type: ignore[arg-type]
+        .where(LibraryFile.library_id == library_id)
+        .distinct()
+    )
+    rows = (await session.execute(stmt)).all()
+    found = {int(mid): str(title) for mid, title in rows}
+    paths = (
+        await session.execute(
+            select(LibraryFile.media_item_id, LibraryFile.file_path).where(
+                LibraryFile.library_id == library_id,
+                LibraryFile.media_item_id.is_not(None),  # type: ignore[union-attr]
+            )
+        )
+    ).all()
+    under: dict[int, None] = {}
+    for media_item_id, file_path in paths:
+        if any(str(file_path).startswith(prefix) for prefix in prefixes):
+            under.setdefault(int(media_item_id), None)
+    return [BatchMember(media_item_id=mid, title=found[mid]) for mid in under if mid in found]
+
+
+async def enqueue_consolidate_job(
+    session,
+    *,
+    library: Library,
+    into: str,
+    drop_roots: list[str],
+    members: list[BatchMember],
+    actor_kind: str | None = None,
+    actor_name: str | None = None,
+    actor_id: str | None = None,
+    origin: str = "web",
+) -> jobs.CreateJobResult:
+    """投递库内根路径归并作业（与批量转移共用处理器，见 CONSOLIDATE_JOB_TYPE）。"""
+    assert library.id is not None
+    total = len(members)
+    return await jobs.create_job(
+        session,
+        job_type=CONSOLIDATE_JOB_TYPE,
+        subject=f"{library.name}：{total} 个条目并入 {into}",
+        input_data={
+            "source_library_id": library.id,
+            "target_library_id": library.id,
+            "target_library_name": library.name,
+            "target_root": into,
+            "drop_roots": drop_roots,
+            "on_conflict": ON_CONFLICT_SKIP,
+            "members": [asdict(m) for m in members],
+            "checkpoint_id": uuid.uuid4().hex,
+        },
+        resources=[jobs.ResourceRef("library", library.id)],
+        dedupe_key=f"{CONSOLIDATE_JOB_TYPE}:{library.id}:{into}",
+        conflict_policy="return_existing",
+        handler_revision=f"{CONSOLIDATE_JOB_TYPE}.v1",
+        max_attempts=3,
+        actor_kind=actor_kind,
+        actor_name=actor_name,
+        actor_id=actor_id,
+        origin=origin,
+        progress={
+            **jobs.default_progress(f"等待归并 {total} 个条目"),
+            "total": total,
+            "details": {
+                "source_library_id": library.id,
+                "target_library_id": library.id,
+                "total_items": total,
+                "done_items": 0,
+                "done": [],
+            },
+        },
+    )
+
+
 async def enqueue_batch_transfer_job(
     session,
     *,
@@ -189,6 +283,7 @@ async def enqueue_batch_transfer_job(
 
 
 @jobs.register_job_handler(JOB_TYPE)
+@jobs.register_job_handler(CONSOLIDATE_JOB_TYPE)
 async def _run_batch_transfer_job(
     context: jobs.JobContext, input_data: dict[str, object]
 ) -> dict[str, object]:
@@ -202,6 +297,9 @@ async def _run_batch_transfer_job(
     source_id = int(input_data["source_library_id"])  # type: ignore[arg-type]
     target_id = int(input_data["target_library_id"])  # type: ignore[arg-type]
     on_conflict = str(input_data.get("on_conflict") or ON_CONFLICT_SKIP)
+    landing = Path(str(input_data["target_root"])) if input_data.get("target_root") else None
+    # 库内归并才有：并完之后要从库配置里摘掉的那些源根
+    drop_roots = [str(r) for r in (input_data.get("drop_roots") or [])]
     checkpoint_id = str(input_data.get("checkpoint_id") or context.job_id)
     raw_members = input_data.get("members") or []
     members = [BatchMember(**m) for m in raw_members]  # type: ignore[arg-type]
@@ -218,12 +316,22 @@ async def _run_batch_transfer_job(
         title=f"{len(members)} 个条目",
         total=len(members),
     )
-    # 两侧库各占一个任务位，整轮只取一次：扫描/整理/重识别一律挡下
+    # 两侧库各占一个任务位，整轮只取一次：扫描/整理/重识别一律挡下。
+    # 库内归并时两个 id 相同，只占一次（重复登记会被任务位判成"已在跑"）
     if not _transfer_tasks.try_start(source_id, state):
         raise jobs.JobRetry("源媒体库仍有搬运任务在收尾", delay_seconds=5)
-    if not _transfer_tasks.try_start(target_id, state):
+    same_library = source_id == target_id
+    if not same_library and not _transfer_tasks.try_start(target_id, state):
         _transfer_tasks.finish(source_id)
         raise jobs.JobRetry("目标媒体库仍有搬运任务在收尾", delay_seconds=5)
+
+    # **先加后删**：归并到一个当前不在 root_paths 里的新根时，必须在开始搬
+    # 之前就把它加进配置。顺序反了会出事——文件先落到库根之外，下一次扫描
+    # （或崩溃后的恢复扫描）会把它们全标 missing。代价是中途失败时配置里会
+    # 多一个根、处于"两个根都有内容"的半搬完状态，但那是可观察、可续跑的，
+    # 比"文件在根外"的静默损坏好得多。
+    if landing is not None:
+        await _ensure_root_registered(source_id, landing)
 
     consecutive = 0
     try:
@@ -239,6 +347,7 @@ async def _run_batch_transfer_job(
                 member,
                 source_id=source_id,
                 target_id=target_id,
+                landing=landing,
                 context=context,
                 checkpoint_id=checkpoint_id,
                 outcome=outcome,
@@ -278,8 +387,14 @@ async def _run_batch_transfer_job(
             )
     finally:
         _transfer_tasks.finish(source_id)
-        _transfer_tasks.finish(target_id)
+        if not same_library:
+            _transfer_tasks.finish(target_id)
         await _refresh_batch_stats(source_id, target_id)
+
+    # 只有真正搬干净了才摘掉源根：还有跳过或失败就说明那些根下仍有内容，
+    # 摘掉会让它们的台账瞬间指到库根之外、下次扫描全标 missing
+    if drop_roots and not outcome.failed and not outcome.skipped:
+        await _drop_roots(source_id, drop_roots)
 
     await notify_media_server()
     return {"message": _summary_message(outcome, len(members)), **asdict(outcome)}
@@ -290,6 +405,7 @@ async def _transfer_one(
     *,
     source_id: int,
     target_id: int,
+    landing: Path | None,
     context: jobs.JobContext,
     checkpoint_id: str,
     outcome: BatchOutcome,
@@ -330,7 +446,7 @@ async def _transfer_one(
             _skip(outcome, member, "这部作品已经不在源媒体库里了")
             return "skipped"
         # 预检到轮到它可能已经过了几小时：以此刻的磁盘现场为准重算
-        plan = await build_transfer_plan(session, source, target, item, rows)
+        plan = await build_transfer_plan(session, source, target, item, rows, target_root=landing)
 
     if plan.blocked:
         reason = "；".join(plan.blocked)
@@ -446,6 +562,51 @@ async def _save_progress(
             "done": outcome.done,
         },
     )
+
+
+async def _ensure_root_registered(library_id: int, root: Path) -> None:
+    """确保归并目标根已在库配置里（先加后删的"先加"）。
+
+    直接写 ``Library.root_paths``，**不走 library.update**：那条路径在根变化时
+    会自动投递一次补扫，而归并任务正持着这个库的任务位，等于跟自己抢锁。
+    归并的台账是逐条精确随迁的，也不需要靠扫描重建。
+    """
+    db = get_database()
+    async with db.session() as session:
+        library = await session.get(Library, library_id)
+        if library is None:
+            return
+        target = str(root).rstrip("/")
+        roots = [r.rstrip("/") for r in library.root_paths]
+        if target in roots:
+            return
+        library.root_paths = [*roots, target]
+        library.updated_at = utcnow()
+        session.add(library)
+        await session.commit()
+        logger.info("媒体库 #%s 的归并目标根已加入配置：%s", library_id, target)
+
+
+async def _drop_roots(library_id: int, roots: list[str]) -> None:
+    """归并完成后摘掉已经搬空的源根（先加后删的"后删"）。
+
+    只在整轮没有跳过也没有失败时调用：还剩内容就摘根，那些台账会瞬间指到
+    库根之外，下一次扫描把它们全标 missing。
+    """
+    dropped = {r.rstrip("/") for r in roots}
+    db = get_database()
+    async with db.session() as session:
+        library = await session.get(Library, library_id)
+        if library is None:
+            return
+        remaining = [r for r in library.root_paths if r.rstrip("/") not in dropped]
+        if not remaining or remaining == list(library.root_paths):
+            return
+        library.root_paths = remaining
+        library.updated_at = utcnow()
+        session.add(library)
+        await session.commit()
+        logger.info("媒体库 #%s 已摘掉归并完成的源根：%s", library_id, "、".join(sorted(dropped)))
 
 
 async def _refresh_batch_stats(source_id: int, target_id: int) -> None:

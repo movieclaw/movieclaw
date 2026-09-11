@@ -149,6 +149,7 @@ library artwork list-candidates
 library artwork select
 library chapter-images
 library chapter-images generate
+library consolidate-roots
 library create
 library delete
 library get
