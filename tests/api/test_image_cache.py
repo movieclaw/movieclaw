@@ -125,6 +125,54 @@ async def test_purge_evicts_least_recently_used(tmp_path: Path) -> None:
     assert again.path.read_bytes() == b"x" * 100
 
 
+async def test_hit_does_not_write_and_keeps_lru_usable(tmp_path: Path) -> None:
+    """命中不写盘：海报墙滚一屏上百张图，逐张刷 mtime 就是上百次随机写，
+    足以把休眠的硬盘唤醒。mtime 只服务于 LRU 排序，够新就不该动它。"""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"Content-Type": "image/png"}, content=b"png")
+
+    cache = _make_cache(tmp_path, handler)
+    url = "https://img.host-a.com/p.png"
+    cached = await cache.get_or_fetch(url)
+    before = cached.path.stat().st_mtime_ns
+
+    for _ in range(5):
+        again = await cache.get_or_fetch(url)
+        assert again.content_type == "image/png"
+        assert again.version == cached.version
+    assert cached.path.stat().st_mtime_ns == before, "刚写过的条目不该被反复刷 mtime"
+
+    # 但足够旧的条目仍要刷新，否则 LRU 会把还在用的图当成冷数据淘汰掉
+    stale = 1.0
+    os.utime(cached.path, (stale, stale))
+    await cache.get_or_fetch(url)
+    assert cached.path.stat().st_mtime > stale, "久未刷新的条目命中时应更新 mtime"
+
+
+async def test_hit_metadata_follows_content_replacement(tmp_path: Path) -> None:
+    """命中路径会在进程内记住元数据，但内容被重新写过后必须立刻跟上——
+    否则重新回源/换图之后，派生缩略图会一直按旧版本号命中旧图。"""
+    content_type = "image/png"
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"Content-Type": content_type}, content=b"v1")
+
+    cache = _make_cache(tmp_path, handler)
+    url = "https://img.host-a.com/p.png"
+    first = await cache.get_or_fetch(url)
+    await cache.get_or_fetch(url)  # 让元数据进内存
+
+    # 模拟一次重新回源（原地覆盖内容 + 新的元数据）
+    content_type = "image/webp"
+    content_path, meta_path = cache._entry_paths(url)
+    meta_path.unlink()
+    content_path.unlink()
+    second = await cache.get_or_fetch(url)
+    assert second.content_type == "image/webp"
+    assert second.version != first.version
+
+
 async def test_variant_is_webp_cached_and_never_upscales(tmp_path: Path) -> None:
     """横卡派生按 480×270 封顶；小于目标的分集图保持原尺寸且二次命中缓存。"""
 

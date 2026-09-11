@@ -8,7 +8,13 @@ from movieclaw_api.schemas.base import BaseModel
 from movieclaw_db.models.llm_provider import LlmProvider
 from movieclaw_db.models.site_credential import ConfigStatus
 from movieclaw_llm.models import ModelInfo, ProviderPreset
-from movieclaw_llm.protocols.openai_chat import sdk_default_user_agent
+
+
+def _sdk_default_user_agent() -> str:
+    """SDK 自带 UA，**用到才去导 openai**（见 openai_chat._sdk 的说明）。"""
+    from movieclaw_llm.protocols.openai_chat import sdk_default_user_agent
+
+    return sdk_default_user_agent()
 
 
 class LlmPresetView(BaseModel):
@@ -21,7 +27,7 @@ class LlmPresetView(BaseModel):
     #: 该预设是否必须填 base_url（通用兼容端点没有默认值）
     requires_base_url: bool
     #: 用户不覆盖 User-Agent 时实际发送的 SDK 自带 UA（设置页占位提示用）
-    default_user_agent: str = Field(default_factory=sdk_default_user_agent)
+    default_user_agent: str = Field(default_factory=_sdk_default_user_agent)
     models: list[ModelInfo] = Field(default_factory=list)
 
     @classmethod

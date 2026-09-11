@@ -14,11 +14,9 @@ import contextlib
 import json
 import logging
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
-import openai
-from openai import AsyncOpenAI
 
 from movieclaw_llm.base import BaseLlmProtocol
 from movieclaw_llm.exceptions import (
@@ -48,7 +46,26 @@ from movieclaw_llm.thinking import thinking_body_fragment
 from movieclaw_llm.tools import HARMONY_RESIDUE_HINT, has_harmony_residue
 from movieclaw_net import egress_transport
 
+if TYPE_CHECKING:  # 仅供类型检查，运行期不导入
+    import openai as openai_sdk
+
 logger = logging.getLogger(__name__)
+
+
+def _sdk() -> openai_sdk:
+    """按需导入 openai SDK。
+
+    **刻意不在模块顶部导入**：这个包一旦被 import，就要打开 800 个文件、
+    花掉小半秒——而它只在用户真的调用大模型时才用得上。本模块却在启动路径上
+    （协议注册表 → LLM 路由 → Agent → API 路由），顶部导入等于让每次启动都替
+    「可能整轮都不会用到的功能」付这笔冷启动磁盘 IO。家用 NAS 的机械盘上，
+    几百个小文件的随机读就是实打实的秒级。
+
+    SDK 本体由 Python 的模块缓存持有，第二次起是一次字典查找。
+    """
+    import openai
+
+    return openai
 
 
 def _warn_harmony_residue_in_content(content: str | None) -> None:
@@ -64,7 +81,8 @@ def sdk_default_user_agent() -> str:
     而不是写死字符串——升级 SDK 后设置页展示的默认值自动跟着变。
     供设置页作为 User-Agent 输入框的占位提示，帮用户排查网关按 UA 放行的场景。
     """
-    return f"{AsyncOpenAI.__name__}/Python {openai.__version__}"
+    openai = _sdk()
+    return f"{openai.AsyncOpenAI.__name__}/Python {openai.__version__}"
 
 # OpenAI 的 finish_reason → 统一枚举；未知值按 stop 兜底
 _FINISH_REASON_MAP: dict[str, FinishReason] = {
@@ -95,7 +113,7 @@ class OpenAIChatProtocol(BaseLlmProtocol):
         # 用户可在「设置 → 网络」让 LLM 请求走代理（OpenAI 官方等被墙端点）。
         # 超时仍由 AsyncOpenAI 的 timeout 参数按请求控制，这里不重复设置。
         kwargs["http_client"] = httpx.AsyncClient(transport=egress_transport("llm"))
-        self._client = AsyncOpenAI(**kwargs)
+        self._client = _sdk().AsyncOpenAI(**kwargs)
 
     # -- 请求转换 -----------------------------------------------------------
 
@@ -300,6 +318,7 @@ class OpenAIChatProtocol(BaseLlmProtocol):
         name = self.config.name
         if isinstance(exc, LlmError):
             return exc
+        openai = _sdk()
         if isinstance(exc, openai.AuthenticationError | openai.PermissionDeniedError):
             return LlmAuthError(f"认证失败，请检查 API Key 是否有效：{exc}", provider=name)
         if isinstance(exc, openai.RateLimitError):

@@ -2604,7 +2604,9 @@ async def get_file_thumb(
     # 成员按文件归属库做可见性判定（不可见与不存在同样 404）
     if row.library_id is not None:
         await assert_library_visible(session, principal, row.library_id)
-    thumb = find_episode_thumb(Path(row.file_path))
+    # 放线程池：分集区一屏几十张缩略图都打到这里，网络挂载上一次目录读取
+    # 就是一次往返，在事件循环里做会把同一时刻的其他请求一起卡住
+    thumb = await asyncio.to_thread(find_episode_thumb, Path(row.file_path))
     if thumb is None:
         raise NotFoundException("该文件没有本地缩略图")
     return FileResponse(thumb, headers={"Cache-Control": "private, max-age=3600"})
