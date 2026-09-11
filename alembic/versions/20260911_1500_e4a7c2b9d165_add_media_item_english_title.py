@@ -19,8 +19,8 @@
 读写都不碰（回退即回到今天的召回策略）。
 
 Revision ID: e4a7c2b9d165
-Revises: d9f3b6a2e814
-Create Date: 2026-09-11 11:00:00.000000
+Revises: e6b2d4f8a137
+Create Date: 2026-09-11 15:00:00.000000
 
 """
 
@@ -30,7 +30,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "e4a7c2b9d165"
-down_revision: str | None = "d9f3b6a2e814"
+down_revision: str | None = "e6b2d4f8a137"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
