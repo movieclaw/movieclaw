@@ -58,8 +58,9 @@ from sqlmodel import select
 
 from movieclaw_api.exceptions import BadRequestException, ConflictException
 from movieclaw_api.services import jobs
+from movieclaw_api.services.library.config import sanitize_folder_name
 from movieclaw_api.services.library.fsops import rename_no_replace
-from movieclaw_api.services.library.layout import entry_dir_of, entry_dirs
+from movieclaw_api.services.library.layout import entry_dir_of, entry_dirs, is_disc_dir
 from movieclaw_api.services.library.local_identity import local_external_id
 
 # 复用整理器的"只清理自己搬空的目录"实现（非空即停、绝不删文件）——同一
@@ -172,6 +173,7 @@ async def build_transfer_plan(
     files: list[LibraryFile],
     *,
     target_root: Path | None = None,
+    merge_same_anchor: bool = False,
 ) -> TransferPlan:
     """计算转移计划。只读磁盘与台账，不做任何写入。
 
@@ -181,6 +183,11 @@ async def build_transfer_plan(
     ``target_root`` 缺省是目标库主根（跨库转移）。库内根路径归并传入要并到的
     那个根，此时 ``source`` 与 ``target`` 是同一个库：台账只改路径不改归属，
     引擎其余部分一字不用变。
+
+    ``merge_same_anchor`` 打开后，目标已存在的同名目录**若属于同一个条目**
+    （同一部作品的其他版本）不再判为阻断，而是逐文件并进去。判据是台账的锚
+    不是目录名：目录名分不清「同一部片的另一个版本」和「碰巧重名的另一部
+    片」，而这两者的正确处理完全相反。锚不同或没有台账行的目录一律照旧阻断。
     """
     assert source.id is not None and target.id is not None and item.id is not None
     # 源库里**其他条目**占用的路径：条目目录里混着别人时不能整目录搬
@@ -198,6 +205,26 @@ async def build_transfer_plan(
     )
     roots = [Path(p) for p in source.root_paths]
     landing = target_root if target_root is not None else Path(target.primary_root or "")
+    # 允许并入的目标目录：落点根下、挂在**同一个条目**上的那些条目目录。
+    # 这一次查询就是「同名」升级成「同锚」的全部数据来源。
+    mergeable: set[Path] = set()
+    if merge_same_anchor:
+        owned = (
+            (
+                await session.execute(
+                    select(LibraryFile.file_path).where(
+                        LibraryFile.file_path.startswith(str(landing)),
+                        LibraryFile.media_item_id == item.id,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for raw in owned:
+            entry = entry_dir_of([landing], Path(raw))
+            if entry is not None:
+                mergeable.add(entry)
     # 磁盘检查（exists/stat/附属文件枚举）放线程池：网络挂载上一次 stat 也要毫秒级
     return await asyncio.to_thread(
         _build_plan_sync,
@@ -209,6 +236,7 @@ async def build_transfer_plan(
         landing,
         files,
         [Path(p) for p in foreign],
+        mergeable,
         # 一文件一条目的库（本地内容库）搬文件，有识别链的库搬条目目录
         not profile_of(source).scraped,
     )
@@ -223,6 +251,7 @@ def _build_plan_sync(
     target_root: Path,
     files: list[LibraryFile],
     foreign_paths: list[Path],
+    mergeable: set[Path],
     file_entries: bool,
 ) -> TransferPlan:
     plan = TransferPlan(
@@ -290,6 +319,17 @@ def _build_plan_sync(
     for entry, rows in by_entry.items():
         dst = target_root / entry.name
         if str(dst) in taken or dst.exists():
+            if dst in mergeable and not is_disc_dir(dst) and not is_disc_dir(entry):
+                # 同一部作品的其他版本：逐文件并进去，保留相对结构（Season 层
+                # 跟着走）。撞名的由 _add_file_move 退让成 `… - 标签.ext`，
+                # 与入库、洗版、整理产出的多版本形态完全一致，绝不覆盖。
+                for row in rows:
+                    src = Path(row.file_path)
+                    _add_file_move(plan, row, src, dst / src.relative_to(entry), taken, others)
+                continue
+            # 原盘不并进条目目录：生态里没有任何一家支持「同一文件夹内多版本
+            # 含原盘」（Jellyfin 官方文档明确 BDMV/VIDEO_TS 不支持多版本），
+            # 并进去下游播放器反而认不出来
             plan.blocked.append(
                 f"目标库里已存在同名目录「{dst}」，为避免覆盖/合并已中止；"
                 "请先处理目标库里的同名内容，或改用「重新识别」修正身份"
@@ -340,10 +380,21 @@ def _add_file_move(
     taken: set[str],
     others: set[Path],
 ) -> None:
-    """登记一个单文件搬运单元（含字幕/NFO/海报等附属文件）。"""
+    """登记一个单文件搬运单元（含字幕/NFO/海报等附属文件）。
+
+    目标已被占用时先按既有的多版本约定退让一次（``… - 标签.ext``，标签取
+    分辨率/片源/发布组，与入库侧 ``_resolve_transfer_target`` 同一套形态）；
+    退让后仍被占用才跳过。**绝不覆盖**是这里唯一不能让的底线。
+    """
     if str(dst) in taken or dst.exists():
-        plan.skips.append(TransferSkip(str(src), f"目标路径已存在同名文件，跳过以免覆盖：{dst}"))
-        return
+        label = _version_label(row)
+        deferred = dst.with_name(f"{dst.stem} - {label}{dst.suffix}") if label else None
+        if deferred is None or str(deferred) in taken or deferred.exists():
+            plan.skips.append(
+                TransferSkip(str(src), f"目标路径已存在同名文件，跳过以免覆盖：{dst}")
+            )
+            return
+        dst = deferred
     taken.add(str(dst))
     assert row.id is not None
     plan.moves.append(
@@ -356,6 +407,17 @@ def _add_file_move(
             sidecars=_find_sidecars(src, dst, others),
         )
     )
+
+
+def _version_label(row: LibraryFile) -> str:
+    """撞名退让时用的版本标签：分辨率 → 片源 → 发布组，全缺则无标签。
+
+    与整理器的 ``_version_labels`` 同一套取值口径（那边还有按体积编号的兜底，
+    这里只有单个文件、没有"组内唯一"可言，所以缺信息时宁可跳过也不编一个
+    V2——编出来的名字下次整理会被改掉，等于白搬）。
+    """
+    raw = row.resolution or row.media_source or row.release_group
+    return sanitize_folder_name(raw) if raw else ""
 
 
 def _find_sidecars(src: Path, dst: Path, others: set[Path]) -> list[tuple[str, str]]:

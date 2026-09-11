@@ -263,7 +263,9 @@ func newLibraryItemsTransferCommand() *cobra.Command {
 		"从文件读条目 id（- 表示标准输入）；接受 items list 的 JSON 或一行一个 id")
 	flags.BoolVar(&all, "all", false, "转移该库的全部条目")
 	flags.StringVar(&onConflict, "on-conflict", "skip",
-		"目标已有同名目录时：skip=跳过这一条其余照搬（缺省）；fail=整批中止")
+		"目标已有同名目录时：skip=跳过这一条其余照搬（缺省）；"+
+			"merge=同一部作品的其他版本就并进去（撞名的退让成「标题 - 分辨率.ext」，绝不覆盖）；"+
+			"fail=整批中止")
 	flags.BoolVar(&dryRun, "dry-run", false, "只输出预检，不动磁盘")
 	flags.BoolVar(&waitDone, "wait", false, "等待转移完成（跨盘搬大库可能要几小时，缺省不等）")
 	flagx.Var(flags, &waitTimeout, "wait-timeout", 6*time.Hour, "--wait 的最长等待秒数")
@@ -331,7 +333,7 @@ func newLibraryItemsTransferCommand() *cobra.Command {
 			// 有可合并的同名时主动指路：缺省 skip 会让用户白跑一次
 			if same := jsonval.Int(jsonval.Object(preview.Get("conflicts")).Get("same_anchor")); same > 0 {
 				hint += fmt.Sprintf("。其中 %d 个是目标库已有的同一部作品的其他版本，"+
-					"当前一律跳过", same)
+					"按缺省策略会跳过；想把它们并进同一个条目目录就加 --on-conflict merge", same)
 			}
 			return err.WithHint("%s", hint)
 		}

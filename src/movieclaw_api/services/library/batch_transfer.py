@@ -64,8 +64,11 @@ CONSOLIDATE_JOB_TYPE = "library.consolidate-roots"
 # 跑完一半才有统计意义，太晚了。阈值写死——这是安全网，不是策略旋钮。
 MAX_CONSECUTIVE_FAILURES = 5
 
-# 冲突策略。merge 留给后续实现同名合并时接入（§7）。
+# 冲突策略（§7.6）。缺省 skip 的理由是**可逆性不对称**：批量场景下用户看不见
+# 每一条，跳过的损失是「这几部没搬、得手工处理」，合并的损失可能是「文件名被
+# 改了」而用户根本没细看预检。可逆性不对称时，缺省取可逆的那一侧。
 ON_CONFLICT_SKIP = "skip"
+ON_CONFLICT_MERGE = "merge"
 ON_CONFLICT_FAIL = "fail"
 
 
@@ -446,7 +449,15 @@ async def _transfer_one(
             _skip(outcome, member, "这部作品已经不在源媒体库里了")
             return "skipped"
         # 预检到轮到它可能已经过了几小时：以此刻的磁盘现场为准重算
-        plan = await build_transfer_plan(session, source, target, item, rows, target_root=landing)
+        plan = await build_transfer_plan(
+            session,
+            source,
+            target,
+            item,
+            rows,
+            target_root=landing,
+            merge_same_anchor=on_conflict == ON_CONFLICT_MERGE,
+        )
 
     if plan.blocked:
         reason = "；".join(plan.blocked)

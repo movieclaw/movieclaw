@@ -1127,10 +1127,13 @@ class BatchTransferPayload(BaseModel):
         description=f"要转移的条目 id 列表（最多 {BATCH_TRANSFER_MAX_SELECTION} 个）",
     )
     all_items: bool = Field(default=False, description="true=转移该库的全部条目，忽略 id 列表")
-    on_conflict: Literal["skip", "fail"] = Field(
+    on_conflict: Literal["skip", "merge", "fail"] = Field(
         default="skip",
         description=(
             "目标已有同名目录时：skip=跳过这一条、其余照搬（缺省）；"
+            "merge=目标那个目录若属于同一部作品就把文件并进去"
+            "（撞名的按多版本约定退让成「标题 - 分辨率.ext」，绝不覆盖；"
+            "只是目录重名的另一部片、以及原盘目录仍然跳过）；"
             "fail=整批中止（脚本场景要求要么全成要么不动）"
         ),
     )

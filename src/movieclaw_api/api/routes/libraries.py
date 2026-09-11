@@ -137,7 +137,11 @@ from movieclaw_api.services.library.organize import (
     last_organize,
     organize_progress,
 )
-from movieclaw_api.services.library.preflight import MAX_SELECTION, build_preflight
+from movieclaw_api.services.library.preflight import (
+    CONFLICT_LABELS,
+    MAX_SELECTION,
+    build_preflight,
+)
 from movieclaw_api.services.library.scan import (
     PHASE_LABELS,
     ScanPhase,
@@ -3222,6 +3226,7 @@ async def preview_batch_transfer(
         Path(target.primary_root or ""),
         [(m.media_item_id, m.title) for m in members],
         seeding_names=await _seeding_root_names(),
+        on_conflict=payload.on_conflict,
     )
     return ok(
         BatchTransferPreviewView(
@@ -3280,13 +3285,21 @@ async def start_batch_transfer(
         source,
         Path(target.primary_root or ""),
         [(m.media_item_id, m.title) for m in members],
+        on_conflict=payload.on_conflict,
     )
     if result.blocked:
         raise ConflictException("；".join(result.blocked))
     if not result.movable:
+        detail = next(
+            (
+                m.reason or CONFLICT_LABELS.get(m.conflict or "", "")
+                for m in result.members
+                if m.reason or m.conflict
+            ),
+            "",
+        )
         raise BadRequestException(
-            "选中的条目没有一个可以搬运：" + (result.members[0].reason if result.members else "")
-            or "选中的条目没有可搬运的内容"
+            f"选中的条目没有一个可以搬运：{detail}" if detail else "选中的条目没有可搬运的内容"
         )
     created = await enqueue_batch_transfer_job(
         session,

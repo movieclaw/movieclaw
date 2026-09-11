@@ -61,6 +61,14 @@ CONFLICT_DIFFERENT_ANCHOR = "different_anchor"  # 目录撞名，不是同一部
 CONFLICT_UNKNOWN = "unknown"  # 目标目录没有台账行，身份不明 → 只能跳过
 
 
+# 冲突分类 → 给人看的一句话。枚举名是给机器的，不能直接抛到用户面前。
+CONFLICT_LABELS = {
+    CONFLICT_SAME_ANCHOR: "目标位置已有这部作品的其他版本",
+    CONFLICT_DIFFERENT_ANCHOR: "目标位置被另一部作品占着（只是目录重名）",
+    CONFLICT_UNKNOWN: "目标位置已有内容，但媒体库里没有它的记录（手工放入或正在下载？）",
+}
+
+
 @dataclass
 class MemberPreflight:
     """单个成员的预检结论。"""
@@ -173,12 +181,18 @@ async def build_preflight(
     members: list[tuple[int, str]],
     *,
     seeding_names: set[str] | None = None,
+    on_conflict: str = "skip",
 ) -> Preflight:
     """算出一次批量搬运的预检。只读磁盘与台账，不做任何写入。
 
     ``members`` 是**已经冻结**的成员集合（条目 id + 标题）；筛选与全选在调用
     方完成，这里不认识筛选这回事。``seeding_names`` 是下载器当前的落盘根名
     集合，``None`` 表示下载器不可达——那一栏如实报「无法确认」而不是报 0。
+
+    ``on_conflict`` 必须与执行时传的是同一个值：预检按该策略算出的影响面，
+    就是执行会做的事。``merge`` 下同锚冲突（同一部作品的其他版本）算作可搬，
+    ``skip``/``fail`` 下算作跳过——同一份成员清单在两种策略下的 ``movable``
+    本来就不一样，糊成一个数会让调用方按错的数去判断要不要执行。
     """
     assert source.id is not None
     result = Preflight(target_root=str(target_root), selected=len(members))
@@ -220,6 +234,7 @@ async def build_preflight(
         file_entries,
         owners,
         seeding_names,
+        on_conflict,
     )
 
 
@@ -257,6 +272,7 @@ def _build_sync(
     file_entries: bool,
     owners: dict[str, set[int]],
     seeding_names: set[str] | None,
+    on_conflict: str,
 ) -> Preflight:
     by_member: dict[int, list[LibraryFile]] = {}
     for row in rows:
@@ -309,7 +325,7 @@ def _build_sync(
                 Path(p).name in seeding_names for p in member.target_paths
             )
 
-    _summarize(result, target_root, seeding_names)
+    _summarize(result, target_root, seeding_names, on_conflict)
     return result
 
 
@@ -377,14 +393,22 @@ def _hardlinked_bytes(rows: list[LibraryFile]) -> int:
     return total
 
 
-def _summarize(result: Preflight, target_root: Path, seeding_names: set[str] | None) -> None:
+def _summarize(
+    result: Preflight,
+    target_root: Path,
+    seeding_names: set[str] | None,
+    on_conflict: str,
+) -> None:
     """把逐成员明细汇总成用户一眼要看的那几个数。"""
     seeding = 0
+    merging = on_conflict == "merge"
     for member in result.members:
-        if member.conflict is not None or member.reason:
-            counted = member.conflict
-            if counted:
-                result.conflicts[counted] = result.conflicts.get(counted, 0) + 1
+        if member.conflict is not None:
+            result.conflicts[member.conflict] = result.conflicts.get(member.conflict, 0) + 1
+            # merge 下同锚冲突是「并进去」，仍然算可搬；异锚与无主任何策略下都跳过
+            if not (merging and member.conflict == CONFLICT_SAME_ANCHOR):
+                continue
+        elif member.reason:
             continue
         result.movable += 1
         result.total_bytes += member.size_bytes

@@ -317,3 +317,121 @@ async def test_checkpoint_skips_members_already_done(db, tmp_path) -> None:
     assert outcome["result"]["moved"] == 1
     assert entries["甲"][1].exists()
     assert (target_root / "乙").is_dir()
+
+
+# ---------------------------------------------------------------------------
+# 同名合并（--on-conflict merge）
+# ---------------------------------------------------------------------------
+
+
+async def _add_target_version(target_id: int, target_root, name: str, item_id: int) -> None:
+    """在目标库里先放一个同一部作品的其他版本（同锚）。"""
+    entry = target_root / name
+    entry.mkdir(parents=True, exist_ok=True)
+    video = entry / f"{name}.mkv"
+    video.write_bytes(b"y" * 200)
+    async with get_database().session() as session:
+        session.add(
+            LibraryFile(
+                library_id=target_id,
+                media_item_id=item_id,
+                file_path=str(video),
+                size_bytes=200,
+                source=FileSource.SCANNED,
+                resolution="2160p",
+            )
+        )
+        await session.commit()
+
+
+async def test_merge_folds_same_anchor_versions_into_one_directory(db, tmp_path) -> None:
+    """同一部作品的其他版本：并进同一个条目目录，撞名的退让成多版本命名。
+
+    产出形态与入库、洗版、整理完全一致（`标题 - 标签.ext`），Jellyfin/Emby
+    认得，整理重跑也不会把它改回去。
+    """
+    source_id, target_id, _, target_root, entries = await _setup(db, tmp_path, names=["甲"])
+    item_id = entries["甲"][0]
+    await _add_target_version(target_id, target_root, "甲", item_id)
+
+    # 给源文件一个可用的版本标签，撞名时才有东西可退让
+    async with get_database().session() as session:
+        row = (
+            await session.execute(
+                select(LibraryFile).where(
+                    LibraryFile.library_id == source_id,
+                    LibraryFile.media_item_id == item_id,
+                )
+            )
+        ).scalar_one()
+        row.resolution = "1080p"
+        session.add(row)
+        await session.commit()
+
+    await _start(
+        source_id,
+        BatchTransferPayload(target_library_id=target_id, all_items=True, on_conflict="merge"),
+    )
+    outcome = await _drain(source_id)
+
+    assert outcome["status"] is JobStatus.SUCCEEDED
+    assert outcome["result"]["moved"] == 1
+    assert outcome["result"]["skipped"] == 0
+    # 目标目录里两个版本共存，原有那份一字未动（合并只增不减）
+    assert (target_root / "甲" / "甲.mkv").read_bytes() == b"y" * 200
+    assert (target_root / "甲" / "甲 - 1080p.mkv").is_file()
+    assert not entries["甲"][1].exists()
+
+
+async def test_merge_still_skips_a_different_work_with_the_same_name(db, tmp_path) -> None:
+    """只是目录重名的另一部片：任何策略下都跳过——同名是坏判据，同锚才是好判据。"""
+    source_id, target_id, _, target_root, entries = await _setup(db, tmp_path, names=["甲", "乙"])
+    stranger_root = target_root / "甲"
+    stranger_root.mkdir()
+    (stranger_root / "甲.mkv").write_bytes(b"z" * 50)
+    async with get_database().session() as session:
+        stranger = MediaItem(kind="movie", tmdb_id=99001, title="另一部同名片", original_title="X")
+        session.add(stranger)
+        await session.flush()
+        assert stranger.id
+        session.add(
+            LibraryFile(
+                library_id=target_id,
+                media_item_id=stranger.id,
+                file_path=str(stranger_root / "甲.mkv"),
+                size_bytes=50,
+                source=FileSource.SCANNED,
+            )
+        )
+        await session.commit()
+
+    await _start(
+        source_id,
+        BatchTransferPayload(target_library_id=target_id, all_items=True, on_conflict="merge"),
+    )
+    outcome = await _drain(source_id)
+
+    # 「甲」跳过、「乙」照搬——冲突不阻断整批
+    assert outcome["result"]["moved"] == 1
+    assert outcome["result"]["skipped"] == 1
+    # 别人的文件一字未动，「甲」的源目录也还在原位
+    assert (stranger_root / "甲.mkv").read_bytes() == b"z" * 50
+    assert entries["甲"][1].exists()
+    assert not entries["乙"][1].exists()
+
+
+async def test_merge_without_version_label_skips_instead_of_overwriting(db, tmp_path) -> None:
+    """退让不出名字（没有分辨率/片源/发布组）时跳过——绝不覆盖是不能让的底线。"""
+    source_id, target_id, _, target_root, entries = await _setup(db, tmp_path, names=["甲"])
+    await _add_target_version(target_id, target_root, "甲", entries["甲"][0])
+
+    await _start(
+        source_id,
+        BatchTransferPayload(target_library_id=target_id, all_items=True, on_conflict="merge"),
+    )
+    outcome = await _drain(source_id)
+
+    # 目录并了，但那个撞名的文件没搬（记在 skips 里），目标原文件一字未动
+    assert (target_root / "甲" / "甲.mkv").read_bytes() == b"y" * 200
+    assert not (target_root / "甲" / "甲 - .mkv").exists()
+    assert outcome["result"]["failed"] == 0
