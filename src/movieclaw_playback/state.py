@@ -188,7 +188,15 @@ async def mark_unplayed(
 async def set_favorite(
     session: AsyncSession, unit: Unit, *, member_id: int, favorite: bool
 ) -> PlaybackState:
+    """收藏 / 取消收藏。网页详情页的心与 Jellyfin 客户端的心都落在这里。
+
+    ``favorited_at`` **只在由非收藏变收藏时刷新**：重复点心是幂等的，不该把
+    时间改写成今天；取消收藏则留着旧时间不动——它已经不会被读到（列表只看
+    ``is_favorite``），而下次真的再收藏时自然会刷新。
+    """
     row = await _get_or_create(session, unit, member_id=member_id)
+    if favorite and not row.is_favorite:
+        row.favorited_at = utcnow()
     row.is_favorite = favorite
     row.updated_at = utcnow()
     return row

@@ -273,3 +273,90 @@ def test_favorites_gallery_pages_by_work(client, tmp_path):
     # 没有海报的两部电影仍各占一组，只是 images 为空
     assert [g["images"] for g in rest] == [[], []]
     assert gallery(client, limit=2, offset=3) == []
+
+
+# ---------------------------------------------------------------------------
+# 收藏时间与首页那一行的排序
+# ---------------------------------------------------------------------------
+
+
+def mark_played(client: TestClient, media_item_id: int) -> None:
+    resp = client.post(f"{_PB}/marks", json={"media_item_id": media_item_id, "played": True})
+    assert resp.status_code == 200, resp.text
+
+
+def test_watching_something_does_not_reorder_your_favorites(client, tmp_path):
+    """看一遍不等于重新收藏一次。
+
+    原来按 ``updated_at`` 排，而那一列**任何写入**都会动——进度上报、标记已看、
+    记忆轨选择。于是"两年前收藏、昨晚看过一遍"的片会排到最前面。现在按只在
+    收藏那一刻写的 ``favorited_at`` 排，看过什么都不影响顺序。
+    """
+    ids = seed(client, tmp_path)
+    web_favorite(client, media_item_id=ids["movie_a"])
+    web_favorite(client, media_item_id=ids["movie_b"])
+    assert [i["media_item_id"] for i in favorites(client)["items"]] == [
+        ids["movie_b"],
+        ids["movie_a"],
+    ]
+
+    # 把先收藏的那部看完——它不该因此跳到最前面
+    mark_played(client, ids["movie_a"])
+    assert [i["media_item_id"] for i in favorites(client)["items"]] == [
+        ids["movie_b"],
+        ids["movie_a"],
+    ]
+
+
+def test_favoriting_again_is_idempotent_and_keeps_the_original_time(client, tmp_path):
+    """重复点心是幂等的，不该把收藏时间改写成今天。"""
+    ids = seed(client, tmp_path)
+    web_favorite(client, media_item_id=ids["movie_a"])
+    web_favorite(client, media_item_id=ids["movie_b"])
+    web_favorite(client, media_item_id=ids["movie_a"])  # 再点一次
+    assert [i["media_item_id"] for i in favorites(client)["items"]] == [
+        ids["movie_b"],
+        ids["movie_a"],
+    ]
+
+
+def test_unfavoriting_and_favoriting_again_refreshes_the_time(client, tmp_path):
+    """取消之后重新收藏，是一次**新的**收藏，该排到最前面。"""
+    ids = seed(client, tmp_path)
+    web_favorite(client, media_item_id=ids["movie_a"])
+    web_favorite(client, media_item_id=ids["movie_b"])
+    resp = client.post(f"{_PB}/marks", json={"media_item_id": ids["movie_a"], "favorite": False})
+    assert resp.status_code == 200, resp.text
+    assert [i["media_item_id"] for i in favorites(client)["items"]] == [ids["movie_b"]]
+
+    web_favorite(client, media_item_id=ids["movie_a"])
+    assert [i["media_item_id"] for i in favorites(client)["items"]] == [
+        ids["movie_a"],
+        ids["movie_b"],
+    ]
+
+
+def test_home_row_puts_unfinished_first_while_the_full_page_keeps_favorite_order(
+    client, tmp_path
+):
+    """首页那一行是「我想看的」：没看完的整体提前，一部都不少。
+
+    ``/library/favorites`` 全量页是"我收藏过什么"的完整账本，不受影响——两处
+    问的是不同的问题，给不同的答案才对。
+    """
+    ids = seed(client, tmp_path)
+    # 收藏顺序：甲 → 剧 → 乙，所以纯时间序是 乙、剧、甲
+    web_favorite(client, media_item_id=ids["movie_a"])
+    web_favorite(client, media_item_id=ids["show"])
+    web_favorite(client, media_item_id=ids["movie_b"])
+    # 最近收藏的那部电影已经看完了
+    mark_played(client, ids["movie_b"])
+
+    full_page = [i["media_item_id"] for i in favorites(client)["items"]]
+    assert full_page == [ids["movie_b"], ids["show"], ids["movie_a"]], "全量页按收藏时间"
+
+    home_row = [i["media_item_id"] for i in favorites(client, unwatched_first=True)["items"]]
+    # 看完的乙沉到最后；没看完的两部组内仍是收藏时间倒序
+    assert home_row == [ids["show"], ids["movie_a"], ids["movie_b"]]
+    # 一部都没少——这一行不删东西，只换顺序
+    assert sorted(home_row) == sorted(full_page)

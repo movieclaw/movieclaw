@@ -136,7 +136,8 @@ export function LibraryView() {
       listLibraries(),
       // 最近观看 / 我的收藏失败不拖垮媒体库首页；保留旧数据，下一轮轮询自动重试。
       listUpNext(UP_NEXT_COUNT).catch(() => null),
-      listFavorites(FAVORITES_COUNT).catch(() => null),
+      // 首页这一行是「我想看的」：没看完的提前（全量页不传，保持收藏时间序）
+      listFavorites(FAVORITES_COUNT, 0, true).catch(() => null),
       // 合集数只决定一个入口露不露，拿不到就当没有——不拖垮首页
       listCollections().catch(() => null),
     ])

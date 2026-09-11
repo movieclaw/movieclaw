@@ -32,14 +32,24 @@ async def _favorite_page(
     visible_library_ids: set[int] | None,
     limit: int,
     offset: int,
+    unwatched_first: bool = False,
 ) -> tuple[list[tuple[int, int]], int, dict[int, PlaybackState]]:
     """收藏墙与收藏图廊共用的一页名单：``[(条目 id, 落点库 id)]`` + 去重总数 +
     每部作品最近那一行收藏状态（层级文案要用）。
 
-    最近收藏的在前；同一作品跨库存在时按媒体库首页的展示顺序选择第一个可见库，
-    保证这一格有稳定、可访问的详情落点；没有任何可见在位文件的收藏不计入总数。
+    默认**最近收藏的在前**——按 ``favorited_at`` 而不是 ``updated_at``：后者
+    任何写入都会动（进度上报、标记已看、记忆轨选择），会把"两年前收藏、昨晚
+    看过一遍"的片顶到最前面，那不是用户理解的"最近收藏"。
+
+    ``unwatched_first`` 只有**首页那一行**会传：收藏在这个产品里更接近"想看
+    清单"而不是"珍藏架"（珍藏架已经有手动合集这个更好的归宿），所以首页把
+    还没看完的整体提前；一部都不少，看过的心头好只是靠后。``/library/favorites``
+    全量页不传——那里是"我收藏过什么"的完整账本，该老老实实按收藏时间排。
+
+    同一作品跨库存在时按媒体库首页的展示顺序选择第一个可见库，保证这一格有
+    稳定、可访问的详情落点；没有任何可见在位文件的收藏不计入总数。
     海报墙与图廊必须走同一份名单——两种视图翻的是同一批作品、同一个顺序，
-    切换视图时看到的不能是两份内容。
+    切换视图时看到的不能是两份内容（两者都不传 ``unwatched_first``，所以仍然一致）。
     """
     if visible_library_ids == set():
         return [], 0, {}
@@ -53,7 +63,9 @@ async def _favorite_page(
                     PlaybackState.is_favorite.is_(True),  # type: ignore[union-attr]
                 )
                 .order_by(
-                    PlaybackState.updated_at.desc(),  # type: ignore[union-attr]
+                    # 存量行的 favorited_at 由迁移回填成 updated_at；真的为空时
+                    # 排在最后，而不是被 SQLite 当成最小值顶到最前
+                    PlaybackState.favorited_at.desc().nullslast(),  # type: ignore[union-attr]
                     PlaybackState.id.desc(),  # type: ignore[union-attr]
                 )
             )
@@ -87,6 +99,13 @@ async def _favorite_page(
             library_of.setdefault(item_id, library_id)
 
     ordered = [item_id for item_id in latest if item_id in library_of]
+    if unwatched_first:
+        # 稳定排序：没看完的整体提前，组内仍是收藏时间倒序。
+        # 判据用的是**收藏那一行自己的 played**——电影准确；剧集收藏整剧时
+        # 哨兵行的 played 基本恒为假，于是剧一律靠前。这个近似偏向"早点露出"，
+        # 而剧"没追完"本来就是常态；要精确就得把 up-next 那套单元遍历搬过来，
+        # 为一行的排序不值当。
+        ordered.sort(key=lambda item_id: latest[item_id].played)
     total = len(ordered)
     page = [(item_id, library_of[item_id]) for item_id in ordered[offset : offset + limit]]
     return page, total, latest
@@ -99,8 +118,9 @@ async def favorite_items(
     visible_library_ids: set[int] | None,
     limit: int,
     offset: int = 0,
+    unwatched_first: bool = False,
 ) -> tuple[list[FavoriteItemView], int]:
-    """返回一个账号收藏的作品（最近收藏的在前）与去重后的总数。
+    """返回一个账号收藏的作品与去重后的总数。
 
     ``offset`` / ``limit`` 是「全部收藏」海报墙的滚动分页窗口；首页横滚行只取
     最前面一页。卡片本体复用单库海报墙的聚合视图，因此按落点库分组聚合、
@@ -112,6 +132,7 @@ async def favorite_items(
         visible_library_ids=visible_library_ids,
         limit=limit,
         offset=offset,
+        unwatched_first=unwatched_first,
     )
     if not page:
         return [], total

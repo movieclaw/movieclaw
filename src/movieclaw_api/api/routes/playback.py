@@ -391,11 +391,15 @@ async def list_up_next(
 async def list_favorites(
     limit: Annotated[int, Query(ge=1, le=200)] = 20,
     offset: Annotated[int, Query(ge=0, description="跳过的作品数（全部收藏页滚动加载用）")] = 0,
+    unwatched_first: Annotated[
+        bool, Query(description="把还没看完的整体提前（首页横滚行用；全量页不传）")
+    ] = False,
     principal: Principal = Depends(require_login),
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[FavoritesView]:
     """列出当前账号在可见媒体库中收藏的作品（网页与 Jellyfin 客户端点的心同一份），
-    最近收藏在前。首页横滚行取前 20；「全部收藏」海报墙按 offset 滚动加载。"""
+    最近收藏在前。首页横滚行取前 20 且把没看完的提前；「全部收藏」海报墙按
+    offset 滚动加载，保持纯收藏时间序。"""
     visible_ids = await visible_library_ids(session, principal)
     member_id = principal.member_id if principal.member_id is not None else 0
     items, total = await favorite_items(
@@ -404,6 +408,7 @@ async def list_favorites(
         visible_library_ids=visible_ids,
         limit=limit,
         offset=offset,
+        unwatched_first=unwatched_first,
     )
     return ok(FavoritesView(items=items, total=total))
 

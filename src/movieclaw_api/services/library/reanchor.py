@@ -80,6 +80,7 @@ async def migrate_watch_state(session: AsyncSession, old_unit: Unit, new_unit: U
                     played=old.played,
                     play_count=old.play_count,
                     is_favorite=old.is_favorite,
+                    favorited_at=old.favorited_at,
                     last_played_at=old.last_played_at,
                 )
             )
@@ -91,6 +92,12 @@ async def migrate_watch_state(session: AsyncSession, old_unit: Unit, new_unit: U
             target.subtitle_track = old.subtitle_track or target.subtitle_track
             target.last_played_at = old.last_played_at
         target.played = target.played or old.played
+        # 收藏时间取两边**较早**的那个：重新识别只是换了个身份锚点，
+        # 用户收藏这部作品的那个动作还是当初那一次，不该看起来像刚收藏
+        if old.is_favorite:
+            times = [t for t in (target.favorited_at, old.favorited_at) if t is not None]
+            if times:
+                target.favorited_at = min(times)
         target.is_favorite = target.is_favorite or old.is_favorite
         target.play_count = max(target.play_count, old.play_count)
         target.updated_at = utcnow()

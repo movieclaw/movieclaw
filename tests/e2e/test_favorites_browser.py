@@ -8,7 +8,7 @@ SQLite 播种：二十五部电影 + 一部三集剧，各有在位文件。覆�
   已看（``Played`` 为真、续播点清零）；再点回未看；
 - 剧集详情页：心收藏整部剧（Series 的 ``IsFavorite``）；对勾标记当前选中集，
   分集卡右上角出现对勾、Jellyfin 的 ``UnplayedItemCount`` 减一；
-- 首页「我的收藏」跟在最近观看之下，横滚最近收藏的 20 部（26 个收藏时最早的
+- 首页「我的收藏」跟在「接下来继续」之下，横滚最近收藏的 20 部（26 个收藏时最早的
   被挤出）；「查看全部」进 /library/favorites，与单库页同一套海报墙、全部换行
   铺开，顶栏那颗键能切进图床浏览（跨库图廊，与海报墙同一份名单）再切回来，
   顶栏返回键回首页；
@@ -420,7 +420,7 @@ def test_favorites_and_played_end_to_end(stack) -> None:  # noqa: PLR0915
         _eventually(lambda: jf_user_data(show)["UnplayedItemCount"], 2)
         page.screenshot(path=str(shots / "03-show-detail-episode-played.png"), full_page=True)
 
-        # ---- Infuse 里再收藏一部电影；首页「我的收藏」横滚三部，跟在最近观看之下 ----
+        # ---- Infuse 里再收藏一部电影；首页「我的收藏」横滚三部，跟在「接下来继续」之下 ----
         jf_favorite(ids["电影 02"], True)
         page.goto(f"{base}/library")
         section = page.get_by_test_id("favorites-row")
@@ -430,10 +430,11 @@ def test_favorites_and_played_end_to_end(stack) -> None:  # noqa: PLR0915
         # 最近收藏的在前：Infuse 收藏的电影 02 → 整部剧 → 电影 01
         assert favorite_titles(page) == ["电影 02", SHOW_TITLE, "电影 01"]
         expect(section.get_by_role("link", name="查看全部 3 部")).to_be_visible()
-        # 首页顺序：最近观看 → 我的收藏 → 我的媒体库
+        # 首页顺序：接下来继续 → 我的收藏 → 我的媒体库
+        # （先接着看正在看的，再挑想看的，最后才是管理入口）
         heading_tops = [
             page.get_by_role("heading", name=name).bounding_box()["y"]
-            for name in ("最近观看", "我的收藏", "我的媒体库")
+            for name in ("接下来继续", "我的收藏", "我的媒体库")
         ]
         assert heading_tops == sorted(heading_tops)
         page.screenshot(path=str(shots / "04-home-favorites-row.png"), full_page=True)

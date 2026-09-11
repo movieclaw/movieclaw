@@ -66,6 +66,14 @@ class PlaybackState(MemberScopedMixin, TimestampMixin, table=True):
     played: bool = Field(default=False, index=True, description="是否已看完")
     play_count: int = Field(default=0, description="播放次数（开始播放时 +1）")
     is_favorite: bool = Field(default=False, description="是否收藏")
+    # 收藏**这一次**的时间。不能用 updated_at 代替：那一列任何写入都会动
+    # （进度上报、标记已看、记忆轨选择），于是"两年前收藏、昨晚看过一遍"的片
+    # 会排到收藏列表最前面——那不是用户理解的"最近收藏"。
+    # 只在 is_favorite 由非真变真时刷新；重复收藏是幂等的，不该改写时间。
+    # NULL=这一行从未被收藏过，或收藏发生在本列落地之前（迁移回填成 updated_at）。
+    favorited_at: datetime | None = Field(
+        default=None, index=True, description="收藏时间；NULL=从未收藏"
+    )
     last_played_at: datetime | None = Field(
         default=None, index=True, description="最近一次播放活动时间；NULL=从未播放"
     )

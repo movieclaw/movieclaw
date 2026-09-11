@@ -122,10 +122,17 @@ export interface FavoritesPage {
 
 /** 当前账号在可见媒体库中收藏的作品（网页与 Jellyfin 客户端点的心同一份），
  *  最近收藏在前。首页横滚行取前 20；「全部收藏」海报墙按 offset 滚动加载。 */
-export async function listFavorites(limit = 20, offset = 0): Promise<FavoritesPage> {
-  const response = await request<ApiEnvelope<FavoritesPage>>(
-    `/playback/favorites?limit=${limit}&offset=${offset}`,
-  );
+export async function listFavorites(
+  limit = 20,
+  offset = 0,
+  /**
+   * 把还没看完的整体提前。**只有首页那一行传 true**：那一行是「我想看的」，
+   * 而「全部收藏」页是完整账本，该老老实实按收藏时间排。
+   */
+  unwatchedFirst = false,
+): Promise<FavoritesPage> {
+  const query = `limit=${limit}&offset=${offset}${unwatchedFirst ? "&unwatched_first=true" : ""}`;
+  const response = await request<ApiEnvelope<FavoritesPage>>(`/playback/favorites?${query}`);
   return response.data;
 }
 
