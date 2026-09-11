@@ -32,7 +32,6 @@ import { usePageTitle } from "@/lib/use-page-title";
 import { useIsMobile } from "@/lib/use-media-query";
 import { LibraryFormDialog } from "@/components/library-form-dialog";
 import { LIBRARY_KIND_META } from "@/components/library-kind-meta";
-import { effectiveLibraryId } from "@/components/library-view";
 import { LibraryOrganizeDialog } from "@/components/library-organize-dialog";
 import { PhotoLightbox } from "@/components/photo-lightbox";
 import {
@@ -42,7 +41,6 @@ import {
   usePhotoWallDensity,
   type PhotoWallDensity,
 } from "@/components/photo-wall";
-import { PosterCardVisual, type PosterVisualItem } from "@/components/poster-card";
 import { WallLoadMore, WallLoadPrev, WallRecallPill } from "@/components/wall-chrome";
 import { InventoryCell, PosterWall, WALL_GRID_WIDE } from "@/components/poster-wall";
 import {
@@ -75,7 +73,6 @@ import {
   listLibraryIdentityReviewCases,
   listLibraries,
   listLibraryGallery,
-  listLibraryItemIds,
   listLibraryItemIndex,
   type LibraryFilter,
   type WatchFilter,
@@ -84,6 +81,7 @@ import {
   isFilterEmpty,
   listLibraryItems,
   type LibraryIndexEntry,
+  type LibraryItemOrder,
   type LibraryItemSort,
   listMissingLibraryFiles,
   listUnidentifiedLibraryFiles,
@@ -107,7 +105,6 @@ import {
   searchSeedFromLabel,
 } from "@/components/claim-panels";
 import { setPlaybackMarks } from "@/lib/api/playback";
-import { listSubscriptions, type Subscription } from "@/lib/api/subscriptions";
 import { HttpError } from "@/lib/http";
 import { formatBytes } from "@/lib/format";
 import { activeWallInitialAtViewport, wallInitialAtOffset } from "@/lib/library-wall-index";
@@ -130,10 +127,6 @@ import {
   type LibraryDetailSnapshot,
 } from "@/lib/library-detail-snapshot";
 import { useScrollRestoration } from "@/lib/use-scroll-restoration";
-import {
-  subscriptionProgressNote,
-  subscriptionStatusMeta,
-} from "@/lib/subscription-ui";
 
 /**
  * 长任务状态胶囊的文案：阶段名 + 分子分母 + 一句"在等什么"。
@@ -151,11 +144,13 @@ function busyText(progress: ScanProgress | null): string {
 /**
  * 单库页（/library/[id]）：库头部 + **真实库存**海报墙（Emby 进库后的浏览视图）。
  *
- * 三个分区：
- * 1. 追踪中：入库目标是本库、但还没有文件落地的订阅——自动化正在进行的部分，
- *    时效性最强，置顶展示（格子样式仍弱化，点进订阅详情）；
- * 2. 库存（library_file 台账聚合）：已在磁盘上的作品，格下标注集数/规格/大小；
- * 3. 待识别：扫描认不出身份的文件，按条目目录成组，点候选或填 TMDB ID 整组认领。
+ * 两个分区：
+ * 1. 库存（library_file 台账聚合）：已在磁盘上的作品，格下标注集数/规格/大小；
+ * 2. 待识别：扫描认不出身份的文件，按条目目录成组，点候选或填 TMDB ID 整组认领。
+ *
+ * 不再有「追踪中」分区（订阅了、文件还没落地的片）：它不受筛选与搜索约束，永远
+ * 钉在墙顶，搜什么都先看到一排无关的片。订阅进度去订阅页看；系列合集里缺的那几部
+ * 另有「追踪中」标注。
  */
 
 /** 海报墙每次向服务端要的格数（首屏一批，滚到底再追加一批）。 */
@@ -186,15 +181,41 @@ function keepOnError<T>(rows: Promise<T[]>): Promise<T[] | null> {
  * 内容时间能分出月份档，右侧的跳转轨道靠的就是这个。所以「最近添加」是持续
  * 往库里添内容的人**自己选**的一档，不做默认。
  */
-type WallSortPref = "default" | "added_at" | "rating" | "runtime" | "size" | "last_played";
+type WallSortPref =
+  | "default"
+  | "added_at"
+  | "release_date"
+  | "rating"
+  | "runtime"
+  | "size"
+  | "last_played";
 
 /** 偏好 → 服务端排序键。`default` 由库的形态决定（影视库拼音序、其他库按时间）。 */
 const PREF_TO_SORT: Record<Exclude<WallSortPref, "default">, LibraryItemSort> = {
   added_at: "added_at",
+  release_date: "release_date",
   rating: "rating",
   runtime: "runtime",
   size: "size",
   last_played: "last_played",
+};
+
+/**
+ * 每档的自然方向与方向的人话（2026-09-11 起排序可切换正倒序）。
+ *
+ * 不反转时请求不带 order，服务端按自然方向排——与加方向之前逐字相同。方向写成
+ * 人话（「短→长」）而不是只画箭头：↑ 到底是"从小到大"还是"大的在上"，光看箭头
+ * 要想一下。补探序是扫描临时接管的，控件那几分钟本来就是灰的，方向无意义
+ */
+const SORT_DIRECTIONS: Record<LibraryItemSort, { naturalAsc: boolean; asc: string; desc: string }> = {
+  title: { naturalAsc: true, asc: "A→Z", desc: "Z→A" },
+  added_at: { naturalAsc: false, asc: "旧→新", desc: "新→旧" },
+  release_date: { naturalAsc: false, asc: "旧→新", desc: "新→旧" },
+  probing: { naturalAsc: true, asc: "A→Z", desc: "Z→A" },
+  rating: { naturalAsc: false, asc: "低→高", desc: "高→低" },
+  runtime: { naturalAsc: true, asc: "短→长", desc: "长→短" },
+  size: { naturalAsc: false, asc: "小→大", desc: "大→小" },
+  last_played: { naturalAsc: false, asc: "远→近", desc: "近→远" },
 };
 
 /**
@@ -207,7 +228,11 @@ const PREF_TO_SORT: Record<Exclude<WallSortPref, "default">, LibraryItemSort> = 
  * 图廊（图床浏览）只吃服务端的 title / added_at 两档，所以那个形态下只给两档
  * ——把点了不生效的档摆出来，比少几档更伤。
  */
-function sortOptions(defaultLabel: string, gallery: boolean): readonly (readonly [WallSortPref, string])[] {
+function sortOptions(
+  defaultLabel: string,
+  gallery: boolean,
+  timeline: boolean,
+): readonly (readonly [WallSortPref, string])[] {
   const base = [
     ["default", defaultLabel],
     // 一次导入的内容入账时间都挤在一起，所以这一档对"陆续往库里添东西"才有意义
@@ -216,6 +241,9 @@ function sortOptions(defaultLabel: string, gallery: boolean): readonly (readonly
   if (gallery) return base;
   return [
     ...base,
+    // 影视库补上「按上映时间」：老片→新片 / 新片→老片 是正倒序最用得上的一档。
+    // 其他库的默认档本来就是按时间，不重复摆
+    ...(timeline ? [] : ([["release_date", "按上映时间"]] as [WallSortPref, string][])),
     ["rating", "按评分"],
     ["runtime", "按片长"],
     ["size", "按体积"],
@@ -285,40 +313,79 @@ function writeViewToUrl(view: LibraryView): void {
   window.history.replaceState(null, "", `${window.location.pathname}${rest ? `?${rest}` : ""}`);
 }
 
-/** 哪些排序分得出有意义的索引档：其余排序轨道不显示，也就不必请求。 */
-const INDEXED_SORTS: Partial<Record<LibraryItemSort, "title" | "release_date" | "rating">> = {
+/**
+ * 哪些排序要请求索引：按标题（A-Z 索引条）与按内容时间（其他库 / 图片库的月份时间线）。
+ *
+ * 评分档不再请求：影视库按评分、按上映时间都不显示侧边索引条（2026-09-11 试过画成
+ * 「9+ / 8+ / 未评分」「2010s」分档后撤掉）——只有几档、档名又宽，一条宽索引条挤掉
+ * 海报列宽，却只省下几屏滚动
+ */
+const INDEXED_SORTS: Partial<Record<LibraryItemSort, "title" | "release_date">> = {
   title: "title",
   probing: "title",
   release_date: "release_date",
-  rating: "rating",
 };
 const WALL_SORT_STORAGE_KEY = "movieclaw.library.wall-sort";
 
+/** 能从 storage 里认回来的排序偏好；其余一律当默认序（防老版本或手改出来的脏值） */
+const WALL_SORT_PREFS: readonly WallSortPref[] = [
+  "default",
+  "added_at",
+  "release_date",
+  "rating",
+  "runtime",
+  "size",
+  "last_played",
+];
+
+/** 排序偏好：选的哪一档，以及是否反转了这一档的自然方向。 */
+interface WallSortState {
+  pref: WallSortPref;
+  reversed: boolean;
+}
+
 /**
- * 读写排序偏好。第三个返回值是「读完 storage 了没有」：首帧一律先给默认值
+ * 读写排序偏好（含方向）。第四个返回值是「读完 storage 了没有」：首帧一律先给默认值
  * （服务端渲染没有 localStorage），排序相关的副作用必须等它为真再动手——
  * 否则从详情页返回的那一帧会先按默认序把窗口重拉一遍，把人甩回墙首。
+ *
+ * 存成 `rating` / `rating:rev`。此前只认回「最近添加」一档：选了按评分、按片长，
+ * 刷新一下就退回默认序——排序是偏好，该记全。换档时方向回到新档的自然方向：
+ * 从「片长 长→短」换到「评分」，用户要的是"高分在前"，不是继承一个反向
  */
-function useWallSortPref(): [WallSortPref, (next: WallSortPref) => void, boolean] {
-  const [sort, setSort] = useState<WallSortPref>("default");
+function useWallSortPref(): [WallSortState, (next: WallSortPref) => void, () => void, boolean] {
+  const [state, setState] = useState<WallSortState>({ pref: "default", reversed: false });
   const [ready, setReady] = useState(false);
+  const stateRef = useRef(state);
+  stateRef.current = state;
   useEffect(() => {
     try {
-      if (window.localStorage.getItem(WALL_SORT_STORAGE_KEY) === "added_at") setSort("added_at");
+      const [pref, flag] = (window.localStorage.getItem(WALL_SORT_STORAGE_KEY) ?? "").split(":");
+      if (WALL_SORT_PREFS.includes(pref as WallSortPref)) {
+        setState({ pref: pref as WallSortPref, reversed: flag === "rev" });
+      }
     } catch {
       /* 隐私模式等拿不到 storage：保持默认序 */
     }
     setReady(true);
   }, []);
-  const update = useCallback((next: WallSortPref) => {
-    setSort(next);
+  const persist = useCallback((next: WallSortState) => {
+    setState(next);
     try {
-      window.localStorage.setItem(WALL_SORT_STORAGE_KEY, next);
+      window.localStorage.setItem(
+        WALL_SORT_STORAGE_KEY,
+        next.reversed ? `${next.pref}:rev` : next.pref,
+      );
     } catch {
       /* 同上 */
     }
   }, []);
-  return [sort, update, ready];
+  const update = useCallback((pref: WallSortPref) => persist({ pref, reversed: false }), [persist]);
+  const toggleReversed = useCallback(
+    () => persist({ ...stateRef.current, reversed: !stateRef.current.reversed }),
+    [persist],
+  );
+  return [state, update, toggleReversed, ready];
 }
 
 export function LibraryDetailView({ libraryId }: { libraryId: number }) {
@@ -378,11 +445,6 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   const [provisional, setProvisional] = useState<LibraryItem[]>([]);
   // 服务端还有没有下一页；滚动加载的哨兵据此决定是否继续观察
   const [wallHasMore, setWallHasMore] = useState(snapshot?.wallHasMore ?? false);
-  // 本库全部条目 id：海报墙分页后这份名单仍要完整——「追踪中」要靠它把
-  // 已入库的订阅剔掉，而已入库的那部可能在第 5 页上，光看当前页会误判
-  const [ownedIds, setOwnedIds] = useState<Set<number>>(
-    () => snapshot?.ownedIds ?? new Set(),
-  );
   // A-Z 索引条的分档（按标题排序时才有意义）
   const [wallIndex, setWallIndex] = useState<LibraryIndexEntry[]>(snapshot?.wallIndex ?? []);
   // 当前窗口在整份排序里的起点：0 = 从头开始；点字母跳转后是该档的 offset。
@@ -395,7 +457,6 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   const [review, setReview] = useState<ReviewGroup[]>(snapshot?.review ?? []);
   const [ignored, setIgnored] = useState<UnidentifiedGroup[]>(snapshot?.ignored ?? []);
   const [missing, setMissing] = useState<MissingItem[]>(snapshot?.missing ?? []);
-  const [subscriptions, setSubscriptions] = useState<Subscription[]>(snapshot?.subscriptions ?? []);
   const [failed, setFailed] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [editing, setEditing] = useState<MediaLibrary | null>(null);
@@ -443,6 +504,8 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   // 当前排序（扫描补探阶段切到「待补探优先」）。放 ref 而不进依赖：reload
   // 每轮都读最新值，不必为切排序重建回调链
   const wallSort = useRef<LibraryItemSort>(snapshot?.wallSort ?? "title");
+  // 排序方向（同 wallSort 放 ref）：undefined = 该档的自然方向，请求里不带 order
+  const wallOrder = useRef<LibraryItemOrder | undefined>(snapshot?.wallOrder);
   // 当前窗口起点的 ref 版：reload 每轮读它，不进依赖（同 wallSort）
   const wallOffset = useRef(snapshot?.wallOffset ?? 0);
   const snapshotRef = useRef<LibraryDetailSnapshot | null>(null);
@@ -451,17 +514,16 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
         libraries,
         items,
         wallHasMore,
-        ownedIds,
         wallIndex,
         wallStart,
         unidentified,
         review,
         ignored,
         missing,
-        subscriptions,
         metaRefresh,
         wallLoaded: wallLoaded.current,
         wallSort: wallSort.current,
+        wallOrder: wallOrder.current,
         wallOffset: wallOffset.current,
         galleryGroups,
         galleryHasMore,
@@ -484,9 +546,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
     libraryId,
     metaRefresh,
     missing,
-    ownedIds,
     review,
-    subscriptions,
     snapshotStale,
     unidentified,
     wallHasMore,
@@ -504,6 +564,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
         const offset = from + page * WALL_API_PAGE_SIZE;
         return listLibraryItems(libraryId, {
           sort: wallSort.current,
+          order: wallOrder.current,
           filter: wallFilter.current,
           limit: Math.min(WALL_API_PAGE_SIZE, wanted - page * WALL_API_PAGE_SIZE),
           offset,
@@ -526,7 +587,6 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
         sort: "added_at",
         limit: PROVISIONAL_LIMIT,
       }).catch(() => [] as LibraryItem[]),
-      listLibraryItemIds(libraryId).catch(() => []),
       // 跳转索引与当前排序、当前筛选同口径——三者读的是同一份有序名单。
       // 只有三种排序分得出有意义的档：首字母 / 月份 / 评分档。其余（最近添加、
       // 片长、体积、最近观看）轨道本来就不显示，索引这一趟请求也省了
@@ -536,6 +596,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
             libraryId,
             INDEXED_SORTS[wallSort.current]!,
             wallFilter.current,
+            wallOrder.current,
           ).catch(() => []),
       canManageLibraries
         ? keepOnError(listUnidentifiedLibraryFiles(libraryId))
@@ -549,9 +610,8 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
       canManageLibraries
         ? keepOnError(listMissingLibraryFiles(libraryId))
         : Promise.resolve([]),
-      listSubscriptions().catch(() => []),
     ])
-      .then(([libs, libraryItems, provisionalItems, ids, index, unknown, reviewGroups, ignoredGroups, missingItems, subs]) => {
+      .then(([libs, libraryItems, provisionalItems, index, unknown, reviewGroups, ignoredGroups, missingItems]) => {
         if (seq !== reloadSeq.current) return;
         setSnapshotStale(false);
         // 四张待办清单只要有一张没拿到，就保留上一份快照并点亮顶部提示条。
@@ -569,16 +629,11 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
         wallLoaded.current = Math.max(WALL_PAGE_SIZE, libraryItems.length);
         // 拿满这一页就假定后面还有；真到底时下一次追加会拿到空数组并收尾
         setWallHasMore(libraryItems.length >= wanted);
-        // 内容没变就复用旧集合，别让「追踪中」每轮轮询白白重算重画
-        setOwnedIds((prev) =>
-          ids.length === prev.size && ids.every((i) => prev.has(i)) ? prev : new Set(ids),
-        );
         setWallIndex((prev) => keepIfEqual(prev, index));
         if (unknown !== null) setUnidentified((prev) => keepIfEqual(prev, unknown));
         if (reviewGroups !== null) setReview((prev) => keepIfEqual(prev, reviewGroups));
         if (ignoredGroups !== null) setIgnored((prev) => keepIfEqual(prev, ignoredGroups));
         if (missingItems !== null) setMissing((prev) => keepIfEqual(prev, missingItems));
-        setSubscriptions((prev) => keepIfEqual(prev, subs));
         // 整库刷新可能是别处（首页卡片/其他设备）发起的：库列表响应里带着
         // 状态，据此补种进度面板——否则只有挂载时那一次探测，之后发起的
         // 刷新这个页面永远看不见。已有进行中的状态时不覆盖（专用轮询更新鲜）
@@ -614,6 +669,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
     const offset = wallOffset.current + wallLoaded.current;
     listLibraryItems(libraryId, {
       sort: wallSort.current,
+      order: wallOrder.current,
       filter: wallFilter.current,
       limit: WALL_PAGE_SIZE,
       offset,
@@ -658,6 +714,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
     const from = Math.max(0, until - WALL_PAGE_SIZE);
     listLibraryItems(libraryId, {
       sort: wallSort.current,
+      order: wallOrder.current,
       filter: wallFilter.current,
       limit: until - from,
       offset: from,
@@ -763,6 +820,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
       wallOffset.current = offset;
       listLibraryItems(libraryId, {
       sort: wallSort.current,
+      order: wallOrder.current,
       filter: wallFilter.current,
       limit: WALL_PAGE_SIZE,
       offset,
@@ -922,8 +980,27 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   const [photoDensity, setPhotoDensity] = usePhotoWallDensity();
   // 「最近添加」是用户在 ⋯ 菜单里选的一档，三面墙（海报墙 / 相册墙 / 图廊）
   // 共用。补探阶段的临时排序压过它：那几分钟墙上要回答的是"在处理哪几部"
-  const [wallSortPref, setWallSortPref, wallSortReady] = useWallSortPref();
+  const [
+    { pref: wallSortPref, reversed: wallSortReversed },
+    setWallSortPref,
+    toggleWallSortReversed,
+    wallSortReady,
+  ] = useWallSortPref();
   const recentFirst = wallSortPref === "added_at" && !probing;
+  // 当前真正生效的服务端排序键：补探阶段临时接管；其次是用户选的档；默认档按库的形态。
+  // 图片库只认「最近添加」：偏好是全站共用的一个键，别的库里选的「按评分」
+  // 不该把相册的按月瀑布流排乱（图片库也不摆排序控件）
+  const effectiveSort: LibraryItemSort = probing
+    ? "probing"
+    : wallSortPref !== "default" && !(photoWall && wallSortPref !== "added_at")
+      ? PREF_TO_SORT[wallSortPref]
+      : timeline
+        ? "release_date"
+        : "title";
+  // 这一次是不是升序：该档自然方向，用户反转过就倒过来（补探序与相册墙不理会方向）
+  const sortAscending =
+    SORT_DIRECTIONS[effectiveSort].naturalAsc !==
+    (wallSortReversed && effectiveSort !== "probing" && !photoWall);
   // 图廊按同一个键取页（后端默认标题序，只有选了最近添加才带参数）
   const gallerySort = recentFirst ? ("added_at" as const) : undefined;
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
@@ -1084,8 +1161,16 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   // 两者的「第 300 个」不是同一部作品，形态对不上就不提示（见 WallRecall.view）
   // 排序也是形态的一部分：同一个 offset 在标题序与最近添加序里指向的不是
   // 同一部作品，换了排序就当作没有记录（后缀只加在非默认序上，免得让老记录失效）
+  // 每一档、每个方向各记各的：同一个 offset 在「按评分 高→低」与「低→高」里指向两头。
+  // 默认档（标题序 / 其他库的时间序）不加后缀，老记录不失效；「最近添加」沿用 :added
+  const defaultSort =
+    effectiveSort === "title" ||
+    effectiveSort === "probing" ||
+    (timeline && effectiveSort === "release_date");
   const wallView =
-    (gallery ? "gallery" : timeline ? "wall:time" : "wall:title") + (recentFirst ? ":added" : "");
+    (gallery ? "gallery" : timeline ? "wall:time" : "wall:title") +
+    (recentFirst ? ":added" : gallery || defaultSort ? "" : `:${effectiveSort}`) +
+    (!gallery && sortAscending !== SORT_DIRECTIONS[effectiveSort].naturalAsc ? ":rev" : "");
   // 条目 id → 它在整份排序里的绝对位置。滚动时按首个可见格反查（图廊按瓦片
   // 所属的作品），DOM 上只挂 id，不必给每一格再算一遍下标
   const offsetById = useMemo(
@@ -1243,32 +1328,22 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
     // 同图廊：偏好没读出来之前不动排序，否则从详情页返回的那一帧会先按
     // 默认序把窗口重拉一遍，人被甩回墙首
     if (!wallSortReady) return;
-    const next: LibraryItemSort = probing
-      ? "probing"
-      : wallSortPref !== "default"
-        ? PREF_TO_SORT[wallSortPref]
-        : timeline
-          ? "release_date"
-          : "title";
-    if (wallSort.current === next) return;
-    wallSort.current = next;
+    // 只有反转了自然方向才带 order：不反转时与加方向之前的请求逐字相同
+    const nextOrder: LibraryItemOrder | undefined =
+      sortAscending === SORT_DIRECTIONS[effectiveSort].naturalAsc
+        ? undefined
+        : sortAscending
+          ? "asc"
+          : "desc";
+    if (wallSort.current === effectiveSort && wallOrder.current === nextOrder) return;
+    wallSort.current = effectiveSort;
+    wallOrder.current = nextOrder;
     wallLoaded.current = WALL_PAGE_SIZE;
-    // 换了排序，之前跳到的字母位置就没意义了，窗口回到墙首
+    // 换了排序或方向，之前跳到的字母位置就没意义了，窗口回到墙首
     wallOffset.current = 0;
     setWallStart(0);
     reload();
-  }, [probing, timeline, wallSortPref, wallSortReady, reload]);
-
-  // 追踪中：目标是本库、且尚未在库存中出现的订阅
-  const pending = useMemo(() => {
-    if (!libraries || !library) return [];
-    return subscriptions.filter(
-      (s) =>
-        effectiveLibraryId(s, libraries) === library.id &&
-        !ownedIds.has(s.media.media_item_id ?? -1) &&
-        s.progress.imported === 0,
-    );
-  }, [libraries, library, subscriptions, ownedIds]);
+  }, [effectiveSort, sortAscending, wallSortReady, reload]);
 
   // 只有一次都没加载成功过才整页报错；已有数据在手时，瞬时失败只在页内
   // 挂提示条（stale-while-error）——为一次网络抖动把整面海报墙换成错误屏，
@@ -1340,11 +1415,18 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
    *（实测 50.5px → 102px 的差别）。
    */
   const galleryAvailable = library.capabilities.playable && libraryView === "items";
+  // 按评分排序或用评分筛选时，评分就是用户正在比的东西：墙上每格常显评分。
+  // 平时浏览不印（见 InventoryCell 的 ratingText）
+  const showRating = wallSortPref === "rating" || filter.ratingGte != null;
 
   /**
-   * 作品 / 合集 切换。窄屏上挂进顶栏右上角（与发现页把数据源切换挂进顶栏
-   * 同一手法）：它在正文里要独占一整行，而 390px 的屏幕上那一行很贵。
+   * 作品 / 合集 切换。窄屏上挂进 PageNav 顶栏、搜索键左侧（与发现页把 TMDB /
+   * 豆瓣 切换挂进全局顶栏同一个位置，外观也照抄 discover-view 的
+   * SourceSwitcher）：它在正文里要独占一整行，而 390px 的屏幕上那一行很贵。
    * 桌面端仍留在正文，那儿不缺这一行，tab 紧挨着内容也更符合 Plex 的心智。
+   *
+   * 顶栏里不带合集数：☰ + 返回 + 切换 + 搜索 + ⋯ 已经把 390px 用满，再多
+   * 一个数字就把整行挤出屏幕。数量在切到合集视图后一眼就能看到。
    *
    * 一个合集都没有时整个控件不出现——没有事实就不摆控件。
    */
@@ -1352,7 +1434,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
     <div
       role="tablist"
       aria-label="库内视图"
-      className="flex shrink-0 items-center rounded-full border border-white/[0.09] bg-black/30 p-0.5 backdrop-blur-md"
+      className="flex shrink-0 rounded-full border border-white/10 bg-black/35 p-1 backdrop-blur-xl"
     >
       {(
         [
@@ -1366,19 +1448,13 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
           role="tab"
           aria-selected={libraryView === value}
           onClick={() => switchView(value)}
-          className={`flex h-8 items-center gap-1 rounded-full px-2.5 text-caption transition max-md:h-9 ${
+          className={`rounded-full px-4 py-1.5 text-sub font-semibold transition ${
             libraryView === value
-              ? "bg-white/[0.16] font-medium text-white"
-              : "text-white/60"
+              ? "bg-white/15 text-white shadow-sm"
+              : "text-[var(--text-muted)] hover:text-white"
           }`}
         >
           {label}
-          {/* 合集数留着：不切过去也能知道那边有没有东西 */}
-          {value === "collections" && (
-            <span className="font-mono text-caption tabular-nums text-white/40">
-              {collections.length}
-            </span>
-          )}
         </button>
       ))}
     </div>
@@ -1520,6 +1596,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
         title={library.name}
         fallback={navFallback}
         actions={actionsMenu || undefined}
+        toolbar={(isMobile && !photoWall && viewSwitch) || undefined}
       />
       {/* —— 库头部 —— */}
       <div className="px-6 max-md:px-4">
@@ -1538,10 +1615,6 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
               仅管理
             </span>
           ) : null}
-          {/* 窄屏把视图切换挪到库名这一行的右端：那儿本来就空着大半，既省下
-              正文里那一整行，又不必去挤顶栏——顶栏那一行在 390px 上只剩 90px
-              给吸顶标题，再塞一个文字切换就是负数，标题直接没了 */}
-          {isMobile && !photoWall && <div className="ml-auto">{viewSwitch}</div>}
         </div>
         <p className="text-on-image mt-1.5 truncate text-ui text-[var(--text-muted)] max-md:text-sub">
           {meta.label}库 · {stats.item_count} {library.kind === "photo" ? "张" : "部作品"} ·{" "}
@@ -1688,7 +1761,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
 
       {/* —— 管理视图：超管不在本库的浏览范围内（docs/design/library-access.md 2.4）。
           设置 / 扫描 / 待处理 / 回收站照常（都在上方头部与 ⋯ 菜单里），海报墙、
-          未识别分区与追踪中一概不渲染——内容对当前身份就是不存在 —— */}
+          未识别分区一概不渲染——内容对当前身份就是不存在 —— */}
       {!library.viewer_access ? (
         <div className="mt-16 flex flex-col items-center gap-3 px-6 text-center">
           <LockIcon className="size-9 text-white/[0.28]" />
@@ -1709,23 +1782,6 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
         </div>
       ) : (
       <>
-      {/* —— 追踪中（订阅已指向本库、文件未落地）：自动化正在进行的部分，置顶优先 —— */}
-      {pending.length > 0 && (
-        <div className="mt-6 px-6 max-md:mt-4 max-md:px-4">
-          <h3 className="text-on-image text-body-lg font-semibold text-white/85">
-            追踪中
-            <span className="ml-2 text-sub font-normal text-[var(--text-faint)]">
-              已订阅、资源到位后自动入库
-            </span>
-          </h3>
-          <div className="mt-4 grid gap-x-4 gap-y-7 [grid-template-columns:repeat(auto-fill,minmax(148px,1fr))] max-md:gap-x-3 max-md:gap-y-5 max-md:[grid-template-columns:repeat(auto-fill,minmax(140px,1fr))]">
-            {pending.map((sub) => (
-              <PendingCell key={sub.id} sub={sub} />
-            ))}
-          </div>
-        </div>
-      )}
-
       {/* —— 作品 / 合集：库内的两个视图（Plex 的 tab 模型）。
           一个合集都没有时这一行不出现——没有事实就不摆控件 —— */}
       {!photoWall && !isMobile && collections.length > 0 && (
@@ -1770,7 +1826,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
         </div>
       ) : (
       <>
-      {/* —— 库存海报墙（追踪中置顶时补「已入库」标题，两片海报墙不致连读）—— */}
+      {/* —— 库存海报墙 —— */}
       {items.length === 0 && provisional.length === 0 && filtering ? (
         // 筛空了不给空墙——给一条真能救回内容的出路（铁律 2）。库本身就是空的
         // 是另一回事，走下面那个分支
@@ -1789,11 +1845,6 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
         </p>
       ) : (
         <>
-          {pending.length > 0 && (
-            <h3 className="text-on-image mt-10 px-6 text-body-lg font-semibold text-white/85 max-md:mt-7 max-md:px-4">
-              已入库
-            </h3>
-          )}
           {/* 筛选条：静止态只有一个「筛选」按钮，点开才有四个维度；
               条件一生效，条件本身就顶替控件出现在下面那行（且与面板开合无关）。
               图片库不给筛选——照片没有类型/评分/地区这些事实，摆上去就是
@@ -1815,16 +1866,26 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
               sortControl={
                 <WallSortControl
                   value={wallSortPref}
-                  options={sortOptions(!gallery && timeline ? "按时间" : "按标题", gallery)}
+                  options={sortOptions(!gallery && timeline ? "按时间" : "按标题", gallery, timeline)}
                   onChange={setWallSortPref}
                   disabled={probing}
+                  // 图廊只吃服务端标题 / 最近添加两档的默认方向，不给方向切换
+                  direction={
+                    gallery
+                      ? undefined
+                      : {
+                          ascending: sortAscending,
+                          label: SORT_DIRECTIONS[effectiveSort][sortAscending ? "asc" : "desc"],
+                          onToggle: toggleWallSortReversed,
+                        }
+                  }
                 />
               }
               className="mt-5 px-6 max-md:mt-4 max-md:px-4"
             />
             </div>
           )}
-          <div ref={wallTop} className={pending.length > 0 ? "mt-4" : "mt-6 max-md:mt-4"}>
+          <div ref={wallTop} className="mt-6 max-md:mt-4">
             {/* 索引条与内容列并排：条固定在视口右侧（sticky），列照常滚。索引条
                 有固定高度，加载哨兵与未识别分区必须放进同一列里——否则卡片少时
                 这一行被索引条撑高，分区会被推到一大段空白之下 */}
@@ -1867,6 +1928,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
                         libraryIdOf={ownLibraryId}
                         wide={false}
                         workingLabelOf={workingLabelOf}
+                        showRating={showRating}
                       />
                     </div>
                     <h3 className="text-on-image mb-4 mt-8 text-body-lg font-semibold text-white/85">
@@ -1877,6 +1939,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
                       libraryIdOf={ownLibraryId}
                       wide
                       workingLabelOf={workingLabelOf}
+                      showRating={showRating}
                     />
                   </>
                 ) : (
@@ -1887,6 +1950,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
                       wide={wideWall}
                       workingLabelOf={workingLabelOf}
                       onGeometry={onWallGeometry}
+                      showRating={showRating}
                     />
                   </div>
                 )}
@@ -1948,8 +2012,15 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
               </div>
               {/* 补探阶段排序不是拼音序，字母跳转会跳错位置——那几分钟里收起来；
                   其他库按内容时间排，同理没有字母档；「最近添加」序两种档都没有 */}
-              {!probing && !recentFirst && !timeline && !gallery && (
-                <WallIndexBar index={wallIndex} active={activeWallInitial} onJump={jumpTo} />
+              {/* 只有按标题排序才有侧边索引条：补探序、最近添加、其他库的时间序没有字母档；
+                  按评分 / 按上映时间只有几档、档名又宽，画出来挤海报却省不了几屏（见 INDEXED_SORTS） */}
+              {effectiveSort === "title" && !gallery && (
+                <WallIndexBar
+                  index={wallIndex}
+                  active={activeWallInitial}
+                  onJump={jumpTo}
+                  reversed={!sortAscending}
+                />
               )}
               {photoWall && !recentFirst && (
                 <PhotoTimelineScrubber
@@ -2330,13 +2401,17 @@ function WallIndexBar({
   index,
   active,
   onJump,
+  reversed,
 }: {
   index: LibraryIndexEntry[];
   /** 当前视口所在档位；由海报墙滚动锚点实时更新。 */
   active: string | null;
   onJump: (offset: number) => void;
+  /** 墙是倒序（Z→A）时字母表跟着倒过来：往下滑墙与往下滑索引条是同一个方向 */
+  reversed: boolean;
 }) {
   const byInitial = useMemo(() => new Map(index.map((e) => [e.initial, e])), [index]);
+  const slots = useMemo(() => (reversed ? [...WALL_INITIALS].reverse() : WALL_INITIALS), [reversed]);
   const barRef = useRef<HTMLDivElement>(null);
   // 正在滑选的字母（气泡预览 + 高亮）；null = 没在按压
   const [preview, setPreview] = useState<string | null>(null);
@@ -2348,17 +2423,14 @@ function WallIndexBar({
     const rect = barRef.current?.getBoundingClientRect();
     if (!rect || rect.height === 0) return null;
     const ratio = (clientY - rect.top) / rect.height;
-    const idx = Math.min(
-      WALL_INITIALS.length - 1,
-      Math.max(0, Math.floor(ratio * WALL_INITIALS.length)),
-    );
-    return WALL_INITIALS[idx];
-  }, []);
+    const idx = Math.min(slots.length - 1, Math.max(0, Math.floor(ratio * slots.length)));
+    return slots[idx];
+  }, [slots]);
 
   if (index.length === 0) return null;
 
   const previewEntry = preview ? byInitial.get(preview) : undefined;
-  const previewIdx = preview ? WALL_INITIALS.indexOf(preview) : -1;
+  const previewIdx = preview ? slots.indexOf(preview) : -1;
 
   return (
     <div
@@ -2394,7 +2466,7 @@ function WallIndexBar({
         setPreview(null);
       }}
     >
-      {WALL_INITIALS.map((initial) => {
+      {slots.map((initial) => {
         const entry = byInitial.get(initial);
         return (
           <span
@@ -2419,7 +2491,7 @@ function WallIndexBar({
       {preview && previewIdx >= 0 && (
         <div
           className="pointer-events-none absolute right-full mr-3 flex -translate-y-1/2 items-center gap-2 rounded-xl border border-white/[0.14] bg-[rgba(16,18,26,0.92)] px-3.5 py-2 shadow-[0_8px_28px_rgba(0,0,0,0.5)]"
-          style={{ top: `${((previewIdx + 0.5) / WALL_INITIALS.length) * 100}%` }}
+          style={{ top: `${((previewIdx + 0.5) / slots.length) * 100}%` }}
         >
           <span className="text-title-lg font-bold text-white">{preview}</span>
           <span className="whitespace-nowrap text-caption text-[var(--text-muted)]">
@@ -2427,36 +2499,6 @@ function WallIndexBar({
           </span>
         </div>
       )}
-    </div>
-  );
-}
-
-/** 追踪中格：订阅状态行沿用订阅页语言，点击进订阅详情。 */
-function PendingCell({ sub }: { sub: Subscription }) {
-  const meta = subscriptionStatusMeta[sub.status];
-  const visual: PosterVisualItem = {
-    id: String(sub.media.tmdb_id),
-    source: "tmdb",
-    title: sub.media.title,
-    year: sub.media.year ?? undefined,
-    rating: 0,
-    posterUrl: sub.media.poster_url ? cachedImageUrl(sub.media.poster_url) : "",
-  };
-  return (
-    // content-visibility 与库存格同款：追踪中的订阅一多（批量订阅季播剧），
-    // 视口外的格子同样不该参与布局与绘制
-    <div className="opacity-80 transition [contain-intrinsic-size:auto_270px] [content-visibility:auto] hover:opacity-100">
-      {/* 已是订阅产物，悬浮层不再给「订阅影片」重复入口 */}
-      <PosterCardVisual item={visual} href={`/subscriptions/${sub.id}` as Route} action="none" />
-      <p className="text-on-image mt-1.5 flex items-center gap-1.5 truncate text-caption text-[var(--text-muted)]">
-        <span
-          className="size-1.5 shrink-0 rounded-full"
-          style={{ backgroundColor: meta.color }}
-        />
-        <span className="truncate">
-          {meta.label} · {subscriptionProgressNote(sub)}
-        </span>
-      </p>
     </div>
   );
 }

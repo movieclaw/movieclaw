@@ -43,6 +43,7 @@ from movieclaw_api.services import jobs
 from movieclaw_api.services.library.series import (
     build_series_key,
     ensure_series_collections_for_item,
+    rename_series_collections,
 )
 from movieclaw_api.services.scrape_config import (
     effective_asset_sizes,
@@ -786,8 +787,13 @@ async def apply_display_profile(
     # 作品系列：TMDB 的 belongs_to_collection 就在详情响应里，零额外请求。
     # 只落列，**不在这里建合集**——刮削只管落数据，建合集是 library/series.py
     # 的事（调用方在事务收尾时调 ensure_series_collections_for_item）
+    previous_key, previous_name = meta.series_key, meta.series_name
     meta.series_key = build_series_key(profile.series_tmdb_id, profile.series_name)
     meta.series_name = profile.series_name
+    if previous_key == meta.series_key:
+        # 同一个系列换了名字（典型是改了刮削语言后刷新）：已建好的合集行不会被
+        # ensure 改名，这里让用户没改过名的那些跟着换（判据见 rename_series_collections）
+        await rename_series_collections(session, meta.series_key, previous_name, meta.series_name)
     meta.scraped_at = now
     meta.scrape_language = language
     meta.updated_at = now

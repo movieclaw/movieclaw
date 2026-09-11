@@ -2,6 +2,7 @@ import type {
   LibraryGalleryGroup,
   LibraryIndexEntry,
   LibraryItem,
+  LibraryItemOrder,
   LibraryItemSort,
   MediaLibrary,
   MetadataRefreshProgress,
@@ -9,7 +10,6 @@ import type {
   ReviewGroup,
   UnidentifiedGroup,
 } from "@/lib/api/libraries";
-import type { Subscription } from "@/lib/api/subscriptions";
 import { createSessionSnapshots } from "@/lib/session-snapshot";
 
 /**
@@ -22,17 +22,17 @@ export interface LibraryDetailSnapshot {
   libraries: MediaLibrary[];
   items: LibraryItem[];
   wallHasMore: boolean;
-  ownedIds: Set<number>;
   wallIndex: LibraryIndexEntry[];
   wallStart: number;
   unidentified: UnidentifiedGroup[];
   review: ReviewGroup[];
   ignored: UnidentifiedGroup[];
   missing: MissingItem[];
-  subscriptions: Subscription[];
   metaRefresh: MetadataRefreshProgress | null;
   wallLoaded: number;
   wallSort: LibraryItemSort;
+  /** 排序方向；undefined = 自然方向（不带 order 参数，老快照也没有这一项） */
+  wallOrder?: LibraryItemOrder;
   wallOffset: number;
   /**
    * 图床浏览模式已加载的整份窗口。它必须跟着快照一起回来：图廊只按条目分页，

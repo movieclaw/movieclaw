@@ -9,7 +9,7 @@ import Link from "next/link";
 
 import { MultiFilterMenu } from "@/components/filter-menu";
 import type { Collection } from "@/lib/api/collections";
-import { CheckIcon, ChevronDownIcon } from "@/components/icons";
+import { ArrowDownIcon, CheckIcon, ChevronDownIcon, FilterIcon } from "@/components/icons";
 import {
   type FacetValue,
   type LibraryFacets,
@@ -33,7 +33,8 @@ import { useIsMobile } from "@/lib/use-media-query";
  * 永远只占一行的量：
  *
  *   静止态：排序（显值、无边框）+ 筛选（唯一一个带框的按钮）
- *   点开后：多出一行四个维度下拉，用完可收回
+ *   点开后：宽屏多出一行四个维度下拉，用完可收回；窄屏直接拉起底部抽屉，
+ *           一二级维度全部平铺成胶囊（见 FilterSheet）
  *   有条件：条件本身顶替控件出现，且**与面板开合无关**——收起面板不影响
  *           条件可见，否则用户会以为收起就等于取消了筛选
  *
@@ -75,7 +76,8 @@ export function LibraryFilterBar({
   // 二级维度的展示名只在 tier=all 里才有（"gt120" → "> 120′"）。所以只要**条件里
   // 已经有二级维度**就得取全份，不能只在面板展开时取：分享进来的链接、点开的
   // 合集都可能带着二级条件，那时面板是关的，条件行只好把裸值印出来
-  const needsAllFacets = more || hasSecondary(filter);
+  // 窄屏的筛选抽屉一打开就把一二级维度都摆出来，所以直接取全份
+  const needsAllFacets = more || (mobile && open) || hasSecondary(filter);
   // 全份 facet 到了没有。没到就别把「找片 / 查库」两个小标题孤零零地摆出来——
   // 面板会先是个空壳、随后内容弹进来把它撑高，在移动端就是拇指底下抖一下
   const secondaryReady = Boolean(
@@ -150,43 +152,48 @@ export function LibraryFilterBar({
 
   return (
     <div className={className}>
-      {/* —— 静止态那一行：左侧合集 chip，右侧排序与筛选 —— */}
+      {/* —— 静止态那一行：筛选 · 排序 · 合集 chip，**一律靠左**，排不下换行 ——
+          曾经是「左侧合集 chip、右侧排序与筛选」。库里没有自建合集时（系列合集不进
+          chip 行）左边整块空着，两个控件孤零零挂在右边，像飘在海报上方。页面上
+          库名、库信息都是左对齐的，控件跟着从左边起，读起来是一条线往下走。
+          筛选在前：它是这一行唯一带框的按钮，也是最常用的那个 */}
       <div className="flex flex-wrap items-center gap-2">
+        {/* 静止态也要看得出是个按钮：glass-row 默认透明无框，「筛选」此前只是一行
+            70% 的字，比旁边显值的排序还弱，主次倒挂。补一圈极淡描边 + 最浅一档玻璃底
+            + 图标，文字提到 90% 中等字重——认得出，但不跳。有条件 / 展开时仍是高亮底 */}
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={() => setOpen((v) => !v)}
+          className={`glass-row flex h-8 !w-auto shrink-0 items-center gap-1.5 rounded-full !px-3 text-caption font-medium ${
+            open || !empty
+              ? "!border-white/[0.16] !bg-[var(--glass-fill-active)] !text-[var(--text)]"
+              : "!border-white/[0.12] !bg-[var(--glass-fill)] text-white/90 hover:!bg-[var(--glass-fill-hover)]"
+          }`}
+        >
+          <FilterIcon className="size-3.5 opacity-70" />
+          筛选
+          {selectedCount > 0 && (
+            <span className="font-mono text-caption font-semibold tabular-nums text-white/85">
+              {selectedCount}
+            </span>
+          )}
+        </button>
+        {sortControl}
         <CollectionChips
           collections={collections ?? []}
           libraryId={libraryId}
           activeId={activeCollectionId}
           onApply={applyCollection}
         />
-        <div className="ml-auto flex shrink-0 items-center gap-2">
-          {sortControl}
-          <button
-            type="button"
-            aria-expanded={open}
-            onClick={() => setOpen((v) => !v)}
-            className={`glass-row flex h-8 !w-auto shrink-0 items-center gap-1.5 rounded-full !px-3 text-caption ${
-              open || !empty ? "!bg-[var(--glass-fill-active)] !text-[var(--text)]" : "text-white/70"
-            }`}
-          >
-            筛选
-            {selectedCount > 0 && (
-              <span className="font-mono text-caption font-semibold tabular-nums text-white/85">
-                {selectedCount}
-              </span>
-            )}
-          </button>
-        </div>
       </div>
 
-      {/* —— 点开才有的四个维度 ——
-          窄屏是「四维横滚 + 更多筛选钉在右侧」：四个下拉换行会把墙推下去半屏，
-          所以横滚；但「更多筛选」不是第四个维度，它是通往二级的那扇门，跟着
-          一起滚出屏幕就等于不存在了（实机截图确认：一进来最后可见的是「地区」，
-          右边什么都不露，看着就是一行到此为止）。所以把它钉在滚动区外面，
-          并给滚动区右缘一道渐隐，明示"右边还有"。 */}
-      {open && (
-        <div className="mt-2.5 flex items-center gap-2 max-md:gap-1.5">
-        <div className="scroll-thin flex flex-1 flex-wrap items-center gap-2 max-md:flex-nowrap max-md:overflow-x-auto max-md:pb-1 max-md:[mask-image:linear-gradient(to_right,black_calc(100%-24px),transparent)]">
+      {/* —— 点开才有的四个维度（宽屏） ——
+          窄屏不走这里，点「筛选」直接拉起 FilterSheet：一排下拉在窄屏怎么摆都别扭——
+          横滚会在滑动中误触弹出，两列铺开又占掉半屏、还得再点一层才看得到取值 */}
+      {open && !mobile && (
+        <div className="mt-2.5 flex items-center gap-2">
+        <div className="flex flex-1 flex-wrap items-center gap-2">
           <MultiFilterMenu
             label="类型"
             hint="可多选 · 维度内是「或」"
@@ -237,13 +244,15 @@ export function LibraryFilterBar({
           onFilterChange={onFilterChange}
         />
       )}
-      {open && more && mobile && (
-        <MoreFiltersSheet
+      {open && mobile && (
+        <FilterSheet
           facets={facets}
           loading={!secondaryReady}
           filter={filter}
           onFilterChange={onFilterChange}
-          onClose={() => setMore(false)}
+          onToggle={toggle}
+          onToggleWatch={toggleWatch}
+          onClose={() => setOpen(false)}
         />
       )}
 
@@ -484,14 +493,26 @@ export function WallSortControl<T extends string>({
   options,
   onChange,
   disabled,
+  direction,
 }: {
   value: T;
   options: readonly (readonly [T, string])[];
   onChange: (next: T) => void;
   /** 扫描补探那几分钟排序被临时接管：如实置灰，不给按了没反应的控件 */
   disabled?: boolean;
+  /**
+   * 正倒序（不给就不显示方向、也不能切）。按钮上一枚箭头说方向，菜单里当前档
+   * 后面用人话写（「短→长」）——光看 ↑ 要想一下它是"从小到大"还是"大的在上"。
+   * 再点一次当前档就反转，菜单不关，看得见方向在变
+   */
+  direction?: {
+    ascending: boolean;
+    label: string;
+    onToggle: () => void;
+  };
 }) {
-  const current = options.find(([key]) => key === value)?.[1] ?? value;
+  // 当前档不在这组选项里（图廊只有两档，偏好却是"按评分"）时显示第一档，不把键名裸露出来
+  const current = options.find(([key]) => key === value)?.[1] ?? options[0]?.[1] ?? value;
   return (
     <DropdownMenu.Root>
       <DropdownMenu.Trigger asChild>
@@ -499,35 +520,70 @@ export function WallSortControl<T extends string>({
           type="button"
           disabled={disabled}
           aria-label="排序"
+          title={direction ? `${current} · ${direction.label}` : undefined}
           className="flex h-8 shrink-0 items-center gap-1 rounded-full px-2.5 text-caption text-white/55 hover:bg-white/[0.08] hover:text-white disabled:pointer-events-none disabled:opacity-40 data-[state=open]:bg-white/[0.12] data-[state=open]:text-white"
         >
           <span className="font-semibold text-white/85">{current}</span>
+          {direction && (
+            <ArrowDownIcon
+              className={`size-3 text-white/60 transition-transform ${direction.ascending ? "rotate-180" : ""}`}
+            />
+          )}
           <ChevronDownIcon className="size-3 text-white/40" />
         </button>
       </DropdownMenu.Trigger>
       <DropdownMenu.Portal>
+        {/* 靠左弹出：排序控件现在排在工具行左侧（筛选之后），右对齐会整片悬到按钮左边外 */}
         <DropdownMenu.Content
-          align="end"
+          align="start"
           sideOffset={6}
           collisionPadding={12}
-          className="menu-surface z-50 min-w-[11rem] p-1"
+          className="menu-surface z-50 min-w-[12rem] p-1"
         >
-          <DropdownMenu.Label className="px-3 pb-1 pt-1.5 text-caption text-[var(--text-faint)]">
-            索引条跟着换口径
-          </DropdownMenu.Label>
-          <DropdownMenu.RadioGroup value={value} onValueChange={(next) => onChange(next as T)}>
-            {options.map(([key, label]) => (
-              <DropdownMenu.RadioItem
-                key={key}
-                value={key}
-                className="glass-row nav-item flex cursor-pointer items-center justify-between px-3 py-2 text-sub outline-none data-[highlighted]:!bg-[var(--glass-fill-hover)]"
-              >
-                {label}
-                <DropdownMenu.ItemIndicator>
-                  <CheckIcon className="size-3.5 text-[var(--info)]" />
-                </DropdownMenu.ItemIndicator>
-              </DropdownMenu.RadioItem>
-            ))}
+          {/* 只在真的换了档时才 onChange：Radix 的 RadioItem 每次选中都会调 onValueChange，
+              **点已选中的那一档也照调**（onSelect 与它串联且 checkForDefaultPrevented: false）。
+              不拦的话「再点一次反转」刚翻过来，就被同值的 onChange 把方向重置回去 */}
+          <DropdownMenu.RadioGroup
+            value={value}
+            onValueChange={(next) => {
+              if (next !== value) onChange(next as T);
+            }}
+          >
+            {options.map(([key, label]) => {
+              const selected = key === value;
+              return (
+                <DropdownMenu.RadioItem
+                  key={key}
+                  value={key}
+                  // 再点一次当前档 = 反转方向（同值的 onValueChange 已在 RadioGroup 上拦掉）；
+                  // preventDefault 让菜单留着，方向文案当场翻过来
+                  onSelect={(event) => {
+                    if (!selected || !direction) return;
+                    event.preventDefault();
+                    direction.onToggle();
+                  }}
+                  aria-label={
+                    selected && direction ? `${label}，${direction.label}，再点一次反转顺序` : undefined
+                  }
+                  className="glass-row nav-item flex cursor-pointer items-center justify-between gap-3 px-3 py-2 text-sub outline-none data-[highlighted]:!bg-[var(--glass-fill-hover)]"
+                >
+                  {label}
+                  <span className="flex items-center gap-1.5 text-caption text-[var(--info)]">
+                    {selected && direction && (
+                      <>
+                        {direction.label}
+                        <ArrowDownIcon
+                          className={`size-3 ${direction.ascending ? "rotate-180" : ""}`}
+                        />
+                      </>
+                    )}
+                    <DropdownMenu.ItemIndicator>
+                      <CheckIcon className="size-3.5 text-[var(--info)]" />
+                    </DropdownMenu.ItemIndicator>
+                  </span>
+                </DropdownMenu.RadioItem>
+              );
+            })}
           </DropdownMenu.RadioGroup>
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
@@ -657,7 +713,8 @@ function PillGroup({
               type="button"
               disabled={dead}
               onClick={() => onToggle(option.value)}
-              className={`rounded-full border px-2.5 py-0.5 text-caption transition-colors disabled:pointer-events-none disabled:opacity-30 ${
+              // 窄屏加高：这里是抽屉里唯一的点按目标，py-0.5 的胶囊拇指很难点准
+              className={`rounded-full border px-2.5 py-0.5 text-caption transition-colors disabled:pointer-events-none disabled:opacity-30 max-md:px-3 max-md:py-1.5 ${
                 on
                   ? "border-white/40 bg-white/[0.14] font-semibold text-white"
                   : `border-white/[0.14] hover:bg-white/[0.08] ${tone?.[option.value] ?? "text-white/65"}`
@@ -704,17 +761,21 @@ function MoreFiltersPanel({
       [key]: current.includes(value) ? current.filter((v) => v !== value) : [...current, value],
     });
   };
+  // 窄屏（max-md）下这块只出现在 FilterSheet 里，排在一级四维下面：卡片外壳
+  // 在抽屉里就成了"抽屉里又套一张卡"，与上面平铺的胶囊两种长相。所以窄屏拆掉
+  // 边框、底色与内边距，分区只靠一道细线与小标题，整个抽屉一种排法。
+  // 宽屏的「更多筛选」面板是在页面里展开的，卡片形态照旧
   if (loading) {
     return (
-      <div className="mt-2.5 rounded-2xl border border-white/[0.1] bg-black/20 px-4 py-6 text-center text-sub text-[var(--text-faint)]">
+      <div className="mt-2.5 rounded-2xl border border-white/[0.1] bg-black/20 px-4 py-6 text-center text-sub text-[var(--text-faint)] max-md:mt-0 max-md:rounded-none max-md:border-x-0 max-md:border-b-0 max-md:border-white/[0.08] max-md:bg-transparent max-md:px-0 max-md:py-4">
         正在数各档位还剩多少部…
       </div>
     );
   }
   return (
-    <div className="mt-2.5 grid grid-cols-2 gap-x-6 rounded-2xl border border-white/[0.1] bg-black/20 p-4 max-md:grid-cols-1 max-md:gap-y-2">
-      <div>
-        <p className="mb-3 border-b border-white/[0.08] pb-2 text-sub font-semibold text-white">
+    <div className="mt-2.5 grid grid-cols-2 gap-x-6 rounded-2xl border border-white/[0.1] bg-black/20 p-4 max-md:mt-0 max-md:grid-cols-1 max-md:rounded-none max-md:border-0 max-md:bg-transparent max-md:p-0">
+      <div className="max-md:border-t max-md:border-white/[0.08] max-md:pt-3">
+        <p className="mb-3 border-b border-white/[0.08] pb-2 text-sub font-semibold text-white max-md:mb-2.5 max-md:border-b-0 max-md:pb-0">
           找片
           <span className="ml-2 text-caption font-normal text-[var(--text-faint)]">
             作品是什么样的 · 来自刮削档案
@@ -746,7 +807,7 @@ function MoreFiltersPanel({
         />
       </div>
       <div className="border-l border-white/[0.08] pl-6 max-md:border-l-0 max-md:border-t max-md:pl-0 max-md:pt-3">
-        <p className="mb-3 border-b border-white/[0.08] pb-2 text-sub font-semibold text-white">
+        <p className="mb-3 border-b border-white/[0.08] pb-2 text-sub font-semibold text-white max-md:mb-2.5 max-md:border-b-0 max-md:pb-0">
           查库
           <span className="ml-2 text-caption font-normal text-[var(--text-faint)]">
             文件是什么规格 · 来自库存台账
@@ -856,7 +917,14 @@ const CHIP_LIMIT = 8;
 
 
 /**
- * 「更多筛选」的移动端形态：底部抽屉（docs/design/library-filtering.md 5.2）。
+ * 窄屏的筛选抽屉：点「筛选」直接拉起，一二级维度全在里面
+ * （docs/design/library-filtering.md 5.2）。
+ *
+ * **每个维度直接平铺成胶囊**，不是一排下拉：点一下就是一个取值，取值和各自
+ * 还剩几部一眼看全，没有「菜单里再弹菜单」。窄屏先后试过两种下拉摆法都别扭——
+ * 横滚，滑动中手指一停就误触弹出；两列铺开，占掉半屏还要再点一层才看得到取值。
+ * 一级四维在上、二级「找片 / 查库」在下，同一个抽屉往下滑就是，所以窄屏没有
+ * 「更多筛选」这扇门。
  *
  * **非全屏**是要点：上方留出一截墙，用户看得见条件在实时影响什么。每次勾选
  * 立即生效，底部主按钮上的数字实时跳——不做"确定"式提交。做成"确定"式的话，
@@ -865,17 +933,22 @@ const CHIP_LIMIT = 8;
  *
  * 底部那颗 `查看 N 部` 因此不是"提交"，只是"我看完了，把抽屉收起来"。
  */
-function MoreFiltersSheet({
+function FilterSheet({
   facets,
   loading,
   filter,
   onFilterChange,
+  onToggle,
+  onToggleWatch,
   onClose,
 }: {
   facets: LibraryFacets | null;
+  /** 全份 facet 还没到（二级维度的档位要等它） */
   loading?: boolean;
   filter: LibraryFilter;
   onFilterChange: (next: LibraryFilter) => void;
+  onToggle: (dim: "genres" | "countries" | "decades", value: string) => void;
+  onToggleWatch: (value: string) => void;
   onClose: () => void;
 }) {
   // Esc / 点上方留白都收起（与全站弹层一致）
@@ -898,15 +971,44 @@ function MoreFiltersSheet({
       {/* 上半截只压一层很淡的幕：压黑了就等于全屏，看不见墙在变 */}
       <button
         type="button"
-        aria-label="收起更多筛选"
+        aria-label="收起筛选"
         onClick={onClose}
         className="flex-1 cursor-default bg-black/25"
       />
-      <div className="flex max-h-[62dvh] flex-col rounded-t-2xl border-t border-white/10 bg-[rgba(16,18,26,0.92)] shadow-[0_-12px_40px_rgba(0,0,0,0.5)] backdrop-blur-2xl">
+      {/* 装下一二级全部维度，比原先只装二级时高一些，但仍给上方留出一截墙 */}
+      <div className="flex max-h-[70dvh] flex-col rounded-t-2xl border-t border-white/10 bg-[rgba(16,18,26,0.92)] shadow-[0_-12px_40px_rgba(0,0,0,0.5)] backdrop-blur-2xl">
         <div className="flex shrink-0 items-center justify-center py-2">
           <span className="h-1 w-9 rounded-full bg-white/25" />
         </div>
         <div className="scroll-thin min-h-0 flex-1 overflow-y-auto px-4">
+          {/* 一级四维：与宽屏那排下拉同一份取值与计数，只是换成平铺 */}
+          <PillGroup
+            label="类型"
+            hint="可多选 · 维度内是「或」"
+            options={facets?.genres ?? []}
+            selected={(filter.genres ?? []).map(String)}
+            onToggle={(v) => onToggle("genres", v)}
+          />
+          <PillGroup
+            label="年代"
+            options={facets?.decades ?? []}
+            selected={filter.decades ?? []}
+            onToggle={(v) => onToggle("decades", v)}
+          />
+          <PillGroup
+            label="地区"
+            hint="可多选 · 维度内是「或」"
+            options={facets?.countries ?? []}
+            selected={filter.countries ?? []}
+            onToggle={(v) => onToggle("countries", v)}
+          />
+          <PillGroup
+            label="观看"
+            hint="单选"
+            options={facets?.watch ?? []}
+            selected={filter.watch ? [filter.watch] : []}
+            onToggle={onToggleWatch}
+          />
           <MoreFiltersPanel
             facets={facets}
             loading={loading}

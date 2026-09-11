@@ -489,6 +489,8 @@ export function LibraryItemDetailView({
   const itemFacts = [
     detail.year ? String(detail.year) : null,
     runtimeMinutes != null ? formatRuntimeMinutes(runtimeMinutes) : null,
+    // 评分：海报墙上默认不印，点进来想知道"这部好不好看"时，这里必须有
+    meta?.rating ? `★ ${meta.rating.toFixed(1)}` : null,
   ].filter((fact): fact is string => Boolean(fact));
   const directorCast =
     meta

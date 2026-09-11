@@ -79,12 +79,20 @@ export function PageNav({
   title,
   fallback,
   actions,
+  toolbar,
   className = "",
 }: {
   title: string;
   fallback: PageNavFallback;
   /** 页面级操作（如 ⋯ 菜单）：排在同一行的最右端，随顶栏一起吸顶常驻 */
   actions?: React.ReactNode;
+  /**
+   * 页面级视角切换（如库页的「作品 / 合集」）：排在搜索键左侧，与发现页把
+   * TMDB / 豆瓣 切换挂进全局顶栏同一个位置。给了它就不再渲染吸顶标题——
+   * 390px 宽的一行放不下 ☰ + 返回 + 切换 + 搜索 + ⋯ 之外再加一个标题，
+   * 硬塞只会把整行挤出屏幕；页面正文里本来就有同名大标题。
+   */
+  toolbar?: React.ReactNode;
   className?: string;
 }) {
   const back = useBackNavigation(fallback.href);
@@ -173,24 +181,27 @@ export function PageNav({
         </div>
         {/* 吸顶标题：内容区下方本来就有同名大标题，这里只是滚动后的补位视觉，
             对读屏隐藏，避免同一个标题被念两遍。 */}
-        <span
-          aria-hidden="true"
-          className="min-w-0 truncate text-body-lg font-semibold tracking-[-0.01em] text-white/90"
-          style={{
-            opacity: "var(--nav-reveal, 0)",
-            transform: "translateY(calc((1 - var(--nav-reveal, 0)) * 5px))",
-          }}
-        >
-          {title}
-        </span>
+        {!toolbar && (
+          <span
+            aria-hidden="true"
+            className="min-w-0 truncate text-body-lg font-semibold tracking-[-0.01em] text-white/90"
+            style={{
+              opacity: "var(--nav-reveal, 0)",
+              transform: "translateY(calc((1 - var(--nav-reveal, 0)) * 5px))",
+            }}
+          >
+            {title}
+          </span>
+        )}
         {/* 页面操作靠右：与返回键同一行，页面首屏不再单独占一条工具栏，
             滚动后又随顶栏留在原地——操作入口的位置从头到尾不动。
             移动端还要在这里补一颗搜索——本页顶栏顶掉了外壳那条全局顶栏，
             搜索是其中唯一无处安放的入口（导航在抽屉里、字标只是回首页），
             排在页面操作左侧。必须条件渲染而不是 CSS 隐藏：SearchCommand 自带
             全局 ⌘K 监听，桌面上再挂一份会让一次快捷键把面板开了又关。 */}
-        {(actions || (isMobile && chrome)) && (
+        {(toolbar || actions || (isMobile && chrome)) && (
           <div className="ml-auto flex shrink-0 items-center gap-2">
+            {toolbar}
             {isMobile && chrome && (
               <SearchCommand onSearch={chrome.onSearch} triggerClassName={PAGE_NAV_BUTTON_CLASS} />
             )}

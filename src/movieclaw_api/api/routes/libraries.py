@@ -2003,6 +2003,15 @@ async def list_library_items(
             )
         ),
     ] = "title",
+    order: Annotated[
+        Literal["asc", "desc"] | None,
+        Query(
+            description=(
+                "排序方向：asc=升序 / desc=降序；不给则用该排序的自然方向"
+                "（标题 A→Z、片长短→长，其余大的/新的在前）"
+            )
+        ),
+    ] = None,
     limit: Annotated[
         int | None, Query(ge=1, le=200, description="本页条目数；不给则返回整库")
     ] = None,
@@ -2035,6 +2044,7 @@ async def list_library_items(
             member_id=member_id,
             filters=filters,
             content_limit=await content_limit_for(session, principal),
+            order=order,
         )
     )
 
@@ -2083,6 +2093,12 @@ async def list_library_item_index(
             "其余排序没有有意义的分档，索引条不显示"
         ),
     ),
+    # Annotated 写法：函数被直接调用时拿到真实的 None，而不是一个真值的 Query 对象
+    # ——否则不传方向也会被当成 "desc"，按标题的 A-Z 索引整条倒过来
+    order: Annotated[
+        Literal["asc", "desc"] | None,
+        Query(description="排序方向，与 /items 的 order 同义；两边必须传同一个值，offset 才对得上"),
+    ] = None,
     filters: Annotated[LibraryFilter, Depends(_filter_params)] = None,  # type: ignore[assignment]
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(require_library_visible),
@@ -2103,6 +2119,7 @@ async def list_library_item_index(
         filters=filters,
         member_id=member_id,
         content_limit=await content_limit_for(session, principal),
+        order=order,
     )
     return ok(
         [

@@ -616,6 +616,73 @@ async def test_new_sorts_respect_filters(db) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 正倒序切换（2026-09-11）
+# ---------------------------------------------------------------------------
+
+#: 自然方向是升序的档；其余都是「大的 / 新的 / 近的在前」
+_ASC_BY_NATURE = {"title", "runtime"}
+
+#: 可以切方向的全部排序档（补探序是临时接管，不在其列）
+_DIRECTIONAL_SORTS = (
+    "title",
+    "added_at",
+    "release_date",
+    "rating",
+    "runtime",
+    "size",
+    "last_played",
+)
+
+
+async def test_reversed_order_is_the_natural_order_backwards(db) -> None:
+    """反向后的墙恰好是自然方向倒过来——同分、同为空的片也倒过来。
+
+    只有这样，翻页、索引、「回到上次位置」的 offset 才能共用一套口径；显式传
+    自然方向则必须与不传逐字相同（老调用方、合集的 sort 都不带方向）。
+    """
+    async with db.session() as session:
+        library_id, _ = await _seed_metrics(session)
+        for sort in _DIRECTIONAL_SORTS:
+            natural = await _order(session, library_id, sort)
+            same, flipped = ("asc", "desc") if sort in _ASC_BY_NATURE else ("desc", "asc")
+            assert await _order(session, library_id, sort, order=flipped) == natural[::-1], sort
+            assert await _order(session, library_id, sort, order=same) == natural, sort
+
+
+async def test_missing_metric_sinks_in_both_directions(db) -> None:
+    """没数据的条目不是"最小值"：反过来排，它也不该跑到墙最前面。"""
+    async with db.session() as session:
+        library_id, _ = await _seed_metrics(session)
+        blank = MediaItem(kind="movie", tmdb_id=497, title="没有档案", original_title="Z")
+        session.add(blank)
+        await session.flush()
+        assert blank.id is not None
+        session.add(_file(library_id, blank.id))
+        await session.flush()
+
+        assert (await _order(session, library_id, "rating", order="asc"))[-1] == "没有档案"
+        assert (await _order(session, library_id, "runtime", order="desc"))[-1] == "没有档案"
+
+
+async def test_reversed_index_is_the_natural_index_backwards(db) -> None:
+    """索引跟着墙一起反：档的先后倒过来，每档起点仍指向该档在反向墙里的第一格。"""
+    async with db.session() as session:
+        library_id, _ = await _seed_metrics(session)
+        for sort, flipped in (("title", "desc"), ("rating", "asc")):
+            natural = await build_library_index(session, library_id, sort, member_id=_ME)
+            backwards = await build_library_index(
+                session, library_id, sort, member_id=_ME, order=flipped
+            )
+            total = sum(count for _, count, _ in natural)
+            assert [(label, count) for label, count, _ in backwards] == [
+                (label, count) for label, count, _ in reversed(natural)
+            ], sort
+            assert [start for _, _, start in backwards] == [
+                total - start - count for _, count, start in reversed(natural)
+            ], sort
+
+
+# ---------------------------------------------------------------------------
 # 放宽建议（铁律 2：永不空货架）
 # ---------------------------------------------------------------------------
 

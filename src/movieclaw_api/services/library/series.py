@@ -27,17 +27,13 @@ import re
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from movieclaw_db.models import Collection, Library, LibraryFile, MediaMetadata
+from movieclaw_db.models import Collection, Library, LibraryFile, MediaMetadata, utcnow
 
 logger = logging.getLogger("movieclaw_api.library_series")
 
 #: 系列合集的 builtin 前缀。builtin 非空 = 自动生成 = 规则不可改、删除落墓碑，
 #: 与「我的收藏」共用同一套推导，不需要第二个标志位
 SERIES_BUILTIN_PREFIX = "series"
-
-#: 成员少于这个数就不下发。一部片也算"系列"只会把合集页塞满没意义的单片盒子
-#: （TMDB 的系列里常有只入库了一部的）。与"空合集不列"是同一处闸门的两档
-SERIES_MIN_MEMBERS = 2
 
 
 def normalize_series_name(name: str) -> str:
@@ -101,18 +97,6 @@ def series_key_of(collection: Collection) -> str | None:
     return body.rsplit(":", 1)[0] or None
 
 
-def min_members_of(collection: Collection) -> int:
-    """这个合集至少要有几个成员才下发。
-
-    系列要 **2** 部起：TMDB 的系列里常有只入库了一部的，一部片也算"系列"只会
-    把合集页塞满没意义的单片盒子。其余合集 1 个就够——「我的收藏」里只收了
-    一部也是一个有意义的合集。
-
-    与"空合集不列"是同一处闸门的两档，不是第二套规则。
-    """
-    return SERIES_MIN_MEMBERS if is_series_collection(collection) else 1
-
-
 async def ensure_series_collection(
     session: AsyncSession, library_id: int, key: str, name: str | None
 ) -> Collection | None:
@@ -146,6 +130,46 @@ async def ensure_series_collection(
     session.add(row)
     await session.flush()
     return row
+
+
+async def rename_series_collections(
+    session: AsyncSession, key: str | None, previous_name: str | None, name: str | None
+) -> int:
+    """系列名变了（典型是换了刮削语言）时，让**用户没改过名**的系列合集跟着改名（不 commit）。
+
+    ``ensure_series_collection`` 对已存在的行不碰名字，因为它分不清名字是 TMDB 给的
+    还是用户改的。调用方手上有**改之前**的系列名，这件事就分得清了：合集名仍等于
+    旧系列名（或建行时兜底用的 key），说明它还是自动起的名，跟着换；不相等就是用户
+    自己起的名，一个字都不动。
+
+    例：刮削语言是中文，但系列名当初按英文落了库——重新按中文问回来之后，
+    「If You Are the One (Collection)」变成「非诚勿扰（系列）」。
+
+    返回改了几行。``key`` 相同才有意义：key 变了是换了系列，新系列的合集由 ensure 新建。
+    """
+    if not key or not name or name == previous_name:
+        return 0
+    automatic = {key} | ({previous_name} if previous_name else set())
+    rows = (
+        (
+            await session.execute(
+                select(Collection).where(
+                    # 末尾带冒号：series:tmdb:12 不能误伤 series:tmdb:123
+                    Collection.builtin.startswith(  # type: ignore[union-attr]
+                        f"{SERIES_BUILTIN_PREFIX}:{key}:", autoescape=True
+                    ),
+                    Collection.name.in_(automatic),  # type: ignore[attr-defined]
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for row in rows:
+        row.name = name
+        row.updated_at = utcnow()
+        session.add(row)
+    return len(rows)
 
 
 async def ensure_series_collections_for_item(session: AsyncSession, media_item_id: int) -> int:
@@ -235,9 +259,24 @@ async def load_series_parts(session: AsyncSession, collection: Collection) -> li
         # name: 那一支没有上游档案可拉（本地库/认不出的片），只能靠库里有什么
         return []
     from movieclaw_api.services.media_discover import get_tmdb_client
+    from movieclaw_api.services.scrape_config import (
+        ITEM_SCOPED_OVERRIDABLE,
+        effective_language,
+        merge_for_library,
+    )
 
+    # 片名按刮削设置的元数据语言要：不带 language 时 TMDB 一律回英文。系列合集
+    # 必定挂在某个库下（规则驱动），语言取那个库的有效设置，与刮削管线同一口径
+    library = (
+        await session.get(Library, collection.library_id)
+        if collection.library_id is not None
+        else None
+    )
+    language = effective_language(merge_for_library(library, fields=ITEM_SCOPED_OVERRIDABLE))
     try:
-        data = await get_tmdb_client().get(f"collection/{key.split(':', 1)[1]}")
+        data = await get_tmdb_client().get(
+            f"collection/{key.split(':', 1)[1]}", {"language": language}
+        )
     except Exception:  # noqa: BLE001 -- 缺片是锦上添花，拉不到不该让详情页打不开
         logger.warning("TMDB 系列档案读取失败，缺片补齐本次不可用", exc_info=True)
         return []

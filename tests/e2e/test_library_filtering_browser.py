@@ -104,7 +104,7 @@ SERIES = {
     "你的名字": (SERIES_KEY, SERIES_NAME),
     "天气之子": (SERIES_KEY, SERIES_NAME),
 }
-#: 系列里库存没有的那一部：详情页该说「还缺 1 部」并给订阅入口
+#: 系列里库存没有的那一部：详情页要把它压暗画进墙里，悬停给订阅入口
 MISSING_PART_TITLE = "铃芽之旅"
 
 MISSING_TITLE = "回到未来"
@@ -481,7 +481,7 @@ def _seed(
                     )
                 ).scalar_one()
                 # 两部库里有（tmdb_id 必须与播种的对得上，否则"已有"认不出来），
-                # 第三部库里没有——那正是要显示的「还缺 1 部」
+                # 第三部库里没有——那正是要压暗画进墙里、给订阅入口的那一格
                 tmdb_of = {row[0]: 70_000 + i for i, row in enumerate(CATALOG)}
                 row.series_parts = [
                     {
@@ -978,11 +978,21 @@ def test_filtering_and_collections_end_to_end(stack) -> None:  # noqa: PLR0915
         # 规则条：系列的规则是 series_key，翻不成"类型/年代"那套话，
         # 硬套会显示"收录本库全部作品"——一句彻头彻尾的假话
         expect(page.get_by_text("作品系列 ·").first).to_be_visible()
-        # 缺片补齐：这一块才是系列合集真正的价值（只归类的话装个 Emby 也有）
+        # 缺片补齐：这才是系列合集真正的价值（只归类的话装个 Emby 也有）。
+        # 缺的那部不另起一块，按上映顺序画在墙上：海报压暗、副行写「未入库」，
+        # 悬停给订阅入口（走全站那一份订阅弹窗，不是就地一键订上）
         expect(page.get_by_text("已有 2 / 共 3 部")).to_be_visible()
-        expect(page.get_by_text("还缺 1 部")).to_be_visible()
-        expect(page.get_by_text(MISSING_PART_TITLE)).to_be_visible()
-        expect(page.get_by_role("button", name="订阅").first).to_be_visible()
+        missing_cell = page.get_by_test_id("series-missing-part").filter(
+            has_text=MISSING_PART_TITLE
+        )
+        expect(missing_cell).to_have_count(1)
+        expect(missing_cell).to_contain_text("未入库")
+        # 《铃芽之旅》(2022) 最晚上映，排在墙的最后一格
+        expect(page.get_by_test_id("series-wall").locator(":scope > *").last).to_contain_text(
+            MISSING_PART_TITLE
+        )
+        missing_cell.hover()
+        expect(page.get_by_role("button", name=f"订阅影片《{MISSING_PART_TITLE}》")).to_be_visible()
         # 系列按**上映正序**排：先看《你的名字》(2016) 再看《天气之子》(2019)。
         # 墙上默认的 release_date 是倒序（新的在前，浏览的语义），系列不能跟着
         # ——规则条上写着"按上映顺序排列"，那句话必须是真的
@@ -1249,31 +1259,30 @@ def test_mobile_layout_end_to_end(stack) -> None:  # noqa: PLR0915
             "() => document.documentElement.scrollWidth <= window.innerWidth + 1"
         ), "页面出现了横向溢出"
 
-        # ================= 2. 一级四维横滚，不换行 =================
+        # ================= 2. 点「筛选」直接拉起底部抽屉，所有维度平铺 =================
+        # 窄屏不在页面里展开一排下拉：横滚会在滑动中误触弹出，两列铺开又占掉半屏、
+        # 还得再点一层才看得到取值。抽屉里每个维度直接平铺成胶囊，点一下就是一个取值
         page.get_by_role("button", name=FILTER_BTN).click()
-        dims = page.get_by_role("button", name="类型", exact=True).locator("xpath=..")
-        assert "overflow-x-auto" in (dims.get_attribute("class") or "")
-        # 真的在横滚（换行的话 scrollWidth 不会超出 clientWidth）
-        assert dims.evaluate("el => el.scrollWidth > el.clientWidth"), "四维没有横滚，说明换行了"
-        # 「更多筛选」不跟着滚出屏幕：它是通往二级的门，滚没了就等于不存在
-        more_btn = page.get_by_role("button", name="更多筛选")
-        expect(more_btn).to_be_in_viewport()
-        assert more_btn.evaluate(
-            "el => !el.closest('[class*=overflow-x-auto]')"
-        ), "「更多筛选」还在横滚区里，会跟着滚走"
-        shot("02-dims-scroller")
+        sheet = page.get_by_role("button", name="收起筛选")
+        expect(sheet).to_be_visible()
+        # 一二级在同一个抽屉里：没有「更多筛选」这扇门
+        expect(page.get_by_role("button", name="更多筛选")).to_have_count(0)
+        anime_pill = page.get_by_role("button", name=re.compile(r"^动画\s*\d+$"))
+        expect(anime_pill).to_be_visible()
+        assert page.evaluate(
+            "() => document.documentElement.scrollWidth <= window.innerWidth + 1"
+        ), "打开筛选抽屉后出现了横向溢出"
+        shot("02-filter-sheet")
 
-        # ================= 3. 下拉菜单在窄屏不出界 =================
-        page.get_by_role("button", name="类型", exact=True).click()
-        menu = page.get_by_role("menu")
-        expect(menu).to_be_visible()
-        menu_box = menu.bounding_box()
-        assert menu_box and menu_box["x"] >= 0 and menu_box["x"] + menu_box["width"] <= 390, (
-            f"下拉菜单超出屏幕：{menu_box}"
-        )
-        shot("03-menu")
-        page.get_by_role("menuitem").filter(has_text="动画").click()
-        page.keyboard.press("Escape")
+        # ================= 3. 点胶囊立即生效，「查看 N 部」只是收起 =================
+        view_all = page.locator("button").filter(has_text="查看")
+        anime_pill.click()
+        expect(view_all).to_contain_text(str(len(ANIME_TITLES)))
+        # 点胶囊不弹任何菜单——「菜单里再弹菜单」正是要去掉的那一层
+        expect(page.get_by_role("menu")).to_have_count(0)
+        shot("03-sheet-primary")
+        view_all.click()
+        expect(sheet).to_have_count(0)
 
         # ================= 4. 条件行在窄屏 =================
         expect(page.get_by_text("筛出")).to_contain_text(str(len(ANIME_TITLES)))
@@ -1289,10 +1298,9 @@ def test_mobile_layout_end_to_end(stack) -> None:  # noqa: PLR0915
             "() => document.documentElement.scrollWidth <= window.innerWidth + 1"
         ), "有条件之后出现了横向溢出"
 
-        # ================= 5. 底部抽屉：留得住墙、勾选立即生效 =================
+        # ================= 5. 底部抽屉：留得住墙、二级维度同样立即生效 =================
         page.get_by_role("button", name="清空").click()
-        page.get_by_role("button", name="更多筛选").click()
-        sheet = page.get_by_role("button", name="收起更多筛选")
+        page.get_by_role("button", name=FILTER_BTN).click()
         expect(sheet).to_be_visible()
         shot("05-sheet")
         # 打开那一刻不能是「找片 / 查库」两个孤零零的空标题：档位还没数完就先
@@ -1351,17 +1359,23 @@ def test_mobile_layout_end_to_end(stack) -> None:  # noqa: PLR0915
         page.keyboard.press("Escape")
 
         # ================= 7. 合集网格与详情页 =================
-        # 窄屏的视图切换挪到了库名那一行的右端：正文里不再单占一行，也没有去
-        # 挤顶栏——顶栏那一行在 390px 上只剩 90px 给吸顶标题，塞个文字切换就是
-        # 负数。这里两头都验：切换在库名同一行，且吸顶标题没被挤没
+        # 窄屏的视图切换挂进 PageNav 顶栏、搜索键左侧——与发现页把 TMDB / 豆瓣
+        # 切换挂进全局顶栏同一个位置。代价是吸顶标题让位：390px 放不下 ☰ + 返回
+        # + 切换 + 搜索 + ⋯ 之外再加一个标题。这里验：切换与 ⋯ 同一行、排在它
+        # 左边，整行没有挤出屏幕，正文里也没有第二份切换
         page.goto(f"{base}/library/{movie_lib}")
         page.wait_for_load_state("networkidle")
-        tabs = page.get_by_role("tab", name="合集")
+        tabs = page.get_by_role("tablist", name="库内视图")
+        expect(tabs).to_have_count(1)
         expect(tabs).to_be_visible()
-        title_row = page.get_by_role("heading", name="电影库").bounding_box()
         tabs_box = tabs.bounding_box()
-        assert abs(tabs_box["y"] - title_row["y"]) < 24, "视图切换没和库名同一行"
-        assert tabs_box["x"] + tabs_box["width"] <= 390, "切换超出屏幕右边"
+        more_box = page.get_by_role("button", name="更多操作").bounding_box()
+        assert (
+            abs((tabs_box["y"] + tabs_box["height"] / 2) - (more_box["y"] + more_box["height"] / 2))
+            < 12
+        ), "视图切换没挂进顶栏那一行"
+        assert tabs_box["x"] + tabs_box["width"] <= more_box["x"], "视图切换没排在 ⋯ 左边"
+        assert more_box["x"] + more_box["width"] <= 390, "顶栏塞太满，⋯ 被挤出屏幕右边"
         # 滚的是内层容器（全站是「外壳固定 + 内层 overflow-y-auto」），不是窗口：
         # 对着窗口滚，吸顶标题的 --nav-reveal 一直是 0，截图上永远看不到标题，
         # 很容易被误读成"标题被挤没了"
@@ -1373,15 +1387,9 @@ def test_mobile_layout_end_to_end(stack) -> None:  # noqa: PLR0915
             "  if (el) el.scrollTop = 600; }"
         )
         page.wait_for_timeout(400)
-        shot("12-view-switch-on-title-row")
-        # 顶栏那一行必须给吸顶标题留出地方。实测：现在标题有 50.5px（放得下
-        # 「电影库」），而往操作区再塞一个「作品|合集」那么宽的控件，标题会被
-        # 挤成 0——这正是视图切换没有挂进顶栏、而是挂在库名那一行右端的原因。
-        # 这条断言守的是"以后别再往这一行加东西"
-        sticky = page.locator('[class*="sticky"] span[aria-hidden="true"]').first
-        assert sticky.evaluate("el => el.getBoundingClientRect().width") > 40, (
-            "顶栏塞太满，吸顶标题没地方了"
-        )
+        shot("12-view-switch-in-top-bar")
+        # 切换随顶栏吸顶：正文滚走了它还在原地，与发现页的数据源切换一致
+        assert abs(tabs.bounding_box()["y"] - tabs_box["y"]) < 4, "视图切换跟着正文滚走了"
 
         # 右上角只留搜索与 ⋯ 两颗：图床入口收进了菜单
         assert page.get_by_role("button", name="图床浏览").count() == 0, "图床键还在顶栏"
@@ -1427,6 +1435,12 @@ def test_mobile_layout_end_to_end(stack) -> None:  # noqa: PLR0915
         assert page.evaluate(
             "() => document.documentElement.scrollWidth <= window.innerWidth + 1"
         ), "合集详情页出现了横向溢出"
+        # 页面要自己出滚动容器（外壳的 main 不滚）：少了这一层，海报墙超出一屏
+        # 就滑不动。PageNav 是那个容器的直接子节点，顺着它找父节点最准
+        assert page.evaluate(
+            "() => { const nav = document.querySelector('main [class*=\"sticky\"]');"
+            "  return !!nav && getComputedStyle(nav.parentElement).overflowY === 'auto'; }"
+        ), "合集详情页没有自己的滚动容器，内容超出一屏会滑不动"
         # 管理动作在窄屏同样收在 ⋯ 里
         page.get_by_role("button", name="更多操作").click()
         expect(page.get_by_role("menuitem", name="改名")).to_be_visible()

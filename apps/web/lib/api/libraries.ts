@@ -270,6 +270,8 @@ export interface LibraryItem {
   primary_aspect: number;
   /** 内容日期（ISO 日期）：影视为上映/首播日，本地条目为拍摄/录制日 */
   release_date: string | null;
+  /** 评分（0~10，TMDB 或 NFO）；海报墙默认不印，悬停层与按评分排序/筛选时才显示 */
+  rating: number | null;
   /** 主图的微缩占位图 data URI（约 300 字节）：缩略图到达前铺一层模糊色块 */
   poster_blur: string | null;
   /** 条目的首个在位文件 id：图片库取原图/回收站用 */
@@ -521,6 +523,9 @@ export type LibraryItemSort =
   | "size"
   | "last_played";
 
+/** 排序方向。不给 = 该排序的自然方向（标题 A→Z、片长短→长，其余大的/新的在前）。 */
+export type LibraryItemOrder = "asc" | "desc";
+
 // 筛选的纯逻辑放独立模块（与 lib/discovery-filters.ts 同一惯例）：那边不带
 // `@/` 别名，node --test 能直接 import，逻辑才测得到。这里原样再导出，
 // 调用方仍然只认 "@/lib/api/libraries" 一个入口。
@@ -557,6 +562,8 @@ export function listLibraryItems(
   id: number,
   params?: {
     sort?: LibraryItemSort;
+    /** 排序方向；不给 = 自然方向。与 listLibraryItemIndex 必须传同一个值，索引的 offset 才对得上 */
+    order?: LibraryItemOrder;
     limit?: number;
     offset?: number;
     identity?: LibraryItemIdentity;
@@ -565,17 +572,13 @@ export function listLibraryItems(
 ): Promise<LibraryItem[]> {
   const query = new URLSearchParams();
   if (params?.sort) query.set("sort", params.sort);
+  if (params?.order) query.set("order", params.order);
   if (params?.identity) query.set("identity", params.identity);
   if (params?.limit !== undefined) query.set("limit", String(params.limit));
   if (params?.offset) query.set("offset", String(params.offset));
   filterQuery(params?.filter, query);
   const suffix = query.size > 0 ? `?${query}` : "";
   return unwrap(request<ApiEnvelope<LibraryItem[]>>(`/libraries/${id}/items${suffix}`));
-}
-
-/** 库内条目 id 集合：海报墙分页后仍要整份「已入库」名单（判定订阅是否还在追踪中）。 */
-export function listLibraryItemIds(id: number): Promise<number[]> {
-  return unwrap(request<ApiEnvelope<number[]>>(`/libraries/${id}/item-ids`));
 }
 
 /** 媒体库搜索结果的一组：一个库内命中关键词的条目（组内按标题拼音排序）。 */
@@ -588,7 +591,8 @@ export interface LibrarySearchGroup {
 
 /** 海报墙 A-Z 索引条的一档（按标题排序下的首字母分组）。 */
 export interface LibraryIndexEntry {
-  /** 档名：按标题排序是首字母 A-Z（落不进的归 #）；按内容时间排序是月份 2026-08（缺日期归「未知」） */
+  /** 档名：按标题排序是首字母 A-Z（落不进的归 #）；按内容时间排序是月份 2026-08（缺日期归「未知」）；
+   *  按评分排序是评分档 9+ / 8+ / 7+ / 更低 / 未评分 */
   initial: string;
   count: number;
   /** 该档第一格的位置——即 listLibraryItems 的 offset 取值 */
@@ -600,9 +604,12 @@ export function listLibraryItemIndex(
   id: number,
   sort: "title" | "release_date" | "rating" = "title",
   filter?: LibraryFilter,
+  /** 与 listLibraryItems 的 order 同一个值：档位是在同一份排好的序列上分段的 */
+  order?: LibraryItemOrder,
 ): Promise<LibraryIndexEntry[]> {
   const query = new URLSearchParams();
   if (sort !== "title") query.set("sort", sort);
+  if (order) query.set("order", order);
   filterQuery(filter, query);
   const suffix = query.size > 0 ? `?${query}` : "";
   return unwrap(

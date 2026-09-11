@@ -7,6 +7,11 @@
 ``GET /movie/{id}``（**不带 append_to_response**，比完整刮削便宜一个量级），
 只取 ``belongs_to_collection`` 落列 + ensure 合集。
 
+**按刮削设置的元数据语言问**：不带 ``language`` 时 TMDB 一律回英文，合集页就会
+整片是「If You Are the One (Collection)」而不是「非诚勿扰（系列）」。语言按条目的
+归属库解析（与刮削管线同一个入口 ``scrape_setting_for_item``），库级覆盖了语言的
+库各按各的来。
+
 **可中断可重入**：每 tick 处理一小批，判据是"这一列还是 NULL"，所以中途停了
 下次接着跑，跑完自然停（查过没有系列的写空串，不会被反复问）。这里没有做成
 带进度条的作业中心任务——同样的用户价值（升级完自己就补齐了），少一大截
@@ -26,7 +31,9 @@ from movieclaw_api.services.library.series import (
     SERIES_KEY_NONE,
     build_series_key,
     ensure_series_collections_for_item,
+    rename_series_collections,
 )
+from movieclaw_api.services.scrape_config import effective_language, scrape_setting_for_item
 from movieclaw_db.engine import get_database
 from movieclaw_db.models import MediaItem, MediaMetadata, MediaSource, utcnow
 from movieclaw_db.models.scheduled_task import TriggerType
@@ -54,30 +61,40 @@ _BATCH = 50
 async def backfill_media_series() -> None:
     db = get_database()
     async with db.session() as session:
-        rows = (
-            await session.execute(
-                select(MediaItem.id, MediaItem.tmdb_id)
-                .join(MediaMetadata, MediaMetadata.media_item_id == MediaItem.id)
-                .where(
-                    MediaItem.source == MediaSource.TMDB,
-                    MediaItem.kind == MediaKind.MOVIE.value,
-                    MediaItem.tmdb_id.is_not(None),  # type: ignore[union-attr]
-                    # NULL = 还没查过。查过没系列的写空串，不会再被捞出来
-                    MediaMetadata.series_key.is_(None),  # type: ignore[union-attr]
+        items = (
+            (
+                await session.execute(
+                    select(MediaItem)
+                    .join(MediaMetadata, MediaMetadata.media_item_id == MediaItem.id)
+                    .where(
+                        MediaItem.source == MediaSource.TMDB,
+                        MediaItem.kind == MediaKind.MOVIE.value,
+                        MediaItem.tmdb_id.is_not(None),  # type: ignore[union-attr]
+                        # NULL = 还没查过。查过没系列的写空串，不会再被捞出来
+                        MediaMetadata.series_key.is_(None),  # type: ignore[union-attr]
+                    )
+                    .limit(_BATCH)
                 )
-                .limit(_BATCH)
             )
-        ).all()
-    if not rows:
+            .scalars()
+            .all()
+        )
+        batch: list[tuple[int, int, str]] = []
+        for item in items:
+            setting = await scrape_setting_for_item(session, item)
+            batch.append((item.id, item.tmdb_id, effective_language(setting)))
+        # 解析归属库时可能把推断结果固化到条目上（resolve_scrape_library），一并落盘
+        await session.commit()
+    if not batch:
         return
 
     from movieclaw_api.services.media_discover import get_tmdb_client
 
     client = get_tmdb_client()
     filled = 0
-    for media_item_id, tmdb_id in rows:
+    for media_item_id, tmdb_id, language in batch:
         try:
-            data = await client.get(f"movie/{tmdb_id}")
+            data = await client.get(f"movie/{tmdb_id}", {"language": language})
         except Exception:  # noqa: BLE001 -- 单条失败不该让整轮回填停下
             logger.warning("作品系列回填：条目 %s 的 TMDB 详情读取失败，下轮重试", media_item_id)
             continue
@@ -90,12 +107,17 @@ async def backfill_media_series() -> None:
             ).scalar_one_or_none()
             if meta is None:
                 continue
+            previous_name = meta.series_name
             meta.series_key = build_series_key(summary.get("id"), summary.get("name"))
             meta.series_name = summary.get("name") or None
             meta.updated_at = utcnow()
             session.add(meta)
             await session.flush()
             if meta.series_key != SERIES_KEY_NONE:
+                # 系列名换了语言：用户没改过名的合集跟着换（判据见 rename_series_collections）
+                await rename_series_collections(
+                    session, meta.series_key, previous_name, meta.series_name
+                )
                 await ensure_series_collections_for_item(session, media_item_id)
                 filled += 1
             await session.commit()

@@ -270,6 +270,30 @@ WallSort = Literal[
     "last_played",
 ]
 
+#: 排序方向（2026-09-11 起可切换）。不给方向 = 该档的**自然方向**（见 ``_NATURAL_ASC``），
+#: 与加方向之前逐字等价——老调用方、合集的 sort、首页「最近添加」都不受影响。
+WallOrder = Literal["asc", "desc"]
+
+#: 各档的自然方向是不是升序：标题 A→Z、片长短→长、上映正序档是升序；
+#: 其余都是「大的 / 新的 / 近的在前」。补探序是临时接管，方向无意义
+_NATURAL_ASC: dict[str, bool] = {
+    "title": True,
+    "added_at": False,
+    "release_date": False,
+    "release_date_asc": True,
+    "probing": True,
+    "rating": False,
+    "runtime": True,
+    "size": False,
+    "last_played": False,
+}
+
+
+def _ascending(sort: WallSort, order: WallOrder | None) -> bool:
+    """这一次按升序排还是降序排：没指定方向就用该档的自然方向。"""
+    return _NATURAL_ASC[sort] if order is None else order == "asc"
+
+
 # ── 筛选（docs/design/library-filtering.md 3.1/3.2）──────────────────────
 # 维内 OR、维间 AND。取值与合集规则同构（library-routing.md 1.1 的
 # [{field, op, values}]），所以「筛完存为合集」是一次纯粹的形状转换。
@@ -617,6 +641,7 @@ async def build_library_index(
     filters: LibraryFilter | None = None,
     member_id: int | None = None,
     content_limit: ContentLimit | None = None,
+    order: WallOrder | None = None,
 ) -> list[tuple[str, int, int]]:
     """海报墙跳转索引：[(档, 条目数, 起始 offset)]，只回非空档。
 
@@ -628,6 +653,9 @@ async def build_library_index(
 
     起始 offset 就是海报墙 ``?sort=<同一排序>&offset=`` 的取值——前端点一下
     档名即可跳到该档第一格；两种排序与分页共用同一份排序，口径天然一致。
+
+    ``order`` 与墙的 ``order`` 必须是同一个值：档位是在排好的序列上就地分段的，
+    倒过来排，档的先后与 offset 就一起倒过来（Z→A、低分档在前），不需要另算。
     """
     buckets: list[tuple[str, int, int]] = []
     if sort == "rating":
@@ -642,6 +670,7 @@ async def build_library_index(
             filters=filters,
             member_id=member_id,
             content_limit=content_limit,
+            order=order,
         )
         scored = dict(
             (
@@ -680,6 +709,7 @@ async def build_library_index(
             filters=filters,
             member_id=member_id,
             content_limit=content_limit,
+            order=order,
         )
         dated = dict(
             (
@@ -702,6 +732,8 @@ async def build_library_index(
     ordered = await _titles_sorted(
         session, library_id, "confirmed", filters, member_id, content_limit
     )
+    if not _ascending("title", order):
+        ordered.reverse()
     for index, (_, title) in enumerate(ordered):
         initial = title_initial(title)
         if buckets and buckets[-1][0] == initial:
@@ -1196,12 +1228,17 @@ async def _wall_page_ids(
     filters: LibraryFilter | None = None,
     member_id: int | None = None,
     content_limit: ContentLimit | None = None,
+    order: WallOrder | None = None,
 ) -> list[int]:
     """按 sort 排好序的本页条目 id（无 limit 时是全库）。
 
     先把「这一页是哪些条目」定下来，后面的聚合才能只算这几十个条目。
     每个排序都以 media_item_id 收尾——排序键相等时顺序必须稳定，
     否则翻页会出现某条目重复出现、另一条目永远刷不到的漏项。
+
+    ``order`` 反转方向时，**收尾的 id 跟着一起反**：反向后的序列恰好是自然序列
+    倒过来，翻页、索引、「回到上次位置」的 offset 口径都不必另算。
+    度量为空（没评分、没看过）的条目两个方向都沉底——它们不是"最小值"，是"没数据"。
     """
     narrow = _narrow(filters, member_id, library_id=library_id, content_limit=content_limit)
 
@@ -1212,10 +1249,14 @@ async def _wall_page_ids(
                 session, library_id, identity, filters, member_id, content_limit
             )
         ]
+        if not _ascending(sort, order):
+            ids.reverse()
         return ids if limit is None else ids[offset : offset + limit]
 
     if sort == "added_at":
         # 「最近添加」：条目的入账时间取它名下最新的一次文件入账
+        ascending = _ascending(sort, order)
+        added = func.max(LibraryFile.created_at)
         query = (
             select(LibraryFile.media_item_id)
             .where(
@@ -1224,8 +1265,8 @@ async def _wall_page_ids(
             )
             .group_by(LibraryFile.media_item_id)  # type: ignore[arg-type]
             .order_by(
-                func.max(LibraryFile.created_at).desc(),
-                LibraryFile.media_item_id.desc(),  # type: ignore[union-attr]
+                added.asc() if ascending else added.desc(),
+                LibraryFile.media_item_id.asc() if ascending else LibraryFile.media_item_id.desc(),  # type: ignore[union-attr]
             )
         )
         if limit is not None:
@@ -1246,11 +1287,13 @@ async def _wall_page_ids(
             )
             .group_by(LibraryFile.media_item_id)  # type: ignore[arg-type]
         )
-        if sort == "release_date_asc":
-            # 正序档：系列合集用它（第一部排第一）。三个键一起翻向，
-            # 只翻主键会让同年的片仍按倒序，读起来更乱
+        if _ascending(sort, order):
+            # 正序：系列合集的 release_date_asc 档、或用户把「按上映时间」切成旧→新。
+            # 三个键一起翻向，只翻主键会让同年的片仍按倒序，读起来更乱。
+            # 缺日期的沉底（SQLite 升序默认把 NULL 排最前）：与倒序一致，
+            # 索引条的「未知」档因此两个方向都在最后
             query = query.order_by(
-                func.max(MediaMetadata.release_date).asc(),
+                nullslast(func.max(MediaMetadata.release_date).asc()),
                 func.max(MediaItem.year).asc(),
                 func.max(MediaItem.title).asc(),
                 LibraryFile.media_item_id.asc(),  # type: ignore[union-attr]
@@ -1283,18 +1326,22 @@ async def _wall_page_ids(
             .group_by(LibraryFile.media_item_id)  # type: ignore[arg-type]
         )
         if sort == "rating":
-            metric = func.max(MediaMetadata.vote_average).desc()
+            measure = func.max(MediaMetadata.vote_average)
         elif sort == "runtime":
-            metric = func.max(MediaMetadata.runtime_minutes).asc()
+            measure = func.max(MediaMetadata.runtime_minutes)
         elif sort == "size":
             # 体积按本库内的在位文件求和：同一部片散在两个库时，
             # 这面墙上显示的应该是它在**这个库**占多少地方
-            metric = func.sum(LibraryFile.size_bytes).desc()
+            measure = func.sum(LibraryFile.size_bytes)
         else:
-            metric = func.max(_last_played_at(member_id or 0)).desc()
+            measure = func.max(_last_played_at(member_id or 0))
+        ascending = _ascending(sort, order)
+        # 自然方向下收尾一律是 id 倒序（加方向之前的行为）；反向时整条序列倒过来，
+        # 收尾也跟着变 id 正序——否则同分的片在两个方向里是同一个先后，不是"倒过来"
+        flipped = ascending != _NATURAL_ASC[sort]
         query = query.order_by(
-            nullslast(metric),
-            LibraryFile.media_item_id.desc(),  # type: ignore[union-attr]
+            nullslast(measure.asc() if ascending else measure.desc()),
+            LibraryFile.media_item_id.asc() if flipped else LibraryFile.media_item_id.desc(),  # type: ignore[union-attr]
         )
         if limit is not None:
             query = query.limit(limit).offset(offset)
@@ -1417,6 +1464,7 @@ async def build_library_wall(
     member_id: int | None = None,
     filters: LibraryFilter | None = None,
     content_limit: ContentLimit | None = None,
+    order: WallOrder | None = None,
 ) -> list[LibraryItemView]:
     """库内媒体条目的库存聚合（单库海报墙数据源）。
 
@@ -1433,7 +1481,7 @@ async def build_library_wall(
     调用方需自行完成库存在性检查（404）。
     """
     page_ids = await _wall_page_ids(
-        session, library_id, sort, limit, offset, identity, filters, member_id, content_limit
+        session, library_id, sort, limit, offset, identity, filters, member_id, content_limit, order
     )
     if not page_ids:
         return []
@@ -1458,13 +1506,15 @@ async def build_library_wall(
 
 @dataclass(frozen=True, slots=True)
 class PosterFacts:
-    """一个条目的海报事实：最终 URL、模糊占位图、本地资产像素尺寸、上映日。"""
+    """一个条目的海报事实：最终 URL、模糊占位图、本地资产像素尺寸、上映日、评分。"""
 
     url: str | None = None
     blur: str | None = None
     #: 本地刮削资产的像素尺寸；没有本地资产时为 None（比例只能回落到文件探测值）
     asset_size: tuple[int | None, int | None] | None = None
     release_date: date | None = None
+    #: 评分（0~10，TMDB 或 NFO）；没有档案或没评过为 None。与上映日同一条查询顺带取，不多一次往返
+    rating: float | None = None
 
 
 async def poster_facts_many(
@@ -1487,7 +1537,7 @@ async def poster_facts_many(
         return {}
     base = get_settings().tmdb_image_base_url.rstrip("/")
     out: dict[int, PosterFacts] = {}
-    for item_id, poster_path, poster_file, width, height, released, blur in (
+    for item_id, poster_path, poster_file, width, height, released, blur, rating in (
         await session.execute(
             select(
                 MediaItem.id,
@@ -1497,6 +1547,7 @@ async def poster_facts_many(
                 MediaMetadata.poster_height,
                 MediaMetadata.release_date,
                 MediaMetadata.poster_blur,
+                MediaMetadata.vote_average,
             )
             .outerjoin(MediaMetadata, MediaMetadata.media_item_id == MediaItem.id)  # type: ignore[arg-type]
             .where(MediaItem.id.in_(ids))  # type: ignore[attr-defined]
@@ -1505,10 +1556,10 @@ async def poster_facts_many(
         if poster_file:
             # ?v=<mtime>：换图原地覆盖同一路径，不带版本海报墙会一直显示旧图
             url = f"/images/assets/{poster_file}?v={asset_version(poster_file)}"
-            out[item_id] = PosterFacts(url, blur or None, (width, height), released)
+            out[item_id] = PosterFacts(url, blur or None, (width, height), released, rating)
         else:
             url = f"{base}/w500{poster_path}" if poster_path else None
-            out[item_id] = PosterFacts(url, None, None, released)
+            out[item_id] = PosterFacts(url, None, None, released, rating)
     return out
 
 
@@ -1677,6 +1728,7 @@ async def _aggregate_wall_views(
             primary_aspect=primary_aspect(item, *(poster.asset_size or _pixel_size_of(files))),
             poster_blur=poster.blur,
             release_date=poster.release_date,
+            rating=poster.rating,
             # 首个在位文件：一文件一条目的库就是那一个；多文件条目取最早入账的
             primary_file_id=min(
                 (f.id for f in files if f.state == FileState.IN_PLACE), default=None

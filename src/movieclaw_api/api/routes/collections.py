@@ -49,7 +49,6 @@ from movieclaw_api.services.library.items import (
 from movieclaw_api.services.library.series import (
     is_series_collection,
     load_series_parts,
-    min_members_of,
 )
 from movieclaw_db.engine import get_session
 from movieclaw_db.models import (
@@ -255,8 +254,9 @@ async def list_collections(
     )
     if include_empty:
         return ok(views)
-    floors = {row.id: min_members_of(row) for row in rows}
-    return ok([v for v in views if v.item_count >= floors.get(v.id, 1)])
+    # 只入库了一部的系列同样列出：进去能看到缺的那几部、就地补订阅——那正是系列
+    # 合集的用处。与 Jellyfin 的 BoxSet 列表同一口径：只有空合集不列
+    return ok([v for v in views if v.item_count > 0])
 
 
 @router.post(
@@ -709,7 +709,8 @@ async def get_collection_series(
             tmdb_id=part["tmdb_id"],
             title=part["title"],
             release_date=_iso_date(part.get("release_date")),
-            poster_url=(f"{base}/w200{part['poster_path']}" if part.get("poster_path") else None),
+            # 缺片画进海报墙、与库存海报同一规格，w200 放大到卡片尺寸会糊
+            poster_url=(f"{base}/w500{part['poster_path']}" if part.get("poster_path") else None),
             media_item_id=owned.get(part["tmdb_id"]),
             subscribed=part["tmdb_id"] in tracked,
         )

@@ -164,7 +164,7 @@ def client(tmp_path: Path, monkeypatch):
                 (672, "哈利·波特与密室", 2002, f"tmdb:{POTTER}", "哈利·波特系列"),
                 (673, "哈利·波特与阿兹卡班的囚徒", 2004, f"tmdb:{POTTER}", "哈利·波特系列"),
                 (27205, "盗梦空间", 2010, SERIES_KEY_NONE, None),
-                # 只入库了一部的系列：< 2 不下发，否则合集页塞满单片盒子
+                # 只入库了一部的系列：照样列出（进去能补缺片）
                 (1893, "星球大战前传1", 1999, "tmdb:10", "星球大战系列"),
             ]
             for tmdb_id, title, year, key, name in rows:
@@ -240,14 +240,16 @@ def test_series_becomes_a_rule_driven_collection(client: TestClient) -> None:
     ]
 
 
-def test_a_single_film_is_not_a_series(client: TestClient) -> None:
-    """成员 < 2 不下发——TMDB 的系列里常有只入库了一部的。"""
+def test_a_series_with_a_single_film_is_listed(client: TestClient) -> None:
+    """只入库了一部的系列照样列出：进去能看到缺的那几部、就地补订阅。
+
+    曾经是「成员 < 2 不下发」，结果影片页的「所属系列」点得进去、合集页上却找不到
+    它，看起来像被隐藏了；而补齐缺片恰恰最常从只有一部的系列开始。
+    """
     asyncio.run(_ensure())
     rows = client.get("/api/v1/collections?library_id=1").json()["data"]
-    assert all(row["builtin"] != series_builtin("tmdb:10", 1) for row in rows)
-    # 行是建了的，只是不列：以后补齐第二部它自己就出现，不需要再 ensure
-    admin = client.get("/api/v1/collections?library_id=1&include_empty=true").json()["data"]
-    assert any(row["builtin"] == series_builtin("tmdb:10", 1) for row in admin)
+    single = next(row for row in rows if row["builtin"] == series_builtin("tmdb:10", 1))
+    assert single["item_count"] == 1
 
 
 def test_members_match_the_wall_exactly(client: TestClient) -> None:
@@ -256,8 +258,9 @@ def test_members_match_the_wall_exactly(client: TestClient) -> None:
     这是整条链路的地基：不成立的话后面每一层都会各写一套查询。
     """
     asyncio.run(_ensure())
-    rows = client.get("/api/v1/collections?library_id=1").json()["data"]
-    potter = next(row for row in rows if row["kind"] == "series")
+    # 按 builtin 认《哈利·波特》，不取"第一个系列"：只有一部的系列现在也列出来，
+    # 靠列表顺序认合集会认错
+    potter = _potter(client)
     members = client.get(f"/api/v1/collections/{potter['id']}/items").json()["data"]
     wall = client.get(
         f"/api/v1/libraries/1/items?series_keys=tmdb:{POTTER}&sort=release_date_asc"
@@ -319,3 +322,110 @@ def test_item_detail_links_into_the_series(client: TestClient) -> None:
     # 藏起来之后入口就撤掉：同一件事不能说两句不一样的话
     client.delete(f"/api/v1/collections/{detail['series_collection_id']}")
     assert client.get("/api/v1/libraries/1/items/1").json()["data"]["series_collection_id"] is None
+
+
+# ---------------------------------------------------------------------------
+# 系列名跟着刮削设置的元数据语言走
+# ---------------------------------------------------------------------------
+
+
+class _FakeTmdb:
+    """只记请求参数的 TMDB 替身：这组用例断言的是"用什么语言问的"。"""
+
+    def __init__(self, payload: dict) -> None:
+        self.payload = payload
+        self.calls: list[tuple[str, dict]] = []
+
+    async def get(self, path: str, params: dict | None = None) -> dict:
+        self.calls.append((path, dict(params or {})))
+        return self.payload
+
+
+def _use_scrape_language(monkeypatch, *languages: str) -> None:
+    from movieclaw_api.services import scrape_config
+    from movieclaw_api.settings import MetadataScrapeSetting
+
+    monkeypatch.setattr(
+        scrape_config, "_current_scrape", MetadataScrapeSetting(language_priority=list(languages))
+    )
+
+
+async def _forget_series(key: str) -> None:
+    """把一个系列打回"还没查过"（名字留着），让回填重新问一遍。"""
+    from sqlalchemy import update
+
+    async with get_database().session() as session:
+        await session.execute(
+            update(MediaMetadata).where(MediaMetadata.series_key == key).values(series_key=None)
+        )
+        await session.commit()
+
+
+def _potter(client: TestClient) -> dict:
+    rows = client.get("/api/v1/collections?library_id=1&include_empty=true").json()["data"]
+    return next(row for row in rows if row["builtin"] == series_builtin(f"tmdb:{POTTER}", 1))
+
+
+def test_backfill_asks_in_the_scrape_language_and_renames_the_series(
+    client: TestClient, monkeypatch
+) -> None:
+    """回填按刮削设置的元数据语言问 TMDB，自动起名的合集跟着换成那个语言。
+
+    不带 language 时 TMDB 一律回英文——系列合集上线后整片英文名就是这么来的。
+    """
+    from movieclaw_api.services import media_discover
+    from movieclaw_api.services.library.series_backfill import backfill_media_series
+
+    asyncio.run(_ensure())
+    _use_scrape_language(monkeypatch, "ja-JP", "en-US")
+    fake = _FakeTmdb({"belongs_to_collection": {"id": POTTER, "name": "ハリー・ポッター シリーズ"}})
+    monkeypatch.setattr(media_discover, "get_tmdb_client", lambda: fake)
+    asyncio.run(_forget_series(f"tmdb:{POTTER}"))
+
+    asyncio.run(backfill_media_series())
+
+    assert len(fake.calls) == 3
+    assert all(params == {"language": "ja-JP"} for _, params in fake.calls)
+    assert _potter(client)["name"] == "ハリー・ポッター シリーズ"
+
+
+def test_series_parts_are_fetched_in_the_scrape_language(client: TestClient, monkeypatch) -> None:
+    """缺片名单同理：片名要按刮削语言给，不然「还缺 2 部」下面列的是英文片名。"""
+    from movieclaw_api.services import media_discover
+
+    asyncio.run(_ensure())
+    _use_scrape_language(monkeypatch, "ja-JP")
+    fake = _FakeTmdb(
+        {
+            "poster_path": None,
+            "parts": [
+                {"id": 671, "title": "ハリー・ポッターと賢者の石", "release_date": "2001-11-16"}
+            ],
+        }
+    )
+    monkeypatch.setattr(media_discover, "get_tmdb_client", lambda: fake)
+
+    resp = client.get(f"/api/v1/collections/{_potter(client)['id']}/series")
+
+    assert resp.status_code == 200, resp.text
+    assert fake.calls == [(f"collection/{POTTER}", {"language": "ja-JP"})]
+    assert resp.json()["data"]["parts"][0]["title"] == "ハリー・ポッターと賢者の石"
+
+
+def test_a_series_the_user_renamed_keeps_its_name(client: TestClient, monkeypatch) -> None:
+    """用户自己起的名字不被换语言顶掉：合集名已经不等于旧系列名，那就是用户的选择。"""
+    from movieclaw_api.services import media_discover
+    from movieclaw_api.services.library.series_backfill import backfill_media_series
+
+    asyncio.run(_ensure())
+    resp = client.put(f"/api/v1/collections/{_potter(client)['id']}", json={"name": "我的波特"})
+    assert resp.status_code == 200, resp.text
+    _use_scrape_language(monkeypatch, "ja-JP")
+    fake = _FakeTmdb({"belongs_to_collection": {"id": POTTER, "name": "ハリー・ポッター シリーズ"}})
+    monkeypatch.setattr(media_discover, "get_tmdb_client", lambda: fake)
+    asyncio.run(_forget_series(f"tmdb:{POTTER}"))
+
+    asyncio.run(backfill_media_series())
+
+    assert fake.calls, "回填没有重新问 TMDB，这条用例什么也没验到"
+    assert _potter(client)["name"] == "我的波特"

@@ -9,7 +9,9 @@ import { ShareDialog } from "@/components/share-dialog";
 import { useConfirm, usePrompt, useToast } from "@/components/feedback";
 import { MoreIcon } from "@/components/icons";
 import { PAGE_NAV_BUTTON_CLASS, PageNav } from "@/components/page-nav";
-import { PosterWall } from "@/components/poster-wall";
+import { PosterCard } from "@/components/poster-card";
+import { InventoryCell, PosterWall, WALL_GRID_POSTER } from "@/components/poster-wall";
+import { useSubscribeEntry } from "@/components/subscribe-entry";
 import { WallLoadMore } from "@/components/wall-chrome";
 import {
   applyCollectionToLibrary,
@@ -23,8 +25,9 @@ import {
   type SeriesPart,
 } from "@/lib/api/collections";
 import { getCollectionShare, type ShareView } from "@/lib/api/shares";
-import { createSubscription } from "@/lib/api/subscriptions";
 import { getLibraryFacets, type LibraryFacets, type LibraryItem } from "@/lib/api/libraries";
+import { imageUrl } from "@/lib/image-proxy";
+import type { MediaItem } from "@/lib/media-types";
 import { LibraryFilterBar } from "@/components/library-filter-bar";
 import { filterToRules, isFilterEmpty, rulesToFilter, type LibraryFilter } from "@/lib/library-filter";
 import { usePageTitle } from "@/lib/use-page-title";
@@ -219,18 +222,20 @@ export function LibraryCollectionDetailView({
 
   if (error) {
     return (
-      <>
+      <div className="scroll-thin scroll-safe flex-1 overflow-y-auto pb-10">
         <PageNav title="合集" fallback={{
           label: "媒体库",
           href: (libraryId === null ? "/library/collections" : `/library/${libraryId}`) as Route,
         }} />
         <p className="mt-16 text-center text-ui leading-7 text-[var(--text-muted)]">{error}</p>
-      </>
+      </div>
     );
   }
 
+  // 页面自己出滚动容器：外壳的 main 不滚动（与收藏页、单库页同一约定），
+  // 少了这一层，海报墙超出一屏就滑不动
   return (
-    <>
+    <div className="scroll-thin scroll-safe flex-1 overflow-y-auto pb-10">
       <PageNav
         title={collection?.name ?? "合集"}
         fallback={{
@@ -411,29 +416,25 @@ export function LibraryCollectionDetailView({
         />
       )}
 
-      {/* 系列合集永远挂在库下面（规则驱动必须指定库），所以这里 libraryId 一定
-          不是 null；跨库合集是名单驱动的，根本走不到这一段 */}
-      {series && series.available && libraryId !== null && series.total > series.owned_count && (
-        <MissingParts
-          series={series}
-          libraryId={libraryId}
-          onSubscribed={(tmdbId) =>
-            setSeries((prev) =>
-              prev
-                ? {
-                    ...prev,
-                    parts: prev.parts.map((part) =>
-                      part.tmdb_id === tmdbId ? { ...part, subscribed: true } : part,
-                    ),
-                  }
-                : prev,
-            )
-          }
-        />
-      )}
-
       <div className="mt-6 max-md:mt-4">
-        {items.length === 0 ? (
+        {series?.available && series.parts.some((part) => part.media_item_id === null) ? (
+          // 系列缺片：缺的那几部不另起一块，直接按上映顺序画进墙里（见 SeriesWall）
+          <div className="px-6 max-md:px-4">
+            <SeriesWall
+              items={items}
+              parts={series.parts}
+              complete={!hasMore}
+              libraryIdOf={ownLibraryId}
+            />
+            <WallLoadMore
+              hasMore={hasMore}
+              loaded={items.length}
+              start={0}
+              total={collection?.item_count ?? items.length}
+              onReach={loadMore}
+            />
+          </div>
+        ) : items.length === 0 ? (
           <p className="mt-16 text-center text-ui leading-7 text-[var(--text-muted)]">
             这个合集现在一部都没有。
           </p>
@@ -451,86 +452,120 @@ export function LibraryCollectionDetailView({
           </div>
         )}
       </div>
-    </>
+    </div>
   );
 }
 
 /**
- * 缺片补齐（docs/design/library-series-collections.md 6.5）。
+ * 系列合集的海报墙：库里有的与缺的按上映顺序排在**同一面墙**上
+ * （docs/design/library-series-collections.md 6.5）。
  *
- * **这一块才是系列合集真正的价值。** 只做归类的话，用户装个 Emby 也有；
- * 能告诉他"缺哪两部、点一下就去补"的，只有这个产品。
+ * **缺片补齐才是系列合集真正的价值。** 只做归类的话，用户装个 Emby 也有；
+ * 能告诉他"缺哪几部、点一下就去补"的，只有这个产品。
  *
- * 订阅是现成能力：``title_ref = "tmdb:movie:{id}"``，而 parts 正好给这个 id。
- * 所以这里不需要新的下游链路，只是把两个已有的东西接起来——与剧集的
- * 「补齐缺集」是同一个心智，用户不用学新东西。
+ * 缺的那部不另起一块"还缺 N 部"清单，而是画在它该在的位置上：《哈利·波特》
+ * 第 3 部缺了，就在第 2 部与第 4 部之间放一张压暗的海报——缺的是哪一部、前后
+ * 是什么一眼就懂；清单只能让用户自己去对年份。
  *
- * 分寸：只在详情页出现，**不上卡片**（6.5.2）。已经在追的显示「追踪中」而不是
- * 一颗还能再点一次的按钮。
+ * 订阅走全站那一份订阅弹窗（海报卡片自带的「订阅影片」动作），不就地一键订上：
+ * 选库、规则组、下载落点都在弹窗里，缺片补订不该是绕开这些的旁路。
+ *
+ * 不用虚拟化的 PosterWall：一个系列就几部到二十几部，普通网格足够；虚拟化墙的
+ * 排版与位置锚点都假定每一格是库存条目，硬把缺片塞成假条目只会污染它们。
+ * 缺片等合集整页加载完才插（``complete``）——还没加载到的库存片可能排在它前面。
  */
-function MissingParts({
-  series,
-  libraryId,
-  onSubscribed,
+function SeriesWall({
+  items,
+  parts,
+  complete,
+  libraryIdOf,
 }: {
-  series: CollectionSeries;
-  libraryId: number;
-  onSubscribed: (tmdbId: number) => void;
+  items: LibraryItem[];
+  parts: SeriesPart[];
+  complete: boolean;
+  libraryIdOf: (item: LibraryItem) => number;
 }) {
-  const toast = useToast();
-  const [pending, setPending] = useState<number | null>(null);
-  const missing = series.parts.filter((part) => part.media_item_id === null);
-  if (missing.length === 0) return null;
-
-  const subscribe = async (part: SeriesPart) => {
-    setPending(part.tmdb_id);
-    try {
-      await createSubscription({
-        title_ref: `tmdb:movie:${part.tmdb_id}`,
-        library_id: libraryId,
-      });
-      onSubscribed(part.tmdb_id);
-      toast.success(`已订阅《${part.title}》`);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "订阅失败");
-    } finally {
-      setPending(null);
-    }
-  };
-
+  const { subscriptionOf } = useSubscribeEntry();
+  const missing = complete ? parts.filter((part) => part.media_item_id === null) : [];
   return (
-    <section className="mt-6 px-6 max-md:mt-4 max-md:px-4">
-      <h2 className="text-ui font-medium text-[var(--text-strong)]">
-        还缺 {missing.length} 部
-      </h2>
-      <div className="mt-3 flex flex-wrap gap-3">
-        {missing.map((part) => (
-          <div
-            key={part.tmdb_id}
-            className="glass-row flex !w-auto items-center gap-3 rounded-xl !px-3 py-2"
-          >
-            <div className="min-w-0">
-              <p className="truncate text-ui text-[var(--text-strong)]">{part.title}</p>
-              <p className="text-caption text-[var(--text-faint)]">
-                {part.release_date?.slice(0, 4) ?? "待定"}
-              </p>
-            </div>
-            {part.subscribed ? (
-              <span className="shrink-0 text-caption text-[var(--text-faint)]">追踪中</span>
-            ) : (
-              <button
-                type="button"
-                onClick={() => void subscribe(part)}
-                disabled={pending === part.tmdb_id}
-                className="shrink-0 rounded-lg bg-white/10 px-2.5 py-1 text-caption font-medium text-white transition hover:bg-white/20 disabled:opacity-40"
-              >
-                {pending === part.tmdb_id ? "订阅中…" : "订阅"}
-              </button>
-            )}
-          </div>
-        ))}
-      </div>
-    </section>
+    <div data-testid="series-wall" className={WALL_GRID_POSTER}>
+      {interleaveByRelease(items, missing).map((cell) =>
+        "part" in cell ? (
+          <MissingPartCell
+            key={`missing:${cell.part.tmdb_id}`}
+            part={cell.part}
+            tracked={
+              cell.part.subscribed ||
+              Boolean(subscriptionOf({ id: String(cell.part.tmdb_id), type: "movie" }))
+            }
+          />
+        ) : (
+          <InventoryCell
+            key={cell.item.media_item_id}
+            item={cell.item}
+            libraryId={libraryIdOf(cell.item)}
+          />
+        ),
+      )}
+    </div>
+  );
+}
+
+type SeriesCell = { item: LibraryItem } | { part: SeriesPart };
+
+/** 两列都已按上映正序：归并成一列。没有日期的排最后，与后端 parts 的排序同一口径。 */
+function interleaveByRelease(items: LibraryItem[], missing: SeriesPart[]): SeriesCell[] {
+  const dateOf = (value: string | null) => value ?? "9999-12-31";
+  const cells: SeriesCell[] = [];
+  let next = 0;
+  for (const item of items) {
+    while (
+      next < missing.length &&
+      dateOf(missing[next].release_date) < dateOf(item.release_date)
+    ) {
+      cells.push({ part: missing[next++] });
+    }
+    cells.push({ item });
+  }
+  for (; next < missing.length; next++) cells.push({ part: missing[next] });
+  return cells;
+}
+
+/**
+ * 缺片格：与发现页同一张海报卡，只是**压暗**——一眼看出"这部还不在我的库里"。
+ *
+ * 点海报与发现页一样进 TMDB 详情；悬停（触屏是首次点按展开）浮出「订阅影片」，
+ * 走全站的订阅弹窗。已经在追的副行写「追踪中」，卡片自己也会把订阅键换成
+ * 「管理订阅」，不会让人再订一遍。
+ */
+function MissingPartCell({ part, tracked }: { part: SeriesPart; tracked: boolean }) {
+  // 点海报走发现页同一条 TMDB 详情路径，所以要给完整的 MediaItem；列表拿不到的
+  // 字段（类型、简介）留空，进详情后由详情接口回填
+  const visual: MediaItem = {
+    titleRef: `tmdb:movie:${part.tmdb_id}`,
+    id: String(part.tmdb_id),
+    source: "tmdb",
+    type: "movie",
+    title: part.title,
+    originalTitle: part.title,
+    // 0 = 上映日待定：卡片对假值年份不渲染
+    year: part.release_date ? Number(part.release_date.slice(0, 4)) : 0,
+    rating: 0,
+    genres: [],
+    badges: [],
+    overview: "",
+    posterUrl: imageUrl(part.poster_url, "poster-card"),
+    extent: tracked ? "追踪中" : "未入库",
+  };
+  return (
+    // 只压暗海报图，不压暗片名与悬停层：文字照样读得清，订阅键照样醒目。
+    // 悬停时提亮一些，让人看清要订的是哪张海报
+    <div
+      data-testid="series-missing-part"
+      className="[&_img]:opacity-40 [&_img]:transition-opacity [&_img]:duration-300 hover:[&_img]:opacity-75"
+    >
+      <PosterCard item={visual} action="subscribe" />
+    </div>
   );
 }
 
@@ -560,7 +595,9 @@ function RuleRow({
     // 这里会显示"收录本库全部作品"——一句彻头彻尾的假话
     return (
       <p className="mt-3 text-sub text-[var(--text-faint)]">
-        作品系列 · 自动收录这个系列的全部作品，按上映顺序排列
+        {/* 不说"收录全部作品"：合集里只有库里有的那几部（上面写着「已有 N / 共 M」），
+            也不说"自动收录"：缺片画在墙上之后，这四个字会被读成"会自动去下载" */}
+        作品系列 · 按上映顺序排列，以后入库的续作会自动归进来
       </p>
     );
   }

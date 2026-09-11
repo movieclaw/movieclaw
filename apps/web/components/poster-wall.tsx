@@ -101,6 +101,7 @@ export const InventoryCell = memo(function InventoryCell({
   workingLabel,
   frameAspect,
   measuring = false,
+  showRating = false,
 }: {
   item: LibraryItem;
   libraryId: number;
@@ -118,11 +119,21 @@ export const InventoryCell = memo(function InventoryCell({
    * 它们指到一部并不在墙上的作品。
    */
   measuring?: boolean;
+  /**
+   * 在年份后面常显评分。只在用户正按评分排序 / 用评分筛选时开：那时评分就是他
+   * 正在比的东西，不印出来只能一部部点进去看。平时浏览不印（见 ratingText）
+   */
+  showRating?: boolean;
 }) {
   const inventoryLabel =
     item.kind === "tv" && item.inventory_summary
       ? formatLibraryInventorySummary(item.inventory_summary)
       : null;
+  // 评分：浏览墙默认不印在海报上——与 Netflix 同一个判断，每格多一个数字整面墙
+  // 就吵，还会让人只盯着分数挑片；评分是对某一部起了兴趣之后才要的信息。
+  // 所以它只出现在「多看一眼」的地方：悬停信息层，以及按评分排序/筛选时的副行
+  const ratingText =
+    item.rating != null && item.rating > 0 ? `★ ${item.rating.toFixed(1)}` : null;
   const visual: PosterVisualItem = {
     // 本地条目没有 TMDB id：占位 id 只做 key，不会被当成外部 id 请求
     id: item.tmdb_id != null ? String(item.tmdb_id) : `local:${item.media_item_id}`,
@@ -138,6 +149,9 @@ export const InventoryCell = memo(function InventoryCell({
     aspect: frameAspect ?? (item.primary_aspect >= 1 ? 16 / 9 : 2 / 3),
     imageAspect: item.primary_aspect,
     overlayDetails: inventoryLabel ? { primary: inventoryLabel } : undefined,
+    // 副行已经常显评分时，悬停层就别再印一遍
+    overlayMeta: showRating ? undefined : (ratingText ?? undefined),
+    extent: showRating ? (ratingText ?? undefined) : undefined,
     favorite: item.is_favorite,
     // 海报可能是本地刮削资产的相对路径（断网可用），也可能是 TMDB 图床地址。
     // 与首页海报墙同样取派生图（竖版 poster-card / 横版 landscape-card）：海报墙
@@ -171,11 +185,13 @@ export const InventoryCell = memo(function InventoryCell({
           海报墙上也要能一眼看到"正在弄这部"，否则用户得在两处之间对片名 */}
       <div className="relative">
         <div className={dead ? "opacity-50 grayscale" : undefined}>
+          {/* 触屏的「首点展开信息层」只给剧集的库存概况：电影的信息层只剩一行评分，
+              为它让每部电影都多点一下才进得了详情，不值——触屏看评分去详情页 */}
           <PosterCardVisual
             item={visual}
             href={`/library/${libraryId}/item/${item.media_item_id}` as Route}
             action={libraryCardAction(item)}
-            revealInfoOnTouch
+            revealInfoOnTouch={Boolean(inventoryLabel)}
           />
         </div>
         {workingLabel && (
@@ -277,6 +293,7 @@ export function PosterWall<T extends LibraryItem>({
   frameAspect,
   workingLabelOf,
   onGeometry,
+  showRating = false,
 }: {
   /** 已加载的条目（服务端给的顺序） */
   items: T[];
@@ -293,6 +310,8 @@ export function PosterWall<T extends LibraryItem>({
    * 的顶边算，那个容器只有库页知道，所以计算留在调用方
    */
   onGeometry?: (geometry: { rowTops: readonly number[]; columns: number } | null) => void;
+  /** 在年份后面常显评分（按评分排序 / 筛选时由调用方打开，见 InventoryCell） */
+  showRating?: boolean;
 }) {
   // 容器宽度：ResizeObserver 驱动重排；首帧用 layout effect 量一次，避免闪一下空墙
   const containerRef = useRef<HTMLDivElement>(null);
@@ -365,6 +384,7 @@ export function PosterWall<T extends LibraryItem>({
                 libraryId={libraryIdOf(item)}
                 frameAspect={frameAspect}
                 workingLabel={workingLabelOf?.(item)}
+                showRating={showRating}
                 x={placement.x}
                 y={placement.y}
                 width={placement.width}
@@ -388,6 +408,7 @@ const PositionedCell = memo(function PositionedCell({
   libraryId,
   frameAspect,
   workingLabel,
+  showRating,
   x,
   y,
   width,
@@ -396,6 +417,7 @@ const PositionedCell = memo(function PositionedCell({
   libraryId: number;
   frameAspect?: number;
   workingLabel?: string;
+  showRating?: boolean;
   x: number;
   y: number;
   width: number;
@@ -417,6 +439,7 @@ const PositionedCell = memo(function PositionedCell({
         libraryId={libraryId}
         frameAspect={frameAspect}
         workingLabel={workingLabel}
+        showRating={showRating}
       />
     </div>
   );

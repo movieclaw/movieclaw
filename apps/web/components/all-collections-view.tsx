@@ -39,10 +39,10 @@ export function AllCollectionsView() {
 
   if (rows === null) {
     return (
-      <>
+      <div className="scroll-thin scroll-safe flex-1 overflow-y-auto pb-10">
         <PageNav title="全部合集" fallback={{ label: "媒体库", href: "/library" as Route }} />
         <p className="mt-16 text-center text-ui text-[var(--text-muted)]">正在读取合集…</p>
-      </>
+      </div>
     );
   }
 
@@ -54,8 +54,10 @@ export function AllCollectionsView() {
     }))
     .filter((group) => group.items.length > 0);
 
+  // 页面自己出滚动容器：外壳的 main 不滚动（与收藏页、单库页同一约定），
+  // 少了这一层，合集一多就滑不动
   return (
-    <>
+    <div className="scroll-thin scroll-safe flex-1 overflow-y-auto pb-10">
       <PageNav title="全部合集" fallback={{ label: "媒体库", href: "/library" as Route }} />
       {rows.length === 0 ? (
         <p className="mt-16 text-center text-ui leading-7 text-[var(--text-muted)]">
@@ -84,6 +86,6 @@ export function AllCollectionsView() {
           ))}
         </div>
       )}
-    </>
+    </div>
   );
 }

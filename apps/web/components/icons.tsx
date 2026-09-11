@@ -206,6 +206,20 @@ export const ChevronDownIcon = (p: IconProps) => (
   </Base>
 );
 
+/** 筛选：三条逐级收短的横线（"从多到少"），与 iOS 的筛选符号同一个隐喻，比漏斗轻 */
+export const FilterIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="M4 7h16M7 12h10M10 17h4" />
+  </Base>
+);
+
+/** 向下箭头：排序方向（降序）；升序时由调用方 rotate-180 翻过来，两个方向同一枚图标 */
+export const ArrowDownIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="M12 5v14M6 13l6 6 6-6" />
+  </Base>
+);
+
 /** 拖拽手柄（两列圆点）：实心小点比描边更接近系统级「可拖动」示意 */
 export const GripIcon = (p: IconProps) => (
   <Base fill="currentColor" stroke="none" {...p}>
