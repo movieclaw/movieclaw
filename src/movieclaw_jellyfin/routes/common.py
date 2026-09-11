@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from movieclaw_api.settings.schemas import get_jellyfin_compat
@@ -46,10 +45,13 @@ def dto_options(
 
 
 async def dto_context() -> DtoContext:
-    from movieclaw_api.services.media_scrape import assets_root
+    from movieclaw_api.services.media_scrape import assets_root_resolved
 
     setting = await get_jellyfin_compat()
-    return DtoContext(server_id=setting.server_id, assets_root=Path(assets_root()))
+    # 直接给解析过软链的根：图片接口每张图都要拿它做越权判定的基准，而
+    # Path.resolve() 要对路径上每一级目录各发一次系统调用。根是配置项、
+    # 进程内不变，解析结果在 media_scrape 里缓存（见 assets_root_resolved）
+    return DtoContext(server_id=setting.server_id, assets_root=assets_root_resolved())
 
 
 async def require_enabled() -> None:

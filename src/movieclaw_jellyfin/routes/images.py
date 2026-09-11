@@ -301,8 +301,9 @@ async def get_item_image(
         # 条目在但无该类型图：text 文案 404（对齐 ImageController.cs:1875）
         raise JellyfinError(404, text=f"Item does not have an image of type {image_type}")
 
+    # ctx.assets_root 已是解析过的根（见 dto_context），不必每张图再解析一遍
     target = (ctx.assets_root / rel_path).resolve()
-    if not target.is_relative_to(ctx.assets_root.resolve()) or not target.is_file():
+    if not target.is_relative_to(ctx.assets_root) or not target.is_file():
         raise not_found()
 
     tag = request.query_params.get("tag")
