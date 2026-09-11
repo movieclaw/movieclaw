@@ -21,6 +21,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
+from movieclaw_api.services.subscription.disproven import disproven_by_media
 from movieclaw_api.services.subscription.identity_recheck import (
     fetch_external_ids,
     needs_external_id_recheck,
@@ -347,6 +348,18 @@ async def load_match_context(session: AsyncSession) -> dict[int, MediaContext]:
         for ctx in contexts.values():
             if ctx.subscription.id is not None:
                 ctx.content_missing = proven.get(ctx.subscription.id, {})
+
+        # 条目级台账（media_disproven_source）：与上面的 attempt 记忆**并集**。
+        # attempt 随订阅 CASCADE 删除，删订阅重建就全忘了（真实教训：同一条
+        # 113 MB 假种被抓了两次）；条目级的那份带得走。两边都读是为了让存量
+        # 安装不必做数据迁移——旧记忆继续从 content_missing 生效
+        durable = await disproven_by_media(
+            session,
+            (ctx.item.id for ctx in contexts.values() if ctx.open_wanted and ctx.item.id),
+        )
+        for ctx in contexts.values():
+            for unit, sources in durable.get(ctx.item.id or 0, {}).items():
+                ctx.content_missing.setdefault(unit, set()).update(sources)
 
     # -- 洗版单元（quality-upgrade.md §5）------------------------------------
     upgrade_rule_ids = {

@@ -939,6 +939,26 @@ async def test_reopen_blacklists_wrong_source(db):
         assert attempt.content_missing["units"] == [[0, 0]]
         assert ["ssd", "7788"] in attempt.content_missing["sources"]
 
+        # 同一份证据还要落到**条目**上：attempt 随订阅 CASCADE 删除，用户修正
+        # 错配后若把订阅删了重建，只挂在 attempt 上的记忆会跟着一起消失
+        from movieclaw_db.models import MediaDisprovenSource
+
+        durable = (
+            (
+                await session.execute(
+                    select(MediaDisprovenSource).where(
+                        MediaDisprovenSource.media_item_id == item_id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert [(d.site_id, d.torrent_id, d.season_number, d.episode_number) for d in durable] == [
+            ("ssd", "7788", 0, 0)
+        ]
+        assert durable[0].reason == "content_missing"
+
 
 @pytest.mark.asyncio
 async def test_reopen_only_touches_units_no_longer_owned(db):

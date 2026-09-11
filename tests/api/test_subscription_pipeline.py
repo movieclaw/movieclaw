@@ -28,6 +28,7 @@ from movieclaw_db.engine import dispose_db, get_database, init_db
 from movieclaw_db.migrations import run_migrations
 from movieclaw_db.models import (
     DownloadAttemptStatus,
+    MediaDisprovenSource,
     MediaItem,
     MediaSource,
     SiteTorrent,
@@ -1517,6 +1518,83 @@ async def test_absurdly_small_release_never_reaches_dispatch(db) -> None:
         assert len(rejected) == 1
         assert rejected[0].payload["reason_code"] == "size_absurd_for_runtime"
         assert "预告片" in rejected[0].message
+
+
+async def test_disproven_memory_survives_deleting_and_rebuilding_the_subscription(db) -> None:
+    """证伪来源记在**条目**上，删订阅重建也带得走。
+
+    真实教训：用户抓到一条假「正片」，手动删掉库里的文件、删掉订阅重建，系统
+    把同一条种子原样又抓了一遍。负面记忆此前只写在
+    ``subscription_download_attempt.content_missing`` 上，而那张表的
+    ``subscription_id`` 是 ON DELETE CASCADE——证据产生过，只是挂在了一个比它
+    短命的东西上。「这个发布里没有这部电影」是关于内容的事实，与用户订没订无关。
+    """
+    from movieclaw_api.services.subscription.disproven import (
+        REASON_CONTENT_MISSING,
+        remember_disproven_sources,
+    )
+
+    async with db.session() as session:
+        service = _service(session)
+        sub = await service.create(MediaKind.MOVIE, 101)
+        media_item_id = sub.media_item_id
+        await remember_disproven_sources(
+            session,
+            media_item_id=media_item_id,
+            sources=[("testsite", "bad1")],
+            units=[(0, 0)],
+            reason=REASON_CONTENT_MISSING,
+            note="实测证伪",
+        )
+        await session.commit()
+        await service.delete_permanently(sub.id)
+
+    async with db.session() as session:
+        # 订阅名下的投递台账随订阅一起消失（这正是旧记忆丢失的机制）……
+        assert (
+            await session.execute(
+                select(SubscriptionDownloadAttempt).where(
+                    SubscriptionDownloadAttempt.subscription_id == sub.id
+                )
+            )
+        ).scalars().all() == []
+        # ……条目级台账还在
+        durable = (
+            (
+                await session.execute(
+                    select(MediaDisprovenSource).where(
+                        MediaDisprovenSource.media_item_id == media_item_id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(durable) == 1
+
+    async with db.session() as session:
+        rebuilt = await _service(session).create(MediaKind.MOVIE, 101)
+        assert rebuilt.media_item_id == media_item_id  # 同一条目，新订阅
+        bad = await _insert_torrent(
+            session,
+            "bad1",
+            "Upcoming Movie 2026 1080p WEB-DL",
+            {"media_type": "movie", "year": 2026, "resolution": "1080p"},
+            size_bytes=6 * 1024**3,
+        )
+        await evaluate_and_dispatch(session, [bad], source="被动匹配")
+        assert (await _wanted_map(session, rebuilt.id))[(0, 0)].status == WantedStatus.WANTED
+
+        # 对照：换一条没被证伪过的发布照常投递，证明拦的是那个来源不是这部片
+        good = await _insert_torrent(
+            session,
+            "good1",
+            "Upcoming Movie 2026 1080p BluRay",
+            {"media_type": "movie", "year": 2026, "resolution": "1080p"},
+            size_bytes=11 * 1024**3,
+        )
+        await evaluate_and_dispatch(session, [good], source="被动匹配")
+        assert (await _wanted_map(session, rebuilt.id))[(0, 0)].status == WantedStatus.GRABBED
 
 
 async def test_normal_sized_release_records_no_shadow_note(db) -> None:

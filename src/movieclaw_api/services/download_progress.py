@@ -1269,6 +1269,21 @@ async def _record_content_missing(
         "sources": [[site_id, torrent_id] for site_id, torrent_id in sorted(sources)],
     }
     session.add(attempt)
+    # 同一份证据再记一份到**条目**上：attempt 随订阅 CASCADE 删除，删订阅重建
+    # 就全忘了，而"这个发布里没有这一集"与用户订没订无关（见 disproven 模块）
+    from movieclaw_api.services.subscription.disproven import (
+        REASON_CONTENT_MISSING,
+        remember_disproven_sources,
+    )
+
+    await remember_disproven_sources(
+        session,
+        media_item_id=rows[0].media_item_id,
+        sources=sources,
+        units=units,
+        reason=REASON_CONTENT_MISSING,
+        note="下载完成后核验文件清单，这份发布里没有该单元",
+    )
 
 
 async def _requeue(

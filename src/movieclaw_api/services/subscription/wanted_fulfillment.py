@@ -295,3 +295,18 @@ async def _remember_wrong_sources(
             "sources": [[site, torrent] for site, torrent in sorted(known_sources)],
         }
         session.add(attempt)
+    # 同一份证据再记一份到**条目**上（见 disproven 模块）：用户修正错配之后
+    # 若把订阅删了重建，挂在 attempt 上的这份记忆会跟着订阅一起消失
+    from movieclaw_api.services.subscription.disproven import (
+        REASON_CONTENT_MISSING,
+        remember_disproven_sources,
+    )
+
+    await remember_disproven_sources(
+        session,
+        media_item_id=rows[0].media_item_id,
+        sources=sources,
+        units=units,
+        reason=REASON_CONTENT_MISSING,
+        note="身份修正后确认：这份发布满足不了该单元",
+    )
