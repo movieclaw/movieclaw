@@ -560,7 +560,7 @@ HLG/杜比视界）、mpegts `-skip_frame nokey`、宽度上限 1280、strm 跳�
 | 守卫 | 位置 |
 |---|---|
 | 定时刷新只取 `source='tmdb'` | `media_refresh.py:46` |
-| `scrape_media_item` / `ensure_assets` 按 `source` 分派 | `media_scrape.py` |
+| `scrape_media_item` / `ensure_assets` 按 `source` 分派；本地条目的「刷新」= 重读 sidecar NFO（`reread_local_nfo`，含 `<set>`）+ 重建封面，菜单里叫「重新读取 NFO 与封面」 | `media_scrape.py` |
 | NFO 写出（身份/完整/分集）只对 `source='tmdb'` | `media_scrape.py:1521,1535`、`nfo.py` |
 | Jellyfin `ProviderIds` 只对 tmdb | `catalog.py` |
 | 前端 TMDB 链接 / 订阅 / 洗版入口按 `tmdb_id != null` 与 `capabilities`；认领/重识别入口对影视库临时条目**开放** | `library-item-detail-view.tsx:450-479, 665-673` 等 |

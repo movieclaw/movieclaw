@@ -79,7 +79,7 @@ import { resolveRequestUrl } from "@/lib/http";
 import { cachedImageUrl } from "@/lib/image-proxy";
 import { languageLabel } from "@/lib/language-labels";
 import { invalidateLibraryDetailSnapshot } from "@/lib/library-detail-snapshot";
-import { refreshItemConfirm } from "@/lib/library-confirm";
+import { refreshItemConfirm, rereadItemNfoConfirm } from "@/lib/library-confirm";
 import { usePermissions } from "@/lib/permissions";
 import { formatDateTime, formatRelativeTime } from "@/lib/time";
 import { usePageTitle } from "@/lib/use-page-title";
@@ -525,7 +525,9 @@ export function LibraryItemDetailView({
 
   const runMetadataRefresh = async () => {
     // 重操作先确认：单条目刷新是 force 语义（图片覆盖重下），说清再动手
-    if (!(await confirm(refreshItemConfirm(detail?.title ?? "此条目")))) return;
+    // 其他库的视频条目：刷新是重读 NFO + 重新生成封面，不套 TMDB 那份文案
+    const ask = detail?.kind === "video" ? rereadItemNfoConfirm : refreshItemConfirm;
+    if (!(await confirm(ask(detail?.title ?? "此条目")))) return;
     setKicking(true);
     try {
       await refreshItemMetadata(libraryId, mediaItemId);
@@ -582,6 +584,7 @@ export function LibraryItemDetailView({
               }}
               identifiable={scrapedLibrary}
               scraped={detail.source === "tmdb"}
+              readsNfo={detail.kind === "video"}
               scraping={scrapingNow}
               searchHref={`/search?q=${encodeURIComponent(detail.title)}` as Route}
               // 加入合集：任何能看到这部片的人都能把它扔进自己的单子
@@ -1248,6 +1251,7 @@ function ItemActionsMenu({
   canManage,
   identifiable,
   scraped,
+  readsNfo,
   scraping,
   searchHref,
   onReidentify,
@@ -1270,6 +1274,8 @@ function ItemActionsMenu({
   identifiable: boolean;
   /** 条目本身来自 TMDB：给刷新元数据/更换图片；本地条目只有封面 */
   scraped: boolean;
+  /** 其他库的视频条目：刷新会先重读视频旁的 NFO（照片、影视库里的临时条目只重建封面） */
+  readsNfo: boolean;
   scraping: boolean;
   /** 站点资源搜索直达（预填片名）：手动补版本/换版本的入口 */
   searchHref: Route;
@@ -1364,7 +1370,13 @@ function ItemActionsMenu({
                   disabled={scraping}
                   className={itemClass}
                 >
-                  {scraping ? "正在生成封面…" : "重新生成封面"}
+                  {scraping
+                    ? readsNfo
+                      ? "正在读取 NFO…"
+                      : "正在生成封面…"
+                    : readsNfo
+                      ? "重新读取 NFO 与封面"
+                      : "重新生成封面"}
                 </DropdownMenu.Item>
               )}
               {onRegenerateChapterImages && (

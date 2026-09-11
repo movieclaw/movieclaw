@@ -11,6 +11,7 @@ import { useConfirm, useToast } from "@/components/feedback";
 import {
   chapterImagesConfirm,
   refreshLibraryConfirm,
+  rereadLibraryNfoConfirm,
   scanLibraryConfirm,
 } from "@/lib/library-confirm";
 import { chapterJobLabel } from "@/lib/library-manage";
@@ -1558,7 +1559,9 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
           void kick(stopLibraryMetadataRefresh(libraryId));
           return;
         }
-        void confirm(refreshLibraryConfirm(library.name)).then((ok) => {
+        const caps = library.capabilities;
+        const ask = !caps.scraped && caps.playable ? rereadLibraryNfoConfirm : refreshLibraryConfirm;
+        void confirm(ask(library.name)).then((ok) => {
           if (ok) void kick(startLibraryMetadataRefresh(libraryId));
         });
       }}
@@ -2256,7 +2259,9 @@ function LibraryActionsMenu({
               ? `停止刷新${metaProgress === null ? "" : ` ${metaProgress}`}`
               : capabilities.scraped
                 ? "刷新元数据"
-                : "重新生成封面"}
+                : capabilities.playable
+                  ? "重新读取 NFO 与封面"
+                  : "重新生成封面"}
           </DropdownMenu.Item>
           {onChapterImages && (
             <DropdownMenu.Item

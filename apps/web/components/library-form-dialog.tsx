@@ -1177,7 +1177,7 @@ function EditLibraryDialog({
           )}
           {playable && dot(extractChapterImages, "章节")}
           {dot(!excludeFromHome, "首页展示")}
-          {scraped && dot(autoSeriesCollections, "系列合集")}
+          {library.kind !== "photo" && dot(autoSeriesCollections, "系列合集")}
         </>
       ),
       body: (
@@ -1227,13 +1227,17 @@ function EditLibraryDialog({
             onChange={(next) => setExcludeFromHome(!next)}
             detail="关闭后首页「最近添加」与 Jellyfin 客户端的「最新媒体」都跳过这个库；库卡片仍在，进库内看照常。"
           />
-          {/* 系列是"作品的属性"，只有能刮削的库才有这回事 */}
-          {scraped && (
+          {/* 系列是"作品的属性"：影视库来自 TMDB，其他库来自视频旁 NFO 的 <set>；照片没有系列 */}
+          {library.kind !== "photo" && (
             <SwitchRow
               title="按作品系列自动生成合集"
               checked={autoSeriesCollections}
               onChange={setAutoSeriesCollections}
-              detail="《哈利·波特》《碟中谍》这类系列会在合集页自动成集，按上映顺序排列，还能看出你缺哪几部、一键去补。这只是**展示**偏好：关掉之后系列信息照常入库、NFO 里照常写，Kodi/Emby 那边不受影响，只是我们的合集页不再自动多出几十个系列；重新打开会把已有的补齐，不会重新刮削。"
+              detail={
+                scraped
+                  ? "《哈利·波特》《碟中谍》这类系列会在合集页自动成集，按上映顺序排列，还能看出你缺哪几部、一键去补。这只是**展示**偏好：关掉之后系列信息照常入库、NFO 里照常写，Kodi/Emby 那边不受影响，只是我们的合集页不再自动多出几十个系列；重新打开会把已有的补齐，不会重新刮削。"
+                  : "视频旁的 NFO 里写了系列（<set>）的，会在合集页按系列自动成集。这只是**展示**偏好：关掉之后系列信息照常读取，只是合集页不再自动生成；重新打开会把已有的补齐。改了 NFO 之后，在库的 ⋯ 菜单里点「重新读取 NFO 与封面」生效。"
+              }
             />
           )}
         </div>

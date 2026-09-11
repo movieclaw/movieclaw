@@ -38,6 +38,7 @@ import {
 import {
   chapterImagesConfirm,
   refreshLibraryConfirm,
+  rereadLibraryNfoConfirm,
   scanLibraryConfirm,
 } from "@/lib/library-confirm";
 import { useJobs } from "@/lib/jobs";
@@ -285,7 +286,9 @@ export function LibraryManageView() {
           run(stopLibraryMetadataRefresh(library.id));
           return;
         }
-        void confirm(refreshLibraryConfirm(library.name)).then((ok) => {
+        const caps = library.capabilities;
+        const ask = !caps.scraped && caps.playable ? rereadLibraryNfoConfirm : refreshLibraryConfirm;
+        void confirm(ask(library.name)).then((ok) => {
           if (ok) run(startLibraryMetadataRefresh(library.id));
         });
       },

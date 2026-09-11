@@ -40,6 +40,7 @@ from movieclaw_api.services.media_probe import MediaSpec
 from movieclaw_db.engine import dispose_db, get_database, init_db
 from movieclaw_db.migrations import run_migrations
 from movieclaw_db.models import (
+    Collection,
     ImportWatch,
     IngestEntry,
     IngestStatus,
@@ -276,6 +277,51 @@ async def test_scan_video_library_absorbs_late_sidecar_nfo(db, tmp_path) -> None
         assert item.title == "宝宝第一次走路" and item.year == 2021
         row = (await session.execute(select(LibraryFile))).scalar_one()
         assert row.identity_source == IdentitySource.NFO.value
+
+
+async def test_reread_local_nfo_applies_edits_a_rescan_skips(db, tmp_path) -> None:
+    """已吸收过的 NFO 事后被改（简介、补 ``<set>``）：重扫不重读，「重新读取 NFO」才生效。
+
+    读出系列要当场建出系列合集；NFO 里再删掉 ``<set>``，系列跟着清空。
+    """
+    from movieclaw_api.services.library.series import series_builtin
+
+    root = tmp_path / "media" / "home"
+    root.mkdir(parents=True)
+    video = root / "IMG_0002.mov"
+    video.write_bytes(b"v")
+    nfo = video.with_suffix(".nfo")
+    nfo.write_text("<movie><title>春节团圆饭</title><plot>旧简介</plot></movie>", encoding="utf-8")
+    library = await _make_video_library(db, root)
+    await scan_library(library.id)
+
+    nfo.write_text(
+        "<movie><title>春节团圆饭（2019）</title><plot>新简介</plot>"
+        "<set><name>春节合集</name></set></movie>",
+        encoding="utf-8",
+    )
+    await scan_library(library.id)
+    async with db.session() as session:
+        item = (await session.execute(select(MediaItem))).scalar_one()
+        meta = (await session.execute(select(MediaMetadata))).scalar_one()
+        assert item.title == "春节团圆饭" and meta.overview == "旧简介" and not meta.series_key
+
+    assert await scrape_mod.reread_local_nfo(item.id)
+    builtin = series_builtin("name:春节合集", library.id)
+    async with db.session() as session:
+        item = (await session.execute(select(MediaItem))).scalar_one()
+        meta = (await session.execute(select(MediaMetadata))).scalar_one()
+        assert item.title == "春节团圆饭（2019）" and meta.overview == "新简介"
+        assert meta.series_key == "name:春节合集"
+        found = await session.execute(select(Collection).where(Collection.builtin == builtin))
+        assert found.scalar_one_or_none() is not None
+
+    nfo.write_text("<movie><title>春节团圆饭（2019）</title></movie>", encoding="utf-8")
+    assert await scrape_mod.reread_local_nfo(item.id)
+    async with db.session() as session:
+        meta = (await session.execute(select(MediaMetadata))).scalar_one()
+        assert meta.series_key == "" and meta.series_name is None
+        assert meta.overview == "新简介"  # NFO 没写的字段不清空
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="需要系统 ffmpeg")

@@ -54,6 +54,35 @@ export function refreshItemConfirm(title: string): ConfirmOptions {
   };
 }
 
+/** 其他库（家庭录像这类本地视频）没有刮削链：「刷新」是重读视频旁的 NFO + 重新生成封面，
+ *  不联网——TMDB 那套文案放在这里既不对、也吓人。 */
+export function rereadLibraryNfoConfirm(name: string): ConfirmOptions {
+  return {
+    title: `重新读取「${name}」的 NFO 与封面？`,
+    description: "本次会为库里的全部视频：",
+    bullets: [
+      "重新读取视频旁同名的 NFO 文件，标题、简介、系列等以 NFO 为准",
+      "NFO 里写了系列（<set>）的，按库设置自动归进系列合集",
+      "重新生成封面",
+      "不联网，不会修改或删除你的文件",
+    ],
+    confirmLabel: "开始读取",
+  };
+}
+
+export function rereadItemNfoConfirm(title: string): ConfirmOptions {
+  return {
+    title: `重新读取《${title}》的 NFO 与封面？`,
+    description: "本次会：",
+    bullets: [
+      "重新读取视频旁同名的 NFO 文件，标题、简介、系列等以 NFO 为准",
+      "重新生成封面",
+      "不联网，不会改动你的文件",
+    ],
+    confirmLabel: "读取",
+  };
+}
+
 /** 整库生成章节：默认只补缺（跳过已经抓齐的文件），勾选项决定是否全部重做
  *  （force）。一个菜单入口 + 弹窗内开关，与「刷新元数据」的交互保持一致。 */
 export function chapterImagesConfirm(name: string): ConfirmOptions & { checkbox: ConfirmCheckbox } {

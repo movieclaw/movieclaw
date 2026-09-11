@@ -319,7 +319,13 @@ async def ensure_series_collections_for_library(session: AsyncSession, library_i
 
     展示开关重新打开时走这里：一条 ``GROUP BY series_key`` 拿到全部取值，
     缺哪个建哪个。**不重新联网、不重新刮削**——数据早就在列里了。
+
+    与 ``ensure_series_collections_for_item`` 一样受库的展示开关管：扫描收尾每轮
+    都走这里，不查开关的话，关着开关的库扫一次，系列合集就全回来了。
     """
+    library = await session.get(Library, library_id)
+    if library is None or not library.auto_series_collections:
+        return 0
     rows = (
         await session.execute(
             select(MediaMetadata.series_key, MediaMetadata.series_name)

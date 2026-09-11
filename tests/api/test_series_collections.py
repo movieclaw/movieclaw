@@ -305,6 +305,26 @@ def test_the_switch_controls_display_only(client: TestClient) -> None:
     assert detail["series_collection_id"] is None  # 没生成合集就不给入口
 
 
+def test_the_switch_also_gates_the_library_wide_backfill(client: TestClient) -> None:
+    """扫描收尾每轮都整库补齐一次：开关关着时这一支也不许建行。
+
+    只有条目级 ensure 查开关的话，关了开关、扫一次库，系列合集就全回来了。
+    """
+    resp = client.put(
+        "/api/v1/libraries/1",
+        json={
+            "name": "电影",
+            "kind": "movie",
+            "root_paths": ["/tmp/media"],
+            "auto_series_collections": False,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    asyncio.run(_ensure())
+    rows = client.get("/api/v1/collections?library_id=1&include_empty=true").json()["data"]
+    assert all(row["kind"] != "series" for row in rows)
+
+
 async def _ensure_for_item(media_item_id: int = 1) -> None:
     from movieclaw_api.services.library.series import ensure_series_collections_for_item
 

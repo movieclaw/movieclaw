@@ -411,7 +411,13 @@ function RowMenu({
             disabled={busy && !refreshing}
             className={itemClass}
           >
-            {refreshing ? `停止刷新${pct}` : caps.scraped ? "刷新元数据" : "重新生成封面"}
+            {refreshing
+              ? `停止刷新${pct}`
+              : caps.scraped
+                ? "刷新元数据"
+                : caps.playable
+                  ? "重新读取 NFO 与封面"
+                  : "重新生成封面"}
           </DropdownMenu.Item>
           {library.extract_chapter_images && (
             <DropdownMenu.Item

@@ -152,7 +152,6 @@ async def _scrape(media_item_id: int, *, force: bool, on_phase: PhaseHook = None
         if on_phase is not None:
             on_phase(text)
 
-    _phase("拉取 TMDB 档案")
     db = get_database()
     async with db.session() as session:
         repo = MediaItemRepository(session)
@@ -160,15 +159,18 @@ async def _scrape(media_item_id: int, *, force: bool, on_phase: PhaseHook = None
         if item is None:
             return False
         # 本地来源条目（docs/design/library-other-kind.md 4.8 source 守卫）：
-        # 没有上游档案可拉，"刷新"只剩重建缩略图这一件事，全程零 TMDB 请求
+        # 没有上游档案可拉，"刷新"是重读 sidecar NFO + 重建封面，全程零 TMDB 请求
         local_only = item.source != MediaSource.TMDB
         kind = MediaKind(item.kind)
     if local_only:
+        _phase("读取 NFO")
+        await reread_local_nfo(media_item_id)
         _phase("生成封面")
         from movieclaw_api.services.library.thumbs import ensure_local_assets
 
         await ensure_local_assets(media_item_id, force=force)
         return True
+    _phase("拉取 TMDB 档案")
     async with db.session() as session:
         repo = MediaItemRepository(session)
         item = await session.get(MediaItem, media_item_id)
@@ -955,6 +957,88 @@ async def apply_local_identity(session: AsyncSession, item: MediaItem, identity)
     row.scraped_at = utcnow()
     row.updated_at = utcnow()
     session.add(row)
+
+
+async def reread_local_nfo(media_item_id: int) -> bool:
+    """本地内容库条目的「重新读取 NFO」：把 sidecar NFO 完整重读一遍，以它为准写回。
+
+    扫描只在"标题此前来自文件名、目录里新出现了 NFO"时吸收一次——已吸收过的
+    NFO 不会每轮重读，否则每个秒过行都要读一次盘。用户事后改了 NFO（改简介、
+    补 ``<set>`` 系列）只能从这里生效。与扫描路径的区别：
+
+    - 标题/年份直接写回，不经 ``ensure_local_item``：它按"标题变了才更新"判断，
+      只改了简介或系列的 NFO 会被当成没变化；
+    - NFO 里删掉了 ``<set>`` 时系列一并清空：``apply_local_identity`` 的"没读出来
+      不清空"是扫描的保守口径，用户主动点了重读，NFO 就是全部真相；
+    - 读出系列后当场补建系列合集（仍受库的展示开关管），不必等下一轮扫描收尾；
+    - NFO 没写日期时不拿 mtime 顶替：重读时没有探测结果，``_content_date`` 会一路
+      回落到 mtime，把扫描时从容器里读到的拍摄日期冲掉。
+
+    只处理本地内容库（能力档案 ``scraped=False``）里的非原盘文件：影视库里的临时
+    本地条目该走「修正识别结果」，原盘没有 sidecar NFO。返回是否读到并写回了 NFO。
+    """
+    from movieclaw_api.services.library.local_identity import build_local_identity
+    from movieclaw_api.services.library.nfo import read_local_sidecar
+    from movieclaw_api.services.library.profile import profile_of
+    from movieclaw_db.models.library_file import DISC_CONTAINERS, IdentitySource
+
+    async with get_database().session() as session:
+        item = await session.get(MediaItem, media_item_id)
+        if item is None or item.source == MediaSource.TMDB:
+            return False
+        rows = (
+            await session.execute(
+                select(LibraryFile, Library)
+                .join(Library, Library.id == LibraryFile.library_id)  # type: ignore[arg-type]
+                .where(LibraryFile.media_item_id == media_item_id, LibraryFile.on_shelf())
+                .order_by(LibraryFile.id)  # type: ignore[arg-type]
+            )
+        ).all()
+        for row, library in rows:
+            if profile_of(library).scraped or (row.container or "") in DISC_CONTAINERS:
+                continue
+            file = Path(row.file_path)
+            nfo = await asyncio.to_thread(read_local_sidecar, file.with_suffix(".nfo"))
+            if nfo is None:
+                continue
+            root = next(
+                (Path(p) for p in library.root_paths if file.is_relative_to(p)), file.parent
+            )
+            identity = await asyncio.to_thread(
+                build_local_identity,
+                library_id=library.id,
+                kind=MediaKind(item.kind),
+                root=root,
+                file=file,
+                spec=None,
+                is_disc=False,
+                scraped=False,
+            )
+            if not nfo.release_date:
+                identity.release_date = None
+            if identity.from_nfo:
+                item.title = identity.title
+                item.original_title = identity.title
+                if nfo.year or identity.release_date:
+                    item.year = nfo.year or identity.release_date.year  # type: ignore[union-attr]
+                row.identity_source = IdentitySource.NFO
+                row.updated_at = utcnow()
+                session.add_all([item, row])
+            await apply_local_identity(session, item, identity)
+            if not identity.series_name:
+                meta = (
+                    await session.execute(
+                        select(MediaMetadata).where(MediaMetadata.media_item_id == item.id)
+                    )
+                ).scalar_one()
+                meta.series_key = build_series_key(None, None)
+                meta.series_name = None
+            await session.flush()
+            await ensure_series_collections_for_item(session, media_item_id)
+            await session.commit()
+            logger.info("本地条目已重读 NFO：《%s》（%s）", item.title, nfo.nfo_name)
+            return True
+    return False
 
 
 def _parse_iso_date(raw: str | None):
