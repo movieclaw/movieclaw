@@ -864,6 +864,53 @@ class HealthIssueView(BaseModel):
     options: list[FixOptionView] = Field(description="结构化修复选项（多个时由用户取舍）")
 
 
+class IdentityAuditSampleView(BaseModel):
+    """一条可直接人工核对的观察样本。"""
+
+    at: str = Field(description="发生时间（ISO 8601）")
+    title: str = Field(description="条目标题；条目/订阅已删除时给占位文案")
+    note: str = Field(description="可直接展示的中文说明")
+    site_id: str | None = None
+    torrent_id: str | None = None
+
+
+class IdentityAuditGroupView(BaseModel):
+    """一组观察：窗口内命中次数 + 最近若干条样本（样本有上限，hits 没有）。"""
+
+    hits: int
+    samples: list[IdentityAuditSampleView]
+
+
+class IdentityConfidenceStatView(BaseModel):
+    """投递的身份证据强度分布。"""
+
+    dispatched: int = Field(description="窗口内有证据强度记录的投递数（分母）")
+    guess: int = Field(description="其中只靠片名+年份认的")
+    ratio: float = Field(description="guess / dispatched；无投递时为 0")
+
+
+class IdentityAuditView(BaseModel):
+    """识别存疑的观察台账（identity-confidence.md §10.2/§10.4 的灰度依据）。
+
+    纯只读：这些判定本来就都落了库，只是此前全项目零读取点，于是 shadow 的
+    观察期永远得不出结论。
+    """
+
+    window_days: int
+    confidence: IdentityConfidenceStatView = Field(
+        description="§10.4 的核心指标：只靠片名+年份认的投递占比"
+    )
+    bitrate_shadow: IdentityAuditGroupView = Field(
+        description="体积÷片长 的可疑档命中（只记录、未拦截）——它要不要点灯看这组"
+    )
+    absurd_rejected: IdentityAuditGroupView = Field(
+        description="极端档真正拦下的候选——这一档已生效，看的是有没有过度开火"
+    )
+    runtime_doubt: IdentityAuditGroupView = Field(
+        description="入库实测片长与影片信息不符的文件"
+    )
+
+
 class PipelineHealthView(BaseModel):
     """订阅链路体检的整体结论（订阅设定页与订阅列表警示横幅共用）。"""
 

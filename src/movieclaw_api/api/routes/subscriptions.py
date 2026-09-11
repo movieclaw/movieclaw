@@ -22,6 +22,7 @@ from movieclaw_api.schemas.subscription import (
     DownloadUnitView,
     GrabPayload,
     GrabResultView,
+    IdentityAuditView,
     MediaBrief,
     PipelineHealthView,
     PrepareView,
@@ -311,6 +312,31 @@ async def pipeline_health_check(
     from movieclaw_api.services.subscription import pipeline_health
 
     return ok(PipelineHealthView(**await pipeline_health(session)))
+
+
+@router.get(
+    "/identity-audit",
+    response_model=ApiResponse[IdentityAuditView],
+    summary="识别存疑的观察台账：几条 shadow 判定的真实触发率",
+    operation_id="subscriptions.identity-audit",
+    dependencies=[Depends(require_admin)],
+)
+async def identity_audit_report(
+    window_days: int = Query(
+        default=30, ge=1, le=365, description="统计窗口（天）"
+    ),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[IdentityAuditView]:
+    """纯只读。
+
+    ``identity-confidence.md`` §10.2 要求那几个拍脑袋的阈值先走 shadow，跑满
+    观察期后按触发率与误报率决定是否点灯。判定一直都在落库，但此前**全项目
+    没有任何一处读它们**，灰度因此永远收敛不了——那条 113 MB 的假「正片」是
+    用户自己发现的，而系统连着两层都"看见"了。这个端点就是那个缺失的出口。
+    """
+    from movieclaw_api.services.subscription.identity_audit import identity_audit
+
+    return ok(IdentityAuditView(**await identity_audit(session, window_days=window_days)))
 
 
 @router.get(
