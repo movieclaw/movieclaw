@@ -41,6 +41,7 @@ import {
   stopSession,
   streamSession,
 } from "@/lib/api/agent";
+import { applyTurns } from "@/lib/agent-activity";
 import { parseSkillTokens, toTokenForm } from "@/lib/agent-skills";
 import { HttpError } from "@/lib/http";
 import { nanoid } from "nanoid";
@@ -129,6 +130,8 @@ export interface AgentConversation {
   /** 服务端会话 id（路由 /sessions/[id] 与所有会话动作都用它） */
   id: string;
   title: string;
+  /** 最近活跃时间（epoch ms），侧栏「最近会话」的排序键。只在用户提交一轮
+   *  与轮次落终态时刷新，流式产出不刷新（口径见 lib/agent-activity.ts） */
   updatedAt: number;
   /** 是否有存活的运行（列表摘要派生；详情加载后随本地 turn 状态刷新） */
   running: boolean;
@@ -624,7 +627,7 @@ export function AgentConversationsProvider({ children }: { children: React.React
       });
   }, [hasMore]);
 
-  /** 对某会话中某轮做不可变更新，并刷新 updatedAt 与派生的 running。 */
+  /** 对某会话中某轮做不可变更新；running 与 updatedAt 由 applyTurns 派生。 */
   const updateTurn = useCallback(
     (conversationId: string, turnId: string, patch: (turn: AgentTurn) => AgentTurn) => {
       setConversations((previous) =>
@@ -633,12 +636,7 @@ export function AgentConversationsProvider({ children }: { children: React.React
           const turns = conversation.turns.map((turn) =>
             turn.id === turnId ? patch(turn) : turn,
           );
-          return {
-            ...conversation,
-            updatedAt: Date.now(),
-            running: turns.some((turn) => turn.status === "running"),
-            turns,
-          };
+          return applyTurns(conversation, turns);
         }),
       );
     },
@@ -674,12 +672,7 @@ export function AgentConversationsProvider({ children }: { children: React.React
             turn.id === buffer.turnId ? buffer.events.reduce(applyAgentEvent, turn) : turn,
           );
         }
-        return {
-          ...conversation,
-          updatedAt: Date.now(),
-          running: turns.some((turn) => turn.status === "running"),
-          turns,
-        };
+        return applyTurns(conversation, turns);
       }),
     );
   }, []);
