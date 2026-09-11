@@ -348,6 +348,7 @@ class MediaLibraryService:
             douban_id=douban_id,
             title=profile.title,
             original_title=profile.original_title,
+            english_title=profile.english_title,
             year=profile.year,
             aliases=aliases,
             status=profile.status,

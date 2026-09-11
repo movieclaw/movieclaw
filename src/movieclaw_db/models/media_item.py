@@ -100,6 +100,15 @@ class MediaItem(TimestampMixin, table=True):
     # -- 标题与匹配素材 ------------------------------------------------------
     title: str = Field(description="主展示标题（zh-CN 优先）")
     original_title: str = Field(description="原始语言标题")
+    # 国际英文名（TMDB translations.en，回落 alternative_titles 的 US/GB）。
+    # **不能用 original_title 代替**：后者是「原始语言标题」，只在影片原语言
+    # 就是英语时才等于英文名——韩语片是「악인전」、日语片是「万引き家族」，
+    # 而发布组命名的事实标准是英文名（The.Gangster.the.Cop.the.Devil.2019...）。
+    # 主动搜索的第一召回词（真实教训：拿韩文原名去中文 PT 站搜，正片一条
+    # 都召不回来）。NULL=未知，或本身就是英语片（与 original_title 去重后消掉）
+    english_title: str | None = Field(
+        default=None, description="国际英文名；NULL=未知或与原名相同"
+    )
     year: int | None = Field(
         default=None, description="上映/首播年份；NULL=未知（匹配的硬约束之一）"
     )
