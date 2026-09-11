@@ -102,6 +102,12 @@ import {
   canHoldSpeed,
   holdSpeedReducer,
 } from "@/lib/player/hold-speed";
+import {
+  type ScrubFollowState,
+  afterScrubFollow,
+  initialScrubFollowState,
+  planScrubFollow,
+} from "@/lib/player/scrub-follow";
 import { nextSeekTarget, seekBatchWindowMs } from "@/lib/player/seek-batch";
 import { resolveTap } from "@/lib/player/tap";
 import {
@@ -1900,6 +1906,28 @@ export function VideoPlayer(props: VideoPlayerProps) {
     setPendingSeekMs(null);
   }, []);
 
+  /**
+   * 拖动跟随的在途状态（判定在 lib/player/scrub-follow.ts）。
+   *
+   * `count` 是**这一次拖动里写到第几次**：第一次要照常算作用户跳转（他确实
+   * 跳了），第二次起是同一个动作的延续——一次拖动写十几次，全算进 QoE 的话
+   * 「拖动次数」就从「用户跳了几次」变成「写了几次 currentTime」，指标废掉。
+   *
+   * `pendingMs` 是后沿节流排队中、还没落地的最新落点，计时器 id 在
+   * `scrubTimerRef`。**这是一份在途状态**，按 player-feel.md §13.2 的三问：
+   * 松手提交时撤（commitSeek）、手势被取消时撤（onScrubCancel）、切集与卸载
+   * 时撤（下面 unitKey 那个 effect）。
+   */
+  const scrubRef = useRef<ScrubFollowState>(initialScrubFollowState());
+  const scrubTimerRef = useRef<number | null>(null);
+
+  /** 撤掉排队中的后沿跟随 */
+  const cancelScrubFollow = useCallback(() => {
+    if (scrubTimerRef.current !== null) window.clearTimeout(scrubTimerRef.current);
+    scrubTimerRef.current = null;
+    scrubRef.current = { ...scrubRef.current, pendingMs: null };
+  }, []);
+
   /** 供延时提交的合并计时器读最新值：它跨过一段时间才执行 */
   const seekToFileMsRef = useRef(seekToFileMs);
   seekToFileMsRef.current = seekToFileMs;
@@ -1956,32 +1984,14 @@ export function VideoPlayer(props: VideoPlayerProps) {
     // 这个 ref 装的对象身份恒定（只改字段不换对象），可以放心带进 cleanup
     const pending = pendingSeekRef.current;
     cancelPendingSeek();
+    // 拖动跟随的后沿计时器同理：它只有 60~100 毫秒，但切集恰好发生在拖动
+    // 途中时，它会把**新一集**挪到上一集的落点上。
+    cancelScrubFollow();
     return () => {
       if (pending.timer !== null) window.clearTimeout(pending.timer);
+      if (scrubTimerRef.current !== null) window.clearTimeout(scrubTimerRef.current);
     };
-  }, [unitKey, cancelPendingSeek]);
-
-  /**
-   * 拖动进度条时的实时跟随（docs/design/player-feel.md §2.C2）。
-   *
-   * 松手才提交是转码会话逼出来的规矩：拖动中每次 move 都跳会让服务端一路杀
-   * ffmpeg 重启，画面永远追不上手指。但**跳转不要钱的时候没有理由不跟随**：
-   *
-   * - 档 0 直出：整个文件都能跳，浏览器自己按 range 取数据；
-   * - 任何模式落在已缓冲区间内：数据就在手上，跳过去是零成本。
-   *
-   * 其余情况（拖到没缓冲的地方、旧会话相对制）原样按下不表，等松手那一次。
-   * 100ms 节流：hls.js 在列表内跳转会取消在途的分片请求，一秒跳六十次反而
-   * 让缓冲永远建立不起来。
-   */
-  /**
-   * 拖动跟随自己写 currentTime 的节流与计数。
-   *
-   * `count` 是**这一次拖动里写到第几次**：第一次要照常算作用户跳转（他确实
-   * 跳了），第二次起是同一个动作的延续——一次拖动写十几次，全算进 QoE 的话
-   * 「拖动次数」就从「用户跳了几次」变成「写了几次 currentTime」，指标废掉。
-   */
-  const scrubRef = useRef({ at: 0, count: 0 });
+  }, [unitKey, cancelPendingSeek, cancelScrubFollow]);
 
   /**
    * 这一跳贵不贵：落点已在缓冲里、或档 0 直出（整个文件随便跳）就是零成本，
@@ -2000,20 +2010,16 @@ export function VideoPlayer(props: VideoPlayerProps) {
   const isCheapSeekRef = useRef(isCheapSeek);
   isCheapSeekRef.current = isCheapSeek;
 
-  const scrubTo = useCallback(
+  /** 把画面真的挪到落点。延时落地会跨过一段时间，所以只读 ref。 */
+  const applyScrubFollow = useCallback(
     (fileMs: number) => {
-      // 拖动就是活动：不重排自动隐藏的倒计时的话，手指按着不动四秒钟，
-      // 控制条会**在拖动过程中**淡出——指针捕获让拖动照旧生效，用户却是
-      // 对着一条看不见的进度条在拖，松手才知道跳到了哪儿。
-      bumpChromeActivity();
       if (!video) return;
-      const now = performance.now();
-      if (now - scrubRef.current.at < 100) return;
       const seconds = toSessionSeconds(fileMs, startMsRef.current);
-      if (seconds < 0 || !isCheapSeek(fileMs)) return;
-      // 500 毫秒之内的连续写视为同一次拖动
-      const continuing = now - scrubRef.current.at < 500;
-      scrubRef.current = { at: now, count: continuing ? scrubRef.current.count + 1 : 0 };
+      // 后沿落地要跨过几十毫秒，**判据得在落地的这一刻重算**：这段时间里
+      // back buffer 可能已经把落点回收掉，那时写 currentTime 就不再是零成本
+      // 的跳转，而是一次把 ffmpeg 拽回去重启——跟随这条路上最不该出现的事。
+      if (seconds < 0 || !isCheapSeekRef.current(fileMs)) return;
+      scrubRef.current = afterScrubFollow(scrubRef.current, performance.now());
       // **只动 currentTime，不走 engine.seek**：后者会 stopLoad + startLoad
       // 把在途的分片请求全掐掉重来——那是给「跳到没缓冲的地方」准备的重手段。
       // 拖动跟随只在数据已经在手上时才发生（isCheapSeek），一秒十次地掐断
@@ -2024,7 +2030,60 @@ export function VideoPlayer(props: VideoPlayerProps) {
       if (typeof video.fastSeek === "function") video.fastSeek(seconds);
       else video.currentTime = seconds;
     },
-    [video, isCheapSeek, bumpChromeActivity],
+    [video],
+  );
+  /** 供后沿计时器读最新值：它跨过一段时间才执行，闭包里的会话可能已经换过 */
+  const applyScrubFollowRef = useRef(applyScrubFollow);
+  applyScrubFollowRef.current = applyScrubFollow;
+
+  /**
+   * 拖动进度条时的实时跟随（docs/design/player-feel.md §2.C2）。
+   *
+   * 松手才提交是转码会话逼出来的规矩：拖动中每次 move 都跳会让服务端一路杀
+   * ffmpeg 重启，画面永远追不上手指。但**跳转不要钱的时候没有理由不跟随**：
+   *
+   * - 档 0 直出：整个文件都能跳，浏览器自己按 range 取数据；
+   * - 任何模式落在已缓冲区间内：数据就在手上，跳过去是零成本。
+   *
+   * 其余情况（拖到没缓冲的地方、旧会话相对制）原样按下不表，等松手那一次。
+   *
+   * 跟随的**节奏**由 lib/player/scrub-follow.ts 定：连续扫动时 10Hz（一秒
+   * 跳六十次会让 hls.js 反复取消在途的分片请求，缓冲永远建立不起来），手指
+   * 一停 60ms 之内补最后一次。补这一次是关键——见那个模块开头的说明。
+   */
+
+  const scrubTo = useCallback(
+    (fileMs: number) => {
+      // 拖动就是活动：不重排自动隐藏的倒计时的话，手指按着不动四秒钟，
+      // 控制条会**在拖动过程中**淡出——指针捕获让拖动照旧生效，用户却是
+      // 对着一条看不见的进度条在拖，松手才知道跳到了哪儿。
+      bumpChromeActivity();
+      if (!video) return;
+      const plan = planScrubFollow({
+        now: performance.now(),
+        state: scrubRef.current,
+        cheap: isCheapSeek(fileMs),
+        reachable: toSessionSeconds(fileMs, startMsRef.current) >= 0,
+      });
+      if (plan.kind === "skip") return;
+      if (plan.kind === "follow") {
+        cancelScrubFollow();
+        applyScrubFollow(fileMs);
+        return;
+      }
+      // 后沿：只记下最新落点，到点（或手指停稳）再落地。**丢掉它就是
+      // 2026-09-11 反馈的根因**——手指停住之后浏览器不再发 pointermove，
+      // 被窗口吃掉的那个落点永远没有机会落地，画面钉在半路、读数停在手指
+      // 所在处，两者差出几分钟，直到松手才对上。
+      scrubRef.current = { ...scrubRef.current, pendingMs: fileMs };
+      if (scrubTimerRef.current !== null) window.clearTimeout(scrubTimerRef.current);
+      scrubTimerRef.current = window.setTimeout(() => {
+        scrubTimerRef.current = null;
+        const target = scrubRef.current.pendingMs;
+        if (target !== null) applyScrubFollowRef.current(target);
+      }, plan.delayMs);
+    },
+    [video, isCheapSeek, bumpChromeActivity, cancelScrubFollow, applyScrubFollow],
   );
 
   /**
@@ -2036,9 +2095,11 @@ export function VideoPlayer(props: VideoPlayerProps) {
   const commitSeek = useCallback(
     (fileMs: number) => {
       cancelPendingSeek();
+      // 排队中的跟随落点比这次提交旧，让它落地就是把画面往回拽一下
+      cancelScrubFollow();
       seekToFileMs(fileMs);
     },
-    [cancelPendingSeek, seekToFileMs],
+    [cancelPendingSeek, cancelScrubFollow, seekToFileMs],
   );
   /** 供触摸手势回调读最新值：跟着依赖重绑 touch 监听会在手势中途换掉监听器 */
   const commitSeekRef = useRef(commitSeek);
@@ -3413,6 +3474,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
             chromeVisible={chromeVisible}
             onSeek={commitSeek}
             onScrub={scrubTo}
+            onScrubCancel={cancelScrubFollow}
             subtitles={subtitles}
             selectedSubtitle={selectedSubtitle}
             onSelectSubtitle={selectSubtitle}

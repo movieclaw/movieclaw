@@ -220,6 +220,13 @@ export interface PlayerControlsProps {
    * 捅十几刀），这里只管把落点递过去。
    */
   onScrub: (fileMs: number) => void;
+  /**
+   * 拖动被打断（系统手势收走手指、片长变未知）时通知父组件撤掉在途的跟随。
+   *
+   * 跟随是**后沿**落地的（见 lib/player/scrub-follow.ts），手势作废之后那个
+   * 排队中的落点还会在几十毫秒后把画面挪过去——用户没抬手确认过它。
+   */
+  onScrubCancel: () => void;
   subtitles: SubtitleTracks;
   selectedSubtitle: string | null;
   onSelectSubtitle: (ref: string | null) => void;
@@ -272,6 +279,7 @@ export function PlayerControls(props: PlayerControlsProps) {
     chromeVisible,
     onSeek,
     onScrub,
+    onScrubCancel,
     subtitles,
     selectedSubtitle,
     onSelectSubtitle,
@@ -305,11 +313,79 @@ export function PlayerControls(props: PlayerControlsProps) {
   // 进度条和时间读数从此不跟画面走，画面照常播，两处读数各说各话
   // （2026-09-08 反馈）。片长一没就地清掉，退回 positionMs 这个真值。
   useEffect(() => {
-    if (!durationMs) setDragging(null);
-  }, [durationMs]);
+    if (!durationMs) {
+      setDragging(null);
+      // 在途的后沿跟随一起撤：片长一没，这次拖动就作废了
+      onScrubCancel();
+    }
+  }, [durationMs, onScrubCancel]);
   const [menu, setMenu] = useState<"none" | "audio" | "subtitles" | "settings">("none");
   // 悬停预览的位置（文件毫秒 + 进度条内的像素横坐标）。null = 没在悬停
   const [hover, setHover] = useState<{ ms: number; x: number } | null>(null);
+
+  // ---------------------------------------------------------------------
+  // 指针输入合帧（docs/design/player-feel.md §2.C4）
+  //
+  // pointermove 的频率跟硬件走：手机触屏 120Hz、数位笔 240Hz，而这条路上
+  // 原本挂着**两次** setState——悬停气泡的 `hover`（外层那一格）和拖动值
+  // `dragging`（进度条那一格，事件冒泡后两个都会收到）。一次指针事件就是
+  // 一次整条控制条的重渲染，外加两次 getBoundingClientRect 和气泡夹边的一次
+  // 强制回流。一秒 240 次足以把主线程占满，而圆点恰恰是**在 React 提交之后**
+  // 才被 rAF 画出去的：渲染排不上队，点就跟不上手指——「快速拖动不够丝滑」
+  // 的主要来源。
+  //
+  // 屏幕一帧只画一次，所以一帧只处理一次指针位置：事件里只量坐标，真正的
+  // setState 交给 rAF。两格合成一次测量之后，气泡与圆点从此也一定同源。
+  // ---------------------------------------------------------------------
+  const pointerRef = useRef<{ x: number; length: number } | null>(null);
+  const pointerFrameRef = useRef(0);
+  /** 供合帧回调读最新值：它跨过一帧才执行，不能带闭包里的旧值 */
+  const latestRef = useRef({ durationMs, dragging, onScrub });
+  latestRef.current = { durationMs, dragging, onScrub };
+
+  /** 这一帧量到的指针位置 → 文件毫秒。没有片长或没量到就是 null */
+  const pointerMs = useCallback(() => {
+    const point = pointerRef.current;
+    const total = latestRef.current.durationMs;
+    if (!point || !total || point.length <= 0) return null;
+    return Math.round(Math.min(1, Math.max(0, point.x / point.length)) * total);
+  }, []);
+
+  const cancelPointerFrame = useCallback(() => {
+    if (pointerFrameRef.current) cancelAnimationFrame(pointerFrameRef.current);
+    pointerFrameRef.current = 0;
+  }, []);
+
+  const flushPointer = useCallback(() => {
+    pointerFrameRef.current = 0;
+    const point = pointerRef.current;
+    const next = pointerMs();
+    if (point === null || next === null) return;
+    setHover({ ms: next, x: point.x });
+    // 没在拖就只是悬停：不能去动画面
+    if (latestRef.current.dragging === null) return;
+    setDragging(next);
+    // 画面跟着手指走——能免费跳的时候不跟随是白白浪费手感
+    latestRef.current.onScrub(next);
+  }, [pointerMs]);
+
+  /** 量一次指针位置并排一帧。拖动与悬停共用，因为两者量的是同一条轨道 */
+  const trackPointer = useCallback(
+    (event: React.PointerEvent<HTMLElement>) => {
+      const { offset, length } = pointerOffsetX(
+        event,
+        event.currentTarget.getBoundingClientRect(),
+        fakeLandscape,
+      );
+      pointerRef.current = { x: Math.min(Math.max(offset, 0), length), length };
+      if (!pointerFrameRef.current) {
+        pointerFrameRef.current = requestAnimationFrame(flushPointer);
+      }
+    },
+    [fakeLandscape, flushPointer],
+  );
+
+  useEffect(() => cancelPointerFrame, [cancelPointerFrame]);
   /** 时间文字用的位置。取值规则与进度条自绘**同一个函数**，见 shownPositionMs */
   const shown = shownPositionMs({
     draggingMs: dragging,
@@ -318,7 +394,11 @@ export function PlayerControls(props: PlayerControlsProps) {
     livePositionMs: null,
     positionMs,
   });
-  const previewTile = hover ? tileAt(trickplay, hover.ms) : null;
+  // memo 化不是为了省这几行算术，而是为了**身份稳定**：`tileAt` 每次都返回
+  // 新对象，而下面气泡夹边那个 useLayoutEffect 把它当依赖——不 memo 的话，
+  // 每一次重渲染（4Hz 的 timeupdate、1Hz 的速度读数……）都会重跑一次
+  // `offsetWidth` / `clientWidth`，那是一次强制同步回流。
+  const previewTile = useMemo(() => (hover ? tileAt(trickplay, hover.ms) : null), [hover, trickplay]);
   /** 刻度位置。0 秒那条不画——片头永远在最左端，画出来只是一条噪音 */
   const chapterMarks = useMemo(
     () =>
@@ -545,17 +625,16 @@ export function PlayerControls(props: PlayerControlsProps) {
       >
         <div
           className="player-scrub-shade relative h-5"
-          onPointerMove={(e) => {
-            if (!durationMs) return;
-            const { offset, length } = pointerOffsetX(
-              e,
-              e.currentTarget.getBoundingClientRect(),
-              fakeLandscape,
-            );
-            const x = Math.min(Math.max(offset, 0), length);
-            setHover({ ms: (x / length) * durationMs, x });
+          // 拖动中的 pointermove 会从底下的 input 冒泡到这里（指针捕获期间
+          // 也一样），所以量一次就够——悬停气泡与拖动值从此同一份坐标。
+          onPointerMove={trackPointer}
+          onPointerLeave={() => {
+            // **拖动中不撤这一帧**：指针捕获期间 pointerleave 照样会来（手指
+            // 划出轨道上下缘就会，真 Chromium 上验过），撤掉的话手指停在轨道
+            // 外的那一次移动就跟丢了。没在拖才是真的「鼠标走开了」。
+            if (latestRef.current.dragging === null) cancelPointerFrame();
+            setHover(null);
           }}
-          onPointerLeave={() => setHover(null)}
         >
           {/* 缩略图预览：拖进度条时能看见画面。没生成好就只剩时间戳，
               不影响拖动——预览是锦上添花，时间戳是刚需。
@@ -641,24 +720,21 @@ export function PlayerControls(props: PlayerControlsProps) {
                 e.currentTarget.getBoundingClientRect(),
                 fakeLandscape,
               );
+              pointerRef.current = { x: Math.min(Math.max(offset, 0), length), length };
+              // 按下这一次**不合帧**：起手要当场把圆点挪到指下，等一帧是看得
+              // 出来的迟滞。之后的移动才交给 rAF。
               const ratio = Math.min(1, Math.max(0, offset / length));
               setDragging(Math.round(ratio * durationMs));
             }}
-            onPointerMove={(e) => {
-              if (dragging === null || !durationMs) return;
-              const { offset, length } = pointerOffsetX(
-                e,
-                e.currentTarget.getBoundingClientRect(),
-                fakeLandscape,
-              );
-              const ratio = Math.min(1, Math.max(0, offset / length));
-              const next = Math.round(ratio * durationMs);
-              setDragging(next);
-              // 画面跟着手指走——能免费跳的时候不跟随是白白浪费手感
-              onScrub(next);
-            }}
+            // 移动不在这里处理：事件会冒泡到外层那一格，由 trackPointer 合帧
             onPointerUp={() => {
-              if (dragging !== null) onSeek(dragging);
+              // 合帧意味着最后一次移动可能还压在这一帧里没落地。抬手提交的
+              // 落点必须是**手指最后所在处**，不能是上一帧那个——快速拖动时
+              // 一帧的位移在两小时的片子上就是好几分钟。
+              cancelPointerFrame();
+              const last = pointerMs();
+              if (dragging !== null) onSeek(last ?? dragging);
+              pointerRef.current = null;
               setDragging(null);
             }}
             // 手势被系统收走时浏览器**只发 pointercancel、不再发 pointerup**：
@@ -670,7 +746,14 @@ export function PlayerControls(props: PlayerControlsProps) {
             // 完整拖拽把它清掉才「自己好了」。
             // 取消的手势**不提交** seek：用户没松手确认过这个位置，退回
             // positionMs 才是真值。
-            onPointerCancel={() => setDragging(null)}
+            onPointerCancel={() => {
+              cancelPointerFrame();
+              pointerRef.current = null;
+              // 排队中的后沿跟随也要撤：手势作废之后它还会在几十毫秒后把画面
+              // 挪到一个用户没抬手确认过的位置上
+              onScrubCancel();
+              setDragging(null);
+            }}
             onKeyUp={() => {
               if (dragging !== null) onSeek(dragging);
               setDragging(null);
