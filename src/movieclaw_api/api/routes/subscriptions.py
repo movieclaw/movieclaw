@@ -334,7 +334,7 @@ async def identity_audit_report(
     没有任何一处读它们**，灰度因此永远收敛不了——那条 113 MB 的假「正片」是
     用户自己发现的，而系统连着两层都"看见"了。这个端点就是那个缺失的出口。
     """
-    from movieclaw_api.services.subscription.identity_audit import identity_audit
+    from movieclaw_api.services.subscription import identity_audit
 
     return ok(IdentityAuditView(**await identity_audit(session, window_days=window_days)))
 

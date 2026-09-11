@@ -2339,7 +2339,7 @@ async def _ingest_entry(
         # 它同样**不阻断入库**：文件照常入库、照常不告警，改变的只是"下次还要不
         # 要再抓这个来源"
         if doubt and stamp_site and stamp_torrent and _runtime_disproves_source(doubt):
-            from movieclaw_api.services.subscription.disproven import (
+            from movieclaw_api.services.subscription import (
                 REASON_RUNTIME_MISMATCH,
                 remember_disproven_sources,
             )

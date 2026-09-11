@@ -29,7 +29,14 @@ from movieclaw_api.services.subscription.core import (
     schedule_for,
 )
 from movieclaw_api.services.subscription.dispatch import dispatch, preview_dispatch_route
+from movieclaw_api.services.subscription.disproven import (
+    REASON_CONTENT_MISSING,
+    REASON_RUNTIME_MISMATCH,
+    disproven_by_media,
+    remember_disproven_sources,
+)
 from movieclaw_api.services.subscription.health import pipeline_health
+from movieclaw_api.services.subscription.identity_audit import identity_audit
 from movieclaw_api.services.subscription.matching import (
     DISPATCH_RETRY_DELAY,
     MATCH_BATCH_SIZE,
@@ -48,6 +55,7 @@ from movieclaw_api.services.subscription.release_forecast import (
     refresh_release_forecasts,
 )
 from movieclaw_api.services.subscription.replacement import (
+    REPLACEMENT_REQUESTS_PER_TICK,
     fail_trial,
     promote_trial,
     quality_not_lower,
@@ -66,7 +74,11 @@ from movieclaw_api.services.subscription.wanted_fulfillment import (
     close_fulfilled_wanted,
     reopen_unfulfilled_wanted,
 )
-from movieclaw_api.services.subscription.wanted_search import kick_search_soon, search_wanted
+from movieclaw_api.services.subscription.wanted_search import (
+    SearchBudget,
+    kick_search_soon,
+    search_wanted,
+)
 
 __all__ = [
     "DISPATCH_RETRY_DELAY",
@@ -93,6 +105,13 @@ __all__ = [
     "preview_dispatch_route",
     "promote_trial",
     "quality_not_lower",
+    "REASON_CONTENT_MISSING",
+    "REASON_RUNTIME_MISMATCH",
+    "REPLACEMENT_REQUESTS_PER_TICK",
+    "SearchBudget",
+    "disproven_by_media",
+    "identity_audit",
+    "remember_disproven_sources",
     "reconcile_pending_cleanup",
     "run_upgrade_round",
     "upgrading_counts",

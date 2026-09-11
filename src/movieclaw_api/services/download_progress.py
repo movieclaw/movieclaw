@@ -130,10 +130,10 @@ async def check_download_progress() -> None:
         # **共因**故障会让一大批任务同时进入"30 分钟无进度"，于是同一轮里几十次
         # 跨站搜索一起打出去，恰好是在站点/网络本来就不正常的时候。
         # 用完的部分下一轮继续——换源的退避以小时计，晚一轮没有代价
-        from movieclaw_api.services.subscription.replacement import (
+        from movieclaw_api.services.subscription import (
             REPLACEMENT_REQUESTS_PER_TICK,
+            SearchBudget,
         )
-        from movieclaw_api.services.subscription.wanted_search import SearchBudget
 
         budget = SearchBudget(REPLACEMENT_REQUESTS_PER_TICK)
         for attempt in attempts:
@@ -1285,7 +1285,7 @@ async def _record_content_missing(
     session.add(attempt)
     # 同一份证据再记一份到**条目**上：attempt 随订阅 CASCADE 删除，删订阅重建
     # 就全忘了，而"这个发布里没有这一集"与用户订没订无关（见 disproven 模块）
-    from movieclaw_api.services.subscription.disproven import (
+    from movieclaw_api.services.subscription import (
         REASON_CONTENT_MISSING,
         remember_disproven_sources,
     )
