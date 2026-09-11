@@ -11,8 +11,12 @@ from movieclaw_api.schemas.library import LibraryItemView
 from movieclaw_media.models import MediaKind
 
 
-class RecentWatchItemView(BaseModel):
-    """媒体库首页的一张最近观看卡片。"""
+class UpNextItemView(BaseModel):
+    """媒体库首页「接下来继续」的一张卡片。
+
+    卡片指向的**永远是还没看完的那个单元**——电影是它自己，剧集是从最近播放
+    那一集起往后第一个没看完的。看完的作品不出卡，所以这里没有"已看完"态。
+    """
 
     media_item_id: int
     library_id: int
@@ -27,24 +31,31 @@ class RecentWatchItemView(BaseModel):
     )
     backdrop_url: str | None
     episode_still_url: str | None
+    # 季集是**卡片这一集**的，不是最近播放那一集的：卡片指向下一集时，
+    # 标题、剧照、时长、详情落点都跟着走
     season_number: int
     episode_number: int
     episode_title: str | None
-    # 锚点之后、当前成员从未看过且文件在位的分集数——“还能接着看几集”，
-    # 不是“最近入库了几集”：看完全剧、补齐旧季与洗版都不该触发提醒。
+    # 卡片这一集**之后**还有几个没看完、且文件在位的单元——"还能接着看几集"。
+    # 补齐的旧季与洗版的老集排在前面，不计入；电影恒为 0
     unwatched_ahead_count: int
+    # 续播点。为 0 就是"这一集还没开过"（多半是下一集），前端据此在
+    # 「继续看 · 42%」与「下一集」两种文案间选
     position_ms: int
     duration_ms: int | None
     progress_percent: int | None
-    played: bool
-    play_count: int
+    #: 卡片已经**翻过篇**了：最近播放那一集看完了，这张卡指向它之后的下一集。
+    #: 前端推不出来——``position_ms == 0`` 同时意味着"下一集"和"这一集还没开过"，
+    #: 两者该说的话不一样
+    advanced: bool = Field(default=False, description="指向的是下一集，而不是上次那一个")
+    #: 最近一次播放这部作品的时间——卡片的排序依据与"什么时候看的"那行文案
     last_played_at: datetime
 
 
-class RecentWatchView(BaseModel):
-    """最近观看横排的数据载荷。"""
+class UpNextView(BaseModel):
+    """「接下来继续」横排的数据载荷。"""
 
-    items: list[RecentWatchItemView]
+    items: list[UpNextItemView]
 
 
 class FavoriteItemView(LibraryItemView):

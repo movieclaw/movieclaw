@@ -62,7 +62,7 @@ interface ApiEnvelope<T> {
   data: T;
 }
 
-export interface RecentWatchItem {
+export interface UpNextItem {
   media_item_id: number;
   library_id: number;
   kind: MediaType;
@@ -73,25 +73,31 @@ export interface RecentWatchItem {
   poster_aspect: number;
   /** 电影横向背景剧照；缺失时前端按 poster_aspect 用海报铺满或模糊铺底。 */
   backdrop_url: string | null;
-  /** 剧集最近播放那一集的 16:9 剧照；电影恒为 null。 */
+  /** **卡片这一集**的 16:9 剧照；电影恒为 null。 */
   episode_still_url: string | null;
+  /** 卡片指向的季集——可能是最近播放那一集，也可能是它之后的下一集 */
   season_number: number;
   episode_number: number;
   episode_title: string | null;
-  /** 同一媒体库中排在最近播放那一集之后、仍在位且从未看过的分集数；电影恒为 0。 */
+  /** 卡片这一集**之后**还有几个没看完、且文件在位的单元；电影恒为 0。 */
   unwatched_ahead_count: number;
+  /** 续播点；0 = 这一集还没开过（多半是下一集） */
   position_ms: number;
   duration_ms: number | null;
   progress_percent: number | null;
-  played: boolean;
-  play_count: number;
+  /**
+   * 卡片已经**翻过篇**了：上次那一集看完了，这张卡指向它之后的下一集。
+   * 前端推不出来——`position_ms === 0` 同时意味着"下一集"和"这一集还没开过"。
+   */
+  advanced: boolean;
+  /** 最近一次播放这部作品的时间——排序依据与"什么时候看的"那行文案 */
   last_played_at: string;
 }
 
-/** 当前账号在可见媒体库中的最近观看作品。 */
-export async function listRecentWatch(limit = 20): Promise<RecentWatchItem[]> {
-  const response = await request<ApiEnvelope<{ items: RecentWatchItem[] }>>(
-    `/playback/recent?limit=${limit}`,
+/** 当前账号"接下来该接着看"的作品；看完的不在其中。 */
+export async function listUpNext(limit = 20): Promise<UpNextItem[]> {
+  const response = await request<ApiEnvelope<{ items: UpNextItem[] }>>(
+    `/playback/up-next?limit=${limit}`,
   );
   return response.data.items;
 }

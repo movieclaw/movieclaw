@@ -140,7 +140,6 @@ library metadata stop-refresh
 library missing clear-records
 library missing list
 library missing redownload
-library recommendations
 library recycle list
 library recycle purge
 library recycle restore

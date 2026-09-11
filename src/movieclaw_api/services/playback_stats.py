@@ -40,7 +40,7 @@ from movieclaw_api.services.playback_activity import (
     _target,
     libraries_by_item,
 )
-from movieclaw_api.services.playback_recent import _progress_percent
+from movieclaw_api.services.playback_up_next import _progress_percent
 from movieclaw_db.models import PlaybackLog, PlaybackMetric
 from movieclaw_db.models.base import utcnow
 from movieclaw_media.models import MediaKind

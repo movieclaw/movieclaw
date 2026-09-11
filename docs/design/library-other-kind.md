@@ -11,7 +11,7 @@
 > 各轮之间的矛盾表述。
 > 关联文档：[library.md](library.md)、[metadata.md](metadata.md)、
 > [web-player.md](web-player.md)、[jellyfin-compat.md](jellyfin-compat.md)、
-> [library-home-recently-watched.md](library-home-recently-watched.md)、
+> [library-home-up-next.md](library-home-up-next.md)、
 > [library-file-recycle.md](library-file-recycle.md)、
 > [member-management.md](member-management.md)。
 

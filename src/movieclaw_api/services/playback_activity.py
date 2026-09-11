@@ -29,7 +29,7 @@ from movieclaw_api.services.media_scrape import asset_version
 from movieclaw_api.services.playback.session import get_session_manager
 
 # 与首页"最近观看"共用同一套时长回退与进度换算口径，避免两处各算各的
-from movieclaw_api.services.playback_recent import _progress_percent, _runtime_ms
+from movieclaw_api.services.playback_up_next import _progress_percent, _runtime_ms
 from movieclaw_db.models import (
     JellyfinDevice,
     LibraryFile,

@@ -477,18 +477,6 @@ class CollectionView(BaseModel):
     position: int
 
 
-class LibraryRecommendRowView(BaseModel):
-    """一行推荐（docs/design/library-filtering.md F5）。
-
-    ``title`` 就是这一行的理由——说不清楚为什么推的，不如不推。
-    """
-
-    key: str = Field(description="行标识（resume / series / genre:16…），前端用作 key")
-    title: str
-    reason: str | None = Field(default=None, description="把理由说完整；没有就不显示")
-    items: list[LibraryItemView] = Field(default_factory=list)
-
-
 class CollectionItemsPayload(BaseModel):
     """手动合集的成员操作：加入与排序共用这一个形状。"""
 

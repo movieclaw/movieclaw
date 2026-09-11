@@ -459,11 +459,11 @@ def test_library_visibility_whitelist(client: TestClient) -> None:
 
 
 def test_recent_playback_is_a_member_browsing_route(client: TestClient) -> None:
-    """最近观看属于成员浏览面；新账号没有记录时返回空列表而不是拒绝访问。"""
+    """「接下来继续」属于成员浏览面；新账号没有记录时返回空列表而不是拒绝访问。"""
     _admin_cookie, member_cookie, _ = _setup_admin_and_member(client)
     _use(client, member_cookie)
 
-    response = client.get("/api/v1/playback/recent")
+    response = client.get("/api/v1/playback/up-next")
 
     assert response.status_code == 200
     assert response.json()["data"] == {"items": []}
@@ -577,13 +577,12 @@ _MEMBER_ALLOWLIST = {
     # 系列合集的「已有 N / 共 M」与缺片名单：成员浏览合集时就要看见它
     ("GET", "/api/v1/collections/{collection_id}/series"),
     # 推荐行是按人算的，成员看的是自己那份
-    ("GET", "/api/v1/libraries/{library_id}/recommendations"),
     # 手动合集的成员增删与排序：成员管自己的合集（可见性另有三层收口）
     ("POST", "/api/v1/collections/{collection_id}/items"),
     ("DELETE", "/api/v1/collections/{collection_id}/items/{media_item_id}"),
     ("PUT", "/api/v1/collections/{collection_id}/order"),
-    # 最近观看是按成员隔离的个人播放数据，并继续受媒体库白名单过滤。
-    ("GET", "/api/v1/playback/recent"),
+    # 「接下来继续」是按成员隔离的个人播放数据，并继续受媒体库白名单过滤。
+    ("GET", "/api/v1/playback/up-next"),
     # 清除观看记录只作用于当前成员自己的行（超管删超管的），跨成员不提供；
     # 按条目/按库清除还要求目标在可浏览范围内（docs/design/library-access.md 2.6）
     ("DELETE", "/api/v1/playback/history"),

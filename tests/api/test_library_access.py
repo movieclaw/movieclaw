@@ -5,7 +5,7 @@
    配置可读、管理动作可用，但海报墙 / 封面 / 条目图片一律 404；勾回自己即恢复；
 2. 「指定成员」的库对 all_libraries 成员默认不可见；库设置页勾选成员后可见，
    且与成员管理页的 library_ids 是同一份数据（互通）；
-3. 最近观看 / 活动页对范围外的库：首页不出现，活动页只报个数不出片名；
+3. 接下来继续 / 活动页对范围外的库：首页不出现，活动页只报个数不出片名；
 4. 清除观看记录：三种范围只删自己的，其他成员不受影响，范围外的库 404；
 5. 令牌主体只看 everyone 库（不继承超管授权）：库列表默认只列可浏览的库，
    scope=all 才连同只有管理权的库一起列出；
@@ -246,22 +246,22 @@ async def test_selected_library_requires_explicit_member_grant(client: TestClien
 
 
 # ---------------------------------------------------------------------------
-# 3. 聚合面：最近观看与活动页
+# 3. 聚合面：接下来继续与活动页
 # ---------------------------------------------------------------------------
 
 
-async def test_recent_watch_hides_out_of_scope(client: TestClient) -> None:
-    """首页最近观看随超管的浏览范围折叠；活动页的同类折叠见
+async def test_up_next_hides_out_of_scope(client: TestClient) -> None:
+    """首页「接下来继续」随超管的浏览范围折叠；活动页的同类折叠见
     test_playback_activity.py（播放记录的 hidden_count）。"""
     lib = _create_library(client, "私藏", "/m/private", access_mode="selected", admin_visible=False)
     item = await _seed_item(lib, "私藏片", 3001)
     await _seed_state(0, item)
 
-    assert client.get("/api/v1/playback/recent").json()["data"]["items"] == []
+    assert client.get("/api/v1/playback/up-next").json()["data"]["items"] == []
 
     _update_library(client, lib, admin_visible=True)
     assert [
-        i["media_item_id"] for i in client.get("/api/v1/playback/recent").json()["data"]["items"]
+        i["media_item_id"] for i in client.get("/api/v1/playback/up-next").json()["data"]["items"]
     ] == [item]
 
 
@@ -281,33 +281,33 @@ async def test_clear_history_scopes_only_touch_own_rows(client: TestClient) -> N
         await _seed_state(0, item)
         await _seed_state(member_id, item)
 
-    def _recent_ids() -> list[int]:
+    def _up_next_ids() -> list[int]:
         return sorted(
             i["media_item_id"]
-            for i in client.get("/api/v1/playback/recent").json()["data"]["items"]
+            for i in client.get("/api/v1/playback/up-next").json()["data"]["items"]
         )
 
     # 按条目
     resp = client.delete("/api/v1/playback/history", params={"scope": "item", "media_item_id": a1})
     assert resp.status_code == 200, resp.text
     assert resp.json()["data"]["deleted_states"] == 1
-    assert _recent_ids() == sorted([a2, b1])
+    assert _up_next_ids() == sorted([a2, b1])
 
     # 按库
     resp = client.delete(
         "/api/v1/playback/history", params={"scope": "library", "library_id": lib_a}
     )
     assert resp.json()["data"]["deleted_states"] == 1
-    assert _recent_ids() == [b1]
+    assert _up_next_ids() == [b1]
 
     # 全部
     resp = client.delete("/api/v1/playback/history", params={"scope": "all"})
     assert resp.json()["data"]["deleted_states"] == 1
-    assert _recent_ids() == []
+    assert _up_next_ids() == []
 
     # 成员的记录一条没动
     _use(client, member_cookie)
-    assert _recent_ids() == sorted([a1, a2, b1])
+    assert _up_next_ids() == sorted([a1, a2, b1])
 
     # 范围外的库不能按库清
     _use(client, _admin_cookie(client))
@@ -329,10 +329,10 @@ async def test_clear_history_since_only_touches_recent_plays(client: TestClient)
     await _seed_state(0, fresh, last_played_at=now - timedelta(hours=1))
     await _seed_state(0, stale, last_played_at=now - timedelta(days=30))
 
-    def _recent_ids() -> list[int]:
+    def _up_next_ids() -> list[int]:
         return sorted(
             i["media_item_id"]
-            for i in client.get("/api/v1/playback/recent").json()["data"]["items"]
+            for i in client.get("/api/v1/playback/up-next").json()["data"]["items"]
         )
 
     # 带时区的 ISO 起点（浏览器 toISOString 的形态）也能正确归一到库里的 UTC 朴素时间
@@ -340,7 +340,7 @@ async def test_clear_history_since_only_touches_recent_plays(client: TestClient)
     resp = client.delete("/api/v1/playback/history", params={"scope": "all", "since": since})
     assert resp.status_code == 200, resp.text
     assert resp.json()["data"]["deleted_states"] == 1
-    assert _recent_ids() == [stale]
+    assert _up_next_ids() == [stale]
 
     # 时间窗口可叠在按库范围上
     resp = client.delete(
@@ -348,7 +348,7 @@ async def test_clear_history_since_only_touches_recent_plays(client: TestClient)
         params={"scope": "library", "library_id": lib, "since": since},
     )
     assert resp.json()["data"]["deleted_states"] == 0
-    assert _recent_ids() == [stale]
+    assert _up_next_ids() == [stale]
 
 
 # ---------------------------------------------------------------------------

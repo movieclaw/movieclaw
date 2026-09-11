@@ -4,22 +4,22 @@ import type { Route } from "next";
 import Link from "next/link";
 
 import { HScroller } from "@/components/h-scroller";
-import { CheckIcon, PlayIcon } from "@/components/icons";
+import { PlayIcon } from "@/components/icons";
 import { PosterImage } from "@/components/poster-image";
-import { RecentWatchMenu } from "@/components/recent-watch-menu";
+import { WatchHistoryMenu } from "@/components/watch-history-menu";
 import type { MediaLibrary } from "@/lib/api/libraries";
-import type { RecentWatchItem } from "@/lib/api/playback";
+import type { UpNextItem } from "@/lib/api/playback";
 import { playHref, rememberPlayerReturnPath } from "@/lib/player/play-links";
 import { cardVariantFor, imageUrl } from "@/lib/image-proxy";
 import { formatRelativeTime } from "@/lib/time";
 import { useTapGuard } from "@/lib/use-tap-guard";
 
 /** S1E2 统一展示为播放器常见的 S01E02，扫一眼即可辨认具体集。 */
-function episodeCode(item: RecentWatchItem): string {
+function episodeCode(item: UpNextItem): string {
   return `S${String(item.season_number).padStart(2, "0")}E${String(item.episode_number).padStart(2, "0")}`;
 }
 
-function itemHref(item: RecentWatchItem): Route {
+function itemHref(item: UpNextItem): Route {
   const base = `/library/${item.library_id}/item/${item.media_item_id}`;
   if (item.kind === "tv") {
     return `${base}?season=${item.season_number}&episode=${item.episode_number}&from=recent` as Route;
@@ -36,17 +36,17 @@ function itemHref(item: RecentWatchItem): Route {
  * 退出回哪不进地址（分享者的上下文不是内容标识），点击时记进
  * sessionStorage；这张卡只出现在媒体库首页，落点固定。
  */
-function cardPlayHref(item: RecentWatchItem): Route {
+function cardPlayHref(item: UpNextItem): Route {
   return playHref(item.media_item_id, {
     season: item.kind === "tv" ? item.season_number : undefined,
     episode: item.kind === "tv" ? item.episode_number : undefined,
   }) as Route;
 }
 
-/** 播放键的读法：看完的是重播，看了一半的是续播，其余就是播放。 */
-function playVerb(item: RecentWatchItem): string {
-  if (item.played) return "重新播放";
-  return item.position_ms > 0 ? "继续播放" : "播放";
+/** 播放键的读法。这一行里没有"重播"——看完的作品根本不出现。 */
+function playVerb(item: UpNextItem): string {
+  if (item.position_ms > 0) return "继续播放";
+  return item.advanced ? "播放下一集" : "播放";
 }
 
 /** 毫秒 → 播放器风格时钟，只有超过一小时才带小时位，短片保持 12:34 的紧凑写法。 */
@@ -60,36 +60,37 @@ function clock(ms: number): string {
 }
 
 /**
- * 「已播 / 总时长」文本。只在"看了一半"时出现：
- * 已看完的作品右上角有对勾就够了，尚未开播或后端没探到时长的也不必占位，
- * 卡片上始终只保留当下最有用的那一条信息。
+ * 「已播 / 总时长」文本。只在"看了一半"时出现：还没开过的那一集（多半是
+ * 下一集）没有续播点可报，后端没探到时长的也不必占位，卡片上始终只保留
+ * 当下最有用的那一条信息。
  */
-function playbackClock(item: RecentWatchItem): string | null {
-  if (item.played || item.position_ms <= 0 || !item.duration_ms) return null;
+function playbackClock(item: UpNextItem): string | null {
+  if (item.position_ms <= 0 || !item.duration_ms) return null;
   return `${clock(item.position_ms)} / ${clock(item.duration_ms)}`;
 }
 
 /**
- * 卡片底部第三行的状态文案。卡片上已经用时钟展示进度时不再重复百分比，
- * 这一行只回答"什么时候看的"。
+ * 卡片底部第三行的状态文案。这一行要回答的是"**为什么它在这儿**"——
+ * 接着上次那一集看，还是上一集已经看完了该看下一集。卡片上已经用时钟
+ * 展示进度时不再重复百分比。
  */
-function stateLabel(item: RecentWatchItem, hasClock: boolean): string {
+function stateLabel(item: UpNextItem, hasClock: boolean): string {
   const ago = formatRelativeTime(item.last_played_at);
-  if (item.played) return `${ago}已看完`;
+  if (item.advanced) return `${ago}看完上一集`;
   if (item.position_ms > 0 && item.progress_percent != null && !hasClock) {
-    return `${ago}观看到 ${item.progress_percent}%`;
+    return `${ago}看到 ${item.progress_percent}%`;
   }
-  if (item.position_ms > 0) return `${ago}观看过`;
-  return `${ago}播放过`;
+  if (item.position_ms > 0) return `${ago}看过一段`;
+  return `${ago}打开过`;
 }
 
 /** 媒体库首页顶部的最近观看横排；空列表整段隐藏。 */
-export function RecentWatchRow({
+export function UpNextRow({
   items,
   libraries,
   onCleared,
 }: {
-  items: RecentWatchItem[] | null;
+  items: UpNextItem[] | null;
   /** 当前身份可浏览的库：⋯ 菜单「清空某个媒体库」的候选 */
   libraries: MediaLibrary[];
   /** 清除观看记录成功后回调：父组件重新拉数据，这一行随之刷新或隐藏 */
@@ -101,26 +102,26 @@ export function RecentWatchRow({
   if (!items?.length) return null;
 
   return (
-    <section className="mt-8 max-md:mt-6" aria-labelledby="recent-watch-title">
+    <section className="mt-8 max-md:mt-6" aria-labelledby="up-next-title">
       <div className="flex items-center justify-between gap-4 px-6 max-md:px-4">
         <h3
-          id="recent-watch-title"
+          id="up-next-title"
           className="text-on-image text-body-lg font-semibold tracking-[-0.01em] text-[var(--text)]"
         >
-          最近观看
+          接下来继续
         </h3>
         {/* 清空观看记录收在标题行右端的 ⋯ 里：与「我的媒体库」等分区标题
             行同一布局，分区自己的操作长在分区上 */}
-        <RecentWatchMenu libraries={libraries} onCleared={onCleared} />
+        <WatchHistoryMenu libraries={libraries} onCleared={onCleared} />
       </div>
       <HScroller className="mt-3 gap-4 px-6 pb-2 pt-1 max-md:gap-3 max-md:px-4">
-        {items.map((item) => <RecentWatchCard key={item.media_item_id} item={item} />)}
+        {items.map((item) => <UpNextCard key={item.media_item_id} item={item} />)}
       </HScroller>
     </section>
   );
 }
 
-function RecentWatchCard({ item }: { item: RecentWatchItem }) {
+function UpNextCard({ item }: { item: UpNextItem }) {
   const tapGuard = useTapGuard();
   // 播放键自己也要过一遍误触保护：横滑最近观看这一行时，手指常常正好停在
   // 卡片中央，没有它一划就起播了（比误进详情页糟得多——会真的起转码会话）。
@@ -135,12 +136,13 @@ function RecentWatchCard({ item }: { item: RecentWatchItem }) {
     : item.year
       ? String(item.year)
       : "";
-  const progress = item.played ? 100 : item.progress_percent;
+  const progress = item.progress_percent;
   const timeLabel = playbackClock(item);
   const artworkUrl = isEpisode ? item.episode_still_url : item.backdrop_url;
-  // 角标回答“还能接着看几集”：已经看过的集不计，因此整部剧看完后角标自然消失。
+  // 角标回答"这一集之后还有多少可看"——相对**卡片这一集**算，不是相对上次看的
+  // 那一集。看完的集不计，所以追平之后角标自然消失。
   const unwatchedLabel =
-    isEpisode && item.unwatched_ahead_count > 0 ? `未看 ${item.unwatched_ahead_count} 集` : null;
+    isEpisode && item.unwatched_ahead_count > 0 ? `还有 ${item.unwatched_ahead_count} 集` : null;
 
   return (
     // 卡片是两个入口叠在一起：整卡进详情、中央播放键直接起播。播放键必须是
@@ -188,19 +190,12 @@ function RecentWatchCard({ item }: { item: RecentWatchItem }) {
             />
           )}
           <div className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-black/75 to-transparent" />
-          {/* 右上角统一放"状态角标"：看完的对勾与未看提示同排，不再和底部进度抢位置。 */}
-          {(unwatchedLabel || item.played) && (
-            <div className="pointer-events-none absolute right-2 top-2 flex items-center gap-1.5">
-              {unwatchedLabel && (
-                <span className="tnum rounded-full border border-emerald-200/25 bg-[rgba(5,46,34,0.76)] px-2 py-0.5 text-micro font-semibold text-emerald-100 shadow-[0_5px_16px_rgba(0,0,0,0.32)] backdrop-blur-md">
-                  {unwatchedLabel}
-                </span>
-              )}
-              {item.played && (
-                <span className="flex size-6 items-center justify-center rounded-full bg-[var(--ok)] text-[#07120c] shadow-lg">
-                  <CheckIcon className="size-3.5 stroke-[2.5]" />
-                </span>
-              )}
+          {/* 右上角只剩"还有几集"：这一行里不存在看完的作品，对勾没有用武之地 */}
+          {unwatchedLabel && (
+            <div className="pointer-events-none absolute right-2 top-2">
+              <span className="tnum rounded-full border border-emerald-200/25 bg-[rgba(5,46,34,0.76)] px-2 py-0.5 text-micro font-semibold text-emerald-100 shadow-[0_5px_16px_rgba(0,0,0,0.32)] backdrop-blur-md">
+                {unwatchedLabel}
+              </span>
             </div>
           )}
           {/* 底部只留进度：看了一半时在进度条上方补一行「已播 / 总时长」。 */}
@@ -213,7 +208,7 @@ function RecentWatchCard({ item }: { item: RecentWatchItem }) {
             {progress != null ? (
               <div className="h-[3px] overflow-hidden rounded-full bg-white/25">
                 <div
-                  className={`h-full rounded-full ${item.played ? "bg-[var(--ok)]" : "bg-[var(--accent-2)]"}`}
+                  className="h-full rounded-full bg-[var(--accent-2)]"
                   style={{ width: `${progress}%` }}
                 />
               </div>

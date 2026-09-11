@@ -8,7 +8,7 @@
 > 语义是**超管的浏览也受可见范围约束**。
 > 关联：[member-management.md](member-management.md) §3.6（库访问模型，
 > 本文是其演进）、[library.md](library.md)、
-> [library-home-recently-watched.md](library-home-recently-watched.md)、
+> [library-home-up-next.md](library-home-up-next.md)、
 > [activity.md](activity.md)、[jellyfin-compat.md](jellyfin-compat.md)。
 > 后续分期（不在本文范围）：P2 Jellyfin 设备级开关、Web 会话解锁态、
 > 库级「不记录播放」、日志脱敏、备份清理提示。

@@ -197,7 +197,6 @@ library missing clear-records
 library missing list
 library missing redownload
 library organize-files
-library recommendations
 library reconcile-paths
 library recycle
 library recycle list

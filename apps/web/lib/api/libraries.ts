@@ -643,22 +643,6 @@ export interface FacetValue {
 }
 
 /** 一次筛选下的全部候选值与计数。 */
-/** 一行推荐：title 就是它的理由（说不清楚为什么推的，不如不推）。 */
-export interface LibraryRecommendRow {
-  key: string;
-  title: string;
-  /** 把理由说完整；没有就不显示 */
-  reason: string | null;
-  items: LibraryItem[];
-}
-
-/** 按这个人自己的观看记录给的推荐行；记录太少时是空表。 */
-export function listLibraryRecommendations(libraryId: number): Promise<LibraryRecommendRow[]> {
-  return unwrap(
-    request<ApiEnvelope<LibraryRecommendRow[]>>(`/libraries/${libraryId}/recommendations`),
-  );
-}
-
 export interface LibraryFacets {
   total: number;
   genres: FacetValue[];

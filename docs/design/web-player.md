@@ -5,7 +5,7 @@
 > 关联文档：[jellyfin-compat.md](jellyfin-compat.md)（第三方播放器直连）、
 > [library.md](library.md)（媒体库架构）、[strm-workflow.md](strm-workflow.md)
 > （网盘零流量原则）、[jellyfin-subtitle.md](jellyfin-subtitle.md)（字幕轨中性引用）、
-> [library-home-recently-watched.md](library-home-recently-watched.md)（续播入口）、
+> [library-home-up-next.md](library-home-up-next.md)（续播入口）、
 > [remote-transcode.md](remote-transcode.md)（远程硬件转码 Worker）。
 >
 > **本文修订 [jellyfin-compat.md](jellyfin-compat.md) §0 硬边界 2「不转码」**，

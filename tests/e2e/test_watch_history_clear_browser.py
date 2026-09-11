@@ -1,11 +1,12 @@
-"""首页「最近观看」⋯ 菜单清空观看记录的浏览器端到端（docs/design/library-access.md 2.6）。
+"""首页「接下来继续」⋯ 菜单清空观看记录的浏览器端到端（docs/design/library-access.md 2.6）。
 
 真后端（uvicorn 子进程）+ 真前端（``pnpm dev``）+ 无头 Chromium。观看记录不经
 播放器产生，直接往 SQLite 里播种 mock 数据：两个库、五条最近播放时间各异的
 状态行（今天 / 三天前 / 上个月）。覆盖：
 
 - 单库页 ⋯ 菜单不再有「清空我的观看记录」；
-- 「最近观看」标题右侧的 ⋯ 菜单四条：清空今天 → 只掉今天的两张卡；清空最近
+- 看完一集之后，卡片翻篇到下一集（这一行改版的主因）；
+- 「接下来继续」标题右侧的 ⋯ 菜单四条：清空今天 → 只掉今天的两张卡；清空最近
   一周 → 再掉三天前那张；清空某个媒体库（弹窗下拉选库）→ 只掉该库的；清空全部
   → 分区整段隐藏；
 - 时间窗口内没有记录时的回执文案；每一步都用接口核对剩余记录。
@@ -71,8 +72,8 @@ def _wait_http(url: str, timeout: float) -> None:
 @pytest.fixture(scope="module")
 def stack(tmp_path_factory):
     """拉起后端 + 前端；模块结束时收掉子进程。"""
-    root = tmp_path_factory.mktemp("recent-watch-e2e")
-    roots = {name: root / "media" / name for name in ("a", "b")}
+    root = tmp_path_factory.mktemp("up-next-e2e")
+    roots = {name: root / "media" / name for name in ("a", "b", "tv")}
     for path in roots.values():
         path.mkdir(parents=True)
     tmdb_log = root / "tmdb-requests.log"
@@ -152,6 +153,68 @@ _SEED = (
 )
 
 
+
+def _seed_finished_episode(database_url: str, library_id: int) -> None:
+    """播一部"E01 看完了、E02/E03 还在"的剧——「接下来继续」最要紧的那个场景。"""
+    from movieclaw_db.engine import Database
+    from movieclaw_db.models import LibraryFile, MediaEpisode, MediaItem, PlaybackState
+    from movieclaw_db.models.base import utcnow
+
+    async def _run() -> None:
+        db = Database(database_url)
+        try:
+            async with db.session() as session:
+                show = MediaItem(
+                    kind="tv",
+                    tmdb_id=91_000,
+                    title="追到一半的剧",
+                    original_title="Halfway",
+                    year=2024,
+                    aliases=[],
+                )
+                session.add(show)
+                await session.commit()
+                for episode in (1, 2, 3):
+                    session.add(
+                        LibraryFile(
+                            library_id=library_id,
+                            media_item_id=show.id,
+                            season_number=1,
+                            episode_number=episode,
+                            file_path=f"/media/tv/S01E{episode:02d}.mkv",
+                            source="scanned",
+                            size_bytes=1_000,
+                            duration_seconds=2400,
+                        )
+                    )
+                session.add(
+                    MediaEpisode(
+                        media_item_id=show.id,
+                        season_number=1,
+                        episode_number=2,
+                        name="第二集",
+                    )
+                )
+                # E01 看完了——卡片该翻篇到 E02
+                session.add(
+                    PlaybackState(
+                        member_id=0,
+                        media_item_id=show.id,
+                        season_number=1,
+                        episode_number=1,
+                        played=True,
+                        play_count=1,
+                        last_played_at=utcnow() - timedelta(hours=2),
+                    )
+                )
+                await session.commit()
+        finally:
+            await db.dispose()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pool.submit(lambda: asyncio.run(_run())).result()
+
+
 def _seed_watch_history(database_url: str, library_ids: dict[str, int]) -> None:
     """直接往后端正在用的 SQLite 里播种条目、在位台账与观看状态（超管 member_id=0）。"""
     from movieclaw_db.engine import Database
@@ -214,8 +277,8 @@ def test_recent_watch_clear_menu(stack) -> None:  # noqa: PLR0915
         assert resp.ok, f"{method} {path}: {resp.status} {resp.text()}"
         return resp.json()
 
-    def recent_titles(page) -> list[str]:
-        return sorted(i["title"] for i in api(page, "get", "/playback/recent")["data"]["items"])
+    def up_next_titles(page) -> list[str]:
+        return sorted(i["title"] for i in api(page, "get", "/playback/up-next")["data"]["items"])
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, **_chromium_kwargs())
@@ -258,7 +321,7 @@ def test_recent_watch_clear_menu(stack) -> None:  # noqa: PLR0915
             for key in ("a", "b")
         }
         _seed_watch_history(stack["database_url"], library_ids)
-        assert recent_titles(page) == sorted(title for _, title, _ in _SEED)
+        assert up_next_titles(page) == sorted(title for _, title, _ in _SEED)
 
         # ---- 单库页：⋯ 菜单里没有「清空我的观看记录」了 ----
         page.goto(f"{base}/library/{library_ids['a']}")
@@ -269,10 +332,10 @@ def test_recent_watch_clear_menu(stack) -> None:  # noqa: PLR0915
         page.screenshot(path=str(shots / "01-library-menu-without-clear.png"))
         page.keyboard.press("Escape")
 
-        # ---- 首页：最近观看五张卡，标题右侧有 ⋯ ----
+        # ---- 首页：接下来继续五张卡，标题右侧有 ⋯ ----
         page.goto(f"{base}/library")
-        section = page.locator("section[aria-labelledby=recent-watch-title]")
-        expect(section.get_by_role("heading", name="最近观看")).to_be_visible()
+        section = page.locator("section[aria-labelledby=up-next-title]")
+        expect(section.get_by_role("heading", name="接下来继续")).to_be_visible()
 
         def card(title: str):
             return section.get_by_role("link", name=re.compile(f"^{re.escape(title)}，"))
@@ -280,7 +343,7 @@ def test_recent_watch_clear_menu(stack) -> None:  # noqa: PLR0915
         for _, title, _ in _SEED:
             expect(card(title)).to_be_visible()
         expect(page.get_by_role("link", name="管理媒体库")).to_be_visible()
-        page.screenshot(path=str(shots / "02-home-recent-watch.png"), full_page=True)
+        page.screenshot(path=str(shots / "02-home-up-next.png"), full_page=True)
 
         def open_menu():
             section.get_by_role("button", name="清空观看记录").click()
@@ -294,7 +357,7 @@ def test_recent_watch_clear_menu(stack) -> None:  # noqa: PLR0915
             "清空某个媒体库的观看记录…",
         ):
             expect(menu.get_by_role("menuitem", name=label)).to_be_visible()
-        page.screenshot(path=str(shots / "03-recent-watch-menu.png"))
+        page.screenshot(path=str(shots / "03-watch-history-menu.png"))
 
         # ---- 清空今天：确认弹窗 → 只掉今天的两张卡 ----
         menu.get_by_role("menuitem", name="清空今天的观看记录…").click()
@@ -306,13 +369,13 @@ def test_recent_watch_clear_menu(stack) -> None:  # noqa: PLR0915
         expect(card("今天看的 A")).to_have_count(0)
         expect(card("今天看的 B")).to_have_count(0)
         expect(card("三天前看的 A")).to_be_visible()
-        assert recent_titles(page) == ["三天前看的 A", "上个月看的 A", "上个月看的 B"]
+        assert up_next_titles(page) == ["三天前看的 A", "上个月看的 A", "上个月看的 B"]
 
         # 今天已经没有记录：再清一次给出「没有可清除的记录」的回执，卡片不动
         open_menu().get_by_role("menuitem", name="清空今天的观看记录…").click()
         page.get_by_role("dialog").last.get_by_role("button", name="清空").click()
         expect(page.get_by_text("今天的观看记录里没有可清除的记录")).to_be_visible()
-        assert recent_titles(page) == ["三天前看的 A", "上个月看的 A", "上个月看的 B"]
+        assert up_next_titles(page) == ["三天前看的 A", "上个月看的 A", "上个月看的 B"]
 
         # ---- 清空最近一周：三天前那张也掉，上个月的两张留下 ----
         open_menu().get_by_role("menuitem", name="清空最近一周的观看记录…").click()
@@ -323,7 +386,7 @@ def test_recent_watch_clear_menu(stack) -> None:  # noqa: PLR0915
         expect(card("三天前看的 A")).to_have_count(0)
         expect(card("上个月看的 A")).to_be_visible()
         expect(card("上个月看的 B")).to_be_visible()
-        assert recent_titles(page) == ["上个月看的 A", "上个月看的 B"]
+        assert up_next_titles(page) == ["上个月看的 A", "上个月看的 B"]
 
         # ---- 清空某个媒体库：弹窗里下拉选「库 B」→ 只掉 B 的 ----
         open_menu().get_by_role("menuitem", name="清空某个媒体库的观看记录…").click()
@@ -339,7 +402,7 @@ def test_recent_watch_clear_menu(stack) -> None:  # noqa: PLR0915
         expect(page.get_by_text("已清除你在这个库里的观看记录")).to_be_visible()
         expect(card("上个月看的 B")).to_have_count(0)
         expect(card("上个月看的 A")).to_be_visible()
-        assert recent_titles(page) == ["上个月看的 A"]
+        assert up_next_titles(page) == ["上个月看的 A"]
 
         # ---- 清空全部：分区整段隐藏（连同 ⋯ 入口） ----
         open_menu().get_by_role("menuitem", name="清空全部观看记录…").click()
@@ -349,8 +412,32 @@ def test_recent_watch_clear_menu(stack) -> None:  # noqa: PLR0915
         expect(page.get_by_text("已清除你的全部观看记录")).to_be_visible()
         expect(section).to_have_count(0)
         expect(page.get_by_role("heading", name="我的媒体库")).to_be_visible()
-        assert recent_titles(page) == []
+        assert up_next_titles(page) == []
         page.screenshot(path=str(shots / "06-home-after-clear-all.png"), full_page=True)
+
+        # ---- 看完一集 → 卡片翻篇到下一集（这一行改版的主因） ----
+        # 放在最后：此时记录已清空，不会扰动上面那些按标题锁死的断言
+        tv_library = api(
+            page,
+            "post",
+            "/libraries",
+            data={"name": "剧集库", "kind": "tv", "root_paths": [str(roots["tv"])]},
+        )["data"]["id"]
+        _seed_finished_episode(stack["database_url"], tv_library)
+        page.reload()
+        page.wait_for_load_state("networkidle")
+        expect(section.get_by_role("heading", name="接下来继续")).to_be_visible()
+        show_card = card("追到一半的剧")
+        expect(show_card).to_be_visible()
+        # 卡片指的是 E02 而不是刚看完的 E01，副标题连读成「S01E02 · 第二集」
+        expect(show_card).to_contain_text("S01E02")
+        expect(show_card).to_contain_text("第二集")
+        # 状态行说清楚它为什么在这儿；角标相对 E02 算，后面只剩 E03 一集
+        expect(show_card).to_contain_text("看完上一集")
+        expect(show_card).to_contain_text("还有 1 集")
+        # 看完的东西不出卡：E01 一张都不该有
+        assert "S01E01" not in section.inner_text()
+        page.screenshot(path=str(shots / "07-up-next-advanced.png"), full_page=True)
 
         assert not page_errors, f"页面脚本报错：{page_errors}"
         browser.close()

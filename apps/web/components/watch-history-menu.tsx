@@ -1,7 +1,10 @@
 "use client";
 
 /**
- * 媒体库首页「最近观看」标题右侧的 ⋯ 菜单：清空观看记录的**唯一**入口。
+ * 媒体库首页「接下来继续」标题右侧的 ⋯ 菜单：清空观看记录的**唯一**入口。
+ *
+ * 按职能命名而不是按它挂在哪一行：它清的是观看记录本身，只是恰好长在
+ * 展示这些记录的那一行上。
  *
  * 以前这个入口挂在每个单库页的 ⋯ 菜单里（「清空我的观看记录」）——进任何
  * 一个库都能看到一条与浏览无关的破坏性操作，位置也不对：观看记录是跨库
@@ -9,7 +12,8 @@
  * 今天 / 最近一周 / 全部 / 某个媒体库（弹窗里下拉选库）。
  *
  * 四条都是删自己的记录（docs/design/library-access.md 2.6），二次确认后
- * 调同一个接口；成功后由父组件重新拉最近观看，这一行随之刷新或整段隐藏。
+ * 调同一个接口；成功后由父组件重新拉数据，这一行随之刷新或整段隐藏
+ * （记录清空了，也就没有「接下来」可言）。
  */
 
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
@@ -36,7 +40,7 @@ function weekAgo(): Date {
   return new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 }
 
-export function RecentWatchMenu({
+export function WatchHistoryMenu({
   libraries,
   onCleared,
 }: {

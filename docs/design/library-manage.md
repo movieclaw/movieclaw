@@ -5,7 +5,7 @@
 > 样稿：`docs/design/mockups/library-manage-demo.html`（三屏：首页改后 / 管理页桌面 / 管理页手机）
 >
 > 相关：`library.md`（库模型）、`library-routing.md`（收藏范围）、`library-access.md`（可见范围）、
-> `library-home-recently-watched.md`（首页「最近观看」）、`mockups/library-import-watch-demo.html`（自动入库标签样稿）
+> `library-home-up-next.md`（首页「接下来继续」）、`mockups/library-import-watch-demo.html`（自动入库标签样稿）
 
 ## 1. 问题
 

@@ -54,8 +54,8 @@ from movieclaw_api.schemas.playback import (
     PlaybackStateView,
     PlaybackStatsView,
     PlaybackWatchStatsView,
-    RecentWatchView,
     TrickplayView,
+    UpNextView,
 )
 from movieclaw_api.schemas.response import ApiResponse, ok
 from movieclaw_api.services import media_scrape
@@ -121,8 +121,8 @@ from movieclaw_api.services.playback_activity import (
     revoke_device,
 )
 from movieclaw_api.services.playback_favorites import favorite_gallery, favorite_items
-from movieclaw_api.services.playback_recent import recent_watch_items
 from movieclaw_api.services.playback_stats import playback_history, playback_stats
+from movieclaw_api.services.playback_up_next import up_next_items
 from movieclaw_api.settings import PlaybackPolicySetting
 from movieclaw_api.settings.store import get_setting_store
 from movieclaw_db.engine import get_database, get_session
@@ -355,27 +355,30 @@ def _build_playback_diagnostics(
 
 
 @router.get(
-    "/recent",
-    response_model=ApiResponse[RecentWatchView],
-    summary="最近观看",
-    operation_id="playback.recent",
+    "/up-next",
+    response_model=ApiResponse[UpNextView],
+    summary="接下来继续",
+    operation_id="playback.up-next",
     openapi_extra={"x-cli-hidden": True},
 )
-async def list_recent_watch(
+async def list_up_next(
     limit: Annotated[int, Query(ge=1, le=50)] = 20,
     principal: Principal = Depends(require_login),
     session: AsyncSession = Depends(get_session),
-) -> ApiResponse[RecentWatchView]:
-    """列出当前账号在可见媒体库中的最近观看作品。"""
+) -> ApiResponse[UpNextView]:
+    """当前账号在可见媒体库中"接下来该接着看"的作品。
+
+    每张卡都指向一个还没看完的单元；看完的作品不出现在这里。
+    """
     visible_ids = await visible_library_ids(session, principal)
     member_id = principal.member_id if principal.member_id is not None else 0
-    items = await recent_watch_items(
+    items = await up_next_items(
         session,
         member_id=member_id,
         visible_library_ids=visible_ids,
         limit=limit,
     )
-    return ok(RecentWatchView(items=items))
+    return ok(UpNextView(items=items))
 
 
 @router.get(
