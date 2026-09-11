@@ -1270,6 +1270,13 @@ class TransferStatusView(BaseModel):
     subscription_moved: bool = Field(
         default=False, description="该片的订阅是否一并改挂到目标库（后续剧集直接投新库）"
     )
+    # 批量转移 / 根路径归并的结论。跳过与失败刻意分成两栏：跳过是用户在预检里
+    # 已经确认过的策略性结果，失败才是意外——合成一个"问题数"就没法只给失败
+    # 那部分提供重试入口，用户也分不清哪些是自己点头同意的
+    moved_items: int = Field(default=0, description="成功搬运的条目数（批量/归并）")
+    skipped_items: int = Field(default=0, description="按策略跳过的条目数（如同名冲突）")
+    failed_items: int = Field(default=0, description="执行时出错的条目数")
+    skips: list[str] = Field(default_factory=list, description="逐条跳过的中文原因")
     errors: list[str] = Field(default_factory=list)
 
     @field_serializer("finished_at")

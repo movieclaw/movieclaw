@@ -102,11 +102,15 @@ from movieclaw_api.services.library.access import (
     visible_library_ids,
 )
 from movieclaw_api.services.library.batch_transfer import (
+    CONSOLIDATE_JOB_TYPE,
     BatchMember,
     enqueue_batch_transfer_job,
     enqueue_consolidate_job,
     resolve_members,
     resolve_members_under_roots,
+)
+from movieclaw_api.services.library.batch_transfer import (
+    JOB_TYPE as BATCH_JOB_TYPE,
 )
 from movieclaw_api.services.library.collections import collections_containing
 from movieclaw_api.services.library.config import LibraryConfigService
@@ -3585,7 +3589,12 @@ async def get_transfer_status(
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[TransferStatusView]:
     """源库与目标库两侧查到的是同一份状态（转移期间两侧都占着任务位），
-    前端弹窗轮询这一个接口即可从"进行中"一路走到结论页。"""
+    前端弹窗轮询这一个接口即可从"进行中"一路走到结论页。
+
+    三种搬运共用这一个状态口径：单条目转移、批量转移、根路径归并。进行中的
+    读数来自库级任务位（批量时 title 是**当前正在搬的那一条**），结论则取三
+    类作业里最近完成的那一个——批量与归并的结论额外带 moved/skipped/failed。
+    """
     await LibraryConfigService(session).get(library_id)  # 404 检查
     state = transfer_state(library_id)
     if state is not None:
@@ -3599,9 +3608,9 @@ async def get_transfer_status(
                 total=state.total,
             )
         )
-    latest = await jobs.latest_job_for_resource(
-        session, "library", library_id, job_type="library.transfer"
-    )
+    latest = await _latest_relocation_job(session, library_id)
+    if latest is not None and latest.job_type in (BATCH_JOB_TYPE, CONSOLIDATE_JOB_TYPE):
+        return ok(_batch_status_view(latest))
     if latest is not None:
         progress = latest.progress or {}
         details = progress.get("details") if isinstance(progress.get("details"), dict) else {}
@@ -3659,6 +3668,49 @@ async def get_transfer_status(
             subscription_moved=summary.subscription_moved,
             errors=summary.errors,
         )
+    )
+
+
+async def _latest_relocation_job(session: AsyncSession, library_id: int) -> Job | None:
+    """三类搬运作业里最近的那一个（单条目转移 / 批量转移 / 根路径归并）。"""
+    candidates = []
+    for job_type in ("library.transfer", BATCH_JOB_TYPE, CONSOLIDATE_JOB_TYPE):
+        found = await jobs.latest_job_for_resource(
+            session, "library", library_id, job_type=job_type
+        )
+        if found is not None:
+            candidates.append(found)
+    if not candidates:
+        return None
+    return max(candidates, key=lambda job: job.created_at)
+
+
+def _batch_status_view(job: Job) -> TransferStatusView:
+    """把批量/归并作业投影成同一个状态视图（老前端不改也能读进度）。"""
+    progress = job.progress or {}
+    details = progress.get("details") if isinstance(progress.get("details"), dict) else {}
+    result = job.result or {}
+    running = job.status in ACTIVE_JOB_STATUSES
+    return TransferStatusView(
+        running=running,
+        title=str(job.subject or ""),
+        target_library_id=int(details.get("target_library_id") or 0) or None,
+        processed=int(progress.get("current") or 0),
+        total=int(progress.get("total") or 0),
+        finished_at=None if running else job.finished_at,
+        moved_items=int(result.get("moved") or 0),
+        skipped_items=int(result.get("skipped") or 0),
+        failed_items=int(result.get("failed") or 0),
+        files_relocated=int(result.get("files_relocated") or 0),
+        bytes_moved=int(result.get("bytes_moved") or 0),
+        removed_dirs=int(result.get("removed_dirs") or 0),
+        # 跳过是用户在预检里确认过的策略性结果，失败才是意外——两者分开给，
+        # 前端不能把它们合成一个"问题数"（合了就没法只对失败给重试入口）
+        skips=[str(item.get("reason") or "") for item in (result.get("skips") or [])],
+        errors=[
+            f"{item.get('title') or ''}：{item.get('reason') or ''}"
+            for item in (result.get("failures") or [])
+        ],
     )
 
 

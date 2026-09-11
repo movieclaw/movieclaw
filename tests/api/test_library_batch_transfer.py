@@ -435,3 +435,33 @@ async def test_merge_without_version_label_skips_instead_of_overwriting(db, tmp_
     assert (target_root / "甲" / "甲.mkv").read_bytes() == b"y" * 200
     assert not (target_root / "甲" / "甲 - .mkv").exists()
     assert outcome["result"]["failed"] == 0
+
+
+async def test_status_endpoint_reports_batch_outcome(db, tmp_path) -> None:
+    """批量与归并的结论要能从既有的转移状态接口读到：三种搬运共用一个口径。
+
+    跳过与失败分成两栏——跳过是用户在预检里点头同意过的，失败才是意外，
+    合成一个「问题数」前端就没法只给失败那部分提供重试入口。
+    """
+    from movieclaw_api.api.routes.libraries import get_transfer_status
+
+    source_id, target_id, _, target_root, entries = await _setup(
+        db, tmp_path, names=["甲", "乙"]
+    )
+    (target_root / "乙").mkdir()  # 这一条会被跳过
+
+    await _start(source_id, BatchTransferPayload(target_library_id=target_id, all_items=True))
+    await _drain(source_id)
+
+    async with get_database().session() as session:
+        view = (await get_transfer_status(source_id, session=session)).data
+    assert view.running is False
+    assert view.moved_items == 1
+    assert view.skipped_items == 1
+    assert view.failed_items == 0
+    assert len(view.skips) == 1 and "同名" in view.skips[0]
+    assert view.errors == []
+    # 目标库那一侧查到的是同一份结论
+    async with get_database().session() as session:
+        mirrored = (await get_transfer_status(target_id, session=session)).data
+    assert mirrored.moved_items == 1
