@@ -29,6 +29,7 @@ from movieclaw_db.migrations import run_migrations
 from movieclaw_db.models import (
     DownloadAttemptStatus,
     MediaItem,
+    MediaSource,
     SiteTorrent,
     SubscriptionActivity,
     SubscriptionDownloadAttempt,
@@ -1061,21 +1062,108 @@ async def test_tick_budget_counts_searches_not_groups(db, monkeypatch) -> None:
     _fake_search_by_keyword(monkeypatch, {}, calls)
     async with db.session() as session:
         service = _service(session)
-        subs = [
-            await service.create(MediaKind.MOVIE, 104),  # 3 个召回词
-            await service.create(MediaKind.MOVIE, 105),  # 1 个
-            await service.create(MediaKind.MOVIE, 106),  # 1 个
-        ]
+        three_words = await service.create(MediaKind.MOVIE, 104)  # 3 个召回词
+        one_word = await service.create(MediaKind.MOVIE, 105)  # 1 个
+        left_over = await service.create(MediaKind.MOVIE, 106)  # 1 个
+        # 取单序是 (priority DESC, next_search_at ASC)。显式压死优先级——不然
+        # 顺序只靠创建时刻的微秒差，换个顺序这个用例断言的就是另一回事了
+        for sub, priority in ((three_words, 20), (one_word, 10), (left_over, 0)):
+            for w in (await _wanted_map(session, sub.id)).values():
+                w.priority = priority
+        await session.commit()
 
     await search_wanted()
-    assert len(calls) == 4  # 预算用满即停，不是 5
+    assert len(calls) == 4  # 3 + 1 用满预算，第三组没开工
     async with db.session() as session:
-        untouched = [
-            sub
-            for sub in subs
-            if all(w.search_attempts == 0 for w in (await _wanted_map(session, sub.id)).values())
+        assert all(
+            w.search_attempts == 1 for w in (await _wanted_map(session, three_words.id)).values()
+        )
+        assert all(
+            w.search_attempts == 1 for w in (await _wanted_map(session, one_word.id)).values()
+        )
+        assert all(
+            w.search_attempts == 0 for w in (await _wanted_map(session, left_over.id)).values()
+        )
+
+
+def test_recall_keywords_order_dedup_and_blank_fallback() -> None:
+    """召回词集合的三条性质：顺序、归一化去重、脏数据不硬凑。"""
+    from movieclaw_api.services.subscription.wanted_search import recall_keywords
+
+    def item(**kw) -> MediaItem:
+        return MediaItem(kind="movie", source=MediaSource.TMDB, aliases=[], **kw)
+
+    assert recall_keywords(
+        item(title=_ZH, original_title=_KO, english_title=_EN)
+    ) == [_EN, _ZH, _KO]  # 英文名 → 中文名 → 原名
+
+    # 归一化后同形只留一个，且留的是**原样文本**
+    assert recall_keywords(
+        item(title="Dune: Part Two", original_title="Dune.Part.Two", english_title="dune part two")
+    ) == ["dune part two"]
+
+    # 英文名缺失（存量条目回填前）退回两个词，也就是改动前的行为
+    assert recall_keywords(item(title=_ZH, original_title=_KO)) == [_ZH, _KO]
+
+    # 三个字段全空/全是符号：返回空列表，**不能**硬塞一个可能为空的主标题去搜
+    # ——空关键词打到站点上等于"搜全站"，会把整个索引灌进 site_torrent
+    assert recall_keywords(item(title="", original_title="")) == []
+    assert recall_keywords(item(title="!!!", original_title="---")) == []
+
+
+async def test_media_without_usable_keyword_never_hits_a_site(db, monkeypatch) -> None:
+    """没有可用召回词的脏数据条目：一次站点请求都不许发出去。"""
+    from movieclaw_api.services.subscription.wanted_search import search_wanted
+
+    calls: list = []
+    _fake_search_by_keyword(monkeypatch, {}, calls)
+    async with db.session() as session:
+        sub = await _service(session).create(MediaKind.MOVIE, 104)
+        item = await session.get(MediaItem, sub.media_item_id)
+        item.title = item.original_title = item.english_title = ""
+        await session.commit()
+
+    await search_wanted()
+    assert calls == []
+    # 且必须顺延：不然这个条目组永远停在"已到期"，每个 tick 都被挑中又原地跳过，
+    # 长期占住取单名额，够几个就能把其他订阅饿死
+    async with db.session() as session:
+        for w in (await _wanted_map(session, sub.id)).values():
+            assert w.next_search_at > utcnow()
+            assert w.search_attempts == 0  # 不是站点的错，不计退避档
+
+
+async def test_budget_is_charged_even_when_a_group_blows_up(db, monkeypatch) -> None:
+    """一组在搜完之后崩了，已经打出去的请求照样计数。
+
+    按返回值结算的话那一组等于免费，本 tick 反而会比正常情况打更多请求——
+    旧的"每 tick 两个条目组"是硬上限，异常与否都拦得住；换成按次计量之后，
+    这条保证得自己补上。
+    """
+    from movieclaw_api.services.subscription import wanted_search
+
+    calls: list = []
+    _fake_search_by_keyword(monkeypatch, {}, calls)
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("评估炸了")
+
+    monkeypatch.setattr(wanted_search, "evaluate_and_dispatch", boom)
+    async with db.session() as session:
+        service = _service(session)
+        boomer = await service.create(MediaKind.MOVIE, 104)  # 3 个召回词，随后抛异常
+        rest = [
+            await service.create(MediaKind.MOVIE, 105),
+            await service.create(MediaKind.MOVIE, 106),
         ]
-        assert len(untouched) == 1  # 恰好一组留到下一轮
+        for sub, priority in ((boomer, 20), (rest[0], 10), (rest[1], 0)):
+            for w in (await _wanted_map(session, sub.id)).values():
+                w.priority = priority
+        await session.commit()
+
+    await wanted_search.search_wanted()
+    # 崩掉的那组已经打了 3 次，预算只剩 1 次 → 只轮得到后面一组，不是两组
+    assert len(calls) == 4
 
 
 async def test_movie_forced_search_restores_release_schedule(db, monkeypatch) -> None:

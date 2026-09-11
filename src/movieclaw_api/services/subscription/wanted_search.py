@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -97,9 +98,9 @@ def recall_keywords(item: MediaItem) -> list[str]:
             continue
         seen.add(key)
         picked.append(text)
-    # 三个字段全空/全是符号是脏数据，退回主标题让本轮走正常的"零结果"退避，
-    # 而不是空手返回把工单永远卡在到期状态
-    return picked or [item.title]
+    # 全空时**返回空列表**而不是硬塞一个主标题：主标题本身就可能是空串，拿它
+    # 去搜等于向站点发一次空关键词查询（多数站点会回整个索引）。调用方据此跳过
+    return picked
 
 
 def _keyword_text(per_keyword: list[tuple[str, int]]) -> str:
@@ -172,16 +173,41 @@ async def search_wanted() -> None:
             media_ids = await _due_media_groups(session)
         if not media_ids:
             return
-        logger.info("本轮缺口搜索：%d 个条目组到期", len(media_ids))
-        spent = 0
+        logger.info(
+            "本轮缺口搜索：%d 个条目组候选，预算 %d 次搜索",
+            len(media_ids),
+            SEARCH_REQUESTS_PER_TICK,
+        )
+        budget = _SearchBudget(SEARCH_REQUESTS_PER_TICK)
         for media_id in media_ids:
-            if spent >= SEARCH_REQUESTS_PER_TICK:
-                logger.info("本轮搜索预算已用满（%d 次），其余条目组下轮再来", spent)
+            if budget.exhausted:
+                logger.info("本轮搜索预算已用满，其余条目组下轮再来")
                 break
             try:
-                spent += await _search_one_media(media_id)
+                await _search_one_media(media_id, budget)
             except Exception:  # noqa: BLE001 -- 单组失败不拖垮整轮
                 logger.exception("条目 #%s 的缺口搜索执行失败", media_id)
+
+
+@dataclass
+class _SearchBudget:
+    """一轮 tick 的搜索次数预算。
+
+    **逐次立即记账**，不是等一组跑完再结算：一个条目组在搜完之后的评估/落库/
+    记账环节抛异常时，已经打出去的请求必须照样计数。按返回值结算的话，那一组
+    等于免费——本 tick 反而会比正常情况打出更多请求，而这正是这个阀门要防的事
+    （旧的"每 tick 两个条目组"是硬上限，异常与否都拦得住，换成按次计量后这条
+    保证得自己补上）。
+    """
+
+    remaining: int
+
+    def charge(self) -> None:
+        self.remaining -= 1
+
+    @property
+    def exhausted(self) -> bool:
+        return self.remaining <= 0
 
 
 async def _due_media_groups(session: AsyncSession) -> list[int]:
@@ -225,11 +251,12 @@ async def _due_media_groups(session: AsyncSession) -> list[int]:
     return ordered
 
 
-async def _search_one_media(media_id: int) -> int:
+async def _search_one_media(media_id: int, budget: _SearchBudget) -> None:
     """一个条目组的完整搜索回合：搜索 → 落库 → 评估投递 → 退避记账 → 活动。
 
-    返回**实际下发的搜索次数**（即召回词个数），供 tick 的预算记账使用；
-    条目/订阅已不在时一次都没打，返回 0。
+    ``budget`` 在每次下发关键词前扣减：请求已经发出去了就得认账，哪怕后面的
+    环节抛异常（见 ``_SearchBudget``）。组内**不检查**预算——合并去重要求一轮
+    把该组的词全部下发完，是否开工由调用方在进组前判定。
     """
     from movieclaw_api.services.site_search import search_all_sites
 
@@ -257,9 +284,26 @@ async def _search_one_media(media_id: int) -> int:
             ).scalar_one_or_none()
             movie_plan = movie_schedule(release_date, item.status)
     if item is None or subscription is None:
-        return 0
+        return
 
     keywords = recall_keywords(item)
+    if not keywords:
+        # 三个标题字段全空或全是符号（脏数据）。空关键词打到站点上等于"搜全站"，
+        # 会把整个索引灌进 site_torrent，比不搜坏得多，所以一次请求都不发。
+        # 但**必须照样顺延**：不postpone 的话这个条目组永远停在"已到期"，每个
+        # tick 都被优先挑中又原地跳过，取单的名额被它长期占住，够几个就能把其他
+        # 订阅饿死。口径与"搜索本身失败"一致：短冷却重试、不计退避档
+        logger.warning("条目 #%s《%s》没有可用的召回词，跳过本轮搜索", media_id, item.title)
+        async with db.session() as session:
+            from movieclaw_api.services.subscription.upgrade import postpone_upgrade_wanted
+
+            await _postpone_open_wanted(
+                session, media_id, delay=SEARCH_FAILURE_RETRY, count_attempt=False
+            )
+            await postpone_upgrade_wanted(
+                session, media_id, delay=SEARCH_FAILURE_RETRY, count_attempt=False
+            )
+        return
 
     hits_by_key: dict[tuple[str, str], TorrentHit] = {}
     per_keyword: list[tuple[str, int]] = []
@@ -267,6 +311,7 @@ async def _search_one_media(media_id: int) -> int:
     sites_ok = 0
     categories = _SEARCH_CATEGORIES.get(item.kind)
     for keyword in keywords:
+        budget.charge()  # 请求发出前先记账：中途抛异常也不让预算回血
         # exclude_protected：受保护站点不参与订阅链路的自动拉种（保护开关语义）
         response = await search_all_sites(
             keyword, categories=categories, exclude_protected=True
@@ -310,7 +355,7 @@ async def _search_one_media(media_id: int) -> int:
                     payload={"keywords": keywords, "failed": True},
                 )
             )
-            return len(per_keyword)
+            return
 
         # 结果沉淀进公共缓存（source=SEARCH），再回读 ORM 行进共享管道
         persisted = await _persist_hits(session, hits)
@@ -353,7 +398,6 @@ async def _search_one_media(media_id: int) -> int:
                 },
             )
         )
-    return len(per_keyword)
 
 
 async def _persist_hits(session: AsyncSession, hits: list[TorrentHit]) -> list[SiteTorrent]:
