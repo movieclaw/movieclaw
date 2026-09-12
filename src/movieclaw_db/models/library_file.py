@@ -119,6 +119,15 @@ class LibraryFile(TimestampMixin, table=True):
         # Jellyfin 首页浏览热路径：Latest 按库过滤在位文件，再按媒体单元聚合
         # 最新入库时间；电影库默认分页也会按库/条目检查文件是否在位。把这些
         # 纯标量键放进同一棵索引，SQLite 可只扫描索引而不读取音轨/字幕 JSON。
+        #
+        # ``unidentified_code`` 在最后一位：海报墙的排序键查询
+        # （``SELECT DISTINCT media_item_id, title … WHERE library_id=? AND
+        # state != 'trashed' AND unidentified_code IS NULL``）只差这一列就能
+        # 走覆盖索引；缺了它 planner 只好改挑 ``ix_library_file_library_size``
+        # 再逐行回表取这一列。放末尾是为了不动任何既有前缀——上面那些查询
+        # 该怎么走还怎么走。实测 9500 文件的库：排序键查询 19.2ms → 7.9ms
+        # （改走覆盖扫描），墙聚合顺带 16.5ms → 13.0ms（也改走了这棵索引），
+        # 而库体积只涨 0.1 MiB。
         Index(
             "ix_library_file_browse_unit",
             "library_id",
@@ -127,6 +136,7 @@ class LibraryFile(TimestampMixin, table=True):
             "season_number",
             "episode_number",
             "created_at",
+            "unidentified_code",
         ),
         # 改名归并的候选池查询（同库同尺寸）。缺了它，首次扫描每落一个新文件
         # 都要扫一遍本库全部台账行，整轮就是 O(文件数²)
