@@ -50,6 +50,7 @@ import { nextSeekTarget, seekBatchWindowMs } from "../lib/player/seek-batch.ts";
 import {
   clampSeekTarget,
   isWithinRanges,
+  livePositionMs,
   planSeek,
   progressRatio,
   shownPositionMs,
@@ -624,10 +625,16 @@ class Player {
   }
   barMs() {
     const el = this.video;
-    const live =
-      el && !el.paused && !el.seeking && el.readyState >= 2
-        ? toFileMs(el.currentTime, this.startMs)
-        : null;
+    // live 可用不可用由 livePositionMs 一处裁决（与实现一致）。**注意**：这个
+    // 装置目前把换会话建模成瞬时的，所以喂不进 `originMs: null` 那一档——
+    // 换会话的空档（mode 变 null、参照点无从可取）还没被覆盖，见 §17.4。
+    const live = livePositionMs({
+      originMs: this.startMs,
+      currentTimeSeconds: el.currentTime,
+      paused: el.paused,
+      seeking: el.seeking,
+      readyState: el.readyState,
+    });
     return shownPositionMs({
       draggingMs: this.dragging,
       overrideMs: this.overrideMs,

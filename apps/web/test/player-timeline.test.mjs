@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   SEEK_TAIL_GUARD_MS,
+  livePositionMs,
   clampSeekTarget,
   planSeek,
   progressRatio,
@@ -147,3 +148,59 @@ test("0 是合法位置，不能被当成「没有值」", () => {
     0,
   );
 });
+
+// ---------------------------------------------------------------------------
+// 进度条自绘的 live 取值：换会话的空档没有参照点
+// ---------------------------------------------------------------------------
+
+/** 一路正在播的 video：会话起点 40 分钟，已经放到会话内第 30 秒 */
+const playing = (overrides = {}) => ({
+  originMs: 2_400_000,
+  currentTimeSeconds: 30,
+  paused: false,
+  seeking: false,
+  readyState: 4,
+  ...overrides,
+});
+
+test("正在播：live = 参照点 + currentTime", () => {
+  assert.equal(livePositionMs(playing()), 2_430_000);
+});
+
+test("回归：换会话的空档没有参照点，live 必须是 null", () => {
+  // 反馈 2026-09-12：拖进度条拖很远会换会话（横滑封顶 ±90 秒，落点几乎总在
+  // 已转区间内，走的是 native，所以横滑看不到这个问题）。换会话时
+  // `state.session` 被摘成 null，`mode` 跟着变 null，而进度条的参照点写的是
+  // `mode?.originMs ?? 0`——**静默掉回 0**。此刻文字读数走 positionMs（文件
+  // 时间），进度条算的是 0 + currentTime，两个读数落在两条不同的时间轴上：
+  // 起点在 40 分钟处就差 40 分钟。
+  assert.equal(livePositionMs(playing({ originMs: null })), null);
+  // 掉回 0 的话会算出这个数——与文字读数的 2_430_000 差了整整一个会话起点
+  assert.equal(livePositionMs(playing({ originMs: 0 })), 30_000);
+});
+
+test("暂停 / seek 途中 / 数据不够时 live 不可用，退回状态值", () => {
+  assert.equal(livePositionMs(playing({ paused: true })), null);
+  assert.equal(livePositionMs(playing({ seeking: true })), null);
+  assert.equal(livePositionMs(playing({ readyState: 1 })), null);
+  // readyState 2 = HAVE_CURRENT_DATA，够了
+  assert.equal(livePositionMs(playing({ readyState: 2 })), 2_430_000);
+});
+
+test("currentTime 不是有限数（刚挂流的一瞬）同样不作数", () => {
+  assert.equal(livePositionMs(playing({ currentTimeSeconds: Number.NaN })), null);
+});
+
+test("参照点为 0 是合法的（档 0 直出 / VOD 全片列表），不要与 null 混为一谈", () => {
+  // 0 是「文件绝对制」的真实参照点，null 才是「没有参照点」
+  assert.equal(livePositionMs(playing({ originMs: 0, currentTimeSeconds: 12 })), 12_000);
+});
+
+test("换会话空档里两个读数必须同源：live 为 null 时 shownPositionMs 退回 positionMs", () => {
+  const positionMs = 2_430_000; // 文字读数：落点（文件时间）
+  const live = livePositionMs(playing({ originMs: null }));
+  const bar = shownPositionMs({ draggingMs: null, overrideMs: null, livePositionMs: live, positionMs });
+  const text = shownPositionMs({ draggingMs: null, overrideMs: null, livePositionMs: null, positionMs });
+  assert.equal(bar, text, "换会话空档里进度条与时间文字仍然打架");
+});
+

@@ -3476,7 +3476,9 @@ export function VideoPlayer(props: VideoPlayerProps) {
           <PlayerControls
             positionMs={positionMs}
             video={video}
-            startMs={mode?.originMs ?? 0}
+            // 没有 mode = 换会话的空档：**不能退回 0**，那会让进度条拿旧流的
+            // currentTime 当文件时间算（见 timeline.ts 的 livePositionMs）
+            startMs={mode?.originMs ?? null}
             overrideMs={overrideMs}
             durationMs={durationMs}
             bufferedEndMs={bufferedEndMs}

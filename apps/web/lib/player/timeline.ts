@@ -122,6 +122,38 @@ export function shownPositionMs(input: {
 }
 
 /**
+ * 「正在播的那一路 video 现在放到文件的哪儿」——**进度条自绘唯一的 live 取法**。
+ *
+ * `shownPositionMs` 的文档早就写明：换会话的空档必须传 `livePositionMs: null`
+ * （那时 video 还挂着旧流）。但组件里的自绘只能看见 `paused / seeking /
+ * readyState` 这三样，**看不出「空档」**——于是 2026-09-12 的反馈踩到了这个洞：
+ *
+ * 进度条的 live 是 `toFileMs(video.currentTime, originMs)`，而 `originMs` 来自
+ * `mode?.originMs ?? 0`；换会话时 `state.session` 被摘成 null，`mode` 跟着变
+ * null，**参照点于是静默掉回 0**。此刻文字读数走的是 `positionMs`（文件时间，
+ * 仍是落点），而进度条算的是 `0 + currentTime`——两个读数落在**两条不同的
+ * 时间轴**上。会话相对制下起点在四十分钟处的话，两者就差四十分钟。
+ *
+ * 所以参照点必须能表达「现在没有参照点」：`originMs === null` = 没有会话，
+ * 这一刻**没有任何办法**把 `currentTime` 换算成文件时间，只能退回 `positionMs`。
+ * 把这个判断收进纯函数，组件里就只剩接线，也才测得到。
+ */
+export function livePositionMs(input: {
+  /** 时间轴参照点；**null = 换会话的空档，没有参照点** */
+  originMs: number | null;
+  currentTimeSeconds: number;
+  paused: boolean;
+  seeking: boolean;
+  readyState: number;
+}): number | null {
+  if (input.originMs === null) return null;
+  // 暂停 / seek 途中 / 数据还不够：这一刻的 currentTime 不是「正在播的位置」
+  if (input.paused || input.seeking || input.readyState < 2) return null;
+  if (!Number.isFinite(input.currentTimeSeconds)) return null;
+  return toFileMs(input.currentTimeSeconds, input.originMs);
+}
+
+/**
  * 位置 → 进度条比例（0~1）。
  *
  * 片长未知时返回 0：那时进度条本来就是禁用状态，画一条随机长度的已播段

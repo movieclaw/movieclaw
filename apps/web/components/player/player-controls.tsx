@@ -8,7 +8,12 @@ import { SUBTITLE_OFFSET_STEP, clampSubtitleOffset } from "@/lib/player/subtitle
 import { QUALITY_OPTIONS } from "@/lib/player/quality";
 import type { SubtitleStyle, SubtitleTracks } from "@/lib/player/subtitles";
 import { pointerOffsetX } from "@/lib/player/touch-adjust";
-import { formatClock, progressRatio, shownPositionMs, toFileMs } from "@/lib/player/timeline";
+import {
+  formatClock,
+  livePositionMs,
+  progressRatio,
+  shownPositionMs,
+} from "@/lib/player/timeline";
 import { type TrickplayIndex, tileAt } from "@/lib/player/trickplay";
 
 /**
@@ -198,9 +203,15 @@ export interface PlayerControlsProps {
    * 这个组件重，每帧 setState 会把整条控制条重渲染 60 次。
    */
   video: HTMLVideoElement | null;
-  /** 时间轴参照点（会话相对制的 start_ms；VOD/直通恒为 0）。文件时间 =
-   * startMs + video.currentTime × 1000，与 timeline.ts 的 toFileMs 同式 */
-  startMs: number;
+  /**
+   * 时间轴参照点（会话相对制的 start_ms；VOD/直通恒为 0）。文件时间 =
+   * startMs + video.currentTime × 1000，与 timeline.ts 的 toFileMs 同式。
+   *
+   * **null = 换会话的空档，此刻没有参照点**：video 上挂的可能是旧流、也可能
+   * 什么都没有，怎么换算都不对，进度条必须退回 `positionMs`。详见
+   * timeline.ts 的 `livePositionMs`。
+   */
+  startMs: number | null;
   /**
    * 覆盖位置：横滑拖进度的落点、连按快进的累积落点。非 null 时进度条与
    * 时间文字都显示它而不是真实播放位置——**屏幕上任何时刻只能有一个读数**
@@ -476,12 +487,17 @@ export function PlayerControls(props: PlayerControlsProps) {
       return;
     }
     // 取值规则与时间文字**同一个函数**，这里只多喂一路「正在播的真实位置」
-    // ——它是唯一每帧都在变的来源。不可用（暂停 / seek 途中 / 换会话空档，
-    // 那时 video 还挂着旧流）就传 null，由函数退回状态值。
-    const live =
-      el && !el.paused && !el.seeking && el.readyState >= 2
-        ? toFileMs(el.currentTime, origin)
-        : null;
+    // ——它是唯一每帧都在变的来源。它可用不可用（暂停 / seek 途中 / 换会话的
+    // 空档没有参照点）由 livePositionMs 一处裁决，不在这里自己判。
+    const live = el
+      ? livePositionMs({
+          originMs: origin,
+          currentTimeSeconds: el.currentTime,
+          paused: el.paused,
+          seeking: el.seeking,
+          readyState: el.readyState,
+        })
+      : null;
     const ratio = progressRatio(
       shownPositionMs({ draggingMs, overrideMs: override, livePositionMs: live, positionMs: state }),
       total,
