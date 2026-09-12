@@ -179,6 +179,10 @@ def seed(db_path: str) -> None:
                 title, title, year, "[]",
                 "Released" if kind == "movie" else rng.choice(STATUSES_TV),
                 poster, f"/b{item_id % 9999:04d}back.jpg",
+                # 身份锚的第三分量：TMDB 来源就是 tmdb_id 的字符串形式
+                # （与 media_item._default_external_id 同口径）。列上的默认值
+                # 是 SQLAlchemy 回调，裸 sqlite3 写入不会触发，必须显式给
+                str(tmdb_seq),
                 created, created,
             ))
             genres = rng.sample(GENRE_POOL, k=rng.randint(1, 3))
@@ -301,7 +305,7 @@ def seed(db_path: str) -> None:
     cur.executemany(
         "INSERT INTO media_item (id,kind,tmdb_id,imdb_id,douban_id,title,"
         "original_title,year,aliases,status,poster_path,backdrop_path,"
-        "created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "external_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         item_rows,
     )
     cur.executemany(

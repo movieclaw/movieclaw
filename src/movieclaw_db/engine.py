@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import logging
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -18,7 +19,13 @@ logger = logging.getLogger("movieclaw_db.engine")
 # ---------------------------------------------------------------------------
 # SQLite 连接级 PRAGMA 设置
 # ---------------------------------------------------------------------------
-def _configure_sqlite_pragmas(dbapi_conn, _connection_record) -> None:
+#: 每连接页缓存上限的默认值（MB）。见 ``_configure_sqlite_pragmas``。
+DEFAULT_CACHE_MB = 32
+
+
+def _configure_sqlite_pragmas(
+    dbapi_conn, _connection_record, cache_mb: int = DEFAULT_CACHE_MB
+) -> None:
     """每次建立新连接时执行的 PRAGMA 设置。
 
     这些设置是 SQLite 在"单体应用 + 一定并发"场景下稳定运行的关键：
@@ -29,12 +36,30 @@ def _configure_sqlite_pragmas(dbapi_conn, _connection_record) -> None:
       避免瞬时写冲突直接抛出 "database is locked"。
     - ``foreign_keys=ON``：SQLite 默认不强制外键约束，显式打开以保证数据完整性。
     - ``synchronous=NORMAL``：配合 WAL 使用的推荐值，在安全与性能间取得平衡。
+    - ``cache_size``：**每连接**页缓存上限，负数表示"按 KiB 计"而不是按页数。
+      SQLite 自带的默认值是 2MB（约 500 页），那是小库时代的遗留。库一大，
+      海报墙、筛选栏这类聚合要把同一批页反复读回来，500 页根本兜不住：
+      实测 158MB 的库（3.7 万条目 / 7 万文件），筛选栏一次请求要发
+      **122443 次** ``pread``——把整个库读了三遍多。给到 32MB 后降到 1854 次
+      （-98.5%），海报墙 13838 → 797（-94%），A-Z 索引降到 0。
+
+      家用 NAS 上这件事比看起来更重要：本机内存宽裕时这些读被页缓存接住，
+      只是白烧 CPU；内存紧张（NAS 还跑着别的容器）时它们就是**真的随机磁盘
+      读**，机械盘上十几万次随机读是分钟级的。
+
+      内存代价小得出乎意料，因为页缓存**按需增长、不预分配**：小库压根摸不到
+      那么多页，实测内存开销为零；大库在 8 路并发下常驻内存也只多约 40MB
+      （不是"池上限 × 32MB"那个理论天花板——重查询被事件循环串行化，同时
+      真正吃满缓存的连接只有两三个）。内存吃紧的设备可以用
+      ``MOVIECLAW_DB_CACHE_MB`` 调小，设 0 则完全不干预、回到 SQLite 默认。
     """
     cursor = dbapi_conn.cursor()
     cursor.execute("PRAGMA journal_mode=WAL;")
     cursor.execute("PRAGMA busy_timeout=5000;")
     cursor.execute("PRAGMA foreign_keys=ON;")
     cursor.execute("PRAGMA synchronous=NORMAL;")
+    if cache_mb > 0:
+        cursor.execute(f"PRAGMA cache_size=-{cache_mb * 1024};")
     cursor.close()
 
 
@@ -65,7 +90,9 @@ class Database:
     典型用法是在应用启动时创建单例（见 ``init_db``），关闭时调用 ``dispose``。
     """
 
-    def __init__(self, database_url: str, *, echo: bool = False) -> None:
+    def __init__(
+        self, database_url: str, *, echo: bool = False, cache_mb: int = DEFAULT_CACHE_MB
+    ) -> None:
         _ensure_sqlite_dir(database_url)
         self.is_sqlite = database_url.startswith("sqlite")
 
@@ -79,7 +106,11 @@ class Database:
         # 为底层同步引擎注册 connect 事件，写入 PRAGMA
         # （async 引擎通过 sync_engine 暴露事件挂载点）
         if database_url.startswith("sqlite"):
-            event.listen(self._engine.sync_engine, "connect", _configure_sqlite_pragmas)
+            event.listen(
+                self._engine.sync_engine,
+                "connect",
+                functools.partial(_configure_sqlite_pragmas, cache_mb=cache_mb),
+            )
 
         # expire_on_commit=False：提交后对象仍可访问属性，避免 async 上下文中
         # 触发意外的隐式惰性加载（在异步环境里惰性加载会报错）
@@ -143,13 +174,15 @@ async def refresh_query_statistics(db: Database) -> None:
 _db: Database | None = None
 
 
-def init_db(database_url: str, *, echo: bool = False) -> Database:
+def init_db(
+    database_url: str, *, echo: bool = False, cache_mb: int = DEFAULT_CACHE_MB
+) -> Database:
     """初始化全局数据库单例。应在应用启动（lifespan）时调用一次。"""
     global _db
     if _db is not None:
         logger.warning("数据库已初始化，重复调用 init_db 被忽略")
         return _db
-    _db = Database(database_url, echo=echo)
+    _db = Database(database_url, echo=echo, cache_mb=cache_mb)
     return _db
 
 

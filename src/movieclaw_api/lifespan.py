@@ -108,7 +108,9 @@ def build_lifespan(settings: Settings):
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         # 先初始化引擎（会顺带创建 SQLite 文件所在目录），再执行迁移
-        db = init_db(settings.database_url, echo=settings.db_echo)
+        db = init_db(
+            settings.database_url, echo=settings.db_echo, cache_mb=settings.db_cache_mb
+        )
         await run_migrations()
         # 迁移之后立刻刷一次索引统计：没有它 SQLite 会挑错索引，把"取某个条目
         # 的文件行"退化成整表扫描（见 refresh_query_statistics 注释）
