@@ -515,6 +515,12 @@ mclaw jobs show <job_id> -o json | mclaw library items transfer 3 --to 7 --items
 四个端点全部 `x-cli-hidden`：**正式执行必须走精选层的「预览 → 回显影响面 → --yes」**，
 不给生成命令绕过确认的旁路——与 `organize-files`、`reconcile-paths` 同一立场。
 
+> **2026-09-12 补：四个端点同时标 `x-cli-covered-by`（指向 §10 的两条命令）。**
+> 光标 hidden 会**反过来促成**它要防的事：读 OpenAPI 的 Agent 看到 hidden，
+> 判定「CLI 做不了」，于是自己签 token 手写 HTTP 请求，把确认闸整个绕开——
+> 一次真实的媒体库合并里就是这么发生的。指路是机器可读的，且由
+> `TestCoveredByPointsAtRealCommands` 保证不烂掉（见 `cli.md` §2.3）。
+
 `library.items.transfer`（单条目）从生成层改由精选层提供，命令名与位置参数形态保持
 兼容（见 §10），`operation_id` 不变。命令树快照 diff 会红一次，需在 PR 里显式确认。
 

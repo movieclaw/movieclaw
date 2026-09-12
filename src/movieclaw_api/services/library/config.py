@@ -247,6 +247,14 @@ class LibraryConfigService:
         文件在两个库之间反复横跳，扫描还会撞唯一键整轮失败。这种配置必须在
         保存时拒绝，而不是等扫描时炸出天书报错。同一个库自己的嵌套根路径
         不受此限（扫描按 seen_paths 去重，明确支持）。
+
+        **报错里必须给出合并库的正确走法**。"把几个子目录库合并成一个父目录
+        大库"是这条校验最常撞上的真实意图，而拦下来只说"请调整根路径"的话，
+        用户（和 Agent）会推导出唯一剩下的路：先删旧库、再建新库——那是最危险
+        的顺序，删库会触发孤儿清理。正确顺序全程不需要删任何还有内容的库：
+        先把条目转移进目标库，源库空了再删，最后归并根路径（同库嵌套根是
+        允许的，所以这一步不会撞上本校验）。实测中确实有人被逼进了错误顺序，
+        所以这句指路留在报错里，而不是只写在文档里。
         """
         for other in await self._repo.list_all():
             if other.id == exclude_id:
@@ -258,7 +266,12 @@ class LibraryConfigService:
                     if r == s or r.startswith(s + "/") or s.startswith(r + "/"):
                         raise BadRequestException(
                             f"根路径与媒体库「{other.name}」重叠：{root} ↔ {other_root}；"
-                            "一个目录只能归属一个库，请调整其中一方的根路径"
+                            "一个目录只能归属一个库，请调整其中一方的根路径。"
+                            f"如果你是想把「{other.name}」合并进来，不要先删库——"
+                            "先用「批量转移」把它的条目转到目标库（mclaw library "
+                            "items transfer <源库> --all --to <目标库>），源库空了"
+                            "再删，最后用「归并根路径」把目标库的根收成一个"
+                            "（mclaw library consolidate-roots <目标库> --into <父目录>）"
                         )
 
     async def _assert_name_available(self, name: str, *, exclude_id: int | None = None) -> None:

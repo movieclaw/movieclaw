@@ -4,6 +4,9 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/movieclaw/movieclaw/cli/internal/overlay"
+	"github.com/spf13/cobra"
 )
 
 // 本文件是命令面的守护测试，从退役的 tests/cli/test_tree_snapshot.py 原样搬来。
@@ -413,4 +416,51 @@ func compareSets(t *testing.T, label string, want, got []string, hint string) {
 	if len(extra) > 0 || len(missing) > 0 {
 		t.Errorf("%s 发生变化：多出 %v，少了 %v。%s", label, extra, missing, hint)
 	}
+}
+
+// TestCoveredByPointsAtRealCommands 守 x-cli-covered-by 不烂掉。
+//
+// hidden 的工作流端点（批量转移、根路径归并、整理文件名、跨站流式搜索）
+// 语义由精选命令承担，不给生成命令旁路——但只看 x-cli-hidden 的人分不出
+// 「没有命令行消费方」和「命令在别处」，会一律判成 CLI 做不了，转而自己
+// 拼 HTTP 请求，正好绕过那道确认闸。x-cli-covered-by 就是给这种情况指路，
+// 所以它必须真的指到一条存在的命令：命令改名而注解没跟着改，这里会红。
+func TestCoveredByPointsAtRealCommands(t *testing.T) {
+	root := &cobra.Command{Use: "mclaw"}
+	overlay.Register(root)
+
+	for _, op := range IterOperations(loadSpec(t)) {
+		if op.CoveredBy == "" {
+			continue
+		}
+		if !op.Hidden && !op.Stream {
+			t.Errorf("%s 会生成命令，不该再标 x-cli-covered-by（那是给 hidden/stream 指路用的）",
+				op.OperationID)
+			continue
+		}
+		if cmd := findCommand(root, strings.Fields(op.CoveredBy)); cmd == nil {
+			t.Errorf("%s 的 x-cli-covered-by 指向 `mclaw %s`，但精选层没有这条命令"+
+				"（命令改名了就同步改 openapi_extra，别让指路指进空气）",
+				op.OperationID, op.CoveredBy)
+		}
+	}
+}
+
+// findCommand 按空格分段在 cobra 树里逐级下钻，找不到返回 nil。
+func findCommand(root *cobra.Command, path []string) *cobra.Command {
+	current := root
+	for _, name := range path {
+		var next *cobra.Command
+		for _, child := range current.Commands() {
+			if child.Name() == name {
+				next = child
+				break
+			}
+		}
+		if next == nil {
+			return nil
+		}
+		current = next
+	}
+	return current
 }

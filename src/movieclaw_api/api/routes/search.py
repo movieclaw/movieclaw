@@ -191,6 +191,7 @@ async def _save_snapshot(
     operation_id="workflow.search.torrents.stream",
     openapi_extra={
         "x-cli-hidden": True,
+        "x-cli-covered-by": "search torrents",
         "x-cli-stream": {"terminal_events": ["done"]},
     },
 )
