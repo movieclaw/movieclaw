@@ -32,7 +32,7 @@ func (o *Overrides) Register(flags *pflag.FlagSet, taken map[string]bool) {
 		flagx.Var(flags, &o.Timeout, "timeout", 0, "请求超时（秒，覆盖全局设置）")
 	}
 	if !taken["quiet"] {
-		flags.BoolVar(&o.Quiet, "quiet", false, "成功时不输出数据")
+		flags.BoolVar(&o.Quiet, "quiet", false, "成功时不输出数据，--wait 也不打进度（失败照常报）")
 	}
 	if !taken["debug"] {
 		flags.BoolVar(&o.Debug, "debug", false, "打印调试信息到 stderr")

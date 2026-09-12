@@ -135,7 +135,18 @@ spec 标准字段表达不了的 CLI 语义，用少量扩展字段声明（声�
 | `x-cli-long-task` | 声明这是长任务启动端点 + 进度从哪读（端点或字段路径），驱动统一 `--wait` | `{"progress_op": "library.get", "progress_field": "scan_progress"}` |
 | `x-cli-stream` | SSE 端点标记 + 终态事件名 | 搜索流 / Agent 流 |
 | `x-cli-hidden` | 不生成命令（纯 Web 基础设施，如图片代理），CI 快照中显式记为豁免 | `/images/proxy` |
+| `x-cli-covered-by` | 这个 hidden/stream 端点的语义由哪条精选命令承担（指路） | `library consolidate-roots` |
 | `x-cli-paged` | 分页参数名，驱动统一 `--limit/--all` | `/sessions` |
+
+`x-cli-covered-by` 是 `x-cli-hidden` 的必要补充。hidden 其实有两种截然不同的
+理由：**没有命令行消费方**（图片代理、设备授权回调），和**语义由精选命令承担、
+刻意不给生成命令旁路**（批量转移、根路径归并、整理文件名）。只标 hidden 分不出
+这两类——读 OpenAPI 的人（尤其是 Agent）会一律判成「CLI 做不了」，转而自己签
+token 拼 HTTP 请求，**正好绕过 hidden 想守住的那道「预览 → 回显影响面 → --yes」
+确认闸**。这不是假想：一次真实的媒体库合并里就是这么发生的，端点在 spec 里看得
+见、命令在 `mclaw library` 下明明存在，但没有任何一处把两者连起来。
+第二类因此必须标上承接命令，`TestCoveredByPointsAtRealCommands` 保证它指向的
+命令真实存在——命令改名而注解没跟着改，CI 就红。
 
 **CI 守护测试**（新 API 自动支持 CLI 的强制机制）：遍历 OpenAPI 全部路由，
 校验 ① summary 非空（已满足）② operation_id 合规 ③ 写操作有 description

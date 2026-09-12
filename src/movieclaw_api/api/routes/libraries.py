@@ -9,6 +9,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, Query, Request, Response
 from fastapi.responses import FileResponse
+from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
@@ -200,6 +201,7 @@ from movieclaw_db.models import (
     MediaItemPerson,
     MediaSeason,
     Person,
+    PlaybackState,
     Subscription,
 )
 from movieclaw_db.repositories import MediaItemRepository
@@ -1274,13 +1276,35 @@ async def delete_library(
         .all()
         if i is not None
     ]
+    # 观看记录锚在 media_item 上、与库无关，删库不会动它（孤儿清理的第三条
+    # 判定）。数量在这里回显：否则用户删完库只看到条目从墙上消失，无从确认
+    # "我看过哪些"还在——留下的条目是休眠的，任何页面都不会显示它。
+    # 走子查询而不是把 affected 灌进 IN：万级条目的库会撞上 SQLite 的
+    # 变量数上限，而这条统计只是为了一句提示，不值得为它分批
+    kept_states = (
+        await session.execute(
+            select(func.count())
+            .select_from(PlaybackState)
+            .where(
+                PlaybackState.media_item_id.in_(  # type: ignore[union-attr]
+                    select(LibraryFile.media_item_id).where(
+                        LibraryFile.library_id == library_id,
+                        LibraryFile.media_item_id.is_not(None),  # type: ignore[union-attr]
+                    )
+                )
+            )
+        )
+    ).scalar_one()
     await service.delete(library_id)
     # 孤儿条目的**数据库清理**在这里等它做完再返回：SQLite 会复用被删的库 id，
     # 用户删库后立刻用同一目录重建，新库的本地条目会与旧条目同键，后台清理
     # 晚一步就把新库刚认领的条目删掉（见 cleanup_orphan_items 的说明）。
     # 删几百个资产目录是纯磁盘活，仍放后台，不拖住这一次请求
     await media_scrape.cleanup_orphan_items(affected, defer_assets=True)
-    return ok({}, message="已删除（磁盘上的媒体文件未受影响）")
+    message = "已删除（磁盘上的媒体文件未受影响）"
+    if kept_states:
+        message += f"；{kept_states} 条观看记录已保留，同一部作品重新入库后自动接回"
+    return ok({}, message=message)
 
 
 # ---------------------------------------------------------------------------
@@ -1363,7 +1387,7 @@ def _validated_reconcile_roots(
     operation_id="workflow.library.reconcile-paths.preview",
     dependencies=[Depends(require_admin)],
     # CLI 必须经精选层的「预览 → --yes」工作流，不能让生成命令绕过确认。
-    openapi_extra={"x-cli-hidden": True},
+    openapi_extra={"x-cli-hidden": True, "x-cli-covered-by": "library reconcile-paths"},
 )
 async def preview_path_reconcile(
     library_id: int,
@@ -1389,6 +1413,7 @@ async def preview_path_reconcile(
     openapi_extra={
         "x-cli-job": {"id_path": "job_id", "wait_op": "jobs.wait"},
         "x-cli-hidden": True,
+        "x-cli-covered-by": "library reconcile-paths",
     },
     status_code=202,
 )
@@ -1758,7 +1783,7 @@ async def select_artwork_route(
     summary="预览整理计划：每个文件改成什么名、哪些跳过及原因（只读，不动磁盘）",
     operation_id="workflow.library.organize-files.preview",
     dependencies=[Depends(require_admin)],
-    openapi_extra={"x-cli-hidden": True},
+    openapi_extra={"x-cli-hidden": True, "x-cli-covered-by": "library organize-files"},
 )
 async def preview_organize(
     library_id: int,
@@ -1809,6 +1834,7 @@ async def preview_organize(
     openapi_extra={
         "x-cli-job": {"id_path": "job_id", "wait_op": "jobs.wait"},
         "x-cli-hidden": True,
+        "x-cli-covered-by": "library organize-files",
     },
     status_code=202,
 )
@@ -3211,7 +3237,7 @@ async def _seeding_root_names() -> set[str] | None:
     operation_id="workflow.library.transfer-items.preview",
     dependencies=[Depends(require_admin)],
     # CLI 必须走精选层的「预检 → --yes」工作流，不给生成命令绕过确认的旁路
-    openapi_extra={"x-cli-hidden": True},
+    openapi_extra={"x-cli-hidden": True, "x-cli-covered-by": "library items transfer"},
 )
 async def preview_batch_transfer(
     library_id: int,
@@ -3266,6 +3292,7 @@ async def preview_batch_transfer(
     dependencies=[Depends(require_admin)],
     openapi_extra={
         "x-cli-hidden": True,
+        "x-cli-covered-by": "library items transfer",
         "x-cli-dangerous": "confirm",
         "x-cli-job": {"id_path": "job_id", "wait_op": "jobs.wait"},
     },
@@ -3365,7 +3392,7 @@ def _validated_consolidate_roots(
     summary="预检根路径归并：条目会搬到哪、空间够不够、根配置怎么变（只读）",
     operation_id="workflow.library.consolidate-roots.preview",
     dependencies=[Depends(require_admin)],
-    openapi_extra={"x-cli-hidden": True},
+    openapi_extra={"x-cli-hidden": True, "x-cli-covered-by": "library consolidate-roots"},
 )
 async def preview_consolidate_roots(
     library_id: int,
@@ -3420,6 +3447,7 @@ async def preview_consolidate_roots(
     dependencies=[Depends(require_admin)],
     openapi_extra={
         "x-cli-hidden": True,
+        "x-cli-covered-by": "library consolidate-roots",
         "x-cli-dangerous": "confirm",
         "x-cli-job": {"id_path": "job_id", "wait_op": "jobs.wait"},
     },

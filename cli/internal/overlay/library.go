@@ -115,7 +115,7 @@ func newLibraryOrganizeFilesCommand() *cobra.Command {
 				ProgressPath:    "/libraries/" + libraryID,
 				ProgressField:   "organize_progress",
 				ProgressCommand: "mclaw library get " + libraryID,
-			}, waitTimeout)
+			}, waitTimeout, s.Quiet)
 		})
 }
 
@@ -354,7 +354,7 @@ func newLibraryItemsTransferCommand() *cobra.Command {
 			}
 			return nil
 		}
-		return wait.Job(client, jobID, waitTimeout)
+		return wait.Job(client, jobID, waitTimeout, s.Quiet)
 	})
 }
 
@@ -632,6 +632,6 @@ func newLibraryConsolidateRootsCommand() *cobra.Command {
 			}
 			return nil
 		}
-		return wait.Job(client, jobID, waitTimeout)
+		return wait.Job(client, jobID, waitTimeout, s.Quiet)
 	})
 }
