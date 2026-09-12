@@ -122,8 +122,14 @@ def rewrite_identity_nfo(nfo_path: Path, item: MediaItem) -> bool:
     return True
 
 
-def write_full_nfo(entry_dir: Path, item: MediaItem, meta: MediaMetadata | None) -> None:
+def write_full_nfo(entry_dir: Path, item: MediaItem, meta: MediaMetadata | None) -> Path | None:
     """在条目目录写出完整 NFO（身份 + 简介/评分/片长/分级/演职员）。
+
+    返回**与库内档案对齐后的 NFO 路径**（内容本来就一致、没真的落盘也算），
+    拒写或写失败返回 None。调用方据此把这份"我们自己写的"NFO 记进吸收台账
+    （``media_metadata.nfo_fingerprint``）——否则下一次刷新会把它当成用户的
+    NFO 重新吸收，用上一轮的旧内容盖掉刚拉回来的 TMDB 新数据
+    （见 ``services/library/nfo_absorb``）。
 
     同步函数（调用方放线程池）。覆盖规则（docs/design/metadata.md 6.2，
     2026-08-04 决策翻转）：NFO 是库内档案在媒体目录的镜像，**每次刮削/刷新
@@ -137,19 +143,19 @@ def write_full_nfo(entry_dir: Path, item: MediaItem, meta: MediaMetadata | None)
     - **没有刮削档案时绝不覆盖已有文件**（不能拿最小身份档降级 TMM 的富 NFO）。
     """
     if not entry_dir.is_dir():
-        return
+        return None
     kind = MediaKind(item.kind)
     root_tag = "movie" if kind is MediaKind.MOVIE else "tvshow"
     nfo_path = entry_dir / ("movie.nfo" if kind is MediaKind.MOVIE else "tvshow.nfo")
     if _kind_conflicting_nfo(entry_dir, kind, item) is not None:
-        return
+        return None
     exists = nfo_path.exists()
     if exists:
         declared = read_tmdb_id(nfo_path)
         if declared is not None and declared != item.tmdb_id:
-            return  # 身份对不上，宁可不写
+            return None  # 身份对不上，宁可不写
         if meta is None or meta.scraped_at is None:
-            return  # 无档案可对齐，保留既有内容
+            return None  # 无档案可对齐，保留既有内容
 
     lines = [
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
@@ -222,15 +228,16 @@ def write_full_nfo(entry_dir: Path, item: MediaItem, meta: MediaMetadata | None)
     if exists:
         try:
             if nfo_path.read_text(encoding="utf-8") == content:
-                return  # 内容无变化，不动 mtime
+                return nfo_path  # 内容无变化，不动 mtime
         except OSError:
             pass
     try:
         nfo_path.write_text(content, encoding="utf-8")
     except OSError as exc:
         logger.warning("完整 NFO 写出失败（不阻断）：%s（%s）", nfo_path, exc)
-        return
+        return None
     logger.info("已写出完整 NFO：%s（tmdbid=%s）", nfo_path, item.tmdb_id)
+    return nfo_path
 
 
 def write_episode_nfo(video: Path, episode: MediaEpisode) -> None:

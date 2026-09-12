@@ -193,6 +193,11 @@ async def _scrape(media_item_id: int, *, force: bool, on_phase: PhaseHook = None
         _phase("写入元数据")
         _merge_identity(item, profile, await repo.get_metadata(media_item_id))
         await apply_display_profile(session, media_item_id, profile, language)
+        # 本地 NFO 吸收：必须在 TMDB 落库**之后**——NFO 里有值的字段压过 TMDB，
+        # 这是「本地刮削成果优先」的落点（此前是在详情页读时判定，每打开一次
+        # 就回媒体盘读一次）。失败只告警，档案已经是 TMDB 那份、页面不受影响
+        _phase("读取本地 NFO")
+        await absorb_local_nfo(session, media_item_id)
         # 系列合集：刮完就把它所在的每个库补齐一行（幂等，只写合集行不写成员行）
         await ensure_series_collections_for_item(session, media_item_id)
 
@@ -231,11 +236,12 @@ async def _scrape(media_item_id: int, *, force: bool, on_phase: PhaseHook = None
 
 
 async def ensure_assets(media_item_id: int) -> None:
-    """建档后的资产补齐入口（图片下载 + 媒体目录镜像，不重拉文本档案）。
+    """挂锚后的入库补齐入口（吸收本地 NFO + 图片下载 + 媒体目录镜像）。
 
-    文本档案在 ``ensure_media_item`` 建档事务里已经落库（同一份 TMDB 响应），
-    这里只补磁盘侧的活。扫描收尾/入库管线/人工认领挂锚后调用；失败只
-    记日志，任一后续刷新入口自愈。
+    TMDB 文本档案在 ``ensure_media_item`` 建档事务里已经落库（同一份 TMDB
+    响应），这里补的是**要有条目目录才能做**的事。扫描收尾/入库管线/人工
+    认领挂锚后调用——建档时文件台账行还没挂上条目，条目目录无从谈起，
+    所以本地 NFO 的吸收只能等到这里。失败只记日志，任一后续刷新入口自愈。
     """
     try:
         db = get_database()
@@ -248,6 +254,13 @@ async def ensure_assets(media_item_id: int) -> None:
 
             await ensure_local_assets(media_item_id)
             return
+        # 本地 NFO 吸收（docs/design/metadata.md 第 5 节）：**入库时读一次**写进
+        # 库内档案，此后详情页只读库、不再回媒体盘。必须排在镜像**之前**——
+        # 镜像会按库内档案重写条目 NFO，晚一步读到的就是我们自己写出去的
+        # 那一份，用户原本用 TMM 刮好的 NFO 就白读了
+        async with db.session() as session:
+            await absorb_local_nfo(session, media_item_id)
+            await session.commit()
         await download_item_assets(media_item_id)
         await mirror_media_dir_assets(media_item_id)
     except Exception:  # noqa: BLE001 -- 资产是锦上添花，绝不影响主流程
@@ -960,6 +973,65 @@ async def apply_local_identity(session: AsyncSession, item: MediaItem, identity)
     row.scraped_at = utcnow()
     row.updated_at = utcnow()
     session.add(row)
+
+
+async def absorb_local_nfo(session: AsyncSession, media_item_id: int) -> bool:
+    """把条目目录的 NFO 与分集 NFO 吸收进库内档案（TMDB 来源条目）。
+
+    在 ``_scrape`` 里紧跟 TMDB 落库之后调用，因此 NFO 有值的字段最终生效——
+    与改动前「详情页读时本地 NFO 最优先」是同一个优先级，只是判定从读时挪到
+    了写时（说明见 ``services/library/nfo_absorb`` 的模块注释）。
+
+    读盘失败/目录不可达一律只告警：档案里已经是 TMDB 那一份，详情页照常。
+    """
+    from movieclaw_api.services.library.layout import entry_dir_of
+    from movieclaw_api.services.library.nfo_absorb import (
+        NO_NFO,
+        absorb_entry_nfo,
+        absorb_episode_nfos,
+    )
+
+    repo = MediaItemRepository(session)
+    item = await session.get(MediaItem, media_item_id)
+    if item is None or item.source != MediaSource.TMDB:
+        return False
+    meta_row = await repo.get_metadata(media_item_id)
+    if meta_row is None:
+        return False
+    rows = list(
+        (
+            await session.execute(
+                select(LibraryFile, Library)
+                .join(Library, Library.id == LibraryFile.library_id)  # type: ignore[arg-type]
+                .where(LibraryFile.media_item_id == media_item_id, LibraryFile.in_place())
+                .order_by(LibraryFile.id)  # type: ignore[arg-type]
+            )
+        ).all()
+    )
+    if not rows:
+        # 没有在位文件就没有条目目录可读。仍要记上「查过了」，否则存量回填
+        # 会把这类条目反复挑出来、永远收敛不了
+        meta_row.nfo_fingerprint = NO_NFO
+        session.add(meta_row)
+        return False
+    files = [row for row, _ in rows]
+    entry_dirs: list[Path] = []
+    for row, library in rows:
+        entry = entry_dir_of([Path(p) for p in library.root_paths], Path(row.file_path))
+        if entry is not None and entry not in entry_dirs:
+            entry_dirs.append(entry)
+
+    try:
+        absorbed = await absorb_entry_nfo(
+            session, item, meta_row, entry_dirs, files, MediaKind(item.kind)
+        )
+        if MediaKind(item.kind) is MediaKind.TV:
+            await absorb_episode_nfos(session, await repo.list_episodes(media_item_id), files)
+    except OSError as exc:
+        logger.warning("吸收本地 NFO 失败（档案保持 TMDB 那份）：《%s》（%s）", item.title, exc)
+        return False
+    await session.flush()
+    return absorbed
 
 
 async def reread_local_nfo(media_item_id: int) -> bool:
@@ -1856,6 +1928,11 @@ async def mirror_media_dir_assets(media_item_id: int, *, force: bool = False) ->
         if _file_trusted(file):
             trusted_entries.add(entry)
 
+    # 镜像写出的条目 NFO 是**我们自己的档案的副本**，必须记进吸收台账——
+    # 否则下一次刷新会把它当用户的 NFO 重新吸收，用上一轮的旧内容盖掉刚
+    # 拉回来的 TMDB 新数据（见 services/library/nfo_absorb 的指纹说明）
+    aligned_nfos: list[Path] = []
+
     def _mirror() -> None:
         for entry, library in entry_dirs.items():
             if not entry.is_dir():
@@ -1875,7 +1952,9 @@ async def mirror_media_dir_assets(media_item_id: int, *, force: bool = False) ->
                             item_dir / f"season-{season.season_number}.jpg", entry / name, force
                         )
             if write_nfo and entry in trusted_entries:
-                write_full_nfo(entry, item, meta)
+                aligned = write_full_nfo(entry, item, meta)
+                if aligned is not None:
+                    aligned_nfos.append(aligned)
         for file, library in rows:
             episode = episodes.get((file.season_number, file.episode_number))
             if episode is None or file.container in ("bluray", "dvd"):
@@ -1892,6 +1971,33 @@ async def mirror_media_dir_assets(media_item_id: int, *, force: bool = False) ->
                 write_episode_nfo(video, episode)
 
     await asyncio.to_thread(_mirror)
+    await _record_mirrored_nfo(media_item_id, aligned_nfos)
+
+
+async def _record_mirrored_nfo(media_item_id: int, aligned_nfos: list[Path]) -> None:
+    """把镜像刚对齐的条目 NFO 记进吸收台账（``media_metadata.nfo_fingerprint``）。
+
+    多个条目目录（同一部片挂在两个库）时记第一个——吸收端也是按候选顺序
+    取第一份，两边同序即可对上；真对不上最多是多吸收一次自己的镜像，
+    内容与档案一致，不会出错。
+    """
+    from movieclaw_api.services.library.nfo_absorb import fingerprint_of
+
+    if not aligned_nfos:
+        return
+    fingerprint = await asyncio.to_thread(fingerprint_of, aligned_nfos[0])
+    if fingerprint is None:
+        return
+    db = get_database()
+    async with db.session() as session:
+        meta = await MediaItemRepository(session).get_metadata(media_item_id)
+        if meta is None or meta.nfo_fingerprint == fingerprint:
+            return
+        # 只动指纹，不动 ``nfo_name``：那一列答的是「档案里的内容来自哪份
+        # NFO」，镜像写出的是档案自己的副本，一个字段也没贡献
+        meta.nfo_fingerprint = fingerprint
+        session.add(meta)
+        await session.commit()
 
 
 def _copy_asset(src: Path, dest: Path, force: bool) -> None:

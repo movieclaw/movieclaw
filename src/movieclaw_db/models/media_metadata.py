@@ -141,6 +141,22 @@ class MediaMetadata(TimestampMixin, table=True):
     scraped_at: datetime | None = Field(default=None, description="最近一次成功刮削时间")
     scrape_language: str = Field(default="", description="刮削使用的 TMDB language")
 
+    # -- 本地 NFO 的吸收台账（docs/design/metadata.md 第 5 节）-----------------
+    # 条目目录里的 movie.nfo / tvshow.nfo 在**刮削时**被读进上面那些展示列
+    # （非空字段压过 TMDB），之后读路径一律只读库，不再回媒体盘。这两列是
+    # 那次吸收的台账：
+    nfo_name: str | None = Field(
+        default=None,
+        description='吸收来源的 NFO 文件名；NULL=没有本地 NFO（详情页据此标注"信息来自 xxx.nfo"）',
+    )
+    nfo_fingerprint: str | None = Field(
+        default=None,
+        description=(
+            '已吸收的 NFO 指纹 "mtime_ns:大小"；NULL=从未吸收过（存量回填的判据）。'
+            "找不到 NFO 时写空串，表示查过了、确实没有"
+        ),
+    )
+
 
 class MediaEpisode(TimestampMixin, table=True):
     """分集展示元数据——集数据的唯一事实源（docs/design/metadata.md 2.2）。

@@ -202,6 +202,9 @@ def build_lifespan(settings: Settings):
             from movieclaw_api.services.library import (  # noqa: F401  监听导入与对账任务注册
                 ingest as library_ingest,
             )
+            from movieclaw_api.services.library import (  # noqa: F401  本地 NFO 吸收回填任务注册
+                nfo_backfill as library_nfo_backfill,
+            )
             from movieclaw_api.services.library import (  # noqa: F401  回收站到期清理与孤儿清扫任务注册
                 recycle as library_recycle,
             )

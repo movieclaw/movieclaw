@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -1498,34 +1497,16 @@ async def items_filters(request: Request) -> JSONResponse:
 async def _overlay_layered_meta(dto: dict[str, Any], bundle: ItemBundle) -> None:
     """单条目详情叠加分层元数据（与 Web 详情页同一份读策略，layered_item_meta）。
 
-    列表装配只读库内档案（批量性能不容 NFO 磁盘 IO 与 TMDB 兜底）；点进
-    详情的这一条走完整分层——NFO 里人工维护的简介优先生效，还没刮过的
-    条目当场用 TMDB 兜底填充文本（后台自愈刮削由分层读内部触发）。
-    People 不叠加：人物页要靠关系表里的影人 id，NFO/TMDB 兜底给不出稳定
+    列表装配只读库内档案；点进详情的这一条走完整分层——还没刮过的条目
+    当场用 TMDB 兜底填充文本（后台自愈刮削由分层读内部触发）。本地 NFO
+    不在读路径上，它在刮削时就被吸收进库内档案了（nfo_absorb）。
+    People 不叠加：人物页要靠关系表里的影人 id，TMDB 兜底给不出稳定
     id，缺口由自愈刮削收敛。库内档案来源与 DTO 同源，无需二次装配。
     """
-    from movieclaw_api.services.library.items import layered_item_meta, resolve_entry_dirs
-    from movieclaw_media.models import MediaKind
+    from movieclaw_api.services.library.items import layered_item_meta
 
     async with get_database().session() as session:
-        rows = (
-            await session.execute(
-                select_files_with_roots(bundle.item.id)  # type: ignore[arg-type]
-            )
-        ).all()
-        if not rows:
-            return
-        files = [f for f, _ in rows]
-        roots: list[Path] = []
-        for _, lib in rows:
-            for p in lib.root_paths:
-                path = Path(p)
-                if path not in roots:
-                    roots.append(path)
-        entry_dirs = resolve_entry_dirs(roots, files)
-        meta = await layered_item_meta(
-            session, bundle.item, entry_dirs, files, MediaKind(bundle.item.kind)
-        )
+        meta = await layered_item_meta(session, bundle.item)
     if meta is None or meta.source not in ("nfo", "tmdb"):
         return
     if meta.plot:

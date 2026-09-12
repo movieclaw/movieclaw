@@ -481,12 +481,13 @@ async def test_item_detail_assembles_local_scrape(db, tmp_path, monkeypatch) -> 
     assert view.backdrop_url.startswith(f"{art_base}?kind=fanart&v=")
     assert int(view.poster_url.rsplit("v=", 1)[1]) > 0
     assert view.entry_dirs == [str(entry)]
-    # NFO 元数据——2026-08-04 对齐语义：扫描收尾的资产镜像已把第三方 NFO
-    # 重写为与库内档案一致（rating 8.2/121 的旧值被 TMDB 档案 7.2/118 取代），
-    # 详情读到的 NFO 层与 media_metadata 同源（docs/design/metadata.md 6.2）
-    assert view.local_meta is not None
-    assert view.local_meta.rating == 7.2 and view.local_meta.runtime_minutes == 118
-    assert [a.name for a in view.local_meta.actors] == ["线上演员甲", "线上演员乙"]
+    # 展示元数据全部出自库内档案（详情页不再回媒体盘读 NFO）。入库时第三方
+    # NFO 已被**吸收**进档案且压过 TMDB（rating 8.2/121、NFO 的演员表），
+    # 这正是"入库优先读 NFO、之后只读库"（docs/design/metadata.md 第 5 节）
+    assert view.local_meta is not None and view.local_meta.source == "nfo"
+    assert view.local_meta.nfo_name == "movie.nfo"
+    assert view.local_meta.rating == 8.2 and view.local_meta.runtime_minutes == 121
+    assert [a.name for a in view.local_meta.actors] == ["演员甲", "演员乙"]
     # 详情页不再触发补探：音轨保持"尚未探测"（前端据此提示重新扫描），
     # 浏览不碰媒体文件本体（云盘挂载上读文件就是流量与延迟）
     file = view.files[0]
@@ -569,8 +570,8 @@ async def test_strm_rows_never_count_as_probe_pending(db, tmp_path) -> None:
 
 async def test_item_detail_selfsufficient_after_scan(db, tmp_path) -> None:
     """一次入库刮削（docs/design/metadata.md）：扫描挂锚即展示档案落库、
-    最小身份 NFO 原地升级为完整版。详情页读路径 NFO > DB——删掉 NFO 后
-    档案照样从库内 media_metadata 出（断网可用），出处标注 db。"""
+    最小身份 NFO 原地升级为完整版。详情页**只读库内档案**——最小身份 NFO
+    没有展示内容可吸收，出处标注 db；删掉 NFO 也毫无影响（断网可用）。"""
     root = tmp_path / "media" / "movies"
     entry = root / "某电影 (2020)"
     entry.mkdir(parents=True)
@@ -594,8 +595,8 @@ async def test_item_detail_selfsufficient_after_scan(db, tmp_path) -> None:
         resp = await get_library_item(library.id, item.id, _ADMIN, session)
         view = resp.data
 
-    # NFO 身份高置信（identity_source=nfo）→ 最小 NFO 被升级为完整版并回读
-    assert view.local_meta is not None and view.local_meta.source == "nfo"
+    # 最小身份 NFO 只有 tmdbid，没有可吸收的展示内容 → 档案就是 TMDB 那份
+    assert view.local_meta is not None and view.local_meta.source == "db"
     assert view.local_meta.plot == "一段来自 TMDB 的简介。"
     assert view.local_meta.rating == 7.2 and view.local_meta.runtime_minutes == 118
     assert view.local_meta.directors == ["线上导演"]
@@ -612,7 +613,7 @@ async def test_item_detail_selfsufficient_after_scan(db, tmp_path) -> None:
         "/w300/a1.jpg"
     )
 
-    # 删掉 NFO：读路径落到第二层——库内刮削档案（media_metadata），断网可用
+    # 删掉 NFO：读路径本就只读库内刮削档案（media_metadata），断网可用
     (entry / "movie.nfo").unlink()
     async with db.session() as session:
         item = (
@@ -635,7 +636,12 @@ async def test_item_detail_selfsufficient_after_scan(db, tmp_path) -> None:
 async def test_item_detail_fills_missing_actor_thumbs_from_archive(db, tmp_path) -> None:
     """NFO 只写了演员姓名（很多刮削器如此，本项目早期版本也是）时，头像按
     姓名从库内档案回填——否则详情页的演职员条是一排空占位。档案里也没有
-    头像的演员保持为空，不瞎编。"""
+    头像的演员保持为空，不瞎编。
+
+    回填发生在**吸收时**（用户改完 NFO 点「刷新元数据」），不在读时：
+    详情页永远只读库内档案。"""
+    from movieclaw_api.services.media_scrape import scrape_media_item
+
     root = tmp_path / "media" / "movies"
     entry = root / "某电影 (2020)"
     entry.mkdir(parents=True)
@@ -663,7 +669,10 @@ async def test_item_detail_fills_missing_actor_thumbs_from_archive(db, tmp_path)
             .scalars()
             .one()
         )
-        resp = await get_library_item(library.id, item.id, _ADMIN, session)
+        item_id = item.id
+    await scrape_media_item(item_id)  # 用户主动刷新元数据 → 重读 NFO
+    async with db.session() as session:
+        resp = await get_library_item(library.id, item_id, _ADMIN, session)
         view = resp.data
 
     assert view.local_meta is not None and view.local_meta.source == "nfo"
@@ -677,6 +686,8 @@ async def test_item_detail_fills_person_ids_even_when_thumbs_complete(db, tmp_pa
     """NFO 头像全齐但没有 <actor><tmdbid>（TMM/Emby 与本项目旧版本写出的
     典型形态）时，影人 id 仍要按姓名从库内档案回填——曾因"头像齐了就早退"
     把 id 回填一起跳掉，演职员卡全部不可点（人物页链接依赖这个 id）。"""
+    from movieclaw_api.services.media_scrape import scrape_media_item
+
     root = tmp_path / "media" / "movies"
     entry = root / "某电影 (2020)"
     entry.mkdir(parents=True)
@@ -706,7 +717,10 @@ async def test_item_detail_fills_person_ids_even_when_thumbs_complete(db, tmp_pa
             .scalars()
             .one()
         )
-        resp = await get_library_item(library.id, item.id, _ADMIN, session)
+        item_id = item.id
+    await scrape_media_item(item_id)  # 用户主动刷新元数据 → 重读 NFO
+    async with db.session() as session:
+        resp = await get_library_item(library.id, item_id, _ADMIN, session)
         view = resp.data
 
     assert view.local_meta is not None and view.local_meta.source == "nfo"
@@ -1589,10 +1603,13 @@ async def test_detach_marks_non_work_and_frees_the_slot(db, tmp_path) -> None:
 async def test_actor_thumb_missing_only_when_tmdb_has_no_profile(db, tmp_path) -> None:
     """演职员头像为空的唯一成因是 TMDB 没有这个人的 profile_path，不是读取/入库丢数据。
 
-    夹具里「线上演员甲」有 profile_path、「线上演员乙」没有。三条读路径
-    （NFO / 库内档案 / TMDB 兜底）都必须：有图的拿到 w300 地址，没图的为 None
-    且**仍然保留这一行**——姓名与角色本身就是信息，不能因为缺图就把人丢掉。
+    夹具里「线上演员甲」有 profile_path、「线上演员乙」没有。无论演员表是
+    TMDB 直接落库的、还是吸收 NFO 后合并出来的，都必须：有图的拿到 w300
+    地址，没图的为 None 且**仍然保留这一行**——姓名与角色本身就是信息，
+    不能因为缺图就把人丢掉。
     """
+    from movieclaw_api.services.media_scrape import scrape_media_item
+
     root = tmp_path / "media" / "movies"
     entry = root / "某电影 (2020)"
     entry.mkdir(parents=True)
@@ -1616,7 +1633,30 @@ async def test_actor_thumb_missing_only_when_tmdb_has_no_profile(db, tmp_path) -
             resp = await get_library_item(library.id, item.id, _ADMIN, session)
         return resp.data.local_meta
 
-    # 1) NFO 路径（我们自己写出的完整 NFO：有图的写 <thumb>，没图的不写）
+    # 1) 库内档案（TMDB 直接落库那份）
+    meta = await actors_now()
+    assert meta is not None and meta.source == "db"
+    assert [(a.name, bool(a.thumb_url)) for a in meta.actors] == [
+        ("线上演员甲", True),
+        ("线上演员乙", False),
+    ]
+
+    # 2) 吸收 NFO 后的档案：用户换上一份只写姓名的 NFO 再刷新元数据，
+    #    头像按姓名从档案回填，档案里也没有的那位仍然留行、头像为空
+    (entry / "movie.nfo").write_text(
+        "<movie><title>某电影</title><tmdbid>300</tmdbid><plot>本地简介。</plot>"
+        "<actor><name>线上演员甲</name></actor>"
+        "<actor><name>线上演员乙</name></actor></movie>",
+        encoding="utf-8",
+    )
+    async with db.session() as session:
+        item_id = (
+            (await session.execute(select(MediaItem).where(MediaItem.tmdb_id == 300)))
+            .scalars()
+            .one()
+            .id
+        )
+    await scrape_media_item(item_id)
     meta = await actors_now()
     assert meta is not None and meta.source == "nfo"
     assert [(a.name, bool(a.thumb_url)) for a in meta.actors] == [
@@ -1624,10 +1664,10 @@ async def test_actor_thumb_missing_only_when_tmdb_has_no_profile(db, tmp_path) -
         ("线上演员乙", False),
     ]
 
-    # 2) 库内档案路径（删掉 NFO，断网可用的第二层）
+    # 3) 删掉 NFO 不影响读取——读路径本就只读库内档案（断网可用）
     (entry / "movie.nfo").unlink()
     meta = await actors_now()
-    assert meta is not None and meta.source == "db"
+    assert meta is not None
     assert [(a.name, bool(a.thumb_url)) for a in meta.actors] == [
         ("线上演员甲", True),
         ("线上演员乙", False),

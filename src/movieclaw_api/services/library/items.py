@@ -68,10 +68,7 @@ from movieclaw_api.services.library.content_rating import ratings_at_or_below
 from movieclaw_api.services.library.layout import STRM_EXT, entry_dir_of
 from movieclaw_api.services.library.nfo import (
     EntryMetadata,
-    EpisodeNfo,
     NfoActor,
-    read_entry_metadata,
-    read_episode_metadata,
 )
 from movieclaw_api.services.library.sort_key import title_initial, title_sort_key
 from movieclaw_api.services.library.thumbs import primary_aspect
@@ -2115,24 +2112,19 @@ def resolve_entry_dirs(roots: list[Path], files: list[LibraryFile]) -> list[Path
     return entry_dirs
 
 
-async def layered_item_meta(
-    session: AsyncSession,
-    item: MediaItem,
-    entry_dirs: list[Path],
-    files: list[LibraryFile],
-    kind: MediaKind,
-) -> EntryMetadata | None:
+async def layered_item_meta(session: AsyncSession, item: MediaItem) -> EntryMetadata | None:
     """条目展示元数据的**唯一读口径**（docs/design/metadata.md 第 5 节），
     Web 详情页与 Jellyfin 兼容层共用——分层策略只在这里维护一份：
-    本地 NFO 最优先（尊重既有刮削成果）→ 库内刮削档案（media_metadata，
-    绝大多数条目的日常路径，断网可用）→ TMDB 实时兜底（条目还没刮过，
+    库内刮削档案（media_metadata，断网可用）→ TMDB 实时兜底（条目还没刮过，
     顺带触发后台刮削自愈）。
+
+    **本地 NFO 不在这里读**：它在刮削时就被吸收进库内档案了（见
+    ``services/library/nfo_absorb``），NFO 里有值的字段压过 TMDB，出处记在
+    ``media_metadata.nfo_name`` 上。这样详情页无论打开多少次都只读库，
+    不再回媒体盘——NAS 上那块盘本来就该少碰。用户改了 NFO 想立刻生效，
+    走「刷新元数据」重新吸收。
     """
-    local_meta = await asyncio.to_thread(_read_meta, entry_dirs, files, kind)
-    if local_meta is not None:
-        await _fill_actor_thumbs(session, item, local_meta)
-    if local_meta is None:
-        local_meta = await _db_meta(session, item)
+    local_meta = await _db_meta(session, item)
     if local_meta is None:
         local_meta = await _tmdb_fallback_meta(session, item)
         if item.id is not None:
@@ -2192,10 +2184,8 @@ async def build_item_detail(
     落空，页面仍能靠台账字段渲染。不触发 ffprobe——探测只在入库/扫描时做。
     """
     roots = [Path(p) for p in library.root_paths]
-    kind = MediaKind(library.kind)
-
     entry_dirs = resolve_entry_dirs(roots, files)
-    local_meta = await layered_item_meta(session, item, entry_dirs, files, kind)
+    local_meta = await layered_item_meta(session, item)
 
     poster_art, fanart_art, subtitles_by_path = await asyncio.to_thread(
         _detail_local_files, roots, files
@@ -2219,32 +2209,6 @@ async def build_item_detail(
         local_fanart_version=file_version(fanart_art),
         external_subtitles=external,
     )
-
-
-def _read_meta(
-    entry_dirs: list[Path], files: list[LibraryFile], kind: MediaKind
-) -> EntryMetadata | None:
-    """找到并解析条目 NFO（同步，放线程池）。
-
-    候选顺序：条目目录的 movie.nfo/tvshow.nfo → 各视频文件的同名 .nfo
-    （散装电影惯例）。取第一份解出实质内容的；全是最小身份 NFO 时返回 None
-    ——前端据此展示"本地未刮削"而不是一堆空栏。
-    """
-    candidates: list[Path] = []
-    entry_name = "movie.nfo" if kind is MediaKind.MOVIE else "tvshow.nfo"
-    for directory in entry_dirs:
-        candidates.append(directory / entry_name)
-    for row in files:
-        path = Path(row.file_path)
-        if path.suffix:  # 原盘目录没有同名 NFO 一说
-            candidates.append(path.with_suffix(".nfo"))
-    for nfo in candidates:
-        # 不预先 is_file()：read_entry_metadata 本来就要 stat 一次（缓存要拿
-        # mtime/大小做键），文件不在时它返回 None，判两遍等于白多一次系统调用
-        meta = read_entry_metadata(nfo)
-        if meta is not None and meta.has_content():
-            return meta
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -2307,25 +2271,16 @@ def find_episode_thumb(video: Path, cache: DirListing | None = None) -> Path | N
     return None
 
 
-def _season_local_facts(
-    videos: list[Path],
-) -> dict[Path, tuple[EpisodeNfo | None, bool]]:
-    """一季分集的本地读盘结果：``{视频: (分集 NFO, 是否有本地缩略图)}``。
+def _season_local_thumbs(videos: list[Path]) -> dict[Path, bool]:
+    """一季各集有没有本地缩略图（``<视频名>-thumb.jpg``）。
 
-    原本每集两次 ``asyncio.to_thread``（读 NFO、找缩略图），一季十几集就是
-    三十来次线程跳转 + 每集 4 次缩略图 stat。合成一次线程跳转、目录只列一遍。
+    **分集 NFO 不在这里读**：它在刮削时就被吸收进 ``media_episode`` 了
+    （见 ``services/library/nfo_absorb``）。缩略图仍要现场判断——那是"图还在
+    不在磁盘上"的事实，不是元数据，而且一整季只需列一次目录（结果还有进程级
+    缓存兜着），成本是一次 stat 量级。
     """
     cache: DirListing = {}
-    facts: dict[Path, tuple[EpisodeNfo | None, bool]] = {}
-    for video in videos:
-        listing = dir_listing(video.parent, cache) or {}
-        # 目录列举已经知道有没有同名 NFO，没有就不必再去 open 一次讨个 ENOENT
-        nfo_path = listing.get(f"{video.stem.lower()}.nfo")
-        facts[video] = (
-            read_episode_metadata(nfo_path) if nfo_path is not None else None,
-            find_episode_thumb(video, cache) is not None,
-        )
-    return facts
+    return {video: find_episode_thumb(video, cache) is not None for video in videos}
 
 
 async def build_season_episodes(
@@ -2381,9 +2336,9 @@ async def build_season_episodes(
             if row.state == FileState.IN_PLACE:
                 season_videos[number] = (row, Path(row.file_path))
                 break
-    local_facts = (
+    local_thumbs = (
         await asyncio.to_thread(
-            _season_local_facts, [video for _row, video in season_videos.values()]
+            _season_local_thumbs, [video for _row, video in season_videos.values()]
         )
         if season_videos
         else {}
@@ -2418,12 +2373,9 @@ async def build_season_episodes(
         owned_file = season_videos.get(number)
         if owned_file is not None:
             row, video = owned_file
-            nfo, has_thumb = local_facts.get(video, (None, False))
-            if nfo is not None:
-                info.name = nfo.title or info.name
-                info.overview = nfo.plot or info.overview
-                info.air_date = info.air_date or nfo.aired
-            if has_thumb:
+            # 集名/简介/首播日已经在 media_episode 里（分集 NFO 刮削时吸收），
+            # 上面取 meta 时就带出来了；这里只补"本地有缩略图就用本地的"
+            if local_thumbs.get(video):
                 info.still_url = f"/libraries/files/{row.id}/thumb"
         infos.append(info)
 
@@ -2509,42 +2461,6 @@ async def _fill_from_tmdb_season(
             info.still_url = f"{image_base}/w300{still}"
 
 
-async def _fill_actor_thumbs(session: AsyncSession, item: MediaItem, meta: EntryMetadata) -> None:
-    """给 NFO 里缺 ``<thumb>`` 或缺 ``<tmdbid>`` 的演员按姓名回填库内档案（就地改 meta）。
-
-    很多刮削器（包括本项目早期版本）只往 NFO 写演员姓名与角色，不写头像，
-    详情页的演职员条就是一排灰底占位。而 media_metadata.cast 里的
-    ``profile_path`` 通常是全的——数据本来就在库里，只是被"NFO 优先"整份
-    挡住了。这里只补空缺的头像与影人 id，姓名/角色一律以 NFO 为准，不动其它字段。
-    """
-    if item.id is None or not meta.actors:
-        return
-    # 头像**和**影人 id 都齐了才可以跳过：TMM/Emby 写的 NFO 常见头像全有、
-    # <tmdbid> 全无，只看头像就早退会把 id 回填一起跳掉，人物页永远点不开
-    if all(actor.thumb and actor.tmdb_person_id is not None for actor in meta.actors):
-        return
-    from movieclaw_api.core.config import get_settings
-    from movieclaw_db.repositories import MediaItemRepository
-
-    row = await MediaItemRepository(session).get_metadata(item.id)
-    if row is None or not row.cast:
-        return
-    by_name = {(c.get("name") or "").strip(): c for c in row.cast if c.get("name")}
-    if not by_name:
-        return
-    image_base = get_settings().tmdb_image_base_url.rstrip("/")
-    for actor in meta.actors:
-        entry = by_name.get(actor.name.strip())
-        if entry is None:
-            continue
-        if not actor.thumb and entry.get("profile_path"):
-            actor.thumb = f"{image_base}/w300{entry['profile_path']}"
-        # 影人 id 同理按姓名回填：第三方刮削器写的 NFO 通常没有 <actor><tmdbid>，
-        # 而库内档案里有——补上这一格才点得开人物页
-        if actor.tmdb_person_id is None and entry.get("tmdb_person_id"):
-            actor.tmdb_person_id = int(entry["tmdb_person_id"])
-
-
 async def _db_meta(session: AsyncSession, item: MediaItem) -> EntryMetadata | None:
     """库内刮削档案（media_metadata）→ 详情页展示元数据。
 
@@ -2561,6 +2477,16 @@ async def _db_meta(session: AsyncSession, item: MediaItem) -> EntryMetadata | No
     if row is None or row.scraped_at is None:
         return None
     image_base = get_settings().tmdb_image_base_url.rstrip("/")
+
+    def _thumb(actor: dict) -> str | None:
+        # NFO 自带的绝对地址优先（吸收时原样存下，见 nfo_absorb._merge_cast），
+        # 否则用 TMDB 图床（经前端缓存代理）
+        if actor.get("nfo_thumb"):
+            return str(actor["nfo_thumb"])
+        if actor.get("profile_path"):
+            return f"{image_base}/w300{actor['profile_path']}"
+        return None
+
     meta = EntryMetadata(
         plot=row.overview,
         rating=row.vote_average,
@@ -2571,17 +2497,16 @@ async def _db_meta(session: AsyncSession, item: MediaItem) -> EntryMetadata | No
             NfoActor(
                 name=actor["name"],
                 role=actor.get("character") or None,
-                thumb=(
-                    f"{image_base}/w300{actor['profile_path']}"
-                    if actor.get("profile_path")
-                    else None
-                ),
+                thumb=_thumb(actor),
                 tmdb_person_id=actor.get("tmdb_person_id"),
             )
             for actor in row.cast
             if actor.get("name")
         ],
-        source="db",
+        # 档案里带着 NFO 出处就照实说「信息来自 xxx.nfo」——那些字段确实是
+        # 从它吸收来的，只是吸收发生在刮削时而不是这次请求里
+        nfo_name=row.nfo_name or "",
+        source="nfo" if row.nfo_name else "db",
     )
     return meta if meta.has_content() else None
 
