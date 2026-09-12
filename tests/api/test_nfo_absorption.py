@@ -290,3 +290,167 @@ async def test_backfill_absorbs_legacy_entries(db, tmp_path) -> None:
             .all()
         )
     assert list(left) == []
+
+
+# ---------------------------------------------------------------------------
+# 自家副本守卫：镜像写出去的 NFO 不得在下一轮被当成用户的重新吸收
+# ---------------------------------------------------------------------------
+
+
+class _StubSession:
+    """吸收函数只用到 ``session.add``；这几条用例不碰库，不必起真会话。"""
+
+    def add(self, _row) -> None:
+        return None
+
+
+def test_mirrored_episode_nfo_never_masks_new_tmdb_data(tmp_path) -> None:
+    """分集级的自家副本守卫（``media_episode.nfo_mirror_fingerprint``）。
+
+    没有这一列时，镜像每次刷新按 media_episode 重写 <视频名>.nfo，下一轮的
+    吸收又把它读回来——集名与简介永久冻结在第一次镜像时的内容。新播剧集
+    最吃亏：TMDB 初期只有占位的"第 N 集"，几天后补上的真标题永远显示不出来。
+    """
+    import asyncio
+    from datetime import date
+
+    from movieclaw_api.services.library.nfo import write_episode_nfo
+    from movieclaw_api.services.library.nfo_absorb import absorb_episode_nfos, fingerprint_of
+    from movieclaw_db.models import LibraryFile, MediaEpisode
+
+    video = tmp_path / "Some.Show.S01E05.1080p.mkv"
+    video.write_bytes(b"v")
+    row = LibraryFile(library_id=1, file_path=str(video), season_number=1, episode_number=5)
+
+    def _episode(name: str, overview: str) -> MediaEpisode:
+        return MediaEpisode(
+            media_item_id=1,
+            season_number=1,
+            episode_number=5,
+            name=name,
+            overview=overview,
+            air_date=date(2026, 5, 1),
+        )
+
+    # 第 1 轮刷新收尾：镜像按库内档案写出分集 NFO，并把指纹记进台账
+    first = _episode("第 5 集", "TMDB 初版分集简介。")
+    aligned = write_episode_nfo(video, first)
+    assert aligned is not None  # _record_mirrored_nfo 依赖这个返回值
+    first.nfo_mirror_fingerprint = fingerprint_of(aligned)
+
+    # 第 2 轮刷新：TMDB 把占位标题补成了真标题，apply_display_profile 已写进档案行
+    second = _episode("真正的集标题", "TMDB 更新后的分集简介。")
+    second.nfo_mirror_fingerprint = first.nfo_mirror_fingerprint
+
+    asyncio.run(absorb_episode_nfos(_StubSession(), [second], [row]))
+
+    assert second.name == "真正的集标题"
+    assert second.overview == "TMDB 更新后的分集简介。"
+
+
+def test_user_episode_nfo_still_wins(tmp_path) -> None:
+    """守卫只认自家副本：用户自己的分集 NFO 照常压过 TMDB。"""
+    import asyncio
+    from datetime import date
+
+    from movieclaw_api.services.library.nfo_absorb import absorb_episode_nfos
+    from movieclaw_db.models import LibraryFile, MediaEpisode
+
+    video = tmp_path / "Some.Show.S01E05.1080p.mkv"
+    video.write_bytes(b"v")
+    video.with_suffix(".nfo").write_text(
+        "<episodedetails><title>用户写的集名</title><plot>用户写的简介</plot>"
+        "</episodedetails>",
+        encoding="utf-8",
+    )
+    row = LibraryFile(library_id=1, file_path=str(video), season_number=1, episode_number=5)
+    episode = MediaEpisode(
+        media_item_id=1,
+        season_number=1,
+        episode_number=5,
+        name="TMDB 的集名",
+        overview="TMDB 的简介",
+        air_date=date(2026, 5, 1),
+    )
+
+    asyncio.run(absorb_episode_nfos(_StubSession(), [episode], [row]))
+
+    assert episode.name == "用户写的集名"
+    assert episode.overview == "用户写的简介"
+
+
+def test_unchanged_user_entry_nfo_reapplies_every_refresh(tmp_path) -> None:
+    """用户的条目 NFO 没改过也要每次刷新重压一遍。
+
+    刷新时 ``apply_display_profile`` 刚把 TMDB 值无条件写回展示列。此前的判据
+    是"这份 NFO 吸收过没有"，于是没改过的用户 NFO 被跳过、TMDB 值留在原地——
+    关掉了媒体目录镜像的库（磁盘上永远是用户那份、指纹永远不变）因此会发现
+    自己的 NFO 在刷新后静默失效。
+    """
+    import asyncio
+
+    from movieclaw_api.services.library.nfo_absorb import absorb_entry_nfo
+    from movieclaw_db.models import LibraryFile, MediaItem, MediaMetadata
+    from movieclaw_media.models import MediaKind
+
+    entry = tmp_path / "某电影 (2020)"
+    entry.mkdir()
+    video = entry / "某电影.2020.1080p.mkv"
+    video.write_bytes(b"m")
+    (entry / "movie.nfo").write_text(_RICH_NFO, encoding="utf-8")
+
+    item = MediaItem(id=1, tmdb_id=300, title="某电影", kind="movie")
+    row = LibraryFile(library_id=1, file_path=str(video))
+    meta = MediaMetadata(media_item_id=1)
+    session = _StubSession()
+    forget_parsed_nfo()
+
+    asyncio.run(absorb_entry_nfo(session, item, meta, [entry], [row], MediaKind.MOVIE))
+    assert meta.overview == "手写的中文简介。"
+    assert meta.nfo_mirror_fingerprint is None  # 镜像没写过，这份是用户的
+
+    # 刷新：TMDB 值先落库，紧接着再吸收一次
+    meta.overview = "TMDB 的简介。"
+    asyncio.run(absorb_entry_nfo(session, item, meta, [entry], [row], MediaKind.MOVIE))
+
+    assert meta.overview == "手写的中文简介。"
+
+
+@pytest.mark.asyncio
+async def test_mirror_records_its_own_fingerprint(db, tmp_path) -> None:
+    """镜像写完必须把自家指纹记进 ``nfo_mirror_fingerprint``（守卫的数据来源）。"""
+    _library_id, item_id, _nfo = await _seed(db, tmp_path, _RICH_NFO)
+
+    meta = await _meta(db, item_id)
+    assert meta.nfo_mirror_fingerprint is not None
+    assert meta.nfo_fingerprint is not None
+
+
+@pytest.mark.asyncio
+async def test_mirror_never_overwrites_an_unabsorbed_nfo(db, tmp_path) -> None:
+    """还没吸收过本地 NFO 的条目不写条目 NFO —— 否则用户的 NFO 被永久毁掉。
+
+    选图（``set_artwork``）会直接 force 镜像，不经吸收。对存量回填尚未轮到的
+    条目，那一写等于拿纯 TMDB 内容盖掉用户用 TMM 刮的那份，且镜像会把指纹
+    记进台账、回填从此再也挑不中它——文件没了、库里也没有。
+    """
+    from movieclaw_api.services.media_scrape import mirror_media_dir_assets
+
+    _library_id, item_id, nfo = await _seed(db, tmp_path, _RICH_NFO)
+
+    # 退回"升级前、回填还没轮到"的样子，并把用户原件放回磁盘
+    nfo.write_text(_RICH_NFO, encoding="utf-8")
+    async with db.session() as session:
+        row = await MediaItemRepository(session).get_metadata(item_id)
+        row.nfo_name = None
+        row.nfo_fingerprint = None
+        row.nfo_mirror_fingerprint = None
+        session.add(row)
+        await session.commit()
+
+    forget_parsed_nfo()
+    await mirror_media_dir_assets(item_id, force=True)
+
+    assert "手写的中文简介。" in nfo.read_text(encoding="utf-8")
+    meta = await _meta(db, item_id)
+    assert meta.nfo_fingerprint is None  # 台账没被污染，回填仍会挑中它

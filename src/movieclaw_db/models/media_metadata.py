@@ -156,6 +156,14 @@ class MediaMetadata(TimestampMixin, table=True):
             "找不到 NFO 时写空串，表示查过了、确实没有"
         ),
     )
+    nfo_mirror_fingerprint: str | None = Field(
+        default=None,
+        description=(
+            "媒体目录镜像**自己写出去**的那份条目 NFO 的指纹；NULL=没写过。"
+            "吸收端据此认出「这份 NFO 是我们档案的副本」并跳过，"
+            "不让上一轮的旧内容盖掉刚拉回来的 TMDB 新数据"
+        ),
+    )
 
 
 class MediaEpisode(TimestampMixin, table=True):
@@ -209,3 +217,14 @@ class MediaEpisode(TimestampMixin, table=True):
     )
     still_path: str | None = Field(default=None, description="TMDB 剧照相对路径")
     still_file: str | None = Field(default=None, description="本地剧照资产相对路径")
+
+    # 分集 NFO（<视频名>.nfo）的镜像台账，与 ``MediaMetadata`` 同款语义。
+    # 没有对应的 nfo_fingerprint：分集不参与存量回填（条目级台账已经能让
+    # 回填收敛），这里只需要认出"这份 NFO 是我们自己写出去的"
+    nfo_mirror_fingerprint: str | None = Field(
+        default=None,
+        description=(
+            "媒体目录镜像**自己写出去**的那份分集 NFO 的指纹；NULL=没写过。"
+            "吸收端据此跳过自家副本，不让旧集名/旧简介盖掉 TMDB 新数据"
+        ),
+    )

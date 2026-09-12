@@ -146,12 +146,17 @@ async def absorb_entry_nfo(
     「信息来自 xxx.nfo」的出处标注。**已经写进展示列的内容不回滚**：那是
     上一次吸收的成果，TMDB 侧下一次刷新自然会把它盖回去。
 
-    指纹相同即跳过，这一条是必需的而不是省事：媒体目录镜像每次刷新都按
-    库内档案重写条目 NFO（6.2 的「NFO 是档案的镜像」），镜像写完会把新指纹
-    记进台账。不比指纹的话，下一次刷新读到的就是**我们自己上一轮写出去的**
-    那份 NFO，它会把刚拉回来的 TMDB 新数据原样盖掉——正是 2026-08-04 决策
-    要消灭的「NFO 挡住新数据」。指纹一致 = 这份 NFO 的内容我们已经吸收过，
-    不必再吸收一次；用户手改过 NFO 指纹必变，照常吸收。
+    跳过的判据是 ``nfo_mirror_fingerprint``——**磁盘上这份是不是我们自己写
+    出去的**，而不是"这份我们吸收过没有"。媒体目录镜像每次刷新都按库内档案
+    重写条目 NFO（6.2 的「NFO 是档案的镜像」），不认出自家副本的话，下一次
+    刷新读到的就是我们上一轮写出去的那份，它会把刚拉回来的 TMDB 新数据原样
+    盖掉——正是 2026-08-04 决策要消灭的「NFO 挡住新数据」。
+
+    反过来，**用户的 NFO 每次刷新都要重新压上去**，哪怕它一个字节没改：
+    刷新时 ``apply_display_profile`` 刚把 TMDB 值无条件写回展示列，不重压
+    一次，"NFO 有值的字段压过 TMDB"这条约定就只在第一次吸收时生效了。关掉
+    媒体目录镜像的库尤其吃这一刀——磁盘上一直是用户那份、指纹永远不变。
+    解析结果有 mtime/大小缓存（``nfo._cached_parse``），重压不等于重读盘。
     """
     candidates = entry_nfo_candidates(entry_dirs, files, kind)
     picked = await asyncio.to_thread(_pick_entry_nfo, candidates)
@@ -161,7 +166,10 @@ async def absorb_entry_nfo(
         session.add(meta_row)
         return False
     nfo_path, fingerprint, nfo = picked
-    if fingerprint != NO_NFO and fingerprint == meta_row.nfo_fingerprint:
+    if fingerprint != NO_NFO and fingerprint == meta_row.nfo_mirror_fingerprint:
+        # 我们自己镜像出去的那份，内容是档案的副本，重新吸收只会拿旧值盖新值
+        meta_row.nfo_fingerprint = fingerprint
+        session.add(meta_row)
         return False
     apply_entry_nfo(meta_row, nfo_path, nfo)
     meta_row.nfo_fingerprint = fingerprint
@@ -184,6 +192,12 @@ async def absorb_episode_nfos(
 
     一个视频对应一集；同一集有多个版本文件时取**第一个**读得出内容的，与
     改动前分集区「取首个在位文件」的口径一致。
+
+    与条目级同款的自家副本守卫（``media_episode.nfo_mirror_fingerprint``）：
+    镜像每次刷新都按 ``media_episode`` 重写 ``<视频名>.nfo``，认不出自家副本
+    的话，下一轮刷新会把上一轮的集名/简介读回来盖掉 TMDB 刚补的内容——新播
+    剧集尤其吃亏，TMDB 初期只有占位的"第 N 集"，几天后补上的真标题会永远
+    显示不出来。
     """
     by_unit: dict[tuple[int, int], MediaEpisode] = {
         (e.season_number, e.episode_number): e for e in episodes
@@ -205,13 +219,18 @@ async def absorb_episode_nfos(
     if not targets:
         return 0
 
-    def _read_all() -> list[tuple[MediaEpisode, object]]:
-        return [(episode, read_episode_metadata(path)) for episode, path in targets]
+    def _read_all() -> list[tuple[MediaEpisode, str | None, object]]:
+        return [
+            (episode, fingerprint_of(path), read_episode_metadata(path))
+            for episode, path in targets
+        ]
 
     changed = 0
-    for episode, nfo in await asyncio.to_thread(_read_all):
+    for episode, fingerprint, nfo in await asyncio.to_thread(_read_all):
         if nfo is None:
             continue
+        if fingerprint is not None and fingerprint == episode.nfo_mirror_fingerprint:
+            continue  # 我们自己写出去的那份，吸收它等于拿旧值盖新值
         touched = False
         if nfo.title:
             episode.name, touched = nfo.title, True

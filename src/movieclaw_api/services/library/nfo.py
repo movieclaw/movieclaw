@@ -240,7 +240,7 @@ def write_full_nfo(entry_dir: Path, item: MediaItem, meta: MediaMetadata | None)
     return nfo_path
 
 
-def write_episode_nfo(video: Path, episode: MediaEpisode) -> None:
+def write_episode_nfo(video: Path, episode: MediaEpisode) -> Path | None:
     """写出分集 NFO（视频同名 .nfo，根元素 <episodedetails>）。
 
     同步函数（调用方放线程池）。与条目 NFO 同款对齐语义（2026-08-04）：
@@ -248,10 +248,15 @@ def write_episode_nfo(video: Path, episode: MediaEpisode) -> None:
     高置信身份门槛把关，季集号本就来自台账与档案的同一套数字对。
     防降级闸：档案行只有集号骨架（无简介且无播出日期，说明 TMDB 没数据）
     时不覆盖已有文件——第三方刮的分集 NFO 大概率比骨架富。
+
+    返回**与库内档案对齐后的 NFO 路径**（内容本来就一致、没真的落盘也算），
+    拒写或写失败返回 None——与 ``write_full_nfo`` 同款契约。调用方据此把这份
+    "我们自己写的"记进 ``media_episode.nfo_mirror_fingerprint``，否则下一次
+    刷新会把它当用户的 NFO 重新吸收，用上一轮的旧集名盖掉 TMDB 新数据。
     """
     nfo_path = video.with_suffix(".nfo")
     if nfo_path.exists() and not episode.overview and episode.air_date is None:
-        return
+        return None
     lines = [
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
         "<episodedetails>",
@@ -270,13 +275,15 @@ def write_episode_nfo(video: Path, episode: MediaEpisode) -> None:
     if nfo_path.exists():
         try:
             if nfo_path.read_text(encoding="utf-8") == content:
-                return  # 内容无变化，不动 mtime
+                return nfo_path  # 内容无变化，不动 mtime
         except OSError:
             pass
     try:
         nfo_path.write_text(content, encoding="utf-8")
     except OSError as exc:
         logger.warning("分集 NFO 写出失败（不阻断）：%s（%s）", nfo_path, exc)
+        return None
+    return nfo_path
 
 
 # ---------------------------------------------------------------------------

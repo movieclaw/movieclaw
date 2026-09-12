@@ -1928,10 +1928,18 @@ async def mirror_media_dir_assets(media_item_id: int, *, force: bool = False) ->
         if _file_trusted(file):
             trusted_entries.add(entry)
 
-    # 镜像写出的条目 NFO 是**我们自己的档案的副本**，必须记进吸收台账——
-    # 否则下一次刷新会把它当用户的 NFO 重新吸收，用上一轮的旧内容盖掉刚
-    # 拉回来的 TMDB 新数据（见 services/library/nfo_absorb 的指纹说明）
+    # 镜像写出的 NFO 是**我们自己的档案的副本**，必须记进镜像台账——否则
+    # 下一次刷新会把它当用户的 NFO 重新吸收，用上一轮的旧内容盖掉刚拉回来
+    # 的 TMDB 新数据（见 services/library/nfo_absorb 的指纹说明）。条目级与
+    # 分集级各记各的
     aligned_nfos: list[Path] = []
+    aligned_episode_nfos: list[tuple[tuple[int, int], Path]] = []
+
+    # 还没吸收过本地 NFO 的条目（台账为 NULL，存量回填尚未轮到）**不写条目
+    # NFO**：档案里此刻还没有用户 NFO 的任何字段，写出去就是拿纯 TMDB 内容
+    # 盖掉用户用 TMM 精心刮的那份，且覆盖后回填再也读不回来。等回填或下一次
+    # 刷新吸收完，镜像自然跟上。图片不受此限（识别链与展示都不读 NFO 图）
+    absorbed = meta is not None and meta.nfo_fingerprint is not None
 
     def _mirror() -> None:
         for entry, library in entry_dirs.items():
@@ -1951,7 +1959,7 @@ async def mirror_media_dir_assets(media_item_id: int, *, force: bool = False) ->
                         _copy_asset(
                             item_dir / f"season-{season.season_number}.jpg", entry / name, force
                         )
-            if write_nfo and entry in trusted_entries:
+            if write_nfo and absorbed and entry in trusted_entries:
                 aligned = write_full_nfo(entry, item, meta)
                 if aligned is not None:
                     aligned_nfos.append(aligned)
@@ -1968,36 +1976,66 @@ async def mirror_media_dir_assets(media_item_id: int, *, force: bool = False) ->
                     force,
                 )
             if write_nfo and _file_trusted(file):
-                write_episode_nfo(video, episode)
+                aligned = write_episode_nfo(video, episode)
+                if aligned is not None:
+                    aligned_episode_nfos.append(
+                        ((episode.season_number, episode.episode_number), aligned)
+                    )
 
     await asyncio.to_thread(_mirror)
-    await _record_mirrored_nfo(media_item_id, aligned_nfos)
+    await _record_mirrored_nfo(media_item_id, aligned_nfos, aligned_episode_nfos)
 
 
-async def _record_mirrored_nfo(media_item_id: int, aligned_nfos: list[Path]) -> None:
-    """把镜像刚对齐的条目 NFO 记进吸收台账（``media_metadata.nfo_fingerprint``）。
+async def _record_mirrored_nfo(
+    media_item_id: int,
+    aligned_nfos: list[Path],
+    aligned_episode_nfos: list[tuple[tuple[int, int], Path]],
+) -> None:
+    """把镜像刚对齐的 NFO 记进镜像台账（``nfo_mirror_fingerprint``）。
 
-    多个条目目录（同一部片挂在两个库）时记第一个——吸收端也是按候选顺序
-    取第一份，两边同序即可对上；真对不上最多是多吸收一次自己的镜像，
-    内容与档案一致，不会出错。
+    条目级：多个条目目录（同一部片挂在两个库）时记第一个——吸收端也是按
+    候选顺序取第一份，两边同序即可对上；真对不上最多是多吸收一次自己的
+    镜像，内容与档案一致，不会出错。
+
+    分集级：按 (季号, 集号) 逐行记。这一列是**认出自家副本**的唯一依据，
+    没有它，下一轮刷新会把上一轮写出去的旧集名读回来盖掉 TMDB 新数据。
     """
     from movieclaw_api.services.library.nfo_absorb import fingerprint_of
 
-    if not aligned_nfos:
+    if not aligned_nfos and not aligned_episode_nfos:
         return
-    fingerprint = await asyncio.to_thread(fingerprint_of, aligned_nfos[0])
-    if fingerprint is None:
-        return
+
+    def _fingerprints() -> tuple[str | None, dict[tuple[int, int], str]]:
+        entry = fingerprint_of(aligned_nfos[0]) if aligned_nfos else None
+        episodes: dict[tuple[int, int], str] = {}
+        for unit, path in aligned_episode_nfos:
+            value = fingerprint_of(path)
+            if value is not None:
+                episodes[unit] = value
+        return entry, episodes
+
+    entry_fingerprint, episode_fingerprints = await asyncio.to_thread(_fingerprints)
     db = get_database()
     async with db.session() as session:
-        meta = await MediaItemRepository(session).get_metadata(media_item_id)
-        if meta is None or meta.nfo_fingerprint == fingerprint:
-            return
-        # 只动指纹，不动 ``nfo_name``：那一列答的是「档案里的内容来自哪份
-        # NFO」，镜像写出的是档案自己的副本，一个字段也没贡献
-        meta.nfo_fingerprint = fingerprint
-        session.add(meta)
-        await session.commit()
+        repo = MediaItemRepository(session)
+        dirty = False
+        if entry_fingerprint is not None:
+            meta = await repo.get_metadata(media_item_id)
+            if meta is not None and meta.nfo_mirror_fingerprint != entry_fingerprint:
+                # 只动镜像指纹，不动 ``nfo_name``：那一列答的是「档案里的内容
+                # 来自哪份 NFO」，镜像写出的是档案自己的副本，一个字段也没贡献
+                meta.nfo_mirror_fingerprint = entry_fingerprint
+                session.add(meta)
+                dirty = True
+        if episode_fingerprints:
+            for row in await repo.list_episodes(media_item_id):
+                value = episode_fingerprints.get((row.season_number, row.episode_number))
+                if value is not None and row.nfo_mirror_fingerprint != value:
+                    row.nfo_mirror_fingerprint = value
+                    session.add(row)
+                    dirty = True
+        if dirty:
+            await session.commit()
 
 
 def _copy_asset(src: Path, dest: Path, force: bool) -> None:
