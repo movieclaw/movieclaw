@@ -359,8 +359,7 @@ def test_user_episode_nfo_still_wins(tmp_path) -> None:
     video = tmp_path / "Some.Show.S01E05.1080p.mkv"
     video.write_bytes(b"v")
     video.with_suffix(".nfo").write_text(
-        "<episodedetails><title>用户写的集名</title><plot>用户写的简介</plot>"
-        "</episodedetails>",
+        "<episodedetails><title>用户写的集名</title><plot>用户写的简介</plot></episodedetails>",
         encoding="utf-8",
     )
     row = LibraryFile(library_id=1, file_path=str(video), season_number=1, episode_number=5)
@@ -438,10 +437,13 @@ async def test_mirror_never_overwrites_an_unabsorbed_nfo(db, tmp_path) -> None:
 
     _library_id, item_id, nfo = await _seed(db, tmp_path, _RICH_NFO)
 
-    # 退回"升级前、回填还没轮到"的样子，并把用户原件放回磁盘
+    # 退回"升级前、回填还没轮到"的样子：台账清空、展示列换回纯 TMDB 那份
+    # （这一步是关键——档案与磁盘上的 NFO 必须不同，镜像真写下去才看得出来），
+    # 用户原件放回磁盘
     nfo.write_text(_RICH_NFO, encoding="utf-8")
     async with db.session() as session:
         row = await MediaItemRepository(session).get_metadata(item_id)
+        row.overview, row.vote_average, row.runtime_minutes = "TMDB 初版简介。", 7.0, 100
         row.nfo_name = None
         row.nfo_fingerprint = None
         row.nfo_mirror_fingerprint = None
@@ -451,6 +453,8 @@ async def test_mirror_never_overwrites_an_unabsorbed_nfo(db, tmp_path) -> None:
     forget_parsed_nfo()
     await mirror_media_dir_assets(item_id, force=True)
 
-    assert "手写的中文简介。" in nfo.read_text(encoding="utf-8")
+    text = nfo.read_text(encoding="utf-8")
+    assert "手写的中文简介。" in text  # 用户原件原样还在
+    assert "TMDB 初版简介。" not in text  # 没被档案里的 TMDB 内容盖掉
     meta = await _meta(db, item_id)
     assert meta.nfo_fingerprint is None  # 台账没被污染，回填仍会挑中它

@@ -49,12 +49,8 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "media_metadata", sa.Column("nfo_mirror_fingerprint", sa.String(), nullable=True)
-    )
-    op.add_column(
-        "media_episode", sa.Column("nfo_mirror_fingerprint", sa.String(), nullable=True)
-    )
+    op.add_column("media_metadata", sa.Column("nfo_mirror_fingerprint", sa.String(), nullable=True))
+    op.add_column("media_episode", sa.Column("nfo_mirror_fingerprint", sa.String(), nullable=True))
     # 条目级照抄（空串是"查过、确实没有"，不是指纹，不抄）
     op.execute(
         "UPDATE media_metadata SET nfo_mirror_fingerprint = nfo_fingerprint "
