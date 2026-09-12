@@ -410,7 +410,10 @@ async def bench() -> None:  # noqa: PLR0915 - 场景清单本就是一长串
             for it in tv_items[:8]:
                 item_id = it["media_item_id"]
                 await cli.get(f"/libraries/{tv_lib}/items/{item_id}")
-                await cli.get(f"/libraries/{tv_lib}/items/{item_id}/episodes", params={"season": 1})
+                await cli.get(
+                    f"/libraries/{tv_lib}/items/{item_id}/episodes",
+                    params={"season_number": 1},
+                )
 
     async def item_artwork():
         """详情页的条目目录美术图：每一次都要翻媒体盘。"""

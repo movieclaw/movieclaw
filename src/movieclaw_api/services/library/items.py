@@ -2239,8 +2239,8 @@ def _read_meta(
         if path.suffix:  # 原盘目录没有同名 NFO 一说
             candidates.append(path.with_suffix(".nfo"))
     for nfo in candidates:
-        if not nfo.is_file():
-            continue
+        # 不预先 is_file()：read_entry_metadata 本来就要 stat 一次（缓存要拿
+        # mtime/大小做键），文件不在时它返回 None，判两遍等于白多一次系统调用
         meta = read_entry_metadata(nfo)
         if meta is not None and meta.has_content():
             return meta

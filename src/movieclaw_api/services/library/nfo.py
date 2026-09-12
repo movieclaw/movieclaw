@@ -19,8 +19,11 @@ from __future__ import annotations
 import logging
 import re
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass, field
+from collections import OrderedDict
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Any
 from xml.sax.saxutils import escape
 
 from movieclaw_db.models import MediaEpisode, MediaItem, MediaMetadata
@@ -325,6 +328,55 @@ _MAX_ACTORS = 40
 _ROOT_SLICE = re.compile(r"<(movie|tvshow|episodedetails)[\s>].*?</\1>", re.DOTALL | re.IGNORECASE)
 
 
+# ---------------------------------------------------------------------------
+# 解析结果缓存
+# ---------------------------------------------------------------------------
+#: (用途, 路径) -> (mtime_ns, 大小, 解析结果)。见 ``_cached_parse``。
+_PARSED: OrderedDict[tuple[str, str], tuple[int, int, Any]] = OrderedDict()
+#: 缓存条数上限。条目级 NFO 带完整演员表时一条几 KB，分集级只有几百字节；
+#: 按 2048 条算，最坏几 MB 量级。满了淘汰最久没用的那条。
+_PARSED_MAX = 2048
+
+
+def _cached_parse(nfo_path: Path, kind: str, parse: Callable[[Path], Any]) -> Any:
+    """按 (mtime_ns, 大小) 缓存 NFO 的解析结果。
+
+    为什么值得缓存：NFO 是**读路径每次都要重读**的那一层。分层读的约定是
+    「本地 NFO 最优先」（docs/design/metadata.md 第 5 节），而 NFO 的展示内容
+    从不落库——所以它没法从数据库里拿，只能每次回磁盘。详情页每打开一次读
+    一份，分集区每打开一次把**一季每一集**都读一遍。这些文件躺在媒体盘上，
+    正是 NAS 上最该少碰的那块盘。
+
+    为什么缓存不会让用户看到过期内容：键里带 ``mtime_ns`` 与文件大小，手工
+    改过 NFO（或刮削器重写过）这两个值必变，下一次请求就重新解析。命中时
+    仍要 stat 一次确认——省掉的是 open/read/close 与 XML 解析，不是那次 stat。
+
+    ``kind`` 把「同一个文件被当条目级读」与「被当分集级读」分成两条记录：
+    多集合一的 NFO 两边都认，解析结果不是一回事。
+    """
+    key = (kind, str(nfo_path))
+    try:
+        stat = nfo_path.stat()
+    except OSError:
+        _PARSED.pop(key, None)
+        return None
+    hit = _PARSED.get(key)
+    if hit is not None and hit[0] == stat.st_mtime_ns and hit[1] == stat.st_size:
+        _PARSED.move_to_end(key)
+        return hit[2]
+    parsed = parse(nfo_path)
+    _PARSED[key] = (stat.st_mtime_ns, stat.st_size, parsed)
+    _PARSED.move_to_end(key)
+    while len(_PARSED) > _PARSED_MAX:
+        _PARSED.popitem(last=False)
+    return parsed
+
+
+def forget_parsed_nfo() -> None:
+    """丢弃 NFO 解析缓存（测试用；生产靠 mtime/大小自动失效）。"""
+    _PARSED.clear()
+
+
 def _parse_set_name(root) -> str | None:
     """``<set>`` → 系列名，**两种写法都认**。
 
@@ -348,7 +400,25 @@ def read_entry_metadata(nfo_path: Path) -> EntryMetadata | None:
 
     同步函数（调用方放线程池）。文件不存在、不是合法 XML、根元素不认识
     时返回 None；个别字段畸形只跳过该字段。
+
+    结果按 (mtime_ns, 大小) 缓存（见 ``_cached_parse``）：详情页每打开一次
+    就要读一次，缓存命中后只剩一次 stat。手改过 NFO 必然改掉这两个值，
+    「改了立刻生效」这条约定不受影响。演员表是**可变对象**（详情装配会就地
+    回填头像），所以命中时发的是副本，不把缓存里的实例交出去。
     """
+    cached = _cached_parse(nfo_path, "entry", _parse_entry_metadata)
+    if cached is None:
+        return None
+    # 浅拷贝 + 演员逐个拷：调用方（_fill_actor_thumbs）会改 actor.thumb
+    return replace(
+        cached,
+        genres=list(cached.genres),
+        directors=list(cached.directors),
+        actors=[replace(actor) for actor in cached.actors],
+    )
+
+
+def _parse_entry_metadata(nfo_path: Path) -> EntryMetadata | None:
     try:
         text = nfo_path.read_text(encoding="utf-8", errors="ignore")
     except OSError:
@@ -462,7 +532,17 @@ def read_episode_metadata(nfo_path: Path) -> EpisodeNfo | None:
     多集合一文件的 NFO 允许并列多个 <episodedetails>，标准解析器会因
     多根报错——走 _ROOT_SLICE 兜底取第一段即可（展示第一集的信息）。
     根元素不是 episodedetails（如条目级 movie.nfo）返回 None。
+
+    与条目级 NFO 同样按 (mtime_ns, 大小) 缓存。这里收益最大：**分集区每打开
+    一次，就要把这一季每一集的 NFO 读一遍**——40 集的季一次就是 40 份，
+    而它们几乎从不变。命中后每集只剩一次 stat。
     """
+    cached = _cached_parse(nfo_path, "episode", _parse_episode_metadata)
+    # 字段全是标量、调用方只读；仍发副本，免得以后有人就地改出跨请求串味
+    return replace(cached) if cached is not None else None
+
+
+def _parse_episode_metadata(nfo_path: Path) -> EpisodeNfo | None:
     try:
         text = nfo_path.read_text(encoding="utf-8", errors="ignore")
     except OSError:
