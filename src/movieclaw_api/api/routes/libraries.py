@@ -1387,7 +1387,7 @@ def _validated_reconcile_roots(
     operation_id="workflow.library.reconcile-paths.preview",
     dependencies=[Depends(require_admin)],
     # CLI 必须经精选层的「预览 → --yes」工作流，不能让生成命令绕过确认。
-    openapi_extra={"x-cli-hidden": True},
+    openapi_extra={"x-cli-hidden": True, "x-cli-covered-by": "library reconcile-paths"},
 )
 async def preview_path_reconcile(
     library_id: int,
@@ -1413,6 +1413,7 @@ async def preview_path_reconcile(
     openapi_extra={
         "x-cli-job": {"id_path": "job_id", "wait_op": "jobs.wait"},
         "x-cli-hidden": True,
+        "x-cli-covered-by": "library reconcile-paths",
     },
     status_code=202,
 )
@@ -1782,7 +1783,7 @@ async def select_artwork_route(
     summary="预览整理计划：每个文件改成什么名、哪些跳过及原因（只读，不动磁盘）",
     operation_id="workflow.library.organize-files.preview",
     dependencies=[Depends(require_admin)],
-    openapi_extra={"x-cli-hidden": True},
+    openapi_extra={"x-cli-hidden": True, "x-cli-covered-by": "library organize-files"},
 )
 async def preview_organize(
     library_id: int,
@@ -1833,6 +1834,7 @@ async def preview_organize(
     openapi_extra={
         "x-cli-job": {"id_path": "job_id", "wait_op": "jobs.wait"},
         "x-cli-hidden": True,
+        "x-cli-covered-by": "library organize-files",
     },
     status_code=202,
 )
@@ -3235,7 +3237,7 @@ async def _seeding_root_names() -> set[str] | None:
     operation_id="workflow.library.transfer-items.preview",
     dependencies=[Depends(require_admin)],
     # CLI 必须走精选层的「预检 → --yes」工作流，不给生成命令绕过确认的旁路
-    openapi_extra={"x-cli-hidden": True},
+    openapi_extra={"x-cli-hidden": True, "x-cli-covered-by": "library items transfer"},
 )
 async def preview_batch_transfer(
     library_id: int,
@@ -3290,6 +3292,7 @@ async def preview_batch_transfer(
     dependencies=[Depends(require_admin)],
     openapi_extra={
         "x-cli-hidden": True,
+        "x-cli-covered-by": "library items transfer",
         "x-cli-dangerous": "confirm",
         "x-cli-job": {"id_path": "job_id", "wait_op": "jobs.wait"},
     },
@@ -3389,7 +3392,7 @@ def _validated_consolidate_roots(
     summary="预检根路径归并：条目会搬到哪、空间够不够、根配置怎么变（只读）",
     operation_id="workflow.library.consolidate-roots.preview",
     dependencies=[Depends(require_admin)],
-    openapi_extra={"x-cli-hidden": True},
+    openapi_extra={"x-cli-hidden": True, "x-cli-covered-by": "library consolidate-roots"},
 )
 async def preview_consolidate_roots(
     library_id: int,
@@ -3444,6 +3447,7 @@ async def preview_consolidate_roots(
     dependencies=[Depends(require_admin)],
     openapi_extra={
         "x-cli-hidden": True,
+        "x-cli-covered-by": "library consolidate-roots",
         "x-cli-dangerous": "confirm",
         "x-cli-job": {"id_path": "job_id", "wait_op": "jobs.wait"},
     },

@@ -122,12 +122,23 @@ class LibraryReorderPayload(BaseModel):
 
 
 class LibraryStats(BaseModel):
-    """库存统计快照（台账变化时重算，查询时直接读取 library 表）。"""
+    """库存统计快照（台账变化时重算，查询时直接读取 library 表）。
+
+    **扫描进行中读到的是中间态，不是结论**：扫描按事务分批落账，文件先入账、
+    随后才识别，所以 ``unidentified_count`` 在扫描途中会先冲高再回落（一次
+    上万文件的扫描中途读到两千多、扫完是 0，两个数都是真的）。要判断"这个库
+    还有多少待识别"，先看同一响应里的 ``scanning``：为 true 时这几个数只能当
+    进度看。刻意不把统计改成"只在扫描结束后更新"——那会让扫描期间完全看不到
+    进展，比抖动更糟。
+    """
 
     item_count: int = Field(default=0, description="在位且已识别的媒体条目数")
     file_count: int = Field(default=0, description="在位文件总数（含待识别）")
     total_size_bytes: int = Field(default=0, description="在位文件总大小（字节）")
-    unidentified_count: int = Field(default=0, description="在位待识别文件数（不含已忽略）")
+    unidentified_count: int = Field(
+        default=0,
+        description="在位待识别文件数（不含已忽略）；scanning=true 时是中间态，扫完才是结论",
+    )
     missing_count: int = Field(default=0, description="标记 missing 的文件数（缺失清单入口）")
     ignored_count: int = Field(
         default=0,

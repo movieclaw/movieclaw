@@ -43,7 +43,7 @@ func newJobsWaitCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := wait.Job(client, args[0], waitTimeout); err != nil {
+			if err := wait.Job(client, args[0], waitTimeout, s.Quiet); err != nil {
 				return err
 			}
 			// 等到终态后再取一次完整任务：stdout 给出的是结果，不是过程

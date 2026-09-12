@@ -22,6 +22,14 @@ import (
 	"github.com/movieclaw/movieclaw/cli/internal/output"
 )
 
+// infoUnlessQuiet 打一行过程提示；--quiet 下静默。只用于进度与成功提示——
+// 失败、部分成功、超时走 clierr 返回，任何时候都不会被这里吞掉。
+func infoUnlessQuiet(quiet bool, format string, args ...any) {
+	if !quiet {
+		output.Info(format, args...)
+	}
+}
+
 // jobTerminalStatuses 是统一 Job 体系的终态集合。
 var jobTerminalStatuses = map[string]bool{
 	"succeeded": true, "failed": true, "cancelled": true, "blocked": true,
@@ -75,7 +83,11 @@ type LongTask struct {
 }
 
 // Long 轮询进度端点直到终态（docs/design/cli.md §8.3）。
-func Long(client *api.Client, task LongTask, waitTimeout time.Duration) error {
+//
+// quiet 时不打进度与完成提示（错误照常抛）：等一个上万文件的扫描时，进度串
+// 里的计数器每轮都在变，行内去重形同虚设，一次 --wait 能往 stderr 刷上千行，
+// 把 Agent 的会话和 CI 日志淹掉。与生成层「--quiet 不打 LastMessage」同口径。
+func Long(client *api.Client, task LongTask, waitTimeout time.Duration, quiet bool) error {
 	path := task.ProgressPath
 
 	sig, stop := interrupted()
@@ -114,12 +126,12 @@ func Long(client *api.Client, task LongTask, waitTimeout time.Duration) error {
 			if sawRunning {
 				// 注意：进度接口不区分成功/失败，这里只能断言「已结束」；
 				// 若怀疑失败可查系统日志（mclaw logs tail）
-				output.Info("任务已结束")
+				infoUnlessQuiet(quiet, "任务已结束")
 				return nil
 			}
 			doneStreak++
 			if doneStreak >= 3 {
-				output.Info("任务已结束（未观测到运行状态，可能启动后瞬间完成）")
+				infoUnlessQuiet(quiet, "任务已结束（未观测到运行状态，可能启动后瞬间完成）")
 				return nil
 			}
 			if sleepOrInterrupt(2*time.Second, sig) {
@@ -131,7 +143,7 @@ func Long(client *api.Client, task LongTask, waitTimeout time.Duration) error {
 		doneStreak = 0
 		line := compactJSON(progress)
 		if line != lastLine {
-			output.Info("进行中：%s", line)
+			infoUnlessQuiet(quiet, "进行中：%s", line)
 			lastLine = line
 		}
 		if sleepOrInterrupt(pollInterval(elapsed), sig) {
@@ -141,7 +153,9 @@ func Long(client *api.Client, task LongTask, waitTimeout time.Duration) error {
 }
 
 // Job 等待统一 Job 体系里的一个任务到终态；本地停止等待不会取消服务端任务。
-func Job(client *api.Client, jobID string, waitTimeout time.Duration) error {
+//
+// quiet 的含义同 Long：不打进度与完成提示，失败与部分成功照常抛错。
+func Job(client *api.Client, jobID string, waitTimeout time.Duration, quiet bool) error {
 	sig, stop := interrupted()
 	defer stop()
 
@@ -190,7 +204,7 @@ func Job(client *api.Client, jobID string, waitTimeout time.Duration) error {
 			line = fmt.Sprintf("%s（%s%%）", line, jsonval.Plain(percent))
 		}
 		if line != lastLine {
-			output.Info("%s · %s", jobID, line)
+			infoUnlessQuiet(quiet, "%s · %s", jobID, line)
 			lastLine = line
 		}
 		if !jobTerminalStatuses[status] {
@@ -200,7 +214,7 @@ func Job(client *api.Client, jobID string, waitTimeout time.Duration) error {
 			if err := partialSuccess(jobID, job.Get("result")); err != nil {
 				return err
 			}
-			output.Info("任务已完成：%s", jobID)
+			infoUnlessQuiet(quiet, "任务已完成：%s", jobID)
 			return nil
 		}
 		errObj := jsonval.Object(job.Get("error"))

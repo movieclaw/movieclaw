@@ -206,13 +206,13 @@ func execute(
 				return clierr.New("服务端已接收任务，但响应中没有可追踪的任务 ID").
 					WithHint("请用 mclaw jobs list --active-only 查找刚创建的任务")
 			}
-			return wait.Job(client, jobID, in.waitTimeout)
+			return wait.Job(client, jobID, in.waitTimeout, settings.Quiet)
 		case op.LongTask != nil:
 			task, ok := longTaskFor(op, opsByID, pathArgs)
 			if !ok {
 				return nil
 			}
-			return wait.Long(client, task, in.waitTimeout)
+			return wait.Long(client, task, in.waitTimeout, settings.Quiet)
 		}
 	}
 	return nil

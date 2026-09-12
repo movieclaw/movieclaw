@@ -173,6 +173,11 @@ def test_root_overlap_across_libraries_rejected(client) -> None:
         json={"name": "总库", "kind": "tv", "root_paths": ["/media"]},
     )
     assert r.status_code == 400 and "重叠" in r.json()["message"]
+    # 「建父目录大库」正是合并库的意图，报错必须给出安全顺序（转移 → 删空库 →
+    # 归并根），否则用户只能推导出"先删旧库再建新库"——那个顺序会触发孤儿清理
+    message = r.json()["message"]
+    assert "不要先删库" in message
+    assert "items transfer" in message and "consolidate-roots" in message
     # 仅前缀相似而非路径嵌套：不误伤
     r = client.post(
         "/api/v1/libraries",

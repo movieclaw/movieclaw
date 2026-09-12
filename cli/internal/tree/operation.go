@@ -86,6 +86,13 @@ type Operation struct {
 	// 生成层只关心「是不是流」，终态事件名由精选层自己消费。
 	Stream    bool
 	Dangerous string
+	// CoveredBy 是「这个端点被哪条精选命令承接」（spec 的 x-cli-covered-by）。
+	// hidden 的端点分两类：纯 Web 基础设施（没有命令行消费方），以及语义由
+	// 精选命令承担、刻意不给生成命令旁路的工作流端点。只看 x-cli-hidden
+	// 分不出这两类——读 OpenAPI 的人（尤其是 Agent）会一律判成「CLI 做不了」，
+	// 转而自己拼 HTTP 请求，正好绕过 hidden 想守住的那道确认闸。这一列把
+	// 「为什么藏」写成机器可读的指路；守护测试保证它指向真实存在的命令。
+	CoveredBy string
 	LongTask  *LongTask
 	Job       *Job
 }
@@ -166,6 +173,7 @@ func parseOperation(path, method string, raw, components map[string]any) Operati
 		Hidden:      truthy(raw["x-cli-hidden"]),
 		Stream:      raw["x-cli-stream"] != nil,
 		Dangerous:   str(raw["x-cli-dangerous"]),
+		CoveredBy:   str(raw["x-cli-covered-by"]),
 	}
 	if params, ok := raw["parameters"].([]any); ok {
 		for _, item := range params {
