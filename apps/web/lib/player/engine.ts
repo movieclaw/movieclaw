@@ -17,9 +17,16 @@ import { reportPlaybackClientLog } from "@/lib/api/playback";
 
 import {
   type BandwidthWindow,
+  type BitrateSample,
+  type BufferedProbe,
   bandwidthBps,
+  bitrateBps,
   createBandwidthWindow,
+  peakBitrateBps,
   pushBandwidthSample,
+  pushBitrateSample,
+  readBufferedProbe,
+  sampleFromProgress,
   sampleFromResourceTiming,
 } from "./bandwidth";
 import { backBufferSeconds } from "./buffer-budget";
@@ -246,44 +253,32 @@ function describeMediaError(video: HTMLVideoElement): string {
   }
 }
 
-/**
- * 直出档的取流速度估算：两次 `progress` 之间缓冲涨了多少秒 × 源码率。
- *
- * `<video src>` 这条路浏览器一个字节计数都不给（`webkitVideoDecodedByteCount`
- * 是解码字节，不是网络字节），只能这么反推。误差来自码率是全片均值而这一段
- * 可能是动作戏，但用途是「够不够」这个量级的判断，够用。
- *
- * 只在 `networkState === NETWORK_LOADING` 时采样，且两次 progress 间隔超过
- * 2 秒就丢弃——浏览器缓冲喂饱后会 suspend，那段静默期不是在传输，算进分母
- * 就把速度压成十分之一（口径见 bandwidth.ts）。
- */
-const DIRECT_PROGRESS_MAX_GAP_MS = 2_000;
-
 /** 档 0 与原生 HLS 共用：直接把地址交给 `<video src>`。 */
 class DirectEngine implements PlaybackEngine {
   private stopStallWatch: (() => void) | null = null;
   private bandwidth: BandwidthWindow = createBandwidthWindow();
-  /** 上一次 progress 的时刻与当时的缓冲末端，用来做差 */
-  private lastProgress: { at: number; bufferedEnd: number } | null = null;
+  /** 上一次 progress 量到的缓冲现场，用来做差（判据全在 bandwidth.ts） */
+  private lastProbe: BufferedProbe | null = null;
   private readonly onProgress = () => {
     const { video, sourceBitrateBps } = this.options;
-    if (!sourceBitrateBps || sourceBitrateBps <= 0) return;
-    const now = performance.now();
-    const buffered = video.buffered;
-    const bufferedEnd = buffered.length ? buffered.end(buffered.length - 1) : 0;
-    const previous = this.lastProgress;
-    this.lastProgress = { at: now, bufferedEnd };
-    if (!previous) return;
-    const transferMs = now - previous.at;
-    // 跳转会让缓冲末端倒退或大跳，那次差值没有意义；静默过久的那段不算传输
-    if (transferMs > DIRECT_PROGRESS_MAX_GAP_MS) return;
-    const grownSeconds = bufferedEnd - previous.bufferedEnd;
-    if (grownSeconds <= 0) return;
-    this.bandwidth = pushBandwidthSample(this.bandwidth, {
-      at: now,
-      bytes: (grownSeconds * sourceBitrateBps) / 8,
-      transferMs,
+    const current = readBufferedProbe(video, performance.now());
+    const sample = sampleFromProgress({
+      previous: this.lastProbe,
+      current,
+      sourceBitrateBps,
     });
+    this.lastProbe = current;
+    if (sample) this.bandwidth = pushBandwidthSample(this.bandwidth, sample);
+  };
+  /**
+   * 浏览器缓冲喂饱、停手了。
+   *
+   * 这一刻之前的采样不能再和恢复取数之后的第一次配对：中间那段静默一个字节
+   * 都没在传，算进分母会把速度压下去。`sampleFromProgress` 的 2 秒间隔上限只
+   * 是兜底，短暂的补水（喂满 → 掉一点 → 再补）间隔常常不到 2 秒。
+   */
+  private readonly onSuspend = () => {
+    this.lastProbe = null;
   };
   private readonly onErrorEvent = () => {
     // 报错瞬间的客户端现场进服务端日志：iPhone 上没有控制台可看，
@@ -302,6 +297,7 @@ class DirectEngine implements PlaybackEngine {
     const { video, streamUrl, onFailed, startPositionS } = this.options;
     video.addEventListener("error", this.onErrorEvent);
     video.addEventListener("progress", this.onProgress);
+    video.addEventListener("suspend", this.onSuspend);
     // 起播点的两条路（2026-08-25 真机结论，iPhone 逐场景实测）：
     // - 直出 mp4：媒体片段（#t=）可用且零副作用，保留；
     // - 原生 HLS：**#t= 在 iOS 上对 HLS 列表不生效**——AVPlayer 会拉对
@@ -349,6 +345,7 @@ class DirectEngine implements PlaybackEngine {
     this.stopStallWatch = null;
     this.options.video.removeEventListener("error", this.onErrorEvent);
     this.options.video.removeEventListener("progress", this.onProgress);
+    this.options.video.removeEventListener("suspend", this.onSuspend);
     if (this.onMetadataSeek) {
       this.options.video.removeEventListener("loadedmetadata", this.onMetadataSeek);
       this.onMetadataSeek = null;
@@ -410,7 +407,8 @@ function guardResourceTimingBuffer(): () => void {
 class HlsEngine implements PlaybackEngine {
   private hls: Hls | null = null;
   private stopStallWatch: (() => void) | null = null;
-  private currentBitrate: number | null = null;
+  /** 最近几个分片的字节与时长，折成「实时码率」（口径见 bandwidth.ts） */
+  private bitrateSamples: BitrateSample[] = [];
   /** 实测取流速度的滑动窗口（口径见 bandwidth.ts） */
   private bandwidth: BandwidthWindow = createBandwidthWindow();
   /** 连续网络恢复计数；任何一个分片成功落地就清零 */
@@ -520,25 +518,31 @@ class HlsEngine implements PlaybackEngine {
      */
     const syncBackBuffer = () => {
       if (!this.hls) return;
-      const seconds = backBufferSeconds(this.currentBitrate);
+      // 预算用窗口内**峰值**而不是平均：按平均算秒数，遇上高码率那一段实际
+      // 占用会超出字节预算（理由见 bandwidth.ts 的 peakBitrateBps）
+      const bitrate = peakBitrateBps(this.bitrateSamples);
+      const seconds = backBufferSeconds(bitrate);
       if (this.hls.config.backBufferLength === seconds) return;
       this.hls.config.backBufferLength = seconds;
       clientLog(this.options, "hls-back-buffer", {
         seconds,
-        bitrate: Math.round(this.currentBitrate ?? 0),
+        bitrate: Math.round(bitrate ?? 0),
       });
     };
 
     // 任何一个分片成功到手都说明链路是通的，连续失败计数从头数
     this.hls.on(HlsCtor.Events.FRAG_LOADED, (_event, data) => {
       this.networkRecoveries = 0;
-      // 顺手实测码率：字节 ÷ 时长。它同时是诊断面板那行「实时码率」的来源
-      // ——媒体播放列表里没有 BANDWIDTH，只读 levels[].bitrate 那行永远是空的。
+      // 顺手实测码率：最近几片的字节 ÷ 时长。它同时是诊断面板那行「实时码率」
+      // 的来源——媒体播放列表里没有 BANDWIDTH，只读 levels[].bitrate 那行永远
+      // 是空的。**不能取累计最大值**：一个动作戏分片就会把读数钉在峰值上，
+      // 降档之后也下不来，而这行读数恰恰是用来判断降档有没有用的（见
+      // bandwidth.ts 的 BITRATE_SAMPLE_COUNT）。
       const stats = data.frag?.stats;
       const bytes = stats?.total ?? 0;
       const seconds = data.frag?.duration ?? 0;
       if (bytes > 0 && seconds > 0) {
-        this.currentBitrate = Math.max(this.currentBitrate ?? 0, (bytes * 8) / seconds);
+        this.bitrateSamples = pushBitrateSample(this.bitrateSamples, { bytes, seconds });
         syncBackBuffer();
       }
       // 取流速度：口径与「为什么不能用 data.frag.stats.loading 的时刻」见
@@ -588,7 +592,7 @@ class HlsEngine implements PlaybackEngine {
   stats(): EngineStats {
     return {
       engine: "hls.js",
-      bitrate: this.currentBitrate,
+      bitrate: bitrateBps(this.bitrateSamples),
       downlinkBps: bandwidthBps(this.bandwidth),
       ...readCommonStats(this.options.video),
     };
