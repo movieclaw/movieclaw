@@ -1226,6 +1226,121 @@ async def test_delete_single_file_missing_row_clears_ledger_only(db, tmp_path) -
         assert [r.file_path for r in remaining] == [str(present)]
 
 
+async def test_item_delete_stages_into_trash_then_purges_in_background(db, tmp_path) -> None:
+    """删除的两段式：同步阶段只把条目目录 rename 进库根回收站的暂存目录
+    （常数时间，大文件不卡前端），真正的磁盘回收由后台任务完成。"""
+    from movieclaw_api.services.library.items import purge_staged_deletions
+    from movieclaw_api.services.library.recycle import TRASH_DIR_NAME
+
+    root, entry, _video = _make_movie_entry(tmp_path)
+    async with db.session() as session:
+        library = await LibraryRepository(session).create(
+            name="电影库", kind="movie", root_paths=[str(root)]
+        )
+    await scan_library(library.id)
+
+    async with db.session() as session:
+        item = (
+            (await session.execute(select(MediaItem).where(MediaItem.tmdb_id == 300)))
+            .scalars()
+            .one()
+        )
+        # BackgroundTasks 手工构造，任务不会自动跑——正好用来观察同步阶段的落点
+        tasks = BackgroundTasks()
+        resp = await delete_library_item(library.id, item.id, tasks, session)
+
+    assert resp.data.rows_deleted == 1 and not resp.data.errors
+    assert not entry.exists()  # 条目目录已不在库里
+    assert resp.data.removed_paths == [str(entry)]  # 回给前端的仍是用户认得的原路径
+
+    trash_dir = root / TRASH_DIR_NAME
+    staging_dirs = list(trash_dir.iterdir())
+    assert len(staging_dirs) == 1
+    # 文件还在盘上，只是搬进了回收站暂存目录，等后台回收
+    assert (staging_dirs[0] / entry.name / "movie.nfo").exists()
+
+    await purge_staged_deletions([str(staging_dirs[0])])  # 路由挂在响应之后的那一步
+    assert not staging_dirs[0].exists()
+    assert trash_dir.is_dir()  # 回收站目录本身留着
+
+
+async def test_item_delete_falls_back_to_inplace_when_rename_fails(
+    db, tmp_path, monkeypatch
+) -> None:
+    """跨文件系统等 rename 失败时退回原地同步删除：慢，但绝不把文件留在库里。"""
+    root, entry, _video = _make_movie_entry(tmp_path)
+    async with db.session() as session:
+        library = await LibraryRepository(session).create(
+            name="电影库", kind="movie", root_paths=[str(root)]
+        )
+    await scan_library(library.id)
+
+    def _exdev(*_args, **_kwargs):
+        raise OSError(18, "Invalid cross-device link")
+
+    monkeypatch.setattr(items_mod.os, "rename", _exdev)
+
+    async with db.session() as session:
+        item = (
+            (await session.execute(select(MediaItem).where(MediaItem.tmdb_id == 300)))
+            .scalars()
+            .one()
+        )
+        resp = await delete_library_item(library.id, item.id, BackgroundTasks(), session)
+
+    assert resp.data.rows_deleted == 1 and not resp.data.errors
+    assert not entry.exists()  # 原地删干净，没有残留
+    assert resp.data.removed_paths == [str(entry)]
+    async with db.session() as session:
+        assert (await session.execute(select(LibraryFile))).scalars().all() == []
+
+
+async def test_item_delete_spares_dir_holding_unidentified_file(db, tmp_path) -> None:
+    """条目目录里混着**未识别**文件（media_item_id 为空）时不整删目录：
+    存在性判定用 SQL 之后，NULL 行必须显式并进"别人的文件"，
+    否则 `media_item_id != X` 遇 NULL 返回 NULL 会把它们漏掉、连带删掉。"""
+    root, entry, video = _make_movie_entry(tmp_path)
+    stranger = entry / "谁也认不出的片子.mkv"
+    stranger.write_bytes(b"stranger")
+    async with db.session() as session:
+        library = await LibraryRepository(session).create(
+            name="电影库", kind="movie", root_paths=[str(root)]
+        )
+        item = MediaItem(kind="movie", tmdb_id=300, title="某电影", original_title="Some")
+        session.add(item)
+        await session.flush()
+        session.add_all(
+            [
+                LibraryFile(
+                    library_id=library.id,
+                    media_item_id=item.id,
+                    file_path=str(video),
+                    size_bytes=1,
+                    source="scanned",
+                ),
+                LibraryFile(  # 未识别：没有 media_item_id
+                    library_id=library.id,
+                    media_item_id=None,
+                    file_path=str(stranger),
+                    size_bytes=1,
+                    source="scanned",
+                ),
+            ]
+        )
+        await session.commit()
+        item_id = item.id
+
+    async with db.session() as session:
+        resp = await delete_library_item(library.id, item_id, BackgroundTasks(), session)
+
+    assert resp.data.rows_deleted == 1 and not resp.data.errors
+    assert not video.exists()  # 只删本条目的文件
+    assert stranger.exists() and entry.exists()  # 未识别文件与条目目录纹丝不动
+    async with db.session() as session:
+        remaining = (await session.execute(select(LibraryFile))).scalars().all()
+        assert [r.file_path for r in remaining] == [str(stranger)]
+
+
 # ---------------------------------------------------------------------------
 # 剧集分集
 # ---------------------------------------------------------------------------

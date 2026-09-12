@@ -265,7 +265,7 @@ async def test_delete_single_file_purges_trashed_row(db, tmp_path):
         )
         old_row = next(r for r in rows if r.id == old_id)
         trash_path = old_row.file_path
-        result = await delete_single_file(session, library, old_row, rows, rows)
+        result = await delete_single_file(session, library, old_row, rows)
         assert result.errors == []
         assert result.rows_deleted == 1
     from pathlib import Path as _P
@@ -296,7 +296,7 @@ async def test_item_delete_removes_trash_file_but_keeps_trash_dir(db, tmp_path):
                 )
             ).scalars()
         )
-        result = await delete_item_files(session, library, item_id, rows, rows)
+        result = await delete_item_files(session, library, item_id, rows)
         assert result.errors == []
     assert not entry.exists()  # 条目目录整删
     assert trash_dir.is_dir()  # 回收站目录健在
@@ -483,7 +483,7 @@ async def test_delete_single_file_refuses_disc_dir_containing_other_version(db, 
             await session.refresh(row)
 
         library_obj = await session.get(Library, library.id)
-        result = await delete_single_file(session, library_obj, rows[0], rows, rows)
+        result = await delete_single_file(session, library_obj, rows[0], rows)
         assert result.rows_deleted == 0
         assert any("目录内还有其他在案文件" in err for err in result.errors)
     assert disc.is_dir() and inner_new.exists()
@@ -528,7 +528,7 @@ async def test_item_delete_covers_sibling_version_dirs(db, tmp_path):
         for row in rows:
             await session.refresh(row)
         library_obj = await session.get(Library, library.id)
-        result = await delete_item_files(session, library_obj, item.id, rows, rows)
+        result = await delete_item_files(session, library_obj, item.id, rows)
         assert result.errors == []
         assert result.rows_deleted == 2
     assert not entry.exists()

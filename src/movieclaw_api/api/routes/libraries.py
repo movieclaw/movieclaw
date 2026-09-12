@@ -130,6 +130,7 @@ from movieclaw_api.services.library.items import (
     episode_view,
     find_episode_thumb,
     local_item_artwork,
+    purge_staged_deletions,
 )
 from movieclaw_api.services.library.items import (
     search_library_items as search_visible_library_items,
@@ -2841,8 +2842,7 @@ async def delete_library_item(
     library = await service.get(library_id)
     await _assert_not_busy(session, library.name, library_id)
     item, rows = await _item_rows(session, library_id, media_item_id)
-    all_rows = await LibraryFileRepository(session).list_by_library(library_id)
-    result = await delete_item_files(session, library, media_item_id, rows, all_rows)
+    result = await delete_item_files(session, library, media_item_id, rows)
 
     # 通知下游媒体服务器刷新库（未配置时空转；失败只告警不阻断）
 
@@ -2850,6 +2850,8 @@ async def delete_library_item(
     # 条目在所有库都没文件了、也没订阅 → 连同图片资产一并清掉，不留孤儿
 
     background_tasks.add_task(media_scrape.cleanup_orphan_items, [media_item_id])
+    # 真正的磁盘回收：文件已 rename 出媒体库，慢 IO 挪到响应之后做
+    background_tasks.add_task(purge_staged_deletions, result.pending_purge)
 
     view = ItemDeleteResultView(
         removed_paths=result.removed_paths,
@@ -2890,13 +2892,13 @@ async def delete_library_file(
     if row is None:
         raise NotFoundException(f"台账文件不存在或不属于「{item.title}」：id={file_id}")
     file_name = PurePath(row.file_path).name
-    all_rows = await LibraryFileRepository(session).list_by_library(library_id)
-    result = await delete_single_file(session, library, row, rows, all_rows)
+    result = await delete_single_file(session, library, row, rows)
 
     # 与整条目删除同一套善后：通知媒体服务器刷新；条目在所有库都没文件了
-    # 且没订阅时连同图片资产一并清掉
+    # 且没订阅时连同图片资产一并清掉；磁盘回收挪到响应之后
     background_tasks.add_task(notify_media_server_refresh)
     background_tasks.add_task(media_scrape.cleanup_orphan_items, [media_item_id])
+    background_tasks.add_task(purge_staged_deletions, result.pending_purge)
 
     view = ItemDeleteResultView(
         removed_paths=result.removed_paths,
