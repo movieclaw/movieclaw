@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import os
 import time
+from collections import OrderedDict
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -51,8 +52,11 @@ _KINDS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
 DirListing = dict[Path, "dict[str, Path] | None"]
 
 #: 进程级目录列举缓存：目录 -> (目录 inode 指纹, 列举结果)。见 ``dir_listing``。
-_DIR_CACHE: dict[Path, tuple[tuple[int, int, int], dict[str, Path]]] = {}
-#: 缓存目录数上限。满了整体清空——纯加速缓存，重建只是多列几次目录。
+#: 用 OrderedDict 当 LRU：满了**淘汰最久没用的那条**，而不是整体清空。
+#: 库一大（几万个条目目录）时两者差别很大——整体清空意味着每攒满一次上限，
+#: 连正在被反复浏览的那几十个热目录也一起丢掉，下一屏海报又要全列一遍。
+_DIR_CACHE: OrderedDict[Path, tuple[tuple[int, int, int], dict[str, Path]]] = OrderedDict()
+#: 缓存目录数上限。一条约等于「一个目录的文件名表」，几十字节到几 KB 不等。
 _DIR_CACHE_MAX = 4096
 #: 目录刚被改过的这段时间内不信任缓存：部分文件系统的 mtime 只有秒级精度，
 #: "同一秒内先读后改"会让指纹看起来没变。留出这个窗口，代价只是刚落盘的
@@ -110,6 +114,7 @@ def _listing_uncached(directory: Path) -> dict[str, Path] | None:
     fingerprint = _dir_fingerprint(dir_stat)
     hit = _DIR_CACHE.get(directory)
     if hit is not None and hit[0] == fingerprint:
+        _DIR_CACHE.move_to_end(directory)  # 命中即刷新 LRU 位置
         return hit[1]
     try:
         with os.scandir(directory) as entries:
@@ -121,9 +126,10 @@ def _listing_uncached(directory: Path) -> dict[str, Path] | None:
         return None
     # 目录刚变过就先不落缓存（见 _DIR_QUIET_SECONDS）
     if time.time() - dir_stat.st_mtime >= _DIR_QUIET_SECONDS:
-        if len(_DIR_CACHE) >= _DIR_CACHE_MAX:
-            _DIR_CACHE.clear()
         _DIR_CACHE[directory] = (fingerprint, names)
+        _DIR_CACHE.move_to_end(directory)
+        while len(_DIR_CACHE) > _DIR_CACHE_MAX:
+            _DIR_CACHE.popitem(last=False)
     return names
 
 

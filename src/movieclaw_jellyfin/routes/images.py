@@ -28,7 +28,6 @@ from movieclaw_db.engine import get_database
 from movieclaw_db.models import LibraryFile, MediaEpisode, MediaMetadata, MediaSeason
 from movieclaw_jellyfin.errors import JellyfinError, not_found
 from movieclaw_jellyfin.ids import EntityKind, decode_guid, item_guid
-from movieclaw_jellyfin.routes.common import dto_context
 
 router = APIRouter()
 
@@ -245,7 +244,6 @@ async def _tmdb_image(tmdb_path: str, itype: str, request: Request) -> Response:
 async def get_item_image(
     request: Request, item_id: str, image_type: str, image_index: int = 0
 ) -> Response:
-    ctx = await dto_context()
     # 库封面：服务端渲染的氛围光货架拼贴（与控制台媒体库页同一张图）
     ref = decode_guid(item_id)
     if ref is not None and ref.kind == EntityKind.LIBRARY:
@@ -301,9 +299,11 @@ async def get_item_image(
         # 条目在但无该类型图：text 文案 404（对齐 ImageController.cs:1875）
         raise JellyfinError(404, text=f"Item does not have an image of type {image_type}")
 
-    # ctx.assets_root 已是解析过的根（见 dto_context），不必每张图再解析一遍
-    target = (ctx.assets_root / rel_path).resolve()
-    if not target.is_relative_to(ctx.assets_root) or not target.is_file():
+    # 越权判定（含 resolve）与 Web 侧共用同一份实现与同一份缓存
+    from movieclaw_api.services.media_scrape import resolve_asset_path
+
+    target = resolve_asset_path(rel_path)
+    if target is None or not target.is_file():
         raise not_found()
 
     tag = request.query_params.get("tag")

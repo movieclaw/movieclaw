@@ -1236,6 +1236,43 @@ def assets_root_resolved() -> Path:
     return _resolved_assets_root(str(assets_root()))
 
 
+#: 已判定过的「资产相对路径 → 绝对路径」。见 ``resolve_asset_path``。
+_ASSET_PATHS: dict[tuple[str, str], Path] = {}
+#: 缓存条数上限（每条约 200 字节）。满了整体清空——纯加速缓存，重建只是
+#: 多走一遍 resolve。
+_ASSET_PATHS_MAX = 8192
+
+
+def resolve_asset_path(rel_path: str) -> Path | None:
+    """资产相对路径 → 绝对路径；越出资产根返回 ``None``（防目录穿越）。
+
+    ``/images/assets/<相对路径>`` 与 Jellyfin 的条目图片接口共用这一道判定。
+    判定本身要一次 ``Path.resolve()``，而它会对路径上**每一级**目录各发一次
+    系统调用——海报墙一屏上百张图，就是上百遍地重走同一串父目录。资产路径
+    是稳定的（``<条目 id>/poster.jpg``），判过一次就记下来。
+
+    **为什么缓存判定结果是安全的**：记下来的是「已经确认落在资产根内、且
+    自身不含软链」的绝对路径。之后即便有人往资产目录里塞一条指向外面的软链，
+    我们也不会再去跟随它——用的是当初解析好的真实路径，越界依然不可能发生。
+    换句话说这层缓存只会让判定更保守，不会放松。
+
+    键里带资产根：配置换了（测试里换 METADATA_DIR）自然是另一批条目。
+    不缓存失败结果——否则构造一堆越界路径就能把内存撑起来。
+    """
+    root = assets_root_resolved()
+    key = (str(root), rel_path)
+    hit = _ASSET_PATHS.get(key)
+    if hit is not None:
+        return hit
+    target = (root / rel_path).resolve()
+    if not target.is_relative_to(root):
+        return None
+    if len(_ASSET_PATHS) >= _ASSET_PATHS_MAX:
+        _ASSET_PATHS.clear()
+    _ASSET_PATHS[key] = target
+    return target
+
+
 async def cleanup_orphan_items(media_item_ids: Iterable[int], *, defer_assets: bool = False) -> int:
     """清理孤儿条目：**已不在任何媒体库、也没有订阅**的条目连同其图片资产
     一起删除，返回清理数量。

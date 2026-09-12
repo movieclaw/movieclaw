@@ -1158,7 +1158,6 @@ def _folder_user_data(
 @dataclass
 class DtoContext:
     server_id: str
-    assets_root: Path
 
 
 def _common(

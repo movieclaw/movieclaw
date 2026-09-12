@@ -81,17 +81,19 @@ async def get_metadata_asset(
     海报位一直空着（实测踩过）。
     """
     from movieclaw_api.services.library.access import assert_item_visible
-    from movieclaw_api.services.media_scrape import assets_root_resolved
+    from movieclaw_api.services.media_scrape import resolve_asset_path
 
-    root = assets_root_resolved()
-    target = (root / path).resolve()
+    # 越权判定（含 resolve）结果按相对路径缓存，见 resolve_asset_path
+    target = resolve_asset_path(path)
+    if target is None:
+        raise NotFoundException("图片资产不存在")
     # 一次 stat 走完「存在吗 + 是文件吗 + 版本戳 + 能不能永久缓存」四问：
     # 这四问原本各 stat 一次，而海报墙一屏就是上百个这样的请求
     try:
         stat = target.stat()
     except OSError:
         raise NotFoundException("图片资产不存在") from None
-    if not target.is_relative_to(root) or not S_ISREG(stat.st_mode):
+    if not S_ISREG(stat.st_mode):
         raise NotFoundException("图片资产不存在")
     head = path.split("/", 1)[0]
     if head.isdigit() and principal.kind != "admin":

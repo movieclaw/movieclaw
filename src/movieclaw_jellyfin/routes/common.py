@@ -45,13 +45,8 @@ def dto_options(
 
 
 async def dto_context() -> DtoContext:
-    from movieclaw_api.services.media_scrape import assets_root_resolved
-
     setting = await get_jellyfin_compat()
-    # 直接给解析过软链的根：图片接口每张图都要拿它做越权判定的基准，而
-    # Path.resolve() 要对路径上每一级目录各发一次系统调用。根是配置项、
-    # 进程内不变，解析结果在 media_scrape 里缓存（见 assets_root_resolved）
-    return DtoContext(server_id=setting.server_id, assets_root=assets_root_resolved())
+    return DtoContext(server_id=setting.server_id)
 
 
 async def require_enabled() -> None:
