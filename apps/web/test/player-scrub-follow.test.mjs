@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  SCRUB_DRAG_GAP_MS,
   SCRUB_FOLLOW_MAX_WAIT_MS,
   SCRUB_FOLLOW_SETTLE_MS,
   afterScrubFollow,
@@ -48,7 +47,7 @@ test("本轮第一次移动就立刻跟随：按下就动，不凭空加一帧�
 test("刚跟随过就排后沿，而不是像原先那样直接丢掉", () => {
   const plan = planScrubFollow({
     now: 1_010,
-    state: { at: 1_000, count: 0, pendingMs: null },
+    state: { at: 1_000, pendingMs: null },
     cheap: true,
     reachable: true,
   });
@@ -59,7 +58,7 @@ test("后沿的延时不许越过兜底时刻，否则连续扫动会被一路�
   // 距上次跟随已 70ms，只剩 30ms 就到兜底窗口——只能等 30ms
   const plan = planScrubFollow({
     now: 1_070,
-    state: { at: 1_000, count: 0, pendingMs: null },
+    state: { at: 1_000, pendingMs: null },
     cheap: true,
     reachable: true,
   });
@@ -69,7 +68,7 @@ test("后沿的延时不许越过兜底时刻，否则连续扫动会被一路�
 test("到了兜底窗口就立刻跟随：连续拖动中画面仍以 10Hz 刷新", () => {
   const plan = planScrubFollow({
     now: 1_000 + SCRUB_FOLLOW_MAX_WAIT_MS,
-    state: { at: 1_000, count: 0, pendingMs: null },
+    state: { at: 1_000, pendingMs: null },
     cheap: true,
     reachable: true,
   });
@@ -77,26 +76,11 @@ test("到了兜底窗口就立刻跟随：连续拖动中画面仍以 10Hz 刷�
 });
 
 // ---------------------------------------------------------------------------
-// 跟随落地之后的状态（QoE 的「一次拖动只记第一次」靠它）
+// 跟随落地之后的状态
 // ---------------------------------------------------------------------------
 
-test("同一次拖动里的第二次跟随递增 count，不再算作用户又跳了一次", () => {
-  const first = afterScrubFollow(initialScrubFollowState(), 1_000);
-  assert.equal(first.count, 0, "本轮第一次仍是 0——他确实跳了一次，要计入");
-  const second = afterScrubFollow(first, 1_100);
-  assert.equal(second.count, 1);
-  assert.equal(second.at, 1_100);
-});
-
-test("隔了 500ms 以上就是新的一次拖动，count 归零", () => {
-  const first = afterScrubFollow(initialScrubFollowState(), 1_000);
-  const later = afterScrubFollow(first, 1_000 + SCRUB_DRAG_GAP_MS);
-  assert.equal(later.count, 0);
-});
-
-test("跟随落地会清掉在途落点", () => {
-  const next = afterScrubFollow({ at: 1_000, count: 2, pendingMs: 42_000 }, 1_060);
-  assert.equal(next.pendingMs, null);
+test("跟随落地记下时刻并清掉在途落点", () => {
+  assert.deepEqual(afterScrubFollow(1_060), { at: 1_060, pendingMs: null });
 });
 
 // ---------------------------------------------------------------------------
@@ -122,7 +106,7 @@ function drive(moves, { leadingEdge = false } = {}) {
     while (timer !== null && timer.at <= until) {
       const { at, targetMs } = timer;
       timer = null;
-      state = afterScrubFollow({ ...state, pendingMs: targetMs }, at);
+      state = afterScrubFollow(at);
       landed.push({ at, targetMs });
     }
   };
@@ -133,7 +117,7 @@ function drive(moves, { leadingEdge = false } = {}) {
     if (leadingEdge) {
       // 改动前的实现
       if (clock - state.at < 100) continue;
-      state = afterScrubFollow(state, clock);
+      state = afterScrubFollow(clock);
       landed.push({ at: clock, targetMs: move.targetMs });
       continue;
     }
@@ -141,7 +125,7 @@ function drive(moves, { leadingEdge = false } = {}) {
     if (plan.kind === "skip") continue;
     if (plan.kind === "follow") {
       timer = null;
-      state = afterScrubFollow(state, clock);
+      state = afterScrubFollow(clock);
       landed.push({ at: clock, targetMs: move.targetMs });
       continue;
     }

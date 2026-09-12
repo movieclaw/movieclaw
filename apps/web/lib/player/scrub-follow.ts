@@ -41,25 +41,15 @@ export const SCRUB_FOLLOW_SETTLE_MS = 60;
  */
 export const SCRUB_FOLLOW_MAX_WAIT_MS = 100;
 
-/**
- * 同一次拖动的判定窗口。
- *
- * 超过它没有新的跟随，下一次就算作用户**新的一次**跳转（QoE 的 seek_count
- * 只记每次拖动的第一次，见 player-feel.md §11「拖动跟随把 QoE 指标搅了」）。
- */
-export const SCRUB_DRAG_GAP_MS = 500;
-
 export interface ScrubFollowState {
   /** 上一次真的写进 video 的时刻。0 = 还没跟随过 */
   at: number;
-  /** 这一次拖动里已经跟随了几次（0 = 下一次是本轮第一次，要计入 QoE） */
-  count: number;
   /** 已排队、还没落地的最新落点。null = 没有在途的跟随 */
   pendingMs: number | null;
 }
 
 export function initialScrubFollowState(): ScrubFollowState {
-  return { at: 0, count: 0, pendingMs: null };
+  return { at: 0, pendingMs: null };
 }
 
 export type ScrubFollowPlan =
@@ -95,11 +85,12 @@ export function planScrubFollow(input: {
 /**
  * 一次跟随真的落地之后的新状态。
  *
- * `count` 的语义与原先一致：同一次拖动（两次跟随间隔 < 500ms）里第二次及以后
- * 递增，间隔超过窗口则归零——`onSeeking` 靠它把「我们自己写的 currentTime」
- * 与「用户又跳了一次」区分开。
+ * 这里曾经还带一个 `count`（同一次拖动里跟随了几次），供 `onSeeking` 把「我们
+ * 自己写的 currentTime」与「用户又跳了一次」区分开，好让 QoE 的 `seek_count`
+ * 不被灌脏。现在计数改由跳转入口直接发 `seek-requested`（见 qoe.ts），元素的
+ * `seeking` 事件只负责开「这段等待不算卡顿」的闸、不再计数——这一类从结构上
+ * 就不存在了，`count` 随之没有用处。
  */
-export function afterScrubFollow(state: ScrubFollowState, now: number): ScrubFollowState {
-  const continuing = now - state.at < SCRUB_DRAG_GAP_MS;
-  return { at: now, count: continuing ? state.count + 1 : 0, pendingMs: null };
+export function afterScrubFollow(now: number): ScrubFollowState {
+  return { at: now, pendingMs: null };
 }

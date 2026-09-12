@@ -9,7 +9,9 @@
  *   `loadeddata` 全都早于真实出画（有时早几百毫秒），用它们量会系统性偏乐观，
  *   然后困惑「数据好看但用户说慢」。
  * - **卡顿必须排除 seek 引起的 `waiting`**。不排除的话用户拖一下进度条就被
- *   记成一次卡顿，数据全废。
+ *   记成一次卡顿，数据全废。**排除的闸必须在「用户要求跳转」那一刻就打开**，
+ *   不能等 video 的 `seeking` 事件——换会话那条路上它一次都不会来（见
+ *   `seek-requested`），于是拖一下就多记一次卡顿，正是这条要防的事。
  *
  * 遥测**只落本地**（硬边界 3）：写进自己的数据库、设置页可看，绝不外发。
  */
@@ -34,6 +36,25 @@ export type QoeEvent =
   | { type: "first-frame"; at: number }
   | { type: "waiting"; at: number }
   | { type: "playing"; at: number }
+  /**
+   * **用户要求跳转**（进度条松手、横滑松手、连按合并落地、系统媒体键）。
+   *
+   * 「跳了几次」和「这一跳花了多久」都以它为准，**不以 video 的 `seeking`
+   * 事件为准**。两者差别在换会话那条路上是决定性的：拖出已转区间要杀掉
+   * ffmpeg 换一个新会话，新流的起播点恒在自己时间轴的 0 秒，于是 hls.js
+   * 根本不会 seek——`seeking` 一次都不会来。结果是**最贵的那种跳转在质量
+   * 数据里完全不存在**：`seek_count` 不记，`lastSeekMs`（诊断面板那行「跳转
+   * 耗时」，用户报「拖拽不丝滑」时唯一能量化它的数字）也不更新，而会话拆除
+   * + 重开 + ffmpeg 起转这几秒正是用户等的那几秒。
+   */
+  | { type: "seek-requested"; at: number }
+  /**
+   * video 元素开始 seek。**只用来开「这段等待不算卡顿」的闸，不计数**。
+   *
+   * 计数交给 `seek-requested`：元素这个事件会为拖动跟随写的每一次
+   * currentTime、以及换会话后新流的起播 seek 都触发一次，拿它计数就是把
+   * 「用户跳了几次」算成「写了几次 currentTime」。
+   */
   | { type: "seeking"; at: number }
   | { type: "seeked"; at: number }
   | { type: "frames"; dropped: number; total: number }
@@ -102,14 +123,22 @@ export function reduceQoe(state: State, event: QoeEvent): State {
     case "first-frame":
       // 只记第一次——降档重来时的第二次出画不是"首帧"
       return state.firstFrameAt === null ? { ...state, firstFrameAt: event.at } : state;
-    case "seeking":
+    case "seek-requested":
       return {
         ...state,
         inSeek: true,
         seekCount: state.seekCount + 1,
         waitingSince: null,
-        // 连续拖拽（seeking 里再 seeking）以第一次为起点：用户感知的等待
+        // 连续拖拽（一跳还没落地又来一跳）以第一次为起点：用户感知的等待
         // 从第一下拖动就开始了
+        seekStartedAt: state.seekStartedAt ?? event.at,
+      };
+    case "seeking":
+      // 开闸、必要时起表，但不计数（理由见事件类型上的注释）
+      return {
+        ...state,
+        inSeek: true,
+        waitingSince: null,
         seekStartedAt: state.seekStartedAt ?? event.at,
       };
     case "seeked":

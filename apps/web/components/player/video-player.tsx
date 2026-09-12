@@ -1165,11 +1165,10 @@ export function VideoPlayer(props: VideoPlayerProps) {
     };
     const onSeeking = () => {
       if (!isCurrentSession()) return;
-      const scrub = scrubRef.current;
-      // 同一次拖动的第二次及以后：位置是我们自己每 100 毫秒写进去的，
-      // 不是用户又跳了一次（第一次照常计入——他确实跳了）
-      const fromScrub = scrub.count > 0 && performance.now() - scrub.at < 250;
-      if (!fromScrub) qoe({ type: "seeking", at: performance.now() });
+      // 只开「这段等待不算卡顿」的闸，**不计数**——拖动跟随写的每一次
+      // currentTime、换会话后新流的起播 seek 都会走到这里。计数由
+      // `seek-requested` 在真正的跳转入口发出（见 qoe.ts）。
+      qoe({ type: "seeking", at: performance.now() });
       dispatch({ type: "seeking" });
     };
     const onSeeked = () => {
@@ -1837,6 +1836,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
         // startMs 为 null = 首次起播，起点还等着服务端按观看状态定（§6.10）。
         // 那一刻按下的快进键不该把续播点顶掉，让它照旧落空。
         if (!isBusy(state.phase) || state.startMs === null) return;
+        qoe({ type: "seek-requested", at: performance.now() });
         pendingFileMsRef.current = fileMs;
         setPositionMs(fileMs);
         dispatch({ type: "restart", startMs: fileMs });
@@ -1849,6 +1849,11 @@ export function VideoPlayer(props: VideoPlayerProps) {
         // 是否越界换会话由播放模式定：VOD/档 0 列表覆盖全片，永远列表内跳
         hasSession: Boolean(sessionId) && (mode?.seekBeyondBufferedRestarts ?? false),
       });
+      // 「用户跳了一次」的唯一计时起点。**必须在这里而不是在 video 的
+      // `seeking` 里**：restart 那条路新流从自己时间轴的 0 秒起播，hls.js
+      // 一次都不会 seek，元素事件永远不来——而会话拆除 + 重开 + ffmpeg
+      // 起转正是用户等的那几秒（见 qoe.ts 的 seek-requested）。
+      qoe({ type: "seek-requested", at: performance.now() });
       if (plan.kind === "native") {
         const seconds = Math.max(0, plan.seconds);
         // 落点在缓冲之外：hls.js 会清掉当前这段缓冲从新落点重新装载，中间
@@ -1881,7 +1886,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
       setPositionMs(plan.startMs);
       dispatch({ type: "restart", startMs: plan.startMs });
     },
-    [video, sessionId, mode, durationMs, state.session, state.phase, state.startMs, freezeFrame],
+    [video, sessionId, mode, durationMs, state.session, state.phase, state.startMs, freezeFrame, qoe],
   );
 
   /**
@@ -2012,14 +2017,18 @@ export function VideoPlayer(props: VideoPlayerProps) {
 
   /** 把画面真的挪到落点。延时落地会跨过一段时间，所以只读 ref。 */
   const applyScrubFollow = useCallback(
-    (fileMs: number) => {
+    (rawFileMs: number) => {
       if (!video) return;
+      // 与松手提交**用同一条夹紧规则**：不夹的话拖到最右端时跟随会把画面送到
+      // 文件最后一刻，而提交那一次要给片尾留一秒余量（clampSeekTarget），于是
+      // 松手瞬间画面往回跳一秒。落点的夹紧只该有一处口径。
+      const fileMs = clampSeekTarget(rawFileMs, durationMs);
       const seconds = toSessionSeconds(fileMs, startMsRef.current);
       // 后沿落地要跨过几十毫秒，**判据得在落地的这一刻重算**：这段时间里
       // back buffer 可能已经把落点回收掉，那时写 currentTime 就不再是零成本
       // 的跳转，而是一次把 ffmpeg 拽回去重启——跟随这条路上最不该出现的事。
       if (seconds < 0 || !isCheapSeekRef.current(fileMs)) return;
-      scrubRef.current = afterScrubFollow(scrubRef.current, performance.now());
+      scrubRef.current = afterScrubFollow(performance.now());
       // **只动 currentTime，不走 engine.seek**：后者会 stopLoad + startLoad
       // 把在途的分片请求全掐掉重来——那是给「跳到没缓冲的地方」准备的重手段。
       // 拖动跟随只在数据已经在手上时才发生（isCheapSeek），一秒十次地掐断
@@ -2030,7 +2039,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
       if (typeof video.fastSeek === "function") video.fastSeek(seconds);
       else video.currentTime = seconds;
     },
-    [video],
+    [video, durationMs],
   );
   /** 供后沿计时器读最新值：它跨过一段时间才执行，闭包里的会话可能已经换过 */
   const applyScrubFollowRef = useRef(applyScrubFollow);
