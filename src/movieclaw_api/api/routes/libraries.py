@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import mimetypes
+from dataclasses import asdict
 from pathlib import Path, PurePath
 from typing import Annotated, Literal
 from urllib.parse import quote
@@ -20,9 +21,13 @@ from movieclaw_api.schemas.library import (
     ArtworkCandidateView,
     ArtworkSelectPayload,
     AudioStreamView,
+    BatchTransferPayload,
+    BatchTransferPreviewView,
     ChapterView,
     ClaimBatchPayload,
     ClaimPayload,
+    ConsolidateRootsPayload,
+    ConsolidateRootsPreviewView,
     DetachPayload,
     DirectorView,
     IdentityReviewDecision,
@@ -55,6 +60,7 @@ from movieclaw_api.schemas.library import (
     OrganizeStartView,
     PathReconcilePayload,
     PathReconcilePreviewView,
+    PreflightMemberView,
     RedownloadPayload,
     RefreshActiveView,
     ReidentifyGroupView,
@@ -95,8 +101,20 @@ from movieclaw_api.services.library.access import (
     content_limit_for,
     visible_library_ids,
 )
+from movieclaw_api.services.library.batch_transfer import (
+    CONSOLIDATE_JOB_TYPE,
+    BatchMember,
+    enqueue_batch_transfer_job,
+    enqueue_consolidate_job,
+    resolve_members,
+    resolve_members_under_roots,
+)
+from movieclaw_api.services.library.batch_transfer import (
+    JOB_TYPE as BATCH_JOB_TYPE,
+)
 from movieclaw_api.services.library.collections import collections_containing
 from movieclaw_api.services.library.config import LibraryConfigService
+from movieclaw_api.services.library.ingest import _downloader_briefs
 from movieclaw_api.services.library.items import (
     LibraryFilter,
     build_item_detail,
@@ -122,6 +140,11 @@ from movieclaw_api.services.library.organize import (
     is_organizing,
     last_organize,
     organize_progress,
+)
+from movieclaw_api.services.library.preflight import (
+    CONFLICT_LABELS,
+    MAX_SELECTION,
+    build_preflight,
 )
 from movieclaw_api.services.library.scan import (
     PHASE_LABELS,
@@ -171,6 +194,7 @@ from movieclaw_db.models import (
     FileState,
     Job,
     JobStatus,
+    Library,
     LibraryFile,
     MediaItem,
     MediaItemPerson,
@@ -3136,6 +3160,323 @@ async def _transfer_context(
     return source, target, item, rows
 
 
+async def _batch_transfer_context(
+    session: AsyncSession,
+    library_id: int,
+    payload: BatchTransferPayload,
+) -> tuple[Library, Library, list[BatchMember]]:
+    """批量转移两接口共用的前置：取源库/目标库 + 把选择集解析成冻结的成员清单。"""
+    service = LibraryConfigService(session)
+    source = await service.get(library_id)
+    target = await service.get(payload.target_library_id)
+    assert_transferable(source, target)
+    if not payload.all_items and len(payload.media_item_ids) > MAX_SELECTION:
+        raise BadRequestException(
+            f"一次最多提交 {MAX_SELECTION} 个条目（收到 {len(payload.media_item_ids)} 个）；"
+            "要搬整个库请改用 all_items"
+        )
+    members = await resolve_members(
+        session,
+        library_id,
+        media_item_ids=payload.media_item_ids,
+        all_items=payload.all_items,
+    )
+    if not members:
+        raise BadRequestException(
+            "没有选中任何条目：请传 media_item_ids，或用 all_items 转移整个库"
+        )
+    return source, target, members
+
+
+async def _seeding_root_names() -> set[str] | None:
+    """下载器当前的落盘根名集合；下载器不可达时返回 None（如实报"无法确认"）。
+
+    用途是识别「下载器直接做种库内路径」这种非常规部署：那种部署下库里的
+    条目目录名就是下载器的落盘根名，搬走（哪怕是同盘 rename）都会让做种任务
+    找不到文件。按正常方式入库的库（复制或硬链接）目录名是规范化过的
+    ``标题 (年份)``，与种子原名不同，不会命中。
+    """
+    briefs = await _downloader_briefs()
+    if briefs is None:
+        return None
+    return {b.content_name for b in briefs if getattr(b, "content_name", "")}
+
+
+@router.post(
+    "/{library_id}/item-transfer-preview",
+    response_model=ApiResponse[BatchTransferPreviewView],
+    summary="预检批量转移：空间、冲突、硬链接与做种影响一次算清（只读，不动磁盘）",
+    operation_id="workflow.library.transfer-items.preview",
+    dependencies=[Depends(require_admin)],
+    # CLI 必须走精选层的「预检 → --yes」工作流，不给生成命令绕过确认的旁路
+    openapi_extra={"x-cli-hidden": True},
+)
+async def preview_batch_transfer(
+    library_id: int,
+    payload: BatchTransferPayload,
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[BatchTransferPreviewView]:
+    """纯只读。搬 593 部要跑几个小时、用户不在现场，**搬到一半才发现盘不够是
+    灾难**——所以这里一次把四件事摆清：目标盘空间够不够（只算跨盘部分，同盘
+    搬运是 rename 不占新空间）、哪些同名以及同名的三种不同性质、跨盘会断掉
+    哪些硬链接（源盘因此不会释放空间）、有没有条目正被下载器原地做种。
+
+    成本是 O(成员数) 而不是 O(文件数)：逐文件的精确计划留到执行时逐成员现算。
+    """
+    source, target, members = await _batch_transfer_context(session, library_id, payload)
+    result = await build_preflight(
+        session,
+        source,
+        Path(target.primary_root or ""),
+        [(m.media_item_id, m.title) for m in members],
+        seeding_names=await _seeding_root_names(),
+        on_conflict=payload.on_conflict,
+    )
+    return ok(
+        BatchTransferPreviewView(
+            target_library_id=target.id or 0,
+            target_library_name=target.name,
+            target_root=result.target_root,
+            on_conflict=payload.on_conflict,
+            selected=result.selected,
+            movable=result.movable,
+            total_bytes=result.total_bytes,
+            members=[PreflightMemberView(**asdict(m)) for m in result.members],
+            cross_device_items=result.cross_device_items,
+            cross_device_bytes=result.cross_device_bytes,
+            target_free_bytes=result.target_free_bytes,
+            target_required_bytes=result.target_required_bytes,
+            source_reclaimable_bytes=result.source_reclaimable_bytes,
+            hardlinked_items=result.hardlinked_items,
+            hardlinked_bytes=result.hardlinked_bytes,
+            seeding_in_place_items=result.seeding_in_place_items,
+            conflicts=result.conflicts,
+            blocked=result.blocked,
+        )
+    )
+
+
+@router.post(
+    "/{library_id}/item-transfers",
+    response_model=ApiResponse[TransferStartView],
+    summary="批量转移条目到另一个媒体库：一次提交，后台逐条搬运并随迁台账",
+    operation_id="workflow.library.transfer-items.start",
+    dependencies=[Depends(require_admin)],
+    openapi_extra={
+        "x-cli-hidden": True,
+        "x-cli-dangerous": "confirm",
+        "x-cli-job": {"id_path": "job_id", "wait_op": "jobs.wait"},
+    },
+    status_code=202,
+)
+async def start_batch_transfer(
+    library_id: int,
+    payload: BatchTransferPayload,
+    client_name: str | None = Header(default=None, alias="X-MovieClaw-Client"),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[TransferStartView]:
+    """合并媒体库、批量纠正分错库的作品，都走这一条。
+
+    **成员集合在这里冻结**并写进作业输入：用户确认的是"这 593 部"，而筛选
+    结果会随扫描与刮削漂移。每个成员的路径计划则在轮到它时按磁盘现场重算。
+
+    搬运直接发生在磁盘上、无法一键撤销，调用方必须先用预检接口把影响面摆给
+    用户确认；这里只重新核对整批级的阻断问题（盘没挂、空间不够）。
+    """
+    source, target, members = await _batch_transfer_context(session, library_id, payload)
+    result = await build_preflight(
+        session,
+        source,
+        Path(target.primary_root or ""),
+        [(m.media_item_id, m.title) for m in members],
+        on_conflict=payload.on_conflict,
+    )
+    if result.blocked:
+        raise ConflictException("；".join(result.blocked))
+    if not result.movable:
+        detail = next(
+            (
+                m.reason or CONFLICT_LABELS.get(m.conflict or "", "")
+                for m in result.members
+                if m.reason or m.conflict
+            ),
+            "",
+        )
+        raise BadRequestException(
+            f"选中的条目没有一个可以搬运：{detail}" if detail else "选中的条目没有可搬运的内容"
+        )
+    created = await enqueue_batch_transfer_job(
+        session,
+        source=source,
+        target=target,
+        members=members,
+        on_conflict=payload.on_conflict,
+        origin=_job_origin(client_name),
+    )
+    message = (
+        f"已开始把 {len(members)} 个条目转移到「{target.name}」，可在任务中心继续观察"
+        if created.created
+        else f"「{source.name}」的批量转移作业已在进行中"
+    )
+    if result.cross_device_items:
+        message += f"（其中 {result.cross_device_items} 个需要跨盘复制，耗时取决于体积）"
+    return ok(
+        TransferStartView(
+            started=True,
+            message=message,
+            job_id=created.job.id,
+            created=created.created,
+        ),
+        message=message,
+    )
+
+
+def _validated_consolidate_roots(
+    library: Library, payload: ConsolidateRootsPayload
+) -> tuple[str, list[str]]:
+    """校验归并的目标根与源根，返回规范化后的（into, from_roots）。"""
+    into = payload.into.strip().rstrip("/")
+    if not into:
+        raise BadRequestException("必须给出要并到的目标根路径")
+    if not Path(into).is_dir():
+        raise BadRequestException(f"目标根路径不存在或不可访问：{into}（盘未挂载？）")
+    current = [r.rstrip("/") for r in library.root_paths]
+    sources = [r.strip().rstrip("/") for r in payload.from_roots if r.strip()]
+    if not sources:
+        # 留空 = 除目标根外的全部根，这正是「拍平多级目录」最常见的意图
+        sources = [r for r in current if r != into]
+    unknown = [r for r in sources if r not in current]
+    if unknown:
+        raise BadRequestException(
+            "这些源根不在媒体库的配置里：" + "、".join(unknown) + "；请用 mclaw library get 核对"
+        )
+    if into in sources:
+        raise BadRequestException("目标根不能同时出现在源根里")
+    if not sources:
+        raise BadRequestException("没有要并过来的源根——这个库只有目标根一个根路径")
+    return into, sources
+
+
+@router.post(
+    "/{library_id}/root-consolidation-preview",
+    response_model=ApiResponse[ConsolidateRootsPreviewView],
+    summary="预检根路径归并：条目会搬到哪、空间够不够、根配置怎么变（只读）",
+    operation_id="workflow.library.consolidate-roots.preview",
+    dependencies=[Depends(require_admin)],
+    openapi_extra={"x-cli-hidden": True},
+)
+async def preview_consolidate_roots(
+    library_id: int,
+    payload: ConsolidateRootsPayload,
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[ConsolidateRootsPreviewView]:
+    """纯只读。换盘、换挂载点、把历史的多级分类目录拍平成一层都走这条。
+
+    与批量转移是同一套预检（空间只算跨盘部分、硬链接只在跨盘统计、同名按锚
+    分类），差别只在这里的选择集是「这些根下的全部条目」，以及会告诉你目标根
+    是不是一个将被加进配置的新路径。
+    """
+    library = await LibraryConfigService(session).get(library_id)
+    into, sources = _validated_consolidate_roots(library, payload)
+    members = await resolve_members_under_roots(session, library_id, sources)
+    result = await build_preflight(
+        session,
+        library,
+        Path(into),
+        [(m.media_item_id, m.title) for m in members],
+        seeding_names=await _seeding_root_names(),
+    )
+    return ok(
+        ConsolidateRootsPreviewView(
+            library_id=library_id,
+            into=into,
+            from_roots=sources,
+            into_is_new_root=into not in [r.rstrip("/") for r in library.root_paths],
+            selected=result.selected,
+            movable=result.movable,
+            total_bytes=result.total_bytes,
+            members=[PreflightMemberView(**asdict(m)) for m in result.members],
+            cross_device_items=result.cross_device_items,
+            cross_device_bytes=result.cross_device_bytes,
+            target_free_bytes=result.target_free_bytes,
+            target_required_bytes=result.target_required_bytes,
+            source_reclaimable_bytes=result.source_reclaimable_bytes,
+            hardlinked_items=result.hardlinked_items,
+            hardlinked_bytes=result.hardlinked_bytes,
+            seeding_in_place_items=result.seeding_in_place_items,
+            conflicts=result.conflicts,
+            blocked=result.blocked,
+        )
+    )
+
+
+@router.post(
+    "/{library_id}/root-consolidations",
+    response_model=ApiResponse[TransferStartView],
+    summary="归并根路径：把若干个根下的条目搬到一个根，台账随迁、根配置收口",
+    operation_id="workflow.library.consolidate-roots.start",
+    dependencies=[Depends(require_admin)],
+    openapi_extra={
+        "x-cli-hidden": True,
+        "x-cli-dangerous": "confirm",
+        "x-cli-job": {"id_path": "job_id", "wait_op": "jobs.wait"},
+    },
+    status_code=202,
+)
+async def start_consolidate_roots(
+    library_id: int,
+    payload: ConsolidateRootsPayload,
+    client_name: str | None = Header(default=None, alias="X-MovieClaw-Client"),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[TransferStartView]:
+    """换盘、换挂载点、拍平历史多级目录，都是这一条。
+
+    与「整理文件名」的分工要说死：整理**改名字**、永远留在当前根下；归并
+    **换位置**、不碰名字。一次操作只做一件事，用户才说得清刚才那一下改了什么。
+
+    目标根若还不在库配置里会**先加进去再开始搬**：顺序反了文件会先落到库根
+    之外，下一次扫描把它们全标 missing。搬完并且没有任何跳过或失败时，才把
+    源根从配置里摘掉——还剩内容就摘根，那些台账会瞬间指到库根之外。
+    """
+    library = await LibraryConfigService(session).get(library_id)
+    into, sources = _validated_consolidate_roots(library, payload)
+    await _assert_not_busy(session, library.name, library_id)
+    members = await resolve_members_under_roots(session, library_id, sources)
+    if not members:
+        raise BadRequestException(
+            "这些源根下没有任何已入库的条目——如果只是想改配置，直接编辑媒体库的根路径即可"
+        )
+    result = await build_preflight(
+        session, library, Path(into), [(m.media_item_id, m.title) for m in members]
+    )
+    if result.blocked:
+        raise ConflictException("；".join(result.blocked))
+    created = await enqueue_consolidate_job(
+        session,
+        library=library,
+        into=into,
+        drop_roots=sources,
+        members=members,
+        origin=_job_origin(client_name),
+    )
+    message = (
+        f"已开始把 {len(members)} 个条目并入「{into}」，可在任务中心继续观察"
+        if created.created
+        else f"「{library.name}」的根路径归并作业已在进行中"
+    )
+    if result.cross_device_items:
+        message += f"（其中 {result.cross_device_items} 个需要跨盘复制，耗时取决于体积）"
+    return ok(
+        TransferStartView(
+            started=True,
+            message=message,
+            job_id=created.job.id,
+            created=created.created,
+        ),
+        message=message,
+    )
+
+
 @router.get(
     "/{library_id}/items/{media_item_id}/transfer-preview",
     response_model=ApiResponse[TransferPreviewView],
@@ -3248,7 +3589,12 @@ async def get_transfer_status(
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[TransferStatusView]:
     """源库与目标库两侧查到的是同一份状态（转移期间两侧都占着任务位），
-    前端弹窗轮询这一个接口即可从"进行中"一路走到结论页。"""
+    前端弹窗轮询这一个接口即可从"进行中"一路走到结论页。
+
+    三种搬运共用这一个状态口径：单条目转移、批量转移、根路径归并。进行中的
+    读数来自库级任务位（批量时 title 是**当前正在搬的那一条**），结论则取三
+    类作业里最近完成的那一个——批量与归并的结论额外带 moved/skipped/failed。
+    """
     await LibraryConfigService(session).get(library_id)  # 404 检查
     state = transfer_state(library_id)
     if state is not None:
@@ -3262,9 +3608,9 @@ async def get_transfer_status(
                 total=state.total,
             )
         )
-    latest = await jobs.latest_job_for_resource(
-        session, "library", library_id, job_type="library.transfer"
-    )
+    latest = await _latest_relocation_job(session, library_id)
+    if latest is not None and latest.job_type in (BATCH_JOB_TYPE, CONSOLIDATE_JOB_TYPE):
+        return ok(_batch_status_view(latest))
     if latest is not None:
         progress = latest.progress or {}
         details = progress.get("details") if isinstance(progress.get("details"), dict) else {}
@@ -3322,6 +3668,49 @@ async def get_transfer_status(
             subscription_moved=summary.subscription_moved,
             errors=summary.errors,
         )
+    )
+
+
+async def _latest_relocation_job(session: AsyncSession, library_id: int) -> Job | None:
+    """三类搬运作业里最近的那一个（单条目转移 / 批量转移 / 根路径归并）。"""
+    candidates = []
+    for job_type in ("library.transfer", BATCH_JOB_TYPE, CONSOLIDATE_JOB_TYPE):
+        found = await jobs.latest_job_for_resource(
+            session, "library", library_id, job_type=job_type
+        )
+        if found is not None:
+            candidates.append(found)
+    if not candidates:
+        return None
+    return max(candidates, key=lambda job: job.created_at)
+
+
+def _batch_status_view(job: Job) -> TransferStatusView:
+    """把批量/归并作业投影成同一个状态视图（老前端不改也能读进度）。"""
+    progress = job.progress or {}
+    details = progress.get("details") if isinstance(progress.get("details"), dict) else {}
+    result = job.result or {}
+    running = job.status in ACTIVE_JOB_STATUSES
+    return TransferStatusView(
+        running=running,
+        title=str(job.subject or ""),
+        target_library_id=int(details.get("target_library_id") or 0) or None,
+        processed=int(progress.get("current") or 0),
+        total=int(progress.get("total") or 0),
+        finished_at=None if running else job.finished_at,
+        moved_items=int(result.get("moved") or 0),
+        skipped_items=int(result.get("skipped") or 0),
+        failed_items=int(result.get("failed") or 0),
+        files_relocated=int(result.get("files_relocated") or 0),
+        bytes_moved=int(result.get("bytes_moved") or 0),
+        removed_dirs=int(result.get("removed_dirs") or 0),
+        # 跳过是用户在预检里确认过的策略性结果，失败才是意外——两者分开给，
+        # 前端不能把它们合成一个"问题数"（合了就没法只对失败给重试入口）
+        skips=[str(item.get("reason") or "") for item in (result.get("skips") or [])],
+        errors=[
+            f"{item.get('title') or ''}：{item.get('reason') or ''}"
+            for item in (result.get("failures") or [])
+        ],
     )
 
 

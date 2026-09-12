@@ -335,7 +335,13 @@ async def run_replacement_search(attempt_id: int, *, force: bool = False) -> boo
                 await session.commit()
                 return False
             item_kind = item.kind
-            keywords = list(dict.fromkeys(filter(None, (item.original_title, item.title))))
+            # 召回词与主动搜索同源（wanted_search.recall_keywords）：英文名 →
+            # 中文名 → 原名。换源此前只用 (原名, 主标题) 两个，在非英语片上跟
+            # 主动搜索犯的是同一个错——原名是 TMDB 的「原始语言标题」，韩语片
+            # 给的是「악인전」，中文 PT 站根本不用它命名，于是死种换不出来
+            from movieclaw_api.services.subscription.wanted_search import recall_keywords
+
+            keywords = recall_keywords(item)
             # 网络调用前先排一个技术失败兜底，进程中途退出也不会每个 tick 重打站点。
             attempt.status = DownloadAttemptStatus.REPLACEMENT_PENDING
             attempt.last_search_at = now

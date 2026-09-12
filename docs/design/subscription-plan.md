@@ -106,7 +106,13 @@ tick → SELECT wanted WHERE status='wanted' AND next_search_at<=now
    wanted。订阅 20 季老剧绝不能变成几百次跨站请求。
 2. 每 tick 只取少量分组（如 3~5 个条目），叠加站点级并发上限（复用聚合搜索的扇出控制）——
    双重限流，对 PT 站保持克制。
-3. **搜索词策略**：首选 `original_title`（种子多为英文命名），空结果补一次主 `title`；
+3. **搜索词策略**：召回词集合 = 英文名（`english_title`）+ 中文名（`title`）+
+   原名（`original_title`），去重后**全部下发、结果合并去重**。
+   ⚠️ **初稿的"首选 `original_title`（种子多为英文命名），空结果补一次主 `title`"
+   已被推翻**：`original_title` 是「原始语言标题」不是英文名，两者只在原语言
+   就是英语时重合；而"空结果才补"的短路判据看的是"有没有结果"不是"有没有用"。
+   真实教训：韩语片用原名召回 4 条且全被规则拒，中文名的 70 条正片从未进入
+   候选池（`services/subscription/wanted_search.py::recall_keywords`）。
    词条带年份与否交给各站适配层现状，不做特殊处理。
 4. **退避曲线**：15min → 1h → 6h → 24h → 7d 封顶。追新工单的首个到期时刻即
    `air_date + 宽限期`（创建时写死，见 F1），被动匹配没接住时 worker 才会见到它。

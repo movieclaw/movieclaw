@@ -641,6 +641,8 @@ def _merge_identity(
             seen.add(alias)
     item.title = profile.title or item.title
     item.original_title = profile.original_title or item.original_title
+    # 存量条目的英文名靠这里自然回填（加列时不写一次性回填任务）
+    item.english_title = profile.english_title or item.english_title
     item.year = profile.year or item.year
     item.status = profile.status or item.status
     if meta is None or not meta.poster_locked:

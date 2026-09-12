@@ -33,6 +33,7 @@ from movieclaw_matcher.decision import (
     upgrade_target_label,
 )
 from movieclaw_matcher.identity import (
+    absurdly_small_for_runtime,
     better_explained_by_twin,
     implausible_for_runtime,
     match_identity,
@@ -71,6 +72,7 @@ __all__ = [
     "TorrentCandidate",
     "UpgradeSource",
     "UpgradeVerdict",
+    "absurdly_small_for_runtime",
     "better_explained_by_twin",
     "implausible_for_runtime",
     "match_identity",

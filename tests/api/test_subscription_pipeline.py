@@ -29,6 +29,7 @@ from movieclaw_db.migrations import run_migrations
 from movieclaw_db.models import (
     DownloadAttemptStatus,
     MediaItem,
+    MediaSource,
     SiteTorrent,
     SubscriptionActivity,
     SubscriptionDownloadAttempt,
@@ -91,6 +92,46 @@ _MOVIE_ROUTES = {
         "original_title": "Upcoming Movie",
         "release_date": (_TODAY + timedelta(days=30)).isoformat(),
         "status": "Post Production",
+        "external_ids": {},
+        "alternative_titles": {"titles": []},
+        "translations": {"translations": []},
+    },
+    # 召回词夹具：韩语片。三个名字互不相同——原名是站点最不可能用的那个写法，
+    # 英文名才是发布组的片名段，中文名是国内站副标题的事实标准
+    "/3/movie/104": {
+        "id": 104,
+        "title": "恶人传",
+        "original_title": "악인전",
+        "release_date": (_TODAY - timedelta(days=60)).isoformat(),
+        "status": "Released",
+        "external_ids": {},
+        "alternative_titles": {"titles": []},
+        "translations": {
+            "translations": [
+                {"iso_639_1": "en", "data": {"title": "The Gangster, the Cop, the Devil"}}
+            ]
+        },
+    },
+    # 英语片：三个字段归一化后是同一个词，召回只该打一次站点
+    "/3/movie/105": {
+        "id": 105,
+        "title": "Dune: Part Two",
+        "original_title": "Dune: Part Two",
+        "release_date": (_TODAY - timedelta(days=60)).isoformat(),
+        "status": "Released",
+        "external_ids": {},
+        "alternative_titles": {"titles": []},
+        "translations": {
+            "translations": [{"iso_639_1": "en", "data": {"title": "Dune.Part.Two"}}]
+        },
+    },
+    # 预算夹具：另一部单关键词英语片（与 105 一起把本轮预算用满）
+    "/3/movie/106": {
+        "id": 106,
+        "title": "Sinners",
+        "original_title": "Sinners",
+        "release_date": (_TODAY - timedelta(days=60)).isoformat(),
+        "status": "Released",
         "external_ids": {},
         "alternative_titles": {"titles": []},
         "translations": {"translations": []},
@@ -848,6 +889,283 @@ async def test_search_hit_persists_and_dispatches(db, monkeypatch) -> None:
         assert "投递覆盖 2 个单元" in searched[0].message
 
 
+# ---------------------------------------------------------------------------
+# F4 召回词集合：全部下发 + 合并去重（wanted_search.recall_keywords）
+# ---------------------------------------------------------------------------
+
+_EN = "The Gangster, the Cop, the Devil"
+_ZH = "恶人传"
+_KO = "악인전"
+
+
+def _fake_search_by_keyword(monkeypatch, mapping: dict, calls: list) -> None:
+    """按关键词返回不同结果的假搜索——召回词集合的行为只有这样才测得出。"""
+    from movieclaw_api.schemas.search import SearchResponse, SiteSearchStatus
+    from movieclaw_api.services import site_search
+
+    async def fake(
+        keyword, categories=None, site_ids=None, label=None, page=1, exclude_protected=False
+    ):
+        calls.append(keyword)
+        hits = mapping.get(keyword, [])
+        return SearchResponse(
+            keyword=keyword,
+            label=label,
+            categories=[],
+            total=len(hits),
+            items=hits,
+            sites=[SiteSearchStatus(site_id="s0", site_name="站0", count=len(hits))],
+        )
+
+    monkeypatch.setattr(site_search, "search_all_sites", fake)
+
+
+def _movie_hit(torrent_id: str, title: str, *, size_bytes: int, seeders: int = 10) -> object:
+    from movieclaw_api.schemas.search import TorrentHit
+
+    return TorrentHit(
+        site_id="testsite",
+        site_name="测试站",
+        torrent_id=torrent_id,
+        title=title,
+        subtitle="",
+        seeders=seeders,
+        size_bytes=size_bytes,
+        download_volume_factor=0.0,
+        free=True,
+        attrs=TorrentAttrs.model_validate(
+            {"media_type": "movie", "year": 2026, "resolution": "1080p"}
+        ),
+    )
+
+
+async def test_recall_searches_every_keyword_and_merges(db, monkeypatch) -> None:
+    """三个召回词全部下发，结果合并后统一评估——不再"有结果就短路"。
+
+    顺序即"站点拿它命名的可能性"：英文名（发布组的片名段）→ 中文名（国内站
+    副标题）→ 原名（这部韩语片的原名是站点最不可能用的那个写法）。
+    """
+    from movieclaw_api.services.subscription.wanted_search import search_wanted
+
+    calls: list = []
+    _fake_search_by_keyword(
+        monkeypatch,
+        {
+            _EN: [_movie_hit("en1", f"{_EN} 2026 1080p WEB-DL", size_bytes=6 * 1024**3)],
+            _ZH: [_movie_hit("zh1", f"{_ZH} 2026 1080p BluRay", size_bytes=11 * 1024**3)],
+            _KO: [_movie_hit("ko1", f"{_KO} 2026 1080p FHDRip", size_bytes=2 * 1024**3)],
+        },
+        calls,
+    )
+    async with db.session() as session:
+        await _service(session).create(MediaKind.MOVIE, 104)
+
+    await search_wanted()
+    assert calls == [_EN, _ZH, _KO]
+    async with db.session() as session:
+        persisted = (
+            (await session.execute(select(SiteTorrent).where(SiteTorrent.site_id == "testsite")))
+            .scalars()
+            .all()
+        )
+        assert {row.torrent_id for row in persisted} == {"en1", "zh1", "ko1"}
+
+
+async def test_recall_does_not_stop_at_a_keyword_with_useless_hits(db, monkeypatch) -> None:
+    """**本案例的回归钉**：第一个词召回到的东西全都用不了，正片仍要被找到。
+
+    真实现场——韩语原名召回 4 条且全被规则拒，中文名的 70 条正片从未进入候选
+    池，于是那一轮唯一"合格"的候选是一条 113 MB 的预告片。旧判据看的是"有没有
+    结果"，不是"有没有用"。这里把两件事一起钉死：短路没了，且那条 113 MB 的
+    预告片即便被召回也进不了候选池。
+    """
+    from movieclaw_api.services.subscription.wanted_search import search_wanted
+
+    calls: list = []
+    _fake_search_by_keyword(
+        monkeypatch,
+        {
+            # 英文名召回到的是预告片体量的假种（0.14 Mbps）
+            _EN: [_movie_hit("trailer", f"{_EN} 2026 1080p WEB-DL", size_bytes=113 * 1024**2)],
+            # 正片在中文名那一轮
+            _ZH: [
+                _movie_hit(
+                    "feature", f"{_ZH} 2026 1080p BluRay x264", size_bytes=11 * 1024**3,
+                    seeders=29,
+                )
+            ],
+        },
+        calls,
+    )
+    async with db.session() as session:
+        sub = await _service(session).create(MediaKind.MOVIE, 104)
+        await _set_runtime(session, sub, 110)
+
+    await search_wanted()
+    async with db.session() as session:
+        assert (await _wanted_map(session, sub.id))[(0, 0)].status == WantedStatus.GRABBED
+        grabbed = [a for a in await _activities(session, sub.id) if a.type == "grabbed"]
+        assert len(grabbed) == 1 and grabbed[0].payload["torrent_id"] == "feature"
+        rejected = [a for a in await _activities(session, sub.id) if a.type == "match_rejected"]
+        assert [a.payload["torrent_id"] for a in rejected] == ["trailer"]
+
+
+async def test_recall_deduplicates_titles_that_normalize_to_one_word(db, monkeypatch) -> None:
+    """英语片的三个字段归一到同一个词，只该打一次站点。
+
+    去重按匹配内核的归一化形式比对（``Dune.Part.Two`` 与 ``Dune: Part Two``
+    同形），但下发的是原样文本——归一化是匹配的职责，站点搜索吃的是原文。
+    """
+    from movieclaw_api.services.subscription.wanted_search import search_wanted
+
+    calls: list = []
+    _fake_search_by_keyword(monkeypatch, {}, calls)
+    async with db.session() as session:
+        await _service(session).create(MediaKind.MOVIE, 105)
+
+    await search_wanted()
+    assert calls == ["Dune.Part.Two"]
+
+
+async def test_recall_dedupes_the_same_torrent_across_keywords(db, monkeypatch) -> None:
+    """同一个种子被多个召回词搜到只评估一次——合并键是 (站点, 种子ID)。"""
+    from movieclaw_api.services.subscription.wanted_search import search_wanted
+
+    calls: list = []
+    shared = _movie_hit("same", f"{_EN} 2026 1080p BluRay", size_bytes=11 * 1024**3)
+    _fake_search_by_keyword(monkeypatch, {_EN: [shared], _ZH: [shared], _KO: [shared]}, calls)
+    async with db.session() as session:
+        sub = await _service(session).create(MediaKind.MOVIE, 104)
+
+    await search_wanted()
+    assert len(calls) == 3
+    async with db.session() as session:
+        grabbed = [a for a in await _activities(session, sub.id) if a.type == "grabbed"]
+        assert len(grabbed) == 1  # 投一次，不是三次
+        searched = [a for a in await _activities(session, sub.id) if a.type == "searched"]
+        # 逐词结果数进文案：合并后看不出是哪个词召回的，而"为什么没搜到正片"
+        # 只有这条线索能回答
+        assert "关键词" in searched[0].message and searched[0].message.count("1 条") == 3
+        assert [entry["keyword"] for entry in searched[0].payload["keywords"]] == [_EN, _ZH, _KO]
+
+
+async def test_tick_budget_counts_searches_not_groups(db, monkeypatch) -> None:
+    """节流按**搜索次数**记账，不按条目组——否则多一个召回词就把站点压力乘以三。
+
+    预算 4 次：三词的《恶人传》用掉 3 次，单词的英语片用掉第 4 次，第三组留到
+    下一轮。组不中途截断（合并去重要求一轮把词发完），所以停止判据是"开工之前
+    预算还有没有剩"。
+    """
+    from movieclaw_api.services.subscription.wanted_search import search_wanted
+
+    calls: list = []
+    _fake_search_by_keyword(monkeypatch, {}, calls)
+    async with db.session() as session:
+        service = _service(session)
+        three_words = await service.create(MediaKind.MOVIE, 104)  # 3 个召回词
+        one_word = await service.create(MediaKind.MOVIE, 105)  # 1 个
+        left_over = await service.create(MediaKind.MOVIE, 106)  # 1 个
+        # 取单序是 (priority DESC, next_search_at ASC)。显式压死优先级——不然
+        # 顺序只靠创建时刻的微秒差，换个顺序这个用例断言的就是另一回事了
+        for sub, priority in ((three_words, 20), (one_word, 10), (left_over, 0)):
+            for w in (await _wanted_map(session, sub.id)).values():
+                w.priority = priority
+        await session.commit()
+
+    await search_wanted()
+    assert len(calls) == 4  # 3 + 1 用满预算，第三组没开工
+    async with db.session() as session:
+        assert all(
+            w.search_attempts == 1 for w in (await _wanted_map(session, three_words.id)).values()
+        )
+        assert all(
+            w.search_attempts == 1 for w in (await _wanted_map(session, one_word.id)).values()
+        )
+        assert all(
+            w.search_attempts == 0 for w in (await _wanted_map(session, left_over.id)).values()
+        )
+
+
+def test_recall_keywords_order_dedup_and_blank_fallback() -> None:
+    """召回词集合的三条性质：顺序、归一化去重、脏数据不硬凑。"""
+    from movieclaw_api.services.subscription.wanted_search import recall_keywords
+
+    def item(**kw) -> MediaItem:
+        return MediaItem(kind="movie", source=MediaSource.TMDB, aliases=[], **kw)
+
+    assert recall_keywords(
+        item(title=_ZH, original_title=_KO, english_title=_EN)
+    ) == [_EN, _ZH, _KO]  # 英文名 → 中文名 → 原名
+
+    # 归一化后同形只留一个，且留的是**原样文本**
+    assert recall_keywords(
+        item(title="Dune: Part Two", original_title="Dune.Part.Two", english_title="dune part two")
+    ) == ["dune part two"]
+
+    # 英文名缺失（存量条目回填前）退回两个词，也就是改动前的行为
+    assert recall_keywords(item(title=_ZH, original_title=_KO)) == [_ZH, _KO]
+
+    # 三个字段全空/全是符号：返回空列表，**不能**硬塞一个可能为空的主标题去搜
+    # ——空关键词打到站点上等于"搜全站"，会把整个索引灌进 site_torrent
+    assert recall_keywords(item(title="", original_title="")) == []
+    assert recall_keywords(item(title="!!!", original_title="---")) == []
+
+
+async def test_media_without_usable_keyword_never_hits_a_site(db, monkeypatch) -> None:
+    """没有可用召回词的脏数据条目：一次站点请求都不许发出去。"""
+    from movieclaw_api.services.subscription.wanted_search import search_wanted
+
+    calls: list = []
+    _fake_search_by_keyword(monkeypatch, {}, calls)
+    async with db.session() as session:
+        sub = await _service(session).create(MediaKind.MOVIE, 104)
+        item = await session.get(MediaItem, sub.media_item_id)
+        item.title = item.original_title = item.english_title = ""
+        await session.commit()
+
+    await search_wanted()
+    assert calls == []
+    # 且必须顺延：不然这个条目组永远停在"已到期"，每个 tick 都被挑中又原地跳过，
+    # 长期占住取单名额，够几个就能把其他订阅饿死
+    async with db.session() as session:
+        for w in (await _wanted_map(session, sub.id)).values():
+            assert w.next_search_at > utcnow()
+            assert w.search_attempts == 0  # 不是站点的错，不计退避档
+
+
+async def test_budget_is_charged_even_when_a_group_blows_up(db, monkeypatch) -> None:
+    """一组在搜完之后崩了，已经打出去的请求照样计数。
+
+    按返回值结算的话那一组等于免费，本 tick 反而会比正常情况打更多请求——
+    旧的"每 tick 两个条目组"是硬上限，异常与否都拦得住；换成按次计量之后，
+    这条保证得自己补上。
+    """
+    from movieclaw_api.services.subscription import wanted_search
+
+    calls: list = []
+    _fake_search_by_keyword(monkeypatch, {}, calls)
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("评估炸了")
+
+    monkeypatch.setattr(wanted_search, "evaluate_and_dispatch", boom)
+    async with db.session() as session:
+        service = _service(session)
+        boomer = await service.create(MediaKind.MOVIE, 104)  # 3 个召回词，随后抛异常
+        rest = [
+            await service.create(MediaKind.MOVIE, 105),
+            await service.create(MediaKind.MOVIE, 106),
+        ]
+        for sub, priority in ((boomer, 20), (rest[0], 10), (rest[1], 0)):
+            for w in (await _wanted_map(session, sub.id)).values():
+                w.priority = priority
+        await session.commit()
+
+    await wanted_search.search_wanted()
+    # 崩掉的那组已经打了 3 次，预算只剩 1 次 → 只轮得到后面一组，不是两组
+    assert len(calls) == 4
+
+
 async def test_movie_forced_search_restores_release_schedule(db, monkeypatch) -> None:
     """强制搜索未上映电影无果后，退避地板把调度恢复到"上映 + 宽限"，
     不落进 15 分钟起步的退避曲线在明知没资源的窗口里反复空搜。"""
@@ -1138,19 +1456,24 @@ async def test_bitrate_counter_evidence_is_recorded_but_does_not_block(db, monke
     阈值是凭经验拍的，直接开成否决会误伤正常发布（identity-confidence.md §10.2）。
     先在真实流量上攒触发率与误报率，再决定是否生效——所以这个用例同时钉死
     两件事：**记录发生了**，且**行为没有变**。
+
+    夹具刻意取在**可疑档**（离谱下限之下、极端档之上）：更小的体积现在会被
+    ``absurdly_small_for_runtime`` 直接拒掉，那条线不需要校准也就不该走 shadow
+    （见 ``test_absurdly_small_release_never_reaches_dispatch``）。
     """
     async with db.session() as session:
         service = _service(session)
         sub = await service.create(MediaKind.MOVIE, 101)
         await _set_runtime(session, sub, 120)
 
-        # 0.2 GB 的"1080p 电影"：隐含码率约 0.24 Mbps，预告片体量
+        # 0.9 GB 的"1080p 电影"：隐含码率约 1.07 Mbps——低于 1080p 的离谱下限
+        # (1.5)、但在极端档 (0.3) 之上，正是"要校准才敢拦"的那一档
         row = await _insert_torrent(
             session,
             "tiny",
             "Upcoming Movie 2026 1080p WEB-DL",
             {"media_type": "movie", "year": 2026, "resolution": "1080p"},
-            size_bytes=int(0.2 * 1024**3),
+            size_bytes=int(0.9 * 1024**3),
         )
         await evaluate_and_dispatch(session, [row], source="被动匹配")
 
@@ -1161,6 +1484,39 @@ async def test_bitrate_counter_evidence_is_recorded_but_does_not_block(db, monke
         assert "bitrate_reject" in grabbed[0].payload["shadow"]
         # shadow 判定绝不进用户可见的文案
         assert "Mbps" not in grabbed[0].message
+
+
+async def test_absurdly_small_release_never_reaches_dispatch(db) -> None:
+    """体积离谱到不可能是正片的候选**直接拒**，不进候选池。
+
+    真实教训：一部 110 分钟的电影收到 113 MB 的「1080p WEB-DL」（隐含码率
+    0.14 Mbps，1080p 离谱下限的十五分之一），实测只有 5 分钟——是预告片。它
+    能中选不是因为排序把好片比下去了，而是那一轮**只有它一个候选通过了规则**：
+    选优只在多个合格候选里挑好的，唯一候选无论多小都会中，体积根本不参与打分。
+    所以这条线必须在候选池之前生效，而不是投递前记一笔。
+    """
+    async with db.session() as session:
+        service = _service(session)
+        sub = await service.create(MediaKind.MOVIE, 101)
+        await _set_runtime(session, sub, 110)
+
+        row = await _insert_torrent(
+            session,
+            "trailer",
+            "Upcoming Movie 2026 1080p WEB-DL",
+            {"media_type": "movie", "year": 2026, "resolution": "1080p"},
+            size_bytes=113 * 1024**2,
+        )
+        await evaluate_and_dispatch(session, [row], source="被动匹配")
+
+        wanted = await _wanted_map(session, sub.id)
+        assert wanted[(0, 0)].status == WantedStatus.WANTED  # 没投出去，缺口还在
+        assert not [a for a in await _activities(session, sub.id) if a.type == "grabbed"]
+        # 静默拒绝会让漏配变成查不出原因的哑巴故障：拒绝原因必须留痕且可读
+        rejected = [a for a in await _activities(session, sub.id) if a.type == "match_rejected"]
+        assert len(rejected) == 1
+        assert rejected[0].payload["reason_code"] == "size_absurd_for_runtime"
+        assert "预告片" in rejected[0].message
 
 
 async def test_normal_sized_release_records_no_shadow_note(db) -> None:

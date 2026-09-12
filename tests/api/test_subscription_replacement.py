@@ -112,6 +112,7 @@ async def test_real_search_distinguishes_no_candidate_from_site_failure(db, monk
             tmdb_id=41,
             title="搜索换源",
             original_title="Replacement Search",
+            english_title="The Replacement",
         )
         rule = RuleSet(name="搜索规则")
         session.add_all([media, rule])
@@ -162,7 +163,10 @@ async def test_real_search_distinguishes_no_candidate_from_site_failure(db, monk
 
     monkeypatch.setattr(site_search, "search_all_sites", empty_search)
     assert await run_replacement_search(attempt_id) is False
-    assert searched_keywords == ["Replacement Search", "搜索换源"]
+    # 换源与主动搜索共用召回词集合（wanted_search.recall_keywords）：
+    # 英文名 → 中文名 → 原名。此前只用 (原名, 主标题) 两个，在非英语片上
+    # 跟主动搜索犯的是同一个错——原名是「原始语言标题」，不是英文名
+    assert searched_keywords == ["The Replacement", "搜索换源", "Replacement Search"]
 
     async with db.session() as session:
         attempt = await session.get(SubscriptionDownloadAttempt, attempt_id)

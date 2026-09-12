@@ -109,6 +109,9 @@ class MediaProfile(BaseModel):
     imdb_id: str | None = None
     title: str
     original_title: str
+    # 国际英文名：发布组命名的事实标准，主动搜索的第一召回词。与
+    # ``original_title`` 是两回事——后者只在原语言是英语时才等于英文名
+    english_title: str | None = None
     year: int | None = None
     aliases: list[str] = Field(default_factory=list)
     status: str | None = None
@@ -278,6 +281,7 @@ async def fetch_media_profile(
         imdb_id=(data.get("external_ids") or {}).get("imdb_id") or None,
         title=title,
         original_title=original_title,
+        english_title=_english_title(data, translations),
         year=_parse_year(release_date),
         aliases=_build_aliases(data, title, original_title),
         status=data.get("status") or None,
@@ -773,6 +777,35 @@ def _alt_region_title(data: dict, language_tag: str) -> str | None:
             value = (entry.get("title") or "").strip()
             if value:
                 return value
+    return None
+
+
+def _english_title(data: dict, translations: dict[str, dict]) -> str | None:
+    """国际英文名：``translations.en`` 优先，回落 ``alternative_titles`` 的 US/GB。
+
+    这是主动搜索的第一召回词——scene/P2P 的命名规范里片名段就是英文名，
+    国内压制组也照办（``The.Gangster.the.Cop.the.Devil.2019.1080p...``）。
+
+    **为什么不复用 ``original_title``**：它是「原始语言标题」，只在影片原语言
+    就是英语时才等于英文名。韩语片给的是「악인전」、日语片是「万引き家族」，
+    拿它去中文 PT 站搜召回接近于零（真实教训见迁移
+    ``e4a7c2b9d165_add_media_item_english_title``）。
+
+    **为什么不从 ``aliases`` 里挑**：``_build_aliases`` 把各来源拍进一个扁平
+    列表时语言标签就丢了，只能靠"挑第一个 ASCII 串"猜——法语/西语原名同样
+    是 ASCII，猜错的代价直接落在最重要的那条召回通道上。
+
+    译名优先于地区别名，与 ``_alt_region_title`` 的取向一致：别名是用户投稿，
+    质量不如译名，只用来补译名的缺。三处全空返回 None（英语片的 en 译名常常
+    就等于原名，此时调用方按原样文本去重自然会消掉重复）。
+    """
+    value = _translation_text(translations, "en", "title", "name")
+    if value:
+        return value
+    for tag in ("en-US", "en-GB"):
+        value = _alt_region_title(data, tag)
+        if value:
+            return value
     return None
 
 

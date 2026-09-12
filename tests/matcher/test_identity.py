@@ -9,6 +9,7 @@ from __future__ import annotations
 from movieclaw_enrich.models import TorrentAttrs
 from movieclaw_matcher import MediaIdentity, TorrentCandidate, match_identity
 from movieclaw_matcher.identity import (
+    absurdly_small_for_runtime,
     better_explained_by_twin,
     implausible_for_runtime,
     implied_bitrate_mbps,
@@ -631,6 +632,113 @@ def test_single_sided_sentinel_does_not_catch_the_twin_movie_case() -> None:
     # 但相对比较是成立的：同一个体积，88 分钟那版的隐含码率正常得多——
     # 这正是 §9 落地后要用的判别方式
     assert implied_bitrate_mbps(candidate, 210) < implied_bitrate_mbps(candidate, 88)
+
+
+def test_absurd_tier_catches_the_trailer_that_shipped_as_a_feature() -> None:
+    """极端档：113 MB 的「1080p 正片」÷ 110 分钟 ≈ 0.14 Mbps。
+
+    真实样本——一部 110 分钟的电影，实测下到的文件只有 5 分钟。这一档不需要
+    校准：0.3 Mbps 的 1080p 跑 110 分钟只有 247 MB，这样的正片不存在。
+    """
+    candidate = _sized(
+        "The.Gangster.the.Cop.the.Devil.2019.1080p.WEB-DL.H264",
+        113 / 1024,
+        media_type="movie",
+        year=2019,
+        resolution="1080p",
+    )
+    media = _movie(["The Gangster, the Cop, the Devil"], 2019, runtime_minutes=110)
+    reason = absurdly_small_for_runtime(candidate, media)
+    assert reason is not None and "预告片" in reason
+
+
+def test_absurd_tier_floor_applies_to_low_resolutions_too() -> None:
+    """绝对地板对**所有**分辨率生效，不只是分辨率未知时的兜底。
+
+    只当兜底会留一个反常的洞：480p 的离谱下限再除 5 是 0.08 Mbps，比未知分辨率
+    的 0.25 还松——同一条 0.14 Mbps 的假种标 1080p 会被拦、标成 480p 反而放行，
+    而"标低分辨率"恰恰是假种最省事的伪装。
+    """
+    media = _movie(["The Gangster, the Cop, the Devil"], 2019, runtime_minutes=110)
+    for resolution in ("1080p", "720p", "576p", "480p"):
+        candidate = _sized(
+            f"The.Gangster.the.Cop.the.Devil.2019.{resolution}", 113 / 1024,
+            media_type="movie", year=2019, resolution=resolution,
+        )
+        assert absurdly_small_for_runtime(candidate, media) is not None, resolution
+
+    # 但真实的 480p 压制（一部片 400-700 MB ≈ 0.5-0.9 Mbps）不能被误伤
+    real_480p = _sized(
+        "Some Movie 2024 480p DVDRip", 0.55, media_type="movie", year=2024, resolution="480p"
+    )
+    long_movie = _movie(["Some Movie"], 2024, runtime_minutes=110)
+    assert absurdly_small_for_runtime(real_480p, long_movie) is None
+
+
+def test_absurd_tier_falls_back_to_an_absolute_floor_without_resolution() -> None:
+    """分辨率未知时退到绝对地板——``implausible_for_runtime`` 在这里直接放弃
+    判断（那是可校准阈值的正确保守取向），但"0.14 Mbps 的电影"缺的不是基准。
+    """
+    candidate = _sized("The.Gangster.the.Cop.the.Devil.2019", 113 / 1024,
+                       media_type="movie", year=2019)
+    media = _movie(["The Gangster, the Cop, the Devil"], 2019, runtime_minutes=110)
+    assert implausible_for_runtime(candidate, media) is None  # 可疑档：不判
+    assert absurdly_small_for_runtime(candidate, media) is not None  # 极端档：判
+
+
+def test_absurd_tier_leaves_the_shadow_band_alone() -> None:
+    """两档的分工：可疑档（下限之下、极端档之上）仍然只观测不拦截。
+
+    0.9 GB ÷ 120 分钟 ≈ 1.07 Mbps——低于 1080p 的离谱下限 1.5，高于极端档
+    0.3。这一档里站着正常的低码压制，所以它要先攒真实误报率再点灯（§10.2）。
+    """
+    candidate = _sized(
+        "Some Movie 2024 1080p WEB-DL", 0.9, media_type="movie", year=2024, resolution="1080p"
+    )
+    media = _movie(["Some Movie"], 2024, runtime_minutes=120)
+    assert implausible_for_runtime(candidate, media) is not None
+    assert absurdly_small_for_runtime(candidate, media) is None
+
+
+def test_absurd_tier_does_not_touch_normal_encodes_or_the_twin_case() -> None:
+    """极端档绝不误伤：正常压制与 §0 的孪生错配都远在它之上。
+
+    后一条尤其要钉死——极端档是**新增**的一档，不是把既有边界往上挪：4 GB ÷
+    210 分钟 ≈ 2.7 Mbps 仍然两档都不碰，同名同年错配依旧只能靠孪生判别。
+    """
+    normal = _sized(
+        "Some Movie 2024 1080p WEB-DL x265", 2.5, media_type="movie", year=2024,
+        resolution="1080p",
+    )
+    normal_movie = _movie(["Some Movie"], 2024, runtime_minutes=120)
+    assert absurdly_small_for_runtime(normal, normal_movie) is None
+
+    odyssey = _sized(
+        "The.Odyssey.2026.1080p.AMZN.WEB-DL.DDP5.1.H.264-Group", 4.0,
+        media_type="movie", year=2026, resolution="1080p",
+    )
+    nolan = _movie(["The Odyssey"], 2026, runtime_minutes=210)
+    assert absurdly_small_for_runtime(odyssey, nolan) is None
+
+
+def test_absurd_tier_never_judges_without_evidence() -> None:
+    """片长未知、体积未知一律不判；剧集整季包同样不参与（单集时长不可比）。"""
+    candidate = _sized("Some Movie 2024 1080p WEB-DL", 0.1, media_type="movie", year=2024,
+                       resolution="1080p")
+    assert absurdly_small_for_runtime(candidate, _movie(["Some Movie"], 2024)) is None
+
+    no_size = _candidate(
+        "Some Movie 2024 1080p WEB-DL", "", media_type="movie", year=2024, resolution="1080p"
+    )
+    known = _movie(["Some Movie"], 2024, runtime_minutes=120)
+    assert absurdly_small_for_runtime(no_size, known) is None
+
+    pack = _sized("Test Show S01 1080p WEB-DL", 0.1, media_type="tv", year=2024, seasons=[1],
+                  resolution="1080p")
+    tv = MediaIdentity(
+        kind="tv", year=2024, aliases=("Test Show",), season_numbers=(1,), runtime_minutes=45
+    )
+    assert absurdly_small_for_runtime(pack, tv) is None
 
 
 def test_runtime_counter_evidence_is_movie_only() -> None:

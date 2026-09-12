@@ -58,8 +58,9 @@ from sqlmodel import select
 
 from movieclaw_api.exceptions import BadRequestException, ConflictException
 from movieclaw_api.services import jobs
+from movieclaw_api.services.library.config import sanitize_folder_name
 from movieclaw_api.services.library.fsops import rename_no_replace
-from movieclaw_api.services.library.layout import entry_dir_of, entry_dirs
+from movieclaw_api.services.library.layout import entry_dir_of, entry_dirs, is_disc_dir
 from movieclaw_api.services.library.local_identity import local_external_id
 
 # 复用整理器的"只清理自己搬空的目录"实现（非空即停、绝不删文件）——同一
@@ -149,6 +150,10 @@ class TransferPlan:
     target_library_id: int
     media_item_id: int
     title: str
+    # 落点的根目录。跨库转移是目标库主根；库内归并（把若干个根下的条目并到
+    # 一个根）是指定的那个根——两处都要用它，所以由计划统一持有，而不是各自
+    # 再从库配置里推一遍（推法一分叉，落点与身份锚就会指向两个地方）
+    target_root: str = ""
     moves: list[TransferMove] = field(default_factory=list)
     skips: list[TransferSkip] = field(default_factory=list)
     # 逻辑随迁的缺失台账行（磁盘上没有实体，只改 library_id 与路径投影）
@@ -166,11 +171,23 @@ async def build_transfer_plan(
     target: Library,
     item: MediaItem,
     files: list[LibraryFile],
+    *,
+    target_root: Path | None = None,
+    merge_same_anchor: bool = False,
 ) -> TransferPlan:
     """计算转移计划。只读磁盘与台账，不做任何写入。
 
     调用前的合法性校验（同类型、非同库、目标有主根）由 ``assert_transferable``
     统一负责——预览与执行都要走那一道，不在这里重复。
+
+    ``target_root`` 缺省是目标库主根（跨库转移）。库内根路径归并传入要并到的
+    那个根，此时 ``source`` 与 ``target`` 是同一个库：台账只改路径不改归属，
+    引擎其余部分一字不用变。
+
+    ``merge_same_anchor`` 打开后，目标已存在的同名目录**若属于同一个条目**
+    （同一部作品的其他版本）不再判为阻断，而是逐文件并进去。判据是台账的锚
+    不是目录名：目录名分不清「同一部片的另一个版本」和「碰巧重名的另一部
+    片」，而这两者的正确处理完全相反。锚不同或没有台账行的目录一律照旧阻断。
     """
     assert source.id is not None and target.id is not None and item.id is not None
     # 源库里**其他条目**占用的路径：条目目录里混着别人时不能整目录搬
@@ -187,7 +204,27 @@ async def build_transfer_plan(
         .all()
     )
     roots = [Path(p) for p in source.root_paths]
-    target_root = Path(target.primary_root or "")
+    landing = target_root if target_root is not None else Path(target.primary_root or "")
+    # 允许并入的目标目录：落点根下、挂在**同一个条目**上的那些条目目录。
+    # 这一次查询就是「同名」升级成「同锚」的全部数据来源。
+    mergeable: set[Path] = set()
+    if merge_same_anchor:
+        owned = (
+            (
+                await session.execute(
+                    select(LibraryFile.file_path).where(
+                        LibraryFile.file_path.startswith(str(landing)),
+                        LibraryFile.media_item_id == item.id,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for raw in owned:
+            entry = entry_dir_of([landing], Path(raw))
+            if entry is not None:
+                mergeable.add(entry)
     # 磁盘检查（exists/stat/附属文件枚举）放线程池：网络挂载上一次 stat 也要毫秒级
     return await asyncio.to_thread(
         _build_plan_sync,
@@ -196,9 +233,10 @@ async def build_transfer_plan(
         item.id,
         item.title,
         roots,
-        target_root,
+        landing,
         files,
         [Path(p) for p in foreign],
+        mergeable,
         # 一文件一条目的库（本地内容库）搬文件，有识别链的库搬条目目录
         not profile_of(source).scraped,
     )
@@ -213,6 +251,7 @@ def _build_plan_sync(
     target_root: Path,
     files: list[LibraryFile],
     foreign_paths: list[Path],
+    mergeable: set[Path],
     file_entries: bool,
 ) -> TransferPlan:
     plan = TransferPlan(
@@ -220,6 +259,7 @@ def _build_plan_sync(
         target_library_id=target_library_id,
         media_item_id=media_item_id,
         title=title,
+        target_root=str(target_root),
     )
     if not target_root.is_dir():
         plan.blocked.append(f"目标库的主根路径不可访问：{target_root}（盘未挂载？）")
@@ -279,6 +319,17 @@ def _build_plan_sync(
     for entry, rows in by_entry.items():
         dst = target_root / entry.name
         if str(dst) in taken or dst.exists():
+            if dst in mergeable and not is_disc_dir(dst) and not is_disc_dir(entry):
+                # 同一部作品的其他版本：逐文件并进去，保留相对结构（Season 层
+                # 跟着走）。撞名的由 _add_file_move 退让成 `… - 标签.ext`，
+                # 与入库、洗版、整理产出的多版本形态完全一致，绝不覆盖。
+                for row in rows:
+                    src = Path(row.file_path)
+                    _add_file_move(plan, row, src, dst / src.relative_to(entry), taken, others)
+                continue
+            # 原盘不并进条目目录：生态里没有任何一家支持「同一文件夹内多版本
+            # 含原盘」（Jellyfin 官方文档明确 BDMV/VIDEO_TS 不支持多版本），
+            # 并进去下游播放器反而认不出来
             plan.blocked.append(
                 f"目标库里已存在同名目录「{dst}」，为避免覆盖/合并已中止；"
                 "请先处理目标库里的同名内容，或改用「重新识别」修正身份"
@@ -329,10 +380,21 @@ def _add_file_move(
     taken: set[str],
     others: set[Path],
 ) -> None:
-    """登记一个单文件搬运单元（含字幕/NFO/海报等附属文件）。"""
+    """登记一个单文件搬运单元（含字幕/NFO/海报等附属文件）。
+
+    目标已被占用时先按既有的多版本约定退让一次（``… - 标签.ext``，标签取
+    分辨率/片源/发布组，与入库侧 ``_resolve_transfer_target`` 同一套形态）；
+    退让后仍被占用才跳过。**绝不覆盖**是这里唯一不能让的底线。
+    """
     if str(dst) in taken or dst.exists():
-        plan.skips.append(TransferSkip(str(src), f"目标路径已存在同名文件，跳过以免覆盖：{dst}"))
-        return
+        label = _version_label(row)
+        deferred = dst.with_name(f"{dst.stem} - {label}{dst.suffix}") if label else None
+        if deferred is None or str(deferred) in taken or deferred.exists():
+            plan.skips.append(
+                TransferSkip(str(src), f"目标路径已存在同名文件，跳过以免覆盖：{dst}")
+            )
+            return
+        dst = deferred
     taken.add(str(dst))
     assert row.id is not None
     plan.moves.append(
@@ -345,6 +407,17 @@ def _add_file_move(
             sidecars=_find_sidecars(src, dst, others),
         )
     )
+
+
+def _version_label(row: LibraryFile) -> str:
+    """撞名退让时用的版本标签：分辨率 → 片源 → 发布组，全缺则无标签。
+
+    与整理器的 ``_version_labels`` 同一套取值口径（那边还有按体积编号的兜底，
+    这里只有单个文件、没有"组内唯一"可言，所以缺信息时宁可跳过也不编一个
+    V2——编出来的名字下次整理会被改掉，等于白搬）。
+    """
+    raw = row.resolution or row.media_source or row.release_group
+    return sanitize_folder_name(raw) if raw else ""
 
 
 def _find_sidecars(src: Path, dst: Path, others: set[Path]) -> list[tuple[str, str]]:
@@ -474,6 +547,11 @@ async def _run(plan: TransferPlan, state: TransferState) -> None:
     )
     try:
         await _transfer(plan, state, summary)
+    except _MoveHalt as exc:
+        # 环境性故障：停下就是正确处理，原因要原样留给用户（这条路径没有
+        # 作业可退避重试，用户处理完环境问题后重新发起即可从断点继续）
+        logger.warning("条目 #%s 的转移因环境问题中止：%s", plan.media_item_id, exc)
+        summary.errors.append(str(exc))
     except Exception:  # noqa: BLE001 -- 后台任务无人 await，异常必须就地落日志
         logger.exception(
             "条目 #%s 从库 #%s 转移到库 #%s 时发生未知错误",
@@ -496,7 +574,14 @@ async def _transfer(
     *,
     context: jobs.JobContext | None = None,
     checkpoint_id: str | None = None,
+    notify_downstream: bool = True,
 ) -> None:
+    """搬运一个条目并随迁台账。
+
+    ``notify_downstream=False`` 供批量调用方使用：593 个成员各通知一次下游
+    媒体服务器刷新，等于对 Jellyfin/Emby 发起 593 次全库扫描请求——批量在
+    整轮收尾时统一通知一次即可。
+    """
     db = get_database()
     async with db.session() as session:
         target = await session.get(Library, plan.target_library_id)
@@ -619,12 +704,8 @@ async def _transfer(
 
             # 条目身份随迁：本地锚改到新库新路径 + 刮削归属改挂目标库
             await _relocate_item_identity(session, plan, target, summary)
-    from movieclaw_api.services.media_server_notify import notify_media_server_refresh
-
-    try:
-        await notify_media_server_refresh()
-    except Exception:  # noqa: BLE001 -- 下游刷新失败不该影响转移结论
-        logger.warning("转移完成后通知媒体服务器刷新失败（不影响本地库存）", exc_info=True)
+    if notify_downstream:
+        await notify_media_server()
 
     logger.info(
         "条目「%s」已从库 #%s 转移到「%s」：搬运 %d 个路径、随迁 %d 条台账（约 %.1f GB），"
@@ -687,7 +768,7 @@ async def _relocate_item_identity(
             .scalars()
             .all()
         )
-        anchor = _relocated_anchor(rows, target)
+        anchor = _relocated_anchor(rows, target, Path(plan.target_root))
     if anchor is not None and anchor != item.external_id:
         item.external_id = anchor
         changed = True
@@ -707,9 +788,10 @@ async def _relocate_item_identity(
         )
 
 
-def _relocated_anchor(rows: list[LibraryFile], target: Library) -> str | None:
-    """本地来源条目搬到目标库后应有的身份锚；算不出同一口径的值时 None。"""
-    target_root = Path(target.primary_root or "")
+def _relocated_anchor(
+    rows: list[LibraryFile], target: Library, target_root: Path
+) -> str | None:
+    """本地来源条目搬到新位置后应有的身份锚；算不出同一口径的值时 None。"""
     anchor_path = next(
         (Path(row.file_path) for row in rows if target_root in Path(row.file_path).parents),
         None,
@@ -800,6 +882,7 @@ def _plan_from_job(value: object) -> TransferPlan:
         target_library_id=int(value["target_library_id"]),
         media_item_id=int(value["media_item_id"]),
         title=str(value.get("title") or "未知条目"),
+        target_root=str(value.get("target_root") or ""),
         moves=[TransferMove(**item) for item in value.get("moves", [])],
         skips=[TransferSkip(**item) for item in value.get("skips", [])],
         missing_file_ids=[int(item) for item in value.get("missing_file_ids", [])],
@@ -852,13 +935,29 @@ async def _run_transfer_job(
                 "total_bytes": plan.total_bytes,
             },
         )
-        await _transfer(
-            plan,
-            state,
-            summary,
-            context=context,
-            checkpoint_id=checkpoint_id,
-        )
+        try:
+            await _transfer(
+                plan,
+                state,
+                summary,
+                context=context,
+                checkpoint_id=checkpoint_id,
+            )
+        except _MoveHalt as exc:
+            # 环境性故障（盘满 / 只读挂载 / 盘掉线）：已搬完的保持已搬完，
+            # 整轮退避后重试——用户腾出空间或把盘挂回来即可自愈，不必重新
+            # 预览。继续试下一条只会把同一个错误重复几百遍，并在目标盘留下
+            # 一地半截续传文件。
+            logger.warning(
+                "条目 #%s 的转移因环境问题中止（已搬 %d 个路径）：%s",
+                plan.media_item_id,
+                len(summary.moved_paths),
+                exc,
+            )
+            raise jobs.JobRetry(
+                f"{exc}——已搬完的部分保持不变，稍后自动重试；请确认目标盘的剩余空间与挂载状态",
+                delay_seconds=60,
+            ) from exc
         message = f"已把「{plan.title}」转移到「{summary.target_library_name}」"
         if summary.errors:
             message += f"，{len(summary.errors)} 个问题已跳过"
@@ -870,8 +969,63 @@ async def _run_transfer_job(
         _transfer_tasks.finish(plan.target_library_id, result=finished)
 
 
+async def notify_media_server() -> None:
+    """通知下游媒体服务器刷新；失败只记日志，绝不影响搬运结论。"""
+    from movieclaw_api.services.media_server_notify import notify_media_server_refresh
+
+    try:
+        await notify_media_server_refresh()
+    except Exception:  # noqa: BLE001 -- 下游刷新失败不该影响转移结论
+        logger.warning("转移完成后通知媒体服务器刷新失败（不影响本地库存）", exc_info=True)
+
+
 class _MoveError(Exception):
-    """单个单元搬运失败。message 是完整中文句子，直接进 errors。"""
+    """单个单元搬运失败。message 是完整中文句子，直接进 errors。
+
+    语义是**跳过这一条、继续下一条**——错因只影响这个文件/目录（源被别的
+    进程改名了、目标被占用、单个文件权限不足）。与 ``_MoveHalt`` 的判据是
+    「这个错对下一条还会不会发生」：不会 → 本类；会 → ``_MoveHalt``。
+    """
+
+
+# 环境性错因：错在「环境」不在「这一条」，对后面每一条都会原样重演。
+# 盘满是其中最要命的一个——不识别出来的话，一次整库转移会挨个尝试剩下的
+# 几百个条目、挨个失败，跑几个小时、刷出几百条一模一样的错误，还在目标盘
+# 留下几百个半截续传文件。
+_HALT_ERRNOS = frozenset(
+    code
+    for code in (
+        getattr(errno, name, None)
+        for name in (
+            "ENOSPC",  # 目标盘写满
+            "EDQUOT",  # 超出磁盘配额
+            "EROFS",  # 只读挂载
+            "EIO",  # 底层 IO 错误（盘要坏了 / 网络盘断了）
+            "ENODEV",  # 设备不存在
+            "ENXIO",  # 设备未就绪
+            "ESTALE",  # NFS 句柄失效（多半是挂载被重建）
+            "ENOTCONN",  # 网络挂载已断开
+            "EHOSTDOWN",
+            "EHOSTUNREACH",
+        )
+    )
+    if code is not None
+)
+
+
+class _MoveHalt(Exception):
+    """环境性故障：必须停下整轮搬运，不能继续试下一条。
+
+    调用方（作业处理器）把它转成 ``jobs.JobRetry``——退避之后重试，用户
+    腾出空间或把盘挂回来，作业就能从断点继续；重试用尽才算失败。
+    """
+
+
+def _classify_os_error(exc: OSError, message: str) -> Exception:
+    """按 errno 把一次失败判成「跳过这一条」还是「停下整轮」。"""
+    if exc.errno in _HALT_ERRNOS:
+        return _MoveHalt(message)
+    return _MoveError(message)
 
 
 def _checkpoint_paths(dst: Path, checkpoint_id: str) -> tuple[Path, Path]:
@@ -919,7 +1073,7 @@ async def _move_resumable(
         if exc.errno != errno.EXDEV:
             if isinstance(exc, FileExistsError):
                 raise _MoveError(f"目标路径已被占用，跳过以免覆盖：{dst}") from exc
-            raise _MoveError(f"搬运失败（{exc.strerror}）：{src} → {dst}") from exc
+            raise _classify_os_error(exc, f"搬运失败（{exc.strerror}）：{src} → {dst}") from exc
 
     try:
         await _copy_path_resumable(context, src, partial)
@@ -939,7 +1093,11 @@ async def _move_resumable(
         raise
     except (OSError, shutil.Error) as exc:
         # 临时副本刻意保留：网络盘瞬断或应用更新后，下次从已有字节继续。
-        raise _MoveError(f"跨盘复制暂未完成（{exc}）：{src} → {dst}") from exc
+        message = f"跨盘复制暂未完成（{exc}）：{src} → {dst}"
+        # shutil.Error 不带 errno，只有 OSError 能分级；前者按单条处理
+        if isinstance(exc, OSError):
+            raise _classify_os_error(exc, message) from exc
+        raise _MoveError(message) from exc
 
 
 def _rename_no_replace_with_parent(src: Path, dst: Path) -> None:
@@ -1040,7 +1198,7 @@ def _move(src: Path, dst: Path, cross_device: bool) -> None:
     try:
         dst.parent.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
-        raise _MoveError(f"创建目标目录失败（{exc.strerror}）：{dst.parent}") from exc
+        raise _classify_os_error(exc, f"创建目标目录失败（{exc.strerror}）：{dst.parent}") from exc
     if dst.exists():
         raise _MoveError(f"目标路径已被占用，跳过以免覆盖：{dst}")
     try:
@@ -1048,7 +1206,7 @@ def _move(src: Path, dst: Path, cross_device: bool) -> None:
         return
     except OSError as exc:
         if exc.errno != errno.EXDEV:
-            raise _MoveError(f"搬运失败（{exc.strerror}）：{src} → {dst}") from exc
+            raise _classify_os_error(exc, f"搬运失败（{exc.strerror}）：{src} → {dst}") from exc
     # 跨设备：复制成功才删源
     try:
         if src.is_dir():
@@ -1057,7 +1215,10 @@ def _move(src: Path, dst: Path, cross_device: bool) -> None:
             shutil.copy2(src, dst)
     except (OSError, shutil.Error) as exc:
         shutil.rmtree(dst, ignore_errors=True) if dst.is_dir() else dst.unlink(missing_ok=True)
-        raise _MoveError(f"跨盘复制失败（{exc}）：{src} → {dst}") from exc
+        message = f"跨盘复制失败（{exc}）：{src} → {dst}"
+        if isinstance(exc, OSError):
+            raise _classify_os_error(exc, message) from exc
+        raise _MoveError(message) from exc
     try:
         shutil.rmtree(src) if src.is_dir() else src.unlink()
     except OSError as exc:

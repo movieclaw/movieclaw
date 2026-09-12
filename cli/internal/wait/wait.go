@@ -197,6 +197,9 @@ func Job(client *api.Client, jobID string, waitTimeout time.Duration) error {
 			continue
 		}
 		if status == "succeeded" {
+			if err := partialSuccess(jobID, job.Get("result")); err != nil {
+				return err
+			}
 			output.Info("任务已完成：%s", jobID)
 			return nil
 		}
@@ -214,6 +217,61 @@ func Job(client *api.Client, jobID string, waitTimeout time.Duration) error {
 		}
 		return clierr.Newf(clierr.TaskFailed, "%s", message).WithHint("%s", hint)
 	}
+}
+
+// partialSuccess 把「跑完了，但有一部分没做成」判成业务错误（退出码 1）。
+//
+// 为什么不能退 0：批量搬运这类任务天然会有零星失败（单个文件权限、源目录
+// 被别的进程改名），服务端如实记在 result.failures / result.errors 里，但
+// Job 状态仍是 succeeded——因为它确实跑完了。如果 CLI 据此退 0，Agent 会
+// 认为「593 部全搬走了」，紧接着去删源库，而源库里还有 7 部没搬走。这是
+// 一个会真正丢数据的组合，所以宁可用退出码把话说重。
+//
+// 两个键都认：failures 是结构化明细（新的批量类任务），errors 是既有任务
+// 的中文原因列表。任一非空即为部分完成。
+func partialSuccess(jobID string, result any) error {
+	if result == nil {
+		return nil
+	}
+	obj := jsonval.Object(result)
+	failures := jsonval.Array(obj.Get("failures"))
+	reasons := jsonval.Array(obj.Get("errors"))
+	count := len(failures) + len(reasons)
+	if count == 0 {
+		return nil
+	}
+	// 结论本身仍然要打出来（哪些成了、哪些没成都在 result 里），只是退出码
+	// 不再是 0，并给出可直接执行的下一步。
+	return clierr.Newf(clierr.Business, "任务已结束，但有 %d 项没有完成", count).
+		WithHint("执行 mclaw jobs show %s -o json 查看未完成明细；"+
+			"转移类任务可把其中的 media_item_id 用 --items-from - 重新提交", jobID).
+		WithDetails(firstReasons(failures, reasons))
+}
+
+// firstReasons 取前几条原因供 stderr 直接展示，避免几百条刷屏。
+func firstReasons(groups ...[]any) []string {
+	const maxShown = 5
+	out := []string{}
+	for _, group := range groups {
+		for _, entry := range group {
+			if len(out) >= maxShown {
+				return out
+			}
+			if text := jsonval.Str(entry); text != "" {
+				out = append(out, text)
+				continue
+			}
+			item := jsonval.Object(entry)
+			reason := jsonval.Str(item.Get("reason"))
+			if title := jsonval.Str(item.Get("title")); title != "" && reason != "" {
+				reason = title + "：" + reason
+			}
+			if reason != "" {
+				out = append(out, reason)
+			}
+		}
+	}
+	return out
 }
 
 // abortWait 打印「任务还在后台」的说明后以业务错误码退出。
