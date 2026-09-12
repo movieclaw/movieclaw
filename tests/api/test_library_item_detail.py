@@ -1898,9 +1898,7 @@ async def test_library_gallery_flattens_posters_stills_and_chapters(db, tmp_path
 
         # 分页按条目数：跳过唯一的条目就什么都没有
         assert (
-            await list_library_gallery(
-                library.id, 1, 1, "title", session=session, principal=_ADMIN
-            )
+            await list_library_gallery(library.id, 1, 1, "title", session=session, principal=_ADMIN)
         ).data == []
 
     async with db.session() as session:
@@ -1915,3 +1913,136 @@ async def test_library_gallery_flattens_posters_stills_and_chapters(db, tmp_path
             )
         ).data
         assert groups[0].is_favorite is True
+
+
+async def test_orphan_cleanup_keeps_items_carrying_user_data(db, tmp_path) -> None:
+    """孤儿清理的第三条判定：条目虽然不在任何库、也没订阅，但只要还挂着
+    用户数据（观看状态 / 自建合集成员 / 分享链接）就必须保留。
+
+    `playback_state` 等表对 `media_item` 是 ondelete=CASCADE，删条目行等于
+    把"看到哪了 / 已看 / 收藏"一起不可逆清掉——而删库明确「不动磁盘文件」，
+    删文件也只是腾空间，两者都不该顺手销毁用户的观看历史。
+    资产同样保留：重新入库接回来时要有海报。
+    """
+    from datetime import timedelta
+
+    from movieclaw_api.services.media_scrape import assets_root, cleanup_orphan_items
+    from movieclaw_db.models import Collection, CollectionItem, MediaShare, PlaybackState
+    from movieclaw_db.models.base import utcnow
+
+    async with db.session() as session:
+        plain = MediaItem(kind="movie", tmdb_id=911, title="纯孤儿", original_title="P")
+        watched = MediaItem(kind="movie", tmdb_id=912, title="看过的", original_title="W")
+        collected = MediaItem(kind="movie", tmdb_id=913, title="进了合集", original_title="C")
+        shared = MediaItem(kind="movie", tmdb_id=914, title="分享出去的", original_title="S")
+        session.add_all([plain, watched, collected, shared])
+        await session.flush()
+        ids = {
+            "plain": plain.id,
+            "watched": watched.id,
+            "collected": collected.id,
+            "shared": shared.id,
+        }
+        # 看过一半 + 标了已看：最典型的"看完就删文件"留下的痕迹
+        session.add(
+            PlaybackState(
+                media_item_id=watched.id, position_ms=1_800_000, played=True, play_count=1
+            )
+        )
+        collection = Collection(name="我的片单", visibility="household")
+        session.add(collection)
+        await session.flush()
+        session.add(CollectionItem(collection_id=collection.id, media_item_id=collected.id))
+        session.add(
+            MediaShare(
+                slug="abc123",
+                media_item_id=shared.id,
+                expires_at=utcnow() + timedelta(days=7),
+            )
+        )
+        await session.commit()
+
+    for item_id in ids.values():
+        directory = assets_root() / str(item_id)
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "poster.jpg").write_bytes(b"x")
+
+    # 四个条目一起送进清理：只有真正无引用的那个该消失
+    assert await cleanup_orphan_items(sorted(ids.values())) == 1
+
+    async with db.session() as session:
+        assert await session.get(MediaItem, ids["plain"]) is None
+        for key in ("watched", "collected", "shared"):
+            assert await session.get(MediaItem, ids[key]) is not None, key
+        state = (
+            await session.execute(
+                select(PlaybackState).where(PlaybackState.media_item_id == ids["watched"])
+            )
+        ).scalar_one()
+        assert state.played is True and state.position_ms == 1_800_000
+
+    assert not (assets_root() / str(ids["plain"])).exists()
+    for key in ("watched", "collected", "shared"):
+        assert (assets_root() / str(ids[key]) / "poster.jpg").is_file(), key
+
+
+async def test_delete_library_keeps_watch_history_and_reattaches_on_rescan(db, tmp_path) -> None:
+    """删库不丢观看进度，重新入库自动接回。
+
+    这是这条判定要守的真实场景：合并/重建媒体库时，用户的"已看/看到哪了"
+    不能随台账结构消失。TMDB 条目的身份锚 `(source, kind, external_id)`
+    与库无关，重新扫描同一部片拿到的是同一行 `media_item`，观看状态因此
+    原地就在——不需要任何迁移或人工重映射。
+    """
+    from movieclaw_api.api.routes.libraries import delete_library
+    from movieclaw_db.models import PlaybackState
+
+    root, _entry, _video = _make_movie_entry(tmp_path)
+    async with db.session() as session:
+        library = await LibraryRepository(session).create(
+            name="电影库", kind="movie", root_paths=[str(root)]
+        )
+    await scan_library(library.id)
+
+    async with db.session() as session:
+        item = (
+            await session.execute(select(MediaItem).where(MediaItem.tmdb_id == 300))
+        ).scalar_one()
+        item_id = item.id
+        session.add(
+            PlaybackState(media_item_id=item_id, position_ms=4_200_000, played=True, play_count=2)
+        )
+        await session.commit()
+
+    async with db.session() as session:
+        response = await delete_library(library.id, session)
+    # 回显要把"记录还在"说出来：条目从墙上消失后，用户没有别的地方能确认
+    assert "1 条观看记录已保留" in response.message
+
+    async with db.session() as session:
+        assert await session.get(MediaItem, item_id) is not None
+        state = (
+            await session.execute(
+                select(PlaybackState).where(PlaybackState.media_item_id == item_id)
+            )
+        ).scalar_one()
+        assert state.played is True and state.position_ms == 4_200_000
+
+    # 同一批文件重新建库入账：锚不变 → 条目复用 → 观看记录自动接回
+    async with db.session() as session:
+        rebuilt = await LibraryRepository(session).create(
+            name="合并后的电影库", kind="movie", root_paths=[str(root)]
+        )
+    await scan_library(rebuilt.id)
+
+    async with db.session() as session:
+        again = (
+            await session.execute(select(MediaItem).where(MediaItem.tmdb_id == 300))
+        ).scalar_one()
+        assert again.id == item_id, "同一部片必须复用同一行条目，否则观看记录接不回来"
+        state = (
+            await session.execute(
+                select(PlaybackState).where(PlaybackState.media_item_id == item_id)
+            )
+        ).scalar_one()
+        assert state.played is True and state.position_ms == 4_200_000

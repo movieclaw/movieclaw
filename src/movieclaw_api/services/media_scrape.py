@@ -1346,15 +1346,34 @@ def resolve_asset_path(rel_path: str) -> Path | None:
 
 
 async def cleanup_orphan_items(media_item_ids: Iterable[int], *, defer_assets: bool = False) -> int:
-    """清理孤儿条目：**已不在任何媒体库、也没有订阅**的条目连同其图片资产
-    一起删除，返回清理数量。
+    """清理孤儿条目：**已不在任何媒体库、没有订阅、也没有用户数据**的条目
+    连同其图片资产一起删除，返回清理数量。
 
     删库/删条目之后调用。不这么做的话，条目行与 `data/metadata/images/{id}/`
     会永远留着（背景图按 original 档动辄 1~3MB/部，反复建删库会攒下可观的
-    垃圾）。判定必须同时看两处引用：
+    垃圾）。判定必须同时看三处引用：
     - 还在别的库里（同一部剧的集分散在两个库是常态）→ 保留；
-    - 还有订阅盯着（追新中，文件迟早回来）→ 保留。
+    - 还有订阅盯着（追新中，文件迟早回来）→ 保留；
+    - 还挂着用户数据（观看状态 / 自建合集成员 / 分享链接）→ 保留。
     条目删除后 media_metadata / media_season / media_episode 由外键级联清掉。
+
+    第三条是数据安全底线。``playback_state`` / ``collection_item`` /
+    ``media_share`` 对 ``media_item`` 都是 ondelete=CASCADE，条目一删，
+    "看到哪了 / 已看 / 收藏"跟着不可逆地消失——而删库接口明确「不动磁盘
+    文件」，连文件都不删却把观看历史删了，语义上说不通；删文件同理（看完
+    删片腾空间是常态，半年后重新下载应当还标着已看）。这个立场项目本来
+    就有：重新识别换锚时 ``reanchor.migrate_watch_state`` 会把观看状态迁到
+    新条目，只有删除路径漏了。另外观看记录是**按成员隔离**的个人数据
+    （``playback.history.clear`` 明确不提供跨成员删除），超管删个库就把
+    全家的记录清了，等于从后门绕过了那条边界。
+
+    保留下来的条目不在任何库里，而海报墙、库存统计、观看流水、收藏页
+    全部按库过滤，所以它是**休眠**的：哪儿都不露面，直到同一部作品重新
+    入库——TMDB 条目的锚 ``(source, kind, external_id)`` 与库无关，
+    ``ensure_media_item`` 幂等复用同一行，观看记录自然接回。
+    **保留的条目连图片资产一起留**：接回来时要有海报；而且本地条目的锚
+    ``{库id}:path:…`` 在删文件（库还在）场景下同样会原路复用，按来源分叉
+    删资产反而会删错。规则因此只有一条——删条目行才删资产，留就都留。
 
     **数据库阶段必须在调用方等待它完成后再放行后续操作**（``defer_assets``
     只把磁盘删除放到后台）。删库接口曾把整个清理放后台：SQLite 会复用被删
@@ -1366,12 +1385,13 @@ async def cleanup_orphan_items(media_item_ids: Iterable[int], *, defer_assets: b
     磁盘删除单独放线程池；某个目录删不掉只记日志，不阻断其余清理
     （宁可留点垃圾，也不能让删库这类操作半途失败）。
     """
-    from movieclaw_db.models import Subscription
+    from movieclaw_db.models import CollectionItem, MediaShare, PlaybackState, Subscription
 
     ids = list(dict.fromkeys(media_item_ids))
     if not ids:
         return 0
     removed: list[int] = []
+    kept = 0
     db = get_database()
     async with db.session() as session:
         # 成批判定：删一个几万张图的库要看几万个条目，逐条三次查询太慢
@@ -1395,6 +1415,19 @@ async def cleanup_orphan_items(media_item_ids: Iterable[int], *, defer_assets: b
                     )
                 ).scalars()
             )
+            # 用户数据三张表：有任意一行就说明用户在这部作品上留下过痕迹
+            # （playback_state 只在真正开播/标已看/收藏时才建行），保留条目
+            user_data: set[int] = set()
+            for column in (
+                PlaybackState.media_item_id,
+                CollectionItem.media_item_id,
+                MediaShare.media_item_id,
+            ):
+                user_data.update(
+                    (
+                        await session.execute(select(column).where(column.in_(chunk)).distinct())
+                    ).scalars()
+                )
             existing = set(
                 (
                     await session.execute(
@@ -1405,6 +1438,9 @@ async def cleanup_orphan_items(media_item_ids: Iterable[int], *, defer_assets: b
             for item_id in chunk:
                 if item_id in in_library or item_id in subscribed or item_id not in existing:
                     continue
+                if item_id in user_data:
+                    kept += 1
+                    continue
                 item = await session.get(MediaItem, item_id)
                 if item is not None:
                     await session.delete(item)
@@ -1414,6 +1450,12 @@ async def cleanup_orphan_items(media_item_ids: Iterable[int], *, defer_assets: b
 
     if removed:
         logger.info("已清理 %d 个无引用条目（条目 %s）", len(removed), removed)
+    if kept:
+        logger.info(
+            "%d 个条目已不在任何媒体库，但仍挂着用户数据（观看记录 / 合集 / 分享链接），"
+            "予以保留；同一部作品重新入库后会自动接回",
+            kept,
+        )
     if defer_assets:
         task = asyncio.get_running_loop().create_task(_remove_asset_dirs(removed))
         _asset_cleanup_tasks.add(task)
