@@ -156,6 +156,13 @@ def write_full_nfo(entry_dir: Path, item: MediaItem, meta: MediaMetadata | None)
             return None  # 身份对不上，宁可不写
         if meta is None or meta.scraped_at is None:
             return None  # 无档案可对齐，保留既有内容
+        if meta.nfo_fingerprint is None:
+            # 还没吸收过本地 NFO（存量回填尚未轮到）：档案里此刻没有这份 NFO
+            # 的任何字段，写下去就是拿纯 TMDB 内容盖掉用户用 TMM 刮的那份，
+            # 且镜像会把指纹记进台账、回填从此再也挑不中它——文件没了、库里
+            # 也没有。等回填或下一次刷新吸收完，镜像自然跟上。
+            # 只拦"已有文件"这一种：目录里本来没有 NFO 时写出去不毁任何东西
+            return None
 
     lines = [
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
@@ -240,7 +247,7 @@ def write_full_nfo(entry_dir: Path, item: MediaItem, meta: MediaMetadata | None)
     return nfo_path
 
 
-def write_episode_nfo(video: Path, episode: MediaEpisode) -> Path | None:
+def write_episode_nfo(video: Path, episode: MediaEpisode, *, absorbed: bool = True) -> Path | None:
     """写出分集 NFO（视频同名 .nfo，根元素 <episodedetails>）。
 
     同步函数（调用方放线程池）。与条目 NFO 同款对齐语义（2026-08-04）：
@@ -249,13 +256,17 @@ def write_episode_nfo(video: Path, episode: MediaEpisode) -> Path | None:
     防降级闸：档案行只有集号骨架（无简介且无播出日期，说明 TMDB 没数据）
     时不覆盖已有文件——第三方刮的分集 NFO 大概率比骨架富。
 
+    ``absorbed=False``（条目还没吸收过本地 NFO，存量回填尚未轮到）同样不覆盖
+    已有文件，理由与 ``write_full_nfo`` 的同名闸一致：档案里此刻没有用户 NFO
+    的任何字段，写下去就是永久毁掉它。目录里本来没有 NFO 时照写。
+
     返回**与库内档案对齐后的 NFO 路径**（内容本来就一致、没真的落盘也算），
     拒写或写失败返回 None——与 ``write_full_nfo`` 同款契约。调用方据此把这份
     "我们自己写的"记进 ``media_episode.nfo_mirror_fingerprint``，否则下一次
     刷新会把它当用户的 NFO 重新吸收，用上一轮的旧集名盖掉 TMDB 新数据。
     """
     nfo_path = video.with_suffix(".nfo")
-    if nfo_path.exists() and not episode.overview and episode.air_date is None:
+    if nfo_path.exists() and (not absorbed or (not episode.overview and episode.air_date is None)):
         return None
     lines = [
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',

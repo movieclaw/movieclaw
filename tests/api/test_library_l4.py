@@ -159,6 +159,9 @@ def test_full_nfo_refresh_alignment(tmp_path) -> None:
         overview="新简介",
         genres=["剧情"],
         scraped_at=datetime.now(UTC),
+        # 已吸收过本地 NFO（非 NULL）。镜像只对齐吸收过的条目——档案里没有
+        # 用户 NFO 的字段时覆盖下去就是永久毁掉它，见本函数末尾的用例
+        nfo_fingerprint="",
     )
     entry = tmp_path / "某电影 (2020)"
     entry.mkdir()
@@ -184,6 +187,21 @@ def test_full_nfo_refresh_alignment(tmp_path) -> None:
     nfo.write_text("<movie><tmdbid>99</tmdbid><plot>other</plot></movie>", encoding="utf-8")
     write_full_nfo(entry, item, meta)
     assert "other" in nfo.read_text(encoding="utf-8")
+
+    # 还没吸收过本地 NFO（台账 NULL，存量回填尚未轮到）→ 不覆盖既有内容。
+    # 档案里此刻没有这份 NFO 的任何字段，盖下去用户用 TMM 刮的那份就没了，
+    # 而镜像会把指纹记进台账、回填从此再也挑不中它
+    unabsorbed = MediaMetadata(
+        media_item_id=1, overview="新简介", scraped_at=datetime.now(UTC), nfo_fingerprint=None
+    )
+    nfo.write_text("<movie><tmdbid>42</tmdbid><plot>用户的</plot></movie>", encoding="utf-8")
+    assert write_full_nfo(entry, item, unabsorbed) is None
+    assert "用户的" in nfo.read_text(encoding="utf-8")
+
+    # 但目录里本来没有 NFO 时照写——写出去不毁任何东西
+    nfo.unlink()
+    assert write_full_nfo(entry, item, unabsorbed) is not None
+    assert "新简介" in nfo.read_text(encoding="utf-8")
 
 
 def test_episode_nfo_refresh_alignment(tmp_path) -> None:

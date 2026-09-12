@@ -1935,10 +1935,10 @@ async def mirror_media_dir_assets(media_item_id: int, *, force: bool = False) ->
     aligned_nfos: list[Path] = []
     aligned_episode_nfos: list[tuple[tuple[int, int], Path]] = []
 
-    # 还没吸收过本地 NFO 的条目（台账为 NULL，存量回填尚未轮到）**不写条目
-    # NFO**：档案里此刻还没有用户 NFO 的任何字段，写出去就是拿纯 TMDB 内容
-    # 盖掉用户用 TMM 精心刮的那份，且覆盖后回填再也读不回来。等回填或下一次
-    # 刷新吸收完，镜像自然跟上。图片不受此限（识别链与展示都不读 NFO 图）
+    # 还没吸收过本地 NFO 的条目（台账为 NULL，存量回填尚未轮到）**不覆盖已有
+    # 的 NFO**：档案里此刻还没有用户 NFO 的任何字段，盖下去就是永久毁掉它。
+    # 条目级的闸在 write_full_nfo 里（它自己看得到 meta），分集级没有 meta，
+    # 由这里传进去。图片不受此限（识别链与展示都不读 NFO 图）
     absorbed = meta is not None and meta.nfo_fingerprint is not None
 
     def _mirror() -> None:
@@ -1959,7 +1959,7 @@ async def mirror_media_dir_assets(media_item_id: int, *, force: bool = False) ->
                         _copy_asset(
                             item_dir / f"season-{season.season_number}.jpg", entry / name, force
                         )
-            if write_nfo and absorbed and entry in trusted_entries:
+            if write_nfo and entry in trusted_entries:
                 aligned = write_full_nfo(entry, item, meta)
                 if aligned is not None:
                     aligned_nfos.append(aligned)
@@ -1976,7 +1976,7 @@ async def mirror_media_dir_assets(media_item_id: int, *, force: bool = False) ->
                     force,
                 )
             if write_nfo and _file_trusted(file):
-                aligned = write_episode_nfo(video, episode)
+                aligned = write_episode_nfo(video, episode, absorbed=absorbed)
                 if aligned is not None:
                     aligned_episode_nfos.append(
                         ((episode.season_number, episode.episode_number), aligned)
