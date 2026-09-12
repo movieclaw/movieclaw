@@ -18,6 +18,9 @@
    混有**其他条目**的文件时退化为只删本条目的文件及其同名附属文件。
    ``delete_single_file`` 是它的文件级姊妹：只删一个版本/一集的文件及
    同名附属（多版本洗版、删某集重下），最后一个文件时升级为整条目删除。
+   磁盘回收是**两段式**的：请求内只把目标 rename 进回收站暂存目录（常数
+   时间，几十 GB 的片子也不让前端干等），真删由 ``purge_staged_deletions``
+   在响应发出之后完成（见 ``_TrashStaging``）。
 """
 
 from __future__ import annotations
@@ -29,10 +32,11 @@ import logging
 import os
 import re
 import shutil
+import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any, Literal, NamedTuple
 
 from sqlalchemy import Integer, and_, func, not_, nullslast, or_, true
@@ -70,6 +74,7 @@ from movieclaw_api.services.library.nfo import (
     EntryMetadata,
     NfoActor,
 )
+from movieclaw_api.services.library.recycle import TRASH_DIR_NAME
 from movieclaw_api.services.library.sort_key import title_initial, title_sort_key
 from movieclaw_api.services.library.thumbs import primary_aspect
 from movieclaw_api.services.media_probe import (
@@ -2718,6 +2723,104 @@ class DeleteResult:
     rows_deleted: int = 0  # 删掉的台账行数
     freed_bytes: int = 0  # 释放的空间（按台账 size 估算）
     errors: list[str] = field(default_factory=list)
+    # 已移出媒体库、等后台真删的暂存目录；路由挂到 BackgroundTasks 上，
+    # 响应发出后才做真正的磁盘回收（见 _TrashStaging / purge_staged_deletions）
+    pending_purge: list[str] = field(default_factory=list)
+
+
+# 附属文件（NFO/字幕/图片）的扩展名集合。判定口径见 _is_delete_sidecar
+_SIDECAR_DELETE_EXTS = _SUBTITLE_EXTS | {".nfo"} | set(_ART_EXTS)
+
+
+class _TrashStaging:
+    """删除的「先移开、后台再真删」两段式暂存区。
+
+    为什么要有它：大文件的磁盘回收是**慢 IO**——几十 GB 的单文件在机械盘
+    或网络挂载（NFS/SMB）上 unlink 要好几秒，原盘 BDMV 目录 rmtree 更是
+    成千上万次 unlink，每次一个 RTT。同步删完再回响应，前端就得对着转圈
+    干等。这里改成：先把要删的目录/文件 **改名**移进库根回收站下的一次性
+    暂存目录——同一文件系统内 rename 是常数时间，再大的片子也只是毫秒——
+    请求随即返回；真正的磁盘回收交给 ``purge_staged_deletions``。
+
+    暂存目录落在 ``.movieclaw-trash`` 之内是有意的，它同时满足三件事：
+    与库文件同一文件系统（rename 才可能成功，跨盘搬几十 GB 就没意义了）、
+    库扫描跳过点开头目录（文件不会被当新文件重新收编）、进程在后台清理
+    跑完前重启时有兜底（``recycle.sweep_orphan_trash`` 每天清扫回收站里
+    没有台账行的遗留条目）。
+
+    rename 失败（跨文件系统的 EXDEV、只读挂载、权限）时 ``stage`` 返回
+    False，调用方**退回原地同步删除**——慢，但语义与结果和以前完全一致，
+    绝不因为快不了就把文件留在库里。
+    """
+
+    def __init__(self, roots: list[Path]) -> None:
+        self._roots = roots
+        self._dirs: dict[Path, Path] = {}  # 库根 -> 该根下的暂存目录（按需创建）
+
+    def _dir_for(self, path: Path) -> Path | None:
+        """按前缀选 path 所属的库根，返回（必要时创建）该根下的暂存目录。
+
+        按库根分组而不是全局一个：多根库的各个根可能在不同盘上，只有同根
+        的暂存目录才保证 rename 落在同一文件系统里。
+        """
+        root = next((r for r in self._roots if r in path.parents), None)
+        if root is None:
+            return None
+        existing = self._dirs.get(root)
+        if existing is not None:
+            return existing
+        staging = root / TRASH_DIR_NAME / f"deleted-{uuid.uuid4().hex[:12]}"
+        try:
+            staging.mkdir(parents=True)
+        except OSError:
+            logger.warning("创建删除暂存目录失败，本次退回同步删除：%s", staging, exc_info=True)
+            return None
+        self._dirs[root] = staging
+        return staging
+
+    def stage(self, path: Path) -> bool:
+        """把 path 移进暂存目录；移不动返回 False（调用方退回原地删除）。"""
+        staging = self._dir_for(path)
+        if staging is None:
+            return False
+        target = staging / path.name
+        if target.exists():
+            # 同一次删除里撞名（多根同名条目目录）：加随机前缀，不覆盖
+            target = staging / f"{uuid.uuid4().hex[:8]}-{path.name}"
+        try:
+            # 必须是 os.rename 而不是 shutil.move：后者跨设备时会退化成
+            # **复制**几十 GB 再删，比原地删还慢，正好背离本机制的目的
+            os.rename(path, target)
+        except OSError:
+            logger.info(
+                "移入删除暂存目录失败（可能跨文件系统），退回同步删除：%s", path, exc_info=True
+            )
+            return False
+        return True
+
+    @property
+    def dirs(self) -> list[str]:
+        """本次删除实际用到的暂存目录（交给后台清理）。"""
+        return [str(path) for path in self._dirs.values()]
+
+
+async def purge_staged_deletions(paths: Sequence[str]) -> None:
+    """真正回收暂存目录里的内容（路由挂在 BackgroundTasks 上，响应发出后才跑）。
+
+    失败只记日志、不重试也不告诉用户：文件早已移出媒体库、台账也已清干净，
+    从用户视角删除就是完成了；万一残留（进程在这一步之前重启也一样），
+    回收站孤儿清扫会在保留期后兜底删掉。
+    """
+    for raw in paths:
+        path = Path(raw)
+        try:
+            await asyncio.to_thread(shutil.rmtree, path)
+        except OSError:
+            logger.warning(
+                "后台回收删除暂存目录失败，留给回收站孤儿清扫兜底：%s", path, exc_info=True
+            )
+        else:
+            logger.info("已完成后台磁盘回收：%s", path)
 
 
 async def delete_item_files(
@@ -2725,7 +2828,6 @@ async def delete_item_files(
     library: Library,
     media_item_id: int,
     files: list[LibraryFile],
-    all_library_files: list[LibraryFile],
 ) -> DeleteResult:
     """把条目从库中**彻底删除**：磁盘上的条目目录（视频+NFO+海报+字幕）
     整个清掉，台账行随之删除。
@@ -2736,18 +2838,23 @@ async def delete_item_files(
       及其同名附属文件（NFO/字幕/图片）；
     - 磁盘删除失败的文件保留台账行（并报错给用户），不制造"账没了文件还在"
       的幽灵——下次扫描会把它当新文件重新入账反而更乱。
+
+    磁盘回收是两段式的（见 ``_TrashStaging``）：本函数只把目标 rename 进
+    回收站暂存目录（常数时间，大文件也不卡），真删由调用方拿
+    ``result.pending_purge`` 交给 ``purge_staged_deletions`` 在响应之后做。
+    "移进暂存目录"即视为删除成功——文件已不在库内、扫描也不会再收编，
+    不存在幽灵账；只有连 rename 都失败、退回原地删除又失败时才保留台账行。
     """
     result = DeleteResult()
     roots = [Path(p) for p in library.root_paths]
-
-    # 其他条目占用的路径：判定条目目录是否可整删
-    foreign_paths = [
-        Path(row.file_path) for row in all_library_files if row.media_item_id != media_item_id
-    ]
+    staging = _TrashStaging(roots)
+    assert library.id is not None
 
     dirs_to_remove: list[Path] = []
     files_to_remove: dict[int, Path] = {}  # row.id -> 主文件路径（附属文件删除时一并找）
     covered_rows: dict[Path, list[LibraryFile]] = {}  # 整删目录覆盖的行
+    # 同一个条目目录往往对应几十行（整季剧集），存在性查询按目录缓存一次
+    foreign: dict[Path, bool] = {}
 
     for row in files:
         path = Path(row.file_path)
@@ -2763,7 +2870,11 @@ async def delete_item_files(
         if entry is None and row.container in ("bluray", "dvd"):
             entry = path  # 直接躺在根下的原盘目录：目录本身就是条目
         if entry is not None and _safe_inside_roots(entry, roots):
-            if any(entry in fp.parents or entry == fp for fp in foreign_paths):
+            if entry not in foreign:
+                foreign[entry] = await _dir_holds_other_item(
+                    session, library.id, entry, media_item_id
+                )
+            if foreign[entry]:
                 # 目录里混着其他条目：退化为逐文件删除
                 assert row.id is not None
                 files_to_remove[row.id] = path
@@ -2780,7 +2891,7 @@ async def delete_item_files(
     deleted_row_ids: set[int] = set()
 
     for directory in dirs_to_remove:
-        ok = await asyncio.to_thread(_remove_tree, directory, result)
+        ok = await asyncio.to_thread(_discard_tree, directory, staging, result)
         if ok:
             for row in covered_rows.get(directory, []):
                 assert row.id is not None
@@ -2790,7 +2901,7 @@ async def delete_item_files(
     by_id = {row.id: row for row in files}
     for row_id, path in files_to_remove.items():
         row = by_id[row_id]
-        ok = await asyncio.to_thread(_remove_file_with_sidecars, path, result)
+        ok = await asyncio.to_thread(_discard_file_with_sidecars, path, staging, result)
         if ok:
             deleted_row_ids.add(row_id)
             result.freed_bytes += row.size_bytes
@@ -2806,13 +2917,14 @@ async def delete_item_files(
         if row.id in deleted_row_ids:
             await session.delete(row)
     result.rows_deleted = len(deleted_row_ids)
+    result.pending_purge = staging.dirs
     await session.commit()
-    if result.rows_deleted and library.id is not None:
+    if result.rows_deleted:
         await LibraryRepository(session).refresh_stats([library.id])
 
     if result.removed_paths:
         logger.info(
-            "已从磁盘删除条目 #%s 的 %d 个路径（库「%s」，释放约 %.1f GB）：%s",
+            "已从库中移除条目 #%s 的 %d 个路径（库「%s」，释放约 %.1f GB）：%s",
             media_item_id,
             len(result.removed_paths),
             library.name,
@@ -2827,7 +2939,6 @@ async def delete_single_file(
     library: Library,
     row: LibraryFile,
     item_rows: list[LibraryFile],
-    all_library_files: list[LibraryFile],
 ) -> DeleteResult:
     """从磁盘删除条目的**单个文件**（多版本洗版 / 删某一集重下的出口）。
 
@@ -2839,20 +2950,20 @@ async def delete_single_file(
       的原则（调用方须在确认界面明确告知这一升级）；
     - missing 行没有磁盘实体，直接清台账；
     - 磁盘删除失败保留台账行（与整条目删除同规则，不制造幽灵账）。
+
+    磁盘回收同样是两段式的，见 ``delete_item_files`` 与 ``_TrashStaging``。
     """
     assert row.media_item_id is not None
     if len(item_rows) == 1:
-        return await delete_item_files(
-            session, library, row.media_item_id, item_rows, all_library_files
-        )
+        return await delete_item_files(session, library, row.media_item_id, item_rows)
 
     result = DeleteResult()
+    assert library.id is not None
     if row.state == FileState.MISSING:
         await session.delete(row)
         result.rows_deleted = 1
         await session.commit()
-        if library.id is not None:
-            await LibraryRepository(session).refresh_stats([library.id])
+        await LibraryRepository(session).refresh_stats([library.id])
         return result
 
     path = Path(row.file_path)
@@ -2862,27 +2973,26 @@ async def delete_single_file(
         return result
 
     # 原盘目录形态整树删除前查台账：监听导入按站点原始目录结构落盘，
-    # 新版本文件可能就在旧原盘目录里面——rmtree 会把它一起炸掉
+    # 新版本文件可能就在旧原盘目录里面——整目录处理会把它一起带走
     if path.is_dir():
-        prefix = str(path).rstrip("/") + "/"
-        if any(
-            other.id != row.id and other.file_path.startswith(prefix) for other in all_library_files
-        ):
+        assert row.id is not None
+        if await _dir_holds_other_rows(session, library.id, path, row.id):
             result.errors.append(
                 f"「{path}」目录内还有其他在案文件（可能是新入库的版本），已跳过整目录删除"
             )
             return result
 
-    ok = await asyncio.to_thread(_remove_file_with_sidecars, path, result)
+    staging = _TrashStaging(roots)
+    ok = await asyncio.to_thread(_discard_file_with_sidecars, path, staging, result)
     if ok:
         result.rows_deleted = 1
         result.freed_bytes = row.size_bytes
+        result.pending_purge = staging.dirs
         await session.delete(row)
         await session.commit()
-        if library.id is not None:
-            await LibraryRepository(session).refresh_stats([library.id])
+        await LibraryRepository(session).refresh_stats([library.id])
         logger.info(
-            "已从磁盘删除条目 #%s 的单个文件（库「%s」，释放约 %.1f GB）：%s",
+            "已从库中移除条目 #%s 的单个文件（库「%s」，释放约 %.1f GB）：%s",
             row.media_item_id,
             library.name,
             result.freed_bytes / 1024**3,
@@ -2891,58 +3001,140 @@ async def delete_single_file(
     return result
 
 
+def _like_prefix(prefix: str) -> str:
+    """LIKE 前缀里的通配符按字面转义——路径里出现 % 和 _ 一点也不罕见。"""
+    return prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+async def _dir_holds_other_item(
+    session: AsyncSession, library_id: int, directory: Path, media_item_id: int
+) -> bool:
+    """目录之下（或目录本身）是否住着**别的条目**的台账行——住着就不能整删。
+
+    以前的写法是把整库台账 ``list_by_library`` 读进内存再遍历，删一部小片
+    也要为几万行的库付一次全表 hydrate，耗时随库存规模增长；这里换成一条
+    带 LIMIT 1 的存在性查询，成本与库存脱钩。
+
+    未识别行（``media_item_id`` 为空）同样算"别人的"，绝不能被卷走——SQL
+    的 ``!=`` 碰上 NULL 返回 NULL 会把这些行漏掉，所以显式并上 IS NULL。
+    """
+    prefix = _like_prefix(str(directory).rstrip("/") + "/")
+    found = (
+        await session.execute(
+            select(LibraryFile.id)
+            .where(
+                LibraryFile.library_id == library_id,
+                or_(
+                    LibraryFile.media_item_id.is_(None),  # type: ignore[union-attr]
+                    LibraryFile.media_item_id != media_item_id,
+                ),
+                or_(
+                    LibraryFile.file_path == str(directory),
+                    LibraryFile.file_path.like(prefix + "%", escape="\\"),  # type: ignore[union-attr]
+                ),
+            )
+            .limit(1)
+        )
+    ).first()
+    return found is not None
+
+
+async def _dir_holds_other_rows(
+    session: AsyncSession, library_id: int, directory: Path, row_id: int
+) -> bool:
+    """目录之下是否还有除本行以外的台账行（原盘目录整删的爆炸半径保护）。"""
+    prefix = _like_prefix(str(directory).rstrip("/") + "/")
+    found = (
+        await session.execute(
+            select(LibraryFile.id)
+            .where(
+                LibraryFile.library_id == library_id,
+                LibraryFile.id != row_id,
+                LibraryFile.file_path.like(prefix + "%", escape="\\"),  # type: ignore[union-attr]
+            )
+            .limit(1)
+        )
+    ).first()
+    return found is not None
+
+
 def _safe_inside_roots(path: Path, roots: list[Path]) -> bool:
     """路径必须严格位于某个库根之内（不等于根本身）——删除的硬边界。"""
     return any(root in path.parents for root in roots)
 
 
-def _remove_tree(directory: Path, result: DeleteResult) -> bool:
-    """整删条目目录（同步，放线程池）。目录已不存在视为成功（幂等）。"""
-    if not directory.exists():
-        result.removed_paths.append(str(directory))
-        return True
-    try:
-        shutil.rmtree(directory)
-    except OSError as exc:
-        result.errors.append(f"删除目录失败：{directory}（{exc}）")
-        return False
-    result.removed_paths.append(str(directory))
-    return True
+def _discard_one(path: Path, staging: _TrashStaging) -> str | None:
+    """移开（或原地删除）单个路径；成功返回 None，失败返回可读的错误原因。
 
-
-def _remove_file_with_sidecars(path: Path, result: DeleteResult) -> bool:
-    """删单个视频文件及其同名附属文件（NFO/字幕/图片）。
-
-    主文件删除失败返回 False（台账保留）；附属文件失败只记错误不影响结论。
-    原盘目录（path 是目录）整目录删除。
+    先试暂存区 rename（常数时间），移不动才原地删。路径已不存在视为成功
+    （幂等）——删除是"确保它不在了"，不是"确保是我删的"。
     """
+    if staging.stage(path):
+        return None
     try:
         if path.is_dir():
             shutil.rmtree(path)
         elif path.exists():
             os.remove(path)
     except OSError as exc:
-        result.errors.append(f"删除文件失败：{path}（{exc}）")
+        return str(exc)
+    return None
+
+
+def _discard_tree(directory: Path, staging: _TrashStaging, result: DeleteResult) -> bool:
+    """整删条目目录（同步，放线程池）。"""
+    error = _discard_one(directory, staging)
+    if error is not None:
+        result.errors.append(f"删除目录失败：{directory}（{error}）")
+        return False
+    result.removed_paths.append(str(directory))
+    return True
+
+
+def _is_delete_sidecar(entry_name: str, stem: str) -> bool:
+    """``entry_name`` 是否是主文件名 ``stem``（小写）的同名附属文件。
+
+    口径与 ``library.sidecar`` 的整理/转移链路略有出入（这里还认
+    ``主文件名-`` 开头的任意图片，如 ``foo-fanart.jpg``），删除宁可多清一点
+    刮削残渣，改口径是另一件事，不在本次改动范围内。
+    """
+    entry = PurePath(entry_name)
+    if entry.suffix.lower() not in _SIDECAR_DELETE_EXTS:
+        return False
+    name = entry.stem.lower()
+    return name == stem or name.startswith(stem + ".") or name.startswith(stem + "-")
+
+
+def _discard_file_with_sidecars(path: Path, staging: _TrashStaging, result: DeleteResult) -> bool:
+    """删单个视频文件及其同名附属文件（NFO/字幕/图片）。
+
+    主文件删除失败返回 False（台账保留）；附属文件失败只记错误不影响结论。
+    原盘目录（path 是目录）整目录删除。
+    """
+    error = _discard_one(path, staging)
+    if error is not None:
+        result.errors.append(f"删除文件失败：{path}（{error}）")
         return False
     result.removed_paths.append(str(path))
 
-    if path.suffix:
-        stem = path.stem.lower()
-        try:
-            entries = list(path.parent.iterdir())
-        except OSError:
-            return True
-        for entry in entries:
-            if not entry.is_file():
-                continue
-            name = entry.stem.lower()
-            is_sidecar = entry.suffix.lower() in _SUBTITLE_EXTS | {".nfo"} | set(_ART_EXTS)
-            if is_sidecar and (
-                name == stem or name.startswith(stem + ".") or name.startswith(stem + "-")
-            ):
-                try:
-                    os.remove(entry)
-                    result.removed_paths.append(str(entry))
-                except OSError as exc:
-                    result.errors.append(f"删除附属文件失败：{entry}（{exc}）")
+    if not path.suffix:
+        return True
+    stem = path.stem.lower()
+    try:
+        # scandir 用 getdents 已带回的类型位判断，省掉逐条目一次 stat：
+        # 扁平大目录（上千个文件）里这就是上千次系统调用的差别
+        with os.scandir(path.parent) as entries:
+            sidecars = [
+                Path(entry.path)
+                for entry in entries
+                if entry.is_file() and _is_delete_sidecar(entry.name, stem)
+            ]
+    except OSError:
+        return True
+    for sidecar in sidecars:
+        error = _discard_one(sidecar, staging)
+        if error is not None:
+            result.errors.append(f"删除附属文件失败：{sidecar}（{error}）")
+        else:
+            result.removed_paths.append(str(sidecar))
     return True
