@@ -2718,6 +2718,144 @@ async def test_explicit_e00_pilot_skipped_without_blocking(db, tmp_path, monkeyp
 
 
 @pytest.mark.asyncio
+async def test_upgrade_delivery_follows_rule_set_ladder_not_neutral(db, tmp_path, monkeypatch):
+    """issue #381：规则组把 1080p 排在 2160p 前（追剧省流）时，洗版投递的 1080p
+    文件不能被"同档预检"按中性阶梯当成低档重复拦在库外——预检、抓取判定、
+    洗版验证必须同一把尺子。放行后验证端实测确认：旧 2160p 版本让位，
+    工单基线刷新为 1080p，洗版任务收口为已入库。"""
+    from movieclaw_db.models import (
+        DownloadAttemptStatus,
+        RuleSet,
+        Subscription,
+        SubscriptionDownloadAttempt,
+        WantedItem,
+        WantedStatus,
+    )
+    from movieclaw_downloader import TorrentBrief
+
+    root, watch = tmp_path / "tv", tmp_path / "watch"
+    watch.mkdir()
+    library_id = await _make_library(db, kind=MediaKind.TV, root=root)
+    item = await _make_item(db, kind=MediaKind.TV, title="测试剧集", year=2024)
+    monkeypatch.setattr(ingest_mod, "probe_media", lambda _path: _FAKE_SPEC)  # 实测 1080p
+    _stub_unit(monkeypatch, lambda file: (1, 1))
+
+    async def identify_none(session, kind, watch_root, main, spec):
+        return None
+
+    monkeypatch.setattr(ingest_mod, "_identify", identify_none)
+
+    # 库里已有 2160p 版本，工单已入库且基线为 2160p
+    season_dir = root / "测试剧集 (2024)" / "Season 01"
+    season_dir.mkdir(parents=True)
+    existing = season_dir / "测试剧集 (2024) - S01E01.mkv"
+    existing.write_bytes(b"existing-2160p")
+    async with db.session() as session:
+        rule_set = RuleSet(
+            name="追剧省流",
+            spec={"resolutions": ["1080p", "2160p"], "upgrade_source": "web-dl"},
+        )
+        session.add(rule_set)
+        await session.commit()
+        await session.refresh(rule_set)
+        sub = Subscription(
+            media_item_id=item.id, kind="tv", rule_set_id=rule_set.id, library_id=library_id
+        )
+        session.add(sub)
+        await session.commit()
+        await session.refresh(sub)
+        session.add_all(
+            [
+                WantedItem(
+                    subscription_id=sub.id,
+                    media_item_id=item.id,
+                    season_number=1,
+                    episode_number=1,
+                    status=WantedStatus.IMPORTED,
+                    quality={"resolution": "2160p", "media_source": "WEB-DL"},
+                    info_hash="hash-old-2160p",
+                    imported_at=utcnow() - timedelta(days=1),
+                ),
+                # 洗版投递：按规则组偏好序 1080p 优于 2160p
+                SubscriptionDownloadAttempt(
+                    subscription_id=sub.id,
+                    info_hash="hash-upgrade-1080p",
+                    site_id="mteam",
+                    torrent_id="381",
+                    units=[[1, 1]],
+                    purpose="upgrade",
+                    quality={"resolution": "1080p", "media_source": "WEB-DL"},
+                    status=DownloadAttemptStatus.COMPLETED,
+                    last_progress_at=utcnow(),
+                ),
+                LibraryFile(
+                    library_id=library_id,
+                    media_item_id=item.id,
+                    season_number=1,
+                    episode_number=1,
+                    file_path=str(existing),
+                    size_bytes=existing.stat().st_size,
+                    resolution="2160p",
+                    media_source="WEB-DL",
+                    source=FileSource.IMPORTED,
+                ),
+            ]
+        )
+        await session.commit()
+
+    brief = TorrentBrief(
+        name="测试剧集.S01E01.1080p.WEB-DL",
+        content_name="测试剧集.S01E01.1080p.WEB-DL",
+        completed=True,
+        info_hash="hash-upgrade-1080p",
+    )
+
+    async def briefs():
+        return [brief]
+
+    monkeypatch.setattr(ingest_mod, "_downloader_briefs", briefs)
+
+    entry = watch / "测试剧集.S01E01.1080p.WEB-DL"
+    entry.mkdir()
+    (entry / "ep1.mkv").write_bytes(b"upgrade-1080p")
+
+    library = await _get_library(db, library_id)
+    await ingest_mod._sweep_dir(
+        _fixed_rule(watch, library_id=library_id), library, execute_inline=True
+    )
+
+    # 预检放行：1080p 文件落成版本名进库，不再是「无需整理」
+    assert (season_dir / "测试剧集 (2024) - S01E01 - 1080p.mkv").exists()
+    async with db.session() as session:
+        record = (await session.execute(select(IngestEntry))).scalar_one()
+        wanted = (await session.execute(select(WantedItem))).scalar_one()
+        attempt = (
+            await session.execute(
+                select(SubscriptionDownloadAttempt).where(
+                    SubscriptionDownloadAttempt.info_hash == "hash-upgrade-1080p"
+                )
+            )
+        ).scalar_one()
+        in_place = list(
+            (
+                await session.execute(
+                    select(LibraryFile).where(
+                        LibraryFile.media_item_id == item.id, LibraryFile.in_place()
+                    )
+                )
+            ).scalars()
+        )
+    assert record.status == IngestStatus.IMPORTED
+    assert record.imported_count == 1
+    assert "已有同档或更高版本" not in (record.message or "")
+    # 洗版验证按规则组阶梯确认：基线刷新、任务收口、旧版本让位
+    assert wanted.quality["resolution"] == "1080p"
+    assert wanted.info_hash == "hash-upgrade-1080p"
+    assert attempt.status == DownloadAttemptStatus.IMPORTED
+    assert [f.resolution for f in in_place] == ["1080p"]
+
+
+@pytest.mark.asyncio
 async def test_all_dup_skipped_still_closes_fulfilled_wanted(db, tmp_path, monkeypatch):
     """整包都被同档跳过时也要做库存对账：工单集早已由别的源入库的投递，
     结论「无需整理」的同时必须关闭已满足的工单——否则下载任务永远挂在

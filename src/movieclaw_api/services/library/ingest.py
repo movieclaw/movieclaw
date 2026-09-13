@@ -176,7 +176,7 @@ from movieclaw_db.repositories.library_file_repo import LibraryFileRepository
 from movieclaw_db.repositories.library_repo import LibraryRepository
 from movieclaw_enrich import enrich
 from movieclaw_enrich.inference import model_release_tag
-from movieclaw_matcher import DISC_SOURCE
+from movieclaw_matcher import DISC_SOURCE, QualitySnapshot, RuleSetSpec, build_snapshot
 from movieclaw_media.models import MediaKind
 from movieclaw_scheduler.registry import register_task
 
@@ -283,29 +283,27 @@ async def _covered_by_library(
     season: int,
     episode: int,
     *,
-    resolution: str | None,
-    media_source: str | None,
-    remux: bool,
+    incoming: QualitySnapshot,
+    spec: RuleSetSpec,
 ) -> bool:
-    """同名冲突的去重判据：该单元在位文件里是否已有同档或更高版本。
+    """同名冲突 / 订阅投递的去重判据：该单元在位文件里是否已有同档或更高版本。
 
     典型场景：季包只为补 E14–E15 的缺口投递，附带的 E05 与此前换源包
     收编的版本同档不同尺寸——基础名与版本退让名全被占，但重复内容本就
-    不值得入库。档位口径与洗版裁决同源（分辨率位次 > 片源档字典序，见
-    upgrade._file_sort_key）；来件分辨率未知（探测不可用）时不判定——
-    宁可进待处理，不做猜测性丢弃。真升级（档位更高）落的是不同版本名，
-    不会走进同名冲突，仍由洗版验证确认后把旧版送待回收。
-    """
-    from movieclaw_matcher import RuleSetSpec
-    from movieclaw_matcher.decision import resolution_rank, source_tier
+    不值得入库。
 
-    neutral = RuleSetSpec()
-    incoming = (
-        resolution_rank(resolution, neutral) or 0,
-        source_tier(media_source, remux) or 0,
-    )
-    if incoming[0] <= 0:
-        return False
+    裁决本身不在这里做：交给 ``covered_by_existing``，它与抓取判定、洗版
+    验证走**同一条阶梯**（规则组的偏好序）。这里此前用中性阶梯自己比
+    (分辨率, 片源) 二元组，规则组把 1080p 排在 2160p 前面（追剧省流）时，
+    抓取端认定的洗版升级到这里被当成低档重复丢弃，洗版永不完成
+    （issue #381）。``spec`` 由调用方按来源投递所属的规则组给出，非订阅
+    路径用中性阶梯。在位文件的快照与验证端同一构造（``snapshot_from_file``）。
+    只有明确判定"已覆盖"才跳过；无从判定（来件分辨率未知等）一律放行——
+    宁可进待处理，不做猜测性丢弃。
+    """
+    from movieclaw_api.services.subscription.upgrade import snapshot_from_file
+    from movieclaw_matcher import covered_by_existing
+
     rows = (
         await session.execute(
             select(LibraryFile).where(
@@ -318,14 +316,8 @@ async def _covered_by_library(
             )
         )
     ).scalars()
-    keys = [
-        (
-            resolution_rank(row.resolution, neutral) or 0,
-            source_tier(row.media_source, False) or 0,
-        )
-        for row in rows
-    ]
-    return bool(keys) and max(keys) >= incoming
+    existing = [snapshot_from_file(row, None) for row in rows]
+    return covered_by_existing(existing, incoming, spec) is True
 
 
 class IngestSourceChanged(Exception):
@@ -1893,6 +1885,43 @@ async def _ingest_entry(
         """某个入库文件的来源戳 (site, torrent)。"""
         return delivery.stamp(entry, file, unit) if delivery is not None else manual_stamp
 
+    # 去重阶梯：订阅投递按来源投递所属规则组的偏好序判"同档或更高"，与抓取
+    # 判定、洗版验证同一把尺子（issue #381）；非订阅路径没有规则组，用中性阶梯
+    dedup_specs: dict[int, RuleSetSpec | None] = {}
+    if delivery is not None and delivery.attempts:
+        from movieclaw_api.services.subscription.upgrade import _specs_for_subscriptions
+
+        dedup_specs = await _specs_for_subscriptions(
+            session, {a.subscription_id for a in delivery.attempts}
+        )
+
+    def dedup_context(
+        file: Path, unit: tuple[int, int], file_spec
+    ) -> tuple[QualitySnapshot, RuleSetSpec]:
+        """去重裁判的输入：来件快照 + 生效的档位阶梯。
+
+        快照构造与洗版验证同口径（``build_snapshot``）：能实测的维度以
+        ffprobe 为准，出处维度采信名称解析——来自订阅投递的文件优先用投递时
+        定格的种子名解析（``attempt.quality``），与验证端 ``_file_from_attempt``
+        的取值一致；其余用条目名解析。
+        """
+        attempt = delivery.attempt_for(entry, file, unit) if delivery is not None else None
+        name_attrs = (
+            QualitySnapshot.model_validate(attempt.quality)
+            if attempt is not None and attempt.quality
+            else release_attrs
+        )
+        snapshot = build_snapshot(
+            name_attrs,
+            probed=file_spec is not None,
+            probe_resolution=file_spec.resolution if file_spec else None,
+            probe_hdr_label=file_spec.hdr if file_spec else None,
+            probe_video_codec=file_spec.video_codec if file_spec else None,
+            probe_bit_rate=file_spec.bit_rate if file_spec else None,
+        )
+        rule_spec = dedup_specs.get(attempt.subscription_id) if attempt is not None else None
+        return snapshot, rule_spec or RuleSetSpec()
+
     # 身份来源分档：这条入库记录的身份是怎么来的、有多可信。这一列此前在
     # 监听导入路径上恒为 NULL——连"用户亲手认领的"和"机器蒙的"都分不出来
     ledger_identity = _ledger_identity_source(
@@ -2208,19 +2237,15 @@ async def _ingest_entry(
         # 订阅投递的同档预检：单元已有同档或更高版本在库时不再落盘。同名
         # 幂等只挡得住同扩展名——换组包的 .mp4 会绕过 .mkv 的名字，落成
         # 一个"同档不构成升级、verify 也不会替换"的多余版本（NAS 实测
-        # 洗版 E04/E06 的 CHDWEB 包把 E01 又入了一份）。真升级档位更高，
-        # 预检拦不住；订阅之外的路径（手工监听/自定义目录）不受影响
+        # 洗版 E04/E06 的 CHDWEB 包把 E01 又入了一份）。真升级（按规则组
+        # 阶梯严格更优）预检放行，交洗版验证实测裁决；订阅之外的路径
+        # （手工监听/自定义目录）不受影响
+        incoming, dedup_spec = dedup_context(file, (season, episode), file_spec)
         if (
             staging is None
             and identity_source == "subscription"
             and await _covered_by_library(
-                session,
-                item.id,
-                season,
-                episode,
-                resolution=file_spec.resolution if file_spec else None,
-                media_source=release_attrs.media_source,
-                remux=release_attrs.remux,
+                session, item.id, season, episode, incoming=incoming, spec=dedup_spec
             )
         ):
             dup_skipped += 1
@@ -2273,13 +2298,7 @@ async def _ingest_entry(
             # 冲突先做同档去重裁决：库里已有同档或更高版本时跳过即是完成，
             # 不阻塞任务；判不了或来件更优才留给人工
             if staging is None and await _covered_by_library(
-                session,
-                item.id,
-                season,
-                episode,
-                resolution=file_spec.resolution if file_spec else None,
-                media_source=release_attrs.media_source,
-                remux=release_attrs.remux,
+                session, item.id, season, episode, incoming=incoming, spec=dedup_spec
             ):
                 dup_skipped += 1
                 completed_bytes += file.stat().st_size
@@ -2868,6 +2887,13 @@ class _DeliveryProvenance:
         self, entry: Path, file: Path | None, unit: tuple[int, int] | None
     ) -> tuple[str | None, str | None]:
         """单个入库文件的来源戳；file 为 None（原盘目录）时不看文件证据。"""
+        attempt = self.attempt_for(entry, file, unit)
+        return (attempt.site_id, attempt.torrent_id) if attempt is not None else (None, None)
+
+    def attempt_for(
+        self, entry: Path, file: Path | None, unit: tuple[int, int] | None
+    ) -> SubscriptionDownloadAttempt | None:
+        """单个入库文件对应的投递记录（来源戳与去重阶梯都从它取）；判不出返回 None。"""
         candidates = list(self.attempts)
         writers: frozenset[str] | None = None
         if file is not None and self.file_hashes:
@@ -2881,13 +2907,13 @@ class _DeliveryProvenance:
                 in {(int(u[0]), int(u[1])) for u in a.units if isinstance(u, list) and len(u) == 2}
             ]
             if claiming:
-                newest = max(claiming, key=lambda a: a.id or 0)
-                return newest.site_id, newest.torrent_id
+                return max(claiming, key=lambda a: a.id or 0)
         if writers and candidates:
-            newest = max(candidates, key=lambda a: a.id or 0)
-            return newest.site_id, newest.torrent_id
+            return max(candidates, key=lambda a: a.id or 0)
         sources = {(a.site_id, a.torrent_id) for a in candidates}
-        return sources.pop() if len(sources) == 1 else (None, None)
+        if len(sources) != 1:
+            return None
+        return max(candidates, key=lambda a: a.id or 0)
 
 
 async def _load_delivery_provenance(
