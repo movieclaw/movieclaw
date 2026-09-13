@@ -608,7 +608,14 @@ export function unsubscribeFromSubscription(id: number): Promise<Record<string, 
   );
 }
 
-/** 取消订阅可一并清理的内容（见 schemas.subscription.SubscriptionRemovalPreviewView）。 */
+/** 按季清理时被有意保留的跨季种子（整季包仍被保留的季使用）。 */
+export interface RetainedCrossSeasonTorrent {
+  title: string;
+  /** 该种子覆盖到的季号；空 = 无从按季定位的存量数据 */
+  seasons: number[];
+}
+
+/** 可一并清理的内容（见 schemas.subscription.SubscriptionRemovalPreviewView）。 */
 export interface SubscriptionRemovalPreview {
   torrent_count: number;
   torrent_titles: string[];
@@ -616,18 +623,58 @@ export interface SubscriptionRemovalPreview {
   library_file_count: number;
   library_bytes: number;
   recycle_retention_days: number;
+  retained_cross_season: RetainedCrossSeasonTorrent[];
 }
 
-/** 取消订阅的联动清理选项；两项都不勾 = 只取消订阅（默认）。 */
+/** 联动清理选项；两项都不勾 = 什么都不删（默认）。 */
 export interface SubscriptionRemovalOptions {
   deleteTorrents: boolean;
   deleteLibraryFiles: boolean;
 }
 
-/** 取消订阅弹窗打开时拉取：能一起删掉多少种子与媒体库文件。 */
-export function getSubscriptionRemovalPreview(id: number): Promise<SubscriptionRemovalPreview> {
+/**
+ * 确认弹窗打开时拉取：能一起删掉多少种子与媒体库文件。
+ *
+ * `seasons`：只看这几季（减季后的按季清理）；不传 = 整条退订的范围——后端按
+ * 「这条订阅覆盖过的季」收口，不是条目下的一切。
+ */
+export function getSubscriptionRemovalPreview(
+  id: number,
+  seasons?: number[],
+): Promise<SubscriptionRemovalPreview> {
+  const query = seasons?.length
+    ? `?${new URLSearchParams(seasons.map((s) => ["seasons", String(s)]))}`
+    : "";
   return unwrap(
-    request<ApiEnvelope<SubscriptionRemovalPreview>>(`/subscriptions/${id}/removal-preview`),
+    request<ApiEnvelope<SubscriptionRemovalPreview>>(
+      `/subscriptions/${id}/removal-preview${query}`,
+    ),
+  );
+}
+
+/**
+ * 清理已移出订阅范围的那几季的内容（减季后的可选收尾）。
+ *
+ * 订阅不会被删——它还在追别的季。后端会拒绝仍在范围内的季，并把退出那几季
+ * 已入库的单元退回缺口（以后重新勾选该季会重新下载）。
+ */
+export function cleanupSubscriptionSeasons(
+  id: number,
+  seasons: number[],
+  options: SubscriptionRemovalOptions,
+): Promise<{ cleanup_job_id: string | null }> {
+  return unwrap(
+    request<ApiEnvelope<{ cleanup_job_id: string | null }>>(
+      `/subscriptions/${id}/season-cleanup`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          seasons,
+          delete_torrents: options.deleteTorrents,
+          delete_library_files: options.deleteLibraryFiles,
+        }),
+      },
+    ),
   );
 }
 

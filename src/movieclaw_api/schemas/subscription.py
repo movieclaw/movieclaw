@@ -290,24 +290,49 @@ class SearchNowView(BaseModel):
     reset_count: int = Field(description="跳过冷却、重新排队的缺口工单数")
 
 
+class RetainedTorrentView(BaseModel):
+    """按季清理时被有意保留的跨季种子（整季包覆盖到仍在追的季）。"""
+
+    title: str = Field(description="下载任务名")
+    seasons: list[int] = Field(
+        default_factory=list, description="该种子覆盖到的季号；空=无从按季定位的存量数据"
+    )
+
+
 class SubscriptionRemovalPreviewView(BaseModel):
-    """取消订阅弹窗的联动清理预览：勾上开关会连带处理掉多少东西。
+    """清理确认弹窗的预览：勾上开关会连带处理掉多少东西。
 
     体积只给媒体库那一侧——它来自台账、是准确值；种子体积要连下载器才知道，
     不值得让一个确认弹窗等网络往返，也不该拿估算值吓唬用户。
     """
 
-    torrent_count: int = Field(description="该订阅投递过、仍可定位的下载任务数")
+    torrent_count: int = Field(description="范围内、仍可定位的下载任务数")
     torrent_titles: list[str] = Field(
         default_factory=list, description="下载任务名（最多前 5 条，供弹窗举例）"
     )
     hit_and_run_count: int = Field(
         description="其中处于 H&R 考核或考核状态未知的任务数；删除可能影响站点考核"
     )
-    library_file_count: int = Field(description="该条目在媒体库里的文件数（含缺失记录）")
+    library_file_count: int = Field(description="范围内的媒体库文件数（含缺失记录）")
     library_bytes: int = Field(description="上述文件的台账体积合计（字节）")
     recycle_retention_days: int = Field(
         description="媒体库文件删除后在回收站的保留天数，期间可恢复"
+    )
+    retained_cross_season: list[RetainedTorrentView] = Field(
+        default_factory=list,
+        description="按季清理时不会删除的跨季种子（仍被保留的季使用）；整条退订时为空",
+    )
+
+
+class SeasonCleanupPayload(BaseModel):
+    """清理已移出订阅范围的那几季的内容（减季后的可选收尾）。"""
+
+    seasons: list[int] = Field(description="要清理的季号；必须都已移出订阅范围")
+    delete_torrents: bool = Field(
+        default=False, description="从下载器删除这几季的种子任务及其数据文件（不可恢复）"
+    )
+    delete_library_files: bool = Field(
+        default=False, description="把这几季在媒体库里的文件移入回收站（保留期内可恢复）"
     )
 
 
