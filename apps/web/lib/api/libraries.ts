@@ -714,20 +714,28 @@ export interface LibraryGalleryGroup {
 }
 
 /**
- * 影视库 / 其他库的图床浏览模式数据源：与 listLibraryItems 同一份排序与分页
- * 口径（offset / limit 都按条目数），默认标题序，`sort: "added_at"` 是用户在
- * ⋯ 菜单里选的「最近添加」。没有图的条目也占一组（images 为空），一页的组数
- * 恒等于条目数——拿满一页就还有下一页，空组前端自己滤掉。
+ * 影视库 / 其他库的图床浏览模式数据源：与 listLibraryItems 同一套排序档位与方向、
+ * 同一份分页口径（offset / limit 都按条目数）——两面墙传同一个 sort / order 就是
+ * 同一份名单。没有图的条目也占一组（images 为空），一页的组数恒等于条目数
+ * ——拿满一页就还有下一页，空组前端自己滤掉。
  */
 export function listLibraryGallery(
   id: number,
-  params?: { limit?: number; offset?: number; sort?: "added_at"; filter?: LibraryFilter },
+  params?: {
+    limit?: number;
+    offset?: number;
+    sort?: LibraryItemSort;
+    /** 排序方向；不给 = 自然方向。与 listLibraryItems 传同一个值 */
+    order?: LibraryItemOrder;
+    filter?: LibraryFilter;
+  },
 ): Promise<LibraryGalleryGroup[]> {
   const query = new URLSearchParams();
   if (params?.limit !== undefined) query.set("limit", String(params.limit));
   if (params?.offset) query.set("offset", String(params.offset));
   // 不给 sort 就是服务端默认的标题序（与海报墙同一份名单）
   if (params?.sort) query.set("sort", params.sort);
+  if (params?.order) query.set("order", params.order);
   // 图廊与海报墙是同一份名单的两种画法，筛选自然也是同一份
   filterQuery(params?.filter, query);
   const suffix = query.size > 0 ? `?${query}` : "";

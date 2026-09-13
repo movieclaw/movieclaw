@@ -1911,6 +1911,7 @@ async def build_library_gallery(
     limit: int | None = None,
     offset: int = 0,
     sort: WallSort = "title",
+    order: WallOrder | None = None,
     filters: LibraryFilter | None = None,
     content_limit: ContentLimit | None = None,
 ) -> list[LibraryGalleryGroupView]:
@@ -1918,12 +1919,21 @@ async def build_library_gallery(
 
     与海报墙共用同一份条目名单、同一套排序与分页口径（``offset`` / ``limit``
     都按**条目**数），本页条目定下来之后交给 :func:`build_gallery_groups` 组图。
-    默认按标题排（图廊的常驻序），``sort=added_at`` 是用户在 ⋯ 菜单里选的
-    「最近添加」——两面墙同一个 ``offset`` 口径，切了排序「回到上次位置」
-    仍然跳得准（前端把排序写进位置记录的形态里，见 lib/library-wall-recall.ts）。
+    ``sort`` / ``order`` 与海报墙同一套档位与方向语义——两面墙同一个 ``offset``
+    口径，切了排序「回到上次位置」仍然跳得准（前端把排序与方向写进位置记录的
+    形态里，见 lib/library-wall-recall.ts）。
     """
     page_ids = await _wall_page_ids(
-        session, library_id, sort, limit, offset, "confirmed", filters, member_id, content_limit
+        session,
+        library_id,
+        sort,
+        limit,
+        offset,
+        "confirmed",
+        filters,
+        member_id,
+        content_limit,
+        order,
     )
     return await build_gallery_groups(
         session, [(item_id, library_id) for item_id in page_ids], member_id=member_id

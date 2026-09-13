@@ -382,6 +382,35 @@ async def test_gallery_follows_the_same_sort_as_the_wall(db) -> None:
         )
         assert [g.title for g in page.data] == [wall.data[1].title] == ["B片"]
 
+        # 图廊吃**全部**档位与方向（此前只认 title / added_at 两档）：只要海报墙
+        # 能按它排，图廊就要排出同一个顺序——两面墙翻的本来就是同一份名单
+        for sort, order in (("size", "asc"), ("title", "desc"), ("added_at", "asc")):
+            gallery_rows = await list_library_gallery(
+                library.id,
+                limit=None,
+                offset=0,
+                sort=sort,
+                order=order,
+                session=session,
+                principal=_ADMIN,
+            )
+            wall_rows = await list_library_items(
+                library.id, sort=sort, order=order, session=session, principal=_ADMIN
+            )
+            assert [g.media_item_id for g in gallery_rows.data] == [
+                r.media_item_id for r in wall_rows.data
+            ], f"{sort}/{order} 两面墙顺序不一致"
+        reversed_title = await list_library_gallery(
+            library.id,
+            limit=None,
+            offset=0,
+            sort="title",
+            order="desc",
+            session=session,
+            principal=_ADMIN,
+        )
+        assert [g.title for g in reversed_title.data] == ["C片", "B片", "A片"]
+
 
 async def test_items_recent_addition_uses_latest_ingest_batch(db) -> None:
     """最近摘要只返回让条目置顶的最后一批单元，累计库存仍保持独立口径。"""
@@ -571,9 +600,7 @@ async def test_items_pinyin_order_and_index(db) -> None:
             "9号秘事",  # 数字归 #，排在最后
         ]
 
-        index_rows = await list_library_item_index(
-            library.id, session=session, principal=_ADMIN
-        )
+        index_rows = await list_library_item_index(library.id, session=session, principal=_ADMIN)
         assert [(e.initial, e.count, e.offset) for e in index_rows.data] == [
             ("A", 1, 0),
             ("C", 1, 1),
