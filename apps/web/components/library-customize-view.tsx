@@ -103,19 +103,25 @@ export function LibraryCustomizeView() {
             if (editSeq.current === seq) setDraft(null);
           })
           .catch((err: unknown) => {
-            setSaveError(err instanceof Error ? err.message : "保存失败，请稍后再试");
+            setSaveError(
+              err instanceof Error ? err.message : "保存失败，请稍后再试",
+            );
           });
       }, SAVE_DELAY_MS);
     },
     [savePrefs],
   );
-  useEffect(() => () => {
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-  }, []);
+  useEffect(
+    () => () => {
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+    },
+    [],
+  );
 
   const update = (id: string, patch: (row: HomeRow) => HomeRow) =>
     commit(rows.map((row) => (row.id === id ? patch(row) : row)));
-  const move = (index: number, direction: -1 | 1) => commit(moveRow(rows, index, direction));
+  const move = (index: number, direction: -1 | 1) =>
+    commit(moveRow(rows, index, direction));
   const remove = (id: string) => {
     if (expanded === id) setExpanded(null);
     commit(rows.filter((row) => row.id !== id));
@@ -131,14 +137,22 @@ export function LibraryCustomizeView() {
     setExpanded(null);
     setDraft(null);
     // 空清单 = 出厂布局，与侧栏导航同一约定
-    savePrefs({ ...prefsRef.current, home: { rows: [] } }).catch((err: unknown) => {
-      setSaveError(err instanceof Error ? err.message : "保存失败，请稍后再试");
-    });
+    savePrefs({ ...prefsRef.current, home: { rows: [] } }).catch(
+      (err: unknown) => {
+        setSaveError(
+          err instanceof Error ? err.message : "保存失败，请稍后再试",
+        );
+      },
+    );
   };
 
-  const visibleLibraries = (libraries ?? []).filter((library) => library.viewer_access);
+  const visibleLibraries = (libraries ?? []).filter(
+    (library) => library.viewer_access,
+  );
   const collectionsOnHome = new Set(
-    rows.filter((row) => row.kind === "collection").map((row) => row.collection.id),
+    rows
+      .filter((row) => row.kind === "collection")
+      .map((row) => row.collection.id),
   );
   const shownCount = rows.filter((row) => !row.hidden).length;
 
@@ -183,39 +197,48 @@ export function LibraryCustomizeView() {
           </p>
         )}
 
-        <ul className="mt-4 space-y-1.5" data-testid="home-rows">
-          {rows.map((row, index) => (
-            <RowItem
-              key={row.id}
-              row={row}
-              index={index}
-              total={rows.length}
-              expanded={expanded === row.id}
-              dragging={dragIndex === index}
-              onToggle={() => setExpanded((current) => (current === row.id ? null : row.id))}
-              onMove={(direction) => move(index, direction)}
-              onHide={() => update(row.id, (r) => ({ ...r, hidden: !r.hidden }))}
-              onChange={(patch) => update(row.id, patch)}
-              onRemove={() => remove(row.id)}
-              onDragStart={() => setDragIndex(index)}
-              onDragEnd={() => setDragIndex(null)}
-              onDragEnter={() => {
-                // 拖到哪就换到哪（跟手实时重排），与设置页导航顺序同一手感
-                if (dragIndex == null || dragIndex === index) return;
-                const next = rows.slice();
-                const [moved] = next.splice(dragIndex, 1);
-                next.splice(index, 0, moved);
-                commit(next);
-                setDragIndex(index);
-              }}
-            />
-          ))}
-        </ul>
+        {/* 库与合集没回来之前不画列表：先画三条内置行、再蹦出库行，看着像列表在抖 */}
+        {libraries !== null && (
+          <ul className="mt-4 space-y-1.5" data-testid="home-rows">
+            {rows.map((row, index) => (
+              <RowItem
+                key={row.id}
+                row={row}
+                index={index}
+                total={rows.length}
+                expanded={expanded === row.id}
+                dragging={dragIndex === index}
+                onToggle={() =>
+                  setExpanded((current) => (current === row.id ? null : row.id))
+                }
+                onMove={(direction) => move(index, direction)}
+                onHide={() =>
+                  update(row.id, (r) => ({ ...r, hidden: !r.hidden }))
+                }
+                onChange={(patch) => update(row.id, patch)}
+                onRemove={() => remove(row.id)}
+                onDragStart={() => setDragIndex(index)}
+                onDragEnd={() => setDragIndex(null)}
+                onDragEnter={() => {
+                  // 拖到哪就换到哪（跟手实时重排），与设置页导航顺序同一手感
+                  if (dragIndex == null || dragIndex === index) return;
+                  const next = rows.slice();
+                  const [moved] = next.splice(dragIndex, 1);
+                  next.splice(index, 0, moved);
+                  commit(next);
+                  setDragIndex(index);
+                }}
+              />
+            ))}
+          </ul>
+        )}
 
         {/* 添加一行只问一个问题：从哪来。选一个库得到「最近添加的 X」，选一个合集得到
             它本身；排序和名字点开那一行再改。已在首页的合集置灰 */}
         <div className="mt-4 rounded-xl border border-dashed border-white/15 px-4 py-3">
-          <p className="text-caption text-[var(--text-faint)]">＋ 添加一行 · 从哪来？</p>
+          <p className="text-caption text-[var(--text-faint)]">
+            ＋ 添加一行 · 从哪来？
+          </p>
           <div className="mt-2 flex flex-wrap gap-1.5">
             {visibleLibraries.map((library) => (
               <button
@@ -355,14 +378,20 @@ function RowItem({
         <GripIcon className="size-4 shrink-0 cursor-grab text-[var(--text-faint)] max-md:hidden" />
         <span
           className={`grid size-6 shrink-0 place-items-center rounded-md text-[var(--text-muted)] max-md:size-5 ${
-            row.kind === "collection" ? "bg-[rgba(127,176,255,0.14)] text-[#7fb0ff]" : "bg-white/[0.06]"
+            row.kind === "collection"
+              ? "bg-[rgba(127,176,255,0.14)] text-[#7fb0ff]"
+              : "bg-white/[0.06]"
           } ${row.hidden ? "opacity-40" : ""}`}
         >
           <RowIcon row={row} />
         </span>
         <div className={`min-w-0 flex-1 ${row.hidden ? "opacity-40" : ""}`}>
-          <div className="truncate text-ui font-semibold text-[var(--text)] max-md:text-sub">{title}</div>
-          <div className="truncate text-caption text-[var(--text-faint)]">{rowMeta(row)}</div>
+          <div className="truncate text-ui font-semibold text-[var(--text)] max-md:text-sub">
+            {title}
+          </div>
+          <div className="truncate text-caption text-[var(--text-faint)]">
+            {rowMeta(row)}
+          </div>
         </div>
         <div
           className="flex shrink-0 items-center gap-1 max-md:gap-1.5"
@@ -371,7 +400,12 @@ function RowItem({
           role="presentation"
         >
           <div className="flex items-center gap-0.5 max-md:flex-col max-md:gap-0">
-            <MoveButton label={`把「${title}」上移`} up disabled={index === 0} onClick={() => onMove(-1)} />
+            <MoveButton
+              label={`把「${title}」上移`}
+              up
+              disabled={index === 0}
+              onClick={() => onMove(-1)}
+            />
             <MoveButton
               label={`把「${title}」下移`}
               disabled={index === total - 1}
@@ -392,7 +426,9 @@ function RowItem({
         </div>
         <span className="w-3 shrink-0 text-center text-[10px] text-[var(--text-faint)] max-md:hidden">
           {canEdit && (
-            <ChevronDownIcon className={`size-3 transition ${expanded ? "rotate-180" : ""}`} />
+            <ChevronDownIcon
+              className={`size-3 transition ${expanded ? "rotate-180" : ""}`}
+            />
           )}
         </span>
       </div>
@@ -424,14 +460,20 @@ function RowEditor({
       <div className="border-t border-white/[0.08] px-3 pb-3 pt-2.5 md:pl-[52px]">
         <p className="text-caption text-[var(--text-faint)]">排序</p>
         <SortRadios
-          options={(Object.keys(FAVORITES_SORT_PRESETS) as FavoritesSort[]).map((key) => ({
-            key,
-            label: FAVORITES_SORT_PRESETS[key].name,
-            hint: FAVORITES_SORT_PRESETS[key].hint,
-          }))}
+          options={(Object.keys(FAVORITES_SORT_PRESETS) as FavoritesSort[]).map(
+            (key) => ({
+              key,
+              label: FAVORITES_SORT_PRESETS[key].name,
+              hint: FAVORITES_SORT_PRESETS[key].hint,
+            }),
+          )}
           value={row.sort}
           onChange={(sort) =>
-            onChange((r) => (r.kind === "favorites" ? { ...r, sort: sort as FavoritesSort } : r))
+            onChange((r) =>
+              r.kind === "favorites"
+                ? { ...r, sort: sort as FavoritesSort }
+                : r,
+            )
           }
         />
       </div>
@@ -454,13 +496,20 @@ function RowEditor({
           }))}
           value={row.sort}
           onChange={(sort) =>
-            onChange((r) => (r.kind === "collection" ? { ...r, sort: sort as HomeRowSort } : r))
+            onChange((r) =>
+              r.kind === "collection" ? { ...r, sort: sort as HomeRowSort } : r,
+            )
           }
         />
         <div className="mt-3 flex flex-wrap items-center gap-2">
-          <span className="text-caption text-[var(--text-faint)]">名字跟合集走，规则在合集页改</span>
+          <span className="text-caption text-[var(--text-faint)]">
+            名字跟合集走，规则在合集页改
+          </span>
           <span className="flex-1" />
-          <Link href={href} className="btn-glass px-3 py-1 text-sub font-medium">
+          <Link
+            href={href}
+            className="btn-glass px-3 py-1 text-sub font-medium"
+          >
             打开合集 ›
           </Link>
           <button
@@ -489,7 +538,9 @@ function RowEditor({
         }))}
         value={row.sort}
         onChange={(sort) =>
-          onChange((r) => (r.kind === "library" ? { ...r, sort: sort as HomeRowSort } : r))
+          onChange((r) =>
+            r.kind === "library" ? { ...r, sort: sort as HomeRowSort } : r,
+          )
         }
       />
       <label className="mt-3 flex items-center gap-2.5 text-sub text-[var(--text)]">
@@ -515,14 +566,19 @@ function RowEditor({
           const name = e.target.value;
           onChange((r) => (r.kind === "library" ? { ...r, name } : r));
         }}
-        onBlur={() => onChange((r) => (r.kind === "library" ? { ...r, name: r.name.trim() } : r))}
+        onBlur={() =>
+          onChange((r) =>
+            r.kind === "library" ? { ...r, name: r.name.trim() } : r,
+          )
+        }
         className="mt-1.5 w-full rounded-lg border border-white/15 bg-white/[0.05] px-3 py-1.5 text-sub text-[var(--text)] outline-none placeholder:text-[var(--text-faint)] focus:border-white/30"
         data-testid="row-name"
       />
       <p className="mt-1.5 text-caption text-[var(--text-faint)]">
         {row.name ? (
           <>
-            已手动命名。清空则回到推荐：<span className="text-[var(--text-muted)]">{suggested}</span>
+            已手动命名。清空则回到推荐：
+            <span className="text-[var(--text-muted)]">{suggested}</span>
           </>
         ) : (
           "留空跟随排序：换一个排序，名字自动变"
@@ -554,7 +610,10 @@ function SortRadios({
   onChange: (key: string) => void;
 }) {
   return (
-    <div role="radiogroup" className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-0.5 max-md:grid-cols-1">
+    <div
+      role="radiogroup"
+      className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-0.5 max-md:grid-cols-1"
+    >
       {options.map((option) => {
         const on = option.key === value;
         return (
@@ -646,7 +705,13 @@ function MoveButton({
 
 function EyeIcon({ off }: { off: boolean }) {
   return (
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" className="size-4">
+    <svg
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      className="size-4"
+    >
       <path
         d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z"
         opacity={off ? 0.45 : 1}
