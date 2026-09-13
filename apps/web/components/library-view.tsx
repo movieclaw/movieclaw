@@ -399,23 +399,24 @@ export function LibraryView() {
             )}
           </p>
         </div>
+        {/* 两个页面级动作都是图标钮：自定义首页（所有人）、管理媒体库（有权限的人） */}
         <div className="flex shrink-0 items-center gap-2">
           <Link
             href={"/library/customize" as Route}
             aria-label="自定义首页"
             title="自定义首页"
-            className="btn-glass mt-1 h-8 shrink-0 gap-1.5 px-3 text-sub font-medium max-md:mt-0 max-md:px-2"
+            className="btn-glass mt-1 grid size-8 shrink-0 place-items-center !p-0 max-md:mt-0"
           >
             <ListIcon className="size-4" />
-            <span className="max-md:hidden">自定义首页</span>
           </Link>
           {canManageLibraries && (
             <Link
               href={"/library/manage" as Route}
-              className="btn-glass mt-1 h-8 shrink-0 gap-1.5 px-3 text-sub font-medium max-md:mt-0"
+              aria-label="管理媒体库"
+              title="管理媒体库"
+              className="btn-glass mt-1 grid size-8 shrink-0 place-items-center !p-0 max-md:mt-0"
             >
               <GearIcon className="size-4" />
-              管理媒体库
             </Link>
           )}
         </div>

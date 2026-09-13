@@ -429,17 +429,11 @@ export function newCollectionRow(
   };
 }
 
-/** 把第 index 行往上/下挪一格；越界原样返回（调用方按此禁用箭头）。 */
-export function moveRow(
-  rows: HomeRow[],
-  index: number,
-  direction: -1 | 1,
-): HomeRow[] {
-  const target = index + direction;
-  if (index < 0 || index >= rows.length || target < 0 || target >= rows.length)
-    return rows;
+/** 把第 from 行挪到第 to 位（拖拽落点）；越界或没动原样返回。 */
+export function moveRowTo(rows: HomeRow[], from: number, to: number): HomeRow[] {
+  if (from === to || from < 0 || to < 0 || from >= rows.length || to >= rows.length) return rows;
   const next = rows.slice();
-  const [row] = next.splice(index, 1);
-  next.splice(target, 0, row);
+  const [row] = next.splice(from, 1);
+  next.splice(to, 0, row);
   return next;
 }

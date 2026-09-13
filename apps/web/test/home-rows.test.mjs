@@ -3,7 +3,7 @@ import test from "node:test";
 
 import {
   buildHomeRows,
-  moveRow,
+  moveRowTo,
   newCollectionRow,
   newLibraryRow,
   newRowId,
@@ -160,11 +160,12 @@ test("写回时只存与默认不同的字段，默认库行不带来源", () =>
   ]);
 });
 
-test("新行 id 是 row: 加 6 位 base36；上下移动越界原样返回", () => {
+test("新行 id 是 row: 加 6 位 base36；拖到某一位越界原样返回", () => {
   assert.match(newRowId(), /^row:[0-9a-z]{6}$/);
   assert.equal(newRowId(() => 0), "row:000000");
   const rows = buildHomeRows({ rows: [] }, LIBS, COLS);
-  assert.deepEqual(ids(moveRow(rows, 0, -1)), ids(rows));
-  assert.deepEqual(ids(moveRow(rows, 3, -1)).slice(0, 4), ["up-next", "favorites", "lib:1", "libraries"]);
+  assert.deepEqual(ids(moveRowTo(rows, 0, -1)), ids(rows));
+  assert.deepEqual(ids(moveRowTo(rows, 5, 0)).slice(0, 3), ["lib:3", "up-next", "favorites"]);
+  assert.deepEqual(ids(moveRowTo(rows, 3, 2)).slice(0, 4), ["up-next", "favorites", "lib:1", "libraries"]);
   assert.equal(newLibraryRow(LIBS[0], "row:abc").id, "row:abc");
 });
