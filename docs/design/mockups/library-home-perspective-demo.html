@@ -400,7 +400,7 @@ body{margin:0;background:var(--ink);color:var(--text);font-family:var(--f-sans);
       <span class="k">"name"</span>: "评分最高的动漫" },                <span class="c">// 用户自己加的；sort 直接是 WallSort 取值</span>
     { <span class="k">"id"</span>: "lib:2" },
     { <span class="k">"id"</span>: "row:a91e", <span class="k">"collection_id"</span>: 7,
-      <span class="k">"sort"</span>: "random" },                       <span class="c">// 合集行，名字跟合集走</span>
+      <span class="k">"sort"</span>: "release_date_asc" },             <span class="c">// 合集行，名字跟合集走，排序与库行同一组</span>
     { <span class="k">"id"</span>: "lib:3", <span class="k">"hidden"</span>: true }
   ] }
 }</pre>
@@ -422,7 +422,7 @@ body{margin:0;background:var(--ink);color:var(--text);font-family:var(--f-sans);
               <tr><td><b>我的收藏</b></td><td class="y">未看优先 / 最近收藏 / 评分最高 / 片名 A–Z</td><td><span class="n">固定</span></td><td class="y">✓</td><td><span class="n">—</span></td></tr>
               <tr><td><b>库行（默认）</b><br><span class="n">lib:&lt;id&gt;，每库一条</span></td><td class="y">七个预设，见下表</td><td class="y">可改，留空跟推荐</td><td class="y">✓</td><td><span class="n">—</span></td></tr>
               <tr><td><b>库行（自加）</b><br><span class="n">row:&lt;uuid&gt;，同库可多条</span></td><td class="y">同上</td><td class="y">同上</td><td class="y">✓</td><td class="y">✓</td></tr>
-              <tr><td><b>合集行</b></td><td class="y">规则合集：合集自身 / 最近添加 / 评分最高 / 随便看看<br><span class="n">手动合集只有首尾两档</span></td><td><span class="n">跟合集名</span></td><td class="y">✓</td><td class="y">✓</td></tr>
+              <tr><td><b>合集行</b></td><td class="y">与库行同一组预设，默认取合集自己的 sort</td><td><span class="n">跟合集名</span></td><td class="y">✓</td><td class="y">✓</td></tr>
             </table>
             <h4 style="margin-top:18px">库行的排序 = 一列预设，每个预设自带推荐名</h4>
             <table>
@@ -493,7 +493,7 @@ tabs.forEach(t=>t.addEventListener("click",()=>goto(t.dataset.p)));
    三个库、三个合集。d=入库距今天数，lp=最近播放距今天数（null 没播过），
    rel=上映年月，r=评分，w=观看状态，fav=收藏距今天数。排序是真跑的。 */
 const LIBS={1:{name:"电影",kind:"movie"},2:{name:"剧集",kind:"tv"},3:{name:"动漫",kind:"anime"}};
-const COLS={7:{name:"宫崎骏",lib:3,n:9},8:{name:"诺兰",lib:1,n:11},9:{name:"90 年代港片",lib:1,n:23}};
+const COLS={7:{name:"宫崎骏",lib:3,n:9,sort:"release_date_asc"},8:{name:"诺兰",lib:1,n:11,sort:"release_date_asc"},9:{name:"90 年代港片",lib:1,n:23,sort:"title"}};
 const ITEMS=[
  {lib:1,t:"沙丘 2",y:2024,rel:"2024-03",r:8.3,d:3,lp:null,w:"unwatched"},
  {lib:1,t:"奥本海默",y:2023,rel:"2023-07",r:8.7,d:9,lp:12,w:"played",fav:40},
@@ -543,7 +543,8 @@ const SORTS={
  title:           {nm:L=>L+" A–Z",       d:"片名"},
 };
 const FAV_SORTS={unwatched_first:{nm:"未看优先",d:"没看完的在前，再按收藏时间"},favorited_at:{nm:"最近收藏",d:"收藏时间"},rating:{nm:"评分最高",d:"评分"},title:{nm:"片名 A–Z",d:"片名"}};
-const COL_SORTS={collection:{nm:"合集自身的顺序",d:"在合集页定的"},added_at:{nm:"最近添加",d:"入库时间"},rating:{nm:"评分最高",d:"评分"},random:{nm:"随便看看",d:"每天换一批"}};
+/* 合集行与库行同一组预设，只是标签不带库名；默认取合集自己的 sort */
+const COL_SORTS={added_at:{nm:"最近添加",d:"入库时间，新的在前"},release_date:{nm:"最近上映",d:"上映时间，新的在前"},release_date_asc:{nm:"最早上映",d:"上映时间，老的在前"},last_played:{nm:"最近观看",d:"我最近播放过的"},rating:{nm:"评分最高",d:"评分，高的在前"},random:{nm:"随便看看",d:"每天换一批"},title:{nm:"片名 A–Z",d:"片名"}};
 
 function seeded(n){let x=(20260913+n)|0;return()=>{x=(x*1103515245+12345)&0x7fffffff;return x/0x7fffffff}}
 function sortItems(list,sort){
@@ -570,7 +571,7 @@ let ROWS=[
  {id:"lib:1",sort:"release_date",name:""},
  {id:"row:8f2c",library_id:3,sort:"rating",unwatched:true,name:"评分最高的动漫"},
  {id:"lib:2",sort:"added_at",name:""},
- {id:"row:a91e",collection_id:7,sort:"collection"},
+ {id:"row:a91e",collection_id:7,sort:"release_date_asc"},
  {id:"lib:3",sort:"added_at",name:"",hidden:true},
 ];
 let expanded="row:8f2c";
@@ -602,7 +603,7 @@ function rowItems(r){
   }
   if(r.collection_id){
     const c=COLS[r.collection_id];const list=ITEMS.filter(i=>c.lib===3?i.gh:i.lib===c.lib);
-    return sortItems(list,r.sort==="collection"?"release_date_asc":r.sort);
+    return sortItems(list,r.sort);
   }
   let list=ITEMS.filter(i=>i.lib===rowLib(r));
   if(r.unwatched)list=list.filter(i=>i.w!=="played");
@@ -675,7 +676,7 @@ function move(r,dir){const i=ROWS.indexOf(r),j=i+dir;if(j<0||j>=ROWS.length)retu
 document.addEventListener("click",e=>{
   const g=e.target.closest("[data-goto]");if(g){e.preventDefault();goto(g.dataset.goto);return}
   const al=e.target.closest("[data-add-lib]");if(al){const id="row:"+(++uid);ROWS.push({id,library_id:+al.dataset.addLib,sort:"added_at",name:""});expanded=id;render();return}
-  const ac=e.target.closest("[data-add-col]");if(ac){const id="row:"+(++uid);ROWS.push({id,collection_id:+ac.dataset.addCol,sort:"collection"});expanded=id;render();return}
+  const ac=e.target.closest("[data-add-col]");if(ac){const id="row:"+(++uid);ROWS.push({id,collection_id:+ac.dataset.addCol,sort:COLS[+ac.dataset.addCol].sort});expanded=id;render();return}
   if(e.target.closest("[data-reset]")){if(confirm("恢复默认布局？你自己加的行会被移除。")){ROWS=DEFAULT_ROWS();expanded=null;render()}return}
   const rowEl=e.target.closest("[data-row]");if(!rowEl)return;
   const r=ROWS.find(x=>x.id===rowEl.dataset.row);if(!r)return;
