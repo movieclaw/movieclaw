@@ -360,38 +360,39 @@ def test_home_row_puts_unfinished_first_while_the_full_page_keeps_favorite_order
     assert sorted(home_row) == sorted(full_page)
 
 
-async def _rate(item_scores: dict[int, float]) -> None:
-    from movieclaw_db.models import MediaMetadata, utcnow
-
-    async with get_database().session() as session:
-        for item_id, score in item_scores.items():
-            session.add(
-                MediaMetadata(media_item_id=item_id, vote_average=score, scraped_at=utcnow())
-            )
-        await session.commit()
+# ---------------------------------------------------------------------------
+# 排序：「全部收藏」页与单库海报墙能力对齐
+# ---------------------------------------------------------------------------
 
 
-def test_home_row_can_sort_favorites_by_rating_or_title(client, tmp_path):
-    """首页自定义行给收藏行换排序：评分高的在前 / 片名拼音序；默认仍是收藏时间。"""
+def test_full_page_can_be_resorted_like_a_library_wall(client, tmp_path):
+    """收藏页的排序档与单库海报墙同一套（同一份实现 ``items.sort_item_ids``）：
+    默认仍是最近收藏在前；换档后海报墙与图廊仍是同一份名单、同一个顺序，
+    方向也能反——两种形态切来切去看到的必须是同一批作品的同一个先后。"""
     ids = seed(client, tmp_path)
-    web_favorite(client, media_item_id=ids["movie_a"])  # 电影甲
-    web_favorite(client, media_item_id=ids["show"])  # 剧
-    web_favorite(client, media_item_id=ids["movie_b"])  # 电影乙
-    client.portal.call(partial(_rate, {ids["movie_a"]: 8.5, ids["movie_b"]: 6.0}))
+    for key in ("movie_a", "movie_b", "show"):
+        web_favorite(client, media_item_id=ids[key])
+    newest_first = [ids["show"], ids["movie_b"], ids["movie_a"]]
+    assert [i["media_item_id"] for i in favorites(client)["items"]] == newest_first
 
-    by_time = [i["media_item_id"] for i in favorites(client)["items"]]
-    assert by_time == [ids["movie_b"], ids["show"], ids["movie_a"]]
-
-    by_rating = [i["media_item_id"] for i in favorites(client, sort="rating")["items"]]
-    assert by_rating == [ids["movie_a"], ids["movie_b"], ids["show"]], "没评分的剧沉底"
-
-    by_title = [i["media_item_id"] for i in favorites(client, sort="title")["items"]]
-    # 拼音序：电影甲(dianyingjia) < 电影乙(dianyingyi) < 剧(ju)
-    assert by_title == [ids["movie_a"], ids["movie_b"], ids["show"]]
-
-    # 未看优先与排序叠加：看完的乙沉底，其余仍按评分
-    mark_played(client, ids["movie_b"])
-    stacked = [
-        i["media_item_id"] for i in favorites(client, sort="rating", unwatched_first=True)["items"]
+    # 按标题：电影甲 < 电影乙 < 剧（拼音序，与库页同一把尺）
+    by_title = [ids["movie_a"], ids["movie_b"], ids["show"]]
+    assert [i["media_item_id"] for i in favorites(client, sort="title")["items"]] == by_title
+    assert [g["media_item_id"] for g in gallery(client, sort="title")] == by_title
+    # 反向：整条倒过来
+    assert [
+        i["media_item_id"] for i in favorites(client, sort="title", order="desc")["items"]
+    ] == by_title[::-1]
+    # 收藏时间档也能反：旧→新
+    assert [i["media_item_id"] for i in favorites(client, order="asc")["items"]] == (
+        newest_first[::-1]
+    )
+    # 分页在排好的序列上切：offset 口径两种形态一致
+    assert [
+        i["media_item_id"] for i in favorites(client, sort="title", limit=1, offset=1)["items"]
+    ] == [ids["movie_b"]]
+    assert [g["media_item_id"] for g in gallery(client, sort="title", limit=1, offset=1)] == [
+        ids["movie_b"]
     ]
-    assert stacked == [ids["movie_a"], ids["show"], ids["movie_b"]]
+    # 不认识的档拒收，而不是静默退回默认序
+    assert client.get(f"{_PB}/favorites", params={"sort": "bogus"}).status_code == 422

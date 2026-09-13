@@ -168,11 +168,9 @@ export function LibraryManageRow({
             {/* 手机端没有库存列，主数字并进这行 */}
             <span className="hidden max-md:inline">· {inventory.primary}</span>
             {notes.map((note) => (
-              <span key={note.text} className="inline-flex items-center gap-x-1.5">
+              <span key={note} className="inline-flex items-center gap-x-1.5">
                 <span aria-hidden>·</span>
-                <span className={note.tone === "warn" ? "text-[var(--warn)]" : undefined}>
-                  {note.text}
-                </span>
+                <span>{note}</span>
               </span>
             ))}
             <span className="flex min-w-0 max-w-full items-center gap-x-1.5 max-md:hidden">

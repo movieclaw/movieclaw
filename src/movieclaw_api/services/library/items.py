@@ -41,7 +41,6 @@ from typing import Any, Literal, NamedTuple
 
 from sqlalchemy import BigInteger, Integer, and_, func, not_, nullslast, or_, true
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.sql import Select
 from sqlmodel import select
 
 from movieclaw_api.schemas.library import (
@@ -642,19 +641,12 @@ def _identity_clause(identity: WallIdentity):
 
 
 def _wall_scope(
-    library_id: int,
-    identity: WallIdentity = "confirmed",
-    only_item_id: int | Select | None = None,
+    library_id: int, identity: WallIdentity = "confirmed", only_item_id: int | None = None
 ):
     """海报墙的成员口径：本库、挂了条目、**在架**（没进回收站）、指定身份档。
 
     ``only_item_id`` 把候选集收窄成**一个条目**——"这部片在不在这个合集里"
-    走的就是这条路。传一个 ``Select``（一列 media_item_id 的子查询）则收窄成
-    **一批**条目：名单驱动的合集要按度量排序时，把名单子查询交进来，与规则
-    合集走的是同一条排序查询（docs/design/library-home-perspective.md 4.2 第 2 条）。
-    用子查询而不是 id 列表，是因为 SQLite 的绑定变量数有上限。
-
-    它收窄的是"谁是候选"，不是"要满足什么条件"，所以
+    走的就是这条路。它收窄的是"谁是候选"，不是"要满足什么条件"，所以
     放在这里而不是 ``LibraryFilter``：后者是用户能表达的维度，这个不是。
     反查合集因此与正查成员**逐字同一条查询**，不存在两处答案不一致。
 
@@ -673,11 +665,7 @@ def _wall_scope(
         LibraryFile.on_shelf(),
         _identity_clause(identity),
     )
-    if only_item_id is None:
-        return scope
-    if isinstance(only_item_id, int):
-        return (*scope, LibraryFile.media_item_id == only_item_id)
-    return (*scope, LibraryFile.media_item_id.in_(only_item_id))  # type: ignore[union-attr]
+    return scope if only_item_id is None else (*scope, LibraryFile.media_item_id == only_item_id)
 
 
 async def _titles_sorted(
@@ -687,7 +675,7 @@ async def _titles_sorted(
     filters: LibraryFilter | None = None,
     member_id: int | None = None,
     content_limit: ContentLimit | None = None,
-    only_item_id: int | Select | None = None,
+    only_item_id: int | None = None,
 ) -> list[tuple[int, str]]:
     """本库全部条目的 (id, 标题)，按拼音序排好。
 
@@ -1298,6 +1286,190 @@ async def build_library_relax(
     )
 
 
+def _sorted_ids_query(scope: tuple, sort: WallSort, order: WallOrder | None, member_id: int | None):
+    """给定成员口径（WHERE 片段）与档位，返回「按该档排好的 media_item_id」查询。
+
+    标题档不在这里：拼音序在 Python 里排（见 ``_titles_sorted`` / ``sort_item_ids``），
+    SQLite 对中文按码点排出来的顺序对用户没有意义。
+
+    **排序键、方向语义、平局收尾只写在这一处。** 海报墙翻页（``_wall_page_ids``，
+    口径是"某个库里符合条件的"）与收藏页 / 名单驱动合集（``sort_item_ids``，
+    口径是"这一批 id"）换的只是 ``scope``：同一档在三面墙上必须指同一个数、
+    同一条平局规则，否则用户在收藏页看到的「按评分」与库页对不上。
+
+    每个排序都以 media_item_id 收尾——排序键相等时顺序必须稳定，否则翻页会出现
+    某条目重复出现、另一条目永远刷不到的漏项。``order`` 反转方向时收尾的 id 跟着
+    一起反：反向后的序列恰好是自然序列倒过来，翻页、索引、「回到上次位置」的
+    offset 口径都不必另算。度量为空（没评分、没看过）的条目两个方向都沉底——
+    它们不是"最小值"，是"没数据"。
+    """
+    ascending = _ascending(sort, order)
+    query = select(LibraryFile.media_item_id).where(*scope).group_by(LibraryFile.media_item_id)  # type: ignore[arg-type]
+
+    if sort == "added_at":
+        # 「最近添加」：条目的入账时间取它名下最新的一次文件入账
+        added = func.max(LibraryFile.created_at)
+        return query.order_by(
+            added.asc() if ascending else added.desc(),
+            LibraryFile.media_item_id.asc() if ascending else LibraryFile.media_item_id.desc(),  # type: ignore[union-attr]
+        )
+
+    query = query.join(MediaItem, MediaItem.id == LibraryFile.media_item_id).outerjoin(  # type: ignore[arg-type]
+        MediaMetadata,
+        MediaMetadata.media_item_id == MediaItem.id,  # type: ignore[arg-type]
+    )
+    if sort in ("release_date", "release_date_asc"):
+        # 「按内容时间」：其他库的家庭录像按拍摄日期倒序最自然（release_date 由
+        # 扫描从 sidecar NFO / 容器日期标签 / 文件 mtime 回落而来，见
+        # local_identity）；影视库则是上映/首播日期。缺日期的退到年份、再到 id
+        if ascending:
+            # 正序：系列合集的 release_date_asc 档、或用户把「按上映时间」切成旧→新。
+            # 三个键一起翻向，只翻主键会让同年的片仍按倒序，读起来更乱。
+            # 缺日期的沉底（SQLite 升序默认把 NULL 排最前）：与倒序一致，
+            # 索引条的「未知」档因此两个方向都在最后
+            return query.order_by(
+                nullslast(func.max(MediaMetadata.release_date).asc()),
+                func.max(MediaItem.year).asc(),
+                func.max(MediaItem.title).asc(),
+                LibraryFile.media_item_id.asc(),  # type: ignore[union-attr]
+            )
+        return query.order_by(
+            func.max(MediaMetadata.release_date).desc(),
+            func.max(MediaItem.year).desc(),
+            # release_date 只有日期没有时分：同一天的照片/录像按标题（文件名
+            # 主干，相机序号单调）排，比按入账 id 稳定得多
+            func.max(MediaItem.title).desc(),
+            LibraryFile.media_item_id.desc(),  # type: ignore[union-attr]
+        )
+
+    # —— 以下四档共用同一个形状：按某个度量聚合后倒/正序，末尾一律以
+    #    media_item_id 收尾保证稳定分页；度量为空的条目靠 NULLS LAST 沉底，
+    #    而不是随排序方向在头尾之间跳
+    if sort == "rating":
+        measure = func.max(MediaMetadata.vote_average)
+    elif sort == "runtime":
+        measure = func.max(MediaMetadata.runtime_minutes)
+    elif sort == "size":
+        # 体积按口径内的在架文件求和：单库墙上是它在**这个库**占多少地方，
+        # 跨库的一面墙（收藏、跨库合集）问的才是它总共占多少
+        measure = func.sum(LibraryFile.size_bytes)
+    elif sort == "random":
+        # 每条目一个当日固定的伪随机数；GROUP BY 之后取 max 只是为了满足聚合形状。
+        # 随机档没有方向可言：order 参数对它忽略，永远按哈希升序
+        multiplier = (_RANDOM_MULTIPLIER * (2 * _random_seed() + 1)) % _RANDOM_MODULUS
+        measure = func.max(
+            (func.cast(LibraryFile.media_item_id, BigInteger) * multiplier) % _RANDOM_MODULUS
+        )
+        ascending = True
+    else:
+        measure = func.max(_last_played_at(member_id or 0))
+    # 自然方向下收尾一律是 id 倒序（加方向之前的行为）；反向时整条序列倒过来，
+    # 收尾也跟着变 id 正序——否则同分的片在两个方向里是同一个先后，不是"倒过来"
+    flipped = ascending != _NATURAL_ASC[sort]
+    return query.order_by(
+        nullslast(measure.asc() if ascending else measure.desc()),
+        LibraryFile.media_item_id.asc() if flipped else LibraryFile.media_item_id.desc(),  # type: ignore[union-attr]
+    )
+
+
+async def sort_item_ids(
+    session: AsyncSession,
+    ids: Sequence[int],
+    sort: WallSort,
+    order: WallOrder | None = None,
+    *,
+    member_id: int | None = None,
+    library_ids: set[int] | None = None,
+) -> list[int]:
+    """把一批**给定的**条目 id 按海报墙的档位排好——收藏页与名单驱动合集的排序入口。
+
+    这两面墙的成员不是"某个库里符合条件的"（那是 ``_wall_page_ids`` 的口径），
+    而是一份现成的名单：收藏行、``collection_item``。名单从哪来与按什么排是两件
+    事，但**排序键只能有一份**——「按评分」在库页、收藏页、合集页里必须指同一个
+    数、同一条平局规则、同一种方向语义。所以标题档走 ``title_sort_key``（与
+    ``_titles_sorted`` 同一把尺），其余档走 ``_sorted_ids_query``（与海报墙同一条
+    ORDER BY），只把口径换成"这批 id 在这些库里的在架文件"。
+
+    ``library_ids`` 是观看者可见库（None=不受限）：体积、入账时间这类按文件聚合
+    的度量只算可见库里的文件，与跨库合集的墙聚合同一口径。
+
+    排序查询里查不到的条目（名单里还挂着、文件已经全清掉的）按原顺序补在末尾：
+    排序不该让条目消失，出不出现由调用方的可见性过滤决定，这里只管先后。
+    """
+    if not ids:
+        return []
+    if sort in ("title", "probing"):
+        rows = (
+            await session.execute(
+                select(MediaItem.id, MediaItem.title).where(MediaItem.id.in_(list(ids)))  # type: ignore[attr-defined]
+            )
+        ).all()
+        ordered = [
+            i
+            for i, _ in sorted(
+                ((i, t) for i, t in rows if i is not None),
+                key=lambda r: (title_sort_key(r[1]), r[0]),
+            )
+        ]
+        if not _ascending("title", order):
+            ordered.reverse()
+    else:
+        scope: list = [
+            LibraryFile.media_item_id.in_(list(ids)),  # type: ignore[union-attr]
+            LibraryFile.on_shelf(),
+        ]
+        if library_ids is not None:
+            scope.append(LibraryFile.library_id.in_(library_ids))  # type: ignore[attr-defined]
+        ordered = [
+            i
+            for i in (
+                await session.execute(_sorted_ids_query(tuple(scope), sort, order, member_id))
+            )
+            .scalars()
+            .all()
+            if i is not None
+        ]
+    placed = set(ordered)
+    return ordered + [i for i in ids if i not in placed]
+
+
+async def landing_library_of(
+    session: AsyncSession,
+    item_ids: Sequence[int],
+    *,
+    library_ids: set[int] | None = None,
+    files=None,
+) -> dict[int, int]:
+    """跨库的一面墙上每个条目的**详情落点库**：有文件的可见库里、按媒体库首页
+    顺序取第一个。
+
+    收藏页与跨库合集共用：落点决定卡片点进去落在哪个库的条目页，以及图廊取
+    哪个库的章节图与分集剧照。同一作品跨库存在时按首页库顺序选，落点才稳定、
+    可访问。``files`` 是"什么样的文件算数"的判别（默认在架 ``on_shelf``，收藏页
+    传 ``in_place``——那里"没有在位文件的收藏不计入总数"是刻意的口径）。
+    没有任何合格文件的条目不在返回的字典里。
+    """
+    if not item_ids:
+        return {}
+    query = (
+        select(LibraryFile.media_item_id, Library.id)
+        .join(Library, Library.id == LibraryFile.library_id)  # type: ignore[arg-type]
+        .where(
+            LibraryFile.media_item_id.in_(list(item_ids)),  # type: ignore[union-attr]
+            LibraryFile.on_shelf() if files is None else files,
+        )
+        .order_by(Library.sort_order.asc(), Library.id.asc())  # type: ignore[union-attr]
+        .distinct()
+    )
+    if library_ids is not None:
+        query = query.where(Library.id.in_(library_ids))  # type: ignore[attr-defined]
+    landing: dict[int, int] = {}
+    for item_id, library_id in (await session.execute(query)).all():
+        if item_id is not None and library_id is not None:
+            landing.setdefault(item_id, library_id)
+    return landing
+
+
 async def _wall_page_ids(
     session: AsyncSession,
     library_id: int,
@@ -1309,7 +1481,7 @@ async def _wall_page_ids(
     member_id: int | None = None,
     content_limit: ContentLimit | None = None,
     order: WallOrder | None = None,
-    only_item_id: int | Select | None = None,
+    only_item_id: int | None = None,
 ) -> list[int]:
     """按 sort 排好序的本页条目 id（无 limit 时是全库）。
 
@@ -1338,103 +1510,12 @@ async def _wall_page_ids(
             ids.reverse()
         return ids if limit is None else ids[offset : offset + limit]
 
-    if sort == "added_at":
-        # 「最近添加」：条目的入账时间取它名下最新的一次文件入账
-        ascending = _ascending(sort, order)
-        added = func.max(LibraryFile.created_at)
-        query = (
-            select(LibraryFile.media_item_id)
-            .where(
-                *_wall_scope(library_id, identity, only_item_id),
-                *narrow,
-            )
-            .group_by(LibraryFile.media_item_id)  # type: ignore[arg-type]
-            .order_by(
-                added.asc() if ascending else added.desc(),
-                LibraryFile.media_item_id.asc() if ascending else LibraryFile.media_item_id.desc(),  # type: ignore[union-attr]
-            )
-        )
-        if limit is not None:
-            query = query.limit(limit).offset(offset)
-        return [i for i in (await session.execute(query)).scalars().all() if i is not None]
-
-    if sort in ("release_date", "release_date_asc"):
-        # 「按内容时间」：其他库的家庭录像按拍摄日期倒序最自然（release_date 由
-        # 扫描从 sidecar NFO / 容器日期标签 / 文件 mtime 回落而来，见
-        # local_identity）；影视库则是上映/首播日期。缺日期的退到年份、再到 id
-        query = (
-            select(LibraryFile.media_item_id)
-            .join(MediaItem, MediaItem.id == LibraryFile.media_item_id)  # type: ignore[arg-type]
-            .outerjoin(MediaMetadata, MediaMetadata.media_item_id == MediaItem.id)  # type: ignore[arg-type]
-            .where(
-                *_wall_scope(library_id, identity, only_item_id),
-                *narrow,
-            )
-            .group_by(LibraryFile.media_item_id)  # type: ignore[arg-type]
-        )
-        if _ascending(sort, order):
-            # 正序：系列合集的 release_date_asc 档、或用户把「按上映时间」切成旧→新。
-            # 三个键一起翻向，只翻主键会让同年的片仍按倒序，读起来更乱。
-            # 缺日期的沉底（SQLite 升序默认把 NULL 排最前）：与倒序一致，
-            # 索引条的「未知」档因此两个方向都在最后
-            query = query.order_by(
-                nullslast(func.max(MediaMetadata.release_date).asc()),
-                func.max(MediaItem.year).asc(),
-                func.max(MediaItem.title).asc(),
-                LibraryFile.media_item_id.asc(),  # type: ignore[union-attr]
-            )
-        else:
-            query = query.order_by(
-                func.max(MediaMetadata.release_date).desc(),
-                func.max(MediaItem.year).desc(),
-                # release_date 只有日期没有时分：同一天的照片/录像按标题（文件名
-                # 主干，相机序号单调）排，比按入账 id 稳定得多
-                func.max(MediaItem.title).desc(),
-                LibraryFile.media_item_id.desc(),  # type: ignore[union-attr]
-            )
-        if limit is not None:
-            query = query.limit(limit).offset(offset)
-        return [i for i in (await session.execute(query)).scalars().all() if i is not None]
-
-    # —— 以下四档共用同一个形状：按某个度量聚合后倒/正序，末尾一律以
-    #    media_item_id 收尾保证稳定分页；度量为空的条目靠 NULLS LAST 沉底，
-    #    而不是随排序方向在头尾之间跳
-    if sort in ("rating", "runtime", "size", "last_played", "random"):
-        query = (
-            select(LibraryFile.media_item_id)
-            .join(MediaItem, MediaItem.id == LibraryFile.media_item_id)  # type: ignore[arg-type]
-            .outerjoin(MediaMetadata, MediaMetadata.media_item_id == MediaItem.id)  # type: ignore[arg-type]
-            .where(
-                *_wall_scope(library_id, identity, only_item_id),
-                *narrow,
-            )
-            .group_by(LibraryFile.media_item_id)  # type: ignore[arg-type]
-        )
-        if sort == "rating":
-            measure = func.max(MediaMetadata.vote_average)
-        elif sort == "runtime":
-            measure = func.max(MediaMetadata.runtime_minutes)
-        elif sort == "size":
-            # 体积按本库内的在位文件求和：同一部片散在两个库时，
-            # 这面墙上显示的应该是它在**这个库**占多少地方
-            measure = func.sum(LibraryFile.size_bytes)
-        elif sort == "random":
-            # 每条目一个当日固定的伪随机数；GROUP BY 之后取 max 只是为了满足聚合形状
-            multiplier = (_RANDOM_MULTIPLIER * (2 * _random_seed() + 1)) % _RANDOM_MODULUS
-            hashed = (
-                func.cast(LibraryFile.media_item_id, BigInteger) * multiplier
-            ) % _RANDOM_MODULUS
-            measure = func.max(hashed)
-        else:
-            measure = func.max(_last_played_at(member_id or 0))
-        # 随机档没有方向可言：order 参数对它忽略，永远按哈希升序
-        ascending = True if sort == "random" else _ascending(sort, order)
-        # 自然方向下收尾一律是 id 倒序（加方向之前的行为）；反向时整条序列倒过来，
-        # 收尾也跟着变 id 正序——否则同分的片在两个方向里是同一个先后，不是"倒过来"
-        flipped = ascending != _NATURAL_ASC[sort]
-        query = query.order_by(
-            nullslast(measure.asc() if ascending else measure.desc()),
-            LibraryFile.media_item_id.asc() if flipped else LibraryFile.media_item_id.desc(),  # type: ignore[union-attr]
+    if sort != "probing":
+        # 走 SQL 的几档：口径（本库、在架、身份档、筛选收窄）在这里给定，
+        # ORDER BY 由 _sorted_ids_query 统一生成——收藏页与名单驱动的合集
+        # 给一批 id 排序时走的也是它，「按评分」在三处指同一个数、同一条平局规则
+        query = _sorted_ids_query(
+            (*_wall_scope(library_id, identity, only_item_id), *narrow), sort, order, member_id
         )
         if limit is not None:
             query = query.limit(limit).offset(offset)
@@ -1860,6 +1941,7 @@ async def build_library_gallery(
     limit: int | None = None,
     offset: int = 0,
     sort: WallSort = "title",
+    order: WallOrder | None = None,
     filters: LibraryFilter | None = None,
     content_limit: ContentLimit | None = None,
 ) -> list[LibraryGalleryGroupView]:
@@ -1867,12 +1949,21 @@ async def build_library_gallery(
 
     与海报墙共用同一份条目名单、同一套排序与分页口径（``offset`` / ``limit``
     都按**条目**数），本页条目定下来之后交给 :func:`build_gallery_groups` 组图。
-    默认按标题排（图廊的常驻序），``sort=added_at`` 是用户在 ⋯ 菜单里选的
-    「最近添加」——两面墙同一个 ``offset`` 口径，切了排序「回到上次位置」
-    仍然跳得准（前端把排序写进位置记录的形态里，见 lib/library-wall-recall.ts）。
+    ``sort`` / ``order`` 与海报墙同一套档位与方向语义——两面墙同一个 ``offset``
+    口径，切了排序「回到上次位置」仍然跳得准（前端把排序与方向写进位置记录的
+    形态里，见 lib/library-wall-recall.ts）。
     """
     page_ids = await _wall_page_ids(
-        session, library_id, sort, limit, offset, "confirmed", filters, member_id, content_limit
+        session,
+        library_id,
+        sort,
+        limit,
+        offset,
+        "confirmed",
+        filters,
+        member_id,
+        content_limit,
+        order,
     )
     return await build_gallery_groups(
         session, [(item_id, library_id) for item_id in page_ids], member_id=member_id

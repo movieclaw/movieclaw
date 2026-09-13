@@ -39,6 +39,12 @@ from typing import Any
 from urllib.parse import quote, urlsplit
 
 from movieclaw_api.core.config import get_settings
+from movieclaw_api.services.playback.cache import (
+    Manifest,
+    cache_components,
+    cache_key,
+    new_manifest,
+)
 from movieclaw_api.services.playback.ffmpeg_args import (
     LIVE_PLAYLIST_NAME,
     PLAYLIST_NAME,
@@ -46,6 +52,7 @@ from movieclaw_api.services.playback.ffmpeg_args import (
     TranscodeCommand,
     build_hls_command,
 )
+from movieclaw_api.services.playback.limits import auto_quota_bytes
 from movieclaw_api.services.playback.remote_signing import issue_remote_grant
 from movieclaw_api.services.playback.remote_worker import (
     RemoteWorkerUnavailable,
@@ -89,8 +96,42 @@ MIN_FREE_BYTES = 2 * 1024**3
 #: 低水位急停后，剩余空间回到这个线以上才恢复被暂停的转码。两档水位拉开
 #: 距离是为了不在临界值附近反复停/走（迟滞回差）。
 RESUME_FREE_BYTES = 2 * MIN_FREE_BYTES
+#: 闭环供片节流（docs/design/player-pipeline-optimization.md §A）：转码头领先
+#: 播放头超过这么多秒就 SIGSTOP 整个进程组，回落到 LEAD_LOW_S 以下再 SIGCONT。
+#:
+#: 它替换掉的是 ``-readrate`` 那个开环常数。控盘要控的是**绝对量**（领先秒数 ×
+#: 码率 = 盘上多少字节），readrate 控的是速率：速率限住了领先量仍随时间无界
+#: 增长（用户暂停一小时，转码头照样往前走一小时）；速率不限，领先量又可以很
+#: 小。而且 1.5 倍限速让前向缓冲要播满两分钟才攒得够，期间任何抖动都直接
+#: stall（QoE 复盘：每会话卡 2~3 次）。改成按领先量暂停/恢复之后：起播与 seek
+#: 后缓冲以硬件速度攒满，盘占用峰值有硬上限（LEAD_HIGH_S × 码率），暂停期间
+#: 不再空烧 GPU 与盘。
+#:
+#: 上限取 120 秒：hls.js 前向缓冲目标 60 秒（engine.ts maxBufferLength）之外
+#: 再留一分钟给弱网抖动；下限与前向缓冲同值——回落到 60 秒时恢复，正好在
+#: 客户端开始缺粮之前把料续上。远程 Worker 的恢复要一个 RTT，同样的数够用。
+LEAD_HIGH_S = 120.0
+LEAD_LOW_S = 60.0
+#: 节流巡检间隔。领先量随转码头推进而涨，播放头不动时只有这个循环能发现
+#: 该暂停了；0.5 秒对应最多半秒的超出量，硬件档 10 倍速也就是 5 秒内容。
+THROTTLE_INTERVAL_S = 0.5
+#: 暂停原因的两个取值：磁盘低水位（``_enforce_disk_watermark``）与领先量
+#: 节流（``_throttle_session``）。任一存在即挂起，全部撤销才恢复。
+PAUSE_DISK = "disk"
+PAUSE_LEAD = "lead"
 #: stderr 保留的行数，供诊断面板与日志使用。
 _STDERR_KEEP_LINES = 40
+#: 冷缓存（没有活跃会话在用的转码目录）最长保留多久，超过一律删除，不看
+#: 配额。24 小时盖住「今天看一半明天接着看」；更久的重看本来就少，而且
+#: 配额 LRU 也会先淘汰它们（docs/design/player-pipeline-optimization.md §B）。
+CACHE_RETENTION_S = 24 * 3600.0
+
+
+def _dir_size(directory: Path) -> int:
+    try:
+        return sum(f.stat().st_size for f in directory.rglob("*") if f.is_file())
+    except OSError:
+        return 0
 
 
 def _segment_index_from_name(name: str) -> int | None:
@@ -165,9 +206,12 @@ class TranscodeSession:
     created_at: float = field(default_factory=time.monotonic)
     error: str | None = None
     stderr_tail: deque[str] = field(default_factory=lambda: deque(maxlen=_STDERR_KEEP_LINES))
-    #: 被磁盘低水位哨兵 SIGSTOP 挂起中。挂起的进程不响应 SIGTERM，
-    #: 终止前必须先 SIGCONT（见 ``_terminate``）。
-    disk_paused: bool = False
+    #: 当前挂起（SIGSTOP / 远程 job.pause）的原因集合：``PAUSE_DISK``（磁盘
+    #: 低水位）与 ``PAUSE_LEAD``（转码头领先播放头过多）。两个来源各自独立
+    #: 增删，集合非空即挂起、清空才恢复——只用一个布尔的话，磁盘回升会把
+    #: 领先量节流的暂停一并解开。挂起的进程不响应 SIGTERM，终止前必须先
+    #: SIGCONT（见 ``_terminate``）。
+    pause_reasons: set[str] = field(default_factory=set)
     #: VOD 模式（§12）：非 None 表示播放列表由服务端按关键帧表预生成，
     #: seek 由分片请求驱动（ensure_segment），ffmpeg 可在会话内多次重启。
     segment_plan: SegmentPlan | None = None
@@ -249,6 +293,13 @@ class TranscodeSession:
     #: 起会话的浏览器设备标识（web-<成员>-<浏览器>），管理员「结束播放」按它
     #: 找到并停掉这台浏览器的全部会话。
     device_id: str = ""
+    #: 跨会话复用的台账（§B）：非 None 表示目录按指纹命名、结束时不删而是
+    #: 落台账供下一次认领；None = 旧行为（目录按会话 id 命名，结束即删）。
+    manifest: Manifest | None = None
+    #: 本会话开始时认领到了已有缓存（诊断面板显示，也是「命中率」日志的依据）
+    cache_hit: bool = False
+    #: 认领时台账里已经可用的分片数
+    cached_segments: int = 0
     _stderr_task: asyncio.Task | None = None
     _restart_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
@@ -267,6 +318,21 @@ class TranscodeSession:
 
     def touch(self) -> None:
         self.last_ping = time.monotonic()
+
+    @property
+    def paused(self) -> bool:
+        """进程组（或远程 job）当前处于挂起态。"""
+        return bool(self.pause_reasons)
+
+    @property
+    def disk_paused(self) -> bool:
+        """被磁盘低水位哨兵挂起中。seek 重启在这个状态下必须让路。"""
+        return PAUSE_DISK in self.pause_reasons
+
+    @property
+    def lead_paused(self) -> bool:
+        """被领先量节流挂起中（诊断面板显示用）。"""
+        return PAUSE_LEAD in self.pause_reasons
 
     def record_remote_upload(
         self,
@@ -334,6 +400,10 @@ class TranscodeSessionManager:
         self._root = root or Path(get_settings().transcode_dir)
         self._sessions: dict[str, TranscodeSession] = {}
         self._reaper: asyncio.Task | None = None
+        self._throttler: asyncio.Task | None = None
+        #: 正在 stop() 途中的目录名：会话已从表里摘掉、进程还在收尾。新会话
+        #: 这时认领同一个目录就是两个 ffmpeg 写一处，必须当作「在用」绕开。
+        self._stopping_dirs: set[str] = set()
 
     @property
     def cache_root(self) -> Path:
@@ -343,34 +413,91 @@ class TranscodeSessionManager:
     # -- 生命周期 ---------------------------------------------------------
 
     def cleanup_orphans(self) -> int:
-        """删掉根目录下的全部残留会话目录，返回清理数量。
+        """启动清理（契约 5）：没有台账的目录一律删掉，返回清理数量。
 
-        会话状态只在内存里，所以启动时目录里的任何东西都是上次退出留下的垃圾
-        （契约 5）。**不能假设上次是干净退出的**。
+        会话状态只在内存里，**不能假设上次是干净退出的**。但有台账的目录不是
+        垃圾——那是上次 stop 时留下供复用的转码产物（§B），台账里登记的分片
+        都是已确认写完的。留下它们，再按保留期与配额做一轮 LRU。
         """
         if not self._root.exists():
             return 0
         removed = 0
         for child in self._root.iterdir():
-            if child.is_dir():
+            if not child.is_dir():
+                continue
+            if Manifest.load(child) is None:
                 shutil.rmtree(child, ignore_errors=True)
                 removed += 1
         if removed:
             logger.info("清理了 %d 个上次退出遗留的转码目录", removed)
+        evicted = self.evict_cold(quota_bytes=auto_quota_bytes(self._root))
+        if evicted:
+            logger.info("启动时按保留期/配额淘汰了 %d 个转码缓存目录", evicted)
         return removed
 
+    # -- 转码缓存的回收（§B） -------------------------------------------------
+
+    def _cold_directories(self) -> list[tuple[Path, Manifest | None]]:
+        """没有活跃会话在用的目录（含没有台账的残留），按最后使用时间从旧到新。"""
+        if not self._root.exists():
+            return []
+        in_use = {s.directory.name for s in self._sessions.values()} | self._stopping_dirs
+        cold: list[tuple[Path, Manifest | None]] = []
+        for child in self._root.iterdir():
+            if not child.is_dir() or child.name in in_use:
+                continue
+            cold.append((child, Manifest.load(child)))
+        cold.sort(key=lambda pair: pair[1].last_used_at if pair[1] else 0.0)
+        return cold
+
+    def evict_cold(self, *, quota_bytes: int | None, max_age_s: float | None = None) -> int:
+        """按保留期与配额淘汰冷缓存，返回删除的目录数。
+
+        先删过期的（超过 ``max_age_s``，默认 CACHE_RETENTION_S），再从最久没用的
+        起删到占盘 ≤ ``quota_bytes``。活跃会话的目录永远不碰。
+        """
+        age_limit = CACHE_RETENTION_S if max_age_s is None else max_age_s
+        now = time.time()
+        removed = 0
+        survivors: list[tuple[Path, Manifest | None]] = []
+        for directory, manifest in self._cold_directories():
+            stale = manifest is None or now - manifest.last_used_at > age_limit
+            if stale:
+                shutil.rmtree(directory, ignore_errors=True)
+                removed += 1
+            else:
+                survivors.append((directory, manifest))
+        if quota_bytes is not None:
+            usage = self.usage_bytes()
+            for directory, _ in survivors:
+                if usage <= quota_bytes:
+                    break
+                size = _dir_size(directory)
+                shutil.rmtree(directory, ignore_errors=True)
+                usage -= size
+                removed += 1
+        return removed
+
+    def cold_cache_bytes(self) -> int:
+        """冷缓存占盘（活跃会话之外的全部目录）。设置页与配额判定用。"""
+        return sum(_dir_size(directory) for directory, _ in self._cold_directories())
+
     def start_reaper(self) -> None:
-        """启动心跳巡检。应用 lifespan 里调一次。"""
+        """启动心跳巡检与供片节流巡检。应用 lifespan 里调一次。"""
         if self._reaper is None or self._reaper.done():
             self._reaper = asyncio.create_task(self._reap_loop())
+        if self._throttler is None or self._throttler.done():
+            self._throttler = asyncio.create_task(self._throttle_loop())
 
     async def shutdown(self) -> None:
         """停掉全部会话与巡检任务。后端退出前必须走到这里（契约 3）。"""
-        if self._reaper is not None:
-            self._reaper.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._reaper
-            self._reaper = None
+        for attr in ("_reaper", "_throttler"):
+            task = getattr(self, attr)
+            if task is not None:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+                setattr(self, attr, None)
         for session_id in list(self._sessions):
             await self.stop(session_id)
 
@@ -384,9 +511,120 @@ class TranscodeSessionManager:
             except Exception:  # noqa: BLE001 — 巡检不能因单次异常停摆
                 logger.exception("转码会话巡检异常")
 
+    async def _throttle_loop(self) -> None:
+        while True:
+            try:
+                await asyncio.sleep(THROTTLE_INTERVAL_S)
+                await self.throttle()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 — 巡检不能因单次异常停摆
+                logger.exception("供片节流巡检异常")
+
+    # -- 闭环供片节流（§A） -------------------------------------------------
+
+    def lead_seconds(self, session: TranscodeSession) -> float | None:
+        """转码头领先播放头多少秒。非 VOD 会话（没有播放头信息）返回 None。
+
+        播放头取最近一次**请求**的分片（不是最近供出的）：请求一到就代表
+        播放器已经走到那里，等它供出再算会晚一拍。本轮还什么都没产出时为 0。
+        """
+        plan = session.segment_plan
+        if plan is None:
+            return None
+        produced = self._highest_produced(session)
+        if produced < session.head_segment:
+            return 0.0
+        playhead = session.last_requested_segment
+        if playhead is None or playhead < session.head_segment:
+            # 播放头落在本轮起点之前（刚重启、或旧轮次的分片仍可服务）：
+            # 从本轮起点量——那是它接下来要从哪里开始吃
+            playhead = session.head_segment
+        end = plan.boundaries[produced + 1] if produced + 1 < plan.count else plan.duration_s
+        return max(0.0, end - plan.boundaries[min(playhead, plan.count - 1)])
+
+    def _has_live_writer(self, session: TranscodeSession) -> bool:
+        """本会话是否有一个还在写盘的 ffmpeg（本地进程或远程 job）。"""
+        if session.remote:
+            if session.remote_job_id is None:
+                return False
+            state = get_remote_worker_registry().job_state(session.remote_job_id)
+            return state is None or state.get("type") not in {"job.failed", "job.finished"}
+        return session.process is not None and session.process.returncode is None
+
+    async def _throttle_session(self, session: TranscodeSession) -> None:
+        """按领先量决定这一路该停还是该走（迟滞两档，见 LEAD_HIGH_S）。"""
+        if session.state not in ("spawning", "ready") or not self._has_live_writer(session):
+            return
+        lead = self.lead_seconds(session)
+        if lead is None:
+            return
+        if lead >= LEAD_HIGH_S and not session.lead_paused:
+            if await self._pause(session, PAUSE_LEAD):
+                logger.info(
+                    "转码领先播放 %.0f 秒，暂停供片：session=%s（头=%d 播放头=%s）",
+                    lead, session.id, session.head_segment, session.last_requested_segment,
+                )
+        elif (
+            lead <= LEAD_LOW_S
+            and session.lead_paused
+            and await self._resume(session, PAUSE_LEAD)
+        ):
+            logger.info("转码领先回落到 %.0f 秒，恢复供片：session=%s", lead, session.id)
+
+    async def throttle(self) -> None:
+        """对全部会话跑一遍领先量节流。巡检循环与分片请求入口都会调它。"""
+        for session in list(self._sessions.values()):
+            await self._throttle_session(session)
+
+    async def _pause(self, session: TranscodeSession, reason: str) -> bool:
+        """以某个原因挂起会话。已因别的原因挂起时只记原因，不重复发信号。"""
+        if reason in session.pause_reasons:
+            return True
+        if session.pause_reasons:
+            session.pause_reasons.add(reason)
+            return True
+        if session.remote:
+            if session.remote_job_id is None:
+                return False
+            ok = await get_remote_worker_registry().pause(session.remote_job_id)
+        else:
+            ok = self._signal_group(session, signal.SIGSTOP)
+        if ok:
+            session.pause_reasons.add(reason)
+        return ok
+
+    async def _resume(self, session: TranscodeSession, reason: str) -> bool:
+        """撤销某个挂起原因；全部原因都撤销了才真正发恢复信号。"""
+        if reason not in session.pause_reasons:
+            return True
+        session.pause_reasons.discard(reason)
+        if session.pause_reasons:
+            return True
+        if session.remote:
+            if session.remote_job_id is None:
+                return False
+            return await get_remote_worker_registry().resume(session.remote_job_id)
+        return self._signal_group(session, signal.SIGCONT)
+
+    async def _release(self, session: TranscodeSession) -> None:
+        """无条件解冻：终止或重启前调用，否则 SIGTERM 会排队到 SIGCONT 之后。"""
+        if not session.pause_reasons:
+            return
+        session.pause_reasons.clear()
+        if session.remote:
+            if session.remote_job_id is not None:
+                await get_remote_worker_registry().resume(session.remote_job_id)
+            return
+        self._signal_group(session, signal.SIGCONT)
+
     async def reap(self) -> int:
-        """回收超时无心跳的会话，返回回收数量。顺带跑一遍磁盘水位哨兵。"""
+        """回收超时无心跳的会话，返回回收数量。顺带跑一遍磁盘水位哨兵，并把
+        活跃会话的台账刷一遍（进程崩了也只丢最近十几秒的登记）。"""
         await self._enforce_disk_watermark()
+        for session in list(self._sessions.values()):
+            if session.manifest is not None:
+                await asyncio.to_thread(self._save_manifest, session)
         now = time.monotonic()
         stale = [
             sid
@@ -417,12 +655,17 @@ class TranscodeSessionManager:
         remote_base_url: str = "",
         display_name: str = "",
         device_id: str = "",
+        cache: bool = True,
     ) -> TranscodeSession:
         """起一个会话。playlist 出现即返回，不等全部分片转完。
 
         ``segment_plan`` 非 None 走 VOD 模式（§12）：客户端列表由服务端按
         它生成，ffmpeg 从 ``start_ms`` 所在的分片边界起转、编号接上全片
         规划；seek 由分片请求驱动（``ensure_segment``），会话内可重启。
+
+        ``cache``（仅 VOD 模式有意义）：目录按计划指纹命名，同指纹的冷目录
+        直接认领——已转出的分片不再重转（§B）。关掉即旧行为：目录按会话 id
+        命名、结束即删。
         """
         if plan.tier is PlaybackTier.DIRECT_PLAY:
             raise ValueError("档 0 是原文件直出，不需要会话")
@@ -446,7 +689,8 @@ class TranscodeSessionManager:
             device_id=device_id,
             member_id=member_id,
             tier=plan.tier,
-            # 目录名就用会话 id：排查问题时看一眼盘上的目录就知道是哪个会话
+            # 目录名默认就用会话 id：排查问题时看一眼盘上的目录就知道是哪个
+            # 会话。开了缓存的 VOD 会话下面会换成指纹目录
             directory=self._root / session_id,
             start_ms=start_ms,
             plan=plan,
@@ -456,10 +700,28 @@ class TranscodeSessionManager:
             hw_backend=hw_backend,
             remote=use_remote,
         )
+        if cache and segment_plan is not None:
+            self._assign_cache_directory(session)
         session.directory.mkdir(parents=True, exist_ok=True)
         self._sessions[session.id] = session
+        if session.manifest is not None:
+            # 一落地就写台账：进程半路崩了，目录也有身份，不会被启动清理当垃圾
+            session.manifest.last_used_at = time.time()
+            session.manifest.save(session.directory)
         try:
-            if use_remote:
+            if session.manifest is not None and session.cache_hit and self._segment_ready(
+                session, head_segment
+            ):
+                # 起播分片已在缓存里：先不起写者，让播放器直接读文件；播到
+                # 没转过的分片时 ensure_segment 的「无写者」分支再把 ffmpeg
+                # 拉起来（与远程 Worker 断线后仍能播缓存段同一条路）
+                session.state = "ready"
+                session.touch()
+                logger.info(
+                    "转码缓存命中：session=%s 目录=%s 已有 %d 段可用，起播段 %d 直接读文件",
+                    session.id, session.directory.name, session.cached_segments, head_segment,
+                )
+            elif use_remote:
                 # 远程 Worker 在首个分片前不可用时，当前会话必须失败。远程硬件
                 # 计划可能只因远程能力才越过了软件转码同意门槛，不能在这里绕过
                 # 决策层偷偷启动 libx264；播放器下一次请求会带 failed_tiers，
@@ -485,6 +747,58 @@ class TranscodeSessionManager:
                 await self.stop(session.id)
             raise
         return session
+
+    def _assign_cache_directory(self, session: TranscodeSession) -> None:
+        """按指纹给会话选目录，并在能认领时导入台账（§B）。
+
+        三种结局：指纹目录空着 → 用它、台账从零建；目录冷着且台账成分逐项
+        相等 → 认领，已转出的分片直接可用；目录正被别的活跃会话用着（另一
+        位成员同时在看）→ 退到「指纹~会话 id」的独立目录，绝不两个写者写一处
+        （第一版刻意不做写者仲裁：并发看同一片本来就少，安全比复用重要）。
+        """
+        assert session.segment_plan is not None
+        components = cache_components(
+            session.plan,
+            source_path=session.source_path,
+            hw_backend=session.hw_backend,
+            remote=session.remote,
+            segment_plan=session.segment_plan,
+        )
+        key = cache_key(components)
+        in_use = {s.directory.name for s in self._sessions.values()} | self._stopping_dirs
+        directory = self._root / key
+        if key in in_use:
+            session.directory = self._root / f"{key}~{session.id}"
+            session.manifest = new_manifest(key, components, session.segment_plan)
+            return
+        session.directory = directory
+        existing = Manifest.load(directory) if directory.exists() else None
+        if existing is not None and existing.matches(components):
+            usable = existing.usable_segments(directory)
+            session.completed_segments = set(usable)
+            session.cache_hit = True
+            session.cached_segments = len(usable)
+            existing.completed = sorted(usable)
+            session.manifest = existing
+            # 旧轮次的 live.m3u8 只是上一路 ffmpeg 的进度，台账已经取代它；
+            # 留着会把它当本轮进度解析
+            session.playlist_path.unlink(missing_ok=True)
+            return
+        if directory.exists():
+            # 有目录没有（可信的）台账：上次进程没走完 stop 的残留，或成分变了
+            # （参数版本升级）。整个重来，别让旧字节混进新会话
+            shutil.rmtree(directory, ignore_errors=True)
+        session.manifest = new_manifest(key, components, session.segment_plan)
+
+    def _save_manifest(self, session: TranscodeSession) -> None:
+        """把当前已完成分片写进台账（stop / 重启前 / 巡检时调用）。"""
+        manifest = session.manifest
+        if manifest is None or not session.directory.exists():
+            return
+        self._sync_completed(session)
+        manifest.completed = sorted(session.completed_segments)
+        manifest.last_used_at = time.time()
+        manifest.save(session.directory)
 
     async def _spawn_remote(
         self, session: TranscodeSession, base_url_override: str
@@ -634,15 +948,22 @@ class TranscodeSessionManager:
                 )
 
     def _check_disk(self, quota_bytes: int | None) -> None:
-        """写入前先查盘（§4.6）。**不要指望 LRU 跑得比写入快。**"""
+        """写入前先查盘（§4.6）。**不要指望 LRU 跑得比写入快。**
+
+        冷缓存是可牺牲的：盘紧或配额满时先把没人用的目录淘汰掉，再判要不要
+        拒绝——拒绝只能是活跃会话真把盘占满了的时候。"""
         self._root.mkdir(parents=True, exist_ok=True)
         free = shutil.disk_usage(self._root).free
+        if free < MIN_FREE_BYTES and self.evict_cold(quota_bytes=0):
+            free = shutil.disk_usage(self._root).free
         if free < MIN_FREE_BYTES:
             raise DiskQuotaError(
                 f"磁盘剩余空间不足（{free / 1024**3:.1f} GB），已拒绝新的转码会话。"
                 "转码缓存与数据库同在 data 目录，写满会导致整个应用不可用。"
                 "请清理磁盘后重试。"
             )
+        if quota_bytes is not None and self.usage_bytes() >= quota_bytes:
+            self.evict_cold(quota_bytes=quota_bytes)
         if quota_bytes is not None and self.usage_bytes() >= quota_bytes:
             raise DiskQuotaError(
                 f"转码缓存已达配额上限（{quota_bytes / 1024**3:.1f} GB，"
@@ -682,17 +1003,14 @@ class TranscodeSessionManager:
             free = shutil.disk_usage(self._root).free
         except OSError:
             return
+        if free < MIN_FREE_BYTES and await asyncio.to_thread(self.evict_cold, quota_bytes=0):
+            # 先牺牲冷缓存，腾出来了就不必挂起正在看的人
+            free = shutil.disk_usage(self._root).free
         if free < MIN_FREE_BYTES:
             for session in writing:
                 if session.disk_paused:
                     continue
-                paused = (
-                    await registry.pause(session.remote_job_id)
-                    if session.remote and session.remote_job_id is not None
-                    else self._signal_group(session, signal.SIGSTOP)
-                )
-                if paused:
-                    session.disk_paused = True
+                if await self._pause(session, PAUSE_DISK):
                     logger.warning(
                         "磁盘剩余 %.1f GB 已低于安全水位，暂停会话 %s 的转码写入（%s）",
                         free / 1024**3,
@@ -703,13 +1021,7 @@ class TranscodeSessionManager:
             for session in writing:
                 if not session.disk_paused:
                     continue
-                resumed = (
-                    await registry.resume(session.remote_job_id)
-                    if session.remote and session.remote_job_id is not None
-                    else self._signal_group(session, signal.SIGCONT)
-                )
-                if resumed:
-                    session.disk_paused = False
+                if await self._resume(session, PAUSE_DISK):
                     logger.info(
                         "磁盘空间已恢复（剩余 %.1f GB），继续会话 %s 的转码（%s）",
                         free / 1024**3,
@@ -729,6 +1041,8 @@ class TranscodeSessionManager:
             return False
 
     async def _spawn(self, session: TranscodeSession, command: TranscodeCommand) -> None:
+        # 新进程从不挂起态起步：旧进程的挂起原因随它一起消失
+        session.pause_reasons.clear()
         # 契约 1+2：异步子进程 + 独立进程组
         process = await asyncio.create_subprocess_exec(
             *command.argv,
@@ -833,6 +1147,9 @@ class TranscodeSessionManager:
         session.pending_since.setdefault(index, waited_from)
         session.last_requested_segment = index
         session.last_requested_at_ms = int(time.time() * 1000)
+        # 播放头动了：领先量可能已经回落，先看要不要把挂起的转码放行——
+        # 不在这里判的话要等巡检的下一拍，缺粮边缘上那半秒就是一次卡顿
+        await self._throttle_session(session)
         try:
             result = await self._await_segment(
                 session,
@@ -917,7 +1234,7 @@ class TranscodeSessionManager:
                 return target
             # seek 重启会先清空旧 job/worker，再异步下发新 job。这个短窗口
             # 内不检查旧状态，否则等待者会把正常切换误报成 Worker 断线。
-            if session.remote and not session.remote_restarting:
+            if session.remote and not session.remote_restarting and session.remote_job_id:
                 registry = get_remote_worker_registry()
                 job_state = registry.job_state(session.remote_job_id or "")
                 if job_state and job_state.get("type") in {"job.failed", "job.finished"}:
@@ -1106,13 +1423,21 @@ class TranscodeSessionManager:
                 wanted = min(aged)
             behind = wanted < session.head_segment
             ahead = wanted > produced + self._RESTART_AHEAD_SEGMENTS
-            process_dead = session.process is not None and session.process.returncode is not None
+            # 没有写者：进程已退出，或缓存命中起播时根本没起（§B），或远程
+            # 会话还没派过任务——要的分片不在盘上就得拉一个起来
+            if session.remote:
+                # 远程 seek 切换 job 的窗口里 job_id 暂空，那不是「没有写者」
+                writer_missing = session.remote_job_id is None and not session.remote_restarting
+            else:
+                writer_missing = (
+                    session.process is None or session.process.returncode is not None
+                )
             # 进程还活着且全体等待者都在覆盖范围内：等它转过来即可
             if not (
                 retry_failed
                 or behind
                 or ahead
-                or (process_dead and not self._segment_ready(session, index))
+                or (writer_missing and not self._segment_ready(session, index))
             ):
                 return
             index = wanted
@@ -1156,8 +1481,10 @@ class TranscodeSessionManager:
                 hw_backend=session.hw_backend,
                 start_number=index,
             )
-            # 旧轮次的清单先并入台账再删：这一轮转出的分片下次回看直接可用
+            # 旧轮次的清单先并入台账再删：这一轮转出的分片下次回看直接可用；
+            # 跨会话台账也顺手刷一遍，进程崩了这一轮的产出也不丢
             self._sync_completed(session)
+            self._save_manifest(session)
             session.playlist_path.unlink(missing_ok=True)
             await self._spawn(session, command)
 
@@ -1193,9 +1520,7 @@ class TranscodeSessionManager:
         try:
             old_job_id = session.remote_job_id
             if old_job_id is not None:
-                if session.disk_paused:
-                    await registry.resume(old_job_id)
-                    session.disk_paused = False
+                await self._release(session)
                 # seek 重启与普通退出不同：旧分片已经失去交付价值，直接杀掉
                 # 远端 ffmpeg，避免旧任务继续读源并和新轮次并发上传。
                 await registry.cancel(old_job_id, force=True)
@@ -1358,13 +1683,23 @@ class TranscodeSessionManager:
         # ffmpeg 拉起来，而会话已经不在表里，那个进程从此没人管（孤儿
         # ffmpeg，「关了播放 ffmpeg 还在跑」的一条来路）。
         session.state = "stopped"
-        async with session._restart_lock:
-            # 锁内再置一次：恰好在临界区里的那次重启会经由 _spawn 把状态写回
-            # spawning/ready，把外面置的 stopped 盖掉——不重申终态的话，还挂着
-            # 的分片等待者下一拍又能通过状态检查再拉起一个 ffmpeg。
-            session.state = "stopped"
-            await self._terminate(session)
-        shutil.rmtree(session.directory, ignore_errors=True)
+        self._stopping_dirs.add(session.directory.name)
+        try:
+            async with session._restart_lock:
+                # 锁内再置一次：恰好在临界区里的那次重启会经由 _spawn 把状态写回
+                # spawning/ready，把外面置的 stopped 盖掉——不重申终态的话，还挂着
+                # 的分片等待者下一拍又能通过状态检查再拉起一个 ffmpeg。
+                session.state = "stopped"
+                await self._terminate(session)
+            if session.manifest is not None and session.error is None:
+                # 缓存会话：目录留着、台账落盘，下一次同指纹的会话直接认领（§B）。
+                # 半路死掉的分片文件不进台账（只登记已确认完成的），认领时自然
+                # 被覆盖
+                await asyncio.to_thread(self._save_manifest, session)
+            else:
+                shutil.rmtree(session.directory, ignore_errors=True)
+        finally:
+            self._stopping_dirs.discard(session.directory.name)
         if session.activity_meter is not None:
             # 活动页的字节流随会话一起结束，否则「正在播放」会一直显示一条
             # 已经没人拉的流
@@ -1416,9 +1751,7 @@ class TranscodeSessionManager:
             # SIGTERM/SIGKILL 对应。即使 Worker 已断线，也要释放 NAS 的占用台账。
             registry = get_remote_worker_registry()
             if session.remote_job_id is not None:
-                if session.disk_paused:
-                    await registry.resume(session.remote_job_id)
-                    session.disk_paused = False
+                await self._release(session)
                 await registry.cancel(session.remote_job_id)
                 registry.remove_job(session.remote_job_id)
             session.remote_worker_id = None
@@ -1428,11 +1761,9 @@ class TranscodeSessionManager:
         if process is None or process.returncode is not None:
             await self._cancel_stderr(session)
             return
-        # 被低水位哨兵挂起的进程不会处理 SIGTERM（信号排队到 SIGCONT 之后），
-        # 不解冻直接杀只能等 3 秒超时走 SIGKILL——白等
-        if session.disk_paused:
-            self._signal_group(session, signal.SIGCONT)
-            session.disk_paused = False
+        # 挂起的进程不会处理 SIGTERM（信号排队到 SIGCONT 之后），不解冻直接杀
+        # 只能等 3 秒超时走 SIGKILL——白等。领先量节流与磁盘低水位两种挂起同理
+        await self._release(session)
         first_signal = signal.SIGTERM if graceful else signal.SIGKILL
         try:
             os.killpg(os.getpgid(process.pid), first_signal)

@@ -19,6 +19,7 @@ from movieclaw_matcher import (
     candidate_ladder_rank,
     compare_ladder,
     compare_upgrade,
+    covered_by_existing,
     ladder_vector,
     provably_at_cutoff,
     provably_below_cutoff,
@@ -604,6 +605,64 @@ def test_candidate_ladder_rank_follows_user_resolution_order() -> None:
     r1080 = candidate_ladder_rank(TorrentAttrs(resolution="1080p", media_source="WEB-DL"), spec)
     r2160 = candidate_ladder_rank(TorrentAttrs(resolution="2160p", media_source="WEB-DL"), spec)
     assert r1080 > r2160
+
+
+# ---------------------------------------------------------------------------
+# 入库去重裁判（issue #381）：与抓取判定、洗版验证同一条阶梯
+# ---------------------------------------------------------------------------
+
+
+_WEBDL_1080 = dict(resolution="1080p", media_source="WEB-DL")
+_WEBDL_2160 = dict(resolution="2160p", media_source="WEB-DL")
+
+COVERED_CASES = [
+    # (在位快照列表, 来件, spec kwargs, 期望)
+    # 规则组把 1080p 排在 2160p 前（追剧省流）：1080p 来件是真升级，放行
+    ([_WEBDL_2160], _WEBDL_1080, dict(resolutions=["1080p", "2160p"]), False),
+    # 同一来件在中性阶梯下是低档重复：跳过
+    ([_WEBDL_2160], _WEBDL_1080, {}, True),
+    # 同档：重复内容
+    ([_WEBDL_1080], _WEBDL_1080, {}, True),
+    # 中性阶梯下的真升级：2160p 对 1080p
+    ([_WEBDL_1080], _WEBDL_2160, {}, False),
+    # 片源升级同样是真升级（同分辨率比片源档）
+    ([_WEBDL_1080], dict(resolution="1080p", media_source="Blu-ray", remux=True), {}, False),
+    # 来件片源未知：无法证明严格更优 = 与验证端同口径视为重复
+    ([_WEBDL_1080], dict(resolution="1080p"), {}, True),
+    # 在位片源未知、来件 WEB-DL：单侧未知不可比，同样不能证明更优
+    ([dict(resolution="1080p")], _WEBDL_1080, {}, True),
+    # 多版本并存：来件优于其一但不优于另一 → 仍算覆盖
+    ([dict(resolution="720p", media_source="WEB-DL"), _WEBDL_2160], _WEBDL_1080, {}, True),
+    # 规则组配了编码阶梯：同分辨率同片源、编码更优也是真升级
+    (
+        [dict(resolution="1080p", media_source="WEB-DL", video_codec="x264")],
+        dict(resolution="1080p", media_source="WEB-DL", video_codec="x265"),
+        dict(video_codecs=["x265", "x264"], upgrade_ladder=["resolution", "source", "video_codec"]),
+        False,
+    ),
+    # 来件分辨率未知（探测失败且名称没标）：对来件一无所知，不判定
+    ([_WEBDL_1080], dict(media_source="WEB-DL"), {}, None),
+    # 没有在位版本：无从覆盖
+    ([], _WEBDL_1080, {}, None),
+]
+
+
+@pytest.mark.parametrize("existing, incoming, spec_kwargs, expected", COVERED_CASES)
+def test_covered_by_existing(existing, incoming, spec_kwargs, expected) -> None:
+    """入库去重与抓取判定同一把尺子：规则组偏好序决定谁高谁低，未知不冒充已知。"""
+    verdict = covered_by_existing(
+        [_snap(**e) for e in existing], _snap(**incoming), _spec(**spec_kwargs)
+    )
+    assert verdict is expected
+
+
+def test_covered_by_existing_agrees_with_upgrade_decision() -> None:
+    """抓取端认定的升级，入库端绝不能判成重复——否则文件被拦在库外，洗版永不完成。"""
+    spec = _spec(upgrade_source="web-dl", resolutions=["1080p", "2160p"])
+    current = _snap(**_WEBDL_2160)
+    candidate = _candidate(**_WEBDL_1080)
+    assert compare_upgrade(candidate, current, spec).accepted
+    assert covered_by_existing([current], candidate.attrs, spec) is False
 
 
 # ---------------------------------------------------------------------------

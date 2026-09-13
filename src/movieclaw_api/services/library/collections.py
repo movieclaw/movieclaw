@@ -19,10 +19,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from movieclaw_api.services.library.access import ContentLimit
 from movieclaw_api.services.library.items import (
     LibraryFilter,
+    WallOrder,
     WallSort,
     _narrow,
     _wall_count,
     _wall_page_ids,
+    sort_item_ids,
 )
 from movieclaw_db.models import Collection, CollectionItem, LibraryFile
 
@@ -131,6 +133,7 @@ async def resolve_members(
     visible_library_ids: set[int] | None = None,
     content_limit: ContentLimit | None = None,
     sort: WallSort | None = None,
+    order: WallOrder | None = None,
     limit: int | None = None,
     offset: int = 0,
     only_item_id: int | None = None,
@@ -144,6 +147,10 @@ async def resolve_members(
 
     规则驱动 → ``rules_to_filter()`` 后原样交给 ``_wall_page_ids()``；
     名单驱动 → ``collection_item`` 按 position，再过一遍可见性与在位文件。
+
+    ``sort`` / ``order`` 是观看者在合集页临时选的排序（不给 = 合集自己的序：
+    规则驱动用 ``collection.sort``，名单驱动用 position）。名单驱动的合集选了
+    排序时交给 ``items.sort_item_ids``——与海报墙同一份排序实现，不在这里另排。
 
     ``visible_library_ids`` 是成员可见库的收口点（None=不受限）。跨库合集
     （``library_id IS NULL``）目前只能是名单驱动——规则驱动要指定库，
@@ -162,6 +169,7 @@ async def resolve_members(
             rules_to_filter(effective_rules(collection)),
             member_id,
             content_limit,
+            order,
             only_item_id,
         )
 
@@ -170,24 +178,6 @@ async def resolve_members(
     member_rows = select(CollectionItem.media_item_id).where(
         CollectionItem.collection_id == collection.id
     )
-    # 给了 sort 的单库名单合集：把名单当候选集交给**同一条**排序查询（首页自定义行
-    # 要按评分 / 上映 / 随机排它，见 docs/design/library-home-perspective.md 4.2 第 2 条）。
-    # 跨库名单（library_id 为空）没有单一的库口径，仍按 position 返回、忽略 sort
-    if sort is not None and collection.library_id is not None and only_item_id is None:
-        if visible_library_ids is not None and collection.library_id not in visible_library_ids:
-            return []
-        return await _wall_page_ids(
-            session,
-            collection.library_id,
-            sort,
-            limit,
-            offset,
-            "confirmed",
-            None,
-            member_id,
-            content_limit,
-            only_item_id=member_rows,
-        )
     if only_item_id is not None:
         member_rows = member_rows.where(CollectionItem.media_item_id == only_item_id)
     rows = (
@@ -218,6 +208,18 @@ async def resolve_members(
         .all()
     )
     ordered = [i for i in ids if i in alive]
+    if sort is not None:
+        # 度量按文件聚合的档（体积、入账时间）只算这个合集范围内的文件：
+        # 单库合集是本库，跨库合集是观看者可见的库
+        scope_libraries = (
+            {collection.library_id} if collection.library_id is not None else visible_library_ids
+        )
+        ordered = await sort_item_ids(
+            session, ordered, sort, order, member_id=member_id, library_ids=scope_libraries
+        )
+    elif order == "desc":
+        # 自定顺序的自然方向就是名单序，反过来即整条倒着读
+        ordered.reverse()
     return ordered[offset : offset + limit] if limit is not None else ordered[offset:]
 
 

@@ -166,7 +166,10 @@ export function LibraryView() {
                 0,
                 // 「未看优先」是首页这一行的默认：没看完的提前（全量页不传，保持收藏时间序）
                 favoritesRow.sort === "unwatched_first",
-                favoritesRow.sort === "unwatched_first" ? "favorited_at" : favoritesRow.sort,
+                {
+                  sort:
+                    favoritesRow.sort === "unwatched_first" ? "favorited_at" : favoritesRow.sort,
+                },
               ).catch(() => null)
             : Promise.resolve(null),
         ]);
@@ -533,8 +536,13 @@ function rowFetches(
       );
     } else if (row.kind === "collection") {
       const { collection, sort } = row;
+      // 合集接口没有 release_date_asc 这一档：它由「按上映时间 + 正序」覆盖
+      const params =
+        sort === "release_date_asc"
+          ? { sort: "release_date" as const, order: "asc" as const }
+          : { sort };
       fetches.set(rowFetchKey(row), () =>
-        listCollectionItems(collection.id, { limit: RECENT_COUNT, sort }),
+        listCollectionItems(collection.id, { limit: RECENT_COUNT, ...params }),
       );
     } else if (row.kind === "libraries") {
       for (const library of libraries) {

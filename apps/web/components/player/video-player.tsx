@@ -18,6 +18,7 @@ import {
   type PlaybackDiagnostics,
   type PlaybackWatchState,
   pingPlaybackSession,
+  reportPlaybackClientLog,
   reportPlaybackProgress,
   reportPlaybackProgressOnUnload,
   resolveStreamUrl,
@@ -30,7 +31,13 @@ import {
   stopPlaybackSessionOnUnload,
 } from "@/lib/api/playback";
 import { type AutoplayOutcome, attemptAutoplay, shouldAttemptAutoplay } from "@/lib/player/autoplay";
-import { formatBandwidth } from "@/lib/player/bandwidth";
+import {
+  DIRECT_SHORTFALL_SAMPLES,
+  bandwidthRestartWanted,
+  directDownlinkShort,
+  downlinkHintBps,
+  formatBandwidth,
+} from "@/lib/player/bandwidth";
 import { getCapabilitySnapshot } from "@/lib/player/capability";
 import type { PlaybackEngine } from "@/lib/player/engine";
 import { createEngine, preloadHlsEngine } from "@/lib/player/engine";
@@ -523,6 +530,15 @@ export function VideoPlayer(props: VideoPlayerProps) {
    * 为了这个，见 player-feel.md §2.A1，别从这里把它加回来）。
    */
   const [speedLabel, setSpeedLabel] = useState<string | null>(null);
+  /** 最近一次可用的取流速度（bps），下一次开会话带给服务端压码率（§C） */
+  const lastDownlinkRef = useRef<number | null>(null);
+  /** 本会话是否已经按带宽重开过一次（每会话只试一次，防无限循环） */
+  const bandwidthRestartedRef = useRef(false);
+  /** 直通档「线路不够」的连续采样计数与是否已提示过 */
+  const directShortRef = useRef(0);
+  const directHintShownRef = useRef(false);
+  /** 源码率（台账真值），供 1Hz 循环判直通档线路够不够 */
+  const sourceBitrateRef = useRef<number | null>(null);
 
   /** 横滑拖进度时的落点读数。手势期间常显，松手/取消后淡出 */
   const [seekPreview, setSeekPreview] = useState<{
@@ -891,6 +907,10 @@ export function VideoPlayer(props: VideoPlayerProps) {
             max_height: quality ?? undefined,
             audio_track: requestedAudio ?? undefined,
             subtitle_track: requestedSubtitle ?? undefined,
+            // 上一路引擎量到的线路速度：服务端据此压转码码率（§C）。首次
+            // 起播还没有读数，服务端按阶梯值；重开（seek 换会话 / 缺粮重开
+            // / 换轨）时才带得上——正是外网用户最需要它的时刻
+            downlink_bps: downlinkHintBps(lastDownlinkRef.current),
           },
           apiRef.current,
         );
@@ -992,6 +1012,11 @@ export function VideoPlayer(props: VideoPlayerProps) {
     if (!session?.stream_url || !video || !mode) return;
 
     let disposed = false;
+    // 每路会话各自一次机会：按带宽重开的护栏、直通档提示的计数都按会话清
+    bandwidthRestartedRef.current = false;
+    directShortRef.current = 0;
+    directHintShownRef.current = false;
+    sourceBitrateRef.current = session.source?.bit_rate ?? null;
     const engine = createEngine({
       video,
       streamUrl: resolveStreamUrl(mode.streamUrl),
@@ -1005,8 +1030,36 @@ export function VideoPlayer(props: VideoPlayerProps) {
       // 全片列表下这是防止 hls.js 先去拉第 0 段的关键（engine.ts 有注释）
       startPositionS: Math.max(0, toSessionSeconds(pendingFileMsRef.current, mode.originMs)),
       telemetry: apiRef.current.telemetry,
-      onFailed: (reason) => {
-        if (!disposed) dispatch({ type: "failed", reason });
+      onFailed: (reason, cause) => {
+        if (disposed) return;
+        // 缺粮且线路装不下当前码率：按带宽同档重开（服务端用 downlink_bps
+        // 压码率），不走降档——降档降的是编码档，对带宽无能为力，只会白白
+        // 掉一级画质（docs/design/player-pipeline-optimization.md §C）。
+        // 每会话只试一次：重开后仍缺粮说明估错了，再来就是无限循环。
+        const stats = engine.stats();
+        if (
+          bandwidthRestartWanted({
+            cause,
+            videoAction: session.decision.video?.action,
+            downlinkBps: stats.downlinkBps,
+            bitrateBps: stats.bitrate,
+            alreadyRestarted: bandwidthRestartedRef.current,
+          })
+        ) {
+          bandwidthRestartedRef.current = true;
+          reportPlaybackClientLog("bandwidth-restart", {
+            reason,
+            downlink_bps: Math.round(stats.downlinkBps ?? 0),
+            bitrate_bps: Math.round(stats.bitrate ?? 0),
+          }, apiRef.current);
+          freezeFrame();
+          video.pause();
+          wantsPlayRef.current = true;
+          pendingFileMsRef.current = positionRef.current;
+          dispatch({ type: "restart", startMs: positionRef.current });
+          return;
+        }
+        dispatch({ type: "failed", reason });
       },
       // 取流持续失败（token 过期 / 服务端中断）：与心跳自愈同一条路，同档位
       // 原地重开（新会话 = 新 token），不走降档——这一档没有失败。真断网时
@@ -1132,12 +1185,29 @@ export function VideoPlayer(props: VideoPlayerProps) {
     const timer = window.setInterval(() => {
       const engine = engineRef.current;
       if (!engine) return;
-      const label = formatBandwidth(engine.stats().downlinkBps);
+      const stats = engine.stats();
+      const label = formatBandwidth(stats.downlinkBps);
       // 新引擎刚挂上、样本还没攒够时同样保留上一个读数（理由同上）
       if (label !== null) setSpeedLabel(label);
+      // 最近一次可用读数留给下一次开会话（§C）：换会话的空档没有引擎可问，
+      // 而重开请求恰恰要在那个空档里发出
+      if (stats.downlinkBps !== null) lastDownlinkRef.current = stats.downlinkBps;
+      // 直通档线路不够：码率改不了，只能提醒用户换画质。连续十次采样都不够
+      // 才提示、每会话一次——一次抖动不该弹提示，反复弹更烦人
+      if (stats.engine === "direct" && !directHintShownRef.current) {
+        const short = directDownlinkShort({
+          downlinkBps: stats.downlinkBps,
+          sourceBitrateBps: sourceBitrateRef.current,
+        });
+        directShortRef.current = short ? directShortRef.current + 1 : 0;
+        if (directShortRef.current >= DIRECT_SHORTFALL_SAMPLES) {
+          directHintShownRef.current = true;
+          flashNotice("线路速度低于片源码率，可在设置里选更低画质");
+        }
+      }
     }, 1000);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [flashNotice]);
 
   /** 累计一条播放质量事件。归约是纯函数，这里只负责喂事件。 */
   const qoe = useCallback((event: QoeEvent) => {

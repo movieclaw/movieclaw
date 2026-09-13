@@ -39,7 +39,7 @@ import { playHref, rememberPlayerReturnPath } from "@/lib/player/play-links";
  *     播放就是从那一帧起播（服务端给了 t_seconds），分集剧照带季集号进详情页
  *     直接落到那一集；心与详情页那颗是同一颗（收藏整部作品，见 playback marks）。
  *
- * 数据来自 /libraries/{id}/gallery，按作品分页（与海报墙同一份标题序）；
+ * 数据来自 /libraries/{id}/gallery，按作品分页（与海报墙同一套排序档位与方向）；
  * 灯箱翻的是铺平后的整份图列表（GalleryEntry），翻到末尾向外要下一页。
  *
  * 「全部收藏」页复用同一套墙与灯箱，数据换成 /playback/favorites/gallery

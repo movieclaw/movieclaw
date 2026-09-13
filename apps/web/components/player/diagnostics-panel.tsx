@@ -234,6 +234,11 @@ export function DiagnosticsPanel({
           decision.video.height ? ` ${decision.video.height}p` : ""
         }${session.hw_backend ? ` · ${session.hw_backend}` : " · 软件"}${
           decision.video.tone_map ? " · HDR 转 SDR" : ""
+        }${
+          // 按实测带宽压过码率要摆出来：否则用户会以为画质设置坏了（§C）
+          decision.video.bitrate_cap_bps
+            ? ` · 按线路限 ${(decision.video.bitrate_cap_bps / 1_000_000).toFixed(2)} Mbps`
+            : ""
         }）`
     : null;
 
@@ -482,7 +487,24 @@ export function DiagnosticsPanel({
               连续产出 {segmentLabel(diagnostics.highest_produced_segment)} · 头部{" "}
               {segmentLabel(diagnostics.head_segment)} · 共 {diagnostics.total_segments} 段
             </ActionLine>
-            <ActionLine>NAS 会话缓存 {formatBytes(diagnostics.cache_bytes)}</ActionLine>
+            {diagnostics.lead_seconds != null ? (
+              // 领先量与挂起态：用户问「为什么转码停了」时这一行直接作答——
+              // 停是因为已经领先够多（闭环节流，§A），不是转不动
+              <ActionLine>
+                转码领先 {Math.round(diagnostics.lead_seconds)} 秒
+                {diagnostics.pause_reasons?.includes("lead")
+                  ? " · 已领先足够，转码暂停"
+                  : diagnostics.pause_reasons?.includes("disk")
+                    ? " · 磁盘空间告急，转码暂停"
+                    : ""}
+              </ActionLine>
+            ) : null}
+            <ActionLine>
+              NAS 会话缓存 {formatBytes(diagnostics.cache_bytes)}
+              {diagnostics.cache_hit
+                ? ` · 命中上次转码产物（${diagnostics.cached_segments ?? 0} 段免转）`
+                : ""}
+            </ActionLine>
             {failedSegment != null ? (
               <ActionLine alert>
                 当前缺口 {segmentLabel(failedSegment)}

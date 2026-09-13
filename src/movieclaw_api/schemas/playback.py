@@ -348,6 +348,11 @@ class PlaybackDecideRequest(BaseModel):
     #: 浏览器的稳定标识（与进度上报同一个值）。开会话时写进取流 token，
     #: 取流字节才能记到活动页上这台浏览器的会话名下。
     device_id: str | None = Field(default=None, max_length=128)
+    #: 前端实测的下行速度（bps，传输期口径）。只在**开/重开会话**时生效，
+    #: 且只对转码视频起作用：把 maxrate 压到线路装得下的水平，必要时连高度
+    #: 一起降（services/playback/adaptive.py）。用户手动选了画质上限时忽略——
+    #: 他的选择优先。样本不够时不带。
+    downlink_bps: int | None = Field(default=None, ge=0, le=10**12)
 
 
 class VideoPlanView(BaseModel):
@@ -355,6 +360,8 @@ class VideoPlanView(BaseModel):
     codec: str | None = None
     height: int | None = None
     tone_map: bool = False
+    #: 按实测带宽收紧后的码率上限（bps）；None = 只按分辨率阶梯
+    bitrate_cap_bps: int | None = None
     #: 非空 = 该字幕轨被烧录进画面（用户显式选中 PGS 触发，Emby 语义的
     #: 「字幕压制」）。前端据此：不再旁挂渲染这条轨、菜单选中态指向它、
     #: 诊断面板显示「字幕压制」。
@@ -504,6 +511,13 @@ class PlaybackDiagnosticsView(BaseModel):
     recent_uploads: list[PlaybackArtifactUploadView] = Field(default_factory=list)
     cache_bytes: int = 0
     total_segments: int | None = None
+    #: 转码头领先播放头的秒数（闭环供片节流的输入，§A）；非 VOD 会话为 None
+    lead_seconds: float | None = None
+    #: 当前挂起原因（"lead" 领先过多 / "disk" 磁盘低水位）；空 = 在跑
+    pause_reasons: list[str] = Field(default_factory=list)
+    #: 开会话时认领到了同指纹的转码缓存（§B），以及当时可用的分片数
+    cache_hit: bool = False
+    cached_segments: int = 0
 
 
 class PlaybackChapterMarkView(BaseModel):
@@ -668,6 +682,8 @@ class PlaybackPolicyView(BaseModel):
     #: 进度条预览缩略图的生成开关（设置页「播放」分区）。已生成的预览不受它
     #: 影响——关掉只是不再生成新的。
     trickplay_enabled: bool = True
+    #: 转码产物是否保留供续播、重看复用（§B）。关闭即会话结束即删。
+    transcode_cache_enabled: bool = True
     #: 实测结果而非配置项——用户改不了自己有没有显卡。前端据此说明
     #: 「无可用硬件加速，HDR 片源需要软件转码」这类结论。
     hardware_available: bool = False
@@ -681,6 +697,7 @@ class PlaybackPolicyPayload(BaseModel):
 
     software_transcode_enabled: bool | None = None
     trickplay_enabled: bool | None = None
+    transcode_cache_enabled: bool | None = None
 
 
 class PlaybackFontsView(BaseModel):

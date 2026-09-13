@@ -73,6 +73,7 @@ from movieclaw_api.services.playback import metrics, trickplay
 from movieclaw_api.services.playback import plan as playback_plan
 from movieclaw_api.services.playback import warmup as playback_warmup
 from movieclaw_api.services.playback import watch as playback_watch
+from movieclaw_api.services.playback.adaptive import adapt_to_downlink
 from movieclaw_api.services.playback.embedded_subs import (
     extract_embedded_fonts,
     extract_embedded_subtitle_async,
@@ -120,7 +121,11 @@ from movieclaw_api.services.playback_activity import (
     media_activity_overview,
     revoke_device,
 )
-from movieclaw_api.services.playback_favorites import favorite_gallery, favorite_items
+from movieclaw_api.services.playback_favorites import (
+    FavoriteSort,
+    favorite_gallery,
+    favorite_items,
+)
 from movieclaw_api.services.playback_stats import playback_history, playback_stats
 from movieclaw_api.services.playback_up_next import up_next_items
 from movieclaw_api.settings import PlaybackPolicySetting
@@ -336,6 +341,10 @@ def _build_playback_diagnostics(
         job_stderr_tail=job_stderr_tail,
         head_segment=session.head_segment if session.segment_plan is not None else None,
         highest_produced_segment=highest_produced,
+        lead_seconds=manager.lead_seconds(session),
+        pause_reasons=sorted(session.pause_reasons),
+        cache_hit=session.cache_hit,
+        cached_segments=session.cached_segments,
         requested_segment=session.last_requested_segment,
         served_segment=session.last_served_segment,
         segment_wait_ms=session.last_segment_wait_ms,
@@ -376,6 +385,14 @@ async def list_up_next(
     return ok(UpNextView(items=items))
 
 
+_FAVORITE_SORT_DESC = (
+    "排序：favorited_at=最近收藏在前（默认）/ title=按标题 / added_at=最近入账 / "
+    "release_date=按上映时间 / rating=按评分 / runtime=按片长 / size=按体积 / "
+    "last_played=最近观看——与单库海报墙同一套档位"
+)
+_ORDER_DESC = "方向：asc / desc；不给 = 该档的自然方向（收藏时间新→旧、标题 A→Z…）"
+
+
 @router.get(
     "/favorites",
     response_model=ApiResponse[FavoritesView],
@@ -389,16 +406,14 @@ async def list_favorites(
     unwatched_first: Annotated[
         bool, Query(description="把还没看完的整体提前（首页横滚行用；全量页不传）")
     ] = False,
-    sort: Annotated[
-        Literal["favorited_at", "rating", "title"],
-        Query(description="收藏时间（默认）/ 评分高的在前 / 片名拼音序；首页自定义行用"),
-    ] = "favorited_at",
+    sort: Annotated[FavoriteSort, Query(description=_FAVORITE_SORT_DESC)] = "favorited_at",
+    order: Annotated[Literal["asc", "desc"] | None, Query(description=_ORDER_DESC)] = None,
     principal: Principal = Depends(require_login),
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[FavoritesView]:
     """列出当前账号在可见媒体库中收藏的作品（网页与 Jellyfin 客户端点的心同一份），
-    最近收藏在前。首页横滚行取前 20 且把没看完的提前；「全部收藏」海报墙按
-    offset 滚动加载，保持纯收藏时间序。"""
+    默认最近收藏在前。首页横滚行取前 20 且把没看完的提前；「全部收藏」海报墙按
+    offset 滚动加载，排序档与单库海报墙对齐（``sort`` / ``order``）。"""
     visible_ids = await visible_library_ids(session, principal)
     member_id = principal.member_id if principal.member_id is not None else 0
     items, total = await favorite_items(
@@ -409,6 +424,7 @@ async def list_favorites(
         offset=offset,
         unwatched_first=unwatched_first,
         sort=sort,
+        order=order,
     )
     return ok(FavoritesView(items=items, total=total))
 
@@ -423,12 +439,14 @@ async def list_favorites(
 async def list_favorites_gallery(
     limit: Annotated[int, Query(ge=1, le=100, description="本页作品数（按作品分页，不按图）")] = 24,
     offset: Annotated[int, Query(ge=0, description="跳过的作品数（滚动加载翻页用）")] = 0,
+    sort: Annotated[FavoriteSort, Query(description=_FAVORITE_SORT_DESC)] = "favorited_at",
+    order: Annotated[Literal["asc", "desc"] | None, Query(description=_ORDER_DESC)] = None,
     principal: Principal = Depends(require_login),
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[list[LibraryGalleryGroupView]]:
     """「全部收藏」页的图床浏览模式：与 ``/playback/favorites`` 同一份名单与顺序
-    （最近收藏在前），一组就是一部作品的全部图。收藏跨库，每组带自己的详情
-    落点库。没有任何图的作品也占一组，一页的组数恒等于作品数。"""
+    （``sort`` / ``order`` 传同一个值），一组就是一部作品的全部图。收藏跨库，
+    每组带自己的详情落点库。没有任何图的作品也占一组，一页的组数恒等于作品数。"""
     visible_ids = await visible_library_ids(session, principal)
     member_id = principal.member_id if principal.member_id is not None else 0
     return ok(
@@ -438,6 +456,8 @@ async def list_favorites_gallery(
             visible_library_ids=visible_ids,
             limit=limit,
             offset=offset,
+            sort=sort,
+            order=order,
         )
     )
 
@@ -1058,6 +1078,20 @@ async def start_playback_session(
         ]
         execution_backend = None
         use_remote = False
+    # 按实测线路带宽收紧转码码率（docs/design/player-pipeline-optimization.md §C）。
+    # 用户手动选了画质上限时不动——他的选择优先于自动。
+    if payload.max_height is None:
+        adapted = adapt_to_downlink(decision, payload.downlink_bps)
+        if adapted is not decision:
+            decision = adapted
+            view = playback_plan.to_view(decision)
+            logger.info(
+                "按线路带宽收紧转码：downlink=%s bps → 高度 %s 码率上限 %s bps（file_id=%s）",
+                payload.downlink_bps,
+                view.video.height if view.video else None,
+                view.video.bitrate_cap_bps if view.video else None,
+                file.id,
+            )
     hw_used = (
         effective_hw_backend(decision, execution_backend)
         if execution_backend and view.video and view.video.action == "transcode"
@@ -1108,6 +1142,7 @@ async def start_playback_session(
             # 但统一带上省得两条路径分叉
             display_name=PathLib(file.file_path).name,
             device_id=device_id,
+            cache=policy.transcode_cache_enabled,
         )
     except (SessionLimitError, DiskQuotaError) as exc:
         raise ServiceUnavailableException(str(exc)) from exc
@@ -1130,7 +1165,7 @@ async def start_playback_session(
     # 用户报「起播慢」时这一行直接指认方向。
     logger.info(
         "播放会话就绪：档 %s · 决策 %d 毫秒 · 准备 %d 毫秒 · ffmpeg %d 毫秒 · 共 %d 毫秒"
-        "（file_id=%s hw=%s session=%s）",
+        "（file_id=%s hw=%s session=%s 缓存=%s）",
         view.tier,
         decide_ms,
         prep_ms,
@@ -1139,6 +1174,7 @@ async def start_playback_session(
         file.id,
         hw_used or "无",
         transcode.id,
+        f"命中 {transcode.cached_segments} 段" if transcode.cache_hit else "未命中",
     )
     return ok(
         PlaybackSessionView(

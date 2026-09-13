@@ -574,6 +574,8 @@ _MEMBER_ALLOWLIST = {
     ("PUT", "/api/v1/collections/{collection_id}"),
     ("DELETE", "/api/v1/collections/{collection_id}"),
     ("GET", "/api/v1/collections/{collection_id}/items"),
+    # 合集页的图床浏览模式：与 items 同一份名单、同一套可见性收口，只是换了画法
+    ("GET", "/api/v1/collections/{collection_id}/gallery"),
     # 系列合集的「已有 N / 共 M」与缺片名单：成员浏览合集时就要看见它
     ("GET", "/api/v1/collections/{collection_id}/series"),
     # 推荐行是按人算的，成员看的是自己那份

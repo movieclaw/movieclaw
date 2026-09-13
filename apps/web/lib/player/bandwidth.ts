@@ -352,3 +352,59 @@ export function peakBitrateBps(samples: readonly BitrateSample[]): number | null
   }
   return peak > 0 ? peak : null;
 }
+
+// ---------------------------------------------------------------------------
+// 带宽读数参与决策（docs/design/player-pipeline-optimization.md §C）
+//
+// 上面的读数原本只是「给用户看」。单变体 HLS 没有 ABR，线路不够时播放器只会
+// 停下来等，45 秒后被判「供流中断」走降档——而降档降的是编码档，对带宽无能
+// 为力。所以把读数接进两条决策：转码档缺粮且线路确实不够 → 带着实测带宽同档
+// 重开会话（服务端按它压码率）；直通档线路不够 → 提示用户手动换画质（码率
+// 改不了，只能换档）。
+// ---------------------------------------------------------------------------
+
+/** 传给服务端之前先过这道闸：样本太少或读数为空就不带，服务端按阶梯值。 */
+export function downlinkHintBps(bps: number | null): number | undefined {
+  if (bps === null || !Number.isFinite(bps) || bps <= 0) return undefined;
+  return Math.round(bps);
+}
+
+/**
+ * 缺粮（starved）要不要按带宽重开而不是降档。
+ *
+ * 三个条件缺一不可：判定确实是缺粮（不是解码卡死）；视频在转码（直通码率
+ * 改不了，重开没用）；实测线路装不下当前码率（否则慢的是服务端转码，重开
+ * 也救不了，该走原来的降档回路）。`alreadyRestarted` 是每会话一次的护栏：
+ * 重开后仍缺粮说明估错了，再来一次就是无限循环。
+ */
+export function bandwidthRestartWanted(input: {
+  cause: "starved" | "decode-stalled" | null | undefined;
+  videoAction: string | null | undefined;
+  downlinkBps: number | null;
+  bitrateBps: number | null;
+  alreadyRestarted: boolean;
+}): boolean {
+  if (input.cause !== "starved" || input.alreadyRestarted) return false;
+  if (input.videoAction !== "transcode") return false;
+  if (input.downlinkBps === null || input.bitrateBps === null) return false;
+  if (input.downlinkBps <= 0 || input.bitrateBps <= 0) return false;
+  return input.downlinkBps < input.bitrateBps;
+}
+
+/** 直通档提示的门槛：线路低于源码率的这个倍数就算「不够」。 */
+export const DIRECT_SHORTFALL_RATIO = 1.2;
+/** 连续多少次 1Hz 采样都不够才提示——一次抖动不该弹提示。 */
+export const DIRECT_SHORTFALL_SAMPLES = 10;
+
+/**
+ * 直通档的线路够不够（一次采样）。码率未知或读数为空一律算够——宁可不提示
+ * 也不误报。
+ */
+export function directDownlinkShort(input: {
+  downlinkBps: number | null;
+  sourceBitrateBps: number | null | undefined;
+}): boolean {
+  if (input.downlinkBps === null || input.downlinkBps <= 0) return false;
+  if (!input.sourceBitrateBps || input.sourceBitrateBps <= 0) return false;
+  return input.downlinkBps < input.sourceBitrateBps * DIRECT_SHORTFALL_RATIO;
+}

@@ -258,7 +258,8 @@ N 次解析。**F3.4 把「我的收藏」登记为内置合集之后，这个�
 | GET | `/collections/{id}` | `collection.get` |
 | PUT | `/collections/{id}` | `collection.update` |
 | DELETE | `/collections/{id}` | `collection.delete` |
-| GET | `/collections/{id}/items?sort=&limit=&offset=` | `collection.items.list` |
+| GET | `/collections/{id}/items?sort=&order=&limit=&offset=` | `collection.items.list` |
+| GET | `/collections/{id}/gallery?sort=&order=&limit=&offset=` | `collection.gallery`（图床浏览模式；`x-cli-hidden`，与库页 / 收藏页的图廊同一类 Web 数据源） |
 | POST | `/collections/{id}/items` | `collection.items.add`（仅手动合集） |
 | DELETE | `/collections/{id}/items/{item_id}` | `collection.items.remove`（仅手动合集） |
 | PUT | `/collections/{id}/order` | `collection.items.reorder`（仅手动合集） |
@@ -269,6 +270,15 @@ N 次解析。**F3.4 把「我的收藏」登记为内置合集之后，这个�
 「仅手动合集」由 `_guard_manual` 统一拦截：规则驱动的合集拒绝手工增删，
 否则下一次规则求值就会把手工结果冲掉——那是一种用户改了、看着生效了、
 过一会儿又变回去的失败，比直接报错难查得多。
+
+**`sort` / `order` 是观看者在合集页临时选的排序**（2026-09-13，浏览能力与单库页
+对齐）：档位与 `/libraries/{id}/items` 同一套（`title / added_at / release_date /
+rating / runtime / size / last_played`），不给就是合集自己的序——规则驱动按
+`collection.sort`，名单驱动按 position。规则驱动那一支原样透传给 `_wall_page_ids`；
+名单驱动的合集选了排序时走 `items.sort_item_ids()`：**排序键只有一份**
+（`_sorted_ids_query` 同时是海报墙翻页的 ORDER BY 来源），收藏页换排序走的也是它。
+它不构成"合集自己的查询"——成员仍由 `resolve_members()` 定，换的只是先后。
+海报墙与图廊必须传同一个值，两种形态才是同一份名单。
 
 新文件 `src/movieclaw_api/api/routes/collections.py`。
 
@@ -561,6 +571,12 @@ F3.5（系列合集）把"合集会自动生成"这件事变成现实，随之�
 （a）跨库规则求值 +（b）合集的画廊模式接口；两项都不在 F4 的范围内，
 留待后续单独立项。在那之前 `/library/favorites` 原样保留，
 它已在 F3.4 登记为 `builtin="favorites"`，合集列表与 Jellyfin BoxSet 两处都能看到它。
+
+**2026-09-13 进展**：前置（b）已经落地——合集详情页现在有图床浏览模式
+（`collection.gallery`）与排序控件，收藏页也补上了排序（`/playback/favorites?sort=`），
+两处的排序档位、控件与偏好记法与单库页同一份（`apps/web/lib/wall-sort.ts`）。
+8.10 第 2 条"能力对不上"里列的东西，现在只剩收藏页独有的位置记忆 / 会话快照；
+前置（a）跨库规则求值仍未建，并页仍不做。
 
 ### 8.1 初稿改了什么（留痕）
 

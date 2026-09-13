@@ -2,7 +2,13 @@ import { publicEnv } from "@/lib/env";
 import { getPlayerDeviceId } from "@/lib/player/device";
 import type { TrickplayIndex } from "@/lib/player/trickplay";
 import { HttpError, request, resolveRequestUrl } from "@/lib/http";
-import type { LibraryEpisode, LibraryGalleryGroup, LibraryItem } from "@/lib/api/libraries";
+import type {
+  LibraryEpisode,
+  LibraryGalleryGroup,
+  LibraryItem,
+  LibraryItemOrder,
+  LibraryItemSort,
+} from "@/lib/api/libraries";
 import type { LibraryKind, MediaType } from "@/lib/media-types";
 import { readLocalProgress, writeLocalProgress } from "@/lib/player/local-progress";
 
@@ -120,8 +126,28 @@ export interface FavoritesPage {
   total: number;
 }
 
+/**
+ * 「全部收藏」页的排序档：`favorited_at`（最近收藏在前）是这面墙独有的默认档，
+ * 其余与单库海报墙同一套键——服务端也是同一份实现，同一档在两处排出同一个顺序。
+ */
+export type FavoriteSort = "favorited_at" | Exclude<LibraryItemSort, "probing">;
+
+/** 收藏页两种形态共用的排序参数：海报墙与图廊必须传同一个值，两者才是同一份名单。 */
+export interface FavoriteSortParams {
+  sort?: FavoriteSort;
+  /** 方向；不给 = 该档的自然方向（收藏时间新→旧、标题 A→Z…） */
+  order?: LibraryItemOrder;
+}
+
+function favoriteSortQuery(query: URLSearchParams, params?: FavoriteSortParams): void {
+  // 默认档不带参数：与加排序之前的请求逐字相同
+  if (params?.sort && params.sort !== "favorited_at") query.set("sort", params.sort);
+  if (params?.order) query.set("order", params.order);
+}
+
 /** 当前账号在可见媒体库中收藏的作品（网页与 Jellyfin 客户端点的心同一份），
- *  最近收藏在前。首页横滚行取前 20；「全部收藏」海报墙按 offset 滚动加载。 */
+ *  默认最近收藏在前。首页横滚行取前 20；「全部收藏」海报墙按 offset 滚动加载，
+ *  排序档与单库海报墙对齐（`sort`）。 */
 export async function listFavorites(
   limit = 20,
   offset = 0,
@@ -130,28 +156,28 @@ export async function listFavorites(
    * 而「全部收藏」页是完整账本，该老老实实按收藏时间排。
    */
   unwatchedFirst = false,
-  /** 收藏时间（默认）/ 评分高的在前 / 片名拼音序；首页自定义行换排序时传 */
-  sort: "favorited_at" | "rating" | "title" = "favorited_at",
+  sort?: FavoriteSortParams,
 ): Promise<FavoritesPage> {
-  const query =
-    `limit=${limit}&offset=${offset}${unwatchedFirst ? "&unwatched_first=true" : ""}` +
-    (sort !== "favorited_at" ? `&sort=${sort}` : "");
+  const query = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  if (unwatchedFirst) query.set("unwatched_first", "true");
+  favoriteSortQuery(query, sort);
   const response = await request<ApiEnvelope<FavoritesPage>>(`/playback/favorites?${query}`);
   return response.data;
 }
 
 /**
- * 「全部收藏」页图床浏览模式的数据源：与 listFavorites 同一份名单与顺序，
- * 一组是一部作品的全部图（海报 / 剧照 / 分集剧照 / 章节场景图）。分页口径同
- * 单库图廊——offset / limit 都按作品数，没有图的作品也占一组，拿满一页就还有
- * 下一页；收藏跨库，每组自带详情落点库。
+ * 「全部收藏」页图床浏览模式的数据源：与 listFavorites 同一份名单与顺序
+ * （`sort` / `order` 传同一个值），一组是一部作品的全部图（海报 / 剧照 / 分集
+ * 剧照 / 章节场景图）。分页口径同单库图廊——offset / limit 都按作品数，没有图的
+ * 作品也占一组，拿满一页就还有下一页；收藏跨库，每组自带详情落点库。
  */
-export async function listFavoritesGallery(params: {
-  limit: number;
-  offset: number;
-}): Promise<LibraryGalleryGroup[]> {
+export async function listFavoritesGallery(
+  params: { limit: number; offset: number } & FavoriteSortParams,
+): Promise<LibraryGalleryGroup[]> {
+  const query = new URLSearchParams({ limit: String(params.limit), offset: String(params.offset) });
+  favoriteSortQuery(query, params);
   const response = await request<ApiEnvelope<LibraryGalleryGroup[]>>(
-    `/playback/favorites/gallery?limit=${params.limit}&offset=${params.offset}`,
+    `/playback/favorites/gallery?${query}`,
   );
   return response.data;
 }
@@ -481,6 +507,8 @@ export interface VideoPlan {
    * 「字幕压制」）。前端据此：不再旁挂渲染这条轨、菜单选中态指向它、
    * 画中画补丁轨跳过、诊断面板显示「字幕压制」。 */
   burn_subtitle: string | null;
+  /** 按实测带宽收紧后的码率上限（bps）；null = 只按分辨率阶梯 */
+  bitrate_cap_bps?: number | null;
 }
 
 export interface AudioPlan {
@@ -594,6 +622,13 @@ export interface PlaybackDiagnostics {
   recent_uploads: PlaybackArtifactUpload[];
   cache_bytes: number;
   total_segments: number | null;
+  /** 转码头领先播放头的秒数（闭环供片节流的输入，§A）；非 VOD 会话为 null */
+  lead_seconds?: number | null;
+  /** 当前挂起原因："lead" 领先过多 / "disk" 磁盘低水位；空 = 在跑 */
+  pause_reasons?: string[];
+  /** 开会话时认领到了同指纹的转码缓存（§B），以及当时可用的分片数 */
+  cache_hit?: boolean;
+  cached_segments?: number;
 }
 
 /** 进度条上的章节刻度（docs/design/player-feel.md §2.C1）。合成章节不下发 */
@@ -649,6 +684,11 @@ interface DecideBody extends PlaybackUnit {
   subtitle_track?: string;
   /** 画质上限（如 720）。上限而非目标：源不超就照常直通。省略 = 自动 */
   max_height?: number;
+  /**
+   * 实测下行速度（bps，bandwidth.ts 的传输期口径）。服务端只对转码视频
+   * 用它压码率、必要时降高度；手动选了画质上限时服务端忽略。样本不够时省略。
+   */
+  downlink_bps?: number;
 }
 
 /** 只问「该怎么放」，不起会话。用于播放前的档位预览与诊断。 */
@@ -975,6 +1015,8 @@ export function reportPlaybackProgressOnUnload(
 export interface PlaybackPolicy {
   software_transcode_enabled: boolean;
   trickplay_enabled: boolean;
+  /** 转码产物保留供续播、重看复用（§B）；关闭即会话结束即删 */
+  transcode_cache_enabled: boolean;
   /** 实测结果而非配置项——用户改不了自己有没有显卡 */
   hardware_available: boolean;
   hw_backends: string[];

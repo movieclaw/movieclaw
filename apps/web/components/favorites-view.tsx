@@ -8,6 +8,7 @@ import type { Route } from "next";
 import { useToast } from "@/components/feedback";
 import { MasonryIcon, MoreIcon, PosterGridIcon } from "@/components/icons";
 import { WallLoadMore, WallLoadPrev, WallRecallPill } from "@/components/wall-chrome";
+import { WallSortControl } from "@/components/library-filter-bar";
 import { PosterWall } from "@/components/poster-wall";
 import { PAGE_NAV_BUTTON_CLASS, PageNav } from "@/components/page-nav";
 import { remeasureWalls, usePhotoWallDensity } from "@/components/photo-wall";
@@ -25,10 +26,20 @@ import {
 import type { LibraryGalleryGroup } from "@/lib/api/libraries";
 import {
   type FavoriteItem,
+  type FavoriteSort,
+  type FavoriteSortParams,
   listFavorites,
   listFavoritesGallery,
   setPlaybackMarks,
 } from "@/lib/api/playback";
+import {
+  PREF_TO_SORT,
+  SORT_DIRECTIONS,
+  SORT_PREF_LABELS,
+  orderParam,
+  useWallSortPref,
+  type WallSortPref,
+} from "@/lib/wall-sort";
 import {
   firstVisibleAnchorId,
   isReentryAfterAbsence,
@@ -47,12 +58,34 @@ const RECALL_SCOPE = wallRecallScope("favorites");
 /**
  * 记录的形态口径（见 WallRecall.view）。
  *
- * 收藏页只有一种排序（最近收藏在前），海报墙与图廊又是同一份名单、同一种按
- * 作品分页——「第 300 个」在两种形态里指向同一部作品，因此共用一条记录：在
- * 图廊里看到哪，切回海报墙照样跳得回去。单库页两种墙的排序不同，那边才必须
- * 分开记。
+ * 收藏页的海报墙与图廊是同一份名单、同一个排序、同一种按作品分页——「第 300 个」
+ * 在两种形态里指向同一部作品，因此两种形态共用一条记录：在图廊里看到哪，切回
+ * 海报墙照样跳得回去。单库页两种墙的排序不同，那边才必须分开记。
+ *
+ * 排序是形态的一部分：同一个 offset 在「最近收藏」与「按评分」里指向的不是同一
+ * 部作品，换了排序就当作没有记录。默认档不加后缀，老记录不失效。
  */
 const RECALL_VIEW = "favorites";
+
+/** 收藏页的排序偏好键：与单库页分开记——那边的默认档是「按标题」，这边是「最近收藏」。 */
+const FAVORITES_SORT_STORAGE_KEY = "movieclaw.favorites.wall-sort";
+
+/**
+ * 排序档位：默认档是这面墙独有的「最近收藏」，其余与单库海报墙同一套
+ * （服务端也是同一份实现，见 items.sort_item_ids）。图廊也吃全部档位——
+ * 与单库页不同，收藏图廊的接口与海报墙传同一个 sort，两种形态永远是同一份名单
+ */
+const SORT_OPTIONS: readonly (readonly [WallSortPref, string])[] = [
+  ["default", "最近收藏"],
+  ...(Object.entries(SORT_PREF_LABELS) as [WallSortPref, string][]),
+];
+
+/** 「最近收藏」档的自然方向是新→旧，与「最近添加」同一种说法。 */
+const FAVORITED_DIRECTION = { naturalAsc: false, asc: "旧→新", desc: "新→旧" } as const;
+
+function directionOf(sort: FavoriteSort) {
+  return sort === "favorited_at" ? FAVORITED_DIRECTION : SORT_DIRECTIONS[sort];
+}
 
 /**
  * 「全部收藏」页离开再返回时的会话快照。
@@ -79,6 +112,8 @@ interface FavoritesSnapshot {
   galleryStart: number;
   /** 已向服务端请求到第几个作品（绝对位置；没图的作品也占一组） */
   galleryLoaded: number;
+  /** 两份窗口是按哪个排序取的（见 sortKey）；返回时偏好变了就不能接着用 */
+  sortKey: string;
 }
 
 let snapshot: FavoritesSnapshot | null = null;
@@ -132,6 +167,31 @@ export function FavoritesView() {
   // 靠这条认）。重新进入时不自动回位，改由底部胶囊来问——两者同时来的话，
   // 人已经在原处了，胶囊就成了指着脚下的废话
   const freshEntry = useRef(initialSnapshot === null || isReentryAfterAbsence(RECALL_SCOPE));
+  // 排序偏好（含方向）：与单库页同一套钩子、同一种记法，只是各记各的键
+  const [{ pref: sortPref, reversed: sortReversed }, setSortPref, toggleSortReversed, sortReady] =
+    useWallSortPref(FAVORITES_SORT_STORAGE_KEY);
+  // 当前真正生效的服务端排序键：默认档是「最近收藏」
+  const effectiveSort: FavoriteSort =
+    sortPref === "default" ? "favorited_at" : PREF_TO_SORT[sortPref];
+  const sortAscending = directionOf(effectiveSort).naturalAsc !== sortReversed;
+  // 两种形态的请求都带同一份：不反转时不带 order，服务端按自然方向排
+  const sortParams = useMemo<FavoriteSortParams>(
+    () => ({
+      sort: effectiveSort,
+      order:
+        effectiveSort === "favorited_at"
+          ? sortReversed
+            ? "asc"
+            : undefined
+          : orderParam(effectiveSort, sortReversed),
+    }),
+    [effectiveSort, sortReversed],
+  );
+  // ref 版：翻页 / 对账 / 补页的回调每轮读最新值，不必为换排序重建回调链
+  const sortRef = useRef(sortParams);
+  sortRef.current = sortParams;
+  // 这份排序的指纹：窗口按它取、位置记录按它分记。默认档为空串，老记录不失效
+  const sortKey = `${sortPref === "default" ? "" : effectiveSort}${sortReversed ? ":rev" : ""}`;
   const [galleryPreferred, setGalleryMode] = useVideoGalleryMode();
   const [galleryGrouped, setGalleryGrouped] = useVideoGalleryGrouped();
   const [density, setDensity] = usePhotoWallDensity();
@@ -170,7 +230,7 @@ export function FavoritesView() {
     if (loading.current) return;
     loading.current = true;
     try {
-      const page = await listFavorites(PAGE_SIZE, offset);
+      const page = await listFavorites(PAGE_SIZE, offset, false, sortRef.current);
       setTotal(page.total);
       setItems((prev) => {
         if (!prev) return page.items;
@@ -198,7 +258,7 @@ export function FavoritesView() {
     try {
       const pages = await Promise.all(
         Array.from({ length: Math.ceil(loadedCount / PAGE_SIZE) }, (_, page) =>
-          listFavorites(PAGE_SIZE, start + page * PAGE_SIZE),
+          listFavorites(PAGE_SIZE, start + page * PAGE_SIZE, false, sortRef.current),
         ),
       );
       const rows = pages.flatMap((page) => page.items);
@@ -207,7 +267,7 @@ export function FavoritesView() {
         // 退回墙首重取，否则明明还有收藏，这一屏却什么都没有
         wallOffset.current = 0;
         setWallStart(0);
-        const head = await listFavorites(PAGE_SIZE, 0);
+        const head = await listFavorites(PAGE_SIZE, 0, false, sortRef.current);
         setTotal(head.total);
         setItems(head.items);
       } else {
@@ -221,11 +281,6 @@ export function FavoritesView() {
       loading.current = false;
     }
   }, []);
-
-  useEffect(() => {
-    if (restoredCount.current > 0) void reload(restoredCount.current);
-    else void load(0);
-  }, [load, reload]);
 
   const loaded = items?.length ?? 0;
   const hasMore = items !== null && wallStart + loaded < total;
@@ -248,7 +303,7 @@ export function FavoritesView() {
     if (until <= 0) return; // 已经到墙首，上方没有东西可补
     loadingPrev.current = true;
     const from = Math.max(0, until - PAGE_SIZE);
-    listFavorites(until - from, from)
+    listFavorites(until - from, from, false, sortRef.current)
       .then((page) => {
         // 一部都没拿到（这一段刚好被取消收藏取空了）：起点保持不动就此打住，
         // 否则起点一路往前挪、哨兵每次都重新观察，会把这段空区间反复请求
@@ -294,11 +349,12 @@ export function FavoritesView() {
     loading.current = true;
     loadingPrev.current = true;
     wallOffset.current = offset;
-    listFavorites(PAGE_SIZE, offset)
+    listFavorites(PAGE_SIZE, offset, false, sortRef.current)
       .then((page) => {
         setTotal(page.total);
         setWallStart(offset);
         setItems(page.items);
+        setFailed(false);
         // 瞬时而不是平滑：墙上的内容已经整段换掉，平滑滚过去的是一堆不存在的
         // 旧内容；落地后墙顶哨兵还会立刻补一页，那一下的滚动补偿会打断动画
         wallTop.current?.scrollIntoView({ block: "start", behavior: "instant" });
@@ -309,6 +365,25 @@ export function FavoritesView() {
         loadingPrev.current = false;
       });
   }, []);
+
+  /**
+   * 海报墙的窗口该按哪个排序取：
+   *   - 偏好还没从 storage 读出来（sortReady 为假）先按兵不动——这一帧的排序是
+   *     默认值，照它拉一遍再按真正的偏好重拉，人会被甩回墙首；
+   *   - 首次进来：从墙首拉第一页；从详情页返回（快照带回窗口且排序没变）：
+   *     按已加载的页数整窗对账；
+   *   - 换了排序：整个窗口换掉、回到墙首（jumpTo(0)），与单库页同一处理。
+   */
+  const wallWindowSort = useRef<string | null>(initialSnapshot?.sortKey ?? null);
+  useEffect(() => {
+    if (!sortReady) return;
+    const previous = wallWindowSort.current;
+    wallWindowSort.current = sortKey;
+    if (previous === null) void load(0);
+    else if (previous !== sortKey) jumpTo(0);
+    else if (restoredCount.current > 0) void reload(restoredCount.current);
+    else void load(0);
+  }, [sortReady, sortKey, load, reload, jumpTo]);
 
   // —— 图床浏览模式 —— //
   const [galleryGroups, setGalleryGroups] = useState<LibraryGalleryGroup[]>(
@@ -327,7 +402,7 @@ export function FavoritesView() {
     if (galleryLoading.current) return;
     galleryLoading.current = true;
     const offset = galleryLoaded.current;
-    listFavoritesGallery({ limit: GALLERY_PAGE_SIZE, offset })
+    listFavoritesGallery({ limit: GALLERY_PAGE_SIZE, offset, ...sortRef.current })
       .then((page) => {
         galleryLoaded.current = offset + page.length;
         setGalleryGroups((current) => dedupeGalleryGroups([...current, ...page]));
@@ -350,6 +425,7 @@ export function FavoritesView() {
         listFavoritesGallery({
           limit: GALLERY_PAGE_SIZE,
           offset: start + page * GALLERY_PAGE_SIZE,
+          ...sortRef.current,
         }),
       ),
     )
@@ -368,7 +444,7 @@ export function FavoritesView() {
   const jumpGalleryTo = useCallback((offset: number) => {
     galleryLoading.current = true; // 跳转期间挡住滚动哨兵与对账，别让旧窗口的页插进来
     galleryStart.current = offset;
-    listFavoritesGallery({ limit: GALLERY_PAGE_SIZE, offset })
+    listFavoritesGallery({ limit: GALLERY_PAGE_SIZE, offset, ...sortRef.current })
       .then((page) => {
         galleryLoaded.current = offset + page.length;
         setGalleryGroups(dedupeGalleryGroups(page));
@@ -381,15 +457,27 @@ export function FavoritesView() {
       });
   }, []);
 
-  // 切进图廊（或进页面时偏好就在图廊）：第一次从头拉一页；快照带回窗口时
-  // **不能**清空重拉——只补第一页的话容器矮到装不下离开时的滚动位置，人被
-  // 甩回墙首（与单库页同一处理），改成按已加载的页数整窗对账。
-  // 海报墙那一份照常自己拉，切回去时首屏已经在手上
+  // 这份图廊窗口是按哪个排序取的；null = 还没取过（快照没带图廊窗口回来）
+  const galleryWindowSort = useRef<string | null>(
+    initialSnapshot?.galleryGroups.length ? initialSnapshot.sortKey : null,
+  );
+  // 切进图廊（或进页面时偏好就在图廊）：第一次、或换了排序，从头拉一页；快照
+  // 带回窗口且排序没变时**不能**清空重拉——只补第一页的话容器矮到装不下离开
+  // 时的滚动位置，人被甩回墙首（与单库页同一处理），改成按已加载的页数整窗对账。
+  // 海报墙那一份照常自己拉，切回去时首屏已经在手上。偏好没读出来前同样按兵不动
   useEffect(() => {
-    if (!galleryPreferred) return;
-    if (galleryLoaded.current > 0) refreshGallery();
-    else loadMoreGallery();
-  }, [galleryPreferred, loadMoreGallery, refreshGallery]);
+    if (!galleryPreferred || !sortReady) return;
+    if (galleryWindowSort.current === sortKey && galleryLoaded.current > 0) {
+      refreshGallery();
+      return;
+    }
+    galleryWindowSort.current = sortKey;
+    galleryStart.current = 0;
+    galleryLoaded.current = 0;
+    setGalleryGroups([]);
+    setGalleryHasMore(false);
+    loadMoreGallery();
+  }, [galleryPreferred, sortReady, sortKey, loadMoreGallery, refreshGallery]);
 
   /**
    * 灯箱里点心：取消收藏后**不把瓦片抽走**——正在看的这张图连同它所在的那一段
@@ -425,8 +513,10 @@ export function FavoritesView() {
       galleryHasMore,
       galleryStart: galleryStart.current,
       galleryLoaded: galleryLoaded.current,
+      // 窗口按哪个排序取的就记哪个：偏好读出来之前窗口还是快照那份，记它原来的键
+      sortKey: wallWindowSort.current ?? sortKey,
     };
-  }, [galleryGroups, galleryHasMore, items, total, wallStart]);
+  }, [galleryGroups, galleryHasMore, items, total, wallStart, sortKey]);
 
   // 收藏一部都没有时不给切换键：两种形态都是空页，多一颗键只会让人以为点了没反应
   const empty = items !== null && items.length === 0;
@@ -473,7 +563,7 @@ export function FavoritesView() {
   }, [scrollElement]);
   const { recallOffset, dismissRecall } = useWallRecall({
     scope: RECALL_SCOPE,
-    view: RECALL_VIEW,
+    view: sortKey ? `${RECALL_VIEW}:${sortKey}` : RECALL_VIEW,
     scroller: scrollElement,
     enabled: gallery ? galleryGroups.length > 0 : loaded > 0,
     offer: freshEntry.current,
@@ -552,9 +642,27 @@ export function FavoritesView() {
           {items === null
             ? "正在读取收藏…"
             : total > 0
-              ? `${total} 部作品 · 最近收藏的在前 · 与 Jellyfin 客户端里点的心同一份`
+              ? `${total} 部作品 · 与 Jellyfin 客户端里点的心同一份`
               : "还没有收藏。在影片页点心，或在 Jellyfin 客户端里收藏，都会出现在这里。"}
         </p>
+        {/* 排序：与单库页同一颗控件、同一套档位（默认档叫「最近收藏」）。「按什么排」
+            看墙是看不出来的，所以当前值必须挂在外面，不能收进 ⋯ 菜单。两种形态
+            共用同一份排序——图廊的接口与海报墙传同一个 sort，切来切去是同一份名单 */}
+        {!empty && items !== null && (
+          <div className="mt-3 flex items-center">
+            <WallSortControl
+              value={sortPref}
+              options={SORT_OPTIONS}
+              onChange={setSortPref}
+              disabled={!sortReady}
+              direction={{
+                ascending: sortAscending,
+                label: directionOf(effectiveSort)[sortAscending ? "asc" : "desc"],
+                onToggle: toggleSortReversed,
+              }}
+            />
+          </div>
+        )}
 
         {failed && items === null && (
           <div className="mt-16 flex flex-col items-center gap-3 text-center">

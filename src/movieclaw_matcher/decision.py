@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from functools import partial
 
 from movieclaw_enrich.models import TorrentAttrs
@@ -334,6 +335,39 @@ def compare_ladder(
 ) -> int | None:
     """``compare_ladder_at`` 只取结果——三个洗版谓词的共同底座。"""
     return compare_ladder_at(left, right)[0]
+
+
+def covered_by_existing(
+    existing: Iterable[QualitySnapshot],
+    incoming: QualitySnapshot | TorrentAttrs,
+    spec: RuleSetSpec,
+) -> bool | None:
+    """入库去重裁判：来件是否已被某个在位版本覆盖（issue #381）。
+
+    这是"来件比在库版本好吗"这一问题在**入库端**的唯一入口，与抓取端
+    （``compare_upgrade``）和验证端（``upgrade._better``）走同一条阶梯
+    ``ladder_vector`` + ``compare_ladder``。此前入库预检自己用中性档位
+    阶梯手写二元组比较，规则组把 1080p 排在 2160p 前面时，抓取端认定的
+    洗版升级到入库端被当成"低档重复"丢弃，洗版验证永远看不到新文件。
+
+    口径与验证端一致——**只有能证明严格更优的来件才不是重复**：
+    - ``True``：至少一个在位版本让来件无法被证明严格更优（等价、更低、
+      或单侧未知不可比）——重复内容，跳过即是完成；
+    - ``False``：来件严格优于每一个在位版本——真升级，放行入库，最终
+      由洗版验证实测裁决；
+    - ``None``：无从判定——没有在位版本，或来件分辨率未知（探测失败且
+      名称也没标）。对来件一无所知时不做猜测性丢弃，交给调用方按"宁可
+      进待处理"处理。
+    """
+    if incoming.resolution is None:
+        return None
+    incoming_vector = ladder_vector(incoming, spec)
+    verdicts = [
+        compare_ladder(incoming_vector, ladder_vector(current, spec)) for current in existing
+    ]
+    if not verdicts:
+        return None
+    return any(verdict != 1 for verdict in verdicts)
 
 
 def candidate_ladder_rank(

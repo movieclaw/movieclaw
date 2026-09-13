@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 
 from movieclaw_api.services.playback import ffmpeg_args
+from movieclaw_api.services.playback import session as session_mod
 from movieclaw_api.services.playback.ffmpeg_args import SEGMENT_PATTERN, SEGMENT_SECONDS
 from movieclaw_api.services.playback.session import TranscodeSessionManager
 from movieclaw_playback.decide import AudioPlan, PlaybackPlan, PlaybackTier, VideoPlan
@@ -90,11 +91,28 @@ def _segment_start_time(directory: Path, index: int) -> float:
     return float(json.loads(proc.stdout)["format"]["start_time"])
 
 
+def _slow_down(monkeypatch, *, readrate: float, burst_s: int) -> None:
+    """给真命令塞一个 readrate：VOD 模式本身已不带限速（供片由会话层按领先量
+    闭环节流，§A），但 60 秒的样本会瞬间转完，「seek 远处必须重启直奔」的场景
+    根本构造不出来。这里只是让 ffmpeg 慢下来，与被测逻辑无关。"""
+    real_build = session_mod.build_hls_command
+
+    def slow_build(*args, **kwargs):
+        command = real_build(*args, **kwargs)
+        argv = list(command.argv)
+        at = argv.index("-i")
+        argv[at:at] = [
+            "-readrate", str(readrate), "-readrate_initial_burst", str(burst_s),
+        ]
+        return ffmpeg_args.TranscodeCommand(
+            argv=argv, playlist_path=command.playlist_path, init_path=command.init_path
+        )
+
+    monkeypatch.setattr(session_mod, "build_hls_command", slow_build)
+
+
 def test_vod_session_serves_and_seeks(sample, tmp_path, monkeypatch):
-    # 把限速调到 0.5 倍速、burst 缩到 4 秒：不然 60 秒的样本瞬间转完，
-    # 「seek 远处必须重启直奔」的场景根本构造不出来
-    monkeypatch.setattr(ffmpeg_args, "READRATE_COPY", 0.5)
-    monkeypatch.setattr(ffmpeg_args, "READRATE_BURST_SECONDS", 4)
+    _slow_down(monkeypatch, readrate=0.5, burst_s=4)
 
     async def scenario() -> None:
         index = read_keyframe_index(sample)
@@ -140,5 +158,47 @@ def test_vod_session_serves_and_seeks(sample, tmp_path, monkeypatch):
             assert session.head_segment == far - 3
         finally:
             await manager.stop(session.id)
+
+    asyncio.run(scenario())
+
+
+def test_lead_throttle_pauses_real_ffmpeg_and_keeps_disk_bounded(sample, tmp_path, monkeypatch):
+    """真 ffmpeg 上的闭环节流（§A）：不限速的 remux 会在几百毫秒内把 60 秒样本
+    全转完；把领先上限压到 12 秒后，巡检应在播放头不动时把 ffmpeg 挂起，盘上
+    分片数停在上限附近；播放头追上后恢复并转完。"""
+    monkeypatch.setattr(session_mod, "LEAD_HIGH_S", 12.0)
+    monkeypatch.setattr(session_mod, "LEAD_LOW_S", 4.0)
+    monkeypatch.setattr(session_mod, "THROTTLE_INTERVAL_S", 0.02)
+    # 让 ffmpeg 至少比巡检慢一点（2 倍速）：全速 remux 在一次巡检之内就能
+    # 写完整部片，那样测的就不是节流而是巡检的运气
+    _slow_down(monkeypatch, readrate=2.0, burst_s=0)
+
+    async def scenario() -> None:
+        index = read_keyframe_index(sample)
+        plan = compute_segment_plan(index.times_s, float(DURATION), target_s=SEGMENT_SECONDS)
+        manager = TranscodeSessionManager(root=tmp_path / "transcodes")
+        manager.start_reaper()
+        session = await manager.start(
+            _plan(), source_path=str(sample), member_id=0, start_ms=0, segment_plan=plan
+        )
+        try:
+            assert await manager.ensure_segment(session, 0) is not None
+            # 播放头停在第 0 片：等巡检把它挂起
+            deadline = asyncio.get_event_loop().time() + 8.0
+            while asyncio.get_event_loop().time() < deadline and not session.lead_paused:
+                await asyncio.sleep(0.05)
+            assert session.lead_paused, "真 ffmpeg 领先超上限却没被挂起"
+            produced = manager._highest_produced(session)
+            # 12 秒上限 ≈ 3 片，再加巡检间隔内的余量
+            assert 2 <= produced <= 6, produced
+            await asyncio.sleep(0.5)
+            assert manager._highest_produced(session) == produced  # 挂起后不再涨
+            # 播放头追上 → 恢复 → 最终全片转完
+            assert await manager.ensure_segment(session, produced) is not None
+            assert not session.lead_paused
+            last = await manager.ensure_segment(session, plan.count - 1)
+            assert last is not None and last.exists()
+        finally:
+            await manager.shutdown()
 
     asyncio.run(scenario())

@@ -199,7 +199,9 @@ def test_clean_skips_busy_entries(data_root, monkeypatch):
     _write(data_root / "transcodes/dead-session/seg0.ts", 30)
 
     class _Session:
-        id = "live-session"
+        id = "session-ulid"
+        # 缓存目录按计划指纹命名（§B），busy 探测认的是目录名而不是会话 id
+        directory = data_root / "transcodes/live-session"
 
     class _Manager:
         def active(self):

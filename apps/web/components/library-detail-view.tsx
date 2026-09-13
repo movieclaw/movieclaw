@@ -116,6 +116,12 @@ import {
   wallRecallScope,
 } from "@/lib/library-wall-recall";
 import { useWallRecall } from "@/lib/use-wall-recall";
+import {
+  PREF_TO_SORT,
+  SORT_DIRECTIONS,
+  useWallSortPref,
+  type WallSortPref,
+} from "@/lib/wall-sort";
 import { formatRelativeTime } from "@/lib/time";
 import { cachedImageUrl } from "@/lib/image-proxy";
 import { keepIfEqual, reconcileList } from "@/lib/poll-reconcile";
@@ -182,46 +188,9 @@ function keepOnError<T>(rows: Promise<T[]>): Promise<T[] | null> {
  * 内容时间能分出月份档，右侧的跳转轨道靠的就是这个。所以「最近添加」是持续
  * 往库里添内容的人**自己选**的一档，不做默认。
  */
-type WallSortPref =
-  | "default"
-  | "added_at"
-  | "release_date"
-  | "rating"
-  | "runtime"
-  | "size"
-  | "last_played";
-
-/** 偏好 → 服务端排序键。`default` 由库的形态决定（影视库拼音序、其他库按时间）。 */
-const PREF_TO_SORT: Record<Exclude<WallSortPref, "default">, LibraryItemSort> = {
-  added_at: "added_at",
-  release_date: "release_date",
-  rating: "rating",
-  runtime: "runtime",
-  size: "size",
-  last_played: "last_played",
-};
-
-/**
- * 每档的自然方向与方向的人话（2026-09-11 起排序可切换正倒序）。
- *
- * 不反转时请求不带 order，服务端按自然方向排——与加方向之前逐字相同。方向写成
- * 人话（「短→长」）而不是只画箭头：↑ 到底是"从小到大"还是"大的在上"，光看箭头
- * 要想一下。补探序是扫描临时接管的，控件那几分钟本来就是灰的，方向无意义
- */
-const SORT_DIRECTIONS: Record<LibraryItemSort, { naturalAsc: boolean; asc: string; desc: string }> = {
-  title: { naturalAsc: true, asc: "A→Z", desc: "Z→A" },
-  added_at: { naturalAsc: false, asc: "旧→新", desc: "新→旧" },
-  release_date: { naturalAsc: false, asc: "旧→新", desc: "新→旧" },
-  probing: { naturalAsc: true, asc: "A→Z", desc: "Z→A" },
-  rating: { naturalAsc: false, asc: "低→高", desc: "高→低" },
-  runtime: { naturalAsc: true, asc: "短→长", desc: "长→短" },
-  size: { naturalAsc: false, asc: "小→大", desc: "大→小" },
-  last_played: { naturalAsc: false, asc: "远→近", desc: "近→远" },
-  // 下面两档不进墙的排序下拉（上映正序只作系列合集的 sort；随机只作首页自定义行的
-  // 排序，按天换一批），这里补上只是让 Record 完整；方向文案不会被读到
-  release_date_asc: { naturalAsc: true, asc: "旧→新", desc: "新→旧" },
-  random: { naturalAsc: true, asc: "随机", desc: "随机" },
-};
+// 档位类型、偏好 → 服务端键、方向表与读写偏好的钩子都在 lib/wall-sort.ts：
+// 收藏页与合集页和这里共用同一份（排序能力对齐指的就是同一份实现）。
+// 这里只剩单库页自己的事：默认档由库的形态决定（影视库拼音序、其他库按时间）
 
 /**
  * 排序档位与展示值。
@@ -230,22 +199,18 @@ const SORT_DIRECTIONS: Record<LibraryItemSort, { naturalAsc: boolean; asc: strin
  * 按库的形态叫「按标题」/「按时间」（本来就有 defaultSortLabel 这套叫法）。
  * 标签能删的前提是值自己会说话，不是硬删。
  *
- * 图廊（图床浏览）只吃服务端的 title / added_at 两档，所以那个形态下只给两档
- * ——把点了不生效的档摆出来，比少几档更伤。
+ * 图廊（图床浏览）与海报墙同一套档位、同一个方向：两面墙翻的是同一份名单，服务端
+ * 也是同一条排序查询。此前"图廊只给 title / added_at 两档"只是接口没放开，不是
+ * 数据不允许（2026-09-13 对齐）。
  */
 function sortOptions(
   defaultLabel: string,
-  gallery: boolean,
   timeline: boolean,
 ): readonly (readonly [WallSortPref, string])[] {
-  const base = [
+  return [
     ["default", defaultLabel],
     // 一次导入的内容入账时间都挤在一起，所以这一档对"陆续往库里添东西"才有意义
     ["added_at", "最近添加"],
-  ] as [WallSortPref, string][];
-  if (gallery) return base;
-  return [
-    ...base,
     // 影视库补上「按上映时间」：老片→新片 / 新片→老片 是正倒序最用得上的一档。
     // 其他库的默认档本来就是按时间，不重复摆
     ...(timeline ? [] : ([["release_date", "按上映时间"]] as [WallSortPref, string][])),
@@ -330,69 +295,6 @@ const INDEXED_SORTS: Partial<Record<LibraryItemSort, "title" | "release_date">> 
   probing: "title",
   release_date: "release_date",
 };
-const WALL_SORT_STORAGE_KEY = "movieclaw.library.wall-sort";
-
-/** 能从 storage 里认回来的排序偏好；其余一律当默认序（防老版本或手改出来的脏值） */
-const WALL_SORT_PREFS: readonly WallSortPref[] = [
-  "default",
-  "added_at",
-  "release_date",
-  "rating",
-  "runtime",
-  "size",
-  "last_played",
-];
-
-/** 排序偏好：选的哪一档，以及是否反转了这一档的自然方向。 */
-interface WallSortState {
-  pref: WallSortPref;
-  reversed: boolean;
-}
-
-/**
- * 读写排序偏好（含方向）。第四个返回值是「读完 storage 了没有」：首帧一律先给默认值
- * （服务端渲染没有 localStorage），排序相关的副作用必须等它为真再动手——
- * 否则从详情页返回的那一帧会先按默认序把窗口重拉一遍，把人甩回墙首。
- *
- * 存成 `rating` / `rating:rev`。此前只认回「最近添加」一档：选了按评分、按片长，
- * 刷新一下就退回默认序——排序是偏好，该记全。换档时方向回到新档的自然方向：
- * 从「片长 长→短」换到「评分」，用户要的是"高分在前"，不是继承一个反向
- */
-function useWallSortPref(): [WallSortState, (next: WallSortPref) => void, () => void, boolean] {
-  const [state, setState] = useState<WallSortState>({ pref: "default", reversed: false });
-  const [ready, setReady] = useState(false);
-  const stateRef = useRef(state);
-  stateRef.current = state;
-  useEffect(() => {
-    try {
-      const [pref, flag] = (window.localStorage.getItem(WALL_SORT_STORAGE_KEY) ?? "").split(":");
-      if (WALL_SORT_PREFS.includes(pref as WallSortPref)) {
-        setState({ pref: pref as WallSortPref, reversed: flag === "rev" });
-      }
-    } catch {
-      /* 隐私模式等拿不到 storage：保持默认序 */
-    }
-    setReady(true);
-  }, []);
-  const persist = useCallback((next: WallSortState) => {
-    setState(next);
-    try {
-      window.localStorage.setItem(
-        WALL_SORT_STORAGE_KEY,
-        next.reversed ? `${next.pref}:rev` : next.pref,
-      );
-    } catch {
-      /* 同上 */
-    }
-  }, []);
-  const update = useCallback((pref: WallSortPref) => persist({ pref, reversed: false }), [persist]);
-  const toggleReversed = useCallback(
-    () => persist({ ...stateRef.current, reversed: !stateRef.current.reversed }),
-    [persist],
-  );
-  return [state, update, toggleReversed, ready];
-}
-
 export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   const initialSnapshot = getLibraryDetailSnapshot(libraryId);
   // 本次是不是「重新进入」：首帧没有会话快照 = 冷启动 / 刷新 / 换了库进来的；
@@ -1006,8 +908,16 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   const sortAscending =
     SORT_DIRECTIONS[effectiveSort].naturalAsc !==
     (wallSortReversed && effectiveSort !== "probing" && !photoWall);
-  // 图廊按同一个键取页（后端默认标题序，只有选了最近添加才带参数）
-  const gallerySort = recentFirst ? ("added_at" as const) : undefined;
+  // 请求里的方向：只有反转了自然方向才带 order，不反转时与加方向之前的请求逐字相同。
+  // 海报墙与图廊传**同一个** sort / order——两面墙是同一份名单的两种画法
+  const wallOrderParam: LibraryItemOrder | undefined =
+    sortAscending === SORT_DIRECTIONS[effectiveSort].naturalAsc
+      ? undefined
+      : sortAscending
+        ? "asc"
+        : "desc";
+  // 图廊窗口按哪份排序取的指纹：换档或换方向都要从第一页重来
+  const gallerySortKey = `${effectiveSort}:${wallOrderParam ?? ""}`;
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   // 月份索引给出全库每月张数，墙上的月份标题据此显示总数而不是已加载数
   const photoMonthCounts = useMemo(
@@ -1029,7 +939,8 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
     listLibraryGallery(libraryId, {
       limit: GALLERY_PAGE_SIZE,
       offset,
-      sort: gallerySort,
+      sort: effectiveSort,
+      order: wallOrderParam,
       filter: wallFilter.current,
     })
       .then((page) => {
@@ -1041,7 +952,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
       .finally(() => {
         galleryLoading.current = false;
       });
-  }, [libraryId, gallerySort]);
+  }, [libraryId, effectiveSort, wallOrderParam]);
   /**
    * 按已加载的页数重拉整个图廊窗口：从快照恢复出来的窗口是离开这一屏时的旧
    * 数据（比如在详情页点了心，返回时角标要跟着变），拿到结果整体替换。
@@ -1058,7 +969,8 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
           filter: wallFilter.current,
           limit: GALLERY_PAGE_SIZE,
           offset: start + page * GALLERY_PAGE_SIZE,
-          sort: gallerySort,
+          sort: effectiveSort,
+          order: wallOrderParam,
         }),
       ),
     )
@@ -1071,7 +983,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
       .finally(() => {
         galleryLoading.current = false;
       });
-  }, [libraryId, gallerySort]);
+  }, [libraryId, effectiveSort, wallOrderParam]);
   /**
    * 图廊跳到整份排序里的某个位置：与海报墙的 jumpTo 是同一件事——换掉整个
    * 窗口（而不是从头追加到那里），此后照常向下滚动加载。图廊的分页口径也是
@@ -1084,7 +996,8 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
       listLibraryGallery(libraryId, {
       limit: GALLERY_PAGE_SIZE,
       offset,
-      sort: gallerySort,
+      sort: effectiveSort,
+      order: wallOrderParam,
       filter: wallFilter.current,
     })
         .then((page) => {
@@ -1098,7 +1011,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
           galleryLoading.current = false;
         });
     },
-    [libraryId, gallerySort],
+    [libraryId, effectiveSort, wallOrderParam],
   );
   /**
    * 图廊里点心：收藏 / 取消收藏整部作品（与详情页那颗心同一落点）。
@@ -1130,7 +1043,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   );
   // 当前这份窗口是按哪个排序取的。null = 快照带回来的窗口（与偏好同一份
   // localStorage，排序不会中途变），按现在的排序对账即可，不必重拉
-  const galleryWindowSort = useRef<typeof gallerySort | null>(null);
+  const galleryWindowSort = useRef<string | null>(null);
   /**
    * 切进图廊：第一次（或换库、换排序）从第一页拉起；从条目详情页返回时窗口已经
    * 由快照恢复，**不能**清空重拉——只补第一页的话容器矮到装不下离开时的滚动
@@ -1144,8 +1057,8 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
     // 照它对账会把窗口按错的顺序重排一遍（见 useWallSortPref）
     if (!gallery || !wallSortReady) return;
     const sortChanged =
-      galleryWindowSort.current !== null && galleryWindowSort.current !== gallerySort;
-    galleryWindowSort.current = gallerySort;
+      galleryWindowSort.current !== null && galleryWindowSort.current !== gallerySortKey;
+    galleryWindowSort.current = gallerySortKey;
     if (!sortChanged && galleryWindowLibrary.current === libraryId) {
       refreshGallery();
       return;
@@ -1156,26 +1069,28 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
     setGalleryGroups([]);
     setGalleryHasMore(false);
     loadMoreGallery();
-  }, [gallery, libraryId, gallerySort, wallSortReady, loadMoreGallery, refreshGallery]);
+  }, [gallery, libraryId, gallerySortKey, wallSortReady, loadMoreGallery, refreshGallery]);
 
   /* —— 「回到上次浏览的位置」（lib/library-wall-recall.ts）——
      大库滑到第几十屏是常态，关掉页面第二天再进来又从墙首开始。这里在底部弹
      一枚胶囊问一句：要跳回去点它，不要就继续滑——滑够一屏胶囊自己让位，
      从那一刻起记的是新位置。会话内从详情页返回不弹（滚动恢复已经自动回位）。 */
-  // 墙的形态决定 offset 的口径：图廊按标题序分页，其他库的海报墙按内容时间序，
-  // 两者的「第 300 个」不是同一部作品，形态对不上就不提示（见 WallRecall.view）
-  // 排序也是形态的一部分：同一个 offset 在标题序与最近添加序里指向的不是
-  // 同一部作品，换了排序就当作没有记录（后缀只加在非默认序上，免得让老记录失效）
+  // 记录的口径是「哪份排序里的第几个」（见 WallRecall.view）：
+  // 排序是形态的一部分：同一个 offset 在标题序与最近添加序里指向的不是同一部
+  // 作品，换了排序就当作没有记录（后缀只加在非默认序上，免得让老记录失效）。
   // 每一档、每个方向各记各的：同一个 offset 在「按评分 高→低」与「低→高」里指向两头。
-  // 默认档（标题序 / 其他库的时间序）不加后缀，老记录不失效；「最近添加」沿用 :added
+  // 默认档（标题序 / 其他库的时间序）不加后缀，老记录不失效；「最近添加」沿用 :added。
+  // 海报墙与图廊**共用一条记录**（与收藏页同一处理）：两面墙现在是同一份名单、同一个
+  // 排序、同一种按作品分页，「第 300 个」在两种形态里是同一部作品——在图廊里看到哪，
+  // 切回海报墙照样跳得回去。此前图廊另记一条（"gallery" 前缀）是因为它只有标题序
   const defaultSort =
     effectiveSort === "title" ||
     effectiveSort === "probing" ||
     (timeline && effectiveSort === "release_date");
   const wallView =
-    (gallery ? "gallery" : timeline ? "wall:time" : "wall:title") +
-    (recentFirst ? ":added" : gallery || defaultSort ? "" : `:${effectiveSort}`) +
-    (!gallery && sortAscending !== SORT_DIRECTIONS[effectiveSort].naturalAsc ? ":rev" : "");
+    (timeline ? "wall:time" : "wall:title") +
+    (recentFirst ? ":added" : defaultSort ? "" : `:${effectiveSort}`) +
+    (wallOrderParam ? ":rev" : "");
   // 条目 id → 它在整份排序里的绝对位置。滚动时按首个可见格反查（图廊按瓦片
   // 所属的作品），DOM 上只挂 id，不必给每一格再算一遍下标
   const offsetById = useMemo(
@@ -1333,22 +1248,15 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
     // 同图廊：偏好没读出来之前不动排序，否则从详情页返回的那一帧会先按
     // 默认序把窗口重拉一遍，人被甩回墙首
     if (!wallSortReady) return;
-    // 只有反转了自然方向才带 order：不反转时与加方向之前的请求逐字相同
-    const nextOrder: LibraryItemOrder | undefined =
-      sortAscending === SORT_DIRECTIONS[effectiveSort].naturalAsc
-        ? undefined
-        : sortAscending
-          ? "asc"
-          : "desc";
-    if (wallSort.current === effectiveSort && wallOrder.current === nextOrder) return;
+    if (wallSort.current === effectiveSort && wallOrder.current === wallOrderParam) return;
     wallSort.current = effectiveSort;
-    wallOrder.current = nextOrder;
+    wallOrder.current = wallOrderParam;
     wallLoaded.current = WALL_PAGE_SIZE;
     // 换了排序或方向，之前跳到的字母位置就没意义了，窗口回到墙首
     wallOffset.current = 0;
     setWallStart(0);
     reload();
-  }, [effectiveSort, sortAscending, wallSortReady, reload]);
+  }, [effectiveSort, wallOrderParam, wallSortReady, reload]);
 
   // 只有一次都没加载成功过才整页报错；已有数据在手时，瞬时失败只在页内
   // 挂提示条（stale-while-error）——为一次网络抖动把整面海报墙换成错误屏，
@@ -1873,19 +1781,15 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
               sortControl={
                 <WallSortControl
                   value={wallSortPref}
-                  options={sortOptions(!gallery && timeline ? "按时间" : "按标题", gallery, timeline)}
+                  options={sortOptions(timeline ? "按时间" : "按标题", timeline)}
                   onChange={setWallSortPref}
                   disabled={probing}
-                  // 图廊只吃服务端标题 / 最近添加两档的默认方向，不给方向切换
-                  direction={
-                    gallery
-                      ? undefined
-                      : {
-                          ascending: sortAscending,
-                          label: SORT_DIRECTIONS[effectiveSort][sortAscending ? "asc" : "desc"],
-                          onToggle: toggleWallSortReversed,
-                        }
-                  }
+                  // 方向两种形态都能切：图廊与海报墙传的是同一份 sort / order
+                  direction={{
+                    ascending: sortAscending,
+                    label: SORT_DIRECTIONS[effectiveSort][sortAscending ? "asc" : "desc"],
+                    onToggle: toggleWallSortReversed,
+                  }}
                 />
               }
               className="mt-5 px-6 max-md:mt-4 max-md:px-4"

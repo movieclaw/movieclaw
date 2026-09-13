@@ -26,6 +26,7 @@ import { ScrapeSettingsSection } from "@/components/scrape-settings-section";
 import { SiteConfigSection, SitesSectionSubtitle } from "@/components/site-config-section";
 import { SubscriptionSettingsSection } from "@/components/subscription-settings-section";
 import { SystemLogsSection } from "@/components/system-logs-section";
+import { TranscodeCacheToggleSection } from "@/components/transcode-cache-toggle-section";
 import { TrickplayToggleSection } from "@/components/trickplay-toggle-section";
 import { WebhookSection } from "@/components/webhook-section";
 import { GlassPanel } from "@/components/glass-panel";
@@ -629,6 +630,7 @@ function PlaybackSection() {
   return (
     <div className="space-y-7">
       <TrickplayToggleSection />
+      <TranscodeCacheToggleSection />
       <RemoteTranscodeSection
         onOpenDevices={() => router.push("/settings/devices" as Route)}
       />

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import date
+from functools import partial
 from pathlib import Path
 
 import pytest
@@ -184,9 +185,9 @@ def test_new_library_gets_the_builtin_favorites_collection(client: TestClient) -
     )
     assert resp.status_code == 200, resp.text
     library_id = resp.json()["data"]["id"]
-    rows = client.get(
-        f"/api/v1/collections?library_id={library_id}&include_empty=true"
-    ).json()["data"]
+    rows = client.get(f"/api/v1/collections?library_id={library_id}&include_empty=true").json()[
+        "data"
+    ]
     fav = next(row for row in rows if row["builtin"] == f"favorites:{library_id}")
     assert fav["name"] == "我的收藏"
     # 内置合集不可改规则——改了它就不是那个合集了
@@ -223,9 +224,7 @@ def test_deleting_an_automatic_collection_leaves_a_tombstone(client: TestClient)
     assert tomb["name"] == "我的收藏"  # 名字/封面/顺序都留着
 
     # 回头路：取消隐藏
-    assert (
-        client.put(f"/api/v1/collections/{fav['id']}", json={"hidden": False}).status_code == 200
-    )
+    assert client.put(f"/api/v1/collections/{fav['id']}", json={"hidden": False}).status_code == 200
     assert [row["id"] for row in listed()] == [fav["id"]]
 
 
@@ -301,9 +300,7 @@ def test_cross_library_collection_has_no_owner(client: TestClient) -> None:
     模型第一天就留了这个口子（``library_id`` 可空），F4 才把入口打开。
     规则驱动的仍然必须指定库——跨库的规则求值排在更后面。
     """
-    created = client.post(
-        "/api/v1/collections", json={"name": "跨库片单", "item_ids": [1]}
-    )
+    created = client.post("/api/v1/collections", json={"name": "跨库片单", "item_ids": [1]})
     assert created.status_code == 200, created.text
     row = created.json()["data"]
     assert row["library_id"] is None
@@ -388,3 +385,105 @@ def test_the_row_and_the_collection_page_never_disagree(client: TestClient) -> N
     assert resp.status_code == 200, resp.text
     assert _detail(client)["collections"] == []
     assert client.get(f"/api/v1/collections/{created['id']}/items").json()["data"] == []
+
+
+# ---------------------------------------------------------------------------
+# 合集页的排序与图床浏览：与单库海报墙能力对齐
+# ---------------------------------------------------------------------------
+
+
+async def _add_second_item(tmp_path: Path) -> int:
+    """再入一部《阿凡达》（2009，评分更低）：排序要有两部才排得出先后。"""
+    async with get_database().session() as session:
+        item = MediaItem(
+            kind="movie", tmdb_id=19995, title="阿凡达", original_title="Avatar", year=2009
+        )
+        session.add(item)
+        await session.flush()
+        assert item.id is not None
+        session.add_all(
+            [
+                MediaMetadata(
+                    media_item_id=item.id,
+                    genre_ids=[878],
+                    release_date=date(2009, 12, 16),
+                    vote_average=7.5,
+                    scraped_at=utcnow(),
+                ),
+                LibraryFile(
+                    library_id=1,
+                    media_item_id=item.id,
+                    season_number=0,
+                    episode_number=0,
+                    file_path=str(tmp_path / "media" / "b.mkv"),
+                    size_bytes=8192,
+                    source=FileSource.SCANNED,
+                    state=FileState.IN_PLACE,
+                ),
+            ]
+        )
+        await session.commit()
+        return item.id
+
+
+def _ids(client: TestClient, collection_id: int, **params) -> list[int]:
+    resp = client.get(f"/api/v1/collections/{collection_id}/items", params=params)
+    assert resp.status_code == 200, resp.text
+    return [row["media_item_id"] for row in resp.json()["data"]]
+
+
+def _gallery(client: TestClient, collection_id: int, **params) -> list[dict]:
+    resp = client.get(f"/api/v1/collections/{collection_id}/gallery", params=params)
+    assert resp.status_code == 200, resp.text
+    return resp.json()["data"]
+
+
+def test_members_can_be_resorted_on_the_fly(client: TestClient, tmp_path: Path) -> None:
+    """观看者在合集页临时换排序（``sort`` / ``order``），与库页同一套档位。
+
+    不给就是合集自己的序：规则驱动按 ``collection.sort``，名单驱动按拖出来的
+    position。名单驱动的合集换档时走的也是海报墙那一份排序实现——「按评分」
+    在库页、合集页指同一个数。
+    """
+    avatar = client.portal.call(partial(_add_second_item, tmp_path))  # type: ignore[attr-defined]
+    smart = _create(client, name="全部", rules=ALL_ITEMS)
+    # 默认标题序：阿凡达 (a) 在 盗梦空间 (d) 前
+    assert _ids(client, smart["id"]) == [avatar, 1]
+    assert _ids(client, smart["id"], sort="release_date") == [1, avatar]
+    assert _ids(client, smart["id"], sort="release_date", order="asc") == [avatar, 1]
+    # 盗梦空间没评分：与库页同一条规则——没数据的两个方向都沉底，不是"最小值"
+    assert _ids(client, smart["id"], sort="rating") == [avatar, 1]
+    assert _ids(client, smart["id"], sort="rating", order="asc") == [avatar, 1]
+    assert _ids(client, smart["id"], order="desc") == [1, avatar], "默认档也能反向"
+
+    manual = _create(client, name="手挑", item_ids=[1, avatar])
+    assert _ids(client, manual["id"]) == [1, avatar], "自定顺序就是名单序"
+    assert _ids(client, manual["id"], order="desc") == [avatar, 1]
+    assert _ids(client, manual["id"], sort="title") == [avatar, 1]
+    assert _ids(client, manual["id"], sort="size") == [avatar, 1], "阿凡达 8192 > 盗梦 4096"
+    assert _ids(client, manual["id"], sort="size", order="asc") == [1, avatar]
+    # 分页在排好的序列上切
+    assert _ids(client, manual["id"], sort="title", limit=1, offset=1) == [1]
+    # 不认识的档拒收
+    assert client.get(f"/api/v1/collections/{manual['id']}/items?sort=bogus").status_code == 422
+
+
+def test_gallery_shares_the_members_order(client: TestClient, tmp_path: Path) -> None:
+    """合集图廊与合集海报墙是同一份名单、同一个顺序（``sort`` 传同一个值）；
+    分页按作品数，没图的作品也占一组；跨库合集每组各带自己的落点库。"""
+    avatar = client.portal.call(partial(_add_second_item, tmp_path))  # type: ignore[attr-defined]
+    smart = _create(client, name="全部", rules=ALL_ITEMS)
+    groups = _gallery(client, smart["id"], sort="release_date")
+    assert [g["media_item_id"] for g in groups] == _ids(client, smart["id"], sort="release_date")
+    assert [g["library_id"] for g in groups] == [1, 1]
+    # 盗梦空间有本地海报、阿凡达没有任何图——仍各占一组
+    assert [i["kind"] for i in groups[0]["images"]] == ["poster"]
+    assert groups[1]["images"] == []
+    assert _gallery(client, smart["id"], sort="release_date", limit=1, offset=1) == [groups[1]]
+
+    cross = client.post(
+        "/api/v1/collections", json={"name": "跨库片单", "item_ids": [avatar, 1]}
+    ).json()["data"]
+    assert [g["media_item_id"] for g in _gallery(client, cross["id"])] == [avatar, 1]
+    assert [g["library_id"] for g in _gallery(client, cross["id"])] == [1, 1]
+    assert client.get("/api/v1/collections/9999/gallery").status_code == 404
