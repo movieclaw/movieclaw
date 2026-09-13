@@ -405,6 +405,11 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   // 轮询乱序守卫：扫描期间后端响应时间抖动大，上一轮的慢响应可能晚于
   // 下一轮到达，不作废就会用旧快照覆盖新状态（进度回跳、胶囊闪烁）
   const reloadSeq = useRef(0);
+  // 清单与库列表那一摊的序号：只有整轮 reload 会推它。换排序 / 翻页 / 跳转只作废
+  // 在途轮询的**墙**（reloadSeq），清单不受影响照常落地——否则带着已存的
+  // 排序偏好进页面时，挂载那轮 reload 被随即而来的换排序作废，四份待办清单要等
+  // 下一次轮询（最长 30 秒）才出现
+  const listsSeq = useRef(0);
   // 海报墙已加载的格数：轮询按这个数重拉第一页，用户滚到第几屏就刷新到第几屏
   // ——否则每轮轮询都把墙缩回首屏，正在看的位置被抽走
   const wallLoaded = useRef(snapshot?.wallLoaded ?? WALL_PAGE_SIZE);
@@ -461,8 +466,12 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
     wallStart,
   ]);
 
-  const reload = useCallback(() => {
-    const seq = ++reloadSeq.current;
+  /**
+   * 墙本身的两趟请求：当前窗口的条目页 + 跳转索引。随排序 / 方向 / 筛选 /
+   * 窗口位置变化的只有这两趟，整轮 reload 与「只换排序」（reloadWall）共用。
+   * 返回 [本窗口条目, 索引档]。
+   */
+  const fetchWall = useCallback(() => {
     const wanted = wallLoaded.current;
     const from = wallOffset.current;
     const itemPages = Array.from(
@@ -478,33 +487,43 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
         });
       },
     );
+    // 跳转索引与当前排序、当前筛选同口径——三者读的是同一份有序名单。
+    // 只有三种排序分得出有意义的档：首字母 / 月份 / 评分档。其余（最近添加、
+    // 片长、体积、最近观看）轨道本来就不显示，索引这一趟请求也省了
+    const indexKind = INDEXED_SORTS[wallSort.current];
+    const fetchIndex = (): Promise<LibraryIndexEntry[]> =>
+      indexKind === undefined
+        ? Promise.resolve([])
+        : listLibraryItemIndex(libraryId, indexKind, wallFilter.current, wallOrder.current).catch(
+            () => [],
+          );
+    // 超管不在这个库的浏览范围内时海报墙接口按 404 拒绝（管理视图不渲染墙），
+    // 不是拉取失败，别点亮顶部的重试提示条。
+    // 索引**排在条目页之后**发、不并发：两趟都要在服务端把整库标题（或上映日）
+    // 过一遍，同时飞出去会在后端互相拖慢——SQLite 逐行取数与事件循环争 GIL，
+    // 9500 部的库实测两趟并发各要 250 ms 以上，串着走一共不到 100 ms
+    return Promise.all(itemPages)
+      .then((pages) => pages.flat())
+      .catch((e) => {
+        if (e instanceof HttpError && e.status === 404) return [] as LibraryItem[];
+        throw e;
+      })
+      .then((libraryItems) => fetchIndex().then((index) => [libraryItems, index] as const));
+  }, [libraryId]);
+
+  const reload = useCallback(() => {
+    const seq = ++reloadSeq.current;
+    const lseq = ++listsSeq.current;
+    const wanted = wallLoaded.current;
     Promise.all([
       listLibraries(),
-      // 超管不在这个库的浏览范围内时海报墙接口按 404 拒绝（管理视图不渲染墙），
-      // 不是拉取失败，别点亮顶部的重试提示条
-      Promise.all(itemPages)
-        .then((pages) => pages.flat())
-        .catch((e) => {
-          if (e instanceof HttpError && e.status === 404) return [] as LibraryItem[];
-          throw e;
-        }),
+      fetchWall(),
       // 临时条目通常是几个到几十个，一次拉全、按入账时间倒序；不参与主墙分页与索引
       listLibraryItems(libraryId, {
         identity: "provisional",
         sort: "added_at",
         limit: PROVISIONAL_LIMIT,
       }).catch(() => [] as LibraryItem[]),
-      // 跳转索引与当前排序、当前筛选同口径——三者读的是同一份有序名单。
-      // 只有三种排序分得出有意义的档：首字母 / 月份 / 评分档。其余（最近添加、
-      // 片长、体积、最近观看）轨道本来就不显示，索引这一趟请求也省了
-      INDEXED_SORTS[wallSort.current] === undefined
-        ? Promise.resolve([] as LibraryIndexEntry[])
-        : listLibraryItemIndex(
-            libraryId,
-            INDEXED_SORTS[wallSort.current]!,
-            wallFilter.current,
-            wallOrder.current,
-          ).catch(() => []),
       canManageLibraries
         ? keepOnError(listUnidentifiedLibraryFiles(libraryId))
         : Promise.resolve([]),
@@ -518,8 +537,11 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
         ? keepOnError(listMissingLibraryFiles(libraryId))
         : Promise.resolve([]),
     ])
-      .then(([libs, libraryItems, provisionalItems, index, unknown, reviewGroups, ignoredGroups, missingItems]) => {
-        if (seq !== reloadSeq.current) return;
+      .then(([libs, [libraryItems, index], provisionalItems, unknown, reviewGroups, ignoredGroups, missingItems]) => {
+        // 更晚的整轮 reload 把两把序号一起推过去，这一轮整个作废；只推 reloadSeq 的
+        // 换排序 / 翻页 / 跳转只作废墙的部分，清单与库列表仍照常落地——它们与
+        // 窗口、排序无关（见 listsSeq）
+        if (lseq !== listsSeq.current) return;
         setSnapshotStale(false);
         // 四张待办清单只要有一张没拿到，就保留上一份快照并点亮顶部提示条。
         // 把失败折成空数组等于对用户说"没有待办了"：胶囊消失、⋯ 菜单的计数
@@ -531,12 +553,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
         // 的 memo，只有真正变化的格子重渲染），其余列表整体复用。否则扫描期间
         // 每 3 秒就把几百个格子全部重画一遍，表现为周期性卡顿
         setLibraries((prev) => (prev ? keepIfEqual(prev, libs) : libs));
-        setItems((prev) => reconcileList(prev, libraryItems, (i) => i.media_item_id));
         setProvisional((prev) => reconcileList(prev, provisionalItems, (i) => i.media_item_id));
-        wallLoaded.current = Math.max(WALL_PAGE_SIZE, libraryItems.length);
-        // 拿满这一页就假定后面还有；真到底时下一次追加会拿到空数组并收尾
-        setWallHasMore(libraryItems.length >= wanted);
-        setWallIndex((prev) => keepIfEqual(prev, index));
         if (unknown !== null) setUnidentified((prev) => keepIfEqual(prev, unknown));
         if (reviewGroups !== null) setReview((prev) => keepIfEqual(prev, reviewGroups));
         if (ignoredGroups !== null) setIgnored((prev) => keepIfEqual(prev, ignoredGroups));
@@ -546,13 +563,44 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
         // 刷新这个页面永远看不见。已有进行中的状态时不覆盖（专用轮询更新鲜）
         const remote = libs.find((l) => l.id === libraryId)?.metadata_refresh;
         if (remote?.refreshing) setMetaRefresh((prev) => (prev?.refreshing ? prev : remote));
+        if (seq !== reloadSeq.current) return;
+        setItems((prev) => reconcileList(prev, libraryItems, (i) => i.media_item_id));
+        wallLoaded.current = Math.max(WALL_PAGE_SIZE, libraryItems.length);
+        // 拿满这一页就假定后面还有；真到底时下一次追加会拿到空数组并收尾
+        setWallHasMore(libraryItems.length >= wanted);
+        setWallIndex((prev) => keepIfEqual(prev, index));
       })
       // 瞬时失败（网络抖动/后端忙）不清已有数据：failed 只决定顶部提示条，
       // 页面继续用上一份快照展示，下一轮轮询成功即自动恢复
       .catch(() => {
+        if (lseq === listsSeq.current) setFailed(true);
+      });
+  }, [canManageLibraries, fetchWall, libraryId]);
+
+  /**
+   * 只重拉墙（本窗口条目 + 索引），换排序 / 方向时走这条。
+   *
+   * 此前换排序走的是整轮 reload：8 趟请求一起飞（库列表、临时条目、四份待办清单
+   * 都跟着重拉），而墙要等 Promise.all 里**最慢的那趟**回来才换内容。这几趟与
+   * 排序毫无关系，却在服务端争同一份 CPU，把「点一下排序」拖成了几百毫秒
+   * （9500 部的电影库实测选档→墙换内容 ≈ 420 ms，只拉墙 ≈ 120 ms）。
+   * 清单与库列表本来就由轮询按节奏刷新，不必为一次换排序提前一轮。
+   */
+  const reloadWall = useCallback(() => {
+    const seq = ++reloadSeq.current;
+    const wanted = wallLoaded.current;
+    fetchWall()
+      .then(([libraryItems, index]) => {
+        if (seq !== reloadSeq.current) return;
+        setItems((prev) => reconcileList(prev, libraryItems, (i) => i.media_item_id));
+        wallLoaded.current = Math.max(WALL_PAGE_SIZE, libraryItems.length);
+        setWallHasMore(libraryItems.length >= wanted);
+        setWallIndex((prev) => keepIfEqual(prev, index));
+      })
+      .catch(() => {
         if (seq === reloadSeq.current) setFailed(true);
       });
-  }, [canManageLibraries, libraryId]);
+  }, [fetchWall]);
 
   useEffect(() => {
     // 挂载即对账，有会话快照也不例外：快照只负责首帧先把上次的分页窗口画
@@ -1243,7 +1291,8 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   }, [items.length, photoWall, probing, scrollElement, wallAnchors, wallIndex, wallStart]);
 
   // 排序切换是**服务端**的事（墙是分页的，本地排只能排到已加载的那几屏）：
-  // 阶段一变、或用户在 ⋯ 菜单里换了排序，就换排序键重拉第一页
+  // 阶段一变、或用户换了排序，就换排序键重拉第一页——只拉墙（reloadWall），
+  // 库列表与待办清单与排序无关，留给轮询
   useEffect(() => {
     // 同图廊：偏好没读出来之前不动排序，否则从详情页返回的那一帧会先按
     // 默认序把窗口重拉一遍，人被甩回墙首
@@ -1255,8 +1304,8 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
     // 换了排序或方向，之前跳到的字母位置就没意义了，窗口回到墙首
     wallOffset.current = 0;
     setWallStart(0);
-    reload();
-  }, [effectiveSort, wallOrderParam, wallSortReady, reload]);
+    reloadWall();
+  }, [effectiveSort, wallOrderParam, wallSortReady, reloadWall]);
 
   // 只有一次都没加载成功过才整页报错；已有数据在手时，瞬时失败只在页内
   // 挂提示条（stale-while-error）——为一次网络抖动把整面海报墙换成错误屏，

@@ -704,71 +704,42 @@ async def build_library_index(
     倒过来排，档的先后与 offset 就一起倒过来（Z→A、低分档在前），不需要另算。
     """
     buckets: list[tuple[str, int, int]] = []
-    if sort == "rating":
+    if sort in ("rating", "release_date"):
         # 与墙读同一份有序名单：档位是在已排好的序列上就地分段，
-        # 因此点档名拿到的 offset 一定指向该档第一格
-        ids = await _wall_page_ids(
-            session,
-            library_id,
-            "rating",
-            None,
-            0,
-            filters=filters,
-            member_id=member_id,
-            content_limit=content_limit,
-            order=order,
-        )
-        scored = dict(
-            (
-                await session.execute(
-                    select(MediaMetadata.media_item_id, MediaMetadata.vote_average).where(
-                        MediaMetadata.media_item_id.in_(ids)  # type: ignore[attr-defined]
-                    )
+        # 因此点档名拿到的 offset 一定指向该档第一格。
+        # 度量（评分 / 上映日）与有序 id 一趟查询同时取回（见 ``_sorted_ids_query``
+        # 的 ``with_measure``）：这一档的口径与 ``_wall_page_ids`` 逐字相同，只是
+        # 不切页、多带一列——按评分/按上映时间的索引条一次请求就是整库的规模，
+        # 再拿几千个 id 回查一遍度量，是这条路径上最贵的一步
+        rows = (
+            await session.execute(
+                _sorted_ids_query(
+                    (
+                        *_wall_scope(library_id),
+                        *_narrow(
+                            filters, member_id, library_id=library_id, content_limit=content_limit
+                        ),
+                    ),
+                    sort,
+                    order,
+                    member_id,
+                    with_measure=True,
                 )
-            ).all()
-        )
-        for index, item_id in enumerate(ids):
-            score = scored.get(item_id)
-            if score is None:
+            )
+        ).all()
+        for index, (_, measure) in enumerate(r for r in rows if r[0] is not None):
+            if sort == "release_date":
+                label = measure.strftime("%Y-%m") if measure else "未知"
+            elif measure is None:
                 label = "未评分"
-            elif score >= 9:
+            elif measure >= 9:
                 label = "9+"
-            elif score >= 8:
+            elif measure >= 8:
                 label = "8+"
-            elif score >= 7:
+            elif measure >= 7:
                 label = "7+"
             else:
                 label = "更低"
-            if buckets and buckets[-1][0] == label:
-                head, count, start = buckets[-1]
-                buckets[-1] = (head, count + 1, start)
-            else:
-                buckets.append((label, 1, index))
-        return buckets
-    if sort == "release_date":
-        ids = await _wall_page_ids(
-            session,
-            library_id,
-            "release_date",
-            None,
-            0,
-            filters=filters,
-            member_id=member_id,
-            content_limit=content_limit,
-            order=order,
-        )
-        dated = dict(
-            (
-                await session.execute(
-                    select(MediaMetadata.media_item_id, MediaMetadata.release_date).where(
-                        MediaMetadata.media_item_id.in_(ids)  # type: ignore[attr-defined]
-                    )
-                )
-            ).all()
-        )
-        for index, item_id in enumerate(ids):
-            released = dated.get(item_id)
-            label = released.strftime("%Y-%m") if released else "未知"
             if buckets and buckets[-1][0] == label:
                 head, count, start = buckets[-1]
                 buckets[-1] = (head, count + 1, start)
@@ -1264,7 +1235,14 @@ async def build_library_relax(
     )
 
 
-def _sorted_ids_query(scope: tuple, sort: WallSort, order: WallOrder | None, member_id: int | None):
+def _sorted_ids_query(
+    scope: tuple,
+    sort: WallSort,
+    order: WallOrder | None,
+    member_id: int | None,
+    *,
+    with_measure: bool = False,
+):
     """给定成员口径（WHERE 片段）与档位，返回「按该档排好的 media_item_id」查询。
 
     标题档不在这里：拼音序在 Python 里排（见 ``_titles_sorted`` / ``sort_item_ids``），
@@ -1280,6 +1258,13 @@ def _sorted_ids_query(scope: tuple, sort: WallSort, order: WallOrder | None, mem
     一起反：反向后的序列恰好是自然序列倒过来，翻页、索引、「回到上次位置」的
     offset 口径都不必另算。度量为空（没评分、没看过）的条目两个方向都沉底——
     它们不是"最小值"，是"没数据"。
+
+    ``with_measure=True`` 时每行多带一列**排序所依据的那个度量**（评分 / 上映日 /
+    片长 / 体积 / 入账时间 / 最近观看），仍按同一条 ORDER BY 排——索引条分档
+    （``build_library_index``）靠它一趟查询就拿到「按序排好的 (id, 度量)」。此前
+    是先取整库有序 id、再拿这几千个 id 做一次 ``IN (...)`` 回查度量：一个万级
+    条目的库要绑几千个变量，实测这一趟回查比排序本身还贵（9500 条目 45~150 ms），
+    而它取的恰恰是排序时已经算出来的那一列。
     """
     ascending = _ascending(sort, order)
     query = select(LibraryFile.media_item_id).where(*scope).group_by(LibraryFile.media_item_id)  # type: ignore[arg-type]
@@ -1287,6 +1272,8 @@ def _sorted_ids_query(scope: tuple, sort: WallSort, order: WallOrder | None, mem
     if sort == "added_at":
         # 「最近添加」：条目的入账时间取它名下最新的一次文件入账
         added = func.max(LibraryFile.created_at)
+        if with_measure:
+            query = query.add_columns(added)
         return query.order_by(
             added.asc() if ascending else added.desc(),
             LibraryFile.media_item_id.asc() if ascending else LibraryFile.media_item_id.desc(),  # type: ignore[union-attr]
@@ -1300,6 +1287,8 @@ def _sorted_ids_query(scope: tuple, sort: WallSort, order: WallOrder | None, mem
         # 「按内容时间」：其他库的家庭录像按拍摄日期倒序最自然（release_date 由
         # 扫描从 sidecar NFO / 容器日期标签 / 文件 mtime 回落而来，见
         # local_identity）；影视库则是上映/首播日期。缺日期的退到年份、再到 id
+        if with_measure:
+            query = query.add_columns(func.max(MediaMetadata.release_date))
         if ascending:
             # 正序：系列合集的 release_date_asc 档、或用户把「按上映时间」切成旧→新。
             # 三个键一起翻向，只翻主键会让同年的片仍按倒序，读起来更乱。
@@ -1333,6 +1322,8 @@ def _sorted_ids_query(scope: tuple, sort: WallSort, order: WallOrder | None, mem
         measure = func.sum(LibraryFile.size_bytes)
     else:
         measure = func.max(_last_played_at(member_id or 0))
+    if with_measure:
+        query = query.add_columns(measure)
     # 自然方向下收尾一律是 id 倒序（加方向之前的行为）；反向时整条序列倒过来，
     # 收尾也跟着变 id 正序——否则同分的片在两个方向里是同一个先后，不是"倒过来"
     flipped = ascending != _NATURAL_ASC[sort]
