@@ -1,7 +1,7 @@
 <title>重复文件清理链路</title>
 <style>
   :root{
-    --bg:#0a0b10;--panel:#10121a;--inset:rgba(255,255,255,.05);
+    --bg:#0a0b10;--inset:rgba(255,255,255,.05);
     --text:#f3f5f9;--muted:rgba(243,245,249,.62);--faint:rgba(243,245,249,.36);
     --line:rgba(255,255,255,.08);--line-strong:rgba(255,255,255,.15);
     --accent:#cdd6e6;--ok:#4ade80;--info:#7fb0ff;--warn:#f5c451;--danger:#ff6b6b;--hdr:#e8c98a;
@@ -10,9 +10,8 @@
   *{box-sizing:border-box}
   body{margin:0;background:#000;color:var(--text);font:14px/1.5 -apple-system,"PingFang SC","Noto Sans SC",sans-serif;-webkit-font-smoothing:antialiased}
   button{font:inherit;color:inherit}
-  button:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--info);outline-offset:2px}
+  button:focus-visible{outline:2px solid var(--info);outline-offset:2px}
 
-  /* ===== 链路导览（demo 自身的壳，不是产品 UI） ===== */
   .guide{position:sticky;top:0;z-index:20;background:rgba(10,11,16,.94);backdrop-filter:blur(12px);border-bottom:1px solid var(--line);padding:10px 16px}
   .guide .inner{max-width:1180px;margin:0 auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
   .guide .k{font-size:11px;letter-spacing:.12em;color:var(--faint);margin-right:6px}
@@ -23,18 +22,18 @@
   .hint{max-width:1180px;margin:12px auto 0;padding:8px 12px;border-left:2px solid var(--warn);font-size:12.5px;color:var(--muted);line-height:1.65}
   .hint b{color:var(--text);font-weight:600}
 
-  /* ===== 机框 ===== */
   .stage{padding:14px 16px 70px}
   .frame{position:relative;max-width:1180px;margin:0 auto;display:grid;grid-template-columns:184px 1fr;background:var(--bg);border:1px solid var(--line-strong);border-radius:18px;overflow:hidden;min-height:680px}
   @media (max-width:860px){.frame{grid-template-columns:1fr}.side{display:none}}
   .side{border-right:1px solid var(--line);padding:16px 10px;background:linear-gradient(180deg,rgba(255,255,255,.04),rgba(255,255,255,.01))}
   .brand{font-weight:700;letter-spacing:.02em;padding:4px 10px 16px}
-  .side a{display:block;padding:7px 10px;border-radius:9px;color:var(--muted);font-size:13px;text-decoration:none;cursor:pointer}
+  .side a{display:block;padding:7px 10px;border-radius:9px;color:var(--muted);font-size:13px;cursor:pointer}
   .side a.on{background:rgba(255,255,255,.1);color:var(--text)}
   .main{padding:24px 24px 30px;min-width:0;position:relative}
   h1{font-size:24px;letter-spacing:-.02em;margin:0 0 4px;text-wrap:balance}
   .sub{color:var(--muted);font-size:13px;margin:0}
-  .back{display:inline-flex;align-items:center;gap:6px;color:var(--muted);font-size:12px;margin-bottom:12px;cursor:pointer}
+  .head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px}
+  .back{display:inline-flex;gap:6px;color:var(--muted);font-size:12px;margin-bottom:12px;cursor:pointer}
   .tabs{display:flex;gap:20px;border-bottom:1px solid var(--line);margin:18px 0 14px}
   .tabs button{background:none;border:0;padding:8px 0;color:var(--faint);font-size:14px;cursor:pointer;border-bottom:2px solid transparent}
   .tabs button.on{color:var(--text);border-bottom-color:var(--text)}
@@ -43,412 +42,245 @@
   .btn{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line-strong);background:rgba(255,255,255,.04);color:var(--text);border-radius:999px;padding:6px 13px;font-size:13px;white-space:nowrap;cursor:pointer}
   .btn.primary{background:var(--accent);color:#0a0b10;border-color:var(--accent);font-weight:600}
   .btn.sm{font-size:12px;padding:3px 10px}
-  .btn.xs{font-size:11.5px;padding:1px 8px;border-color:var(--line)}
+  .btn.xs{font-size:11.5px;padding:1px 9px;border-color:var(--line)}
   .btn.danger{color:var(--danger);border-color:rgba(255,107,107,.35)}
   .btn.danger.solid{background:var(--danger);color:#1a0808;border-color:var(--danger);font-weight:600}
   .btn.ghost{border-color:transparent;background:transparent;color:var(--muted)}
-  .btn:disabled{opacity:.4;cursor:default}
+  .btn:disabled{opacity:.35;cursor:default}
   .tag{display:inline-block;font-size:11px;line-height:1.5;padding:0 7px;border-radius:999px;border:1px solid var(--line-strong);color:var(--muted);vertical-align:middle;white-space:nowrap}
   .tag.keep{color:var(--ok);border-color:rgba(74,222,128,.4)}
-  .tag.dup{color:var(--warn);border-color:rgba(245,196,81,.4)}
-  .tag.low{color:var(--muted);border-style:dashed}
-  .tag.und{color:var(--info);border-color:rgba(127,176,255,.4)}
   .tag.kept{color:var(--hdr);border-color:rgba(232,201,138,.45)}
-  .tag.skip{color:var(--faint);border-color:var(--line)}
-  .cb{width:15px;height:15px;border-radius:4px;border:1px solid var(--line-strong);display:inline-grid;place-items:center;font-size:10px;color:#0a0b10;flex:none;background:transparent;padding:0;cursor:pointer}
-  .cb.on{background:var(--accent);border-color:var(--accent)}
-  .cb.part{border-color:var(--accent);color:var(--accent);font-weight:700}
-  .cb.off{opacity:.25;cursor:default}
-  .chev{display:inline-block;width:12px;color:var(--faint);font-size:11px;text-align:center;transition:transform .15s}
-  .chev.open{transform:rotate(90deg)}
-  @media (prefers-reduced-motion:reduce){.chev{transition:none}}
-
-  /* ===== 摘要 / 工具条 ===== */
-  .summary{display:flex;justify-content:space-between;align-items:center;gap:12px;margin:0 0 10px;font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums;flex-wrap:wrap}
-  .summary b{color:var(--text);font-weight:600}
-  .summary .coex{color:var(--faint)}
-  .toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
-  .chips{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
-  .chip{border:1px solid var(--line-strong);background:transparent;border-radius:999px;padding:3px 10px;font-size:12px;color:var(--muted);white-space:nowrap;cursor:pointer}
+  .tag.warn{color:var(--warn);border-color:rgba(245,196,81,.4)}
+  .chips{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:14px}
+  .chip{border:1px solid var(--line-strong);background:transparent;border-radius:999px;padding:3px 10px;font-size:12px;color:var(--muted);cursor:pointer}
   .chip.on{background:rgba(255,255,255,.12);color:var(--text)}
-  .chips .sep{width:1px;height:16px;background:var(--line);margin:0 4px}
-  .policy{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--muted)}
-  .policy select{background:var(--inset);color:var(--text);border:1px solid var(--line-strong);border-radius:999px;padding:4px 10px;font:inherit;font-size:12.5px}
 
-  /* ===== 表格 ===== */
+  /* 两堆 */
+  .bucket{margin-bottom:22px}
+  .bucket .bh{display:flex;justify-content:space-between;align-items:baseline;gap:12px;padding:0 2px 8px;flex-wrap:wrap}
+  .bucket .bh h2{font-size:15px;margin:0;display:flex;gap:10px;align-items:baseline}
+  .bucket .bh h2 small{font-weight:400;color:var(--faint);font-size:12.5px;font-variant-numeric:tabular-nums}
+  .bucket .bh p{margin:0;color:var(--faint);font-size:12px;flex-basis:100%}
+  .unit{border:1px solid var(--line);border-radius:14px;background:rgba(255,255,255,.02);margin-bottom:10px;overflow:hidden}
+  .unit .uh{display:flex;align-items:center;gap:10px;padding:9px 14px;border-bottom:1px solid var(--line);background:rgba(255,255,255,.02)}
+  .poster{width:26px;height:38px;border-radius:4px;flex:none;border:1px solid var(--line);background:linear-gradient(160deg,#2a3142,#161a24)}
+  .unit .uh .t{font-weight:600}
+  .unit .uh .t small{color:var(--faint);font-weight:400;margin-left:4px}
+  .unit .uh .lib{color:var(--faint);font-size:12px}
+  .unit .uh .sp{flex:1}
+  .frow{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr) minmax(0,1fr) auto;gap:14px;align-items:center;padding:9px 14px;border-bottom:1px solid var(--line);font-size:12.5px}
+  .frow:last-of-type{border-bottom:0}
+  .frow.kept{opacity:.55}
+  .fname{font-family:var(--mono);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .frow .q{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--muted)}
+  .frow .q b{color:var(--text)}
+  .frow .q em{font-style:normal;color:var(--warn);font-weight:600}
+  .frow .o{color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .frow .o small{display:block;color:var(--faint);font-size:11.5px}
+  .frow .a{display:flex;gap:6px;align-items:center}
+  .unit .uf{display:flex;justify-content:flex-end;gap:8px;padding:6px 14px 8px;border-top:1px solid var(--line);background:rgba(0,0,0,.15)}
+  .empty{padding:28px 16px;text-align:center;color:var(--faint);font-size:13px;border:1px dashed var(--line);border-radius:14px}
+  .foot{margin-top:6px;color:var(--faint);font-size:12px}
+  @media (max-width:860px){.frow{grid-template-columns:1fr;gap:4px}}
+
+  /* 回收站表 */
   .tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:14px;background:rgba(255,255,255,.02)}
-  table{width:100%;border-collapse:collapse;min-width:920px;table-layout:fixed;font-variant-numeric:tabular-nums}
-  th:nth-child(1){width:34px}th:nth-child(2){width:19%}th:nth-child(3){width:40%}th:nth-child(4){width:20%}
-  th{text-align:left;font-size:11px;letter-spacing:.05em;color:var(--faint);font-weight:600;padding:10px 12px;border-bottom:1px solid var(--line);white-space:nowrap}
+  table{width:100%;border-collapse:collapse;min-width:820px;table-layout:fixed}
+  th{text-align:left;font-size:11px;letter-spacing:.05em;color:var(--faint);font-weight:600;padding:10px 12px;border-bottom:1px solid var(--line)}
   th.r{text-align:right}
   td{padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:middle;font-size:13px;overflow:hidden}
-  tr.itemrow td{cursor:pointer}
-  tr.sub td{padding-top:6px;padding-bottom:6px;font-size:12.5px;background:rgba(255,255,255,.018)}
-  tr.sub.sel td{background:rgba(205,214,230,.07)}
-  tr.unit td{padding:5px 12px 4px 46px;font-size:11.5px;color:var(--faint);letter-spacing:.03em;background:rgba(255,255,255,.012)}
-  td.f{padding-left:46px}
-  .item{display:flex;gap:8px;align-items:center;min-width:0}
-  .poster{width:30px;height:44px;border-radius:5px;flex:none;border:1px solid var(--line);background:linear-gradient(160deg,#2a3142,#161a24)}
-  .item .t{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .item .t small{color:var(--faint);font-weight:400}
-  .item .lib{font-size:11.5px;color:var(--faint)}
-  .fname{font-family:var(--mono);font-size:12px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;gap:8px;align-items:center}
-  .fname .tag{flex:none}
-  .fname span.n{overflow:hidden;text-overflow:ellipsis}
-  .ql{font-size:12px;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
-  .ql b{color:var(--text);font-weight:600;font-size:12.5px}
-  .ql .sz{color:var(--muted)}
-  .why{font-size:12px;color:var(--muted);white-space:normal;line-height:1.45}
-  .why .o{display:block;color:var(--faint);font-size:11.5px;margin-top:2px}
-  .ops{text-align:right}
-  .acts{display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap}
-  .empty{padding:40px 16px;text-align:center;color:var(--faint);font-size:13px}
-  .foot{margin-top:10px;display:flex;justify-content:space-between;align-items:center;color:var(--faint);font-size:12px}
+  td .why{font-size:12px;color:var(--muted);white-space:normal}
+  td .why small{display:block;color:var(--faint)}
+  td.ops{text-align:right}
+  .summary{display:flex;justify-content:space-between;align-items:center;gap:12px;margin:0 0 10px;font-size:13px;color:var(--muted)}
+  .summary b{color:var(--text)}
 
-  /* ===== 批量条 / 弹窗 / toast ===== */
-  .bulk{position:absolute;left:50%;bottom:18px;transform:translateX(-50%);display:flex;gap:10px;align-items:center;background:#1a1d27;border:1px solid var(--line-strong);border-radius:999px;padding:8px 10px 8px 16px;font-size:13px;box-shadow:0 12px 40px rgba(0,0,0,.5);white-space:nowrap}
-  .bulk b{font-weight:600}
+  /* 弹窗 / toast */
   .modal-bg{position:absolute;inset:0;background:rgba(0,0,0,.6);display:grid;place-items:center;z-index:5;padding:16px}
   .modal{width:min(560px,100%);background:#14171f;border:1px solid var(--line-strong);border-radius:16px;padding:20px 22px;box-shadow:0 30px 80px rgba(0,0,0,.6)}
-  .modal.wide{width:min(900px,100%)}
   .modal h2{font-size:17px;margin:0 0 8px}
   .modal p{color:var(--muted);font-size:13px;margin:0 0 8px;line-height:1.6}
-  .modal .stat{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:12px 0}
-  .modal .stat div{background:var(--inset);border-radius:10px;padding:10px 12px}
-  .modal .stat b{display:block;font-size:18px;font-variant-numeric:tabular-nums}
-  .modal .stat small{color:var(--faint);font-size:11.5px}
+  .modal ul{margin:6px 0 10px;padding-left:18px;color:var(--muted);font-size:12.5px;max-height:220px;overflow:auto}
+  .modal ul b{color:var(--text);font-weight:500}
   .modal .row{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}
-  .modal .warnline{font-size:12.5px;color:var(--warn);margin:6px 0}
   .toast{position:absolute;left:50%;top:14px;transform:translateX(-50%);background:#1a1d27;border:1px solid var(--line-strong);border-radius:12px;padding:9px 14px;font-size:13px;box-shadow:0 12px 40px rgba(0,0,0,.5);z-index:6;white-space:nowrap}
   .toast b{color:var(--ok)}
 
-  /* ===== 条目详情页 ===== */
+  /* 条目页 */
   .hero{display:flex;gap:18px;margin-bottom:18px}
   .hero .poster{width:96px;height:140px;border-radius:10px}
-  .hero h1{margin-top:6px}
   .meta{color:var(--faint);font-size:12.5px;margin-top:6px}
   .section{border:1px solid var(--line);border-radius:14px;background:rgba(255,255,255,.02);margin-top:14px}
   .section .hd{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line);font-size:13px;font-weight:600}
   .section .hd .r{display:flex;gap:8px;align-items:center;font-weight:400}
-  .frow{border-bottom:1px solid var(--line)}
-  .frow:last-child{border-bottom:0}
-  .frow .line{display:flex;align-items:center;gap:10px;padding:10px 14px;cursor:pointer}
-  .frow .line .fname{flex:1}
-  .frow dl{display:grid;grid-template-columns:72px 1fr;gap:6px 18px;margin:0;padding:10px 14px 14px 40px;font-size:12.5px;background:rgba(0,0,0,.18);border-top:1px solid var(--line)}
-  .frow dt{color:var(--faint)}.frow dd{margin:0;color:var(--muted)}
-  .frow dd .sub2{display:block;font-family:var(--mono);font-size:11.5px;color:var(--faint);word-break:break-all}
-  .frow dd.origin{color:var(--text)}
-  .menu{position:relative}
-  .menu .pop{position:absolute;right:0;top:110%;background:#1a1d27;border:1px solid var(--line-strong);border-radius:10px;padding:4px;min-width:170px;z-index:4;box-shadow:0 12px 40px rgba(0,0,0,.5)}
-  .menu .pop button{display:block;width:100%;text-align:left;background:none;border:0;padding:7px 10px;border-radius:7px;font-size:12.5px;cursor:pointer;color:var(--text)}
-  .menu .pop button:hover{background:rgba(255,255,255,.08)}
-  .menu .pop button.dg{color:var(--danger)}
-  .badge-n{font-size:12px;color:var(--muted)}
+  .drow{border-bottom:1px solid var(--line)}
+  .drow:last-child{border-bottom:0}
+  .drow .line{display:flex;align-items:center;gap:10px;padding:10px 14px;cursor:pointer}
+  .drow .line .fname{flex:1;display:flex;gap:8px;align-items:center}
+  .chev{display:inline-block;width:12px;color:var(--faint);font-size:11px;text-align:center}
+  .drow dl{display:grid;grid-template-columns:72px 1fr;gap:6px 18px;margin:0;padding:10px 14px 14px 40px;font-size:12.5px;background:rgba(0,0,0,.18);border-top:1px solid var(--line)}
+  .drow dt{color:var(--faint)}.drow dd{margin:0;color:var(--muted)}
+  .drow dd.origin{color:var(--text)}
+  .drow dd .sub2{display:block;font-family:var(--mono);font-size:11.5px;color:var(--faint);word-break:break-all}
 </style>
 
 <div class="guide">
   <div class="inner">
     <span class="k">链路</span>
     <button class="step on" data-step="1"><i>1</i>发现</button>
-    <button class="step" data-step="2"><i>2</i>看清楚</button>
-    <button class="step" data-step="3"><i>3</i>定策略</button>
-    <button class="step" data-step="4"><i>4</i>确认清理</button>
-    <button class="step" data-step="5"><i>5</i>反悔</button>
-    <button class="step" data-step="6"><i>B</i>另一个入口：条目页</button>
+    <button class="step" data-step="2"><i>2</i>一模一样：一键清</button>
+    <button class="step" data-step="3"><i>3</i>不同版本：留哪个 / 都留着</button>
+    <button class="step" data-step="4"><i>4</i>反悔</button>
+    <button class="step" data-step="5"><i>B</i>另一个入口：条目页</button>
   </div>
   <div class="hint" id="hint"></div>
 </div>
 
-<div class="stage">
-<div class="frame" id="frame">
-  <aside class="side">
-    <div class="brand">movieclaw</div>
-    <a>首页</a>
-    <a class="on" id="nav-manage">媒体库</a>
-    <a>订阅</a>
-    <a>下载</a>
-    <a>搜索</a>
-    <a>设置</a>
-  </aside>
+<div class="stage"><div class="frame" id="frame">
+  <aside class="side"><div class="brand">movieclaw</div><a>首页</a><a class="on" id="nav-manage">媒体库</a><a>订阅</a><a>下载</a><a>搜索</a><a>设置</a></aside>
   <div class="main" id="main"></div>
-</div>
-</div>
+</div></div>
 
 <script>
 (function(){
 'use strict';
-// ---------- 数据（示例，非真实库存） ----------
-const CAT = {
-  same_inode:{label:'同一文件',cls:'dup',why:'与保留文件是同一个 inode，磁盘上只有一份'},
-  same_content:{label:'同内容',cls:'dup',why:'尺寸与时长都相同，是复制品'},
-  same_tier:{label:'同档',cls:'dup',why:'与保留文件同档'},
-  lower_tier:{label:'低档',cls:'low',why:'低于保留文件'},
-  undecidable:{label:'无法判定',cls:'und',why:''},
-};
-// 每个单元：files[0] 是预选保留者；role 由 category 决定
-const seed = () => ([
-  {id:'jm',lib:'电影',title:'九门',year:2025,kind:'movie',units:[{u:'',files:[
-    {id:1,name:'Nine.Gates.2025.2160p.WEB-DL.H265.DDP5.1-CHDWEB.mkv',q:'2160p WEB-DL',sz:'8.1 GB',br:'19.4 Mbps',origin:'订阅《九门》自动投递',od:'HDSky · qBittorrent · 硬链接入库',role:'keep'},
-    {id:2,name:'Nine.Gates.2025.1080p.WEB-DL.H264.AAC-CHDWEB.mkv',q:'1080p WEB-DL',sz:'4.2 GB',br:'12.1 Mbps',origin:'订阅《九门》自动投递（洗版前的旧版本）',od:'HDSky · qBittorrent · 硬链接入库',cat:'lower_tier'},
-    {id:3,name:'九门 (2025) - 1080p.mkv',q:'1080p WEB-DL',sz:'4.0 GB',br:'11.6 Mbps',origin:'存量扫描发现（非本系统入库）',od:'发现于 2026-06-03（手动扫描）',cat:'same_tier',ref:1},
-  ]}]},
-  {id:'got',lib:'剧集',title:'权力的游戏',year:2011,kind:'tv',units:[
-    {u:'S01E01',files:[
-      {id:11,name:'Game.of.Thrones.S01E01.1080p.BluRay.x264-DEMAND.mkv',q:'1080p Blu-ray',sz:'2.9 GB',br:'7.2 Mbps',origin:'监听目录自动识别入库',od:'/downloads/complete · 复制入库',role:'keep'},
-      {id:12,name:'Game.of.Thrones.S01E01.1080p.BluRay.x264-DEMAND (1).mkv',q:'1080p Blu-ray',sz:'2.9 GB',br:'7.2 Mbps',origin:'存量扫描发现（非本系统入库）',od:'发现于 2026-07-12（定时扫描）',cat:'same_content',ref:11}]},
-    {u:'S01E02',files:[
-      {id:13,name:'Game.of.Thrones.S01E02.1080p.BluRay.x264-DEMAND.mkv',q:'1080p Blu-ray',sz:'2.8 GB',br:'7.0 Mbps',origin:'监听目录自动识别入库',od:'/downloads/complete · 硬链接入库',role:'keep'},
-      {id:14,name:'权力的游戏 S01E02.mkv',q:'1080p Blu-ray',sz:'2.8 GB',br:'7.0 Mbps',origin:'存量扫描发现（非本系统入库）',od:'发现于 2026-07-12（定时扫描）',cat:'same_inode',ref:13}]},
-    {u:'S01E03',files:[
-      {id:15,name:'Game.of.Thrones.S01E03.1080p.BluRay.x264-DEMAND.mkv',q:'1080p Blu-ray',sz:'2.9 GB',br:'7.1 Mbps',origin:'监听目录自动识别入库',od:'/downloads/complete · 硬链接入库',role:'keep'},
-      {id:16,name:'Game.of.Thrones.S01E03.720p.HDTV.x264-CTU.mkv',q:'720p HDTV',sz:'1.1 GB',br:'2.6 Mbps',origin:'存量扫描发现（非本系统入库）',od:'发现于 2026-05-20（手动扫描）',cat:'lower_tier'}]},
-  ]},
-  {id:'dune',lib:'4K 电影',title:'沙丘 2',year:2024,kind:'movie',units:[{u:'',files:[
-    {id:21,name:'Dune.Part.Two.2024.2160p.WEB-DL.DV.HDR.H265-FLUX.mkv',q:'2160p WEB-DL · DV',sz:'22.3 GB',br:'31.0 Mbps',origin:'手动下载（HDSky）',od:'qBittorrent · 硬链接入库',role:'keep'},
-    {id:22,name:'Dune.Part.Two.2024.2160p.WEB-DL.SDR.H265-FLUX.mkv',q:'2160p WEB-DL · SDR',sz:'18.9 GB',br:'26.2 Mbps',origin:'手动下载（HDSky）',od:'qBittorrent · 硬链接入库',cat:'undecidable',uwhy:'HDR 与 SDR 不同版本，规则组阶梯未比较 HDR，交给你判断'}]}]},
-  {id:'wd',lib:'电影',title:'流浪地球 2',year:2023,kind:'movie',units:[{u:'',files:[
-    {id:31,name:'The.Wandering.Earth.II.2023.1080p.WEB-DL.H264.DDP5.1-CMCT.mkv',q:'1080p WEB-DL',sz:'6.4 GB',br:'8.9 Mbps',origin:'订阅《流浪地球 2》自动投递',od:'CMCT · qBittorrent · 硬链接入库',role:'keep'},
-    {id:32,name:'流浪地球2.2023.1080p.WEB-DL.国英双语.mkv',q:'1080p WEB-DL',sz:'6.6 GB',br:'9.1 Mbps',origin:'存量扫描发现（非本系统入库）',od:'发现于 2026-04-02（手动扫描）',cat:'undecidable',uwhy:'音轨不同（zho+eng vs eng），可能是配音版，交给你判断'}]}]},
-  {id:'ssy',lib:'剧集',title:'十三邀',year:2016,kind:'tv',units:[{u:'S07E01',files:[
-    {id:41,name:'十三邀 S07E01 - 2160p H.265 AAC ADWeb.mp4',q:'2160p · 片源未知',sz:'1.9 GB',br:'4.1 Mbps',origin:'存量扫描发现（非本系统入库）',od:'发现于 2026-03-15（手动扫描）',role:'keep'},
-    {id:42,name:'十三邀.S07E01.2160p.WEB-DL.mp4',q:'2160p WEB-DL',sz:'2.1 GB',br:'4.5 Mbps',origin:'监听目录自动识别入库',od:'/downloads/complete · 硬链接入库',cat:'undecidable',uwhy:'保留文件的片源未知，无法比较 → 去标注片源'}]}]},
-  {id:'opp',lib:'电影',title:'奥本海默',year:2023,kind:'movie',skip:'规则组「保留共存」：订阅《奥本海默》的规则组开了旧版本保留，低档版本按你的设定放行',units:[{u:'',files:[
-    {id:51,name:'Oppenheimer.2023.2160p.UHD.BluRay.Remux.HDR-FraMeSToR.mkv',q:'2160p Remux',sz:'74 GB',br:'—',origin:'订阅《奥本海默》洗版投递',od:'HDSky · qBittorrent · 硬链接入库',role:'keep'},
-    {id:52,name:'Oppenheimer.2023.1080p.BluRay.x264-SPARKS.mkv',q:'1080p Blu-ray',sz:'14 GB',br:'—',origin:'订阅《奥本海默》自动投递',od:'HDSky · qBittorrent · 硬链接入库',cat:'lower_tier',pass:true}]}]},
-  {id:'br',lib:'电影',title:'银翼杀手 2049',year:2017,kind:'movie',units:[{u:'',files:[
-    {id:61,name:'Blade.Runner.2049.2017.2160p.BluRay.Remux.HDR-EPSiLON.mkv',q:'2160p Remux',sz:'58 GB',br:'—',origin:'手动下载（HDSky）',od:'qBittorrent · 复制入库',role:'keep'},
-    {id:62,name:'Blade.Runner.2049.2017.1080p.BluRay.x264-SPARKS.mkv',q:'1080p Blu-ray',sz:'12 GB',br:'—',origin:'存量扫描发现（非本系统入库）',od:'发现于 2026-02-01（手动扫描）',cat:'lower_tier',kept:'2026-09-01'}]}]},
+// ---------- 示例数据（非真实库存） ----------
+// 每个单元：files 里 suggested:true 的是「建议保留」；bucket 由文件是否一模一样决定
+const seed=()=>([
+ {id:'got1',lib:'剧集',title:'权力的游戏',year:2011,unit:'S01E01',bucket:'identical',files:[
+   {id:11,name:'Game.of.Thrones.S01E01.1080p.BluRay.x264-DEMAND.mkv',q:'1080p Blu-ray',sz:'2.9 GB',br:'7.2 Mbps',origin:'监听目录自动识别入库',od:'/downloads/complete · 复制入库',suggested:true,why:'命名规范、来源可追溯'},
+   {id:12,name:'Game.of.Thrones.S01E01.1080p.BluRay.x264-DEMAND (1).mkv',q:'1080p Blu-ray',sz:'2.9 GB',br:'7.2 Mbps',origin:'存量扫描发现',od:'发现于 2026-07-12（定时扫描）',same:'尺寸与时长相同'}]},
+ {id:'got2',lib:'剧集',title:'权力的游戏',year:2011,unit:'S01E02',bucket:'identical',files:[
+   {id:13,name:'Game.of.Thrones.S01E02.1080p.BluRay.x264-DEMAND.mkv',q:'1080p Blu-ray',sz:'2.8 GB',br:'7.0 Mbps',origin:'监听目录自动识别入库',od:'/downloads/complete · 硬链接入库',suggested:true,why:'命名规范、来源可追溯'},
+   {id:14,name:'权力的游戏 S01E02.mkv',q:'1080p Blu-ray',sz:'2.8 GB',br:'7.0 Mbps',origin:'存量扫描发现',od:'发现于 2026-07-12（定时扫描）',same:'同一个文件（inode 相同，磁盘只有一份）'}]},
+ {id:'ck',lib:'电影',title:'长安三万里',year:2023,unit:'',bucket:'identical',files:[
+   {id:15,name:'Chang.An.2023.2160p.WEB-DL.H265.DDP5.1-CMCT.mkv',q:'2160p WEB-DL',sz:'11.2 GB',br:'14.9 Mbps',origin:'订阅《长安三万里》自动投递',od:'CMCT · qBittorrent · 硬链接入库',suggested:true,why:'来源可追溯'},
+   {id:16,name:'长安三万里.2023.4K.mkv',q:'2160p WEB-DL',sz:'11.2 GB',br:'14.9 Mbps',origin:'存量扫描发现',od:'发现于 2026-05-30（手动扫描）',same:'尺寸与时长相同'}]},
+ {id:'jm',lib:'电影',title:'九门',year:2025,unit:'',bucket:'versions',files:[
+   {id:1,name:'Nine.Gates.2025.2160p.WEB-DL.H265.DDP5.1-CHDWEB.mkv',q:['2160p','WEB-DL','8.1 GB'],origin:'订阅《九门》自动投递',od:'HDSky · qBittorrent · 硬链接入库',suggested:true,why:'档位最高'},
+   {id:2,name:'Nine.Gates.2025.1080p.WEB-DL.H264.AAC-CHDWEB.mkv',q:['1080p','WEB-DL','4.2 GB'],origin:'订阅《九门》自动投递（洗版前的旧版本）',od:'HDSky · qBittorrent · 硬链接入库'},
+   {id:3,name:'九门 (2025) - 1080p.mkv',q:['1080p','WEB-DL','4.0 GB'],origin:'存量扫描发现',od:'发现于 2026-06-03（手动扫描）'}]},
+ {id:'dune',lib:'4K 电影',title:'沙丘 2',year:2024,unit:'',bucket:'versions',files:[
+   {id:21,name:'Dune.Part.Two.2024.2160p.WEB-DL.DV.HDR.H265-FLUX.mkv',q:['2160p','WEB-DL','DV','22.3 GB'],origin:'手动下载',od:'HDSky · qBittorrent · 硬链接入库',suggested:true,why:'档位无法比较（规则组未比 HDR），按实测码率建议'},
+   {id:22,name:'Dune.Part.Two.2024.2160p.WEB-DL.SDR.H265-FLUX.mkv',q:['2160p','WEB-DL','SDR','18.9 GB'],origin:'手动下载',od:'HDSky · qBittorrent · 硬链接入库'}]},
+ {id:'wd',lib:'电影',title:'流浪地球 2',year:2023,unit:'',bucket:'versions',files:[
+   {id:31,name:'The.Wandering.Earth.II.2023.1080p.WEB-DL.H264.DDP5.1-CMCT.mkv',q:['1080p','WEB-DL','eng 5.1','6.4 GB'],origin:'订阅《流浪地球 2》自动投递',od:'CMCT · qBittorrent · 硬链接入库'},
+   {id:32,name:'流浪地球2.2023.1080p.WEB-DL.国英双语.mkv',q:['1080p','WEB-DL','zho+eng 5.1','6.6 GB'],origin:'存量扫描发现',od:'发现于 2026-04-02（手动扫描）',suggested:true,why:'同档，实测码率更高'}]},
+ {id:'ssy',lib:'剧集',title:'十三邀',year:2016,unit:'S07E01',bucket:'versions',files:[
+   {id:41,name:'十三邀 S07E01 - 2160p H.265 AAC ADWeb.mp4',q:['2160p','片源未知','1.9 GB'],origin:'存量扫描发现',od:'发现于 2026-03-15（手动扫描）'},
+   {id:42,name:'十三邀.S07E01.2160p.WEB-DL.mp4',q:['2160p','WEB-DL','2.1 GB'],origin:'监听目录自动识别入库',od:'/downloads/complete · 硬链接入库',suggested:true,why:'档位无法比较（一侧片源未知），按实测码率建议'}]},
 ]);
+const S={units:seed(),lib:'全部',screen:'manage',tab:'dup',recycle:[],modal:null,toast:null,detailOpen:new Set([1]),upgrading:2,keepOld:1,item:null};
 
-const S = {items:seed(),policy:'safe',lib:'全部',cat:null,showKept:false,open:new Set(['jm','got']),checked:new Set(),screen:'manage',tab:'dup',recycle:[],modal:null,toast:null,menu:null,detailOpen:new Set([3])};
-// 初始预勾：按稳妥策略
-function preselect(){S.checked=new Set();for(const it of S.items)if(!it.skip)for(const u of it.units)for(const f of u.files)if(isRedundant(f)&&inPolicy(f.cat))S.checked.add(f.id);}
-function isRedundant(f){return !!f.cat&&f.cat!=='undecidable'&&!f.kept&&!f.pass;}
-function inPolicy(cat){return cat==='same_inode'||cat==='same_content'||cat==='same_tier'||(S.policy==='best_only'&&cat==='lower_tier');}
-preselect();
-
-const fmt=n=>n.toLocaleString('zh-CN');
 const gb=s=>parseFloat(s)||0;
-function allFiles(){const a=[];for(const it of S.items)for(const u of it.units)for(const f of u.files)a.push({it,u,f});return a;}
-function fileById(id){return allFiles().find(x=>x.f.id===id);}
-function stats(){
-  let red=0,bytes=0,coex=0,kept=0,und=0,units=0;const bycat={};
-  for(const {it,u,f} of allFiles()){
-    if(f.kept){kept++;continue;}
-    if(it.skip||!f.cat)continue;
-    if(f.cat==='undecidable'){und++;bycat.undecidable=(bycat.undecidable||0)+1;continue;}
-    bycat[f.cat]=(bycat[f.cat]||0)+1;
-    if(inPolicy(f.cat)){red++;bytes+=gb(f.sz);}else coex++;
-  }
-  for(const it of S.items)if(!it.skip)for(const u of it.units)if(u.files.some(f=>isRedundant(f)&&inPolicy(f.cat)))units++;
-  return {red,bytes,coex,kept,und,units,bycat};
-}
+const sizeOf=f=>Array.isArray(f.q)?f.q[f.q.length-1]:f.sz;
+const visible=()=>S.units.filter(u=>!u.done&&(S.lib==='全部'||u.lib===S.lib)&&(!S.item||u.id.startsWith(S.item)));
+const bucket=b=>visible().filter(u=>u.bucket===b);
+const bstats=b=>{const us=bucket(b);let files=0,bytes=0;for(const u of us){const f=u.files.filter(x=>!x.kept);files+=Math.max(0,f.length-1);for(const x of f)if(!x.suggested)bytes+=gb(sizeOf(x));}return {units:us.length,files,bytes};};
+const total=()=>bstats('identical').files+bstats('versions').files;
 
-// ---------- 渲染 ----------
-const main=document.getElementById('main');
 const HINTS={
-  1:'<b>什么时候会来到这里？</b>不会有人逼你来。管理页标签栏常驻「重复文件 N」，N 是按当前策略算出的冗余文件数；你想清一次就来一次。摘要第一句先告诉你"多少、多大"，低档并存的版本单独一句「未计入」——它们不是垃圾。',
-  2:'<b>先看清楚，再决定。</b>展开条目：每个单元一组，绿色「保留」是系统预选的最优文件，黄色是冗余（同一文件 / 同内容 / 同档），虚线「低档」默认不勾，蓝色「无法判定」永远不勾。「来源」列告诉你每个文件是订阅投递、手动下载、监听识别还是扫描发现。试试点「改为保留」或「刻意保留」。',
-  3:'<b>策略在这里选，只影响预勾。</b>「稳妥」只勾没有信息增量的文件；切到「只留最优」会弹一句说明，然后低档版本也被预勾——银翼杀手那个 1080p 例外，因为你已经标过「刻意保留」。任何策略下都可以逐个改勾选。',
-  4:'<b>点「清理已勾选」→ 确认弹窗。</b>弹窗写清文件数、总大小、其中几个是低档版本，以及「移入回收站，7 天内可恢复」。确认后文件进回收站，标签上的数字随之变化。',
-  5:'<b>反悔在回收站。</b>清掉的文件带着原因「重复清理」和一句说明躺在回收站里，倒计时 7 天。点「恢复」就回到原位，重复文件页会重新列出它。',
-  6:'<b>另一个入口：条目详情页。</b>单元有多个在位文件时，文件区标题旁出现「3 个版本 · 检查重复」，打开只看本条目的同一张表。展开任意文件能看到新增的「来源」行；行菜单里也能直接「刻意保留」。',
+ 1:'<b>什么时候来？</b>没人推你。管理页标签栏常驻「重复文件 N」，想清一次就来一次。页面只有两段：<b>一模一样</b>（机器确定没区别）和<b>不同版本</b>（有区别，只有你知道值不值得留）。每个文件都写着规格和它从哪来。',
+ 2:'<b>一模一样这一段不用想。</b>同一个 inode，或尺寸与时长都相同的复制品。右上角「全部清理」一键搞定，每个单元留系统建议的那个。想逐个来也行：点某个文件的「留这个」。',
+ 3:'<b>不同版本这一段，每个单元回答一次。</b>看规格（和建议保留者不同的维度会加黄）、看来源，然后要么点某个文件的「留这个」，要么点「都留着」。「都留着」的单元从此不再出现，直到有新文件进来。收藏家的全部操作就是这一个按钮。试试把沙丘 2 点成「都留着」，再把九门「留这个」。',
+ 4:'<b>反悔在回收站。</b>清掉的文件带着「重复清理」原因和一句说明躺 7 天，点「恢复」回原位，重复文件页会重新列出它。',
+ 5:'<b>另一个入口：条目详情页。</b>多版本时文件区标题旁出现「3 个版本 · 处理重复」，点过去就是管理页那张表，按这个条目筛选——同一张表只有一处。展开文件能看到「来源」行；「都留着」过的文件显示「你留下的」，可取消。',
 };
 function setStep(n){document.querySelectorAll('.step').forEach(b=>b.classList.toggle('on',b.dataset.step==String(n)));document.getElementById('hint').innerHTML=HINTS[n];
-  if(n===5){S.screen='manage';S.tab='recycle';}else if(n===6){S.screen='detail';}else{S.screen='manage';S.tab='dup';}
-  if(n===3&&S.policy==='safe'){/* 让用户自己切 */}
-  render();}
+  S.item=null;if(n===4){S.screen='manage';S.tab='recycle';}else if(n===5){S.screen='detail';}else{S.screen='manage';S.tab='dup';}render();}
 document.querySelectorAll('.step').forEach(b=>b.addEventListener('click',()=>setStep(+b.dataset.step)));
-document.getElementById('nav-manage').addEventListener('click',()=>{S.screen='manage';render();});
+document.getElementById('nav-manage').addEventListener('click',()=>{S.screen='manage';S.item=null;render();});
 
-function render(){
-  main.innerHTML = S.screen==='detail'?renderDetail():renderManage();
-  bind();
-}
-function tabsHtml(){
-  const st=stats();
-  return `<div class="tabs">
-    <button data-tab="lib">媒体库 <em>4</em></button>
-    <button data-tab="recycle" class="${S.tab==='recycle'?'on':''}">回收站 <em>${S.recycle.length||''}</em></button>
-    <button data-tab="dup" class="${S.tab==='dup'?'on':''}">重复文件 <em>${st.red||''}</em></button>
-  </div>`;
-}
+const main=document.getElementById('main');
+function render(){main.innerHTML=S.screen==='detail'?renderDetail():renderManage();bind();}
 function renderManage(){
   return `<div class="head"><div><h1>媒体库管理</h1><p class="sub">库负责盘点与守护；回收站与重复文件负责让你安心删。</p></div><button class="btn">＋ 创建媒体库</button></div>
-  ${tabsHtml()}
-  ${S.tab==='dup'?renderDup():S.tab==='recycle'?renderRecycle():'<div class="empty">（库列表，略）</div>'}
-  ${renderBulk()}${renderModal()}${S.toast?`<div class="toast">${S.toast}</div>`:''}`;
+  <div class="tabs"><button>媒体库 <em>4</em></button><button data-tab="recycle" class="${S.tab==='recycle'?'on':''}">回收站 <em>${S.recycle.length||''}</em></button><button data-tab="dup" class="${S.tab==='dup'?'on':''}">重复文件 <em>${total()||''}</em></button></div>
+  ${S.tab==='dup'?renderDup():renderRecycle()}${renderModal()}${S.toast?`<div class="toast">${S.toast}</div>`:''}`;
 }
 function renderDup(){
-  const st=stats();
-  const libs=['全部','电影','剧集','4K 电影'];
-  const cats=['same_inode','same_content','same_tier','lower_tier','undecidable'];
-  const rows=S.items.filter(it=>S.lib==='全部'||it.lib===S.lib).map(renderItem).join('');
-  return `<div class="summary"><div>
-      <b>${st.units} 个单元</b> · <b>${st.red} 个冗余文件</b> · <b>${st.bytes.toFixed(1)} GB</b> 可回收
-      ${st.coex?`<span class="coex"> · 另有 ${st.coex} 个低档版本并存（未计入）</span>`:''}
-      ${st.und?`<span class="coex"> · ${st.und} 个无法判定</span>`:''}
-    </div>
-    <div style="display:flex;gap:10px;align-items:center">
-      <label class="policy">策略 <select id="policy"><option value="safe" ${S.policy==='safe'?'selected':''}>稳妥</option><option value="best_only" ${S.policy==='best_only'?'selected':''}>只留最优</option></select></label>
-      <button class="btn primary" id="clean" ${S.checked.size?'':'disabled'}>清理已勾选 · ${S.checked.size}</button>
-    </div></div>
-  <div class="toolbar">
-    <div class="chips">${libs.map(l=>`<button class="chip ${S.lib===l?'on':''}" data-lib="${l}">${l}</button>`).join('')}
-      <span class="sep"></span>
-      ${cats.map(c=>`<button class="chip ${S.cat===c?'on':''}" data-cat="${c}">${CAT[c].label} ${st.bycat[c]||0}</button>`).join('')}
-      <span class="sep"></span>
-      <button class="chip ${S.showKept?'on':''}" data-kept="1">已标记保留 ${st.kept}</button>
-    </div></div>
-  <div class="tablewrap"><table>
-    <thead><tr><th></th><th>条目</th><th>文件 · 品质</th><th>来源</th><th class="r">操作</th></tr></thead>
-    <tbody>${rows||'<tr><td colspan="5" class="empty">没有重复文件。同一部片、同一集只有一个在位文件。</td></tr>'}</tbody>
-  </table></div>
-  <div class="foot"><span>策略只决定预勾；「无法判定」与「刻意保留」永远不会被勾选。清理的文件进回收站，7 天内可恢复。</span></div>`;
+  const a=bstats('identical'),b=bstats('versions');
+  return `<div class="chips">${['全部','电影','剧集','4K 电影'].map(l=>`<button class="chip ${S.lib===l?'on':''}" data-lib="${l}">${l}</button>`).join('')}${S.item?`<button class="chip on" data-item-clear="1">只看《九门》 ✕</button>`:''}</div>
+  <section class="bucket"><div class="bh"><h2>一模一样 <small>${a.units} 个单元 · ${a.files} 个多余文件 · ${a.bytes.toFixed(1)} GB</small></h2>
+    <button class="btn primary sm" data-all="identical" ${a.files?'':'disabled'}>全部清理 · ${a.files}</button>
+    <p>同一个文件的两个名字，或尺寸与时长完全相同的复制品。清掉不丢任何东西。</p></div>
+    ${bucket('identical').map(renderUnit).join('')||'<div class="empty">没有一模一样的文件</div>'}</section>
+  <section class="bucket"><div class="bh"><h2>不同版本 <small>${b.units} 个单元 · ${b.files} 个可能多余的文件</small></h2>
+    <button class="btn sm" data-all="versions" ${b.files?'':'disabled'}>全部按建议清理 · ${b.files}</button>
+    <p>规格或来源有区别。每个单元你说了算：留哪个，或都留着。</p></div>
+    ${bucket('versions').map(renderUnit).join('')||'<div class="empty">没有待决定的单元</div>'}</section>
+  <div class="foot">${S.upgrading} 个单元正在洗版验证中、${S.keepOld} 个条目按规则组「保留共存」，不在这里显示 · 清理的文件进回收站，7 天内可恢复</div>`;
 }
-function visibleFiles(it){
-  return it.units.map(u=>({u,files:u.files.filter(f=>{
-    if(S.showKept)return !!f.kept;
-    if(f.kept)return false;
-    if(S.cat&&f.cat!==S.cat&&f.role!=='keep')return false;
-    return true;
-  })})).filter(x=>x.files.length && (S.showKept || x.files.some(f=>f.role!=='keep')));
+function qHtml(u,f){
+  if(!Array.isArray(f.q))return `<b>${f.q}</b> · ${f.sz} · ${f.br}`;
+  const ref=u.files.find(x=>x.suggested)||u.files[0];
+  return f.q.map((t,i)=>{const diff=f!==ref&&ref.q[i]!==t&&i<f.q.length-1;return diff?`<em>${t}</em>`:(i===0?`<b>${t}</b>`:t);}).join(' · ');
 }
-function renderItem(it){
-  const vis=visibleFiles(it);
-  if(!vis.length)return '';
-  const open=S.open.has(it.id);
-  const cnt=vis.reduce((n,x)=>n+x.files.filter(f=>f.role!=='keep').length,0);
-  const ids=vis.flatMap(x=>x.files.filter(f=>isRedundant(f)).map(f=>f.id));
-  const on=ids.length&&ids.every(i=>S.checked.has(i)), part=!on&&ids.some(i=>S.checked.has(i));
-  const cb=it.skip||!ids.length?`<span class="cb off"></span>`:`<button class="cb ${on?'on':part?'part':''}" data-group="${it.id}" aria-label="勾选整组">${on?'✓':part?'–':''}</button>`;
-  const head=`<tr class="itemrow" data-open="${it.id}"><td>${cb}</td>
-    <td><div class="item"><span class="chev ${open?'open':''}">›</span><div class="poster"></div><div><div class="t">${it.title} <small>${it.year}</small></div><div class="lib">${it.kind==='tv'?'剧集':'电影'} · ${it.lib}</div></div></div></td>
-    <td>${it.skip?`<span class="tag skip">整条目放行</span> <span class="why">${it.skip}</span>`:it.kind==='tv'?`<span class="badge-n">${vis.length} 集有冗余 · S01</span>`:`<span class="badge-n">${cnt} 个${S.showKept?'已标记':'多余'}版本</span>`}</td>
-    <td></td><td class="ops"></td></tr>`;
-  if(!open)return head;
-  return head+vis.map(({u,files})=>(u.u?`<tr class="unit"><td colspan="5">${u.u}</td></tr>`:'')+files.map(f=>renderFile(it,u,f)).join('')).join('');
-}
-function fileTag(f){
-  if(f.kept)return `<span class="tag kept">刻意保留</span>`;
-  if(f.role==='keep')return `<span class="tag keep">保留</span>`;
-  if(f.pass)return `<span class="tag skip">按规则放行</span>`;
-  const c=CAT[f.cat];return `<span class="tag ${c.cls}">${c.label}</span>`;
-}
-function whyText(it,f){
-  if(f.kept)return `刻意保留 · ${f.kept} 标记，不再列为冗余`;
-  if(f.role==='keep')return '预选保留：档位最高（同档时看实测码率、来源可追溯、命名规范）';
-  if(f.pass)return it.skip;
-  if(f.cat==='undecidable')return f.uwhy;
-  const ref=f.ref?fileById(f.ref):null;
-  return CAT[f.cat].why+(f.cat==='lower_tier'?`（${f.q} < 保留文件）`:'')+(S.policy==='safe'&&f.cat==='lower_tier'?' · 稳妥策略不计入':'');
-}
-function renderFile(it,u,f){
-  const red=isRedundant(f)&&!it.skip;
-  const sel=S.checked.has(f.id);
-  const cb=red?`<button class="cb ${sel?'on':''}" data-check="${f.id}" aria-label="勾选">${sel?'✓':''}</button>`:`<span class="cb off"></span>`;
-  let acts='';
-  if(f.kept)acts=`<button class="btn xs" data-unkeep="${f.id}">取消标记</button>`;
-  else if(f.role==='keep')acts='';
-  else if(f.cat==='undecidable'&&f.id===42)acts=`<button class="btn xs" data-annot="1">标注片源</button><button class="btn xs" data-swap="${f.id}">改为保留</button>`;
-  else if(!f.pass)acts=`<button class="btn xs" data-swap="${f.id}">改为保留</button><button class="btn xs" data-keep="${f.id}">刻意保留</button>`;
-  return `<tr class="sub ${sel?'sel':''}"><td>${cb}</td><td></td>
-    <td class="f"><div class="fname">${fileTag(f)}<span class="n">${f.name}</span></div><div class="ql"><b>${f.q}</b> · <span class="sz">${f.sz}</span> · ${f.br}</div></td>
-    <td><div class="why">${f.origin}<span class="o">${whyText(it,f)}</span></div></td>
-    <td class="ops"><div class="acts">${acts}</div></td></tr>`;
-}
-function renderBulk(){
-  if(S.screen!=='manage'||S.tab!=='dup'||!S.checked.size)return '';
-  let bytes=0;for(const id of S.checked){const x=fileById(id);if(x)bytes+=gb(x.f.sz);}
-  return `<div class="bulk">已选 <b>${S.checked.size} 个文件</b> · ${bytes.toFixed(1)} GB <button class="btn sm" id="clean2">移入回收站</button><button class="btn sm ghost" id="uncheck">取消</button></div>`;
+function renderUnit(u){
+  const live=u.files.filter(f=>!f.kept).length;
+  return `<div class="unit" id="u-${u.id}"><div class="uh"><div class="poster"></div><span class="t">${u.title}<small>${u.year}</small></span><span class="lib">${u.lib}${u.unit?' · '+u.unit:''}</span><span class="sp"></span></div>
+  ${u.files.map(f=>`<div class="frow ${f.kept?'kept':''}">
+    <div class="fname" title="${f.name}">${f.name}</div>
+    <div class="q">${qHtml(u,f)}</div>
+    <div class="o">${f.origin}<small>${f.kept?'你留下的 · '+f.kept:f.suggested?'建议保留 · '+f.why:(f.same||'')}</small></div>
+    <div class="a">${f.suggested?'<span class="tag keep">建议保留</span>':''}${f.kept?'<span class="tag kept">你留下的</span>':''}${live>1?`<button class="btn xs" data-keep="${u.id}:${f.id}">留这个</button>`:''}</div></div>`).join('')}
+  <div class="uf">${u.bucket==='versions'?`<button class="btn xs ghost" data-keepall="${u.id}">都留着</button>`:''}</div></div>`;
 }
 function renderRecycle(){
   if(!S.recycle.length)return `<div class="empty">回收站是空的。洗版替换下来的旧版本、重复清理掉的文件会在这里停留 7 天再自动删除，期间可以恢复。</div>`;
-  const bytes=S.recycle.reduce((n,r)=>n+gb(r.f.sz),0);
-  return `<div class="summary"><div><b>${S.recycle.length} 个文件</b> · <b>${bytes.toFixed(1)} GB</b> · 最早 7 天后自动清理</div><button class="btn danger">立即清理全部 · ${S.recycle.length}</button></div>
-  <div class="toolbar"><div class="chips"><button class="chip on">全部原因</button><button class="chip">洗版替换 0</button><button class="chip">重复清理 ${S.recycle.length}</button></div></div>
-  <div class="tablewrap"><table><thead><tr><th></th><th>条目</th><th>文件 · 品质</th><th>原因</th><th class="r">自动清理 · 操作</th></tr></thead><tbody>
-  ${S.recycle.map(r=>`<tr><td><span class="cb"></span></td><td><div class="item"><div class="poster"></div><div><div class="t">${r.it.title} <small>${r.it.year}</small></div><div class="lib">${r.it.lib}${r.u.u?' · '+r.u.u:''}</div></div></div></td>
-    <td><div class="fname"><span class="n">${r.f.name}</span></div><div class="ql"><b>${r.f.q}</b> · <span class="sz">${r.f.sz}</span></div></td>
-    <td><div class="why">重复清理：${r.note}<span class="o">你 · 刚刚</span></div></td>
-    <td class="ops"><div class="ql" style="margin-bottom:4px">7 天后</div><div class="acts"><button class="btn xs" data-restore="${r.f.id}">恢复</button><button class="btn xs danger">清理</button></div></td></tr>`).join('')}
+  const bytes=S.recycle.reduce((n,r)=>n+gb(sizeOf(r.f)),0);
+  return `<div class="summary"><div><b>${S.recycle.length} 个文件</b> · <b>${bytes.toFixed(1)} GB</b> · 最早 7 天后自动清理</div><button class="btn danger sm">立即清理全部 · ${S.recycle.length}</button></div>
+  <div class="chips"><button class="chip on">全部原因</button><button class="chip">洗版替换 0</button><button class="chip">重复清理 ${S.recycle.length}</button></div>
+  <div class="tablewrap"><table><thead><tr><th style="width:22%">条目</th><th style="width:34%">文件 · 品质</th><th>原因</th><th class="r" style="width:150px">自动清理 · 操作</th></tr></thead><tbody>
+  ${S.recycle.map(r=>`<tr><td><b>${r.u.title}</b> <span style="color:var(--faint)">${r.u.year}</span><div style="font-size:11.5px;color:var(--faint)">${r.u.lib}${r.u.unit?' · '+r.u.unit:''}</div></td>
+    <td><div class="fname">${r.f.name}</div><div style="font-size:12px;color:var(--faint)">${Array.isArray(r.f.q)?r.f.q.join(' · '):r.f.q+' · '+r.f.sz}</div></td>
+    <td><div class="why">重复清理：${r.note}<small>你 · 刚刚</small></div></td>
+    <td class="ops"><div style="font-size:12px;color:var(--muted);margin-bottom:4px">7 天后</div><button class="btn xs" data-restore="${r.f.id}">恢复</button> <button class="btn xs danger">清理</button></td></tr>`).join('')}
   </tbody></table></div>`;
 }
 function renderModal(){
   const m=S.modal;if(!m)return '';
-  if(m.type==='policy')return `<div class="modal-bg"><div class="modal"><h2>切换到「只留最优」</h2><p>除了同一文件、同内容副本和同档版本，<b>低于保留文件档位的版本也会被预勾</b>——比如 2160p 旁边的 1080p。</p><p>已标记「刻意保留」的文件不受影响；「无法判定」的仍然不勾。所有勾选都可以逐个取消，清理前还有一次确认。</p><div class="row"><button class="btn" data-close="1">取消</button><button class="btn primary" data-policy-ok="1">切换</button></div></div></div>`;
-  if(m.type==='confirm'){
-    const ids=[...S.checked];let bytes=0,low=0,items=new Set();for(const id of ids){const x=fileById(id);bytes+=gb(x.f.sz);if(x.f.cat==='lower_tier')low++;items.add(x.it.id);}
-    return `<div class="modal-bg"><div class="modal"><h2>把 ${ids.length} 个文件移入回收站？</h2>
-      <div class="stat"><div><b>${ids.length}</b><small>文件</small></div><div><b>${items.size}</b><small>涉及条目</small></div><div><b>${bytes.toFixed(1)} GB</b><small>可回收</small></div></div>
-      ${low?`<p class="warnline">其中 ${low} 个是低档版本（「只留最优」策略），不是复制品。</p>`:''}
-      <p>文件移入各库的回收站目录，<b>7 天内可在「回收站」标签恢复</b>，到期自动删除。每个文件清理前都会重新核对：仍在位、按当前数据仍属冗余、保留文件仍在位，不满足的跳过。</p>
-      <div class="row"><button class="btn" data-close="1">取消</button><button class="btn danger solid" data-confirm="1">移入回收站 · ${ids.length}</button></div></div></div>`;
-  }
-  if(m.type==='annot')return `<div class="modal-bg"><div class="modal"><h2>标注片源</h2><p>这会打开片源标注弹窗（已有功能）：给《十三邀》S07 的文件选一个片源档位。标完回到这里，这一组就能比较了。</p><div class="row"><button class="btn primary" data-close="1">知道了</button></div></div></div>`;
-  if(m.type==='itemdup')return `<div class="modal-bg"><div class="modal wide"><h2>《九门》的重复文件</h2><p>与管理页同一张表，只看这一个条目。</p>
-      <div class="tablewrap"><table><thead><tr><th></th><th>条目</th><th>文件 · 品质</th><th>来源</th><th class="r">操作</th></tr></thead><tbody>${(()=>{const it=S.items[0];S.open.add('jm');return renderItem(it);})()}</tbody></table></div>
-      <div class="row"><button class="btn" data-close="1">关闭</button><button class="btn primary" data-goto-manage="1">去管理页清理 · ${[...S.checked].filter(id=>fileById(id)?.it.id==='jm').length}</button></div></div></div>`;
+  if(m.type==='keep'){const u=S.units.find(x=>x.id===m.u);const k=u.files.find(f=>f.id===m.f);const rest=u.files.filter(f=>f.id!==m.f&&!f.kept);
+    return `<div class="modal-bg"><div class="modal"><h2>留下这个，其余移入回收站？</h2><p>留下：<b style="color:var(--text)">${k.name}</b></p><p>移入回收站（7 天内可恢复）：</p><ul>${rest.map(f=>`<li><b>${f.name}</b> · ${Array.isArray(f.q)?f.q.join(' · '):f.q+' · '+f.sz}</li>`).join('')}</ul><div class="row"><button class="btn" data-close="1">取消</button><button class="btn danger solid" data-do-keep="1">移入回收站 · ${rest.length}</button></div></div></div>`;}
+  if(m.type==='all'){const us=bucket(m.b);const list=[];for(const u of us)for(const f of u.files)if(!f.suggested&&!f.kept)list.push({u,f});const bytes=list.reduce((n,x)=>n+gb(sizeOf(x.f)),0);
+    return `<div class="modal-bg"><div class="modal"><h2>${m.b==='identical'?'清理全部一模一样的文件？':'按建议清理全部不同版本？'}</h2>
+    <p>${list.length} 个文件 · ${us.length} 个单元 · ${bytes.toFixed(1)} GB · 每个单元留下「建议保留」的那个 · 7 天内可在回收站恢复。</p>
+    ${m.b==='versions'?`<p style="color:var(--warn)">这些文件与保留者<b>有区别</b>。想留的请先取消，回去点那个单元的「都留着」。</p><ul>${list.map(x=>`<li><b>${x.u.title}${x.u.unit?' '+x.u.unit:''}</b> · ${x.f.q.join(' · ')}</li>`).join('')}</ul>`:''}
+    <div class="row"><button class="btn" data-close="1">取消</button><button class="btn ${m.b==='identical'?'primary':'danger solid'}" data-do-all="${m.b}">移入回收站 · ${list.length}</button></div></div></div>`;}
   return '';
 }
-
-// ---------- 条目详情页 ----------
 function renderDetail(){
-  const it=S.items[0];const files=it.units[0].files;
+  const u=S.units.find(x=>x.id==='jm');const files=u.done?u.files.filter(f=>!f.gone):u.files;
   return `<div class="back" id="back">‹ 返回媒体库</div>
   <div class="hero"><div class="poster"></div><div><h1>九门 <small style="color:var(--faint);font-weight:400;font-size:16px">2025</small></h1><div class="meta">电影 · 电影库 · 2h 8m · 剧情 / 悬疑</div><div class="meta" style="margin-top:10px"><button class="btn sm">▶ 播放</button> <button class="btn sm ghost">⋯</button></div></div></div>
-  <div class="section"><div class="hd"><span>文件 <em style="font-style:normal;color:var(--faint);font-weight:400">${files.length} 个</em></span><div class="r">${files.length>1?`<span class="tag warn">${files.length} 个版本</span><button class="btn sm" id="itemdup">检查重复</button>`:``}</div></div>
-  ${files.map(f=>{const open=S.detailOpen.has(f.id);return `<div class="frow">
-    <div class="line" data-dopen="${f.id}"><span class="chev ${open?'open':''}">›</span><div class="fname"><span class="n">${f.name}</span>${f.kept?'<span class="tag kept">刻意保留</span>':''}</div>
-      <div class="menu"><button class="btn xs ghost" data-menu="${f.id}">⋯</button>${S.menu===f.id?`<div class="pop">${f.kept?`<button data-unkeep="${f.id}">取消「刻意保留」</button>`:`<button data-keep="${f.id}">刻意保留（不再列为冗余）</button>`}<button>移动到其他库</button><button class="dg">删除此文件</button></div>`:''}</div></div>
-    ${open?`<dl><dt>保存目录</dt><dd class="sub2">/mnt/media/电影/九门 (2025)</dd>
-      <dt>来源</dt><dd class="origin">${f.origin}<span class="sub2">${f.od}</span></dd>
-      <dt>入库时间</dt><dd>2026-08-01 22:14 · 6 周前</dd>
-      <dt>文件尺寸</dt><dd>${f.sz}</dd>
-      <dt>片源</dt><dd>${f.q.split(' ')[1]||'未识别'}</dd>
-      <dt>画面规格</dt><dd>${f.q.split(' ')[0]} · ${f.br}</dd>
-      ${f.kept?`<dt>刻意保留</dt><dd>${f.kept} 标记 · 不会出现在「重复文件」里 · <button class="btn xs" data-unkeep="${f.id}">取消</button></dd>`:''}
-    </dl>`:''}</div>`;}).join('')}
-  </div>
-  <div class="section"><div class="hd"><span>演职员</span></div><div class="empty">（略）</div></div>
-  ${renderModal()}${S.toast?`<div class="toast">${S.toast}</div>`:''}`;
+  <div class="section"><div class="hd"><span>文件 <em style="font-style:normal;color:var(--faint);font-weight:400">${files.length} 个</em></span><div class="r">${files.length>1&&!u.done?`<span class="tag warn">${files.length} 个版本</span><button class="btn sm" id="goto-dup">处理重复</button>`:''}</div></div>
+  ${files.map(f=>{const open=S.detailOpen.has(f.id);return `<div class="drow"><div class="line" data-dopen="${f.id}"><span class="chev">${open?'⌄':'›'}</span><div class="fname">${f.name}${f.kept?'<span class="tag kept">你留下的</span>':''}</div></div>
+    ${open?`<dl><dt>保存目录</dt><dd class="sub2">/mnt/media/电影/九门 (2025)</dd><dt>来源</dt><dd class="origin">${f.origin}<span class="sub2">${f.od}</span></dd><dt>入库时间</dt><dd>2026-08-01 22:14 · 6 周前</dd><dt>文件尺寸</dt><dd>${sizeOf(f)}</dd><dt>片源</dt><dd>${f.q[1]}</dd><dt>画面规格</dt><dd>${f.q[0]}</dd>${f.kept?`<dt>多版本</dt><dd>你留下的 · ${f.kept} · <button class="btn xs" data-unkeep="${f.id}">取消</button></dd>`:''}</dl>`:''}</div>`;}).join('')}
+  </div><div class="section"><div class="hd"><span>演职员</span></div><div class="empty" style="border:0">（略）</div></div>
+  ${S.toast?`<div class="toast">${S.toast}</div>`:''}`;
 }
 
-// ---------- 交互 ----------
-function toast(msg){S.toast=msg;render();clearTimeout(toast.t);toast.t=setTimeout(()=>{S.toast=null;render();},2600);}
-function unitOf(id){for(const it of S.items)for(const u of it.units)if(u.files.some(f=>f.id===id))return {it,u};}
+function toast(msg){S.toast=msg;render();clearTimeout(toast.t);toast.t=setTimeout(()=>{S.toast=null;render();},2800);}
+function recycleFile(u,f,note){f.gone=true;S.recycle.unshift({u,f,note});}
 function bind(){
   const q=s=>main.querySelectorAll(s);
   q('[data-tab]').forEach(b=>b.onclick=()=>{S.tab=b.dataset.tab;render();});
-  q('[data-open]').forEach(r=>r.onclick=e=>{if(e.target.closest('button'))return;const id=r.dataset.open;S.open.has(id)?S.open.delete(id):S.open.add(id);render();});
   q('[data-lib]').forEach(b=>b.onclick=()=>{S.lib=b.dataset.lib;render();});
-  q('[data-cat]').forEach(b=>b.onclick=()=>{S.cat=S.cat===b.dataset.cat?null:b.dataset.cat;S.showKept=false;render();});
-  q('[data-kept]').forEach(b=>b.onclick=()=>{S.showKept=!S.showKept;S.cat=null;render();});
-  q('[data-check]').forEach(b=>b.onclick=()=>{const id=+b.dataset.check;S.checked.has(id)?S.checked.delete(id):S.checked.add(id);render();});
-  q('[data-group]').forEach(b=>b.onclick=()=>{const it=S.items.find(i=>i.id===b.dataset.group);const ids=visibleFiles(it).flatMap(x=>x.files.filter(isRedundant).map(f=>f.id));const all=ids.every(i=>S.checked.has(i));ids.forEach(i=>all?S.checked.delete(i):S.checked.add(i));render();});
-  const pol=main.querySelector('#policy');if(pol)pol.onchange=()=>{if(pol.value==='best_only'){S.modal={type:'policy'};render();}else{S.policy='safe';preselect();render();}};
-  q('[data-policy-ok]').forEach(b=>b.onclick=()=>{S.policy='best_only';S.modal=null;preselect();render();toast('已切换到「只留最优」，<b>低档版本已预勾</b>，可逐个取消');});
+  q('[data-item-clear]').forEach(b=>b.onclick=()=>{S.item=null;render();});
+  q('[data-keep]').forEach(b=>b.onclick=()=>{const [u,f]=b.dataset.keep.split(':');S.modal={type:'keep',u,f:+f};render();});
+  q('[data-do-keep]').forEach(b=>b.onclick=()=>{const u=S.units.find(x=>x.id===S.modal.u);const k=u.files.find(f=>f.id===S.modal.f);let n=0;
+    for(const f of u.files.filter(f=>f.id!==k.id&&!f.kept)){recycleFile(u,f,u.bucket==='identical'?`与「${k.name}」一模一样，已保留后者`:`留下「${k.name}」（${k.q.join(' · ')}），移除本版本`);n++;}
+    u.files=u.files.filter(f=>!f.gone);u.done=true;S.modal=null;render();toast(`<b>已移入回收站 ${n} 个文件</b> · 7 天内可在回收站恢复`);});
+  q('[data-keepall]').forEach(b=>b.onclick=()=>{const u=S.units.find(x=>x.id===b.dataset.keepall);u.files.forEach(f=>f.kept='2026-09-13');u.done=true;render();toast('<b>都留着</b>：这个单元不再列出，直到有新文件进来');});
+  q('[data-all]').forEach(b=>b.onclick=()=>{S.modal={type:'all',b:b.dataset.all};render();});
+  q('[data-do-all]').forEach(b=>b.onclick=()=>{let n=0;for(const u of bucket(b.dataset.doAll)){const k=u.files.find(f=>f.suggested);for(const f of u.files)if(!f.suggested&&!f.kept){recycleFile(u,f,u.bucket==='identical'?`与「${k.name}」一模一样，已保留后者`:`留下「${k.name}」，移除本版本`);n++;}u.files=u.files.filter(f=>!f.gone);u.done=true;}
+    S.modal=null;render();toast(`<b>已移入回收站 ${n} 个文件</b> · 7 天内可在回收站恢复`);});
   q('[data-close]').forEach(b=>b.onclick=()=>{S.modal=null;render();});
-  q('#clean,#clean2').forEach(b=>b.onclick=()=>{S.modal={type:'confirm'};render();});
-  const un=main.querySelector('#uncheck');if(un)un.onclick=()=>{S.checked.clear();render();};
-  q('[data-confirm]').forEach(b=>b.onclick=()=>{
-    const ids=[...S.checked];let n=0;
-    for(const id of ids){const {it,u}=unitOf(id);const f=u.files.find(x=>x.id===id);const keep=u.files.find(x=>x.role==='keep');
-      const note=f.cat==='same_inode'?`与「${keep.name}」是同一文件，已保留后者`:f.cat==='same_content'?`与「${keep.name}」内容相同，已保留后者`:f.cat==='same_tier'?`与「${keep.name}」同档（${f.q}），已保留后者`:`低于「${keep.name}」（${f.q} < ${keep.q}）`;
-      u.files=u.files.filter(x=>x.id!==id);S.recycle.unshift({it,u,f,note});n++;}
-    S.checked.clear();S.modal=null;S.tab='dup';render();toast(`<b>已移入回收站 ${n} 个文件</b> · 7 天内可在回收站恢复`);
-  });
-  q('[data-swap]').forEach(b=>b.onclick=()=>{const id=+b.dataset.swap;const {u}=unitOf(id);const f=u.files.find(x=>x.id===id);const k=u.files.find(x=>x.role==='keep');
-    const cat=f.cat,uwhy=f.uwhy;f.role='keep';delete f.cat;delete f.uwhy;k.role=undefined;k.cat=cat;k.uwhy=uwhy;k.ref=f.id;S.checked.delete(id);if(isRedundant(k)&&inPolicy(cat))S.checked.add(k.id);render();toast('已改为保留这个文件，另一个转为冗余');});
-  q('[data-keep]').forEach(b=>b.onclick=()=>{const id=+b.dataset.keep;const x=fileById(id);x.f.kept='2026-09-13';S.checked.delete(id);S.menu=null;render();toast('<b>已标记「刻意保留」</b>，以后不再列为冗余；可在「已标记保留」里取消');});
-  q('[data-unkeep]').forEach(b=>b.onclick=()=>{const id=+b.dataset.unkeep;const x=fileById(id);delete x.f.kept;S.menu=null;if(isRedundant(x.f)&&inPolicy(x.f.cat))S.checked.add(id);render();toast('已取消标记，重新参与冗余判定');});
-  q('[data-annot]').forEach(b=>b.onclick=()=>{S.modal={type:'annot'};render();});
-  q('[data-restore]').forEach(b=>b.onclick=()=>{const id=+b.dataset.restore;const i=S.recycle.findIndex(r=>r.f.id===id);const r=S.recycle.splice(i,1)[0];r.u.files.push(r.f);if(isRedundant(r.f)&&inPolicy(r.f.cat))S.checked.add(r.f.id);render();toast('<b>已恢复</b>到原位置；它会重新出现在「重复文件」里');});
+  q('[data-restore]').forEach(b=>b.onclick=()=>{const id=+b.dataset.restore;const i=S.recycle.findIndex(r=>r.f.id===id);const r=S.recycle.splice(i,1)[0];delete r.f.gone;r.u.files.push(r.f);r.u.done=false;render();toast('<b>已恢复</b>到原位置；它会重新出现在「重复文件」里');});
+  q('[data-unkeep]').forEach(b=>b.onclick=()=>{const id=+b.dataset.unkeep;for(const u of S.units){const f=u.files.find(x=>x.id===id);if(f){delete f.kept;u.done=false;}}render();toast('已取消，重新列入「不同版本」');});
   const back=main.querySelector('#back');if(back)back.onclick=()=>{S.screen='manage';render();};
-  q('[data-dopen]').forEach(r=>r.onclick=e=>{if(e.target.closest('button'))return;const id=+r.dataset.dopen;S.detailOpen.has(id)?S.detailOpen.delete(id):S.detailOpen.add(id);render();});
-  q('[data-menu]').forEach(b=>b.onclick=e=>{e.stopPropagation();const id=+b.dataset.menu;S.menu=S.menu===id?null:id;render();});
-  const idup=main.querySelector('#itemdup');if(idup)idup.onclick=()=>{S.modal={type:'itemdup'};render();};
-  q('[data-goto-manage]').forEach(b=>b.onclick=()=>{S.modal=null;S.screen='manage';S.tab='dup';setStep(4);});
+  const gd=main.querySelector('#goto-dup');if(gd)gd.onclick=()=>{S.screen='manage';S.tab='dup';S.item='jm';document.querySelectorAll('.step').forEach(x=>x.classList.toggle('on',x.dataset.step==='3'));document.getElementById('hint').innerHTML=HINTS[3];render();};
+  q('[data-dopen]').forEach(r=>r.onclick=()=>{const id=+r.dataset.dopen;S.detailOpen.has(id)?S.detailOpen.delete(id):S.detailOpen.add(id);render();});
 }
 setStep(1);
 })();
