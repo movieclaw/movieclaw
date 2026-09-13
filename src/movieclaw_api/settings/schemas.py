@@ -453,6 +453,10 @@ class HomeRowPref(BaseModel):
 
     id: str = Field(pattern=_HOME_ROW_ID.pattern, description="行 id，见类注释的四种形状")
     sort: str | None = Field(default=None, description="排序档；空 = 该行的默认排序")
+    order: str | None = Field(
+        default=None,
+        description="排序方向 asc / desc；空 = 该档的自然方向。前端只在反转自然方向时才存它",
+    )
     name: str | None = Field(default=None, max_length=40, description="用户起的名字；空 = 跟随推荐")
     unwatched: bool | None = Field(default=None, description="只显示没看过的（仅库行）")
     hidden: bool | None = Field(default=None, description="隐藏这一行，位置保留")
@@ -477,6 +481,8 @@ class HomeRowPref(BaseModel):
             )
             if self.sort not in allowed:
                 raise ValueError(f"这一行不支持排序档 {self.sort!r}")
+        if self.order is not None and self.order not in ("asc", "desc"):
+            raise ValueError(f"排序方向只能是 asc 或 desc，收到 {self.order!r}")
         return self
 
 
