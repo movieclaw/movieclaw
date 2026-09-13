@@ -148,8 +148,8 @@ body{margin:0;background:var(--ink);color:var(--text);font-family:var(--f-sans);
 .ui .homeempty b{display:block;color:var(--text);font-size:14px;margin-bottom:4px}
 
 /* ────────── 自定义首页：独立页面 ──────────
-   不是抽屉、不是弹层。桌面与移动端同一个页面（/library/customize），
-   每一行自带一条小预览，所以不需要「背后的首页」来看效果。 */
+   不是抽屉、不是弹层。桌面与移动端同一个页面（/library/customize）。
+   纯列表，不放海报：这里是配置，效果回首页看。 */
 .ui .cpage{max-width:640px}
 .ui .back{display:inline-flex;align-items:center;gap:4px;font-size:12px;color:var(--faint);text-decoration:none;margin-bottom:6px}
 .ui .back:hover{color:var(--text)}
@@ -158,7 +158,7 @@ body{margin:0;background:var(--ink);color:var(--text);font-family:var(--f-sans);
 .ui .ritem.open{border-color:var(--line-2);background:rgba(255,255,255,.035)}
 .ui .rhead{display:flex;align-items:center;gap:9px;padding:9px 10px 9px 8px;cursor:pointer}
 .ui .ritem.nox .rhead{cursor:default}
-.ui .ritem.off .nm,.ui .ritem.off .mt,.ui .ritem.off .ico,.ui .ritem.off .mini{opacity:.38}
+.ui .ritem.off .nm,.ui .ritem.off .mt,.ui .ritem.off .ico{opacity:.38}
 .ui .ritem .grip{color:var(--faint);cursor:grab;font-size:13px;letter-spacing:-2px;flex:none;width:12px}
 .ui .ritem .ico{width:24px;height:24px;border-radius:7px;display:grid;place-items:center;font-size:11px;flex:none;background:rgba(255,255,255,.06);color:var(--muted)}
 .ui .ritem .ico.sys{background:var(--chrome-soft);color:var(--chrome)}
@@ -173,11 +173,6 @@ body{margin:0;background:var(--ink);color:var(--text);font-family:var(--f-sans);
 .ui .ritem .acts .ikon.dis{opacity:.25;pointer-events:none}
 .ui .ritem .car{color:var(--faint);font-size:10px;transition:transform .15s;flex:none;width:12px;text-align:center}
 .ui .ritem.open .car{transform:rotate(180deg)}
-/* 每行一条小预览：真实的前 6 张，改排序立刻换 */
-.ui .mini{display:flex;gap:5px;padding:0 10px 9px 45px;overflow:hidden}
-.ui .mini i{flex:none;width:34px;height:51px;border-radius:4px;display:block;border:1px solid var(--line)}
-.ui .mini i.w{width:70px;height:40px}
-.ui .mini i.s{width:60px;height:36px;border-radius:6px}
 /* 就地展开的编辑区：排序单选 + 一个开关 + 名字，没有别的 */
 .ui .redit{border-top:1px solid var(--line);padding:11px 12px 12px 45px}
 .ui .redit .fl{font-size:11px;color:var(--faint);margin:0 0 6px}
@@ -234,7 +229,6 @@ body{margin:0;background:var(--ink);color:var(--text);font-family:var(--f-sans);
 .ui .phone .clist{gap:5px;margin-top:10px}
 .ui .phone .ritem .grip{display:none}
 .ui .phone .ritem .acts{opacity:1}
-.ui .phone .mini{padding-left:10px}
 .ui .phone .redit{padding-left:12px}
 .ui .phone .radios{grid-template-columns:1fr}
 .ui .phone .radio .d{display:none}
@@ -343,7 +337,7 @@ body{margin:0;background:var(--ink);color:var(--text);font-family:var(--f-sans);
                 <button class="btn sm ghost" data-reset style="margin-top:2px">恢复默认</button>
               </div>
               <div id="clist1"></div>
-              <p class="cfoot">改动即时生效，只影响你自己的首页。点一行展开它的排序和名字。</p>
+              <p class="cfoot">改动即时生效，只影响你自己的首页。点一行展开它的排序和名字，效果回首页看。</p>
             </div>
           </div>
         </div>
@@ -447,22 +441,22 @@ p1:{h:"首页只有一件事：看",li:[
  "空行照旧整段隐藏，偏好决定「想不想看」，数据决定「有没有」。全部藏光时不出白页，给一个指回「自定义首页」的空态。"],
  try:"点右上角「自定义首页」。"},
 p2:{h:"一个独立页面，桌面和手机同一个",li:[
- "<b>不是抽屉、不是弹层</b>。抽屉的价值是「背后的首页实时跟着变」；这里用另一种方式兑现它——<b>每一行自带一条小预览</b>，是这一行真实的前几张，改排序立刻换。于是不需要把首页留在背后，页面自己就够看。",
+ "<b>不是抽屉、不是弹层，也不放海报</b>。这里是配置页：一行一条，名字、来源与排序、上下移、眼睛，仅此而已。效果回首页看——「‹ 媒体库」一步就回去了。",
  "列表每项：把手 · 类型 · 名字 · 小字「来源 · 排序」· 上移/下移 · 眼睛。<b>点一行就地展开</b>它的排序和名字，不再有第二个弹窗。内置的「接下来继续」「我的媒体库」没有可改的，点了不展开。",
  "隐藏的行<b>留在原位、压暗</b>而不是挪到底部，再打开时回到原来的位置。",
  "「＋ 添加一行」只问一个问题：<b>从哪来</b>。选一个库得到「最近添加的 X」，选一个合集得到它本身，排序和名字展开再改。已在首页的合集置灰标「已在首页」。",
  "没有保存键，改动即时生效。「恢复默认」是页面里唯一带确认的动作。"],
- try:"点「评分最高的动漫」展开；点眼睛、上下箭头看列表变化；「＋ 添加一行」里选「诺兰」。"},
+ try:"点「评分最高的动漫」展开；点眼睛、上下箭头；「＋ 添加一行」里选「诺兰」。再切回「01 新首页」看效果。"},
 p3:{h:"排序就是一列推荐名",li:[
  "上一版的「分段控件选排序 + 方向开关 + 推荐名」三样东西，其实在说同一件事。现在合成一列<b>单选</b>：每个选项<b>就是推荐名</b>，右边小字才是规则。用户选的是「最近上映的动漫」，而不是「上映时间 + 倒序」。",
  "方向没了：「最早上映」是它自己一个选项，对应现有的 <code>release_date_asc</code>，与系列合集用的同一档。七个选项，一个不多。",
  "名字输入框<b>留空就用选中的那个推荐名</b>，占位文字实时显示。手输过就不再跟着动，清空即回到推荐。",
  "「只显示我没看过的」留作唯一的开关：按评分排的行没有它会永远是同一批 20 部。后端已有 <code>w=unwatched</code>。",
  "来源不在这里改：换库等于另一行，删了重加。"],
- try:"切排序看占位名和预览条一起变；手输一个名字再切排序，它就不动了。"},
+ try:"切排序看占位名跟着变；手输一个名字再切排序，它就不动了。"},
 p4:{h:"移动端：同一个页面，窄一点",li:[
  "首页与桌面一样干净：一个图标按钮进「自定义首页」。",
- "「自定义首页」是<b>独立页面</b>，路由 <code>/library/customize</code>，返回键回首页。列表、展开、添加与桌面端完全同一份实现，只是排序单选变成一列。",
+ "「自定义首页」是<b>独立页面</b>，路由 <code>/library/customize</code>，返回键回首页。纯列表、不放海报，列表、展开、添加与桌面端同一份实现，只是排序单选变成一列。",
  "拖拽换成上下箭头——拖拽在滚动容器里会抢手势，箭头笨一点但不会错。"],
  try:null},
 p5:{h:"没有新表，没有第二套 DSL",li:[
@@ -622,11 +616,6 @@ function homeHTML(){
     '</div><div class="strip">'+rowBody(r)+'</div></section>').join("");
 }
 /* 自定义页：每行一条小预览；可改的行点开就地编辑 */
-function miniHTML(r){
-  if(r.id==="up-next")return UPNEXT.slice(0,4).map(u=>'<i class="w" style="background:'+art(u.t+"still")+'"></i>').join("");
-  if(r.id==="libraries")return Object.values(LIBS).map(l=>'<i class="s" style="background:linear-gradient(180deg,#1a1e2c,#0d0f16)"></i>').join("");
-  return rowItems(r).slice(0,8).map(i=>'<i style="background:'+art(i.t)+'"></i>').join("");
-}
 function editHTML(r){
   const k=rowKind(r);
   const radios=(opts,fmt)=>'<div class="radios">'+Object.entries(opts).map(([key,o])=>'<label class="radio'+(r.sort===key?" on":"")+'" data-sort="'+key+'"><span class="r"></span>'+fmt(o)+'<span class="d">'+o.d+'</span></label>').join("")+'</div>';
@@ -648,7 +637,6 @@ function itemHTML(r,i){
     '<div class="acts"><button class="ikon'+(i===0?" dis":"")+'" data-move="-1" title="上移"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 10l4-4 4 4"/></svg></button><button class="ikon'+(i===ROWS.length-1?" dis":"")+'" data-move="1" title="下移"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6l4 4 4-4"/></svg></button>'+
     '<button class="ikon" data-hide title="'+(r.hidden?"显示":"隐藏")+'">'+eye(!r.hidden)+'</button></div>'+
     '<span class="car">'+(editable(r)?"▾":"")+'</span></div>'+
-    (r.hidden?'':'<div class="mini">'+miniHTML(r)+'</div>')+
     (open?editHTML(r):'')+'</div>';
 }
 function listHTML(){
