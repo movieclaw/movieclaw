@@ -5,14 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Route } from "next";
 import Link from "next/link";
 
-import {
-  ArrowLeftIcon,
-  GripIcon,
-  HeartIcon,
-  LibraryIcon,
-  PlayIcon,
-  TrashIcon,
-} from "@/components/icons";
+import { ArrowLeftIcon, GripIcon, TrashIcon } from "@/components/icons";
 import { type Collection, listCollections } from "@/lib/api/collections";
 import { type MediaLibrary, listLibraries } from "@/lib/api/libraries";
 import {
@@ -26,7 +19,6 @@ import {
   moveRowTo,
   newCollectionRow,
   newLibraryRow,
-  rowMeta,
   rowTitle,
   rowsToPrefs,
   sortPresetsFor,
@@ -45,8 +37,8 @@ const SAVE_DELAY_MS = 400;
  *
  * - **独立页面，不是抽屉**：桌面与移动端同一份实现；纯列表、不放海报，效果回首页看。
  * - **没有保存键**：每次改动即时落库（去抖），只影响自己的首页（成员各存各的）。
- * - **不展开**：每行就是一条——名字直接在行上改（库行），排序是一个下拉框，
- *   「只看没看过的」是一颗小开关，眼睛是显隐，自加行多一个删除。
+ * - **收起时只有名字和显隐**：排序这类信息不露。点一行才展开一条紧凑的设置行——
+ *   排序下拉框、「未看」开关与名字（库行）、删除（自加行）。
  * - **拖拽排序**：左侧把手是唯一的换位方式（指针事件实现，触屏也能拖；键盘 Alt+↑/↓）。
  * - 隐藏的行留在原位压暗，不挪到底部；「恢复默认」是页面里唯一带确认的动作。
  *
@@ -121,13 +113,20 @@ export function LibraryCustomizeView() {
 
   const update = (id: string, patch: (row: HomeRow) => HomeRow) =>
     commit(rowsRef.current.map((row) => (row.id === id ? patch(row) : row)));
-  const remove = (id: string) =>
+  const remove = (id: string) => {
+    setExpanded((current) => (current === id ? null : current));
     commit(rowsRef.current.filter((row) => row.id !== id));
-  const add = (row: HomeRow) => commit([...rowsRef.current, row]);
+  };
+  // 新加的行自动展开：它的排序与名字大概率马上要改
+  const add = (row: HomeRow) => {
+    commit([...rowsRef.current, row]);
+    setExpanded(row.id);
+  };
   const restoreDefaults = () => {
     if (!window.confirm("恢复默认布局？你自己加的行会被移除。")) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
     editSeq.current += 1;
+    setExpanded(null);
     setDraft(null);
     // 空清单 = 出厂布局，与侧栏导航同一约定
     savePrefs({ ...prefsRef.current, home: { rows: [] } }).catch(
@@ -144,6 +143,7 @@ export function LibraryCustomizeView() {
   //    捕获不丢）；落点 = 指针所在的那一行的中线之上/之下，跟手实时重排
   const listRef = useRef<HTMLUListElement>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<string | null>(null);
   const dragPointer = useRef<number | null>(null);
   const onGripPointerDown = (
     e: React.PointerEvent<HTMLElement>,
@@ -214,7 +214,7 @@ export function LibraryCustomizeView() {
             <p className="text-on-image mt-1 text-sub text-[var(--text-muted)]">
               {libraries === null
                 ? "正在读取…"
-                : `${shownCount} 行显示 · ${rows.length - shownCount} 行隐藏 · 拖动左侧把手调整顺序，改动即时生效`}
+                : `${shownCount} 行显示 · ${rows.length - shownCount} 行隐藏 · 拖动把手调整顺序，点一行展开设置`}
             </p>
           </div>
           <button
@@ -241,7 +241,7 @@ export function LibraryCustomizeView() {
         {libraries !== null && (
           <ul
             ref={listRef}
-            className="mt-4 space-y-1.5"
+            className="mt-4 divide-y divide-white/[0.07] overflow-hidden rounded-2xl border border-white/[0.09] bg-white/[0.03]"
             data-testid="home-rows"
           >
             {rows.map((row) => (
@@ -249,6 +249,10 @@ export function LibraryCustomizeView() {
                 key={row.id}
                 row={row}
                 dragging={draggingId === row.id}
+                expanded={expanded === row.id}
+                onToggle={() =>
+                  setExpanded((current) => (current === row.id ? null : row.id))
+                }
                 onChange={(patch) => update(row.id, patch)}
                 onRemove={() => remove(row.id)}
                 onGripPointerDown={(e) => onGripPointerDown(e, row.id)}
@@ -280,7 +284,7 @@ export function LibraryCustomizeView() {
             ))}
           </div>
           {pickableCollections.length > 0 && (
-            <div className="mt-2 flex flex-wrap gap-1.5">
+            <div className="flex flex-wrap gap-1.5">
               {pickableCollections.map((collection) => {
                 const onHome = collectionsOnHome.has(collection.id);
                 return (
@@ -301,37 +305,11 @@ export function LibraryCustomizeView() {
             </div>
           )}
         </div>
-        <p className="mt-3 text-caption text-[var(--text-faint)]">
-          改动即时生效，只影响你自己的首页。库行的名字留空就跟随排序推荐；效果回首页看。
+        <p className="mt-4 text-caption text-[var(--text-faint)]">
+          改动即时生效，只影响你自己的首页；效果回首页看。
         </p>
       </div>
     </div>
-  );
-}
-
-function RowIcon({ row }: { row: HomeRow }) {
-  const cls = "size-4";
-  switch (row.kind) {
-    case "up-next":
-      return <PlayIcon className={cls} />;
-    case "favorites":
-      return <HeartIcon className={cls} />;
-    case "libraries":
-      return <LibraryIcon className={cls} />;
-    case "collection":
-      return <CollectionMark />;
-    default:
-      return <span className="text-[13px] leading-none">≡</span>;
-  }
-}
-
-/** 迷你叠卡记号：一眼分清「这是一组」和「这是一个库」。 */
-function CollectionMark() {
-  return (
-    <span className="relative block h-3 w-2.5" aria-hidden>
-      <i className="absolute inset-0 translate-x-[3px] scale-y-[0.84] rounded-[2px] border border-current opacity-30" />
-      <i className="absolute inset-0 rounded-[2px] border border-current opacity-70" />
-    </span>
   );
 }
 
@@ -361,12 +339,15 @@ function sortOptions(row: HomeRow): { key: string; label: string }[] | null {
 }
 
 /**
- * 一行：把手 · 类型 · 名字（库行直接可改）+ 小字 · 排序下拉 · 只看没看过的（库行）·
- * 眼睛 · 删除（自加行）。没有展开态。手机上控件换到第二行。
+ * 一行。收起时：把手 · 名字 · 眼睛，仅此而已（排序这类信息不露）。
+ * 点名字展开一条紧凑的设置行：排序下拉框 · 未看（库行）· 名字（库行）· 删除（自加行）。
+ * 内置的「接下来继续」「我的媒体库」没有可设的，点了不展开。
  */
 function RowItem({
   row,
   dragging,
+  expanded,
+  onToggle,
   onChange,
   onRemove,
   onGripPointerDown,
@@ -376,6 +357,8 @@ function RowItem({
 }: {
   row: HomeRow;
   dragging: boolean;
+  expanded: boolean;
+  onToggle: () => void;
   onChange: (patch: (row: HomeRow) => HomeRow) => void;
   onRemove: () => void;
   onGripPointerDown: (e: React.PointerEvent<HTMLElement>) => void;
@@ -385,6 +368,7 @@ function RowItem({
 }) {
   const title = rowTitle(row);
   const options = sortOptions(row);
+  const editable = options !== null;
   const sort =
     row.kind === "favorites" ||
     row.kind === "library" ||
@@ -393,157 +377,159 @@ function RowItem({
       : null;
   const removable =
     row.kind === "collection" || (row.kind === "library" && !row.builtin);
+  const open = expanded && editable;
   return (
     <li
       data-row-id={row.id}
       data-testid={`home-row-item-${row.id}`}
       data-hidden={row.hidden ? "true" : undefined}
-      className={`flex items-center gap-2.5 rounded-xl border py-2 pl-1.5 pr-2.5 transition max-md:flex-wrap ${
-        dragging
-          ? "border-white/25 bg-white/[0.1] shadow-lg"
-          : "border-white/[0.08] bg-white/[0.03]"
-      }`}
+      className={`transition ${dragging ? "bg-white/[0.09]" : open ? "bg-white/[0.045]" : ""}`}
     >
-      {/* 把手：唯一的换位入口。touch-none 让触屏拖动时页面不跟着滚 */}
-      <button
-        type="button"
-        aria-label={`拖动调整「${title}」的顺序（或按 Alt + 上下方向键）`}
-        title="拖动调整顺序"
-        onPointerDown={onGripPointerDown}
-        onPointerMove={onGripPointerMove}
-        onPointerUp={onGripPointerUp}
-        onPointerCancel={onGripPointerUp}
-        onKeyDown={(e) => {
-          if (!e.altKey) return;
-          if (e.key === "ArrowUp") {
-            e.preventDefault();
-            onMoveKey(-1);
-          } else if (e.key === "ArrowDown") {
-            e.preventDefault();
-            onMoveKey(1);
-          }
-        }}
-        className="grid size-8 shrink-0 cursor-grab touch-none place-items-center rounded-md text-[var(--text-faint)] outline-none transition hover:bg-white/[0.06] hover:text-[var(--text)] focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)] active:cursor-grabbing"
-        data-testid="row-grip"
-      >
-        <GripIcon className="size-4" />
-      </button>
-      <span
-        className={`grid size-6 shrink-0 place-items-center rounded-md text-[var(--text-muted)] ${
-          row.kind === "collection"
-            ? "bg-[rgba(127,176,255,0.14)] text-[#7fb0ff]"
-            : "bg-white/[0.06]"
-        } ${row.hidden ? "opacity-40" : ""}`}
-      >
-        <RowIcon row={row} />
-      </span>
-      <div className={`min-w-0 flex-1 ${row.hidden ? "opacity-40" : ""}`}>
-        {row.kind === "library" ? (
-          // 名字直接在行上改：占位文字就是推荐名，留空即跟随排序
-          <input
-            value={row.name}
-            placeholder={SORT_PRESETS[row.sort].name(row.library.name)}
-            maxLength={40}
-            aria-label={`「${title}」的名字`}
-            title="点击改名；留空跟随排序推荐"
-            onChange={(e) => {
-              const name = e.target.value;
-              onChange((r) => (r.kind === "library" ? { ...r, name } : r));
-            }}
-            onBlur={() =>
-              onChange((r) =>
-                r.kind === "library" ? { ...r, name: r.name.trim() } : r,
-              )
+      <div className="flex h-12 items-center gap-1 pl-2 pr-2">
+        {/* 把手：唯一的换位入口。touch-none 让触屏拖动时页面不跟着滚 */}
+        <button
+          type="button"
+          aria-label={`拖动调整「${title}」的顺序（或按 Alt + 上下方向键）`}
+          title="拖动调整顺序"
+          onPointerDown={onGripPointerDown}
+          onPointerMove={onGripPointerMove}
+          onPointerUp={onGripPointerUp}
+          onPointerCancel={onGripPointerUp}
+          onKeyDown={(e) => {
+            if (!e.altKey) return;
+            if (e.key === "ArrowUp") {
+              e.preventDefault();
+              onMoveKey(-1);
+            } else if (e.key === "ArrowDown") {
+              e.preventDefault();
+              onMoveKey(1);
             }
-            className="-mx-1.5 w-full max-w-full rounded-md border border-transparent bg-transparent px-1.5 py-0.5 text-ui font-semibold text-[var(--text)] outline-none transition placeholder:text-[var(--text)] hover:border-white/15 focus:border-white/30 focus:bg-white/[0.05] focus:placeholder:text-[var(--text-faint)] max-md:text-sub"
-            data-testid="row-name"
-          />
-        ) : (
-          <div className="truncate py-0.5 text-ui font-semibold text-[var(--text)] max-md:text-sub">
-            {title}
-          </div>
-        )}
-        <div className="truncate text-caption text-[var(--text-faint)]">
-          {rowMeta(row)}
-        </div>
-      </div>
-      {/* 排序与「未看」在手机上换到第二行（flex-wrap + basis-full + order），眼睛与删除
-          留在第一行——没有排序的内置行因此仍是一行高 */}
-      {options && sort !== null && (
-        <div className="flex shrink-0 items-center gap-1.5 max-md:order-last max-md:basis-full max-md:justify-end max-md:pl-[46px]">
-          <select
-            value={sort}
-            aria-label={`「${title}」的排序`}
-            onChange={(e) => {
-              const next = e.target.value;
-              onChange((r) => {
-                if (r.kind === "favorites")
-                  return { ...r, sort: next as FavoritesSort };
-                if (r.kind === "library" || r.kind === "collection")
-                  return { ...r, sort: next as HomeRowSort };
-                return r;
-              });
-            }}
-            className="h-8 max-w-[168px] rounded-md border border-white/15 bg-white/[0.05] px-2 text-sub text-[var(--text)] outline-none focus:border-white/30"
-            data-testid="row-sort"
-          >
-            {options.map((option) => (
-              <option
-                key={option.key}
-                value={option.key}
-                className="bg-[#161923] text-white"
-              >
-                {option.label}
-              </option>
-            ))}
-          </select>
-          {row.kind === "library" && (
-            <button
-              type="button"
-              aria-pressed={row.unwatched}
-              title="只显示我没看过的：按评分排时，没有它这一行永远是同 20 部"
-              onClick={() =>
-                onChange((r) =>
-                  r.kind === "library" ? { ...r, unwatched: !r.unwatched } : r,
-                )
-              }
-              className={`h-8 rounded-md border px-2 text-sub transition ${
-                row.unwatched
-                  ? "border-[#7fb0ff]/60 bg-[rgba(127,176,255,0.14)] text-[var(--text)]"
-                  : "border-white/15 text-[var(--text-muted)] hover:bg-white/[0.06]"
-              }`}
-              data-testid="row-unwatched"
-            >
-              未看
-            </button>
+          }}
+          className="grid size-8 shrink-0 cursor-grab touch-none place-items-center rounded-md text-white/25 outline-none transition hover:bg-white/[0.06] hover:text-white/70 focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)] active:cursor-grabbing"
+          data-testid="row-grip"
+        >
+          <GripIcon className="size-4" />
+        </button>
+        {/* 名字：可设的行点它展开设置；不可设的行只是文字 */}
+        <button
+          type="button"
+          disabled={!editable}
+          aria-expanded={editable ? open : undefined}
+          onClick={editable ? onToggle : undefined}
+          className={`flex h-full min-w-0 flex-1 items-center gap-2 rounded-md px-1.5 text-left text-ui text-[var(--text)] outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)] disabled:cursor-default ${
+            row.hidden ? "text-[var(--text-faint)]" : ""
+          }`}
+          data-testid="row-title"
+        >
+          <span className="truncate">{title}</span>
+          {row.hidden && (
+            <span className="shrink-0 text-caption text-[var(--text-faint)]">
+              已隐藏
+            </span>
           )}
-        </div>
-      )}
-      <div className="flex shrink-0 items-center gap-0.5">
+        </button>
         <button
           type="button"
           aria-label={row.hidden ? `显示「${title}」` : `隐藏「${title}」`}
           aria-pressed={!row.hidden}
           title={row.hidden ? "显示这一行" : "隐藏这一行"}
           onClick={() => onChange((r) => ({ ...r, hidden: !r.hidden }))}
-          className="grid size-8 place-items-center rounded-md text-[var(--text-muted)] transition hover:bg-white/[0.08] hover:text-[var(--text)]"
+          className={`grid size-8 shrink-0 place-items-center rounded-md transition hover:bg-white/[0.08] hover:text-[var(--text)] ${
+            row.hidden ? "text-[var(--text-faint)]" : "text-[var(--text-muted)]"
+          }`}
           data-testid="row-visibility"
         >
           <EyeIcon off={row.hidden} />
         </button>
-        {removable && (
-          <button
-            type="button"
-            aria-label={`删除「${title}」`}
-            title="删除这一行"
-            onClick={onRemove}
-            className="grid size-8 place-items-center rounded-md text-[var(--text-faint)] transition hover:bg-white/[0.08] hover:text-[var(--danger)]"
-            data-testid="row-remove"
-          >
-            <TrashIcon className="size-4" />
-          </button>
-        )}
       </div>
+
+      {open && options && sort !== null && (
+        <div
+          className="flex flex-wrap items-center gap-x-4 gap-y-2 px-3 pb-3 pl-[46px] max-md:pl-3"
+          data-testid="row-settings"
+        >
+          <label className="flex items-center gap-2 text-sub text-[var(--text-muted)]">
+            排序
+            <select
+              value={sort}
+              aria-label={`「${title}」的排序`}
+              onChange={(e) => {
+                const next = e.target.value;
+                onChange((r) => {
+                  if (r.kind === "favorites")
+                    return { ...r, sort: next as FavoritesSort };
+                  if (r.kind === "library" || r.kind === "collection")
+                    return { ...r, sort: next as HomeRowSort };
+                  return r;
+                });
+              }}
+              className="h-8 rounded-md border border-white/15 bg-white/[0.05] px-2 text-sub text-[var(--text)] outline-none focus:border-white/30"
+              data-testid="row-sort"
+            >
+              {options.map((option) => (
+                <option
+                  key={option.key}
+                  value={option.key}
+                  className="bg-[#161923] text-white"
+                >
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          {row.kind === "library" && (
+            <label className="flex items-center gap-2 text-sub text-[var(--text-muted)]">
+              <input
+                type="checkbox"
+                checked={row.unwatched}
+                onChange={(e) => {
+                  const unwatched = e.target.checked;
+                  onChange((r) =>
+                    r.kind === "library" ? { ...r, unwatched } : r,
+                  );
+                }}
+                className="size-4 accent-[#7fb0ff]"
+                data-testid="row-unwatched"
+              />
+              只显示我没看过的
+            </label>
+          )}
+          {row.kind === "library" && (
+            <label className="flex min-w-[220px] flex-1 items-center gap-2 text-sub text-[var(--text-muted)]">
+              名字
+              <input
+                value={row.name}
+                placeholder={SORT_PRESETS[row.sort].name(row.library.name)}
+                maxLength={40}
+                aria-label={`「${title}」的名字`}
+                title="留空跟随排序推荐"
+                onChange={(e) => {
+                  const name = e.target.value;
+                  onChange((r) => (r.kind === "library" ? { ...r, name } : r));
+                }}
+                onBlur={() =>
+                  onChange((r) =>
+                    r.kind === "library" ? { ...r, name: r.name.trim() } : r,
+                  )
+                }
+                className="h-8 min-w-0 flex-1 rounded-md border border-white/15 bg-white/[0.05] px-2 text-sub text-[var(--text)] outline-none placeholder:text-[var(--text-faint)] focus:border-white/30"
+                data-testid="row-name"
+              />
+            </label>
+          )}
+          {removable && (
+            <button
+              type="button"
+              onClick={onRemove}
+              className="ml-auto inline-flex h-8 items-center gap-1 rounded-md px-2 text-sub text-[var(--text-muted)] transition hover:bg-white/[0.06] hover:text-[var(--danger)]"
+              data-testid="row-remove"
+            >
+              <TrashIcon className="size-3.5" />
+              删除这一行
+            </button>
+          )}
+        </div>
+      )}
     </li>
   );
 }
