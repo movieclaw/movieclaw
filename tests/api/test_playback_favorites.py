@@ -336,9 +336,7 @@ def test_unfavoriting_and_favoriting_again_refreshes_the_time(client, tmp_path):
     ]
 
 
-def test_home_row_puts_unfinished_first_while_the_full_page_keeps_favorite_order(
-    client, tmp_path
-):
+def test_home_row_puts_unfinished_first_while_the_full_page_keeps_favorite_order(client, tmp_path):
     """首页那一行是「我想看的」：没看完的整体提前，一部都不少。
 
     ``/library/favorites`` 全量页是"我收藏过什么"的完整账本，不受影响——两处
@@ -360,3 +358,40 @@ def test_home_row_puts_unfinished_first_while_the_full_page_keeps_favorite_order
     assert home_row == [ids["show"], ids["movie_a"], ids["movie_b"]]
     # 一部都没少——这一行不删东西，只换顺序
     assert sorted(home_row) == sorted(full_page)
+
+
+async def _rate(item_scores: dict[int, float]) -> None:
+    from movieclaw_db.models import MediaMetadata, utcnow
+
+    async with get_database().session() as session:
+        for item_id, score in item_scores.items():
+            session.add(
+                MediaMetadata(media_item_id=item_id, vote_average=score, scraped_at=utcnow())
+            )
+        await session.commit()
+
+
+def test_home_row_can_sort_favorites_by_rating_or_title(client, tmp_path):
+    """首页自定义行给收藏行换排序：评分高的在前 / 片名拼音序；默认仍是收藏时间。"""
+    ids = seed(client, tmp_path)
+    web_favorite(client, media_item_id=ids["movie_a"])  # 电影甲
+    web_favorite(client, media_item_id=ids["show"])  # 剧
+    web_favorite(client, media_item_id=ids["movie_b"])  # 电影乙
+    client.portal.call(partial(_rate, {ids["movie_a"]: 8.5, ids["movie_b"]: 6.0}))
+
+    by_time = [i["media_item_id"] for i in favorites(client)["items"]]
+    assert by_time == [ids["movie_b"], ids["show"], ids["movie_a"]]
+
+    by_rating = [i["media_item_id"] for i in favorites(client, sort="rating")["items"]]
+    assert by_rating == [ids["movie_a"], ids["movie_b"], ids["show"]], "没评分的剧沉底"
+
+    by_title = [i["media_item_id"] for i in favorites(client, sort="title")["items"]]
+    # 拼音序：电影甲(dianyingjia) < 电影乙(dianyingyi) < 剧(ju)
+    assert by_title == [ids["movie_a"], ids["movie_b"], ids["show"]]
+
+    # 未看优先与排序叠加：看完的乙沉底，其余仍按评分
+    mark_played(client, ids["movie_b"])
+    stacked = [
+        i["media_item_id"] for i in favorites(client, sort="rating", unwatched_first=True)["items"]
+    ]
+    assert stacked == [ids["movie_a"], ids["show"], ids["movie_b"]]

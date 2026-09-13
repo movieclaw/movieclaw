@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import re
 import secrets
 from datetime import UTC, datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from movieclaw_api.settings.base import SettingSchema, register_setting
 from movieclaw_api.settings.store import get_setting_store
@@ -426,6 +427,78 @@ class NavUiPrefs(BaseModel):
     )
 
 
+#: 首页库行 / 合集行可选的排序档。取值与海报墙的 ``WallSort`` 同名（含首页独有的
+#: ``random``），方向合并在取值里（``release_date_asc``），不单独存方向。
+HOME_ROW_SORTS = frozenset(
+    {"added_at", "release_date", "release_date_asc", "last_played", "rating", "random", "title"}
+)
+#: 「我的收藏」行的排序档：未看优先是首页那一行的默认（见 playback_favorites）。
+HOME_FAVORITES_SORTS = frozenset({"unwatched_first", "favorited_at", "rating", "title"})
+#: 行 id 只认四种形状：三个内置行、每库一条的默认库行、用户自己加的行。
+_HOME_ROW_ID = re.compile(r"^(up-next|favorites|libraries|lib:\d+|row:[A-Za-z0-9_-]{1,32})$")
+
+
+class HomeRowPref(BaseModel):
+    """媒体库首页的一「行」：来源 × 排序 × 名字（docs/design/library-home-perspective.md）。
+
+    - 内置行（``up-next`` / ``favorites`` / ``libraries``）只存 ``hidden``，收藏行多一个
+      ``sort``；来源与名字由前端决定，这里不存；
+    - 默认库行 ``lib:<library_id>`` 每库一条，能藏、能改排序和名字，不能删；
+    - 自加行 ``row:<slug>`` 必须且只能带 ``library_id`` 或 ``collection_id`` 之一。
+
+    除 ``id`` 外全部可空：空即默认（排序用预设、名字跟随推荐、不隐藏）。
+    坏形状在 PUT 时就拒掉，读取端不再兜底——与 ``NavUiPrefs`` 一样，存下来的
+    只是提示：指向已删库 / 不可见合集的行由前端合并时静默丢弃。
+    """
+
+    id: str = Field(pattern=_HOME_ROW_ID.pattern, description="行 id，见类注释的四种形状")
+    sort: str | None = Field(default=None, description="排序档；空 = 该行的默认排序")
+    name: str | None = Field(default=None, max_length=40, description="用户起的名字；空 = 跟随推荐")
+    unwatched: bool | None = Field(default=None, description="只显示没看过的（仅库行）")
+    hidden: bool | None = Field(default=None, description="隐藏这一行，位置保留")
+    library_id: int | None = Field(default=None, ge=1, description="自加库行的来源库")
+    collection_id: int | None = Field(default=None, ge=1, description="合集行的来源合集")
+
+    @model_validator(mode="after")
+    def _check_shape(self) -> HomeRowPref:
+        custom = self.id.startswith("row:")
+        sources = (self.library_id is not None) + (self.collection_id is not None)
+        if custom and sources != 1:
+            raise ValueError("自加行必须且只能指定 library_id 或 collection_id 之一")
+        if not custom and sources:
+            raise ValueError("内置行与默认库行不能指定来源")
+        if self.sort is not None:
+            allowed = (
+                HOME_FAVORITES_SORTS
+                if self.id == "favorites"
+                else HOME_ROW_SORTS
+                if custom or self.id.startswith("lib:")
+                else frozenset()
+            )
+            if self.sort not in allowed:
+                raise ValueError(f"这一行不支持排序档 {self.sort!r}")
+        return self
+
+
+class HomeUiPrefs(BaseModel):
+    """媒体库首页的行清单（每个成员一份，超管走全局域）。
+
+    空列表 = 出厂布局；合并规则（存过的按存的顺序、没存过的内置行与每库默认行追加
+    在后、认不出的 id 忽略）在前端 ``lib/home-rows.ts``。上限 48 只是防脏数据的安全阀。
+    """
+
+    rows: list[HomeRowPref] = Field(
+        default_factory=list, max_length=48, description="首页的行，按显示顺序；空 = 出厂布局"
+    )
+
+    @model_validator(mode="after")
+    def _unique_ids(self) -> HomeUiPrefs:
+        ids = [row.id for row in self.rows]
+        if len(ids) != len(set(ids)):
+            raise ValueError("首页的行 id 不能重复")
+        return self
+
+
 @register_setting(namespace="ui.preferences", title="界面偏好")
 class UiPreferencesSetting(SettingSchema):
     """全站界面样式偏好，按页面分组。新页面的设定加嵌套模型字段即可。"""
@@ -433,6 +506,7 @@ class UiPreferencesSetting(SettingSchema):
     sidebar: SidebarUiPrefs = Field(default_factory=SidebarUiPrefs, description="侧边栏玻璃面板")
     scrim: ScrimUiPrefs = Field(default_factory=ScrimUiPrefs, description="全站背景蒙版")
     nav: NavUiPrefs = Field(default_factory=NavUiPrefs, description="侧边栏主导航排序")
+    home: HomeUiPrefs = Field(default_factory=HomeUiPrefs, description="媒体库首页的行清单")
 
 
 async def get_ui_preferences() -> UiPreferencesSetting:

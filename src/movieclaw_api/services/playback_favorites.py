@@ -15,14 +15,21 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from movieclaw_api.schemas.library import LibraryGalleryGroupView
 from movieclaw_api.schemas.playback import FavoriteItemView
 from movieclaw_api.services.library.items import _aggregate_wall_views, build_gallery_groups
-from movieclaw_db.models import Library, LibraryFile, PlaybackState
+from movieclaw_api.services.library.sort_key import title_sort_key
+from movieclaw_db.models import Library, LibraryFile, MediaItem, MediaMetadata, PlaybackState
 from movieclaw_media.models import MediaKind
+
+#: 收藏行的排序档（docs/design/library-home-perspective.md 1.1）。``favorited_at`` 是
+#: 全量页与首页的默认；评分 / 片名只有首页自定义行会传，量小，直接在 Python 里排
+FavoritesSort = Literal["favorited_at", "rating", "title"]
 
 
 async def _favorite_page(
@@ -33,6 +40,7 @@ async def _favorite_page(
     limit: int,
     offset: int,
     unwatched_first: bool = False,
+    sort: FavoritesSort = "favorited_at",
 ) -> tuple[list[tuple[int, int]], int, dict[int, PlaybackState]]:
     """收藏墙与收藏图廊共用的一页名单：``[(条目 id, 落点库 id)]`` + 去重总数 +
     每部作品最近那一行收藏状态（层级文案要用）。
@@ -99,6 +107,27 @@ async def _favorite_page(
             library_of.setdefault(item_id, library_id)
 
     ordered = [item_id for item_id in latest if item_id in library_of]
+    if sort == "rating":
+        # 评分高的在前，没评分的沉底；同分保持收藏时间序（sorted 稳定）
+        scores = dict(
+            (
+                await session.execute(
+                    select(MediaMetadata.media_item_id, MediaMetadata.vote_average).where(
+                        MediaMetadata.media_item_id.in_(ordered)  # type: ignore[attr-defined]
+                    )
+                )
+            ).all()
+        )
+        ordered.sort(key=lambda item_id: (scores.get(item_id) is None, -(scores.get(item_id) or 0)))
+    elif sort == "title":
+        titles = dict(
+            (
+                await session.execute(
+                    select(MediaItem.id, MediaItem.title).where(MediaItem.id.in_(ordered))  # type: ignore[attr-defined]
+                )
+            ).all()
+        )
+        ordered.sort(key=lambda item_id: title_sort_key(titles.get(item_id) or ""))
     if unwatched_first:
         # 稳定排序：没看完的整体提前，组内仍是收藏时间倒序。
         # 判据用的是**收藏那一行自己的 played**——电影准确；剧集收藏整剧时
@@ -119,6 +148,7 @@ async def favorite_items(
     limit: int,
     offset: int = 0,
     unwatched_first: bool = False,
+    sort: FavoritesSort = "favorited_at",
 ) -> tuple[list[FavoriteItemView], int]:
     """返回一个账号收藏的作品与去重后的总数。
 
@@ -133,6 +163,7 @@ async def favorite_items(
         limit=limit,
         offset=offset,
         unwatched_first=unwatched_first,
+        sort=sort,
     )
     if not page:
         return [], total

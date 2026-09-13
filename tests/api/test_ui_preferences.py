@@ -3,6 +3,7 @@
 覆盖：默认值、保存持久化、未知字段前向兼容（忽略不报错）。
 鉴权由 test_auth 的守护测试统一覆盖（/ui 挂在受保护区）。
 """
+
 from __future__ import annotations
 
 import pytest
@@ -43,6 +44,8 @@ DEFAULT_PREFS = {
     "scrim": {"blur": 13.0, "dark": 0.69},
     # 空顺序 = 侧栏主导航用内置默认排布
     "nav": {"order": []},
+    # 空清单 = 媒体库首页用出厂布局
+    "home": {"rows": []},
 }
 
 
@@ -155,3 +158,71 @@ def test_nav_order_too_long_rejected(client: TestClient) -> None:
     )
     assert resp.status_code == 422
     assert client.get("/api/v1/ui/preferences").json()["data"] == DEFAULT_PREFS
+
+
+# ---------------------------------------------------------------------------
+# 媒体库首页的行清单（docs/design/library-home-perspective.md）
+# ---------------------------------------------------------------------------
+
+
+def test_home_rows_default_is_empty(client: TestClient) -> None:
+    """空清单 = 出厂布局，与 nav.order 同一约定。"""
+    assert client.get("/api/v1/ui/preferences").json()["data"]["home"] == {"rows": []}
+
+
+def test_home_rows_persist_with_optional_fields_left_null(client: TestClient) -> None:
+    rows = [
+        {"id": "up-next"},
+        {"id": "favorites", "sort": "unwatched_first"},
+        {"id": "libraries", "hidden": True},
+        {"id": "lib:1", "sort": "release_date", "name": ""},
+        {
+            "id": "row:8f2c",
+            "library_id": 3,
+            "sort": "rating",
+            "unwatched": True,
+            "name": "评分最高的动漫",
+        },
+        {"id": "row:a91e", "collection_id": 7, "sort": "release_date_asc"},
+    ]
+    resp = client.put("/api/v1/ui/preferences", json={"home": {"rows": rows}})
+    assert resp.status_code == 200
+    saved = client.get("/api/v1/ui/preferences").json()["data"]["home"]["rows"]
+    assert [r["id"] for r in saved] == [r["id"] for r in rows]
+    assert saved[4]["name"] == "评分最高的动漫" and saved[4]["unwatched"] is True
+    # 没传的字段是 null，不会被补成假默认（空即默认由前端解释）
+    assert saved[0]["sort"] is None and saved[0]["hidden"] is None
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        {"id": "weird"},  # 认不出的 id 形状
+        {"id": "row:x"},  # 自加行没来源
+        {"id": "row:x", "library_id": 1, "collection_id": 2},  # 两个来源
+        {"id": "lib:1", "library_id": 1},  # 默认库行不能带来源
+        {"id": "up-next", "sort": "rating"},  # 接下来继续没有排序
+        {"id": "favorites", "sort": "random"},  # 收藏行不支持随机
+        {"id": "lib:1", "sort": "size"},  # 首页行不开放体积档
+        {"id": "row:x", "library_id": 1, "name": "x" * 41},  # 名字过长
+    ],
+)
+def test_home_rows_bad_shape_rejected(client: TestClient, row: dict) -> None:
+    resp = client.put("/api/v1/ui/preferences", json={"home": {"rows": [row]}})
+    assert resp.status_code == 422
+    assert client.get("/api/v1/ui/preferences").json()["data"]["home"] == {"rows": []}
+
+
+def test_home_rows_duplicate_ids_and_overflow_rejected(client: TestClient) -> None:
+    dup = [{"id": "lib:1"}, {"id": "lib:1"}]
+    assert client.put("/api/v1/ui/preferences", json={"home": {"rows": dup}}).status_code == 422
+    many = [{"id": f"row:{i}", "library_id": 1} for i in range(49)]
+    assert client.put("/api/v1/ui/preferences", json={"home": {"rows": many}}).status_code == 422
+
+
+def test_home_rows_unknown_targets_accepted(client: TestClient) -> None:
+    """指向已删库 / 不可见合集的行照存：读取端（前端合并）负责忽略，与 nav 同款。"""
+    rows = [{"id": "lib:999"}, {"id": "row:gone", "collection_id": 12345}]
+    resp = client.put("/api/v1/ui/preferences", json={"home": {"rows": rows}})
+    assert resp.status_code == 200
+    assert [r["id"] for r in resp.json()["data"]["home"]["rows"]] == ["lib:999", "row:gone"]

@@ -1887,25 +1887,22 @@ def _filter_params(
         Query(description="年代档：2020s/2010s/2000s/1990s/earlier，逗号分隔（维内 OR）"),
     ] = None,
     w: Annotated[
-        Literal["unwatched", "watching", "played", "favorite"] | None,
-        Query(description="观看状态（单选）：未看/在看/已看完是一个划分，favorite 与之正交"),
+        Literal["unwatched", "watching", "played", "favorite", "seen"] | None,
+        Query(
+            description=(
+                "观看状态（单选）：未看/在看/已看完是一个划分，favorite 与之正交；"
+                "seen=在看或已看完（首页「最近观看」行用，筛选条里不出现）"
+            )
+        ),
     ] = None,
-    rating_gte: Annotated[
-        float | None, Query(ge=0, le=10, description="评分下限（找片）")
-    ] = None,
+    rating_gte: Annotated[float | None, Query(ge=0, le=10, description="评分下限（找片）")] = None,
     rt: Annotated[
         str | None,
         Query(description="片长档：lte60/60to90/90to120/gt120，逗号分隔（找片）"),
     ] = None,
-    lang: Annotated[
-        str | None, Query(description="原始语言码，逗号分隔（找片）")
-    ] = None,
-    res: Annotated[
-        str | None, Query(description="分辨率：2160p/1080p/…，逗号分隔（查库）")
-    ] = None,
-    hdr: Annotated[
-        bool | None, Query(description="true=只看 HDR / false=只看 SDR（查库）")
-    ] = None,
+    lang: Annotated[str | None, Query(description="原始语言码，逗号分隔（找片）")] = None,
+    res: Annotated[str | None, Query(description="分辨率：2160p/1080p/…，逗号分隔（查库）")] = None,
+    hdr: Annotated[bool | None, Query(description="true=只看 HDR / false=只看 SDR（查库）")] = None,
     stock: Annotated[
         str | None,
         Query(description="库存状态：missing=有文件失联 / unscraped=没刮到档案，逗号分隔（查库）"),
@@ -2045,6 +2042,7 @@ async def list_library_items(
             "runtime",
             "size",
             "last_played",
+            "random",
         ],
         Query(
             description=(
@@ -2052,7 +2050,8 @@ async def list_library_items(
                 "release_date=按内容时间倒序 / release_date_asc=按上映正序"
                 "（系列合集用它，筛选栏里不出现）/ probing=待补探优先 / "
                 "rating=评分高的在前 / runtime=片长短的在前 / "
-                "size=占地大的在前 / last_played=最近看过的在前"
+                "size=占地大的在前 / last_played=最近看过的在前 / "
+                "random=随便看看（按天换一批，首页自定义行用）"
             )
         ),
     ] = "title",

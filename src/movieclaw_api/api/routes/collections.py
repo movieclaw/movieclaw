@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import date
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -604,6 +604,24 @@ async def list_collection_items(
     collection_id: int,
     limit: Annotated[int | None, Query(ge=1, le=200, description="本页条目数")] = None,
     offset: Annotated[int, Query(ge=0)] = 0,
+    sort: Annotated[
+        Literal[
+            "title",
+            "added_at",
+            "release_date",
+            "release_date_asc",
+            "rating",
+            "last_played",
+            "random",
+        ]
+        | None,
+        Query(
+            description=(
+                "覆盖合集自己的排序（首页自定义行用）；不给则规则合集按合集的 sort、"
+                "名单合集按拖出来的顺序"
+            )
+        ),
+    ] = None,
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(require_login),
 ) -> ApiResponse[list[LibraryItemView]]:
@@ -622,14 +640,13 @@ async def list_collection_items(
         member_id=member_id,
         visible_library_ids=visible,
         content_limit=content_limit,
+        sort=sort,
         limit=limit,
         offset=offset,
     )
     if not ids:
         return ok([])
-    views = await _aggregate_wall_views(
-        session, row.library_id, ids, ids, library_ids=visible
-    )
+    views = await _aggregate_wall_views(session, row.library_id, ids, ids, library_ids=visible)
     favorites = await favorite_item_ids(session, ids, member_id=member_id)
     for view in views:
         view.is_favorite = view.media_item_id in favorites

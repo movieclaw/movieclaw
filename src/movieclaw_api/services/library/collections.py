@@ -170,6 +170,24 @@ async def resolve_members(
     member_rows = select(CollectionItem.media_item_id).where(
         CollectionItem.collection_id == collection.id
     )
+    # 给了 sort 的单库名单合集：把名单当候选集交给**同一条**排序查询（首页自定义行
+    # 要按评分 / 上映 / 随机排它，见 docs/design/library-home-perspective.md 4.2 第 2 条）。
+    # 跨库名单（library_id 为空）没有单一的库口径，仍按 position 返回、忽略 sort
+    if sort is not None and collection.library_id is not None and only_item_id is None:
+        if visible_library_ids is not None and collection.library_id not in visible_library_ids:
+            return []
+        return await _wall_page_ids(
+            session,
+            collection.library_id,
+            sort,
+            limit,
+            offset,
+            "confirmed",
+            None,
+            member_id,
+            content_limit,
+            only_item_id=member_rows,
+        )
     if only_item_id is not None:
         member_rows = member_rows.where(CollectionItem.media_item_id == only_item_id)
     rows = (

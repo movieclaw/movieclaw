@@ -571,9 +571,7 @@ async def test_items_pinyin_order_and_index(db) -> None:
             "9号秘事",  # 数字归 #，排在最后
         ]
 
-        index_rows = await list_library_item_index(
-            library.id, session=session, principal=_ADMIN
-        )
+        index_rows = await list_library_item_index(library.id, session=session, principal=_ADMIN)
         assert [(e.initial, e.count, e.offset) for e in index_rows.data] == [
             ("A", 1, 0),
             ("C", 1, 1),
@@ -595,3 +593,185 @@ def test_derive_air_status_mapping() -> None:
     assert derive_air_status("Canceled") == "ended"
     assert derive_air_status("莫名其妙的值") is None
     assert derive_air_status(None) is None
+
+
+# ---------------------------------------------------------------------------
+# 媒体库首页自定义行独有的排序与筛选（docs/design/library-home-perspective.md 4.2）
+# ---------------------------------------------------------------------------
+
+
+async def _seed_movies(session, library_id: int, titles: list[str]) -> list[int]:
+    ids: list[int] = []
+    for index, title in enumerate(titles):
+        item = MediaItem(kind="movie", tmdb_id=900 + index, title=title, original_title=title)
+        session.add(item)
+        await session.flush()
+        assert item.id
+        ids.append(item.id)
+        session.add(
+            LibraryFile(
+                library_id=library_id,
+                media_item_id=item.id,
+                season_number=0,
+                episode_number=0,
+                file_path=f"/movies/{title}/{title}.mkv",
+                size_bytes=1,
+                source=FileSource.SCANNED,
+            )
+        )
+    await session.flush()
+    return ids
+
+
+async def test_random_sort_is_stable_within_a_day_and_reshuffles_the_next(db, monkeypatch) -> None:
+    """「随便看看」：同一天内翻页不重不漏、轮询不换批；换了种子才换一批；order 参数被忽略。"""
+    from movieclaw_api.services.library import items as items_service
+
+    async with db.session() as session:
+        library = await LibraryRepository(session).create(
+            name="电影库", kind="movie", root_paths=["/movies"]
+        )
+        assert library.id
+        ids = await _seed_movies(session, library.id, [f"片{i}" for i in range(12)])
+
+        monkeypatch.setattr(items_service, "_random_seed", lambda: 20260913)
+        first = [
+            r.media_item_id
+            for r in (
+                await list_library_items(
+                    library.id, sort="random", session=session, principal=_ADMIN
+                )
+            ).data
+        ]
+        again = [
+            r.media_item_id
+            for r in (
+                await list_library_items(
+                    library.id, sort="random", session=session, principal=_ADMIN
+                )
+            ).data
+        ]
+        assert first == again, "同一天两次请求同一顺序"
+        assert sorted(first) == sorted(ids), "一部不少"
+        assert first != sorted(ids), "不是 id 序（否则就不叫随机）"
+
+        pages = []
+        for offset in (0, 5, 10):
+            page = await list_library_items(
+                library.id, sort="random", limit=5, offset=offset, session=session, principal=_ADMIN
+            )
+            pages += [r.media_item_id for r in page.data]
+        assert pages == first, "分页拼起来就是整体顺序"
+
+        reversed_order = await list_library_items(
+            library.id, sort="random", order="desc", session=session, principal=_ADMIN
+        )
+        assert [r.media_item_id for r in reversed_order.data] == first, "随机档没有方向"
+
+        monkeypatch.setattr(items_service, "_random_seed", lambda: 20260914)
+        tomorrow = [
+            r.media_item_id
+            for r in (
+                await list_library_items(
+                    library.id, sort="random", session=session, principal=_ADMIN
+                )
+            ).data
+        ]
+        assert tomorrow != first, "换了种子换一批"
+        assert sorted(tomorrow) == sorted(ids)
+
+
+async def test_seen_filter_keeps_only_played_or_watching(db) -> None:
+    """``w=seen`` = 在看 ∪ 已看完：「最近观看」行靠它把从没播过的片挡在外面。
+
+    没有它，度量档把空度量沉底而不是排除，取 20 条时看过的排完就轮到没播过的。
+    """
+    from movieclaw_api.services.library.items import LibraryFilter
+    from movieclaw_db.models import PlaybackState
+
+    async with db.session() as session:
+        library = await LibraryRepository(session).create(
+            name="电影库", kind="movie", root_paths=["/movies"]
+        )
+        assert library.id
+        played, watching, untouched = await _seed_movies(session, library.id, ["甲", "乙", "丙"])
+        base = utcnow()
+        session.add_all(
+            [
+                PlaybackState(
+                    member_id=0,
+                    media_item_id=played,
+                    played=True,
+                    last_played_at=base - timedelta(days=3),
+                ),
+                PlaybackState(
+                    member_id=0,
+                    media_item_id=watching,
+                    position_ms=60_000,
+                    last_played_at=base - timedelta(days=1),
+                ),
+            ]
+        )
+        await session.flush()
+
+        plain = await list_library_items(
+            library.id, sort="last_played", session=session, principal=_ADMIN
+        )
+        assert [r.media_item_id for r in plain.data] == [watching, played, untouched], (
+            "墙上没播过的沉底但仍在"
+        )
+
+        seen = await list_library_items(
+            library.id,
+            sort="last_played",
+            filters=LibraryFilter(watch="seen"),
+            session=session,
+            principal=_ADMIN,
+        )
+        assert [r.media_item_id for r in seen.data] == [watching, played], "首页行只要播过的"
+
+
+async def test_manual_collection_accepts_a_sort_override(db) -> None:
+    """名单驱动的合集给了 sort 也按度量排：与规则合集走同一条排序查询。
+
+    不给 sort 仍按拖出来的 position；跨库名单（没有单一库口径）忽略 sort。
+    """
+    from movieclaw_api.services.library.collections import resolve_members
+    from movieclaw_db.models import Collection, CollectionItem, MediaMetadata
+
+    async with db.session() as session:
+        library = await LibraryRepository(session).create(
+            name="电影库", kind="movie", root_paths=["/movies"]
+        )
+        assert library.id
+        low, high, unrated, outsider = await _seed_movies(
+            session, library.id, ["丁", "戊", "己", "庚"]
+        )
+        session.add_all(
+            [
+                MediaMetadata(media_item_id=low, vote_average=6.0, scraped_at=utcnow()),
+                MediaMetadata(media_item_id=high, vote_average=9.0, scraped_at=utcnow()),
+            ]
+        )
+        collection = Collection(name="片单", library_id=library.id, sort="title")
+        session.add(collection)
+        await session.flush()
+        assert collection.id
+        # 拖出来的顺序：己 → 丁 → 戊；庚不在名单里
+        for position, item_id in enumerate([unrated, low, high]):
+            session.add(
+                CollectionItem(
+                    collection_id=collection.id, media_item_id=item_id, position=position
+                )
+            )
+        await session.flush()
+
+        by_position = await resolve_members(session, collection)
+        assert by_position == [unrated, low, high]
+        by_rating = await resolve_members(session, collection, sort="rating")
+        assert by_rating == [high, low, unrated], "评分高的在前，没评分的沉底，名单外的不进来"
+        by_rating_page = await resolve_members(
+            session, collection, sort="rating", limit=2, offset=1
+        )
+        assert by_rating_page == [low, unrated]
+        assert outsider not in by_rating

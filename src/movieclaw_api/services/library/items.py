@@ -35,12 +35,13 @@ import shutil
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path, PurePath
 from typing import Any, Literal, NamedTuple
 
-from sqlalchemy import Integer, and_, func, not_, nullslast, or_, true
+from sqlalchemy import BigInteger, Integer, and_, func, not_, nullslast, or_, true
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql import Select
 from sqlmodel import select
 
 from movieclaw_api.schemas.library import (
@@ -305,6 +306,10 @@ WallSort = Literal[
     "runtime",
     "size",
     "last_played",
+    # 「随便看看」：媒体库首页自定义行独有（docs/design/library-home-perspective.md 4.2）。
+    # 按 UTC 日期做种子，同一天内稳定——轮询刷新、翻页都不换批，明天再换一批。
+    # 它不进筛选栏的排序下拉（前端 sortOptions 是显式列表），A-Z 索引对它返回空
+    "random",
 ]
 
 #: 排序方向（2026-09-11 起可切换）。不给方向 = 该档的**自然方向**（见 ``_NATURAL_ASC``），
@@ -323,7 +328,20 @@ _NATURAL_ASC: dict[str, bool] = {
     "runtime": True,
     "size": False,
     "last_played": False,
+    "random": True,
 }
+
+#: 「随便看看」的哈希：``(media_item_id * 当日乘数) % 模``，当日乘数 =
+#: ``黄金比例常数 × (2 × 种子 + 1)`` 取模（奇 × 奇仍是奇数，乘法哈希才是置换）。
+#: 种子必须进乘数而不是加在后面：加常数只是整体平移，模意义下顺序几乎不变，
+#: 换了天也换不了批。模取 2^32，SQLite 与 PostgreSQL 都是普通整数算术，不需要扩展
+_RANDOM_MULTIPLIER = 2654435761
+_RANDOM_MODULUS = 1 << 32
+
+
+def _random_seed() -> int:
+    """「随便看看」的种子：UTC 日期序数。测试里 monkeypatch 它来验证"跨日换一批"。"""
+    return datetime.now(UTC).date().toordinal()
 
 
 def _ascending(sort: WallSort, order: WallOrder | None) -> bool:
@@ -337,7 +355,10 @@ def _ascending(sort: WallSort, order: WallOrder | None) -> bool:
 
 #: 观看状态。前三者是一个**划分**：任何条目恰好落在其中一档，三档计数之和
 #: 等于总数（facet 计数因此永远对得上）。favorite 与它们正交，单选而已。
-WatchFilter = Literal["unwatched", "watching", "played", "favorite"]
+#: ``seen`` = watching ∪ played（"不是 unwatched"）：只是接口取值，不进筛选条、不进 facet
+#: 计数——媒体库首页「最近观看的 X」行用它把从没播过的片挡在外面（度量档把空度量
+#: 沉底而不是排除，取 20 条时看过的排完就轮到没播过的，首页那一行不能这样）
+WatchFilter = Literal["unwatched", "watching", "played", "favorite", "seen"]
 
 #: 年代档 → 年份闭区间；None 表示不设下界。缺年份的条目（release_date 与
 #: media_item.year 都为空）不属于任何一档——「未知年份」不是年代，硬塞进
@@ -464,6 +485,8 @@ def _watch_clause(watch: WatchFilter, member_id: int):
         return and_(not_(watching), played)
     if watch == "unwatched":
         return and_(not_(watching), not_(played))
+    if watch == "seen":
+        return or_(watching, played)
     # favorite：条目级收藏落在哨兵单元上（剧 (-1,-1) / 电影 (0,0)），
     # 与 services/playback/marks.item_favorite_unit 同一份约定
     is_tv = MediaItem.kind == MediaKind.TV.value
@@ -619,12 +642,19 @@ def _identity_clause(identity: WallIdentity):
 
 
 def _wall_scope(
-    library_id: int, identity: WallIdentity = "confirmed", only_item_id: int | None = None
+    library_id: int,
+    identity: WallIdentity = "confirmed",
+    only_item_id: int | Select | None = None,
 ):
     """海报墙的成员口径：本库、挂了条目、**在架**（没进回收站）、指定身份档。
 
     ``only_item_id`` 把候选集收窄成**一个条目**——"这部片在不在这个合集里"
-    走的就是这条路。它收窄的是"谁是候选"，不是"要满足什么条件"，所以
+    走的就是这条路。传一个 ``Select``（一列 media_item_id 的子查询）则收窄成
+    **一批**条目：名单驱动的合集要按度量排序时，把名单子查询交进来，与规则
+    合集走的是同一条排序查询（docs/design/library-home-perspective.md 4.2 第 2 条）。
+    用子查询而不是 id 列表，是因为 SQLite 的绑定变量数有上限。
+
+    它收窄的是"谁是候选"，不是"要满足什么条件"，所以
     放在这里而不是 ``LibraryFilter``：后者是用户能表达的维度，这个不是。
     反查合集因此与正查成员**逐字同一条查询**，不存在两处答案不一致。
 
@@ -643,7 +673,11 @@ def _wall_scope(
         LibraryFile.on_shelf(),
         _identity_clause(identity),
     )
-    return scope if only_item_id is None else (*scope, LibraryFile.media_item_id == only_item_id)
+    if only_item_id is None:
+        return scope
+    if isinstance(only_item_id, int):
+        return (*scope, LibraryFile.media_item_id == only_item_id)
+    return (*scope, LibraryFile.media_item_id.in_(only_item_id))  # type: ignore[union-attr]
 
 
 async def _titles_sorted(
@@ -653,7 +687,7 @@ async def _titles_sorted(
     filters: LibraryFilter | None = None,
     member_id: int | None = None,
     content_limit: ContentLimit | None = None,
-    only_item_id: int | None = None,
+    only_item_id: int | Select | None = None,
 ) -> list[tuple[int, str]]:
     """本库全部条目的 (id, 标题)，按拼音序排好。
 
@@ -1275,7 +1309,7 @@ async def _wall_page_ids(
     member_id: int | None = None,
     content_limit: ContentLimit | None = None,
     order: WallOrder | None = None,
-    only_item_id: int | None = None,
+    only_item_id: int | Select | None = None,
 ) -> list[int]:
     """按 sort 排好序的本页条目 id（无 limit 时是全库）。
 
@@ -1365,7 +1399,7 @@ async def _wall_page_ids(
     # —— 以下四档共用同一个形状：按某个度量聚合后倒/正序，末尾一律以
     #    media_item_id 收尾保证稳定分页；度量为空的条目靠 NULLS LAST 沉底，
     #    而不是随排序方向在头尾之间跳
-    if sort in ("rating", "runtime", "size", "last_played"):
+    if sort in ("rating", "runtime", "size", "last_played", "random"):
         query = (
             select(LibraryFile.media_item_id)
             .join(MediaItem, MediaItem.id == LibraryFile.media_item_id)  # type: ignore[arg-type]
@@ -1384,9 +1418,17 @@ async def _wall_page_ids(
             # 体积按本库内的在位文件求和：同一部片散在两个库时，
             # 这面墙上显示的应该是它在**这个库**占多少地方
             measure = func.sum(LibraryFile.size_bytes)
+        elif sort == "random":
+            # 每条目一个当日固定的伪随机数；GROUP BY 之后取 max 只是为了满足聚合形状
+            multiplier = (_RANDOM_MULTIPLIER * (2 * _random_seed() + 1)) % _RANDOM_MODULUS
+            hashed = (
+                func.cast(LibraryFile.media_item_id, BigInteger) * multiplier
+            ) % _RANDOM_MODULUS
+            measure = func.max(hashed)
         else:
             measure = func.max(_last_played_at(member_id or 0))
-        ascending = _ascending(sort, order)
+        # 随机档没有方向可言：order 参数对它忽略，永远按哈希升序
+        ascending = True if sort == "random" else _ascending(sort, order)
         # 自然方向下收尾一律是 id 倒序（加方向之前的行为）；反向时整条序列倒过来，
         # 收尾也跟着变 id 正序——否则同分的片在两个方向里是同一个先后，不是"倒过来"
         flipped = ascending != _NATURAL_ASC[sort]
@@ -1402,9 +1444,7 @@ async def _wall_page_ids(
     # 用户能看见"在处理哪几部"；两段各自保持拼音序（sorted 稳定排序）。
     # strm 占位文件不算"没读出"——它永远探不出规格，算进来会让网盘库
     # 每轮扫描都全墙置顶、永不落位
-    ordered = await _titles_sorted(
-        session, library_id, identity, filters, member_id, content_limit
-    )
+    ordered = await _titles_sorted(session, library_id, identity, filters, member_id, content_limit)
     unprobed = {
         i
         for i in (
