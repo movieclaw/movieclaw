@@ -171,6 +171,7 @@ body{margin:0;background:var(--ink);color:var(--text);font-family:var(--f-sans);
 .ui .ritem .acts .ikon{padding:3px}
 .ui .ritem .acts .ikon svg{width:14px;height:14px}
 .ui .ritem .acts .ikon.dis{opacity:.25;pointer-events:none}
+.ui .updown{display:contents}
 .ui .ritem .car{color:var(--faint);font-size:10px;transition:transform .15s;flex:none;width:12px;text-align:center}
 .ui .ritem.open .car{transform:rotate(180deg)}
 /* 就地展开的编辑区：排序单选 + 一个开关 + 名字，没有别的 */
@@ -214,7 +215,7 @@ body{margin:0;background:var(--ink);color:var(--text);font-family:var(--f-sans);
 
 /* ────────── 移动端 ────────── */
 .ui .phones{display:flex;gap:28px;justify-content:center;flex-wrap:wrap;padding:22px 0}
-.ui .phone{position:relative;width:296px;height:600px;border:1px solid var(--line-2);border-radius:34px;background:#0a0b10;padding:16px 12px 0;overflow:hidden;flex:none}
+.ui .phone{position:relative;width:296px;height:720px;border:1px solid var(--line-2);border-radius:34px;background:#0a0b10;padding:16px 12px 0;overflow:hidden;flex:none}
 .ui .phone .notch{width:86px;height:6px;border-radius:999px;background:rgba(255,255,255,.14);margin:0 auto 12px}
 .ui .phone .cap{position:absolute;left:0;right:0;bottom:-30px;text-align:center;font-size:11.5px;color:var(--faint)}
 .ui .phone h2{font-size:18px}
@@ -228,11 +229,24 @@ body{margin:0;background:var(--ink);color:var(--text);font-family:var(--f-sans);
 .ui .phone .cpage{max-width:none}
 .ui .phone .clist{gap:5px;margin-top:10px}
 .ui .phone .ritem .grip{display:none}
-.ui .phone .ritem .acts{opacity:1}
-.ui .phone .redit{padding-left:12px}
-.ui .phone .radios{grid-template-columns:1fr}
+.ui .phone .ritem .car{display:none}
+.ui .phone .rhead{padding:7px 8px 7px 10px;gap:8px}
+.ui .phone .ritem .ico{width:20px;height:20px;font-size:10px}
+.ui .phone .ritem .nm{font-size:12.5px}
+.ui .phone .ritem .mt{font-size:10px}
+.ui .phone .ritem .acts{opacity:1;gap:4px;align-items:center}
+/* 手机上上下箭头叠成一列：宽度只占一个按钮，副标题不再被挤断 */
+.ui .phone .updown{display:flex;flex-direction:column;gap:0}
+.ui .phone .updown .ikon{padding:1px 3px}
+.ui .phone .updown .ikon svg{width:12px;height:12px}
+.ui .phone .redit{padding:9px 10px 11px}
+.ui .phone .radios{grid-template-columns:1fr;gap:0;margin-bottom:8px}
+.ui .phone .radio{padding:5px 6px;font-size:12px}
 .ui .phone .radio .d{display:none}
-.ui .phone .cscroll{height:520px;overflow:hidden;mask-image:linear-gradient(to bottom,#000 88%,transparent)}
+.ui .phone .swrow{font-size:12px;margin-bottom:9px}
+.ui .phone .swrow .d{display:none}
+.ui .phone .adder{display:none}
+.ui .phone .cscroll{height:640px;overflow:hidden;mask-image:linear-gradient(to bottom,#000 90%,transparent)}
 
 /* ────────── 数据 ────────── */
 .ui .datawrap{border:1px solid var(--line-2);border-radius:16px;background:#0a0b10;padding:22px 24px;display:grid;grid-template-columns:1fr 1fr;gap:22px}
@@ -365,7 +379,7 @@ body{margin:0;background:var(--ink);color:var(--text);font-family:var(--f-sans);
               <div class="head" style="margin-bottom:0"><div><h2>自定义首页</h2></div><button class="btn sm ghost">恢复默认</button></div>
               <div id="clist2"></div>
             </div>
-            <div class="cap">独立页面 /library/customize，不是弹层</div>
+            <div class="cap">独立页面 /library/customize · 「＋ 添加一行」在列表底部</div>
           </div>
         </div>
       </div>
@@ -457,7 +471,8 @@ p3:{h:"排序就是一列推荐名",li:[
 p4:{h:"移动端：同一个页面，窄一点",li:[
  "首页与桌面一样干净：一个图标按钮进「自定义首页」。",
  "「自定义首页」是<b>独立页面</b>，路由 <code>/library/customize</code>，返回键回首页。纯列表、不放海报，列表、展开、添加与桌面端同一份实现，只是排序单选变成一列。",
- "拖拽换成上下箭头——拖拽在滚动容器里会抢手势，箭头笨一点但不会错。"],
+ "拖拽换成上下箭头——拖拽在滚动容器里会抢手势，箭头笨一点但不会错。手机上两个箭头<b>叠成一列</b>，右侧只占两个按钮的宽度，名字与小字不再被挤断；展开箭头去掉，整个行头就是点击区。",
+ "密度：行头上下 7px、图标 20px、名字 12.5px；展开区排序单选一列、规则说明隐藏；「＋ 添加一行」沉到列表底部。一屏能看到 6 行左右。"],
  try:null},
 p5:{h:"没有新表，没有第二套 DSL",li:[
  "一行一条记录，存在成员自己的 <code>ui_prefs</code> 里，与侧栏导航排序同一个抽屉、同一套「提示而非契约」的合并规则。",
@@ -634,7 +649,7 @@ function itemHTML(r,i){
   const ico='<span class="ico '+k+'">'+(k==="sys"?(r.id==="up-next"?"▶":r.id==="favorites"?"♥":"▦"):k==="col"?'<span class="stk"><i></i><i></i></span>':"≡")+'</span>';
   return'<div class="ritem'+(r.hidden?" off":"")+(open?" open":"")+(editable(r)?"":" nox")+'" data-row="'+r.id+'">'+
     '<div class="rhead"><span class="grip">⋮⋮</span>'+ico+'<div class="tx"><div class="nm">'+rowTitle(r)+'</div><div class="mt">'+rowMeta(r)+'</div></div>'+
-    '<div class="acts"><button class="ikon'+(i===0?" dis":"")+'" data-move="-1" title="上移"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 10l4-4 4 4"/></svg></button><button class="ikon'+(i===ROWS.length-1?" dis":"")+'" data-move="1" title="下移"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6l4 4 4-4"/></svg></button>'+
+    '<div class="acts"><span class="updown"><button class="ikon'+(i===0?" dis":"")+'" data-move="-1" title="上移"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 10l4-4 4 4"/></svg></button><button class="ikon'+(i===ROWS.length-1?" dis":"")+'" data-move="1" title="下移"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6l4 4 4-4"/></svg></button></span>'+
     '<button class="ikon" data-hide title="'+(r.hidden?"显示":"隐藏")+'">'+eye(!r.hidden)+'</button></div>'+
     '<span class="car">'+(editable(r)?"▾":"")+'</span></div>'+
     (open?editHTML(r):'')+'</div>';

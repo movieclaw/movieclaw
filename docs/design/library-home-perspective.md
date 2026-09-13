@@ -102,6 +102,19 @@ OmniFocus 的透视由三部分组成：规则（筛哪些任务）、呈现（�
 「打开合集 ›」。自加行多一个「删除这一行」。来源不在这里改：换库等于另一行，
 删了重加。
 
+### 2.4 移动端布局与密度
+
+同一个页面，窄一点：
+
+| 项目 | 规格 |
+|---|---|
+| 首页入口 | 页头右侧一个图标按钮（与桌面同一图形），不写字 |
+| 行头 | 上下内边距 7px，类型图标 20px，名字 12.5px，小字 10px；没有拖拽把手，没有展开箭头，整个行头是点击区 |
+| 右侧控件 | 上移/下移叠成一列，加一个眼睛开关，合计只占两个按钮的宽度，名字与小字不被挤断 |
+| 展开区 | 排序单选一列，右侧规则说明隐藏；开关行不带说明文字；名字输入框整行 |
+| 添加一行 | 沉到列表底部，不常驻 |
+| 密度目标 | 一屏约 6 行；「恢复默认」留在页头 |
+
 ## 3. 数据
 
 不新增表，不迁移。存在成员自己的 `member.ui_prefs`（超管走 `ui.preferences` 全局域，
@@ -139,11 +152,119 @@ OmniFocus 的透视由三部分组成：规则（筛哪些任务）、呈现（�
   v1 不做。
 - 首页布局只影响 movieclaw 网页。Jellyfin 客户端的首页是它们自己的，唯一共享的是合集本身。
 
-## 5. 分期
+## 5. 实施计划
 
-1. 行清单模型 + `/library/customize` 页面（显隐、顺序、恢复默认）+ 首页按清单渲染。
-2. 就地展开的编辑区：排序预设、只看未看、命名与推荐；同库多行；随机排序。
-3. 合集行：抽屉里添加、合集页「显示在首页」、排序覆盖。收藏行排序开关。
+五步，每步单独可合并、单独可发。前三步不碰排序后端，就能把「显隐、顺序、改名、
+换排序」交付出去；第四步补齐首页独有的排序；第五步收尾。
+
+### 5.1 偏好模型与合并逻辑（不改任何界面）
+
+**后端** `src/movieclaw_api/settings/schemas.py`
+
+- 新增 `HomeRowPref`：`id`、`sort`、`name`、`unwatched`、`hidden`、`library_id`、
+  `collection_id`，除 `id` 外全部可空。`id` 只认四种形状：`up-next` / `favorites` /
+  `libraries` / `lib:<int>` / `row:<slug>`；`row:` 必须且只能带 `library_id` 或
+  `collection_id` 之一；`name` 上限 40 字。校验放在 Pydantic 里，坏数据在 PUT 时拒掉，
+  而不是读的时候兜底。
+- 新增 `HomeUiPrefs(rows: list[HomeRowPref], max_length=48)`，`UiPreferencesSetting`
+  加 `home` 字段。基类 `extra="ignore"`，老数据原地生效，**不需要迁移**。
+- 路由 `api/routes/ui.py` 不动：成员走 `member.ui_prefs`、超管走全局域的分流已经在。
+
+**前端** `apps/web/lib/api/ui.ts`：类型、`DEFAULT_UI_PREFS.home`、`normalizeUiPreferences`
+里对 `home.rows` 加数组守卫（与 `nav.order` 同款）。
+
+**前端** 新建 `apps/web/lib/home-rows.ts`（不用 `@/` 别名，让 `node --test` 直接导入）：
+
+- `SORT_PRESETS`：1.1 那张表，取值 → 推荐名函数 + 规则说明。
+- `buildHomeRows(saved, libraries, collections)`：合并规则（§3）。存过的按存的顺序；
+  没存过的内置行按出厂顺序补；每个当前成员可见、且清单里没有 `lib:<id>` 的库，
+  在最后一条库行之后补一条默认行；`row:` 指向不可见库或不可见合集的直接丢弃。
+- `rowTitle` / `rowMeta`：名字为空时按预设推荐；小字「来源 · 排序 · 只看没看过的」。
+- `DEFAULT_ROWS()`：出厂布局。**空清单即默认**，「恢复默认」就是存一个空列表，
+  与 `nav.order` 同一约定。
+
+**验证**
+
+- `tests/api/test_ui_preferences.py` 照 nav 那组加：默认值、坏 id 被拒、`row:` 缺来源
+  被拒、超过 48 行被拒、成员与超管各存各的。
+- `apps/web/test/home-rows.test.mjs`：存过的排前、新库追加在库行之后、删库的行消失、
+  隐藏保留位置、名字为空跟随预设。
+
+### 5.2 首页按清单渲染
+
+`apps/web/components/library-view.tsx`
+
+- `reload()` 先拿 `listLibraries` + `listCollections`，用 `buildHomeRows` 得到清单，
+  再**按清单逐行取数**，隐藏的行不发请求：
+  - `up-next` → `listUpNext(20)`，渲染仍是 `UpNextRow`；
+  - `favorites` → `listFavorites(20, 0, true)`（本步只支持默认的未看优先）；
+  - `libraries` → 现有库卡片 `HScroller`，「全部合集 ›」入口留在这一行；
+  - `lib:` / 库行 → `listLibraryItems(id, { sort, limit: 20, filter: unwatched ? { watch: "unwatched" } : undefined })`；
+  - 合集行 → `listCollectionItems(id, { limit: 20 })`（本步只支持合集自身排序）。
+- `lib/api/libraries.ts` 的 `LibraryItemSort` 补上后端已有的 `release_date_asc`。
+- 行标题用 `rowTitle`，`moreHref` 库行指向 `/library/{id}`、合集行指向合集页。
+  `MediaRow` 不需要改：它本来就只有标题和一个「查看全部」。
+- 页头「管理媒体库」左侧加「自定义首页」，链到 `/library/customize`；全部隐藏时渲染
+  指回该页的空态。
+- 轮询与 stale-while-error 沿用 `useVisiblePolling` 现有分档，不动。
+
+**验证**：现有 `library-view` 相关测试跑绿；手工核对默认布局与改造前逐行一致
+（这是本步的成功标准：**没有偏好的用户看不出任何变化**）。
+
+### 5.3 自定义首页页面
+
+- `apps/web/app/(app)/library/customize/page.tsx`：与 `favorites/page.tsx` 同样的壳。
+- `apps/web/components/library-customize-view.tsx`：
+  - 数据来自 `useUiPrefs()`；每次改动 `savePrefs` 整体 PUT，去抖 500ms；没有保存键。
+  - 列表：复用 `library-manage-row.tsx` 的拖拽模式（`draggable` + before/after 落点 +
+    键盘上下移），不引入拖拽库；上下箭头两端同时给，手机上只有箭头（§2.4）。
+  - 点行头就地展开：排序单选（`SORT_PRESETS` / 收藏与合集各自的短表）、「只显示我没看过的」
+    开关（仅库行）、名字输入框（占位 = 推荐名，`onBlur` 才写入，避免每个键入都 PUT）。
+  - 「＋ 添加一行」：库来自 `listLibraries`（只列 `viewer_access` 的），合集来自
+    `listCollections()`；新行 id 为 `row:` + 6 位 base36 随机串，添加后自动展开。
+  - 「恢复默认」带确认，写空列表。
+  - 布局与密度按 §2.4；桌面列表最大宽 640px。
+- 侧栏与首页之间的返回：页头「‹ 媒体库」。
+
+**验证**：`apps/web/test` 加纯逻辑用例（新增行 id 生成、移动、显隐不改顺序）；
+手机宽度 375px 下逐项核对 §2.4 的规格；改动 300ms 内落库、刷新后保留。
+
+### 5.4 首页独有的排序补齐（后端）
+
+- `random`：`services/library/items.py` 的 `WallSort` / `_NATURAL_ASC` / `_wall_page_ids`
+  各加一档；顺序用算术哈希 `(media_item_id * 2654435761 + seed) % 2^32` 做 `ORDER BY`，
+  `seed` 取当天日期整数，SQLite 与 PostgreSQL 都不需要扩展；分页在同一天内稳定。
+  `api/routes/libraries.py` 里重复的 `Literal` 与前端 `LibraryItemSort` 同步。
+- 合集行排序覆盖：`GET /collections/{id}/items` 加 `sort`（`added_at` / `rating` / `random`），
+  不给即合集自身顺序；实现是把 `resolve_members` 的结果再交给现有的排序步骤。
+- 收藏行排序：`GET /playback/favorites` 加 `sort`（`favorited_at` / `rating` / `title`），
+  与 `unwatched_first` 并存。
+- 前端三个 API 客户端补参数；`library-view.tsx` 把行的 `sort` 透传。
+
+**验证**：`tests/api/test_library_items.py` 加随机档「同日稳定、跨日变化、分页不重不漏」；
+`test_collections_api.py` / `test_playback_favorites.py` 各加排序用例。
+
+### 5.5 收尾
+
+- 合集详情页头部加「显示在首页」开关，写同一份偏好（找到就切 `hidden`，找不到就追加一行）。
+- `docs/design/library-home-up-next.md` 第 2 节的信息层级标注「已由首页透视取代，默认布局不变」。
+- 样稿与本文按最终实现回写差异。
+
+### 5.6 改动面清单
+
+| 层 | 文件 | 改动 |
+|---|---|---|
+| 后端偏好 | `settings/schemas.py` | `HomeRowPref` / `HomeUiPrefs` / `UiPreferencesSetting.home` |
+| 后端排序 | `services/library/items.py`、`api/routes/libraries.py` | `random` 档 |
+| 后端接口 | `api/routes/collections.py`、`api/routes/playback.py` | `sort` 参数 |
+| 前端偏好 | `lib/api/ui.ts`、`lib/home-rows.ts`（新） | 类型、默认、合并、命名 |
+| 前端 API | `lib/api/libraries.ts`、`collections.ts`、`playback.ts` | 补 `release_date_asc`、`sort` |
+| 首页 | `components/library-view.tsx` | 按清单渲染、入口、空态 |
+| 自定义页 | `app/(app)/library/customize/page.tsx`、`components/library-customize-view.tsx`（新） | 列表、展开编辑、添加、恢复默认 |
+| 合集页 | 合集详情视图 | 「显示在首页」开关 |
+| 测试 | `tests/api/test_ui_preferences.py`、`test_library_items.py`、`test_collections_api.py`、`test_playback_favorites.py`；`apps/web/test/home-rows.test.mjs` | 见各步 |
+
+不在清单里的：数据库迁移（没有）、`docker/runtime-version`（没动依赖）、Jellyfin 兼容层（不受影响）。
 
 ## 6. 刻意不做
 
