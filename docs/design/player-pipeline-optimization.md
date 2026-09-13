@@ -1,6 +1,7 @@
 # 播放流水线优化方案：加载 / 缓冲 / 快进 / 拖动
 
-> 状态：**提案**（2026-09-13），未实施。
+> 状态：**A / B / C 已实施并通过端到端验证**（2026-09-13，实施纪要见 §7）；
+> **D 实测不可行**，理由与数据见 §7.4，本轮不实施。
 > 前置阅读：[web-player.md](web-player.md)（档位、会话、VOD 列表）、
 > [player-feel.md](player-feel.md)（手感、seek 判据、节流）。本文不重复那两份
 > 已经落地的东西，只谈**还没做、值得做、以及明确不做**的。
@@ -378,3 +379,90 @@ B 的盘成本正是它换来 GPU 不重复的代价，是否值得取决于部�
 5. 这条路上原来有谁在计数（QoE、`MAX_NETWORK_RECOVERIES`、活动页字节
    计量）？会不会被灌脏？
 6. 注释里写的承诺，有没有一条测试盯着？
+
+---
+
+## 7. 实施纪要（2026-09-13）
+
+### 7.1 落地的三条
+
+| 项 | 代码落点 | 关键取值 |
+|---|---|---|
+| A 闭环节流 | `session.py`：`LEAD_HIGH_S` / `LEAD_LOW_S` / `THROTTLE_INTERVAL_S`、`pause_reasons`、`_throttle_session`；`ffmpeg_args.py` VOD 模式不再带 `-readrate` | 领先 ≥120 秒 SIGSTOP、≤60 秒 SIGCONT，0.5 秒巡检 + 分片请求入口即时判 |
+| B 缓存复用 | `cache.py`（指纹、manifest）；`session.py`：`_assign_cache_directory` / `evict_cold` / `stop` 不删目录；`settings/playback.py` 的 `transcode_cache_enabled`；存储登记项文案 | 目录按指纹命名；24 小时保留期；配额沿用 `auto_quota_bytes`；同指纹并发退独立目录，不共写 |
+| C 带宽定码率 | `adaptive.py`；请求体 `downlink_bps`；`VideoPlan.bitrate_cap_bps`；前端 `bandwidth.ts` 三个判定 + `engine.ts` 把停顿归因带给上层 | 0.8 × 线路；阶梯打七五折仍装得下就只压码率；上限量化 250 kbps；缺粮 + 转码 + 线路不够 → 同档重开一次 |
+
+诊断面板新增三行读数：「转码领先 N 秒 · 已领先足够，转码暂停」「命中上次转码
+产物（N 段免转）」「按线路限 X Mbps」——用户问「为什么转码停了 / 为什么这么快 /
+为什么画质变了」时，这三行直接作答。
+
+### 7.2 与提案的偏离
+
+- **A 的 `_RESTART_AHEAD_SEGMENTS` 没动**，仍是 1。提案说要实测后再放宽，本轮
+  没有真机弱网数据，不凭感觉改。
+- **B 第一版禁止同指纹共写**（提案里已写明）：另一位成员同时看同一部片同一档时
+  退到 `<指纹>~<会话id>` 目录，各转各的。stop 途中的目录也当在用，避免 reap 与
+  新会话抢同一目录（`_stopping_dirs`）。
+- **C 的高度规则加了一条**：目标高度阶梯值打七五折仍装得下就保住高度只压码率
+  ——1080p 给 5 Mbps 仍比 720p 给 3 Mbps 清楚，提案里「先找装得下的档」会把
+  7 Mbps 的线路错降到 720p。
+
+### 7.3 验证
+
+**后端**（真 ffmpeg 6.1，Ubuntu 容器）：
+
+- `tests/playback/test_lead_throttle.py`（10 条，假 ffmpeg）：领先超上限 SIGSTOP、
+  产出停住、播放头追上 SIGCONT、两种暂停原因互不覆盖、seek 重启与 stop 前先解冻、
+  巡检任务随 reaper 起停。
+- `tests/playback/test_vod_session_integration.py` 新增真 ffmpeg 用例：不限速的
+  remux 在 12 秒领先上限下被挂起、分片数停在 2~6、恢复后转完全片。
+- `tests/playback/test_transcode_cache.py`（17 条）：指纹覆盖每一项输入（含 §C
+  的码率上限）、台账损坏视为无缓存、第二路认领后不起写者直到请求没转过的分片、
+  指纹不同不认领、并发同指纹不共写、无台账目录先清、缓存关闭走旧行为、启动清理
+  只删无台账目录、淘汰先过期后最旧、活跃会话永不淘汰。
+- `tests/playback/test_adaptive.py`（14 条）+ `test_ffmpeg_args.py`：阶梯与上限
+  随线路走、maxrate/bufsize 跟着上限。
+- `tests/api/test_playback_e2e.py`（真 HTTP + 真 ffmpeg，7 条全过）：其中
+  `test_stopping_a_session_keeps_a_reusable_cache` 验第二次开会话诊断报
+  `cache_hit=true`、拼出的流仍可解、存储页一键清空删得掉冷缓存。顺手修了这个
+  文件里列表解析的旧 bug（URI 带 `?token=` 时 `endswith(".m4s")` 恒假，四个
+  用例此前在任何环境都过不了）。
+- `pytest -m "not integration" -n auto`：除 `tests/enrich/test_enrich.py`（种子名
+  NER 模型，与本轮无关、基线同样失败）外全绿。
+
+**前端**：`tsc --noEmit`、`eslint` 无错误；`node --test test/player-*.test.mjs`
+382 条全过（新增 3 条带宽判定用例）。
+
+**真浏览器**（Playwright + Chromium，Next dev + 真后端 + 真 ffmpeg）：
+
+- `scripts/perf/e2e_player_feel.py`（档 0 直出，VP9+Opus mp4）：八条全过，首帧
+  947 ms。
+- HLS 路径（VP9+Opus MKV → 档 1 remux → hls.js 喂 fMP4，Chromium 解得了 VP9）：
+  冷缓存首帧 1422 ms → 远跳 100 秒 → 回拖 2 秒 → 离开再进 → 诊断报「命中 30 段」、
+  起播不起 ffmpeg、首帧 1160 ms。远跳与回拖都**没有触发重启**：不限速的 remux
+  在起播后一秒内就把 120 秒样片全部转完（`highest_produced_segment=29`），
+  两次跳转都落在已转出的分片上——这正是 A 的效果，也说明「重启直奔」这条路
+  只能用 `test_vod_session_integration.py` 里刻意放慢的真 ffmpeg 用例验。
+  120 秒的样片顶不到 120 秒的领先上限，节流的挂起/恢复同样只在集成用例里
+  验过（12 秒上限），真机长片待验。
+
+### 7.4 D 为什么没做：分片是原子落盘的
+
+提案 D 的前提是「分片在写的过程中可以边写边发」。实测（ffmpeg 6.1，`-f hls
+-hls_segment_type fmp4`，直通与 libx264 转码各测一次，每 100 ms 采一次文件
+大小）：**分片文件在完成的那一刻才出现、且一出现就是完整大小**，中间没有任何
+可读的部分：
+
+```
+直通 remux（readrate 1）:  4.0s: seg00000=405015   7.5s: seg00001=421886
+libx264 转码（全速）:     0.3s: seg00000=257076   0.4s: seg00001=271555 ...
+```
+
+原因在 movenc：hls muxer 用 `frag_custom` 让 mov muxer 把整个分片的 moof+mdat
+攒在内存里，到分片边界一次性写出。加 `frag_duration=1000000` 试图让它每秒
+flush 一次，结果是 hlsenc 的切分被搅乱（seg00000 只剩 24 字节的 styp 头，
+内容跑到下一片）。要拿到部分分片只有两条路：改用 dash/ldash 的 chunked 写法
+（整套 VOD 列表与台账要重做），或者放弃预生成列表让重启后的首片切短（回到
+EVENT 列表——正是 §12 之前因 iPhone 闪黑屏被换掉的方案）。两条都超出「小改
+动」的范围，本轮不做；远跳的结构性 2~6 秒仍靠冻结帧 + 落点缩略图填感知差距
+（player-feel.md §2.G2/G4）。
