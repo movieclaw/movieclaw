@@ -194,6 +194,7 @@ func TestDomainCommandSets(t *testing.T) {
 		},
 		"subscriptions": {
 			"subscriptions.check-automation-readiness",
+			"subscriptions.cleanup-seasons",
 			"subscriptions.create",
 			"subscriptions.delete",
 			"subscriptions.download-selected-torrent",
@@ -359,6 +360,7 @@ func TestDangerousAndLongTaskAnnotations(t *testing.T) {
 	}
 	for id, want := range map[string]string{
 		"library.items.delete":                     "destructive",
+		"subscriptions.cleanup-seasons":            "confirm",
 		"subscriptions.delete":                     "confirm",
 		"subscriptions.unsubscribe":                "confirm",
 		"library.items.transfer":                   "confirm",

@@ -233,6 +233,7 @@ site status set
 site update
 site verify
 subscriptions check-automation-readiness
+subscriptions cleanup-seasons
 subscriptions create
 subscriptions delete
 subscriptions download-selected-torrent

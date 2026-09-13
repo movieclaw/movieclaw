@@ -328,6 +328,7 @@ site verify
 status
 subscriptions
 subscriptions check-automation-readiness
+subscriptions cleanup-seasons
 subscriptions create
 subscriptions delete
 subscriptions download-selected-torrent
