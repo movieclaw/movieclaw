@@ -56,6 +56,16 @@ const FALLBACK_TIER = 4;
 /** 连续失败到这个次数就放弃逐级降档（§6.3）。 */
 const MAX_STEPWISE_FAILURES = 2;
 
+/**
+ * 视频 `-c:v copy` 的三档：直出、remux、音频单转。
+ *
+ * 线路装不下源码率时这三档的命运一样——码率一分不少，照样缺粮。逐级降只是
+ * 让用户多等两轮 45 秒外加两次黑屏重开，所以带宽引起的降档把它们一并标掉，
+ * 下一轮决策直接落到转码档（有硬件档 3、没有档 4），并带上实测带宽让服务端
+ * 压码率（bandwidth.ts 的 bandwidthDegradeWanted）。
+ */
+const COPY_TIERS = [0, 1, 2];
+
 export interface PlayerState {
   phase: PlayerPhase;
   /** 当前生效的会话（含 stream_url / start_ms / 字幕地址）；档 0 也有，只是 session_id 为 null */
@@ -108,6 +118,11 @@ export type PlayerEvent =
   | { type: "restart"; startMs: number }
   /** 播放链路失败（error 事件 / 长时间 stall），触发降档回路 */
   | { type: "failed"; reason: string }
+  /**
+   * 视频直通但线路装不下源码率：三个直通档一并标掉，直接开转码会话。
+   * 判定在 bandwidth.ts 的 bandwidthDegradeWanted，理由见 COPY_TIERS。
+   */
+  | { type: "bandwidth-degrade" }
   /** 无法继续（接口报错、会话起不来等），直接进错误态 */
   | { type: "fatal"; message: string; suggestion?: string | null }
   | { type: "ended" }
@@ -267,6 +282,25 @@ export function playerReducer(state: PlayerState, event: PlayerEvent): PlayerSta
         phase: "degrading",
         failedTiers,
         failureCount: state.failureCount + 1,
+        session: null,
+      };
+    }
+
+    case "bandwidth-degrade": {
+      // 与 failed 同一道闸：只有当前会话的事件才算数，切档/重开后的迟到事件不理
+      if (
+        !acceptsMediaEvent(state.phase) ||
+        state.session === null ||
+        state.decision === null
+      ) {
+        return state;
+      }
+      // failureCount **不加**：这不是「这一档播不了」的证据，而是线路的问题；
+      // 计进连败会让下一次真失败越过硬件档直接落到软转
+      return {
+        ...state,
+        phase: "degrading",
+        failedTiers: [...new Set([...state.failedTiers, ...COPY_TIERS])].sort((a, b) => a - b),
         session: null,
       };
     }

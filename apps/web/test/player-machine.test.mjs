@@ -63,6 +63,38 @@ test("降档是逐级的：档 1 失败后只把 1 标失败，仍会试档 2", 
   assert.deepEqual(state.failedTiers, [1]);
 });
 
+test("带宽降档：三个直通档一并标掉，下一轮直接落转码档", () => {
+  // 直出因线路装不下缺粮：remux / 音频单转码率一分不少，逐级试它们只是让
+  // 用户多等两轮 45 秒外加两次黑屏重开
+  const state = run([
+    { type: "request", startMs: 0 },
+    { type: "session", session: planSession(0) },
+    { type: "playing" },
+    { type: "bandwidth-degrade" },
+  ]);
+  assert.equal(state.phase, "degrading");
+  assert.deepEqual(state.failedTiers, [0, 1, 2]);
+  assert.equal(state.session, null);
+  // 不计入连败：这不是「这一档播不了」，下一次真失败仍该逐级降而不是直落软转
+  assert.equal(state.failureCount, 0);
+});
+
+test("带宽降档保留已有的失败记录，且迟到的事件顶不掉切档中的状态", () => {
+  const degraded = run([
+    { type: "request", startMs: 0 },
+    { type: "session", session: planSession(1) },
+    { type: "playing" },
+    { type: "failed", reason: "解码错误" },
+    // 档 2 还在起播缓冲里就缺粮了（没出过画，连败计数还没被 playing 清掉）
+    { type: "session", session: planSession(2) },
+    { type: "bandwidth-degrade" },
+  ]);
+  assert.deepEqual(degraded.failedTiers, [0, 1, 2]);
+  assert.equal(degraded.failureCount, 1);
+  // 会话已经摘掉（degrading）：旧引擎的迟到事件原样返回
+  assert.equal(run([{ type: "bandwidth-degrade" }], degraded), degraded);
+});
+
 test("连败两次直接跳兜底档：兜底档以下全部标失败", () => {
   const state = run([
     { type: "request", startMs: 0 },

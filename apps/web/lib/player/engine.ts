@@ -32,6 +32,7 @@ import {
 import { backBufferSeconds } from "./buffer-budget";
 import { type MediaRecoverState, nextMediaRecovery } from "./media-recover";
 import {
+  DIRECT_STARVE_TIMEOUT_S,
   NUDGE_STEP_S,
   type StallVerdict,
   bufferedAhead,
@@ -188,6 +189,8 @@ function watchStall(
   video: HTMLVideoElement,
   onFailed: (reason: string, cause: Exclude<StallVerdict, "ok">) => void,
   onNudge?: (attempt: number) => void,
+  /** 缺粮上限：档 0 直出没有转码器可等，传 DIRECT_STARVE_TIMEOUT_S */
+  starveTimeoutS?: number,
 ): () => void {
   let lastTime = video.currentTime;
   let stalledFor = 0;
@@ -209,6 +212,7 @@ function watchStall(
       advanced,
       bufferedAhead: bufferedAhead(video),
       stalledFor: stalledFor + 1,
+      starveTimeoutS,
     });
     lastTime = video.currentTime;
     if (video.paused || video.ended || video.seeking || advanced) {
@@ -222,7 +226,7 @@ function watchStall(
     if (verdict !== "ok") {
       stalledFor = 0;
       nudges = 0;
-      onFailed(stallReason(verdict), verdict);
+      onFailed(stallReason(verdict, starveTimeoutS), verdict);
       return;
     }
     // 有数据却不动：先推一把（见 stall.ts shouldNudge 的 iOS wedge 注释），
@@ -349,6 +353,8 @@ class DirectEngine implements PlaybackEngine {
           ...videoSnapshot(video),
         });
       },
+      // 档 0 没有转码器可等，缺粮上限收短；原生 HLS 后面仍是转码会话，照旧
+      this.label === "direct" ? DIRECT_STARVE_TIMEOUT_S : undefined,
     );
   }
 

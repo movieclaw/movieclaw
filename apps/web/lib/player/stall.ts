@@ -33,6 +33,15 @@ export const DECODE_STALL_MIN_BUFFER_S = 3;
  * 追上首帧，客户端等十几秒是常事。
  */
 export const STARVE_TIMEOUT_S = 45;
+/**
+ * 档 0 直出的缺粮上限（秒）。
+ *
+ * 45 秒是给「等转码器追上来」留的；直出没有转码器，浏览器自己按 Range 取原
+ * 文件，缓冲耗尽后十几秒一个字节都没到只可能是线路装不下（或断了），再等
+ * 三十秒没有任何东西会变好。缩短它，直出档的带宽降档（bandwidth.ts 的
+ * bandwidthDegradeWanted）才不用让用户对着转圈等满 45 秒。
+ */
+export const DIRECT_STARVE_TIMEOUT_S = 15;
 /** 小于这个秒数的前方缓冲视同没有——四舍五入的抖动不该被当成"有数据"。 */
 
 export type StallVerdict = "ok" | "decode-stalled" | "starved";
@@ -86,6 +95,8 @@ export interface StallInput {
   bufferedAhead: number;
   /** 已经连续停顿了多少秒 */
   stalledFor: number;
+  /** 缺粮上限；不传按转码会话的 STARVE_TIMEOUT_S，档 0 传 DIRECT_STARVE_TIMEOUT_S */
+  starveTimeoutS?: number;
 }
 
 /**
@@ -99,14 +110,20 @@ export function classifyStall(input: StallInput): StallVerdict {
   }
   // 前方只剩零点几秒到两三秒：大概率是追上了转码器（buffered 尾 = 已转出
   // 的全部），按缺粮处理给足 45 秒——降档的代价是整路重来，误杀最伤
-  return input.stalledFor >= STARVE_TIMEOUT_S ? "starved" : "ok";
+  return input.stalledFor >= (input.starveTimeoutS ?? STARVE_TIMEOUT_S) ? "starved" : "ok";
 }
 
 /** 判定 → 面向用户的中文原因。用户报障时这句话就是全部线索。 */
-export function stallReason(verdict: Exclude<StallVerdict, "ok">): string {
-  return verdict === "decode-stalled"
-    ? `播放停滞超过 ${STALL_TIMEOUT_S} 秒，这一档的码流浏览器吃不下`
-    : `等待服务端供流超过 ${STARVE_TIMEOUT_S} 秒——转码速度跟不上播放，或转码已中断`;
+export function stallReason(
+  verdict: Exclude<StallVerdict, "ok">,
+  starveTimeoutS: number = STARVE_TIMEOUT_S,
+): string {
+  if (verdict === "decode-stalled") {
+    return `播放停滞超过 ${STALL_TIMEOUT_S} 秒，这一档的码流浏览器吃不下`;
+  }
+  return starveTimeoutS < STARVE_TIMEOUT_S
+    ? `等待取流超过 ${starveTimeoutS} 秒——线路装不下这部片的码率，或连接已中断`
+    : `等待服务端供流超过 ${starveTimeoutS} 秒——转码速度跟不上播放，或转码已中断`;
 }
 
 /** `currentTime` 前方的连续缓冲秒数；不在任何缓冲区间内记 0。 */

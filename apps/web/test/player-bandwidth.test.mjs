@@ -302,10 +302,33 @@ test("峰值同样只看窗口：降档之后几片就跟着下来，不像原�
 
 import {
   DIRECT_SHORTFALL_RATIO,
+  bandwidthDegradeWanted,
   bandwidthRestartWanted,
   directDownlinkShort,
   downlinkHintBps,
 } from "../lib/player/bandwidth.ts";
+
+test("缺粮 + 视频直通 + 线路装不下 → 越过逐级降档直接转码；其余情况不动", () => {
+  // 直出 / remux / 音频单转的视频都是 copy，码率改不了；逐级降到 remux 照样
+  // 缺粮，用户要转圈一分多钟外加三次黑屏重开才落到能压码率的转码档
+  const base = {
+    cause: "starved",
+    videoAction: "copy",
+    downlinkBps: 3_000_000,
+    bitrateBps: 8_000_000,
+  };
+  assert.equal(bandwidthDegradeWanted(base), true);
+  // 解码卡死不是带宽问题，照旧逐级降
+  assert.equal(bandwidthDegradeWanted({ ...base, cause: "decode-stalled" }), false);
+  // 已经在转码：那是 bandwidthRestartWanted 的地盘（同档重开），不是这条
+  assert.equal(bandwidthDegradeWanted({ ...base, videoAction: "transcode" }), false);
+  // 线路装得下源码率：慢的不是线路，别把直通白白换成转码
+  assert.equal(bandwidthDegradeWanted({ ...base, downlinkBps: 9_000_000 }), false);
+  // 读数缺一样都不猜
+  assert.equal(bandwidthDegradeWanted({ ...base, downlinkBps: null }), false);
+  assert.equal(bandwidthDegradeWanted({ ...base, bitrateBps: null }), false);
+  assert.equal(bandwidthDegradeWanted({ ...base, bitrateBps: 0 }), false);
+});
 
 test("带宽提示：没有读数就不带，有读数取整", () => {
   assert.equal(downlinkHintBps(null), undefined);

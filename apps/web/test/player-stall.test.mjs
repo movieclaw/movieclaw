@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   DECODE_STALL_MIN_BUFFER_S,
+  DIRECT_STARVE_TIMEOUT_S,
   MAX_NUDGES,
   NUDGE_AT_S,
   STALL_TIMEOUT_S,
@@ -69,6 +70,24 @@ test("供流也不能无限等：会话半路死掉同样是缓冲耗尽后再�
 
 test("供流的容忍度必须远大于解码卡死", () => {
   assert.ok(STARVE_TIMEOUT_S > STALL_TIMEOUT_S * 3);
+});
+
+test("档 0 直出没有转码器可等：缺粮上限按传入的短窗口判", () => {
+  // 45 秒是给转码器追上来留的；直出缓冲耗尽后十几秒没有一个字节只能是线路
+  // 装不下，带宽降档不该让用户对着转圈等满 45 秒
+  assert.ok(DIRECT_STARVE_TIMEOUT_S < STARVE_TIMEOUT_S);
+  assert.ok(DIRECT_STARVE_TIMEOUT_S > STALL_TIMEOUT_S);
+  const direct = { ...base, bufferedAhead: 0, starveTimeoutS: DIRECT_STARVE_TIMEOUT_S };
+  assert.equal(classifyStall({ ...direct, stalledFor: DIRECT_STARVE_TIMEOUT_S - 1 }), "ok");
+  assert.equal(classifyStall({ ...direct, stalledFor: DIRECT_STARVE_TIMEOUT_S }), "starved");
+  // 不传就是转码会话的 45 秒
+  assert.equal(
+    classifyStall({ ...base, bufferedAhead: 0, stalledFor: DIRECT_STARVE_TIMEOUT_S }),
+    "ok",
+  );
+  // 原因文案跟着窗口走：直出说的是线路，不是转码
+  assert.match(stallReason("starved", DIRECT_STARVE_TIMEOUT_S), /线路/);
+  assert.match(stallReason("starved"), /转码/);
 });
 
 test("零点几秒的前方缓冲视同没有", () => {

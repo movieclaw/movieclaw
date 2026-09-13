@@ -391,6 +391,33 @@ export function bandwidthRestartWanted(input: {
   return input.downlinkBps < input.bitrateBps;
 }
 
+/**
+ * 直通视频缺粮（starved）要不要**越过逐级降档，直接改用转码**。
+ *
+ * 直出 / remux / 音频单转三档的视频都是 `-c:v copy`，码率改不了。线路装不下
+ * 源码率时它们的表现完全一样：缓冲耗尽、看门狗判缺粮。原先这条走普通的
+ * `failed`，逐级降到 remux、再到音频单转——码率一分没少，照样卡，连败两次才
+ * 一步到软转把码率压下来。用户看到的是一分多钟转圈外加三次黑屏重开
+ * （docs/design/web-player.md §6.3 的 2026-09-13 补记）。
+ *
+ * 所以判据与 `bandwidthRestartWanted` 对称：那条是「已在转码、线路不够 → 同档
+ * 带带宽重开」，这条是「视频直通、线路不够 → 把三个直通档一并标掉，带着实测
+ * 带宽去开转码会话」，服务端 `adapt_to_downlink` 会按线路压码率、必要时降高度。
+ * 线路读数或源码率缺失时不作判定，退回原来的逐级降档——那时慢的可能不是线路。
+ */
+export function bandwidthDegradeWanted(input: {
+  cause: "starved" | "decode-stalled" | null | undefined;
+  videoAction: string | null | undefined;
+  downlinkBps: number | null;
+  bitrateBps: number | null;
+}): boolean {
+  if (input.cause !== "starved") return false;
+  if (input.videoAction !== "copy") return false;
+  if (input.downlinkBps === null || input.bitrateBps === null) return false;
+  if (input.downlinkBps <= 0 || input.bitrateBps <= 0) return false;
+  return input.downlinkBps < input.bitrateBps;
+}
+
 /** 直通档提示的门槛：线路低于源码率的这个倍数就算「不够」。 */
 export const DIRECT_SHORTFALL_RATIO = 1.2;
 /** 连续多少次 1Hz 采样都不够才提示——一次抖动不该弹提示。 */

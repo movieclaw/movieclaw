@@ -33,6 +33,7 @@ import {
 import { type AutoplayOutcome, attemptAutoplay, shouldAttemptAutoplay } from "@/lib/player/autoplay";
 import {
   DIRECT_SHORTFALL_SAMPLES,
+  bandwidthDegradeWanted,
   bandwidthRestartWanted,
   directDownlinkShort,
   downlinkHintBps,
@@ -1059,6 +1060,35 @@ export function VideoPlayer(props: VideoPlayerProps) {
           dispatch({ type: "restart", startMs: positionRef.current });
           return;
         }
+        // 视频直通且线路装不下源码率：逐级降到 remux / 音频单转码率一分不少，
+        // 照样缺粮，用户要转圈一分多钟外加三次黑屏重开才落到能压码率的转码档。
+        // 三个直通档一并标掉，直接带实测带宽去开转码会话（服务端按它压码率）。
+        // 直出档的引擎量不到分片码率，用台账里的源码率。
+        const sourceBitrate = stats.bitrate ?? sourceBitrateRef.current;
+        if (
+          bandwidthDegradeWanted({
+            cause,
+            videoAction: session.decision.video?.action,
+            downlinkBps: stats.downlinkBps,
+            bitrateBps: sourceBitrate,
+          })
+        ) {
+          // 重开请求要带的读数就是此刻这个：1Hz 循环下一拍未必来得及写
+          lastDownlinkRef.current = stats.downlinkBps;
+          reportPlaybackClientLog("bandwidth-degrade", {
+            reason,
+            tier: session.decision.tier,
+            downlink_bps: Math.round(stats.downlinkBps ?? 0),
+            bitrate_bps: Math.round(sourceBitrate ?? 0),
+          }, apiRef.current);
+          flashNotice("线路带宽装不下原片码率，改用转码降码率播放");
+          freezeFrame();
+          video.pause();
+          wantsPlayRef.current = true;
+          pendingFileMsRef.current = positionRef.current;
+          dispatch({ type: "bandwidth-degrade" });
+          return;
+        }
         dispatch({ type: "failed", reason });
       },
       // 取流持续失败（token 过期 / 服务端中断）：与心跳自愈同一条路，同档位
@@ -1115,7 +1145,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
       engine.destroy();
       engineRef.current = null;
     };
-  }, [state.session, mode, video, tryAutoplay, freezeFrame]);
+  }, [state.session, mode, video, tryAutoplay, freezeFrame, flashNotice]);
 
   /**
    * 换了会话（降档 / seek 换流）就重新获得自动播放的机会。
