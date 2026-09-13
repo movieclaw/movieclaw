@@ -7,6 +7,9 @@
 > `library-recycle-bin.md`（管理页回收站标签，本文的列表页同构于它）、
 > `quality-upgrade.md` §2.4 / §14（档位阶梯与三态铁律，本文的比较尺子）、
 > `media-source-annotation.md`（片源人工标注，同样把「未知」交还给人判断）。
+>
+> 交互样稿：`docs/design/mockups/library-duplicate-files-demo.html`（可点：发现 → 看清楚 →
+> 定策略 → 确认清理 → 反悔，以及条目详情页入口）。
 
 ## 0. 问题与摸底
 
