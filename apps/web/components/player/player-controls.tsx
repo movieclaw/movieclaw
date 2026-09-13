@@ -6,6 +6,7 @@ import type { PlaybackChapterMark } from "@/lib/api/playback";
 import type { AudioOption } from "@/lib/player/audio-tracks";
 import { SUBTITLE_OFFSET_STEP, clampSubtitleOffset } from "@/lib/player/subtitles";
 import { QUALITY_OPTIONS } from "@/lib/player/quality";
+import { scrubCommitTarget } from "@/lib/player/scrub-follow";
 import type { SubtitleStyle, SubtitleTracks } from "@/lib/player/subtitles";
 import { pointerOffsetX } from "@/lib/player/touch-adjust";
 import {
@@ -743,13 +744,22 @@ export function PlayerControls(props: PlayerControlsProps) {
               setDragging(Math.round(ratio * durationMs));
             }}
             // 移动不在这里处理：事件会冒泡到外层那一格，由 trackPointer 合帧
-            onPointerUp={() => {
-              // 合帧意味着最后一次移动可能还压在这一帧里没落地。抬手提交的
-              // 落点必须是**手指最后所在处**，不能是上一帧那个——快速拖动时
-              // 一帧的位移在两小时的片子上就是好几分钟。
+            onPointerUp={(e) => {
+              // 合帧意味着最后一次移动可能还压在这一帧里没落地。鼠标抬手提交
+              // 的落点必须是**指针最后所在处**，不能是上一帧那个——快速拖动时
+              // 一帧的位移在两小时的片子上就是好几分钟。触屏反过来要用屏幕上
+              // 正显示的值：指腹抬起时会漂几个像素，裁决见 scrubCommitTarget。
               cancelPointerFrame();
               const last = pointerMs();
-              if (dragging !== null) onSeek(last ?? dragging);
+              if (dragging !== null) {
+                onSeek(
+                  scrubCommitTarget({
+                    pointerType: e.pointerType,
+                    lastPointerMs: last,
+                    draggingMs: dragging,
+                  }),
+                );
+              }
               pointerRef.current = null;
               setDragging(null);
             }}

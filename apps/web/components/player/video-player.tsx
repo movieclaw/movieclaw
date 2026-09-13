@@ -2069,21 +2069,37 @@ export function VideoPlayer(props: VideoPlayerProps) {
   }, [unitKey, cancelPendingSeek, cancelScrubFollow]);
 
   /**
-   * 这一跳贵不贵：落点已在缓冲里、或档 0 直出（整个文件随便跳）就是零成本，
-   * 否则转码会话要按分片请求把 ffmpeg 杀掉重启直奔目标。
+   * 这一跳贵不贵：落点已在缓冲里就是零成本，否则要么等浏览器拉数据、要么
+   * （转码会话）按分片请求把 ffmpeg 杀掉重启直奔目标。
    *
-   * 拖动实时跟随（只在便宜时跟）与连按合并（只在贵时等）共用同一条判据。
+   * 档 0 直出**不再特殊**：整个文件都能 seek 不等于不要钱——远程的进度 MP4
+   * 在手机上每一次 seek 都是一条新的 Range 请求外加播放器重新起解码，拖动中
+   * 一秒十次就是画面一路抽（2026-09-13 真机反馈）。直出档拖出缓冲之后只在
+   * 手指停住时跟一次，见 canScrubFollow 与 scrub-follow.ts 的 settleOnly。
+   *
+   * 拖动实时跟随（只在便宜时按 10Hz 跟）与连按合并（只在贵时等）共用这条判据。
    */
   const isCheapSeek = useCallback(
     (fileMs: number) => {
       if (!video) return false;
-      if (mode?.engine === "direct") return true;
       return isWithinRanges(video.buffered, toSessionSeconds(fileMs, startMsRef.current));
     },
-    [video, mode],
+    [video],
   );
   const isCheapSeekRef = useRef(isCheapSeek);
   isCheapSeekRef.current = isCheapSeek;
+
+  /**
+   * 拖动跟随能不能落到这个位置：便宜的跳转任何模式都行；直出档不在缓冲里的
+   * 位置也行（浏览器自己按 Range 取数据），只是节奏由 planScrubFollow 收成
+   * 「手指停住才跟」。转码会话拖出缓冲绝不跟——那是杀 ffmpeg 重启。
+   */
+  const canScrubFollow = useCallback(
+    (fileMs: number) => mode?.engine === "direct" || isCheapSeek(fileMs),
+    [mode, isCheapSeek],
+  );
+  const canScrubFollowRef = useRef(canScrubFollow);
+  canScrubFollowRef.current = canScrubFollow;
 
   /** 把画面真的挪到落点。延时落地会跨过一段时间，所以只读 ref。 */
   const applyScrubFollow = useCallback(
@@ -2097,7 +2113,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
       // 后沿落地要跨过几十毫秒，**判据得在落地的这一刻重算**：这段时间里
       // back buffer 可能已经把落点回收掉，那时写 currentTime 就不再是零成本
       // 的跳转，而是一次把 ffmpeg 拽回去重启——跟随这条路上最不该出现的事。
-      if (seconds < 0 || !isCheapSeekRef.current(fileMs)) return;
+      if (seconds < 0 || !canScrubFollowRef.current(fileMs)) return;
       scrubRef.current = afterScrubFollow(performance.now());
       // **只动 currentTime，不走 engine.seek**：后者会 stopLoad + startLoad
       // 把在途的分片请求全掐掉重来——那是给「跳到没缓冲的地方」准备的重手段。
@@ -2121,10 +2137,11 @@ export function VideoPlayer(props: VideoPlayerProps) {
    * 松手才提交是转码会话逼出来的规矩：拖动中每次 move 都跳会让服务端一路杀
    * ffmpeg 重启，画面永远追不上手指。但**跳转不要钱的时候没有理由不跟随**：
    *
-   * - 档 0 直出：整个文件都能跳，浏览器自己按 range 取数据；
-   * - 任何模式落在已缓冲区间内：数据就在手上，跳过去是零成本。
+   * - 任何模式落在已缓冲区间内：数据就在手上，跳过去是零成本，10Hz 跟着走；
+   * - 档 0 直出拖出缓冲：浏览器自己按 range 取数据，能跳但不便宜（远程 MP4
+   *   在手机上一次就是几百毫秒到两秒），只在手指停住时跟一次。
    *
-   * 其余情况（拖到没缓冲的地方、旧会话相对制）原样按下不表，等松手那一次。
+   * 其余情况（转码会话拖到没缓冲的地方）原样按下不表，等松手那一次。
    *
    * 跟随的**节奏**由 lib/player/scrub-follow.ts 定：连续扫动时 10Hz（一秒
    * 跳六十次会让 hls.js 反复取消在途的分片请求，缓冲永远建立不起来），手指
@@ -2143,6 +2160,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
         state: scrubRef.current,
         cheap: isCheapSeek(fileMs),
         reachable: toSessionSeconds(fileMs, startMsRef.current) >= 0,
+        settleOnly: mode?.engine === "direct",
       });
       if (plan.kind === "skip") return;
       if (plan.kind === "follow") {
@@ -2162,7 +2180,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
         if (target !== null) applyScrubFollowRef.current(target);
       }, plan.delayMs);
     },
-    [video, isCheapSeek, bumpChromeActivity, cancelScrubFollow, applyScrubFollow],
+    [video, mode, isCheapSeek, bumpChromeActivity, cancelScrubFollow, applyScrubFollow],
   );
 
   /**

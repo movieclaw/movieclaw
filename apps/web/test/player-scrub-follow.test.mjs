@@ -7,6 +7,7 @@ import {
   afterScrubFollow,
   initialScrubFollowState,
   planScrubFollow,
+  scrubCommitTarget,
 } from "../lib/player/scrub-follow.ts";
 
 // ---------------------------------------------------------------------------
@@ -76,6 +77,99 @@ test("到了兜底窗口就立刻跟随：连续拖动中画面仍以 10Hz 刷�
 });
 
 // ---------------------------------------------------------------------------
+// 直出档：缓冲外只在手指停住时跟一次（2026-09-13 真机反馈）
+//
+// 整个文件都能 seek 不等于不要钱：远程的进度 MP4 在手机上每一次 seek 都是一条
+// 新的 Range 请求外加播放器重新起解码。原先直出档被 isCheapSeek 无条件判成
+// 便宜，扫动途中一秒十次、每次都被下一次打断，画面一路抽却追不上手指。
+// ---------------------------------------------------------------------------
+
+test("直出档拖出缓冲：不按 10Hz 跟，只排一个停稳窗口的后沿", () => {
+  const plan = planScrubFollow({
+    now: 5_000,
+    state: initialScrubFollowState(),
+    cheap: false,
+    reachable: true,
+    settleOnly: true,
+  });
+  assert.deepEqual(plan, { kind: "defer", delayMs: SCRUB_FOLLOW_SETTLE_MS });
+});
+
+test("直出档扫动途中永远不落地：兜底窗口到了也只是重排后沿", () => {
+  // 上次跟随已经过去很久，便宜的跳转此刻会「follow」；不便宜的直出档不行
+  const plan = planScrubFollow({
+    now: 1_000 + SCRUB_FOLLOW_MAX_WAIT_MS * 5,
+    state: { at: 1_000, pendingMs: null },
+    cheap: false,
+    reachable: true,
+    settleOnly: true,
+  });
+  assert.deepEqual(plan, { kind: "defer", delayMs: SCRUB_FOLLOW_SETTLE_MS });
+});
+
+test("直出档落在缓冲里照旧 10Hz 跟随：数据在手上没理由等停住", () => {
+  const plan = planScrubFollow({
+    now: 5_000,
+    state: initialScrubFollowState(),
+    cheap: true,
+    reachable: true,
+    settleOnly: true,
+  });
+  assert.deepEqual(plan, { kind: "follow" });
+});
+
+test("settleOnly 不放宽可达性：往回拖过会话起点仍然不跟", () => {
+  const plan = planScrubFollow({
+    now: 5_000,
+    state: initialScrubFollowState(),
+    cheap: false,
+    reachable: false,
+    settleOnly: true,
+  });
+  assert.deepEqual(plan, { kind: "skip" });
+});
+
+test("直出档一段扫动只在停住后落地一次，落的是最后那个落点", () => {
+  // 复用下面的 drive：把每一次移动都按 settleOnly 排后沿，手指停住 2 秒
+  const moves = sweep(1_000);
+  const landed = drive(moves, { settleOnly: true });
+  assert.equal(landed.length, 1, `扫动 1 秒落地了 ${landed.length} 次，应当只有停住那一次`);
+  assert.equal(landed[0].targetMs, moves[moves.length - 1].targetMs);
+  assert.equal(landed[0].at - moves[moves.length - 1].at, SCRUB_FOLLOW_SETTLE_MS);
+});
+
+// ---------------------------------------------------------------------------
+// 抬手提交到哪儿（2026-09-13 真机反馈：触屏松手后进度往回跳一下）
+// ---------------------------------------------------------------------------
+
+test("鼠标抬手提交指针最后所在处：合帧压着的最后一段位移不能丢", () => {
+  assert.equal(
+    scrubCommitTarget({ pointerType: "mouse", lastPointerMs: 305_000, draggingMs: 300_000 }),
+    305_000,
+  );
+  // 量不到指针位置（片长刚变 null 之类）退回屏幕上的值
+  assert.equal(
+    scrubCommitTarget({ pointerType: "mouse", lastPointerMs: null, draggingMs: 300_000 }),
+    300_000,
+  );
+});
+
+test("触屏抬手提交屏幕上正显示的值：指腹剥离时的漂移进不了落点", () => {
+  // 手指抬起瞬间接触点往回挪了一截，指针最后所在处已经不是用户看到的位置
+  assert.equal(
+    scrubCommitTarget({ pointerType: "touch", lastPointerMs: 262_000, draggingMs: 300_000 }),
+    300_000,
+  );
+});
+
+test("笔跟鼠标走：笔尖抬起没有指腹那种剥离位移", () => {
+  assert.equal(
+    scrubCommitTarget({ pointerType: "pen", lastPointerMs: 301_000, draggingMs: 300_000 }),
+    301_000,
+  );
+});
+
+// ---------------------------------------------------------------------------
 // 跟随落地之后的状态
 // ---------------------------------------------------------------------------
 
@@ -96,7 +190,7 @@ test("跟随落地记下时刻并清掉在途落点", () => {
 // ---------------------------------------------------------------------------
 
 /** 跑一段拖动，返回每一次真正写进 video 的落点与时刻 */
-function drive(moves, { leadingEdge = false } = {}) {
+function drive(moves, { leadingEdge = false, settleOnly = false } = {}) {
   const landed = [];
   let state = initialScrubFollowState();
   let timer = null; // { at, targetMs }
@@ -121,7 +215,14 @@ function drive(moves, { leadingEdge = false } = {}) {
       landed.push({ at: clock, targetMs: move.targetMs });
       continue;
     }
-    const plan = planScrubFollow({ now: clock, state, cheap: true, reachable: true });
+    // settleOnly 模拟的是直出档拖出缓冲：不便宜、但允许停住时跟一次
+    const plan = planScrubFollow({
+      now: clock,
+      state,
+      cheap: !settleOnly,
+      reachable: true,
+      settleOnly,
+    });
     if (plan.kind === "skip") continue;
     if (plan.kind === "follow") {
       timer = null;

@@ -427,9 +427,13 @@ class Player {
   }
 
   // ------------------------------------------------------- 跳转
+  /** 落点已在缓冲里（与实现一致：直出档不再特殊） */
   isCheapSeek(fileMs) {
-    if (this.mode === "direct") return true;
     return isWithinRanges(this.video.buffered, toSessionSeconds(fileMs, this.startMs));
+  }
+  /** 跟随能不能落到这里：便宜的都行，直出档缓冲外也行（只在停住时跟） */
+  canScrubFollow(fileMs) {
+    return this.mode === "direct" || this.isCheapSeek(fileMs);
   }
 
   cancelScrubFollow() {
@@ -444,7 +448,7 @@ class Player {
       ? rawFileMs
       : clampSeekTarget(rawFileMs, this.durationMs);
     const seconds = toSessionSeconds(fileMs, this.startMs);
-    if (seconds < 0 || !this.isCheapSeek(fileMs)) {
+    if (seconds < 0 || !this.canScrubFollow(fileMs)) {
       if (this.trace) this.trace.push(`${this.clock.now()} apply-DROP target=${fileMs} sec=${seconds.toFixed(1)} cheap=${this.isCheapSeek(fileMs)}`);
       return;
     }
@@ -467,6 +471,8 @@ class Player {
       state: this.scrubRef,
       cheap: this.isCheapSeek(fileMs),
       reachable: toSessionSeconds(fileMs, this.startMs) >= 0,
+      // 直出档缓冲外只在手指停住时跟一次（与实现一致）
+      settleOnly: this.mode === "direct",
     });
     if (plan.kind === "skip") return;
     if (plan.kind === "follow") {
@@ -790,11 +796,12 @@ function soak({ seed, mode, pointerHz, gestures, linkBps, bitrateBps: br, durati
       if (e.kind === "down") player.pointerDown(e.ratio);
       else if (e.kind === "move") {
         player.pointerMove(e.ratio);
-        // 跟随只在「这一跳不要钱」时发生，而这个判断只在**移动那一刻**做一次
-        // （手指停住之后不再有 pointermove，也就不会重新评估——转码会话下
-        // 拖到没转的段落，画面就该原地不动等松手，这是 §2.C2 定的规矩）。
-        // 所以不变式要看的是停手那一刻便宜不便宜，而不是现在便宜不便宜。
-        lastMoveCheap = player.isCheapSeek(Math.round(e.ratio * player.durationMs));
+        // 跟随能不能落到这个位置，这个判断只在**移动那一刻**做一次（手指
+        // 停住之后不再有 pointermove，也就不会重新评估——转码会话下拖到没转
+        // 的段落，画面就该原地不动等松手，这是 §2.C2 定的规矩；直出档缓冲外
+        // 则是停住时补一次）。所以不变式要看的是停手那一刻能不能跟，而不是
+        // 现在能不能跟。
+        lastMoveCheap = player.canScrubFollow(Math.round(e.ratio * player.durationMs));
       }
       else if (e.kind === "up") player.pointerUp();
       else if (e.kind === "cancel") player.pointerCancel();

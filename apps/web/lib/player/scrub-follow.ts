@@ -63,17 +63,33 @@ export type ScrubFollowPlan =
 /**
  * 这一次 pointermove 该怎么处理。
  *
- * `cheap` 是 `isCheapSeek` 的结果（落点已缓冲 / 档 0 直出），`reachable` 是
- * 「落点落在本次会话的时间轴之内」（`toSessionSeconds >= 0`）。两者都成立才
- * 谈得上跟随。
+ * `cheap` 是 `isCheapSeek` 的结果（落点已在缓冲里），`reachable` 是「落点落在
+ * 本次会话的时间轴之内」（`toSessionSeconds >= 0`）。便宜且可达才按 10Hz
+ * 跟着手指走。
+ *
+ * `settleOnly` 是档 0 直出的口径：整个文件都能 seek，但**不等于不要钱**——
+ * 远程的进度 MP4 在手机上每一次 seek 都是一条新的 Range 请求外加播放器重新
+ * 起解码，扫动途中一秒十次、每次都被下一次打断，画面追不上手指还一路抽
+ * （2026-09-13 真机反馈）。所以直出档拖出缓冲之后只在**手指停住**时补一次
+ * 跟随：停下来看一眼落点是用户真的想要的，扫动途中的十几次不是。局域网上
+ * 这一跳本来就快，停住 60ms 之内照样能看到画面，牺牲的只有「扫动途中画面
+ * 跟着抽」这件本来就不该有的事。
  */
 export function planScrubFollow(input: {
   now: number;
   state: ScrubFollowState;
   cheap: boolean;
   reachable: boolean;
+  settleOnly?: boolean;
 }): ScrubFollowPlan {
-  if (!input.cheap || !input.reachable) return { kind: "skip" };
+  if (!input.reachable) return { kind: "skip" };
+  if (!input.cheap) {
+    // 不便宜但允许停住时跟一次：只排后沿、不设兜底，手指不停就永远不落地。
+    // 每次移动都重排，所以真正落地的只有手指停稳之后那一次
+    return input.settleOnly
+      ? { kind: "defer", delayMs: SCRUB_FOLLOW_SETTLE_MS }
+      : { kind: "skip" };
+  }
   const waited = input.now - input.state.at;
   // 连续扫动的兜底：到点了就立刻用最新落点刷一次
   if (waited >= SCRUB_FOLLOW_MAX_WAIT_MS) return { kind: "follow" };
@@ -93,4 +109,28 @@ export function planScrubFollow(input: {
  */
 export function afterScrubFollow(now: number): ScrubFollowState {
   return { at: now, pendingMs: null };
+}
+
+/**
+ * 抬手时该提交到哪儿。
+ *
+ * 鼠标用**指针最后所在处**（`lastPointerMs`）：指针输入是合帧的（player-feel.md
+ * §2.C4），最后一次移动可能还压在这一帧里没落到 `dragging` 上，快速拖动时一帧
+ * 的位移在两小时的片子上就是好几分钟，提交上一帧那个值等于丢掉最后一段。
+ *
+ * 触屏反过来：指腹是从屏幕上**剥离**的，抬起瞬间接触点会挪几个像素，手指
+ * 滑出进度条再抬更是如此，而指针捕获把这段位移一并收了进来。用户眼里进度条
+ * 停在哪儿他就是要跳到哪儿，落点比屏幕上的值差出几十秒，看起来就是「松手
+ * 后进度往回跳了一下」（2026-09-13 真机反馈）。所以触屏提交**屏幕上正显示的
+ * 值**（`draggingMs`）——它是上一帧落地的读数，抬手漂移进不来。
+ *
+ * 笔跟鼠标走：笔尖抬起没有指腹那种剥离位移。
+ */
+export function scrubCommitTarget(input: {
+  pointerType: string;
+  lastPointerMs: number | null;
+  draggingMs: number;
+}): number {
+  if (input.pointerType === "touch") return input.draggingMs;
+  return input.lastPointerMs ?? input.draggingMs;
 }
