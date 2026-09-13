@@ -217,7 +217,7 @@ async def resolve_duplicates(
     "/resolve-all",
     response_model=ApiResponse[TrashedBatchResultView],
     summary="整堆按「建议保留」清理（一模一样 / 不同版本）",
-    operation_id="library.duplicates.resolve_all",
+    operation_id="library.duplicates.resolve-all",
     openapi_extra={"x-cli-dangerous": "destructive"},
 )
 async def resolve_all_duplicates(

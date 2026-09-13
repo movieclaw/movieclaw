@@ -1250,6 +1250,13 @@ export interface SubtitlePreview {
 }
 
 /** 条目详情页的一个物理文件（一个版本 / 一集）。 */
+/** 文件来源快照：一句话 label + 可选的第二行 detail（站点 · 种子标题 · 下载器 · 搬运方式）。 */
+export interface FileOrigin {
+  kind: "subscription" | "manual_download" | "watch_import" | "scan" | string;
+  label: string;
+  detail: string | null;
+}
+
 export interface LibraryItemFile {
   id: number;
   file_path: string;
@@ -1280,6 +1287,10 @@ export interface LibraryItemFile {
   purge_after: string | null;
   /** 待回收原因（中文整句，含触发方） */
   trash_note: string | null;
+  /** 来源快照：这个文件是怎么进库的（docs/design/library-duplicate-files.md §2） */
+  origin: FileOrigin;
+  /** 用户在「重复文件」页点过「都留着」的时间；null=未标记 */
+  kept_at: string | null;
   /** 音轨列表；null=尚未探测（ffprobe 缺失或文件不可达） */
   audio_streams: AudioStream[] | null;
   /** 字幕列表：内封轨 + 外挂文件 */
@@ -1880,6 +1891,149 @@ export function restoreTrashedFiles(ids: number[]): Promise<TrashedBatchResult> 
     request<ApiEnvelope<TrashedBatchResult>>(`/libraries/trashed-files/restore`, {
       method: "POST",
       body: JSON.stringify({ ids }),
+    }),
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// 重复文件（docs/design/library-duplicate-files.md §3–§4）：两堆，两种决定
+// ---------------------------------------------------------------------------
+
+export type DuplicateBucket = "identical" | "versions";
+
+/** 一个多文件单元里的一个文件。 */
+export interface DuplicateFile {
+  id: number;
+  file_name: string;
+  file_path: string;
+  /** 版本签名的质量部分：「分辨率 片源[ HDR]」 */
+  quality_label: string;
+  size_bytes: number;
+  bit_rate: number | null;
+  resolution: string | null;
+  media_source: string | null;
+  hdr: string | null;
+  video_codec: string | null;
+  audio_label: string | null;
+  origin: FileOrigin;
+  /** 版本签名：质量标签|来源 label（整季留这个版本时传回） */
+  version_key: string;
+  /** 系统建议保留的那个（只是建议） */
+  suggested: boolean;
+  suggest_reason: string | null;
+  /** 用户「都留着」过；null=未标记 */
+  kept_at: string | null;
+}
+
+/** 一个单元（电影 = 条目；剧集 = 某季某集）。 */
+export interface DuplicateUnit {
+  season_number: number;
+  episode_number: number;
+  bucket: DuplicateBucket;
+  files: DuplicateFile[];
+}
+
+/** 同构季的一个版本行。 */
+export interface DuplicateVersion {
+  key: string;
+  quality_label: string;
+  origin_label: string;
+  episodes: number[];
+  bytes: number;
+  suggested: boolean;
+}
+
+/** 一个条目的一季在某一堆里的块；电影恰好一季一集。 */
+export interface DuplicateSeason {
+  season_number: number;
+  bucket: DuplicateBucket;
+  /** 同构：各集版本签名一致，可整季按版本决定 */
+  uniform: boolean;
+  versions: DuplicateVersion[];
+  units: DuplicateUnit[];
+}
+
+export interface DuplicateItem {
+  library: { id: number; name: string };
+  media_item: {
+    id: number;
+    title: string;
+    year: number | null;
+    kind: MediaType;
+    poster_url: string | null;
+  };
+  seasons: DuplicateSeason[];
+}
+
+export interface DuplicateBucketStats {
+  units: number;
+  /** 会被清掉的文件数（非建议保留、非都留着） */
+  files: number;
+  bytes: number;
+}
+
+export interface DuplicateFilesData {
+  identical: DuplicateBucketStats;
+  versions: DuplicateBucketStats;
+  /** 洗版验证在途、暂不显示的单元数 */
+  upgrading_units: number;
+  /** 规则组「保留共存」、不显示的条目数 */
+  keep_old_items: number;
+  total_items: number;
+  items: DuplicateItem[];
+}
+
+export interface DuplicateFilter {
+  q?: string;
+  library_id?: number | null;
+  media_item_id?: number | null;
+}
+
+/** 重复文件列表：按条目分页，随带两堆摘要。 */
+export function listDuplicateFiles(
+  filter: DuplicateFilter,
+  page: { limit: number; offset: number },
+  init?: RequestInit,
+): Promise<DuplicateFilesData> {
+  const params = new URLSearchParams();
+  if (filter.q) params.set("q", filter.q);
+  if (filter.library_id != null) params.set("library_id", String(filter.library_id));
+  if (filter.media_item_id != null) params.set("media_item_id", String(filter.media_item_id));
+  params.set("limit", String(page.limit));
+  params.set("offset", String(page.offset));
+  return unwrap(
+    request<ApiEnvelope<DuplicateFilesData>>(`/libraries/duplicate-files?${params.toString()}`, init),
+  );
+}
+
+/**
+ * 一个单元 / 一季的决定：`keep` 为文件 id = 这一集留这个（其余进回收站）；
+ * 为版本 key = 整季留这个版本；为 "all" = 都留着（只盖标记，不动文件）。
+ */
+export function resolveDuplicates(payload: {
+  media_item_id: number;
+  season_number: number;
+  episode_number?: number | null;
+  keep: number | string;
+}): Promise<TrashedBatchResult> {
+  return unwrap(
+    request<ApiEnvelope<TrashedBatchResult>>(`/libraries/duplicate-files/resolve`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  );
+}
+
+/** 整堆按「建议保留」清理（一次最多 500 个文件；超出的在 remaining 里）。 */
+export function resolveAllDuplicates(payload: {
+  bucket: DuplicateBucket;
+  library_id?: number | null;
+}): Promise<TrashedBatchResult> {
+  return unwrap(
+    request<ApiEnvelope<TrashedBatchResult>>(`/libraries/duplicate-files/resolve-all`, {
+      method: "POST",
+      body: JSON.stringify({ bucket: payload.bucket, library_id: payload.library_id ?? null }),
     }),
   );
 }

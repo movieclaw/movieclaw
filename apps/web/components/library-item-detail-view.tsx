@@ -470,6 +470,25 @@ export function LibraryItemDetailView({
     : (selectedSeriesEpisode?.files ?? []);
   // 音轨/规格只认在位文件：缺失与待回收的版本都不该被当作可播内容展示
   const availableTrackFiles = trackFiles.filter((file) => file.state === "in_place");
+  // 重复文件入口（docs/design/library-duplicate-files.md §5）：同一单元（电影 = 条目，
+  // 剧集 = 某季某集）有两个以上在位文件时，文件区标题旁给「处理重复」，跳到管理页
+  // 重复文件标签并按本条目筛选——同一张表只有一处
+  const duplicateUnits = (() => {
+    const counts = new Map<string, number>();
+    for (const file of detail.files) {
+      if (file.state !== "in_place") continue;
+      const key = `${file.season_number}:${file.episode_number}`;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return [...counts.values()].filter((n) => n > 1).length;
+  })();
+  const duplicateLabel =
+    duplicateUnits === 0
+      ? null
+      : detail.kind === "tv"
+        ? `${duplicateUnits} 集有重复`
+        : `${detail.files.filter((f) => f.state === "in_place").length} 个版本`;
+  const duplicateHref = `/library/manage?tab=duplicates&item=${mediaItemId}` as Route;
   const selectedTrackFile =
     availableTrackFiles.find((file) => file.id === selectedTrackFileId) ??
     availableTrackFiles[0] ??
@@ -922,6 +941,8 @@ export function LibraryItemDetailView({
             <FileSection
               files={files}
               title="文件"
+              duplicateHref={canManageLibraries ? duplicateHref : null}
+              duplicateLabel={duplicateLabel}
               onDeleteFile={canManageLibraries ? setDeleteFileTarget : undefined}
               onRestoreFile={canManageLibraries ? restoreTrashedFile : undefined}
               onPurgeFile={canManageLibraries ? purgeTrashedFile : undefined}
@@ -1856,12 +1877,17 @@ function fileDirectory(filePath: string): string {
 function FileSection({
   files,
   title,
+  duplicateHref,
+  duplicateLabel,
   onDeleteFile,
   onRestoreFile,
   onPurgeFile,
 }: {
   files: LibraryItemFile[];
   title: string;
+  /** 条目有多文件单元时的「处理重复」入口（管理页重复文件标签，按本条目筛选）；null 不显示 */
+  duplicateHref?: Route | null;
+  duplicateLabel?: string | null;
   onDeleteFile?: (file: LibraryItemFile) => void;
   /** 待回收行的恢复/立即清理（library-file-recycle.md §7）；未传则只读展示 */
   onRestoreFile?: (file: LibraryItemFile) => void;
@@ -1869,11 +1895,21 @@ function FileSection({
 }) {
   return (
     <section>
-      <h2 className="mb-3 text-ui font-medium tracking-[-0.01em] text-[var(--text-muted)]">
-        {title}{" "}
-        <span className="tnum text-caption font-normal text-[var(--text-faint)]">
-          {files.length}
+      <h2 className="mb-3 flex items-center gap-2 text-ui font-medium tracking-[-0.01em] text-[var(--text-muted)]">
+        <span>
+          {title}{" "}
+          <span className="tnum text-caption font-normal text-[var(--text-faint)]">
+            {files.length}
+          </span>
         </span>
+        {duplicateHref && duplicateLabel && (
+          <Link
+            href={duplicateHref}
+            className="ml-auto inline-flex items-center gap-1.5 rounded-full border border-[var(--warn)]/35 px-2.5 py-0.5 text-caption font-medium text-[var(--warn)] transition hover:bg-[var(--warn)]/10"
+          >
+            {duplicateLabel} · 处理重复
+          </Link>
+        )}
       </h2>
       <div className="overflow-hidden rounded-xl border border-white/[0.04] bg-white/[0.015]">
         {files.map((file) => (
@@ -2021,6 +2057,24 @@ function FileRow({
                 · {formatRelativeTime(file.added_at)}
               </span>
             </dd>
+            <dt className="text-[var(--text-faint)]">来源</dt>
+            <dd className="min-w-0 text-[var(--text-muted)]">
+              <span className="text-[var(--text)]">{file.origin.label}</span>
+              {file.origin.detail && (
+                <span className="block break-all font-mono text-caption leading-5 text-[var(--text-faint)]">
+                  {file.origin.detail}
+                </span>
+              )}
+            </dd>
+            {file.kept_at && (
+              <>
+                <dt className="text-[var(--text-faint)]">多版本</dt>
+                <dd className="text-[var(--text-muted)]">
+                  你留下的 · {formatDateTime(file.kept_at)}
+                  <span className="ml-1.5 text-[var(--text-faint)]">（不会再列为重复文件）</span>
+                </dd>
+              </>
+            )}
             <dt className="text-[var(--text-faint)]">文件尺寸</dt>
             <dd className="tnum text-[var(--text-muted)]">{formatBytes(file.size_bytes)}</dd>
             <dt className="text-[var(--text-faint)]">片源</dt>
