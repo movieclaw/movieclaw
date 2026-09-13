@@ -511,17 +511,20 @@ export function deleteLibrary(id: number): Promise<Record<string, never>> {
   return unwrap(request<ApiEnvelope<Record<string, never>>>(`/libraries/${id}`, { method: "DELETE" }));
 }
 
-/** 海报墙排序：按标题 / 最近入账 / 按内容时间倒序（其他库默认）/ 待补探优先（扫描补探阶段）
- *  / 评分高的在前 / 片长短的在前 / 占地大的在前 / 最近看过的在前。 */
+/** 海报墙排序：按标题 / 最近入账 / 按内容时间倒序（其他库默认）/ 按上映正序（系列合集）
+ *  / 待补探优先（扫描补探阶段）/ 评分高的在前 / 片长短的在前 / 占地大的在前 / 最近看过的在前
+ *  / 随便看看（按天换一批，只有首页自定义行用）。 */
 export type LibraryItemSort =
   | "title"
   | "added_at"
   | "release_date"
+  | "release_date_asc"
   | "probing"
   | "rating"
   | "runtime"
   | "size"
-  | "last_played";
+  | "last_played"
+  | "random";
 
 /** 排序方向。不给 = 该排序的自然方向（标题 A→Z、片长短→长，其余大的/新的在前）。 */
 export type LibraryItemOrder = "asc" | "desc";

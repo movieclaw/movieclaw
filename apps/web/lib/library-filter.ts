@@ -6,7 +6,9 @@
  */
 
 /** 观看状态筛选：未看 / 在看 / 已看完是一个划分，收藏与它们正交（单选）。 */
-export type WatchFilter = "unwatched" | "watching" | "played" | "favorite";
+/** 观看状态。前三者是一个划分；favorite 与之正交；seen = 在看 ∪ 已看完，只有首页
+ *  「最近观看」行用它把从没播过的片挡在外面，筛选条里不出现。 */
+export type WatchFilter = "unwatched" | "watching" | "played" | "favorite" | "seen";
 
 /**
  * 海报墙的筛选条件（docs/design/library-filtering.md 3.1）。

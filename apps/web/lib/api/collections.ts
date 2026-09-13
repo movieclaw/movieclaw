@@ -1,5 +1,5 @@
 import { request } from "@/lib/http";
-import type { LibraryItem } from "@/lib/api/libraries";
+import type { LibraryItem, LibraryItemSort } from "@/lib/api/libraries";
 import type { FilterRule } from "@/lib/library-filter";
 
 /** 后端统一响应信封（见 movieclaw_api.schemas.response.ApiResponse） */
@@ -143,11 +143,17 @@ export function deleteCollection(id: number): Promise<void> {
 /** 合集成员：与单库海报墙同一份聚合，卡片因此长得一模一样。 */
 export function listCollectionItems(
   id: number,
-  params?: { limit?: number; offset?: number },
+  params?: {
+    limit?: number;
+    offset?: number;
+    /** 覆盖合集自己的排序（首页自定义行用）；不给则规则合集按合集的 sort、名单合集按拖出来的顺序 */
+    sort?: LibraryItemSort;
+  },
 ): Promise<LibraryItem[]> {
   const query = new URLSearchParams();
   if (params?.limit !== undefined) query.set("limit", String(params.limit));
   if (params?.offset) query.set("offset", String(params.offset));
+  if (params?.sort) query.set("sort", params.sort);
   const suffix = query.size > 0 ? `?${query}` : "";
   return unwrap(request<ApiEnvelope<LibraryItem[]>>(`/collections/${id}/items${suffix}`));
 }

@@ -11,6 +11,7 @@ import { LIBRARY_KIND_META } from "@/components/library-kind-meta";
 import {
   FilmIcon,
   GearIcon,
+  ListIcon,
   PlusIcon,
 } from "@/components/icons";
 import { MediaRow } from "@/components/media-row";
@@ -23,7 +24,7 @@ import {
   listLibraryItems,
   SCAN_PHASE_LABELS,
 } from "@/lib/api/libraries";
-import { listCollections } from "@/lib/api/collections";
+import { type Collection, listCollectionItems, listCollections } from "@/lib/api/collections";
 import {
   type FavoriteItem,
   type FavoritesPage,
@@ -34,6 +35,7 @@ import {
 import type { Subscription } from "@/lib/api/subscriptions";
 import { publicEnv } from "@/lib/env";
 import { favoriteLevelLabel } from "@/lib/favorites";
+import { buildHomeRows, type HomeRow, rowTitle } from "@/lib/home-rows";
 import { formatBytes } from "@/lib/format";
 import { cardVariantFor, imageUrl } from "@/lib/image-proxy";
 import { libraryInventoryAction } from "@/lib/library-inventory-summary";
@@ -41,10 +43,11 @@ import type { MediaItem } from "@/lib/media-types";
 import { usePermissions } from "@/lib/permissions";
 import { buildRecentAdditionOverlay } from "@/lib/recent-addition";
 import { formatRelativeTime } from "@/lib/time";
+import { useUiPrefs } from "@/lib/ui-prefs";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
 import { useScrollRestoration } from "@/lib/use-scroll-restoration";
 
-/** 每个库「最近添加」行的格数（也是本页向服务端要的条目数上限）。 */
+/** 每个库行 / 合集行的格数（也是本页向服务端要的条目数上限）。 */
 const RECENT_COUNT = 20;
 /** 「接下来继续」横滚行最多几张卡。 */
 const UP_NEXT_COUNT = 20;
@@ -108,79 +111,89 @@ export function libraryStatsSummary(libraries: MediaLibrary[] | null): string {
  */
 export function LibraryView() {
   const { canManageLibraries } = usePermissions();
+  // 首页的行清单存在界面偏好里（成员各存各的），应用启动时已随全站偏好拉过一次
+  const { prefs } = useUiPrefs();
+  const homePrefs = prefs.home;
   const scrollRef = useScrollRestoration("library");
   const [libraries, setLibraries] = useState<MediaLibrary[] | null>(null);
-  const [itemsByLibrary, setItemsByLibrary] = useState<Map<number, LibraryItem[]>>(
-    new Map(),
-  );
+  // 当前身份可见的合集：合并行清单要靠它认出合集行；数字大于零也决定
+  // 「全部合集」入口露不露（空合集后端已经滤掉了）
+  const [collections, setCollections] = useState<Collection[]>([]);
+  // 库行 / 合集行 / 库卡片封面的条目按「取数键」缓存：同一个库同一种排序只请求
+  // 一次（库卡片封面与默认的「最近添加」行共用 added_at 那一份）
+  const [itemsByKey, setItemsByKey] = useState<Map<string, LibraryItem[]>>(new Map());
   const [upNext, setUpNext] = useState<UpNextItem[] | null>(null);
-  // 我的收藏：与最近观看同一轮拉取、同一套失败策略（拉不到保留旧数据）
+  // 我的收藏：与接下来继续同一轮拉取、同一套失败策略（拉不到保留旧数据）
   const [favorites, setFavorites] = useState<FavoritesPage | null>(null);
-  // 只用来决定「全部合集」这个入口露不露；空合集后端已经滤掉了，所以
-  // 数字大于零就意味着"点进去真有东西"
-  const [collectionCount, setCollectionCount] = useState(0);
-  // 推荐行按**库**取：每个库的观看记录各算各的（在电影库常看动画，不代表
-  // 剧集库也要推动画）。记录不足的库返回空表，那一行就不出现
   const [failed, setFailed] = useState(false);
 
   // 轮询乱序守卫：扫描期间后端响应时间抖动大，上一轮的慢响应可能晚于
   // 下一轮到达，不作废就会用旧快照覆盖新状态（进度回跳、卡片状态闪烁）
   const reloadSeq = useRef(0);
-  // 上一轮已拉过条目时的库列表快照：库状态（扫描/整理/入账数/刷新进度）
-  // 没有任何变化，说明库存也不会变，封面拼图不必再逐库全量拉一遍条目
-  // ——否则空闲时每 30 秒也要打出 1 + N 个请求
-  const lastLibsSnapshot = useRef<string | null>(null);
+  // 上一轮已拉过条目时的快照（库状态 + 要取哪些行 + 合集成员数）：都没变说明
+  // 库存也不会变，不必再逐行全量拉一遍——否则空闲时每 30 秒也要打出 1 + N 个请求
+  const lastSnapshot = useRef<string | null>(null);
   const reload = useCallback(() => {
     const seq = ++reloadSeq.current;
     Promise.all([
       listLibraries(),
-      // 最近观看 / 我的收藏失败不拖垮媒体库首页；保留旧数据，下一轮轮询自动重试。
-      listUpNext(UP_NEXT_COUNT).catch(() => null),
-      // 首页这一行是「我想看的」：没看完的提前（全量页不传，保持收藏时间序）
-      listFavorites(FAVORITES_COUNT, 0, true).catch(() => null),
-      // 合集数只决定一个入口露不露，拿不到就当没有——不拖垮首页
+      // 合集拿不到就当没有——不拖垮首页，合集行下一轮轮询自动回来
       listCollections().catch(() => null),
     ])
-      .then(async ([libs, latestUpNext, latestFavorites, allCollections]) => {
+      .then(async ([libs, cols]) => {
         if (seq !== reloadSeq.current) return;
-        setCollectionCount(allCollections?.length ?? 0);
         setFailed(false);
+        const collectionsNow = cols ?? [];
+        const collectionsSnapshot = JSON.stringify(collectionsNow);
+        setCollections((prev) =>
+          JSON.stringify(prev) === collectionsSnapshot ? prev : collectionsNow,
+        );
+        const libsSnapshot = JSON.stringify(libs);
+        // 内容没变就复用旧引用，跳过整页卡片的无谓重渲染
+        setLibraries((prev) => (prev && JSON.stringify(prev) === libsSnapshot ? prev : libs));
+
+        // 只取**显示中的**行：隐藏的行不发请求
+        const rows = buildHomeRows(homePrefs, libs, collectionsNow).filter((row) => !row.hidden);
+        const favoritesRow = rows.find((row) => row.kind === "favorites");
+        // 接下来继续 / 我的收藏随播放状态变，每轮都拉；失败不拖垮首页，保留旧数据
+        const [latestUpNext, latestFavorites] = await Promise.all([
+          rows.some((row) => row.kind === "up-next")
+            ? listUpNext(UP_NEXT_COUNT).catch(() => null)
+            : Promise.resolve(null),
+          favoritesRow && favoritesRow.kind === "favorites"
+            ? listFavorites(
+                FAVORITES_COUNT,
+                0,
+                // 「未看优先」是首页这一行的默认：没看完的提前（全量页不传，保持收藏时间序）
+                favoritesRow.sort === "unwatched_first",
+                favoritesRow.sort === "unwatched_first" ? "favorited_at" : favoritesRow.sort,
+              ).catch(() => null)
+            : Promise.resolve(null),
+        ]);
+        if (seq !== reloadSeq.current) return;
         if (latestUpNext !== null) setUpNext(latestUpNext);
         else setUpNext((previous) => previous ?? []);
         if (latestFavorites !== null) setFavorites(latestFavorites);
         else setFavorites((previous) => previous ?? { items: [], total: 0 });
-        const snapshot = JSON.stringify(libs);
-        // 内容没变就复用旧引用，跳过整页卡片的无谓重渲染
-        setLibraries((prev) => (prev && JSON.stringify(prev) === snapshot ? prev : libs));
-        if (snapshot === lastLibsSnapshot.current) return;
-        // 本页每个库只用到最近入账的 20 部（「最近添加」行 + 卡片封面拼图取前 4），
-        // 排序与截断都交给服务端——早先在这里拉整库再本地切片，一个几千部的库
-        // 光这一个请求就是几百 KB、后端还要把全库台账聚合一遍
+
+        const fetches = rowFetches(rows, libs);
+        const snapshot = `${libsSnapshot}|${[...fetches.keys()].join(",")}|${collectionsSnapshot}`;
+        if (snapshot === lastSnapshot.current) return;
         const entries = await Promise.all(
-          libs.map(
-            async (lib) =>
-              [
-                lib.id,
-                // 不在自己浏览范围内的库（超管把自己摘掉了）只有管理权：
-                // 卡片带锁、不拉条目——拉了也是 404
-                lib.viewer_access
-                  ? await listLibraryItems(lib.id, { sort: "added_at", limit: RECENT_COUNT }).catch(
-                      () => [],
-                    )
-                  : [],
-              ] as const,
+          [...fetches].map(
+            async ([key, fetch]) => [key, await fetch().catch((): LibraryItem[] => [])] as const,
           ),
         );
         if (seq !== reloadSeq.current) return;
-        lastLibsSnapshot.current = snapshot;
-        setItemsByLibrary(new Map(entries));
+        lastSnapshot.current = snapshot;
+        setItemsByKey(new Map(entries));
       })
       // 瞬时失败不清已有数据：failed 只决定提示条，卡片继续用上一份快照，
       // 下一轮轮询成功即自动恢复（整页错误屏只留给一次都没加载成功的情况）
       .catch(() => {
         if (seq === reloadSeq.current) setFailed(true);
       });
-  }, []);
+  }, [homePrefs]);
 
   useEffect(() => {
     reload();
@@ -217,9 +230,6 @@ export function LibraryView() {
     busyAny || recentlyBusy ? 3000 : refreshingAny ? 5000 : importingAny ? 10_000 : 30_000,
   );
 
-  // 每个非空库一行「最近添加」：服务端已按最近入账倒序给到前 20，复用发现页的
-  // 横滚海报行。这里只呈现入库上下文，订阅/补齐操作留在单库页，避免 hover
-  // 被“已订阅”等与最近添加无关的状态占据。
   // 卡片区只放当前身份能浏览的库：超管把自己摘出浏览范围的库（「仅管理」）
   // 对首页来说就是不存在，它只在管理页出现（带锁标）
   const visibleLibraries = useMemo(
@@ -227,33 +237,18 @@ export function LibraryView() {
     [libraries],
   );
 
-  const recentRows = useMemo(
-    () =>
-      (libraries ?? [])
-        // 勾了「从首页排除」的库不上首页（库卡片仍在，进库内看照常）；
-        // 不在自己浏览范围内的库更不上——内容对当前身份就是不存在
-        .filter((library) => !library.exclude_from_home && library.viewer_access)
-        .map((library) => {
-          const recent = itemsByLibrary.get(library.id) ?? [];
-          // 已在库的条目点击进**媒体库条目详情**（本地刮削信息 + 片源规格 +
-          // 条目操作），与单库页库存格同一目标，不再跳发现页的 TMDB 详情
-          const hrefs = new Map(
-            recent.map((it) => [
-              libraryItemKey(it),
-              `/library/${library.id}/item/${it.media_item_id}` as Route,
-            ]),
-          );
-          return {
-            library,
-            items: recent.map(libraryItemToMediaItem),
-            hrefOf: (m: MediaItem) => hrefs.get(m.id),
-          };
-        })
-        .filter((row) => row.items.length > 0),
-    [libraries, itemsByLibrary],
+  // 首页 = 行清单：存过的按存的顺序，没存过的内置行与每库默认行补在后面
+  // （规则见 lib/home-rows.ts）。这里再合并一次是为了渲染，与 reload 里取数
+  // 用的是同一个纯函数，不会出现"取了 A 行、画了 B 行"
+  const rows = useMemo(
+    () => buildHomeRows(homePrefs, libraries ?? [], collections),
+    [homePrefs, libraries, collections],
   );
+  const visibleRows = useMemo(() => rows.filter((row) => !row.hidden), [rows]);
+  const librariesRowHidden = rows.some((row) => row.kind === "libraries" && row.hidden);
+  const collectionCount = collections.length;
 
-  // 「我的收藏」横滚行：与「最近添加」同一张海报卡、同一个行组件，只把 hover
+  // 「我的收藏」横滚行：与库行同一张海报卡、同一个行组件，只把 hover
   // 层换成收藏的层级说明；落点是服务端解析好的可见库里的条目详情
   const favoriteRow = useMemo(() => {
     const items = favorites?.items ?? [];
@@ -269,10 +264,118 @@ export function LibraryView() {
     };
   }, [favorites]);
 
+  /** 库行 / 合集行：服务端已按这一行的排序给到前 20，复用发现页的横滚海报行。
+   *  已在库的条目点击进**媒体库条目详情**（本地刮削信息 + 片源规格 + 条目操作），
+   *  与单库页库存格同一目标。只呈现入库上下文，订阅/补齐操作留在单库页。 */
+  const contentRow = (row: HomeRow, moreHref: Route) => {
+    const items = itemsByKey.get(rowFetchKey(row)) ?? [];
+    // 空行整段隐藏：偏好决定「想不想看」，数据决定「有没有」
+    if (items.length === 0) return null;
+    const fallbackLibrary = row.kind === "library" ? row.library.id : row.kind === "collection" ? row.collection.library_id : null;
+    const hrefs = new Map(
+      items.map((it) => [
+        libraryItemKey(it),
+        `/library/${it.library_id ?? fallbackLibrary ?? 0}/item/${it.media_item_id}` as Route,
+      ]),
+    );
+    return (
+      <div key={row.id} className="mt-8 max-md:mt-6" data-testid={`home-row-${row.id}`}>
+        <MediaRow
+          row={{
+            id: `home-${row.id}`,
+            title: rowTitle(row),
+            items: items.map(libraryItemToMediaItem),
+          }}
+          moreHref={moreHref}
+          moreLabel="查看全部"
+          cardAction="none"
+          cardHref={(m) => hrefs.get(m.id)}
+          cardRevealInfoOnTouch
+        />
+      </div>
+    );
+  };
+
+  const renderRow = (row: HomeRow) => {
+    switch (row.kind) {
+      case "up-next":
+        // 当前账号跨可见库聚合的播放状态；空列表时组件整段隐藏。
+        // 清空观看记录的入口就在这一行的标题右侧，清完重新拉一次数据。
+        return (
+          <UpNextRow key={row.id} items={upNext} libraries={visibleLibraries} onCleared={reload} />
+        );
+      case "favorites":
+        // 只横滚最近收藏的 20 部（网页与 Jellyfin 客户端点的心同一份），「查看全部」
+        // 进与单库页同一套海报墙的 /library/favorites；没有收藏时整段隐藏
+        if (favoriteRow.items.length === 0) return null;
+        return (
+          <div key={row.id} className="mt-8 max-md:mt-6" data-testid="favorites-row">
+            <MediaRow
+              row={{ id: "favorites", title: rowTitle(row), items: favoriteRow.items }}
+              moreHref={"/library/favorites" as Route}
+              moreLabel={`查看全部 ${favorites?.total ?? 0} 部`}
+              cardAction="none"
+              cardHref={favoriteRow.hrefOf}
+              cardRevealInfoOnTouch
+            />
+          </div>
+        );
+      case "libraries":
+        // 库卡片横排：库多了不换行堆高，改为一行横滚（与库行同一交互）
+        if (visibleLibraries.length === 0) return null;
+        return (
+          <section key={row.id} className="mt-8 max-md:mt-6" aria-labelledby="my-libraries-title">
+            <div className="flex items-center justify-between gap-4 px-6 max-md:px-4">
+              <h3
+                id="my-libraries-title"
+                className="text-on-image text-body-lg font-semibold tracking-[-0.01em] text-[var(--text)]"
+              >
+                {rowTitle(row)}
+              </h3>
+              {/* 「全部合集」的入口等到真有合集了才露出：一开始就摆在这儿，
+                  用户点进去只有一片空白，那个位置就白占了（IA 那条决策） */}
+              {collectionCount > 0 && (
+                <Link
+                  href={"/library/collections" as Route}
+                  className="shrink-0 text-ui text-[var(--text-faint)] transition hover:text-[var(--text)]"
+                >
+                  全部合集 ›
+                </Link>
+              )}
+            </div>
+            <HScroller className="mt-3 gap-5 px-6 pb-1 pt-1 max-md:gap-3.5 max-md:px-4">
+              {visibleLibraries.map((library) => (
+                <div
+                  key={library.id}
+                  data-library-card={library.id}
+                  className="w-[268px] shrink-0 rounded-2xl max-md:w-[230px]"
+                >
+                  <LibraryCard
+                    library={library}
+                    items={itemsByKey.get(coverFetchKey(library.id)) ?? []}
+                  />
+                </div>
+              ))}
+            </HScroller>
+          </section>
+        );
+      case "library":
+        return contentRow(row, `/library/${row.library.id}` as Route);
+      case "collection":
+        return contentRow(
+          row,
+          (row.collection.library_id === null
+            ? `/library/c/${row.collection.id}`
+            : `/library/${row.collection.library_id}/c/${row.collection.id}`) as Route,
+        );
+    }
+  };
+
   return (
     <div ref={scrollRef} className="scroll-thin scroll-safe flex-1 overflow-y-auto pb-10">
-      {/* 页头：标题 + 统计，右侧是页面级操作「管理媒体库」（SaaS 惯例：页面
-          动作放标题行右端；分区标题行只留分区自己的东西） */}
+      {/* 页头：标题 + 统计，右侧是页面级操作「自定义首页」「管理媒体库」（SaaS 惯例：
+          页面动作放标题行右端；分区标题行只留分区自己的东西）。首页上没有任何
+          排序细节与行菜单——调整全部收进自定义页，首页只负责看 */}
       <div className="flex items-start justify-between gap-4 px-6 pt-7 max-md:px-4 max-md:pt-4">
         <div className="min-w-0">
           <h2 className="text-on-image text-[26px] font-bold leading-tight tracking-[-0.02em] text-white max-md:text-[21px]">
@@ -282,17 +385,40 @@ export function LibraryView() {
             {failed && libraries === null
               ? "暂时无法获取媒体库统计，正在自动重试"
               : libraryStatsSummary(libraries === null ? null : visibleLibraries)}
+            {/* 「我的媒体库」行被藏起来时，「全部合集」的入口不能跟着消失：挪到统计行末尾 */}
+            {librariesRowHidden && collectionCount > 0 && (
+              <>
+                {" · "}
+                <Link
+                  href={"/library/collections" as Route}
+                  className="text-[var(--text-faint)] transition hover:text-[var(--text)]"
+                >
+                  全部合集 ›
+                </Link>
+              </>
+            )}
           </p>
         </div>
-        {canManageLibraries && (
+        <div className="flex shrink-0 items-center gap-2">
           <Link
-            href={"/library/manage" as Route}
-            className="btn-glass mt-1 h-8 shrink-0 gap-1.5 px-3 text-sub font-medium max-md:mt-0"
+            href={"/library/customize" as Route}
+            aria-label="自定义首页"
+            title="自定义首页"
+            className="btn-glass mt-1 h-8 shrink-0 gap-1.5 px-3 text-sub font-medium max-md:mt-0 max-md:px-2"
           >
-            <GearIcon className="size-4" />
-            管理媒体库
+            <ListIcon className="size-4" />
+            <span className="max-md:hidden">自定义首页</span>
           </Link>
-        )}
+          {canManageLibraries && (
+            <Link
+              href={"/library/manage" as Route}
+              className="btn-glass mt-1 h-8 shrink-0 gap-1.5 px-3 text-sub font-medium max-md:mt-0"
+            >
+              <GearIcon className="size-4" />
+              管理媒体库
+            </Link>
+          )}
+        </div>
       </div>
 
       {libraries === null && !failed && (
@@ -323,28 +449,6 @@ export function LibraryView() {
         </div>
       )}
 
-      {/* 当前账号跨可见库聚合的播放状态；空列表时组件整段隐藏。
-          清空观看记录的入口就在这一行的标题右侧，清完重新拉一次数据。 */}
-      {(!failed || libraries !== null) && (
-        <UpNextRow items={upNext} libraries={visibleLibraries} onCleared={reload} />
-      )}
-
-      {/* 「我的收藏」跟在最近观看之下：先接着看、再挑想看的。只横滚最近收藏的
-          20 部（网页与 Jellyfin 客户端点的心同一份），「查看全部」进与单库页同一
-          套海报墙的 /library/favorites；没有收藏时整段隐藏 */}
-      {(!failed || libraries !== null) && favoriteRow.items.length > 0 && (
-        <div className="mt-8 max-md:mt-6" data-testid="favorites-row">
-          <MediaRow
-            row={{ id: "favorites", title: "我的收藏", items: favoriteRow.items }}
-            moreHref={"/library/favorites" as Route}
-            moreLabel={`查看全部 ${favorites?.total ?? 0} 部`}
-            cardAction="none"
-            cardHref={favoriteRow.hrefOf}
-            cardRevealInfoOnTouch
-          />
-        </div>
-      )}
-
       {libraries !== null && libraries.length === 0 && (
         <ContentEmptyState
           variant="library"
@@ -368,66 +472,83 @@ export function LibraryView() {
         />
       )}
 
-      {/* 库卡片横排：库多了不换行堆高，改为一行横滚（与下方「最近添加」
-          同一交互），首屏始终保住「最近观看 → 我的媒体库 → 最近添加」的层次。 */}
-      {libraries !== null && visibleLibraries.length > 0 && (
-        <section className="mt-8 max-md:mt-6" aria-labelledby="my-libraries-title">
-          <div className="flex items-center justify-between gap-4 px-6 max-md:px-4">
-            <h3
-              id="my-libraries-title"
-              className="text-on-image text-body-lg font-semibold tracking-[-0.01em] text-[var(--text)]"
-            >
-              我的媒体库
-            </h3>
-            {/* 「全部合集」的入口等到真有合集了才露出：一开始就摆在这儿，
-                用户点进去只有一片空白，那个位置就白占了（IA 那条决策） */}
-            {collectionCount > 0 && (
-              <Link
-                href={"/library/collections" as Route}
-                className="shrink-0 text-ui text-[var(--text-faint)] transition hover:text-[var(--text)]"
-              >
-                全部合集 ›
-              </Link>
-            )}
-          </div>
-          <HScroller className="mt-3 gap-5 px-6 pb-1 pt-1 max-md:gap-3.5 max-md:px-4">
-            {visibleLibraries.map((library) => (
-              <div
-                key={library.id}
-                data-library-card={library.id}
-                className="w-[268px] shrink-0 rounded-2xl max-md:w-[230px]"
-              >
-                <LibraryCard library={library} items={itemsByLibrary.get(library.id) ?? []} />
-              </div>
-            ))}
-          </HScroller>
-        </section>
-      )}
-
-
-      {/* —— 最近添加：Emby 首页式分区，每个非空库一行横滚海报 —— */}
-      {recentRows.length > 0 && (
-        <div className="mt-10 space-y-8">
-          {recentRows.map(({ library, items, hrefOf }) => (
-            <MediaRow
-              key={library.id}
-              row={{
-                id: `library-recent-${library.id}`,
-                title: `最近添加的${library.name}`,
-                items,
-              }}
-              moreHref={`/library/${library.id}` as Route}
-              moreLabel="查看全部"
-              cardAction="none"
-              cardHref={hrefOf}
-              cardRevealInfoOnTouch
-            />
-          ))}
+      {/* 全部藏光时不出白页：给一个指回自定义页的空态 */}
+      {libraries !== null && libraries.length > 0 && visibleRows.length === 0 && (
+        <div
+          className="mx-6 mt-16 rounded-2xl border border-dashed border-white/15 px-6 py-8 text-center max-md:mx-4"
+          data-testid="home-all-hidden"
+        >
+          <p className="text-ui font-semibold text-[var(--text)]">首页空空如也</p>
+          <p className="mt-1 text-sub text-[var(--text-muted)]">
+            所有行都被隐藏了。到「自定义首页」挑几行回来，或恢复默认。
+          </p>
+          <Link
+            href={"/library/customize" as Route}
+            className="btn-glass mt-4 inline-flex px-4 py-2 text-ui font-medium text-[var(--text)]"
+          >
+            自定义首页
+          </Link>
         </div>
       )}
 
+      {libraries !== null && visibleRows.map(renderRow)}
     </div>
   );
+}
+
+/** 一行取数的缓存键：同一个库同一种排序（同一个只看没看过的开关）只请求一次。 */
+function rowFetchKey(row: HomeRow): string {
+  if (row.kind === "library") return `lib:${row.library.id}:${row.sort}:${row.unwatched}`;
+  if (row.kind === "collection") return `col:${row.collection.id}:${row.sort}`;
+  return row.id;
+}
+
+/** 库卡片封面用的那批条目：最近入账的前几部，与默认的「最近添加」行共用一份。 */
+function coverFetchKey(libraryId: number): string {
+  return `lib:${libraryId}:added_at:false`;
+}
+
+/**
+ * 显示中的行各自要打的请求，按缓存键去重。排序与截断都交给服务端——早先在这里
+ * 拉整库再本地切片，一个几千部的库光这一个请求就是几百 KB。
+ */
+function rowFetches(
+  rows: HomeRow[],
+  libraries: MediaLibrary[],
+): Map<string, () => Promise<LibraryItem[]>> {
+  const fetches = new Map<string, () => Promise<LibraryItem[]>>();
+  for (const row of rows) {
+    if (row.kind === "library") {
+      const { library, sort, unwatched } = row;
+      // 「最近观看」行只要播过的：度量档把没播过的沉底而不是排除，取 20 条时
+      // 看过的排完就轮到没播过的，首页这一行不能这样（w=seen）
+      const watch = unwatched ? "unwatched" : sort === "last_played" ? "seen" : undefined;
+      fetches.set(rowFetchKey(row), () =>
+        listLibraryItems(library.id, {
+          sort,
+          limit: RECENT_COUNT,
+          filter: watch ? { watch } : undefined,
+        }),
+      );
+    } else if (row.kind === "collection") {
+      const { collection, sort } = row;
+      fetches.set(rowFetchKey(row), () =>
+        listCollectionItems(collection.id, { limit: RECENT_COUNT, sort }),
+      );
+    } else if (row.kind === "libraries") {
+      for (const library of libraries) {
+        // 不在自己浏览范围内的库（超管把自己摘掉了）只有管理权：卡片带锁、不拉条目——拉了也是 404
+        if (!library.viewer_access) continue;
+        const key = coverFetchKey(library.id);
+        if (!fetches.has(key)) {
+          fetches.set(key, () =>
+            listLibraryItems(library.id, { sort: "added_at", limit: RECENT_COUNT }),
+          );
+        }
+      }
+    }
+  }
+  return fetches;
 }
 
 /**

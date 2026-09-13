@@ -23,8 +23,8 @@ const lib = (id, name, kind = "movie", extra = {}) => ({
 });
 const LIBS = [lib(1, "电影"), lib(2, "剧集", "tv"), lib(3, "动漫", "tv")];
 const COLS = [
-  { id: 7, name: "宫崎骏", sort: "release_date_asc" },
-  { id: 8, name: "诺兰", sort: "title" },
+  { id: 7, name: "宫崎骏", library_id: 3, sort: "release_date_asc" },
+  { id: 8, name: "诺兰", library_id: 1, sort: "title" },
 ];
 const ids = (rows) => rows.map((row) => row.id);
 
@@ -125,12 +125,12 @@ test("合集行的排序：存了用存的，没存用合集自己的，都不�
       ],
     },
     LIBS,
-    [...COLS, { id: 9, name: "怪", sort: "probing" }],
+    [...COLS, { id: 9, name: "怪", library_id: null, sort: "probing" }],
   );
   assert.equal(rows[0].sort, "release_date_asc");
   assert.equal(rows[1].sort, "random");
   assert.equal(rowTitle(rows[0]), "宫崎骏");
-  assert.equal(newCollectionRow({ id: 9, name: "怪", sort: "probing" }, "row:z").sort, "added_at");
+  assert.equal(newCollectionRow({ id: 9, name: "怪", library_id: null, sort: "probing" }, "row:z").sort, "added_at");
 });
 
 test("收藏行只认自己的四档，其余回落到未看优先", () => {

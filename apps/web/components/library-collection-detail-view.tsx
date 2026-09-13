@@ -32,6 +32,8 @@ import { LibraryFilterBar } from "@/components/library-filter-bar";
 import { filterToRules, isFilterEmpty, rulesToFilter, type LibraryFilter } from "@/lib/library-filter";
 import { usePageTitle } from "@/lib/use-page-title";
 import { usePermissions } from "@/lib/permissions";
+import { newRowId } from "@/lib/home-rows";
+import { useUiPrefs } from "@/lib/ui-prefs";
 
 const PAGE_SIZE = 60;
 
@@ -153,6 +155,30 @@ export function LibraryCollectionDetailView({
   // 又会长回来，用户会觉得"删不掉"）。归宿由后端按 builtin 推导，前端只是
   // 把话说对——文案说"删除"而实际藏起来，比藏起来本身更让人迷惑
   const auto = collection ? collection.kind !== "user" : false;
+  // 首页行清单存在界面偏好里（成员各存各的）：这个合集有没有一行、那一行藏没藏
+  const { prefs, savePrefs } = useUiPrefs();
+  const homeRow = collection
+    ? prefs.home.rows.find((row) => row.collection_id === collection.id)
+    : undefined;
+  const onHome = Boolean(homeRow && !homeRow.hidden);
+  const toggleOnHome = useCallback(async () => {
+    if (!collection) return;
+    const rows = homeRow
+      ? prefs.home.rows.map((row) =>
+          row.collection_id === collection.id ? { ...row, hidden: onHome } : row,
+        )
+      : [
+          ...prefs.home.rows,
+          { id: newRowId(), collection_id: collection.id, sort: collection.sort },
+        ];
+    try {
+      await savePrefs({ ...prefs, home: { rows } });
+      toast.success(onHome ? "已从首页移除" : "已显示在首页");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "保存失败");
+    }
+  }, [collection, homeRow, onHome, prefs, savePrefs, toast]);
+
   const remove = useCallback(async () => {
     if (!collection) return;
     const automatic = collection.kind !== "user";
@@ -313,6 +339,11 @@ export function LibraryCollectionDetailView({
                         设为本库的收藏范围
                       </DropdownMenu.Item>
                     )}
+                  {/* 「显示在首页」：把这个合集加成媒体库首页的一行（与 Plex 的 Pin to Home
+                      一致），写的是与自定义页同一份偏好；再点一次是隐藏那一行，不删 */}
+                  <DropdownMenu.Item onSelect={toggleOnHome} className={MENU_ITEM_CLASS}>
+                    {onHome ? "从首页移除" : "显示在首页"}
+                  </DropdownMenu.Item>
                   <DropdownMenu.Separator className="my-1 h-px bg-white/[0.07]" />
                   {collection.hidden ? (
                     <DropdownMenu.Item onSelect={unhide} className={MENU_ITEM_CLASS}>

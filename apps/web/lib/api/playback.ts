@@ -130,8 +130,12 @@ export async function listFavorites(
    * 而「全部收藏」页是完整账本，该老老实实按收藏时间排。
    */
   unwatchedFirst = false,
+  /** 收藏时间（默认）/ 评分高的在前 / 片名拼音序；首页自定义行换排序时传 */
+  sort: "favorited_at" | "rating" | "title" = "favorited_at",
 ): Promise<FavoritesPage> {
-  const query = `limit=${limit}&offset=${offset}${unwatchedFirst ? "&unwatched_first=true" : ""}`;
+  const query =
+    `limit=${limit}&offset=${offset}${unwatchedFirst ? "&unwatched_first=true" : ""}` +
+    (sort !== "favorited_at" ? `&sort=${sort}` : "");
   const response = await request<ApiEnvelope<FavoritesPage>>(`/playback/favorites?${query}`);
   return response.data;
 }

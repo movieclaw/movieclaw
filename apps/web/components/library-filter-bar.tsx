@@ -474,6 +474,8 @@ export const SORT_LABELS: Record<LibraryItemSort, string> = {
   runtime: "按片长",
   size: "按体积",
   last_played: "最近观看",
+  release_date_asc: "按上映正序",
+  random: "随便看看",
 };
 
 /**

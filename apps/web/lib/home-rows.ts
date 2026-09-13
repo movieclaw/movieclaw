@@ -62,6 +62,8 @@ export interface HomeLibraryLike {
 export interface HomeCollectionLike {
   id: number;
   name: string;
+  /** 所属库；null = 跨库合集（落点走 /library/c/{id}） */
+  library_id: number | null;
   /** 合集自己的默认排序（WallSort 取值），新加合集行时作为初始排序 */
   sort: string;
 }
