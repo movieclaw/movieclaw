@@ -169,3 +169,32 @@ test("新行 id 是 row: 加 6 位 base36；拖到某一位越界原样返回", 
   assert.deepEqual(ids(moveRowTo(rows, 3, 2)).slice(0, 4), ["up-next", "favorites", "lib:1", "libraries"]);
   assert.equal(newLibraryRow(LIBS[0], "row:abc").id, "row:abc");
 });
+
+test("管理员「从首页排除」的库：存过的默认行也不出现，用户自加的行仍尊重", () => {
+  const libs = [lib(1, "电影"), lib(2, "家庭录像", "video", { exclude_from_home: true })];
+  const rows = buildHomeRows(
+    { rows: [{ id: "lib:2", sort: "title" }, { id: "row:v", library_id: 2 }, { id: "lib:1" }] },
+    libs,
+    [],
+  );
+  assert.deepEqual(ids(rows), ["row:v", "lib:1", "up-next", "favorites", "libraries"]);
+});
+
+test("「最近观看」与「只看没看过的」互斥：以排序为准，开关作废", () => {
+  const rows = buildHomeRows(
+    { rows: [{ id: "lib:1", sort: "last_played", unwatched: true }] },
+    LIBS,
+    COLS,
+  );
+  assert.equal(rows[0].unwatched, false);
+  assert.deepEqual(rowsToPrefs([rows[0]]), [{ id: "lib:1", sort: "last_played" }]);
+});
+
+test("一条库行都没有时，新库的默认行插在「我的媒体库」之后，不落到合集行后面", () => {
+  const rows = buildHomeRows(
+    { rows: [{ id: "up-next" }, { id: "libraries" }, { id: "row:c", collection_id: 7 }] },
+    LIBS,
+    COLS,
+  );
+  assert.deepEqual(ids(rows), ["up-next", "libraries", "lib:1", "lib:2", "lib:3", "row:c", "favorites"]);
+});

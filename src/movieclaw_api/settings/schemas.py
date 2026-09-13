@@ -484,11 +484,14 @@ class HomeUiPrefs(BaseModel):
     """媒体库首页的行清单（每个成员一份，超管走全局域）。
 
     空列表 = 出厂布局；合并规则（存过的按存的顺序、没存过的内置行与每库默认行追加
-    在后、认不出的 id 忽略）在前端 ``lib/home-rows.ts``。上限 48 只是防脏数据的安全阀。
+    在后、认不出的 id 忽略）在前端 ``lib/home-rows.ts``。
+
+    上限 128 只是防脏数据的安全阀：自定义页会把合并后的整份清单存回来（三个内置行 +
+    每个可见库一条 + 自加的行），上限必须留得比"家里有很多库"大得多。
     """
 
     rows: list[HomeRowPref] = Field(
-        default_factory=list, max_length=48, description="首页的行，按显示顺序；空 = 出厂布局"
+        default_factory=list, max_length=128, description="首页的行，按显示顺序；空 = 出厂布局"
     )
 
     @model_validator(mode="after")

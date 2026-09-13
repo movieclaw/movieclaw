@@ -458,8 +458,17 @@ function RowItem({
                 onChange((r) => {
                   if (r.kind === "favorites")
                     return { ...r, sort: next as FavoritesSort };
-                  if (r.kind === "library" || r.kind === "collection")
+                  if (r.kind === "collection")
                     return { ...r, sort: next as HomeRowSort };
+                  if (r.kind === "library") {
+                    const sort = next as HomeRowSort;
+                    // 「最近观看」只要播过的，与「只看没看过的」互斥
+                    return {
+                      ...r,
+                      sort,
+                      unwatched: sort === "last_played" ? false : r.unwatched,
+                    };
+                  }
                   return r;
                 });
               }}
@@ -477,7 +486,7 @@ function RowItem({
               ))}
             </select>
           </label>
-          {row.kind === "library" && (
+          {row.kind === "library" && row.sort !== "last_played" && (
             <label className="flex items-center gap-2 text-sub text-[var(--text-muted)]">
               <input
                 type="checkbox"

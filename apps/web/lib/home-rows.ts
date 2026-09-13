@@ -304,13 +304,12 @@ export function buildHomeRows(
     (row) => row.kind === "library" && !seen.has(row.id),
   );
   if (missing.length > 0) {
+    // 一条库行都没有时插在「我的媒体库」之后（出厂布局里库行就跟在它后面）
     let at = rows.length;
-    for (let index = rows.length - 1; index >= 0; index -= 1) {
-      if (rows[index].kind === "library") {
-        at = index + 1;
-        break;
-      }
-    }
+    const lastLibrary = rows.map((row) => row.kind).lastIndexOf("library");
+    const librariesRow = rows.findIndex((row) => row.kind === "libraries");
+    if (lastLibrary >= 0) at = lastLibrary + 1;
+    else if (librariesRow >= 0) at = librariesRow + 1;
     rows.splice(at, 0, ...missing);
   }
   return rows;
@@ -333,7 +332,9 @@ function resolveRow(
   }
   if (pref.id.startsWith("lib:")) {
     const library = libById.get(Number(pref.id.slice(4)));
-    if (!library) return null;
+    // 管理员勾了「从首页排除」的库：默认行不出现，存过也一样（管理员的决定优先）；
+    // 用户自己加的 row: 仍尊重
+    if (!library || library.exclude_from_home) return null;
     return libraryRow(pref, library, true);
   }
   if (!pref.id.startsWith("row:")) return null;
@@ -361,12 +362,15 @@ function libraryRow(
   library: HomeLibraryLike,
   builtin: boolean,
 ): HomeRow {
+  const sort = asRowSort(pref.sort, sortPresetsFor(library.kind));
   return {
     id: pref.id,
     kind: "library",
     hidden: pref.hidden === true,
-    sort: asRowSort(pref.sort, sortPresetsFor(library.kind)),
-    unwatched: pref.unwatched === true,
+    sort,
+    // 「最近观看」只要播过的，与「只看没看过的」互斥：两者同时为真会得到一行按 id
+    // 排的没播过的片；以排序为准，开关作废
+    unwatched: pref.unwatched === true && sort !== "last_played",
     name: (pref.name ?? "").trim(),
     library,
     builtin,
@@ -430,8 +434,19 @@ export function newCollectionRow(
 }
 
 /** 把第 from 行挪到第 to 位（拖拽落点）；越界或没动原样返回。 */
-export function moveRowTo(rows: HomeRow[], from: number, to: number): HomeRow[] {
-  if (from === to || from < 0 || to < 0 || from >= rows.length || to >= rows.length) return rows;
+export function moveRowTo(
+  rows: HomeRow[],
+  from: number,
+  to: number,
+): HomeRow[] {
+  if (
+    from === to ||
+    from < 0 ||
+    to < 0 ||
+    from >= rows.length ||
+    to >= rows.length
+  )
+    return rows;
   const next = rows.slice();
   const [row] = next.splice(from, 1);
   next.splice(to, 0, row);

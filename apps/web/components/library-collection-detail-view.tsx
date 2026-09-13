@@ -10,7 +10,11 @@ import { useConfirm, usePrompt, useToast } from "@/components/feedback";
 import { MoreIcon } from "@/components/icons";
 import { PAGE_NAV_BUTTON_CLASS, PageNav } from "@/components/page-nav";
 import { PosterCard } from "@/components/poster-card";
-import { InventoryCell, PosterWall, WALL_GRID_POSTER } from "@/components/poster-wall";
+import {
+  InventoryCell,
+  PosterWall,
+  WALL_GRID_POSTER,
+} from "@/components/poster-wall";
 import { useSubscribeEntry } from "@/components/subscribe-entry";
 import { WallLoadMore } from "@/components/wall-chrome";
 import {
@@ -23,16 +27,27 @@ import {
   type Collection,
   type CollectionSeries,
   type SeriesPart,
+  listCollections,
 } from "@/lib/api/collections";
 import { getCollectionShare, type ShareView } from "@/lib/api/shares";
-import { getLibraryFacets, type LibraryFacets, type LibraryItem } from "@/lib/api/libraries";
+import {
+  getLibraryFacets,
+  type LibraryFacets,
+  type LibraryItem,
+  listLibraries,
+} from "@/lib/api/libraries";
 import { imageUrl } from "@/lib/image-proxy";
 import type { MediaItem } from "@/lib/media-types";
 import { LibraryFilterBar } from "@/components/library-filter-bar";
-import { filterToRules, isFilterEmpty, rulesToFilter, type LibraryFilter } from "@/lib/library-filter";
+import {
+  filterToRules,
+  isFilterEmpty,
+  rulesToFilter,
+  type LibraryFilter,
+} from "@/lib/library-filter";
 import { usePageTitle } from "@/lib/use-page-title";
 import { usePermissions } from "@/lib/permissions";
-import { newRowId } from "@/lib/home-rows";
+import { buildHomeRows, newCollectionRow, rowsToPrefs } from "@/lib/home-rows";
 import { useUiPrefs } from "@/lib/ui-prefs";
 
 const PAGE_SIZE = 60;
@@ -141,7 +156,9 @@ export function LibraryCollectionDetailView({
 
   const rename = useCallback(async () => {
     if (!collection) return;
-    const name = (await prompt({ title: "合集名", initialValue: collection.name }))?.trim();
+    const name = (
+      await prompt({ title: "合集名", initialValue: collection.name })
+    )?.trim();
     if (!name || name === collection.name) return;
     try {
       setCollection(await updateCollection(collection.id, { name }));
@@ -163,15 +180,27 @@ export function LibraryCollectionDetailView({
   const onHome = Boolean(homeRow && !homeRow.hidden);
   const toggleOnHome = useCallback(async () => {
     if (!collection) return;
-    const rows = homeRow
-      ? prefs.home.rows.map((row) =>
-          row.collection_id === collection.id ? { ...row, hidden: onHome } : row,
-        )
-      : [
-          ...prefs.home.rows,
-          { id: newRowId(), collection_id: collection.id, sort: collection.sort },
-        ];
     try {
+      let rows;
+      if (homeRow) {
+        rows = prefs.home.rows.map((row) =>
+          row.collection_id === collection.id
+            ? { ...row, hidden: onHome }
+            : row,
+        );
+      } else {
+        // 与自定义页同一条路：先按当前的库与合集合并出整份清单，再把新行追加在末尾。
+        // 直接往存的清单里塞一条，在从没存过清单的人那里会排到首页最前面；
+        // newCollectionRow 还会把合集自己的排序收窄到首页支持的档
+        const [libraries, collections] = await Promise.all([
+          listLibraries(),
+          listCollections(),
+        ]);
+        rows = rowsToPrefs([
+          ...buildHomeRows(prefs.home, libraries, collections),
+          newCollectionRow(collection),
+        ]);
+      }
       await savePrefs({ ...prefs, home: { rows } });
       toast.success(onHome ? "已从首页移除" : "已显示在首页");
     } catch (err) {
@@ -183,7 +212,9 @@ export function LibraryCollectionDetailView({
     if (!collection) return;
     const automatic = collection.kind !== "user";
     const ok = await confirm({
-      title: automatic ? `隐藏「${collection.name}」？` : `删除合集「${collection.name}」？`,
+      title: automatic
+        ? `隐藏「${collection.name}」？`
+        : `删除合集「${collection.name}」？`,
       // 这句一定要说：合集从来不拥有作品，删它不会少一部片。不说的话，
       // 用户会因为怕删掉影片而不敢清理合集
       description: automatic
@@ -200,17 +231,29 @@ export function LibraryCollectionDetailView({
       toast.success(automatic ? "已隐藏" : "已删除");
       window.history.back();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : automatic ? "隐藏失败" : "删除失败");
+      toast.error(
+        err instanceof Error
+          ? err.message
+          : automatic
+            ? "隐藏失败"
+            : "删除失败",
+      );
     }
   }, [collection, confirm, toast]);
 
   const saveRules = useCallback(async () => {
     if (!collection || editing === null) return;
     try {
-      setCollection(await updateCollection(collection.id, { rules: filterToRules(editing) }));
+      setCollection(
+        await updateCollection(collection.id, {
+          rules: filterToRules(editing),
+        }),
+      );
       setEditing(null);
       // 条件变了成员就变了：把这一页重取，别让用户对着旧名单猜
-      const rows = await listCollectionItems(collectionId, { limit: PAGE_SIZE });
+      const rows = await listCollectionItems(collectionId, {
+        limit: PAGE_SIZE,
+      });
       setItems(rows);
       setHasMore(rows.length === PAGE_SIZE);
       toast.success("条件已保存");
@@ -249,11 +292,18 @@ export function LibraryCollectionDetailView({
   if (error) {
     return (
       <div className="scroll-thin scroll-safe flex-1 overflow-y-auto pb-10">
-        <PageNav title="合集" fallback={{
-          label: "媒体库",
-          href: (libraryId === null ? "/library/collections" : `/library/${libraryId}`) as Route,
-        }} />
-        <p className="mt-16 text-center text-ui leading-7 text-[var(--text-muted)]">{error}</p>
+        <PageNav
+          title="合集"
+          fallback={{
+            label: "媒体库",
+            href: (libraryId === null
+              ? "/library/collections"
+              : `/library/${libraryId}`) as Route,
+          }}
+        />
+        <p className="mt-16 text-center text-ui leading-7 text-[var(--text-muted)]">
+          {error}
+        </p>
       </div>
     );
   }
@@ -266,7 +316,9 @@ export function LibraryCollectionDetailView({
         title={collection?.name ?? "合集"}
         fallback={{
           label: "媒体库",
-          href: (libraryId === null ? "/library/collections" : `/library/${libraryId}`) as Route,
+          href: (libraryId === null
+            ? "/library/collections"
+            : `/library/${libraryId}`) as Route,
         }}
         actions={
           // 收进 ⋯，与单库页一致：顶栏那几个位子是 36px 的圆钮，塞中文标签会
@@ -289,7 +341,10 @@ export function LibraryCollectionDetailView({
                   collisionPadding={12}
                   className="menu-surface z-50 min-w-[11rem] p-1"
                 >
-                  <DropdownMenu.Item onSelect={rename} className={MENU_ITEM_CLASS}>
+                  <DropdownMenu.Item
+                    onSelect={rename}
+                    className={MENU_ITEM_CLASS}
+                  >
                     改名
                   </DropdownMenu.Item>
                   {/* 分享整个合集：链接对外可看，成员每次访问现算——
@@ -303,7 +358,9 @@ export function LibraryCollectionDetailView({
                             setShareOpen(true);
                           })
                           .catch((err) =>
-                            toast.error(err instanceof Error ? err.message : "打不开分享"),
+                            toast.error(
+                              err instanceof Error ? err.message : "打不开分享",
+                            ),
                           );
                       }}
                       className={MENU_ITEM_CLASS}
@@ -313,14 +370,18 @@ export function LibraryCollectionDetailView({
                   )}
                   {/* 规则就是这个合集的定义，改它是最要紧的一件事——此前只读，
                       看得见改不了（F4 把它补上）*/}
-                  {libraryId !== null && collection.editable && collection.rule_driven && (
-                    <DropdownMenu.Item
-                      onSelect={() => setEditing(rulesToFilter(collection.rules))}
-                      className={MENU_ITEM_CLASS}
-                    >
-                      改条件…
-                    </DropdownMenu.Item>
-                  )}
+                  {libraryId !== null &&
+                    collection.editable &&
+                    collection.rule_driven && (
+                      <DropdownMenu.Item
+                        onSelect={() =>
+                          setEditing(rulesToFilter(collection.rules))
+                        }
+                        className={MENU_ITEM_CLASS}
+                      >
+                        改条件…
+                      </DropdownMenu.Item>
+                    )}
                   {/* 手动合集才谈得上"顺序"：规则驱动的成员是求值出来的，
                       它的先后由 sort 决定，拖不动也不该拖 */}
                   {collection.editable && !collection.rule_driven && (
@@ -335,22 +396,34 @@ export function LibraryCollectionDetailView({
                     canManageLibraries &&
                     collection.editable &&
                     collection.rule_driven && (
-                      <DropdownMenu.Item onSelect={applyToLibrary} className={MENU_ITEM_CLASS}>
+                      <DropdownMenu.Item
+                        onSelect={applyToLibrary}
+                        className={MENU_ITEM_CLASS}
+                      >
                         设为本库的收藏范围
                       </DropdownMenu.Item>
                     )}
                   {/* 「显示在首页」：把这个合集加成媒体库首页的一行（与 Plex 的 Pin to Home
                       一致），写的是与自定义页同一份偏好；再点一次是隐藏那一行，不删 */}
-                  <DropdownMenu.Item onSelect={toggleOnHome} className={MENU_ITEM_CLASS}>
+                  <DropdownMenu.Item
+                    onSelect={toggleOnHome}
+                    className={MENU_ITEM_CLASS}
+                  >
                     {onHome ? "从首页移除" : "显示在首页"}
                   </DropdownMenu.Item>
                   <DropdownMenu.Separator className="my-1 h-px bg-white/[0.07]" />
                   {collection.hidden ? (
-                    <DropdownMenu.Item onSelect={unhide} className={MENU_ITEM_CLASS}>
+                    <DropdownMenu.Item
+                      onSelect={unhide}
+                      className={MENU_ITEM_CLASS}
+                    >
                       恢复显示
                     </DropdownMenu.Item>
                   ) : (
-                    <DropdownMenu.Item onSelect={remove} className={MENU_ITEM_CLASS}>
+                    <DropdownMenu.Item
+                      onSelect={remove}
+                      className={MENU_ITEM_CLASS}
+                    >
                       {auto ? "隐藏这个合集" : "删除合集"}
                     </DropdownMenu.Item>
                   )}
@@ -373,10 +446,14 @@ export function LibraryCollectionDetailView({
               ? `已有 ${series.owned_count} / 共 ${series.total} 部`
               : `${collection.item_count} 部`
             : ""}
-          {collection?.visibility === "private" && <span className="ml-2">· 只有我可见</span>}
+          {collection?.visibility === "private" && (
+            <span className="ml-2">· 只有我可见</span>
+          )}
           {collection?.hidden && <span className="ml-2">· 已隐藏</span>}
         </p>
-        {collection && editing === null && <RuleRow collection={collection} facets={facets} />}
+        {collection && editing === null && (
+          <RuleRow collection={collection} facets={facets} />
+        )}
         {collection && editing !== null && libraryId !== null && (
           <div className="mt-3">
             <LibraryFilterBar
@@ -448,7 +525,8 @@ export function LibraryCollectionDetailView({
       )}
 
       <div className="mt-6 max-md:mt-4">
-        {series?.available && series.parts.some((part) => part.media_item_id === null) ? (
+        {series?.available &&
+        series.parts.some((part) => part.media_item_id === null) ? (
           // 系列缺片：缺的那几部不另起一块，直接按上映顺序画进墙里（见 SeriesWall）
           <div className="px-6 max-md:px-4">
             <SeriesWall
@@ -517,7 +595,9 @@ function SeriesWall({
   libraryIdOf: (item: LibraryItem) => number;
 }) {
   const { subscriptionOf } = useSubscribeEntry();
-  const missing = complete ? parts.filter((part) => part.media_item_id === null) : [];
+  const missing = complete
+    ? parts.filter((part) => part.media_item_id === null)
+    : [];
   return (
     <div data-testid="series-wall" className={WALL_GRID_POSTER}>
       {interleaveByRelease(items, missing).map((cell) =>
@@ -527,7 +607,12 @@ function SeriesWall({
             part={cell.part}
             tracked={
               cell.part.subscribed ||
-              Boolean(subscriptionOf({ id: String(cell.part.tmdb_id), type: "movie" }))
+              Boolean(
+                subscriptionOf({
+                  id: String(cell.part.tmdb_id),
+                  type: "movie",
+                }),
+              )
             }
           />
         ) : (
@@ -545,7 +630,10 @@ function SeriesWall({
 type SeriesCell = { item: LibraryItem } | { part: SeriesPart };
 
 /** 两列都已按上映正序：归并成一列。没有日期的排最后，与后端 parts 的排序同一口径。 */
-function interleaveByRelease(items: LibraryItem[], missing: SeriesPart[]): SeriesCell[] {
+function interleaveByRelease(
+  items: LibraryItem[],
+  missing: SeriesPart[],
+): SeriesCell[] {
   const dateOf = (value: string | null) => value ?? "9999-12-31";
   const cells: SeriesCell[] = [];
   let next = 0;
@@ -569,7 +657,13 @@ function interleaveByRelease(items: LibraryItem[], missing: SeriesPart[]): Serie
  * 走全站的订阅弹窗。已经在追的副行写「追踪中」，卡片自己也会把订阅键换成
  * 「管理订阅」，不会让人再订一遍。
  */
-function MissingPartCell({ part, tracked }: { part: SeriesPart; tracked: boolean }) {
+function MissingPartCell({
+  part,
+  tracked,
+}: {
+  part: SeriesPart;
+  tracked: boolean;
+}) {
   // 点海报走发现页同一条 TMDB 详情路径，所以要给完整的 MediaItem；列表拿不到的
   // 字段（类型、简介）留空，进详情后由详情接口回填
   const visual: MediaItem = {
@@ -642,13 +736,20 @@ function RuleRow({
   const filter = rulesToFilter(collection.rules);
   // 查不到展示名就给省略号：规则里存的是 TMDB id 与国家码，界面上冒出「16」
   // 「JP」比空着更糟。查不到只意味着 facet 还在路上，到了自然补上
-  const labelOf = (pool: { value: string; label: string }[] | undefined, value: string) =>
-    pool?.find((row) => row.value === value)?.label ?? "…";
+  const labelOf = (
+    pool: { value: string; label: string }[] | undefined,
+    value: string,
+  ) => pool?.find((row) => row.value === value)?.label ?? "…";
   const groups = DIMS.map(({ key, label }) => {
     const values =
       key === "watch"
         ? filter.watch
-          ? [{ value: filter.watch, label: labelOf(facets?.watch, filter.watch) }]
+          ? [
+              {
+                value: filter.watch,
+                label: labelOf(facets?.watch, filter.watch),
+              },
+            ]
           : []
         : (((filter[key] ?? []) as (string | number)[]) ?? []).map((raw) => {
             const value = String(raw);
@@ -665,7 +766,9 @@ function RuleRow({
 
   if (groups.length === 0) {
     return (
-      <p className="mt-3 text-sub text-[var(--text-faint)]">自动收录 · 收录本库全部作品</p>
+      <p className="mt-3 text-sub text-[var(--text-faint)]">
+        自动收录 · 收录本库全部作品
+      </p>
     );
   }
 
@@ -675,15 +778,21 @@ function RuleRow({
       {groups.map((group, index) => (
         <div key={group.label} className="flex items-center gap-2">
           {/* 维度之间是「且」，维度内是「或」——与库页筛选条同一套语言 */}
-          {index > 0 && <span className="text-caption tracking-wide text-white/30">且</span>}
+          {index > 0 && (
+            <span className="text-caption tracking-wide text-white/30">且</span>
+          )}
           <span className="glass-row flex h-7 !w-auto items-center gap-1.5 rounded-lg !bg-[var(--glass-fill-active)] !px-2 py-0">
             <span className="rounded bg-black/25 px-1.5 py-0.5 text-caption text-white/40">
               {group.label}
             </span>
             {group.values.map((value, i) => (
               <span key={value.value} className="flex items-center gap-1.5">
-                {i > 0 && <span className="text-caption text-white/30">或</span>}
-                <span className="text-caption font-semibold text-white">{value.label}</span>
+                {i > 0 && (
+                  <span className="text-caption text-white/30">或</span>
+                )}
+                <span className="text-caption font-semibold text-white">
+                  {value.label}
+                </span>
               </span>
             ))}
           </span>

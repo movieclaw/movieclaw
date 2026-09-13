@@ -216,7 +216,7 @@ def test_home_rows_bad_shape_rejected(client: TestClient, row: dict) -> None:
 def test_home_rows_duplicate_ids_and_overflow_rejected(client: TestClient) -> None:
     dup = [{"id": "lib:1"}, {"id": "lib:1"}]
     assert client.put("/api/v1/ui/preferences", json={"home": {"rows": dup}}).status_code == 422
-    many = [{"id": f"row:{i}", "library_id": 1} for i in range(49)]
+    many = [{"id": f"row:{i}", "library_id": 1} for i in range(129)]
     assert client.put("/api/v1/ui/preferences", json={"home": {"rows": many}}).status_code == 422
 
 

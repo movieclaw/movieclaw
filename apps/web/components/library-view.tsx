@@ -523,7 +523,7 @@ function rowFetches(
       const { library, sort, unwatched } = row;
       // 「最近观看」行只要播过的：度量档把没播过的沉底而不是排除，取 20 条时
       // 看过的排完就轮到没播过的，首页这一行不能这样（w=seen）
-      const watch = unwatched ? "unwatched" : sort === "last_played" ? "seen" : undefined;
+      const watch = sort === "last_played" ? "seen" : unwatched ? "unwatched" : undefined;
       fetches.set(rowFetchKey(row), () =>
         listLibraryItems(library.id, {
           sort,
