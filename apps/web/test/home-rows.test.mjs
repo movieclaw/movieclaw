@@ -127,10 +127,87 @@ test("合集行的排序：存了用存的，没存用合集自己的，都不�
     LIBS,
     [...COLS, { id: 9, name: "怪", library_id: null, sort: "probing" }],
   );
-  assert.equal(rows[0].sort, "release_date_asc");
+  // 合集表里的 release_date_asc（方向烧在取值里的那个年代）归一成「上映时间 + 反转」
+  assert.equal(rows[0].sort, "release_date");
+  assert.equal(rows[0].reversed, true);
   assert.equal(rows[1].sort, "random");
+  assert.equal(rows[1].reversed, false);
   assert.equal(rowTitle(rows[0]), "宫崎骏");
   assert.equal(newCollectionRow({ id: 9, name: "怪", library_id: null, sort: "probing" }, "row:z").sort, "added_at");
+});
+
+test("合集行也能自己起名字：空则跟合集名走，只有空白等于没起", () => {
+  const rows = buildHomeRows(
+    {
+      rows: [
+        { id: "row:a", collection_id: 7, name: "今晚看点轻松的" },
+        { id: "row:b", collection_id: 8 },
+        { id: "row:c", collection_id: 7, name: "   " },
+      ],
+    },
+    LIBS,
+    COLS,
+  );
+  assert.equal(rowTitle(rows[0]), "今晚看点轻松的");
+  assert.equal(rowTitle(rows[1]), "诺兰");
+  assert.equal(rows[2].name, "");
+  assert.equal(rowTitle(rows[2]), "宫崎骏");
+  // 新加的合集行不预填名字，先跟着合集走
+  assert.equal(newCollectionRow(COLS[0], "row:z").name, "");
+  // 写回只存非空的名字，"跟随合集名" 不占一个字段
+  const picked = ["row:a", "row:b", "row:c"].map((id) =>
+    rows.find((row) => row.id === id),
+  );
+  assert.deepEqual(rowsToPrefs(picked), [
+    {
+      id: "row:a",
+      collection_id: 7,
+      sort: "release_date",
+      order: "asc",
+      name: "今晚看点轻松的",
+    },
+    { id: "row:b", collection_id: 8, sort: "title" },
+    { id: "row:c", collection_id: 7, sort: "release_date", order: "asc" },
+  ]);
+});
+
+test("方向单独一个开关：推荐名跟着翻，写回只在反转自然方向时才存 order，老取值归一", () => {
+  const rows = buildHomeRows(
+    {
+      rows: [
+        { id: "lib:1", sort: "added_at", order: "asc" },
+        { id: "lib:2", sort: "title", order: "desc" },
+        { id: "row:x", library_id: 1, sort: "rating", order: "desc" }, // 与自然方向相同 = 没反转
+        { id: "row:y", library_id: 1, sort: "release_date_asc" }, // 老取值
+        { id: "row:z", library_id: 1, sort: "random", order: "asc" }, // 随机没有方向
+        { id: "favorites", sort: "favorited_at", order: "asc" },
+      ],
+    },
+    LIBS,
+    COLS,
+  );
+  const byId = (id) => rows.find((row) => row.id === id);
+  assert.equal(rowTitle(byId("lib:1")), "最早添加的电影");
+  assert.equal(rowTitle(byId("lib:2")), "剧集 Z–A");
+  assert.equal(byId("row:x").reversed, false);
+  assert.equal(rowTitle(byId("row:x")), "评分最高的电影");
+  assert.equal(byId("row:y").sort, "release_date");
+  assert.equal(byId("row:y").reversed, true);
+  assert.equal(rowTitle(byId("row:y")), "最早上映的电影");
+  assert.equal(byId("row:z").reversed, false);
+  assert.equal(byId("favorites").reversed, true);
+  assert.equal(rowMeta(byId("favorites")), "内置 · 最早收藏");
+  const picked = ["lib:1", "lib:2", "row:x", "row:y", "row:z", "favorites"].map(byId);
+  assert.deepEqual(rowsToPrefs(picked), [
+    { id: "lib:1", sort: "added_at", order: "asc" },
+    { id: "lib:2", sort: "title", order: "desc" },
+    { id: "row:x", library_id: 1, sort: "rating" },
+    { id: "row:y", library_id: 1, sort: "release_date", order: "asc" },
+    { id: "row:z", library_id: 1, sort: "random" },
+    { id: "favorites", sort: "favorited_at", order: "asc" },
+  ]);
+  // 下拉里不再有「最早上映」这一条：方向是开关，不是档位
+  assert.ok(!sortPresetsFor("movie").includes("release_date_asc"));
 });
 
 test("收藏行只认自己的四档，其余回落到未看优先", () => {
@@ -156,7 +233,7 @@ test("写回时只存与默认不同的字段，默认库行不带来源", () =>
     { id: "favorites", sort: "rating" },
     { id: "lib:1", hidden: true, sort: "release_date" },
     { id: "row:x", library_id: 3, sort: "rating", unwatched: true, name: "周末补番" },
-    { id: "row:c", collection_id: 7, sort: "release_date_asc" },
+    { id: "row:c", collection_id: 7, sort: "release_date", order: "asc" },
   ]);
 });
 

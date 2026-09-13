@@ -175,7 +175,7 @@ def test_home_rows_persist_with_optional_fields_left_null(client: TestClient) ->
         {"id": "up-next"},
         {"id": "favorites", "sort": "unwatched_first"},
         {"id": "libraries", "hidden": True},
-        {"id": "lib:1", "sort": "release_date", "name": ""},
+        {"id": "lib:1", "sort": "release_date", "order": "asc", "name": ""},
         {
             "id": "row:8f2c",
             "library_id": 3,
@@ -183,13 +183,22 @@ def test_home_rows_persist_with_optional_fields_left_null(client: TestClient) ->
             "unwatched": True,
             "name": "评分最高的动漫",
         },
-        {"id": "row:a91e", "collection_id": 7, "sort": "release_date_asc"},
+        {
+            "id": "row:a91e",
+            "collection_id": 7,
+            "sort": "release_date_asc",
+            "name": "今晚看点轻松的",
+        },
     ]
     resp = client.put("/api/v1/ui/preferences", json={"home": {"rows": rows}})
     assert resp.status_code == 200
     saved = client.get("/api/v1/ui/preferences").json()["data"]["home"]["rows"]
     assert [r["id"] for r in saved] == [r["id"] for r in rows]
     assert saved[4]["name"] == "评分最高的动漫" and saved[4]["unwatched"] is True
+    # 合集行也能带自己的名字：首页上叫什么与合集自身的名字是两回事
+    assert saved[5]["name"] == "今晚看点轻松的"
+    # 方向单独一个字段：反转了自然方向才存，没存的是 null（由前端按该档的自然方向解释）
+    assert saved[3]["order"] == "asc" and saved[4]["order"] is None
     # 没传的字段是 null，不会被补成假默认（空即默认由前端解释）
     assert saved[0]["sort"] is None and saved[0]["hidden"] is None
 
@@ -200,6 +209,7 @@ def test_home_rows_persist_with_optional_fields_left_null(client: TestClient) ->
         {"id": "weird"},  # 认不出的 id 形状
         {"id": "row:x"},  # 自加行没来源
         {"id": "row:x", "library_id": 1, "collection_id": 2},  # 两个来源
+        {"id": "lib:1", "sort": "rating", "order": "up"},  # 方向只认 asc / desc
         {"id": "lib:1", "library_id": 1},  # 默认库行不能带来源
         {"id": "up-next", "sort": "rating"},  # 接下来继续没有排序
         {"id": "favorites", "sort": "random"},  # 收藏行不支持随机
