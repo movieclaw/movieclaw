@@ -53,7 +53,8 @@ OmniFocus 的透视由三部分组成：规则（筛哪些任务）、呈现（�
 
 名字留空即跟随选中的预设，用户一旦手输就不再跟着变，清空即回到推荐。
 收藏行：未看优先（默认）/ 最近收藏 / 评分最高 / 片名 A–Z。
-合集行：合集自身 / 最近添加 / 评分最高 / 随便看看。
+合集行：合集自身 / 最近添加 / 评分最高 / 随便看看（手动合集只有首尾两档）。
+预设按库的 kind 裁剪，见 4.2 第 4 条。
 
 ### 1.2 「只显示我没看过的」
 
@@ -142,15 +143,53 @@ OmniFocus 的透视由三部分组成：规则（筛哪些任务）、呈现（�
 3. `sort`、`name`、`unwatched` 全部可空，空即默认。没有 `asc` 字段，方向在 `sort` 取值里。
 4. 上限 48 行，防脏数据，不是产品限制。
 
-## 4. 接口
+## 4. 接口与技术核对
+
+### 4.1 接口
 
 - 偏好读写：沿用 `GET/PUT /ui/preferences`，不加新路由。
-- 库行数据：现有 `GET /ui/libraries/{id}/items?sort=&w=unwatched&limit=20`；
-  `WallSort` 加 `random`（按天种子，服务端 `ORDER BY` 用 seed 派生的哈希）。
-- 合集行数据：现有 `GET /collections/{id}/items?sort=&limit=20`。
+- 库行数据：现有 `GET /libraries/{id}/items?sort=&w=&limit=20`；`WallSort` 加 `random`。
+- 合集行数据：现有 `GET /collections/{id}/items`，加 `sort` 参数。
+- 收藏行数据：现有 `GET /playback/favorites`，加 `sort` 参数，与 `unwatched_first` 并存。
 - 前端按清单逐行取数，**隐藏的行不发请求**。行数多到影响首屏时再考虑聚合接口，
   v1 不做。
 - 首页布局只影响 movieclaw 网页。Jellyfin 客户端的首页是它们自己的，唯一共享的是合集本身。
+
+### 4.2 对着代码核对后补的决定
+
+按 `services/library/items.py`、`services/library/collections.py`、`api/routes/*.py`
+逐条核对后，初稿有七处没想到或想错，这里定下来：
+
+1. **「最近观看」行会被没看过的片灌满。** `_wall_page_ids` 的度量档（`rating` /
+   `runtime` / `size` / `last_played`）把空度量 `NULLS LAST` 沉底而不是排除，取 20 条时
+   看过的片排完就轮到从没播过的。墙上这样是对的（墙要全量），首页这一行不行。
+   决定：`WatchFilter` 加一档 `seen`（= watching ∪ played，即「不是 unwatched」），
+   库行 `sort=last_played` 时前端自动带 `w=seen`。`seen` 只是接口取值，不进筛选条 UI，
+   facet 三档计数的划分不受影响。
+2. **手动合集不接受排序覆盖。** `resolve_members` 的名单驱动分支按 `position` 返回、
+   忽略 `sort`；规则驱动分支原样把 `sort` 交给 `_wall_page_ids`，所以规则合集的
+   `added_at` / `rating` / `random` 覆盖是免费的。决定：**手动合集只给「合集自身」
+   与「随便看看」两档**，随机在 Python 里对 id 列表按当日种子洗牌；不为它另写一套
+   按度量排序的查询，用户拖出来的顺序本来就不该被覆盖。展开区按合集类型只列可用的档。
+3. **`random` 的实现放进度量档那个形状里。** `measure = (media_item_id * 2654435761
+   + seed) % 2^32`，`seed` 取 UTC 日期序数；`_NATURAL_ASC["random"] = True`，`order`
+   参数对它忽略；PostgreSQL 下 `media_item_id` 先 cast 成 bigint。`build_library_index`
+   对 `random` 返回空索引；`_wall_count` 不受影响；墙页的排序下拉是 `sortOptions`
+   显式列表，不会自动露出 `random`。同一天内分页稳定，跨过 UTC 零点会换一批，接受。
+4. **预设按库的 kind 裁剪。** `photo` 库只有 `added_at` / `title` / `random`；`video`
+   库多一个 `last_played`；`movie` / `tv` 全部七个。评分、上映对家庭录像没有意义，
+   列出来只会让用户选到一行空的。裁剪逻辑放在 `lib/home-rows.ts`，前端与展开区共用。
+5. **「全部合集 ›」入口不能随「我的媒体库」行一起消失。** 它目前挂在那一行的标题右侧，
+   行被隐藏后首页就没有去合集列表的路。决定：该行隐藏且合集数大于 0 时，把
+   「全部合集」作为文字链放到页头统计行末尾；不加第三个页头按钮。
+6. **超管的观看状态按 `member_id=0` 算。** `list_library_items` 与 `_scope` 都是
+   `principal.member_id or 0`，`w=unwatched`、`last_played` 对超管的口径与现在海报墙
+   一致，沿用，不在本期处理。
+7. **整体 PUT 的覆盖。** 自定义页 PUT 的是整个 `UiPreferences`，与外观设置页相同：
+   基于 `useUiPrefs` 里最新的 `prefs` 只替换 `home` 再写回；跨标签页最后写入者赢，接受。
+
+顺带记两条现状：前端 `LibraryItemSort` 缺后端已有的 `release_date_asc`，第二步补上；
+名字为空的库行在库改名后自动跟着变，这是「留空跟随推荐」额外赚到的。
 
 ## 5. 实施计划
 
@@ -199,13 +238,15 @@ OmniFocus 的透视由三部分组成：规则（筛哪些任务）、呈现（�
   - `up-next` → `listUpNext(20)`，渲染仍是 `UpNextRow`；
   - `favorites` → `listFavorites(20, 0, true)`（本步只支持默认的未看优先）；
   - `libraries` → 现有库卡片 `HScroller`，「全部合集 ›」入口留在这一行；
-  - `lib:` / 库行 → `listLibraryItems(id, { sort, limit: 20, filter: unwatched ? { watch: "unwatched" } : undefined })`；
+  - `lib:` / 库行 → `listLibraryItems(id, { sort, limit: 20, filter })`，`filter.watch` 为
+    `unwatched`（开关开着）或 `seen`（`sort=last_played`，见 4.2 第 1 条；本步后端还没有
+    `seen`，先在前端把空度量的条目截掉，5.4 补上后去掉这段截断）；
   - 合集行 → `listCollectionItems(id, { limit: 20 })`（本步只支持合集自身排序）。
 - `lib/api/libraries.ts` 的 `LibraryItemSort` 补上后端已有的 `release_date_asc`。
 - 行标题用 `rowTitle`，`moreHref` 库行指向 `/library/{id}`、合集行指向合集页。
   `MediaRow` 不需要改：它本来就只有标题和一个「查看全部」。
 - 页头「管理媒体库」左侧加「自定义首页」，链到 `/library/customize`；全部隐藏时渲染
-  指回该页的空态。
+  指回该页的空态。「我的媒体库」行隐藏时「全部合集」链接挪到页头统计行（4.2 第 5 条）。
 - 轮询与 stale-while-error 沿用 `useVisiblePolling` 现有分档，不动。
 
 **验证**：现有 `library-view` 相关测试跑绿；手工核对默认布局与改造前逐行一致
@@ -235,13 +276,17 @@ OmniFocus 的透视由三部分组成：规则（筛哪些任务）、呈现（�
   各加一档；顺序用算术哈希 `(media_item_id * 2654435761 + seed) % 2^32` 做 `ORDER BY`，
   `seed` 取当天日期整数，SQLite 与 PostgreSQL 都不需要扩展；分页在同一天内稳定。
   `api/routes/libraries.py` 里重复的 `Literal` 与前端 `LibraryItemSort` 同步。
+- `WatchFilter` 加 `seen`：`_watch_clause` 返回 `or_(watching, played)`；`_filter_params`
+  的 Literal 与前端 `WatchFilter` 类型同步，筛选条 UI 不列它。
 - 合集行排序覆盖：`GET /collections/{id}/items` 加 `sort`（`added_at` / `rating` / `random`），
-  不给即合集自身顺序；实现是把 `resolve_members` 的结果再交给现有的排序步骤。
+  不给即合集自身顺序。规则合集直接透传给 `resolve_members(sort=)`；手动合集只接受
+  `random`，在名单分支对 alive ids 按当日种子洗牌，其余取值返回 400。
 - 收藏行排序：`GET /playback/favorites` 加 `sort`（`favorited_at` / `rating` / `title`），
   与 `unwatched_first` 并存。
 - 前端三个 API 客户端补参数；`library-view.tsx` 把行的 `sort` 透传。
 
-**验证**：`tests/api/test_library_items.py` 加随机档「同日稳定、跨日变化、分页不重不漏」；
+**验证**：`tests/api/test_library_items.py` 加随机档「同日稳定、跨日变化、分页不重不漏」
+与 `w=seen`「只含播过的」；
 `test_collections_api.py` / `test_playback_favorites.py` 各加排序用例。
 
 ### 5.5 收尾
@@ -255,8 +300,8 @@ OmniFocus 的透视由三部分组成：规则（筛哪些任务）、呈现（�
 | 层 | 文件 | 改动 |
 |---|---|---|
 | 后端偏好 | `settings/schemas.py` | `HomeRowPref` / `HomeUiPrefs` / `UiPreferencesSetting.home` |
-| 后端排序 | `services/library/items.py`、`api/routes/libraries.py` | `random` 档 |
-| 后端接口 | `api/routes/collections.py`、`api/routes/playback.py` | `sort` 参数 |
+| 后端排序 | `services/library/items.py`、`api/routes/libraries.py` | `random` 档、`seen` 筛选 |
+| 后端接口 | `api/routes/collections.py`、`services/library/collections.py`、`api/routes/playback.py` | `sort` 参数、手动合集随机 |
 | 前端偏好 | `lib/api/ui.ts`、`lib/home-rows.ts`（新） | 类型、默认、合并、命名 |
 | 前端 API | `lib/api/libraries.ts`、`collections.ts`、`playback.ts` | 补 `release_date_asc`、`sort` |
 | 首页 | `components/library-view.tsx` | 按清单渲染、入口、空态 |
