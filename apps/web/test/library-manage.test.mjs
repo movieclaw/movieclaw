@@ -187,13 +187,12 @@ test("页头摘要：规模事实 + 在跑 / 待处理的库数，有缺失时�
   assert.deepEqual(summarizeLibraries([]), { facts: "0 个媒体库 · 0 个条目 · 0 B", busy: 0, attention: 0, missing: false });
 });
 
-test("配置备注：只说偏离默认或有待办的部分", () => {
+test("配置备注：只说偏离默认的部分", () => {
   assert.deepEqual(configNotes(lib()), []);
-  assert.deepEqual(configNotes(lib({ match_rules: [] })), [{ text: "未声明收藏范围", tone: "warn" }]);
-  // 无刮削能力的库谈不上收藏范围
-  assert.deepEqual(configNotes(lib({ match_rules: [], capabilities: { scraped: false, naming: false } })), []);
+  // 不声明收藏范围是正常形态，不再挂备注
+  assert.deepEqual(configNotes(lib({ match_rules: [] })), []);
   assert.deepEqual(
-    configNotes(lib({ exclude_from_home: true, realtime_watch: false })).map((n) => n.text),
+    configNotes(lib({ exclude_from_home: true, realtime_watch: false })),
     ["从首页排除", "实时监控关"],
   );
 });

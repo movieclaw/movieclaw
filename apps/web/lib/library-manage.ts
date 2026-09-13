@@ -295,23 +295,15 @@ export function accessRestricted(library: MediaLibrary): boolean {
 }
 
 /**
- * 库名下的配置备注：只说偏离默认或有待办的部分，默认态不占字。
- * - 影视库没声明收藏范围是一个待办信号（自动入库不知道该把什么收进来），用警示色；
- *   声明了多少条不说——那是编辑弹窗里的事，列表上逐行重复「N 项条件」只是噪音。
+ * 库名下的配置备注：只说偏离默认的部分，默认态不占字。
+ * - 收藏范围不声明是完全正常的形态（显式指定与默认库兜底都能把内容收进来），
+ *   既不提示也不用警示色；声明了多少条同样不说——那是编辑弹窗里的事。
  * - 「在首页展示」「实时监控开」是默认，不说；关了才说。
  */
-export interface ConfigNote {
-  text: string;
-  tone?: "warn";
-}
-
-export function configNotes(library: MediaLibrary): ConfigNote[] {
-  const notes: ConfigNote[] = [];
-  if (library.capabilities.scraped && library.match_rules.length === 0) {
-    notes.push({ text: "未声明收藏范围", tone: "warn" });
-  }
-  if (library.exclude_from_home) notes.push({ text: "从首页排除" });
-  if (!library.realtime_watch) notes.push({ text: "实时监控关" });
+export function configNotes(library: MediaLibrary): string[] {
+  const notes: string[] = [];
+  if (library.exclude_from_home) notes.push("从首页排除");
+  if (!library.realtime_watch) notes.push("实时监控关");
   return notes;
 }
 
