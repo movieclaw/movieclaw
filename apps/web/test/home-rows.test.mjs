@@ -105,7 +105,7 @@ test("隐藏保留位置；名字为空跟随排序推荐，手输过就不动",
   );
   assert.equal(rows[0].hidden, true);
   assert.equal(rowTitle(rows[1]), "评分最高的电影");
-  assert.equal(rowMeta(rows[1]), "电影库 · 评分最高的 · 只看没看过的");
+  assert.equal(rowMeta(rows[1]), "电影库 · 评分最高 · 只看没看过的");
   assert.equal(rowTitle(rows[2]), "周末补番");
 });
 

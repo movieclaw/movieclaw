@@ -251,25 +251,28 @@ export function LibraryCustomizeView() {
               </button>
             ))}
           </div>
-          {collections.length > 0 && (
+          {collections.some((collection) => collection.kind !== "builtin") && (
             <div className="mt-2 flex flex-wrap gap-1.5">
-              {collections.map((collection) => {
-                const onHome = collectionsOnHome.has(collection.id);
-                return (
-                  <button
-                    key={collection.id}
-                    type="button"
-                    disabled={onHome}
-                    onClick={() => add(newCollectionRow(collection))}
-                    className="rounded-full border border-white/15 px-3 py-1 text-sub text-[var(--text-muted)] transition hover:bg-white/[0.07] hover:text-[var(--text)] disabled:opacity-35 disabled:hover:bg-transparent"
-                  >
-                    {collection.name}
-                    <span className="ml-1.5 text-caption text-[var(--text-faint)]">
-                      {onHome ? "已在首页" : `${collection.item_count} 部`}
-                    </span>
-                  </button>
-                );
-              })}
+              {/* 内置的「我的收藏」合集不进候选：首页已经有「我的收藏」这一行 */}
+              {collections
+                .filter((collection) => collection.kind !== "builtin")
+                .map((collection) => {
+                  const onHome = collectionsOnHome.has(collection.id);
+                  return (
+                    <button
+                      key={collection.id}
+                      type="button"
+                      disabled={onHome}
+                      onClick={() => add(newCollectionRow(collection))}
+                      className="rounded-full border border-white/15 px-3 py-1 text-sub text-[var(--text-muted)] transition hover:bg-white/[0.07] hover:text-[var(--text)] disabled:opacity-35 disabled:hover:bg-transparent"
+                    >
+                      {collection.name}
+                      <span className="ml-1.5 text-caption text-[var(--text-faint)]">
+                        {onHome ? "已在首页" : `${collection.item_count} 部`}
+                      </span>
+                    </button>
+                  );
+                })}
             </div>
           )}
         </div>
@@ -491,7 +494,7 @@ function RowEditor({
         <SortRadios
           options={COLLECTION_SORTS.map((key) => ({
             key,
-            label: SORT_PRESETS[key].name(""),
+            label: SORT_PRESETS[key].short,
             hint: SORT_PRESETS[key].hint,
           }))}
           value={row.sort}

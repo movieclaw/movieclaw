@@ -28,7 +28,11 @@ export type HomeRowSort =
   | "title";
 
 /** 「我的收藏」行的排序档。未看优先是它的默认（见 playback_favorites 的 unwatched_first）。 */
-export type FavoritesSort = "unwatched_first" | "favorited_at" | "rating" | "title";
+export type FavoritesSort =
+  | "unwatched_first"
+  | "favorited_at"
+  | "rating"
+  | "title";
 
 /** 服务端存的一行（settings.schemas.HomeRowPref）；除 id 外全部可空，空即默认。 */
 export interface HomeRowPref {
@@ -93,17 +97,44 @@ export type HomeRow =
       collection: HomeCollectionLike;
     };
 
-/** 排序预设：一个取值 = 一个推荐名 + 一句规则。展开区的单选就是这张表。 */
-export const SORT_PRESETS: Record<HomeRowSort, { name: (library: string) => string; hint: string }> =
-  {
-    added_at: { name: (l) => `最近添加的${l}`, hint: "入库时间，新的在前" },
-    release_date: { name: (l) => `最近上映的${l}`, hint: "上映时间，新的在前" },
-    release_date_asc: { name: (l) => `最早上映的${l}`, hint: "上映时间，老的在前" },
-    last_played: { name: (l) => `最近观看的${l}`, hint: "我最近播放过的" },
-    rating: { name: (l) => `评分最高的${l}`, hint: "评分，高的在前" },
-    random: { name: (l) => `随便看看 · ${l}`, hint: "每天换一批" },
-    title: { name: (l) => `${l} A–Z`, hint: "片名" },
-  };
+/** 排序预设：一个取值 = 一个推荐名 + 一句规则。展开区的单选就是这张表。
+ *  `short` 是不带库名的短标签，合集行的单选与自定义页的小字用它。 */
+export const SORT_PRESETS: Record<
+  HomeRowSort,
+  { name: (library: string) => string; short: string; hint: string }
+> = {
+  added_at: {
+    name: (l) => `最近添加的${l}`,
+    short: "最近添加",
+    hint: "入库时间，新的在前",
+  },
+  release_date: {
+    name: (l) => `最近上映的${l}`,
+    short: "最近上映",
+    hint: "上映时间，新的在前",
+  },
+  release_date_asc: {
+    name: (l) => `最早上映的${l}`,
+    short: "最早上映",
+    hint: "上映时间，老的在前",
+  },
+  last_played: {
+    name: (l) => `最近观看的${l}`,
+    short: "最近观看",
+    hint: "我最近播放过的",
+  },
+  rating: {
+    name: (l) => `评分最高的${l}`,
+    short: "评分最高",
+    hint: "评分，高的在前",
+  },
+  random: {
+    name: (l) => `随便看看 · ${l}`,
+    short: "随便看看",
+    hint: "每天换一批",
+  },
+  title: { name: (l) => `${l} A–Z`, short: "A–Z", hint: "片名" },
+};
 
 /** 排序预设按库的 kind 裁剪：评分、上映对家庭录像与照片没有意义，列出来只会选到一行空的。 */
 export function sortPresetsFor(kind: HomeLibraryKind): HomeRowSort[] {
@@ -136,7 +167,10 @@ export const COLLECTION_SORTS: HomeRowSort[] = [
   "title",
 ];
 
-export const FAVORITES_SORT_PRESETS: Record<FavoritesSort, { name: string; hint: string }> = {
+export const FAVORITES_SORT_PRESETS: Record<
+  FavoritesSort,
+  { name: string; hint: string }
+> = {
   unwatched_first: { name: "未看优先", hint: "没看完的在前，再按收藏时间" },
   favorited_at: { name: "最近收藏", hint: "收藏时间" },
   rating: { name: "评分最高", hint: "评分" },
@@ -145,8 +179,13 @@ export const FAVORITES_SORT_PRESETS: Record<FavoritesSort, { name: string; hint:
 
 const FAVORITES_SORTS = new Set<string>(Object.keys(FAVORITES_SORT_PRESETS));
 
-function asRowSort(value: string | null | undefined, allowed: HomeRowSort[]): HomeRowSort {
-  return allowed.includes(value as HomeRowSort) ? (value as HomeRowSort) : allowed[0];
+function asRowSort(
+  value: string | null | undefined,
+  allowed: HomeRowSort[],
+): HomeRowSort {
+  return allowed.includes(value as HomeRowSort)
+    ? (value as HomeRowSort)
+    : allowed[0];
 }
 
 /** 这一行显示的名字：用户起的优先，空则按排序推荐；合集行跟合集名走。 */
@@ -177,13 +216,13 @@ export function rowMeta(row: HomeRow): string {
     case "library":
       return [
         `${row.library.name}库`,
-        SORT_PRESETS[row.sort].name(""),
+        SORT_PRESETS[row.sort].short,
         row.unwatched ? "只看没看过的" : null,
       ]
         .filter(Boolean)
         .join(" · ");
     case "collection":
-      return `合集 · ${SORT_PRESETS[row.sort].name("")}`;
+      return `合集 · ${SORT_PRESETS[row.sort].short}`;
   }
 }
 
@@ -198,20 +237,27 @@ export function newRowId(random: () => number = Math.random): string {
 function defaultRows(libraries: HomeLibraryLike[]): HomeRow[] {
   return [
     { id: "up-next", kind: "up-next", hidden: false },
-    { id: "favorites", kind: "favorites", hidden: false, sort: "unwatched_first" },
+    {
+      id: "favorites",
+      kind: "favorites",
+      hidden: false,
+      sort: "unwatched_first",
+    },
     { id: "libraries", kind: "libraries", hidden: false },
     ...libraries
       .filter((library) => !library.exclude_from_home)
-      .map((library): HomeRow => ({
-        id: `lib:${library.id}`,
-        kind: "library",
-        hidden: false,
-        sort: "added_at",
-        unwatched: false,
-        name: "",
-        library,
-        builtin: true,
-      })),
+      .map(
+        (library): HomeRow => ({
+          id: `lib:${library.id}`,
+          kind: "library",
+          hidden: false,
+          sort: "added_at",
+          unwatched: false,
+          name: "",
+          library,
+          builtin: true,
+        }),
+      ),
   ];
 }
 
@@ -232,7 +278,9 @@ export function buildHomeRows(
   if (saved.length === 0) return defaults;
 
   const libById = new Map(visible.map((library) => [library.id, library]));
-  const colById = new Map(collections.map((collection) => [collection.id, collection]));
+  const colById = new Map(
+    collections.map((collection) => [collection.id, collection]),
+  );
   const seen = new Set<string>();
   const rows: HomeRow[] = [];
 
@@ -252,7 +300,9 @@ export function buildHomeRows(
   }
   // 没存过的库（新建的、或存清单之后才可见的）补一条默认行，插在最后一条库行之后
   // ——放在队尾会落到合集行后面，"新库的最近添加"混在合集里不像是首页的默认行
-  const missing = defaults.filter((row) => row.kind === "library" && !seen.has(row.id));
+  const missing = defaults.filter(
+    (row) => row.kind === "library" && !seen.has(row.id),
+  );
   if (missing.length > 0) {
     let at = rows.length;
     for (let index = rows.length - 1; index >= 0; index -= 1) {
@@ -273,9 +323,12 @@ function resolveRow(
 ): HomeRow | null {
   const hidden = pref.hidden === true;
   if (pref.id === "up-next") return { id: "up-next", kind: "up-next", hidden };
-  if (pref.id === "libraries") return { id: "libraries", kind: "libraries", hidden };
+  if (pref.id === "libraries")
+    return { id: "libraries", kind: "libraries", hidden };
   if (pref.id === "favorites") {
-    const sort = FAVORITES_SORTS.has(pref.sort ?? "") ? (pref.sort as FavoritesSort) : "unwatched_first";
+    const sort = FAVORITES_SORTS.has(pref.sort ?? "")
+      ? (pref.sort as FavoritesSort)
+      : "unwatched_first";
     return { id: "favorites", kind: "favorites", hidden, sort };
   }
   if (pref.id.startsWith("lib:")) {
@@ -303,7 +356,11 @@ function resolveRow(
   return null;
 }
 
-function libraryRow(pref: HomeRowPref, library: HomeLibraryLike, builtin: boolean): HomeRow {
+function libraryRow(
+  pref: HomeRowPref,
+  library: HomeLibraryLike,
+  builtin: boolean,
+): HomeRow {
   return {
     id: pref.id,
     kind: "library",
@@ -342,7 +399,10 @@ export function rowsToPrefs(rows: HomeRow[]): HomeRowPref[] {
 }
 
 /** 新建一条库行（排序取「最近添加」，名字留空跟随推荐）。 */
-export function newLibraryRow(library: HomeLibraryLike, id = newRowId()): HomeRow {
+export function newLibraryRow(
+  library: HomeLibraryLike,
+  id = newRowId(),
+): HomeRow {
   return {
     id,
     kind: "library",
@@ -356,7 +416,10 @@ export function newLibraryRow(library: HomeLibraryLike, id = newRowId()): HomeRo
 }
 
 /** 新建一条合集行（排序取合集自己的默认）。 */
-export function newCollectionRow(collection: HomeCollectionLike, id = newRowId()): HomeRow {
+export function newCollectionRow(
+  collection: HomeCollectionLike,
+  id = newRowId(),
+): HomeRow {
   return {
     id,
     kind: "collection",
@@ -367,9 +430,14 @@ export function newCollectionRow(collection: HomeCollectionLike, id = newRowId()
 }
 
 /** 把第 index 行往上/下挪一格；越界原样返回（调用方按此禁用箭头）。 */
-export function moveRow(rows: HomeRow[], index: number, direction: -1 | 1): HomeRow[] {
+export function moveRow(
+  rows: HomeRow[],
+  index: number,
+  direction: -1 | 1,
+): HomeRow[] {
   const target = index + direction;
-  if (index < 0 || index >= rows.length || target < 0 || target >= rows.length) return rows;
+  if (index < 0 || index >= rows.length || target < 0 || target >= rows.length)
+    return rows;
   const next = rows.slice();
   const [row] = next.splice(index, 1);
   next.splice(target, 0, row);
