@@ -292,4 +292,31 @@ def test_admin_permanent_delete_uses_explicit_endpoint_semantics(client: TestCli
     deleted = client.delete(f"/api/v1/subscriptions/{subscription_id}")
     assert deleted.status_code == 200
     assert "永久删除" in deleted.json()["message"]
+    # 默认不做任何联动清理：没有清理任务，文案仍承诺已下载内容不受影响
+    assert deleted.json()["data"]["cleanup_job_id"] is None
+    assert "不受影响" in deleted.json()["message"]
     assert client.get(f"/api/v1/subscriptions/{subscription_id}").status_code == 404
+
+
+def test_removal_preview_reports_nothing_to_clean_for_fresh_subscription(
+    client: TestClient,
+) -> None:
+    """刚订阅、还没投递也没入库：两条清单都是 0，弹窗据此把开关置灰。"""
+    created = client.post("/api/v1/subscriptions", json={"title_ref": "tmdb:movie:100"})
+    subscription_id = created.json()["data"]["subscription"]["id"]
+
+    preview = client.get(f"/api/v1/subscriptions/{subscription_id}/removal-preview")
+    assert preview.status_code == 200, preview.text
+    data = preview.json()["data"]
+    assert data["torrent_count"] == 0
+    assert data["library_file_count"] == 0
+    assert data["library_bytes"] == 0
+    assert data["recycle_retention_days"] > 0  # 回收站保留期如实告诉用户
+
+    # 勾了清理但确实无可清理内容时不建空任务
+    deleted = client.delete(
+        f"/api/v1/subscriptions/{subscription_id}"
+        "?delete_torrents=true&delete_library_files=true"
+    )
+    assert deleted.status_code == 200, deleted.text
+    assert deleted.json()["data"]["cleanup_job_id"] is None

@@ -608,10 +608,45 @@ export function unsubscribeFromSubscription(id: number): Promise<Record<string, 
   );
 }
 
-/** 管理员永久删除订阅与追踪工单（不影响已下载内容）。 */
-export function deleteSubscriptionPermanently(id: number): Promise<Record<string, never>> {
+/** 取消订阅可一并清理的内容（见 schemas.subscription.SubscriptionRemovalPreviewView）。 */
+export interface SubscriptionRemovalPreview {
+  torrent_count: number;
+  torrent_titles: string[];
+  hit_and_run_count: number;
+  library_file_count: number;
+  library_bytes: number;
+  recycle_retention_days: number;
+}
+
+/** 取消订阅的联动清理选项；两项都不勾 = 只取消订阅（默认）。 */
+export interface SubscriptionRemovalOptions {
+  deleteTorrents: boolean;
+  deleteLibraryFiles: boolean;
+}
+
+/** 取消订阅弹窗打开时拉取：能一起删掉多少种子与媒体库文件。 */
+export function getSubscriptionRemovalPreview(id: number): Promise<SubscriptionRemovalPreview> {
   return unwrap(
-    request<ApiEnvelope<Record<string, never>>>(`/subscriptions/${id}`, {
+    request<ApiEnvelope<SubscriptionRemovalPreview>>(`/subscriptions/${id}/removal-preview`),
+  );
+}
+
+/**
+ * 管理员永久删除订阅与追踪工单。
+ *
+ * 默认不动任何已有内容；勾了联动清理时后端立刻返回并把删种子/回收文件交给
+ * 后台任务（cleanup_job_id 可在任务中心查看进度）。
+ */
+export function deleteSubscriptionPermanently(
+  id: number,
+  options?: SubscriptionRemovalOptions,
+): Promise<{ cleanup_job_id: string | null }> {
+  const query = new URLSearchParams({
+    delete_torrents: String(options?.deleteTorrents ?? false),
+    delete_library_files: String(options?.deleteLibraryFiles ?? false),
+  });
+  return unwrap(
+    request<ApiEnvelope<{ cleanup_job_id: string | null }>>(`/subscriptions/${id}?${query}`, {
       method: "DELETE",
     }),
   );

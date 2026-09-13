@@ -9,6 +9,7 @@ import { CheckIcon } from "@/components/icons";
 import { Modal } from "@/components/modal";
 import { PosterImage } from "@/components/poster-image";
 import { RuleSetEditorDialog, specSummary, upgradeTargetLabel } from "@/components/rule-sets-panel";
+import { SubscriptionCancelDialog } from "@/components/subscription-cancel-dialog";
 import { UpgradeRunReportView } from "@/components/upgrade-run-dialog";
 import { listLibraries, type MediaLibrary } from "@/lib/api/libraries";
 import {
@@ -24,6 +25,7 @@ import {
   type ResolveCandidate,
   type RuleSet,
   type SeasonOverview,
+  type SubscriptionRemovalOptions,
   type UpgradeRunReport,
 } from "@/lib/api/subscriptions";
 import { cachedImageUrl } from "@/lib/image-proxy";
@@ -81,6 +83,8 @@ export function SubscribeDialog({
   const [ruleSetId, setRuleSetId] = useState<number | null>(null);
   // 快捷新建规则组（编辑器叠在本弹窗之上，保存后自动选中新组）
   const [creatingRuleSet, setCreatingRuleSet] = useState(false);
+  // 管理员取消订阅：叠一层弹窗选"要不要连种子/媒体库文件一起删"
+  const [cancelling, setCancelling] = useState(false);
   const [libraryId, setLibraryId] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [selectedTitleRef, setSelectedTitleRef] = useState("");
@@ -251,18 +255,36 @@ export function SubscribeDialog({
     }
   };
 
+  // 管理员的取消订阅先叠一层弹窗问"种子与媒体库资源要不要一起删"（与订阅
+  // 详情页同一个组件、同一套文案）；成员只是取消自己的关注，直接执行。
   const unsubscribe = async () => {
     if (!prepared?.existing_subscription_id) return;
+    if (isAdmin) {
+      setCancelling(true);
+      return;
+    }
     setBusy(true);
     try {
-      if (isAdmin) {
-        await deleteSubscriptionPermanently(prepared.existing_subscription_id);
-      } else {
-        await unsubscribeFromSubscription(prepared.existing_subscription_id);
-      }
+      await unsubscribeFromSubscription(prepared.existing_subscription_id);
       onChanged?.();
       onClose();
     } catch (e) {
+      setError(e instanceof Error ? e.message : "取消订阅失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const confirmRemoval = async (options: SubscriptionRemovalOptions) => {
+    if (!prepared?.existing_subscription_id) return;
+    setBusy(true);
+    try {
+      await deleteSubscriptionPermanently(prepared.existing_subscription_id, options);
+      setCancelling(false);
+      onChanged?.();
+      onClose();
+    } catch (e) {
+      setCancelling(false);
       setError(e instanceof Error ? e.message : "取消订阅失败");
     } finally {
       setBusy(false);
@@ -646,6 +668,17 @@ export function SubscribeDialog({
                 : "确认订阅"}
           </button>
         </div>
+      )}
+
+      {isAdmin && prepared?.existing_subscription_id && (
+        <SubscriptionCancelDialog
+          open={cancelling}
+          raised
+          subscriptionId={prepared.existing_subscription_id}
+          title={prepared.media?.title ?? target?.title ?? ""}
+          onClose={() => setCancelling(false)}
+          onConfirm={confirmRemoval}
+        />
       )}
 
       {canManageSubscriptions && creatingRuleSet && (

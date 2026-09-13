@@ -274,6 +274,9 @@ def build_lifespan(settings: Settings):
         from movieclaw_api.services.library import organize as organize_jobs  # noqa: F401
         from movieclaw_api.services.library import scan as scan_jobs  # noqa: F401
         from movieclaw_api.services.library import transfer as transfer_jobs  # noqa: F401
+        from movieclaw_api.services.subscription import (  # noqa: F401  取消订阅联动清理
+            cleanup as subscription_cleanup_jobs,
+        )
         from movieclaw_api.services.subtitle_gen import tasks as subtitle_tasks  # noqa: F401
 
         await init_job_dispatcher()

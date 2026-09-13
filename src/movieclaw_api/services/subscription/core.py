@@ -31,6 +31,11 @@ from movieclaw_api.exceptions import (
 )
 from movieclaw_api.services.media_library import MediaLibraryService
 from movieclaw_api.services.rule_sets import RuleSetService
+from movieclaw_api.services.subscription.cleanup import (
+    CleanupPlan,
+    build_cleanup_plan,
+    enqueue_cleanup_job,
+)
 from movieclaw_api.services.subscription.matching import publish_calendar_date
 from movieclaw_api.services.subscription.release_forecast import (
     next_forecast_probe_times_by_wanted,
@@ -101,6 +106,14 @@ def _payload_time(value: object) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed
     return parsed.astimezone(UTC).replace(tzinfo=None)
+
+
+@dataclass(frozen=True)
+class DeleteOutcome:
+    """删除订阅的结果：可直接展示的中文描述 + 联动清理任务 id（没勾清理为 None）。"""
+
+    message: str
+    cleanup_job_id: str | None
 
 
 @dataclass(frozen=True)
@@ -964,17 +977,69 @@ class SubscriptionService:
         logger.info("成员 #%d 退出并删除无人关注的订阅 #%d", member_id, subscription_id)
         return "已取消订阅"
 
-    async def delete_permanently(self, subscription_id: int) -> str:
-        """管理员永久删除订阅记录与工单，不影响已下载文件或下载器任务。"""
+    async def removal_preview(self, subscription_id: int) -> CleanupPlan:
+        """取消订阅前的联动清理预览：能一起删掉的种子与媒体库文件各有多少。
+
+        纯读快照，不连下载器（种子体积等实时信息不值得让一个确认弹窗等网络
+        往返）；媒体库体积来自台账，本来就是准确值。
+        """
         subscription = await self._get_or_404(subscription_id)
+        return await build_cleanup_plan(self._session, subscription)
+
+    async def delete_permanently(
+        self,
+        subscription_id: int,
+        *,
+        delete_torrents: bool = False,
+        delete_library_files: bool = False,
+        origin: str = "web",
+    ) -> DeleteOutcome:
+        """管理员永久删除订阅记录与工单。
+
+        默认不碰任何已有内容（订阅删除一直以来的承诺）。两个开关是用户在
+        确认弹窗里的显式选择：勾了就把该订阅投递过的种子任务、该条目在媒体库
+        里的文件交给后台清理任务处理（见 ``services.subscription.cleanup``）——
+        删种子要逐个连下载器、回收文件要搬磁盘，都不能挡在这个接口里。
+
+        清理计划必须在删订阅**之前**快照：投递记录随订阅级联删除，订阅一没，
+        "这条订阅投过哪些种子"就再也查不回来了。入队与删除共用一个事务，
+        绝不会出现"订阅还在但文件已被回收"。
+        """
+        subscription = await self._get_or_404(subscription_id)
+        cleanup_job_id: str | None = None
+        cleaned: list[str] = []
+        if delete_torrents or delete_library_files:
+            plan = await build_cleanup_plan(self._session, subscription)
+            created = await enqueue_cleanup_job(
+                self._session,
+                plan,
+                delete_torrents=delete_torrents,
+                delete_library_files=delete_library_files,
+                origin=origin,
+            )
+            if created is not None:
+                cleanup_job_id = created.job.id
+                if delete_torrents and plan.torrents:
+                    cleaned.append(f"{len(plan.torrents)} 个下载任务")
+                if delete_library_files and plan.files:
+                    cleaned.append(f"{len(plan.files)} 个媒体库文件")
         await self._repo.delete(subscription)
-        logger.info("管理员已永久删除订阅 #%d", subscription_id)
-        return "订阅已永久删除；已下载内容不受影响"
+        logger.info(
+            "管理员已永久删除订阅 #%d%s",
+            subscription_id,
+            f"，并发起联动清理任务 {cleanup_job_id}" if cleanup_job_id else "",
+        )
+        if cleanup_job_id is None:
+            return DeleteOutcome("订阅已永久删除；已下载内容不受影响", None)
+        return DeleteOutcome(
+            "订阅已永久删除；正在后台清理" + "与".join(cleaned) + "（可在任务中心查看进度）",
+            cleanup_job_id,
+        )
 
     async def delete(self, subscription_id: int, *, member_id: int | None = None) -> str:
         """兼容旧调用；新代码应明确选择 ``unsubscribe`` 或 ``delete_permanently``。"""
         if member_id is None:
-            return await self.delete_permanently(subscription_id)
+            return (await self.delete_permanently(subscription_id)).message
         return await self.unsubscribe(subscription_id, member_id=member_id)
 
     async def list_with_progress(

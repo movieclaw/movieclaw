@@ -24,6 +24,7 @@ import { PosterImage } from "@/components/poster-image";
 import { specSummary, upgradeTargetLabel } from "@/components/rule-sets-panel";
 import { useSubscribeEntry } from "@/components/subscribe-entry";
 import { SubscriptionAdjustDialog } from "@/components/subscription-adjust-dialog";
+import { SubscriptionCancelDialog } from "@/components/subscription-cancel-dialog";
 import { UpgradeRunDialog } from "@/components/upgrade-run-dialog";
 import {
   deleteSubscriptionPermanently,
@@ -41,6 +42,7 @@ import {
   type SubscriptionActivity,
   type SubscriptionDetail,
   type SubscriptionDownload,
+  type SubscriptionRemovalOptions,
   type ResourceTiming,
   type WantedItem,
 } from "@/lib/api/subscriptions";
@@ -93,6 +95,8 @@ export function SubscriptionInspectorView({
   const [adjusting, setAdjusting] = useState(false);
   const [upgradeRunning, setUpgradeRunning] = useState(autoOpenUpgradeRun);
   const [managing, setManaging] = useState(false);
+  // 管理员取消订阅：弹窗里选"要不要连种子/媒体库文件一起删"
+  const [cancelling, setCancelling] = useState(false);
   const toast = useToast();
 
   const [downloads, setDownloads] = useState<SubscriptionDownload[]>([]);
@@ -281,12 +285,23 @@ export function SubscriptionInspectorView({
     }
   };
 
+  /** 取消订阅后的共同善后：刷新全站订阅状态并离开这条已不存在的详情。 */
+  const afterRemoved = () => {
+    refreshSubscriptions();
+    // 订阅已不存在，替换当前历史项，避免浏览器后退再次进入失效详情。
+    router.replace("/subscriptions");
+  };
+
+  // 管理员的取消订阅要先问"种子和媒体库文件要不要一起删"（专用弹窗带数量与
+  // 后果）；成员只是取消自己的关注，不涉及任何内容，沿用轻量二次确认。
   const remove = async () => {
+    if (isAdmin) {
+      setCancelling(true);
+      return;
+    }
     const ok = await confirm({
       title: `取消订阅《${detail.media.title}》？`,
-      description: isAdmin
-        ? "将停止追踪剩余内容；已经下载或入库的文件不会被删除。"
-        : "将取消你的订阅关注；已经下载或入库的文件不会被删除。",
+      description: "将取消你的订阅关注；已经下载或入库的文件不会被删除。",
       confirmLabel: "取消订阅",
       cancelLabel: "先不",
       tone: "danger",
@@ -294,11 +309,26 @@ export function SubscriptionInspectorView({
     if (!ok) return;
     setBusy(true);
     try {
-      if (isAdmin) await deleteSubscriptionPermanently(detail.id);
-      else await unsubscribeFromSubscription(detail.id);
-      refreshSubscriptions();
-      // 订阅已不存在，替换当前历史项，避免浏览器后退再次进入失效详情。
-      router.replace("/subscriptions");
+      await unsubscribeFromSubscription(detail.id);
+      afterRemoved();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const confirmRemoval = async (options: SubscriptionRemovalOptions) => {
+    setBusy(true);
+    try {
+      const { cleanup_job_id } = await deleteSubscriptionPermanently(detail.id, options);
+      setCancelling(false);
+      toast.success(
+        cleanup_job_id
+          ? "已取消订阅，正在后台清理关联内容（可在任务中心查看进度）"
+          : "已取消订阅",
+      );
+      afterRemoved();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "取消订阅失败，请稍后重试");
     } finally {
       setBusy(false);
     }
@@ -555,6 +585,16 @@ export function SubscriptionInspectorView({
             reload();
             refreshSubscriptions();
           }}
+        />
+      )}
+
+      {isAdmin && (
+        <SubscriptionCancelDialog
+          open={cancelling}
+          subscriptionId={detail.id}
+          title={detail.media.title}
+          onClose={() => setCancelling(false)}
+          onConfirm={confirmRemoval}
         />
       )}
 

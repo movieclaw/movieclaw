@@ -290,6 +290,35 @@ class SearchNowView(BaseModel):
     reset_count: int = Field(description="跳过冷却、重新排队的缺口工单数")
 
 
+class SubscriptionRemovalPreviewView(BaseModel):
+    """取消订阅弹窗的联动清理预览：勾上开关会连带处理掉多少东西。
+
+    体积只给媒体库那一侧——它来自台账、是准确值；种子体积要连下载器才知道，
+    不值得让一个确认弹窗等网络往返，也不该拿估算值吓唬用户。
+    """
+
+    torrent_count: int = Field(description="该订阅投递过、仍可定位的下载任务数")
+    torrent_titles: list[str] = Field(
+        default_factory=list, description="下载任务名（最多前 5 条，供弹窗举例）"
+    )
+    hit_and_run_count: int = Field(
+        description="其中处于 H&R 考核或考核状态未知的任务数；删除可能影响站点考核"
+    )
+    library_file_count: int = Field(description="该条目在媒体库里的文件数（含缺失记录）")
+    library_bytes: int = Field(description="上述文件的台账体积合计（字节）")
+    recycle_retention_days: int = Field(
+        description="媒体库文件删除后在回收站的保留天数，期间可恢复"
+    )
+
+
+class SubscriptionDeleteView(BaseModel):
+    """删除订阅的结果；勾了联动清理时带上后台任务 id 供任务中心跟进。"""
+
+    cleanup_job_id: str | None = Field(
+        default=None, description="联动清理任务 id；没有可清理内容或未勾选时为空"
+    )
+
+
 class GrabPayload(BaseModel):
     """人工选择种子下载：把搜索结果里的一条种子直接投给本订阅。
 

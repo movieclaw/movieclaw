@@ -203,6 +203,7 @@ func TestDomainCommandSets(t *testing.T) {
 			"subscriptions.list-activities",
 			"subscriptions.list-today-arrivals",
 			"subscriptions.preview-download-routing",
+			"subscriptions.preview-removal",
 			"subscriptions.search-missing-resources",
 			"subscriptions.set-follow-future",
 			"subscriptions.set-tracking-state",
