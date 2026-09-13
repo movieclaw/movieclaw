@@ -1833,3 +1833,99 @@ class TrashedBatchResultView(BaseModel):
     done: int = Field(description="成功处理的文件数")
     failed: list[TrashedBatchFailureView] = Field(default_factory=list)
     remaining: int = Field(default=0, description="按筛选清理时超出单次上限、尚未处理的文件数")
+
+
+# ---------------------------------------------------------------------------
+# 重复文件（docs/design/library-duplicate-files.md §3–§4）：两堆，两种决定
+# ---------------------------------------------------------------------------
+
+
+class DuplicateFileView(BaseModel):
+    """一个多文件单元里的一个文件。"""
+
+    id: int
+    file_name: str
+    file_path: str = Field(description="绝对路径（悬停显示；成员视图不返回本接口）")
+    quality_label: str = Field(description="版本签名的质量部分：「分辨率 片源[ HDR]」")
+    size_bytes: int
+    bit_rate: int | None
+    resolution: str | None
+    media_source: str | None
+    hdr: str | None
+    video_codec: str | None
+    audio_label: str | None = Field(default=None, description="首条音轨「编码 声道」")
+    origin: FileOriginView
+    version_key: str = Field(description="版本签名：质量标签|来源 label（整季留这个版本时传回）")
+    suggested: bool = Field(description="系统建议保留的那个（只是建议）")
+    suggest_reason: str | None = Field(
+        default=None, description="建议依据：档位最高 / 档位无法比较，按实测码率建议 / 同档，…"
+    )
+    kept_at: datetime | None = Field(default=None, description="用户「都留着」过；null=未标记")
+
+
+class DuplicateUnitView(BaseModel):
+    """一个单元（电影 = 条目；剧集 = 某季某集）。"""
+
+    season_number: int
+    episode_number: int
+    bucket: Literal["identical", "versions"]
+    files: list[DuplicateFileView]
+
+
+class DuplicateVersionView(BaseModel):
+    """同构季的一个版本行：这版本覆盖哪些集、多大、从哪来。"""
+
+    key: str
+    quality_label: str
+    origin_label: str
+    episodes: list[int]
+    bytes: int
+    suggested: bool
+
+
+class DuplicateSeasonView(BaseModel):
+    """一个条目的一季在某一堆里的块（一季两种都有时两堆各一块）。电影恰好一季一集。"""
+
+    season_number: int
+    bucket: Literal["identical", "versions"]
+    uniform: bool = Field(description="同构：各集版本签名一致，可整季按版本决定")
+    versions: list[DuplicateVersionView] = Field(default_factory=list)
+    units: list[DuplicateUnitView]
+
+
+class DuplicateItemView(BaseModel):
+    library: TrashedLibraryRefView
+    media_item: TrashedItemRefView
+    seasons: list[DuplicateSeasonView]
+
+
+class DuplicateBucketStats(BaseModel):
+    units: int
+    files: int = Field(description="会被清掉的文件数（非建议保留、非都留着）")
+    bytes: int
+
+
+class DuplicateFilesData(BaseModel):
+    """重复文件列表：两堆摘要 + 本页条目（按条目分页）。"""
+
+    identical: DuplicateBucketStats
+    versions: DuplicateBucketStats
+    upgrading_units: int = Field(description="洗版验证在途、暂不显示的单元数")
+    keep_old_items: int = Field(description="规则组「保留共存」、不显示的条目数")
+    total_items: int
+    items: list[DuplicateItemView]
+
+
+class DuplicateResolvePayload(BaseModel):
+    """一个单元 / 一季的决定。``keep``：文件 id = 这一集留这个；版本 key = 整季留这个版本；
+    ``"all"`` = 都留着。"""
+
+    media_item_id: int
+    season_number: int = 0
+    episode_number: int | None = Field(default=None, description="省略 = 整季")
+    keep: int | str
+
+
+class DuplicateResolveAllPayload(BaseModel):
+    bucket: Literal["identical", "versions"]
+    library_id: int | None = None
