@@ -31,7 +31,14 @@ import {
 } from "./bandwidth";
 import { backBufferSeconds } from "./buffer-budget";
 import { type MediaRecoverState, nextMediaRecovery } from "./media-recover";
-import { NUDGE_STEP_S, bufferedAhead, classifyStall, shouldNudge, stallReason } from "./stall";
+import {
+  NUDGE_STEP_S,
+  type StallVerdict,
+  bufferedAhead,
+  classifyStall,
+  shouldNudge,
+  stallReason,
+} from "./stall";
 import { isWithinRanges } from "./timeline";
 
 /** 把 `<video>` 的当下状态压成一行上报（排障用，字段都很小）。 */
@@ -110,8 +117,12 @@ export interface EngineOptions {
    * 播放链路失败：error 事件或长时间无进展。**这是降档回路的唯一入口**——
    * 「看起来 codec 兼容、实际 copy 出来是坏流」的源片穷举不完（MKV header
    * compression、参数集只在 CodecPrivate、开放 GOP……），只能靠这条回路兜。
+   *
+   * `cause` 只在停顿看门狗判死时带上（缺粮 / 解码卡死）：上层要区分「转码
+   * 追不上」与「线路不够」——后者按带宽同档重开就够，降档白白掉画质
+   * （docs/design/player-pipeline-optimization.md §C）。
    */
-  onFailed: (reason: string) => void;
+  onFailed: (reason: string, cause?: Exclude<StallVerdict, "ok">) => void;
   /**
    * 取流**持续**失败（连续多次网络类致命错误、期间没有任何一个分片成功）。
    *
@@ -175,7 +186,7 @@ function readCommonStats(
  */
 function watchStall(
   video: HTMLVideoElement,
-  onFailed: (reason: string) => void,
+  onFailed: (reason: string, cause: Exclude<StallVerdict, "ok">) => void,
   onNudge?: (attempt: number) => void,
 ): () => void {
   let lastTime = video.currentTime;
@@ -211,7 +222,7 @@ function watchStall(
     if (verdict !== "ok") {
       stalledFor = 0;
       nudges = 0;
-      onFailed(stallReason(verdict));
+      onFailed(stallReason(verdict), verdict);
       return;
     }
     // 有数据却不动：先推一把（见 stall.ts shouldNudge 的 iOS wedge 注释），
@@ -322,13 +333,14 @@ class DirectEngine implements PlaybackEngine {
     video.load();
     this.stopStallWatch = watchStall(
       video,
-      (reason) => {
+      (reason, cause) => {
         // 停滞判死同样要留客户端现场：它与真 MediaError 的处置完全不同
         clientLog(this.options, `${this.label}-stall`, {
           reason,
+          cause,
           ...videoSnapshot(video),
         });
-        onFailed(reason);
+        onFailed(reason, cause);
       },
       (attempt) => {
         // 推动也留痕：日志里「nudge 后恢复」与「nudge 无效判死」是两种病

@@ -295,3 +295,54 @@ test("峰值同样只看窗口：降档之后几片就跟着下来，不像原�
   for (const mbps of [2.0, 2.1, 1.9, 2.0]) samples = pushBitrateSample(samples, frag(mbps));
   assert.ok(peakBitrateBps(samples) / 1e6 < 2.5, "降档后峰值没有跟着下来");
 });
+
+// ---------------------------------------------------------------------------
+// 读数参与决策（docs/design/player-pipeline-optimization.md §C）
+// ---------------------------------------------------------------------------
+
+import {
+  DIRECT_SHORTFALL_RATIO,
+  bandwidthRestartWanted,
+  directDownlinkShort,
+  downlinkHintBps,
+} from "../lib/player/bandwidth.ts";
+
+test("带宽提示：没有读数就不带，有读数取整", () => {
+  assert.equal(downlinkHintBps(null), undefined);
+  assert.equal(downlinkHintBps(0), undefined);
+  assert.equal(downlinkHintBps(Number.NaN), undefined);
+  assert.equal(downlinkHintBps(1234567.8), 1234568);
+});
+
+test("缺粮 + 转码 + 线路装不下 → 按带宽重开；其余情况走原来的降档", () => {
+  const base = {
+    cause: "starved",
+    videoAction: "transcode",
+    downlinkBps: 2_000_000,
+    bitrateBps: 4_000_000,
+    alreadyRestarted: false,
+  };
+  assert.equal(bandwidthRestartWanted(base), true);
+  // 解码卡死不是带宽问题
+  assert.equal(bandwidthRestartWanted({ ...base, cause: "decode-stalled" }), false);
+  // 直通视频码率改不了，重开没用
+  assert.equal(bandwidthRestartWanted({ ...base, videoAction: "copy" }), false);
+  // 线路装得下：慢的是服务端转码，重开救不了
+  assert.equal(bandwidthRestartWanted({ ...base, downlinkBps: 8_000_000 }), false);
+  // 没有读数不能猜
+  assert.equal(bandwidthRestartWanted({ ...base, downlinkBps: null }), false);
+  assert.equal(bandwidthRestartWanted({ ...base, bitrateBps: null }), false);
+  // 每会话只试一次
+  assert.equal(bandwidthRestartWanted({ ...base, alreadyRestarted: true }), false);
+});
+
+test("直通档线路够不够：低于源码率的 1.2 倍算不够，缺读数一律算够", () => {
+  assert.equal(directDownlinkShort({ downlinkBps: 5e6, sourceBitrateBps: 8e6 }), true);
+  assert.equal(
+    directDownlinkShort({ downlinkBps: 8e6 * DIRECT_SHORTFALL_RATIO, sourceBitrateBps: 8e6 }),
+    false,
+  );
+  assert.equal(directDownlinkShort({ downlinkBps: null, sourceBitrateBps: 8e6 }), false);
+  assert.equal(directDownlinkShort({ downlinkBps: 5e6, sourceBitrateBps: null }), false);
+  assert.equal(directDownlinkShort({ downlinkBps: 5e6, sourceBitrateBps: 0 }), false);
+});

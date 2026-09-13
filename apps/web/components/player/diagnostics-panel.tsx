@@ -234,6 +234,11 @@ export function DiagnosticsPanel({
           decision.video.height ? ` ${decision.video.height}p` : ""
         }${session.hw_backend ? ` · ${session.hw_backend}` : " · 软件"}${
           decision.video.tone_map ? " · HDR 转 SDR" : ""
+        }${
+          // 按实测带宽压过码率要摆出来：否则用户会以为画质设置坏了（§C）
+          decision.video.bitrate_cap_bps
+            ? ` · 按线路限 ${(decision.video.bitrate_cap_bps / 1_000_000).toFixed(2)} Mbps`
+            : ""
         }）`
     : null;
 

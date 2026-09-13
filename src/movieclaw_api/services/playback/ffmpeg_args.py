@@ -45,7 +45,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from movieclaw_playback.decide import PlaybackPlan, PlaybackTier
+from movieclaw_playback.decide import PlaybackPlan, PlaybackTier, VideoPlan
 from movieclaw_playback.subtitles import parse_embedded_track
 
 PLAYLIST_NAME = "index.m3u8"
@@ -87,6 +87,21 @@ def maxrate_for_height(height: int | None) -> str:
         if height <= step:
             return BITRATE_LADDER[step]
     return BITRATE_LADDER[2160]
+
+
+def maxrate_for_video(video: VideoPlan) -> str:
+    """阶梯值与计划里的码率上限（按实测带宽反推，adaptive.py）取小。
+
+    返回 ``<数字>M`` 形态，bufsize 按它的两倍算——两处都吃这个字符串，
+    格式不能变。"""
+    ladder = maxrate_for_height(video.height)
+    cap = video.bitrate_cap_bps
+    if cap is None or cap <= 0:
+        return ladder
+    ladder_bps = int(float(ladder[:-1]) * 1_000_000)
+    if cap >= ladder_bps:
+        return ladder
+    return f"{cap / 1_000_000:g}M"
 
 
 #: 读入限速（相对实时的倍数）与起播突发窗口（秒）。
@@ -554,8 +569,8 @@ def _video_args(
     args = []
     if filters:
         args += ["-vf", filters]
-    maxrate = maxrate_for_height(plan.video.height)
-    bufsize = f"{int(float(maxrate[:-1]) * 2)}M"
+    maxrate = maxrate_for_video(plan.video)
+    bufsize = f"{float(maxrate[:-1]) * 2:g}M"
     if backend is not None:
         args += ["-c:v", backend.encoder]
         # iOS 原生 HLS 对 10-bit/High 10 的硬件编码结果兼容性很差，统一锁

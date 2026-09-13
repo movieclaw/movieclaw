@@ -73,6 +73,7 @@ from movieclaw_api.services.playback import metrics, trickplay
 from movieclaw_api.services.playback import plan as playback_plan
 from movieclaw_api.services.playback import warmup as playback_warmup
 from movieclaw_api.services.playback import watch as playback_watch
+from movieclaw_api.services.playback.adaptive import adapt_to_downlink
 from movieclaw_api.services.playback.embedded_subs import (
     extract_embedded_fonts,
     extract_embedded_subtitle_async,
@@ -1063,6 +1064,20 @@ async def start_playback_session(
         ]
         execution_backend = None
         use_remote = False
+    # 按实测线路带宽收紧转码码率（docs/design/player-pipeline-optimization.md §C）。
+    # 用户手动选了画质上限时不动——他的选择优先于自动。
+    if payload.max_height is None:
+        adapted = adapt_to_downlink(decision, payload.downlink_bps)
+        if adapted is not decision:
+            decision = adapted
+            view = playback_plan.to_view(decision)
+            logger.info(
+                "按线路带宽收紧转码：downlink=%s bps → 高度 %s 码率上限 %s bps（file_id=%s）",
+                payload.downlink_bps,
+                view.video.height if view.video else None,
+                view.video.bitrate_cap_bps if view.video else None,
+                file.id,
+            )
     hw_used = (
         effective_hw_backend(decision, execution_backend)
         if execution_backend and view.video and view.video.action == "transcode"

@@ -176,6 +176,11 @@ class VideoPlan:
     #: 这是**硬边界 1 唯一的例外**，且必须由用户的选择触发，决策器绝不主动。
     #: 只在 action="transcode" 时出现（烧录本身就要求转码）。
     burn_subtitle: str | None = None
+    #: 转码目标码率上限（bps），由实测线路带宽反推（services/playback/adaptive.py，
+    #: docs/design/player-pipeline-optimization.md §C）。None = 只按分辨率阶梯。
+    #: 放在计划里而不是命令装配的参数上：它和高度一样是「对这部片做了什么」
+    #: 的一部分，诊断面板要显示、转码缓存的指纹要包含。
+    bitrate_cap_bps: int | None = None
 
 
 @dataclass(frozen=True)

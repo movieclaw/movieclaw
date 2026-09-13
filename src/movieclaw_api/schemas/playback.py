@@ -348,6 +348,11 @@ class PlaybackDecideRequest(BaseModel):
     #: 浏览器的稳定标识（与进度上报同一个值）。开会话时写进取流 token，
     #: 取流字节才能记到活动页上这台浏览器的会话名下。
     device_id: str | None = Field(default=None, max_length=128)
+    #: 前端实测的下行速度（bps，传输期口径）。只在**开/重开会话**时生效，
+    #: 且只对转码视频起作用：把 maxrate 压到线路装得下的水平，必要时连高度
+    #: 一起降（services/playback/adaptive.py）。用户手动选了画质上限时忽略——
+    #: 他的选择优先。样本不够时不带。
+    downlink_bps: int | None = Field(default=None, ge=0, le=10**12)
 
 
 class VideoPlanView(BaseModel):
@@ -355,6 +360,8 @@ class VideoPlanView(BaseModel):
     codec: str | None = None
     height: int | None = None
     tone_map: bool = False
+    #: 按实测带宽收紧后的码率上限（bps）；None = 只按分辨率阶梯
+    bitrate_cap_bps: int | None = None
     #: 非空 = 该字幕轨被烧录进画面（用户显式选中 PGS 触发，Emby 语义的
     #: 「字幕压制」）。前端据此：不再旁挂渲染这条轨、菜单选中态指向它、
     #: 诊断面板显示「字幕压制」。

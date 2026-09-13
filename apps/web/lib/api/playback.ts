@@ -477,6 +477,8 @@ export interface VideoPlan {
    * 「字幕压制」）。前端据此：不再旁挂渲染这条轨、菜单选中态指向它、
    * 画中画补丁轨跳过、诊断面板显示「字幕压制」。 */
   burn_subtitle: string | null;
+  /** 按实测带宽收紧后的码率上限（bps）；null = 只按分辨率阶梯 */
+  bitrate_cap_bps?: number | null;
 }
 
 export interface AudioPlan {
@@ -645,6 +647,11 @@ interface DecideBody extends PlaybackUnit {
   subtitle_track?: string;
   /** 画质上限（如 720）。上限而非目标：源不超就照常直通。省略 = 自动 */
   max_height?: number;
+  /**
+   * 实测下行速度（bps，bandwidth.ts 的传输期口径）。服务端只对转码视频
+   * 用它压码率、必要时降高度；手动选了画质上限时服务端忽略。样本不够时省略。
+   */
+  downlink_bps?: number;
 }
 
 /** 只问「该怎么放」，不起会话。用于播放前的档位预览与诊断。 */
