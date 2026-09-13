@@ -336,9 +336,7 @@ def test_unfavoriting_and_favoriting_again_refreshes_the_time(client, tmp_path):
     ]
 
 
-def test_home_row_puts_unfinished_first_while_the_full_page_keeps_favorite_order(
-    client, tmp_path
-):
+def test_home_row_puts_unfinished_first_while_the_full_page_keeps_favorite_order(client, tmp_path):
     """首页那一行是「我想看的」：没看完的整体提前，一部都不少。
 
     ``/library/favorites`` 全量页是"我收藏过什么"的完整账本，不受影响——两处
@@ -360,3 +358,41 @@ def test_home_row_puts_unfinished_first_while_the_full_page_keeps_favorite_order
     assert home_row == [ids["show"], ids["movie_a"], ids["movie_b"]]
     # 一部都没少——这一行不删东西，只换顺序
     assert sorted(home_row) == sorted(full_page)
+
+
+# ---------------------------------------------------------------------------
+# 排序：「全部收藏」页与单库海报墙能力对齐
+# ---------------------------------------------------------------------------
+
+
+def test_full_page_can_be_resorted_like_a_library_wall(client, tmp_path):
+    """收藏页的排序档与单库海报墙同一套（同一份实现 ``items.sort_item_ids``）：
+    默认仍是最近收藏在前；换档后海报墙与图廊仍是同一份名单、同一个顺序，
+    方向也能反——两种形态切来切去看到的必须是同一批作品的同一个先后。"""
+    ids = seed(client, tmp_path)
+    for key in ("movie_a", "movie_b", "show"):
+        web_favorite(client, media_item_id=ids[key])
+    newest_first = [ids["show"], ids["movie_b"], ids["movie_a"]]
+    assert [i["media_item_id"] for i in favorites(client)["items"]] == newest_first
+
+    # 按标题：电影甲 < 电影乙 < 剧（拼音序，与库页同一把尺）
+    by_title = [ids["movie_a"], ids["movie_b"], ids["show"]]
+    assert [i["media_item_id"] for i in favorites(client, sort="title")["items"]] == by_title
+    assert [g["media_item_id"] for g in gallery(client, sort="title")] == by_title
+    # 反向：整条倒过来
+    assert [
+        i["media_item_id"] for i in favorites(client, sort="title", order="desc")["items"]
+    ] == by_title[::-1]
+    # 收藏时间档也能反：旧→新
+    assert [i["media_item_id"] for i in favorites(client, order="asc")["items"]] == (
+        newest_first[::-1]
+    )
+    # 分页在排好的序列上切：offset 口径两种形态一致
+    assert [
+        i["media_item_id"] for i in favorites(client, sort="title", limit=1, offset=1)["items"]
+    ] == [ids["movie_b"]]
+    assert [g["media_item_id"] for g in gallery(client, sort="title", limit=1, offset=1)] == [
+        ids["movie_b"]
+    ]
+    # 不认识的档拒收，而不是静默退回默认序
+    assert client.get(f"{_PB}/favorites", params={"sort": "bogus"}).status_code == 422

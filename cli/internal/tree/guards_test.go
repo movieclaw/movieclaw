@@ -75,6 +75,8 @@ var knownNonGenerated = []string{
 	"playback.marks.set",
 	"playback.favorites",
 	"playback.favorites.gallery",
+	// 合集页的图床浏览：与 ui.library.gallery / playback.favorites.gallery 同一类 Web 数据源
+	"collection.gallery",
 	"playback.policy.show",
 	"playback.policy.set",
 	"workflow.library.organize-files.preview",

@@ -1,5 +1,10 @@
 import { request } from "@/lib/http";
-import type { LibraryItem } from "@/lib/api/libraries";
+import type {
+  LibraryGalleryGroup,
+  LibraryItem,
+  LibraryItemOrder,
+  LibraryItemSort,
+} from "@/lib/api/libraries";
 import type { FilterRule } from "@/lib/library-filter";
 
 /** 后端统一响应信封（见 movieclaw_api.schemas.response.ApiResponse） */
@@ -140,16 +145,55 @@ export function deleteCollection(id: number): Promise<void> {
   return unwrap(request<ApiEnvelope<void>>(`/collections/${id}`, { method: "DELETE" }));
 }
 
-/** 合集成员：与单库海报墙同一份聚合，卡片因此长得一模一样。 */
-export function listCollectionItems(
-  id: number,
-  params?: { limit?: number; offset?: number },
-): Promise<LibraryItem[]> {
+/**
+ * 合集页可选的排序档：与单库海报墙同一套键（`probing` 是扫描临时接管的序，不对外）。
+ * 不给 = 合集自己的序：规则驱动用合集存的 sort，名单驱动用拖出来的顺序。
+ */
+export type CollectionSort = Exclude<LibraryItemSort, "probing">;
+
+/** 合集页两种形态共用的排序参数：海报墙与图廊必须传同一个值，两者才是同一份名单。 */
+export interface CollectionSortParams {
+  sort?: CollectionSort;
+  /** 方向；不给 = 该档的自然方向（自定顺序即名单序） */
+  order?: LibraryItemOrder;
+}
+
+function collectionPageQuery(
+  params?: { limit?: number; offset?: number } & CollectionSortParams,
+): string {
   const query = new URLSearchParams();
   if (params?.limit !== undefined) query.set("limit", String(params.limit));
   if (params?.offset) query.set("offset", String(params.offset));
-  const suffix = query.size > 0 ? `?${query}` : "";
-  return unwrap(request<ApiEnvelope<LibraryItem[]>>(`/collections/${id}/items${suffix}`));
+  if (params?.sort) query.set("sort", params.sort);
+  if (params?.order) query.set("order", params.order);
+  return query.size > 0 ? `?${query}` : "";
+}
+
+/** 合集成员：与单库海报墙同一份聚合，卡片因此长得一模一样。 */
+export function listCollectionItems(
+  id: number,
+  params?: { limit?: number; offset?: number } & CollectionSortParams,
+): Promise<LibraryItem[]> {
+  return unwrap(
+    request<ApiEnvelope<LibraryItem[]>>(`/collections/${id}/items${collectionPageQuery(params)}`),
+  );
+}
+
+/**
+ * 合集页图床浏览模式的数据源：与 listCollectionItems 同一份名单与顺序
+ * （`sort` / `order` 传同一个值），一组是一部作品的全部图。分页口径同单库图廊
+ * ——offset / limit 都按作品数，没有图的作品也占一组，拿满一页就还有下一页；
+ * 跨库合集每组自带详情落点库。
+ */
+export function listCollectionGallery(
+  id: number,
+  params: { limit: number; offset: number } & CollectionSortParams,
+): Promise<LibraryGalleryGroup[]> {
+  return unwrap(
+    request<ApiEnvelope<LibraryGalleryGroup[]>>(
+      `/collections/${id}/gallery${collectionPageQuery(params)}`,
+    ),
+  );
 }
 
 /**

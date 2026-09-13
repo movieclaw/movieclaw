@@ -120,7 +120,11 @@ from movieclaw_api.services.playback_activity import (
     media_activity_overview,
     revoke_device,
 )
-from movieclaw_api.services.playback_favorites import favorite_gallery, favorite_items
+from movieclaw_api.services.playback_favorites import (
+    FavoriteSort,
+    favorite_gallery,
+    favorite_items,
+)
 from movieclaw_api.services.playback_stats import playback_history, playback_stats
 from movieclaw_api.services.playback_up_next import up_next_items
 from movieclaw_api.settings import PlaybackPolicySetting
@@ -168,6 +172,7 @@ stream_router = APIRouter(prefix="/playback", tags=["playback"])
 
 class _SubtitleClientDisconnected(Exception):
     """客户端已放弃字幕请求，且底层抽取任务已经完成取消。"""
+
 
 _DIAGNOSTIC_SECRET_RE = re.compile(
     r"((?:[?&]|\b)(?:token|access_token|signature|sig)=)[^&\s]+", re.IGNORECASE
@@ -250,11 +255,7 @@ def _build_playback_diagnostics(
             ),
             None,
         )
-    job = (
-        registry.job_state(session.remote_job_id or "")
-        if session.remote_job_id
-        else None
-    )
+    job = registry.job_state(session.remote_job_id or "") if session.remote_job_id else None
     highest_produced = (
         manager._highest_produced(session) if session.segment_plan is not None else None
     )
@@ -292,18 +293,16 @@ def _build_playback_diagnostics(
         job.get("error") if job and isinstance(job.get("error"), str) else None
     )
     job_stderr_tail = _diagnostic_error(
-        job.get("stderr_tail")
-        if job and isinstance(job.get("stderr_tail"), str)
-        else None
+        job.get("stderr_tail") if job and isinstance(job.get("stderr_tail"), str) else None
     )
     session_error = _diagnostic_error(session.error)
     if session_error is None:
         session_error = job_error
     failed_segments = sorted(session.remote_failed_segments)
     playback_cursor = _diagnostic_playback_cursor(session)
-    active_failed_segments = [
-        segment for segment in failed_segments if segment >= playback_cursor
-    ][:32]
+    active_failed_segments = [segment for segment in failed_segments if segment >= playback_cursor][
+        :32
+    ]
     historical_failed_segments = [
         segment for segment in failed_segments if segment < playback_cursor
     ][:32]
@@ -381,6 +380,14 @@ async def list_up_next(
     return ok(UpNextView(items=items))
 
 
+_FAVORITE_SORT_DESC = (
+    "排序：favorited_at=最近收藏在前（默认）/ title=按标题 / added_at=最近入账 / "
+    "release_date=按上映时间 / rating=按评分 / runtime=按片长 / size=按体积 / "
+    "last_played=最近观看——与单库海报墙同一套档位"
+)
+_ORDER_DESC = "方向：asc / desc；不给 = 该档的自然方向（收藏时间新→旧、标题 A→Z…）"
+
+
 @router.get(
     "/favorites",
     response_model=ApiResponse[FavoritesView],
@@ -394,12 +401,14 @@ async def list_favorites(
     unwatched_first: Annotated[
         bool, Query(description="把还没看完的整体提前（首页横滚行用；全量页不传）")
     ] = False,
+    sort: Annotated[FavoriteSort, Query(description=_FAVORITE_SORT_DESC)] = "favorited_at",
+    order: Annotated[Literal["asc", "desc"] | None, Query(description=_ORDER_DESC)] = None,
     principal: Principal = Depends(require_login),
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[FavoritesView]:
     """列出当前账号在可见媒体库中收藏的作品（网页与 Jellyfin 客户端点的心同一份），
-    最近收藏在前。首页横滚行取前 20 且把没看完的提前；「全部收藏」海报墙按
-    offset 滚动加载，保持纯收藏时间序。"""
+    默认最近收藏在前。首页横滚行取前 20 且把没看完的提前；「全部收藏」海报墙按
+    offset 滚动加载，排序档与单库海报墙对齐（``sort`` / ``order``）。"""
     visible_ids = await visible_library_ids(session, principal)
     member_id = principal.member_id if principal.member_id is not None else 0
     items, total = await favorite_items(
@@ -409,6 +418,8 @@ async def list_favorites(
         limit=limit,
         offset=offset,
         unwatched_first=unwatched_first,
+        sort=sort,
+        order=order,
     )
     return ok(FavoritesView(items=items, total=total))
 
@@ -421,16 +432,16 @@ async def list_favorites(
     openapi_extra={"x-cli-hidden": True},
 )
 async def list_favorites_gallery(
-    limit: Annotated[
-        int, Query(ge=1, le=100, description="本页作品数（按作品分页，不按图）")
-    ] = 24,
+    limit: Annotated[int, Query(ge=1, le=100, description="本页作品数（按作品分页，不按图）")] = 24,
     offset: Annotated[int, Query(ge=0, description="跳过的作品数（滚动加载翻页用）")] = 0,
+    sort: Annotated[FavoriteSort, Query(description=_FAVORITE_SORT_DESC)] = "favorited_at",
+    order: Annotated[Literal["asc", "desc"] | None, Query(description=_ORDER_DESC)] = None,
     principal: Principal = Depends(require_login),
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[list[LibraryGalleryGroupView]]:
     """「全部收藏」页的图床浏览模式：与 ``/playback/favorites`` 同一份名单与顺序
-    （最近收藏在前），一组就是一部作品的全部图。收藏跨库，每组带自己的详情
-    落点库。没有任何图的作品也占一组，一页的组数恒等于作品数。"""
+    （``sort`` / ``order`` 传同一个值），一组就是一部作品的全部图。收藏跨库，
+    每组带自己的详情落点库。没有任何图的作品也占一组，一页的组数恒等于作品数。"""
     visible_ids = await visible_library_ids(session, principal)
     member_id = principal.member_id if principal.member_id is not None else 0
     return ok(
@@ -440,6 +451,8 @@ async def list_favorites_gallery(
             visible_library_ids=visible_ids,
             limit=limit,
             offset=offset,
+            sort=sort,
+            order=order,
         )
     )
 
@@ -736,10 +749,7 @@ def _select_execution_backend(
     NAS 执行当前计划的后端；只有本地都不兼容时，才把在线 VideoToolbox
     Worker 作为候选。返回值的第二项明确标出是否需要远程会话。
     """
-    if (
-        decision.tier is not Tier.HARDWARE_TRANSCODE
-        or decision.video.action != "transcode"
-    ):
+    if decision.tier is not Tier.HARDWARE_TRANSCODE or decision.video.action != "transcode":
         return None, False
 
     for backend in local_backends:
@@ -753,6 +763,7 @@ def _select_execution_backend(
     ):
         return "videotoolbox", True
     return None, False
+
 
 #: 播放列表里 `#EXT-X-MAP` 那行的初始化段地址，形如 `URI="init.mp4"`。
 _PLAYLIST_MAP_URI = re.compile(r'(#EXT-X-MAP:.*?URI=")([^"]+)(")')
@@ -826,8 +837,11 @@ async def _decide(
     failed = frozenset(Tier(t) for t in payload.failed_tiers if t in Tier._value2member_map_)
     if payload.file_id is not None:
         return await playback_plan.decide_for_file(
-            session, payload.file_id, capability,
-            can_self_enable=principal.is_admin, failed_tiers=failed,
+            session,
+            payload.file_id,
+            capability,
+            can_self_enable=principal.is_admin,
+            failed_tiers=failed,
             preferred_audio=payload.audio_track,
             preferred_subtitle=payload.subtitle_track,
             max_height=payload.max_height,
@@ -835,11 +849,17 @@ async def _decide(
         )
     if payload.media_item_id is not None:
         files = await playback_plan.library_files_for_unit(
-            session, payload.media_item_id, payload.season_number,
-            payload.episode_number, visible_library_ids=visible,
+            session,
+            payload.media_item_id,
+            payload.season_number,
+            payload.episode_number,
+            visible_library_ids=visible,
         )
         return await playback_plan.decide_for_files(
-            files, capability, can_self_enable=principal.is_admin, failed_tiers=failed,
+            files,
+            capability,
+            can_self_enable=principal.is_admin,
+            failed_tiers=failed,
             preferred_audio=payload.audio_track,
             preferred_subtitle=payload.subtitle_track,
             max_height=payload.max_height,
@@ -903,15 +923,11 @@ async def start_playback_session(
         if payload.subtitle_track is None and watch_row and watch_row.subtitle_track:
             # 字幕记忆同款：上次选的 PGS 轨会自动继续烧录，文本轨/"off" 在
             # decide 里是 no-op（只有 PGS 改变视频策略）。
-            payload = payload.model_copy(
-                update={"subtitle_track": watch_row.subtitle_track}
-            )
+            payload = payload.model_copy(update={"subtitle_track": watch_row.subtitle_track})
     resolved_start_ms = payload.start_ms
     if resolved_start_ms is None:
         # 看完的重播从头开始——续播到最后三十秒等于点开就是片尾
-        resolved_start_ms = (
-            0 if (watch_row is None or watch_row.played) else watch_row.position_ms
-        )
+        resolved_start_ms = 0 if (watch_row is None or watch_row.played) else watch_row.position_ms
 
     decision = await _decide(payload, principal, session)
     decide_ms = int((time.perf_counter() - started_at) * 1000)
@@ -975,9 +991,7 @@ async def start_playback_session(
         )
         # 分段计时（§6.10）：用户报「起播慢」时，这一行直接指认卡在哪一段。
         # 决策段偏慢多半是关键帧采样在现场读盘——详情页预热没盖住的路径。
-        logger.info(
-            "播放会话就绪：档 0 直出 · 决策 %d 毫秒（file_id=%s）", decide_ms, file.id
-        )
+        logger.info("播放会话就绪：档 0 直出 · 决策 %d 毫秒（file_id=%s）", decide_ms, file.id)
         return ok(
             PlaybackSessionView(
                 decision=view,
@@ -1011,9 +1025,7 @@ async def start_playback_session(
     # ``backends`` 可能包含外置 Worker 的 videotoolbox；本地命令只能从真实的
     # NAS 探测快照中选编码器。只有在执行端确认仍在线时，才把 videotoolbox
     # 作为远程命令发给 Worker。
-    local_backends = (
-        await asyncio.to_thread(available_local_backends) if backends else ()
-    )
+    local_backends = await asyncio.to_thread(available_local_backends) if backends else ()
     remote_video_available = remote_worker_available("videotoolbox")
     prep_ms = int((time.perf_counter() - prep_started_at) * 1000)
     # 只有真的转视频才谈得上硬件加速：直通档（-c:v copy）不经编码器，报个
@@ -1030,9 +1042,7 @@ async def start_playback_session(
         # 决策阶段看到的硬件能力可能在准备阶段断线，或本地后端与当前滤镜链
         # 不兼容。不能把硬件档的计划悄悄交给 libx264；把硬件档标记为失败后
         # 重新走统一降档逻辑：软件开关关闭时返回 consent，开启时才允许软转。
-        retry_failed_tiers = sorted(
-            {*payload.failed_tiers, int(Tier.HARDWARE_TRANSCODE)}
-        )
+        retry_failed_tiers = sorted({*payload.failed_tiers, int(Tier.HARDWARE_TRANSCODE)})
         fallback_payload = payload.model_copy(update={"failed_tiers": retry_failed_tiers})
         decision = await _decide(fallback_payload, principal, session)
         if decision is None:
@@ -1091,9 +1101,7 @@ async def start_playback_session(
     start_ms = resolved_start_ms
     if segment_plan is None and start_ms > 0 and view.video and view.video.action == "copy":
         # 旧模式的关键帧校正（VOD 下不需要：start() 自己对齐到分片边界）
-        keyframe_s = await asyncio.to_thread(
-            probe_keyframe_before, file.file_path, start_ms / 1000
-        )
+        keyframe_s = await asyncio.to_thread(probe_keyframe_before, file.file_path, start_ms / 1000)
         if keyframe_s is not None:
             start_ms = int(keyframe_s * 1000)
     spawn_started_at = time.perf_counter()
@@ -1138,16 +1146,20 @@ async def start_playback_session(
     logger.info(
         "播放会话就绪：档 %s · 决策 %d 毫秒 · 准备 %d 毫秒 · ffmpeg %d 毫秒 · 共 %d 毫秒"
         "（file_id=%s hw=%s session=%s）",
-        view.tier, decide_ms, prep_ms, spawn_ms, total_ms,
-        file.id, hw_used or "无", transcode.id,
+        view.tier,
+        decide_ms,
+        prep_ms,
+        spawn_ms,
+        total_ms,
+        file.id,
+        hw_used or "无",
+        transcode.id,
     )
     return ok(
         PlaybackSessionView(
             decision=view,
             session_id=transcode.id,
-            stream_url=(
-                f"/api/v1/playback/sessions/{transcode.id}/index.m3u8?token={token}"
-            ),
+            stream_url=(f"/api/v1/playback/sessions/{transcode.id}/index.m3u8?token={token}"),
             # master 列表带 WEBVTT 字幕组：iOS 原生 HLS 用它，字幕成为系统级
             # 字幕轨——画中画小窗、原生全屏里都由系统渲染（§12）
             master_url=(
@@ -1255,10 +1267,15 @@ async def get_session_playlist(
 #: HLS 字幕组 NAME 的语言显示名。装进系统播放器的字幕菜单里给人看的，
 #: 覆盖常见语言即可，冷门语言直接显示原始码也能认。
 _SUBTITLE_LANG_NAMES = {
-    "chi": "中文", "zho": "中文", "zh": "中文",
-    "eng": "英文", "en": "英文",
-    "jpn": "日文", "ja": "日文",
-    "kor": "韩文", "ko": "韩文",
+    "chi": "中文",
+    "zho": "中文",
+    "zh": "中文",
+    "eng": "英文",
+    "en": "英文",
+    "jpn": "日文",
+    "ja": "日文",
+    "kor": "韩文",
+    "ko": "韩文",
 }
 
 #: 能进 HLS 字幕组的轨：文本轨（vtt 含 srt 转换；ass 服务端降级转 VTT）。
@@ -1584,9 +1601,7 @@ async def stream_library_file(
     )
 
 
-async def _extract_subtitle_until_disconnect(
-    request: Request, file: LibraryFile, index: int
-):
+async def _extract_subtitle_until_disconnect(request: Request, file: LibraryFile, index: int):
     """等待字幕抽取，并在浏览器放弃请求时取消底层 ffmpeg。
 
     内封 PGS/ASS 首次抽取需要通读整个容器，不能把它放进不可取消的线程池。
@@ -1622,9 +1637,7 @@ async def _extract_subtitle_until_disconnect(
 async def get_playback_subtitle(
     request: Request,
     file_id: Annotated[int, Path()],
-    track: Annotated[
-        str, Query(description="中性轨引用：external:<文件名> / embedded:<序号>")
-    ],
+    track: Annotated[str, Query(description="中性轨引用：external:<文件名> / embedded:<序号>")],
     token: Annotated[str, Query()],
     format: Annotated[str | None, Query()] = None,
     session: AsyncSession = Depends(get_session),
@@ -1788,9 +1801,7 @@ async def get_playback_resume(
 
     从未播过不是错误——返回全零状态，播放器从头开始放。
     """
-    unit = await _visible_unit(
-        session, principal, media_item_id, season_number, episode_number
-    )
+    unit = await _visible_unit(session, principal, media_item_id, season_number, episode_number)
     member_id = principal.member_id if principal.member_id is not None else 0
     states = await playback_state.get_states(session, [media_item_id], member_id=member_id)
     row = states.get(unit)
@@ -1999,9 +2010,7 @@ async def get_playback_item_episodes(
                     LibraryFile.library_id == library_id,
                     LibraryFile.media_item_id == media_item_id,
                 )
-                .order_by(
-                    LibraryFile.season_number, LibraryFile.episode_number, LibraryFile.id
-                )
+                .order_by(LibraryFile.season_number, LibraryFile.episode_number, LibraryFile.id)
             )
         )
         .scalars()
@@ -2107,8 +2116,7 @@ async def list_playback_fonts(
     return ok(
         PlaybackFontsView(
             fonts=[
-                f"/api/v1/playback/files/{file_id}/fonts/{quote(name, safe='')}"
-                f"?token={token}"
+                f"/api/v1/playback/files/{file_id}/fonts/{quote(name, safe='')}?token={token}"
                 for name in names
             ]
         )
@@ -2209,8 +2217,7 @@ async def get_trickplay_index(
             rows=index.rows,
             count=index.count,
             sheets=[
-                f"/api/v1/playback/files/{file_id}/trickplay/{quote(name, safe='')}"
-                f"?token={token}"
+                f"/api/v1/playback/files/{file_id}/trickplay/{quote(name, safe='')}?token={token}"
                 for name in index.sheets
             ],
         )
@@ -2293,8 +2300,10 @@ async def report_playback_metric(
         f"（从档 {payload.degraded_from} 降档）" if payload.degraded_from is not None else "",
         payload.engine or "未知",
         f"{payload.ttff_ms} 毫秒" if payload.ttff_ms is not None else "未出画",
-        payload.rebuffer_count, payload.rebuffer_ms,
-        payload.seek_count, payload.watched_ms // 1000,
+        payload.rebuffer_count,
+        payload.rebuffer_ms,
+        payload.seek_count,
+        payload.watched_ms // 1000,
         payload.library_file_id,
     )
     await metrics.record(

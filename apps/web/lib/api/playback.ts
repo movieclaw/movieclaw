@@ -2,7 +2,13 @@ import { publicEnv } from "@/lib/env";
 import { getPlayerDeviceId } from "@/lib/player/device";
 import type { TrickplayIndex } from "@/lib/player/trickplay";
 import { HttpError, request, resolveRequestUrl } from "@/lib/http";
-import type { LibraryEpisode, LibraryGalleryGroup, LibraryItem } from "@/lib/api/libraries";
+import type {
+  LibraryEpisode,
+  LibraryGalleryGroup,
+  LibraryItem,
+  LibraryItemOrder,
+  LibraryItemSort,
+} from "@/lib/api/libraries";
 import type { LibraryKind, MediaType } from "@/lib/media-types";
 import { readLocalProgress, writeLocalProgress } from "@/lib/player/local-progress";
 
@@ -120,8 +126,28 @@ export interface FavoritesPage {
   total: number;
 }
 
+/**
+ * 「全部收藏」页的排序档：`favorited_at`（最近收藏在前）是这面墙独有的默认档，
+ * 其余与单库海报墙同一套键——服务端也是同一份实现，同一档在两处排出同一个顺序。
+ */
+export type FavoriteSort = "favorited_at" | Exclude<LibraryItemSort, "probing">;
+
+/** 收藏页两种形态共用的排序参数：海报墙与图廊必须传同一个值，两者才是同一份名单。 */
+export interface FavoriteSortParams {
+  sort?: FavoriteSort;
+  /** 方向；不给 = 该档的自然方向（收藏时间新→旧、标题 A→Z…） */
+  order?: LibraryItemOrder;
+}
+
+function favoriteSortQuery(query: URLSearchParams, params?: FavoriteSortParams): void {
+  // 默认档不带参数：与加排序之前的请求逐字相同
+  if (params?.sort && params.sort !== "favorited_at") query.set("sort", params.sort);
+  if (params?.order) query.set("order", params.order);
+}
+
 /** 当前账号在可见媒体库中收藏的作品（网页与 Jellyfin 客户端点的心同一份），
- *  最近收藏在前。首页横滚行取前 20；「全部收藏」海报墙按 offset 滚动加载。 */
+ *  默认最近收藏在前。首页横滚行取前 20；「全部收藏」海报墙按 offset 滚动加载，
+ *  排序档与单库海报墙对齐（`sort`）。 */
 export async function listFavorites(
   limit = 20,
   offset = 0,
@@ -130,24 +156,28 @@ export async function listFavorites(
    * 而「全部收藏」页是完整账本，该老老实实按收藏时间排。
    */
   unwatchedFirst = false,
+  sort?: FavoriteSortParams,
 ): Promise<FavoritesPage> {
-  const query = `limit=${limit}&offset=${offset}${unwatchedFirst ? "&unwatched_first=true" : ""}`;
+  const query = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  if (unwatchedFirst) query.set("unwatched_first", "true");
+  favoriteSortQuery(query, sort);
   const response = await request<ApiEnvelope<FavoritesPage>>(`/playback/favorites?${query}`);
   return response.data;
 }
 
 /**
- * 「全部收藏」页图床浏览模式的数据源：与 listFavorites 同一份名单与顺序，
- * 一组是一部作品的全部图（海报 / 剧照 / 分集剧照 / 章节场景图）。分页口径同
- * 单库图廊——offset / limit 都按作品数，没有图的作品也占一组，拿满一页就还有
- * 下一页；收藏跨库，每组自带详情落点库。
+ * 「全部收藏」页图床浏览模式的数据源：与 listFavorites 同一份名单与顺序
+ * （`sort` / `order` 传同一个值），一组是一部作品的全部图（海报 / 剧照 / 分集
+ * 剧照 / 章节场景图）。分页口径同单库图廊——offset / limit 都按作品数，没有图的
+ * 作品也占一组，拿满一页就还有下一页；收藏跨库，每组自带详情落点库。
  */
-export async function listFavoritesGallery(params: {
-  limit: number;
-  offset: number;
-}): Promise<LibraryGalleryGroup[]> {
+export async function listFavoritesGallery(
+  params: { limit: number; offset: number } & FavoriteSortParams,
+): Promise<LibraryGalleryGroup[]> {
+  const query = new URLSearchParams({ limit: String(params.limit), offset: String(params.offset) });
+  favoriteSortQuery(query, params);
   const response = await request<ApiEnvelope<LibraryGalleryGroup[]>>(
-    `/playback/favorites/gallery?limit=${params.limit}&offset=${params.offset}`,
+    `/playback/favorites/gallery?${query}`,
   );
   return response.data;
 }

@@ -15,14 +15,36 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from movieclaw_api.schemas.library import LibraryGalleryGroupView
 from movieclaw_api.schemas.playback import FavoriteItemView
-from movieclaw_api.services.library.items import _aggregate_wall_views, build_gallery_groups
-from movieclaw_db.models import Library, LibraryFile, PlaybackState
+from movieclaw_api.services.library.items import (
+    WallOrder,
+    _aggregate_wall_views,
+    build_gallery_groups,
+    landing_library_of,
+    sort_item_ids,
+)
+from movieclaw_db.models import LibraryFile, PlaybackState
 from movieclaw_media.models import MediaKind
+
+#: 「全部收藏」页的排序档：``favorited_at``（最近收藏在前）是这面墙独有的默认档，
+#: 其余与单库海报墙同一套键、同一份实现（``items.sort_item_ids``）——收藏页
+#: 与库页"能力对齐"指的是同一档在两处排出同一个顺序，不是各自再写一遍
+FavoriteSort = Literal[
+    "favorited_at",
+    "title",
+    "added_at",
+    "release_date",
+    "rating",
+    "runtime",
+    "size",
+    "last_played",
+]
 
 
 async def _favorite_page(
@@ -33,6 +55,8 @@ async def _favorite_page(
     limit: int,
     offset: int,
     unwatched_first: bool = False,
+    sort: FavoriteSort = "favorited_at",
+    order: WallOrder | None = None,
 ) -> tuple[list[tuple[int, int]], int, dict[int, PlaybackState]]:
     """收藏墙与收藏图廊共用的一页名单：``[(条目 id, 落点库 id)]`` + 去重总数 +
     每部作品最近那一行收藏状态（层级文案要用）。
@@ -40,6 +64,10 @@ async def _favorite_page(
     默认**最近收藏的在前**——按 ``favorited_at`` 而不是 ``updated_at``：后者
     任何写入都会动（进度上报、标记已看、记忆轨选择），会把"两年前收藏、昨晚
     看过一遍"的片顶到最前面，那不是用户理解的"最近收藏"。
+
+    ``sort`` 换成别的档（按标题 / 评分 / 片长…）时交给 ``sort_item_ids``——与单库
+    海报墙同一份排序实现，只是范围从"某个库"换成"这批收藏"；``order`` 是方向
+    （不给 = 该档的自然方向，收藏时间档的自然方向是新→旧）。
 
     ``unwatched_first`` 只有**首页那一行**会传：收藏在这个产品里更接近"想看
     清单"而不是"珍藏架"（珍藏架已经有手动合集这个更好的归宿），所以首页把
@@ -81,24 +109,18 @@ async def _favorite_page(
         return [], 0, {}
 
     # 落点库：作品有在位文件的可见库，按首页库排序取第一个
-    library_query = (
-        select(LibraryFile.media_item_id, Library.id)
-        .join(Library, Library.id == LibraryFile.library_id)  # type: ignore[arg-type]
-        .where(
-            LibraryFile.media_item_id.in_(list(latest)),  # type: ignore[union-attr]
-            LibraryFile.in_place(),
-        )
-        .order_by(Library.sort_order.asc(), Library.id.asc())  # type: ignore[union-attr]
-        .distinct()
+    library_of = await landing_library_of(
+        session, list(latest), library_ids=visible_library_ids, files=LibraryFile.in_place()
     )
-    if visible_library_ids is not None:
-        library_query = library_query.where(Library.id.in_(visible_library_ids))  # type: ignore[attr-defined]
-    library_of: dict[int, int] = {}
-    for item_id, library_id in (await session.execute(library_query)).all():
-        if item_id is not None and library_id is not None:
-            library_of.setdefault(item_id, library_id)
 
     ordered = [item_id for item_id in latest if item_id in library_of]
+    if sort != "favorited_at":
+        ordered = await sort_item_ids(
+            session, ordered, sort, order, member_id=member_id, library_ids=visible_library_ids
+        )
+    elif order == "asc":
+        # 收藏时间档的自然方向是新→旧，反过来就是整条倒着读
+        ordered.reverse()
     if unwatched_first:
         # 稳定排序：没看完的整体提前，组内仍是收藏时间倒序。
         # 判据用的是**收藏那一行自己的 played**——电影准确；剧集收藏整剧时
@@ -119,6 +141,8 @@ async def favorite_items(
     limit: int,
     offset: int = 0,
     unwatched_first: bool = False,
+    sort: FavoriteSort = "favorited_at",
+    order: WallOrder | None = None,
 ) -> tuple[list[FavoriteItemView], int]:
     """返回一个账号收藏的作品与去重后的总数。
 
@@ -133,6 +157,8 @@ async def favorite_items(
         limit=limit,
         offset=offset,
         unwatched_first=unwatched_first,
+        sort=sort,
+        order=order,
     )
     if not page:
         return [], total
@@ -178,6 +204,8 @@ async def favorite_gallery(
     visible_library_ids: set[int] | None,
     limit: int,
     offset: int = 0,
+    sort: FavoriteSort = "favorited_at",
+    order: WallOrder | None = None,
 ) -> list[LibraryGalleryGroupView]:
     """「我的收藏」的图床浏览模式数据源：与收藏海报墙同一份名单、同一个顺序。
 
@@ -185,6 +213,7 @@ async def favorite_gallery(
     墙，所以每组各带自己的落点库（``library_id``），段标题与灯箱的「前往详情」
     据此拼地址。分页口径与单库图廊一致：``offset`` / ``limit`` 都按**作品**数，
     没有图的作品也占一组，前端靠"拿到的组数是否满一页"判断还有没有下一页。
+    ``sort`` / ``order`` 与海报墙传同一个值，两种形态才是同一份名单。
     """
     page, _total, _latest = await _favorite_page(
         session,
@@ -192,5 +221,7 @@ async def favorite_gallery(
         visible_library_ids=visible_library_ids,
         limit=limit,
         offset=offset,
+        sort=sort,
+        order=order,
     )
     return await build_gallery_groups(session, page, member_id=member_id)

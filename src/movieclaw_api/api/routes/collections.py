@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import date
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,6 +25,7 @@ from movieclaw_api.schemas.library import (
     CollectionPayload,
     CollectionSeriesView,
     CollectionView,
+    LibraryGalleryGroupView,
     LibraryItemView,
     SeriesPartView,
 )
@@ -43,7 +44,9 @@ from movieclaw_api.services.library.collections import (
 )
 from movieclaw_api.services.library.items import (
     _aggregate_wall_views,
+    build_gallery_groups,
     favorite_item_ids,
+    landing_library_of,
     poster_facts_many,
 )
 from movieclaw_api.services.library.series import (
@@ -61,6 +64,19 @@ from movieclaw_db.models import (
 from movieclaw_media.models import MediaKind
 
 router = APIRouter(prefix="/collections", tags=["collections"])
+
+#: 合集页可选的排序档：与单库海报墙同一套键（``probing`` 是扫描临时接管的序、
+#: ``release_date_asc`` 由 ``release_date + order=asc`` 覆盖，两者都不对外）。
+#: 不给 = 合集自己的序：规则驱动用 ``collection.sort``，名单驱动用拖出来的 position
+CollectionSort = Literal[
+    "title", "added_at", "release_date", "rating", "runtime", "size", "last_played"
+]
+_SORT_DESC = (
+    "排序：不给=合集自己的顺序（自定顺序 / 合集默认序）；title=按标题 / "
+    "added_at=最近入账 / release_date=按上映时间 / rating=按评分 / runtime=按片长 / "
+    "size=按体积 / last_played=最近观看——与单库海报墙同一套档位"
+)
+_ORDER_DESC = "方向：asc / desc；不给 = 该档的自然方向（自定顺序即名单序）"
 
 
 async def _scope(
@@ -604,6 +620,8 @@ async def list_collection_items(
     collection_id: int,
     limit: Annotated[int | None, Query(ge=1, le=200, description="本页条目数")] = None,
     offset: Annotated[int, Query(ge=0)] = 0,
+    sort: Annotated[CollectionSort | None, Query(description=_SORT_DESC)] = None,
+    order: Annotated[Literal["asc", "desc"] | None, Query(description=_ORDER_DESC)] = None,
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(require_login),
 ) -> ApiResponse[list[LibraryItemView]]:
@@ -622,18 +640,69 @@ async def list_collection_items(
         member_id=member_id,
         visible_library_ids=visible,
         content_limit=content_limit,
+        sort=sort,
+        order=order,
         limit=limit,
         offset=offset,
     )
     if not ids:
         return ok([])
-    views = await _aggregate_wall_views(
-        session, row.library_id, ids, ids, library_ids=visible
-    )
+    views = await _aggregate_wall_views(session, row.library_id, ids, ids, library_ids=visible)
     favorites = await favorite_item_ids(session, ids, member_id=member_id)
     for view in views:
         view.is_favorite = view.media_item_id in favorites
     return ok(views)
+
+
+@router.get(
+    "/{collection_id}/gallery",
+    response_model=ApiResponse[list[LibraryGalleryGroupView]],
+    summary="合集成员的图廊：海报 / 剧照 / 章节场景图按作品分组铺平（合集页图床浏览模式数据源）",
+    operation_id="collection.gallery",
+    openapi_extra={"x-cli-hidden": True},
+)
+async def list_collection_gallery(
+    collection_id: int,
+    limit: Annotated[int, Query(ge=1, le=100, description="本页作品数（按作品分页，不按图）")] = 24,
+    offset: Annotated[int, Query(ge=0, description="跳过的作品数（滚动加载翻页用）")] = 0,
+    sort: Annotated[CollectionSort | None, Query(description=_SORT_DESC)] = None,
+    order: Annotated[Literal["asc", "desc"] | None, Query(description=_ORDER_DESC)] = None,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_login),
+) -> ApiResponse[list[LibraryGalleryGroupView]]:
+    """合集页的图床浏览模式：与 ``/collections/{id}/items`` 同一份名单与顺序
+    （``sort`` / ``order`` 传同一个值），一组就是一部作品的全部图。分页口径与
+    单库 / 收藏图廊一致：按作品数，没有图的作品也占一组。跨库合集每组各带
+    自己的落点库；单库合集恒为本库。"""
+
+    member_id, visible, content_limit = await _scope(session, principal)
+    row = await _get_or_404(session, collection_id)
+    _guard_visible(row, member_id, visible)
+
+    ids = await resolve_members(
+        session,
+        row,
+        member_id=member_id,
+        visible_library_ids=visible,
+        content_limit=content_limit,
+        sort=sort,
+        order=order,
+        limit=limit,
+        offset=offset,
+    )
+    if not ids:
+        return ok([])
+    if row.library_id is not None:
+        landing = {item_id: row.library_id for item_id in ids}
+    else:
+        landing = await landing_library_of(session, ids, library_ids=visible)
+    return ok(
+        await build_gallery_groups(
+            session,
+            [(item_id, landing[item_id]) for item_id in ids if item_id in landing],
+            member_id=member_id,
+        )
+    )
 
 
 @router.get(

@@ -116,6 +116,12 @@ import {
   wallRecallScope,
 } from "@/lib/library-wall-recall";
 import { useWallRecall } from "@/lib/use-wall-recall";
+import {
+  PREF_TO_SORT,
+  SORT_DIRECTIONS,
+  useWallSortPref,
+  type WallSortPref,
+} from "@/lib/wall-sort";
 import { formatRelativeTime } from "@/lib/time";
 import { cachedImageUrl } from "@/lib/image-proxy";
 import { keepIfEqual, reconcileList } from "@/lib/poll-reconcile";
@@ -182,42 +188,9 @@ function keepOnError<T>(rows: Promise<T[]>): Promise<T[] | null> {
  * 内容时间能分出月份档，右侧的跳转轨道靠的就是这个。所以「最近添加」是持续
  * 往库里添内容的人**自己选**的一档，不做默认。
  */
-type WallSortPref =
-  | "default"
-  | "added_at"
-  | "release_date"
-  | "rating"
-  | "runtime"
-  | "size"
-  | "last_played";
-
-/** 偏好 → 服务端排序键。`default` 由库的形态决定（影视库拼音序、其他库按时间）。 */
-const PREF_TO_SORT: Record<Exclude<WallSortPref, "default">, LibraryItemSort> = {
-  added_at: "added_at",
-  release_date: "release_date",
-  rating: "rating",
-  runtime: "runtime",
-  size: "size",
-  last_played: "last_played",
-};
-
-/**
- * 每档的自然方向与方向的人话（2026-09-11 起排序可切换正倒序）。
- *
- * 不反转时请求不带 order，服务端按自然方向排——与加方向之前逐字相同。方向写成
- * 人话（「短→长」）而不是只画箭头：↑ 到底是"从小到大"还是"大的在上"，光看箭头
- * 要想一下。补探序是扫描临时接管的，控件那几分钟本来就是灰的，方向无意义
- */
-const SORT_DIRECTIONS: Record<LibraryItemSort, { naturalAsc: boolean; asc: string; desc: string }> = {
-  title: { naturalAsc: true, asc: "A→Z", desc: "Z→A" },
-  added_at: { naturalAsc: false, asc: "旧→新", desc: "新→旧" },
-  release_date: { naturalAsc: false, asc: "旧→新", desc: "新→旧" },
-  probing: { naturalAsc: true, asc: "A→Z", desc: "Z→A" },
-  rating: { naturalAsc: false, asc: "低→高", desc: "高→低" },
-  runtime: { naturalAsc: true, asc: "短→长", desc: "长→短" },
-  size: { naturalAsc: false, asc: "小→大", desc: "大→小" },
-  last_played: { naturalAsc: false, asc: "远→近", desc: "近→远" },
-};
+// 档位类型、偏好 → 服务端键、方向表与读写偏好的钩子都在 lib/wall-sort.ts：
+// 收藏页与合集页和这里共用同一份（排序能力对齐指的就是同一份实现）。
+// 这里只剩单库页自己的事：默认档由库的形态决定（影视库拼音序、其他库按时间）
 
 /**
  * 排序档位与展示值。
@@ -326,69 +299,6 @@ const INDEXED_SORTS: Partial<Record<LibraryItemSort, "title" | "release_date">> 
   probing: "title",
   release_date: "release_date",
 };
-const WALL_SORT_STORAGE_KEY = "movieclaw.library.wall-sort";
-
-/** 能从 storage 里认回来的排序偏好；其余一律当默认序（防老版本或手改出来的脏值） */
-const WALL_SORT_PREFS: readonly WallSortPref[] = [
-  "default",
-  "added_at",
-  "release_date",
-  "rating",
-  "runtime",
-  "size",
-  "last_played",
-];
-
-/** 排序偏好：选的哪一档，以及是否反转了这一档的自然方向。 */
-interface WallSortState {
-  pref: WallSortPref;
-  reversed: boolean;
-}
-
-/**
- * 读写排序偏好（含方向）。第四个返回值是「读完 storage 了没有」：首帧一律先给默认值
- * （服务端渲染没有 localStorage），排序相关的副作用必须等它为真再动手——
- * 否则从详情页返回的那一帧会先按默认序把窗口重拉一遍，把人甩回墙首。
- *
- * 存成 `rating` / `rating:rev`。此前只认回「最近添加」一档：选了按评分、按片长，
- * 刷新一下就退回默认序——排序是偏好，该记全。换档时方向回到新档的自然方向：
- * 从「片长 长→短」换到「评分」，用户要的是"高分在前"，不是继承一个反向
- */
-function useWallSortPref(): [WallSortState, (next: WallSortPref) => void, () => void, boolean] {
-  const [state, setState] = useState<WallSortState>({ pref: "default", reversed: false });
-  const [ready, setReady] = useState(false);
-  const stateRef = useRef(state);
-  stateRef.current = state;
-  useEffect(() => {
-    try {
-      const [pref, flag] = (window.localStorage.getItem(WALL_SORT_STORAGE_KEY) ?? "").split(":");
-      if (WALL_SORT_PREFS.includes(pref as WallSortPref)) {
-        setState({ pref: pref as WallSortPref, reversed: flag === "rev" });
-      }
-    } catch {
-      /* 隐私模式等拿不到 storage：保持默认序 */
-    }
-    setReady(true);
-  }, []);
-  const persist = useCallback((next: WallSortState) => {
-    setState(next);
-    try {
-      window.localStorage.setItem(
-        WALL_SORT_STORAGE_KEY,
-        next.reversed ? `${next.pref}:rev` : next.pref,
-      );
-    } catch {
-      /* 同上 */
-    }
-  }, []);
-  const update = useCallback((pref: WallSortPref) => persist({ pref, reversed: false }), [persist]);
-  const toggleReversed = useCallback(
-    () => persist({ ...stateRef.current, reversed: !stateRef.current.reversed }),
-    [persist],
-  );
-  return [state, update, toggleReversed, ready];
-}
-
 export function LibraryDetailView({ libraryId }: { libraryId: number }) {
   const initialSnapshot = getLibraryDetailSnapshot(libraryId);
   // 本次是不是「重新进入」：首帧没有会话快照 = 冷启动 / 刷新 / 换了库进来的；
