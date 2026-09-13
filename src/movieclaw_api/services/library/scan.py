@@ -76,6 +76,7 @@ from movieclaw_api.services.library.nfo import (
     read_entry_identity,
     read_episode_metadata,
 )
+from movieclaw_api.services.library.origin import scan_origin
 from movieclaw_api.services.library.profile import IgnoreProfile, LibraryProfile, profile_of
 from movieclaw_api.services.library.reanchor import migrate_watch_state
 from movieclaw_api.services.library.resolve import (
@@ -931,6 +932,12 @@ async def _scan(
         # 一轮扫描里首次发现的所有文件共享批次号。已存在/回归的台账行不会
         # 覆盖原批次，因此「最近添加」只描述真正的新入账，不把重扫冒充新增。
         added_batch_id = uuid4().hex
+        # 来源快照：扫描分不清文件是谁放进来的，只记"哪种扫描第一次看见它"
+        # （docs/design/library-duplicate-files.md §2.1）
+        scan_trigger = (
+            "watch" if scope_paths else "manual" if backfill_existing_specs else "scheduled"
+        )
+        origin_snapshot = scan_origin(scan_trigger)
 
         async def recover_failed_session() -> None:
             """单文件失败后的会话急救。失败若发生在半截事务里（如写台账时
@@ -1201,6 +1208,7 @@ async def _scan(
                     existing=existing,
                     dir_names=dir_files.get(str(file.parent)),
                     added_batch_id=added_batch_id,
+                    origin=origin_snapshot,
                     prefetched_probe=probe_task,
                 )
             except Exception as exc:  # noqa: BLE001 -- 单文件失败不断整轮
@@ -2418,6 +2426,11 @@ async def _merge_same_file_rows(
         survivor.media_source_manual = True
     if survivor.source == FileSource.SCANNED and duplicate.source == FileSource.IMPORTED:
         survivor.source = duplicate.source
+    # 来源快照与「都留着」标记同样只补空：保留行自己有就以它为准
+    if survivor.origin is None:
+        survivor.origin = duplicate.origin
+    if survivor.kept_at is None:
+        survivor.kept_at = duplicate.kept_at
     if survivor.ignored_at is None:
         survivor.ignored_at = duplicate.ignored_at
     if survivor.media_item_id is None:
@@ -2598,6 +2611,7 @@ async def _ingest_file(
     existing: LibraryFile | None = None,
     dir_names: list[str] | None = None,
     added_batch_id: str,
+    origin: dict | None = None,
     prefetched_probe: asyncio.Task[MediaSpec | None] | None = None,
 ) -> None:
     """把一个文件识别并写入台账。``existing`` 是该路径已有的台账行：
@@ -2782,6 +2796,7 @@ async def _ingest_file(
             release_group=attrs.release_group if profile.scraped else None,
             source=FileSource.SCANNED,
             added_batch_id=added_batch_id,
+            origin=origin,
             # 临时本地身份的行同时带着"为什么没认出"：清单与角标据此表达
             unidentified_reason=(unidentified_reason if item_id is None or provisional else None),
             unidentified_code=unidentified_code if item_id is None or provisional else None,

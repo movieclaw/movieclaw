@@ -31,6 +31,7 @@ from movieclaw_api.schemas.library import (
     ConsolidateRootsPreviewView,
     DetachPayload,
     DirectorView,
+    FileOriginView,
     IdentityReviewDecision,
     ItemCollectionRef,
     ItemDeleteResultView,
@@ -143,6 +144,7 @@ from movieclaw_api.services.library.organize import (
     last_organize,
     organize_progress,
 )
+from movieclaw_api.services.library.origin import derive_origins, origin_of
 from movieclaw_api.services.library.preflight import (
     CONFLICT_LABELS,
     MAX_SELECTION,
@@ -2339,8 +2341,13 @@ def _chapter_views(row: LibraryFile) -> list[ChapterView] | None:
     return views
 
 
-def _file_view(row: LibraryFile, external_subs: list[str]) -> LibraryFileView:
-    """台账行 → 详情页文件视图：内封字幕轨与外挂字幕文件合并成一份清单。"""
+def _file_view(
+    row: LibraryFile, external_subs: list[str], origins: dict[int, dict] | None = None
+) -> LibraryFileView:
+    """台账行 → 详情页文件视图：内封字幕轨与外挂字幕文件合并成一份清单。
+
+    ``origins`` 是旧行（origin 为空）的读时推导结果（``derive_origins``），
+    有落库快照的行不看它。"""
     subtitles = [
         SubtitleStreamView(
             codec=stream.get("codec"),
@@ -2390,6 +2397,8 @@ def _file_view(row: LibraryFile, external_subs: list[str]) -> LibraryFileView:
         state=row.state,
         purge_after=row.purge_after,
         trash_note=_trash_note(row),
+        origin=FileOriginView(**origin_of(row, origins or {})),
+        kept_at=row.kept_at,
         audio_streams=(
             None
             if row.audio_streams is None
@@ -2563,7 +2572,10 @@ async def get_library_item(
         seasons = sorted({s for s in meta_seasons if s > 0} | owned_seasons)
 
     assert item.id is not None
-    file_views = [_file_view(row, bundle.external_subtitles.get(row.id or -1, [])) for row in rows]
+    origins = await derive_origins(session, rows)
+    file_views = [
+        _file_view(row, bundle.external_subtitles.get(row.id or -1, []), origins) for row in rows
+    ]
     entry_dirs = bundle.entry_dirs
     if not principal.is_admin:
         # 成员不暴露落盘路径：文件行只留文件名与规格，条目目录整个不给

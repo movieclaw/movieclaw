@@ -302,6 +302,26 @@ class LibraryFile(TimestampMixin, table=True):
         default=None,
         description="首次入账批次；NULL=旧数据或旧版本写入",
     )
+    # 来源快照（docs/design/library-duplicate-files.md §2）：这个文件是怎么进库的，
+    # 入库/扫描时一次成型的**展示用文案**，不外键——订阅可以取消、监听规则可以
+    # 删、种子表会滚动，快照永远能读。只存三个键，就是文件区要显示的三样：
+    #   {"kind": "subscription" | "manual_download" | "watch_import" | "scan",
+    #    "label": "订阅《九门》自动投递",                       # 第一行
+    #    "detail": "HDSky · 种子标题 · qBittorrent · 硬链接入库"}  # 第二行，可为空
+    # NULL = 特性上线前的旧行，展示时按 source / site_id / torrent_id 读时推导
+    # （services/library/origin.derive_origins），不回填。
+    origin: dict | None = Field(
+        default=None,
+        sa_column=Column(_NullableJson, nullable=True),
+        description="来源快照 {kind,label,detail}；NULL=旧数据（读时推导）",
+    )
+    # 「都留着」标记（docs/design/library-duplicate-files.md §3.4）：用户在重复
+    # 文件页对一个单元说"这些版本都是我要的"，单元内当前每个文件盖上时间戳。
+    # 判定时全部文件都带标记的单元不再列为重复；新文件进来（无标记）就重新
+    # 列出。沿用待识别清单 ignored_at 的范式，不加新表。
+    kept_at: datetime | None = Field(
+        default=None, description="用户「都留着」标记时间；NULL=未标记"
+    )
 
     # -- 生命周期（docs/design/library-file-recycle.md）----------------------
     # state 是唯一判别式；missing_since / trashed_at 是状态附属时间戳，

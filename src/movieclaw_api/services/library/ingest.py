@@ -138,6 +138,12 @@ from movieclaw_api.services.library.naming import (
     movie_file_name,
     season_dir_name,
 )
+from movieclaw_api.services.library.origin import (
+    load_origin_context,
+    manual_download_origin,
+    subscription_origin,
+    watch_import_origin,
+)
 from movieclaw_api.services.library.profile import kind_label, profile_for
 from movieclaw_api.services.library.resolve import verify_resolve
 from movieclaw_api.services.library.scan import disc_main_stream, guess_evidence
@@ -998,13 +1004,12 @@ async def _has_managed_download_claim(session, entry: Path) -> bool:
                     & (SiteTorrent.torrent_id == ManualDownloadIntent.torrent_id),
                 )
                 .where(
-                    ManualDownloadIntent.created_at
-                    >= utcnow() - MANUAL_DOWNLOAD_INTENT_TTL,  # type: ignore[arg-type]
+                    ManualDownloadIntent.created_at >= utcnow() - MANUAL_DOWNLOAD_INTENT_TTL,  # type: ignore[arg-type]
                     or_(
                         ManualDownloadIntent.download_name == entry.name,
                         ManualDownloadIntent.download_name.is_(None),  # type: ignore[union-attr]
                         ManualDownloadIntent.download_name == "",
-                    )
+                    ),
                 )
             )
         ).all()
@@ -1519,8 +1524,7 @@ async def _process_entry(
                 else str(latest_job.input_data.get("detected_fingerprint") or "")
             )
             if not reconciled_disc_job and (
-                latest_job.status == JobStatus.CANCELLED
-                or terminal_fingerprint == snap.fingerprint
+                latest_job.status == JobStatus.CANCELLED or terminal_fingerprint == snap.fingerprint
             ):
                 return
         # 标记文件与权威信号矛盾（说完成却还有 .!qB 等）说明匹配可疑，从严按
@@ -1885,6 +1889,31 @@ async def _ingest_entry(
         """某个入库文件的来源戳 (site, torrent)。"""
         return delivery.stamp(entry, file, unit) if delivery is not None else manual_stamp
 
+    # 来源快照（docs/design/library-duplicate-files.md §2）：与来源戳同源、同粒度
+    # ——订阅投递按文件定位到那次投递，手动下载与监听识别按条目；文案在落账
+    # 现场一次成型，之后订阅取消 / 规则删除 / 种子表滚动都不影响它可读
+    origin_ctx = await load_origin_context(
+        session, delivery.attempts if delivery is not None else (), manual_intent
+    )
+
+    def origin_for(file: Path | None, unit: tuple[int, int] | None) -> dict:
+        attempt = delivery.attempt_for(entry, file, unit) if delivery is not None else None
+        if attempt is not None:
+            return subscription_origin(
+                attempt,
+                item_title=item.title,
+                downloader_name=origin_ctx.downloader(attempt.downloader_id),
+                strategy=strategy,
+            )
+        if manual_intent is not None:
+            return manual_download_origin(
+                manual_intent,
+                torrent_title=origin_ctx.manual_torrent_title,
+                downloader_name=origin_ctx.downloader(manual_intent.downloader_id),
+                strategy=strategy,
+            )
+        return watch_import_origin(rule)
+
     # 去重阶梯：订阅投递按来源投递所属规则组的偏好序判"同档或更高"，与抓取
     # 判定、洗版验证同一把尺子（issue #381）；非订阅路径没有规则组，用中性阶梯
     dedup_specs: dict[int, RuleSetSpec | None] = {}
@@ -2032,9 +2061,7 @@ async def _ingest_entry(
                     await job_context.update_progress(
                         mode="determinate",
                         phase="transferring",
-                        message=(
-                            f"正在{'复制' if strategy == 'copy' else '硬链接'}完整原盘"
-                        ),
+                        message=(f"正在{'复制' if strategy == 'copy' else '硬链接'}完整原盘"),
                         current=copied,
                         total=total,
                         percent=round(percent, 1),
@@ -2101,6 +2128,7 @@ async def _ingest_entry(
                 site_id=disc_site,
                 torrent_id=disc_torrent,
                 added_batch_id=added_batch_id,
+                origin=origin_for(None, None),
             )
         )
         await LibraryRepository(session).refresh_stats([dest_library.id])
@@ -2380,6 +2408,7 @@ async def _ingest_entry(
                 site_id=stamp_site,
                 torrent_id=stamp_torrent,
                 added_batch_id=added_batch_id,
+                origin=origin_for(file, None if kind is MediaKind.MOVIE else (season, episode)),
             )
         )
         imported += 1
@@ -2525,19 +2554,27 @@ async def _ingest_raw_drop(
     from movieclaw_api.services.media_scrape import ensure_assets
 
     if snap.has_disc:
-        return None, 0, (
-            IngestStatus.PENDING,
-            "原样落盘暂不接收原盘目录（BDMV/VIDEO_TS），请人工整理",
+        return (
+            None,
+            0,
+            (
+                IngestStatus.PENDING,
+                "原样落盘暂不接收原盘目录（BDMV/VIDEO_TS），请人工整理",
+            ),
         )
     if not snap.videos:
         return None, 0, (IngestStatus.SKIPPED, "条目中没有视频文件，已跳过")
     root = library.primary_root if library is not None else dest_root
     if not root:
-        return None, 0, (
-            IngestStatus.FAILED,
-            f"媒体库「{library.name}」没有配置根路径，无法入库"
-            if library is not None
-            else "自定义目录规则没有目标目录，无法搬运",
+        return (
+            None,
+            0,
+            (
+                IngestStatus.FAILED,
+                f"媒体库「{library.name}」没有配置根路径，无法入库"
+                if library is not None
+                else "自定义目录规则没有目标目录，无法搬运",
+            ),
         )
     assert library is None or library.id is not None
     if job_context is not None and library is not None:
@@ -2556,9 +2593,13 @@ async def _ingest_raw_drop(
     main = max(snap.videos, key=lambda f: f.stat().st_size)
     spec = await asyncio.to_thread(probe_media, main)
     if spec is None and ffprobe_available():
-        return None, 0, (
-            IngestStatus.FAILED,
-            f"主视频「{main.name}」探测失败——可能尚未下载完成或已损坏，文件变化后自动重试",
+        return (
+            None,
+            0,
+            (
+                IngestStatus.FAILED,
+                f"主视频「{main.name}」探测失败——可能尚未下载完成或已损坏，文件变化后自动重试",
+            ),
         )
     dest_base = Path(root) / entry.name if entry.is_dir() else Path(root)
     # 全部常规文件原样搬（视频 + NFO/字幕/图片），隐藏文件与下载器标记不带。
@@ -2641,9 +2682,13 @@ async def _ingest_raw_drop(
         # 自定义目录：过客文件只搬不记账（后续出现在某个库根时由扫描入账）
         imported = sum(1 for src_file, _final in transferred if src_file in video_set)
         if imported:
-            return None, imported, (
-                IngestStatus.IMPORTED,
-                f"已原样{verb}到自定义目录（{dest_base}），共 {imported} 个视频{suffix}",
+            return (
+                None,
+                imported,
+                (
+                    IngestStatus.IMPORTED,
+                    f"已原样{verb}到自定义目录（{dest_base}），共 {imported} 个视频{suffix}",
+                ),
             )
         if conflict:
             return None, 0, (IngestStatus.PENDING, f"目标目录已有同名文件，未覆盖{suffix}")
@@ -2699,6 +2744,7 @@ async def _ingest_raw_drop(
                 source=FileSource.IMPORTED,
                 identity_source=identity.identity_source.value,
                 added_batch_id=added_batch_id,
+                origin=watch_import_origin(rule),
             )
         )
         imported += 1
@@ -2727,9 +2773,13 @@ async def _ingest_raw_drop(
             # 章节图与上面的封面同理，只是慢得多，交给条目作业在后台跑
             await enqueue_ingested_item_chapter_images(session, library, item_id, item_title)
     if imported:
-        return first_item, imported, (
-            IngestStatus.IMPORTED,
-            f"已原样{verb}到「{library.name}」（{dest_base}），入库 {imported} 个视频{suffix}",
+        return (
+            first_item,
+            imported,
+            (
+                IngestStatus.IMPORTED,
+                f"已原样{verb}到「{library.name}」（{dest_base}），入库 {imported} 个视频{suffix}",
+            ),
         )
     if conflict:
         return None, 0, (IngestStatus.PENDING, f"目标目录已有同名文件，未覆盖{suffix}")
@@ -3201,8 +3251,7 @@ def _prepare_disc_ingest(
         "source": str(source),
         "directories": [relative.as_posix() for relative in directories],
         "files": [
-            [relative.as_posix(), size, mtime_ns]
-            for _path, relative, size, mtime_ns in files
+            [relative.as_posix(), size, mtime_ns] for _path, relative, size, mtime_ns in files
         ],
     }
     valid = False
@@ -3236,9 +3285,7 @@ async def _transfer_disc_tree_for_job(
     on_progress: Callable[[int, int], Awaitable[None]],
 ) -> tuple[Path, bool]:
     """Job 专用完整原盘搬运：复制可续传，整树完成后才原子发布。"""
-    final, already_present = await asyncio.to_thread(
-        _disc_destination, source, base, version_label
-    )
+    final, already_present = await asyncio.to_thread(_disc_destination, source, base, version_label)
     if already_present:
         stage, state_path = _disc_ingest_paths(final)
         if stage.exists():
@@ -3850,8 +3897,7 @@ async def _execute_ingest_job(
             disc_retry = bool(
                 snap.has_disc
                 and record.status == IngestStatus.SKIPPED
-                and "原盘目录（BDMV/VIDEO_TS）暂不支持自动入库"
-                in (record.message or "")
+                and "原盘目录（BDMV/VIDEO_TS）暂不支持自动入库" in (record.message or "")
             )
             if (
                 record.status in {IngestStatus.IMPORTED, IngestStatus.SKIPPED}

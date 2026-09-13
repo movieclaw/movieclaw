@@ -246,6 +246,11 @@ class LibraryFileRepository:
         existing.source = row.source
         existing.site_id = row.site_id
         existing.torrent_id = row.torrent_id
+        # 来源快照记的是"第一次怎么进库"：只补空、不覆盖（缺失回归 / 识别重试
+        # 走的是扫描，覆盖会把订阅投递改写成"存量扫描发现"）；kept_at 是用户
+        # 决定，写路径永远不碰
+        if existing.origin is None:
+            existing.origin = row.origin
         existing.unidentified_reason = row.unidentified_reason
         existing.unidentified_code = row.unidentified_code
         existing.unidentified_candidates = row.unidentified_candidates

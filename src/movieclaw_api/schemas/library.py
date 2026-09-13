@@ -816,6 +816,18 @@ class ChapterView(BaseModel):
     )
 
 
+class FileOriginView(BaseModel):
+    """文件来源快照（docs/design/library-duplicate-files.md §2）：这个文件是怎么进库的。"""
+
+    kind: str = Field(description="subscription / manual_download / watch_import / scan")
+    label: str = Field(
+        description="一句话：订阅《九门》自动投递 / 手动下载 / 监听目录自动识别入库 / 存量扫描发现"
+    )
+    detail: str | None = Field(
+        default=None, description="第二行：站点 · 种子标题 · 下载器 · 搬运方式"
+    )
+
+
 class LibraryFileView(BaseModel):
     """条目详情页的一个物理文件（一个版本 / 一集）。"""
 
@@ -853,6 +865,10 @@ class LibraryFileView(BaseModel):
     trash_note: str | None = Field(
         default=None,
         description="待回收原因（中文整句，含触发方），文件区直接展示",
+    )
+    origin: FileOriginView = Field(description="来源快照：这个文件是怎么进库的")
+    kept_at: datetime | None = Field(
+        default=None, description="用户在重复文件页点过「都留着」的时间；null=未标记"
     )
     audio_streams: list[AudioStreamView] | None = Field(
         default=None, description="音轨列表；null=尚未探测（ffprobe 缺失或文件不可达）"
