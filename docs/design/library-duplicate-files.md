@@ -322,3 +322,8 @@ body: { "bucket": "identical" | "versions", "library_id": null }
 | 5 | （决策 A 通过后）监听导入非订阅路径的同档预检 | 既有 ingest 测试全绿 + 新增用例 |
 
 步骤 1 与 2–3 相互独立，可并行两个 PR；4 依赖 1–3。
+
+验收落在三处测试：`tests/api/test_library_duplicates.py`（判定逻辑，手搓台账行）、
+`tests/api/test_library_duplicates_e2e.py`（**真实扫描 / 监听入库管线 + 真硬链接 +
+真复制 + 磁盘落位与恢复**）、`tests/e2e/test_library_duplicates_browser.py`（真前端 +
+无头 Chromium 走完两堆、留这个、都留着、回收站与条目页入口，标 integration）。
