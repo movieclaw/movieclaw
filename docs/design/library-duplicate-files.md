@@ -1,0 +1,328 @@
+# 媒体库冗余文件：来源附注与重复版本的检测清理
+
+> 状态：**方案讨论稿**（2026-09-13），尚未实施。起源于真实反馈：电影与剧集条目
+> 下都会出现同一部片 / 同一集挂着多个文件，既不是洗版留下的，也说不清是谁放进来的。
+>
+> 相关：`library-file-recycle.md`（「待回收」第三态与回收站，本文的清理通道）、
+> `library-recycle-bin.md`（管理页回收站标签，本文的列表页同构于它）、
+> `quality-upgrade.md` §2.4 / §14（档位阶梯与三态铁律，本文的比较尺子）、
+> `media-source-annotation.md`（片源人工标注，同样把「未知」交还给人判断）。
+
+## 0. 问题与摸底
+
+### 0.1 现象
+
+同一**单元**（电影 = 条目本身，剧集 = 某一季某一集）下有两个以上在位文件。
+用户面对它们只能看到文件名，答不出三个问题：**它从哪来、它和另一个有什么区别、
+留哪个删哪个**。
+
+### 0.2 重复从哪来（代码摸底）
+
+| # | 来源 | 证据 | 本方案的处置 |
+|---|---|---|---|
+| 1 | **监听目录导入的非订阅内容**：换个发布组 / 换个扩展名的包，以版本退让名 `… - 1080p.mkv` 落库 | 入库的「同档预检」只对 `identity_source == "subscription"` 生效（`ingest.py` 2244 行附近，注释明确写着"订阅之外的路径不受影响"）；同名幂等只挡得住同扩展名（`_resolve_transfer_target`） | 检测清理；是否堵源头见 §7 决策 A |
+| 2 | **存量扫描发现**：外部工具（其他下载器 / 整理器）或人工放进库根的文件 | 扫描的定位是盘点不是守门，"绝不移动 / 重命名 / 删除任何存量文件"（`scan.py` 模块头） | 检测清理（源头无法堵，也不该堵） |
+| 3 | **同一 inode 的多个名字**：外部工具改名后又硬链、或整理器落位后原名残留 | 扫描按路径入账，同尺寸在位行**不参与**改名归并（`_try_relink`："路径仍在磁盘的同尺寸行是复制/硬链，不是改名"），于是两行并存 | 检测为「同一文件」类；清理不省空间但消歧 |
+| 4 | **洗版在途**：新版本已入库成多版本行、验证尚未裁决 | `quality-upgrade.md` §12.1：入库引擎不感知洗版，证伪 / 替换发生在验证钩子 | **放行**——不能与验证打架 |
+| 5 | **洗版「保留共存」规则**（`upgrade_keep_old`） | `upgrade.py` 900 行附近 | **放行**——用户明确要的多版本 |
+
+结论：1、2、3 是真正的冗余，4、5 是有意的多版本。检测必须能把两类分开。
+
+### 0.3 台账里已经有、但没给人看的来源信息
+
+`library_file` 已有 `source`（imported / scanned）、`site_id` / `torrent_id`（投递来源戳）、
+`added_batch_id`、`identity_source`。但：
+
+- 文件区只把 `source` 传给了前端，**没有任何展示**（`LibraryItemFile.source` 无消费方）；
+- 手动下载的身份锚 `ManualDownloadIntent` **入库成功即删除**（`ingest.py`："和台账一起提交删除"），
+  之后只剩 (site, torrent) 两个 id；
+- 哪条监听规则、硬链还是复制、哪个下载器、是首次投递还是洗版投递、是自动还是人工选种——
+  这些当时都知道，**都没落**。
+
+## 1. 一句话设计
+
+给每个文件行落一份**来源快照**（`origin`，写入时一次成型、免 join），文件区直接展示
+「它从哪来」；再用洗版已有的**档位阶梯**加上「同一文件 / 同内容」两条物理指纹，把每个多文件
+单元里的文件分成「保留 / 冗余（四类）/ 无法判定」，用户按策略勾选后走 `recycle_file`
+进回收站——7 天可恢复，机制一行不加。
+
+## 2. 来源附注（目标 1）
+
+### 2.1 数据：`library_file.origin` JSON 快照
+
+沿用 `trash_context` 的范式：**存展示用快照、不外键**——订阅可以取消、监听规则可以删、
+种子表会滚动，快照文案永远能读。
+
+```json
+{
+  "kind": "subscription",                 // subscription / manual_download / watch_import / scan
+  "label": "订阅《九门》自动投递",           // 一句话，文件区第一行直接显示
+  "torrent_title": "Nine.Gates.2025.S01.1080p.WEB-DL.H264.AAC-CHDWEB",
+  "site_id": "hdsky", "site_name": "HDSky",
+  "downloader": "qBittorrent",
+  "strategy": "hardlink",                 // hardlink / copy
+  "subscription_id": 12, "attempt_id": 345,
+  "purpose": "download",                  // download / upgrade（洗版投递）
+  "manual_pick": false,                   // 人工选种投递
+  "watch_id": 3, "watch_path": "/downloads/complete",
+  "ingest_entry_id": 77
+}
+```
+
+`kind` 是唯一必填键，其余按来源有什么写什么。四种 kind 对应的 `label`：
+
+| kind | label 示例 | 数据从哪来（入库现场都有） |
+|---|---|---|
+| `subscription` | 订阅《九门》自动投递 / 订阅《九门》洗版投递（人工选种） | `_DeliveryProvenance.attempt_for()` 返回的 `SubscriptionDownloadAttempt`：`torrent_title`、`purpose`、`manual`、`downloader_id`、`site_id` |
+| `manual_download` | 手动下载（HDSky） | `ManualDownloadIntent`（删除前取值）+ `SiteTorrent.title` |
+| `watch_import` | 监听目录自动识别入库（未匹配到任何下载任务） | `ImportWatch` 规则（`source_path`、`strategy`）+ `IngestEntry.id` |
+| `scan` | 存量扫描发现（非本系统入库） | 扫描触发方式（手动 / 定时 / 目录监听）+ `added_batch_id` |
+
+写入点只有四处：`ingest.py` 三个 `LibraryFile(...)` 构造（原盘 2099、普通文件 2377、
+「其他」形态 2699 行附近）与 `scan.py` 的新行落账。条目转移 / 根路径归并只改路径，
+`origin` 原样随行——"它当初怎么来的"不因搬家而变。
+
+### 2.2 历史行：读时推导，不做回填
+
+`origin IS NULL` 的旧行在文件视图装配时推导一份等价快照（`derive_origin(row)`）：
+
+- `source=imported` 且带 (site, torrent) 戳 → 查 `SubscriptionDownloadAttempt`（同 site+torrent，
+  取最新一条）拼订阅名 / 目的 / 人工选种；查不到投递记录 → 查 `SiteTorrent.title` 记为
+  「手动或监听导入 · 站点 · 种子标题」；
+- `source=imported` 无戳 → 「监听目录导入（来源种子未记录）」；
+- `source=scanned` → 「存量扫描发现于 {created_at}」。
+
+推导结果**不写回**：一次详情页最多几十行、一两条 `IN (...)` 查询，代价可忽略；写回则要
+决定"推导的算不算真相"，不值得。若将来回收站 / 重复文件列表也要显示来源，同一个函数复用。
+
+### 2.3 展示
+
+条目详情页文件区，展开面板的 `<dl>` 加一行「来源」：
+
+```
+来源    订阅《九门》自动投递
+        HDSky · Nine.Gates.2025.S01.1080p.WEB-DL.H264.AAC-CHDWEB · qBittorrent · 硬链接入库
+```
+
+第一行 `label`，第二行由存在的键按固定顺序拼（站点 · 种子标题 · 下载器 · 搬运方式）。
+`scan` 类第二行写「发现于 2026-06-03（手动扫描）」。收起态的文件行**不加徽标**——来源
+是解释信息，不是状态，不该常驻占位。
+
+`LibraryFileView` 新增 `origin: {kind, label, detail: str | null}`（`detail` 由后端拼好，
+前端不再理解各 kind 的键）。
+
+## 3. 冗余检测（目标 2 · 检测）
+
+### 3.1 单元与候选
+
+- 单元 = `(media_item_id, season_number, episode_number)`，与库存 / 工单口径一致；
+- 候选 = 该单元 **`state = in_place`** 的行 ≥ 2。`missing` 行不参与（可能是拔掉的移动盘，
+  既不算副本，也不能当保留者）；`trashed` 行不参与（已在回收站）；未识别行
+  （`media_item_id IS NULL`）不参与——没有单元就谈不上重复。
+
+纯数据库查询：一条按 `(media_item_id, season, episode)` 分组、`HAVING COUNT(*) >= 2` 的
+聚合就能圈出全部多文件单元；之后只对这些单元的文件做判定。**不 ffprobe、不算哈希**；
+唯一的磁盘访问是对多文件单元逐文件 `stat` 一次取 `(st_dev, st_ino)`（几十到几百次
+stat，云盘挂载也可接受；失败时该文件退化为"不判 inode"）。
+
+### 3.2 判定：每个文件与「保留者」比一次
+
+先按 §3.3 选出单元的保留者，其余每个文件与它比，落成一个类别：
+
+| 类别 | 判据 | 说明 |
+|---|---|---|
+| `same_inode` 同一文件 | `(st_dev, st_ino)` 相同 | 磁盘只有一份，两个名字。清理不省空间，但让台账、播放列表、统计都只剩一行 |
+| `same_content` 同内容副本 | 尺寸精确相等 且 实测时长相等（±2 秒，两侧都有值）| 与 `_try_relink` 同一指纹；复制入库两次、外部工具再拷一份都落这里 |
+| `same_tier` 同档 | 阶梯比较结果 `0` | 两个组的 1080p WEB-DL；见 §3.4 的 HDR 守卫 |
+| `lower_tier` 被更高档覆盖 | 阶梯比较结果 `-1` | 1080p 与 2160p 并存时的 1080p |
+| `undecidable` 无法判定 | 阶梯比较结果 `None` | 单侧片源 / 分辨率未知——三态铁律，**只列出、永不预勾** |
+
+阶梯比较复用 `movieclaw_matcher.ladder_vector` + `compare_ladder`，`spec` 取该条目
+**订阅所属规则组**（有订阅时，与抓取 / 入库去重 / 洗版验证同一把尺子，issue #381 的教训），
+无订阅取中性阶梯 `RuleSetSpec()`。判定按上表**自上而下短路**：同一 inode 就不再比档位。
+
+### 3.3 保留者：`_file_sort_key` 的扩展
+
+现有 `_file_sort_key`（分辨率位次 > 片源档 > 新入库优先）是给洗版基线选最优文件用的，
+本处扩展为：
+
+1. 阶梯向量（规则组序；`None` 位按最低处理，只影响排序不影响判定）；
+2. 实测码率 `bit_rate`（同档看谁更"实"）；
+3. 来源可追溯性：`origin.kind` 为订阅 / 手动 > 监听 > 扫描（本系统入库的有台账证据链）；
+4. 命名规范：路径不带 ` - 版本标签` 退让后缀者优先（它占着整理器的标准名）；
+5. `id` 大者优先。
+
+保留者只是**预选**，列表里每个文件都能被用户改选为保留。
+
+### 3.4 放行规则（不算冗余，列表里以灰色说明呈现）
+
+- 条目订阅的规则组 `upgrade_keep_old = true`：`lower_tier` 不算冗余，说明「规则组保留共存」；
+- 洗版在途：该单元有 `purpose = upgrade` 且未终态的投递 → 整个单元说明「洗版验证中」跳过；
+- **HDR 守卫**：规则组阶梯没把 `hdr` 列入维度时，HDR 与 SDR 会被阶梯判成同档；本处附加
+  一条——两侧 `hdr` 探测值不同（含一侧 DV / HDR10、一侧 SDR）→ 降为 `undecidable`。
+  这是"多版本"而不是"重复"，该由人决定；
+- 原盘（`is_disc()`）与单文件并存：阶梯上 Disc T6 高于 Remux，单文件会落 `lower_tier`。
+  按上表如实分类，但「稳妥」策略不含它（§3.5），默认不勾。
+
+### 3.5 策略档
+
+| 策略 | 预勾的类别 | 定位 |
+|---|---|---|
+| **稳妥**（默认） | `same_inode` + `same_content` + `same_tier` | 清掉的都是"没有任何信息增量"的文件 |
+| 只留最优 | 稳妥 + `lower_tier` | 空间优先的用户；确认弹窗额外说明"低档版本也会进回收站" |
+
+`undecidable` 在两档里都只列不勾。策略只决定**预勾**，用户永远可以逐个改。
+
+## 4. 清理（目标 2 · 处理）
+
+只调 `recycle_file`，不碰文件系统：
+
+```python
+await recycle_file(
+    session, file,
+    reason="duplicate_cleanup",
+    trigger={"kind": "member", "id": member.id, "label": member.display_name},
+    note="冗余版本：与「Nine.Gates…-CHDWEB.mkv」同档（1080p WEB-DL），已保留后者",
+)
+```
+
+- `note` 按类别生成四种句式（同一文件 / 同内容副本 / 同档 / 低于 X 档），落进
+  `trash_context`，回收站与文件区原样展示；
+- 回收站「原因」胶囊词表加 `duplicate_cleanup` →「重复清理」；
+- 批量执行同步进行（回收站 = 同盘 rename，常数时间），逐文件独立提交、失败不回滚已成功的，
+  返回结构与回收站 `TrashedBatchResultView` 相同；单次上限沿用回收站的批量上限；
+- 执行前**逐文件重验**：仍 `in_place`、按当前数据仍属冗余、保留者仍在位——列表是几分钟前
+  算的，中间可能跑了扫描或洗版。不满足的跳过并返回 `error` 文案，绝不按过期结论删；
+- 清理后：`refresh_stats` 刷库统计、`notify_media_server` 通知媒体服务器（与转移 / 删除一致）。
+
+7 天保留期是本方案唯一的安全网，也是它敢于"批量"的前提；不新增任何确认之外的保护层。
+
+## 5. API（`require_admin`，`ApiResponse` 包装）
+
+```text
+GET /libraries/duplicate-files?library_id=&media_item_id=&policy=safe|best_only&q=&limit=20&offset=0
+```
+
+```json
+{
+  "total_units": 38, "total_redundant_files": 57, "redundant_bytes": 61200000000,
+  "by_library": [{"library_id": 1, "name": "电影", "count": 41}],
+  "by_category": [{"category": "same_tier", "count": 30}, {"category": "same_inode", "count": 4}, …],
+  "items": [{
+    "library": {"id": 1, "name": "电影"},
+    "media_item": {"id": 965, "title": "九门", "year": 2025, "kind": "movie", "poster_url": "…"},
+    "units": [{
+      "season_number": 0, "episode_number": 0,
+      "skipped_reason": null,                       // "upgrade_in_progress" / "keep_old_rule"
+      "files": [
+        {"id": 1, "file_name": "…-CHDWEB.mkv", "role": "keep", "quality_label": "1080p WEB-DL",
+         "size_bytes": …, "origin": {"kind": "subscription", "label": "订阅《九门》自动投递"}},
+        {"id": 2, "file_name": "… - 1080p.mkv", "role": "redundant", "category": "same_tier",
+         "preselected": true, "note": "与「…-CHDWEB.mkv」同档（1080p WEB-DL）", …}
+      ]
+    }]
+  }]
+}
+```
+
+```text
+POST /libraries/duplicate-files/recycle
+body: {"file_ids": [2, 9, 17]}            // 只传要清理的；保留者由"不在列表里"表达
+→ TrashedBatchResultView {done, failed: [{id, file_name, error}]}
+```
+
+- 列表按条目分页（与回收站同：一部剧 24 集不该占满一页）；`media_item_id` 给条目详情页用，
+  返回单条目全部单元；
+- 命名对齐既有资源风格（`trashed-files` / `media-source-annotations`），定位走 query，
+  避开 `GET /{library_id}` 的路径抢占。
+
+## 6. UI
+
+### 6.1 管理页第三个标签「重复文件 N」（`?tab=duplicates`）
+
+`library-manage.md` §5 预留的标签栏、`library-recycle-bin.md` 已经落地的第二个标签——
+重复文件是第三个，**页面结构与回收站同构**，复用它的表格 / 卡片 / 批量条 / 确认弹窗：
+
+```text
+[媒体库 12]  [回收站 57]  [重复文件 38]
+38 个单元 · 57 个冗余文件 · 61.2 GB 可回收        策略 [稳妥 ▾]   [清理已勾选 · 44]
+[⌕ 搜索] [全部库][电影 41][剧集 16] | [同一文件 4][同内容 9][同档 30][低档 12][无法判定 2]
+┌──┬──────────────┬────────────────────────────────────────────┬──────────────────┬──────┐
+│  │ 九门 2025     │ ✓ 保留  Nine.Gates…-CHDWEB.mkv              │ 订阅《九门》自动投递 │      │
+│  │ 电影          │         1080p WEB-DL · 4.2 GB · 12.1 Mbps    │                  │      │
+│☑ │               │ ⊘ 同档  Nine.Gates… - 1080p.mkv              │ 存量扫描发现       │ 4.0 GB│
+│  │               │         1080p WEB-DL · 4.0 GB · 11.6 Mbps    │                  │      │
+│– │ › 权力的游戏   │ 24 集有冗余 · 3 季                            │                  │      │
+└──┴──────────────┴────────────────────────────────────────────┴──────────────────┴──────┘
+```
+
+- 一个条目一行，可展开到单元、单元下逐文件；保留者带「保留」标签不可勾，其余文件按策略
+  预勾；点某个冗余文件的「改为保留」即互换角色；
+- 「来源」列直接读 §2 的 `origin.label`——**两个目标在这一页汇合**：知道它从哪来，才敢
+  决定留哪个；
+- 无法判定的行给一句"片源未知，无法比较"，并链接到片源标注（`media-source-annotation.md`）：
+  标完再回来，它就能判了；
+- 确认弹窗：文件数、条目数、总大小、「将移入回收站，7 天内可恢复」；「只留最优」策略下
+  追加一句"其中 N 个是低档版本"。
+
+### 6.2 条目详情页文件区
+
+- 单元有 ≥ 2 在位文件时，文件区标题右侧出现「N 个版本 · 检查重复」（`canManageLibraries`），
+  打开一个复用 §6.1 表格的弹层，只显示本条目（`media_item_id=` 查询）；
+- 展开面板加「来源」行（§2.3）。
+
+剧集条目的文件区只列当前选中集，但「检查重复」按**条目全季集**聚合——用户想知道的是
+"这部剧哪些集重了"，不是逐集点。
+
+## 7. 决策点（需要拍板）
+
+**A. 要不要堵第一个源头**——监听导入的非订阅路径也做同档预检？
+
+- 赞成：它是重复的最大来源；预检逻辑现成（`_covered_by_library`），改一个条件；
+  被跳过的文件仍留在监听目录（硬链保种不受影响），`ingest_entry.message` 会写明
+  「N 个文件在库中已有同档或更高版本，跳过」；
+- 反对：现状是有意留白——人工放进监听目录的内容是显式意图，可能就是想要多版本；
+- **建议**：堵。想要多版本的人有洗版规则组的「保留共存」和管理页的「改为保留」两个出口；
+  而不堵，重复文件页面会变成一个永远清不完的周期性任务。
+
+**B. 「同档」算不算冗余（默认策略含不含 `same_tier`）**
+
+- 收 HDR 组 / 中字压制组的用户，同档不同组是有意为之；但阶梯若配置了 HDR / 编码 / 平台维度，
+  这些差别已经体现在「档」里，§3.4 的 HDR 守卫又兜住了没配置的情况；
+- **建议**：含。剩下的"同档不同组"绝大多数是无意识重复；有意的人改预勾即可。
+
+**C. 「只留最优」是否进 v1**
+
+- 它是「稳妥」之上多勾一个类别，实现成本几乎为零；风险全在用户理解上；
+- **建议**：进，但默认「稳妥」，切换时弹一句说明。
+
+**D. 入口**
+
+- 管理页标签（本文方案）vs 库详情页 ⋯ 菜单里的「检查重复」；
+- **建议**：管理页标签为主（跨库汇总是主场景），条目详情页弹层为辅；库详情页不加入口。
+
+## 8. 边界与不做
+
+- **不做内容哈希**：几十 GB 的文件算哈希要读全盘；尺寸 + 时长 + inode 三条指纹已覆盖真实
+  场景，误判方向也安全（同尺寸同时长不同内容只会被当副本进回收站，7 天可恢复）；
+- **不做自动清理**：v1 全部人工确认。定时检测 + 系统通知「发现 N 个冗余文件」可作后续，
+  但清理动作永远经人；
+- **不做跨库重复**（同一部片在两个库各有一份）：那是库规划问题，转移功能已覆盖；
+- **不改播放侧**的多版本选择；
+- **不动 `_same_payload` 的尺寸判等**（同名冲突短路只比尺寸）：它是反方向的问题
+  （不同内容被当同内容而漏入库），与本议题无关，提一下不改；
+- **回退兼容**：`origin` 为可空 JSON 列，默认 NULL；`duplicate_cleanup` 只是 `trash_context`
+  里的一个新词，旧代码照常展示 note。无运行时依赖变更，**不 bump runtime-version**；
+- **原盘目录**只参与阶梯比较，不做整树内容指纹。
+
+## 9. 落地顺序
+
+| 步骤 | 内容 | 验证 |
+|---|---|---|
+| 1 | `origin` 列 + 迁移；ingest 三处 / scan 一处写入；`derive_origin` 读时推导；`LibraryFileView.origin`；文件区「来源」行 | API 测试：订阅投递 / 手动下载 / 监听识别 / 扫描四种 kind 的 label 与 detail；旧行推导；转移后 origin 不变 |
+| 2 | 检测服务 `services/library/duplicates.py`：多文件单元圈定、五类判定、保留者、放行规则、策略预勾；`GET /libraries/duplicate-files` | 单测：五类各一例；HDR 守卫；keep_old / 洗版在途放行；`undecidable` 永不预勾；规则组阶梯 vs 中性阶梯 |
+| 3 | 清理：`POST …/recycle` 逐文件重验 + `recycle_file(reason="duplicate_cleanup")`；回收站原因词表 | API 测试：过期结论被跳过；回收站按「重复清理」筛得到；恢复后再检测重新出现 |
+| 4 | 前端：管理页第三个标签 + 条目详情页弹层 + 「来源」行 | 交互走查：电影双版本、剧集整季重复、无法判定行的标注跳转 |
+| 5 | （决策 A 通过后）监听导入非订阅路径的同档预检 | 既有 `test_library_ingest*` 全绿 + 新增"非订阅同档跳过"用例 |
+
+步骤 1 与 2–3 相互独立，可并行两个 PR；4 依赖 1–3。
