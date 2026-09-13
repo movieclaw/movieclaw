@@ -342,6 +342,8 @@ def _build_playback_diagnostics(
         job_stderr_tail=job_stderr_tail,
         head_segment=session.head_segment if session.segment_plan is not None else None,
         highest_produced_segment=highest_produced,
+        lead_seconds=manager.lead_seconds(session),
+        pause_reasons=sorted(session.pause_reasons),
         requested_segment=session.last_requested_segment,
         served_segment=session.last_served_segment,
         segment_wait_ms=session.last_segment_wait_ms,

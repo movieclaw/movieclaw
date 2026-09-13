@@ -511,6 +511,10 @@ class PlaybackDiagnosticsView(BaseModel):
     recent_uploads: list[PlaybackArtifactUploadView] = Field(default_factory=list)
     cache_bytes: int = 0
     total_segments: int | None = None
+    #: 转码头领先播放头的秒数（闭环供片节流的输入，§A）；非 VOD 会话为 None
+    lead_seconds: float | None = None
+    #: 当前挂起原因（"lead" 领先过多 / "disk" 磁盘低水位）；空 = 在跑
+    pause_reasons: list[str] = Field(default_factory=list)
 
 
 class PlaybackChapterMarkView(BaseModel):

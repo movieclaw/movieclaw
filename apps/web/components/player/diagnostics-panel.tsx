@@ -487,6 +487,18 @@ export function DiagnosticsPanel({
               连续产出 {segmentLabel(diagnostics.highest_produced_segment)} · 头部{" "}
               {segmentLabel(diagnostics.head_segment)} · 共 {diagnostics.total_segments} 段
             </ActionLine>
+            {diagnostics.lead_seconds != null ? (
+              // 领先量与挂起态：用户问「为什么转码停了」时这一行直接作答——
+              // 停是因为已经领先够多（闭环节流，§A），不是转不动
+              <ActionLine>
+                转码领先 {Math.round(diagnostics.lead_seconds)} 秒
+                {diagnostics.pause_reasons?.includes("lead")
+                  ? " · 已领先足够，转码暂停"
+                  : diagnostics.pause_reasons?.includes("disk")
+                    ? " · 磁盘空间告急，转码暂停"
+                    : ""}
+              </ActionLine>
+            ) : null}
             <ActionLine>NAS 会话缓存 {formatBytes(diagnostics.cache_bytes)}</ActionLine>
             {failedSegment != null ? (
               <ActionLine alert>

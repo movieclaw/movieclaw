@@ -104,22 +104,22 @@ def maxrate_for_video(video: VideoPlan) -> str:
     return f"{cap / 1_000_000:g}M"
 
 
-#: 读入限速（相对实时的倍数）与起播突发窗口（秒）。
+#: 读入限速（相对实时的倍数）与起播突发窗口（秒）——**只剩会话相对制
+#: （非 VOD）在用**。
 #:
 #: 不限速的教训（2026-08-23，一晚上写满 200 GB）：remux 档 `-c copy` 以磁盘
 #: IO 的速度跑，点开一部 30 GB 的片看一分钟，盘上就是完整的 30 GB 分片；
 #: 转码档也会一路转到片尾。分片在会话存续期间只增不减，而配额只在**开会话
 #: 时**检查——活跃会话可以写穿配额直到磁盘归零，转码缓存又与 SQLite 同卷。
 #:
-#: `-readrate` 让 ffmpeg 限速读输入：转码进度始终领先播放位置、但占盘增速
-#: 被钉住；`-readrate_initial_burst` 先全速转出开头一段，保证起播与开场
-#: seek 不受限速拖累。Jellyfin 10.9+ 同款方案。
-#:
-#: 直通档与转码档分开限（2026-08-23 复盘 QoE 数据的结论）：1.5 倍配合前端
-#: 60 秒的缓冲目标，起播后要播满两分钟缓冲才攒得够，这期间任何抖动都直接
-#: stall——实测每次会话卡 2~3 次。直通档 `-c:v copy` 不吃 CPU，限它只是在
-#: 省盘，而盘已有配额与低水位哨兵兜着，放到 4 倍让缓冲 20 秒内攒满；
-#: 真转码档维持 1.5 倍护 CPU（软转 4 倍速本来也跑不动）。
+#: `-readrate` 是这条教训最早的答案：限速读输入，占盘增速被钉住。但它是
+#: **开环**的：控盘要控的是领先量（秒 × 码率 = 字节），它控的是速率——速率
+#: 限住了领先量仍无界增长，而 1.5 倍又让前向缓冲要播满两分钟才攒得够，
+#: 期间任何抖动都直接 stall（QoE 复盘每会话卡 2~3 次）。VOD 模式因此改由
+#: 会话层按「转码头领先播放头多少秒」SIGSTOP/SIGCONT（session.py 的
+#: LEAD_HIGH_S，docs/design/player-pipeline-optimization.md §A），ffmpeg 全速
+#: 跑，盘占用峰值反而有了硬上限。会话相对制没有播放头信息（EVENT 列表、
+#: 时长未知的源），保留 readrate 兜底。
 READRATE = 1.5
 READRATE_COPY = 4
 READRATE_BURST_SECONDS = 60
@@ -403,11 +403,13 @@ def build_hls_command(
     # 无条件加这一条。
     if not transcoding_video:
         argv += ["-fflags", "+genpts"]
-    # 读入限速也是输入选项，必须在 -i 之前，理由见常量注释
-    argv += [
-        "-readrate", str(READRATE_COPY if not transcoding_video else READRATE),
-        "-readrate_initial_burst", str(READRATE_BURST_SECONDS),
-    ]
+    # 读入限速也是输入选项，必须在 -i 之前。只给会话相对制：VOD 模式由会话层
+    # 按领先量闭环节流（理由见常量注释）
+    if start_number is None:
+        argv += [
+            "-readrate", str(READRATE_COPY if not transcoding_video else READRATE),
+            "-readrate_initial_burst", str(READRATE_BURST_SECONDS),
+        ]
     if backend and backend.hwaccel:
         # 解码**恒定留在硬件上**，哪怕滤镜链是软件的：不发
         # ``-hwaccel_output_format`` 时 ffmpeg 自己把解码帧下载回系统内存，

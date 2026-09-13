@@ -665,9 +665,21 @@ def test_readrate_throttle_precedes_input():
     assert argv.index("-readrate_initial_burst") < argv.index("-i")
 
 
+def test_vod_mode_relies_on_lead_throttle_instead_of_readrate(tmp_path):
+    """VOD 模式（start_number 非 None）不带 readrate：供片速度由会话层按
+    「转码头领先播放头多少秒」闭环暂停/恢复（session.py LEAD_HIGH_S），ffmpeg
+    全速跑——开环限速让前向缓冲要播满两分钟才攒得够（§A）。"""
+    argv = build_hls_command(
+        plan(PlaybackTier.REMUX), source_path="/m/a.mkv", session_dir=tmp_path,
+        start_number=0,
+    ).argv
+    assert "-readrate" not in argv
+    assert "-readrate_initial_burst" not in argv
+
+
 def test_readrate_applies_to_every_tier():
-    """remux 与转码档都要限，但闸门不同：直通不吃 CPU 放到 4 倍让缓冲快攒，
-    真转码维持 1.5 倍护 CPU。全不限的教训是一晚 200 GB。"""
+    """会话相对制下 remux 与转码档都要限，但闸门不同：直通不吃 CPU 放到 4 倍
+    让缓冲快攒，真转码维持 1.5 倍护 CPU。全不限的教训是一晚 200 GB。"""
     copy_argv = argv_of(plan(PlaybackTier.REMUX))
     assert pair(copy_argv, "-readrate") == "4"
     assert pair(copy_argv, "-readrate_initial_burst") == "60"

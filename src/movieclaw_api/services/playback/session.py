@@ -89,6 +89,29 @@ MIN_FREE_BYTES = 2 * 1024**3
 #: 低水位急停后，剩余空间回到这个线以上才恢复被暂停的转码。两档水位拉开
 #: 距离是为了不在临界值附近反复停/走（迟滞回差）。
 RESUME_FREE_BYTES = 2 * MIN_FREE_BYTES
+#: 闭环供片节流（docs/design/player-pipeline-optimization.md §A）：转码头领先
+#: 播放头超过这么多秒就 SIGSTOP 整个进程组，回落到 LEAD_LOW_S 以下再 SIGCONT。
+#:
+#: 它替换掉的是 ``-readrate`` 那个开环常数。控盘要控的是**绝对量**（领先秒数 ×
+#: 码率 = 盘上多少字节），readrate 控的是速率：速率限住了领先量仍随时间无界
+#: 增长（用户暂停一小时，转码头照样往前走一小时）；速率不限，领先量又可以很
+#: 小。而且 1.5 倍限速让前向缓冲要播满两分钟才攒得够，期间任何抖动都直接
+#: stall（QoE 复盘：每会话卡 2~3 次）。改成按领先量暂停/恢复之后：起播与 seek
+#: 后缓冲以硬件速度攒满，盘占用峰值有硬上限（LEAD_HIGH_S × 码率），暂停期间
+#: 不再空烧 GPU 与盘。
+#:
+#: 上限取 120 秒：hls.js 前向缓冲目标 60 秒（engine.ts maxBufferLength）之外
+#: 再留一分钟给弱网抖动；下限与前向缓冲同值——回落到 60 秒时恢复，正好在
+#: 客户端开始缺粮之前把料续上。远程 Worker 的恢复要一个 RTT，同样的数够用。
+LEAD_HIGH_S = 120.0
+LEAD_LOW_S = 60.0
+#: 节流巡检间隔。领先量随转码头推进而涨，播放头不动时只有这个循环能发现
+#: 该暂停了；0.5 秒对应最多半秒的超出量，硬件档 10 倍速也就是 5 秒内容。
+THROTTLE_INTERVAL_S = 0.5
+#: 暂停原因的两个取值：磁盘低水位（``_enforce_disk_watermark``）与领先量
+#: 节流（``_throttle_session``）。任一存在即挂起，全部撤销才恢复。
+PAUSE_DISK = "disk"
+PAUSE_LEAD = "lead"
 #: stderr 保留的行数，供诊断面板与日志使用。
 _STDERR_KEEP_LINES = 40
 
@@ -165,9 +188,12 @@ class TranscodeSession:
     created_at: float = field(default_factory=time.monotonic)
     error: str | None = None
     stderr_tail: deque[str] = field(default_factory=lambda: deque(maxlen=_STDERR_KEEP_LINES))
-    #: 被磁盘低水位哨兵 SIGSTOP 挂起中。挂起的进程不响应 SIGTERM，
-    #: 终止前必须先 SIGCONT（见 ``_terminate``）。
-    disk_paused: bool = False
+    #: 当前挂起（SIGSTOP / 远程 job.pause）的原因集合：``PAUSE_DISK``（磁盘
+    #: 低水位）与 ``PAUSE_LEAD``（转码头领先播放头过多）。两个来源各自独立
+    #: 增删，集合非空即挂起、清空才恢复——只用一个布尔的话，磁盘回升会把
+    #: 领先量节流的暂停一并解开。挂起的进程不响应 SIGTERM，终止前必须先
+    #: SIGCONT（见 ``_terminate``）。
+    pause_reasons: set[str] = field(default_factory=set)
     #: VOD 模式（§12）：非 None 表示播放列表由服务端按关键帧表预生成，
     #: seek 由分片请求驱动（ensure_segment），ffmpeg 可在会话内多次重启。
     segment_plan: SegmentPlan | None = None
@@ -268,6 +294,21 @@ class TranscodeSession:
     def touch(self) -> None:
         self.last_ping = time.monotonic()
 
+    @property
+    def paused(self) -> bool:
+        """进程组（或远程 job）当前处于挂起态。"""
+        return bool(self.pause_reasons)
+
+    @property
+    def disk_paused(self) -> bool:
+        """被磁盘低水位哨兵挂起中。seek 重启在这个状态下必须让路。"""
+        return PAUSE_DISK in self.pause_reasons
+
+    @property
+    def lead_paused(self) -> bool:
+        """被领先量节流挂起中（诊断面板显示用）。"""
+        return PAUSE_LEAD in self.pause_reasons
+
     def record_remote_upload(
         self,
         name: str,
@@ -334,6 +375,7 @@ class TranscodeSessionManager:
         self._root = root or Path(get_settings().transcode_dir)
         self._sessions: dict[str, TranscodeSession] = {}
         self._reaper: asyncio.Task | None = None
+        self._throttler: asyncio.Task | None = None
 
     @property
     def cache_root(self) -> Path:
@@ -360,17 +402,21 @@ class TranscodeSessionManager:
         return removed
 
     def start_reaper(self) -> None:
-        """启动心跳巡检。应用 lifespan 里调一次。"""
+        """启动心跳巡检与供片节流巡检。应用 lifespan 里调一次。"""
         if self._reaper is None or self._reaper.done():
             self._reaper = asyncio.create_task(self._reap_loop())
+        if self._throttler is None or self._throttler.done():
+            self._throttler = asyncio.create_task(self._throttle_loop())
 
     async def shutdown(self) -> None:
         """停掉全部会话与巡检任务。后端退出前必须走到这里（契约 3）。"""
-        if self._reaper is not None:
-            self._reaper.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._reaper
-            self._reaper = None
+        for attr in ("_reaper", "_throttler"):
+            task = getattr(self, attr)
+            if task is not None:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+                setattr(self, attr, None)
         for session_id in list(self._sessions):
             await self.stop(session_id)
 
@@ -383,6 +429,113 @@ class TranscodeSessionManager:
                 raise
             except Exception:  # noqa: BLE001 — 巡检不能因单次异常停摆
                 logger.exception("转码会话巡检异常")
+
+    async def _throttle_loop(self) -> None:
+        while True:
+            try:
+                await asyncio.sleep(THROTTLE_INTERVAL_S)
+                await self.throttle()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 — 巡检不能因单次异常停摆
+                logger.exception("供片节流巡检异常")
+
+    # -- 闭环供片节流（§A） -------------------------------------------------
+
+    def lead_seconds(self, session: TranscodeSession) -> float | None:
+        """转码头领先播放头多少秒。非 VOD 会话（没有播放头信息）返回 None。
+
+        播放头取最近一次**请求**的分片（不是最近供出的）：请求一到就代表
+        播放器已经走到那里，等它供出再算会晚一拍。本轮还什么都没产出时为 0。
+        """
+        plan = session.segment_plan
+        if plan is None:
+            return None
+        produced = self._highest_produced(session)
+        if produced < session.head_segment:
+            return 0.0
+        playhead = session.last_requested_segment
+        if playhead is None or playhead < session.head_segment:
+            # 播放头落在本轮起点之前（刚重启、或旧轮次的分片仍可服务）：
+            # 从本轮起点量——那是它接下来要从哪里开始吃
+            playhead = session.head_segment
+        end = plan.boundaries[produced + 1] if produced + 1 < plan.count else plan.duration_s
+        return max(0.0, end - plan.boundaries[min(playhead, plan.count - 1)])
+
+    def _has_live_writer(self, session: TranscodeSession) -> bool:
+        """本会话是否有一个还在写盘的 ffmpeg（本地进程或远程 job）。"""
+        if session.remote:
+            if session.remote_job_id is None:
+                return False
+            state = get_remote_worker_registry().job_state(session.remote_job_id)
+            return state is None or state.get("type") not in {"job.failed", "job.finished"}
+        return session.process is not None and session.process.returncode is None
+
+    async def _throttle_session(self, session: TranscodeSession) -> None:
+        """按领先量决定这一路该停还是该走（迟滞两档，见 LEAD_HIGH_S）。"""
+        if session.state not in ("spawning", "ready") or not self._has_live_writer(session):
+            return
+        lead = self.lead_seconds(session)
+        if lead is None:
+            return
+        if lead >= LEAD_HIGH_S and not session.lead_paused:
+            if await self._pause(session, PAUSE_LEAD):
+                logger.info(
+                    "转码领先播放 %.0f 秒，暂停供片：session=%s（头=%d 播放头=%s）",
+                    lead, session.id, session.head_segment, session.last_requested_segment,
+                )
+        elif (
+            lead <= LEAD_LOW_S
+            and session.lead_paused
+            and await self._resume(session, PAUSE_LEAD)
+        ):
+            logger.info("转码领先回落到 %.0f 秒，恢复供片：session=%s", lead, session.id)
+
+    async def throttle(self) -> None:
+        """对全部会话跑一遍领先量节流。巡检循环与分片请求入口都会调它。"""
+        for session in list(self._sessions.values()):
+            await self._throttle_session(session)
+
+    async def _pause(self, session: TranscodeSession, reason: str) -> bool:
+        """以某个原因挂起会话。已因别的原因挂起时只记原因，不重复发信号。"""
+        if reason in session.pause_reasons:
+            return True
+        if session.pause_reasons:
+            session.pause_reasons.add(reason)
+            return True
+        if session.remote:
+            if session.remote_job_id is None:
+                return False
+            ok = await get_remote_worker_registry().pause(session.remote_job_id)
+        else:
+            ok = self._signal_group(session, signal.SIGSTOP)
+        if ok:
+            session.pause_reasons.add(reason)
+        return ok
+
+    async def _resume(self, session: TranscodeSession, reason: str) -> bool:
+        """撤销某个挂起原因；全部原因都撤销了才真正发恢复信号。"""
+        if reason not in session.pause_reasons:
+            return True
+        session.pause_reasons.discard(reason)
+        if session.pause_reasons:
+            return True
+        if session.remote:
+            if session.remote_job_id is None:
+                return False
+            return await get_remote_worker_registry().resume(session.remote_job_id)
+        return self._signal_group(session, signal.SIGCONT)
+
+    async def _release(self, session: TranscodeSession) -> None:
+        """无条件解冻：终止或重启前调用，否则 SIGTERM 会排队到 SIGCONT 之后。"""
+        if not session.pause_reasons:
+            return
+        session.pause_reasons.clear()
+        if session.remote:
+            if session.remote_job_id is not None:
+                await get_remote_worker_registry().resume(session.remote_job_id)
+            return
+        self._signal_group(session, signal.SIGCONT)
 
     async def reap(self) -> int:
         """回收超时无心跳的会话，返回回收数量。顺带跑一遍磁盘水位哨兵。"""
@@ -686,13 +839,7 @@ class TranscodeSessionManager:
             for session in writing:
                 if session.disk_paused:
                     continue
-                paused = (
-                    await registry.pause(session.remote_job_id)
-                    if session.remote and session.remote_job_id is not None
-                    else self._signal_group(session, signal.SIGSTOP)
-                )
-                if paused:
-                    session.disk_paused = True
+                if await self._pause(session, PAUSE_DISK):
                     logger.warning(
                         "磁盘剩余 %.1f GB 已低于安全水位，暂停会话 %s 的转码写入（%s）",
                         free / 1024**3,
@@ -703,13 +850,7 @@ class TranscodeSessionManager:
             for session in writing:
                 if not session.disk_paused:
                     continue
-                resumed = (
-                    await registry.resume(session.remote_job_id)
-                    if session.remote and session.remote_job_id is not None
-                    else self._signal_group(session, signal.SIGCONT)
-                )
-                if resumed:
-                    session.disk_paused = False
+                if await self._resume(session, PAUSE_DISK):
                     logger.info(
                         "磁盘空间已恢复（剩余 %.1f GB），继续会话 %s 的转码（%s）",
                         free / 1024**3,
@@ -729,6 +870,8 @@ class TranscodeSessionManager:
             return False
 
     async def _spawn(self, session: TranscodeSession, command: TranscodeCommand) -> None:
+        # 新进程从不挂起态起步：旧进程的挂起原因随它一起消失
+        session.pause_reasons.clear()
         # 契约 1+2：异步子进程 + 独立进程组
         process = await asyncio.create_subprocess_exec(
             *command.argv,
@@ -833,6 +976,9 @@ class TranscodeSessionManager:
         session.pending_since.setdefault(index, waited_from)
         session.last_requested_segment = index
         session.last_requested_at_ms = int(time.time() * 1000)
+        # 播放头动了：领先量可能已经回落，先看要不要把挂起的转码放行——
+        # 不在这里判的话要等巡检的下一拍，缺粮边缘上那半秒就是一次卡顿
+        await self._throttle_session(session)
         try:
             result = await self._await_segment(
                 session,
@@ -1193,9 +1339,7 @@ class TranscodeSessionManager:
         try:
             old_job_id = session.remote_job_id
             if old_job_id is not None:
-                if session.disk_paused:
-                    await registry.resume(old_job_id)
-                    session.disk_paused = False
+                await self._release(session)
                 # seek 重启与普通退出不同：旧分片已经失去交付价值，直接杀掉
                 # 远端 ffmpeg，避免旧任务继续读源并和新轮次并发上传。
                 await registry.cancel(old_job_id, force=True)
@@ -1416,9 +1560,7 @@ class TranscodeSessionManager:
             # SIGTERM/SIGKILL 对应。即使 Worker 已断线，也要释放 NAS 的占用台账。
             registry = get_remote_worker_registry()
             if session.remote_job_id is not None:
-                if session.disk_paused:
-                    await registry.resume(session.remote_job_id)
-                    session.disk_paused = False
+                await self._release(session)
                 await registry.cancel(session.remote_job_id)
                 registry.remove_job(session.remote_job_id)
             session.remote_worker_id = None
@@ -1428,11 +1570,9 @@ class TranscodeSessionManager:
         if process is None or process.returncode is not None:
             await self._cancel_stderr(session)
             return
-        # 被低水位哨兵挂起的进程不会处理 SIGTERM（信号排队到 SIGCONT 之后），
-        # 不解冻直接杀只能等 3 秒超时走 SIGKILL——白等
-        if session.disk_paused:
-            self._signal_group(session, signal.SIGCONT)
-            session.disk_paused = False
+        # 挂起的进程不会处理 SIGTERM（信号排队到 SIGCONT 之后），不解冻直接杀
+        # 只能等 3 秒超时走 SIGKILL——白等。领先量节流与磁盘低水位两种挂起同理
+        await self._release(session)
         first_signal = signal.SIGTERM if graceful else signal.SIGKILL
         try:
             os.killpg(os.getpgid(process.pid), first_signal)

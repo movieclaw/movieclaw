@@ -592,6 +592,10 @@ export interface PlaybackDiagnostics {
   recent_uploads: PlaybackArtifactUpload[];
   cache_bytes: number;
   total_segments: number | null;
+  /** 转码头领先播放头的秒数（闭环供片节流的输入，§A）；非 VOD 会话为 null */
+  lead_seconds?: number | null;
+  /** 当前挂起原因："lead" 领先过多 / "disk" 磁盘低水位；空 = 在跑 */
+  pause_reasons?: string[];
 }
 
 /** 进度条上的章节刻度（docs/design/player-feel.md §2.C1）。合成章节不下发 */
