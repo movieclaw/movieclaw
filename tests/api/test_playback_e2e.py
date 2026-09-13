@@ -157,7 +157,12 @@ def fetch_whole_stream(client: TestClient, data: dict, tmp_path: Path) -> Path:
     token = data["stream_url"].split("token=")[1]
     session_id = data["session_id"]
 
-    names = [line.strip() for line in playlist.text.splitlines() if line.strip().endswith(".m4s")]
+    # VOD 列表里每条 URI 都带 ?token=…（HLS 客户端不继承查询串），文件名在问号前
+    names = [
+        line.strip().split("?", 1)[0]
+        for line in playlist.text.splitlines()
+        if line.strip().split("?", 1)[0].endswith(".m4s")
+    ]
     assert names, f"playlist 里没有分片：\n{playlist.text}"
 
     init = client.get(f"{_PB}/sessions/{session_id}/init.mp4?token={token}")
@@ -187,7 +192,10 @@ def wait_for_segments(client: TestClient, data: dict, count: int = 1, timeout: f
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         text = client.get(data["stream_url"]).text
-        if sum(1 for line in text.splitlines() if line.strip().endswith(".m4s")) >= count:
+        listed = sum(
+            1 for line in text.splitlines() if line.strip().split("?", 1)[0].endswith(".m4s")
+        )
+        if listed >= count:
             return
         time.sleep(0.2)
     raise AssertionError(f"等分片超时：\n{text}")
@@ -259,40 +267,78 @@ def test_hevc_without_consent_asks_instead_of_transcoding(client, tmp_path):
 
 
 def test_seek_starts_the_stream_later_in_the_file(client, tmp_path):
-    """会话时间轴恒从 0 起；seek 后的内容更短，且不会掐过头。
+    """VOD 列表的时间轴是文件绝对时间：带 start_ms 开会话，列表仍覆盖全片
+    （播放器想到哪就 seek 到哪），服务端只从起播点所在的分片边界起转；
+    那一片拼上 init 后 ffprobe 读到的起始时间就是它的边界（不是 0）。
 
-    取 3 秒而不是 2 秒：源片关键帧在 0/2/4 秒，而 ffmpeg 的 input seek 落在
-    **严格早于**请求时间的关键帧上——请求正好等于关键帧时间（2.0）反而会退到
-    更前一个（0.0）。3.0 稳定落到 2.0。详见 ffmpeg_args 模块文档的实测表。
+    源片关键帧在 0/2/4 秒、分片栅格 4 秒 → 边界 [0, 4]；3 秒落在第 0 片，
+    5 秒落在第 1 片（起点 4.0）。
     """
     path = make_media(tmp_path / "m", "seek", codec="h264", container="mkv")
     file_id = client.portal.call(partial(_seed, path, codec="h264", container="mkv"))
-    data = start(client, file_id, start_ms=3000)
-    assert data["start_ms"] == 3000
+    data = start(client, file_id, start_ms=5000)
+    assert data["start_ms"] == 5000
+    assert data["timeline"] == "file"
 
-    wait_for_segments(client, data, count=1)
-    assembled = fetch_whole_stream(client, data, tmp_path)
+    token = data["stream_url"].split("token=")[1]
+    session_id = data["session_id"]
+    playlist = client.get(data["stream_url"]).text
+    names = [
+        line.strip().split("?", 1)[0]
+        for line in playlist.splitlines()
+        if line.strip().split("?", 1)[0].endswith(".m4s")
+    ]
+    assert names == ["seg00000.m4s", "seg00001.m4s"]  # 列表覆盖全片
+    init = client.get(f"{_PB}/sessions/{session_id}/init.mp4?token={token}")
+    seg = client.get(f"{_PB}/sessions/{session_id}/seg00001.m4s?token={token}")
+    assert init.status_code == 200 and seg.status_code == 200
+    joined = tmp_path / "seg1.mp4"
+    joined.write_bytes(init.content + seg.content)
     proc = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-         "-of", "csv=p=0", str(assembled)],
+        ["ffprobe", "-v", "error", "-show_entries", "format=start_time",
+         "-of", "csv=p=0", str(joined)],
         capture_output=True, timeout=60,
     )
-    duration = float(proc.stdout.decode().strip())
-    assert duration < DURATION  # 掐掉了开头
-    assert duration > 1.0       # 但没掐过头
+    start_time = float(proc.stdout.decode().strip())
+    assert abs(start_time - 4.0) < 0.6   # 分片时间戳是文件绝对时间
+    # 第 1 片只有 4→6 秒这两秒，必然比 0→4 秒的第 0 片小
+    first = client.get(f"{_PB}/sessions/{session_id}/seg00000.m4s?token={token}")
+    assert first.status_code == 200 and len(seg.content) < len(first.content)
 
 
-def test_stopping_a_session_removes_its_files(client, tmp_path):
-    """会话结束即清盘——转码缓存与数据库同卷，不能越攒越多。"""
+def test_stopping_a_session_keeps_a_reusable_cache(client, tmp_path):
+    """会话结束不再清盘：目录连同台账留给下一次同指纹会话认领（§B），
+    第二次开会话直接命中、起播段免转；「存储」页一键清空仍能把它删掉。"""
+    from movieclaw_api.services.playback.cache import MANIFEST_NAME
+    from movieclaw_api.services.storage import service as storage_service
+
     path = make_media(tmp_path / "m", "cleanup", codec="h264", container="mkv")
     file_id = client.portal.call(partial(_seed, path, codec="h264", container="mkv"))
     data = start(client, file_id)
-    wait_for_segments(client, data, count=1)
+    assembled = fetch_whole_stream(client, data, tmp_path)  # 拉全片：全部分片落盘
+    assert any(s["codec_name"] == "h264" for s in probe_streams(assembled))
 
     root = Path(get_settings().transcode_dir)
-    assert any(root.iterdir())
     assert client.delete(f"{_PB}/sessions/{data['session_id']}").status_code == 200
-    assert list(root.iterdir()) == []
+    dirs = [d for d in root.iterdir() if d.is_dir()]
+    assert len(dirs) == 1 and (dirs[0] / MANIFEST_NAME).exists()
+
+    # 第二次：命中缓存，起播段不需要 ffmpeg，流照样完整可解
+    again = start(client, file_id)
+    token = again["stream_url"].split("token=")[1]
+    diag = client.get(
+        f"{_PB}/sessions/{again['session_id']}/diagnostics?token={token}"
+    ).json()["data"]
+    assert diag["cache_hit"] is True and diag["cached_segments"] >= 2
+    (tmp_path / "again").mkdir()
+    assembled_again = fetch_whole_stream(client, again, tmp_path / "again")
+    assert any(s["codec_name"] == "h264" for s in probe_streams(assembled_again))
+    assert client.delete(f"{_PB}/sessions/{again['session_id']}").status_code == 200
+
+    # 存储页清空：冷缓存删得掉
+    result = client.portal.call(partial(storage_service.clean, "transcodes", "all"))
+    assert result.removed == 1
+    assert [d for d in root.iterdir() if d.is_dir()] == []
 
 
 def test_embedded_subtitle_is_served_over_http(client, tmp_path):

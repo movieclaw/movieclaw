@@ -596,6 +596,9 @@ export interface PlaybackDiagnostics {
   lead_seconds?: number | null;
   /** 当前挂起原因："lead" 领先过多 / "disk" 磁盘低水位；空 = 在跑 */
   pause_reasons?: string[];
+  /** 开会话时认领到了同指纹的转码缓存（§B），以及当时可用的分片数 */
+  cache_hit?: boolean;
+  cached_segments?: number;
 }
 
 /** 进度条上的章节刻度（docs/design/player-feel.md §2.C1）。合成章节不下发 */
@@ -982,6 +985,8 @@ export function reportPlaybackProgressOnUnload(
 export interface PlaybackPolicy {
   software_transcode_enabled: boolean;
   trickplay_enabled: boolean;
+  /** 转码产物保留供续播、重看复用（§B）；关闭即会话结束即删 */
+  transcode_cache_enabled: boolean;
   /** 实测结果而非配置项——用户改不了自己有没有显卡 */
   hardware_available: boolean;
   hw_backends: string[];

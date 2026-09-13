@@ -499,7 +499,12 @@ export function DiagnosticsPanel({
                     : ""}
               </ActionLine>
             ) : null}
-            <ActionLine>NAS 会话缓存 {formatBytes(diagnostics.cache_bytes)}</ActionLine>
+            <ActionLine>
+              NAS 会话缓存 {formatBytes(diagnostics.cache_bytes)}
+              {diagnostics.cache_hit
+                ? ` · 命中上次转码产物（${diagnostics.cached_segments ?? 0} 段免转）`
+                : ""}
+            </ActionLine>
             {failedSegment != null ? (
               <ActionLine alert>
                 当前缺口 {segmentLabel(failedSegment)}

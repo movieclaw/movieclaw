@@ -143,7 +143,7 @@ async def _active_transcode_sessions(entries: list[Path]) -> set[Path]:
     """正在播放的转码会话目录（删了正在看的人立刻黑屏）。"""
     from movieclaw_api.services.playback.session import get_session_manager
 
-    live = {s.id for s in get_session_manager().active()}
+    live = {s.directory.name for s in get_session_manager().active()}
     return {e for e in entries if e.name in live}
 
 
@@ -240,10 +240,12 @@ DATA_DIRS: tuple[DataDir, ...] = (
     DataDir(
         key="transcodes",
         title="转码分片",
-        summary="网页播放器实时转码的 HLS 分片",
+        summary="网页播放器转码产物的缓存（供续播、重看复用）",
         description=(
-            "网页播放器实时转码产生的 HLS 分片，会话结束即删、重启时清残留，正常"
-            "情况下不应有大量占用。正在播放的会话会被跳过。"
+            "网页播放器转码产生的 HLS 分片。会话结束后保留供同一部片续播、重看"
+            "时直接复用（不再重新转码），按磁盘剩余空间的四分之一自动限额、"
+            "24 小时未用自动淘汰。清空后再次播放需要重新转码，正在播放的会话"
+            "会被跳过。"
         ),
         default="data/transcodes",
         resolve=lambda s: Path(s.transcode_dir),

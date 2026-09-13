@@ -347,15 +347,41 @@ async def test_low_free_space_refuses_new_sessions(manager, monkeypatch):
 
 
 async def test_quota_exhaustion_refuses_new_sessions(manager, monkeypatch):
+    """活跃会话把配额占满时拒绝新会话。冷缓存不算：它会先被淘汰（§B）。"""
+    install_fake(monkeypatch, WRITES_PLAYLIST_THEN_SLEEPS)
+    first = await manager.start(make_plan(), source_path="/m/a.mkv", member_id=0)
+    try:
+        (first.directory / "seg00000.m4s").write_bytes(b"x" * 4096)
+        with pytest.raises(DiskQuotaError) as excinfo:
+            await manager.start(
+                make_plan(file_id=2), source_path="/m/b.mkv", member_id=0, quota_bytes=1024
+            )
+        assert "配额" in str(excinfo.value)
+    finally:
+        await manager.shutdown()
+
+
+async def test_cold_cache_is_evicted_before_refusing_on_quota(manager, monkeypatch):
+    """冷缓存是可牺牲的：配额满了先淘汰没人用的目录，不拒绝新会话。"""
+    from movieclaw_api.services.playback.cache import Manifest
+
     install_fake(monkeypatch, WRITES_PLAYLIST_THEN_SLEEPS)
     manager._root.mkdir(parents=True)
-    (manager._root / "old").mkdir()
-    (manager._root / "old" / "seg.m4s").write_bytes(b"x" * 4096)
-    with pytest.raises(DiskQuotaError) as excinfo:
-        await manager.start(
-            make_plan(), source_path="/m/a.mkv", member_id=0, quota_bytes=1024
-        )
-    assert "配额" in str(excinfo.value)
+    cold = manager._root / "cold"
+    cold.mkdir()
+    (cold / "seg00000.m4s").write_bytes(b"x" * 4096)
+    Manifest(
+        key="cold", components={}, boundaries=[0.0], duration_s=4.0,
+        completed=[0], created_at=1.0, last_used_at=1.0,
+    ).save(cold)
+    session = await manager.start(
+        make_plan(), source_path="/m/a.mkv", member_id=0, quota_bytes=1024
+    )
+    try:
+        assert session.state == "ready"
+        assert not cold.exists()
+    finally:
+        await manager.shutdown()
 
 
 async def test_usage_bytes_counts_session_output(manager, monkeypatch):

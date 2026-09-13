@@ -515,6 +515,9 @@ class PlaybackDiagnosticsView(BaseModel):
     lead_seconds: float | None = None
     #: 当前挂起原因（"lead" 领先过多 / "disk" 磁盘低水位）；空 = 在跑
     pause_reasons: list[str] = Field(default_factory=list)
+    #: 开会话时认领到了同指纹的转码缓存（§B），以及当时可用的分片数
+    cache_hit: bool = False
+    cached_segments: int = 0
 
 
 class PlaybackChapterMarkView(BaseModel):
@@ -679,6 +682,8 @@ class PlaybackPolicyView(BaseModel):
     #: 进度条预览缩略图的生成开关（设置页「播放」分区）。已生成的预览不受它
     #: 影响——关掉只是不再生成新的。
     trickplay_enabled: bool = True
+    #: 转码产物是否保留供续播、重看复用（§B）。关闭即会话结束即删。
+    transcode_cache_enabled: bool = True
     #: 实测结果而非配置项——用户改不了自己有没有显卡。前端据此说明
     #: 「无可用硬件加速，HDR 片源需要软件转码」这类结论。
     hardware_available: bool = False
@@ -692,6 +697,7 @@ class PlaybackPolicyPayload(BaseModel):
 
     software_transcode_enabled: bool | None = None
     trickplay_enabled: bool | None = None
+    transcode_cache_enabled: bool | None = None
 
 
 class PlaybackFontsView(BaseModel):

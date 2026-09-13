@@ -30,6 +30,15 @@ class PlaybackPolicySetting(SettingSchema):
             "询问并永久保存。"
         ),
     )
+    transcode_cache_enabled: bool = Field(
+        default=True,
+        description=(
+            "是否保留转码产物供续播、重看复用。开启后会话结束不再立即删除分片，"
+            "同一部片同一档位再次播放时已转出的部分直接读文件、不重新转码；"
+            "缓存按磁盘剩余空间的四分之一自动限额、24 小时未用自动清理，也可在"
+            "「存储」页一键清空。关闭即旧行为：会话结束即删。"
+        ),
+    )
     trickplay_enabled: bool = Field(
         default=True,
         description=(

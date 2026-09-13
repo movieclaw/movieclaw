@@ -344,6 +344,8 @@ def _build_playback_diagnostics(
         highest_produced_segment=highest_produced,
         lead_seconds=manager.lead_seconds(session),
         pause_reasons=sorted(session.pause_reasons),
+        cache_hit=session.cache_hit,
+        cached_segments=session.cached_segments,
         requested_segment=session.last_requested_segment,
         served_segment=session.last_served_segment,
         segment_wait_ms=session.last_segment_wait_ms,
@@ -1132,6 +1134,7 @@ async def start_playback_session(
             # 但统一带上省得两条路径分叉
             display_name=PathLib(file.file_path).name,
             device_id=device_id,
+            cache=policy.transcode_cache_enabled,
         )
     except (SessionLimitError, DiskQuotaError) as exc:
         raise ServiceUnavailableException(str(exc)) from exc
@@ -1154,9 +1157,10 @@ async def start_playback_session(
     # 用户报「起播慢」时这一行直接指认方向。
     logger.info(
         "播放会话就绪：档 %s · 决策 %d 毫秒 · 准备 %d 毫秒 · ffmpeg %d 毫秒 · 共 %d 毫秒"
-        "（file_id=%s hw=%s session=%s）",
+        "（file_id=%s hw=%s session=%s 缓存=%s）",
         view.tier, decide_ms, prep_ms, spawn_ms, total_ms,
         file.id, hw_used or "无", transcode.id,
+        f"命中 {transcode.cached_segments} 段" if transcode.cache_hit else "未命中",
     )
     return ok(
         PlaybackSessionView(
