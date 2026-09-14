@@ -37,6 +37,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from movieclaw_api.services import jobs
+from movieclaw_api.services.foreground import yield_to_foreground
 from movieclaw_api.services.library.duplicates import (
     DupFile,
     DupItem,
@@ -697,6 +698,9 @@ async def _run_duplicate_scan_job(
         )
         # 放在 update_progress 之后：它已经顺路发现过租约失效，这时判定不花查询
         await context.raise_if_cancelled()
+        # 每批之间给前台让路（services/foreground.py）：页面加载的那一两秒里
+        # 不跟它抢数据库
+        await yield_to_foreground()
 
     db = get_database()
     async with db.session() as session:

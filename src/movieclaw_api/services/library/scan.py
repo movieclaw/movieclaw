@@ -56,6 +56,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from movieclaw_api.services import jobs
+from movieclaw_api.services.foreground import yield_to_foreground
 from movieclaw_api.services.library.bluray import (
     disc_playlist_record,
     disc_playlist_stale,
@@ -390,6 +391,7 @@ class ScanSummary:
     probed: int = 0  # 补探：给缺介质规格的在位行补上 ffprobe 结果
     dirs_listed: int = 0  # 本轮真的 readdir 过的目录数
     dirs_skipped: int = 0  # 凭目录 mtime 未变跳过、没有重列的目录数（增量对账）
+    yield_seconds: float = 0.0  # 给前台请求让路累计等了多少秒（services/foreground.py）
     cancelled: bool = False  # 用户手动停止：已入账的保留，未处理的留待下次扫描
     errors: list[str] = field(default_factory=list)
     # 暂缓文件的最近到期秒数（补扫的等待时长；对外接口不暴露）
@@ -1034,6 +1036,9 @@ async def _scan(
                 )
             )
             while True:
+                # 前台有请求在算就让一步（services/foreground.py）：遍历的每一块
+                # 都是一串 readdir，页面加载的那一两秒里不该跟它抢盘和数据库
+                summary.yield_seconds += await yield_to_foreground()
                 batch = await asyncio.to_thread(_take_chunk, walker)
                 for file, is_disc in batch:
                     # 根路径互相嵌套时同一个文件会被遍历两次，去重后才是"每个
@@ -1107,6 +1112,8 @@ async def _scan(
 
         async def advance(done: int) -> None:
             state.processed = done
+            # 逐文件让路：前台空闲时是一次整数比较，零开销
+            summary.yield_seconds += await yield_to_foreground()
             if bridge is not None:
                 await bridge.checkpoint(state, summary, before_write=session.commit)
 
@@ -1488,7 +1495,7 @@ async def _scan(
         "媒体库 #%s 文件入账完成：新入账 %d（已识别 %d / 待识别 %d），识别重试 %d，"
         "身份复核 %d（存疑 %d），改名归并 %d，根路径随迁 %d，跳过已知 %d，跳过已忽略 %d，"
         "标记丢失 %d（旧根 %d），清理丢失 %d（旧根 %d），旧根冲突 %d，暂缓 %d，问题 %d，"
-        "目录列出 %d / 未变跳过 %d",
+        "目录列出 %d / 未变跳过 %d，给前台让路 %.1fs",
         library_id,
         summary.scanned - summary.relinked,
         summary.identified,
@@ -1509,6 +1516,7 @@ async def _scan(
         len(summary.errors),
         summary.dirs_listed,
         summary.dirs_skipped,
+        summary.yield_seconds,
     )
 
     # 一次入库刮削的资产补齐：文本档案在建档时已随 ensure_media_item 落库，
@@ -3209,6 +3217,8 @@ async def _probe_backfill(
 
     async def _tick() -> bool:
         state.processed += 1
+        # 逐行让路：每一行都是一次 ffprobe（网络盘上是一次长读），页面加载时退开
+        summary.yield_seconds += await yield_to_foreground()
         if bridge is not None:
             await bridge.raise_if_cancelled()
         return not _scan_tasks.stop_requested(library_id)

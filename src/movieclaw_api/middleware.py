@@ -21,6 +21,7 @@ from fastapi import FastAPI
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from movieclaw_api.core.config import Settings
+from movieclaw_api.services import foreground
 from movieclaw_api.spec_state import SPEC_HASH_HEADER, get_spec_hash
 
 logger = logging.getLogger("movieclaw_api.access")
@@ -104,7 +105,44 @@ class AccessLogMiddleware:
             raise
 
 
+class ForegroundPressureMiddleware:
+    """维护「在途且还没开始响应」的 API 请求数——后台重任务让路的压力信号。
+
+    响应头一发出就减掉：取流 / SSE 的 body 会流几分钟，但它们的重活在头之前就
+    算完了，不该把后台饿死。健康探针不计（容器每 30 秒探一次）。计数在
+    ``finally`` 里兜底：客户端在响应头之前断开、处理器抛异常，都不能留下一个
+    永远减不掉的 1——那会让后台从此永远在等一个不存在的前台。
+    """
+
+    HEALTH_PATH_SUFFIX = "/health"
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or scope.get("path", "").endswith(self.HEALTH_PATH_SUFFIX):
+            await self.app(scope, receive, send)
+            return
+        foreground.request_started()
+        responding = False
+
+        async def send_counted(message: Message) -> None:
+            nonlocal responding
+            if message["type"] == "http.response.start" and not responding:
+                responding = True
+                foreground.request_responding()
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_counted)
+        finally:
+            if not responding:
+                foreground.request_responding()
+
+
 def register_middlewares(app: FastAPI, settings: Settings) -> None:
     # add_middleware 后注册者在外层：访问日志最外层，与原 @app.middleware 顺序一致
     app.add_middleware(SpecHashHeaderMiddleware, api_prefix=settings.api_v1_prefix)
     app.add_middleware(AccessLogMiddleware, enabled=settings.access_log_enabled)
+    # 最外层：从请求进门到响应头出门都算在途，不受访问日志开关影响
+    app.add_middleware(ForegroundPressureMiddleware)
