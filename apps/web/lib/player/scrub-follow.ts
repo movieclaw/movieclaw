@@ -134,3 +134,66 @@ export function scrubCommitTarget(input: {
   if (input.pointerType === "touch") return input.draggingMs;
   return input.lastPointerMs ?? input.draggingMs;
 }
+
+/**
+ * 进度条那个 `<input type="range">` 的步长（毫秒）。
+ *
+ * 只有键盘（Home / End / PageUp / PageDown）还在用它——方向键被全局快捷键接管
+ * 了（shortcuts.ts）。拖动走的是指针事件自己算的落点，与这个步长无关。
+ */
+export const SCRUB_INPUT_STEP_MS = 1000;
+
+/**
+ * 浏览器会把写进 range 的 value **整理**成什么数（HTML 规范的「step 不匹配」
+ * 处理）：先夹进 `[0, max]`，再对齐到最近的步长倍数（两边一样近取大的），对齐
+ * 之后越过 max 就退一格。
+ *
+ * 为什么要在这里把这条规则写一遍：受控 input 的 `value` 由我们写，浏览器读回
+ * 来的却是整理过的数。写 `1489320` 读回 `1489000`——两边不一致，React 就会把
+ * 下一次原生 `input`/`change` 事件当成「用户改了值」派发 onChange（它靠比对
+ * 「上次写入的」与「现在读到的」来判断）。抬手之后原生滑块补发的那次 `change`
+ * 正是踩在这条缝里（见 acceptsNativeScrubValue）。写进去的值先按同一条规则
+ * 整理好，两边从此一致，这条缝在结构上就不存在了。
+ */
+export function scrubInputValue(
+  shownMs: number,
+  durationMs: number | null,
+  stepMs = SCRUB_INPUT_STEP_MS,
+): number {
+  const max = durationMs && durationMs > 0 ? durationMs : 0;
+  if (!Number.isFinite(shownMs) || max <= 0) return 0;
+  const clamped = Math.min(max, Math.max(0, shownMs));
+  let aligned = Math.round(clamped / stepMs) * stepMs;
+  if (aligned > max) aligned -= stepMs;
+  return Math.max(0, aligned);
+}
+
+/**
+ * 原生 range 事件（`input` / `change`）送来的值要不要当成一次键盘拖动。
+ *
+ * 进度条的拖动是指针事件自己算的（iOS 按不中 1px 的原生把手，见组件里的注释），
+ * 但**原生滑块并没有因此关掉**：桌面上鼠标按下轨道、Chromium 触屏按下轨道、
+ * iOS 上手指恰好压在那 1px 把手所在的一列，浏览器都会同时跑自己的那套拖动——
+ * 拖动中连发 `input`，抬手时再补一次 `change`。抬手那次是致命的：它在
+ * `pointerup` **之后**到，而 `pointerup` 已经提交跳转、把 `dragging` 清成了
+ * null；这一发 `change` 一进 onChange 就把 `dragging` 重新钉在落点上，从此圆点与
+ * 时间读数都不再跟画面走，直到下一次按下（2026-09-14 反馈：松手后圆点不动。
+ * 鼠标次次中招，触屏只在落点没对齐步长时中招，iOS 上还要先按中那一列——所以
+ * 表现是「偶尔」）。
+ *
+ * 两条规则：
+ * 1. 指针正按着时一律不收——落点由指针路径算，原生滑块那份是重复且更糙的；
+ * 2. 与屏幕上正显示的值整理后相同的不收——那不是用户改了值，只是浏览器把我们
+ *    写进去的数读回来了（抬手补发的 `change` 恒是这一种）。键盘真按了
+ *    Home / End / PageUp 时值一定不同，照常放行。
+ */
+export function acceptsNativeScrubValue(input: {
+  nativeValue: number;
+  shownMs: number;
+  durationMs: number | null;
+  pointerDragging: boolean;
+}): boolean {
+  if (input.pointerDragging) return false;
+  if (!Number.isFinite(input.nativeValue)) return false;
+  return input.nativeValue !== scrubInputValue(input.shownMs, input.durationMs);
+}

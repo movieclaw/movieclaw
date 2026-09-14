@@ -6,7 +6,12 @@ import type { PlaybackChapterMark } from "@/lib/api/playback";
 import type { AudioOption } from "@/lib/player/audio-tracks";
 import { SUBTITLE_OFFSET_STEP, clampSubtitleOffset } from "@/lib/player/subtitles";
 import { QUALITY_OPTIONS } from "@/lib/player/quality";
-import { scrubCommitTarget } from "@/lib/player/scrub-follow";
+import {
+  SCRUB_INPUT_STEP_MS,
+  acceptsNativeScrubValue,
+  scrubCommitTarget,
+  scrubInputValue,
+} from "@/lib/player/scrub-follow";
 import type { SubtitleStyle, SubtitleTracks } from "@/lib/player/subtitles";
 import { pointerOffsetX } from "@/lib/player/touch-adjust";
 import {
@@ -367,6 +372,15 @@ export function PlayerControls(props: PlayerControlsProps) {
     if (pointerFrameRef.current) cancelAnimationFrame(pointerFrameRef.current);
     pointerFrameRef.current = 0;
   }, []);
+  /**
+   * 指针正按在进度条上（按下到抬起/取消之间）。
+   *
+   * 给 onChange 用：这段时间里原生滑块自己也在跑，连发的 `input` 事件不能
+   * 再来改 `dragging`——落点由指针路径算，原生那份是重复的。走 ref 而不看
+   * `dragging`：抬手时先清的是 `dragging`，而原生的 `change` 在那之后才到，
+   * 靠 state 分不出「键盘拖动」与「抬手补发」。裁决在 acceptsNativeScrubValue。
+   */
+  const pointerDragRef = useRef(false);
 
   const flushPointer = useCallback(() => {
     pointerFrameRef.current = 0;
@@ -716,21 +730,46 @@ export function PlayerControls(props: PlayerControlsProps) {
             type="range"
             min={0}
             max={durationMs ?? 0}
-            step={1000}
-            value={shown}
+            step={SCRUB_INPUT_STEP_MS}
+            // 写进去之前先按浏览器的规则整理到步长上：写 1489320 读回 1489000
+            // 的话，React 会把下一次原生事件当成「用户改了值」派发 onChange——
+            // 抬手后原生滑块补发的那次 change 就是这么把 dragging 重新钉住的
+            // （scrub-follow.ts 的 scrubInputValue / acceptsNativeScrubValue）。
+            value={scrubInputValue(shown, durationMs)}
             disabled={!durationMs}
             aria-label="播放进度"
-            onChange={(e) => setDragging(Number(e.target.value))}
+            // 只剩键盘（Home / End / PageUp / PageDown）走这条：方向键被全局快捷键
+            // 接管，指针拖动由下面的 pointer 事件自己算。原生滑块跟着指针跑出来的
+            // 那些 input / change 一律不收，理由见 acceptsNativeScrubValue。
+            onChange={(e) => {
+              const next = Number(e.target.value);
+              if (
+                !acceptsNativeScrubValue({
+                  nativeValue: next,
+                  shownMs: shown,
+                  durationMs,
+                  pointerDragging: pointerDragRef.current,
+                })
+              ) {
+                return;
+              }
+              setDragging(next);
+            }}
             // 拖拽不走 range 的原生行为，用指针事件自己算：iOS 只有按中
             // **原生把手**才进入连续拖拽，而那个把手被缩到 1px 藏起来了
             // （见下方圆点注释），手指永远按不中——表现为拖动时圆点不跟手、
             // 松手 seek 到的是按下点。setPointerCapture 让移出条外也不断跟。
+            // 注意原生滑块**并没有因此关掉**：鼠标按下轨道、Chromium 触屏按下
+            // 轨道、iOS 上手指恰好压中那 1px 把手所在的一列，浏览器都会同时跑
+            // 自己的拖动并发 input / change，上面的 onChange 靠
+            // acceptsNativeScrubValue 把它们挡在外面（player-feel.md §19）。
             onPointerDown={(e) => {
               // 只认主指针的主键起手。不挡的话右键点进度条会**当场 seek**
               // 再弹出上下文菜单（中键同理），而右键的意图从来不是跳转；
               // 触屏上第二根手指落在条上也会顶掉第一根正在进行的拖动。
               // 触摸/笔的主接触点 button 恒为 0，这条不会误伤它们。
               if (!durationMs || e.button !== 0 || !e.isPrimary) return;
+              pointerDragRef.current = true;
               e.currentTarget.setPointerCapture(e.pointerId);
               const { offset, length } = pointerOffsetX(
                 e,
@@ -750,6 +789,7 @@ export function PlayerControls(props: PlayerControlsProps) {
               // 一帧的位移在两小时的片子上就是好几分钟。触屏反过来要用屏幕上
               // 正显示的值：指腹抬起时会漂几个像素，裁决见 scrubCommitTarget。
               cancelPointerFrame();
+              pointerDragRef.current = false;
               const last = pointerMs();
               if (dragging !== null) {
                 onSeek(
@@ -774,6 +814,7 @@ export function PlayerControls(props: PlayerControlsProps) {
             // positionMs 才是真值。
             onPointerCancel={() => {
               cancelPointerFrame();
+              pointerDragRef.current = false;
               pointerRef.current = null;
               // 排队中的后沿跟随也要撤：手势作废之后它还会在几十毫秒后把画面
               // 挪到一个用户没抬手确认过的位置上

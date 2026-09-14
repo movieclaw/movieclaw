@@ -4,10 +4,13 @@ import test from "node:test";
 import {
   SCRUB_FOLLOW_MAX_WAIT_MS,
   SCRUB_FOLLOW_SETTLE_MS,
+  SCRUB_INPUT_STEP_MS,
+  acceptsNativeScrubValue,
   afterScrubFollow,
   initialScrubFollowState,
   planScrubFollow,
   scrubCommitTarget,
+  scrubInputValue,
 } from "../lib/player/scrub-follow.ts";
 
 // ---------------------------------------------------------------------------
@@ -314,4 +317,92 @@ test("每一次落地用的都是新鲜落点，不是窗口开头那个过期�
     );
     assert.ok(fresh, `${hit.at}ms 落地的 ${hit.targetMs} 已经过期超过停稳窗口`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// 回归：抬手之后原生滑块补发的 change 不能把 dragging 重新钉住
+//
+// 2026-09-14 反馈「拖到 15 分钟松手，画面到了 15 分钟，圆点却不动了」。进度条的
+// 拖动是指针事件自己算的，但原生 range 滑块并没有关掉：鼠标按下轨道、Chromium
+// 触屏按下轨道、iOS 上手指恰好压中那 1px 把手所在的一列，浏览器都会同时跑自己
+// 的拖动——抬手时补一次 `change`，而它在 pointerup 之后才到。pointerup 已经把
+// dragging 清成 null，这一发 change 一进 onChange 又把 dragging 钉回落点。
+// Chromium 真机复现（Playwright，鼠标与 CDP 触摸各一遍）：修前松手 1.6 秒后
+// input.value 纹丝不动，修后跟着位置走。
+// ---------------------------------------------------------------------------
+
+test("写进 range 的值先按浏览器规则整理：夹进片长、对齐步长、两边一样近取大的", () => {
+  assert.equal(scrubInputValue(1_489_320, 3_600_000), 1_489_000);
+  assert.equal(scrubInputValue(1_489_500, 3_600_000), 1_490_000);
+  assert.equal(scrubInputValue(-5, 3_600_000), 0);
+  assert.equal(scrubInputValue(9_999_999, 3_600_000), 3_600_000);
+  // 片长未知时进度条是禁用的，值统一为 0
+  assert.equal(scrubInputValue(1_000, null), 0);
+  assert.equal(scrubInputValue(1_000, 0), 0);
+});
+
+test("对齐后越过 max 要退一格：浏览器不会把 value 整理到 max 之外", () => {
+  // max 本身不在步长上：3_599_700 最近的步长倍数是 3_600_000，越过 max
+  assert.equal(scrubInputValue(3_599_700, 3_599_999), 3_599_000);
+  assert.equal(scrubInputValue(3_599_999, 3_599_999), 3_599_000);
+  assert.equal(SCRUB_INPUT_STEP_MS, 1_000);
+});
+
+test("抬手补发的 change 与屏幕值整理后相同：不是用户改了值，不收", () => {
+  // pointerup 已把 dragging 清掉、跳转提交到 1_489_320，React 写进 range 的是
+  // 整理后的 1_489_000，原生 change 读回来的也是它
+  assert.equal(
+    acceptsNativeScrubValue({
+      nativeValue: 1_489_000,
+      shownMs: 1_489_320,
+      durationMs: 3_600_000,
+      pointerDragging: false,
+    }),
+    false,
+  );
+});
+
+test("指针按着的时候原生滑块连发的 input 一律不收：落点由指针路径算", () => {
+  assert.equal(
+    acceptsNativeScrubValue({
+      nativeValue: 1_500_000,
+      shownMs: 1_489_320,
+      durationMs: 3_600_000,
+      pointerDragging: true,
+    }),
+    false,
+  );
+});
+
+test("键盘真改了值（Home / End / PageUp）照常放行", () => {
+  assert.equal(
+    acceptsNativeScrubValue({
+      nativeValue: 1_490_000,
+      shownMs: 1_489_320,
+      durationMs: 3_600_000,
+      pointerDragging: false,
+    }),
+    true,
+  );
+  assert.equal(
+    acceptsNativeScrubValue({
+      nativeValue: 0,
+      shownMs: 1_489_320,
+      durationMs: 3_600_000,
+      pointerDragging: false,
+    }),
+    true,
+  );
+});
+
+test("片尾那一格同样认得出来：max 不在步长上时补发的 change 带的是退一格的值", () => {
+  assert.equal(
+    acceptsNativeScrubValue({
+      nativeValue: 3_599_000,
+      shownMs: 3_599_700,
+      durationMs: 3_599_999,
+      pointerDragging: false,
+    }),
+    false,
+  );
 });
