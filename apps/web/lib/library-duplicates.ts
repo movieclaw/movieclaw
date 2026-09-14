@@ -114,6 +114,78 @@ export function formatBitRate(bps: number): string {
   return `${Math.round(bps / 1000)} kbps`;
 }
 
+/**
+ * 一个文件的规格整句：`2160p · WEB-DL · AAC 2.0 · 1.01 GB · 3.1 Mbps`。
+ * 与 `qualitySegments` 同一份内容，只是拼成一行用来做"几个文件是不是一样"的比对。
+ */
+export function specText(file: DuplicateFile): string {
+  return qualitySegments(file, null)
+    .map((s) => s.text)
+    .join(" · ");
+}
+
+/**
+ * 单元内**所有文件都一样**的规格与来源。
+ *
+ * 手机上一个文件行要竖着叠成四行，而重复文件最常见的样子恰恰是"规格与来源
+ * 完全相同、只有文件名不同"（同一个包被扫进来两次、外部工具改过名）——那就是
+ * 同样的两行文字各印一遍，占满屏幕却一个字都不帮用户做决定。相同的部分提到
+ * 单元头上说一次，文件行只留下真正不同的东西。
+ *
+ * 只有一个文件时不算"共有"：没有比较对象，该显示的还是要显示。
+ */
+export interface SharedFacts {
+  quality: string | null;
+  origin: string | null;
+}
+
+export function sharedFacts(files: DuplicateFile[]): SharedFacts {
+  if (files.length < 2) return { quality: null, origin: null };
+  const specs = new Set(files.map(specText));
+  const origins = new Set(files.map((f) => f.origin.label));
+  return {
+    quality: specs.size === 1 ? specText(files[0]) : null,
+    origin: origins.size === 1 ? files[0].origin.label : null,
+  };
+}
+
+/** 单元头上那句共有信息；没有共有的东西就是空串（这时文件行照常各说各的）。 */
+export function sharedLine(files: DuplicateFile[]): string {
+  const facts = sharedFacts(files);
+  return [facts.quality, facts.origin].filter(Boolean).join(" · ");
+}
+
+/**
+ * 单元内几个文件名的**最长公共前缀**。
+ *
+ * `三体 S01E16 - 2160p H.265 AAC ADWeb.mp4` 与 `三体 S01E16 - 2160p H.265 AAC.mp4`
+ * 的区别只在最后几个字符，而窄屏上文件名是从尾部截断的——两行看起来会一模一样，
+ * 用户根本无从选择。把公共前缀单独拎出来淡显并允许截断、差异的尾巴永远完整显示，
+ * 窄到什么程度都还能一眼看出差在哪。
+ *
+ * 两个门槛：前缀短于 8 个字符不值得折（折了反而更碎）；任何一个文件的尾巴为空
+ * 也不折（那一行会看起来是空的）。
+ */
+export function commonNamePrefix(files: DuplicateFile[]): string {
+  if (files.length < 2) return "";
+  const names = files.map((f) => f.file_name);
+  const shortest = Math.min(...names.map((n) => n.length));
+  let i = 0;
+  while (i < shortest && names.every((n) => n[i] === names[0][i])) i += 1;
+  if (i < 8 || names.some((n) => n.length === i)) return "";
+  // 差异的尾巴是不截断的（截了就白折了），太长会把行撑破——那种名字直接不折，
+  // 走普通的整名截断
+  if (Math.max(...names.map((n) => n.length - i)) > 28) return "";
+  return names[0].slice(0, i);
+}
+
+/** 同构季里几个版本行共有的来源；不同则为 null（这时每行各自显示）。 */
+export function sharedVersionOrigin(versions: DuplicateVersion[]): string | null {
+  if (versions.length < 2) return null;
+  const origins = new Set(versions.map((v) => v.origin_label));
+  return origins.size === 1 ? versions[0].origin_label : null;
+}
+
 /** 单元里的建议保留者（没有时取第一个，后端保证一定有）。 */
 export function suggestedOf(unit: DuplicateUnit): DuplicateFile {
   return unit.files.find((f) => f.suggested) ?? unit.files[0];

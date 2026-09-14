@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  commonNamePrefix,
   fileNote,
   groupSummary,
   hiddenNote,
@@ -13,6 +14,10 @@ import {
   resolveResultText,
   scanNote,
   seasonHeadline,
+  sharedFacts,
+  sharedLine,
+  sharedVersionOrigin,
+  specText,
   tierFacts,
 } from "../lib/library-duplicates.ts";
 
@@ -153,4 +158,73 @@ test("resolveResultText", () => {
     resolveResultText({ done: 4, failed: [{ id: 1, file_name: "x", error: "权限不足" }], remaining: 3 }),
     "已移入回收站 4 个文件，1 个失败：权限不足，还有 3 个未处理（再点一次即可）",
   );
+});
+
+
+test("sharedFacts：规格与来源都一样时提到单元头上说一次", () => {
+  // 最常见的那种重复：同一个包被扫进来两次，规格与来源逐字相同，只有文件名不同
+  const twinA = file({ id: 11, file_name: "三体 S01E16 - 2160p H.265 AAC ADWeb.mp4" });
+  const twinB = file({ id: 12, file_name: "三体 S01E16 - 2160p H.265 AAC.mp4", suggested: false });
+  assert.equal(specText(twinA), "2160p · WEB-DL · DDP 5.1 · 8.00 GB · 20.0 Mbps");
+  assert.deepEqual(sharedFacts([twinA, twinB]), {
+    quality: "2160p · WEB-DL · DDP 5.1 · 8.00 GB · 20.0 Mbps",
+    origin: "订阅《九门》自动投递",
+  });
+  assert.equal(
+    sharedLine([twinA, twinB]),
+    "2160p · WEB-DL · DDP 5.1 · 8.00 GB · 20.0 Mbps · 订阅《九门》自动投递",
+  );
+
+  // 规格不同就不是"共有"——那正是用户要逐行看的东西
+  assert.deepEqual(sharedFacts([A, B]), { quality: null, origin: null });
+  // 来源相同、规格不同：只提来源
+  const sameOrigin = file({ id: 13, quality_label: "1080p WEB-DL", suggested: false });
+  assert.deepEqual(sharedFacts([A, sameOrigin]).origin, "订阅《九门》自动投递");
+  assert.equal(sharedFacts([A, sameOrigin]).quality, null);
+  // 只有一个文件时没有比较对象，该显示的还要显示
+  assert.deepEqual(sharedFacts([A]), { quality: null, origin: null });
+  assert.equal(sharedLine([A]), "");
+});
+
+test("commonNamePrefix：把差异的尾巴留出来，窄屏截断才不会把两行截成一样", () => {
+  const twinA = file({ id: 11, file_name: "三体 S01E16 - 2160p H.265 AAC ADWeb.mp4" });
+  const twinB = file({ id: 12, file_name: "三体 S01E16 - 2160p H.265 AAC.mp4" });
+  const prefix = commonNamePrefix([twinA, twinB]);
+  assert.equal(prefix, "三体 S01E16 - 2160p H.265 AAC");
+  assert.equal(twinA.file_name.slice(prefix.length), " ADWeb.mp4");
+  assert.equal(twinB.file_name.slice(prefix.length), ".mp4");
+
+  // 前缀太短不值得折
+  assert.equal(commonNamePrefix([file({ file_name: "a.mkv" }), file({ file_name: "b.mkv" })]), "");
+  // 一个文件名是另一个的前缀：折了那一行的尾巴就是空的，不折
+  assert.equal(
+    commonNamePrefix([
+      file({ file_name: "Nine.Gates.2160p.mkv" }),
+      file({ file_name: "Nine.Gates.2160p.mkv.bak" }),
+    ]),
+    "",
+  );
+  assert.equal(commonNamePrefix([A]), "");
+
+  // 差异的尾巴不截断，太长会把行撑破 → 那种名字不折
+  const longTailA = file({ file_name: "剧集合集 2024 第一部分 完整版 蓝光原盘重制 4K HDR 版本甲.mkv" });
+  const longTailB = file({ file_name: "剧集合集 2024 第一部分 完整版 蓝光原盘重制 4K HDR 版本乙.mkv" });
+  assert.equal(commonNamePrefix([longTailA, longTailB]).length > 0, true, "尾巴短，该折");
+  const bloatedA = file({ file_name: "共同前缀共同前缀共同前缀." + "a".repeat(40) + ".mkv" });
+  const bloatedB = file({ file_name: "共同前缀共同前缀共同前缀." + "b".repeat(40) + ".mkv" });
+  assert.equal(commonNamePrefix([bloatedA, bloatedB]), "");
+});
+
+test("sharedVersionOrigin：同构季几个版本行来源相同才提到块头上", () => {
+  const v = (key, origin_label) => ({
+    key,
+    quality_label: key,
+    origin_label,
+    episodes: [1, 2, 3],
+    bytes: 100,
+    suggested: false,
+  });
+  assert.equal(sharedVersionOrigin([v("1080p", "存量扫描发现"), v("720p", "存量扫描发现")]), "存量扫描发现");
+  assert.equal(sharedVersionOrigin([v("1080p", "存量扫描发现"), v("720p", "订阅投递")]), null);
+  assert.equal(sharedVersionOrigin([v("1080p", "存量扫描发现")]), null);
 });

@@ -30,7 +30,9 @@ import {
 import { formatBytes } from "@/lib/format";
 import { imageUrl } from "@/lib/image-proxy";
 import {
+  type SharedFacts,
   TIER_ACTION_LABELS,
+  commonNamePrefix,
   episodeLabel,
   fileNote,
   groupSummary,
@@ -42,6 +44,9 @@ import {
   resolveResultText,
   scanNote,
   seasonHeadline,
+  sharedFacts,
+  sharedLine,
+  sharedVersionOrigin,
   suggestedOf,
   tierFacts,
   versionCoverage,
@@ -53,9 +58,21 @@ const PAGE_SIZE = 20;
 /** 后端一次批量最多处理的文件数（与 api/routes/library_duplicates.BATCH_LIMIT 同） */
 const BATCH_LIMIT = 500;
 
-/** 文件行 / 版本行的四列：名字或规格 / 规格或覆盖 / 来源 / 动作。手机上叠成一列。 */
+/**
+ * 文件行 / 版本行的四格：名字或规格 / 规格或覆盖 / 来源 / 动作。
+ *
+ * 宽屏是四列一张表，重复的规格上下对齐反而好扫。窄屏叠成一列就成了灾难——四行
+ * 文字里往往只有一个词不同。所以手机上改成「名字 + 动作」并排一行（`order` 把
+ * 动作提到第二格），规格与来源整行排在下面、共有的那些还会被整格隐藏（见
+ * `sharedFacts`）：最常见的那种重复从四行压到一行。
+ */
 const ROW_GRID =
-  "grid items-center gap-x-4 gap-y-1 max-md:grid-cols-1 md:grid-cols-[minmax(0,1.5fr)_minmax(0,1.1fr)_minmax(0,1fr)_auto]";
+  "grid items-center gap-x-4 gap-y-1 max-md:grid-cols-[minmax(0,1fr)_auto] md:grid-cols-[minmax(0,1.5fr)_minmax(0,1.1fr)_minmax(0,1fr)_auto]";
+/** 窄屏下四个格子的次序与跨列：名字、动作在第一行，规格、来源各占整行 */
+const CELL_NAME = "max-md:order-1";
+const CELL_SPEC = "max-md:order-3 max-md:col-span-2";
+const CELL_ORIGIN = "max-md:order-4 max-md:col-span-2";
+const CELL_ACTION = "max-md:order-2";
 
 /** 三档的配色：只有「可以放心清理」用主色实心按钮，另两档都在动"有区别"的文件 */
 const TIER_TONE: Record<DuplicateTier, string> = {
@@ -458,7 +475,7 @@ export function LibraryDuplicateFiles({
       ) : (
         <section className="mx-6 mt-5 max-md:mx-4" aria-label={focusGroup?.label ?? "重复文件"}>
           <div className="mb-2.5 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1.5 px-0.5">
-            <div className="flex min-w-0 items-baseline gap-2.5">
+            <div className="flex min-w-0 items-baseline gap-2.5 max-md:w-full max-md:flex-wrap max-md:gap-x-2">
               {focus.tier !== null && (
                 <button
                   type="button"
@@ -468,7 +485,7 @@ export function LibraryDuplicateFiles({
                   ‹ 返回摘要
                 </button>
               )}
-              <h2 className="truncate text-ui font-semibold text-[var(--text)]">
+              <h2 className="text-ui font-semibold text-[var(--text)] max-md:shrink-0 md:truncate">
                 {focusGroup?.label ?? (itemTitle ? `《${itemTitle}》的重复文件` : "重复文件")}
               </h2>
               {focusGroup && (
@@ -478,7 +495,7 @@ export function LibraryDuplicateFiles({
               )}
             </div>
             {focus.tier !== null && focusGroup !== null && focusGroup.files > 0 && (
-              <div className="flex items-center gap-1.5">
+              <div className="flex items-center gap-1.5 max-md:w-full">
                 {focus.tier === "review" && (
                   <ActionButton disabled={busy} onClick={() => keepGroup(focus.tier!, focus.reviewKind, focusGroup)}>
                     整组都留着
@@ -488,7 +505,7 @@ export function LibraryDuplicateFiles({
                   type="button"
                   disabled={busy}
                   onClick={() => cleanGroup(focus.tier!, focus.reviewKind, focusGroup)}
-                  className={`flex h-8 items-center rounded-full border px-3 text-caption font-medium transition disabled:opacity-40 ${
+                  className={`flex h-8 items-center justify-center rounded-full border px-3 text-caption font-medium transition disabled:opacity-40 max-md:flex-1 ${
                     focus.tier === "safe"
                       ? "border-[var(--accent)] bg-[var(--accent)] text-[#0a0b10] hover:opacity-90"
                       : "border-white/[0.15] text-[var(--text)] hover:bg-white/[0.08]"
@@ -498,7 +515,10 @@ export function LibraryDuplicateFiles({
                 </button>
               </div>
             )}
-            {focusGroup?.hint && <p className="basis-full text-caption text-[var(--text-faint)]">{focusGroup.hint}</p>}
+            {/* 这句在摘要卡上已经讲过一遍（明细层只能从那里进来），窄屏不再占掉两行 */}
+            {focusGroup?.hint && (
+              <p className="basis-full text-caption text-[var(--text-faint)] max-md:hidden">{focusGroup.hint}</p>
+            )}
           </div>
 
           {data.items.length === 0 ? (
@@ -726,6 +746,8 @@ function SeasonBlock({
   const headline = seasonHeadline(season, media.kind);
   const showVersions = season.uniform && !expanded;
   const suggestedVersion = season.versions.find((v) => v.suggested) ?? null;
+  // 几个版本行来源相同时（同一轮扫描发现的多个包），窄屏上不必每行都印一遍
+  const commonOrigin = sharedVersionOrigin(season.versions);
 
   return (
     <div className="mb-2.5 overflow-hidden rounded-2xl border border-white/[0.08] bg-white/[0.02]">
@@ -749,6 +771,12 @@ function SeasonBlock({
               </>
             )}
           </span>
+          {/* 几个版本行来源相同时，窄屏上在块头说一次，行里就不再各印一遍 */}
+          {commonOrigin && showVersions && (
+            <span className="basis-full text-caption text-[var(--text-faint)] md:hidden">
+              {commonOrigin}
+            </span>
+          )}
         </div>
         {season.uniform && (
           <button type="button" onClick={onToggleExpanded} className="shrink-0 rounded-full px-2.5 py-1 text-caption text-[var(--text-muted)] hover:bg-white/[0.06] hover:text-[var(--text)]">
@@ -762,18 +790,25 @@ function SeasonBlock({
           {season.versions.map((version) => (
             <div key={version.key} className={`px-4 py-2.5 text-sub ${ROW_GRID}`}>
               <QualityLine
+                className={CELL_NAME}
                 segments={version.quality_label.split(" ").map((text, i) => ({
                   text,
                   diff: suggestedVersion !== null && !version.suggested && suggestedVersion.quality_label.split(" ")[i] !== text,
                 }))}
               />
-              <span className="text-[var(--text-muted)] tabular-nums">
+              <span className={`text-[var(--text-muted)] tabular-nums ${CELL_SPEC}`}>
                 <b className="font-semibold text-[var(--text)]">{versionCoverage(version).split(" · ")[0]}</b>
                 {" · "}
                 {versionCoverage(version).split(" · ")[1]}
               </span>
-              <span className="truncate text-[var(--text-muted)]">{version.origin_label}</span>
-              <div className="flex items-center justify-end gap-1.5 max-md:justify-start">
+              <span
+                className={`truncate text-[var(--text-muted)] ${CELL_ORIGIN} ${
+                  commonOrigin ? "max-md:hidden" : ""
+                }`}
+              >
+                {version.origin_label}
+              </span>
+              <div className={`flex items-center justify-end gap-1.5 ${CELL_ACTION}`}>
                 {version.suggested && <Tag tone="keep">建议保留</Tag>}
                 <ActionButton disabled={busy} onClick={() => onKeepVersion(version)}>
                   整季留这个
@@ -784,20 +819,44 @@ function SeasonBlock({
         </div>
       ) : (
         <div className="max-h-[520px] overflow-y-auto">
-          {season.units.map((unit) => (
-            <div key={`${unit.season_number}-${unit.episode_number}`}>
-              {isTv && (
-                <div className="border-b border-white/[0.06] bg-white/[0.012] px-4 py-1 text-micro tracking-wide text-[var(--text-faint)]">
-                  {episodeLabel(unit.episode_number)}
+          {season.units.map((unit) => {
+            // 这一集几个文件都一样的规格 / 来源在这里说一次，文件行里就不再各印一遍
+            const shared = sharedFacts(unit.files);
+            const common = sharedLine(unit.files);
+            const prefix = commonNamePrefix(unit.files);
+            return (
+              <div key={`${unit.season_number}-${unit.episode_number}`}>
+                {(isTv || common) && (
+                  <div
+                    className={`border-b border-white/[0.06] bg-white/[0.012] px-4 py-1 text-micro tracking-wide text-[var(--text-faint)] ${
+                      isTv ? "" : "md:hidden"
+                    }`}
+                  >
+                    {isTv && episodeLabel(unit.episode_number)}
+                    {common && (
+                      <span className="md:hidden">
+                        {isTv && " · "}
+                        {common}
+                      </span>
+                    )}
+                  </div>
+                )}
+                <div className="divide-y divide-white/[0.06]">
+                  {unit.files.map((file) => (
+                    <FileRow
+                      key={file.id}
+                      unit={unit}
+                      file={file}
+                      shared={shared}
+                      namePrefix={prefix}
+                      busy={busy}
+                      onKeep={() => onKeepFile(unit, file)}
+                    />
+                  ))}
                 </div>
-              )}
-              <div className="divide-y divide-white/[0.06]">
-                {unit.files.map((file) => (
-                  <FileRow key={file.id} unit={unit} file={file} busy={busy} onKeep={() => onKeepFile(unit, file)} />
-                ))}
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
@@ -815,22 +874,53 @@ function SeasonBlock({
   );
 }
 
-/** 文件行：文件名 / 规格（与建议保留者不同的维度加亮）/ 来源 / 建议保留标签 + 留这个。 */
-function FileRow({ unit, file, busy, onKeep }: { unit: DuplicateUnit; file: DuplicateFile; busy: boolean; onKeep: () => void }) {
+/**
+ * 文件行：文件名 / 规格（与建议保留者不同的维度加亮）/ 来源 / 建议保留标签 + 留这个。
+ *
+ * 窄屏上做两件减法：单元里几个文件**共有**的规格与来源整格隐藏（已经在单元头上
+ * 说过一次），文件名的**公共前缀**淡显并允许截断、差异的尾巴永远完整——窄到
+ * 一半宽度也还看得出两个文件差在哪。宽屏是四列对齐的表，一格不动。
+ */
+function FileRow({
+  unit,
+  file,
+  shared,
+  namePrefix,
+  busy,
+  onKeep,
+}: {
+  unit: DuplicateUnit;
+  file: DuplicateFile;
+  shared: SharedFacts;
+  namePrefix: string;
+  busy: boolean;
+  onKeep: () => void;
+}) {
   const reference = suggestedOf(unit);
   const note = fileNote(file);
   const live = unit.files.filter((f) => !f.kept_at).length;
+  const tail = namePrefix ? file.file_name.slice(namePrefix.length) : file.file_name;
   return (
     <div className={`px-4 py-2 text-sub ${ROW_GRID} ${file.kept_at ? "opacity-55" : ""}`}>
       <Tooltip content={<span className="tnum break-all font-mono text-caption leading-5">{file.file_path}</span>} maxWidth={520}>
-        <span className="block truncate font-mono text-caption text-[var(--text)]">{file.file_name}</span>
+        <span className={`flex min-w-0 items-baseline font-mono text-caption text-[var(--text)] ${CELL_NAME}`}>
+          {namePrefix && <span className="truncate text-[var(--text-faint)]">{namePrefix}</span>}
+          <span className={namePrefix ? "shrink-0" : "truncate"}>{tail}</span>
+        </span>
       </Tooltip>
-      <QualityLine segments={qualitySegments(file, reference)} />
-      <span className="min-w-0 truncate text-[var(--text-muted)]">
-        {file.origin.label}
+      <QualityLine
+        segments={qualitySegments(file, reference)}
+        className={`${CELL_SPEC} ${shared.quality ? "max-md:hidden" : ""}`}
+      />
+      <span
+        className={`min-w-0 truncate text-[var(--text-muted)] ${CELL_ORIGIN} ${
+          shared.origin && !note ? "max-md:hidden" : ""
+        }`}
+      >
+        <span className={shared.origin ? "max-md:hidden" : ""}>{file.origin.label}</span>
         {note && <span className="block truncate text-caption text-[var(--text-faint)]">{note}</span>}
       </span>
-      <div className="flex items-center justify-end gap-1.5 max-md:justify-start">
+      <div className={`flex items-center justify-end gap-1.5 ${CELL_ACTION}`}>
         {file.suggested && <Tag tone="keep">建议保留</Tag>}
         {file.kept_at && <Tag tone="kept">你留下的</Tag>}
         {(live > 1 || unit.files.length > 1) && (
@@ -843,9 +933,15 @@ function FileRow({ unit, file, busy, onKeep }: { unit: DuplicateUnit; file: Dupl
   );
 }
 
-function QualityLine({ segments }: { segments: { text: string; diff: boolean }[] }) {
+function QualityLine({
+  segments,
+  className = "",
+}: {
+  segments: { text: string; diff: boolean }[];
+  className?: string;
+}) {
   return (
-    <span className="truncate text-[var(--text-muted)] tabular-nums">
+    <span className={`truncate text-[var(--text-muted)] tabular-nums ${className}`}>
       {segments.map((seg, i) => (
         <span key={`${seg.text}-${i}`}>
           {i > 0 && <span aria-hidden> · </span>}
