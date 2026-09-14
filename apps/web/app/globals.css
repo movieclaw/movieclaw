@@ -221,14 +221,23 @@ html {
 
 /* iOS 对每次点按都要等一拍判断「是不是双击缩放」，快速连点（翻页、
    步进按钮）会被误判成缩放手势把页面放大。声明 manipulation 告诉系统
-   这些元素只做点按/平移，判定取消、响应也更跟手。捏合缩放不受影响。 */
-button,
-a,
-input,
-select,
-textarea,
-[role="button"] {
-  touch-action: manipulation;
+   这些元素只做点按/平移，判定取消、响应也更跟手。捏合缩放不受影响。
+
+   **必须写在 @layer base 里**（与下面 button { cursor } 同一条规矩）：不分层
+   的规则永远压过 Tailwind 的 @layer utilities，与特异性无关。此前这条没有
+   layer，播放器进度条上的 `touch-none` 被它压成 manipulation——竖屏沿条拖是
+   横向、页面横向没得滚才碰巧没事；伪横屏容器转了 90°，沿条就是物理竖直方向，
+   浏览器把触摸当翻页手势收走（pointercancel），进度条一动不动
+   （2026-09-14 真触摸复现，docs/design/player-feel.md §19.8）。 */
+@layer base {
+  button,
+  a,
+  input,
+  select,
+  textarea,
+  [role="button"] {
+    touch-action: manipulation;
+  }
 }
 
 /* —— 装成 App 之后的「不可选中」触感 ——
@@ -1768,16 +1777,6 @@ html:has(.player-root) {
     0 1px 6px rgb(0 0 0 / 0.5);
 }
 
-/* 进度条自己接管全部触摸：拖动由指针事件算，浏览器不许把它当平移手势收走。
-   组件上写的 `touch-none` 在这里**不生效**——上面那条 `input { touch-action:
-   manipulation }` 是不分层的规则，而 Tailwind 的工具类在 @layer utilities 里，
-   级联层的规矩是不分层的永远压过分层的，与特异性无关。后果只在伪横屏里
-   暴露：容器转了 90°，沿条拖就是物理竖直方向，manipulation 允许竖直平移，
-   浏览器（Chromium 实测，iOS 同理）按下 50ms 后发 pointercancel 把手势收走，
-   进度条一动不动。竖屏里沿条是横向、页面横向没得滚，才碰巧没事。 */
-.player-scrub {
-  touch-action: none;
-}
 .player-scrub::-webkit-slider-runnable-track {
   background: transparent;
   height: 100%;

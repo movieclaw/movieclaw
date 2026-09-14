@@ -1321,11 +1321,11 @@ tryAutoplay → attemptAutoplay`。seek 落在片长处元素当场 `ended`（�
 平移。竖屏里沿条拖是横向、页面横向没得滚，才碰巧没事；伪横屏容器转了 90°，沿条
 就是物理竖直方向，浏览器把它当翻页手势收走。iPhone 横屏看片正是这条路。
 
-修：`.player-scrub { touch-action: none }` 放在 `globals.css` 的不分层规则里。修后
-计算值 `none`，伪横屏沿条拖动、按住再拖都正常发 seek；全矩阵 28/28。
-
-顺带一条教训：**Tailwind 的 `touch-*` / 任何要压过全局基础规则的工具类，在这个
-仓库里都不保证生效**——`globals.css` 里那些按标签选择的基础规则不分层。
+修：那条全局规则搬进 `@layer base`——`globals.css` 里 `button { cursor: pointer }`
+早就为同一个原因这么写了（那段注释说得很清楚）。修后计算值 `none`，伪横屏
+沿条拖动、按住再拖都正常发 seek；全矩阵 28/28。没有给 `.player-scrub` 单开
+一条特例：按标签选的基础规则本来就该在 base 层，特例只会把下一个 `touch-none`
+再坑一次（站内还有四处拖动把手在用它）。
 
 ### 19.9 没做到的
 
