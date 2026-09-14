@@ -319,7 +319,7 @@ async def test_keep_one_moves_file_to_trash_dir_and_restore_brings_it_back(clien
             "media_item_id": movie["media_item"]["id"],
             "season_number": 0,
             "episode_number": 0,
-            "keep": keep["id"],
+            "keep_file_id": keep["id"],
         },
     )
     assert res.status_code == 200, res.text
@@ -391,7 +391,7 @@ async def test_keep_season_version_and_resolve_all_move_real_files(client, db, t
         json={
             "media_item_id": show["media_item"]["id"],
             "season_number": 1,
-            "keep": low["key"],
+            "keep_version": low["key"],
         },
     )
     assert res.status_code == 200, res.text
@@ -443,7 +443,7 @@ async def test_keep_all_survives_rescan_and_new_file_relists(client, db, tmp_pat
             "media_item_id": movie["media_item"]["id"],
             "season_number": 0,
             "episode_number": 0,
-            "keep": "all",
+            "keep_all": True,
         },
     )
     assert res.status_code == 200, res.text
@@ -606,7 +606,7 @@ async def test_file_deleted_outside_is_converged_not_errored(client, db, tmp_pat
             "media_item_id": movie["media_item"]["id"],
             "season_number": 0,
             "episode_number": 0,
-            "keep": keep["id"],
+            "keep_file_id": keep["id"],
         },
     )
     assert res.status_code == 200, res.text

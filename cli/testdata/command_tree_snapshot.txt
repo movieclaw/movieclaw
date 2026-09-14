@@ -100,6 +100,9 @@ library artwork select
 library chapter-images generate
 library create
 library delete
+library duplicates list
+library duplicates resolve
+library duplicates resolve-all
 library get
 library identification assign-file-to-title
 library identification assign-files-to-title

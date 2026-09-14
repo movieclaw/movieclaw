@@ -11,6 +11,10 @@
 > 说了只留一个），「整季留这个版本」与批量清理则跳过已标记的文件。代码：
 > `services/library/origin.py`、`services/library/duplicates.py`、
 > `api/routes/library_duplicates.py`、`apps/web/components/library-duplicate-files.tsx`。
+> ⑤决定字段拆成 `keep_file_id` / `keep_version` / `keep_all` 三个而不是一个联合类型的
+> `keep`：OpenAPI 生成的 Go CLI 会把 `int | str` 压成单一标量（实测生成出 `--keep int`），
+> 三种决定里只剩一种表达得出来。新增端点还要同步 `cli/testdata/` 的两份命令树快照与
+> `cli/internal/tree/guards_test.go` 的域清单，否则 cli-go 作业红。
 >
 > 相关：`library-file-recycle.md`（「待回收」第三态与回收站，本文的清理通道）、
 > `library-recycle-bin.md`（管理页回收站标签，本文的列表页同构于它）、
@@ -237,8 +241,10 @@ GET /libraries/duplicate-files?library_id=&media_item_id=&q=&limit=20&offset=0
 POST /libraries/duplicate-files/resolve
 body: { "media_item_id": 965, "season_number": 1,
         "episode_number": 3,                   // 省略 = 整季
-        "keep": 17 | "1080p Blu-ray|监听目录自动识别入库" | "all" }
-        // 文件 id = 这一集留这个；版本 key = 整季留这个版本（缺该版本的集留建议保留者）；"all" = 都留着
+        // 下面三个正好给一个（多给少给都 400）：
+        "keep_file_id": 17 }                   // 这一集留这个，其余移入回收站
+        "keep_version": "1080p Blu-ray|监听目录自动识别入库"  // 整季留这个版本；没有该版本的集留建议保留者
+        "keep_all": true }                     // 都留着，只盖 kept_at 不动文件
 → TrashedBatchResultView
 
 POST /libraries/duplicate-files/resolve-all

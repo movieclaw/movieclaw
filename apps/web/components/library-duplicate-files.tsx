@@ -175,7 +175,7 @@ export function LibraryDuplicateFiles({
         media_item_id: item.media_item.id,
         season_number: unit.season_number,
         episode_number: unit.episode_number,
-        keep: file.id,
+        keep_file_id: file.id,
       }),
     );
   };
@@ -199,7 +199,11 @@ export function LibraryDuplicateFiles({
     });
     if (!ok) return;
     await run(() =>
-      resolveDuplicates({ media_item_id: item.media_item.id, season_number: season.season_number, keep: version.key }),
+      resolveDuplicates({
+        media_item_id: item.media_item.id,
+        season_number: season.season_number,
+        keep_version: version.key,
+      }),
     );
   };
 
@@ -211,7 +215,7 @@ export function LibraryDuplicateFiles({
           media_item_id: item.media_item.id,
           season_number: season.season_number,
           episode_number: item.media_item.kind === "tv" ? null : 0,
-          keep: "all",
+          keep_all: true,
         }),
       item.media_item.kind === "tv" ? "整季都留着：不再列出，直到有新文件进来" : "都留着：不再列出，直到有新文件进来",
     );

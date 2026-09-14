@@ -481,7 +481,7 @@ async def test_resolve_keep_one_file(client, db, tmp_path):
             "media_item_id": ids["jm"],
             "season_number": 0,
             "episode_number": 0,
-            "keep": ids["jm_a"],
+            "keep_file_id": ids["jm_a"],
         },
     )
     assert res.status_code == 200, res.text
@@ -514,7 +514,7 @@ async def test_resolve_keep_one_file(client, db, tmp_path):
             "media_item_id": ids["ca"],
             "season_number": 0,
             "episode_number": 0,
-            "keep": ids["jm_b"],
+            "keep_file_id": ids["jm_b"],
         },
     )
     assert stale.status_code == 404
@@ -528,7 +528,7 @@ async def test_resolve_season_by_version_key(client, db, tmp_path):
         json={
             "media_item_id": ids["fh"],
             "season_number": 1,
-            "keep": "1080p WEB-DL|存量扫描发现（非本系统入库）",
+            "keep_version": "1080p WEB-DL|存量扫描发现（非本系统入库）",
         },
     )
     assert res.status_code == 200, res.text
@@ -553,13 +553,13 @@ async def test_resolve_season_by_version_key(client, db, tmp_path):
         json={
             "media_item_id": ids["fh"],
             "season_number": 1,
-            "keep": "1080p WEB-DL|存量扫描发现（非本系统入库）",
+            "keep_version": "1080p WEB-DL|存量扫描发现（非本系统入库）",
         },
     )
     assert again.status_code == 404
     bad = await client.post(
         "/api/v1/libraries/duplicate-files/resolve",
-        json={"media_item_id": ids["fh"], "season_number": 1, "keep": "nonsense"},
+        json={"media_item_id": ids["fh"], "season_number": 1, "keep_version": "nonsense"},
     )
     assert bad.status_code == 400
 
@@ -569,7 +569,12 @@ async def test_resolve_keep_all_then_new_file_relists(client, db, tmp_path):
     ids = await _seed(db, tmp_path)
     res = await client.post(
         "/api/v1/libraries/duplicate-files/resolve",
-        json={"media_item_id": ids["dune"], "season_number": 0, "episode_number": 0, "keep": "all"},
+        json={
+            "media_item_id": ids["dune"],
+            "season_number": 0,
+            "episode_number": 0,
+            "keep_all": True,
+        },
     )
     assert res.status_code == 200, res.text
     assert res.json()["data"]["done"] == 2
@@ -641,3 +646,43 @@ async def test_resolve_all_identical_bucket(client, db, tmp_path):
             "长安三万里.4K.mkv",
         ]
         assert all(r.trash_context["note"].endswith("一模一样，已保留后者") for r in gone)
+
+
+@pytest.mark.asyncio
+async def test_resolve_requires_exactly_one_decision(client, db, tmp_path):
+    """三个决定字段必须正好给一个——联合类型压成单一 CLI 标量的教训（schema 注释）。
+
+    多给、少给、以及把版本签名写成一个不含「|」的字符串，都要在入口挡下来，
+    不能让服务层去猜用户想干什么。
+    """
+    ids = await _seed(db, tmp_path)
+    base = {"media_item_id": ids["jm"], "season_number": 0, "episode_number": 0}
+    for payload, why in (
+        ({}, "一个都不给"),
+        ({"keep_file_id": ids["jm_a"], "keep_all": True}, "又要留一个又要都留着"),
+        ({"keep_version": "2160p WEB-DL|订阅《X》自动投递", "keep_all": True}, "两个都给"),
+    ):
+        res = await client.post(
+            "/api/v1/libraries/duplicate-files/resolve", json={**base, **payload}
+        )
+        assert res.status_code == 400, f"{why} 应当被拒：{res.text}"
+        assert "三选一" in res.json()["message"]
+
+    res = await client.post(
+        "/api/v1/libraries/duplicate-files/resolve",
+        json={**base, "keep_version": "看起来不像版本签名"},
+    )
+    assert res.status_code == 400
+    assert "version_key" in res.json()["message"]
+
+    # 文件一个都没动
+    async with db.session() as session:
+        states = {
+            r.state
+            for r in (
+                await session.execute(
+                    select(LibraryFile).where(LibraryFile.media_item_id == ids["jm"])
+                )
+            ).scalars()
+        }
+    assert states == {FileState.IN_PLACE}

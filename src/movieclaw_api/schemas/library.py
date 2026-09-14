@@ -1917,15 +1917,36 @@ class DuplicateFilesData(BaseModel):
 
 
 class DuplicateResolvePayload(BaseModel):
-    """一个单元 / 一季的决定。``keep``：文件 id = 这一集留这个；版本 key = 整季留这个版本；
-    ``"all"`` = 都留着。"""
+    """一个单元 / 一季的决定：三选一，正好给一个。
 
-    media_item_id: int
-    season_number: int = 0
-    episode_number: int | None = Field(default=None, description="省略 = 整季")
-    keep: int | str
+    三个字段而不是一个联合类型的 ``keep``：联合类型在 OpenAPI 生成的 CLI 里会被
+    压成单一标量（实测生成出 ``--keep int``），三种决定里只剩一种表达得出来。
+    拆开之后 JSON 与命令行都自解释：``--keep-file-id`` / ``--keep-version`` /
+    ``--keep-all``。
+    """
+
+    media_item_id: int = Field(description="条目 id")
+    season_number: int = Field(default=0, description="季号；电影为 0（哨兵）")
+    episode_number: int | None = Field(
+        default=None, description="集号；省略 = 整季（电影传 0 或省略）"
+    )
+    keep_file_id: int | None = Field(
+        default=None, description="留这个：保留该文件，单元内其余移入回收站"
+    )
+    keep_version: str | None = Field(
+        default=None,
+        description=(
+            "整季留这个版本：版本签名（列表接口的 version_key，形如"
+            "「1080p Blu-ray|监听目录自动识别入库」）；没有该版本的集保留建议保留者"
+        ),
+    )
+    keep_all: bool = Field(
+        default=False, description="都留着：这些版本都要，单元不再列为重复（不动文件）"
+    )
 
 
 class DuplicateResolveAllPayload(BaseModel):
-    bucket: Literal["identical", "versions"]
-    library_id: int | None = None
+    bucket: Literal["identical", "versions"] = Field(
+        description="要清理的那一堆：identical 一模一样 / versions 不同版本（按建议保留）"
+    )
+    library_id: int | None = Field(default=None, description="只清某个库；省略 = 全部库")

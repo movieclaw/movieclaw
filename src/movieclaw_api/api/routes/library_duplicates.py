@@ -187,9 +187,22 @@ async def resolve_duplicates(
     principal: Principal = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[TrashedBatchResultView]:
-    keep: int | str = payload.keep
-    if isinstance(keep, str) and keep != "all" and "|" not in keep:
-        raise BadRequestException('keep 必须是文件 id、版本 key 或 "all"')
+    chosen = [
+        payload.keep_file_id is not None,
+        payload.keep_version is not None,
+        payload.keep_all,
+    ]
+    if sum(chosen) != 1:
+        raise BadRequestException("keep_file_id / keep_version / keep_all 三选一，必须且只能给一个")
+    if payload.keep_version is not None and "|" not in payload.keep_version:
+        raise BadRequestException("keep_version 必须是列表接口返回的 version_key（含「|」）")
+    keep: int | str = (
+        "all"
+        if payload.keep_all
+        else payload.keep_file_id
+        if payload.keep_file_id is not None
+        else payload.keep_version  # type: ignore[assignment]
+    )
     try:
         outcome = await resolve_unit(
             session,
@@ -203,7 +216,7 @@ async def resolve_duplicates(
         raise NotFoundException(str(exc)) from exc
     except ValueError as exc:
         raise BadRequestException(str(exc)) from exc
-    if keep == "all":
+    if payload.keep_all:
         return ok(_result(outcome), message=f"已标记「都留着」：{outcome.done} 个文件不再列为重复")
     if outcome.done:
         await LibraryRepository(session).refresh_stats(list(outcome.library_ids))

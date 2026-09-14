@@ -152,6 +152,10 @@ library chapter-images generate
 library consolidate-roots
 library create
 library delete
+library duplicates
+library duplicates list
+library duplicates resolve
+library duplicates resolve-all
 library get
 library identification
 library identification assign-file-to-title

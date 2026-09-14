@@ -2008,14 +2008,17 @@ export function listDuplicateFiles(
 }
 
 /**
- * 一个单元 / 一季的决定：`keep` 为文件 id = 这一集留这个（其余进回收站）；
- * 为版本 key = 整季留这个版本；为 "all" = 都留着（只盖标记，不动文件）。
+ * 一个单元 / 一季的决定：三选一，正好给一个——
+ * `keep_file_id` 这一集留这个（其余进回收站）、`keep_version` 整季留这个版本、
+ * `keep_all` 都留着（只盖标记，不动文件）。
  */
 export function resolveDuplicates(payload: {
   media_item_id: number;
   season_number: number;
   episode_number?: number | null;
-  keep: number | string;
+  keep_file_id?: number;
+  keep_version?: string;
+  keep_all?: boolean;
 }): Promise<TrashedBatchResult> {
   return unwrap(
     request<ApiEnvelope<TrashedBatchResult>>(`/libraries/duplicate-files/resolve`, {
