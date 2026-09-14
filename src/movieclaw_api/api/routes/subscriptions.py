@@ -26,7 +26,9 @@ from movieclaw_api.schemas.subscription import (
     PipelineHealthView,
     PrepareView,
     ResolveCandidateView,
+    RetainedTorrentView,
     SearchNowView,
+    SeasonCleanupPayload,
     SeasonOverview,
     SubscriptionCreatePayload,
     SubscriptionCreateView,
@@ -703,10 +705,14 @@ async def unsubscribe_from_subscription(
 )
 async def preview_subscription_removal(
     subscription_id: int,
+    seasons: list[int] | None = Query(
+        default=None,
+        description="只预览这几季（减季后的按季清理）；不传=整条退订的范围",
+    ),
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[SubscriptionRemovalPreviewView]:
     """纯读预览：确认弹窗据此告诉用户"一起删"到底会删掉什么、有多少。"""
-    plan = await _service(session).removal_preview(subscription_id)
+    plan = await _service(session).removal_preview(subscription_id, seasons=seasons)
     return ok(
         SubscriptionRemovalPreviewView(
             torrent_count=len(plan.torrents),
@@ -715,7 +721,43 @@ async def preview_subscription_removal(
             library_file_count=len(plan.files),
             library_bytes=plan.library_bytes,
             recycle_retention_days=RECYCLE_RETENTION_DAYS,
+            retained_cross_season=[
+                RetainedTorrentView(title=t.title, seasons=list(t.seasons))
+                for t in plan.retained
+            ],
         )
+    )
+
+
+@router.post(
+    "/{subscription_id}/season-cleanup",
+    response_model=ApiResponse[SubscriptionDeleteView],
+    summary="清理已移出订阅范围的那几季的种子与媒体库文件",
+    operation_id="subscriptions.cleanup-seasons",
+    dependencies=[Depends(require_admin)],
+    openapi_extra={"x-cli-dangerous": "confirm"},
+)
+async def cleanup_subscription_seasons(
+    subscription_id: int,
+    payload: SeasonCleanupPayload,
+    client_name: str | None = Header(default=None, alias="X-MovieClaw-Client"),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[SubscriptionDeleteView]:
+    """减季之后的可选收尾：订阅继续追别的季，只清掉退出那几季的内容。
+
+    仍在订阅范围内的季会被拒绝——这个接口不是"绕过减季直接删内容"的后门。
+    两个开关同样默认关闭，实际的删种子与回收文件照旧交给后台任务。
+    """
+    outcome = await _service(session).cleanup_seasons(
+        subscription_id,
+        payload.seasons,
+        delete_torrents=payload.delete_torrents,
+        delete_library_files=payload.delete_library_files,
+        origin=_job_origin(client_name),
+    )
+    return ok(
+        SubscriptionDeleteView(cleanup_job_id=outcome.cleanup_job_id),
+        message=outcome.message,
     )
 
 

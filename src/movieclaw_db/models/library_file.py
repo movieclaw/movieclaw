@@ -282,6 +282,15 @@ class LibraryFile(TimestampMixin, table=True):
         sa_column=Column(_NullableJson, nullable=True),
         description="章节场景图清单 JSON；NULL=没抓过",
     )
+    # 原盘专用（container=bluray）：主播放列表的剪辑清单，播放链路据此构造
+    # concat 输入与关键帧索引，不必回盘上读 MPLS（docs/design/disc-playback.md
+    # §3.2）。结构见 services/library/bluray.py::disc_playlist_record；
+    # NULL=未探测或非原盘，补探会补齐。
+    disc_playlist: dict | None = Field(
+        default=None,
+        sa_column=Column(_NullableJson, nullable=True),
+        description="原盘主播放列表 JSON（列表名 + 剪辑 IN/OUT）；NULL=未探测/非原盘",
+    )
 
     # -- 发布信息（来自文件名解析，enrich 复用）------------------------------
     media_source: str | None = Field(default=None, description="片源：WEB-DL/Blu-ray/…")

@@ -1009,3 +1009,45 @@ def test_real_degrade_still_marks_the_origin_tier():
     assert decision.tier is PlaybackTier.HARDWARE_TRANSCODE
     assert decision.degraded_from is PlaybackTier.REMUX
     assert "已自动降档" in decision.reason
+
+
+def test_universal_capability_remuxes_multi_clip_disc_but_direct_plays_single_clip():
+    """原盘（disc-playback.md §3.4）：多剪辑主片没有单文件可直连，全解码播放器也只能
+    走 concat copy 到 HLS——仍然不重编码；单剪辑原盘照旧档 0。"""
+    multi = media(container="bluray", video_codec="hevc", disc_clips=3)
+    decision = decide_playback(multi, universal_capability(), NO_GPU, preferred_audio="embedded:1")
+    assert isinstance(decision, PlaybackPlan)
+    assert decision.tier is PlaybackTier.REMUX
+    assert decision.container == "hls-fmp4"
+    assert decision.video.action == "copy" and decision.audio.action == "copy"
+    assert decision.audio.track_ref == "embedded:1"
+    assert "3 段" in decision.reason
+
+    single = media(container="bluray", video_codec="hevc", disc_clips=1)
+    decision = decide_playback(single, universal_capability(), NO_GPU)
+    assert isinstance(decision, PlaybackPlan)
+    assert decision.tier is PlaybackTier.DIRECT_PLAY
+
+
+def test_fmp4_copy_audio_track_avoids_truehd_and_prefers_same_language():
+    """原盘 HLS remux：TrueHD 装不进 fMP4（ffmpeg 视为 experimental），回退到同语言
+    的 AC-3 核心；用户点选的可封装轨优先；全都不可封装时原样返回。"""
+    from movieclaw_playback.decide import fmp4_copy_audio_track
+
+    truehd = AudioTrack(
+        ref="embedded:0", codec="truehd", channels=8, language="eng", is_default=True
+    )
+    ac3_chi = AudioTrack(ref="embedded:1", codec="ac3", channels=6, language="chi")
+    ac3_eng = AudioTrack(ref="embedded:2", codec="ac3", channels=6, language="eng")
+    tracks = (truehd, ac3_chi, ac3_eng)
+    assert fmp4_copy_audio_track(tracks, None) is ac3_eng  # 默认轨 TrueHD → 同语言 AC-3
+    assert fmp4_copy_audio_track(tracks, "embedded:1") is ac3_chi  # 点选可封装轨照用
+    assert fmp4_copy_audio_track(tracks, "embedded:0") is ac3_eng  # 点选 TrueHD → 同语言回退
+    assert fmp4_copy_audio_track((truehd,), None) is truehd  # 无可封装轨：原样返回
+    assert fmp4_copy_audio_track((), None) is None
+
+    multi = media(container="bluray", audio_tracks=tracks, disc_clips=2)
+    decision = decide_playback(multi, universal_capability(), NO_GPU)
+    assert isinstance(decision, PlaybackPlan)
+    assert decision.audio.track_ref == "embedded:2" and decision.audio.codec == "ac3"
+

@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from movieclaw_api.services.media_probe import probe_keyframe_interval
+from movieclaw_api.services.playback.disc_source import disc_source_for_file
 from movieclaw_api.services.playback.hwprobe import hardware_available
 from movieclaw_api.services.playback.limits import MAX_TRANSCODE_HEIGHT
 from movieclaw_api.settings import PlaybackPolicySetting
@@ -96,9 +97,18 @@ async def decide_for_files(
         # 关键帧密度只服务于档 1/2 的视频复制。先用不需要源片 IO 的纯判定
         # 判断候选是否可能落在这两个档位；iOS 4K 硬转、软件转码和 Direct
         # Play 都直接跳过，避免为最终不会使用的安全信息等待慢存储。
-        profile = media_profile_from_file(file)
+        # 原盘：段数进决策输入（多剪辑没有单文件可直连）；关键帧密度来自 CLPI
+        # 的 EP_map 而不是 ffprobe——目录探不了，m2ts 本体通读不起
+        disc = disc_source_for_file(file) if file.is_disc() else None
+        disc_clips = len(disc.clips) if disc is not None else 0
+        profile = media_profile_from_file(file, disc_clips=disc_clips)
         interval = None
-        if needs_keyframe_probe(
+        if disc is not None:
+            interval = await asyncio.to_thread(disc.keyframe_interval_s)
+            profile = media_profile_from_file(
+                file, keyframe_interval_s=interval, disc_clips=disc_clips
+            )
+        elif needs_keyframe_probe(
             profile,
             capability,
             policy,
@@ -120,7 +130,9 @@ async def decide_for_files(
                     "关键帧采样耗时 %.1f 秒（%s）——存储较慢，首播延迟主要来自这里",
                     probe_s, file.file_path,
                 )
-            profile = media_profile_from_file(file, keyframe_interval_s=interval)
+            profile = media_profile_from_file(
+                file, keyframe_interval_s=interval, disc_clips=disc_clips
+            )
         decisions.append(
             (
                 decide_playback(

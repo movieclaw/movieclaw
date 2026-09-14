@@ -24,6 +24,7 @@ from fastapi.responses import JSONResponse
 
 from movieclaw_api.services.playback import marks as playback_marks
 from movieclaw_api.services.playback import watch as playback_watch
+from movieclaw_api.services.playback.session import get_session_manager
 from movieclaw_db.engine import get_database
 from movieclaw_jellyfin.catalog import (
     TICKS_PER_MS,
@@ -269,6 +270,9 @@ async def playing_stopped(
     request: Request, identity: RequestIdentity = Depends(require_device)
 ) -> Response:
     body = await _read_body(request)
+    # 原盘多剪辑走 HLS remux 会话（disc-playback.md §3.5）：播放器停了就把这台
+    # 设备的 ffmpeg 收掉，不等 180 秒无心跳回收；无会话时是空操作
+    await get_session_manager().stop_for_device(identity.device.device_id)
     failed = body.get("failed")
     if failed is True or (isinstance(failed, str) and failed.lower() == "true"):
         # 播放失败的上报不落库（SessionManager.cs:1164-1167）；字符串 "true"

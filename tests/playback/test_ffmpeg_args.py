@@ -970,3 +970,28 @@ def test_burn_session_produces_burned_segments(tmp_path):
     assert all(c > 220 for c in inside), f"字幕没烧进画面：{inside}"
     assert not all(c > 220 for c in outside), f"矩形外不该是白色：{outside}"
     assert not all(c > 220 for c in after), f"字幕结束后应消失：{after}"
+
+
+def test_concat_input_format_puts_demuxer_flags_before_input():
+    """原盘多剪辑：``-f concat -safe 0`` 紧贴在 ``-i 清单`` 之前，-ss 仍在其前。"""
+    argv = build_hls_command(
+        plan(PlaybackTier.REMUX),
+        source_path="/data/transcodes/abc/source.concat",
+        session_dir=SESSION_DIR,
+        start_ms=30_000,
+        start_number=3,
+        input_format="concat",
+    ).argv
+    i = argv.index("-i")
+    assert argv[i - 4 : i + 2] == [
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        "/data/transcodes/abc/source.concat",
+    ]
+    assert argv.index("-ss") < i
+    # 普通输入不带 concat 标志
+    plain = argv_of(plan(PlaybackTier.REMUX))
+    assert "concat" not in plain
