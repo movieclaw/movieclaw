@@ -370,6 +370,7 @@ def test_every_route_denies_anonymous_access(client: TestClient) -> None:
             .replace("{member_id}", "1")
             .replace("{job_id}", "job_test")
             .replace("{device_id}", "test-device")
+            .replace("{task_key}", "library_reconcile")
             .replace("{user_code}", "MCLW-TEST")
             .replace("{name}", "seg00000.m4s")
             .replace("{index}", "0")

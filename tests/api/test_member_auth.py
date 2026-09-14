@@ -655,6 +655,7 @@ _MEMBER_ALLOWLIST = {
 
 # 路径参数哑值（与 test_auth.py 的匿名守护测试保持一致）
 _PATH_DUMMIES = {
+    "{task_key}": "library_reconcile",
     "{site_id}": "mteam",
     "{history_id}": "1",
     "{backdrop_id}": "f" * 32,
