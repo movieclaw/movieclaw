@@ -238,6 +238,7 @@ class LibraryFileRepository:
         existing.subtitle_streams = row.subtitle_streams
         existing.external_subtitles = row.external_subtitles
         existing.chapters = row.chapters
+        existing.disc_playlist = row.disc_playlist
         # 人工标注的片源不被自动解析覆盖（docs/design/media-source-annotation.md
         # §3.2）；扫描/入库构造的 row 永远非人工，标记位无需从 row 继承
         if not existing.media_source_manual:

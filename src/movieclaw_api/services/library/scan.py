@@ -57,6 +57,8 @@ from sqlmodel import select
 
 from movieclaw_api.services import jobs
 from movieclaw_api.services.library.bluray import (
+    disc_playlist_record,
+    disc_playlist_stale,
     enrich_spec_with_clpi,
     read_clpi_languages,
     read_main_playlist,
@@ -2630,6 +2632,7 @@ async def _ingest_file(
             note_probe_failure(str(file))
         else:
             note_probe_success(str(file))
+    disc_playlist: dict | None = None
     if spec is not None and is_disc and (file / "BDMV").is_dir():
         # m2ts 常常不带语言描述符；同编号 CLPI 用 PID 补齐，已有 ffprobe
         # 语言保持不动。缺失/损坏 CLPI 只降级，不影响原盘入账。
@@ -2638,7 +2641,12 @@ async def _ingest_file(
             spec = enrich_spec_with_clpi(spec, languages)
         playlist = await asyncio.to_thread(read_main_playlist, file)
         if playlist is not None and playlist.duration_seconds > 0:
-            spec = replace(spec, duration_seconds=playlist.duration_seconds)
+            # 时长与章节都以主播放列表为准：m2ts 没有章节，单个剪辑的时长也
+            # 不等于正片（多剪辑主片 / 播放列表只用剪辑的一截）
+            spec = replace(
+                spec, duration_seconds=playlist.duration_seconds, chapters=playlist.chapters()
+            )
+            disc_playlist = disc_playlist_record(playlist)
     if is_disc:
         size_bytes = await asyncio.to_thread(_disc_total_size, file)
         container = "bluray" if (file / "BDMV").is_dir() else "dvd"
@@ -2777,6 +2785,7 @@ async def _ingest_file(
             audio_streams=list(spec.audio_streams) if spec else None,
             subtitle_streams=list(spec.subtitle_streams) if spec else None,
             chapters=list(spec.chapters) if spec else None,
+            disc_playlist=disc_playlist,
             external_subtitles=external_subtitles,
             media_source=scanned_media_source(attrs, container) if profile.scraped else None,
             release_group=attrs.release_group if profile.scraped else None,
@@ -2966,7 +2975,12 @@ async def _probe_backfill(
         or (row.probe_version or 0) < PROBE_SCHEMA_VERSION
         or (
             row.container == "bluray"
-            and not streams_have_clpi_metadata(row.audio_streams, row.subtitle_streams)
+            and (
+                not streams_have_clpi_metadata(row.audio_streams, row.subtitle_streams)
+                # 主播放列表清单缺失/版本落后：播放链路要靠它，且选主片规则
+                # 修过（排除循环诱饵列表）后时长与章节都要重算
+                or disc_playlist_stale(row.disc_playlist)
+            )
         )
     ]
     # strm 占位文件永远探不出规格（本体没有媒体流），不进分母——否则

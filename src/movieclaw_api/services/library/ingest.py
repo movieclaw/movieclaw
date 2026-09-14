@@ -118,6 +118,7 @@ from sqlmodel import select
 from movieclaw_api.services import jobs
 from movieclaw_api.services.import_watch_config import rule_target_label
 from movieclaw_api.services.library.bluray import (
+    disc_playlist_record,
     enrich_spec_with_clpi,
     read_clpi_languages,
     read_main_playlist,
@@ -1807,13 +1808,18 @@ async def _ingest_entry(
             IngestStatus.FAILED,
             f"主视频「{main.name}」探测失败——可能尚未下载完成或已损坏，文件变化后自动重试",
         )
+    disc_playlist: dict | None = None
     if spec is not None and disc_root is not None and (disc_root / "BDMV").is_dir():
         languages = await asyncio.to_thread(read_clpi_languages, main)
         if languages is not None:
             spec = enrich_spec_with_clpi(spec, languages)
         playlist = await asyncio.to_thread(read_main_playlist, disc_root)
         if playlist is not None and playlist.duration_seconds > 0:
-            spec = replace(spec, duration_seconds=playlist.duration_seconds)
+            # 时长与章节以主播放列表为准（与扫描端同口径，见 scan._register_file）
+            spec = replace(
+                spec, duration_seconds=playlist.duration_seconds, chapters=playlist.chapters()
+            )
+            disc_playlist = disc_playlist_record(playlist)
 
     # 身份优先级：人工认领（forced_item，用户拍板最高权威）→ 订阅工单认领
     # （info_hash 命中在途投递 → 继承投递时锚定的精确身份，零猜测）→
@@ -2091,6 +2097,7 @@ async def _ingest_entry(
                 audio_streams=list(spec.audio_streams) if spec else None,
                 subtitle_streams=list(spec.subtitle_streams) if spec else None,
                 chapters=list(spec.chapters) if spec else None,
+                disc_playlist=disc_playlist,
                 # 完整原盘入库：片源按结构判顶档（T6），压过种子名里的
                 # "Blu-ray"——原盘高于从它剥出来的 Remux，否则一个 Remux
                 # 候选会把刚入库的原盘洗掉（issue #163）

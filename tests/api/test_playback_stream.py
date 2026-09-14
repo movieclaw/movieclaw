@@ -1313,3 +1313,101 @@ def test_remote_artifact_upload_rejects_finished_job(client, tmp_path):
         assert response.status_code == 404
     finally:
         registry._job_states.pop("remote-attempt-test", None)
+
+
+def _mpls_bytes(*items: tuple[str, int, int]) -> bytes:
+    body = bytearray(b"\0\0" + len(items).to_bytes(2, "big") + b"\0\0")
+    for clip_id, in_time, out_time in items:
+        core = (
+            clip_id.encode("ascii")
+            + b"M2TS"
+            + b"\0\0"
+            + b"\0"
+            + in_time.to_bytes(4, "big")
+            + out_time.to_bytes(4, "big")
+        )
+        body += len(core).to_bytes(2, "big") + core
+    header = bytearray(b"MPLS0100" + (20).to_bytes(4, "big") + b"\0" * 8)
+    return bytes(header + len(body).to_bytes(4, "big") + body)
+
+
+async def _seed_disc(tmp_path: Path) -> int:
+    """落一张两段剪辑的最小原盘（H.264，让 H.264-only 的浏览器能走 remux）。"""
+    from tests.api.test_bluray_clpi import _clpi_with_ep_map
+
+    from movieclaw_api.services.library.bluray import disc_playlist_record, read_main_playlist
+
+    n = next(_seed_counter)
+    disc = tmp_path / f"discs{n}" / "Movie (2020)"
+    (disc / "BDMV" / "PLAYLIST").mkdir(parents=True)
+    (disc / "BDMV" / "STREAM").mkdir()
+    (disc / "BDMV" / "CLIPINF").mkdir()
+    for clip in ("00001", "00002"):
+        (disc / "BDMV" / "STREAM" / f"{clip}.m2ts").write_bytes(b"M2TS" * 64)
+        # 每 4 秒一个关键帧的 EP_map：决策能走 remux，VOD 分片规划能算出来
+        (disc / "BDMV" / "CLIPINF" / f"{clip}.clpi").write_bytes(
+            _clpi_with_ep_map({0x1011: [45_000 * 4 * k for k in range(75)]})
+        )
+    (disc / "BDMV" / "PLAYLIST" / "00001.mpls").write_bytes(
+        _mpls_bytes(("00001", 0, 45_000 * 300), ("00002", 0, 45_000 * 300))
+    )
+    async with get_database().session() as session:
+        library = await LibraryRepository(session).create(
+            name=f"原盘库{n}", kind="movie", root_paths=[str(disc.parent)]
+        )
+        item = MediaItem(
+            kind="movie", tmdb_id=5000 + n, title=f"原盘{n}", original_title=f"Disc{n}"
+        )
+        session.add(item)
+        await session.flush()
+        row = LibraryFile(
+            library_id=library.id,
+            media_item_id=item.id,
+            file_path=str(disc),
+            size_bytes=4096,
+            source=FileSource.SCANNED,
+            state=FileState.IN_PLACE,
+            container="bluray",
+            video_codec="h264",
+            resolution="1080p",
+            duration_seconds=600,
+            audio_streams=[{"codec": "aac", "channels": 2, "default": True}],
+            disc_playlist=disc_playlist_record(read_main_playlist(disc)),
+        )
+        session.add(row)
+        await session.commit()
+        await session.refresh(row)
+        return row.id
+
+
+def test_disc_session_feeds_ffmpeg_a_concat_list(client, tmp_path, monkeypatch):
+    """原盘（disc-playback.md §3.4）：网页播放器起会话时 ffmpeg 的输入是会话目录里的
+    concat 清单（-f concat），不是原盘目录；关键帧表来自 CLPI，时间轴是播放列表时间。"""
+    calls: list[dict] = []
+
+    def fake_build(
+        plan, *, source_path, session_dir, start_ms=0, hw_backend=None, start_number=None, **kw
+    ):
+        calls.append({"source_path": source_path, "start_number": start_number, **kw})
+        playlist = Path(session_dir) / "index.m3u8"
+        return TranscodeCommand(
+            argv=["python3", "-c", FAKE_FFMPEG, str(playlist)],
+            playlist_path=playlist,
+            init_path=Path(session_dir) / "init.mp4",
+        )
+
+    monkeypatch.setattr(session_mod, "build_hls_command", fake_build)
+    file_id = client.portal.call(partial(_seed_disc, tmp_path))
+    data = start_session(client, file_id)
+    assert data["decision"]["tier"] == 1, data["decision"]
+    assert data["session_id"]
+    call = calls[-1]
+    assert call.get("input_format") == "concat"
+    assert call["source_path"].endswith("/source.concat")
+    text = Path(call["source_path"]).read_text(encoding="utf-8")
+    assert text.count("\nfile '") == 2 and "inpoint 0.000000" in text
+    # CLPI 关键帧表可用 → VOD 预生成分片，时间轴是播放列表（文件）绝对时间
+    assert call["start_number"] == 0
+    assert data["timeline"] == "file"
+    assert client.get(data["stream_url"]).status_code == 200
+    assert client.delete(f"{_PB}/sessions/{data['session_id']}").status_code == 200

@@ -9,11 +9,15 @@
   鉴权：真 Jellyfin 此接口匿名，我们要求 token（偏离③，公网暴露考量）；
 - /Videos/{id}/{msId}/Subtitles/{idx}[/{ticks}]/Stream.{fmt}：外挂字幕
   输出（§4.4）——内容与格式转换来自 movieclaw_playback.subtitles，
-  本层只做 GUID/编号反解与 HTTP 形态。
+  本层只做 GUID/编号反解与 HTTP 形态；
+- 原盘（docs/design/disc-playback.md）：单剪辑主片按 m2ts 文件直出；多剪辑
+  主片 PlaybackInfo 给 TranscodingUrl，/Videos/{id}/master.m3u8 起一个
+  copy remux 会话（复用网页播放器的 VOD 分片流水线），不重编码。
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import secrets
 from pathlib import Path
@@ -24,9 +28,26 @@ from sqlalchemy import select
 
 from movieclaw_api.services.library.access import member_visible_ids
 from movieclaw_api.services.playback import watch as playback_watch
+from movieclaw_api.services.playback.disc_source import disc_source_for_file
+from movieclaw_api.services.playback.ffmpeg_args import SEGMENT_SECONDS
+from movieclaw_api.services.playback.limits import (
+    MAX_REMUX_CONCURRENCY,
+    auto_quota_bytes,
+    auto_transcode_concurrency,
+)
+from movieclaw_api.services.playback.session import (
+    DiskQuotaError,
+    SessionLimitError,
+    SessionStartError,
+    get_session_manager,
+)
+from movieclaw_api.services.playback.signing import issue_stream_token
+from movieclaw_api.settings import PlaybackPolicySetting
+from movieclaw_api.settings.store import get_setting_store
 from movieclaw_db.engine import get_database
 from movieclaw_db.models import LibraryFile
 from movieclaw_jellyfin.catalog import (
+    audio_track_for_index,
     index_for_subtitle_track,
     media_source_dto,
     subtitle_track_for_index,
@@ -43,7 +64,16 @@ from movieclaw_jellyfin.ids import (
 from movieclaw_jellyfin.security import RequestIdentity, require_device
 from movieclaw_playback import activity
 from movieclaw_playback import state as playback_state
+from movieclaw_playback.decide import (
+    AudioPlan,
+    PlaybackPlan,
+    PlaybackTier,
+    VideoPlan,
+    fmp4_copy_audio_track,
+)
 from movieclaw_playback.events import ClientInfo
+from movieclaw_playback.hls_vod import build_master_playlist, compute_segment_plan
+from movieclaw_playback.profile import media_profile_from_file
 from movieclaw_playback.streaming import (
     DisconnectAwareFileResponse,
     container_mime_type,
@@ -123,15 +153,19 @@ async def playback_info(
     # query 优先于 body；DeviceProfile 与 LiveStreamId 一律忽略（后者会短路
     # 源解析，绝不能当 mediaSourceId 用）
     media_source_id = request.query_params.get("mediaSourceId")
-    if media_source_id is None and request.method == "POST":
+    audio_stream_index = _int_or_none(_query_ci(request, "audioStreamIndex"))
+    if request.method == "POST":
         try:
             body = await request.json()
         except Exception:
             body = None
         if isinstance(body, dict):
             lowered = {str(k).lower(): v for k, v in body.items()}
-            raw = lowered.get("mediasourceid")
-            media_source_id = str(raw) if raw else None
+            if media_source_id is None:
+                raw = lowered.get("mediasourceid")
+                media_source_id = str(raw) if raw else None
+            if audio_stream_index is None:
+                audio_stream_index = _int_or_none(lowered.get("audiostreamindex"))
 
     files = await _files_for_ref(ref, identity.device.member_id)
     selected = _select_source(files, media_source_id, item_id)
@@ -153,15 +187,63 @@ async def playback_info(
         audio_mem, subtitle_mem = await playback_state.get_remembered_tracks(
             session, unit, member_id=identity.device.member_id
         )
+    play_session_id = secrets.token_hex(16)
     for f, source in pairs:
         _apply_subtitle_delivery(source, f, ref, identity.device.token)
         _apply_default_tracks(source, f, audio_mem, subtitle_mem)
+        _apply_disc_transcoding(
+            source, f, ref, identity.device.token, play_session_id, audio_stream_index
+        )
     return JSONResponse(
         {
             "MediaSources": [s for _, s in pairs],
-            "PlaySessionId": secrets.token_hex(16),
+            "PlaySessionId": play_session_id,
         }
     )
+
+
+def _query_ci(request: Request, key: str) -> str | None:
+    """取 query 参数，键名大小写不敏感（客户端方言：AudioStreamIndex / audioStreamIndex）。"""
+    wanted = key.lower()
+    for k, v in request.query_params.items():
+        if k.lower() == wanted:
+            return v
+    return None
+
+
+def _int_or_none(raw: object) -> int | None:
+    try:
+        return int(str(raw)) if raw is not None and str(raw).strip() != "" else None
+    except ValueError:
+        return None
+
+
+def _apply_disc_transcoding(
+    source: dict,
+    f: LibraryFile,
+    ref: EntityRef,
+    token: str,
+    play_session_id: str,
+    audio_stream_index: int | None,
+) -> None:
+    """多剪辑原盘的 TranscodingUrl（docs/design/disc-playback.md §3.5）。
+
+    形态对齐真 Jellyfin ``StreamInfo.ToUrl``：``/Videos/{item}/master.m3u8`` 带
+    MediaSourceId / PlaySessionId / AudioStreamIndex / ApiKey。音轨取客户端
+    这次协商指定的（切换音轨时 Infuse 会重新 PlaybackInfo），没指定用默认轨。
+    """
+    if not f.is_disc() or not source.get("SupportsTranscoding"):
+        return
+    audio_index = audio_stream_index
+    if audio_index is None or audio_track_for_index(f, audio_index) is None:
+        audio_index = source.get("DefaultAudioStreamIndex")
+    query = (
+        f"MediaSourceId={media_source_guid(f.id)}&PlaySessionId={play_session_id}"
+        f"&SegmentContainer=mp4&ApiKey={token}"
+    )
+    if audio_index is not None:
+        query += f"&AudioStreamIndex={audio_index}"
+    source["TranscodingUrl"] = f"/Videos/{_unit_item_guid(ref)}/master.m3u8?{query}"
 
 
 def _range_start(request: Request) -> int:
@@ -290,12 +372,26 @@ async def video_stream(
         return RedirectResponse(url, status_code=302)
 
     path = Path(f.file_path)
-    if not path.is_file():
-        raise not_found()
     # MIME 优先级对齐 StreamingHelpers：URL 后缀 → ?container= query → 真实容器
     media_type = container_mime_type(
         container or request.query_params.get("container") or f.container or path.suffix
     )
+    if f.is_disc():
+        # 原盘（disc-playback.md §3.3）：单剪辑主片直接按 m2ts 供流；多剪辑
+        # 没有单文件，客户端应按 PlaybackInfo 给的 TranscodingUrl 走 HLS
+        disc = disc_source_for_file(f)
+        clip = disc.single_clip if disc is not None else None
+        if clip is None:
+            logger.warning(
+                "原盘取流拒绝：%s（%s）",
+                f.file_path,
+                "主片由多段剪辑组成，须走 master.m3u8 转封装" if disc else "主播放列表不可读",
+            )
+            raise not_found()
+        path = clip.path
+        media_type = container_mime_type("m2ts")
+    if not path.is_file():
+        raise not_found()
     # 停止播放并不保证客户端立刻关闭 Range 连接。按已认证设备登记这条流，
     # 让 /Sessions/Playing/Stopped 能主动停止读盘；TCP 断连仍是第二道兜底。
     device_id = identity.device.device_id
@@ -373,7 +469,8 @@ async def download_item(
         return RedirectResponse(url, status_code=302)
 
     path = Path(f.file_path)
-    if not path.is_file():
+    if f.is_disc() or not path.is_file():
+        # 原盘是目录，没有"一个文件"可下（CanDownload 已恒 false，这里是兜底）
         raise not_found()
     # 下载不是播放会话：不登记设备流，避免用户边下边看时点"停止播放"误杀
     # 下载读盘；但下载器取消/断网后必须停止读盘（裸 FileResponse 会把几十 GB
@@ -491,3 +588,111 @@ async def subtitle_stream(
         logger.warning("外挂字幕输出失败：%s", exc)
         raise not_found() from None
     return Response(content=content, media_type=mime)
+
+
+@router.get("/Videos/{item_id}/master.m3u8")
+async def video_hls_master(
+    request: Request,
+    item_id: str,
+    identity: RequestIdentity = Depends(require_device),
+) -> Response:
+    """原盘多剪辑的 HLS 入口（docs/design/disc-playback.md §3.5）。
+
+    只服务原盘：普通文件本层恒直连（偏离①）。做的事与网页播放器开会话同源：
+    按主播放列表写 concat 清单、CLPI 关键帧表预生成 VOD 分片规划、起一个
+    ``-c copy`` 的 HLS 会话，然后把 master 列表指到网页播放器的会话端点
+    （带取流 token，播放器媒体内核拉分片不带自定义头）。同片同成员的旧会话
+    先停掉——播放器换音轨/重开都会再打这一条，不清会积 ffmpeg。
+    """
+    ref = decode_guid(item_id)
+    if ref is None or ref.kind not in (EntityKind.ITEM, EntityKind.EPISODE):
+        raise not_found()
+    files = await _files_for_ref(ref, identity.device.member_id)
+    selected = _select_source(files, request.query_params.get("mediaSourceId"), item_id)
+    if not selected:
+        raise not_found()
+    f = selected[0]
+    if not f.is_disc() or f.id is None:
+        raise not_found()
+    disc = disc_source_for_file(f)
+    if disc is None:
+        logger.warning("原盘 HLS 拒绝：主播放列表不可读：%s", f.file_path)
+        raise not_found()
+    if activity.device_ended(identity.device.device_id):
+        raise bad_request_text("播放已被管理员结束")
+
+    # 音轨：协议编号 → 中性轨引用；没给/越界用默认轨。再按「能否原样封装进
+    # fMP4」回退（TrueHD/LPCM 装不进 mp4，蓝光 TrueHD 自带的 AC-3 核心顶上）
+    requested_ref = None
+    protocol_index = _int_or_none(_query_ci(request, "audioStreamIndex"))
+    if protocol_index is not None:
+        requested_ref = audio_track_for_index(f, protocol_index)
+    if requested_ref is None:
+        default_index = resolve_default_audio(f, None)
+        requested_ref = f"embedded:{default_index if default_index is not None else 0}"
+    track = fmp4_copy_audio_track(media_profile_from_file(f).audio_tracks, requested_ref)
+    if track is not None and track.ref != requested_ref:
+        logger.info(
+            "原盘 HLS 音轨回退：%s 无法原样封装进 fMP4，改用 %s（%s）",
+            requested_ref,
+            track.ref,
+            track.codec,
+        )
+    plan = PlaybackPlan(
+        tier=PlaybackTier.REMUX,
+        file_id=f.id,
+        container="hls-fmp4",
+        video=VideoPlan(action="copy", codec=f.video_codec, source_bit_depth=f.bit_depth),
+        audio=AudioPlan(
+            action="copy",
+            track_ref=track.ref if track is not None else None,
+            codec=track.codec if track is not None else None,
+            channels=track.channels if track is not None else None,
+        ),
+        reason=(
+            f"原盘主片由 {len(disc.clips)} 段剪辑拼接而成，按播放列表拼接后原样封装为 HLS，不转码"
+        ),
+    )
+    duration_s = float(f.duration_seconds or 0) or disc.duration_s
+    keyframes = await asyncio.to_thread(disc.keyframe_index)
+    segment_plan = (
+        compute_segment_plan(keyframes.times_s, duration_s, target_s=SEGMENT_SECONDS)
+        if keyframes is not None and duration_s > 0
+        else None
+    )
+    member_id = identity.device.member_id
+    manager = get_session_manager()
+    policy = await get_setting_store().get(PlaybackPolicySetting)
+    await manager.stop_for_file(f.id, member_id)
+    try:
+        session = await manager.start(
+            plan,
+            source_path=f.file_path,
+            member_id=member_id,
+            start_ms=0,
+            segment_plan=segment_plan,
+            max_transcode=auto_transcode_concurrency(hardware=False),
+            max_remux=MAX_REMUX_CONCURRENCY,
+            quota_bytes=auto_quota_bytes(manager.cache_root),
+            display_name=disc.display_name,
+            device_id=identity.device.device_id,
+            cache=policy.transcode_cache_enabled,
+            source_concat=disc.concat_list(),
+        )
+    except (SessionLimitError, DiskQuotaError, SessionStartError) as exc:
+        logger.warning("原盘 HLS 会话启动失败：%s（%s）", f.file_path, exc)
+        raise not_found() from None
+    token = await issue_stream_token(
+        member_id=member_id,
+        file_id=f.id,
+        session_id=session.id,
+        device_id=identity.device.device_id,
+    )
+    return Response(
+        content=build_master_playlist(
+            media_uri=f"/api/v1/playback/sessions/{session.id}/index.m3u8",
+            query=f"?token={token}",
+        ),
+        media_type="application/vnd.apple.mpegurl",
+        headers={"Cache-Control": "no-store"},
+    )

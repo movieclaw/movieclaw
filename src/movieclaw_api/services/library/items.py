@@ -64,8 +64,11 @@ from movieclaw_api.services.library.artwork import (
     find_artwork,
 )
 from movieclaw_api.services.library.bluray import (
+    disc_playlist_record,
+    disc_playlist_stale,
     enrich_spec_with_clpi,
     read_clpi_languages,
+    read_main_playlist,
     streams_have_clpi_metadata,
 )
 from movieclaw_api.services.library.content_rating import ratings_at_or_below
@@ -2753,11 +2756,18 @@ async def backfill_streams(
         needs_clpi = row.container == "bluray" and not streams_have_clpi_metadata(
             row.audio_streams, row.subtitle_streams
         )
+        # 原盘主播放列表清单缺失/版本落后（docs/design/disc-playback.md §3.1）：
+        # 播放链路要靠它；选主片规则修过（排除循环诱饵列表）后，时长、章节与
+        # 探测目标都要按真正的主片重算
+        needs_disc = row.container == "bluray" and disc_playlist_stale(row.disc_playlist)
         # 新增帧率/色彩空间后，历史行两列同时为空时允许整库扫描补探一次。
         # 正常视频至少能取得其中一项，避免个别元数据缺失的文件每轮重复 ffprobe。
         needs_visual_details = row.frame_rate is None and row.color_space is None
         if (
-            row.audio_streams is not None and not needs_clpi and not needs_visual_details
+            row.audio_streams is not None
+            and not needs_clpi
+            and not needs_disc
+            and not needs_visual_details
         ) or row.state != FileState.IN_PLACE:
             if not await keep_going():
                 break
@@ -2774,6 +2784,20 @@ async def backfill_streams(
                 break
             continue
         path = Path(row.file_path)
+        if needs_disc:
+            playlist = await asyncio.to_thread(read_main_playlist, path)
+            if playlist is not None and playlist.duration_seconds > 0:
+                # 时长按主播放列表**覆盖**而不是补空：旧行可能记着诱饵列表的虚高时长
+                row.disc_playlist = disc_playlist_record(playlist)
+                row.duration_seconds = playlist.duration_seconds
+                row.chapters = playlist.chapters()
+            else:
+                # 读不出主播放列表（残缺盘）：写"读过但没有"的哨兵，下轮不再重读；
+                # 播放时 disc_source 见到空清单会再试一次读盘（盘补齐后自愈）。
+                # 没有主播放列表就没有"主片换了"的理由，不为此强制重读 m2ts
+                row.disc_playlist = disc_playlist_record(None)
+                needs_disc = False
+            row.updated_at = utcnow()
         target = disc_main_stream(path) if row.container in ("bluray", "dvd") else path
         if target is None or not await asyncio.to_thread(target.exists):
             if not await keep_going():
@@ -2784,7 +2808,7 @@ async def backfill_streams(
             languages = await asyncio.to_thread(read_clpi_languages, target)
             # 已有 ffprobe 流的存量行只缺 CLPI 回填；CLPI 不存在/损坏时不值得
             # 再读一遍大 m2ts。audio_streams=NULL 的行仍按原逻辑补普通规格。
-            if row.audio_streams is not None and languages is None:
+            if row.audio_streams is not None and languages is None and not needs_disc:
                 if not await keep_going():
                     break
                 continue
@@ -2799,7 +2823,7 @@ async def backfill_streams(
                 spec = enrich_spec_with_clpi(spec, languages)
             row.audio_streams = list(spec.audio_streams)
             row.subtitle_streams = list(spec.subtitle_streams)
-            if row.chapters is None:
+            if row.chapters is None and not needs_disc:
                 row.chapters = list(spec.chapters)
             # 顺手回填缺失的视频规格（同一次探测的免费产出，不覆盖已有值）
             row.resolution = row.resolution or spec.resolution

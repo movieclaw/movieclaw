@@ -1,10 +1,17 @@
-"""蓝光原盘 MPLS 主播放列表、CLPI 语言元数据解析与 ffprobe 结果合并。
+"""蓝光原盘 MPLS 主播放列表、CLPI 元数据解析与 ffprobe 结果合并。
 
 BDMV 的 m2ts 是 MPEG-TS 流文件，ffprobe 能稳定拿到编码、声道与流 PID，
 但不少原盘没有把语言描述符写进 TS；真实语言位于同编号的
 ``BDMV/CLIPINF/<clip_id>.clpi``。本模块只读 CLPI 的 ProgramInfo 小节，并用
 PID 关联两边的轨道，绝不按数组下标猜测——播放列表裁剪、交互图形轨或工具
 识别差异都可能让两边数量不同，错一位就会把整组语言写错。
+
+本模块同时承担原盘**播放**所需的两样结构化数据（docs/design/disc-playback.md）：
+
+- MPLS 的 PlayListMark（章节入口标记）——原盘章节的唯一来源，m2ts 本身没有
+  章节；
+- CLPI 的 EP_map（蓝光自带的 I 帧入口表：PTS 与源包号）——原盘的天然关键帧
+  索引。77 GB 的 m2ts 用 ffprobe 列包要顺序读完整个文件，EP_map 只有几十 KB。
 
 解析失败属于可选元数据缺失：调用方保留原 ffprobe 结果，扫描照常完成。
 """
@@ -19,7 +26,17 @@ from movieclaw_api.services.media_probe import MediaSpec
 
 logger = logging.getLogger("movieclaw_api.bluray")
 
-_MPLS_CLOCK_HZ = 45_000
+#: MPLS / CLPI 的时间戳单位（33 位 90 kHz PTS 的高 32 位，即 45 kHz）
+MPLS_CLOCK_HZ = 45_000
+_MPLS_CLOCK_HZ = MPLS_CLOCK_HZ
+
+#: 蓝光主视频流的固定 PID。EP_map 可能给多路流各建一张表（Dolby Vision 双层
+#: 盘的增强层也有），关键帧索引只认主视频这一张。
+_PRIMARY_VIDEO_PID = 0x1011
+
+#: PlayListMark 的 mark_type：1 = 章节入口（entry mark），2 = 链接点（link
+#: point，给 BD-J/菜单跳转用，不是给人看的章节）
+_MARK_TYPE_ENTRY = 1
 
 
 class MplsParseError(ValueError):
@@ -41,10 +58,15 @@ class MplsPlayItem:
 
 @dataclass(frozen=True)
 class MplsPlaylist:
-    """可用于选主片的 MPLS 播放列表。"""
+    """可用于选主片的 MPLS 播放列表。
+
+    ``marks`` 是章节入口标记，元素为**播放列表时间轴**上的毫秒起点（各
+    PlayItem 的时长累加，与播放时 concat 拼接出来的时间轴同一口径）。
+    """
 
     path: Path
     items: tuple[MplsPlayItem, ...]
+    marks: tuple[int, ...] = ()
 
     @property
     def duration_seconds(self) -> int:
@@ -54,12 +76,37 @@ class MplsPlaylist:
     def clip_ids(self) -> tuple[str, ...]:
         return tuple(item.clip_id for item in self.items)
 
+    @property
+    def has_loops(self) -> bool:
+        """同一剪辑以同一 IN_time 出现两次即为循环列表。
+
+        这是 BDInfo（Jellyfin 选主片所用的库）``TSPlaylistFile.HasLoops`` 的
+        同款判据。防拷贝诱饵列表把同一剪辑循环引用几百次、时长虚高数倍，只按
+        时长取最长必然中招——实测 141 张盘约 50 张选错，台账时长错一倍以上。
+        """
+        seen: set[tuple[str, int]] = set()
+        for item in self.items:
+            key = (item.clip_id, item.in_time)
+            if key in seen:
+                return True
+            seen.add(key)
+        return False
+
+    def chapters(self) -> list[dict]:
+        """章节入口标记 → 台账 ``chapters`` 列的元素形态（与 ffprobe 章节同构）。
+
+        原盘的 m2ts 没有内嵌章节，MPLS 的 PlayListMark 是唯一来源。起点取播放
+        列表时间轴；标题恒 None（蓝光不给章节命名，展示层按序号补「第 N 章」）。
+        """
+        return [{"start_ms": start_ms, "end_ms": None, "title": None} for start_ms in self.marks]
+
 
 def parse_mpls_playlist(data: bytes, *, path: Path = Path("unknown.mpls")) -> MplsPlaylist:
-    """解析 MPLS 的 PlayList 小节。
+    """解析 MPLS 的 PlayList 与 PlayListMark 小节。
 
-    这里只读取选择主片所需的 clip id 与 IN/OUT 时间；STN、角度和 SubPath
-    都保留在完整原盘目录中，不需要为了入库而解释或改写。
+    PlayList 只读取选择主片所需的 clip id 与 IN/OUT 时间；STN、角度和 SubPath
+    都保留在完整原盘目录中，不需要为了入库而解释或改写。PlayListMark 解析
+    失败只丢章节不丢列表——章节是可选元数据。
     """
     if len(data) < 20 or data[:4] != b"MPLS":
         raise MplsParseError("文件签名不是 MPLS 或文件头过短")
@@ -71,19 +118,19 @@ def parse_mpls_playlist(data: bytes, *, path: Path = Path("unknown.mpls")) -> Mp
     if section_end > len(data):
         raise MplsParseError("PlayList 长度越界")
     pos = playlist_offset + 4
-    _require(pos, 6, section_end, "PlayList header")
+    _require(pos, 6, section_end, "PlayList header", error=MplsParseError)
     pos += 2  # reserved
     play_item_count = int.from_bytes(data[pos : pos + 2], "big")
     pos += 4  # number_of_play_items + number_of_sub_paths
     items: list[MplsPlayItem] = []
     for _ in range(play_item_count):
-        _require(pos, 2, section_end, "PlayItem length")
+        _require(pos, 2, section_end, "PlayItem length", error=MplsParseError)
         item_length = int.from_bytes(data[pos : pos + 2], "big")
         item_start = pos + 2
         item_end = item_start + item_length
-        _require(item_start, item_length, section_end, "PlayItem")
+        _require(item_start, item_length, section_end, "PlayItem", error=MplsParseError)
         # clip id(5) + codec id(4) + flags(2) + stc id(1) + in/out(8)
-        _require(item_start, 20, item_end, "PlayItem core")
+        _require(item_start, 20, item_end, "PlayItem core", error=MplsParseError)
         clip_raw = data[item_start : item_start + 5]
         codec_raw = data[item_start + 5 : item_start + 9]
         try:
@@ -101,14 +148,94 @@ def parse_mpls_playlist(data: bytes, *, path: Path = Path("unknown.mpls")) -> Mp
         pos = item_end
     if not items:
         raise MplsParseError("播放列表没有 PlayItem")
-    return MplsPlaylist(path=path, items=tuple(items))
+    try:
+        marks = _parse_playlist_marks(data, tuple(items))
+    except MplsParseError as exc:
+        logger.warning("蓝光 MPLS 章节标记解析失败，按无章节处理：%s（%s）", path, exc)
+        marks = ()
+    return MplsPlaylist(path=path, items=tuple(items), marks=marks)
+
+
+def _parse_playlist_marks(data: bytes, items: tuple[MplsPlayItem, ...]) -> tuple[int, ...]:
+    """PlayListMark 小节 → 播放列表时间轴上的章节起点（毫秒，升序去重）。
+
+    文件头 ``0x0c`` 是 PlayListMark 的绝对偏移。每个标记 14 字节：保留(1)、
+    mark_type(1)、ref_to_PlayItem_id(2)、mark_time_stamp(4)、entry_ES_PID(2)、
+    duration(4)。只收 entry mark；时间戳是所属 PlayItem 的剪辑时间，减去该
+    PlayItem 的 IN_time 再加上前面各段的累计时长，才是播放列表时间轴。
+    """
+    mark_offset = int.from_bytes(data[12:16], "big")
+    if mark_offset == 0:
+        return ()
+    if mark_offset + 6 > len(data):
+        raise MplsParseError("PlayListMark 偏移越界")
+    section_length = int.from_bytes(data[mark_offset : mark_offset + 4], "big")
+    section_end = mark_offset + 4 + section_length
+    if section_end > len(data):
+        raise MplsParseError("PlayListMark 长度越界")
+    pos = mark_offset + 4
+    _require(pos, 2, section_end, "PlayListMark header", error=MplsParseError)
+    mark_count = int.from_bytes(data[pos : pos + 2], "big")
+    pos += 2
+    # 各 PlayItem 在播放列表时间轴上的起点（45 kHz）
+    offsets: list[int] = []
+    cursor = 0
+    for item in items:
+        offsets.append(cursor)
+        cursor += max(0, item.out_time - item.in_time)
+    marks: set[int] = set()
+    for _ in range(mark_count):
+        _require(pos, 14, section_end, "PlayListMark entry", error=MplsParseError)
+        mark_type = data[pos + 1]
+        item_index = int.from_bytes(data[pos + 2 : pos + 4], "big")
+        timestamp = int.from_bytes(data[pos + 4 : pos + 8], "big")
+        pos += 14
+        if mark_type != _MARK_TYPE_ENTRY or item_index >= len(items):
+            continue
+        item = items[item_index]
+        relative = min(max(timestamp, item.in_time), item.out_time) - item.in_time
+        marks.add(round((offsets[item_index] + relative) * 1000 / _MPLS_CLOCK_HZ))
+    return tuple(sorted(marks))
+
+
+#: 台账 ``library_file.disc_playlist`` 的结构版本。字段集变了就 +1，补探会把
+#: 旧版本的行重算一遍（与 CLPI 语言版本戳同一思路）。
+DISC_PLAYLIST_VERSION = 1
+
+
+def disc_playlist_record(playlist: MplsPlaylist | None) -> dict:
+    """主播放列表 → 台账 ``disc_playlist`` 列（docs/design/disc-playback.md §3.2）。
+
+    只落播放所需的最小事实：列表名、各剪辑 id 与 IN/OUT（45 kHz 整数）。播放
+    时据此构造 concat 清单与关键帧索引，不必再读盘上成百上千个 MPLS——诱饵盘
+    动辄上千个列表，NFS 上每次全读要一到三秒。
+
+    ``playlist=None`` 写「读过但没有主播放列表」的哨兵（剪辑清单为空）：残缺盘
+    不该每轮补探都重读一遍，播放时播放源解析器见到空清单会再试一次读盘。
+    """
+    if playlist is None:
+        return {"version": DISC_PLAYLIST_VERSION, "name": None, "clips": []}
+    return {
+        "version": DISC_PLAYLIST_VERSION,
+        "name": playlist.path.name,
+        "clips": [
+            {"id": item.clip_id, "in": item.in_time, "out": item.out_time}
+            for item in playlist.items
+        ],
+    }
+
+
+def disc_playlist_stale(record: object) -> bool:
+    """台账里的 ``disc_playlist`` 是否缺失或版本落后，需要补探重算。"""
+    return not isinstance(record, dict) or record.get("version") != DISC_PLAYLIST_VERSION
 
 
 def read_main_playlist(disc_dir: Path) -> MplsPlaylist | None:
     """从完整 BDMV 中选择主播放列表；损坏/伪列表只降级，不阻断扫描。
 
-    候选必须引用实际存在的 STREAM 文件。按有效播放时长优先，同一剪辑序列
-    只保留一个，避免不同语言/菜单入口的等价 MPLS 放大候选数量。
+    候选必须引用实际存在的 STREAM 文件，且**不含循环剪辑**（``has_loops``，
+    防拷贝诱饵列表的判据，与 Jellyfin/BDInfo 同口径）。按有效播放时长优先，
+    同一剪辑序列只保留一个，避免不同语言/菜单入口的等价 MPLS 放大候选数量。
     """
     playlist_dir = disc_dir / "BDMV" / "PLAYLIST"
     stream_dir = disc_dir / "BDMV" / "STREAM"
@@ -135,6 +262,8 @@ def read_main_playlist(disc_dir: Path) -> MplsPlaylist | None:
             logger.warning("蓝光 MPLS 解析失败，跳过候选：%s（%s）", path, exc)
             continue
         if not all(clip_id in streams for clip_id in playlist.clip_ids):
+            continue
+        if playlist.has_loops:
             continue
         current = by_sequence.get(playlist.clip_ids)
         if current is None or playlist.duration_seconds > current.duration_seconds:
@@ -284,6 +413,102 @@ def parse_clpi_languages(data: bytes) -> ClpiLanguages:
     return ClpiLanguages(audio=audio, subtitles=subtitles)
 
 
+def read_clpi_keyframes(stream_path: Path) -> list[int] | None:
+    """读取剪辑的关键帧 PTS 表（45 kHz，升序）；CLPI 缺失/损坏/无 EP_map 时 None。
+
+    与 ``read_clpi_languages`` 同样先主 CLPI 后 ``BDMV/BACKUP`` 镜像。返回 None
+    时调用方退回「关键帧未知」——网页播放器保守不走 remux，Jellyfin 层的多剪辑
+    HLS 退回会话式播放，都不阻断。
+    """
+    primary_path = clpi_path_for_stream(stream_path)
+    if primary_path is None:
+        return None
+    backup_path = primary_path.parent.parent / "BACKUP" / "CLIPINF" / primary_path.name
+    for clpi_path in (primary_path, backup_path):
+        if not clpi_path.is_file():
+            continue
+        try:
+            keyframes = parse_clpi_keyframes(clpi_path.read_bytes())
+        except (OSError, ClpiParseError) as exc:
+            logger.warning("蓝光 CLPI 关键帧表解析失败，继续尝试降级路径：%s（%s）", clpi_path, exc)
+            continue
+        return keyframes or None
+    return None
+
+
+def parse_clpi_keyframes(data: bytes) -> list[int]:
+    """解析 CLPI 的 CPI/EP_map，返回主视频流每个入口点的 PTS（45 kHz，升序去重）。
+
+    文件头 ``0x10`` 是 CPI 的绝对偏移。CPI 先给长度（0 = 没有 EP_map，返回空表）
+    与类型，随后是 EP_map：每路流一条 12 字节索引（PID、类型、粗/细表条目数、
+    该流表的相对起址），流表以粗表（8 字节：ref_to_EP_fine_id 18 位、
+    PTS_EP_coarse 14 位、SPN 32 位）和细表（4 字节：角度标志 1 位、I 帧尾偏移
+    3 位、PTS_EP_fine 11 位、SPN 17 位）两级组织。完整 PTS 的拼法照抄 libbluray
+    ``clpi_access_point``：``((coarse & ~1) << 18) + (fine << 8)``——粗表最低位与
+    细表最高位是同一位，低 8 位丢失（约 5.7 毫秒，切片边界判定可以接受）。
+
+    有多路视频（Dolby Vision 双层）时只取主视频 PID 0x1011 的表；没有它就取
+    PID 最小的一路。
+    """
+    if len(data) < 20:
+        raise ClpiParseError("文件头不足 20 字节")
+    if data[:4] != b"HDMV":
+        raise ClpiParseError("文件签名不是 HDMV")
+    cpi_offset = int.from_bytes(data[16:20], "big")
+    if cpi_offset == 0:
+        return []
+    if cpi_offset + 4 > len(data):
+        raise ClpiParseError("CPI 偏移越界")
+    cpi_length = int.from_bytes(data[cpi_offset : cpi_offset + 4], "big")
+    if cpi_length == 0:
+        return []
+    cpi_end = cpi_offset + 4 + cpi_length
+    if cpi_end > len(data):
+        raise ClpiParseError("CPI 长度越界")
+    # 2 字节：12 位保留 + 4 位 cpi_type；EP_map 内的相对地址以其后为基准
+    ep_map_pos = cpi_offset + 4 + 2
+    _require(ep_map_pos, 2, cpi_end, "EP_map header")
+    stream_count = data[ep_map_pos + 1]
+    pos = ep_map_pos + 2
+    entries: list[tuple[int, int, int, int]] = []  # (pid, coarse 数, fine 数, 起址)
+    for _ in range(stream_count):
+        _require(pos, 12, cpi_end, "EP_map stream entry")
+        raw = int.from_bytes(data[pos : pos + 12], "big")
+        pid = raw >> 80
+        coarse_count = (raw >> 50) & 0xFFFF
+        fine_count = (raw >> 32) & 0x3FFFF
+        start = raw & 0xFFFFFFFF
+        entries.append((pid, coarse_count, fine_count, start))
+        pos += 12
+    if not entries:
+        return []
+    chosen = next((e for e in entries if e[0] == _PRIMARY_VIDEO_PID), None) or min(
+        entries, key=lambda e: e[0]
+    )
+    _, coarse_count, fine_count, start = chosen
+    stream_pos = ep_map_pos + start
+    _require(stream_pos, 4, cpi_end, "EP_map stream table")
+    fine_start = int.from_bytes(data[stream_pos : stream_pos + 4], "big")
+    coarse_pos = stream_pos + 4
+    _require(coarse_pos, coarse_count * 8, cpi_end, "EP_map coarse table")
+    coarse: list[tuple[int, int]] = []  # (ref_to_EP_fine_id, PTS_EP_coarse)
+    for i in range(coarse_count):
+        raw = int.from_bytes(data[coarse_pos + i * 8 : coarse_pos + i * 8 + 8], "big")
+        coarse.append((raw >> 46, (raw >> 32) & 0x3FFF))
+    fine_pos = stream_pos + fine_start
+    _require(fine_pos, fine_count * 4, cpi_end, "EP_map fine table")
+    fine_pts: list[int] = []
+    for i in range(fine_count):
+        raw = int.from_bytes(data[fine_pos + i * 4 : fine_pos + i * 4 + 4], "big")
+        fine_pts.append((raw >> 17) & 0x7FF)
+    keyframes: set[int] = set()
+    for i, (fine_from, pts_coarse) in enumerate(coarse):
+        fine_to = coarse[i + 1][0] if i + 1 < len(coarse) else fine_count
+        for j in range(fine_from, min(fine_to, fine_count)):
+            keyframes.add(((pts_coarse & ~1) << 18) + (fine_pts[j] << 8))
+    return sorted(keyframes)
+
+
 def enrich_spec_with_clpi(spec: MediaSpec, languages: ClpiLanguages) -> MediaSpec:
     """按 PID 给缺语言的 ffprobe 流回填 CLPI，并给所有流写完成版本戳。
 
@@ -322,9 +547,11 @@ def streams_have_clpi_metadata(audio_streams: list | None, subtitle_streams: lis
     return all(stream.get(_VERSION_KEY) == CLPI_LANGUAGE_VERSION for stream in streams)
 
 
-def _require(pos: int, size: int, end: int, field: str) -> None:
+def _require(
+    pos: int, size: int, end: int, field: str, *, error: type[ValueError] = ClpiParseError
+) -> None:
     if size < 0 or pos < 0 or pos + size > end:
-        raise ClpiParseError(f"{field} 数据越界")
+        raise error(f"{field} 数据越界")
 
 
 def _language_at(data: bytes, pos: int, end: int) -> str | None:

@@ -365,8 +365,14 @@ def build_hls_command(
     start_number: int | None = None,
     output_base_url: str | None = None,
     output_url_suffix: str = "",
+    input_format: str | None = None,
 ) -> TranscodeCommand:
     """把播放计划翻成 ffmpeg 命令。档 0（Direct Play）不该走到这里。
+
+    ``input_format="concat"`` 是原盘多剪辑的输入形态（docs/design/disc-playback.md
+    §3.4）：``source_path`` 指向 concat 清单而不是媒体文件，``-f concat -safe 0``
+    让 demuxer 按清单把各段 m2ts 拼成一路输入；``-ss`` 仍放在 ``-i`` 前，concat
+    demuxer 按清单里的 duration 直接定位到对应剪辑，不打开前面的文件。
 
     ``start_number`` 非 None 即 VOD 模式（服务端预生成播放列表，§12）：
     分片编号从它开始接上全片规划，并加 ``-copyts`` 三件套让分片内部时间戳
@@ -425,6 +431,9 @@ def build_hls_command(
         # 输入与输出分别设置一次：前者约束 HTTPS Range 读取，后者由 HLS muxer
         # 传给每个 init/segment/playlist 的 HTTP PUT。
         argv += ["-rw_timeout", str(REMOTE_IO_TIMEOUT_US)]
+    if input_format == "concat":
+        # -safe 0：清单里是绝对路径（默认的 safe 模式只认相对路径）
+        argv += ["-f", "concat", "-safe", "0"]
     argv += ["-i", source_path]
 
     # 只取一路视频一路音频；字幕流不进输出容器（-sn）——默认旁挂由前端渲染

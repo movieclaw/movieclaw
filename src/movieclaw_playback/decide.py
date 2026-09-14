@@ -56,6 +56,12 @@ _ASS_SUBTITLE_CODECS = frozenset({"ass", "ssa"})
 #: 唯一例外，Emby 语义，见 decide_playback 的 preferred_subtitle）。
 _PGS_SUBTITLE_CODECS = frozenset({"hdmv_pgs_subtitle", "pgs"})
 
+#: 能原样 copy 进 fMP4（HLS 分片）的音频编码。TrueHD 在 ffmpeg 的 mov muxer 里
+#: 仍是 experimental（写头直接失败「Experimental feature」），LPCM（pcm_bluray）
+#: 根本没有 MP4 封装形态——原盘 remux 到 HLS 时选轨必须避开它们。蓝光的
+#: TrueHD 流自带 AC-3 核心，ffmpeg 会把它拆成一条独立的 ac3 轨，回退总有得选。
+FMP4_COPY_AUDIO_CODECS = frozenset({"aac", "ac3", "eac3", "dts", "mp3", "flac", "alac", "opus"})
+
 _POLICY_NAMESPACE = "playback.policy"
 _SOFTWARE_TRANSCODE_KEY = "software_transcode_enabled"
 
@@ -125,6 +131,9 @@ class MediaProfile:
     subtitle_tracks: tuple[SubtitleTrack, ...] = ()
     keyframe_interval_s: float | None = None
     is_strm: bool = False
+    #: 原盘（BDMV）主播放列表的剪辑段数；0 = 不是原盘。多剪辑原盘没有可直出
+    #: 的单个文件，全解码播放器也只能走 concat remux（disc-playback.md §3.4）。
+    disc_clips: int = 0
 
     @property
     def height(self) -> int | None:
@@ -295,6 +304,24 @@ def decide_playback(
         return _decide_strm(media, failed_tiers)
 
     # 2. 恒等快照（全解码播放器）：永远直连，与 jellyfin-compat.md 行为一致。
+    #    例外：多剪辑原盘没有单个文件可直连，只能把主播放列表各段 copy 拼成
+    #    HLS——仍然不重编码（disc-playback.md §2 硬边界 1）。
+    if capability.universal and media.disc_clips > 1:
+        return PlaybackPlan(
+            tier=PlaybackTier.REMUX,
+            file_id=media.file_id,
+            container="hls-fmp4",
+            video=VideoPlan(
+                action="copy", codec=media.video_codec, source_bit_depth=media.bit_depth
+            ),
+            audio=_copy_audio_plan(fmp4_copy_audio_track(media.audio_tracks, preferred_audio)),
+            subtitles=(),
+            audio_tracks=media.audio_tracks,
+            reason=(
+                f"原盘主片由 {media.disc_clips} 段剪辑拼接而成，"
+                "按播放列表拼接后原样封装为 HLS，不转码"
+            ),
+        )
     if capability.universal:
         return PlaybackPlan(
             tier=PlaybackTier.DIRECT_PLAY,
@@ -814,6 +841,31 @@ def _burn_target(media: MediaProfile, preferred_subtitle: str | None) -> Subtitl
     if (track.codec or "").lower() not in _PGS_SUBTITLE_CODECS:
         return None
     return track
+
+
+def fmp4_copy_audio_track(
+    tracks: tuple[AudioTrack, ...], preferred: str | None = None
+) -> AudioTrack | None:
+    """原样封装进 fMP4 时该用哪条音轨（disc-playback.md §3.5）。
+
+    顺序：用户点选的轨（编码可封装才认）→ 默认轨（同上）→ 与点选/默认轨
+    **同语言**的可封装轨（TrueHD 的 AC-3 核心正是这一条）→ 第一条可封装轨
+    → 实在没有就原样返回点选/默认轨（ffmpeg 会给出明确的失败原因，好过静默
+    无声）。没有音轨返回 None。
+    """
+    if not tracks:
+        return None
+    chosen = next((t for t in tracks if t.ref == preferred), None) or _preferred_audio(tracks)
+
+    def safe(track: AudioTrack) -> bool:
+        return (track.codec or "").lower() in FMP4_COPY_AUDIO_CODECS
+
+    if safe(chosen):
+        return chosen
+    same_language = [t for t in tracks if safe(t) and t.language and t.language == chosen.language]
+    if same_language:
+        return same_language[0]
+    return next((t for t in tracks if safe(t)), chosen)
 
 
 def _copy_audio_plan(track: AudioTrack | None) -> AudioPlan:

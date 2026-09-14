@@ -28,6 +28,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from movieclaw_api.services.library.access import ContentLimit
 from movieclaw_api.services.library.chapters import chapter_image_map, effective_chapters
 from movieclaw_api.services.library.thumbs import primary_aspect
+from movieclaw_api.services.playback.disc_source import DiscSource, disc_source_for_file
 from movieclaw_db.models import (
     Collection,
     Library,
@@ -1338,8 +1339,9 @@ def _apply_leaf_media_fields(
     Container（浏览态偏离，见 media_source_dto）。
     """
     if options.has("CanDownload"):
-        # 有在位文件才可下载；strm 对齐真 Jellyfin（Path 是本地文件 → true）
-        dto["CanDownload"] = bool(files)
+        # 有在位文件才可下载；strm 对齐真 Jellyfin（Path 是本地文件 → true）；
+        # 原盘是目录，没有"一个文件"可下（Video.CanDownload 对原盘恒 false）
+        dto["CanDownload"] = bool(files) and not files[0].is_disc()
     if options.has("CanDelete"):
         dto["CanDelete"] = False
     dto["LocationType"] = "FileSystem"
@@ -1348,6 +1350,15 @@ def _apply_leaf_media_fields(
         f = files[0]
         if f.container and not is_strm(f.file_path):
             dto["Container"] = f.container
+        if f.is_disc():
+            # 浏览态只认台账清单、不读盘；单剪辑伪装成 m2ts 文件（偏离⑬），
+            # 多剪辑没有单文件容器可报
+            disc = disc_source_for_file(f, read_disc=False)
+            if disc is not None:
+                if disc.single_clip is not None:
+                    dto["Container"] = "m2ts"
+                else:
+                    dto.pop("Container", None)
         wh = _RESOLUTION_WH.get(f.resolution or "")
         if wh:
             if options.has("Width"):
@@ -1943,6 +1954,28 @@ def version_name(f: LibraryFile) -> str:
     return " ".join(parts) or Path(f.file_path).stem
 
 
+def _apply_disc_source(source: dict[str, Any], disc: DiscSource) -> None:
+    """原盘 MediaSource 的两种形态（docs/design/disc-playback.md §3.3/§3.5）。
+
+    - 单剪辑：伪装成一个普通 m2ts 文件——Path 指到主片 m2ts、Container=m2ts、
+      直连旗标不变（偏离⑬：真 Jellyfin 报 VideoType=BluRay 并强制走转码 URL；
+      Infuse/VidHub 自带 TS 解复用，直出零 ffmpeg 还保得住 Dolby Vision 双层）；
+    - 多剪辑：没有单文件可直连，声明只支持"转码"（实际是 copy remux 到 HLS），
+      TranscodingUrl 由 PlaybackInfo 路由补（要 token 与条目 GUID）。
+    """
+    clip = disc.single_clip
+    if clip is not None:
+        source["Path"] = str(clip.path)
+        source["Container"] = "m2ts"
+        return
+    source.pop("Container", None)
+    source["SupportsDirectPlay"] = False
+    source["SupportsDirectStream"] = False
+    source["SupportsTranscoding"] = True
+    source["TranscodingContainer"] = "mp4"
+    source["TranscodingSubProtocol"] = "hls"
+
+
 def media_source_dto(f: LibraryFile, *, resolve_strm: bool = False) -> dict[str, Any] | None:
     """单个文件版本 → MediaSourceInfo（含 v1.1 核实的 8 个恒输出字段）。
 
@@ -2000,6 +2033,15 @@ def media_source_dto(f: LibraryFile, *, resolve_strm: bool = False) -> dict[str,
         source["Bitrate"] = f.bit_rate
     if audio_index is not None:
         source["DefaultAudioStreamIndex"] = audio_index
+
+    if f.is_disc():
+        # 原盘（docs/design/disc-playback.md §3.3）：播放协商时允许回盘上读主
+        # 播放列表（存量未补探的行），读不出即"无可播源"；浏览态只认台账清单
+        disc = disc_source_for_file(f, read_disc=resolve_strm)
+        if disc is None and resolve_strm:
+            return None
+        if disc is not None:
+            _apply_disc_source(source, disc)
 
     if is_strm(f.file_path):
         source["Protocol"] = "Http"

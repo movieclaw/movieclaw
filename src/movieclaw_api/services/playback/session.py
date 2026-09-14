@@ -45,6 +45,7 @@ from movieclaw_api.services.playback.cache import (
     cache_key,
     new_manifest,
 )
+from movieclaw_api.services.playback.disc_source import CONCAT_LIST_NAME
 from movieclaw_api.services.playback.ffmpeg_args import (
     LIVE_PLAYLIST_NAME,
     PLAYLIST_NAME,
@@ -224,6 +225,11 @@ class TranscodeSession:
     #: 重启 ffmpeg 需要的原始参数（VOD 模式）
     source_path: str = ""
     hw_backend: str | None = None
+    #: 原盘多剪辑（disc-playback.md §3.4）：ffmpeg concat 清单的内容。非空时
+    #: ``source_path`` 只是缓存指纹与显示用的逻辑源（原盘目录），实际喂给
+    #: ffmpeg 的是写进会话目录的 ``source.concat``——随会话目录清理，不留
+    #: 持久化中间文件。
+    concat_list: str | None = None
     #: 外置 Worker 会话不持有本地 PID，但仍把分片落在 NAS 的会话目录中；
     #: 这样现有 VOD playlist、Range 取流、配额和清理逻辑都能继续复用。
     remote: bool = False
@@ -656,8 +662,13 @@ class TranscodeSessionManager:
         display_name: str = "",
         device_id: str = "",
         cache: bool = True,
+        source_concat: str | None = None,
     ) -> TranscodeSession:
         """起一个会话。playlist 出现即返回，不等全部分片转完。
+
+        ``source_concat``：原盘多剪辑的 concat 清单内容；非 None 时 ffmpeg 以
+        ``-f concat`` 读会话目录里的清单文件，``source_path`` 仍传原盘目录
+        （缓存指纹据此 stat）。
 
         ``segment_plan`` 非 None 走 VOD 模式（§12）：客户端列表由服务端按
         它生成，ffmpeg 从 ``start_ms`` 所在的分片边界起转、编号接上全片
@@ -699,10 +710,14 @@ class TranscodeSessionManager:
             source_path=source_path,
             hw_backend=hw_backend,
             remote=use_remote,
+            concat_list=source_concat,
         )
         if cache and segment_plan is not None:
             self._assign_cache_directory(session)
         session.directory.mkdir(parents=True, exist_ok=True)
+        if session.concat_list is not None:
+            # 认领的缓存目录里可能已有同名清单（同指纹即同内容），覆盖写无害
+            (session.directory / CONCAT_LIST_NAME).write_text(session.concat_list, encoding="utf-8")
         self._sessions[session.id] = session
         if session.manifest is not None:
             # 一落地就写台账：进程半路崩了，目录也有身份，不会被启动清理当垃圾
@@ -728,13 +743,8 @@ class TranscodeSessionManager:
                 # 再由统一降档逻辑决定是否展示 consent 或使用本地软转。
                 await self._spawn_remote(session, remote_base_url or "")
             else:
-                command = build_hls_command(
-                    plan,
-                    source_path=source_path,
-                    session_dir=session.directory,
-                    start_ms=start_ms,
-                    hw_backend=hw_backend,
-                    start_number=head_segment if segment_plan is not None else None,
+                command = self._local_command(
+                    session, start_number=head_segment if segment_plan is not None else None
                 )
                 await self._spawn(session, command)
         except BaseException:
@@ -747,6 +757,24 @@ class TranscodeSessionManager:
                 await self.stop(session.id)
             raise
         return session
+
+    def _local_command(self, session: TranscodeSession, *, start_number: int | None):
+        """本地 ffmpeg 命令：起播与 seek 重启共用一处装配，输入形态在这里分叉。"""
+        # 只在 concat 形态下才传 input_format：普通文件的调用形状保持不变
+        extra: dict[str, str] = {}
+        source_path = session.source_path
+        if session.concat_list is not None:
+            source_path = str(session.directory / CONCAT_LIST_NAME)
+            extra["input_format"] = "concat"
+        return build_hls_command(
+            session.plan,
+            source_path=source_path,
+            session_dir=session.directory,
+            start_ms=session.start_ms,
+            hw_backend=session.hw_backend,
+            start_number=start_number,
+            **extra,
+        )
 
     def _assign_cache_directory(self, session: TranscodeSession) -> None:
         """按指纹给会话选目录，并在能认领时导入台账（§B）。
@@ -1473,14 +1501,7 @@ class TranscodeSessionManager:
             session.start_ms = int(plan.boundaries[index] * 1000)
             session.state = "spawning"
             session.error = None
-            command = build_hls_command(
-                session.plan,
-                source_path=session.source_path,
-                session_dir=session.directory,
-                start_ms=session.start_ms,
-                hw_backend=session.hw_backend,
-                start_number=index,
-            )
+            command = self._local_command(session, start_number=index)
             # 旧轮次的清单先并入台账再删：这一轮转出的分片下次回看直接可用；
             # 跨会话台账也顺手刷一遍，进程崩了这一轮的产出也不丢
             self._sync_completed(session)
