@@ -871,13 +871,24 @@ export function PlayerControls(props: PlayerControlsProps) {
               onScrubCancel();
               setDragging(null);
             }}
+            // keyup / blur 这两条只属于**键盘拖动**（Home / End / PageUp 改 range
+            // 的值走 onChange 进 dragging）。指针正按着时一律不理：鼠标按下
+            // 就把焦点给了 input，拖动中碰一下键盘（空格暂停、随手一个 Shift）
+            // keyup 就落在这里，把指针路径上的 dragging 当成键盘调整提交掉、
+            // 再清空——拖动当场作废，圆点停在半路，真松手时什么也不发；焦点
+            // 被别处抢走（弹层、快捷键开菜单）时 blur 同理（2026-09-14 真浏览器
+            // 复现）。
             onKeyUp={() => {
+              if (pointerDragRef.current) return;
               if (dragging !== null) onSeek(dragging);
               setDragging(null);
             }}
-            // 键盘拖动（方向键改 range 的值走 onChange）对称的一条：焦点离开
-            // 时那次键盘调整已经结束，没等到 keyup 就不能让它继续遮着 positionMs
-            onBlur={() => setDragging(null)}
+            // 键盘拖动对称的一条：焦点离开时那次键盘调整已经结束，没等到 keyup
+            // 就不能让它继续遮着 positionMs
+            onBlur={() => {
+              if (pointerDragRef.current) return;
+              setDragging(null);
+            }}
             // 触屏把命中带加高到 44px（Apple HIG 的最小触控目标）：视觉上还是
             // 那条细线，但手指按在线的上下 20px 内都算按中了——竖屏上「滑不准、
             // 按不中」的直接解法。桌面维持 20px，不跟鼠标抢悬停区。

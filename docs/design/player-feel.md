@@ -1349,6 +1349,16 @@ tryAutoplay → attemptAutoplay`。seek 落在片长处元素当场 `ended`（�
 按下**的点、`touchEnd` 列**抬起**的点，都不是「当前全部触点」——第一版装置就是
 按后者写的，把第一指抬掉了，先误报了一次。
 
+同一轮的第二个：**鼠标拖动中碰一下键盘，拖动也作废**。鼠标按下就把焦点给了
+input，拖动中按空格暂停、或随手一个 Shift，`keyup` 落在 range 上——那条本来
+只为键盘拖动写的 `onKeyUp`（Home / End 改 range 的值进 `dragging`，抬键提交）把
+指针路径上的 `dragging` 当成键盘调整提交掉再清空，之后与第二指那次一模一样：
+圆点停在半路，真松手时什么也不发。焦点被别处抢走（弹层、快捷键开菜单）时
+`onBlur` 同理，读数还会先弹回 positionMs。触屏没这条：Chromium 的触摸要到抬起
+之后才给焦点。修：指针正按着时（`pointerDragRef`）keyup / blur 一律不理。矩阵
+「鼠标拖动中碰键盘 / 按空格 / 焦点被抢」三档修前全挂、修后全过，键盘 End / Home
+那档照常。
+
 ### 19.10 没做到的
 
 iOS 那半边（AVPlayer 取消 seek → WebKit 提前发 `timeupdate`）仍是推断。矩阵跑在
