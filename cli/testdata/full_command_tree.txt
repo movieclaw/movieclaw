@@ -156,6 +156,7 @@ library duplicates
 library duplicates list
 library duplicates resolve
 library duplicates resolve-all
+library duplicates scan
 library get
 library identification
 library identification assign-file-to-title

@@ -1966,37 +1966,70 @@ export interface DuplicateItem {
   seasons: DuplicateSeason[];
 }
 
-export interface DuplicateBucketStats {
+/** 三档：放心清 / 建议清 / 要你决定。 */
+export type DuplicateTier = "safe" | "suggested" | "review";
+/** 「需要你决定」里的取舍类型：同一种取舍的单元聚成一组，一次决定一批。 */
+export type DuplicateReviewKind = "resolution" | "hdr" | "unknown" | "same_tier";
+
+/** 一档、或「需要你决定」里的一组：有多少活、清掉能腾多少。 */
+export interface DuplicateGroup {
+  key: DuplicateTier | DuplicateReviewKind;
+  label: string;
+  /** 一句话说明这一档是什么、该怎么处置（文案来自后端，CLI 与 Web 同一句） */
+  hint: string;
   units: number;
-  /** 会被清掉的文件数（非建议保留、非都留着） */
+  /** 按建议清理会清掉几个文件 */
   files: number;
   bytes: number;
 }
 
-export interface DuplicateFilesData {
-  identical: DuplicateBucketStats;
-  versions: DuplicateBucketStats;
-  /** 洗版验证在途、暂不显示的单元数 */
+/** 扫描本身的状态：扫过没有、上次什么时候、现在是不是正在跑。 */
+export interface DuplicateScanState {
+  /** null=从未扫描；queued/running/… =正在跑；succeeded=有结果 */
+  status: string | null;
+  job_id: string | null;
+  message: string | null;
+  percent: number | null;
+  scanned_at: string | null;
+  /** 洗版验证在途、暂不列出的单元数 */
   upgrading_units: number;
-  /** 规则组「保留共存」、不显示的条目数 */
+  /** 规则组「保留共存」、不列出的条目数 */
   keep_old_items: number;
+}
+
+export interface DuplicateFilesData {
+  scan: DuplicateScanState;
+  tiers: DuplicateGroup[];
+  review_groups: DuplicateGroup[];
+  total_units: number;
+  total_files: number;
+  total_bytes: number;
   total_items: number;
   items: DuplicateItem[];
 }
 
 export interface DuplicateFilter {
+  tier?: DuplicateTier | null;
+  review_kind?: DuplicateReviewKind | null;
   q?: string;
   library_id?: number | null;
   media_item_id?: number | null;
 }
 
-/** 重复文件列表：按条目分页，随带两堆摘要。 */
+/**
+ * 重复文件：扫描状态 + 分档摘要 + 本页条目（按条目分页）。
+ *
+ * 读的是上一轮扫描落库的结论，不会在请求线上现算——页面落地只要摘要时传
+ * `limit: 0`，一条聚合查询就够（docs/design/library-duplicate-files.md §9）。
+ */
 export function listDuplicateFiles(
   filter: DuplicateFilter,
   page: { limit: number; offset: number },
   init?: RequestInit,
 ): Promise<DuplicateFilesData> {
   const params = new URLSearchParams();
+  if (filter.tier) params.set("tier", filter.tier);
+  if (filter.review_kind) params.set("review_kind", filter.review_kind);
   if (filter.q) params.set("q", filter.q);
   if (filter.library_id != null) params.set("library_id", String(filter.library_id));
   if (filter.media_item_id != null) params.set("media_item_id", String(filter.media_item_id));
@@ -2004,6 +2037,16 @@ export function listDuplicateFiles(
   params.set("offset", String(page.offset));
   return unwrap(
     request<ApiEnvelope<DuplicateFilesData>>(`/libraries/duplicate-files?${params.toString()}`, init),
+  );
+}
+
+/** 开始扫描重复文件（后台作业，同时最多一份）。 */
+export function startDuplicateScan(): Promise<{ started: boolean; job_id: string; created: boolean }> {
+  return unwrap(
+    request<ApiEnvelope<{ started: boolean; job_id: string; created: boolean }>>(
+      `/libraries/duplicate-files/scan`,
+      { method: "POST" },
+    ),
   );
 }
 
@@ -2028,15 +2071,25 @@ export function resolveDuplicates(payload: {
   );
 }
 
-/** 整堆按「建议保留」清理（一次最多 500 个文件；超出的在 remaining 里）。 */
+/**
+ * 一整档 / 一组一起决定：都按「建议保留」清理（一次最多 500 个文件，超出的在
+ * remaining 里），或 `keep_all` 都留着（只盖标记不动文件，没有上限）。
+ */
 export function resolveAllDuplicates(payload: {
-  bucket: DuplicateBucket;
+  tier: DuplicateTier;
+  review_kind?: DuplicateReviewKind | null;
   library_id?: number | null;
+  keep_all?: boolean;
 }): Promise<TrashedBatchResult> {
   return unwrap(
     request<ApiEnvelope<TrashedBatchResult>>(`/libraries/duplicate-files/resolve-all`, {
       method: "POST",
-      body: JSON.stringify({ bucket: payload.bucket, library_id: payload.library_id ?? null }),
+      body: JSON.stringify({
+        tier: payload.tier,
+        review_kind: payload.review_kind ?? null,
+        library_id: payload.library_id ?? null,
+        keep_all: payload.keep_all ?? false,
+      }),
     }),
   );
 }

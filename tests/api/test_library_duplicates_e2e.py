@@ -200,6 +200,42 @@ async def _make_library(db, *, name: str, kind: str, root: Path) -> int:
         return row.id
 
 
+async def _rescan_duplicates(db) -> dict:
+    """算一轮重复并落库——页面读的是它的结论，不是打开页面现算（§9）。
+
+    走真正的作业处理器，与线上「开始扫描」按钮、媒体库扫描结束后的自动排队
+    是同一条路径。
+    """
+    import asyncio
+    from datetime import timedelta
+
+    from movieclaw_api.services import jobs
+    from movieclaw_api.services.library import duplicate_scan
+    from movieclaw_db.models import utcnow
+    from movieclaw_db.models.job import Job, JobStatus
+
+    async with db.session() as session:
+        created = await duplicate_scan.enqueue_duplicate_scan_job(session)
+        job = await session.get(Job, created.job.id)
+        job.status = JobStatus.RUNNING
+        job.lease_owner = "lease-e2e"
+        job.lease_expires_at = utcnow() + timedelta(minutes=5)
+        await session.commit()
+    context = jobs.JobContext(created.job.id, lease_token="lease-e2e", lease_lost=asyncio.Event())
+    result = await duplicate_scan._run_duplicate_scan_job(context, {})
+    async with db.session() as session:
+        job = await session.get(Job, created.job.id)
+        job.status = JobStatus.SUCCEEDED
+        job.result = result
+        job.finished_at = utcnow()
+        await session.commit()
+    return result
+
+
+def _tiers(payload: dict) -> dict[str, dict]:
+    return {g["key"]: g for g in payload["tiers"]} | {g["key"]: g for g in payload["review_groups"]}
+
+
 def _by_title(payload: dict) -> dict[str, dict]:
     return {it["media_item"]["title"]: it for it in payload["items"]}
 
@@ -229,6 +265,7 @@ async def _build_scanned_library(db, tmp_path) -> tuple[int, int, Path, Path]:
     for lib_id in (movie_lib, tv_lib):
         summary = await scan_library(lib_id)
         assert summary.errors == [], summary.errors
+    await _rescan_duplicates(db)
     return movie_lib, tv_lib, movies, tv
 
 
@@ -253,17 +290,17 @@ async def test_scan_pipeline_writes_origin_and_detects_every_shape(client, db, t
     items = _by_title(data)
     assert set(items) == {"某电影", "另一部电影", "第三部电影", "测试剧集"}
 
-    # 一模一样：真复制（尺寸+时长）与真硬链接（inode）各一个单元
-    assert data["identical"]["units"] == 2
-    assert data["identical"]["files"] == 2
+    # 「可以放心清理」：真复制（尺寸+时长）与真硬链接（inode）各一个单元
+    tiers = _tiers(data)
+    assert tiers["safe"]["units"] == 2 and tiers["safe"]["files"] == 2
     assert items["另一部电影"]["seasons"][0]["bucket"] == "identical"
     assert items["第三部电影"]["seasons"][0]["bucket"] == "identical"
     # 硬链接那对磁盘上只有一份，但仍然值得清掉一行台账
-    assert data["identical"]["bytes"] > 0
+    assert tiers["safe"]["bytes"] > 0
 
-    # 不同版本：某电影（2160p vs 1080p）+ 剧集三集
-    assert data["versions"]["units"] == 4
-    assert data["versions"]["files"] == 4
+    # 「建议清理」：某电影（2160p vs 1080p）+ 剧集三集，档位都真的分出了高下
+    assert tiers["suggested"]["units"] == 4 and tiers["suggested"]["files"] == 4
+    assert tiers["review"]["units"] == 0
 
     # 电影：建议保留 2160p，依据是档位最高；两侧来源都是扫描
     movie = items["某电影"]["seasons"][0]
@@ -368,9 +405,11 @@ async def test_keep_one_moves_file_to_trash_dir_and_restore_brings_it_back(clien
     assert restored.json()["data"]["done"] == 1
     assert gone_path.exists() and gone_path.read_bytes() == gone_bytes
     assert not any(trash.iterdir()), "回收站目录应被清空"
+    # 恢复只是把文件搬回原路径；它重新算作重复要等下一轮扫描（§9）
+    await _rescan_duplicates(db)
     back = (await client.get("/api/v1/libraries/duplicate-files")).json()["data"]
     assert "某电影" in _by_title(back)
-    assert back["versions"]["files"] == 4
+    assert _tiers(back)["suggested"]["files"] == 4
     assert movie_lib  # 句柄存在性
 
 
@@ -409,9 +448,7 @@ async def test_keep_season_version_and_resolve_all_move_real_files(client, db, t
     copy_extra = movies / "另一部电影 (2021)" / "另一部电影 (2021) - 1080p.mkv"
     hardlink_extra = movies / "第三部电影 (2022)" / "第三部电影.2022.1080p.副本.mkv"
     assert copy_extra.exists() and hardlink_extra.exists()
-    res = await client.post(
-        "/api/v1/libraries/duplicate-files/resolve-all", json={"bucket": "identical"}
-    )
+    res = await client.post("/api/v1/libraries/duplicate-files/resolve-all", json={"tier": "safe"})
     assert res.status_code == 200, res.text
     assert res.json()["data"]["done"] == 2
 
@@ -425,8 +462,8 @@ async def test_keep_season_version_and_resolve_all_move_real_files(client, db, t
     ]
 
     after = (await client.get("/api/v1/libraries/duplicate-files")).json()["data"]
-    assert after["identical"]["units"] == 0
-    # 只剩某电影那一个不同版本单元
+    assert _tiers(after)["safe"]["units"] == 0
+    # 只剩某电影那一个「建议清理」单元
     assert set(_by_title(after)) == {"某电影"}
 
 
@@ -458,9 +495,10 @@ async def test_keep_all_survives_rescan_and_new_file_relists(client, db, tmp_pat
         (await client.get("/api/v1/libraries/duplicate-files")).json()["data"]
     )
 
-    # 重扫（真实管线再跑一遍）：标记必须活下来——upsert 不得把 kept_at 洗掉
+    # 重扫（真实管线再跑一遍 + 重算重复）：标记必须活下来——upsert 不得把 kept_at 洗掉
     summary = await scan_library(movie_lib)
     assert summary.errors == []
+    await _rescan_duplicates(db)
     assert "某电影" not in _by_title(
         (await client.get("/api/v1/libraries/duplicate-files")).json()["data"]
     )
@@ -468,6 +506,7 @@ async def test_keep_all_survives_rescan_and_new_file_relists(client, db, tmp_pat
     # 新版本进来 + 重扫 → 单元重新列出，旧两个带「你留下的」
     _write(movies / "某电影 (2020)" / "某电影.2020.720p.WEB-DL.mkv", b"G" * 900)
     assert (await scan_library(movie_lib)).errors == []
+    await _rescan_duplicates(db)
     relisted = (await client.get("/api/v1/libraries/duplicate-files")).json()["data"]
     unit = _by_title(relisted)["某电影"]["seasons"][0]["units"][0]
     kept = [f for f in unit["files"] if f["kept_at"]]
@@ -475,7 +514,7 @@ async def test_keep_all_survives_rescan_and_new_file_relists(client, db, tmp_pat
     assert len(kept) == 2 and len(fresh) == 1
     assert fresh[0]["quality_label"] == "720p WEB-DL"
     # 只有新来的那个会被清掉；已标记的不计入
-    assert relisted["versions"]["files"] == 1 + 3  # 新文件 + 剧集三集
+    assert _tiers(relisted)["suggested"]["files"] == 1 + 3  # 新文件 + 剧集三集
 
 
 @pytest.mark.asyncio
@@ -544,9 +583,12 @@ async def test_probe_failure_keeps_same_size_files_in_versions_bucket(client, db
     assert {r.duration_seconds for r in rows} == {None}
     assert {r.size_bytes for r in rows} == {len(payload)}
 
+    await _rescan_duplicates(db)
     data = (await client.get("/api/v1/libraries/duplicate-files")).json()["data"]
-    assert data["identical"]["units"] == 0
-    assert data["versions"]["units"] == 1
+    tiers = _tiers(data)
+    assert tiers["safe"]["units"] == 0
+    # 规格未知 → 既不能放心清也给不出建议，落在「需要你决定」的「规格不全」一组
+    assert tiers["review"]["units"] == 1 and tiers["unknown"]["units"] == 1
     unit = _by_title(data)["某电影"]["seasons"][0]["units"][0]
     # 两边规格都未知 → 档位比不出来，建议保留者要说明依据而不是假装有把握
     suggested = next(f for f in unit["files"] if f["suggested"])
@@ -555,15 +597,15 @@ async def test_probe_failure_keeps_same_size_files_in_versions_bucket(client, db
 
 
 @pytest.mark.asyncio
-async def test_resolve_all_versions_keeps_one_per_unit(client, db, tmp_path):
-    """整堆按建议清理「不同版本」：每个单元只剩建议保留的那个，其余全进回收站。
+async def test_resolve_all_suggested_tier_keeps_one_per_unit(client, db, tmp_path):
+    """「建议清理」整档按建议清：每个单元只剩建议保留的那个，其余全进回收站。
 
-    这是页面上唯一可能一次清掉用户想留的版本的按钮，所以它的作用域必须精确：
-    只动「不同版本」堆，一模一样那堆一个不碰。
+    这一档是机器真的比出了高下的那些，但它仍然可能清掉用户想留的低配版，
+    所以作用域必须精确：只动这一档，「可以放心清理」那档一个不碰。
     """
     _movie_lib, _tv_lib, movies, tv = await _build_scanned_library(db, tmp_path)
     res = await client.post(
-        "/api/v1/libraries/duplicate-files/resolve-all", json={"bucket": "versions"}
+        "/api/v1/libraries/duplicate-files/resolve-all", json={"tier": "suggested"}
     )
     assert res.status_code == 200, res.text
     assert res.json()["data"]["done"] == 4  # 某电影 1 + 剧集三集各 1
@@ -576,12 +618,12 @@ async def test_resolve_all_versions_keeps_one_per_unit(client, db, tmp_path):
         assert (season_dir / f"测试剧集.S01E0{n}.1080p.WEB-DL-GROUPA.mkv").exists()
         assert not (season_dir / f"测试剧集.S01E0{n}.720p.HDTV-GROUPB.mkv").exists()
 
-    # 一模一样那堆完全没动
+    # 「可以放心清理」那档完全没动
     assert (movies / "另一部电影 (2021)" / "另一部电影 (2021) - 1080p.mkv").exists()
     assert (movies / "第三部电影 (2022)" / "第三部电影.2022.1080p.副本.mkv").exists()
-    after = (await client.get("/api/v1/libraries/duplicate-files")).json()["data"]
-    assert after["versions"]["units"] == 0
-    assert after["identical"]["units"] == 2
+    after = _tiers((await client.get("/api/v1/libraries/duplicate-files")).json()["data"])
+    assert after["suggested"]["units"] == 0
+    assert after["safe"]["units"] == 2
 
 
 @pytest.mark.asyncio

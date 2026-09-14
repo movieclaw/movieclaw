@@ -2,10 +2,10 @@
 
 真后端 + 真前端 + 无头 Chromium，基座沿用 test_library_manage_browser 的 stack。
 重复数据不走扫描（那要 ffprobe 与 TMDB），直接往后端 sqlite 写台账行，**文件真实
-落盘**——清理要真的搬得动它们。覆盖：标签栏计数与 ?tab=duplicates 深链 → 两堆各自
-的小标题与批量按钮 → 电影块列文件行、剧集块折成版本行 → 「留这个」确认弹窗与磁盘
-落位 → 「都留着」让单元消失 → 回收站按「重复清理」筛得到 → 条目详情页的「处理重复」
-入口与文件区「来源」行。
+落盘**——清理要真的搬得动它们。覆盖：没扫过时页面上只有「开始扫描」→ 扫描作业跑完
+出三档摘要 → 标签栏计数与 ?tab=duplicates 深链 → 点进一档看明细：电影块列文件行、
+剧集块折成版本行 → 「留这个」确认弹窗与磁盘落位 → 「都留着」让单元消失 → 回收站按
+「重复清理」筛得到 → 条目详情页的「处理重复」入口与文件区「来源」行。
 
 标 integration：要 pnpm（apps/web 已 install）与 Playwright Chromium，CI 不跑。
 本地：``pytest -m integration tests/e2e/test_library_duplicates_browser.py``。
@@ -250,12 +250,12 @@ def test_duplicate_files_tab(stack) -> None:  # noqa: PLR0915, F811
 
         _wait_for(all_idle, timeout=120, what="两个库首次扫描完成")
 
-        # 没有重复时：标签仍渲染（入口要被看见），切过去是空状态
+        # 还没扫过：页面上只有一件事可做——不在打开页面时偷偷算一遍（§9）
         page.goto(f"{base}/library/manage")
         tabs = page.get_by_role("tablist")
         expect(tabs.get_by_role("tab", name="重复文件", exact=True)).to_be_visible()
         tabs.get_by_role("tab", name="重复文件", exact=True).click()
-        expect(page.get_by_role("heading", name="没有重复文件")).to_be_visible()
+        expect(page.get_by_role("heading", name="还没有扫描过重复文件")).to_be_visible()
         assert "tab=duplicates" in page.url
 
         with ThreadPoolExecutor(max_workers=1) as pool:
@@ -263,24 +263,31 @@ def test_duplicate_files_tab(stack) -> None:  # noqa: PLR0915, F811
                 asyncio.run, _seed(db_path, movie_lib, tv_lib, roots["movies"], roots["tv"])
             ).result()
 
-        # ---- 深链直达：标签计数 = 两堆的多余文件数（1 + 1 + 3） ----
-        page.goto(f"{base}/library/manage?tab=duplicates")
+        # ---- 用户按下「开始扫描」，作业跑完出摘要 ----
+        page.get_by_role("button", name="开始扫描").first.click()
+        _wait_for(
+            lambda: page.get_by_text(re.compile("上次扫描：")).count() > 0,
+            timeout=60,
+            what="重复扫描作业跑完",
+            interval=0.5,
+        )
+
+        # ---- 落地是三档摘要：先做哪一档一目了然 ----
         expect(page.get_by_role("tab", name=re.compile(r"^重复文件\s*5$"))).to_be_visible()
+        expect(page.get_by_role("heading", name="可以放心清理")).to_be_visible()
+        expect(page.get_by_role("heading", name="建议清理")).to_be_visible()
+        expect(page.get_by_role("heading", name="需要你决定")).to_be_visible()
+        expect(page.get_by_role("button", name=re.compile(r"^全部清理 · 1$"))).to_be_visible()
+        expect(page.get_by_role("button", name=re.compile(r"^全部按建议清理 · 4$"))).to_be_visible()
+        page.screenshot(path=str(shots / "duplicates-三档摘要.png"), full_page=True)
 
-        identical = page.get_by_role("region", name="一模一样")
-        versions = page.get_by_role("region", name="不同版本")
-        expect(identical.get_by_role("heading", name=re.compile("一模一样"))).to_be_visible()
-        expect(identical.get_by_role("button", name=re.compile(r"^全部清理 · 1$"))).to_be_visible()
-        expect(
-            versions.get_by_role("button", name=re.compile(r"^全部按建议清理 · 4$"))
-        ).to_be_visible()
-        expect(page.get_by_text("清理的文件进回收站，7 天内可恢复")).to_be_visible()
-
-        # 一模一样：长安三万里；不同版本：九门（文件行）+ 权力的游戏（版本行）
-        expect(identical.get_by_role("link", name="长安三万里")).to_be_visible()
+        # ---- 点进「建议清理」看明细：电影块列文件行，剧集块折成版本行 ----
+        page.get_by_role("button", name="逐个看").nth(1).click()
+        versions = page.get_by_role("region", name="建议清理")
         expect(versions.get_by_role("link", name="九门")).to_be_visible()
         expect(versions.get_by_role("link", name="权力的游戏")).to_be_visible()
         expect(versions.get_by_text("S01 · 3 集有重复")).to_be_visible()
+        expect(page.get_by_text("清理的文件进回收站，7 天内可恢复")).to_be_visible()
 
         # 剧集折成两个版本行，各覆盖 3 集；建议保留 1080p
         expect(versions.get_by_text("3 集", exact=True).first).to_be_visible()
@@ -292,7 +299,7 @@ def test_duplicate_files_tab(stack) -> None:  # noqa: PLR0915, F811
         expect(versions.get_by_text("订阅《九门》自动投递").first).to_be_visible()
         expect(versions.get_by_text("存量扫描发现（非本系统入库）").first).to_be_visible()
         expect(versions.get_by_text("建议保留 · 档位最高")).to_be_visible()
-        page.screenshot(path=str(shots / "duplicates-两堆.png"), full_page=True)
+        page.screenshot(path=str(shots / "duplicates-建议清理明细.png"), full_page=True)
 
         # ---- 「留这个」：确认弹窗写明留谁清谁，确认后文件真的搬进回收站 ----
         old_movie = roots["movies"] / "九门 (2025)" / "九门 (2025) - 1080p.mkv"
@@ -325,6 +332,9 @@ def test_duplicate_files_tab(stack) -> None:  # noqa: PLR0915, F811
         season = roots["tv"] / "权力的游戏 (2011)" / "Season 01"
         assert len(list(season.iterdir())) == 6, "「都留着」不能动任何文件"
         expect(page.get_by_role("tab", name=re.compile(r"^重复文件\s*1$"))).to_be_visible()
+        # 返回摘要：这一档做完了，剩下的活在另一档上
+        page.get_by_role("button", name="‹ 返回摘要").click()
+        expect(page.get_by_role("heading", name="可以放心清理")).to_be_visible()
 
         # ---- 回收站：按「重复清理」筛得到，原因整句可读 ----
         page.goto(f"{base}/library/manage?tab=recycle")

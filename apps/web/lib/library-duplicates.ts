@@ -7,26 +7,17 @@
  */
 
 import type {
-  DuplicateBucket,
   DuplicateFile,
   DuplicateFilesData,
-  DuplicateItem,
+  DuplicateGroup,
+  DuplicateScanState,
   DuplicateSeason,
+  DuplicateTier,
   DuplicateUnit,
   DuplicateVersion,
   TrashedBatchResult,
 } from "./api/libraries";
 import { formatBytes } from "./format.ts";
-
-export const BUCKET_LABELS: Record<DuplicateBucket, string> = {
-  identical: "一模一样",
-  versions: "不同版本",
-};
-
-export const BUCKET_HINTS: Record<DuplicateBucket, string> = {
-  identical: "同一个文件的两个名字，或尺寸与时长完全相同的复制品。清掉不丢任何东西。",
-  versions: "规格或来源有区别。每个单元你说了算：留哪个，或都留着；剧集按季一次决定。",
-};
 
 const pad = (n: number) => String(n).padStart(2, "0");
 
@@ -41,26 +32,54 @@ export function seasonHeadline(season: DuplicateSeason, kind: string): string {
   return `S${pad(season.season_number)} · ${season.units.length} 集有重复`;
 }
 
-/** 堆标题旁的计数：`3 个条目 · 5 个多余文件 · 16.9 GB`（不同版本堆不写字节，"多余"只是可能）。 */
-export function bucketSummary(data: DuplicateFilesData, bucket: DuplicateBucket): string {
-  const stats = data[bucket];
-  const items = data.items.filter((it) => it.seasons.some((s) => s.bucket === bucket)).length;
-  const parts = [
-    `${Math.max(items, stats.units > 0 ? 1 : 0)} 个条目`,
-    bucket === "identical"
-      ? `${stats.files} 个多余文件`
-      : `${stats.units} 个单元 · ${stats.files} 个可能多余的文件`,
-  ];
-  if (bucket === "identical" && stats.bytes > 0) parts.push(formatBytes(stats.bytes));
+/** 一档 / 一组卡片上的计数：`12 个单元 · 14 个文件 · 31 GB`；没有活时返回空串。 */
+export function groupSummary(group: DuplicateGroup): string {
+  if (group.units === 0) return "";
+  const parts = [`${group.units} 个单元`, `${group.files} 个文件`];
+  if (group.bytes > 0) parts.push(formatBytes(group.bytes));
   return parts.join(" · ");
 }
 
+/** 一档的动作按钮该写什么：`safe` 是没风险的清理，另两档都在动"有区别"的文件。 */
+export const TIER_ACTION_LABELS: Record<DuplicateTier, string> = {
+  safe: "全部清理",
+  suggested: "全部按建议清理",
+  review: "全部按建议清理",
+};
+
 /** 页脚那句"不在这里显示的"：两段都为 0 时返回空串。 */
-export function hiddenNote(data: DuplicateFilesData): string {
+export function hiddenNote(scan: DuplicateScanState): string {
   const parts: string[] = [];
-  if (data.upgrading_units > 0) parts.push(`${data.upgrading_units} 个单元正在洗版验证中`);
-  if (data.keep_old_items > 0) parts.push(`${data.keep_old_items} 个条目按规则组「保留共存」`);
+  if (scan.upgrading_units > 0) parts.push(`${scan.upgrading_units} 个单元正在洗版验证中`);
+  if (scan.keep_old_items > 0) parts.push(`${scan.keep_old_items} 个条目按规则组「保留共存」`);
   return parts.length ? `${parts.join("、")}，不在这里显示` : "";
+}
+
+/** 扫描状态那一行：从未扫描 / 正在跑（带进度）/ 上次没跑成 / 上次扫描于何时。 */
+export function scanNote(scan: DuplicateScanState, now: Date = new Date()): string {
+  if (isScanning(scan)) return scan.message ? `正在扫描 · ${scan.message}` : "正在扫描…";
+  if (scan.status === "failed" || scan.status === "cancelled") {
+    const why = scan.message ? `：${scan.message}` : "";
+    const had = scan.scanned_at ? `，下面是 ${relativeTime(scan.scanned_at, now)}的结果` : "";
+    return `上次扫描${scan.status === "failed" ? "失败" : "被取消"}${why}${had}`;
+  }
+  if (!scan.scanned_at) return "还没有扫描过";
+  return `上次扫描：${relativeTime(scan.scanned_at, now)}`;
+}
+
+export function isScanning(scan: DuplicateScanState): boolean {
+  return scan.status !== null && scan.status !== "succeeded" && scan.status !== "failed" && scan.status !== "cancelled";
+}
+
+/** 「3 分钟前」「2 小时前」「3 天前」——精确到秒没有意义，用户只想知道"新不新鲜"。 */
+export function relativeTime(iso: string, now: Date = new Date()): string {
+  const then = new Date(iso.endsWith("Z") || iso.includes("+") ? iso : `${iso}Z`);
+  const seconds = Math.max(0, Math.round((now.getTime() - then.getTime()) / 1000));
+  if (seconds < 60) return "刚刚";
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟前`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)} 小时前`;
+  if (seconds < 86400 * 30) return `${Math.floor(seconds / 86400)} 天前`;
+  return then.toLocaleDateString("zh-CN");
 }
 
 /**
@@ -147,18 +166,22 @@ export function keepVersionFacts(season: DuplicateSeason, version: DuplicateVers
   return { version, gone, bytes: gone.reduce((n, f) => n + f.size_bytes, 0), missingEpisodes: missing };
 }
 
-/** 整堆按建议清理的事实：会被清掉的文件（按条目列），供确认弹窗逐条列出。 */
-export interface BucketFacts {
+/**
+ * 整档按建议清理的确认清单：本页看得到的条目逐条列出会清掉什么。
+ *
+ * 只列本页——后端一次最多清 500 个文件，把几千条全拉回来铺进弹窗，用户一样
+ * 看不完。弹窗另写明总数，让人知道"这不是全部"。
+ */
+export interface TierFacts {
   files: number;
   bytes: number;
   lines: string[];
 }
 
-export function bucketFacts(data: DuplicateFilesData, bucket: DuplicateBucket): BucketFacts {
+export function tierFacts(data: DuplicateFilesData, group: DuplicateGroup | null): TierFacts {
   const lines: string[] = [];
   for (const item of data.items) {
     for (const season of item.seasons) {
-      if (season.bucket !== bucket) continue;
       const extras = season.units.flatMap((u) => u.files.filter((f) => !f.suggested && !f.kept_at));
       if (extras.length === 0) continue;
       const head = item.media_item.kind === "tv" ? `${item.media_item.title} S${pad(season.season_number)}` : item.media_item.title;
@@ -166,7 +189,7 @@ export function bucketFacts(data: DuplicateFilesData, bucket: DuplicateBucket): 
       lines.push(`${head} · ${extras.length} 个文件 · ${kinds}`);
     }
   }
-  return { files: data[bucket].files, bytes: data[bucket].bytes, lines };
+  return { files: group?.files ?? 0, bytes: group?.bytes ?? 0, lines };
 }
 
 /** 批量结果 toast：`已移入回收站 5 个文件` / `…，2 个失败` / `…，还有 N 个未处理`。 */
@@ -175,9 +198,4 @@ export function resolveResultText(result: TrashedBatchResult): string {
   if (result.failed.length > 0) text += `，${result.failed.length} 个失败：${result.failed[0].error}`;
   if (result.remaining > 0) text += `，还有 ${result.remaining} 个未处理（再点一次即可）`;
   return text;
-}
-
-/** 条目在某一堆里的季块。 */
-export function seasonsIn(item: DuplicateItem, bucket: DuplicateBucket): DuplicateSeason[] {
-  return item.seasons.filter((s) => s.bucket === bucket);
 }

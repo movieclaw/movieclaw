@@ -697,6 +697,11 @@ async def _run_organize_job(
         context=context,
         raise_unexpected=True,
     )
+    # 整理会改文件路径，重复结论里的「建议保留」按命名规范排过序：排一轮重复
+    # 扫描让它跟上（docs/design/library-duplicate-files.md §9）
+    from movieclaw_api.services.library.duplicate_scan import enqueue_after_library_change
+
+    await enqueue_after_library_change(f"媒体库 #{library_id}")
     message = f"整理完成：改名 {summary.renamed} 个文件"
     if summary.errors:
         message += f"，{len(summary.errors)} 个问题已跳过"

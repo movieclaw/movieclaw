@@ -858,6 +858,12 @@ async def _run_scan_job(
 
         async with db.session() as session:
             await enqueue_library_chapter_images_job(session, library_id, library.name)
+    # 扫描改动了台账，上一轮的重复结论可能已经不作数：排一轮重复扫描
+    # （docs/design/library-duplicate-files.md §9）。用户打开重复文件页时通常
+    # 就已经有新鲜结果，而不必自己先按一次「开始扫描」
+    from movieclaw_api.services.library.duplicate_scan import enqueue_after_library_change
+
+    await enqueue_after_library_change(library.name)
     payload = scan_summary_payload(summary)
     message = (
         f"扫描完成：新入账 {summary.scanned - summary.relinked} 个文件，"

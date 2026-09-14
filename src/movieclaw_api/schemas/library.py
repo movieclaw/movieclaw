@@ -1899,20 +1899,46 @@ class DuplicateItemView(BaseModel):
     seasons: list[DuplicateSeasonView]
 
 
-class DuplicateBucketStats(BaseModel):
+class DuplicateGroupView(BaseModel):
+    """一档、或「需要你决定」里的一组：有多少活、清掉能腾多少。"""
+
+    key: str = Field(description="safe / suggested / review；或取舍类型 resolution / hdr / …")
+    label: str
+    hint: str = Field(description="一句话说明这一档是什么、该怎么处置")
     units: int
-    files: int = Field(description="会被清掉的文件数（非建议保留、非都留着）")
+    files: int = Field(description="按建议清理会清掉几个文件")
     bytes: int
 
 
-class DuplicateFilesData(BaseModel):
-    """重复文件列表：两堆摘要 + 本页条目（按条目分页）。"""
+class DuplicateScanStateView(BaseModel):
+    """扫描本身的状态：扫过没有、上次什么时候、现在是不是正在跑。"""
 
-    identical: DuplicateBucketStats
-    versions: DuplicateBucketStats
-    upgrading_units: int = Field(description="洗版验证在途、暂不显示的单元数")
-    keep_old_items: int = Field(description="规则组「保留共存」、不显示的条目数")
-    total_items: int
+    status: str | None = Field(
+        default=None, description="null=从未扫描；queued/running/… =正在跑；succeeded=有结果"
+    )
+    job_id: str | None = None
+    message: str | None = Field(default=None, description="正在跑时的进度文案")
+    percent: float | None = None
+    scanned_at: datetime | None = Field(default=None, description="上一轮扫描完成的时间")
+    upgrading_units: int = Field(default=0, description="洗版验证在途、暂不列出的单元数")
+    keep_old_items: int = Field(default=0, description="规则组「保留共存」、不列出的条目数")
+
+
+class DuplicateFilesData(BaseModel):
+    """重复文件页的一次读取：扫描状态 + 分档摘要 + 本页条目。
+
+    页面落地只看前两样（``limit=0`` 时不带条目）；点进某一档才拉明细。
+    """
+
+    scan: DuplicateScanStateView
+    tiers: list[DuplicateGroupView] = Field(description="三档：放心清 / 建议清 / 要你决定")
+    review_groups: list[DuplicateGroupView] = Field(
+        description="「需要你决定」按取舍类型分组，同一种取舍一次决定一批"
+    )
+    total_units: int
+    total_files: int
+    total_bytes: int
+    total_items: int = Field(description="当前筛选下有重复的条目数（分页总数）")
     items: list[DuplicateItemView]
 
 
@@ -1946,7 +1972,24 @@ class DuplicateResolvePayload(BaseModel):
 
 
 class DuplicateResolveAllPayload(BaseModel):
-    bucket: Literal["identical", "versions"] = Field(
-        description="要清理的那一堆：identical 一模一样 / versions 不同版本（按建议保留）"
+    """一整档、或「需要你决定」里的一组，一次决定一批。
+
+    同一种取舍的几百个单元，用户其实只有一个答案（"我要 4K" / "都留着"），
+    所以批量的粒度是**档 / 组**而不是"全部重复文件"。
+    """
+
+    tier: Literal["safe", "suggested", "review"] = Field(
+        description=(
+            "safe 可以放心清理（机器确认没区别）/ suggested 建议清理（有一个档位明显更高）/ "
+            "review 需要你决定"
+        )
     )
-    library_id: int | None = Field(default=None, description="只清某个库；省略 = 全部库")
+    review_kind: Literal["resolution", "hdr", "unknown", "same_tier"] | None = Field(
+        default=None,
+        description="tier=review 时只处理这一种取舍；省略 = 整个 review 档",
+    )
+    library_id: int | None = Field(default=None, description="只处理某个库；省略 = 全部库")
+    keep_all: bool = Field(
+        default=False,
+        description="true = 这一组都留着（只盖标记不动文件）；false = 按「建议保留」清理",
+    )

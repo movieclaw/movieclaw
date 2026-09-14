@@ -98,17 +98,19 @@ export function LibraryManageView() {
     const id = raw ? Number(raw) : NaN;
     if (Number.isInteger(id) && id > 0) setDuplicateItemId(id);
   }, []);
-  // 重复文件标签上的计数：一次 limit=1 的列表请求只为拿两堆的文件数，与回收站同款
+  // 重复文件标签上的计数：读上一轮扫描落库的结论（limit=0 只要摘要，一条聚合
+  // 查询）。第一版这里是每 120 秒现算一遍全库重复关系——没打开这个标签也算，
+  // 万级媒体库上光这一下就要几十秒（docs/design/library-duplicate-files.md §9）。
+  // 结论只在扫描后才变，所以这里只在挂载与切回标签时读一次，不轮询。
   const [duplicateCount, setDuplicateCount] = useState<number | null>(null);
   const reloadDuplicateCount = useCallback(() => {
-    listDuplicateFiles({}, { limit: 1, offset: 0 })
-      .then((d) => setDuplicateCount(d.identical.files + d.versions.files))
+    listDuplicateFiles({}, { limit: 0, offset: 0 })
+      .then((d) => setDuplicateCount(d.total_files))
       .catch(() => {});
   }, []);
   useEffect(() => {
     reloadDuplicateCount();
-  }, [reloadDuplicateCount]);
-  useVisiblePolling(reloadDuplicateCount, tab === "duplicates" ? null : 120_000);
+  }, [reloadDuplicateCount, tab]);
   // 回收站标签上的计数：一次 limit=1 的列表请求只为拿 total_files（一条索引计数查询），
   // 不给库统计快照加列——进出回收站的写路径都不在统计重算之列，加列必陈旧
   const [recycleCount, setRecycleCount] = useState<number | null>(null);

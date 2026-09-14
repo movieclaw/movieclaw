@@ -103,6 +103,7 @@ library delete
 library duplicates list
 library duplicates resolve
 library duplicates resolve-all
+library duplicates scan
 library get
 library identification assign-file-to-title
 library identification assign-files-to-title

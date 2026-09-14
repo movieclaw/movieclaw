@@ -1,14 +1,17 @@
-"""重复文件（docs/design/library-duplicate-files.md §3–§4）测试。
+"""重复文件（docs/design/library-duplicate-files.md §3–§4、§9）测试。
 
 覆盖：两堆判定（同一 inode / 尺寸+时长 → 一模一样，其余 → 不同版本）、建议保留
-与依据、剧集按季折叠（同构季出版本行、单集季直接列集）、放行（保留共存 / 洗版
-在途 / 全部「都留着」）、三种决定（留这个 / 整季留这个版本 / 都留着）、整堆按
-建议清理、过期决定被拒绝、回收站原因词表。
+与依据、**三档分档与「需要你决定」的取舍分组**、剧集按季折叠（同构季出版本行、
+单集季直接列集）、放行（保留共存 / 洗版在途 / 全部「都留着」）、三种决定（留这个 /
+整季留这个版本 / 都留着）、按档批量清理、过期决定被拒绝、回收站原因词表，以及
+**页面只读扫描结论**（没扫过就是空的、结论过期不按它删）。
 """
 
 from __future__ import annotations
 
+import asyncio
 import os
+from datetime import timedelta
 
 import pytest
 import pytest_asyncio
@@ -27,6 +30,7 @@ from movieclaw_db.models import (
     Subscription,
     utcnow,
 )
+from movieclaw_db.models.job import Job, JobStatus
 from movieclaw_db.models.subscription import SubscriptionDownloadAttempt
 from movieclaw_db.repositories.library_repo import LibraryRepository
 
@@ -398,9 +402,69 @@ def _by_title(data: dict) -> dict[str, dict]:
     return {it["media_item"]["title"]: it for it in data["items"]}
 
 
+async def _scan(db) -> dict:
+    """跑一轮重复扫描，页面读的就是它落下的结论（§9）。
+
+    走真正的作业处理器而不是直接调服务：进度回写、结论落表、作业记录三件事
+    都要真的发生——页面头上那行「上次扫描于 X」读的正是这条作业记录。
+    """
+    from movieclaw_api.services import jobs
+    from movieclaw_api.services.library import duplicate_scan
+
+    async with db.session() as session:
+        created = await duplicate_scan.enqueue_duplicate_scan_job(session)
+        job = await session.get(Job, created.job.id)
+        job.status = JobStatus.RUNNING
+        job.lease_owner = "lease-test"
+        job.lease_expires_at = utcnow() + timedelta(minutes=5)
+        await session.commit()
+    context = jobs.JobContext(created.job.id, lease_token="lease-test", lease_lost=asyncio.Event())
+    result = await duplicate_scan._run_duplicate_scan_job(context, {})
+    async with db.session() as session:
+        job = await session.get(Job, created.job.id)
+        job.status = JobStatus.SUCCEEDED
+        job.result = result
+        job.finished_at = utcnow()
+        await session.commit()
+    return result
+
+
+def _groups(data: dict) -> dict[str, dict]:
+    return {g["key"]: g for g in data["tiers"]} | {g["key"]: g for g in data["review_groups"]}
+
+
+@pytest.mark.asyncio
+async def test_list_needs_a_scan_first(client, db, tmp_path):
+    """没扫过 = 页面上什么都没有，而不是"打开页面顺手算一遍"（§9）。
+
+    这是这一版最要紧的一条：检测要给每个候选文件 stat 一次、跑一遍发布名解析，
+    它必须发生在后台任务里，绝不能挂在打开页面的请求线上。
+    """
+    await _seed(db, tmp_path)
+    data = (await client.get("/api/v1/libraries/duplicate-files")).json()["data"]
+    assert data["scan"]["status"] is None and data["scan"]["scanned_at"] is None
+    assert data["items"] == [] and data["total_units"] == 0
+    assert all(g["units"] == 0 for g in data["tiers"])
+
+    started = await client.post("/api/v1/libraries/duplicate-files/scan")
+    assert started.status_code == 202, started.text
+    assert started.json()["data"]["started"] and started.json()["data"]["job_id"]
+    # 同时最多一份在跑：再按一次复用同一个作业
+    again = await client.post("/api/v1/libraries/duplicate-files/scan")
+    assert again.json()["data"]["job_id"] == started.json()["data"]["job_id"]
+    assert not again.json()["data"]["created"]
+
+    await _scan(db)
+    data = (await client.get("/api/v1/libraries/duplicate-files?limit=0")).json()["data"]
+    assert data["scan"]["status"] == "succeeded" and data["scan"]["scanned_at"]
+    # limit=0 只要摘要：页面落地先看三张卡，不拉明细
+    assert data["items"] == [] and data["total_items"] == 7 and data["total_units"] == 10
+
+
 @pytest.mark.asyncio
 async def test_list_buckets_suggestions_and_exclusions(client, db, tmp_path):
     ids = await _seed(db, tmp_path)
+    await _scan(db)
     res = await client.get("/api/v1/libraries/duplicate-files")
     assert res.status_code == 200, res.text
     data = res.json()["data"]
@@ -408,7 +472,7 @@ async def test_list_buckets_suggestions_and_exclusions(client, db, tmp_path):
 
     # 放行：保留共存的条目、洗版在途的单元、全部「都留着」的单元
     assert "奥本海默" not in items and "都留着过" not in items and "洗版中" not in items
-    assert data["keep_old_items"] == 1 and data["upgrading_units"] == 1
+    assert data["scan"]["keep_old_items"] == 1 and data["scan"]["upgrading_units"] == 1
     assert set(items) == {
         "九门",
         "长安三万里",
@@ -419,10 +483,16 @@ async def test_list_buckets_suggestions_and_exclusions(client, db, tmp_path):
         "十三邀",
     }
 
-    # 一模一样：长安（尺寸+时长）、同一文件（inode）、权力的游戏 3 集；其余不同版本
-    assert data["identical"]["units"] == 5 and data["identical"]["files"] == 5
-    assert data["versions"]["units"] == 5  # 九门 / 沙丘 / 十三邀 / 繁花 E01 E02
-    assert data["versions"]["files"] == 2 + 1 + 1 + 2
+    # 三档：放心清 = 一模一样（长安 / 同一文件 / 权游 3 集）；建议清 = 档位真的
+    # 分出了高下（九门 / 繁花 E01 E02）；其余要用户自己看（沙丘 HDR、十三邀 规格不全）
+    groups = _groups(data)
+    assert groups["safe"]["units"] == 5 and groups["safe"]["files"] == 5
+    assert groups["suggested"]["units"] == 3 and groups["suggested"]["files"] == 2 + 1 + 1
+    assert groups["review"]["units"] == 2 and groups["review"]["files"] == 2
+    assert groups["hdr"]["units"] == 1 and groups["unknown"]["units"] == 1
+    assert "resolution" not in groups and "same_tier" not in groups
+    assert data["total_units"] == 10 and data["total_files"] == 11
+    assert groups["safe"]["label"] == "可以放心清理"
 
     jm = items["九门"]["seasons"][0]
     assert jm["bucket"] == "versions" and not jm["uniform"] and jm["versions"] == []
@@ -470,11 +540,22 @@ async def test_list_buckets_suggestions_and_exclusions(client, db, tmp_path):
     assert set(_by_title(tv_only)) == {"权力的游戏", "繁花", "十三邀"}
     page = (await client.get("/api/v1/libraries/duplicate-files?limit=2&offset=2")).json()["data"]
     assert page["total_items"] == 7 and len(page["items"]) == 2
+    # 点进一档只看这一档；review 还能点进某一种取舍
+    safe = (await client.get("/api/v1/libraries/duplicate-files?tier=safe")).json()["data"]
+    assert set(_by_title(safe)) == {"长安三万里", "同一文件", "权力的游戏"}
+    hdr = (
+        await client.get("/api/v1/libraries/duplicate-files?tier=review&review_kind=hdr")
+    ).json()["data"]
+    assert set(_by_title(hdr)) == {"沙丘 2"}
+    # 摘要不随分档筛选变（它回答的是"总共还有多少活"）
+    assert _groups(hdr)["safe"]["units"] == 5
+    assert (await client.get("/api/v1/libraries/duplicate-files?tier=nope")).status_code == 400
 
 
 @pytest.mark.asyncio
 async def test_resolve_keep_one_file(client, db, tmp_path):
     ids = await _seed(db, tmp_path)
+    await _scan(db)
     res = await client.post(
         "/api/v1/libraries/duplicate-files/resolve",
         json={
@@ -523,6 +604,7 @@ async def test_resolve_keep_one_file(client, db, tmp_path):
 @pytest.mark.asyncio
 async def test_resolve_season_by_version_key(client, db, tmp_path):
     ids = await _seed(db, tmp_path)
+    await _scan(db)
     res = await client.post(
         "/api/v1/libraries/duplicate-files/resolve",
         json={
@@ -567,6 +649,7 @@ async def test_resolve_season_by_version_key(client, db, tmp_path):
 @pytest.mark.asyncio
 async def test_resolve_keep_all_then_new_file_relists(client, db, tmp_path):
     ids = await _seed(db, tmp_path)
+    await _scan(db)
     res = await client.post(
         "/api/v1/libraries/duplicate-files/resolve",
         json={
@@ -606,6 +689,9 @@ async def test_resolve_keep_all_then_new_file_relists(client, db, tmp_path):
             )
         )
         await session.commit()
+    # 页面读的是扫描结论：新文件要等下一轮扫描才会重新列出（§9），
+    # 这正是「都留着」之后不会天天再被问一遍的原因
+    await _scan(db)
     data = (
         await client.get(f"/api/v1/libraries/duplicate-files?media_item_id={ids['dune']}")
     ).json()["data"]
@@ -615,20 +701,20 @@ async def test_resolve_keep_all_then_new_file_relists(client, db, tmp_path):
         and sum(1 for f in files if not f["kept_at"]) == 1
     )
     # 建议保留仍是最优的 DV；新来的低档文件是唯一会被清掉的
-    assert data["versions"]["files"] == 1
+    assert data["items"][0]["seasons"][0]["bucket"] == "versions"
 
 
 @pytest.mark.asyncio
-async def test_resolve_all_identical_bucket(client, db, tmp_path):
+async def test_resolve_all_safe_tier(client, db, tmp_path):
     await _seed(db, tmp_path)
-    res = await client.post(
-        "/api/v1/libraries/duplicate-files/resolve-all", json={"bucket": "identical"}
-    )
+    await _scan(db)
+    res = await client.post("/api/v1/libraries/duplicate-files/resolve-all", json={"tier": "safe"})
     assert res.status_code == 200, res.text
     assert res.json()["data"]["done"] == 5 and res.json()["data"]["remaining"] == 0
     data = (await client.get("/api/v1/libraries/duplicate-files")).json()["data"]
-    assert data["identical"]["units"] == 0
-    assert set(_by_title(data)) == {"九门", "沙丘 2", "繁花", "十三邀"}  # 不同版本堆原样
+    # 清完这一档摘要立刻见底，不必等下一轮扫描
+    assert _groups(data)["safe"]["units"] == 0
+    assert set(_by_title(data)) == {"九门", "沙丘 2", "繁花", "十三邀"}  # 另两档原样
     async with db.session() as session:
         gone = list(
             (
@@ -656,6 +742,7 @@ async def test_resolve_requires_exactly_one_decision(client, db, tmp_path):
     不能让服务层去猜用户想干什么。
     """
     ids = await _seed(db, tmp_path)
+    await _scan(db)
     base = {"media_item_id": ids["jm"], "season_number": 0, "episode_number": 0}
     for payload, why in (
         ({}, "一个都不给"),
@@ -686,3 +773,115 @@ async def test_resolve_requires_exactly_one_decision(client, db, tmp_path):
             ).scalars()
         }
     assert states == {FileState.IN_PLACE}
+
+
+@pytest.mark.asyncio
+async def test_stale_conclusion_is_skipped_until_next_scan(client, db, tmp_path):
+    """扫描之后文件集合变了 → 那个单元既不显示也不清理，等下一轮扫描（§9）。
+
+    结论是上一轮算的，中间可能跑了入库或洗版。"按几分钟前的结论删文件"是这个
+    特性最不能犯的错，所以过期判据取集合相等：多一个文件、少一个文件都算变了。
+    """
+    ids = await _seed(db, tmp_path)
+    await _scan(db)
+    async with db.session() as session:
+        path = tmp_path / "movies/九门/Nine.Gates.新来的.mkv"
+        path.write_bytes(b"x" * 6)
+        session.add(
+            LibraryFile(
+                library_id=ids["movie_lib"],
+                media_item_id=ids["jm"],
+                file_path=str(path),
+                size_bytes=6,
+                source=FileSource.SCANNED,
+                origin=SCAN,
+                resolution="1080p",
+                media_source="WEB-DL",
+            )
+        )
+        await session.commit()
+
+    data = (await client.get("/api/v1/libraries/duplicate-files")).json()["data"]
+    assert "九门" not in _by_title(data), "结论过期的单元不显示"
+
+    res = await client.post(
+        "/api/v1/libraries/duplicate-files/resolve-all", json={"tier": "suggested"}
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["data"]["done"] == 2, "只清了繁花两集；九门的结论过期，一个没动"
+    async with db.session() as session:
+        states = {
+            r.state
+            for r in (
+                await session.execute(
+                    select(LibraryFile).where(LibraryFile.media_item_id == ids["jm"])
+                )
+            ).scalars()
+        }
+    assert states == {FileState.IN_PLACE}
+
+    # 整组全过期时不能回一句「已移入回收站 0 个文件」——那会让人以为自己点错了
+    only_stale = await client.post(
+        "/api/v1/libraries/duplicate-files/resolve-all",
+        json={"tier": "review", "review_kind": "hdr", "library_id": ids["tv_lib"]},
+    )
+    assert only_stale.json()["data"]["done"] == 0
+    assert "请重新扫描" in only_stale.json()["message"]
+
+    # 重扫之后它带着新文件回来，这次可以正常处理
+    await _scan(db)
+    data = (await client.get("/api/v1/libraries/duplicate-files")).json()["data"]
+    assert "九门" in _by_title(data)
+
+
+@pytest.mark.asyncio
+async def test_resolve_group_keep_all_answers_a_whole_kind_at_once(client, db, tmp_path):
+    """「需要你决定」里同一种取舍一次回答一批——这是分组存在的全部理由。
+
+    用户对"HDR 和 SDR 我两个都要"只需回答一次，而不是在几百个单元上各点一次
+    「都留着」。它只盖标记不动文件，所以没有批量上限。
+    """
+    ids = await _seed(db, tmp_path)
+    await _scan(db)
+    res = await client.post(
+        "/api/v1/libraries/duplicate-files/resolve-all",
+        json={"tier": "review", "review_kind": "hdr", "keep_all": True},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["data"]["done"] == 2 and "都留着" in res.json()["message"]
+
+    async with db.session() as session:
+        rows = list(
+            (
+                await session.execute(
+                    select(LibraryFile).where(LibraryFile.media_item_id == ids["dune"])
+                )
+            ).scalars()
+        )
+    assert all(r.state == FileState.IN_PLACE and r.kept_at is not None for r in rows)
+
+    data = (await client.get("/api/v1/libraries/duplicate-files")).json()["data"]
+    groups = _groups(data)
+    assert "hdr" not in groups and groups["review"]["units"] == 1  # 只剩「规格不全」那组
+    assert "沙丘 2" not in _by_title(data)
+
+    # review_kind 只在 tier=review 时有意义，配错了要在入口挡下来
+    bad = await client.post(
+        "/api/v1/libraries/duplicate-files/resolve-all",
+        json={"tier": "safe", "review_kind": "hdr"},
+    )
+    assert bad.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_resolve_group_respects_batch_limit(client, db, tmp_path, monkeypatch):
+    """一次清不完就报 remaining，让用户知道还要再按一次（与回收站批量同款）。"""
+    await _seed(db, tmp_path)
+    await _scan(db)
+    monkeypatch.setattr("movieclaw_api.api.routes.library_duplicates.BATCH_LIMIT", 2)
+    res = await client.post("/api/v1/libraries/duplicate-files/resolve-all", json={"tier": "safe"})
+    assert res.status_code == 200, res.text
+    data = res.json()["data"]
+    assert data["done"] == 2 and data["remaining"] == 3
+    rest = await client.post("/api/v1/libraries/duplicate-files/resolve-all", json={"tier": "safe"})
+    assert rest.json()["data"]["done"] == 2 and rest.json()["data"]["remaining"] == 1

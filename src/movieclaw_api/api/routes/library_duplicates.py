@@ -1,9 +1,13 @@
-"""重复文件接口（docs/design/library-duplicate-files.md §4）。
+"""重复文件接口（docs/design/library-duplicate-files.md §4 / §9）。
 
-媒体库管理页「重复文件」标签的数据面：跨库圈出多文件单元，分成「一模一样」
-「不同版本」两堆，按条目分页；三个写动作——一个单元 / 一季的「留这个 /
-整季留这个版本 / 都留着」，以及整堆按建议清理。检测与清理都在
-``services.library.duplicates``，这里只做视图拼装。
+媒体库管理页「重复文件」标签的数据面。**检测不在这里发生**：重复关系由
+``POST /scan`` 起的后台任务算一轮、落进 ``library_duplicate_unit``，这里只读那份
+结论（第一版每次 GET 现算全库，万级媒体库打开即卡，返工记录见设计文档 §9）。
+
+读：一次请求给三样——扫描状态（扫过没有 / 正在跑到哪了）、分档摘要（放心清 /
+建议清 / 要你决定，后者再按取舍类型分组）、本页条目明细（``limit=0`` 不带）。
+写：四个动作——起一轮扫描；一个单元 / 一季的「留这个 / 整季留这个版本 / 都留着」；
+一整档或一组的「都按建议清理 / 都留着」。
 
 路由前缀 ``/libraries/duplicate-files`` 与 ``/libraries/{library_id}`` 有路径
 歧义，必须在 ``libraries.router`` **之前**注册（见 api/router.py，与回收站同）。
@@ -21,12 +25,13 @@ from movieclaw_api.api.routes.library_recycle import PAGE_LIMIT_MAX, _audio_labe
 from movieclaw_api.core.config import get_settings
 from movieclaw_api.exceptions import BadRequestException, NotFoundException
 from movieclaw_api.schemas.library import (
-    DuplicateBucketStats,
     DuplicateFilesData,
     DuplicateFileView,
+    DuplicateGroupView,
     DuplicateItemView,
     DuplicateResolveAllPayload,
     DuplicateResolvePayload,
+    DuplicateScanStateView,
     DuplicateSeasonView,
     DuplicateUnitView,
     DuplicateVersionView,
@@ -38,13 +43,11 @@ from movieclaw_api.schemas.library import (
 )
 from movieclaw_api.schemas.response import ApiResponse, ok
 from movieclaw_api.services.auth import Principal
+from movieclaw_api.services.library import duplicate_scan
 from movieclaw_api.services.library.duplicates import (
     DupFile,
     DupItem,
-    DuplicateReport,
     ResolveOutcome,
-    detect_duplicates,
-    resolve_all,
     resolve_unit,
 )
 from movieclaw_api.services.media_server_notify import notify_media_server_refresh
@@ -54,7 +57,7 @@ from movieclaw_media.models import MediaKind
 
 router = APIRouter(prefix="/libraries/duplicate-files", tags=["libraries"])
 
-# 整堆清理一次最多处理的文件数：同步执行（回收站是同盘 rename），与回收站批量同一上限
+# 一次批量最多处理的文件数：同步执行（回收站是同盘 rename），与回收站批量同一上限
 BATCH_LIMIT = 500
 
 
@@ -126,18 +129,21 @@ def _item_view(d: DupItem) -> DuplicateItemView:
     )
 
 
-def _data(report: DuplicateReport) -> DuplicateFilesData:
-    return DuplicateFilesData(
-        identical=DuplicateBucketStats(
-            units=report.identical.units, files=report.identical.files, bytes=report.identical.bytes
-        ),
-        versions=DuplicateBucketStats(
-            units=report.versions.units, files=report.versions.files, bytes=report.versions.bytes
-        ),
-        upgrading_units=report.upgrading_units,
-        keep_old_items=report.keep_old_items,
-        total_items=report.total_items,
-        items=[_item_view(d) for d in report.items],
+def _group_view(g: duplicate_scan.GroupStats) -> DuplicateGroupView:
+    return DuplicateGroupView(
+        key=g.key, label=g.label, hint=g.hint, units=g.units, files=g.files, bytes=g.bytes
+    )
+
+
+def _scan_view(state: duplicate_scan.ScanState) -> DuplicateScanStateView:
+    return DuplicateScanStateView(
+        status=state.status,
+        job_id=state.job_id,
+        message=state.message,
+        percent=state.percent,
+        scanned_at=state.scanned_at,
+        upgrading_units=state.upgrading_units,
+        keep_old_items=state.keep_old_items,
     )
 
 
@@ -153,25 +159,97 @@ def _result(outcome: ResolveOutcome) -> TrashedBatchResultView:
     )
 
 
+async def _after_cleanup(
+    session: AsyncSession, outcome: ResolveOutcome, background_tasks: BackgroundTasks
+) -> None:
+    if outcome.done:
+        await LibraryRepository(session).refresh_stats(list(outcome.library_ids))
+        background_tasks.add_task(notify_media_server_refresh)
+
+
 @router.get(
     "",
     response_model=ApiResponse[DuplicateFilesData],
-    summary="重复文件：多文件单元分「一模一样 / 不同版本」两堆，按条目分页",
+    summary="重复文件：扫描状态 + 三档摘要 + 本页条目",
     operation_id="library.duplicates.list",
     dependencies=[Depends(require_admin)],
 )
 async def list_duplicate_files(
-    q: Annotated[str | None, Query(description="按片名 / 剧名 / 文件名搜索")] = None,
+    tier: Annotated[str | None, Query(description="只看某一档：safe / suggested / review")] = None,
+    review_kind: Annotated[
+        str | None,
+        Query(description="tier=review 时只看某一种取舍：resolution / hdr / unknown / same_tier"),
+    ] = None,
+    q: Annotated[str | None, Query(description="按片名 / 剧名搜索")] = None,
     library_id: Annotated[int | None, Query(description="只看某个库")] = None,
     media_item_id: Annotated[int | None, Query(description="只看某个条目（详情页入口）")] = None,
-    limit: Annotated[int, Query(ge=1, le=PAGE_LIMIT_MAX, description="本页条目数")] = 20,
+    limit: Annotated[
+        int, Query(ge=0, le=PAGE_LIMIT_MAX, description="本页条目数；0 = 只要摘要")
+    ] = 20,
     offset: Annotated[int, Query(ge=0, description="跳过的条目数")] = 0,
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[DuplicateFilesData]:
-    report = await detect_duplicates(
-        session, library_id=library_id, media_item_id=media_item_id, q=q, limit=limit, offset=offset
+    if tier is not None and tier not in duplicate_scan.TIER_LABELS:
+        raise BadRequestException("tier 只能是 safe / suggested / review")
+    if review_kind is not None and review_kind not in duplicate_scan.REVIEW_KIND_LABELS:
+        raise BadRequestException("review_kind 只能是 resolution / hdr / unknown / same_tier")
+    state = await duplicate_scan.scan_state(session)
+    summary = await duplicate_scan.summarize(session, library_id=library_id)
+    total_items, items = await duplicate_scan.list_duplicate_items(
+        session,
+        tier=tier,
+        review_kind=review_kind,
+        library_id=library_id,
+        media_item_id=media_item_id,
+        q=q,
+        limit=limit,
+        offset=offset,
     )
-    return ok(_data(report))
+    return ok(
+        DuplicateFilesData(
+            scan=_scan_view(state),
+            tiers=[_group_view(g) for g in summary.tiers],
+            review_groups=[_group_view(g) for g in summary.review_groups],
+            total_units=summary.total_units,
+            total_files=summary.total_files,
+            total_bytes=summary.total_bytes,
+            total_items=total_items,
+            items=[_item_view(d) for d in items],
+        )
+    )
+
+
+@router.post(
+    "/scan",
+    response_model=ApiResponse[dict],
+    status_code=202,
+    summary="开始扫描重复文件（可恢复后台作业，结论落库供页面读取）",
+    operation_id="library.duplicates.scan",
+    openapi_extra={"x-cli-job": {"id_path": "job_id", "wait_op": "jobs.wait"}},
+)
+async def start_duplicate_scan(
+    principal: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[dict]:
+    """跨全部媒体库算一轮重复关系，结论落 ``library_duplicate_unit``。
+
+    和「扫描媒体库」一样是用户按一次、后台跑一会儿的事：检测要给每个候选
+    文件各 stat 一次、各跑一遍发布名解析，不能挂在打开页面的请求线上。媒体库
+    扫描结束会自动排一份，这里是手动入口。同时最多一份在跑。"""
+
+    created = await duplicate_scan.enqueue_duplicate_scan_job(
+        session,
+        actor_kind=principal.kind,
+        actor_name=principal.name,
+        actor_id=str(principal.member_id) if principal.member_id else None,
+        origin="user",
+    )
+    return ok(
+        {"started": True, "job_id": created.job.id, "created": created.created},
+        message=(
+            "已开始扫描重复文件，可在任务中心继续观察" if created.created else "重复扫描正在进行中"
+        ),
+    )
 
 
 @router.post(
@@ -216,11 +294,17 @@ async def resolve_duplicates(
         raise NotFoundException(str(exc)) from exc
     except ValueError as exc:
         raise BadRequestException(str(exc)) from exc
+    # 做完决定的单元不再是"待处理"：删掉它的结论行，摘要数字立刻变小，
+    # 不必为一个决定重扫整库（真正的修正等下一轮扫描）
+    await duplicate_scan.forget_units(
+        session,
+        media_item_id=payload.media_item_id,
+        season_number=payload.season_number,
+        episode_number=payload.episode_number,
+    )
     if payload.keep_all:
         return ok(_result(outcome), message=f"已标记「都留着」：{outcome.done} 个文件不再列为重复")
-    if outcome.done:
-        await LibraryRepository(session).refresh_stats(list(outcome.library_ids))
-        background_tasks.add_task(notify_media_server_refresh)
+    await _after_cleanup(session, outcome, background_tasks)
     return ok(
         _result(outcome), message=_summary("移入回收站", outcome.done, len(outcome.failed), 0)
     )
@@ -229,7 +313,7 @@ async def resolve_duplicates(
 @router.post(
     "/resolve-all",
     response_model=ApiResponse[TrashedBatchResultView],
-    summary="整堆按「建议保留」清理（一模一样 / 不同版本）",
+    summary="一整档 / 一组一起决定：都按建议清理，或都留着",
     operation_id="library.duplicates.resolve-all",
     openapi_extra={"x-cli-dangerous": "destructive"},
 )
@@ -239,16 +323,25 @@ async def resolve_all_duplicates(
     principal: Principal = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[TrashedBatchResultView]:
-    outcome = await resolve_all(
+    if payload.review_kind is not None and payload.tier != "review":
+        raise BadRequestException("review_kind 只在 tier=review 时有意义")
+    outcome = await duplicate_scan.resolve_group(
         session,
-        bucket=payload.bucket,
+        tier=payload.tier,
+        review_kind=payload.review_kind,
         library_id=payload.library_id,
+        keep_all=payload.keep_all,
         trigger=_trigger(principal),
         batch_limit=BATCH_LIMIT,
     )
-    if outcome.done:
-        await LibraryRepository(session).refresh_stats(list(outcome.library_ids))
-        background_tasks.add_task(notify_media_server_refresh)
+    if payload.keep_all:
+        return ok(_result(outcome), message=f"已标记「都留着」：{outcome.done} 个文件不再列为重复")
+    await _after_cleanup(session, outcome, background_tasks)
+    if not outcome.done and not outcome.failed and not outcome.remaining:
+        # 这一组的结论全过期了（扫描之后跑过入库 / 洗版 / 另一轮扫描）。不按过期
+        # 结论删文件是铁律，所以这里什么也没做——直接告诉用户该重扫，而不是回一句
+        # 「已移入回收站 0 个文件」让人以为自己点错了
+        return ok(_result(outcome), message="这一组的结果已经过期（库里有过改动），请重新扫描")
     return ok(
         _result(outcome),
         message=_summary("移入回收站", outcome.done, len(outcome.failed), outcome.remaining),

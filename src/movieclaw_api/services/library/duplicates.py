@@ -18,8 +18,12 @@
 不列出的单元：所有文件都带「都留着」标记（``kept_at``）的；订阅规则组开了
 「保留共存」的条目；洗版验证在途的单元（与验证打架）。
 
-清理只调 ``recycle_file``：进回收站、7 天可恢复。执行前逐文件重验——列表是
-几分钟前算的，中间可能跑了扫描或洗版，不按过期结论删。
+清理只调 ``recycle_file``：进回收站、7 天可恢复。执行前逐文件重验——结论是
+上一轮扫描算的，中间可能跑了扫描或洗版，不按过期结论删。
+
+本模块只管**算一遍**。「什么时候算、结论存哪、页面怎么读、怎么分档」在
+``duplicate_scan.py``：检测整轮要给每个候选文件 stat 一次、跑一遍发布名解析，
+放在打开页面的请求线上现算，万级媒体库必卡（返工记录见设计文档 §9）。
 """
 
 from __future__ import annotations
@@ -29,11 +33,12 @@ import logging
 import os
 import re
 from collections import defaultdict
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import PurePath
 from typing import Any, Literal
 
-from sqlalchemy import func, or_
+from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
@@ -48,6 +53,8 @@ from movieclaw_matcher.models import RuleSetSpec
 logger = logging.getLogger("movieclaw_api.library.duplicates")
 
 Bucket = Literal["identical", "versions"]
+#: 扫描任务的进度回调：(阶段, 给人看的话, 已完成, 总数)。检测本身不关心进度怎么显示
+ProgressReport = Callable[[str, str, int | None, int | None], Awaitable[None]]
 
 REASON_DUPLICATE = "duplicate_cleanup"  # trash_context.reason 词表新词：重复清理
 
@@ -68,6 +75,19 @@ _VERSION_SUFFIX = re.compile(
 # 来源可追溯性：本系统入库的有台账证据链，扫描发现的是"不知道谁放的"
 _ORIGIN_PRIORITY = {"subscription": 3, "manual_download": 3, "watch_import": 2, "scan": 1}
 _NEUTRAL_SPEC = RuleSetSpec()
+# 指纹分批的批量。整轮 stat 是检测里唯一的磁盘 IO，网络盘上几千次往返要跑几十秒；
+# 分批只为一件事：让扫描任务的进度条真的在动，用户知道它没卡死
+_STAT_CHUNK = 200
+# 建议依据：机器码 → 给人看的话。只有 ``ladder`` 是"真的比出了高下"，
+# 其余都是同档里按次级信号挑了一个——分档（duplicate_scan.classify）据此判定
+_REASONS = {
+    "ladder": "档位最高",
+    "incomparable": "档位无法比较，按实测码率建议",
+    "bitrate": "同档，实测码率更高",
+    "origin": "同档，来源可追溯",
+    "naming": "同档，占着标准文件名",
+    "fallback": "同档，最近入库",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +103,10 @@ class DupFile:
     version_key: str
     suggested: bool = False
     suggest_reason: str | None = None
+    #: 建议依据的机器码（``_REASONS`` 的键）。分档要用它而不是文案——
+    #: "档位最高" 意味着机器真的比出了高下（可以建议清），其余都只是同档里
+    #: 挑了一个（要用户自己看），这个区别是分档的唯一依据，不能靠字符串相等
+    suggest_basis: str | None = None
 
     @property
     def kept(self) -> bool:
@@ -162,6 +186,13 @@ class DuplicateReport:
 # ---------------------------------------------------------------------------
 
 
+async def _tick(
+    report: ProgressReport | None, phase: str, message: str, current: int | None, total: int | None
+) -> None:
+    if report is not None:
+        await report(phase, message, current, total)
+
+
 def quality_label_of(row: LibraryFile) -> str:
     """版本签名里的质量标签：「分辨率 片源」，HDR 有值时追加——HDR 与 SDR 是不同版本。"""
     parts = [p for p in (row.resolution, row.media_source) if p]
@@ -222,32 +253,35 @@ def _suggest(files: list[DupFile], spec: RuleSetSpec) -> None:
     best_vec = vectors[best.row.id or -1]
     verdicts = [compare_ladder(best_vec, vectors[o.row.id or -1]) for o in ordered[1:]]
     if any(v is None for v in verdicts):
-        reason = "档位无法比较，按实测码率建议"
+        basis = "incomparable"
     elif all(v == 1 for v in verdicts):
-        reason = "档位最高"
+        basis = "ladder"
     else:
         tied = [o for o, v in zip(ordered[1:], verdicts, strict=True) if v == 0]
         if all((best.row.bit_rate or 0) > (o.row.bit_rate or 0) for o in tied):
-            reason = "同档，实测码率更高"
+            basis = "bitrate"
         elif all(
             _ORIGIN_PRIORITY.get(str(best.origin.get("kind")), 0)
             > _ORIGIN_PRIORITY.get(str(o.origin.get("kind")), 0)
             for o in tied
         ):
-            reason = "同档，来源可追溯"
+            basis = "origin"
         elif not _VERSION_SUFFIX.search(PurePath(best.row.file_path).stem) and all(
             _VERSION_SUFFIX.search(PurePath(o.row.file_path).stem) for o in tied
         ):
-            reason = "同档，占着标准文件名"
+            basis = "naming"
         else:
-            reason = "同档，最近入库"
+            basis = "fallback"
     for f in files:
         f.suggested = f is best
-        f.suggest_reason = reason if f is best else None
+        f.suggest_reason = _REASONS[basis] if f is best else None
+        f.suggest_basis = basis if f is best else None
 
 
-def _seasons_of(units: list[DupUnit], is_tv: bool) -> list[DupSeason]:
+def fold_seasons(units: list[DupUnit], is_tv: bool) -> list[DupSeason]:
     """按季折叠：同构（各集版本签名集合一致，允许某版本缺几集）的季出版本行。
+
+    检测与"读上一轮结论"两条路径共用（见 duplicate_scan.list_duplicate_items）。
 
     归堆按集：一季各集都一模一样才整季在「一模一样」堆；两种都有时两堆各出现
     一次，各带自己的集。电影恰好一季一集，永远不同构（直接列文件）。
@@ -360,16 +394,16 @@ async def detect_duplicates(
     *,
     library_id: int | None = None,
     media_item_id: int | None = None,
-    q: str | None = None,
     season_number: int | None = None,
     episode_number: int | None = None,
-    limit: int | None = 20,
-    offset: int = 0,
+    report_progress: ProgressReport | None = None,
 ) -> DuplicateReport:
-    """圈出全部多文件单元，分堆、贴建议、按季折叠；按条目分页。
+    """圈出筛选范围内全部多文件单元，分堆、贴建议、按季折叠。
 
-    ``limit=None`` 取全部（批量清理用）。摘要计数（两堆的单元 / 文件 / 字节）
-    永远按全部筛选算，与页面上的批量按钮是同一份数字。
+    这是**算一遍**的引擎，不是页面的数据源：整轮要给每个候选文件各 stat 一次、
+    各跑一遍发布名解析，万级媒体库上是几十秒的活。两个调用方——重复扫描任务
+    （全库算一轮，结论落 ``library_duplicate_unit``，见 duplicate_scan.py）与
+    清理前的单单元重验（范围小到一个条目）。页面读的是扫描落下的结论，不碰这里。
     """
     # 1. 多文件单元：一条聚合查询
     unit_stmt = (
@@ -395,20 +429,12 @@ async def detect_duplicates(
         unit_stmt = unit_stmt.where(LibraryFile.season_number == season_number)
     if episode_number is not None:
         unit_stmt = unit_stmt.where(LibraryFile.episode_number == episode_number)
-    if q:
-        needle = f"%{q.strip()}%"
-        unit_stmt = unit_stmt.join(MediaItem, MediaItem.id == LibraryFile.media_item_id).where(
-            or_(
-                MediaItem.title.ilike(needle),  # type: ignore[union-attr]
-                MediaItem.original_title.ilike(needle),  # type: ignore[union-attr]
-                LibraryFile.file_path.ilike(needle),  # type: ignore[union-attr]
-            )
-        )
     unit_keys = {(int(m), int(s), int(e)) for m, s, e in (await session.execute(unit_stmt)).all()}
     report = DuplicateReport()
     if not unit_keys:
         return report
     item_ids = {k[0] for k in unit_keys}
+    await _tick(report_progress, "units", f"圈出 {len(unit_keys)} 个多文件单元", None, None)
 
     # 2. 这些单元的全部在位行（一次取，按单元分桶）
     rows_stmt = _candidate_rows_stmt().where(LibraryFile.media_item_id.in_(item_ids))  # type: ignore[union-attr]
@@ -441,9 +467,14 @@ async def detect_duplicates(
 
     # 4. 物理指纹（只对这些文件 stat 一次）+ 来源快照 + 建议保留
     flat = [r for unit_rows in listed.values() for r in unit_rows]
-    stats = await asyncio.to_thread(_stat_many, [r.file_path for r in flat])
+    paths = [r.file_path for r in flat]
+    stats: dict[str, tuple[int, int] | None] = {}
+    for start in range(0, len(paths), _STAT_CHUNK):
+        stats |= await asyncio.to_thread(_stat_many, paths[start : start + _STAT_CHUNK])
+        await _tick(report_progress, "fingerprint", "比对文件指纹", len(stats), len(paths))
     inode = {r.id or -1: stats.get(r.file_path) for r in flat}
     origins = await derive_origins(session, flat)
+    await _tick(report_progress, "suggest", "排出建议保留", None, None)
     units_by_item: dict[int, list[DupUnit]] = defaultdict(list)
     for key, unit_rows in listed.items():
         files = [
@@ -487,7 +518,7 @@ async def detect_duplicates(
         item = items.get(item_id)
         if item is None:
             continue
-        seasons = _seasons_of(units, item.kind == "tv")
+        seasons = fold_seasons(units, item.kind == "tv")
         # 一个条目的文件理论上同库；跨库重叠配置下取第一份即可（展示用）
         library = libraries.get(units[0].files[0].row.library_id)
         if library is None:
@@ -501,7 +532,7 @@ async def detect_duplicates(
             stats_.bytes += sum(f.row.size_bytes for f in extras)
     dup_items.sort(key=lambda d: (d.library.name, d.item.title, d.item.id or 0))
     report.total_items = len(dup_items)
-    report.items = dup_items[offset : offset + limit] if limit is not None else dup_items
+    report.items = dup_items
     return report
 
 
@@ -527,7 +558,7 @@ def _note(keep: DupFile, gone: DupFile, bucket: Bucket) -> str:
     )
 
 
-async def _recycle_extras(
+async def recycle_extras(
     session: AsyncSession,
     unit: DupUnit,
     keep: DupFile,
@@ -536,6 +567,7 @@ async def _recycle_extras(
     *,
     include_kept: bool,
 ) -> None:
+    """留下 ``keep``，单元里其余的进回收站（逐单元决定与成组清理共用这一段）。"""
     for f in unit.files:
         if f is keep or (f.kept and not include_kept):
             continue
@@ -582,7 +614,6 @@ async def resolve_unit(
         media_item_id=media_item_id,
         season_number=season_number,
         episode_number=episode_number,
-        limit=None,
     )
     outcome = ResolveOutcome()
     units = [u for d in report.items for s in d.seasons for u in s.units]
@@ -606,7 +637,7 @@ async def resolve_unit(
         target = next((f for f in unit.files if f.row.id == keep), None)
         if target is None:
             raise LookupError("要保留的文件已不在这个单元里（文件集合已变化），请刷新列表")
-        await _recycle_extras(session, unit, target, trigger, outcome, include_kept=True)
+        await recycle_extras(session, unit, target, trigger, outcome, include_kept=True)
         return outcome
 
     # 整季留某个版本
@@ -614,43 +645,5 @@ async def resolve_unit(
         raise LookupError("这一季里已经没有这个版本（文件集合已变化），请刷新列表")
     for u in units:
         target = next((f for f in u.files if f.version_key == keep), None) or u.suggested
-        await _recycle_extras(session, u, target, trigger, outcome, include_kept=False)
-    return outcome
-
-
-async def resolve_all(
-    session: AsyncSession,
-    *,
-    bucket: Bucket,
-    library_id: int | None,
-    trigger: dict[str, Any],
-    batch_limit: int,
-) -> ResolveOutcome:
-    """整堆按「建议保留」清理，一次最多 ``batch_limit`` 个文件，超出的返回 remaining。"""
-    report = await detect_duplicates(session, library_id=library_id, limit=None)
-    outcome = ResolveOutcome()
-    todo: list[DupUnit] = [
-        u for d in report.items for s in d.seasons if s.bucket == bucket for u in s.units
-    ]
-    budget = batch_limit
-    for u in todo:
-        extras = u.extras
-        if not extras:
-            continue
-        if budget <= 0:
-            outcome.remaining += len(extras)
-            continue
-        if len(extras) > budget:
-            outcome.remaining += len(extras) - budget
-            # 单元内部分清理会让它下次以更少的文件再出现，语义仍然正确
-            trimmed = DupUnit(
-                u.season_number, u.episode_number, u.bucket, [u.suggested, *extras[:budget]]
-            )
-            await _recycle_extras(
-                session, trimmed, u.suggested, trigger, outcome, include_kept=False
-            )
-            budget = 0
-            continue
-        await _recycle_extras(session, u, u.suggested, trigger, outcome, include_kept=False)
-        budget -= len(extras)
+        await recycle_extras(session, u, target, trigger, outcome, include_kept=False)
     return outcome

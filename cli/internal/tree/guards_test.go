@@ -261,6 +261,7 @@ func TestDomainCommandSets(t *testing.T) {
 			"library.duplicates.list",
 			"library.duplicates.resolve",
 			"library.duplicates.resolve-all",
+			"library.duplicates.scan",
 			"library.missing.redownload",
 			"library.recycle.list",
 			"library.recycle.purge",

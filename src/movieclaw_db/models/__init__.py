@@ -30,6 +30,7 @@ from movieclaw_db.models.job import (
     JobStatus,
 )
 from movieclaw_db.models.library import Library
+from movieclaw_db.models.library_duplicate_unit import LibraryDuplicateUnit
 from movieclaw_db.models.library_file import FileSource, FileState, LibraryFile
 from movieclaw_db.models.llm_provider import LlmProvider
 from movieclaw_db.models.manual_download_intent import ManualDownloadIntent
@@ -113,6 +114,7 @@ __all__ = [
     "ACTIVE_JOB_STATUSES",
     "TERMINAL_JOB_STATUSES",
     "Library",
+    "LibraryDuplicateUnit",
     "LibraryFile",
     "LlmProvider",
     "ManualDownloadIntent",
