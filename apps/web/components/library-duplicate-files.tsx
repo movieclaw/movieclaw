@@ -83,14 +83,17 @@ const ROW_GRID =
 /** 文件行：名字整行；规格整行（共有时隐藏）；来源 / 说明与动作并排收尾 */
 const CELL_FILENAME = "max-md:order-1 max-md:col-span-2";
 const CELL_SPEC = "max-md:order-2 max-md:col-span-2";
-const CELL_ORIGIN = "max-md:order-3";
-const CELL_ACTION = "max-md:order-4 max-md:justify-self-end";
+// 两格都**钉死列号**：来源格在共有时会被整格隐藏，光靠 grid 自动流，动作格就会
+// 掉进第一列——同一个单元里两行的「留这个」于是差了一截，而这一版做的所有事就是
+// 为了让它们对齐
+const CELL_ORIGIN = "max-md:order-3 max-md:col-start-1";
+const CELL_ACTION = "max-md:order-4 max-md:col-start-2 max-md:justify-self-end";
 /**
  * 版本行：规格短（`1080p · Blu-ray`），与动作并排占第一行就够，覆盖与来源排在
  * 下面——所以它的次序与文件行不同（文件行的名字要独占整行，动作只能排到第二行）。
  */
 const CELL_VERSION = "max-md:order-1";
-const CELL_VERSION_ACTION = "max-md:order-2 max-md:justify-self-end";
+const CELL_VERSION_ACTION = "max-md:order-2 max-md:col-start-2 max-md:justify-self-end";
 const CELL_VERSION_COVER = "max-md:order-3 max-md:col-span-2";
 const CELL_VERSION_ORIGIN = "max-md:order-4 max-md:col-span-2";
 
@@ -545,24 +548,24 @@ export function LibraryDuplicateFiles({
             {focus.tier !== null && focusGroup !== null && focusGroup.files > 0 && (
               <div className="flex items-center gap-1.5 max-md:w-full">
                 {focus.tier === "review" && (
-                  <ActionButton disabled={busy} onClick={() => keepGroup(focus.tier!, focus.reviewKind, focusGroup)}>
+                  <ActionButton
+                    disabled={busy}
+                    variant="ghost"
+                    onClick={() => keepGroup(focus.tier!, focus.reviewKind, focusGroup)}
+                  >
                     整组都留着
                   </ActionButton>
                 )}
                 {/* 「规格不全」不给成批清理，理由见摘要卡上同一处注释 */}
                 {focus.reviewKind !== "unknown" && (
-                  <button
-                    type="button"
+                  <ActionButton
                     disabled={busy}
+                    variant={focus.tier === "safe" ? "primary" : "danger"}
+                    className="max-md:flex-1"
                     onClick={() => cleanGroup(focus.tier!, focus.reviewKind, focusGroup)}
-                    className={`flex h-8 items-center justify-center rounded-full border px-3 text-caption font-medium transition disabled:opacity-40 max-md:flex-1 ${
-                      focus.tier === "safe"
-                        ? "border-[var(--accent)] bg-[var(--accent)] text-[#0a0b10] hover:opacity-90"
-                        : "border-white/[0.15] text-[var(--text)] hover:bg-white/[0.08]"
-                    }`}
                   >
                     {TIER_ACTION_LABELS[focus.tier]} · {focusGroup.files}
-                  </button>
+                  </ActionButton>
                 )}
               </div>
             )}
@@ -725,18 +728,15 @@ function TierSummary({
                     逐个看
                   </ActionButton>
                   {key !== "review" && (
-                    <button
-                      type="button"
+                    // 「可以放心清理」是这一页唯一"做了不会丢东西"的批量动作，主操作；
+                    // 「建议清理」动的是**有区别**的文件，依据只是机器的建议——危险档
+                    <ActionButton
                       disabled={busy}
+                      variant={key === "safe" ? "primary" : "danger"}
                       onClick={() => onClean(key, null, tier)}
-                      className={`flex h-7 items-center rounded-full border px-3 text-caption font-medium transition disabled:opacity-40 ${
-                        key === "safe"
-                          ? "border-[var(--accent)] bg-[var(--accent)] text-[#0a0b10] hover:opacity-90"
-                          : "border-white/[0.15] text-[var(--text)] hover:bg-white/[0.08]"
-                      }`}
                     >
                       {TIER_ACTION_LABELS[key]} · {tier.files}
-                    </button>
+                    </ActionButton>
                   )}
                 </div>
               )}
@@ -761,10 +761,15 @@ function TierSummary({
                       {compactSummary(group)}
                     </span>
                     <div className="flex basis-full items-center gap-1.5">
+                      {/* 逐个看 = 这一组的正路（玻璃按钮）；都留着 = 关掉它，不动文件（幽灵） */}
                       <ActionButton disabled={busy} onClick={() => onOpen("review", group.key as DuplicateReviewKind)}>
                         逐个看
                       </ActionButton>
-                      <ActionButton disabled={busy} onClick={() => onKeepAll("review", group.key as DuplicateReviewKind, group)}>
+                      <ActionButton
+                        disabled={busy}
+                        variant="ghost"
+                        onClick={() => onKeepAll("review", group.key as DuplicateReviewKind, group)}
+                      >
                         都留着
                       </ActionButton>
                       {/*
@@ -774,7 +779,11 @@ function TierSummary({
                         三态铁律在这里的落点——无从判定就交给人，逐个看或都留着。
                       */}
                       {group.key !== "unknown" && (
-                        <ActionButton disabled={busy} onClick={() => onClean("review", group.key as DuplicateReviewKind, group)}>
+                        <ActionButton
+                          disabled={busy}
+                          variant="danger"
+                          onClick={() => onClean("review", group.key as DuplicateReviewKind, group)}
+                        >
                           按建议清 · {group.files}
                         </ActionButton>
                       )}
@@ -855,9 +864,9 @@ function SeasonBlock({
           )}
         </div>
         {season.uniform && (
-          <button type="button" onClick={onToggleExpanded} className="shrink-0 rounded-full px-2.5 py-1 text-caption text-[var(--text-muted)] hover:bg-white/[0.06] hover:text-[var(--text)]">
+          <ActionButton variant="ghost" className="shrink-0" onClick={onToggleExpanded}>
             {expanded ? "收起各集" : "展开各集"}
-          </button>
+          </ActionButton>
         )}
       </div>
 
@@ -936,15 +945,10 @@ function SeasonBlock({
         </div>
       )}
 
-      <div className="flex justify-end border-t border-white/[0.06] bg-black/[0.15] px-4 py-1.5">
-        <button
-          type="button"
-          disabled={busy}
-          onClick={onKeepAll}
-          className="rounded-full px-2.5 py-1 text-caption text-[var(--text-muted)] transition hover:bg-white/[0.06] hover:text-[var(--text)] disabled:opacity-40"
-        >
+      <div className="flex justify-end border-t border-white/[0.06] bg-black/[0.15] px-4 py-1">
+        <ActionButton disabled={busy} variant="ghost" onClick={onKeepAll}>
           {isTv ? "整季都留着" : "都留着"}
-        </button>
+        </ActionButton>
       </div>
     </div>
   );
@@ -1074,13 +1078,55 @@ function Tag({
   );
 }
 
-function ActionButton({ disabled, onClick, children }: { disabled?: boolean; onClick: () => void; children: React.ReactNode }) {
+/**
+ * 这一页的动作按钮：三档轻重，一眼分得出。
+ *
+ * 第一版所有动作都是「细描边药丸 + 小字」，和上面那排分档胶囊几乎同一套样式——
+ * 于是一整页读起来像一片过滤标签，没人看得出哪个会动文件。现在照全站既有的按钮
+ * 体系分三档（globals.css 里 `.btn-accent` / `.btn-glass` 与 `--danger-solid`
+ * 的注释就是这套语言的出处）：
+ *
+ * - `primary`（亮银实心 `.btn-accent`）：这张卡请你做的那件事，而且做了不会丢
+ *   东西。一张卡至多一个——"满屏都是重点就等于没有重点"；
+ * - `default`（玻璃药丸 `.btn-glass`）：正经动作，深色底上一眼认得出是按钮；
+ * - `ghost`（淡描边、无底、灰字）：关掉 / 跳过这一组，不动文件，不该抢眼；
+ * - `danger`（实心红 + 白字）：**会把文件移进回收站、而依据只是"建议"** 的那些。
+ *   实心红配白字是全站危险操作按钮的既定配色（白字 5.8:1），不是状态色。
+ *
+ * 高度 h-8 也是刻意的：分档胶囊是 h-7，按钮比它高一档，隔着一行也分得清。
+ */
+type ActionVariant = "primary" | "default" | "ghost" | "danger";
+
+const ACTION_VARIANTS: Record<ActionVariant, string> = {
+  primary: "btn-accent",
+  default: "btn-glass",
+  // 幽灵档也**留一圈描边**：三个并排时它要比玻璃档弱，但不能弱到又变回一段纯
+  // 文字——"不太像按钮"正是这一版要修的毛病。轮廓人人有，轻重靠底色与字亮度分
+  ghost:
+    "border border-white/[0.07] text-[var(--text-muted)] hover:border-white/[0.14] hover:bg-white/[0.06] hover:text-[var(--text)]",
+  danger:
+    "border border-transparent bg-[var(--danger-solid)] text-white hover:bg-[var(--danger-solid-hover)]",
+};
+
+function ActionButton({
+  disabled,
+  onClick,
+  variant = "default",
+  className = "",
+  children,
+}: {
+  disabled?: boolean;
+  onClick: () => void;
+  variant?: ActionVariant;
+  className?: string;
+  children: React.ReactNode;
+}) {
   return (
     <button
       type="button"
       disabled={disabled}
       onClick={onClick}
-      className="whitespace-nowrap rounded-full border border-white/[0.15] px-2.5 py-0.5 text-caption font-medium text-[var(--text)] transition hover:bg-white/[0.08] disabled:opacity-40"
+      className={`inline-flex h-8 items-center justify-center gap-1.5 whitespace-nowrap rounded-full px-3 text-caption font-medium transition disabled:cursor-default disabled:opacity-40 ${ACTION_VARIANTS[variant]} ${className}`}
     >
       {children}
     </button>
