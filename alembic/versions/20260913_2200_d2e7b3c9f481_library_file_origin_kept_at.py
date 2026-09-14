@@ -14,8 +14,8 @@ docs/design/library-duplicate-files.md §2 / §3.4：
 一段文案。无运行时依赖变更，不 bump runtime-version。
 
 Revision ID: d2e7b3c9f481
-Revises: c9f4a1e6b573
-Create Date: 2026-09-13 10:00:00.000000
+Revises: d4e7f2a9c631
+Create Date: 2026-09-13 22:00:00.000000
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "d2e7b3c9f481"
-down_revision: str | None = "c9f4a1e6b573"
+down_revision: str | None = "d4e7f2a9c631"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
