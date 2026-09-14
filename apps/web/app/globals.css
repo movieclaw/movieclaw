@@ -422,8 +422,13 @@ body::before {
     radial-gradient(54% 44% at 88% 14%, rgba(140, 104, 214, 0.14), transparent 60%),
     radial-gradient(64% 58% at 80% 92%, rgba(64, 150, 186, 0.13), transparent 64%),
     linear-gradient(180deg, rgba(9, 11, 17, 0.1) 0%, rgba(6, 7, 13, 0.32) 100%),
-    /* --backdrop-image 由 BackdropProvider 按用户上传的图动态写入；未设置时回退到内置色调底图 */
-    var(--backdrop-image, url("/backdrop-default.jpg")) center / cover no-repeat;
+    /* --backdrop-image 由 BackdropProvider 按用户上传的图动态写入；未设置时回退到内置色调底图。
+       顶部对齐（center top）而不是居中：与影片详情页的沉浸覆盖层同一口径
+       （lib/backdrop.tsx 的 backgroundPosition，两处必须一致）。两层铺的是同一块视口、
+       只是图不同，锚点不一样的话进出详情页时画面会整体上下挪一下；对齐之后只是换图。
+       裁切上也更划算——宽屏配竖图时 cover 按宽度放大、纵向溢出，居中会把天空和人物头顶
+       一起切掉，顶部对齐切的是画面下沿，而下沿本来就压在内容与底部操作区底下。 */
+    var(--backdrop-image, url("/backdrop-default.jpg")) center top / cover no-repeat;
   background-color: var(--bg);
 }
 

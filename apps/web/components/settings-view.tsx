@@ -788,7 +788,10 @@ function BackdropGroup() {
               alt="当前首页背景预览"
               loading="lazy"
               decoding="async"
-              className="h-full w-full object-cover transition-transform duration-500 ease-out group-hover:scale-[1.03]"
+              /* object-top：与真实背景（globals.css 的 body::before）同一锚点。
+                 这块叫"预览"就得真的能预览——默认的居中裁切会让预览里看得好好的
+                 画面，铺到全屏后从另一个位置切开 */
+              className="h-full w-full object-cover object-top transition-transform duration-500 ease-out group-hover:scale-[1.03]"
             />
             {/* 底部信息渐变 + 当前背景名 */}
             <div className="pointer-events-none absolute inset-x-0 bottom-0 h-28 bg-gradient-to-t from-black/65 to-transparent" />
@@ -1348,7 +1351,8 @@ function BackdropTile({
           alt={`${label}背景缩略图`}
           loading="lazy"
           decoding="async"
-          className="h-full w-full object-cover"
+          /* object-top：同大预览，与真实背景同一锚点，挑图时看到的就是铺上去的样子 */
+          className="h-full w-full object-cover object-top"
         />
         {active && (
           <span className="absolute right-1.5 top-1.5 flex size-[18px] items-center justify-center rounded-full bg-[var(--accent-strong)] text-[#141821] shadow">

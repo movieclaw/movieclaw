@@ -204,6 +204,9 @@ export function BackdropProvider({ children }: { children: React.ReactNode }) {
           opacity: overrideVisible ? 1 : 0,
           backgroundImage: overrideReady ? `url("${overrideReady}")` : undefined,
           backgroundSize: "cover",
+          // 与 body::before（globals.css）的 `center top / cover` 严格一致：
+          // 两层铺的是同一块视口，锚点不同的话进出详情页会看到画面整体上下挪一下。
+          // 改这里就要一起改那边
           backgroundPosition: "center top",
           backgroundRepeat: "no-repeat",
         }}
