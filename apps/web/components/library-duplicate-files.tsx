@@ -987,8 +987,37 @@ function FileRow({
         file.suggested ? "max-md:shadow-[inset_2px_0_0_0_rgba(74,222,128,0.45)]" : ""
       }`}
     >
-      <Tooltip content={<span className="tnum break-all font-mono text-caption leading-5">{file.file_path}</span>} maxWidth={520}>
-        <span className={`flex min-w-0 items-baseline font-mono text-caption text-[var(--text)] ${CELL_FILENAME}`}>
+      {/*
+        屏幕上的名字是**拆开**的：淡色公共前缀 + 亮色差异尾巴，宽屏前缀还会截断。
+        那样最好比对，但作为一串"原始文件名"就不好读了——所以点一下（或悬停）把
+        它原样给出来。`openOnClick` 是全站既有做法（回收站的路径提示同款）：触屏
+        上 hover 不存在，不开这一项手机用户根本够不到它。
+      */}
+      <Tooltip
+        openOnClick
+        maxWidth={560}
+        content={
+          <div className="space-y-2 text-caption leading-5">
+            <div>
+              <div className="text-[var(--text-faint)]">原始文件名</div>
+              <div className="break-all font-mono text-[var(--text)]">{file.file_name}</div>
+            </div>
+            <div>
+              <div className="text-[var(--text-faint)]">完整路径</div>
+              <div className="break-all font-mono text-[var(--text-muted)]">{file.file_path}</div>
+            </div>
+          </div>
+        }
+      >
+        {/*
+          窄屏是**连续文本流**（block + 内联两段），宽屏才是 flex。差别在长名字上
+          要命：flex 下前缀一换行，`shrink-0` 的尾巴就被挤到第一行右端，读起来成了
+          「…2160p HD ｜ 内嵌简中.mkv」换行「R10 H265 DDP5.1」——顺序全乱。窄屏本来
+          也不需要 flex：名字独占整行，前缀不截断，两段连着排自然换行就对了。
+        */}
+        <span
+          className={`min-w-0 font-mono text-caption text-[var(--text)] max-md:block md:flex md:items-baseline ${CELL_FILENAME}`}
+        >
           {/*
             whitespace-pre-wrap：差异的尾巴常常以空格开头（`…AAC` + ` ADWeb.mp4`），
             HTML 默认会把它折掉，两段拼起来就成了 `AACADWeb.mp4`——一个磁盘上并不
@@ -1001,7 +1030,7 @@ function FileRow({
           )}
           <span
             className={`whitespace-pre-wrap ${
-              namePrefix ? "shrink-0 max-md:break-all" : "max-md:break-all md:truncate"
+              namePrefix ? "max-md:break-all md:shrink-0" : "max-md:break-all md:truncate"
             }`}
           >
             {tail}
