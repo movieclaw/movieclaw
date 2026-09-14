@@ -789,6 +789,10 @@ export function PlayerControls(props: PlayerControlsProps) {
                 return;
               }
               setDragging(next);
+              // 键盘拖动同样是「正按着」：按住 PageUp / End 连跳时控制条不能在
+              // 手还按着键的时候收起——收起之后条是透明的，用户对着看不见的
+              // 进度条在跳（真浏览器复现：按住 4.5 秒就没了）。抬键 / 失焦放开。
+              onScrubbingChange(true);
             }}
             // 拖拽不走 range 的原生行为，用指针事件自己算：iOS 只有按中
             // **原生把手**才进入连续拖拽，而那个把手被缩到 1px 藏起来了
@@ -882,12 +886,14 @@ export function PlayerControls(props: PlayerControlsProps) {
               if (pointerDragRef.current) return;
               if (dragging !== null) onSeek(dragging);
               setDragging(null);
+              onScrubbingChange(false);
             }}
             // 键盘拖动对称的一条：焦点离开时那次键盘调整已经结束，没等到 keyup
             // 就不能让它继续遮着 positionMs
             onBlur={() => {
               if (pointerDragRef.current) return;
               setDragging(null);
+              onScrubbingChange(false);
             }}
             // 触屏把命中带加高到 44px（Apple HIG 的最小触控目标）：视觉上还是
             // 那条细线，但手指按在线的上下 20px 内都算按中了——竖屏上「滑不准、
