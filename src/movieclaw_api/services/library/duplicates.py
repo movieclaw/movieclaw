@@ -48,7 +48,7 @@ from movieclaw_db.models import FileState, LibraryFile, MediaItem, RuleSet, Subs
 from movieclaw_db.models.library import Library
 from movieclaw_db.models.subscription import DownloadAttemptStatus, SubscriptionDownloadAttempt
 from movieclaw_matcher.decision import compare_ladder, ladder_vector
-from movieclaw_matcher.models import RuleSetSpec
+from movieclaw_matcher.models import QualitySnapshot, RuleSetSpec
 
 logger = logging.getLogger("movieclaw_api.library.duplicates")
 
@@ -78,6 +78,9 @@ _NEUTRAL_SPEC = RuleSetSpec()
 # 指纹分批的批量。整轮 stat 是检测里唯一的磁盘 IO，网络盘上几千次往返要跑几十秒；
 # 分批只为一件事：让扫描任务的进度条真的在动，用户知道它没卡死
 _STAT_CHUNK = 200
+#: 发布名解析一批多少个文件扔进线程。ONNX 推理期间会放掉 GIL，一批算完回一次
+#: 事件循环；批太小则线程切换开销压过收益。
+_SNAPSHOT_CHUNK = 100
 # 建议依据：机器码 → 给人看的话。只有 ``ladder`` 是"真的比出了高下"，
 # 其余都是同档里按次级信号挑了一个——分档（duplicate_scan.classify）据此判定
 _REASONS = {
@@ -243,11 +246,23 @@ def _rank(f: DupFile, spec: RuleSetSpec, vectors: dict[int, tuple[int | None, ..
     )
 
 
-def _suggest(files: list[DupFile], spec: RuleSetSpec) -> None:
-    """给单元贴「建议保留」并说明依据。它只是建议：用户点哪个「留这个」就留哪个。"""
+def _snapshots_many(rows: list[LibraryFile]) -> dict[int, QualitySnapshot]:
+    """批量算质量快照——**在工作线程里跑**，别放回事件循环。
+
+    每行都要对文件名重跑一遍 enrich（ONNX NER），单个文件毫秒级，但一轮全库
+    扫描是几千次：放在循环上就是几十秒的独占。只读已加载的行属性、不碰
+    session，所以换线程是安全的。
+    """
     from movieclaw_api.services.subscription.upgrade import snapshot_from_file
 
-    vectors = {f.row.id or -1: ladder_vector(snapshot_from_file(f.row, None), spec) for f in files}
+    return {r.id or -1: snapshot_from_file(r, None) for r in rows}
+
+
+def _suggest(
+    files: list[DupFile], spec: RuleSetSpec, snapshots: dict[int, QualitySnapshot]
+) -> None:
+    """给单元贴「建议保留」并说明依据。它只是建议：用户点哪个「留这个」就留哪个。"""
+    vectors = {f.row.id or -1: ladder_vector(snapshots[f.row.id or -1], spec) for f in files}
     ordered = sorted(files, key=lambda f: _rank(f, spec, vectors), reverse=True)
     best = ordered[0]
     best_vec = vectors[best.row.id or -1]
@@ -474,7 +489,14 @@ async def detect_duplicates(
         await _tick(report_progress, "fingerprint", "比对文件指纹", len(stats), len(paths))
     inode = {r.id or -1: stats.get(r.file_path) for r in flat}
     origins = await derive_origins(session, flat)
-    await _tick(report_progress, "suggest", "排出建议保留", None, None)
+    # 「建议保留」要给每个文件跑一遍发布名解析（ONNX NER）。它是纯 CPU 的活，
+    # 留在事件循环上会把整个 API 占死：万级台账实测占住 57 秒，期间健康探针
+    # 全部超时、后台任务租约心跳续不上，扫描被判超时后又被接管重跑一遍。
+    # 分批扔进线程，每批之间回一次循环。
+    snapshots: dict[int, QualitySnapshot] = {}
+    for start in range(0, len(flat), _SNAPSHOT_CHUNK):
+        snapshots |= await asyncio.to_thread(_snapshots_many, flat[start : start + _SNAPSHOT_CHUNK])
+        await _tick(report_progress, "suggest", "排出建议保留", len(snapshots), len(flat))
     units_by_item: dict[int, list[DupUnit]] = defaultdict(list)
     for key, unit_rows in listed.items():
         files = [
@@ -489,7 +511,7 @@ async def detect_duplicates(
         for f in files:
             f.version_key = f"{f.quality_label}|{f.origin.get('label') or ''}"
         spec = specs.get(key[0], (_NEUTRAL_SPEC, False))[0]
-        _suggest(files, spec)
+        _suggest(files, spec, snapshots)
         units_by_item[key[0]].append(
             DupUnit(
                 season_number=key[1],

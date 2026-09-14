@@ -885,3 +885,32 @@ async def test_resolve_group_respects_batch_limit(client, db, tmp_path, monkeypa
     assert data["done"] == 2 and data["remaining"] == 3
     rest = await client.post("/api/v1/libraries/duplicate-files/resolve-all", json={"tier": "safe"})
     assert rest.json()["data"]["done"] == 2 and rest.json()["data"]["remaining"] == 1
+
+
+@pytest.mark.asyncio
+async def test_name_parsing_never_runs_on_the_event_loop(client, db, tmp_path, monkeypatch):
+    """发布名解析必须在工作线程里跑，不能占住事件循环。
+
+    「建议保留」要给每个候选文件重跑一遍 enrich（ONNX NER）。单个文件毫秒级，
+    但一轮全库扫描是几千次：留在循环上就是几十秒的独占——NAS 上实测把整个 API
+    占死 57 秒，健康探针全超时、后台任务租约心跳续不上，扫描被判超时后又被
+    接管重跑一遍。这里不测耗时（会抖），只钉死"不在循环线程上"这条不变量。
+    """
+    import threading
+
+    from movieclaw_api.services.subscription import upgrade as upgrade_mod
+
+    loop_thread = threading.get_ident()
+    seen: list[int] = []
+    real = upgrade_mod.snapshot_from_file
+
+    def spy(file, name_attrs):
+        seen.append(threading.get_ident())
+        return real(file, name_attrs)
+
+    monkeypatch.setattr(upgrade_mod, "snapshot_from_file", spy)
+    await _seed(db, tmp_path)
+    await _scan(db)
+
+    assert seen, "这轮扫描没有算过任何快照，用例失去意义"
+    assert loop_thread not in seen, "发布名解析跑在了事件循环线程上"
