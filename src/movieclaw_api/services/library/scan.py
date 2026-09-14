@@ -51,7 +51,7 @@ from itertools import islice
 from pathlib import Path
 from uuid import uuid4
 
-from sqlalchemy import or_
+from sqlalchemy import delete, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
@@ -110,6 +110,7 @@ from movieclaw_db.models import (
     JobResource,
     JobStatus,
     Library,
+    LibraryDirSnapshot,
     LibraryFile,
     MediaItem,
     MediaMetadata,
@@ -387,6 +388,8 @@ class ScanSummary:
     reviewed: int = 0  # 身份复核：识别器升级后重走识别链的已识别行
     review_flagged: int = 0  # 复核发现新旧结论不一致、已写入复核建议的行
     probed: int = 0  # 补探：给缺介质规格的在位行补上 ffprobe 结果
+    dirs_listed: int = 0  # 本轮真的 readdir 过的目录数
+    dirs_skipped: int = 0  # 凭目录 mtime 未变跳过、没有重列的目录数（增量对账）
     cancelled: bool = False  # 用户手动停止：已入账的保留，未处理的留待下次扫描
     errors: list[str] = field(default_factory=list)
     # 暂缓文件的最近到期秒数（补扫的等待时长；对外接口不暴露）
@@ -976,6 +979,27 @@ async def _scan(
         # None = 整库遍历。任何存疑（根已换、条目已消失、根级文件事件）都
         # 退回整库——宁可多扫，不能漏扫（漏扫会漏标 missing、漏入账）
         scope_names_by_root = await _resolve_scope(library, scope_paths)
+        # 目录 mtime 快照（models/library_dir_snapshot.py）：只有整库遍历才产出
+        # 完整快照（范围扫描只看了一部分）；只有定期对账走增量——用户主动的
+        # 扫描与根路径迁移永远全量，快照过期（一周）或还没有也强制全量一轮
+        snapshot_walk: _DirSnapshotWalk | None = None
+        incremental = False
+        if scope_names_by_root is None:
+            full_at = library.dir_snapshot_full_at
+            incremental = (
+                not backfill_existing_specs
+                and not reconcile_root_change
+                and full_at is not None
+                and (utcnow() - full_at).total_seconds() < DIR_SNAPSHOT_FULL_INTERVAL_SECONDS
+            )
+            previous_dirs = await _load_dir_snapshot(session, library_id) if incremental else {}
+            if incremental and not previous_dirs:
+                incremental = False
+            snapshot_walk = _DirSnapshotWalk(
+                previous=previous_dirs,
+                # 点名重探的文件要进 pending 才会被 stat 比对：它的目录必须列
+                force_list={os.path.dirname(p) for p in reprobe_paths},
+            )
         for root in library.root_paths:
             if bridge is not None:
                 await bridge.raise_if_cancelled()
@@ -996,6 +1020,7 @@ async def _scan(
                     dir_files,
                     ignore=profile.ignore_rules,
                     exts=profile.media_exts,
+                    snapshot=snapshot_walk,
                 )
                 if only_top is None
                 else _walk_videos(
@@ -1005,6 +1030,7 @@ async def _scan(
                     only_top=only_top,
                     ignore=profile.ignore_rules,
                     exts=profile.media_exts,
+                    snapshot=snapshot_walk,
                 )
             )
             while True:
@@ -1022,6 +1048,32 @@ async def _scan(
                     await bridge.checkpoint(state, summary, before_write=session.commit)
                 if len(batch) < _WALK_CHUNK_FILES:
                     break
+
+        # 遍历完整结束才落快照（中途取消会从 raise_if_cancelled 抛出去，走不到这）。
+        # 按差异写，稳态下几乎零写；全量一轮顺手刷新 dir_snapshot_full_at
+        if snapshot_walk is not None:
+            await _store_dir_snapshot(
+                session,
+                library_id,
+                existing=(
+                    snapshot_walk.previous
+                    if incremental
+                    else await _load_dir_snapshot(session, library_id)
+                ),
+                current=snapshot_walk.current,
+            )
+            if not incremental:
+                library.dir_snapshot_full_at = utcnow()
+            await session.commit()
+            summary.dirs_listed = snapshot_walk.listed
+            summary.dirs_skipped = len(snapshot_walk.skipped)
+            if snapshot_walk.skipped:
+                logger.info(
+                    "媒体库 #%s 对账：%d 个目录自上轮以来没变，未重新列出（列出 %d 个）",
+                    library_id,
+                    len(snapshot_walk.skipped),
+                    snapshot_walk.listed,
+                )
 
         # 根路径编辑后的同实体收敛：用户可能把 ``/media/movies`` 改成指向
         # 同一目录的挂载别名/软链接。此时磁盘对象没有变，台账里的旧路径却已
@@ -1246,6 +1298,15 @@ async def _scan(
         # ``known`` 是扫描开场的快照；新路径的行可能在逐文件入账时新建，也
         # 可能被改名归并迁入。根路径迁移的第二阶段必须重新读取它，才能看到
         # 已经存在的历史重复行，而不能只拿旧快照误判为「新路径还没有台账」。
+        # 本轮真的看见过内容的根：遍历出文件的，加上有目录凭快照"没变"跳过的
+        # ——跳过是"验证过它没变"，不是"没去看"；否则一个稳态的根会被当成
+        # "挂载掉了的空目录"，自动清理丢失记录永远不敢动它
+        roots_with_files = {str(root_path) for root_path, _, _ in pending}
+        skipped_dirs = snapshot_walk.skipped if snapshot_walk is not None else set()
+        for scanned_root in scanned_roots:
+            root_prefix = f"{scanned_root.rstrip('/')}/"
+            if any(d == scanned_root or d.startswith(root_prefix) for d in skipped_dirs):
+                roots_with_files.add(scanned_root)
         removed_root_result = _RemovedRootReconcileResult()
         if reconcile_root_change and not summary.cancelled:
             known.clear()
@@ -1258,7 +1319,7 @@ async def _scan(
                 previous_root_paths=previous_root_paths,
                 new_root_paths=effective_reconcile_new_roots,
                 seen_paths=seen_paths,
-                roots_with_files={str(root_path) for root_path, _, _ in pending},
+                roots_with_files=roots_with_files,
             )
 
         # 收尾感知删除：在位根路径下、台账有但本轮没遍历到 → 标记 missing。
@@ -1290,6 +1351,11 @@ async def _scan(
         for row in known.values():
             path_str = row.file_path
             if path_str in seen_paths:
+                continue
+            # 目录凭 mtime 未变跳过 = 它直接包含的文件（原盘则是它自己）仍在原位
+            if skipped_dirs and (
+                path_str in skipped_dirs or os.path.dirname(path_str) in skipped_dirs
+            ):
                 continue
             if not any(path_str.startswith(prefix) for prefix in prefixes):
                 continue
@@ -1324,7 +1390,7 @@ async def _scan(
                 scanned_roots=scanned_roots,
                 # 本轮真的遍历出文件的根：空根是"挂载掉了但挂载点还在"的典型
                 # 症状，自动清理不能把它当"用户把片子删光了"（见 _auto_clear_missing）
-                roots_with_files={str(root_path) for root_path, _, _ in pending},
+                roots_with_files=roots_with_files,
                 unreadable_dirs=unreadable_dirs,
             )
         await _auto_clear_removed_root_ledger(
@@ -1421,7 +1487,8 @@ async def _scan(
     logger.info(
         "媒体库 #%s 文件入账完成：新入账 %d（已识别 %d / 待识别 %d），识别重试 %d，"
         "身份复核 %d（存疑 %d），改名归并 %d，根路径随迁 %d，跳过已知 %d，跳过已忽略 %d，"
-        "标记丢失 %d（旧根 %d），清理丢失 %d（旧根 %d），旧根冲突 %d，暂缓 %d，问题 %d",
+        "标记丢失 %d（旧根 %d），清理丢失 %d（旧根 %d），旧根冲突 %d，暂缓 %d，问题 %d，"
+        "目录列出 %d / 未变跳过 %d",
         library_id,
         summary.scanned - summary.relinked,
         summary.identified,
@@ -1440,6 +1507,8 @@ async def _scan(
         summary.removed_root_conflicts,
         summary.deferred,
         len(summary.errors),
+        summary.dirs_listed,
+        summary.dirs_skipped,
     )
 
     # 一次入库刮削的资产补齐：文本档案在建档时已随 ensure_media_item 落库，
@@ -2071,6 +2140,87 @@ def _take_chunk(walker, size: int = _WALK_CHUNK_FILES) -> list:
     return list(islice(walker, size))
 
 
+#: 目录快照多久强制全量重建一次（models/library_dir_snapshot.py）：增量对账的
+#: 正确性靠"目录 mtime 没变就没变"，这条在正常文件系统上成立；一周一次全量
+#: 是对时钟异常、mtime 粒度粗的文件系统与人为 utime 的保险
+DIR_SNAPSHOT_FULL_INTERVAL_SECONDS = 7 * 24 * 3600
+#: 快照差异落库时一批多少行（SQLite 绑定参数上限 999）
+_DIR_SNAPSHOT_CHUNK = 500
+
+
+@dataclass
+class _DirSnapshotWalk:
+    """一次遍历里目录 mtime 快照的进出（_walk_videos 与 _scan 之间的契约）。"""
+
+    #: 上一轮快照：目录 → (mtime_ns, 是否叶子)。空 = 全量遍历（什么都不跳）
+    previous: dict[str, tuple[int, bool]]
+    #: 无论如何都要列的目录（点名重探文件的父目录）
+    force_list: set[str] = field(default_factory=set)
+    #: 本轮结论：列过或凭快照跳过的每个目录 → (mtime_ns, 是否叶子)
+    current: dict[str, tuple[int, bool]] = field(default_factory=dict)
+    #: 凭"叶子且 mtime 未变"没有重列的目录
+    skipped: set[str] = field(default_factory=set)
+    #: 本轮真的 readdir 过的目录数
+    listed: int = 0
+
+
+def _dir_mtime_ns(path: str) -> int | None:
+    try:
+        return os.stat(path).st_mtime_ns
+    except OSError:
+        return None
+
+
+def _entry_mtime_ns(entry: os.DirEntry) -> int | None:
+    """子目录的 mtime：父目录刚列过，READDIRPLUS / 本地 dcache 已带回属性，通常零往返。"""
+    try:
+        return entry.stat().st_mtime_ns
+    except OSError:
+        return None
+
+
+async def _load_dir_snapshot(session, library_id: int) -> dict[str, tuple[int, bool]]:
+    rows = (
+        await session.execute(
+            select(
+                LibraryDirSnapshot.path, LibraryDirSnapshot.mtime_ns, LibraryDirSnapshot.leaf
+            ).where(LibraryDirSnapshot.library_id == library_id)
+        )
+    ).all()
+    return {str(path): (int(mtime_ns), bool(leaf)) for path, mtime_ns, leaf in rows}
+
+
+async def _store_dir_snapshot(
+    session,
+    library_id: int,
+    *,
+    existing: dict[str, tuple[int, bool]],
+    current: dict[str, tuple[int, bool]],
+) -> None:
+    """按差异落快照：消失的删、变了的删了重插、没变的一个字节不写。
+
+    只在**完整**遍历之后调用（中途取消/范围扫描都走不到这）。稳态下一轮对账
+    几乎零写；全量重建一次也只是几千行的一次事务。调用方负责 commit。
+    """
+    stale = [p for p in existing if p not in current]
+    changed = {p: v for p, v in current.items() if existing.get(p) != v}
+    doomed = stale + [p for p in changed if p in existing]
+    for start in range(0, len(doomed), _DIR_SNAPSHOT_CHUNK):
+        await session.execute(
+            delete(LibraryDirSnapshot).where(
+                LibraryDirSnapshot.library_id == library_id,
+                LibraryDirSnapshot.path.in_(doomed[start : start + _DIR_SNAPSHOT_CHUNK]),  # type: ignore[union-attr]
+            )
+        )
+    rows = [
+        LibraryDirSnapshot(library_id=library_id, path=p, mtime_ns=m, leaf=leaf)
+        for p, (m, leaf) in changed.items()
+    ]
+    for start in range(0, len(rows), _DIR_SNAPSHOT_CHUNK):
+        session.add_all(rows[start : start + _DIR_SNAPSHOT_CHUNK])
+        await session.flush()
+
+
 def _walk_videos(
     root: Path,
     unreadable: list[str] | None = None,
@@ -2079,6 +2229,7 @@ def _walk_videos(
     *,
     ignore: IgnoreProfile = IgnoreProfile.SCRAPED,
     exts: frozenset[str] | set[str] = SCAN_VIDEO_EXTS,
+    snapshot: _DirSnapshotWalk | None = None,
 ):
     """深度遍历，产出 (路径, 是否原盘目录)。
 
@@ -2112,15 +2263,38 @@ def _walk_videos(
     ``exts``：入账对象的扩展名集合（能力档案 ``media_exts``）。影视库与其他库
     是视频 + strm，图片库是图片；影视库目录里的 jpg 是海报 sidecar、图片库
     目录里的 mp4 不是内容，都按库的口径挡在门外。
+
+    ``snapshot``：目录 mtime 快照（models/library_dir_snapshot.py）。给了它就
+    记录本轮每个目录的 mtime 与是否叶子；快照里已有、仍是叶子、mtime 没变的
+    目录**不再 readdir**（记进 ``snapshot.skipped``，它底下的台账行由调用方按
+    "仍在原位"处理）。非叶子目录照常列——一次 readdir 顺带带回全部子目录的
+    属性（READDIRPLUS / 本地 dcache），比逐个 stat 子目录便宜，列完就知道各
+    子目录该不该下钻。``force_list`` 里的目录无论如何都列。
     """
     plain = ignore is IgnoreProfile.PLAIN
     # 光盘镜像只在收视频的库里是内容；图片库目录里的 .iso 不是
     accept_iso = not VIDEO_EXTS.isdisjoint(exts)
-    # 栈元素 (目录路径, 是否做原盘判定, 第一级名字限制)：根不做原盘判定
-    # 且带范围限制；下钻的子目录都要判原盘、不再限制
-    stack: list[tuple[str, bool, set[str] | None]] = [(str(root), False, only_top)]
+    # 栈元素 (目录路径, 是否做原盘判定, 第一级名字限制, 父目录列出时顺带拿到的
+    # mtime)：根不做原盘判定且带范围限制；下钻的子目录都要判原盘、不再限制
+    stack: list[tuple[str, bool, set[str] | None, int | None]] = [
+        (str(root), False, only_top, None)
+    ]
     while stack:
-        current, check_disc, restrict = stack.pop()
+        current, check_disc, restrict, mtime_ns = stack.pop()
+        if snapshot is not None:
+            if mtime_ns is None:
+                mtime_ns = _dir_mtime_ns(current)
+            previous = snapshot.previous.get(current)
+            if (
+                previous is not None
+                and previous[1]  # 上轮是叶子：底下没有会各自变化的子目录
+                and mtime_ns is not None
+                and previous[0] == mtime_ns
+                and current not in snapshot.force_list
+            ):
+                snapshot.current[current] = previous
+                snapshot.skipped.add(current)
+                continue
         try:
             with os.scandir(current) as scandir_it:
                 entries = sorted(scandir_it, key=lambda e: e.name)
@@ -2136,18 +2310,30 @@ def _walk_videos(
             except OSError:
                 is_dir = False  # 判定不了的按文件走扩展名过滤（同旧行为）
             (subdirs if is_dir else files).append(entry)
+        # 范围扫描列的不是完整目录，不能当快照记；快照只记完整列过的目录
+        record = snapshot is not None and mtime_ns is not None and restrict is None
         if check_disc and any(e.name in _DISC_MARKER_DIRS for e in subdirs):
+            if record:
+                snapshot.current[current] = (mtime_ns, True)  # type: ignore[union-attr, index]
+                snapshot.listed += 1  # type: ignore[union-attr]
             yield Path(current), True
             continue
         if dir_files is not None:
             dir_files[current] = [e.name for e in files]
+        descended = 0
         for entry in subdirs:
             name = entry.name
             if restrict is not None and name not in restrict:
                 continue
             if name.startswith(".") or name.lower() in (_SYSTEM_DIRS if plain else _IGNORE_DIRS):
                 continue
-            stack.append((entry.path, True, None))
+            stack.append(
+                (entry.path, True, None, _entry_mtime_ns(entry) if snapshot is not None else None)
+            )
+            descended += 1
+        if record:
+            snapshot.current[current] = (mtime_ns, descended == 0)  # type: ignore[union-attr, index]
+            snapshot.listed += 1  # type: ignore[union-attr]
         for entry in files:
             name = entry.name
             if restrict is not None and name not in restrict:

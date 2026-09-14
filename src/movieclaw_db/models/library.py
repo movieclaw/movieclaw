@@ -173,6 +173,12 @@ class Library(TimestampMixin, table=True):
     stats_refreshed_at: datetime | None = Field(
         default=None, description="库存统计最近一次重算时间；NULL=尚未扫描"
     )
+    # 最近一次**全量**遍历完成的时间（models/library_dir_snapshot.py）。定期对账
+    # 只在这个时间还新鲜时走增量（只重列 mtime 变过的目录），过期或从未全量
+    # 过就强制全量一轮并刷新它。用户主动发起的扫描永远全量，也会刷新它
+    dir_snapshot_full_at: datetime | None = Field(
+        default=None, description="目录快照最近一次全量重建的时间；NULL=还没有可用快照"
+    )
 
     @property
     def primary_root(self) -> str | None:
