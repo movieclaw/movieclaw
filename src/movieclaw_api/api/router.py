@@ -58,6 +58,7 @@ from movieclaw_api.api.routes.people import router as people_router
 from movieclaw_api.api.routes.playback import router as playback_router
 from movieclaw_api.api.routes.playback import stream_router as playback_stream_router
 from movieclaw_api.api.routes.rule_sets import router as rule_sets_router
+from movieclaw_api.api.routes.scheduled_tasks import router as scheduled_tasks_router
 from movieclaw_api.api.routes.scrape_settings import router as scrape_settings_router
 from movieclaw_api.api.routes.search import router as search_router
 from movieclaw_api.api.routes.shares import admin_router as shares_admin_router
@@ -158,6 +159,8 @@ _ADMIN_ROUTERS = [
     app_update_router,
     # 缓存管理：能删 data/ 卷上的目录，与重启/更新同属服务器控制权
     storage_router,
+    # 定时任务的周期与启停：改的是全站的后台节奏，管理员专属
+    scheduled_tasks_router,
     spec_router,
     # AI 字幕生成消费 LLM 配额（真金白银），G1 管理员专属；成员开放随
     # G2 额度护栏一起评估（docs/design/subtitle-ai-translate.md §6）

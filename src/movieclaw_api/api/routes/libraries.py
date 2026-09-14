@@ -137,6 +137,7 @@ from movieclaw_api.services.library.items import (
     search_library_items as search_visible_library_items,
 )
 from movieclaw_api.services.library.layout import IMAGE_EXTS, entry_dir_of
+from movieclaw_api.services.library.mounts import library_on_network_mount
 from movieclaw_api.services.library.organize import (
     build_organize_plan,
     enqueue_organize_job,
@@ -1014,6 +1015,11 @@ async def create_library(
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[LibraryView]:
     service = LibraryConfigService(session)
+    # 根落在网络挂载上：实时监控收不到远端变更，监听本来就不会建
+    # （watch.watchable_roots）——行上别写一个假的"开"，界面据此把话说清楚
+    realtime_watch = payload.realtime_watch
+    if realtime_watch is not False and library_on_network_mount(list(payload.root_paths)):
+        realtime_watch = False
     row = await service.create(
         name=payload.name,
         kind=payload.kind,
@@ -1021,7 +1027,7 @@ async def create_library(
         root_paths=payload.root_paths,
         match_rules=payload.match_rules,
         auto_clear_missing=payload.auto_clear_missing,
-        realtime_watch=payload.realtime_watch,
+        realtime_watch=realtime_watch,
         scrape_overrides=payload.scrape_overrides,
         generate_thumbnails=payload.generate_thumbnails,
         extract_chapter_images=payload.extract_chapter_images,

@@ -4,6 +4,8 @@ app set
 app show
 app storage clean
 app storage usage
+app tasks list
+app tasks update
 app update apply
 app update check
 app update model-apply

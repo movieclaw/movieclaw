@@ -116,9 +116,7 @@ class SchedulerService:
                 if defn is None:
                     # 库里有定义但代码里没有对应处理器（如删了任务代码）——跳过并告警，
                     # 不删数据，避免误伤用户历史配置。
-                    logger.warning(
-                        "调度定义 %s 在代码中无对应处理器，已跳过", row.task_key
-                    )
+                    logger.warning("调度定义 %s 在代码中无对应处理器，已跳过", row.task_key)
                     continue
                 try:
                     trigger = self._build_trigger(row)
@@ -141,6 +139,36 @@ class SchedulerService:
                     job.next_run_time,
                 )
             logger.info("定时任务加载完成，共 %d 个", loaded)
+
+    async def reschedule(self, task_key: str) -> datetime | None:
+        """用户改了周期 / 启停后按库里的最新定义重排这一个任务，返回下次触发时间。
+
+        停用 → 摘掉 job；启用 → 按新触发器替换（``replace_existing``）。不重启进程、
+        不影响其它任务；正在执行中的那一轮照常跑完（runner 自己管互斥）。
+        """
+        async with get_database().session() as session:
+            repo = ScheduledTaskRepository(session)
+            row = await repo.get_by_key(task_key)
+            defn = get_task(task_key)
+            if row is None or defn is None:
+                return None
+            if not row.enabled or not self._scheduler.running:
+                if self._scheduler.get_job(task_key) is not None:
+                    self._scheduler.remove_job(task_key)
+                await repo.update_next_run(task_key, None)
+                return None
+            job = self._scheduler.add_job(
+                run_task,
+                trigger=self._build_trigger(row),
+                args=[defn],
+                id=task_key,
+                name=defn.title,
+                replace_existing=True,
+            )
+            next_run = _to_naive_utc(job.next_run_time)
+            await repo.update_next_run(task_key, next_run)
+            logger.info("定时任务已重排：%s，下次触发：%s", task_key, job.next_run_time)
+            return next_run
 
     async def start(self) -> None:
         """启动调度器。应在应用启动（lifespan）时调用一次。
@@ -177,6 +205,11 @@ def init_scheduler(config: SchedulerConfig) -> SchedulerService:
         return _scheduler_service
     set_scheduler_config(config)
     _scheduler_service = SchedulerService(config)
+    return _scheduler_service
+
+
+def try_get_scheduler() -> SchedulerService | None:
+    """已初始化就给单例，没有就 None——设置接口在调度器关着时也要能改库里的定义。"""
     return _scheduler_service
 
 

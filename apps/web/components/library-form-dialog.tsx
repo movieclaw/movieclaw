@@ -1186,7 +1186,11 @@ function EditLibraryDialog({
             title="实时监控目录变化"
             checked={realtimeWatch}
             onChange={setRealtimeWatch}
-            detail="新文件落盘后自动增量扫描入库。SMB/NFS 等网络挂载收不到远端变化通知、建立监听还很慢，建议关闭；关闭后由定期对账和手动扫描发现新文件，不实时但不会缺失。"
+            detail={
+              library.network_mount
+                ? "检测到根路径在网络挂载（NFS/SMB）上：这里收不到远端的变化通知，开着也不会建监听。新文件由定期对账发现（可在「设置 → 应用 → 定时任务」调周期，增量对账通常只需几秒）。"
+                : "新文件落盘后自动增量扫描入库。SMB/NFS 等网络挂载收不到远端变化通知、建立监听还很慢，建议关闭；关闭后由定期对账和手动扫描发现新文件，不实时但不会缺失。"
+            }
           />
           <SwitchRow
             title="扫描后自动清理丢失记录"

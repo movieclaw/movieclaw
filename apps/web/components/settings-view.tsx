@@ -7,6 +7,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { LiquidGlassButton } from "@/vendor/liquid-glass";
 
 import { AppStorageSection } from "@/components/app-storage-section";
+import { ScheduledTasksSection } from "@/components/scheduled-tasks-section";
 import { AppUpdateDot, usePendingUpdate } from "@/components/app-update-entry";
 import { AppUpdateSection } from "@/components/app-update-section";
 import { AvatarBadge } from "@/components/avatar-badge";
@@ -583,12 +584,13 @@ function AppSection() {
   // ?tab=storage 深链直达缓存管理，切换时写回地址栏（见 useTabParam）。旧的
   // ?tab=maintain 不再是合法值，会落到默认的「版本与更新」——重启入口正好在那；
   // 旧的 ?tab=remote 深链在路由层重定向到 /settings/playback，到不了这里。
-  const [tab, setTab] = useTabParam(["update", "storage"] as const, "update");
+  const [tab, setTab] = useTabParam(["update", "storage", "tasks"] as const, "update");
   // 本分区只对管理员渲染（成员的分区清单里没有 app），无需再按角色关轮询
   const pendingUpdate = usePendingUpdate();
   const tabs = [
     { id: "update" as const, label: "版本与更新" },
     { id: "storage" as const, label: "缓存管理" },
+    { id: "tasks" as const, label: "定时任务" },
   ] as const;
 
   return (
@@ -613,6 +615,7 @@ function AppSection() {
       </div>
       {tab === "update" && <AppUpdateSection />}
       {tab === "storage" && <AppStorageSection />}
+      {tab === "tasks" && <ScheduledTasksSection />}
     </div>
   );
 }

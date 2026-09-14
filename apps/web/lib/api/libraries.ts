@@ -104,6 +104,8 @@ export interface MediaLibrary {
   auto_clear_missing: boolean;
   /** 是否启用实时文件监控（关闭后靠定期对账与手动扫描，SMB/NFS 建议关） */
   realtime_watch: boolean;
+  /** 任一根路径落在网络挂载上：实时监控收不到远端变化（即使开着也不建监听），新文件靠定期对账发现 */
+  network_mount: boolean;
   /** 库级刮削覆盖；空对象 = 全跟全局设置 */
   scrape_overrides?: Record<string, unknown>;
   /** 库存统计快照（台账变化时重算，列表查询不扫描文件台账） */

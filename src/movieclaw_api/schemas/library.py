@@ -312,6 +312,13 @@ class LibraryView(BaseModel):
         default=False, description="扫描后自动清理已确认丢失的库存记录"
     )
     realtime_watch: bool = Field(default=True, description="是否启用实时文件监控")
+    network_mount: bool = Field(
+        default=False,
+        description=(
+            "任一根路径落在网络挂载（NFS/SMB/fuse）上。这种库实时监控收不到远端变更，"
+            "新文件靠定期对账发现——界面据此把话说清楚，而不是让开关看起来有效"
+        ),
+    )
     scrape_overrides: dict = Field(
         default_factory=dict, description="库级刮削偏好覆盖；空对象 = 全跟全局设置"
     )
@@ -357,6 +364,7 @@ class LibraryView(BaseModel):
         member_ids: list[int] | None = None,
         viewer_access: bool = True,
     ) -> LibraryView:
+        from movieclaw_api.services.library.mounts import library_on_network_mount
         from movieclaw_api.services.library.profile import capabilities_of, profile_of
 
         return cls(
@@ -379,6 +387,7 @@ class LibraryView(BaseModel):
             match_rules=list(row.match_rules),
             auto_clear_missing=row.auto_clear_missing,
             realtime_watch=row.realtime_watch,
+            network_mount=library_on_network_mount(list(row.root_paths)),
             scrape_overrides=dict(row.scrape_overrides or {}),
             stats=LibraryStats(
                 item_count=row.stats_item_count,

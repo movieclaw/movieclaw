@@ -15,6 +15,9 @@ app show
 app storage
 app storage clean
 app storage usage
+app tasks
+app tasks list
+app tasks update
 app update
 app update apply
 app update check
