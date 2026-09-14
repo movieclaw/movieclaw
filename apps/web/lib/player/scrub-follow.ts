@@ -179,6 +179,31 @@ export function scrubCommitTarget(input: {
 }
 
 /**
+ * 这个指针事件是不是**正在拖的那根指针**发来的。
+ *
+ * 拖动只认按下时捕获的那一根：捕获（setPointerCapture）只把**它自己**的事件
+ * 定向到进度条，别的指针照常按命中测试派发。触屏上一根手指按着进度条拖、另一
+ * 根手指误碰到条上（横屏拿机时两只拇指都在条那一带），第二根的 pointerdown
+ * 因为不是主指针被挡下了，但它的 **pointerup 照样落到 input 上**——不认指针
+ * 身份的话这一下就被当成松手：当场提交一个用户没抬手确认的落点，再把拖动清掉，
+ * 第一根手指之后的移动全变成悬停，真松手时什么也不发——画面停在半路、圆点
+ * 也不再跟手（2026-09-14 真浏览器复现）。移动同理：第二根手指在条上划过会把
+ * 拖动值带到它那儿去。
+ *
+ * 没在拖时只认主指针（悬停气泡跟鼠标走，不跟误碰的第二根手指走）。
+ */
+export function isScrubPointer(input: {
+  /** 按下时捕获的指针；null = 没在拖 */
+  activePointerId: number | null;
+  pointerId: number;
+  isPrimary: boolean;
+}): boolean {
+  if (input.activePointerId !== null)
+    return input.pointerId === input.activePointerId;
+  return input.isPrimary;
+}
+
+/**
  * 进度条那个 `<input type="range">` 的步长（毫秒）。
  *
  * 只有键盘（Home / End / PageUp / PageDown）还在用它——方向键被全局快捷键接管

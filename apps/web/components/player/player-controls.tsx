@@ -9,6 +9,7 @@ import { QUALITY_OPTIONS } from "@/lib/player/quality";
 import {
   SCRUB_INPUT_STEP_MS,
   acceptsNativeScrubValue,
+  isScrubPointer,
   scrubCommitTarget,
   scrubInputValue,
 } from "@/lib/player/scrub-follow";
@@ -343,6 +344,7 @@ export function PlayerControls(props: PlayerControlsProps) {
       onScrubCancel();
       // disabled 之后 pointerup 不会再来（见上），按着的状态也要在这儿放开
       onScrubbingChange(false);
+      activePointerIdRef.current = null;
     }
   }, [durationMs, onScrubCancel, onScrubbingChange]);
   const [menu, setMenu] = useState<"none" | "audio" | "subtitles" | "settings">("none");
@@ -391,6 +393,11 @@ export function PlayerControls(props: PlayerControlsProps) {
    */
   const pointerDragRef = useRef(false);
   /**
+   * 正在拖的那根指针的 id；null = 没在拖。抬起 / 取消 / 移动只认它：触屏上
+   * 第二根手指落到条上时，它的 pointerup 也会派发到 input（裁决见 isScrubPointer）。
+   */
+  const activePointerIdRef = useRef<number | null>(null);
+  /**
    * 这次拖动里合帧最近一次刷到屏幕上的落点；按下时清空。
    *
    * 触屏抬手提交的就是它（scrubCommitTarget）。**不能改读 `dragging`**：那是
@@ -417,6 +424,15 @@ export function PlayerControls(props: PlayerControlsProps) {
   /** 量一次指针位置并排一帧。拖动与悬停共用，因为两者量的是同一条轨道 */
   const trackPointer = useCallback(
     (event: React.PointerEvent<HTMLElement>) => {
+      if (
+        !isScrubPointer({
+          activePointerId: activePointerIdRef.current,
+          pointerId: event.pointerId,
+          isPrimary: event.isPrimary,
+        })
+      ) {
+        return;
+      }
       const { offset, length } = pointerOffsetX(
         event,
         event.currentTarget.getBoundingClientRect(),
@@ -789,6 +805,7 @@ export function PlayerControls(props: PlayerControlsProps) {
               // 触摸/笔的主接触点 button 恒为 0，这条不会误伤它们。
               if (!durationMs || e.button !== 0 || !e.isPrimary) return;
               pointerDragRef.current = true;
+              activePointerIdRef.current = e.pointerId;
               flushedPointerMsRef.current = null;
               onScrubbingChange(true);
               e.currentTarget.setPointerCapture(e.pointerId);
@@ -805,6 +822,10 @@ export function PlayerControls(props: PlayerControlsProps) {
             }}
             // 移动不在这里处理：事件会冒泡到外层那一格，由 trackPointer 合帧
             onPointerUp={(e) => {
+              // 不是正在拖的那根指针（第二根手指误碰、按下就被挡掉的右键）：
+              // 与这次拖动无关，不能当成松手
+              if (activePointerIdRef.current === null || e.pointerId !== activePointerIdRef.current) return;
+              activePointerIdRef.current = null;
               // 合帧意味着最后一次移动可能还压在这一帧里没落地。鼠标抬手提交
               // 的落点必须是**指针最后所在处**，不能是上一帧那个——快速拖动时
               // 一帧的位移在两小时的片子上就是好几分钟。触屏反过来要用屏幕上
@@ -837,7 +858,9 @@ export function PlayerControls(props: PlayerControlsProps) {
             // 完整拖拽把它清掉才「自己好了」。
             // 取消的手势**不提交** seek：用户没松手确认过这个位置，退回
             // positionMs 才是真值。
-            onPointerCancel={() => {
+            onPointerCancel={(e) => {
+              if (activePointerIdRef.current === null || e.pointerId !== activePointerIdRef.current) return;
+              activePointerIdRef.current = null;
               cancelPointerFrame();
               pointerDragRef.current = false;
               onScrubbingChange(false);

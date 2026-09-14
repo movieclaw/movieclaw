@@ -9,6 +9,7 @@ import {
   acceptsNativeScrubValue,
   afterScrubFollow,
   initialScrubFollowState,
+  isScrubPointer,
   planScrubFollow,
   scrubCommitTarget,
   scrubInputValue,
@@ -473,4 +474,23 @@ test("落点差得超过容差就要真的 seek：快速跟随落在关键帧上
     false,
   );
   assert.equal(seekAlreadyInFlight({ currentTimeSeconds: Number.NaN, targetSeconds: 720 }), false);
+});
+
+// ---------------------------------------------------------------------------
+// 回归：第二根手指落到条上，它的 pointerup 不能当成松手
+//
+// 2026-09-14 真浏览器复现：一指按着拖、另一指点一下条上别处，第二指的 pointerup
+// 照样派发到 input，被当成松手后拖动当场作废——画面停在半路、真松手时什么也不发。
+// ---------------------------------------------------------------------------
+
+test("拖动中只认按下时捕获的那根指针：第二根手指的抬起 / 移动一律不理", () => {
+  assert.equal(isScrubPointer({ activePointerId: 7, pointerId: 7, isPrimary: true }), true);
+  assert.equal(isScrubPointer({ activePointerId: 7, pointerId: 8, isPrimary: false }), false);
+  // 极端情况：主指针换了人（旧的被系统收走没发 cancel）也不认
+  assert.equal(isScrubPointer({ activePointerId: 7, pointerId: 9, isPrimary: true }), false);
+});
+
+test("没在拖时只认主指针：悬停气泡跟鼠标 / 第一根手指走", () => {
+  assert.equal(isScrubPointer({ activePointerId: null, pointerId: 1, isPrimary: true }), true);
+  assert.equal(isScrubPointer({ activePointerId: null, pointerId: 2, isPrimary: false }), false);
 });
