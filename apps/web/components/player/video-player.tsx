@@ -115,6 +115,7 @@ import {
   afterScrubFollow,
   initialScrubFollowState,
   planScrubFollow,
+  seekAlreadyInFlight,
 } from "@/lib/player/scrub-follow";
 import { nextSeekTarget, seekBatchWindowMs } from "@/lib/player/seek-batch";
 import { resolveTap } from "@/lib/player/tap";
@@ -674,6 +675,13 @@ export function VideoPlayer(props: VideoPlayerProps) {
   const startedKeyRef = useRef<string | null>(null);
   /** 本轮要落到的文件位置（续播点 / seek 目标 / 降档前的位置） */
   const pendingFileMsRef = useRef(0);
+  /**
+   * 松手提交时元素还在为跟随的 seek 忙着、落点又不是同一个：提交的落点
+   * （会话秒数）先记在这儿，等元素 `seeked` 再发。**同一时刻元素上最多只有一次
+   * seek 在途**是 §19.5 的规矩——两次叠在一起，浏览器会把上一次正在取的索引
+   * 请求掐掉，然后退回顺序扫描。换会话 / 切集时作废：那时它指的是旧时间轴。
+   */
+  const pendingCommitRef = useRef<number | null>(null);
   /** 供事件回调读取最新值，避免为了拿一个数字反复重绑监听 */
   const startMsRef = useRef(0);
   const positionRef = useRef(0);
@@ -1155,6 +1163,8 @@ export function VideoPlayer(props: VideoPlayerProps) {
    */
   useEffect(() => {
     if (!state.session) return;
+    // 排在在途 seek 后面的那次提交作废：它指的是上一路流的时间轴
+    pendingCommitRef.current = null;
     autoplayAttemptsRef.current = 0;
     autoplayLastRef.current = null;
     deadSessionRef.current = false;
@@ -1295,7 +1305,12 @@ export function VideoPlayer(props: VideoPlayerProps) {
     };
     const onTimeUpdate = () => {
       if (!isCurrentSession()) return;
-      setPositionMs(toFileMs(video.currentTime, startMsRef.current));
+      // 松手提交还排在在途 seek 后面时，这一拍 timeupdate 报的是**跟随**落地的
+      // 位置，不是用户要去的地方：读数已经提前走到落点了，别让它先弹回去再跳
+      // 过去（一下就是几分钟的来回）。提交真的发出去之后读数照常跟。
+      if (pendingCommitRef.current === null) {
+        setPositionMs(toFileMs(video.currentTime, startMsRef.current));
+      }
       onBuffered();
     };
     // 「现在应该能播了」的两个时机：挂流那一次可能太早，这两次是补刀
@@ -1964,8 +1979,22 @@ export function VideoPlayer(props: VideoPlayerProps) {
         // 带上落点：远跳盖的是**落点的缩略图**而不是上一帧，这一跳视觉上
         // 当场就落地（§2.G4）。
         if (!isWithinRanges(video.buffered, seconds)) freezeFrame(fileMs);
-        if (engineRef.current?.seek) engineRef.current.seek(seconds);
-        else video.currentTime = seconds;
+        // 拖动跟随已经为这个落点发了 seek（或早已停在这儿）就不再叠一次：
+        // 第二次 seek 会把第一次正在取的索引/数据请求掐掉，浏览器退回顺序扫描
+        // ——这正是「松手后画面停在原地、圆点不动」的来路（§19.5）。seek 途中
+        // currentTime 读到的是这次 seek 的目标，可以直接比。
+        if (!seekAlreadyInFlight({ currentTimeSeconds: video.currentTime, targetSeconds: seconds })) {
+          if (video.seeking) {
+            // 在途的是跟随发往**别处**的 seek：也不掐它，排在它后面（seeked 时
+            // 落地，见 pendingCommitRef）。掐掉它的代价见上——本会话第一次 seek
+            // 正在取索引时尤其如此。多等的是那次跟随本来就要花的时间。
+            pendingCommitRef.current = seconds;
+          } else if (engineRef.current?.seek) {
+            engineRef.current.seek(seconds);
+          } else {
+            video.currentTime = seconds;
+          }
+        }
         // 乐观更新进度条：seek 落到未缓冲区间（往回拖出 back buffer、往前
         // 拖到没转的段）时，规范只在 seek **完成**后才发 timeupdate——
         // 服务端供片要一两秒，这期间进度条会弹回旧位置，用户以为没拖上。
@@ -1983,6 +2012,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
       // 这次暂停是我们自己造成的，不是用户不想看了——换流后必须继续自动播放
       wantsPlayRef.current = true;
       pendingFileMsRef.current = plan.startMs;
+      pendingCommitRef.current = null;
       setPositionMs(plan.startMs);
       dispatch({ type: "restart", startMs: plan.startMs });
     },
@@ -2092,6 +2122,8 @@ export function VideoPlayer(props: VideoPlayerProps) {
     // 拖动跟随的后沿计时器同理：它只有 60~100 毫秒，但切集恰好发生在拖动
     // 途中时，它会把**新一集**挪到上一集的落点上。
     cancelScrubFollow();
+    // 排在在途 seek 后面的那次提交同理：它指的是上一集的时间轴
+    pendingCommitRef.current = null;
     return () => {
       if (pending.timer !== null) window.clearTimeout(pending.timer);
       if (scrubTimerRef.current !== null) window.clearTimeout(scrubTimerRef.current);
@@ -2144,6 +2176,15 @@ export function VideoPlayer(props: VideoPlayerProps) {
       // back buffer 可能已经把落点回收掉，那时写 currentTime 就不再是零成本
       // 的跳转，而是一次把 ffmpeg 拽回去重启——跟随这条路上最不该出现的事。
       if (seconds < 0 || !canScrubFollowRef.current(fileMs)) return;
+      // **上一次跟随的 seek 还没落地就绝不发下一次**（player-feel.md §19.5）。
+      // 两次 seek 叠在一起，浏览器会把上一次正在取的索引/数据请求掐掉：
+      // Chromium 上退回顺序扫描找目标（跳几分钟要读几十 MB），iOS 上 AVPlayer
+      // 取消旧 seek、元素状态被提前清掉。落点先记着，元素 `seeked` 时再补
+      // （见下面那个 seeked effect）；期间又有新落点就覆盖，落地的永远是最新的。
+      if (video.seeking) {
+        scrubRef.current = { ...scrubRef.current, pendingMs: fileMs };
+        return;
+      }
       scrubRef.current = afterScrubFollow(performance.now());
       // **只动 currentTime，不走 engine.seek**：后者会 stopLoad + startLoad
       // 把在途的分片请求全掐掉重来——那是给「跳到没缓冲的地方」准备的重手段。
@@ -2151,15 +2192,56 @@ export function VideoPlayer(props: VideoPlayerProps) {
       // 加载管线，恰恰会把这条路本来想改善的手感反过来毁掉。
       // fastSeek 是浏览器为「拖动预览」准备的：就近落在关键帧上，省掉从
       // 关键帧解到精确帧的那段解码。Safari / Firefox 有，Chrome 至今没有，
-      // 所以要探测。松手那次提交仍走精确 seek——落点差半秒用户是看得出来的。
-      if (typeof video.fastSeek === "function") video.fastSeek(seconds);
-      else video.currentTime = seconds;
+      // 所以要探测。**只在落点已缓冲时用它**：直出档拖出缓冲的那次跟随是
+      // 停住后唯一的一跳，松手多半不再补 seek（seekToFileMs 认得出同一落点），
+      // 它就得是精确的——WebKit 的 fastSeek 容差可以大到整段 GOP。
+      if (isCheapSeekRef.current(fileMs) && typeof video.fastSeek === "function") {
+        video.fastSeek(seconds);
+      } else {
+        video.currentTime = seconds;
+      }
     },
     [video, durationMs],
   );
   /** 供后沿计时器读最新值：它跨过一段时间才执行，闭包里的会话可能已经换过 */
   const applyScrubFollowRef = useRef(applyScrubFollow);
   applyScrubFollowRef.current = applyScrubFollow;
+
+  /**
+   * 上一次跟随落地了，把等在后面的那个落点补上。
+   *
+   * 只在没有后沿计时器在排队时补：计时器在排队说明手指还在动，它到点会带着
+   * 更新的落点来；松手提交（commitSeek → cancelScrubFollow）与手势取消都会把
+   * pendingMs 清掉，所以这里绝不会在用户已经表态之后再把画面挪走。
+   */
+  useEffect(() => {
+    if (!video) return;
+    const onLanded = () => {
+      // seek 落地时规范先发 timeupdate 再发 seeked，两个都接：在第一个事件里就
+      // 把下一次 seek 发出去，中间不留一帧让自绘读到跟随落地的那个位置
+      if (video.seeking) return;
+      // 松手提交排在跟随后面的那次优先：用户已经表态，跟随的落点作废
+      const commit = pendingCommitRef.current;
+      if (commit !== null) {
+        pendingCommitRef.current = null;
+        scrubRef.current = { ...scrubRef.current, pendingMs: null };
+        if (engineRef.current?.seek) engineRef.current.seek(commit);
+        else video.currentTime = commit;
+        // 读数立刻回到提交的落点：等待期间 timeupdate 被挡着，这里补上
+        setPositionMs(toFileMs(commit, startMsRef.current));
+        return;
+      }
+      const pending = scrubRef.current.pendingMs;
+      if (pending === null || scrubTimerRef.current !== null) return;
+      applyScrubFollowRef.current(pending);
+    };
+    video.addEventListener("timeupdate", onLanded);
+    video.addEventListener("seeked", onLanded);
+    return () => {
+      video.removeEventListener("timeupdate", onLanded);
+      video.removeEventListener("seeked", onLanded);
+    };
+  }, [video]);
 
   /**
    * 拖动进度条时的实时跟随（docs/design/player-feel.md §2.C2）。

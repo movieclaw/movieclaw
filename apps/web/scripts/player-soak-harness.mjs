@@ -45,6 +45,7 @@ import {
   afterScrubFollow,
   initialScrubFollowState,
   planScrubFollow,
+  seekAlreadyInFlight,
 } from "../lib/player/scrub-follow.ts";
 import { nextSeekTarget, seekBatchWindowMs } from "../lib/player/seek-batch.ts";
 import {
@@ -361,6 +362,9 @@ class Player {
       }
     });
     video.addEventListener("seeked", () => {
+      // 上一次跟随落地了，把等在后面的落点补上（没有后沿计时器在排队时才补）
+      const pending = this.scrubRef.pendingMs;
+      if (pending !== null && this.scrubTimer === null) this.applyScrubFollow(pending);
       this.qoe = reduceQoe(this.qoe, { type: "seeked", at: this.clock.now() });
     });
     video.addEventListener("waiting", () => {
@@ -452,9 +456,17 @@ class Player {
       if (this.trace) this.trace.push(`${this.clock.now()} apply-DROP target=${fileMs} sec=${seconds.toFixed(1)} cheap=${this.isCheapSeek(fileMs)}`);
       return;
     }
+    // 上一次跟随的 seek 没落地就不发下一次（与实现一致，理由见
+    // video-player.tsx applyScrubFollow / player-feel.md §19.5）：落点先记着，
+    // 元素 seeked 时再补
+    if (this.video.seeking) {
+      this.scrubRef = { ...this.scrubRef, pendingMs: fileMs };
+      return;
+    }
     this.scrubWrites = this.clock.now() - this.scrubRef.at < 500 ? this.scrubWrites + 1 : 0;
     this.scrubRef = afterScrubFollow(this.clock.now());
-    this.video.fastSeek(seconds);
+    if (this.isCheapSeek(fileMs)) this.video.fastSeek(seconds);
+    else this.video.currentTime = seconds;
   }
 
   scrubTo(fileMs) {
@@ -504,7 +516,10 @@ class Player {
     }
     if (plan.kind === "native") {
       const seconds = Math.max(0, plan.seconds);
-      this.video.currentTime = seconds;
+      // 跟随已经为这个落点发了 seek 就不再叠一次（与实现一致，§19.5）
+      if (!seekAlreadyInFlight({ currentTimeSeconds: this.video.currentTime, targetSeconds: seconds })) {
+        this.video.currentTime = seconds;
+      }
       this.positionMs = toFileMs(seconds, this.startMs);
       return;
     }

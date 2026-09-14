@@ -5,12 +5,14 @@ import {
   SCRUB_FOLLOW_MAX_WAIT_MS,
   SCRUB_FOLLOW_SETTLE_MS,
   SCRUB_INPUT_STEP_MS,
+  SEEK_DUPLICATE_TOLERANCE_S,
   acceptsNativeScrubValue,
   afterScrubFollow,
   initialScrubFollowState,
   planScrubFollow,
   scrubCommitTarget,
   scrubInputValue,
+  seekAlreadyInFlight,
 } from "../lib/player/scrub-follow.ts";
 
 // ---------------------------------------------------------------------------
@@ -447,4 +449,28 @@ test("片尾那一格同样认得出来：max 不在步长上时补发的 change
     }),
     false,
   );
+});
+
+// ---------------------------------------------------------------------------
+// 回归：跟随已经为这个落点发了 seek，松手不再叠一次
+//
+// 2026-09-14 请求日志实证：第二次 seek 会把第一次正在取的索引请求掐掉
+// （ERR_ABORTED），Chromium 退回从当前缓冲末尾顺序扫描找目标，跳 6 分钟要顺序
+// 读 47MB——画面停在原地、圆点不动。seek 途中 currentTime 读到的是这次 seek 的
+// 目标，所以「正在往同一落点去」直接用它判。
+// ---------------------------------------------------------------------------
+
+test("元素正往同一落点 seek（或已停在那儿）：不再叠一次 seek", () => {
+  assert.equal(seekAlreadyInFlight({ currentTimeSeconds: 720.0, targetSeconds: 720.0 }), true);
+  // 时间刻度换算带来的抖动吃得掉
+  assert.equal(seekAlreadyInFlight({ currentTimeSeconds: 720.12, targetSeconds: 720.0 }), true);
+});
+
+test("落点差得超过容差就要真的 seek：快速跟随落在关键帧上时松手仍要精确落地", () => {
+  assert.equal(seekAlreadyInFlight({ currentTimeSeconds: 716.0, targetSeconds: 720.3 }), false);
+  assert.equal(
+    seekAlreadyInFlight({ currentTimeSeconds: 720.0, targetSeconds: 720.0 + SEEK_DUPLICATE_TOLERANCE_S }),
+    false,
+  );
+  assert.equal(seekAlreadyInFlight({ currentTimeSeconds: Number.NaN, targetSeconds: 720 }), false);
 });

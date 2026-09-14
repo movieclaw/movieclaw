@@ -112,6 +112,33 @@ export function afterScrubFollow(now: number): ScrubFollowState {
 }
 
 /**
+ * 元素上是否已经有一次 seek 在往这个落点去、或者已经停在这个落点上——是的话
+ * 再写一次 currentTime 只有害处。
+ *
+ * **两次 seek 叠在一起会把上一次的加载掐掉**（2026-09-14，Chromium 请求日志
+ * 实证）：拖动跟随刚为落点发出一次 seek，浏览器正在取文件尾部的索引（WebM
+ * Cues / MP4 moov 之外的 sidx），紧接着再来一次 seek，那条索引请求被
+ * `ERR_ABORTED`，浏览器退回从当前缓冲末尾**顺序扫描**去找目标——跳 6 分钟
+ * 要顺序读 47MB，用户看到的就是画面停在原地、圆点不动。iOS 上 AVPlayer 的
+ * 对应行为是新 seek 取消旧 seek，旧的以「未完成」回调，元素状态被提前清掉。
+ *
+ * seek 途中 `currentTime` 读到的是**这次 seek 的目标**（规范如此，Chromium /
+ * WebKit 皆然），所以「正在往同一落点去」可以直接用它判。容差取 0.25 秒：比
+ * 「落点差半秒用户看得出来」（§11）的门槛低，又能吃掉时间刻度换算的抖动。
+ */
+export const SEEK_DUPLICATE_TOLERANCE_S = 0.25;
+
+export function seekAlreadyInFlight(input: {
+  currentTimeSeconds: number;
+  targetSeconds: number;
+  toleranceSeconds?: number;
+}): boolean {
+  const tolerance = input.toleranceSeconds ?? SEEK_DUPLICATE_TOLERANCE_S;
+  if (!Number.isFinite(input.currentTimeSeconds)) return false;
+  return Math.abs(input.currentTimeSeconds - input.targetSeconds) < tolerance;
+}
+
+/**
  * 抬手时该提交到哪儿。
  *
  * 鼠标用**指针最后所在处**（`lastPointerMs`）：指针输入是合帧的（player-feel.md
