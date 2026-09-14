@@ -174,6 +174,12 @@ export interface VideoPlayerProps {
 const PROGRESS_INTERVAL_MS = 10_000;
 /** 会话续命间隔。必须明显短于服务端的空闲回收窗口。 */
 const PING_INTERVAL_MS = 15_000;
+/**
+ * 松手提交排在在途 seek 后面最多等多久（player-feel.md §19.5）。远端一次 seek
+ * 一两秒是常态，五秒还没落地就当它挂了，照旧发提交把它掐掉——掐掉的代价是
+ * 顺序扫描，永远等着的代价是用户松了手却永远跳不过去。
+ */
+const PENDING_COMMIT_MAX_WAIT_MS = 5_000;
 /** 播放中控制条自动隐藏的**静止**时长——任何操作（触摸、鼠标移动、快捷键）
  * 都会把倒计时从头来过（见 chromeActivity 的注释）。4 秒取 Netflix 手机端
  * 的手感：3 秒在真机上「刚找到按钮就没了」（用户反馈）。 */
@@ -347,6 +353,24 @@ export function VideoPlayer(props: VideoPlayerProps) {
    * 又跳了一次——拿它对一下，过期的那张绝不能画上去。
    */
   const freezeTokenRef = useRef(0);
+  /**
+   * 松手提交时元素还在为跟随的 seek 忙着、落点又不是同一个：提交的落点
+   * （会话秒数）先记在这儿，等元素落地再发。**同一时刻元素上最多只有一次
+   * seek 在途**是 §19.5 的规矩——两次叠在一起，浏览器会把上一次正在取的索引
+   * 请求掐掉，然后退回顺序扫描。换会话 / 切集时作废：那时它指的是旧时间轴。
+   *
+   * 等待有上限（`PENDING_COMMIT_MAX_WAIT_MS`）：在途的 seek 要是一直不落地
+   * （远端 Range 请求挂死），用户明明松了手却永远跳不过去——到点就照旧发，
+   * 掐掉它总比永远等着强。`pendingCommitTimerRef` 是那个计时器。
+   */
+  const pendingCommitRef = useRef<number | null>(null);
+  const pendingCommitTimerRef = useRef<number | null>(null);
+  /** 排在在途 seek 后面的那次提交作废（换会话 / 切集 / 已经发出去） */
+  const clearPendingCommit = useCallback(() => {
+    pendingCommitRef.current = null;
+    if (pendingCommitTimerRef.current !== null) window.clearTimeout(pendingCommitTimerRef.current);
+    pendingCommitTimerRef.current = null;
+  }, []);
   /** 雪碧图的解码缓存：连按快进会连着要同一张，每次新建 Image 等于重解一遍 */
   const sheetCacheRef = useRef(new Map<string, HTMLImageElement>());
 
@@ -418,6 +442,9 @@ export function VideoPlayer(props: VideoPlayerProps) {
   useEffect(() => {
     if (!frozen || !video) return;
     const release = () => {
+      // 松手提交还排在在途 seek 后面：这一刻落地的是**跟随**的位置，盖着的是
+      // 落点的缩略图，撤了就先露一帧别处的画面、再黑一下才到落点。等提交发出去
+      if (pendingCommitRef.current !== null) return;
       if (canReleaseFreeze({ seeking: video.seeking, readyState: video.readyState })) {
         // 递增 token 让在途的缩略图作废：晚到的那张不能把已经出画的画面
         // 重新盖回去（远跳时雪碧图与首帧常常是前后脚到）
@@ -675,13 +702,6 @@ export function VideoPlayer(props: VideoPlayerProps) {
   const startedKeyRef = useRef<string | null>(null);
   /** 本轮要落到的文件位置（续播点 / seek 目标 / 降档前的位置） */
   const pendingFileMsRef = useRef(0);
-  /**
-   * 松手提交时元素还在为跟随的 seek 忙着、落点又不是同一个：提交的落点
-   * （会话秒数）先记在这儿，等元素 `seeked` 再发。**同一时刻元素上最多只有一次
-   * seek 在途**是 §19.5 的规矩——两次叠在一起，浏览器会把上一次正在取的索引
-   * 请求掐掉，然后退回顺序扫描。换会话 / 切集时作废：那时它指的是旧时间轴。
-   */
-  const pendingCommitRef = useRef<number | null>(null);
   /** 供事件回调读取最新值，避免为了拿一个数字反复重绑监听 */
   const startMsRef = useRef(0);
   const positionRef = useRef(0);
@@ -1164,12 +1184,12 @@ export function VideoPlayer(props: VideoPlayerProps) {
   useEffect(() => {
     if (!state.session) return;
     // 排在在途 seek 后面的那次提交作废：它指的是上一路流的时间轴
-    pendingCommitRef.current = null;
+    clearPendingCommit();
     autoplayAttemptsRef.current = 0;
     autoplayLastRef.current = null;
     deadSessionRef.current = false;
     setAutoplay(null);
-  }, [state.session]);
+  }, [state.session, clearPendingCommit]);
 
   /** 诊断面板打开时轮询服务端会话，关闭后不额外占用 NAS 请求。 */
   const diagnosticsSessionId = state.session?.session_id;
@@ -1968,9 +1988,19 @@ export function VideoPlayer(props: VideoPlayerProps) {
       // `seeking` 里**：restart 那条路新流从自己时间轴的 0 秒起播，hls.js
       // 一次都不会 seek，元素事件永远不来——而会话拆除 + 重开 + ffmpeg
       // 起转正是用户等的那几秒（见 qoe.ts 的 seek-requested）。
-      qoe({ type: "seek-requested", at: performance.now() });
       if (plan.kind === "native") {
         const seconds = Math.max(0, plan.seconds);
+        const inFlight = seekAlreadyInFlight({
+          currentTimeSeconds: video.currentTime,
+          targetSeconds: seconds,
+        });
+        // 已经停在落点上（跟随刚落地、或只拖了不到一格）：没有跳转可言，
+        // 连 QoE 的「跳了一次」都不记——记了没有 playing 来结算，闸会一直开着
+        if (inFlight && !video.seeking) {
+          setPositionMs(toFileMs(seconds, startMsRef.current));
+          return;
+        }
+        qoe({ type: "seek-requested", at: performance.now() });
         // 落点在缓冲之外：hls.js 会清掉当前这段缓冲从新落点重新装载，中间
         // 那几百毫秒到几秒（外网上就是几秒）`<video>` 一帧都没有，浏览器只
         // 能画黑。先把当前帧冻住盖上去，等新位置出画再撤。缓冲之内的跳转
@@ -1983,12 +2013,18 @@ export function VideoPlayer(props: VideoPlayerProps) {
         // 第二次 seek 会把第一次正在取的索引/数据请求掐掉，浏览器退回顺序扫描
         // ——这正是「松手后画面停在原地、圆点不动」的来路（§19.5）。seek 途中
         // currentTime 读到的是这次 seek 的目标，可以直接比。
-        if (!seekAlreadyInFlight({ currentTimeSeconds: video.currentTime, targetSeconds: seconds })) {
+        if (!inFlight) {
           if (video.seeking) {
-            // 在途的是跟随发往**别处**的 seek：也不掐它，排在它后面（seeked 时
-            // 落地，见 pendingCommitRef）。掐掉它的代价见上——本会话第一次 seek
-            // 正在取索引时尤其如此。多等的是那次跟随本来就要花的时间。
+            // 在途的是跟随发往**别处**的 seek：也不掐它，排在它后面（落地时
+            // 再发，见 flushPendingCommit）。掐掉它的代价见上——本会话第一次 seek
+            // 正在取索引时尤其如此。多等的是那次跟随本来就要花的时间；等待有
+            // 上限，在途的 seek 一直不落地就到点照旧发。
+            clearPendingCommit();
             pendingCommitRef.current = seconds;
+            pendingCommitTimerRef.current = window.setTimeout(() => {
+              pendingCommitTimerRef.current = null;
+              flushPendingCommitRef.current();
+            }, PENDING_COMMIT_MAX_WAIT_MS);
           } else if (engineRef.current?.seek) {
             engineRef.current.seek(seconds);
           } else {
@@ -2003,6 +2039,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
         setPositionMs(toFileMs(seconds, startMsRef.current));
         return;
       }
+      qoe({ type: "seek-requested", at: performance.now() });
       // 换会话必然让画面空一段（旧引擎销毁会把 src 摘干净），先把画面冻住；
       // 这条路恒是远跳，盖落点的缩略图
       freezeFrame(plan.startMs);
@@ -2012,11 +2049,11 @@ export function VideoPlayer(props: VideoPlayerProps) {
       // 这次暂停是我们自己造成的，不是用户不想看了——换流后必须继续自动播放
       wantsPlayRef.current = true;
       pendingFileMsRef.current = plan.startMs;
-      pendingCommitRef.current = null;
+      clearPendingCommit();
       setPositionMs(plan.startMs);
       dispatch({ type: "restart", startMs: plan.startMs });
     },
-    [video, sessionId, mode, durationMs, state.session, state.phase, state.startMs, freezeFrame, qoe],
+    [video, sessionId, mode, durationMs, state.session, state.phase, state.startMs, freezeFrame, qoe, clearPendingCommit],
   );
 
   /**
@@ -2123,12 +2160,12 @@ export function VideoPlayer(props: VideoPlayerProps) {
     // 途中时，它会把**新一集**挪到上一集的落点上。
     cancelScrubFollow();
     // 排在在途 seek 后面的那次提交同理：它指的是上一集的时间轴
-    pendingCommitRef.current = null;
+    clearPendingCommit();
     return () => {
       if (pending.timer !== null) window.clearTimeout(pending.timer);
       if (scrubTimerRef.current !== null) window.clearTimeout(scrubTimerRef.current);
     };
-  }, [unitKey, cancelPendingSeek, cancelScrubFollow]);
+  }, [unitKey, cancelPendingSeek, cancelScrubFollow, clearPendingCommit]);
 
   /**
    * 这一跳贵不贵：落点已在缓冲里就是零成本，否则要么等浏览器拉数据、要么
@@ -2207,6 +2244,21 @@ export function VideoPlayer(props: VideoPlayerProps) {
   const applyScrubFollowRef = useRef(applyScrubFollow);
   applyScrubFollowRef.current = applyScrubFollow;
 
+  /** 把排在在途 seek 后面的那次提交真的发出去（落地时或等待到上限时） */
+  const flushPendingCommit = useCallback(() => {
+    const commit = pendingCommitRef.current;
+    if (commit === null || !video) return;
+    clearPendingCommit();
+    scrubRef.current = { ...scrubRef.current, pendingMs: null };
+    if (engineRef.current?.seek) engineRef.current.seek(commit);
+    else video.currentTime = commit;
+    // 读数立刻回到提交的落点：等待期间 timeupdate 被挡着，这里补上
+    setPositionMs(toFileMs(commit, startMsRef.current));
+  }, [video, clearPendingCommit]);
+  /** 供计时器与元素事件读最新值 */
+  const flushPendingCommitRef = useRef(flushPendingCommit);
+  flushPendingCommitRef.current = flushPendingCommit;
+
   /**
    * 上一次跟随落地了，把等在后面的那个落点补上。
    *
@@ -2221,14 +2273,8 @@ export function VideoPlayer(props: VideoPlayerProps) {
       // 把下一次 seek 发出去，中间不留一帧让自绘读到跟随落地的那个位置
       if (video.seeking) return;
       // 松手提交排在跟随后面的那次优先：用户已经表态，跟随的落点作废
-      const commit = pendingCommitRef.current;
-      if (commit !== null) {
-        pendingCommitRef.current = null;
-        scrubRef.current = { ...scrubRef.current, pendingMs: null };
-        if (engineRef.current?.seek) engineRef.current.seek(commit);
-        else video.currentTime = commit;
-        // 读数立刻回到提交的落点：等待期间 timeupdate 被挡着，这里补上
-        setPositionMs(toFileMs(commit, startMsRef.current));
+      if (pendingCommitRef.current !== null) {
+        flushPendingCommitRef.current();
         return;
       }
       const pending = scrubRef.current.pendingMs;
