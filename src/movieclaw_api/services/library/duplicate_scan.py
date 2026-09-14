@@ -113,10 +113,14 @@ def classify(unit: DupUnit) -> tuple[Tier, str | None]:
     判据只有一条线：**机器有没有把握**。「一模一样」是物理上确认过的没区别；
     「档位最高」是阶梯真的分出了高下；其余都是同档里按次级信号（码率、来源、
     命名）挑了一个——那种"建议"不足以支撑批量清理，必须由人看一眼。
+
+    「档位最高」还要求阶梯**比全了**（``suggest_partial`` 为假）：单元里有文件
+    的规格没探到时，那一位对整个单元失效，哪怕在剩下的位上胜出，没探到的那一位
+    也随时可能把结论翻过来——够不上"成批清理"的把握。
     """
     if unit.bucket == "identical":
         return "safe", None
-    if unit.suggested.suggest_basis == "ladder":
+    if unit.suggested.suggest_basis == "ladder" and not unit.suggested.suggest_partial:
         return "suggested", None
     return "review", _review_kind(unit.files)
 

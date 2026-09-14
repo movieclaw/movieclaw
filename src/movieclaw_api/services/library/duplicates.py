@@ -72,22 +72,53 @@ _IN_FLIGHT = (
 _VERSION_SUFFIX = re.compile(
     r" - (?:\d{3,4}p|V\d+|WEB-?DL|WEBRip|Blu-?ray|BluRay|HDTV|Remux|Disc)$", re.I
 )
+# 复制品留下的名字：系统与整理器的「副本 / 拷贝 / copy / (1)」结尾。和退让名是
+# 同一件事——它在说"我不是占着标准名的那一个"，只是换了个后缀写法
+_COPY_SUFFIX = re.compile(r"[.\s_-]?(?:副本|拷贝|copy|\(\d+\))$", re.I)
+
+
+def _lesser_name(path: str) -> bool:
+    """这个文件名是不是"让位的那一个"（退让名或复制品名）。
+
+    只看后缀写法，不看名字里有没有 WEB-DL 之类的规格词：两个硬链接指向同一份
+    字节时，一个名字里写了片源、另一个没写，说明的只是命名习惯，不是谁更好。
+    """
+    stem = PurePath(path).stem
+    return bool(_VERSION_SUFFIX.search(stem) or _COPY_SUFFIX.search(stem))
+
+
 # 来源可追溯性：本系统入库的有台账证据链，扫描发现的是"不知道谁放的"
 _ORIGIN_PRIORITY = {"subscription": 3, "manual_download": 3, "watch_import": 2, "scan": 1}
 _NEUTRAL_SPEC = RuleSetSpec()
 # 指纹分批的批量。整轮 stat 是检测里唯一的磁盘 IO，网络盘上几千次往返要跑几十秒；
 # 分批只为一件事：让扫描任务的进度条真的在动，用户知道它没卡死
 _STAT_CHUNK = 200
-# 建议依据：机器码 → 给人看的话。只有 ``ladder`` 是"真的比出了高下"，
-# 其余都是同档里按次级信号挑了一个——分档（duplicate_scan.classify）据此判定
+# 建议依据：机器码 → 给人看的话的**后半句**。前半句由"档位比全了没有"决定
+# （见 ``_reason_text``）——这句话必须是真的：曾经不论谁定的序都写"按实测码率
+# 建议"，而实际上定序的是"未知当最差"，码率根本没轮到
 _REASONS = {
     "ladder": "档位最高",
-    "incomparable": "档位无法比较，按实测码率建议",
-    "bitrate": "同档，实测码率更高",
-    "origin": "同档，来源可追溯",
-    "naming": "同档，占着标准文件名",
-    "fallback": "同档，最近入库",
+    "bitrate": "实测码率更高",
+    "origin": "来源可追溯",
+    "naming": "占着标准文件名",
+    "fallback": "最近入库",
 }
+
+
+def _reason_text(basis: str, partial: bool) -> str:
+    """建议依据的整句。三种前缀对应三种处境，一句都不许含糊：
+
+    - 档位比全了、而且真的分出高下 → 「档位最高」；
+    - 档位比全了、只是同档里挑了一个 → 「同档，…」；
+    - 有文件的规格没探全（那一位对整个单元失效）→ 「规格没探全，…」——
+      它同时是"这个单元为什么进不了『建议清理』"的解释。
+    """
+    if partial:
+        core = "在能比的位上最高" if basis == "ladder" else _REASONS[basis]
+        return f"规格没探全，{core}"
+    if basis == "ladder":
+        return _REASONS["ladder"]
+    return f"同档，{_REASONS[basis]}"
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +138,10 @@ class DupFile:
     #: "档位最高" 意味着机器真的比出了高下（可以建议清），其余都只是同档里
     #: 挑了一个（要用户自己看），这个区别是分档的唯一依据，不能靠字符串相等
     suggest_basis: str | None = None
+    #: 档位阶梯有位没比成（单元里有文件的规格没探到，那一位对整个单元失效）。
+    #: 这时哪怕在剩下的位上胜出，也不够格进「建议清理」——没探到的那一位随时
+    #: 可能把结论翻过来
+    suggest_partial: bool = False
 
     @property
     def kept(self) -> bool:
@@ -230,31 +265,70 @@ def _stat_many(paths: list[str]) -> dict[str, tuple[int, int] | None]:
     return out
 
 
-def _rank(f: DupFile, spec: RuleSetSpec, vectors: dict[int, tuple[int | None, ...]]) -> tuple:
+def _rank(f: DupFile, vectors: dict[int, tuple[int, ...]]) -> tuple:
     """建议保留的排序键（大者优先）：档位阶梯 > 实测码率 > 来源可追溯 > 命名规范 > id。
-    阶梯里比不出来的位（None）只影响排序不影响判定，按最低处理。"""
-    vec = tuple(-1 if v is None else v for v in vectors[f.row.id or -1])
+
+    传进来的向量已经**只剩单元内人人都探到的那几位**（见 ``_usable_vectors``），
+    所以这里不再有 ``None`` 要兜底。
+    """
     return (
-        vec,
+        vectors[f.row.id or -1],
         f.row.bit_rate or 0,
         _ORIGIN_PRIORITY.get(str(f.origin.get("kind")), 0),
-        0 if _VERSION_SUFFIX.search(PurePath(f.row.file_path).stem) else 1,
+        0 if _lesser_name(f.row.file_path) else 1,
         f.row.id or 0,
     )
+
+
+def _usable_vectors(
+    vectors: dict[int, tuple[int | None, ...]],
+) -> tuple[dict[int, tuple[int, ...]], bool]:
+    """把档位向量裁到**单元内人人都探到**的那几位；返回 (裁过的向量, 是否裁过)。
+
+    这是三态铁律在"挑一个建议保留"上的落点。``compare_ladder`` 早就写明「未知
+    永远不当已知用」，但排序这边曾经把未知折成 ``-1``——比任何已知档都低。后果是
+    **一个没探到片源的文件必输给任何探到片源的文件**，哪怕它才是更好的那个：
+    真实反馈里 `2160p HDR10 · 4.83 GB · 14.8 Mbps`（片源没探到）输给了
+    `2160p WEB-DL Dolby Vision · 1.22 GB`，而标签还写着"按实测码率建议"——
+    码率压根没轮到，它在片源那一位就已经判负了。
+
+    未知既不当已知用，也不当"最差"用：**这一位对整个单元失效**，直接落到下一个
+    信号（实测码率）。裁过之后向量里不再有 ``None``，比较也就不会再返回"不可比"，
+    所以"够不够格成批清理"改由第二个返回值回答——见 ``_suggest``。
+
+    只有**一边探到、一边没探到**才算"没探全"。全都没探到不算：``compare_ladder``
+    把它判成平局并继续比下一位，理由是"两边都没标片源是命名习惯的常态，不是数据
+    质量问题"——这里跟它同一口径，那种位一样不参与排序，但不因此把整个单元打成
+    "规格没探全"。
+    """
+    if not vectors:
+        return {}, False
+    width = len(next(iter(vectors.values())))
+    usable: list[int] = []
+    partial = False
+    for i in range(width):
+        seen = [v[i] for v in vectors.values()]
+        if all(x is not None for x in seen):
+            usable.append(i)
+        elif any(x is not None for x in seen):
+            partial = True  # 一边探到、一边没探到：这一位谁也说了不算
+    trimmed = {
+        fid: tuple(x for i in usable if (x := v[i]) is not None) for fid, v in vectors.items()
+    }
+    return trimmed, partial
 
 
 def _suggest(files: list[DupFile], spec: RuleSetSpec) -> None:
     """给单元贴「建议保留」并说明依据。它只是建议：用户点哪个「留这个」就留哪个。"""
     from movieclaw_api.services.subscription.upgrade import snapshot_from_file
 
-    vectors = {f.row.id or -1: ladder_vector(snapshot_from_file(f.row, None), spec) for f in files}
-    ordered = sorted(files, key=lambda f: _rank(f, spec, vectors), reverse=True)
+    raw = {f.row.id or -1: ladder_vector(snapshot_from_file(f.row, None), spec) for f in files}
+    vectors, partial = _usable_vectors(raw)
+    ordered = sorted(files, key=lambda f: _rank(f, vectors), reverse=True)
     best = ordered[0]
     best_vec = vectors[best.row.id or -1]
     verdicts = [compare_ladder(best_vec, vectors[o.row.id or -1]) for o in ordered[1:]]
-    if any(v is None for v in verdicts):
-        basis = "incomparable"
-    elif all(v == 1 for v in verdicts):
+    if all(v == 1 for v in verdicts):
         basis = "ladder"
     else:
         tied = [o for o, v in zip(ordered[1:], verdicts, strict=True) if v == 0]
@@ -266,16 +340,18 @@ def _suggest(files: list[DupFile], spec: RuleSetSpec) -> None:
             for o in tied
         ):
             basis = "origin"
-        elif not _VERSION_SUFFIX.search(PurePath(best.row.file_path).stem) and all(
-            _VERSION_SUFFIX.search(PurePath(o.row.file_path).stem) for o in tied
+        elif not _lesser_name(best.row.file_path) and all(
+            _lesser_name(o.row.file_path) for o in tied
         ):
             basis = "naming"
         else:
             basis = "fallback"
+    reason = _reason_text(basis, partial)
     for f in files:
         f.suggested = f is best
-        f.suggest_reason = _REASONS[basis] if f is best else None
+        f.suggest_reason = reason if f is best else None
         f.suggest_basis = basis if f is best else None
+        f.suggest_partial = partial if f is best else False
 
 
 def fold_seasons(units: list[DupUnit], is_tv: bool) -> list[DupSeason]:

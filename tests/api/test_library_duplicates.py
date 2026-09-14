@@ -527,7 +527,8 @@ async def test_list_buckets_suggestions_and_exclusions(client, db, tmp_path):
     ssy = items["十三邀"]["seasons"][0]
     assert not ssy["uniform"] and len(ssy["units"]) == 1
     sb = next(f for f in ssy["units"][0]["files"] if f["id"] == ids["ssy_b"])
-    assert sb["suggested"] and sb["suggest_reason"] == "档位无法比较，按实测码率建议"
+    # 片源只有一边探到 → 那一位对整个单元失效，落到码率；理由必须说的是实话
+    assert sb["suggested"] and sb["suggest_reason"] == "规格没探全，实测码率更高"
 
     # 筛选：只看某条目 / 只看某库 / 分页
     one = (await client.get(f"/api/v1/libraries/duplicate-files?media_item_id={ids['jm']}")).json()[
@@ -885,3 +886,78 @@ async def test_resolve_group_respects_batch_limit(client, db, tmp_path, monkeypa
     assert data["done"] == 2 and data["remaining"] == 3
     rest = await client.post("/api/v1/libraries/duplicate-files/resolve-all", json={"tier": "safe"})
     assert rest.json()["data"]["done"] == 2 and rest.json()["data"]["remaining"] == 1
+
+
+@pytest.mark.asyncio
+async def test_unknown_spec_does_not_lose_by_default(client, db, tmp_path):
+    """某一位只有一边探到 → 这一位对**整个单元**失效，不把未知当"最差"。
+
+    真实反馈：一集有两个文件，`2160p HDR10 · 4.83 GB · 14.8 Mbps`（片源没探到）
+    与 `2160p WEB-DL Dolby Vision · 1.22 GB · 3.7 Mbps`，建议保留给了**小的那个**，
+    理由还写着"按实测码率建议"——而码率根本没轮到：排序把未知片源折成 -1，它在
+    片源那一位就判负了。compare_ladder 早就写明"未知永远不当已知用"，排序这边
+    却把未知当了最差用，两边对不上。
+
+    修正后：分辨率打平、片源整位作废 → 码率定序 → 大的那个胜出；理由不再撒谎；
+    而"规格没探全"仍然不够格进「建议清理」，这一单元照旧留在「需要你决定」。
+    """
+    ids = await _seed(db, tmp_path)
+    async with db.session() as session:
+        item = MediaItem(kind="tv", tmdb_id=77, title="交锋", original_title="Clash", year=2026)
+        session.add(item)
+        await session.flush()
+        base = tmp_path / "tv" / "交锋"
+        base.mkdir(parents=True, exist_ok=True)
+        rows = []
+        for name, size, spec in (
+            # 片源没探到，但码率与体积都高得多
+            ("交锋（2026）- S01E01.mkv", 40, {"hdr": "HDR10", "bit_rate": 14_800_000}),
+            # 片源探到了 WEB-DL，实际是个低码率压制
+            (
+                "交锋（2026）- S01E01.mp4",
+                10,
+                {"media_source": "WEB-DL", "hdr": "Dolby Vision", "bit_rate": 3_700_000},
+            ),
+        ):
+            path = base / name
+            path.write_bytes(b"x" * size)
+            row = LibraryFile(
+                library_id=ids["tv_lib"],
+                media_item_id=item.id,
+                season_number=1,
+                episode_number=1,
+                file_path=str(path),
+                size_bytes=size,
+                duration_seconds=2700,
+                source=FileSource.SCANNED,
+                origin=SCAN,
+                resolution="2160p",
+                **spec,
+            )
+            session.add(row)
+            rows.append(row)
+        await session.commit()
+        for r in rows:
+            await session.refresh(r)
+        big, small = rows[0].id, rows[1].id
+    await _scan(db)
+
+    data = (await client.get(f"/api/v1/libraries/duplicate-files?media_item_id={item.id}")).json()[
+        "data"
+    ]
+    files = {f["id"]: f for f in data["items"][0]["seasons"][0]["units"][0]["files"]}
+    assert files[big]["suggested"], "码率高四倍的那个才该是建议保留，不能因为片源没探到就判负"
+    assert not files[small]["suggested"]
+    assert files[big]["suggest_reason"] == "规格没探全，实测码率更高"
+    # 仍然只是"建议"：规格没探全够不上成批清理，这一单元留在「需要你决定」
+    groups = _groups(data)
+    assert groups["unknown"]["units"] >= 1
+    assert all(
+        f["id"] != big
+        for it in (await client.get("/api/v1/libraries/duplicate-files?tier=suggested")).json()[
+            "data"
+        ]["items"]
+        for s in it["seasons"]
+        for u in s["units"]
+        for f in u["files"]
+    )
