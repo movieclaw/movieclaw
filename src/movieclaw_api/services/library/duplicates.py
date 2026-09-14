@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from pathlib import PurePath
 from typing import Any, Literal
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
@@ -471,6 +471,21 @@ async def _in_flight_units(session: AsyncSession, item_ids: set[int]) -> set[tup
     return out
 
 
+def unparsed_tv_episode(kind: str | None, episode_number: int) -> bool:
+    """这条台账行是不是「剧集，但集号没解析出来」。
+
+    ``units.FileUnit`` 里 ``episode == 0`` 的含义是**无集号**，不是"第 0 集"。
+    整季解不出集号时，那一季的每个文件都落在同一个 ``(条目, 季, 0)`` 上——重复
+    检测按这个三元组分组，于是一整季会被当成"同一集的 N 个版本"，「按建议清理」
+    就是删掉整季只留一个。真实事故：《哆啦A梦》第 2 季 1944 个文件（文件名里的
+    集号写在括号里没被认出来）被判成 1943 个可清重复。
+
+    所以这类单元根本不进重复检测：它是**识别问题**，不是重复问题，清理解决不了
+    它，只会毁数据。电影与其他库的 ``(0, 0)`` 是正常哨兵，不受影响。
+    """
+    return kind == "tv" and episode_number == 0
+
+
 def _candidate_rows_stmt():
     return select(LibraryFile).where(
         LibraryFile.state == FileState.IN_PLACE,
@@ -503,11 +518,14 @@ async def detect_duplicates(
             LibraryFile.season_number,
             LibraryFile.episode_number,
         )
+        .join(MediaItem, MediaItem.id == LibraryFile.media_item_id)  # type: ignore[arg-type]
         .where(
             LibraryFile.state == FileState.IN_PLACE,
             LibraryFile.media_item_id.is_not(None),  # type: ignore[union-attr]
             LibraryFile.unidentified_code.is_(None),  # type: ignore[union-attr]
             LibraryFile.ignored_at.is_(None),  # type: ignore[union-attr]
+            # 剧集里集号没解析出来的行整批排除，见 unparsed_tv_episode
+            or_(MediaItem.kind != "tv", LibraryFile.episode_number != 0),
         )
         .group_by(LibraryFile.media_item_id, LibraryFile.season_number, LibraryFile.episode_number)
         .having(func.count(LibraryFile.id) >= 2)
@@ -645,6 +663,8 @@ class ResolveOutcome:
     failed: list[tuple[int, str, str]] = field(default_factory=list)  # (id, file_name, error)
     library_ids: set[int] = field(default_factory=set)
     remaining: int = 0
+    #: 单个单元的待清文件数就超过了整批上限——任何一批都装不下，只能逐单元决定
+    oversized_units: int = 0
 
 
 async def _refresh_unit(session: AsyncSession, unit: DupUnit) -> None:

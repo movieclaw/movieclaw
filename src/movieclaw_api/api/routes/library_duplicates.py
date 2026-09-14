@@ -341,6 +341,17 @@ async def resolve_all_duplicates(
     if payload.keep_all:
         return ok(_result(outcome), message=f"已标记「都留着」：{outcome.done} 个文件不再列为重复")
     await _after_cleanup(session, outcome, background_tasks)
+    if outcome.oversized_units and not outcome.done:
+        # 单个单元就超过整批上限：再点多少次也轮不到它。出路是逐单元决定
+        # （那条路径没有批量上限），所以这里必须说清楚，而不是回一句
+        # 「已移入回收站 0 个」让人以为点错了
+        return ok(
+            _result(outcome),
+            message=(
+                f"有 {outcome.oversized_units} 个条目的待清文件数超过单次上限"
+                f"（{BATCH_LIMIT} 个），批量清理装不下它们。请点进这些条目逐个决定"
+            ),
+        )
     if not outcome.done and not outcome.failed and not outcome.remaining:
         # 这一组的结论全过期了（扫描之后跑过入库 / 洗版 / 另一轮扫描）。不按过期
         # 结论删文件是铁律，所以这里什么也没做——直接告诉用户该重扫，而不是回一句

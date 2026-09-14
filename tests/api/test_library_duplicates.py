@@ -1184,3 +1184,166 @@ async def test_missing_source_on_both_sides_is_not_unknown(client, db, tmp_path)
     e01 = next(u for it in same["items"] for s in it["seasons"] for u in s["units"])
     reason = next(f["suggest_reason"] for f in e01["files"] if f["suggested"])
     assert reason == "同档，实测码率更高"
+
+
+@pytest.mark.asyncio
+async def test_unparsed_tv_episode_is_never_a_duplicate_unit(db, tmp_path):
+    """剧集里集号没解析出来的行不进重复检测——那是识别问题，不是重复问题。
+
+    真实事故：《哆啦A梦》第 2 季 1944 个文件（集号写在文件名括号里没被认出来）
+    全落在 ``(条目, 2, 0)`` 上，被判成 1943 个可清重复。「按建议清理」一旦执行，
+    删掉的是整整一季。``units.FileUnit`` 里 ``episode == 0`` 的含义是**无集号**。
+    """
+    from movieclaw_api.services.library.duplicates import detect_duplicates
+
+    ids = await _seed(db, tmp_path)
+    tv_root = tmp_path / "tv"
+    async with db.session() as session:
+        item = MediaItem(kind="tv", tmdb_id=57911, title="哆啦A梦", original_title="Doraemon")
+        session.add(item)
+        await session.flush()
+        for i in range(1, 4):  # 同一季三个没集号的文件
+            path = tv_root / f"哆啦A梦第2季/[飞沐team]哆啦A梦第2季 ({i}) .mkv"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"x" * (10 + i))
+            session.add(
+                LibraryFile(
+                    library_id=ids["tv_lib"],
+                    media_item_id=item.id,
+                    season_number=2,
+                    episode_number=0,  # 无集号
+                    file_path=str(path),
+                    size_bytes=10 + i,
+                    source=FileSource.SCANNED,
+                )
+            )
+        # 同一部剧里**解析出集号**的真重复，必须照常检出
+        for tag in ("a", "b"):
+            path = tv_root / f"哆啦A梦第2季/S02E05-{tag}.mkv"
+            path.write_bytes(b"y" * 20)
+            session.add(
+                LibraryFile(
+                    library_id=ids["tv_lib"],
+                    media_item_id=item.id,
+                    season_number=2,
+                    episode_number=5,
+                    file_path=str(path),
+                    size_bytes=20,
+                    source=FileSource.SCANNED,
+                )
+            )
+        await session.commit()
+        report = await detect_duplicates(session, media_item_id=item.id)
+
+    units = [u for d in report.items for s in d.seasons for u in s.units]
+    assert [(u.season_number, u.episode_number) for u in units] == [(2, 5)], (
+        "集号没解析出来的那一季被当成了重复单元"
+    )
+    assert len(units[0].files) == 2
+
+
+@pytest.mark.asyncio
+async def test_stale_unparsed_episode_conclusion_cannot_be_executed(client, db, tmp_path):
+    """部署前落下的旧结论行也不能执行——不能等下一轮扫描重建表，中间点一下就是删整季。"""
+    from movieclaw_api.services.library import duplicate_scan
+
+    ids = await _seed(db, tmp_path)
+    tv_root = tmp_path / "tv"
+    file_ids = []
+    async with db.session() as session:
+        item = MediaItem(kind="tv", tmdb_id=57911, title="哆啦A梦", original_title="Doraemon")
+        session.add(item)
+        await session.flush()
+        for i in range(1, 4):
+            path = tv_root / f"旧结论/({i}).mkv"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"x" * (10 + i))
+            row = LibraryFile(
+                library_id=ids["tv_lib"],
+                media_item_id=item.id,
+                season_number=2,
+                episode_number=0,
+                file_path=str(path),
+                size_bytes=10 + i,
+                source=FileSource.SCANNED,
+            )
+            session.add(row)
+            await session.flush()
+            file_ids.append(row.id)
+        # 手写一条旧口径的结论行（模拟升级前扫描落下的）
+        session.add(
+            LibraryDuplicateUnit(
+                library_id=ids["tv_lib"],
+                media_item_id=item.id,
+                season_number=2,
+                episode_number=0,
+                bucket="versions",
+                tier="review",
+                review_kind="unknown",
+                file_ids=sorted(file_ids),
+                suggested_file_id=sorted(file_ids)[0],
+                extra_files=2,
+                extra_bytes=25,
+            )
+        )
+        await session.commit()
+
+        outcome = await duplicate_scan.resolve_group(
+            session,
+            tier="review",
+            review_kind="unknown",
+            library_id=None,
+            keep_all=False,
+            trigger={"kind": "member", "id": None, "label": "tester"},
+            batch_limit=500,
+        )
+    assert outcome.done == 0, "旧结论行被执行了，整季会被删"
+    async with db.session() as session:
+        rows = {r.id: r for r in (await session.execute(select(LibraryFile))).scalars()}
+    assert all(rows[fid].state == FileState.IN_PLACE for fid in file_ids)
+
+
+@pytest.mark.asyncio
+async def test_oversized_unit_does_not_block_the_whole_batch(client, db, tmp_path):
+    """排头单元装不下时跳过它继续填，后面的小单元照样清得掉。
+
+    行按 extra_bytes 降序来，排头那个只要比整批上限还大，旧写法会把 budget 一次
+    吃成负数，后面几百个小单元全进 remaining——反复点也永远是「已移入回收站 0 个」。
+    """
+    from movieclaw_api.services.library import duplicate_scan
+
+    await _seed(db, tmp_path)
+    await _scan(db)
+    async with db.session() as session:
+        rows = list(
+            (
+                await session.execute(
+                    select(LibraryDuplicateUnit).where(LibraryDuplicateUnit.tier == "safe")
+                )
+            ).scalars()
+        )
+        assert rows, "seed 里没有 safe 档单元，用例失去意义"
+        # 把排头那条伪造成"超过整批上限"：体积最大所以排第一
+        rows[0].extra_files = 999
+        rows[0].extra_bytes = 10**12
+        blocked_id = rows[0].id
+        await session.commit()
+
+        outcome = await duplicate_scan.resolve_group(
+            session,
+            tier="safe",
+            review_kind=None,
+            library_id=None,
+            keep_all=False,
+            trigger={"kind": "member", "id": None, "label": "tester"},
+            batch_limit=500,
+        )
+    assert outcome.oversized_units == 1
+    # 被挡住的那条还在（没按伪造的数字乱删），其余该清的清掉了
+    async with db.session() as session:
+        left = (
+            await session.execute(
+                select(LibraryDuplicateUnit).where(LibraryDuplicateUnit.id == blocked_id)
+            )
+        ).scalar_one_or_none()
+    assert left is not None

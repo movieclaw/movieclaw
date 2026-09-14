@@ -47,6 +47,7 @@ from movieclaw_api.services.library.duplicates import (
     fold_seasons,
     quality_label_of,
     recycle_extras,
+    unparsed_tv_episode,
 )
 from movieclaw_api.services.library.origin import derive_origins, origin_of
 from movieclaw_db.engine import get_database
@@ -338,6 +339,18 @@ async def _hydrate(
     if not rows:
         return {}, []
     keys = {(r.media_item_id, r.season_number, r.episode_number): r for r in rows}
+    # 旧结论里可能还留着"现在的检测口径不会再产生"的单元——剧集里集号没解析
+    # 出来的那种（见 duplicates.unparsed_tv_episode）。它们按**过期**处理：不显示
+    # 也不清理，等下一轮扫描把表重建掉。不能等重建，中间这段时间点一下就是删整季
+    kinds = dict(
+        (
+            await session.execute(
+                select(MediaItem.id, MediaItem.kind).where(
+                    MediaItem.id.in_({r.media_item_id for r in rows})  # type: ignore[union-attr]
+                )
+            )
+        ).all()
+    )
     live = list(
         (
             await session.execute(
@@ -358,6 +371,9 @@ async def _hydrate(
     fresh: dict[int, list[LibraryFile]] = {}
     stale: list[int] = []
     for key, row in keys.items():
+        if unparsed_tv_episode(kinds.get(row.media_item_id), row.episode_number):
+            stale.append(row.id or 0)
+            continue
         files = sorted(by_key.get(key, []), key=lambda f: f.id or 0)
         if [f.id for f in files] != list(row.file_ids):
             stale.append(row.id or 0)
@@ -555,12 +571,20 @@ async def resolve_group(
         await session.commit()
         return outcome
 
-    # 按落账时的 extra_files 先切出够一批的行，只为这些行还原明细
+    # 按落账时的 extra_files 先切出够一批的行，只为这些行还原明细。
+    # **装不下的跳过、继续往后找**，不能就此打住：行是按 extra_bytes 降序来的，
+    # 排头那个单元只要比整批上限还大，budget 就被它一次吃成负数，后面几百个
+    # 小单元全被判进 remaining——一个文件都清不掉，用户反复点也永远是
+    # 「已移入回收站 0 个」（真实事故：排头是个 1943 个文件的单元，上限 500）
     todo: list[LibraryDuplicateUnit] = []
     budget = batch_limit
     for row in rows:
-        if budget <= 0:
+        if row.extra_files > budget:
             outcome.remaining += row.extra_files
+            # 单个单元就超过整批上限：任何一批都装不下它，再点多少次也轮不到。
+            # 报给调用方，让它把出路说清楚（逐单元决定没有这个上限）
+            if row.extra_files > batch_limit:
+                outcome.oversized_units += 1
             continue
         todo.append(row)
         budget -= row.extra_files
