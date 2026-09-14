@@ -35,6 +35,7 @@ import {
   commonNamePrefix,
   episodeLabel,
   fileNote,
+  compactSummary,
   groupSummary,
   hiddenNote,
   isScanning,
@@ -160,6 +161,15 @@ export function LibraryDuplicateFiles({
 
   // 明细层：选了某一档，或者从条目详情页带 ?item= 进来（只看那一个条目）
   const detail = focus.tier !== null || filter.itemId !== null;
+
+  // 分档胶囊行在窄屏要横滚，选中的那枚可能落在屏外——进来第一眼看不到自己在哪
+  // 一档，胶囊行就白做了。切换时把选中项滚进视野（block:nearest 保证不牵动整页）
+  const chipRowRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    chipRowRef.current
+      ?.querySelector('[aria-pressed="true"]')
+      ?.scrollIntoView({ block: "nearest", inline: "center" });
+  }, [focus]);
 
   const reloadSeq = useRef(0);
   const reload = useCallback(() => {
@@ -501,7 +511,7 @@ export function LibraryDuplicateFiles({
               下一步，所以让它一次点到位；选中的那枚胶囊同时就是标题。
             */}
             {focus.tier !== null ? (
-              <div className="flex w-full items-center gap-1.5 overflow-x-auto pb-0.5">
+              <div ref={chipRowRef} className="flex w-full items-center gap-1.5 overflow-x-auto pb-0.5">
                 <Chip active={false} onClick={() => setFocus(NO_FOCUS)}>
                   ‹ 摘要
                 </Chip>
@@ -539,23 +549,36 @@ export function LibraryDuplicateFiles({
                     整组都留着
                   </ActionButton>
                 )}
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => cleanGroup(focus.tier!, focus.reviewKind, focusGroup)}
-                  className={`flex h-8 items-center justify-center rounded-full border px-3 text-caption font-medium transition disabled:opacity-40 max-md:flex-1 ${
-                    focus.tier === "safe"
-                      ? "border-[var(--accent)] bg-[var(--accent)] text-[#0a0b10] hover:opacity-90"
-                      : "border-white/[0.15] text-[var(--text)] hover:bg-white/[0.08]"
-                  }`}
-                >
-                  {TIER_ACTION_LABELS[focus.tier]} · {focusGroup.files}
-                </button>
+                {/* 「规格不全」不给成批清理，理由见摘要卡上同一处注释 */}
+                {focus.reviewKind !== "unknown" && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => cleanGroup(focus.tier!, focus.reviewKind, focusGroup)}
+                    className={`flex h-8 items-center justify-center rounded-full border px-3 text-caption font-medium transition disabled:opacity-40 max-md:flex-1 ${
+                      focus.tier === "safe"
+                        ? "border-[var(--accent)] bg-[var(--accent)] text-[#0a0b10] hover:opacity-90"
+                        : "border-white/[0.15] text-[var(--text)] hover:bg-white/[0.08]"
+                    }`}
+                  >
+                    {TIER_ACTION_LABELS[focus.tier]} · {focusGroup.files}
+                  </button>
+                )}
               </div>
             )}
-            {/* 这句在摘要卡上已经讲过一遍（明细层只能从那里进来），窄屏不再占掉两行 */}
+            {/*
+              说明只在"你正要动手"的地方出现一次：三档的那句在摘要卡上讲过，窄屏
+              这里不再重复；取舍分组的那句摘要卡上没讲（四段叠起来是一面墙），
+              所以点进某一组时要显示出来。
+            */}
             {focusGroup?.hint && (
-              <p className="basis-full text-caption text-[var(--text-faint)] max-md:hidden">{focusGroup.hint}</p>
+              <p
+                className={`basis-full text-caption text-[var(--text-faint)] ${
+                  focus.reviewKind === null ? "max-md:hidden" : ""
+                }`}
+              >
+                {focusGroup.hint}
+              </p>
             )}
           </div>
 
@@ -720,26 +743,41 @@ function TierSummary({
               <p className="basis-full text-caption text-[var(--text-faint)]">{tier.hint}</p>
             </div>
 
-            {/* 「需要你决定」再按取舍类型分组：同一种取舍一次回答一批 */}
+            {/*
+              「需要你决定」再按取舍类型分组：同一种取舍一次回答一批。
+
+              一组两行——名字与分量一行、动作一行。第一版把三个按钮与文字挤在同
+              一行（按钮 `shrink-0`、文字 `flex-1`），窄屏上按钮吃掉大半宽度，
+              名字、计数、说明全被挤成一根一百来像素宽的文字柱，右边一大片空白。
+              说明也不在这里讲了：这张卡上三档各有一句，再叠四段就是一面墙；它挪
+              到点进这一组之后的明细层顶上——你正要动手的时候才需要读它。
+            */}
             {key === "review" && data.review_groups.length > 0 && (
-              <div className="mt-2.5 flex flex-col gap-1.5 border-t border-white/[0.06] pt-2.5">
+              <div className="mt-2.5 flex flex-col gap-2.5 border-t border-white/[0.06] pt-2.5">
                 {data.review_groups.map((group) => (
-                  <div key={group.key} className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-                    <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2">
-                      <span className="text-sub text-[var(--text)]">{group.label}</span>
-                      <span className="text-caption text-[var(--text-faint)] tabular-nums">{groupSummary(group)}</span>
-                      <span className="basis-full text-caption text-[var(--text-faint)]">{group.hint}</span>
-                    </div>
-                    <div className="flex shrink-0 items-center gap-1.5">
+                  <div key={group.key} className="flex flex-wrap items-baseline gap-x-3 gap-y-1.5">
+                    <span className="min-w-0 flex-1 text-sub text-[var(--text)]">{group.label}</span>
+                    <span className="shrink-0 text-caption text-[var(--text-faint)] tabular-nums">
+                      {compactSummary(group)}
+                    </span>
+                    <div className="flex basis-full items-center gap-1.5">
                       <ActionButton disabled={busy} onClick={() => onOpen("review", group.key as DuplicateReviewKind)}>
                         逐个看
                       </ActionButton>
                       <ActionButton disabled={busy} onClick={() => onKeepAll("review", group.key as DuplicateReviewKind, group)}>
                         都留着
                       </ActionButton>
-                      <ActionButton disabled={busy} onClick={() => onClean("review", group.key as DuplicateReviewKind, group)}>
-                        按建议清 · {group.files}
-                      </ActionButton>
+                      {/*
+                        「规格不全」这一组**不给成批清理**：它的定义就是"机器没有
+                        比较的依据"，紧挨着一句"比不出来"再放一个「按建议清 · 2974」，
+                        按下去就是拿一个机器自己声明做不出的判断去删掉近三千个文件。
+                        三态铁律在这里的落点——无从判定就交给人，逐个看或都留着。
+                      */}
+                      {group.key !== "unknown" && (
+                        <ActionButton disabled={busy} onClick={() => onClean("review", group.key as DuplicateReviewKind, group)}>
+                          按建议清 · {group.files}
+                        </ActionButton>
+                      )}
                     </div>
                   </div>
                 ))}

@@ -40,6 +40,20 @@ export function groupSummary(group: DuplicateGroup): string {
   return parts.join(" · ");
 }
 
+/**
+ * 取舍分组行上的计数：`562 个单元 · 933 GB`。
+ *
+ * 比 `groupSummary` 少一段文件数——分组行要和名字、三个按钮共处一行，宽度是
+ * 最紧的；"能腾出多少"比"几个文件"更能决定先做哪一组，而文件数在「按建议清 · N」
+ * 上原样写着。
+ */
+export function compactSummary(group: DuplicateGroup): string {
+  if (group.units === 0) return "";
+  const parts = [`${group.units} 个单元`];
+  if (group.bytes > 0) parts.push(formatBytes(group.bytes));
+  return parts.join(" · ");
+}
+
 /** 一档的动作按钮该写什么：`safe` 是没风险的清理，另两档都在动"有区别"的文件。 */
 export const TIER_ACTION_LABELS: Record<DuplicateTier, string> = {
   safe: "全部清理",
