@@ -59,20 +59,31 @@ export function compactSummary(group: DuplicateGroup): string {
  * 这个作用域给不给「按建议成批清理」。
  *
  * 一条规则三处用（摘要卡的档行、取舍分组行、明细层头部），散在 JSX 条件里迟早
- * 漏一处——真漏过：只在点进「规格不全」那一组时藏了按钮，**停在「需要你决定」
- * 整档**那条路径没管，而整档里混着「规格不全」的单元，一键清照样会碰到它们。
+ * 漏一处——真漏过，所以收成一个函数。
  *
- * 说不给的两种，理由是同一句：那些单元的定义就是"机器没有比较的依据"，拿一个
- * 机器自己声明做不出的判断去成批删文件，是三态铁律的反面。要成批处理就先点进
- * 一个**具体的**取舍组。
+ * 只有停在「需要你决定」**整档**不给：整档里混着几种不同的取舍，确认框说不清
+ * "按什么清"；点进一个具体的取舍组，那句话才说得准。「规格不全」那一组曾经也
+ * 不给（"机器自己说没有比较的依据"），后来放开了：它的「建议保留」与逐个看时
+ * 点的是同一个建议，清掉的进回收站可撤回，不给一键只是把几百次点击强加给人，
+ * 换不来更多安全——真正的保险是确认框把依据说清楚（见 `bulkCleanNote`）。
  */
 export function allowsBulkClean(
   tier: DuplicateTier,
   reviewKind: DuplicateReviewKind | null,
 ): boolean {
-  if (tier !== "review") return true;
-  if (reviewKind === null) return false; // 整档：混着「规格不全」
-  return reviewKind !== "unknown";
+  return tier !== "review" || reviewKind !== null;
+}
+
+/**
+ * 成批清理确认框里那句"依据"：只有「规格不全」要单独说——它的「建议保留」不是
+ * 画质判断，是机器在缺了一截的阶梯上按码率、来源、文件名挑的，用户按下去之前
+ * 得知道这一点。其余作用域用通用的那句。
+ */
+export function bulkCleanNote(reviewKind: DuplicateReviewKind | null): string {
+  if (reviewKind === "unknown") {
+    return "这一组机器没比出档位：留下的那个只是按实测码率、来源、文件名挑的，不是画质判断。";
+  }
+  return "这些文件与保留者有区别；想留的请先取消，回去点那个单元的「都留着」。";
 }
 
 /** 一档的动作按钮该写什么：`safe` 是没风险的清理，另两档都在动"有区别"的文件。 */

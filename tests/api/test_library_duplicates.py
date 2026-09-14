@@ -1115,3 +1115,72 @@ async def test_partial_failure_still_cleans_the_rest(client, db, tmp_path, monke
     trashed = [i for i in (ids["jm_b"], ids["jm_c"]) if rows[i].state == FileState.TRASHED]
     assert len(trashed) == 1, "失败之后同单元的另一个文件没被清掉"
     assert rows[ids["jm_a"]].state == FileState.IN_PLACE
+
+
+async def test_missing_source_on_both_sides_is_not_unknown(client, db, tmp_path):
+    """整组都没标片源 → 不是「规格不全」，是同档里挑了一个（same_tier）。
+
+    「规格不全」的口径与排序那边（``_usable_vectors``）对齐：只有阶梯上某一位
+    **一边探到、一边没探到**才算。整组都没片源时 ``compare_ladder`` 当平局往下比，
+    结论口径是一致的；此前 ``_review_kind`` 却按"任一文件片源为空"打成规格不全，
+    整理过的库文件名普遍不带片源词，几乎整个「需要你决定」都被标成了无从判定。
+
+    分辨率例外：它来自 ffprobe，缺了就是探测失败，一边缺也算规格不全。
+    """
+    ids = await _seed(db, tmp_path)
+    async with db.session() as session:
+        item = MediaItem(
+            kind="tv", tmdb_id=78, title="漫长的季节", original_title="Long", year=2023
+        )
+        session.add(item)
+        await session.flush()
+        base = tmp_path / "tv" / "漫长的季节"
+        base.mkdir(parents=True, exist_ok=True)
+        for ep, name, size, spec in (
+            # E01：两边都没片源、分辨率相同、码率不同 → 同档，按码率挑
+            (1, "漫长的季节 - S01E01.mkv", 40, {"resolution": "1080p", "bit_rate": 9_000_000}),
+            (1, "漫长的季节 - S01E01.mp4", 10, {"resolution": "1080p", "bit_rate": 3_000_000}),
+            # E02：一边分辨率没探到 → 规格不全
+            (2, "漫长的季节 - S01E02.mkv", 40, {"resolution": None, "bit_rate": 9_000_000}),
+            (2, "漫长的季节 - S01E02.mp4", 10, {"resolution": "1080p", "bit_rate": 3_000_000}),
+        ):
+            path = base / name
+            path.write_bytes(b"x" * size)
+            session.add(
+                LibraryFile(
+                    library_id=ids["tv_lib"],
+                    media_item_id=item.id,
+                    season_number=1,
+                    episode_number=ep,
+                    file_path=str(path),
+                    size_bytes=size,
+                    duration_seconds=2700,
+                    source=FileSource.SCANNED,
+                    origin=SCAN,
+                    **spec,
+                )
+            )
+        await session.commit()
+    await _scan(db)
+
+    same = (
+        await client.get(
+            f"/api/v1/libraries/duplicate-files?media_item_id={item.id}&tier=review&review_kind=same_tier"
+        )
+    ).json()["data"]
+    unknown = (
+        await client.get(
+            f"/api/v1/libraries/duplicate-files?media_item_id={item.id}&tier=review&review_kind=unknown"
+        )
+    ).json()["data"]
+
+    def episodes(d: dict) -> list[int]:
+        return sorted(
+            u["episode_number"] for it in d["items"] for s in it["seasons"] for u in s["units"]
+        )
+
+    assert episodes(same) == [1], "两边都没片源不是规格不全，是同档不同版本"
+    assert episodes(unknown) == [2], "分辨率一边没探到才是规格不全"
+    e01 = next(u for it in same["items"] for s in it["seasons"] for u in s["units"])
+    reason = next(f["suggest_reason"] for f in e01["files"] if f["suggested"])
+    assert reason == "同档，实测码率更高"

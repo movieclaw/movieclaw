@@ -33,6 +33,7 @@ import {
   type SharedFacts,
   TIER_ACTION_LABELS,
   allowsBulkClean,
+  bulkCleanNote,
   commonNamePrefix,
   episodeLabel,
   fileNote,
@@ -42,7 +43,6 @@ import {
   isScanning,
   keepFileFacts,
   keepVersionFacts,
-  qualitySegments,
   resolveResultText,
   scanNote,
   seasonHeadline,
@@ -347,7 +347,7 @@ export function LibraryDuplicateFiles({
       description:
         `${scope} · ${group.files} 个文件 · ${formatBytes(group.bytes)} · ` +
         "每个单元留下「建议保留」的那个 · 7 天内可在回收站恢复。" +
-        (tier === "safe" ? "" : " 这些文件与保留者有区别；想留的请先取消，回去点那个单元的「都留着」。") +
+        (tier === "safe" ? "" : ` ${bulkCleanNote(reviewKind)}`) +
         (group.files > BATCH_LIMIT ? ` 一次最多处理 ${BATCH_LIMIT} 个，剩下的再点一次。` : ""),
       bullets: tier === "safe" ? undefined : facts.lines,
       confirmLabel: `移入回收站 · ${Math.min(group.files, BATCH_LIMIT)}`,
@@ -776,7 +776,7 @@ function TierSummary({
                       >
                         都留着
                       </ActionButton>
-                      {/* 哪些作用域不给成批清理，见 `allowsBulkClean` */}
+                      {/* 点进具体一组都给成批清理（「规格不全」的依据由确认框说清），见 `allowsBulkClean` */}
                       {allowsBulkClean("review", group.key as DuplicateReviewKind) && (
                         <ActionButton
                           disabled={busy}

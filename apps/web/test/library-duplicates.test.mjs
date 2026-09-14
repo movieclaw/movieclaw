@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   allowsBulkClean,
+  bulkCleanNote,
   commonNamePrefix,
   fileNote,
   groupSummary,
@@ -271,16 +272,22 @@ test("成批清理的确认清单带上体积", () => {
 });
 
 
-test("allowsBulkClean：无从判定的作用域不给成批清理", () => {
+test("allowsBulkClean：只有停在整档不给成批清理", () => {
   assert.equal(allowsBulkClean("safe", null), true);
   assert.equal(allowsBulkClean("suggested", null), true);
-  // 「规格不全」那一组：机器自己说没有比较的依据，就不该有一键清
-  assert.equal(allowsBulkClean("review", "unknown"), false);
-  // 停在「需要你决定」整档也不给——整档里混着「规格不全」的单元，
-  // 一键清照样会碰到它们（这条曾经漏过）
+  // 停在「需要你决定」整档不给——混着几种取舍，确认框说不清"按什么清"
   assert.equal(allowsBulkClean("review", null), false);
-  // 具体的其他取舍组可以成批
+  // 点进具体一组都给，「规格不全」也给：它的建议与逐个看时点的是同一个，
+  // 清掉的进回收站；依据由确认框说清（bulkCleanNote）
+  assert.equal(allowsBulkClean("review", "unknown"), true);
   assert.equal(allowsBulkClean("review", "hdr"), true);
   assert.equal(allowsBulkClean("review", "resolution"), true);
   assert.equal(allowsBulkClean("review", "same_tier"), true);
+});
+
+test("bulkCleanNote：「规格不全」要说明建议不是画质判断", () => {
+  assert.match(bulkCleanNote("unknown"), /没比出档位/);
+  assert.match(bulkCleanNote("unknown"), /不是画质判断/);
+  assert.match(bulkCleanNote("hdr"), /都留着/);
+  assert.equal(bulkCleanNote(null), bulkCleanNote("same_tier"));
 });

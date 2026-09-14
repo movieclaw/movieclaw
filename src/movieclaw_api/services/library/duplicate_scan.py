@@ -89,7 +89,10 @@ REVIEW_KIND_LABELS: dict[str, str] = {
 REVIEW_KIND_HINTS: dict[str, str] = {
     "resolution": "一个分辨率高、一个片源更好，阶梯上各占一头。要画质还是要体积，只有你知道。",
     "hdr": "HDR 版本在不支持的设备上颜色会发灰，很多人两个都留着。",
-    "unknown": "这些文件的分辨率或片源没探测到，机器没有比较的依据，也就给不出可以成批执行的建议。",
+    "unknown": (
+        "分辨率或片源有一边没探到，机器比不出档位，「建议保留」只是按码率、来源、文件名挑的。"
+        "分辨率缺的，重新扫描媒体库会补探；片源认文件名，有订阅的剧可以在订阅页整季「标注片源」。"
+    ),
     "same_tier": "规格完全同档，差的是发布组、字幕或压制。挑一个熟悉的组，或者都留着。",
 }
 #: 分档在页面上的先后：先做没风险的，再做要花心思的
@@ -123,16 +126,23 @@ def classify(unit: DupUnit) -> tuple[Tier, str | None]:
         return "safe", None
     if unit.suggested.suggest_basis == "ladder" and not unit.suggested.suggest_partial:
         return "suggested", None
-    return "review", _review_kind(unit.files)
+    return "review", _review_kind(unit.files, unit.suggested.suggest_partial)
 
 
-def _review_kind(files: list[DupFile]) -> ReviewKind:
+def _review_kind(files: list[DupFile], partial: bool) -> ReviewKind:
     """这一组文件之间到底在犹豫什么。顺序即优先级：先看大的取舍。
 
-    规格不全排在最前：分辨率是 ``None`` 时"分辨率不同"是句假话——那不是两个
-    分辨率之间的取舍，是机器压根没探到规格。
+    「规格不全」排在最前，口径与 ``_usable_vectors`` 相同——**阶梯上有一位只有
+    一边探到**（``partial``），那一位对整组失效，机器是在缺了一截的阶梯上挑的。
+    此前这里写的是"任一文件的分辨率或片源为空"，比排序那边宽：整组都没标片源
+    时排序按 ``compare_ladder`` 的规矩当平局、照常往下比码率，结论口径是一致的，
+    这里却把它打成"规格不全"——整理过的库文件名普遍不带片源词，于是几乎整个
+    「需要你决定」都被标成了无从判定，而其实机器只是在同档里挑了一个。
+
+    分辨率例外：它来自 ffprobe，缺了就是探测失败，两边都缺也不是"命名习惯"，
+    一样算规格不全。
     """
-    if any(not f.row.resolution or not f.row.media_source for f in files):
+    if partial or any(not f.row.resolution for f in files):
         return "unknown"
     if len({f.row.resolution for f in files}) > 1:
         return "resolution"
