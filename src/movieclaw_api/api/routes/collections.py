@@ -37,8 +37,11 @@ from movieclaw_api.services.library.access import (
     visible_library_ids,
 )
 from movieclaw_api.services.library.collections import (
+    cached_membership,
+    cover_head,
     effective_rules,
     is_rule_driven,
+    refresh_collection_cache,
     resolve_members,
     visible_collections,
 )
@@ -96,10 +99,6 @@ async def _scope(
     )
 
 
-#: 卡片上铺几张封面。三张够看出"这里面装的是哪一类片"，再多就成了缩略图墙。
-_COVER_COUNT = 3
-
-
 def _iso_date(raw: str | None) -> date | None:
     """TMDB 的日期串 → date；畸形值当没有（上游档案脏了不该让整页 500）。"""
     if not raw:
@@ -119,17 +118,6 @@ def _kind_of(row: Collection) -> str:
     if is_series_collection(row):
         return "series"
     return "builtin" if row.builtin else "user"
-
-
-def _cover_head(row: Collection, ids: list[int]) -> list[int]:
-    """卡片上要铺的那几张封面对应的条目——指定了封面就把它挪到最前。"""
-    if not ids:
-        return []
-    head = list(ids)
-    if row.cover_item_id in head:
-        head.remove(row.cover_item_id)
-        head.insert(0, row.cover_item_id)
-    return head[:_COVER_COUNT]
 
 
 async def _views(
@@ -156,8 +144,21 @@ async def _views(
     换成缓存的话，换的也只是这里这一处（设计文档 5.5.2「计数可替换的形状」）。
     """
 
-    resolved: list[tuple[Collection, list[int]]] = []
+    # (合集, 成员数, 封面头)。内容型合集直接读行上的缓存（设计文档 5.5.2）——
+    # 系列合集几十上百个，每个一次墙查询曾是首屏最重的一条读；缓存跟着
+    # refresh_stats 刷，列表页不再为它们跑任何成员判定。分级受限的观看者看到的
+    # 成员本来就少一截，缓存存的是"库里到底有多少"，对不上——他们照旧实时判定
+    unrestricted = content_limit is None or content_limit.unrestricted
+    resolved: list[tuple[Collection, int, list[int]]] = []
     for row in rows:
+        cached = cached_membership(row) if unrestricted else None
+        if cached is not None:
+            # 库对这个成员不可见时与 resolve_members 同一口径：一个成员都没有
+            if visible is not None and row.library_id not in visible:
+                resolved.append((row, 0, []))
+            else:
+                resolved.append((row, cached[0], cached[1]))
+            continue
         ids = await resolve_members(
             session,
             row,
@@ -165,16 +166,16 @@ async def _views(
             visible_library_ids=visible,
             content_limit=content_limit,
         )
-        resolved.append((row, ids))
+        resolved.append((row, len(ids), cover_head(row, ids)))
     # 合集卡片上的图与海报墙上的图永远是同一张：共用 poster_facts_many 这一处实现
     facts = await poster_facts_many(
-        session, sorted({i for row, ids in resolved for i in _cover_head(row, ids)})
+        session, sorted({i for _row, _count, head in resolved for i in head})
     )
     views: list[CollectionView] = []
-    for row, ids in resolved:
+    for row, count, head in resolved:
         covers = [
             CollectionCover(url=fact.url, blur=fact.blur)
-            for fact in (facts.get(i) for i in _cover_head(row, ids))
+            for fact in (facts.get(i) for i in head)
             if fact is not None and fact.url
         ]
         views.append(
@@ -189,7 +190,7 @@ async def _views(
                 # 形态是推导的：能不能改看 builtin，会不会自己长看有没有规则
                 editable=row.builtin is None,
                 rule_driven=is_rule_driven(row),
-                item_count=len(ids),
+                item_count=count,
                 cover_item_id=row.cover_item_id,
                 covers=covers,
                 # 合集从哪来：用户自建 / 内置 / 自动生成的系列。分组展示要它，
@@ -331,6 +332,7 @@ async def create_collection(
             for index, item_id in enumerate(item_ids)
         )
         await session.flush()
+    await refresh_collection_cache(session, row)
     view = await _view(
         session, row, member_id=member_id, visible=visible, content_limit=content_limit
     )
@@ -404,6 +406,8 @@ async def update_collection(
             for index, item_id in enumerate(payload.item_ids)
         )
     await session.flush()
+    # 规则 / 封面变了缓存就是旧的：就地重算，返回的视图与下一次列表看到的一致
+    await refresh_collection_cache(session, row)
     view = await _view(
         session, row, member_id=member_id, visible=visible, content_limit=content_limit
     )

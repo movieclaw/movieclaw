@@ -26,6 +26,7 @@ import {
   SCAN_PHASE_LABELS,
 } from "@/lib/api/libraries";
 import { type Collection, listCollectionItems, listCollections } from "@/lib/api/collections";
+import { withDeadline } from "@/lib/first-paint-deadline";
 import {
   type FavoriteItem,
   type FavoritesPage,
@@ -119,6 +120,9 @@ export function libraryStatsSummary(libraries: MediaLibrary[] | null): string {
  * 数据源是 library_file 台账的**真实库存**（L3 起）：入库管线与存量扫描
  * 落账的文件聚合，不再用订阅占位。
  */
+//: 首帧等合集列表的预算（毫秒）。见 reload 里的说明
+const COLLECTIONS_FIRST_PAINT_BUDGET_MS = 1500;
+
 export function LibraryView() {
   const { canManageLibraries } = usePermissions();
   // 首页的行清单存在界面偏好里（成员各存各的），应用启动时已随全站偏好拉过一次
@@ -142,17 +146,37 @@ export function LibraryView() {
   // 上一轮已拉过条目时的快照（库状态 + 要取哪些行 + 合集成员数）：都没变说明
   // 库存也不会变，不必再逐行全量拉一遍——否则空闲时每 30 秒也要打出 1 + N 个请求
   const lastSnapshot = useRef<string | null>(null);
+  // 首帧只等这么久合集列表：它是首页最重的一条读（后台任务压着数据库时曾到
+  // 十几秒），而库列表几十毫秒就回来。预算内回来照常；超时先用上一份把页面画
+  // 出来，真正的结果晚到再整页补一轮。首帧之后不限预算——页面已经在了，多等
+  // 一会儿合集不影响任何东西
+  const painted = useRef(false);
+  const lastCollections = useRef<Collection[]>([]);
+  const reloadRef = useRef<() => void>(() => {});
   const reload = useCallback(() => {
     const seq = ++reloadSeq.current;
     Promise.all([
       listLibraries(),
-      // 合集拿不到就当没有——不拖垮首页，合集行下一轮轮询自动回来
-      listCollections().catch(() => null),
+      // 合集拿不到就当上一份还在——不拖垮首页，合集行下一轮轮询自动回来
+      withDeadline(
+        listCollections(),
+        painted.current ? null : COLLECTIONS_FIRST_PAINT_BUDGET_MS,
+        null,
+      ),
     ])
-      .then(async ([libs, cols]) => {
+      .then(async ([libs, colsOutcome]) => {
         if (seq !== reloadSeq.current) return;
+        painted.current = true;
         setFailed(false);
-        const collectionsNow = cols ?? [];
+        const collectionsNow = colsOutcome.value ?? lastCollections.current;
+        lastCollections.current = collectionsNow;
+        if (colsOutcome.late) {
+          // 晚到的那份：没有更新一轮的 reload 抢先时整页再拉一次，
+          // 合集行及其条目随之出现
+          void colsOutcome.late.then((late) => {
+            if (late && seq === reloadSeq.current) reloadRef.current();
+          });
+        }
         const collectionsSnapshot = JSON.stringify(collectionsNow);
         setCollections((prev) =>
           JSON.stringify(prev) === collectionsSnapshot ? prev : collectionsNow,
@@ -213,6 +237,7 @@ export function LibraryView() {
   }, [homePrefs]);
 
   useEffect(() => {
+    reloadRef.current = reload;
     reload();
   }, [reload]);
 
