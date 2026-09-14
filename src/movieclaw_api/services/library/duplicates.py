@@ -48,7 +48,7 @@ from movieclaw_db.models import FileState, LibraryFile, MediaItem, RuleSet, Subs
 from movieclaw_db.models.library import Library
 from movieclaw_db.models.subscription import DownloadAttemptStatus, SubscriptionDownloadAttempt
 from movieclaw_matcher.decision import compare_ladder, ladder_vector
-from movieclaw_matcher.models import RuleSetSpec
+from movieclaw_matcher.models import QualitySnapshot, RuleSetSpec
 
 logger = logging.getLogger("movieclaw_api.library.duplicates")
 
@@ -93,6 +93,9 @@ _NEUTRAL_SPEC = RuleSetSpec()
 # 指纹分批的批量。整轮 stat 是检测里唯一的磁盘 IO，网络盘上几千次往返要跑几十秒；
 # 分批只为一件事：让扫描任务的进度条真的在动，用户知道它没卡死
 _STAT_CHUNK = 200
+#: 发布名解析一批多少个文件扔进线程。ONNX 推理期间会放掉 GIL，一批算完回一次
+#: 事件循环；批太小则线程切换开销压过收益。
+_SNAPSHOT_CHUNK = 100
 # 建议依据：机器码 → 给人看的话的**后半句**。前半句由"档位比全了没有"决定
 # （见 ``_reason_text``）——这句话必须是真的：曾经不论谁定的序都写"按实测码率
 # 建议"，而实际上定序的是"未知当最差"，码率根本没轮到
@@ -280,6 +283,18 @@ def _rank(f: DupFile, vectors: dict[int, tuple[int, ...]]) -> tuple:
     )
 
 
+def _snapshots_many(rows: list[LibraryFile]) -> dict[int, QualitySnapshot]:
+    """批量算质量快照——**在工作线程里跑**，别放回事件循环。
+
+    每行都要对文件名重跑一遍 enrich（ONNX NER），单个文件毫秒级，但一轮全库
+    扫描是几千次：放在循环上就是几十秒的独占。只读已加载的行属性、不碰
+    session，所以换线程是安全的。
+    """
+    from movieclaw_api.services.subscription.upgrade import snapshot_from_file
+
+    return {r.id or -1: snapshot_from_file(r, None) for r in rows}
+
+
 def _usable_vectors(
     vectors: dict[int, tuple[int | None, ...]],
 ) -> tuple[dict[int, tuple[int, ...]], bool]:
@@ -318,11 +333,11 @@ def _usable_vectors(
     return trimmed, partial
 
 
-def _suggest(files: list[DupFile], spec: RuleSetSpec) -> None:
+def _suggest(
+    files: list[DupFile], spec: RuleSetSpec, snapshots: dict[int, QualitySnapshot]
+) -> None:
     """给单元贴「建议保留」并说明依据。它只是建议：用户点哪个「留这个」就留哪个。"""
-    from movieclaw_api.services.subscription.upgrade import snapshot_from_file
-
-    raw = {f.row.id or -1: ladder_vector(snapshot_from_file(f.row, None), spec) for f in files}
+    raw = {f.row.id or -1: ladder_vector(snapshots[f.row.id or -1], spec) for f in files}
     vectors, partial = _usable_vectors(raw)
     ordered = sorted(files, key=lambda f: _rank(f, vectors), reverse=True)
     best = ordered[0]
@@ -550,7 +565,14 @@ async def detect_duplicates(
         await _tick(report_progress, "fingerprint", "比对文件指纹", len(stats), len(paths))
     inode = {r.id or -1: stats.get(r.file_path) for r in flat}
     origins = await derive_origins(session, flat)
-    await _tick(report_progress, "suggest", "排出建议保留", None, None)
+    # 「建议保留」要给每个文件跑一遍发布名解析（ONNX NER）。它是纯 CPU 的活，
+    # 留在事件循环上会把整个 API 占死：万级台账实测占住 57 秒，期间健康探针
+    # 全部超时、后台任务租约心跳续不上，扫描被判超时后又被接管重跑一遍。
+    # 分批扔进线程，每批之间回一次循环。
+    snapshots: dict[int, QualitySnapshot] = {}
+    for start in range(0, len(flat), _SNAPSHOT_CHUNK):
+        snapshots |= await asyncio.to_thread(_snapshots_many, flat[start : start + _SNAPSHOT_CHUNK])
+        await _tick(report_progress, "suggest", "排出建议保留", len(snapshots), len(flat))
     units_by_item: dict[int, list[DupUnit]] = defaultdict(list)
     for key, unit_rows in listed.items():
         files = [
@@ -565,7 +587,7 @@ async def detect_duplicates(
         for f in files:
             f.version_key = f"{f.quality_label}|{f.origin.get('label') or ''}"
         spec = specs.get(key[0], (_NEUTRAL_SPEC, False))[0]
-        _suggest(files, spec)
+        _suggest(files, spec, snapshots)
         units_by_item[key[0]].append(
             DupUnit(
                 season_number=key[1],
@@ -625,6 +647,19 @@ class ResolveOutcome:
     remaining: int = 0
 
 
+async def _refresh_unit(session: AsyncSession, unit: DupUnit) -> None:
+    """rollback 之后把单元里的行读回来。
+
+    rollback 让所有实例过期，而单元里排在后面的文件还要读自己的属性。行已经
+    不在库里（比如刚被别的路径删掉）就跳过：那一行轮到它时会自己记一次失败。
+    """
+    for f in unit.files:
+        try:
+            await session.refresh(f.row)
+        except Exception:  # noqa: BLE001 -- 刷不回来的行留给它自己那轮去失败
+            logger.debug("重复清理：回滚后刷新台账行失败", exc_info=True)
+
+
 def _note(keep: DupFile, gone: DupFile, bucket: Bucket) -> str:
     if bucket == "identical":
         return f"重复清理：与「{keep.file_name}」一模一样，已保留后者"
@@ -643,7 +678,16 @@ async def recycle_extras(
     *,
     include_kept: bool,
 ) -> None:
-    """留下 ``keep``，单元里其余的进回收站（逐单元决定与成组清理共用这一段）。"""
+    """留下 ``keep``，单元里其余的进回收站（逐单元决定与成组清理共用这一段）。
+
+    「单个失败不影响其它文件」这条承诺全靠下面两件事撑着：失败分支只用**事先
+    取好的字符串**，以及 rollback 之后把行刷回来。原因是 ``session.rollback()``
+    会让所有 ORM 实例过期，而在异步 session 上读一个过期属性是一次隐式 IO，
+    直接抛 ``MissingGreenlet``——它会把失败分支自己炸掉，整个请求变成 500，
+    ``failed`` 列表因此从来没真正填上过，单元里排在后面的文件也一个都轮不到。
+    """
+    # 展示用的名字与 id 先取出来，失败分支不再碰 ORM
+    marks = {id(f): (f.row.id or 0, f.file_name) for f in unit.files}
     for f in unit.files:
         if f is keep or (f.kept and not include_kept):
             continue
@@ -663,8 +707,10 @@ async def recycle_extras(
             outcome.done += 1
         except Exception as exc:  # noqa: BLE001 -- 单个失败不回滚已成功的
             await session.rollback()
-            logger.warning("重复清理移入回收站失败：%s", row.file_path, exc_info=True)
-            outcome.failed.append((row.id or 0, f.file_name, f"移入回收站失败：{exc}"))
+            file_id, file_name = marks[id(f)]
+            logger.warning("重复清理移入回收站失败：%s", file_name, exc_info=True)
+            outcome.failed.append((file_id, file_name, f"移入回收站失败：{exc}"))
+            await _refresh_unit(session, unit)
 
 
 async def resolve_unit(
