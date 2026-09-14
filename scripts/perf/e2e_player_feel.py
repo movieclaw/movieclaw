@@ -329,14 +329,21 @@ async def run_fake_landscape(browser, args: argparse.Namespace) -> dict:
             " return { left: b.left, top: b.top, w: b.width, h: b.height }; }"
         )
         # 用户眼里「从左往右拖」= 物理竖直方向：进度条转过来之后外接矩形是
-        # 「厚 × 长」，拿 clientX/rect.width 算等于把整部片压进 44 个像素
+        # 「厚 × 长」，拿 clientX/rect.width 算等于把整部片压进 44 个像素。
+        # **必须用 CDP 真触摸而不是 page.mouse**：鼠标没有平移手势，验不出
+        # 「浏览器把沿条的竖直触摸当翻页收走（pointercancel）」这一类——
+        # 2026-09-14 就是这么漏掉的（player-feel.md §19.8）。
         x = bar["left"] + bar["w"] / 2
-        await page.mouse.move(x, bar["top"] + bar["h"] * 0.2)
-        await page.mouse.down()
+        cdp = await context.new_cdp_session(page)
+        touch_at = lambda kind, y: cdp.send(  # noqa: E731 - 三行样板不值得起个名字
+            "Input.dispatchTouchEvent",
+            {"type": kind, "touchPoints": [] if kind == "touchEnd" else [{"x": x, "y": y}]},
+        )
+        await touch_at("touchStart", bar["top"] + bar["h"] * 0.2)
         for ratio in (0.4, 0.7):
-            await page.mouse.move(x, bar["top"] + bar["h"] * ratio)
+            await touch_at("touchMove", bar["top"] + bar["h"] * ratio)
             await asyncio.sleep(0.25)
-        await page.mouse.up()
+        await touch_at("touchEnd", bar["top"] + bar["h"] * 0.7)
         await asyncio.sleep(1.2)
         result = {
             "fake_landscape": True,

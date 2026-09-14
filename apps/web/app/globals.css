@@ -1768,6 +1768,16 @@ html:has(.player-root) {
     0 1px 6px rgb(0 0 0 / 0.5);
 }
 
+/* 进度条自己接管全部触摸：拖动由指针事件算，浏览器不许把它当平移手势收走。
+   组件上写的 `touch-none` 在这里**不生效**——上面那条 `input { touch-action:
+   manipulation }` 是不分层的规则，而 Tailwind 的工具类在 @layer utilities 里，
+   级联层的规矩是不分层的永远压过分层的，与特异性无关。后果只在伪横屏里
+   暴露：容器转了 90°，沿条拖就是物理竖直方向，manipulation 允许竖直平移，
+   浏览器（Chromium 实测，iOS 同理）按下 50ms 后发 pointercancel 把手势收走，
+   进度条一动不动。竖屏里沿条是横向、页面横向没得滚，才碰巧没事。 */
+.player-scrub {
+  touch-action: none;
+}
 .player-scrub::-webkit-slider-runnable-track {
   background: transparent;
   height: 100%;
