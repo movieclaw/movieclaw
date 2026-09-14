@@ -295,13 +295,17 @@ async def resolve_duplicates(
     except ValueError as exc:
         raise BadRequestException(str(exc)) from exc
     # 做完决定的单元不再是"待处理"：删掉它的结论行，摘要数字立刻变小，
-    # 不必为一个决定重扫整库（真正的修正等下一轮扫描）
-    await duplicate_scan.forget_units(
-        session,
-        media_item_id=payload.media_item_id,
-        season_number=payload.season_number,
-        episode_number=payload.episode_number,
-    )
+    # 不必为一个决定重扫整库（真正的修正等下一轮扫描）。
+    # 一个文件都没清成（权限、文件被占用……）时不能删：那不是"做完了决定"，
+    # 而是决定没执行成功。删了它这个单元就从列表和摘要里一起消失，用户看到
+    # 一句报错、再刷新发现条目没了、文件却还在，只能重扫整库才找得回来。
+    if outcome.done or not outcome.failed:
+        await duplicate_scan.forget_units(
+            session,
+            media_item_id=payload.media_item_id,
+            season_number=payload.season_number,
+            episode_number=payload.episode_number,
+        )
     if payload.keep_all:
         return ok(_result(outcome), message=f"已标记「都留着」：{outcome.done} 个文件不再列为重复")
     await _after_cleanup(session, outcome, background_tasks)

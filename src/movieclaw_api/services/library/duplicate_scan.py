@@ -561,9 +561,14 @@ async def resolve_group(
         if len(extras) > budget:
             outcome.remaining += len(extras)
             continue
+        done_before = outcome.done
         await recycle_extras(session, unit, unit.suggested, trigger, outcome, include_kept=False)
         budget -= len(extras)
-        resolved.append(row.id or 0)
+        # 一个都没清成的单元留着结论行：它的文件原封不动，还是"待处理"。
+        # 删了只会让它从页面和摘要里一起消失，用户下次看到的是更小的数字
+        # 和一样多的重复文件
+        if outcome.done > done_before:
+            resolved.append(row.id or 0)
     if resolved:
         await session.execute(
             delete(LibraryDuplicateUnit).where(LibraryDuplicateUnit.id.in_(resolved))  # type: ignore[union-attr]
@@ -663,7 +668,14 @@ async def enqueue_duplicate_scan_job(
 async def _run_duplicate_scan_job(
     context: jobs.JobContext, input_data: dict[str, Any]
 ) -> dict[str, Any]:
-    """重复扫描处理器：算一轮、整表重建。中断了重跑一轮即可，没有断点要存。"""
+    """重复扫描处理器：算一轮、整表重建。中断了重跑一轮即可，没有断点要存。
+
+    每报一次进度顺带查一次取消/租约——这是本任务唯一的安全边界。少了它有两个
+    后果：用户在任务中心点「取消」按不动（要等整轮算完），以及**租约被接管后
+    这一份还在跑**——它照样会把 ``library_duplicate_unit`` 整表删掉重建一遍，
+    与接管者的写并发打架；框架事后那句「丢弃本次执行结果」只丢作业结论，
+    删表重建的副作用早已落库。
+    """
 
     async def report(phase: str, message: str, current: int | None, total: int | None) -> None:
         determinate = current is not None and total
@@ -677,6 +689,8 @@ async def _run_duplicate_scan_job(
             phase_index=_PHASES.index(phase) + 1,
             phase_count=len(_PHASES),
         )
+        # 放在 update_progress 之后：它已经顺路发现过租约失效，这时判定不花查询
+        await context.raise_if_cancelled()
 
     db = get_database()
     async with db.session() as session:

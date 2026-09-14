@@ -24,6 +24,7 @@ from movieclaw_db.migrations import run_migrations
 from movieclaw_db.models import (
     FileSource,
     FileState,
+    LibraryDuplicateUnit,
     LibraryFile,
     MediaItem,
     RuleSet,
@@ -914,3 +915,128 @@ async def test_name_parsing_never_runs_on_the_event_loop(client, db, tmp_path, m
 
     assert seen, "这轮扫描没有算过任何快照，用例失去意义"
     assert loop_thread not in seen, "发布名解析跑在了事件循环线程上"
+
+
+@pytest.mark.asyncio
+async def test_scan_responds_to_cancel_and_keeps_last_conclusions(client, db, tmp_path):
+    """扫描要在安全点响应取消，并且取消不能把上一轮的结论清空。
+
+    框架的契约是处理器自己查取消与租约（jobs.JobContext.raise_if_cancelled）。
+    一次都不查有两个后果：任务中心的「取消」按不动；租约被接管后旧的那一份
+    还会把结论表整表删掉重建，与接管者的写并发打架——框架事后那句「丢弃本次
+    执行结果」只丢作业结论，删表重建早就落库了。
+    """
+    from movieclaw_api.services import jobs
+    from movieclaw_api.services.library import duplicate_scan
+
+    ids = await _seed(db, tmp_path)
+    await _scan(db)
+    async with db.session() as session:
+        before = len((await session.execute(select(LibraryDuplicateUnit))).scalars().all())
+    assert before, "第一轮扫描没落下结论，用例失去意义"
+
+    async with db.session() as session:
+        created = await duplicate_scan.enqueue_duplicate_scan_job(session)
+        job = await session.get(Job, created.job.id)
+        job.status = JobStatus.RUNNING
+        job.lease_owner = "lease-test"
+        job.lease_expires_at = utcnow() + timedelta(minutes=5)
+        job.cancel_requested_at = utcnow()  # 用户在任务中心点了取消
+        await session.commit()
+    context = jobs.JobContext(created.job.id, lease_token="lease-test", lease_lost=asyncio.Event())
+    with pytest.raises(jobs.JobCancelled):
+        await duplicate_scan._run_duplicate_scan_job(context, {})
+
+    async with db.session() as session:
+        rows = (await session.execute(select(LibraryDuplicateUnit))).scalars().all()
+    assert len(rows) == before, "取消把上一轮的结论清空了"
+    assert ids  # 用到 seed 的返回值，保持与其它用例一致的写法
+
+
+@pytest.mark.asyncio
+async def test_failed_cleanup_keeps_the_unit_listed(client, db, tmp_path, monkeypatch):
+    """清理一个都没成功时，结论行必须留着。
+
+    删了它，这个单元会从列表和摘要里一起消失，而文件一个没动：用户看到一句
+    报错、刷新后条目没了、磁盘还是满的，只能重扫整库才找得回来。
+    """
+    from movieclaw_api.services.library import duplicates as dup_mod
+
+    ids = await _seed(db, tmp_path)
+    await _scan(db)
+
+    async def boom(*args, **kwargs):
+        raise OSError("设备忙")
+
+    monkeypatch.setattr(dup_mod, "recycle_file", boom)
+    res = await client.post(
+        "/api/v1/libraries/duplicate-files/resolve",
+        json={
+            "media_item_id": ids["jm"],
+            "season_number": 0,
+            "episode_number": 0,
+            "keep_file_id": ids["jm_a"],
+        },
+    )
+    assert res.status_code == 200, res.text
+    data = res.json()["data"]
+    assert data["done"] == 0 and len(data["failed"]) == 2
+
+    async with db.session() as session:
+        rows = (
+            (
+                await session.execute(
+                    select(LibraryDuplicateUnit).where(
+                        LibraryDuplicateUnit.media_item_id == ids["jm"]
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert rows, "清理全失败，结论行却被删了"
+    listed = (
+        await client.get(f"/api/v1/libraries/duplicate-files?media_item_id={ids['jm']}")
+    ).json()["data"]
+    assert listed["items"], "清理全失败后这个单元从列表里消失了"
+
+
+@pytest.mark.asyncio
+async def test_partial_failure_still_cleans_the_rest(client, db, tmp_path, monkeypatch):
+    """一个文件失败不能拖垮同单元里其它文件。
+
+    失败要 rollback，rollback 让单元里所有行过期；不把它们刷回来，后面每个文件
+    在读自己属性时都会再炸一次，整单元颗粒无收。
+    """
+    from movieclaw_api.services.library import duplicates as dup_mod
+
+    ids = await _seed(db, tmp_path)
+    await _scan(db)
+    real = dup_mod.recycle_file
+    calls = {"n": 0}
+
+    async def flaky(session, row, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("设备忙")
+        return await real(session, row, **kwargs)
+
+    monkeypatch.setattr(dup_mod, "recycle_file", flaky)
+    res = await client.post(
+        "/api/v1/libraries/duplicate-files/resolve",
+        json={
+            "media_item_id": ids["jm"],
+            "season_number": 0,
+            "episode_number": 0,
+            "keep_file_id": ids["jm_a"],
+        },
+    )
+    assert res.status_code == 200, res.text
+    data = res.json()["data"]
+    assert data["done"] == 1 and len(data["failed"]) == 1
+    assert data["failed"][0]["file_name"] and "移入回收站失败" in data["failed"][0]["error"]
+    async with db.session() as session:
+        rows = {r.id: r for r in (await session.execute(select(LibraryFile))).scalars()}
+    trashed = [i for i in (ids["jm_b"], ids["jm_c"]) if rows[i].state == FileState.TRASHED]
+    assert len(trashed) == 1, "失败之后同单元的另一个文件没被清掉"
+    assert rows[ids["jm_a"]].state == FileState.IN_PLACE

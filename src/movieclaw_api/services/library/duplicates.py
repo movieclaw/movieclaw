@@ -571,6 +571,19 @@ class ResolveOutcome:
     remaining: int = 0
 
 
+async def _refresh_unit(session: AsyncSession, unit: DupUnit) -> None:
+    """rollback 之后把单元里的行读回来。
+
+    rollback 让所有实例过期，而单元里排在后面的文件还要读自己的属性。行已经
+    不在库里（比如刚被别的路径删掉）就跳过：那一行轮到它时会自己记一次失败。
+    """
+    for f in unit.files:
+        try:
+            await session.refresh(f.row)
+        except Exception:  # noqa: BLE001 -- 刷不回来的行留给它自己那轮去失败
+            logger.debug("重复清理：回滚后刷新台账行失败", exc_info=True)
+
+
 def _note(keep: DupFile, gone: DupFile, bucket: Bucket) -> str:
     if bucket == "identical":
         return f"重复清理：与「{keep.file_name}」一模一样，已保留后者"
@@ -589,7 +602,16 @@ async def recycle_extras(
     *,
     include_kept: bool,
 ) -> None:
-    """留下 ``keep``，单元里其余的进回收站（逐单元决定与成组清理共用这一段）。"""
+    """留下 ``keep``，单元里其余的进回收站（逐单元决定与成组清理共用这一段）。
+
+    「单个失败不影响其它文件」这条承诺全靠下面两件事撑着：失败分支只用**事先
+    取好的字符串**，以及 rollback 之后把行刷回来。原因是 ``session.rollback()``
+    会让所有 ORM 实例过期，而在异步 session 上读一个过期属性是一次隐式 IO，
+    直接抛 ``MissingGreenlet``——它会把失败分支自己炸掉，整个请求变成 500，
+    ``failed`` 列表因此从来没真正填上过，单元里排在后面的文件也一个都轮不到。
+    """
+    # 展示用的名字与 id 先取出来，失败分支不再碰 ORM
+    marks = {id(f): (f.row.id or 0, f.file_name) for f in unit.files}
     for f in unit.files:
         if f is keep or (f.kept and not include_kept):
             continue
@@ -609,8 +631,10 @@ async def recycle_extras(
             outcome.done += 1
         except Exception as exc:  # noqa: BLE001 -- 单个失败不回滚已成功的
             await session.rollback()
-            logger.warning("重复清理移入回收站失败：%s", row.file_path, exc_info=True)
-            outcome.failed.append((row.id or 0, f.file_name, f"移入回收站失败：{exc}"))
+            file_id, file_name = marks[id(f)]
+            logger.warning("重复清理移入回收站失败：%s", file_name, exc_info=True)
+            outcome.failed.append((file_id, file_name, f"移入回收站失败：{exc}"))
+            await _refresh_unit(session, unit)
 
 
 async def resolve_unit(
