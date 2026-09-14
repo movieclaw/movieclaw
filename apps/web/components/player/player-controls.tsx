@@ -381,6 +381,15 @@ export function PlayerControls(props: PlayerControlsProps) {
    * 靠 state 分不出「键盘拖动」与「抬手补发」。裁决在 acceptsNativeScrubValue。
    */
   const pointerDragRef = useRef(false);
+  /**
+   * 这次拖动里合帧最近一次刷到屏幕上的落点；按下时清空。
+   *
+   * 触屏抬手提交的就是它（scrubCommitTarget）。**不能改读 `dragging`**：那是
+   * 上一次渲染的闭包值，而渲染异步排队——快速甩到目标立刻松手时 rAF 还没跑、
+   * 或跑了但 React 没渲染，闭包里仍是按下那一刻的值，松手就跳回起点
+   * （2026-09-14 反馈）。ref 与渲染节奏无关。
+   */
+  const flushedPointerMsRef = useRef<number | null>(null);
 
   const flushPointer = useCallback(() => {
     pointerFrameRef.current = 0;
@@ -391,6 +400,7 @@ export function PlayerControls(props: PlayerControlsProps) {
     // 没在拖就只是悬停：不能去动画面
     if (latestRef.current.dragging === null) return;
     setDragging(next);
+    flushedPointerMsRef.current = next;
     // 画面跟着手指走——能免费跳的时候不跟随是白白浪费手感
     latestRef.current.onScrub(next);
   }, [pointerMs]);
@@ -770,6 +780,7 @@ export function PlayerControls(props: PlayerControlsProps) {
               // 触摸/笔的主接触点 button 恒为 0，这条不会误伤它们。
               if (!durationMs || e.button !== 0 || !e.isPrimary) return;
               pointerDragRef.current = true;
+              flushedPointerMsRef.current = null;
               e.currentTarget.setPointerCapture(e.pointerId);
               const { offset, length } = pointerOffsetX(
                 e,
@@ -787,7 +798,8 @@ export function PlayerControls(props: PlayerControlsProps) {
               // 合帧意味着最后一次移动可能还压在这一帧里没落地。鼠标抬手提交
               // 的落点必须是**指针最后所在处**，不能是上一帧那个——快速拖动时
               // 一帧的位移在两小时的片子上就是好几分钟。触屏反过来要用屏幕上
-              // 正显示的值：指腹抬起时会漂几个像素，裁决见 scrubCommitTarget。
+              // 正显示的值（合帧最近刷出去的那个，走 ref 不走渲染）：指腹抬起
+              // 时会漂几个像素，裁决见 scrubCommitTarget。
               cancelPointerFrame();
               pointerDragRef.current = false;
               const last = pointerMs();
@@ -796,10 +808,12 @@ export function PlayerControls(props: PlayerControlsProps) {
                   scrubCommitTarget({
                     pointerType: e.pointerType,
                     lastPointerMs: last,
+                    flushedMs: flushedPointerMsRef.current,
                     draggingMs: dragging,
                   }),
                 );
               }
+              flushedPointerMsRef.current = null;
               pointerRef.current = null;
               setDragging(null);
             }}
@@ -815,6 +829,7 @@ export function PlayerControls(props: PlayerControlsProps) {
             onPointerCancel={() => {
               cancelPointerFrame();
               pointerDragRef.current = false;
+              flushedPointerMsRef.current = null;
               pointerRef.current = null;
               // 排队中的后沿跟随也要撤：手势作废之后它还会在几十毫秒后把画面
               // 挪到一个用户没抬手确认过的位置上

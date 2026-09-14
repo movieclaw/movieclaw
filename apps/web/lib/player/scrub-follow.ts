@@ -122,16 +122,32 @@ export function afterScrubFollow(now: number): ScrubFollowState {
  * 滑出进度条再抬更是如此，而指针捕获把这段位移一并收了进来。用户眼里进度条
  * 停在哪儿他就是要跳到哪儿，落点比屏幕上的值差出几十秒，看起来就是「松手
  * 后进度往回跳了一下」（2026-09-13 真机反馈）。所以触屏提交**屏幕上正显示的
- * 值**（`draggingMs`）——它是上一帧落地的读数，抬手漂移进不来。
+ * 值**——合帧上一次刷出去的读数（`flushedMs`），压在最后一帧里没刷出去的
+ * 抬手漂移进不来。
+ *
+ * **不能拿 React 渲染出来的 `dragging` 当这个「屏幕值」**（2026-09-14 反馈：
+ * 快速甩到目标立刻松手，落点回到按下的位置）。它是上一次渲染时的闭包值，而
+ * 渲染是异步排队的：手指甩得快时，合帧的 rAF 一次都还没跑、或者跑了但 React
+ * 还没来得及渲染，`pointerup` 就到了，闭包里的 `dragging` 仍是按下那一刻的值
+ * ——两小时的片子上差出几十分钟。Chromium 连发触摸事件复现：提交 45 秒、目标
+ * 24 分钟。合帧刷出去的值走 ref，与渲染节奏无关；一次都没刷出去（整个甩动压在
+ * 一帧里）就退回指针最后所在处——那时屏幕上什么都还没动，剥离漂移无从谈起，
+ * 指针最后所在处就是用户要的位置。`draggingMs` 只剩量不到指针位置时的兜底。
  *
  * 笔跟鼠标走：笔尖抬起没有指腹那种剥离位移。
  */
 export function scrubCommitTarget(input: {
   pointerType: string;
+  /** 指针最后所在处（含压在最后一帧里没刷出去的那次移动） */
   lastPointerMs: number | null;
+  /** 合帧最近一次刷到屏幕上的落点；这次拖动一次都没刷出去时为 null */
+  flushedMs: number | null;
+  /** React 渲染出来的拖动值，只做最后的兜底 */
   draggingMs: number;
 }): number {
-  if (input.pointerType === "touch") return input.draggingMs;
+  if (input.pointerType === "touch") {
+    return input.flushedMs ?? input.lastPointerMs ?? input.draggingMs;
+  }
   return input.lastPointerMs ?? input.draggingMs;
 }
 

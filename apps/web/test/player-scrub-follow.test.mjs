@@ -147,27 +147,69 @@ test("直出档一段扫动只在停住后落地一次，落的是最后那个�
 
 test("鼠标抬手提交指针最后所在处：合帧压着的最后一段位移不能丢", () => {
   assert.equal(
-    scrubCommitTarget({ pointerType: "mouse", lastPointerMs: 305_000, draggingMs: 300_000 }),
+    scrubCommitTarget({
+      pointerType: "mouse",
+      lastPointerMs: 305_000,
+      flushedMs: 300_000,
+      draggingMs: 290_000,
+    }),
     305_000,
   );
-  // 量不到指针位置（片长刚变 null 之类）退回屏幕上的值
+  // 量不到指针位置（片长刚变 null 之类）退回渲染出来的值
   assert.equal(
-    scrubCommitTarget({ pointerType: "mouse", lastPointerMs: null, draggingMs: 300_000 }),
+    scrubCommitTarget({ pointerType: "mouse", lastPointerMs: null, flushedMs: null, draggingMs: 300_000 }),
     300_000,
   );
 });
 
 test("触屏抬手提交屏幕上正显示的值：指腹剥离时的漂移进不了落点", () => {
-  // 手指抬起瞬间接触点往回挪了一截，指针最后所在处已经不是用户看到的位置
+  // 手指抬起瞬间接触点往回挪了一截，指针最后所在处已经不是用户看到的位置；
+  // 合帧最近刷出去的 300_000 才是屏幕上的读数
   assert.equal(
-    scrubCommitTarget({ pointerType: "touch", lastPointerMs: 262_000, draggingMs: 300_000 }),
+    scrubCommitTarget({
+      pointerType: "touch",
+      lastPointerMs: 262_000,
+      flushedMs: 300_000,
+      draggingMs: 300_000,
+    }),
     300_000,
+  );
+});
+
+test("触屏快速甩动一帧都没刷出去：提交指针最后所在处，而不是按下那一刻的渲染值", () => {
+  // 2026-09-14 反馈：快速拖到目标立刻松手，落点回到起点。整个甩动压在一帧里，
+  // rAF 一次都没跑，React 渲染出来的 dragging 仍是按下时的 45_926
+  assert.equal(
+    scrubCommitTarget({
+      pointerType: "touch",
+      lastPointerMs: 1_489_320,
+      flushedMs: null,
+      draggingMs: 45_926,
+    }),
+    1_489_320,
+  );
+});
+
+test("触屏刷出去过但 React 还没渲染：提交刷出去的值，不是过期的渲染值", () => {
+  assert.equal(
+    scrubCommitTarget({
+      pointerType: "touch",
+      lastPointerMs: 1_489_320,
+      flushedMs: 1_450_000,
+      draggingMs: 45_926,
+    }),
+    1_450_000,
   );
 });
 
 test("笔跟鼠标走：笔尖抬起没有指腹那种剥离位移", () => {
   assert.equal(
-    scrubCommitTarget({ pointerType: "pen", lastPointerMs: 301_000, draggingMs: 300_000 }),
+    scrubCommitTarget({
+      pointerType: "pen",
+      lastPointerMs: 301_000,
+      flushedMs: 300_000,
+      draggingMs: 300_000,
+    }),
     301_000,
   );
 });
