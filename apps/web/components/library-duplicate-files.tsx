@@ -62,17 +62,36 @@ const BATCH_LIMIT = 500;
  * 文件行 / 版本行的四格：名字或规格 / 规格或覆盖 / 来源 / 动作。
  *
  * 宽屏是四列一张表，重复的规格上下对齐反而好扫。窄屏叠成一列就成了灾难——四行
- * 文字里往往只有一个词不同。所以手机上改成「名字 + 动作」并排一行（`order` 把
- * 动作提到第二格），规格与来源整行排在下面、共有的那些还会被整格隐藏（见
- * `sharedFacts`）：最常见的那种重复从四行压到一行。
+ * 文字里往往只有一个词不同（见 §9.6）。窄屏改成两行：
+ *
+ *     三体 S01E16 - 2160p H.265 AAC ADWeb.mp4          ← 名字独占整行，完整不截断
+ *     建议保留 · 同档，最近入库              [留这个]   ← 说明与动作同一行
+ *
+ * **名字必须独占整行**：动作区的宽度是变的（有没有标签差一截），挤在同一行会让
+ * 同一个单元里两行文件名截断在不同位置——而这一页的全部意义就是横向比对两个名字，
+ * 对不齐直接毁掉了这件事。整行给名字之后它多数时候根本不用截断，比对最省力。
+ */
+/**
+ * 宽屏最后一列**写死宽度**而不是 `auto`：动作区的内容是变的（带不带「建议保留」
+ * 胶囊差一截），`auto` 会让有胶囊的那一行把前三列挤窄——同一个单元里两行的规格
+ * 与文件名于是截断在不同位置，横向比对当场作废。写死之后每一列都上下对齐成真正
+ * 的一张表。11rem 按最宽的一组（胶囊 + 「整季留这个」）留的。
  */
 const ROW_GRID =
-  "grid items-center gap-x-4 gap-y-1 max-md:grid-cols-[minmax(0,1fr)_auto] md:grid-cols-[minmax(0,1.5fr)_minmax(0,1.1fr)_minmax(0,1fr)_auto]";
-/** 窄屏下四个格子的次序与跨列：名字、动作在第一行，规格、来源各占整行 */
-const CELL_NAME = "max-md:order-1";
-const CELL_SPEC = "max-md:order-3 max-md:col-span-2";
-const CELL_ORIGIN = "max-md:order-4 max-md:col-span-2";
-const CELL_ACTION = "max-md:order-2";
+  "grid gap-x-4 gap-y-1 max-md:grid-cols-[minmax(0,1fr)_auto] max-md:items-end md:grid-cols-[minmax(0,1.5fr)_minmax(0,1.1fr)_minmax(0,1fr)_11rem] md:items-center";
+/** 文件行：名字整行；规格整行（共有时隐藏）；来源 / 说明与动作并排收尾 */
+const CELL_FILENAME = "max-md:order-1 max-md:col-span-2";
+const CELL_SPEC = "max-md:order-2 max-md:col-span-2";
+const CELL_ORIGIN = "max-md:order-3";
+const CELL_ACTION = "max-md:order-4 max-md:justify-self-end";
+/**
+ * 版本行：规格短（`1080p · Blu-ray`），与动作并排占第一行就够，覆盖与来源排在
+ * 下面——所以它的次序与文件行不同（文件行的名字要独占整行，动作只能排到第二行）。
+ */
+const CELL_VERSION = "max-md:order-1";
+const CELL_VERSION_ACTION = "max-md:order-2 max-md:justify-self-end";
+const CELL_VERSION_COVER = "max-md:order-3 max-md:col-span-2";
+const CELL_VERSION_ORIGIN = "max-md:order-4 max-md:col-span-2";
 
 /** 三档的配色：只有「可以放心清理」用主色实心按钮，另两档都在动"有区别"的文件 */
 const TIER_TONE: Record<DuplicateTier, string> = {
@@ -475,25 +494,44 @@ export function LibraryDuplicateFiles({
       ) : (
         <section className="mx-6 mt-5 max-md:mx-4" aria-label={focusGroup?.label ?? "重复文件"}>
           <div className="mb-2.5 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1.5 px-0.5">
-            <div className="flex min-w-0 items-baseline gap-2.5 max-md:w-full max-md:flex-wrap max-md:gap-x-2">
-              {focus.tier !== null && (
-                <button
-                  type="button"
-                  onClick={() => setFocus(NO_FOCUS)}
-                  className="shrink-0 rounded-full px-2 py-0.5 text-caption text-[var(--text-muted)] transition hover:bg-white/[0.06] hover:text-[var(--text)]"
-                >
-                  ‹ 返回摘要
-                </button>
-              )}
-              <h2 className="text-ui font-semibold text-[var(--text)] max-md:shrink-0 md:truncate">
-                {focusGroup?.label ?? (itemTitle ? `《${itemTitle}》的重复文件` : "重复文件")}
+            {/*
+              分档导航：第一枚是回摘要，其余三枚直接换档。第一版这里只有一个
+              「‹ 返回摘要」，它和标题抢同一行，而且是个**单向出口**——在这一档做完
+              想去下一档，得先回摘要再点一次。做完一档接着做下一档才是这里最常见的
+              下一步，所以让它一次点到位；选中的那枚胶囊同时就是标题。
+            */}
+            {focus.tier !== null ? (
+              <div className="flex w-full items-center gap-1.5 overflow-x-auto pb-0.5">
+                <Chip active={false} onClick={() => setFocus(NO_FOCUS)}>
+                  ‹ 摘要
+                </Chip>
+                <span aria-hidden className="h-4 w-px shrink-0 bg-white/[0.12]" />
+                {data.tiers.map((t) => (
+                  <Chip
+                    key={t.key}
+                    active={focus.tier === t.key && focus.reviewKind === null}
+                    onClick={() => setFocus({ tier: t.key as DuplicateTier, reviewKind: null })}
+                  >
+                    {t.label}
+                    {t.units > 0 && <span className="tabular-nums opacity-70">{t.units}</span>}
+                  </Chip>
+                ))}
+                {focus.reviewKind !== null && focusGroup && (
+                  <Chip active onClick={() => setFocus({ tier: "review", reviewKind: null })}>
+                    {focusGroup.label} <XIcon className="size-3" />
+                  </Chip>
+                )}
+              </div>
+            ) : (
+              <h2 className="text-ui font-semibold text-[var(--text)] md:truncate">
+                {itemTitle ? `《${itemTitle}》的重复文件` : "重复文件"}
               </h2>
-              {focusGroup && (
-                <span className="text-caption font-normal text-[var(--text-faint)] tabular-nums">
-                  {groupSummary(focusGroup)}
-                </span>
-              )}
-            </div>
+            )}
+            {focusGroup && (
+              <span className="text-caption font-normal text-[var(--text-faint)] tabular-nums max-md:w-full">
+                {groupSummary(focusGroup)}
+              </span>
+            )}
             {focus.tier !== null && focusGroup !== null && focusGroup.files > 0 && (
               <div className="flex items-center gap-1.5 max-md:w-full">
                 {focus.tier === "review" && (
@@ -790,25 +828,25 @@ function SeasonBlock({
           {season.versions.map((version) => (
             <div key={version.key} className={`px-4 py-2.5 text-sub ${ROW_GRID}`}>
               <QualityLine
-                className={CELL_NAME}
+                className={CELL_VERSION}
                 segments={version.quality_label.split(" ").map((text, i) => ({
                   text,
                   diff: suggestedVersion !== null && !version.suggested && suggestedVersion.quality_label.split(" ")[i] !== text,
                 }))}
               />
-              <span className={`text-[var(--text-muted)] tabular-nums ${CELL_SPEC}`}>
+              <span className={`text-[var(--text-muted)] tabular-nums ${CELL_VERSION_COVER}`}>
                 <b className="font-semibold text-[var(--text)]">{versionCoverage(version).split(" · ")[0]}</b>
                 {" · "}
                 {versionCoverage(version).split(" · ")[1]}
               </span>
               <span
-                className={`truncate text-[var(--text-muted)] ${CELL_ORIGIN} ${
+                className={`truncate text-[var(--text-muted)] ${CELL_VERSION_ORIGIN} ${
                   commonOrigin ? "max-md:hidden" : ""
                 }`}
               >
                 {version.origin_label}
               </span>
-              <div className={`flex items-center justify-end gap-1.5 ${CELL_ACTION}`}>
+              <div className={`flex items-center justify-end gap-1.5 ${CELL_VERSION_ACTION}`}>
                 {version.suggested && <Tag tone="keep">建议保留</Tag>}
                 <ActionButton disabled={busy} onClick={() => onKeepVersion(version)}>
                   整季留这个
@@ -901,11 +939,32 @@ function FileRow({
   const live = unit.files.filter((f) => !f.kept_at).length;
   const tail = namePrefix ? file.file_name.slice(namePrefix.length) : file.file_name;
   return (
-    <div className={`px-4 py-2 text-sub ${ROW_GRID} ${file.kept_at ? "opacity-55" : ""}`}>
+    <div
+      className={`px-4 py-2 text-sub ${ROW_GRID} ${file.kept_at ? "opacity-55" : ""} ${
+        // 窄屏不显示「建议保留」胶囊（说明行里已经写着），改用一道内嵌色条标出它——
+        // 不占一格宽度，两行名字才能截断在同一个位置
+        file.suggested ? "max-md:shadow-[inset_2px_0_0_0_rgba(74,222,128,0.45)]" : ""
+      }`}
+    >
       <Tooltip content={<span className="tnum break-all font-mono text-caption leading-5">{file.file_path}</span>} maxWidth={520}>
-        <span className={`flex min-w-0 items-baseline font-mono text-caption text-[var(--text)] ${CELL_NAME}`}>
-          {namePrefix && <span className="truncate text-[var(--text-faint)]">{namePrefix}</span>}
-          <span className={namePrefix ? "shrink-0" : "truncate"}>{tail}</span>
+        <span className={`flex min-w-0 items-baseline font-mono text-caption text-[var(--text)] ${CELL_FILENAME}`}>
+          {/*
+            whitespace-pre-wrap：差异的尾巴常常以空格开头（`…AAC` + ` ADWeb.mp4`），
+            HTML 默认会把它折掉，两段拼起来就成了 `AACADWeb.mp4`——一个磁盘上并不
+            存在的名字。保留空白又要允许长名换行，只有 pre-wrap 两样都给。
+          */}
+          {namePrefix && (
+            <span className="whitespace-pre-wrap text-[var(--text-faint)] max-md:break-all md:truncate">
+              {namePrefix}
+            </span>
+          )}
+          <span
+            className={`whitespace-pre-wrap ${
+              namePrefix ? "shrink-0 max-md:break-all" : "max-md:break-all md:truncate"
+            }`}
+          >
+            {tail}
+          </span>
         </span>
       </Tooltip>
       <QualityLine
@@ -921,8 +980,8 @@ function FileRow({
         {note && <span className="block truncate text-caption text-[var(--text-faint)]">{note}</span>}
       </span>
       <div className={`flex items-center justify-end gap-1.5 ${CELL_ACTION}`}>
-        {file.suggested && <Tag tone="keep">建议保留</Tag>}
-        {file.kept_at && <Tag tone="kept">你留下的</Tag>}
+        {file.suggested && <Tag tone="keep" mobileHidden>建议保留</Tag>}
+        {file.kept_at && <Tag tone="kept" mobileHidden>你留下的</Tag>}
         {(live > 1 || unit.files.length > 1) && (
           <ActionButton disabled={busy} onClick={onKeep}>
             留这个
@@ -954,10 +1013,21 @@ function QualityLine({
   );
 }
 
-function Tag({ tone, children }: { tone: "keep" | "kept"; children: React.ReactNode }) {
+/** `mobileHidden`：窄屏上说明行已经写了同一句话，胶囊就是纯重复，还会挤窄名字列 */
+function Tag({
+  tone,
+  mobileHidden = false,
+  children,
+}: {
+  tone: "keep" | "kept";
+  mobileHidden?: boolean;
+  children: React.ReactNode;
+}) {
   return (
     <span
       className={`inline-block whitespace-nowrap rounded-full border px-1.5 text-micro leading-[18px] ${
+        mobileHidden ? "max-md:hidden" : ""
+      } ${
         tone === "keep" ? "border-[rgba(74,222,128,0.4)] text-[var(--ok)]" : "border-[rgba(232,201,138,0.45)] text-[#e8c98a]"
       }`}
     >
