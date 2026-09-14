@@ -32,6 +32,7 @@ import { imageUrl } from "@/lib/image-proxy";
 import {
   type SharedFacts,
   TIER_ACTION_LABELS,
+  allowsBulkClean,
   commonNamePrefix,
   episodeLabel,
   fileNote,
@@ -45,12 +46,14 @@ import {
   resolveResultText,
   scanNote,
   seasonHeadline,
+  specSegments,
   sharedFacts,
   sharedLine,
   sharedVersionOrigin,
   suggestedOf,
   tierFacts,
   versionCoverage,
+  volumeSegments,
 } from "@/lib/library-duplicates";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
 
@@ -294,7 +297,9 @@ export function LibraryDuplicateFiles({
   /** 「整季留这个版本」：每集留该版本，缺该版本的集留建议保留者。 */
   const keepVersion = async (item: DuplicateItem, season: DuplicateSeason, version: DuplicateVersion) => {
     const facts = keepVersionFacts(season, version);
-    const bullets = facts.gone.slice(0, 8).map((f) => `${f.file_name} · ${f.quality_label}`);
+    const bullets = facts.gone
+      .slice(0, 8)
+      .map((f) => `${f.file_name} · ${f.quality_label} · ${formatBytes(f.size_bytes)}`);
     if (facts.gone.length > 8) bullets.push(`… 共 ${facts.gone.length} 个文件`);
     const missing = facts.missingEpisodes.map(episodeLabel).join("、");
     const ok = await confirm({
@@ -556,8 +561,7 @@ export function LibraryDuplicateFiles({
                     整组都留着
                   </ActionButton>
                 )}
-                {/* 「规格不全」不给成批清理，理由见摘要卡上同一处注释 */}
-                {focus.reviewKind !== "unknown" && (
+                {allowsBulkClean(focus.tier, focus.reviewKind) && (
                   <ActionButton
                     disabled={busy}
                     variant={focus.tier === "safe" ? "primary" : "danger"}
@@ -727,7 +731,7 @@ function TierSummary({
                   <ActionButton disabled={busy} onClick={() => onOpen(key, null)}>
                     逐个看
                   </ActionButton>
-                  {key !== "review" && (
+                  {allowsBulkClean(key, null) && (
                     // 「可以放心清理」是这一页唯一"做了不会丢东西"的批量动作，主操作；
                     // 「建议清理」动的是**有区别**的文件，依据只是机器的建议——危险档
                     <ActionButton
@@ -772,13 +776,8 @@ function TierSummary({
                       >
                         都留着
                       </ActionButton>
-                      {/*
-                        「规格不全」这一组**不给成批清理**：它的定义就是"机器没有
-                        比较的依据"，紧挨着一句"比不出来"再放一个「按建议清 · 2974」，
-                        按下去就是拿一个机器自己声明做不出的判断去删掉近三千个文件。
-                        三态铁律在这里的落点——无从判定就交给人，逐个看或都留着。
-                      */}
-                      {group.key !== "unknown" && (
+                      {/* 哪些作用域不给成批清理，见 `allowsBulkClean` */}
+                      {allowsBulkClean("review", group.key as DuplicateReviewKind) && (
                         <ActionButton
                           disabled={busy}
                           variant="danger"
@@ -1010,7 +1009,8 @@ function FileRow({
         </span>
       </Tooltip>
       <QualityLine
-        segments={qualitySegments(file, reference)}
+        segments={specSegments(file, reference)}
+        volume={volumeSegments(file)}
         className={`${CELL_SPEC} ${shared.quality ? "max-md:hidden" : ""}`}
       />
       <span
@@ -1034,15 +1034,21 @@ function FileRow({
   );
 }
 
+/**
+ * 规格行。`volume`（体积 · 码率）给了就**钉在行尾不参与截断**——逐个清点时它是
+ * 最硬的两个数，而它们本来排在规格串的末尾，窄屏一截就先没了它们。
+ */
 function QualityLine({
   segments,
+  volume,
   className = "",
 }: {
   segments: { text: string; diff: boolean }[];
+  volume?: { text: string; diff: boolean }[];
   className?: string;
 }) {
-  return (
-    <span className={`truncate text-[var(--text-muted)] tabular-nums ${className}`}>
+  const body = (
+    <>
       {segments.map((seg, i) => (
         <span key={`${seg.text}-${i}`}>
           {i > 0 && <span aria-hidden> · </span>}
@@ -1051,6 +1057,22 @@ function QualityLine({
           </span>
         </span>
       ))}
+    </>
+  );
+  if (!volume?.length) {
+    return <span className={`truncate text-[var(--text-muted)] tabular-nums ${className}`}>{body}</span>;
+  }
+  return (
+    <span className={`flex min-w-0 items-baseline gap-2 text-[var(--text-muted)] tabular-nums ${className}`}>
+      <span className="min-w-0 flex-1 truncate">{body}</span>
+      <span className="shrink-0 text-[var(--text)]">
+        {volume.map((seg, i) => (
+          <span key={`${seg.text}-${i}`}>
+            {i > 0 && <span aria-hidden className="text-[var(--text-faint)]"> · </span>}
+            {seg.text}
+          </span>
+        ))}
+      </span>
     </span>
   );
 }

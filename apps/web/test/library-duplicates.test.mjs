@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  allowsBulkClean,
   commonNamePrefix,
   fileNote,
   groupSummary,
@@ -17,8 +18,10 @@ import {
   sharedFacts,
   sharedLine,
   sharedVersionOrigin,
+  specSegments,
   specText,
   tierFacts,
+  volumeSegments,
 } from "../lib/library-duplicates.ts";
 
 const origin = (kind, label) => ({ kind, label, detail: null });
@@ -147,7 +150,10 @@ test("tierFacts：确认弹窗逐条列出本页会清掉什么", () => {
   };
   const group = { key: "suggested", label: "建议清理", hint: "", units: 4, files: 4, bytes: 4 * 1024 ** 3 };
   const facts = tierFacts(data, group);
-  assert.deepEqual(facts.lines, ["权力的游戏 S01 · 3 个文件 · 1080p WEB-DL", "九门 · 1 个文件 · 1080p WEB-DL"]);
+  assert.deepEqual(facts.lines, [
+    "权力的游戏 S01 · 3 个文件 · 12.00 GB · 1080p WEB-DL",
+    "九门 · 1 个文件 · 4.00 GB · 1080p WEB-DL",
+  ]);
   // 总数来自摘要而不是本页：本页只是清单，后端一次最多清 500 个
   assert.equal(facts.files, 4);
 });
@@ -227,4 +233,54 @@ test("sharedVersionOrigin：同构季几个版本行来源相同才提到块头�
   assert.equal(sharedVersionOrigin([v("1080p", "存量扫描发现"), v("720p", "存量扫描发现")]), "存量扫描发现");
   assert.equal(sharedVersionOrigin([v("1080p", "存量扫描发现"), v("720p", "订阅投递")]), null);
   assert.equal(sharedVersionOrigin([v("1080p", "存量扫描发现")]), null);
+});
+
+
+test("体积与码率单独一段，绝不参与截断", () => {
+  // 规格串末尾的体积与码率曾经和前面挤在同一条 truncate 的行里，窄屏上真实
+  // 渲染成 `2160p · WEB-DL · Dolby · Vision · AAC 2.0 · 1.22 G…`——体积砍一半、
+  // 码率全没，偏偏这两样才是"留哪个"最直接的依据
+  const spec = specSegments(A, null).map((s) => s.text);
+  const volume = volumeSegments(A).map((s) => s.text);
+  assert.deepEqual(spec, ["2160p", "WEB-DL", "DDP 5.1"]);
+  assert.deepEqual(volume, ["8.00 GB", "20.0 Mbps"]);
+  // 两半拼起来仍是原来那一整句：sharedFacts 的比对口径没被动过
+  assert.deepEqual([...spec, ...volume], qualitySegments(A, null).map((s) => s.text));
+
+  // 没探到码率时只剩体积，不留一个空段
+  assert.deepEqual(volumeSegments(file({ bit_rate: null })).map((s) => s.text), ["8.00 GB"]);
+});
+
+test("成批清理的确认清单带上体积", () => {
+  const season = { season_number: 1, bucket: "identical", uniform: true, versions: [], units: [unit, unit, unit] };
+  const data = {
+    scan: scan(),
+    tiers: [],
+    review_groups: [],
+    total_units: 3,
+    total_files: 3,
+    total_bytes: 12 * 1024 ** 3,
+    total_items: 1,
+    items: [
+      { library: { id: 1, name: "剧集" }, media_item: { id: 7, title: "权力的游戏", year: 2011, kind: "tv", poster_url: null }, seasons: [season] },
+    ],
+  };
+  const facts = tierFacts(data, { key: "safe", label: "", hint: "", units: 3, files: 3, bytes: 12 * 1024 ** 3 });
+  // 逐条核对时"多大"和"什么规格"一样是决定依据
+  assert.deepEqual(facts.lines, ["权力的游戏 S01 · 3 个文件 · 12.00 GB · 1080p WEB-DL"]);
+});
+
+
+test("allowsBulkClean：无从判定的作用域不给成批清理", () => {
+  assert.equal(allowsBulkClean("safe", null), true);
+  assert.equal(allowsBulkClean("suggested", null), true);
+  // 「规格不全」那一组：机器自己说没有比较的依据，就不该有一键清
+  assert.equal(allowsBulkClean("review", "unknown"), false);
+  // 停在「需要你决定」整档也不给——整档里混着「规格不全」的单元，
+  // 一键清照样会碰到它们（这条曾经漏过）
+  assert.equal(allowsBulkClean("review", null), false);
+  // 具体的其他取舍组可以成批
+  assert.equal(allowsBulkClean("review", "hdr"), true);
+  assert.equal(allowsBulkClean("review", "resolution"), true);
+  assert.equal(allowsBulkClean("review", "same_tier"), true);
 });

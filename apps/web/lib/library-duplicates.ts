@@ -10,6 +10,7 @@ import type {
   DuplicateFile,
   DuplicateFilesData,
   DuplicateGroup,
+  DuplicateReviewKind,
   DuplicateScanState,
   DuplicateSeason,
   DuplicateTier,
@@ -52,6 +53,26 @@ export function compactSummary(group: DuplicateGroup): string {
   const parts = [`${group.units} 个单元`];
   if (group.bytes > 0) parts.push(formatBytes(group.bytes));
   return parts.join(" · ");
+}
+
+/**
+ * 这个作用域给不给「按建议成批清理」。
+ *
+ * 一条规则三处用（摘要卡的档行、取舍分组行、明细层头部），散在 JSX 条件里迟早
+ * 漏一处——真漏过：只在点进「规格不全」那一组时藏了按钮，**停在「需要你决定」
+ * 整档**那条路径没管，而整档里混着「规格不全」的单元，一键清照样会碰到它们。
+ *
+ * 说不给的两种，理由是同一句：那些单元的定义就是"机器没有比较的依据"，拿一个
+ * 机器自己声明做不出的判断去成批删文件，是三态铁律的反面。要成批处理就先点进
+ * 一个**具体的**取舍组。
+ */
+export function allowsBulkClean(
+  tier: DuplicateTier,
+  reviewKind: DuplicateReviewKind | null,
+): boolean {
+  if (tier !== "review") return true;
+  if (reviewKind === null) return false; // 整档：混着「规格不全」
+  return reviewKind !== "unknown";
 }
 
 /** 一档的动作按钮该写什么：`safe` 是没风险的清理，另两档都在动"有区别"的文件。 */
@@ -105,7 +126,14 @@ export interface QualitySegment {
   diff: boolean;
 }
 
-export function qualitySegments(file: DuplicateFile, reference: DuplicateFile | null): QualitySegment[] {
+/**
+ * 规格里**认得出是什么**的那几段：分辨率 / 片源 / HDR / 音轨。可以截断——
+ * 截掉音轨编码不影响判断，截掉体积却会。
+ */
+export function specSegments(
+  file: DuplicateFile,
+  reference: DuplicateFile | null,
+): QualitySegment[] {
   const own = file.quality_label.split(" ");
   const ref = reference && reference !== file ? reference.quality_label.split(" ") : null;
   const segments: QualitySegment[] = own.map((text, i) => ({
@@ -118,9 +146,26 @@ export function qualitySegments(file: DuplicateFile, reference: DuplicateFile | 
       diff: ref !== null && reference !== null && reference.audio_label !== file.audio_label,
     });
   }
-  segments.push({ text: formatBytes(file.size_bytes), diff: false });
+  return segments;
+}
+
+/**
+ * **体积与码率**：逐个清点时最硬的那两个数。
+ *
+ * 它们和上面那几段分开，是因为它们绝不能被截断。第一版把体积与码率放在规格行
+ * 末尾，而那一行是 truncate 的——窄屏上真实渲染成
+ * `2160p · WEB-DL · Dolby · Vision · AAC 2.0 · 1.22 G…`：体积被砍掉一半、码率
+ * 整个消失，偏偏这两样才是"留哪个"最直接的依据。现在它们单独一段钉在行尾，
+ * 要截也只截前面那些认名字的段。
+ */
+export function volumeSegments(file: DuplicateFile): QualitySegment[] {
+  const segments: QualitySegment[] = [{ text: formatBytes(file.size_bytes), diff: false }];
   if (file.bit_rate) segments.push({ text: formatBitRate(file.bit_rate), diff: false });
   return segments;
+}
+
+export function qualitySegments(file: DuplicateFile, reference: DuplicateFile | null): QualitySegment[] {
+  return [...specSegments(file, reference), ...volumeSegments(file)];
 }
 
 export function formatBitRate(bps: number): string {
@@ -272,7 +317,9 @@ export function tierFacts(data: DuplicateFilesData, group: DuplicateGroup | null
       if (extras.length === 0) continue;
       const head = item.media_item.kind === "tv" ? `${item.media_item.title} S${pad(season.season_number)}` : item.media_item.title;
       const kinds = [...new Set(extras.map((f) => f.quality_label))].join(" / ");
-      lines.push(`${head} · ${extras.length} 个文件 · ${kinds}`);
+      // 带上这一块会清掉多少——逐条核对时"多大"和"什么规格"一样是决定依据
+      const bytes = formatBytes(extras.reduce((n, f) => n + f.size_bytes, 0));
+      lines.push(`${head} · ${extras.length} 个文件 · ${bytes} · ${kinds}`);
     }
   }
   return { files: group?.files ?? 0, bytes: group?.bytes ?? 0, lines };
