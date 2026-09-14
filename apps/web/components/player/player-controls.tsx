@@ -244,6 +244,12 @@ export interface PlayerControlsProps {
    * 排队中的落点还会在几十毫秒后把画面挪过去——用户没抬手确认过它。
    */
   onScrubCancel: () => void;
+  /**
+   * 指针按在进度条上 / 离开进度条。父组件据此把控制条钉住：按住不动时没有
+   * 移动事件去重排自动隐藏的倒计时，四秒一到控制条会在手指底下淡出
+   * （lib/player/chrome.ts 的 scrubbing）。
+   */
+  onScrubbingChange: (active: boolean) => void;
   subtitles: SubtitleTracks;
   selectedSubtitle: string | null;
   onSelectSubtitle: (ref: string | null) => void;
@@ -297,6 +303,7 @@ export function PlayerControls(props: PlayerControlsProps) {
     onSeek,
     onScrub,
     onScrubCancel,
+    onScrubbingChange,
     subtitles,
     selectedSubtitle,
     onSelectSubtitle,
@@ -334,8 +341,10 @@ export function PlayerControls(props: PlayerControlsProps) {
       setDragging(null);
       // 在途的后沿跟随一起撤：片长一没，这次拖动就作废了
       onScrubCancel();
+      // disabled 之后 pointerup 不会再来（见上），按着的状态也要在这儿放开
+      onScrubbingChange(false);
     }
-  }, [durationMs, onScrubCancel]);
+  }, [durationMs, onScrubCancel, onScrubbingChange]);
   const [menu, setMenu] = useState<"none" | "audio" | "subtitles" | "settings">("none");
   // 悬停预览的位置（文件毫秒 + 进度条内的像素横坐标）。null = 没在悬停
   const [hover, setHover] = useState<{ ms: number; x: number } | null>(null);
@@ -781,6 +790,7 @@ export function PlayerControls(props: PlayerControlsProps) {
               if (!durationMs || e.button !== 0 || !e.isPrimary) return;
               pointerDragRef.current = true;
               flushedPointerMsRef.current = null;
+              onScrubbingChange(true);
               e.currentTarget.setPointerCapture(e.pointerId);
               const { offset, length } = pointerOffsetX(
                 e,
@@ -802,6 +812,7 @@ export function PlayerControls(props: PlayerControlsProps) {
               // 时会漂几个像素，裁决见 scrubCommitTarget。
               cancelPointerFrame();
               pointerDragRef.current = false;
+              onScrubbingChange(false);
               const last = pointerMs();
               if (dragging !== null) {
                 onSeek(
@@ -829,6 +840,7 @@ export function PlayerControls(props: PlayerControlsProps) {
             onPointerCancel={() => {
               cancelPointerFrame();
               pointerDragRef.current = false;
+              onScrubbingChange(false);
               flushedPointerMsRef.current = null;
               pointerRef.current = null;
               // 排队中的后沿跟随也要撤：手势作废之后它还会在几十毫秒后把画面

@@ -76,6 +76,13 @@ export interface AutoplayGateInput {
   wanted: boolean;
   /** 视频当前是不是暂停的 */
   paused: boolean;
+  /**
+   * 视频已经放完（`video.ended`）。放完的元素按规范是「暂停」的，`canplay`
+   * 之类的时机照样会来，而对放完的元素调 `play()` 会**先 seek 回 0 再播**——
+   * 拖到片尾一落地，整部片从头重播（2026-09-14 真浏览器复现）。放完就是放完，
+   * 再放要用户自己按。
+   */
+  ended?: boolean;
   /** 已经试过几次 */
   attempts: number;
   /** 上一次的结果 */
@@ -96,6 +103,7 @@ export interface AutoplayGateInput {
 export function shouldAttemptAutoplay(input: AutoplayGateInput): boolean {
   if (!input.wanted) return false;
   if (!input.paused) return false;
+  if (input.ended) return false;
   if (input.last === "blocked") return false;
   return input.attempts < MAX_AUTOPLAY_ATTEMPTS;
 }

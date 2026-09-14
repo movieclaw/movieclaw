@@ -312,6 +312,8 @@ export function VideoPlayer(props: VideoPlayerProps) {
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [serverDiagnostics, setServerDiagnostics] = useState<PlaybackDiagnostics | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  /** 指针正按在进度条上：按住不动时也要把控制条钉住（lib/player/chrome.ts） */
+  const [scrubbing, setScrubbing] = useState(false);
   const [chromeVisible, setChromeVisible] = useState(true);
   /**
    * 控制层的活动信号：每次用户操作 +1，自动隐藏的倒计时以它为依赖从头再排。
@@ -1022,6 +1024,8 @@ export function VideoPlayer(props: VideoPlayerProps) {
       !shouldAttemptAutoplay({
         wanted: wantsPlayRef.current,
         paused: video.paused,
+        // 放完的元素不许自动重播：对它调 play() 会 seek 回 0 从头放
+        ended: video.ended,
         attempts: autoplayAttemptsRef.current,
         last: autoplayLastRef.current,
       })
@@ -3138,14 +3142,14 @@ export function VideoPlayer(props: VideoPlayerProps) {
   useEffect(() => {
     // 锁屏优先级最高：锁上之后暂停、开菜单都不该把一排能点的按钮放回来
     if (locked) return;
-    if (chromeMustStayVisible({ paused, menuOpen, awaitingUser })) {
+    if (chromeMustStayVisible({ paused, menuOpen, awaitingUser, scrubbing })) {
       setChromeVisible(true);
       return;
     }
     const timer = window.setTimeout(() => setChromeVisible(false), IDLE_HIDE_MS);
     return () => window.clearTimeout(timer);
     // chromeActivity：用户的每次操作都重排这个倒计时（声明见 state 注释）
-  }, [locked, paused, menuOpen, awaitingUser, chromeVisible, chromeActivity]);
+  }, [locked, paused, menuOpen, awaitingUser, scrubbing, chromeVisible, chromeActivity]);
 
   /**
    * 片尾「下一集」卡片该不该显示。
@@ -3732,6 +3736,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
             onSeek={commitSeek}
             onScrub={scrubTo}
             onScrubCancel={cancelScrubFollow}
+            onScrubbingChange={setScrubbing}
             subtitles={subtitles}
             selectedSubtitle={selectedSubtitle}
             onSelectSubtitle={selectSubtitle}

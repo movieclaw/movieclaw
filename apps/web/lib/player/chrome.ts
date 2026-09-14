@@ -18,6 +18,15 @@ export interface ChromeVisibilityInput {
   menuOpen: boolean;
   /** 正等用户拍板（报错页 / 同意弹窗），见 machine.ts 的 awaitsUserDecision */
   awaitingUser: boolean;
+  /**
+   * 手指 / 鼠标正按在进度条上（按下到抬起之间）。
+   *
+   * 拖动中每次移动都会重排自动隐藏的倒计时（§12），但**按住不动**没有移动事件，
+   * 四秒一到控制条就在手指底下淡出——指针捕获让拖动照旧生效，用户对着一条看
+   * 不见的进度条在拖，松手才知道跳到了哪儿（2026-09-14 真浏览器复现：按住 5 秒
+   * 再松）。按着就是在用它，和菜单开着一样钉住。
+   */
+  scrubbing?: boolean;
 }
 
 /**
@@ -35,7 +44,7 @@ export interface ChromeVisibilityInput {
  * 只会挡着看片。它自己一直挂到用户点关闭为止，与控制条互不相干。
  */
 export function chromeMustStayVisible(input: ChromeVisibilityInput): boolean {
-  return input.paused || input.menuOpen || input.awaitingUser;
+  return input.paused || input.menuOpen || input.awaitingUser || Boolean(input.scrubbing);
 }
 
 export interface PointerLeaveInput {
