@@ -265,7 +265,11 @@ N 次解析。**F3.4 把「我的收藏」登记为内置合集之后，这个�
 | PUT | `/collections/{id}/order` | `collection.items.reorder`（仅手动合集） |
 | GET | `/collections/{id}/series` | `collection.series.get`（系列合集的缺片补齐） |
 | GET/POST/DELETE | `/collections/{id}/share` | `collection.share.get/create/revoke` |
-| POST | `/collections/{id}/apply-to-library` | `collection.apply-to-library` |
+
+`POST /collections/{id}/apply-to-library`（把合集条件写进 `library.match_rules`）
+**已下线**（2026-09-15）：它只认 genres / origin_countries 两个字段，其余条件被
+静默丢弃，用户在合集页设完并不知道自己设的是什么；分库的收藏范围在媒体库设置里
+本来就有一处正经入口，两处写同一份配置只会让人不确定以哪处为准。
 
 「仅手动合集」由 `_guard_manual` 统一拦截：规则驱动的合集拒绝手工增删，
 否则下一次规则求值就会把手工结果冲掉——那是一种用户改了、看着生效了、

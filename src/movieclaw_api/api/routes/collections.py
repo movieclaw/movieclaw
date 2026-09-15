@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
-from movieclaw_api.api.deps import require_admin, require_login
+from movieclaw_api.api.deps import require_login
 from movieclaw_api.core.config import get_settings
 from movieclaw_api.exceptions import BadRequestException, NotFoundException
 from movieclaw_api.schemas.library import (
@@ -799,45 +799,3 @@ async def get_collection_series(
             parts=views,
         )
     )
-
-
-@router.post(
-    "/{collection_id}/apply-to-library",
-    response_model=ApiResponse[None],
-    summary="把合集的规则设为某个库的收藏范围",
-    operation_id="collection.apply-to-library",
-    # 这一条改的是**库配置**（match_rules 决定订阅入哪个库），不是合集本身，
-    # 所以它与合集其余接口不同，只对管理员开放
-    dependencies=[Depends(require_admin)],
-)
-async def apply_to_library(
-    collection_id: int,
-    library_id: Annotated[int, Query(description="要写入 match_rules 的库")],
-    session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(require_login),
-) -> ApiResponse[None]:
-    """筛选 → 合集 → 库收藏范围，同一份条件的第三个时态。
-
-    用户不用理解"路由"这个词，就完成了分库配置（docs/design/library-routing.md）。
-    """
-
-    from movieclaw_db.models import Library
-
-    member_id, visible, content_limit = await _scope(session, principal)
-    row = await _get_or_404(session, collection_id)
-    _guard_visible(row, member_id, visible)
-    rules = effective_rules(row)
-    if not rules:
-        raise BadRequestException("名单驱动的合集没有规则，无法作为库的收藏范围")
-    library = await session.get(Library, library_id)
-    if library is None or (visible is not None and library_id not in visible):
-        raise NotFoundException("库不存在或不可见")
-    # 路由只认 genres / origin_countries 两个字段，其余条件在这里被丢弃——
-    # 如实告诉调用方，而不是假装整条规则都生效了
-    routable = [r for r in rules if r.get("field") in {"genres", "origin_countries"}]
-    if not routable:
-        raise BadRequestException("这个合集的条件里没有类型或地区，路由用不上")
-    library.match_rules = routable
-    await session.flush()
-    await session.commit()
-    return ok(None)

@@ -40,7 +40,6 @@ channels weixin accounts unbind
 channels weixin bindings start
 channels weixin bindings status
 channels weixin bindings verify
-collection apply-to-library
 collection create
 collection delete
 collection get

@@ -532,7 +532,7 @@ DELETE /collections/{id}
 GET    /collections/{id}/items?sort=&limit=&offset=      ← 复用 _aggregate_wall_views
 POST   /collections/{id}/items    {media_item_ids}       ← manual，F4
 PUT    /collections/{id}/order    {media_item_ids}       ← manual，F4
-POST   /collections/{id}/apply-to-library {library_id}   ← 规则 → library.match_rules
+POST   /collections/{id}/apply-to-library {library_id}   ← 规则 → library.match_rules（已下线，见 library-collections.md）
 ```
 
 ### 6.4 表结构

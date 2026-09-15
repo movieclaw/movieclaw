@@ -31,7 +31,6 @@ import {
 } from "@/components/video-gallery";
 import { WallLoadMore } from "@/components/wall-chrome";
 import {
-  applyCollectionToLibrary,
   deleteCollection,
   getCollection,
   getCollectionSeries,
@@ -536,23 +535,6 @@ export function LibraryCollectionDetailView({
     }
   }, [collection, toast]);
 
-  const applyToLibrary = useCallback(async () => {
-    if (!collection) return;
-    const ok = await confirm({
-      title: "把这组条件设为库的收藏范围？",
-      description:
-        "以后订阅与自动入库会按这组条件挑库。只有类型和地区会被用上，其余条件用不到。",
-    });
-    if (!ok) return;
-    try {
-      if (libraryId === null) return;
-      await applyCollectionToLibrary(collection.id, libraryId);
-      toast.success("已设为该库的收藏范围");
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "设置失败");
-    }
-  }, [collection, confirm, libraryId, toast]);
-
   if (error) {
     return (
       <div className="scroll-thin scroll-safe flex-1 overflow-y-auto pb-10">
@@ -701,17 +683,6 @@ export function LibraryCollectionDetailView({
                         整理顺序…
                       </DropdownMenu.Item>
                     )}
-                    {libraryId !== null &&
-                      canManageLibraries &&
-                      collection.editable &&
-                      collection.rule_driven && (
-                        <DropdownMenu.Item
-                          onSelect={applyToLibrary}
-                          className={MENU_ITEM_CLASS}
-                        >
-                          设为本库的收藏范围
-                        </DropdownMenu.Item>
-                      )}
                     {/* 「显示在首页」：把这个合集加成媒体库首页的一行（与 Plex 的 Pin to Home
                         一致），写的是与自定义页同一份偏好；再点一次是隐藏那一行，不删 */}
                     <DropdownMenu.Item

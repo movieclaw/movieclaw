@@ -237,12 +237,3 @@ export function reorderCollectionItems(
 export function getCollectionSeries(id: number): Promise<CollectionSeries> {
   return unwrap(request<ApiEnvelope<CollectionSeries>>(`/collections/${id}/series`));
 }
-
-/** 把合集的规则设为某个库的收藏范围（同一份条件的第三个时态）。 */
-export function applyCollectionToLibrary(id: number, libraryId: number): Promise<void> {
-  return unwrap(
-    request<ApiEnvelope<void>>(`/collections/${id}/apply-to-library?library_id=${libraryId}`, {
-      method: "POST",
-    }),
-  );
-}

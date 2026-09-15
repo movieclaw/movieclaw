@@ -567,7 +567,7 @@ _MEMBER_ALLOWLIST = {
     # 合集是成员的浏览面：列表按三层可见性收口（私有只对本人、库不可见就不下发、
     # 成员条目再过一遍），私有合集与不可见库里的合集一律按 404 拒绝而不是空列表。
     # 写操作（建/改/删）同样开放给成员——那是他自己的合集，household 的合集
-    # 本来就是全家共用的东西；apply-to-library 改的是库配置，另挂管理员闸
+    # 本来就是全家共用的东西
     ("GET", "/api/v1/collections"),
     ("POST", "/api/v1/collections"),
     ("GET", "/api/v1/collections/{collection_id}"),
