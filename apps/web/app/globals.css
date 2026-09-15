@@ -2219,10 +2219,11 @@ html[data-theme="netflix"] .detail-ambient::-webkit-scrollbar-track {
    线性 ramp 在照片上会读出一道明显的「带」。
    移动端不做左移/mask（竖屏没有「左文右图」的横向分区），改为全幅 + 纵向
    渐隐（见下方 ::after 的移动端档）。 */
-/* 渐变曲线定义在 html.nf-hero-live 上：覆盖层与轮换层（body 的子节点、
-   不是覆盖层的后代）都要继承它——定义在覆盖层上轮换层只能拿到 undefined，
-   mask 整个失效成硬边（实测踩过）。 */
-html.nf-hero-live {
+/* 渐变曲线定义在 :root 上（原挂在 html.nf-hero-live）：消费者有三处——详情页
+   沉浸覆盖层与轮换层（body 的子节点、不是彼此的后代，必须从根继承）与
+   /library 的 billboard 画面层（.nf-billboard-art）。定义在任何单一消费者上，
+   其余都只能拿到 undefined，mask 整个失效成硬边（实测踩过）。 */
+:root {
   --nf-blend: linear-gradient(
     90deg,
     rgba(0, 0, 0, 0) 0%,
@@ -2337,6 +2338,47 @@ html.nf-hero-live .detail-slideshow {
 @media (prefers-reduced-motion: reduce) {
   .detail-slideshow img {
     animation: none;
+  }
+}
+/* —— /library 顶部的 Netflix Billboard 画面层（library-hero.tsx） ——
+ * 与详情页沉浸剧照同一套画面语言（「media 那样的样式」）：
+ *   - 桌面：左侧多段缓变黑遮罩（--nf-blend，与详情页「左黑右图」同一条曲线）
+ *     护住左下文案块；移动端竖屏没有左文右图的横向分区，不 mask；
+ *   - 纵向渐隐画在 ::after 上（渐到画布纯黑，与下方内容无缝衔接），移动端
+ *     档位另在顶部压一抹暗，让透明顶栏下的画面上缘更稳；
+ *   - 下滚退场：billboard 跟随媒体库页滚动容器滚走时渐暗 + 模糊
+ *     （--nf-hero-recede 由组件按滚动进度写在 section 上，与详情页同名
+ *     变量同一套公式；此处只作用于本子树，不挂 html.nf-hero-live）。
+ * 图床走高清原图（TMDB original / 本地资产原图），组件按「宁黑勿糊」等
+ * 解码完成才显示——此前 landscape-card（480×270）拉伸到全出血明显发虚。 */
+.nf-billboard-art {
+  filter: blur(calc(var(--nf-hero-recede, 0) * 12px))
+    brightness(calc(1 - var(--nf-hero-recede, 0) * 0.55));
+  transition: --nf-hero-recede 450ms linear;
+}
+@media (min-width: 768px) {
+  .nf-billboard-art {
+    mask-image: var(--nf-blend);
+    -webkit-mask-image: var(--nf-blend);
+  }
+}
+.nf-billboard-art::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0) 58%, #000 88%);
+}
+@media (max-width: 767px) {
+  .nf-billboard-art::after {
+    background:
+      linear-gradient(180deg, rgba(0, 0, 0, 0.32) 0%, rgba(0, 0, 0, 0) 15%),
+      linear-gradient(
+        180deg,
+        rgba(0, 0, 0, 0) 20%,
+        rgba(0, 0, 0, 0.5) 36%,
+        rgba(0, 0, 0, 0.85) 50%,
+        #000 62%
+      );
   }
 }
 /* 滚动进度变量注册成 <number> 类型：Chromium 只对注册属性做插值过渡，
@@ -2549,6 +2591,22 @@ html[data-theme="netflix"] .search-palette-panel {
   border-radius: 6px;
   backdrop-filter: none;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.9);
+}
+
+/* 订阅详情摘要卡（subscription-inspector-view）：银玻璃的冷蓝黑底与 Netflix
+   纯黑画布不同相（同 mobile-topbar 雾层的色偏问题），换弹层面板语言——
+   #181818 实底，压暗渐变收敛为黑系、右半多透一些让海报氛围透出来。
+   无层 CSS 特异性压过卡片上的任意值工具类，与 search-palette 同型。 */
+html[data-theme="netflix"] .sub-hero-card {
+  background: #181818;
+}
+html[data-theme="netflix"] .sub-hero-card > .sub-hero-tint {
+  background: linear-gradient(
+    90deg,
+    rgba(0, 0, 0, 0.92),
+    rgba(0, 0, 0, 0.58) 55%,
+    rgba(24, 24, 24, 0.3)
+  );
 }
 
 /* 详情页移动端 hero 提档为 Netflix 专属档（§5.5 修订：约 40vh，对齐 App

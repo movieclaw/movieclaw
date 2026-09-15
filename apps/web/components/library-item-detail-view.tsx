@@ -15,6 +15,7 @@ import { BrandLoader } from "@/components/brand-loader";
 import { CastRow } from "@/components/cast-row";
 import { ChapterStrip } from "@/components/chapter-strip";
 import { MediaTrackRows } from "@/components/media-track-rows";
+import { NetflixBackButton, NetflixPageActions } from "@/components/netflix/back-button";
 import { PAGE_NAV_BUTTON_CLASS, PageNav } from "@/components/page-nav";
 import { HScroller } from "@/components/h-scroller";
 import {
@@ -74,6 +75,7 @@ import { formatBytes, formatRuntimeMinutes, formatVideoResolution } from "@/lib/
 import { formatClock } from "@/lib/player/timeline";
 import { USER_LOWEST_SOURCE, mediaSourceDisplayLabel } from "@/lib/media-source-annotation";
 import { useDoubanAppHref } from "@/lib/douban-app-link";
+import { useBackNavigation } from "@/lib/back-navigation";
 import { useBackdrop } from "@/lib/backdrop";
 import { useIsMobile } from "@/lib/use-media-query";
 import { resolveRequestUrl } from "@/lib/http";
@@ -450,13 +452,20 @@ export function LibraryItemDetailView({
     : fromRecent
       ? { label: "媒体库", href: "/library" as Route }
       : { label: library?.name ?? "库存", href: `/library/${libraryId}` as Route };
+  // Netflix 桌面的顶栏（fixed z-40）会把 PageNav（sticky z-30）整个盖住——
+  // 返回键与 ⋯ 菜单都点不到（发现详情页踩过并修过的同款问题）；该形态下
+  // 退役 PageNav，改用悬浮返回键 + 页面操作簇（见 media-detail-view 的
+  // hidePageNav 分支，银玻璃与移动端仍走 PageNav）。
+  const hidePageNav = isNfDesktop;
+  const back = useBackNavigation(navFallback.href);
 
   if (failed) {
     return (
       // ambient-fallback：同 MediaDetailView——本页豁免全局蒙版，兜底态没有沉浸
       // 背景可铺，文案会压在用户壁纸上，自己带一层底才读得清
       <div className="ambient-fallback flex h-full flex-col">
-        <PageNav title="" fallback={navFallback} />
+        {!hidePageNav && <PageNav title="" fallback={navFallback} />}
+        {hidePageNav && <NetflixBackButton onBack={back} />}
         <div className="flex flex-1 flex-col items-center justify-center gap-4 px-6 text-center">
           <p className="text-body-lg font-semibold text-[var(--text)]">未能加载该条目</p>
           <p className="max-w-sm text-ui leading-6 text-[var(--text-muted)]">
@@ -478,7 +487,8 @@ export function LibraryItemDetailView({
   if (!detail) {
     return (
       <div className="ambient-fallback flex h-full flex-col">
-        <PageNav title="" fallback={navFallback} />
+        {!hidePageNav && <PageNav title="" fallback={navFallback} />}
+        {hidePageNav && <NetflixBackButton onBack={back} />}
         <div className="flex flex-1 items-center justify-center gap-2.5 text-ui text-[var(--text-muted)]">
           <BrandLoader className="size-5" />
           正在读取本地刮削信息…
@@ -582,6 +592,98 @@ export function LibraryItemDetailView({
     }
   };
 
+  // 页面级操作（⋯ 菜单）：银玻璃/移动端排在 PageNav 吸顶行右端；Netflix 桌面
+  // 没有 PageNav，由 NetflixPageActions 浮在顶栏下方右上角（与返回键对称）
+  const itemActions = (
+    <ItemActionsMenu
+      canManage={canManageLibraries}
+      onClearHistory={() => {
+        void confirm({
+          title: `清除《${detail.title}》的观看记录？`,
+          description:
+            "续播进度、已看标记和播放次数都会清除，无法恢复。只影响你自己的记录。",
+          confirmLabel: "清除",
+          tone: "danger",
+        }).then((ok) => {
+          if (!ok) return;
+          clearPlaybackHistory("item", { mediaItemId: detail.media_item_id })
+            .then(({ message }) => toast.success(message))
+            .catch((e) => toast.error((e as Error).message));
+        });
+      }}
+      identifiable={scrapedLibrary}
+      scraped={detail.source === "tmdb"}
+      readsNfo={detail.kind === "video"}
+      scraping={scrapingNow}
+      searchHref={`/search?q=${encodeURIComponent(detail.title)}` as Route}
+      // 加入合集：任何能看到这部片的人都能把它扔进自己的单子
+      onAddToCollection={() => setAddToCollectionOpen(true)}
+      // 分享仅超管（media-share.md §2.1）；照片库条目不分享（分享页是影片页）
+      onShare={
+        isAdmin && detail.kind !== "photo"
+          ? () => {
+              getItemShare(libraryId, mediaItemId)
+                .then((existing) => {
+                  setShareInitial(existing);
+                  setShareOpen(true);
+                })
+                .catch((e) => toast.error((e as Error).message));
+            }
+          : undefined
+      }
+      onReidentify={() => setReidentifyOpen(true)}
+      onRefreshMetadata={runMetadataRefresh}
+      // 场景图与元数据刷新相互独立：库开了开关才给入口
+      onRegenerateChapterImages={
+        library?.extract_chapter_images
+          ? () => {
+              regenerateItemChapterImages(libraryId, mediaItemId)
+                .then(() => {
+                  toast.success("已开始重新生成章节");
+                  // 作业在响应发出前已经落库，立刻拉一次就能拿到
+                  // chapters_pending=true，由它接管后续轮询
+                  reload();
+                })
+                .catch((e) => toast.error((e as Error).message));
+            }
+          : undefined
+      }
+      chaptersPending={Boolean(detail.chapters_pending)}
+      onChangeArtwork={() => setArtworkOpen(true)}
+      onTransfer={() => setTransferOpen(true)}
+      onDelete={() => setDeleteOpen(true)}
+      // 未识别/本地条目没有订阅锚点，不给洗版入口
+      onUpgrade={
+        canSubscribe && tmdbId > 0 && detail.kind !== "video" && detail.kind !== "photo"
+          ? () => {
+              const existing = subscriptionOf({
+                id: String(tmdbId),
+                type: detail.kind === "tv" ? "tv" : "movie",
+              });
+              if (existing) {
+                // 一部影片只有一个订阅：并入既有订阅，跳详情直接开弹层
+                router.push(
+                  `/subscriptions/${existing.id}?upgrade-run=1` as Route,
+                );
+                return;
+              }
+              void openSubscribe(
+                {
+                  id: String(tmdbId),
+                  title: detail.title,
+                  rating: 0,
+                  posterUrl: detail.poster_url ?? "",
+                  type: detail.kind === "tv" ? "tv" : "movie",
+                  year: detail.year ?? undefined,
+                },
+                { upgradeIntent: true },
+              );
+            }
+          : undefined
+      }
+    />
+  );
+
   return (
     // rounded-2xl + overflow 裁切：顶部剧照渐变到纯黑内容板，方角
     // 会与全站"浮起圆角卡片"的形状语言冲突——按侧栏同规格圆角收尾。
@@ -600,99 +702,14 @@ export function LibraryItemDetailView({
           全局蒙版，见 app-shell 的 isHome），大图直出、零边界；.detail-ambient
           在滚动容器上铺「透明 → 纯黑」的渐变板托住下方内容（见 globals.css）。
           顶栏首屏只有返回键与操作入口浮在剧照上。 */}
-      <PageNav
-        title={detail.title}
-        fallback={navFallback}
-        actions={
-            <ItemActionsMenu
-              canManage={canManageLibraries}
-              onClearHistory={() => {
-                void confirm({
-                  title: `清除《${detail.title}》的观看记录？`,
-                  description:
-                    "续播进度、已看标记和播放次数都会清除，无法恢复。只影响你自己的记录。",
-                  confirmLabel: "清除",
-                  tone: "danger",
-                }).then((ok) => {
-                  if (!ok) return;
-                  clearPlaybackHistory("item", { mediaItemId: detail.media_item_id })
-                    .then(({ message }) => toast.success(message))
-                    .catch((e) => toast.error((e as Error).message));
-                });
-              }}
-              identifiable={scrapedLibrary}
-              scraped={detail.source === "tmdb"}
-              readsNfo={detail.kind === "video"}
-              scraping={scrapingNow}
-              searchHref={`/search?q=${encodeURIComponent(detail.title)}` as Route}
-              // 加入合集：任何能看到这部片的人都能把它扔进自己的单子
-              onAddToCollection={() => setAddToCollectionOpen(true)}
-              // 分享仅超管（media-share.md §2.1）；照片库条目不分享（分享页是影片页）
-              onShare={
-                isAdmin && detail.kind !== "photo"
-                  ? () => {
-                      getItemShare(libraryId, mediaItemId)
-                        .then((existing) => {
-                          setShareInitial(existing);
-                          setShareOpen(true);
-                        })
-                        .catch((e) => toast.error((e as Error).message));
-                    }
-                  : undefined
-              }
-              onReidentify={() => setReidentifyOpen(true)}
-              onRefreshMetadata={runMetadataRefresh}
-              // 场景图与元数据刷新相互独立：库开了开关才给入口
-              onRegenerateChapterImages={
-                library?.extract_chapter_images
-                  ? () => {
-                      regenerateItemChapterImages(libraryId, mediaItemId)
-                        .then(() => {
-                          toast.success("已开始重新生成章节");
-                          // 作业在响应发出前已经落库，立刻拉一次就能拿到
-                          // chapters_pending=true，由它接管后续轮询
-                          reload();
-                        })
-                        .catch((e) => toast.error((e as Error).message));
-                    }
-                  : undefined
-              }
-              chaptersPending={Boolean(detail.chapters_pending)}
-              onChangeArtwork={() => setArtworkOpen(true)}
-              onTransfer={() => setTransferOpen(true)}
-              onDelete={() => setDeleteOpen(true)}
-              // 未识别/本地条目没有订阅锚点，不给洗版入口
-              onUpgrade={
-                canSubscribe && tmdbId > 0 && detail.kind !== "video" && detail.kind !== "photo"
-                  ? () => {
-                      const existing = subscriptionOf({
-                        id: String(tmdbId),
-                        type: detail.kind === "tv" ? "tv" : "movie",
-                      });
-                      if (existing) {
-                        // 一部影片只有一个订阅：并入既有订阅，跳详情直接开弹层
-                        router.push(
-                          `/subscriptions/${existing.id}?upgrade-run=1` as Route,
-                        );
-                        return;
-                      }
-                      void openSubscribe(
-                        {
-                          id: String(tmdbId),
-                          title: detail.title,
-                          rating: 0,
-                          posterUrl: detail.poster_url ?? "",
-                          type: detail.kind === "tv" ? "tv" : "movie",
-                          year: detail.year ?? undefined,
-                        },
-                        { upgradeIntent: true },
-                      );
-                    }
-                  : undefined
-              }
-            />
-        }
-      />
+      {hidePageNav ? (
+        <>
+          <NetflixBackButton onBack={back} />
+          <NetflixPageActions>{itemActions}</NetflixPageActions>
+        </>
+      ) : (
+        <PageNav title={detail.title} fallback={navFallback} actions={itemActions} />
+      )}
 
       {/* 手机 Hero（剧照）：宽度撑满，从状态栏底下起铺（绝对定位在滚动内容顶端，PageNav
           的返回键与吸顶雾层浮在它上面），随内容一起滚走，不固定在背景上。顶部一抹暗让状态栏

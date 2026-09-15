@@ -2,13 +2,13 @@
 
 import type { Route } from "next";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { InfoIcon, PlayIcon, SparkIcon } from "@/components/icons";
 import { PosterImage } from "@/components/poster-image";
 import { type LibraryItem, listLibraries, listLibraryItems } from "@/lib/api/libraries";
 import { listUpNext, type UpNextItem } from "@/lib/api/playback";
-import { imageUrl, cardVariantFor } from "@/lib/image-proxy";
+import { imageUrl, upgradedTmdbOriginalUrl, cardVariantFor } from "@/lib/image-proxy";
 import { formatRelativeTime } from "@/lib/time";
 
 /**
@@ -101,8 +101,10 @@ export function NetflixLibraryHero() {
 
 /**
  * 全出血 hero：高度按 16:9 推导并以视口收口 `clamp(480px, 56.25vw, 80vh)`
- * （移动 40vh，自家决策值）；底部渐隐入 #141414、左侧可读性渐变；左下文案块
- * （标题 / 元数据 / 按钮）与「▶ 播放（白底黑字）· ⓘ 详情（灰底）· ✦ 问 AI」。
+ * （移动 40vh，自家决策值）；画面层（.nf-billboard-art）与详情页沉浸剧照
+ * 同一套语言（globals.css）：左侧多段缓变黑遮罩、底部渐隐入画布纯黑、下滚
+ * 渐暗 + 模糊退场。左下文案块（标题 / 元数据 / 按钮）与「▶ 播放（白底黑字）
+ * · ⓘ 详情（灰底）· ✦ 问 AI」。
  */
 function NetflixBillboard({
   upNextItem,
@@ -130,7 +132,11 @@ function NetflixBillboard({
   const artworkUrl = upNextItem
     ? (upNextItem.episode_still_url ?? upNextItem.backdrop_url)
     : (libraryItem?.backdrop_url ?? null);
-  const playHref = upNextItem ? playHrefOf(upNextItem) : null;
+  const playHref = upNextItem
+    ? playHrefOf(upNextItem)
+    : libraryItem && libraryItem.media_item_id != null
+      ? (`/play/${libraryItem.media_item_id}` as Route)
+      : null;
   const detailHref = upNextItem ? itemHrefOf(upNextItem) : libraryItem && libraryItem.library_id != null
     ? (`/library/${libraryItem.library_id}/item/${libraryItem.media_item_id}` as Route)
     : null;
@@ -139,27 +145,97 @@ function NetflixBillboard({
   const addedLabel =
     !upNextItem && libraryItem?.added_at ? `${formatRelativeTime(libraryItem.added_at)}入库` : null;
 
+  // 沉浸画面只走高清（与发现详情页同一条「宁黑勿糊」决策）：TMDB 图升 original
+  // 尺寸档，本地资产直取原图；加载并解码完成才显示，不存在「先低清后高清」的
+  // 换图过程。landscape-card（480×270）只作兜底：无更高清档或高清加载失败时用。
+  const fallbackSrc = artworkUrl ? imageUrl(artworkUrl, "landscape-card") : "";
+  const hdUrl = artworkUrl ? upgradedTmdbOriginalUrl(imageUrl(artworkUrl)) : "";
+  const [artState, setArtState] = useState<"pending" | "ok" | "failed">("pending");
+  useEffect(() => {
+    if (!hdUrl) {
+      setArtState("failed"); // 没有画面素材：走海报模糊铺底兜底
+      return;
+    }
+    setArtState("pending");
+    let cancelled = false;
+    const img = new Image();
+    const settle = () => {
+      img
+        .decode()
+        .catch(() => {})
+        .then(() => {
+          if (!cancelled) setArtState("ok");
+        });
+    };
+    img.onload = settle;
+    img.onerror = () => {
+      if (!cancelled) setArtState("failed");
+    };
+    img.src = hdUrl;
+    return () => {
+      cancelled = true;
+    };
+  }, [hdUrl, fallbackSrc]);
+  const artSrc = artState === "ok" ? hdUrl : artState === "failed" ? fallbackSrc : "";
+
+  // 滚动退场（详情页 --nf-hero-recede 的 billboard 版）：billboard 跟随媒体库
+  // 页的滚动容器滚走，下滚时画面渐暗 + 模糊。进度写在 section 元素上，只有
+  // 本组件的子树消费它（.nf-billboard-art，见 globals.css），不挂
+  // html.nf-hero-live——那会牵连全站沉浸覆盖层的规则。
+  const sectionRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const section = sectionRef.current;
+    if (!section) return;
+    // 找到所在的滚动容器（全站页面都是「外壳固定 + 内层 overflow-y-auto」，
+    // 与 PageNav 同款行走法）；挂载时先读真实 scrollTop——媒体库页带着恢复的
+    // 滚动位置回来时没有滚动事件可听，不能默认 0
+    let found: HTMLElement | null = section.parentElement;
+    while (
+      found &&
+      getComputedStyle(found).overflowY !== "auto" &&
+      getComputedStyle(found).overflowY !== "scroll"
+    ) {
+      found = found.parentElement;
+    }
+    if (!found) return;
+    const scroller = found;
+    let frame = 0;
+    const sync = () => {
+      frame = 0;
+      // 归一化尺度取画面高度的 80%：billboard 比详情页 hero 更早滚出视口，
+      // 缓出区间相应收短
+      const range = Math.max(240, section.clientHeight * 0.8);
+      const progress = Math.min(1, Math.max(0, scroller.scrollTop / range));
+      section.style.setProperty("--nf-hero-recede", progress.toFixed(3));
+    };
+    const onScroll = () => {
+      if (!frame) frame = window.requestAnimationFrame(sync);
+    };
+    scroller.addEventListener("scroll", onScroll, { passive: true });
+    sync();
+    return () => {
+      scroller.removeEventListener("scroll", onScroll);
+      if (frame) window.cancelAnimationFrame(frame);
+    };
+  }, []);
+
   return (
     <section
+      ref={sectionRef}
       aria-label={`正在展示《${title}》`}
       className="relative h-[40vh] min-h-[320px] w-full max-md:min-h-[300px] md:h-[clamp(480px,56.25vw,80vh)]"
     >
-      {/* 画面：横版剧照直出；无剧照的条目用海报模糊铺底兜底 */}
-      <div className="absolute inset-0 overflow-hidden bg-[#141414]">
-        {artworkUrl ? (
-          <img
-            src={imageUrl(artworkUrl, "landscape-card")}
-            alt=""
-            className="size-full object-cover"
-          />
-        ) : libraryItem?.poster_url ? (
+      {/* 画面：高清剧照直出（加载解码完成前保持黑场）；无剧照的条目用海报
+          模糊铺底兜底。遮罩语言（左黑渐变 / 底部渐隐 / 滚动模糊）全部收口在
+          .nf-billboard-art（globals.css，与详情页沉浸剧照同一套规则） */}
+      <div className="absolute inset-0 overflow-hidden bg-black">
+        {artSrc ? (
+          <div className="nf-billboard-art absolute inset-0">
+            <img src={artSrc} alt="" className="size-full object-cover" />
+          </div>
+        ) : artworkUrl ? null : libraryItem?.poster_url ? (
           <PosterFallbackFill url={libraryItem.poster_url} aspect={libraryItem.primary_aspect} />
         ) : null}
-        {/* 底部渐隐入画布色 + 左侧可读性渐变（§2.5 构图）。渐变终点必须是
-            纯黑 #000（= 画布 --bg）：取卡片灰 #141414 会在图与下方内容的
-            交界处显出一道色差缝（globals.css 修 library hero 时的同一结论） */}
-        <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(20,20,20,0.45)_0%,rgba(20,20,20,0)_32%,rgba(20,20,20,0)_60%,#000_100%)]" />
-        <div className="absolute inset-0 max-md:bg-[linear-gradient(180deg,rgba(0,0,0,0.5)_0%,transparent_40%,rgba(0,0,0,0.92)_100%)] md:bg-[linear-gradient(90deg,rgba(0,0,0,0.72)_0%,rgba(0,0,0,0.35)_42%,transparent_68%)]" />
       </div>
 
       {/* 左下文案块 */}

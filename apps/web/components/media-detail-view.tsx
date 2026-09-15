@@ -22,6 +22,7 @@ import { CastRow } from "@/components/cast-row";
 import { DetailBackdropSlideshow } from "@/components/detail-backdrop-slideshow";
 import { HScroller } from "@/components/h-scroller";
 import { Modal } from "@/components/modal";
+import { NetflixBackButton } from "@/components/netflix/back-button";
 import { PageNav } from "@/components/page-nav";
 import { ImageLightbox, type LightboxAction } from "@/components/image-lightbox";
 import { MediaRow } from "@/components/media-row";
@@ -1041,27 +1042,6 @@ function PhotoCard({
         alt={`${title} ${label}`}
         className="size-full object-cover transition-transform duration-500 ease-out hover:scale-[1.05]"
       />
-    </button>
-  );
-}
-
-/**
- * Netflix 桌面详情页的返回键：裸的白色 chevron，fixed 悬浮在顶栏下方左上角。
- * 这就是 Netflix 自己的返回语言——不加底、不加描边，hover 才浮一层浅白；
- * 与银玻璃的圆角玻璃键（PageNav）刻意不同貌。飘在亮图上时靠图标投影保底，
- * 横向对齐 4vw 栅格（与发现页悬浮工具栏、内容行同一条左基线）。
- */
-function NetflixBackButton({ onBack }: { onBack: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onBack}
-      aria-label="返回上一页"
-      title="返回上一页"
-      // calc 任意值的 +/- 两侧必须空白（下划线转义），无空格是无效 CSS
-      className="fixed left-[4vw] top-[calc(var(--nf-nav-h)_+_12px)] z-30 flex size-10 items-center justify-center rounded-full text-white/85 transition hover:bg-white/10 hover:text-white"
-    >
-      <ChevronLeftIcon className="size-6 drop-shadow-[0_1px_3px_rgba(0,0,0,0.8)]" />
     </button>
   );
 }

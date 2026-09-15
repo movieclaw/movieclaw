@@ -19,8 +19,10 @@ import {
 } from "@/components/icons";
 import { MediaSourceAnnotationDialog } from "@/components/media-source-annotation-dialog";
 import { Modal } from "@/components/modal";
+import { NetflixBackButton } from "@/components/netflix/back-button";
 import { PageNav } from "@/components/page-nav";
 import { usePageTitle } from "@/lib/use-page-title";
+import { useBackNavigation } from "@/lib/back-navigation";
 import { PosterImage } from "@/components/poster-image";
 import { specSummary, upgradeTargetLabel } from "@/components/rule-sets-panel";
 import { useSubscribeEntry } from "@/components/subscribe-entry";
@@ -55,6 +57,8 @@ import { subscriptionStatusMeta } from "@/lib/subscription-ui";
 import { formatDateTime, formatRelativeTime } from "@/lib/time";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
 import { usePermissions } from "@/lib/permissions";
+import { useTheme } from "@/lib/ui-prefs";
+import { useIsMobile } from "@/lib/use-media-query";
 
 /**
  * 订阅详情分析页（/subscriptions/[id]）：订阅透明化的落点。
@@ -173,10 +177,22 @@ export function SubscriptionInspectorView({
   // 「本页自带顶栏」，否则移动端全局顶栏（☰ + logo）会先显示再消失、顶部闪一下。
   const navFallback = { label: "我的订阅", href: "/subscriptions" as Route };
 
+  // Netflix 桌面：圆角玻璃返回键（PageNav）退役，换裸白 chevron——与媒体
+  // 详情页同一返回语言（web-themes.md §5.5 修订①）。移动端仍保留 PageNav：
+  // 它要向外壳登记「本页自带顶栏」并充当返回入口。
+  const themeId = useTheme().id;
+  const isMobile = useIsMobile();
+  const isNfDesktop = themeId === "netflix" && !isMobile;
+  const back = useBackNavigation(navFallback.href);
+
   if (failed) {
     return (
       <div className="flex h-full flex-col">
-        <PageNav title="" fallback={navFallback} />
+        {isNfDesktop ? (
+          <NetflixBackButton onBack={back} />
+        ) : (
+          <PageNav title="" fallback={navFallback} />
+        )}
         <div className="flex flex-1 flex-col items-center justify-center gap-4">
           <p className="text-body text-[var(--text-muted)]">未能加载该订阅，可能已被删除。</p>
           <Link
@@ -195,7 +211,11 @@ export function SubscriptionInspectorView({
   if (!detail) {
     return (
       <div className="flex h-full flex-col">
-        <PageNav title="" fallback={navFallback} />
+        {isNfDesktop ? (
+          <NetflixBackButton onBack={back} />
+        ) : (
+          <PageNav title="" fallback={navFallback} />
+        )}
         <div className="flex flex-1 items-center justify-center gap-2.5 text-ui text-[var(--text-muted)]">
           <BrandLoader className="size-5" />
           正在加载订阅详情…
@@ -337,17 +357,24 @@ export function SubscriptionInspectorView({
 
   return (
     <div className="scroll-thin scroll-safe flex-1 overflow-y-auto px-6 pb-12 max-md:px-4">
-      {/* 顶栏：返回订阅列表 + 吸顶片名（容器已有 px-6，用 -mx-6 让吸顶蒙版铺满） */}
-      <PageNav
-        title={detail.media.title}
-        fallback={navFallback}
-        className="-mx-6 max-md:-mx-4"
-      />
-      {/* —— 1. 订阅摘要卡：状态、身份、配置、进度、操作自上而下形成单一路径。
+      {/* 顶栏：返回订阅列表 + 吸顶片名（容器已有 px-6，用 -mx-6 让吸顶蒙版铺满）。
+          Netflix 桌面换裸白 chevron（见上方 isNfDesktop 注释） */}
+      {isNfDesktop ? (
+        <NetflixBackButton onBack={back} />
+      ) : (
+        <PageNav
+          title={detail.media.title}
+          fallback={navFallback}
+          className="-mx-6 max-md:-mx-4"
+        />
+      )}
+      {/* —— 1. 订阅摘要卡：状态、身份、配置、进度、操作自上而下形成单路径。
           海报仍提供条目辨识与轻量氛围，但背景只低透明度取色，不再压过正文。
           PageNav 已占一行导航高度，摘要卡再按一级页基线留出桌面 28px / 移动端
-          16px 的内容间距，避免重卡片贴住顶栏。 —— */}
-      <section className="relative mt-7 overflow-hidden rounded-2xl bg-[#0d111b] shadow-[0_24px_70px_-18px_rgba(0,0,0,0.58)] ring-1 ring-white/10 max-md:mt-4">
+          16px 的内容间距，避免重卡片贴住顶栏。
+          sub-hero-card / sub-hero-tint：Netflix 主题的作用域覆盖钩子（globals.css，
+          #181818 实底 + 黑系渐变——银玻璃冷蓝黑与纯黑画布不同相）。 —— */}
+      <section className="sub-hero-card relative mt-7 overflow-hidden rounded-2xl bg-[#0d111b] shadow-[0_24px_70px_-18px_rgba(0,0,0,0.58)] ring-1 ring-white/10 max-md:mt-4">
         {poster && (
           <PosterImage
             src={poster}
@@ -355,7 +382,7 @@ export function SubscriptionInspectorView({
             className="absolute inset-0 size-full scale-110 object-cover opacity-25 blur-3xl brightness-[0.42] saturate-[0.9]"
           />
         )}
-        <div className="absolute inset-0 bg-gradient-to-r from-[rgba(7,10,17,0.97)] via-[rgba(9,13,22,0.91)] to-[rgba(10,14,23,0.84)]" />
+        <div className="sub-hero-tint absolute inset-0 bg-gradient-to-r from-[rgba(7,10,17,0.97)] via-[rgba(9,13,22,0.91)] to-[rgba(10,14,23,0.84)]" />
 
         {/* 卡片眉头只回答两件事：订阅类型与当前状态。进度挪到主体单独表达，
             不再把“追踪中 · 缺几集 · 已入库几集”揉成一条长句。 */}

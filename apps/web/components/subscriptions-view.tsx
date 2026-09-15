@@ -19,7 +19,6 @@ import type { DownloadTask } from "@/lib/api/downloaders";
 import {
   checkSubscriptionAutomationReadiness,
   listRuleSets,
-  listTodaySubscriptionArrivals,
   type RuleSet,
   type Subscription,
   type TodaySubscriptionArrival,
@@ -37,18 +36,14 @@ import {
   type SubscriptionKind,
 } from "@/lib/subscription-overview";
 import {
-  groupTodayArrivals,
   subscriptionCollectionMeta,
   subscriptionFullyCollected,
   subscriptionRibbon,
-  todayArrivalPresentation,
   type TodayArrivalPresentation,
 } from "@/lib/subscription-ui";
 import { useIsMobile } from "@/lib/use-media-query";
 import { useScrollRestoration } from "@/lib/use-scroll-restoration";
-import { useVisiblePolling } from "@/lib/use-visible-polling";
-
-const TODAY_ARRIVALS_POLL_MS = 10_000;
+import { useTodayArrivalGroups, useTodaySubscriptionArrivals } from "@/lib/use-today-arrivals";
 
 const rememberedVisibleCounts: Record<SubscriptionKind, number> = {
   movie: SUBSCRIPTION_BATCH_SIZE,
@@ -95,7 +90,8 @@ const todayArrivalStyle: Record<
 };
 
 /**
- * 订阅页：用户全部订阅的海报墙。
+ * 订阅页的银玻璃布局（Netflix 主题走 components/netflix/subscriptions-page.tsx，
+ * 入口分流见 components/subscriptions-page.tsx）：用户全部订阅的海报墙。
  *
  * 数据直接消费 SubscribeEntryProvider 的全站订阅列表（唯一数据源）：
  * 弹层里取消订阅后 context 刷新，这里的墙面即时同步，无需各自维护快照。
@@ -122,10 +118,10 @@ export function SubscriptionsView() {
   const { subscriptions, refresh } = useSubscribeEntry();
   const { tasks: downloadTasks } = useDownloadTasks();
   const [failed, setFailed] = useState(false);
-  const [todayArrivals, setTodayArrivals] = useState<TodaySubscriptionArrival[] | null>(null);
-  const [todayArrivalsFailed, setTodayArrivalsFailed] = useState(false);
-  const todayArrivalsRequestRef = useRef(0);
-  const hasTodayArrivalsSnapshotRef = useRef(false);
+  const {
+    arrivals: todayArrivals,
+    failed: todayArrivalsFailed,
+  } = useTodaySubscriptionArrivals(subscriptions);
   const [ruleSets, setRuleSets] = useState<RuleSet[]>([]);
   const [libraries, setLibraries] = useState<MediaLibrary[]>([]);
   // 链路体检整体为 error 时顶部亮警示横幅（提醒推到用户在的地方，
@@ -149,48 +145,6 @@ export function SubscriptionsView() {
   useEffect(() => {
     reload();
   }, [reload]);
-
-  // 只要有订阅就取预告：电影在下载/整理阶段同样进这块，切到电影分区也要有内容。
-  const todayArrivalsEnabled = subscriptions !== null && subscriptions.length > 0;
-  const refreshTodayArrivals = useCallback(() => {
-    if (!todayArrivalsEnabled) return;
-    const requestId = ++todayArrivalsRequestRef.current;
-    void listTodaySubscriptionArrivals()
-      .then((rows) => {
-        if (requestId !== todayArrivalsRequestRef.current) return;
-        hasTodayArrivalsSnapshotRef.current = true;
-        setTodayArrivals(rows);
-        setTodayArrivalsFailed(false);
-      })
-      .catch(() => {
-        if (
-          requestId === todayArrivalsRequestRef.current &&
-          !hasTodayArrivalsSnapshotRef.current
-        ) {
-          setTodayArrivals([]);
-          setTodayArrivalsFailed(true);
-        }
-      });
-  }, [todayArrivalsEnabled]);
-
-  // 首次进入与订阅清单变化时立即读取，停留期间每 10 秒静默同步；
-  // 后台标签页暂停，恢复可见时补一次。已有快照
-  // 遇到瞬时请求失败继续保留，避免时间轨道闪成错误态或重新出现加载文案。
-  useEffect(() => {
-    if (!todayArrivalsEnabled) {
-      todayArrivalsRequestRef.current += 1;
-      hasTodayArrivalsSnapshotRef.current = false;
-      setTodayArrivals(null);
-      setTodayArrivalsFailed(false);
-      return;
-    }
-    setTodayArrivalsFailed(false);
-    refreshTodayArrivals();
-  }, [refreshTodayArrivals, subscriptions, todayArrivalsEnabled]);
-  useVisiblePolling(
-    refreshTodayArrivals,
-    todayArrivalsEnabled ? TODAY_ARRIVALS_POLL_MS : null,
-  );
 
   // 配置名称不是订阅摘要的一部分，分别用现有列表接口补齐。规则组沿用详情页
   // 的管理员可见边界；媒体库接口会按成员白名单过滤，因此所有登录用户都可安全读取。
@@ -525,40 +479,9 @@ function TodayArrivalsSection({
   hasTvInView: boolean;
   canSubscribe: boolean;
 }) {
-  const [now, setNow] = useState(() => new Date());
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(new Date()), 60_000);
-    return () => window.clearInterval(timer);
-  }, []);
-
-  const taskByHash = useMemo(
-    () => new Map(downloadTasks.map((task) => [task.info_hash.toLowerCase(), task])),
-    [downloadTasks],
-  );
-  const rows = useMemo(() => {
-    // 预告跟随当前分区：切到电影就只看电影，避免和下方海报墙讲不同的事。
-    const presented = (arrivals ?? [])
-      .filter((arrival) => mediaType === "all" || arrival.media_kind === mediaType)
-      .map((arrival) => {
-        const task = arrival.info_hash
-          ? taskByHash.get(arrival.info_hash.toLowerCase())
-          : undefined;
-        return {
-          arrival,
-          presentation: todayArrivalPresentation(arrival, task, now),
-        };
-      });
-    const groups = groupTodayArrivals(presented).toSorted((left, right) => {
-      const leftTime = left.presentation.estimatedAt ?? Number.MAX_SAFE_INTEGER;
-      const rightTime = right.presentation.estimatedAt ?? Number.MAX_SAFE_INTEGER;
-      if (leftTime !== rightTime) return leftTime - rightTime;
-      return left.firstWantedId - right.firstWantedId;
-    });
-    // 后端按媒体类型各自给了焦点日，“全部”分区可能同时拿到两类的不同日子；
-    // 这里再收敛一次到最近的那一天，保证卡片始终只讲一件事。
-    const nearest = Math.min(...groups.map((group) => group.daysAhead));
-    return groups.filter((group) => group.daysAhead === nearest);
-  }, [arrivals, mediaType, now, taskByHash]);
+  // 分组 / 排序 / 最近一天收敛与分钟级文案刷新都在共享 hook 里
+  //（见 lib/use-today-arrivals.ts，与 Netflix 布局的预告行同一份逻辑）
+  const rows = useTodayArrivalGroups(arrivals, mediaType, downloadTasks);
 
   const daysAhead = rows[0]?.daysAhead ?? 0;
   const isUpcoming = rows.length > 0 && daysAhead > 0;
@@ -725,8 +648,9 @@ function TodayArrivalsSection({
   );
 }
 
-/** 订阅类型切换：沿用发现页的数据源切换样式，让同类操作保持一致。 */
-function MediaTypeSwitcher({
+/** 订阅类型切换：沿用发现页的数据源切换样式，让同类操作保持一致。
+ *  （Netflix 布局与移动端顶栏共用同一颗胶囊。） */
+export function MediaTypeSwitcher({
   value,
   onChange,
   compact = false,
@@ -812,8 +736,9 @@ function toVisualItem(
   };
 }
 
-/** 海报墙单元格：点击进订阅详情分析页（追踪明细 + 活动时间线），而非影片详情。 */
-function SubscriptionCell({
+/** 海报墙单元格：点击进订阅详情分析页（追踪明细 + 活动时间线），而非影片详情。
+ *  （Netflix 布局的海报行复用同一张卡：斜标与收录脚注的信息不降级。） */
+export function SubscriptionCell({
   sub,
   ruleSetName,
   libraryName,

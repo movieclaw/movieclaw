@@ -474,6 +474,31 @@ Netflix 完全同款、已对齐，不再动。分享页（`/s/[slug]`）与播�
 （Netflix 播放/沉浸层语言）。深度控件（表格、开关、滑杆）沿用现有组件，颜色变量
 自动跟随，圆角接受偏差（§9）。
 
+**（2026-09-15 修订）订阅页升级为结构级处理**：原「`/subscriptions` 只换 token、
+信息架构不动」被取代——订阅是底部页签四个一级内容入口之一（§5.2），token 换皮
+后的「玻璃海报墙」与两侧的发现 / 媒体库页不是一种语言。新版式 =
+Netflix「我的片单 × 新片热门」合体（`components/netflix/subscriptions-page.tsx`，
+主题分流入口在 `components/subscriptions-page.tsx`，银玻璃布局不动）：
+
+- **页头**：大标题 + 统计行，栅格对齐 `--nf-inset`（4vw）；桌面「全部 / 剧集 /
+  电影」胶囊 fixed 悬浮视口右上（发现页工具栏同款安放），移动端仍走全局顶栏
+  actions 位（§5.2 既定）。
+- **「即将入库」预告行**（Coming Soon 行）：双端 16:9 横版卡 + 日期徽标（今天 /
+  明天 / N 天后）+ 状态元信息（预计入库 / 等待资源 / 下载中 / 整理中），
+  下载中的卡带 3px 红色进度条（进度红与全站进度条同一语言）。订阅数据没有
+  横版剧照，画面走「海报模糊铺底 + 中央完整显示」既有兜底（§5.4）。
+- **状态分区海报行**：追更中的剧集 / 订阅的电影 / 已收齐 / 已暂停，取代银玻璃
+  的「剧集 / 电影」两大分区——行式布局里「追更中 → 已收齐」的排序天然回答
+  「还差什么」；已收齐整行压暗（银玻璃压暗取舍的行式等价物）。卡片沿用
+  `PosterCardVisual` 的斜标与收录脚注（信息不降级），移动端吃 `.m-row` 宽度
+  断点公式。
+- 数据与银玻璃版同源（SubscribeEntryProvider + today-arrivals 轮询，共享
+  `lib/use-today-arrivals.ts`），无新后端依赖。
+- 订阅**详情页**仍是 §5.7 的换皮范畴，仅两处对齐：桌面返回键换 `NetflixBackButton`
+  （§5.5 修订① 的既有语言，组件提取到 `components/netflix/back-button.tsx` 与
+  媒体详情页共用）；摘要卡的冷蓝黑底在 Netflix 作用域下覆盖为 `#181818` 实底 +
+  黑系渐变（globals.css 的 `.sub-hero-card`，同 mobile-topbar 雾层的色偏修法）。
+
 ## 6. 页面映射总表
 
 | 路由 | 银玻璃（现状） | Netflix 主题 | 改动 |
@@ -486,7 +511,8 @@ Netflix 完全同款、已对齐，不再动。分享页（`/s/[slug]`）与播�
 | `/play/*` | 播放器 | token 换肤（进度红） | 仅 CSS |
 | `/search` | 结果列表 | 换皮，结构不变 | token 层 |
 | `/sessions/[id]` | 沉浸对话页 | 换皮（`.page-solid` → `#000`） | token 层 |
-| `/settings…`、`/activity`、`/subscriptions` | 控制台页 | 换皮，信息架构不动 | token 层 |
+| `/settings…`、`/activity` | 控制台页 | 换皮，信息架构不动 | token 层 |
+| `/subscriptions` | 订阅海报墙 | 预告行 + 状态分区海报行（2026-09-15 修订，§5.7） | 结构层，新组件 |
 | `/s/[slug]` | 分享页 | token 层跟随 | 仅 CSS |
 | 外壳 | 侧栏 + 抽屉 | **NetflixTopNav / NetflixTabBar** | 结构层，新组件 |
 
