@@ -13,6 +13,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -33,6 +35,8 @@ from movieclaw_db.repositories.library_repo import register_stats_refresh_hook
 #: 合集列表与 Jellyfin BoxSet 里——这个抽象要吃掉既有特例，而不是摆在它旁边。
 #: （`/library/favorites` 那个页面本期不动，见设计文档 1.2 的分寸。）
 BUILTIN_FAVORITES = "favorites"
+
+logger = logging.getLogger("movieclaw_api.library_collections")
 
 #: 内置合集的规则：与用户创建的合集共用同一套结构，只是不可编辑。
 _BUILTIN_RULES: dict[str, list[dict]] = {
@@ -347,15 +351,24 @@ async def pinned_collection_ids(session: AsyncSession, member_id: int) -> list[i
 
     隐藏的行（``hidden``）不算——它在首页上就是不显示，虚拟库同理。
     """
+    from pydantic import ValidationError
+
     from movieclaw_api.settings.schemas import UiPreferencesSetting, get_ui_preferences
     from movieclaw_db.models import Member
 
-    if member_id:
-        member = await session.get(Member, member_id)
-        raw = member.ui_prefs if member is not None else None
-        prefs = UiPreferencesSetting.model_validate(raw) if raw else UiPreferencesSetting()
-    else:
-        prefs = await get_ui_preferences()
+    try:
+        if member_id:
+            member = await session.get(Member, member_id)
+            raw = member.ui_prefs if member is not None else None
+            prefs = UiPreferencesSetting.model_validate(raw) if raw else UiPreferencesSetting()
+        else:
+            prefs = await get_ui_preferences()
+    except ValidationError:
+        # 应用内更新回退后，新版本存下的偏好可能过不了旧版本的校验（成员那列与
+        # 超管的全局域都会抛）。这里的调用方是 /UserViews 这类电视端高频接口，
+        # 抛出去等于整台电视失联；按"没钉任何合集"处理，只少几个虚拟库
+        logger.warning("成员 %s 的界面偏好读不回来，播放器里暂不下发虚拟媒体库", member_id)
+        return []
     out: list[int] = []
     for row in prefs.home.rows:
         if row.collection_id is not None and not row.hidden and row.collection_id not in out:

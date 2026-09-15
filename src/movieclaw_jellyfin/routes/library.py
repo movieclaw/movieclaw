@@ -239,9 +239,9 @@ async def _virtual_libraries(
     ):
         cached = cached_membership(row) if unrestricted else None
         if cached is not None:
-            # 库对这个成员不可见时与 resolve_members 同一口径：一个成员都没有
-            hidden_lib = scope.visible is not None and row.library_id not in scope.visible
-            child_count, head = (0, []) if hidden_lib else cached
+            # 不可见库里的合集在 visible_pinned_collections 就已经被摘掉，
+            # 走到这里的缓存值对这个观看者就是真值
+            child_count, head = cached
             cover_item_id = row.cover_item_id or (head[0] if head else None)
         else:
             child_count = await count_members(
@@ -1143,6 +1143,9 @@ async def _virtual_library_or_404(
         if collection.library_id is not None
         else None
     )
+    # 与 _virtual_libraries 同一口径：图片库下的合集没有「虚拟库」这个身份
+    if library is not None and library.kind in jellyfin_hidden_kinds():
+        raise not_found()
     return collection_library_view_dto(
         ctx,
         collection,
