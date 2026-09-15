@@ -333,6 +333,36 @@ async def visible_collections(
     return out
 
 
+async def pinned_collection_ids(session: AsyncSession, member_id: int) -> list[int]:
+    """该观看者钉在媒体库首页上的合集 id，按首页上的先后。
+
+    首页的行清单是**界面偏好**，按人分流存（docs/design/member-management.md P2）：
+    超管在 ``ui.preferences`` 全局域，成员在自己的 ``member.ui_prefs`` 列。这里
+    只读、不合并——前端存回来的就是合并后的整份清单（``lib/home-rows.ts``），
+    服务端再跑一遍合并没有意义。
+
+    之所以要在领域层暴露它：Jellyfin 兼容层要把钉了首页的合集伪装成虚拟媒体库
+    （docs/design/library-collections.md 4.11），「哪些合集钉了首页」这个问题
+    网页端与播放器必须是同一个答案，不能两处各读一遍偏好各判一次。
+
+    隐藏的行（``hidden``）不算——它在首页上就是不显示，虚拟库同理。
+    """
+    from movieclaw_api.settings.schemas import UiPreferencesSetting, get_ui_preferences
+    from movieclaw_db.models import Member
+
+    if member_id:
+        member = await session.get(Member, member_id)
+        raw = member.ui_prefs if member is not None else None
+        prefs = UiPreferencesSetting.model_validate(raw) if raw else UiPreferencesSetting()
+    else:
+        prefs = await get_ui_preferences()
+    out: list[int] = []
+    for row in prefs.home.rows:
+        if row.collection_id is not None and not row.hidden and row.collection_id not in out:
+            out.append(row.collection_id)
+    return out
+
+
 async def ensure_builtin_collections(session: AsyncSession, library_id: int) -> None:
     """为一个库补齐内置合集（幂等）。
 

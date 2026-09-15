@@ -44,6 +44,7 @@ from movieclaw_db.models import (
 from movieclaw_jellyfin.identity import format_datetime
 from movieclaw_jellyfin.ids import (
     collection_guid,
+    collection_view_guid,
     collections_view_guid,
     episode_guid,
     item_guid,
@@ -649,6 +650,7 @@ async def latest_unit_candidates(
     *,
     member_id: int = 0,
     library_id: int | None = None,
+    item_ids: list[int] | None = None,
     visible_library_ids: set[int] | None = None,
     content_limit: ContentLimit | None = None,
     is_played: bool | None = None,
@@ -661,6 +663,8 @@ async def latest_unit_candidates(
     聚合成一行，播放状态也在数据库侧筛掉；返回固定的小标量列，不会
     触发列表 DTO 不需要的 JSON 反序列化。``min(file.id)`` 只用于复现旧
     路径在入库时间相同的情况下的稳定顺序，不参与业务语义。
+
+    ``item_ids`` 是虚拟媒体库那条路（合集成员集合）；与 ``library_id`` 二选一。
 
     ``row_limit`` 把"只要最新的前 N 个单元"下推到 SQL。排序是全序（入库时间
     之后还有四级 tiebreak），所以取前缀与"取全部再切片"结果完全一致。不下推
@@ -688,6 +692,11 @@ async def latest_unit_candidates(
     )
     if library_id is not None:
         q = q.where(LibraryFile.library_id == library_id)
+    elif item_ids is not None:
+        # 虚拟媒体库（钉了首页的合集）的「最新」：范围由合集成员界定。
+        # 这里**不叠**库级的"从首页排除"——用户亲手把这个合集钉上了首页，
+        # 那是比库开关更晚、更具体的一次表态
+        q = q.where(LibraryFile.media_item_id.in_(item_ids))
     else:
         # 首页级「最新」：勾了"从首页排除"的库不上首页（进库内看仍然有）
         q = q.join(Library, Library.id == LibraryFile.library_id).where(
@@ -1067,6 +1076,39 @@ def person_dto(ctx: DtoContext, person: Person) -> dict[str, Any]:
     if person.original_name and person.original_name != person.name:
         dto["OriginalTitle"] = person.original_name
     return dto
+
+
+async def visible_pinned_collections(
+    session: AsyncSession,
+    *,
+    member_id: int,
+    visible_library_ids: set[int] | None = None,
+) -> list[Collection]:
+    """该观看者钉了首页、且元数据可见的合集（按首页上的先后）。**不解析成员**。
+
+    两层求交：偏好里钉了哪些（领域层的 ``pinned_collection_ids``，每人各一份）
+    ∩ 元数据可见的那些（私有合集、不可见库里的合集、落了墓碑的一律不算）。
+
+    这是「虚拟媒体库」的候选集（docs/design/library-collections.md 4.11）。放在
+    catalog 而不是某个路由文件里，是因为两处要用同一个答案：``/UserViews`` 下发
+    哪些虚拟库，与 Policy 的 ``EnabledFolders`` 放行哪些虚拟库——两处对不上时，
+    客户端会拿 EnabledFolders 把视图里的库自己过滤掉，伪装等于白做。
+    """
+    from movieclaw_api.services.library.collections import (
+        pinned_collection_ids,
+        visible_collections,
+    )
+
+    pinned = await pinned_collection_ids(session, member_id)
+    if not pinned:
+        return []
+    visible = {
+        row.id: row
+        for row in await visible_collections(
+            session, member_id=member_id, visible_library_ids=visible_library_ids
+        )
+    }
+    return [visible[cid] for cid in pinned if cid in visible]
 
 
 async def list_libraries(
@@ -1629,6 +1671,64 @@ def collections_view_dto(ctx: DtoContext) -> dict[str, Any]:
     dto["ImageTags"] = {}
     dto["BackdropImageTags"] = []
     dto["ParentId"] = root_guid()
+    dto["UserData"] = {
+        "PlaybackPositionTicks": 0,
+        "PlayCount": 0,
+        "IsFavorite": False,
+        "Played": False,
+        "Key": guid,
+        "ItemId": guid,
+    }
+    return dto
+
+
+def collection_library_type(library: Library | None) -> str | None:
+    """虚拟媒体库的 ``CollectionType``——不解析成员就能答出来。
+
+    规则驱动的合集**必须**挂在某个库下（见 routes/collections.py 的建库校验），
+    所以合集的形态就是它所属库的形态，一个 ``library_id`` 足够。跨库的名单合集
+    （``library_id`` 为 NULL）可能混装电影和剧集，这时**省略该字段**——真
+    Jellyfin 的混合库就是这么给的，客户端按通用文件夹渲染；硬塞一个 movies
+    会让剧集成员在部分客户端里被当电影画。
+    """
+    return collection_type_of(library) if library is not None else None
+
+
+def collection_library_view_dto(
+    ctx: DtoContext,
+    collection: Collection,
+    *,
+    collection_type: str | None,
+    child_count: int | None = None,
+    cover_item_id: int | None = None,
+) -> dict[str, Any]:
+    """一个合集 → 顶层「虚拟媒体库」（``CollectionFolder``）。
+
+    合集在协议侧的**第二个身份**（docs/design/library-collections.md 4.11）。
+    第一个身份是「合集」视图下的 BoxSet，那个身份继续保留——两者 GUID 不同、
+    各自稳定，已配对客户端指向 BoxSet 的深链与收藏不会指空。
+
+    为什么要有这个身份：BoxSet 在不少客户端里是二等公民——Infuse 与几家
+    Android TV 客户端要么不渲染 ``boxsets`` 视图，要么把它埋得很深，首页那排
+    「媒体库」卡片里根本没有合集的位置。伪装成库，客户端就没法装看不见。
+
+    与 ``library_view_dto`` 的字段口径逐条对齐（``CollectionFolder`` 不做已看
+    聚合、``ParentId`` 挂根），只有封面不同：走合集那套「借首个成员的海报」，
+    不为虚拟库再生成一套拼贴资产（同 4.6 的理由）。
+    """
+    guid = collection_view_guid(collection.id or 0)
+    dto = _common(ctx, guid, collection.name, "CollectionFolder", "Unknown")
+    dto["IsFolder"] = True
+    if collection_type is not None:
+        dto["CollectionType"] = collection_type
+    # 封面与 BoxSet 同源：ImageTags 里放的是**首个成员的条目 GUID**，
+    # 取图时 images.py 按它回落到那部作品的海报（4.6）
+    dto["ImageTags"] = {"Primary": item_guid(cover_item_id)} if cover_item_id else {}
+    dto["BackdropImageTags"] = []
+    dto["ParentId"] = root_guid()
+    if child_count is not None:
+        dto["ChildCount"] = child_count
+        dto["RecursiveItemCount"] = child_count
     dto["UserData"] = {
         "PlaybackPositionTicks": 0,
         "PlayCount": 0,
