@@ -512,7 +512,7 @@ async def _try_candidates(
         verdict = evaluate_rules(candidate, spec, pack_episode_count=len(covered))
         if not verdict.accepted or not quality_not_lower(candidate, attempt.quality):
             continue
-        accepted.append((candidate, covered, verdict))
+        accepted.append((candidate, covered, verdict, match))
     accepted.sort(
         key=lambda entry: (
             entry[0].seeders is not None,
@@ -527,6 +527,7 @@ async def _try_candidates(
 
     from movieclaw_api.services.library.config import LibraryConfigService
     from movieclaw_api.services.library.routing import resolve_save_path
+    from movieclaw_api.services.subscription.file_selection import selective_units_for
     from movieclaw_api.services.torrent_submit import submit_torrent
 
     library = await LibraryConfigService(session).resolve_for_subscription(
@@ -550,7 +551,7 @@ async def _try_candidates(
             )
         ).scalars()
     )
-    for candidate, covered, _verdict in accepted:
+    for candidate, covered, _verdict, match in accepted:
         try:
             result, downloader = await submit_torrent(
                 session,
@@ -559,6 +560,13 @@ async def _try_candidates(
                 tags=["movieclaw-sub", "movieclaw-replacement"],
                 save_path=decision.path,
                 subtitle=candidate.subtitle if decision.entry_level else None,
+                # 替代源常是整季包：同样只下缺的单元，包里已有文件不再重下
+                select_units=selective_units_for(
+                    match,
+                    [(row.season_number, row.episode_number) for row in covered],
+                    subscription.kind,
+                ),
+                known_seasons=subscription.selected_seasons or None,
             )
         except Exception as exc:  # noqa: BLE001 -- 单个候选失败继续尝试下一名
             logger.warning(

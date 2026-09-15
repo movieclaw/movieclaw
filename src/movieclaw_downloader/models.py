@@ -76,6 +76,9 @@ class SubmitResult(BaseModel):
     # 一次成功的全新投递（数据在正确位置、任务归 movieclaw 所有），订阅
     # 侧据此把 owned_by_movieclaw 记为 True。
     reclaimed_from_boost: bool = False
+    # 选择性下载生效时被取消选中的文件数（0 = 未启用或没有跳过任何文件）。
+    # 订阅侧据此在投递活动里告知用户"只下了包里需要的文件"。
+    skipped_file_count: int = 0
 
 
 class DownloaderInfo(BaseModel):

@@ -73,6 +73,22 @@ class BaseDownloader(abc.ABC):
         """
 
     @abc.abstractmethod
+    async def set_file_selection(self, info_hash: str, selected_indices: list[int]) -> None:
+        """按文件索引重设任务的下载选中集合，取消选中其余文件。
+
+        订阅选择性下载专用（整季包只补缺口集时，跳过包里不需要的文件）。
+        前置条件：任务刚以暂停态新添加、全部文件默认已选中，因此实现只需
+        写"取消选中"的一侧，选中的文件不做任何写操作。索引对应种子内文件
+        顺序（0 起），与 get_torrent 返回的 files 列表位置一致。不存在的
+        hash 静默忽略（幂等）。
+        """
+
+    @abc.abstractmethod
+    async def resume(self, info_hash: str) -> None:
+        """恢复暂停中的下载任务。不存在的 hash 静默忽略（幂等）。"""
+
+
+    @abc.abstractmethod
     async def get_limits(self) -> DownloaderLimits:
         """读取下载器的全局限制：限速、备用限速档与任务队列上限。
 

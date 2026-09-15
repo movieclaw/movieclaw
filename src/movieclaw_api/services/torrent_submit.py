@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Collection
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -149,6 +150,8 @@ async def submit_torrent(
     subtitle: str | None = None,
     downloader_id: int | None = None,
     category: str = "movieclaw",
+    select_units: set[tuple[int, int]] | None = None,
+    known_seasons: Collection[int] | None = None,
 ) -> tuple[SubmitResult, DownloaderClient]:
     """从站点取回种子并提交到下载器，返回（提交结果, 所用下载器记录）。
 
@@ -162,6 +165,10 @@ async def submit_torrent(
     默认下载器——订阅投递路径不传该参数，行为不变。
     category 是下载器分类：媒体下载固定 movieclaw；刷流传 movieclaw-boost
     与媒体任务隔离（不进监听导入的视野）。
+    select_units 非空时启用**选择性下载**：种子以暂停态提交，按文件清单
+    只保留覆盖这些 (季, 集) 单元的文件，其余标记不下载后恢复——整季包
+    只补缺口集用。known_seasons 是条目真实存在的季号，借给规划器做季号
+    守卫。规划或写入失败一律回退全量下载，绝不影响投递本身。
     """
     if not download_url:
         raise BadRequestException("该种子没有可用的下载入口（download_url 缺失）")
@@ -234,6 +241,9 @@ async def submit_torrent(
                 save_path=submit_save_path,
                 category=category,
                 tags=tags,
+                # 选择性下载必须以暂停态入库：先规划文件取舍再恢复下载，
+                # 否则下载器可能瞬间把整包拉完，选择失去意义
+                paused=select_units is not None,
             )
         )
         # 「已存在」且是刷流引擎自己抢下的种子 → 接管：把数据迁到本次请求
@@ -243,6 +253,15 @@ async def submit_torrent(
         if submit_result.already_exists and category != "movieclaw-boost":
             submit_result = await _reclaim_boost_task(
                 session, downloader, submit_result, save_path=submit_save_path
+            )
+        elif not submit_result.already_exists and select_units and submit_result.info_hash:
+            # 全新任务 + 启用选择性下载：在暂停态上做文件取舍，然后恢复。
+            # 已存在/刷流接管的任务不动文件选中集合（可能是用户的在途任务）
+            submit_result = await _apply_file_selection(
+                downloader,
+                submit_result,
+                select_units,
+                known_seasons=known_seasons,
             )
     except Exception as exc:
         raise UpstreamServiceException(f"提交到下载器「{row.name}」失败：{exc}") from exc
@@ -276,6 +295,55 @@ async def submit_torrent(
                 "下载线索写入失败（目录 %s），副标题识别信号将缺失", save_path, exc_info=True
             )
     return submit_result, row
+
+
+async def _apply_file_selection(
+    downloader,  # noqa: ANN001 -- BaseDownloader，避免顶层引入适配器依赖
+    submit_result: SubmitResult,
+    select_units: set[tuple[int, int]],
+    *,
+    known_seasons: Collection[int] | None,
+) -> SubmitResult:
+    """在暂停态任务上应用"只下载缺口单元"的文件取舍，然后恢复下载。
+
+    编排固定为 取清单 → 规划 → 写选中集合 → 恢复，且**任何一步失败都不
+    影响投递结果**：规划器给不出结论或写入下载器异常时，兜底强制恢复，
+    让种子全量下载。多下几个 GB 只是浪费，把认领单元的文件跳过则会让工
+    单以 GRABBED 永久挂起（文件清单里"看得到"、磁盘上却没有，库存对账
+    既不退回也不关单）——后者才是必须不惜代价避免的失败。
+    """
+    from movieclaw_api.services.subscription.file_selection import plan_file_selection
+
+    info_hash = submit_result.info_hash
+    assert info_hash is not None  # 调用方已保证非空
+    try:
+        status = await downloader.get_torrent(info_hash, include_files=True)
+        plan = None
+        if status is not None and status.files:
+            plan = plan_file_selection(
+                [f.path for f in status.files],
+                select_units,
+                file_sizes=[f.size_bytes for f in status.files],
+                known_seasons=known_seasons,
+            )
+        if plan is not None and plan.skip_indices:
+            await downloader.set_file_selection(info_hash, plan.keep_indices)
+            logger.info(
+                "选择性下载已生效：hash=%s 跳过 %d 个文件（约 %.1f GB），只下载缺口单元",
+                info_hash,
+                len(plan.skip_indices),
+                plan.skip_bytes / 1e9,
+            )
+            return submit_result.model_copy(update={"skipped_file_count": len(plan.skip_indices)})
+    except Exception as exc:  # noqa: BLE001 -- 选择失败退回全量下载，不影响投递
+        logger.warning("选择性下载规划失败，按全量下载继续（hash=%s）：%s", info_hash, exc)
+    finally:
+        # 暂停态任务必须恢复：成功路径恢复开始下载，失败路径恢复保证全量
+        try:
+            await downloader.resume(info_hash)
+        except Exception:  # noqa: BLE001
+            logger.warning("恢复下载任务失败，请在下载器里手动开始：%s", info_hash)
+    return submit_result
 
 
 async def _reclaim_boost_task(

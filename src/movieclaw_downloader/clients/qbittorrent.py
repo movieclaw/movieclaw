@@ -481,6 +481,48 @@ class QBittorrentDownloader(BaseDownloader):
             ) from exc
         logger.info("已移动 qBittorrent 任务目录: hash=%s -> %s", info_hash, save_path)
 
+    async def set_file_selection(self, info_hash: str, selected_indices: list[int]) -> None:
+        await asyncio.to_thread(self._set_file_selection_sync, info_hash, selected_indices)
+
+    def _set_file_selection_sync(self, info_hash: str, selected_indices: list[int]) -> None:
+        """把选中集合之外的文件置 priority=0（不下载）。
+
+        前置条件是任务刚以暂停态添加、全部文件默认已选中，因此只写"取消
+        选中"的一侧；priority≥1 的文件保持原样，不产生多余调用。文件索引
+        即 torrents_files 的返回顺序（qB 的 index 字段与位置一致，显式读
+        字段做双保险）。
+        """
+        client = self._client()
+        keep = set(selected_indices)
+        with _translate_errors(self.config.url):
+            files = client.torrents_files(torrent_hash=info_hash)
+            unwanted = [
+                index
+                for position, f in enumerate(files)
+                if (index := int(getattr(f, "index", position))) not in keep
+            ]
+            if unwanted:
+                client.torrents_file_priority(
+                    torrent_hash=info_hash.lower(),
+                    file_ids=unwanted,
+                    priority=0,
+                )
+        logger.info(
+            "已设置 qBittorrent 文件选中集合: hash=%s 保留 %d 个、跳过 %d 个文件",
+            info_hash,
+            len(keep),
+            len(unwanted),
+        )
+
+    async def resume(self, info_hash: str) -> None:
+        await asyncio.to_thread(self._resume_sync, info_hash)
+
+    def _resume_sync(self, info_hash: str) -> None:
+        client = self._client()
+        with _translate_errors(self.config.url):
+            client.torrents_resume(torrent_hashes=info_hash.lower())
+
+
     async def test_connection(self) -> DownloaderInfo:
         return await asyncio.to_thread(self._test_connection_sync)
 

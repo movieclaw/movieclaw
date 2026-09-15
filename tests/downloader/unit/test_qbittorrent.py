@@ -47,6 +47,8 @@ class FakeQbtClient:
         self.location_calls: list[dict] = []
         self.autotmm_calls: list[dict] = []
         self.speed_mode_calls: list[bool] = []
+        self.priority_calls: list[dict] = []
+        self.resume_calls: list[str] = []
         # 添加成功后自动登记到 store 的 (hash, name)，模拟下载器注册行为
         self.register_on_add: tuple[str, str] | None = (TORRENT_HASH, "test.mkv")
 
@@ -112,6 +114,12 @@ class FakeQbtClient:
 
     def torrents_files(self, *, torrent_hash):
         return self.files.get(torrent_hash, [])
+
+    def torrents_file_priority(self, **kwargs):
+        self.priority_calls.append(kwargs)
+
+    def torrents_resume(self, **kwargs):
+        self.resume_calls.append(kwargs["torrent_hashes"])
 
     def auth_log_in(self):
         pass
@@ -422,3 +430,56 @@ class TestSharedClient:
         assert len(self.created) == 2
         # 同一 URL 只保留最新凭据的那一个条目
         assert len(module._shared_clients) == 1
+
+
+class TestFileSelection:
+    """选择性下载原语：set_file_selection 只写"取消选中"的一侧，resume 恢复。"""
+
+    @staticmethod
+    def _downloader_with_files(count: int = 4):
+        fake = FakeQbtClient()
+        fake.files[TORRENT_HASH] = [
+            SimpleNamespace(index=i, name=f"Pack/S01E{i + 1:02d}.mkv", priority=1)
+            for i in range(count)
+        ]
+        return fake, make_downloader(fake)
+
+    async def test_unwanted_files_get_priority_zero(self):
+        fake, downloader = self._downloader_with_files()
+
+        await downloader.set_file_selection(TORRENT_HASH, [1])
+
+        # 只写取消选中的一侧，选中的文件不产生任何调用
+        assert fake.priority_calls == [
+            {"torrent_hash": TORRENT_HASH, "file_ids": [0, 2, 3], "priority": 0}
+        ]
+
+    async def test_explicit_index_field_wins_over_position(self):
+        # qB 的 index 字段与列表位置理论上恒等，显式读字段做双保险
+        fake = FakeQbtClient()
+        fake.files[TORRENT_HASH] = [
+            SimpleNamespace(index=5, priority=1),
+            SimpleNamespace(index=9, priority=1),
+        ]
+        downloader = make_downloader(fake)
+
+        await downloader.set_file_selection(TORRENT_HASH, [9])
+
+        assert fake.priority_calls == [
+            {"torrent_hash": TORRENT_HASH, "file_ids": [5], "priority": 0}
+        ]
+
+    async def test_all_selected_sends_no_call(self):
+        fake, downloader = self._downloader_with_files()
+
+        await downloader.set_file_selection(TORRENT_HASH, [0, 1, 2, 3])
+
+        assert fake.priority_calls == []
+
+    async def test_resume(self):
+        fake = FakeQbtClient()
+        downloader = make_downloader(fake)
+
+        await downloader.resume(TORRENT_HASH)
+
+        assert fake.resume_calls == [TORRENT_HASH]

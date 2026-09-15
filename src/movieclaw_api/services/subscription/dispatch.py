@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Collection
 from datetime import UTC, datetime
 
 from sqlalchemy import update
@@ -99,9 +100,21 @@ async def dispatch(
     assert subscription.id is not None
     dry_run = get_settings().subscription_dispatch_dry_run
     submitted_info_hash: str | None = None
+    skipped_files = 0
     all_targets = claimed + upgrade_rows
     units_label = units_text(all_targets)
     spec_text = _describe(candidate)
+
+    # 选择性下载：候选呈整季包/多集包形态且覆盖明显多于本次要下的单元时，
+    # 投递后只在下载器里保留缺口单元对应的文件（包里"已有集"不再重下，
+    # 也不再混入库形成重复版本）。判定与规划见 file_selection 模块
+    from movieclaw_api.services.subscription.file_selection import selective_units_for
+
+    selective_units = selective_units_for(
+        match,
+        [(w.season_number, w.episode_number) for w in all_targets],
+        subscription.kind,
+    )
 
     # 入库目标：订阅指定的库（缺省该类型默认库）→ 投递目录三级兜底走全仓
     # 唯一实现 resolve_save_path（口径与预检/体检/手动下载同源）。
@@ -148,7 +161,10 @@ async def dispatch(
                 candidate,
                 save_path=dispatch_dir,
                 subtitle=candidate.subtitle if entry_level else None,
+                select_units=selective_units,
+                known_seasons=subscription.selected_seasons or None,
             )
+            skipped_files = submit_result.skipped_file_count
         except Exception as exc:  # noqa: BLE001 -- 投递失败退回调度通道重试
             reason = f"{type(exc).__name__}: {exc}"
             await _rollback_claim(session, claimed, retry_delay=DISPATCH_RETRY_DELAY)
@@ -352,6 +368,11 @@ async def dispatch(
     )
     # 洗版投递用专属活动类型与"从 X 洗到 Y"文案；混合投递（缺口+洗版）
     # 仍是 GRABBED，文案附注洗版单元数
+    selective_note = (
+        f"；选择性下载：跳过包内 {skipped_files} 个不需要的文件，仅下载缺口单元"
+        if skipped_files
+        else ""
+    )
     if upgrade_rows and not claimed:
         activity_type = ActivityType.UPGRADE_GRABBED
         label_text = (
@@ -361,6 +382,7 @@ async def dispatch(
             f"{units_label}发现更高版本，已提交洗版下载：来自 {candidate.site_id} 的"
             f"「{candidate.title[:60]}」（{label_text}）"
             + target_text
+            + selective_note
             + ("——模拟投递，未真实提交下载器" if dry_run else "")
         )
     else:
@@ -370,6 +392,7 @@ async def dispatch(
             f"「{candidate.title[:60]}」（{spec_text}）"
             + (f"；其中 {units_text(upgrade_rows)}为洗版" if upgrade_rows else "")
             + target_text
+            + selective_note
             + ("——模拟投递，未真实提交下载器" if dry_run else "")
         )
     # 单集履历注解：把「这集靠哪个种子拿到」冻结在工单上，详情页里程碑链的
@@ -408,6 +431,7 @@ async def dispatch(
                 "save_path": decision.entry_dir,
                 "staging_path": staging,
                 "dispatch_dir": dispatch_dir,
+                **({"skipped_files": skipped_files} if skipped_files else {}),
                 **({"shadow": shadow_notes} if shadow_notes else {}),
             },
         )
@@ -692,6 +716,8 @@ async def _submit_real(
     *,
     save_path: str | None = None,
     subtitle: str | None = None,
+    select_units: set[tuple[int, int]] | None = None,
+    known_seasons: Collection[int] | None = None,
 ):
     """真实投递：委托公共编排（站点取种 → 默认下载器提交，幂等判重）。
 
@@ -699,6 +725,8 @@ async def _submit_real(
     默认目录），完成后的搬运/入账由监听导入或库扫描接管，库存对账关闭工单。
     subtitle 仅在投递目录为**条目级**时传入（download_hint 线索只能锚条目
     目录——锚到监听目录/默认目录会波及目录下全部内容）。
+    select_units 非空时启用选择性下载（只下载缺口单元对应的文件），
+    known_seasons 是订阅勾选的季号，供规划器做季号守卫。
     """
     from movieclaw_api.services.torrent_submit import submit_torrent
 
@@ -709,6 +737,8 @@ async def _submit_real(
         tags=["movieclaw-sub"],
         save_path=save_path,
         subtitle=subtitle,
+        select_units=select_units,
+        known_seasons=known_seasons,
     )
     return result, row
 

@@ -445,6 +445,40 @@ class TransmissionDownloader(BaseDownloader):
             client.move_torrent_data(info_hash.lower(), location=save_path)
         logger.info("已移动 Transmission 任务目录: hash=%s -> %s", info_hash, save_path)
 
+    async def set_file_selection(self, info_hash: str, selected_indices: list[int]) -> None:
+        await asyncio.to_thread(self._set_file_selection_sync, info_hash, selected_indices)
+
+    def _set_file_selection_sync(self, info_hash: str, selected_indices: list[int]) -> None:
+        """把选中集合之外的文件标记 files-unwanted（不下载）。
+
+        前置条件是任务刚以暂停态添加、全部文件默认已选中，因此只写"取消
+        选中"的一侧。Transmission 的文件索引按种子内文件顺序从 0 编号，
+        与 get_torrent 返回的 files 列表位置一致；总数从任务自身的 files
+        数组读取，不依赖客户端版本的字段差异。
+        """
+        client = self._client()
+        keep = set(selected_indices)
+        with _translate_errors(self.config.url):
+            total = len(client.get_torrent(info_hash.lower()).files())
+            unwanted = [index for index in range(total) if index not in keep]
+            if unwanted:
+                client.change_torrent(info_hash.lower(), files_unwanted=unwanted)
+        logger.info(
+            "已设置 Transmission 文件选中集合: hash=%s 保留 %d 个、跳过 %d 个文件",
+            info_hash,
+            len(keep),
+            len(unwanted),
+        )
+
+    async def resume(self, info_hash: str) -> None:
+        await asyncio.to_thread(self._resume_sync, info_hash)
+
+    def _resume_sync(self, info_hash: str) -> None:
+        client = self._client()
+        with _translate_errors(self.config.url):
+            client.start_torrent(info_hash.lower())
+
+
     async def test_connection(self) -> DownloaderInfo:
         return await asyncio.to_thread(self._test_connection_sync)
 

@@ -42,6 +42,8 @@ class FakeTrClient:
         self.add_calls: list[tuple] = []
         self.remove_calls: list[tuple] = []
         self.move_calls: list[tuple] = []
+        self.change_calls: list[tuple] = []
+        self.start_calls: list[str] = []
 
     def get_torrent(self, torrent_id):
         if torrent_id not in self.store:
@@ -61,6 +63,12 @@ class FakeTrClient:
 
     def move_torrent_data(self, torrent_id, *, location):
         self.move_calls.append((torrent_id, location))
+
+    def change_torrent(self, torrent_id, **kwargs):
+        self.change_calls.append((torrent_id, kwargs))
+
+    def start_torrent(self, torrent_id):
+        self.start_calls.append(torrent_id)
 
     # -- 全局限制（get_limits / set_limits） --
     def get_session(self):
@@ -338,3 +346,33 @@ class TestGetTorrent:
         assert status.downloaded_bytes == 80
         assert [file.completed_bytes for file in status.files] == [100, 50, 0]
         assert [file.selected for file in status.files] == [True, True, False]
+
+
+class TestFileSelection:
+    """选择性下载原语：set_file_selection 走 files-unwanted，resume 走 start。"""
+
+    async def test_unwanted_files_marked(self):
+        fake = FakeTrClient()
+        fake.store[TORRENT_HASH] = SimpleNamespace(files=lambda: [None] * 4)
+        downloader = make_downloader(fake)
+
+        await downloader.set_file_selection(TORRENT_HASH, [1])
+
+        assert fake.change_calls == [(TORRENT_HASH, {"files_unwanted": [0, 2, 3]})]
+
+    async def test_all_selected_sends_no_call(self):
+        fake = FakeTrClient()
+        fake.store[TORRENT_HASH] = SimpleNamespace(files=lambda: [None] * 2)
+        downloader = make_downloader(fake)
+
+        await downloader.set_file_selection(TORRENT_HASH, [0, 1])
+
+        assert fake.change_calls == []
+
+    async def test_resume_starts_torrent(self):
+        fake = FakeTrClient()
+        downloader = make_downloader(fake)
+
+        await downloader.resume(TORRENT_HASH)
+
+        assert fake.start_calls == [TORRENT_HASH]
