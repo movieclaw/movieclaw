@@ -9,9 +9,8 @@ import {
   stopPercent,
   thinkingControlShape,
   thinkingListItems,
-  thinkingListNote,
-  thinkingPillLabel,
   thinkingStops,
+  thinkingValueLabel,
 } from "../lib/thinking-level-control.ts";
 
 // 以下菜单取自预设目录（服务端 ModelInfo.thinking_levels 的真实输出）：
@@ -28,9 +27,9 @@ test("菜单按统一词汇表归一排序，词汇表外的值丢弃", () => {
   assert.equal(THINKING_LEVEL_ORDER[0], "off");
 });
 
-test("只有开关的模型（kimi-k2.6 / glm-5.x）不画滑杆，用两项列表", () => {
+test("只有开关的模型（kimi-k2.6 / glm-5.x）不画滑杆，用两格分段", () => {
   // 曾经的 bug：单刻度滑杆没有可拖的距离，点了「关」再点还是「关」，回不到默认
-  assert.equal(thinkingControlShape(thinkingStops(KIMI_K2_6)), "list");
+  assert.equal(thinkingControlShape(thinkingStops(KIMI_K2_6)), "toggle");
   assert.equal(thinkingControlShape(thinkingStops(KIMI_K3)), "slider");
   assert.equal(thinkingControlShape(thinkingStops(QWEN)), "slider");
   assert.equal(thinkingControlShape(thinkingStops(GPT)), "slider");
@@ -100,7 +99,7 @@ test("键盘步进：默认态先落到最浅档，两端不越界，Home/End �
   assert.equal(steppedStopIndex(-1, 0, "ArrowRight"), null);
 });
 
-test("只能关的模型：列表写成「开启（模型默认）/ 关闭」并各带说明，底部注明没有档位", () => {
+test("只能关的模型：两格写成「开启（模型默认）/ 关闭」，各带一句说明", () => {
   const items = thinkingListItems(thinkingStops(KIMI_K2_6));
   assert.deepEqual(
     items.map((i) => [i.level, i.label]),
@@ -113,13 +112,9 @@ test("只能关的模型：列表写成「开启（模型默认）/ 关闭」并
   for (const item of items) assert.ok(item.description.length >= 8, item.label);
   assert.match(items[0].description, /不发送/);
   assert.match(items[1].description, /关闭/);
-  assert.equal(thinkingListNote(thinkingStops(KIMI_K2_6)), "该模型的思考只能开或关，没有强度档位");
-  // pill 上不再是孤零零的「默认」
-  assert.equal(thinkingPillLabel(thinkingStops(KIMI_K2_6), null), "思考 开");
-  assert.equal(thinkingPillLabel(thinkingStops(KIMI_K2_6), "off"), "思考 关");
 });
 
-test("单档但不是「关」的罕见声明退回通用「默认 / 该档」；多档滑杆的 pill 文案不变", () => {
+test("单档但不是「关」的罕见声明退回通用「默认 / 该档」；滑杆标题显示档位本身", () => {
   const items = thinkingListItems(["max"]);
   assert.deepEqual(
     items.map((i) => [i.level, i.label]),
@@ -128,9 +123,8 @@ test("单档但不是「关」的罕见声明退回通用「默认 / 该档」�
       ["max", "最高"],
     ],
   );
-  assert.equal(thinkingListNote(["max"]), null);
-  assert.equal(thinkingListNote(thinkingStops(KIMI_K3)), null);
-  assert.equal(thinkingPillLabel(thinkingStops(KIMI_K3), null), "默认");
-  assert.equal(thinkingPillLabel(thinkingStops(KIMI_K3), "high"), "高");
-  assert.equal(thinkingPillLabel(thinkingStops(GPT), "off"), "关");
+  // 「默认」不是强度轴上的一点，滑杆无滑块时标题就写「默认」
+  assert.equal(thinkingValueLabel(null), "默认");
+  assert.equal(thinkingValueLabel("high"), "高");
+  assert.equal(thinkingValueLabel("off"), "关");
 });

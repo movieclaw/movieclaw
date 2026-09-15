@@ -104,6 +104,8 @@ export interface MediaLibrary {
   auto_clear_missing: boolean;
   /** 是否启用实时文件监控（关闭后靠定期对账与手动扫描，SMB/NFS 建议关） */
   realtime_watch: boolean;
+  /** 任一根路径落在网络挂载上：实时监控收不到远端变化（即使开着也不建监听），新文件靠定期对账发现 */
+  network_mount: boolean;
   /** 库级刮削覆盖；空对象 = 全跟全局设置 */
   scrape_overrides?: Record<string, unknown>;
   /** 库存统计快照（台账变化时重算，列表查询不扫描文件台账） */
@@ -1252,6 +1254,13 @@ export interface SubtitlePreview {
 }
 
 /** 条目详情页的一个物理文件（一个版本 / 一集）。 */
+/** 文件来源快照：一句话 label + 可选的第二行 detail（站点 · 种子标题 · 下载器 · 搬运方式）。 */
+export interface FileOrigin {
+  kind: "subscription" | "manual_download" | "watch_import" | "scan" | string;
+  label: string;
+  detail: string | null;
+}
+
 export interface LibraryItemFile {
   id: number;
   file_path: string;
@@ -1282,6 +1291,10 @@ export interface LibraryItemFile {
   purge_after: string | null;
   /** 待回收原因（中文整句，含触发方） */
   trash_note: string | null;
+  /** 来源快照：这个文件是怎么进库的（docs/design/library-duplicate-files.md §2） */
+  origin: FileOrigin;
+  /** 用户在「重复文件」页点过「都留着」的时间；null=未标记 */
+  kept_at: string | null;
   /** 音轨列表；null=尚未探测（ffprobe 缺失或文件不可达） */
   audio_streams: AudioStream[] | null;
   /** 字幕列表：内封轨 + 外挂文件 */
@@ -1882,6 +1895,205 @@ export function restoreTrashedFiles(ids: number[]): Promise<TrashedBatchResult> 
     request<ApiEnvelope<TrashedBatchResult>>(`/libraries/trashed-files/restore`, {
       method: "POST",
       body: JSON.stringify({ ids }),
+    }),
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// 重复文件（docs/design/library-duplicate-files.md §3–§4）：两堆，两种决定
+// ---------------------------------------------------------------------------
+
+export type DuplicateBucket = "identical" | "versions";
+
+/** 一个多文件单元里的一个文件。 */
+export interface DuplicateFile {
+  id: number;
+  file_name: string;
+  file_path: string;
+  /** 版本签名的质量部分：「分辨率 片源[ HDR]」 */
+  quality_label: string;
+  size_bytes: number;
+  bit_rate: number | null;
+  resolution: string | null;
+  media_source: string | null;
+  hdr: string | null;
+  video_codec: string | null;
+  audio_label: string | null;
+  origin: FileOrigin;
+  /** 版本签名：质量标签|来源 label（整季留这个版本时传回） */
+  version_key: string;
+  /** 系统建议保留的那个（只是建议） */
+  suggested: boolean;
+  suggest_reason: string | null;
+  /** 用户「都留着」过；null=未标记 */
+  kept_at: string | null;
+}
+
+/** 一个单元（电影 = 条目；剧集 = 某季某集）。 */
+export interface DuplicateUnit {
+  season_number: number;
+  episode_number: number;
+  bucket: DuplicateBucket;
+  files: DuplicateFile[];
+}
+
+/** 同构季的一个版本行。 */
+export interface DuplicateVersion {
+  key: string;
+  quality_label: string;
+  origin_label: string;
+  episodes: number[];
+  bytes: number;
+  suggested: boolean;
+}
+
+/** 一个条目的一季在某一堆里的块；电影恰好一季一集。 */
+export interface DuplicateSeason {
+  season_number: number;
+  bucket: DuplicateBucket;
+  /** 同构：各集版本签名一致，可整季按版本决定 */
+  uniform: boolean;
+  versions: DuplicateVersion[];
+  units: DuplicateUnit[];
+}
+
+export interface DuplicateItem {
+  library: { id: number; name: string };
+  media_item: {
+    id: number;
+    title: string;
+    year: number | null;
+    kind: MediaType;
+    poster_url: string | null;
+  };
+  seasons: DuplicateSeason[];
+}
+
+/** 三档：放心清 / 建议清 / 要你决定。 */
+export type DuplicateTier = "safe" | "suggested" | "review";
+/** 「需要你决定」里的取舍类型：同一种取舍的单元聚成一组，一次决定一批。 */
+export type DuplicateReviewKind = "resolution" | "hdr" | "unknown" | "same_tier";
+
+/** 一档、或「需要你决定」里的一组：有多少活、清掉能腾多少。 */
+export interface DuplicateGroup {
+  key: DuplicateTier | DuplicateReviewKind;
+  label: string;
+  /** 一句话说明这一档是什么、该怎么处置（文案来自后端，CLI 与 Web 同一句） */
+  hint: string;
+  units: number;
+  /** 按建议清理会清掉几个文件 */
+  files: number;
+  bytes: number;
+}
+
+/** 扫描本身的状态：扫过没有、上次什么时候、现在是不是正在跑。 */
+export interface DuplicateScanState {
+  /** null=从未扫描；queued/running/… =正在跑；succeeded=有结果 */
+  status: string | null;
+  job_id: string | null;
+  message: string | null;
+  percent: number | null;
+  scanned_at: string | null;
+  /** 洗版验证在途、暂不列出的单元数 */
+  upgrading_units: number;
+  /** 规则组「保留共存」、不列出的条目数 */
+  keep_old_items: number;
+}
+
+export interface DuplicateFilesData {
+  scan: DuplicateScanState;
+  tiers: DuplicateGroup[];
+  review_groups: DuplicateGroup[];
+  total_units: number;
+  total_files: number;
+  total_bytes: number;
+  total_items: number;
+  items: DuplicateItem[];
+}
+
+export interface DuplicateFilter {
+  tier?: DuplicateTier | null;
+  review_kind?: DuplicateReviewKind | null;
+  q?: string;
+  library_id?: number | null;
+  media_item_id?: number | null;
+}
+
+/**
+ * 重复文件：扫描状态 + 分档摘要 + 本页条目（按条目分页）。
+ *
+ * 读的是上一轮扫描落库的结论，不会在请求线上现算——页面落地只要摘要时传
+ * `limit: 0`，一条聚合查询就够（docs/design/library-duplicate-files.md §9）。
+ */
+export function listDuplicateFiles(
+  filter: DuplicateFilter,
+  page: { limit: number; offset: number },
+  init?: RequestInit,
+): Promise<DuplicateFilesData> {
+  const params = new URLSearchParams();
+  if (filter.tier) params.set("tier", filter.tier);
+  if (filter.review_kind) params.set("review_kind", filter.review_kind);
+  if (filter.q) params.set("q", filter.q);
+  if (filter.library_id != null) params.set("library_id", String(filter.library_id));
+  if (filter.media_item_id != null) params.set("media_item_id", String(filter.media_item_id));
+  params.set("limit", String(page.limit));
+  params.set("offset", String(page.offset));
+  return unwrap(
+    request<ApiEnvelope<DuplicateFilesData>>(`/libraries/duplicate-files?${params.toString()}`, init),
+  );
+}
+
+/** 开始扫描重复文件（后台作业，同时最多一份）。 */
+export function startDuplicateScan(): Promise<{ started: boolean; job_id: string; created: boolean }> {
+  return unwrap(
+    request<ApiEnvelope<{ started: boolean; job_id: string; created: boolean }>>(
+      `/libraries/duplicate-files/scan`,
+      { method: "POST" },
+    ),
+  );
+}
+
+/**
+ * 一个单元 / 一季的决定：三选一，正好给一个——
+ * `keep_file_id` 这一集留这个（其余进回收站）、`keep_version` 整季留这个版本、
+ * `keep_all` 都留着（只盖标记，不动文件）。
+ */
+export function resolveDuplicates(payload: {
+  media_item_id: number;
+  season_number: number;
+  episode_number?: number | null;
+  keep_file_id?: number;
+  keep_version?: string;
+  keep_all?: boolean;
+}): Promise<TrashedBatchResult> {
+  return unwrap(
+    request<ApiEnvelope<TrashedBatchResult>>(`/libraries/duplicate-files/resolve`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  );
+}
+
+/**
+ * 一整档 / 一组一起决定：都按「建议保留」清理（一次最多 500 个文件，超出的在
+ * remaining 里），或 `keep_all` 都留着（只盖标记不动文件，没有上限）。
+ */
+export function resolveAllDuplicates(payload: {
+  tier: DuplicateTier;
+  review_kind?: DuplicateReviewKind | null;
+  library_id?: number | null;
+  keep_all?: boolean;
+}): Promise<TrashedBatchResult> {
+  return unwrap(
+    request<ApiEnvelope<TrashedBatchResult>>(`/libraries/duplicate-files/resolve-all`, {
+      method: "POST",
+      body: JSON.stringify({
+        tier: payload.tier,
+        review_kind: payload.review_kind ?? null,
+        library_id: payload.library_id ?? null,
+        keep_all: payload.keep_all ?? false,
+      }),
     }),
   );
 }

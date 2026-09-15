@@ -31,6 +31,7 @@ from movieclaw_api.schemas.library import (
     ConsolidateRootsPreviewView,
     DetachPayload,
     DirectorView,
+    FileOriginView,
     IdentityReviewDecision,
     ItemCollectionRef,
     ItemDeleteResultView,
@@ -136,6 +137,7 @@ from movieclaw_api.services.library.items import (
     search_library_items as search_visible_library_items,
 )
 from movieclaw_api.services.library.layout import IMAGE_EXTS, entry_dir_of
+from movieclaw_api.services.library.mounts import library_on_network_mount
 from movieclaw_api.services.library.organize import (
     build_organize_plan,
     enqueue_organize_job,
@@ -143,6 +145,7 @@ from movieclaw_api.services.library.organize import (
     last_organize,
     organize_progress,
 )
+from movieclaw_api.services.library.origin import derive_origins, origin_of
 from movieclaw_api.services.library.preflight import (
     CONFLICT_LABELS,
     MAX_SELECTION,
@@ -1012,6 +1015,11 @@ async def create_library(
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[LibraryView]:
     service = LibraryConfigService(session)
+    # 根落在网络挂载上：实时监控收不到远端变更，监听本来就不会建
+    # （watch.watchable_roots）——行上别写一个假的"开"，界面据此把话说清楚
+    realtime_watch = payload.realtime_watch
+    if realtime_watch is not False and library_on_network_mount(list(payload.root_paths)):
+        realtime_watch = False
     row = await service.create(
         name=payload.name,
         kind=payload.kind,
@@ -1019,7 +1027,7 @@ async def create_library(
         root_paths=payload.root_paths,
         match_rules=payload.match_rules,
         auto_clear_missing=payload.auto_clear_missing,
-        realtime_watch=payload.realtime_watch,
+        realtime_watch=realtime_watch,
         scrape_overrides=payload.scrape_overrides,
         generate_thumbnails=payload.generate_thumbnails,
         extract_chapter_images=payload.extract_chapter_images,
@@ -2339,8 +2347,13 @@ def _chapter_views(row: LibraryFile) -> list[ChapterView] | None:
     return views
 
 
-def _file_view(row: LibraryFile, external_subs: list[str]) -> LibraryFileView:
-    """台账行 → 详情页文件视图：内封字幕轨与外挂字幕文件合并成一份清单。"""
+def _file_view(
+    row: LibraryFile, external_subs: list[str], origins: dict[int, dict] | None = None
+) -> LibraryFileView:
+    """台账行 → 详情页文件视图：内封字幕轨与外挂字幕文件合并成一份清单。
+
+    ``origins`` 是旧行（origin 为空）的读时推导结果（``derive_origins``），
+    有落库快照的行不看它。"""
     subtitles = [
         SubtitleStreamView(
             codec=stream.get("codec"),
@@ -2390,6 +2403,8 @@ def _file_view(row: LibraryFile, external_subs: list[str]) -> LibraryFileView:
         state=row.state,
         purge_after=row.purge_after,
         trash_note=_trash_note(row),
+        origin=FileOriginView(**origin_of(row, origins or {})),
+        kept_at=row.kept_at,
         audio_streams=(
             None
             if row.audio_streams is None
@@ -2563,7 +2578,10 @@ async def get_library_item(
         seasons = sorted({s for s in meta_seasons if s > 0} | owned_seasons)
 
     assert item.id is not None
-    file_views = [_file_view(row, bundle.external_subtitles.get(row.id or -1, [])) for row in rows]
+    origins = await derive_origins(session, rows)
+    file_views = [
+        _file_view(row, bundle.external_subtitles.get(row.id or -1, []), origins) for row in rows
+    ]
     entry_dirs = bundle.entry_dirs
     if not principal.is_admin:
         # 成员不暴露落盘路径：文件行只留文件名与规格，条目目录整个不给

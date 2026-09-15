@@ -128,6 +128,10 @@ def generate(file: LibraryFile) -> TrickplayIndex | None:
         return existing
     if shutil.which("ffmpeg") is None or not file.duration_seconds:
         return None
+    if file.is_disc():
+        # 原盘的 file_path 是目录，抽帧要通读整张盘（Jellyfin 同样跳过原盘的
+        # trickplay）；没有预览不影响播放
+        return None
     video = Path(file.file_path)
     if not video.is_file():
         return None

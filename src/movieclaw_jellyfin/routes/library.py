@@ -21,11 +21,13 @@ from movieclaw_api.services.library.access import (
     member_visible_ids,
 )
 from movieclaw_api.services.library.collections import (
+    cached_membership,
     count_members,
     has_any_member,
     resolve_members,
     visible_collections,
 )
+from movieclaw_api.services.library.profile import jellyfin_hidden_kinds
 from movieclaw_db.engine import get_database
 from movieclaw_db.models import Collection, Library
 from movieclaw_jellyfin.catalog import (
@@ -36,6 +38,8 @@ from movieclaw_jellyfin.catalog import (
     LatestUnitCandidate,
     ResumeUnitCandidate,
     boxset_dto,
+    collection_library_type,
+    collection_library_view_dto,
     collection_type_of,
     collections_view_dto,
     episode_dto,
@@ -56,12 +60,14 @@ from movieclaw_jellyfin.catalog import (
     search_candidate_item_ids,
     season_dto,
     series_dto,
+    visible_pinned_collections,
 )
 from movieclaw_jellyfin.errors import not_found, not_found_message
 from movieclaw_jellyfin.ids import (
     FIXED_COLLECTIONS,
     FIXED_ROOT,
     EntityKind,
+    collection_view_guid,
     decode_guid,
     is_empty_guid,
     library_guid,
@@ -203,6 +209,72 @@ async def _items_with_persons(session: AsyncSession, person_guids: list[str]) ->
     return set(rows)
 
 
+@dataclass(frozen=True)
+class _VirtualLibrary:
+    """一个「钉了首页 → 伪装成媒体库」的合集，连同下发要用的三个数。"""
+
+    collection: Collection
+    child_count: int
+    cover_item_id: int | None
+    collection_type: str | None
+
+
+async def _virtual_libraries(
+    session: AsyncSession, scope: ViewerScope
+) -> list[_VirtualLibrary]:
+    """要下发的虚拟媒体库（docs/design/library-collections.md 4.11）。
+
+    **空合集不下发**：点进去空无一物的库在电视端是纯粹的死路，与「合集」视图
+    同一条规矩。代价是客户端缓存 ``/UserViews`` 时可能要手动刷新一次才看得到
+    变化——这条代价 4.3 已经记过一次，虚拟库同理。
+
+    成本上沿用合集列表页那条分寸（设计文档 5.5.2）：内容型合集直接读行上的
+    成员缓存，一次查询都不用跑，顺带把封面也拿到了；「我的收藏」这类跟着看的
+    人变的、以及分级受限的观看者，才回落到实时判定。
+    """
+    unrestricted = scope.content_limit.unrestricted
+    out: list[_VirtualLibrary] = []
+    for row in await visible_pinned_collections(
+        session, member_id=scope.member_id, visible_library_ids=scope.visible
+    ):
+        cached = cached_membership(row) if unrestricted else None
+        if cached is not None:
+            # 不可见库里的合集在 visible_pinned_collections 就已经被摘掉，
+            # 走到这里的缓存值对这个观看者就是真值
+            child_count, head = cached
+            cover_item_id = row.cover_item_id or (head[0] if head else None)
+        else:
+            child_count = await count_members(
+                session,
+                row,
+                member_id=scope.member_id,
+                visible_library_ids=scope.visible,
+                content_limit=scope.content_limit,
+            )
+            cover_item_id = row.cover_item_id
+            if child_count and cover_item_id is None:
+                first = await resolve_members(
+                    session,
+                    row,
+                    member_id=scope.member_id,
+                    visible_library_ids=scope.visible,
+                    content_limit=scope.content_limit,
+                    limit=1,
+                )
+                cover_item_id = first[0] if first else None
+        if not child_count:
+            continue
+        library = await session.get(Library, row.library_id) if row.library_id else None
+        # 不对 Jellyfin 暴露的形态（图片库）下面的合集也不该伪装成 Jellyfin 的库——
+        # 那等于给整个库开了一道协议层从来没打算开的门
+        if library is not None and library.kind in jellyfin_hidden_kinds():
+            continue
+        out.append(
+            _VirtualLibrary(row, child_count, cover_item_id, collection_library_type(library))
+        )
+    return out
+
+
 async def _cover_tag(library_id: int) -> str | None:
     """库封面拼贴的版本 key（惰性渲染，素材不变零成本）。"""
     from movieclaw_api.services.library.cover import ensure_library_cover
@@ -250,8 +322,23 @@ async def user_views(
             ):
                 has_collections = True
                 break
+        # 钉了首页的合集额外伪装成一个顶层媒体库，排在真库与「合集」视图之后
+        # （docs/design/library-collections.md 4.11）。合集在协议侧同时有两个身份：
+        # 这里的 CollectionFolder，与「合集」视图下的 BoxSet——两者 GUID 不同、
+        # 各自稳定，已配对客户端指向 BoxSet 的深链与收藏不会因此指空。
+        virtual = await _virtual_libraries(session, scope)
     if has_collections:
         dtos.append(collections_view_dto(ctx))
+    dtos.extend(
+        collection_library_view_dto(
+            ctx,
+            vlib.collection,
+            collection_type=vlib.collection_type,
+            child_count=vlib.child_count,
+            cover_item_id=vlib.cover_item_id,
+        )
+        for vlib in virtual
+    )
     return JSONResponse(query_result(dtos, len(dtos)))
 
 
@@ -269,12 +356,17 @@ async def user_views_grouping_options(
     """
     async with get_database().session() as session:
         libraries = await list_libraries(session, visible_ids=scope.visible)
-    return JSONResponse(
-        [
-            {"Name": lib.name, "Id": library_guid(lib.id)}
-            for lib in sorted(libraries, key=lambda lib: lib.name)
-        ]
+        virtual = await _virtual_libraries(session, scope)
+    options = [{"Name": lib.name, "Id": library_guid(lib.id)} for lib in libraries]
+    # 虚拟库（钉了首页的合集）在这里与真库同列：Infuse 就是拿这张表当"有哪些
+    # 媒体库可加"的清单用的，漏了它等于伪装只做了一半。混装的跨库合集
+    # （CollectionType 为空）不算可分组视图，与真实现对 mixed 库的口径一致
+    options.extend(
+        {"Name": vlib.collection.name, "Id": collection_view_guid(vlib.collection.id or 0)}
+        for vlib in virtual
+        if vlib.collection_type is not None
     )
+    return JSONResponse(sorted(options, key=lambda opt: opt["Name"]))
 
 
 def _refresh_status(library_id: int) -> tuple[str, float | None]:
@@ -315,6 +407,7 @@ async def library_virtual_folders(
     """
     async with get_database().session() as session:
         libraries = await list_libraries(session, visible_ids=scope.visible)
+        virtual = await _virtual_libraries(session, scope)
     infos = []
     for lib in libraries:
         roots = [str(p) for p in (lib.root_paths or [])] if scope.member_id == 0 else []
@@ -352,6 +445,40 @@ async def library_virtual_folders(
         # 对齐真实现：RefreshProgress 仅 Active 时输出（可空 double 的 null 省略约定）
         if progress is not None:
             infos[-1]["RefreshProgress"] = progress
+    # 虚拟库（钉了首页的合集）同列——Infuse 拿这张表当"有哪些媒体库可加"的清单。
+    # 它们没有磁盘路径（成员是求值出来的），Locations 与 PathInfos 恒为空；
+    # 也没有自己的扫描任务线，RefreshStatus 恒 Idle
+    for vlib in virtual:
+        info: dict[str, Any] = {
+            "Name": vlib.collection.name,
+            "Locations": [],
+            "ItemId": collection_view_guid(vlib.collection.id or 0),
+            "RefreshStatus": "Idle",
+            "LibraryOptions": {
+                "Enabled": True,
+                "EnablePhotos": False,
+                "EnableRealtimeMonitor": False,
+                "EnableChapterImageExtraction": False,
+                "ExtractChapterImagesDuringLibraryScan": False,
+                "EnableTrickplayImageExtraction": False,
+                "ExtractTrickplayImagesDuringLibraryScan": False,
+                "PathInfos": [],
+                "SaveLocalMetadata": False,
+                "EnableAutomaticSeriesGrouping": False,
+                "EnableEmbeddedTitles": False,
+                "EnableEmbeddedExtrasTitles": False,
+                "EnableEmbeddedEpisodeInfos": False,
+                "AutomaticRefreshIntervalDays": 0,
+                "SeasonZeroDisplayName": "Specials",
+                "DisabledLocalMetadataReaders": [],
+                "DisabledSubtitleFetchers": [],
+                "SubtitleFetcherOrder": [],
+            },
+        }
+        # 混装的跨库合集不给 CollectionType（与 DTO 同一口径）
+        if vlib.collection_type is not None:
+            info["CollectionType"] = vlib.collection_type
+        infos.append(info)
     return JSONResponse(infos)
 
 
@@ -978,6 +1105,56 @@ async def _boxset_page(
     return out, total
 
 
+async def _virtual_library_or_404(
+    session: AsyncSession,
+    collection_id: int,
+    scope: ViewerScope,
+    ctx: DtoContext,
+) -> dict[str, Any]:
+    """一个可见合集的「虚拟媒体库」身份 → CollectionFolder DTO。
+
+    可见性口径与 ``_boxset_or_404`` 逐条相同（GUID 可枚举，空对象等于确认存在，
+    所以不可见按 404）。**刻意不校验"现在还钉着首页吗"**：客户端会把库 GUID
+    存进自己的快捷入口和播放队列，取消钉首页只该让它从 ``/UserViews`` 里消失，
+    不该让已经存下的链接当场变成错误页。
+    """
+    from movieclaw_db.models import Collection
+
+    collection = await session.get(Collection, collection_id)
+    if collection is None:
+        raise not_found()
+    if collection.visibility == "private" and collection.member_id != scope.member_id:
+        raise not_found()
+    if (
+        scope.visible is not None
+        and collection.library_id is not None
+        and collection.library_id not in scope.visible
+    ):
+        raise not_found()
+    members = await resolve_members(
+        session,
+        collection,
+        member_id=scope.member_id,
+        visible_library_ids=scope.visible,
+        content_limit=scope.content_limit,
+    )
+    library = (
+        await session.get(Library, collection.library_id)
+        if collection.library_id is not None
+        else None
+    )
+    # 与 _virtual_libraries 同一口径：图片库下的合集没有「虚拟库」这个身份
+    if library is not None and library.kind in jellyfin_hidden_kinds():
+        raise not_found()
+    return collection_library_view_dto(
+        ctx,
+        collection,
+        collection_type=collection_library_type(library),
+        child_count=len(members),
+        cover_item_id=collection.cover_item_id or (members[0] if members else None),
+    )
+
+
 async def _boxset_or_404(
     session: AsyncSession,
     collection_id: int,
@@ -1086,7 +1263,9 @@ async def _entries_for_parent(
         # 由 _query_items 单独渲染，这里返回空表示"这一层没有作品"
         return []
 
-    if ref.kind == EntityKind.COLLECTION:
+    if ref.kind in (EntityKind.COLLECTION, EntityKind.COLLECTION_VIEW):
+        # 合集的两个身份（BoxSet / 虚拟媒体库）子级完全一样——都是这个合集的
+        # 成员条目。伪装成库的是**外壳**，不是另一套名单，所以这里不分叉
         from movieclaw_db.models import Collection
 
         collection = await session.get(Collection, ref.entity_id)
@@ -1198,6 +1377,26 @@ async def items_latest(
 
     if library_id is not None and scope.library_hidden(library_id):
         raise not_found()
+    # 虚拟媒体库的「最新」：范围是这个合集的成员。不接这一条的话
+    # parentId 会被当成没给，客户端在合集库里看到的是**全库**最新——
+    # 那比空着更糟，它看起来像是对的
+    member_ids: list[int] | None = None
+    if parent_ref is not None and parent_ref.kind == EntityKind.COLLECTION_VIEW:
+        async with get_database().session() as session:
+            from movieclaw_db.models import Collection
+
+            collection = await session.get(Collection, parent_ref.entity_id)
+            if collection is None or (
+                collection.visibility == "private" and collection.member_id != scope.member_id
+            ):
+                raise not_found()
+            member_ids = await resolve_members(
+                session,
+                collection,
+                member_id=scope.member_id,
+                visible_library_ids=scope.visible,
+                content_limit=scope.content_limit,
+            )
     async with get_database().session() as session:
         # 先读每个最新单元的 5 个标量列；只有通过 limit/groupItems 的最终
         # 条目才进入 load_bundles。这样 1200 部电影不会先水合整库 JSON。
@@ -1214,6 +1413,7 @@ async def items_latest(
                 session,
                 member_id=scope.member_id,
                 library_id=library_id,
+                item_ids=member_ids,
                 visible_library_ids=scope.visible,
                 content_limit=scope.content_limit,
                 is_played=is_played,
@@ -1568,6 +1768,8 @@ async def get_item(
             return JSONResponse(collections_view_dto(ctx))
         if ref.kind == EntityKind.COLLECTION:
             return JSONResponse(await _boxset_or_404(session, ref.entity_id, scope, ctx))
+        if ref.kind == EntityKind.COLLECTION_VIEW:
+            return JSONResponse(await _virtual_library_or_404(session, ref.entity_id, scope, ctx))
         # 单条目是全字段语义，People 恒输出；可见性先行（GUID 可枚举）
         if not await _item_visible(session, ref.entity_id, scope):
             raise not_found()

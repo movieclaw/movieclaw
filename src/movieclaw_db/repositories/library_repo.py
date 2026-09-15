@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Collection
+from collections.abc import Awaitable, Callable, Collection
 
 from sqlalchemy import and_, case, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,6 +9,19 @@ from sqlmodel import select
 from movieclaw_db.models.base import utcnow
 from movieclaw_db.models.library import Library
 from movieclaw_db.models.library_file import FileState, LibraryFile
+
+#: ``refresh_stats`` 收尾钩子。库存变化的写路径有二十来处（扫描、入库、转移、
+#: 回收、认领……），它们都收口在 refresh_stats；跟着库内容一起失效的派生数据
+#: ——内容型合集的成员缓存（services/library/collections.refresh_membership_cache）
+#: ——在这里挂钩，不必逐个写路径去记。钩子用同一个 session、在同一次 commit
+#: 里落库。数据层不认识上层业务，由上层在导入时注册；重复注册幂等
+StatsRefreshHook = Callable[[AsyncSession, list[int]], Awaitable[None]]
+_stats_refresh_hooks: list[StatsRefreshHook] = []
+
+
+def register_stats_refresh_hook(hook: StatsRefreshHook) -> None:
+    if hook not in _stats_refresh_hooks:
+        _stats_refresh_hooks.append(hook)
 
 
 class LibraryRepository:
@@ -191,6 +204,8 @@ class LibraryRepository:
             library.stats_missing_count = int(values["missing_count"] or 0) if values else 0
             library.stats_ignored_count = int(values["ignored_count"] or 0) if values else 0
             library.stats_refreshed_at = refreshed_at
+        for hook in _stats_refresh_hooks:
+            await hook(self._session, ids)
         await self._session.commit()
 
     # -- 写入 --------------------------------------------------------------

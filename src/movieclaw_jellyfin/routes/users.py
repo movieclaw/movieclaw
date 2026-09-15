@@ -16,6 +16,7 @@ from movieclaw_db.models import JellyfinDevice
 from movieclaw_db.models.base import utcnow
 from movieclaw_db.models.member import Member
 from movieclaw_db.repositories.member_repo import MemberRepository
+from movieclaw_jellyfin.catalog import visible_pinned_collections
 from movieclaw_jellyfin.errors import (
     JellyfinError,
     bad_request_text,
@@ -84,13 +85,14 @@ async def authenticate_by_name(request: Request) -> JSONResponse:
         await session.commit()
 
     # 超管与成员都按可浏览集投影 EnabledFolders（超管摘掉自己的库也不在电视端出现）
-    async with get_database().session() as session:
-        visible = await member_visible_ids(session, member_id)
+    visible, pinned = await _enabled_scope(member_id)
     if member is not None:
-        user_payload = await user_dto(setting.server_id, member, visible)
+        user_payload = await user_dto(setting.server_id, member, visible, pinned)
         user_name = member.username
     else:
-        user_payload = await user_dto(setting.server_id, visible_library_ids=visible)
+        user_payload = await user_dto(
+            setting.server_id, visible_library_ids=visible, visible_collection_ids=pinned
+        )
         user_name = (await auth_service.get_admin_account()).username
     return JSONResponse(
         {
@@ -111,18 +113,36 @@ async def authenticate_by_name(request: Request) -> JSONResponse:
     )
 
 
-async def _member_user_dto(server_id: str, member: Member) -> dict:
+async def _enabled_scope(member_id: int) -> tuple[set[int], list[int]]:
+    """这个身份的 EnabledFolders 范围：可浏览库 id + 伪装成库的合集 id。
+
+    两者必须一次算齐。EnabledFolders 非空时客户端拿它当白名单过滤自己看到的
+    库，漏掉虚拟库（钉了首页的合集）就会被客户端自己藏掉，而且不报任何错
+    （docs/design/library-collections.md 4.11）。
+    """
     async with get_database().session() as session:
-        visible = await member_visible_ids(session, member.id)
-    return await user_dto(server_id, member, visible)
+        visible = await member_visible_ids(session, member_id)
+        pinned = [
+            row.id or 0
+            for row in await visible_pinned_collections(
+                session, member_id=member_id, visible_library_ids=visible
+            )
+        ]
+    return visible, pinned
+
+
+async def _member_user_dto(server_id: str, member: Member) -> dict:
+    visible, pinned = await _enabled_scope(member.id)
+    return await user_dto(server_id, member, visible, pinned)
 
 
 async def _identity_user_dto(server_id: str, member_id: int) -> dict:
     """按设备登录身份装配用户 DTO；成员行已不存在（竞态）按 404 处理。"""
     if member_id == 0:
-        async with get_database().session() as session:
-            visible = await member_visible_ids(session, 0)
-        return await user_dto(server_id, visible_library_ids=visible)
+        visible, pinned = await _enabled_scope(0)
+        return await user_dto(
+            server_id, visible_library_ids=visible, visible_collection_ids=pinned
+        )
     async with get_database().session() as session:
         member = await MemberRepository(session).get(member_id)
     if member is None:

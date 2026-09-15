@@ -115,6 +115,7 @@ import {
   afterScrubFollow,
   initialScrubFollowState,
   planScrubFollow,
+  seekAlreadyInFlight,
 } from "@/lib/player/scrub-follow";
 import { nextSeekTarget, seekBatchWindowMs } from "@/lib/player/seek-batch";
 import { resolveTap } from "@/lib/player/tap";
@@ -173,6 +174,12 @@ export interface VideoPlayerProps {
 const PROGRESS_INTERVAL_MS = 10_000;
 /** 会话续命间隔。必须明显短于服务端的空闲回收窗口。 */
 const PING_INTERVAL_MS = 15_000;
+/**
+ * 松手提交排在在途 seek 后面最多等多久（player-feel.md §19.5）。远端一次 seek
+ * 一两秒是常态，五秒还没落地就当它挂了，照旧发提交把它掐掉——掐掉的代价是
+ * 顺序扫描，永远等着的代价是用户松了手却永远跳不过去。
+ */
+const PENDING_COMMIT_MAX_WAIT_MS = 5_000;
 /** 播放中控制条自动隐藏的**静止**时长——任何操作（触摸、鼠标移动、快捷键）
  * 都会把倒计时从头来过（见 chromeActivity 的注释）。4 秒取 Netflix 手机端
  * 的手感：3 秒在真机上「刚找到按钮就没了」（用户反馈）。 */
@@ -305,6 +312,8 @@ export function VideoPlayer(props: VideoPlayerProps) {
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [serverDiagnostics, setServerDiagnostics] = useState<PlaybackDiagnostics | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  /** 指针正按在进度条上：按住不动时也要把控制条钉住（lib/player/chrome.ts） */
+  const [scrubbing, setScrubbing] = useState(false);
   const [chromeVisible, setChromeVisible] = useState(true);
   /**
    * 控制层的活动信号：每次用户操作 +1，自动隐藏的倒计时以它为依赖从头再排。
@@ -346,6 +355,24 @@ export function VideoPlayer(props: VideoPlayerProps) {
    * 又跳了一次——拿它对一下，过期的那张绝不能画上去。
    */
   const freezeTokenRef = useRef(0);
+  /**
+   * 松手提交时元素还在为跟随的 seek 忙着、落点又不是同一个：提交的落点
+   * （会话秒数）先记在这儿，等元素落地再发。**同一时刻元素上最多只有一次
+   * seek 在途**是 §19.5 的规矩——两次叠在一起，浏览器会把上一次正在取的索引
+   * 请求掐掉，然后退回顺序扫描。换会话 / 切集时作废：那时它指的是旧时间轴。
+   *
+   * 等待有上限（`PENDING_COMMIT_MAX_WAIT_MS`）：在途的 seek 要是一直不落地
+   * （远端 Range 请求挂死），用户明明松了手却永远跳不过去——到点就照旧发，
+   * 掐掉它总比永远等着强。`pendingCommitTimerRef` 是那个计时器。
+   */
+  const pendingCommitRef = useRef<number | null>(null);
+  const pendingCommitTimerRef = useRef<number | null>(null);
+  /** 排在在途 seek 后面的那次提交作废（换会话 / 切集 / 已经发出去） */
+  const clearPendingCommit = useCallback(() => {
+    pendingCommitRef.current = null;
+    if (pendingCommitTimerRef.current !== null) window.clearTimeout(pendingCommitTimerRef.current);
+    pendingCommitTimerRef.current = null;
+  }, []);
   /** 雪碧图的解码缓存：连按快进会连着要同一张，每次新建 Image 等于重解一遍 */
   const sheetCacheRef = useRef(new Map<string, HTMLImageElement>());
 
@@ -417,6 +444,9 @@ export function VideoPlayer(props: VideoPlayerProps) {
   useEffect(() => {
     if (!frozen || !video) return;
     const release = () => {
+      // 松手提交还排在在途 seek 后面：这一刻落地的是**跟随**的位置，盖着的是
+      // 落点的缩略图，撤了就先露一帧别处的画面、再黑一下才到落点。等提交发出去
+      if (pendingCommitRef.current !== null) return;
       if (canReleaseFreeze({ seeking: video.seeking, readyState: video.readyState })) {
         // 递增 token 让在途的缩略图作废：晚到的那张不能把已经出画的画面
         // 重新盖回去（远跳时雪碧图与首帧常常是前后脚到）
@@ -994,6 +1024,8 @@ export function VideoPlayer(props: VideoPlayerProps) {
       !shouldAttemptAutoplay({
         wanted: wantsPlayRef.current,
         paused: video.paused,
+        // 放完的元素不许自动重播：对它调 play() 会 seek 回 0 从头放
+        ended: video.ended,
         attempts: autoplayAttemptsRef.current,
         last: autoplayLastRef.current,
       })
@@ -1155,11 +1187,13 @@ export function VideoPlayer(props: VideoPlayerProps) {
    */
   useEffect(() => {
     if (!state.session) return;
+    // 排在在途 seek 后面的那次提交作废：它指的是上一路流的时间轴
+    clearPendingCommit();
     autoplayAttemptsRef.current = 0;
     autoplayLastRef.current = null;
     deadSessionRef.current = false;
     setAutoplay(null);
-  }, [state.session]);
+  }, [state.session, clearPendingCommit]);
 
   /** 诊断面板打开时轮询服务端会话，关闭后不额外占用 NAS 请求。 */
   const diagnosticsSessionId = state.session?.session_id;
@@ -1295,7 +1329,12 @@ export function VideoPlayer(props: VideoPlayerProps) {
     };
     const onTimeUpdate = () => {
       if (!isCurrentSession()) return;
-      setPositionMs(toFileMs(video.currentTime, startMsRef.current));
+      // 松手提交还排在在途 seek 后面时，这一拍 timeupdate 报的是**跟随**落地的
+      // 位置，不是用户要去的地方：读数已经提前走到落点了，别让它先弹回去再跳
+      // 过去（一下就是几分钟的来回）。提交真的发出去之后读数照常跟。
+      if (pendingCommitRef.current === null) {
+        setPositionMs(toFileMs(video.currentTime, startMsRef.current));
+      }
       onBuffered();
     };
     // 「现在应该能播了」的两个时机：挂流那一次可能太早，这两次是补刀
@@ -1953,9 +1992,19 @@ export function VideoPlayer(props: VideoPlayerProps) {
       // `seeking` 里**：restart 那条路新流从自己时间轴的 0 秒起播，hls.js
       // 一次都不会 seek，元素事件永远不来——而会话拆除 + 重开 + ffmpeg
       // 起转正是用户等的那几秒（见 qoe.ts 的 seek-requested）。
-      qoe({ type: "seek-requested", at: performance.now() });
       if (plan.kind === "native") {
         const seconds = Math.max(0, plan.seconds);
+        const inFlight = seekAlreadyInFlight({
+          currentTimeSeconds: video.currentTime,
+          targetSeconds: seconds,
+        });
+        // 已经停在落点上（跟随刚落地、或只拖了不到一格）：没有跳转可言，
+        // 连 QoE 的「跳了一次」都不记——记了没有 playing 来结算，闸会一直开着
+        if (inFlight && !video.seeking) {
+          setPositionMs(toFileMs(seconds, startMsRef.current));
+          return;
+        }
+        qoe({ type: "seek-requested", at: performance.now() });
         // 落点在缓冲之外：hls.js 会清掉当前这段缓冲从新落点重新装载，中间
         // 那几百毫秒到几秒（外网上就是几秒）`<video>` 一帧都没有，浏览器只
         // 能画黑。先把当前帧冻住盖上去，等新位置出画再撤。缓冲之内的跳转
@@ -1964,8 +2013,28 @@ export function VideoPlayer(props: VideoPlayerProps) {
         // 带上落点：远跳盖的是**落点的缩略图**而不是上一帧，这一跳视觉上
         // 当场就落地（§2.G4）。
         if (!isWithinRanges(video.buffered, seconds)) freezeFrame(fileMs);
-        if (engineRef.current?.seek) engineRef.current.seek(seconds);
-        else video.currentTime = seconds;
+        // 拖动跟随已经为这个落点发了 seek（或早已停在这儿）就不再叠一次：
+        // 第二次 seek 会把第一次正在取的索引/数据请求掐掉，浏览器退回顺序扫描
+        // ——这正是「松手后画面停在原地、圆点不动」的来路（§19.5）。seek 途中
+        // currentTime 读到的是这次 seek 的目标，可以直接比。
+        if (!inFlight) {
+          if (video.seeking) {
+            // 在途的是跟随发往**别处**的 seek：也不掐它，排在它后面（落地时
+            // 再发，见 flushPendingCommit）。掐掉它的代价见上——本会话第一次 seek
+            // 正在取索引时尤其如此。多等的是那次跟随本来就要花的时间；等待有
+            // 上限，在途的 seek 一直不落地就到点照旧发。
+            clearPendingCommit();
+            pendingCommitRef.current = seconds;
+            pendingCommitTimerRef.current = window.setTimeout(() => {
+              pendingCommitTimerRef.current = null;
+              flushPendingCommitRef.current();
+            }, PENDING_COMMIT_MAX_WAIT_MS);
+          } else if (engineRef.current?.seek) {
+            engineRef.current.seek(seconds);
+          } else {
+            video.currentTime = seconds;
+          }
+        }
         // 乐观更新进度条：seek 落到未缓冲区间（往回拖出 back buffer、往前
         // 拖到没转的段）时，规范只在 seek **完成**后才发 timeupdate——
         // 服务端供片要一两秒，这期间进度条会弹回旧位置，用户以为没拖上。
@@ -1974,6 +2043,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
         setPositionMs(toFileMs(seconds, startMsRef.current));
         return;
       }
+      qoe({ type: "seek-requested", at: performance.now() });
       // 换会话必然让画面空一段（旧引擎销毁会把 src 摘干净），先把画面冻住；
       // 这条路恒是远跳，盖落点的缩略图
       freezeFrame(plan.startMs);
@@ -1983,10 +2053,11 @@ export function VideoPlayer(props: VideoPlayerProps) {
       // 这次暂停是我们自己造成的，不是用户不想看了——换流后必须继续自动播放
       wantsPlayRef.current = true;
       pendingFileMsRef.current = plan.startMs;
+      clearPendingCommit();
       setPositionMs(plan.startMs);
       dispatch({ type: "restart", startMs: plan.startMs });
     },
-    [video, sessionId, mode, durationMs, state.session, state.phase, state.startMs, freezeFrame, qoe],
+    [video, sessionId, mode, durationMs, state.session, state.phase, state.startMs, freezeFrame, qoe, clearPendingCommit],
   );
 
   /**
@@ -2092,11 +2163,13 @@ export function VideoPlayer(props: VideoPlayerProps) {
     // 拖动跟随的后沿计时器同理：它只有 60~100 毫秒，但切集恰好发生在拖动
     // 途中时，它会把**新一集**挪到上一集的落点上。
     cancelScrubFollow();
+    // 排在在途 seek 后面的那次提交同理：它指的是上一集的时间轴
+    clearPendingCommit();
     return () => {
       if (pending.timer !== null) window.clearTimeout(pending.timer);
       if (scrubTimerRef.current !== null) window.clearTimeout(scrubTimerRef.current);
     };
-  }, [unitKey, cancelPendingSeek, cancelScrubFollow]);
+  }, [unitKey, cancelPendingSeek, cancelScrubFollow, clearPendingCommit]);
 
   /**
    * 这一跳贵不贵：落点已在缓冲里就是零成本，否则要么等浏览器拉数据、要么
@@ -2144,6 +2217,15 @@ export function VideoPlayer(props: VideoPlayerProps) {
       // back buffer 可能已经把落点回收掉，那时写 currentTime 就不再是零成本
       // 的跳转，而是一次把 ffmpeg 拽回去重启——跟随这条路上最不该出现的事。
       if (seconds < 0 || !canScrubFollowRef.current(fileMs)) return;
+      // **上一次跟随的 seek 还没落地就绝不发下一次**（player-feel.md §19.5）。
+      // 两次 seek 叠在一起，浏览器会把上一次正在取的索引/数据请求掐掉：
+      // Chromium 上退回顺序扫描找目标（跳几分钟要读几十 MB），iOS 上 AVPlayer
+      // 取消旧 seek、元素状态被提前清掉。落点先记着，元素 `seeked` 时再补
+      // （见下面那个 seeked effect）；期间又有新落点就覆盖，落地的永远是最新的。
+      if (video.seeking) {
+        scrubRef.current = { ...scrubRef.current, pendingMs: fileMs };
+        return;
+      }
       scrubRef.current = afterScrubFollow(performance.now());
       // **只动 currentTime，不走 engine.seek**：后者会 stopLoad + startLoad
       // 把在途的分片请求全掐掉重来——那是给「跳到没缓冲的地方」准备的重手段。
@@ -2151,15 +2233,65 @@ export function VideoPlayer(props: VideoPlayerProps) {
       // 加载管线，恰恰会把这条路本来想改善的手感反过来毁掉。
       // fastSeek 是浏览器为「拖动预览」准备的：就近落在关键帧上，省掉从
       // 关键帧解到精确帧的那段解码。Safari / Firefox 有，Chrome 至今没有，
-      // 所以要探测。松手那次提交仍走精确 seek——落点差半秒用户是看得出来的。
-      if (typeof video.fastSeek === "function") video.fastSeek(seconds);
-      else video.currentTime = seconds;
+      // 所以要探测。**只在落点已缓冲时用它**：直出档拖出缓冲的那次跟随是
+      // 停住后唯一的一跳，松手多半不再补 seek（seekToFileMs 认得出同一落点），
+      // 它就得是精确的——WebKit 的 fastSeek 容差可以大到整段 GOP。
+      if (isCheapSeekRef.current(fileMs) && typeof video.fastSeek === "function") {
+        video.fastSeek(seconds);
+      } else {
+        video.currentTime = seconds;
+      }
     },
     [video, durationMs],
   );
   /** 供后沿计时器读最新值：它跨过一段时间才执行，闭包里的会话可能已经换过 */
   const applyScrubFollowRef = useRef(applyScrubFollow);
   applyScrubFollowRef.current = applyScrubFollow;
+
+  /** 把排在在途 seek 后面的那次提交真的发出去（落地时或等待到上限时） */
+  const flushPendingCommit = useCallback(() => {
+    const commit = pendingCommitRef.current;
+    if (commit === null || !video) return;
+    clearPendingCommit();
+    scrubRef.current = { ...scrubRef.current, pendingMs: null };
+    if (engineRef.current?.seek) engineRef.current.seek(commit);
+    else video.currentTime = commit;
+    // 读数立刻回到提交的落点：等待期间 timeupdate 被挡着，这里补上
+    setPositionMs(toFileMs(commit, startMsRef.current));
+  }, [video, clearPendingCommit]);
+  /** 供计时器与元素事件读最新值 */
+  const flushPendingCommitRef = useRef(flushPendingCommit);
+  flushPendingCommitRef.current = flushPendingCommit;
+
+  /**
+   * 上一次跟随落地了，把等在后面的那个落点补上。
+   *
+   * 只在没有后沿计时器在排队时补：计时器在排队说明手指还在动，它到点会带着
+   * 更新的落点来；松手提交（commitSeek → cancelScrubFollow）与手势取消都会把
+   * pendingMs 清掉，所以这里绝不会在用户已经表态之后再把画面挪走。
+   */
+  useEffect(() => {
+    if (!video) return;
+    const onLanded = () => {
+      // seek 落地时规范先发 timeupdate 再发 seeked，两个都接：在第一个事件里就
+      // 把下一次 seek 发出去，中间不留一帧让自绘读到跟随落地的那个位置
+      if (video.seeking) return;
+      // 松手提交排在跟随后面的那次优先：用户已经表态，跟随的落点作废
+      if (pendingCommitRef.current !== null) {
+        flushPendingCommitRef.current();
+        return;
+      }
+      const pending = scrubRef.current.pendingMs;
+      if (pending === null || scrubTimerRef.current !== null) return;
+      applyScrubFollowRef.current(pending);
+    };
+    video.addEventListener("timeupdate", onLanded);
+    video.addEventListener("seeked", onLanded);
+    return () => {
+      video.removeEventListener("timeupdate", onLanded);
+      video.removeEventListener("seeked", onLanded);
+    };
+  }, [video]);
 
   /**
    * 拖动进度条时的实时跟随（docs/design/player-feel.md §2.C2）。
@@ -3010,14 +3142,14 @@ export function VideoPlayer(props: VideoPlayerProps) {
   useEffect(() => {
     // 锁屏优先级最高：锁上之后暂停、开菜单都不该把一排能点的按钮放回来
     if (locked) return;
-    if (chromeMustStayVisible({ paused, menuOpen, awaitingUser })) {
+    if (chromeMustStayVisible({ paused, menuOpen, awaitingUser, scrubbing })) {
       setChromeVisible(true);
       return;
     }
     const timer = window.setTimeout(() => setChromeVisible(false), IDLE_HIDE_MS);
     return () => window.clearTimeout(timer);
     // chromeActivity：用户的每次操作都重排这个倒计时（声明见 state 注释）
-  }, [locked, paused, menuOpen, awaitingUser, chromeVisible, chromeActivity]);
+  }, [locked, paused, menuOpen, awaitingUser, scrubbing, chromeVisible, chromeActivity]);
 
   /**
    * 片尾「下一集」卡片该不该显示。
@@ -3604,6 +3736,7 @@ export function VideoPlayer(props: VideoPlayerProps) {
             onSeek={commitSeek}
             onScrub={scrubTo}
             onScrubCancel={cancelScrubFollow}
+            onScrubbingChange={setScrubbing}
             subtitles={subtitles}
             selectedSubtitle={selectedSubtitle}
             onSelectSubtitle={selectSubtitle}

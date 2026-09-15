@@ -37,6 +37,14 @@ class EntityKind(IntEnum):
     # 合集（docs/design/library-collections.md 4.2）：载荷 = collection.id。
     # 自增主键不回收，GUID 天然稳定，与 library/item 同源，不需要映射表
     COLLECTION = 0x08
+    # 合集的**第二个身份**：被钉上媒体库首页的合集，协议侧额外伪装成一个顶层
+    # 媒体库（CollectionFolder），载荷同样是 collection.id
+    # （docs/design/library-collections.md 4.11）。
+    #
+    # 为什么不复用 COLLECTION 那一个 GUID、只是换个 Type：客户端会缓存 DTO，
+    # 同一个 id 在合集视图下是 BoxSet、在根下是 CollectionFolder，各家客户端
+    # 的表现不可预期。一行数据两种协议形态，就该有两个稳定 GUID。
+    COLLECTION_VIEW = 0x09
 
 
 # 固定实体的载荷常量（FIXED 类型下细分）
@@ -88,6 +96,11 @@ def media_source_guid(library_file_id: int) -> str:
 
 def collection_guid(collection_id: int) -> str:
     return _pack(EntityKind.COLLECTION, collection_id)
+
+
+def collection_view_guid(collection_id: int) -> str:
+    """合集作为「虚拟媒体库」时的 GUID（与 ``collection_guid`` 是两个身份）。"""
+    return _pack(EntityKind.COLLECTION_VIEW, collection_id)
 
 
 def collections_view_guid() -> str:

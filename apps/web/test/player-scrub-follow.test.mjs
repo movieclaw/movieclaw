@@ -4,10 +4,16 @@ import test from "node:test";
 import {
   SCRUB_FOLLOW_MAX_WAIT_MS,
   SCRUB_FOLLOW_SETTLE_MS,
+  SCRUB_INPUT_STEP_MS,
+  SEEK_DUPLICATE_TOLERANCE_S,
+  acceptsNativeScrubValue,
   afterScrubFollow,
   initialScrubFollowState,
+  isScrubPointer,
   planScrubFollow,
   scrubCommitTarget,
+  scrubInputValue,
+  seekAlreadyInFlight,
 } from "../lib/player/scrub-follow.ts";
 
 // ---------------------------------------------------------------------------
@@ -144,27 +150,69 @@ test("直出档一段扫动只在停住后落地一次，落的是最后那个�
 
 test("鼠标抬手提交指针最后所在处：合帧压着的最后一段位移不能丢", () => {
   assert.equal(
-    scrubCommitTarget({ pointerType: "mouse", lastPointerMs: 305_000, draggingMs: 300_000 }),
+    scrubCommitTarget({
+      pointerType: "mouse",
+      lastPointerMs: 305_000,
+      flushedMs: 300_000,
+      draggingMs: 290_000,
+    }),
     305_000,
   );
-  // 量不到指针位置（片长刚变 null 之类）退回屏幕上的值
+  // 量不到指针位置（片长刚变 null 之类）退回渲染出来的值
   assert.equal(
-    scrubCommitTarget({ pointerType: "mouse", lastPointerMs: null, draggingMs: 300_000 }),
+    scrubCommitTarget({ pointerType: "mouse", lastPointerMs: null, flushedMs: null, draggingMs: 300_000 }),
     300_000,
   );
 });
 
 test("触屏抬手提交屏幕上正显示的值：指腹剥离时的漂移进不了落点", () => {
-  // 手指抬起瞬间接触点往回挪了一截，指针最后所在处已经不是用户看到的位置
+  // 手指抬起瞬间接触点往回挪了一截，指针最后所在处已经不是用户看到的位置；
+  // 合帧最近刷出去的 300_000 才是屏幕上的读数
   assert.equal(
-    scrubCommitTarget({ pointerType: "touch", lastPointerMs: 262_000, draggingMs: 300_000 }),
+    scrubCommitTarget({
+      pointerType: "touch",
+      lastPointerMs: 262_000,
+      flushedMs: 300_000,
+      draggingMs: 300_000,
+    }),
     300_000,
+  );
+});
+
+test("触屏快速甩动一帧都没刷出去：提交指针最后所在处，而不是按下那一刻的渲染值", () => {
+  // 2026-09-14 反馈：快速拖到目标立刻松手，落点回到起点。整个甩动压在一帧里，
+  // rAF 一次都没跑，React 渲染出来的 dragging 仍是按下时的 45_926
+  assert.equal(
+    scrubCommitTarget({
+      pointerType: "touch",
+      lastPointerMs: 1_489_320,
+      flushedMs: null,
+      draggingMs: 45_926,
+    }),
+    1_489_320,
+  );
+});
+
+test("触屏刷出去过但 React 还没渲染：提交刷出去的值，不是过期的渲染值", () => {
+  assert.equal(
+    scrubCommitTarget({
+      pointerType: "touch",
+      lastPointerMs: 1_489_320,
+      flushedMs: 1_450_000,
+      draggingMs: 45_926,
+    }),
+    1_450_000,
   );
 });
 
 test("笔跟鼠标走：笔尖抬起没有指腹那种剥离位移", () => {
   assert.equal(
-    scrubCommitTarget({ pointerType: "pen", lastPointerMs: 301_000, draggingMs: 300_000 }),
+    scrubCommitTarget({
+      pointerType: "pen",
+      lastPointerMs: 301_000,
+      flushedMs: 300_000,
+      draggingMs: 300_000,
+    }),
     301_000,
   );
 });
@@ -314,4 +362,135 @@ test("每一次落地用的都是新鲜落点，不是窗口开头那个过期�
     );
     assert.ok(fresh, `${hit.at}ms 落地的 ${hit.targetMs} 已经过期超过停稳窗口`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// 回归：抬手之后原生滑块补发的 change 不能把 dragging 重新钉住
+//
+// 2026-09-14 反馈「拖到 15 分钟松手，画面到了 15 分钟，圆点却不动了」。进度条的
+// 拖动是指针事件自己算的，但原生 range 滑块并没有关掉：鼠标按下轨道、Chromium
+// 触屏按下轨道、iOS 上手指恰好压中那 1px 把手所在的一列，浏览器都会同时跑自己
+// 的拖动——抬手时补一次 `change`，而它在 pointerup 之后才到。pointerup 已经把
+// dragging 清成 null，这一发 change 一进 onChange 又把 dragging 钉回落点。
+// Chromium 真机复现（Playwright，鼠标与 CDP 触摸各一遍）：修前松手 1.6 秒后
+// input.value 纹丝不动，修后跟着位置走。
+// ---------------------------------------------------------------------------
+
+test("写进 range 的值先按浏览器规则整理：夹进片长、对齐步长、两边一样近取大的", () => {
+  assert.equal(scrubInputValue(1_489_320, 3_600_000), 1_489_000);
+  assert.equal(scrubInputValue(1_489_500, 3_600_000), 1_490_000);
+  assert.equal(scrubInputValue(-5, 3_600_000), 0);
+  assert.equal(scrubInputValue(9_999_999, 3_600_000), 3_600_000);
+  // 片长未知时进度条是禁用的，值统一为 0
+  assert.equal(scrubInputValue(1_000, null), 0);
+  assert.equal(scrubInputValue(1_000, 0), 0);
+});
+
+test("对齐后越过 max 要退一格：浏览器不会把 value 整理到 max 之外", () => {
+  // max 本身不在步长上：3_599_700 最近的步长倍数是 3_600_000，越过 max
+  assert.equal(scrubInputValue(3_599_700, 3_599_999), 3_599_000);
+  assert.equal(scrubInputValue(3_599_999, 3_599_999), 3_599_000);
+  assert.equal(SCRUB_INPUT_STEP_MS, 1_000);
+});
+
+test("抬手补发的 change 与屏幕值整理后相同：不是用户改了值，不收", () => {
+  // pointerup 已把 dragging 清掉、跳转提交到 1_489_320，React 写进 range 的是
+  // 整理后的 1_489_000，原生 change 读回来的也是它
+  assert.equal(
+    acceptsNativeScrubValue({
+      nativeValue: 1_489_000,
+      shownMs: 1_489_320,
+      durationMs: 3_600_000,
+      pointerDragging: false,
+    }),
+    false,
+  );
+});
+
+test("指针按着的时候原生滑块连发的 input 一律不收：落点由指针路径算", () => {
+  assert.equal(
+    acceptsNativeScrubValue({
+      nativeValue: 1_500_000,
+      shownMs: 1_489_320,
+      durationMs: 3_600_000,
+      pointerDragging: true,
+    }),
+    false,
+  );
+});
+
+test("键盘真改了值（Home / End / PageUp）照常放行", () => {
+  assert.equal(
+    acceptsNativeScrubValue({
+      nativeValue: 1_490_000,
+      shownMs: 1_489_320,
+      durationMs: 3_600_000,
+      pointerDragging: false,
+    }),
+    true,
+  );
+  assert.equal(
+    acceptsNativeScrubValue({
+      nativeValue: 0,
+      shownMs: 1_489_320,
+      durationMs: 3_600_000,
+      pointerDragging: false,
+    }),
+    true,
+  );
+});
+
+test("片尾那一格同样认得出来：max 不在步长上时补发的 change 带的是退一格的值", () => {
+  assert.equal(
+    acceptsNativeScrubValue({
+      nativeValue: 3_599_000,
+      shownMs: 3_599_700,
+      durationMs: 3_599_999,
+      pointerDragging: false,
+    }),
+    false,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// 回归：跟随已经为这个落点发了 seek，松手不再叠一次
+//
+// 2026-09-14 请求日志实证：第二次 seek 会把第一次正在取的索引请求掐掉
+// （ERR_ABORTED），Chromium 退回从当前缓冲末尾顺序扫描找目标，跳 6 分钟要顺序
+// 读 47MB——画面停在原地、圆点不动。seek 途中 currentTime 读到的是这次 seek 的
+// 目标，所以「正在往同一落点去」直接用它判。
+// ---------------------------------------------------------------------------
+
+test("元素正往同一落点 seek（或已停在那儿）：不再叠一次 seek", () => {
+  assert.equal(seekAlreadyInFlight({ currentTimeSeconds: 720.0, targetSeconds: 720.0 }), true);
+  // 时间刻度换算带来的抖动吃得掉
+  assert.equal(seekAlreadyInFlight({ currentTimeSeconds: 720.12, targetSeconds: 720.0 }), true);
+});
+
+test("落点差得超过容差就要真的 seek：快速跟随落在关键帧上时松手仍要精确落地", () => {
+  assert.equal(seekAlreadyInFlight({ currentTimeSeconds: 716.0, targetSeconds: 720.3 }), false);
+  assert.equal(
+    seekAlreadyInFlight({ currentTimeSeconds: 720.0, targetSeconds: 720.0 + SEEK_DUPLICATE_TOLERANCE_S }),
+    false,
+  );
+  assert.equal(seekAlreadyInFlight({ currentTimeSeconds: Number.NaN, targetSeconds: 720 }), false);
+});
+
+// ---------------------------------------------------------------------------
+// 回归：第二根手指落到条上，它的 pointerup 不能当成松手
+//
+// 2026-09-14 真浏览器复现：一指按着拖、另一指点一下条上别处，第二指的 pointerup
+// 照样派发到 input，被当成松手后拖动当场作废——画面停在半路、真松手时什么也不发。
+// ---------------------------------------------------------------------------
+
+test("拖动中只认按下时捕获的那根指针：第二根手指的抬起 / 移动一律不理", () => {
+  assert.equal(isScrubPointer({ activePointerId: 7, pointerId: 7, isPrimary: true }), true);
+  assert.equal(isScrubPointer({ activePointerId: 7, pointerId: 8, isPrimary: false }), false);
+  // 极端情况：主指针换了人（旧的被系统收走没发 cancel）也不认
+  assert.equal(isScrubPointer({ activePointerId: 7, pointerId: 9, isPrimary: true }), false);
+});
+
+test("没在拖时只认主指针：悬停气泡跟鼠标 / 第一根手指走", () => {
+  assert.equal(isScrubPointer({ activePointerId: null, pointerId: 1, isPrimary: true }), true);
+  assert.equal(isScrubPointer({ activePointerId: null, pointerId: 2, isPrimary: false }), false);
 });

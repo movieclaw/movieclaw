@@ -17,6 +17,7 @@ import {
   LibraryManageRow,
 } from "@/components/library-manage-row";
 import { LibraryOrganizeDialog } from "@/components/library-organize-dialog";
+import { LibraryDuplicateFiles } from "@/components/library-duplicate-files";
 import { LibraryRecycleBin } from "@/components/library-recycle-bin";
 import { LibraryShares } from "@/components/library-shares";
 import { listShares } from "@/lib/api/shares";
@@ -26,6 +27,7 @@ import {
   type MediaLibrary,
   deleteLibrary,
   listLibraries,
+  listDuplicateFiles,
   listTrashedFiles,
   reorderLibraries,
   setDefaultLibrary,
@@ -89,7 +91,27 @@ export function LibraryManageView() {
 
   // 标签栏：「媒体库」与「回收站」（docs/design/library-recycle-bin.md §2）；
   // ?tab=recycle 深链直达，切换写回地址栏
-  const [tab, setTab] = useTabParam(["libraries", "recycle", "shares"] as const, "libraries");
+  const [tab, setTab] = useTabParam(["libraries", "recycle", "duplicates", "shares"] as const, "libraries");
+  // 条目详情页「处理重复」带来的 ?item=：重复文件标签只看这一个条目（挂载时读一次）
+  const [duplicateItemId, setDuplicateItemId] = useState<number | null>(null);
+  useEffect(() => {
+    const raw = new URLSearchParams(window.location.search).get("item");
+    const id = raw ? Number(raw) : NaN;
+    if (Number.isInteger(id) && id > 0) setDuplicateItemId(id);
+  }, []);
+  // 重复文件标签上的计数：读上一轮扫描落库的结论（limit=0 只要摘要，一条聚合
+  // 查询）。第一版这里是每 120 秒现算一遍全库重复关系——没打开这个标签也算，
+  // 万级媒体库上光这一下就要几十秒（docs/design/library-duplicate-files.md §9）。
+  // 结论只在扫描后才变，所以这里只在挂载与切回标签时读一次，不轮询。
+  const [duplicateCount, setDuplicateCount] = useState<number | null>(null);
+  const reloadDuplicateCount = useCallback(() => {
+    listDuplicateFiles({}, { limit: 0, offset: 0 })
+      .then((d) => setDuplicateCount(d.total_files))
+      .catch(() => {});
+  }, []);
+  useEffect(() => {
+    reloadDuplicateCount();
+  }, [reloadDuplicateCount, tab]);
   // 回收站标签上的计数：一次 limit=1 的列表请求只为拿 total_files（一条索引计数查询），
   // 不给库统计快照加列——进出回收站的写路径都不在统计重算之列，加列必陈旧
   const [recycleCount, setRecycleCount] = useState<number | null>(null);
@@ -452,6 +474,7 @@ export function LibraryManageView() {
           [
             { id: "libraries" as const, label: "媒体库", count: libraries?.length ?? null },
             { id: "recycle" as const, label: "回收站", count: recycleCount },
+            { id: "duplicates" as const, label: "重复文件", count: duplicateCount },
             { id: "shares" as const, label: "分享", count: shareCount },
           ] as const
         ).map((t) => (
@@ -478,6 +501,9 @@ export function LibraryManageView() {
       </div>
 
       {tab === "recycle" && <LibraryRecycleBin onCountChange={setRecycleCount} />}
+      {tab === "duplicates" && (
+        <LibraryDuplicateFiles libraries={libraries} initialItemId={duplicateItemId} onCountChange={setDuplicateCount} />
+      )}
       {tab === "shares" && <LibraryShares onCountChange={setShareCount} />}
 
       {tab === "libraries" && failed && libraries !== null && (

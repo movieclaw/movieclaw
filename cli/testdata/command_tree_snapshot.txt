@@ -4,6 +4,8 @@ app set
 app show
 app storage clean
 app storage usage
+app tasks list
+app tasks update
 app update apply
 app update check
 app update model-apply
@@ -38,7 +40,6 @@ channels weixin accounts unbind
 channels weixin bindings start
 channels weixin bindings status
 channels weixin bindings verify
-collection apply-to-library
 collection create
 collection delete
 collection get
@@ -100,6 +101,10 @@ library artwork select
 library chapter-images generate
 library create
 library delete
+library duplicates list
+library duplicates resolve
+library duplicates resolve-all
+library duplicates scan
 library get
 library identification assign-file-to-title
 library identification assign-files-to-title

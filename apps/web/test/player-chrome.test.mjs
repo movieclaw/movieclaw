@@ -17,6 +17,12 @@ test("菜单展开时常显——控制条一淡出会把菜单一起带走", ()
   assert.equal(chromeMustStayVisible({ ...idle, menuOpen: true }), true);
 });
 
+test("手指按在进度条上常显——按住不动没有移动事件，倒计时不能在手指底下走完", () => {
+  // 2026-09-14 真浏览器复现：按住 5 秒再松，控制条在第 4 秒淡出
+  assert.equal(chromeMustStayVisible({ ...idle, scrubbing: true }), true);
+  assert.equal(chromeMustStayVisible({ ...idle, scrubbing: false }), false);
+});
+
 test("诊断面板开着不影响控制条——它是独立常驻的一块读数，不该把控制条钉死", () => {
   assert.equal(chromeMustStayVisible({ ...idle, diagnosticsOpen: true }), false);
 });

@@ -11,7 +11,12 @@ from typing import Any
 from movieclaw_api.services import auth as auth_service
 from movieclaw_api.settings.schemas import JellyfinCompatSetting, get_jellyfin_compat
 from movieclaw_db.models.member import Member
-from movieclaw_jellyfin.ids import library_guid, user_guid, user_guid_for
+from movieclaw_jellyfin.ids import (
+    collection_view_guid,
+    library_guid,
+    user_guid,
+    user_guid_for,
+)
 
 # 对外报的 Jellyfin 版本：真实存在的 10.10 系版本号，命中客户端兼容分支
 REPORTED_VERSION = "10.10.7"
@@ -58,21 +63,34 @@ def user_configuration() -> dict[str, Any]:
 def user_policy(
     member: Member | None = None,
     visible_library_ids: set[int] | None = None,
+    visible_collection_ids: list[int] | None = None,
 ) -> dict[str, Any]:
     """用户 Policy。超管（member=None）管理位全开；成员按权限投影：
     非管理员、不可删内容。库可见性经 EnabledFolders 下发给客户端（客户端
     据此过滤其自建的合集/快捷入口；服务端查询侧另有强制过滤）——传入
     ``visible_library_ids`` 时超管与成员一视同仁：超管把自己从某个库的浏览
-    范围摘掉后，电视端也不该再列出它（docs/design/library-access.md）。"""
+    范围摘掉后，电视端也不该再列出它（docs/design/library-access.md）。
+
+    ``visible_collection_ids`` 是伪装成媒体库的那些合集（钉了首页，
+    docs/design/library-collections.md 4.11）。**它们必须一起进 EnabledFolders**：
+    这份清单一旦非空，客户端就拿它当白名单过滤自己看到的库，虚拟库的 GUID 不在
+    里面就会被客户端自己藏掉——``/UserViews`` 下发了也没用，而且这种"少了一个库"
+    的表现没有任何报错，最难查。"""
     if member is not None:
-        policy = user_policy(visible_library_ids=visible_library_ids)  # 以超管为底，只改差异字段
+        # 以超管为底，只改差异字段
+        policy = user_policy(
+            visible_library_ids=visible_library_ids,
+            visible_collection_ids=visible_collection_ids,
+        )
         policy["IsAdministrator"] = False
         policy["IsDisabled"] = member.status != "active"
         return policy
     policy = _admin_policy()
     if visible_library_ids is not None:
         policy["EnableAllFolders"] = False
-        policy["EnabledFolders"] = [library_guid(i) for i in sorted(visible_library_ids)]
+        policy["EnabledFolders"] = [library_guid(i) for i in sorted(visible_library_ids)] + [
+            collection_view_guid(i) for i in (visible_collection_ids or [])
+        ]
     return policy
 
 
@@ -132,9 +150,12 @@ async def user_dto(
     server_id: str,
     member: Member | None = None,
     visible_library_ids: set[int] | None = None,
+    visible_collection_ids: list[int] | None = None,
 ) -> dict[str, Any]:
     """用户 DTO。member=None → 超管（原单用户形态，GUID 不变）；
-    传入成员 → 以其登录名/GUID/Policy 投影（电视登录页的多头像来源）。"""
+    传入成员 → 以其登录名/GUID/Policy 投影（电视登录页的多头像来源）。
+
+    ``visible_collection_ids``：伪装成媒体库的合集，见 ``user_policy``。"""
     if member is not None:
         return {
             "Name": member.username,
@@ -145,7 +166,7 @@ async def user_dto(
             "HasConfiguredEasyPassword": False,
             "EnableAutoLogin": False,
             "Configuration": user_configuration(),
-            "Policy": user_policy(member, visible_library_ids),
+            "Policy": user_policy(member, visible_library_ids, visible_collection_ids),
         }
     account = await auth_service.get_admin_account()
     return {
@@ -157,7 +178,10 @@ async def user_dto(
         "HasConfiguredEasyPassword": False,
         "EnableAutoLogin": False,
         "Configuration": user_configuration(),
-        "Policy": user_policy(visible_library_ids=visible_library_ids),
+        "Policy": user_policy(
+            visible_library_ids=visible_library_ids,
+            visible_collection_ids=visible_collection_ids,
+        ),
     }
 
 

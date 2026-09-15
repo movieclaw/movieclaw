@@ -35,6 +35,13 @@
    `EnableVideoPlaybackTranscoding` 等权限时自己就这么置，
    `MediaInfoHelper.cs:288-303`）。全解码播放器（Infuse 等）永远走直连。
 
+   > **2026-09-13 收窄修订（原盘）**：「不转码」不变，「不起 ffmpeg」改为
+   > 「原盘多剪辑主片允许 ``-c copy`` remux 到 HLS」。原盘（BDMV）没有单个
+   > 文件可直连：单剪辑主片伪装成 m2ts 文件直出（偏离⑬），多剪辑主片按
+   > 主播放列表 concat 拼接后原样封装为 HLS（`SupportsDirectPlay=false` +
+   > `TranscodingUrl` → `/Videos/{id}/master.m3u8`），视频与音频都不重编码。
+   > 设计与取舍见 [disc-playback.md](disc-playback.md)。
+
    > **修订说明**：原文写的是产品级的"不转码"，并把网页端列为"不在支持范围、
    > 播放失败是预期行为"。[web-player.md](web-player.md) §0.3 起，转码在**网页
    > 播放器**上是允许的，"不转码"降为**本兼容层的局部策略**。
@@ -62,7 +69,7 @@
 ⑥ Latest 聚合简化为两态（见 5.5）；⑦ strm 条目的 `Container` 从 URL 猜而非
 Jellyfin 的 `"strm"` 字面量、`ETag` 省略（见 6.4）；⑧ 未知 `parentId` 返回
 404（Jellyfin 是 400，见 5.2）；⑨ `stream` 无 `static=true` 时返回 400
-（Jellyfin 会走 ffmpeg 转码）；⑩ 「其他」库（`homevideos`）**平铺不建
+（Jellyfin 会走 ffmpeg 转码；原盘多剪辑例外——走 `master.m3u8`，见偏离⑬）；⑩ 「其他」库（`homevideos`）**平铺不建
 `Folder` 层级、不收 `Photo`**：真 Jellyfin 的家庭录像库把子目录映射成
 Folder、图片映射成 Photo，我们的库模型一文件一条目、只收视频，视图下直接
 列 `Video` 叶子（docs/design/library-other-kind.md 5.1）；⑪ `Video` 条目没有
@@ -70,7 +77,12 @@ Folder、图片映射成 Photo，我们的库模型一文件一条目、只收�
 `ItemCount`（真 Jellyfin 的 ItemCounts 没有 VideoCount 字段）；⑫ `Chapters[]`
 的 `ChapterInfo` **省略 `ImagePath`**（真 Jellyfin 输出服务器本地路径，对
 客户端无意义；`ImageTag`/`ImageDateModified` 照给，见 5.3 与
-docs/design/video-chapters.md §4.7）。
+docs/design/video-chapters.md §4.7）；⑬ **原盘不报 `VideoType=BluRay`**：
+单剪辑主片伪装成普通 m2ts 文件（`Path` 指到主片 m2ts、`Container=m2ts`、
+可直连），多剪辑主片声明只支持"转码"并给 `TranscodingUrl`——真 Jellyfin 对
+原盘一律 `VideoType=BluRay` 并强制 ffmpeg 转码 URL；我们的取舍是单剪辑零
+ffmpeg 直出（Infuse/VidHub 自带 TS 解复用，还保得住 Dolby Vision 双层），
+多剪辑 copy remux（docs/design/disc-playback.md §3.3/§3.5）。
 （原偏离⑩"图片原图直出"已于 2026-08-03 撤销：库封面拼贴引入 Pillow 后，
 `maxWidth/maxHeight/width/height/fillWidth/fillHeight` 已按 fit-within
 等比缩小实现，变体经 ImageCache 落图片缓存目录，与远程图共用 LRU 上限与缓存管理面板。）
@@ -691,7 +703,13 @@ token 也能拉流；字幕 Stream 接口同样匿名。**我们默认要求 tok
   统一小写比较规避；值等于 itemId 时回落第一个版本（配合 6.2 的 Id 偏离，
   必须实现）；解析失败给 404（Jellyfin 此处未 TryParse 会 500，不复刻）；
 - `.{container}` 后缀路由与不带后缀完全同一处理（后缀只为帮助部分播放器
-  按扩展名选解封装器）。
+  按扩展名选解封装器）；
+- **原盘**（`container=bluray`，偏离⑬）：单剪辑主片把目标换成主片 m2ts，
+  `Content-Type: video/mp2t`，其余（Range、活动登记、停播回收）与普通文件
+  同一条路；多剪辑主片此接口 404——客户端应按 PlaybackInfo 的
+  `TranscodingUrl` 打 `GET /Videos/{itemId}/master.m3u8`，那里起一个
+  `-c copy` 的 HLS 会话并把 master 列表指到网页播放器的会话端点（带取流
+  token）。`/Sessions/Playing/Stopped` 会顺手停掉该设备的 HLS 会话。
 
 **本地文件**：完整实现 HTTP Range 语义——`Accept-Ranges: bytes`、
 `Range: bytes=x-y` → `206 Partial Content` + `Content-Range`、`If-Range`、

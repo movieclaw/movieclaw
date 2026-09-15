@@ -112,6 +112,33 @@ export function afterScrubFollow(now: number): ScrubFollowState {
 }
 
 /**
+ * 元素上是否已经有一次 seek 在往这个落点去、或者已经停在这个落点上——是的话
+ * 再写一次 currentTime 只有害处。
+ *
+ * **两次 seek 叠在一起会把上一次的加载掐掉**（2026-09-14，Chromium 请求日志
+ * 实证）：拖动跟随刚为落点发出一次 seek，浏览器正在取文件尾部的索引（WebM
+ * Cues / MP4 moov 之外的 sidx），紧接着再来一次 seek，那条索引请求被
+ * `ERR_ABORTED`，浏览器退回从当前缓冲末尾**顺序扫描**去找目标——跳 6 分钟
+ * 要顺序读 47MB，用户看到的就是画面停在原地、圆点不动。iOS 上 AVPlayer 的
+ * 对应行为是新 seek 取消旧 seek，旧的以「未完成」回调，元素状态被提前清掉。
+ *
+ * seek 途中 `currentTime` 读到的是**这次 seek 的目标**（规范如此，Chromium /
+ * WebKit 皆然），所以「正在往同一落点去」可以直接用它判。容差取 0.25 秒：比
+ * 「落点差半秒用户看得出来」（§11）的门槛低，又能吃掉时间刻度换算的抖动。
+ */
+export const SEEK_DUPLICATE_TOLERANCE_S = 0.25;
+
+export function seekAlreadyInFlight(input: {
+  currentTimeSeconds: number;
+  targetSeconds: number;
+  toleranceSeconds?: number;
+}): boolean {
+  const tolerance = input.toleranceSeconds ?? SEEK_DUPLICATE_TOLERANCE_S;
+  if (!Number.isFinite(input.currentTimeSeconds)) return false;
+  return Math.abs(input.currentTimeSeconds - input.targetSeconds) < tolerance;
+}
+
+/**
  * 抬手时该提交到哪儿。
  *
  * 鼠标用**指针最后所在处**（`lastPointerMs`）：指针输入是合帧的（player-feel.md
@@ -122,15 +149,119 @@ export function afterScrubFollow(now: number): ScrubFollowState {
  * 滑出进度条再抬更是如此，而指针捕获把这段位移一并收了进来。用户眼里进度条
  * 停在哪儿他就是要跳到哪儿，落点比屏幕上的值差出几十秒，看起来就是「松手
  * 后进度往回跳了一下」（2026-09-13 真机反馈）。所以触屏提交**屏幕上正显示的
- * 值**（`draggingMs`）——它是上一帧落地的读数，抬手漂移进不来。
+ * 值**——合帧上一次刷出去的读数（`flushedMs`），压在最后一帧里没刷出去的
+ * 抬手漂移进不来。
+ *
+ * **不能拿 React 渲染出来的 `dragging` 当这个「屏幕值」**（2026-09-14 反馈：
+ * 快速甩到目标立刻松手，落点回到按下的位置）。它是上一次渲染时的闭包值，而
+ * 渲染是异步排队的：手指甩得快时，合帧的 rAF 一次都还没跑、或者跑了但 React
+ * 还没来得及渲染，`pointerup` 就到了，闭包里的 `dragging` 仍是按下那一刻的值
+ * ——两小时的片子上差出几十分钟。Chromium 连发触摸事件复现：提交 45 秒、目标
+ * 24 分钟。合帧刷出去的值走 ref，与渲染节奏无关；一次都没刷出去（整个甩动压在
+ * 一帧里）就退回指针最后所在处——那时屏幕上什么都还没动，剥离漂移无从谈起，
+ * 指针最后所在处就是用户要的位置。`draggingMs` 只剩量不到指针位置时的兜底。
  *
  * 笔跟鼠标走：笔尖抬起没有指腹那种剥离位移。
  */
 export function scrubCommitTarget(input: {
   pointerType: string;
+  /** 指针最后所在处（含压在最后一帧里没刷出去的那次移动） */
   lastPointerMs: number | null;
+  /** 合帧最近一次刷到屏幕上的落点；这次拖动一次都没刷出去时为 null */
+  flushedMs: number | null;
+  /** React 渲染出来的拖动值，只做最后的兜底 */
   draggingMs: number;
 }): number {
-  if (input.pointerType === "touch") return input.draggingMs;
+  if (input.pointerType === "touch") {
+    return input.flushedMs ?? input.lastPointerMs ?? input.draggingMs;
+  }
   return input.lastPointerMs ?? input.draggingMs;
+}
+
+/**
+ * 这个指针事件是不是**正在拖的那根指针**发来的。
+ *
+ * 拖动只认按下时捕获的那一根：捕获（setPointerCapture）只把**它自己**的事件
+ * 定向到进度条，别的指针照常按命中测试派发。触屏上一根手指按着进度条拖、另一
+ * 根手指误碰到条上（横屏拿机时两只拇指都在条那一带），第二根的 pointerdown
+ * 因为不是主指针被挡下了，但它的 **pointerup 照样落到 input 上**——不认指针
+ * 身份的话这一下就被当成松手：当场提交一个用户没抬手确认的落点，再把拖动清掉，
+ * 第一根手指之后的移动全变成悬停，真松手时什么也不发——画面停在半路、圆点
+ * 也不再跟手（2026-09-14 真浏览器复现）。移动同理：第二根手指在条上划过会把
+ * 拖动值带到它那儿去。
+ *
+ * 没在拖时只认主指针（悬停气泡跟鼠标走，不跟误碰的第二根手指走）。
+ */
+export function isScrubPointer(input: {
+  /** 按下时捕获的指针；null = 没在拖 */
+  activePointerId: number | null;
+  pointerId: number;
+  isPrimary: boolean;
+}): boolean {
+  if (input.activePointerId !== null)
+    return input.pointerId === input.activePointerId;
+  return input.isPrimary;
+}
+
+/**
+ * 进度条那个 `<input type="range">` 的步长（毫秒）。
+ *
+ * 只有键盘（Home / End / PageUp / PageDown）还在用它——方向键被全局快捷键接管
+ * 了（shortcuts.ts）。拖动走的是指针事件自己算的落点，与这个步长无关。
+ */
+export const SCRUB_INPUT_STEP_MS = 1000;
+
+/**
+ * 浏览器会把写进 range 的 value **整理**成什么数（HTML 规范的「step 不匹配」
+ * 处理）：先夹进 `[0, max]`，再对齐到最近的步长倍数（两边一样近取大的），对齐
+ * 之后越过 max 就退一格。
+ *
+ * 为什么要在这里把这条规则写一遍：受控 input 的 `value` 由我们写，浏览器读回
+ * 来的却是整理过的数。写 `1489320` 读回 `1489000`——两边不一致，React 就会把
+ * 下一次原生 `input`/`change` 事件当成「用户改了值」派发 onChange（它靠比对
+ * 「上次写入的」与「现在读到的」来判断）。抬手之后原生滑块补发的那次 `change`
+ * 正是踩在这条缝里（见 acceptsNativeScrubValue）。写进去的值先按同一条规则
+ * 整理好，两边从此一致，这条缝在结构上就不存在了。
+ */
+export function scrubInputValue(
+  shownMs: number,
+  durationMs: number | null,
+  stepMs = SCRUB_INPUT_STEP_MS,
+): number {
+  const max = durationMs && durationMs > 0 ? durationMs : 0;
+  if (!Number.isFinite(shownMs) || max <= 0) return 0;
+  const clamped = Math.min(max, Math.max(0, shownMs));
+  let aligned = Math.round(clamped / stepMs) * stepMs;
+  if (aligned > max) aligned -= stepMs;
+  return Math.max(0, aligned);
+}
+
+/**
+ * 原生 range 事件（`input` / `change`）送来的值要不要当成一次键盘拖动。
+ *
+ * 进度条的拖动是指针事件自己算的（iOS 按不中 1px 的原生把手，见组件里的注释），
+ * 但**原生滑块并没有因此关掉**：桌面上鼠标按下轨道、Chromium 触屏按下轨道、
+ * iOS 上手指恰好压在那 1px 把手所在的一列，浏览器都会同时跑自己的那套拖动——
+ * 拖动中连发 `input`，抬手时再补一次 `change`。抬手那次是致命的：它在
+ * `pointerup` **之后**到，而 `pointerup` 已经提交跳转、把 `dragging` 清成了
+ * null；这一发 `change` 一进 onChange 就把 `dragging` 重新钉在落点上，从此圆点与
+ * 时间读数都不再跟画面走，直到下一次按下（2026-09-14 反馈：松手后圆点不动。
+ * 鼠标次次中招，触屏只在落点没对齐步长时中招，iOS 上还要先按中那一列——所以
+ * 表现是「偶尔」）。
+ *
+ * 两条规则：
+ * 1. 指针正按着时一律不收——落点由指针路径算，原生滑块那份是重复且更糙的；
+ * 2. 与屏幕上正显示的值整理后相同的不收——那不是用户改了值，只是浏览器把我们
+ *    写进去的数读回来了（抬手补发的 `change` 恒是这一种）。键盘真按了
+ *    Home / End / PageUp 时值一定不同，照常放行。
+ */
+export function acceptsNativeScrubValue(input: {
+  nativeValue: number;
+  shownMs: number;
+  durationMs: number | null;
+  pointerDragging: boolean;
+}): boolean {
+  if (input.pointerDragging) return false;
+  if (!Number.isFinite(input.nativeValue)) return false;
+  return input.nativeValue !== scrubInputValue(input.shownMs, input.durationMs);
 }

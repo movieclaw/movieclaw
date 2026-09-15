@@ -82,6 +82,8 @@ export function reasonLabel(reason: string): string {
       return "洗版证伪";
     case "manual":
       return "手动删除";
+    case "duplicate_cleanup":
+      return "重复清理";
     case "unknown":
       return "其他";
     default:

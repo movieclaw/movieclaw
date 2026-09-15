@@ -26,6 +26,7 @@ import {
   SCAN_PHASE_LABELS,
 } from "@/lib/api/libraries";
 import { type Collection, listCollectionItems, listCollections } from "@/lib/api/collections";
+import { withDeadline } from "@/lib/first-paint-deadline";
 import {
   type FavoriteItem,
   type FavoritesPage,
@@ -36,7 +37,14 @@ import {
 import type { Subscription } from "@/lib/api/subscriptions";
 import { publicEnv } from "@/lib/env";
 import { favoriteLevelLabel } from "@/lib/favorites";
-import { buildHomeRows, type HomeRow, rowTitle } from "@/lib/home-rows";
+import {
+  buildHomeRows,
+  FAVORITES_SORT_PRESETS,
+  type HomeRow,
+  orderParamFor,
+  rowTitle,
+  SORT_PRESETS,
+} from "@/lib/home-rows";
 import { formatBytes } from "@/lib/format";
 import { cardVariantFor, imageUrl } from "@/lib/image-proxy";
 import { libraryInventoryAction } from "@/lib/library-inventory-summary";
@@ -110,6 +118,9 @@ export function libraryStatsSummary(libraries: MediaLibrary[] | null): string {
  * 数据源是 library_file 台账的**真实库存**（L3 起）：入库管线与存量扫描
  * 落账的文件聚合，不再用订阅占位。
  */
+//: 首帧等合集列表的预算（毫秒）。见 reload 里的说明
+const COLLECTIONS_FIRST_PAINT_BUDGET_MS = 1500;
+
 export function LibraryView({ hero }: { hero?: ReactNode }) {
   const { canManageLibraries } = usePermissions();
   // 首页的行清单存在界面偏好里（成员各存各的），应用启动时已随全站偏好拉过一次
@@ -134,17 +145,37 @@ export function LibraryView({ hero }: { hero?: ReactNode }) {
   // 上一轮已拉过条目时的快照（库状态 + 要取哪些行 + 合集成员数）：都没变说明
   // 库存也不会变，不必再逐行全量拉一遍——否则空闲时每 30 秒也要打出 1 + N 个请求
   const lastSnapshot = useRef<string | null>(null);
+  // 首帧只等这么久合集列表：它是首页最重的一条读（后台任务压着数据库时曾到
+  // 十几秒），而库列表几十毫秒就回来。预算内回来照常；超时先用上一份把页面画
+  // 出来，真正的结果晚到再整页补一轮。首帧之后不限预算——页面已经在了，多等
+  // 一会儿合集不影响任何东西
+  const painted = useRef(false);
+  const lastCollections = useRef<Collection[]>([]);
+  const reloadRef = useRef<() => void>(() => {});
   const reload = useCallback(() => {
     const seq = ++reloadSeq.current;
     Promise.all([
       listLibraries(),
-      // 合集拿不到就当没有——不拖垮首页，合集行下一轮轮询自动回来
-      listCollections().catch(() => null),
+      // 合集拿不到就当上一份还在——不拖垮首页，合集行下一轮轮询自动回来
+      withDeadline(
+        listCollections(),
+        painted.current ? null : COLLECTIONS_FIRST_PAINT_BUDGET_MS,
+        null,
+      ),
     ])
-      .then(async ([libs, cols]) => {
+      .then(async ([libs, colsOutcome]) => {
         if (seq !== reloadSeq.current) return;
+        painted.current = true;
         setFailed(false);
-        const collectionsNow = cols ?? [];
+        const collectionsNow = colsOutcome.value ?? lastCollections.current;
+        lastCollections.current = collectionsNow;
+        if (colsOutcome.late) {
+          // 晚到的那份：没有更新一轮的 reload 抢先时整页再拉一次，
+          // 合集行及其条目随之出现
+          void colsOutcome.late.then((late) => {
+            if (late && seq === reloadSeq.current) reloadRef.current();
+          });
+        }
         const collectionsSnapshot = JSON.stringify(collectionsNow);
         setCollections((prev) =>
           JSON.stringify(prev) === collectionsSnapshot ? prev : collectionsNow,
@@ -170,6 +201,11 @@ export function LibraryView({ hero }: { hero?: ReactNode }) {
                 {
                   sort:
                     favoritesRow.sort === "unwatched_first" ? "favorited_at" : favoritesRow.sort,
+                  // 反转了自然方向才带 order，与海报墙同一条规矩
+                  order: orderParamFor(
+                    FAVORITES_SORT_PRESETS[favoritesRow.sort].direction,
+                    favoritesRow.reversed,
+                  ),
                 },
               ).catch(() => null)
             : Promise.resolve(null),
@@ -200,6 +236,7 @@ export function LibraryView({ hero }: { hero?: ReactNode }) {
   }, [homePrefs]);
 
   useEffect(() => {
+    reloadRef.current = reload;
     reload();
   }, [reload]);
 
@@ -504,16 +541,18 @@ export function LibraryView({ hero }: { hero?: ReactNode }) {
   );
 }
 
-/** 一行取数的缓存键：同一个库同一种排序（同一个只看没看过的开关）只请求一次。 */
+/** 一行取数的缓存键：同一个库同一种排序同一个方向（同一个只看没看过的开关）只请求一次。 */
 function rowFetchKey(row: HomeRow): string {
-  if (row.kind === "library") return `lib:${row.library.id}:${row.sort}:${row.unwatched}`;
-  if (row.kind === "collection") return `col:${row.collection.id}:${row.sort}`;
+  if (row.kind === "library")
+    return `lib:${row.library.id}:${row.sort}:${row.reversed}:${row.unwatched}`;
+  if (row.kind === "collection") return `col:${row.collection.id}:${row.sort}:${row.reversed}`;
   return row.id;
 }
 
-/** 库卡片封面用的那批条目：最近入账的前几部，与默认的「最近添加」行共用一份。 */
+/** 库卡片封面用的那批条目：最近入账的前几部，与默认的「最近添加」行共用一份。
+ *  键的形状必须与 rowFetchKey 对库行算出来的一致，否则默认行会多打一次同样的请求。 */
 function coverFetchKey(libraryId: number): string {
-  return `lib:${libraryId}:added_at:false`;
+  return `lib:${libraryId}:added_at:false:false`;
 }
 
 /**
@@ -527,26 +566,27 @@ function rowFetches(
   const fetches = new Map<string, () => Promise<LibraryItem[]>>();
   for (const row of rows) {
     if (row.kind === "library") {
-      const { library, sort, unwatched } = row;
+      const { library, sort, reversed, unwatched } = row;
       // 「最近观看」行只要播过的：度量档把没播过的沉底而不是排除，取 20 条时
       // 看过的排完就轮到没播过的，首页这一行不能这样（w=seen）
       const watch = sort === "last_played" ? "seen" : unwatched ? "unwatched" : undefined;
       fetches.set(rowFetchKey(row), () =>
         listLibraryItems(library.id, {
           sort,
+          // 反转了自然方向才带 order；不带时服务端按自然方向排，与加方向之前逐字相同
+          order: orderParamFor(SORT_PRESETS[sort].direction, reversed),
           limit: RECENT_COUNT,
           filter: watch ? { watch } : undefined,
         }),
       );
     } else if (row.kind === "collection") {
-      const { collection, sort } = row;
-      // 合集接口没有 release_date_asc 这一档：它由「按上映时间 + 正序」覆盖
-      const params =
-        sort === "release_date_asc"
-          ? { sort: "release_date" as const, order: "asc" as const }
-          : { sort };
+      const { collection, sort, reversed } = row;
       fetches.set(rowFetchKey(row), () =>
-        listCollectionItems(collection.id, { limit: RECENT_COUNT, ...params }),
+        listCollectionItems(collection.id, {
+          sort,
+          order: orderParamFor(SORT_PRESETS[sort].direction, reversed),
+          limit: RECENT_COUNT,
+        }),
       );
     } else if (row.kind === "libraries") {
       for (const library of libraries) {

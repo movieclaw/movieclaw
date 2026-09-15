@@ -150,16 +150,16 @@ function CollectionCover({ collection }: { collection: Collection }) {
         // content-visibility 跳过态，Chromium 不给里面的 loading="lazy" 做
         // 相交判定，图会一直不发请求（见 poster-image.tsx 的模块注释）
         //
-        // 几何：每张都比框窄一截（FRONT_WIDTH），后面的依次右移、上下内缩、
-        // 压暗，于是右边露出两片窄边——「这是一叠」的信号就靠它，不靠改宽高比。
-        // 最前那张必须**窄于框**，否则它会把身后两张整片盖住，看着与单张无异。
+        // 几何：后面的依次右移、上下内缩、压暗，于是右边露出几片窄边——
+        // 「这是一叠」的信号就靠它，不靠改宽高比。最前那张窄于框，否则它会
+        // 把身后的整片盖住，看着与单张无异。
         shown.map((cover, index) => (
           <div
             key={cover.url}
             className="absolute overflow-hidden rounded-xl"
             style={{
               left: `${index * STACK_STEP}%`,
-              width: `${FRONT_WIDTH}%`,
+              width: `${frontWidth(shown.length)}%`,
               top: `${index * STACK_INSET}%`,
               bottom: `${index * STACK_INSET}%`,
               zIndex: shown.length - index,
@@ -178,9 +178,19 @@ function CollectionCover({ collection }: { collection: Collection }) {
   );
 }
 
-/** 最前那张占框宽的比例：留出右边那两片窄边。 */
-const FRONT_WIDTH = 86;
 /** 每往后一张右移多少（框宽的百分比）。 */
 const STACK_STEP = 7;
 /** 每往后一张上下各内缩多少（框高的百分比）：越靠后越"矮"，才有纵深。 */
 const STACK_INSET = 2.5;
+
+/**
+ * 最前那张占框宽的比例：右边留给后面每张各露一条窄边，整摞正好铺满框。
+ *
+ * **必须按实际张数算**：写死成三张的 86% 时，只有一部片的系列会被压成
+ * 86%×100% 的窄条（比例 0.57，窄于框的 0.67），海报被 object-cover 左右裁掉
+ * 一截、右边还空出 14%——又窄又偏。张数少就把宽度还回去，单张时铺满整框，
+ * 与普通海报卡一模一样。
+ */
+function frontWidth(count: number) {
+  return 100 - STACK_STEP * (count - 1);
+}

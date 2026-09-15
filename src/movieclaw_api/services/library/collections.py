@@ -13,6 +13,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,11 +29,14 @@ from movieclaw_api.services.library.items import (
     sort_item_ids,
 )
 from movieclaw_db.models import Collection, CollectionItem, LibraryFile
+from movieclaw_db.repositories.library_repo import register_stats_refresh_hook
 
 #: 内置合集标识：「我的收藏」。产品里它本来就是一个合集，登记之后自动出现在
 #: 合集列表与 Jellyfin BoxSet 里——这个抽象要吃掉既有特例，而不是摆在它旁边。
 #: （`/library/favorites` 那个页面本期不动，见设计文档 1.2 的分寸。）
 BUILTIN_FAVORITES = "favorites"
+
+logger = logging.getLogger("movieclaw_api.library_collections")
 
 #: 内置合集的规则：与用户创建的合集共用同一套结构，只是不可编辑。
 _BUILTIN_RULES: dict[str, list[dict]] = {
@@ -332,6 +337,45 @@ async def visible_collections(
     return out
 
 
+async def pinned_collection_ids(session: AsyncSession, member_id: int) -> list[int]:
+    """该观看者钉在媒体库首页上的合集 id，按首页上的先后。
+
+    首页的行清单是**界面偏好**，按人分流存（docs/design/member-management.md P2）：
+    超管在 ``ui.preferences`` 全局域，成员在自己的 ``member.ui_prefs`` 列。这里
+    只读、不合并——前端存回来的就是合并后的整份清单（``lib/home-rows.ts``），
+    服务端再跑一遍合并没有意义。
+
+    之所以要在领域层暴露它：Jellyfin 兼容层要把钉了首页的合集伪装成虚拟媒体库
+    （docs/design/library-collections.md 4.11），「哪些合集钉了首页」这个问题
+    网页端与播放器必须是同一个答案，不能两处各读一遍偏好各判一次。
+
+    隐藏的行（``hidden``）不算——它在首页上就是不显示，虚拟库同理。
+    """
+    from pydantic import ValidationError
+
+    from movieclaw_api.settings.schemas import UiPreferencesSetting, get_ui_preferences
+    from movieclaw_db.models import Member
+
+    try:
+        if member_id:
+            member = await session.get(Member, member_id)
+            raw = member.ui_prefs if member is not None else None
+            prefs = UiPreferencesSetting.model_validate(raw) if raw else UiPreferencesSetting()
+        else:
+            prefs = await get_ui_preferences()
+    except ValidationError:
+        # 应用内更新回退后，新版本存下的偏好可能过不了旧版本的校验（成员那列与
+        # 超管的全局域都会抛）。这里的调用方是 /UserViews 这类电视端高频接口，
+        # 抛出去等于整台电视失联；按"没钉任何合集"处理，只少几个虚拟库
+        logger.warning("成员 %s 的界面偏好读不回来，播放器里暂不下发虚拟媒体库", member_id)
+        return []
+    out: list[int] = []
+    for row in prefs.home.rows:
+        if row.collection_id is not None and not row.hidden and row.collection_id not in out:
+            out.append(row.collection_id)
+    return out
+
+
 async def ensure_builtin_collections(session: AsyncSession, library_id: int) -> None:
     """为一个库补齐内置合集（幂等）。
 
@@ -413,3 +457,85 @@ async def collections_containing(
         if hit:
             found.append(row)
     return found
+
+
+# ---------------------------------------------------------------------------
+# 成员缓存：内容型合集的成员数与封面（docs/design/library-series-collections.md 5.5.2）
+# ---------------------------------------------------------------------------
+
+#: 卡片上铺几张封面。三张够看出"这里面装的是哪一类片"，再多就成了缩略图墙。
+COVER_COUNT = 3
+
+
+def cover_head(collection: Collection, ids: list[int]) -> list[int]:
+    """卡片上要铺的那几张封面对应的条目——指定了封面就把它挪到最前。"""
+    if not ids:
+        return []
+    head = list(ids)
+    if collection.cover_item_id in head:
+        head.remove(collection.cover_item_id)
+        head.insert(0, collection.cover_item_id)
+    return head[:COVER_COUNT]
+
+
+def is_content_collection(collection: Collection) -> bool:
+    """成员只取决于「库里有什么」的合集——只有它们的成员数与封面可以缓存。
+
+    规则驱动、挂在某个库上，且规则里没有观看状态（``watch``：未看 / 看过 /
+    收藏，那是按看的人算的）。「我的收藏」的规则正是 ``watch=favorite``，所以它
+    永远不缓存；系列 / 类型 / 年代 / 画质这类都是内容型。名单驱动的不缓存：它的
+    成员判定本来就只是一条按 position 取 id 的查询，不值得多一份会脏的副本。
+    """
+    rules = effective_rules(collection)
+    if not rules or collection.library_id is None:
+        return False
+    return all(rule.get("field") != "watch" for rule in rules if isinstance(rule, dict))
+
+
+def cached_membership(collection: Collection) -> tuple[int, list[int]] | None:
+    """行上的成员缓存 ``(成员数, 封面头)``；不是内容型或还没算过返回 None。"""
+    if not is_content_collection(collection):
+        return None
+    if collection.member_count_cache is None or collection.cover_head_cache is None:
+        return None
+    return int(collection.member_count_cache), [int(i) for i in collection.cover_head_cache]
+
+
+async def refresh_collection_cache(session: AsyncSession, collection: Collection) -> None:
+    """重算一个合集的成员缓存（不 commit）；不是内容型的把缓存清空。
+
+    不限观看者、不限可见库、不限分级：缓存存的是"库里到底有多少"。分级受限的
+    观看者本来就不读它（消费面按 ``ContentLimit.unrestricted`` 分流）。
+    """
+    if not is_content_collection(collection):
+        collection.member_count_cache = None
+        collection.cover_head_cache = None
+        return
+    ids = await resolve_members(session, collection)
+    collection.member_count_cache = len(ids)
+    collection.cover_head_cache = cover_head(collection, ids)
+
+
+async def refresh_membership_cache(session: AsyncSession, library_ids: list[int]) -> None:
+    """``refresh_stats`` 的钩子：这些库里全部内容型合集的缓存重算一遍。
+
+    一个合集一次成员判定，与列表页现算是同一条查询——只是从"每次打开页面"
+    挪到了"库内容变了才算"。隐藏的也刷：取消隐藏时不该回来一个陈旧的数字。
+    """
+    if not library_ids:
+        return
+    rows = (
+        (
+            await session.execute(
+                select(Collection).where(Collection.library_id.in_(list(library_ids)))  # type: ignore[union-attr]
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for row in rows:
+        await refresh_collection_cache(session, row)
+
+
+# 导入即注册：任何会调 refresh_stats 的路径（扫描、入库、路由）都经由本包导入
+register_stats_refresh_hook(refresh_membership_cache)

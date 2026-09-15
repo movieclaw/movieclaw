@@ -1,0 +1,354 @@
+<title>重复文件清理链路</title>
+<style>
+  :root{
+    --bg:#0a0b10;--inset:rgba(255,255,255,.05);
+    --text:#f3f5f9;--muted:rgba(243,245,249,.62);--faint:rgba(243,245,249,.36);
+    --line:rgba(255,255,255,.08);--line-strong:rgba(255,255,255,.15);
+    --accent:#cdd6e6;--ok:#4ade80;--info:#7fb0ff;--warn:#f5c451;--danger:#ff6b6b;--hdr:#e8c98a;
+    --mono:ui-monospace,Menlo,"SF Mono",monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:#000;color:var(--text);font:14px/1.5 -apple-system,"PingFang SC","Noto Sans SC",sans-serif;-webkit-font-smoothing:antialiased}
+  button{font:inherit;color:inherit}
+  button:focus-visible{outline:2px solid var(--info);outline-offset:2px}
+
+  .guide{position:sticky;top:0;z-index:20;background:rgba(10,11,16,.94);backdrop-filter:blur(12px);border-bottom:1px solid var(--line);padding:10px 16px}
+  .guide .inner{max-width:1180px;margin:0 auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .guide .k{font-size:11px;letter-spacing:.12em;color:var(--faint);margin-right:6px}
+  .step{border:1px solid var(--line-strong);background:transparent;color:var(--muted);border-radius:999px;padding:5px 12px;font-size:12.5px;cursor:pointer;display:inline-flex;gap:6px;align-items:center}
+  .step i{font-style:normal;font-family:var(--mono);font-size:11px;color:var(--faint)}
+  .step.on{background:var(--accent);color:#0a0b10;border-color:var(--accent)}
+  .step.on i{color:#0a0b10}
+  .hint{max-width:1180px;margin:12px auto 0;padding:8px 12px;border-left:2px solid var(--warn);font-size:12.5px;color:var(--muted);line-height:1.65}
+  .hint b{color:var(--text);font-weight:600}
+
+  .stage{padding:14px 16px 70px}
+  .frame{position:relative;max-width:1180px;margin:0 auto;display:grid;grid-template-columns:184px 1fr;background:var(--bg);border:1px solid var(--line-strong);border-radius:18px;overflow:hidden;min-height:680px}
+  @media (max-width:860px){.frame{grid-template-columns:1fr}.side{display:none}}
+  .side{border-right:1px solid var(--line);padding:16px 10px;background:linear-gradient(180deg,rgba(255,255,255,.04),rgba(255,255,255,.01))}
+  .brand{font-weight:700;letter-spacing:.02em;padding:4px 10px 16px}
+  .side a{display:block;padding:7px 10px;border-radius:9px;color:var(--muted);font-size:13px;cursor:pointer}
+  .side a.on{background:rgba(255,255,255,.1);color:var(--text)}
+  .main{padding:24px 24px 30px;min-width:0;position:relative}
+  h1{font-size:24px;letter-spacing:-.02em;margin:0 0 4px;text-wrap:balance}
+  .sub{color:var(--muted);font-size:13px;margin:0}
+  .head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px}
+  .back{display:inline-flex;gap:6px;color:var(--muted);font-size:12px;margin-bottom:12px;cursor:pointer}
+  .tabs{display:flex;gap:20px;border-bottom:1px solid var(--line);margin:18px 0 14px}
+  .tabs button{background:none;border:0;padding:8px 0;color:var(--faint);font-size:14px;cursor:pointer;border-bottom:2px solid transparent}
+  .tabs button.on{color:var(--text);border-bottom-color:var(--text)}
+  .tabs em{font-style:normal;color:var(--faint);font-size:12px;margin-left:4px}
+  .tabs button.on em{color:var(--muted)}
+  .btn{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line-strong);background:rgba(255,255,255,.04);color:var(--text);border-radius:999px;padding:6px 13px;font-size:13px;white-space:nowrap;cursor:pointer}
+  .btn.primary{background:var(--accent);color:#0a0b10;border-color:var(--accent);font-weight:600}
+  .btn.sm{font-size:12px;padding:3px 10px}
+  .btn.xs{font-size:11.5px;padding:1px 9px;border-color:var(--line)}
+  .btn.danger{color:var(--danger);border-color:rgba(255,107,107,.35)}
+  .btn.danger.solid{background:var(--danger);color:#1a0808;border-color:var(--danger);font-weight:600}
+  .btn.ghost{border-color:transparent;background:transparent;color:var(--muted)}
+  .btn:disabled{opacity:.35;cursor:default}
+  .tag{display:inline-block;font-size:11px;line-height:1.5;padding:0 7px;border-radius:999px;border:1px solid var(--line-strong);color:var(--muted);vertical-align:middle;white-space:nowrap}
+  .tag.keep{color:var(--ok);border-color:rgba(74,222,128,.4)}
+  .tag.kept{color:var(--hdr);border-color:rgba(232,201,138,.45)}
+  .tag.warn{color:var(--warn);border-color:rgba(245,196,81,.4)}
+  .chips{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:14px}
+  .chip{border:1px solid var(--line-strong);background:transparent;border-radius:999px;padding:3px 10px;font-size:12px;color:var(--muted);cursor:pointer}
+  .chip.on{background:rgba(255,255,255,.12);color:var(--text)}
+
+  /* 两堆 */
+  .bucket{margin-bottom:22px}
+  .bucket .bh{display:flex;justify-content:space-between;align-items:baseline;gap:12px;padding:0 2px 8px;flex-wrap:wrap}
+  .bucket .bh h2{font-size:15px;margin:0;display:flex;gap:10px;align-items:baseline}
+  .bucket .bh h2 small{font-weight:400;color:var(--faint);font-size:12.5px;font-variant-numeric:tabular-nums}
+  .bucket .bh p{margin:0;color:var(--faint);font-size:12px;flex-basis:100%}
+  .unit{border:1px solid var(--line);border-radius:14px;background:rgba(255,255,255,.02);margin-bottom:10px;overflow:hidden}
+  .unit .uh{display:flex;align-items:center;gap:10px;padding:9px 14px;border-bottom:1px solid var(--line);background:rgba(255,255,255,.02)}
+  .poster{width:26px;height:38px;border-radius:4px;flex:none;border:1px solid var(--line);background:linear-gradient(160deg,#2a3142,#161a24)}
+  .unit .uh .t{font-weight:600}
+  .unit .uh .t small{color:var(--faint);font-weight:400;margin-left:4px}
+  .unit .uh .lib{color:var(--faint);font-size:12px}
+  .unit .uh .sp{flex:1}
+  .frow{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr) minmax(0,1fr) auto;gap:14px;align-items:center;padding:9px 14px;border-bottom:1px solid var(--line);font-size:12.5px}
+  .frow:last-of-type{border-bottom:0}
+  .frow.kept{opacity:.55}
+  .fname{font-family:var(--mono);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .frow .q{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--muted)}
+  .frow .q b{color:var(--text)}
+  .frow .q em{font-style:normal;color:var(--warn);font-weight:600}
+  .frow .o{color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .frow .o small{display:block;color:var(--faint);font-size:11.5px}
+  .frow .a{display:flex;gap:6px;align-items:center}
+  .vrow{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr) minmax(0,1.2fr) auto;gap:14px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line);font-size:12.5px}
+  .vrow .q b{color:var(--text)} .vrow .q em{font-style:normal;color:var(--warn);font-weight:600}
+  .vrow .n{color:var(--muted)} .vrow .n b{color:var(--text)} .vrow .o{color:var(--muted)} .vrow .o small{display:block;color:var(--faint);font-size:11.5px}
+  .eph{padding:5px 14px 4px;font-size:11.5px;color:var(--faint);letter-spacing:.04em;background:rgba(255,255,255,.012);border-bottom:1px solid var(--line)}
+  .eplist{max-height:420px;overflow:auto}
+  @media (max-width:860px){.vrow{grid-template-columns:1fr;gap:4px}}
+  .unit .uf{display:flex;justify-content:flex-end;gap:8px;padding:6px 14px 8px;border-top:1px solid var(--line);background:rgba(0,0,0,.15)}
+  .empty{padding:28px 16px;text-align:center;color:var(--faint);font-size:13px;border:1px dashed var(--line);border-radius:14px}
+  .foot{margin-top:6px;color:var(--faint);font-size:12px}
+  @media (max-width:860px){.frow{grid-template-columns:1fr;gap:4px}}
+
+  /* 回收站表 */
+  .tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:14px;background:rgba(255,255,255,.02)}
+  table{width:100%;border-collapse:collapse;min-width:820px;table-layout:fixed}
+  th{text-align:left;font-size:11px;letter-spacing:.05em;color:var(--faint);font-weight:600;padding:10px 12px;border-bottom:1px solid var(--line)}
+  th.r{text-align:right}
+  td{padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:middle;font-size:13px;overflow:hidden}
+  td .why{font-size:12px;color:var(--muted);white-space:normal}
+  td .why small{display:block;color:var(--faint)}
+  td.ops{text-align:right}
+  .summary{display:flex;justify-content:space-between;align-items:center;gap:12px;margin:0 0 10px;font-size:13px;color:var(--muted)}
+  .summary b{color:var(--text)}
+
+  /* 弹窗 / toast */
+  .modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.6);display:grid;place-items:center;z-index:5;padding:16px}
+  .modal{width:min(560px,100%);background:#14171f;border:1px solid var(--line-strong);border-radius:16px;padding:20px 22px;box-shadow:0 30px 80px rgba(0,0,0,.6)}
+  .modal h2{font-size:17px;margin:0 0 8px}
+  .modal p{color:var(--muted);font-size:13px;margin:0 0 8px;line-height:1.6}
+  .modal ul{margin:6px 0 10px;padding-left:18px;color:var(--muted);font-size:12.5px;max-height:220px;overflow:auto}
+  .modal ul b{color:var(--text);font-weight:500}
+  .modal .row{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}
+  .toast{position:fixed;left:50%;top:120px;transform:translateX(-50%);background:#1a1d27;border:1px solid var(--line-strong);border-radius:12px;padding:9px 14px;font-size:13px;box-shadow:0 12px 40px rgba(0,0,0,.5);z-index:6;white-space:nowrap}
+  .toast b{color:var(--ok)}
+
+  /* 条目页 */
+  .hero{display:flex;gap:18px;margin-bottom:18px}
+  .hero .poster{width:96px;height:140px;border-radius:10px}
+  .meta{color:var(--faint);font-size:12.5px;margin-top:6px}
+  .section{border:1px solid var(--line);border-radius:14px;background:rgba(255,255,255,.02);margin-top:14px}
+  .section .hd{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line);font-size:13px;font-weight:600}
+  .section .hd .r{display:flex;gap:8px;align-items:center;font-weight:400}
+  .drow{border-bottom:1px solid var(--line)}
+  .drow:last-child{border-bottom:0}
+  .drow .line{display:flex;align-items:center;gap:10px;padding:10px 14px;cursor:pointer}
+  .drow .line .fname{flex:1;display:flex;gap:8px;align-items:center}
+  .chev{display:inline-block;width:12px;color:var(--faint);font-size:11px;text-align:center}
+  .drow dl{display:grid;grid-template-columns:72px 1fr;gap:6px 18px;margin:0;padding:10px 14px 14px 40px;font-size:12.5px;background:rgba(0,0,0,.18);border-top:1px solid var(--line)}
+  .drow dt{color:var(--faint)}.drow dd{margin:0;color:var(--muted)}
+  .drow dd.origin{color:var(--text)}
+  .drow dd .sub2{display:block;font-family:var(--mono);font-size:11.5px;color:var(--faint);word-break:break-all}
+</style>
+
+<div class="guide">
+  <div class="inner">
+    <span class="k">链路</span>
+    <button class="step on" data-step="1"><i>1</i>发现</button>
+    <button class="step" data-step="2"><i>2</i>一模一样：一键清</button>
+    <button class="step" data-step="3"><i>3</i>不同版本：留哪个 / 都留着</button>
+    <button class="step" data-step="4"><i>4</i>剧集：整季一次决定</button>
+    <button class="step" data-step="5"><i>5</i>反悔</button>
+    <button class="step" data-step="6"><i>B</i>另一个入口：条目页</button>
+  </div>
+  <div class="hint" id="hint"></div>
+</div>
+
+<div class="stage"><div class="frame" id="frame">
+  <aside class="side"><div class="brand">movieclaw</div><a>首页</a><a class="on" id="nav-manage">媒体库</a><a>订阅</a><a>下载</a><a>搜索</a><a>设置</a></aside>
+  <div class="main" id="main"></div>
+</div></div>
+
+<script>
+(function(){
+'use strict';
+// ---------- 示例数据（非真实库存） ----------
+// 电影：{files}；剧集：{season, episodes:[{ep, files}]}。suggested:true 的是「建议保留」
+function series(id,lib,title,year,season,n,mk,opts={}){
+  const episodes=[];for(let e=1;e<=n;e++){const files=mk(e).filter(Boolean);episodes.push({ep:e,files});}
+  return Object.assign({id,lib,title,year,season,episodes},opts);
+}
+const seed=()=>([
+ series('got','剧集','权力的游戏',2011,'S01',24,e=>[
+   {id:1000+e,name:`Game.of.Thrones.S01E${String(e).padStart(2,'0')}.1080p.BluRay.x264-DEMAND.mkv`,q:['1080p','Blu-ray','DEMAND','2.9 GB'],origin:'监听目录自动识别入库',od:'/downloads/complete · 复制入库',suggested:true,why:'命名规范、来源可追溯'},
+   {id:2000+e,name:`Game.of.Thrones.S01E${String(e).padStart(2,'0')}.1080p.BluRay.x264-DEMAND (1).mkv`,q:['1080p','Blu-ray','DEMAND','2.9 GB'],origin:'存量扫描发现',od:'发现于 2026-07-12（定时扫描）',same:'尺寸与时长相同'},
+ ],{bucket:'identical'}),
+ {id:'ck',lib:'电影',title:'长安三万里',year:2023,bucket:'identical',files:[
+   {id:15,name:'Chang.An.2023.2160p.WEB-DL.H265.DDP5.1-CMCT.mkv',q:['2160p','WEB-DL','11.2 GB'],origin:'订阅《长安三万里》自动投递',od:'CMCT · qBittorrent · 硬链接入库',suggested:true,why:'来源可追溯'},
+   {id:16,name:'长安三万里.2023.4K.mkv',q:['2160p','WEB-DL','11.2 GB'],origin:'存量扫描发现',od:'发现于 2026-05-30（手动扫描）',same:'尺寸与时长相同'}]},
+ series('fh','剧集','繁花',2023,'S01',30,e=>[
+   {id:3000+e,name:`Blossoms.Shanghai.2023.S01E${String(e).padStart(2,'0')}.2160p.WEB-DL.H265.DDP5.1-CHDWEB.mkv`,q:['2160p','WEB-DL','6.2 GB'],origin:'订阅《繁花》自动投递',od:'HDSky · qBittorrent · 硬链接入库',suggested:true,why:'档位最高'},
+   e<=28?{id:4000+e,name:`繁花.E${String(e).padStart(2,'0')}.1080p.mkv`,q:['1080p','WEB-DL','2.2 GB'],origin:'存量扫描发现',od:'发现于 2026-02-14（手动扫描）'}:null,
+ ],{bucket:'versions'}),
+ {id:'jm',lib:'电影',title:'九门',year:2025,bucket:'versions',files:[
+   {id:1,name:'Nine.Gates.2025.2160p.WEB-DL.H265.DDP5.1-CHDWEB.mkv',q:['2160p','WEB-DL','8.1 GB'],origin:'订阅《九门》自动投递',od:'HDSky · qBittorrent · 硬链接入库',suggested:true,why:'档位最高'},
+   {id:2,name:'Nine.Gates.2025.1080p.WEB-DL.H264.AAC-CHDWEB.mkv',q:['1080p','WEB-DL','4.2 GB'],origin:'订阅《九门》自动投递（洗版前的旧版本）',od:'HDSky · qBittorrent · 硬链接入库'},
+   {id:3,name:'九门 (2025) - 1080p.mkv',q:['1080p','WEB-DL','4.0 GB'],origin:'存量扫描发现',od:'发现于 2026-06-03（手动扫描）'}]},
+ {id:'dune',lib:'4K 电影',title:'沙丘 2',year:2024,bucket:'versions',files:[
+   {id:21,name:'Dune.Part.Two.2024.2160p.WEB-DL.DV.HDR.H265-FLUX.mkv',q:['2160p','WEB-DL','DV','22.3 GB'],origin:'手动下载',od:'HDSky · qBittorrent · 硬链接入库',suggested:true,why:'档位无法比较（规则组未比 HDR），按实测码率建议'},
+   {id:22,name:'Dune.Part.Two.2024.2160p.WEB-DL.SDR.H265-FLUX.mkv',q:['2160p','WEB-DL','SDR','18.9 GB'],origin:'手动下载',od:'HDSky · qBittorrent · 硬链接入库'}]},
+ series('ssy','剧集','十三邀',2016,'S07',1,e=>[
+   {id:41,name:'十三邀 S07E01 - 2160p H.265 AAC ADWeb.mp4',q:['2160p','片源未知','1.9 GB'],origin:'存量扫描发现',od:'发现于 2026-03-15（手动扫描）'},
+   {id:42,name:'十三邀.S07E01.2160p.WEB-DL.mp4',q:['2160p','WEB-DL','2.1 GB'],origin:'监听目录自动识别入库',od:'/downloads/complete · 硬链接入库',suggested:true,why:'档位无法比较（一侧片源未知），按实测码率建议'},
+ ],{bucket:'versions',epStart:1}),
+]);
+const S={units:seed(),lib:'全部',screen:'manage',tab:'dup',recycle:[],modal:null,toast:null,detailOpen:new Set([1]),upgrading:2,keepOld:1,item:null,expanded:new Set()};
+
+// ---------- 工具 ----------
+const gb=s=>parseFloat(s)||0;
+const sizeOf=f=>f.q[f.q.length-1];
+const qlabel=f=>f.q.slice(0,-1).join(' · ');
+const vkey=f=>qlabel(f)+'|'+f.origin;
+const isSeries=u=>!!u.episodes;
+const liveEps=u=>u.episodes.filter(ep=>ep.files.filter(f=>!f.kept).length>1);  // 仍有重复的集
+const unitLive=u=>isSeries(u)?liveEps(u).length>0:u.files.filter(f=>!f.kept).length>1;
+const visible=()=>S.units.filter(u=>!u.done&&unitLive(u)&&(S.lib==='全部'||u.lib===S.lib)&&(!S.item||u.id===S.item));
+const bucket=b=>visible().filter(u=>u.bucket===b);
+function extras(u){ // 会被清掉的文件（非建议保留）
+  const out=[];const push=(files)=>{for(const f of files)if(!f.suggested&&!f.kept)out.push(f);};
+  if(isSeries(u))for(const ep of liveEps(u))push(ep.files);else push(u.files);return out;}
+const bstats=b=>{const us=bucket(b);let files=0,bytes=0;for(const u of us){const ex=extras(u);files+=ex.length;for(const f of ex)bytes+=gb(sizeOf(f));}return {units:us.length,files,bytes};};
+const total=()=>bstats('identical').files+bstats('versions').files;
+// 季的版本行：按签名聚合
+function versions(u){
+  const map=new Map();
+  for(const ep of liveEps(u))for(const f of ep.files){if(f.kept)continue;const k=vkey(f);let v=map.get(k);if(!v){v={key:k,sample:f,eps:[],bytes:0,sug:0};map.set(k,v);}v.eps.push(ep.ep);v.bytes+=gb(sizeOf(f));if(f.suggested)v.sug++;}
+  const list=[...map.values()];const n=liveEps(u).length;
+  let best=null;for(const v of list)if(!best||v.sug>best.sug)best=v;
+  for(const v of list){v.suggested=v===best;v.missing=[];for(const ep of liveEps(u))if(!v.eps.includes(ep.ep))v.missing.push(ep.ep);}
+  return list;
+}
+const uniform=u=>{const vs=versions(u);const n=liveEps(u).length;return n>=2&&vs.length>=2&&vs.every(v=>v.eps.length===n||v.eps.length>=n-2);};
+
+const HINTS={
+ 1:'<b>什么时候来？</b>没人推你。管理页标签栏常驻「重复文件 N」，想清一次就来一次。页面只有两段：<b>一模一样</b>（机器确定没区别）和<b>不同版本</b>（有区别，只有你知道值不值得留）。每个文件都写着规格和它从哪来。',
+ 2:'<b>一模一样这一段不用想。</b>同一个 inode，或尺寸与时长都相同的复制品。右上角「全部清理」一键搞定，每个单元留系统建议的那个。想逐个来也行：点某个文件的「留这个」。',
+ 3:'<b>不同版本这一段，每个单元回答一次。</b>看规格（和建议保留者不同的维度会加黄）、看来源，然后要么点某个文件的「留这个」，要么点「都留着」。「都留着」的单元从此不再出现，直到有新文件进来。收藏家的全部操作就是这一个按钮。',
+ 4:'<b>剧集不按集列，按季折叠。</b>一季 24 集有重复，几乎总是同一件事：另一个组的季包、复制过一遍的目录。所以一季一块，块里<b>一个版本一行</b>（覆盖几集、多大、从哪来），动作是「整季留这个」。繁花全季 30 集，E29、E30 只有一份，所以块上写「28 集有重复」；若选的版本没覆盖某些重复集，确认弹窗会说明那几集保留原有文件。想逐集看，点「展开各集」，每集仍有自己的「留这个」。',
+ 5:'<b>反悔在回收站。</b>清掉的文件带着「重复清理」原因和一句说明躺 7 天，点「恢复」回原位，重复文件页会重新列出它。',
+ 6:'<b>另一个入口：条目详情页。</b>多版本时文件区标题旁出现「3 个版本 · 处理重复」，点过去就是管理页那张表，按这个条目筛选——同一张表只有一处。展开文件能看到「来源」行；「都留着」过的文件显示「你留下的」，可取消。',
+};
+function setStep(n){document.querySelectorAll('.step').forEach(b=>b.classList.toggle('on',b.dataset.step==String(n)));document.getElementById('hint').innerHTML=HINTS[n];
+  S.item=null;if(n===5){S.screen='manage';S.tab='recycle';}else if(n===6){S.screen='detail';}else{S.screen='manage';S.tab='dup';}render();
+  if(n===4){const el=document.getElementById('u-fh')||document.getElementById('u-got');if(el)el.scrollIntoView({block:'start',behavior:'smooth'});}}
+document.querySelectorAll('.step').forEach(b=>b.addEventListener('click',()=>setStep(+b.dataset.step)));
+document.getElementById('nav-manage').addEventListener('click',()=>{S.screen='manage';S.item=null;render();});
+
+const main=document.getElementById('main');
+function render(){main.innerHTML=S.screen==='detail'?renderDetail():renderManage();bind();}
+function renderManage(){
+  return `<div class="head"><div><h1>媒体库管理</h1><p class="sub">库负责盘点与守护；回收站与重复文件负责让你安心删。</p></div><button class="btn">＋ 创建媒体库</button></div>
+  <div class="tabs"><button>媒体库 <em>4</em></button><button data-tab="recycle" class="${S.tab==='recycle'?'on':''}">回收站 <em>${S.recycle.length||''}</em></button><button data-tab="dup" class="${S.tab==='dup'?'on':''}">重复文件 <em>${total()||''}</em></button></div>
+  ${S.tab==='dup'?renderDup():renderRecycle()}${renderModal()}${S.toast?`<div class="toast">${S.toast}</div>`:''}`;
+}
+function renderDup(){
+  const a=bstats('identical'),b=bstats('versions');
+  return `<div class="chips">${['全部','电影','剧集','4K 电影'].map(l=>`<button class="chip ${S.lib===l?'on':''}" data-lib="${l}">${l}</button>`).join('')}${S.item?`<button class="chip on" data-item-clear="1">只看《九门》 ✕</button>`:''}</div>
+  <section class="bucket"><div class="bh"><h2>一模一样 <small>${a.units} 个条目 · ${a.files} 个多余文件 · ${a.bytes.toFixed(1)} GB</small></h2>
+    <button class="btn primary sm" data-all="identical" ${a.files?'':'disabled'}>全部清理 · ${a.files}</button>
+    <p>同一个文件的两个名字，或尺寸与时长完全相同的复制品。清掉不丢任何东西。</p></div>
+    ${bucket('identical').map(renderUnit).join('')||'<div class="empty">没有一模一样的文件</div>'}</section>
+  <section class="bucket"><div class="bh"><h2>不同版本 <small>${b.units} 个条目 · ${b.files} 个可能多余的文件</small></h2>
+    <button class="btn sm" data-all="versions" ${b.files?'':'disabled'}>全部按建议清理 · ${b.files}</button>
+    <p>规格或来源有区别。每个单元你说了算：留哪个，或都留着。剧集按季一次决定。</p></div>
+    ${bucket('versions').map(renderUnit).join('')||'<div class="empty">没有待决定的单元</div>'}</section>
+  <div class="foot">${S.upgrading} 个单元正在洗版验证中、${S.keepOld} 个条目按规则组「保留共存」，不在这里显示 · 清理的文件进回收站，7 天内可恢复</div>`;
+}
+function qHtml(files,f){
+  const ref=files.find(x=>x.suggested)||files[0];
+  return f.q.map((t,i)=>{const diff=f!==ref&&ref.q[i]!==t&&i<f.q.length-1;return diff?`<em>${t}</em>`:(i===0?`<b>${t}</b>`:t);}).join(' · ');
+}
+function fileRow(u,ep,files,f){
+  const live=files.filter(x=>!x.kept).length;
+  const key=ep?`${u.id}:${ep.ep}:${f.id}`:`${u.id}::${f.id}`;
+  return `<div class="frow ${f.kept?'kept':''}">
+    <div class="fname" title="${f.name}">${f.name}</div>
+    <div class="q">${qHtml(files,f)}</div>
+    <div class="o">${f.origin}<small>${f.kept?'你留下的 · '+f.kept:f.suggested?'建议保留 · '+f.why:(f.same||'')}</small></div>
+    <div class="a">${f.suggested?'<span class="tag keep">建议保留</span>':''}${f.kept?'<span class="tag kept">你留下的</span>':''}${live>1?`<button class="btn xs" data-keep="${key}">留这个</button>`:''}</div></div>`;
+}
+function renderUnit(u){
+  const eps=isSeries(u)?liveEps(u):null;
+  const head=`<div class="uh"><div class="poster"></div><span class="t">${u.title}<small>${u.year}</small></span><span class="lib">${u.lib}${isSeries(u)?` · ${u.season} · <b style="color:var(--text)">${eps.length} 集有重复</b>${u.episodes.length>eps.length?` · 全季 ${u.episodes.length} 集`:''}`:''}</span><span class="sp"></span>${isSeries(u)&&uniform(u)?`<button class="btn xs ghost" data-expand="${u.id}">${S.expanded.has(u.id)?'收起各集':'展开各集'}</button>`:''}</div>`;
+  let body='';
+  if(!isSeries(u)){body=u.files.map(f=>fileRow(u,null,u.files,f)).join('');}
+  else if(uniform(u)&&!S.expanded.has(u.id)){
+    const vs=versions(u);const sample=vs.map(v=>v.sample);
+    body=vs.map(v=>`<div class="vrow"><div class="q">${qHtml(sample,v.sample)}</div>
+      <div class="n"><b>${v.eps.length} 集</b> · ${v.bytes.toFixed(1)} GB${v.missing.length?`<small style="display:block;color:var(--warn);font-size:11.5px">缺 ${v.missing.map(e=>'E'+String(e).padStart(2,'0')).join('、')}</small>`:''}</div>
+      <div class="o">${v.sample.origin}<small>${v.suggested?'建议保留 · '+v.sample.why:(v.sample.same||'')}</small></div>
+      <div class="a">${v.suggested?'<span class="tag keep">建议保留</span>':''}<button class="btn xs" data-keepver="${u.id}|${v.key}">整季留这个</button></div></div>`).join('');
+  } else {
+    body=`<div class="eplist">`+eps.map(ep=>`<div class="eph">E${String(ep.ep).padStart(2,'0')}</div>`+ep.files.map(f=>fileRow(u,ep,ep.files,f)).join('')).join('')+`</div>`;
+  }
+  const foot=u.bucket==='versions'||isSeries(u)?`<div class="uf"><button class="btn xs ghost" data-keepall="${u.id}">${isSeries(u)?'整季都留着':'都留着'}</button></div>`:'<div class="uf"></div>';
+  return `<div class="unit" id="u-${u.id}">${head}${body}${foot}</div>`;
+}
+function renderRecycle(){
+  if(!S.recycle.length)return `<div class="empty">回收站是空的。洗版替换下来的旧版本、重复清理掉的文件会在这里停留 7 天再自动删除，期间可以恢复。</div>`;
+  const bytes=S.recycle.reduce((n,r)=>n+gb(sizeOf(r.f)),0);
+  // 与回收站设计一致：一个条目一行，可展开；这里简化为按条目聚合一行 + 前 3 个文件
+  const groups=new Map();for(const r of S.recycle){const g=groups.get(r.u.id)||{u:r.u,rows:[]};g.rows.push(r);groups.set(r.u.id,g);}
+  return `<div class="summary"><div><b>${S.recycle.length} 个文件</b> · <b>${bytes.toFixed(1)} GB</b> · 最早 7 天后自动清理</div><button class="btn danger sm">立即清理全部 · ${S.recycle.length}</button></div>
+  <div class="chips"><button class="chip on">全部原因</button><button class="chip">洗版替换 0</button><button class="chip">重复清理 ${S.recycle.length}</button></div>
+  <div class="tablewrap"><table><thead><tr><th style="width:22%">条目</th><th style="width:34%">文件 · 品质</th><th>原因</th><th class="r" style="width:170px">自动清理 · 操作</th></tr></thead><tbody>
+  ${[...groups.values()].map(g=>{const r=g.rows[0];const many=g.rows.length>1;return `<tr><td><b>${g.u.title}</b> <span style="color:var(--faint)">${g.u.year}</span><div style="font-size:11.5px;color:var(--faint)">${g.u.lib}${isSeries(g.u)?' · '+g.u.season:''}</div></td>
+    <td>${many?`<div style="font-size:13px"><b>${g.rows.length} 集</b> · ${qlabel(r.f)}</div><div class="fname" style="color:var(--faint)">${r.f.name} …</div>`:`<div class="fname">${r.f.name}</div><div style="font-size:12px;color:var(--faint)">${r.f.q.join(' · ')}</div>`}</td>
+    <td><div class="why">重复清理：${r.note}<small>你 · 刚刚</small></div></td>
+    <td class="ops"><div style="font-size:12px;color:var(--muted);margin-bottom:4px">7 天后</div><button class="btn xs" data-restore="${g.u.id}">恢复${many?' '+g.rows.length:''}</button> <button class="btn xs danger">清理${many?' '+g.rows.length:''}</button></td></tr>`;}).join('')}
+  </tbody></table></div>`;
+}
+function renderModal(){
+  const m=S.modal;if(!m)return '';
+  const listHtml=rest=>`<ul>${rest.slice(0,8).map(x=>`<li><b>${x.f.name}</b> · ${qlabel(x.f)} · ${sizeOf(x.f)}</li>`).join('')}${rest.length>8?`<li style="list-style:none;color:var(--faint)">… 共 ${rest.length} 个文件</li>`:''}</ul>`;
+  if(m.type==='keep'){const {u,ep,f}=m;const files=ep?ep.files:u.files;const k=files.find(x=>x.id===f);const rest=files.filter(x=>x.id!==f&&!x.kept).map(x=>({f:x}));
+    return `<div class="modal-bg"><div class="modal"><h2>留下这个，其余移入回收站？</h2><p>留下：<b style="color:var(--text)">${k.name}</b></p><p>移入回收站（7 天内可恢复）：</p>${listHtml(rest)}<div class="row"><button class="btn" data-close="1">取消</button><button class="btn danger solid" data-do-keep="1">移入回收站 · ${rest.length}</button></div></div></div>`;}
+  if(m.type==='keepver'){const {u,key}=m;const v=versions(u).find(x=>x.key===key);const rest=[];for(const ep of liveEps(u))for(const f of ep.files)if(!f.kept&&vkey(f)!==key&&(v.eps.includes(ep.ep)||!f.suggested))rest.push({f});
+    return `<div class="modal-bg"><div class="modal"><h2>《${u.title}》${u.season} 整季留下这个版本？</h2><p>留下：<b style="color:var(--text)">${qlabel(v.sample)} · ${v.sample.origin}</b>（${v.eps.length} 集）</p>
+    ${v.missing.length?`<p style="color:var(--warn)">${v.missing.map(e=>'E'+String(e).padStart(2,'0')).join('、')} 没有这个版本，这 ${v.missing.length} 集保留原有文件。</p>`:''}
+    <p>移入回收站（7 天内可恢复）：${rest.length} 个文件 · ${rest.reduce((n,x)=>n+gb(sizeOf(x.f)),0).toFixed(1)} GB</p>${listHtml(rest)}
+    <div class="row"><button class="btn" data-close="1">取消</button><button class="btn danger solid" data-do-keepver="1">移入回收站 · ${rest.length}</button></div></div></div>`;}
+  if(m.type==='all'){const us=bucket(m.b);const list=[];for(const u of us)for(const f of extras(u))list.push({u,f});const bytes=list.reduce((n,x)=>n+gb(sizeOf(x.f)),0);
+    return `<div class="modal-bg"><div class="modal"><h2>${m.b==='identical'?'清理全部一模一样的文件？':'按建议清理全部不同版本？'}</h2>
+    <p>${list.length} 个文件 · ${us.length} 个条目 · ${bytes.toFixed(1)} GB · 每个单元留下「建议保留」的那个 · 7 天内可在回收站恢复。</p>
+    ${m.b==='versions'?`<p style="color:var(--warn)">这些文件与保留者<b>有区别</b>。想留的请先取消，回去点那个单元的「都留着」。</p><ul>${us.map(u=>`<li><b>${u.title}${isSeries(u)?' '+u.season:''}</b> · ${extras(u).length} 个文件</li>`).join('')}</ul>`:''}
+    <div class="row"><button class="btn" data-close="1">取消</button><button class="btn ${m.b==='identical'?'primary':'danger solid'}" data-do-all="${m.b}">移入回收站 · ${list.length}</button></div></div></div>`;}
+  return '';
+}
+function renderDetail(){
+  const u=S.units.find(x=>x.id==='jm');const files=u.files;
+  return `<div class="back" id="back">‹ 返回媒体库</div>
+  <div class="hero"><div class="poster"></div><div><h1>九门 <small style="color:var(--faint);font-weight:400;font-size:16px">2025</small></h1><div class="meta">电影 · 电影库 · 2h 8m · 剧情 / 悬疑</div><div class="meta" style="margin-top:10px"><button class="btn sm">▶ 播放</button> <button class="btn sm ghost">⋯</button></div></div></div>
+  <div class="section"><div class="hd"><span>文件 <em style="font-style:normal;color:var(--faint);font-weight:400">${files.length} 个</em></span><div class="r">${files.length>1&&!u.done?`<span class="tag warn">${files.length} 个版本</span><button class="btn sm" id="goto-dup">处理重复</button>`:''}</div></div>
+  ${files.map(f=>{const open=S.detailOpen.has(f.id);return `<div class="drow"><div class="line" data-dopen="${f.id}"><span class="chev">${open?'⌄':'›'}</span><div class="fname">${f.name}${f.kept?'<span class="tag kept">你留下的</span>':''}</div></div>
+    ${open?`<dl><dt>保存目录</dt><dd class="sub2">/mnt/media/电影/九门 (2025)</dd><dt>来源</dt><dd class="origin">${f.origin}<span class="sub2">${f.od}</span></dd><dt>入库时间</dt><dd>2026-08-01 22:14 · 6 周前</dd><dt>文件尺寸</dt><dd>${sizeOf(f)}</dd><dt>片源</dt><dd>${f.q[1]}</dd><dt>画面规格</dt><dd>${f.q[0]}</dd>${f.kept?`<dt>多版本</dt><dd>你留下的 · ${f.kept} · <button class="btn xs" data-unkeep="${f.id}">取消</button></dd>`:''}</dl>`:''}</div>`;}).join('')}
+  </div><div class="section"><div class="hd"><span>演职员</span></div><div class="empty" style="border:0">（略）</div></div>
+  ${S.toast?`<div class="toast">${S.toast}</div>`:''}`;
+}
+
+function toast(msg){S.toast=msg;render();clearTimeout(toast.t);toast.t=setTimeout(()=>{S.toast=null;render();},2800);}
+function recycleFile(u,f,note){S.recycle.unshift({u,f,note});}
+function removeFrom(u,pred){if(isSeries(u)){for(const ep of u.episodes)ep.files=ep.files.filter(f=>!pred(f));}else u.files=u.files.filter(f=>!pred(f));}
+function bind(){
+  const q=s=>main.querySelectorAll(s);
+  q('[data-tab]').forEach(b=>b.onclick=()=>{S.tab=b.dataset.tab;render();});
+  q('[data-lib]').forEach(b=>b.onclick=()=>{S.lib=b.dataset.lib;render();});
+  q('[data-item-clear]').forEach(b=>b.onclick=()=>{S.item=null;render();});
+  q('[data-expand]').forEach(b=>b.onclick=()=>{const id=b.dataset.expand;S.expanded.has(id)?S.expanded.delete(id):S.expanded.add(id);render();});
+  q('[data-keep]').forEach(b=>b.onclick=()=>{const [uid,epn,fid]=b.dataset.keep.split(':');const u=S.units.find(x=>x.id===uid);const ep=epn?u.episodes.find(e=>e.ep===+epn):null;S.modal={type:'keep',u,ep,f:+fid};render();});
+  q('[data-do-keep]').forEach(b=>b.onclick=()=>{const {u,ep,f}=S.modal;const files=ep?ep.files:u.files;const k=files.find(x=>x.id===f);const gone=files.filter(x=>x.id!==f&&!x.kept);
+    for(const x of gone)recycleFile(u,x,u.bucket==='identical'?`与「${k.name}」一模一样，已保留后者`:`留下「${k.name}」（${qlabel(k)}），移除本版本`);
+    const ids=new Set(gone.map(x=>x.id));if(ep)ep.files=ep.files.filter(x=>!ids.has(x.id));else u.files=u.files.filter(x=>!ids.has(x.id));
+    S.modal=null;render();toast(`<b>已移入回收站 ${gone.length} 个文件</b> · 7 天内可在回收站恢复`);});
+  q('[data-keepver]').forEach(b=>b.onclick=()=>{const [uid,key]=b.dataset.keepver.split('|',2);const u=S.units.find(x=>x.id===uid);S.modal={type:'keepver',u,key:b.dataset.keepver.slice(uid.length+1)};render();});
+  q('[data-do-keepver]').forEach(b=>b.onclick=()=>{const {u,key}=S.modal;const v=versions(u).find(x=>x.key===key);let n=0;
+    for(const ep of liveEps(u)){const has=v.eps.includes(ep.ep);const keep=has?ep.files.find(f=>vkey(f)===key):ep.files.find(f=>f.suggested);const gone=ep.files.filter(f=>f!==keep&&!f.kept);
+      for(const f of gone){recycleFile(u,f,u.bucket==='identical'?`与「${keep.name}」一模一样，已保留后者`:`整季留下 ${qlabel(keep)}（${keep.origin}），移除本版本`);n++;}
+      ep.files=ep.files.filter(f=>!gone.includes(f));}
+    S.modal=null;render();toast(`<b>已移入回收站 ${n} 个文件</b> · 7 天内可在回收站恢复`);});
+  q('[data-keepall]').forEach(b=>b.onclick=()=>{const u=S.units.find(x=>x.id===b.dataset.keepall);if(isSeries(u))u.episodes.forEach(ep=>ep.files.forEach(f=>f.kept='2026-09-13'));else u.files.forEach(f=>f.kept='2026-09-13');u.done=true;render();toast(`<b>${isSeries(u)?'整季都留着':'都留着'}</b>：不再列出，直到有新文件进来`);});
+  q('[data-all]').forEach(b=>b.onclick=()=>{S.modal={type:'all',b:b.dataset.all};render();});
+  q('[data-do-all]').forEach(b=>b.onclick=()=>{let n=0;for(const u of bucket(b.dataset.doAll)){const groups=isSeries(u)?liveEps(u).map(e=>e.files):[u.files];
+      for(const files of groups){const k=files.find(f=>f.suggested);const gone=files.filter(f=>!f.suggested&&!f.kept);for(const f of gone){recycleFile(u,f,u.bucket==='identical'?`与「${k.name}」一模一样，已保留后者`:`留下「${k.name}」，移除本版本`);n++;}const ids=new Set(gone.map(f=>f.id));if(isSeries(u)){for(const ep of u.episodes)ep.files=ep.files.filter(f=>!ids.has(f.id));}else u.files=u.files.filter(f=>!ids.has(f.id));}}
+    S.modal=null;render();toast(`<b>已移入回收站 ${n} 个文件</b> · 7 天内可在回收站恢复`);});
+  q('[data-close]').forEach(b=>b.onclick=()=>{S.modal=null;render();});
+  q('[data-restore]').forEach(b=>b.onclick=()=>{const uid=b.dataset.restore;const rows=S.recycle.filter(r=>r.u.id===uid);S.recycle=S.recycle.filter(r=>r.u.id!==uid);
+    for(const r of rows){const u=r.u;if(isSeries(u)){const epn=+(r.f.name.match(/E(\d{2})/)||[])[1];const ep=u.episodes.find(e=>e.ep===epn);ep.files.push(r.f);}else u.files.push(r.f);u.done=false;}
+    render();toast(`<b>已恢复 ${rows.length} 个文件</b>到原位置；它们会重新出现在「重复文件」里`);});
+  q('[data-unkeep]').forEach(b=>b.onclick=()=>{const id=+b.dataset.unkeep;for(const u of S.units){const f=(u.files||[]).find(x=>x.id===id);if(f){delete f.kept;u.done=false;}}render();toast('已取消，重新列入「不同版本」');});
+  const back=main.querySelector('#back');if(back)back.onclick=()=>{S.screen='manage';render();};
+  const gd=main.querySelector('#goto-dup');if(gd)gd.onclick=()=>{S.screen='manage';S.tab='dup';S.item='jm';document.querySelectorAll('.step').forEach(x=>x.classList.toggle('on',x.dataset.step==='3'));document.getElementById('hint').innerHTML=HINTS[3];render();};
+  q('[data-dopen]').forEach(r=>r.onclick=()=>{const id=+r.dataset.dopen;S.detailOpen.has(id)?S.detailOpen.delete(id):S.detailOpen.add(id);render();});
+}
+setStep(1);
+})();
+</script>

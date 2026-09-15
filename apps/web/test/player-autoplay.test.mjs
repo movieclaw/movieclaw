@@ -96,3 +96,11 @@ test("重试次数有上限，不会无限打", () => {
     false,
   );
 });
+
+test("放完的元素不自动重播：拖到片尾落地后 canplay 照样来，play() 会 seek 回 0 从头放", () => {
+  // 2026-09-14 真浏览器复现：拖到片尾，seek 落在片长处元素当场 ended，随之而来的
+  // canplay 触发自动播放闸门——ended 的元素按规范是暂停的，闸门原本只看 paused
+  const gate = { wanted: true, paused: true, attempts: 0, last: null };
+  assert.equal(shouldAttemptAutoplay({ ...gate, ended: true }), false);
+  assert.equal(shouldAttemptAutoplay({ ...gate, ended: false }), true);
+});

@@ -265,7 +265,11 @@ N 次解析。**F3.4 把「我的收藏」登记为内置合集之后，这个�
 | PUT | `/collections/{id}/order` | `collection.items.reorder`（仅手动合集） |
 | GET | `/collections/{id}/series` | `collection.series.get`（系列合集的缺片补齐） |
 | GET/POST/DELETE | `/collections/{id}/share` | `collection.share.get/create/revoke` |
-| POST | `/collections/{id}/apply-to-library` | `collection.apply-to-library` |
+
+`POST /collections/{id}/apply-to-library`（把合集条件写进 `library.match_rules`）
+**已下线**（2026-09-15）：它只认 genres / origin_countries 两个字段，其余条件被
+静默丢弃，用户在合集页设完并不知道自己设的是什么；分库的收藏范围在媒体库设置里
+本来就有一处正经入口，两处写同一份配置只会让人不确定以哪处为准。
 
 「仅手动合集」由 `_guard_manual` 统一拦截：规则驱动的合集拒绝手工增删，
 否则下一次规则求值就会把手工结果冲掉——那是一种用户改了、看着生效了、
@@ -459,6 +463,74 @@ entries。
 `private` 合集对非归属成员**返回 404 而不是空列表**——与现有条目可见性的处理一致
 （GUID 可枚举，空列表等于确认存在）。
 
+### 4.11 虚拟媒体库：钉了首页的合集额外伪装成一个库（2026-09-15）
+
+4.3 把合集放在了一个顶层「合集」视图（`CollectionType=boxsets`）下。那个决策
+本身没错，但它押的是"客户端会好好渲染 boxsets 视图"——**实测押不中**。Infuse
+与几家 Android TV 客户端要么不渲染这个视图，要么把它埋在很深的层级里，用户在
+首页那排「媒体库」卡片里根本看不到合集。协议兼容的价值是"表现可预期"，那就
+不能指望客户端对一个二等公民类型有好的表现。
+
+**做法**：被用户钉上媒体库首页的合集（`⋯` 菜单的「显示在首页」，
+docs/design/library-home-perspective.md），在 `/UserViews` 里额外下发成一个
+顶层 `CollectionFolder`。客户端当它是库，也就没法装看不见。
+
+#### 一个合集，两个身份
+
+| 身份 | GUID | Type | 出现在 |
+|---|---|---|---|
+| 片单 | `collection_guid(id)`（`COLLECTION` = 0x08） | `BoxSet` | 「合集」视图下 |
+| 虚拟库 | `collection_view_guid(id)`（`COLLECTION_VIEW` = 0x09） | `CollectionFolder` | 根（`/UserViews`） |
+
+**两个 GUID，不是一个 GUID 两种 Type**。客户端会缓存 DTO，同一个 id 一会儿是
+BoxSet、一会儿是 CollectionFolder，各家的表现不可预期。
+
+**两个身份并存，不做去重**。钉上首页之后 BoxSet 那一份照旧下发——已配对客户端
+存下的深链、收藏、播放队列都指向那个 GUID，摘掉它们会当场指空。代价是同一个
+合集在电视端能看见两次，接受。
+
+#### 为什么是「钉首页」，不是一个独立开关
+
+首页那颗开关本来就是用户在回答"这组片子对我重要到要摆在最前面"，虚拟库问的是
+同一个问题。再加一颗独立开关，用户要在两个几乎同义的地方各表态一次。
+
+**代价如实记下**：首页行清单是**按人存**的界面偏好（超管在 `ui.preferences`
+全局域，成员在 `member.ui_prefs`），所以虚拟库也按人投影——家里两个人的电视上
+看到的库列表可以不一样。这是对的（可见性本来就按人算），但意味着改一次首页
+排版会震动电视端的 `/UserViews` 缓存，客户端可能要手动刷新一次。
+
+#### 改动点
+
+| 文件 | 改动 |
+|---|---|
+| `services/library/collections.py` | `pinned_collection_ids()`——读界面偏好里钉了哪些，按人分流 |
+| `jellyfin/ids.py` | `COLLECTION_VIEW = 0x09` + `collection_view_guid()` |
+| `jellyfin/catalog.py` | `collection_library_view_dto()` / `collection_library_type()` / `visible_pinned_collections()`；`latest_unit_candidates()` 加 `item_ids` |
+| `jellyfin/routes/library.py` | `/UserViews`、`/Items?ParentId=`、`/Items/{id}`、`/Items/Latest`、`/Library/VirtualFolders`、`/UserViews/GroupingOptions` |
+| `jellyfin/routes/images.py` | 封面与 BoxSet 同源（借首个成员的海报，4.6） |
+| `jellyfin/identity.py` + `routes/users.py` | **`EnabledFolders` 带上虚拟库 GUID** |
+
+最后一条是整条链路上最难查的坑：`EnabledFolders` 一旦非空，客户端就拿它当白名单
+过滤自己看到的库。虚拟库的 GUID 不在里面，`/UserViews` 下发了也会被客户端自己
+藏掉，而且**不报任何错**。
+
+#### 几条分寸
+
+- **`CollectionType` 不解析成员就能答**：规则驱动的合集必须挂在某个库下，所以
+  合集的形态就是所属库的形态。跨库名单合集（`library_id` 为 NULL）可能混装，
+  这时**省略该字段**——真 Jellyfin 的混合库就是这么给的；硬塞一个 `movies`
+  会让剧集成员在部分客户端里被当电影画。
+- **空合集不下发**，与「合集」视图同一条规矩。成本沿用 5.5.2：内容型合集直接读
+  行上的成员缓存，顺带把封面也拿到了。
+- **子级不分叉**：虚拟库与 BoxSet 的子级是同一份名单（伪装的是外壳）。
+- **取消钉首页不让已存的链接失效**：`/Items/{虚拟库 GUID}` 照旧 200，只是不再
+  出现在 `/UserViews` 里。客户端会把库 GUID 存进快捷入口，让它当场变成错误页
+  比多留一个可达的 GUID 更糟。
+- **`/Items/Latest?parentId=<虚拟库>` 必须收窄到成员**。不接这一条的话
+  `parentId` 会被当成没给，客户端在合集库里看到的是全库最新——那比空着更糟，
+  它看起来像是对的。这条路不叠库级的「从首页排除」：用户亲手把这个合集钉上了
+  首页，那是比库开关更晚、更具体的一次表态。
+
 ### 4.10 客户端核对清单（验收时逐条走）
 
 | 请求 | 期望 |
@@ -472,6 +544,10 @@ entries。
 | `GET /Items/Counts` | 含 `BoxSetCount` |
 | 私有合集 + 非归属成员 | 上述全部 404 / 不出现 |
 | 成员不可见库中的合集 | 不出现 |
+| `GET /UserViews`（合集钉了首页） | 多出一个 `CollectionFolder`，`Id` = `collection_view_guid` |
+| `GET /Items?ParentId=<虚拟库>` | 与 `ParentId=<同一合集的 boxset>` 逐条相同 |
+| `GET /Users/Me` → `Policy.EnabledFolders` | 含虚拟库 GUID |
+| 取消钉首页 | 从 `/UserViews` 消失，`/Items/{虚拟库}` 仍 200 |
 
 ## 5. 性能
 

@@ -31,7 +31,6 @@ import {
 } from "@/components/video-gallery";
 import { WallLoadMore } from "@/components/wall-chrome";
 import {
-  applyCollectionToLibrary,
   deleteCollection,
   getCollection,
   getCollectionSeries,
@@ -468,7 +467,14 @@ export function LibraryCollectionDetailView({
         ]);
       }
       await savePrefs({ ...prefs, home: { rows } });
-      toast.success(onHome ? "已从首页移除" : "已显示在首页");
+      // 把副作用说出来：这颗开关同时决定电视端有没有这个「媒体库」
+      // （docs/design/library-collections.md 4.11）。不说的话，用户会在
+      // 播放器里凭空多出/少掉一个库，而想不起来是自己刚才点的
+      toast.success(
+        onHome
+          ? "已从首页移除，播放器里的这个媒体库也会一并消失"
+          : "已显示在首页，播放器里也会多出这个媒体库",
+      );
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "保存失败");
     }
@@ -535,23 +541,6 @@ export function LibraryCollectionDetailView({
       toast.error(err instanceof Error ? err.message : "恢复失败");
     }
   }, [collection, toast]);
-
-  const applyToLibrary = useCallback(async () => {
-    if (!collection) return;
-    const ok = await confirm({
-      title: "把这组条件设为库的收藏范围？",
-      description:
-        "以后订阅与自动入库会按这组条件挑库。只有类型和地区会被用上，其余条件用不到。",
-    });
-    if (!ok) return;
-    try {
-      if (libraryId === null) return;
-      await applyCollectionToLibrary(collection.id, libraryId);
-      toast.success("已设为该库的收藏范围");
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "设置失败");
-    }
-  }, [collection, confirm, libraryId, toast]);
 
   if (error) {
     return (
@@ -701,19 +690,11 @@ export function LibraryCollectionDetailView({
                         整理顺序…
                       </DropdownMenu.Item>
                     )}
-                    {libraryId !== null &&
-                      canManageLibraries &&
-                      collection.editable &&
-                      collection.rule_driven && (
-                        <DropdownMenu.Item
-                          onSelect={applyToLibrary}
-                          className={MENU_ITEM_CLASS}
-                        >
-                          设为本库的收藏范围
-                        </DropdownMenu.Item>
-                      )}
                     {/* 「显示在首页」：把这个合集加成媒体库首页的一行（与 Plex 的 Pin to Home
-                        一致），写的是与自定义页同一份偏好；再点一次是隐藏那一行，不删 */}
+                        一致），写的是与自定义页同一份偏好；再点一次是隐藏那一行，不删。
+                        同一份偏好还决定 Jellyfin 兼容层要不要把这个合集伪装成一个顶层
+                        媒体库（docs/design/library-collections.md 4.11）——BoxSet 在不少
+                        客户端里是二等公民，伪装成库它们才躲不掉 */}
                     <DropdownMenu.Item
                       onSelect={toggleOnHome}
                       className={MENU_ITEM_CLASS}

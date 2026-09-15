@@ -102,6 +102,23 @@ class Collection(MemberScopedMixin, TimestampMixin, table=True):
         description="封面取哪部作品的海报；NULL=取首个成员",
     )
 
+    # -- 成员缓存（只有「内容型」合集有，docs/design/library-series-collections.md 5.5.2）--
+    # 合集列表页每次打开都要给每个合集各跑一次成员判定（一次完整的海报墙查询）。
+    # 自动生成几十上百个系列合集之后这就是首屏最重的一条读：NAS 上几百毫秒起，
+    # 后台任务一压就是十几秒，而它算出来的东西——成员数与卡片上那三张封面——
+    # 只在「库里有什么」变化时才变。所以对**成员只取决于库内容**的合集（规则
+    # 驱动、规则不含观看状态），把这两个数落在行上，跟着 refresh_stats 一起刷；
+    # 「我的收藏」这类跟着看的人变的永远不缓存（NULL），分级受限的观看者也不读
+    # 缓存（他们看到的成员本来就少一截）。NULL = 没有缓存，走实时判定
+    member_count_cache: int | None = Field(
+        default=None, description="内容型合集的成员数缓存；NULL=没有缓存（实时判定）"
+    )
+    cover_head_cache: list | None = Field(
+        default=None,
+        sa_column=Column(JSON, nullable=True),
+        description="内容型合集卡片封面用的前几个成员 id 缓存（指定封面已挪到最前）",
+    )
+
     # -- 系列档案快照（只有系列合集有）----------------------------------------
     # TMDB `GET /collection/{id}` 回的 parts[]：整个系列共几部、每部的 tmdb id /
     # 标题 / 上映日 / 海报。用来算「缺哪几部」并一键去补——这一条才是把系列合集

@@ -233,15 +233,24 @@ html {
    步进按钮）会被误判成缩放手势把页面放大。声明 manipulation 告诉系统
    这些元素只做点按/平移，判定取消、响应也更跟手。捏合缩放不受影响。
    video 同理入列：播放器在 video 上自实现双击快进，不声明的话
-   Android Chrome 里双击会和浏览器的双击缩放判定竞争（§播放器触控）。 */
-button,
-a,
-input,
-select,
-textarea,
-video,
-[role="button"] {
-  touch-action: manipulation;
+   Android Chrome 里双击会和浏览器的双击缩放判定竞争（§播放器触控）。
+
+   **必须写在 @layer base 里**（与下面 button { cursor } 同一条规矩）：不分层
+   的规则永远压过 Tailwind 的 @layer utilities，与特异性无关。此前这条没有
+   layer，播放器进度条上的 `touch-none` 被它压成 manipulation——竖屏沿条拖是
+   横向、页面横向没得滚才碰巧没事；伪横屏容器转了 90°，沿条就是物理竖直方向，
+   浏览器把触摸当翻页手势收走（pointercancel），进度条一动不动
+   （2026-09-14 真触摸复现，docs/design/player-feel.md §19.8）。 */
+@layer base {
+  button,
+  a,
+  input,
+  select,
+  textarea,
+  video,
+  [role="button"] {
+    touch-action: manipulation;
+  }
 }
 
 /* —— 装成 App 之后的「不可选中」触感 ——
@@ -426,8 +435,13 @@ body::before {
     radial-gradient(54% 44% at 88% 14%, rgba(140, 104, 214, 0.14), transparent 60%),
     radial-gradient(64% 58% at 80% 92%, rgba(64, 150, 186, 0.13), transparent 64%),
     linear-gradient(180deg, rgba(9, 11, 17, 0.1) 0%, rgba(6, 7, 13, 0.32) 100%),
-    /* --backdrop-image 由 BackdropProvider 按用户上传的图动态写入；未设置时回退到内置色调底图 */
-    var(--backdrop-image, url("/backdrop-default.jpg")) center / cover no-repeat;
+    /* --backdrop-image 由 BackdropProvider 按用户上传的图动态写入；未设置时回退到内置色调底图。
+       顶部对齐（center top）而不是居中：与影片详情页的沉浸覆盖层同一口径
+       （lib/backdrop.tsx 的 backgroundPosition，两处必须一致）。两层铺的是同一块视口、
+       只是图不同，锚点不一样的话进出详情页时画面会整体上下挪一下；对齐之后只是换图。
+       裁切上也更划算——宽屏配竖图时 cover 按宽度放大、纵向溢出，居中会把天空和人物头顶
+       一起切掉，顶部对齐切的是画面下沿，而下沿本来就压在内容与底部操作区底下。 */
+    var(--backdrop-image, url("/backdrop-default.jpg")) center top / cover no-repeat;
   background-color: var(--bg);
 }
 
@@ -476,7 +490,7 @@ body::before {
     --detail-hero-h: 22vh;
     --detail-hero-min-h: 120px;
   }
-  /* 手机有页内剧照 Hero 时（library-item-detail-view 的 mobileHeroSrc）：页面上的剧照由
+  /* 手机有页内剧照 Hero 时（两个详情页的 mobileHeroSrc）：页面上的剧照由
      Hero 来画，滚动容器直接铺黑。全站背景仍换成同一张剧照（侧栏玻璃要折射它），但它在
      竖屏上是按高度放大、只剩中间一条的裁切，由这层黑底整个挡住，不在页面上露出来 */
   .detail-ambient.detail-ambient--hero {

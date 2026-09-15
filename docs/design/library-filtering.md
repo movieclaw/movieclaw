@@ -77,7 +77,7 @@
    │    └── 海报墙（筛选结果）              （沿用，只换候选集）
    └─ 合集视图：纵向网格，封面 2:3 与作品同形                  ← 新增
 /library/[id]/c/[cid]       合集详情：一面被规则/手工定义的墙          ← 新增
-/library/collections        跨库合集总览（合集多了以后才露出入口）      ← 新增，F4
+/library/collections        跨库合集总览（媒体库页头 首页/合集 切换器）  ← 新增，F4
 /library/favorites          全部收藏 = 一个内置的系统合集              （改造：接入同一套筛选）
 ```
 
@@ -85,6 +85,25 @@
 "我的电影库里有一批诺兰"，不是"我有一个诺兰库"。跨库合集（`library_id = NULL`）
 在模型上从第一天就允许，但入口等到 F4 合集数量真正起来再开，避免一开始就多一个
 要学的层级。
+
+**2026-09-13 调整入口形态**（仍不进侧栏）：总览页从「媒体库某一行标题右端的文字链」
+改成媒体库页头右上角的 **首页 / 合集 分段控件**，并一律常驻、不再按合集数显隐。
+它因此成了媒体库分区的同级视角（页头同形、没有返回键），而不是侧栏里的第二个一级
+入口——上面那条心智判断没有被推翻。缘由与连带改动见
+[library-home-perspective.md](library-home-perspective.md) 4.2 第 5 条。
+
+**同日给总览页补了两个维度的筛选**，长相与单库墙的筛选条同款（`h-7` 无边框胶囊 +
+等宽计数，见 5.1；**不是**发现页那种分段控件，那副长相留给视角切换）：
+
+| 维度 | 档位 | 判据 |
+|---|---|---|
+| 类型 | 全部 / 剧集 / 电影 | 合集自己没有类型，取**所属库的 kind**；跨库与 video/photo 库的只在「全部」里 |
+| 来源 | 全部 / 自建 / 自动 | `kind=user` 为自建，其余（系列 + 内置「我的收藏」）归自动，两档正好切满 |
+
+两处计数都按 faceted 口径算（带上另一个维度的当前选择），配合「永不空货架」——数为 0
+的档压暗点不动，因此不存在「筛完为空」那一态。库内次序改为**自建在前、内置居中、
+系列在后**（稳定排序，同档保持服务端的 position 序）；库分组之间的先后仍是媒体库
+管理页配置的库顺序，不随筛选变动。
 
 ## 3. 筛选模型
 
@@ -513,7 +532,7 @@ DELETE /collections/{id}
 GET    /collections/{id}/items?sort=&limit=&offset=      ← 复用 _aggregate_wall_views
 POST   /collections/{id}/items    {media_item_ids}       ← manual，F4
 PUT    /collections/{id}/order    {media_item_ids}       ← manual，F4
-POST   /collections/{id}/apply-to-library {library_id}   ← 规则 → library.match_rules
+POST   /collections/{id}/apply-to-library {library_id}   ← 规则 → library.match_rules（已下线，见 library-collections.md）
 ```
 
 ### 6.4 表结构

@@ -7,6 +7,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { LiquidGlassButton } from "@/vendor/liquid-glass";
 
 import { AppStorageSection } from "@/components/app-storage-section";
+import { ScheduledTasksSection } from "@/components/scheduled-tasks-section";
 import { AppUpdateDot, usePendingUpdate } from "@/components/app-update-entry";
 import { AppUpdateSection } from "@/components/app-update-section";
 import { AvatarBadge } from "@/components/avatar-badge";
@@ -586,7 +587,7 @@ function AppSection() {
   // ?tab=storage 深链直达缓存管理，切换时写回地址栏（见 useTabParam）。旧的
   // ?tab=maintain 不再是合法值，会落到默认的「版本与更新」——重启入口正好在那；
   // 旧的 ?tab=remote 深链在路由层重定向到 /settings/playback，到不了这里。
-  const [tab, setTab] = useTabParam(["update", "storage"] as const, "update");
+  const [tab, setTab] = useTabParam(["update", "storage", "tasks"] as const, "update");
   // 本分区只对管理员渲染（成员的分区清单里没有 app），无需再按角色关轮询
   const pendingUpdate = usePendingUpdate();
   // Netflix：激活胶囊是白底黑字（与外观分区同一语言，见 AppearanceSection）
@@ -594,6 +595,7 @@ function AppSection() {
   const tabs = [
     { id: "update" as const, label: "版本与更新" },
     { id: "storage" as const, label: "缓存管理" },
+    { id: "tasks" as const, label: "定时任务" },
   ] as const;
 
   return (
@@ -618,6 +620,7 @@ function AppSection() {
       </div>
       {tab === "update" && <AppUpdateSection />}
       {tab === "storage" && <AppStorageSection />}
+      {tab === "tasks" && <ScheduledTasksSection />}
     </div>
   );
 }
@@ -905,7 +908,10 @@ function BackdropGroup() {
               alt="当前首页背景预览"
               loading="lazy"
               decoding="async"
-              className="h-full w-full object-cover transition-transform duration-500 ease-out group-hover:scale-[1.03]"
+              /* object-top：与真实背景（globals.css 的 body::before）同一锚点。
+                 这块叫"预览"就得真的能预览——默认的居中裁切会让预览里看得好好的
+                 画面，铺到全屏后从另一个位置切开 */
+              className="h-full w-full object-cover object-top transition-transform duration-500 ease-out group-hover:scale-[1.03]"
             />
             {/* 底部信息渐变 + 当前背景名 */}
             <div className="pointer-events-none absolute inset-x-0 bottom-0 h-28 bg-gradient-to-t from-black/65 to-transparent" />
@@ -1465,7 +1471,8 @@ function BackdropTile({
           alt={`${label}背景缩略图`}
           loading="lazy"
           decoding="async"
-          className="h-full w-full object-cover"
+          /* object-top：同大预览，与真实背景同一锚点，挑图时看到的就是铺上去的样子 */
+          className="h-full w-full object-cover object-top"
         />
         {active && (
           <span className="absolute right-1.5 top-1.5 flex size-[18px] items-center justify-center rounded-full bg-[var(--accent-strong)] text-[#141821] shadow">

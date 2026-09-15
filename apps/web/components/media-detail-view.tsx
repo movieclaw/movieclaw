@@ -142,10 +142,9 @@ export function MediaDetailView({
   // 沉浸背景：进入本页把全站背景临时换成该片剧照（侧栏、外壳留白一起透出，
   // 不再只铺详情卡片的局部），离开即恢复用户配置的背景——与媒体库条目详情页
   // 同一条链路（见 lib/backdrop.tsx 的 setOverrideBackdrop）。没有横幅剧照时
-  // 退回海报，覆盖层自己会铺满作氛围色。
-  //
-  // 豆瓣来源不换背景：豆瓣只有小尺寸海报、没有高清横幅剧照，铺成全屏背景是
-  // 一片糊图，比用户自己配置的背景差得多。宁可保持原背景，也不要为了沉浸降质。
+  // 退回海报，覆盖层自己会铺满作氛围色。豆瓣条目同样换：它的图确实比 TMDB 小，
+  // 但手机上页面看到的是下面的页内 Hero、全站背景被黑底整个挡住，桌面上一张
+  // 偏软的剧照也好过「这部片的页面配着另一部片的壁纸」的断裂感。
   const { setOverrideBackdrop } = useBackdrop();
   // 沉浸背景只走高清：TMDB 的 original 地址是确定性的（w1280 同图换尺寸段，
   // 见 upgradedTmdbOriginalUrl），进入页面即刻推导并预加载，加载**并解码**完成
@@ -199,7 +198,6 @@ export function MediaDetailView({
     setOverrideBackdrop(immersiveUrl);
     return () => setOverrideBackdrop(null);
   }, [immersiveUrl, setOverrideBackdrop]);
-
   // 豆瓣外链的移动端 App 直跳：无悬停设备把「豆瓣」外链换成官方分发地址，
   // 装了豆瓣 App 直接拉起进词条页（桌面/未命中时为 null，回落网页地址）
   const doubanAppHref = useDoubanAppHref(source === "douban" ? id : null);

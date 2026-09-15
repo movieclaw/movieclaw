@@ -75,6 +75,27 @@ class ScheduledTaskRepository:
         await self._session.commit()
         return True
 
+    async def update_schedule(
+        self,
+        task_key: str,
+        *,
+        enabled: bool,
+        trigger_type: TriggerType,
+        interval_seconds: int | None,
+        cron_expr: str | None,
+    ) -> ScheduledTask | None:
+        """用户改周期 / 启停：只改定义列，运行台账（上次 / 下次）由调度器回写。"""
+        row = await self.get_by_key(task_key)
+        if row is None:
+            return None
+        row.enabled = enabled
+        row.trigger_type = trigger_type
+        row.interval_seconds = interval_seconds
+        row.cron_expr = cron_expr
+        row.updated_at = utcnow()
+        await self._session.commit()
+        return row
+
     async def update_next_run(self, task_key: str, next_run_at: datetime | None) -> None:
         """回填下次预计触发时间（调度器建立/刷新 job 后调用）。"""
         row = await self.get_by_key(task_key)

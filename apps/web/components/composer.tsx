@@ -21,9 +21,8 @@ import {
   stopPercent,
   thinkingControlShape,
   thinkingListItems,
-  thinkingListNote,
-  thinkingPillLabel,
   thinkingStops,
+  thinkingValueLabel,
 } from "@/lib/thinking-level-control";
 import { useBackdrop } from "@/lib/backdrop";
 import { LiquidGlassIconButton } from "@/vendor/liquid-glass";
@@ -34,7 +33,7 @@ import { LiquidGlassIconButton } from "@/vendor/liquid-glass";
  *   ┌─ 附件托盘（有附件才出现）：小型 chip（缩略图 + 名字 + ×），不放大图 ─┐
  *   ├─ 输入区：无边框 textarea（Codex 风格，固定 2 行高框内滚动）        ─┤
  *   └─ 工具行（单行，永不换行/reflow）：                                  ─┘
- *        左簇：＋（图片/技能菜单） · 模型（ghost pill） · 思考档位（ghost pill）
+ *        左簇：＋（图片/技能菜单） · 模型（ghost pill，菜单里连带调思考强度）
  *        右簇：回车提示 · 发送/停止
  *
  * 三条从 maka 学来的原则：
@@ -63,11 +62,11 @@ export interface ComposerProps {
   modelValue?: string | null;
   /** 模型切换回调；不传则不渲染选择器 */
   onModelChange?: (ref: string | null) => void;
-  /** 当前模型的思考档位菜单；空/缺省 = 隐藏档位选择器（模型强度不可控） */
+  /** 当前模型的思考档位菜单；空/缺省 = 模型强度不可控（模型菜单下半不渲染） */
   thinkingLevels?: string[];
   /** 当前选中的思考档位；null = 默认（模型自身行为） */
   thinkingValue?: string | null;
-  /** 档位切换回调；不传则不渲染选择器 */
+  /** 档位切换回调；不传则模型菜单下半整段不渲染（调用方没接思维链能力） */
   onThinkingChange?: (level: string | null) => void;
   /** 生成中：提交被阻断；配合 onStop 时发送键变为停止键（仿 ChatGPT） */
   busy?: boolean;
@@ -253,14 +252,9 @@ export function Composer({
               value={modelValue}
               disabled={disabled}
               onChange={onModelChange}
-            />
-          )}
-          {onThinkingChange && (thinkingLevels?.length ?? 0) > 0 && (
-            <ThinkingLevelMenu
-              levels={thinkingLevels ?? []}
-              value={thinkingValue}
-              disabled={disabled}
-              onChange={onThinkingChange}
+              thinkingLevels={thinkingLevels ?? []}
+              thinkingValue={thinkingValue}
+              onThinkingChange={onThinkingChange}
             />
           )}
         </div>
@@ -506,7 +500,7 @@ function ComposerPlusMenu({
   );
 }
 
-/* —— 锚定弹层：ghost pill 上方的浮层，模型菜单与思维链滑杆共用 ——
+/* —— 锚定弹层：ghost pill 上方的浮层（模型菜单与加号菜单同一套定位思路）——
  * 弹层 Portal 到 body + fixed 定位（同 user-menu 折叠态）：composer 包在
  * GlassPanel 里，面板 overflow:hidden 会把向上的弹层裁掉。打开瞬间按 pill
  * 当前位置算一次坐标（浮层是瞬态的，不跟随滚动）；点弹层外任意处或 Escape 收起。 */
@@ -544,7 +538,7 @@ function useAnchoredPopover() {
     setOpen((v) => !v);
   };
 
-  // 弹层左对齐 pill，但弹层（滑杆 18rem / 模型清单最宽 22rem）比 pill 宽得多：
+  // 弹层左对齐 pill，但弹层（模型菜单 19rem）比 pill 宽得多：
   // 窄屏上 pill 靠右时会直接伸出屏幕右缘。弹层宽度渲染前不可知，打开后量一次
   // 真实尺寸把它夹回视口内（留 8px 边距）；同理键盘弹起后上方空间不够时往下夹。
   // useLayoutEffect 在绘制前修正，不会先画在屏外再跳回来。尺寸用 offsetWidth /
@@ -571,39 +565,56 @@ function useAnchoredPopover() {
 const PILL_CLASS =
   "flex h-8 max-w-full items-center gap-1 rounded-xl px-2.5 text-caption text-[var(--text-muted)] transition-colors hover:bg-[var(--glass-fill-hover)] hover:text-[var(--text)] max-md:h-11";
 
-/* —— 安静菜单：ghost pill + 向上弹出的单选列表（maka quiet-menu 的思路） ——
- * 不用原生 <select>：弹层要向上、选中项要打勾、pill 文案要与菜单项分离
- * （pill 只显示当前项，菜单里才是完整清单），原生控件三样都做不到。 */
+/* —— 模型菜单：一个胶囊管两件事（选模型 + 调思考强度） ——
+ *
+ * 合并前工具行上并排挂着「模型」「强度」两个 pill：小屏被挤成两截省略号，
+ * 而且孤零零一个「高」看不出是谁的高——强度本来就是**当前模型的**强度，是
+ * 模型的从属设置，不该与模型平起平坐。合并后只剩一个 pill，点开：
+ *
+ *   ┌──────────────────────────┐
+ *   │ 模型                     │  超过一屏内部滚动，打开时把当前项滚进视野
+ *   │ ✓ Claude Opus 5          │
+ *   │   GPT-5.2（备用实例）     │
+ *   ├──────────────────────────┤
+ *   │ 思维链强度  高   恢复默认 │  下半按当前模型的菜单渲染形态
+ *   │ 更快 ●──●──◉──● 更聪明    │
+ *   └──────────────────────────┘
+ *
+ * 三条交互约定：
+ * 1. 选模型即收起（换模型是终态操作，同各家模型选择器），调强度不收起——
+ *    滑杆是拖着调的，每动一档就关掉菜单等于没法拖；
+ * 2. 换模型时清空档位由调用方负责（旧档位在新模型的菜单里未必存在，见
+ *    lib/composer-prefs.ts 的 reconcileComposerPrefs 与服务端 resolve 兜底）；
+ * 3. pill 只写模型名、不带档位后缀：工具行要安静，档位进菜单里看。
+ */
 
-interface QuietMenuOption {
-  key: string;
-  label: string;
-  selected: boolean;
-  onSelect: () => void;
-  /** 第二行灰字：这一项到底做什么（思考开关这种一个词说不清的用） */
-  description?: string;
-}
-
-function QuietMenu({
-  ariaLabel,
-  pillLabel,
+function ModelMenu({
   options,
+  value,
   disabled,
-  wide = false,
-  note,
+  onChange,
+  thinkingLevels,
+  thinkingValue,
+  onThinkingChange,
 }: {
-  ariaLabel: string;
-  pillLabel: string;
-  options: QuietMenuOption[];
+  options: LlmModelOption[];
+  value: string | null;
   disabled?: boolean;
-  /** 模型清单可能很长：弹层放宽并限高滚动 */
-  wide?: boolean;
-  /** 清单底部的一行备注（如「该模型只能开关思考」） */
-  note?: string | null;
+  onChange: (ref: string | null) => void;
+  /** 当前模型的思考档位菜单；空 = 该模型强度不可控 */
+  thinkingLevels: string[];
+  thinkingValue: string | null;
+  /** 不传 = 调用方没接思维链能力，菜单下半整段不渲染 */
+  onThinkingChange?: (level: string | null) => void;
 }) {
   const { open, toggle, close, rootRef, popoverRef, pos } = useAnchoredPopover();
+  // 未显式选择（value=null）时显示全局默认项；同 id 跨实例冲突的项 label 已带
+  // 「（实例名）」，不冲突的就是裸模型 id——前端不做去重判断，照单渲染。
+  const current = resolveModelOption(options, value);
+  const stops = thinkingStops(thinkingLevels);
+  const shape = thinkingControlShape(stops);
 
-  // 长清单（模型）打开时把当前项滚进视野，用户一眼看到自己选的是哪个
+  // 长清单打开时把当前项滚进视野，用户一眼看到自己选的是哪个
   useEffect(() => {
     if (!open) return;
     popoverRef.current
@@ -611,64 +622,77 @@ function QuietMenu({
       ?.scrollIntoView({ block: "nearest" });
   }, [open, popoverRef]);
 
-  const menu = open && pos && (
+  const panel = open && pos && (
     <div
       ref={popoverRef}
-      role="listbox"
-      aria-label={ariaLabel}
-      className={`menu-surface p-1.5 ${
-        wide ? "max-h-72 min-w-[12rem] max-w-[22rem] overflow-y-auto" : "min-w-[8rem]"
-      }`}
+      role="group"
+      aria-label="模型与思维链"
       // .menu-surface 自带 position:relative，须整体覆盖为 fixed
       style={{ position: "fixed", left: pos.left, bottom: pos.bottom, zIndex: 50 }}
+      className="menu-surface w-[19rem] max-w-[calc(100vw-1rem)] p-1.5"
     >
-      {options.map((option) => (
-        <button
-          key={option.key}
-          type="button"
-          role="option"
-          aria-selected={option.selected}
-          title={option.label}
-          onClick={() => {
-            option.onSelect();
-            close();
-          }}
-          className={`flex w-full items-center justify-between gap-3 rounded-[10px] px-2.5 py-1.5 text-left text-ui transition-colors hover:bg-white/[0.06] ${
-            option.selected ? "text-[var(--text)]" : "text-[var(--text-muted)]"
-          }`}
-        >
-          <span className="min-w-0">
-            <span className="block truncate">{option.label}</span>
-            {option.description && (
-              <span className="block text-caption leading-4 text-[var(--text-faint)]">
-                {option.description}
-              </span>
-            )}
-          </span>
-          {option.selected && <span aria-hidden>✓</span>}
-        </button>
-      ))}
-      {note && (
-        <p className="mx-1 mt-1 border-t border-white/[0.08] px-1.5 pb-0.5 pt-2 text-caption text-[var(--text-faint)]">
-          {note}
-        </p>
+      <p className="px-2.5 pb-0.5 pt-1 text-caption text-[var(--text-faint)]">模型</p>
+      {/* 模型清单单独限高滚动：下半的强度控件要一直贴在菜单底部，不随清单滚走 */}
+      <div role="listbox" aria-label="模型" className="max-h-56 overflow-y-auto">
+        {options.map((option) => {
+          const selected = option.ref === current?.ref;
+          return (
+            <button
+              key={option.ref}
+              type="button"
+              role="option"
+              aria-selected={selected}
+              title={option.label}
+              onClick={() => {
+                // 选回全局默认项即「默认」（null）：续聊沿用、设置页改默认后自动跟随
+                onChange(option.is_default ? null : option.ref);
+                close();
+              }}
+              className={`flex w-full items-center justify-between gap-3 rounded-[10px] px-2.5 py-1.5 text-left text-ui transition-colors hover:bg-white/[0.06] ${
+                selected ? "text-[var(--text)]" : "text-[var(--text-muted)]"
+              }`}
+            >
+              <span className="min-w-0 truncate">{option.label}</span>
+              {selected && <span aria-hidden>✓</span>}
+            </button>
+          );
+        })}
+      </div>
+      {onThinkingChange && (
+        <>
+          <div className="mx-2.5 my-1.5 h-px bg-white/[0.08]" />
+          {shape === "slider" && (
+            <ThinkingSlider stops={stops} value={thinkingValue} onChange={onThinkingChange} />
+          )}
+          {shape === "toggle" && (
+            <ThinkingToggle stops={stops} value={thinkingValue} onChange={onThinkingChange} />
+          )}
+          {/* 不可控的模型：下半空着会让人以为控件丢了，留一行灰字交代它去哪了 */}
+          {shape === "hidden" && (
+            <p className="px-2.5 pb-1.5 pt-0.5 text-caption text-[var(--text-faint)]">
+              该模型不支持调节思考强度
+            </p>
+          )}
+        </>
       )}
     </div>
   );
 
+  const label = current?.label ?? "模型";
   return (
     <div ref={rootRef} className="relative min-w-0 shrink">
-      {menu && createPortal(menu, document.body)}
+      {panel && createPortal(panel, document.body)}
       <button
         type="button"
-        aria-label={`${ariaLabel}：${pillLabel}`}
-        aria-haspopup="listbox"
+        aria-label={`模型与思维链：${label}`}
+        // 弹层里不只是一列选项（下半还有强度滑杆），不是 menu/listbox
+        aria-haspopup="dialog"
         aria-expanded={open}
         disabled={disabled}
         onClick={toggle}
         className={PILL_CLASS}
       >
-        <span className="min-w-0 truncate">{pillLabel}</span>
+        <span className="min-w-0 truncate">{label}</span>
         <ChevronRightIcon
           className={`size-3 shrink-0 transition-transform ${open ? "rotate-[-90deg]" : "rotate-90"}`}
         />
@@ -677,115 +701,32 @@ function QuietMenu({
   );
 }
 
-/* —— 模型选择：清单由服务端拍平，pill 只显示当前项的 label。
- * 未显式选择（value=null）时显示全局默认项；同 id 跨实例冲突的项 label 已带
- * 「（实例名）」，不冲突的就是裸模型 id——前端不做去重判断。 */
-
-function ModelMenu({
-  options,
-  value,
-  disabled,
-  onChange,
-}: {
-  options: LlmModelOption[];
-  value: string | null;
-  disabled?: boolean;
-  onChange: (ref: string | null) => void;
-}) {
-  const current = resolveModelOption(options, value);
-  return (
-    <QuietMenu
-      ariaLabel="模型"
-      pillLabel={current?.label ?? "模型"}
-      disabled={disabled}
-      wide
-      options={options.map((option) => ({
-        key: option.ref,
-        label: option.label,
-        selected: option.ref === current?.ref,
-        // 选回全局默认项即「默认」（null）：续聊沿用、设置页改默认后自动跟随
-        onSelect: () => onChange(option.is_default ? null : option.ref),
-      }))}
-    />
-  );
-}
-
-/* —— 思维链强度：pill 只显示当前档位本身；弹层形态由菜单形状决定 ——
- * 强度是有序量（越右想得越深、越慢），两档以上用一根横向离散滑杆：
- *   标题行  「强度  高」            右侧「恢复默认」（选了档位才出现）
+/* —— 思维链强度（菜单下半 · 滑杆形态） ——
+ * 强度是有序量（越右想得越深、越慢），两档以上画一根横向离散滑杆：
+ *   标题行  「思维链强度  高」        右侧「恢复默认」（选了档位才出现）
  *   轴标签  「更快 ……… 更聪明」
  *   滑杆     ●──●──◉──●──●   刻度 = 该模型声明的档位，按统一词汇表排序
  * 轨道整体可点可拖（指针捕获，滑出轨道也跟手），松手前一直吸附到最近刻度；
  * 键盘左右键在刻度间移动。「默认」= 不发任何参数、用模型自身行为，不是强度
- * 轴上的一点，所以不占刻度：默认态滑杆无滑块，靠「恢复默认」回去。
- * 只有一档的模型（toggle 方言的「关」）没有可拖的距离，画成滑杆点了就
- * 回不到默认——改用与模型选择器同款的两项列表「默认 / 关」。 */
+ * 轴上的一点，所以不占刻度：默认态滑杆无滑块，靠「恢复默认」回去。 */
 
 /** 刻度圆心离轨道两端的留白（px）：滑块半径 14px 加一点边距，与定位式共用。 */
 const TRACK_INSET_PX = 16;
 
-function ThinkingLevelMenu({
-  levels,
-  value,
-  disabled,
-  onChange,
-}: {
-  levels: string[];
-  value: string | null;
-  disabled?: boolean;
-  onChange: (level: string | null) => void;
-}) {
-  const stops = thinkingStops(levels);
-  const currentLabel = thinkingPillLabel(stops, value);
-  if (thinkingControlShape(stops) === "list") {
-    // 只能开关的模型：「默认」说不清是开是关，列表写成「开启（模型默认）/ 关闭」
-    // 并各带一行说明，底部注明没有强度档位（文案在 thinking-level-control.ts）
-    return (
-      <QuietMenu
-        ariaLabel="思维链"
-        pillLabel={currentLabel}
-        disabled={disabled}
-        wide
-        note={thinkingListNote(stops)}
-        options={thinkingListItems(stops).map((item) => ({
-          key: item.level ?? "default",
-          label: item.label,
-          description: item.description,
-          selected: value === item.level,
-          onSelect: () => onChange(item.level),
-        }))}
-      />
-    );
-  }
-  return (
-    <ThinkingLevelSlider
-      stops={stops}
-      value={value}
-      currentLabel={currentLabel}
-      disabled={disabled}
-      onChange={onChange}
-    />
-  );
-}
-
-function ThinkingLevelSlider({
+function ThinkingSlider({
   stops,
   value,
-  currentLabel,
-  disabled,
   onChange,
 }: {
   stops: string[];
   value: string | null;
-  currentLabel: string;
-  disabled?: boolean;
   onChange: (level: string | null) => void;
 }) {
-  const { open, toggle, rootRef, popoverRef, pos } = useAnchoredPopover();
   const trackRef = useRef<HTMLDivElement>(null);
   // 指针按下到抬起之间为拖拽态；用 ref 而不是 state，move 事件里读最新值且不触发重渲染
   const dragging = useRef(false);
   const index = value === null ? -1 : stops.indexOf(value);
+  const currentLabel = thinkingValueLabel(value);
   const percent = (i: number) => stopPercent(i, stops.length);
   const stopLeft = (i: number) =>
     `calc(${TRACK_INSET_PX}px + (100% - ${TRACK_INSET_PX * 2}px) * ${percent(i) / 100})`;
@@ -827,32 +768,26 @@ function ThinkingLevelSlider({
     onChange(stops[next]);
   };
 
-  const panel = open && pos && (
-    <div
-      ref={popoverRef}
-      role="group"
-      aria-label="思维链强度"
-      className="menu-surface w-[18rem] p-4"
-      style={{ position: "fixed", left: pos.left, bottom: pos.bottom, zIndex: 50 }}
-    >
+  return (
+    <div role="group" aria-label="思维链强度" className="px-2.5 pb-2 pt-0.5">
       <div className="flex items-baseline justify-between gap-3">
         <p className="text-ui text-[var(--text-muted)]">
-          强度
+          思维链强度
           <span className="ml-2 text-body font-medium text-[var(--text)]">{currentLabel}</span>
         </p>
         {value !== null ? (
           <button
             type="button"
             onClick={() => onChange(null)}
-            className="rounded-md px-1.5 py-0.5 text-caption text-[var(--text-faint)] transition-colors hover:bg-white/[0.06] hover:text-[var(--text)]"
+            className="shrink-0 rounded-md px-1.5 py-0.5 text-caption text-[var(--text-faint)] transition-colors hover:bg-white/[0.06] hover:text-[var(--text)]"
           >
             恢复默认
           </button>
         ) : (
-          <span className="text-caption text-[var(--text-faint)]">由模型自行决定</span>
+          <span className="shrink-0 text-caption text-[var(--text-faint)]">由模型自行决定</span>
         )}
       </div>
-      <div className="mt-3 flex items-center justify-between text-caption text-[var(--text-faint)]">
+      <div className="mt-2.5 flex items-center justify-between text-caption text-[var(--text-faint)]">
         <span>更快</span>
         <span>更聪明</span>
       </div>
@@ -871,7 +806,7 @@ function ThinkingLevelSlider({
         onPointerMove={onPointerMove}
         onPointerUp={onPointerEnd}
         onPointerCancel={onPointerEnd}
-        className="relative mt-2 h-8 cursor-pointer touch-none select-none rounded-full bg-white/[0.06] outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/60"
+        className="relative mt-1.5 h-8 cursor-pointer touch-none select-none rounded-full bg-white/[0.06] outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/60"
       >
         {/* 已选段用主色冷银填充（与应用更新进度条同款）：此前只比轨道亮 2%，
             选了几档肉眼看不出；滑块保持纯白，仍是整根轨道上最亮的点 */}
@@ -903,23 +838,55 @@ function ThinkingLevelSlider({
       </div>
     </div>
   );
+}
 
+/* —— 思维链强度（菜单下半 · 分段形态） ——
+ * 只有一档的模型（toggle 方言 kimi-k2.6、glm-5.x 的菜单就是单项「关」）没有
+ * 可拖的距离，画成滑杆点了就回不到默认——改用两格分段「开启（模型默认）/
+ * 关闭」。文案与「选中这格到底发什么参数」的说明都在 thinking-level-control.ts。 */
+
+function ThinkingToggle({
+  stops,
+  value,
+  onChange,
+}: {
+  stops: string[];
+  value: string | null;
+  onChange: (level: string | null) => void;
+}) {
+  const items = thinkingListItems(stops);
+  const current = items.find((item) => item.level === value) ?? items[0];
   return (
-    <div ref={rootRef} className="relative shrink-0">
-      {panel && createPortal(panel, document.body)}
-      <button
-        type="button"
-        aria-label={`思维链强度：${currentLabel}`}
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        disabled={disabled}
-        onClick={toggle}
-        title="思维链强度"
-        // 与模型 pill 同款的安静样式：选了档位由文案本身体现，不常驻高亮底色
-        className={PILL_CLASS}
+    <div className="px-2.5 pb-2 pt-0.5">
+      <p className="text-ui text-[var(--text-muted)]">思维链</p>
+      <div
+        role="group"
+        aria-label="思维链开关"
+        className="mt-2 flex gap-1 rounded-xl bg-white/[0.05] p-[3px]"
       >
-        {currentLabel}
-      </button>
+        {items.map((item) => {
+          const selected = value === item.level;
+          return (
+            <button
+              key={item.level ?? "default"}
+              type="button"
+              aria-pressed={selected}
+              onClick={() => onChange(item.level)}
+              className={`min-w-0 flex-1 truncate rounded-[9px] py-1.5 text-ui transition-colors ${
+                selected
+                  ? "bg-white/[0.14] text-[var(--text)]"
+                  : "text-[var(--text-muted)] hover:text-[var(--text)]"
+              }`}
+            >
+              {item.label}
+            </button>
+          );
+        })}
+      </div>
+      {/* 只显示当前选中那格的说明：两格的说明并排会把菜单撑得比模型清单还高 */}
+      <p className="mt-1.5 text-caption leading-4 text-[var(--text-faint)]">
+        {current.description}
+      </p>
     </div>
   );
 }

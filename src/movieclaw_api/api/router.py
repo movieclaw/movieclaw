@@ -47,6 +47,7 @@ from movieclaw_api.api.routes.import_watch import router as import_watch_router
 from movieclaw_api.api.routes.jobs import router as jobs_router
 from movieclaw_api.api.routes.libraries import router as libraries_router
 from movieclaw_api.api.routes.libraries import search_router as library_search_router
+from movieclaw_api.api.routes.library_duplicates import router as library_duplicates_router
 from movieclaw_api.api.routes.library_recycle import router as library_recycle_router
 from movieclaw_api.api.routes.llm import router as llm_router
 from movieclaw_api.api.routes.logs import router as logs_router
@@ -57,6 +58,7 @@ from movieclaw_api.api.routes.people import router as people_router
 from movieclaw_api.api.routes.playback import router as playback_router
 from movieclaw_api.api.routes.playback import stream_router as playback_stream_router
 from movieclaw_api.api.routes.rule_sets import router as rule_sets_router
+from movieclaw_api.api.routes.scheduled_tasks import router as scheduled_tasks_router
 from movieclaw_api.api.routes.scrape_settings import router as scrape_settings_router
 from movieclaw_api.api.routes.search import router as search_router
 from movieclaw_api.api.routes.shares import admin_router as shares_admin_router
@@ -105,6 +107,7 @@ _MEMBER_ROUTERS = [
     # 回收站 /libraries/trashed-files 必须排在 /libraries/{library_id} 之前，
     # 否则 "trashed-files" 会被当成 library_id 校验失败（422）
     library_recycle_router,
+    library_duplicates_router,
     libraries_router,
     collections_router,
     people_router,
@@ -156,6 +159,8 @@ _ADMIN_ROUTERS = [
     app_update_router,
     # 缓存管理：能删 data/ 卷上的目录，与重启/更新同属服务器控制权
     storage_router,
+    # 定时任务的周期与启停：改的是全站的后台节奏，管理员专属
+    scheduled_tasks_router,
     spec_router,
     # AI 字幕生成消费 LLM 配额（真金白银），G1 管理员专属；成员开放随
     # G2 额度护栏一起评估（docs/design/subtitle-ai-translate.md §6）

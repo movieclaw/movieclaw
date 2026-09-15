@@ -74,6 +74,7 @@ from movieclaw_api.services.playback import plan as playback_plan
 from movieclaw_api.services.playback import warmup as playback_warmup
 from movieclaw_api.services.playback import watch as playback_watch
 from movieclaw_api.services.playback.adaptive import adapt_to_downlink
+from movieclaw_api.services.playback.disc_source import disc_source_for_file
 from movieclaw_api.services.playback.embedded_subs import (
     extract_embedded_fonts,
     extract_embedded_subtitle_async,
@@ -1010,12 +1011,21 @@ async def start_playback_session(
             )
         )
 
+    # 原盘（disc-playback.md §3.4）：ffmpeg 吃不了目录——单剪辑也走 concat
+    # 清单（时间轴 = 播放列表时间，与台账时长、章节同口径），关键帧索引来自
+    # CLPI 的 EP_map；远程 Worker 只会经 HTTP 读单个源文件，原盘一律本地执行
+    disc = disc_source_for_file(file) if file.is_disc() else None
+    if file.is_disc() and disc is None:
+        raise NotFoundException("原盘主播放列表不可读，无法播放；请检查 BDMV/PLAYLIST 是否完整")
+
     async def _keyframe_index():
         """全片关键帧索引，只有直通档的 VOD 规划要它。冷缓存时 mp4 要过
         ffprobe（上秒级）——这是把它并入 gather 的主要理由：分享链接直达
         播放页时详情页预热没跑过，串行 await 会把这一秒全记在起播上。"""
         if not file.duration_seconds or not view.video or view.video.action != "copy":
             return None
+        if disc is not None:
+            return await asyncio.to_thread(disc.keyframe_index)
         return await asyncio.to_thread(read_keyframe_index, file.file_path)
 
     # 三件准备工作互相独立，并行做：策略读取（设置存储自带短会话，与请求
@@ -1041,7 +1051,7 @@ async def start_playback_session(
         decision,
         available=backends,
         local_backends=local_backends,
-        remote_video_available=remote_video_available,
+        remote_video_available=remote_video_available and disc is None,
     )
     if view.tier == int(Tier.HARDWARE_TRANSCODE) and execution_backend is None:
         # 决策阶段看到的硬件能力可能在准备阶段断线，或本地后端与当前滤镜链
@@ -1143,6 +1153,7 @@ async def start_playback_session(
             display_name=PathLib(file.file_path).name,
             device_id=device_id,
             cache=policy.transcode_cache_enabled,
+            source_concat=disc.concat_list() if disc is not None else None,
         )
     except (SessionLimitError, DiskQuotaError) as exc:
         raise ServiceUnavailableException(str(exc)) from exc
@@ -1585,9 +1596,18 @@ async def stream_library_file(
             raise NotFoundException("网盘直链无效")
         return RedirectResponse(remote, status_code=302)
     path = PathLib(file.file_path)
+    media_type = container_mime_type(file.container)
+    if file.is_disc():
+        # 原盘只有单剪辑主片才有「原文件」可直出（disc-playback.md §3.3）；
+        # 多剪辑在决策层已被导向 remux，不会走到这里
+        disc = disc_source_for_file(file)
+        clip = disc.single_clip if disc is not None else None
+        if clip is None:
+            raise NotFoundException("原盘主片由多段剪辑组成，不能按单文件直出")
+        path = clip.path
+        media_type = container_mime_type("m2ts")
     if not path.exists():
         raise NotFoundException("文件已不在磁盘上")
-    media_type = container_mime_type(file.container)
     if not grant.device_id or file.media_item_id is None:
         # 升级前签出的旧地址没有设备标识，不计量；未识别文件没有播放单元可记
         return DisconnectAwareFileResponse(path, media_type=media_type)

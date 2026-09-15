@@ -135,6 +135,28 @@ def _event_scopes(root: str, event) -> set[str | None]:  # noqa: ANN001
     return {_scope_for(root, p) for p in paths if p}
 
 
+def watchable_roots(libraries) -> tuple[list[tuple[int, str]], list[tuple[str, str]]]:
+    """该建监听的 (库 id, 根) 与被跳过的 (库名, 根)。
+
+    两条过滤：库关掉了实时监控的不建；根落在网络挂载上的不建（inotify 收不到
+    远端变更）。后者与开关无关——开关说的是"我想要"，挂载说的是"做不到"。
+    """
+    from movieclaw_api.services.library.mounts import is_network_root
+
+    roots: list[tuple[int, str]] = []
+    skipped: list[tuple[str, str]] = []
+    for library in libraries:
+        if library.id is None or not library.realtime_watch:
+            continue
+        for root in library.root_paths:
+            normalised = str(Path(root))
+            if is_network_root(normalised):
+                skipped.append((library.name, normalised))
+            else:
+                roots.append((library.id, normalised))
+    return roots, skipped
+
+
 class _PendingScan:
     """去抖批次里单个库累计的扫描诉求（全量标志 + 条目范围 + 重探点名）。"""
 
@@ -254,13 +276,17 @@ class LibraryWatcher:
             libraries = list((await session.execute(select(Library))).scalars().all())
         # 关闭了实时监控的库（realtime_watch=false，SMB/NFS 网络挂载的典型
         # 选择）不进清单：差量重建会自动拆掉它已有的监听，其新文件由定期
-        # 对账与手动扫描发现
-        roots = [
-            (library.id, str(Path(root)))
-            for library in libraries
-            if library.id is not None and library.realtime_watch
-            for root in library.root_paths
-        ]
+        # 对账与手动扫描发现。落在网络挂载上的根**无论开关**都不建：inotify
+        # 收不到远端变更，建了只是白付递归 watch 的成本（issue #162 的启动拖死），
+        # 还让用户误以为有保障——诚实地说清楚，交给定期对账（services/library/mounts.py）
+        roots, skipped = watchable_roots(libraries)
+        for library_name, root in skipped:
+            logger.info(
+                "媒体库「%s」的根路径「%s」在网络挂载上，实时监控收不到远端变更，"
+                "已跳过监听；新文件由定期对账发现",
+                library_name,
+                root,
+            )
         # 每库的监听扩展名口径（图片库只认图片，影视/其他库只认视频+strm）
         from movieclaw_api.services.library.layout import SUBTITLE_EXTS
         from movieclaw_api.services.library.profile import profile_of
@@ -318,9 +344,7 @@ class LibraryWatcher:
             handler = self._make_handler(library_id, root)
             # 同一根被多个库共用时 watchdog 只允许一个 watch，把 handler
             # 挂到既有 watch 上；unschedule 只在最后一个引用拆除时执行
-            shared = next(
-                (w for (_lib, r), (_h, w) in self._entries.items() if r == root), None
-            )
+            shared = next((w for (_lib, r), (_h, w) in self._entries.items() if r == root), None)
             try:
                 if shared is not None:
                     observer.add_handler_for_watch(handler, shared)
@@ -458,9 +482,7 @@ class LibraryWatcher:
         task = self._rescan_tasks.get(library_id)
         if task is not None and not task.done():
             return
-        self._rescan_tasks[library_id] = asyncio.create_task(
-            self._requeue_after_scan(library_id)
-        )
+        self._rescan_tasks[library_id] = asyncio.create_task(self._requeue_after_scan(library_id))
 
     async def _requeue_after_scan(self, library_id: int) -> None:
         from movieclaw_api.services.library.scan import is_scanning
