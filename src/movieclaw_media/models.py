@@ -243,7 +243,7 @@ class MediaDetail(BaseModel):
     )
     backdrop_url: str | None = Field(
         default=None,
-        description="主横幅剧照的原图（original 尺寸）；详情页沉浸背景用，避免 w1280 在大屏拉伸发虚",
+        description="主横幅剧照原图（original 尺寸）；详情页沉浸背景用，避免 w1280 大屏拉伸发虚",
     )
     collection: MediaCollection | None = Field(
         default=None,

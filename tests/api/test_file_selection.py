@@ -7,16 +7,15 @@
 
 from __future__ import annotations
 
-import pytest
 import pytest_asyncio
 
 import movieclaw_api.services.torrent_submit as torrent_submit_service
 from movieclaw_api.core.config import get_settings
+from movieclaw_api.services.site_access import SiteUnavailableError
 from movieclaw_api.services.subscription.file_selection import (
     plan_file_selection,
     selective_units_for,
 )
-from movieclaw_api.services.site_access import SiteUnavailableError
 from movieclaw_db.engine import dispose_db, get_database, init_db
 from movieclaw_db.models import DownloaderClient
 from movieclaw_db.models.site_credential import ConfigStatus
@@ -65,7 +64,9 @@ class TestSelectiveUnitsFor:
 
 # -- 规划器：plan_file_selection ----------------------------------------------
 
-S01_PACK = [f"Alone.S01.2015.Complete.1080p/Alone.S01E{e:02d}.1080p.WEB-DL.mkv" for e in range(1, 12)]
+S01_PACK = [
+    f"Alone.S01.2015.Complete.1080p/Alone.S01E{e:02d}.1080p.WEB-DL.mkv" for e in range(1, 12)
+]
 
 
 class TestPlanFileSelection:
