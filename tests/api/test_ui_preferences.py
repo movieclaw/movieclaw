@@ -40,6 +40,8 @@ def client(tmp_path, monkeypatch):
 
 # 各页面的默认样式（与 UiPreferencesSetting 各分组默认值一致）
 DEFAULT_PREFS = {
+    # 主题 id：银玻璃为出厂主题，Netflix 主题切换后存 "netflix"
+    "theme": "silver",
     "sidebar": {"transparency": 0.49, "brightness": -0.36, "depth": 28.0},
     "scrim": {"blur": 13.0, "dark": 0.69},
     # 空顺序 = 侧栏主导航用内置默认排布

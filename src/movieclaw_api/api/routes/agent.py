@@ -164,8 +164,10 @@ _PAGE_ROUTES: list[tuple[str, str]] = [
         "库内条目详情（条目 ID 来自 library items list）",
     ),
     ("/activity", "活动页（观看：实时播放/下载；任务：后台作业与下载任务）"),
+    ("/new", "AI 新任务直达页（Netflix 顶栏「＋ 新任务」入口；与首页共用内容）"),
     ("/sessions/{会话ID}", "AI 会话详情（ID 来自 session list/start）"),
     ("/people/{影人ID}", "影人档案（ID 来自 people 域）"),
+    ("/my", "「我的」页（用户信息、快捷入口、AI 会话与账号操作；Netflix 移动端底栏页签）"),
     ("/settings", "设置页"),
 ]
 
