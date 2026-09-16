@@ -42,6 +42,8 @@ apps/web/tmp/
 .DS_Store
 .claude/settings.local.json
 /.claude/launch.json
+# 本地 NAS 部署技能含内网地址与部署细节，只留本地不入仓库
+/.claude/skills/nas-deploy/
 .codex/
 
 # 本地 UI 验收的临时产物（截图、隔离数据库、开发日志），只留本地不入仓库
