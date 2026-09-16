@@ -25,6 +25,7 @@
   <a href="#boundaries">Boundaries</a> ·
   <a href="#control-it-from-anywhere">CLI</a> ·
   <a href="docs/design/">Design Docs</a> ·
+  <a href="#community">Community</a> ·
   <a href="https://github.com/movieclaw/movieclaw/issues">Feedback</a>
 </p>
 
@@ -34,6 +35,7 @@
   <a href="https://hub.docker.com/r/movieclaw/movieclaw/tags"><img alt="Image Version" src="https://img.shields.io/docker/v/movieclaw/movieclaw/latest?label=docker%20image"></a>
   <img alt="Last Commit" src="https://img.shields.io/github/last-commit/movieclaw/movieclaw">
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/movieclaw/movieclaw"></a>
+  <a href="https://t.me/movieclawio"><img alt="Telegram" src="https://img.shields.io/badge/Telegram-%40movieclawio-26A5E4?logo=telegram&logoColor=white"></a>
 </p>
 
 <p align="center">
@@ -567,6 +569,34 @@ allows no cleanup — `kill -9`, a power cut — while the AI assistant is execu
 the subprocesses it spawned may be left running (normal shutdown, timeouts, and the user's
 stop button all reap the whole process group, and under Docker a container restart cleans
 up as well). After a hard crash on bare metal, a quick `ps` check for leftovers is worth it.
+
+## Community
+
+Deployment questions, setup tips, feature ideas, or just showing off your library —
+come say hello:
+
+<table>
+  <tr>
+    <td align="center" width="50%" valign="top">
+      <a href="https://t.me/movieclawio"><img src="https://img.shields.io/badge/Telegram-%40movieclawio-26A5E4?logo=telegram&logoColor=white&style=for-the-badge" alt="Telegram group"></a>
+      <br><br>
+      <b>Telegram</b><br>
+      <a href="https://t.me/movieclawio">t.me/movieclawio</a>
+      <br><br>
+      Open to everyone, no invite needed.
+    </td>
+    <td align="center" width="50%" valign="top">
+      <img src="docs/images/wechat-group.jpg" width="240" alt="WeChat group QR code">
+      <br>
+      <b>WeChat group</b><br>
+      Scan with WeChat to join.
+    </td>
+  </tr>
+</table>
+
+WeChat group QR codes expire after a week. If the one above no longer works, the Telegram
+group always does — or [open an issue](https://github.com/movieclaw/movieclaw/issues) and
+we'll refresh it.
 
 ## Docs & Support
 

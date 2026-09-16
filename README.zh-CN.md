@@ -24,6 +24,7 @@
   <a href="#boundaries">边界</a> ·
   <a href="#在别的机器上操控它">命令行</a> ·
   <a href="docs/design/">设计文档</a> ·
+  <a href="#交流群">交流群</a> ·
   <a href="https://github.com/movieclaw/movieclaw/issues">反馈</a>
 </p>
 
@@ -33,6 +34,7 @@
   <a href="https://hub.docker.com/r/movieclaw/movieclaw/tags"><img alt="Image Version" src="https://img.shields.io/docker/v/movieclaw/movieclaw/latest?label=docker%20image"></a>
   <img alt="Last Commit" src="https://img.shields.io/github/last-commit/movieclaw/movieclaw">
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/movieclaw/movieclaw"></a>
+  <a href="https://t.me/movieclawio"><img alt="Telegram" src="https://img.shields.io/badge/Telegram-%40movieclawio-26A5E4?logo=telegram&logoColor=white"></a>
 </p>
 
 <p align="center">
@@ -490,6 +492,32 @@ Web 控制台 `http://127.0.0.1:3000`，API 文档 `http://127.0.0.1:8000/docs`�
 无法收尾的方式杀死，助手启动的子进程可能残留在系统里继续运行（正常停止、超时和
 用户点停止都会整组回收，Docker 部署下容器重启也会连带清干净）。裸机上遇到异常
 停机后可以 `ps` 检查一下有没有残留进程。
+
+## 交流群
+
+部署遇到问题、想提需求、或者只是想晒一下自己的片库，都欢迎进群聊：
+
+<table>
+  <tr>
+    <td align="center" width="50%" valign="top">
+      <img src="docs/images/wechat-group.jpg" width="240" alt="微信交流群二维码">
+      <br>
+      <b>微信群</b><br>
+      用微信扫码进群。
+    </td>
+    <td align="center" width="50%" valign="top">
+      <a href="https://t.me/movieclawio"><img src="https://img.shields.io/badge/Telegram-%40movieclawio-26A5E4?logo=telegram&logoColor=white&style=for-the-badge" alt="Telegram 群"></a>
+      <br><br>
+      <b>Telegram</b><br>
+      <a href="https://t.me/movieclawio">t.me/movieclawio</a>
+      <br><br>
+      公开群，直接点链接进。
+    </td>
+  </tr>
+</table>
+
+微信群二维码 7 天失效。如果上面的码已经扫不进去了，可以先进 Telegram 群，
+或者开个 [Issue](https://github.com/movieclaw/movieclaw/issues) 提醒我们换新码。
 
 ## 文档与支持
 
