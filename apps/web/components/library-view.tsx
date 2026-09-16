@@ -121,22 +121,48 @@ export function libraryStatsSummary(libraries: MediaLibrary[] | null): string {
 //: 首帧等合集列表的预算（毫秒）。见 reload 里的说明
 const COLLECTIONS_FIRST_PAINT_BUDGET_MS = 1500;
 
+/**
+ * 上一次成功加载的首页数据（模块级，进程内存，跨路由驻留）。
+ *
+ * 顶栏「媒体库」等入口回到本页时组件会重挂载：没有这份快照，首帧只能画
+ * 「正在加载…」的矮内容，滚动恢复（use-scroll-restoration）要等行数据到齐、
+ * 内容撑到旧位置的高度才能写入 scrollTop——页面先在最上端闪一拍、再跳回
+ * 离开处。快照让首帧直接以全量内容渲染，恢复就能在首次绘制前落位。
+ * 数据仍照常重新拉取刷新，快照只是绘制起点，不承担缓存有效期职责。
+ */
+let lastLoadedHome: {
+  libraries: MediaLibrary[];
+  collections: Collection[];
+  upNext: UpNextItem[];
+  favorites: FavoritesPage;
+  itemsByKey: Map<string, LibraryItem[]>;
+} | null = null;
+
 export function LibraryView({ hero }: { hero?: ReactNode }) {
   const { canManageLibraries } = usePermissions();
   // 首页的行清单存在界面偏好里（成员各存各的），应用启动时已随全站偏好拉过一次
   const { prefs } = useUiPrefs();
   const homePrefs = prefs.home;
   const scrollRef = useScrollRestoration("library");
-  const [libraries, setLibraries] = useState<MediaLibrary[] | null>(null);
+  // 各状态初值取上次会话留存的快照（没有则走加载态），见 lastLoadedHome
+  const [libraries, setLibraries] = useState<MediaLibrary[] | null>(
+    () => lastLoadedHome?.libraries ?? null,
+  );
   // 当前身份可见的合集：合并行清单要靠它认出合集行；数字大于零也决定
   // 「全部合集」入口露不露（空合集后端已经滤掉了）
-  const [collections, setCollections] = useState<Collection[]>([]);
+  const [collections, setCollections] = useState<Collection[]>(
+    () => lastLoadedHome?.collections ?? [],
+  );
   // 库行 / 合集行 / 库卡片封面的条目按「取数键」缓存：同一个库同一种排序只请求
   // 一次（库卡片封面与默认的「最近添加」行共用 added_at 那一份）
-  const [itemsByKey, setItemsByKey] = useState<Map<string, LibraryItem[]>>(new Map());
-  const [upNext, setUpNext] = useState<UpNextItem[] | null>(null);
+  const [itemsByKey, setItemsByKey] = useState<Map<string, LibraryItem[]>>(
+    () => lastLoadedHome?.itemsByKey ?? new Map(),
+  );
+  const [upNext, setUpNext] = useState<UpNextItem[] | null>(() => lastLoadedHome?.upNext ?? null);
   // 我的收藏：与接下来继续同一轮拉取、同一套失败策略（拉不到保留旧数据）
-  const [favorites, setFavorites] = useState<FavoritesPage | null>(null);
+  const [favorites, setFavorites] = useState<FavoritesPage | null>(
+    () => lastLoadedHome?.favorites ?? null,
+  );
   const [failed, setFailed] = useState(false);
 
   // 轮询乱序守卫：扫描期间后端响应时间抖动大，上一轮的慢响应可能晚于
@@ -239,6 +265,19 @@ export function LibraryView({ hero }: { hero?: ReactNode }) {
     reloadRef.current = reload;
     reload();
   }, [reload]);
+
+  // 成功到手的数据随手更新模块级快照，供下次重挂载首帧直出（见 lastLoadedHome）。
+  // 只在 libraries 已加载时写：加载态/失败态不该顶掉上一份好数据。
+  useEffect(() => {
+    if (libraries === null) return;
+    lastLoadedHome = {
+      libraries,
+      collections,
+      upNext: upNext ?? [],
+      favorites: favorites ?? { items: [], total: 0 },
+      itemsByKey,
+    };
+  }, [libraries, collections, upNext, favorites, itemsByKey]);
 
   // 有库在扫描/整理时轮询刷新，任务完成即看到最新库存与文件名
   const busyAny = (libraries ?? []).some((l) => l.scanning || l.organizing);

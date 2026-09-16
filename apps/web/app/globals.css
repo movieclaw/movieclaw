@@ -612,9 +612,18 @@ html.immersive-route .page-solid {
   color: var(--text);
 }
 
-a {
-  color: inherit;
-  text-decoration: none;
+/*
+ * a 的默认观感（继承文字色、无下划线）与 preflight 同向，但 text-decoration
+ * 档位不同（none 而非 inherit）。必须写在 @layer base 里：无 @layer 的普通
+ * 规则优先级永远高于任何 @layer，而 Tailwind 的工具类都在 @layer utilities
+ * （与下方 button cursor 规则同一坑，2026-09-16 实测踩中——顶栏导航链接的
+ * text-[var(--accent)] 激活红被这条无层规则压成继承色，红色高亮不生效）。
+ */
+@layer base {
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
 }
 
 /*

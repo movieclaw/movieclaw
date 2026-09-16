@@ -18,6 +18,7 @@ import { SettingsSidebar } from "@/components/settings-view";
 import { Sidebar } from "@/components/sidebar";
 import { SubscribeEntryProvider } from "@/components/subscribe-entry";
 import { NetflixSettingsNav, NetflixTabBar } from "@/components/netflix/tab-bar";
+import { NetflixSettingsSidebar } from "@/components/netflix/settings-sidebar";
 import { NetflixTopNav } from "@/components/netflix/top-nav";
 import { MovieclawMark, MovieclawWordmark } from "@/components/netflix/brand";
 import { AgentConversationsProvider } from "@/lib/agent-conversations";
@@ -276,11 +277,21 @@ function AppShellBody({ children }: { children: React.ReactNode }) {
   // 必须只渲染一份——面板是真实 WebGL 液态玻璃，多一份就多吃一个 WebGL 上下文。
   // （Netflix 主题下玻璃已停用，但侧栏仍只在设置模式出现，同样单实例。）
   const sidebarNode = isSettings ? (
-    <SettingsSidebar
-      active={activeSettings}
-      onSelect={(id) => router.push(`/settings/${id}` as Route)}
-      onBack={backToWorkspace}
-    />
+    // Netflix 主题用自家的黑底文字菜单（见 netflix/settings-sidebar.tsx），
+    // 银玻璃维持玻璃面板 + 胶囊行的 SaaS 菜单；两者分区/选中语义同源
+    isNetflix ? (
+      <NetflixSettingsSidebar
+        active={activeSettings}
+        onSelect={(id) => router.push(`/settings/${id}` as Route)}
+        onBack={backToWorkspace}
+      />
+    ) : (
+      <SettingsSidebar
+        active={activeSettings}
+        onSelect={(id) => router.push(`/settings/${id}` as Route)}
+        onBack={backToWorkspace}
+      />
+    )
   ) : (
     <Sidebar
       activeNav={activeNav}

@@ -27,7 +27,8 @@ import { clearUiPrefsCache } from "@/lib/ui-prefs-cache";
  * - 高 68px、fixed，页面顶端透明（压一层向下渐隐的黑雾保证字标可读），
  *   任一滚动容器滚过阈值后过渡为 #141414 实底——Netflix 顶栏是实底不是毛玻璃，
  *   不引入 backdrop-filter。
- * - 左：品牌字标（回媒体库）+ 导航链接（激活 = 白 700，未激活 = #e5e5e5）；
+ * - 左：品牌字标（回媒体库）+ 导航链接（激活 = 品牌红加粗——红只用于品牌
+ *   标识与激活指示的 §4 纪律，未激活 = #e5e5e5、悬停变白）；
  *   <1100px 收敛为「浏览 ▾」下拉（Netflix 同款断点）。
  * - 右：「＋ 新任务」（白底黑字，AI 是本站差异能力，给一个 Netflix 没有但
  *   不破坏画面的入口）· 搜索（复用 SearchCommand 命令面板）· 通知铃 · 头像下拉。
@@ -91,10 +92,22 @@ export function NetflixTopNav({
   }, []);
   // 顶栏常驻外壳、不随路由重建，滚动深度是跨页面残留的：上个页面滚过后跳到
   // 详情页，新页面停在顶部却没有滚动事件来纠正，顶栏会一直保持实底黑。路由
-  // 切换即复位为页面顶端状态；目标页若带着恢复的滚动位置，随后的滚动事件自
-  // 会把变量纠正回来。
+  // 切换即复位为页面顶端状态。复位与随后的「落位纠正」都要瞬时完成：媒体库
+  // 等页面带着恢复的滚动位置回来时（滚动恢复在首帧绘制前写 scrollTop），纠正
+  // 若参与 450ms 渐变，顶栏底色会在已经滚到深处的新页面上重放一遍
+  // 「透明 → 黑」，观感即到达后闪一下。整个短窗口内压掉变量过渡（过渡属性
+  // 挂 inline），等窗口过期再交还类上的缓动；在窗口内做过样式计算后再恢复
+  // 才安全，靠墙钟 timeout 而非 rAF——rAF 在渲染节流（后台标签）下可能与
+  // 写入挤进同一次样式计算，瞬时写入又被渐变接管（实测踩过）。
   useEffect(() => {
-    rootRef.current?.style.setProperty("--nf-nav-dim", "0");
+    const root = rootRef.current;
+    if (!root) return;
+    root.style.transition = "none";
+    root.style.setProperty("--nf-nav-dim", "0");
+    const resume = window.setTimeout(() => {
+      root.style.transition = "";
+    }, 250);
+    return () => window.clearTimeout(resume);
   }, [pathname]);
 
   const visibleLinks = NAV_LINKS.filter((link) => link.id !== "subscriptions" || canSubscribe);
@@ -128,10 +141,10 @@ export function NetflixTopNav({
             <Link
               key={link.id}
               href={link.href}
-              className={`shrink-0 text-[14px] transition-colors hover:text-white/75 ${
+              className={`shrink-0 text-[14px] transition-colors ${
                 active === link.id
-                  ? "font-bold text-white"
-                  : "font-normal text-[#e5e5e5]"
+                  ? "font-bold text-[var(--accent)]"
+                  : "font-normal text-[#e5e5e5] hover:text-white"
               }`}
             >
               {link.label}
@@ -225,7 +238,7 @@ function BrowseDropdown({
               href={link.href}
               onClick={() => setOpen(false)}
               className={`glass-row px-2.5 py-2 text-ui font-medium ${
-                active === link.id ? "text-white" : ""
+                active === link.id ? "font-bold text-[var(--accent)]" : ""
               }`}
             >
               <span className="flex-1">{link.label}</span>
