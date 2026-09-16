@@ -429,18 +429,6 @@ export function LibraryView({ hero }: { hero?: ReactNode }) {
             {failed && libraries === null
               ? "暂时无法获取媒体库统计，正在自动重试"
               : libraryStatsSummary(libraries === null ? null : visibleLibraries)}
-            {/* 「我的媒体库」行被藏起来时，「全部合集」的入口不能跟着消失：挪到统计行末尾 */}
-            {librariesRowHidden && collectionCount > 0 && (
-              <>
-                {" · "}
-                <Link
-                  href={"/library/collections" as Route}
-                  className="text-[var(--text-faint)] transition hover:text-[var(--text)]"
-                >
-                  全部合集 ›
-                </Link>
-              </>
-            )}
           </p>
         </div>
         {/* 两个页面级动作都是图标钮：自定义首页（所有人）、管理媒体库（有权限的人） */}
