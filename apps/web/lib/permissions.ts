@@ -43,7 +43,15 @@ export function roleLabel(session: SessionView): string {
  */
 export function accessiblePathFor(session: SessionView, requestedPath: string): string {
   if (session.role === "member") {
-    if (requestedPath === "/" || requestedPath.startsWith("/sessions/")) return "/library";
+    // Agent 入口（首页输入台 / 直达页 / 会话页）一律挡在成员之外：界面上已经
+    // 不给入口，手输 URL 也不该看到一个后端全 403 的空壳页
+    if (
+      requestedPath === "/" ||
+      requestedPath === "/new" ||
+      requestedPath.startsWith("/sessions/")
+    ) {
+      return "/library";
+    }
     if (!session.capabilities.allow_subscribe && requestedPath.startsWith("/subscriptions")) {
       return "/library";
     }

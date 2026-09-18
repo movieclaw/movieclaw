@@ -143,8 +143,9 @@ export function MediaDetailView({
   // 不再只铺详情卡片的局部），离开即恢复用户配置的背景——与媒体库条目详情页
   // 同一条链路（见 lib/backdrop.tsx 的 setOverrideBackdrop）。没有横幅剧照时
   // 退回海报，覆盖层自己会铺满作氛围色。豆瓣来源不换背景：只有小尺寸海报、
-  // 没有高清横幅剧照，铺成全屏背景是一片糊图——宁可保持原背景，也不为沉浸降质
-  // （页内手机 Hero 与背景分开取源，豆瓣在手机上仍有 Hero，见下）。
+  // 没有高清横幅剧照，铺成全屏背景是一片糊图——宁可保持原背景，也不为沉浸降质。
+  // 注意「不换全站背景」≠「页面上没有画面」：手机上画面由页内 Hero 呈现，
+  // 取源与全站背景**分开**（见下方 mobileHeroSrc），豆瓣条目因此照常有 Hero。
   const { setOverrideBackdrop } = useBackdrop();
   // 沉浸背景只走高清：TMDB 的 original 地址是确定性的（w1280 同图换尺寸段，
   // 见 upgradedTmdbOriginalUrl），进入页面即刻推导并预加载，加载**并解码**完成
@@ -198,6 +199,22 @@ export function MediaDetailView({
     setOverrideBackdrop(immersiveUrl);
     return () => setOverrideBackdrop(null);
   }, [immersiveUrl, setOverrideBackdrop]);
+
+  // 手机页内 Hero 的取源与全站沉浸背景**分开**，这是两个不同的展示位：
+  //   - 全站背景是 fixed 全屏覆盖层，竖屏上横版剧照只能按高度放大、从正中
+  //     裁出一条竖条（"半个屋顶 + 一根树干"），所以手机不靠它显示画面；
+  //     它仍要换，因为侧栏的液态玻璃折射的就是它，不换会与页面断成两截。
+  //   - 页内 Hero 是有限高度的画面框（约 1.15 倍宽），横版剧照按高度铺满、
+  //     上下不裁，左右裁掉两边留住主体——这才是手机上看到的那张图。
+  // 因此 Hero 不跟随「豆瓣不换全站背景」那条决策：全屏铺糊图不可接受，
+  // 有限高度的画面框里小图完全够用，而没有 Hero 的豆瓣详情页开局是一整块
+  // 空洞（顶部 186px 什么都没有）。没有剧照时退回海报（豆瓣条目、极少数
+  // 没有横幅图的 TMDB 条目）。
+  const mobileHeroSrc = hdState === "ok" && hdUrl ? hdUrl : fallbackBackdrop;
+  // Hero 的框比剧照高：宽度撑满、高约 1.15 倍宽（封顶 62svh，390px 宽的屏上约
+  // 448px）——比按宽度塞下整张（只有 219px 高）多一倍画面，又不像铺满整屏那样
+  // 只剩中间一条。与媒体库条目详情页同一套公式，两个详情页的手机构图一致。
+  const mobileHeroHeight = "min(115vw, 62svh)";
   // 豆瓣外链的移动端 App 直跳：无悬停设备把「豆瓣」外链换成官方分发地址，
   // 装了豆瓣 App 直接拉起进词条页（桌面/未命中时为 null，回落网页地址）
   const doubanAppHref = useDoubanAppHref(source === "douban" ? id : null);
@@ -213,18 +230,19 @@ export function MediaDetailView({
   const isNf = themeId === "netflix";
   const isNfDesktop = isNf && !isMobile;
   const hidePageNav = isNfDesktop;
+  const showMobileHero = isMobile && mobileHeroSrc !== "";
 
   // 滚动退场：详情页下滚时剧照不是被机械地推出屏幕，而是随滚动进度渐暗 +
   // 模糊（Netflix 海报墙的观感）。进度写到根节点 CSS 变量 --nf-hero-recede
   // （0→1），沉浸覆盖层（globals.css 的 html.nf-hero-live .backdrop-override）
   // 用它驱动 filter——滚动过程零 React 重渲染。rAF 合帧：一次滚动会派发多次
-  // scroll 事件，只保留最后一帧的写入。Netflix 主题桌面与移动都启用（移动端
-  // 的纵向渐隐同样挂在这个标记类上，见 globals.css 的移动端档）；卸载 / 换片
-  // 重建时把变量与标记类清干净，别污染其他页面。
+  // scroll 事件，只保留最后一帧的写入。**只在桌面启用**：手机上画面由页内
+  // Hero 承担、滚动容器已铺黑把全站背景整个挡住，标记类无处生效（与媒体库
+  // 条目详情页同口径）；卸载 / 换片重建时把变量与标记类清干净，别污染其他页面。
   const scrollRef = useRef<HTMLDivElement>(null);
   const hasItem = Boolean(item);
   useEffect(() => {
-    if (!isNf) return;
+    if (!isNfDesktop) return;
     const root = document.documentElement;
     root.classList.add("nf-hero-live");
     const el = scrollRef.current;
@@ -255,7 +273,7 @@ export function MediaDetailView({
       root.classList.remove("nf-hero-live");
       root.style.removeProperty("--nf-hero-recede");
     };
-  }, [isNf, hasItem]);
+  }, [isNfDesktop, hasItem]);
 
   // 兜底态也必须渲染 PageNav——它向外壳登记「本页自带顶栏」，否则移动端的
   // 全局顶栏（☰ + logo）会在数据到达前先显示、随后又消失，顶部闪一下；
@@ -318,12 +336,15 @@ export function MediaDetailView({
     // 圆角色块——与 library-item-detail-view 同一处理。
     <div
       ref={scrollRef}
-      className="detail-ambient scroll-thin scroll-safe relative isolate h-full overflow-y-auto rounded-2xl max-md:rounded-none"
+      className={`detail-ambient scroll-thin scroll-safe relative isolate h-full overflow-y-auto rounded-2xl max-md:rounded-none ${
+        showMobileHero ? "detail-ambient--hero" : ""
+      }`}
     >
-      {/* 没有任何 Hero 图层：全站背景此刻就是本片剧照（沉浸覆盖 + 本页豁免
-          全局蒙版，见 app-shell 的 isHome），大图直出、零边界；.detail-ambient
-          在滚动容器上铺「透明 → 纯黑」的渐变板托住下方内容（见 globals.css，
-          Netflix 主题另有左侧渐变遮罩护住标题区）。 */}
+      {/* 桌面没有任何 Hero 图层：全站背景此刻就是本片剧照（沉浸覆盖 + 本页
+          豁免全局蒙版，见 app-shell 的 isHome），大图直出、零边界；
+          .detail-ambient 在滚动容器上铺「透明 → 纯黑」的渐变板托住下方内容
+          （见 globals.css，Netflix 主题另有左侧渐变遮罩护住标题区）。
+          手机上竖屏放不下横版剧照，改由下面的页内 Hero 呈现。 */}
       {!hidePageNav && <PageNav title={item.title} fallback={navFallback} />}
       {isNfDesktop && <NetflixBackButton onBack={back} />}
       {/* 背景轮换：Netflix 桌面且剧照多于一张时，按序叠变（见组件说明）。
@@ -336,9 +357,34 @@ export function MediaDetailView({
         />
       )}
 
-      {/* 氛围留白：这一段什么都不放，让剧照完整呼吸。高度由 --detail-hero-h
-          驱动（与 globals.css 的渐变起点同源，各主题自行取值）。 */}
-      <div className="h-[var(--detail-hero-h)] min-h-[var(--detail-hero-min-h)]" />
+      {/* 手机 Hero（剧照）：宽度撑满，从状态栏底下起铺（绝对定位在滚动内容顶端，
+          PageNav 的返回键与吸顶雾层浮在它上面），随内容一起滚走，不固定在背景上。
+          顶部一抹暗让状态栏与返回键落在亮图上也读得清；底部从中段开始压暗，到
+          底边落成纯黑，与下方黑底无缝接上。与媒体库条目详情页同一套实现。 */}
+      {showMobileHero && (
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-x-0 top-0 z-0 overflow-hidden"
+          style={{ height: mobileHeroHeight }}
+        >
+          <img src={mobileHeroSrc} alt="" decoding="async" className="size-full object-cover object-center" />
+          <div className="absolute inset-x-0 top-0 h-28 bg-gradient-to-b from-black/45 to-transparent" />
+          <div className="absolute inset-x-0 bottom-0 h-[55%] bg-gradient-to-b from-transparent via-black/55 to-black" />
+        </div>
+      )}
+
+      {/* 氛围留白：这一段什么都不放，让剧照完整呼吸。桌面高度由 --detail-hero-h
+          驱动（与 globals.css 的渐变起点同源，各主题自行取值）；手机有 Hero 时
+          = Hero 高度减去吸顶顶栏的占位（52px + 安全区）与片名压进图里的那一截
+          （150px），片名与信息落在剧照底部的渐变上；视口很矮时减到负数就不留白。 */}
+      <div
+        className={showMobileHero ? undefined : "h-[var(--detail-hero-h)] min-h-[var(--detail-hero-min-h)]"}
+        style={
+          showMobileHero
+            ? { height: `max(0px, calc(${mobileHeroHeight} - 52px - var(--safe-top) - 150px))` }
+            : undefined
+        }
+      />
 
       {/* 内容层：-mt-28/pt-28 与 .detail-ambient 的渐变起点对齐——渐变从标题
           上方开始压暗，基础信息附近已接近纯黑，下面保持全黑。detail-content

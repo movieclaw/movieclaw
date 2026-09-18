@@ -2636,7 +2636,13 @@ html[data-theme="netflix"] .sub-hero-card > .sub-hero-tint {
    详情构图；银玻璃移动端维持 22vh/120px 不动）。spacer 与渐变起点同源取
    这两个变量，改一处全链路跟随。 */
 @media (max-width: 767px) {
-  html[data-theme="netflix"] {
+  /* 选择器必须钉在 .detail-ambient 上，不能只写 html[data-theme="netflix"]：
+     .detail-ambient 自己在上面的移动端档里声明了 --detail-hero-h: 22vh，而
+     自定义属性上「元素自身的声明」恒定压过「从祖先继承的值」（与选择器
+     特异度、源码先后都无关）。挂在 html 上等于没写——实测 Netflix 手机详情页
+     一直是 22vh/186px，而不是这里要的 40vh/220px。桌面档（上面 58vh 那条）
+     本来就写成后代选择器，所以只有移动档踩了坑。 */
+  html[data-theme="netflix"] .detail-ambient {
     --detail-hero-h: 40vh;
     --detail-hero-min-h: 220px;
   }

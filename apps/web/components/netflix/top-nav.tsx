@@ -132,7 +132,12 @@ export function NetflixTopNav({
           aria-label="回到媒体库"
           className="flex shrink-0 items-center transition-opacity hover:opacity-80"
         >
-          <MovieclawWordmark className="h-7 w-auto" />
+          {/* 字标高度 = 大写高，宽度由字形比例推导（≈6.25 : 1）。22px 高 ≈ 137px
+              宽，在 68px 顶栏里约占 1/3 高——原先的 h-7（28px / 175px 宽）把
+              右边四条 14px 的导航链接整个压住了。MOVIECLAW 是 9 个字母，比
+              NETFLIX 的 7 个天然更宽，同样的大写高会显著更抢眼，因此取比
+              Netflix 官方字标（约 25px 高）更小的一档。 */}
+          <MovieclawWordmark className="h-[22px] w-auto" />
         </Link>
 
         {/* 导航链接：≥1100px 全量展开 */}
@@ -157,15 +162,19 @@ export function NetflixTopNav({
 
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
           {/* ＋ 新任务：品牌红实底主操作（Netflix 品牌语言：红只在主 CTA /
-              进度条等少数位置出现，顶栏按钮是全站最醒目的一处） */}
-          <button
-            type="button"
-            onClick={() => router.push("/new")}
-            className="flex h-9 items-center gap-1.5 rounded-[4px] bg-[var(--accent)] px-3 text-[14px] font-semibold text-white transition-colors hover:bg-[var(--accent-strong)]"
-          >
-            <PlusGlyph />
-            新任务
-          </button>
+              进度条等少数位置出现，顶栏按钮是全站最醒目的一处）。
+              管理员专属——银玻璃侧栏用 memberNavItems 把「新会话」整条摘掉，
+              这里必须同口径，否则成员会看到一个后端全 403 的入口。 */}
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={() => router.push("/new")}
+              className="flex h-9 items-center gap-1.5 rounded-[4px] bg-[var(--accent)] px-3 text-[14px] font-semibold text-white transition-colors hover:bg-[var(--accent-strong)]"
+            >
+              <PlusGlyph />
+              新任务
+            </button>
+          )}
           {canSearch && <SearchCommand onSearch={onSearch} triggerClassName="nf-icon-btn" />}
           <NoticeCenter collapsed variant="bell" />
           <NetflixAvatarMenu onOpenSettings={onOpenSettings} isAdmin={isAdmin} />
@@ -394,10 +403,14 @@ function NetflixAvatarMenu({
         aria-label="账号菜单"
         className="nf-icon-btn"
       >
+        {/* rounded-* 要经 style 才压得过 AvatarBadge 内部硬写的 rounded-full
+            （同特异度的工具类拼在一起，胜负取决于生成 CSS 的先后，实测是
+            rounded-full 赢）——Netflix 头像是圆角方形，不做全圆 */}
         <AvatarBadge
           nickname={session.nickname}
           avatarUrl={session.avatar_url}
-          className="size-8 rounded-[4px] text-ui"
+          className="size-8 text-ui"
+          style={{ borderRadius: 4 }}
         />
       </button>
     </div>

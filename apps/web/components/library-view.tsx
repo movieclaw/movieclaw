@@ -325,8 +325,15 @@ export function LibraryView({ hero }: { hero?: ReactNode }) {
     [homePrefs, libraries, collections],
   );
   const visibleRows = useMemo(() => rows.filter((row) => !row.hidden), [rows]);
-  const librariesRowHidden = rows.some((row) => row.kind === "libraries" && row.hidden);
   const collectionCount = collections.length;
+  // 「全部合集」入口默认挂在「我的媒体库」行的标题右侧。但那一行不是永远都在：
+  // 用户可以在「自定义首页」里隐藏它，一个可见库都没有时整节也 return null。
+  // 它一消失，入口就跟着没了——而 /library/collections 全站**只有这一个入口**
+  // （合集页自己的 LibrarySectionSwitch 要先进得去才用得上），等于功能在 UI 上
+  // 彻底不可达。这两种情况下把入口抬到页头动作区，保证始终有一条路进得去。
+  const librariesRowVisible =
+    rows.some((row) => row.kind === "libraries" && !row.hidden) && visibleLibraries.length > 0;
+  const collectionsEntryInHeader = collectionCount > 0 && !librariesRowVisible;
 
   // 「我的收藏」横滚行：与库行同一张海报卡、同一个行组件，只把 hover
   // 层换成收藏的层级说明；落点是服务端解析好的可见库里的条目详情
@@ -413,7 +420,8 @@ export function LibraryView({ hero }: { hero?: ReactNode }) {
                 {rowTitle(row)}
               </h3>
               {/* 「全部合集」的入口等到真有合集了才露出：一开始就摆在这儿，
-                  用户点进去只有一片空白，那个位置就白占了（IA 那条决策） */}
+                  用户点进去只有一片空白，那个位置就白占了（IA 那条决策）。
+                  本行不可见时入口由页头动作区兜底，见 collectionsEntryInHeader */}
               {collectionCount > 0 && (
                 <Link
                   href={"/library/collections" as Route}
@@ -472,6 +480,14 @@ export function LibraryView({ hero }: { hero?: ReactNode }) {
         </div>
         {/* 两个页面级动作都是图标钮：自定义首页（所有人）、管理媒体库（有权限的人） */}
         <div className="flex shrink-0 items-center gap-2">
+          {collectionsEntryInHeader && (
+            <Link
+              href={"/library/collections" as Route}
+              className="shrink-0 text-ui text-[var(--text-faint)] transition hover:text-[var(--text)]"
+            >
+              全部合集 ›
+            </Link>
+          )}
           <Link
             href={"/library/customize" as Route}
             aria-label="自定义首页"

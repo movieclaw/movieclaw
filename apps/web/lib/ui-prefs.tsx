@@ -171,8 +171,31 @@ export function useUiPrefs(): UiPrefsContextValue {
  * 按默认主题渲染：那些页面还没有账号上下文，主题本就未知；token 层不受影响
  * ——layout.tsx 的内联脚本已按 localStorage 缓存把 data-theme 写上 <html>，
  * 纯 CSS 换肤在任意页面都生效，这里兜底的只是结构层的分支选择。
+ *
+ * **只换皮肤（token 层）的消费方用它就够**；要按主题换路由或换整页结构的
+ * 消费方必须改用 useThemeState()，原因见该函数说明。
  */
 export function useTheme(): ThemeMeta {
   const ctx = useContext(UiPrefsContext);
   return themeMeta(ctx ? ctx.prefs.theme : DEFAULT_THEME_ID);
+}
+
+/**
+ * 主题 + 「首次拉取是否还在进行中」。
+ *
+ * 结构层里凡是**会把人送走**的分支（/my 与 /settings 按主题 replace 到别的
+ * 路由）都必须等 loading 落定再决策：首帧的主题取自 localStorage 缓存，
+ * 冷缓存（新设备首次登录、无痕窗口、清过站点数据、别人发来的链接）时它
+ * 返回的是默认主题 silver，于是 Netflix 用户点「我的」会被立刻 replace 走，
+ * 等偏好到账时人已经在别的页面上了——刷新一次才正常，这个 bug 只在缓存
+ * 冷的时候出现，非常难查。纯换肤的分支没有这个问题（渲染错一帧会自愈），
+ * 换路由的分支不会自愈：路由已经跳了。
+ */
+export function useThemeState(): { theme: ThemeMeta; loading: boolean } {
+  const ctx = useContext(UiPrefsContext);
+  return {
+    theme: themeMeta(ctx ? ctx.prefs.theme : DEFAULT_THEME_ID),
+    // Provider 外（登录页等）没有偏好可等，直接按「已落定」处理
+    loading: ctx ? ctx.loading : false,
+  };
 }

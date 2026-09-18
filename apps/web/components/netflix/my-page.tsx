@@ -25,7 +25,7 @@ import { accessiblePathFor, usePermissions } from "@/lib/permissions";
 import { useSession } from "@/lib/session";
 import { taskActivityBadge, useTaskActivity, type TaskActivityBadge } from "@/lib/task-activity";
 import { clearUiPrefsCache } from "@/lib/ui-prefs-cache";
-import { useTheme } from "@/lib/ui-prefs";
+import { useThemeState } from "@/lib/ui-prefs";
 
 /**
  * Netflix 主题的「我的」页面（路由 /my，2026-09 修订）。
@@ -43,7 +43,10 @@ import { useTheme } from "@/lib/ui-prefs";
  */
 export function NetflixMyPage() {
   const router = useRouter();
-  const theme = useTheme();
+  // loading 期间**不做任何跳转判断**：首帧主题读的是 localStorage 缓存，冷缓存
+  // 时它是 silver，直接 replace 会把 Netflix 用户从「我的」弹回媒体库
+  // （新设备首次登录 / 无痕窗口 / 清过站点数据都会踩到，见 useThemeState）
+  const { theme, loading } = useThemeState();
   const { session } = useSession();
   const { isAdmin, canSubscribe } = usePermissions();
   const { conversations } = useAgentConversations();
@@ -51,8 +54,8 @@ export function NetflixMyPage() {
 
   // 银玻璃主题的同等入口在抽屉侧栏里，本页只在 Netflix 结构下存在
   useEffect(() => {
-    if (theme.id !== "netflix") router.replace("/");
-  }, [theme.id, router]);
+    if (!loading && theme.id !== "netflix") router.replace("/");
+  }, [loading, theme.id, router]);
 
   /**
    * 退出登录：只退当前账号，本浏览器还有别的账号时后端自动切过去，
@@ -70,6 +73,9 @@ export function NetflixMyPage() {
     window.location.href = next ? accessiblePathFor(next, "/") : "/login";
   };
 
+  // 偏好未落定时先占位（而不是 null）：本页是底栏页签的落点，渲染 null 会让
+  // 页面在这一两帧里空掉、底栏浮在纯黑上闪一下
+  if (loading) return <div className="h-full" aria-busy="true" />;
   if (theme.id !== "netflix") return null;
 
   return (
@@ -77,10 +83,13 @@ export function NetflixMyPage() {
       <div className="mx-auto w-full max-w-2xl px-4 pb-16 pt-6 md:px-6 md:pt-10">
         {/* 用户头：头像 + 昵称 + 用户名（My Netflix 的门面） */}
         <header className="flex items-center gap-4 px-1">
+          {/* 圆角走 style（见 AvatarBadge 说明）：className 里的 rounded-[4px]
+              压不过组件内部的 rounded-full，实测渲染成正圆 */}
           <AvatarBadge
             nickname={session.nickname}
             avatarUrl={session.avatar_url}
-            className="size-14 rounded-[4px] text-title-lg"
+            className="size-14 text-title-lg"
+            style={{ borderRadius: 4 }}
           />
           <div className="min-w-0 flex-1">
             <h1 className="truncate text-title-lg font-bold tracking-[-0.01em] text-[var(--text)]">
@@ -90,7 +99,7 @@ export function NetflixMyPage() {
               @{session.username}
             </p>
           </div>
-          <MovieclawMark className="h-6 w-auto shrink-0 opacity-90" aria-hidden="true" />
+          <MovieclawMark className="h-5 w-auto shrink-0 opacity-90" aria-hidden="true" />
         </header>
 
         {/* 快捷入口 */}
@@ -98,7 +107,12 @@ export function NetflixMyPage() {
           {/* 待处理事项：Netflix 主题没有侧栏，银玻璃侧栏里的告警入口由本行
               承接（组件自轮询自鉴权，无事时整行不渲染） */}
           <NoticeCenter collapsed={false} />
-          <MyRow Icon={PlusIcon} label="新任务" onClick={() => router.push("/new" as Route)} />
+          {/* 新任务是 Agent 入口，管理员专属——银玻璃侧栏用 memberNavItems 把
+              「新会话」整条摘掉，这里必须同口径，否则成员点进去是一个后端
+              全 403 的页面（安全边界在后端 require_admin，这里是界面裁剪） */}
+          {isAdmin && (
+            <MyRow Icon={PlusIcon} label="新任务" onClick={() => router.push("/new" as Route)} />
+          )}
           {canSubscribe && (
             <MyRow
               Icon={BookmarkIcon}

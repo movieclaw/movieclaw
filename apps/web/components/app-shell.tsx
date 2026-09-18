@@ -565,9 +565,13 @@ function MobileTopBar({
             className="flex h-11 shrink-0 items-center transition-opacity active:opacity-60"
           >
             {actions ? (
-              <MovieclawMark className="size-7" />
+              <MovieclawMark className="size-6" />
             ) : (
-              <MovieclawWordmark className="h-7 w-auto" />
+              /* 20px 高 ≈ 125px 宽（字形比例 ≈6.25 : 1）。原先的 h-7 是 175px
+                 宽，在 390px 视口里占掉 45% 的顶栏——字标是身份标识不是主
+                 内容，不该比页面标题还抢眼。max-w 再兜一道底：320px 的窄屏
+                 上按宽度自适应，绝不挤压右侧的页面级控件与搜索键。 */
+              <MovieclawWordmark className="h-5 w-auto max-w-[125px]" />
             )}
           </button>
         ) : (

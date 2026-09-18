@@ -725,7 +725,10 @@ function AppearanceSection() {
 function DisabledGlassGroup({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <div aria-disabled className="pointer-events-none select-none opacity-45">
+      {/* inert 而不是只有 pointer-events-none：后者只挡鼠标，键盘 Tab 照样能
+          进去把里面的控件按下去、还会真的存下来（实测组里有 3 个可聚焦控件）。
+          inert 把整棵子树移出无障碍树与焦点序列，才是真的禁用。 */}
+      <div inert aria-disabled className="pointer-events-none select-none opacity-45">
         {children}
       </div>
       <p className="mt-2.5 px-1 text-caption text-[var(--text-faint)]">
