@@ -21,6 +21,7 @@ app tasks update
 app update
 app update apply
 app update check
+app update last-exit-dismiss
 app update model-apply
 app update model-check
 app update pending

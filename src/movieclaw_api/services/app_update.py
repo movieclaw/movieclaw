@@ -234,6 +234,22 @@ def _read_last_abnormal_exit() -> LastAbnormalExitView | None:
         return None
 
 
+def dismiss_last_abnormal_exit() -> None:
+    """用户在「更新与维护」点「知道了」后清掉异常退出记录，横幅随即消失。
+
+    记录本就是尽力而为的诊断外显，直接删文件即可——entrypoint 下次异常
+    退出会重新落盘，不需要「已读」之类的额外状态。删不掉（权限/只读卷）
+    也不报错，按展示窗口（7 天）自然过期兜底。
+    """
+    path = _updates_dir() / "state" / "last-exit.json"
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        logger.warning(
+            "清除异常退出记录失败（%s），将在展示窗口过期后自动消失", path, exc_info=True
+        )
+
+
 def _overlay_state(vdir: Path) -> tuple[str, bool, str]:
     """判定一个 overlay 版本目录能否被 entrypoint 采用（与其校验口径一致）。
 

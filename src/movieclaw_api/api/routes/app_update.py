@@ -7,6 +7,7 @@
 - POST /app/update/apply     —— 发起更新（后台执行，进度轮询下方接口）；
 - GET  /app/update/progress  —— 更新执行进度；
 - POST /app/update/rollback  —— 回退到上一版本（或镜像基线）；
+- POST /app/update/last-exit/dismiss —— 确认异常退出告警（清除记录）；
 - POST /app/update/model/check / /app/update/model/apply —— NER 模型独立更新。
 """
 
@@ -79,6 +80,17 @@ async def apply_update() -> ApiResponse[UpdateProgressView]:
 )
 async def get_update_progress() -> ApiResponse[UpdateProgressView]:
     return ok(app_update.get_progress())
+
+
+@router.post(
+    "/last-exit/dismiss",
+    response_model=ApiResponse[None],
+    summary="确认上一次异常退出告警（清除记录，不再展示）",
+    operation_id="app.update.last-exit-dismiss",
+)
+async def dismiss_last_abnormal_exit() -> ApiResponse[None]:
+    app_update.dismiss_last_abnormal_exit()
+    return ok(None, message="已确认，该告警不再展示")
 
 
 @router.post(

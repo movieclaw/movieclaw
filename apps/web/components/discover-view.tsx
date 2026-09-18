@@ -709,6 +709,13 @@ function HeroSlide({
   const { canSubscribe, open: openSubscribe, subscriptionOf } = useSubscribeEntry();
   // 该影片是否已有订阅（数据来自 SubscribeEntryProvider 的全站订阅列表，Hero 自身不发请求）
   const existingSub = subscriptionOf(item);
+  // 首帧挂载时就带着 active=true，推镜 <img> 一出生就是终态 scale-[1.06]，
+  // 没有「1.0 → 1.06」的变化过程，transition 不起播——推镜在首个驻留期缺席
+  // （表现为「切了图才开始推」）。挂载完成后再认推镜标记，首帧也经历一次
+  // 从 scale-100 起步的缓推。
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  const push = active && mounted;
   // 「粘性」装载：轮到过一次就永久保留 src（浏览器已缓存，重复挂载无成本）
   const [revealed, setRevealed] = useState(preload);
   useEffect(() => {
@@ -746,7 +753,7 @@ function HeroSlide({
         src={backdropSrc}
         alt={`${item.title} 剧照`}
         className={`absolute inset-0 size-full object-cover object-top transition-transform duration-[9000ms] ease-linear ${
-          active ? "scale-[1.06]" : "scale-100"
+          push ? "scale-[1.06]" : "scale-100"
         }`}
       />
       <div className="absolute inset-0 bg-gradient-to-r from-[rgba(7,9,14,0.88)] via-[rgba(7,9,14,0.42)] to-transparent" />

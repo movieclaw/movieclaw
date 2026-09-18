@@ -18,6 +18,7 @@ import {
   applyUpdate,
   checkModelUpdate,
   checkUpdate,
+  dismissLastAbnormalExit,
   getPendingUpdate,
   getRollbackOptions,
   getUpdateProgress,
@@ -118,6 +119,17 @@ export function AppUpdateSection() {
     getUpdateStatus()
       .then(setStatus)
       .catch(() => setFailed(true));
+  }, []);
+
+  /** 「知道了」：让后端清掉异常退出记录，成功后就地隐藏横幅；失败走
+   *  actionError 提示、横幅保留——记录还在，下次进页仍会展示。 */
+  const dismissExit = useCallback(async () => {
+    try {
+      await dismissLastAbnormalExit();
+      setStatus((s) => (s ? { ...s, last_abnormal_exit: null } : s));
+    } catch {
+      setActionError("确认告警失败，请稍后重试");
+    }
   }, []);
 
   /** 全量重启的等待：先观察到服务不可达（sawDown）、再观察到恢复才算完成
@@ -448,12 +460,20 @@ export function AppUpdateSection() {
               </div>
             )}
             {status.last_abnormal_exit && (
-              <div className="px-5 py-3.5">
+              <div className="flex items-start justify-between gap-3 px-5 py-3.5">
                 <p className="text-sub text-amber-300/90">
                   应用曾于 {formatUnixDateTime(status.last_abnormal_exit.at)}{" "}
                   异常退出并被容器自动恢复：{status.last_abnormal_exit.detail}
                   （exit={status.last_abnormal_exit.exit_code}）。若频繁出现，请查看容器日志排查。
                 </p>
+                {/* 偶发的单次自愈事件看完即可确认消除；真再崩溃会重新落盘再次提醒 */}
+                <button
+                  type="button"
+                  onClick={dismissExit}
+                  className="btn-glass shrink-0 px-3 py-1.5 text-sub font-medium"
+                >
+                  知道了
+                </button>
               </div>
             )}
           </div>

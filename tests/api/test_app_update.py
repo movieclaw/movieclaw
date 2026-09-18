@@ -365,6 +365,23 @@ def test_status_hides_stale_or_broken_last_exit(updates_dir):
     assert app_update.build_status().last_abnormal_exit is None
 
 
+def test_dismiss_last_abnormal_exit(updates_dir):
+    """「知道了」清除记录后状态不再外显；记录不存在时重复确认也不报错。"""
+    state = updates_dir / "state"
+    state.mkdir(parents=True, exist_ok=True)
+    (state / "last-exit.json").write_text(
+        json.dumps({"ts": int(time.time()), "reason": "web_crash",
+                    "exit_code": 2, "detail": "前端进程异常退出"}),
+        encoding="utf-8",
+    )
+
+    app_update.dismiss_last_abnormal_exit()
+    assert not (state / "last-exit.json").exists()
+    assert app_update.build_status().last_abnormal_exit is None
+
+    app_update.dismiss_last_abnormal_exit()  # 幂等：再点一次仍成功
+
+
 def test_status_exposes_inactive_overlay(updates_dir, tmp_path, monkeypatch):
     """current 指向的版本没在运行时，状态页外显原因（bad 回落场景）。"""
     app_update._apply_downloaded(_make_manifest(tmp_path / "d1", "0.2.0"), tmp_path / "d1")

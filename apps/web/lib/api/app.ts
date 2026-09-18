@@ -173,6 +173,11 @@ export function getUpdateStatus(): Promise<UpdateStatusView> {
   return unwrap(request<ApiEnvelope<UpdateStatusView>>("/app/update/status"));
 }
 
+/** 确认上一次异常退出告警：后端清除记录，横幅不再展示。 */
+export async function dismissLastAbnormalExit(): Promise<void> {
+  await request<ApiEnvelope<null>>("/app/update/last-exit/dismiss", { method: "POST" });
+}
+
 export function checkUpdate(): Promise<UpdateCheckView> {
   return unwrap(request<ApiEnvelope<UpdateCheckView>>("/app/update/check", { method: "POST" }));
 }
