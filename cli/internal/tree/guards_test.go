@@ -217,6 +217,8 @@ func TestDomainCommandSets(t *testing.T) {
 			"library.artwork.list-candidates",
 			"library.artwork.select",
 			"library.chapter-images.generate",
+			"library.cover.clear",
+			"library.cover.set",
 			"library.create",
 			"library.delete",
 			"library.get",
