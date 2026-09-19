@@ -15,14 +15,18 @@ import { LibraryScrapeSettings } from "@/components/library-scrape-settings";
 import { LIBRARY_KIND_META } from "@/components/library-kind-meta";
 import { Modal } from "@/components/modal";
 import { Tooltip } from "@/components/tooltip";
+import { fileToCompressedJpeg } from "@/lib/backdrop";
 import {
   type LibraryPayload,
   type MatchRule,
   type MediaLibrary,
   type RoutingOptions,
   createLibrary,
+  deleteLibraryCover,
+  libraryCoverUrl,
   listLibraryRoutingOptions,
   updateLibrary,
+  uploadLibraryCover,
   type LibraryAccessMode,
 } from "@/lib/api/libraries";
 import { listMembers, type MemberView } from "@/lib/api/members";
@@ -729,7 +733,127 @@ function CreateLibraryDialog({
 
 /* —— 编辑：分区折叠，每区一行摘要 —— */
 
-type EditSectionId = "basic" | "scan" | "access" | "scope" | "scrape";
+type EditSectionId = "basic" | "cover" | "scan" | "access" | "scope" | "scrape";
+
+/**
+ * 封面编辑器：上传一张自己的图顶掉服务端自动拼贴的「氛围光货架」（issue #427）。
+ *
+ * 与这个弹窗里其它字段不同，封面**上传即生效**、不等「保存」——它是一次文件
+ * 传输而不是表单字段，攒到保存再传只会让失败反馈来得更晚。文案里把这点说明白。
+ *
+ * 上传前先在浏览器压一道（长边 1600 的 JPEG）：省上传体积、也避开 10MB 的
+ * 上限；服务端还会再归一化一次，那才是真正的保证（CLI 等客户端绕得过浏览器）。
+ */
+function CoverEditor({
+  libraryId,
+  custom,
+  onChange,
+}: {
+  libraryId: number;
+  custom: boolean;
+  onChange: (next: boolean) => void;
+}) {
+  const fileInput = useRef<HTMLInputElement | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // 换图后要让 <img> 真的重取：libraryCoverUrl 里的时间戳变了，src 才会变
+  const [stamp, setStamp] = useState(0);
+  const [failed, setFailed] = useState(false);
+
+  const pick = (file: File | null | undefined) => {
+    if (!file || busy) return;
+    setBusy(true);
+    setError(null);
+    void fileToCompressedJpeg(file, 1600)
+      .then((blob) => uploadLibraryCover(libraryId, blob))
+      .then(() => {
+        setFailed(false);
+        setStamp((n) => n + 1);
+        onChange(true);
+      })
+      .catch((e) => setError((e as Error).message))
+      .finally(() => setBusy(false));
+  };
+
+  const restore = () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    void deleteLibraryCover(libraryId)
+      .then(() => {
+        setFailed(false);
+        setStamp((n) => n + 1);
+        onChange(false);
+      })
+      .catch((e) => setError((e as Error).message))
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <>
+      <div className="flex items-start gap-4 max-md:flex-col">
+        <div className="relative aspect-[21/10] w-52 shrink-0 overflow-hidden rounded-xl border border-white/[0.08] bg-gradient-to-br from-[#1c2230] to-[#10131c] max-md:w-full">
+          {failed ? (
+            <div className="grid size-full place-items-center text-caption text-[var(--text-faint)]">
+              暂无封面
+            </div>
+          ) : (
+            <img
+              key={stamp}
+              src={libraryCoverUrl(libraryId)}
+              alt=""
+              className="size-full object-cover"
+              onError={() => setFailed(true)}
+            />
+          )}
+        </div>
+        <div className="min-w-0 flex-1 space-y-2.5">
+          <p className="text-sub leading-6 text-[var(--text-muted)]">
+            {custom
+              ? "当前用的是你上传的封面。恢复后会重新按库内最近入库的作品自动拼贴。"
+              : "当前是自动拼贴：取库内最近入库的 4 部作品的海报。上传一张图即可换掉它。"}
+          </p>
+          <p className="text-caption leading-5 text-[var(--text-faint)]">
+            推荐 21:10 的横图（如 1260×600）。上传的图会自动压缩（长边 1600 的 JPEG），
+            控制台与播放器（Jellyfin 客户端）用的是同一张。上传后立即生效，无需点保存。
+          </p>
+          <div className="flex flex-wrap items-center gap-2.5">
+            <button
+              type="button"
+              onClick={() => fileInput.current?.click()}
+              disabled={busy}
+              className="btn-glass h-8 px-3.5 text-ui font-medium disabled:opacity-40"
+            >
+              {busy ? "处理中…" : custom ? "换一张" : "上传封面"}
+            </button>
+            {custom && (
+              <button
+                type="button"
+                onClick={restore}
+                disabled={busy}
+                className="btn-glass h-8 px-3.5 text-ui font-medium text-[var(--text-muted)] disabled:opacity-40"
+              >
+                恢复自动拼贴
+              </button>
+            )}
+          </div>
+          {error && <p className="text-caption leading-5 text-red-300">{error}</p>}
+        </div>
+      </div>
+      <input
+        ref={fileInput}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={(e) => {
+          pick(e.target.files?.[0]);
+          // 同一个文件再选一次也要触发 change
+          e.target.value = "";
+        }}
+      />
+    </>
+  );
+}
 
 /**
  * 可见范围编辑器（docs/design/library-access.md 2.1）：
@@ -1083,6 +1207,8 @@ function EditLibraryDialog({
   const [scrapeOverrides, setScrapeOverrides] = useState<Record<string, unknown>>({
     ...(library.scrape_overrides ?? {}),
   });
+  // 封面上传即生效，不进 payload；这里只跟着摘要行走
+  const [customCover, setCustomCover] = useState(library.custom_cover);
   // 展开的分区（同时只开一个）；默认全收起——摘要行已经把现状说清
   const [open, setOpen] = useState<EditSectionId | null>(null);
   const [busy, setBusy] = useState(false);
@@ -1163,6 +1289,16 @@ function EditLibraryDialog({
           </div>
         </>
       ),
+    },
+    {
+      id: "cover",
+      title: "封面",
+      summary: (
+        <span className="text-[var(--text-muted)]">
+          {customCover ? "自定义封面" : "自动拼贴（库内最近入库的作品）"}
+        </span>
+      ),
+      body: <CoverEditor libraryId={library.id} custom={customCover} onChange={setCustomCover} />,
     },
     {
       id: "scan",

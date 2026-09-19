@@ -554,7 +554,7 @@ Backdrop 数组下标即 index，本设计每条目至多 1 张背景，只需�
 
 | Jellyfin 图 | movieclaw 资产 |
 |---|---|
-| 库视图 `Primary` | **服务端渲染的「氛围光货架」拼贴**（`services/library/cover.py`：该库最近入库 4 部作品海报，复刻控制台 LibraryCover 构图——21:10 画布、首图重模糊氛围光、圆角海报排 + 倒影 + 地面光斑；素材指纹做 key，内容变化自动重渲；控制台 `/api/v1/libraries/{id}/cover` 与本接口吐**同一张图**，前端媒体库页也直接 `<img>` 引用替代客户端 CSS 合成） |
+| 库视图 `Primary` | 用户上传过**自定义封面**就用它（docs/design/library-custom-cover.md），否则是**服务端渲染的「氛围光货架」拼贴**（`services/library/cover.py`：该库最近入库 4 部作品海报，复刻控制台 LibraryCover 构图——21:10 画布、首图重模糊氛围光、圆角海报排 + 倒影 + 地面光斑；素材指纹做 key，内容变化自动重渲；控制台 `/api/v1/libraries/{id}/cover` 与本接口吐**同一张图**，前端媒体库页也直接 `<img>` 引用替代客户端 CSS 合成） |
 | Movie/Series `Primary` | `media_metadata.poster_file` |
 | Movie/Series `Backdrop/0` | `media_metadata.backdrop_file` |
 | Season `Primary` | `media_season.poster_file`（无 → 404，客户端自动退剧海报） |

@@ -21,6 +21,7 @@ import { UpNextRow } from "@/components/up-next-row";
 import {
   type LibraryItem,
   type MediaLibrary,
+  libraryCoverUrl,
   listLibraries,
   listLibraryItems,
   SCAN_PHASE_LABELS,
@@ -35,7 +36,6 @@ import {
   type UpNextItem,
 } from "@/lib/api/playback";
 import type { Subscription } from "@/lib/api/subscriptions";
-import { publicEnv } from "@/lib/env";
 import { favoriteLevelLabel } from "@/lib/favorites";
 import {
   buildHomeRows,
@@ -729,7 +729,12 @@ function LibraryCard({ library, items }: { library: MediaLibrary; items: Library
         className="block overflow-hidden rounded-2xl ring-1 ring-white/10 outline-none transition duration-300 hover:ring-white/35 focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]"
       >
         <div className="relative aspect-[21/10] bg-[#0a0c12]">
-          <LibraryCover libraryId={library.id} posters={posters} Icon={meta.Icon} />
+          <LibraryCover
+            libraryId={library.id}
+            posters={posters}
+            custom={library.custom_cover}
+            Icon={meta.Icon}
+          />
           {/* 状态徽标叠在封面左下的倒影暗区：那块本就没有信息、又足够暗
               压得住字；标题行因此永远只有库名，长库名不会被徽标挤没。
               扫描/整理时封面归进度环，徽标让位（否则隔着蒙版透出来像脏渲染） */}
@@ -833,28 +838,31 @@ function ScanProgressRing({ progress }: { progress: { processed: number; total: 
 function LibraryCover({
   libraryId,
   posters,
+  custom,
   Icon,
 }: {
   libraryId: number;
   posters: string[];
+  /** 用户上传了自定义封面——空库也照样出图，不看有没有海报素材 */
+  custom: boolean;
   Icon: typeof FilmIcon;
 }) {
   // 服务端渲染的「氛围光货架」拼贴（与 Jellyfin 兼容层给播放器的是同一张图）：
   // 一次 <img> 请求替代 9+ 张图的客户端合成，ETag 协商缓存，渲染显著更快。
   // 拼贴尚未生成/加载失败时回退到原客户端 CSS 货架（素材同源，观感一致）。
+  // 设了自定义封面的库走同一个地址，后端在那一层就短路了。
   const [collageFailed, setCollageFailed] = useState(false);
-  if (posters.length === 0) {
-    return (
-      <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-[#1c2230] to-[#10131c]">
-        <Icon className="size-12 text-white/[0.13]" />
-      </div>
-    );
-  }
+  const placeholder = (
+    <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-[#1c2230] to-[#10131c]">
+      <Icon className="size-12 text-white/[0.13]" />
+    </div>
+  );
+  if (posters.length === 0 && !custom) return placeholder;
   if (!collageFailed) {
     return (
       <div className="absolute inset-0 overflow-hidden">
         <img
-          src={`${publicEnv.apiBaseUrl}/libraries/${libraryId}/cover`}
+          src={libraryCoverUrl(libraryId)}
           alt=""
           loading="lazy"
           className="absolute inset-0 size-full object-cover transition duration-300 group-hover/lib:scale-[1.02]"
@@ -865,6 +873,8 @@ function LibraryCover({
       </div>
     );
   }
+  // 自定义封面加载失败（文件被删/权限变化）：没有素材可回退，画类型占位
+  if (posters.length === 0) return placeholder;
   return (
     <div className="absolute inset-0 overflow-hidden">
       {/* 氛围光：首图放大重模糊 + 提饱和，再整体压暗保证前景对比度 */}

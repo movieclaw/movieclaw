@@ -2050,7 +2050,11 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
         <>
           <LibraryFormDialog
             state={editing}
-            onClose={() => setEditing(null)}
+            onClose={() => {
+              setEditing(null);
+              // 封面上传即生效、不走「保存」，取消关闭同样要刷新
+              reload();
+            }}
             onSaved={() => {
               setEditing(null);
               reload();
