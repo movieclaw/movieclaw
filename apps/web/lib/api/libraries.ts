@@ -1,3 +1,4 @@
+import { publicEnv } from "@/lib/env";
 import { request, resolveRequestUrl } from "@/lib/http";
 import type { ItemSource, LibraryKind, MediaType } from "@/lib/media-types";
 
@@ -106,6 +107,8 @@ export interface MediaLibrary {
   realtime_watch: boolean;
   /** 任一根路径落在网络挂载上：实时监控收不到远端变化（即使开着也不建监听），新文件靠定期对账发现 */
   network_mount: boolean;
+  /** 封面是用户上传的自定义图（而非自动拼贴）——空库也照样出图 */
+  custom_cover: boolean;
   /** 库级刮削覆盖；空对象 = 全跟全局设置 */
   scrape_overrides?: Record<string, unknown>;
   /** 库存统计快照（台账变化时重算，列表查询不扫描文件台账） */
@@ -486,6 +489,47 @@ export function updateLibrary(id: number, payload: LibraryPayload): Promise<Medi
       body: JSON.stringify(payload),
     }),
   );
+}
+
+// 换过封面的库 → 换图时刻。后端给的是 ETag 协商缓存，重新加载页面自然拿到
+// 新图；但已经渲染在 DOM 里的 <img> 不会因为 ETag 变了自己重取（那是 DOM 行为，
+// 不是缓存行为），必须换 src 才行。
+const coverBust = new Map<number, number>();
+
+/** 库封面地址（三处卡片共用：首页、管理页缩略图、AI 卡片）。 */
+export function libraryCoverUrl(id: number): string {
+  const v = coverBust.get(id);
+  const base = `${publicEnv.apiBaseUrl}/libraries/${id}/cover`;
+  return v ? `${base}?v=${v}` : base;
+}
+
+/**
+ * 上传媒体库自定义封面。``file`` 是前端已压过一道的 JPEG——服务端还会再统一
+ * 归一化（长边 1600、重编码、丢 EXIF），前端这一道只为省上传体积。
+ * 返回的 version 是服务端算的内容指纹（同 ETag），调用方一般只需要知道成功了。
+ */
+export function uploadLibraryCover(id: number, file: Blob): Promise<{ version: string }> {
+  const form = new FormData();
+  form.append("file", file, "cover.jpg");
+  return unwrap(
+    request<ApiEnvelope<{ version: string }>>(`/libraries/${id}/cover`, {
+      method: "POST",
+      body: form,
+    }),
+  ).then((data) => {
+    coverBust.set(id, Date.now());
+    return data;
+  });
+}
+
+/** 删除自定义封面，封面回落到服务端自动拼贴。 */
+export function deleteLibraryCover(id: number): Promise<void> {
+  return unwrap(
+    request<ApiEnvelope<void>>(`/libraries/${id}/cover`, { method: "DELETE" }),
+  ).then((data) => {
+    coverBust.set(id, Date.now());
+    return data;
+  });
 }
 
 /** 设为该类型的默认库。同类型其他库的默认标记随之取消，调用后应整体刷新列表。 */

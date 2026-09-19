@@ -9,8 +9,7 @@ import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 
 import { GripIcon, LockIcon, MoreIcon } from "@/components/icons";
 import { LIBRARY_KIND_META } from "@/components/library-kind-meta";
-import { type MediaLibrary, SCAN_PHASE_LABELS } from "@/lib/api/libraries";
-import { publicEnv } from "@/lib/env";
+import { libraryCoverUrl, type MediaLibrary, SCAN_PHASE_LABELS } from "@/lib/api/libraries";
 import {
   type LibraryStatus,
   type LibraryStatusTone,
@@ -243,15 +242,16 @@ function RootPath({ library }: { library: MediaLibrary }) {
   );
 }
 
-/** 小缩略图：服务端拼贴图（与首页卡片同源），失败或空库退回类型图标。 */
+/** 小缩略图：服务端封面（自定义图或拼贴，与首页卡片同源），失败或空库退回类型图标。 */
 function LibraryThumb({ library, Icon }: { library: MediaLibrary; Icon: typeof LockIcon }) {
   const [failed, setFailed] = useState(false);
-  const showImage = library.viewer_access && library.stats.item_count > 0 && !failed;
+  const hasCover = library.custom_cover || library.stats.item_count > 0;
+  const showImage = library.viewer_access && hasCover && !failed;
   return (
     <div className="relative h-11 w-[72px] shrink-0 overflow-hidden rounded-lg border border-white/[0.08] bg-gradient-to-br from-[#1c2230] to-[#10131c]">
       {showImage ? (
         <img
-          src={`${publicEnv.apiBaseUrl}/libraries/${library.id}/cover`}
+          src={libraryCoverUrl(library.id)}
           alt=""
           loading="lazy"
           className="size-full object-cover"

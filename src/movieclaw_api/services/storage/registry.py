@@ -302,8 +302,11 @@ DATA_DIRS: tuple[DataDir, ...] = (
     DataDir(
         key="uploads",
         title="上传文件",
-        summary="成员头像与首页背景图",
-        description="成员头像与首页背景图库，用户上传的原件，无法重建。",
+        summary="成员头像、首页背景图与媒体库自定义封面",
+        description=(
+            "成员头像、首页背景图库，以及媒体库的自定义封面（library-covers/，"
+            "删库时随库清理）。用户上传的图片，无法重建。"
+        ),
         default="data/uploads",
         resolve=lambda s: Path(s.media_dir),
     ),

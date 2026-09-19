@@ -462,7 +462,12 @@ class LibraryConfigService:
 
     async def delete(self, library_id: int) -> None:
         """删除库。挂在它上面的订阅回落到该类型默认库（外键 SET NULL）。"""
+        from movieclaw_api.services.library.cover import remove_custom_cover
+
         row = await self.get(library_id)
         await self._repo.delete(library_id)
+        # 自定义封面是库外的文件，没有外键替我们收尾；不删就是永久孤儿——
+        # 它落在不可清理的 uploads 组里，存储面板也帮不上忙
+        remove_custom_cover(library_id)
         self._refresh_watcher()
         logger.info("媒体库「%s」已删除，其订阅将回落到该类型的默认库", row.name)

@@ -642,7 +642,11 @@ export function LibraryManageView() {
 
       <LibraryFormDialog
         state={editing}
-        onClose={() => setEditing(null)}
+        onClose={() => {
+          setEditing(null);
+          // 封面是上传即生效的，不走「保存」；取消关闭也要把列表对齐
+          reload();
+        }}
         onSaved={(saved) => {
           const isNew = editing === "new";
           setEditing(null);
