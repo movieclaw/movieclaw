@@ -363,6 +363,9 @@ async def upload_library_cover(
     summary="删除媒体库自定义封面（回落到自动拼贴）",
     operation_id="library.cover.clear",
     dependencies=[Depends(require_admin)],
+    # 删的是用户自己上传的原件（重传即可恢复，但文件确实没了），与删背景图同级。
+    # destructive 留给动磁盘媒体文件的操作
+    openapi_extra={"x-cli-dangerous": "confirm"},
 )
 async def delete_library_cover(library_id: int) -> ApiResponse[dict]:
     """删掉用户上传的封面，封面回落到服务端自动拼贴的「氛围光货架」。"""
