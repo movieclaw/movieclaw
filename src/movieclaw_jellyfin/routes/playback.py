@@ -77,6 +77,7 @@ from movieclaw_playback.profile import media_profile_from_file
 from movieclaw_playback.streaming import (
     DisconnectAwareFileResponse,
     container_mime_type,
+    direct_play_byte_patches,
     is_strm,
     register_device_stream,
     resolve_strm_url,
@@ -392,6 +393,9 @@ async def video_stream(
         media_type = container_mime_type("m2ts")
     if not path.is_file():
         raise not_found()
+    # hev1 标签的 HEVC MP4 在 AVPlayer 系播放器上直出必败，流里改成 hvc1（#430）；
+    # 用自带解码器的 Infuse 之流两种标签都认，不受影响
+    byte_patches = await direct_play_byte_patches(path, f.container, f.video_codec)
     # 停止播放并不保证客户端立刻关闭 Range 连接。按已认证设备登记这条流，
     # 让 /Sessions/Playing/Stopped 能主动停止读盘；TCP 断连仍是第二道兜底。
     device_id = identity.device.device_id
@@ -427,6 +431,7 @@ async def video_stream(
         session_stopped=session_stopped,
         byte_sink=meter.add,
         on_close=_close,
+        byte_patches=byte_patches,
     )
 
 
