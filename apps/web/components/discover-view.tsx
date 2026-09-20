@@ -14,6 +14,7 @@ import {
   StarIcon,
 } from "@/components/icons";
 import { MediaRow } from "@/components/media-row";
+import { NetflixPageActions } from "@/components/netflix/back-button";
 import { DiscoverRegionFooter } from "@/components/discover-region-footer";
 import { DiscoveryFilterControl } from "@/components/discovery-filter-dialog";
 import { FilteredDiscoveryView } from "@/components/filtered-discovery-view";
@@ -251,8 +252,10 @@ export function DiscoverView({
     () => (
       <div className="flex items-center gap-2">
         {isMobile && <MediaTypeSwitcher value={mediaType} onChange={switchMediaType} />}
+        <SourceSwitcher value={source} onChange={switchSource} compact={isMobile} />
         {/* 筛选仅 TMDB 源支持：豆瓣视角下不再整体隐藏（隐藏会让顶栏右栏
-            跳动重排），改为禁用置灰原地保留，规则由禁用态自己表达。 */}
+            跳动重排），改为禁用置灰原地保留，规则由禁用态自己表达。
+            位置按方案 C 排在两颗胶囊之后、紧邻搜索键，不再夹在中间。 */}
         <DiscoveryFilterControl
           mediaType={mediaType}
           filters={filters}
@@ -261,7 +264,6 @@ export function DiscoverView({
           compact={isMobile}
           disabled={source !== "tmdb"}
         />
-        <SourceSwitcher value={source} onChange={switchSource} compact={isMobile} />
       </div>
     ),
     [applyFilters, currentYear, filters, isMobile, mediaType, source, switchMediaType, switchSource],
@@ -279,12 +281,12 @@ export function DiscoverView({
   const toolbar = isMobile ? null : isNf ? (
     // Netflix：fixed 悬浮在视口右上（顶栏下方），不随页面滚动移位——发现页
     // 一滚数屏，筛选/数据源入口跟着内容滚走后想换源就得滚回顶部；银玻璃维持
-    // 原吸顶工具栏不变。right 对齐行内边距 4vw，top 让出顶栏高度。
-    // calc 任意值里 +/- 两侧必须空白（用下划线转义），无空格是无效 CSS、
-    // top 整条被丢掉，控件会落回静态位置钻进顶栏底下点不到。
-    <div className="fixed right-[4vw] top-[calc(var(--nf-nav-h)_+_12px)] z-20 flex items-center gap-2">
-      {controls}
-    </div>
+    // 原吸顶工具栏不变。
+    // 用 NetflixPageActions（与详情页 ⋯ 菜单同一规格的悬浮操作簇）而不是再
+    // 手写一份同款 fixed 类：手写副本会与组件规格漂移（此前 z-20 vs z-30），
+    // 改一处漏一处。唯一差异是层级 20→30：与 NetflixBackButton 同层，仍在
+    // z-40 顶栏之下，不构成遮挡变化。
+    <NetflixPageActions>{controls}</NetflixPageActions>
   ) : (
     <div className="sticky top-0 z-20 flex items-center justify-end px-6 pb-3 pt-7">
       {controls}
@@ -311,7 +313,7 @@ export function DiscoverView({
 
   if (error) {
     return (
-      <div className={`flex flex-1 flex-col max-md:pt-4 ${isNf ? "relative" : ""}`}>
+      <div className={`flex flex-1 flex-col ${isNf ? "relative" : "max-md:pt-4"}`}>
         {toolbar}
         <DiscoverError error={error} onRetry={() => setReloadKey((k) => k + 1)} />
       </div>
@@ -319,7 +321,7 @@ export function DiscoverView({
   }
   if (!page) {
     return (
-      <div className={`flex flex-1 flex-col max-md:pt-4 ${isNf ? "relative" : ""}`}>
+      <div className={`flex flex-1 flex-col ${isNf ? "relative" : "max-md:pt-4"}`}>
         {toolbar}
         <DiscoverSkeleton fullBleed={isNf} />
       </div>
@@ -328,8 +330,11 @@ export function DiscoverView({
   return (
     <div
       ref={scrollRef}
-      className={`scroll-thin scroll-safe flex-1 overflow-y-auto pb-10 max-md:pt-4 ${
-        isNf ? "relative" : ""
+      className={`scroll-thin scroll-safe flex-1 overflow-y-auto pb-10 ${
+        // Netflix 主题 Hero 全出血、顶栏透明悬浮：顶部不得再留内边距，否则
+        // Hero 上沿会露出一条页面底色的黑边；银玻璃 Hero 是圆角卡片，保留
+        // max-md:pt-4 作为顶栏雾层下的呼吸位。
+        isNf ? "relative" : "max-md:pt-4"
       }`}
     >
       {toolbar}
@@ -375,12 +380,10 @@ export function DiscoverView({
 }
 
 /** 数据源视角切换：两个视角分别缓存，来回切换不会重复请求。compact 档给
- *  移动端顶栏用：字号用 micro 档（移动端 11px）、底板降透明度，作为「次级
- *  维度」与内容类型切换拉开层级；py-2 把整颗胶囊撑到 ≈44px 触控高度。
- *  激活态统一用 accent 底（银玻璃主题为冷银、Netflix 主题为品牌红，与筛选
- *  角标同一变量），与内容类型切换的实白底构成「双激活签名」：白 = 内容
- *  维度、accent = 来源维度——两颗胶囊不再共用同一种「发亮」，当前
- *  「电影 × TMDB」组合一眼可读，也不再把四个选项看成并列 Tab。 */
+ *  移动端顶栏用：字号、内边距、底板配方与类型胶囊完全同档（text-sub +
+ *  py-1.5 px-2.5 + 标准玻璃底），全行控件一套规格一套配方；宽排布顺序
+ *  （类型在前、来源在后）表达先选内容、再选来源的动线。宽度预算：375px
+ *  视口下 ≈364px 放得下，容器横向滚动仅作更窄设备的兜底。 */
 function SourceSwitcher({
   value,
   onChange,
@@ -391,21 +394,21 @@ function SourceSwitcher({
   compact?: boolean;
 }) {
   return (
-    <div
-      className={`flex shrink-0 rounded-full border p-1 backdrop-blur-xl ${
-        compact ? "border-white/[0.07] bg-black/20" : "border-white/10 bg-black/35"
-      }`}
-    >
+    // 胶囊底材与订阅页 MediaTypeSwitcher 逐类一致（不加 solid-popover 浮层钩子）：
+    // 2026-09-20 用户拍板——切换胶囊全站一套材质，Netflix 主题下保持玻璃底，
+    // 不随浮层换实底；选中态白系语言原样。
+    <div className="flex shrink-0 rounded-full border border-white/10 bg-black/35 p-1 backdrop-blur-xl">
       {(["tmdb", "douban"] as const).map((source) => (
         <button
           key={source}
           type="button"
+          aria-pressed={value === source}
           onClick={() => onChange(source)}
           className={`rounded-full font-semibold transition ${
-            compact ? "px-2.5 py-2 text-micro" : "py-1.5 px-4 text-sub"
+            compact ? "px-2.5 py-1.5 text-sub" : "py-1.5 px-4 text-sub"
           } ${
             value === source
-              ? "bg-[var(--accent)] text-black shadow-sm"
+              ? "bg-white/15 text-white shadow-sm"
               : "text-[var(--text-muted)] hover:text-white"
           }`}
         >
@@ -418,10 +421,10 @@ function SourceSwitcher({
 
 /** 电影/剧集切换（移动端顶栏右上角）：与订阅页的类型切换同一位置同一形态，
     走路由切换（/discover/movie ↔ /discover/tv），各视角独立缓存。
-    只在移动端渲染。字号用 caption 档（移动端 13px，替代原先压到下限的
-    micro 10px），py-2 把整颗胶囊撑到 ≈44px、与搜索/筛选圆键（触屏档
-    44px）同一触控规格；激活态用实白底黑字，与数据源切换的 accent 底构成
-    「双激活签名」（白 = 内容维度、accent = 来源维度）。 */
+    只在移动端渲染。控件规格与 subscriptions-view 的 SubscriptionTypeSwitcher
+    完全同构（同容器、text-sub 字号档、py-1.5 px-2.5、激活态 bg-white/15），
+    保持全站切换胶囊一套语言；宽度预算：375px 视口下字标 + 三控件 + 搜索键
+    ≈351px 放得下，容器横向滚动仅作更窄设备的兜底。 */
 function MediaTypeSwitcher({
   value,
   onChange,
@@ -441,9 +444,9 @@ function MediaTypeSwitcher({
           type="button"
           aria-pressed={value === type}
           onClick={() => onChange(type)}
-          className={`rounded-full px-2.5 py-2 text-caption font-semibold transition ${
+          className={`rounded-full px-2.5 py-1.5 text-sub font-semibold transition ${
             value === type
-              ? "bg-white text-black shadow-sm"
+              ? "bg-white/15 text-white shadow-sm"
               : "text-[var(--text-muted)] hover:text-white"
           }`}
         >
@@ -626,7 +629,13 @@ function HeroBanner({ items, fullBleed = false }: { items: MediaItem[]; fullBlee
       }}
     >
       {items.map((item, i) => (
-        <HeroSlide key={item.id} item={item} active={i === index} preload={i === index || i === next} />
+        <HeroSlide
+          key={item.id}
+          item={item}
+          active={i === index}
+          preload={i === index || i === next}
+          fullBleed={fullBleed}
+        />
       ))}
 
       {/* 手动切换按钮：桌面悬停浮现。无悬停设备直接不渲染出来——常显会压住
@@ -710,11 +719,14 @@ function HeroSlide({
   item,
   active,
   preload,
+  fullBleed,
 }: {
   item: MediaItem;
   active: boolean;
   /** 是否该装载大图（当前帧或下一帧）；一旦装载过就保持，淡出时不闪白 */
   preload: boolean;
+  /** Netflix 主题全出血形态：文字区左右边距对齐全站 4vw 左基线 */
+  fullBleed: boolean;
 }) {
   const { open } = useMediaDetail();
   const { canSubscribe, open: openSubscribe, subscriptionOf } = useSubscribeEntry();
@@ -770,11 +782,12 @@ function HeroSlide({
       <div className="absolute inset-0 bg-gradient-to-r from-[rgba(7,9,14,0.88)] via-[rgba(7,9,14,0.42)] to-transparent" />
       <div className="absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-[rgba(7,9,14,0.72)] to-transparent max-md:h-3/4 max-md:from-[rgba(7,9,14,0.9)]" />
 
-      {/* 文字与操作区：随当前帧轻微上移淡入 */}
+      {/* 文字与操作区：随当前帧轻微上移淡入。全出血（Netflix）的左右边距走
+          4vw 左基线与顶栏字标对齐，纵向节奏不变；圆角卡片形态（银玻璃）维持原样 */}
       <div
-        className={`absolute inset-0 flex max-w-xl flex-col justify-end p-7 transition-all delay-150 duration-500 ease-out max-md:p-4 sm:p-9 ${
-          active ? "translate-y-0 opacity-100" : "translate-y-3 opacity-0"
-        }`}
+        className={`absolute inset-0 flex max-w-xl flex-col justify-end transition-all delay-150 duration-500 ease-out ${
+          fullBleed ? "px-[4vw] py-7 max-md:py-4 sm:py-9" : "p-7 max-md:p-4 sm:p-9"
+        } ${active ? "translate-y-0 opacity-100" : "translate-y-3 opacity-0"}`}
       >
         <p className="text-caption font-semibold uppercase tracking-[0.22em] text-[var(--accent-2)]">
           今日精选 · {item.type === "movie" ? "电影" : "剧集"}

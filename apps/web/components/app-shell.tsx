@@ -20,7 +20,7 @@ import { SubscribeEntryProvider } from "@/components/subscribe-entry";
 import { NetflixSettingsNav, NetflixTabBar } from "@/components/netflix/tab-bar";
 import { NetflixSettingsSidebar } from "@/components/netflix/settings-sidebar";
 import { NetflixTopNav } from "@/components/netflix/top-nav";
-import { MovieclawMark, MovieclawWordmark } from "@/components/netflix/brand";
+import { MovieclawMark } from "@/components/netflix/brand";
 import { AgentConversationsProvider } from "@/lib/agent-conversations";
 import { useAppNavigationTracking } from "@/lib/back-navigation";
 import { BackdropProvider } from "@/lib/backdrop";
@@ -564,15 +564,10 @@ function MobileTopBar({
             aria-label="回到媒体库"
             className="flex h-11 shrink-0 items-center transition-opacity active:opacity-60"
           >
-            {actions ? (
-              <MovieclawMark className="size-6" />
-            ) : (
-              /* 20px 高 ≈ 125px 宽（字形比例 ≈6.25 : 1）。原先的 h-7 是 175px
-                 宽，在 390px 视口里占掉 45% 的顶栏——字标是身份标识不是主
-                 内容，不该比页面标题还抢眼。max-w 再兜一道底：320px 的窄屏
-                 上按宽度自适应，绝不挤压右侧的页面级控件与搜索键。 */
-              <MovieclawWordmark className="h-5 w-auto max-w-[125px]" />
-            )}
+            {/* 全站统一用 M 标：媒体库等没有顶栏控件的页面不再回落到全字标，
+                与发现页等挂控件页面的品牌形态保持一致；全字标 ≈125px 宽，
+                在 390px 视口里会占掉近三分之一顶栏，M 标 24px 方正得下。 */}
+            <MovieclawMark className="size-6" />
           </button>
         ) : (
           /* 字标可点区拉到 44px 高（与图标键同标准）——图片本身保持 h-7 的视觉

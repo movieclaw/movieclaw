@@ -194,6 +194,9 @@ function ScopeSwitcher({
   onChange: (scope: ActivityScope) => void;
 }) {
   return (
+    // 胶囊底材与订阅页 MediaTypeSwitcher 逐类一致（不加 solid-popover 浮层钩子）：
+    // 2026-09-20 用户拍板——切换胶囊全站一套材质，Netflix 主题下保持玻璃底，
+    // 不随浮层换实底；选中态白系胶囊（bg-white/15）原样保留
     <div className="flex shrink-0 rounded-full border border-white/10 bg-black/35 p-1 backdrop-blur-xl">
       {(["media", "tasks"] as const).map((scope) => (
         <button
