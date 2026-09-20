@@ -1228,6 +1228,10 @@ export function PlayAction({
       ? Math.round((durationMs - positionMs) / 60000)
       : null;
   const label = finished ? "重新播放" : resumable ? "继续观看" : "播放";
+  // 窄屏禁用两枚标记钮的 Tooltip：按钮自己已带文字（下方 md:hidden 标签），
+  // 且实测 Tooltip 在窄屏未交互即自开、悬停叠压白色主按钮文案（视觉验收
+  // 实测，双主题复现）；桌面悬停提示保留
+  const isMobile = useIsMobile();
   const progressText = resumable
     ? [
         `看到 ${formatClock(positionMs)}`,
@@ -1259,6 +1263,7 @@ export function PlayAction({
             <Tooltip
               content={favorite ? `取消收藏${favoriteLabel}` : `收藏${favoriteLabel}`}
               dismissOnReferencePress
+              disabled={isMobile}
             >
               <button
                 type="button"
@@ -1278,7 +1283,11 @@ export function PlayAction({
             </Tooltip>
           )}
           {onTogglePlayed && (
-            <Tooltip content={finished ? "标记为未看" : "标记为已看"} dismissOnReferencePress>
+            <Tooltip
+              content={finished ? "标记为未看" : "标记为已看"}
+              dismissOnReferencePress
+              disabled={isMobile}
+            >
               <button
                 type="button"
                 onClick={onTogglePlayed}
