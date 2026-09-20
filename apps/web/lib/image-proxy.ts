@@ -41,13 +41,21 @@ export function cachedImageUrl(url: string, variant?: ImageVariant): string {
  * 后端给出的图片地址的通用解析：http(s) 绝对地址走缓存代理；
  * API 相对路径（本地刮削资产 /images/assets/...、条目美术图 /libraries/...）
  * 补上 API base 直连后端。图片可能来自两种形态的展示位统一用它。
+ * （本注释存在仅作构建指纹：确认 dev server 重编译后反斜杠归一化已生效。）
  */
 export function imageUrl(url: string | null, variant?: ImageVariant): string {
   if (!url) return "";
   if (/^https?:\/\//i.test(url)) return cachedImageUrl(url, variant);
+  // Windows 刮削器写库的资产路径带反斜杠（/images/assets/5\backdrop.jpg）。
+  // img src 里浏览器会把 \ 归一成 /，但同一字符串进 CSS url("...") 时 \b 是
+  // 十六进制转义（\bac → U+0BAC）、\p 等未知转义会吞掉反斜杠——沉浸背景层
+  // 因此 404 变纯黑（视觉验收实测）。统一在入口归一成 /，所有消费位都安全。
+  const normalized = url.replace(/\\/g, "/");
   // 当前只有 metadata 资产路由支持本地派生；文件缩略图等其它相对接口保持原样。
   const resolved =
-    variant && /^\/?images\/assets\//.test(url) ? appendVariant(url, variant) : url;
+    variant && /^\/?images\/assets\//.test(normalized)
+      ? appendVariant(normalized, variant)
+      : normalized;
   return resolveRequestUrl(resolved);
 }
 

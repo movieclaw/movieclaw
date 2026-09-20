@@ -1502,7 +1502,14 @@ function ItemActionsMenu({
 /** 图片地址：本地美术图是 API 相对路径（补 base），TMDB 图床走缓存代理。 */
 function imageUrl(url: string | null): string {
   if (!url) return "";
-  return /^https?:\/\//i.test(url) ? cachedImageUrl(url) : resolveRequestUrl(url);
+  if (/^https?:\/\//i.test(url)) return cachedImageUrl(url);
+  // 本地美术图路径由扫描端落库，Windows 机器上会带 `\` 分隔符（如
+  // /images/assets/5\backdrop.jpg）。这条地址在本页的桌面消费方是沉浸覆盖层的
+  // CSS background-image——CSS 字符串里 `\b` 会被解析成十六进制转义（U+0BAC），
+  // 请求路径被打碎成 404，Netflix 桌面的整页沉浸背景只剩纯黑；而 <img> 消费方
+  // （手机 Hero）按 URL 规范把 `\` 宽容为 `/`，同一张图反而加载正常——这正是
+  // 「页面没图、图在磁盘上明明存在」的假象来源。归一化后两处消费同一张图。
+  return resolveRequestUrl(url.replace(/\\/g, "/"));
 }
 
 const VIDEO_CODEC_LABELS: Record<string, string> = {
