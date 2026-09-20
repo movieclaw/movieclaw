@@ -1,7 +1,37 @@
 from functools import lru_cache
+from urllib.parse import urlsplit, urlunsplit
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# TMDB 官方地址都带一段固定后缀：接口在版本段 ``/3`` 下，图床在图片前缀
+# ``/t/p`` 下。配反代时这一段最容易漏（填成 ``https://tmdb.example.com``），
+# 漏了请求就打到 ``/movie/550`` 而不是 ``/3/movie/550``，表现为「镜像配了还是不通」，
+# 而且报错在 TMDB 那一侧，用户很难联想到是自己少写了两个字符。
+TMDB_API_PATH_SUFFIX = "/3"
+TMDB_IMAGE_PATH_SUFFIX = "/t/p"
+
+
+def normalize_tmdb_base_url(value: str, suffix: str) -> str:
+    """把用户填的镜像地址收敛成客户端能直接拼接的形态。
+
+    只做两件确定性的事，不猜用户意图：
+
+    1. 去掉末尾多余的 ``/``（``https://x.com/3/`` → ``https://x.com/3``）；
+    2. **只在没写路径时**补上官方后缀（``https://x.com`` → ``https://x.com/3``）。
+
+    写了路径就一律原样保留——自建反代常把 ``/tmdb`` 这类前缀映射过去
+    （``https://x.com/tmdb``），替他改写反而会把能用的配置改坏。
+    形态不合法（没有协议或域名）时同样原样返回，交给调用方的校验去报错。
+    """
+    url = value.strip()
+    if not url:
+        return ""
+    parts = urlsplit(url)
+    if not parts.scheme or not parts.netloc:
+        return url
+    path = parts.path.rstrip("/")
+    return urlunsplit(parts._replace(path=path or suffix))
 
 
 class Settings(BaseSettings):
@@ -189,6 +219,8 @@ class Settings(BaseSettings):
     tmdb_api_key: str | None = Field(default=None, alias="TMDB_API_KEY")
     # TMDB 接口与图床地址。所在网络无法直连 api.themoviedb.org 时，
     # 可整体切换到自建反代或公共镜像，无需改代码。
+    # 只填到域名（TMDB_API_BASE_URL=https://tmdb.example.com）也能用：
+    # 官方后缀由本类末尾的校验器补齐，见 normalize_tmdb_base_url。
     tmdb_api_base_url: str = Field(
         default="https://api.themoviedb.org/3", alias="TMDB_API_BASE_URL"
     )
@@ -251,6 +283,16 @@ class Settings(BaseSettings):
     scheduler_timezone: str = Field(default="Asia/Shanghai", alias="SCHEDULER_TIMEZONE")
     # 任务执行历史的保留天数，超期由内置清理任务归档，避免 task_run 无限增长。
     task_run_retention_days: int = Field(default=30, alias="TASK_RUN_RETENTION_DAYS")
+
+    @field_validator("tmdb_api_base_url")
+    @classmethod
+    def _normalize_tmdb_api_base_url(cls, value: str) -> str:
+        return normalize_tmdb_base_url(value, TMDB_API_PATH_SUFFIX)
+
+    @field_validator("tmdb_image_base_url")
+    @classmethod
+    def _normalize_tmdb_image_base_url(cls, value: str) -> str:
+        return normalize_tmdb_base_url(value, TMDB_IMAGE_PATH_SUFFIX)
 
     model_config = SettingsConfigDict(
         env_file=".env",

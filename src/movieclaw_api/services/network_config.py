@@ -18,7 +18,12 @@ from urllib.parse import urlsplit
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from movieclaw_api.core.config import get_settings
+from movieclaw_api.core.config import (
+    TMDB_API_PATH_SUFFIX,
+    TMDB_IMAGE_PATH_SUFFIX,
+    get_settings,
+    normalize_tmdb_base_url,
+)
 from movieclaw_api.exceptions import BadRequestException
 from movieclaw_api.schemas.network import (
     EgressServiceOption,
@@ -122,6 +127,19 @@ def _validate_payload(payload: NetworkConfigPayload) -> None:
 
 async def save_config(session: AsyncSession, payload: NetworkConfigPayload) -> NetworkConfigView:
     """校验并保存网络配置，立即生效（代理热切换 + 镜像变更重建媒体服务）。"""
+    # 先规范化再校验：用户只填到域名时补齐官方后缀（/3、/t/p），末尾斜杠去掉。
+    # 规范化在保存入口做而不是读取时做——落库的就是实际生效的地址，
+    # 设置页保存后回显补全结果，用户能立刻看到系统替他改成了什么
+    payload = payload.model_copy(
+        update={
+            "tmdb_api_base_url": normalize_tmdb_base_url(
+                payload.tmdb_api_base_url, TMDB_API_PATH_SUFFIX
+            ),
+            "tmdb_image_base_url": normalize_tmdb_base_url(
+                payload.tmdb_image_base_url, TMDB_IMAGE_PATH_SUFFIX
+            ),
+        }
+    )
     _validate_payload(payload)
     mirrors_before = (
         effective_tmdb_api_base_url(),

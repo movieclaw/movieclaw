@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from movieclaw_api.core.config import get_settings
-from movieclaw_api.services import network_config
+from movieclaw_api.services import network_config, network_egress
 from movieclaw_api.services.auth import reset_auth_state
 from movieclaw_api.services.media_discover import reset_media_service
 from movieclaw_api.services.network_egress import reset_network_egress
@@ -134,6 +134,58 @@ def test_save_rejects_bad_mirror_url(client):
         json={"proxy_mode": "off", "tmdb_api_base_url": "not-a-url"},
     )
     assert resp.status_code == 400
+
+
+def test_save_fills_missing_mirror_suffix(client):
+    """只填到域名时自动补齐官方后缀：/3 与 /t/p，末尾斜杠一并去掉。
+
+    漏写后缀是配镜像最常见的坑（请求会打到 /movie/550 而不是 /3/movie/550），
+    补全结果必须落库并回显，用户看得见系统替他改成了什么。
+    """
+    resp = client.put(
+        "/api/v1/network/config",
+        json={
+            "proxy_mode": "off",
+            "tmdb_api_base_url": "https://tmdb.example.com",
+            "tmdb_image_base_url": "https://img.example.com/",
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["tmdb_api_base_url"] == "https://tmdb.example.com/3"
+    assert data["tmdb_image_base_url"] == "https://img.example.com/t/p"
+    # 立即生效：出口层按补全后的地址取值
+    assert network_egress.effective_tmdb_api_base_url() == "https://tmdb.example.com/3"
+    assert network_egress.effective_tmdb_image_base_url() == "https://img.example.com/t/p"
+
+
+def test_save_keeps_custom_mirror_path(client):
+    """用户自己写了路径就原样保留——自建反代常把 /tmdb 这类前缀映射过去。"""
+    resp = client.put(
+        "/api/v1/network/config",
+        json={
+            "proxy_mode": "off",
+            "tmdb_api_base_url": "https://x.example.com/tmdb",
+            "tmdb_image_base_url": "https://x.example.com/img/t/p/",
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["tmdb_api_base_url"] == "https://x.example.com/tmdb"
+    assert data["tmdb_image_base_url"] == "https://x.example.com/img/t/p"
+
+
+def test_env_mirror_suffix_normalized(monkeypatch):
+    """环境变量入口同样补全：Docker 部署者只写域名也能直接用。"""
+    monkeypatch.setenv("TMDB_API_BASE_URL", "https://tmdb.example.com/")
+    monkeypatch.setenv("TMDB_IMAGE_BASE_URL", "https://img.example.com")
+    get_settings.cache_clear()
+    try:
+        settings = get_settings()
+        assert settings.tmdb_api_base_url == "https://tmdb.example.com/3"
+        assert settings.tmdb_image_base_url == "https://img.example.com/t/p"
+    finally:
+        get_settings.cache_clear()
 
 
 def test_test_endpoint_rejects_unknown_service(client):
