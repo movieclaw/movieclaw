@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 
 import { FilterIcon, XIcon } from "@/components/icons";
 import { Modal } from "@/components/modal";
+import { PAGE_NAV_BUTTON_CLASS } from "@/components/page-nav";
 import { fetchDiscoveryGenres, type DiscoveryGenre } from "@/lib/api/discover";
 import {
   DISCOVERY_COUNTRIES,
@@ -79,16 +80,17 @@ export function DiscoveryFilterControl({
     <>
       {compact ? (
         /* 移动端顶栏的紧凑档：去掉「筛选」文字换成图标 + 角标计数——顶栏要
-           同时装下电影/剧集切换、筛选、数据源切换与搜索键，文字按钮放不下；
-           size-11 圆钮与搜索键（PAGE_NAV_BUTTON_CLASS 触屏档）同一触控规格
-           （44px）。豆瓣源下禁用置灰。 */
+           同时装下电影/剧集切换、筛选、数据源切换与搜索键，文字按钮放不下。
+           圆钮规格直接复用全站 PAGE_NAV_BUTTON_CLASS，与顶栏搜索键完全同款
+           （鼠标 36px / 触屏 44px），保证同一行圆键永远一样大、一套玻璃配方。
+           豆瓣源下禁用置灰。 */
         <button
           type="button"
           onClick={() => setOpen(true)}
           disabled={disabled}
           title={disabled ? "筛选仅 TMDB 源支持" : undefined}
-          className={`relative flex size-11 shrink-0 items-center justify-center rounded-full border border-white/10 bg-black/35 text-sub font-semibold text-[var(--text-muted)] backdrop-blur-xl transition ${
-            disabled ? "cursor-not-allowed opacity-40" : "hover:border-white/20 hover:text-white"
+          className={`relative shrink-0 ${PAGE_NAV_BUTTON_CLASS} ${
+            disabled ? "pointer-events-none opacity-40" : ""
           }`}
           aria-label={activeCount > 0 ? `筛选，已启用 ${activeCount} 项` : "筛选影片"}
         >
@@ -105,7 +107,7 @@ export function DiscoveryFilterControl({
           onClick={() => setOpen(true)}
           disabled={disabled}
           title={disabled ? "筛选仅 TMDB 源支持" : undefined}
-          className={`relative flex h-9 shrink-0 items-center rounded-full border border-white/10 bg-black/35 px-4 text-sub font-semibold text-[var(--text-muted)] backdrop-blur-xl transition ${
+          className={`relative flex h-10 shrink-0 items-center rounded-full border border-white/10 bg-black/35 px-4 text-sub font-semibold text-[var(--text-muted)] backdrop-blur-xl transition ${
             disabled ? "cursor-not-allowed opacity-40" : "hover:border-white/20 hover:text-white"
           }`}
           aria-label={activeCount > 0 ? `筛选，已启用 ${activeCount} 项` : "筛选影片"}

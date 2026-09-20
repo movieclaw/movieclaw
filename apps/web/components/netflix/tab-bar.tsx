@@ -6,8 +6,8 @@ import { usePathname, useRouter } from "next/navigation";
 import { useLayoutEffect } from "react";
 
 import {
-  ArrowLeftIcon,
   BookmarkIcon,
+  ChevronLeftIcon,
   CompassIcon,
   LibraryIcon,
   UserIcon,
@@ -124,9 +124,12 @@ export function NetflixSettingsNav({ title, backHref }: { title: string; backHre
           type="button"
           onClick={back}
           aria-label="返回"
-          className="nf-icon-btn !size-11"
+          // 返回键与右侧搜索键同一套规格（PAGE_NAV_BUTTON_CLASS：size-9 /
+          // pointer-coarse:size-11，按指针能力分档）：全站返回键同图标
+          // （ChevronLeft）同尺寸档，不再用 !important 强制 44px 单档
+          className={PAGE_NAV_BUTTON_CLASS}
         >
-          <ArrowLeftIcon className="size-[22px]" />
+          <ChevronLeftIcon className="size-[18px] max-md:size-[22px]" />
         </button>
         <h1 className="min-w-0 flex-1 truncate px-1 text-title font-semibold text-[var(--text)]">
           {title}

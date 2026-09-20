@@ -5,11 +5,15 @@ import Link from "next/link";
 import type { Route } from "next";
 
 import { BrandLoader } from "@/components/brand-loader";
-import { ArrowLeftIcon } from "@/components/icons";
+import { ChevronLeftIcon } from "@/components/icons";
+import { NetflixBackButton } from "@/components/netflix/back-button";
 import { PageNav } from "@/components/page-nav";
 import { PosterImage } from "@/components/poster-image";
 import { fetchPerson, type PersonCredit, type PersonDetail } from "@/lib/api/people";
 import { HttpError } from "@/lib/http";
+import { useBackNavigation } from "@/lib/back-navigation";
+import { useTheme } from "@/lib/ui-prefs";
+import { useIsMobile } from "@/lib/use-media-query";
 import { usePageTitle } from "@/lib/use-page-title";
 
 /**
@@ -27,6 +31,14 @@ import { usePageTitle } from "@/lib/use-page-title";
 export function PersonDetailView({ tmdbPersonId }: { tmdbPersonId: number | string }) {
   const [person, setPerson] = useState<PersonDetail | null>(null);
   const navFallback = { label: "媒体库", href: "/library" as Route };
+  // Netflix 桌面返回语言一套：全出血(isHome)详情页用 NetflixBackButton；带
+  // PageNav 工具条的页面用 PageNav 内返回键；两者同图标 / 同尺寸档 / 同 4vw
+  // 基线 / 同 useBackNavigation 行为。本页 Netflix 桌面换 NetflixBackButton
+  // 浮在顶栏下（与条目详情页同一套）；移动端保留 PageNav——它要向外壳登记顶栏
+  const isMobile = useIsMobile();
+  const isNf = useTheme().id === "netflix";
+  const isNfDesktop = isNf && !isMobile;
+  const back = useBackNavigation(navFallback.href);
   // null=加载中；"missing"=库内没有这个人；"error"=其他失败
   const [failure, setFailure] = useState<"missing" | "error" | null>(null);
 
@@ -56,7 +68,7 @@ export function PersonDetailView({ tmdbPersonId }: { tmdbPersonId: number | stri
   if (failure !== null) {
     return (
       <div className="flex h-full flex-col">
-        <PageNav title="" fallback={navFallback} />
+        {isNfDesktop ? <NetflixBackButton onBack={back} /> : <PageNav title="" fallback={navFallback} />}
         <PersonFallback failure={failure} />
       </div>
     );
@@ -64,7 +76,7 @@ export function PersonDetailView({ tmdbPersonId }: { tmdbPersonId: number | stri
   if (person === null) {
     return (
       <div className="flex h-full flex-col">
-        <PageNav title="" fallback={navFallback} />
+        {isNfDesktop ? <NetflixBackButton onBack={back} /> : <PageNav title="" fallback={navFallback} />}
         <div className="flex flex-1 items-center justify-center gap-2.5 text-ui text-[var(--text-muted)]">
           <BrandLoader className="size-5" />
           正在读取影人档案…
@@ -80,12 +92,20 @@ export function PersonDetailView({ tmdbPersonId }: { tmdbPersonId: number | stri
     <div className="scroll-thin scroll-safe h-full overflow-y-auto pb-12">
       {/* 来路交给统一后退：进人物页的入口是各处演职员条，来路不固定；
           只有分享链接或新标签直达时才兜底去媒体库。
-          不补负边距——本页的横向内边距在各分区上，滚动容器自身没有 px，
-          PageNav 自带的 px-6/max-md:px-4 正好对齐（补了反而会撑出横向滚动条）。 */}
-      <PageNav title={person.name} fallback={navFallback} />
+          不补负边距——本页的横向内边距在各分区上，滚动容器自身没有 px。 */}
+      {/* onPhoto：NetflixBackButton 悬在左上角、头像卡已让位到键底之下
+          （globals.css 的 .person-hero 桌面档），实底深灰圆盘作为亮图兜底
+          保留；加载/失败态无头像卡，行为一致无妨 */}
+      {isNfDesktop ? (
+        <NetflixBackButton onBack={back} onPhoto />
+      ) : (
+        <PageNav title={person.name} fallback={navFallback} />
+      )}
 
-      {/* 头部：头像 + 姓名。刻意不做大 Hero——影人没有专属剧照 */}
-      <header className="flex items-end gap-6 px-12 pt-2 max-md:gap-4 max-md:px-4">
+      {/* 头部：头像 + 姓名。刻意不做大 Hero——影人没有专属剧照。
+          person-hero：Netflix 桌面让位钩子（globals.css 桌面档把头部推到
+          NetflixBackButton 键底之下，银玻璃与移动端不吃这条规则） */}
+      <header className={`person-hero flex items-end gap-6 pt-2 px-12 max-md:gap-4 max-md:px-4`}>
         <div className="w-[132px] shrink-0 overflow-hidden rounded-xl bg-[var(--poster-placeholder)] shadow-[0_20px_48px_rgba(0,0,0,0.5)] ring-1 ring-white/[0.1] max-md:w-[92px]">
           <PosterImage
             src={person.avatarUrl}
@@ -216,7 +236,7 @@ function PersonFallback({ failure }: { failure: "missing" | "error" }) {
             一并建立，对它执行一次「刷新元数据」即可补齐，之后这里就会列出他在库内的全部作品。
           </p>
           <Link href={"/library" as Route} className="btn-glass px-4 py-2 text-ui font-medium">
-            <ArrowLeftIcon className="size-4" />
+            <ChevronLeftIcon className="size-4" />
             去媒体库
           </Link>
         </>

@@ -25,7 +25,7 @@ import { AgentConversationsProvider } from "@/lib/agent-conversations";
 import { useAppNavigationTracking } from "@/lib/back-navigation";
 import { BackdropProvider } from "@/lib/backdrop";
 import type { SearchScope } from "@/lib/categories";
-import { PageChromeProvider } from "@/lib/page-chrome";
+import { PageChromeProvider, isHomeRoute } from "@/lib/page-chrome";
 import { SearchPrefsProvider } from "@/lib/search-prefs";
 import { buildSearchPath } from "@/lib/search-url";
 import { UiPrefsProvider, useTheme } from "@/lib/ui-prefs";
@@ -217,11 +217,10 @@ function AppShellBody({ children }: { children: React.ReactNode }) {
   // Netflix 主题的 /library 顶部是原内容首页并入的全出血 Billboard
   // （components/netflix/library-hero.tsx），同为大图直出的氛围页：
   // 不加顶栏让位，让画面从透明顶栏底下穿过（银玻璃的 /library 不在此列）。
-  const isHome =
-    pathname === "/" ||
-    (isNetflix && pathname === "/library") ||
-    /^\/library\/\d+\/item\/\d+/.test(pathname) ||
-    pathname.startsWith("/media/");
+  // 判定本体抽在 lib/page-chrome.tsx 的 isHomeRoute：PageNav 的渲染入口要用
+  // 同一份判定短路（Netflix 桌面全出血页渲染 PageNav 会被 z-40 顶栏盖住），
+  // 两处必须同源，改动路由清单时只动一处。
+  const isHome = isHomeRoute(pathname, isNetflix);
   // Agent 对话页走沉浸模式：蒙版换成完全不透明的 .page-solid，整页盖掉
   // 背景大图（密集文本页不允许透图）；侧栏切换为实色形态。
   const isImmersive = pathname.startsWith("/sessions/");

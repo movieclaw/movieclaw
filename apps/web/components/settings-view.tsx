@@ -32,9 +32,9 @@ import { TrickplayToggleSection } from "@/components/trickplay-toggle-section";
 import { WebhookSection } from "@/components/webhook-section";
 import { GlassPanel } from "@/components/glass-panel";
 import {
-  ArrowLeftIcon,
   CheckIcon,
   ChevronDownIcon,
+  ChevronLeftIcon,
   GripIcon,
   PlusIcon,
   XIcon,
@@ -93,7 +93,7 @@ export function SettingsSidebar({ active, onSelect, onBack }: SettingsSidebarPro
           onClick={onBack}
           className="btn-glass px-3.5 py-1.5 text-sub font-medium text-[var(--text-muted)] hover:text-[var(--text)]"
         >
-          <ArrowLeftIcon className="size-4" />
+          <ChevronLeftIcon className="size-4" />
           <span>返回工作台</span>
         </button>
       </div>

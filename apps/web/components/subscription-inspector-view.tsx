@@ -10,8 +10,8 @@ import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { BrandLoader } from "@/components/brand-loader";
 import { useConfirm, useToast } from "@/components/feedback";
 import {
-  ArrowLeftIcon,
   ChevronDownIcon,
+  ChevronLeftIcon,
   FilmIcon,
   MoreIcon,
   RefreshIcon,
@@ -177,9 +177,10 @@ export function SubscriptionInspectorView({
   // 「本页自带顶栏」，否则移动端全局顶栏（☰ + logo）会先显示再消失、顶部闪一下。
   const navFallback = { label: "我的订阅", href: "/subscriptions" as Route };
 
-  // Netflix 桌面：圆角玻璃返回键（PageNav）退役，换裸白 chevron——与媒体
-  // 详情页同一返回语言（web-themes.md §5.5 修订①）。移动端仍保留 PageNav：
-  // 它要向外壳登记「本页自带顶栏」并充当返回入口。
+  // Netflix 桌面返回语言一套：全出血(isHome)详情页用 NetflixBackButton；带
+  // PageNav 工具条的页面用 PageNav 内返回键；两者同图标 / 同尺寸档 / 同 4vw
+  // 基线 / 同 useBackNavigation 行为。本页属前者，PageNav 退役；移动端仍保留
+  // PageNav：它要向外壳登记「本页自带顶栏」并充当返回入口。
   const themeId = useTheme().id;
   const isMobile = useIsMobile();
   const isNfDesktop = themeId === "netflix" && !isMobile;
@@ -195,14 +196,13 @@ export function SubscriptionInspectorView({
         )}
         <div className="flex flex-1 flex-col items-center justify-center gap-4">
           <p className="text-body text-[var(--text-muted)]">未能加载该订阅，可能已被删除。</p>
-          <Link
-            href="/subscriptions"
-            replace
-            className="btn-glass px-4 py-2 text-ui font-medium"
-          >
-            <ArrowLeftIcon className="size-4" />
+          {/* 失败态的返回出口与全站同一语言：走 useBackNavigation（上方 back，
+              有站内历史 router.back()，直达落地 replace 到结构父级），不再用
+              <Link replace> 固定跳兜底地址——真实来路优先，兜底只补直达 */}
+          <button type="button" onClick={back} className="btn-glass px-4 py-2 text-ui font-medium">
+            <ChevronLeftIcon className="size-4" />
             返回订阅列表
-          </Link>
+          </button>
         </div>
       </div>
     );
@@ -373,7 +373,8 @@ export function SubscriptionInspectorView({
           PageNav 已占一行导航高度，摘要卡再按一级页基线留出桌面 28px / 移动端
           16px 的内容间距，避免重卡片贴住顶栏。
           sub-hero-card / sub-hero-tint：Netflix 主题的作用域覆盖钩子（globals.css，
-          #181818 实底 + 黑系渐变——银玻璃冷蓝黑与纯黑画布不同相）。 —— */}
+          #181818 实底 + 黑系渐变——银玻璃冷蓝黑与纯黑画布不同相）；Netflix 桌面
+          的让位间距（摘要卡让到返回键底之下）也挂在 globals.css 的桌面档里。 —— */}
       <section className="sub-hero-card relative mt-7 overflow-hidden rounded-2xl bg-[#0d111b] shadow-[0_24px_70px_-18px_rgba(0,0,0,0.58)] ring-1 ring-white/10 max-md:mt-4">
         {poster && (
           <PosterImage

@@ -15,7 +15,7 @@ import Link from "next/link";
 import type { Route } from "next";
 
 import { useToast } from "@/components/feedback";
-import { LayersIcon, ListIcon, PhotoIcon, XIcon } from "@/components/icons";
+import { ChevronLeftIcon, LayersIcon, ListIcon, PhotoIcon, XIcon } from "@/components/icons";
 import { Modal } from "@/components/modal";
 import { useTileWindow } from "@/components/photo-wall";
 import { PosterImage } from "@/components/poster-image";
@@ -1075,11 +1075,14 @@ export function SearchResults({ query, onResearch, grabForSubscriptionId }: Sear
             正在为《{grabTarget.title}》手动选种——点资源上的「投给订阅」直接下载并计入该订阅
             （跳过规则组限制）
           </span>
+          {/* 「返回订阅」是回到来路的返回语义，箭头却在文字右侧指向前方——
+              方向配错。统一为 ChevronLeft 置于文字前，与全站返回语言一致 */}
           <Link
             href={`/subscriptions/${grabTarget.id}` as Route}
-            className="ml-auto shrink-0 font-medium text-white/85 hover:underline"
+            className="ml-auto flex shrink-0 items-center gap-0.5 font-medium text-white/85 hover:underline"
           >
-            返回订阅 ›
+            <ChevronLeftIcon className="size-3.5" />
+            返回订阅
           </Link>
         </div>
       )}

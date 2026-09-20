@@ -5,7 +5,6 @@ import Link from "next/link";
 import type { Route } from "next";
 
 import {
-  ArrowLeftIcon,
   CheckIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
@@ -1111,7 +1110,7 @@ function DetailFallback({ failed, onBack }: { failed: boolean; onBack: () => voi
             onClick={onBack}
             className="btn-glass px-4 py-2 text-ui font-medium text-[var(--text)]"
           >
-            <ArrowLeftIcon className="size-4" />
+            <ChevronLeftIcon className="size-4" />
             返回
           </button>
         </>

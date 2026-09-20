@@ -19,8 +19,8 @@ import { NetflixBackButton, NetflixPageActions } from "@/components/netflix/back
 import { PAGE_NAV_BUTTON_CLASS, PageNav } from "@/components/page-nav";
 import { HScroller } from "@/components/h-scroller";
 import {
-  ArrowLeftIcon,
   CheckIcon,
+  ChevronLeftIcon,
   ChevronRightIcon,
   FolderIcon,
   HeartIcon,
@@ -471,14 +471,17 @@ export function LibraryItemDetailView({
           <p className="max-w-sm text-ui leading-6 text-[var(--text-muted)]">
             条目可能已被删除或重新识别为其他作品，请返回后查看。
           </p>
-          <Link
-            href={navFallback.href}
-            replace
+          {/* 失败态的返回出口与全站同一语言：走 useBackNavigation（上方 back，
+              有站内历史 router.back()，直达落地 replace 到结构父级），不再用
+              <Link replace> 固定跳兜底地址——真实来路优先，兜底只补直达 */}
+          <button
+            type="button"
+            onClick={back}
             className="btn-glass flex items-center gap-2 px-4 py-2 text-ui font-medium text-[var(--text)]"
           >
-            <ArrowLeftIcon className="size-4" />
+            <ChevronLeftIcon className="size-4" />
             返回{navFallback.label}
-          </Link>
+          </button>
         </div>
       </div>
     );

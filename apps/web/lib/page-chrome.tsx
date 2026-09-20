@@ -73,6 +73,28 @@ const PageChromeContext = createContext<PageChromeValue | null>(null);
 
 export const PageChromeProvider = PageChromeContext.Provider;
 
+/**
+ * 「全出血（isHome / 氛围页）路由」判定：这些路由的主区不为顶栏让位
+ * （外壳按它决定加不加 .nf-nav-offset、渲染不渲染全局蒙版），大图从顶栏
+ * 底下穿过。抽出为纯函数供外壳与 page-nav 共用，两处判定必须同源。
+ *
+ * 为什么 PageNav 也要吃这份判定（防遮挡硬约束）：Netflix 桌面的全出血页若
+ * 渲染 PageNav（sticky z-30），会被 fixed z-40 的 Netflix 顶栏整个盖住——
+ * 返回键看得见却永远点不到。因此 PageNav 在渲染入口按本判定短路，改为由
+ * 页面自身的 NetflixBackButton 承担返回（netflix/back-button.tsx）。
+ * 「新增路由自动继承、无需登记」的全站让位原则由此获得代码保证，不再只靠
+ * 各页人工规避。
+ */
+export function isHomeRoute(pathname: string, isNetflix: boolean): boolean {
+  return (
+    pathname === "/" ||
+    // Netflix 主题的 /library 顶部是全出血 Billboard（netflix/library-hero.tsx）
+    (isNetflix && pathname === "/library") ||
+    /^\/library\/\d+\/item\/\d+/.test(pathname) ||
+    pathname.startsWith("/media/")
+  );
+}
+
 /** 读取顶栏协商上下文；不在 AppShell 内（如独立的 /login、/setup）时返回 null。 */
 export function usePageChrome(): PageChromeValue | null {
   return useContext(PageChromeContext);

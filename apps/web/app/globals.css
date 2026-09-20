@@ -2417,6 +2417,20 @@ html[data-theme="netflix"] .detail-ambient::-webkit-scrollbar-track {
     min-height: 320px;
   }
 }
+
+/* 人物页头部让位（person-detail-view / discovered-person-detail-view 的 header）：
+   Netflix 桌面返回键（NetflixBackButton，fixed left-[4vw]、top =
+   --nf-nav-h 68px + 12px）悬在左上角，而头部原起点（pt-2 → 顶 76px）被键
+   整个压住（键底 68+12+键径 36/44 = 116/124px）。照详情页标题上移
+   （.detail-content）的先例，netflix 桌面作用域把头部推到 68+64=132px——
+   鼠标档键下留 16px、触屏档（pointer-coarse 44px 键）留 8px，都不小于既定
+   的 ≥8px 间隙。无层规则压过 pt-2 工具类；银玻璃与移动端（<768px）不吃
+   这条，间距维持 pt-2 不变。 */
+@media (min-width: 768px) {
+  html[data-theme="netflix"] .person-hero {
+    padding-top: 64px;
+  }
+}
 /* 沉浸覆盖层的尺寸与定位基准（backdrop.tsx 不再内联写死，内联会压过类级规则）：
    默认 cover + 居中顶对齐 */
 .backdrop-override {
@@ -2817,6 +2831,16 @@ html[data-theme="netflix"] .sub-hero-card > .sub-hero-tint {
     rgba(0, 0, 0, 0.58) 55%,
     rgba(24, 24, 24, 0.3)
   );
+}
+/* 订阅详情摘要卡让位：Netflix 桌面返回键（NetflixBackButton）悬在左上角
+   （fixed，top = --nf-nav-h 68px + 12px，键底 116/124px），摘要卡原起点
+   （mt-7 → 卡顶 ≈96px）被键压住。桌面档把卡顶推到 68+64=132px，鼠标档键下
+   留 16px、触屏档（pointer-coarse 44px 键）留 8px；移动端（<768px）不吃
+   这条，mt-4 不变。无层规则压过 mt-7 工具类，与上方 .sub-hero-card 换皮同型。 */
+@media (min-width: 768px) {
+  html[data-theme="netflix"] .sub-hero-card {
+    margin-top: 64px;
+  }
 }
 
 /* 详情页移动端 hero 提档为 Netflix 专属档（§5.5 修订：约 40vh，对齐 App

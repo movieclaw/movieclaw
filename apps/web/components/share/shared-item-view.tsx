@@ -8,6 +8,7 @@ import { useRouter } from "next/navigation";
 import { BrandLoader } from "@/components/brand-loader";
 import { CastRow } from "@/components/cast-row";
 import { ChapterStrip } from "@/components/chapter-strip";
+import { ChevronLeftIcon } from "@/components/icons";
 import {
   ExpandablePlot,
   PlayAction,
@@ -219,9 +220,11 @@ export function SharedItemView({
               <button
                 type="button"
                 onClick={onBack}
-                className="shrink-0 rounded-lg px-2 py-1 text-sub text-white/60 transition hover:bg-white/10 hover:text-white"
+                className="flex shrink-0 items-center gap-0.5 rounded-lg px-2 py-1 text-sub text-white/60 transition hover:bg-white/10 hover:text-white"
               >
-                ‹ 返回合集
+                {/* 裸字符「‹」换全站返回图标：字形随字体漂移，图标才是同一套语言 */}
+                <ChevronLeftIcon className="size-3.5" />
+                返回合集
               </button>
             )}
             <span className="text-sub font-semibold uppercase tracking-[0.18em] text-white/70">
