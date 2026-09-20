@@ -146,7 +146,7 @@ function LibraryMiniCardBody({ library }: { library: MediaLibrary }) {
       aria-label={`打开媒体库「${library.name}」，${summary}`}
       className="group/lib block w-[248px] shrink-0 outline-none max-md:w-[212px]"
     >
-      <div className="relative aspect-[21/10] overflow-hidden rounded-2xl bg-[#141824] shadow-[0_10px_28px_rgba(0,0,0,0.38)] ring-1 ring-white/10 transition duration-300 group-hover/lib:-translate-y-1 group-hover/lib:ring-white/35 group-focus-visible/lib:ring-2 group-focus-visible/lib:ring-[var(--accent-ring)]">
+      <div className="relative aspect-[21/10] overflow-hidden rounded-2xl bg-[var(--poster-placeholder)] shadow-[0_10px_28px_rgba(0,0,0,0.38)] ring-1 ring-white/10 transition duration-300 group-hover/lib:-translate-y-1 group-hover/lib:ring-white/35 group-focus-visible/lib:ring-2 group-focus-visible/lib:ring-[var(--accent-ring)]">
         {coverFailed || stats.item_count === 0 ? (
           <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-[#1c2230] to-[#10131c]">
             <meta.Icon className="size-10 text-white/[0.13]" />
@@ -330,7 +330,7 @@ function LibraryItemPlayCardBody({
         {...tapGuard}
         className="group/card block outline-none"
       >
-        <div className="relative aspect-video overflow-hidden rounded-2xl bg-[#141824] shadow-[0_10px_28px_rgba(0,0,0,0.38)] ring-1 ring-white/[0.08] transition duration-300 group-hover/play:-translate-y-1 group-hover/play:shadow-[0_18px_42px_rgba(0,0,0,0.55)] group-hover/play:ring-white/25 group-focus-visible/card:ring-2 group-focus-visible/card:ring-white/80">
+        <div className="relative aspect-video overflow-hidden rounded-2xl bg-[var(--poster-placeholder)] shadow-[0_10px_28px_rgba(0,0,0,0.38)] ring-1 ring-white/[0.08] transition duration-300 group-hover/play:-translate-y-1 group-hover/play:shadow-[0_18px_42px_rgba(0,0,0,0.55)] group-hover/play:ring-white/25 group-focus-visible/card:ring-2 group-focus-visible/card:ring-white/80">
           {backdrop ? (
             <PosterImage
               src={imageUrl(backdrop, "landscape-card")}

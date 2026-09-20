@@ -993,14 +993,17 @@ function ProgressStrip({
           style={{ width: `${(upgrading / denom) * 100}%` }}
         />
         <div
-          className="bg-[#6aa7ff]"
+          // 「管线中」段走 --info-soft、图例点走 --info-legend：银玻璃各自保值
+          // （#6aa7ff / 与 --info 同值的 #7fb0ff，旧双值并存），Netflix 归一成白，
+          // 条带与图例不再错色；青色「洗版」段属另一挂起项，不在本次范围
+          className="bg-[var(--info-soft)]"
           style={{ width: `${(inPipeline / denom) * 100}%` }}
         />
       </div>
       <div className="tnum mt-2 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-caption text-white/45">
         <ProgressLegend color="var(--ok)" label={`已入库 ${importedSettled}`} />
         {upgrading > 0 && <ProgressLegend color="#2dd4bf" label={`洗版中 ${upgrading}`} />}
-        <ProgressLegend color="var(--info)" label={`下载中 ${inPipeline}`} />
+        <ProgressLegend color="var(--info-legend)" label={`下载中 ${inPipeline}`} />
         <ProgressLegend color="rgba(255,255,255,0.2)" label={`缺失 ${wanted}`} />
       </div>
     </div>
@@ -1070,7 +1073,9 @@ function SearchRoundBar({
     .sort()[0];
 
   return (
-    <div className="rounded-2xl border border-white/[0.07] bg-[rgba(14,16,22,0.45)] backdrop-blur-xl">
+    // solid-card：Netflix 换皮钩子（#181818 实底 + --line 描边 + 关 blur），
+    // 本页另一批同型玻璃卡照 sub-hero-card 的收口路数补钩子；银玻璃零变化
+    <div className="solid-card rounded-2xl border border-white/[0.07] bg-[rgba(14,16,22,0.45)] backdrop-blur-xl">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2.5">
         <span
           className="size-1.5 shrink-0 rounded-full bg-[var(--info)]"
@@ -1107,7 +1112,7 @@ function ActivityLogSection({ activities }: { activities: SubscriptionActivity[]
   const [open, setOpen] = useState(false);
   if (activities.length === 0) return null;
   return (
-    <div className="overflow-hidden rounded-2xl border border-white/[0.07] bg-[rgba(14,16,22,0.45)] backdrop-blur-xl">
+    <div className="solid-card overflow-hidden rounded-2xl border border-white/[0.07] bg-[rgba(14,16,22,0.45)] backdrop-blur-xl">
       <button
         type="button"
         aria-expanded={open}
@@ -1175,7 +1180,7 @@ function ActivityTimeline({
 }) {
   if (activities.length === 0) {
     return (
-      <p className="rounded-2xl border border-white/[0.07] bg-[rgba(14,16,22,0.45)] p-5 text-sub leading-6 text-[var(--text-muted)] backdrop-blur-xl">
+      <p className="solid-card rounded-2xl border border-white/[0.07] bg-[rgba(14,16,22,0.45)] p-5 text-sub leading-6 text-[var(--text-muted)] backdrop-blur-xl">
         暂无活动记录。系统开始搜索、匹配或投递后，每个动作都会记录在这里。
       </p>
     );
@@ -1185,7 +1190,7 @@ function ActivityTimeline({
       className={
         bare
           ? "px-6 py-5 max-md:px-4"
-          : "rounded-2xl border border-white/[0.07] bg-[rgba(14,16,22,0.45)] px-6 py-5 backdrop-blur-xl"
+          : "solid-card rounded-2xl border border-white/[0.07] bg-[rgba(14,16,22,0.45)] px-6 py-5 backdrop-blur-xl"
       }
     >
       <ol>
@@ -1295,7 +1300,7 @@ function WantedBreakdown({
   const [openWanted, setOpenWanted] = useState<number | null>(null);
   if (wanted.length === 0) {
     return (
-      <p className="rounded-2xl border border-white/[0.07] bg-[rgba(14,16,22,0.45)] p-5 text-sub leading-6 text-[var(--text-muted)] backdrop-blur-xl">
+      <p className="solid-card rounded-2xl border border-white/[0.07] bg-[rgba(14,16,22,0.45)] p-5 text-sub leading-6 text-[var(--text-muted)] backdrop-blur-xl">
         当前没有追踪项。开启「自动续订」后，新集播出会自动加入。
       </p>
     );
@@ -1322,7 +1327,7 @@ function WantedBreakdown({
           return (
             <div
               key={season}
-              className="overflow-hidden rounded-2xl border border-white/[0.07] bg-[rgba(14,16,22,0.45)] backdrop-blur-xl"
+              className="solid-card overflow-hidden rounded-2xl border border-white/[0.07] bg-[rgba(14,16,22,0.45)] backdrop-blur-xl"
             >
               {(!isMovie || annotatable.has(season)) && (
                 /* 折叠热区用 role="button" 的 div 而不是 <button>：季头行里还有

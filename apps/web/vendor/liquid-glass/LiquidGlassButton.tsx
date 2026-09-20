@@ -5,6 +5,7 @@ import {
   type LiquidGlassSettings,
   type LiquidGlassVariant
 } from "./core/types";
+import { useTheme } from "@/lib/ui-prefs";
 
 const MATERIAL_HANDOFF = 0.32;
 const ANIMATION_TIME_SCALE = 1.5;
@@ -79,6 +80,12 @@ export function LiquidGlassButton({
   const currentChecked = checked ?? internalChecked;
   const checkedRef = useRef(currentChecked);
   checkedRef.current = currentChecked;
+  // 本项目改动（Netflix 主题，docs/design/web-themes.md §3.5）：纯色平铺设计下
+  // 整体停用玻璃层——不创建 WebGL 渲染器，静态层由 globals.css 的 netflix 覆盖
+  // 换成实色开关（灰轨道 + 红开启 + 白滑块）。注意玻璃层停用后按下动画里
+  // 「静态层淡出让位玻璃」的交接不存在了，CSS 侧必须把静态层 opacity 钉住，
+  // 否则按下的瞬间开关会整块透明。
+  const theme = useTheme();
   const mergedSettings = useMemo(() => resolveLiquidGlassSettings(variant, {
     blur: 0.18,
     refraction: 0.12,
@@ -117,6 +124,8 @@ export function LiquidGlassButton({
 
   const ensureRenderer = () => {
     if (rendererRef.current || !canvasRef.current) return;
+    // Netflix 主题：玻璃层整体停用（见上方 useTheme 处的注释），按下也不再建渲染器
+    if (theme.id === "netflix") return;
     try {
       rendererRef.current = new LiquidGlassRenderer(canvasRef.current, backgroundImage, settingsRef.current);
       rendererRef.current.setBackgroundSampling(false);

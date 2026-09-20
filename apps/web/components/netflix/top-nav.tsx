@@ -161,15 +161,17 @@ export function NetflixTopNav({
         <BrowseDropdown links={visibleLinks} active={active} />
 
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
-          {/* ＋ 新任务：品牌红实底主操作（Netflix 品牌语言：红只在主 CTA /
-              进度条等少数位置出现，顶栏按钮是全站最醒目的一处）。
+          {/* ＋ 新任务：白底黑字主操作（§4 用色纪律：红只给品牌字标 / 进度条 /
+              匹配度 / 激活指示，主按钮走 Netflix 生产主键语言——白底黑字，
+              三态透明度 1 / hover 0.75 / 按下 0.5，与 .btn-accent 的主题覆盖
+              同一款；白钮在纯黑顶栏上依旧是最醒目的一处）。
               管理员专属——银玻璃侧栏用 memberNavItems 把「新会话」整条摘掉，
               这里必须同口径，否则成员会看到一个后端全 403 的入口。 */}
           {isAdmin && (
             <button
               type="button"
               onClick={() => router.push("/new")}
-              className="flex h-9 items-center gap-1.5 rounded-[4px] bg-[var(--accent)] px-3 text-[14px] font-semibold text-white transition-colors hover:bg-[var(--accent-strong)]"
+              className="flex h-9 items-center gap-1.5 rounded-[4px] bg-white px-3 text-[14px] font-semibold text-black transition-colors hover:bg-white/75 active:bg-white/50"
             >
               <PlusGlyph />
               新任务

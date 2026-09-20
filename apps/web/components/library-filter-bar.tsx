@@ -769,13 +769,13 @@ function MoreFiltersPanel({
   // 宽屏的「更多筛选」面板是在页面里展开的，卡片形态照旧
   if (loading) {
     return (
-      <div className="mt-2.5 rounded-2xl border border-white/[0.1] bg-black/20 px-4 py-6 text-center text-sub text-[var(--text-faint)] max-md:mt-0 max-md:rounded-none max-md:border-x-0 max-md:border-b-0 max-md:border-white/[0.08] max-md:bg-transparent max-md:px-0 max-md:py-4">
+      <div className="solid-card mt-2.5 rounded-2xl border border-white/[0.1] bg-black/20 px-4 py-6 text-center text-sub text-[var(--text-faint)] max-md:mt-0 max-md:rounded-none max-md:border-x-0 max-md:border-b-0 max-md:border-white/[0.08] max-md:bg-transparent max-md:px-0 max-md:py-4">
         正在数各档位还剩多少部…
       </div>
     );
   }
   return (
-    <div className="mt-2.5 grid grid-cols-2 gap-x-6 rounded-2xl border border-white/[0.1] bg-black/20 p-4 max-md:mt-0 max-md:grid-cols-1 max-md:rounded-none max-md:border-0 max-md:bg-transparent max-md:p-0">
+    <div className="solid-card mt-2.5 grid grid-cols-2 gap-x-6 rounded-2xl border border-white/[0.1] bg-black/20 p-4 max-md:mt-0 max-md:grid-cols-1 max-md:rounded-none max-md:border-0 max-md:bg-transparent max-md:p-0">
       <div className="max-md:border-t max-md:border-white/[0.08] max-md:pt-3">
         <p className="mb-3 border-b border-white/[0.08] pb-2 text-sub font-semibold text-white max-md:mb-2.5 max-md:border-b-0 max-md:pb-0">
           找片
@@ -978,7 +978,7 @@ function FilterSheet({
         className="flex-1 cursor-default bg-black/25"
       />
       {/* 装下一二级全部维度，比原先只装二级时高一些，但仍给上方留出一截墙 */}
-      <div className="flex max-h-[70dvh] flex-col rounded-t-2xl border-t border-white/10 bg-[rgba(16,18,26,0.92)] shadow-[0_-12px_40px_rgba(0,0,0,0.5)] backdrop-blur-2xl">
+      <div className="solid-popover flex max-h-[70dvh] flex-col rounded-t-2xl border-t border-white/10 bg-[rgba(16,18,26,0.92)] shadow-[0_-12px_40px_rgba(0,0,0,0.5)] backdrop-blur-2xl">
         <div className="flex shrink-0 items-center justify-center py-2">
           <span className="h-1 w-9 rounded-full bg-white/25" />
         </div>

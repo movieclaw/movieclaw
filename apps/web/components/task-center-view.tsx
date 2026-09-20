@@ -1532,12 +1532,12 @@ function DownloadTaskGroupCard({
   const isTv = group.kind === "tv";
   const firstSubscription = group.tasks.flatMap((task) => task.subscriptions)[0];
   return (
-    <article className="overflow-hidden rounded-2xl border border-white/[0.08] bg-[rgba(14,16,22,0.52)] backdrop-blur-xl">
+    <article className="solid-card overflow-hidden rounded-2xl border border-white/[0.08] bg-[rgba(14,16,22,0.52)] backdrop-blur-xl">
       {/* 影片身份集中在紧凑顶部，种子列表另起整行占满卡片宽度。海报不再
           作为贯穿整组的左栏，长种子名、状态和操作按钮因此有完整横向空间。 */}
       <div className="flex items-center gap-3.5 border-b border-white/[0.07] px-4 py-3 max-md:px-3.5">
         <div className="w-10 shrink-0 max-md:w-9">
-          <div className="aspect-[2/3] overflow-hidden rounded-lg bg-[#141824] ring-1 ring-white/10">
+          <div className="aspect-[2/3] overflow-hidden rounded-lg bg-[var(--poster-placeholder)] ring-1 ring-white/10">
             <PosterImage
               src={imageUrl(group.posterUrl)}
               alt={`${group.title}海报`}
@@ -1638,7 +1638,7 @@ function DownloadTaskCard({
       className={
         grouped
           ? "rounded-xl border border-white/[0.06] bg-black/15 p-3"
-          : "rounded-2xl border border-white/[0.08] bg-[rgba(14,16,22,0.5)] p-4 backdrop-blur-xl max-md:p-3.5"
+          : "solid-card rounded-2xl border border-white/[0.08] bg-[rgba(14,16,22,0.5)] p-4 backdrop-blur-xl max-md:p-3.5"
       }
     >
       <div className="min-w-0">
@@ -2337,7 +2337,7 @@ function EmptyView({ view }: { view: TaskCenterViewName }) {
     },
   };
   return (
-    <div className="mt-8 rounded-2xl border border-white/[0.07] bg-black/20 px-6 py-16 text-center backdrop-blur-xl">
+    <div className="solid-card mt-8 rounded-2xl border border-white/[0.07] bg-black/20 px-6 py-16 text-center backdrop-blur-xl">
       <p className="text-title-sm font-semibold text-white/75">{copy[view].title}</p>
       <p className="mt-2 text-ui text-[var(--text-muted)]">{copy[view].note}</p>
     </div>

@@ -741,7 +741,7 @@ function TrailerCard({
       {...tapGuard}
       className="group/trailer w-[264px] shrink-0 text-left max-md:w-[208px]"
     >
-      <div className="relative aspect-video overflow-hidden rounded-xl bg-[#141824] ring-1 ring-white/[0.08] transition-all duration-300 ease-out group-hover/trailer:-translate-y-1 group-hover/trailer:shadow-[0_16px_40px_rgba(0,0,0,0.55)] group-hover/trailer:ring-white/30">
+      <div className="relative aspect-video overflow-hidden rounded-xl bg-[var(--poster-placeholder)] ring-1 ring-white/[0.08] transition-all duration-300 ease-out group-hover/trailer:-translate-y-1 group-hover/trailer:shadow-[0_16px_40px_rgba(0,0,0,0.55)] group-hover/trailer:ring-white/30">
         {/* YouTube 封面是 4:3（上下带黑边），object-cover 裁进 16:9 恰好只剩画面 */}
         <PosterImage
           src={video.thumbnailUrl}
@@ -1077,7 +1077,7 @@ function PhotoCard({
       type="button"
       {...tapGuard}
       aria-label={`查看${label}第 ${index + 1} 张`}
-      className={`shrink-0 overflow-hidden rounded-xl bg-[#141824] ring-1 ring-white/[0.08] transition-all duration-300 ease-out hover:-translate-y-1 hover:shadow-[0_16px_40px_rgba(0,0,0,0.55)] hover:ring-white/30 ${
+      className={`shrink-0 overflow-hidden rounded-xl bg-[var(--poster-placeholder)] ring-1 ring-white/[0.08] transition-all duration-300 ease-out hover:-translate-y-1 hover:shadow-[0_16px_40px_rgba(0,0,0,0.55)] hover:ring-white/30 ${
         landscape ? "aspect-video h-[148px] max-md:h-[104px]" : "aspect-[2/3] h-[148px] max-md:h-[126px]"
       }`}
     >

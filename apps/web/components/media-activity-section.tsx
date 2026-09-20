@@ -254,7 +254,8 @@ function ActivityTitle({ media }: { media: MediaActivityTarget }) {
       )}
       {/* 「全部」口径下范围外的记录：与库首页对超管不可浏览库的「仅管理」标签同一措辞 */}
       {!media.browsable && (
-        <span className="ml-1.5 rounded-md border border-white/15 px-1.5 py-px text-[11px] font-medium text-white/50">
+        // 角标描边消费 --line-strong：银玻璃 :root 同值（白 0.15）零变化
+        <span className="ml-1.5 rounded-md border border-[var(--line-strong)] px-1.5 py-px text-[11px] font-medium text-white/50">
           仅管理
         </span>
       )}
@@ -438,7 +439,10 @@ function ActivityCard({
   muted?: boolean;
 }) {
   return (
-    <div className="relative overflow-hidden rounded-2xl border border-white/[0.08] bg-white/[0.03]">
+    // solid-card：Netflix 换皮钩子（同任务中心卡面），银玻璃下无基样式零变化；
+    // 卡内白透小件（进度轨 bg-white/[0.06]）无同值 token，按「银玻璃工具类
+    // 原样保留」约定不动，落在 #181818 实底上即近官方卡面灰
+    <div className="solid-card relative overflow-hidden rounded-2xl border border-white/[0.08] bg-white/[0.03]">
       <div className="flex gap-3.5 p-3.5 pb-4 max-md:gap-3 max-md:p-3 max-md:pb-3.5">
         {children}
       </div>

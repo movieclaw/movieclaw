@@ -330,7 +330,7 @@ function PosterCardContent({
       <div
         // 比例走内联样式：其他库的抓帧缩略图是 16:9，TMDB 海报是 2:3，同一张墙上按条目各自排版
         style={{ aspectRatio: frameAspect }}
-        className="relative w-full overflow-hidden rounded-2xl bg-[#141824] shadow-[0_10px_28px_rgba(0,0,0,0.4)] ring-1 ring-white/[0.08] transition-all duration-300 ease-out group-hover/card:-translate-y-1.5 group-hover/card:shadow-[0_22px_50px_rgba(0,0,0,0.6)] group-hover/card:ring-white/25"
+        className="relative w-full overflow-hidden rounded-2xl bg-[var(--poster-placeholder)] shadow-[0_10px_28px_rgba(0,0,0,0.4)] ring-1 ring-white/[0.08] transition-all duration-300 ease-out group-hover/card:-translate-y-1.5 group-hover/card:shadow-[0_22px_50px_rgba(0,0,0,0.6)] group-hover/card:ring-white/25"
       >
         {letterbox ? (
           <>

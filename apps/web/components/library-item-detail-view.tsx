@@ -917,7 +917,10 @@ export function LibraryItemDetailView({
 
           {/* 元数据刷新的失败提示（识别相关的结论都在「修正识别结果」弹窗里给） */}
           {refreshError && (
-            <div className="mt-4 max-w-2xl rounded-xl border border-white/[0.1] bg-[rgba(14,16,22,0.6)] px-4 py-3 text-sub leading-6 text-[#ff9f9f] backdrop-blur-md">
+            // solid-card：Netflix 卡面钩子接管材质并关 blur（银玻璃零变化）；
+            // 字色保留 #ff9f9f 浅红字面量——:root --danger=#ff6b6b 与之不同值，
+            // 收口会让银玻璃可见变化，待设计决策
+            <div className="solid-card mt-4 max-w-2xl rounded-xl border border-white/[0.1] bg-[rgba(14,16,22,0.6)] px-4 py-3 text-sub leading-6 text-[#ff9f9f] backdrop-blur-md">
               {refreshError}
             </div>
           )}
@@ -1153,7 +1156,11 @@ export function LibraryItemDetailView({
  * 文字色不在同一个元素，不存在工具类互相覆盖的问题。
  */
 const MARK_BUTTON_CLASS =
-  "inline-flex h-12 shrink-0 items-center justify-center gap-2 rounded-full border border-white/[0.12] bg-white/[0.08] text-white/85 backdrop-blur-md transition duration-200 hover:bg-white/[0.14] hover:text-white active:scale-[0.96] disabled:pointer-events-none disabled:opacity-60 md:size-12 max-md:h-11 max-md:px-4";
+  // page-nav-btn：圆钮主题钩子（与返回键/顶栏操作键同一族，银玻璃下无基样式
+  // 零变化）——Netflix 主题压成 --line 描边 + 实底深灰 + 关 blur，圆形按
+  // §2.3「圆形按钮除外」保留。不用 .btn-glass：其银玻璃基样式（胶囊+白透底）
+  // 会改变本组圆钮的银玻璃外观
+  "page-nav-btn inline-flex h-12 shrink-0 items-center justify-center gap-2 rounded-full border border-white/[0.12] bg-white/[0.08] text-white/85 backdrop-blur-md transition duration-200 hover:bg-white/[0.14] hover:text-white active:scale-[0.96] disabled:pointer-events-none disabled:opacity-60 md:size-12 max-md:h-11 max-md:px-4";
 
 /**
  * 播放入口（主行动按钮 + 续播进度）。
@@ -1864,7 +1871,7 @@ function EpisodeCard({
       }`}
     >
       <div
-        className={`relative aspect-video overflow-hidden rounded-xl bg-[#141824] transition ${
+        className={`relative aspect-video overflow-hidden rounded-xl bg-[var(--poster-placeholder)] transition ${
           selected
             ? "ring-2 ring-white/85 shadow-[0_10px_30px_rgba(0,0,0,0.5)]"
             : "ring-1 ring-white/[0.08] hover:ring-white/35"

@@ -64,7 +64,10 @@ function EmptyArtwork({ variant }: { variant: ContentEmptyStateProps["variant"] 
           <span className="absolute right-7 top-7 grid h-[92px] w-16 rotate-6 place-items-center rounded-xl border border-white/[0.09] bg-white/[0.04] text-white/20 shadow-xl">
             <TvIcon className="size-6" />
           </span>
-          <span className="absolute left-1/2 top-1/2 z-10 grid size-[76px] -translate-x-1/2 -translate-y-1/2 place-items-center rounded-2xl border border-white/[0.16] bg-[#202530]/90 text-white/75 shadow-[0_18px_45px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.12)] backdrop-blur-xl">
+          {/* solid-card：图标座挂卡片材质钩子（Netflix 下换 #181818 并随钩子
+              box-shadow:none 抹掉 inset 白高光；冷蓝灰 #202530 是硬编码，
+              不动它以免银玻璃变化），圆版/方版形状保留 */}
+          <span className="solid-card absolute left-1/2 top-1/2 z-10 grid size-[76px] -translate-x-1/2 -translate-y-1/2 place-items-center rounded-2xl border border-white/[0.16] bg-[#202530]/90 text-white/75 shadow-[0_18px_45px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.12)] backdrop-blur-xl">
             <FolderIcon className="size-9" />
           </span>
           <span className="absolute inset-x-5 bottom-3 h-px bg-gradient-to-r from-transparent via-white/20 to-transparent" />
@@ -77,7 +80,7 @@ function EmptyArtwork({ variant }: { variant: ContentEmptyStateProps["variant"] 
           <span className="absolute right-5 top-9 grid size-11 rotate-6 place-items-center rounded-xl border border-white/[0.09] bg-white/[0.04] text-white/35 shadow-lg">
             <TvIcon className="size-5" />
           </span>
-          <span className="absolute left-1/2 top-1/2 z-10 grid size-[76px] -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full border border-white/[0.16] bg-[#202530]/90 text-white/75 shadow-[0_18px_45px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.12)] backdrop-blur-xl">
+          <span className="solid-card absolute left-1/2 top-1/2 z-10 grid size-[76px] -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full border border-white/[0.16] bg-[#202530]/90 text-white/75 shadow-[0_18px_45px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.12)] backdrop-blur-xl">
             <BookmarkIcon className="size-8" />
           </span>
           <span className="absolute bottom-4 right-[72px] z-20 grid size-8 place-items-center rounded-full border border-white/15 bg-[#303743] text-white/70 shadow-lg">

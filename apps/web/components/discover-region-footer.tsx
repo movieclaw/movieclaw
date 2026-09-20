@@ -111,7 +111,9 @@ export function DiscoverRegionFooter({ onChanged }: { onChanged?: () => void }) 
       {open && (
         <div
           role="menu"
-          className="absolute bottom-[calc(100%+8px)] left-1/2 z-20 min-w-[150px] -translate-x-1/2 rounded-xl border border-white/[0.15] bg-[var(--surface-raised)] p-1.5 shadow-[0_14px_40px_rgba(0,0,0,0.5)] backdrop-blur-xl"
+          // solid-popover：底色已消费 --surface-raised（netflix=#181818），钩子
+          // 只补齐描边色/Netflix 投影并关 blur；银玻璃零变化
+          className="solid-popover absolute bottom-[calc(100%+8px)] left-1/2 z-20 min-w-[150px] -translate-x-1/2 rounded-xl border border-white/[0.15] bg-[var(--surface-raised)] p-1.5 shadow-[0_14px_40px_rgba(0,0,0,0.5)] backdrop-blur-xl"
         >
           {REGIONS.map((item) => (
             <button

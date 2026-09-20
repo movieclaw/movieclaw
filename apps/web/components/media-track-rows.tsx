@@ -673,7 +673,10 @@ export function ReadOnlyTrackRows({
   );
 }
 
-/** 折叠态芯片：统一中性色，颜色留给展开态的格式色块。 */
+/** 折叠态芯片：统一中性色，颜色留给展开态的格式色块。
+ *  backdrop-blur-md 保留：芯片在详情页列表行内、不压在海报图上，不适用
+ *  poster-card 海报墙的图上压字件去模糊约定；Netflix 侧如需关模糊应走
+ *  主题作用域覆盖，不动银玻璃基样式。 */
 const CHIP_CLASS =
   "tnum inline-flex h-7 items-center gap-1.5 rounded-[7px] bg-white/[0.075] px-2.5 " +
   "text-caption font-medium leading-none text-white/85 backdrop-blur-md " +

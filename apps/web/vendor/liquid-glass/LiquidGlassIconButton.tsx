@@ -5,6 +5,7 @@ import {
   type LiquidGlassSettings,
   type LiquidGlassVariant
 } from "./core/types";
+import { useTheme } from "@/lib/ui-prefs";
 
 export interface LiquidGlassIconButtonProps {
   active?: boolean;
@@ -57,6 +58,12 @@ export function LiquidGlassIconButton({
 }: LiquidGlassIconButtonProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<LiquidGlassRenderer | null>(null);
+  // 本项目改动（Netflix 主题，docs/design/web-themes.md §3.5）：纯色平铺设计下
+  // 不挂玻璃画布——本组件与开关不同，渲染器是**挂载即建、常驻到卸载**的，
+  // 不跳过的话每个图标按钮都独占一个 WebGL 上下文（浏览器每页上限约 16 个，
+  // 见 LiquidGlassButton 里 issue #89 的注释）。Netflix 下的外观由 globals.css
+  // 的 netflix 覆盖接管（.lg-icon-button 半透白实底按钮）。
+  const theme = useTheme();
   const [internalActive, setInternalActive] = useState(defaultActive);
   const [pressed, setPressed] = useState(false);
   const currentActive = active ?? internalActive;
@@ -113,6 +120,9 @@ export function LiquidGlassIconButton({
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+    // Netflix 主题：整体停用玻璃层（见上方 useTheme 处的注释），不创建渲染器；
+    // theme.id 进依赖保证银玻璃 ⇄ Netflix 实时切换时旧渲染器被正确 dispose。
+    if (theme.id === "netflix") return;
     try {
       const renderer = new LiquidGlassRenderer(canvas, backgroundImage, mergedSettings);
       renderer.setBackgroundSampling(true);
@@ -127,7 +137,7 @@ export function LiquidGlassIconButton({
       rendererRef.current?.dispose();
       rendererRef.current = null;
     };
-  }, [geometry.height, geometry.width]);
+  }, [geometry.height, geometry.width, theme.id]);
 
   useEffect(() => {
     rendererRef.current?.setImage(backgroundImage);

@@ -518,8 +518,9 @@ function RunRow({
         <span className="relative flex size-[7px] shrink-0 items-center justify-center">
           {running && (
             <>
-              <span className="absolute inline-flex size-full animate-ping rounded-full bg-[#6aa7ff] opacity-70" />
-              <span className="relative size-[7px] rounded-full bg-[#6aa7ff]" />
+              {/* 活动蓝点走 --info-soft（银玻璃 = 原 #6aa7ff；Netflix 收敛白点） */}
+              <span className="absolute inline-flex size-full animate-ping rounded-full bg-[var(--info-soft)] opacity-70" />
+              <span className="relative size-[7px] rounded-full bg-[var(--info-soft)]" />
             </>
           )}
         </span>

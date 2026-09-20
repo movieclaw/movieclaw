@@ -989,7 +989,9 @@ function LlmProviderForm({
         </p>
       )}
 
-      <div className="sticky bottom-0 z-10 -mx-4 -mb-4 flex items-center gap-3 border-t border-white/[0.08] bg-[rgba(17,20,27,0.94)] px-4 py-3 backdrop-blur-xl sm:static sm:mx-0 sm:mb-0 sm:justify-end sm:border-0 sm:bg-transparent sm:p-0 sm:pt-1 sm:backdrop-blur-none">
+      {/* solid-card：移动端 sticky 保存条挂卡片材质钩子（描边/实底/关 blur，
+          银玻璃零变化）；sm: 起回透明档的工具类原样保留 */}
+      <div className="solid-card sticky bottom-0 z-10 -mx-4 -mb-4 flex items-center gap-3 border-t border-white/[0.08] bg-[rgba(17,20,27,0.94)] px-4 py-3 backdrop-blur-xl sm:static sm:mx-0 sm:mb-0 sm:justify-end sm:border-0 sm:bg-transparent sm:p-0 sm:pt-1 sm:backdrop-blur-none">
         <button
           type="button"
           onClick={onCancel}

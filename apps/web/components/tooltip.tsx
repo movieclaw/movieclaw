@@ -110,7 +110,9 @@ export function Tooltip({
           >
             <div
               style={transitionStyles}
-              className="select-text rounded-xl border border-white/[0.12] bg-[rgba(16,18,26,0.97)] px-3.5 py-2.5 text-sub leading-relaxed text-[var(--text)] shadow-2xl backdrop-blur-2xl"
+              // tooltip-bubble：主题钩子——Netflix 主题在 globals.css 里换成
+              // 实色 #181818 气泡（毛玻璃是银玻璃语言，见 docs/design/web-themes.md §5.7）。
+              className="tooltip-bubble select-text rounded-xl border border-white/[0.12] bg-[rgba(16,18,26,0.97)] px-3.5 py-2.5 text-sub leading-relaxed text-[var(--text)] shadow-2xl backdrop-blur-2xl"
             >
               <FloatingArrow
                 ref={arrowRef}

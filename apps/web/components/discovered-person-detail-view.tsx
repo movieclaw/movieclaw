@@ -85,7 +85,7 @@ export function DiscoveredPersonDetailView({
       <PageNav title={person.name} fallback={navFallback} />
 
       <header className="flex items-end gap-6 px-12 pt-2 max-md:gap-4 max-md:px-4">
-        <div className="w-[132px] shrink-0 overflow-hidden rounded-xl bg-[#141824] shadow-[0_20px_48px_rgba(0,0,0,0.5)] ring-1 ring-white/[0.1] max-md:w-[92px]">
+        <div className="w-[132px] shrink-0 overflow-hidden rounded-xl bg-[var(--poster-placeholder)] shadow-[0_20px_48px_rgba(0,0,0,0.5)] ring-1 ring-white/[0.1] max-md:w-[92px]">
           <PosterImage
             src={person.avatarUrl}
             alt={person.name}

@@ -119,7 +119,7 @@ export function MediaSearchResults({
             <div className="ml-auto flex items-center gap-2">
               <span
                 title="这是历史留存的结果快照，来源站数据（评分/海报）可能已变化"
-                className="flex items-center gap-1.5 rounded-full border border-[#6aa7ff]/30 bg-[#6aa7ff]/12 px-2.5 py-1 text-caption text-[#b9d4ff] backdrop-blur-sm"
+                className="flex items-center gap-1.5 rounded-full border border-[var(--info-soft)]/30 bg-[var(--info-soft)]/12 px-2.5 py-1 text-caption text-[var(--info-text)] backdrop-blur-sm"
               >
                 <svg
                   viewBox="0 0 24 24"
