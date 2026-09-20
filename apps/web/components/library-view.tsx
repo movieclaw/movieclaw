@@ -340,6 +340,16 @@ export function LibraryView({ hero }: { hero?: ReactNode }) {
     rows.some((row) => row.kind === "libraries" && !row.hidden) && visibleLibraries.length > 0;
   const collectionsEntryInHeader = collectionCount > 0 && !librariesRowVisible;
 
+  // 「我的收藏」的兜底入口：收藏行只有在**有收藏**时才渲染（没有事实不摆控件），
+  // 被用户隐藏时也整个不出现——于是「还没有收藏」与「行被隐藏」两种状态下，
+  // 全站都没有进 /library/favorites 的路（它没有第二个入口）。收藏数据跟着行
+  // 取数，行隐藏时连请求都不发，所以这里不能依赖收藏数据本身：行在场就让位给
+  // 行内的「查看全部」，行不在场（没收藏 / 被隐藏）时由页头动作区指路。
+  const favoritesRowVisible =
+    rows.some((row) => row.kind === "favorites" && !row.hidden) &&
+    (favorites?.items.length ?? 0) > 0;
+  const favoritesEntryInHeader = !favoritesRowVisible;
+
   // 「我的收藏」横滚行：与库行同一张海报卡、同一个行组件，只把 hover
   // 层换成收藏的层级说明；落点是服务端解析好的可见库里的条目详情
   const favoriteRow = useMemo(() => {
@@ -493,6 +503,14 @@ export function LibraryView({ hero }: { hero?: ReactNode }) {
         </div>
         {/* 两个页面级动作都是图标钮：自定义首页（所有人）、管理媒体库（有权限的人） */}
         <div className="flex shrink-0 items-center gap-2">
+          {favoritesEntryInHeader && (
+            <Link
+              href={"/library/favorites" as Route}
+              className="shrink-0 text-ui text-[var(--text-faint)] transition hover:text-[var(--text)]"
+            >
+              我的收藏 ›
+            </Link>
+          )}
           {collectionsEntryInHeader && (
             <Link
               href={"/library/collections" as Route}
