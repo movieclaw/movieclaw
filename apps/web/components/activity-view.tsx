@@ -10,6 +10,7 @@ import { MediaActivityPanel, useMediaActivity } from "@/components/media-activit
 import { TaskCenterView } from "@/components/task-center-view";
 import { usePageChrome } from "@/lib/page-chrome";
 import { usePermissions } from "@/lib/permissions";
+import { useTheme } from "@/lib/ui-prefs";
 import { taskActivityBadge, useTaskActivity } from "@/lib/task-activity";
 import type { ActivityScope, TaskCenterViewName, WatchViewName } from "@/lib/task-center";
 import { useIsMobile } from "@/lib/use-media-query";
@@ -36,6 +37,9 @@ export function ActivityView({
 }) {
   const router = useRouter();
   const pathname = usePathname();
+  // 页面左右留白随主题走栅格：Netflix 主题放弃居中窄栏、整幅铺开并对齐全站
+  // 4vw 左基线（与订阅页/媒体库首页同一条线）；银玻璃维持居中 1180px 栏
+  const isNf = useTheme().id === "netflix";
   const [scope, setScope] = useState<ActivityScope>(initialScope);
   const [view, setView] = useState<TaskCenterViewName>(initialView);
   const [watchView, setWatchView] = useState<WatchViewName>(initialWatchView);
@@ -135,7 +139,13 @@ export function ActivityView({
 
   return (
     <div className="scroll-thin scroll-safe h-full overflow-y-auto pb-10">
-      <div className="mx-auto w-full max-w-[1180px] px-6 pt-7 max-md:px-4 max-md:pt-4">
+      <div
+        className={
+          isNf
+            ? "w-full px-[4vw] pt-7 max-md:pt-4"
+            : "mx-auto w-full max-w-[1180px] px-6 pt-7 max-md:px-4 max-md:pt-4"
+        }
+      >
         <header className="flex items-start justify-between gap-4">
           <div className="min-w-0">
             <div className="flex items-center gap-2.5">

@@ -164,7 +164,12 @@ export function PageNav({
        安全区以下。这正是原生 App 顶栏的层次，也与全局顶栏 .mobile-topbar 一致。 */
     <div
       ref={rootRef}
-      className={`sticky top-0 z-30 px-6 max-md:px-4 max-md:pt-[var(--safe-top)] ${className}`}
+      className={`sticky top-0 z-30 ${
+        // 左右留白随主题走栅格：Netflix 主题对齐全站 4vw 左基线（顶栏字标、
+        // 各页正文同一条线），银玻璃维持 px-6。调用方若用等量负边距让吸顶
+        // 蒙版铺满整宽，两套值必须成对传（见 collection-grid-view 的 insetMx）
+        isNetflix ? "px-[4vw]" : "px-6 max-md:px-4"
+      } max-md:pt-[var(--safe-top)] ${className}`}
     >
       {/* 吸顶蒙版：不是一条「header 色块」，而是一层向下渐隐的雾——顶边最浓、
           到底部完全化开，没有分隔线，因此看不出边界，只感觉标题那一块变干净了。

@@ -356,7 +356,14 @@ export function SubscriptionInspectorView({
   };
 
   return (
-    <div className="scroll-thin scroll-safe flex-1 overflow-y-auto px-6 pb-12 max-md:px-4">
+    <div
+      className={`scroll-thin scroll-safe flex-1 overflow-y-auto pb-12 ${
+        // Netflix 桌面正文对齐 4vw 左基线——与 NetflixBackButton（left-[4vw]）
+        // 同一条线；银玻璃与 Netflix 移动端维持 px-6/px-4：PageNav 的吸顶蒙版
+        // 用 -mx-6/-mx-4 反向抵消容器内边距，这两个值必须成对，不能随主题动
+        isNfDesktop ? "px-[4vw]" : "px-6 max-md:px-4"
+      }`}
+    >
       {/* 顶栏：返回订阅列表 + 吸顶片名（容器已有 px-6，用 -mx-6 让吸顶蒙版铺满）。
           Netflix 桌面换裸白 chevron（见上方 isNfDesktop 注释） */}
       {isNfDesktop ? (

@@ -7,6 +7,7 @@ import { PosterCardVisual } from "@/components/poster-card";
 import type { MediaSearchItem } from "@/lib/api/discover";
 import { getTitleSearchHistoryResults, searchTitles } from "@/lib/api/search";
 import { formatRelativeTime } from "@/lib/time";
+import { useTheme } from "@/lib/ui-prefs";
 import { useScrollRestoration } from "@/lib/use-scroll-restoration";
 
 /**
@@ -41,6 +42,8 @@ export function MediaSearchResults({
   /** 切到「站点资源」垂直（空态/出错时的逃生入口） */
   onSwitchToTorrent?: () => void;
 }) {
+  // 页面左右留白随主题走栅格：Netflix 主题对齐全站 4vw 左基线，银玻璃维持 px-6
+  const inset = useTheme().id === "netflix" ? "px-[4vw]" : "px-6 max-md:px-4";
   const scrollRef = useScrollRestoration(`search:media:${keyword}:${snapshotId ?? "live"}`);
   // 每个来源各自三态：null = 加载中；[] = 无结果；error 非空 = 该分区失败
   const [douban, setDouban] = useState<MediaSearchItem[] | null>(null);
@@ -108,7 +111,7 @@ export function MediaSearchResults({
   return (
     <div className="relative flex h-full flex-col">
       {/* 状态行：与站点资源垂直的头部同构（关键词 + 快照提示） */}
-      <header className="shrink-0 px-6 pb-3 pt-4 max-md:px-4 max-md:pt-3">
+      <header className={`shrink-0 pb-3 pt-4 ${inset} max-md:pt-3`}>
         <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
           <h1 className="text-on-image text-title-lg font-semibold tracking-[-0.01em] text-white">
             “{keyword}”
@@ -151,7 +154,7 @@ export function MediaSearchResults({
 
       <div
         ref={scrollRef}
-        className="scroll-thin scroll-safe relative min-h-0 flex-1 overflow-y-auto px-6 pb-6 max-md:px-4"
+        className={`scroll-thin scroll-safe relative min-h-0 flex-1 overflow-y-auto pb-6 ${inset}`}
       >
         {allEmpty ? (
           <MediaSearchEmpty

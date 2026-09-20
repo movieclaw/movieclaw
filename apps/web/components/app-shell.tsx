@@ -356,7 +356,8 @@ function AppShellBody({ children }: { children: React.ReactNode }) {
             <NetflixTopNav onSearch={handleSearch} onOpenSettings={openSettings} />
             {isSettings ? (
               <div className="nf-nav-offset absolute inset-0 flex">
-                <aside className="h-full w-[300px] shrink-0 pl-3.5">
+                {/* 分区菜单贴全站 4vw 左基线（与顶栏字标同一条线），内容区随后左锚定 */}
+                <aside className="h-full w-[300px] shrink-0 pl-[4vw]">
                   {sidebarNode}
                 </aside>
                 <main className="h-full min-w-0 flex-1">{children}</main>

@@ -46,6 +46,7 @@ import {
   wallRecallScope,
 } from "@/lib/library-wall-recall";
 import { usePageTitle } from "@/lib/use-page-title";
+import { useTheme } from "@/lib/ui-prefs";
 import { useScrollRestoration } from "@/lib/use-scroll-restoration";
 import { useWallRecall } from "@/lib/use-wall-recall";
 
@@ -161,6 +162,9 @@ const FAVORITES_FRAME_ASPECT = 2 / 3;
 export function FavoritesView() {
   usePageTitle("我的收藏");
   const toast = useToast();
+  // 页面左右留白随主题走栅格：Netflix 主题对齐全站 4vw 左基线，银玻璃维持 px-6；
+  // 页头、排序条与海报墙都在这一层容器里，一处改全页生效
+  const inset = useTheme().id === "netflix" ? "px-[4vw]" : "px-6 max-md:px-4";
   const initialSnapshot = snapshot;
   // 本次是不是「重新进入」：首帧没有会话快照 = 冷启动 / 刷新 / 从别处进来的；
   // 或者本次页面加载期间挂过很久后台（iOS PWA 恢复应用不重新加载页面，只能
@@ -634,7 +638,7 @@ export function FavoritesView() {
           )
         }
       />
-      <div className="px-6 max-md:px-4">
+      <div className={inset}>
         <h2 className="text-on-image truncate text-[26px] font-bold leading-tight tracking-[-0.02em] text-white max-md:text-[20px]">
           我的收藏
         </h2>

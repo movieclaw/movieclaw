@@ -23,6 +23,7 @@ import {
   isFilterEmpty,
 } from "@/lib/api/libraries";
 import { filterKey, rulesToFilter } from "@/lib/library-filter";
+import { useTheme } from "@/lib/ui-prefs";
 import { useIsMobile } from "@/lib/use-media-query";
 
 /**
@@ -611,6 +612,9 @@ export function FilterEmptyState({
   onFilterChange: (next: LibraryFilter) => void;
 }) {
   const [relax, setRelax] = useState<LibraryRelax | null>(null);
+  // Netflix 主题下宿主页面（单库页）已提供全页 4vw 留白，这张空态卡不再自带
+  // mx-6（否则双重缩进）；银玻璃维持原样
+  const insetMx = useTheme().id === "netflix" ? "" : "mx-6 max-md:mx-4";
 
   useEffect(() => {
     let alive = true;
@@ -640,7 +644,7 @@ export function FilterEmptyState({
 
   const suggestions = relax?.suggestions ?? [];
   return (
-    <div className="mx-6 mt-8 max-w-[34rem] rounded-2xl border border-dashed border-white/[0.14] p-6 max-md:mx-4 max-md:mt-6 max-md:p-4">
+    <div className={`mt-8 max-w-[34rem] rounded-2xl border border-dashed border-white/[0.14] p-6 ${insetMx} max-md:mt-6 max-md:p-4`}>
       <h3 className="text-body-lg font-semibold text-white">
         没有同时满足这 {count} 个条件的作品
       </h3>
