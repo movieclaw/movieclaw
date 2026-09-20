@@ -23,13 +23,16 @@ export function DiscoveryFilterControl({
   currentYear,
   onApply,
   compact = false,
+  disabled = false,
 }: {
   mediaType: MediaType;
   filters: DiscoveryFilters;
   currentYear: number;
   onApply: (filters: DiscoveryFilters) => void;
-  /** 移动端顶栏的图标形态（44px 圆钮 + 角标），与文字形态同开一个弹窗 */
+  /** 移动端顶栏的图标形态（40px 圆钮 + 角标），与文字形态同开一个弹窗 */
   compact?: boolean;
+  /** 豆瓣源不支持筛选：禁用置灰原地保留（不整体隐藏，避免顶栏跳动重排） */
+  disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState(filters);
@@ -77,11 +80,16 @@ export function DiscoveryFilterControl({
       {compact ? (
         /* 移动端顶栏的紧凑档：去掉「筛选」文字换成图标 + 角标计数——顶栏要
            同时装下电影/剧集切换、筛选、数据源切换与搜索键，文字按钮放不下；
-           size-11 圆钮与搜索键同一触控规格（44px） */
+           size-11 圆钮与搜索键（PAGE_NAV_BUTTON_CLASS 触屏档）同一触控规格
+           （44px）。豆瓣源下禁用置灰。 */
         <button
           type="button"
           onClick={() => setOpen(true)}
-          className="relative flex size-11 shrink-0 items-center justify-center rounded-full border border-white/10 bg-black/35 text-sub font-semibold text-[var(--text-muted)] backdrop-blur-xl transition hover:border-white/20 hover:text-white"
+          disabled={disabled}
+          title={disabled ? "筛选仅 TMDB 源支持" : undefined}
+          className={`relative flex size-11 shrink-0 items-center justify-center rounded-full border border-white/10 bg-black/35 text-sub font-semibold text-[var(--text-muted)] backdrop-blur-xl transition ${
+            disabled ? "cursor-not-allowed opacity-40" : "hover:border-white/20 hover:text-white"
+          }`}
           aria-label={activeCount > 0 ? `筛选，已启用 ${activeCount} 项` : "筛选影片"}
         >
           <FilterIcon className="size-[18px]" />
@@ -95,7 +103,11 @@ export function DiscoveryFilterControl({
         <button
           type="button"
           onClick={() => setOpen(true)}
-          className="relative flex h-9 shrink-0 items-center rounded-full border border-white/10 bg-black/35 px-4 text-sub font-semibold text-[var(--text-muted)] backdrop-blur-xl transition hover:border-white/20 hover:text-white"
+          disabled={disabled}
+          title={disabled ? "筛选仅 TMDB 源支持" : undefined}
+          className={`relative flex h-9 shrink-0 items-center rounded-full border border-white/10 bg-black/35 px-4 text-sub font-semibold text-[var(--text-muted)] backdrop-blur-xl transition ${
+            disabled ? "cursor-not-allowed opacity-40" : "hover:border-white/20 hover:text-white"
+          }`}
           aria-label={activeCount > 0 ? `筛选，已启用 ${activeCount} 项` : "筛选影片"}
         >
           筛选

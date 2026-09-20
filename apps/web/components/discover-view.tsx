@@ -251,15 +251,16 @@ export function DiscoverView({
     () => (
       <div className="flex items-center gap-2">
         {isMobile && <MediaTypeSwitcher value={mediaType} onChange={switchMediaType} />}
-        {source === "tmdb" && (
-          <DiscoveryFilterControl
-            mediaType={mediaType}
-            filters={filters}
-            currentYear={currentYear}
-            onApply={applyFilters}
-            compact={isMobile}
-          />
-        )}
+        {/* 筛选仅 TMDB 源支持：豆瓣视角下不再整体隐藏（隐藏会让顶栏右栏
+            跳动重排），改为禁用置灰原地保留，规则由禁用态自己表达。 */}
+        <DiscoveryFilterControl
+          mediaType={mediaType}
+          filters={filters}
+          currentYear={currentYear}
+          onApply={applyFilters}
+          compact={isMobile}
+          disabled={source !== "tmdb"}
+        />
         <SourceSwitcher value={source} onChange={switchSource} compact={isMobile} />
       </div>
     ),
@@ -374,10 +375,12 @@ export function DiscoverView({
 }
 
 /** 数据源视角切换：两个视角分别缓存，来回切换不会重复请求。compact 档给
- *  移动端顶栏用：字号降到 micro、内边距收窄（给同排的电影/剧集切换与筛选
- *  键让宽度——三组控件全塞顶栏时按 px 计的宽度预算非常紧，375px 视口里
- *  字标 + 三控件 + 搜索键必须都放得下），纵向用 py-2 把整颗胶囊撑到
- *  ≈44px 触控高度。 */
+ *  移动端顶栏用：字号用 micro 档（移动端 11px）、底板降透明度，作为「次级
+ *  维度」与内容类型切换拉开层级；py-2 把整颗胶囊撑到 ≈44px 触控高度。
+ *  激活态统一用 accent 底（银玻璃主题为冷银、Netflix 主题为品牌红，与筛选
+ *  角标同一变量），与内容类型切换的实白底构成「双激活签名」：白 = 内容
+ *  维度、accent = 来源维度——两颗胶囊不再共用同一种「发亮」，当前
+ *  「电影 × TMDB」组合一眼可读，也不再把四个选项看成并列 Tab。 */
 function SourceSwitcher({
   value,
   onChange,
@@ -388,17 +391,21 @@ function SourceSwitcher({
   compact?: boolean;
 }) {
   return (
-    <div className="flex shrink-0 rounded-full border border-white/10 bg-black/35 p-1 backdrop-blur-xl">
+    <div
+      className={`flex shrink-0 rounded-full border p-1 backdrop-blur-xl ${
+        compact ? "border-white/[0.07] bg-black/20" : "border-white/10 bg-black/35"
+      }`}
+    >
       {(["tmdb", "douban"] as const).map((source) => (
         <button
           key={source}
           type="button"
           onClick={() => onChange(source)}
           className={`rounded-full font-semibold transition ${
-            compact ? "px-1.5 py-2 text-micro" : "py-1.5 px-4 text-sub"
+            compact ? "px-2.5 py-2 text-micro" : "py-1.5 px-4 text-sub"
           } ${
             value === source
-              ? "bg-white/15 text-white shadow-sm"
+              ? "bg-[var(--accent)] text-black shadow-sm"
               : "text-[var(--text-muted)] hover:text-white"
           }`}
         >
@@ -409,9 +416,12 @@ function SourceSwitcher({
   );
 }
 
-/** 电影/剧集切换（移动端顶栏右上角）：与订阅页的类型切换同一形态，
+/** 电影/剧集切换（移动端顶栏右上角）：与订阅页的类型切换同一位置同一形态，
     走路由切换（/discover/movie ↔ /discover/tv），各视角独立缓存。
-    只在移动端渲染，尺寸即 compact 档（与 SourceSwitcher 同一套宽度预算）。 */
+    只在移动端渲染。字号用 caption 档（移动端 13px，替代原先压到下限的
+    micro 10px），py-2 把整颗胶囊撑到 ≈44px、与搜索/筛选圆键（触屏档
+    44px）同一触控规格；激活态用实白底黑字，与数据源切换的 accent 底构成
+    「双激活签名」（白 = 内容维度、accent = 来源维度）。 */
 function MediaTypeSwitcher({
   value,
   onChange,
@@ -431,9 +441,9 @@ function MediaTypeSwitcher({
           type="button"
           aria-pressed={value === type}
           onClick={() => onChange(type)}
-          className={`rounded-full px-1.5 py-2 text-micro font-semibold transition ${
+          className={`rounded-full px-2.5 py-2 text-caption font-semibold transition ${
             value === type
-              ? "bg-white/15 text-white shadow-sm"
+              ? "bg-white text-black shadow-sm"
               : "text-[var(--text-muted)] hover:text-white"
           }`}
         >
