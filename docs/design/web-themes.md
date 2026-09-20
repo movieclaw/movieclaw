@@ -393,6 +393,10 @@ Netflix 阴影，`.brand-badge` / `.nav-item` 选中胶囊 → 白系，播放�
 
 ### 5.4 卡片行 `NetflixRow` 与卡片
 
+> **永不实现——2026-09-20 用户拍板：接线实测观感灾难，已全部回退；同日组件文件
+> `components/netflix/row.tsx` 已整个删除，全库零引用。下述设计仅作历史存档，
+> 禁止再实现或恢复 `NetflixRow`。**
+
 - **PC（hover:hover 设备）**：16:9 横版剧照（`backdropUrl`，数据层已在
   discover / libraries / playback DTO 中返回）；无横版图的条目复用 `PosterImage`
   已有的「主图模糊铺底 + 居中完整显示」机制兜底。每行张数：桌面 6（>1400）/
