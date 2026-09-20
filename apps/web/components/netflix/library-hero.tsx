@@ -9,6 +9,7 @@ import { PosterImage } from "@/components/poster-image";
 import { type LibraryItem, listLibraries, listLibraryItems } from "@/lib/api/libraries";
 import { listUpNext, type UpNextItem } from "@/lib/api/playback";
 import { imageUrl, upgradedTmdbOriginalUrl, cardVariantFor } from "@/lib/image-proxy";
+import { useWantsOriginalImage } from "@/lib/image-resolution";
 import { formatRelativeTime } from "@/lib/time";
 
 /**
@@ -148,8 +149,15 @@ function NetflixBillboard({
   // 沉浸画面只走高清（与发现详情页同一条「宁黑勿糊」决策）：TMDB 图升 original
   // 尺寸档，本地资产直取原图；加载并解码完成才显示，不存在「先低清后高清」的
   // 换图过程。landscape-card（480×270）只作兜底：无更高清档或高清加载失败时用。
+  // 小物理宽屏（≤1280）跳过升清但不落 landscape-card——480×270 在 3 倍屏上
+  // 拉不满，直接用基础档（TMDB=w1280 / 资产=档位原图）作高清目标。
+  const wantsOriginal = useWantsOriginalImage();
   const fallbackSrc = artworkUrl ? imageUrl(artworkUrl, "landscape-card") : "";
-  const hdUrl = artworkUrl ? upgradedTmdbOriginalUrl(imageUrl(artworkUrl)) : "";
+  const hdUrl = !artworkUrl
+    ? ""
+    : wantsOriginal
+      ? upgradedTmdbOriginalUrl(imageUrl(artworkUrl))
+      : imageUrl(artworkUrl);
   const [artState, setArtState] = useState<"pending" | "ok" | "failed">("pending");
   useEffect(() => {
     if (!hdUrl) {

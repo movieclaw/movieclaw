@@ -40,6 +40,7 @@ import { useBackdrop } from "@/lib/backdrop";
 import { buildDiscoveryReturnPath } from "@/lib/discovery-return-path";
 import { useDoubanAppHref } from "@/lib/douban-app-link";
 import { upgradedTmdbOriginalUrl } from "@/lib/image-proxy";
+import { useWantsOriginalImage } from "@/lib/image-resolution";
 import { getMediaSeed } from "@/lib/media-detail";
 import { useTapGuard } from "@/lib/use-tap-guard";
 import { usePageTitle } from "@/lib/use-page-title";
@@ -151,9 +152,13 @@ export function MediaDetailView({
   // 才显示——不存在「先低清后高清」的换图过程，也就没有换图带来的突兀/闪烁。
   // 低清 w1280 只作兜底：非 TMDB 图（无更高档位，地址原样返回）或高清加载
   // 失败时才显示。没有横幅剧照时退回海报。
+  // 小物理宽屏（≤1280，全部手机）不算「高清失守」而是「无需高清」：393px×3
+  // 倍屏物理宽 1179，w1280 已饱和，按 useWantsOriginalImage 门槛把 hdUrl 置空
+  // 直接走兜底档，不为看不见的清晰度多拉 1~3MB 原图。
+  const wantsOriginal = useWantsOriginalImage();
   const fallbackBackdrop = item?.backdropUrl || item?.posterUrl || "";
   const hdUrl =
-    source === "douban"
+    source === "douban" || !wantsOriginal
       ? undefined
       : (detail?.backdropOriginalUrl ??
         (fallbackBackdrop ? upgradedTmdbOriginalUrl(fallbackBackdrop) : undefined));
@@ -244,10 +249,25 @@ export function MediaDetailView({
   // 条目详情页同口径）；卸载 / 换片重建时把变量与标记类清干净，别污染其他页面。
   const scrollRef = useRef<HTMLDivElement>(null);
   const hasItem = Boolean(item);
+  // Ken Burns 相位锚点：覆盖层的推镜随标记类起跑，起跑时刻记在这里传给
+  // 轮换层（DetailBackdropSlideshow 的 pushAnchor）换算首图负延迟，两层锁
+  // 同一条 9s 时间线。每个视图实例只在首跑记一次——数据到达引发的 effect
+  // 重跑不得重置（同帧内的类摘除重挂不会重启 CSS 动画，锚点也必须不动）。
+  const kbAnchorRef = useRef<number | undefined>(undefined);
   useEffect(() => {
     if (!isNfDesktop) return;
     const root = document.documentElement;
-    root.classList.add("nf-hero-live");
+    if (kbAnchorRef.current === undefined) {
+      // 首跑：先摘再挂并跨一次 reflow。detail→detail 直跳时新旧视图在同一
+      // 个 commit 里交接，同帧内的类切换不会触发样式重算、动画不会重启；
+      // 强制 reflow 让新一片详情的推镜确定性地从头起跑，锚点才对得上。
+      root.classList.remove("nf-hero-live");
+      void root.offsetWidth;
+      root.classList.add("nf-hero-live");
+      kbAnchorRef.current = performance.now();
+    } else if (!root.classList.contains("nf-hero-live")) {
+      root.classList.add("nf-hero-live");
+    }
     const el = scrollRef.current;
     if (!el) {
       // 兜底态（数据未到）没有滚动容器：只挂标记类，清理时照常摘除
@@ -357,6 +377,7 @@ export function MediaDetailView({
         <DetailBackdropSlideshow
           images={detail.backdrops}
           initialUrl={detail.backdropOriginalUrl ?? detail.backdrops[0]?.fullUrl}
+          pushAnchor={kbAnchorRef.current}
         />
       )}
 

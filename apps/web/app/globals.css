@@ -2440,7 +2440,9 @@ html[data-theme="netflix"] .detail-ambient::-webkit-scrollbar-track {
 /* Netflix 详情页的「左黑右图」构图（仅桌面）：黑色块只占窗口左 1/4，覆盖层
    从窗口 25% 起铺（图片保持 cover 原始比例**不放大**）；25%~50% 区间从纯黑
    渐显，窗口右半完全正常显示图片。渐变用多段缓动曲线（两端平缓、中段过渡），
-   线性 ramp 在照片上会读出一道明显的「带」。
+   线性 ramp 在照片上会读出一道明显的「带」。2026-09-20 修订：6 档内插仍被
+   反馈「中段生硬」——内部档位加密到 8 档的 S 曲线（最陡斜率 ~3.9→~3.2/档，
+   0.2~0.8 过渡带约 14→20 档），起止区间与构图不动，只把过渡抻匀。
    移动端不做左移/mask（竖屏没有「左文右图」的横向分区），改为全幅 + 纵向
    渐隐（见下方 ::after 的移动端档）。 */
 /* 渐变曲线定义在 :root 上（原挂在 html.nf-hero-live）：消费者有三处——详情页
@@ -2451,10 +2453,12 @@ html[data-theme="netflix"] .detail-ambient::-webkit-scrollbar-track {
   --nf-blend: linear-gradient(
     90deg,
     rgba(0, 0, 0, 0) 0%,
-    rgba(0, 0, 0, 0.18) 6%,
-    rgba(0, 0, 0, 0.45) 13%,
-    rgba(0, 0, 0, 0.72) 20%,
-    rgba(0, 0, 0, 0.92) 28%,
+    rgba(0, 0, 0, 0.07) 4%,
+    rgba(0, 0, 0, 0.19) 10%,
+    rgba(0, 0, 0, 0.37) 16%,
+    rgba(0, 0, 0, 0.56) 22%,
+    rgba(0, 0, 0, 0.74) 28%,
+    rgba(0, 0, 0, 0.89) 34%,
     #000 40%
   );
 }
@@ -2463,6 +2467,20 @@ html[data-theme="netflix"] .detail-ambient::-webkit-scrollbar-track {
     left: 25%;
     mask-image: var(--nf-blend);
     -webkit-mask-image: var(--nf-blend);
+  }
+  /* 首帧覆盖层的 Ken Burns 缓推（与轮换层同一条 nf-kenburns：9s 线性推 6%）：
+     进页即动，消灭「首图静止期」。背景借 ::before 的 background:inherit 复制
+     一份来推——mask 留在父层静止，左缘渐隐带不随缩放漂移（与轮换层同构：
+     mask 在 .detail-slideshow、img 在推）；::before 画在 ::after（纵向渐隐）
+     之下，叠加顺序不变。动画随标记类起跑，起跑时刻由详情视图记入 ref 传给
+     轮换层换算负延迟做相位锁定（见 detail-backdrop-slideshow 的 pushAnchor），
+     接管瞬间两层缩放逐像素一致。 */
+  html.nf-hero-live .backdrop-override::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: inherit;
+    animation: nf-kenburns 9s linear both;
   }
 }
 /* 轮换层挂载时隐藏沉浸覆盖层：覆盖层永远停在主 backdrop（第一张图），
@@ -2544,23 +2562,25 @@ html.nf-hero-live .detail-slideshow {
 }
 .detail-slideshow img {
   transition: opacity 1600ms ease-in-out;
-  /* Ken Burns 缓推：覆盖整个驻留周期（轮换 9s + 溶解 1.6s）缓慢放大平移，
+  /* Ken Burns 缓推：与发现页 Hero 同速（9s 线性推 6%，scale 1→1.06），
      「叠变」的另一半——溶解时两层各自在动，是融接不是硬切。
-     700ms 起步延迟 = 与覆盖层交接的淡入时长：淡入期间轮换层静止在 scale 1，
-     与覆盖层逐像素重合（否则交接时两张不同缩放的同一张图叠出重影，且图片
-     边缘的移动会让左侧遮罩看起来「先小后大」）；淡入完成后缓推才启动。 */
-  animation: nf-kenburns 11.5s linear 700ms both;
+     默认 700ms 起步延迟沿用原交接节奏（溶解中静止、收尾再推）；唯独接管
+     首帧覆盖层的第一张图由组件换成负延迟（与覆盖层锁同一条时间线，见
+     detail-backdrop-slideshow 的 pushAnchor）——覆盖层自己也在推，若首图
+     仍从 scale 1 起步，交接时会看到画面「缩回去」一下。 */
+  animation: nf-kenburns 9s linear 700ms both;
 }
 @keyframes nf-kenburns {
   from {
     transform: scale(1);
   }
   to {
-    transform: scale(1.045);
+    transform: scale(1.06);
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .detail-slideshow img {
+  .detail-slideshow img,
+  html.nf-hero-live .backdrop-override::before {
     animation: none;
   }
 }

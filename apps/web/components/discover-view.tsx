@@ -19,6 +19,7 @@ import { DiscoverRegionFooter } from "@/components/discover-region-footer";
 import { DiscoveryFilterControl } from "@/components/discovery-filter-dialog";
 import { FilteredDiscoveryView } from "@/components/filtered-discovery-view";
 import { PosterImage } from "@/components/poster-image";
+import { useWantsOriginalImage } from "@/lib/image-resolution";
 import { useSubscribeEntry } from "@/components/subscribe-entry";
 import {
   browseDiscoveryCollection,
@@ -686,10 +687,13 @@ function HeroBanner({ items, fullBleed = false }: { items: MediaItem[]; fullBlee
  * Hero 大图的「同图升清」：列表数据只有 w1280（首屏快），这里在图 reveal 后
  * 预加载 original 原图（大屏整幅拉伸发虚），加载**并解码**完成才替换 src——
  * 与详情页沉浸背景同一策略；非 TMDB 图（无 w 档位）原样返回、不预加载。
+ * 小物理宽屏（≤1280，全部手机）w1280 已 1:1 饱和，按 useWantsOriginalImage
+ * 的门槛直接停在 w1280，不为看不见的清晰度多拉 1~3MB 原图。
  */
 function useHeroBackdrop(revealed: boolean, w1280: string | undefined): string | undefined {
   const original = w1280 ? upgradedTmdbOriginalUrl(w1280) : undefined;
-  const upgradable = Boolean(original && original !== w1280);
+  const wantsOriginal = useWantsOriginalImage();
+  const upgradable = wantsOriginal && Boolean(original && original !== w1280);
   const [ready, setReady] = useState(false);
   useEffect(() => {
     if (!revealed || !upgradable || !original) {

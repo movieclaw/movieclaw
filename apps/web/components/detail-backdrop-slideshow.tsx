@@ -5,10 +5,22 @@ import { createPortal } from "react-dom";
 
 import type { MediaImage } from "@/lib/api/discover";
 
-const ROTATE_INTERVAL_MS = 9000;
+const ROTATE_INTERVAL_MS = 8000;
 const FADE_MS = 1600;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** 从任意图片地址提取去重键：代理地址解开 url 参数取远端文件名，其余取路径
+    尾段。同一张剧照的 w1280 与 original 共享同一远端文件名，键一致即同一张。 */
+function imageKey(url: string): string {
+  try {
+    const proxied = url.match(/[?&]url=([^&]+)/);
+    const raw = proxied ? decodeURIComponent(proxied[1]) : url;
+    return raw.split("?")[0].split("/").pop() ?? raw;
+  } catch {
+    return url;
+  }
+}
 
 /** 预加载并解码一张图；失败返回 false（该张本轮跳过）。 */
 function load(url: string): Promise<boolean> {
@@ -40,8 +52,12 @@ function load(url: string): Promise<boolean> {
  * （globals.css 的 .detail-slideshow，改构图两处必须一起改）。
  *
  * 规矩：
- *   - 首帧用 initialUrl（与沉浸覆盖层同源的主图，衔接零跳变），轮换从清单
- *     第一张起循环（与首帧相同的图再放一次无妨，观众不会对照编号）；
+ *   - 首帧用 initialUrl（与沉浸覆盖层同源的主图，衔接零跳变），首轮换跳过
+ *     清单里与首帧相同的照片（同图自溶解会读成「收缩+重影」，见 cycle 内
+ *     注释），从第一张不同的照片起循环；
+ *   - 驻留 8s 与发现页 Hero 同拍（HERO_INTERVAL=8000）：9s 推镜在下一张
+ *     切入瞬间恰好推满，出场图不在 1.06 定格——定格后溶入一张从 1.0 起推
+ *     的新图，合成画面会读成轻微收缩；
  *   - 下一张预加载并解码**就位才切**，加载失败跳过该张，绝不闪黑；
  *   - 页面不可见（切标签页）时跳过该轮，回来自动继续；
  *   - 系统开启「减弱动态效果」时不轮（本组件直接不挂载，见调用方）。
@@ -57,16 +73,31 @@ function load(url: string): Promise<boolean> {
 export function DetailBackdropSlideshow({
   images,
   initialUrl,
+  pushAnchor,
 }: {
   images: MediaImage[];
   /** 首帧：与沉浸覆盖层当前显示的主图同源（主 backdrop 原图），衔接零跳变 */
   initialUrl?: string;
+  /** 首帧覆盖层 Ken Burns 的起跑时刻（performance.now()）。首图与覆盖层是
+      同一张照片，覆盖层又在推镜——首图必须接着它已推到的缩放继续，否则
+      接管瞬间画面会「缩回去」一下。换算成负动画延迟后两层共享同一条 9s
+      时间线，任何时刻缩放逐像素一致（图层淡入的 700ms 里也在动，无缝）。 */
+  pushAnchor?: number;
 }) {
   const [bottom, setBottom] = useState<string | null>(
     initialUrl ?? images[0]?.fullUrl ?? null,
   );
   const [top, setTop] = useState<string | null>(null);
   const [topOn, setTopOn] = useState(false);
+  // 首图相位锁定的负延迟，挂载时刻一次性定格（元素整个生命周期不变）。
+  // 已推超过 9s（覆盖层推完定格在 1.06）时负延迟超出时长，CSS 按「播完」
+  // 处理直接停在 1.06——与定格中的覆盖层依然逐像素一致。
+  const [firstPushDelay] = useState(() => {
+    if (pushAnchor === undefined) return undefined;
+    const elapsed = (performance.now() - pushAnchor) / 1000;
+    if (elapsed <= 0) return undefined;
+    return `${(-elapsed).toFixed(3)}s`;
+  });
   // 首图预加载解码完成才把整层显示出来：挂载即渲染会先透黑、图到了再突然
   // 出现，加上覆盖层同步被隐藏——两次硬切就是闪烁。
   const [ready, setReady] = useState(false);
@@ -94,6 +125,20 @@ export function DetailBackdropSlideshow({
 
     const cycle = async () => {
       await sleep(ROTATE_INTERVAL_MS);
+      // 首轮换跳过与首帧相同的照片：清单第一张通常就是主 backdrop 的另一个
+      // 尺寸，快速推镜下同一张照片以 ~1.06 溶解回 1.0 的自己，特征错位读成
+      // 「画面收缩 + 重影」（2026-09-21 实测反馈）；不同照片之间的同款溶解
+      // 才是正常的 Ken Burns 换图节奏。
+      const initialKey = initialUrl ? imageKey(initialUrl) : null;
+      if (initialKey) {
+        while (
+          !cancelled &&
+          indexRef.current < urlsRef.current.length &&
+          imageKey(urlsRef.current[indexRef.current]) === initialKey
+        ) {
+          indexRef.current += 1;
+        }
+      }
       while (!cancelled) {
         if (!document.hidden) {
           const urls = urlsRef.current;
@@ -140,13 +185,19 @@ export function DetailBackdropSlideshow({
     >
       {/* key=src（加层前缀）：换图即新元素，Ken Burns 动画从头起播。
           前缀必须有——溶解收尾时 bottom 会短暂与 top 同 URL，裸 URL 作 key
-          会触发 React 重复 key 报错（每次轮换一条）。 */}
+          会触发 React 重复 key 报错（每次轮换一条）。
+          首图（与覆盖层同一张）挂相位锁定的负延迟；首轮换之后就回默认 700ms。 */}
       <img
         key={`b:${bottom}`}
         src={bottom}
         alt=""
         draggable={false}
-        className="absolute inset-0 size-full object-cover"
+        style={
+          bottom === initialUrl && firstPushDelay
+            ? { animationDelay: firstPushDelay }
+            : undefined
+        }
+        className="absolute inset-0 size-full object-cover object-top"
       />
       {top && (
         <img
@@ -154,7 +205,7 @@ export function DetailBackdropSlideshow({
           src={top}
           alt=""
           draggable={false}
-          className={`absolute inset-0 size-full object-cover ${
+          className={`absolute inset-0 size-full object-cover object-top ${
             topOn ? "opacity-100" : "opacity-0"
           }`}
         />
