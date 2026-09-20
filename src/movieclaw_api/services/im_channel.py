@@ -1,9 +1,13 @@
-"""IM 通道服务编排(Telegram / Discord 共用):配对码绑定 + Agent 装配 + 主动推送。
+"""IM 通道服务编排(Telegram / Discord / 飞书共用):绑定 + Agent 装配 + 主动推送。
 
 与微信服务(weixin_channel.py)的分工:微信有扫码/配对码/iLink 网关等
 重量级绑定状态机,自成一体;TG/Discord 的绑定简单得多——面板填 bot token,
 服务端生成 6 位配对码,用户私聊 bot 发码即完成绑定(谁发码谁是白名单)。
 两个平台的差异全部收敛在「通道规格」(_ChannelSpec)里,服务本体只写一份。
+
+飞书是第三种形态:群自定义机器人 Webhook,纯推送出口、没有 bot 身份,
+绑定连配对码都不需要——``bind_feishu`` 校验地址、发一条欢迎消息验真,
+即绑即用(不进 Agent,无对话能力,因此也不要求先配好 AI 模型)。
 
 Agent 装配与微信同款红线:受限工具集(仅 mclaw 产品操作),不开宿主 shell;
 会话与 Web「最近会话」共用 agent_session 体系,/reset 换新会话。
@@ -17,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import secrets
 import time
@@ -42,6 +47,9 @@ from movieclaw_channel.adapter import ChannelAdapter
 from movieclaw_channel.discord import CHANNEL_ID as DISCORD_CHANNEL_ID
 from movieclaw_channel.discord import DiscordAdapter, DiscordClient
 from movieclaw_channel.dispatcher import make_dispatcher
+from movieclaw_channel.feishu import CHANNEL_ID as FEISHU_CHANNEL_ID
+from movieclaw_channel.feishu import FeishuAdapter, FeishuClient
+from movieclaw_channel.feishu.client import feishu_account_id, normalize_webhook_url
 from movieclaw_channel.telegram import CHANNEL_ID as TELEGRAM_CHANNEL_ID
 from movieclaw_channel.telegram import TelegramAdapter, TelegramClient
 from movieclaw_channel.types import OutboundEnvelope, ReplyContext
@@ -52,8 +60,12 @@ from movieclaw_db.repositories.channel_account_repo import ChannelAccountReposit
 
 logger = logging.getLogger("movieclaw_api.im_channel")
 
-ImChannelId = Literal["telegram", "discord"]
-IM_CHANNEL_IDS: tuple[ImChannelId, ...] = (TELEGRAM_CHANNEL_ID, DISCORD_CHANNEL_ID)
+ImChannelId = Literal["telegram", "discord", "feishu"]
+IM_CHANNEL_IDS: tuple[ImChannelId, ...] = (
+    TELEGRAM_CHANNEL_ID,
+    DISCORD_CHANNEL_ID,
+    FEISHU_CHANNEL_ID,
+)
 
 #: IM 侧 Agent 步数上限(与微信同口径)
 _IM_MAX_STEPS = 40
@@ -92,6 +104,11 @@ async def _dc_validate(client: DiscordClient) -> tuple[str, str]:
     return str(me["id"]), str(me.get("username") or me["id"])
 
 
+async def _feishu_reject_pairing(client: FeishuClient) -> tuple[str, str]:
+    """飞书不走 token 配对(占位校验):误入配对流程时给出明确指引。"""
+    raise ValueError("飞书通道不使用 bot token:请在面板粘贴群机器人 Webhook 地址接入")
+
+
 _SPECS: dict[str, _ChannelSpec] = {
     TELEGRAM_CHANNEL_ID: _ChannelSpec(
         channel_id=TELEGRAM_CHANNEL_ID,
@@ -106,6 +123,15 @@ _SPECS: dict[str, _ChannelSpec] = {
         make_client=DiscordClient,
         make_adapter=DiscordAdapter,
         validate=_dc_validate,
+    ),
+    FEISHU_CHANNEL_ID: _ChannelSpec(
+        channel_id=FEISHU_CHANNEL_ID,
+        display_name="飞书",
+        make_client=FeishuClient,
+        make_adapter=FeishuAdapter,
+        # 飞书走 bind_feishu(Webhook 即绑即用),不存在 token 校验;
+        # 误经配对码流程会被 begin_binding 的前置拦截接住
+        validate=_feishu_reject_pairing,
     ),
 }
 
@@ -228,11 +254,12 @@ class ImChannelService:
         adapter = spec.make_adapter(client, row.account_id)
 
         bound_user = (row.bound_user_id or "").strip()
-        if bound_user:
+        # 飞书 Webhook 是群维度推送,没有绑定用户概念:凭据在即成为推送目标
+        if bound_user or row.channel_id == FEISHU_CHANNEL_ID:
             self._push_targets[key] = ReplyContext(
                 channel_id=row.channel_id,
                 account_id=row.account_id,
-                user_id=bound_user,
+                user_id=bound_user or "group",
             )
         dispatcher = make_dispatcher(
             adapter,
@@ -277,6 +304,9 @@ class ImChannelService:
     # ------------------------------------------------------------------
     async def begin_binding(self, channel_id: ImChannelId, token: str) -> PairChallenge:
         """校验 token → 生成配对码 → 起临时账号等待用户发码。"""
+        if channel_id == FEISHU_CHANNEL_ID:
+            # 飞书是 Webhook 即绑即用,配对码流程不适用(CLI 误调用也拿到明确报错)
+            raise ValueError("飞书通道不支持配对码绑定:请在面板粘贴群机器人 Webhook 地址接入")
         spec = _SPECS[channel_id]
         client = spec.make_client(token)
         try:
@@ -451,6 +481,43 @@ class ImChannelService:
         self._pairing_clients.pop(challenge.challenge_id, None)
         # 从配对模式切到正式模式(热替换;当前正在配对回调里,起后台任务避免自锁)
         self._spawn(self._start_account(row, token), "绑定确认后的通道热切换")
+
+    # ------------------------------------------------------------------
+    # 飞书:Webhook 即绑即用(无配对码)
+    # ------------------------------------------------------------------
+    async def bind_feishu(self, webhook_url: str, secret: str = "") -> ChannelAccount:
+        """接入飞书群自定义机器人:校验地址 → 发欢迎消息验真 → 落库并启动。
+
+        无配对码:自定义机器人没有 bot 身份,谁持有 Webhook 地址谁就能发
+        消息,地址本身即凭据(hook 令牌作 account_id,重复接入即覆盖)。
+        欢迎消息就是连通性校验——地址错/签名错/关键词拦截都在这一步暴露,
+        用户能在飞书群里当场看到消息落地。
+        """
+        url = normalize_webhook_url(webhook_url)
+        account_id = feishu_account_id(url)
+        # token 列存 JSON(SecretBox 加密落库);secret 为空 = 未开启签名校验
+        token = json.dumps({"webhook_url": url, "secret": secret.strip()})
+        client = FeishuClient(token)
+        try:
+            await client.send_text(
+                "🎉 movieclaw 已接入本群,订阅投递、入库完成等事件将推送到这里。"
+            )
+        except Exception as exc:
+            await client.aclose()
+            raise ValueError(f"飞书 Webhook 校验失败:{exc}") from exc
+        # 验真客户端即用即弃:正式账号的客户端由 _start_account 按同一凭据重建
+        await client.aclose()
+        async with get_database().session() as session:
+            row = await ChannelAccountRepository(session).upsert(
+                channel_id=FEISHU_CHANNEL_ID,
+                account_id=account_id,
+                token=token,
+                base_url="",
+                bound_user_id=None,
+            )
+        await self._start_account(row, token)
+        logger.info("飞书群机器人已接入 account=%s", account_id)
+        return row
 
     def get_challenge(self, challenge_id: str) -> PairChallenge | None:
         ch = self._challenges.get(challenge_id)

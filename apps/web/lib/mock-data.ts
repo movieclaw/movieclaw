@@ -183,7 +183,7 @@ export const settingsSectionGroups: SettingsSectionGroup[] = [
     // 「模型接入」回答怎么连上，「AI 设定」回答什么场景用哪个模型。
     label: "通知与集成",
     items: [
-      { id: "im-push", label: "消息推送", description: "微信 / Telegram / Discord 推送与 AI 对话", icon: ChatIcon },
+      { id: "im-push", label: "消息推送", description: "微信 / Telegram / Discord / 飞书 推送与 AI 对话", icon: ChatIcon },
       { id: "webhook", label: "Webhook", description: "向外部服务推送播放、收藏等事件", icon: SendIcon },
       { id: "llm", label: "模型接入", description: "接入 OpenAI、百炼等模型供应商，可同时接入多家", icon: SparkIcon },
       { id: "mcp", label: "MCP 服务", description: "把 movieclaw 的能力开放给 Claude Code、Cursor 等 AI 客户端", icon: PlugIcon },

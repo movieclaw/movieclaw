@@ -46,10 +46,10 @@ def tmdb_push_image_url(backdrop_path: str | None, poster_path: str | None) -> s
 
 
 async def push_to_all_channels(text: str, photo: bytes | None = None) -> int:
-    """推送到所有通道(微信 + Telegram + Discord),返回入队的账号数。"""
+    """推送到所有通道(微信 + Telegram + Discord + 飞书),返回入队的账号数。"""
     count = 0
 
-    # IM 通道(telegram/discord):服务内存里有现成的推送地址簿
+    # IM 通道(telegram/discord/飞书):服务内存里有现成的推送地址簿
     try:
         from movieclaw_api.services.im_channel import get_im_channels
 

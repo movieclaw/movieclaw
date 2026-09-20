@@ -105,6 +105,15 @@ class ImBindTokenPayload(BaseModel):
     token: str = Field(min_length=8, max_length=256, description="bot token")
 
 
+class FeishuBindPayload(BaseModel):
+    """接入飞书群自定义机器人(粘贴 Webhook 地址即绑即用,无配对码)。"""
+
+    webhook_url: str = Field(
+        min_length=16, max_length=512, description="飞书自定义机器人 Webhook 地址"
+    )
+    secret: str = Field(default="", max_length=256, description="签名校验密钥;未开启签名校验留空")
+
+
 class ImBindingView(BaseModel):
     """配对绑定状态(发起返回 + 前端 poll 同一结构)。
 

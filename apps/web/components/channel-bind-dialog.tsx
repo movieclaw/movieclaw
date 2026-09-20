@@ -8,10 +8,11 @@
  * 页面被一次性流程撑长，还会在进页面时自动弹出微信二维码——纯浏览也触发副作用。
  * 现在只有点「新增通道」才进入这层，绑定成功即关闭并刷新列表。
  *
- * 两种流程的差异只落在 body 上，外壳（标题 / 指引 / 关闭）完全一致：
+ * 三种流程的差异只落在 body 上，外壳（标题 / 指引 / 关闭）完全一致：
  *   - 微信：进弹窗即请求二维码 → 扫码 →（可能）填手机上的配对码 → 完成；
  *   - Telegram / Discord：先填 bot token → 拿 6 位配对码 → 私聊 bot 发码 → 完成。
- * 两者都靠 2 秒一次的状态轮询推进（后端只读内存快照，毫秒级返回）。
+ *   - 飞书：粘贴群机器人 Webhook 地址 → 服务端发欢迎消息验真 → 即绑即用（无轮询）。
+ * 前两者靠 2 秒一次的状态轮询推进（后端只读内存快照，毫秒级返回）。
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -23,17 +24,18 @@ import {
   type WeixinBindingSnapshot,
   getImBindingStatus,
   getWeixinBindingStatus,
+  startFeishuBinding,
   startImBinding,
   startWeixinBinding,
   submitWeixinVerifyCode,
 } from "@/lib/api/channels";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
 
-/** 全部可接入的通道；微信走扫码，其余走 bot token + 配对码。 */
+/** 全部可接入的通道；微信走扫码，Telegram/Discord 走 bot token + 配对码，飞书贴 Webhook。 */
 export type ChannelKind = "weixin" | ImChannelId;
 
 /** 「新增通道」菜单与统一列表的展示顺序。 */
-export const CHANNEL_KINDS: ChannelKind[] = ["weixin", "telegram", "discord"];
+export const CHANNEL_KINDS: ChannelKind[] = ["weixin", "telegram", "discord", "feishu"];
 
 /**
  * 平台文案——本模块唯一的平台差异落点。
@@ -64,6 +66,12 @@ export const CHANNEL_META: Record<
       "在 discord.com/developers 创建应用 → Bot → Reset Token 复制；国内网络请先在「设置 → 网络」为 Discord 开启代理。",
     tokenHint: "Discord 开发者后台 Bot 页面的 token",
   },
+  feishu: {
+    label: "飞书",
+    summary: "粘贴群机器人 Webhook 地址，即绑即用",
+    howTo:
+      "在飞书群聊「设置 → 群机器人 → 添加机器人」里添加「自定义机器人」，把复制的 Webhook 地址粘贴到下面即可。安全设置建议选「签名校验」，并把密钥一并填入。",
+  },
 };
 
 const INPUT_CLASS =
@@ -88,6 +96,8 @@ export function ChannelBindDialog({ channel, onClose, onBound }: ChannelBindDial
         <div className="mt-5">
           {channel === "weixin" ? (
             <WeixinBindBody onBound={onBound} />
+          ) : channel === "feishu" ? (
+            <FeishuBindBody onBound={onBound} />
           ) : (
             <ImBindBody channel={channel} onBound={onBound} />
           )}
@@ -264,6 +274,62 @@ function WeixinBindBody({ onBound }: { onBound: () => void }) {
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+/* —— 飞书：Webhook 地址即绑即用 —— */
+
+function FeishuBindBody({ onBound }: { onBound: () => void }) {
+  const [webhookUrl, setWebhookUrl] = useState("");
+  const [secret, setSecret] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function handleBind() {
+    if (!webhookUrl.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await startFeishuBinding(webhookUrl.trim(), secret.trim());
+      onBound();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      {error && <ErrorBanner message={error} />}
+      <input
+        value={webhookUrl}
+        onChange={(e) => setWebhookUrl(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && void handleBind()}
+        autoFocus
+        placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/…"
+        className={INPUT_CLASS}
+      />
+      <input
+        value={secret}
+        onChange={(e) => setSecret(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && void handleBind()}
+        placeholder="签名密钥（未开启签名校验可留空）"
+        className={INPUT_CLASS}
+      />
+      <p className="text-caption leading-5 text-[var(--text-faint)]">
+        接入成功会立即向群里发一条欢迎消息，收到即说明通道可用。安全设置若选了
+        「自定义关键词」，推送文案需包含该关键词才会送达，建议改用「签名校验」。
+      </p>
+      <button
+        type="button"
+        disabled={busy || !webhookUrl.trim()}
+        onClick={() => void handleBind()}
+        className="btn-accent w-full rounded-xl py-2 text-ui font-semibold disabled:opacity-40"
+      >
+        {busy ? "接入中…" : "完成接入"}
+      </button>
     </div>
   );
 }
