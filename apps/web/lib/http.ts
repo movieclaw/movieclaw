@@ -70,30 +70,107 @@ export function redirectToLoginOn401(status: number): void {
   }
 }
 
-export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(resolveRequestUrl(path), {
-    ...init,
-    headers: buildHeaders(init.headers, init.body),
-  });
+/**
+ * 请求被浏览器自己掐断时的兜底文案。
+ *
+ * fetch 只在**网络层**失败时抛 TypeError，浏览器各写各的话术：WebKit 是
+ * `Load failed`、Chrome 是 `Failed to fetch`、Firefox 是 `NetworkError ...`。
+ * 原样甩给用户等于让他对着一句英文猜是文件坏了还是网断了（issue #432 里
+ * iPhone Safari 就是这样显示的）。这里统一换成能行动的中文。
+ */
+const NETWORK_ERROR_MESSAGE = "网络中断或请求被浏览器放弃，请检查连接后重试";
+const TIMEOUT_ERROR_MESSAGE = "服务器响应太慢，请求已取消——请稍后重试";
 
-  if (response.status === 204) {
-    return undefined as T;
+export interface RequestOptions {
+  /**
+   * 本次请求的超时毫秒数；不传 = 不设超时（沿用浏览器默认）。
+   *
+   * **只给明确知道该多快返回的接口用**。整站统一超时是陷阱：一键校准要解码
+   * 音轨、上传要传完文件，给它们套一个数字只会把能成功的请求打断。
+   */
+  timeoutMs?: number;
+}
+
+/** 把调用方的 signal 与超时合成一个：AbortSignal.any 在旧 WebView 上没有。 */
+function withTimeout(
+  signal: AbortSignal | null | undefined,
+  timeoutMs: number,
+): { signal: AbortSignal; done: () => void; timedOut: () => boolean } {
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  const forward = () => controller.abort();
+  if (signal) {
+    if (signal.aborted) forward();
+    else signal.addEventListener("abort", forward, { once: true });
   }
+  return {
+    signal: controller.signal,
+    done: () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", forward);
+    },
+    timedOut: () => timedOut,
+  };
+}
 
-  const contentType = response.headers.get("content-type") || "";
-  const isJson = contentType.includes("application/json");
-  const payload = isJson ? await response.json() : await response.text();
+export async function request<T>(
+  path: string,
+  init: RequestInit = {},
+  options: RequestOptions = {},
+): Promise<T> {
+  const timeout =
+    options.timeoutMs !== undefined ? withTimeout(init.signal, options.timeoutMs) : null;
 
-  if (!response.ok) {
-    const message =
-      isJson && payload && typeof payload === "object" && "message" in payload
-        ? String(payload.message)
-        : `Request failed with status ${response.status}`;
+  // 整段（连同读响应体）都在 try 里：超时要能覆盖「连上了但一直不给完数据」，
+  // 只掐 fetch 那一步等于只保护到响应头。
+  try {
+    const response = await fetch(resolveRequestUrl(path), {
+      ...init,
+      signal: timeout ? timeout.signal : init.signal,
+      headers: buildHeaders(init.headers, init.body),
+    });
 
-    redirectToLoginOn401(response.status);
+    if (response.status === 204) {
+      return undefined as T;
+    }
 
-    throw new HttpError(message, response.status, payload);
+    const contentType = response.headers.get("content-type") || "";
+    const isJson = contentType.includes("application/json");
+    const payload = isJson ? await response.json() : await response.text();
+
+    if (!response.ok) {
+      const message =
+        isJson && payload && typeof payload === "object" && "message" in payload
+          ? String(payload.message)
+          : `Request failed with status ${response.status}`;
+
+      redirectToLoginOn401(response.status);
+
+      throw new HttpError(message, response.status, payload);
+    }
+
+    return payload as T;
+  } catch (error) {
+    // 后端给出的业务错误已经是可读中文，原样上抛
+    if (error instanceof HttpError) throw error;
+    // 调用方主动取消（换轨、关弹窗、组件卸载）也原样上抛：上层靠
+    // signal.aborted / AbortError 区分「用户不要了」和「真出错了」。
+    // 不写 instanceof DOMException——各运行时（浏览器 / undici）实现不一。
+    if ((error as { name?: string } | null)?.name === "AbortError") {
+      if (timeout?.timedOut()) {
+        throw new HttpError(TIMEOUT_ERROR_MESSAGE, 0, null);
+      }
+      throw error;
+    }
+    if (error instanceof TypeError) {
+      throw new HttpError(NETWORK_ERROR_MESSAGE, 0, null);
+    }
+    throw error;
+  } finally {
+    timeout?.done();
   }
-
-  return payload as T;
 }

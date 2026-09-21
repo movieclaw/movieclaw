@@ -2833,8 +2833,10 @@ async def preview_file_subtitle(
     """用户主动点击字幕徽章时才读取文件本体。
 
     轨引用必须命中该台账行：外挂文件名不能越过台账白名单，内封流序号
-    不能越界；成员仍按文件所属库执行可见性判定。文本内封轨首次预览会
-    调用 ffmpeg 抽取，结果沿用字幕生成缓存，后续打开无需重复通读视频。
+    不能越界；成员仍按文件所属库执行可见性判定。文本内封轨首次预览需要
+    ffmpeg 通读整个容器（大文件分钟级），因此**不在请求里等**：返回
+    ``pending`` 由前端轮询，产物与播放器旁挂字幕共用一份缓存，抽过一次
+    之后两边都直接命中（issue #432）。
     """
 
     row = await session.get(LibraryFile, file_id)
@@ -2858,6 +2860,7 @@ async def preview_file_subtitle(
             format=preview.format,
             event_count=len(cues),
             cues=cues,
+            pending=preview.pending,
         )
     )
 

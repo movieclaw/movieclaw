@@ -1,22 +1,20 @@
 """参考字幕加载：外挂文件读取 + 内封轨 ffmpeg 抽取（subtitle-ai-translate.md §4）。
 
-内封抽取兑现 jellyfin-subtitle.md §6.4 的预留：沿用 media_probe 的直接
-subprocess 风格（线程池执行、超时保护、失败中文日志），不引 ffmpeg-python。
-抽取产物进 data/cache/subtitle_gen/（中间品不落库目录）。
+内封抽取交给中性的 ``services/media_extract``：播放器旁挂字幕和这里的参考
+字幕要的是同一条轨、同一条 ffmpeg 命令，各抽各的等于把同一个大文件通读两遍
+（issue #432）。那边负责单飞、可取消与缓存，本模块只负责把产物解码成事件。
 """
 
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import functools
 import logging
 import shutil
-import subprocess
-import uuid
 from pathlib import Path
 
 from movieclaw_api.core.config import get_settings
+from movieclaw_api.services import media_extract
 from movieclaw_api.services.subtitle_gen.source import SourceCandidate
 from movieclaw_db.models import LibraryFile
 
@@ -25,12 +23,13 @@ logger = logging.getLogger("movieclaw_api.subtitle_gen")
 # (start_ms, end_ms, text)——生成管线内的事件形态，时间轴全程不动
 SubEvent = tuple[int, int, str]
 
-_EXTRACT_TIMEOUT = 120.0  # 抽取要读遍整个容器，比探测慢得多
-
 
 def cache_dir() -> Path:
-    """中间品目录（抽取产物/断点暂存）；根目录来自配置，缓存管理面板按登记表
-    统计/清理它（清理会避开正在运行的字幕任务的断点）。"""
+    """中间品目录（PGS 图片与翻译断点）；根目录来自配置，缓存管理面板按登记表
+    统计/清理它（清理会避开正在运行的字幕任务的断点）。
+
+    内封轨的抽取产物**不在这里**——它与播放器共用 ``media_extract.cache_dir()``。
+    """
     return Path(get_settings().subtitle_gen_cache_dir)
 
 
@@ -41,6 +40,20 @@ def ffmpeg_available() -> bool:
 
 class SourceLoadError(Exception):
     """参考字幕无法加载（面向任务日志的中文信息）。"""
+
+
+class SourceExtractionPending(Exception):
+    """内封轨仍在抽取，本次还给不出结论——调用方稍后重试（issue #432）。
+
+    这**不是失败**：大文件通读是分钟级，预检把请求挂在那里等，iPhone Safari
+    约 60 秒就掐断连接、对话框显示浏览器原话 ``Load failed``，而服务端照跑到
+    底。改成抛这个信号、接口立刻回「正在读取」，前端轮询等它落缓存。
+    """
+
+    def __init__(self, message: str, *, candidate_key: str) -> None:
+        super().__init__(message)
+        self.message = message
+        self.candidate_key = candidate_key
 
 
 # 高频汉字集（简繁通用字为主，含字幕场景高频词素）：中文编码判定的
@@ -108,13 +121,25 @@ _decode_text = decode_subtitle_bytes
 
 
 def parse_events(
-    text: str, origin: str, *, preserve_linebreaks: bool = False
+    text: str,
+    origin: str,
+    *,
+    preserve_linebreaks: bool = False,
+    subtitle_format: str | None = None,
 ) -> list[SubEvent]:
-    """字幕文本 → 事件序列；预览可保留对白换行，翻译链路默认压为单行。"""
+    """字幕文本 → 事件序列；预览可保留对白换行，翻译链路默认压为单行。
+
+    源格式已知就显式告诉 pysubs2：autodetect 对精简的 ASS 头（缺
+    ``[V4+ Styles]`` 段）会直接认不出来。
+    """
     import pysubs2
 
     try:
-        subs = pysubs2.SSAFile.from_string(text)
+        subs = (
+            pysubs2.SSAFile.from_string(text, format_=subtitle_format)
+            if subtitle_format
+            else pysubs2.SSAFile.from_string(text)
+        )
     except Exception as exc:  # noqa: BLE001 -- pysubs2 异常不穷举
         raise SourceLoadError(f"参考字幕解析失败：{origin}（{exc}）") from exc
     events: list[SubEvent] = []
@@ -128,72 +153,20 @@ def parse_events(
     return events
 
 
-def _extract_embedded_sync(video: Path, stream_index: int, out_path: Path) -> None:
-    """（线程池）ffmpeg 抽取内封文本轨为 srt；0:s:<k> 与台账数组下标同源。
-
-    带新鲜度缓存：预检/发起/执行三步都会加载参考源，抽取要通读整个容器
-    （大文件分钟级）——产物比视频新且非空时直接复用，只有视频本体变了
-    才重抽。
-    """
-    try:
-        if (
-            out_path.is_file()
-            and out_path.stat().st_size > 0
-            and out_path.stat().st_mtime_ns > video.stat().st_mtime_ns
-        ):
-            return
-    except OSError:
-        pass  # stat 失败按未缓存处理，走正常抽取
-    if not ffmpeg_available():
-        raise SourceLoadError(
-            "系统中未找到 ffmpeg，无法抽取内封字幕轨——请安装 ffmpeg，"
-            "或为该影片放置外挂字幕后重试（官方 Docker 镜像已内置 ffmpeg）"
-        )
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    # ffmpeg 只能写临时文件：失败/超时可能留下非空残片，若直接写最终路径，
-    # 下一次会被上面的 mtime 缓存判定误认成成功产物。临时文件保留 .srt
-    # 后缀，确保 ffmpeg 能按扩展名选择 muxer。
-    tmp_path = out_path.with_name(
-        f".{out_path.stem}.{uuid.uuid4().hex}.part{out_path.suffix}"
-    )
-    with contextlib.suppress(OSError):
-        tmp_path.unlink(missing_ok=True)
-    try:
-        proc = subprocess.run(
-            [
-                "ffmpeg", "-v", "error", "-y",
-                "-i", str(video),
-                "-map", f"0:s:{stream_index}",
-                "-c:s", "srt",
-                str(tmp_path),
-            ],
-            capture_output=True,
-            timeout=_EXTRACT_TIMEOUT,
-        )
-    except subprocess.TimeoutExpired as exc:
-        with contextlib.suppress(OSError):
-            tmp_path.unlink(missing_ok=True)
-        raise SourceLoadError(f"内封字幕抽取超时（{_EXTRACT_TIMEOUT:.0f} 秒）：{video}") from exc
-    if proc.returncode != 0 or not tmp_path.is_file() or tmp_path.stat().st_size == 0:
-        stderr = proc.stderr.decode(errors="replace")[:200]
-        with contextlib.suppress(OSError):
-            tmp_path.unlink(missing_ok=True)
-        raise SourceLoadError(f"内封字幕抽取失败：{video} 轨 {stream_index}（{stderr}）")
-    try:
-        tmp_path.replace(out_path)
-    except OSError as exc:
-        with contextlib.suppress(OSError):
-            tmp_path.unlink(missing_ok=True)
-        raise SourceLoadError(f"内封字幕缓存写入失败：{out_path}（{exc}）") from exc
-
-
 async def load_candidate_events(
     file: LibraryFile,
     candidate: SourceCandidate,
     *,
     preserve_linebreaks: bool = False,
+    wait: bool = True,
 ) -> list[SubEvent]:
-    """加载候选事件；预览保留换行，字幕生成继续使用单行文本。"""
+    """加载候选事件；预览保留换行，字幕生成继续使用单行文本。
+
+    ``wait=False``（预检/详情页预览用）时，内封轨没有现成产物就**不等**：
+    转后台抽取并抛 ``SourceExtractionPending``，由调用方回一个「正在读取」
+    让前端轮询。``wait=True``（发起生成、任务执行）仍然等到底——CLI 与后台
+    任务没有浏览器的 60 秒上限，等一次比让用户自己重试合理。
+    """
     if candidate.kind == "external":
         path = Path(file.file_path).parent / candidate.key
         try:
@@ -206,15 +179,48 @@ async def load_candidate_events(
             preserve_linebreaks=preserve_linebreaks,
         )
 
-    out_path = cache_dir() / f"{file.id}.embedded{candidate.key}.srt"
-    await asyncio.to_thread(
-        _extract_embedded_sync, Path(file.file_path), int(candidate.key), out_path
-    )
-    raw = await asyncio.to_thread(out_path.read_bytes)
+    try:
+        index = int(candidate.key)
+    except ValueError as exc:
+        raise SourceLoadError(f"内封字幕轨标识不合法：{candidate.key!r}") from exc
+
+    track = media_extract.cached_track(file, index)
+    if track is None and not wait:
+        # 轮询路径：上次已经失败过就直接报错。不拦的话，前端每隔两三秒就会
+        # 催起一个新的 ffmpeg 去读同一条读不出来的轨。
+        if media_extract.extraction_failed(file, index):
+            raise SourceLoadError(
+                f"内封字幕抽取失败：{file.file_path} 轨 {index}（具体原因见服务端日志）"
+            )
+        if media_extract.schedule_extraction(file, index):
+            raise SourceExtractionPending(
+                "正在读取内封字幕，大文件可能需要一两分钟",
+                candidate_key=f"{candidate.kind}:{candidate.key}",
+            )
+    if track is None:
+        # 走到这里：要么 wait=True（发起生成/后台任务，等到底），要么这条轨
+        # 压根没法调度（不支持的编码、没有事件循环）——都按原行为就地抽取。
+        track = await media_extract.extract_track_async(file, index)
+    if track is None:
+        if not ffmpeg_available():
+            raise SourceLoadError(
+                "系统中未找到 ffmpeg，无法抽取内封字幕轨——请安装 ffmpeg，"
+                "或为该影片放置外挂字幕后重试（官方 Docker 镜像已内置 ffmpeg）"
+            )
+        raise SourceLoadError(
+            f"内封字幕抽取失败：{file.file_path} 轨 {index}（具体原因见服务端日志）"
+        )
+    if track.format not in media_extract.TEXT_FORMATS:
+        raise SourceLoadError(
+            f"内封轨 {index} 是图形字幕（{track.format}），不能直接当作参考文本"
+        )
+
+    raw = await asyncio.to_thread(track.path.read_bytes)
     return parse_events(
-        _decode_text(raw, str(out_path)),
-        str(out_path),
+        _decode_text(raw, str(track.path)),
+        str(track.path),
         preserve_linebreaks=preserve_linebreaks,
+        subtitle_format=track.format,
     )
 
 

@@ -191,11 +191,12 @@ DATA_DIRS: tuple[DataDir, ...] = (
     ),
     DataDir(
         key="cache.playback_subs",
-        title="播放字幕缓存",
-        summary="播放器抽取的内封字幕与字体",
+        title="内封字幕缓存",
+        summary="从视频内封轨抽出来的字幕与字体",
         description=(
-            "网页播放器从视频内封轨抽取出来的字幕与字体文件。清空后下次播放会重新"
-            "抽取，首次开播稍慢几秒。"
+            "从视频内封轨抽取出来的字幕与字体文件，网页播放器、字幕预览与 AI 字幕"
+            "生成共用同一份（抽一次谁都能用）。清空后下次播放或预览会重新抽取，"
+            "大文件要重新通读整个容器，需要等一会儿。"
         ),
         default="data/cache/playback-subs",
         resolve=lambda s: Path(s.playback_subs_cache_dir),
@@ -208,10 +209,11 @@ DATA_DIRS: tuple[DataDir, ...] = (
     DataDir(
         key="cache.subtitle_gen",
         title="AI 字幕中间品",
-        summary="AI 字幕生成的抽取产物与翻译断点",
+        summary="AI 字幕生成的 PGS 图片与翻译断点",
         description=(
-            "AI 字幕生成过程中的抽取产物、PGS 图片与翻译断点。正在运行的字幕任务"
-            "所属文件会被跳过；已完成任务的中间品可放心清理。"
+            "AI 字幕生成过程中的 PGS 图片与翻译断点（内封轨的抽取产物在「内封字幕"
+            "缓存」里，与播放器共用）。正在运行的字幕任务所属文件会被跳过；"
+            "已完成任务的中间品可放心清理。"
         ),
         default="data/cache/subtitle_gen",
         resolve=lambda s: Path(s.subtitle_gen_cache_dir),

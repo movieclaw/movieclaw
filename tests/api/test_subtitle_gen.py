@@ -193,7 +193,7 @@ async def test_preview_loads_only_the_requested_reference(monkeypatch) -> None:
     async def fake_context(_session, _row):  # noqa: ANN001
         return CTX, "jpn"
 
-    async def fake_load(_row, candidate):  # noqa: ANN001
+    async def fake_load(_row, candidate, **_kwargs):  # noqa: ANN001
         loaded.append(candidate.key)
         return complete
 
@@ -1023,45 +1023,198 @@ def test_manual_generation_is_not_bound_to_http_background_tasks() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_extract_cache_skips_when_fresh(tmp_path: Path, monkeypatch) -> None:
-    """抽取产物比视频新且非空 → 直接复用（预检/发起/执行三连不重复通读容器）。"""
-    video = tmp_path / "Movie.mkv"
-    video.write_bytes(b"fake")
-    out = tmp_path / "cached.srt"
-    out.write_text("1\n00:00:01,000 --> 00:00:02,000\nx\n")
+def _embedded_file(video: Path) -> LibraryFile:
+    row = _file([{"codec": "subrip", "language": "eng"}], [])
+    row.id = 77
+    row.file_path = str(video)
+    return row
+
+
+_EMBEDDED_CANDIDATE = source.SourceCandidate(
+    kind="embedded", key="0", language="eng", forced=False, sdh=False, format="subrip"
+)
+
+
+async def test_embedded_source_reuses_the_playback_cache(tmp_path: Path, monkeypatch) -> None:
+    """播放器抽过的那条轨，AI 字幕生成直接拿来用——不再把大文件通读第二遍。
+
+    这是 issue #432 的第三条：两边各有一套缓存目录，同一个 16 GB 的 MKV 被
+    播放路径和预检各读了一次。现在共用 ``media_extract`` 的产物。
+    """
     import os
 
-    os.utime(out, ns=(video.stat().st_mtime_ns + 10**9,) * 2)
-    monkeypatch.setattr(extract, "ffmpeg_available", lambda: False)  # 命中缓存就不该走到这
-    extract._extract_embedded_sync(video, 0, out)  # 不抛 = 缓存生效
+    from movieclaw_api.services import media_extract
 
-    # 视频比产物新（洗版替换）→ 缓存失效,走抽取路径（此处 ffmpeg 缺失即抛）
-    os.utime(video, ns=(out.stat().st_mtime_ns + 10**9,) * 2)
-    with pytest.raises(extract.SourceLoadError):
-        extract._extract_embedded_sync(video, 0, out)
-
-
-def test_extract_failure_does_not_leave_cache(tmp_path: Path, monkeypatch) -> None:
-    """ffmpeg 失败时只污染临时文件，最终缓存必须保持不存在。"""
     video = tmp_path / "Movie.mkv"
     video.write_bytes(b"fake")
-    out = tmp_path / "cached.srt"
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    monkeypatch.setattr(media_extract, "cache_dir", lambda: cache)
+    # 播放器抽取产物的命名与位置（file_id.s<轨号>.<格式>）
+    product = cache / "77.s0.srt"
+    product.write_text("1\n00:00:01,000 --> 00:00:02,000\n你好\n\n", encoding="utf-8")
+    os.utime(product, ns=(video.stat().st_mtime_ns + 10**9,) * 2)
 
-    def failed_run(argv, **_kwargs):  # noqa: ANN001
-        Path(argv[-1]).write_text("partial but non-empty", encoding="utf-8")
+    def never(*_args, **_kwargs):  # pragma: no cover - 命中缓存就不该起进程
+        raise AssertionError("命中缓存却又起了一次 ffmpeg")
 
-        class Result:
-            returncode = 1
-            stderr = b"decode failed"
+    monkeypatch.setattr(media_extract.subprocess, "Popen", never)
+    monkeypatch.setattr(media_extract.asyncio, "create_subprocess_exec", never)
 
-        return Result()
+    events = await extract.load_candidate_events(_embedded_file(video), _EMBEDDED_CANDIDATE)
+    assert [text for _s, _e, text in events] == ["你好"]
 
+
+#: ffmpeg 抽 ASS 时实际写出的头（字段列表必须完整，否则 pysubs2 解不出对白）
+_ASS_PRODUCT = """[Script Info]
+ScriptType: v4.00+
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, \
+BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, \
+BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial,72,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,\
+100,100,0,0,1,2,0,2,10,10,10,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.50,0:00:03.00,Default,,0,0,0,,{\\pos(320,240)}特效字幕\\N第二行
+Dialogue: 0,0:00:04.00,0:00:06.00,Default,,0,0,0,,{\\b1}加粗{\\b0}普通
+"""
+
+
+async def test_ass_product_feeds_the_translation_pipeline_directly(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """播放器为 ASS 轨存的是 .ass（保住样式），生成端直接读它取纯文本。
+
+    这是共用产物的关键前提：不必为 AI 翻译再把同一条轨抽成 SRT 通读第二遍。
+    pysubs2 的 plaintext 会剥掉 {\\pos}{\\b1} 这类样式标签，翻译链路压成单行、
+    预览保留换行。
+    """
+    import os
+
+    from movieclaw_api.services import media_extract
+
+    video = tmp_path / "Movie.mkv"
+    video.write_bytes(b"fake")
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    monkeypatch.setattr(media_extract, "cache_dir", lambda: cache)
+    product = cache / "77.s0.ass"
+    product.write_text(_ASS_PRODUCT, encoding="utf-8")
+    os.utime(product, ns=(video.stat().st_mtime_ns + 10**9,) * 2)
+
+    row = _file([{"codec": "ass", "language": "eng"}], [])
+    row.id = 77
+    row.file_path = str(video)
+    candidate = source.SourceCandidate(
+        kind="embedded", key="0", language="eng", forced=False, sdh=False, format="ass"
+    )
+
+    translated = await extract.load_candidate_events(row, candidate)
+    assert translated == [(500, 3000, "特效字幕 第二行"), (4000, 6000, "加粗普通")]
+
+    preview_events = await extract.load_candidate_events(
+        row, candidate, preserve_linebreaks=True
+    )
+    assert preview_events[0][2] == "特效字幕\n第二行"
+
+
+async def test_graphic_product_is_refused_as_reference_text(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """PGS 抽出来的 .sup 是位图，绝不能当参考文本喂给翻译。"""
+    import os
+
+    from movieclaw_api.services import media_extract
+
+    video = tmp_path / "Movie.mkv"
+    video.write_bytes(b"fake")
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    monkeypatch.setattr(media_extract, "cache_dir", lambda: cache)
+    product = cache / "77.s0.sup"
+    product.write_bytes(b"PG" + b"\x00" * 200)
+    os.utime(product, ns=(video.stat().st_mtime_ns + 10**9,) * 2)
+
+    row = _file([{"codec": "hdmv_pgs_subtitle", "language": "eng"}], [])
+    row.id = 77
+    row.file_path = str(video)
+    candidate = source.SourceCandidate(
+        kind="embedded", key="0", language="eng", forced=False, sdh=False,
+        format="hdmv_pgs_subtitle",
+    )
+    with pytest.raises(extract.SourceLoadError, match="图形字幕"):
+        await extract.load_candidate_events(row, candidate)
+
+
+async def test_uncached_embedded_preview_defers_instead_of_blocking(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """预检不等 ffmpeg：没缓存就转后台抽取并抛 pending（issue #432）。
+
+    同步等下去的代价是 iPhone Safari 约 60 秒掐断连接、对话框显示浏览器原话
+    ``Load failed``，而服务端照跑到底——用户看到失败，机器的活一点没省。
+    """
+    from movieclaw_api.services import media_extract
+
+    video = tmp_path / "Movie.mkv"
+    video.write_bytes(b"fake")
+    cache = tmp_path / "cache"
+    monkeypatch.setattr(media_extract, "cache_dir", lambda: cache)
+
+    scheduled: list[int] = []
+    monkeypatch.setattr(
+        media_extract,
+        "schedule_extraction",
+        lambda _file, index: (scheduled.append(index), True)[1],
+    )
+
+    with pytest.raises(extract.SourceExtractionPending) as caught:
+        await extract.load_candidate_events(
+            _embedded_file(video), _EMBEDDED_CANDIDATE, wait=False
+        )
+    assert scheduled == [0], "没有把抽取转到后台，用户轮询也等不到结果"
+    assert caught.value.candidate_key == "embedded:0"
+
+    # wait=True（发起生成、后台任务）仍然等到底：CLI 没有浏览器的 60 秒上限
+    async def no_product(_file, _index):
+        return None
+
+    monkeypatch.setattr(media_extract, "extract_track_async", no_product)
     monkeypatch.setattr(extract, "ffmpeg_available", lambda: True)
-    monkeypatch.setattr(extract.subprocess, "run", failed_run)
     with pytest.raises(extract.SourceLoadError):
-        extract._extract_embedded_sync(video, 0, out)
-    assert not out.exists()
-    assert not list(tmp_path.glob("*.part.srt"))
+        await extract.load_candidate_events(
+            _embedded_file(video), _EMBEDDED_CANDIDATE, wait=True
+        )
+
+
+async def test_preview_pending_does_not_masquerade_as_a_blocker(monkeypatch) -> None:
+    """等待期间绝不能显示「这份片源没有参考字幕」——那与事实相反。"""
+    row = _file([{"codec": "subrip", "language": "eng"}], [])
+
+    async def fake_load_row(_session, _file_id):  # noqa: ANN001
+        return row
+
+    async def fake_context(_session, _row):  # noqa: ANN001
+        return CTX, "eng"
+
+    async def pending(_row, _candidate, **_kwargs):  # noqa: ANN001
+        raise extract.SourceExtractionPending("正在读取内封字幕", candidate_key="embedded:0")
+
+    monkeypatch.setattr(tasks, "_load_row", fake_load_row)
+    monkeypatch.setattr(tasks, "_film_context", fake_context)
+    monkeypatch.setattr(extract, "load_candidate_events", pending)
+
+    pv = await tasks.preview(None, 7, "chs", wait=False)  # type: ignore[arg-type]
+
+    assert pv.pending is not None
+    assert pv.pending.candidate_key == "embedded:0"
+    assert pv.blocker is None, "pending 期间不能给出「做不了」的结论"
+    assert pv.chosen is None and pv.event_count == 0
+    # 输出文件名与「已生成过」这类不依赖抽取的信息仍要照常给出
+    assert pv.output_filename
 
 
 async def test_subtitle_job_handler_allows_different_files_to_run_concurrently(

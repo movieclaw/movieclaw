@@ -48,25 +48,53 @@ export function SubtitlePreviewDialog({
 }) {
   const [data, setData] = useState<SubtitlePreview | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** 非空 = 内封轨正在后台抽取，还没有内容可显示（不是出错）。 */
+  const [pending, setPending] = useState<string | null>(null);
   const [retryKey, setRetryKey] = useState(0);
   const [calibrating, setCalibrating] = useState(false);
   const [calibrationNotice, setCalibrationNotice] = useState<string | null>(null);
 
   const retry = useCallback(() => setRetryKey((value) => value + 1), []);
 
+  /**
+   * 内封轨首次预览要 ffmpeg 通读整个容器（大文件分钟级）。后端不把请求挂住
+   * 等——它回一个 pending 并转后台抽取，这里按它给的间隔重拉（issue #432）。
+   * 关掉弹窗只中断轮询，后台的抽取会继续做完落缓存，下次打开秒开。
+   */
   useEffect(() => {
     if (!open) return;
     const controller = new AbortController();
+    let timer: number | null = null;
+    let cancelled = false;
     setData(null);
     setError(null);
-    getSubtitlePreview(file.id, track, controller.signal)
-      .then(setData)
-      .catch((reason: unknown) => {
-        if (!controller.signal.aborted) {
+    setPending(null);
+
+    const load = () => {
+      getSubtitlePreview(file.id, track, controller.signal)
+        .then((result) => {
+          if (cancelled) return;
+          if (result.pending) {
+            setPending(result.pending);
+            timer = window.setTimeout(load, Math.max(1000, result.retry_after_ms));
+            return;
+          }
+          setPending(null);
+          setData(result);
+        })
+        .catch((reason: unknown) => {
+          if (cancelled || controller.signal.aborted) return;
+          setPending(null);
           setError(reason instanceof Error ? reason.message : "字幕预览加载失败，请稍后重试");
-        }
-      });
-    return () => controller.abort();
+        });
+    };
+    load();
+
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+      controller.abort();
+    };
   }, [file.id, open, retryKey, track]);
 
   const calibrate = useCallback(async () => {
@@ -132,8 +160,13 @@ export function SubtitlePreviewDialog({
           >
             <span className="size-5 animate-spin rounded-full border-2 border-white/20 border-t-white/75" />
             <p className="text-ui text-[var(--text-muted)]">
-              {stream.external ? "正在读取字幕…" : "正在抽取内封字幕，首次打开可能需要稍候…"}
+              {pending ?? (stream.external ? "正在读取字幕…" : "正在抽取内封字幕…")}
             </p>
+            {pending && (
+              <p className="max-w-md text-caption leading-5 text-[var(--text-faint)]">
+                首次读取内封字幕需要通读整个视频文件，读好后会自动显示。
+              </p>
+            )}
           </div>
         )}
 
