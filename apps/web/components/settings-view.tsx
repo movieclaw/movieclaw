@@ -146,9 +146,9 @@ export function SettingsPanel({ active }: SettingsPanelProps) {
   // 时回退到首个可见分区——界面兜底，真正的安全边界在后端 403
   const { session } = useSession();
   const router = useRouter();
-  // 内容列的锚定随主题分叉：Netflix 账户页形态是「左侧分区菜单 + 右侧左锚定
-  // 内容列」（菜单贴全站 4vw 左基线，见 app-shell 的设置分支），居中会让内容
-  // 漂在菜单与右缘之间；银玻璃维持居中窄栏
+  // 内容列在设置 main 区（右侧分区菜单之后的剩余空间）内水平居中，两主题一致；
+  // 银玻璃无分区菜单，居中即全宽居中（mx-auto px-6）。分区菜单固定 300px 宽
+  // （见 app-shell 的设置分支），列不与菜单重叠
   const isNf = useTheme().structural;
   const allowed = settingsSectionGroupsFor(session.role).flatMap((g) => g.items);
   const section =
@@ -175,7 +175,7 @@ export function SettingsPanel({ active }: SettingsPanelProps) {
           路径映射对照表，同给 3xl；其余表单类分区维持 2xl 的舒适阅读宽度 */}
       <div
         className={`w-full pb-20 pt-12 max-md:pb-12 max-md:pt-6 ${
-          isNf ? "pl-12 pr-12 max-md:px-4" : "mx-auto px-6 max-md:px-4"
+          isNf ? "mx-auto pl-12 pr-12 max-md:px-4" : "mx-auto px-6 max-md:px-4"
         } ${
           section.id === "logs" || section.id === "mcp"
             ? "max-w-4xl"
