@@ -23,6 +23,12 @@ from starlette.datastructures import MutableHeaders
 from starlette.responses import FileResponse
 from starlette.types import Receive, Scope, Send
 
+from movieclaw_playback.mp4_sample_entry import (
+    BytePatch,
+    apply_byte_patches,
+    hev1_to_hvc1_patches,
+)
+
 logger = logging.getLogger("movieclaw_playback.streaming")
 
 STRM_EXT = ".strm"
@@ -131,6 +137,7 @@ class DisconnectAwareFileResponse(FileResponse):
         session_stopped: asyncio.Event | None = None,
         on_close: Callable[[], None] | None = None,
         byte_sink: Callable[[int], None] | None = None,
+        byte_patches: tuple[BytePatch, ...] = (),
         **kwargs,
     ) -> None:
         super().__init__(path, **kwargs)
@@ -139,6 +146,10 @@ class DisconnectAwareFileResponse(FileResponse):
         # 每发出一块调用一次的字节计量回调（活动页「观看」视角的速率来源）；
         # 必须是同步且近零开销的，不能拖慢发送循环
         self._byte_sink = byte_sink
+        # 流经时原地替换的字节（目前只有 HEVC MP4 的 hev1 → hvc1 标签，见
+        # mp4_sample_entry）。长度不变，Content-Length / Range 语义都不受影响；
+        # 磁盘上的文件一个字节都不动
+        self._byte_patches = byte_patches
         self._disconnected = asyncio.Event()
         self._bytes_read = 0
         self._stop_logged = False
@@ -222,6 +233,8 @@ class DisconnectAwareFileResponse(FileResponse):
             self._bytes_read += len(chunk)
             if self._byte_sink is not None:
                 self._byte_sink(len(chunk))
+            if self._byte_patches:
+                chunk = apply_byte_patches(chunk, start, self._byte_patches)
             start += len(chunk)
             more_body = len(chunk) == self.chunk_size and (end is None or start < end)
             await send({"type": "http.response.body", "body": chunk, "more_body": more_body})
@@ -310,6 +323,8 @@ class DisconnectAwareFileResponse(FileResponse):
                     self._bytes_read += len(chunk)
                     if self._byte_sink is not None:
                         self._byte_sink(len(chunk))
+                    if self._byte_patches:
+                        chunk = apply_byte_patches(chunk, start, self._byte_patches)
                     start += len(chunk)
                     await send({"type": "http.response.body", "body": chunk, "more_body": True})
                 await send({"type": "http.response.body", "body": b"\r\n", "more_body": True})
@@ -320,6 +335,27 @@ class DisconnectAwareFileResponse(FileResponse):
                     "more_body": False,
                 }
             )
+
+
+#: 只有这些容器的 HEVC 才有 hev1/hvc1 之分（MKV 没有样本条目类型码）
+_ISOBMFF_CONTAINERS = {"mp4", "m4v", "mov"}
+
+
+async def direct_play_byte_patches(
+    path: str | Path, container: str | None, video_codec: str | None
+) -> tuple[BytePatch, ...]:
+    """档 0 直出要带的字节补丁：HEVC MP4 的 ``hev1`` → ``hvc1``（issue #430）。
+
+    WebKit 只认 hvc1，而 WEB-DL 的 MP4 大多打 hev1；改的只是 stsd 里 4 字节
+    类型码，对其它播放器也都合法。非 HEVC / 非 ISO BMFF 直接返回空，不开文件。
+    首次要读盒子头（moov 在文件尾时几次 seek），放线程池里做；之后按
+    (路径, mtime, 大小) 命中缓存。
+    """
+    if (container or "").lower() not in _ISOBMFF_CONTAINERS:
+        return ()
+    if (video_codec or "").lower() != "hevc":
+        return ()
+    return await asyncio.to_thread(hev1_to_hvc1_patches, path)
 
 
 def container_mime_type(container: str | None) -> str:

@@ -150,6 +150,7 @@ from movieclaw_playback.keyframes import read_keyframe_index
 from movieclaw_playback.streaming import (
     DisconnectAwareFileResponse,
     container_mime_type,
+    direct_play_byte_patches,
     is_strm,
     register_device_stream,
     resolve_strm_url,
@@ -1608,9 +1609,11 @@ async def stream_library_file(
         media_type = container_mime_type("m2ts")
     if not path.exists():
         raise NotFoundException("文件已不在磁盘上")
+    # hev1 标签的 HEVC MP4 在 Safari 上直出必败，流里把标签改成 hvc1（#430）
+    byte_patches = await direct_play_byte_patches(path, file.container, file.video_codec)
     if not grant.device_id or file.media_item_id is None:
         # 升级前签出的旧地址没有设备标识，不计量；未识别文件没有播放单元可记
-        return DisconnectAwareFileResponse(path, media_type=media_type)
+        return DisconnectAwareFileResponse(path, media_type=media_type, byte_patches=byte_patches)
     # 与 Jellyfin 取流同一套登记：按浏览器设备登记这条流，让停止上报能主动
     # 停止读盘（播放器不会因为退出就立刻关闭已建立的 Range 连接）；顺带登记
     # 到活动注册表，活动页据此展示这台浏览器的实时传输速率
@@ -1639,6 +1642,7 @@ async def stream_library_file(
         session_stopped=session_stopped,
         byte_sink=meter.add,
         on_close=_close,
+        byte_patches=byte_patches,
     )
 
 

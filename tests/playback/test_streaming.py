@@ -318,3 +318,36 @@ async def test_whole_file_response_declares_content_length(tmp_path: Path) -> No
     assert headers["content-length"] == str(len(content))
     assert b"".join(message.get("body", b"") for message in messages) == content
     assert messages[-1]["more_body"] is False
+
+
+@pytest.mark.asyncio
+async def test_byte_patches_apply_across_chunks_ranges_and_multipart(tmp_path: Path) -> None:
+    """hev1 → hvc1 之类的字节补丁：整文件、单 Range、多 Range 三条路径都要
+    改到，跨块边界只改落在块内的那段，长度头一律不变（issue #430）。"""
+    video = tmp_path / "movie.mp4"
+    content = bytearray(b"." * 5000)
+    content[2046:2050] = b"hev1"  # 横跨 chunk_size=2048 的边界
+    content[4000:4004] = b"hev1"
+    video.write_bytes(content)
+    patches = ((2046, b"hvc1"), (4000, b"hvc1"))
+    expected = bytes(content).replace(b"hev1", b"hvc1")
+
+    async def body_of(headers: list[tuple[bytes, bytes]]) -> tuple[dict[str, str], bytes]:
+        messages: list[dict[str, Any]] = []
+        response = DisconnectAwareFileResponse(video, byte_patches=patches)
+        response.chunk_size = 2048
+        await response(_scope(headers=headers), _receive, _sender(messages))
+        start = messages[0]
+        head = {key.decode(): value.decode() for key, value in start["headers"]}
+        return head, b"".join(message.get("body", b"") for message in messages[1:])
+
+    head, body = await body_of([])
+    assert head["content-length"] == "5000" and body == expected
+
+    head, body = await body_of([(b"range", b"bytes=2000-4001")])
+    assert head["content-length"] == "2002" and body == expected[2000:4002]
+
+    head, body = await body_of([(b"range", b"bytes=2048-2049, 4002-4003")])
+    assert head["content-type"].startswith("multipart/byteranges")
+    assert b"c1" in body and b"hev1" not in body and b"hvc1" not in body
+    assert video.read_bytes() == bytes(content), "磁盘上的文件不能被改动"
