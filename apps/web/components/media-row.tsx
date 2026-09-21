@@ -18,7 +18,7 @@ export function MediaRow({
   cardAction,
   cardHref,
   cardRevealInfoOnTouch = false,
-  insetClassName = "px-6 max-md:px-4",
+  insetClassName = "page-inset",
 }: {
   row: MediaRowData;
   moreHref?: Route;
@@ -40,10 +40,9 @@ export function MediaRow({
    */
   cardRevealInfoOnTouch?: boolean;
   /**
-   * 行的左右留白，缺省对齐银玻璃主题的 px-6 栅格；Netflix 主题的调用方
-   * （发现页 / 媒体库首页）显式传 px-[4vw]，与顶栏字标同一条左基线。
-   * 影片详情页正文用 px-12，行不跟着改的话标题与海报会比上方的简介、
-   * 剧照墙往左戳出一截。
+   * 行的左右留白，缺省 page-inset（主题变量档：银玻璃 px-6、Netflix 4vw）。
+   * 影片详情页正文用 content-inset（px-12 档），行不跟着改的话标题与海报
+   * 会比上方的简介、剧照墙往左戳出一截。
    */
   insetClassName?: string;
 }) {

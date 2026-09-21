@@ -357,7 +357,7 @@ export function DiscoverView({
           // 失败或条目太少（空 items）的行整行收起
           if (row === "error") return null;
           if (row && row.items.length === 0) return null;
-          if (!row) return <RowSkeleton key={section.collectionRef} stub={section} fullBleed={isNf} />;
+          if (!row) return <RowSkeleton key={section.collectionRef} stub={section} />;
           const href = section.supportsFullListing
             ? collectionHref(section.collectionRef)
             : undefined;
@@ -367,7 +367,6 @@ export function DiscoverView({
               key={row.id}
               row={moreHref ? { ...row, items: row.items.slice(0, 10) } : row}
               moreHref={moreHref}
-              insetClassName={isNf ? "px-[4vw]" : undefined}
             />
           );
         })}
@@ -495,8 +494,8 @@ function HeroSkeleton({ fullBleed = false }: { fullBleed?: boolean }) {
  * 标题栏与横滚区的留白复刻 MediaRow 的布局，数据到达后原位替换不跳版；
  * 这一行行「亮着名字等数据」的骨架就是页面的分区加载进度。
  */
-function RowSkeleton({ stub, fullBleed = false }: { stub: { title: string }; fullBleed?: boolean }) {
-  const inset = fullBleed ? "px-[4vw]" : "px-6 max-md:px-4";
+function RowSkeleton({ stub }: { stub: { title: string } }) {
+  const inset = "page-inset";
   return (
     <section aria-busy="true" aria-label={`「${stub.title}」加载中`}>
       <div className={`mb-3 max-md:mb-2 ${inset}`}>
@@ -790,7 +789,7 @@ function HeroSlide({
           4vw 左基线与顶栏字标对齐，纵向节奏不变；圆角卡片形态（银玻璃）维持原样 */}
       <div
         className={`absolute inset-0 flex max-w-xl flex-col justify-end transition-all delay-150 duration-500 ease-out ${
-          fullBleed ? "px-[4vw] py-7 max-md:py-4 sm:py-9" : "p-7 max-md:p-4 sm:p-9"
+          fullBleed ? "page-inset py-7 max-md:py-4 sm:py-9" : "p-7 max-md:p-4 sm:p-9"
         } ${active ? "translate-y-0 opacity-100" : "translate-y-3 opacity-0"}`}
       >
         <p className="text-caption font-semibold uppercase tracking-[0.22em] text-[var(--accent-2)]">

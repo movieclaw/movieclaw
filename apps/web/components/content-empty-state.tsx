@@ -3,7 +3,6 @@
 import type { ReactNode } from "react";
 
 import { BellIcon, BookmarkIcon, FilmIcon, FolderIcon, TvIcon } from "@/components/icons";
-import { useTheme } from "@/lib/ui-prefs";
 
 interface ContentEmptyStateProps {
   variant: "library" | "subscription";
@@ -24,13 +23,12 @@ export function ContentEmptyState({
   description,
   action,
 }: ContentEmptyStateProps) {
-  // 展台自己的左右外边距就是页面级留白（调用方渲染在滚动容器一层）：
-  // Netflix 主题对齐全站 4vw 左基线，银玻璃维持 mx-6
-  const insetMx = useTheme().id === "netflix" ? "mx-[4vw]" : "mx-6 max-md:mx-4";
+  // 展台自己的左右外边距就是页面级留白（调用方渲染在滚动容器一层），
+  // 走主题变量档：银玻璃 mx-6、Netflix 4vw
   return (
     <section
       aria-label={title}
-      className={`css-glass relative mt-7 flex min-h-[360px] overflow-hidden !rounded-3xl px-6 py-10 ${insetMx} max-md:mt-5 max-md:min-h-[340px] max-md:px-5`}
+      className={`css-glass relative mt-7 flex min-h-[360px] overflow-hidden !rounded-3xl px-6 py-10 page-inset-mx max-md:mt-5 max-md:min-h-[340px] max-md:px-5`}
     >
       <div
         aria-hidden="true"

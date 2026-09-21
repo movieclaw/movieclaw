@@ -234,10 +234,6 @@ export function MediaDetailView({
   const isNf = themeId === "netflix";
   const isNfDesktop = isNf && !isMobile;
   const hidePageNav = isNfDesktop;
-  // 正文左右留白随主题走栅格：Netflix 主题对齐全站 4vw 左基线（返回键、顶栏
-  // 字标同一条线），银玻璃维持详情页的 px-12 规格。头部/简介/演职员/预告片/
-  // 剧照墙与两条横滚行都由它统一定边
-  const inset = isNf ? "px-[4vw]" : "px-12 max-md:px-4";
   const showMobileHero = isMobile && mobileHeroSrc !== "";
 
   // 滚动退场：详情页下滚时剧照不是被机械地推出屏幕，而是随滚动进度渐暗 +
@@ -420,7 +416,7 @@ export function MediaDetailView({
           固定线开始，不随简介长短上下漂移——简介短时下方留黑色空档。 */}
       <div className="detail-lead">
       {/* —— 3. 头部信息区 —— */}
-      <div className={`relative z-10 pt-6 ${inset} max-md:pt-3`}>
+      <div className={`relative z-10 pt-6 content-inset max-md:pt-3`}>
         <div className="min-w-0 max-w-5xl pb-1">
           {/* break-words：未识别条目的标题就是文件名（Some.Movie.2023.2160p…），
               整串无空格，不允许断词就会横向撑开整页 */}
@@ -562,7 +558,7 @@ export function MediaDetailView({
 
       {/* 简介承接标题与基础信息；四行确实溢出时才提供展开入口。 */}
       {item.overview && (
-        <div className={`mt-4 ${inset}`}>
+        <div className={`mt-4 content-inset`}>
           <ExpandablePlot text={item.overview} />
         </div>
       )}
@@ -570,7 +566,7 @@ export function MediaDetailView({
 
       {/* —— 5. 演职员 —— */}
       {people.length > 0 && (
-        <div className={`mt-9 max-md:mt-6 ${inset}`}>
+        <div className={`mt-9 max-md:mt-6 content-inset`}>
           {/* 导演 / 主创放在演员之前，共用同一条人物横滚；演员头像仍来自数据源 credits。 */}
           <CastRow cast={people} personHrefPrefix="/discover/people" />
         </div>
@@ -578,14 +574,14 @@ export function MediaDetailView({
 
       {/* —— 6. 预告片：紧邻剧照，把「动态素材 + 静态素材」并成一段观感区 —— */}
       {detail && detail.videos.length > 0 && (
-        <div className={`mt-9 max-md:mt-6 ${inset}`}>
+        <div className={`mt-9 max-md:mt-6 content-inset`}>
           <TrailerRow title={item.title} videos={detail.videos} />
         </div>
       )}
 
       {/* —— 7. 剧照与海报 —— */}
       {detail && (detail.backdrops.length > 0 || detail.posters.length > 0) && (
-        <div className={`mt-9 max-md:mt-6 ${inset}`}>
+        <div className={`mt-9 max-md:mt-6 content-inset`}>
           <PhotoWall
             title={item.title}
             backdrops={detail.backdrops}
@@ -603,7 +599,7 @@ export function MediaDetailView({
               title: collection.name,
               items: collection.items,
             }}
-            insetClassName={inset}
+            insetClassName="content-inset"
           />
         </div>
       )}
@@ -613,7 +609,7 @@ export function MediaDetailView({
         <div className="mt-9">
           <MediaRow
             row={{ id: `related-${item.id}`, title: "相似推荐", items: related }}
-            insetClassName={inset}
+            insetClassName="content-inset"
           />
         </div>
       )}

@@ -114,7 +114,7 @@ export function FilteredDiscoveryView({
   return (
     <main
       className={
-        isNf ? "w-full px-[4vw] pb-12" : "mx-auto w-full max-w-[1500px] px-6 pb-12 max-md:px-4"
+        isNf ? "w-full page-inset pb-12" : "mx-auto w-full max-w-[1500px] page-inset pb-12"
       }
     >
       <header className="mb-7 flex items-end justify-between gap-4 max-md:mb-5">

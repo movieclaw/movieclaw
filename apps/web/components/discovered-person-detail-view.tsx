@@ -47,8 +47,6 @@ export function DiscoveredPersonDetailView({
   const isNf = useTheme().id === "netflix";
   const isNfDesktop = isNf && !isMobile;
   const back = useBackNavigation(navFallback.href);
-  // 正文左右留白随主题走栅格：Netflix 主题对齐全站 4vw 左基线，银玻璃维持 px-12
-  const inset = isNf ? "px-[4vw]" : "px-12 max-md:px-4";
 
   useEffect(() => {
     let cancelled = false;
@@ -100,7 +98,7 @@ export function DiscoveredPersonDetailView({
 
       {/* person-hero：Netflix 桌面让位钩子（globals.css 桌面档把头部推到
           NetflixBackButton 键底之下，银玻璃与移动端不吃这条规则） */}
-      <header className={`person-hero flex items-end gap-6 pt-2 ${inset} max-md:gap-4`}>
+      <header className={`person-hero flex items-end gap-6 pt-2 content-inset max-md:gap-4`}>
         <div className="w-[132px] shrink-0 overflow-hidden rounded-xl bg-[var(--poster-placeholder)] shadow-[0_20px_48px_rgba(0,0,0,0.5)] ring-1 ring-white/[0.1] max-md:w-[92px]">
           <PosterImage
             src={person.avatarUrl}
@@ -129,7 +127,7 @@ export function DiscoveredPersonDetailView({
         </div>
       </header>
 
-      <div className={`mt-8 max-md:mt-6 ${inset}`}>
+      <div className={`mt-8 max-md:mt-6 content-inset`}>
         {person.items.length > 0 ? (
           <CreditGrid items={person.items} isSubscribed={isSubscribed} onOpen={open} />
         ) : (

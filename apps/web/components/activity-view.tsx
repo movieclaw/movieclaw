@@ -142,8 +142,8 @@ export function ActivityView({
       <div
         className={
           isNf
-            ? "w-full px-[4vw] pt-7 max-md:pt-4"
-            : "mx-auto w-full max-w-[1180px] px-6 pt-7 max-md:px-4 max-md:pt-4"
+            ? "w-full page-inset pt-7 max-md:pt-4"
+            : "mx-auto w-full max-w-[1180px] page-inset pt-7 max-md:pt-4"
         }
       >
         <header className="flex items-start justify-between gap-4">

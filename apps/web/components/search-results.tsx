@@ -22,7 +22,6 @@ import { PosterImage } from "@/components/poster-image";
 import { Tooltip } from "@/components/tooltip";
 import { ZoomLightbox, type ZoomLightboxSlide } from "@/components/zoom-lightbox";
 import { CATEGORY_LABEL, type SearchScope, type TorrentCategory } from "@/lib/categories";
-import { useTheme } from "@/lib/ui-prefs";
 import {
   forgetDownloadTargetPref,
   listDownloadTargetPrefs,
@@ -740,12 +739,6 @@ function collectEntities(items: TorrentHit[]): Map<string, EntityGroup> {
 export function SearchResults({ query, onResearch, grabForSubscriptionId }: SearchResultsProps) {
   // 保存位置记忆只对能一键下载的人有意义，没权限就不拉
   const { canDirectDownload: pageCanDirectDownload } = usePermissions();
-  // 页面左右留白随主题走栅格：Netflix 主题对齐全站 4vw 左基线，银玻璃维持 px-6。
-  // 页头、手动选种横幅与结果滚动区共用这套留白（Netflix 主题下本页其余外观的
-  // 换肤另行处理，这里只管对齐）
-  const isNf = useTheme().id === "netflix";
-  const inset = isNf ? "px-[4vw]" : "px-6 max-md:px-4";
-  const insetMx = isNf ? "mx-[4vw]" : "mx-6 max-md:mx-4";
   const scrollRef = useScrollRestoration(
     `search:torrent:${query.keyword}:${query.scope.label ?? "all"}:${query.scope.categories.join(",")}:${query.scope.siteIds.join(",")}:${query.snapshotId ?? "live"}`,
   );
@@ -1077,7 +1070,7 @@ export function SearchResults({ query, onResearch, grabForSubscriptionId }: Sear
           信息蓝走 --info-soft 系 token：银玻璃值 = 原 #6aa7ff 字面量（零变化），
           Netflix 主题整组收敛为白/灰（双主题拆色，见 globals.css token 注释） */}
       {grabTarget && (
-        <div className={`${insetMx} mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border border-[var(--info-soft)]/30 bg-[var(--info-soft)]/12 px-4 py-2.5 text-sub text-[var(--info-text)] backdrop-blur-sm`}>
+        <div className={`page-inset-mx mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border border-[var(--info-soft)]/30 bg-[var(--info-soft)]/12 px-4 py-2.5 text-sub text-[var(--info-text)] backdrop-blur-sm`}>
           <span className="min-w-0">
             正在为《{grabTarget.title}》手动选种——点资源上的「投给订阅」直接下载并计入该订阅
             （跳过规则组限制）
@@ -1098,7 +1091,7 @@ export function SearchResults({ query, onResearch, grabForSubscriptionId }: Sear
           工具栏 = 类型分段/分辨率（左）+ 筛选/排序/视图（右）
           条件回显行只在筛选激活时出现；流式期间再加一条 2px 进度线 */}
       {/* pt-4：上方还有 /search 页的垂直选项卡行（影视 | 站点资源），间距略收 */}
-      <header className={`relative z-20 shrink-0 pb-3 pt-4 ${inset} max-md:pt-3`}>
+      <header className={`relative z-20 shrink-0 pb-3 pt-4 page-inset max-md:pt-3`}>
         <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
           <h1 className="text-on-image text-title-lg font-semibold tracking-[-0.01em] text-white">
             {/* 浏览模式（无关键词）标题落在动作上，具体范围由右边的分类药丸交代 */}
@@ -1198,7 +1191,7 @@ export function SearchResults({ query, onResearch, grabForSubscriptionId }: Sear
       {/* 主体：结果随 site_result 事件渐进出现，首批结果到达前保持骨架屏 */}
       <div
         ref={scrollRef}
-        className={`scroll-thin scroll-safe relative z-0 min-h-0 flex-1 overflow-y-auto pb-6 ${inset}`}
+        className={`scroll-thin scroll-safe relative z-0 min-h-0 flex-1 overflow-y-auto pb-6 page-inset`}
       >
         {streaming && items.length === 0 && (
           <SkeletonList siteCount={siteProgress.length} />

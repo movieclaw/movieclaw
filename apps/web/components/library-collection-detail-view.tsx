@@ -65,7 +65,7 @@ import {
 import { usePageTitle } from "@/lib/use-page-title";
 import { usePermissions } from "@/lib/permissions";
 import { buildHomeRows, newCollectionRow, rowsToPrefs } from "@/lib/home-rows";
-import { useTheme, useUiPrefs } from "@/lib/ui-prefs";
+import { useUiPrefs } from "@/lib/ui-prefs";
 import {
   PREF_TO_SORT,
   SORT_DIRECTIONS,
@@ -166,10 +166,6 @@ export function LibraryCollectionDetailView({
     (libraryId === null ? "/library/collections" : `/library/${libraryId}`) as Route,
   );
   const { canManageLibraries } = usePermissions();
-  // 页面左右留白随主题走栅格：Netflix 主题对齐全站 4vw 左基线，银玻璃维持 px-6。
-  // 页头与三种墙（图廊 / 系列 / 海报）都由这层容器统一定边
-  const isNf = useTheme().id === "netflix";
-  const inset = isNf ? "px-[4vw]" : "px-6 max-md:px-4";
   const [collection, setCollection] = useState<Collection | null>(null);
   // null = 第一页还没回来：这时既不画空墙也不说"一部都没有"，那是一句还没成立的话
   const [items, setItems] = useState<LibraryItem[] | null>(null);
@@ -737,7 +733,7 @@ export function LibraryCollectionDetailView({
         }
       />
 
-      <div className={`pt-2 ${inset}`}>
+      <div className={`pt-2 page-inset`}>
         <h1 className="text-title font-semibold text-[var(--text-strong)]">
           {collection?.name ?? " "}
         </h1>
@@ -837,7 +833,7 @@ export function LibraryCollectionDetailView({
 
       <div className="mt-6 max-md:mt-4">
         {items === null ? null : gallery ? (
-          <div className={inset}>
+          <div className="page-inset">
             <VideoGalleryWall
               groups={galleryGroups}
               density={density}
@@ -855,7 +851,7 @@ export function LibraryCollectionDetailView({
           </div>
         ) : showSeries ? (
           // 系列缺片：缺的那几部不另起一块，直接按上映顺序画进墙里（见 SeriesWall）
-          <div className={inset}>
+          <div className="page-inset">
             <SeriesWall
               items={rows}
               parts={series.parts}
@@ -875,7 +871,7 @@ export function LibraryCollectionDetailView({
             这个合集现在一部都没有。
           </p>
         ) : (
-          <div className={inset}>
+          <div className="page-inset">
             {/* 合集挂在库下面，每一格都落回本库的条目详情 */}
             <PosterWall items={rows} libraryIdOf={ownLibraryId} wide={false} />
             <WallLoadMore

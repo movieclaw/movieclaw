@@ -327,9 +327,6 @@ export function LibraryItemDetailView({
   const isMobile = useIsMobile();
   const isNf = useTheme().id === "netflix";
   const isNfDesktop = isNf && !isMobile;
-  // 正文左右留白随主题走栅格：Netflix 主题对齐全站 4vw 左基线（返回键、顶栏
-  // 字标同一条线），银玻璃维持详情页的 px-12 规格标题/简介/分区由这层统一给定
-  const inset = isNf ? "px-[4vw]" : "px-12 max-md:px-4";
   // Netflix 桌面的滚动退场（与发现详情页同一套）：挂 html.nf-hero-live 标记类，
   // 把滚动进度写进 --nf-hero-recede，globals.css 据此给沉浸覆盖层加渐暗 + 模糊、
   // 左侧纯黑遮罩护住上移后的标题。仅桌面启用——手机的剧照是页内 Hero
@@ -770,7 +767,7 @@ export function LibraryItemDetailView({
           遮罩直接落在剧照上，与发现详情页同一构图）。 */}
       <div className="detail-content relative z-10 -mt-28 pb-12 pt-28">
       {/* —— 头部信息区 —— */}
-      <div className={`relative z-10 pt-6 ${inset} max-md:pt-3`}>
+      <div className={`relative z-10 pt-6 content-inset max-md:pt-3`}>
         <div className="min-w-0 max-w-5xl pb-1">
           {/* break-words：未识别条目的标题就是文件名（Some.Movie.2023.2160p…），
               整串无空格，不允许断词就会横向撑开整页 */}
@@ -936,12 +933,12 @@ export function LibraryItemDetailView({
 
       {/* 简介承接标题、类型与介质轨信息；电影与剧集保持同一阅读路径。 */}
       {itemPlot && (
-        <div className={`mt-4 ${inset}`}>
+        <div className={`mt-4 content-inset`}>
           <ExpandablePlot text={itemPlot} />
         </div>
       )}
 
-      <div className={`mt-9 space-y-8 max-md:mt-6 max-md:space-y-6 ${inset}`}>
+      <div className={`mt-9 space-y-8 max-md:mt-6 max-md:space-y-6 content-inset`}>
         {/* —— 剧集分集区：季选择 + 分集横滚卡 + 选中集的简介/规格/文件 —— */}
         {!isMovie && detail.seasons.length > 0 && (
           <SeasonEpisodesSection

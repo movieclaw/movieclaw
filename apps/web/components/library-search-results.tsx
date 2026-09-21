@@ -8,7 +8,6 @@ import { libraryCardAction } from "@/components/library-view";
 import type { LibraryItem, LibrarySearchGroup } from "@/lib/api/libraries";
 import { searchLibraryItems } from "@/lib/api/search";
 import { imageUrl } from "@/lib/image-proxy";
-import { useTheme } from "@/lib/ui-prefs";
 import { useScrollRestoration } from "@/lib/use-scroll-restoration";
 
 /**
@@ -30,8 +29,6 @@ export function LibrarySearchResults({
   onSwitchToMedia?: () => void;
 }) {
   const scrollRef = useScrollRestoration(`search:library:${keyword}`);
-  // 页面左右留白随主题走栅格：Netflix 主题对齐全站 4vw 左基线，银玻璃维持 px-6
-  const inset = useTheme().id === "netflix" ? "px-[4vw]" : "px-6 max-md:px-4";
   // null = 加载中；[] = 无结果；error 非空 = 请求失败
   const [groups, setGroups] = useState<LibrarySearchGroup[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -57,7 +54,7 @@ export function LibrarySearchResults({
   return (
     <div className="relative flex h-full flex-col">
       {/* 状态行：与另外两个垂直的头部同构（关键词） */}
-      <header className={`shrink-0 pb-3 pt-4 ${inset} max-md:pt-3`}>
+      <header className={`shrink-0 pb-3 pt-4 page-inset max-md:pt-3`}>
         <h1 className="text-on-image text-title-lg font-semibold tracking-[-0.01em] text-white">
           “{keyword}”
         </h1>
@@ -65,7 +62,7 @@ export function LibrarySearchResults({
 
       <div
         ref={scrollRef}
-        className={`scroll-thin scroll-safe relative min-h-0 flex-1 overflow-y-auto pb-6 ${inset}`}
+        className={`scroll-thin scroll-safe relative min-h-0 flex-1 overflow-y-auto pb-6 page-inset`}
       >
         {groups === null && !error && <LibrarySearchSkeleton />}
         {(error || empty) && (

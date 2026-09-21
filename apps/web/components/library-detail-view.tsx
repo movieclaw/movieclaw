@@ -31,7 +31,6 @@ import { listCollections, type Collection } from "@/lib/api/collections";
 import { PAGE_NAV_BUTTON_CLASS, PageNav } from "@/components/page-nav";
 import { usePageTitle } from "@/lib/use-page-title";
 import { useIsMobile } from "@/lib/use-media-query";
-import { useTheme } from "@/lib/ui-prefs";
 import { useBackNavigation } from "@/lib/back-navigation";
 import { LibraryFormDialog } from "@/components/library-form-dialog";
 import { LIBRARY_KIND_META } from "@/components/library-kind-meta";
@@ -308,10 +307,6 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
     initialSnapshot === undefined || isReentryAfterAbsence(wallRecallScope(libraryId)),
   );
   const { canManageLibraries } = usePermissions();
-  // 页面左右留白随主题走栅格：Netflix 主题对齐全站 4vw 左基线（顶栏字标同一条
-  // 线），银玻璃维持 px-6。海报墙自身不带边距，由这层容器统一给定
-  const isNf = useTheme().id === "netflix";
-  const inset = isNf ? "px-[4vw]" : "px-6 max-md:px-4";
   const { activeJobs } = useJobs();
   // 影视库 / 其他库的图床浏览模式（video-gallery.tsx）：海报墙换成每部作品的
   // 海报 / 剧照 / 章节图瀑布流，点开灯箱能直接播放或进详情。偏好记在浏览器里；
@@ -1573,7 +1568,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
         toolbar={(isMobile && !photoWall && viewSwitch) || undefined}
       />
       {/* —— 库头部 —— */}
-      <div className={inset}>
+      <div className="page-inset">
         <div className="flex items-center gap-2.5">
           <h2 className="text-on-image truncate text-[26px] font-bold leading-tight tracking-[-0.02em] text-white max-md:text-[20px]">
             {library.name}
@@ -1737,7 +1732,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
           设置 / 扫描 / 待处理 / 回收站照常（都在上方头部与 ⋯ 菜单里），海报墙、
           未识别分区一概不渲染——内容对当前身份就是不存在 —— */}
       {!library.viewer_access ? (
-        <div className={`mt-16 flex flex-col items-center gap-3 text-center ${inset}`}>
+        <div className={`mt-16 flex flex-col items-center gap-3 text-center page-inset`}>
           <LockIcon className="size-9 text-white/[0.28]" />
           <p className="text-ui leading-7 text-[var(--text-muted)]">
             内容已隐藏：你不在这个库的可见范围内。
@@ -1762,7 +1757,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
         <div
           role="tablist"
           aria-label="库内视图"
-          className={`mt-5 flex items-center gap-1 ${inset}`}
+          className={`mt-5 flex items-center gap-1 page-inset`}
         >
           {(
             [
@@ -1851,7 +1846,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
                   }}
                 />
               }
-              className={`mt-5 ${inset} max-md:mt-4`}
+              className={`mt-5 page-inset max-md:mt-4`}
             />
             </div>
           )}
@@ -1859,7 +1854,7 @@ export function LibraryDetailView({ libraryId }: { libraryId: number }) {
             {/* 索引条与内容列并排：条固定在视口右侧（sticky），列照常滚。索引条
                 有固定高度，加载哨兵与未识别分区必须放进同一列里——否则卡片少时
                 这一行被索引条撑高，分区会被推到一大段空白之下 */}
-            <div className={`flex items-start gap-2 ${inset} max-md:gap-1`}>
+            <div className={`flex items-start gap-2 page-inset max-md:gap-1`}>
               {/* overflow-anchor:none：向上补页后墙会长高，浏览器自带的滚动锚定
                   会跟着自己补一次 scrollTop，与我们按长高量做的补偿叠加就是跳两下
                   （何况 Safari 根本没有滚动锚定）。这一段的位置全部自己算 */}

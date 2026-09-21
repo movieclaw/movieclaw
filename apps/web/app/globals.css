@@ -83,6 +83,13 @@
      Netflix 主题在下方覆盖组里换中性灰） */
   --poster-placeholder: #141824;
 
+  /* —— 主题布局留白档 ——
+     页面级（px-6 档）与详情正文级（px-12 档）各一档；断点内收见下方
+     media 组，主题覆盖（Netflix 4vw）在 html[data-theme="netflix"] 组。
+     页面一律消费 page-inset 系语义工具类，禁止手写主题留白判断。 */
+  --page-inset: 1.5rem;
+  --content-inset: 3rem;
+
   /* —— 文本层级（冷白） —— */
   --text: #f3f5f9;
   --text-muted: rgba(243, 245, 249, 0.62);
@@ -264,6 +271,33 @@ html {
    横向、页面横向没得滚才碰巧没事；伪横屏容器转了 90°，沿条就是物理竖直方向，
    浏览器把触摸当翻页手势收走（pointercancel），进度条一动不动
    （2026-09-14 真触摸复现，docs/design/player-feel.md §19.8）。 */
+/* —— 主题布局留白：语义工具类（消费 --page-inset / --content-inset） ——
+   页面左右留白随主题走档：银玻璃 px-6/px-12 档、Netflix 全站 4vw。 */
+
+.page-inset {
+  padding-inline: var(--page-inset);
+}
+
+.page-inset-mx {
+  margin-inline: var(--page-inset);
+}
+
+/* 吸顶工具条（PageNav）满宽蒙版的反向抵消：与 page-inset 天然成对 */
+.page-inset-bleed {
+  margin-inline: calc(var(--page-inset) * -1);
+}
+
+.content-inset {
+  padding-inline: var(--content-inset);
+}
+
+@media (width < 768px) {
+  :root {
+    --page-inset: 1rem;
+    --content-inset: 1rem;
+  }
+}
+
 @layer base {
   button,
   a,
@@ -2018,6 +2052,10 @@ html[data-theme="netflix"] {
   --surface-inset: #2f2f2f; /* 输入框内嵌（存疑值，P6 对照定稿） */
   /* 海报占位：银玻璃的冷蓝黑在纯黑画布上发蓝，换中性卡片面 */
   --poster-placeholder: #181818;
+
+  /* 布局留白档：全站一条 4vw 左基线（与顶栏字标 / 返回键同一条线） */
+  --page-inset: 4vw;
+  --content-inset: 4vw;
 
   /* —— 文本层级 —— */
   --text: #ffffff;

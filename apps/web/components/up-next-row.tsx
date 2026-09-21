@@ -89,14 +89,14 @@ export function UpNextRow({
   items,
   libraries,
   onCleared,
-  insetClassName = "px-6 max-md:px-4",
+  insetClassName = "page-inset",
 }: {
   items: UpNextItem[] | null;
   /** 当前身份可浏览的库：⋯ 菜单「清空某个媒体库」的候选 */
   libraries: MediaLibrary[];
   /** 清除观看记录成功后回调：父组件重新拉数据，这一行随之刷新或隐藏 */
   onCleared: () => void;
-  /** 行的左右留白，与 MediaRow 的同名参数同一套用法（Netflix 主题传 px-[4vw]） */
+  /** 行的左右留白，与 MediaRow 的同名参数同一套用法（语义工具类，缺省 page-inset） */
   insetClassName?: string;
 }) {
   // 首页不存在观看记录时完全不占位；首次请求尚未返回也先保持原布局，

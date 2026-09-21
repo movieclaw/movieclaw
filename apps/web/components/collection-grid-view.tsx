@@ -58,12 +58,7 @@ export function CollectionGridView({
 }) {
   const initialSnapshot = getCollectionGridSnapshot(collectionRef);
   const scrollRef = useScrollRestoration(`collection:${collectionRef}`);
-  // 页面左右留白随主题走栅格：Netflix 主题对齐全站 4vw 左基线（顶栏字标、返回键
-  // 同一条线），并放弃居中 1500px 栏改全幅（与发现页内容行一致）；银玻璃维持
-  // px-6 + 居中栏。吸顶蒙版靠等量负边距铺满整宽，两套值必须成对改
   const isNf = useTheme().id === "netflix";
-  const inset = isNf ? "px-[4vw]" : "px-6 max-md:px-4";
-  const insetMx = isNf ? "-mx-[4vw]" : "-mx-6 max-md:-mx-4";
   const fullGrid = isNf ? "mt-8" : "mx-auto mt-8 max-w-[1500px]";
   const [items, setItems] = useState<MediaItem[] | null>(() => initialSnapshot?.items ?? null);
   const [title, setTitle] = useState(() => initialSnapshot?.title ?? "影视片单");
@@ -262,7 +257,7 @@ export function CollectionGridView({
     <div
       ref={scrollRef}
       data-scroll-root
-      className={`scroll-thin scroll-safe flex-1 overflow-y-auto pb-12 ${inset}`}
+      className={`scroll-thin scroll-safe flex-1 overflow-y-auto pb-12 page-inset`}
     >
       {/* 顶栏：返回发现电影（保留豆瓣数据源视角）+ 吸顶榜单名；
           容器已有左右留白，用等量负边距让吸顶蒙版铺满整宽 */}
@@ -272,7 +267,7 @@ export function CollectionGridView({
           label: mediaType === "tv" ? "发现剧集" : "发现电影",
           href: `/discover/${mediaType === "tv" ? "tv" : "movie"}?source=${provider === "douban" ? "douban" : "tmdb"}` as Route,
         }}
-        className={insetMx}
+        className="page-inset-bleed"
       />
       <header className={isNf ? undefined : "mx-auto max-w-[1500px]"}>
         <div className="mt-1 flex flex-col justify-between gap-5 sm:flex-row sm:items-end">
