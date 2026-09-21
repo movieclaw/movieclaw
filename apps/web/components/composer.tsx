@@ -25,7 +25,7 @@ import {
   thinkingValueLabel,
 } from "@/lib/thinking-level-control";
 import { useBackdrop } from "@/lib/backdrop";
-import { LiquidGlassIconButton } from "@/vendor/liquid-glass";
+import { LiquidGlassIconButton } from "@/components/liquid-glass";
 
 /*
  * 布局设计（调研 maka composer 与 Codex 输入框后的定案）：

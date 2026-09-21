@@ -8,7 +8,7 @@ import {
   type LiquidGlassVariant,
 } from "@/vendor/liquid-glass";
 import { LiquidGlassRenderer } from "@/vendor/liquid-glass/core/LiquidGlassRenderer";
-import { useTheme } from "@/lib/ui-prefs";
+import { useResolvedTheme } from "@/themes/registry";
 
 /**
  * GlassPanel —— 边到边大面板专用的「真实 WebGL 液态玻璃」承载层。
@@ -83,7 +83,7 @@ export function GlassPanel({
   // Netflix 主题（纯色平铺设计）整体停用 WebGL：不挂 canvas、按 flat 预设渲染
   // （实色卡面 + 实线描边，见 globals.css 的 .glass-panel--flat）。调用方零改动，
   // 顺带省下 GPU 与移动端的 WebGL 上下文配额（docs/design/web-themes.md §3.5）。
-  const theme = useTheme();
+  const { capabilities } = useResolvedTheme();
 
   // 最新配置的引用：apply 从这里取值而非闭包捕获，保证参数热更新时
   // （如设置页拖动侧栏透明度滑杆）不必销毁重建 WebGL 渲染器。
@@ -116,7 +116,7 @@ export function GlassPanel({
   // 主题参与依赖：netflix 主题不创建渲染器，从银玻璃切过来时也会把旧渲染器
   // 一并 dispose（live 切换主题不能泄漏 WebGL 上下文）。
   useEffect(() => {
-    if (theme.id === "netflix") return;
+    if (!capabilities.glass) return;
     const root = rootRef.current;
     const canvas = canvasRef.current;
     if (!root || !canvas) return;
@@ -151,7 +151,7 @@ export function GlassPanel({
       renderer.dispose();
       rendererRef.current = null;
     };
-  }, [backgroundImage, apply, theme.id]);
+  }, [backgroundImage, apply, capabilities.glass]);
 
   // 参数（variant/settings/radius/sampleBackground）内容变化时热更新，不重建渲染器。
   useEffect(() => {
@@ -160,7 +160,7 @@ export function GlassPanel({
   }, [settingsKey, apply]);
 
   // —— flat 分支（Netflix 主题）：实色卡面，不挂 canvas、不初始化 WebGL ——
-  if (theme.id === "netflix") {
+  if (!capabilities.glass) {
     return (
       <div
         className={`glass-panel glass-panel--flat ${className}`}

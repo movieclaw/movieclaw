@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import { LiquidGlassButton } from "@/vendor/liquid-glass";
+import { LiquidGlassButton } from "@/components/liquid-glass";
 
 import { useConfirm } from "@/components/feedback";
 import { GripIcon } from "@/components/icons";

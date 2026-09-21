@@ -14,12 +14,8 @@ import { FeedbackProvider } from "@/components/feedback";
 import { MenuIcon } from "@/components/icons";
 import { PAGE_NAV_BUTTON_CLASS } from "@/components/page-nav";
 import { SearchCommand, type SearchSubmitOptions } from "@/components/search-command";
-import { SettingsSidebar } from "@/components/settings-view";
 import { Sidebar } from "@/components/sidebar";
 import { SubscribeEntryProvider } from "@/components/subscribe-entry";
-import { NetflixSettingsNav, NetflixTabBar } from "@/components/netflix/tab-bar";
-import { NetflixSettingsSidebar } from "@/components/netflix/settings-sidebar";
-import { NetflixTopNav } from "@/components/netflix/top-nav";
 import { MovieclawMark } from "@/components/brand";
 import { AgentConversationsProvider } from "@/lib/agent-conversations";
 import { useAppNavigationTracking } from "@/lib/back-navigation";
@@ -29,6 +25,7 @@ import { PageChromeProvider, isHomeRoute } from "@/lib/page-chrome";
 import { SearchPrefsProvider } from "@/lib/search-prefs";
 import { buildSearchPath } from "@/lib/search-url";
 import { UiPrefsProvider, useTheme } from "@/lib/ui-prefs";
+import { useResolvedTheme } from "@/themes/registry";
 import { useIsMobile } from "@/lib/use-media-query";
 import { settingsSectionGroupsFor, settingsSections } from "@/lib/mock-data";
 import { usePermissions } from "@/lib/permissions";
@@ -94,9 +91,13 @@ function AppShellBody({ children }: { children: React.ReactNode }) {
   useAppNavigationTracking(pathname);
   // 移动端（< 768px）走另一套骨架：单栏 + 顶栏 + 抽屉式侧栏，见文件末尾的分支渲染
   const isMobile = useIsMobile();
-  // 结构层主题：netflix 主题换外壳（顶栏 / 底部标签栏 / 内容首页）
+  // 结构层主题：解析自主题注册表（换外壳 = 提供桌面顶栏 / 底部标签栏等坑位）。
+  // isNetflix 局部名沿用，语义 = 当前主题是结构级主题
   const theme = useTheme();
-  const isNetflix = theme.id === "netflix";
+  const isNetflix = theme.structural;
+  const { slots } = useResolvedTheme();
+  const SettingsNav = slots.settingsNav;
+  const MobileSettingsNav = slots.mobileSettingsNav;
   // 抽屉开合（银玻璃移动端）。「我的」在 Netflix 主题下是独立路由页（/my），
   // 不再是外壳管理的开合面板（原 NetflixMySheet 已退役）。
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -215,12 +216,12 @@ function AppShellBody({ children }: { children: React.ReactNode }) {
   // 页面内部的有限高度剧照，并由自身渐变保证内容可读。新增路由无需登记，
   // 自动继承蒙版。Netflix 主题是纯色平铺设计，蒙版整体不渲染（§3.5）。
   // Netflix 主题的 /library 顶部是原内容首页并入的全出血 Billboard
-  // （components/netflix/library-hero.tsx），同为大图直出的氛围页：
+  // （themes/netflix/components/library-hero.tsx），同为大图直出的氛围页：
   // 不加顶栏让位，让画面从透明顶栏底下穿过（银玻璃的 /library 不在此列）。
   // 判定本体抽在 lib/page-chrome.tsx 的 isHomeRoute：PageNav 的渲染入口要用
   // 同一份判定短路（Netflix 桌面全出血页渲染 PageNav 会被 z-40 顶栏盖住），
   // 两处必须同源，改动路由清单时只动一处。
-  const isHome = isHomeRoute(pathname, isNetflix);
+  const isHome = isHomeRoute(pathname, slots.libraryHero != null);
   // Agent 对话页走沉浸模式：蒙版换成完全不透明的 .page-solid，整页盖掉
   // 背景大图（密集文本页不允许透图）；侧栏切换为实色形态。
   const isImmersive = pathname.startsWith("/sessions/");
@@ -276,21 +277,14 @@ function AppShellBody({ children }: { children: React.ReactNode }) {
   // 必须只渲染一份——面板是真实 WebGL 液态玻璃，多一份就多吃一个 WebGL 上下文。
   // （Netflix 主题下玻璃已停用，但侧栏仍只在设置模式出现，同样单实例。）
   const sidebarNode = isSettings ? (
-    // Netflix 主题用自家的黑底文字菜单（见 netflix/settings-sidebar.tsx），
-    // 银玻璃维持玻璃面板 + 胶囊行的 SaaS 菜单；两者分区/选中语义同源
-    isNetflix ? (
-      <NetflixSettingsSidebar
-        active={activeSettings}
-        onSelect={(id) => router.push(`/settings/${id}` as Route)}
-        onBack={backToWorkspace}
-      />
-    ) : (
-      <SettingsSidebar
-        active={activeSettings}
-        onSelect={(id) => router.push(`/settings/${id}` as Route)}
-        onBack={backToWorkspace}
-      />
-    )
+    // 设置分区菜单走主题坑位：Netflix = 黑底文字菜单
+    // （themes/netflix/chrome/settings-sidebar），银玻璃 = 玻璃面板 + 胶囊行
+    // 的 SaaS 菜单；两者分区/选中语义同源，由注册表按主题解析
+    <SettingsNav
+      active={activeSettings}
+      onSelect={(id) => router.push(`/settings/${id}` as Route)}
+      onBack={backToWorkspace}
+    />
   ) : (
     <Sidebar
       activeNav={activeNav}
@@ -326,12 +320,12 @@ function AppShellBody({ children }: { children: React.ReactNode }) {
               />
             )}
             <main className="absolute inset-0">
-              {isSettings ? (
+              {isSettings && MobileSettingsNav ? (
                 /* 设置：/settings 是分区列表页，/settings/[x] 是分区内容页，
                    本条只承担「返回键 + 标题」（分区下拉浮层已退役——长清单
-                   在触屏上滑不动，见 components/netflix/settings-index.tsx）。 */
+                   在触屏上滑不动，见 themes/netflix/pages/settings-index.tsx）。 */
                 <div className="flex h-full flex-col">
-                  <NetflixSettingsNav
+                  <MobileSettingsNav
                     title={
                       isSettingsIndex
                         ? "设置"
@@ -345,7 +339,7 @@ function AppShellBody({ children }: { children: React.ReactNode }) {
                 children
               )}
             </main>
-            <NetflixTabBar />
+            {slots.mobileTabBar ? <slots.mobileTabBar /> : null}
           </div>
         ) : (
           /* —— Netflix 桌面：顶栏 + 全宽内容 ——
@@ -353,7 +347,9 @@ function AppShellBody({ children }: { children: React.ReactNode }) {
              其余页面由 .nf-nav-offset 为顶栏让位。设置模式保留「分区菜单 + 内容」
              的信息架构（§0 决策 2：控制台页只换皮肤、不重排）。 */
           <div className="app-shell viewport-app-height relative z-10 w-full">
-            <NetflixTopNav onSearch={handleSearch} onOpenSettings={openSettings} />
+            {slots.desktopTopNav && (
+              <slots.desktopTopNav onSearch={handleSearch} onOpenSettings={openSettings} />
+            )}
             {isSettings ? (
               <div className="nf-nav-offset absolute inset-0 flex">
                 {/* 分区菜单贴全站 4vw 左基线（与顶栏字标同一条线），内容区随后左锚定 */}
@@ -527,7 +523,7 @@ function MobileTopBar({
   // 品牌与 ☰ 落点随主题分叉：Netflix 用红色 SVG 字标、不放 ☰（导航在底栏）；
   // 银玻璃 = rotor 图片 logo + ☰ 开侧栏抽屉。雾层色由 globals.css 的
   // html[data-theme="netflix"] .mobile-topbar 覆盖，组件里不用管。
-  const isNetflix = useTheme().id === "netflix";
+  const isNetflix = useTheme().structural;
   return (
     <header className="mobile-topbar pointer-events-none absolute inset-x-0 top-0 z-40">
       <div className="pointer-events-auto flex h-[52px] items-center gap-2 px-3">

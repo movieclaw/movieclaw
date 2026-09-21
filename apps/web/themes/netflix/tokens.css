@@ -1,0 +1,764 @@
+/*
+ * Netflix 主题覆盖组（自 app/globals.css 原样迁入，选择器与值逐行未改）。
+ * 由 globals.css 顶部 @import 引入；全部规则挂在 html[data-theme="netflix"]
+ * 作用域（或仅 Netflix 使用的标记类/关键帧）上，特异性高于基础同类规则，
+ * 与基础组的先后顺序不构成级联依赖。银玻璃不加载这份语义——基础组即银玻璃。
+ */
+
+
+html[data-theme="netflix"] {
+  color-scheme: dark;
+
+  /* —— 分层表面（§4） —— */
+  /* Netflix 画布是纯黑 #000（官网 body 直出纯黑），#141414 只做卡片/行悬浮面 —— */
+  --bg: #000000;
+  --surface-main: #141414;
+  --surface-raised: #181818; /* 卡片 / 弹层 / 信息面板 */
+  --surface-inset: #2f2f2f; /* 输入框内嵌（存疑值，P6 对照定稿） */
+  /* 海报占位：银玻璃的冷蓝黑在纯黑画布上发蓝，换中性卡片面 */
+  --poster-placeholder: #181818;
+
+  /* 布局留白档：全站一条 4vw 左基线（与顶栏字标 / 返回键同一条线） */
+  --page-inset: 4vw;
+  --content-inset: 4vw;
+
+  /* —— 文本层级 —— */
+  --text: #ffffff;
+  --text-muted: #b3b3b3;
+  --text-faint: #808080;
+
+  /* —— 描边：Netflix 用实线（存疑值 #404040，P6 定稿） —— */
+  --line: #404040;
+  --line-strong: #808080;
+
+  /* —— 强调：品牌红。纪律（§4）：红只出现在字标 / 进度条 / 匹配度高亮 /
+        激活指示上；主按钮是白底黑字（见 .btn-accent 覆盖）。 —— */
+  --accent: #e50914;
+  --accent-strong: #c11119; /* hover 红：Netflix 的红是 hover 变暗，不是变亮 */
+  --accent-2: #b20710; /* pressed / 品牌暗红 */
+  --accent-soft: rgba(229, 9, 20, 0.15);
+  /* Netflix 焦点环 = 2px 白描边（生产 CSS 证实），不是冷光 */
+  --accent-ring: rgba(255, 255, 255, 0.7);
+
+  /* —— 行内填充（hover / active） —— */
+  --glass-fill: rgba(255, 255, 255, 0.06);
+  --glass-fill-hover: rgba(255, 255, 255, 0.12); /* ≈ #2f2f2f on #141414 */
+  --glass-fill-active: rgba(255, 255, 255, 0.2);
+
+  /* —— 状态语义色（Netflix 化；--danger 刻意不等于品牌红，红点/红字是状态
+        信号，与品牌色混用会让满屏红失去语义，见 §4 备注） —— */
+  --ok: #46d369;
+  --info: #6ba6ff;
+  --warn: #e87c03;
+  --danger: #eb3942;
+  --danger-solid: #b20710;
+  --danger-solid-hover: #c11119;
+
+  /* —— 信息蓝系（:root #6aa7ff 遗留字面量的 Netflix 收敛值） ——
+        信息类一律不用彩色，整组收敛为白/灰层次（红只留给品牌与播放动作）。
+        渐变两端同值后自然变成平底；高浓度信息实底（促销折扣、全集包）变白后
+        压白字会不可读，文字转深色，对齐 Netflix「白底黑字」的按钮语言 —— */
+  --info-soft: #ffffff;
+  --info-text: #ffffff;
+  --info-text-2: rgba(255, 255, 255, 0.7);
+  --info-grad-a: #ffffff;
+  --info-grad-b: #ffffff;
+  --info-on-solid: #141414;
+  --info-legend: #ffffff;
+
+  /* —— Tailwind v4 圆角换档（默认值表：xs 2 / sm 4 / md 6 / lg 8 / xl 12 /
+        2xl 16 / 3xl 24 / 4xl 32）：压到 Netflix 的 2/4/6 档 —— */
+  --radius-xs: 2px; /* 徽章 */
+  --radius-sm: 4px; /* 按钮、输入框、卡片、磁贴（生产 CSS 证实 4px） */
+  --radius-md: 4px;
+  --radius-lg: 4px;
+  --radius-xl: 6px; /* 弹窗、展开卡 */
+  --radius-2xl: 6px;
+  --radius-3xl: 8px; /* 个别大面留一档 */
+  --radius-4xl: 8px;
+
+  /* PageNav 吸顶雾换纯黑系（浓度档与银玻璃一致，只换色相——雾的「压字
+     不糊」手感是全站调过的，不因主题重调） */
+  --page-fog: linear-gradient(
+    180deg,
+    rgba(0, 0, 0, 0.72) 0%,
+    rgba(0, 0, 0, 0.46) 46%,
+    rgba(0, 0, 0, 0) 100%
+  );
+}
+
+/*
+ * ============================================================================
+ * 「Netflix」主题（html[data-theme="netflix"]）
+ * ============================================================================
+ * 规格来源：docs/design/web-themes.md（§4 token 全表 / §2 设计语言调研）。
+ *
+ * 生效分三层，全部挂在本作用域上：
+ *   1. token 层：语义变量整组覆盖，全站组件消费变量、皮肤自动跟随；
+ *   2. Tailwind v4 圆角换档：rounded-* 工具类编译产物是 var(--radius-*) 引用，
+ *      在根节点覆盖变量即可全站把圆角压到 Netflix 的 2/4/6 档，无需重编译
+ *      （rounded-full / rounded-none 与任意值 rounded-[10px] 是静态值，不受影响
+ *      ——前者本来就该圆，后者按「验收清单内替换、清单外接受」策略处理）；
+ *   3. 结构层：外壳（顶栏 / 底部标签栏 / 内容首页）由 React 按 useTheme() 分支
+ *      渲染，见 components/netflix/*；这里只承载它们的样式。
+ *
+ * 与现有氛围体系的兼容（§3.5）：Netflix 是纯色平铺设计，body::before 背景大图
+ * 在本主题下整体不渲染；全站蒙版（.page-scrim）由外壳不渲染（netflix 分支里
+ * 根本不挂）；WebGL 液态玻璃由 GlassPanel 读主题后不挂 canvas，走 flat 形态。
+ */
+
+html[data-theme="netflix"] body::before {
+  display: none;
+}
+
+/* —— 氛围体系停用：背景大图伪元素整体不渲染，纯 #141414 直出（§3.5） —— */
+
+html[data-theme="netflix"] [class*="ring-white"] {
+  --tw-ring-color: transparent;
+}
+
+/*
+ * —— 画面类元素去白边 ——
+ * 银玻璃语言给每张海报/封面容器一圈白色 ring 勾轮廓（ring-white/[0.06~0.4]），
+ * 在纯黑画布上成了一圈亮白细框，hover 放大时尤其刺眼——Netflix 的卡片没有任何
+ * 描边，分隔全靠卡片间隙。ring 工具类的颜色经 --tw-ring-color 落在字面量 #fff
+ * 上（无共享变量可改），这里按类名子串一次性把颜色打穿为透明：凡 class 里带
+ * ring-white 的元素（含 hover:/focus-visible: 变体）在主题下全部失效。
+ * 键盘焦点不受影响——全站 :focus-visible 的 outline（var(--accent-ring)，主题下
+ * 为白环）是独立于 box-shadow ring 的另一条通路。
+ * 本条必须在无层 CSS 里（本文件默认环境），无层规则优先于 @layer utilities，
+ * 一条规则覆盖静息与 hover 两种状态。
+ */
+
+html[data-theme="netflix"] .glass-row {
+  border-radius: 4px;
+}
+
+/* 圆角行（菜单项 / 设置分区行）：glass-row 的无层 14px 圆角换 Netflix 4px 档 */
+
+html[data-theme="netflix"] .brand-badge {
+  background: linear-gradient(145deg, #e50914 0%, #b00710 100%);
+  color: #ffffff;
+  box-shadow: none;
+}
+
+/* —— 品牌红扩大使用面（§4 纪律：红只出现在品牌标识 / 主 CTA / 进度条 /
+      激活指示上） —— */
+/* 头像徽标（无上传图时的首字底）：银玻璃 → 品牌红 */
+/* 设置页滑杆的圆钮：亮银 → 品牌红（轨道不变） */
+html[data-theme="netflix"] .range-glass::-webkit-slider-thumb {
+  background: var(--accent);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+}
+
+html[data-theme="netflix"] .range-glass::-moz-range-thumb {
+  background: var(--accent);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+}
+
+
+html[data-theme="netflix"] .page-solid {
+  background: #000;
+}
+
+/* 沉浸层（AI 会话页）取 Netflix 播放器/沉浸语言的纯黑（§5.7） */
+
+html[data-theme="netflix"] .glass-panel {
+  box-shadow: none;
+}
+
+/* —— 玻璃面板 flat 形态（GlassPanel 读主题后不再挂 canvas，容器只剩实色卡） —— */
+html[data-theme="netflix"] .glass-panel--flat {
+  background: var(--surface-raised);
+}
+
+html[data-theme="netflix"] .glass-panel--flat .glass-panel__content::before {
+  /* 发丝内线换成 Netflix 实线描边 */
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+/* 兜底底色统一抬到卡片面（原为更深的面板色） */
+html[data-theme="netflix"] .panel--sidebar,
+html[data-theme="netflix"] .panel--main {
+  background: var(--surface-raised);
+}
+
+html[data-theme="netflix"] .panel--sidebar-flat {
+  background: #181818;
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+
+html[data-theme="netflix"] .surface-raised,
+html[data-theme="netflix"] .menu-surface {
+  background: #181818;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.9);
+}
+
+/* —— 浮层表面：#181818 实底 + Netflix 弹窗阴影（§4「中心化类同步覆盖」） —— */
+html[data-theme="netflix"] .surface-raised {
+  border-radius: 6px;
+}
+
+/* 菜单的「深底叠深底」发丝内线换成实线描边 */
+html[data-theme="netflix"] .menu-surface {
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.9),
+    inset 0 0 0 1px var(--line);
+}
+
+html[data-theme="netflix"] .notice-surface {
+  background: rgb(24 24 24 / 0.92);
+  backdrop-filter: none;
+}
+
+/* 设置子卡片：玻璃磨砂内嵌 → 实色卡 + 实线描边（§5.7 控制台换皮） */
+html[data-theme="netflix"] .css-glass {
+  border: 1px solid var(--line);
+  background: var(--surface-raised);
+  box-shadow: none;
+}
+
+
+html[data-theme="netflix"] .modal-scrim {
+  background: rgb(0 0 0 / 0.72);
+  backdrop-filter: none;
+}
+
+/* —— 居中弹窗 / Toast / Tooltip：毛玻璃 → 实色卡（§5.7 控制台换皮） ——
+ * 钩子类分别挂在 modal.tsx（.modal-scrim / .modal-panel）与 tooltip.tsx
+ * （.tooltip-bubble）上；toast 面板自带 .toast-item。面板圆角走
+ * rounded-2xl → --radius-2xl 的换档（6px），这里只换材质与描边。
+ * 这三个浮层是全站公共基座，覆盖此处即覆盖所有对话框/回执/气泡。 */
+html[data-theme="netflix"] .modal-panel {
+  border: 1px solid var(--line);
+  background: #181818;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.9);
+  backdrop-filter: none;
+}
+
+html[data-theme="netflix"] .toast-item {
+  border: 1px solid var(--line);
+  background: #181818;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.9);
+  backdrop-filter: none;
+}
+
+html[data-theme="netflix"] .tooltip-bubble {
+  border: 1px solid var(--line);
+  background: #181818;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.9);
+  backdrop-filter: none;
+}
+
+/* FloatingArrow 的 fill/stroke 落在 SVG 表现属性上（非内联样式），CSS 直接压过 */
+html[data-theme="netflix"] .tooltip-bubble svg {
+  fill: #181818;
+  stroke: var(--line);
+}
+
+
+html[data-theme="netflix"] .btn-accent {
+  background: #ffffff;
+  color: #000000;
+  box-shadow: none;
+}
+
+/* —— 主操作按钮：白底黑字三态（生产 CSS：1 / hover 0.75 / 按下 0.5） —— */
+html[data-theme="netflix"] .btn-accent:hover {
+  filter: none;
+  background: rgb(255 255 255 / 0.75);
+}
+
+html[data-theme="netflix"] .btn-accent:active {
+  transform: none;
+  background: rgb(255 255 255 / 0.5);
+}
+
+
+html[data-theme="netflix"] .btn-glass {
+  border: 0;
+  border-radius: 4px;
+  background: rgba(109, 109, 110, 0.7);
+  color: #ffffff;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+/* —— 次级按钮：灰半透方角（生产 CSS：rgba(109,109,110,0.7)，hover 0.4） ——
+ * 圆角压到 4px 档、关掉毛玻璃：基础 .btn-glass 是 999px 全胶囊 + 沿途调用点
+ * 还会叠 backdrop-blur-md（详情页操作钮），都是银玻璃语言。调用点上带
+ * !rounded-full 的圆形图标钮不受影响（无层规则压不过 important 工具类，
+ * 且 §2.3「圆形按钮除外」本就该保圆）。 */
+html[data-theme="netflix"] .btn-glass:hover {
+  background: rgba(109, 109, 110, 0.4);
+  border-color: transparent;
+}
+
+
+html[data-theme="netflix"] .lg-button__glass,
+html[data-theme="netflix"] .lg-icon-button__glass,
+html[data-theme="netflix"] .lg-icon-button__active-surface {
+  display: none;
+}
+
+/* —— 液态玻璃控件（vendor/liquid-glass）Netflix 换皮 ——
+ * vendor 的开关/图标按钮不消费主题 token（iOS 风格硬编码：绿色轨道渐变 +
+ * 高光白滑块 + 按下 WebGL 玻璃），§5.7「深度控件颜色变量自动跟随」的假设
+ * 对它们不成立，这里整组接管外观；WebGL 渲染器的跳过在组件里
+ * （LiquidGlassButton / LiquidGlassIconButton 读主题后不建渲染器）。
+ * 开关保持胶囊形——§2.3「圆形按钮与开关除外」；只换材质：
+ * 关 = 实色灰轨（--line），开 = 品牌红（激活指示，与滑杆红钮同一语言），
+ * 滑块 = 纯白平面小圆角，去掉一切内嵌高光。 */
+/* 玻璃层停用后，按下动画里「静态层淡出让位玻璃」的交接不存在了，
+   必须把静态层钉在不透明上，否则按下的瞬间开关整块透明 */
+html[data-theme="netflix"] .lg-button__thumb {
+  opacity: 1;
+}
+
+html[data-theme="netflix"] .lg-button__switch {
+  background: var(--line);
+  box-shadow: none;
+}
+
+html[data-theme="netflix"] .lg-button.is-checked .lg-button__switch {
+  background: var(--accent);
+  box-shadow: none;
+}
+
+/* 轨道上的白色高光渐变（.lg-button__track）一并抹平 */
+html[data-theme="netflix"] .lg-button__track {
+  background: none;
+}
+
+html[data-theme="netflix"] .lg-button__thumb {
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.35);
+}
+
+/* composer 发送键（.lg-icon-button）：玻璃画布停用后给同位银玻璃低配兜底
+   （composer.tsx 里 bg-white/[0.1] 那颗按钮）同款实底；圆角随 shape 类保留 */
+html[data-theme="netflix"] .lg-icon-button {
+  background: rgb(255 255 255 / 0.1);
+}
+
+html[data-theme="netflix"] .lg-icon-button:hover {
+  background: rgb(255 255 255 / 0.16);
+}
+
+
+html[data-theme="netflix"] .panel--sidebar-flat {
+  border-radius: 8px;
+}
+
+/* —— 零散控件收尾（§5.7 换皮缺口：基础规则里未消费 token 的硬编码） —— */
+/* AI 会话页实色侧栏：底色/描边已随基础 .panel--sidebar-flat 的 netflix 覆盖
+   换过，这里把遗留的 16px 圆角压到 8px 大面档 */
+/* markdown 正文（AI 会话 / 更新说明）链接：冷蓝 #8ab4ff 是银玻璃残留，
+   Netflix 文字语言是白字下划线 */
+html[data-theme="netflix"] .markdown a {
+  color: #ffffff;
+  text-decoration-color: rgb(255 255 255 / 0.4);
+}
+
+/* 代码块 10px 定制圆角 → 4px 控件档 */
+html[data-theme="netflix"] .markdown pre {
+  border-radius: 4px;
+}
+
+/* AI 徽章：紫青渐变 + 循环流光 → 白系实底胶囊。红不给徽章——红色是品牌与
+   状态信号，滥用会稀释；灰白胶囊足够表达「AI 标注」 */
+html[data-theme="netflix"] .ai-chip {
+  background: rgb(255 255 255 / 0.14);
+  box-shadow: none;
+}
+
+html[data-theme="netflix"] .ai-chip::after {
+  content: none;
+}
+
+/* 设置面板标题的银白渐变字 → 纯白实色 */
+html[data-theme="netflix"] .text-sheen {
+  background: none;
+  color: #ffffff;
+}
+
+/* composer 技能 token：白透明内嵌 → 实线描边 + 4px 档 */
+html[data-theme="netflix"] .skill-token-chip {
+  border-radius: 4px;
+  background: rgb(255 255 255 / 0.08);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+/* 设置分区头下的发丝分隔线（仅桌面可见的那条 <div>）：白渐变「受光」隐喻
+   → 实线描边。header 本体不带背景，用标签限定避免给整块头刷色 */
+html[data-theme="netflix"] div.settings-panel-head {
+  background: var(--line);
+}
+
+
+html[data-theme="netflix"] .solid-popover {
+  border-color: var(--line);
+  background: #181818;
+  box-shadow: 0 8px 32px rgb(0 0 0 / 0.9);
+  backdrop-filter: none;
+}
+
+/* —— 页面临时浮层/卡片的换皮钩子（search-results / library-filter-bar /
+   task-center-view）——
+   这些表面由银玻璃工具类临时拼成，不经过中心化浮层类，token 换皮够不到；
+   钩子类只接管材质（描边色/实底/投影/模糊），圆角仍走调用点自己的
+   rounded-2xl 换档、边框宽度与移动端形态（max-md: 变体系列）原样保留。 */
+html[data-theme="netflix"] .solid-card {
+  border-color: var(--line);
+  background: #181818;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+/* PageNav 圆钮（返回键 / 顶栏操作键共用 PAGE_NAV_BUTTON_CLASS）：玻璃圆钮
+   → 实底深灰，描边换实线、关模糊。圆形保留——§2.3「圆形按钮除外」；
+   与详情页的裸 chevron（NetflixBackButton）同属暗底白字语言 */
+html[data-theme="netflix"] .page-nav-btn {
+  border-color: var(--line);
+  background: rgb(0 0 0 / 0.45);
+  backdrop-filter: none;
+}
+
+
+html[data-theme="netflix"] .nav-item[data-active="true"] {
+  background: rgba(255, 255, 255, 0.2);
+  border-color: transparent;
+  box-shadow: none;
+}
+
+/* —— 选中胶囊：白系（§4；侧栏在 netflix 主题只服务于设置模式） —— */
+html[data-theme="netflix"] .nav-item[data-active="true"] .icon-chip {
+  background: #ffffff;
+  color: #141414;
+  box-shadow: none;
+}
+
+
+html[data-theme="netflix"] select option,
+html[data-theme="netflix"] select optgroup {
+  background-color: #181818;
+}
+
+/* 原生 select 弹层底色跟随卡片面（Windows Chromium 不吃 color-scheme，见上方原注释） */
+
+html[data-theme="netflix"] .detail-ambient {
+  scrollbar-color: rgba(255, 255, 255, 0.16) #000;
+  background-image: none;
+}
+
+/* —— 详情页（§5.5） ——
+ * 渐变落点不再覆盖成 #141414：Netflix 画布本就是纯黑 #000（#141414 只做卡片/
+ * 行悬浮面），基础 .detail-ambient 的「透明 → #000」渐变直接沿用，下方内容
+ * 底色与画布同色、无接缝。
+ * 滚动条轨道必须给实色：剧照是 fixed 全屏覆盖层，而轨道默认透明——透明轨道
+ * 会在页面右缘漏出一整条未压暗的原图（轨道不被元素自身 background 覆盖）。
+ * 轨道色取画布纯黑、滑块维持全局同款半透明白。
+ * 内容层**不画任何遮罩**：横向过渡是图片层的 `--nf-blend` mask，纵向渐隐
+ * 是图片层的 ::after（见下方）——内容层的背景画在图片层之上（z-10 > z-2），
+ * 在这里铺渐变就是第二重视觉遮罩，且出现时机与图片不同步（实测两次踩坑）。
+ * hero 以下的正文可读性：图片层自身在纵向渐隐到纯黑 + 滚动时渐暗模糊。 */
+/* 同上，给不支持 scrollbar-color 的老 Chromium 的 ::-webkit 通路兜底
+   （支持的内核会忽略 ::-webkit-*，两条并存不冲突） */
+html[data-theme="netflix"] .detail-ambient::-webkit-scrollbar-track {
+  background: #000;
+}
+
+/* 标题上移：银玻璃的内容层 -mt-28 + pt-28（上提与内边距互相抵消，标题停在
+   渐变板中段）；Netflix 的标题要落在横幅**左上区**（约横幅高度 1/3 处、让开
+   左上角的返回键），借左侧纯黑遮罩直接坐在剧照上——负外边距 320px、内边距
+   归零。注意底部渐变的起点（--detail-ambient-top）刻意**不**跟随上提：整幅
+   剧照不能因为标题上移就提早压暗，标题区由左侧纯黑遮罩单独护住。无层规则
+   优先于 Tailwind 的 @layer utilities，直接覆盖 -mt-28/pt-28 工具类。 */
+@media (min-width: 768px) {
+  html[data-theme="netflix"] .detail-ambient {
+    --detail-hero-h: 58vh;
+    --detail-hero-min-h: 340px;
+  }
+  html[data-theme="netflix"] .detail-content {
+    margin-top: -320px;
+    padding-top: 0;
+  }
+  /* 标题/简介这个前导簇占满到横幅底（内容起点 = 横幅底 − 320px，簇高固定
+     320px）：演职员表从横幅正下方一条固定线开始，不随简介长短上下漂移；
+     简介短时，下方留的是纯黑空档。 */
+  html[data-theme="netflix"] .detail-lead {
+    min-height: 320px;
+  }
+}
+
+
+@media (min-width: 768px) {
+  html[data-theme="netflix"] .person-hero {
+    padding-top: 64px;
+  }
+}
+
+@media (min-width: 768px) {
+  html.nf-hero-live .backdrop-override {
+    left: 25%;
+    mask-image: var(--nf-blend);
+    -webkit-mask-image: var(--nf-blend);
+  }
+  /* 首帧覆盖层的 Ken Burns 缓推（与轮换层同一条 nf-kenburns：9s 线性推 6%）：
+     进页即动，消灭「首图静止期」。背景借 ::before 的 background:inherit 复制
+     一份来推——mask 留在父层静止，左缘渐隐带不随缩放漂移（与轮换层同构：
+     mask 在 .detail-slideshow、img 在推）；::before 画在 ::after（纵向渐隐）
+     之下，叠加顺序不变。动画随标记类起跑，起跑时刻由详情视图记入 ref 传给
+     轮换层换算负延迟做相位锁定（见 detail-backdrop-slideshow 的 pushAnchor），
+     接管瞬间两层缩放逐像素一致。 */
+  html.nf-hero-live .backdrop-override::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: inherit;
+    animation: nf-kenburns 9s linear both;
+  }
+}
+
+/* 轮换层挂载时隐藏沉浸覆盖层：覆盖层永远停在主 backdrop（第一张图），
+   轮换开始后它会从半透明渐变区透出、成为「上一张的残影」。覆盖层的 opacity
+   由组件内联样式驱动（CSS 压不过内联），这里改用 visibility；首帧两层显示
+   同一张图，切换瞬间不可见。 */
+/* 轮换层存在（将要接管背景）时，覆盖层从一开始就不显示。
+   不能让两层共存哪怕一瞬：mask 是半透明的，同一张图被两层各「漏」一次，
+   渐变区亮度 = 2m − m²（m=50% 处亮 33%）；覆盖层一隐藏亮度骤降回 m——
+   这就是「图片开始动之后渐变区突然变暗」的根源。隐藏后入场只剩一条路径：
+   黑场 → 轮换层（原图）一次性淡入，中途没有任何层切换。 */
+html.nf-hero-live:has(.detail-slideshow) .backdrop-override {
+  visibility: hidden;
+}
+
+/* 滚动退场：详情页下滚时剧照渐暗 + 模糊（媒体详情视图把滚动进度写在根节点
+   的 --nf-hero-recede 上）。filter 只挂在标记类 nf-hero-live 存在时——即
+   Netflix 详情页挂载期间——其他页面不给全屏覆盖层强加零值 filter（那会白白
+   提升一个全屏合成层）。blur 让退场像「失焦」而不是「推走」，brightness 压到
+   45% 保证前景文字始终可读。
+   背景轮换层（DetailBackdropSlideshow）与覆盖层同一构图（右移 46% + 左缘
+   渐隐），两处规则必须一起改。 */
+html.nf-hero-live .backdrop-override,
+html.nf-hero-live .detail-slideshow {
+  filter: blur(calc(var(--nf-hero-recede, 0) * 12px))
+    brightness(calc(1 - var(--nf-hero-recede, 0) * 0.55));
+  /* 注册属性的过渡（见下方 @property）：滚轮一次甩几百像素时，进度变量
+     不再一帧跳到目标，而是按固定时长缓动过去——退场观感是连续的 */
+  transition: --nf-hero-recede 450ms linear;
+}
+
+/* 纵向渐隐画在图片层自己身上（::after 渐到纯黑、与画布同色）：hero 以下的
+   正文行依然落在黑底上，而变暗来源从「内容层全宽渐变」变成图片层的一部分，
+   视觉上不再多出一层遮罩。 */
+html.nf-hero-live .backdrop-override::after,
+html.nf-hero-live .detail-slideshow::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0) 58%, #000 88%);
+}
+
+/* 移动端竖屏档（2026-09 修订）：hero 约 40vh、标题压进图下段，渐变整体
+   上移收口到 ~60vh；顶部另压一抹暗，保证状态栏/PageNav 返回键在亮图上
+   可读。此前移动端完全没有渐变（净效果 = 亮图直压白字），桌面专属的
+   「左黑右图」又与竖屏无关——这是移动端详情页观感「不成体系」的主因。 */
+@media (max-width: 767px) {
+  html.nf-hero-live .backdrop-override::after {
+    background:
+      linear-gradient(180deg, rgba(0, 0, 0, 0.32) 0%, rgba(0, 0, 0, 0) 15%),
+      linear-gradient(
+        180deg,
+        rgba(0, 0, 0, 0) 20%,
+        rgba(0, 0, 0, 0.5) 36%,
+        rgba(0, 0, 0, 0.85) 50%,
+        #000 62%
+      );
+  }
+}
+
+/* 滚动退场的另一半：整层随进度淡出（此前纵向渐变随内容滚上来兜底，
+   移除后改由这里接手）——深层滚动时图片只剩微光，正文完全主导。 */
+html.nf-hero-live .detail-slideshow {
+  opacity: calc(1 - var(--nf-hero-recede, 0) * 0.85);
+}
+
+.detail-slideshow img {
+  transition: opacity 1600ms ease-in-out;
+  /* Ken Burns 缓推：与发现页 Hero 同速（9s 线性推 6%，scale 1→1.06），
+     「叠变」的另一半——溶解时两层各自在动，是融接不是硬切。
+     默认 700ms 起步延迟沿用原交接节奏（溶解中静止、收尾再推）；唯独接管
+     首帧覆盖层的第一张图由组件换成负延迟（与覆盖层锁同一条时间线，见
+     detail-backdrop-slideshow 的 pushAnchor）——覆盖层自己也在推，若首图
+     仍从 scale 1 起步，交接时会看到画面「缩回去」一下。 */
+  animation: nf-kenburns 9s linear 700ms both;
+}
+
+@keyframes nf-kenburns {
+  from {
+    transform: scale(1);
+  }
+  to {
+    transform: scale(1.06);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .detail-slideshow img,
+  html.nf-hero-live .backdrop-override::before {
+    animation: none;
+  }
+}
+
+/*
+ * 品牌加载动画（components/brand-loader.tsx）：M 字标缓慢呼吸——
+ * 轻微放大 + 透明度起伏，比旋转圆环安静、有品牌辨识度。
+ * 系统开启「减弱动态效果」时退化为静止 logo。
+ * 品牌资产随主题分叉（组件里双渲染）：银玻璃 = rotor 图片；
+ * Netflix = 红色 SVG M 字标——加载中的一抹品牌红。
+ */
+.brand-loader--netflix {
+  display: none;
+}
+
+html[data-theme="netflix"] .brand-loader--silver {
+  display: none;
+}
+
+html[data-theme="netflix"] .brand-loader--netflix {
+  display: block;
+}
+
+html[data-theme="netflix"] .detail-ambient.detail-ambient--hero {
+  /* 纯黑而非 #141414：手机页内 Hero 的底部渐变（library-item-detail-view）
+     落点是 to-black（#000），容器底色取卡片灰会在图与内容的交界处显出一道
+     色差缝；Netflix 画布本就是 #000，与渐变终点同色无缝衔接 */
+  background: #000;
+}
+
+html[data-theme="netflix"] .ambient-fallback {
+  background: rgb(20 20 20 / 0.8);
+  backdrop-filter: none;
+}
+
+
+html[data-theme="netflix"] .nf-nav-offset {
+  padding-top: var(--nf-nav-h);
+}
+
+/* 移动端底部标签栏（§5.2）：栏高 49px + 底部安全区，主区让位收口在这一条。
+   实底不透明（同 NetflixTopNav 的取舍：Netflix 的栏是实底不是毛玻璃）——
+   0.95 不透明度下的模糊几乎不可见，却让滚动每帧多一层采样合成的开销，
+   索性提到全不透明并去掉 backdrop-filter。 */
+@media (max-width: 767px) {
+  html[data-theme="netflix"] .app-shell > main {
+    padding-bottom: calc(49px + var(--safe-bottom));
+  }
+  /* 不透明 tab 栏下，main 已整层让位 49px+safe-bottom，各页滚动容器里的
+     .scroll-safe（为「内容从指示条下方穿过」的半透明设计）再垫一次
+     safe-bottom 就是双倍空白——Netflix 主题作用域下关掉内层占位。 */
+  html[data-theme="netflix"] .app-shell > main .scroll-safe::after {
+    height: 0;
+  }
+}
+
+
+
+@media (max-width: 767px) {
+  html[data-theme="netflix"] .settings-panel-head {
+    display: none;
+  }
+}
+
+/* —— 移动端收口（docs/design/web-themes-mobile/）—— */
+/* 设置页大图标头（settings-view 的分区头）：Netflix 移动端由页顶的
+   NetflixSettingsNav（返回键 + 分区名）承担定位，窄屏不再重复占位 */
+
+html[data-theme="netflix"] .mobile-topbar {
+  background: linear-gradient(
+    180deg,
+    rgba(0, 0, 0, 0.8) 0%,
+    rgba(0, 0, 0, 0.55) 58%,
+    rgba(0, 0, 0, 0) 100%
+  );
+}
+
+/* 移动全局顶栏雾层换纯黑系：Netflix 画布是纯黑，银玻璃蓝黑雾在其上会读出色偏。
+   blur 与 mask 保留——雾下滚过的海报墙仍要被压糊，这是雾的职责。 */
+
+html[data-theme="netflix"] .search-palette-overlay {
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: none;
+}
+
+/* 搜索命令面板：Netflix 弹层语言——#181818 实底、方角、无玻璃模糊
+   （§5.1「浮层换 Netflix 皮」）。无层 CSS 特异性 0,2,0 压过工具类的
+   bg-[rgba(...)] / rounded-2xl / backdrop-blur-2xl（任意值不走 token，
+   只能这样压），与上面 40 处 netflix 覆盖同型。遮罩同步换 Netflix 的
+   70% 纯黑（§2.5 详情弹层规格）——不走银玻璃的可调 scrim 变量（蓝黑
+   色相 + blur 与纯色平铺的世界不符）。 */
+html[data-theme="netflix"] .search-palette-panel {
+  background: #181818;
+  border-color: rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  backdrop-filter: none;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.9);
+}
+
+
+html[data-theme="netflix"] .sub-hero-card {
+  background: #181818;
+}
+
+/* 订阅详情摘要卡（subscription-inspector-view）：银玻璃的冷蓝黑底与 Netflix
+   纯黑画布不同相（同 mobile-topbar 雾层的色偏问题），换弹层面板语言——
+   #181818 实底，压暗渐变收敛为黑系、右半多透一些让海报氛围透出来。
+   无层 CSS 特异性压过卡片上的任意值工具类，与 search-palette 同型。 */
+html[data-theme="netflix"] .sub-hero-card > .sub-hero-tint {
+  background: linear-gradient(
+    90deg,
+    rgba(0, 0, 0, 0.92),
+    rgba(0, 0, 0, 0.58) 55%,
+    rgba(24, 24, 24, 0.3)
+  );
+}
+
+/* 订阅详情摘要卡让位：Netflix 桌面返回键（NetflixBackButton）悬在左上角
+   （fixed，top = --nf-nav-h 68px + 12px，键底 116/124px），摘要卡原起点
+   （mt-7 → 卡顶 ≈96px）被键压住。桌面档把卡顶推到 68+64=132px，鼠标档键下
+   留 16px、触屏档（pointer-coarse 44px 键）留 8px；移动端（<768px）不吃
+   这条，mt-4 不变。无层规则压过 mt-7 工具类，与上方 .sub-hero-card 换皮同型。 */
+@media (min-width: 768px) {
+  html[data-theme="netflix"] .sub-hero-card {
+    margin-top: 64px;
+  }
+}
+
+
+@media (max-width: 767px) {
+  /* 选择器必须钉在 .detail-ambient 上，不能只写 html[data-theme="netflix"]：
+     .detail-ambient 自己在上面的移动端档里声明了 --detail-hero-h: 22vh，而
+     自定义属性上「元素自身的声明」恒定压过「从祖先继承的值」（与选择器
+     特异度、源码先后都无关）。挂在 html 上等于没写——实测 Netflix 手机详情页
+     一直是 22vh/186px，而不是这里要的 40vh/220px。桌面档（上面 58vh 那条）
+     本来就写成后代选择器，所以只有移动档踩了坑。 */
+  html[data-theme="netflix"] .detail-ambient {
+    --detail-hero-h: 40vh;
+    --detail-hero-min-h: 220px;
+  }
+
+  /* 移动行张数断点（§7 表 500-767 / <500 两档）：Netflix 主题下竖版海报卡
+     从银玻璃的固定 126px 换为视口宽公式——375px ≈ 3 张可见 + 半张 peek、
+     320px ≈ 2~3 张，一条规则覆盖首页 / 发现 / 库的全部行（都走 MediaRow 的
+     .m-row），银玻璃不受作用域影响。 */
+  html[data-theme="netflix"] .m-row > div {
+    width: clamp(100px, 30vw, 156px);
+  }
+  /* 发现页加载骨架卡挂同一宽度公式（discover-view 的 .m-row-skel）：
+     骨架与真实行卡同宽，数据到达时整行不跳宽。 */
+  html[data-theme="netflix"] .m-row-skel {
+    width: clamp(100px, 30vw, 156px);
+  }
+}

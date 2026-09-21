@@ -14,12 +14,12 @@ import {
   StarIcon,
 } from "@/components/icons";
 import { MediaRow } from "@/components/media-row";
-import { NetflixPageActions } from "@/components/netflix/back-button";
 import { DiscoverRegionFooter } from "@/components/discover-region-footer";
 import { DiscoveryFilterControl } from "@/components/discovery-filter-dialog";
 import { FilteredDiscoveryView } from "@/components/filtered-discovery-view";
 import { PosterImage } from "@/components/poster-image";
 import { useWantsOriginalImage } from "@/lib/image-resolution";
+import { useResolvedTheme } from "@/themes/registry";
 import { useSubscribeEntry } from "@/components/subscribe-entry";
 import {
   browseDiscoveryCollection,
@@ -240,7 +240,8 @@ export function DiscoverView({
   const chrome = usePageChrome();
   const isMobile = useIsMobile();
   // Netflix 主题：工具栏悬浮在 Hero 上（不自占一条）、Hero 全出血（§5.3 构图）
-  const isNf = useTheme().id === "netflix";
+  const isNf = useTheme().structural;
+  const PageActions = useResolvedTheme().slots.pageActions;
   const switchMediaType = useCallback(
     (next: MediaType) => {
       if (next === mediaType) return;
@@ -283,11 +284,10 @@ export function DiscoverView({
     // Netflix：fixed 悬浮在视口右上（顶栏下方），不随页面滚动移位——发现页
     // 一滚数屏，筛选/数据源入口跟着内容滚走后想换源就得滚回顶部；银玻璃维持
     // 原吸顶工具栏不变。
-    // 用 NetflixPageActions（与详情页 ⋯ 菜单同一规格的悬浮操作簇）而不是再
-    // 手写一份同款 fixed 类：手写副本会与组件规格漂移（此前 z-20 vs z-30），
-    // 改一处漏一处。唯一差异是层级 20→30：与 NetflixBackButton 同层，仍在
-    // z-40 顶栏之下，不构成遮挡变化。
-    <NetflixPageActions>{controls}</NetflixPageActions>
+    // 页面悬浮操作簇走主题坑位（与详情页 ⋯ 菜单同一规格）而不是手写一份
+    // 同款 fixed 类：手写副本会与组件规格漂移（此前 z-20 vs z-30），改一处漏
+    // 一处。唯一差异是层级 20→30：与返回键同层，仍在 z-40 顶栏之下。
+    PageActions ? <PageActions>{controls}</PageActions> : null
   ) : (
     <div className="sticky top-0 z-20 flex items-center justify-end px-6 pb-3 pt-7">
       {controls}

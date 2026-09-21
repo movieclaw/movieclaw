@@ -15,8 +15,8 @@ import { BrandLoader } from "@/components/brand-loader";
 import { CastRow } from "@/components/cast-row";
 import { ChapterStrip } from "@/components/chapter-strip";
 import { MediaTrackRows } from "@/components/media-track-rows";
-import { NetflixBackButton, NetflixPageActions } from "@/components/netflix/back-button";
-import { PAGE_NAV_BUTTON_CLASS, PageNav } from "@/components/page-nav";
+import { PAGE_NAV_BUTTON_CLASS } from "@/components/page-nav";
+import { useResolvedTheme } from "@/themes/registry";
 import { HScroller } from "@/components/h-scroller";
 import {
   CheckIcon,
@@ -325,7 +325,7 @@ export function LibraryItemDetailView({
   // 的 setOverrideBackdrop。没有横幅剧照时退回海报，覆盖层自己会铺满作氛围色。
   const { setOverrideBackdrop } = useBackdrop();
   const isMobile = useIsMobile();
-  const isNf = useTheme().id === "netflix";
+  const isNf = useTheme().structural;
   const isNfDesktop = isNf && !isMobile;
   // Netflix 桌面的滚动退场（与发现详情页同一套）：挂 html.nf-hero-live 标记类，
   // 把滚动进度写进 --nf-hero-recede，globals.css 据此给沉浸覆盖层加渐暗 + 模糊、
@@ -453,11 +453,11 @@ export function LibraryItemDetailView({
     : fromRecent
       ? { label: "媒体库", href: "/library" as Route }
       : { label: library?.name ?? "库存", href: `/library/${libraryId}` as Route };
-  // Netflix 桌面的顶栏（fixed z-40）会把 PageNav（sticky z-30）整个盖住——
-  // 返回键与 ⋯ 菜单都点不到（发现详情页踩过并修过的同款问题）；该形态下
-  // 退役 PageNav，改用悬浮返回键 + 页面操作簇（见 media-detail-view 的
-  // hidePageNav 分支，银玻璃与移动端仍走 PageNav）。
-  const hidePageNav = isNfDesktop;
+  // 详情页返回导航走主题坑位：Netflix 桌面 = 悬浮返回键 + 页面操作簇
+  // （fixed z-30，避开 z-40 顶栏的遮挡），银玻璃与移动端 = PageNav 工具条。
+  const { slots } = useResolvedTheme();
+  const DetailNav = slots.detailNav;
+  const PageActions = slots.pageActions;
   const back = useBackNavigation(navFallback.href);
 
   if (failed) {
@@ -465,8 +465,7 @@ export function LibraryItemDetailView({
       // ambient-fallback：同 MediaDetailView——本页豁免全局蒙版，兜底态没有沉浸
       // 背景可铺，文案会压在用户壁纸上，自己带一层底才读得清
       <div className="ambient-fallback flex h-full flex-col">
-        {!hidePageNav && <PageNav title="" fallback={navFallback} />}
-        {hidePageNav && <NetflixBackButton onBack={back} />}
+        <DetailNav title="" fallback={navFallback} onBack={back} />
         <div className="flex flex-1 flex-col items-center justify-center gap-4 px-6 text-center">
           <p className="text-body-lg font-semibold text-[var(--text)]">未能加载该条目</p>
           <p className="max-w-sm text-ui leading-6 text-[var(--text-muted)]">
@@ -491,8 +490,7 @@ export function LibraryItemDetailView({
   if (!detail) {
     return (
       <div className="ambient-fallback flex h-full flex-col">
-        {!hidePageNav && <PageNav title="" fallback={navFallback} />}
-        {hidePageNav && <NetflixBackButton onBack={back} />}
+        <DetailNav title="" fallback={navFallback} onBack={back} />
         <div className="flex flex-1 items-center justify-center gap-2.5 text-ui text-[var(--text-muted)]">
           <BrandLoader className="size-5" />
           正在读取本地刮削信息…
@@ -725,14 +723,8 @@ export function LibraryItemDetailView({
           全局蒙版，见 app-shell 的 isHome），大图直出、零边界；.detail-ambient
           在滚动容器上铺「透明 → 纯黑」的渐变板托住下方内容（见 globals.css）。
           顶栏首屏只有返回键与操作入口浮在剧照上。 */}
-      {hidePageNav ? (
-        <>
-          <NetflixBackButton onBack={back} />
-          <NetflixPageActions>{itemActions}</NetflixPageActions>
-        </>
-      ) : (
-        <PageNav title={detail.title} fallback={navFallback} actions={itemActions} />
-      )}
+      <DetailNav title={detail.title} fallback={navFallback} onBack={back} actions={itemActions} />
+      {PageActions && <PageActions>{itemActions}</PageActions>}
 
       {/* 手机 Hero（剧照）：宽度撑满，从状态栏底下起铺（绝对定位在滚动内容顶端，PageNav
           的返回键与吸顶雾层浮在它上面），随内容一起滚走，不固定在背景上。顶部一抹暗让状态栏

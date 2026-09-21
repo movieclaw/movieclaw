@@ -25,7 +25,7 @@ import {
 } from "@/lib/api/mcp";
 import { useBackdrop } from "@/lib/backdrop";
 import { relativeTime } from "@/lib/devices-display";
-import { LiquidGlassButton } from "@/vendor/liquid-glass";
+import { LiquidGlassButton } from "@/components/liquid-glass";
 
 type Tab = "overview" | "tools" | "settings";
 

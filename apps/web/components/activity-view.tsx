@@ -39,7 +39,7 @@ export function ActivityView({
   const pathname = usePathname();
   // 页面左右留白随主题走栅格：Netflix 主题放弃居中窄栏、整幅铺开并对齐全站
   // 4vw 左基线（与订阅页/媒体库首页同一条线）；银玻璃维持居中 1180px 栏
-  const isNf = useTheme().id === "netflix";
+  const isNf = useTheme().structural;
   const [scope, setScope] = useState<ActivityScope>(initialScope);
   const [view, setView] = useState<TaskCenterViewName>(initialView);
   const [watchView, setWatchView] = useState<WatchViewName>(initialWatchView);

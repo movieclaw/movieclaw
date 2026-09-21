@@ -9,6 +9,7 @@ import { SearchCommand } from "@/components/search-command";
 import { useBackNavigation } from "@/lib/back-navigation";
 import { isHomeRoute, usePageChrome } from "@/lib/page-chrome";
 import { useTheme } from "@/lib/ui-prefs";
+import { useResolvedTheme } from "@/themes/registry";
 import { useIsMobile } from "@/lib/use-media-query";
 
 /** 没有可用站内历史时的结构父级；只作兜底，不覆盖真实来路。 */
@@ -109,9 +110,10 @@ export function PageNav({
   const rootRef = useRef<HTMLDivElement>(null);
   const chrome = usePageChrome();
   // ☰ 键只在银玻璃渲染（开抽屉）；Netflix 的导航在底部页签，详见下方控件组注释
-  const isNetflix = useTheme().id === "netflix";
+  const isNetflix = useTheme().structural;
   const isMobile = useIsMobile();
   const pathname = usePathname();
+  const { slots } = useResolvedTheme();
 
   // 向外壳登记「本页自带顶栏」：移动端据此撤掉全局顶栏，两条顶栏不再摞在一起
   // （见 lib/page-chrome.tsx）。PageNav 只在子页面渲染，挂载即认领顶栏。
@@ -150,7 +152,7 @@ export function PageNav({
   // 详情页的 PageNav 照常保留；银玻璃两端的顶栏都不是 fixed，同样不受限。
   // 现状零行为变化：isHome 页面在 Netflix 桌面本就各自分支改用了
   // NetflixBackButton，没有任何页面在会触发本短路的状态下向本组件要过渲染。
-  if (isNetflix && !isMobile && isHomeRoute(pathname, isNetflix)) {
+  if (isNetflix && !isMobile && isHomeRoute(pathname, slots.libraryHero != null)) {
     return null;
   }
 

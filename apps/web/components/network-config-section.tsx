@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { LiquidGlassButton } from "@/vendor/liquid-glass";
+import { LiquidGlassButton } from "@/components/liquid-glass";
 
 import { ExternalAccessSection } from "@/components/external-access-section";
 import { CheckIcon, ChevronRightIcon, InfoIcon } from "@/components/icons";

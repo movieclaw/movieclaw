@@ -6,14 +6,11 @@ import type { Route } from "next";
 
 import { BrandLoader } from "@/components/brand-loader";
 import { ChevronLeftIcon } from "@/components/icons";
-import { NetflixBackButton } from "@/components/netflix/back-button";
-import { PageNav } from "@/components/page-nav";
 import { PosterImage } from "@/components/poster-image";
 import { fetchPerson, type PersonCredit, type PersonDetail } from "@/lib/api/people";
 import { HttpError } from "@/lib/http";
 import { useBackNavigation } from "@/lib/back-navigation";
-import { useTheme } from "@/lib/ui-prefs";
-import { useIsMobile } from "@/lib/use-media-query";
+import { useResolvedTheme } from "@/themes/registry";
 import { usePageTitle } from "@/lib/use-page-title";
 
 /**
@@ -35,10 +32,9 @@ export function PersonDetailView({ tmdbPersonId }: { tmdbPersonId: number | stri
   // PageNav 工具条的页面用 PageNav 内返回键；两者同图标 / 同尺寸档 / 同 4vw
   // 基线 / 同 useBackNavigation 行为。本页 Netflix 桌面换 NetflixBackButton
   // 浮在顶栏下（与条目详情页同一套）；移动端保留 PageNav——它要向外壳登记顶栏
-  const isMobile = useIsMobile();
-  const isNf = useTheme().id === "netflix";
-  const isNfDesktop = isNf && !isMobile;
   const back = useBackNavigation(navFallback.href);
+  const { slots } = useResolvedTheme();
+  const DetailNav = slots.detailNav;
   // null=加载中；"missing"=库内没有这个人；"error"=其他失败
   const [failure, setFailure] = useState<"missing" | "error" | null>(null);
 
@@ -68,7 +64,7 @@ export function PersonDetailView({ tmdbPersonId }: { tmdbPersonId: number | stri
   if (failure !== null) {
     return (
       <div className="flex h-full flex-col">
-        {isNfDesktop ? <NetflixBackButton onBack={back} /> : <PageNav title="" fallback={navFallback} />}
+        <DetailNav title="" fallback={navFallback} onBack={back} />
         <PersonFallback failure={failure} />
       </div>
     );
@@ -76,7 +72,7 @@ export function PersonDetailView({ tmdbPersonId }: { tmdbPersonId: number | stri
   if (person === null) {
     return (
       <div className="flex h-full flex-col">
-        {isNfDesktop ? <NetflixBackButton onBack={back} /> : <PageNav title="" fallback={navFallback} />}
+        <DetailNav title="" fallback={navFallback} onBack={back} />
         <div className="flex flex-1 items-center justify-center gap-2.5 text-ui text-[var(--text-muted)]">
           <BrandLoader className="size-5" />
           正在读取影人档案…
@@ -96,11 +92,7 @@ export function PersonDetailView({ tmdbPersonId }: { tmdbPersonId: number | stri
       {/* onPhoto：NetflixBackButton 悬在左上角、头像卡已让位到键底之下
           （globals.css 的 .person-hero 桌面档），实底深灰圆盘作为亮图兜底
           保留；加载/失败态无头像卡，行为一致无妨 */}
-      {isNfDesktop ? (
-        <NetflixBackButton onBack={back} onPhoto />
-      ) : (
-        <PageNav title={person.name} fallback={navFallback} />
-      )}
+      <DetailNav title={person.name} fallback={navFallback} onBack={back} onPhoto />
 
       {/* 头部：头像 + 姓名。刻意不做大 Hero——影人没有专属剧照。
           person-hero：Netflix 桌面让位钩子（globals.css 桌面档把头部推到

@@ -2,6 +2,8 @@ import type { ComponentType, ReactNode } from "react";
 import type { Route } from "next";
 import type { ThemeMeta } from "@/lib/themes";
 import type { SettingsSidebarProps } from "@/components/settings-view";
+import type { SearchScope } from "@/lib/categories";
+import type { SearchSubmitOptions } from "@/components/search-command";
 
 /**
  * 主题坑位与定义的类型契约（docs/design/theme-framework/02）。
@@ -25,11 +27,11 @@ export interface ThemeCapabilities {
 
 /** 桌面顶栏 props（结构级主题替换银玻璃的「侧栏布局」时消费） */
 export interface DesktopTopNavProps {
-  onSearch: () => void;
+  onSearch: (keyword: string, scope: SearchScope, options?: SearchSubmitOptions) => void;
   onOpenSettings: () => void;
 }
 
-/** 详情页返回导航 props。基础实现消费 title/fallback，Netflix 实现消费 onBack/onPhoto */
+/** 详情页返回导航 props。基础实现消费 title/fallback/actions/className，Netflix 实现消费 onBack/onPhoto */
 export interface DetailNavProps {
   title: string;
   /** 无站内历史时的结构父级兜底（与 PageNav 的 fallback 同形） */
@@ -37,11 +39,21 @@ export interface DetailNavProps {
   onBack: () => void;
   /** 落在亮色画面上时用实底圆盘保底对比度（Netflix 实现消费） */
   onPhoto?: boolean;
+  /** 工具条右侧动作区（基础 PageNav 消费；Netflix 由 pageActions 坑位另行承载） */
+  actions?: ReactNode;
+  /** 附加类名（如 page-inset-bleed 满宽蒙版抵消；Netflix 实现忽略） */
+  className?: string;
 }
 
 /** 页面右上悬浮操作簇容器 props */
 export interface PageActionsProps {
   children: ReactNode;
+}
+
+/** 移动端设置页「返回 + 标题」条 props（Netflix 专属坑位；银玻璃 undefined） */
+export interface MobileSettingsNavProps {
+  title: string;
+  backHref: Route;
 }
 
 /**
@@ -53,6 +65,8 @@ export interface ThemeSlots {
   desktopTopNav?: ComponentType<DesktopTopNavProps>;
   /** 移动端底部标签栏。银玻璃 = undefined（抽屉 + 全局顶栏，无底栏） */
   mobileTabBar?: ComponentType;
+  /** 移动端设置页「返回 + 标题」条。银玻璃 = undefined（/settings 重定向到分区） */
+  mobileSettingsNav?: ComponentType<MobileSettingsNavProps>;
   /** 设置分区菜单。基础实现 = SettingsSidebar（玻璃面板 SaaS 菜单） */
   settingsNav?: ComponentType<SettingsSidebarProps>;
   /** 详情页返回导航。基础实现 = PageNav 工具条；Netflix = 浮动返回键 */
@@ -82,6 +96,13 @@ export interface ThemeDefinition {
 export interface ResolvedTheme {
   meta: ThemeMeta;
   capabilities: ThemeCapabilities;
-  slots: ThemeSlots;
+  /** 已解析坑位：有基础实现的坑位在此保证非空（回落发生在 getResolvedTheme 内） */
+  slots: ResolvedSlots;
   pages: ThemePages;
+}
+
+/** 解析后的坑位：带基础实现的坑位为必选，主题专属坑位仍可选 */
+export interface ResolvedSlots extends ThemeSlots {
+  settingsNav: ComponentType<SettingsSidebarProps>;
+  detailNav: ComponentType<DetailNavProps>;
 }

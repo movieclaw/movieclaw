@@ -19,10 +19,9 @@ import {
 } from "@/components/icons";
 import { MediaSourceAnnotationDialog } from "@/components/media-source-annotation-dialog";
 import { Modal } from "@/components/modal";
-import { NetflixBackButton } from "@/components/netflix/back-button";
-import { PageNav } from "@/components/page-nav";
 import { usePageTitle } from "@/lib/use-page-title";
 import { useBackNavigation } from "@/lib/back-navigation";
+import { useResolvedTheme } from "@/themes/registry";
 import { PosterImage } from "@/components/poster-image";
 import { specSummary, upgradeTargetLabel } from "@/components/rule-sets-panel";
 import { useSubscribeEntry } from "@/components/subscribe-entry";
@@ -57,8 +56,6 @@ import { subscriptionStatusMeta } from "@/lib/subscription-ui";
 import { formatDateTime, formatRelativeTime } from "@/lib/time";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
 import { usePermissions } from "@/lib/permissions";
-import { useTheme } from "@/lib/ui-prefs";
-import { useIsMobile } from "@/lib/use-media-query";
 
 /**
  * 订阅详情分析页（/subscriptions/[id]）：订阅透明化的落点。
@@ -181,19 +178,14 @@ export function SubscriptionInspectorView({
   // PageNav 工具条的页面用 PageNav 内返回键；两者同图标 / 同尺寸档 / 同 4vw
   // 基线 / 同 useBackNavigation 行为。本页属前者，PageNav 退役；移动端仍保留
   // PageNav：它要向外壳登记「本页自带顶栏」并充当返回入口。
-  const themeId = useTheme().id;
-  const isMobile = useIsMobile();
-  const isNfDesktop = themeId === "netflix" && !isMobile;
   const back = useBackNavigation(navFallback.href);
+  const { slots } = useResolvedTheme();
+  const DetailNav = slots.detailNav;
 
   if (failed) {
     return (
       <div className="flex h-full flex-col">
-        {isNfDesktop ? (
-          <NetflixBackButton onBack={back} />
-        ) : (
-          <PageNav title="" fallback={navFallback} />
-        )}
+        <DetailNav title="" fallback={navFallback} onBack={back} />
         <div className="flex flex-1 flex-col items-center justify-center gap-4">
           <p className="text-body text-[var(--text-muted)]">未能加载该订阅，可能已被删除。</p>
           {/* 失败态的返回出口与全站同一语言：走 useBackNavigation（上方 back，
@@ -211,11 +203,7 @@ export function SubscriptionInspectorView({
   if (!detail) {
     return (
       <div className="flex h-full flex-col">
-        {isNfDesktop ? (
-          <NetflixBackButton onBack={back} />
-        ) : (
-          <PageNav title="" fallback={navFallback} />
-        )}
+        <DetailNav title="" fallback={navFallback} onBack={back} />
         <div className="flex flex-1 items-center justify-center gap-2.5 text-ui text-[var(--text-muted)]">
           <BrandLoader className="size-5" />
           正在加载订阅详情…
@@ -363,17 +351,13 @@ export function SubscriptionInspectorView({
         "page-inset"
       }`}
     >
-      {/* 顶栏：返回订阅列表 + 吸顶片名（容器已有 px-6，用 -mx-6 让吸顶蒙版铺满）。
-          Netflix 桌面换裸白 chevron（见上方 isNfDesktop 注释） */}
-      {isNfDesktop ? (
-        <NetflixBackButton onBack={back} />
-      ) : (
-        <PageNav
-          title={detail.media.title}
-          fallback={navFallback}
-          className="-mx-6 max-md:-mx-4"
-        />
-      )}
+      {/* 顶栏：返回订阅列表 + 吸顶片名（满宽蒙版走 page-inset-bleed 反向抵消） */}
+      <DetailNav
+        title={detail.media.title}
+        fallback={navFallback}
+        onBack={back}
+        className="page-inset-bleed"
+      />
       {/* —— 1. 订阅摘要卡：状态、身份、配置、进度、操作自上而下形成单路径。
           海报仍提供条目辨识与轻量氛围，但背景只低透明度取色，不再压过正文。
           PageNav 已占一行导航高度，摘要卡再按一级页基线留出桌面 28px / 移动端

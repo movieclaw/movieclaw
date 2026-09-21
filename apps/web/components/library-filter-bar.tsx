@@ -614,7 +614,7 @@ export function FilterEmptyState({
   const [relax, setRelax] = useState<LibraryRelax | null>(null);
   // Netflix 主题下宿主页面（单库页）已提供全页 4vw 留白，这张空态卡不再自带
   // mx-6（否则双重缩进）；银玻璃维持原样
-  const insetMx = useTheme().id === "netflix" ? "" : "mx-6 max-md:mx-4";
+  const insetMx = useTheme().structural ? "" : "mx-6 max-md:mx-4";
 
   useEffect(() => {
     let alive = true;

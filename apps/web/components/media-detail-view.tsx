@@ -21,8 +21,6 @@ import { CastRow } from "@/components/cast-row";
 import { DetailBackdropSlideshow } from "@/components/detail-backdrop-slideshow";
 import { HScroller } from "@/components/h-scroller";
 import { Modal } from "@/components/modal";
-import { NetflixBackButton } from "@/components/netflix/back-button";
-import { PageNav } from "@/components/page-nav";
 import { ImageLightbox, type LightboxAction } from "@/components/image-lightbox";
 import { MediaRow } from "@/components/media-row";
 import { PosterImage } from "@/components/poster-image";
@@ -40,6 +38,7 @@ import { useBackdrop } from "@/lib/backdrop";
 import { buildDiscoveryReturnPath } from "@/lib/discovery-return-path";
 import { useDoubanAppHref } from "@/lib/douban-app-link";
 import { upgradedTmdbOriginalUrl } from "@/lib/image-proxy";
+import { useResolvedTheme } from "@/themes/registry";
 import { useWantsOriginalImage } from "@/lib/image-resolution";
 import { getMediaSeed } from "@/lib/media-detail";
 import { useTapGuard } from "@/lib/use-tap-guard";
@@ -229,11 +228,11 @@ export function MediaDetailView({
   // chevron（见 NetflixBackButton）。移动端仍保留 PageNav：它要向外壳登记
   // 「本页自带顶栏」并充当返回入口（见 app-shell）。
   // 这些 hook 必须无条件调用（短路写法会触发 rules-of-hooks）。
-  const themeId = useTheme().id;
   const isMobile = useIsMobile();
-  const isNf = themeId === "netflix";
+  const isNf = useTheme().structural;
   const isNfDesktop = isNf && !isMobile;
-  const hidePageNav = isNfDesktop;
+  const { slots } = useResolvedTheme();
+  const DetailNav = slots.detailNav;
   const showMobileHero = isMobile && mobileHeroSrc !== "";
 
   // 滚动退场：详情页下滚时剧照不是被机械地推出屏幕，而是随滚动进度渐暗 +
@@ -302,8 +301,7 @@ export function MediaDetailView({
     return (
       <div className="flex h-full flex-col">
         {/* 当前页标题未知，留空——只为立起返回键并认领顶栏 */}
-        {!hidePageNav && <PageNav title="" fallback={navFallback} />}
-        {isNfDesktop && <NetflixBackButton onBack={back} />}
+        <DetailNav title="" fallback={navFallback} onBack={back} />
         <DetailFallback failed={loadFailed} onBack={back} />
       </div>
     );
@@ -364,8 +362,7 @@ export function MediaDetailView({
           .detail-ambient 在滚动容器上铺「透明 → 纯黑」的渐变板托住下方内容
           （见 globals.css，Netflix 主题另有左侧渐变遮罩护住标题区）。
           手机上竖屏放不下横版剧照，改由下面的页内 Hero 呈现。 */}
-      {!hidePageNav && <PageNav title={item.title} fallback={navFallback} />}
-      {isNfDesktop && <NetflixBackButton onBack={back} />}
+      <DetailNav title={item.title} fallback={navFallback} onBack={back} />
       {/* 背景轮换：Netflix 桌面且剧照多于一张时，按序叠变（见组件说明）。
           首帧传主 backdrop 原图——与覆盖层当前显示的是同一张照片，轮换层
           淡入接管时没有构图/内容跳变。 */}

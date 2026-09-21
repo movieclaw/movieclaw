@@ -36,7 +36,7 @@ import {
 import type { PathProbe } from "@/lib/api/downloaders";
 import { formatRelativeTime } from "@/lib/time";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
-import { LiquidGlassButton } from "@/vendor/liquid-glass";
+import { LiquidGlassButton } from "@/components/liquid-glass";
 
 /** 连接状态 → 展示文案与颜色（与站点配置同语言） */
 const STATUS_META: Record<DownloaderStatus, { label: string; color: string }> = {

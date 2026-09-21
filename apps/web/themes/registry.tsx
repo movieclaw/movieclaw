@@ -3,7 +3,8 @@ import { SettingsSidebar } from "@/components/settings-view";
 import { DEFAULT_THEME_ID, normalizeThemeId, themeMeta } from "@/lib/themes";
 import { useTheme } from "@/lib/ui-prefs";
 
-import type { DetailNavProps, ResolvedTheme, ThemeDefinition, ThemeSlots } from "./types";
+import type { DetailNavProps, ResolvedSlots, ResolvedTheme, ThemeDefinition, ThemeSlots } from "./types";
+import netflixTheme from "./netflix/theme";
 
 /**
  * 主题坑位注册表（docs/design/theme-framework/01–02）。
@@ -35,10 +36,32 @@ function PageNavAdapter({ title, fallback }: DetailNavProps) {
 }
 
 /**
- * 主题定义注册表。约定：键 = 主题 id，值 = 主题目录的 default export；
+ * 主题定义注册表。约定：键 = 主题 id，值 = 主题目录的 default export。
  * dev 模式下对未知坑位名做断言（拼写错误在开发期暴露，不带进生产）。
  */
-const DEFINITIONS: Record<string, ThemeDefinition> = {};
+const DEFINITIONS: Record<string, ThemeDefinition> = {
+  netflix: netflixTheme,
+};
+
+const KNOWN_SLOT_NAMES = new Set([
+  "desktopTopNav",
+  "mobileTabBar",
+  "mobileSettingsNav",
+  "settingsNav",
+  "detailNav",
+  "pageActions",
+  "libraryHero",
+]);
+
+if (process.env.NODE_ENV !== "production") {
+  for (const def of Object.values(DEFINITIONS)) {
+    for (const name of Object.keys(def.slots)) {
+      if (!KNOWN_SLOT_NAMES.has(name)) {
+        console.error(`[themes] 主题「${def.meta.id}」注册了未知坑位「${name}」——检查拼写或先在 types.ts 立户`);
+      }
+    }
+  }
+}
 
 /**
  * 解析主题：capabilities / slots / pages 全部归并基础缺省。
@@ -51,7 +74,7 @@ export function getResolvedTheme(id: string): ResolvedTheme {
   return {
     meta: def?.meta ?? themeMeta(DEFAULT_THEME_ID),
     capabilities: { glass: def?.capabilities.glass ?? true },
-    slots: { ...BASE_SLOTS, ...def?.slots },
+    slots: { ...BASE_SLOTS, ...def?.slots } as ResolvedSlots,
     pages: { ...def?.pages },
   };
 }

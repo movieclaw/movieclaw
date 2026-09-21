@@ -58,7 +58,7 @@ export function CollectionGridView({
 }) {
   const initialSnapshot = getCollectionGridSnapshot(collectionRef);
   const scrollRef = useScrollRestoration(`collection:${collectionRef}`);
-  const isNf = useTheme().id === "netflix";
+  const isNf = useTheme().structural;
   const fullGrid = isNf ? "mt-8" : "mx-auto mt-8 max-w-[1500px]";
   const [items, setItems] = useState<MediaItem[] | null>(() => initialSnapshot?.items ?? null);
   const [title, setTitle] = useState(() => initialSnapshot?.title ?? "影视片单");
@@ -398,7 +398,7 @@ export function CollectionGridView({
 
 function CollectionSkeleton() {
   // 与正文网格同一套主题栅格：Netflix 全幅、银玻璃居中 1500px
-  const isNf = useTheme().id === "netflix";
+  const isNf = useTheme().structural;
   return (
     <div
       className={

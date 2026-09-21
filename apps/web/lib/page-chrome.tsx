@@ -85,11 +85,12 @@ export const PageChromeProvider = PageChromeContext.Provider;
  * 「新增路由自动继承、无需登记」的全站让位原则由此获得代码保证，不再只靠
  * 各页人工规避。
  */
-export function isHomeRoute(pathname: string, isNetflix: boolean): boolean {
+export function isHomeRoute(pathname: string, hasFullBleedLibraryHero: boolean): boolean {
   return (
     pathname === "/" ||
-    // Netflix 主题的 /library 顶部是全出血 Billboard（netflix/library-hero.tsx）
-    (isNetflix && pathname === "/library") ||
+    // 主题自带全出血媒体库 Hero（Netflix 的 Billboard，坑位 libraryHero）时，
+    // /library 是大图直出的氛围页
+    (hasFullBleedLibraryHero && pathname === "/library") ||
     /^\/library\/\d+\/item\/\d+/.test(pathname) ||
     pathname.startsWith("/media/")
   );

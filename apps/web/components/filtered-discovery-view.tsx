@@ -33,7 +33,7 @@ export function FilteredDiscoveryView({
   const [genreNames, setGenreNames] = useState<ReadonlyMap<number, string>>(new Map());
   // 页面左右留白随主题走栅格：Netflix 主题放弃居中栏、与发现页内容行同走全幅
   // 4vw 左基线；银玻璃维持居中 1500px 栏 + px-6
-  const isNf = useTheme().id === "netflix";
+  const isNf = useTheme().structural;
 
   const loadPage = useCallback(async (page: number) => {
     if (loadingRef.current) return;

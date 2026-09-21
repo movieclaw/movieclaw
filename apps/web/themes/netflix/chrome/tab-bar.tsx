@@ -93,7 +93,7 @@ export function NetflixTabBar() {
  * **2026-09 修订**：原实现把分区选择做成标题旁的下拉浮层——分区一多
  * （管理员 19 个）浮层高过视口又不能滚，长列表在触屏上滑不动；且换分区的
  * 入口藏在二级交互里。分区选择改为独立路由页：/settings 列出全部分区
- * （components/netflix/settings-index.tsx），点行进 /settings/[section]。
+ * （../pages/settings-index.tsx），点行进 /settings/[section]。
  * 本条退化为纯导航：列表页显示「设置」、返回「我的」；分区页显示分区名、
  * 返回列表页（两级返回链由外壳按 pathname 计算）。
  *
