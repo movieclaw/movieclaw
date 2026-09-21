@@ -197,11 +197,19 @@ export function MediaDetailView({
         : hdState === "failed"
           ? fallbackBackdrop
           : "";
+  // 覆盖图的「设置」与「清除」分挂在两个 effect：immersiveUrl 换档时（列表
+  // w1280 → 详情 original 的同图升清，或高清解码完成后从兜底图切高清）只设置
+  // 新地址、**不撤下当前画面**——此前 cleanup 随依赖变化执行，升清瞬间会先
+  // setOverrideBackdrop(null) 把画面硬闪成黑再淡回（Netflix 主题下覆盖层的
+  // opacity 过渡又被主题层接管，连渐变都没有），就是推镜约 1 秒处的「回退
+  // 叠影」（2026-09-21 实测定位）。同图换档的无感衔接由 lib/backdrop.tsx 的
+  // 同图判断（backdropPathOf）接管：路径一致就保持可见、就位后瞬时换图。
+  // 清除只发生在视图卸载（离开详情页 / detail→detail 跳转旧视图卸载）。
+  // 空串语义：豆瓣来源或高清待定时不设置（也不清除已显示的画面）。
   useEffect(() => {
-    if (!immersiveUrl) return;
-    setOverrideBackdrop(immersiveUrl);
-    return () => setOverrideBackdrop(null);
+    if (immersiveUrl) setOverrideBackdrop(immersiveUrl);
   }, [immersiveUrl, setOverrideBackdrop]);
+  useEffect(() => () => setOverrideBackdrop(null), [setOverrideBackdrop]);
 
   // 手机页内 Hero 的取源与全站沉浸背景**分开**，这是两个不同的展示位：
   //   - 全站背景是 fixed 全屏覆盖层，竖屏上横版剧照只能按高度放大、从正中
