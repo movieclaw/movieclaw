@@ -319,6 +319,13 @@ class LibraryView(BaseModel):
             "新文件靠定期对账发现——界面据此把话说清楚，而不是让开关看起来有效"
         ),
     )
+    custom_cover: bool = Field(
+        default=False,
+        description=(
+            "封面是用户上传的自定义图（而非自动拼贴）。前端据此决定"
+            "「恢复自动拼贴」按钮的形态，以及空库要不要照样出图"
+        ),
+    )
     scrape_overrides: dict = Field(
         default_factory=dict, description="库级刮削偏好覆盖；空对象 = 全跟全局设置"
     )
@@ -364,6 +371,7 @@ class LibraryView(BaseModel):
         member_ids: list[int] | None = None,
         viewer_access: bool = True,
     ) -> LibraryView:
+        from movieclaw_api.services.library.cover import has_custom_cover
         from movieclaw_api.services.library.mounts import library_on_network_mount
         from movieclaw_api.services.library.profile import capabilities_of, profile_of
 
@@ -388,6 +396,7 @@ class LibraryView(BaseModel):
             auto_clear_missing=row.auto_clear_missing,
             realtime_watch=row.realtime_watch,
             network_mount=library_on_network_mount(list(row.root_paths)),
+            custom_cover=has_custom_cover(row.id),  # type: ignore[arg-type]  # 落库后必有主键
             scrape_overrides=dict(row.scrape_overrides or {}),
             stats=LibraryStats(
                 item_count=row.stats_item_count,
@@ -802,6 +811,9 @@ class SubtitlePreviewView(BaseModel):
     format: str | None = None
     event_count: int = Field(ge=0)
     cues: list[SubtitleCueView] = Field(default_factory=list)
+    #: 非空 = 内封轨正在后台抽取，cues 暂时为空，前端按间隔轮询即可。
+    pending: str | None = Field(default=None, description="等待文案；为空表示已就绪")
+    retry_after_ms: int = Field(default=2500, ge=0, description="建议的下次轮询间隔")
 
 
 class SubtitleDeleteResultView(BaseModel):

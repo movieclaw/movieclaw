@@ -7,7 +7,17 @@ from pathlib import Path, PurePath
 from typing import Annotated, Literal
 from urllib.parse import quote
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, Query, Request, Response
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    Header,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+)
 from fastapi.responses import FileResponse
 from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -305,6 +315,65 @@ async def get_library_cover(library_id: int, request: Request) -> Response:
         media_type="image/jpeg",
         headers={"ETag": etag, "Cache-Control": "no-cache"},
     )
+
+
+@router.post(
+    "/{library_id}/cover",
+    response_model=ApiResponse[dict],
+    summary="上传媒体库自定义封面（替代自动拼贴）",
+    operation_id="library.cover.set",
+    dependencies=[Depends(require_admin)],
+)
+async def upload_library_cover(
+    library_id: int,
+    file: UploadFile = File(...),
+    session: AsyncSession = Depends(get_session),
+) -> ApiResponse[dict]:
+    """接收一张图片作为该库封面，三端（控制台卡片、管理页、Jellyfin）立即生效。
+
+    上传的图会被统一压缩：长边缩到 1600、重编码为 JPEG、丢掉 EXIF——手机原图
+    动辄 5~10MB，落盘通常只剩一两百 KB。不做裁剪，各处按自己的卡片比例取景。
+    """
+    from movieclaw_api.services.library.cover import (
+        MAX_UPLOAD_BYTES,
+        normalize_cover_image,
+        save_custom_cover,
+    )
+
+    # 库不存在就别在磁盘上留孤儿文件；顺带给出比 500 有用的提示
+    await LibraryConfigService(session).get(library_id)
+
+    data = await file.read()
+    if not data:
+        raise BadRequestException("上传的图片为空，请重新选择")
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise BadRequestException(f"图片过大，请控制在 {MAX_UPLOAD_BYTES // (1024 * 1024)}MB 以内")
+    try:
+        # 解码与重编码是 CPU 活（大图能到几百毫秒），丢线程池，别堵事件循环
+        image = await asyncio.to_thread(normalize_cover_image, data)
+    except ValueError as exc:
+        raise BadRequestException(str(exc)) from exc
+    version = await asyncio.to_thread(save_custom_cover, library_id, image)
+    return ok({"version": version, "bytes": len(image)}, message="封面已更新")
+
+
+@router.delete(
+    "/{library_id}/cover",
+    response_model=ApiResponse[dict],
+    summary="删除媒体库自定义封面（回落到自动拼贴）",
+    operation_id="library.cover.clear",
+    dependencies=[Depends(require_admin)],
+    # 删的是用户自己上传的原件（重传即可恢复，但文件确实没了），与删背景图同级。
+    # destructive 留给动磁盘媒体文件的操作
+    openapi_extra={"x-cli-dangerous": "confirm"},
+)
+async def delete_library_cover(library_id: int) -> ApiResponse[dict]:
+    """删掉用户上传的封面，封面回落到服务端自动拼贴的「氛围光货架」。"""
+    from movieclaw_api.services.library.cover import remove_custom_cover
+
+    if not await asyncio.to_thread(remove_custom_cover, library_id):
+        raise NotFoundException("这个库没有自定义封面")
+    return ok({}, message="已恢复自动拼贴封面")
 
 
 # 卡片要回答「在扫吗」和「上次扫的结果」，后者可能被若干条已取消/无结论的
@@ -2764,8 +2833,10 @@ async def preview_file_subtitle(
     """用户主动点击字幕徽章时才读取文件本体。
 
     轨引用必须命中该台账行：外挂文件名不能越过台账白名单，内封流序号
-    不能越界；成员仍按文件所属库执行可见性判定。文本内封轨首次预览会
-    调用 ffmpeg 抽取，结果沿用字幕生成缓存，后续打开无需重复通读视频。
+    不能越界；成员仍按文件所属库执行可见性判定。文本内封轨首次预览需要
+    ffmpeg 通读整个容器（大文件分钟级），因此**不在请求里等**：返回
+    ``pending`` 由前端轮询，产物与播放器旁挂字幕共用一份缓存，抽过一次
+    之后两边都直接命中（issue #432）。
     """
 
     row = await session.get(LibraryFile, file_id)
@@ -2789,6 +2860,7 @@ async def preview_file_subtitle(
             format=preview.format,
             event_count=len(cues),
             cues=cues,
+            pending=preview.pending,
         )
     )
 

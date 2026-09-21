@@ -18,6 +18,7 @@ import { fetchDiscoveredTitleDetails } from "@/lib/api/discover";
 import {
   getLibrary,
   getLibraryItemDetail,
+  libraryCoverUrl,
   type LibraryItemDetail,
   type MediaLibrary,
 } from "@/lib/api/libraries";
@@ -28,7 +29,6 @@ import {
   type PlaybackWatchState,
 } from "@/lib/api/playback";
 import { getSubscription, type Subscription } from "@/lib/api/subscriptions";
-import { publicEnv } from "@/lib/env";
 import { formatBytes } from "@/lib/format";
 import { cachedImageUrl, imageUrl } from "@/lib/image-proxy";
 import type { LibraryKind, MediaItem } from "@/lib/media-types";
@@ -153,7 +153,7 @@ function LibraryMiniCardBody({ library }: { library: MediaLibrary }) {
           </div>
         ) : (
           <img
-            src={`${publicEnv.apiBaseUrl}/libraries/${library.id}/cover`}
+            src={libraryCoverUrl(library.id)}
             alt=""
             loading="lazy"
             className="absolute inset-0 size-full object-cover transition duration-300 group-hover/lib:scale-[1.02]"

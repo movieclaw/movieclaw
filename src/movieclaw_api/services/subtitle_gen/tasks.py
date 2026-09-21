@@ -294,6 +294,19 @@ class Preview:
     blocker: PreviewBlocker | None
     output_filename: str | None = None
     selected_source_key: str | None = None
+    pending: PreviewPending | None = None
+
+
+@dataclass(frozen=True)
+class PreviewPending:
+    """预检还没有结论：内封轨正在后台抽取，稍后重试即可（issue #432）。
+
+    与 ``blocker`` 是两回事——blocker 说「这份片源做不了」，pending 说
+    「再等一会儿」。混成一个会让用户在等待期间看到「这份片源没有参考字幕」。
+    """
+
+    message: str
+    candidate_key: str
 
 
 @dataclass(frozen=True)
@@ -584,8 +597,14 @@ async def preview(
     secondary_language: str | None = None,
     source_candidate_key: str | None = None,
     pgs_ocr_language: str | None = None,
+    wait: bool = True,
 ) -> Preview:
-    """选源 + 加载最优候选做成本估算（不动 LLM）。"""
+    """选源 + 加载最优候选做成本估算（不动 LLM）。
+
+    ``wait=False`` 供 HTTP 预检使用：内封轨没有现成产物就立刻返回 pending，
+    把分钟级的通读放到后台（issue #432）。发起生成与后台任务用默认的
+    ``wait=True``，等到底。
+    """
     target_language, secondary_language = ensure_output_languages(
         target_language, secondary_language
     )
@@ -600,7 +619,39 @@ async def preview(
     selected = _select_reference(ranked, source_candidate_key)
     selected_candidates = [selected] if selected is not None else []
     warnings: list[str] = []
-    chosen, events = await _pick_loadable(row, selected_candidates, warnings)
+    output_filename = _sidecar_path(row, target_language, secondary_language).name
+    already_generated = bool(
+        {
+            output_filename,
+            *(
+                [_legacy_sidecar_path(row, target_language).name]
+                if secondary_language is None
+                else []
+            ),
+        }
+        & {e.get("filename") for e in row.external_subtitles or []}
+    )
+    selected_key = candidate_key(selected) if selected is not None else None
+
+    try:
+        chosen, events = await _pick_loadable(row, selected_candidates, warnings, wait=wait)
+    except extract.SourceExtractionPending as exc:
+        # 还没有结论，但也不是「做不了」：blocker 必须留空，否则用户在等待
+        # 期间会看到「这份片源没有参考字幕」这种与事实相反的结论。
+        return Preview(
+            candidates=ranked,
+            chosen=None,
+            event_count=0,
+            estimated_tokens=0,
+            already_generated=already_generated,
+            warnings=warnings,
+            pgs_conversion=None,
+            blocker=None,
+            output_filename=output_filename,
+            selected_source_key=selected_key,
+            pending=PreviewPending(message=exc.message, candidate_key=exc.candidate_key),
+        )
+
     pgs_conversion = (
         await _pgs_plan(
             row,
@@ -624,17 +675,7 @@ async def preview(
         chosen=chosen,
         event_count=len(events),
         estimated_tokens=est,
-        already_generated=bool(
-            {
-                _sidecar_path(row, target_language, secondary_language).name,
-                *(
-                    [_legacy_sidecar_path(row, target_language).name]
-                    if secondary_language is None
-                    else []
-                ),
-            }
-            & {e.get("filename") for e in row.external_subtitles or []}
-        ),
+        already_generated=already_generated,
         warnings=warnings,
         pgs_conversion=pgs_conversion,
         blocker=(
@@ -642,8 +683,8 @@ async def preview(
             if chosen is None
             else None
         ),
-        output_filename=_sidecar_path(row, target_language, secondary_language).name,
-        selected_source_key=candidate_key(selected) if selected is not None else None,
+        output_filename=output_filename,
+        selected_source_key=selected_key,
     )
 
 
@@ -651,13 +692,19 @@ async def _pick_loadable(
     row: LibraryFile,
     ranked: list[source.RankedCandidate],
     warnings: list[str],
+    *,
+    wait: bool = True,
 ) -> tuple[source.RankedCandidate | None, list[extract.SubEvent]]:
-    """按排序逐个加载候选，返回第一个完整度合格的（§2：加载后评估）。"""
+    """按排序逐个加载候选，返回第一个完整度合格的（§2：加载后评估）。
+
+    ``SourceExtractionPending`` 不在这里吞掉——它不是「这条候选不能用」，
+    而是「这条候选还没读出来」，必须原样上抛给预检。
+    """
     for cand in ranked:
         if cand.excluded:
             continue
         try:
-            events = await extract.load_candidate_events(row, cand.candidate)
+            events = await extract.load_candidate_events(row, cand.candidate, wait=wait)
         except extract.SourceLoadError as exc:
             warnings.append(str(exc))
             continue

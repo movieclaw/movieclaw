@@ -101,6 +101,8 @@ library artwork download
 library artwork list-candidates
 library artwork select
 library chapter-images generate
+library cover clear
+library cover set
 library create
 library delete
 library duplicates list

@@ -100,6 +100,17 @@ export function NetworkConfigSection() {
       saveNetworkConfig(next)
         .then((v) => {
           setView(v);
+          // 后端会把镜像地址规范化（补 /3、/t/p，去末尾斜杠），回填让用户
+          // 看到实际生效的地址；值没变就不会触发输入框重挂载
+          setForm((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  tmdb_api_base_url: v.tmdb_api_base_url,
+                  tmdb_image_base_url: v.tmdb_image_base_url,
+                }
+              : prev,
+          );
           // 出口配置变了，旧的测试结论不再可信
           setTests({});
           setSaveState("saved");
@@ -388,12 +399,12 @@ export function NetworkConfigSection() {
                   [
                     "tmdb_api_base_url",
                     "接口地址",
-                    "替换 api.themoviedb.org 的官方接口地址（发现页/搜索/订阅建档用）。",
+                    "替换 api.themoviedb.org 的官方接口地址（发现页/搜索/订阅建档用）。只填到域名即可，会自动补上官方的 /3 后缀；自己写了路径则按你写的用。",
                   ],
                   [
                     "tmdb_image_base_url",
                     "图床地址",
-                    "替换 image.tmdb.org 的图床地址（海报/背景图回源用）。",
+                    "替换 image.tmdb.org 的图床地址（海报/背景图回源用）。只填到域名即可，会自动补上官方的 /t/p 后缀；自己写了路径则按你写的用。",
                   ],
                 ] as const
               ).map(([field, label, help]) => (
@@ -401,6 +412,9 @@ export function NetworkConfigSection() {
                   <div className="flex items-center justify-between gap-4 max-md:flex-col max-md:items-stretch max-md:gap-2">
                     <LabelWithHelp label={label} help={<p>{help} 留空使用默认值。</p>} />
                     <input
+                      // key 绑已落库的值：后端补全后回填时重挂载显示新值，
+                      // 用户打字过程中（值未提交）不会被打断
+                      key={`${field}:${form[field]}`}
                       type="text"
                       defaultValue={form[field]}
                       onBlur={(e) => {

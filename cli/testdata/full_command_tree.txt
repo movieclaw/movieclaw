@@ -155,6 +155,9 @@ library artwork select
 library chapter-images
 library chapter-images generate
 library consolidate-roots
+library cover
+library cover clear
+library cover set
 library create
 library delete
 library duplicates

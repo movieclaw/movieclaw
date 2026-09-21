@@ -16,7 +16,10 @@ from pathlib import Path
 
 import pytest
 
-import movieclaw_api.services.playback.embedded_subs as embedded_subs
+# 抽取本体住在中性的 media_extract（播放器与 AI 字幕生成共用同一份产物，
+# issue #432）；embedded_subs 只剩播放侧的包装与内嵌字体。进程替身因此分两处：
+# 字幕抽取打 media_extract，字体抽取打 embedded_subs。
+import movieclaw_api.services.media_extract as media_extract
 from movieclaw_api.services.playback.embedded_subs import (
     embedded_subtitle_format,
     embedded_track_codec,
@@ -100,7 +103,7 @@ def test_unsupported_track_never_touches_ffmpeg(tmp_path, monkeypatch):
     """格式判定要在起进程之前完成——VobSub 轨不该白白读一遍整个容器。"""
     called = []
     monkeypatch.setattr(
-        "movieclaw_api.services.playback.embedded_subs.subprocess.run",
+        "movieclaw_api.services.media_extract.subprocess.Popen",
         lambda *a, **k: called.append(a),
     )
     file = make_file(tmp_path, [{"codec": "dvd_subtitle"}])
@@ -146,11 +149,11 @@ async def test_async_extraction_cancels_ffmpeg_and_removes_partial_file(tmp_path
         process.returncode = -15
         killed.set()
 
-    monkeypatch.setattr(embedded_subs.shutil, "which", lambda _name: "/fake/ffmpeg")
+    monkeypatch.setattr(media_extract.shutil, "which", lambda _name: "/fake/ffmpeg")
     monkeypatch.setattr(
-        embedded_subs.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
+        media_extract.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
     )
-    monkeypatch.setattr(embedded_subs, "_signal_process_group", fake_signal)
+    monkeypatch.setattr(media_extract, "_signal_process_group", fake_signal)
 
     pending = asyncio.create_task(extract_embedded_subtitle_async(file, 0))
     await started.wait()
@@ -249,10 +252,10 @@ def test_second_call_reuses_the_cache(tmp_path, monkeypatch, video_with_subs):
     stamp = first.path.stat().st_mtime_ns
 
     calls = []
-    real_run = subprocess.run
+    real_popen = subprocess.Popen
     monkeypatch.setattr(
-        "movieclaw_api.services.playback.embedded_subs.subprocess.run",
-        lambda *a, **k: (calls.append(a), real_run(*a, **k))[1],
+        "movieclaw_api.services.media_extract.subprocess.Popen",
+        lambda *a, **k: (calls.append(a), real_popen(*a, **k))[1],
     )
     second = extract_embedded_subtitle(file, 0)
     assert second is not None and second.path == first.path

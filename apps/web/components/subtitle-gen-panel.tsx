@@ -429,7 +429,11 @@ export function SubtitleGenPanel({
   const [stopping, setStopping] = useState(false);
   const [agentStarting, setAgentStarting] = useState(false);
   const [requestError, setRequestError] = useState<string | null>(null);
+  // 内封轨正在后台抽取时的等待文案；非空即「还没有结论，不是出错了」。
+  const [pendingNotice, setPendingNotice] = useState<string | null>(null);
   const previewRequestRef = useRef(0);
+  const previewAbortRef = useRef<AbortController | null>(null);
+  const previewTimerRef = useRef<number | null>(null);
   const sharedJob = latestFor("library_file", file.id, "subtitle.generate");
   const sharedJobId = sharedJob?.id;
   const sharedJobStatus = sharedJob?.status;
@@ -457,32 +461,88 @@ export function SubtitleGenPanel({
     previousJobRef.current = { id: sharedJobId, status: sharedJobStatus };
   }, [onChanged, sharedJobId, sharedJobStatus]);
 
+  /**
+   * 收掉在途预检：作废所有未回来的响应、中断请求、清掉轮询定时器。
+   *
+   * 此前只用 requestId 丢弃旧响应，请求本身照发——用户在等待时拨一下「双语」
+   * 开关，后端就会对同一个 16 GB 的文件再起一个 ffmpeg（issue #432）。现在
+   * 换轨、改语言、关弹窗都真的把上一条掐掉。
+   */
+  const stopPreviewPolling = useCallback(() => {
+    previewRequestRef.current += 1;
+    previewAbortRef.current?.abort();
+    previewAbortRef.current = null;
+    if (previewTimerRef.current !== null) {
+      window.clearTimeout(previewTimerRef.current);
+      previewTimerRef.current = null;
+    }
+  }, []);
+
   const loadPreview = useCallback(async (
     target: string,
     secondary: string | null,
     sourceKey: string | null = null,
   ) => {
-    const requestId = previewRequestRef.current + 1;
-    previewRequestRef.current = requestId;
+    stopPreviewPolling();
+    const requestId = previewRequestRef.current;
+    const controller = new AbortController();
+    previewAbortRef.current = controller;
+
     setDialogMode("preview");
     setDialogOpen(true);
     setPreview(null);
     setPgsOcrLanguage("");
     setRequestError(null);
+    setPendingNotice(null);
     setPreviewing(true);
-    try {
-      const result = await previewSubtitleGeneration(file.id, target, secondary, sourceKey);
-      if (previewRequestRef.current !== requestId) return;
-      setPreview(result);
-      setSourceCandidateKey(result.selected_source_key);
-      setPgsOcrLanguage(result.pgs_conversion?.ocr_language ?? "");
-    } catch (error) {
-      if (previewRequestRef.current !== requestId) return;
-      setRequestError(errorMessage(error));
-    } finally {
-      if (previewRequestRef.current === requestId) setPreviewing(false);
-    }
-  }, [file.id]);
+
+    const isCurrent = () => previewRequestRef.current === requestId;
+
+    const run = async (): Promise<void> => {
+      try {
+        const result = await previewSubtitleGeneration(
+          file.id, target, secondary, sourceKey, controller.signal,
+        );
+        if (!isCurrent()) return;
+        if (result.pending) {
+          // 内封轨还在后台抽取：保持「正在检查」并按后端给的间隔重拉。
+          // 这里**不能** setPreview——那份快照里 chosen/blocker 都是空的，
+          // 渲染出来就成了「这份片源没有参考字幕」，与事实相反。
+          setPendingNotice(result.pending.message);
+          previewTimerRef.current = window.setTimeout(() => {
+            previewTimerRef.current = null;
+            if (isCurrent()) void run();
+          }, Math.max(1000, result.pending.retry_after_ms));
+          return;
+        }
+        setPendingNotice(null);
+        setPreview(result);
+        setSourceCandidateKey(result.selected_source_key);
+        setPgsOcrLanguage(result.pgs_conversion?.ocr_language ?? "");
+        setPreviewing(false);
+      } catch (error) {
+        // 主动取消（换轨/关弹窗/离开页面）不是错误，别弹红框
+        if (!isCurrent() || controller.signal.aborted) return;
+        setPendingNotice(null);
+        setRequestError(errorMessage(error));
+        setPreviewing(false);
+      }
+    };
+
+    await run();
+  }, [file.id, stopPreviewPolling]);
+
+  // 弹窗关闭即收掉在途预检与轮询：否则用户关掉后徽章会一直卡在「正在检查」。
+  // 后端的抽取任务**不受影响**，会继续把产物抽完落缓存，下次秒开。
+  useEffect(() => {
+    if (dialogOpen) return;
+    stopPreviewPolling();
+    setPreviewing(false);
+    setPendingNotice(null);
+  }, [dialogOpen, stopPreviewPolling]);
+
+  // 组件卸载（用户直接离开详情页）同样要清掉定时器与在途请求
+  useEffect(() => () => stopPreviewPolling(), [stopPreviewPolling]);
 
   const openAction = useCallback(() => {
     if (running || hasTerminalIssue) {
@@ -538,23 +598,50 @@ export function SubtitleGenPanel({
     }
   }, [sharedJobId, upsert]);
 
+  // 状态弹窗是在给一个已经存在的任务收尾，语言与参考源以任务入参为准（Agent、
+  // CLI 发起的任务在这里也看得到）；预检弹窗还没有任务，用弹窗里当前的选择。
+  const jobTargetLanguage = progress?.target_language ?? null;
+  const jobSecondaryLanguage = progress?.secondary_language ?? null;
+  const jobSourceKey = progress?.source_candidate_key ?? null;
+
+  /*
+   * 「交给 Agent 处理」必须把用户已经做出的选择一起带走。
+   *
+   * 早先的提示词只有文件与失败原因，Agent 拿不到语言选择，只能按默认参数重跑
+   * 一轮单语：用户勾的是双语，拿回来的却是单语文件，白花一轮 LLM 配额，还要
+   * 再解释一遍（issue #433）。语言与参考字幕是用户已经拍板的事，不该让 Agent
+   * 去猜，所以除了人话的「期望输出」，再给一行可直接执行的 CLI 参数。
+   */
   const handOffToAgent = useCallback(
     async (reason: string) => {
       setAgentStarting(true);
       setRequestError(null);
       const conversion = preview?.pgs_conversion;
+      const jobLanguage = dialogMode === "status" ? jobTargetLanguage : null;
+      const target = jobLanguage ?? targetLanguage;
+      const secondary = jobLanguage
+        ? jobSecondaryLanguage
+        : bilingual
+          ? secondaryLanguage
+          : null;
+      const sourceKey = jobLanguage ? jobSourceKey : sourceCandidateKey;
       const prompt = [
         "请帮我处理 MovieClaw 的 AI 字幕生成问题。",
         `文件：${file.file_name}`,
         `文件台账 ID：${file.id}`,
         `文件路径：${file.file_path}`,
+        `期望输出：${outputLabel(target, secondary)}`,
+        `对应参数：--target-language ${target}` +
+          (secondary ? ` --secondary-language ${secondary}` : "") +
+          (sourceKey ? ` --source-candidate-key ${sourceKey}` : ""),
         `当前问题：${reason}`,
         conversion
           ? `预检环境：${conversion.platform} ${conversion.architecture}${conversion.engine ? ` · ${conversion.engine}` : " · 未找到可用识别引擎"}`
           : null,
         conversion?.message ? `预检诊断：${conversion.message}` : null,
         ...(preview?.blocker?.suggestions.map((suggestion) => `已有建议：${suggestion}`) ?? []),
-        "请先判断原因；如果能通过 MovieClaw 的工具安全解决，请直接执行，否则给出明确的操作步骤。不要修改影片原文件。",
+        "请先判断原因；如果能通过 MovieClaw 的工具安全解决，请按上面的「对应参数」直接执行" +
+          "（不要换回默认参数），否则给出明确的操作步骤。不要修改影片原文件。",
       ]
         .filter(Boolean)
         .join("\n");
@@ -569,7 +656,22 @@ export function SubtitleGenPanel({
         setAgentStarting(false);
       }
     },
-    [file.file_name, file.file_path, file.id, preview, router, startAgent],
+    [
+      bilingual,
+      dialogMode,
+      file.file_name,
+      file.file_path,
+      file.id,
+      jobSecondaryLanguage,
+      jobSourceKey,
+      jobTargetLanguage,
+      preview,
+      router,
+      secondaryLanguage,
+      sourceCandidateKey,
+      startAgent,
+      targetLanguage,
+    ],
   );
 
   if (!isAdmin || file.missing) return null;
@@ -720,7 +822,10 @@ export function SubtitleGenPanel({
                         : "border-[#ff9f9f]/30 bg-[#ff9f9f]/[0.08] text-[#ffb4b4]"
                     }`}
                   >
+                    {/* 结束态也报一句目标输出：Agent、CLI 发起的任务用户没在这个
+                        弹窗里选过语言，不写出来就看不出生成的到底是单语还是双语 */}
                     <p className="text-ui font-semibold">
+                      {activeOutputLabel}
                       {jobSucceeded ? "字幕生成完成" : "字幕生成未完成"}
                     </p>
                     <p className="mt-1.5 text-sub leading-5 opacity-85">
@@ -847,7 +952,19 @@ export function SubtitleGenPanel({
               {previewing && (
                 <div className="flex items-center gap-3 rounded-xl border border-white/[0.08] bg-white/[0.04] px-4 py-4">
                   <BrandLoader className="size-5" />
-                  <p className="text-ui font-medium text-white">正在检查参考字幕，不会调用 AI…</p>
+                  <div>
+                    <p className="text-ui font-medium text-white">
+                      {pendingNotice ?? "正在检查参考字幕，不会调用 AI…"}
+                    </p>
+                    {/* 内封字幕要把整个视频通读一遍，大文件是分钟级。说清楚
+                        「在读什么、为什么慢」，用户才不会以为是卡住了。 */}
+                    {pendingNotice && (
+                      <p className="mt-1 text-caption leading-5 text-[var(--text-faint)]">
+                        首次读取内封字幕需要通读整个视频文件，读好后会自动继续；
+                        这一步不会调用 AI，也不产生费用。
+                      </p>
+                    )}
+                  </div>
                 </div>
               )}
 

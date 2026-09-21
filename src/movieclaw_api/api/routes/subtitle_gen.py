@@ -18,6 +18,7 @@ from movieclaw_api.schemas.subtitle_gen import (
     CalibratePayload,
     CalibrateResultView,
     GenPreviewBlockerView,
+    GenPreviewPendingView,
     GenPreviewView,
     GenStartPayload,
     PgsConversionView,
@@ -90,6 +91,14 @@ def _preview_view(pv: gen_tasks.Preview) -> GenPreviewView:
             else None
         ),
         output_filename=pv.output_filename,
+        pending=(
+            GenPreviewPendingView(
+                message=pv.pending.message,
+                candidate_key=pv.pending.candidate_key,
+            )
+            if pv.pending
+            else None
+        ),
     )
 
 
@@ -114,12 +123,20 @@ async def gen_preview(
     source_candidate_key: str | None = None,
     session: AsyncSession = Depends(get_session),
 ) -> ApiResponse[GenPreviewView]:
+    """内封轨首次预检不在这里等 ffmpeg（issue #432）。
+
+    抽取要通读整个容器，16 GB 的 MKV 是 80 秒级，而 iPhone Safari 约 60 秒
+    就掐断请求、对话框显示浏览器原话 ``Load failed``——用户以为文件坏了，
+    服务端却照跑到底。``wait=False`` 让预检立刻返回 ``pending``，抽取转后台
+    单飞进行，前端按 ``retry_after_ms`` 轮询同一个接口拿最终结论。
+    """
     pv = await gen_tasks.preview(
         session,
         file_id,
         target_language,
         secondary_language=secondary_language,
         source_candidate_key=source_candidate_key,
+        wait=False,
     )
     return ApiResponse(data=_preview_view(pv))
 
