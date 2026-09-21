@@ -29,10 +29,14 @@ class SubtitlePreviewError(Exception):
 
 @dataclass(frozen=True)
 class SubtitlePreview:
-    """解析后的字幕预览；events 已按开始时间排序并移除格式样式标记。"""
+    """解析后的字幕预览；events 已按开始时间排序并移除格式样式标记。
+
+    ``pending`` 为真时 events 为空：内封轨正在后台抽取，稍后重试即可。
+    """
 
     format: str | None
     events: list[extract.SubEvent]
+    pending: str | None = None
 
 
 def _candidate_for_track(file: LibraryFile, track: str) -> SourceCandidate:
@@ -84,13 +88,24 @@ def _candidate_for_track(file: LibraryFile, track: str) -> SourceCandidate:
     raise SubtitleTrackNotFound("字幕轨标识无效")
 
 
-async def load_subtitle_preview(file: LibraryFile, track: str) -> SubtitlePreview:
-    """读取并解析一条字幕；阻塞的磁盘读取/ffmpeg 抽取均在线程池执行。"""
+async def load_subtitle_preview(
+    file: LibraryFile, track: str, *, wait: bool = False
+) -> SubtitlePreview:
+    """读取并解析一条字幕；磁盘读取与 ffmpeg 抽取都不阻塞事件循环。
+
+    内封轨首次预览要通读整个容器（大文件分钟级）。默认 ``wait=False``：没有
+    现成产物就转后台抽取并返回 pending，由前端轮询——把请求挂住等的下场是
+    浏览器先超时，用户看到一条莫名其妙的网络错误（issue #432）。
+    """
 
     candidate = _candidate_for_track(file, track)
     try:
         events = await extract.load_candidate_events(
-            file, candidate, preserve_linebreaks=True
+            file, candidate, preserve_linebreaks=True, wait=wait
+        )
+    except extract.SourceExtractionPending as pending:
+        return SubtitlePreview(
+            format=candidate.format, events=[], pending=pending.message
         )
     except extract.SourceLoadError as exc:
         # SourceLoadError 会包含磁盘绝对路径，便于部署者排障，但该接口也对普通

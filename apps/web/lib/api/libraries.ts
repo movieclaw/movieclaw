@@ -1295,6 +1295,9 @@ export interface SubtitlePreview {
   format: string | null;
   event_count: number;
   cues: SubtitleCue[];
+  /** 非空 = 内封轨正在后台抽取，cues 暂时为空，按 retry_after_ms 重拉。 */
+  pending: string | null;
+  retry_after_ms: number;
 }
 
 /** 条目详情页的一个物理文件（一个版本 / 一集）。 */
@@ -1526,7 +1529,14 @@ export function getLibraryItemDetail(
   );
 }
 
-/** 读取一条外挂或文本内封字幕，并返回去样式后的时间轴对白。 */
+/**
+ * 读取一条外挂或文本内封字幕，并返回去样式后的时间轴对白。
+ *
+ * 内封轨首次预览要 ffmpeg 通读整个容器，后端不在请求里等：返回 `pending`
+ * 并把抽取转后台，调用方按 `retry_after_ms` 重拉（issue #432）。
+ */
+const SUBTITLE_PREVIEW_TIMEOUT_MS = 20_000;
+
 export function getSubtitlePreview(
   fileId: number,
   track: string,
@@ -1537,6 +1547,7 @@ export function getSubtitlePreview(
     request<ApiEnvelope<SubtitlePreview>>(
       `/libraries/files/${fileId}/subtitles/preview?${query.toString()}`,
       { signal },
+      { timeoutMs: SUBTITLE_PREVIEW_TIMEOUT_MS },
     ),
   );
 }

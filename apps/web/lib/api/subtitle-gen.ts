@@ -72,6 +72,17 @@ export interface SubtitleGenerationPreview {
   } | null;
   /** 规范化后的最终外挂字幕文件名。 */
   output_filename: string | null;
+  /**
+   * 非空 = 这次还没有结论：内封轨正在后台抽取，按 retry_after_ms 重拉即可。
+   *
+   * 与 blocker 是两回事——blocker 说「这份片源做不了」，pending 说「再等
+   * 一会儿」。等待期间绝不能把 blocker 的文案显示出来。
+   */
+  pending: {
+    message: string;
+    candidate_key: string;
+    retry_after_ms: number;
+  } | null;
 }
 
 export interface CalibrateResult {
@@ -82,12 +93,21 @@ export interface CalibrateResult {
   score: number | null;
 }
 
-/** 生成预检：选源结果 + 成本估算（确认框素材，不动 LLM）。 */
+/**
+ * 生成预检：选源结果 + 成本估算（确认框素材，不动 LLM）。
+ *
+ * 后端保证这个接口**不会**在里面等 ffmpeg 通读大文件：内封轨没抽好就回
+ * `pending`，抽取转后台（issue #432）。所以这里可以放心给一个短超时——
+ * 超过它就是真的不对劲，而不是「文件大，再等等」。
+ */
+const PREVIEW_TIMEOUT_MS = 20_000;
+
 export function previewSubtitleGeneration(
   fileId: number,
   targetLanguage = "chs",
   secondaryLanguage: string | null = null,
   sourceCandidateKey: string | null = null,
+  signal?: AbortSignal,
 ): Promise<SubtitleGenerationPreview> {
   const query = new URLSearchParams({ target_language: targetLanguage });
   if (secondaryLanguage) query.set("secondary_language", secondaryLanguage);
@@ -95,6 +115,8 @@ export function previewSubtitleGeneration(
   return unwrap(
     request<ApiEnvelope<SubtitleGenerationPreview>>(
       `/libraries/files/${fileId}/subtitles/generation-preview?${query}`,
+      { signal },
+      { timeoutMs: PREVIEW_TIMEOUT_MS },
     ),
   );
 }

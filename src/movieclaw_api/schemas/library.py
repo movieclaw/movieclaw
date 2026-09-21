@@ -811,6 +811,9 @@ class SubtitlePreviewView(BaseModel):
     format: str | None = None
     event_count: int = Field(ge=0)
     cues: list[SubtitleCueView] = Field(default_factory=list)
+    #: 非空 = 内封轨正在后台抽取，cues 暂时为空，前端按间隔轮询即可。
+    pending: str | None = Field(default=None, description="等待文案；为空表示已就绪")
+    retry_after_ms: int = Field(default=2500, ge=0, description="建议的下次轮询间隔")
 
 
 class SubtitleDeleteResultView(BaseModel):

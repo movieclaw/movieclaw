@@ -108,7 +108,7 @@ async def test_preview_text_embedded_subtitle_uses_stream_index(tmp_path, monkey
         external=[],
     )
 
-    async def fake_load(row, candidate, *, preserve_linebreaks=False):
+    async def fake_load(row, candidate, *, preserve_linebreaks=False, wait=True):
         assert row is file
         assert (candidate.kind, candidate.key, candidate.format) == ("embedded", "0", "ass")
         assert preserve_linebreaks is True

@@ -1,4 +1,4 @@
-"""内封字幕轨的按需抽取（docs/design/web-player.md §6.2）。
+"""播放侧的内封字幕与字体供给（docs/design/web-player.md §6.2）。
 
 **为什么必须做这个**：PT 片源绝大多数字幕是内封的，外挂 .srt 反而是少数。
 只服务外挂轨等于对大部分片子没有字幕——而字幕是「能不能看」而非「好不好看」
@@ -7,369 +7,73 @@
 **为什么不烧录**（硬边界 1）：烧录会把任何档位瞬间拖进全转码。所以内封轨
 也走旁挂：抽出来当独立文件下发，由前端渲染。
 
-**为什么保留原格式**：ASS 转 VTT 会丢掉特效与排版，番剧字幕直接崩。因此
-ASS/SSA 原样 copy 出来交 JASSUB，纯文本轨才转 SRT（再由服务层按需转 VTT）。
-这也是不复用 ``subtitle_gen.extract`` 那套抽取的原因——它为 AI 翻译服务，
-一律转成 SRT 拿纯文本，对播放来说是有损的。两处需求不同，各自窄实现比
-硬凑一个参数化的公共函数更清楚。
-
-抽取是长时间 IO：异步调用路径使用可取消的子进程，取消时连同整个进程组
-一起回收；同步入口仅保留给既有离线调用，并同样带超时和进程组清理。
+字幕轨的抽取本身（单飞、可取消、缓存、格式选择）住在中性的
+``services/media_extract``——播放器与 AI 字幕生成要的是同一条轨、同一条
+ffmpeg 命令、同一份产物，各抽各的会把同一个大文件通读两遍（issue #432）。
+本模块只做播放侧的那层包装：把产物表达成 ``SubtitleRef``，外加**内嵌字体**
+——它是 ASS 特效字幕的另一半，纯属播放渲染，不与生产端共享。
 """
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
 import json
 import logging
-import os
 import re
 import shutil
-import signal
 import subprocess
-import time
 import uuid
-from dataclasses import dataclass
 from pathlib import Path
 
-from movieclaw_api.core.config import get_settings
+from movieclaw_api.services.media_extract import (
+    EXTRACT_TIMEOUT as _EXTRACT_TIMEOUT,
+)
+from movieclaw_api.services.media_extract import (
+    ExtractedTrack,
+    cache_dir,
+    extract_track,
+    extract_track_async,
+    subtitle_format,
+    track_codec,
+)
 from movieclaw_db.models import LibraryFile
 from movieclaw_playback.subtitles import SubtitleRef
 
 logger = logging.getLogger("movieclaw_api.playback.subtitles")
 
-#: 抽取要通读整个容器，大文件是分钟级，比探测慢得多。
-_EXTRACT_TIMEOUT = 120.0
-# 先给 ffmpeg 一个正常退出窗口，超时或取消后再强制杀掉整个进程组。
-_PROCESS_TERM_TIMEOUT = 2.0
-_PROCESS_KILL_TIMEOUT = 5.0
+#: 内封轨 codec → 抽取后的文件格式；不支持的轨（VobSub 等）返回 None。
+embedded_subtitle_format = subtitle_format
+#: 第 index 条内封字幕轨的 codec；越界或未探测返回 None。
+embedded_track_codec = track_codec
 
-#: 纯文本轨：抽成 SRT，服务层再按请求转 VTT 交 ``<track>``。
-_TEXT_CODECS = frozenset({"subrip", "srt", "mov_text", "text", "webvtt", "vtt"})
-#: 特效轨：原样 copy 出来交 JASSUB，转格式就毁了。
-_ASS_CODECS = frozenset({"ass", "ssa"})
-#: 蓝光位图轨：原样 copy 成 .sup（HDMV PGS 的标准封装，ffmpeg 的 sup muxer），
-#: 交前端 libbitsub 在 canvas 上渲染——与 Jellyfin 10.9+ 的做法一致。
-#: 绝不烧录（硬边界 1），也绝不 OCR（错字比没字幕更糟）。
-_PGS_CODECS = frozenset({"hdmv_pgs_subtitle", "pgssub", "pgs"})
-
-
-@dataclass(frozen=True)
-class _ExtractionSpec:
-    """一次字幕抽取的固定输入与缓存位置。"""
-
-    fmt: str
-    video: Path
-    out_path: Path
+__all__ = [
+    "cache_dir",
+    "embedded_subtitle_format",
+    "embedded_track_codec",
+    "extract_embedded_fonts",
+    "extract_embedded_subtitle",
+    "extract_embedded_subtitle_async",
+    "font_cache_dir",
+    "safe_font_name",
+]
 
 
-@dataclass
-class _ExtractionJob:
-    """同一字幕轨的共享抽取任务及当前等待者数量。"""
-
-    task: asyncio.Task[SubtitleRef | None]
-    waiters: int = 0
-
-
-# 详情页预热与播放器请求可能同时命中同一条内封轨；共享任务既避免重复读盘，
-# 也让最后一个请求离开时能取消仍在进行的 ffmpeg。
-_EXTRACTION_JOBS: dict[tuple[str, int, str], _ExtractionJob] = {}
-
-
-def cache_dir() -> Path:
-    """抽取产物目录。中间品不进媒体库目录，根目录来自配置（缓存管理面板按
-    登记表统计/清理它，见 services/storage/registry.py）。"""
-    return Path(get_settings().playback_subs_cache_dir)
-
-
-def embedded_subtitle_format(codec: str | None) -> str | None:
-    """内封轨 codec → 抽取后的文件格式；不支持的轨（VobSub 等）返回 None。"""
-    normalized = (codec or "").lower()
-    if normalized in _ASS_CODECS:
-        return "ass"
-    if normalized in _TEXT_CODECS:
-        return "srt"
-    if normalized in _PGS_CODECS:
-        return "sup"
-    return None
-
-
-def embedded_track_codec(file: LibraryFile, index: int) -> str | None:
-    """取第 index 条内封字幕轨的 codec；越界或未探测返回 None。
-
-    数组下标与 ffmpeg 的 ``0:s:<k>`` 同源——都是「第 k 条字幕流」，因此可以
-    直接用。绝不能换成绝对流序号，那个会被视频/音频/附件流搅乱。
-    """
-    streams = file.subtitle_streams or []
-    if not 0 <= index < len(streams):
+def _as_ref(track: ExtractedTrack | None) -> SubtitleRef | None:
+    """抽取产物 → 播放层的可服务定位（两者同形，只是分属不同层的词汇）。"""
+    if track is None:
         return None
-    raw = streams[index]
-    return raw.get("codec") if isinstance(raw, dict) else None
+    return SubtitleRef(path=track.path, format=track.format)
 
 
 def extract_embedded_subtitle(file: LibraryFile, index: int) -> SubtitleRef | None:
-    """阻塞地抽出内封轨，供既有同步/离线调用使用。
-
-    Web 请求使用下面的异步入口；这里仍保留同步 API，避免影响扫描脚本和已有
-    调用者，但进程同样独立成组，超时会清理，不会遗留 ``.part`` 文件。
-    """
-    spec = _extraction_spec(file, index)
-    if spec is None:
-        return None
-    cached = _cached_ref(spec)
-    if cached is not None:
-        return cached
-    if not _can_extract(spec):
-        return None
-
-    tmp_path = _new_tmp_path(spec.out_path)
-    started_at = time.monotonic()
-    try:
-        proc = subprocess.Popen(
-            _extract_command(spec, index, tmp_path),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=True,
-        )
-    except OSError as exc:
-        _cleanup(tmp_path)
-        logger.warning("内封字幕抽取进程启动失败：%s（%s）", spec.video, exc)
-        return None
-
-    try:
-        _, stderr = proc.communicate(timeout=_EXTRACT_TIMEOUT)
-    except subprocess.TimeoutExpired:
-        _terminate_sync_process(proc)
-        _cleanup(tmp_path)
-        logger.warning(
-            "内封字幕抽取超时（%.0f 秒）：%s 轨 %d", _EXTRACT_TIMEOUT, spec.video, index
-        )
-        return None
-    return _finish_extraction(
-        spec, index, tmp_path, proc.returncode, stderr, started_at
-    )
+    """阻塞地抽出内封轨，供既有同步/离线调用使用。"""
+    return _as_ref(extract_track(file, index))
 
 
 async def extract_embedded_subtitle_async(
     file: LibraryFile, index: int
 ) -> SubtitleRef | None:
-    """异步抽出内封轨，并在请求取消时回收对应的 ffmpeg 进程。
-
-    同一条轨的调用共享一个任务。调用方取消只释放自己的等待者；没有其它
-    等待者时才取消底层任务，避免详情页预热与播放器请求互相误杀。
-    """
-    spec = _extraction_spec(file, index)
-    if spec is None:
-        return None
-    cached = _cached_ref(spec)
-    if cached is not None:
-        return cached
-
-    key = (str(spec.video), index, str(spec.out_path))
-    job = _EXTRACTION_JOBS.get(key)
-    if job is None or job.task.done():
-        task = asyncio.create_task(_extract_async_uncached(spec, index))
-        job = _ExtractionJob(task=task)
-        _EXTRACTION_JOBS[key] = job
-        task.add_done_callback(lambda done: _forget_extraction_job(key, done))
-    job.waiters += 1
-    try:
-        # 请求取消不能直接取消共享任务；finally 会在最后一个等待者离开时
-        # 负责取消它，并由子进程协程完成 SIGTERM/SIGKILL 清理。
-        return await asyncio.shield(job.task)
-    finally:
-        job.waiters -= 1
-        if job.waiters == 0 and not job.task.done():
-            job.task.cancel()
-
-
-def _extraction_spec(file: LibraryFile, index: int) -> _ExtractionSpec | None:
-    fmt = embedded_subtitle_format(embedded_track_codec(file, index))
-    if fmt is None:
-        return None
-    video = Path(file.file_path)
-    return _ExtractionSpec(
-        fmt=fmt,
-        video=video,
-        out_path=cache_dir() / f"{file.id}.s{index}.{fmt}",
-    )
-
-
-def _cached_ref(spec: _ExtractionSpec) -> SubtitleRef | None:
-    if not _is_fresh(spec.out_path, spec.video):
-        return None
-    return SubtitleRef(path=spec.out_path, format=spec.fmt)
-
-
-def _can_extract(spec: _ExtractionSpec) -> bool:
-    if shutil.which("ffmpeg") is None:
-        logger.warning(
-            "系统中未找到 ffmpeg，无法抽取内封字幕轨——请安装 ffmpeg，"
-            "或为该影片放置外挂字幕文件（官方 Docker 镜像已内置 ffmpeg）"
-        )
-        return False
-    return spec.video.is_file()
-
-
-def _new_tmp_path(out_path: Path) -> Path:
-    # 先写临时文件再原子替换：失败、超时或取消都不会把半成品当成缓存。
-    # 临时文件保留正式后缀，ffmpeg 才能按扩展名选对 muxer。
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    return out_path.with_name(f".{out_path.stem}.{uuid.uuid4().hex}.part{out_path.suffix}")
-
-
-def _extract_command(spec: _ExtractionSpec, index: int, tmp_path: Path) -> list[str]:
-    # ASS/PGS 用 copy 保住格式；文本轨统一转 SRT，抹平 mov_text 等差异。
-    codec_args = ["-c:s", "copy"] if spec.fmt in ("ass", "sup") else ["-c:s", "srt"]
-    return [
-        "ffmpeg", "-nostdin", "-v", "error", "-y",
-        "-i", str(spec.video),
-        "-map", f"0:s:{index}",
-        *codec_args,
-        str(tmp_path),
-    ]
-
-
-def _finish_extraction(
-    spec: _ExtractionSpec,
-    index: int,
-    tmp_path: Path,
-    returncode: int | None,
-    stderr: bytes,
-    started_at: float,
-) -> SubtitleRef | None:
-    try:
-        valid = tmp_path.is_file() and tmp_path.stat().st_size > 0
-    except OSError:
-        valid = False
-    if returncode != 0 or not valid:
-        _cleanup(tmp_path)
-        logger.warning(
-            "内封字幕抽取失败：%s 轨 %d（%s）",
-            spec.video, index, stderr.decode(errors="replace")[:200],
-        )
-        return None
-    try:
-        tmp_path.replace(spec.out_path)
-    except OSError as exc:
-        _cleanup(tmp_path)
-        logger.warning("内封字幕缓存写入失败：%s（%s）", spec.out_path, exc)
-        return None
-    logger.info(
-        "内封字幕抽取完成：%s 轨 %d → %s 耗时 %.1f 秒",
-        spec.video.name, index, spec.fmt, time.monotonic() - started_at,
-    )
-    return SubtitleRef(path=spec.out_path, format=spec.fmt)
-
-
-def _signal_process_group(pid: int | None, sig: signal.Signals) -> None:
-    """给独立进程组发信号；进程已退出时按幂等处理。"""
-    if pid is None:
-        return
-    with contextlib.suppress(OSError):
-        os.killpg(pid, sig)
-
-
-def _terminate_sync_process(proc: subprocess.Popen[bytes]) -> None:
-    _signal_process_group(proc.pid, signal.SIGTERM)
-    try:
-        proc.communicate(timeout=_PROCESS_TERM_TIMEOUT)
-    except subprocess.TimeoutExpired:
-        _signal_process_group(proc.pid, signal.SIGKILL)
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            proc.communicate(timeout=_PROCESS_KILL_TIMEOUT)
-
-
-async def _terminate_async_process(
-    proc: asyncio.subprocess.Process,
-    communicate: asyncio.Task[tuple[bytes, bytes]],
-) -> None:
-    _signal_process_group(proc.pid, signal.SIGTERM)
-    try:
-        await asyncio.wait_for(asyncio.shield(communicate), _PROCESS_TERM_TIMEOUT)
-        return
-    except (TimeoutError, OSError, asyncio.CancelledError):
-        _signal_process_group(proc.pid, signal.SIGKILL)
-    with contextlib.suppress(TimeoutError, OSError, asyncio.CancelledError):
-        await asyncio.wait_for(asyncio.shield(communicate), _PROCESS_KILL_TIMEOUT)
-
-
-async def _extract_async_uncached(spec: _ExtractionSpec, index: int) -> SubtitleRef | None:
-    # 共享任务创建后再次检查，避免并发调用之间有一个刚刚完成缓存写入。
-    cached = _cached_ref(spec)
-    if cached is not None:
-        return cached
-    if not _can_extract(spec):
-        return None
-
-    tmp_path = _new_tmp_path(spec.out_path)
-    started_at = time.monotonic()
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *_extract_command(spec, index, tmp_path),
-            stdin=subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            start_new_session=True,
-        )
-    except OSError as exc:
-        _cleanup(tmp_path)
-        logger.warning("内封字幕抽取进程启动失败：%s（%s）", spec.video, exc)
-        return None
-
-    communicate = asyncio.create_task(proc.communicate())
-    try:
-        _, stderr = await asyncio.wait_for(
-            asyncio.shield(communicate), _EXTRACT_TIMEOUT
-        )
-    except asyncio.CancelledError:
-        await asyncio.shield(_terminate_async_process(proc, communicate))
-        _cleanup(tmp_path)
-        logger.info("内封字幕抽取已取消：%s 轨 %d", spec.video, index)
-        raise
-    except TimeoutError:
-        await _terminate_async_process(proc, communicate)
-        _cleanup(tmp_path)
-        logger.warning(
-            "内封字幕抽取超时（%.0f 秒）：%s 轨 %d", _EXTRACT_TIMEOUT, spec.video, index
-        )
-        return None
-    return _finish_extraction(
-        spec, index, tmp_path, proc.returncode, stderr, started_at
-    )
-
-
-def _forget_extraction_job(
-    key: tuple[str, int, str], task: asyncio.Task[SubtitleRef | None]
-) -> None:
-    job = _EXTRACTION_JOBS.get(key)
-    if job is not None and job.task is task:
-        _EXTRACTION_JOBS.pop(key, None)
-    with contextlib.suppress(asyncio.CancelledError, Exception):
-        task.exception()
-
-
-def _is_fresh(out_path: Path, video: Path) -> bool:
-    """产物比视频新且非空即可复用。
-
-    抽取要通读整个容器，不能每次点开字幕都重来一遍；而只有视频本体变了
-    （洗版、改名归并）才需要重抽。
-    """
-    try:
-        return (
-            out_path.is_file()
-            and out_path.stat().st_size > 0
-            and out_path.stat().st_mtime_ns > video.stat().st_mtime_ns
-        )
-    except OSError:
-        return False  # stat 失败按未缓存处理，走正常抽取
-
-
-def _cleanup(path: Path) -> None:
-    with contextlib.suppress(OSError):
-        path.unlink(missing_ok=True)
+    """异步抽出内封轨，并在请求取消时回收对应的 ffmpeg 进程。"""
+    return _as_ref(await extract_track_async(file, index))
 
 
 # ---------------------------------------------------------------------------
