@@ -242,7 +242,8 @@ function jobDetailItems(job: JobView): Array<{ label: string; alert?: boolean }>
     const totalEvents = detailNumber(details, "total_events");
     const parallelism = detailNumber(details, "parallelism");
     const rateLimits = detailNumber(details, "rate_limit_count");
-    if (language) items.push({ label: LANGUAGE_LABELS[language] ?? language });
+    // subtitleLanguageLabel 出来的已经是中文标签，不要再拿去查一次语言码表
+    if (language) items.push({ label: language });
     if (doneEvents != null && totalEvents) {
       items.push({ label: `${doneEvents} / ${totalEvents} 条字幕` });
     }

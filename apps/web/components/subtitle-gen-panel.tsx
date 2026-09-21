@@ -538,23 +538,50 @@ export function SubtitleGenPanel({
     }
   }, [sharedJobId, upsert]);
 
+  // 状态弹窗是在给一个已经存在的任务收尾，语言与参考源以任务入参为准（Agent、
+  // CLI 发起的任务在这里也看得到）；预检弹窗还没有任务，用弹窗里当前的选择。
+  const jobTargetLanguage = progress?.target_language ?? null;
+  const jobSecondaryLanguage = progress?.secondary_language ?? null;
+  const jobSourceKey = progress?.source_candidate_key ?? null;
+
+  /*
+   * 「交给 Agent 处理」必须把用户已经做出的选择一起带走。
+   *
+   * 早先的提示词只有文件与失败原因，Agent 拿不到语言选择，只能按默认参数重跑
+   * 一轮单语：用户勾的是双语，拿回来的却是单语文件，白花一轮 LLM 配额，还要
+   * 再解释一遍（issue #433）。语言与参考字幕是用户已经拍板的事，不该让 Agent
+   * 去猜，所以除了人话的「期望输出」，再给一行可直接执行的 CLI 参数。
+   */
   const handOffToAgent = useCallback(
     async (reason: string) => {
       setAgentStarting(true);
       setRequestError(null);
       const conversion = preview?.pgs_conversion;
+      const jobLanguage = dialogMode === "status" ? jobTargetLanguage : null;
+      const target = jobLanguage ?? targetLanguage;
+      const secondary = jobLanguage
+        ? jobSecondaryLanguage
+        : bilingual
+          ? secondaryLanguage
+          : null;
+      const sourceKey = jobLanguage ? jobSourceKey : sourceCandidateKey;
       const prompt = [
         "请帮我处理 MovieClaw 的 AI 字幕生成问题。",
         `文件：${file.file_name}`,
         `文件台账 ID：${file.id}`,
         `文件路径：${file.file_path}`,
+        `期望输出：${outputLabel(target, secondary)}`,
+        `对应参数：--target-language ${target}` +
+          (secondary ? ` --secondary-language ${secondary}` : "") +
+          (sourceKey ? ` --source-candidate-key ${sourceKey}` : ""),
         `当前问题：${reason}`,
         conversion
           ? `预检环境：${conversion.platform} ${conversion.architecture}${conversion.engine ? ` · ${conversion.engine}` : " · 未找到可用识别引擎"}`
           : null,
         conversion?.message ? `预检诊断：${conversion.message}` : null,
         ...(preview?.blocker?.suggestions.map((suggestion) => `已有建议：${suggestion}`) ?? []),
-        "请先判断原因；如果能通过 MovieClaw 的工具安全解决，请直接执行，否则给出明确的操作步骤。不要修改影片原文件。",
+        "请先判断原因；如果能通过 MovieClaw 的工具安全解决，请按上面的「对应参数」直接执行" +
+          "（不要换回默认参数），否则给出明确的操作步骤。不要修改影片原文件。",
       ]
         .filter(Boolean)
         .join("\n");
@@ -569,7 +596,22 @@ export function SubtitleGenPanel({
         setAgentStarting(false);
       }
     },
-    [file.file_name, file.file_path, file.id, preview, router, startAgent],
+    [
+      bilingual,
+      dialogMode,
+      file.file_name,
+      file.file_path,
+      file.id,
+      jobSecondaryLanguage,
+      jobSourceKey,
+      jobTargetLanguage,
+      preview,
+      router,
+      secondaryLanguage,
+      sourceCandidateKey,
+      startAgent,
+      targetLanguage,
+    ],
   );
 
   if (!isAdmin || file.missing) return null;
@@ -720,7 +762,10 @@ export function SubtitleGenPanel({
                         : "border-[#ff9f9f]/30 bg-[#ff9f9f]/[0.08] text-[#ffb4b4]"
                     }`}
                   >
+                    {/* 结束态也报一句目标输出：Agent、CLI 发起的任务用户没在这个
+                        弹窗里选过语言，不写出来就看不出生成的到底是单语还是双语 */}
                     <p className="text-ui font-semibold">
+                      {activeOutputLabel}
                       {jobSucceeded ? "字幕生成完成" : "字幕生成未完成"}
                     </p>
                     <p className="mt-1.5 text-sub leading-5 opacity-85">
